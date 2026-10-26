@@ -72,7 +72,15 @@ namespace engine::hotload {
 // its end for the first time — `font`, `letter_spacing_px` and a drop shadow. The host reads an
 // element only as far as the module's `size` says and leaves the rest at the defaults, so a module
 // built against 3, 4 or 5 loads and its elements draw exactly as they drew.
-inline constexpr u32 k_abi_version = 6;
+//
+// **7** (2026-10-25): two **optional exports** a host calls when a module has them, of two new
+// signatures (roadmap W79; apps.md, "The loading presentation"): `game_loading` (`LoadingFn`),
+// handed a `GameLoadProgress` every loading frame — the host's own loading screen steps aside
+// and the module draws its own through the HUD it has — and `game_ready_milestone`
+// (`MilestoneFn`), the `GameMilestone` the module wants reached before its `game_tick` starts and
+// the player has control. `HostApi` did not change: a module built against 3 to 6 exports neither
+// and loads and runs exactly as it did.
+inline constexpr u32 k_abi_version = 7;
 // The oldest module ABI a host of this header loads (4, above, says why 3 and not 4).
 inline constexpr u32 k_abi_oldest = 3;
 
@@ -286,6 +294,38 @@ struct ActorState {
   u32 fading = 0;      // a cross-fade, a fade in or a fade to rest in flight
   u64 pose_hash = 0;   // over the joint matrices of the last step
   char clip[64] = {};  // the library's name ("bar/bend"); empty when stopped
+};
+
+// **The startup's milestones** (ABI 7; apps.md, "--startup-trace"), in the order a load reaches
+// them: what `game_ready_milestone` names and `GameLoadProgress::milestones` has a bit for.
+enum class GameMilestone : u32 {
+  Main = 0,
+  Device = 1,
+  SceneLoaded = 2,
+  GpuScene = 3,
+  FirstFrame = 4,
+  PlayerControllable = 5,  // the default: control as soon as the walker has taken a tick
+  GroundCollisionReady = 6,
+  NearbyStable = 7,
+};
+inline constexpr u32 k_game_milestones = 8;
+
+// **Where the load is** (ABI 7), handed to `game_loading` every loading frame: the host's own
+// `LoadProgress` (core/profiling/startup_trace.h) in the ABI's terms. The strings are borrowed,
+// NUL-terminated, and valid for the call. Led by its `size`, as the host built it; a module reads
+// no field past it.
+struct GameLoadProgress {
+  u32 size = sizeof(GameLoadProgress);
+  u32 stages_done = 0;
+  u32 stages_expected = 0;
+  u32 milestones = 0;       // bit i: `GameMilestone` i has been reached
+  f32 fraction = 0.0f;      // [0, 1], never falls during one load
+  u32 ready = 0;            // 1 once the milestone the module asked for is reached (the last call)
+  u64 bytes_read = 0;       // the process's reads since the load began
+  u64 items = 0;            // what the load's stages counted: meshes, tiles, instances stood
+  u64 elapsed_ns = 0;       // since the load began
+  const char* stage = "";   // the load's stage now ("load scene")
+  const char* detail = "";  // what it is doing inside ("cluster read: tree.clusters"), or ""
 };
 
 // The engine as a module sees it. Every function takes the table's `host` first. The table and
@@ -508,6 +548,9 @@ using NumberFn = f64 (*)(ModuleContext*, f64);
 using ViewNumberFn = f64 (*)(ModuleContext*, View);
 using TickFn = void (*)(ModuleContext*, View self, f32 dt);
 using ConditionFn = bool (*)(ModuleContext*, View a, View b);
+// ABI 7's optional exports: `game_loading` and `game_ready_milestone` (a `GameMilestone`).
+using LoadingFn = void (*)(ModuleContext*, const GameLoadProgress* progress);
+using MilestoneFn = u32 (*)(ModuleContext*);
 
 // A signature's number. A function type that is not in the list does not compile into an export
 // table, and the host refuses to hand out a function under a signature it was not exported with,
@@ -524,6 +567,12 @@ template <>
 inline constexpr u32 k_signature<TickFn> = 4;
 template <>
 inline constexpr u32 k_signature<ConditionFn> = 5;
+template <>
+inline constexpr u32 k_signature<LoadingFn> = 6;
+template <>
+inline constexpr u32 k_signature<MilestoneFn> = 7;
+// The largest signature number this header knows (an export naming a larger one is refused).
+inline constexpr u32 k_signature_max = 7;
 
 struct Export {
   const char* name;
@@ -535,7 +584,8 @@ template <class F>
 Export export_function(const char* name, F function) noexcept {
   static_assert(k_signature<F> != 0,
                 "engine hotload: this function's type is not one of the export signatures in "
-                "module_abi.h (VoidFn, NumberFn, ViewNumberFn, TickFn, ConditionFn)");
+                "module_abi.h (VoidFn, NumberFn, ViewNumberFn, TickFn, ConditionFn, LoadingFn, "
+                "MilestoneFn)");
   return Export{name, k_signature<F>, reinterpret_cast<void (*)()>(function)};
 }
 

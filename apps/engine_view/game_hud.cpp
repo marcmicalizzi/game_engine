@@ -1,5 +1,7 @@
 #include "game_hud.h"
 
+#include "loading.h"
+
 #include <core/json/json.h>
 #include <core/time/time.h>
 #include <foundation/image/decode.h>
@@ -610,7 +612,7 @@ bool GameHudOverlay::layout(const GameHud& hud, const JsonValue* result, u32 wid
 // Textures first, so every command names one the overlay has (engine-editor's EditorUi::render
 // does the same; the atlas is made once and grown or re-baked a few times as glyphs or sizes are
 // first used), then the commands' textures resolved from ImGui's ids.
-bool GameHudOverlay::upload(renderer::SceneRenderer& renderer, std::string& error) {
+bool GameHudOverlay::upload(OverlayTextures& textures, std::string& error) {
   if (context_ == nullptr) return true;
   ImGui::SetCurrentContext(context_);
   ImDrawData* data = ImGui::GetDrawData();
@@ -620,12 +622,12 @@ bool GameHudOverlay::upload(renderer::SceneRenderer& renderer, std::string& erro
       if (tex->Status == ImTextureStatus_WantCreate || tex->Status == ImTextureStatus_WantUpdates) {
         const i64 start = time::monotonic_ns();
         if (tex->TexID != ImTextureID_Invalid)
-          renderer.remove_overlay_texture(static_cast<u32>(tex->TexID - 1));
+          textures.remove_texture(static_cast<u32>(tex->TexID - 1));
         if (tex->Format != ImTextureFormat_RGBA32) {
           error = "ImGui asked for a texture format the overlay does not take";
           return false;
         }
-        const u32 id = renderer.overlay().add_texture(
+        const u32 id = textures.add_texture(
             static_cast<u32>(tex->Width), static_cast<u32>(tex->Height), tex->GetPixels(), &error);
         if (id == renderer::OverlayPass::k_no_texture) return false;
         tex->SetTexID(static_cast<ImTextureID>(id) + 1);
@@ -634,7 +636,7 @@ bool GameHudOverlay::upload(renderer::SceneRenderer& renderer, std::string& erro
         atlas_ns_ += time::monotonic_ns() - start;
       } else if (tex->Status == ImTextureStatus_WantDestroy && tex->UnusedFrames > 0) {
         if (tex->TexID != ImTextureID_Invalid)
-          renderer.remove_overlay_texture(static_cast<u32>(tex->TexID - 1));
+          textures.remove_texture(static_cast<u32>(tex->TexID - 1));
         tex->SetTexID(ImTextureID_Invalid);
         tex->SetStatus(ImTextureStatus_Destroyed);
       }
@@ -651,7 +653,7 @@ bool GameHudOverlay::upload(renderer::SceneRenderer& renderer, std::string& erro
       if (tex >= k_image_texture_base) {
         // An image element's (ABI 6): its texture, made the first time a layout draws it.
         const u32 image = static_cast<u32>(tex - k_image_texture_base);
-        if (!image_texture(renderer, image, error)) return false;
+        if (!image_texture(textures, image, error)) return false;
         commands_[c].texture = image_texture_[image];
       } else {
         commands_[c].texture = tex == ImTextureID_Invalid ? renderer::OverlayPass::k_no_texture
@@ -660,7 +662,7 @@ bool GameHudOverlay::upload(renderer::SceneRenderer& renderer, std::string& erro
       ++c;
     }
   }
-  release_images(renderer);
+  release_images(textures);
   u32 kept = 0;
   for (u32 i = 0; i < commands_.size(); ++i) {
     if (commands_[i].texture == renderer::OverlayPass::k_no_texture) continue;
@@ -673,8 +675,7 @@ bool GameHudOverlay::upload(renderer::SceneRenderer& renderer, std::string& erro
 // An image's overlay texture (ABI 6): decoded from the file the runner found, uploaded once, kept
 // while an element names it. The upload is a blocking submission in the HUD's build, before the
 // frame is recorded, the first time a frame draws the image — never in a steady frame.
-bool GameHudOverlay::image_texture(renderer::SceneRenderer& renderer, u32 image,
-                                   std::string& error) {
+bool GameHudOverlay::image_texture(OverlayTextures& textures, u32 image, std::string& error) {
   if (image >= GameHud::k_images || hud_ == nullptr || image >= hud_->image_count) {
     error = "an image element names no image the runner holds";
     return false;
@@ -686,8 +687,7 @@ bool GameHudOverlay::image_texture(renderer::SceneRenderer& renderer, u32 image,
     error = "the HUD image " + std::string(file.path) + " cannot be read: " + error;
     return false;
   }
-  const u32 id =
-      renderer.overlay().add_texture(decoded.width, decoded.height, decoded.pixels.data(), &error);
+  const u32 id = textures.add_texture(decoded.width, decoded.height, decoded.pixels.data(), &error);
   if (id == renderer::OverlayPass::k_no_texture) return false;
   image_texture_[image] = id;
   ++image_uploads_;
@@ -696,24 +696,24 @@ bool GameHudOverlay::image_texture(renderer::SceneRenderer& renderer, u32 image,
 
 // The textures of images no element of the last layout named: removed with the element, which
 // waits for the device (a removal, never a frame's cost).
-void GameHudOverlay::release_images(renderer::SceneRenderer& renderer) {
+void GameHudOverlay::release_images(OverlayTextures& textures) {
   for (u32 i = 0; i < GameHud::k_images; ++i) {
     if (image_used_[i] || image_texture_[i] == renderer::OverlayPass::k_no_texture) continue;
-    renderer.remove_overlay_texture(image_texture_[i]);
+    textures.remove_texture(image_texture_[i]);
     image_texture_[i] = renderer::OverlayPass::k_no_texture;
   }
 }
 
 bool GameHudOverlay::build(const GameHud& hud, const JsonValue* result, u32 width, u32 height,
-                           f32 display_scale, renderer::SceneRenderer& renderer,
+                           f32 display_scale, OverlayTextures& textures,
                            renderer::OverlayDrawData& out, std::string& error) {
   out = renderer::OverlayDrawData{};
   if (!layout(hud, result, width, height, display_scale)) return false;
   if (vertices_.empty()) {
-    release_images(renderer);
+    release_images(textures);
     return true;
   }
-  if (!upload(renderer, error)) return false;
+  if (!upload(textures, error)) return false;
   out.vertices = std::span<const renderer::OverlayVertex>(vertices_.data(), vertices_.size());
   out.indices = std::span<const u32>(indices_.data(), indices_.size());
   out.commands = std::span<const renderer::OverlayCommand>(commands_.data(), commands_.size());

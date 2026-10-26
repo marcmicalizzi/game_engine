@@ -36,13 +36,18 @@ bool StartupTrace::start(const std::string& path, i64 main_ns, std::string* erro
 }
 
 void StartupTrace::milestone(const char* name) noexcept {
-  if (!on_) return;
+  // The live progress (W79) follows the milestones whether or not the trace records them.
+  if (!on_ && !profiling::progress_enabled()) return;
   const u32 i = milestone_index(name);
   if (i < k_startup_milestone_count) {
     if (reached_[i]) return;
     reached_[i] = true;
   }
-  (void)profiling::trace_milestone(name);
+  if (on_) {
+    (void)profiling::trace_milestone(name);  // which feeds the progress too
+  } else {
+    profiling::progress_milestone(name);
+  }
 }
 
 bool StartupTrace::reached(const char* name) const noexcept {
@@ -51,7 +56,7 @@ bool StartupTrace::reached(const char* name) const noexcept {
 }
 
 void StartupTrace::frame(const Readiness& r) noexcept {
-  if (!on_) return;
+  if (!on_ && !profiling::progress_enabled()) return;
   if (r.frame_done) milestone("first_frame");
   if (r.frame_done && r.controllable) milestone("player_controllable");
   if (r.frame_done && r.collision) milestone("ground_collision_ready");
@@ -66,7 +71,11 @@ void StartupTrace::frame(const Readiness& r) noexcept {
   if (stable_ == 0) stable_since_ = profiling::trace_now_ns();
   if (++stable_ == k_stable_frames) {
     reached_[stable] = true;
-    (void)profiling::trace_milestone_at("nearby_stable", stable_since_, "held 30 frames");
+    if (on_) {
+      (void)profiling::trace_milestone_at("nearby_stable", stable_since_, "held 30 frames");
+    } else {
+      profiling::progress_milestone("nearby_stable");
+    }
   }
 }
 

@@ -606,8 +606,60 @@ struct LoadTrace {
   }
 };
 
+// **The live progress over the call** (roadmap W79; `render.progress`, protocol.md): the load's two
+// stages at the same weight and its two milestones, finished when the call succeeds and stopped
+// however it ends, so the record a later `render.progress` reads is this load's.
+struct LoadProgressScope {
+  bool ok = false;
+  LoadProgressScope() {
+    profiling::ProgressPlan plan;
+    (void)plan.add_stage("scene file", 1.0);
+    (void)plan.add_stage("load scene", 1.0);
+    for (const char* m : k_load_milestones)
+      (void)plan.add_milestone(m);
+    (void)profiling::progress_start(plan);
+  }
+  ~LoadProgressScope() {
+    if (ok) profiling::progress_finish();
+    profiling::progress_stop();
+  }
+};
+
+bool render_progress(protocol::Context&, protocol::RenderProgressResult& out, protocol::RpcError&) {
+  profiling::LoadProgress p;
+  profiling::progress_read(p);
+  out.active = p.active;
+  out.done = p.done;
+  out.stage = p.stage;
+  out.detail = p.detail;
+  out.stages_done = p.stages_done;
+  out.stages_expected = p.stages_expected;
+  out.fraction = static_cast<f64>(p.fraction);
+  out.milestones.clear();
+  for (u32 i = 0; i < p.milestone_count && i < 32; ++i) {
+    if (((p.milestones >> i) & 1u) != 0 &&
+        i < sizeof(k_load_milestones) / sizeof(k_load_milestones[0]))
+      out.milestones.push_back(k_load_milestones[i]);
+  }
+  out.bytes_read = p.bytes_read;
+  out.items = p.items;
+  out.elapsed_ms = static_cast<f64>(p.elapsed_ns) / 1.0e6;
+  out.sequence = p.sequence;
+  return true;
+}
+
+bool render_load_followed(protocol::Context& ctx, const protocol::RenderLoadParams& params,
+                          protocol::RenderSceneInfo& out, protocol::RpcError& error);
+
 bool render_load(protocol::Context& ctx, const protocol::RenderLoadParams& params,
                  protocol::RenderSceneInfo& out, protocol::RpcError& error) {
+  LoadProgressScope load_progress;
+  load_progress.ok = render_load_followed(ctx, params, out, error);
+  return load_progress.ok;
+}
+
+bool render_load_followed(protocol::Context& ctx, const protocol::RenderLoadParams& params,
+                          protocol::RenderSceneInfo& out, protocol::RpcError& error) {
   LoadTrace load_trace;
   if (params.startup_trace) {
     profiling::TraceOptions trace_options;
@@ -1700,6 +1752,12 @@ void add_render_methods(protocol::Dispatcher& d) {
       "render.unload",
       "Release a loaded scene: its GPU buffers, textures, acceleration structures, renderer and "
       "host arrays. The id names nothing afterwards; the device stays open for the next load.")));
+  d.add(protocol::read_only(
+      protocol::method_no_params<protocol::RenderProgressResult, &render_progress>(
+          "render.progress",
+          "Where the process's scene load is: its stage and what runs inside it, stages done over "
+          "expected, a fraction that never falls, the milestones reached, bytes read and items "
+          "counted; the last load's record once it is done.")));
   d.add(protocol::read_only(protocol::method_no_params<protocol::RenderScenesResult,
                                                        &render_scenes>(
       "render.scenes",

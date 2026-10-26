@@ -3347,6 +3347,10 @@ bool GpuScene::upload_materials(const ResolvedSettings& resolved, std::string* e
         made.slot = image_slot[index];
         made.bytes = uploaded.bytes;
         scene_textures.add(made);
+        // A slice: a thread that owns a window keeps its messages flowing between two uploads
+        // (profiling::progress_pump; apps.md, "The loading presentation"). Nothing when no one
+        // pumps, which is every caller but engine-view's window.
+        profiling::progress_pump();
         return image_slot[index];
       };
       u32 source_material_index = 0;

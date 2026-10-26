@@ -33,9 +33,15 @@ if(TARGET engine_game_walk_poc AND TARGET engine_engine_view_tests)
   engine_game_module(NAME walk_poc_actor OUTPUT_DIRECTORY "${_tests}"
     SOURCES walk_poc.cpp SCHEMAS walk_poc.schema)
   target_compile_definitions(engine_game_walk_poc_actor PRIVATE WALK_POC_TEST=5)
+  # And one named walk_poc_loading that draws its own loading line (`game_loading`) and holds its
+  # first tick until the ground under the feet has collision (`game_ready_milestone`; ABI 7, W79).
+  engine_game_module(NAME walk_poc_loading OUTPUT_DIRECTORY "${_tests}"
+    SOURCES walk_poc.cpp SCHEMAS walk_poc.schema)
+  target_compile_definitions(engine_game_walk_poc_loading PRIVATE WALK_POC_TEST=6)
   add_dependencies(engine_engine_view_tests engine_game_walk_poc engine_game_walk_poc_bad_action
                    engine_game_walk_poc_failing engine_game_walk_poc_no_props
-                   engine_game_walk_poc_teleport engine_game_walk_poc_actor)
+                   engine_game_walk_poc_teleport engine_game_walk_poc_actor
+                   engine_game_walk_poc_loading)
   target_compile_definitions(engine_engine_view_tests PRIVATE
     WALK_POC_PATH="$<TARGET_FILE:engine_game_walk_poc>"
     WALK_POC_BAD_ACTION_PATH="$<TARGET_FILE:engine_game_walk_poc_bad_action>"
@@ -43,6 +49,7 @@ if(TARGET engine_game_walk_poc AND TARGET engine_engine_view_tests)
     WALK_POC_NO_PROPS_PATH="$<TARGET_FILE:engine_game_walk_poc_no_props>"
     WALK_POC_TELEPORT_PATH="$<TARGET_FILE:engine_game_walk_poc_teleport>"
     WALK_POC_ACTOR_PATH="$<TARGET_FILE:engine_game_walk_poc_actor>"
+    WALK_POC_LOADING_PATH="$<TARGET_FILE:engine_game_walk_poc_loading>"
     WALK_POC_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
   # The hot-reload case compiles a second build of the fixture, a field added, into its own
   # scratch directory with the exported command, as foundation/hotload's tests do.

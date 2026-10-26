@@ -32,6 +32,9 @@ ENGINE_EXPECT_SIZE(112, 4, hotload::GraphicsRequest);
 // ABI 5: an actor as the host keeps it, led by its size: two words, the f64 position, eight
 // four-byte fields, the pose hash and a 64-byte clip name.
 ENGINE_EXPECT_SIZE(136, 8, hotload::ActorState);
+// ABI 7: where a load is, handed to `game_loading`, led by its size: six words, three u64 (bytes,
+// items, elapsed) and the stage's and detail's pointers. The table did not grow.
+ENGINE_EXPECT_SIZE(64, 8, hotload::GameLoadProgress);
 ENGINE_EXPECT_SIZE(16, 8, hotload::ModuleContext);
 ENGINE_EXPECT_SIZE(24, 8, hotload::Export);
 ENGINE_EXPECT_SIZE(56, 8, hotload::ModuleDesc);

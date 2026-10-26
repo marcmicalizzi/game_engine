@@ -32,7 +32,8 @@ namespace engine::profiling {
 
 namespace detail {
 std::atomic<bool> g_trace_on{false};
-}
+std::atomic<bool> g_progress_on{false};
+}  // namespace detail
 
 namespace {
 
@@ -415,6 +416,7 @@ void trace_wait(i64 ns) noexcept {
 }
 
 void trace_items(u64 n) noexcept {
+  progress_items(n);
   if (t_current == k_trace_none) return;
   State& s = state();
   if (!s.slots || t_current >= s.capacity) return;
@@ -428,6 +430,7 @@ u32 trace_milestone(const char* name, std::string_view detail) noexcept {
 }
 
 u32 trace_milestone_at(const char* name, i64 at_ns, std::string_view detail) noexcept {
+  progress_milestone(name);
   if (!trace_enabled()) return k_trace_none;
   u32 id = k_trace_none;
   Slot* slot = claim(id);
@@ -979,6 +982,321 @@ JsonValue startup_summary_json(std::span<const TraceEvent> events,
   }
   out.set("process_at", std::move(at));
   return out;
+}
+
+// ---- the live progress
+// ----------------------------------------------------------------------------
+
+bool ProgressPlan::add_stage(std::string_view name, f64 weight) noexcept {
+  if (stage_count >= k_progress_max_stages || name.empty() || find(name) < stage_count)
+    return false;
+  const usize n = std::min<usize>(name.size(), k_progress_name_bytes - 1);
+  std::memcpy(stages[stage_count], name.data(), n);
+  stages[stage_count][n] = '\0';
+  weights[stage_count] = weight > 0.0 && weight < 1.0e12 ? weight : 1.0;
+  ++stage_count;
+  return true;
+}
+
+bool ProgressPlan::add_milestone(const char* name) noexcept {
+  if (milestone_count >= k_progress_max_milestones || name == nullptr) return false;
+  milestones[milestone_count++] = name;
+  return true;
+}
+
+u32 ProgressPlan::find(std::string_view name) const noexcept {
+  const usize want = std::min<usize>(name.size(), k_progress_name_bytes - 1);
+  for (u32 i = 0; i < stage_count; ++i) {
+    const usize n = std::strlen(stages[i]);
+    if (n == want && std::memcmp(stages[i], name.data(), n) == 0) return i;
+  }
+  return stage_count;
+}
+
+namespace {
+
+static_assert(k_progress_max_stages <= 32, "the done stages are one u32 mask");
+
+// Everything a reader copies, written only between two bumps of the sequence.
+struct ProgressShared {
+  ProgressPlan plan;
+  char stage[k_progress_name_bytes] = {};
+  char detail[k_trace_detail_bytes] = {};
+  bool active = false;
+  bool done = false;
+  u32 done_mask = 0;
+  u32 current = k_trace_none;
+  i64 current_begin_ns = 0;
+  u32 milestones = 0;
+  i64 start_ns = 0;
+  u64 read_base = 0;
+  u32 epoch = 0;
+  i64 first_begin_ns[k_progress_max_stages] = {};
+  i64 last_end_ns[k_progress_max_stages] = {};
+};
+
+struct Progress {
+  std::atomic<u32> lock{0};
+  std::atomic<u64> sequence{0};
+  ProgressShared shared;
+  std::atomic<u64> items{0};
+  std::atomic<u32> fraction_bits{0};  // the largest fraction a read has returned (an f32's bits)
+  std::atomic<void (*)(void*)> pump{nullptr};
+  std::atomic<void*> pump_user{nullptr};
+};
+
+Progress& progress() {
+  static Progress p;
+  return p;
+}
+
+thread_local bool t_pump_thread = false;
+thread_local bool t_in_pump = false;
+
+// A writer: the spin flag (writers are stages' begins and ends, a few hundred a load), and the
+// sequence odd while the record changes.
+class ProgressWrite {
+ public:
+  explicit ProgressWrite(Progress& p) noexcept : p_(p) {
+    while (p_.lock.exchange(1, std::memory_order_acquire) != 0)
+      std::this_thread::yield();
+    p_.sequence.fetch_add(1, std::memory_order_relaxed);
+    std::atomic_thread_fence(std::memory_order_release);
+  }
+  ~ProgressWrite() {
+    p_.sequence.fetch_add(1, std::memory_order_release);
+    p_.lock.store(0, std::memory_order_release);
+  }
+  ProgressWrite(const ProgressWrite&) = delete;
+  ProgressWrite& operator=(const ProgressWrite&) = delete;
+
+ private:
+  Progress& p_;
+};
+
+void copy_text(char* out, usize capacity, std::string_view text) noexcept {
+  const usize n = std::min(text.size(), capacity - 1);
+  if (n != 0) std::memcpy(out, text.data(), n);
+  out[n] = '\0';
+}
+
+}  // namespace
+
+bool progress_start(const ProgressPlan& plan) noexcept {
+  if (plan.stage_count == 0) return false;
+  Progress& p = progress();
+  {
+    ProgressWrite write(p);
+    ProgressShared& s = p.shared;
+    const u32 epoch = s.epoch + 1;
+    s = ProgressShared{};
+    s.plan = plan;
+    s.epoch = epoch;
+    s.active = true;
+    s.start_ns = trace_now_ns();
+    s.read_base = process_read_bytes();
+    for (u32 i = 0; i < k_progress_max_stages; ++i) {
+      s.first_begin_ns[i] = -1;
+      s.last_end_ns[i] = -1;
+    }
+    copy_text(s.stage, sizeof(s.stage), plan.stages[0]);
+    p.items.store(0, std::memory_order_relaxed);
+    p.fraction_bits.store(0, std::memory_order_relaxed);
+  }
+  detail::g_progress_on.store(true, std::memory_order_release);
+  return true;
+}
+
+void progress_finish() noexcept {
+  Progress& p = progress();
+  ProgressWrite write(p);
+  if (!p.shared.active) return;
+  p.shared.done = true;
+  p.shared.current = k_trace_none;
+}
+
+void progress_stop() noexcept {
+  detail::g_progress_on.store(false, std::memory_order_release);
+  Progress& p = progress();
+  ProgressWrite write(p);
+  p.shared.active = false;
+}
+
+void progress_read(LoadProgress& out) noexcept {
+  Progress& p = progress();
+  // The copy is per thread and not on the stack: 2.5 KB is more than a frame loop should carry
+  // there, and two readers on two threads must not share one.
+  thread_local ProgressShared copy;
+  for (;;) {
+    const u64 before = p.sequence.load(std::memory_order_acquire);
+    if ((before & 1u) != 0) {
+      std::this_thread::yield();
+      continue;
+    }
+    std::memcpy(static_cast<void*>(&copy), static_cast<const void*>(&p.shared), sizeof(copy));
+    std::atomic_thread_fence(std::memory_order_acquire);
+    if (p.sequence.load(std::memory_order_relaxed) == before) {
+      out.sequence = before / 2;
+      break;
+    }
+  }
+  const i64 now = trace_now_ns();
+  out.active = copy.active;
+  out.done = copy.done;
+  out.from_previous = copy.plan.from_previous;
+  std::memcpy(out.stage, copy.stage, sizeof(out.stage));
+  std::memcpy(out.detail, copy.detail, sizeof(out.detail));
+  out.stages_expected = copy.plan.stage_count;
+  out.stages_done = 0;
+  f64 total = 0.0;
+  f64 done = 0.0;
+  for (u32 i = 0; i < copy.plan.stage_count; ++i) {
+    total += copy.plan.weights[i];
+    if (((copy.done_mask >> i) & 1u) != 0) {
+      done += copy.plan.weights[i];
+      ++out.stages_done;
+    }
+  }
+  if (copy.done) out.stages_done = out.stages_expected;
+  f64 partial = 0.0;
+  out.stage_elapsed_ns = 0;
+  if (!copy.done && copy.current < copy.plan.stage_count &&
+      ((copy.done_mask >> copy.current) & 1u) == 0) {
+    out.stage_elapsed_ns = now - copy.current_begin_ns;
+    if (copy.plan.from_previous) {
+      const f64 expected_ns = copy.plan.weights[copy.current] * 1.0e6;
+      const f64 share = static_cast<f64>(out.stage_elapsed_ns) / expected_ns;
+      partial = copy.plan.weights[copy.current] * std::clamp(share, 0.0, 0.9);
+    }
+  }
+  f32 fraction = 0.0f;
+  if (copy.done) {
+    fraction = 1.0f;
+  } else if (total > 0.0) {
+    fraction = static_cast<f32>(std::clamp((done + partial) / total, 0.0, 1.0));
+  }
+  // Never below what a read returned before: a nonnegative f32's bits order as the number does.
+  u32 bits = 0;
+  std::memcpy(&bits, &fraction, sizeof(bits));
+  u32 seen = p.fraction_bits.load(std::memory_order_relaxed);
+  while (bits > seen &&
+         !p.fraction_bits.compare_exchange_weak(seen, bits, std::memory_order_relaxed)) {
+  }
+  if (bits < seen) std::memcpy(&fraction, &seen, sizeof(fraction));
+  out.fraction = fraction;
+  out.milestones = copy.milestones;
+  out.milestone_count = copy.plan.milestone_count;
+  const u64 read = process_read_bytes();
+  out.bytes_read = copy.active && read >= copy.read_base ? read - copy.read_base : 0;
+  out.items = p.items.load(std::memory_order_relaxed);
+  out.elapsed_ns = copy.start_ns != 0 ? now - copy.start_ns : 0;
+}
+
+void progress_measured(ProgressPlan& out) noexcept {
+  Progress& p = progress();
+  ProgressWrite write(p);  // a writer's exclusion is this read's consistency too
+  const ProgressShared& s = p.shared;
+  out = ProgressPlan{};
+  out.from_previous = true;
+  for (u32 i = 0; i < s.plan.stage_count; ++i) {
+    if (s.first_begin_ns[i] < 0 || s.last_end_ns[i] < s.first_begin_ns[i]) continue;
+    const f64 ms = static_cast<f64>(s.last_end_ns[i] - s.first_begin_ns[i]) / 1.0e6;
+    (void)out.add_stage(s.plan.stages[i], std::max(ms, 0.001));
+  }
+  for (u32 i = 0; i < s.plan.milestone_count; ++i)
+    (void)out.add_milestone(s.plan.milestones[i]);
+}
+
+u32 progress_stage_begin(const char* name, std::string_view detail) noexcept {
+  if (name == nullptr) return k_trace_none;
+  Progress& p = progress();
+  u32 token = k_trace_none;
+  {
+    ProgressWrite write(p);
+    ProgressShared& s = p.shared;
+    if (!s.active) return k_trace_none;
+    const u32 i = s.plan.find(name);
+    if (i < s.plan.stage_count) {
+      const i64 now = trace_now_ns();
+      if (s.first_begin_ns[i] < 0) s.first_begin_ns[i] = now;
+      s.current = i;
+      s.current_begin_ns = now;
+      copy_text(s.stage, sizeof(s.stage), s.plan.stages[i]);
+      copy_text(s.detail, sizeof(s.detail), detail);
+      token = (s.epoch & 0xFFFFu) << 16 | i;
+    } else {
+      // Not a stage the plan follows: what the current one is doing now.
+      const std::string_view n(name);
+      const usize cap = sizeof(s.detail) - 1;
+      usize at = std::min(n.size(), cap);
+      std::memcpy(s.detail, n.data(), at);
+      if (!detail.empty() && at + 2 < cap) {
+        s.detail[at++] = ':';
+        s.detail[at++] = ' ';
+        const usize more = std::min(detail.size(), cap - at);
+        std::memcpy(s.detail + at, detail.data(), more);
+        at += more;
+      }
+      s.detail[at] = '\0';
+      // A token all the same, so that its end pumps too (a boundary inside a long stage).
+      token = (s.epoch & 0xFFFFu) << 16 | 0xFFFFu;
+    }
+  }
+  progress_pump();
+  return token;
+}
+
+void progress_stage_end(u32 token) noexcept {
+  Progress& p = progress();
+  {
+    ProgressWrite write(p);
+    ProgressShared& s = p.shared;
+    const u32 i = token & 0xFFFFu;
+    if (s.active && (token >> 16) == (s.epoch & 0xFFFFu) && i < s.plan.stage_count) {
+      s.done_mask |= 1u << i;
+      s.last_end_ns[i] = trace_now_ns();
+      if (s.current == i) s.current = k_trace_none;
+    }
+  }
+  progress_pump();
+}
+
+void progress_milestone(const char* name) noexcept {
+  if (name == nullptr || !progress_enabled()) return;
+  Progress& p = progress();
+  ProgressWrite write(p);
+  ProgressShared& s = p.shared;
+  if (!s.active) return;
+  for (u32 i = 0; i < s.plan.milestone_count; ++i)
+    if (std::strcmp(s.plan.milestones[i], name) == 0) s.milestones |= 1u << i;
+}
+
+void progress_items(u64 n) noexcept {
+  if (progress_enabled()) progress().items.fetch_add(n, std::memory_order_relaxed);
+}
+
+void progress_detail(std::string_view detail) noexcept {
+  if (!progress_enabled()) return;
+  Progress& p = progress();
+  ProgressWrite write(p);
+  if (p.shared.active) copy_text(p.shared.detail, sizeof(p.shared.detail), detail);
+}
+
+void progress_set_pump(void (*fn)(void* user), void* user) noexcept {
+  Progress& p = progress();
+  t_pump_thread = fn != nullptr;
+  p.pump_user.store(user, std::memory_order_relaxed);
+  p.pump.store(fn, std::memory_order_release);
+}
+
+void progress_pump() noexcept {
+  if (!t_pump_thread || t_in_pump) return;
+  Progress& p = progress();
+  void (*fn)(void*) = p.pump.load(std::memory_order_acquire);
+  if (fn == nullptr) return;
+  t_in_pump = true;
+  fn(p.pump_user.load(std::memory_order_relaxed));
+  t_in_pump = false;
 }
 
 }  // namespace engine::profiling

@@ -321,6 +321,25 @@ class GameRunner {
   static void observe(void* user, const FlySession& session, const input::InputState& input);
   void tick(const GameTickInput& in);
 
+  // ---- ABI 7: the load and the hand-over (apps.md, "The loading presentation") ------------------
+  // Whether the module exports `game_loading`; if so the host's own loading screen steps aside.
+  bool has_loading() const noexcept;
+  // Calls `game_loading` with `progress` (nothing when the module has none). The module says its
+  // HUD from inside it; a failure there ends the session as a tick's would.
+  void loading(const hotload::GameLoadProgress& progress);
+  // The `GameMilestone` the module wants reached before its first `game_tick` and the player's
+  // control (`game_ready_milestone`), or `PlayerControllable` — today's hand-over — without one.
+  u32 ready_milestone() const noexcept;
+  // **The hold**: until `release`, the session's ticks reach the module no further than here (its
+  // clocks do not run and `game_tick` is not called), counted in `held_ticks`. With `until_tick`
+  // non-zero the hold also ends by itself at that session tick: a replay releases where the live
+  // session did (its header's `game.release_tick`), whatever its own milestones say.
+  void hold(u64 until_tick) noexcept;
+  void release() noexcept;
+  bool held() const noexcept;
+  // The session tick the first `game_tick` was called at (0 when none has been yet).
+  u64 first_tick() const noexcept;
+
   // Between frames: stats the module's file and swaps a rebuild in with its state carried. 1 when
   // it did; a refused rebuild keeps the old build running and is said once on stderr and counted.
   u32 poll();

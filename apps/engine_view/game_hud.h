@@ -39,6 +39,10 @@
 struct ImGuiContext;
 struct ImFont;
 
+namespace engine::view {
+class OverlayTextures;  // loading.h: the renderer's overlay pass, or the loading presenter's
+}  // namespace engine::view
+
 namespace engine::renderer {
 class SceneRenderer;
 }
@@ -102,14 +106,14 @@ class GameHudOverlay {
   // fields formatted, and the keys that quit or start a new run. False with `error` when a texture
   // could not be made.
   bool build(const GameHud& hud, const JsonValue* result, u32 width, u32 height, f32 display_scale,
-             renderer::SceneRenderer& renderer, renderer::OverlayDrawData& out, std::string& error);
+             OverlayTextures& textures, renderer::OverlayDrawData& out, std::string& error);
   // The two halves of `build`, for a test with no device: the ImGui frame — the font size applied,
   // the panels laid out, the lists copied — and then the atlas's textures made and retired through
   // the renderer. `layout` leaves texture requests pending (`pending_textures`); its commands name
   // only textures already made.
   bool layout(const GameHud& hud, const JsonValue* result, u32 width, u32 height,
               f32 display_scale);
-  bool upload(renderer::SceneRenderer& renderer, std::string& error);
+  bool upload(OverlayTextures& textures, std::string& error);
 
   // Commands drawn by the last `build`.
   u32 commands() const noexcept { return commands_.size(); }
@@ -140,8 +144,8 @@ class GameHudOverlay {
  private:
   void apply_font(f32 px);
   void load_fonts(const GameHud& hud);
-  bool image_texture(renderer::SceneRenderer& renderer, u32 image, std::string& error);
-  void release_images(renderer::SceneRenderer& renderer);
+  bool image_texture(OverlayTextures& textures, u32 image, std::string& error);
+  void release_images(OverlayTextures& textures);
   void draw_elements(const GameHud& hud, f32 margin_x, f32 margin_y);
 
   // The rectangles of the last layout, by id: the stack's lines and meters, then the elements.

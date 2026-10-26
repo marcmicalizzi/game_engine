@@ -147,13 +147,108 @@ JsonValue startup_summary_json(std::span<const TraceEvent> events,
                                std::span<const char* const> milestones, const char* until,
                                u32 dropped = 0);
 
+// ---- the live progress (profiling.md, "The trace is live"; roadmap W79) -------------------------
+//
+// **What a load says while it runs**, for a loading screen, a game's own (hotload ABI 7's
+// `game_loading`) and the protocol's `render.progress`. The same stages that feed the trace feed
+// it — every `TraceStage` (and so every `ENGINE_STARTUP_STAGE`), every milestone, every
+// `trace_items` — whether the trace records or not: it has a switch of its own, so a window that
+// shows its load pays for no trace buffer.
+//
+// A **plan** says what the load expects: its top-level stages by name, each with a weight, and
+// the milestone ladder. The host fills it from the previous run's measured stage times (engine-
+// view keeps them at `<ddc>/startup/<scene hash>.json`) or, with none, gives every stage the same
+// weight; nothing about it is ever decided by a file's timestamp. A stage the plan names is done
+// when it ends; any other stage that begins while the load runs becomes the current one's detail.
+// The fraction is the done stages' weight over the plan's, plus, when the weights are the previous
+// run's, the current stage's share of its own weight by its elapsed time against its previous
+// duration, capped at nine tenths of it — presentation, never a decision — and it **never falls**:
+// a read returns at least what the last read returned.
+//
+// **Readable from any thread, allocating nothing**: writers (a stage's begin and end, on whatever
+// thread runs it) take a spin flag and bump a sequence around their change; `progress_read` copies
+// the record between two reads of the sequence and retries while a write was in flight.
+
+inline constexpr u32 k_progress_max_stages = 32;
+inline constexpr u32 k_progress_max_milestones = 16;
+inline constexpr u32 k_progress_name_bytes = 48;
+
+struct ProgressPlan {
+  char stages[k_progress_max_stages][k_progress_name_bytes] = {};
+  f64 weights[k_progress_max_stages] = {};  // > 0; the previous run's milliseconds, or 1 each
+  u32 stage_count = 0;
+  const char* milestones[k_progress_max_milestones] = {};  // static storage, in ladder order
+  u32 milestone_count = 0;
+  bool from_previous = false;  // the weights are a previous run's measured times
+  // Appends (false when full or named already); a weight <= 0 or not finite counts as 1.
+  bool add_stage(std::string_view name, f64 weight) noexcept;
+  bool add_milestone(const char* name) noexcept;
+  // The index of the stage named so, or `stage_count`.
+  u32 find(std::string_view name) const noexcept;
+};
+
+// One consistent read of the progress.
+struct LoadProgress {
+  u64 sequence = 0;     // grows with every change; equal between two reads means nothing changed
+  bool active = false;  // a plan is being followed (`progress_start` .. `progress_stop`)
+  bool done = false;    // `progress_finish`: the load is ready, the fraction is 1
+  bool from_previous = false;
+  char stage[k_progress_name_bytes] = {};  // the plan's stage running now, or the last one begun
+  char detail[k_trace_detail_bytes] = {};  // the stage's detail, or the stage running inside it
+  u32 stages_done = 0;
+  u32 stages_expected = 0;
+  f32 fraction = 0.0f;  // [0, 1], monotone over reads
+  u32 milestones = 0;   // bit i: the plan's milestone i has been reached
+  u32 milestone_count = 0;
+  u64 bytes_read = 0;        // the process's OS reads since `progress_start`
+  u64 items = 0;             // what the stages counted (`trace_items`) since `progress_start`
+  i64 elapsed_ns = 0;        // since `progress_start`
+  i64 stage_elapsed_ns = 0;  // since the current stage began
+};
+
+namespace detail {
+extern std::atomic<bool> g_progress_on;
+}
+inline bool progress_enabled() noexcept {
+  return detail::g_progress_on.load(std::memory_order_relaxed);
+}
+
+// Follows `plan` from now (a load starting); replaces any earlier one. False for an empty plan.
+bool progress_start(const ProgressPlan& plan) noexcept;
+// The load is ready: every stage counts as done and the fraction is 1. Feeding continues (a
+// milestone reached after ready still sets its bit) until `progress_stop`.
+void progress_finish() noexcept;
+// Stops feeding; the last record stays readable.
+void progress_stop() noexcept;
+void progress_read(LoadProgress& out) noexcept;
+// The plan's stages that ran, each with its measured wall milliseconds as its weight (the first
+// time each began to the last time it ended), in plan order: what the next run's plan is made of.
+void progress_measured(ProgressPlan& out) noexcept;
+
+// What `TraceStage` calls (any thread): a token for `progress_stage_end`, or `k_trace_none`.
+u32 progress_stage_begin(const char* name, std::string_view detail) noexcept;
+void progress_stage_end(u32 token) noexcept;
+void progress_milestone(const char* name) noexcept;
+void progress_items(u64 n) noexcept;
+void progress_detail(std::string_view detail) noexcept;
+
+// **The pump** (apps.md, "The loading presentation"): the calling thread becomes the one whose
+// stages pump — every stage that begins or ends on it while progress is on calls `fn(user)` — and
+// `progress_pump()` calls it from inside a long stage between its bounded slices. A thread that
+// owns a window and has to run a long stage itself keeps its messages flowing this way. Null
+// clears it. The callback must not begin stages of its own (a nested call is ignored).
+void progress_set_pump(void (*fn)(void* user), void* user) noexcept;
+void progress_pump() noexcept;
+
 // A scoped stage, and the Tracy zone of the same name in a Tracy build.
 class TraceStage {
  public:
   explicit TraceStage(const char* name, std::string_view detail = {}) noexcept
-      : id_(trace_enabled() ? trace_begin(name, detail) : k_trace_none) {}
+      : id_(trace_enabled() ? trace_begin(name, detail) : k_trace_none),
+        progress_(progress_enabled() ? progress_stage_begin(name, detail) : k_trace_none) {}
   ~TraceStage() {
     if (id_ != k_trace_none) trace_end(id_);
+    if (progress_ != k_trace_none) progress_stage_end(progress_);
   }
   TraceStage(const TraceStage&) = delete;
   TraceStage& operator=(const TraceStage&) = delete;
@@ -164,11 +259,14 @@ class TraceStage {
   // Ends the stage before the scope does.
   void end() noexcept {
     if (id_ != k_trace_none) trace_end(id_);
+    if (progress_ != k_trace_none) progress_stage_end(progress_);
     id_ = k_trace_none;
+    progress_ = k_trace_none;
   }
 
  private:
   u32 id_;
+  u32 progress_;
 };
 
 // A wait: a stage named `name` that depends on `on`, whose whole duration counts as the enclosing

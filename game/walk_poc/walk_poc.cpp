@@ -393,12 +393,37 @@ void game_tick(ModuleContext* context, View tick, f32) {
   }
 }
 
+#if WALK_POC_TEST == 6
+// **The loading build** (ABI 7; apps.md, "The loading presentation"): its own loading line, said
+// through the HUD every loading frame, which makes the host's default step aside; and the hand-over
+// held until the ground under the feet has collision (the forest would ask for nearby_stable).
+void game_loading(ModuleContext* context, const GameLoadProgress* progress) {
+  Survivor& s = state<Survivor>(context);
+  const f64 fraction = static_cast<f64>(progress->fraction);
+  if (s.loading_calls > 0 && fraction < s.loading_fraction) ++s.loading_falls;
+  s.loading_fraction = fraction;
+  ++s.loading_calls;
+  char line[160];
+  std::snprintf(line, sizeof(line), "walk_poc is loading: %s %.0f%%", progress->stage,
+                fraction * 100.0);
+  hud_text(context, 0, line);
+}
+
+u32 game_ready_milestone(ModuleContext*) {
+  return static_cast<u32>(GameMilestone::GroundCollisionReady);
+}
+#endif
+
 }  // namespace
 
 ENGINE_HOTLOAD_DESCRIBE(api, out) {
   (void)api;
   static const Export exports[] = {
       export_function<TickFn>("game_tick", &game_tick),
+#if WALK_POC_TEST == 6
+      export_function<LoadingFn>("game_loading", &game_loading),
+      export_function<MilestoneFn>("game_ready_milestone", &game_ready_milestone),
+#endif
   };
   out->abi_version = k_abi_version;
   out->desc_size = static_cast<u32>(sizeof(ModuleDesc));
@@ -406,6 +431,8 @@ ENGINE_HOTLOAD_DESCRIBE(api, out) {
   out->name = "walk_poc_teleport";
 #elif WALK_POC_TEST == 5
   out->name = "walk_poc_actor";
+#elif WALK_POC_TEST == 6
+  out->name = "walk_poc_loading";
 #else
   out->name = "walk_poc";
 #endif

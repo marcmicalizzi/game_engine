@@ -3,8 +3,13 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <shaders/overlay.spv.h>
 
 namespace engine::renderer {
+
+void add_overlay_shader(gfx::ShaderLibrary& library) {
+  library.add_embedded("overlay", shaders::k_overlay_spirv, shaders::k_overlay_spirv_size);
+}
 
 OverlayPass::~OverlayPass() { destroy(); }
 

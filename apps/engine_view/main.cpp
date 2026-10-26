@@ -23,6 +23,7 @@
 // that cannot trace), which tests treat as a skip. A device without mesh shaders is not one of
 // them: it draws through the vertex-shader baseline tier.
 #include "fly_camera.h"
+#include "loading.h"
 #include "pacing.h"
 #include "report.h"
 #include "startup.h"
@@ -100,6 +101,8 @@
 #include <systems/water/water.h>
 #endif
 
+#include <atomic>
+#include <chrono>
 #include <cmath>
 #include <cstdarg>
 #include <cstdio>
@@ -518,6 +521,12 @@ constexpr const char* k_usage =
     "                   20 ms, and the milestones up to nearby_stable; written to <f> as Chrome\n"
     "                   trace JSON (chrome://tracing, Perfetto) and summarized as the summary's\n"
     "                   \"startup\" block\n"
+    "  --no-loading-overlay  a window's load shows cleared frames, not its stage and bar (a\n"
+    "                   --game module with game_loading draws its own either way)\n"
+    "  --load-on-main   the window's load as it was before W79: every stage on the main thread,\n"
+    "                   no messages pumped until the first frame (to measure the difference)\n"
+    "  --test-slow-load <ms>  a test hook: the window's load sleeps <ms> on its load thread\n"
+    "                   inside a stage of its own\n"
     "  --windowed       --replay-input: fly the replay in the window at its recorded pace even\n"
     "                   with --benchmark, which then writes a record per presented frame like a\n"
     "                   live session's: the fair before and after of a presentation change;\n"
@@ -634,6 +643,10 @@ struct Options {
   u32 grid = 257;
   std::string log_spec;
   std::string startup_trace;  // `--startup-trace <out.json>` (startup.h)
+  // The window's loading presentation (loading.h; apps.md, "The loading presentation"; W79).
+  bool loading_overlay = true;  // --no-loading-overlay
+  bool load_on_main = false;    // --load-on-main: the load as it was, for the before
+  u32 test_slow_load_ms = 0;    // --test-slow-load <ms>: a stage that sleeps on the load thread
   std::string shaders;
   std::string mesh;        // glTF or .clusters file; empty renders a procedural scene
   std::string procedural;  // which one: "" / "heightfield", or "shredded-atlas"
@@ -1411,8 +1424,9 @@ const renderer::OverlayDrawData* game_hud_overlay(renderer::SceneRenderer& rende
   if (g_hud == nullptr || !g_hud->valid()) return nullptr;
   static bool said = false;
   std::string error;
+  view::RendererTextures textures(renderer);
   if (!g_hud->build(g_game->hud(), game_result_panel(), renderer.width(), renderer.height(),
-                    g_hud_display_scale, renderer, g_hud_data, error)) {
+                    g_hud_display_scale, textures, g_hud_data, error)) {
     if (!said) {
       said = true;
       std::fprintf(stderr, "engine-view: game: the HUD cannot be drawn: %s\n", error.c_str());
@@ -1427,14 +1441,72 @@ JsonValue game_hud_elements() {
   return view::hud_elements_json(g_game->hud(),
                                  g_hud != nullptr && g_hud->valid() ? g_hud : nullptr);
 }
+// **ABI 7: the module's loading screen and its hand-over** (apps.md, "The loading presentation").
+bool game_draws_loading() { return g_game != nullptr && g_game->has_loading(); }
+// The milestone the module wants before its first tick: `player_controllable` without a module.
+u32 game_ready_milestone() {
+  return g_game != nullptr ? g_game->ready_milestone()
+                           : static_cast<u32>(hotload::GameMilestone::PlayerControllable);
+}
+// The module's `game_loading` with the progress as it stands (`ready`: the last call, at the
+// hand-over). It says its HUD from inside, which the frame then draws like any other.
+void game_loading_call(bool ready) {
+  if (!game_draws_loading()) return;
+  profiling::LoadProgress p;
+  profiling::progress_read(p);
+  hotload::GameLoadProgress abi;
+  abi.stages_done = p.stages_done;
+  abi.stages_expected = p.stages_expected;
+  abi.milestones = p.milestones;
+  abi.fraction = p.fraction;
+  abi.ready = ready ? 1u : 0u;
+  abi.bytes_read = p.bytes_read;
+  abi.items = p.items;
+  abi.elapsed_ns = p.elapsed_ns > 0 ? static_cast<u64>(p.elapsed_ns) : 0u;
+  abi.stage = p.stage;
+  abi.detail = p.detail;
+  g_game->loading(abi);
+}
+// One loading frame of the module's before the renderer: `game_loading`, then its HUD laid out into
+// the presenter's own `hud` over the presenter's `textures`.
+const renderer::OverlayDrawData* game_loading_overlay(view::GameHudOverlay& hud, u32 width,
+                                                      u32 height, view::OverlayTextures& textures,
+                                                      renderer::OverlayDrawData& out) {
+  if (!game_draws_loading()) return nullptr;
+  game_loading_call(false);
+  if (!hud.valid()) return nullptr;
+  std::string error;
+  if (!hud.build(g_game->hud(), nullptr, width, height, g_hud_display_scale, textures, out,
+                 error)) {
+    return nullptr;
+  }
+  return out.commands.empty() ? nullptr : &out;
+}
+// Holds the module's first tick until its milestone; a replay's header says the tick instead.
+void game_hold(u64 until_tick) {
+  if (g_game != nullptr) g_game->hold(until_tick);
+}
+void game_release() {
+  if (g_game != nullptr) g_game->release();
+}
+bool game_held() { return g_game != nullptr && g_game->held(); }
+u64 game_first_tick() { return g_game != nullptr ? g_game->first_tick() : 0; }
 #else
+f32 g_hud_display_scale = 1.0f;  // the loading overlay's, set by the windowed loop
+bool game_draws_loading() { return false; }
+u32 game_ready_milestone() { return 5; }  // player_controllable
+void game_hold(u64) {}
+void game_release() {}
+bool game_held() { return false; }
+u64 game_first_tick() { return 0; }
+void game_loading_call(bool) {}
 void note_game_graphics(const gfx::Device&, const renderer::ResolvedSettings&, u32, u32) {}
 void poll_game() {}
 bool game_over() { return false; }
 bool game_failed() { return false; }
 bool game_clock(view::SunDay&, view::WorldDay&) { return false; }
 void game_new_run() {}
-void set_hud_display_scale(f32) {}
+void set_hud_display_scale(f32 scale) { g_hud_display_scale = scale > 0.0f ? scale : 1.0f; }
 void finish_game() {}
 const renderer::OverlayDrawData* game_hud_overlay(renderer::SceneRenderer&) { return nullptr; }
 bool attach_game_scene(renderer::SceneData&, std::string&) { return true; }
@@ -2068,6 +2140,9 @@ bool save_recording(const Options& options, const Interactive& it, const view::F
                     input::InputLog& recording, std::string& error) {
   view::SessionHeader header = session.header();
   header.ticks = session.tick().value;
+  // A module held past the walker's first tick (ABI 7, `game_ready_milestone`): the tick it was
+  // released at, which a replay holds it to instead of its own milestones (fly_camera.h).
+  if (game_ready_milestone() > 5 && !game_held()) header.game_release_tick = game_first_tick();
   recording.set_map(it.map);
   recording.set_session(view::session_to_json(header));
   const io::Status status = recording.save(options.record_input);
@@ -2822,6 +2897,9 @@ int run_offscreen(Options& options, Interactive& interactive) {
 #if ENGINE_VIEW_GAME
       attach_game(session, clock.sky_start_s, clock.sun_rate, clock.world_rate, scene_data, walker);
 #endif
+      // ABI 7: a replay holds the module to the tick the live session released it at.
+      if (interactive.header.game_release_tick != 0)
+        game_hold(interactive.header.game_release_tick);
 #if ENGINE_VIEW_ANIMATION
       // After the game's observer, which it chains: the world on the replay's tick.
       if (animated) animation_ticks.attach(session, *animated, view_renderer, tick_hz);
@@ -3466,6 +3544,170 @@ int run_offscreen(Options& options, Interactive& interactive) {
   return exit_code;
 }
 
+// ---- the window's load (apps.md, "The loading presentation"; loading.h; roadmap W79) -----------
+//
+// **The main thread never stops pumping.** The load's CPU stages run on a load thread the main
+// thread does not join until they are done, and the main thread pumps the window's messages every
+// few milliseconds and presents a loading frame at `k_loading_hz`; the stages that have to run on
+// the device's thread stay on it, and pump between their slices through the progress record's pump
+// (`profiling::progress_set_pump`): every stage that begins or ends on the main thread, and every
+// `progress_pump()` inside a long one. `--load-on-main` keeps the load as it was, to measure it.
+constexpr i64 k_loading_frame_ns = 1'000'000'000 / 30;  // the loading frames' rate, 30 Hz
+constexpr i64 k_loading_poll_ns = 5'000'000;            // the main thread's look while it waits
+// `player_controllable`'s rung in `view::k_startup_milestones` (and `hotload::GameMilestone`): a
+// module asking for a later one is held; asking for it or an earlier one changes nothing.
+constexpr u32 k_controllable_rung = 5;
+
+// The plan's file (loading.h): keyed by what is loaded — the scene file or the mesh as named, and
+// the switches that decide which stages run — under the derived-data root; none with `--no-cache`.
+std::string window_load_plan_path(const Options& options) {
+  if (!options.cache) return {};
+  const std::string ddc =
+      options.ddc.empty() ? geometry::find_ddc_root(platform::executable_directory()) : options.ddc;
+  if (ddc.empty()) return {};
+  std::string what = options.scene.empty() ? options.mesh : options.scene;
+  what += '|';
+  what += options.procedural;
+  if (options.world) what += "|world";
+  if (options.animate) what += "|animate";
+  return view::progress_plan_path(ddc, hash_bytes(what.data(), what.size()));
+}
+
+struct WindowLoad {
+  window::Window* window = nullptr;
+  view::LoadingPresenter presenter;
+  view::LoadingOverlay overlay;  // the default line and bar
+#if ENGINE_VIEW_GAME
+  view::GameHudOverlay game_hud;  // a module's own loading HUD, through the presenter
+#endif
+  renderer::OverlayDrawData data;
+  bool show = true;         // the default's line and bar (--no-loading-overlay: cleared frames)
+  bool game_draws = false;  // the module exports game_loading
+  bool in_job = false;
+  i64 started_ns = 0;
+  i64 last_pump_ns = 0;
+  i64 last_present_ns = 0;
+  i64 longest_gap_ns = 0;      // between two pumps, from the first to the hand-over
+  i64 longest_job_gap_ns = 0;  // the same while the load thread ran
+  char longest_gap_stage[profiling::k_progress_name_bytes] = {};
+  u64 pumps = 0;
+  u64 job_pumps = 0;
+  u64 events = 0;  // the window's own messages, as `poll` handed them over
+  u64 frames = 0;
+  i64 overlay_ns = 0;  // building and presenting the loading frames
+  i64 job_ns = 0;
+  bool quit = false;
+  bool resized = false;
+  i32 focus = 0;  // the last focus change while loading: 1 gained, -1 lost
+  bool failed = false;
+  std::string error;
+
+  static void pump_fn(void* self) { static_cast<WindowLoad*>(self)->pump(); }
+
+  void pump() {
+    const i64 now = time::monotonic_ns();
+    if (last_pump_ns != 0) {
+      const i64 gap = now - last_pump_ns;
+      if (gap > longest_gap_ns) {
+        longest_gap_ns = gap;
+        profiling::LoadProgress p;
+        profiling::progress_read(p);
+        std::memcpy(longest_gap_stage, p.stage, sizeof(longest_gap_stage));
+      }
+      if (in_job && gap > longest_job_gap_ns) longest_job_gap_ns = gap;
+    }
+    last_pump_ns = now;
+    ++pumps;
+    if (in_job) ++job_pumps;
+    window::Event event;
+    while (window->poll(event)) {
+      ++events;
+      switch (event.kind) {
+        case window::EventKind::Quit:
+        case window::EventKind::CloseRequested: quit = true; break;
+        case window::EventKind::Resized: resized = true; break;
+        case window::EventKind::FocusGained: focus = 1; break;
+        case window::EventKind::FocusLost: focus = -1; break;
+        default: break;  // keys and the pointer mean nothing until the session starts
+      }
+    }
+    if (presenter.valid() && !failed && now - last_present_ns >= k_loading_frame_ns) {
+      last_present_ns = now;
+      present();
+    }
+  }
+
+  void present() {
+    const i64 start = time::monotonic_ns();
+    profiling::LoadProgress p;
+    profiling::progress_read(p);
+    const u32 w = presenter.width();
+    const u32 h = presenter.height();
+    const renderer::OverlayDrawData* drawn = nullptr;
+#if ENGINE_VIEW_GAME
+    if (game_draws) drawn = game_loading_overlay(game_hud, w, h, presenter, data);
+#endif
+    if (!game_draws && show) {
+      if (overlay.build(p, w, h, g_hud_display_scale, presenter, data, error)) {
+        drawn = data.commands.empty() ? nullptr : &data;
+      } else {
+        failed = true;
+      }
+    }
+    if (!failed &&
+        !presenter.present(drawn, window->pixel_width(), window->pixel_height(), &error)) {
+      failed = true;
+    }
+    if (failed) {
+      std::fprintf(stderr, "engine-view: the loading frames stop: %s\n", error.c_str());
+    } else {
+      ++frames;
+    }
+    overlay_ns += time::monotonic_ns() - start;
+  }
+
+  // Runs `work` on a load thread, pumping until it is done (or on this thread, as before, with
+  // `on_main`). The work must not touch the window.
+  template <class F>
+  bool run(bool on_main, F&& work) {
+    if (on_main) return work();
+    std::atomic<bool> done{false};
+    bool ok = false;
+    const i64 start = time::monotonic_ns();
+    in_job = true;
+    std::thread job([&] {
+      ok = work();
+      done.store(true, std::memory_order_release);
+    });
+    while (!done.load(std::memory_order_acquire)) {
+      pump();
+      std::this_thread::sleep_for(std::chrono::nanoseconds(k_loading_poll_ns));
+    }
+    job.join();
+    in_job = false;
+    job_ns += time::monotonic_ns() - start;
+    pump();
+    return ok;
+  }
+
+  JsonValue summary_json(bool on_main) const {
+    JsonValue out = JsonValue::object();
+    out.set("on_main", on_main);
+    out.set("overlay", game_draws ? "game" : show ? "default" : "none");
+    out.set("pumps", pumps);
+    out.set("job_pumps", job_pumps);
+    out.set("events", events);
+    out.set("frames", frames);
+    out.set("longest_gap_ms", static_cast<f64>(longest_gap_ns) / 1.0e6);
+    out.set("longest_gap_stage", std::string(longest_gap_stage));
+    out.set("longest_job_gap_ms", static_cast<f64>(longest_job_gap_ns) / 1.0e6);
+    out.set("job_ms", static_cast<f64>(job_ns) / 1.0e6);
+    out.set("overlay_ms_per_frame",
+            frames > 0 ? static_cast<f64>(overlay_ns) / 1.0e6 / static_cast<f64>(frames) : 0.0);
+    return out;
+  }
+};
+
 int run_view(int argc, char** argv);
 
 }  // namespace
@@ -4030,6 +4272,17 @@ int run_view(int argc, char** argv) {
       g_report.frames.enable();
     } else if (a == "--startup-trace") {
       if (!next_value(argc, argv, i, a, options.startup_trace)) return k_exit_usage;
+    } else if (a == "--no-loading-overlay") {
+      options.loading_overlay = false;
+    } else if (a == "--load-on-main") {
+      options.load_on_main = true;
+    } else if (a == "--test-slow-load") {
+      std::string text;
+      if (!next_value(argc, argv, i, a, text) || !parse_u32(text, options.test_slow_load_ms) ||
+          options.test_slow_load_ms > 60000) {
+        std::fprintf(stderr, "engine-view: --test-slow-load takes milliseconds, 0..60000\n");
+        return k_exit_usage;
+      }
     } else if (a == "--game") {
       if (!next_value(argc, argv, i, a, options.game)) return k_exit_usage;
       options.interactive = true;  // a game is played from the session, live or replayed
@@ -4876,6 +5129,16 @@ int run_view(int argc, char** argv) {
   view::PointerGate pointer_gate;
   pointer_gate.takes_pointer = grab_pointer;
   bool hdr_metadata_set = false;  // the HDR chain carries HDR10 metadata (E39)
+  // The load in the window (WindowLoad; apps.md, "The loading presentation"): the presenter goes
+  // before the swapchain it presents to, and the record of what the load did outlives the loop.
+  view::StartupTrace& startup = view::startup_trace();
+  WindowLoad load;
+  std::string load_plan_path;    // <ddc>/startup/<scene key>.json, or empty
+  std::string load_plan_source;  // "the previous run", or why the stages are equally weighted
+  bool load_ready = false;       // the ready milestone has been reached: the overlay is gone
+  i64 load_ready_ns = 0;
+  i64 load_controllable_ns = 0;
+  const u32 load_ready_rung = std::min(game_ready_milestone(), view::k_startup_milestone_count - 1);
 
   // Everything below unwinds through this block so the destruction order stays in one place.
   do {
@@ -4947,162 +5210,227 @@ int run_view(int argc, char** argv) {
       break;
     }
 
+    // ---- the loading presentation (WindowLoad above; apps.md, "The loading presentation") ------
+    // The plan from the last run of this scene (its stages' times), or equal weights; the progress
+    // record follows it from here, the main thread's stages pump, and the first loading frame is
+    // up before anything is read.
+    load.window = &window;
+    load.show = options.loading_overlay;
+    load.game_draws = game_draws_loading();
+    load.started_ns = time::monotonic_ns();
+    {
+      std::string why;
+      if (!load.presenter.create(device, swapchain, &why)) {
+        ENGINE_LOG_WARN(log_view, "no loading frames; the window waits blank",
+                        log::field("reason", why));
+      }
+      if (load.show) (void)load.overlay.create();
+#if ENGINE_VIEW_GAME
+      if (load.game_draws) (void)load.game_hud.create();
+#endif
+      load_plan_path = window_load_plan_path(options);
+      const profiling::ProgressPlan plan = view::load_progress_plan(
+          load_plan_path, view::k_load_stages,
+          std::span<const char* const>(view::k_startup_milestones, view::k_startup_milestone_count),
+          &why);
+      load_plan_source = why;
+      (void)profiling::progress_start(plan);
+      profiling::progress_milestone("main");
+      startup.milestone("device");
+      // `--load-on-main` is the load as it was: nothing pumps until the hand-over.
+      if (!options.load_on_main) profiling::progress_set_pump(&WindowLoad::pump_fn, &load);
+      load.pump();
+    }
+
     // The scene: the file's meshes and instances, a grid of one mesh, or the heightfield.
     renderer::SceneDesc desc;
-    desc.procedural = options.procedural == "shredded-atlas" ? renderer::Procedural::shredded_atlas
-                                                             : renderer::Procedural::heightfield;
-    desc.lod = options.lod;
-    desc.heightfield_grid = options.grid;
-    desc.grid_instances = options.grid_instances;
-    desc.ddc = options.ddc;
-    desc.materials = options.materials;
-    desc.cache = options.cache;
-    desc.stream = options.settings.stream;  // keep the page table for the residency manager
-    if (!options.scene.empty()) {
-      renderer::SceneFileOptions file_options;
-      file_options.overlay = options.overlay;
-      file_options.world = options.world;
-      file_options.world_instances = options.world_instances;
-      renderer::scene_file_options(request_of(options), file_options);  // `--ground-time`
-      if (!renderer::read_scene_file(options.scene, file_options, desc, error)) {
-        exit_code = fail("scene", error);
-        break;
+    // **The load's CPU stages, on the load thread** (WindowLoad::run): the scene file, the clips,
+    // the meshes, the settings against them and the ground's first layout. Nothing here touches the
+    // window or the device's queue; a failure says why and the session ends as it always did.
+    const auto load_cpu = [&]() -> bool {
+      if (options.test_slow_load_ms != 0) {
+        ENGINE_STARTUP_STAGE("test slow load");
+        std::this_thread::sleep_for(std::chrono::milliseconds(options.test_slow_load_ms));
       }
-      // A streamed world's own instances get forms cut for this session's projection and LOD.
-      renderer::authored_rules(options.settings, options.height, renderer::Camera{}.fov_y,
-                               desc.authored);
-    } else {
-      desc.meshes.push_back(options.mesh);  // empty: the procedural heightfield
-    }
-    if (options.world && !desc.world.enabled) {
-      exit_code = fail("world", "--world streams a scene file's ruins; name one with --scene");
-      break;
-    }
-    // The flags' own conflicts were refused before anything was read; these are the file's.
-    if (desc.world.enabled && (options.verify_occlusion || options.animate ||
-                               options.morph_animate || options.reference != 0)) {
-      exit_code = fail("world",
-                       "the scene file's \"world\" block streams its instances between frames, "
-                       "which --verify-occlusion, --animate, --morph-animate and --reference do "
-                       "not draw");
-      break;
-    }
+      profiling::TraceStage scene_file_stage("scene file", options.scene);
+      desc.procedural = options.procedural == "shredded-atlas"
+                            ? renderer::Procedural::shredded_atlas
+                            : renderer::Procedural::heightfield;
+      desc.lod = options.lod;
+      desc.heightfield_grid = options.grid;
+      desc.grid_instances = options.grid_instances;
+      desc.ddc = options.ddc;
+      desc.materials = options.materials;
+      desc.cache = options.cache;
+      desc.stream = options.settings.stream;  // keep the page table for the residency manager
+      if (!options.scene.empty()) {
+        renderer::SceneFileOptions file_options;
+        file_options.overlay = options.overlay;
+        file_options.world = options.world;
+        file_options.world_instances = options.world_instances;
+        renderer::scene_file_options(request_of(options), file_options);  // `--ground-time`
+        if (!renderer::read_scene_file(options.scene, file_options, desc, error)) {
+          exit_code = fail("scene", error);
+          return false;
+        }
+        // A streamed world's own instances get forms cut for this session's projection and LOD.
+        renderer::authored_rules(options.settings, options.height, renderer::Camera{}.fov_y,
+                                 desc.authored);
+      } else {
+        desc.meshes.push_back(options.mesh);  // empty: the procedural heightfield
+      }
+      if (options.world && !desc.world.enabled) {
+        exit_code = fail("world", "--world streams a scene file's ruins; name one with --scene");
+        return false;
+      }
+      // The flags' own conflicts were refused before anything was read; these are the file's.
+      if (desc.world.enabled && (options.verify_occlusion || options.animate ||
+                                 options.morph_animate || options.reference != 0)) {
+        exit_code = fail("world",
+                         "the scene file's \"world\" block streams its instances between frames, "
+                         "which --verify-occlusion, --animate, --morph-animate and --reference do "
+                         "not draw");
+        return false;
+      }
+      scene_file_stage.end();
 
 #if ENGINE_VIEW_ANIMATION
-    // ---- the animated world, part one: the clips, and which instances play them --------------
-    if (!view::prepare_animation(animated, desc, animation_options(options), error)) {
-      exit_code = fail("clips", error);
-      break;
-    }
+      // ---- the animated world, part one: the clips, and which instances play them --------------
+      profiling::TraceStage clips_stage("animation clips");
+      if (!view::prepare_animation(animated, desc, animation_options(options), error)) {
+        exit_code = fail("clips", error);
+        return false;
+      }
+      clips_stage.end();
 #endif
 
-    keep_game_actors(desc);
-    if (!renderer::load_scene(desc, scene_data, error)) {
-      exit_code = fail("mesh", error);
-      break;
-    }
-    look_overrides(options, scene_data);  // `--sky-disc-scale`
-    if (!attach_game_scene(scene_data, error)) {
-      exit_code = fail("game", error);
-      break;
-    }
-    sky_offset = sky_offset_s(options, scene_data);
-    // A budget as a fraction of what this scene's pages come to, which cannot be known until the
-    // page table has been built, is `renderer::settings_for`'s, below, with the morph weights.
-    // A camera path, read against the scene it flies over: a key may hold a height above its
-    // terrain. With no `--frames` the window flies the path once at its own rate and closes.
-    if (!options.camera_path.empty()) {
-      if (!renderer::read_camera_path(options.camera_path,
-                                      scene_data.terrain.enabled ? &scene_data.terrain : nullptr,
-                                      window_path, error)) {
-        exit_code = fail("camera path", error);
-        break;
+      keep_game_actors(desc);  // the declared actors stay in the prefix (W78)
+      profiling::TraceStage load_stage("load scene");
+      if (!renderer::load_scene(desc, scene_data, error)) {
+        exit_code = fail("mesh", error);
+        return false;
       }
-      // An interactive session only starts at the path's first camera; it ends when it ends.
-      if (options.frames == 0 && !interactive.on) options.frames = window_path.frame_count();
-    }
-    // A live session given neither a path nor `--start` begins where the scene's own path does
-    // (`Scene.camera_path`), which is where the scene is meant to be seen from; nothing flies it.
-    if (live && options.camera_path.empty() && !options.start_given && !desc.camera_path.empty()) {
-      if (!renderer::read_camera_path(desc.camera_path,
-                                      scene_data.terrain.enabled ? &scene_data.terrain : nullptr,
-                                      scene_path, error)) {
-        exit_code = fail("camera path", desc.camera_path + ": " + error);
-        break;
+      load_stage.end();
+      startup.milestone("scene_loaded");
+      profiling::TraceStage attach_stage("attach");
+      look_overrides(options, scene_data);  // `--sky-disc-scale`
+      if (!attach_game_scene(scene_data, error)) {
+        exit_code = fail("game", error);
+        return false;
       }
-    }
+      sky_offset = sky_offset_s(options, scene_data);
+      // A budget as a fraction of what this scene's pages come to, which cannot be known until the
+      // page table has been built, is `renderer::settings_for`'s, below, with the morph weights.
+      // A camera path, read against the scene it flies over: a key may hold a height above its
+      // terrain. With no `--frames` the window flies the path once at its own rate and closes.
+      if (!options.camera_path.empty()) {
+        if (!renderer::read_camera_path(options.camera_path,
+                                        scene_data.terrain.enabled ? &scene_data.terrain : nullptr,
+                                        window_path, error)) {
+          exit_code = fail("camera path", error);
+          return false;
+        }
+        // An interactive session only starts at the path's first camera; it ends when it ends.
+        if (options.frames == 0 && !interactive.on) options.frames = window_path.frame_count();
+      }
+      // A live session given neither a path nor `--start` begins where the scene's own path does
+      // (`Scene.camera_path`), which is where the scene is meant to be seen from; nothing flies it.
+      if (live && options.camera_path.empty() && !options.start_given &&
+          !desc.camera_path.empty()) {
+        if (!renderer::read_camera_path(desc.camera_path,
+                                        scene_data.terrain.enabled ? &scene_data.terrain : nullptr,
+                                        scene_path, error)) {
+          exit_code = fail("camera path", desc.camera_path + ": " + error);
+          return false;
+        }
+      }
 
 #if ENGINE_VIEW_ANIMATION
-    // ---- part two: the entities, their clips, and the bounds a moving character needs --------
-    if (animated) {
-      if (!view::attach_instances(*animated, desc, scene_data, animation_options(options), error)) {
-        exit_code = fail("animate", error);
-        break;
+      // ---- part two: the entities, their clips, and the bounds a moving character needs --------
+      if (animated) {
+        if (!view::attach_instances(*animated, desc, scene_data, animation_options(options),
+                                    error)) {
+          exit_code = fail("animate", error);
+          return false;
+        }
+        skinned_instances = animated->instances;
+        joint_matrices = static_cast<u32>(animated->system.joint_matrices().size());
+        clip_text = animated->clip_name;
+        // The summary is a JSON line, so a clip name with a quote or a backslash in it would break
+        // whatever reads it. Names come from a file nobody here wrote; replace rather than escape,
+        // since this is a label and not an identifier.
+        for (char& c : clip_text) {
+          if (c == '"' || c == '\\' || static_cast<unsigned char>(c) < 0x20) c = '_';
+        }
+        ENGINE_LOG_INFO(
+            log_view, "animated", log::field("instances", animated->instances),
+            log::field("clip", animated->clip_name), log::field("joints", animated->joints),
+            log::field("joint_matrices", joint_matrices), log::field("speed", options.anim_speed));
       }
-      skinned_instances = animated->instances;
-      joint_matrices = static_cast<u32>(animated->system.joint_matrices().size());
-      clip_text = animated->clip_name;
-      // The summary is a JSON line, so a clip name with a quote or a backslash in it would break
-      // whatever reads it. Names come from a file nobody here wrote; replace rather than escape,
-      // since this is a label and not an identifier.
-      for (char& c : clip_text) {
-        if (c == '"' || c == '\\' || static_cast<unsigned char>(c) < 0x20) c = '_';
-      }
-      ENGINE_LOG_INFO(
-          log_view, "animated", log::field("instances", animated->instances),
-          log::field("clip", animated->clip_name), log::field("joints", animated->joints),
-          log::field("joint_matrices", joint_matrices), log::field("speed", options.anim_speed));
-    }
 #endif
-    // The settings against the loaded scene — the page budget's percentage and the morph weights
-    // — through the renderer's function, which `render.*` calls too.
-    if (!renderer::settings_for(request_of(options), scene_data, options.settings, &error)) {
-      exit_code = fail("morph", error);
-      break;
-    }
-    renderer::resolve_settings(options.settings, device.features(), &scene_data, resolved);
-    report_device(device, resolved, options.width, options.height);
-    const renderer::RenderAvailability availability =
-        renderer::check_availability(resolved, device.features());
-    if (availability != renderer::RenderAvailability::Ok) {
-      const std::string why = renderer::unavailable_reason(availability, device);
-      exit_code = unavailable(why.c_str(), "");
-      break;
-    }
-    // The time-lapse's pool, and the terrain rings round where the camera starts (a path's first
-    // frame, the scene's own path's, or the orbit's): built before the GPU scene, which reserves
-    // their slots. A camera that starts elsewhere re-centres them in its first frames. A window's
-    // pool leaves the frame's thread CPUs of its own (`renderer::terrain_window_workers`, which
-    // `MovingGround::prepare` reads for a window).
-    terrain_camera =
-        !window_path.keys.empty()
-            ? renderer::camera_path_frame(window_path, 0, window_path.frame_count())
-        : !scene_path.keys.empty()
-            ? renderer::camera_path_frame(scene_path, 0, scene_path.frame_count())
-            : renderer::orbit_camera(scene_data.center, scene_data.radius, options.orbit, 0);
-    // An interactive session starts where its header says — `--start`, a replay's recorded start —
-    // and the first layout is built round that, not round the orbit: on the endless desert the
-    // orbit is the old erg's centre, and a session started 2 km from it began with a whole ring to
-    // rebuild behind its frames, the camera at 100 m/s outrunning each catch-up for its first tens
-    // of seconds (the owner's first flight, 2026-10-02). A live header is built here for that
-    // reason, where the scene's bounds and the paths are known.
-    if (interactive.on) {
-      if (!interactive.replay) {
-        const renderer::CameraPath* start_path = !window_path.keys.empty()  ? &window_path
-                                                 : !scene_path.keys.empty() ? &scene_path
-                                                                            : nullptr;
-        interactive.header = live_header(options, scene_data, start_path);
+      // The settings against the loaded scene — the page budget's percentage and the morph weights
+      // — through the renderer's function, which `render.*` calls too.
+      if (!renderer::settings_for(request_of(options), scene_data, options.settings, &error)) {
+        exit_code = fail("morph", error);
+        return false;
       }
-      terrain_camera.position = interactive.header.start.position;
-    }
-    if (!ground.prepare(scene_data, resolved, terrain_camera, &error, /*window=*/true)) {
-      exit_code = fail(ground.stage(), error);
+      renderer::resolve_settings(options.settings, device.features(), &scene_data, resolved);
+      report_device(device, resolved, options.width, options.height);
+      const renderer::RenderAvailability availability =
+          renderer::check_availability(resolved, device.features());
+      if (availability != renderer::RenderAvailability::Ok) {
+        const std::string why = renderer::unavailable_reason(availability, device);
+        exit_code = unavailable(why.c_str(), "");
+        return false;
+      }
+      // The time-lapse's pool, and the terrain rings round where the camera starts (a path's first
+      // frame, the scene's own path's, or the orbit's): built before the GPU scene, which reserves
+      // their slots. A camera that starts elsewhere re-centres them in its first frames. A window's
+      // pool leaves the frame's thread CPUs of its own (`renderer::terrain_window_workers`, which
+      // `MovingGround::prepare` reads for a window).
+      terrain_camera =
+          !window_path.keys.empty()
+              ? renderer::camera_path_frame(window_path, 0, window_path.frame_count())
+          : !scene_path.keys.empty()
+              ? renderer::camera_path_frame(scene_path, 0, scene_path.frame_count())
+              : renderer::orbit_camera(scene_data.center, scene_data.radius, options.orbit, 0);
+      // An interactive session starts where its header says — `--start`, a replay's recorded start
+      // — and the first layout is built round that, not round the orbit: on the endless desert the
+      // orbit is the old erg's centre, and a session started 2 km from it began with a whole ring
+      // to rebuild behind its frames, the camera at 100 m/s outrunning each catch-up for its first
+      // tens of seconds (the owner's first flight, 2026-10-02). A live header is built here for
+      // that reason, where the scene's bounds and the paths are known.
+      if (interactive.on) {
+        if (!interactive.replay) {
+          const renderer::CameraPath* start_path = !window_path.keys.empty()  ? &window_path
+                                                   : !scene_path.keys.empty() ? &scene_path
+                                                                              : nullptr;
+          interactive.header = live_header(options, scene_data, start_path);
+        }
+        terrain_camera.position = interactive.header.start.position;
+      }
+      attach_stage.end();
+      profiling::TraceStage ground_stage("ground prepare");
+      if (!ground.prepare(scene_data, resolved, terrain_camera, &error, /*window=*/true)) {
+        exit_code = fail(ground.stage(), error);
+        return false;
+      }
+      return true;
+    };
+    if (!load.run(options.load_on_main, load_cpu)) break;
+    if (load.quit) {  // closed while loading: the session ends as a closed window's does
+      g_report.reason = "closed";
       break;
     }
+
+    // ---- the device's stages, on this thread, pumping between their slices ----------------------
+    profiling::TraceStage gpu_scene_stage("gpu scene");
     if (!scene.create(device, scene_data, resolved, &error, ground.level_set())) {
       exit_code = fail("scene", error);
       break;
     }
+    gpu_scene_stage.end();
+    startup.milestone("gpu_scene");
     // The pose stage's per-frame array and the defaults it is refilled from, sized once.
     if (options.morph_animate && scene.morphed()) {
       morph_pose_weights.resize(scene.morph_channel_count(), 0.0f);
@@ -5193,6 +5521,7 @@ int run_view(int argc, char** argv) {
     // the module fills `Surround3` in; engine-view exposes the yaw, which is the parameter a
     // player actually has to set.
     renderer_desc.views = renderer::view_set_desc(resolved.settings);
+    profiling::TraceStage renderer_stage("renderer");
     if (!view_renderer.create(device, scene, resolved, renderer_desc, &error)) {
       exit_code = fail("renderer", error);
       break;
@@ -5201,13 +5530,17 @@ int run_view(int argc, char** argv) {
       exit_code = fail("medium", error);  // brief-volumetrics
       break;
     }
+    renderer_stage.end();
     // In a window the fields are never waited for: a late one holds the surface where it is, and
     // a re-centre's chunks are uploaded a few a frame and swapped in when they are all there.
+    profiling::TraceStage ground_start_stage("ground start");
     if (!ground.start(scene, resolved, false, &error)) {
       exit_code = fail(ground.stage(), error);
       break;
     }
+    ground_start_stage.end();
 #if ENGINE_VIEW_WORLD
+    profiling::TraceStage world_stage("world create");
     if (scene_data.world.enabled || ground.tiles() != nullptr) {
       if (!view_world.create(scene_data, view_renderer, &error, ground.tiles())) {
         exit_code = fail("world", error);
@@ -5219,6 +5552,7 @@ int run_view(int argc, char** argv) {
         break;
       }
     }
+    world_stage.end();
 #endif
     extent_width = view_renderer.width();
     extent_height = view_renderer.height();
@@ -5248,15 +5582,20 @@ int run_view(int argc, char** argv) {
     // CPU window and spawns a process for the GPU reading, so both samples sit outside the timed
     // region and cost the run nothing. `--wait-quiet` waits for a quiet machine first, as a
     // flythrough's timed pass does.
-    machine_start = options.wait_quiet_s > 0
-                        ? wait_for_quiet(options.wait_quiet_s)
-                        : bench::sample_machine_state(bench::k_sample_window_ms);
+    // On the load thread too: the sample sleeps for its window and a quiet wait can take seconds.
+    (void)load.run(options.load_on_main, [&] {
+      machine_start = options.wait_quiet_s > 0
+                          ? wait_for_quiet(options.wait_quiet_s)
+                          : bench::sample_machine_state(bench::k_sample_window_ms);
+      return true;
+    });
 
     // ---- the interactive camera: its header, its clock, and where it ends ----------------------
     // A live session's header is built here, where the scene's bounds and the camera path are
     // known; a replay's came out of its log. `session_end` is the tick a replay or an injected
     // session stops at, and 0 for somebody at the window, whose session ends when they close it.
     u64 session_end = 0;
+    profiling::TraceStage session_stage("session");
     if (interactive.on) {
       // (A live session's header was built above, before the terrain's first layout.)
       // The walker, on the scene as loaded and the ground as the first frame draws it; with the
@@ -5284,6 +5623,14 @@ int run_view(int argc, char** argv) {
         attach_game(session, sky_offset, start.sun_rate, start.world_rate, scene_data, walker);
       }
 #endif
+      // ABI 7's hand-over: a module that asked for a milestone later than the walker's first tick
+      // is held until it (below, in the loop); a replay holds it to the tick the recording says.
+      if (interactive.replay) {
+        if (interactive.header.game_release_tick != 0)
+          game_hold(interactive.header.game_release_tick);
+      } else if (game_ready_milestone() > k_controllable_rung) {
+        game_hold(0);
+      }
 #if ENGINE_VIEW_ANIMATION
       // The scene's characters on the session's tick, after the game's observer, which it chains:
       // the same world at the same ticks as an offscreen replay of this session.
@@ -5309,6 +5656,16 @@ int run_view(int argc, char** argv) {
                       log::field("speed", interactive.header.params.speed),
                       log::field("map", interactive.map.hash()));
     }
+    session_stage.end();
+    // The hand-over: the presenter's last frame is up; from the next the renderer draws, with the
+    // loading overlay over the scene until the ready milestone (the loop below).
+    profiling::progress_set_pump(nullptr, nullptr);
+    load.pump();
+    load.presenter.destroy();
+#if ENGINE_VIEW_GAME
+    load.game_hud.destroy();
+#endif
+    load.overlay.destroy();
     const u32 session_hz =
         interactive.header.params.tick_hz > 0 ? interactive.header.params.tick_hz : 240u;
     // The ticks come from a fixed-step clock fed with wall time: a frame runs however many ticks
@@ -5464,6 +5821,18 @@ int run_view(int argc, char** argv) {
 
     bool running = true;
     bool resize_pending = false;
+    // What the load saw of the window while it pumped (WindowLoad): a close ends the session now,
+    // a resize is acted on by the first frame, and a focus gained takes the pointer as it would.
+    if (load.quit) {
+      running = false;
+      g_report.reason = "closed";
+    }
+    if (load.resized) resize_pending = true;
+    if (load.focus > 0 && live && grab_pointer) pointer_captured = true;
+    // The default overlay over the scene's first frames, until the ready milestone.
+    view::LoadingOverlay scene_overlay;
+    if (options.loading_overlay && !load.game_draws) (void)scene_overlay.create();
+    renderer::OverlayDrawData loading_data;
     bool alt_held = false;       // Alt+Enter: Alt's state, from its own key events
     bool chord_enter = false;    // the chord's Enter is down: its repeats and release are ours
     u32 fullscreen_toggles = 0;  // the summary's `presentation.fullscreen_toggles`
@@ -5737,6 +6106,9 @@ int run_view(int argc, char** argv) {
         if (interactive.replay) {
           replay_cursor = session.run(interactive.log.events(), replay_cursor, SimTick{to});
         } else {
+          // A module held for its milestone (ABI 7) has not handed the player control yet: the
+          // walker stands, and what was pressed meanwhile reaches neither it nor the recording.
+          if (game_held()) edge.clear();
           (void)session.run(edge.events(), 0, SimTick{to});
           if (session.tick().value > before) {
             // Fed, so recorded: what the log holds is exactly what the camera was flown with.
@@ -5853,7 +6225,59 @@ int run_view(int argc, char** argv) {
       }
       frame.sky_time_s = sky_offset + sun.time_s;
       frame.world_time_s = world.time_s;
+      // **Until the ready milestone** (apps.md, "The loading presentation"): what the frames so far
+      // say about readiness, the hand-over when the module's milestone (or the walker's first
+      // tick) is reached, and the loading overlay over the scene until then — the module's own HUD
+      // when it draws its loading screen, the default line and bar otherwise.
+      if (!load_ready) {
+        view::Readiness r;
+        r.frame_done = rendered > 0;
+        r.controllable = !walker.available() || walker.stats().ticks > 0;
+        r.collision = !walker.available() || walker.ground_ready();
+        r.world_settled = true;
+#if ENGINE_VIEW_WORLD
+        if (view_world.valid()) {
+          const world::UpdateStats& last = view_world.world().last();
+          r.world_settled = last.activated == 0 && last.changed == 0 &&
+                            last.deferred_promotions == 0 && last.deferred_demotions == 0;
+        }
+#endif
+        r.pages_settled = view_renderer.stats().stream.pending == 0 &&
+                          view_renderer.stats().stream.loads_in_flight == 0;
+        const auto ground_now = renderer::frame_terrain(time_lapse);
+        r.ground_settled = !ground_now.has_value() ||
+                           (ground_now->chunks_built == 0 && ground_now->layout_lag_m == 0.0);
+        startup.frame(r);
+        if (load_controllable_ns == 0 && startup.reached("player_controllable"))
+          load_controllable_ns = time::monotonic_ns();
+        if (startup.reached(view::k_startup_milestones[load_ready_rung])) {
+          load_ready = true;
+          load_ready_ns = time::monotonic_ns();
+          game_release();
+          profiling::progress_finish();
+          profiling::ProgressPlan measured;
+          profiling::progress_measured(measured);
+          std::string why;
+          if (!load_plan_path.empty() && !view::save_progress_plan(load_plan_path, measured, &why))
+            ENGINE_LOG_INFO(log_view, "the load's plan was not kept", log::field("reason", why));
+          if (load.game_draws) game_loading_call(true);
+          profiling::progress_stop();
+        } else if (load.game_draws) {
+          game_loading_call(false);
+        }
+      }
       frame.overlay = game_hud_overlay(view_renderer);  // the game's HUD, when it has one
+      if (!load_ready && !load.game_draws && scene_overlay.valid() && frame.overlay == nullptr) {
+        profiling::LoadProgress p;
+        profiling::progress_read(p);
+        view::RendererTextures textures(view_renderer);
+        std::string why;
+        if (scene_overlay.build(p, view_renderer.width(), view_renderer.height(),
+                                g_hud_display_scale, textures, loading_data, why) &&
+            !loading_data.commands.empty()) {
+          frame.overlay = &loading_data;
+        }
+      }
       frame.exposure = exposure_keys;
       terrain_camera = frame.camera;  // the next frame's rings follow this one
 #if ENGINE_VIEW_WORLD
@@ -6169,6 +6593,31 @@ int run_view(int argc, char** argv) {
       }
     }
   } while (false);
+  // However the block ended, nothing pumps through `load` any more and the record stops.
+  profiling::progress_set_pump(nullptr, nullptr);
+  profiling::progress_stop();
+  load.presenter.destroy();
+  std::string loading_text;
+  {
+    JsonValue block = load.summary_json(options.load_on_main);
+    block.set("plan", load_plan_source);
+    block.set("ready_milestone", std::string(view::k_startup_milestones[load_ready_rung]));
+    const auto from_main = [](i64 ns) {
+      return ns > 0 ? JsonValue(static_cast<f64>(ns - g_main_ns) / 1.0e6) : JsonValue::null();
+    };
+    block.set("loading_from_main_ms", from_main(load.started_ns));
+    block.set("controllable_from_main_ms", from_main(load_controllable_ns));
+    block.set("ready_from_main_ms", from_main(load_ready_ns));
+    block.set("first_game_tick", game_first_tick());
+    loading_text = write_json(block, JsonWriteOptions{.pretty = false});
+  }
+  // `--startup-trace` in a window: the same block an offscreen run's summary carries (null off).
+  std::string startup_text;
+  {
+    std::string why;
+    startup_text = write_json(startup.finish(&why), JsonWriteOptions{.pretty = false});
+    if (!why.empty()) std::fprintf(stderr, "engine-view: --startup-trace: %s\n", why.c_str());
+  }
 
   const renderer::Stats stats = view_renderer.stats();
   // The chain's bytes move with its capacity, so the figure is the run's last, not the load's.
@@ -6245,7 +6694,7 @@ int run_view(int argc, char** argv) {
         "\"rt\":%.4f,\"clas\":%.4f,\"deform\":%.4f,\"deform_alloc\":%.4f,"
         "\"trace\":%.4f,\"shadow\":%.4f,\"shadow_cull\":%.4f,\"total\":%.4f,"
         "\"frames\":%llu},\"captured\":%s,\"interactive\":%s,\"time_lapse\":%s,\"sun\":%s,"
-        "\"output\":%s,\"medium\":%s,\"flora\":%s}\n",
+        "\"output\":%s,\"medium\":%s,\"flora\":%s,\"loading\":%s,\"startup\":%s}\n",
         static_cast<unsigned long long>(rendered), seconds, avg_ms, extent_width, extent_height,
         scene_data.cluster_count(), scene_data.leaf_count(), scene_data.lod.leaf_triangle_count,
         scene_data.lod.level_cluster_counts.size(), static_cast<f64>(scene_data.build_ns) / 1.0e6,
@@ -6286,7 +6735,8 @@ int run_view(int argc, char** argv) {
         stats.deform_alloc_ms(), stats.trace_ms(), stats.shadow_ms(), stats.shadow_cull_ms(),
         stats.total_ms(), static_cast<unsigned long long>(stats.timed_frames),
         captured ? "true" : "false", interactive_text.c_str(), time_lapse_text.c_str(),
-        sun_text.c_str(), output_text.c_str(), medium_text.c_str(), flora_text.c_str());
+        sun_text.c_str(), output_text.c_str(), medium_text.c_str(), flora_text.c_str(),
+        loading_text.c_str(), startup_text.c_str());
     std::fputs(summary_text.c_str(), stdout);
     g_report.summary_line = summary_text.substr(0, summary_text.find_last_not_of('\n') + 1);
     std::fflush(stdout);

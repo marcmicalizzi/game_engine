@@ -42,6 +42,7 @@ set(_view_tests tests/view_tests.cpp tests/mesh_view_tests.cpp tests/fly_tests.c
                 tests/interactive_tests.cpp tests/time_controls_tests.cpp tests/walk_tests.cpp
                 tests/walk_view_tests.cpp tests/far_tests.cpp tests/frame_loop_tests.cpp
                 tests/game_view_tests.cpp tests/startup_trace_view_tests.cpp
+                tests/loading_view_tests.cpp
                 ${_view_interactive})
 if(TARGET engine::tileset)
   # A scene naming a built tile set drawn offscreen, the set written by engine-content beside it;
@@ -133,7 +134,8 @@ if(TARGET engine::animation)
 endif()
 
 engine_app(NAME engine_view OUTPUT engine-view
-  SOURCES main.cpp report.cpp startup.cpp ${_view_interactive} ${_view_world} ${_view_game}
+  SOURCES main.cpp report.cpp startup.cpp loading.cpp ${_view_interactive} ${_view_world}
+          ${_view_game}
           ${_view_animation}
   DEPS ${_view_deps} profiling
   E2E_TESTS ${_view_tests})
@@ -141,6 +143,10 @@ engine_app(NAME engine_view OUTPUT engine-view
 # (domain/gfx/backend/vulkan/: the swapchain, the device's instance for the surface); the renderer
 # it drives does not (docs/subsystems/gfx.md, "The RHI surface and the backend surface").
 target_link_libraries(engine_engine_view PRIVATE engine::gfx_vulkan)
+# The loading presentation (loading.h; apps.md, "The loading presentation") lays its line and bar
+# out with Dear ImGui in every configuration, as the HUD does with a game: ImGui is fetched in every
+# one (cmake/EngineImgui.cmake).
+target_link_libraries(engine_engine_view PRIVATE imgui)
 if(TARGET engine::volumetrics)
   target_compile_definitions(engine_engine_view PRIVATE ENGINE_VIEW_VOLUMETRICS=1)
   if(TARGET engine_engine_view_tests)

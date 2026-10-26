@@ -550,6 +550,7 @@ JsonValue session_to_json(const SessionHeader& header) {
     game.set("module", header.game_module);
     game.set("build", static_cast<u64>(header.game_build));
     if (header.game_restored.is_object()) game.set("restored", header.game_restored);
+    if (header.game_release_tick != 0) game.set("release_tick", header.game_release_tick);
     out.set("game", std::move(game));
   }
   if (header.has_clock) {
@@ -647,6 +648,10 @@ bool session_from_json(const JsonValue& value, SessionHeader& out, std::string* 
     if (const JsonValue* restored = game->find("restored"); restored != nullptr) {
       if (!restored->is_object()) return fail("the game block's restored state is not an object");
       h.game_restored = *restored;
+    }
+    if (const JsonValue* release = game->find("release_tick"); release != nullptr) {
+      if (!release->get_u64(h.game_release_tick))
+        return fail("the game block's release_tick is not a tick");
     }
   }
   // The clock block, from 2026-10-20 (R88): the rates the session ran on. Absent: the flags'.

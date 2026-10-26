@@ -1264,6 +1264,31 @@ struct RenderEvaluateResult @version(1) {
 // long as the agent's client does — would otherwise hold every one of them, GPU buffers and all,
 // and a client that can release scenes has to be able to see which it holds.
 
+/// What `render.progress` answers (roadmap W79; docs/subsystems/protocol.md, `render.progress`):
+/// the process's live load progress (`profiling::LoadProgress`, core/profiling/startup_trace.h) as
+/// it stands — the last load's record, kept after it is done. `render.load` follows a plan of its
+/// stages (`scene read`, `load scene`, each with the same weight) and finishes it when it returns.
+struct RenderProgressResult @version(1) {
+  /// A load is being followed, and whether it is done (the fraction then 1).
+  active: bool
+  done: bool
+  /// The plan's stage now (or the last begun), and what is running inside it.
+  stage: string
+  detail: string
+  stages_done: u32
+  stages_expected: u32
+  /// 0..1, never falling over reads during one load.
+  fraction: f64
+  /// The milestones reached, by name, in their ladder's order.
+  milestones: string[]
+  /// The process's OS reads since the load began, and what its stages counted.
+  bytes_read: u64
+  items: u64
+  elapsed_ms: f64
+  /// Grows with every change: two equal answers mean nothing moved between them.
+  sequence: u64
+}
+
 /// Parameters of `render.unload`.
 struct RenderUnloadParams @version(1) {
   /// The id `render.load` returned.

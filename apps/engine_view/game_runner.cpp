@@ -202,6 +202,14 @@ struct GameRunner::Impl {
   Config config;
   std::unique_ptr<hotload::ModuleHost> host;
   hotload::FunctionId game_tick;
+  hotload::FunctionId game_loading;  // ABI 7, optional
+  u32 ready_milestone = static_cast<u32>(hotload::GameMilestone::PlayerControllable);
+  bool held = false;
+  u64 hold_until = 0;
+  u64 held_ticks = 0;
+  u64 first_tick = 0;
+  bool ticked = false;
+  u64 loading_calls = 0;
   hotload::View view;
   game::GameTick state;  // the object the module's view reads
   const input::ActionMap* map = nullptr;
@@ -955,6 +963,18 @@ bool GameRunner::start(const Config& config, const input::ActionMap& map, u32 ti
                   "f32)), which is what the runner calls every tick");
   }
   g.view = host.bind(g.state);
+  // ABI 7's optional exports: absent is the default, a module of 3 to 6 has neither.
+  if (host.find<hotload::LoadingFn>("game_loading", g.game_loading) != hotload::Status::Ok)
+    g.game_loading = hotload::FunctionId{};
+  hotload::FunctionId milestone;
+  if (host.find<hotload::MilestoneFn>("game_ready_milestone", milestone) == hotload::Status::Ok) {
+    const u32 m = host.function<hotload::MilestoneFn>(milestone)(host.context());
+    if (m >= hotload::k_game_milestones) {
+      return refuse(config.module + "'s game_ready_milestone named " + std::to_string(m) +
+                    ", which is no milestone (0..7)");
+    }
+    g.ready_milestone = m;
+  }
 
   // --game-state: the state as the last run left it, through the descriptor (unknown fields
   // ignored, missing ones at their defaults: the reload's rules). A replay of a `--game` recording
@@ -1193,9 +1213,49 @@ void GameRunner::observe(void* user, const FlySession& session, const input::Inp
   self.tick(in);
 }
 
+bool GameRunner::has_loading() const noexcept { return impl_->host && impl_->game_loading.valid(); }
+
+void GameRunner::loading(const hotload::GameLoadProgress& progress) {
+  Impl& g = *impl_;
+  if (!g.host || !g.game_loading.valid() || g.failed) return;
+  hotload::ModuleHost& host = *g.host;
+  host.function<hotload::LoadingFn>(g.game_loading)(host.context(), &progress);
+  ++g.loading_calls;
+  std::string failure = host.take_failure();
+  if (!failure.empty()) {
+    g.failed = true;
+    g.ended = true;
+    g.error = "game_loading failed: " + failure;
+  }
+}
+
+u32 GameRunner::ready_milestone() const noexcept { return impl_->ready_milestone; }
+
+void GameRunner::hold(u64 until_tick) noexcept {
+  impl_->held = true;
+  impl_->hold_until = until_tick;
+}
+
+void GameRunner::release() noexcept { impl_->held = false; }
+
+bool GameRunner::held() const noexcept { return impl_->held; }
+
+u64 GameRunner::first_tick() const noexcept { return impl_->first_tick; }
+
 void GameRunner::tick(const GameTickInput& in) {
   Impl& g = *impl_;
   if (!g.host) return;
+  // ABI 7's hold: nothing of the module runs until the milestone it asked for (or, replayed, the
+  // tick the live session released it at).
+  if (g.held && g.hold_until != 0 && in.tick >= g.hold_until) g.held = false;
+  if (g.held) {
+    ++g.held_ticks;
+    return;
+  }
+  if (!g.ticked) {
+    g.ticked = true;
+    g.first_tick = in.tick;
+  }
   // The rate keys at the ticks they were pressed on: a rung of the day's ladder (`[`, `]`) or of
   // the world's (`,`, `.`) each, as the window's `step_rate` does (time_controls.h); then the day
   // moves by this tick's real seconds at the sun rate now, and the world by them at the world rate
@@ -1377,6 +1437,11 @@ JsonValue GameRunner::summary_json() const {
   out.set("name", g.host->module_name());
   out.set("build", g.host->generation());
   out.set("reloads", g.reloads);
+  // ABI 7: the module's own loading screen and the hand-over it asked for.
+  out.set("loading_calls", g.loading_calls);
+  out.set("ready_milestone", g.ready_milestone);
+  out.set("held_ticks", g.held_ticks);
+  out.set("first_tick", g.first_tick);
   out.set("refused_reloads", g.refused_reloads);
   out.set("last_refusal", g.last_refusal);
   out.set("ticks", g.ticks);
