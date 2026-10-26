@@ -399,7 +399,7 @@ void game_tick(ModuleContext* context, View tick, f32) {
 // held until the ground under the feet has collision (the forest would ask for nearby_stable).
 void game_loading(ModuleContext* context, const GameLoadProgress* progress) {
   Survivor& s = state<Survivor>(context);
-  const f64 fraction = progress->fraction;
+  const f64 fraction = static_cast<f64>(progress->fraction);
   if (s.loading_calls > 0 && fraction < s.loading_fraction) ++s.loading_falls;
   s.loading_fraction = fraction;
   ++s.loading_calls;

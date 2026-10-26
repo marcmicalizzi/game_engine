@@ -634,7 +634,7 @@ bool render_progress(protocol::Context&, protocol::RenderProgressResult& out, pr
   out.detail = p.detail;
   out.stages_done = p.stages_done;
   out.stages_expected = p.stages_expected;
-  out.fraction = p.fraction;
+  out.fraction = static_cast<f64>(p.fraction);
   out.milestones.clear();
   for (u32 i = 0; i < p.milestone_count && i < 32; ++i) {
     if (((p.milestones >> i) & 1u) != 0 &&
