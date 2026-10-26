@@ -100,11 +100,66 @@ TEST_CASE("authored scene: the pair accounting names its numbers") {
   a.prefix_pairs = 1'000'000;
   a.tail_floor = 50'000;
   CHECK(pairs_fit(a, &error));
-  a.limit = 1'400'000;
+  a.limit = 1'399'999;
   a.named = "the ray tracing chain's geometry indices name over the views";
   CHECK_FALSE(pairs_fit(a, &error));
   CHECK(error.find("one tile of its streamed instances 50000") != std::string::npos);
-  CHECK(error.find("of the 1400000 the ray tracing chain's") != std::string::npos);
+  CHECK(error.find("of the 1399999 the ray tracing chain's") != std::string::npos);
+}
+
+TEST_CASE("pair accounting: settings and layout share prefix slots and reserved tail") {
+  SceneData data;
+  data.dynamic = true;
+  data.pair_count = 1000;
+  data.tail_floor_pairs = 129;
+  data.parts.resize(3);
+  data.parts[0].cluster_count = 100;
+  data.parts[1].cluster_count = 600;
+  data.parts[2].cluster_count = 300;
+  data.instances.resize(3);
+  for (u32 i = 0; i != 3; ++i)
+    data.instances[i].mesh = i;
+  data.instances[1].flags = gfx::k_instance_untraced;
+  data.instances[2].flags = gfx::k_instance_static_rt;
+  ResolvedSettings layout_settings;
+  PairAccount account = account_pairs(data, layout_settings);
+  // Four terrain rings, each reserving both active and replacement slots.
+  for (const u32 slots : {8u, 16u, 32u, 64u})
+    account.slot_pairs += u64{slots} * 2 * 4;
+  CHECK(account.slot_pairs == 960);
+  CHECK(account.tail_floor == 144);
+  CHECK(account.minimum_pairs() == 2104);
+  CHECK(account.frame_pairs() == 1204);
+  gfx::DeviceFeatures features;
+  features.mesh_shader = features.buffer_int64_atomics = true;
+  features.acceleration_structure = features.cluster_acceleration_structure = features.ray_query =
+      true;
+  features.cluster_max_geometry_index = 1203;
+  RenderSettings settings;
+  settings.shadows = ShadowMode::RayTraced;
+  ResolvedSettings resolved;
+  resolve_settings(settings, features, &data, resolved, &account);
+  CHECK(resolved.casters);  // counting the untraced/static 900 pairs would have disabled them
+  CHECK(resolved.pairs.minimum_pairs() == account.minimum_pairs());
+  TileLayout layout;
+  layout.reset(3, static_cast<u32>(resolved.pairs.fixed_pairs()));
+  const TileLayout::Request tile{1, 0, 1, data.tail_floor_pairs, false};
+  Vector<SlotWrite> writes;
+  TileLayoutChange change;
+  std::string error;
+  REQUIRE(layout.apply(std::span(&tile, 1), 25, false, 2104, writes, change, &error));
+  CHECK(layout.pair_end() == account.minimum_pairs());
+  CHECK_FALSE(change.tight);
+  features.cluster_max_geometry_index = 1202;
+  resolve_settings(settings, features, &data, resolved, &account);
+  CHECK_FALSE(resolved.casters);
+  CHECK(resolved.shadows);
+  CHECK(resolved.caster_index_fallback);
+  CHECK(pairs_fit(resolved.pairs, &error));
+  account.limit = account.fixed_pairs();
+  CHECK(pairs_fit(account, &error));  // no room for a tile: the consumer withholds it
+  --account.limit;
+  CHECK_FALSE(pairs_fit(account, &error));  // only the immutable prefix refuses
 }
 
 #if ENGINE_RENDERER_TESTS_FLORA

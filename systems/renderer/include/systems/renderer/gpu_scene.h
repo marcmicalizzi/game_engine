@@ -36,6 +36,7 @@
 #include <domain/gfx/visibility_resolve.h>
 #include <systems/renderer/flora_motion.h>
 #include <systems/renderer/flora_poser.h>
+#include <systems/renderer/pair_account.h>
 #include <systems/renderer/rt_capacity.h>
 #include <systems/renderer/scene.h>
 #include <systems/renderer/settings.h>
@@ -80,15 +81,6 @@ inline constexpr u32 k_max_pairs = 1u << 24;
 // (the most pairs one tile of the scene's streamed instances holds drawn whole) take of what the
 // pair space names, checked by `GpuScene::create` before anything is made. False, with one
 // sentence naming the numbers and what to lower, when they do not fit.
-struct PairAccount {
-  u64 instances = 0;     // the load's instances
-  u64 prefix_pairs = 0;  // their pairs
-  u64 slot_pairs = 0;    // the terrain rings' slots'
-  u64 tail_floor = 0;    // a streamed tile's, drawn whole
-  u64 limit = k_max_pairs;
-  const char* named = "the visibility id names";  // what `limit` is
-};
-bool pairs_fit(const PairAccount& account, std::string* error) noexcept;
 static_assert(gfx::k_caster_run < k_visible_runs);
 
 // The vertex path's index budget per region, in triangles of twelve bytes: how much of one hardware
@@ -222,6 +214,7 @@ class GpuScene {
   // chain the most the device's cluster geometry indices name over the views' runs (renderer.md,
   // "The ray tracing chain's index space"). What a world's placements consumer budgets against.
   u32 pair_limit() const noexcept { return pair_limit_; }
+  const ResolvedSettings& resolved() const noexcept { return resolved_; }
   // The terrain rings' reserved slots' pairs, as the pair accounting counted them before the scene
   // was made (renderer.md, "The pair accounting"): `static_pair_count()` less the load's own.
   u64 ring_slot_pairs() const noexcept { return accounted_slot_pairs_; }
@@ -466,10 +459,11 @@ class GpuScene {
   u64 rt_bytes_per_cluster() const noexcept { return rt_bytes_per_cluster_; }
   // The most structures a frame can ask for, from what the scene knows now: its pairs — the
   // prefix, the rings' slots and the tail as laid out, holes included — less the static forms'
-  // (built once), in every view. What the first capacity is sized from (`first_rt_capacity`).
+  // (built once) and untraced pairs, in every view. What the first capacity is sized from
+  // (`first_rt_capacity`).
   u64 rt_frame_estimate() const noexcept {
-    const u64 pairs =
-        u64{pair_stride_} > static_pairs_live_ ? pair_stride_ - static_pairs_live_ : 0;
+    const u64 excluded = static_pairs_live_ + untraced_pairs_live_;
+    const u64 pairs = u64{pair_stride_} > excluded ? pair_stride_ - excluded : 0;
     return pairs * view_count_;
   }
   // Reallocates the per-frame part for `clusters` structures (clamped to the limit). The device
@@ -1013,7 +1007,8 @@ class GpuScene {
   // instances that lost their casters (gfx::ClusterRecordParams). A transfer source, because the
   // frame's statistics copy it out for the capacity policy.
   gfx::BufferResource record_count;
-  gfx::BufferResource slots;  // u32 per pair per view: the records pass's bucketing scratch
+  gfx::BufferResource hit_entries;  // compact record index -> original visible entry
+  gfx::BufferResource slots;        // u32 per pair per view: the records pass's bucketing scratch
   // Three u32 per instance: its drawn clusters, its casters, then its dense record base.
   gfx::BufferResource instance_counts;
   gfx::BufferResource blas_records;  // one 16-byte bottom-level record per instance
@@ -1392,6 +1387,7 @@ class GpuScene {
   u64 static_bytes_ = 0;
   u32 static_instances_live_ = 0;
   u64 static_pairs_live_ = 0;
+  u64 untraced_pairs_live_ = 0;
   gfx::ClusterSet static_clas_;
   gfx::ClusterBlasSet static_blas_;
   // Which meshes are static and which of their clusters are the frontier, before the geometry is

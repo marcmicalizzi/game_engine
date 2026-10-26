@@ -113,6 +113,10 @@ scene::FrameRecord frame_record(const FrameStats& stats, u32 repeat, u32 frame, 
 }
 
 void summarize_rt(const RtStats& stats, scene::FlythroughRt& out) {
+  out.caster_index_fallbacks = stats.caster_index_fallbacks;
+  out.frame_estimate = stats.frame_estimate;
+  out.bytes_per_cluster = stats.bytes_per_cluster;
+  out.geometry_index_need = stats.geometry_index_need;
   out.capacity = stats.capacity;
   out.peak_capacity = stats.peak_capacity;
   out.limit = stats.limit;

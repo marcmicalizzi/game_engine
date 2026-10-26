@@ -702,6 +702,62 @@ TEST_CASE("engine-view: a streamed world's first frames under traced shadows are
   CHECK(field_u64(*rt, "grows") == 0);
 }
 
+TEST_CASE("engine-view: four rings with static forms and grass keep traced casters") {
+  const test::TempDir tmp("engine_view_rt_four_rings");
+  REQUIRE(write_text(tmp.file("oak.flora.json"), k_oak));
+  REQUIRE(write_text(tmp.file("spruce.flora.json"), k_spruce));
+  REQUIRE(write_text(tmp.file("sward.flora.json"), k_sward));
+  std::string text = scene_text(
+      R"({"tile_size":16,"rings":[{"radius":2},{"radius":4},{"radius":8},{"radius":12}]})");
+  const usize meshes = text.find(R"("scatters")");
+  REQUIRE(meshes != std::string::npos);
+  const usize mesh_end = text.rfind(']', meshes);
+  text.insert(mesh_end, R"(,{"name":"sward","path":"sward.flora.json"})");
+  const usize scatter_end = text.find(R"(],"world")");
+  REQUIRE(scatter_end != std::string::npos);
+  text.insert(scatter_end,
+              R"(,{"mesh":2,"center":[0,0,0],"radius_max":100,"count":800,"seed":21})");
+  REQUIRE(write_text(tmp.file("dense.json"), text));
+  REQUIRE(write_text(tmp.file("path.json"),
+                     R"({"format":"engine.camera-path.v1","name":"four","fps":10,"keys":[)"
+                     R"({"time":0,"position":[-30,14,10],"target":[30,2,0]}]})"));
+  const Run complete = traced_dense(tmp, "all.jsonl", "all.png", 12,
+                                    {"--raster", "hw", "--tunable", "renderer.flora.motion=true"});
+  if (complete.exit_code == 3) {
+    MESSAGE("engine-view unavailable here: " << complete.output);
+    return;
+  }
+  REQUIRE_MESSAGE(complete.exit_code == 0, complete.output);
+  const JsonValue summary = summary_of(complete.output);
+  const JsonValue* rt = summary.find("rt");
+  const JsonValue* world = summary.find("world");
+  REQUIRE(rt != nullptr);
+  REQUIRE(world != nullptr);
+  CHECK(casters_max(summary) > 0);
+  CHECK(field_u64(*rt, "static_instances") > 0);
+  CHECK(field_u64(*rt, "overflow_frames") == 0);
+  CHECK(field_u64(*rt, "dropped_instances") == 0);
+  CHECK(field_u64(*world, "refused") == 0);
+  const JsonValue* withheld = world->find("ring_withheld");
+  REQUIRE(withheld != nullptr);
+  REQUIRE(withheld->as_array().size() == 4);
+  for (u32 i = 0; i < withheld->as_array().size(); ++i) {
+    u64 count = 1;
+    REQUIRE(withheld->as_array()[i].get_u64(count));
+    CHECK(count == 0);
+  }
+  const Run small = traced_dense(
+      tmp, "small.jsonl", "small.png", 12,
+      {"--raster", "hw", "--rt-budget-mib", "1", "--tunable", "renderer.flora.motion=true"});
+  REQUIRE_MESSAGE(small.exit_code == 0, small.output);
+  const JsonValue limited = summary_of(small.output);
+  const JsonValue* limited_rt = limited.find("rt");
+  REQUIRE(limited_rt != nullptr);
+  CHECK(field_u64(*limited_rt, "overflow_frames") > 0);
+  CHECK(field_u64(*limited_rt, "dropped_instances") > 0);
+  CHECK(field_u64(*limited.find("world"), "refused") == 0);
+}
+
 // R94: past the budget a frame keeps the nearest ring first and, within one ring, drawn clusters
 // before casters (`gfx::ClusterRecordParams::drop_order`), and which structures it drops is a
 // function of the scene and the camera — two runs draw the same traced shadows.

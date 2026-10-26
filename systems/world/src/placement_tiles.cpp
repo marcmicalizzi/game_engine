@@ -410,15 +410,19 @@ void PlacementTiles::admit() {
     if (a.score != b.score) return a.score < b.score;
     return a.key < b.key;
   });
-  u64 pairs = scene_->pair_count;
+  const u32 fixed = config_.fixed_pairs != 0 ? config_.fixed_pairs : scene_->pair_count;
+  u64 pairs = fixed;
+  u64 live_pairs = 0;
   bool full = false;
   u32 withheld = 0;
   u32 newly = 0;
   u8 nearest = k_inactive;
   for (const Rank& rank : ranks_) {
     TileBlock& block = tiles_.value_at(rank.index);
-    if (!full && pairs + block.pairs <= config_.max_pairs) {
-      pairs += block.pairs;
+    const u32 reserved = renderer::reserved_tile_pairs(block.pairs);
+    if (!full && pairs + reserved <= config_.max_pairs) {
+      pairs += reserved;
+      live_pairs += block.pairs;
       block.withheld = false;
       continue;
     }
@@ -428,7 +432,7 @@ void PlacementTiles::admit() {
     nearest = rank.ring < nearest ? rank.ring : nearest;
     block.withheld = true;
   }
-  tail_pairs_ = static_cast<u32>(pairs - scene_->pair_count);
+  tail_pairs_ = static_cast<u32>(live_pairs);
   if (withheld != 0 && withheld != stats_.withheld) {
     ENGINE_LOG_WARN(log_world_placements, "the pair budget withholds tiles' placements",
                     log::field("withheld", withheld), log::field("nearest_ring", nearest),

@@ -261,6 +261,7 @@ bool ReferenceRenderer::render(const Camera& camera, const ReferenceSettings& se
   // frame drawn without the cull pass produces. The reference always runs with culling on
   // (the acceleration structure chain forces it), so this is the cull's own list.
   params.visible = resolved.cull ? scene_->visible.address : 0;
+  params.hit_entries = scene_->hit_entries.address;
   params.lights = lights_.address;
   params.width = width_;
   params.height = height_;

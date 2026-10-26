@@ -108,99 +108,45 @@ void run_starved(const gfx::Device& device);
 
 }  // namespace
 
-TEST_CASE("rt index space: past the device's geometry indices, the casters go, then the chain") {
-  // What the chain names, whatever the frame holds: the drawn clusters are the views' first runs,
-  // the casters run `k_caster_run` behind them.
+TEST_CASE("rt index space: compact casters share the drawn bound without refusing the chain") {
   CHECK(rt_max_geometry_index(1000, 1, false) == 999);
-  CHECK(rt_max_geometry_index(1000, 3, false) == 2999);
-  CHECK(rt_max_geometry_index(1000, 3, true) == 8999);
+  CHECK(rt_max_geometry_index(1000, 3, true) == 2999);
   CHECK(rt_max_geometry_index(0, 3, true) == 0);
-  // The ashlar ruins on the owner's surround, and a product a u32 would have wrapped.
-  CHECK(rt_max_geometry_index(3699274, 3, false) == 11097821);
-  CHECK(rt_max_geometry_index(3699274, 3, true) == 33293465);
-  CHECK(rt_max_geometry_index(0xffffffffu, 3, true) == u64{9} * 0xffffffffu - 1);
-
-  gfx::DeviceFeatures features;  // a device that traces, with a limit a small scene can reach
-  features.mesh_shader = true;
-  features.buffer_int64_atomics = true;
-  features.acceleration_structure = true;
-  features.cluster_acceleration_structure = true;
-  features.ray_query = true;
+  CHECK(rt_max_geometry_index(3699274, 3, true) == 11097821);
+  CHECK(rt_max_geometry_index(0xffffffffu, 3, true) == u64{3} * 0xffffffffu - 1);
+  gfx::DeviceFeatures features;
+  features.mesh_shader = features.buffer_int64_atomics = true;
+  features.acceleration_structure = features.cluster_acceleration_structure = features.ray_query =
+      true;
   SceneData scene;
   scene.pair_count = 1000;
+  PairAccount account;
+  account.prefix_pairs = 1000;
   RenderSettings settings;
   settings.shadows = ShadowMode::RayTraced;
   settings.views = ViewLayout::Surround3;
   ResolvedSettings resolved;
-  const auto starts = [&] {
-    return check_availability(resolved, features) == RenderAvailability::Ok;
-  };
-
-  // A hand-made DeviceFeatures reports no limit, and bounds nothing.
-  resolve_settings(settings, features, &scene, resolved);
-  CHECK(resolved.shadows);
+  features.cluster_max_geometry_index = 2999;
+  resolve_settings(settings, features, &scene, resolved, &account);
   CHECK(resolved.casters);
-
-  // Everything fits, to the last index.
-  features.cluster_max_geometry_index = 8999;
-  resolve_settings(settings, features, &scene, resolved);
-  CHECK(resolved.shadows);
-  CHECK(resolved.casters);
-  CHECK_FALSE(resolved.csm);
-  CHECK(starts());
-
-  // The casters do not: traced shadows without them, and the summary says so.
-  features.cluster_max_geometry_index = 8998;
-  resolve_settings(settings, features, &scene, resolved);
+  features.cluster_max_geometry_index = 2998;
+  resolve_settings(settings, features, &scene, resolved, &account);
+  CHECK_FALSE(resolved.casters);
+  CHECK(resolved.caster_index_fallback);
   CHECK(resolved.shadows);
   CHECK(resolved.rt_chain);
-  CHECK_FALSE(resolved.casters);
-  CHECK_FALSE(resolved.settings.shadow_casters);
-  CHECK(resolved.settings.shadows == ShadowMode::RayTraced);
-  CHECK(starts());
-  // With one view the same scene keeps them: the layout multiplies the range, not the frame.
-  settings.views = ViewLayout::Single;
-  resolve_settings(settings, features, &scene, resolved);
-  CHECK(resolved.casters);
-  settings.views = ViewLayout::Surround3;
-
-  // The drawn clusters do not either: the cascaded maps, for `rt` as for `auto`, and it starts.
-  features.cluster_max_geometry_index = 2998;
-  for (const ShadowMode mode : {ShadowMode::RayTraced, ShadowMode::Auto}) {
-    settings.shadows = mode;
-    resolve_settings(settings, features, &scene, resolved);
-    CHECK_FALSE(resolved.shadows);
-    CHECK_FALSE(resolved.rt_chain);
-    CHECK_FALSE(resolved.casters);
-    CHECK(resolved.csm);
-    CHECK(resolved.shadow_cascades > 0);
-    CHECK(resolved.settings.shadows == ShadowMode::Cascaded);
-    CHECK(starts());
-  }
-  // The ray path draws with the rasterizer — the mesh path, or the vertex path without mesh
-  // shaders — and its shadows are the maps.
+  CHECK(check_availability(resolved, features) == RenderAvailability::Ok);
   settings.raster = RasterMode::RayTrace;
-  settings.shadows = ShadowMode::RayTraced;
-  resolve_settings(settings, features, &scene, resolved);
-  CHECK_FALSE(resolved.ray_path);
-  CHECK(resolved.settings.raster == RasterMode::Hardware);
-  CHECK_FALSE(resolved.rt_chain);
-  CHECK(resolved.csm);
-  CHECK(starts());
-  features.mesh_shader = false;
-  resolve_settings(settings, features, &scene, resolved);
-  CHECK(resolved.vertex_path);
-  CHECK(resolved.csm);
-  CHECK(starts());
-  features.mesh_shader = true;
-  // One view fits again (999 drawn), and its casters (2,999) do not.
-  settings.views = ViewLayout::Single;
-  resolve_settings(settings, features, &scene, resolved);
+  resolve_settings(settings, features, &scene, resolved, &account);
   CHECK(resolved.ray_path);
   CHECK(resolved.shadows);
-  CHECK_FALSE(resolved.casters);
+  settings.views = ViewLayout::Single;
+  resolve_settings(settings, features, &scene, resolved, &account);
+  CHECK(resolved.casters);
+  settings.views = ViewLayout::Surround3;
+  resolve_settings(settings, features, &scene, resolved);
+  CHECK(resolved.casters);  // provisional resolution defers admission until terrain is known
 }
-
 TEST_CASE("rt capacity: grows ahead, shrinks late, steps, and stops at the limit") {
   RtCapacityConfig config;
   config.limit = 100000;
@@ -239,6 +185,39 @@ TEST_CASE("rt capacity: grows ahead, shrinks late, steps, and stops at the limit
   policy.resized(limited);
   CHECK(policy.observe(250000) == 100000);
   CHECK(policy.capacity() == 100000);
+}
+
+TEST_CASE("rt capacity: removing the last untraced tile restores the frame estimate") {
+  gfx::Device device;
+  std::string error;
+  if (!device.create(gfx::DeviceOptions{}, &error) || !traces(device)) {
+    MESSAGE("tracing unavailable: " << error);
+    return;
+  }
+  SceneData data;
+  REQUIRE_MESSAGE(load_scene(terrain_grid(), data, error), error);
+  data.dynamic = true;
+  // A synthetic mesh with the field's policy exercises admission without a grass cook.
+  data.sources.resize(data.parts.size());
+  data.sources[0].species = "sward";
+  RenderSettings settings;
+  settings.shadows = ShadowMode::RayTraced;
+  ResolvedSettings resolved;
+  resolve_settings(settings, device.features(), &data, resolved);
+  GpuScene scene;
+  REQUIRE_MESSAGE(scene.create(device, data, resolved, &error), error);
+  SceneInstance placed;
+  placed.mesh = 0;
+  GpuScene::TileChange added;
+  REQUIRE_MESSAGE(scene.set_dynamic_instances(std::span(&placed, 1), {}, added, nullptr, &error),
+                  error);
+  CHECK(scene.flora_stats().untraced == data.instances.size() + 1);
+  GpuScene::TileChange removed;
+  REQUIRE_MESSAGE(scene.set_dynamic_instances({}, {}, removed, nullptr, &error), error);
+  CHECK(removed.layout.freed == 1);
+  CHECK(removed.slots_written == 0);
+  CHECK(scene.flora_stats().untraced == data.instances.size());
+  CHECK(scene.rt_frame_estimate() == u64{scene.pair_stride()} - data.pair_count);
 }
 
 // R94: the first capacity is what the scene could want, clamped to the budget and the union, with

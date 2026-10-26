@@ -657,7 +657,8 @@ inline constexpr u32 k_instance_uv_from_corner = 2u;
 // address (`TlasReferenceParams::static_addresses`); the frame's records pass leaves its entries
 // out. A hit on it carries the cluster's index **within its mesh** as its geometry index, not a
 // visible entry, so a reader decodes it to `{instance, mesh.first_cluster + index}` (`hit_pair`
-// in shaders/scene.slang). Bit 7 took no new word (bits 2 to 6 are the caster policy's, below; renumbered at the merge of R94 and R95).
+// in shaders/scene.slang). Bit 7 took no new word (bits 2 to 6 are the caster policy's, below;
+// renumbered at the merge of R94 and R95).
 inline constexpr u32 k_instance_static_rt = 1u << 7;
 // InstanceDesc::flags, bits 2 to 6: **the caster policy** of the instance's species
 // (geometry::FloraCasterPolicy; renderer.md, "The caster policy"; R95), all zero for everything

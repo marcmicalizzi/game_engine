@@ -88,6 +88,8 @@ struct PathTraceParams {
   int terrain_uv_z0_mm;
   float terrain_uv_per_mm;
   uint terrain_uv_pad;
+  uint64_t hit_entries;
+  uint64_t hit_pad;
 };
 
 struct PathTracePush {
@@ -109,6 +111,7 @@ static const uint k_pt_alpha_masks = 8u;
 // flag did) and every later ray stops on (as forcing opacity did).
 bool pt_candidate_keeps(PathTraceParams* params, uint visible_index, uint instance_id,
                         uint primitive, float2 barycentrics, bool camera_ray) {
+  visible_index = hit_visible_entry(params->hit_entries, params->instances, visible_index, instance_id);
   MaskTables masks = no_mask_tables();
   masks.materials = params->materials;
   masks.cluster_materials = params->cluster_materials;
@@ -279,7 +282,8 @@ float3 trace_path(PathTraceParams* params, float3 origin, float3 direction, inou
 
     // The hit, decoded exactly as ray_visibility.slang decodes one: the CLAS record's base
     // geometry index is the visible entry, the primitive index the triangle within the cluster.
-    const uint visible_index = query.CommittedGeometryIndex();
+    const uint visible_index = hit_visible_entry(params->hit_entries, params->instances,
+                                                 query.CommittedGeometryIndex(), query.CommittedInstanceID());
     bool is_static = false;  // a rigid form's static structure: the cluster within its mesh
     const uint2 entry = hit_pair(params->visible, params->instances, params->mesh, visible_index,
                                  query.CommittedInstanceID(), is_static);
