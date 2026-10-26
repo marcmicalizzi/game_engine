@@ -471,6 +471,29 @@ class GpuScene {
   // frame that asked to be complete (`FrameDesc::rt_complete`, the reference renderer's) and
   // nothing else.
   bool resize_ray_tracing(u32 capacity, std::string* error = nullptr, bool beyond_budget = false);
+  // **Static structures for rigid forms** (docs/subsystems/renderer.md, "Static structures for
+  // rigid forms"; `ResolvedSettings::static_forms`). A rigid distance form drawn at its frontier is
+  // a fixed cut, so its cluster structures and one bottom-level structure are built here once, at
+  // create, and every instance of it the tail places is flagged `gfx::k_instance_static_rt` and
+  // referenced from the top-level structure by `static_addresses` — the frame's records pass
+  // leaves it out. `static_meshes()` is how many forms have one, `static_clusters()` the clusters
+  // built once over all of them, `static_bytes()` what they hold (in `rt_bytes()` as well),
+  // `static_instances()` how many of the instance table's slots reference one now, and
+  // `static_pairs()` those slots' pairs: what the frame no longer builds per instance.
+  bool static_forms() const noexcept { return static_forms_; }
+  bool static_mesh(u32 mesh) const noexcept {
+    return static_forms_ && mesh < static_of_mesh_.size() && static_of_mesh_[mesh] != ~0u;
+  }
+  u32 static_meshes() const noexcept { return static_count_; }
+  u32 static_clusters() const noexcept { return static_clusters_; }
+  u64 static_bytes() const noexcept { return static_bytes_; }
+  u32 static_instances() const noexcept { return static_instances_live_; }
+  u64 static_pairs() const noexcept { return static_pairs_live_; }
+  // u64 per mesh: its static bottom-level structure's address, or 0 (TlasReferenceParams); 0 for
+  // a scene with none. The static set has one record per mesh, so its address table is this.
+  u64 static_addresses() const noexcept {
+    return static_build_ ? static_blas_.addresses.address : 0u;
+  }
   // The vertex path's indexed draw (gfx::VertexDrawHeader): for each view and each of the two
   // hardware runs, run-major like the visible list, a header, a record per pair and an index array
   // of `vertex_index_capacity()` triangles, in three buffers. Empty unless the resolved settings
@@ -1306,6 +1329,28 @@ class GpuScene {
   gfx::ClusterSetLimits rt_limits_;  // what every per-frame set is created with, but the count
   u32 tlas_slot_ = gfx::BindlessSet::k_invalid_slot;
   bool ray_tracing_ = false;
+  // Static structures for rigid forms (`static_forms()`): per mesh its index among the static
+  // forms or ~0; per static form its first record and its frontier's cluster count; whether each
+  // frontier cluster is alpha-tested (built non-opaque); the structures, built once.
+  bool static_forms_ = false;
+  bool static_build_ = false;  // the structures are built once (else the cut alone is fixed)
+  Vector<u32> static_of_mesh_;
+  Vector<u32> static_first_;
+  Vector<u32> static_counts_;
+  Vector<u32> static_cluster_ids_;  // the frontier clusters, global index, in record order
+  Vector<u8> static_masked_;        // per global cluster of a static form: alpha-tested
+  u32 static_count_ = 0;
+  u32 static_clusters_ = 0;
+  u64 static_bytes_ = 0;
+  u32 static_instances_live_ = 0;
+  u64 static_pairs_live_ = 0;
+  gfx::ClusterSet static_clas_;
+  gfx::ClusterBlasSet static_blas_;
+  // Which meshes are static and which of their clusters are the frontier, before the geometry is
+  // uploaded: the cut the cull selects for them is patched to the frontier (`patch_static_lods`).
+  void plan_static_forms();
+  bool build_static_forms(std::string* error);
+  void uncount_static(u32 slot) noexcept;
   bool deform_ = false;
   bool streamed_ = false;
   u32 page_count_ = 0;

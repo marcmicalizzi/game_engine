@@ -53,6 +53,13 @@ u32 rt_budget_mib_tunable() noexcept;
 u32 rt_headroom_pct_tunable() noexcept;
 u32 rt_shrink_frames_tunable() noexcept;
 u32 rt_step_tunable() noexcept;
+// `renderer.rt.static_forms` (true): rigid distance forms keep structures built once
+// (`RenderSettings::rt_static_forms`; renderer.md, "Static structures for rigid forms").
+bool rt_static_forms_tunable() noexcept;
+// `renderer.rt.static_build` (true): with static forms, build their structures once. False keeps
+// the forms' fixed cut and builds it every frame — the comparison the tests and the measurement
+// make.
+bool rt_static_build_tunable() noexcept;
 inline constexpr u32 k_default_rt_budget_mib = 1024;
 // The first capacity of a scene too large to hold whole within the budget, before any frame has
 // said what it builds: 65,536 clusters is 400 MB on the RTX 5090, above every first frame the

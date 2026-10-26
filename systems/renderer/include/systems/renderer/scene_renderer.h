@@ -281,6 +281,15 @@ struct RtStats {
   u64 overflow_frames = 0;
   u64 dropped_instances = 0;
   u64 dropped_caster_instances = 0;
+  // **Static structures for rigid forms** (renderer.md, "Static structures for rigid forms"): the
+  // forms whose structures were built once, their clusters and bytes (in `bytes` too), and now —
+  // after the last change of the tail — how many instance slots reference one and their pairs,
+  // which is what the frame no longer builds per instance. Zero without static forms.
+  u32 static_forms = 0;
+  u32 static_clusters = 0;
+  u64 static_bytes = 0;
+  u32 static_instances = 0;
+  u64 static_pairs = 0;
 };
 
 struct Stats {

@@ -174,6 +174,11 @@ void records_main(uint3 thread_id : SV_DispatchThreadID) {
   const uint instance_index = visible[index].x;
   InstanceDesc* instances = (InstanceDesc*)g_params.instances;
   const InstanceDesc instance = instances[instance_index];
+  // **A rigid form's structure is built once** (renderer.md, "Static structures for rigid forms"):
+  // its cut is fixed, so the frame builds nothing for it and the top-level record takes its mesh's
+  // static structure (tlas_references.slang). Left out before it is counted, so it is neither
+  // built, wanted nor dropped.
+  if ((instance.flags & k_instance_static_rt) != 0) return;
   uint* slots = (uint*)g_params.slots;
   if (caster) {
     // **A deformed caster the pool had no room for is not built** (renderer.md, "Shadows"). A

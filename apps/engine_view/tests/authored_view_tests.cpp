@@ -337,4 +337,68 @@ TEST_CASE("engine-view: a streamed tree that leaves and comes back sways in its 
   CHECK(differing == 0);
 }
 
+// Roadmap R94 (renderer.md, "Static structures for rigid forms"): under the ray tracing chain a
+// rigid distance form is drawn at its fixed cut — its frontier — and traced against structures
+// built once, so the traced shadows of the raster picture and the ray-traced picture itself are
+// the bytes the per-frame build of the same cut gives (`renderer.rt.static_build=false`), in two
+// rings past the inner one; and the frame builds only what is not a form.
+TEST_CASE("engine-view: a rigid form's structures built once trace the per-frame build's bytes") {
+  const test::TempDir tmp("engine_view_rt_static_forms");
+  REQUIRE(write_text(tmp.file("oak.flora.json"), k_oak));
+  REQUIRE(write_text(tmp.file("spruce.flora.json"), k_spruce));
+  REQUIRE(write_text(
+      tmp.file("streamed.json"),
+      scene_text(R"({"tile_size":16,"rings":[{"radius":1.5},{"radius":3},{"radius":6}]})")));
+  // Low over the trees' edge, looking across them: the inner ring's full meshes, both outer
+  // rings' forms, and the forms' traced shadows on the sand.
+  REQUIRE(write_text(tmp.file("path.json"),
+                     R"({"format":"engine.camera-path.v1","name":"across","fps":10,"keys":[)"
+                     R"({"time":0,"position":[-60,14,10],"target":[30,2,0]}]})"));
+  const auto capture = [&](const char* png, const std::vector<const char*>& extra) {
+    std::vector<std::string> args = base_args(tmp, "streamed.json", "path.json");
+    args.erase(args.begin() + 9, args.begin() + 11);  // the base's --shadows off
+    for (const char* a : {"--frames", "3", "--capture"})
+      args.push_back(a);
+    args.push_back(tmp.file(png));
+    for (const char* a : extra)
+      args.push_back(a);
+    return view(args);
+  };
+  struct Case {
+    const char* name;
+    std::vector<const char*> mode;
+  };
+  const Case cases[] = {{"traced shadows", {"--shadows", "rt"}},
+                        {"ray path", {"--raster", "rt", "--shadows", "rt"}}};
+  for (const Case& c : cases) {
+    std::vector<const char*> per_frame = c.mode;
+    for (const char* a : {"--tunable", "renderer.rt.static_build=false"})
+      per_frame.push_back(a);
+    const Run built_once = capture("once.png", c.mode);
+    if (built_once.exit_code == 3) {
+      MESSAGE("engine-view unavailable here: " << built_once.output);
+      return;
+    }
+    REQUIRE_MESSAGE(built_once.exit_code == 0, built_once.output);
+    const Run every_frame = capture("every.png", per_frame);
+    REQUIRE_MESSAGE(every_frame.exit_code == 0, every_frame.output);
+    const JsonValue once_summary = summary_of(built_once.output);
+    const JsonValue every_summary = summary_of(every_frame.output);
+    const JsonValue* once_rt = once_summary.find("rt");
+    const JsonValue* every_rt = every_summary.find("rt");
+    REQUIRE(once_rt != nullptr);
+    REQUIRE(every_rt != nullptr);
+    const u32 differing = differing_pixels(tmp.file("once.png"), tmp.file("every.png"));
+    MESSAGE(std::string(c.name) << ": " << field_u64(*once_rt, "static_forms") << " forms of "
+                   << field_u64(*once_rt, "static_clusters") << " clusters built once, "
+                   << field_u64(*once_rt, "static_instances") << " instances referencing them; "
+                   << differing << " pixels differ from the per-frame build");
+    CHECK(field_u64(*once_rt, "static_forms") > 0);
+    CHECK(field_u64(*once_rt, "static_instances") > 0);
+    CHECK(field_u64(*once_rt, "static_bytes") > 0);
+    CHECK(field_u64(*every_rt, "static_instances") == 0);
+    CHECK(differing == 0);
+  }
+}
+
 #endif

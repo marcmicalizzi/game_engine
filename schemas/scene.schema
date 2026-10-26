@@ -1736,8 +1736,10 @@ struct OcclusionCheck @version(1) {
 /// clusters at the end and at its largest, the budget as a capacity, what the chain would be sized
 /// for if it were sized by the scene (`views * pairs`), its device bytes at the end and at their
 /// largest, how often it was resized, and the frames that wanted more than it held. All zero
-/// without the chain.
-struct FlythroughRt @version(1) {
+/// without the chain. Version 2 (2026-10-25) adds the static structures of rigid forms (renderer.md,
+/// "Static structures for rigid forms"): the forms built once, their clusters and bytes, and the
+/// instance slots and pairs that referenced one at the end.
+struct FlythroughRt @version(2) {
   capacity: u32 = 0
   peak_capacity: u32 = 0
   limit: u32 = 0
@@ -1749,6 +1751,11 @@ struct FlythroughRt @version(1) {
   overflow_frames: u64 = 0
   dropped_instances: u64 = 0
   dropped_caster_instances: u64 = 0
+  static_forms: u32 = 0 @since(2)
+  static_clusters: u32 = 0 @since(2)
+  static_bytes: u64 = 0 @since(2)
+  static_instances: u32 = 0 @since(2)
+  static_pairs: u64 = 0 @since(2)
   /// Per frame, over the path: what the chain built and what the frame wanted.
   built: Percentiles
   wanted: Percentiles

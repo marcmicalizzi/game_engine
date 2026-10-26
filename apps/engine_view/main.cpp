@@ -926,6 +926,15 @@ JsonValue rt_summary(const renderer::RtStats& rt) {
   out.set("overflow_frames", rt.overflow_frames);
   out.set("dropped_instances", rt.dropped_instances);
   out.set("dropped_caster_instances", rt.dropped_caster_instances);
+  // Rigid forms' structures built once, and the instances and pairs that reference them now
+  // (renderer.md, "Static structures for rigid forms").
+  JsonValue fixed = JsonValue::object();
+  fixed.set("forms", rt.static_forms);
+  fixed.set("clusters", rt.static_clusters);
+  fixed.set("bytes", rt.static_bytes);
+  fixed.set("instances", rt.static_instances);
+  fixed.set("pairs", rt.static_pairs);
+  out.set("static", std::move(fixed));
   return out;
 }
 

@@ -22,6 +22,17 @@ tunables::Int rt_step{"renderer.rt.step_clusters", 4096, 1, 1 << 24,
                       "The ray tracing chain's capacity moves in multiples of this many clusters "
                       "(4,096 is 24 MiB of cluster structures on the RTX 5090)"};
 
+tunables::Bool rt_static_forms{
+    "renderer.rt.static_forms", true,
+    "Draw a streamed world's rigid distance forms at their fixed cut and "
+    "trace them against structures built once, instead of building every "
+    "instance's cut every frame"};
+
+tunables::Bool rt_static_build{
+    "renderer.rt.static_build", true,
+    "With static forms, build their structures once; false draws them at "
+    "their fixed cut but builds them every frame, to compare against"};
+
 u64 round_up(u64 value, u64 step) noexcept { return (value + step - 1) / step * step; }
 
 }  // namespace
@@ -30,6 +41,8 @@ u32 rt_budget_mib_tunable() noexcept { return static_cast<u32>(rt_budget_mib.get
 u32 rt_headroom_pct_tunable() noexcept { return static_cast<u32>(rt_headroom_pct.get()); }
 u32 rt_shrink_frames_tunable() noexcept { return static_cast<u32>(rt_shrink_frames.get()); }
 u32 rt_step_tunable() noexcept { return static_cast<u32>(rt_step.get()); }
+bool rt_static_forms_tunable() noexcept { return rt_static_forms.get(); }
+bool rt_static_build_tunable() noexcept { return rt_static_build.get(); }
 
 void RtCapacity::reset(const RtCapacityConfig& config, u32 capacity) noexcept {
   config_ = config;

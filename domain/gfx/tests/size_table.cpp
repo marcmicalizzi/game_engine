@@ -114,7 +114,10 @@ ENGINE_EXPECT_SIZE(144, 8, gfx::ClusterRecordParams);
 // tlas_references.slang's push block: two addresses and the count (2026-10-04).
 // 80, not 24: the instance table and the frame's eye, because the dispatch writes each record's
 // transform from the eye every frame as well as its reference (ADR-0053, 2026-10-05).
-ENGINE_EXPECT_SIZE(80, 8, gfx::TlasReferenceParams);
+// 88, not 80: the per-mesh table of static structures, which a rigid form's instance takes its
+// reference from instead of this frame's build (renderer.md, "Static structures for rigid forms",
+// 2026-10-25).
+ENGINE_EXPECT_SIZE(88, 8, gfx::TlasReferenceParams);
 
 // 416, not 400: geometry streaming appended the address of its own block plus the two counts that
 // bound every index the shader writes — the page table's length and the request buffer's capacity

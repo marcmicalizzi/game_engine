@@ -529,6 +529,32 @@ uint2 visible_entry(uint64_t visible, uint index) {
   return entries[index];
 }
 
+// InstanceDesc::flags bit 2 (gfx::k_instance_static_rt): the instance's ray tracing structure is
+// its mesh's **static** one, built once at load from the rigid distance form's fixed cut
+// (renderer.md, "Static structures for rigid forms"). Its hits carry the cluster's index within the
+// mesh as their geometry index, not a visible entry.
+static const uint k_instance_static_rt = 4u;
+
+// The {instance, cluster} a ray's hit names. `geometry` is the hit's geometry index — with the
+// KHR path's per-instance base already added — and `instance_id` the top-level instance's custom
+// index, which is the scene instance. A hit on a static structure is the cluster `geometry` of its
+// instance's mesh; any other is the visible entry `geometry`. `is_static` says which it was, since
+// a static structure holds no shadow caster run.
+uint2 hit_pair(uint64_t visible, uint64_t instances, uint64_t meshes, uint geometry,
+               uint instance_id, out bool is_static) {
+  is_static = false;
+  if (instances != 0 && meshes != 0) {
+    InstanceDesc* table = (InstanceDesc*)instances;
+    const InstanceDesc instance = table[instance_id];
+    if ((instance.flags & k_instance_static_rt) != 0) {
+      MeshDesc* mesh_table = (MeshDesc*)meshes;
+      is_static = true;
+      return uint2(instance_id, mesh_table[instance.mesh].first_cluster + geometry);
+    }
+  }
+  return visible_entry(visible, geometry);
+}
+
 // The scene's pair index of `cluster` drawn by `instance`: the inverse of the cull pass's
 // `first_cluster + (pair - first_pair)`. It is what the visibility id carries in its high 24 bits,
 // so that the id is a function of the scene alone — the same for every run of the visible list,

@@ -632,6 +632,15 @@ inline constexpr u32 k_instance_uniform_scale = 1u;
 // UVs and the cluster DAG simplified from them — is a function of its key and its heights alone,
 // wherever it is. Bit 1 took no new word.
 inline constexpr u32 k_instance_uv_from_corner = 2u;
+// InstanceDesc::flags, bit 2: **the instance's ray tracing structure is its mesh's static one**
+// (docs/subsystems/renderer.md, "Static structures for rigid forms"). A rigid distance form is a
+// fixed cut, so its cluster structures and its bottom-level structure are built once, when the
+// scene is made, and every instance of it is referenced from the top-level structure by that
+// address (`TlasReferenceParams::static_addresses`); the frame's records pass leaves its entries
+// out. A hit on it carries the cluster's index **within its mesh** as its geometry index, not a
+// visible entry, so a reader decodes it to `{instance, mesh.first_cluster + index}` (`hit_pair`
+// in shaders/scene.slang). Bit 2 took no new word.
+inline constexpr u32 k_instance_static_rt = 4u;
 
 // GPU-mirrored; keep in step with the InstanceDesc struct in the shaders. 96 bytes, read through
 // a device address. One per instance of the scene, in order of `first_pair`.

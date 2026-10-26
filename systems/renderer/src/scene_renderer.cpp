@@ -1195,6 +1195,8 @@ bool SceneRenderer::set_dynamic_instances(std::span<const SceneInstance> tail,
     ++stats_.tiles.relayouts;
     stats_.tiles.relayout_ns += static_cast<f64>(time::monotonic_ns() - waited);
   }
+  // The static forms' instances the tail now holds, and the chain's bytes after any relayout.
+  note_rt_bytes();
   // Made again, the flags hold whatever the allocator left: the next frame fills both, which is
   // what a first frame does. Every block that did not move keeps its pairs and so its history, and
   // a pair whose block is new has a flag that only decides which occlusion pass tests it (the
@@ -1562,6 +1564,11 @@ void SceneRenderer::note_rt_bytes() noexcept {
   chain.bytes = scene_->rt_bytes();
   chain.peak_capacity = std::max(chain.peak_capacity, chain.capacity);
   chain.peak_bytes = std::max(chain.peak_bytes, chain.bytes);
+  chain.static_forms = scene_->static_meshes();
+  chain.static_clusters = scene_->static_clusters();
+  chain.static_bytes = scene_->static_bytes();
+  chain.static_instances = scene_->static_instances();
+  chain.static_pairs = scene_->static_pairs();
 }
 
 u64 SceneRenderer::submit_frame(const FrameDesc& frame, std::string* error) {
@@ -2602,6 +2609,9 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
     // And each record's transform, from the instance's cell and this frame's eye (ADR-0053).
     tlas_references.instances = scene.instances.address;
     tlas_references.eye = gpu_eye;
+    // A rigid form's instance takes its mesh's structure, built once (renderer.md, "Static
+    // structures for rigid forms"): one u64 per mesh, 0 for a mesh with none.
+    tlas_references.static_addresses = scene.static_addresses();
     record_params.clusters = scene.clusters.address;
     record_params.vertices = scene.vertices.address;
     record_params.indices8 = scene.indices8.address;

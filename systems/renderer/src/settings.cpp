@@ -4,6 +4,7 @@
 #include <domain/gfx/requirements.h>
 #include <foundation/tunables/tunables.h>
 #include <systems/renderer/flora_motion.h>
+#include <systems/renderer/rt_capacity.h>
 #include <systems/renderer/scene.h>
 #include <systems/renderer/settings.h>
 #include <systems/renderer/view_set.h>
@@ -570,6 +571,13 @@ void resolve_settings(const RenderSettings& requested, const gfx::DeviceFeatures
                       log::field("device_limit", index_limit));
     }
   }
+  // **Static structures for rigid forms** (renderer.md, "Static structures for rigid forms"). A
+  // streamed world's ring-1-and-beyond forms are rigid and, drawn at their frontier, a fixed cut:
+  // their structures are built once and referenced per instance, and the frame builds the rest.
+  // It needs the cut (a form's frontier is a cut the cull selects), and build records, since a
+  // template instantiation is the per-frame path for a deforming mesh.
+  out.static_forms = out.rt_chain && s.cull && s.rt_static_forms && rt_static_forms_tunable() &&
+                     !s.rt_templates && !out.stream;
   // **A morphed mesh is not streamed**, and the reason is said out loud rather than discovered as
   // a wrong picture. A page's payload is the cluster's positions, attributes, triangles and
   // bindings; the morph stream is keyed by cluster too, but its slice directory indexes a

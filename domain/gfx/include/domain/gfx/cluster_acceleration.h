@@ -312,15 +312,21 @@ static_assert(sizeof(ClusterRecordParams) == 144);
 // the frame's eye, `instance_from_eye` (shaders/scene.slang) - the same bits the rasterizers place
 // the instance at, written on the GPU every frame so that nothing is rewritten on the CPU when the
 // eye moves. 80 bytes, not the 24 it was: the instance table's address and the eye.
+//
+// **And a static structure's address** (docs/subsystems/renderer.md, "Static structures for rigid
+// forms"): an instance flagged `k_instance_static_rt` takes its mesh's entry of `static_addresses`
+// — the bottom-level structure built once for that rigid form — instead of what this frame's build
+// decided, which for such an instance is an empty structure. 88 bytes.
 struct TlasReferenceParams {
   u64 addresses = 0;  // u64[count]
   u64 records = 0;    // top-level instance records, k_instance_record_bytes each
   u32 count = 0;
   u32 pad = 0;
-  u64 instances = 0;  // InstanceDesc[count], the scene's, in record order
-  FrameEye eye;       // the frame's origin
+  u64 instances = 0;         // InstanceDesc[count], the scene's, in record order
+  FrameEye eye;              // the frame's origin
+  u64 static_addresses = 0;  // u64 per mesh: its static structure, or 0; 0 for no static forms
 };
-static_assert(sizeof(TlasReferenceParams) == 80);
+static_assert(sizeof(TlasReferenceParams) == 88);
 inline constexpr u32 k_tlas_references_workgroup = 64;
 inline constexpr u32 k_cluster_records_workgroup = 64;
 inline constexpr u32 k_cluster_records_instantiate = 1u << 16;  // ClusterRecordParams::mode
