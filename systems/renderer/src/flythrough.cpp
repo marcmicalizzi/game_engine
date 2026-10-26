@@ -124,6 +124,12 @@ void summarize_rt(const RtStats& stats, scene::FlythroughRt& out) {
   out.overflow_frames = stats.overflow_frames;
   out.dropped_instances = stats.dropped_instances;
   out.dropped_caster_instances = stats.dropped_caster_instances;
+  out.static_forms = stats.static_forms;
+  out.static_clusters = stats.static_clusters;
+  out.static_bytes = stats.static_bytes;
+  out.static_instances = stats.static_instances;
+  out.static_pairs = stats.static_pairs;
+  out.horizon_casters = stats.horizon_casters;
 }
 
 void summarize_textures(const GpuScene& scene, scene::FlythroughTextures& out) {

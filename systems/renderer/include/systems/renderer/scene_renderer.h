@@ -69,7 +69,10 @@ struct ViewStats {
   u32 visible_hw = 0;
   u32 visible_pass2 = 0;
   u32 visible_sw = 0;
-  u32 shadow_casters = 0;   // see Stats::shadow_casters
+  u32 shadow_casters = 0;
+  // The casters the horizon kept out of the structures (ResolvedSettings::caster_horizon), one
+  // frame late like the rest.
+  u32 horizon_casters = 0;  // see Stats::shadow_casters
   u32 triangles_hw = 0;     // see Stats::triangles_hw
   u32 vertex_fallback = 0;  // see Stats::vertex_fallback
   f64 gpu_cull = 0.0;
@@ -144,7 +147,10 @@ struct FrameStats {
   u32 visible_hw = 0;
   u32 visible_pass2 = 0;
   u32 visible_sw = 0;
-  u32 shadow_casters = 0;     // Stats::shadow_casters: built into the structures, not drawn
+  u32 shadow_casters = 0;
+  // The casters the horizon kept out of the structures (ResolvedSettings::caster_horizon), one
+  // frame late like the rest.
+  u32 horizon_casters = 0;    // Stats::shadow_casters: built into the structures, not drawn
   u32 shadow_pairs = 0;       // Stats::shadow_pairs: drawn into the cascaded maps
   f64 gpu_shadow = 0.0;       // the cascaded maps' passes, cull included
   f64 gpu_shadow_cull = 0.0;  // of which the light-view cull
@@ -281,6 +287,17 @@ struct RtStats {
   u64 overflow_frames = 0;
   u64 dropped_instances = 0;
   u64 dropped_caster_instances = 0;
+  // **Static structures for rigid forms** (renderer.md, "Static structures for rigid forms"): the
+  // forms whose structures were built once, their clusters and bytes (in `bytes` too), and now —
+  // after the last change of the tail — how many instance slots reference one and their pairs,
+  // which is what the frame no longer builds per instance. Zero without static forms.
+  u32 static_forms = 0;
+  u32 static_clusters = 0;
+  u64 static_bytes = 0;
+  u32 static_instances = 0;
+  u64 static_pairs = 0;
+  // The last frame's casters the horizon kept out of the structures (Stats::horizon_casters).
+  u32 horizon_casters = 0;
 };
 
 struct Stats {
@@ -293,6 +310,9 @@ struct Stats {
   // structures anyway, so that they cast shadows (ResolvedSettings::casters). Not visible pairs:
   // nothing draws them, and `visible_pairs()` does not count them. One frame late, like the rest.
   u32 shadow_casters = 0;
+  // The casters the horizon kept out of the structures (ResolvedSettings::caster_horizon), one
+  // frame late like the rest.
+  u32 horizon_casters = 0;
   // The vertex path's indexed draw, last frame, both hardware passes and every view: the triangles
   // the cut's clusters hold, which is what it draws (three indices each), and how many of those
   // clusters the index budget had no room for, which the fallback drew instead at one vertex
@@ -887,7 +907,8 @@ class SceneRenderer {
   bool vertex_fallback_warned_ = false;  // the index budget sent a cluster to the fallback, once
   bool shadow_fallback_warned_ = false;  // the same, for a shadow cascade's cut
   bool rt_overflow_warned_ = false;      // a frame dropped instances' structures, said once
-  bool rt_hold_ = false;  // render_offscreen is redrawing a frame it grew the chain for
+  bool rt_hold_ = false;      // render_offscreen is redrawing a frame it grew the chain for
+  bool rt_observed_ = false;  // a frame's demand has reached the capacity policy
   // The ray tracing chain's capacity policy (rt_capacity.h): fed every folded frame's demand, and
   // the reason `GpuScene::resize_ray_tracing` is ever called.
   RtCapacity rt_capacity_;

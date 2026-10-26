@@ -112,6 +112,10 @@ struct CullParams {
   uint caster_volume_count;
   float foliage_px;  // the coverage errors' threshold
   float fade;        // the cross-fade's half band, a fraction of the threshold; 0 switches at once
+  float caster_horizon;  // gfx::CullParams::caster_horizon: no caster farther from the eye; 0 none
+  uint horizon_pad0;
+  uint horizon_pad1;
+  uint horizon_pad2;
 };
 
 struct CullPush {
@@ -327,6 +331,19 @@ bool in_caster_volume(CullParams* params, float3 center, float radius) {
     if (inside) return true;
   }
   return false;
+}
+
+// **The caster horizon** (renderer.md, "Shadows"; R94): a caster whose sphere is farther from the
+// eye — the frame's origin — than `caster_horizon` casts nothing, and is counted in the second word
+// of the view's software argument block, beside the casters' own count, which a frame with casters
+// never dispatches.
+bool beyond_caster_horizon(CullParams* params, float3 center, float radius) {
+  if (!(params->caster_horizon > 0.0) || length(center) - radius <= params->caster_horizon) {
+    return false;
+  }
+  Atomic<uint>* dropped = (Atomic<uint>*)(params->caster_count + 4);
+  dropped->add(1);
+  return true;
 }
 
 // A hardware survivor's share of its run's indexed draw (gfx::VertexDrawHeader): its triangles are
@@ -574,6 +591,9 @@ void cull_pair(uint pair, bool vertex_draw) {
   // not in the drawn-this-frame flags either — and a frame with casters has no second occlusion
   // pass to read them, because the ray tracing chain turns occlusion culling off.
   if (caster) {
+    // Past the horizon a caster that passed every other test is counted instead of kept, so the
+    // casters kept and the casters past it are the casters there would have been.
+    if (beyond_caster_horizon(params, center, radius)) return;
     Atomic<uint>* count = (Atomic<uint>*)params->caster_count;
     const uint slot = count->add(1);
     uint2* casters = (uint2*)params->casters;

@@ -36,6 +36,7 @@
 #include <domain/gfx/visibility_resolve.h>
 #include <systems/renderer/flora_motion.h>
 #include <systems/renderer/flora_poser.h>
+#include <systems/renderer/rt_capacity.h>
 #include <systems/renderer/scene.h>
 #include <systems/renderer/settings.h>
 #include <systems/renderer/terrain_levels.h>
@@ -463,6 +464,14 @@ class GpuScene {
   // structure, its address and size words, its record, its share of the bottom-level set and of
   // the scratch. It is what turns the byte budget into `rt_capacity_limit()`.
   u64 rt_bytes_per_cluster() const noexcept { return rt_bytes_per_cluster_; }
+  // The most structures a frame can ask for, from what the scene knows now: its pairs — the
+  // prefix, the rings' slots and the tail as laid out, holes included — less the static forms'
+  // (built once), in every view. What the first capacity is sized from (`first_rt_capacity`).
+  u64 rt_frame_estimate() const noexcept {
+    const u64 pairs =
+        u64{pair_stride_} > static_pairs_live_ ? pair_stride_ - static_pairs_live_ : 0;
+    return pairs * view_count_;
+  }
   // Reallocates the per-frame part for `clusters` structures (clamped to the limit). The device
   // must be idle with respect to every buffer of the chain: the caller waits first. Nothing else
   // changes — the top-level structure, its bindless slot and the scene-sized buffers stay — so a
@@ -471,6 +480,34 @@ class GpuScene {
   // frame that asked to be complete (`FrameDesc::rt_complete`, the reference renderer's) and
   // nothing else.
   bool resize_ray_tracing(u32 capacity, std::string* error = nullptr, bool beyond_budget = false);
+  // **Static structures for rigid forms** (docs/subsystems/renderer.md, "Static structures for
+  // rigid forms"; `ResolvedSettings::static_forms`). A rigid distance form drawn at its frontier is
+  // a fixed cut, so its cluster structures and one bottom-level structure are built here once, at
+  // create, and every instance of it the tail places is flagged `gfx::k_instance_static_rt` and
+  // referenced from the top-level structure by `static_addresses` — the frame's records pass
+  // leaves it out. `static_meshes()` is how many forms have one, `static_clusters()` the clusters
+  // built once over all of them, `static_bytes()` what they hold (in `rt_bytes()` as well),
+  // `static_instances()` how many of the instance table's slots reference one now, and
+  // `static_pairs()` those slots' pairs: what the frame no longer builds per instance.
+  bool static_forms() const noexcept { return static_forms_; }
+  bool static_mesh(u32 mesh) const noexcept {
+    return static_forms_ && mesh < static_of_mesh_.size() && static_of_mesh_[mesh] != ~0u;
+  }
+  u32 static_meshes() const noexcept { return static_count_; }
+  u32 static_clusters() const noexcept { return static_clusters_; }
+  u64 static_bytes() const noexcept { return static_bytes_; }
+  u32 static_instances() const noexcept { return static_instances_live_; }
+  // **The drop order** for frame slot `slot` (`gfx::ClusterRecordParams::drop_order`;
+  // `rt_drop_order` in rt_capacity.h): the device address of that slot's copy, brought up to date
+  // with the tables first — written while recording, after the slot's previous frame has finished,
+  // so no frame in flight reads it. 0 for a scene read whole, whose order is instance order.
+  u64 rt_drop_order_address(u32 slot, std::string* error = nullptr);
+  u64 static_pairs() const noexcept { return static_pairs_live_; }
+  // u64 per mesh: its static bottom-level structure's address, or 0 (TlasReferenceParams); 0 for
+  // a scene with none. The static set has one record per mesh, so its address table is this.
+  u64 static_addresses() const noexcept {
+    return static_build_ ? static_blas_.addresses.address : 0u;
+  }
   // The vertex path's indexed draw (gfx::VertexDrawHeader): for each view and each of the two
   // hardware runs, run-major like the visible list, a header, a record per pair and an index array
   // of `vertex_index_capacity()` triangles, in three buffers. Empty unless the resolved settings
@@ -1306,6 +1343,38 @@ class GpuScene {
   gfx::ClusterSetLimits rt_limits_;  // what every per-frame set is created with, but the count
   u32 tlas_slot_ = gfx::BindlessSet::k_invalid_slot;
   bool ray_tracing_ = false;
+  // Static structures for rigid forms (`static_forms()`): per mesh its index among the static
+  // forms or ~0; per static form its first record and its frontier's cluster count; whether each
+  // frontier cluster is alpha-tested (built non-opaque); the structures, built once.
+  bool static_forms_ = false;
+  bool static_build_ = false;  // the structures are built once (else the cut alone is fixed)
+  Vector<u32> static_of_mesh_;
+  Vector<u32> static_first_;
+  Vector<u32> static_counts_;
+  Vector<u32> static_cluster_ids_;  // the frontier clusters, global index, in record order
+  Vector<u8> static_masked_;        // per global cluster of a static form: alpha-tested
+  u32 static_count_ = 0;
+  u32 static_clusters_ = 0;
+  u64 static_bytes_ = 0;
+  u32 static_instances_live_ = 0;
+  u64 static_pairs_live_ = 0;
+  gfx::ClusterSet static_clas_;
+  gfx::ClusterBlasSet static_blas_;
+  // Which meshes are static and which of their clusters are the frontier, before the geometry is
+  // uploaded: the cut the cull selects for them is patched to the frontier (`patch_static_lods`).
+  void plan_static_forms();
+  bool build_static_forms(std::string* error);
+  void uncount_static(u32 slot) noexcept;
+  // The drop order (`rt_drop_order_address`): each slot's rank (0 the prefix, ring + 1 a tail
+  // block's), the order laid out from it when the tables change, and per frame slot a host-visible
+  // copy and the version it holds.
+  Vector<u32> slot_rank_;
+  Vector<RtDropBlock> rt_order_blocks_;
+  Vector<u32> rt_order_;
+  u64 rt_order_version_ = 0;
+  Vector<gfx::BufferResource> rt_order_buffers_;
+  Vector<u64> rt_order_written_;
+  void lay_out_rt_order();
   bool deform_ = false;
   bool streamed_ = false;
   u32 page_count_ = 0;

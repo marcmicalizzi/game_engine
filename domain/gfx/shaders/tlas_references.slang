@@ -20,7 +20,7 @@
 
 #include "scene.slang"
 
-// Mirrors gfx::TlasReferenceParams (80 bytes).
+// Mirrors gfx::TlasReferenceParams (88 bytes).
 struct TlasReferenceParams {
   uint64_t addresses;  // uint64_t[count]: ClusterBlasSet::addresses, what the build wrote
   uint64_t records;    // VkAccelerationStructureInstanceKHR[count], 64 bytes each
@@ -28,6 +28,9 @@ struct TlasReferenceParams {
   uint pad;
   uint64_t instances;  // InstanceDesc[count]: the scene's, in record order
   FrameEye eye;        // the frame's origin
+  // uint64_t per mesh: the static structure of a rigid distance form, built once (renderer.md,
+  // "Static structures for rigid forms"), or 0; the whole word 0 when the scene has none.
+  uint64_t static_addresses;
 };
 
 [[vk::push_constant]] ConstantBuffer<TlasReferenceParams> g_params;
@@ -44,9 +47,15 @@ void tlas_references_main(uint3 thread_id : SV_DispatchThreadID) {
   if (i >= g_params.count) return;
   uint64_t* addresses = (uint64_t*)g_params.addresses;
   uint64_t* records = (uint64_t*)g_params.records;
-  records[uint64_t(i) * k_record_words + (k_record_words - 1)] = addresses[i];
   InstanceDesc* instances = (InstanceDesc*)g_params.instances;
   const InstanceDesc instance = instances[i];
+  // A rigid form's structure was built once, at load: this frame's build left the instance's own
+  // empty (clas_records.slang leaves its entries out), and its mesh's static one stands in.
+  uint64_t reference = addresses[i];
+  if (g_params.static_addresses != 0 && (instance.flags & k_instance_static_rt) != 0) {
+    reference = ((uint64_t*)g_params.static_addresses)[instance.mesh];
+  }
+  records[uint64_t(i) * k_record_words + (k_record_words - 1)] = reference;
   const float3 from_eye = instance_from_eye(instance, g_params.eye);
   float4* rows = (float4*)(g_params.records + uint64_t(i) * k_record_floats * 4);
   rows[0] = float4(instance.rows[0].xyz, from_eye.x);

@@ -62,16 +62,27 @@ struct RayPush {
 
 [[vk::push_constant]] ConstantBuffer<RayPush> g_push;
 
-// The visible entry a hit names.
+// The visible entry a hit names, or for a hit on a rigid form's static structure the cluster's
+// index within its mesh (renderer.md, "Static structures for rigid forms").
 uint hit_entry(RayVisibilityParams* params, uint geometry, uint instance_id) {
   if (params->instance_base == 0) return geometry;
   uint* base = (uint*)params->instance_base;
   return geometry + base[instance_id];  // the scene instance
 }
 
-// The id a hit writes: the scene's pair of its entry, and the triangle.
-uint hit_key(RayVisibilityParams* params, uint entry, uint primitive) {
-  const uint2 pair = visible_entry(params->visible, entry);
+// The {instance, cluster} a hit names (scene.slang, `hit_pair`), and whether it is a shadow caster:
+// an entry of the casters' run, which a static structure has none of.
+uint2 hit_of(RayVisibilityParams* params, uint geometry, uint instance_id, out bool caster) {
+  bool is_static = false;
+  const uint entry = hit_entry(params, geometry, instance_id);
+  const uint2 pair =
+      hit_pair(params->visible, params->instances, params->meshes, entry, instance_id, is_static);
+  caster = !is_static && entry >= params->caster_base;
+  return pair;
+}
+
+// The id a hit writes: the scene's pair of its {instance, cluster}, and the triangle.
+uint hit_key(RayVisibilityParams* params, uint2 pair, uint primitive) {
   InstanceDesc* instances = (InstanceDesc*)params->instances;
   const InstanceDesc instance = instances[pair.x];
   MeshDesc* meshes = (MeshDesc*)params->meshes;
@@ -79,9 +90,8 @@ uint hit_key(RayVisibilityParams* params, uint entry, uint primitive) {
 }
 
 // The loop's rule for a non-opaque candidate of a drawn entry: its mask, if its pair has one.
-bool candidate_passes(RayVisibilityParams* params, uint entry, uint primitive, float2 barycentrics,
+bool candidate_passes(RayVisibilityParams* params, uint2 pair, uint primitive, float2 barycentrics,
                       uint2 pixel) {
-  const uint2 pair = visible_entry(params->visible, entry);
   InstanceDesc* instances = (InstanceDesc*)params->instances;
   const InstanceDesc instance = instances[pair.x];
   MeshDesc* meshes = (MeshDesc*)params->meshes;
@@ -130,8 +140,10 @@ void trace_main(uint3 id : SV_DispatchThreadID) {
     if (query.CommittedStatus() == COMMITTED_TRIANGLE_HIT) {
       hit = true;
       t = query.CommittedRayT();
+      bool caster = false;
       key = hit_key(params,
-                    hit_entry(params, query.CommittedGeometryIndex(), query.CommittedInstanceID()),
+                    hit_of(params, query.CommittedGeometryIndex(), query.CommittedInstanceID(),
+                           caster),
                     query.CommittedPrimitiveIndex());
     }
   } else {
@@ -139,9 +151,10 @@ void trace_main(uint3 id : SV_DispatchThreadID) {
     query.TraceRayInline(g_scenes[params->scene], RAY_FLAG_NONE, 0xff, ray);
     while (query.Proceed()) {
       if (query.CandidateType() != CANDIDATE_NON_OPAQUE_TRIANGLE) continue;
-      const uint entry =
-          hit_entry(params, query.CandidateGeometryIndex(), query.CandidateInstanceID());
-      if (entry >= params->caster_base) continue;
+      bool caster = false;
+      const uint2 entry =
+          hit_of(params, query.CandidateGeometryIndex(), query.CandidateInstanceID(), caster);
+      if (caster) continue;
       if (candidate_passes(params, entry, query.CandidatePrimitiveIndex(),
                            query.CandidateTriangleBarycentrics(), id.xy)) {
         query.CommitNonOpaqueTriangleHit();
@@ -150,8 +163,10 @@ void trace_main(uint3 id : SV_DispatchThreadID) {
     if (query.CommittedStatus() == COMMITTED_TRIANGLE_HIT) {
       hit = true;
       t = query.CommittedRayT();
+      bool caster = false;
       key = hit_key(params,
-                    hit_entry(params, query.CommittedGeometryIndex(), query.CommittedInstanceID()),
+                    hit_of(params, query.CommittedGeometryIndex(), query.CommittedInstanceID(),
+                           caster),
                     query.CommittedPrimitiveIndex());
     }
   }
@@ -174,9 +189,10 @@ void trace_main(uint3 id : SV_DispatchThreadID) {
     while (scan.Proceed()) {
       if (scan.CandidateType() != CANDIDATE_NON_OPAQUE_TRIANGLE) continue;
       if (scan.CandidateTriangleRayT() != t) continue;
-      const uint entry = hit_entry(params, scan.CandidateGeometryIndex(),
-                                   scan.CandidateInstanceID());
-      if (entry >= params->caster_base) continue;
+      bool caster = false;
+      const uint2 entry =
+          hit_of(params, scan.CandidateGeometryIndex(), scan.CandidateInstanceID(), caster);
+      if (caster) continue;
       // A masked candidate the mask cuts away is not a surface at this distance.
       if (masked_frame && !candidate_passes(params, entry, scan.CandidatePrimitiveIndex(),
                                             scan.CandidateTriangleBarycentrics(), id.xy)) {

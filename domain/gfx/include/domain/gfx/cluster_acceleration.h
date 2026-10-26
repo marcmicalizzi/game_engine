@@ -224,7 +224,8 @@ inline constexpr u64 k_cluster_blas_record_bytes = 16;
 // keeps what fits and drops the rest **whole instances at a time, casters before drawn clusters**:
 // every instance's drawn clusters are taken in instance order while they fit, an instance whose
 // drawn clusters do not fit is skipped entirely (its casters with them), and the other instances'
-// casters are then taken the same way from what is left. Whole instances because a partial one
+// casters are then taken the same way from what is left — a rank of `drop_order` at a time when it
+// names one (below), nearest rank first. Whole instances because a partial one
 // would keep whichever clusters the atomics happened to bucket first, which is not the same twice;
 // casters last because a caster only adds a shadow of a surface facing away from the camera,
 // while a drawn cluster that loses its structure loses its shadow and, under the ray path, its
@@ -298,8 +299,14 @@ struct ClusterRecordParams {
   // extension has 256 bytes of push constants) are asked to take.
   u64 mask_materials = 0;
   u64 mask_cluster_materials = 0;
+  // **The drop order** (renderer.md, "The ray tracing chain's memory", 2026-10-25): what
+  // `ranges_main` keeps when a frame wants more than `capacity` — `u32 count, u32 pad`, then
+  // `count` `{instance, rank}` pairs in the order the capacity is spent, nearest rank first. A rank
+  // is kept drawn clusters first, then casters, before the next rank is touched; an instance the
+  // order does not name keeps nothing. 0 is instance order in one rank, the rule before.
+  u64 drop_order = 0;
 };
-static_assert(sizeof(ClusterRecordParams) == 144);
+static_assert(sizeof(ClusterRecordParams) == 152);
 // `tlas_references.slang`'s push block: each instance's bottom-level address, which the frame's
 // implicit-destination build of a `ClusterBlasSet` decided (`ClusterBlasSet::addresses`), written
 // into the reference field — the last eight bytes — of its `k_instance_record_bytes` top-level
@@ -312,15 +319,21 @@ static_assert(sizeof(ClusterRecordParams) == 144);
 // the frame's eye, `instance_from_eye` (shaders/scene.slang) - the same bits the rasterizers place
 // the instance at, written on the GPU every frame so that nothing is rewritten on the CPU when the
 // eye moves. 80 bytes, not the 24 it was: the instance table's address and the eye.
+//
+// **And a static structure's address** (docs/subsystems/renderer.md, "Static structures for rigid
+// forms"): an instance flagged `k_instance_static_rt` takes its mesh's entry of `static_addresses`
+// — the bottom-level structure built once for that rigid form — instead of what this frame's build
+// decided, which for such an instance is an empty structure. 88 bytes.
 struct TlasReferenceParams {
   u64 addresses = 0;  // u64[count]
   u64 records = 0;    // top-level instance records, k_instance_record_bytes each
   u32 count = 0;
   u32 pad = 0;
-  u64 instances = 0;  // InstanceDesc[count], the scene's, in record order
-  FrameEye eye;       // the frame's origin
+  u64 instances = 0;         // InstanceDesc[count], the scene's, in record order
+  FrameEye eye;              // the frame's origin
+  u64 static_addresses = 0;  // u64 per mesh: its static structure, or 0; 0 for no static forms
 };
-static_assert(sizeof(TlasReferenceParams) == 80);
+static_assert(sizeof(TlasReferenceParams) == 88);
 inline constexpr u32 k_tlas_references_workgroup = 64;
 inline constexpr u32 k_cluster_records_workgroup = 64;
 inline constexpr u32 k_cluster_records_instantiate = 1u << 16;  // ClusterRecordParams::mode

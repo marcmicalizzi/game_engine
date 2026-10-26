@@ -107,13 +107,16 @@ static const uint k_pt_alpha_masks = 8u;
 // The loop's rule for a non-opaque candidate (alpha_mask.slang): a masked pair by its mask at level
 // 0; anything else non-opaque is a shadow caster, which the camera ray leaves out (as the culling
 // flag did) and every later ray stops on (as forcing opacity did).
-bool pt_candidate_keeps(PathTraceParams* params, uint visible_index, uint primitive,
-                        float2 barycentrics, bool camera_ray) {
+bool pt_candidate_keeps(PathTraceParams* params, uint visible_index, uint instance_id,
+                        uint primitive, float2 barycentrics, bool camera_ray) {
   MaskTables masks = no_mask_tables();
   masks.materials = params->materials;
   masks.cluster_materials = params->cluster_materials;
   masks.attributes = params->attributes;
-  const uint2 entry = visible_entry(params->visible, visible_index);
+  // A rigid form's static structure names the cluster within its mesh (scene.slang, `hit_pair`).
+  bool is_static = false;
+  const uint2 entry = hit_pair(params->visible, params->instances, params->mesh, visible_index,
+                               instance_id, is_static);
   InstanceDesc* instances = (InstanceDesc*)params->instances;
   const InstanceDesc instance = instances[entry.x];
   const uint material = pair_material(masks, instance, entry.y);
@@ -178,7 +181,7 @@ bool occluded(PathTraceParams* params, float3 origin, float3 direction, float t_
     while (masked.Proceed()) {
       if (masked.CandidateType() != CANDIDATE_NON_OPAQUE_TRIANGLE) continue;
       if (pt_candidate_keeps(params, masked.CandidateGeometryIndex(),
-                             masked.CandidatePrimitiveIndex(),
+                             masked.CandidateInstanceID(), masked.CandidatePrimitiveIndex(),
                              masked.CandidateTriangleBarycentrics(), false)) {
         masked.CommitNonOpaqueTriangleHit();
       }
@@ -256,7 +259,7 @@ float3 trace_path(PathTraceParams* params, float3 origin, float3 direction, inou
     query.TraceRayInline(g_scenes[NonUniformResourceIndex(params->scene)], flags, 0xff, ray);
     while (query.Proceed()) {
       if (!masked || query.CandidateType() != CANDIDATE_NON_OPAQUE_TRIANGLE) continue;
-      if (pt_candidate_keeps(params, query.CandidateGeometryIndex(),
+      if (pt_candidate_keeps(params, query.CandidateGeometryIndex(), query.CandidateInstanceID(),
                              query.CandidatePrimitiveIndex(),
                              query.CandidateTriangleBarycentrics(), bounce == 0)) {
         query.CommitNonOpaqueTriangleHit();
@@ -277,7 +280,9 @@ float3 trace_path(PathTraceParams* params, float3 origin, float3 direction, inou
     // The hit, decoded exactly as ray_visibility.slang decodes one: the CLAS record's base
     // geometry index is the visible entry, the primitive index the triangle within the cluster.
     const uint visible_index = query.CommittedGeometryIndex();
-    const uint2 entry = visible_entry(params->visible, visible_index);
+    bool is_static = false;  // a rigid form's static structure: the cluster within its mesh
+    const uint2 entry = hit_pair(params->visible, params->instances, params->mesh, visible_index,
+                                 query.CommittedInstanceID(), is_static);
     const InstanceDesc instance = instances[entry.x];
     const uint triangle = query.CommittedPrimitiveIndex() & 0xff;
     const TriangleFetch tri = fetch_triangle(geo, instance, visible_index, entry.y, triangle);

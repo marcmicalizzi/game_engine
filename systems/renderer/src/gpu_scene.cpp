@@ -353,6 +353,9 @@ bool GpuScene::create(const gfx::Device& device, const SceneData& data,
   pair_stride_ = pair_count_;
   dynamic_ = data.dynamic;
   resolved_ = resolved;
+  // Which rigid forms keep static structures, before the geometry is uploaded: their cut is the
+  // frontier (renderer.md, "Static structures for rigid forms").
+  plan_static_forms();
   triangles_per_cluster_ = geometry::ClusterLodOptions{}.max_triangles;
   instance_table_ = data.instances;
   scene_vertex_count_ = data.lod.mesh.vertices.size();
@@ -1066,6 +1069,8 @@ bool GpuScene::set_dynamic_instances(std::span<const SceneInstance> tail,
   }
   if (change.layout.compacted) ++compactions_;
   if (change.slots_written > 0 || change.grew) tables_changed_ = true;
+  // The drop order follows the tables (renderer.md, "The ray tracing chain's memory").
+  if (ray_tracing_ && (change.slots_written > 0 || change.grew)) lay_out_rt_order();
   // The poser's chunks follow the trees, cut again in place (renderer.md, "Streamed trees sway").
   if (flora_recut_) {
     flora_recut_ = false;
@@ -1088,6 +1093,8 @@ bool GpuScene::write_slots(std::span<const SceneInstance> tail,
       release_tail_tree(slot);
     if (tail_tree_of_slot_.size() < end) tail_tree_of_slot_.resize(end, ~0u);
   }
+  for (u32 slot = end; slot < instance_table_.size(); ++slot)
+    uncount_static(slot);
   instance_table_.resize(end);
   tail_keys_.resize(end);
   for (const SlotWrite& write : writes) {
@@ -1099,12 +1106,23 @@ bool GpuScene::write_slots(std::span<const SceneInstance> tail,
       // Whatever tree the slot held gives its record back; the instance it now holds takes one
       // if its mesh sways in the tail (renderer.md, "Streamed trees sway").
       if (flora_tail_) release_tail_tree(slot);
+      uncount_static(slot);
       if (block != nullptr && k < write.live) {
         const SceneInstance& source = tail[block->first + k];
         gfx::InstanceDesc& desc = instance_table_[slot];
         if (!make_instance(*data_, source, first_pair, desc, error)) return false;
         desc.material_base =
             source.mesh < mesh_material_base_.size() ? mesh_material_base_[source.mesh] : 0u;
+        // A rigid form's instance references its mesh's structure, built once (renderer.md,
+        // "Static structures for rigid forms").
+        // Its rank in the drop order: the ring its tile is drawn in, past the prefix's 0.
+        if (slot_rank_.size() <= slot) slot_rank_.resize(slot + 1, 0u);
+        slot_rank_[slot] = block->ring + 1;
+        if (static_build_ && static_mesh(source.mesh)) {
+          desc.flags |= gfx::k_instance_static_rt;
+          ++static_instances_live_;
+          static_pairs_live_ += data_->parts[source.mesh].cluster_count;
+        }
         tail_keys_[slot] = key_of(source);
         first_pair += data_->parts[source.mesh].cluster_count;
         if (flora_tail_ && tail_sways(source.mesh)) acquire_tail_tree(slot, source);
@@ -1508,10 +1526,36 @@ bool GpuScene::upload_geometry(const ResolvedSettings& resolved, std::string* er
   // (`lay_out_rings`): `cluster_count_` and the capacities count both, the scene's arrays only
   // their own part.
   const u64 scene_clusters = data_->cluster_count();
+  // **A rigid form is drawn at its frontier** (renderer.md, "Static structures for rigid forms"):
+  // with static structures, the cut the cull selects for such a form's clusters is the frontier
+  // at every distance — the frontier's parent error is made terminal, so it never coarsens, and
+  // every other cluster's own error terminal, so it never draws — which is what makes the form a
+  // fixed cut its structures can be built once for. Only the GPU's copy; the scene's stays the
+  // form `extract_lod_form` cut.
+  const geometry::ClusterLodDesc* lod_data = lod.lod.data();
+  Vector<geometry::ClusterLodDesc> fixed_lods;
+  if (static_forms_) {
+    fixed_lods.resize(lod.lod.size());
+    std::memcpy(fixed_lods.data(), lod.lod.data(),
+                u64{lod.lod.size()} * sizeof(geometry::ClusterLodDesc));
+    for (u32 m = 0; m < static_of_mesh_.size(); ++m) {
+      if (static_of_mesh_[m] == ~0u) continue;
+      const geometry::ClusterMeshPart& part = data_->parts[m];
+      for (u32 i = 0; i < part.cluster_count; ++i) {
+        geometry::ClusterLodDesc& desc = fixed_lods[part.first_cluster + i];
+        if (desc.level == 0) {
+          desc.parent_error = geometry::k_lod_terminal_error;
+        } else {
+          desc.own_error = geometry::k_lod_terminal_error;
+        }
+      }
+    }
+    lod_data = fixed_lods.data();
+  }
   if (!upload_room(device, lod.mesh.clusters.data(), scene_clusters * sizeof(geometry::ClusterDesc),
                    u64{cluster_count_} * sizeof(geometry::ClusterDesc), cluster_usage, clusters,
                    error) ||
-      !upload_room(device, lod.lod.data(), scene_clusters * sizeof(geometry::ClusterLodDesc),
+      !upload_room(device, lod_data, scene_clusters * sizeof(geometry::ClusterLodDesc),
                    u64{cluster_count_} * sizeof(geometry::ClusterLodDesc), k_storage, lods,
                    error)) {
     return false;
@@ -3548,6 +3592,36 @@ bool GpuScene::upload_materials(const ResolvedSettings& resolved, std::string* e
     if ((material.flags & gfx::k_material_terrain_layers) != 0) has_terrain_materials_ = true;
     if ((material.flags & gfx::k_material_alpha_mask) != 0) has_masked_ = true;
   }
+  // A rigid form's frontier, drawn at every distance (upload_geometry): its coverage errors follow
+  // the geometric ones — the frontier's parent half and every other cluster's own half read +inf,
+  // so the foliage threshold cannot move the fixed cut either. And which frontier clusters are
+  // alpha-tested, since their static structures are built once and a masked one non-opaque.
+  if (static_forms_) {
+    static_masked_.assign(static_cluster_ids_.size(), u8{0});
+    for (u32 m = 0; m < static_of_mesh_.size(); ++m) {
+      const u32 s = static_of_mesh_[m];
+      if (s == ~0u) continue;
+      for (u32 k = static_first_[s]; k < static_first_[s] + static_counts_[s]; ++k) {
+        const u32 material = cluster_material[static_cluster_ids_[k]] + mesh_material_base[m];
+        if (material < material_table.size() &&
+            (material_table[material].flags & gfx::k_material_alpha_mask) != 0) {
+          static_masked_[k] = 1u;
+        }
+      }
+    }
+    if (!coverage_words.empty()) {
+      for (u32 m = 0; m < static_of_mesh_.size(); ++m) {
+        if (static_of_mesh_[m] == ~0u) continue;
+        const geometry::ClusterMeshPart& part = data_->parts[m];
+        for (u32 i = 0; i < part.cluster_count; ++i) {
+          const u32 c = part.first_cluster + i;
+          u32& word = coverage_words[c];
+          word = data_->lod.lod[c].level == 0 ? (word & 0xffffu) | 0x7C000000u
+                                              : (word & 0xffff0000u) | 0x7C00u;
+        }
+      }
+    }
+  }
   // A dynamic scene's instance table is a set per frame in flight, made by `create` once the mesh
   // table (and its null mesh) exists.
   has_coverage_ = !coverage_words.empty();
@@ -3732,8 +3806,211 @@ bool GpuScene::create_ray_tracing(const ResolvedSettings& resolved, std::string*
         template_bytes_ += sizes[c];
     }
   }
+  // The rigid forms' structures, once (renderer.md, "Static structures for rigid forms").
+  if (ok) ok = build_static_forms(error);
   if (!ok) return false;
   return lay_out_ray_tracing(error);
+}
+
+// **Static structures for rigid forms** (renderer.md, "Static structures for rigid forms"). A
+// streamed world's forms past the first ring are meshes of their own (`SceneData::form_source`),
+// and a rigid one (`form_rigid`) is drawn by no deformation. Its frontier — the clusters
+// `extract_lod_form` left at level 0, one on every path of the form's DAG — is a complete cut, and
+// drawn at every distance (upload_geometry's patch) it is the form's only cut: so its structures
+// are a function of the mesh alone and are built here, once, instead of once per instance per
+// frame.
+void GpuScene::plan_static_forms() {
+  static_forms_ = false;
+  static_build_ = false;
+  static_of_mesh_.clear();
+  static_first_.clear();
+  static_counts_.clear();
+  static_cluster_ids_.clear();
+  static_masked_.clear();
+  static_count_ = 0;
+  static_clusters_ = 0;
+  if (!ray_tracing_ || !dynamic_ || !resolved_.static_forms || streamed_) return;
+  const SceneData& data = *data_;
+  static_of_mesh_.assign(data.parts.size(), ~0u);
+  for (u32 m = 0; m < data.parts.size(); ++m) {
+    const bool form = m < data.form_source.size() && data.form_source[m] != m;
+    const bool rigid = m < data.form_rigid.size() && data.form_rigid[m] != 0;
+    if (!form || !rigid) continue;
+    const geometry::ClusterMeshPart& part = data.parts[m];
+    const u32 first = static_cluster_ids_.size();
+    for (u32 i = 0; i < part.cluster_count; ++i) {
+      const u32 c = part.first_cluster + i;
+      if (data.lod.lod[c].level == 0) static_cluster_ids_.push_back(c);
+    }
+    const u32 count = static_cluster_ids_.size() - first;
+    if (count == 0) continue;
+    static_of_mesh_[m] = static_count_++;
+    static_first_.push_back(first);
+    static_counts_.push_back(count);
+  }
+  static_clusters_ = static_cluster_ids_.size();
+  static_forms_ = static_count_ > 0;
+  // The fixed cut without the structures built once: the per-frame build of the same cut, which
+  // the tests and the measurement compare the static structures against.
+  static_build_ = static_forms_ && rt_static_build_tunable();
+  if (!static_forms_) static_of_mesh_.clear();
+}
+
+bool GpuScene::build_static_forms(std::string* error) {
+  static_bytes_ = 0;
+  if (!static_build_) return true;
+  ENGINE_STARTUP_STAGE("static ray tracing structures");
+  const gfx::Device& device = *device_;
+  const geometry::ClusterLodMesh& lod = data_->lod;
+  const u32 mesh_count = data_->parts.size();
+  u32 most_clusters = 0;
+  u32 most_per_form = 0;
+  for (u32 m = 0; m < mesh_count; ++m) {
+    const u32 s = static_of_mesh_[m];
+    if (s == ~0u) continue;
+    most_clusters = std::max(most_clusters, data_->parts[m].cluster_count);
+    most_per_form = std::max(most_per_form, static_counts_[s]);
+  }
+  // One structure per frontier cluster, its cluster id and base geometry index the cluster's index
+  // within its mesh — what a hit on a flagged instance decodes (scene.slang, `hit_pair`) — opaque
+  // but where its material is alpha-tested, as the frame's records are written.
+  Vector<gfx::ClusterBuildInput> inputs;
+  inputs.reserve(static_clusters_);
+  for (u32 m = 0; m < mesh_count; ++m) {
+    const u32 s = static_of_mesh_[m];
+    if (s == ~0u) continue;
+    const geometry::ClusterMeshPart& part = data_->parts[m];
+    for (u32 k = static_first_[s]; k < static_first_[s] + static_counts_[s]; ++k) {
+      const u32 c = static_cluster_ids_[k];
+      const geometry::ClusterDesc& desc = lod.mesh.clusters[c];
+      gfx::ClusterBuildInput in;
+      in.cluster_id = c - part.first_cluster;
+      in.triangle_count = desc.triangle_count;
+      in.vertex_count = desc.vertex_count;
+      in.vertices = vertices.address + u64{desc.vertex_offset} * sizeof(Vec3);
+      in.indices = indices8.address + u64{desc.triangle_offset} * 3;
+      in.opaque = !(k < static_masked_.size() && static_masked_[k] != 0);
+      inputs.push_back(in);
+    }
+  }
+  gfx::ClusterSetLimits limits = rt_limits_;
+  limits.max_clusters = static_clusters_;
+  limits.max_geometry_index = most_clusters > 0 ? most_clusters - 1 : 0;
+  limits.instantiate = false;
+  constexpr gfx::BufferUsage k_record_usage = k_address | gfx::BufferUsage::AccelerationBuildInput;
+  gfx::BufferResource clas_records;
+  gfx::BufferResource blas_records_once;
+  gfx::BufferResource scratch;
+  // One bottom-level record per **mesh**, not per static form: a mesh with none builds an empty
+  // structure, whose address the build writes as zero, so `static_blas_.addresses` is the per-mesh
+  // table `tlas_references.slang` reads with no copy in between.
+  bool ok = gfx::create_buffer(device, gfx::k_cluster_build_record_bytes * static_clusters_,
+                               k_record_usage, true, clas_records, error) &&
+            gfx::create_buffer(device, gfx::k_cluster_blas_record_bytes * mesh_count,
+                               k_record_usage, true, blas_records_once, error) &&
+            gfx::create_cluster_set(device, limits, static_clas_, error) &&
+            gfx::create_cluster_blas_set(device, mesh_count, static_clusters_, most_per_form,
+                                         static_blas_, error);
+  if (ok) {
+    ok = gfx::create_scratch(
+        device, std::max(static_clas_.build_scratch_bytes, static_blas_.build_scratch_bytes),
+        scratch, error);
+  }
+  if (ok) {
+    gfx::write_cluster_build_records(
+        std::span<const gfx::ClusterBuildInput>(inputs.data(), inputs.size()), clas_records.mapped);
+    auto* bytes = static_cast<u8*>(blas_records_once.mapped);
+    for (u32 m = 0; m < mesh_count; ++m) {
+      const u32 s = static_of_mesh_[m];
+      const u32 count = s == ~0u ? 0u : static_counts_[s];
+      const u32 stride = sizeof(u64);
+      const u64 references =
+          s == ~0u ? 0u : static_clas_.addresses.address + u64{static_first_[s]} * sizeof(u64);
+      u8* record = bytes + u64{m} * gfx::k_cluster_blas_record_bytes;
+      std::memcpy(record, &count, sizeof(count));
+      std::memcpy(record + 4, &stride, sizeof(stride));
+      std::memcpy(record + 8, &references, sizeof(references));
+    }
+    ok = gfx::submit_immediate(
+        device,
+        [&](gfx::CommandList cb) {
+          gfx::build_cluster_set(cb, static_clas_, clas_records.address, 0, scratch);
+          gfx::acceleration_build_barrier(cb, gfx::PipelineStage::AccelerationBuild,
+                                          gfx::MemoryAccess::AccelerationStructureRead);
+          gfx::build_cluster_blas_set(cb, static_blas_, blas_records_once.address, 0, scratch);
+          gfx::acceleration_build_barrier(cb, gfx::PipelineStage::ComputeShader,
+                                          gfx::MemoryAccess::AccelerationStructureRead);
+        },
+        error);
+  }
+  gfx::destroy_buffer(device, clas_records);
+  gfx::destroy_buffer(device, blas_records_once);
+  gfx::destroy_buffer(device, scratch);
+  if (!ok) {
+    for (gfx::BufferResource& buffer : rt_order_buffers_)
+      gfx::destroy_buffer(device, buffer);
+    rt_order_buffers_.clear();
+    rt_order_written_.clear();
+    rt_order_.clear();
+    slot_rank_.clear();
+    gfx::destroy_cluster_set(device, static_clas_);
+    gfx::destroy_cluster_blas_set(device, static_blas_);
+    return false;
+  }
+  static_bytes_ = static_clas_.data.size + static_clas_.addresses.size + static_clas_.sizes.size +
+                  static_blas_.data.size + static_blas_.addresses.size;
+  ENGINE_LOG_INFO(log_renderer, "static ray tracing structures built",
+                  log::field("forms", static_count_), log::field("clusters", static_clusters_),
+                  log::field("bytes", static_bytes_));
+  return true;
+}
+
+// A slot about to be written or dropped stops counting as a static form's instance
+// (static_instances()).
+void GpuScene::uncount_static(u32 slot) noexcept {
+  if (!static_forms_ || slot >= instance_table_.size()) return;
+  const gfx::InstanceDesc& desc = instance_table_[slot];
+  if ((desc.flags & gfx::k_instance_static_rt) == 0) return;
+  --static_instances_live_;
+  static_pairs_live_ -= data_->parts[desc.mesh].cluster_count;
+}
+
+// The prefix, then every live block by its ring's rank and its key (`rt_drop_order`); a block's
+// slack and the holes are null instances, which want nothing and are left out.
+void GpuScene::lay_out_rt_order() {
+  rt_order_blocks_.clear();
+  for (const TileBlock& block : layout_.blocks()) {
+    if (block.instances == 0) continue;
+    RtDropBlock drop;
+    drop.key = block.key;
+    drop.rank = block.inst_begin < slot_rank_.size() ? slot_rank_[block.inst_begin] : 1u;
+    drop.first_slot = block.inst_begin;
+    drop.slots = block.instances;
+    rt_order_blocks_.push_back(drop);
+  }
+  rt_drop_order(static_instances_,
+                std::span<RtDropBlock>(rt_order_blocks_.data(), rt_order_blocks_.size()),
+                rt_order_);
+  ++rt_order_version_;
+}
+
+u64 GpuScene::rt_drop_order_address(u32 slot, std::string* error) {
+  if (!ray_tracing_ || !dynamic_ || rt_order_.empty()) return 0;
+  if (rt_order_buffers_.size() <= slot) {
+    rt_order_buffers_.resize(slot + 1);
+    rt_order_written_.resize(slot + 1, ~u64{0});
+  }
+  gfx::BufferResource& buffer = rt_order_buffers_[slot];
+  if (rt_order_written_[slot] == rt_order_version_) return buffer.address;
+  const u64 bytes = u64{rt_order_.size()} * sizeof(u32);
+  if (buffer.size < bytes) {
+    // This slot's own copy: its previous frame has finished, and no other frame reads it.
+    gfx::destroy_buffer(*device_, buffer);
+    if (!gfx::create_buffer(*device_, bytes + bytes / 2, k_address, true, buffer, error)) return 0;
+  }
+  std::memcpy(buffer.mapped, rt_order_.data(), bytes);
+  rt_order_written_[slot] = rt_order_version_;
+  return buffer.address;
 }
 
 void GpuScene::destroy_ray_tracing_layout() noexcept {
@@ -3853,7 +4130,7 @@ bool GpuScene::lay_out_ray_tracing(std::string* error) {
   rt_scene_bytes_ = indices8.size + record_count.size + slots.size + instance_counts.size +
                     blas_records.size + tlas.buffer.size + rt_instances.size +
                     clas_templates.data.size + clas_templates.addresses.size +
-                    clas_templates.sizes.size;
+                    clas_templates.sizes.size + static_bytes_;
 
   // **The budget, in clusters.** What one cluster of capacity costs comes from the driver's own
   // sizes at a probe count — the structure, its address and size words, its record, its share of
@@ -3891,10 +4168,14 @@ bool GpuScene::lay_out_ray_tracing(std::string* error) {
   // (which is every scene the tests draw, and so every picture they pin), `k_initial_rt_clusters`
   // otherwise. The renderer grows or shrinks it from the frames' own demand; a relayout keeps the
   // capacity the frames had grown it to.
-  const u32 initial = std::min(rt_capacity_limit_, k_initial_rt_clusters);
-  const u32 first = keep_capacity != 0              ? keep_capacity
-                    : rt_union_clusters_ <= initial ? rt_union_clusters_
-                                                    : initial;
+  // Since 2026-10-25 from what the scene knows (`first_rt_capacity`): every pair a frame could
+  // build, less the static forms', in every view, clamped to the budget and the union, at least
+  // `renderer.rt.initial_clusters` where the union is larger — so a scene past the budget starts at
+  // it rather than growing over its first frames, and one inside it can never drop anything.
+  const u32 first = keep_capacity != 0
+                        ? keep_capacity
+                        : first_rt_capacity(rt_capacity_limit_, rt_union_clusters_,
+                                            rt_frame_estimate(), rt_initial_clusters_tunable());
   if (!resize_ray_tracing(first, error)) return false;
   ENGINE_LOG_INFO(
       log_renderer, "ray tracing ready", log::field("pairs", pair_count_),
@@ -4003,6 +4284,18 @@ void GpuScene::destroy() noexcept {
   gfx::destroy_buffer(device, ring_pairs_);
   gfx::destroy_buffer(device, meshes);
   gfx::destroy_cluster_templates(device, clas_templates);
+  for (gfx::BufferResource& buffer : rt_order_buffers_)
+    gfx::destroy_buffer(device, buffer);
+  rt_order_buffers_.clear();
+  rt_order_written_.clear();
+  rt_order_.clear();
+  slot_rank_.clear();
+  gfx::destroy_cluster_set(device, static_clas_);
+  gfx::destroy_cluster_blas_set(device, static_blas_);
+  static_forms_ = static_build_ = false;
+  static_of_mesh_.clear();
+  static_count_ = static_clusters_ = static_instances_live_ = 0;
+  static_bytes_ = static_pairs_live_ = 0;
   gfx::destroy_acceleration_structure(device, tlas);
   gfx::destroy_cluster_blas_set(device, blas_set);
   gfx::destroy_cluster_set(device, clas_set);

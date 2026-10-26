@@ -321,7 +321,12 @@ bool shadow_ray_blocked(ResolveParams* params, uint bit, float3 origin, float3 d
                           RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH, 0xff, ray);
     while (masked.Proceed()) {
       if (masked.CandidateType() != CANDIDATE_NON_OPAQUE_TRIANGLE) continue;
-      const uint2 entry = visible_entry(params->visible, masked.CandidateGeometryIndex());
+      // A rigid form's static structure names the cluster within its mesh instead (renderer.md,
+      // "Static structures for rigid forms"; scene.slang, `hit_pair`).
+      bool is_static = false;
+      const uint2 entry =
+          hit_pair(params->visible, params->instances, params->mesh,
+                   masked.CandidateGeometryIndex(), masked.CandidateInstanceID(), is_static);
       InstanceDesc* instances = (InstanceDesc*)params->instances;
       const InstanceDesc instance = instances[entry.x];
       // The pair, for the fade's table; read only in a frame with a fade.

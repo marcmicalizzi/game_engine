@@ -1104,6 +1104,7 @@ void SceneRenderer::destroy() noexcept {
   scene_ = nullptr;
   width_ = height_ = 0;
   submitted_ = 0;
+  rt_observed_ = false;
   recorded_ = 0;
   collected_ = 0;
   flags_dirty_ = true;
@@ -1124,6 +1125,7 @@ void SceneRenderer::reset_stats() noexcept {
   note_rt_bytes();  // what the chain holds is state, not a count: it survives a reset
   fill_view_layout();
   submitted_ = 0;
+  rt_observed_ = false;
   sample_gpu_memory();  // a reset must not leave a summary with no memory figure at all
 }
 
@@ -1195,6 +1197,26 @@ bool SceneRenderer::set_dynamic_instances(std::span<const SceneInstance> tail,
     ++stats_.tiles.relayouts;
     stats_.tiles.relayout_ns += static_cast<f64>(time::monotonic_ns() - waited);
   }
+  // **The first capacity from what the scene knows** (renderer.md, "The ray tracing chain's
+  // memory"): until a frame has said what it builds, a tail that brings more than the chain was
+  // sized for at create — a streamed world's first tiles — sizes it again, before any frame wants
+  // it, so the first frame is drawn complete instead of growing over its first frames. Not a growth
+  // when no frame has been submitted, since nothing waited for it.
+  if (resolved_.rt_chain && !rt_observed_) {
+    const u32 first = first_rt_capacity(scene_->rt_capacity_limit(), scene_->rt_union_clusters(),
+                                        scene_->rt_frame_estimate(), rt_initial_clusters_tunable());
+    if (first > scene_->rt_capacity()) {
+      if (submitted_ > 0) {
+        if (!apply_rt_capacity(first, error)) return false;
+      } else {
+        frames_.wait_idle();
+        if (!scene_->resize_ray_tracing(first, error)) return false;
+        rt_capacity_.resized(scene_->rt_capacity());
+      }
+    }
+  }
+  // The static forms' instances the tail now holds, and the chain's bytes after any relayout.
+  note_rt_bytes();
   // Made again, the flags hold whatever the allocator left: the next frame fills both, which is
   // what a first frame does. Every block that did not move keeps its pairs and so its history, and
   // a pair whose block is new has a flag that only decides which occlusion pass tests it (the
@@ -1251,6 +1273,7 @@ void SceneRenderer::fold_visible(u32 slot) {
   stats_.visible_pass2 = 0;
   stats_.visible_sw = 0;
   stats_.shadow_casters = 0;
+  stats_.horizon_casters = 0;
   stats_.triangles_hw = 0;
   stats_.vertex_fallback = 0;
   for (u32 v = 0; v < view_count(); ++v) {
@@ -1262,10 +1285,15 @@ void SceneRenderer::fold_visible(u32 slot) {
     // shadows, which has no software pass — the shadow casters, which are not visible pairs.
     view.visible_sw = resolved_.casters ? 0u : block[6];
     view.shadow_casters = resolved_.casters ? block[6] : 0u;
+    // The casters past the horizon, in the software block's second word, which the frame fills
+    // with 1 and never dispatches when it has casters.
+    view.horizon_casters = resolved_.caster_horizon && block[7] > 0 ? block[7] - 1u : 0u;
     stats_.visible_hw += view.visible_hw;
     stats_.visible_pass2 += view.visible_pass2;
     stats_.visible_sw += view.visible_sw;
     stats_.shadow_casters += view.shadow_casters;
+    stats_.horizon_casters += view.horizon_casters;
+    stats_.rt.horizon_casters = stats_.horizon_casters;
     if (resolved_.vertex_indexed) {
       view.triangles_hw = block[9] + block[11];
       view.vertex_fallback = block[10] + block[12];
@@ -1510,6 +1538,7 @@ void SceneRenderer::begin_frame() {
     // the device, so it happens here — before this frame records anything — and only when the
     // demand crossed a threshold, never as a matter of course.
     if (resolved_.rt_chain && !rt_hold_) {
+      rt_observed_ = true;
       const u32 next = rt_capacity_.observe(stats_.rt.wanted);
       if (next != scene_->rt_capacity() && !apply_rt_capacity(next, nullptr)) {
         // The allocation failed: the device is out of memory. Say so and fall back to the smallest
@@ -1562,6 +1591,11 @@ void SceneRenderer::note_rt_bytes() noexcept {
   chain.bytes = scene_->rt_bytes();
   chain.peak_capacity = std::max(chain.peak_capacity, chain.capacity);
   chain.peak_bytes = std::max(chain.peak_bytes, chain.bytes);
+  chain.static_forms = scene_->static_meshes();
+  chain.static_clusters = scene_->static_clusters();
+  chain.static_bytes = scene_->static_bytes();
+  chain.static_instances = scene_->static_instances();
+  chain.static_pairs = scene_->static_pairs();
 }
 
 u64 SceneRenderer::submit_frame(const FrameDesc& frame, std::string* error) {
@@ -2226,6 +2260,8 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
     if (casters) {
       cull.casters = vf.run_address[gfx::k_caster_run];
       cull.caster_count = scene.sw_args.address + vf.args_offset;
+      // The caster horizon: none farther from the eye than the shadows' distance (R94).
+      cull.caster_horizon = resolved_.caster_horizon ? settings.shadow_distance : 0.0f;
       // And what its frustum rejects but a ray towards a shadowed light could still meet:
       // this view's caster volumes (caster_volume.h), fit from its own frustum, since every view's
       // cull run has its own planes.
@@ -2602,6 +2638,9 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
     // And each record's transform, from the instance's cell and this frame's eye (ADR-0053).
     tlas_references.instances = scene.instances.address;
     tlas_references.eye = gpu_eye;
+    // A rigid form's instance takes its mesh's structure, built once (renderer.md, "Static
+    // structures for rigid forms"): one u64 per mesh, 0 for a mesh with none.
+    tlas_references.static_addresses = scene.static_addresses();
     record_params.clusters = scene.clusters.address;
     record_params.vertices = scene.vertices.address;
     record_params.indices8 = scene.indices8.address;
@@ -2637,6 +2676,9 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
     record_params.capacity = scene.rt_capacity();
     record_params.mask_materials = mask_tables.materials;  // a masked pair is built non-opaque
     record_params.mask_cluster_materials = mask_tables.cluster_materials;
+    // Past the capacity, what the frame keeps: nearest rank first (renderer.md, "The ray tracing
+    // chain's memory"). This frame slot's copy, brought up to date while recording.
+    record_params.drop_order = scene.rt_drop_order_address(frames_.slot());
   }
 
   gfx::RenderGraph& graph = *graph_;

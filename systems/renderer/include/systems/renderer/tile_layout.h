@@ -40,6 +40,10 @@ struct DynamicBlock {
   u64 key = 0;
   u32 first = 0;
   u32 count = 0;
+  // The ring the block's tile is drawn in, 0 for the inner one or for none: past the budget the ray
+  // tracing chain drops whole instances farthest ring first (renderer.md, "The ray tracing chain's
+  // memory").
+  u32 ring = 0;
 };
 
 // The granularities a block's reserved runs are rounded to: sixteen pairs, four instance slots.

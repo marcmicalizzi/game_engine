@@ -110,11 +110,16 @@ ENGINE_EXPECT_SIZE(128, 8, gfx::ClusterDrawParams);
 // built non-opaque (renderer.md, "Alpha-tested geometry"). Past the 128 bytes of push constants
 // every device guarantees, which this pass may take: it runs only on devices with
 // VK_NV_cluster_acceleration_structure, and every one of them has 256.
-ENGINE_EXPECT_SIZE(144, 8, gfx::ClusterRecordParams);
+// 152, not 144: the drop order, which spends a frame's capacity nearest rank first (renderer.md,
+// "The ray tracing chain's memory", 2026-10-25).
+ENGINE_EXPECT_SIZE(152, 8, gfx::ClusterRecordParams);
 // tlas_references.slang's push block: two addresses and the count (2026-10-04).
 // 80, not 24: the instance table and the frame's eye, because the dispatch writes each record's
 // transform from the eye every frame as well as its reference (ADR-0053, 2026-10-05).
-ENGINE_EXPECT_SIZE(80, 8, gfx::TlasReferenceParams);
+// 88, not 80: the per-mesh table of static structures, which a rigid form's instance takes its
+// reference from instead of this frame's build (renderer.md, "Static structures for rigid forms",
+// 2026-10-25).
+ENGINE_EXPECT_SIZE(88, 8, gfx::TlasReferenceParams);
 
 // 416, not 400: geometry streaming appended the address of its own block plus the two counts that
 // bound every index the shader writes — the page table's length and the request buffer's capacity
@@ -149,7 +154,8 @@ ENGINE_EXPECT_SIZE(80, 8, gfx::TlasReferenceParams);
 // the vertex attributes) right after `eye`, so a rasterizer that reads the eye through
 // `ClusterDrawParams::eye` reaches them too (renderer.md, "Alpha-tested geometry"); the caster
 // volumes moved 32 bytes back, and nothing reads them by offset.
-ENGINE_EXPECT_SIZE(1712, 8, gfx::CullParams);
+// 1728, not 1712: the caster horizon and its pad (renderer.md, "Shadows", R94, 2026-10-25).
+ENGINE_EXPECT_SIZE(1728, 8, gfx::CullParams);
 ENGINE_EXPECT_SIZE(32, 8, gfx::MaskTables);
 // The mask test reads one word of a material by offset (scene.slang,
 // `k_resolve_material_flags_offset`).

@@ -13,6 +13,7 @@
 #include <test_paths.h>
 #include <test_temp_dir.h>
 
+#include <algorithm>
 #include <fstream>
 #include <sstream>
 #include <string>
@@ -335,6 +336,231 @@ TEST_CASE("engine-view: a streamed tree that leaves and comes back sways in its 
   const u32 differing = differing_pixels(tmp.file("stay.png"), tmp.file("away.png"));
   MESSAGE("away and back against staying: " << differing << " pixels differ");
   CHECK(differing == 0);
+}
+
+// Roadmap R94 (renderer.md, "Static structures for rigid forms"): under the ray tracing chain a
+// rigid distance form is drawn at its fixed cut — its frontier — and traced against structures
+// built once, so the traced shadows of the raster picture and the ray-traced picture itself are
+// the bytes the per-frame build of the same cut gives (`renderer.rt.static_build=false`), in two
+// rings past the inner one; and the frame builds only what is not a form.
+TEST_CASE("engine-view: a rigid form's structures built once trace the per-frame build's bytes") {
+  const test::TempDir tmp("engine_view_rt_static_forms");
+  REQUIRE(write_text(tmp.file("oak.flora.json"), k_oak));
+  REQUIRE(write_text(tmp.file("spruce.flora.json"), k_spruce));
+  REQUIRE(write_text(
+      tmp.file("streamed.json"),
+      scene_text(R"({"tile_size":16,"rings":[{"radius":1.5},{"radius":3},{"radius":6}]})")));
+  // Low over the trees' edge, looking across them: the inner ring's full meshes, both outer
+  // rings' forms, and the forms' traced shadows on the sand.
+  REQUIRE(write_text(tmp.file("path.json"),
+                     R"({"format":"engine.camera-path.v1","name":"across","fps":10,"keys":[)"
+                     R"({"time":0,"position":[-60,14,10],"target":[30,2,0]}]})"));
+  const auto capture = [&](const char* png, const std::vector<const char*>& extra) {
+    std::vector<std::string> args = base_args(tmp, "streamed.json", "path.json");
+    args.erase(args.begin() + 9, args.begin() + 11);  // the base's --shadows off
+    for (const char* a : {"--frames", "3", "--capture"})
+      args.push_back(a);
+    args.push_back(tmp.file(png));
+    for (const char* a : extra)
+      args.push_back(a);
+    return view(args);
+  };
+  struct Case {
+    const char* name;
+    std::vector<const char*> mode;
+  };
+  const Case cases[] = {{"traced shadows", {"--shadows", "rt"}},
+                        {"ray path", {"--raster", "rt", "--shadows", "rt"}}};
+  for (const Case& c : cases) {
+    std::vector<const char*> per_frame = c.mode;
+    for (const char* a : {"--tunable", "renderer.rt.static_build=false"})
+      per_frame.push_back(a);
+    const Run built_once = capture("once.png", c.mode);
+    if (built_once.exit_code == 3) {
+      MESSAGE("engine-view unavailable here: " << built_once.output);
+      return;
+    }
+    REQUIRE_MESSAGE(built_once.exit_code == 0, built_once.output);
+    const Run every_frame = capture("every.png", per_frame);
+    REQUIRE_MESSAGE(every_frame.exit_code == 0, every_frame.output);
+    const JsonValue once_summary = summary_of(built_once.output);
+    const JsonValue every_summary = summary_of(every_frame.output);
+    const JsonValue* once_rt = once_summary.find("rt");
+    const JsonValue* every_rt = every_summary.find("rt");
+    REQUIRE(once_rt != nullptr);
+    REQUIRE(every_rt != nullptr);
+    const u32 differing = differing_pixels(tmp.file("once.png"), tmp.file("every.png"));
+    MESSAGE(std::string(c.name) << ": " << field_u64(*once_rt, "static_forms") << " forms of "
+                                << field_u64(*once_rt, "static_clusters")
+                                << " clusters built once, "
+                                << field_u64(*once_rt, "static_instances")
+                                << " instances referencing them; " << differing
+                                << " pixels differ from the per-frame build");
+    CHECK(field_u64(*once_rt, "static_forms") > 0);
+    CHECK(field_u64(*once_rt, "static_instances") > 0);
+    CHECK(field_u64(*once_rt, "static_bytes") > 0);
+    CHECK(field_u64(*every_rt, "static_instances") == 0);
+    CHECK(differing == 0);
+  }
+}
+
+namespace {
+
+// A denser grove than `scene_text`'s — 400 of each tree, a wider inner ring — so that a frame
+// under traced shadows wants a few thousand structures, past what 16 MiB of them hold.
+std::string dense_scene_text() {
+  std::string text = scene_text(R"({"tile_size":16,"rings":[{"radius":4},{"radius":8}]})");
+  for (usize at = text.find(R"("count":70)"); at != std::string::npos;
+       at = text.find(R"("count":70)", at)) {
+    text.replace(at, 10, R"("count":400)");
+  }
+  return text;
+}
+
+// The most shadow casters a frame of the run kept (the summary's percentiles; still frames).
+u64 casters_max(const JsonValue& summary) {
+  const JsonValue* casters = summary.find("shadow_casters");
+  return casters != nullptr ? field_u64(*casters, "max") : 0u;
+}
+
+// Traced shadows over the dense grove at 640 x 360, `frames` frames into `bench` and `png`.
+Run traced_dense(const test::TempDir& tmp, const char* bench, const char* png, u32 frames,
+                 const std::vector<const char*>& extra) {
+  std::vector<std::string> args = base_args(tmp, "dense.json", "path.json");
+  args[6] = "640";
+  args[8] = "360";
+  args[10] = "rt";  // --shadows rt
+  for (const std::string& a :
+       {std::string("--frames"), std::to_string(frames), std::string("--benchmark"),
+        tmp.file(bench), std::string("--capture"), tmp.file(png)})
+    args.push_back(a);
+  for (const char* a : extra)
+    args.push_back(a);
+  return view(args);
+}
+
+}  // namespace
+
+// R94: the first capacity is what the scene could want — its pairs less the static forms', in
+// every view — clamped to the budget, so a streamed world's first frame is drawn complete and no
+// growth lands as its first tiles arrive. The floor is lowered to 256 (`renderer.rt.initial_
+// clusters`), under which the old first capacity (the union or the floor) dropped instances over
+// the first frames while the policy grew towards what they wanted.
+TEST_CASE("engine-view: a streamed world's first frames under traced shadows are complete") {
+  const test::TempDir tmp("engine_view_rt_first_capacity");
+  REQUIRE(write_text(tmp.file("oak.flora.json"), k_oak));
+  REQUIRE(write_text(tmp.file("spruce.flora.json"), k_spruce));
+  REQUIRE(write_text(tmp.file("dense.json"), dense_scene_text()));
+  REQUIRE(write_text(tmp.file("path.json"),
+                     R"({"format":"engine.camera-path.v1","name":"across","fps":10,"keys":[)"
+                     R"({"time":0,"position":[-60,14,10],"target":[30,2,0]}]})"));
+  const Run run = traced_dense(tmp, "bench.jsonl", "first.png", 60,
+                               {"--tunable", "renderer.rt.initial_clusters=256"});
+  if (run.exit_code == 3) {
+    MESSAGE("engine-view unavailable here: " << run.output);
+    return;
+  }
+  REQUIRE_MESSAGE(run.exit_code == 0, run.output);
+  const JsonValue summary = summary_of(run.output);
+  const JsonValue* rt = summary.find("rt");
+  REQUIRE(rt != nullptr);
+  std::ifstream log(tmp.file("bench.jsonl"), std::ios::binary);
+  std::string line;
+  u32 frames = 0;
+  u32 incomplete = 0;
+  u64 wanted_max = 0;
+  while (std::getline(log, line)) {
+    JsonValue record;
+    if (!parse_json(line, record).ok || record.find("frame") == nullptr) continue;
+    ++frames;
+    const u64 built = field_u64(record, "rt_built");
+    const u64 wanted = field_u64(record, "rt_wanted");
+    wanted_max = std::max(wanted_max, wanted);
+    incomplete += built < wanted ? 1u : 0u;
+  }
+  MESSAGE(frames << " frames, " << incomplete << " incomplete, at most " << wanted_max
+                 << " structures wanted, " << field_u64(*rt, "grows") << " growths, peak capacity "
+                 << field_u64(*rt, "peak_capacity"));
+  CHECK(frames >= 60);
+  CHECK(wanted_max > 256);  // the floor alone would not have held the first frame
+  CHECK(incomplete == 0);
+  CHECK(field_u64(*rt, "overflow_frames") == 0);
+  CHECK(field_u64(*rt, "grows") == 0);
+}
+
+// R94: past the budget a frame keeps the nearest ring first and, within one ring, drawn clusters
+// before casters (`gfx::ClusterRecordParams::drop_order`), and which structures it drops is a
+// function of the scene and the camera — two runs draw the same traced shadows.
+TEST_CASE("engine-view: past the budget the chain drops the same structures every run") {
+  const test::TempDir tmp("engine_view_rt_drop_order");
+  REQUIRE(write_text(tmp.file("oak.flora.json"), k_oak));
+  REQUIRE(write_text(tmp.file("spruce.flora.json"), k_spruce));
+  REQUIRE(write_text(tmp.file("dense.json"), dense_scene_text()));
+  REQUIRE(write_text(tmp.file("path.json"),
+                     R"({"format":"engine.camera-path.v1","name":"across","fps":10,"keys":[)"
+                     R"({"time":0,"position":[-60,14,10],"target":[30,2,0]}]})"));
+  const Run a = traced_dense(tmp, "a.jsonl", "a.png", 3, {"--rt-budget-mib", "16"});
+  if (a.exit_code == 3) {
+    MESSAGE("engine-view unavailable here: " << a.output);
+    return;
+  }
+  REQUIRE_MESSAGE(a.exit_code == 0, a.output);
+  const Run b = traced_dense(tmp, "b.jsonl", "b.png", 3, {"--rt-budget-mib", "16"});
+  REQUIRE_MESSAGE(b.exit_code == 0, b.output);
+  for (const Run* run : {&a, &b}) {
+    const JsonValue summary = summary_of(run->output);
+    const JsonValue* rt = summary.find("rt");
+    REQUIRE(rt != nullptr);
+    MESSAGE(field_u64(*rt, "overflow_frames")
+            << " frames past " << field_u64(*rt, "limit") << " structures, "
+            << field_u64(*rt, "dropped_caster_instances") << " casters' instances dropped");
+    CHECK(field_u64(*rt, "overflow_frames") > 0);
+  }
+  CHECK(differing_pixels(tmp.file("a.png"), tmp.file("b.png")) == 0);
+}
+
+// R94: the caster horizon. With `--shadow-distance` and `renderer.rt.caster_horizon`, a shadow
+// caster farther from the eye than the distance is not built and is counted; one nearer is built
+// as before, so the casters kept and the casters past it are the casters without it.
+TEST_CASE("engine-view: a shadow caster past the caster horizon casts nothing and is counted") {
+  const test::TempDir tmp("engine_view_rt_caster_horizon");
+  REQUIRE(write_text(tmp.file("oak.flora.json"), k_oak));
+  REQUIRE(write_text(tmp.file("spruce.flora.json"), k_spruce));
+  REQUIRE(write_text(tmp.file("dense.json"), dense_scene_text()));
+  REQUIRE(write_text(tmp.file("path.json"),
+                     R"({"format":"engine.camera-path.v1","name":"across","fps":10,"keys":[)"
+                     R"({"time":0,"position":[-60,14,10],"target":[30,2,0]}]})"));
+  const Run all = traced_dense(tmp, "all.jsonl", "all.png", 3, {"--shadow-distance", "30"});
+  if (all.exit_code == 3) {
+    MESSAGE("engine-view unavailable here: " << all.output);
+    return;
+  }
+  REQUIRE_MESSAGE(all.exit_code == 0, all.output);
+  const Run near =
+      traced_dense(tmp, "near.jsonl", "near.png", 3,
+                   {"--shadow-distance", "30", "--tunable", "renderer.rt.caster_horizon=true"});
+  REQUIRE_MESSAGE(near.exit_code == 0, near.output);
+
+  const JsonValue all_summary = summary_of(all.output);
+  const JsonValue near_summary = summary_of(near.output);
+
+  const JsonValue* all_rt = all_summary.find("rt");
+  const JsonValue* near_rt = near_summary.find("rt");
+
+  REQUIRE(all_rt != nullptr);
+  REQUIRE(near_rt != nullptr);
+
+  const u64 casters_all = casters_max(all_summary);
+  const u64 casters_near = casters_max(near_summary);
+  const u32 changed = differing_pixels(tmp.file("all.png"), tmp.file("near.png"));
+
+  MESSAGE("casters " << casters_all << " without the horizon, " << casters_near << " within 30 m ("
+                     << field_u64(*near_rt, "horizon_casters") << " past it); " << changed
+                     << " pixels of the traced shadows change");
+  CHECK(field_u64(*all_rt, "horizon_casters") == 0);
+  CHECK(field_u64(*near_rt, "horizon_casters") > 0);
+  CHECK(casters_near < casters_all);
+  CHECK(casters_near + field_u64(*near_rt, "horizon_casters") == casters_all);
 }
 
 #endif

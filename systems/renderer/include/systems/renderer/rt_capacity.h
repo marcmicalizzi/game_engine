@@ -37,6 +37,9 @@
 // it answers with a different capacity.
 
 #include <core/base/types.h>
+#include <core/containers/vector.h>
+
+#include <span>
 
 namespace engine::renderer {
 
@@ -53,12 +56,49 @@ u32 rt_budget_mib_tunable() noexcept;
 u32 rt_headroom_pct_tunable() noexcept;
 u32 rt_shrink_frames_tunable() noexcept;
 u32 rt_step_tunable() noexcept;
+// `renderer.rt.static_forms` (true): rigid distance forms keep structures built once
+// (`RenderSettings::rt_static_forms`; renderer.md, "Static structures for rigid forms").
+bool rt_static_forms_tunable() noexcept;
+// `renderer.rt.static_build` (true): with static forms, build their structures once. False keeps
+// the forms' fixed cut and builds it every frame — the comparison the tests and the measurement
+// make.
+bool rt_static_build_tunable() noexcept;
+// `renderer.rt.caster_horizon` (false): `RenderSettings::rt_caster_horizon` from the command line.
+bool rt_caster_horizon_tunable() noexcept;
 inline constexpr u32 k_default_rt_budget_mib = 1024;
 // The first capacity of a scene too large to hold whole within the budget, before any frame has
 // said what it builds: 65,536 clusters is 400 MB on the RTX 5090, above every first frame the
 // desert overlook's path draws at any resolution. A scene whose every pair in every view fits in
 // less is allocated for all of them, exactly as before, and so never drops anything.
 inline constexpr u32 k_initial_rt_clusters = 65536;
+// `renderer.rt.initial_clusters` (`k_initial_rt_clusters`): the first capacity's floor.
+u32 rt_initial_clusters_tunable() noexcept;
+
+// **The first capacity, from what the scene knows** (renderer.md, "The first capacity"). Before any
+// frame has said what it builds, the chain is sized for `estimate` — every pair a frame could
+// build, which is the scene's pairs less the static forms' (they are built once, not per frame),
+// in every view — clamped to the budget (`limit`) and to the union, and never under `floor` where
+// the union is larger: so a scene whose every pair fits in the budget is allocated for all of
+// them and can never drop anything, and one past it starts at the budget, where its first frame
+// is drawn as complete as the budget allows instead of growing over its first frames. Until
+// 2026-10-25 it was the union or 65,536 clusters, whichever was less, and a streamed forest's
+// first frames dropped instances while the capacity grew towards what they wanted. Arithmetic
+// only, so the rule is tested on the CPU.
+u32 first_rt_capacity(u32 limit, u32 union_clusters, u64 estimate, u32 floor) noexcept;
+
+// **The drop order** (renderer.md, "The ray tracing chain's memory"; `gfx::ClusterRecordParams::
+// drop_order`): what a frame past its capacity spends it on first. The prefix's slots (rank 0, in
+// slot order), then each block of a streamed tail at its ring's rank (ring + 1), the blocks of one
+// rank by tile key, a block's live slots in slot order — so the farthest ring loses its casters
+// first, then its instances, then the next ring in, and the same ones every run. `blocks` is
+// sorted in place; `out` is `u32 count, u32 0`, then `{slot, rank}` pairs.
+struct RtDropBlock {
+  u64 key = 0;
+  u32 rank = 0;
+  u32 first_slot = 0;
+  u32 slots = 0;
+};
+void rt_drop_order(u32 prefix_slots, std::span<RtDropBlock> blocks, Vector<u32>& out);
 
 class RtCapacity {
  public:

@@ -241,6 +241,50 @@ TEST_CASE("rt capacity: grows ahead, shrinks late, steps, and stops at the limit
   CHECK(policy.capacity() == 100000);
 }
 
+// R94: the first capacity is what the scene could want, clamped to the budget and the union, with
+// `renderer.rt.initial_clusters` as a floor — where it used to be the union or 65,536, whichever
+// was less, which a streamed forest's first frames outgrew one growth at a time.
+TEST_CASE("rt capacity: the first capacity is the scene's estimate, the budget its ceiling") {
+  // A scene inside the budget is allocated for every pair: it never drops anything.
+  CHECK(first_rt_capacity(150000, 20000, 20000, 65536) == 20000);
+  // A scene past it starts at the budget, not at 65,536 below it.
+  CHECK(first_rt_capacity(118214, 7284526, 7284526, 65536) == 118214);
+  // What the static forms take off the estimate is not allocated: 3.3 M pairs of forms in a union
+  // of 3.4 M leave 80,000 a frame can build.
+  CHECK(first_rt_capacity(150000, 3400000, 80000, 4096) == 80000);
+  // The floor where the union is larger than the estimate, never past the union or the budget.
+  CHECK(first_rt_capacity(150000, 3400000, 1000, 65536) == 65536);
+  CHECK(first_rt_capacity(150000, 30000, 1000, 65536) == 30000);
+  CHECK(first_rt_capacity(40000, 3400000, 1000, 65536) == 40000);
+  CHECK(first_rt_capacity(150000, 0, 0, 0) == 1);
+}
+
+// R94: past the capacity a frame spends it nearest first — the prefix, then the rings inside out,
+// one ring's blocks by tile key, a block's slots in order — whatever order the blocks were laid
+// out in, so the same instances are dropped every run.
+TEST_CASE("rt capacity: the drop order is the prefix, then the rings inside out by tile key") {
+  RtDropBlock blocks[] = {{.key = 9, .rank = 3, .first_slot = 10, .slots = 2},
+                          {.key = 4, .rank = 2, .first_slot = 12, .slots = 1},
+                          {.key = 2, .rank = 3, .first_slot = 13, .slots = 3},
+                          {.key = 7, .rank = 1, .first_slot = 16, .slots = 2}};
+  Vector<u32> order;
+  rt_drop_order(3, std::span<RtDropBlock>(blocks, 4), order);
+  const u32 expected[] = {11, 0,                               // count, pad
+                          0,  0, 1,  0, 2,  0,                 // the prefix
+                          16, 1, 17, 1,                        // ring 0: key 7
+                          12, 2,                               // ring 1: key 4
+                          13, 3, 14, 3, 15, 3, 10, 3, 11, 3};  // ring 2: key 2, then 9
+  REQUIRE(order.size() == std::size(expected));
+  for (u32 i = 0; i < order.size(); ++i)
+    CHECK(order[i] == expected[i]);
+  // The blocks handed over in another order lay out the same order.
+  RtDropBlock shuffled[] = {blocks[3], blocks[0], blocks[2], blocks[1]};
+  Vector<u32> again;
+  rt_drop_order(3, std::span<RtDropBlock>(shuffled, 4), again);
+  REQUIRE(again.size() == order.size());
+  for (u32 i = 0; i < order.size(); ++i)
+    CHECK(again[i] == order[i]);
+}
 TEST_CASE("rt capacity: a chain sized by the frame draws what a chain sized by the scene draws") {
   gfx::Device device;
   std::string error;

@@ -125,7 +125,8 @@ bool ViewWorld::hand_over(void* context, std::span<const renderer::SceneInstance
   if (!self->data_->streamed.empty()) {
     self->placements_.tile_ranges(self->ranges_);
     for (const world::PlacementTiles::TileRange& range : self->ranges_)
-      self->blocks_.push_back(renderer::DynamicBlock{range.key, range.first, range.count});
+      self->blocks_.push_back(
+          renderer::DynamicBlock{range.key, range.first, range.count, range.ring});
   }
   // The appended block (game_props.h): after the tiles, under its own key. Both runs are copied
   // into one tail because the renderer takes one span; the copy is the tail's size, kept between

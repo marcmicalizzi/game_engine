@@ -90,7 +90,7 @@ struct BlasRecord {
   uint64_t references;
 };
 
-// Mirrors gfx::ClusterRecordParams (144 bytes: past the 128 every device guarantees, which this
+// Mirrors gfx::ClusterRecordParams (152 bytes: past the 128 every device guarantees, which this
 // pass may take because it runs only where VK_NV_cluster_acceleration_structure does, and every
 // such device has 256).
 struct RecordParams {
@@ -118,6 +118,10 @@ struct RecordParams {
   // material per cluster, or 0 for a frame with none. A masked pair is built non-opaque.
   uint64_t mask_materials;
   uint64_t mask_cluster_materials;
+  // **The drop order** (renderer.md, "The ray tracing chain's memory"): uint count, uint pad, then
+  // `count` {instance, rank} pairs, nearest rank first — the prefix, then a streamed world's rings
+  // inside out, each by tile key and slot — or 0 for instance order in one rank.
+  uint64_t drop_order;
 };
 
 [[vk::push_constant]] ConstantBuffer<RecordParams> g_params;
@@ -174,6 +178,11 @@ void records_main(uint3 thread_id : SV_DispatchThreadID) {
   const uint instance_index = visible[index].x;
   InstanceDesc* instances = (InstanceDesc*)g_params.instances;
   const InstanceDesc instance = instances[instance_index];
+  // **A rigid form's structure is built once** (renderer.md, "Static structures for rigid forms"):
+  // its cut is fixed, so the frame builds nothing for it and the top-level record takes its mesh's
+  // static structure (tlas_references.slang). Left out before it is counted, so it is neither
+  // built, wanted nor dropped.
+  if ((instance.flags & k_instance_static_rt) != 0) return;
   uint* slots = (uint*)g_params.slots;
   if (caster) {
     // **A deformed caster the pool had no room for is not built** (renderer.md, "Shadows"). A
@@ -254,28 +263,62 @@ void ranges_main(uint3 group_thread : SV_GroupThreadID) {
     return;
   }
   if (t != 0) return;
-  // Drawn clusters first, instance by instance; an instance that does not fit keeps nothing — its
-  // casters go with its drawn clusters, since they would cast a part of its shadow and not the
-  // rest — and the next one is tried, so a large instance cannot starve every small one behind
-  // it. Then the other instances' casters, the same way, from what is left.
+  // **Nearest first, and within one distance drawn clusters before casters** (renderer.md, "The
+  // ray tracing chain's memory"). The order is a rank at a time — the prefix, then a streamed
+  // world's rings inside out, each by tile key and slot, which the CPU lays out with the tables —
+  // and within a rank the drawn clusters instance by instance, then the casters: an instance that
+  // does not fit keeps nothing — its casters go with its drawn clusters, since they would cast a
+  // part of its shadow and not the rest — and the next one is tried, so a large instance cannot
+  // starve every small one behind it. So what a frame past its capacity loses is the farthest
+  // ring's casters, then its instances, then the next ring's, never a near tree before a far one,
+  // and the same instances whatever order the atomics ran in. Without an order (a scene read
+  // whole) the instances are one rank in instance order, as before.
   uint left = g_params.capacity;
   uint dropped_drawn = 0;
-  for (uint i = 0; i < g_params.instance_count; ++i) {
-    if (drawn[i] <= left) {
-      left -= drawn[i];
-    } else {
+  uint dropped_casters = 0;
+  const uint k_visited = 0x80000000u;
+  uint* order = (uint*)g_params.drop_order;
+  const uint order_count = g_params.drop_order != 0 ? order[0] : g_params.instance_count;
+  uint begin_rank = 0;
+  while (begin_rank < order_count) {
+    const uint rank = g_params.drop_order != 0 ? order[2 + 2 * begin_rank + 1] : 0u;
+    uint end_rank = begin_rank;
+    while (end_rank < order_count &&
+           (g_params.drop_order == 0 || order[2 + 2 * end_rank + 1] == rank)) {
+      const uint i = g_params.drop_order != 0 ? order[2 + 2 * end_rank] : end_rank;
+      if (i < n) {
+        if (drawn[i] <= left) {
+          left -= drawn[i];
+        } else {
+          drawn[i] = 0;
+          casters[i] = 0;
+          ++dropped_drawn;
+        }
+        drawn[i] |= k_visited;
+      }
+      ++end_rank;
+    }
+    for (uint k = begin_rank; k < end_rank; ++k) {
+      const uint i = g_params.drop_order != 0 ? order[2 + 2 * k] : k;
+      if (i >= n) continue;
+      if (casters[i] <= left) {
+        left -= casters[i];
+      } else {
+        casters[i] = 0;
+        ++dropped_casters;
+      }
+    }
+    begin_rank = end_rank;
+  }
+  // An instance the order did not name builds nothing (and is counted), so the build never holds
+  // more than the capacity whatever the order says.
+  for (uint i = 0; i < n; ++i) {
+    if ((drawn[i] & k_visited) != 0) {
+      drawn[i] &= ~k_visited;
+    } else if (drawn[i] + casters[i] != 0) {
       drawn[i] = 0;
       casters[i] = 0;
       ++dropped_drawn;
-    }
-  }
-  uint dropped_casters = 0;
-  for (uint i = 0; i < g_params.instance_count; ++i) {
-    if (casters[i] <= left) {
-      left -= casters[i];
-    } else {
-      casters[i] = 0;
-      ++dropped_casters;
     }
   }
   uint total = 0;
