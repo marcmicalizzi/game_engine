@@ -98,9 +98,32 @@ TEST_CASE("flora motion: every catalogued species has explicit compliance; unkno
   for (const auto& info : geometry::k_flora_species) {
     CAPTURE(info.name);
     FloraMesh mesh;
+    // A species that never moves (the cover's mats) is no tree: refused, and drawn rigid silently.
+    if (info.motion == geometry::FloraMotionKind::none) {
+      CHECK_FALSE(flora_mesh({parts.data(), parts.size()}, {}, info.name, mesh));
+      continue;
+    }
     REQUIRE(flora_mesh({parts.data(), parts.size()}, {}, info.name, mesh));
     CHECK(flora_stiffness(info.name).leaf == info.compliance[3]);
+    // R95: the field kind is the catalogue's, with its leaf compliance; the trees are posed by
+    // parts.
+    CHECK(mesh.field == (info.motion == geometry::FloraMotionKind::field));
+    if (mesh.field) CHECK(mesh.field_compliance == info.compliance[3]);
   }
+  // The sward is grass posed as a field, cast into the nearest cascade at rest and never traced;
+  // every tree keeps the defaults.
+  const geometry::FloraSpeciesInfo* sward = geometry::flora_species_info("sward");
+  REQUIRE(sward != nullptr);
+  CHECK(sward->motion == geometry::FloraMotionKind::field);
+  CHECK_FALSE(sward->casters.traced);
+  CHECK(sward->casters.cascades == 1);
+  CHECK(sward->casters.rest_pose);
+  const geometry::FloraSpeciesInfo* maple = geometry::flora_species_info("maple");
+  REQUIRE(maple != nullptr);
+  CHECK(maple->motion == geometry::FloraMotionKind::parts);
+  CHECK(maple->casters.traced);
+  CHECK(maple->casters.cascades == geometry::k_flora_all_cascades);
+  CHECK_FALSE(maple->casters.rest_pose);
   FloraMesh mesh;
   CHECK_FALSE(flora_mesh({parts.data(), parts.size()}, {}, "missing_profile", mesh));
 }

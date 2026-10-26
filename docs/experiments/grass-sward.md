@@ -282,6 +282,19 @@ above). The speeds do not scale with the wind's strength, which would make the p
 change times the clock; a turning wind re-phases the gust far from the world's origin (the mean lean
 does not jump).
 
+**Measured** (renderer.md, "The field kind", has the table and the machine's state): the cooked
+dense meadow's flight at 1920×1080 went from 35.7 ms of GPU (13.0 ms cascades, 22.3 ms pool pass,
+15.3 ms CPU posing, 2.6 GB of tail room for 4,514 card records) to 1.42 ms (0.11, 0.09, 0.14 ms, no
+grass record), and at 11520×2160 from 60.1 to 6.9 ms; cascade pairs fell from 370,918 to 3,526 at
+1080p. The POC's bounded 64 × 64 m dense sward, 173 ms of GPU on 51ef062a, draws in 7.6 ms
+offscreen at 1920×1080 (4.6 ms cascades, 0.44 ms pool) and 23.9 ms at 11520×2160. A full-density
+card container keeps 16 of its 1,040 blades once loaded (1,040 parts before). None of these is a
+quiet run.
+
+**Still open on the engine side**: section 41 in the resolve (`ao` on the sky's ambient, `hue` and
+`age` on the base colour; `thickness` waits for R22) — not reached in R95's budget; walked-track
+history; a gust field that follows a turning wind without re-phasing.
+
 ## V5 asset measurements, 2026-10-25
 
 Independent 256² four-view coverage measurements of seed 8801, variant 0, after fitting with

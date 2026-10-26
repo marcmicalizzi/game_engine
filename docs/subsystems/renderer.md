@@ -2247,6 +2247,33 @@ from the eye (once per thread), a 3×3 product for the root, four sines for the 
 flutter, two integer hashes, the cofactor axis (three cross products), and the rotation's sine and
 cosine — about 120 ALU operations and 20 bytes read, against the tree's 4 + 80.
 
+**What it bought** (2026-10-25; RTX 5090, i9-10980XE, `msvc-release` engine-view, offscreen,
+`--shadows csm --time-of-day 12`, `--repeat 2 --warmup 60 --wait-quiet 120` (never quiet: other
+agents' builds), GPU ms median / p95 / p99; `before` is dcd77811, `after` 7668a437; the meadow is
+G90's cooked dense meadow (`dense-meadow`, 1,310 patches in its ring 1 at the path's end, three
+edge birches) copied to scratch; `machine_state` is CPU by others / GPU busy at start → end, and
+every time is an upper bound):
+
+| Run | GPU total | shadow | pool | resolve | CPU pose ms | parts posed | tail room | shadow pairs | machine_state |
+|---|---|---|---|---|---|---|---|---|---|
+| meadow 1920×1080, before | 35.65 / 41.20 / 41.62 | 12.97 | 22.26 | 0.307 | 15.35 | 8,819,377 | 2,616,732,832 B | 370,918 | 18% / 1% → 22% / 16% |
+| meadow 1920×1080, after | 1.42 / 1.65 / 1.73 | 0.106 | 0.093 | 0.303 | 0.135 | 177 | 2,146,304 B | 3,526 | 40% / 2% → 53% / 99% |
+| meadow 11520×2160, before | 60.06 / 63.46 / 63.85 | 4.45 | 48.09 | 2.652 | 21.24 | 8,819,377 | 2,616,732,832 B | 596,875 | 100% / 1% → 100% / 1% |
+| meadow 11520×2160, after | 6.94 / 7.58 / 7.72 | 0.191 | 0.157 | 2.657 | 1.150 | 177 | 2,146,304 B | 10,707 | 100% / 0% → 100% / 1% |
+| POC v12 bounded sward 1920×1080, after | 7.58 / 8.17 / 8.38 | 4.60 | 0.438 | 0.37 | 1.20 | 160,883 | 24,226,048 B | 555,373 | 50% / 1% → 32% / 72% |
+| POC v12 bounded sward 11520×2160, after | 23.89 / 24.79 / 25.27 | 11.44 | 1.019 | 3.44 | 1.27 | 160,883 | 25,184,512 B | 1,684,604 | 61% / 3% → 26% / 99% |
+
+The tail's room "after" is the birches' reserve: grass takes none (4,514 records before, 0 after),
+and the pose table is the three field blocks and the trees' 177 parts, 2,009,040 bytes. A full
+dense patch's card took a 2,048-part class, 491,520 bytes of poses over three slots, before; it
+takes none now, and its cooked card container keeps 16 of its 1,040 blades (below). The POC's
+bounded dense sward (its `world/v12/comparisons/bounded-sward.json` read as data, its terrain cache
+copied to scratch, `--raster hw --deform-pool-mib 64`, wind 0.7, the grass-clearing view, 4,067
+sward instances) reported 173.2 ms of GPU with 147.8 ms of shadows and 25.5 ms of deformation on
+51ef062a in a window; offscreen here it is 7.6 ms, 4.6 and 0.44. Both frame loops allocate the same
+(26 frames, 1,180 allocations over the flight, the world's streaming of the placements: W73's,
+unchanged by this).
+
 **What holds it.** `authored_view_tests.cpp`: 160 sward patches read whole and streamed in one ring
 and in two, thirty frames into the sway, **0 pixels** different, where the field moves 337 of the
 whole read's pixels against the rigid picture; a second run of the same frames 0 pixels; the
@@ -2277,7 +2304,11 @@ defaults sets none, so every existing scene's instances are the bytes they were.
   drawn by the rasterizers.
 - **The trees' sway LOD** falls out of the same switch: `renderer.flora.rest_pose_cascades_m`
   (default 0, off) is a distance past which every deformed instance casts its rest pose into the
-  cascades — its entries in the cascades' runs take no pool block.
+  cascades — its entries in the cascades' runs take no pool block. Measured at the POC v12
+  bounded scene's hardwoods view (1600 × 900, the same build and flags as the table above, 1,090
+  swaying plants): GPU total 3.83 / 3.30 ms at 0 (off) / 100 m and the pool pass 0.097 / 0.093 ms,
+  with the 50 m run (6.00 ms) taken beside a busy GPU (3% → 98%). Ring 0's trees are near enough
+  that the option moves little there; it stays off until a view with swaying trees far off asks.
 - `renderer.flora.caster_policy=false` casts every species as a tree does, for a before-and-after.
   `FloraStats::casters_nearest`, `casters_rest` and `untraced` count the instances by policy, when
   the instances change.
@@ -2297,7 +2328,10 @@ part's id in its source stays beside the table (`SourceMesh::motion_part_ids`), 
 phase is taken from it (`FloraMesh::phase_id`), so a pruned form sways as its source and the
 streamed-sway tests still differ by 0 pixels. `AuthoredStats::form_parts_before/after` count it; the
 authored test's oak and spruce forms keep 144 of their 151 parts (the oak's cards name every part of
-its crown; the spruce's forms keep 26 and 21 of 27).
+its crown; the spruce's forms keep 26 and 21 of 27). **A cooked grass container is pruned the same
+way at load** (`adopt_container`, grass alone, since a tree's table also feeds the collision): the
+meadow's card containers keep 14 to 16 blades of 270 to 1,040 — `d100-v0/distance.clusters`
+1,040 → 16.
 
 ### A refused commit keeps the device
 

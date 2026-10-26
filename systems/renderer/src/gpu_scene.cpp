@@ -1652,6 +1652,12 @@ bool GpuScene::upload_geometry(const ResolvedSettings& resolved, std::string* er
       for (u32 m = 0; m < data_->parts.size() && m < data_->sources.size(); ++m) {
         const SourceMesh& source = data_->sources[m];
         if (!source.has_motion()) continue;
+        // A contract that does not move (the cover's mats, `FloraMotionKind::none`) is drawn rigid
+        // and is no tree refused: no record, no warning.
+        if (const geometry::FloraSpeciesInfo* info = geometry::flora_species_info(source.species);
+            info != nullptr && info->motion == geometry::FloraMotionKind::none) {
+          continue;
+        }
         const geometry::ClusterMeshPart& part = data_->parts[m];
         const u32 end =
             m + 1 < data_->parts.size() ? data_->parts[m + 1].first_vertex : total_vertices;

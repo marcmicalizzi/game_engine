@@ -164,6 +164,7 @@ bool flora_mesh(std::span<const geometry::ClusterFileMotionPart> parts,
   if (geometry::flora_species_info(species) == nullptr) return false;
   const FloraStiffness stiffness = flora_stiffness(species);
   const geometry::FloraSpeciesInfo& info = *geometry::flora_species_info(species);
+  if (info.motion == geometry::FloraMotionKind::none) return false;  // it never moves
   out.field = info.motion == geometry::FloraMotionKind::field;
   out.field_compliance = stiffness.leaf;
   const bool structured = structure.size() == parts.size();

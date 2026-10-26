@@ -87,8 +87,10 @@ bool read_flora_file(std::string_view text, FloraFile& out, std::string& error) 
     in_range = sward_in_range(checked.sward, error);
   } else {
     error = "unknown flora species \"" + checked.species + "\"; available:";
-    for (const auto& info : geometry::k_flora_species)
-      error += " " + std::string(info.name);
+    for (const auto& info : geometry::k_flora_species) {
+      // A species no flora solver grows (the cover's mats) is the catalogue's, not a recipe's.
+      if (info.motion != geometry::FloraMotionKind::none) error += " " + std::string(info.name);
+    }
     return false;
   }
   return in_range && materials_in_range(out, error);

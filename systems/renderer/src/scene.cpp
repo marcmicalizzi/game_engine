@@ -12,6 +12,7 @@
 #include <domain/content_build/image_identities.h>
 #include <domain/geometry/cluster_file.h>
 #include <domain/geometry/cluster_pages.h>
+#include <domain/geometry/flora_species.h>
 #include <domain/geometry/stress_mesh.h>
 #include <domain/materials/materials.h>
 #include <domain/scene_gen/scene_gen.h>
@@ -40,6 +41,8 @@
 namespace engine::renderer {
 
 namespace {
+
+void prune_form_parts(SourceMesh& form);  // below, beside the forms that take it first
 
 std::string schema_errors(const schema::ReadContext& ctx) {
   std::string text;
@@ -539,6 +542,20 @@ void adopt_container(geometry::ClusterFileData& container_data, const std::strin
     out.motion_vertices = std::move(container_data.motion_vertices);
     out.structural_parts = std::move(container_data.structural_parts);
     out.species = container_data.generator_kind;
+    // **A cooked grass container carries only the blades its vertices use** (R95): a sward's card
+    // container (`distance.clusters`) was cooked with its patch's whole table — 1,040 blades for
+    // three clusters' 192 vertices. Grass alone, because a field's blades have no collider a
+    // vertexless part could stand for; a tree's table is kept whole for the collision.
+    const geometry::FloraSpeciesInfo* info = geometry::flora_species_info(out.species);
+    if (info != nullptr && info->motion == geometry::FloraMotionKind::field) {
+      const u32 before = out.motion_parts.size();
+      prune_form_parts(out);
+      if (out.motion_parts.size() < before) {
+        ENGINE_LOG_INFO(log_renderer, "a grass container's blades pruned to the ones it draws",
+                        log::field("before", before),
+                        log::field("after", static_cast<u32>(out.motion_parts.size())));
+      }
+    }
   }
   out.part_of_cluster = std::move(container_data.cluster_material);
   if (container_data.lod_coverage.size() == lod.mesh.clusters.size())

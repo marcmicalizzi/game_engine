@@ -1081,6 +1081,12 @@ many of the sun's nearest cascades it is drawn into (`k_flora_all_cascades` for 
 whether a cascade draws it from its rest pose. The defaults are a tree's, `parts` and
 `{true, all, false}`, so only the rows that differ name them; `sward` is `field` and
 `{false, 1, true}`, the owner's policy in [grass-sward.md](../experiments/grass-sward.md#confirmed-wire-contract-owner-2026-10-25).
+A third kind, `none`, is a contract that never moves: the `cover` row (the cover capability's
+moss and lichen mats, whose part 0 is a geometry-less root only so collision leaves them out) has
+zero compliance, and the renderer draws such a mesh rigid without the "a tree drawn rigid"
+warning that every cover mesh, its ring forms included, raised on the POC's v12 scene. The cover's
+vines (`ivy`) still have no row: no measured ivy stiffness was found (a search for *Hedera* petiole
+mechanics turned up broad-leaf analogies only), so they stay refused and warned about until one is.
 The compile-time check refuses a `field` species that casts into every cascade: grass bent once
 per cascade would pay the pool pass for every blade in every map. Both structs are pinned in the
 size table (3 and 56 bytes) and neither reaches the GPU; the renderer turns the policy into
