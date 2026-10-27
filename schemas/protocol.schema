@@ -428,9 +428,9 @@ struct RenderSettings @version(14) {
   /// cull pass and the picture's rasterizer draw from the light (hw and vertex paths; the point
   /// lights are unshadowed). hybrid (since version 14): rt on a surface nearer the eye than
   /// `shadow_ray_distance_m`, csm past it plus `shadow_ray_band_m`, blended across the band (hw and
-  /// vertex paths; the ray path traces alone). auto: hybrid wherever the device has cluster
-  /// acceleration structures and ray queries (rt on the ray path; until version 14 rt everywhere),
-  /// csm where it has not (docs/subsystems/renderer.md, "Shadows", "Rays near, maps far").
+  /// vertex paths; the ray path traces alone). auto: rt wherever the device has cluster
+  /// acceleration structures and ray queries, csm where it has not (docs/subsystems/renderer.md,
+  /// "Shadows", "Rays near, maps far").
   shadows: string = "auto"
   /// id, tri, depth, shaded, normals, uv, shadow (the sun's shadow alone: white where it reaches
   /// the surface, black where a shadow ray is blocked, grey where the surface faces away), albedo,

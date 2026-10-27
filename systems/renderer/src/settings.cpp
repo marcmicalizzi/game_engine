@@ -321,12 +321,15 @@ void resolve_settings(const RenderSettings& requested, const gfx::DeviceFeatures
   // the reason rt is: `auto` resolves to maps exactly where it cannot trace.
   const bool map_mode = s.raster == RasterMode::Hardware || out.vertex_path;
   // **Rays near, maps far** (renderer.md, "Rays near, maps far"; R102): both, on a path that
-  // rasterizes its picture and a device that traces — the default there since 2026-10-26. The ray
-  // path draws no maps, so the hybrid is its rays alone; a device that cannot trace has the maps.
-  const bool hybrid_asked = s.shadows == ShadowMode::Hybrid || s.shadows == ShadowMode::Auto;
+  // rasterizes its picture and a device that traces. The ray path draws no maps, so the hybrid is
+  // its rays alone; a device that cannot trace has the maps. Asked for only: `auto` stays the rays
+  // where the device traces, because on the forest it was measured against the hybrid's frame cost
+  // two to three times the rays' (the cascades it draws beside them), and the page says when that
+  // changes.
+  const bool hybrid_asked = s.shadows == ShadowMode::Hybrid;
   out.hybrid = hybrid_asked && out.shadows && map_mode;
-  out.csm = map_mode &&
-            (s.shadows == ShadowMode::Cascaded || out.hybrid || (hybrid_asked && !out.shadows));
+  const bool maps_instead = (hybrid_asked || s.shadows == ShadowMode::Auto) && !out.shadows;
+  out.csm = map_mode && (s.shadows == ShadowMode::Cascaded || out.hybrid || maps_instead);
   if (out.hybrid) {
     if (!(s.shadow_ray_distance_m >= 0.0f)) s.shadow_ray_distance_m = 0.0f;
     if (!(s.shadow_ray_band_m >= 0.0f)) s.shadow_ray_band_m = 0.0f;

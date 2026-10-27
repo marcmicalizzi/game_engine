@@ -33,10 +33,10 @@ enum class RasterMode : u8 { Direct, Hardware, Software, Auto, Vertex, RayTrace 
 // rasterizers from the light and filtered in the resolve. `Hybrid` is both, chosen per pixel by
 // distance (renderer.md, "Rays near, maps far"; R102): the ray query nearer the eye than
 // `RenderSettings::shadow_ray_distance_m`, the maps past it plus `shadow_ray_band_m`, the two
-// blended across the band. `Auto` is the hybrid wherever the device has ray queries and cluster
-// acceleration structures and the path rasterizes its picture (hw, vertex), the rays alone on the
-// ray path, cascaded maps where the device cannot trace, and off on a path that can have neither
-// (direct, sw, auto). Until 2026-10-26 `Auto` was the rays alone on such a device.
+// blended across the band; asked for only, since on the forest it measured slower than the rays
+// alone (renderer.md has the numbers). `Auto` is ray-traced wherever the device has ray queries
+// and cluster acceleration structures, cascaded maps where it has not, and off on a path that can
+// have neither (direct, sw, auto).
 enum class ShadowMode : u8 { Auto, Off, RayTraced, Cascaded, Hybrid };
 
 // **Rays near, maps far**: the hybrid's defaults (renderer.md, "Rays near, maps far", has the
@@ -217,7 +217,9 @@ struct RenderSettings {
   // the eye than `shadow_distance` is not built, and is counted (`Stats::horizon_casters`), the
   // cascades' rule for the rays. Without a `shadow_distance` the horizon is the far side of the
   // scene's bounds, which no caster passes. Off (and the `renderer.rt.caster_horizon` tunable
-  // false) keeps every caster the volumes reach.
+  // false) keeps every caster the volumes reach — except under the hybrid, whose rays' casters
+  // always end at `shadow_ray_distance_m + shadow_ray_band_m`
+  // (`ResolvedSettings::caster_horizon_m`).
   bool rt_caster_horizon = false;
   // One upload per distinct image per scene (docs/subsystems/renderer.md, "One upload per distinct
   // image"): every (mesh, image) a material samples is keyed by its content — the `.tex` build key,
@@ -312,8 +314,8 @@ struct ResolvedSettings {
   // visibility buffer in one list per pass (hw, vertex). Together with `shadows` only in the
   // hybrid.
   bool csm = false;
-  // **Rays near, maps far** (`ShadowMode::Hybrid`, or `Auto` on a device that traces, on the hw and
-  // vertex paths): `shadows` and `csm` both, and the resolve picks between them per pixel by its
+  // **Rays near, maps far** (`ShadowMode::Hybrid` on a device that traces, on the hw and vertex
+  // paths): `shadows` and `csm` both, and the resolve picks between them per pixel by its
   // distance from the eye (`gfx::k_shadow_hybrid`).
   bool hybrid = false;
   u32 shadow_cascades = 0;  // the cascades drawn, 1..4 with `csm`, else 0

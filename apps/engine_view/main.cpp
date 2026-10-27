@@ -287,10 +287,10 @@ constexpr const char* k_usage =
     "                   the resolve; the point lights are unshadowed; hw and vertex paths only.\n"
     "                   hybrid: rt on a surface nearer the eye than --shadow-ray-distance, csm\n"
     "                   past it plus --shadow-ray-band, the two blended across the band; hw and\n"
-    "                   vertex paths (the ray path traces alone). The default is hybrid where the\n"
-    "                   device has cluster acceleration structures and ray queries (rt on the ray\n"
-    "                   path), csm where it has not; an explicit rt on a device without them\n"
-    "                   exits 3 with the sentence `engine-cli gpu.adapters` reports for it\n"
+    "                   vertex paths (the ray path traces alone). The default is rt where the\n"
+    "                   device has cluster acceleration structures and ray queries, csm where it\n"
+    "                   has not; an explicit rt on a device without them exits 3 with the\n"
+    "                   sentence `engine-cli gpu.adapters` reports for it\n"
     "  --shadow-ray-distance <m>  hybrid: metres from the eye the rays answer within (default 100)\n"
     "  --shadow-ray-band <m>  hybrid: metres past that over which the maps take over (default 20)\n"
     "  --shadow-cascades <n>  csm: cascades, 1 to 4 (default 4); a frame whose first cascades\n"
@@ -2004,6 +2004,32 @@ scene::FlythroughOutput output_summary(const renderer::SceneRenderer& view,
   return out;
 }
 
+// **Where the rays end and the maps begin** (renderer.md, "Rays near, maps far"): the hybrid's
+// distances, the casters' horizon, and the last frame's cascades — each one's camera depths and the
+// world a texel spans — which is what the ray distance is chosen against. One JSON object, the
+// summary line's `shadow_fit`; a run along a path prints it on stderr instead (`describe_run`).
+std::string shadow_fit_json(const renderer::ResolvedSettings& resolved,
+                            const renderer::SceneRenderer& view) {
+  char line[256];
+  std::snprintf(line, sizeof(line),
+                "{\"ray_distance_m\":%.2f,\"ray_band_m\":%.2f,\"caster_horizon_m\":%.2f,"
+                "\"cascades\":[",
+                resolved.hybrid ? static_cast<f64>(resolved.settings.shadow_ray_distance_m) : 0.0,
+                resolved.hybrid ? static_cast<f64>(resolved.settings.shadow_ray_band_m) : 0.0,
+                static_cast<f64>(resolved.caster_horizon_m));
+  std::string text = line;
+  const renderer::ShadowCascades& fit = view.shadow_cascades();
+  for (u32 c = 0; resolved.csm && c < fit.count; ++c) {
+    std::snprintf(line, sizeof(line), "%s{\"near_m\":%.3f,\"far_m\":%.3f,\"texel_m\":%.5f}",
+                  c > 0 ? "," : "", static_cast<f64>(fit.splits[c]),
+                  static_cast<f64>(fit.splits[c + 1]),
+                  static_cast<f64>(fit.cascades[c].texel_world));
+    text += line;
+  }
+  text += "]}";
+  return text;
+}
+
 // What a run drew and on what, into a flythrough summary: the scene, the path (a camera path, or
 // a replayed session's log), every mesh's identity and one hash over all of them, and the
 // renderer's settings. Shared by the flythrough, the offscreen replay and a live session's
@@ -2012,6 +2038,10 @@ void describe_run(const renderer::SceneData& scene_data, const Options& options,
                   const std::string& path_name, u64 path_hash,
                   const renderer::ResolvedSettings& resolved, const renderer::SceneRenderer& view,
                   const renderer::GpuScene& gpu_scene, scene::FlythroughSummary& summary) {
+  // The summary has no field for the cascades' fit; a run with maps says it beside it.
+  if (resolved.csm) {
+    std::fprintf(stderr, "engine-view: shadow fit %s\n", shadow_fit_json(resolved, view).c_str());
+  }
   summary.scene = !scene_data.name.empty() ? scene_data.name : options.scene;
   summary.scene_hash = renderer::hash_hex(scene_data.file_hash);
   summary.path = path_name;
@@ -6652,29 +6682,7 @@ int run_view(int argc, char** argv) {
   // The chain's bytes move with its capacity, so the figure is the run's last, not the load's.
   if (stats.rt.bytes > 0) rt_bytes = stats.rt.bytes;
   const std::string rt_text = write_json(rt_summary(stats.rt), JsonWriteOptions{.pretty = false});
-  // **Where the rays end and the maps begin** (renderer.md, "Rays near, maps far"): the hybrid's
-  // distances, the casters' horizon, and the last frame's cascades — each one's camera depths and
-  // the world a texel spans — which is what the ray distance is chosen against.
-  std::string shadow_fit_text;
-  {
-    char line[256];
-    std::snprintf(line, sizeof(line),
-                  "{\"ray_distance_m\":%.2f,\"ray_band_m\":%.2f,\"caster_horizon_m\":%.2f,"
-                  "\"cascades\":[",
-                  resolved.hybrid ? static_cast<f64>(resolved.settings.shadow_ray_distance_m) : 0.0,
-                  resolved.hybrid ? static_cast<f64>(resolved.settings.shadow_ray_band_m) : 0.0,
-                  static_cast<f64>(resolved.caster_horizon_m));
-    shadow_fit_text = line;
-    const renderer::ShadowCascades& fit = view_renderer.shadow_cascades();
-    for (u32 c = 0; resolved.csm && c < fit.count; ++c) {
-      std::snprintf(line, sizeof(line), "%s{\"near_m\":%.3f,\"far_m\":%.3f,\"texel_m\":%.5f}",
-                    c > 0 ? "," : "", static_cast<f64>(fit.splits[c]),
-                    static_cast<f64>(fit.splits[c + 1]),
-                    static_cast<f64>(fit.cascades[c].texel_world));
-      shadow_fit_text += line;
-    }
-    shadow_fit_text += "]}";
-  }
+  const std::string shadow_fit_text = shadow_fit_json(resolved, view_renderer);
   // The process's own footprint, read before anything is torn down: with a container-backed page
   // source this is the number the whole change is about, so it is taken where it still means
   // something. The peak beside it says whether the load ever *materialized* what it then freed.

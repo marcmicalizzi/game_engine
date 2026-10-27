@@ -327,22 +327,29 @@ TEST_CASE("renderer: shadows resolve to maps without ray queries and to rays wit
   ResolvedSettings resolved;
   RenderSettings settings;  // auto
   resolve_settings(settings, rtx, nullptr, resolved);
-  // Rays near and maps far where the device can trace (R102; until 2026-10-26 the rays alone).
-  CHECK(resolved.shadows);
-  CHECK(resolved.csm);
-  CHECK(resolved.hybrid);
-  CHECK(resolved.rt_chain);
-  CHECK_FALSE(resolved.occlusion);  // the rays' structures are built from one visible list
-  CHECK(resolved.shadow_cascades == k_default_shadow_cascades);
-  CHECK(std::string(resolved_shadow_name(resolved)) == "hybrid");
-  // The casters end where the rays do.
-  CHECK(resolved.casters);
-  CHECK(resolved.caster_horizon);
-  CHECK(resolved.caster_horizon_m == k_default_shadow_ray_distance_m + k_default_shadow_ray_band_m);
+  CHECK(resolved.shadows);  // traced where the device can: the 5090's default is unchanged
+  CHECK_FALSE(resolved.csm);
+  CHECK_FALSE(resolved.hybrid);  // asked for only (renderer.md, "Rays near, maps far")
+  CHECK(std::string(resolved_shadow_name(resolved)) == "rt");
   {
+    // The hybrid: rays and maps both, and the casters end where the rays do.
+    RenderSettings asked;
+    asked.shadows = ShadowMode::Hybrid;
+    resolve_settings(asked, rtx, nullptr, resolved);
+    CHECK(resolved.shadows);
+    CHECK(resolved.csm);
+    CHECK(resolved.hybrid);
+    CHECK(resolved.rt_chain);
+    CHECK_FALSE(resolved.occlusion);  // the rays' structures are built from one visible list
+    CHECK(resolved.shadow_cascades == k_default_shadow_cascades);
+    CHECK(std::string(resolved_shadow_name(resolved)) == "hybrid");
+    CHECK(resolved.casters);
+    CHECK(resolved.caster_horizon);
+    CHECK(resolved.caster_horizon_m ==
+          k_default_shadow_ray_distance_m + k_default_shadow_ray_band_m);
     // A shadow distance nearer than the rays' reach bounds the casters instead, with the horizon
     // asked for; without it the rays' reach does.
-    RenderSettings nearer;
+    RenderSettings nearer = asked;
     nearer.shadow_distance = 50.0f;
     nearer.rt_caster_horizon = true;
     resolve_settings(nearer, rtx, nullptr, resolved);
