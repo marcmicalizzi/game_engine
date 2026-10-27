@@ -206,6 +206,7 @@ class PlacementTiles {
                                  bool scene_ground = false) const noexcept;
   bool build(TileCoord tile, u8 ring, TileBlock& out, u32 entries = ~0u, bool for_query = false);
   bool take(const TileEvent& event);
+  void recycle(u64 key, TileBlock&& block);
   void admit();
   // The query cache: a tile's instances and how many entries made them.
   struct QueryTile {
@@ -223,6 +224,10 @@ class PlacementTiles {
   std::unique_ptr<renderer::TerrainSampler> ground_;
   Vector<std::unique_ptr<Entry>> entries_;
   FlatMap<u64, TileBlock> tiles_;
+  // Finite entries' exact per-tile room, made at load and exchanged with the active map. The
+  // empty record stays in the pool while its tile is active. Other generators reuse free blocks.
+  FlatMap<u64, TileBlock> spare_tiles_;
+  Vector<TileBlock> free_blocks_;
   Vector<renderer::SceneInstance> tail_;
   Vector<u8> tail_tags_;
   u32 tail_pairs_ = 0;

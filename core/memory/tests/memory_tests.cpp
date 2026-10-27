@@ -164,3 +164,25 @@ TEST_CASE("memory: DefaultAlloc satisfies the policy and is empty") {
   REQUIRE(p != nullptr);
   alloc.deallocate(p, 64, 16);
 }
+
+#if ENGINE_DEBUG
+TEST_CASE("memory: bounded allocation capture excludes paused work and counts overflow") {
+  mem::AllocationSite sites[1];
+  const u64 before = mem::allocations_on_thread();
+  mem::begin_allocation_capture(sites, 1);
+  void* first = mem::allocate(16, 16);
+  const bool previous = mem::pause_allocation_capture(true);
+  void* excluded = mem::allocate(32, 16);
+  (void)mem::pause_allocation_capture(previous);
+  void* overflow = mem::allocate(64, 16);
+  const u64 dropped = mem::end_allocation_capture();
+  CHECK(sites[0].count == 1);
+  CHECK(sites[0].bytes == 16);
+  CHECK(sites[0].depth > 0);
+  CHECK(dropped == 1);
+  CHECK(mem::allocations_on_thread() == before + 3);
+  mem::deallocate(first, 16, 16);
+  mem::deallocate(excluded, 32, 16);
+  mem::deallocate(overflow, 64, 16);
+}
+#endif

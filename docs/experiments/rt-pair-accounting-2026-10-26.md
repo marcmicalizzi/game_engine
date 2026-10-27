@@ -177,3 +177,10 @@ streaming allocation debt is not closed by R100. The desert-overlook input is un
 (`content/samples/Lantern/Lantern.glb`), so its flight is skipped. Early targeted sandbox runs
 could not write the shared GPU lock; these results are superseded by this elevated, locked
 affected run. A second affected run is required after the final documentation commit.
+
+**Later W73 allocation audit, 2026-10-26.** The 308-allocation streamed-tree second flight above
+is now held to zero, rigid and swaying, with retained tile storage and allocation-site capture;
+see the [before/after attribution](streamed-tree-allocations-2026-10-26.md). The larger frozen
+forest crossing drops from 2,896 to 156 second-flight allocations; its mask-reader scratch and
+two table-copy vector growths remain explicitly recorded there. R100's rendering and accounting
+numbers above are historical and unchanged.

@@ -29,6 +29,7 @@ struct PlacementTiles::Entry {
   const scene_gen::PlacementGeneratorDesc* generator = nullptr;
   void* state = nullptr;
   const renderer::StreamedPlacements* source = nullptr;
+  scene_gen::Placements placed;  // one entry's tile output, kept across arrivals and rebuilds
   ~Entry() {
     if (generator != nullptr) generator->close(state);
   }
@@ -58,6 +59,8 @@ bool PlacementTiles::create(const renderer::SceneData& scene, const PlacementTil
   config_ = config;
   entries_.clear();
   tiles_.clear();
+  spare_tiles_.clear();
+  free_blocks_.clear();
   tail_.clear();
   tail_tags_.clear();
   tail_pairs_ = 0;
@@ -84,6 +87,7 @@ bool PlacementTiles::create(const renderer::SceneData& scene, const PlacementTil
     radius_of_.push_back(
         renderer::ground_radius(scene.lod, part.first_cluster, part.cluster_count));
   const scene_gen::GeneratorRegistry& registry = scene_gen::GeneratorRegistry::global();
+  FlatMap<u64, u32> tile_counts;
   for (const renderer::StreamedPlacements& source : scene.streamed) {
     auto entry = std::make_unique<Entry>();
     entry->source = &source;
@@ -110,11 +114,33 @@ bool PlacementTiles::create(const renderer::SceneData& scene, const PlacementTil
       return false;
     }
     entry->state = state;
+    u32 largest = 0;
+    for (const renderer::StreamedPlacements::TileInstances& bound : source.tile_instances) {
+      tile_counts[tile_key(TileCoord{bound.x, bound.z})] += bound.count;
+      largest = std::max(largest, bound.count);
+    }
+    entry->placed.instances.reserve(largest);
     ENGINE_LOG_INFO(log_world_placements, "placements streamed", log::field("entry", source.where),
                     log::field("generator", source.generator),
                     log::field("meshes", source.meshes.size()));
     entries_.push_back(std::move(entry));
   }
+  u32 total = 0;
+  u32 largest = 0;
+  spare_tiles_.reserve(tile_counts.size());
+  for (u32 i = 0; i < tile_counts.size(); ++i) {
+    TileBlock& spare = spare_tiles_[tile_counts.key_at(i)];
+    const u32 count = tile_counts.value_at(i);
+    spare.instances.reserve(count);
+    spare.tags.reserve(count);
+    total += count;
+    largest = std::max(largest, count);
+  }
+  tiles_.reserve(spare_tiles_.size());
+  ranks_.reserve(spare_tiles_.size());
+  tail_.reserve(total);
+  tail_tags_.reserve(total);
+  earlier_.reserve(largest);
   return true;
 }
 
@@ -187,15 +213,15 @@ bool PlacementTiles::build(TileCoord tile, u8 ring, TileBlock& out, u32 entries,
   out.stood = for_query ? (scene_->terrain.enabled ? scene_->terrain.time_s : 0.0) : stand_time_;
   const scene_gen::TileCoord at{tile.x, tile.z};
   bool ok = true;
-  scene_gen::Placements placed;
   // Each entry is handed the footprints of the entries before it on this tile (ADR-0046 decision
   // 4, as built): the tile is a function of the entries, the seed, the tile, the ground and those.
   earlier_.clear();
   const u32 run = entries < entries_.size() ? entries : entries_.size();
   for (u32 e = 0; e < run; ++e) {
-    const Entry& entry = *entries_[e];
+    Entry& entry = *entries_[e];
     if (entry.generator->occupies != nullptr && !entry.generator->occupies(entry.state, at))
       continue;
+    scene_gen::Placements& placed = entry.placed;
     placed.clear();
     std::string why;
     const i64 start = time::monotonic_ns();
@@ -338,10 +364,7 @@ u32 PlacementTiles::restand(f64 surface_time_s, u32 budget) {
   for (const Rank& rank : ranks_) {
     if (built >= budget) break;
     TileBlock& held = tiles_.value_at(rank.index);
-    TileBlock fresh;
-    if (!build(tile_of_key(rank.key), held.ring, fresh)) ++stats_.failures;
-    fresh.withheld = held.withheld;
-    held = std::move(fresh);
+    if (!build(tile_of_key(rank.key), held.ring, held)) ++stats_.failures;
     ++built;
   }
   stats_.restood += built;
@@ -351,18 +374,43 @@ u32 PlacementTiles::restand(f64 surface_time_s, u32 budget) {
 }
 
 bool PlacementTiles::take(const TileEvent& event) {
-  TileBlock block;
-  const bool built = build(event.tile, event.to, block);
-  if (!built) ++stats_.failures;
   const u64 key = tile_key(event.tile);
   TileBlock* held = tiles_.find_value(key);
-  if (block.instances.empty()) {
-    if (held != nullptr) tiles_.erase(key);
+  if (held != nullptr) {
+    const bool built = build(event.tile, event.to, *held);
+    if (!built) ++stats_.failures;
+    if (held->instances.empty()) {
+      recycle(key, std::move(*held));
+      tiles_.erase(key);
+    }
     return built;
   }
-  block.withheld = held != nullptr && held->withheld;
+  TileBlock block;
+  if (TileBlock* spare = spare_tiles_.find_value(key)) {
+    block = std::move(*spare);
+  } else if (!free_blocks_.empty()) {
+    block = std::move(free_blocks_.back());
+    free_blocks_.pop_back();
+  }
+  const bool built = build(event.tile, event.to, block);
+  if (!built) ++stats_.failures;
+  if (block.instances.empty()) {
+    recycle(key, std::move(block));
+    return built;
+  }
+  block.withheld = false;
   tiles_.insert_or_assign(key, std::move(block));
   return built;
+}
+
+void PlacementTiles::recycle(u64 key, TileBlock&& block) {
+  block.instances.clear();
+  block.tags.clear();
+  if (TileBlock* spare = spare_tiles_.find_value(key)) {
+    *spare = std::move(block);
+  } else if (block.instances.capacity() != 0 || block.tags.capacity() != 0) {
+    free_blocks_.push_back(std::move(block));
+  }
 }
 
 bool PlacementTiles::activate(void* context, const TileEvent& event) {
@@ -386,6 +434,7 @@ void PlacementTiles::deactivate(void* context, const TileEvent& event) {
   const u64 key = tile_key(event.tile);
   TileBlock* held = self->tiles_.find_value(key);
   if (held == nullptr) return;
+  self->recycle(key, std::move(*held));
   self->tiles_.erase(key);
   ++self->stats_.dropped;
 }

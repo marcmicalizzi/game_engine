@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <cstring>
 #include <utility>
 
@@ -34,11 +35,17 @@ f64 rank(const Vector<f64>& sorted, f64 p) {
 thread_local u64 t_left_out_allocations = 0;
 thread_local u64 t_left_out_buffers = 0;
 thread_local u32 t_bookkeeping_depth = 0;
+#if ENGINE_DEBUG
+thread_local bool t_capture_was_paused = false;
+#endif
 
 }  // namespace
 
 FlightBookkeeping::FlightBookkeeping() noexcept : outermost_(t_bookkeeping_depth++ == 0) {
   if (outermost_) {
+#if ENGINE_DEBUG
+    t_capture_was_paused = mem::pause_allocation_capture(true);
+#endif
     allocations_ = mem::allocations_on_thread();
     buffers_ = gfx::buffers_created_on_thread();
   }
@@ -47,6 +54,9 @@ FlightBookkeeping::FlightBookkeeping() noexcept : outermost_(t_bookkeeping_depth
 FlightBookkeeping::~FlightBookkeeping() {
   --t_bookkeeping_depth;
   if (outermost_) {
+#if ENGINE_DEBUG
+    (void)mem::pause_allocation_capture(t_capture_was_paused);
+#endif
     t_left_out_allocations += mem::allocations_on_thread() - allocations_;
     t_left_out_buffers += gfx::buffers_created_on_thread() - buffers_;
   }
@@ -181,6 +191,14 @@ bool fly_camera_path(SceneRenderer& renderer, const CameraPath& path, const Flig
         gfx::buffers_created_on_thread() - FlightBookkeeping::buffers_left_out()};
   };
   auto submit = [&](u32 f, bool recorded, u32 repeat, u32 warmup) {
+#if ENGINE_DEBUG
+    mem::AllocationSite sites[64];
+    mem::begin_allocation_capture(sites, 64);
+    // End even on a refused host turn. The storage belongs to this submission's stack.
+    struct EndCapture {
+      ~EndCapture() { (void)mem::end_allocation_capture(); }
+    } end_capture;
+#endif
     const i64 start = time::monotonic_ns();
     const std::pair<u64, u64> turn = counted();
     // The host's turn, between two frames: a streamed world updates its ring from this camera and
@@ -197,6 +215,9 @@ bool fly_camera_path(SceneRenderer& renderer, const CameraPath& path, const Flig
     }
     renderer.begin_frame();
     const std::pair<u64, u64> begun = counted();
+#if ENGINE_DEBUG
+    (void)mem::pause_allocation_capture(true);
+#endif
     const Stats& stats = renderer.stats();
     if (stats.folded != folded) {
       folded = stats.folded;
@@ -223,7 +244,13 @@ bool fly_camera_path(SceneRenderer& renderer, const CameraPath& path, const Flig
     frame.sky_time_s = options.sky_start_s + options.sun_rate * static_cast<f64>(f) / 60.0;
     submissions.push_back(Submission{repeat, f, recorded});
     const std::pair<u64, u64> before_submit = counted();
+#if ENGINE_DEBUG
+    (void)mem::pause_allocation_capture(false);
+#endif
     const bool ok = renderer.submit_frame(frame, error) != 0;
+#if ENGINE_DEBUG
+    (void)mem::pause_allocation_capture(true);
+#endif
     const std::pair<u64, u64> submitted = counted();
     Submission& mine = submissions[submissions.size() - 1];
     mine.allocations = (begun.first - turn.first) + (submitted.first - before_submit.first);
@@ -231,6 +258,13 @@ bool fly_camera_path(SceneRenderer& renderer, const CameraPath& path, const Flig
     mine.cpu_ms = static_cast<f64>(time::monotonic_ns() - ready) / 1.0e6;
     mine.frame_ms = previous_start != 0 ? static_cast<f64>(start - previous_start) / 1.0e6 : 0.0;
     previous_start = start;
+#if ENGINE_DEBUG
+    if (recorded && mine.allocations != 0) {
+      std::fprintf(stderr, "frame allocation sites repeat=%u frame=%u allocations=%llu\n", repeat,
+                   f, static_cast<unsigned long long>(mine.allocations));
+      mem::print_allocation_capture();
+    }
+#endif
     return ok;
   };
   for (u32 r = 0; r < repeats; ++r) {

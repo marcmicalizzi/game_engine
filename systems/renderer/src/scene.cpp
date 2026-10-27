@@ -1559,6 +1559,7 @@ bool stream_authored(SceneDesc& resolved, Vector<SourceMesh>& sources,
          pairs});
   }
   std::sort(tile_pairs.begin(), tile_pairs.end());
+  Vector<StreamedPlacements::TileInstances> tile_instances;
   u64 floor_pairs = 0;
   for (u32 i = 0; i < tile_pairs.size();) {
     u64 sum = 0;
@@ -1566,6 +1567,9 @@ bool stream_authored(SceneDesc& resolved, Vector<SourceMesh>& sources,
     for (; j < tile_pairs.size() && tile_pairs[j].first == tile_pairs[i].first; ++j)
       sum += tile_pairs[j].second;
     floor_pairs = std::max(floor_pairs, sum);
+    tile_instances.push_back(StreamedPlacements::TileInstances{
+        static_cast<i32>(static_cast<u32>(tile_pairs[i].first >> 32)),
+        static_cast<i32>(static_cast<u32>(tile_pairs[i].first)), j - i});
     i = j;
   }
   out.tail_floor_pairs = static_cast<u32>(std::min<u64>(floor_pairs, 0xFFFFFFFFu));
@@ -1576,6 +1580,7 @@ bool stream_authored(SceneDesc& resolved, Vector<SourceMesh>& sources,
   entry.where = (resolved.name.empty() ? std::string("scene") : resolved.name) + ": instances";
   entry.meshes = std::move(resident);
   entry.motion_key_base = first;  // id n is instance first + n - 1 of the whole read
+  entry.tile_instances = std::move(tile_instances);
   resolved.streamed.push_back(std::move(entry));
   stats.streamed = taken;
   ENGINE_LOG_INFO(log_renderer, "instances streamed by the world", log::field("streamed", taken),

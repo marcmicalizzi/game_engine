@@ -6,6 +6,7 @@ A write-up is not a benchmark log. It is the page a future contributor reads ins
 
 | Experiment | Page | Settles |
 |---|---|---|
+| W73 allocations | [streamed-tree-allocations-2026-10-26.md](streamed-tree-allocations-2026-10-26.md) | frame-thread allocation attribution for streamed trees, retained tile storage and the zero-allocation gate |
 | G90 | [grass-sward.md](grass-sward.md) | species grounding, patch/card/ground coverage, placement and the sward budget ladder; work in progress |
 | R95 ivy | [ivy-stem-mechanics.md](ivy-stem-mechanics.md) | published stem mechanics, the explicit climber analogue and the catalogue's ivy compliance |
 | Rock structure | [rock-structure.md](rock-structure.md) | Joint-directed rock detail, physical feature scales, budget filtering and the owner's photographic references |

@@ -34,6 +34,20 @@ A first fill — engine-view's first frame at a camera the ring has not followed
 **What a tile keeps of where its records are is the document's f64.** `record_position` reads the record's position property as the doubles the document holds (`worldpos`), where it read float32s, and refuses one no cell can name; `TileProjection.position` is a `worldpos` (version 2), so a tile that goes inactive 420 km out keeps its records where they are rather than on a 3.1 cm grid, and reconciliation promotes them from there. A projection written at version 1 reads as the same position (its float32 was written as the double it widens to). `SaveObserver.position` is a `worldpos` too (version 2), and engine-host moves its observers in f64 (`position += DVec3{velocity} * step`, as `kinematics::integrate` moves a cart). Both changed the migration corpus only where the store's bytes changed: the hash a second after loading `v1`, `v2` and `v3` moved, and it was the projections — with the projection's position rounded back to float32 in one experiment build, all three continued to the hashes they had before ([the corpus README](../../content/migration-corpus/README.md)).
 
 ## The consumers
+
+**Finite placement storage survives tile changes** (2026-10-26, W73). The authored scene reader
+hands over exact counts per occupied tile in `StreamedPlacements::tile_instances`, summed across
+entries sharing a tile. `PlacementTiles::create` reserves that tile's instance/tag arrays, each
+entry's largest tile output, the combined tail and admission scratch. A kept pool keyed by tile
+exchanges these arrays with the active map on arrival and departure; a ring change or re-standing
+reuses the held arrays. Storage is proportional to the finite entry's instance count, not its
+largest tile multiplied by every tile. Generators without finite counts reuse returned blocks and
+their entry output at their warm-up high-water marks. This removes the fresh `Placements` and
+`TileBlock` vectors previously constructed at every tile build; admission order, withheld tiles,
+motion keys and placement bytes are unchanged. The CPU regression checks an unseen tile's first
+arrival, rebuilds, departures and reuse without allocations; the renderer's streamed-tree flight
+holds the complete host/renderer path to zero in its second flight. The
+[allocation hunt](../experiments/streamed-tree-allocations-2026-10-26.md) records attribution and runs.
 Since R100 (2026-10-26), placements receive the renderer's full fixed reservation, including
 terrain replacement slots, in `PlacementTilesConfig::fixed_pairs`, and its visibility ceiling in
 `max_pairs`. Each admitted tile pays `renderer::reserved_tile_pairs`, the layout's rounded block

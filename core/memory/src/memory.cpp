@@ -3,12 +3,23 @@
 #include <core/memory/memory.h>
 
 #include <atomic>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <mutex>
 
 #if ENGINE_PLATFORM_WINDOWS
 #include <malloc.h>
+#endif
+
+#if ENGINE_DEBUG
+#if ENGINE_PLATFORM_WINDOWS
+#define WIN32_LEAN_AND_MEAN
+#define NOMINMAX
+#include <windows.h>
+#else
+#include <execinfo.h>
+#endif
 #endif
 
 #ifndef ENGINE_MEMORY_TRACKING
@@ -97,6 +108,36 @@ AtomicStats g_total;
 std::atomic<u64> g_allocation_counter{0};
 // The calling thread's own count: a plain increment, no atomic, since only its thread writes it.
 thread_local u64 t_allocations = 0;
+
+#if ENGINE_DEBUG
+thread_local AllocationSite* t_sites = nullptr;
+thread_local u32 t_site_capacity = 0;
+thread_local u64 t_sites_dropped = 0;
+thread_local bool t_capture_paused = false;
+
+void capture_allocation(usize bytes) noexcept {
+  if (t_sites == nullptr || t_capture_paused) return;
+  void* stack[16]{};
+#if ENGINE_PLATFORM_WINDOWS
+  const u32 depth = ::CaptureStackBackTrace(1, 16, stack, nullptr);
+#else
+  const u32 depth = static_cast<u32>(::backtrace(stack, 16));
+#endif
+  for (u32 i = 0; i < t_site_capacity; ++i) {
+    AllocationSite& site = t_sites[i];
+    if (site.count == 0) {
+      std::memcpy(site.stack, stack, sizeof(stack));
+      site.depth = depth;
+    } else if (site.depth != depth || std::memcmp(site.stack, stack, sizeof(stack)) != 0) {
+      continue;
+    }
+    ++site.count;
+    site.bytes += bytes;
+    return;
+  }
+  ++t_sites_dropped;
+}
+#endif
 
 #if ENGINE_MEMORY_TRACKING
 
@@ -245,6 +286,52 @@ u64 allocation_counter() noexcept { return g_allocation_counter.load(std::memory
 
 u64 allocations_on_thread() noexcept { return t_allocations; }
 
+#if ENGINE_DEBUG
+void begin_allocation_capture(AllocationSite* sites, u32 capacity) noexcept {
+  ENGINE_ASSERT(t_sites == nullptr, "allocation captures cannot nest");
+  for (u32 i = 0; i < capacity; ++i)
+    sites[i] = AllocationSite{};
+  t_sites = sites;
+  t_site_capacity = capacity;
+  t_sites_dropped = 0;
+  t_capture_paused = false;
+}
+
+bool pause_allocation_capture(bool paused) noexcept {
+  const bool previous = t_capture_paused;
+  t_capture_paused = paused;
+  return previous;
+}
+
+void print_allocation_capture() noexcept {
+#if ENGINE_PLATFORM_WINDOWS
+  std::fprintf(stderr, "allocation image base=%p\n",
+               static_cast<void*>(::GetModuleHandleW(nullptr)));
+#endif
+  for (u32 i = 0; i < t_site_capacity && t_sites[i].count != 0; ++i) {
+    const AllocationSite& site = t_sites[i];
+    std::fprintf(stderr, "allocation site count=%llu bytes=%llu stack=",
+                 static_cast<unsigned long long>(site.count),
+                 static_cast<unsigned long long>(site.bytes));
+    for (u32 s = 0; s < site.depth; ++s)
+      std::fprintf(stderr, "%s%p", s == 0 ? "" : ",", site.stack[s]);
+    std::fprintf(stderr, "\n");
+#if ENGINE_PLATFORM_LINUX
+    // Also print module-relative offsets for PIE executables, usable after the process exits.
+    ::backtrace_symbols_fd(site.stack, static_cast<int>(site.depth), 2);
+#endif
+  }
+  if (t_sites_dropped != 0)
+    std::fprintf(stderr, "allocation sites truncated: %llu allocations\n",
+                 static_cast<unsigned long long>(t_sites_dropped));
+}
+
+u64 end_allocation_capture() noexcept {
+  t_sites = nullptr;
+  return t_sites_dropped;
+}
+#endif
+
 // --- allocation -----------------------------------------------------------------------------
 
 void* try_allocate(usize bytes, usize align) noexcept {
@@ -256,6 +343,9 @@ void* try_allocate(usize bytes, usize align) noexcept {
 
   g_allocation_counter.fetch_add(1, std::memory_order_relaxed);
   ++t_allocations;
+#if ENGINE_DEBUG
+  capture_allocation(bytes);
+#endif
   g_total.record_allocation(bytes);
 #if ENGINE_MEMORY_TRACKING
   const TagId tag = t_current_tag;
