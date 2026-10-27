@@ -91,9 +91,9 @@ TEST_CASE(
     const f32 py = -static_cast<f32>(i) * 0.25f;
     const f32 pz = static_cast<f32>(i) * 0.125f;
     const i32 cell[] = {(i & 1) == 0 ? 6548 : -6548, 0, 1562500};
-    const f64 rest[] = {(static_cast<f64>(63.999f) + static_cast<f64>(0.00001f) + static_cast<f64>(px)) * 1000.0,
-                        (0.125 + static_cast<f64>(py)) * 1000.0,
-                        (-0.25 + static_cast<f64>(pz)) * 1000.0};
+    const f64 rest[] = {
+        (static_cast<f64>(63.999f) + static_cast<f64>(0.00001f) + static_cast<f64>(px)) * 1000.0,
+        (0.125 + static_cast<f64>(py)) * 1000.0, (-0.25 + static_cast<f64>(pz)) * 1000.0};
     const u32 axis = i % 3;
     const u32 a = axis == 0 ? 2 : 0;  // the plane's u: z for projection 0, x otherwise
     const u32 b = axis == 1 ? 2 : 1;  // its v: z for projection 1, y otherwise

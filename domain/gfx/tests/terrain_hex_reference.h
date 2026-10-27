@@ -72,12 +72,14 @@ inline TerrainHexRef terrain_hex_reference(i32 cu, i32 cv, f64 fu_mm, f64 fv_mm,
     corner[2][0] = 0, corner[2][1] = 1;
   }
   f64 sum = 0, squares = 0;
-  for (u32 k = 0; k < 3; ++k)
-    sum += (w[k] = std::pow(w[k], gamma));
-  for (u32 k = 0; k < 3; ++k)
-    squares += (w[k] /= sum) * w[k];
-  for (u32 k = 0; k < 3; ++k)
-    hex.weight[k] = w[k];
+  for (u32 k = 0; k < 3; ++k) {
+    w[k] = std::pow(w[k], gamma);
+    sum += w[k];
+  }
+  for (u32 k = 0; k < 3; ++k) {
+    hex.weight[k] = w[k] / sum;
+    squares += hex.weight[k] * hex.weight[k];
+  }
   hex.gain = 1.0 / std::sqrt(squares);
   const u32 seed = terrain_hash(static_cast<u32>(pitch) ^ 0x9e3779b9u);
   for (u32 k = 0; k < 3; ++k) {

@@ -12,8 +12,10 @@ nonperiodic sampler, at what cost, and does the far ground regain variance at th
 random tile offsets (three reads per map per projection), Burley's exponentiated weights at
 power 7, Heitz and Neyret's variance-preserving operator applied to the texels directly (no
 Gaussian transform, so **no lookup table, no second texture and no container section**), an
-optional bounded per-tile turn with Mikkelsen's normal reorientation, and no detail fade. The
-measurements are below.
+optional bounded per-tile turn with Mikkelsen's normal reorientation, and no detail fade. On the
+forest it costs 0.2–0.7 ms of resolve at 2560×1440 and 1.7–2.3 ms at 11520×2160, no residency,
+and gives the 150–500 m ground its texture back (it was flat means); past 500 m it adds little,
+because the mips there hold little — the far blotches are mostly the masks' patches.
 
 ## Sources
 
@@ -121,4 +123,75 @@ stripes is 0.24 of that across them with offsets alone (all of it in the tiles' 
 
 ## Measurements on the forest
 
-*(filled below once measured)*
+**Setup.** This worktree's `engine-view` in `msvc-release` (RTX 5090), offscreen, the POC's frozen
+v14 scene (`reports/quality-v15/engine-c1ee971d/runs/expanded-forest-rt-wide-…/scene.json`) copied
+to scratch with its tile set's `ddc` pointed at a scratch copy of `world/v14/ddc`; the arguments of
+the POC's run (`--terrain-tiles --terrain-far 6 --lod 1 --time-of-day 15 --no-lights --raster hw`,
+`--rt-budget-mib 1024 --deform-pool-mib 64`, flora motion on) with `--shadows csm`, so that the
+resolve's time is its material work and not its shadow rays. *Before* is the base (5552a2b3) on the
+scene as it is; *after* is this change on the same scene with all nine triplanar layers
+`"sampling": "Stochastic"` (no turn). Views: the owner's tag 5 (the mountain) and tag 1 (the beach)
+from `surface-audit/tag-0N-path.json`, and **across the lake** from tag 1's place 30 m up, looking
+at (−755, 15, 711), the far shore 300 m to 2 km out. 241 frames of a still camera, `--wait-quiet 120`.
+
+**Machine state**: never quiet tonight. Every run waited its 120 s and measured anyway, with other
+agents' GPU jobs holding the GPU lock (`claude-engine`, `codex-night-astra-relief`,
+`codex-night-sol-alloc`), other processes at 9–100% of the CPU and the GPU 1–100% busy at start.
+The totals swing by a factor of three between neighbouring runs and are not comparable; the
+resolve's own GPU time was stable within each run (p95 within 2% of the median) and is the number
+quoted, as an upper bound.
+
+| view | size | resolve before (ms) | resolve after (ms) | Δ | texture residency before / after |
+|---|---|---:|---:|---:|---|
+| tag 5, mountain | 2560×1440 | 0.71 | 1.38 | +0.67 | 383.9 / 383.9 MiB |
+| tag 1, beach | 2560×1440 | 0.70 | 0.86 | +0.16 | 383.9 / 383.9 MiB |
+| across the lake | 2560×1440 | 0.63 | 0.80 | +0.17 | 383.9 / 383.9 MiB |
+| tag 5, mountain | 11520×2160 | 3.52 | 5.84 | +2.32 | 383.9 / 383.9 MiB |
+| tag 1, beach | 11520×2160 | 5.12 | 6.78 | +1.66 | 383.9 / 383.9 MiB |
+| across the lake | 11520×2160 | 3.63 | 5.75 | +2.12 | 383.9 / 383.9 MiB |
+
+**Samples per ground pixel.** A tiled layer reads 9 texels inside `detail_far_m` (128 m here) and
+**none** past it — it is its mean there — so most of the forest's far ground cost no texture reads
+at all before. A stochastic layer reads 9 on ground under 16.6° (where the side projections' share,
+sin⁴/(sin⁴ + cos⁴), is under 1/128), 18 on steeper ground, 27 at a three-way corner, at every
+distance, times the one to four layers a mask tile weighs there. That is the whole of the cost: the
+mountain (tag 5) is steep, so it reads two projections nearly everywhere, and the far ground in
+every view went from 0 reads to 9–18 per layer. Texture residency does not move: no texture,
+table or section is added.
+
+**The same bytes.** The base and this change draw the tiled scene to identical PNGs, shaded and
+albedo, at all three views at 2560×1440 (file hashes equal).
+
+**The blotch measure.** Albedo (`--view albedo`) of the same scene with its instances, placements
+and fires removed, so every brown pixel is ground; each ground pixel's world point found by marching
+the source heightfield (`region.f32`, 0.5 m) along the pixel's ray; the points binned into
+50 m × 50 m windows; in each window of 30 points or more, the standard deviation of linear
+luminance, and a fine-scale deviation (each pixel less the mean of its 5×5 ground neighbours, the
+part of the variation that is not the masks' patches). Means and medians over the windows:
+
+| view, band | size | window σ, median: before → after | fine σ, mean: before → after |
+|---|---|---|---|
+| across the lake, 150–500 m | 2560×1440 | 0.0000 → 0.0028 | 0.0035 → 0.0061 |
+| across the lake, 150–500 m | 11520×2160 | 0.0000 → 0.0035 | 0.0018 → 0.0061 |
+| across the lake, 500 m–2 km | 2560×1440 | 0.0040 → 0.0061 | 0.0251 → 0.0259 |
+| across the lake, 500 m–2 km | 11520×2160 | 0.0174 → 0.0214 | 0.0154 → 0.0181 |
+| tag 1, 150–500 m | 11520×2160 | 0.0110 → 0.0095 | 0.0129 → 0.0153 |
+| tag 1, 500 m–2 km | 11520×2160 | 0.0646 → 0.0666 | 0.0232 → 0.0263 |
+| tag 5, 500 m–2 km | 11520×2160 | 0.0861 → 0.0862 | 0.0356 → 0.0376 |
+
+Before, the median window across the lake from 150 to 500 m has **no** variation at all (σ 0): it is
+one layer's mean, and the only change across the ground is at the masks' patch edges — the blotch,
+measured. After, every window carries the texture's own variation at its mip, and the fine scale
+rises 1.7× at 2560 and 3.4× at 11520 there; the far shore's gravel band shows its grain
+(`captures/before-lake-2560-farshore-x2.png` against `after-…`). **Past 500 m the gain is small**
+(window σ +0.002 at 2560, +0.004 at 11520): at 1–3 m repeats a pixel there covers 0.4–4 m of
+ground along the view, so the mip it selects is within one to three levels of the image's average
+and holds little of the texture's variance. The far ground's blotchiness past 500 m is mostly the
+masks' patches and the layers' mean colours themselves (the window σ is dominated by windows
+holding a patch edge), which a sampler cannot change: that is content (patch scale and contrast) and
+R92/R99 work, not R96's.
+
+Captures (scratch, not committed): the six albedo and six shaded runs per state under the agent's
+scratch `stochastic/runs/` (`albedo-before-lake/view.png`, `albedo-after-lake/view.png`,
+`ground-{before,after}-{tag05,tag01,lake}[-11520]/view.png`, `{before,after}-{view}-{size}/view.png`
+with their `report.json`), and the far-shore crops in `stochastic/captures/`.

@@ -738,8 +738,10 @@ no lookup table, no second texture and no container section, and adds no texture
   skips a projection whose share is under 1/128 and renormalizes the rest: flat and gently sloped
   ground reads one projection, nine reads per layer (colour, metallic-roughness with height, normal
   at three tiles) — the nine a tiled layer makes reading all three projections; a 45° slope reads
-  18 and a three-way corner 27. The resolve's measured cost on the forest is on the experiments
-  page.
+  18 and a three-way corner 27. Past `detail_far_m` a tiled layer reads nothing (it is its mean),
+  so on far ground a stochastic layer is 9–27 reads per layer where there were none: on the forest
+  the resolve rose 0.2–0.7 ms at 2560×1440 and 1.7–2.3 ms at 11520×2160 with every layer
+  stochastic (a loaded machine; upper bounds), and texture residency did not change.
 - **What holds it.** `gfx: terrain material phases …` checks the GPU's lattice, weights, shifts,
   turns and blend against the double mirror in `domain/gfx/tests/terrain_hex_reference.h` at an eye
   100,000 km out (worst 9 × 10⁻⁶); the CPU cases on the mirror check the statistics (mean to 0.005,
