@@ -618,6 +618,73 @@ TEST_CASE("engine-view: a rigid form's structures built once trace the per-frame
   }
 }
 
+// Roadmap R101 (renderer.md, "The resident cluster structure cache"): the inner ring's trees are
+// rigid full meshes, so their clusters' structures are built once into the cache and referenced
+// by every instance and frame after; with the static forms off, the forms are cut by distance and
+// cached as well. Under traced shadows and under the ray path the picture is the bytes the
+// per-frame build gives (`renderer.rt.cache=false`), and a streamed world's frames build into the
+// cache only what they draw first.
+TEST_CASE("engine-view: a streamed world's cached structures trace the per-frame build's bytes") {
+  const test::TempDir tmp("engine_view_rt_cache");
+  REQUIRE(write_text(tmp.file("oak.flora.json"), k_oak));
+  REQUIRE(write_text(tmp.file("spruce.flora.json"), k_spruce));
+  REQUIRE(write_text(
+      tmp.file("streamed.json"),
+      scene_text(R"({"tile_size":16,"rings":[{"radius":1.5},{"radius":3},{"radius":6}]})")));
+  REQUIRE(write_text(tmp.file("path.json"),
+                     R"({"format":"engine.camera-path.v1","name":"across","fps":10,"keys":[)"
+                     R"({"time":0,"position":[-60,14,10],"target":[30,2,0]}]})"));
+  const auto capture = [&](const char* png, const std::vector<const char*>& extra) {
+    std::vector<std::string> args = base_args(tmp, "streamed.json", "path.json");
+    args.erase(args.begin() + 9, args.begin() + 11);  // the base's --shadows off
+    for (const char* a : {"--frames", "3", "--capture"})
+      args.push_back(a);
+    args.push_back(tmp.file(png));
+    for (const char* a : extra)
+      args.push_back(a);
+    return view(args);
+  };
+  struct Case {
+    const char* name;
+    std::vector<const char*> mode;
+  };
+  const Case cases[] = {{"traced shadows", {"--shadows", "rt"}},
+                        {"ray path", {"--raster", "rt", "--shadows", "rt"}},
+                        {"forms cut by distance",
+                         {"--shadows", "rt", "--tunable", "renderer.rt.static_forms=false"}}};
+  for (const Case& c : cases) {
+    std::vector<const char*> per_frame = c.mode;
+    for (const char* a : {"--tunable", "renderer.rt.cache=false"})
+      per_frame.push_back(a);
+    const Run cached = capture("cached.png", c.mode);
+    if (cached.exit_code == 3) {
+      MESSAGE("engine-view unavailable here: " << cached.output);
+      return;
+    }
+    REQUIRE_MESSAGE(cached.exit_code == 0, cached.output);
+    const Run every_frame = capture("every.png", per_frame);
+    REQUIRE_MESSAGE(every_frame.exit_code == 0, every_frame.output);
+    const JsonValue cached_summary = summary_of(cached.output);
+    const JsonValue every_summary = summary_of(every_frame.output);
+    const JsonValue* cached_rt = cached_summary.find("rt");
+    const JsonValue* every_rt = every_summary.find("rt");
+    REQUIRE(cached_rt != nullptr);
+    REQUIRE(every_rt != nullptr);
+    const u32 differing = differing_pixels(tmp.file("cached.png"), tmp.file("every.png"));
+    MESSAGE(std::string(c.name) << ": the cache keeps " << field_u64(*cached_rt, "cache_clusters")
+                                << " clusters of " << field_u64(*cached_rt, "cache_meshes")
+                                << " meshes in " << field_u64(*cached_rt, "cache_slots")
+                                << " slots, built " << field_u64(*cached_rt, "cache_built_total")
+                                << " of them; " << differing
+                                << " pixels differ from the per-frame build");
+    CHECK(field_u64(*cached_rt, "cache_meshes") > 0);
+    CHECK(field_u64(*cached_rt, "cache_built_total") > 0);
+    CHECK(field_u64(*cached_rt, "cache_overflow") == 0);
+    CHECK(field_u64(*every_rt, "cache_slots") == 0);
+    CHECK(differing == 0);
+  }
+}
+
 namespace {
 
 // A denser grove than `scene_text`'s — 400 of each tree, a wider inner ring — so that a frame

@@ -119,7 +119,11 @@ ENGINE_EXPECT_SIZE(128, 8, gfx::ClusterDrawParams);
 // VK_NV_cluster_acceleration_structure, and every one of them has 256.
 // 152, not 144: the drop order, which spends a frame's capacity nearest rank first (renderer.md,
 // "The ray tracing chain's memory", 2026-10-25).
-ENGINE_EXPECT_SIZE(160, 8, gfx::ClusterRecordParams);
+// 176, not 160: the resident cluster structure cache's tables and the frame's stamp (renderer.md,
+// "The resident cluster structure cache", R101); the compact hit entries had taken 160.
+ENGINE_EXPECT_SIZE(176, 8, gfx::ClusterRecordParams);
+// The cache's tables, read through an address (R101).
+ENGINE_EXPECT_SIZE(112, 8, gfx::ClusterCacheTables);
 // tlas_references.slang's push block: two addresses and the count (2026-10-04).
 // 80, not 24: the instance table and the frame's eye, because the dispatch writes each record's
 // transform from the eye every frame as well as its reference (ADR-0053, 2026-10-05).

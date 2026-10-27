@@ -292,6 +292,58 @@ void build_cluster_set(CommandList commands, const ClusterSet& set, DeviceAddres
   vkCmdBuildClusterAccelerationStructureIndirectNV(vk::native(commands), &info);
 }
 
+bool cluster_explicit_sizes(const Device& device, const ClusterSetLimits& limits,
+                            ClusterExplicitSizes& out) noexcept {
+  out = ClusterExplicitSizes{};
+  ClusterAsProperties props;
+  if (limits.instantiate || !cluster_as_properties(device, props) || !limits_fit(limits, props)) {
+    return false;
+  }
+  // One structure's most from a query for one: whatever the driver means by the size of a request
+  // for many in this mode, for one it is that one's.
+  ClusterSetLimits one = limits;
+  one.max_clusters = 1;
+  VkClusterAccelerationStructureTriangleClusterInputNV triangles = triangle_input(one);
+  VkClusterAccelerationStructureInputInfoNV input = set_input(one, triangles);
+  input.opMode = VK_CLUSTER_ACCELERATION_STRUCTURE_OP_MODE_EXPLICIT_DESTINATIONS_NV;
+  VkAccelerationStructureBuildSizesInfoKHR sizes{};
+  sizes.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_SIZES_INFO_KHR;
+  vkGetClusterAccelerationStructureBuildSizesNV(device.handles().device, &input, &sizes);
+  if (sizes.accelerationStructureSize == 0) return false;
+  const u64 alignment = props.cluster_alignment != 0 ? props.cluster_alignment : 1;
+  out.structure_bytes = (sizes.accelerationStructureSize + alignment - 1) / alignment * alignment;
+  out.alignment = props.cluster_alignment;
+  VkClusterAccelerationStructureTriangleClusterInputNV all_triangles = triangle_input(limits);
+  VkClusterAccelerationStructureInputInfoNV all = set_input(limits, all_triangles);
+  all.opMode = VK_CLUSTER_ACCELERATION_STRUCTURE_OP_MODE_EXPLICIT_DESTINATIONS_NV;
+  VkAccelerationStructureBuildSizesInfoKHR all_sizes{};
+  all_sizes.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_SIZES_INFO_KHR;
+  vkGetClusterAccelerationStructureBuildSizesNV(device.handles().device, &all, &all_sizes);
+  out.scratch_bytes = all_sizes.buildScratchSize + props.scratch_alignment;
+  return true;
+}
+
+void build_cluster_set_explicit(CommandList commands, const ClusterSetLimits& limits,
+                                DeviceAddress records, DeviceAddress count,
+                                DeviceAddress destinations, const BufferResource& scratch,
+                                u32 alignment) {
+  VkClusterAccelerationStructureTriangleClusterInputNV triangles = triangle_input(limits);
+  VkClusterAccelerationStructureCommandsInfoNV info{};
+  info.sType = VK_STRUCTURE_TYPE_CLUSTER_ACCELERATION_STRUCTURE_COMMANDS_INFO_NV;
+  info.input = set_input(limits, triangles);
+  info.input.opMode = VK_CLUSTER_ACCELERATION_STRUCTURE_OP_MODE_EXPLICIT_DESTINATIONS_NV;
+  info.dstImplicitData = 0;
+  // The scratch's start aligned as `build_cluster_set` aligns it, by the cluster alignment.
+  info.scratchData = align_up(scratch.address, alignment);
+  info.dstAddressesArray = {destinations, sizeof(u64), u64{limits.max_clusters} * sizeof(u64)};
+  info.dstSizesArray = {0, 0, 0};
+  info.srcInfosArray = {records, k_cluster_build_record_bytes,
+                        k_cluster_build_record_bytes * limits.max_clusters};
+  info.srcInfosCount = count;
+  info.addressResolutionFlags = 0;
+  vkCmdBuildClusterAccelerationStructureIndirectNV(vk::native(commands), &info);
+}
+
 void instantiate_cluster_templates(CommandList commands, const ClusterSet& set,
                                    DeviceAddress records, DeviceAddress count,
                                    const BufferResource& scratch) {

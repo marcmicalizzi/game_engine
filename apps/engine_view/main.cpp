@@ -952,6 +952,28 @@ JsonValue rt_summary(const renderer::RtStats& rt) {
   fixed.set("instances", rt.static_instances);
   fixed.set("pairs", rt.static_pairs);
   out.set("static", std::move(fixed));
+  // The resident cluster structure cache (renderer.md, "The resident cluster structure cache";
+  // R101): what it keeps and holds, the last frame's references and builds, and the run's.
+  JsonValue cache = JsonValue::object();
+  cache.set("meshes", rt.cache_meshes);
+  cache.set("clusters", rt.cache_clusters);
+  cache.set("slots", rt.cache_slots);
+  cache.set("slot_bytes", rt.cache_slot_bytes);
+  cache.set("bytes", rt.cache_bytes);
+  cache.set("occupied", rt.cache_occupied);
+  cache.set("references_last", rt.references);
+  cache.set("references_wanted_last", rt.references_wanted);
+  cache.set("peak_references_wanted", rt.peak_references_wanted);
+  cache.set("reference_capacity", rt.reference_capacity);
+  cache.set("reference_limit", rt.reference_limit);
+  cache.set("bytes_per_reference", rt.bytes_per_reference);
+  cache.set("misses_last", rt.cache_misses);
+  cache.set("built_last", rt.cache_built);
+  cache.set("built_total", rt.cache_built_total);
+  cache.set("build_frames", rt.cache_build_frames);
+  cache.set("overflow", rt.cache_overflow);
+  cache.set("evictions", rt.cache_evictions);
+  out.set("cache", std::move(cache));
   return out;
 }
 

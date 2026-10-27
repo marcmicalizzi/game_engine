@@ -461,11 +461,41 @@ class GpuScene {
   // prefix, the rings' slots and the tail as laid out, holes included — less the static forms'
   // (built once) and untraced pairs, in every view. What the first capacity is sized from
   // (`first_rt_capacity`).
-  u64 rt_frame_estimate() const noexcept {
-    const u64 excluded = static_pairs_live_ + untraced_pairs_live_;
-    const u64 pairs = u64{pair_stride_} > excluded ? pair_stride_ - excluded : 0;
-    return pairs * view_count_;
-  }
+  // Since R101 it leaves out the cached instances' pairs as well, which the frame references and
+  // does not build (`rt_reference_estimate`).
+  u64 rt_frame_estimate() const noexcept;
+  // ---- the resident cluster structure cache (R101; docs/subsystems/renderer.md, "The resident
+  // cluster structure cache") -------------------------------------------------------------------
+  //
+  // **A rigid cluster's structure is built once, not once per instance per frame.** A cached mesh
+  // — every mesh of the scene's own but the static forms (they have their own structures) and any
+  // with more than `gfx::k_cluster_cache_max_clusters` clusters — has a key per cluster and form
+  // (drawn opaque, drawn alpha-tested, caster); a rigid instance of it builds no record of its own:
+  // the first frame any instance draws a cluster builds its structure into a slot of
+  // `rt_cache_slots()`, and every bottom-level structure that frame and after references it, until
+  // the least recently drawn are evicted to make room. The slots are sized at create, from the
+  // scene's cached clusters (twice, for the drawn and the caster forms) up to the
+  // `renderer.rt.cache_mib` ceiling (1,024), and never grow: a cache that fills evicts. Off with
+  // `renderer.rt.cache` false, under templates (instantiated every frame by design), under
+  // geometry streaming (a page's clusters move), and on a device whose geometry indices stop short
+  // of 24 bits. The frame's **references** to it are sized by the frames like the capacity, by a
+  // policy of their own (`rt_reference_capacity()`, the `renderer.rt.reference_mib` ceiling).
+  bool rt_cache() const noexcept { return rt_cache_slots_ != 0; }
+  u32 rt_cache_slots() const noexcept { return rt_cache_slots_; }
+  u32 rt_cache_meshes() const noexcept { return rt_cache_meshes_; }
+  u32 rt_cache_clusters() const noexcept { return rt_cache_clusters_; }
+  u64 rt_cache_bytes() const noexcept { return rt_cache_bytes_; }
+  u64 rt_cache_slot_bytes() const noexcept { return rt_cache_stride_; }
+  u64 rt_cache_tables_address() const noexcept { return rt_cache_buffers.tables.address; }
+  // The frame's stamp for the cache's least-recently-drawn rule: a new one every recorded frame.
+  u32 next_rt_cache_frame() noexcept { return ++rt_cache_frame_; }
+  // Whether `instance`'s structures come from the cache: the records pass's `instance_cached`.
+  bool rt_instance_cached(const gfx::InstanceDesc& instance) const noexcept;
+  u32 rt_reference_capacity() const noexcept { return rt_reference_capacity_; }
+  u32 rt_reference_limit() const noexcept { return rt_reference_limit_; }
+  u64 rt_bytes_per_reference() const noexcept { return rt_bytes_per_reference_; }
+  // Every cached pair in every view: what the first reference capacity is sized from.
+  u64 rt_reference_estimate() const noexcept;
   // Reallocates the per-frame part for `clusters` structures (clamped to the limit). The device
   // must be idle with respect to every buffer of the chain: the caller waits first. Nothing else
   // changes — the top-level structure, its bindless slot and the scene-sized buffers stay — so a
@@ -473,7 +503,10 @@ class GpuScene {
   // `beyond_budget` lets the capacity pass `rt_capacity_limit()`, up to `rt_union_clusters()`: a
   // frame that asked to be complete (`FrameDesc::rt_complete`, the reference renderer's) and
   // nothing else.
-  bool resize_ray_tracing(u32 capacity, std::string* error = nullptr, bool beyond_budget = false);
+  // `references` replaces the cache's reference capacity too (0 keeps it): the bottom-level set is
+  // sized for both.
+  bool resize_ray_tracing(u32 capacity, std::string* error = nullptr, bool beyond_budget = false,
+                          u32 references = 0);
   // **Static structures for rigid forms** (docs/subsystems/renderer.md, "Static structures for
   // rigid forms"; `ResolvedSettings::static_forms`). A rigid distance form drawn at its frontier is
   // a fixed cut, so its cluster structures and one bottom-level structure are built here once, at
@@ -1024,6 +1057,17 @@ class GpuScene {
   gfx::ClusterSet clas_set;
   gfx::ClusterBlasSet blas_set;  // every instance's cluster bottom-level structure, one build
   gfx::BufferResource rt_scratch;
+  // The resident cluster structure cache (`rt_cache()`; gfx::ClusterCacheTables documents each):
+  // scene-sized but for `references` and `reference_keys`, which `resize_ray_tracing` sizes.
+  struct RtCacheBuffers {
+    gfx::BufferResource tables;  // the gfx::ClusterCacheTables block, host visible
+    gfx::BufferResource bases, keys, owners, stamps, free_list, misses, miss_records,
+        miss_destinations, scratch, slots;
+    gfx::BufferResource references, reference_keys;
+  };
+  RtCacheBuffers rt_cache_buffers;
+  gfx::ClusterSetLimits rt_cache_limits;  // the misses' explicit build: `slots` clusters
+  u32 rt_cache_alignment = 0;
 
  private:
   bool upload_geometry(const ResolvedSettings& resolved, std::string* error);
@@ -1390,6 +1434,22 @@ class GpuScene {
   u64 untraced_pairs_live_ = 0;
   gfx::ClusterSet static_clas_;
   gfx::ClusterBlasSet static_blas_;
+  // The resident cluster structure cache (`rt_cache()`): per mesh its first cluster's key / 3 or
+  // ~0, the slots, and the reference capacity's policy inputs.
+  Vector<u32> rt_cache_base_;
+  u32 rt_cache_slots_ = 0;
+  u32 rt_cache_meshes_ = 0;
+  u32 rt_cache_clusters_ = 0;
+  u64 rt_cache_bytes_ = 0;
+  u64 rt_cache_stride_ = 0;
+  u64 rt_cache_scratch_bytes_ = 0;
+  u32 rt_cache_frame_ = 0;
+  u32 rt_reference_capacity_ = 0;
+  u32 rt_reference_limit_ = 0;
+  u64 rt_bytes_per_reference_ = 0;
+  bool create_rt_cache(std::string* error);
+  void write_rt_cache_tables() noexcept;
+  void destroy_rt_cache() noexcept;
   // Which meshes are static and which of their clusters are the frontier, before the geometry is
   // uploaded: the cut the cull selects for them is patched to the frontier (`patch_static_lods`).
   void plan_static_forms();

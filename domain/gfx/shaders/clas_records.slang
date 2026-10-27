@@ -123,9 +123,74 @@ struct RecordParams {
   // inside out, each by tile key and slot — or 0 for instance order in one rank.
   uint64_t drop_order;
   uint64_t hit_entries;
+  // **The resident cluster structure cache** (renderer.md, "The resident cluster structure cache";
+  // gfx::ClusterCacheTables): its tables, or 0 for none; and the frame's stamp.
+  uint64_t cache;
+  uint frame;
+  uint cache_pad;
+};
+
+// Mirrors gfx::ClusterCacheTables (112 bytes).
+struct CacheTables {
+  uint64_t bases;              // uint per mesh: its first cluster's key / 3, or ~0
+  uint64_t keys;               // uint per key: its slot, or a mark
+  uint64_t owners;             // uint per slot: its key, or k_cache_empty
+  uint64_t stamps;             // uint per slot: the last frame that drew it
+  uint64_t free_list;          // uint per slot
+  uint64_t misses;             // uint4 per slot: key, cluster, geometry word, 0
+  uint64_t miss_records;       // ClusterRecord per slot
+  uint64_t miss_destinations;  // uint64_t per slot
+  uint64_t references;         // uint64_t per cached reference
+  uint64_t reference_keys;     // uint per cached reference
+  uint64_t scratch;            // uint[4 + k_cache_ages]: free count, threshold, quota, taken, ages
+  uint64_t slot_base;
+  uint slot_stride;
+  uint slot_count;
+  uint mesh_count;
+  uint reference_capacity;
 };
 
 [[vk::push_constant]] ConstantBuffer<RecordParams> g_params;
+
+static const uint k_cache_empty = 0xffffffffu;     // gfx::k_cluster_cache_empty
+static const uint k_cache_claim = 0xfffffffeu;     // gfx::k_cluster_cache_claim
+static const uint k_cache_overflow = 0xfffffffdu;  // gfx::k_cluster_cache_overflow
+static const uint k_cache_forms = 3;               // gfx::k_cluster_cache_forms
+static const uint k_cache_geometry = 1u << 23;     // gfx::k_cluster_cache_geometry
+static const uint k_cache_caster = 1u << 22;       // gfx::k_cluster_cache_caster
+static const uint k_cache_ages = 64;               // gfx::k_cluster_cache_ages
+// record_count's words (gfx::k_cluster_record_count_words)
+static const uint k_count_refs_kept = 4;
+static const uint k_count_refs_wanted = 5;
+static const uint k_count_misses = 6;
+static const uint k_count_miss_built = 7;
+static const uint k_count_miss_overflow = 8;
+static const uint k_count_evicted = 9;
+static const uint k_count_occupied = 10;
+
+CacheTables* cache_tables() { return (CacheTables*)g_params.cache; }
+
+// **A cached instance** (renderer.md, "The resident cluster structure cache"): one whose clusters'
+// structures are the cache's, built once, and not this frame's. Rigid — nothing in the pool moves
+// its vertices, so every instance of its mesh traces the same clusters — and of a mesh the cache
+// keeps. A static form and an untraced instance never reach a records pass that asks.
+bool instance_cached(InstanceDesc instance) {
+  if (g_params.cache == 0 || instance.deform != k_invalid_deform) return false;
+  CacheTables* tables = cache_tables();
+  if (instance.mesh >= tables->mesh_count) return false;
+  uint* bases = (uint*)tables->bases;
+  return bases[instance.mesh] != k_cache_empty;
+}
+
+uint reference_capacity() { return g_params.cache != 0 ? cache_tables()->reference_capacity : 0u; }
+
+// Whether instance `i` is cached, reading the instance table only when there is a cache: a caller
+// of the ranges pass alone (the records tests) hands it no instances.
+bool cached_at(uint i) {
+  if (g_params.cache == 0) return false;
+  InstanceDesc* instances = (InstanceDesc*)g_params.instances;
+  return instance_cached(instances[i]);
+}
 
 static const uint k_index_type_8bit = 1;
 static const uint k_geometry_opaque = 4;
@@ -220,6 +285,23 @@ void records_main(uint3 thread_id : SV_DispatchThreadID) {
 // what "whole instances, in order" needs; it writes what it always wrote.
 static const uint k_ranges_threads = 256;  // numthreads below; the pass dispatches one group
 groupshared uint g_ranges_sum[k_ranges_threads];
+// The cached instances' references (renderer.md, "The resident cluster structure cache"): a second
+// prefix sum beside the built records', because the two are two arrays. A cached instance's
+// bottom-level record points into the cache's `references`, any other's into the frame's own CLAS
+// addresses, and each counts against its own capacity.
+groupshared uint g_cached_sum[k_ranges_threads];
+
+// Takes `n` from the left of the kind the instance is: what the capacity rule spends.
+bool take(inout uint left_built, inout uint left_cached, bool cached, uint n) {
+  if (cached) {
+    if (n > left_cached) return false;
+    left_cached -= n;
+    return true;
+  }
+  if (n > left_built) return false;
+  left_built -= n;
+  return true;
+}
 
 [shader("compute")]
 [numthreads(256, 1, 1)]
@@ -231,38 +313,62 @@ void ranges_main(uint3 group_thread : SV_GroupThreadID) {
   uint* record_count = (uint*)g_params.record_count;
   const uint n = g_params.instance_count;
   const uint t = group_thread.x;
+  // The cache's words and counters start every frame at zero; the passes after this one count
+  // into them (this pass and they are ordered by the graph).
+  if (t < 6) record_count[k_count_misses + t] = 0;
+  if (g_params.cache != 0 && t < 4 + k_cache_ages) ((uint*)cache_tables()->scratch)[t] = 0;
+  uint64_t cached_references = g_params.cache != 0 ? cache_tables()->references : 0;
   const uint per = (n + k_ranges_threads - 1) / k_ranges_threads;
   const uint begin = min(t * per, n);
   const uint end = min(begin + per, n);
   uint own = 0;
-  for (uint i = begin; i < end; ++i)
-    own += drawn[i] + casters[i];
+  uint own_cached = 0;
+  for (uint i = begin; i < end; ++i) {
+    if (cached_at(i)) {
+      own_cached += drawn[i] + casters[i];
+    } else {
+      own += drawn[i] + casters[i];
+    }
+  }
   g_ranges_sum[t] = own;
+  g_cached_sum[t] = own_cached;
   GroupMemoryBarrierWithGroupSync();
   for (uint step = 1; step < k_ranges_threads; step <<= 1) {
     const uint add = t >= step ? g_ranges_sum[t - step] : 0u;
+    const uint add_cached = t >= step ? g_cached_sum[t - step] : 0u;
     GroupMemoryBarrierWithGroupSync();
     g_ranges_sum[t] += add;
+    g_cached_sum[t] += add_cached;
     GroupMemoryBarrierWithGroupSync();
   }
   const uint wanted = g_ranges_sum[k_ranges_threads - 1];
-  if (wanted <= g_params.capacity) {
+  const uint cached_wanted = g_cached_sum[k_ranges_threads - 1];
+  if (wanted <= g_params.capacity && cached_wanted <= reference_capacity()) {
     // Everything fits: nothing is dropped, and each run writes its instances from its prefix.
     uint total = g_ranges_sum[t] - own;
+    uint cached_total = g_cached_sum[t] - own_cached;
     for (uint i = begin; i < end; ++i) {
-      first[i] = total;
       BlasRecord record;
       record.count = drawn[i] + casters[i];
       record.stride = 8;
-      record.references = g_params.clas_addresses + uint64_t(total) * 8;
+      if (cached_at(i)) {
+        first[i] = cached_total;
+        record.references = cached_references + uint64_t(cached_total) * 8;
+        cached_total += record.count;
+      } else {
+        first[i] = total;
+        record.references = g_params.clas_addresses + uint64_t(total) * 8;
+        total += record.count;
+      }
       blas[i] = record;
-      total += record.count;
     }
     if (t == 0) {
       record_count[0] = wanted;
       record_count[1] = wanted;
       record_count[2] = 0;
       record_count[3] = 0;
+      record_count[k_count_refs_kept] = cached_wanted;
+      record_count[k_count_refs_wanted] = cached_wanted;
     }
     return;
   }
@@ -276,8 +382,11 @@ void ranges_main(uint3 group_thread : SV_GroupThreadID) {
   // starve every small one behind it. So what a frame past its capacity loses is the farthest
   // ring's casters, then its instances, then the next ring's, never a near tree before a far one,
   // and the same instances whatever order the atomics ran in. Without an order (a scene read
-  // whole) the instances are one rank in instance order, as before.
+  // whole) the instances are one rank in instance order, as before. A cached instance spends the
+  // references' capacity and any other the frame's own (renderer.md, "The resident cluster
+  // structure cache"), by the same rule.
   uint left = g_params.capacity;
+  uint left_cached = reference_capacity();
   uint dropped_drawn = 0;
   uint dropped_casters = 0;
   const uint k_visited = 0x80000000u;
@@ -291,9 +400,7 @@ void ranges_main(uint3 group_thread : SV_GroupThreadID) {
            (g_params.drop_order == 0 || order[2 + 2 * end_rank + 1] == rank)) {
       const uint i = g_params.drop_order != 0 ? order[2 + 2 * end_rank] : end_rank;
       if (i < n) {
-        if (drawn[i] <= left) {
-          left -= drawn[i];
-        } else {
+        if (!take(left, left_cached, cached_at(i), drawn[i])) {
           drawn[i] = 0;
           casters[i] = 0;
           ++dropped_drawn;
@@ -305,9 +412,7 @@ void ranges_main(uint3 group_thread : SV_GroupThreadID) {
     for (uint k = begin_rank; k < end_rank; ++k) {
       const uint i = g_params.drop_order != 0 ? order[2 + 2 * k] : k;
       if (i >= n) continue;
-      if (casters[i] <= left) {
-        left -= casters[i];
-      } else {
+      if (!take(left, left_cached, cached_at(i), casters[i])) {
         casters[i] = 0;
         ++dropped_casters;
       }
@@ -326,21 +431,29 @@ void ranges_main(uint3 group_thread : SV_GroupThreadID) {
     }
   }
   uint total = 0;
+  uint cached_total = 0;
   for (uint i = 0; i < g_params.instance_count; ++i) {
-    first[i] = total;
     BlasRecord record;
     record.count = drawn[i] + casters[i];
     record.stride = 8;
-    record.references = g_params.clas_addresses + uint64_t(total) * 8;
+    if (cached_at(i)) {
+      first[i] = cached_total;
+      record.references = cached_references + uint64_t(cached_total) * 8;
+      cached_total += record.count;
+    } else {
+      first[i] = total;
+      record.references = g_params.clas_addresses + uint64_t(total) * 8;
+      total += record.count;
+    }
     blas[i] = record;
-    total += drawn[i] + casters[i];
   }
   record_count[0] = total;  // what the build reads: never more than the capacity
   record_count[1] = wanted;
   record_count[2] = dropped_drawn;
   record_count[3] = dropped_casters;
+  record_count[k_count_refs_kept] = cached_total;
+  record_count[k_count_refs_wanted] = cached_wanted;
 }
-
 // Where a cluster's twelve-byte positions live this frame: the mesh's rest-pose float array for
 // a rigid instance, and this **visible entry's** block of the deformed-vertex pool for a deformed
 // one. The block is exactly the cluster's vertex range and is contiguous, which is what lets a
@@ -352,6 +465,52 @@ uint64_t cluster_vertex_address(MeshDesc mesh, InstanceDesc instance, ClusterDes
   const uint base = deform_base(mesh, instance, visible_index);
   if (base != k_no_pool_slot) return mesh.deform_pool + uint64_t(base) * 12;
   return g_params.vertices + uint64_t(cluster.vertex_offset) * 12;
+}
+
+// **A cached instance's entry** (renderer.md, "The resident cluster structure cache"): no record of
+// its own, but a reference — slot `dense` of the cache's `references`, whose address
+// `cache_references_main` writes once every key has its slot — and a look-up of its key. A key
+// whose structure is resident has its slot stamped with this frame, which is what keeps the
+// eviction off it; one that is not is claimed by exactly one thread (the compare-exchange) and
+// listed as a miss, which `cache_assign_main` gives a slot and a build record.
+void emit_cached(uint dense, uint cluster_id, MeshDesc mesh, InstanceDesc instance,
+                 uint visible_index) {
+  CacheTables* tables = cache_tables();
+  MaskTables masks = no_mask_tables();
+  masks.materials = g_params.mask_materials;
+  masks.cluster_materials = g_params.mask_cluster_materials;
+  const bool caster = g_params.caster_count != 0 && visible_index >= caster_base();
+  const bool masked = pair_masked(masks, instance, cluster_id);
+  // The three forms a cluster's structure can take differ in their flags and their name, and the
+  // structure carries both: the drawn opaque one, the drawn alpha-tested one (non-opaque, so the
+  // ray loops test its mask), and the caster (non-opaque, and named as one).
+  const uint form = caster ? 2u : (masked ? 1u : 0u);
+  const uint local = cluster_id - mesh.first_cluster;
+  uint* bases = (uint*)tables->bases;
+  const uint key = (bases[instance.mesh] + local) * k_cache_forms + form;
+  uint* reference_keys = (uint*)tables->reference_keys;
+  reference_keys[dense] = key;
+  Atomic<uint>* keys = (Atomic<uint>*)tables->keys;
+  const uint value = keys[key].load();
+  if (value < k_cache_overflow) {
+    uint* stamps = (uint*)tables->stamps;
+    stamps[value] = g_params.frame;
+    return;
+  }
+  if (value == k_cache_claim) return;  // another entry of this frame claimed it
+  if (keys[key].compareExchange(value, k_cache_claim) != value) return;
+  Atomic<uint>* counts = (Atomic<uint>*)g_params.record_count;
+  const uint index = counts[k_count_misses].add(1);
+  if (index >= tables->slot_count) {
+    // More misses than the cache has slots: no room whatever is evicted.
+    keys[key].store(k_cache_overflow);
+    counts[k_count_miss_overflow].add(1);
+    return;
+  }
+  const bool opaque = !caster && !masked;
+  const uint geometry = local | k_cache_geometry | (caster ? k_cache_caster : 0u);
+  uint4* misses = (uint4*)tables->misses;
+  misses[index] = uint4(key, cluster_id, geometry | ((opaque ? k_geometry_opaque : 0u) << 29), 0u);
 }
 
 // Move the kept entries down to the dense array and write their CLAS build records, or, in the
@@ -391,6 +550,10 @@ void emit_main(uint3 thread_id : SV_DispatchThreadID) {
   MeshDesc* meshes = (MeshDesc*)g_params.meshes;
   const MeshDesc mesh = meshes[instance.mesh];
   const uint dense = instance_first()[instance_index] + dense_local;
+  if (instance_cached(instance)) {
+    emit_cached(dense, cluster_id, mesh, instance, visible_index);
+    return;
+  }
   const uint geometry_index = g_params.hit_entries != 0 ? dense : visible_index;
   if (g_params.hit_entries != 0) {
     uint* entries = (uint*)g_params.hit_entries;
@@ -435,4 +598,168 @@ void emit_main(uint3 thread_id : SV_DispatchThreadID) {
   record.omm_indices = 0;
   ClusterRecord* records = (ClusterRecord*)g_params.records;
   records[dense] = record;
+}
+
+// ---- the resident cluster structure cache (renderer.md, "The resident cluster structure cache") --
+//
+// After the emit pass every cached entry has looked its key up: a resident key's slot carries this
+// frame's stamp, and a missing one is claimed and listed in `misses`. Then, a pass each, over the
+// slots or the references:
+
+// The free slots, listed, and the occupied ones this frame did not draw counted by how many frames
+// ago they were drawn (the age histogram, the last bucket everything older). Slot 0 is the
+// inactive structure a reference without a slot points at, and is never free or evicted.
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void cache_scan_main(uint3 thread_id : SV_DispatchThreadID) {
+  CacheTables* tables = cache_tables();
+  const uint slot = thread_id.x;
+  if (slot == 0 || slot >= tables->slot_count) return;
+  uint* owners = (uint*)tables->owners;
+  Atomic<uint>* scratch = (Atomic<uint>*)tables->scratch;
+  if (owners[slot] == k_cache_empty) {
+    uint* free_list = (uint*)tables->free_list;
+    free_list[scratch[0].add(1)] = slot;
+    return;
+  }
+  uint* stamps = (uint*)tables->stamps;
+  const uint age = g_params.frame - stamps[slot];
+  if (age == 0) return;  // drawn this frame: never evicted
+  scratch[4 + min(age, k_cache_ages - 1)].add(1);
+}
+
+// One thread: how many slots the misses need beyond the free ones, and the oldest ages that hold
+// them — every slot older than `threshold`, and `quota` of those exactly that old. **Least recently
+// drawn first**, to the frame within the histogram's 63, everything older as one.
+[shader("compute")]
+[numthreads(1, 1, 1)]
+void cache_threshold_main(uint3 thread_id : SV_DispatchThreadID) {
+  CacheTables* tables = cache_tables();
+  uint* scratch = (uint*)tables->scratch;
+  uint* record_count = (uint*)g_params.record_count;
+  const uint misses = min(record_count[k_count_misses], tables->slot_count);
+  const uint free = scratch[0];
+  const uint need = misses > free ? misses - free : 0u;
+  uint threshold = k_cache_ages;  // none
+  uint quota = 0;
+  if (need > 0) {
+    uint held = 0;
+    threshold = 1;
+    quota = scratch[4 + 1];  // every slot not drawn this frame, if that is what it takes
+    for (int age = int(k_cache_ages) - 1; age >= 1; --age) {
+      const uint count = scratch[4 + age];
+      if (held + count >= need) {
+        threshold = uint(age);
+        quota = need - held;
+        break;
+      }
+      held += count;
+    }
+  }
+  scratch[1] = threshold;
+  scratch[2] = quota;
+  scratch[3] = 0;
+}
+
+// Evicts what the threshold chose: the key loses its slot (its next draw misses and builds it
+// again) and the slot joins the free list behind the ones the scan found.
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void cache_evict_main(uint3 thread_id : SV_DispatchThreadID) {
+  CacheTables* tables = cache_tables();
+  const uint slot = thread_id.x;
+  if (slot == 0 || slot >= tables->slot_count) return;
+  uint* owners = (uint*)tables->owners;
+  const uint owner = owners[slot];
+  if (owner == k_cache_empty) return;
+  uint* stamps = (uint*)tables->stamps;
+  const uint age = g_params.frame - stamps[slot];
+  if (age == 0) return;
+  Atomic<uint>* scratch = (Atomic<uint>*)tables->scratch;
+  uint* words = (uint*)tables->scratch;
+  const uint bucket = min(age, k_cache_ages - 1);
+  if (bucket < words[1]) return;
+  if (bucket == words[1] && scratch[3].add(1) >= words[2]) return;
+  Atomic<uint>* keys = (Atomic<uint>*)tables->keys;
+  keys[owner].store(k_cache_empty);
+  owners[slot] = k_cache_empty;
+  uint* free_list = (uint*)tables->free_list;
+  free_list[scratch[0].add(1)] = slot;
+  Atomic<uint>* counts = (Atomic<uint>*)g_params.record_count;
+  counts[k_count_evicted].add(1);
+}
+
+// Every miss its slot, in miss order, and its build record and destination; a miss past the free
+// slots — only when this frame's own new clusters outnumber every slot it did not draw — is marked
+// so its references take the inactive structure, and counted. Thread 0 writes the count the
+// explicit build reads and how many slots are occupied after it.
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void cache_assign_main(uint3 thread_id : SV_DispatchThreadID) {
+  CacheTables* tables = cache_tables();
+  uint* record_count = (uint*)g_params.record_count;
+  uint* scratch = (uint*)tables->scratch;
+  const uint misses = min(record_count[k_count_misses], tables->slot_count);
+  const uint free = scratch[0];
+  const uint assigned = min(misses, free);
+  const uint i = thread_id.x;
+  if (i == 0) {
+    record_count[k_count_miss_built] = assigned;
+    record_count[k_count_occupied] = tables->slot_count - 1 - free + assigned;
+  }
+  if (i >= misses) return;
+  uint4* list = (uint4*)tables->misses;
+  const uint4 miss = list[i];
+  Atomic<uint>* keys = (Atomic<uint>*)tables->keys;
+  if (i >= free) {
+    keys[miss.x].store(k_cache_overflow);
+    Atomic<uint>* counts = (Atomic<uint>*)g_params.record_count;
+    counts[k_count_miss_overflow].add(1);
+    return;
+  }
+  uint* free_list = (uint*)tables->free_list;
+  const uint slot = free_list[i];
+  uint* owners = (uint*)tables->owners;
+  uint* stamps = (uint*)tables->stamps;
+  owners[slot] = miss.x;
+  stamps[slot] = g_params.frame;
+  keys[miss.x].store(slot);
+  // The record as the emit pass writes a rigid entry's, from the rest-pose float positions, but
+  // named by the cluster within its mesh (`miss.z`) rather than by a visible entry.
+  ClusterDesc* clusters = (ClusterDesc*)g_params.clusters;
+  const ClusterDesc cluster = clusters[miss.y];
+  ClusterRecord record;
+  record.cluster_id = miss.z & 0xffffff;
+  record.cluster_flags = 0;
+  record.counts = (cluster.triangle_count & 0x1ff) | ((cluster.vertex_count & 0x1ff) << 9) |
+                  (k_index_type_8bit << 24);
+  record.geometry = miss.z;
+  record.strides0 = 1 | (12 << 16);
+  record.strides1 = 0;
+  record.index_buffer = g_params.indices8 + uint64_t(cluster.triangle_offset) * 3;
+  record.vertex_buffer = g_params.vertices + uint64_t(cluster.vertex_offset) * 12;
+  record.geometry_buffer = 0;
+  record.omm_array = 0;
+  record.omm_indices = 0;
+  ClusterRecord* records = (ClusterRecord*)tables->miss_records;
+  records[i] = record;
+  uint64_t* destinations = (uint64_t*)tables->miss_destinations;
+  destinations[i] = tables->slot_base + uint64_t(slot) * tables->slot_stride;
+}
+
+// Every cached reference's address: its key's slot, or the inactive structure for a key the cache
+// had no room for this frame.
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void cache_references_main(uint3 thread_id : SV_DispatchThreadID) {
+  CacheTables* tables = cache_tables();
+  uint* record_count = (uint*)g_params.record_count;
+  const uint d = thread_id.x;
+  if (d >= record_count[k_count_refs_kept]) return;
+  uint* reference_keys = (uint*)tables->reference_keys;
+  uint* keys = (uint*)tables->keys;
+  const uint slot = keys[reference_keys[d]];
+  uint64_t* references = (uint64_t*)tables->references;
+  references[d] =
+      tables->slot_base + (slot < k_cache_overflow ? uint64_t(slot) * tables->slot_stride : 0u);
 }

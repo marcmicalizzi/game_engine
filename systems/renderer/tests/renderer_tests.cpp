@@ -19,6 +19,7 @@
 #include <domain/geometry/cluster_lod.h>
 #include <domain/geometry/stress_mesh.h>
 #include <domain/gfx/device.h>
+#include <foundation/tunables/tunables.h>
 #include <systems/renderer/capture.h>
 #include <systems/renderer/gpu_scene.h>
 #include <systems/renderer/reference.h>
@@ -2174,6 +2175,101 @@ TEST_CASE("renderer: culling stays conservative at every phase of a bend") {
   CHECK(worst_differences == 0);  // nothing visible was culled at any of them
 }
 
+// R101 (renderer.md, "The resident cluster structure cache"): a rigid bar between two skinned ones.
+// The skinned bars' structures are this frame's, built from the pool; the rigid one's are the
+// cache's, built the first frame and referenced after. Under traced shadows and under the ray path
+// the picture is the bytes the per-frame build of everything gives (`renderer.rt.cache=false`).
+TEST_CASE(
+    "renderer: a rigid instance's cached structures beside skinned ones trace the same bytes") {
+  Gpu gpu;
+  if (!gpu.ok) {
+    MESSAGE("renderer unavailable here: " << gpu.why);
+    return;
+  }
+  SkinnedBar bar;
+  build_skinned_bar(bar);
+  constexpr u32 k_width = 200;
+  constexpr u32 k_height = 200;
+  Vector<anim::JointMatrix> matrices;
+  bar_matrices(bar, 45.0f, matrices);
+  Vector<anim::JointMatrix> both;
+  for (u32 copy = 0; copy < 2; ++copy) {
+    for (const anim::JointMatrix& m : matrices)
+      both.push_back(m);
+  }
+  const u32 joints = matrices.size();
+  const InstanceJoints runs[3] = {{0, joints}, {0, 0}, {joints, joints}};
+  CaptureChannels channels;
+  channels.color = true;
+  channels.ids = true;
+  tunables::Tunable* cache = tunables::find("renderer.rt.cache");
+  REQUIRE(cache != nullptr);
+  auto shoot = [&](RasterMode mode, bool cached, CapturedFrame& out, RtStats& rt,
+                   std::string& why) {
+    REQUIRE(cache->set_from_text(cached ? "true" : "false"));
+    Rig rig;
+    if (!make_bar_scene(bar, 3, joints, 1.0f, rig.data, rig.error)) {
+      why = rig.error;
+      return false;
+    }
+    // The middle bar is rigid: no joints, and so no pool block and a cached structure.
+    rig.data.instance_joints[1] = 0;
+    rig.data.instances[1].bounds_padding = 0.0f;
+    rig.data.skinned_instances -= 1;
+    RenderSettings settings;
+    settings.raster = mode;
+    settings.shadows = ShadowMode::RayTraced;
+    settings.lights = false;
+    if (!rig.finish(gpu.device, settings, k_width, k_height)) {
+      why = rig.error;
+      return false;
+    }
+    std::string error;
+    bool ok = true;
+    for (u32 f = 0; f < 3 && ok; ++f) {
+      FrameDesc frame =
+          skinned_frame(rig.data, std::span<const anim::JointMatrix>(both.data(), both.size()),
+                        std::span<const InstanceJoints>(runs, 3), 3.0f);
+      frame.frame_index = f;
+      ok = f < 2 ? rig.renderer.render_offscreen(frame, &error)
+                 : rig.renderer.capture(frame, channels, out, &error);
+    }
+    rt = rig.renderer.stats().rt;
+    why = error;
+    return ok;
+  };
+  for (const RasterMode mode : {RasterMode::Hardware, RasterMode::RayTrace}) {
+    CapturedFrame per_frame;
+    CapturedFrame cached;
+    RtStats per_frame_rt;
+    RtStats cached_rt;
+    std::string why;
+    const bool shot = shoot(mode, false, per_frame, per_frame_rt, why) &&
+                      shoot(mode, true, cached, cached_rt, why);
+    REQUIRE(cache->set_from_text("true"));
+    if (!shot) {
+      MESSAGE("traced shadows unavailable here: " << why);
+      return;
+    }
+    u32 colour = 0;
+    u32 ids = 0;
+    for (u32 i = 0; i < per_frame.color.size(); ++i)
+      colour += per_frame.color[i] != cached.color[i] ? 1u : 0u;
+    for (u32 i = 0; i < per_frame.ids.size(); ++i)
+      ids += per_frame.ids[i] != cached.ids[i] ? 1u : 0u;
+    MESSAGE(std::string(raster_name(mode))
+            << ": the cached chain built " << cached_rt.built
+            << " structures of its own and referenced " << cached_rt.references << " cached ones ("
+            << cached_rt.cache_built_total << " built into the cache), the per-frame chain built "
+            << per_frame_rt.built << "; " << colour << " colour bytes and " << ids
+            << " id words differ");
+    CHECK(cached_rt.built > 0);       // the skinned bars, from the pool
+    CHECK(cached_rt.references > 0);  // the rigid one, from the cache
+    CHECK(cached_rt.built + cached_rt.references == per_frame_rt.built);
+    CHECK(colour == 0);
+    CHECK(ids == 0);
+  }
+}
 TEST_CASE("renderer: the mesh, vertex and ray paths agree on a posed frame") {
   Gpu gpu;
   if (!gpu.ok) {

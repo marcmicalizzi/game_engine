@@ -19,6 +19,7 @@
 #include <bit>
 #include <cmath>
 #include <cstring>
+#include <limits>
 #include <renderer_log.h>
 
 namespace engine::renderer {
@@ -3963,6 +3964,9 @@ bool GpuScene::create_ray_tracing(const ResolvedSettings& resolved, std::string*
   }
   // The rigid forms' structures, once (renderer.md, "Static structures for rigid forms").
   if (ok) ok = build_static_forms(error);
+  // The rigid meshes' cluster structures, built once each as frames first draw them (renderer.md,
+  // "The resident cluster structure cache").
+  if (ok) ok = create_rt_cache(error);
   if (!ok) return false;
   return lay_out_ray_tracing(error);
 }
@@ -4120,6 +4124,225 @@ bool GpuScene::build_static_forms(std::string* error) {
   return true;
 }
 
+// **The resident cluster structure cache** (renderer.md, "The resident cluster structure cache";
+// R101; gfx::ClusterCacheTables). Every mesh of the scene's own but a static form, up to
+// `gfx::k_cluster_cache_max_clusters` clusters, gets three keys a cluster; the slots are the
+// driver's most for one cluster each, as many as the cached clusters twice over (the drawn and the
+// caster forms) up to `renderer.rt.cache_mib`, made here once and never grown — a cache that fills
+// evicts, which is a cost the frame pays in builds and never a reallocation inside a flight. Slot 0
+// is built now, with no active triangle, for a reference the cache had no room for.
+bool GpuScene::create_rt_cache(std::string* error) {
+  rt_cache_base_.clear();
+  rt_cache_slots_ = rt_cache_meshes_ = rt_cache_clusters_ = 0;
+  rt_cache_bytes_ = rt_cache_stride_ = rt_cache_scratch_bytes_ = 0;
+  if (!ray_tracing_ || rt_limits_.instantiate || streamed_ || !rt_cache_tunable()) return true;
+  const gfx::Device& device = *device_;
+  gfx::ClusterAsProperties props;
+  if (!gfx::cluster_as_properties(device, props) || props.max_geometry_index < 0xffffffu) {
+    return true;  // a cached structure's name needs all 24 bits (gfx::k_cluster_cache_geometry)
+  }
+  const SceneData& data = *data_;
+  rt_cache_base_.assign(data.parts.size(), ~0u);
+  u64 cached = 0;
+  for (u32 m = 0; m < data.parts.size(); ++m) {
+    if (static_build_ && static_mesh(m)) continue;  // built once already, by its frontier
+    const u32 count = data.parts[m].cluster_count;
+    if (count == 0 || count > gfx::k_cluster_cache_max_clusters) continue;
+    rt_cache_base_[m] = static_cast<u32>(cached);
+    cached += count;
+    ++rt_cache_meshes_;
+  }
+  if (cached == 0 || cached * gfx::k_cluster_cache_forms > 0xfff00000u) {
+    rt_cache_base_.clear();
+    rt_cache_meshes_ = 0;
+    return true;
+  }
+  gfx::ClusterSetLimits limits = rt_limits_;
+  limits.instantiate = false;
+  limits.max_geometry_index = 0xffffffu;
+  limits.max_clusters = 1;
+  gfx::ClusterExplicitSizes one;
+  if (!gfx::cluster_explicit_sizes(device, limits, one)) {
+    if (error != nullptr) *error = "the driver gave no size for one cached cluster structure";
+    return false;
+  }
+  const u64 ceiling = u64{rt_cache_mib_tunable()} * 1024 * 1024 / one.structure_bytes;
+  const u64 slot_ceiling = rt_cache_slots_tunable() != 0 ? rt_cache_slots_tunable() : 0x7fffffffu;
+  const u64 slot_total = std::min<u64>({2 * cached + 1, ceiling, slot_ceiling});
+  if (slot_total < 2) {
+    rt_cache_base_.clear();
+    rt_cache_meshes_ = 0;
+    return true;
+  }
+  limits.max_clusters = static_cast<u32>(slot_total);
+  gfx::ClusterExplicitSizes sizes;
+  if (!gfx::cluster_explicit_sizes(device, limits, sizes)) {
+    if (error != nullptr) {
+      *error = "the driver gave no sizes for a cluster cache of " + std::to_string(slot_total);
+    }
+    return false;
+  }
+  rt_cache_limits = limits;
+  rt_cache_alignment = sizes.alignment;
+  rt_cache_stride_ = sizes.structure_bytes;
+  rt_cache_scratch_bytes_ = sizes.scratch_bytes;
+  const u32 slot_count = static_cast<u32>(slot_total);
+  const u64 keys = cached * gfx::k_cluster_cache_forms;
+  RtCacheBuffers& c = rt_cache_buffers;
+  constexpr gfx::BufferUsage k_record_usage = k_address | gfx::BufferUsage::AccelerationBuildInput;
+  constexpr gfx::BufferUsage k_structures = gfx::BufferUsage::AccelerationStorage |
+                                            gfx::BufferUsage::ShaderDeviceAddress |
+                                            gfx::BufferUsage::Storage;
+  // Every key empty, every slot free but slot 0, held by a mark no key is.
+  Vector<u32> empty_keys(static_cast<u32>(keys), gfx::k_cluster_cache_empty);
+  Vector<u32> owners(slot_count, gfx::k_cluster_cache_empty);
+  owners[0] = gfx::k_cluster_cache_claim;
+  Vector<u32> zeros(slot_count, 0u);
+  bool ok =
+      gfx::upload_buffer(device, rt_cache_base_.data(), u64{rt_cache_base_.size()} * sizeof(u32),
+                         k_address, c.bases, error) &&
+      gfx::upload_buffer(device, empty_keys.data(), keys * sizeof(u32), k_address, c.keys, error) &&
+      gfx::upload_buffer(device, owners.data(), u64{slot_count} * sizeof(u32), k_address, c.owners,
+                         error) &&
+      gfx::upload_buffer(device, zeros.data(), u64{slot_count} * sizeof(u32), k_address, c.stamps,
+                         error) &&
+      gfx::create_buffer(device, u64{slot_count} * sizeof(u32), k_address, false, c.free_list,
+                         error) &&
+      gfx::create_buffer(device, u64{slot_count} * 16, k_address, false, c.misses, error) &&
+      gfx::create_buffer(device, u64{slot_count} * gfx::k_cluster_build_record_bytes,
+                         k_record_usage, false, c.miss_records, error) &&
+      gfx::create_buffer(device, u64{slot_count} * sizeof(u64), k_record_usage, false,
+                         c.miss_destinations, error) &&
+      gfx::create_buffer(device, u64{gfx::k_cluster_cache_scratch_words} * sizeof(u32), k_address,
+                         false, c.scratch, error) &&
+      gfx::create_buffer(device, u64{slot_count} * rt_cache_stride_ + one.alignment, k_structures,
+                         false, c.slots, error) &&
+      gfx::create_buffer(device, sizeof(gfx::ClusterCacheTables), k_address, true, c.tables, error);
+  // Slot 0: one triangle whose every vertex's x is NaN, which the device treats as inactive — a
+  // structure nothing can hit, for a reference whose key had no slot.
+  if (ok) {
+    const f32 nan = std::numeric_limits<f32>::quiet_NaN();
+    const f32 positions[9] = {nan, 0.0f, 0.0f, nan, 1.0f, 0.0f, nan, 0.0f, 1.0f};
+    const u8 indices[4] = {0, 1, 2, 0};
+    const u64 alignment = one.alignment != 0 ? one.alignment : 1;
+    const u64 slot_base = (c.slots.address + alignment - 1) / alignment * alignment;
+    gfx::BufferResource vertices_once, indices_once, record_once, destination_once, scratch_once;
+    gfx::ClusterSetLimits single = limits;
+    single.max_clusters = 1;
+    ok = gfx::upload_buffer(device, positions, sizeof(positions), gfx::k_build_input_usage,
+                            vertices_once, error) &&
+         gfx::upload_buffer(device, indices, sizeof(indices), gfx::k_build_input_usage,
+                            indices_once, error) &&
+         gfx::create_buffer(device, gfx::k_cluster_build_record_bytes, k_record_usage, true,
+                            record_once, error) &&
+         gfx::create_buffer(device, sizeof(u64), k_record_usage, true, destination_once, error) &&
+         gfx::create_scratch(device, one.scratch_bytes, scratch_once, error);
+    if (ok) {
+      gfx::ClusterBuildInput in;
+      in.cluster_id = gfx::k_cluster_cache_geometry;
+      in.triangle_count = 1;
+      in.vertex_count = 3;
+      in.vertices = vertices_once.address;
+      in.indices = indices_once.address;
+      in.opaque = true;
+      gfx::write_cluster_build_records(std::span<const gfx::ClusterBuildInput>(&in, 1),
+                                       record_once.mapped);
+      std::memcpy(destination_once.mapped, &slot_base, sizeof(slot_base));
+      ok = gfx::submit_immediate(
+          device,
+          [&](gfx::CommandList cb) {
+            gfx::build_cluster_set_explicit(cb, single, record_once.address, 0,
+                                            destination_once.address, scratch_once, one.alignment);
+            gfx::acceleration_build_barrier(
+                cb, gfx::PipelineStage::AllCommands,
+                gfx::MemoryAccess::MemoryRead | gfx::MemoryAccess::MemoryWrite);
+          },
+          error);
+    }
+    for (gfx::BufferResource* b :
+         {&vertices_once, &indices_once, &record_once, &destination_once, &scratch_once})
+      gfx::destroy_buffer(device, *b);
+  }
+  if (!ok) {
+    destroy_rt_cache();
+    return false;
+  }
+  rt_cache_slots_ = slot_count;
+  rt_cache_clusters_ = static_cast<u32>(cached);
+  rt_cache_bytes_ = c.bases.size + c.keys.size + c.owners.size + c.stamps.size + c.free_list.size +
+                    c.misses.size + c.miss_records.size + c.miss_destinations.size +
+                    c.scratch.size + c.slots.size + c.tables.size;
+  write_rt_cache_tables();
+  ENGINE_LOG_INFO(log_renderer, "cluster structure cache ready",
+                  log::field("meshes", rt_cache_meshes_), log::field("clusters", cached),
+                  log::field("slots", slot_count), log::field("slot_bytes", rt_cache_stride_),
+                  log::field("bytes", rt_cache_bytes_),
+                  log::field("ceiling_mib", rt_cache_mib_tunable()));
+  return true;
+}
+
+void GpuScene::write_rt_cache_tables() noexcept {
+  const RtCacheBuffers& c = rt_cache_buffers;
+  if (c.tables.mapped == nullptr) return;
+  gfx::ClusterCacheTables tables;
+  tables.bases = c.bases.address;
+  tables.keys = c.keys.address;
+  tables.owners = c.owners.address;
+  tables.stamps = c.stamps.address;
+  tables.free_list = c.free_list.address;
+  tables.misses = c.misses.address;
+  tables.miss_records = c.miss_records.address;
+  tables.miss_destinations = c.miss_destinations.address;
+  tables.references = c.references.address;
+  tables.reference_keys = c.reference_keys.address;
+  tables.scratch = c.scratch.address;
+  const u64 alignment = rt_cache_alignment != 0 ? rt_cache_alignment : 1;
+  tables.slot_base = (c.slots.address + alignment - 1) / alignment * alignment;
+  tables.slot_stride = static_cast<u32>(rt_cache_stride_);
+  tables.slot_count = rt_cache_slots_ != 0 ? rt_cache_slots_ : rt_cache_limits.max_clusters;
+  tables.mesh_count = rt_cache_base_.size();
+  tables.reference_capacity = c.references.address != 0 ? rt_reference_capacity_ : 0u;
+  std::memcpy(c.tables.mapped, &tables, sizeof(tables));
+}
+
+void GpuScene::destroy_rt_cache() noexcept {
+  if (device_ == nullptr) return;
+  RtCacheBuffers& c = rt_cache_buffers;
+  for (gfx::BufferResource* b : {&c.tables, &c.bases, &c.keys, &c.owners, &c.stamps, &c.free_list,
+                                 &c.misses, &c.miss_records, &c.miss_destinations, &c.scratch,
+                                 &c.slots, &c.references, &c.reference_keys})
+    gfx::destroy_buffer(*device_, *b);
+  rt_cache_base_.clear();
+  rt_cache_slots_ = rt_cache_meshes_ = rt_cache_clusters_ = 0;
+  rt_cache_bytes_ = rt_cache_stride_ = rt_cache_scratch_bytes_ = 0;
+  rt_cache_limits = gfx::ClusterSetLimits{};
+  rt_cache_alignment = 0;
+  rt_reference_capacity_ = rt_reference_limit_ = 0;
+  rt_bytes_per_reference_ = 0;
+}
+
+bool GpuScene::rt_instance_cached(const gfx::InstanceDesc& instance) const noexcept {
+  if (rt_cache_slots_ == 0 || instance.deform != gfx::k_invalid_deform) return false;
+  if ((instance.flags & (gfx::k_instance_static_rt | gfx::k_instance_untraced)) != 0) return false;
+  return instance.mesh < rt_cache_base_.size() && rt_cache_base_[instance.mesh] != ~0u;
+}
+
+u64 GpuScene::rt_reference_estimate() const noexcept {
+  if (rt_cache_slots_ == 0) return 0;
+  u64 pairs = 0;
+  for (const gfx::InstanceDesc& instance : instance_table_) {
+    if (rt_instance_cached(instance)) pairs += data_->parts[instance.mesh].cluster_count;
+  }
+  return pairs * view_count_;
+}
+
+u64 GpuScene::rt_frame_estimate() const noexcept {
+  const u64 excluded =
+      static_pairs_live_ + untraced_pairs_live_ + rt_reference_estimate() / view_count_;
+  const u64 pairs = u64{pair_stride_} > excluded ? pair_stride_ - excluded : 0;
+  return pairs * view_count_;
+}
+
 // A slot about to be written or dropped stops counting as a static form's instance
 // (static_instances()).
 void GpuScene::uncount_static(u32 slot) noexcept {
@@ -4197,6 +4420,7 @@ void GpuScene::destroy_ray_tracing_layout() noexcept {
 bool GpuScene::lay_out_ray_tracing(std::string* error) {
   const gfx::Device& device = *device_;
   const u32 keep_capacity = rt_capacity_;
+  const u32 keep_references = rt_reference_capacity_;
   destroy_ray_tracing_layout();
   rt_instance_slots_ = dynamic_ ? std::max(instance_capacity_, instance_count_) : instance_count_;
   rt_union_clusters_ = pair_stride_ * view_count_;
@@ -4265,7 +4489,7 @@ bool GpuScene::lay_out_ray_tracing(std::string* error) {
   rt_scene_bytes_ = indices8.size + record_count.size + slots.size + instance_counts.size +
                     blas_records.size + tlas.buffer.size + rt_instances.size +
                     clas_templates.data.size + clas_templates.addresses.size +
-                    clas_templates.sizes.size + static_bytes_;
+                    clas_templates.sizes.size + static_bytes_ + rt_cache_bytes_;
 
   // **The budget, in clusters.** What one cluster of capacity costs comes from the driver's own
   // sizes at a probe count — the structure, its address and size words, its record, its share of
@@ -4300,6 +4524,7 @@ bool GpuScene::lay_out_ray_tracing(std::string* error) {
            u64{count} * (record_bytes + sizeof(u64) + 2 * sizeof(u32));
   };
   const u64 probe_bytes = bytes(set_sizes, blas_sizes, k_probe);
+  const gfx::ClusterBuildSizes blas_probe = blas_sizes;
   probe.max_clusters = 2 * k_probe;
   if (!gfx::cluster_set_build_sizes(device, probe, set_sizes) ||
       !gfx::cluster_blas_set_build_sizes(device, rt_instance_slots_, 2 * k_probe,
@@ -4317,8 +4542,25 @@ bool GpuScene::lay_out_ray_tracing(std::string* error) {
   const u32 budget_mib = resolved_.settings.rt_budget_mib != 0 ? resolved_.settings.rt_budget_mib
                                                                : rt_budget_mib_tunable();
   const u64 budget_clusters = u64{budget_mib} * 1024 * 1024 / rt_bytes_per_cluster_;
+  // With a cache the frame's own records are named under bit 23 (gfx::k_cluster_cache_geometry),
+  // which a cached structure's name sets: 8,388,608 of them, past any budget's.
+  const u64 index_room = rt_cache() ? u64{gfx::k_cluster_cache_geometry} : u64{device_max} + 1;
   rt_capacity_limit_ = static_cast<u32>(
-      std::max<u64>(1, std::min({budget_clusters, u64{rt_union_clusters_}, u64{device_max} + 1})));
+      std::max<u64>(1, std::min({budget_clusters, u64{rt_union_clusters_}, index_room})));
+  // **The references to the cache** (renderer.md, "The resident cluster structure cache"): eight
+  // bytes of address, four of key, and the bottom-level set's growth per reference, by the same two
+  // driver probes; `renderer.rt.reference_mib` is their ceiling, as the budget is the capacity's.
+  rt_reference_limit_ = 0;
+  rt_bytes_per_reference_ = 0;
+  if (rt_cache()) {
+    const u64 before = blas_probe.data_bytes + blas_probe.scratch_bytes;
+    const u64 after = blas_sizes.data_bytes + blas_sizes.scratch_bytes;
+    const u64 blas_growth = after > before ? after - before : 0;
+    rt_bytes_per_reference_ = (blas_growth + k_probe - 1) / k_probe + sizeof(u64) + sizeof(u32);
+    rt_reference_limit_ = static_cast<u32>(std::max<u64>(
+        1, std::min(u64{rt_reference_mib_tunable()} * 1024 * 1024 / rt_bytes_per_reference_,
+                    u64{rt_union_clusters_})));
+  }
   // The first capacity, before any frame has said what it builds: the whole union when that fits
   // (which is every scene the tests draw, and so every picture they pin), `k_initial_rt_clusters`
   // otherwise. The renderer grows or shrinks it from the frames' own demand; a relayout keeps the
@@ -4331,7 +4573,13 @@ bool GpuScene::lay_out_ray_tracing(std::string* error) {
                         ? keep_capacity
                         : first_rt_capacity(rt_capacity_limit_, rt_union_clusters_,
                                             rt_frame_estimate(), rt_initial_clusters_tunable());
-  if (!resize_ray_tracing(first, error)) return false;
+  u32 first_references = keep_references;
+  if (rt_cache() && first_references == 0) {
+    first_references = first_rt_capacity(rt_reference_limit_, rt_union_clusters_,
+                                         rt_reference_estimate(), rt_initial_clusters_tunable());
+  }
+  rt_reference_capacity_ = 0;
+  if (!resize_ray_tracing(first, error, false, first_references)) return false;
   ENGINE_LOG_INFO(
       log_renderer, "ray tracing ready", log::field("pairs", pair_count_),
       log::field("stride", pair_stride_), log::field("views", view_count_),
@@ -4347,14 +4595,29 @@ bool GpuScene::lay_out_ray_tracing(std::string* error) {
   return true;
 }
 
-bool GpuScene::resize_ray_tracing(u32 capacity, std::string* error, bool beyond_budget) {
+bool GpuScene::resize_ray_tracing(u32 capacity, std::string* error, bool beyond_budget,
+                                  u32 references) {
   if (!ray_tracing_ || device_ == nullptr) return true;
   const gfx::Device& device = *device_;
   const u32 ceiling =
       beyond_budget || rt_capacity_limit_ == 0 ? rt_union_clusters_ : rt_capacity_limit_;
-  capacity = static_cast<u32>(
-      std::max<u64>(1, std::min({u64{capacity}, u64{ceiling},
-                                 u64{device.features().cluster_max_geometry_index} + 1})));
+  const u64 index_room = rt_cache() ? u64{gfx::k_cluster_cache_geometry}
+                                    : u64{device.features().cluster_max_geometry_index} + 1;
+  capacity =
+      static_cast<u32>(std::max<u64>(1, std::min({u64{capacity}, u64{ceiling}, index_room})));
+  // The cache's references (renderer.md, "The resident cluster structure cache"): 0 keeps them.
+  if (rt_cache()) {
+    if (references == 0) references = rt_reference_capacity_;
+    const u32 reference_ceiling =
+        beyond_budget || rt_reference_limit_ == 0 ? rt_union_clusters_ : rt_reference_limit_;
+    references = static_cast<u32>(std::max<u64>(
+        1, std::min({u64{references}, u64{reference_ceiling}, u64{rt_union_clusters_}})));
+  } else {
+    references = 0;
+  }
+  gfx::destroy_buffer(device, rt_cache_buffers.references);
+  gfx::destroy_buffer(device, rt_cache_buffers.reference_keys);
+  rt_reference_capacity_ = 0;
   gfx::destroy_buffer(device, records);
   gfx::destroy_buffer(device, hit_entries);
   gfx::destroy_cluster_set(device, clas_set);
@@ -4372,15 +4635,28 @@ bool GpuScene::resize_ray_tracing(u32 capacity, std::string* error, bool beyond_
       gfx::create_buffer(device, sizeof(u32) * u64{capacity}, k_address, false, hit_entries,
                          error) &&
       gfx::create_cluster_set(device, limits, clas_set, error) &&
-      gfx::create_cluster_blas_set(device, rt_instance_slots_, capacity,
-                                   std::min(rt_max_per_instance_, capacity), blas_set, error);
+      (references == 0 || (gfx::create_buffer(device, u64{references} * sizeof(u64), k_record_usage,
+                                              false, rt_cache_buffers.references, error) &&
+                           gfx::create_buffer(device, u64{references} * sizeof(u32), k_address,
+                                              false, rt_cache_buffers.reference_keys, error))) &&
+      // One bottom-level set over both: an instance references the frame's own structures or the
+      // cache's, never both, so its most is the larger of the two capacities.
+      gfx::create_cluster_blas_set(device, rt_instance_slots_, capacity + references,
+                                   std::min(rt_max_per_instance_, std::max(capacity, references)),
+                                   blas_set, error);
   if (ok) {
     u64 scratch_bytes = clas_set.build_scratch_bytes;
     scratch_bytes = std::max(scratch_bytes, blas_set.build_scratch_bytes);
     scratch_bytes = std::max(scratch_bytes, tlas.build_scratch_bytes);
+    // The cache's misses build in the same chain, one pass before the frame's own (the graph
+    // orders the two), so they share it.
+    scratch_bytes = std::max(scratch_bytes, rt_cache_scratch_bytes_);
     ok = gfx::create_scratch(device, scratch_bytes, rt_scratch, error);
   }
   if (!ok) {
+    gfx::destroy_buffer(device, rt_cache_buffers.references);
+    gfx::destroy_buffer(device, rt_cache_buffers.reference_keys);
+    write_rt_cache_tables();
     gfx::destroy_buffer(device, records);
     gfx::destroy_buffer(device, hit_entries);
     gfx::destroy_cluster_set(device, clas_set);
@@ -4390,9 +4666,12 @@ bool GpuScene::resize_ray_tracing(u32 capacity, std::string* error, bool beyond_
     return false;
   }
   rt_capacity_ = capacity;
+  rt_reference_capacity_ = references;
+  write_rt_cache_tables();
   rt_bytes_ = rt_scene_bytes_ + records.size + hit_entries.size + clas_set.data.size +
               clas_set.addresses.size + clas_set.sizes.size + blas_set.data.size +
-              blas_set.addresses.size + rt_scratch.size;
+              blas_set.addresses.size + rt_scratch.size + rt_cache_buffers.references.size +
+              rt_cache_buffers.reference_keys.size;
   return true;
 }
 
@@ -4455,6 +4734,7 @@ void GpuScene::destroy() noexcept {
   slot_rank_.clear();
   gfx::destroy_cluster_set(device, static_clas_);
   gfx::destroy_cluster_blas_set(device, static_blas_);
+  destroy_rt_cache();
   static_forms_ = static_build_ = false;
   static_of_mesh_.clear();
   static_count_ = static_clusters_ = static_instances_live_ = 0;
