@@ -7,6 +7,7 @@
 // and not the ground's place — and when the tile goes, its placements are gone before its ground
 // is.
 #include <core/json/json.h>
+#include <core/memory/memory.h>
 #include <domain/scene_gen/scene_gen.h>
 #include <systems/renderer/scene.h>
 #include <systems/renderer/terrain.h>
@@ -214,4 +215,52 @@ TEST_CASE("world order: a scene with no ground tiles or no placements registers 
   World empty(one_tile());
   add_scene_consumers(empty, &none, nullptr);
   CHECK(empty.consumer_count() == 0);
+}
+
+TEST_CASE("world placements: finite tile storage survives arrivals, rebuilds and departures") {
+  renderer::SceneData scene = scene_of("a", "b");
+  for (renderer::StreamedPlacements& entry : scene.streamed) {
+    entry.tile_instances.push_back({1, -1, 1});
+    entry.tile_instances.push_back({100, 5, 1});
+  }
+  PlacementTiles placements;
+  PlacementTilesConfig config;
+  config.ring_count = 2;
+  std::string error;
+  REQUIRE_MESSAGE(placements.create(scene, config, &error), error);
+  const TileConsumer consumer = placements.consumer();
+  TileEvent near;
+  near.tile = {1, -1};
+  near.to = 0;
+  TileEvent far = near;
+  far.tile = {100, 5};
+  // The second tile has never been built: its room comes from the load, not the warm-up.
+  for (u32 repeat = 0; repeat < 3; ++repeat) {
+    const u64 before = mem::allocations_on_thread();
+    const bool first = consumer.activate(consumer.context, near);
+    consumer.commit(consumer.context);
+    const bool second = consumer.activate(consumer.context, far);
+    consumer.commit(consumer.context);
+    const u64 arrived = mem::allocations_on_thread();
+    CHECK(first);
+    CHECK(second);
+    CHECK(arrived == before);
+    REQUIRE(placements.tail().size() == 4);
+    CHECK(placements.tile_instances(near.tile)[0].origin.y == 2.0);
+    near.to = 1;
+    const u64 rebuilding = mem::allocations_on_thread();
+    const bool rebuilt = consumer.change_ring(consumer.context, near);
+    consumer.commit(consumer.context);
+    const u64 changed = mem::allocations_on_thread();
+    CHECK(rebuilt);
+    CHECK(changed == rebuilding);
+    const u64 leaving = mem::allocations_on_thread();
+    consumer.deactivate(consumer.context, near);
+    consumer.deactivate(consumer.context, far);
+    consumer.commit(consumer.context);
+    const u64 left = mem::allocations_on_thread();
+    CHECK(left == leaving);
+    CHECK(placements.tail().empty());
+    near.to = 0;
+  }
 }

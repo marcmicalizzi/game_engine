@@ -1727,6 +1727,24 @@ The benchmark corpus of [plan 09 §9.4](../plan/09-testing-profiling.md#94-bench
 
 ### The frame loop allocates nothing
 
+**Streamed tile changes are steady state too** (2026-10-26, W73). The streamed-trees case now
+requires zero allocations and zero device buffers in both its rigid and swaying second flights;
+equality between two nonzero counts is not a pass. The authored reader records each tile's exact
+instance count in `StreamedPlacements::tile_instances`. The world's consumer uses those counts
+at load to size its placement scratch, per-tile instance/tag storage and combined tail, exchanging
+the per-tile storage with a kept pool on arrival and departure. Ring changes and re-standing
+rebuild into the held storage. Distance forms change meshes without changing these counts.
+No instance, pair, motion key or rendered byte changes. See the
+[allocation hunt](../experiments/streamed-tree-allocations-2026-10-26.md).
+
+In debug builds, every counted submission captures up to 64 distinct allocation stacks (16 return
+addresses, count and requested bytes per stack) in caller-owned storage. `FlightBookkeeping`
+pauses capture as it excludes its allocations from the metric; submission-list and frame-record
+bookkeeping is outside capture too. An allocating recorded frame prints its repeat/frame and
+sites to stderr, which the test prints on failure. Overflow is explicit. Use that executable's
+matching debug symbols to resolve addresses; Windows output includes its load base and Linux
+output includes module-relative offsets. Capture and diagnostic output are absent in release.
+
 **What a frame allocated is part of its record** (2026-10-07, `FrameRecord` version 10, `FlythroughSummary` version 12; roadmap T48). AGENTS.md's rule is that the frame loop allocates nothing in steady state, and plan 11 §11.2 makes the count a CI metric; until this date only the world tiles' long-flight test (`terrain_tiles_gpu_tests.cpp`) counted, for one scene. Now every flight does: `fly_camera_path` snapshots, on the frame's thread, the engine's allocations (`mem::allocations_on_thread`, a thread-local count kept in every build, tracking or not) and the device buffers made (`gfx::buffers_created_on_thread`) around the host's turn (`FlightOptions::before_frame`: a streamed world's update, the ground's frame), `begin_frame` and `submit_frame`, and writes the sum into the frame's record as `allocations` and `buffers`. The flight's own bookkeeping between those calls — the list of submissions, the records — is outside the windows, and **what a host's hook records for the benchmark is left out by the host**: it holds a `renderer::FlightBookkeeping` round that recording (engine-view's time-lapse state for the record, its world log's line and ring times), and what is made inside one is subtracted. A job worker's allocations are its own thread's and not counted: the rule is the frame thread's. The summary's `frame_loop` block (`FrameLoopAllocations`) has the totals over the recorded frames, the frames with any, and the last path frame that had any; `device` beside it names the adapter. Both hosts fill them (`render.benchmark` returns the same summary); a window's loop does not count yet, and its records say zero.
 
 **Steady state is the second flight over the path.** `engine_view`'s `frame_loop_tests.cpp` flies the three path scenes — the overlook, the erg's walk on its rings and the endless desert over its tiles, each made small enough for a debug build and its path resampled to 96 frames — twice each after 12 warm-up frames, and asserts that the second flight's records are all zero. The first is the warm-up: lists that grow with what a frame holds reach the most the path needs during it. **What the first run found** (2026-10-07, `msvc-release`, RTX 5090): **one allocation in every frame of every scene**, `gfx::GpuTimer::begin_frame`'s read-back of the frame's timestamps into a vector made per frame — now sized once in `GpuTimer::create`; two more a frame on the erg and the endless desert that were engine-view's own measurement (the time-lapse record and the world log's line), now inside a `FlightBookkeeping`; and on the endless desert's first flight 57 allocations and 6 device buffers over its first 57 frames — the world's tile ring and tier lists (`world::TileRing::update`, `sim::TierAssignment::assign_tiers`) and the terrain's staging records (`GpuScene::stage_chunk`, `terrain_prepare`) growing to the path's high-water mark, and the staging ring's overflow buffers while the first rings fill — and none in its second. The long-flight test's note that the renderer's half "made one engine allocation a frame" was the timer.
@@ -2337,9 +2355,9 @@ swaying plants with the default, because records are kept for the next tile of t
 trim of records free for many frames, or poses in a pool sized by the visible plants rather than the
 resident ones, is the next stage. (2) A swaying plant's cascades are most of its cost; a sway LOD
 (far or small plants drawn rigid, or their shadows cast from the rest pose) would buy most of it
-back. (3) The same flight's second pass allocates 308 times on the frames that change tiles, with or
-without the sway — the world's streaming of the authored tiles, W73's, not yet held to the frame-loop
-rule.
+back. (3) The old 308-allocation second flight, with or without sway, is addressed by W73's
+2026-10-26 allocation hunt: tile output scratch and tile instance/tag storage are retained, and
+both versions of the test now require zero ([measurement](../experiments/streamed-tree-allocations-2026-10-26.md)).
 
 ### The field kind
 

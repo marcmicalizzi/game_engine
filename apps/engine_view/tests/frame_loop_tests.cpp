@@ -104,7 +104,8 @@ struct Flown {
   // The first flight's, the warm-up: reported, not asserted.
   u64 first_allocations = 0;
   u64 first_buffers = 0;
-  std::string first;  // the first frames that allocated, for the message
+  std::string first;             // the first frames that allocated, for the message
+  std::string allocation_sites;  // debug child output, printed only when zero is violated
   JsonValue summary;
 };
 
@@ -186,6 +187,7 @@ Flown fly(const test::TempDir& tmp, const std::string& name, const std::string& 
                << out.first_buffers << " device buffers on the frame's thread, the second "
                << out.allocations << " and " << out.buffers
                << (out.first.empty() ? std::string() : " (" + out.first + ")"));
+  if (out.allocations != 0) out.allocation_sites = run.output;
   out.ran = true;
   return out;
 }
@@ -227,7 +229,7 @@ TEST_CASE("frame loop: the desert overlook allocates nothing in its second fligh
   REQUIRE(io::write_file(file, write_json(scene)) == io::Status::Ok);
   const Flown flown = fly(tmp, "desert-overlook", file, dir + "/camera-path.json", {});
   if (!flown.ran) return;
-  CHECK(flown.allocations == 0);
+  CHECK_MESSAGE(flown.allocations == 0, flown.first << '\n' << flown.allocation_sites);
   CHECK(flown.buffers == 0);
 }
 
@@ -250,7 +252,7 @@ TEST_CASE("frame loop: the erg's walk on its rings allocates nothing in its seco
   const Flown flown =
       fly(tmp, "desert-erg walk", file, dir + "/walk-path.json", {"--terrain-rings"});
   if (!flown.ran) return;
-  CHECK(flown.allocations == 0);
+  CHECK_MESSAGE(flown.allocations == 0, flown.first << '\n' << flown.allocation_sites);
   CHECK(flown.buffers == 0);
 }
 
@@ -287,7 +289,7 @@ TEST_CASE(
   const Flown flown =
       fly(tmp, "desert-endless", file, dir + "/camera-path.json", {"--terrain-far", "2"});
   if (!flown.ran) return;
-  CHECK(flown.allocations == 0);
+  CHECK_MESSAGE(flown.allocations == 0, flown.first << '\n' << flown.allocation_sites);
   CHECK(flown.buffers == 0);
 }
 
@@ -295,8 +297,8 @@ TEST_CASE(
 // Roadmap W74 (renderer.md, "Streamed trees sway"): a streamed world's own trees sway with their
 // tiles, each taking a record of its mesh's free list when its tile arrives and giving it back when
 // it leaves. The first flight makes the records a mesh needs at most; the second (`--repeat`
-// starts the world over, so every tile arrives and leaves again) reuses them, and allocates nothing
-// the same flight with the tail drawn rigid does not.
+// starts the world over, so every tile arrives and leaves again) reuses them. Tile changes are
+// steady state: both the rigid and the swaying flight must allocate nothing.
 TEST_CASE("frame loop: a streamed world's swaying trees allocate nothing in their second flight" *
           doctest::skip()) {
   const test::TempDir tmp("engine_view_frame_loop_trees");
@@ -325,10 +327,6 @@ TEST_CASE("frame loop: a streamed world's swaying trees allocate nothing in thei
                            R"({"time":0,"position":[-220,14,10],"target":[0,4,0]},)"
                            R"({"time":1.6,"position":[220,14,-10],"target":[400,4,0]}]})";
   REQUIRE(io::write_file(tmp.file("path.json"), path) == io::Status::Ok);
-  // **Against the same flight with the tail rigid**, not against zero: the world's own streaming of
-  // these tiles still allocates a few times a tile change in its second flight (308 over the
-  // flight on 2026-10-24, with the sway on or off — W73's, stated in renderer.md, "Streamed trees
-  // sway"), so what this holds is that the sway adds nothing to it.
   const Flown rigid = fly(tmp, "streamed-trees-rigid", tmp.file("trees.json"),
                           tmp.file("path.json"), {"--tunable", "renderer.flora.tail=false"});
   if (!rigid.ran) return;
@@ -337,7 +335,9 @@ TEST_CASE("frame loop: a streamed world's swaying trees allocate nothing in thei
   MESSAGE("second flight, swaying: " << flown.allocations << " allocations, " << flown.buffers
                                      << " buffers; rigid: " << rigid.allocations << ", "
                                      << rigid.buffers);
-  CHECK(flown.allocations == rigid.allocations);
+  CHECK_MESSAGE(rigid.allocations == 0, rigid.first << '\n' << rigid.allocation_sites);
+  CHECK(rigid.buffers == 0);
+  CHECK_MESSAGE(flown.allocations == 0, flown.first << '\n' << flown.allocation_sites);
   CHECK(flown.buffers == 0);
 }
 #endif  // ENGINE_VIEW_TESTS_FLORA

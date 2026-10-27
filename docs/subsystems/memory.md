@@ -18,6 +18,18 @@
 
 **Tagging model.** Tags follow the code path, not the object: `mem::TagScope scope(tag)` on the current thread attributes every allocation made inside it. Containers therefore store no tag. Tags are registered once per module at startup; names are copied and truncated to 47 characters.
 
+**Debug allocation sites** (2026-10-26, W73). `begin_allocation_capture(sites, capacity)` records
+16 return addresses per distinct stack into caller-owned `AllocationSite` storage on the current
+thread, accumulating its count and requested bytes. It allocates no engine storage. Captures do
+not nest; `pause_allocation_capture` returns the previous pause state, and
+`end_allocation_capture` stops capture and returns the count whose sites exceeded the supplied
+capacity. `print_allocation_capture` writes the sites to stderr (on Windows with the executable's
+load base, on Linux also with module-relative offsets). Use the matching executable and debug
+symbols to resolve them. These APIs and capture work exist only under `ENGINE_DEBUG`; the
+allocation counter remains identical in all builds. The frame-loop flight captures 64 distinct
+sites per submission, pauses over its bookkeeping, and prints allocating recorded frames, so a
+failed zero-allocation test carries attribution rather than only a total.
+
 **Depends on.** `base`, `hash` (for the tracker's pointer hashing).
 
 **Testing.** `tools/dev.ps1 test -Filter memory`. Per-tag tests skip themselves when tracking is compiled out (Release builds).

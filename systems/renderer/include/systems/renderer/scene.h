@@ -208,6 +208,15 @@ struct StreamedPlacements {
   // place in the file's own list plus one), the loaded index of id 1: a placement of id `n` is
   // given `motion_key = motion_key_base + n - 1`, the key the whole read gives it. `~0u`: none.
   u32 motion_key_base = ~0u;
+  // Finite entries can size the consumer's per-tile storage at load. The authored reader knows
+  // the exact count in every tile; a distance form changes the mesh, never this count. Empty for
+  // generators without a finite bound (their tile storage is pooled at its high-water mark).
+  struct TileInstances {
+    i32 x = 0;
+    i32 z = 0;
+    u32 count = 0;
+  };
+  Vector<TileInstances> tile_instances;
 };
 
 // A prop of a scene file (`engine.scene.Prop`): a mesh the load places nowhere, kept for a game

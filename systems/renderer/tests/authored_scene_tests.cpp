@@ -199,6 +199,12 @@ TEST_CASE("authored scene: a streamed world's own instances become the generator
   REQUIRE(streamed.data.streamed.size() == 1);
   const StreamedPlacements& entry = streamed.data.streamed.back();
   CHECK(entry.generator == "authored");
+  u32 bounded_instances = 0;
+  for (const StreamedPlacements::TileInstances& bound : entry.tile_instances) {
+    CHECK(bound.count > 0);
+    bounded_instances += bound.count;
+  }
+  CHECK(bounded_instances == stats.streamed);
   // The oak has card levels and the spruce a decimated chain: both get smaller forms past the first
   // ring, each placed as its source is and on its source's grid.
   CHECK(stats.forms >= 2);

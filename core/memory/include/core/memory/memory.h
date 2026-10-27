@@ -68,6 +68,22 @@ u64 allocation_counter() noexcept;
 // — stay out of it (docs/subsystems/renderer.md, "What a frame waits for").
 u64 allocations_on_thread() noexcept;
 
+#if ENGINE_DEBUG
+// Optional, allocation-free attribution on the calling thread. The caller owns the bounded
+// storage; identical stacks are counted together and stacks beyond it are counted as dropped.
+// Pause around benchmark bookkeeping, just as its allocations are excluded from the metric.
+struct AllocationSite {
+  void* stack[16]{};
+  u64 count = 0;
+  u64 bytes = 0;
+  u32 depth = 0;
+};
+void begin_allocation_capture(AllocationSite* sites, u32 capacity) noexcept;
+bool pause_allocation_capture(bool paused) noexcept;
+void print_allocation_capture() noexcept;  // stderr; symbolize with this binary's debug symbols
+u64 end_allocation_capture() noexcept;     // number of allocations whose sites did not fit
+#endif
+
 // `align` must be a power of two. Zero-byte requests are rounded up to one byte.
 [[nodiscard]] void* allocate(usize bytes, usize align);               // aborts on failure
 [[nodiscard]] void* try_allocate(usize bytes, usize align) noexcept;  // nullptr on failure
