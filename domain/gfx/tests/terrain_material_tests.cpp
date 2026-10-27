@@ -1,3 +1,5 @@
+#include "terrain_hex_reference.h"
+
 #include <core/math/math.h>
 #include <domain/gfx/commands.h>
 #include <domain/gfx/device.h>
@@ -11,8 +13,10 @@
 #include <bit>
 #include <cmath>
 #include <cstring>
+#include <numbers>
 #include <shaders/terrain_mask_probe.spv.h>
 #include <shaders/terrain_material_probe.spv.h>
+#include <vector>
 
 using namespace engine;
 
@@ -35,7 +39,7 @@ TEST_CASE(
   gfx::BufferResource output;
   constexpr u32 k_count = 64;
   REQUIRE_MESSAGE(
-      gfx::create_buffer(device, k_count * 3u * sizeof(Vec4),
+      gfx::create_buffer(device, k_count * 8u * sizeof(Vec4),
                          gfx::BufferUsage::Storage | gfx::BufferUsage::ShaderDeviceAddress, true,
                          output, &error),
       error);
@@ -77,6 +81,63 @@ TEST_CASE(
     CHECK(values[3 * i + 2].z == 0);
     CHECK(values[3 * i + 2].w == doctest::Approx(1.0));
   }
+  // The stochastic lattice at the same far eye (100,000 km out in z): the GPU's tiles, weights,
+  // shifts and turns are the double reference's, and the blend of a smooth stand-in texture agrees
+  // everywhere, edges included, since a tile leaving the triangle leaves with weight zero.
+  u32 compared = 0;
+  f64 worst_blend = 0, worst_field = 0;
+  for (u32 i = 0; i < k_count; ++i) {
+    const f32 px = static_cast<f32>(i) * 0.001f;
+    const f32 py = -static_cast<f32>(i) * 0.25f;
+    const f32 pz = static_cast<f32>(i) * 0.125f;
+    const i32 cell[] = {(i & 1) == 0 ? 6548 : -6548, 0, 1562500};
+    const f64 rest[] = {
+        (static_cast<f64>(63.999f) + static_cast<f64>(0.00001f) + static_cast<f64>(px)) * 1000.0,
+        (0.125 + static_cast<f64>(py)) * 1000.0, (-0.25 + static_cast<f64>(pz)) * 1000.0};
+    const u32 axis = i % 3;
+    const u32 a = axis == 0 ? 2 : 0;  // the plane's u: z for projection 0, x otherwise
+    const u32 b = axis == 1 ? 2 : 1;  // its v: z for projection 1, y otherwise
+    const f64 rotation = (i & 1) == 0 ? 0.0 : static_cast<f64>(0.7f);
+    const auto hex =
+        test::terrain_hex_reference(cell[a], cell[b], rest[a], rest[b], 1500.0, rotation);
+    const f64 world[] = {cell[0] * 64.0 + rest[0] / 1000.0, cell[1] * 64.0 + rest[1] / 1000.0,
+                         cell[2] * 64.0 + rest[2] / 1000.0};
+    const f64 uv[] = {world[a] / 1.5 - std::floor(world[a] / 1.5),
+                      world[b] / 1.5 - std::floor(world[b] / 1.5)};
+    f64 x[3];
+    for (u32 k = 0; k < 3; ++k) {
+      const f64 p[] = {uv[0] + hex.shift[k][0], uv[1] + hex.shift[k][1]};
+      x[k] = 0.5 + 0.25 * std::sin(2 * std::numbers::pi * (p[0] + 2 * p[1])) +
+             0.15 * std::cos(2 * std::numbers::pi * (3 * p[0] - p[1]));
+    }
+    const Vec4* got = values + 3 * k_count + 5 * i;
+    const f64 blend = test::terrain_hex_blend_reference(hex, 0.5, x);
+    worst_blend = std::max(worst_blend, std::abs(blend - static_cast<f64>(got[4].x)));
+    // Field by field only away from the triangle's edges, where float and double may pick
+    // different (zero-weight) corners.
+    const f64 edge = std::min({hex.frac[0], hex.frac[1], 1 - hex.frac[0], 1 - hex.frac[1],
+                               std::abs(1 - hex.frac[0] - hex.frac[1])});
+    if (edge < 1e-3) continue;
+    ++compared;
+    const f64 want[] = {hex.weight[0],   hex.weight[1],   hex.weight[2],   hex.gain,
+                        hex.shift[0][0], hex.shift[0][1], hex.shift[1][0], hex.shift[1][1],
+                        hex.shift[2][0], hex.shift[2][1], hex.turn[0][0],  hex.turn[0][1],
+                        hex.turn[1][0],  hex.turn[1][1],  hex.turn[2][0],  hex.turn[2][1]};
+    const auto* have = reinterpret_cast<const f32*>(got);  // four Vec4s: 16 floats in order
+    f64 fields[16][2];
+    for (u32 j = 0; j < 16; ++j) {
+      fields[j][0] = want[j];
+      fields[j][1] = static_cast<f64>(have[j]);
+    }
+    for (const auto& f : fields)
+      worst_field = std::max(worst_field, std::abs(f[0] - f[1]));
+  }
+  MESSAGE("stochastic lattice, GPU against double: " << compared << " points field by field, worst "
+                                                     << worst_field << "; worst blend "
+                                                     << worst_blend);
+  CHECK(compared > k_count / 2);
+  CHECK(worst_field < 1e-4);
+  CHECK(worst_blend < 1e-4);
   gfx::destroy_buffer(device, output);
   gfx::destroy_compute_pipeline(device, pipeline);
   gfx::destroy_shader_module(device, module);
@@ -317,4 +378,211 @@ TEST_CASE("gfx: the mask sampler reads one tile's table and filters its mips at 
   gfx::destroy_compute_pipeline(device, pipeline);
   gfx::destroy_shader_module(device, module);
   device.destroy();
+}
+
+// ---- the stochastic sampler's statistics, direction and normals (R96), on its double reference
+// ---------------------------------------------------------------------
+
+namespace {
+// A periodic image on the CPU, read bilinearly with wrap, as the layer's sampler reads its texture.
+struct CpuImage {
+  u32 size = 0;
+  std::vector<f64> texels;
+  f64 at(f64 u, f64 v) const {
+    const f64 x = (u - std::floor(u)) * size - 0.5, y = (v - std::floor(v)) * size - 0.5;
+    const f64 fx = std::floor(x), fy = std::floor(y);
+    const f64 ax = x - fx, ay = y - fy;
+    const i64 n = size;
+    const auto texel = [&](i64 i, i64 j) {
+      return texels[static_cast<size_t>(((j % n + n) % n) * n + ((i % n + n) % n))];
+    };
+    const i64 i = static_cast<i64>(fx), j = static_cast<i64>(fy);
+    return (1 - ax) * (1 - ay) * texel(i, j) + ax * (1 - ay) * texel(i + 1, j) +
+           (1 - ax) * ay * texel(i, j + 1) + ax * ay * texel(i + 1, j + 1);
+  }
+};
+
+// A substrate-like image with a skewed, two-humped histogram: pebbles of 0.75 over a 0.2 floor,
+// edges softened, from a few integer-frequency waves so it tiles.
+CpuImage pebbles() {
+  CpuImage image;
+  image.size = 128;
+  image.texels.resize(128 * 128);
+  u32 seed = 7;
+  f64 phase[6][3];
+  for (auto& w : phase)
+    for (f64& c : w)
+      c = static_cast<f64>(test::terrain_hash(seed++) >> 8) / 16777216.0;
+  for (u32 y = 0; y < 128; ++y)
+    for (u32 x = 0; x < 128; ++x) {
+      const f64 u = (x + 0.5) / 128, v = (y + 0.5) / 128;
+      f64 n = 0;
+      for (u32 k = 0; k < 6; ++k) {
+        const f64 fu = 3 + std::floor(phase[k][1] * 6), fv = 3 + std::floor(phase[k][2] * 6);
+        n += std::sin(2 * std::numbers::pi * (fu * u + (k % 2 == 0 ? fv : -fv) * v + phase[k][0]));
+      }
+      const f64 t = std::clamp((n / 6 + 0.12) * 6, 0.0, 1.0);
+      image.texels[y * 128 + x] = 0.2 + 0.55 * t * t * (3 - 2 * t);
+    }
+  return image;
+}
+
+// One projection's read at a plane point (millimetres from the frame's cell 0), as
+// `terrain_hex_sample` reads a colour channel: three tiles, the blend, the saturate.
+f64 stochastic_read(const CpuImage& image, f64 u_mm, f64 v_mm, f64 pitch, f64 rotation, f64 mean,
+                    f64 gamma = 7.0, bool variance = true) {
+  const auto hex = test::terrain_hex_reference(0, 0, u_mm, v_mm, pitch, rotation, gamma);
+  f64 x[3];
+  for (u32 k = 0; k < 3; ++k)
+    x[k] = image.at(u_mm / pitch + hex.shift[k][0], v_mm / pitch + hex.shift[k][1]);
+  return std::clamp(test::terrain_hex_blend_reference(hex, mean, x, variance), 0.0, 1.0);
+}
+
+struct Moments {
+  f64 mean = 0, variance = 0;
+};
+Moments moments(const std::vector<f64>& v) {
+  Moments m;
+  for (const f64 x : v)
+    m.mean += x;
+  m.mean /= static_cast<f64>(v.size());
+  for (const f64 x : v)
+    m.variance += (x - m.mean) * (x - m.mean);
+  m.variance /= static_cast<f64>(v.size());
+  return m;
+}
+// The 1-Wasserstein distance between two equal-sized samples: the mean gap of their sorted values.
+f64 wasserstein(std::vector<f64> a, std::vector<f64> b) {
+  std::sort(a.begin(), a.end());
+  std::sort(b.begin(), b.end());
+  f64 sum = 0;
+  for (size_t i = 0; i < a.size(); ++i)
+    sum += std::abs(a[i] - b[i]);
+  return sum / static_cast<f64>(a.size());
+}
+}  // namespace
+
+TEST_CASE("gfx: the stochastic terrain sampler keeps the texture's mean, variance and histogram") {
+  // Over 260 by 260 repeats of the image, a point every 0.26 of a repeat: the tiled read of the
+  // same points is the image's own statistics under the same filter. The stochastic read must
+  // match its mean to 0.005 and its variance to 4%; the plain linear blends the method was chosen
+  // over are measured beside it for the experiments page.
+  const CpuImage image = pebbles();
+  constexpr f64 k_pitch = 1500;
+  constexpr u32 k_side = 1000;
+  constexpr f64 k_step = 391.0;  // mm: no rational part of the pitch or the lattice
+  std::vector<f64> tiled, ours, linear, sharp, burley;
+  f64 image_mean = 0;
+  for (const f64 t : image.texels)
+    image_mean += t;
+  image_mean /= static_cast<f64>(image.texels.size());
+  for (u32 j = 0; j < k_side; ++j)
+    for (u32 i = 0; i < k_side; ++i) {
+      const f64 u = i * k_step + 0.37 * j, v = j * k_step;
+      tiled.push_back(image.at(u / k_pitch, v / k_pitch));
+      ours.push_back(stochastic_read(image, u, v, k_pitch, 0, image_mean));
+      linear.push_back(stochastic_read(image, u, v, k_pitch, 0, image_mean, 1.0, false));
+      sharp.push_back(stochastic_read(image, u, v, k_pitch, 0, image_mean, 7.0, false));
+      burley.push_back(stochastic_read(image, u, v, k_pitch, 0, image_mean, 4.0));
+    }
+  const Moments m_tiled = moments(tiled), m_ours = moments(ours), m_linear = moments(linear),
+                m_sharp = moments(sharp);
+  const f64 sd = std::sqrt(m_tiled.variance);
+  MESSAGE("tiled mean " << m_tiled.mean << " variance " << m_tiled.variance);
+  MESSAGE("stochastic (gamma 7, variance-preserving): mean "
+          << m_ours.mean << ", variance ratio " << m_ours.variance / m_tiled.variance << ", W1/sd "
+          << wasserstein(tiled, ours) / sd);
+  MESSAGE("linear blend (gamma 1): mean " << m_linear.mean << ", variance ratio "
+                                          << m_linear.variance / m_tiled.variance << ", W1/sd "
+                                          << wasserstein(tiled, linear) / sd);
+  MESSAGE("linear blend (gamma 7, Mikkelsen's exponent): mean "
+          << m_sharp.mean << ", variance ratio " << m_sharp.variance / m_tiled.variance
+          << ", W1/sd " << wasserstein(tiled, sharp) / sd);
+  MESSAGE("variance-preserving at gamma 4 (Burley's exponent): variance ratio "
+          << moments(burley).variance / m_tiled.variance << ", W1/sd "
+          << wasserstein(tiled, burley) / sd);
+  CHECK(std::abs(m_ours.mean - m_tiled.mean) < 0.005);
+  CHECK(std::abs(m_ours.variance / m_tiled.variance - 1.0) < 0.04);
+  CHECK(wasserstein(tiled, ours) < wasserstein(tiled, sharp));
+}
+
+TEST_CASE("gfx: a stochastic layer without a turn keeps a directed texture's direction") {
+  // Stripes across u. Offsets alone move them along u and keep them straight in v: the squared
+  // gradient along v stays a small fraction of the one along u. Turns of up to 180 degrees
+  // scatter them.
+  CpuImage stripes;
+  stripes.size = 128;
+  stripes.texels.resize(128 * 128);
+  for (u32 y = 0; y < 128; ++y)
+    for (u32 x = 0; x < 128; ++x)
+      stripes.texels[y * 128 + x] =
+          0.5 + 0.4 * std::sin(2 * std::numbers::pi * 4 * (x + 0.5) / 128);
+  constexpr f64 k_pitch = 2000, k_h = 2.0;  // mm
+  const auto anisotropy = [&](f64 rotation) {
+    f64 gu = 0, gv = 0;
+    for (u32 j = 0; j < 300; ++j)
+      for (u32 i = 0; i < 300; ++i) {
+        const f64 u = i * 523.0 + 0.11 * j, v = j * 523.0;
+        const f64 c = stochastic_read(stripes, u, v, k_pitch, rotation, 0.5);
+        gu += std::pow(stochastic_read(stripes, u + k_h, v, k_pitch, rotation, 0.5) - c, 2);
+        gv += std::pow(stochastic_read(stripes, u, v + k_h, k_pitch, rotation, 0.5) - c, 2);
+      }
+    return gv / gu;
+  };
+  const f64 straight = anisotropy(0), turned = anisotropy(std::numbers::pi);
+  MESSAGE("gradient energy along the stripes over across them: no turn "
+          << straight << ", turns to 180 degrees " << turned);
+  CHECK(straight < 0.35);
+  CHECK(turned > 0.75);
+}
+
+TEST_CASE("gfx: a turned stochastic tile turns its normal map's slopes with its colour") {
+  // A height field and its OpenGL normal map (y up the image, so the stored slope pair is
+  // (-dH/du, +dH/dv)). Inside a tile, where one weight is all, the slope the sampler reports is
+  // the one the blended height itself has, at every turn: bump and colour stay on one feature.
+  const f64 two_pi = 2 * std::numbers::pi;
+  const auto height = [&](f64 u, f64 v) {
+    return 0.5 + 0.2 * std::sin(two_pi * (u + 2 * v)) + 0.1 * std::cos(two_pi * (3 * u - v));
+  };
+  const auto stored = [&](f64 u, f64 v, f64 out[2]) {
+    const f64 a = two_pi * (u + 2 * v), b = two_pi * (3 * u - v);
+    const f64 hu = 0.2 * two_pi * std::cos(a) - 0.1 * 3 * two_pi * std::sin(b);
+    const f64 hv = 0.2 * 2 * two_pi * std::cos(a) + 0.1 * two_pi * std::sin(b);
+    out[0] = -hu;
+    out[1] = hv;
+  };
+  constexpr f64 k_pitch = 1000, k_h = 0.01;  // mm
+  u32 checked = 0;
+  f64 worst = 0;
+  for (const f64 rotation : {0.0, 0.9, 2.5}) {
+    for (u32 i = 0; i < 4000; ++i) {
+      const f64 u = 37.0 * i + 0.5, v = 61.0 * i + 0.25;
+      const auto hex = test::terrain_hex_reference(0, 0, u, v, k_pitch, rotation);
+      if (std::max({hex.weight[0], hex.weight[1], hex.weight[2]}) < 0.9999) continue;
+      const auto blended = [&](f64 pu, f64 pv) {
+        const auto h = test::terrain_hex_reference(0, 0, pu, pv, k_pitch, rotation);
+        f64 x[3];
+        for (u32 k = 0; k < 3; ++k)
+          x[k] = height(pu / k_pitch + h.shift[k][0], pv / k_pitch + h.shift[k][1]);
+        return test::terrain_hex_blend_reference(h, 0.5, x);
+      };
+      // terrain_hex_sample's slope: each tile's stored pair turned by its R, blended about zero.
+      f64 slope[2] = {};
+      for (u32 k = 0; k < 3; ++k) {
+        f64 q[2];
+        stored(u / k_pitch + hex.shift[k][0], v / k_pitch + hex.shift[k][1], q);
+        const f64 c = hex.turn[k][0], s = hex.turn[k][1];
+        slope[0] += hex.gain * hex.weight[k] * (c * q[0] - s * q[1]);
+        slope[1] += hex.gain * hex.weight[k] * (s * q[0] + c * q[1]);
+      }
+      const f64 du = (blended(u + k_h, v) - blended(u - k_h, v)) / (2 * k_h / k_pitch);
+      const f64 dv = (blended(u, v + k_h) - blended(u, v - k_h)) / (2 * k_h / k_pitch);
+      worst = std::max({worst, std::abs(slope[0] + du), std::abs(slope[1] - dv)});
+      ++checked;
+    }
+  }
+  // The slopes are near 3; a turn the wrong way would be off by about that much.
+  MESSAGE(checked << " points inside a tile; worst slope error " << worst);
+  CHECK(checked > 100);
+  CHECK(worst < 0.02);
 }

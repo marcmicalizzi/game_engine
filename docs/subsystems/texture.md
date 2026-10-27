@@ -31,6 +31,13 @@ skips one it does not know:
 | 3 | `data` | `u8` | every level's blocks back to back, each level at a 16-byte aligned offset, the padding zero |
 | 4 | `source_hash` | `u64`, two | the source image's content hash (`hash_bytes` over its encoded bytes as read) and the build key over it and the options |
 
+Stochastic terrain sampling (R96, 2026-10-26) was expected to need a section here — a histogram
+transform's inverse look-up tables per image and mip, as Heitz and Neyret's and Burley's methods
+do — and **needs none**: its variance-preserving blend works on the texels as they are, about means
+the terrain's preparation already computes, so a stochastic layer samples the same `.tex` a tiled
+one does and no kind was taken ([stochastic terrain sampling](../experiments/stochastic-terrain-sampling-2026-10-26.md)
+has the measured comparison).
+
 A level is whole blocks even when its sides are not multiples of four (a 2x1 level of BC7 is one
 16-byte block), which is what Vulkan's copy expects. The reader refuses, each with its own
 sentence and an empty result: a truncated file, the wrong magic or version, a section past the end,

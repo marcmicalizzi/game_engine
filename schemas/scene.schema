@@ -700,9 +700,18 @@ enum TerrainProjection : u8 {
   Map
 }
 
+/// How a triplanar layer's texels are placed (renderer.md, "Stochastic sampling"). `Tiled` repeats
+/// the image every `tile_m`; `Stochastic` reads three tiles of a triangle lattice, each at its own
+/// random offset (and, with `rotation_deg`, a bounded turn), blended so the texture's mean and
+/// variance hold everywhere: no visible repeat, so the detail is kept to the horizon.
+enum TerrainSampling : u8 {
+  Tiled
+  Stochastic
+}
+
 /// One native-ground layer. Colour is sRGB; normals are OpenGL (+Y); roughness and mask are
 /// linear, read from R. Paths are relative to the scene. Layers composite in array order.
-struct TerrainMaterialLayer @version(2) {
+struct TerrainMaterialLayer @version(3) {
   name: string
   base_color: string
   normal: string
@@ -725,6 +734,13 @@ struct TerrainMaterialLayer @version(2) {
   /// How much water the substrate's pores take, [0, 1] (Lagarde 2013): wet ground darkens by up to
   /// 0.8 of this and loses up to 0.4 of it in roughness. Sand and soil near 1, rock near 0.
   porosity: f32 = 0.5 @since(2)
+  /// Triplanar only: `Stochastic` breaks the repeat and keeps the layer's detail at every distance
+  /// (the record's detail fade no longer applies to it), for substrates without a direction.
+  sampling: TerrainSampling = Tiled @since(3)
+  /// With `Stochastic`: each lattice tile turns by up to this many degrees, [0, 180], and its
+  /// normal map's slopes turn with it. 0 (the default) turns nothing, so strata, a road's ruts or
+  /// a directed needle bed keep their direction.
+  rotation_deg: f32 = 0 @since(3) @unit(deg)
 }
 
 struct TerrainMaterials @version(1) {

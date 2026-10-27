@@ -46,6 +46,16 @@ bool validate_terrain_materials(const scene::TerrainMaterials& m, std::string* e
     for (const f32 c : {tint.x, tint.y, tint.z})
       if (!(c >= 0 && c <= 1)) return fail(l.name + ": tint must be finite in [0,1]");
     if (!(l.porosity >= 0 && l.porosity <= 1)) return fail(l.name + ": porosity must be in [0,1]");
+    if (l.sampling != scene::TerrainSampling::Tiled &&
+        l.sampling != scene::TerrainSampling::Stochastic)
+      return fail(l.name + ": unknown sampling");
+    if (l.sampling == scene::TerrainSampling::Stochastic &&
+        l.projection != scene::TerrainProjection::Triplanar)
+      return fail(l.name + ": stochastic sampling is for a triplanar layer (a Map is a painting)");
+    if (!(l.rotation_deg >= 0 && l.rotation_deg <= 180))
+      return fail(l.name + ": rotation_deg must be in [0,180]");
+    if (l.rotation_deg > 0 && l.sampling != scene::TerrainSampling::Stochastic)
+      return fail(l.name + ": rotation_deg turns a stochastic layer's tiles; this layer is tiled");
     for (const auto* path : {&l.base_color, &l.normal, &l.roughness, &l.mask, &l.height}) {
       if (!path->empty() && !io::exists(*path)) return fail(l.name + ": missing image " + *path);
     }
@@ -61,7 +71,8 @@ bool append_terrain_materials(const TerrainDesc& terrain, assets::MeshData& mesh
   // Embed sources so cached terrain containers retain their exact image bytes. Roughness R
   // becomes glTF G with B=0; normals keep the existing OpenGL convention and BC5 build path.
   const auto add_image = [&](const std::string& path, bool roughness, i32& index, Vec3* mean,
-                             const std::string& height = std::string()) {
+                             const std::string& height = std::string(),
+                             f32* height_mean = nullptr) {
     index = -1;
     if (path.empty() && height.empty()) return true;
     image::Image decoded;
@@ -107,10 +118,14 @@ bool append_terrain_materials(const TerrainDesc& terrain, assets::MeshData& mesh
           decoded.pixels[p + 1] = 255;
         }
       }
+      f64 sum = 0;
       for (u32 p = 0; p < decoded.pixels.size(); p += 4) {
         decoded.pixels[p + 2] = h.pixels[p];
         decoded.pixels[p + 3] = 255;
+        sum += h.pixels[p] / 255.0;
       }
+      if (height_mean != nullptr)
+        *height_mean = static_cast<f32>(sum / (static_cast<f64>(h.width) * h.height));
     }
     assets::ImageRef ref;
     ref.name = height.empty() ? path : path + "+" + height;
@@ -135,16 +150,20 @@ bool append_terrain_materials(const TerrainDesc& terrain, assets::MeshData& mesh
     m.normal_scale = layer.normal_scale;
     Vec3 colour_mean{1, 1, 1};
     Vec3 roughness_mean{1, 1, 1};
+    f32 height_mean = 0.5f;
     if (!add_image(layer.base_color, false, m.base_color_image, &colour_mean) ||
         !add_image(layer.normal, false, m.normal_image, nullptr) ||
-        !add_image(layer.roughness, true, m.metallic_roughness_image, &roughness_mean,
-                   layer.height) ||
+        !add_image(layer.roughness, true, m.metallic_roughness_image, &roughness_mean, layer.height,
+                   &height_mean) ||
         !add_image(layer.mask, false, m.occlusion_image, nullptr))
       return false;
     // Cold container transport for the two means. GPU upload moves them into uv_transform and
     // clears emissive/metallic before shading; no cluster directly names a layer entry.
     m.emissive = Vec3{colour_mean.x * tint.x, colour_mean.y * tint.y, colour_mean.z * tint.z};
     m.metallic = roughness_mean.x * layer.roughness_factor;
+    // A stochastic layer's height mean (R96), which its variance-preserving blend is taken about,
+    // in the alpha cutoff a terrain layer never reads; a tiled layer's material is as it was.
+    if (layer.sampling == scene::TerrainSampling::Stochastic) m.alpha_cutoff = height_mean;
     for (u32 slot = 0; slot < geometry::k_material_slots; ++slot) {
       if (slot == geometry::k_slot_occlusion || layer.projection == scene::TerrainProjection::Map) {
         m.sampling[slot].sampler.wrap_s = geometry::TextureWrap::clamp_to_edge;
@@ -164,14 +183,32 @@ bool append_terrain_materials(const TerrainDesc& terrain, assets::MeshData& mesh
 
 u64 terrain_materials_hash(const scene::TerrainMaterials& materials) {
   scene::TerrainMaterials identity = materials;
-  for (auto& layer : identity.layers)
+  bool stochastic = false;
+  for (auto& layer : identity.layers) {
     for (auto* path :
          {&layer.base_color, &layer.normal, &layer.roughness, &layer.mask, &layer.height})
       path->clear();
-  const std::string text = write_json(schema::to_json(identity));
+    stochastic = stochastic || layer.sampling == scene::TerrainSampling::Stochastic;
+  }
+  // The sampling fields (R96) are shading, read at upload, except that a stochastic layer's
+  // container carries its height mean: they leave the identity text, so every scene before them
+  // keeps its key, and a scene with a stochastic layer is keyed apart below.
+  JsonValue json = schema::to_json(identity);
+  if (JsonValue* layers = json.find("layers"); layers != nullptr && layers->is_array())
+    for (JsonValue& layer : layers->as_array())
+      if (layer.is_object()) {
+        layer.as_object().erase(std::string("sampling"));
+        layer.as_object().erase(std::string("rotation_deg"));
+      }
+  const std::string text = write_json(json);
   // 2: the terrain record entry after the layers (2026-10-24), so a container built before it,
   // which has none, is never read for a scene that needs one.
   u64 h = hash_combine(hash_bytes(text.data(), text.size()), 2u);
+  if (stochastic) {
+    h = hash_combine(h, 0x53544F4348415354ull);  // "STOCHAST"
+    for (const auto& layer : materials.layers)
+      h = hash_combine(h, layer.sampling == scene::TerrainSampling::Stochastic ? 1u : 0u);
+  }
   for (const auto& layer : materials.layers) {
     for (const auto* path :
          {&layer.base_color, &layer.normal, &layer.roughness, &layer.mask, &layer.height}) {

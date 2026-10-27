@@ -15,6 +15,7 @@
 #include <bit>
 #include <cmath>
 #include <limits>
+#include <numbers>
 
 using namespace engine;
 using namespace engine::renderer;
@@ -530,6 +531,153 @@ TEST_CASE("renderer: ground masks shade their layers, wet them, and agree with t
   } else {
     MESSAGE("no reference here: " << why);
   }
+  renderer.destroy();
+  scene.destroy();
+  device.destroy();
+}
+
+TEST_CASE(
+    "renderer: stochastic sampling validates, keeps tiled scenes' keys and carries a height mean") {
+  const test::TempDir tmp("terrain_stochastic_validation");
+  const std::string colour = tmp.file("colour.png");
+  const std::string height = tmp.file("height.png");
+  write_pixel(colour, 64, 128, 192);
+  write_pixel(height, 51, 51, 51);
+  auto t = ground(colour);
+  t.materials->layers[0].height = height;
+  std::string error;
+  const u64 tiled = terrain_materials_hash(*t.materials);
+  // Tiled is the default and writes nothing new: the key and the container are what they were.
+  assets::MeshData mesh;
+  mesh.materials.emplace_back();
+  REQUIRE_MESSAGE(append_terrain_materials(t, mesh, &error), error);
+  CHECK(mesh.materials[1].alpha_cutoff == 0.5f);
+  t.materials->layers[0].sampling = scene::TerrainSampling::Stochastic;
+  CHECK(validate_terrain_materials(*t.materials, &error));
+  CHECK(terrain_materials_hash(*t.materials) != tiled);
+  assets::MeshData stochastic;
+  stochastic.materials.emplace_back();
+  REQUIRE_MESSAGE(append_terrain_materials(t, stochastic, &error), error);
+  CHECK(stochastic.materials[1].alpha_cutoff == doctest::Approx(0.2));
+  // A turn is a stochastic layer's; it is bounded; and a painting is never made stochastic.
+  t.materials->layers[0].rotation_deg = 190;
+  CHECK_FALSE(validate_terrain_materials(*t.materials, &error));
+  t.materials->layers[0].rotation_deg = 30;
+  CHECK(validate_terrain_materials(*t.materials, &error));
+  // The turn is shading read at upload, not a container's identity.
+  const u64 turned = terrain_materials_hash(*t.materials);
+  t.materials->layers[0].rotation_deg = 0;
+  CHECK(terrain_materials_hash(*t.materials) == turned);
+  t.materials->layers[0].projection = scene::TerrainProjection::Map;
+  CHECK_FALSE(validate_terrain_materials(*t.materials, &error));
+  CHECK(error.find("triplanar") != std::string::npos);
+  t.materials->layers[0].projection = scene::TerrainProjection::Triplanar;
+  t.materials->layers[0].sampling = scene::TerrainSampling::Tiled;
+  t.materials->layers[0].rotation_deg = 30;
+  CHECK_FALSE(validate_terrain_materials(*t.materials, &error));
+}
+
+TEST_CASE(
+    "renderer: a stochastic layer shades the same ground in the resolve and the path tracer") {
+  // R96's three readers: the resolve (with traced shadows where the device has them, so its ray
+  // module is the one drawn) and the reference path tracer read one lattice; FLIP between their
+  // pictures stays within the reference tests' bound for a diffuse plane under the sun.
+  gfx::Device device;
+  std::string error;
+  if (!device.create(gfx::DeviceOptions{}, &error)) {
+    MESSAGE("no device: " << error);
+    return;
+  }
+  const test::TempDir tmp("terrain_stochastic_reference");
+  constexpr u32 k_n = 32;
+  Vector<u8> colour(k_n * k_n * 4u), normal(k_n * k_n * 4u);
+  for (u32 z = 0; z < k_n; ++z)
+    for (u32 x = 0; x < k_n; ++x) {
+      const u32 p = (z * k_n + x) * 4;
+      const f64 a = 2 * std::numbers::pi * (x + 2.0 * z) / k_n;
+      colour[p] = static_cast<u8>(std::lround(120 + 70 * std::sin(a)));
+      colour[p + 1] = static_cast<u8>(std::lround(100 + 50 * std::cos(a)));
+      colour[p + 2] = 60;
+      colour[p + 3] = 255;
+      // A gentle OpenGL normal map of the height 0.02 sin(a) over a 2 m repeat.
+      const f64 hu = 0.02 * std::cos(a) * 2 * std::numbers::pi / 2.0;
+      const f64 hv = 2 * hu;
+      const f64 len = std::sqrt(hu * hu + hv * hv + 1);
+      normal[p] = static_cast<u8>(std::lround((-hu / len * 0.5 + 0.5) * 255));
+      normal[p + 1] = static_cast<u8>(std::lround((hv / len * 0.5 + 0.5) * 255));
+      normal[p + 2] = static_cast<u8>(std::lround((1 / len * 0.5 + 0.5) * 255));
+      normal[p + 3] = 255;
+    }
+  REQUIRE(image::write_png(tmp.file("colour.png"), k_n, k_n, 4, {colour.data(), colour.size()}) ==
+          io::Status::Ok);
+  REQUIRE(image::write_png(tmp.file("normal.png"), k_n, k_n, 4, {normal.data(), normal.size()}) ==
+          io::Status::Ok);
+  SceneDesc desc;
+  desc.meshes.push_back("");
+  desc.terrain = ground(tmp.file("colour.png"));
+  desc.terrain.extent = 32;
+  desc.terrain.materials->layers[0].normal = tmp.file("normal.png");
+  desc.terrain.materials->layers[0].tile_m = 2.0f;
+  desc.terrain.materials->layers[0].sampling = scene::TerrainSampling::Stochastic;
+  desc.terrain.materials->layers[0].rotation_deg = 60;
+  desc.cache = false;
+  desc.ddc = tmp.file("ddc");
+  SceneData data;
+  REQUIRE_MESSAGE(load_scene(desc, data, error), error);
+  RenderSettings settings;
+  settings.shadows = ShadowMode::RayTraced;
+  ResolvedSettings resolved;
+  resolve_settings(settings, device.features(), &data, resolved);
+  if (check_availability(resolved, device.features()) != RenderAvailability::Ok) {
+    settings.shadows = ShadowMode::Off;
+    resolve_settings(settings, device.features(), &data, resolved);
+  }
+  if (check_availability(resolved, device.features()) != RenderAvailability::Ok) {
+    MESSAGE("rendering unavailable on this device");
+    device.destroy();
+    return;
+  }
+  std::string why;
+  if (!reference_available(resolved, device, &why)) {
+    MESSAGE("no reference here: " << why);
+    device.destroy();
+    return;
+  }
+  GpuScene scene;
+  REQUIRE_MESSAGE(scene.create(device, data, resolved, &error), error);
+  SceneRenderer renderer;
+  SceneRenderer::Desc rd;
+  rd.width = 160;
+  rd.height = 120;
+  REQUIRE_MESSAGE(renderer.create(device, scene, resolved, rd, &error), error);
+  Camera camera;
+  camera.position = WorldPos{0, 9, 12};
+  camera.target = WorldPos{0, 0, 2};
+  FrameDesc lit;
+  lit.camera = camera;
+  CapturedFrame shot;
+  REQUIRE_MESSAGE(renderer.render_offscreen(lit, &error), error);
+  REQUIRE_MESSAGE(renderer.capture(lit, CaptureChannels{}, shot, &error), error);
+  ReferenceRenderer reference;
+  REQUIRE_MESSAGE(reference.create(device, scene, renderer, {}, &error), error);
+  ReferenceSettings rs;
+  rs.spp = 64;
+  rs.max_bounces = 1;
+  rs.pixel_center = true;
+  ReferenceFrame traced;
+  REQUIRE_MESSAGE(reference.render(camera, rs, traced, &error), error);
+  image::Image a, b;
+  a.width = b.width = rd.width;
+  a.height = b.height = rd.height;
+  a.channels = b.channels = 4;
+  a.pixels = traced.color;
+  b.pixels = shot.color;
+  image::FloatImage map;
+  REQUIRE(image::flip(a, b, map, image::FlipOptions{}, &error));
+  const f32 flip = image::pool_mean(map);
+  MESSAGE("FLIP mean, resolve against the path tracer over stochastic ground: " << flip);
+  CHECK(flip < 0.05f);
+  reference.destroy();
   renderer.destroy();
   scene.destroy();
   device.destroy();
