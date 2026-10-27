@@ -3286,8 +3286,8 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
   // first and closes in the third. `params` lives as long as the graph's recording.
   auto add_alloc = [&](const char* zone, gfx::RgBuffer rg_source,
                        const gfx::DeformAllocParams* params) {
-    const auto record = [&pipelines, params](gfx::CommandList cb,
-                                             const gfx::ComputePipeline& pipeline, u32 groups) {
+    const auto record = [params](gfx::CommandList cb, const gfx::ComputePipeline& pipeline,
+                                 u32 groups) {
       cb.bind_pipeline(gfx::BindPoint::Compute, pipeline.pipeline);
       cb.push_constants(pipeline.layout, gfx::ShaderStage::Compute, 0,
                         sizeof(gfx::DeformAllocParams), params);
