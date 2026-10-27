@@ -290,6 +290,12 @@ groupshared uint g_ranges_sum[k_ranges_threads];
 // bottom-level record points into the cache's `references`, any other's into the frame's own CLAS
 // addresses, and each counts against its own capacity.
 groupshared uint g_cached_sum[k_ranges_threads];
+// While `ranges_main` runs, bit 30 of an instance's two counts says it is cached: read from its
+// 96-byte record once, by the group, and carried in words the rule below loads anyway — a load of
+// the record, or of one more word, per instance on that rule's one thread made the forest's
+// over-capacity frames' chain slower by 4 to 29 ms. Cleared before the pass ends.
+static const uint k_count_cached = 0x40000000u;
+static const uint k_count_mask = 0x3fffffffu;
 
 // Takes `n` from the left of the kind the instance is: what the capacity rule spends.
 bool take(inout uint left_built, inout uint left_cached, bool cached, uint n) {
@@ -326,13 +332,15 @@ void ranges_main(uint3 group_thread : SV_GroupThreadID) {
   for (uint i = begin; i < end; ++i) {
     if (cached_at(i)) {
       own_cached += drawn[i] + casters[i];
+      drawn[i] |= k_count_cached;
+      casters[i] |= k_count_cached;
     } else {
       own += drawn[i] + casters[i];
     }
   }
   g_ranges_sum[t] = own;
   g_cached_sum[t] = own_cached;
-  GroupMemoryBarrierWithGroupSync();
+  AllMemoryBarrierWithGroupSync();
   for (uint step = 1; step < k_ranges_threads; step <<= 1) {
     const uint add = t >= step ? g_ranges_sum[t - step] : 0u;
     const uint add_cached = t >= step ? g_cached_sum[t - step] : 0u;
@@ -348,10 +356,13 @@ void ranges_main(uint3 group_thread : SV_GroupThreadID) {
     uint total = g_ranges_sum[t] - own;
     uint cached_total = g_cached_sum[t] - own_cached;
     for (uint i = begin; i < end; ++i) {
+      const bool cached = (drawn[i] & k_count_cached) != 0;
+      drawn[i] &= k_count_mask;
+      casters[i] &= k_count_mask;
       BlasRecord record;
       record.count = drawn[i] + casters[i];
       record.stride = 8;
-      if (cached_at(i)) {
+      if (cached) {
         first[i] = cached_total;
         record.references = cached_references + uint64_t(cached_total) * 8;
         cached_total += record.count;
@@ -384,7 +395,8 @@ void ranges_main(uint3 group_thread : SV_GroupThreadID) {
   // and the same instances whatever order the atomics ran in. Without an order (a scene read
   // whole) the instances are one rank in instance order, as before. A cached instance spends the
   // references' capacity and any other the frame's own (renderer.md, "The resident cluster
-  // structure cache"), by the same rule.
+  // structure cache"), by the same rule; an instance dropped loses its counts and with them its
+  // mark, and keeps nothing of either kind.
   uint left = g_params.capacity;
   uint left_cached = reference_capacity();
   uint dropped_drawn = 0;
@@ -400,7 +412,8 @@ void ranges_main(uint3 group_thread : SV_GroupThreadID) {
            (g_params.drop_order == 0 || order[2 + 2 * end_rank + 1] == rank)) {
       const uint i = g_params.drop_order != 0 ? order[2 + 2 * end_rank] : end_rank;
       if (i < n) {
-        if (!take(left, left_cached, cached_at(i), drawn[i])) {
+        const uint word = drawn[i];
+        if (!take(left, left_cached, (word & k_count_cached) != 0, word & k_count_mask)) {
           drawn[i] = 0;
           casters[i] = 0;
           ++dropped_drawn;
@@ -412,7 +425,8 @@ void ranges_main(uint3 group_thread : SV_GroupThreadID) {
     for (uint k = begin_rank; k < end_rank; ++k) {
       const uint i = g_params.drop_order != 0 ? order[2 + 2 * k] : k;
       if (i >= n) continue;
-      if (!take(left, left_cached, cached_at(i), casters[i])) {
+      const uint word = casters[i];
+      if (!take(left, left_cached, (word & k_count_cached) != 0, word & k_count_mask)) {
         casters[i] = 0;
         ++dropped_casters;
       }
@@ -424,7 +438,7 @@ void ranges_main(uint3 group_thread : SV_GroupThreadID) {
   for (uint i = 0; i < n; ++i) {
     if ((drawn[i] & k_visited) != 0) {
       drawn[i] &= ~k_visited;
-    } else if (drawn[i] + casters[i] != 0) {
+    } else if (((drawn[i] | casters[i]) & k_count_mask) != 0) {
       drawn[i] = 0;
       casters[i] = 0;
       ++dropped_drawn;
@@ -433,10 +447,13 @@ void ranges_main(uint3 group_thread : SV_GroupThreadID) {
   uint total = 0;
   uint cached_total = 0;
   for (uint i = 0; i < g_params.instance_count; ++i) {
+    const bool cached = ((drawn[i] | casters[i]) & k_count_cached) != 0;
+    drawn[i] &= k_count_mask;
+    casters[i] &= k_count_mask;
     BlasRecord record;
     record.count = drawn[i] + casters[i];
     record.stride = 8;
-    if (cached_at(i)) {
+    if (cached) {
       first[i] = cached_total;
       record.references = cached_references + uint64_t(cached_total) * 8;
       cached_total += record.count;
