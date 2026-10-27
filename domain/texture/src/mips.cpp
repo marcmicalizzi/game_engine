@@ -177,6 +177,7 @@ u32 edge_index(i32 i, i32 n, EdgeMode edge) noexcept {
 // seam where the filter would otherwise have smeared one edge's colour into the join — and the
 // reflection for a mirrored one. Two taps may land on one texel (a repeating axis a level is
 // narrower than the kernel); their weights simply add.
+template <bool Positive = false>
 void make_taps(u32 src, u32 dst, EdgeMode edge, Taps& out) {
   out.first.clear();
   out.index.clear();
@@ -202,7 +203,8 @@ void make_taps(u32 src, u32 dst, EdgeMode edge, Taps& out) {
     f32 sum = 0.0f;
     for (i32 i = lo; i <= hi; ++i) {
       const f32 x = (static_cast<f32>(i) + 0.5f - center) / scale;
-      const f32 w = mip_kernel(x);
+      f32 w = mip_kernel(x);
+      if constexpr (Positive) w = w > 0.0f ? w : 0.0f;
       if (w == 0.0f) continue;
       out.index.push_back(edge_index(i, static_cast<i32>(src), edge));
       out.weight.push_back(w);
@@ -228,13 +230,13 @@ void for_rows(jobs::JobSystem* pool, u32 count, F&& body) {
 
 // One separable resampling of a 4-channel float image `fetch(x, y)` of `sw` x `sh` into `dst`
 // (`dw` x `dh` x 4 floats): horizontally into `scratch` (`dw` x `sh` x 4), then vertically.
-template <class Fetch>
+template <bool Positive = false, class Fetch>
 void resample(const Fetch& fetch, u32 sw, u32 sh, u32 dw, u32 dh, EdgeMode edge_x, EdgeMode edge_y,
               Vector<f32>& scratch, Vector<f32>& dst, jobs::JobSystem* pool) {
   Taps horizontal;
   Taps vertical;
-  make_taps(sw, dw, edge_x, horizontal);
-  make_taps(sh, dh, edge_y, vertical);
+  make_taps<Positive>(sw, dw, edge_x, horizontal);
+  make_taps<Positive>(sh, dh, edge_y, vertical);
   scratch.resize(dw * sh * 4);
   dst.resize(dw * dh * 4);
   f32* mid = scratch.data();
@@ -443,6 +445,60 @@ void build_mip_chain(std::span<const u8> rgba, u32 width, u32 height, MipMode mo
     built.width = w;
     built.height = h;
     quantize(next, w, h, mode, built.rgba, pool);
+    out.push_back(std::move(built));
+    std::swap(previous, next);
+    pw = w;
+    ph = h;
+  }
+}
+
+void build_normal_variance_chain(std::span<const u8> rgba, u32 width, u32 height, bool mips,
+                                 Vector<MipLevel>& out, jobs::JobSystem* pool, EdgeMode edge_x,
+                                 EdgeMode edge_y) {
+  out.clear();
+  if (width == 0 || height == 0 || rgba.size() < static_cast<usize>(width) * height * 4) return;
+  const u32 count = mips ? texture_full_level_count(width, height) : 1u;
+  MipLevel first;
+  first.width = width;
+  first.height = height;
+  first.rgba.resize(width * height * 4, 0);
+  out.push_back(std::move(first));
+  Vector<f32> previous, next, scratch;
+  u32 pw = width, ph = height;
+  for (u32 level = 1; level < count; ++level) {
+    const u32 w = texture_level_extent(width, level);
+    const u32 h = texture_level_extent(height, level);
+    if (level == 1) {
+      auto fetch = [&](u32 x, u32 y, f32* texel) {
+        const u8* p = rgba.data() + (static_cast<usize>(y) * pw + x) * 4;
+        for (u32 c = 0; c < 3; ++c)
+          texel[c] = static_cast<f32>(p[c]) * (2.0f / 255.0f) - 1.0f;
+        renormalize(texel);
+        texel[3] = 0.0f;
+      };
+      resample<true>(fetch, pw, ph, w, h, edge_x, edge_y, scratch, next, pool);
+    } else {
+      auto fetch = [&](u32 x, u32 y, f32* texel) {
+        const f32* p = previous.data() + (static_cast<usize>(y) * pw + x) * 4;
+        for (u32 c = 0; c < 4; ++c)
+          texel[c] = p[c];
+      };
+      resample<true>(fetch, pw, ph, w, h, edge_x, edge_y, scratch, next, pool);
+    }
+    MipLevel built;
+    built.width = w;
+    built.height = h;
+    built.rgba.resize(w * h * 4, 0);
+    for_rows(pool, h, [&](u32 begin, u32 end) {
+      for (u32 y = begin; y < end; ++y) {
+        for (u32 x = 0; x < w; ++x) {
+          const usize at = (static_cast<usize>(y) * w + x) * 4;
+          const f32* n = next.data() + at;
+          const f32 length = std::sqrt(n[0] * n[0] + n[1] * n[1] + n[2] * n[2]);
+          built.rgba.data()[at] = unorm8(1.0f - length);
+        }
+      }
+    });
     out.push_back(std::move(built));
     std::swap(previous, next);
     pw = w;

@@ -296,6 +296,10 @@ inline constexpr u32 k_material_terrain_height = 2048u;
 // A triplanar layer sampled stochastically (R96; renderer.md, "Stochastic sampling"): three tiles
 // of a triangle lattice, each at its own offset, blended by the variance-preserving operator.
 inline constexpr u32 k_material_terrain_stochastic = 4096u;
+// The normal map carries a normal-variance chain (R97; texture.md, "Normal variance"): a BC4 image
+// of 1 - |mean unit normal| per mip, in the bindless slot immediately after `normal_texture`, which
+// widens the GGX roughness by what the footprint's normals no longer resolve.
+inline constexpr u32 k_material_normal_variance = 8192u;
 
 // TerrainRecord::flags: the terrain has a mask level (`mask` names its buffer).
 inline constexpr u32 k_terrain_masked = 1u;
@@ -578,6 +582,10 @@ enum class ResolveMode : u32 {
   // dither, so an SDR, HDR10 or scRGB chain and the display behind it are seen with nothing
   // upstream of the encode (E39's "10-bit ramp"; renderer.md, "HDR output").
   Ramp = 10,
+  // Ground sun-specular probe, linear data: R radiance luminance, G ground mask, B roughness.
+  // Legacy disables R97 only, for a same-frame comparison with identical geometry and textures.
+  SunSpecular = 11,
+  SunSpecularLegacy = 12,
 };
 
 // The Panini projection of parameter d (docs/plan/04-renderer.md §4.6, experiment E9), as the

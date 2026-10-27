@@ -13,10 +13,10 @@ with supersampled shading, rather than increase distance settings or roughness
 globally. The owner's tags 1, 5 and 8 are the beach, mountain and backshore cameras
 in the read-only POC's `reports/quality-v15/surface-audit/markers.json`.
 
-**Machine state:** no measurements yet. Future measurements must record the
-harness's `machine_state`; shared-machine times are upper bounds. Captures and
-logs belong in `D:/workspace/ge-codex-scratch/astra-filter`, using this worktree's
-offscreen binary and a scratch copy of the frozen v14 DDC.
+**Machine state:** the measurements below record the harness's `machine_state`;
+shared-machine times are upper bounds. Captures and logs are in
+`D:/workspace/ge-codex-scratch/astra-filter`, using this worktree's offscreen
+binary and a scratch copy of the frozen v14 DDC.
 
 ## Sources and what they establish
 
@@ -119,7 +119,10 @@ Deterministic texture bytes across MSVC and Clang; flat-map identity; monotone
 footprint fixture and a stated neighbouring-pixel continuity bound; GPU/double
 agreement; 1 versus 64 samples per pixel error; raster/ray terrain byte agreement;
 zero frame-loop allocations; three 2560x1440 camera captures and ground sun-specular
-means before/after; 11520x2160 resolve timings with machine state. The texture and double-reference results above are established; GPU and corrected forest acceptance remain pending.
+means before/after; 11520x2160 resolve timings with machine state. Texture,
+double-reference and focused GPU checks are established, as are the corrected
+forest measurements below. Full Windows affected validation, raster/ray fixture
+parity, frame-loop allocation checks and quiet cost acceptance remain pending.
 
 The texture cache-version bump also changes the embedded impostor texture keys in
 cluster section 33. The broadleaf/ancient full-container golden folds therefore move
@@ -183,4 +186,16 @@ and passed the 2e-6 formula comparisons. Its identity assertion used CPU and GPU
 `i/7` as if they were bit-identical: 3/7 and 6/7 differed by division rounding.
 The test now uses exactly representable `i/8` inputs, retaining an exact comparison
 for zero widening. This changes the fixture inputs, not the shading formula or its
-tolerance. The corrected run remains to be recorded.
+tolerance. The corrected RTX 5090 run passed all three cases and 8,471 assertions;
+the measured maximum adjacent step was 0.00097394. The final production sources
+passed all 13 selected Linux Clang tests; the subsequent test-only input correction
+passed a focused Linux gfx rerun. This checkout's Linux volumes were pruned.
+
+At the 2026-10-27 handoff budget, the Windows affected run had completed 25 of
+29 selected CTests: 23 passed and gfx/renderer skipped after 1,803/1,802 seconds
+waiting for the shared GPU. A separate full gfx rerun passed 105 cases and
+427,889 assertions (two cases skipped). The affected run was stopped during
+engine_view and the renderer retry was stopped without a final result. Therefore
+the Windows affected gate and frame-loop allocation acceptance are not passed.
+The implementation remains uncommitted for continuation; the research/roadmap
+stage is commit `0e8cce17`. No R97 completion is claimed.

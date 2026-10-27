@@ -96,8 +96,11 @@ enum class TextureSection : u32 {
   // options (`texture_cache_key`). Zero in a texture built from pixels with no file behind them,
   // which an incremental build reads as "rebuild it".
   SourceHash = 4,
+  // Kind 5 is reserved for R96's histogram section. BC4 UNORM of 1 - |mean(unit normal)|,
+  // all mip levels, each 16-byte aligned; extents are the normal texture's extents.
+  NormalVariance = 6,
 };
-inline constexpr u32 k_texture_section_kinds = static_cast<u32>(TextureSection::SourceHash) + 1;
+inline constexpr u32 k_texture_section_kinds = static_cast<u32>(TextureSection::NormalVariance) + 1;
 // The name of a kind this build knows, "unknown" otherwise; for diagnostics and `engine-content
 // info`.
 const char* texture_section_name(u32 kind) noexcept;
@@ -157,9 +160,11 @@ struct TextureData {
   Vector<u8> data;
   u64 source_hash = 0;
   u64 build_key = 0;
+  Vector<u8> normal_variance;  // optional BC4 shortening chain, independent of normal strength
 
   // Level `index`'s bytes; empty for an index past the chain.
   std::span<const u8> level_bytes(u32 index) const noexcept;
+  std::span<const u8> normal_variance_level_bytes(u32 index) const noexcept;
 };
 
 // Checks what the reader relies on: a known format, a chain whose every level has the extent

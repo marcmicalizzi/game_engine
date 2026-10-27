@@ -382,6 +382,27 @@ bool build_texture(std::span<const u8> rgba, u32 width, u32 height, u32 source_c
       target = target < 0.0 ? 0.0 : (target > 1.0 ? 1.0 : target);
     }
   }
+  if (options.normal_map) {
+    Vector<MipLevel> variance;
+    build_normal_variance_chain(source, width, height, options.mips, variance, pool, options.edge_x,
+                                options.edge_y);
+    u64 variance_bytes = 0;
+    for (const MipLevel& level : variance)
+      variance_bytes = (variance_bytes + 15u) / 16u * 16u +
+                       texture_level_bytes(TextureFormat::bc4, level.width, level.height);
+    if (variance_bytes > std::numeric_limits<u32>::max())
+      return fail(error, "normal variance would not fit one payload");
+    out.normal_variance.resize(static_cast<u32>(variance_bytes), 0);
+    u64 at = 0;
+    for (const MipLevel& level : variance) {
+      at = (at + 15u) / 16u * 16u;
+      const u64 bytes = texture_level_bytes(TextureFormat::bc4, level.width, level.height);
+      encode_level(TextureFormat::bc4, {level.rgba.data(), level.rgba.size()}, level.width,
+                   level.height, false,
+                   {out.normal_variance.data() + at, static_cast<usize>(bytes)}, pool);
+      at += bytes;
+    }
+  }
   r.encode_ms = ms_since(encode_start);
 
   // How far level 0 moved: decoded back and compared with what the encoder was given.

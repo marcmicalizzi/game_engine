@@ -803,6 +803,30 @@ no lookup table, no second texture and no container section, and adds no texture
   `renderer: a stochastic layer shades the same ground in the resolve and the path tracer` holds
   the three readers together by FLIP.
 
+#### Normal filtering (R97)
+
+A layer with a built normal-variance chain replaces the
+normal and roughness distance fades with footprint filtering: the sampled normal's
+unresolved variation widens the GGX lobe, while its resolved mean remains the shading
+normal. Colour and height retain the existing near/far policy; R96 owns their sampling.
+Older textures retain the old fades exactly. Combination happens after fetch: weighted
+fourth powers of roughness and the variance between the layers' mean slopes form the
+result. The isotropic approximation does not retain triplanar-axis covariance or an
+anisotropic lobe. Geometry contributes the bounded projected-normal derivative kernel,
+computed from the hit triangle's analytic barycentrics rather than neighbouring pixels.
+Both GGX and Smith use the final roughness. The shared terrain/material code serves
+raster, ray visibility and the reference tracer; the latter's infinitesimal rays keep
+level zero and their samples integrate the footprint. See [normal filtering](../experiments/normal-filtering.md)
+for the model, sources, error fixture and outstanding appearance/cost acceptance.
+
+The diagnostic views `sun-specular` and `sun-specular-legacy` return linear data:
+R is the shadowed sun-specular radiance luminance of native ground before aerial
+scattering and exposure, G is 1 on ground and 0 elsewhere, B is roughness. Capture
+with `--present-format linear --capture probe.exr`; average R where G is 1.
+The legacy view disables R97 on the same geometry and textures, retaining the old
+normal/roughness fades. It changes no shadow algorithm and excludes water, other
+meshes and sky from the mask. These are measurement views, not display colours.
+
 The normal resolve, ray-shadow resolve and reference path tracer share `terrain_material.slang`.
 The water volume tier evaluates it at the analytic bottom hit too; this does not add submerged
 scene objects or reflections. Separate `_terrain` modules are selected only for scenes that

@@ -1,6 +1,9 @@
 #include "terrain_hex_reference.h"
+#include "brdf_reference.h"
 
 #include <core/math/math.h>
+#include <domain/gfx/backend/vulkan/vulkan.h>
+#include <domain/gfx/bindless.h>
 #include <domain/gfx/commands.h>
 #include <domain/gfx/device.h>
 #include <domain/gfx/pipeline.h>
@@ -19,6 +22,203 @@
 #include <vector>
 
 using namespace engine;
+
+TEST_CASE("gfx: variance footprint is monotone and continuous between texture mips") {
+  gfx::Device device;
+  std::string error;
+  if (!device.create(gfx::DeviceOptions{}, &error)) {
+    MESSAGE("no device: " << error);
+    return;
+  }
+  if (!device.features().texture_compression_bc) return;
+  gfx::BindlessSet bindless;
+  REQUIRE(bindless.create(device, {}, &error));
+  Vector<Vector<u8>> bytes;
+  Vector<gfx::ImageLevelData> levels;
+  bytes.resize(9);
+  for (u32 level = 0; level < 9; ++level) {
+    const u32 side = std::max(1u, 256u >> level);
+    const u32 blocks = ((side + 3) / 4) * ((side + 3) / 4);
+    bytes[level].resize(blocks * 8, 0);
+    for (u32 b = 0; b < blocks; ++b) {
+      bytes[level][b * 8] = static_cast<u8>(level * 8);
+      bytes[level][b * 8 + 1] = static_cast<u8>(level * 8);
+    }
+    levels.push_back({bytes[level].data(), bytes[level].size()});
+  }
+  gfx::ImageResource image;
+  gfx::ImageViewHandle view;
+  REQUIRE(gfx::upload_image_2d_levels(
+      device, 256, 256, gfx::Format::Bc4Unorm,
+      std::span<const gfx::ImageLevelData>(levels.data(), levels.size()), image, &error));
+  REQUIRE(gfx::create_image_view(device, image, view, &error));
+  const u32 normal_slot = bindless.add_sampled_image(view, gfx::ImageLayout::ShaderReadOnly);
+  REQUIRE(bindless.add_sampled_image(view, gfx::ImageLayout::ShaderReadOnly) == normal_slot + 1);
+  gfx::SamplerHandle sampler;
+  REQUIRE(gfx::create_mip_sampler(device, 1, sampler, &error));
+  REQUIRE(bindless.add_sampler(sampler) == 0);
+  const auto module =
+      gfx::create_shader_module(device, shaders::k_terrain_material_probe_spirv,
+                                shaders::k_terrain_material_probe_spirv_size, &error);
+  REQUIRE(module.valid());
+  const gfx::DescriptorSetLayoutHandle layout[] = {bindless.layout()};
+  gfx::ComputePipeline pipeline;
+  REQUIRE(
+      gfx::create_compute_pipeline(device, module, "footprint_main", layout, 16, pipeline, &error));
+  gfx::BufferResource output;
+  constexpr u32 k_count = 2048;
+  REQUIRE(gfx::create_buffer(device, k_count * sizeof(Vec4),
+                             gfx::BufferUsage::Storage | gfx::BufferUsage::ShaderDeviceAddress,
+                             true, output, &error));
+  struct Params {
+    u64 output;
+    u32 count;
+    u32 slot;
+  };
+  const Params params{output.address, k_count, normal_slot};
+  REQUIRE(gfx::submit_immediate(
+      device,
+      [&](gfx::CommandList cb) {
+        cb.bind_pipeline(gfx::BindPoint::Compute, pipeline.pipeline);
+        const VkDescriptorSet set = gfx::vk::native(bindless.set());
+        vkCmdBindDescriptorSets(gfx::vk::native(cb), VK_PIPELINE_BIND_POINT_COMPUTE,
+                                gfx::vk::native(pipeline.layout), 0, 1, &set, 0, nullptr);
+        cb.push_constants(pipeline.layout, gfx::ShaderStage::Compute, 0, sizeof(params), &params);
+        cb.dispatch(k_count / 64, 1, 1);
+      },
+      &error));
+  const auto* values = static_cast<const Vec4*>(output.mapped);
+  float maximum_step = 0;
+  for (u32 i = 0; i < k_count; ++i) {
+    const double expected = brdf_ref::filter_roughness(
+        0.5, brdf_ref::normal_variance(static_cast<double>(values[i].y), 1));
+    CHECK(std::abs(static_cast<double>(values[i].x) - expected) < 2e-6);
+    CHECK(values[i].z == 0.5f);  // absent section/flag is exactly the old path
+    CHECK(std::abs(static_cast<double>(values[i].w) -
+                   brdf_ref::terrain_filter_combination(0.0625, static_cast<double>(values[i].y),
+                                                        {static_cast<double>(values[i].y), 0, 0})) <
+          2e-6);
+    if (i != 0) {
+      const float step = values[i].x - values[i - 1].x;
+      CHECK(step >= -2e-6f);
+      maximum_step = std::max(maximum_step, std::abs(step));
+    }
+  }
+  CHECK(maximum_step < 0.008f);
+  MESSAGE("maximum adjacent roughness step: " << maximum_step);
+  gfx::destroy_buffer(device, output);
+  gfx::destroy_compute_pipeline(device, pipeline);
+  gfx::destroy_shader_module(device, module);
+  bindless.destroy();
+  gfx::destroy_sampler(device, sampler);
+  gfx::destroy_image_view(device, view);
+  gfx::destroy_image(device, image);
+  device.destroy();
+}
+
+TEST_CASE("gfx: normal filtering agrees with the double reference") {
+  gfx::Device device;
+  std::string error;
+  if (!device.create(gfx::DeviceOptions{}, &error)) {
+    MESSAGE("no device: " << error);
+    return;
+  }
+  const auto module =
+      gfx::create_shader_module(device, shaders::k_terrain_material_probe_spirv,
+                                shaders::k_terrain_material_probe_spirv_size, &error);
+  REQUIRE_MESSAGE(module.valid(), error);
+  gfx::ComputePipeline pipeline;
+  REQUIRE_MESSAGE(
+      gfx::create_compute_pipeline(device, module, "filter_main", {}, 16, pipeline, &error), error);
+  gfx::BufferResource output;
+  constexpr u32 k_count = 64;
+  REQUIRE_MESSAGE(
+      gfx::create_buffer(device, k_count * sizeof(Vec4),
+                         gfx::BufferUsage::Storage | gfx::BufferUsage::ShaderDeviceAddress, true,
+                         output, &error),
+      error);
+  struct Params {
+    u64 output;
+    u32 count;
+    u32 pad;
+  };
+  const Params params{output.address, k_count, 0};
+  REQUIRE_MESSAGE(gfx::submit_immediate(
+                      device,
+                      [&](gfx::CommandList cb) {
+                        cb.bind_pipeline(gfx::BindPoint::Compute, pipeline.pipeline);
+                        cb.push_constants(pipeline.layout, gfx::ShaderStage::Compute, 0,
+                                          sizeof(params), &params);
+                        cb.dispatch(1, 1, 1);
+                      },
+                      &error),
+                  error);
+  const auto* values = static_cast<const Vec4*>(output.mapped);
+  for (u32 i = 0; i < k_count; ++i) {
+    // Binary-exact inputs let the no-widening check test identity, not CPU/GPU division rounding.
+    const double r = static_cast<double>(i % 8) / 8;
+    const double loss = static_cast<double>(i / 8) / 8;
+    const double scale = static_cast<double>(i % 3) * 0.5;
+    const double v = brdf_ref::normal_variance(loss, scale);
+    const double g = brdf_ref::geometric_alpha2({r * 0.1, 0, 0}, {0, loss * 0.2, 0});
+    CHECK(std::abs(static_cast<double>(values[i].x) - v) < 2e-6);
+    CHECK(std::abs(static_cast<double>(values[i].y) - g) < 2e-6);
+    CHECK(std::abs(static_cast<double>(values[i].z) - brdf_ref::filter_roughness(r, v, g)) < 2e-6);
+    CHECK(values[i].w == static_cast<float>(i % 8) / 8.0f);
+  }
+  gfx::destroy_buffer(device, output);
+  gfx::destroy_compute_pipeline(device, pipeline);
+  gfx::destroy_shader_module(device, module);
+  device.destroy();
+}
+
+TEST_CASE("gfx: filtered GGX is closer to an 8 by 8 normal-plane reference") {
+  namespace ref = brdf_ref;
+  // A unit-period sinusoidal normal map; centre sample is flat, 8x8 midpoint quadrature
+  // integrates one unresolved period. Black dielectric isolates the sun's specular term.
+  const ref::Dvec3 light{-std::cos(ref::k_pi / 12), std::sin(ref::k_pi / 12), 0};
+  for (double r : {0.2, 0.5, 0.8}) {
+    for (double amplitude : {0.1, 0.3, 0.6}) {
+      ref::Dvec3 normals[64];
+      double mean_y = 0;
+      for (u32 y = 0; y < 8; ++y) {
+        for (u32 x = 0; x < 8; ++x) {
+          const auto n = ref::normalize({amplitude * std::sin(2 * ref::k_pi * (x + 0.5) / 8), 1,
+                                         amplitude * std::sin(2 * ref::k_pi * (y + 0.5) / 8)});
+          normals[y * 8 + x] = n;
+          mean_y += n.y / 64;
+        }
+      }
+      const double filtered = ref::filter_roughness(r, ref::normal_variance(1 - mean_y, 1));
+      double before = 0, after = 0;
+      for (int angle = 45; angle <= 89; ++angle) {
+        for (int azimuth = -20; azimuth <= 20; ++azimuth) {
+          const double theta = angle * ref::k_pi / 180;
+          const double phi = azimuth * ref::k_pi / 180;
+          ref::Surface s;
+          s.view = {std::sin(theta) * std::cos(phi), std::cos(theta),
+                    std::sin(theta) * std::sin(phi)};
+          s.roughness = r;
+          double truth = 0;
+          for (const auto n : normals) {
+            s.normal = n;
+            truth += ref::direct(s, light, {1, 1, 1}).x / 64;
+          }
+          s.normal = {0, 1, 0};
+          const double raw = ref::direct(s, light, {1, 1, 1}).x - truth;
+          s.roughness = filtered;
+          const double smooth = ref::direct(s, light, {1, 1, 1}).x - truth;
+          before += raw * raw;
+          after += smooth * smooth;
+        }
+      }
+      MESSAGE("r=" << r << " amplitude=" << amplitude << " unfiltered_rmse="
+                   << std::sqrt(before / 1845) << " filtered_rmse=" << std::sqrt(after / 1845)
+                   << " ratio=" << std::sqrt(after / before));
+      CHECK(after < before * 0.51);  // at least 28.5% lower RMSE in every fixture
+    }
+  }
+}
 
 TEST_CASE(
     "gfx: terrain material phases retain millimetres far away and projected normals preserve "

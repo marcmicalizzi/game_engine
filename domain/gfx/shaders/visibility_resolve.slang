@@ -223,6 +223,7 @@ struct FullscreenOut {
 // (display.slang, `display_output`), dithered at the view's `pixel` — the stand-in's flat colour
 // is not: it has no gradient to band, and it is the clear the pass already wrote.
 float4 sky_pixel(ResolveParams* params, float2 source, uint2 pixel) {
+  if (params->mode == 11 || params->mode == 12) return float4(0, 0, 0, 1);
   if (params->sky_params == 0) {
     if (params->sky_is_clear != 0) discard;
     return params->sky;
@@ -763,7 +764,8 @@ float4 fs_resolve(FullscreenOut in) : SV_Target {
                                params->terrain_uv_per_mm);
   if (params->mode == 5) return float4(frac(surface_uv), 0.0, 1.0);
 
-  const ResolveMaterial material = material_of(geo, instance, entry.y);
+  ResolveMaterial material = material_of(geo, instance, entry.y);
+  if (params->mode == 12) material.flags &= ~k_material_normal_variance;
   // The material's UV transform (KHR_texture_transform) after the scale, and its linear part on
   // the derivatives: a brick texture authored to tile eight times reads eight tiles.
   const float2 uv = material_uv(material, surface_uv * material.uv_scale);
@@ -793,7 +795,8 @@ float4 fs_resolve(FullscreenOut in) : SV_Target {
     screen_position_gradients(tri, source, params->view_proj, params->camera.xyz, params->width,
                               params->height, dp_dx, dp_dy);
     sampled = sample_terrain_material(geo, material, surface_uv, duv_dx, duv_dy, s.position,
-                                      s.normal, dp_dx, dp_dy, length(from_eye), true, terrain_normal);
+                                      s.normal, dp_dx, dp_dy, length(from_eye), true, terrain_normal,
+                                      params->mode != 12);
   }
 #else
   const MaterialSample sampled = sample_material_grad(material, uv, duv_dx, duv_dy);
@@ -828,6 +831,12 @@ float4 fs_resolve(FullscreenOut in) : SV_Target {
   // the reconstruction's own derivatives, from the triangle, as the UV's are. Only a material that
   // carries it, and only when the frame hands over its block; everything else reads what it read.
   float roughness = sampled.roughness;
+  if (sampled.normal_filter) {
+    const TriangleFetch tri = fetch_triangle(geo, instance, visible_index, entry.y, id & 0xff);
+    roughness = brdf_filter_roughness(roughness, 0.0,
+        screen_geometric_alpha2(geo, instance, tri, source, params->view_proj,
+                                params->camera.xyz, params->width, params->height));
+  }
   const bool detailed =
       (material.flags & k_material_ground_detail) != 0 && params->ground_detail != 0;
   if (detailed) {
@@ -887,6 +896,24 @@ float4 fs_resolve(FullscreenOut in) : SV_Target {
   // illuminance rather than the stand-in's intensity (sky.slang, `sky_light_at`).
   SkyParams* sky = (SkyParams*)params->sky_params;
   const bool has_sky = params->sky_params != 0;
+
+  // R97's measurement channel: sunlight specular alone before aerial scattering or display
+  // encoding. Green identifies native ground, including shadowed ground with zero red.
+  if (params->mode == 11 || params->mode == 12) {
+    if ((material.flags & 512u) == 0) return float4(0, 0, 0, 1);
+    BrdfSurface specular = surface;
+    specular.albedo = float3(0);
+    specular.metallic = 0;
+    float3 radiance = float3(0);
+    if (dot(surface.normal, params->sun.xyz) > 0.0) {
+      const float visibility = shadow_visibility(params, k_shadow_sun, 0u, s.position,
+          s.geometric, ray_bias, params->sun.xyz, 1e30);
+      float3 sun = float3(params->sun.w);
+      if (has_sky) sun = sky_light_at(sky, s.position, params->sun.xyz, sky->sun_illuminance.rgb);
+      radiance = brdf_direct(specular, params->sun.xyz, sun * visibility);
+    }
+    return float4(dot(radiance, float3(0.2126, 0.7152, 0.0722)), 1, roughness, 1);
+  }
 
   // The sun: one direction, one intensity, no falloff; a hit anywhere along the ray removes it,
   // and a filtered map removes the fraction it covers. A visibility of 1 multiplies nothing, so a

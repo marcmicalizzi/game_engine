@@ -203,8 +203,10 @@ void prepare_scene_textures(const SceneDesc& desc, Vector<SourceMesh>& sources,
       if (!image.bytes.empty()) {
         ref.source_hash = record.key != 0 ? record.source_hash
                                           : hash_bytes(image.bytes.data(), image.bytes.size());
-        ref.key =
-            record.key != 0 ? record.key : texture::texture_cache_key(ref.source_hash, options);
+        // A cached mesh can outlive the texture builder version. Its embedded source identity
+        // stays valid, but reusing its old derived key would prevent new texture sections from
+        // ever being built (R97's terrain normal variance). The record is updated below, in memory.
+        ref.key = texture::texture_cache_key(ref.source_hash, options);
       } else if (!image.uri.empty()) {
         std::string path = io::normalize_path(
             mesh.image_dir.empty() ? image.uri : io::join_path(mesh.image_dir, image.uri));

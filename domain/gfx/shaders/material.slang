@@ -39,6 +39,7 @@ static const uint k_material_ground_detail = 8u;
 // The material is a water surface, shaded by the resolve's water branch (water.slang) from the
 // numbers gfx::set_water_material packed into slots an untextured material never reads.
 static const uint k_material_water = 16u;
+static const uint k_material_normal_variance = 8192u;
 // A per-slot sampler half that borrows the material's `sampler` (gfx::k_same_sampler).
 static const uint k_same_sampler = 0xffffu;
 
@@ -399,6 +400,34 @@ void screen_position_gradients(TriangleFetch tri, float2 pixel_center,
   dp_dy = s.db_dy.y * e1 + s.db_dy.z * e2;
 }
 
+// Normal derivatives use the same analytic barycentrics, never a fullscreen quad that straddles
+// triangles. Differentiate normalization after the instance's cofactor transform; this also
+// handles nonuniform scale and deformed normals. The 2021 projected-space kernel is bounded.
+float screen_geometric_alpha2(SceneGeometry geo, InstanceDesc instance, TriangleFetch tri,
+                               float2 pixel_center, column_major float4x4 view_proj,
+                               float3 eye, uint width, uint height) {
+  if (geo.attributes == 0) return 0.0;
+  const ScreenBarycentrics s = screen_barycentrics(tri, pixel_center, view_proj, eye, width, height);
+  VertexAttributes* attributes = (VertexAttributes*)geo.attributes;
+  const float3 c0 = float3(instance.rows[0].x, instance.rows[1].x, instance.rows[2].x);
+  const float3 c1 = float3(instance.rows[0].y, instance.rows[1].y, instance.rows[2].y);
+  const float3 c2 = float3(instance.rows[0].z, instance.rows[1].z, instance.rows[2].z);
+  float3 normals[3];
+  [unroll] for (uint i = 0; i < 3; ++i) {
+    float3 n = decode_normal_oct(attributes[tri.local[i]].normal_oct);
+    if (geo.normal_pool != 0 && tri.pool_base != k_no_pool_slot)
+      n = load_pool_normal(geo.normal_pool, tri.pool_base, tri.pool_local[i], n);
+    normals[i] = cross(c1, c2) * n.x + cross(c2, c0) * n.y + cross(c0, c1) * n.z;
+  }
+  const float3 mean = s.b.x * normals[0] + s.b.y * normals[1] + s.b.z * normals[2];
+  const float len = length(mean);
+  if (len < 1e-8) return 0.18;
+  const float3 n = mean / len;
+  const float3 dx = s.db_dx.y * (normals[1] - normals[0]) + s.db_dx.z * (normals[2] - normals[0]);
+  const float3 dy = s.db_dy.y * (normals[1] - normals[0]) + s.db_dy.z * (normals[2] - normals[0]);
+  return brdf_geometric_alpha2((dx - n * dot(n, dx)) / len, (dy - n * dot(n, dy)) / len);
+}
+
 // The hit triangle's tangent frame, from its own positions and UVs: with dp1 = T du1 + B dv1 and
 // dp2 = T du2 + B dv2, the two edge deltas and the two UV deltas solve for T and B, which are
 // then Gram-Schmidt orthonormalized against the shading normal so the frame is orthonormal and
@@ -458,6 +487,7 @@ struct MaterialSample {
   // sand share, which its detail is weighted by. Every other material ignores it (glTF gives the
   // map's alpha no meaning, and an image without one reads 1).
   float detail_mask;
+  bool normal_filter;
 };
 
 //
@@ -467,6 +497,7 @@ struct MaterialSample {
 // (docs/subsystems/renderer.md, "Materials").
 MaterialSample sample_material(ResolveMaterial material, float2 uv) {
   MaterialSample sampled;
+  sampled.normal_filter = (material.flags & k_material_normal_variance) != 0;
   sampled.albedo = material.albedo.rgb;
   if (material.albedo_texture != k_no_texture) {
     sampled.albedo *= g_textures[NonUniformResourceIndex(material.albedo_texture)]
@@ -502,6 +533,7 @@ MaterialSample sample_material_grad(ResolveMaterial material, float2 uv, float2 
                                     float2 duv_dy) {
   if ((material.flags & k_material_mipped) == 0) return sample_material(material, uv);
   MaterialSample sampled;
+  sampled.normal_filter = (material.flags & k_material_normal_variance) != 0;
   sampled.albedo = material.albedo.rgb;
   if (material.albedo_texture != k_no_texture) {
     sampled.albedo *= g_textures[NonUniformResourceIndex(material.albedo_texture)]
@@ -520,6 +552,14 @@ MaterialSample sample_material_grad(ResolveMaterial material, float2 uv, float2 
     sampled.roughness *= mr.g;
     sampled.metallic *= mr.b;
     sampled.detail_mask = mr.a;
+  }
+  if ((material.flags & k_material_normal_variance) != 0 &&
+      material.normal_texture != k_no_texture) {
+    const uint s = slot_sampler(material, material.samplers_mr_normal, 16);
+    const float loss = g_textures[NonUniformResourceIndex(material.normal_texture + 1u)].SampleGrad(
+        g_samplers[NonUniformResourceIndex(s)], uv, duv_dx, duv_dy).r;
+    sampled.roughness = brdf_filter_roughness(
+        sampled.roughness, brdf_normal_variance(loss, material.normal_scale), 0.0);
   }
   sampled.emissive = material.emissive.rgb;
   if (material.emissive_texture != k_no_texture) {

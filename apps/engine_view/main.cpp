@@ -320,7 +320,9 @@ constexpr const char* k_usage =
     "                   detail (a terrain's sand detail as data: R ripple height, G the share\n"
     "                   drawn, B grain; black elsewhere), or ramp (a grey test pattern through the\n"
     "                   output encode in place of the scene: black to white, the darkest eighth,\n"
-    "                   and four stops past white; E39's 10-bit ramp)\n"
+    "                   and four stops past white; E39's 10-bit ramp), sun-specular or\n"
+    "                   sun-specular-legacy (linear ground probe: R sun-specular luminance,\n"
+    "                   G ground mask, B roughness; capture as linear EXR)\n"
     "  --orbit <d>    orbit at a fixed distance instead of breathing between 8 and 36 units;\n"
     "                   distances scale with the scene radius (10 for the heightfield)\n"
     "  --deform <mode>  deform every instance through the per-frame deformed-vertex pool\n"
@@ -4155,7 +4157,7 @@ int run_view(int argc, char** argv) {
       if (!renderer::parse_view_mode(value, options.settings.view_mode)) {
         std::fprintf(stderr,
                      "engine-view: --view expects id, tri, depth, shaded, normals, uv, shadow, "
-                     "albedo, occlusion, detail, or ramp\n");
+                     "albedo, occlusion, detail, ramp, sun-specular, or sun-specular-legacy\n");
         return k_exit_usage;
       }
     } else if (a == "--capture") {

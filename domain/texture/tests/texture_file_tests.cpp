@@ -69,6 +69,41 @@ void check_equal(const TextureData& a, const TextureData& b) {
   }
   REQUIRE(a.data.size() == b.data.size());
   CHECK(std::memcmp(a.data.data(), b.data.data(), a.data.size()) == 0);
+  REQUIRE(a.normal_variance.size() == b.normal_variance.size());
+  if (!a.normal_variance.empty())
+    CHECK(std::memcmp(a.normal_variance.data(), b.normal_variance.data(),
+                      a.normal_variance.size()) == 0);
+}
+
+TEST_CASE("texture variance: optional chain round trips and malformed payloads are refused") {
+  const test::TempDir tmp("normal_variance");
+  Vector<u8> pixels;
+  test_fixtures::normal_image(37, 21, pixels);
+  TextureBuildOptions options;
+  options.normal_map = true;
+  TextureData data;
+  std::string error;
+  REQUIRE(build_texture({pixels.data(), pixels.size()}, 37, 21, 4, options, data, nullptr, &error));
+  REQUIRE(!data.normal_variance.empty());
+  for (u32 i = 0; i < data.levels.size(); ++i)
+    CHECK(data.normal_variance_level_bytes(i).size() ==
+          texture_level_bytes(TextureFormat::bc4, data.levels[i].width, data.levels[i].height));
+  CHECK(data.normal_variance_level_bytes(data.levels.size()).empty());
+  const auto path = tmp.file("normal.tex");
+  REQUIRE(write_texture_file(path, data, &error));
+  TextureData read;
+  REQUIRE(read_texture_file(path, read, &error));
+  check_equal(data, read);
+  data.normal_variance.pop_back();
+  CHECK_FALSE(validate_texture(data, &error));
+  data.normal_variance.clear();
+  CHECK(validate_texture(data, &error));
+  REQUIRE(write_texture_file(path, data, &error));
+  REQUIRE(read_texture_file(path, read, &error));
+  CHECK(read.normal_variance.empty());
+  data.normal_variance.resize(8);
+  data.flags &= ~k_texture_normal_map;
+  CHECK_FALSE(validate_texture(data, &error));
 }
 
 // A copy of `file` with a section of an unknown kind inserted, the way the cluster container's

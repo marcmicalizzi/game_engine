@@ -30,6 +30,7 @@ skips one it does not know:
 | 2 | `levels` | `TextureFileLevel`, 24 bytes, one per level | width, height, and the offset and length of the level's blocks in `data`; level 0 first |
 | 3 | `data` | `u8` | every level's blocks back to back, each level at a 16-byte aligned offset, the padding zero |
 | 4 | `source_hash` | `u64`, two | the source image's content hash (`hash_bytes` over its encoded bytes as read) and the build key over it and the options |
+| 6 | `normal_variance` | `u8` | optional BC4 UNORM shortening chain beside a normal map; kind 5 reserved for R96 |
 
 Stochastic terrain sampling (R96, 2026-10-26) was expected to need a section here — a histogram
 transform's inverse look-up tables per image and mip, as Heitz and Neyret's and Burley's methods
@@ -107,6 +108,38 @@ The kernel is a polynomial rather than a windowed sinc for the determinism rule 
 negative lobes can take a value a hair outside the source's range; the quantizer clamps.
 
 ## Block compression
+
+### Normal variance (R97)
+
+Normal-map builds at cache version 2 additionally store `1 - length(mean(unit normal))`
+in a BC4 chain, with the same extents and 16-byte level alignment as the normal chain.
+Section 6 is optional; an older file has an empty `normal_variance`, and older readers
+skip it. `normal_variance_level_bytes` exposes each level without a second level table.
+The reader rejects a chain with the wrong size or attached to a non-normal texture.
+
+The means are formed from normalized **source** vectors, before compression, and
+are never renormalized between levels. The filter is Mitchell with negative taps
+removed and the remaining weights normalized: a normal distribution needs positive
+weights. Edge modes follow the normal map. Level 0 has zero unresolved variance;
+a constant normal has zero at every level. The statistic is independent of the
+material's roughness and normal strength. It costs half the BC5 chain's block bytes,
+plus small-level alignment, and is built once per image. Existing normal blocks are
+unchanged. Source and model limits: [normal filtering](../experiments/normal-filtering.md).
+The renderer uploads the BC4 chain immediately after its normal image in the bindless
+set, checks descriptor adjacency, and shares both by the image key. Material flag 8192
+permits that read; a texture without the section keeps the old path. The 112-byte
+material record is unchanged. The auxiliary read uses the normal sampler and UV
+derivatives, including mip interpolation and anisotropy. Its shortening becomes
+variance scaled by normal strength squared, then widens GGX roughness in the shared
+material code; [normal filtering](../experiments/normal-filtering.md) gives the formula
+and its limits. The reference tracer's level-zero rays have zero unresolved variance;
+the reference average performs the pixel integration itself.
+
+The version bump changes encoded-image build identities. The golden test's two
+normal-container hashes change for the added section, and its PNG-container hash
+changes for the new key; all eleven existing block-payload hashes stay unchanged.
+
+### Encoders
 
 `encode_level` encodes one level with the vendored encoders (`cmake/EngineTexture.cmake`,
 [third-party licences](../../third_party/LICENSES.md)): **BC7** through Rich Geldreich's `bc7enc`
@@ -602,3 +635,11 @@ occlusion slots and the transform's rotation are held to the CPU reference in
 - **`domain/atlas`'s rebake** still uses `std::pow` for its sRGB tables, which is one reason a
   repacked container is not yet the same bytes everywhere ([atlas](atlas.md#determinism)); these
   tables are the fix waiting for it.
+
+A cached mesh may carry embedded source images and texture keys from an older
+builder. Scene cache preparation derives the current key from each embedded source
+identity and options, just as it does for path images, and updates the loaded mesh's
+records in memory. It does not rewrite the source container. Without this step,
+a texture cache version bump would never reach cached terrain normal maps. Direct
+reads of old `.tex` files, and scenes loaded without cache preparation, retain the
+optional-section fallback.

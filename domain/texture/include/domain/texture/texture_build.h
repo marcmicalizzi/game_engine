@@ -27,7 +27,8 @@ namespace engine::texture {
 // an encoder setting, the level-0 rule for normal maps, the encoders' pin. It is not the file
 // format version: a cache miss is cheap, a wrong texture is not.
 // 1: the first texture build (2026-09-24).
-inline constexpr u32 k_texture_cache_version = 1;
+// 2: optional normal-variance chain (R97, 2026-10-26).
+inline constexpr u32 k_texture_cache_version = 2;
 
 // What a build is asked for. `format` may be `auto`, which `resolve_texture_format` turns into a
 // concrete format from the options and what the source stored.
@@ -179,6 +180,14 @@ struct MipLevel {
 void build_mip_chain(std::span<const u8> rgba, u32 width, u32 height, MipMode mode, bool mips,
                      Vector<MipLevel>& out, jobs::JobSystem* pool = nullptr,
                      EdgeMode edge_x = EdgeMode::clamp, EdgeMode edge_y = EdgeMode::clamp);
+
+// Toksvig shortening, 1 - length(mean(unit source normal)), in R. Positive Mitchell taps,
+// renormalized to sum to one: negative weights are not a distribution. Intermediate means are
+// never normalized or quantized; level 0 is zero. Edges match the normal map's sampler.
+void build_normal_variance_chain(std::span<const u8> rgba, u32 width, u32 height, bool mips,
+                                 Vector<MipLevel>& out, jobs::JobSystem* pool = nullptr,
+                                 EdgeMode edge_x = EdgeMode::clamp,
+                                 EdgeMode edge_y = EdgeMode::clamp);
 
 // Encodes one level of RGBA8 into `format`'s blocks (`texture_level_bytes` of them). Normal maps
 // go to BC5 as R and G; BC4 takes R. `perceptual` weights BC7's error in YCbCr, which is right for
