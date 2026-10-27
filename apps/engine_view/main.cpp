@@ -374,6 +374,9 @@ constexpr const char* k_usage =
     "  --terrain-far <n>  far levels of ground past the world tiles' outermost ring, each twice\n"
     "                   the spacing and reach of the one inside it, out to where the air takes\n"
     "                   the ground (0 to 8; default renderer.terrain.far_levels, 6)\n"
+    "  --terrain-far-error-px <px>  derive far spacing from a measured scene error (0: ratio 4)\n"
+    "  --terrain-far-error-per-m <m/m>  measured height-error envelope per metre of spacing\n"
+    "  --terrain-far-ratio <n>  explicit spacing / outer ring spacing; overrides the error rule\n"
     "  --animate [clip] play a skinned glTF's animation: the skin becomes a skeleton, a clip is\n"
     "                   ticked at the fixed step, and every instance is skinned through the same\n"
     "                   deformed-vertex pool --deform uses. The optional value names the clip by\n"
@@ -2742,7 +2745,7 @@ int run_offscreen(Options& options, Interactive& interactive) {
               : renderer::orbit_camera(scene_data.center, scene_data.radius, options.orbit, 0);
       if (interactive.on) first.position = interactive.header.start.position;
       ENGINE_STARTUP_STAGE("ground prepare");
-      if (!ground.prepare(scene_data, resolved, first, &error)) {
+      if (!ground.prepare(scene_data, resolved, first, &error, false, options.height)) {
         exit_code = fail(ground.stage(), error);
         break;
       }
@@ -3861,6 +3864,26 @@ int run_view(int argc, char** argv) {
         return k_exit_usage;
       }
       options.settings.terrain_far_levels = static_cast<i32>(n);
+    } else if (a == "--terrain-far-ratio") {
+      if (!next_value(argc, argv, i, a, value)) return k_exit_usage;
+      u32 n = 0;
+      if (!parse_u32(value, n) || n < 1 || n > 128) {
+        std::fprintf(stderr, "engine-view: --terrain-far-ratio expects 1 to 128\n");
+        return k_exit_usage;
+      }
+      options.settings.terrain_far_ratio = n;
+    } else if (a == "--terrain-far-error-px" || a == "--terrain-far-error-per-m") {
+      if (!next_value(argc, argv, i, a, value)) return k_exit_usage;
+      f32 v = 0.0f;
+      if (!parse_f32_zero_ok(value, v) || !std::isfinite(v) || v > 1024.0f) {
+        std::fprintf(stderr, "engine-view: %.*s expects 0 to 1024\n", static_cast<int>(a.size()),
+                     a.data());
+        return k_exit_usage;
+      }
+      if (a == "--terrain-far-error-px")
+        options.settings.terrain_far_error_px = v;
+      else
+        options.settings.terrain_far_error_per_m = v;
     } else if (a == "--lod" || a == "--sw-px" || a == "--orbit" || a == "--deform-amplitude") {
       if (!next_value(argc, argv, i, a, value)) return k_exit_usage;
       f32 px = 0.0f;
@@ -5423,7 +5446,8 @@ int run_view(int argc, char** argv) {
       }
       attach_stage.end();
       profiling::TraceStage ground_stage("ground prepare");
-      if (!ground.prepare(scene_data, resolved, terrain_camera, &error, /*window=*/true)) {
+      if (!ground.prepare(scene_data, resolved, terrain_camera, &error, /*window=*/true,
+                          options.height)) {
         exit_code = fail(ground.stage(), error);
         return false;
       }

@@ -1655,7 +1655,7 @@ bool RenderHost::ensure_renderer(Scene& scene, const renderer::RenderSettings& s
   // The rings or the world's tiles round the call's first camera, before the GPU scene, which
   // reserves their slots beside its own meshes.
   auto ground = std::make_unique<renderer::MovingGround>();
-  if (!ground->prepare(scene.data, scene.resolved, first, &error)) {
+  if (!ground->prepare(scene.data, scene.resolved, first, &error, false, height)) {
     error = std::string(ground->stage()) + ": " + error;
     return false;
   }

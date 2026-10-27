@@ -419,7 +419,7 @@ struct DisplaysResult @version(1) {
 /// field this is `renderer::RenderSettings` in engine-view's spellings and units, read by one
 /// function the renderer owns (`renderer::read_protocol_settings`, systems/renderer/request.h);
 /// `request_tests.cpp` fails when a renderer field has no field here and no reason to have none.
-struct RenderSettings @version(13) {
+struct RenderSettings @version(14) {
   /// direct, hw, vertex, sw, auto, or rt. `hw` and `direct` fall back to `vertex` on a device
   /// without mesh shaders; the result says which one ran.
   raster: string = "hw"
@@ -560,6 +560,13 @@ struct RenderSettings @version(13) {
   /// "low" is the surface alone — the sky, the sun's glitter and a bottom colour painted by the
   /// depth — the picture before the tier. `engine-view --water-quality low|high`.
   water_quality: string = "high" @since(13)
+  /// Optional far-ground spacing from a measured per-scene height-error envelope (F20).
+  /// Zero takes renderer.terrain.far_error_px (default zero: today's constants).
+  terrain_far_error_px: f32 = 0 @since(14)
+  /// Metres of measured height error per metre of far lattice spacing; no automatic source mip.
+  terrain_far_error_per_m: f32 = 0 @since(14)
+  /// Explicit first far spacing / outermost ring spacing. Zero derives or uses four; wins over px.
+  terrain_far_ratio: u32 = 0 @since(14)
 }
 
 /// What a frame is drawn at beyond its camera and its number: the world's one clock

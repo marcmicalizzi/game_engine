@@ -14,6 +14,7 @@
 #include <domain/gfx/cluster_cull.h>
 #include <domain/scene_gen/scene_gen.h>
 #include <foundation/io/vfs.h>
+#include <systems/renderer/settings.h>
 #include <systems/renderer/terrain_tiles.h>
 
 #include <doctest/doctest.h>
@@ -800,6 +801,116 @@ void check_tiling(const TerrainTileSet& set, const char* where) {
 
 }  // namespace
 
+TEST_CASE("world tiles: derive far spacing from measured error at every level's start") {
+  const TerrainTilesDesc original = small_far_tiles();
+  // A measured linear envelope. The first start is 34.8 m; 1 px at proj_scale 1000
+  // admits 0.0348 m, hence 4 m spacing at 0.02 m, and rejects 8 m at 0.04 m.
+  const TerrainFarError measured[] = {{2000, 0.01}, {4000, 0.02}, {8000, 0.04}, {16000, 0.08}};
+  std::string error;
+  TerrainTilesDesc t = original;
+  REQUIRE_MESSAGE(derive_terrain_far(t, measured, 1.0, 1000.0, 0, &error), error);
+  CHECK(t.far_ratio == 2);
+  CHECK(t.far_levels == 3);
+  CHECK(terrain_far_start_m(t, 1) == doctest::Approx(34.8));
+  CHECK(terrain_far_start_m(t, 2) == 128.0);
+  CHECK(terrain_far_start_m(t, 3) == 256.0);
+  CHECK(terrain_far_level(t, 3).spacing == 16000);
+  t = original;
+  REQUIRE(derive_terrain_far(t, measured, 2.0, 1000.0));
+  CHECK(t.far_ratio == 4);
+  CHECK(t.far_levels == 2);
+  t = original;
+  REQUIRE(derive_terrain_far(t, measured, 0.5, 1000.0));
+  CHECK(t.far_ratio == 1);
+  CHECK(t.far_levels == 4);
+  CHECK(terrain_far_level(t, 1).spacing == 2000);
+  CHECK(terrain_far_reach_m(t) >= terrain_far_reach_m(original));
+  // Exercise the existing tiling proof with equal-spacing filtered far ground too.
+  TerrainTileSet set;
+  REQUIRE_MESSAGE(set.build(grid_desc(), t, k_waves, ground_at(1.0f, 2.0f), nullptr, &error),
+                  error);
+  check_tiling(set, "derived ratio one");
+  t = original;
+  REQUIRE(derive_terrain_far(t, {}, 0.0, 0.0));
+  CHECK(std::memcmp(&t, &original, sizeof(t)) == 0);
+  REQUIRE(derive_terrain_far(t, {}, 0.00001, 0.0, 4));  // override needs no table or projection
+  CHECK(t.far_ratio == 4);
+  CHECK(t.far_levels == original.far_levels);
+  t = original;
+  CHECK_FALSE(derive_terrain_far(t, {}, 1.0, 1000.0, 0, &error));
+  CHECK(std::memcmp(&t, &original, sizeof(t)) == 0);
+  CHECK_FALSE(derive_terrain_far(t, measured, -1.0, 1000.0));
+  CHECK_FALSE(derive_terrain_far(t, measured, 1.0, 0.0));
+  // A coarse level may fail even when the finest fits: no extrapolation from the first entry.
+  const TerrainFarError coarse_bad[] = {{2000, 0.01}, {4000, 0.02}, {8000, 0.04}, {16000, 100.0}};
+  CHECK_FALSE(derive_terrain_far(t, coarse_bad, 1.0, 1000.0));
+}
+
+TEST_CASE("world tiles: a derived chain cannot exceed the sixteen-level layout") {
+  TerrainTilesDesc t = small_far_tiles();
+  t.far_levels = k_max_far_levels;
+  const TerrainTilesDesc original = t;
+  TerrainFarError measured[10];
+  for (u32 k = 0; k < 10; ++k)
+    measured[k] = {i64{2000} << k, 0.01 * static_cast<f64>(u32{1} << k)};
+  std::string error;
+  CHECK_FALSE(derive_terrain_far(t, measured, 0.5, 1000.0, 0, &error));
+  CHECK(error.find("sixteen-level layout") != std::string::npos);
+  CHECK(error.find("eight far levels") != std::string::npos);
+  CHECK(std::memcmp(&t, &original, sizeof(t)) == 0);
+  RenderSettings settings;
+  settings.terrain_far_error_px = 1.0f;
+  CHECK_FALSE(terrain_far_settings(t, settings, 1440, radians(55.0f), &error));
+  CHECK(error.find("no height-range mip") != std::string::npos);
+  settings.terrain_far_error_per_m = 0.71f;
+  CHECK_FALSE(terrain_far_settings(t, settings, 1440, radians(55.0f), &error));
+  settings.terrain_far_ratio = 1;
+  REQUIRE(terrain_far_settings(t, settings, 1440, radians(55.0f), &error));
+  CHECK(t.far_ratio == 1);
+}
+
+TEST_CASE("world tiles: the forest envelope refuses one and two pixels and preserves reach") {
+  TerrainTilesDesc original;
+  original.tile_size = 64.0f;
+  original.ring_count = 4;
+  original.far_levels = 6;
+  const f32 radii[] = {0.75f, 3.0f, 10.0f, 20.0f};
+  for (u32 r = 0; r < 4; ++r) {
+    original.radius[r] = radii[r];
+    original.cells[r] = 128u >> r;
+  }
+  CHECK(terrain_far_start_m(original, 1) == doctest::Approx(1040.0));
+  CHECK(terrain_far_reach_m(original) == 65536.0);
+  for (const u32 height : {1440u, 2160u}) {
+    RenderSettings settings;
+    settings.terrain_far_error_per_m = 0.75f;
+    std::string error;
+    for (const f32 px : {1.0f, 2.0f}) {
+      TerrainTilesDesc t = original;
+      settings.terrain_far_error_px = px;
+      CHECK_FALSE(terrain_far_settings(t, settings, height, radians(55.0f), &error));
+      CHECK(error.find("no legal far spacing") != std::string::npos);
+      CHECK(t.far_ratio == original.far_ratio);
+      CHECK(t.far_levels == original.far_levels);
+    }
+    TerrainTilesDesc t = original;
+    settings.terrain_far_error_px = 8.0f;
+    REQUIRE_MESSAGE(terrain_far_settings(t, settings, height, radians(55.0f), &error), error);
+    CHECK(t.far_ratio == 1);
+    CHECK(t.far_levels == 7);
+    CHECK(terrain_far_level(t, 1).spacing == 4000);
+    CHECK(terrain_far_level(t, 7).spacing == 256000);
+    CHECK(terrain_far_reach_m(t) >= terrain_far_reach_m(original));
+    settings.terrain_far_error_px = 16.0f;
+    t = original;
+    REQUIRE(terrain_far_settings(t, settings, height, radians(55.0f)));
+    CHECK(t.far_ratio == 2);
+    CHECK(t.far_levels == 7);
+    CHECK(terrain_far_level(t, 7).spacing == 512000);
+    CHECK(terrain_far_reach_m(t) >= terrain_far_reach_m(original));
+  }
+}
+
 TEST_CASE("world tiles: the far levels tile the ground to their outermost square, seamed") {
   const TerrainDesc grid = grid_desc();
   const TerrainTilesDesc t = small_far_tiles();
@@ -825,7 +936,7 @@ TEST_CASE("world tiles: the far levels tile the ground to their outermost square
         doctest::Approx(static_cast<f64>(f3.half - f3.margin - f3.snap / 2) / 1000.0));
   {
     TerrainTilesDesc bad = t;
-    bad.far_ratio = 1;
+    bad.far_ratio = 0;
     CHECK_FALSE(validate_terrain_tiles(bad, &error));
     bad = t;
     bad.far_cells = 3;  // a 12 m far tile is not whole 8 m world tiles

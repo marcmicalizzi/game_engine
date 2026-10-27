@@ -1,5 +1,19 @@
 # apps: engine-host, engine-cli, engine-view, engine-editor, engine-content, engine-input, engine-image, engine-mcp (apps)
 
+**Far-ground error controls (F20, 2026-10-26).** Beside `--terrain-far <0..8>`, engine-view takes
+`--terrain-far-error-px <0..1024>` (zero: existing constants),
+`--terrain-far-error-per-m <0..1024>` (the scene's measured height-error envelope in metres per
+metre of spacing), and `--terrain-far-ratio <1..128>` (explicit override, winning over the rule).
+The ratio must still divide the world tile and satisfy its hole-mask limit. The corresponding
+`renderer.terrain.far_error_px`, `.far_error_per_m`, `.far_ratio` tunables default to zero;
+zero settings take those tunables. A positive pixel request without a measured envelope is
+refused; an unattainable error or excess levels is refused with a sentence. The source has no
+error mip to infer the scene's envelope. `render.*` settings carry the same three fields in
+`engine.protocol.RenderSettings` version 14. This resolves at load from the first camera's FOV
+and actual view height. Rebuild after changing the view to retain the estimate.
+[Ground to the horizon](renderer.md#ground-to-the-horizon) defines the bound, the conditional
+starting distances, level capacity and the frozen mountain's measurements.
+
 **Purpose.** The first executables (docs/plan/02-architecture.md §2.2, ADR-0001). `engine-host` is the engine as a headless server: in Phase 0 it runs in `sim` mode only and speaks JSON-RPC 2.0 over stdio, one request per line in and one response per line out. `engine-cli` is the thin scriptable client for humans, agents, and CI: it spawns a host, optionally opens a document, sends one method, prints the result, and exits. Because sessions persist their journal and undo position on disk (see [doc](doc.md) and [protocol](protocol.md)), a sequence of separate `engine-cli` invocations behaves like one editing session, which is what the Phase 0 exit criterion asks for and what the end-to-end test checks. `engine-view` is the window on the renderer, and `engine-content` is the content build on the command line: the step that turns a source mesh into the derived form the renderer loads. `engine-mcp` (module `mcp_bridge`) is the MCP bridge: a Model Context Protocol server an agent's client starts, which owns one engine-host and exposes curated tools over it ([its section](#engine-mcp-the-mcp-bridge) below).
 
 **engine-host.**

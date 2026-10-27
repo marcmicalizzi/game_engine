@@ -7,6 +7,7 @@
 #include <core/time/time.h>
 #include <foundation/tunables/tunables.h>
 #include <systems/renderer/scene.h>
+#include <systems/renderer/settings.h>
 #include <systems/renderer/terrain_tiles.h>
 
 #include <algorithm>
@@ -34,6 +35,15 @@ tunables::Int far_levels_tunable{
     "renderer.terrain.far_levels", 6, 0, static_cast<i64>(k_max_far_levels),
     "How many coarser levels of ground the world's tiles draw past their outermost ring, each "
     "twice the spacing and the reach of the one inside it (RenderSettings::terrain_far_levels -1)"};
+
+tunables::Float far_error_px{"renderer.terrain.far_error_px", 0.0, 0.0, 1024.0,
+                             "Far lattice's allowed measured error in pixels; zero keeps ratio 4"};
+tunables::Float far_error_per_m{
+    "renderer.terrain.far_error_per_m", 0.0, 0.0, 1024.0,
+    "Per-scene measured far-height error envelope, metres per metre of lattice spacing"};
+tunables::Int far_ratio_tunable{
+    "renderer.terrain.far_ratio", 0, 0, 128,
+    "Explicit far spacing / outer-ring spacing; zero derives or uses 4"};
 
 i64 floor_div(i64 a, i64 b) noexcept {
   const i64 q = a / b;
@@ -182,9 +192,11 @@ bool validate_terrain_tiles(const TerrainTilesDesc& desc, std::string* error) {
     // and the outermost ring's lattice must hold its (the ring's edges collapse onto it); a far
     // tile must be whole world tiles, and few enough of them that its hole is a 64-bit mask.
     const i64 outer = tile_mm / static_cast<i64>(terrain_tile_cells(desc, desc.ring_count - 1));
+    if (desc.far_ratio < 1 || desc.far_ratio > terrain_tile_cells(desc, desc.ring_count - 1))
+      return fail(
+          "the first far level's ratio must be positive and its spacing divide a world tile");
     const i64 first = outer * static_cast<i64>(desc.far_ratio);
     const i64 far_tile = first * static_cast<i64>(desc.far_cells);
-    if (desc.far_ratio < 2) return fail("the first far level must be at least twice as coarse");
     if (desc.far_cells < 1 || tile_mm % first != 0 || far_tile % tile_mm != 0 ||
         (far_tile / tile_mm) * (far_tile / tile_mm) > 64) {
       return fail("a far tile of " + std::to_string(desc.far_cells) + " cells " +
@@ -231,6 +243,127 @@ f64 terrain_far_reach_m(const TerrainTilesDesc& desc) noexcept {
            static_cast<f64>(desc.tile_size);
   const TerrainFarLevel f = terrain_far_level(desc, desc.far_levels);
   return static_cast<f64>(f.half - f.margin - f.snap / 2) / 1000.0;
+}
+
+f64 terrain_far_start_m(const TerrainTilesDesc& desc, u32 k) noexcept {
+  if (k == 0 || k > desc.far_levels || desc.ring_count == 0) return 0.0;
+  if (k == 1) {
+    // Inward hysteresis and a tile's half-diagonal rounded upwards, on the circular rings' edge.
+    return std::max(0.0, (static_cast<f64>(desc.radius[desc.ring_count - 1]) *
+                              (1.0 - static_cast<f64>(desc.hysteresis)) -
+                          0.75) *
+                             static_cast<f64>(desc.tile_size));
+  }
+  const TerrainFarLevel inner = terrain_far_level(desc, k - 1);
+  return static_cast<f64>(inner.half - inner.margin - inner.snap / 2) / 1000.0;
+}
+
+bool derive_terrain_far(TerrainTilesDesc& desc, std::span<const TerrainFarError> measured,
+                        f64 error_px, f64 proj_scale, u32 ratio_override, std::string* error) {
+  const auto fail = [&](const std::string& sentence) {
+    if (error != nullptr) *error = "world tiles: " + sentence;
+    return false;
+  };
+  if (!std::isfinite(error_px) || error_px < 0.0)
+    return fail("terrain_far_error_px must be finite and nonnegative");
+  if (!validate_terrain_tiles(desc, error)) return false;
+  if (ratio_override != 0) {
+    TerrainTilesDesc explicit_desc = desc;
+    explicit_desc.far_ratio = ratio_override;
+    if (!validate_terrain_tiles(explicit_desc, error)) return false;
+    desc = explicit_desc;
+    return true;
+  }
+  if (error_px == 0.0 || desc.far_levels == 0) return true;
+  if (!std::isfinite(proj_scale) || !(proj_scale > 0.0))
+    return fail("the far error rule needs a positive finite view projection scale");
+  for (const TerrainFarError& e : measured)
+    if (e.spacing_mm <= 0 || !std::isfinite(e.bound_m) || e.bound_m < 0.0)
+      return fail("the far error table needs positive spacings and finite nonnegative bounds");
+  const f64 reach = terrain_far_reach_m(desc);
+  bool exceeded = false;
+  u32 needed = 0;
+  TerrainTilesDesc best;
+  bool found = false;
+  const u32 most = terrain_tile_cells(desc, desc.ring_count - 1);
+  for (u32 ratio = 1; ratio != 0 && ratio <= most; ratio *= 2) {
+    TerrainTilesDesc candidate = desc;
+    candidate.far_ratio = ratio;
+    candidate.far_levels = 1;
+    while (terrain_far_reach_m(candidate) < reach && candidate.far_levels <= k_max_far_levels)
+      ++candidate.far_levels;
+    TerrainTilesDesc geometry = candidate;
+    geometry.far_levels = std::min(candidate.far_levels, k_max_far_levels);
+    if (!validate_terrain_tiles(geometry)) continue;
+    bool fits = true;
+    for (u32 k = 1; k <= candidate.far_levels && fits; ++k) {
+      const i64 spacing = terrain_far_level(candidate, k).spacing;
+      bool held = false;
+      for (const TerrainFarError& e : measured) {
+        if (e.spacing_mm != spacing) continue;
+        held = true;
+        fits = fits && e.bound_m * proj_scale <= error_px * terrain_far_start_m(candidate, k);
+      }
+      fits = fits && held;
+    }
+    if (fits) {
+      if (candidate.far_levels > k_max_far_levels ||
+          1 + candidate.ring_count + candidate.far_levels > k_max_terrain_levels) {
+        exceeded = true;
+        needed = std::max(needed, candidate.far_levels);
+      } else {
+        best = candidate;
+        found = true;
+      }
+    }
+    if (ratio > most / 2) break;
+  }
+  if (!found) {
+    if (exceeded)
+      return fail("derived far ground needs " + std::to_string(needed) +
+                  " far levels; at most eight fit the sixteen-level layout reserved for the grid, "
+                  "seven rings and eight far levels (k_max_terrain_levels); other legal spacings "
+                  "do not meet the measured error or are missing from the table");
+    return fail(
+        "no legal far spacing meets terrain_far_error_px with the supplied measured "
+        "bounds; refine the outermost ring, supply measured reconstruction errors, relax "
+        "the error, or explicitly override far_ratio");
+  }
+  desc = best;
+  return true;
+}
+
+bool terrain_far_settings(TerrainTilesDesc& desc, const RenderSettings& settings, u32 height,
+                          f32 fov_y, std::string* error) {
+  if (!validate_terrain_tiles(desc, error)) return false;
+  const f64 px = settings.terrain_far_error_px != 0.0f
+                     ? static_cast<f64>(settings.terrain_far_error_px)
+                     : far_error_px.get();
+  const f64 per_m = settings.terrain_far_error_per_m != 0.0f
+                        ? static_cast<f64>(settings.terrain_far_error_per_m)
+                        : far_error_per_m.get();
+  const u32 ratio = settings.terrain_far_ratio != 0 ? settings.terrain_far_ratio
+                                                    : static_cast<u32>(far_ratio_tunable.get());
+  TerrainFarError measured[16];
+  usize count = 0;
+  if (px > 0.0 && ratio == 0 && desc.far_levels > 0) {
+    if (!(per_m > 0.0) || !std::isfinite(per_m)) {
+      if (error != nullptr)
+        *error =
+            "world tiles: terrain_far_error_px needs a positive measured per-scene "
+            "terrain_far_error_per_m; the tile source stores no height-range mip";
+      return false;
+    }
+    const i64 outer = std::llround(static_cast<f64>(desc.tile_size) * 1000.0) /
+                      static_cast<i64>(terrain_tile_cells(desc, desc.ring_count - 1));
+    for (u32 k = 0; k < 16; ++k) {
+      const i64 spacing = outer * (i64{1} << k);
+      measured[count++] = {spacing, per_m * static_cast<f64>(spacing) / 1000.0};
+    }
+  }
+  const f64 projection = static_cast<f64>(height) / (2.0 * std::tan(static_cast<f64>(fov_y) / 2.0));
+  return derive_terrain_far(desc, std::span<const TerrainFarError>(measured, count), px, projection,
+                            ratio, error);
 }
 
 bool terrain_uv_frame(const TerrainDesc& desc, TerrainUvFrame& out, std::string* error) {

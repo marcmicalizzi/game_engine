@@ -250,6 +250,12 @@ struct RenderSettings {
   // the outermost ring, as it did. A host reads
   // it when it builds its tile set (engine-view's `--terrain-far`).
   i32 terrain_far_levels = -1;
+  // Far-lattice error estimate at load (F20). Zero takes the same-named tunable (default zero,
+  // today's ratio four). The source has no height-range mip: supply a measured scene envelope
+  // B(s) <= terrain_far_error_per_m * s in metres. An explicit ratio overrides the error rule.
+  f32 terrain_far_error_px = 0.0f;
+  f32 terrain_far_error_per_m = 0.0f;
+  u32 terrain_far_ratio = 0;
 
   // Geometry streaming (04 §4.3 step 3, §4.9). The scene's clusters are laid out in fixed-size
   // pages, the GPU holds a budgeted subset of them in a page pool, the cull pass draws whatever is
