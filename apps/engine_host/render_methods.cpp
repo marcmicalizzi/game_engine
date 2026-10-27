@@ -253,6 +253,12 @@ void fill_stats(const renderer::Stats& in, const renderer::ViewSet& views,
   out.stream.steals = stream.steals;
   // The ray tracing chain, under engine-view's `rt` summary keys.
   const renderer::RtStats& rt = in.rt;
+  out.rt.caster_index_fallbacks = rt.caster_index_fallbacks;
+  out.rt.frame_estimate = rt.frame_estimate;
+  out.rt.bytes_per_cluster = rt.bytes_per_cluster;
+  out.rt.geometry_index_max = rt.geometry_index_max;
+  out.rt.geometry_index_required = rt.geometry_index_required;
+  out.rt.geometry_index_limit = rt.geometry_index_limit;
   out.rt.capacity = rt.capacity;
   out.rt.peak_capacity = rt.peak_capacity;
   out.rt.limit = rt.limit;
@@ -402,6 +408,25 @@ protocol::RenderFramedCamera framed_camera(const renderer::Camera& camera) {
   return out;
 }
 
+// render.load keeps GPU upload lazy, but its answer needs the same final terrain account as
+// GpuScene::create. Prepare a CPU layout at the default camera, with no motion or GPU device work.
+bool resolve_load_settings(const renderer::RenderSettings& settings, const gfx::Device& device,
+                           const renderer::SceneData& data, renderer::ResolvedSettings& resolved,
+                           JsonValue& pairs, std::string& error) {
+  renderer::resolve_settings(settings, device.features(), &data, resolved);
+  renderer::MovingGround ground;
+  if (renderer::check_availability(resolved, device.features()) ==
+          renderer::RenderAvailability::Ok &&
+      !ground.prepare(data, resolved, renderer::read_protocol_camera(data, nullptr, nullptr),
+                      &error))
+    return false;
+  auto* levels = ground.level_set();
+  const auto account = renderer::account_pairs(data, resolved, levels);
+  renderer::resolve_settings(settings, device.features(), &data, resolved, &account);
+  pairs = renderer::pair_account_summary(account, levels);
+  return true;
+}
+
 // Fills the load's answer from a registered scene.
 void fill_scene_info(const RenderHost::Scene& scene, const gfx::Device& device,
                      protocol::RenderSceneInfo& out) {
@@ -427,6 +452,8 @@ void fill_scene_info(const RenderHost::Scene& scene, const gfx::Device& device,
   out.occlusion = scene.resolved.occlusion;
   out.deform = renderer::deform_name(scene.resolved.settings);
   out.rt_templates = scene.resolved.settings.rt_templates;
+  out.shadow_casters = scene.resolved.casters;
+  out.pair_breakdown = scene.pair_breakdown;
   out.sky = scene.data.sky.has_value();
   if (scene.data.terrain.enabled) out.ground_time_s = scene.data.terrain.time_s;
   out.ground = ground_name(scene.data, scene.resolved);
@@ -494,7 +521,11 @@ bool load_session(protocol::Context& ctx, RenderHost& host,
         return false;
       }
       renderer::ResolvedSettings resolved;
-      renderer::resolve_settings(settings, device.features(), &scene->data, resolved);
+      JsonValue pairs;
+      if (!resolve_load_settings(settings, device, scene->data, resolved, pairs, message)) {
+        error = invalid(std::move(message));
+        return false;
+      }
       if (const renderer::RenderAvailability a =
               renderer::check_availability(resolved, device.features());
           a != renderer::RenderAvailability::Ok) {
@@ -521,6 +552,7 @@ bool load_session(protocol::Context& ctx, RenderHost& host,
       scene->request = request;
       scene->requested = settings;
       scene->resolved = resolved;
+      scene->pair_breakdown = std::move(pairs);
       fill_scene_info(*scene, device, out);
       out.moved = static_cast<u32>(changes.moved.size());
       out.rebuilt = false;
@@ -551,7 +583,11 @@ bool load_session(protocol::Context& ctx, RenderHost& host,
     return false;
   }
   renderer::ResolvedSettings resolved;
-  renderer::resolve_settings(settings, device.features(), &data, resolved);
+  JsonValue pairs;
+  if (!resolve_load_settings(settings, device, data, resolved, pairs, message)) {
+    error = invalid(std::move(message));
+    return false;
+  }
   if (const renderer::RenderAvailability a =
           renderer::check_availability(resolved, device.features());
       a != renderer::RenderAvailability::Ok) {
@@ -569,6 +605,7 @@ bool load_session(protocol::Context& ctx, RenderHost& host,
   scene->request = request;
   scene->requested = settings;
   scene->resolved = resolved;
+  scene->pair_breakdown = std::move(pairs);
   scene->data = std::move(data);
   scene->document = std::move(described);
   fill_scene_info(*scene, device, out);
@@ -790,7 +827,11 @@ bool render_load_followed(protocol::Context& ctx, const protocol::RenderLoadPara
     return false;
   }
   renderer::ResolvedSettings resolved;
-  renderer::resolve_settings(settings, device->features(), &data, resolved);
+  JsonValue pairs;
+  if (!resolve_load_settings(settings, *device, data, resolved, pairs, load_error)) {
+    error = invalid(std::move(load_error));
+    return false;
+  }
   const renderer::RenderAvailability availability =
       renderer::check_availability(resolved, device->features());
   if (availability != renderer::RenderAvailability::Ok) {
@@ -801,6 +842,7 @@ bool render_load_followed(protocol::Context& ctx, const protocol::RenderLoadPara
   scene->request = request;
   scene->requested = settings;
   scene->resolved = resolved;
+  scene->pair_breakdown = std::move(pairs);
   scene->data = std::move(data);
   if (!params.scene.empty()) {
     scene->kind = "scene";
@@ -1143,6 +1185,7 @@ bool render_benchmark(protocol::Context& ctx, const protocol::RenderBenchmarkPar
       summary.device = device->adapter().name;
     }
     renderer::summarize_rt(scene->view->stats().rt, summary.rt);
+    summary.pair_breakdown = scene->gpu->pair_summary();
     renderer::summarize_textures(*scene->gpu, summary.textures);
     JsonValue machine = JsonValue::object();
     machine.set("start", bench::machine_state_json(machine_start));
@@ -1660,7 +1703,9 @@ bool RenderHost::ensure_renderer(Scene& scene, const renderer::RenderSettings& s
     return false;
   }
   auto gpu = std::make_unique<renderer::GpuScene>();
+  const renderer::ResolvedSettings requested = scene.resolved;
   if (!gpu->create(*dev, scene.data, scene.resolved, &error, ground->level_set())) return false;
+  scene.resolved = gpu->resolved();
   auto view = std::make_unique<renderer::SceneRenderer>();
   // `SceneRenderer::Desc::page_source` is left null, so a streamed scene's pages are copied out of
   // the `SceneData` this host keeps rather than read back out of the meshes' containers. That is
@@ -1682,7 +1727,7 @@ bool RenderHost::ensure_renderer(Scene& scene, const renderer::RenderSettings& s
   // `resolve_settings` saw just above, because the scene's per-frame working set is sized by the
   // view count; both come from the same `RenderSettings`, which is what keeps them in step.
   desc.views = renderer::view_set_desc(scene.resolved.settings);
-  if (!view->create(*dev, *gpu, scene.resolved, desc, &error)) return false;
+  if (!view->create(*dev, *gpu, requested, desc, &error)) return false;
   // The motion from the scene's own time, waiting for its fields as an offscreen engine-view run
   // does, so the frames of a call draw the same pictures however fast the machine evaluates.
   if (!ground->start(*gpu, scene.resolved, true, &error)) {

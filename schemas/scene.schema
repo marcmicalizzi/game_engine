@@ -1755,12 +1755,19 @@ struct OcclusionCheck @version(1) {
 /// without the chain. Version 2 (2026-10-25) adds the static structures of rigid forms (renderer.md,
 /// "Static structures for rigid forms"): the forms built once, their clusters and bytes, and the
 /// instance slots and pairs that referenced one at the end.
-struct FlythroughRt @version(3) {
+struct FlythroughRt @version(4) {
   /// R100: admission fallback and the compact chain's capacity arithmetic.
   caster_index_fallbacks: u32 = 0 @since(3)
   frame_estimate: u64 = 0 @since(3)
   bytes_per_cluster: u64 = 0 @since(3)
-  geometry_index_need: u64 = 0 @since(3)
+  /// Compatibility spelling for geometry_index_max, never a demand.
+  geometry_index_need: u64 = 0 @since(3) @deprecated
+  /// Maximum allocated geometry index: capacity - 1 (zero for no capacity).
+  geometry_index_max: u64 = 0 @since(4)
+  /// Admission's eligible-pair bound in every view, minus one; includes the tail floor.
+  geometry_index_required: u64 = 0 @since(4)
+  /// The device's maximum representable geometry index, not the memory budget's capacity.
+  geometry_index_limit: u32 = 0 @since(4)
   capacity: u32 = 0
   peak_capacity: u32 = 0
   limit: u32 = 0
@@ -1961,7 +1968,7 @@ struct FlythroughAnimation @version(1) {
 ///
 /// Version 17: `load`, what the load read for its meshes and textures and what the device's
 /// pipeline cache did (roadmap W75; docs/subsystems/apps.md, "The summary's load block").
-struct FlythroughSummary @version(17) {
+struct FlythroughSummary @version(18) {
   /// "engine.flythrough.v1".
   format: string
   scene: string
@@ -1983,6 +1990,8 @@ struct FlythroughSummary @version(17) {
   page_budget_bytes: u64 = 0
   instances: u32 = 0
   pairs: u32 = 0
+  /// Cold pair-account and layout report; see renderer.md, "The pair accounting".
+  pair_breakdown: json @since(18)
   clusters: u32 = 0
   frames: u32 = 0
   repeats: u32 = 0

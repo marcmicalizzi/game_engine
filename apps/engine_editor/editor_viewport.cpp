@@ -60,9 +60,11 @@ bool Viewport::load(std::string& error) {
                           options_.height))
       return false;
   }
+  const renderer::ResolvedSettings requested = resolved_;
   if (!gpu_->create(*device_, data_, resolved_, &error,
                     ground_ != nullptr ? ground_->level_set() : nullptr))
     return false;
+  resolved_ = gpu_->resolved();
   if (ground_ != nullptr && !ground_->start(*gpu_, resolved_, options_.offscreen, &error))
     return false;
   renderer::SceneRenderer::Desc rd;
@@ -73,7 +75,7 @@ bool Viewport::load(std::string& error) {
   rd.offscreen = options_.offscreen;
   rd.views = renderer::view_set_desc(resolved_.settings);
   renderer_ = std::make_unique<renderer::SceneRenderer>();
-  return renderer_->create(*device_, *gpu_, resolved_, rd, &error);
+  return renderer_->create(*device_, *gpu_, requested, rd, &error);
 }
 
 void Viewport::destroy() noexcept {

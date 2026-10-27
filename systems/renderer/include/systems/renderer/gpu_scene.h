@@ -218,6 +218,9 @@ class GpuScene {
   // The terrain rings' reserved slots' pairs, as the pair accounting counted them before the scene
   // was made (renderer.md, "The pair accounting"): `static_pair_count()` less the load's own.
   u64 ring_slot_pairs() const noexcept { return accounted_slot_pairs_; }
+  // Allocates only when a host asks for a summary, never while recording a frame. Reservations
+  // and live shares come from the account, ring slots, tile layout and instance table as held.
+  JsonValue pair_summary() const;
   // A change grew the stride or the instance capacity of a scene whose pool or ray tracing chain
   // is laid out by them: `relayout` makes them again, and must be called with no frame in flight
   // before the next frame is recorded (`SceneRenderer::set_dynamic_instances` waits for the device

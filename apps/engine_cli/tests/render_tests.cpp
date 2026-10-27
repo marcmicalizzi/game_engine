@@ -180,6 +180,60 @@ std::string expected_hw_raster(Host& host, const std::string& adapter) {
 
 }  // namespace
 
+TEST_CASE("render: a tiny RT budget reports the accounted caster decision at load") {
+  Host host;
+  REQUIRE(host.ok);
+  const JsonValue loaded =
+      host.call("render.load", R"({"grid":257,"grid_instances":3,"settings":{"raster":"hw",)"
+                               R"("shadows":"rt","shadow_casters":true,"rt_budget_mib":1}})");
+  if (error_code(loaded) == k_render_unavailable) {
+    MESSAGE("traced render.load unavailable here: " << error_message(loaded));
+    return;
+  }
+  const JsonValue& info = result_of(loaded);
+  bool casters = false;
+  REQUIRE(info.find("shadow_casters") != nullptr);
+  REQUIRE(info.find("shadow_casters")->get_bool(casters));
+  CHECK(casters);  // memory capacity does not change the account's geometry-index bound
+  const auto* pairs = info.find("pair_breakdown");
+  REQUIRE(pairs != nullptr);
+  CHECK(number(*pairs, "pair_count") == number(info, "pairs"));
+  CHECK(number(*pairs, "admission_eligible_pairs") == number(info, "pairs"));
+  CHECK(number(*pairs, "tail_live_pairs") == 0);
+  const std::string id = text(info, "scene");
+  const JsonValue bench = host.call(
+      "render.benchmark", "{\"scene\":\"" + id + "\",\"width\":64,\"height\":64,\"frames\":2}");
+  CHECK(text(result_of(bench), "shadows") == "rt");
+  const auto* stats = result_of(bench).find("stats");
+  REQUIRE(stats != nullptr);
+  const auto* rt = stats->find("rt");
+  REQUIRE(rt != nullptr);
+  const u64 device_limit = number(*rt, "geometry_index_limit");
+  const u64 clusters = number(info, "clusters");
+  REQUIRE(clusters > 0);
+  // A surround's eligible bound can exceed the real device limit while its immutable prefix
+  // still fits visibility. The lazy load exercises final admission without allocating that
+  // large scene on the GPU. The 1 MiB budget remains deliberately tiny, but is not the cause.
+  const u64 side = static_cast<u64>(std::sqrt(static_cast<f64>(device_limit + 1) /
+                                              (3.0 * static_cast<f64>(clusters)))) +
+                   1;
+  if (side > 64 || side * side * clusters > (1u << 24)) {
+    MESSAGE("device index space is too wide to force caster fallback within visibility");
+    return;
+  }
+  const JsonValue forced = host.call(
+      "render.load", "{\"grid\":257,\"grid_instances\":" + std::to_string(side) +
+                         ",\"settings\":{\"raster\":\"hw\",\"views\":\"surround3\","
+                         "\"shadows\":\"rt\",\"shadow_casters\":true,\"rt_budget_mib\":1}}");
+  const JsonValue& final = result_of(forced);
+  REQUIRE(final.find("shadow_casters") != nullptr);
+  REQUIRE(final.find("shadow_casters")->get_bool(casters));
+  CHECK_FALSE(casters);
+  CHECK(text(final, "shadows") == "rt");
+  const auto* accounted = final.find("pair_breakdown");
+  REQUIRE(accounted != nullptr);
+  CHECK(number(*accounted, "admission_eligible_pairs") * 3 - 1 > device_limit);
+}
 TEST_CASE("render: load, capture, benchmark, and compare over the protocol") {
   const test::TempDir tmp("engine_render_cli");
   const std::string out_dir = tmp.path();

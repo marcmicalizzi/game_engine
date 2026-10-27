@@ -18,9 +18,11 @@
 //
 // The scene is the procedural heightfield as a grid of instances, so it needs no content. The GPU
 // cases skip on a device without cluster acceleration structures and ray queries.
+#include <core/log/log.h>
 #include <domain/gfx/device.h>
 #include <foundation/tunables/tunables.h>
 #include <systems/renderer/capture.h>
+#include <systems/renderer/flythrough.h>
 #include <systems/renderer/gpu_scene.h>
 #include <systems/renderer/rt_capacity.h>
 #include <systems/renderer/scene.h>
@@ -146,6 +148,110 @@ TEST_CASE("rt index space: compact casters share the drawn bound without refusin
   settings.views = ViewLayout::Surround3;
   resolve_settings(settings, features, &scene, resolved);
   CHECK(resolved.casters);  // provisional resolution defers admission until terrain is known
+}
+TEST_CASE("rt reporting: final scene settings and typed creation differences under a tiny budget") {
+  gfx::Device device;
+  std::string error;
+  if (!device.create({}, &error) || !traces(device)) {
+    MESSAGE("cluster ray tracing unavailable: " << error);
+    return;
+  }
+  SceneData data;
+  REQUIRE_MESSAGE(load_scene(terrain_grid(), data, error), error);
+  RenderSettings settings;
+  settings.shadows = ShadowMode::RayTraced;
+  settings.rt_budget_mib = 1;
+  // Lower only this device object's advertised limit, as the CPU case does, so a small scene
+  // exercises the real GpuScene admission fallback. Every build remains below the real device
+  // limit; no large visibility buffers or driver mock are needed. Restore it before teardown.
+  struct IndexLimit {
+    gfx::DeviceFeatures& features;
+    u32 previous;
+    explicit IndexLimit(gfx::Device& dev, u32 limit)
+        : features(const_cast<gfx::DeviceFeatures&>(dev.features())),
+          previous(features.cluster_max_geometry_index) {
+      features.cluster_max_geometry_index = limit;
+    }
+    ~IndexLimit() { features.cluster_max_geometry_index = previous; }
+  } index_limit(device, data.pair_count - 2);
+  ResolvedSettings requested;
+  resolve_settings(settings, device.features(), &data, requested);
+  REQUIRE(requested.casters);
+  GpuScene scene;
+  REQUIRE_MESSAGE(scene.create(device, data, requested, &error), error);
+  CHECK_FALSE(scene.resolved().casters);
+  REQUIRE(scene.resolved().caster_index_fallback);
+  // Check the other creation-difference fields on the same line as the actual admission change.
+  requested.ray_path = !scene.resolved().ray_path;
+  requested.rt_chain = !scene.resolved().rt_chain;
+  requested.static_forms = !scene.resolved().static_forms;
+  requested.caster_index_fallback = !scene.resolved().caster_index_fallback;
+  struct CaptureLog {
+    log::RingSink sink{512};
+    CaptureLog() { log::add_sink(&sink); }
+    ~CaptureLog() { log::remove_sink(&sink); }
+  } capture;
+  SceneRenderer renderer;
+  SceneRenderer::Desc desc;
+  desc.width = k_width;
+  desc.height = k_height;
+  REQUIRE_MESSAGE(renderer.create(device, scene, requested, desc, &error), error);
+  u32 lines = 0;
+  capture.sink.for_each(0, [&](const log::RingSink::Entry& entry) {
+    if (entry.message != "scene settings resolved") return;
+    ++lines;
+    CHECK(entry.level == log::Level::Info);
+    REQUIRE(entry.fields.size() == 11);
+    CHECK(entry.fields[0].kind == log::Field::Kind::String);
+    CHECK(entry.fields[0].string() == "the pair account");
+    const bool expected[] = {true,
+                             false,
+                             requested.ray_path,
+                             scene.resolved().ray_path,
+                             requested.rt_chain,
+                             scene.resolved().rt_chain,
+                             requested.static_forms,
+                             scene.resolved().static_forms,
+                             requested.caster_index_fallback,
+                             scene.resolved().caster_index_fallback};
+    const char* keys[] = {"requested_casters",
+                          "resolved_casters",
+                          "requested_ray_path",
+                          "resolved_ray_path",
+                          "requested_rt_chain",
+                          "resolved_rt_chain",
+                          "requested_static_forms",
+                          "resolved_static_forms",
+                          "requested_caster_index_fallback",
+                          "resolved_caster_index_fallback"};
+    for (u32 i = 0; i < 10; ++i) {
+      bool found = false;
+      for (const log::Field& field : entry.fields) {
+        if (field.key != keys[i]) continue;
+        found = true;
+        CHECK(field.kind == log::Field::Kind::Bool);
+        CHECK(field.value.b == expected[i]);
+      }
+      CHECK(found);
+    }
+  });
+  CHECK(lines == 1);
+  CHECK(renderer.stats().rt.caster_index_fallbacks == 1);
+  CHECK(renderer.stats().rt.geometry_index_max == scene.rt_capacity() - 1);
+  CHECK(renderer.stats().rt.geometry_index_required == data.pair_count - 1);
+  CHECK(renderer.stats().rt.geometry_index_limit == device.features().cluster_max_geometry_index);
+  scene::FlythroughRt report;
+  summarize_rt(renderer.stats().rt, report);
+  CHECK(report.geometry_index_need == report.geometry_index_max);
+  CHECK(report.geometry_index_required == data.pair_count - 1);
+  renderer.reset_stats();
+  CHECK(renderer.stats().rt.caster_index_fallbacks == 1);
+  renderer.destroy();
+  capture.sink.clear();
+  REQUIRE_MESSAGE(renderer.create(device, scene, scene.resolved(), desc, &error), error);
+  capture.sink.for_each(0, [&](const log::RingSink::Entry& entry) {
+    CHECK(entry.message != "scene settings resolved");
+  });
 }
 TEST_CASE("rt capacity: grows ahead, shrinks late, steps, and stops at the limit") {
   RtCapacityConfig config;

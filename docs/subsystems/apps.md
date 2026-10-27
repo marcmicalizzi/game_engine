@@ -599,6 +599,8 @@ render.scenes    {} -> every scene held: id, source, counts, whether and at what
 
 `render.load` is the expensive call — it imports and clusters a glTF, or reads the container the cache already holds — and the host keeps the result, so a capture and a benchmark of the same scene pay it once. `settings` on `render.benchmark` may differ from the ones the scene was loaded with; the host then rebuilds the GPU scene and the renderer from the loaded `SceneData` rather than re-importing the mesh.
 
+The load's `shadow_casters` and `pair_breakdown` reflect the final pair account used by the scene; hosts retain the scene's resolved settings after GPU creation.
+
 ```bash
 engine-cli render.load '{"mesh":"content/samples/Suzanne/Suzanne.gltf","settings":{"raster":"hw"}}'
 engine-cli render.capture '{"scene":"scene1","orbit":{"distance":22},"width":800,"height":600,
@@ -1086,6 +1088,23 @@ own is found with the repository's cache otherwise); `package-game` and `export-
 `content/materials/` when it is there, the first passing `--materials` to the packaged engine-view
 (`package.json`'s `materials`). `tools/materials-pack.Tests.ps1` (`tools.materials_pack`) runs both
 scripts over stand-in sets offline.
+
+**Pair reporting (2026-10-26, R100/W73).** `render.load` reports the final pair-account
+`shadow_casters` decision used by `GpuScene`, including admission fallback; GPU upload stays lazy,
+with the terrain's CPU layout accounted at the default framing camera before answering.
+Engine-view's summaries and `render.load` add `pair_breakdown` beside the existing numeric `pairs`:
+`prefix_pairs`, `ring_slot_pairs`, `fixed_pairs`, `tail_floor_pairs`, `tail_live_pairs`,
+`tail_reserved_pairs`, `tail_hole_pairs`, `pair_count`, `limit`, `untraced_pairs`,
+`static_form_pairs` and `admission_eligible_pairs`. Prefix plus ring reservations plus live tail
+plus tail holes equals `pair_count`. `rings` describes each terrain level's `slots_reserved`,
+`slots_used`, `reserved_tile_pairs`, `reserved_pairs` and `live_pairs`: reserved pairs equal slots
+times reserved tile pairs, including replacement slots. `placement_rings` describes each world's
+ring with live/reserved instance slots and pairs, tile count and `forms` (mesh, source mesh,
+cluster count, instances and pairs), exposing which distance forms contribute its live pairs.
+Free tile blocks appear in the tail holes; the tail floor is an admission bound and is never
+added to live pairs. A load has no live streamed tail yet. RT summaries add `geometry_index_max`,
+`geometry_index_required` and `geometry_index_limit` (allocated maximum, eligible admission bound
+and device limit); the old `geometry_index_need` remains a compatibility alias for the maximum.
 
 ## What else the machine was doing, in both hosts' numbers
 

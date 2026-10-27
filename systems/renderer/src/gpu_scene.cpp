@@ -336,6 +336,79 @@ bool find_built_textures(const SourceMesh& mesh, const SceneTextures& known,
 
 GpuScene::~GpuScene() { destroy(); }
 
+JsonValue GpuScene::pair_summary() const {
+  JsonValue out = pair_account_summary(resolved_.pairs);
+  if (data_ == nullptr) return out;
+  out.set("pair_count", pair_count_);
+  out.set("tail_live_pairs", dynamic_pair_count());
+  const u64 tail_reserved = pair_count_ - static_pairs_;
+  out.set("tail_reserved_pairs", tail_reserved);
+  out.set("tail_hole_pairs", tail_reserved - dynamic_pair_count());
+  out.set("untraced_pairs", untraced_pairs_live_);
+  out.set("static_form_pairs", static_pairs_live_);
+  JsonValue rings = JsonValue::array();
+  for (const RingSlots& held : ring_slots_) {
+    JsonValue ring = JsonValue::object();
+    ring.set("level", held.level);
+    ring.set("slots_reserved", held.slots.size());
+    ring.set("slots_used", held.slots.size() - held.free_slots.size());
+    ring.set("reserved_tile_pairs", held.clusters_per_slot);
+    ring.set("reserved_pairs", u64{held.slots.size()} * held.clusters_per_slot);
+    u64 live = 0;
+    for (const TerrainSlot& slot : held.slots)
+      if (slot.on) live += slot.clusters;
+    ring.set("live_pairs", live);
+    rings.push_back(std::move(ring));
+  }
+  out.set("rings", std::move(rings));
+  JsonValue placements = JsonValue::array();
+  u32 ring_count = data_->world.ring_count;
+  for (const u32 rank : slot_rank_)
+    ring_count = std::max(ring_count, rank);
+  for (u32 r = 0; r < ring_count; ++r) {
+    u64 reserved = 0, live = 0, reserved_slots = 0, used = 0, tiles = 0;
+    Vector<u64> form_pairs(data_->parts.size());
+    Vector<u32> form_instances(data_->parts.size());
+    for (const TileBlock& block : layout_.blocks()) {
+      const u32 rank = block.inst_begin < slot_rank_.size() ? slot_rank_[block.inst_begin] : 1u;
+      if (rank != r + 1) continue;
+      ++tiles;
+      reserved += block.pair_cap;
+      live += block.pairs;
+      reserved_slots += block.inst_cap;
+      used += block.instances;
+      for (u32 i = block.inst_begin; i < block.inst_begin + block.instances; ++i) {
+        const u32 mesh = instance_table_[i].mesh;
+        if (mesh >= form_pairs.size()) continue;
+        ++form_instances[mesh];
+        form_pairs[mesh] += data_->parts[mesh].cluster_count;
+      }
+    }
+    JsonValue ring = JsonValue::object();
+    ring.set("ring", r);
+    ring.set("tiles", tiles);
+    ring.set("slots_reserved", reserved_slots);
+    ring.set("slots_used", used);
+    ring.set("reserved_pairs", reserved);
+    ring.set("live_pairs", live);
+    JsonValue forms = JsonValue::array();
+    for (u32 mesh = 0; mesh < form_pairs.size(); ++mesh) {
+      if (form_instances[mesh] == 0) continue;
+      JsonValue form = JsonValue::object();
+      form.set("mesh", mesh);
+      form.set("source_mesh", mesh < data_->form_source.size() ? data_->form_source[mesh] : mesh);
+      form.set("clusters", data_->parts[mesh].cluster_count);
+      form.set("instances", form_instances[mesh]);
+      form.set("pairs", form_pairs[mesh]);
+      forms.push_back(std::move(form));
+    }
+    ring.set("forms", std::move(forms));
+    placements.push_back(std::move(ring));
+  }
+  out.set("placement_rings", std::move(placements));
+  return out;
+}
+
 bool GpuScene::create(const gfx::Device& device, const SceneData& data,
                       const ResolvedSettings& requested, std::string* error,
                       TerrainLevelSet* rings) {
