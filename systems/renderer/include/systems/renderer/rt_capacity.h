@@ -73,6 +73,19 @@ inline constexpr u32 k_default_rt_budget_mib = 1024;
 inline constexpr u32 k_initial_rt_clusters = 65536;
 // `renderer.rt.initial_clusters` (`k_initial_rt_clusters`): the first capacity's floor.
 u32 rt_initial_clusters_tunable() noexcept;
+// **The resident cluster structure cache** (renderer.md, "The resident cluster structure cache";
+// R101): `renderer.rt.cache` (true) builds a rigid mesh's cluster structures once and references
+// them; `renderer.rt.cache_mib` (256) is the most its slots may take, which a scene needing less
+// does not reach; `renderer.rt.reference_mib` (256) the ceiling of the frame's references to it,
+// the cache's counterpart of the budget.
+bool rt_cache_tunable() noexcept;
+u32 rt_cache_mib_tunable() noexcept;
+u32 rt_reference_mib_tunable() noexcept;
+// `renderer.rt.cache_slots` (0, none): a ceiling in slots beside the MiB, slot 0 included, for a
+// measurement or a test that wants a cache of a known size.
+u32 rt_cache_slots_tunable() noexcept;
+inline constexpr u32 k_default_rt_cache_mib = 256;
+inline constexpr u32 k_default_rt_reference_mib = 256;
 
 // **The first capacity, from what the scene knows** (renderer.md, "The first capacity"). Before any
 // frame has said what it builds, the chain is sized for `estimate` — every pair a frame could

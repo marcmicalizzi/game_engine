@@ -381,6 +381,9 @@ TEST_CASE("rt capacity: a chain sized by the frame draws what a chain sized by t
     MESSAGE("no cluster acceleration structures or ray queries: nothing to size");
     return;
   }
+  // The per-frame chain's policy: the grid is rigid, so with the cluster cache (renderer.md, "The
+  // resident cluster structure cache") it would build nothing per frame and have nothing to size.
+  ScopedTunable per_frame("renderer.rt.cache", "false");
   for (const RasterMode raster : {RasterMode::Hardware, RasterMode::RayTrace}) {
     RenderSettings settings;
     settings.raster = raster;
@@ -483,6 +486,9 @@ namespace {
 
 void run_starved(const gfx::Device& device) {
   std::string error;
+  // The frame's own builds past their budget; the cache's references have a ceiling of their own
+  // (`renderer.rt.reference_mib`), which the grid's cut is nowhere near.
+  ScopedTunable per_frame("renderer.rt.cache", "false");
   RenderSettings settings;
   settings.raster = RasterMode::Hardware;
   settings.shadows = ShadowMode::RayTraced;
@@ -549,3 +555,205 @@ void run_starved(const gfx::Device& device) {
 }
 
 }  // namespace
+
+// ---- the resident cluster structure cache (renderer.md, "The resident cluster structure cache";
+// R101) ----------------------------------------------------------------------------------------
+
+namespace {
+
+struct Pictures {
+  u32 colour = 0;
+  u32 ids = 0;
+};
+
+Pictures compare(const CapturedFrame& a, const CapturedFrame& b) {
+  Pictures out;
+  REQUIRE(a.color.size() == b.color.size());
+  REQUIRE(a.ids.size() == b.ids.size());
+  for (u32 i = 0; i < a.color.size(); ++i)
+    out.colour += a.color[i] != b.color[i] ? 1u : 0u;
+  for (u32 i = 0; i < a.ids.size(); ++i)
+    out.ids += a.ids[i] != b.ids[i] ? 1u : 0u;
+  return out;
+}
+
+}  // namespace
+
+// The grid is nine instances of one rigid heightfield, so with the cache every structure a frame
+// traces is a cached one: the frame builds no CLAS of its own, a cluster is built the first frame
+// any instance draws it, and a second flight over the same cuts builds nothing at all. Against
+// the per-frame build of the same cuts (`renderer.rt.cache=false`) the traced shadows of the mesh
+// path and the ray path's picture are the same bytes, colour and ids, at every stop.
+TEST_CASE("rt cache: rigid structures built once trace the per-frame build's bytes") {
+  gfx::Device device;
+  std::string error;
+  if (!device.create(gfx::DeviceOptions{}, &error) || !traces(device)) {
+    MESSAGE("tracing unavailable: " << error);
+    return;
+  }
+  for (const RasterMode raster : {RasterMode::Hardware, RasterMode::RayTrace}) {
+    RenderSettings settings;
+    settings.raster = raster;
+    settings.shadows = ShadowMode::RayTraced;
+    settings.lights = false;
+    Rig per_frame;
+    {
+      ScopedTunable off("renderer.rt.cache", "false");
+      REQUIRE_MESSAGE(per_frame.build(device, settings, error), error);
+    }
+    Rig cached;
+    REQUIRE_MESSAGE(cached.build(device, settings, error), error);
+    REQUIRE(cached.scene.rt_cache());
+    REQUIRE_FALSE(per_frame.scene.rt_cache());
+    const f32 distances[] = {9.0f, 1.4f, 0.8f, 5.0f};
+    u64 frame_index = 0;
+    u64 built_first = 0;
+    for (u32 flight = 0; flight < 2; ++flight) {
+      const u64 before = cached.renderer.stats().rt.cache_built_total;
+      Pictures differ;
+      for (const f32 distance : distances) {
+        for (u32 k = 0; k < 3; ++k, ++frame_index) {
+          REQUIRE_MESSAGE(per_frame.renderer.render_offscreen(
+                              frame_at(per_frame.data, distance, frame_index), &error),
+                          error);
+          REQUIRE_MESSAGE(cached.renderer.render_offscreen(
+                              frame_at(cached.data, distance, frame_index), &error),
+                          error);
+          // No rigid cluster is built per frame: everything this grid traces is the cache's.
+          CHECK(cached.renderer.stats().rt.built == 0);
+          CHECK(cached.renderer.stats().rt.references > 0);
+        }
+        for (const u32 view : {~u32{0}, static_cast<u32>(gfx::ResolveMode::Shadow)}) {
+          CapturedFrame a;
+          CapturedFrame b;
+          REQUIRE_MESSAGE(
+              per_frame.renderer.capture(frame_at(per_frame.data, distance, frame_index, view),
+                                         {.color = true, .ids = true}, a, &error),
+              error);
+          REQUIRE_MESSAGE(
+              cached.renderer.capture(frame_at(cached.data, distance, frame_index, view),
+                                      {.color = true, .ids = true}, b, &error),
+              error);
+          ++frame_index;
+          const Pictures d = compare(a, b);
+          differ.colour += d.colour;
+          differ.ids += d.ids;
+        }
+      }
+      const RtStats& rt = cached.renderer.stats().rt;
+      const u64 built = rt.cache_built_total - before;
+      if (flight == 0) built_first = built;
+      MESSAGE(std::string(raster_name(raster))
+              << " flight " << flight << ": " << built << " structures built into the cache ("
+              << rt.cache_occupied << " of " << rt.cache_slots << " slots, " << rt.cache_clusters
+              << " clusters of " << rt.cache_meshes << " meshes), " << rt.references
+              << " references the last frame, " << rt.cache_evictions << " evictions; "
+              << differ.colour << " colour bytes and " << differ.ids
+              << " id words differ from the per-frame build, which built "
+              << per_frame.renderer.stats().rt.built << " the last frame");
+      CHECK(differ.colour == 0);
+      CHECK(differ.ids == 0);
+      CHECK(rt.cache_overflow == 0);
+      CHECK(rt.cache_evictions == 0);
+      if (flight == 0) {
+        CHECK(built > 0);
+      } else {
+        CHECK(built == 0);  // nothing new entered the cut: the second flight builds nothing
+      }
+    }
+    CHECK(built_first <= cached.scene.rt_cache_slots());
+  }
+  device.destroy();
+}
+
+// A cache too small for the flight but not for any one frame of it: the near cut's clusters and
+// the far cut's do not fit together, so each move evicts the slots the other drew least recently
+// — counted — and builds its own again, and the picture is the per-frame build's throughout. The
+// cache's size comes from the cuts themselves: what each one occupies alone, and together.
+TEST_CASE("rt cache: a full cache evicts the least recently drawn and the picture holds") {
+  gfx::Device device;
+  std::string error;
+  if (!device.create(gfx::DeviceOptions{}, &error) || !traces(device)) {
+    MESSAGE("tracing unavailable: " << error);
+    return;
+  }
+  {  // the scenes and renderers go before the device they were made on
+    RenderSettings settings;
+    settings.raster = RasterMode::Hardware;
+    settings.shadows = ShadowMode::RayTraced;
+    settings.lights = false;
+    const f32 near_at = 0.8f;
+    const f32 far_at = 9.0f;
+    // What a cut occupies: the slots a fresh cache holds after drawing it (and then the other).
+    const auto occupied = [&](std::initializer_list<f32> stops) {
+      Rig rig;
+      REQUIRE_MESSAGE(rig.build(device, settings, error), error);
+      u64 index = 0;
+      for (const f32 distance : stops) {
+        for (u32 k = 0; k < 2; ++k, ++index)
+          REQUIRE_MESSAGE(
+              rig.renderer.render_offscreen(frame_at(rig.data, distance, index), &error), error);
+      }
+      return rig.renderer.stats().rt.cache_occupied;
+    };
+    const u32 near_alone = occupied({near_at});
+    const u32 far_alone = occupied({far_at});
+    const u32 together = occupied({near_at, far_at});
+    MESSAGE("the near cut occupies " << near_alone << " slots, the far one " << far_alone
+                                     << ", the two together " << together);
+    REQUIRE(together > std::max(near_alone, far_alone));
+    Rig per_frame;
+    {
+      ScopedTunable off("renderer.rt.cache", "false");
+      REQUIRE_MESSAGE(per_frame.build(device, settings, error), error);
+    }
+    // Room for either cut and the inactive slot 0, not for both.
+    Rig small;
+    {
+      const std::string slots = std::to_string(std::max(near_alone, far_alone) + 1);
+      ScopedTunable tight("renderer.rt.cache_slots", slots.c_str());
+      REQUIRE_MESSAGE(small.build(device, settings, error), error);
+    }
+    REQUIRE(small.scene.rt_cache());
+    REQUIRE(small.scene.rt_cache_slots() < together + 1);
+    const f32 distances[] = {near_at, far_at, near_at, far_at, near_at};
+    u64 frame_index = 0;
+    Pictures differ;
+    for (const f32 distance : distances) {
+      for (u32 k = 0; k < 2; ++k, ++frame_index) {
+        REQUIRE_MESSAGE(per_frame.renderer.render_offscreen(
+                            frame_at(per_frame.data, distance, frame_index), &error),
+                        error);
+        REQUIRE_MESSAGE(
+            small.renderer.render_offscreen(frame_at(small.data, distance, frame_index), &error),
+            error);
+      }
+      CapturedFrame a;
+      CapturedFrame b;
+      const u32 shadow_view = static_cast<u32>(gfx::ResolveMode::Shadow);
+      REQUIRE_MESSAGE(
+          per_frame.renderer.capture(frame_at(per_frame.data, distance, frame_index, shadow_view),
+                                     {.color = true, .ids = true}, a, &error),
+          error);
+      REQUIRE_MESSAGE(
+          small.renderer.capture(frame_at(small.data, distance, frame_index, shadow_view),
+                                 {.color = true, .ids = true}, b, &error),
+          error);
+      ++frame_index;
+      const Pictures d = compare(a, b);
+      differ.colour += d.colour;
+      differ.ids += d.ids;
+      const RtStats& rt = small.renderer.stats().rt;
+      MESSAGE("at " << distance << " radii: " << rt.references << " references, "
+                    << rt.cache_occupied << " of " << rt.cache_slots << " slots occupied, "
+                    << rt.cache_evictions << " evictions and " << rt.cache_overflow
+                    << " misses without room so far; " << d.colour << " colour bytes differ");
+    }
+    const RtStats& rt = small.renderer.stats().rt;
+    CHECK(rt.cache_evictions > 0);  // the flight did not fit: the cache evicted, and counted it
+    CHECK(rt.cache_overflow == 0);  // every frame on its own did
+    CHECK(differ.colour == 0);
+    CHECK(differ.ids == 0);
+  }
+  device.destroy();
+}

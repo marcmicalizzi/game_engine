@@ -1495,7 +1495,7 @@ struct FrameWalk @version(2) {
 /// (AGENTS.md, "No allocations in the frame loop in steady state").
 ///
 /// Version 11: `walk`, a walking session's frame (`FrameWalk`).
-struct FrameRecord @version(11) {
+struct FrameRecord @version(12) {
   /// Which pass over the path, from 0.
   repeat: u32 = 0
   /// The path frame, from 0; an interactive session's frame, from 0.
@@ -1582,6 +1582,13 @@ struct FrameRecord @version(11) {
   rt_built: u32 = 0 @since(2)
   rt_wanted: u32 = 0 @since(2)
   rt_capacity: u32 = 0 @since(2)
+  /// The resident cluster structure cache (docs/subsystems/renderer.md, "The resident cluster
+  /// structure cache", R101): the frame's references to cached structures, the structures it built
+  /// into the cache — the first frames of a flight build its clusters, a steady one none — and the
+  /// slots it evicted. Zero without the cache.
+  rt_references: u32 = 0 @since(12)
+  rt_cache_built: u32 = 0 @since(12)
+  rt_cache_evicted: u32 = 0 @since(12)
   /// The scene the frame culled: its instances and its (instance, cluster) pairs, one cull thread
   /// each. Constant for a scene read whole; a streamed world's tiles move both between frames.
   instances: u32 = 0 @since(5)
@@ -1789,6 +1796,30 @@ struct FlythroughRt @version(4) {
   /// Per frame, over the path: what the chain built and what the frame wanted.
   built: Percentiles
   wanted: Percentiles
+  /// Version 4 (R101): the resident cluster structure cache (docs/subsystems/renderer.md, "The
+  /// resident cluster structure cache") — the meshes and clusters it keeps, its slots, a slot's
+  /// bytes and its bytes in all (in `bytes` too); the slots occupied at the end; over the run what
+  /// was built into it, the frames that built anything, the misses it had no room for, and the
+  /// slots evicted; the frame's references to it against their capacity and ceiling, their bytes
+  /// each and the policy's resizes; and per frame over the path the references and the builds.
+  cache_meshes: u32 = 0 @since(4)
+  cache_clusters: u32 = 0 @since(4)
+  cache_slots: u32 = 0 @since(4)
+  cache_slot_bytes: u64 = 0 @since(4)
+  cache_bytes: u64 = 0 @since(4)
+  cache_occupied: u32 = 0 @since(4)
+  cache_built_total: u64 = 0 @since(4)
+  cache_build_frames: u64 = 0 @since(4)
+  cache_overflow: u64 = 0 @since(4)
+  cache_evictions: u64 = 0 @since(4)
+  peak_references_wanted: u32 = 0 @since(4)
+  reference_capacity: u32 = 0 @since(4)
+  reference_limit: u32 = 0 @since(4)
+  bytes_per_reference: u64 = 0 @since(4)
+  reference_grows: u32 = 0 @since(4)
+  reference_shrinks: u32 = 0 @since(4)
+  references: Percentiles @since(4)
+  cache_built: Percentiles @since(4)
 }
 
 /// The materials' textures a scene holds on the device (`renderer::GpuScene`): the distinct

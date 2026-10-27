@@ -560,16 +560,44 @@ uint2 hit_pair(uint64_t visible, uint64_t instances, uint64_t meshes, uint geome
       is_static = true;
       return uint2(instance_id, mesh_table[instance.mesh].first_cluster + geometry);
     }
+    // A cached structure (below) names its cluster within the mesh, like a static one.
+    if ((geometry & k_hit_cached) != 0) {
+      MeshDesc* mesh_table = (MeshDesc*)meshes;
+      is_static = true;
+      return uint2(instance_id,
+                   mesh_table[instance.mesh].first_cluster + (geometry & k_hit_cached_cluster));
+    }
   }
   return visible_entry(visible, geometry);
 }
 
+// **A hit on the resident cluster structure cache** (renderer.md, "The resident cluster structure
+// cache"; gfx::ClusterCacheTables). A cached structure is shared by every instance of its mesh and
+// every frame that draws it, so it cannot name a visible entry: its geometry index is the cluster's
+// index within its mesh with `gfx::k_cluster_cache_geometry` (bit 23) set, and
+// `gfx::k_cluster_cache_caster` (bit 22) for its shadow-caster form. The frame's own records stay
+// under bit 23 while a cache exists. `hit_visible_entry` hands such an index on with bit 31 set —
+// a visible entry never reaches it — and `hit_pair` decodes it to `{instance, mesh.first_cluster +
+// index}`, the pair the rasterizer drew. A rigid instance is all a cached hit can be, so nothing
+// needs its visible entry: it has no pool block.
+static const uint k_hit_cached = 0x80000000u;
+static const uint k_hit_cached_cluster = (1u << 22) - 1;  // the cluster within its mesh
+static const uint k_cache_geometry_bit = 1u << 23;      // gfx::k_cluster_cache_geometry
+static const uint k_cache_caster_bit = 1u << 22;        // gfx::k_cluster_cache_caster
+
+// Whether what `hit_visible_entry` answered is a cached structure's caster form.
+bool hit_cached_caster(uint entry) {
+  return (entry & k_hit_cached) != 0 && (entry & k_cache_caster_bit) != 0;
+}
+
 // Compact per-frame indices recover the rasterizer's entry, including its pool block.
-// Static forms keep their mesh-local index and do not read the frame's table.
+// Static forms keep their mesh-local index and do not read the frame's table; a cached structure's
+// index comes back marked (above).
 uint hit_visible_entry(uint64_t entries, uint64_t instances, uint geometry, uint instance_id) {
   if (entries == 0) return geometry;
   InstanceDesc* table = (InstanceDesc*)instances;
   if ((table[instance_id].flags & k_instance_static_rt) != 0) return geometry;
+  if ((geometry & k_cache_geometry_bit) != 0) return k_hit_cached | geometry;
   return ((uint*)entries)[geometry];
 }
 

@@ -112,6 +112,31 @@ bool create_cluster_set(const Device& device, const ClusterSetLimits& limits, Cl
 // limits.max_clusters records.
 void build_cluster_set(CommandList commands, const ClusterSet& set, DeviceAddress records,
                        DeviceAddress count, const BufferResource& scratch);
+
+// **Clusters built where the caller says** (explicit destinations): one CLAS per record, each into
+// the address at the same index of `destinations` (u64 each), which the caller has made room for —
+// `structure_bytes` from `cluster_explicit_sizes` at the device's `cluster_alignment`. It is what a
+// cache of structures that outlive the frame needs (docs/subsystems/renderer.md, "The resident
+// cluster structure cache"): a slot is a fixed piece of one buffer, so a structure built this frame
+// is still there, at the same address, for every later frame's bottom-level build to reference.
+// `structure_bytes` is the driver's most for one cluster of `limits` (6,144 bytes for 124 triangles
+// and 64 vertices on the RTX 5090 at driver 610 — what an implicit build reserves for each too),
+// `scratch_bytes` what one build of `limits.max_clusters` of them needs, both with the alignment
+// slack the build adds. False for limits the device refuses or a driver answer of zero.
+struct ClusterExplicitSizes {
+  u64 structure_bytes = 0;
+  u64 scratch_bytes = 0;
+  u32 alignment = 0;  // ClusterAsProperties::cluster_alignment: where a destination may start
+};
+bool cluster_explicit_sizes(const Device& device, const ClusterSetLimits& limits,
+                            ClusterExplicitSizes& out) noexcept;
+// `count` is a device address of a u32 count (or 0 for `limits.max_clusters`); `records` and
+// `destinations` hold `limits.max_clusters` entries; `alignment` is `ClusterExplicitSizes::
+// alignment`. Never `limits.instantiate`.
+void build_cluster_set_explicit(CommandList commands, const ClusterSetLimits& limits,
+                                DeviceAddress records, DeviceAddress count,
+                                DeviceAddress destinations, const BufferResource& scratch,
+                                u32 alignment);
 // The same command for a set created with `limits.instantiate`: `records` holds instantiate
 // records (k_cluster_instantiate_record_bytes each, see write_cluster_instantiate_records or
 // clas_records.slang's `instantiate` variant), each naming a template and the positions to
@@ -277,8 +302,9 @@ struct ClusterRecordParams {
   // themselves are run `k_caster_run` of the visible list. 0: there is no caster run.
   u64 caster_count = 0;
   u64 records = 0;  // build or instantiate records out, the matching stride each
-  // u32[4] out: built (what the build reads as `count`), wanted, instances that lost their drawn
-  // clusters, instances that lost their casters (k_cluster_record_count_words).
+  // u32[k_cluster_record_count_words] out: built (what the build reads as `count`), wanted,
+  // instances that lost their drawn clusters, instances that lost their casters, then the cache's
+  // words (k_cluster_record_count_words).
   u64 record_count = 0;
   u64 blas_records = 0;    // k_cluster_blas_record_bytes per instance (ranges_main out)
   u64 clas_addresses = 0;  // ClusterSet::addresses.address
@@ -308,8 +334,74 @@ struct ClusterRecordParams {
   // Optional compact geometry indices: emit writes the original visible entry at the record's
   // dense index. Zero preserves the direct visible-index records used by low-level callers.
   u64 hit_entries = 0;
+  // **The resident cluster structure cache** (docs/subsystems/renderer.md, "The resident cluster
+  // structure cache"; R101): a `ClusterCacheTables` block, or 0 for none — every record is then
+  // built this frame, as before, and the records are the bytes they always were. With one, a
+  // **cached** instance — rigid (`InstanceDesc::deform` invalid), traced, not a static form, and of
+  // a mesh the block's `bases` names — builds nothing per frame: its clusters' structures are built
+  // once, the first frame any instance draws them, into the cache's slots, and its bottom-level
+  // structure references them (`ClusterCacheTables::references`). `frame` stamps the slots a frame
+  // draws, which is what the least-recently-drawn eviction reads.
+  u64 cache = 0;
+  u32 frame = 0;
+  u32 cache_pad = 0;
 };
-static_assert(sizeof(ClusterRecordParams) == 160);
+static_assert(sizeof(ClusterRecordParams) == 176);
+
+// **The resident cluster structure cache's tables** (docs/subsystems/renderer.md, "The resident
+// cluster structure cache"; R101), one device block the records passes read through
+// `ClusterRecordParams::cache`. A **key** is a cluster of a cached mesh in one of three forms —
+// drawn opaque, drawn alpha-tested (non-opaque, so the ray loops test its mask), and shadow caster
+// (non-opaque, and named as one) — `(bases[mesh] + cluster within the mesh) * 3 + form`; `keys`
+// holds each key's **slot**, or `k_cluster_cache_empty`. A slot is `slot_stride` bytes of one
+// buffer at `slot_base + slot * slot_stride`, the driver's most for one cluster, so a structure
+// built into it stays at that address until it is evicted. Slot 0 is a structure with no active
+// triangle (every vertex's x NaN), which a reference the cache had no room for points at.
+//
+// A cached structure's cluster id and base geometry index are **not** a visible entry: they are
+// the cluster's index within its mesh with `k_cluster_cache_geometry` set, and
+// `k_cluster_cache_caster` for the caster form, so a hit names its pair as a static form's does —
+// `{instance, mesh.first_cluster + index}` — and says by itself whether it was a caster
+// (`hit_visible_entry` and `hit_pair` in shaders/scene.slang). The frame's own dense indices stay
+// under `k_cluster_cache_geometry`, which bounds the per-frame capacity while a cache exists.
+//
+// Five passes run between the emit pass and the builds, over the slots and the references:
+// `cache_scan_main` lists the free slots and counts the occupied ones by how many frames ago they
+// were drawn; `cache_evict_main` frees the least recently drawn — never one this frame drew — until
+// this frame's misses fit (its threshold computed by `cache_threshold_main`, one thread); then
+// `cache_assign_main` gives every miss a slot and writes its build record and destination, and
+// `cache_references_main` writes every cached reference's address. The misses are then built with
+// explicit destinations (`build_cluster_set_explicit`), before the frame's own builds.
+struct ClusterCacheTables {
+  u64 bases = 0;              // u32 per mesh: its first cluster's key / 3, or ~0: not cached
+  u64 keys = 0;               // u32 per key: its slot, or one of the k_cluster_cache_* marks
+  u64 owners = 0;             // u32 per slot: the key it holds, or k_cluster_cache_empty (free)
+  u64 stamps = 0;             // u32 per slot: the last frame that drew it
+  u64 free_list = 0;          // u32 per slot: this frame's free slots, scan then eviction order
+  u64 misses = 0;             // uint4 per slot: key, cluster, geometry word, 0
+  u64 miss_records = 0;       // k_cluster_build_record_bytes per slot: the misses' builds
+  u64 miss_destinations = 0;  // u64 per slot: each miss's slot address
+  u64 references = 0;         // u64 per reference: the frame's cached instances' CLAS addresses
+  u64 reference_keys = 0;     // u32 per reference: the key each one is
+  u64 scratch = 0;            // u32[k_cluster_cache_scratch_words]: the passes' counters
+  u64 slot_base = 0;          // slot 0's address
+  u32 slot_stride = 0;
+  u32 slot_count = 0;  // slot 0 included
+  u32 mesh_count = 0;
+  u32 reference_capacity = 0;
+};
+static_assert(sizeof(ClusterCacheTables) == 112);
+inline constexpr u32 k_cluster_cache_empty = 0xffffffffu;
+inline constexpr u32 k_cluster_cache_claim = 0xfffffffeu;      // a miss this frame, not yet a slot
+inline constexpr u32 k_cluster_cache_overflow = 0xfffffffdu;   // a miss the cache had no room for
+inline constexpr u32 k_cluster_cache_forms = 3;                // keys per cluster
+inline constexpr u32 k_cluster_cache_geometry = 1u << 23;      // a cached structure's index bit
+inline constexpr u32 k_cluster_cache_caster = 1u << 22;        // ... and its caster form's
+inline constexpr u32 k_cluster_cache_max_clusters = 1u << 22;  // a cached mesh's most clusters
+inline constexpr u32 k_cluster_cache_ages = 64;                // the eviction's age histogram
+// free count, eviction threshold, quota, taken, then the histogram
+inline constexpr u32 k_cluster_cache_scratch_words = 4 + k_cluster_cache_ages;
+inline constexpr u32 k_cluster_cache_workgroup = 64;
 // `tlas_references.slang`'s push block: each instance's bottom-level address, which the frame's
 // implicit-destination build of a `ClusterBlasSet` decided (`ClusterBlasSet::addresses`), written
 // into the reference field — the last eight bytes — of its `k_instance_record_bytes` top-level
@@ -340,7 +432,12 @@ static_assert(sizeof(TlasReferenceParams) == 88);
 inline constexpr u32 k_tlas_references_workgroup = 64;
 inline constexpr u32 k_cluster_records_workgroup = 64;
 inline constexpr u32 k_cluster_records_instantiate = 1u << 16;  // ClusterRecordParams::mode
-inline constexpr u32 k_cluster_record_count_words = 4;
+// `record_count`'s words: 0 built (what the frame's own CLAS build reads as its count), 1 wanted, 2
+// instances that lost their drawn clusters, 3 instances that lost their casters; with a cache, 4
+// cached references kept, 5 cached references wanted, 6 misses (keys claimed this frame), 7 misses
+// built into the cache (what its explicit build reads as its count), 8 misses the cache had no
+// room for, 9 slots evicted, 10 slots occupied after the frame, 11 zero.
+inline constexpr u32 k_cluster_record_count_words = 12;
 constexpr u32 cluster_records_mode(u32 views, bool instantiate) noexcept {
   return (views & 0xffffu) | (instantiate ? k_cluster_records_instantiate : 0u);
 }

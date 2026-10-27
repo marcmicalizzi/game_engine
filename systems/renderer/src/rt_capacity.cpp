@@ -45,6 +45,21 @@ tunables::Bool rt_caster_horizon{
     "With traced shadows and a shadow distance, build no shadow caster "
     "farther from the eye than that distance"};
 
+// The resident cluster structure cache (renderer.md, "The resident cluster structure cache"; R101).
+tunables::Bool rt_cache{"renderer.rt.cache", true,
+                        "Build a rigid mesh's cluster structures once, into a cache every instance "
+                        "and frame references, instead of once per instance per frame"};
+tunables::Int rt_cache_mib{"renderer.rt.cache_mib", k_default_rt_cache_mib, 1, 1 << 20,
+                           "Most device memory the resident cluster structure cache may take, in "
+                           "MiB; it takes what the scene's cached clusters need up to this, and a "
+                           "full cache evicts the least recently drawn"};
+tunables::Int rt_cache_slots{"renderer.rt.cache_slots", 0, 0, 1 << 30,
+                             "A ceiling on the cluster cache's slots beside its MiB, for "
+                             "measurement and the eviction test; 0 is none"};
+tunables::Int rt_reference_mib{"renderer.rt.reference_mib", k_default_rt_reference_mib, 1, 1 << 20,
+                               "Most device memory the frame's references to the cluster cache "
+                               "may take, in MiB; past it a frame drops whole instances"};
+
 u64 round_up(u64 value, u64 step) noexcept { return (value + step - 1) / step * step; }
 
 }  // namespace
@@ -57,6 +72,10 @@ bool rt_static_forms_tunable() noexcept { return rt_static_forms.get(); }
 bool rt_static_build_tunable() noexcept { return rt_static_build.get(); }
 bool rt_caster_horizon_tunable() noexcept { return rt_caster_horizon.get(); }
 u32 rt_initial_clusters_tunable() noexcept { return static_cast<u32>(rt_initial_clusters.get()); }
+bool rt_cache_tunable() noexcept { return rt_cache.get(); }
+u32 rt_cache_mib_tunable() noexcept { return static_cast<u32>(rt_cache_mib.get()); }
+u32 rt_reference_mib_tunable() noexcept { return static_cast<u32>(rt_reference_mib.get()); }
+u32 rt_cache_slots_tunable() noexcept { return static_cast<u32>(rt_cache_slots.get()); }
 
 void rt_drop_order(u32 prefix_slots, std::span<RtDropBlock> blocks, Vector<u32>& out) {
   std::sort(blocks.begin(), blocks.end(), [](const RtDropBlock& a, const RtDropBlock& b) {

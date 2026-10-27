@@ -161,6 +161,7 @@ struct FrameStats {
   f64 gpu_resolve = 0.0;
   f64 gpu_rt = 0.0;
   f64 gpu_clas = 0.0;
+  f64 gpu_clas_cache = 0.0;  // the cluster cache's build of the frame's misses, inside the chain
   f64 gpu_deform = 0.0;
   f64 gpu_deform_alloc = 0.0;
   f64 gpu_trace = 0.0;
@@ -184,6 +185,11 @@ struct FrameStats {
   u32 rt_built = 0;
   u32 rt_wanted = 0;
   u32 rt_capacity = 0;
+  // The cluster cache's part of the frame (RtStats): its references, what it built into the cache
+  // (zero once the flight's clusters are resident), and the slots it evicted.
+  u32 rt_references = 0;
+  u32 rt_cache_built = 0;
+  u32 rt_cache_evicted = 0;
   // The scene this frame culled: its instances and its (instance, cluster) pairs — one cull thread
   // each. Constant for a scene read whole; a streamed world's tiles move both between frames.
   u32 instances = 0;
@@ -304,6 +310,35 @@ struct RtStats {
   u64 static_pairs = 0;
   // The last frame's casters the horizon kept out of the structures (Stats::horizon_casters).
   u32 horizon_casters = 0;
+  // **The resident cluster structure cache** (renderer.md, "The resident cluster structure cache";
+  // R101): the meshes and clusters it keeps, its slots and their bytes (in `bytes` too); the last
+  // frame's cached references kept and wanted against the reference capacity and its limit (the
+  // `renderer.rt.reference_mib` ceiling over `bytes_per_reference`), the peak wanted, and the
+  // policy's resizes; the last frame's misses (keys first drawn, or drawn again after an eviction),
+  // what it built into the cache, and the slots occupied after it; over the run, what was built
+  // into the cache, the frames that built anything, the misses it had no room for, and the slots
+  // evicted. All zero without a cache. A cached instance's references that do not fit the
+  // reference capacity drop the instance whole, counted with `dropped_instances` as before.
+  u32 cache_meshes = 0;
+  u32 cache_clusters = 0;
+  u32 cache_slots = 0;
+  u64 cache_slot_bytes = 0;
+  u64 cache_bytes = 0;
+  u32 references = 0;
+  u32 references_wanted = 0;
+  u32 peak_references_wanted = 0;
+  u32 reference_capacity = 0;
+  u32 reference_limit = 0;
+  u64 bytes_per_reference = 0;
+  u32 reference_grows = 0;
+  u32 reference_shrinks = 0;
+  u32 cache_misses = 0;
+  u32 cache_built = 0;
+  u32 cache_occupied = 0;
+  u64 cache_built_total = 0;
+  u64 cache_build_frames = 0;
+  u64 cache_overflow = 0;
+  u64 cache_evictions = 0;
 };
 
 struct Stats {
@@ -350,7 +385,8 @@ struct Stats {
   f64 gpu_resolve = 0.0;
   f64 gpu_rt = 0.0;  // records + ranges + emit + CLAS + cluster BLAS + TLAS
   f64 gpu_clas = 0.0;
-  f64 gpu_blas = 0.0;  // the one bottom-level build of every instance's structure
+  f64 gpu_clas_cache = 0.0;  // the cluster cache's build of the frame's misses, inside the chain
+  f64 gpu_blas = 0.0;        // the one bottom-level build of every instance's structure
   f64 gpu_deform = 0.0;
   // The pool's suballocator, kept apart from the pool pass it feeds: one dispatch covers every
   // view of a run, so it is the frame's cost and no view's, and E25's "9.4 µs plus 0.9 µs per
@@ -756,6 +792,8 @@ class SceneRenderer {
     gfx::ComputePipeline records;
     gfx::ComputePipeline record_ranges;
     gfx::ComputePipeline record_emit;
+    gfx::ComputePipeline
+        cache[5];  // the cluster cache's scan, threshold, evict, assign, references
     gfx::ComputePipeline tlas_references;  // tlas_references.slang: the BLAS addresses in
     gfx::ComputePipeline trace;
     // pair_expand.slang: a streamed world's changed pair-table entries, from its instance table.
@@ -912,19 +950,27 @@ class SceneRenderer {
   u64 collected_ = 0;  // the timeline value whose statistics were last folded in
   bool flags_dirty_ = true;
   bool recording_ = false;
-  bool joint_overflow_warned_ = false;   // a span longer than the scene was sized for, said once
-  bool deform_overflow_warned_ = false;  // the pool budget refused a pair, said once
-  bool vertex_fallback_warned_ = false;  // the index budget sent a cluster to the fallback, once
-  bool shadow_fallback_warned_ = false;  // the same, for a shadow cascade's cut
-  bool rt_overflow_warned_ = false;      // a frame dropped instances' structures, said once
-  bool rt_hold_ = false;      // render_offscreen is redrawing a frame it grew the chain for
-  bool rt_observed_ = false;  // a frame's demand has reached the capacity policy
+  bool joint_overflow_warned_ = false;     // a span longer than the scene was sized for, said once
+  bool deform_overflow_warned_ = false;    // the pool budget refused a pair, said once
+  bool vertex_fallback_warned_ = false;    // the index budget sent a cluster to the fallback, once
+  bool shadow_fallback_warned_ = false;    // the same, for a shadow cascade's cut
+  bool rt_overflow_warned_ = false;        // a frame dropped instances' structures, said once
+  bool rt_cache_overflow_warned_ = false;  // the cluster cache had no room for misses, said once
+  u64 rt_evictions_folded_ = 0;  // the evictions the last folded frame's record took off the sum
+  Vector<u64> rt_cache_folded_;  // per frame slot: the submission whose cache words were summed
+  bool rt_hold_ = false;         // render_offscreen is redrawing a frame it grew the chain for
+  bool rt_observed_ = false;     // a frame's demand has reached the capacity policy
   // The ray tracing chain's capacity policy (rt_capacity.h): fed every folded frame's demand, and
   // the reason `GpuScene::resize_ray_tracing` is ever called.
   RtCapacity rt_capacity_;
+  // The cluster cache's references (renderer.md, "The resident cluster structure cache"), by the
+  // same arithmetic as the capacity.
+  RtCapacity rt_reference_policy_;
   // Resizes the chain to `capacity` when it differs, waiting for the device first. False only when
   // the allocation failed, in which case the chain keeps nothing and the frame must not be drawn.
-  bool apply_rt_capacity(u32 capacity, std::string* error, bool beyond_budget = false);
+  // `references` 0 keeps the cache's reference capacity.
+  bool apply_rt_capacity(u32 capacity, std::string* error, bool beyond_budget = false,
+                         u32 references = 0);
   void note_rt_bytes() noexcept;
 };
 

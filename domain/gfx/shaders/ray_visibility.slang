@@ -78,7 +78,9 @@ uint2 hit_of(RayVisibilityParams* params, uint geometry, uint instance_id, out b
                                        hit_entry(params, geometry, instance_id), instance_id);
   const uint2 pair =
       hit_pair(params->visible, params->instances, params->meshes, entry, instance_id, is_static);
-  caster = !is_static && entry >= params->caster_base;
+  // A cached structure says by its own index whether it is a caster's (scene.slang,
+  // `hit_cached_caster`); a static one is never one.
+  caster = is_static ? hit_cached_caster(entry) : entry >= params->caster_base;
   return pair;
 }
 

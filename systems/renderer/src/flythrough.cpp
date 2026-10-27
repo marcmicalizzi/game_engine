@@ -104,6 +104,9 @@ scene::FrameRecord frame_record(const FrameStats& stats, u32 repeat, u32 frame, 
   out.rt_built = stats.rt_built;
   out.rt_wanted = stats.rt_wanted;
   out.rt_capacity = stats.rt_capacity;
+  out.rt_references = stats.rt_references;
+  out.rt_cache_built = stats.rt_cache_built;
+  out.rt_cache_evicted = stats.rt_cache_evicted;
   out.instances = stats.instances;
   out.pairs = stats.pairs;
   out.table_slots = stats.table_slots;
@@ -147,6 +150,22 @@ void summarize_rt(const RtStats& stats, scene::FlythroughRt& out) {
   out.static_instances = stats.static_instances;
   out.static_pairs = stats.static_pairs;
   out.horizon_casters = stats.horizon_casters;
+  out.cache_meshes = stats.cache_meshes;
+  out.cache_clusters = stats.cache_clusters;
+  out.cache_slots = stats.cache_slots;
+  out.cache_slot_bytes = stats.cache_slot_bytes;
+  out.cache_bytes = stats.cache_bytes;
+  out.cache_occupied = stats.cache_occupied;
+  out.cache_built_total = stats.cache_built_total;
+  out.cache_build_frames = stats.cache_build_frames;
+  out.cache_overflow = stats.cache_overflow;
+  out.cache_evictions = stats.cache_evictions;
+  out.peak_references_wanted = stats.peak_references_wanted;
+  out.reference_capacity = stats.reference_capacity;
+  out.reference_limit = stats.reference_limit;
+  out.bytes_per_reference = stats.bytes_per_reference;
+  out.reference_grows = stats.reference_grows;
+  out.reference_shrinks = stats.reference_shrinks;
 }
 
 void summarize_textures(const GpuScene& scene, scene::FlythroughTextures& out) {
@@ -355,6 +374,8 @@ void summarize_frames(std::span<const scene::FrameRecord> records, u32 frames, u
     cpu_compile,
     cpu_record,
     cpu_submit,
+    rt_references,
+    rt_cache_built,
     passes
   };
   Vector<f64> per_frame[passes];
@@ -431,7 +452,9 @@ void summarize_frames(std::span<const scene::FrameRecord> records, u32 frames, u
                                     r->cpu.passes,
                                     r->cpu.compile,
                                     r->cpu.record,
-                                    r->cpu.submit};
+                                    r->cpu.submit,
+                                    static_cast<f64>(r->rt_references),
+                                    static_cast<f64>(r->rt_cache_built)};
         repeats_of.push_back(values[p]);
       }
       per_frame[p].push_back(median_of(repeats_of));
@@ -456,6 +479,8 @@ void summarize_frames(std::span<const scene::FrameRecord> records, u32 frames, u
   out.gpu_ms.blas = over(blas);
   out.rt.built = over(rt_built);
   out.rt.wanted = over(rt_wanted);
+  out.rt.references = over(rt_references);
+  out.rt.cache_built = over(rt_cache_built);
   out.shadow_pairs = over(shadow_pairs);
   out.cpu_ms = over(cpu);
   out.frame_ms = over(wall);
