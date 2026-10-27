@@ -1810,6 +1810,71 @@ And with no device: **a rebuild of changes draws what a whole build draws** (`te
 
 ## Ground to the horizon
 
+**Optional error rule (2026-10-26, F20).** `terrain_far_error_px` is zero by default:
+existing scenes retain their spacings, windows, tiles and bytes. Positive values derive the first
+spacing from the view and a **measured per-scene error**. `terrain_far_error_per_m` supplies the
+envelope `B(s) = c s` in metres; neither the tile-source interface nor the set's format currently
+stores a range/error mip. The tunables are `renderer.terrain.far_error_px`, `.far_error_per_m` and
+`.far_ratio`; zero settings take their defaults (all zero). `terrain_far_ratio` explicitly overrides
+the rule, keeping the requested count. With neither rule nor override the ratio remains four.
+engine-view exposes `--terrain-far-error-px`, `--terrain-far-error-per-m` and `--terrain-far-ratio`
+beside `--terrain-far <count>`; protocol `RenderSettings` version 14 carries the same fields.
+Hosts pass the actual pixel height and first camera's vertical FOV to `MovingGround::prepare`.
+Selection happens at load: rebuilding after a resolution/FOV change retains the estimate.
+
+**Define the error before using it.** For heights in `[m,M]` and box mean `mu`,
+`E_box = max(M-mu, mu-m) <= M-m`. Half the range bounds deviation from the **midrange**,
+not generally the mean (a narrow peak is a counterexample). A cell's slope range is also not
+the reconstructed triangle mesh's error: a plane has a large range and zero residual. To bound
+the mesh, measure its residual against the source over its interpolation/filter support, or use
+the range of that whole support. A p95 is a quality estimate with a tail, not an everywhere bound.
+Automatic certification would require spatially queryable per-spacing min/max or reconstruction
+residual records in the set and `TileSource`; no such data is invented by this change.
+
+The frozen forest mountain (0.5 m source, 64 m world tiles, outer ring 4 m, correcting the initial
+brief's 1 m/32 m) was measured over world-aligned boxes centred on heights at least 200 m, north
+of z = 1024 m, wholly inside the source. The histogram and separate triangle-residual census are
+in [the dated experiment](../experiments/far-ground-2026-10-03.md#2026-10-26-f20-the-forest-mountains-error).
+
+| spacing | boxes | range median / p95, m | deviation from box mean p95, m |
+|---|---:|---:|---:|
+| 16 m | 5,995 | 12.611 / 20.393 | 10.473 |
+| 32 m | 1,492 | 25.440 / 40.789 | 21.182 |
+| 64 m | 374 | 49.761 / 82.483 | 42.263 |
+
+At vertical FOV 55°, `P = H / (2 tan(55°/2))`, so `t` pixels admit `t d / P` metres at
+distance `d`. At 2 km, one pixel is **1.446 m at 2560×1440** and **0.964 m at 11520×2160**
+in single-view perspective; width changes the horizontal FOV, not this projection. At 5 km the
+values are 3.615 and 2.410 m. This mountain's literal range envelope cannot meet one or two
+pixels without finer near rings; the rule refuses that request. It cannot repair authored ribs
+or gullies, or distant colour (R96/R97).
+
+**Derivation (`derive_terrain_far`).** Try every legal power-of-two multiple of the outermost
+ring spacing, including one (the same lattice). Keep at least the old worst-camera reach by
+adding finer levels; retaining the old coarsest spacing as well would needlessly extend the
+ground and reserve an extra level. Require `B(s_k) P <= terrain_far_error_px d_k`
+at **every** level; the largest admitted ratio wins. The CPU API accepts a measured table,
+never extrapolating missing entries; settings build a table from the supplied linear envelope.
+The first conservative start is `max(0, (R (1-hysteresis) - 0.75) tile_size)` (inward hysteresis
+and an upward rounded tile half-diagonal); later starts are the inner square's
+`half-margin-snap/2`. From the second start these double, but the first transition need not.
+Withheld world tiles can expose fallback ground closer, so the estimate assumes a filled outer
+ring. Coarser residuals need not grow linearly: this is why every level is checked. An excess is
+refused with **"derived far ground needs N far levels; at most eight fit the sixteen-level layout
+reserved for the grid, seven rings and eight far levels (k_max_terrain_levels)"**, never clamped.
+Missing filtered heights retain W77's refusal: rebuild the set into the caller's DDC for that
+chain. Near rings and their spacing are unchanged.
+
+**Capacity.** A 16-cell far tile has at most 289 source lattice vertices and 512 triangles before
+holes and collapsed edges. A square of half-side `h` at spacing `s` has `(2h/(16s))²` tiles,
+or three quarters of that in a coarser annulus. Two slots per tile hold both layouts. A slot
+reserves at least 16 cluster pairs, rounded to four above the largest measured DAG times
+`tile_slack` (1.5); vertex/triangle arenas reserve the largest measured DAG times that slack,
+times slots, plus 1024. Two field buffers each hold `(2h/s+3)²` floats. Halving spacing at fixed
+reach therefore costs roughly four times the vertices, pairs and memory per level, before adding
+a level. Actual DAG sizes and device bytes are reported per run: source vertices alone do not
+account for them.
+
 **Status, 2026-10-03:** built and held by the tests below; the captures from 2 m to 2,000 m, the far edge's hand-over and the offscreen cost (about 0.4 ms of GPU at 1080p and 0.5 ms at 11520×2160, 164 MiB of device memory) are in [the experiment](../experiments/far-ground-2026-10-03.md); the windowed lag is not measured yet. **The frame's thread allocates nothing when a far square moves** (2026-10-03): the 5 allocations the long flight first counted with far levels were the arenas' free lists growing as a far square's move let a strip of tiles go, not the upload lists; they are sized at load for the most they can hold, and the long flight holds its zero with three far levels ([The ground from the world's tiles](#the-ground-from-the-worlds-tiles), "A long flight"). [ADR-0051](../adr/0051-the-far-ground-is-the-renderers.md) (accepted, 2026-10-07) records the decisions.
 
 The world's tiles end at the world's outermost ring — 64 tiles, 2 km, on the endless desert — and from a few hundred metres up that was a straight edge against the sky model's planet. **Far levels** carry the ground on past it (`TerrainTilesDesc::far_levels`, `RenderSettings::terrain_far_levels`, engine-view's `--terrain-far`, `render.*`'s `settings.terrain_far_levels`, the tunable `renderer.terrain.far_levels`, 6; both hosts lay them out through `MovingGround`, [One request, two hosts](#one-request-two-hosts), so a call that names no count draws engine-view's): coarser tile levels of the same mechanism, laid out by the renderer and not by the world, whose ring keeps one tile size and streams nothing past its rings ([ADR-0051](../adr/0051-the-far-ground-is-the-renderers.md) decision 1). A scene that does not ask for tiles is untouched; one that does gets far levels unless it asks for none.

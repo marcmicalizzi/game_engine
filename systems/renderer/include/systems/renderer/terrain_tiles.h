@@ -100,11 +100,28 @@ struct WorldDesc;
 TerrainTilesDesc terrain_tiles_desc(const WorldDesc& world, i32 far_levels = 0) noexcept;
 // The far levels a host draws when its settings say -1: `renderer.terrain.far_levels`.
 u32 terrain_far_levels_default() noexcept;
+// Measured filtered-surface error in metres. Percentiles are estimates, not worst-case guarantees.
+struct TerrainFarError {
+  i64 spacing_mm = 0;
+  f64 bound_m = 0.0;
+};
+// Resolve once at load. Zero error preserves the description; an explicit ratio wins. Otherwise
+// choose the largest legal power-of-two ratio that fits every level's start, preserving at least
+// the old reach. Missing table entries and excess levels are refused, without
+// changing desc. proj_scale = height / (2 tan(vertical field of view / 2)).
+bool derive_terrain_far(TerrainTilesDesc& desc, std::span<const TerrainFarError> measured,
+                        f64 error_px, f64 proj_scale, u32 ratio_override = 0,
+                        std::string* error = nullptr);
+// Assumes a filled outer ring; withheld world tiles can expose the fallback closer.
+f64 terrain_far_start_m(const TerrainTilesDesc& desc, u32 k) noexcept;
+struct RenderSettings;
+bool terrain_far_settings(TerrainTilesDesc& desc, const RenderSettings& settings, u32 height,
+                          f32 fov_y, std::string* error = nullptr);
 // False, with a sentence naming what is wrong: a tile that is not a whole number of millimetres, no
 // ring or more than `k_max_tile_rings`, radii that are not positive and increasing, cells that do
 // not cut the tile into whole millimetres, a ring finer than the one inside it, or two neighbouring
 // rings whose cells do not divide (a coarser tile's lattice must be a subset of a finer one's);
-// more than `k_max_far_levels`, a far ratio under two, or far cells that do not make a far tile a
+// more than `k_max_far_levels`, a zero far ratio, or far cells that do not make a far tile a
 // whole number of world tiles cut on the first far level's lattice.
 bool validate_terrain_tiles(const TerrainTilesDesc& desc, std::string* error = nullptr);
 

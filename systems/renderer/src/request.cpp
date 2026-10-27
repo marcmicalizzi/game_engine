@@ -170,7 +170,7 @@ MovingGround::MovingGround() = default;
 MovingGround::~MovingGround() { finish(); }
 
 bool MovingGround::prepare(const SceneData& data, const ResolvedSettings& resolved,
-                           const Camera& first, std::string* error, bool window) {
+                           const Camera& first, std::string* error, bool window, u32 height) {
   stage_ = "";
   if (!resolved.terrain_levels) return true;
   // The time-lapse's pool is its own, so its evaluations never compete with a page read; a
@@ -190,9 +190,13 @@ bool MovingGround::prepare(const SceneData& data, const ResolvedSettings& resolv
     tiles_ = std::make_unique<TerrainTileSet>();
     // The far levels past the world's rings are the renderer's own (ADR-0051): the request's
     // `terrain_far_levels` lays them out, -1 the tunable's count.
-    if (!tiles_->build(data.terrain,
-                       terrain_tiles_desc(data.world, resolved.settings.terrain_far_levels),
-                       ground_->provider().tiles(), first.position, jobs_.get(), error)) {
+    TerrainTilesDesc tiles = terrain_tiles_desc(data.world, resolved.settings.terrain_far_levels);
+    if (!terrain_far_settings(tiles, resolved.settings, height, first.fov_y, error)) {
+      stage_ = "terrain-tiles";
+      return false;
+    }
+    if (!tiles_->build(data.terrain, tiles, ground_->provider().tiles(), first.position,
+                       jobs_.get(), error)) {
       stage_ = "terrain-tiles";
       return false;
     }
@@ -530,6 +534,14 @@ bool read_protocol_settings(const protocol::RenderSettings& in, RenderRequest& o
     error = "terrain_far_levels must be within 0.." + std::to_string(k_max_far_levels);
     return false;
   }
+  if (!(in.terrain_far_error_px >= 0.0f && in.terrain_far_error_px <= 1024.0f) ||
+      !(in.terrain_far_error_per_m >= 0.0f && in.terrain_far_error_per_m <= 1024.0f) ||
+      in.terrain_far_ratio > 128) {
+    error =
+        "terrain_far_error_px and terrain_far_error_per_m must be within 0..1024; "
+        "terrain_far_ratio must be within 0..128";
+    return false;
+  }
   for (const std::string& entry : in.morph) {
     if (entry.find('=') == std::string::npos) {
       error = "a morph entry is <name|index>=<weight>; got '" + entry + "'";
@@ -571,6 +583,9 @@ bool read_protocol_settings(const protocol::RenderSettings& in, RenderRequest& o
   // Null is the tunable's count, as engine-view without `--terrain-far` (-1 in the settings).
   s.terrain_far_levels =
       in.terrain_far_levels.has_value() ? static_cast<i32>(*in.terrain_far_levels) : -1;
+  s.terrain_far_error_px = in.terrain_far_error_px;
+  s.terrain_far_error_per_m = in.terrain_far_error_per_m;
+  s.terrain_far_ratio = in.terrain_far_ratio;
   s.side_yaw = radians(in.side_yaw_deg);
   s.panini_d = in.panini_d;
   s.peripheral_lod = in.peripheral_lod;

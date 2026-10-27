@@ -56,7 +56,8 @@ bool Viewport::load(std::string& error) {
   gpu_ = std::make_unique<renderer::GpuScene>();
   if (resolved_.terrain_levels) {
     ground_ = std::make_unique<renderer::MovingGround>();
-    if (!ground_->prepare(data_, resolved_, framing_camera(), &error, !options_.offscreen))
+    if (!ground_->prepare(data_, resolved_, framing_camera(), &error, !options_.offscreen,
+                          options_.height))
       return false;
   }
   if (!gpu_->create(*device_, data_, resolved_, &error,

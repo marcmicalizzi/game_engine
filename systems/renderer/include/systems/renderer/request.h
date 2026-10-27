@@ -143,8 +143,10 @@ class MovingGround {
   // what failed ("terrain-rings" or "terrain-tiles").
   // `window` is a presenting host's: its pool leaves the frame's thread CPUs of their own
   // (`terrain_window_workers`, `renderer.terrain.workers`); an offscreen run's takes the default.
+  // `height` is the view's pixel height for the optional far-ground error rule (F20). A caller
+  // enabling that rule must supply it; zero retains the old call when the rule is disabled.
   bool prepare(const SceneData& data, const ResolvedSettings& resolved, const Camera& first,
-               std::string* error = nullptr, bool window = false);
+               std::string* error = nullptr, bool window = false, u32 height = 0);
   // What `GpuScene::create` takes as its last argument: the rings, the tiles, or null.
   TerrainLevelSet* level_set() noexcept;
   TerrainTileSet* tiles() noexcept { return tiles_.get(); }

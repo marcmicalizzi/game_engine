@@ -1,5 +1,94 @@
 # Ground to the horizon: far levels past the world's tiles (2026-10-03)
 
+## 2026-10-26 F20: the forest mountain's error
+
+The owner sees the opposite mountain as rounded and blotchy. This measures the geometric
+part before choosing a finer far lattice. The original far-ground flight below remains the
+historical baseline; these are different data, cameras and machine state.
+
+**Sources and definitions.** Read ADR-0050/0051, the renderer's complete "Ground to the horizon"
+section, and the tile set's exact trapezoidal box filter. [Losasso and Hoppe (2004), §9 error
+analysis](https://hhoppe.com/geomclipmap.pdf) measures error against the reconstructed piecewise
+linear surface and reports percentiles separately from maxima; that distinction matters here.
+Its numerical terrain results are not transferred to this authored mountain.
+
+Read-only inputs: the POC's `reports/quality-v15/engine-c1ee971d/runs/ridge-csm-wide-20261026-191449/scene.json`,
+`run.json` and `Reproduce.cmd`, `surface-audit/markers.json` (entry 5, one-based), and the cook
+`world/v14/ddc/tilesets/0642f2422dcb4e1a/manifest.json`. The manifest and source descriptor say
+**0.5 m**, 4097×7169 samples, origin (-1024,-768) m, source hash `bd4d4be5d83f1bd6`, far filters
+16,32,64,128,256,512 m. The scene has **64 m** world tiles and ring cells 128,64,32,16 (4 m at
+the outside), radius 20 tiles. These correct the brief's 1 m source/32 m tiles. The actual ridge
+camera is (590,259.1289978027344,1430), looking at (150,560,2000); tag 5 is
+(5.2993751246767715,262.3149009019297,1552.9847968086178), yaw 2.5136375427246094,
+pitch 0.18588769435882568 radians. The scratch camera uses the engine's
+`(-cos(pitch) sin(yaw), sin(pitch), -cos(pitch) cos(yaw))`, FOV 55°, held for two seconds.
+
+**A bound that is true.** For cell min `m`, max `M` and box mean `mu`,
+`max|h-mu| = max(M-mu,mu-m) <= M-m`. Half the range bounds distance to the **midrange**, not
+generally to the mean. A single narrow peak disproves a universal half-range claim. A mesh
+interpolates neighbouring box means, so its conservative support includes their boxes too;
+one box's range is not a global triangle-error certificate. Likewise p95 leaves a 5% tail.
+A plane's range grows with spacing although its filtered triangulation is exact: ranges are
+conservative proxies, not direct evidence that a mountain has lost that many metres of shape.
+
+**Census method.** Scratch `measure.ps1` reads the frozen float32 source, quantizes once to
+integer millimetres as the set does, enumerates world-aligned square box supports at each
+spacing, includes those whose centre has height >=200 m and z>=1024 m, and requires the whole
+support inside the authored source. Min/max are over all source vertices in a box (extrema of
+the bilinear surface); the mean is the exact separable trapezoidal integral. Nearest-rank
+percentiles, one value per box. CPU arithmetic is independent of concurrent machine load.
+Raw counts and histograms: `D:/workspace/ge-codex-scratch/sol-far/mountain-errors.json`.
+
+| spacing, m | boxes | range median, m | range p95, m | mean-deviation p95, m |
+|---:|---:|---:|---:|---:|
+| 2 | 384765 | 1.577 | 2.557 | 1.288 |
+| 4 | 96138 | 3.153 | 5.107 | 2.585 |
+| 8 | 24002 | 6.296 | 10.206 | 5.198 |
+| 16 | 5995 | 12.611 | 20.393 | 10.473 |
+| 32 | 1492 | 25.440 | 40.789 | 21.182 |
+| 64 | 374 | 49.761 | 82.483 | 42.263 |
+| 128 | 89 | 102.183 | 169.411 | 92.170 |
+| 256 | 20 | 196.191 | 292.252 | 166.215 |
+| 512 | 6 | 316.339 | 426.865 | 270.040 |
+
+`0.75 m/m` rounds above every measured p95 mean-deviation/spacing, including 128 m's 0.7201.
+It is a **scene-specific percentile proxy**, not a proven terrain-wide bound, especially with
+only six 512 m supports. At a 55° vertical FOV, `P=H/(2 tan(FOV/2))`; one pixel at 2 km is
+1.446 m at 2560×1440 and 0.964 m at 11520×2160, and two pixels twice that. At 5 km the
+one-pixel thresholds are 3.615/2.410 m. At the conservative first far start (1040 m), one pixel
+allows 0.752/0.501 m. Even the smallest permitted first spacing, 4 m, carries 3 m under the
+chosen envelope: **requests of 1 and 2 pixels must be refused**, not silently clamped or labelled
+as satisfying their error. Refining near rings is outside F20.
+
+**Reconstruction cross-check.** Scratch `reconstruction.ps1` integrates the same quantized
+bilinear source for the four coarse vertices, uses the engine's two triangles per cell, and
+measures the largest residual at source vertices in each interior coarse cell. This excludes
+seam fans and cluster simplification, and uses unrounded box means, so it is a diagnostic,
+not a rendered-error certificate. It selects the same height/z region by cell centre, with all
+four box supports inside the data. Results (`reconstruction-errors.json`):
+
+| spacing, m | cells | per-cell maximum residual median / p95 / maximum, m |
+|---:|---:|---:|
+| 4 | 96062 | 0.043 / 0.152 / 1.557 |
+| 8 | 23968 | 0.172 / 0.407 / 4.912 |
+| 16 | 5958 | 0.538 / 1.271 / 12.521 |
+| 32 | 1481 | 1.474 / 4.975 / 26.276 |
+| 64 | 359 | 3.675 / 20.086 / 38.471 |
+| 128 | 89 | 13.434 / 40.876 / 49.915 |
+| 256 | 20 | 39.250 / 90.246 / 93.992 |
+
+The residual grows faster than linearly over several levels; doubling distance does not in
+general justify doubling spacing without checking the error table. The CPU rule checks all
+levels. A spatial residual mip would avoid assigning the mountain's worst percentile to empty
+or flat distant terrain; this change adds no source-format or provider-interface data.
+
+**Implementation and limits.** The optional settings rule, explicit measured-table API,
+override precedence, preserved reach and the eight-far/sixteen-total refusal
+are specified in [renderer](../subsystems/renderer.md#ground-to-the-horizon). Default zero is the
+old layout. The rule runs once at load, with no frame-loop work. A finer chain requires a new
+cook in scratch (the original cook only answers 16–512 m); the POC and its cache stay read-only.
+The blotchy distant colour belongs to R96/R97, and authored ribs/gullies remain game work.
+
 - **Question.** From a few hundred metres up the endless desert ended at the world's outermost ring, 2 km out, in a straight edge against the sky model's planet. How far must the ground reach at 2 m, 100 m, 350 m and 2,000 m over the erg's sky, how many coarser levels does that take, what do heights filtered to a level's spacing buy over point samples, and what do the levels cost? ([renderer](../subsystems/renderer.md#ground-to-the-horizon), [ADR-0051](../adr/0051-the-far-ground-is-the-renderers.md), proposed.)
 - **Date:** 2026-10-03. **Machine:** the owner's desktop (RTX 5090, 36 logical CPUs). The arithmetic, the filter and the tests on `msvc-debug`; the captures and the cost on `msvc-release`, each run alone under the GPU lock with `--wait-quiet 60`. **Machine state** (the harness's `machine_state`): other agents' CPU at 1.7–10.8% at the start and end of each measured run, the GPU idle (0–1%) at each start, 9.3–10.0 GB of device memory held by other processes, and the owner's session **locked** throughout; the two runs with six far levels did not reach the quiet threshold in 60 s and ran anyway (`quiet: false`), the others did.
 - **Status:** the arithmetic, the filter, the tests, the captures from 2 m to 2,000 m at 10:00 and 18:00, the hand-over at the far edge (one more far level: six by default) and the offscreen cost are here. **The windowed lag is not**: the owner's session was locked, and a locked session presents at 4 Hz (below, "In a window"). The third pass (on `main` after the shared request) measured what a far square's move costs and made its pairs and its scan cheaper (below, "A far square's move"), corrected the reading of the allocations and of the far tiles built, and captured the owner's 350 m start (below, "The captures"); the session was locked again.
@@ -134,3 +223,11 @@ One 1920×1080 windowed flight of the path at 100 m/s, as [the window's page](wo
 - The traced shadows' specks on distant ridges: an offset that grows with the pixel's footprint, in the resolve. (Not so, 2026-10-10: they are rays under fold-overs in the terrain's coarse clusters, [the shards page](shadow-shards-2026-10-09.md#2026-10-10-the-census-again-f17-and-the-surround-at-the-cameras-field-of-view-f18); the folds are refused where the simplifier made them since 2026-10-11, [the shards page](shadow-shards-2026-10-09.md#2026-10-11-where-the-folds-are-made-f17).)
 - The far ground's haze past 32 km: the sky's aerial table.
 - Far dunes past the cascades at a low sun: the horizon-angle term.
+
+Range histogram (box counts; bin upper edges in metres):
+
+| spacing | <=1 | (1,2] | (2,4] | (4,8] | (8,16] | (16,32] | (32,64] | (64,128] | >128 |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 16 | 2 | 15 | 94 | 788 | 3610 | 1422 | 41 | 23 | 0 |
+| 32 | 0 | 0 | 1 | 20 | 193 | 912 | 346 | 20 | 0 |
+| 64 | 0 | 0 | 0 | 0 | 4 | 49 | 228 | 87 | 6 |
