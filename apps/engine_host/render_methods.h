@@ -50,6 +50,7 @@ class RenderHost {
     renderer::RenderRequest request;
     renderer::RenderSettings requested;
     renderer::ResolvedSettings resolved;
+    JsonValue pair_breakdown;  // the load's account before the lazy GPU upload
     std::unique_ptr<renderer::GpuScene> gpu;
     std::unique_ptr<renderer::SceneRenderer> view;
     // The terrain levels a call moves — the time-lapse, the rings, the world's tiles — built with

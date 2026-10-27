@@ -709,6 +709,13 @@ TEST_CASE("engine-view: four rings with static forms and grass keep traced caste
   REQUIRE(write_text(tmp.file("sward.flora.json"), k_sward));
   std::string text = scene_text(
       R"({"tile_size":16,"rings":[{"radius":2},{"radius":4},{"radius":8},{"radius":12}]})");
+#if ENGINE_VIEW_TESTS_DUNES
+  // Waves has no millimetre entries, so only a carried dunes provider can exercise the
+  // terrain tile slots beside the four placement rings. Builds without it keep the waves.
+  const usize provider = text.find("Waves");
+  REQUIRE(provider != std::string::npos);
+  text.replace(provider, 5, "Dunes");
+#endif
   const usize meshes = text.find(R"("scatters")");
   REQUIRE(meshes != std::string::npos);
   const usize mesh_end = text.rfind(']', meshes);
@@ -722,7 +729,8 @@ TEST_CASE("engine-view: four rings with static forms and grass keep traced caste
                      R"({"format":"engine.camera-path.v1","name":"four","fps":10,"keys":[)"
                      R"({"time":0,"position":[-30,14,10],"target":[30,2,0]}]})"));
   const Run complete = traced_dense(tmp, "all.jsonl", "all.png", 12,
-                                    {"--raster", "hw", "--tunable", "renderer.flora.motion=true"});
+                                    {"--raster", "hw", "--terrain-tiles", "--terrain-far", "0",
+                                     "--tunable", "renderer.flora.motion=true"});
   if (complete.exit_code == 3) {
     MESSAGE("engine-view unavailable here: " << complete.output);
     return;
@@ -733,6 +741,42 @@ TEST_CASE("engine-view: four rings with static forms and grass keep traced caste
   const JsonValue* world = summary.find("world");
   REQUIRE(rt != nullptr);
   REQUIRE(world != nullptr);
+  const JsonValue* pairs = summary.find("pair_breakdown");
+  REQUIRE(pairs != nullptr);
+  CHECK(field_u64(*pairs, "prefix_pairs") + field_u64(*pairs, "ring_slot_pairs") +
+            field_u64(*pairs, "tail_live_pairs") + field_u64(*pairs, "tail_hole_pairs") ==
+        field_u64(*pairs, "pair_count"));
+  const JsonValue* rings = pairs->find("rings");
+  REQUIRE(rings != nullptr);
+#if ENGINE_VIEW_TESTS_DUNES
+  REQUIRE(rings->as_array().size() == 4);
+#else
+  CHECK(rings->as_array().empty());
+#endif
+  u64 reserved = 0;
+  for (const auto& ring : rings->as_array()) {
+    CHECK(field_u64(ring, "reserved_pairs") ==
+          field_u64(ring, "slots_reserved") * field_u64(ring, "reserved_tile_pairs"));
+    CHECK(field_u64(ring, "slots_used") <= field_u64(ring, "slots_reserved"));
+    reserved += field_u64(ring, "reserved_pairs");
+  }
+  CHECK(reserved == field_u64(*pairs, "ring_slot_pairs"));
+  const JsonValue* placement_rings = pairs->find("placement_rings");
+  REQUIRE(placement_rings != nullptr);
+  REQUIRE(placement_rings->as_array().size() == 4);
+  u64 tail = 0;
+  for (const auto& ring : placement_rings->as_array()) {
+    tail += field_u64(ring, "live_pairs");
+    const auto* forms = ring.find("forms");
+    REQUIRE(forms != nullptr);
+    u64 form_pairs = 0;
+    for (const auto& form : forms->as_array()) {
+      CHECK(field_u64(form, "pairs") == field_u64(form, "instances") * field_u64(form, "clusters"));
+      form_pairs += field_u64(form, "pairs");
+    }
+    CHECK(form_pairs == field_u64(ring, "live_pairs"));
+  }
+  CHECK(tail == field_u64(*pairs, "tail_live_pairs"));
   CHECK(casters_max(summary) > 0);
   CHECK(field_u64(*rt, "static_instances") > 0);
   CHECK(field_u64(*rt, "overflow_frames") == 0);

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <core/base/types.h>
+#include <core/json/json_value.h>
 
 #include <string>
 
@@ -34,5 +35,9 @@ bool pairs_fit(const PairAccount& account, std::string* error) noexcept;
 // The same size class that TileLayout reserves, used before a tile is admitted.
 u32 reserved_tile_pairs(u32 pairs) noexcept;
 u32 mesh_caster_policy(const SceneData& scene, u32 mesh) noexcept;
+
+// Cold reporting only: the admission account and, before upload, the terrain layout's slots.
+// A GPU scene fills the live tail and uploaded slot details from its existing tables.
+JsonValue pair_account_summary(const PairAccount& account, TerrainLevelSet* rings = nullptr);
 
 }  // namespace engine::renderer

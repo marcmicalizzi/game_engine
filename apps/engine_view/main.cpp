@@ -942,7 +942,10 @@ JsonValue rt_summary(const renderer::RtStats& rt) {
   out.set("caster_index_fallbacks", rt.caster_index_fallbacks);
   out.set("frame_estimate", rt.frame_estimate);
   out.set("bytes_per_cluster", rt.bytes_per_cluster);
-  out.set("geometry_index_need", rt.geometry_index_need);
+  out.set("geometry_index_need", rt.geometry_index_max);  // compatibility with older reports
+  out.set("geometry_index_max", rt.geometry_index_max);
+  out.set("geometry_index_required", rt.geometry_index_required);
+  out.set("geometry_index_limit", rt.geometry_index_limit);
   // Rigid forms' structures built once, and the instances and pairs that reference them now
   // (renderer.md, "Static structures for rigid forms").
   JsonValue fixed = JsonValue::object();
@@ -2039,6 +2042,7 @@ void describe_run(const renderer::SceneData& scene_data, const Options& options,
   summary.page_budget_bytes = resolved.settings.page_budget_bytes;
   summary.instances = scene_data.instances.size();
   summary.pairs = scene_data.pair_count;
+  summary.pair_breakdown = gpu_scene.pair_summary();
   summary.clusters = scene_data.cluster_count();
   if (view.valid()) renderer::summarize_rt(view.stats().rt, summary.rt);
   renderer::summarize_textures(gpu_scene, summary.textures);
@@ -2227,6 +2231,7 @@ int run_reference(Options& options) {
   int exit_code = 0;
   renderer::SceneData scene_data;
   renderer::ResolvedSettings resolved;
+  renderer::ResolvedSettings scene_requested;
   renderer::GpuScene scene;
   renderer::SceneRenderer view_renderer;
   renderer::ReferenceRenderer reference;
@@ -2312,16 +2317,18 @@ int run_reference(Options& options) {
       exit_code = unavailable((std::string(device.adapter().name) + " " + why).c_str(), "");
       break;
     }
+    scene_requested = resolved;
     if (!scene.create(device, scene_data, resolved, &error)) {
       exit_code = fail("scene", error);
       break;
     }
+    resolved = scene.resolved();
     renderer::SceneRenderer::Desc renderer_desc;
     renderer_desc.width = options.width;
     renderer_desc.height = options.height;
     renderer_desc.offscreen = true;
     renderer_desc.shader_manifest = options.shaders;
-    if (!view_renderer.create(device, scene, resolved, renderer_desc, &error)) {
+    if (!view_renderer.create(device, scene, scene_requested, renderer_desc, &error)) {
       exit_code = fail("renderer", error);
       break;
     }
@@ -2533,12 +2540,14 @@ int run_offscreen(Options& options, Interactive& interactive) {
   int exit_code = 0;
   renderer::SceneData scene_data;
   renderer::ResolvedSettings resolved;
+  renderer::ResolvedSettings scene_requested;
   renderer::GpuScene scene;
   jobs::JobSystem page_jobs(
       jobs::JobSystemConfig{.performance_workers = 1, .efficiency_workers = 2});
   renderer::FilePageSource page_source;
   renderer::SceneRenderer view_renderer;
   renderer::ResolvedSettings resolved_off;
+  renderer::ResolvedSettings scene_off_requested;
   renderer::GpuScene scene_off;
   renderer::SceneRenderer renderer_off;
   ViewMedium medium;  // brief-volumetrics: after the renderer, so it unregisters first
@@ -2749,10 +2758,12 @@ int run_offscreen(Options& options, Interactive& interactive) {
     }
     {
       ENGINE_STARTUP_STAGE("gpu scene");
+      scene_requested = resolved;
       if (!scene.create(device, scene_data, resolved, &error, ground.level_set())) {
         exit_code = fail("scene", error);
         break;
       }
+      resolved = scene.resolved();
     }
     startup.milestone("gpu_scene");
     // The occlusion check's second scene is built before a page source could release the host
@@ -2761,10 +2772,12 @@ int run_offscreen(Options& options, Interactive& interactive) {
       renderer::RenderSettings off = options.settings;
       off.occlusion = false;
       renderer::resolve_settings(off, device.features(), &scene_data, resolved_off);
+      scene_off_requested = resolved_off;
       if (!scene_off.create(device, scene_data, resolved_off, &error)) {
         exit_code = fail("scene", error);
         break;
       }
+      resolved_off = scene_off.resolved();
     }
     if (resolved.stream && options.page_source != Options::PageSource::host) {
       std::string why;
@@ -2792,7 +2805,7 @@ int run_offscreen(Options& options, Interactive& interactive) {
       renderer_desc.color_format = gfx::display_encoding_format(renderer_desc.display);
     {
       ENGINE_STARTUP_STAGE("renderer");
-      if (!view_renderer.create(device, scene, resolved, renderer_desc, &error)) {
+      if (!view_renderer.create(device, scene, scene_requested, renderer_desc, &error)) {
         exit_code = fail("renderer", error);
         break;
       }
@@ -3265,7 +3278,7 @@ int run_offscreen(Options& options, Interactive& interactive) {
     if (options.verify_occlusion) {
       renderer::SceneRenderer::Desc off_desc = renderer_desc;
       off_desc.page_source = nullptr;
-      if (!renderer_off.create(device, scene_off, resolved_off, off_desc, &error)) {
+      if (!renderer_off.create(device, scene_off, scene_off_requested, off_desc, &error)) {
         exit_code = fail("renderer", error);
         break;
       }
@@ -5030,6 +5043,7 @@ int run_view(int argc, char** argv) {
   gfx::Swapchain swapchain;
   renderer::SceneData scene_data;
   renderer::ResolvedSettings resolved;
+  renderer::ResolvedSettings scene_requested;
   renderer::GpuScene scene;
   // The Efficiency pool a container-backed page source reads on, and the source itself. Two
   // workers: a page is three or four reads and the budget lets two pages a frame through, so more
@@ -5437,6 +5451,7 @@ int run_view(int argc, char** argv) {
 
     // ---- the device's stages, on this thread, pumping between their slices ----------------------
     profiling::TraceStage gpu_scene_stage("gpu scene");
+    scene_requested = resolved;
     if (!scene.create(device, scene_data, resolved, &error, ground.level_set())) {
       exit_code = fail("scene", error);
       break;
@@ -5535,7 +5550,7 @@ int run_view(int argc, char** argv) {
     // player actually has to set.
     renderer_desc.views = renderer::view_set_desc(resolved.settings);
     profiling::TraceStage renderer_stage("renderer");
-    if (!view_renderer.create(device, scene, resolved, renderer_desc, &error)) {
+    if (!view_renderer.create(device, scene, scene_requested, renderer_desc, &error)) {
       exit_code = fail("renderer", error);
       break;
     }
@@ -6636,6 +6651,8 @@ int run_view(int argc, char** argv) {
   // The chain's bytes move with its capacity, so the figure is the run's last, not the load's.
   if (stats.rt.bytes > 0) rt_bytes = stats.rt.bytes;
   const std::string rt_text = write_json(rt_summary(stats.rt), JsonWriteOptions{.pretty = false});
+  const std::string pairs_text =
+      write_json(scene.pair_summary(), JsonWriteOptions{.pretty = false});
   // The process's own footprint, read before anything is torn down: with a container-backed page
   // source this is the number the whole change is about, so it is taken where it still means
   // something. The peak beside it says whether the load ever *materialized* what it then freed.
@@ -6699,7 +6716,7 @@ int run_view(int argc, char** argv) {
         "\"template_bytes\":%llu,\"rt_bytes\":%llu,\"geometry_bytes\":%llu,\"stream_bytes\":%llu,"
         "\"textures\":{\"built\":%u,\"decoded\":%u,\"distinct\":%u,\"shared\":%u,\"bytes\":%llu,"
         "\"bytes_saved\":%llu,\"sharing\":%s},"
-        "\"rt\":%s,\"views\":%s,\"streaming\":%s,"
+        "\"rt\":%s,\"pair_breakdown\":%s,\"views\":%s,\"streaming\":%s,"
         "\"host_memory\":{\"bytes\":%llu,\"peak_bytes\":%llu},"
         "\"gpu_memory\":{\"budget_mib\":%llu,\"used_mib\":%llu,"
         "\"device_local_total_mib\":%llu},\"machine_state\":%s,"
@@ -6737,8 +6754,8 @@ int run_view(int argc, char** argv) {
         textures_built + textures_decoded, textures_shared,
         static_cast<unsigned long long>(texture_bytes),
         static_cast<unsigned long long>(texture_bytes_saved),
-        resolved.settings.share_textures ? "true" : "false", rt_text.c_str(), views_text.c_str(),
-        streaming_text.c_str(), static_cast<unsigned long long>(host_memory),
+        resolved.settings.share_textures ? "true" : "false", rt_text.c_str(), pairs_text.c_str(),
+        views_text.c_str(), streaming_text.c_str(), static_cast<unsigned long long>(host_memory),
         static_cast<unsigned long long>(host_memory_peak),
         static_cast<unsigned long long>(stats.gpu_memory.budget_mib),
         static_cast<unsigned long long>(stats.gpu_memory.used_mib),

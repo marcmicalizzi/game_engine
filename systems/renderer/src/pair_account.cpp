@@ -68,4 +68,40 @@ bool pairs_fit(const PairAccount& a, std::string* error) noexcept {
   }
   return false;
 }
+
+JsonValue pair_account_summary(const PairAccount& a, TerrainLevelSet* rings) {
+  JsonValue out = JsonValue::object();
+  out.set("prefix_pairs", a.prefix_pairs);
+  out.set("ring_slot_pairs", a.slot_pairs);
+  out.set("fixed_pairs", a.fixed_pairs());
+  out.set("tail_floor_pairs", a.tail_floor);
+  out.set("tail_live_pairs", u64{0});
+  out.set("tail_reserved_pairs", u64{0});
+  out.set("tail_hole_pairs", u64{0});
+  out.set("pair_count", a.fixed_pairs());
+  out.set("limit", a.limit);
+  out.set("untraced_pairs", a.untraced_pairs);
+  out.set("static_form_pairs", a.static_pairs);
+  out.set("admission_eligible_pairs", a.frame_pairs());
+  JsonValue levels = JsonValue::array();
+  if (rings != nullptr) {
+    for (u32 level = 1; level < rings->level_count(); ++level) {
+      const auto c = rings->capacity(level);
+      JsonValue ring = JsonValue::object();
+      ring.set("level", level);
+      ring.set("slots_reserved", c.slots);
+      ring.set("slots_used", rings->chunks(level).size());
+      ring.set("reserved_tile_pairs", c.clusters_per_slot);
+      ring.set("reserved_pairs", u64{c.slots} * c.clusters_per_slot);
+      u64 live = 0;
+      for (const auto& chunk : rings->chunks(level))
+        live += chunk.lod.mesh.clusters.size();
+      ring.set("live_pairs", live);
+      levels.push_back(std::move(ring));
+    }
+  }
+  out.set("rings", std::move(levels));
+  out.set("placement_rings", JsonValue::array());
+  return out;
+}
 }  // namespace engine::renderer

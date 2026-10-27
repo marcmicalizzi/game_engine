@@ -444,7 +444,10 @@ exclude untraced instances and static forms. The actual set names `capacity - 1`
 frame asking to exceed the memory budget cannot exceed that index bound.
 
 `GpuScene::create` computes the [pair account](#the-pair-accounting) with the terrain capacities
-and passes it to `resolve_settings` before allocating. Preliminary settings resolution defers
+and passes it to `resolve_settings` before allocating. RT reports name the allocated maximum
+`geometry_index_max`, the account's eligible admission bound `geometry_index_required`, and the
+device's maximum `geometry_index_limit`; `geometry_index_need` remains the old maximum's
+deprecated compatibility spelling. Preliminary settings resolution defers
 this decision: the file prefix alone cannot decide whether the rings fit. If the eligible bound
 exceeds the device, casters go first, traced shadows stay, `Stats::rt.caster_index_fallbacks`
 counts the fallback and one `shadow casters off` warning names both numbers. Capacity drops are
@@ -2452,6 +2455,13 @@ out-of-memory loss. Grass takes no record and costs it nothing. `authored_view_t
 ends well with its capture written.
 
 ### The pair accounting
+
+**Pair diagnostics (2026-10-26, R100/W73).** Hosts copy `GpuScene::resolved()` after upload;
+`SceneRenderer::create` compares its caller's preliminary settings with that result once and,
+when any differ, logs casters, ray path, chain, static forms and caster-index fallback as typed
+requested/resolved boolean fields on one INFO line, with the pair account named for its fallback. The admission fallback count survives a warmup statistics reset, like the chain's capacity and other resolved state.
+The 1 MiB GPU reporting case lowers only its own device object's advertised index limit and captures the actual admission fallback; the stdio load case crosses the real limit with a surround prefix while keeping upload lazy. The cold `GpuScene::pair_summary` reads the account, terrain slot tables, tile layout and instance
+forms only when a host asks for a report; it adds no accounting or work to the frame loop.
 
 **One reservation rule, before allocation and before admission** (2026-10-26, R100).
 `account_pairs` constructs the `PairAccount` consumed by final `resolve_settings` and

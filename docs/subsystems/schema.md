@@ -53,3 +53,11 @@ schemac compiles each declaration into a constant-initialized `schema::Materiali
 **Units.** A field may declare `@unit(<symbol>)` from a small closed table in `tools/schemac/src/resolve.cpp` — length (`m`, `cm`, `mm`, `km`), angle (`rad`, `deg`), time (`s`, `ms`, `us`, `min`, `h`), mass (`kg`, `g`, `t`), velocity (`"m/s"`, `"cm/s"`, `"km/h"`), angular velocity (`"rad/s"`, `"deg/s"`, `rpm`), temperature (`K`, `degC`), ratio (`ratio`, `percent`); a symbol with a `/` is quoted. A row whose two sides declare different units of one dimension converts: schemac computes the affine map `component = record × scale + offset` from the table (temperature is why there is an offset) and emits it as exact doubles, and `read_mapped`/`write_mapped` apply it and its inverse in f64 and store the field's own width. Different dimensions are refused, a conversion into anything but a float or float vector is refused (it would round), and **a unit on one side only is refused**: it cannot say whether the other side means the same unit or forgot to say. Units change nothing else: the C++ types are the same, and the generated Markdown lists each field's unit.
 
 **`stable_type_id(name)`** is the 32-bit FNV-1a of a qualified name: what a store event or projection names its type by (`store::EventRecord::type`), the same on every build and machine without a registry of numbers. The write-back event `engine.world.WriteBack` is the first user ([store](store.md#write-back-events)).
+
+**RT report versions (2026-10-26, R100).** `engine.scene.FlythroughRt` version 4 adds
+`geometry_index_max` (allocated capacity minus one), `geometry_index_required` (the admission
+account's eligible pairs in all views minus one, including the tail floor), and
+`geometry_index_limit` (the device's maximum index). Version 3's `geometry_index_need` remains a
+deprecated compatibility alias of the allocated maximum. `FlythroughSummary` version 18 adds
+`pair_breakdown`; `engine.protocol.RenderSceneInfo` version 6 adds the same block and the final
+`shadow_casters` boolean. `RenderRtStats` version 2 carries the same index arithmetic and admission fallback in capture and benchmark statistics. Existing fields retain their meanings.

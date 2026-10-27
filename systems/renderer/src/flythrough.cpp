@@ -116,7 +116,10 @@ void summarize_rt(const RtStats& stats, scene::FlythroughRt& out) {
   out.caster_index_fallbacks = stats.caster_index_fallbacks;
   out.frame_estimate = stats.frame_estimate;
   out.bytes_per_cluster = stats.bytes_per_cluster;
-  out.geometry_index_need = stats.geometry_index_need;
+  out.geometry_index_need = stats.geometry_index_max;  // version 3's compatibility spelling
+  out.geometry_index_max = stats.geometry_index_max;
+  out.geometry_index_required = stats.geometry_index_required;
+  out.geometry_index_limit = stats.geometry_index_limit;
   out.capacity = stats.capacity;
   out.peak_capacity = stats.peak_capacity;
   out.limit = stats.limit;

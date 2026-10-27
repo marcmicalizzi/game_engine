@@ -281,8 +281,24 @@ SceneRenderer::~SceneRenderer() { destroy(); }
 bool SceneRenderer::create(const gfx::Device& device, GpuScene& scene,
                            const ResolvedSettings& requested, const Desc& desc,
                            std::string* error) {
-  (void)requested;
   const ResolvedSettings& resolved = scene.resolved();
+  if (requested.casters != resolved.casters || requested.ray_path != resolved.ray_path ||
+      requested.rt_chain != resolved.rt_chain || requested.static_forms != resolved.static_forms ||
+      requested.caster_index_fallback != resolved.caster_index_fallback) {
+    ENGINE_LOG_INFO(log_renderer, "scene settings resolved",
+                    log::field("reason", resolved.caster_index_fallback ? "the pair account"
+                                                                        : "scene resolution"),
+                    log::field("requested_casters", requested.casters),
+                    log::field("resolved_casters", resolved.casters),
+                    log::field("requested_ray_path", requested.ray_path),
+                    log::field("resolved_ray_path", resolved.ray_path),
+                    log::field("requested_rt_chain", requested.rt_chain),
+                    log::field("resolved_rt_chain", resolved.rt_chain),
+                    log::field("requested_static_forms", requested.static_forms),
+                    log::field("resolved_static_forms", resolved.static_forms),
+                    log::field("requested_caster_index_fallback", requested.caster_index_fallback),
+                    log::field("resolved_caster_index_fallback", resolved.caster_index_fallback));
+  }
   destroy();
   device_ = &device;
   scene_ = &scene;
@@ -291,7 +307,6 @@ bool SceneRenderer::create(const gfx::Device& device, GpuScene& scene,
   frame_fires_.clear();
   frame_fires_.reserve(k_max_fires);
   resolved_ = resolved;
-  stats_.rt.caster_index_fallbacks = resolved.caster_index_fallback ? 1u : 0u;
   desc_ = desc;
   width_ = desc.width;
   height_ = desc.height;
@@ -1590,9 +1605,13 @@ void SceneRenderer::note_rt_bytes() noexcept {
   if (scene_ == nullptr || !resolved_.rt_chain) return;
   RtStats& chain = stats_.rt;
   chain.capacity = scene_->rt_capacity();
+  chain.caster_index_fallbacks = resolved_.caster_index_fallback ? 1u : 0u;
   chain.frame_estimate = scene_->rt_frame_estimate();
   chain.bytes_per_cluster = scene_->rt_bytes_per_cluster();
-  chain.geometry_index_need = chain.capacity == 0 ? 0 : chain.capacity - 1;
+  chain.geometry_index_max = chain.capacity == 0 ? 0 : chain.capacity - 1;
+  chain.geometry_index_required = rt_max_geometry_index(
+      static_cast<u32>(resolved_.pairs.frame_pairs()), resolved_.view_count, resolved_.casters);
+  chain.geometry_index_limit = device_->features().cluster_max_geometry_index;
   chain.limit = scene_->rt_capacity_limit();
   chain.union_clusters = scene_->rt_union_clusters();
   chain.bytes = scene_->rt_bytes();

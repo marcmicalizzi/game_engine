@@ -654,7 +654,13 @@ struct RenderGroundStats @version(2) {
 /// last frame's built and wanted counts, the resizes, and the frames that wanted more than the
 /// capacity held and so dropped whole instances' structures. All zero without the chain. The keys
 /// are engine-view's `rt` summary object's, so one reader serves both hosts.
-struct RenderRtStats @version(1) {
+struct RenderRtStats @version(2) {
+  caster_index_fallbacks: u32 = 0 @since(2)
+  frame_estimate: u64 = 0 @since(2)
+  bytes_per_cluster: u64 = 0 @since(2)
+  geometry_index_max: u64 = 0 @since(2)
+  geometry_index_required: u64 = 0 @since(2)
+  geometry_index_limit: u32 = 0 @since(2)
   capacity: u32 = 0
   peak_capacity: u32 = 0
   limit: u32 = 0
@@ -825,7 +831,7 @@ struct RenderLoadParams @version(7) {
 ///
 /// Version 3 (ADR-0053): `center` is a `worldpos`, the scene's f64 centre, where version 2 wrote
 /// it rounded to a float32. The JSON is the same three numbers.
-struct RenderSceneInfo @version(5) {
+struct RenderSceneInfo @version(6) {
   scene: string
   adapter: string
   meshes: u32 = 0
@@ -852,6 +858,10 @@ struct RenderSceneInfo @version(5) {
   occlusion: bool = false
   deform: string
   rt_templates: bool = false
+  /// Final pair-account resolution, as GpuScene uses it.
+  shadow_casters: bool = false @since(6)
+  /// Pair account and layout reservations, in engine-view's pair_breakdown shape.
+  pair_breakdown: json @since(6)
   /// Whether the scene names a sky (a `render.*` call's `clock` and the settings' exposure then
   /// mean something), and the game time its ground stands at: the terrain's `time`, or
   /// `ground_time_s`. Null without a terrain.
