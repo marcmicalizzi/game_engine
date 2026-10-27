@@ -585,6 +585,7 @@ Pictures compare(const CapturedFrame& a, const CapturedFrame& b) {
 // the per-frame build of the same cuts (`renderer.rt.cache=false`) the traced shadows of the mesh
 // path and the ray path's picture are the same bytes, colour and ids, at every stop.
 TEST_CASE("rt cache: rigid structures built once trace the per-frame build's bytes") {
+  ScopedTunable on("renderer.rt.cache", "true");  // off by default since 2026-10-27
   gfx::Device device;
   std::string error;
   if (!device.create(gfx::DeviceOptions{}, &error) || !traces(device)) {
@@ -671,6 +672,7 @@ TEST_CASE("rt cache: rigid structures built once trace the per-frame build's byt
 // — counted — and builds its own again, and the picture is the per-frame build's throughout. The
 // cache's size comes from the cuts themselves: what each one occupies alone, and together.
 TEST_CASE("rt cache: a full cache evicts the least recently drawn and the picture holds") {
+  ScopedTunable on("renderer.rt.cache", "true");  // off by default since 2026-10-27
   gfx::Device device;
   std::string error;
   if (!device.create(gfx::DeviceOptions{}, &error) || !traces(device)) {

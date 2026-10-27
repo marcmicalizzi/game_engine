@@ -656,7 +656,10 @@ TEST_CASE("engine-view: a streamed world's cached structures trace the per-frame
     std::vector<const char*> per_frame = c.mode;
     for (const char* a : {"--tunable", "renderer.rt.cache=false"})
       per_frame.push_back(a);
-    const Run cached = capture("cached.png", c.mode);
+    std::vector<const char*> with_cache = c.mode;
+    for (const char* a : {"--tunable", "renderer.rt.cache=true"})
+      with_cache.push_back(a);
+    const Run cached = capture("cached.png", with_cache);
     if (cached.exit_code == 3) {
       MESSAGE("engine-view unavailable here: " << cached.output);
       return;

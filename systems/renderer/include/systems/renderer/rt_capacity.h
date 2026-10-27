@@ -74,7 +74,8 @@ inline constexpr u32 k_initial_rt_clusters = 65536;
 // `renderer.rt.initial_clusters` (`k_initial_rt_clusters`): the first capacity's floor.
 u32 rt_initial_clusters_tunable() noexcept;
 // **The resident cluster structure cache** (renderer.md, "The resident cluster structure cache";
-// R101): `renderer.rt.cache` (true) builds a rigid mesh's cluster structures once and references
+// R101): `renderer.rt.cache` (false since 2026-10-27, until a cache that references nothing costs
+// nothing) builds a rigid mesh's cluster structures once and references
 // them; `renderer.rt.cache_mib` (256) is the most its slots may take, which a scene needing less
 // does not reach; `renderer.rt.reference_mib` (256) the ceiling of the frame's references to it,
 // the cache's counterpart of the budget.

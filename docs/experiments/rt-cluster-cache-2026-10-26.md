@@ -94,3 +94,37 @@ structure of its own at all.
 **What it costs is memory, up front.** 256 MiB of slots at the driver's worst case per cluster on
 any scene with a rigid mesh, needed or not. Sizing the slots by demand (grown, like the frame's
 capacity, on a trend), or packing them at the size each structure has, would take that back.
+## 2026-10-27: the merge's frame budgets, and the default
+
+Batch 42's gate (the frame budgets of ADR-0018, `tools/frame-budget.ps1` on the release build at
+ed92e9bb) found one row over: `endless-surround3-rt`'s `gpu_ms.rt`, the records chain plus the
+CLAS, BLAS and TLAS builds plus the cache's passes. The scene caches nothing — its one authored mesh
+is a placeholder of one cluster, and every ring slot deforms — so the cache's cost there is the
+cost of having one. The three runs below are the same scene, path, resolution and flags, on the
+same binary but for the tunable; the machine was not quiet (others used about a third of the GPU,
+8–17 % of the CPU, the same state as the batch 41 run the budget was last met in), so every figure
+is an upper bound, and the two cache-on runs agreeing to 0.001 ms is what makes the difference
+readable.
+
+| run | `rt` median / p99 (ms) | `blas` | `clas` | `resolve` | frame median | cache slots | references |
+|---|---|---|---|---|---|---|---|
+| batch 41 (before R101), 2026-10-26 18:10 | 0.971 / 1.396 | 0.270 | 0.325 | 1.935 | 4.236 | — | — |
+| batch 42, cache on (default as merged), 2026-10-27 08:56 | 1.151 / 1.666 | 0.266 | 0.322 | 1.953 | 4.394 | 3 | 0 |
+| batch 42, cache on, the quiet re-fly, 09:02 | 1.150 / 1.629 | 0.266 | 0.321 | 1.953 | 4.393 | 3 | 0 |
+| batch 42, `renderer.rt.cache=false`, 09:07 | 1.064 / 1.595 | 0.264 | 0.324 | 1.951 | 4.308 | 0 | 0 |
+
+The budget's `rt` median is 0.951 ms with a 1.096 ms limit. Half of the 0.18 ms is the cache's
+own passes with nothing to do (scan, threshold, evict, assign, references and the empty build, six
+graph passes a frame); the other half is in the records chain with the cache off, which is the
+`ranges_main` and `emit_main` this change restructured: the one-thread instance loop now keeps two
+prefix sums, and the endless desert has tens of thousands of ring-slot instances for it to walk.
+The two erg runs moved the same way by less (`erg-walk-1080p-rt` 0.366 → 0.382 ms, surround
+0.606 → 0.623), and the table above shows the forest's chain 33.70 → 34.89 ms and the clearing's
+4.02 → 4.10 before this was measured.
+
+**Decision (the merge, 2026-10-27).** `renderer.rt.cache` defaults to **false** until a cache that
+references nothing costs nothing and the instance loop is parallel (roadmap R106); the cache, its
+tests (which turn it on for themselves) and its counters stay, and `renderer.rt.cache=true` is what
+a rigid scene — the overlook, the forest with its forms cut by distance — asks for meanwhile. The
+default was chosen over a rebaseline because the budget exists to refuse exactly this: a cost on
+every scene for a gain on some.
