@@ -1457,3 +1457,587 @@ TEST_CASE("material resolve: cascaded shadow maps against the geometry the raste
   frames.destroy();
   device.destroy();
 }
+
+// **Rays near, maps far** (`gfx::k_shadow_hybrid`; renderer.md, "Rays near, maps far"): the two
+// cases above in one picture. The quad, the occluder in the acceleration structure and in the
+// sun's map, the sun and the point light both casting; the eye low beside the quad, so its pixels
+// are 7.8 to 16 units away, and the rays answer within 11.2 of it, the maps past 12.0, the two
+// blended between. Held: nearer than the distance the hybrid is the ray picture to
+// the byte, past the band the map picture to the byte (the point light lit there, as the maps
+// leave it), each held to the CPU reference by its own rule (ref::hybrid_side); in the band every
+// channel lies between the two pictures'; with the rays' distance past the picture it is the
+// rays' picture whole, and with no distance the maps'. And the blend is monotone: under the rays'
+// occluder with a map that holds none, the shadow view's grey is the maps' share of the
+// visibility, rising with distance from 0 to 255 across the band as gfx::shadow_hybrid_weight says.
+TEST_CASE("material resolve: hybrid shadows are the rays near the eye and the maps far from it") {
+  gfx::Device device;
+  std::string error;
+  if (!gfx_test::open_device(device)) return;
+  if (!gfx_test::require(device,
+                         {gfx_test::Need::VisibilityBuffer, gfx_test::Need::AccelerationStructure,
+                          gfx_test::Need::RayQuery})) {
+    return;
+  }
+
+  const Vec3 quad_positions[4] = {Vec3{-5.0f, 0.0f, -5.0f}, Vec3{5.0f, 0.0f, -5.0f},
+                                  Vec3{5.0f, 0.0f, 5.0f}, Vec3{-5.0f, 0.0f, 5.0f}};
+  const Quad occluder{4.0, -2.0, 2.0, -0.2, 3.8};
+  const Vec3 occluder_positions[4] = {
+      Vec3{static_cast<f32>(occluder.x0), static_cast<f32>(occluder.plane),
+           static_cast<f32>(occluder.z0)},
+      Vec3{static_cast<f32>(occluder.x1), static_cast<f32>(occluder.plane),
+           static_cast<f32>(occluder.z0)},
+      Vec3{static_cast<f32>(occluder.x1), static_cast<f32>(occluder.plane),
+           static_cast<f32>(occluder.z1)},
+      Vec3{static_cast<f32>(occluder.x0), static_cast<f32>(occluder.plane),
+           static_cast<f32>(occluder.z1)}};
+  const u32 indices[6] = {0, 2, 1, 0, 3, 2};
+  geometry::ClusterMesh meshes[2];
+  REQUIRE(geometry::build_clusters(quad_positions, indices, geometry::ClusterBuildOptions{},
+                                   meshes[0], &error));
+  REQUIRE(geometry::build_clusters(occluder_positions, indices, geometry::ClusterBuildOptions{},
+                                   meshes[1], &error));
+  REQUIRE(meshes[0].clusters.size() == 1);
+  REQUIRE(meshes[1].clusters.size() == 1);
+  const u32 triangles_per_cluster = geometry::ClusterBuildOptions{}.max_triangles;
+
+  constexpr gfx::BufferUsage k_storage = gfx::BufferUsage::Storage;
+  gfx::BufferResource clusters[2];
+  gfx::BufferResource triangles[2];
+  gfx_test::SingleInstance scenes[2];
+  for (u32 m = 0; m < 2; ++m) {
+    REQUIRE(gfx::upload_buffer(device, meshes[m].clusters.data(), sizeof(geometry::ClusterDesc),
+                               k_storage, clusters[m], &error));
+    REQUIRE(scenes[m].create(device, meshes[m], 1, &error));
+    REQUIRE(gfx::upload_buffer(device, meshes[m].triangles.data(),
+                               meshes[m].triangles.size() * sizeof(u32), k_storage, triangles[m],
+                               &error));
+  }
+  gfx::BufferResource materials;
+  gfx::BufferResource cluster_materials;
+  gfx::BufferResource lights;
+  gfx::ResolveMaterial material_table[1];
+  material_table[0].albedo = Vec4{0.8f, 0.4f, 0.2f, 0.7f};  // a rough dielectric
+  material_table[0].emissive = Vec4{};
+  const u32 material_index[1] = {0};
+  REQUIRE(gfx::upload_buffer(device, material_table, sizeof(material_table), k_storage, materials,
+                             &error));
+  REQUIRE(gfx::upload_buffer(device, material_index, sizeof(material_index), k_storage,
+                             cluster_materials, &error));
+  gfx::ResolveLight light_table[1];
+  light_table[0].position_radius = Vec4{0.0f, 12.0f, 1.8f, 40.0f};
+  light_table[0].color_intensity = Vec4{1.0f, 0.9f, 0.8f, 100.0f};
+  REQUIRE(gfx::upload_buffer(device, light_table, sizeof(light_table), k_storage, lights, &error));
+
+  // The traced geometry: the quad's cluster as drawn and the occluder, one bottom-level structure.
+  const geometry::ClusterDesc& quad_cluster = meshes[0].clusters[0];
+  Vector<Vec3> as_position_data;
+  for (const Vec3& v : meshes[0].vertices)
+    as_position_data.push_back(v);
+  const u32 occluder_vertex = as_position_data.size();
+  for (const Vec3& v : occluder_positions)
+    as_position_data.push_back(v);
+  Vector<u16> as_index_data;
+  gfx::expand_packed_triangles(
+      std::span<const u32>(meshes[0].triangles.data() + quad_cluster.triangle_offset,
+                           quad_cluster.triangle_count),
+      as_index_data);
+  const u32 occluder_index = as_index_data.size();
+  const u16 occluder_triangles[6] = {0, 1, 2, 0, 2, 3};
+  for (const u16 i : occluder_triangles)
+    as_index_data.push_back(i);
+  gfx::BufferResource as_vertices;
+  gfx::BufferResource as_indices;
+  REQUIRE(gfx::upload_buffer(device, as_position_data.data(),
+                             as_position_data.size() * sizeof(Vec3), gfx::k_build_input_usage,
+                             as_vertices, &error));
+  REQUIRE(gfx::upload_buffer(device, as_index_data.data(), as_index_data.size() * sizeof(u16),
+                             gfx::k_build_input_usage, as_indices, &error));
+  gfx::ClusterGeometry geometries[2];
+  geometries[0].vertices = as_vertices.address + u64{quad_cluster.vertex_offset} * sizeof(Vec3);
+  geometries[0].vertex_count = quad_cluster.vertex_count;
+  geometries[0].indices = as_indices.address;
+  geometries[0].triangle_count = quad_cluster.triangle_count;
+  geometries[1].vertices = as_vertices.address + u64{occluder_vertex} * sizeof(Vec3);
+  geometries[1].vertex_count = 4;
+  geometries[1].indices = as_indices.address + u64{occluder_index} * sizeof(u16);
+  geometries[1].triangle_count = 2;
+  const std::span<const gfx::ClusterGeometry> both(geometries, 2);
+  gfx::AccelerationStructure blas;
+  gfx::AccelerationStructure tlas;
+  REQUIRE_MESSAGE(gfx::create_blas(device, both, gfx::k_build_fast_trace, blas, &error), error);
+  REQUIRE_MESSAGE(gfx::create_tlas(device, 1, gfx::k_build_fast_trace, tlas, &error), error);
+  gfx::BufferResource scratch;
+  gfx::BufferResource instances;
+  REQUIRE(gfx::create_scratch(device, std::max(blas.build_scratch_bytes, tlas.build_scratch_bytes),
+                              scratch, &error));
+  REQUIRE(gfx::create_buffer(device, gfx::k_instance_record_bytes, gfx::k_build_input_usage, true,
+                             instances, &error));
+  gfx::TlasInstance instance_record;
+  instance_record.blas = blas.address;
+  gfx::write_instances(std::span<const gfx::TlasInstance>(&instance_record, 1), instances.mapped);
+  REQUIRE(gfx::submit_immediate(
+      device,
+      [&](gfx::CommandList cb) {
+        gfx::build_blas(cb, blas, both, gfx::k_build_fast_trace, scratch);
+        gfx::acceleration_build_barrier(cb, gfx::PipelineStage::AccelerationBuild,
+                                        gfx::MemoryAccess::AccelerationStructureRead |
+                                            gfx::MemoryAccess::AccelerationStructureWrite);
+        gfx::build_tlas(cb, tlas, instances.address, 1, gfx::k_build_fast_trace, scratch);
+        gfx::acceleration_build_barrier(cb, gfx::PipelineStage::FragmentShader,
+                                        gfx::MemoryAccess::AccelerationStructureRead);
+      },
+      &error));
+
+  // The sun's maps, fit as the cascaded case fits them: one with the occluder, one of the quad.
+  const Vec3 sun_dir = normalize(Vec3{0.0f, 1.0f, 0.45f});
+  constexpr u32 k_map = 512;
+  constexpr f32 k_radius = 7.1f;
+  constexpr f32 k_normal_offset = 3.0f;
+  const gfx::ShadowLight sun = gfx::shadow_light(sun_dir);
+  const gfx::ShadowCascade cascade = gfx::make_shadow_cascade(
+      sun, gfx::shadow_snap(sun, Vec3{}, 2.0f * k_radius / k_map), k_radius, 10.0f, k_map, 0.5f);
+  constexpr u32 k_maps = 2;
+  const bool map_occluder[k_maps] = {true, false};
+  gfx::BindlessSet bindless;
+  REQUIRE(bindless.create(device, gfx::BindlessConfig{}, &error));
+  REQUIRE(bindless.has_acceleration_structures());
+  const u32 scene_slot = bindless.add_acceleration_structure(tlas.handle);
+  REQUIRE(scene_slot != gfx::BindlessSet::k_invalid_slot);
+  gfx::ImageResource atlas[k_maps];
+  gfx::ImageViewHandle atlas_view[k_maps] = {};
+  u32 atlas_slot[k_maps] = {};
+  for (u32 a = 0; a < k_maps; ++a) {
+    REQUIRE_MESSAGE(
+        gfx::create_image_2d(device, k_map, k_map, gfx::Format::D32Sfloat,
+                             gfx::ImageUsage::DepthStencilAttachment | gfx::ImageUsage::Sampled,
+                             atlas[a], &error),
+        error);
+    REQUIRE_MESSAGE(gfx::create_image_view(device, atlas[a], atlas_view[a], &error), error);
+    atlas_slot[a] = bindless.add_sampled_image(atlas_view[a], gfx::ImageLayout::ShaderReadOnly);
+    REQUIRE(atlas_slot[a] != gfx::BindlessSet::k_invalid_slot);
+  }
+  gfx::SamplerHandle point_sampler = {};
+  REQUIRE(gfx::create_sampler(device, gfx::Filter::Nearest, point_sampler, &error));
+  const u32 sampler_slot = bindless.add_sampler(point_sampler);
+  REQUIRE(sampler_slot != gfx::BindlessSet::k_invalid_slot);
+  gfx::BufferResource map_params;
+  REQUIRE(gfx::create_buffer(device, sizeof(gfx::ShadowMapParams) * k_maps,
+                             k_storage | gfx::BufferUsage::ShaderDeviceAddress, true, map_params,
+                             &error));
+  u64 map_address[k_maps];
+  for (u32 a = 0; a < k_maps; ++a) {
+    gfx::ShadowMapParams& maps = static_cast<gfx::ShadowMapParams*>(map_params.mapped)[a];
+    maps = gfx::ShadowMapParams{};
+    maps.cascades[0] = cascade;
+    maps.light_right = Vec4{sun.right, 0.0f};
+    maps.light_up = Vec4{sun.up, 0.0f};
+    maps.light_dir = Vec4{sun.direction, 0.0f};
+    maps.cascade_count = 1;
+    maps.tiles = 1;
+    maps.resolution = k_map;
+    maps.texture = atlas_slot[a];
+    maps.sampler = sampler_slot;
+    maps.max_slope = 8.0f;
+    maps.normal_offset = k_normal_offset;
+    map_address[a] = map_params.address + a * sizeof(gfx::ShadowMapParams);
+  }
+
+  // Low and to one side, so the sun's shadow (the square |x|, |z| <= 2) runs from 9.4 to 13.4
+  // units away and the point light's further: both cross the band.
+  const Vec3 eye{0.0f, 6.0f, -10.0f};
+  const Vec3 target{};
+  const Vec3 up{0.0f, 1.0f, 0.0f};
+  const f32 fov_y = radians(60.0f);
+  const Mat4 view_proj = perspective_reversed_z(fov_y, 1.0f, 0.1f) * look_at(eye, target, up);
+  const Vec4 sky{0.2f, 0.3f, 0.4f, 1.0f};
+  constexpr f32 k_bias = 0.01f;
+  constexpr f32 k_distance = 11.2f;
+  constexpr f32 k_band = 0.8f;
+  gfx::BufferResource vis;
+  REQUIRE(gfx::create_buffer(
+      device, u64{k_size} * k_size * sizeof(u64),
+      k_storage | gfx::BufferUsage::ShaderDeviceAddress | gfx::BufferUsage::TransferDst, false, vis,
+      &error));
+  gfx::ResolveParams base{};
+  base.sky = sky;
+  base.sun = Vec4{sun_dir, 1.0f};
+  base.camera = Vec4{eye, 0.0f};
+  base.view_proj = view_proj;
+  base.visibility = vis.address;
+  base.clusters = clusters[0].address;
+  base.mesh = scenes[0].meshes.address;
+  base.instances = scenes[0].instances.address;
+  base.triangles = triangles[0].address;
+  base.materials = materials.address;
+  base.cluster_materials = cluster_materials.address;
+  base.lights = lights.address;
+  base.light_count = 1;
+  base.width = k_size;
+  base.height = k_size;
+  base.shadow_bias = k_bias;
+  base.scene = scene_slot;
+  base.shadow_maps = map_address[0];
+  constexpr u32 k_lit = gfx::k_shadow_sun | gfx::k_shadow_lights;
+  constexpr u32 k_hybrid = k_lit | gfx::k_shadow_cascades | gfx::k_shadow_hybrid;
+  // The blocks: 0 unshadowed; 1 the rays, both lights; 2 the maps (the point light's bit set, which
+  // they leave lit); 3 the hybrid; 4 the hybrid with its distance past the picture; 5 with none;
+  // 6 the hybrid's shadow view against the map of the quad alone.
+  constexpr u32 k_hybrid_blocks = 7;
+  gfx::ResolveParams blocks[k_hybrid_blocks];
+  for (gfx::ResolveParams& b : blocks)
+    b = base;
+  blocks[1].shadow_flags = k_lit;
+  blocks[2].shadow_flags = k_lit | gfx::k_shadow_cascades;
+  blocks[3].shadow_flags = k_hybrid;
+  blocks[3].shadow_ray_distance = k_distance;
+  blocks[3].shadow_ray_band = k_band;
+  blocks[4] = blocks[3];
+  blocks[4].shadow_ray_distance = 1.0e6f;
+  blocks[5] = blocks[3];
+  blocks[5].shadow_ray_distance = 0.0f;
+  blocks[5].shadow_ray_band = 0.0f;
+  blocks[6] = blocks[3];
+  blocks[6].shadow_maps = map_address[1];
+  blocks[6].mode = static_cast<u32>(gfx::ResolveMode::Shadow);
+  gfx::BufferResource params;
+  gfx::BufferResource host_color;
+  REQUIRE(gfx::create_buffer(device, sizeof(gfx::ResolveParams) * k_hybrid_blocks,
+                             k_storage | gfx::BufferUsage::ShaderDeviceAddress, true, params,
+                             &error));
+  REQUIRE(gfx::create_buffer(device, u64{k_size} * k_size * 4 * k_hybrid_blocks,
+                             gfx::BufferUsage::TransferDst, true, host_color, &error));
+  u64 block_address[k_hybrid_blocks];
+  for (u32 i = 0; i < k_hybrid_blocks; ++i) {
+    static_cast<gfx::ResolveParams*>(params.mapped)[i] = blocks[i];
+    block_address[i] = params.address + i * sizeof(gfx::ResolveParams);
+  }
+
+  gfx::FrameContext frames;
+  REQUIRE(frames.create(device, 2, &error));
+  gfx::ShaderModuleHandle resolve_module =
+      gfx::create_shader_module(device, shaders::k_visibility_resolve_rt_spirv,
+                                shaders::k_visibility_resolve_rt_spirv_size, &error);
+  REQUIRE(resolve_module.valid());
+  gfx::GraphicsPipelineDesc resolve_desc;
+  resolve_desc.vertex = resolve_module;
+  resolve_desc.vertex_entry = "vs_fullscreen";
+  resolve_desc.fragment = resolve_module;
+  resolve_desc.fragment_entry = "fs_resolve";
+  resolve_desc.layout = bindless.pipeline_layout();
+  resolve_desc.color_format = gfx::Format::R8G8B8A8Unorm;
+  gfx::PipelineHandle resolve_pipeline = {};
+  REQUIRE_MESSAGE(gfx::create_graphics_pipeline(device, resolve_desc, resolve_pipeline, &error),
+                  error);
+  gfx_test::ClusterRaster picture;
+  REQUIRE_MESSAGE(picture.create(device, bindless.pipeline_layout(), triangles_per_cluster, &error),
+                  error);
+  gfx_test::ClusterRaster depth;
+  REQUIRE_MESSAGE(depth.create(device, gfx_test::RasterPath::Vertex, bindless.pipeline_layout(),
+                               triangles_per_cluster, &error, gfx::Format::D32Sfloat),
+                  error);
+  auto draw_of = [&](u32 m, const Mat4& vp, u64 visibility, u32 extent) {
+    gfx::ClusterDrawParams d{};
+    d.view_proj = vp;
+    d.clusters = clusters[m].address;
+    d.mesh = scenes[m].meshes.address;
+    d.instances = scenes[m].instances.address;
+    d.triangles = triangles[m].address;
+    d.visibility = visibility;
+    d.extent = gfx::draw_extent(extent, extent);
+    return d;
+  };
+
+  gfx::RenderGraph graph(device);
+  const gfx::RgBuffer rg_vis = graph.import_buffer("vis", vis);
+  const gfx::RgBuffer rg_host = graph.import_buffer("host", host_color);
+  gfx::RgImage rg_atlas[k_maps];
+  for (u32 a = 0; a < k_maps; ++a)
+    rg_atlas[a] = graph.import_image("shadow map", atlas[a]);
+  gfx::RgImage targets[k_hybrid_blocks];
+  for (u32 i = 0; i < k_hybrid_blocks; ++i) {
+    targets[i] = graph.create_image(
+        "resolved", {k_size, k_size, gfx::Format::R8G8B8A8Unorm,
+                     gfx::ImageUsage::ColorAttachment | gfx::ImageUsage::TransferSrc});
+  }
+  graph.add_pass(
+      "clear", gfx::PassKind::Transfer,
+      [&](gfx::PassBuilder& b) { b.write(rg_vis, gfx::Access::TransferWrite); },
+      [&](gfx::CommandList cb, gfx::RenderGraph&) {
+        cb.fill_buffer(vis.buffer, 0, gfx::k_whole_size, 0);
+      });
+  graph.add_pass(
+      "visibility", gfx::PassKind::Raster,
+      [&](gfx::PassBuilder& b) {
+        b.render_area(k_size, k_size);
+        b.write(rg_vis, gfx::Access::FragmentReadWrite);
+      },
+      [&](gfx::CommandList cb, gfx::RenderGraph&) {
+        picture.draw(cb, bindless, draw_of(0, view_proj, vis.address, k_size), 1);
+      });
+  for (u32 a = 0; a < k_maps; ++a) {
+    graph.add_pass(
+        "shadow map", gfx::PassKind::Raster,
+        [&, a](gfx::PassBuilder& b) { b.depth_attachment(rg_atlas[a], gfx::LoadOp::Clear, 0.0f); },
+        [&, a](gfx::CommandList cb, gfx::RenderGraph&) {
+          depth.draw(cb, bindless, draw_of(0, cascade.view_proj, 0, k_map), 1);
+          if (map_occluder[a]) depth.draw(cb, bindless, draw_of(1, cascade.view_proj, 0, k_map), 1);
+        });
+  }
+  for (u32 i = 0; i < k_hybrid_blocks; ++i) {
+    graph.add_pass(
+        "resolve", gfx::PassKind::Raster,
+        [&, i](gfx::PassBuilder& b) {
+          gfx::ClearColor clear{};
+          b.color_attachment(targets[i], gfx::LoadOp::Clear, clear);
+          b.read(rg_vis, gfx::Access::FragmentRead);
+          for (u32 a = 0; a < k_maps; ++a)
+            b.read(rg_atlas[a], gfx::Access::SampledRead);
+        },
+        [&, i](gfx::CommandList cb, gfx::RenderGraph&) {
+          cb.bind_pipeline(gfx::BindPoint::Graphics, resolve_pipeline);
+          bindless.bind(cb, gfx::BindPoint::Graphics);
+          cb.push_constants(bindless.pipeline_layout(), gfx::ShaderStage::All, 0, sizeof(u64),
+                            &block_address[i]);
+          cb.draw(3, 1, 0, 0);
+        });
+  }
+  graph.add_pass(
+      "readback", gfx::PassKind::Transfer,
+      [&](gfx::PassBuilder& b) {
+        for (u32 i = 0; i < k_hybrid_blocks; ++i)
+          b.read(targets[i], gfx::Access::TransferRead);
+        b.write(rg_host, gfx::Access::TransferWrite);
+      },
+      [&](gfx::CommandList cb, gfx::RenderGraph& g) {
+        for (u32 i = 0; i < k_hybrid_blocks; ++i) {
+          VkBufferImageCopy region{};
+          region.bufferOffset = u64{k_size} * k_size * 4 * i;
+          region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+          region.imageExtent = {k_size, k_size, 1};
+          vkCmdCopyImageToBuffer(gfx::vk::native(cb), gfx::vk::native(g.image(targets[i]).image),
+                                 gfx::vk::native(g.image_layout(targets[i])),
+                                 gfx::vk::native(host_color.buffer), 1, &region);
+        }
+      });
+  REQUIRE_MESSAGE(graph.compile(&error), error);
+  gfx::CommandList commands = frames.begin_frame();
+  graph.execute(commands);
+  REQUIRE(frames.wait(frames.end_frame()));
+  graph.reset();
+
+  auto pixel = [&](u32 image, u32 x, u32 y) {
+    return static_cast<const u8*>(host_color.mapped) +
+           (u64{k_size} * k_size * image + y * k_size + x) * 4;
+  };
+  auto is_sky = [](const u8* p) -> bool {
+    return std::abs(int{p[0]} - 51) <= 1 && std::abs(int{p[1]} - 77) <= 1 &&
+           std::abs(int{p[2]} - 102) <= 1;
+  };
+  auto differing = [&](u32 a, u32 b) {
+    u32 n = 0;
+    for (u32 y = 0; y < k_size; ++y) {
+      for (u32 x = 0; x < k_size; ++x)
+        n += std::memcmp(pixel(a, x, y), pixel(b, x, y), 4) != 0 ? 1u : 0u;
+    }
+    return n;
+  };
+  // The two ends: the rays' distance past every pixel is the rays' picture, none the maps'.
+  const u32 all_rays = differing(4, 1);
+  const u32 all_maps = differing(5, 2);
+  CHECK(all_rays == 0);
+  CHECK(all_maps == 0);
+
+  // The reference's rules, each where it holds: the ray case's quarter-unit edge band, and the map
+  // case's band (the filter's footprint over the cosine, plus the normal offset's lift).
+  const double texel = static_cast<double>(cascade.texel_world);
+  const double cos_sun = static_cast<double>(sun_dir.y);
+  const double map_band = 0.25 + 3.0 * texel / cos_sun +
+                          static_cast<double>(k_normal_offset) * (1.0 - cos_sun) * texel *
+                              static_cast<double>(sun_dir.z) / cos_sun;
+  // A centimetre of slack round the distances: the resolve's point is the pixel centre's ray on the
+  // triangle, the reference's the same ray on the exact plane, a few micrometres apart.
+  constexpr double k_distance_margin = 0.01;
+  const ref::Dvec3 sky_ref = ref::dvec3(sky);
+  const ref::Dvec3 sun_ref = ref::dvec3(sun_dir);
+  const ref::Dvec3 eye_ref = ref::dvec3(eye);
+  const ref::Dvec3 light_position = ref::dvec3(light_table[0].position_radius);
+  u32 near_compared = 0, near_shadowed = 0, near_differs = 0;
+  u32 far_compared = 0, far_shadowed = 0, far_differs = 0;
+  u32 band_pixels = 0, band_outside = 0, skipped = 0;
+  int worst = 0;
+  bool reported = false;
+  for (u32 y = 0; y < k_size; ++y) {
+    for (u32 x = 0; x < k_size; ++x) {
+      const u8* got = pixel(3, x, y);
+      if (is_sky(got)) continue;
+      ref::Surface s;
+      s.position = ref::pixel_on_plane(eye_ref, ref::dvec3(target), ref::dvec3(up),
+                                       static_cast<double>(fov_y), 1.0, k_size, k_size, x, y, 0.0);
+      s.normal = ref::Dvec3{0.0, 1.0, 0.0};
+      s.view = ref::normalize(eye_ref - s.position);
+      s.albedo = ref::dvec3(material_table[0].albedo);
+      s.roughness = static_cast<double>(material_table[0].albedo.w);
+      s.metallic = static_cast<double>(material_table[0].emissive.w);
+      ref::Light light;
+      light.position = light_position;
+      light.radius = static_cast<double>(light_table[0].position_radius.w);
+      light.color = ref::dvec3(light_table[0].color_intensity);
+      light.intensity = static_cast<double>(light_table[0].color_intensity.w);
+      const ref::HybridSide side =
+          ref::hybrid_side(s.position, eye_ref, static_cast<double>(k_distance),
+                           static_cast<double>(k_band), k_distance_margin);
+      if (side == ref::HybridSide::Band) {
+        // Between the rays' answer and the maps', channel by channel (one code of rounding).
+        ++band_pixels;
+        const u8* ray = pixel(1, x, y);
+        const u8* map = pixel(2, x, y);
+        for (u32 c = 0; c < 3; ++c) {
+          const int lo = std::min(int{ray[c]}, int{map[c]}) - 1;
+          const int hi = std::max(int{ray[c]}, int{map[c]}) + 1;
+          if (int{got[c]} < lo || int{got[c]} > hi) {
+            ++band_outside;
+            break;
+          }
+        }
+        continue;
+      }
+      const bool is_near = side == ref::HybridSide::Ray;
+      bool sun_shadowed = false;
+      double margin = 0.0;
+      if (is_near) {
+        const ref::Dvec3 origin = s.position + ref::Dvec3{0.0, static_cast<double>(k_bias), 0.0};
+        const double sun_margin = quad_margin(origin, sun_ref, occluder, 1.0e30);
+        const ref::Dvec3 to_light = light_position - s.position;
+        const double light_distance = std::sqrt(ref::dot(to_light, to_light));
+        const double light_margin = quad_margin(origin, ref::normalize(to_light), occluder,
+                                                light_distance - static_cast<double>(k_bias));
+        sun_shadowed = sun_margin > 0.0;
+        light.shadowed = light_margin > 0.0;
+        margin = std::min(std::fabs(sun_margin), std::fabs(light_margin)) - 0.25;
+      } else {
+        const double sun_margin = quad_margin(s.position, sun_ref, occluder, 1.0e30);
+        sun_shadowed = sun_margin > 0.0;  // and the point light lit: the maps answer the sun alone
+        margin = std::fabs(sun_margin) - map_band;
+      }
+      if (margin < 0.0) {
+        ++skipped;
+        continue;
+      }
+      const ref::Dvec3 linear = ref::shade(s, sun_ref, 1.0, sky_ref, ref::dvec3(base.ground),
+                                           &light, 1, ref::Dvec3{}, sun_shadowed);
+      const u8 expect[3] = {ref::display(linear.x), ref::display(linear.y), ref::display(linear.z)};
+      int here = 0;
+      for (u32 c = 0; c < 3; ++c)
+        here = std::max(here, std::abs(int{got[c]} - int{expect[c]}));
+      worst = std::max(worst, here);
+      if (here > 2 && !reported) {
+        reported = true;
+        CHECK_MESSAGE(here <= 2, (is_near ? "near" : "far")
+                                     << " pixel " << x << "," << y << ": gpu " << int{got[0]} << ","
+                                     << int{got[1]} << "," << int{got[2]} << " reference "
+                                     << int{expect[0]} << "," << int{expect[1]} << ","
+                                     << int{expect[2]});
+      }
+      // And the byte-for-byte rule: near, the rays' picture; far, the maps'.
+      const bool same = std::memcmp(got, pixel(is_near ? 1u : 2u, x, y), 4) == 0;
+      if (is_near) {
+        ++near_compared;
+        near_shadowed += sun_shadowed || light.shadowed ? 1u : 0u;
+        near_differs += same ? 0u : 1u;
+      } else {
+        ++far_compared;
+        far_shadowed += sun_shadowed ? 1u : 0u;
+        far_differs += same ? 0u : 1u;
+      }
+    }
+  }
+  CHECK(near_shadowed > 50);
+  CHECK(far_shadowed > 100);
+  CHECK(near_compared - near_shadowed > 200);
+  CHECK(far_compared - far_shadowed > 200);
+  CHECK(worst <= 2);
+  CHECK(near_differs == 0);
+  CHECK(far_differs == 0);
+  CHECK(band_pixels > 200);
+  CHECK(band_outside == 0);
+  MESSAGE("hybrid at " << static_cast<f64>(k_distance) << " + " << static_cast<f64>(k_band)
+                       << " units: " << near_compared << " near pixels (" << near_shadowed
+                       << " shadowed) the rays' bytes, " << far_compared << " far (" << far_shadowed
+                       << " shadowed) the maps', within 2 of the reference (worst " << worst
+                       << " of 255); " << band_pixels << " in the blend band, " << band_outside
+                       << " outside the two answers; " << skipped
+                       << " edge pixels skipped; the ends: " << all_rays << " and " << all_maps
+                       << " pixels differ");
+
+  // The blend is monotone in distance: under the occluder's ray shadow, with a map of the quad
+  // alone, the shadow view is the maps' share. Sorted by the reference's distance, the grey never
+  // falls by more than a code, and every pixel is within two codes of 255 times the share.
+  struct Sample {
+    double distance;
+    int grey;
+  };
+  Vector<Sample> samples;
+  int weight_worst = 0;
+  for (u32 y = 0; y < k_size; ++y) {
+    for (u32 x = 0; x < k_size; ++x) {
+      const u8* got = pixel(6, x, y);
+      if (is_sky(got)) continue;
+      const ref::Dvec3 position =
+          ref::pixel_on_plane(eye_ref, ref::dvec3(target), ref::dvec3(up),
+                              static_cast<double>(fov_y), 1.0, k_size, k_size, x, y, 0.0);
+      const ref::Dvec3 origin = position + ref::Dvec3{0.0, static_cast<double>(k_bias), 0.0};
+      if (quad_margin(origin, sun_ref, occluder, 1.0e30) < 0.25) continue;
+      const ref::Dvec3 d = position - eye_ref;
+      const double distance = std::sqrt(ref::dot(d, d));
+      const f32 share = gfx::shadow_hybrid_weight(static_cast<f32>(distance), k_distance, k_band);
+      const int expect = static_cast<int>(std::lround(static_cast<double>(share) * 255.0));
+      weight_worst = std::max(weight_worst, std::abs(int{got[0]} - expect));
+      samples.push_back(Sample{distance, int{got[0]}});
+    }
+  }
+  std::sort(samples.begin(), samples.end(),
+            [](const Sample& a, const Sample& b) { return a.distance < b.distance; });
+  u32 falls = 0;
+  u32 rising = 0;
+  int highest = 0;
+  for (const Sample& sample : samples) {
+    if (sample.grey < highest - 1) ++falls;
+    highest = std::max(highest, sample.grey);
+    rising += sample.grey > 0 && sample.grey < 255 ? 1u : 0u;
+  }
+  REQUIRE(samples.size() > 300);
+  CHECK(samples[0].grey == 0);
+  CHECK(samples[samples.size() - 1].grey == 255);
+  CHECK(rising > 50);
+  CHECK(falls == 0);
+  CHECK(weight_worst <= 2);
+  MESSAGE("the blend across the band: "
+          << samples.size() << " pixels under the rays' shadow, " << rising << " partly the maps', "
+          << falls << " falling with distance, worst " << weight_worst << " codes from the share");
+
+  gfx::destroy_pipeline(device, resolve_pipeline);
+  picture.destroy(device);
+  depth.destroy(device);
+  gfx::destroy_shader_module(device, resolve_module);
+  bindless.destroy();
+  gfx::destroy_sampler(device, point_sampler);
+  for (u32 a = 0; a < k_maps; ++a) {
+    gfx::destroy_image_view(device, atlas_view[a]);
+    gfx::destroy_image(device, atlas[a]);
+  }
+  for (u32 m = 0; m < 2; ++m) {
+    scenes[m].destroy(device);
+    gfx::destroy_buffer(device, clusters[m]);
+    gfx::destroy_buffer(device, triangles[m]);
+  }
+  gfx::destroy_acceleration_structure(device, tlas);
+  gfx::destroy_acceleration_structure(device, blas);
+  for (gfx::BufferResource* b :
+       {&host_color, &params, &vis, &map_params, &instances, &scratch, &as_indices, &as_vertices,
+        &lights, &cluster_materials, &materials}) {
+    gfx::destroy_buffer(device, *b);
+  }
+  frames.destroy();
+  device.destroy();
+}

@@ -9,6 +9,8 @@
 #include <systems/renderer/settings.h>
 #include <systems/renderer/view_set.h>
 
+#include <algorithm>
+
 namespace engine::renderer {
 
 ENGINE_LOG_CATEGORY_DEFINE(log_renderer, "renderer");
@@ -50,6 +52,7 @@ const char* shadow_name(ShadowMode mode) noexcept {
     case ShadowMode::Off: return "off";
     case ShadowMode::RayTraced: return "rt";
     case ShadowMode::Cascaded: return "csm";
+    case ShadowMode::Hybrid: return "hybrid";
   }
   return "?";
 }
@@ -63,6 +66,8 @@ bool parse_shadow_mode(std::string_view text, ShadowMode& out) noexcept {
     out = ShadowMode::Cascaded;
   } else if (text == "auto") {
     out = ShadowMode::Auto;
+  } else if (text == "hybrid") {
+    out = ShadowMode::Hybrid;
   } else {
     return false;
   }
@@ -85,6 +90,7 @@ bool parse_water_quality(std::string_view text, WaterQuality& out) noexcept {
 }
 
 const char* resolved_shadow_name(const ResolvedSettings& resolved) noexcept {
+  if (resolved.hybrid) return "hybrid";
   return resolved.shadows ? "rt" : (resolved.csm ? "csm" : "off");
 }
 
@@ -201,8 +207,16 @@ tunables::Float lod_fade{"renderer.lod.fade", 0.1, 0.0, 0.5,
 tunables::Float display_paper_white{"renderer.display.paper_white_nits", 0.0, 0.0, 10000.0,
                                     "The luminance an HDR picture shows a diffuse white at, nits "
                                     "(0: Windows' SDR white level for the display, else 200)"};
+// A measurement switch, never a default (R102): what the alpha-tested casters' masks cost the
+// shadow rays, read off the same frame with every caster opaque.
+tunables::Bool shadow_opaque_rays{
+    "renderer.shadow.opaque_rays", false,
+    "Measurement only: the shadow rays treat every caster as opaque, so an alpha-tested leaf "
+    "casts its whole card (renderer.md, Rays near, maps far)"};
 
 }  // namespace
+
+bool shadow_opaque_rays_tunable() noexcept { return shadow_opaque_rays.get(); }
 
 DisplayLevels display_levels(const RenderSettings& settings) {
   DisplayLevels out;
@@ -296,8 +310,9 @@ void resolve_settings(const RenderSettings& requested, const gfx::DeviceFeatures
   // pass.
   const bool shadow_device = features.cluster_acceleration_structure && features.ray_query;
   const bool shadow_mode = out.ray_path || s.raster == RasterMode::Hardware || out.vertex_path;
-  out.shadows = (s.shadows == ShadowMode::RayTraced || s.shadows == ShadowMode::Auto) &&
-                shadow_device && shadow_mode;
+  const bool wants_rays = s.shadows == ShadowMode::RayTraced || s.shadows == ShadowMode::Auto ||
+                          s.shadows == ShadowMode::Hybrid;
+  out.shadows = wants_rays && shadow_device && shadow_mode;
   // **Cascaded shadow maps** are the baseline tier's shadow (04 §4.4, the 2026-09-23 direction
   // note). They are drawn by the cull pass and the rasterizers from the light and read by the
   // resolve, so they need a path that rasterizes the picture into the visibility buffer and
@@ -305,14 +320,33 @@ void resolve_settings(const RenderSettings& requested, const gfx::DeviceFeatures
   // traces its picture and has its own shadows, and the direct, sw and auto paths are refused for
   // the reason rt is: `auto` resolves to maps exactly where it cannot trace.
   const bool map_mode = s.raster == RasterMode::Hardware || out.vertex_path;
-  out.csm = map_mode &&
-            (s.shadows == ShadowMode::Cascaded || (s.shadows == ShadowMode::Auto && !out.shadows));
+  // **Rays near, maps far** (renderer.md, "Rays near, maps far"; R102): both, on a path that
+  // rasterizes its picture and a device that traces. The ray path draws no maps, so the hybrid is
+  // its rays alone; a device that cannot trace has the maps. Asked for only: `auto` stays the rays
+  // where the device traces, because on the forest it was measured against the hybrid's frame cost
+  // two to three times the rays' (the cascades it draws beside them), and the page says when that
+  // changes.
+  const bool hybrid_asked = s.shadows == ShadowMode::Hybrid;
+  out.hybrid = hybrid_asked && out.shadows && map_mode;
+  const bool maps_instead = (hybrid_asked || s.shadows == ShadowMode::Auto) && !out.shadows;
+  out.csm = map_mode && (s.shadows == ShadowMode::Cascaded || out.hybrid || maps_instead);
+  if (out.hybrid) {
+    if (!(s.shadow_ray_distance_m >= 0.0f)) s.shadow_ray_distance_m = 0.0f;
+    if (!(s.shadow_ray_band_m >= 0.0f)) s.shadow_ray_band_m = 0.0f;
+  }
   // An explicit `rt` on a device that cannot trace is not a warning here: `check_availability`
   // refuses it, and the host prints the device's own verdict (`unavailable_reason`).
   if (s.shadows == ShadowMode::RayTraced && !out.shadows && shadow_device) {
     ENGINE_LOG_WARN(log_renderer, "ray-traced shadows off",
                     log::field("reason", "the direct, sw, and auto paths do not build them"));
-  } else if (s.shadows == ShadowMode::Auto && out.csm) {
+  } else if (s.shadows == ShadowMode::Hybrid && !out.hybrid) {
+    ENGINE_LOG_WARN(log_renderer, "shadows not hybrid",
+                    log::field("reason", out.shadows ? "the ray path draws no maps: rays alone"
+                                         : out.csm   ? "no cluster acceleration structures or "
+                                                       "ray queries: maps alone"
+                                                     : "the direct, sw, and auto paths draw "
+                                                       "neither"));
+  } else if (s.shadows == ShadowMode::Auto && out.csm && !out.hybrid) {
     ENGINE_LOG_INFO(log_renderer, "cascaded shadow maps instead of ray-traced shadows",
                     log::field("reason", dynamic ? "a scene whose instances come and go"
                                                  : "no cluster acceleration structures or ray "
@@ -541,8 +575,22 @@ void resolve_settings(const RenderSettings& requested, const gfx::DeviceFeatures
   // It needs the cut (a form's frontier is a cut the cull selects), and build records, since a
   // template instantiation is the per-frame path for a deforming mesh.
   // **The caster horizon**: the cascades' bound for the rays' casters, when there is one.
-  out.caster_horizon = out.casters && (s.rt_caster_horizon || rt_caster_horizon_tunable()) &&
-                       s.shadow_distance > 0.0f;
+  // **The hybrid's casters end where its rays do** (R102): a surface past the ray distance and the
+  // band asks the maps, so a caster farther than that from the eye is in no structure. A caster
+  // nearer can still be met by a ray from a near receiver, which is the horizon's one approximation
+  // (renderer.md, "Rays near, maps far").
+  const bool distance_horizon =
+      (s.rt_caster_horizon || rt_caster_horizon_tunable()) && s.shadow_distance > 0.0f;
+  out.caster_horizon = out.casters && (distance_horizon || out.hybrid);
+  if (out.caster_horizon) {
+    f32 horizon = distance_horizon ? s.shadow_distance : 0.0f;
+    if (out.hybrid) {
+      // Never 0, which the cull reads as no horizon: a hybrid whose rays reach nowhere keeps none.
+      const f32 reach = std::max(s.shadow_ray_distance_m + s.shadow_ray_band_m, 1.0e-3f);
+      horizon = horizon > 0.0f ? std::min(horizon, reach) : reach;
+    }
+    out.caster_horizon_m = horizon;
+  }
   out.static_forms = out.rt_chain && s.cull && s.rt_static_forms && rt_static_forms_tunable() &&
                      !s.rt_templates && !out.stream;
   // **A morphed mesh is not streamed**, and the reason is said out loud rather than discovered as

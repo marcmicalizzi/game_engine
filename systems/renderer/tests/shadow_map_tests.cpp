@@ -329,7 +329,57 @@ TEST_CASE("renderer: shadows resolve to maps without ray queries and to rays wit
   resolve_settings(settings, rtx, nullptr, resolved);
   CHECK(resolved.shadows);  // traced where the device can: the 5090's default is unchanged
   CHECK_FALSE(resolved.csm);
+  CHECK_FALSE(resolved.hybrid);  // asked for only (renderer.md, "Rays near, maps far")
   CHECK(std::string(resolved_shadow_name(resolved)) == "rt");
+  {
+    // The hybrid: rays and maps both, and the casters end where the rays do.
+    RenderSettings asked;
+    asked.shadows = ShadowMode::Hybrid;
+    resolve_settings(asked, rtx, nullptr, resolved);
+    CHECK(resolved.shadows);
+    CHECK(resolved.csm);
+    CHECK(resolved.hybrid);
+    CHECK(resolved.rt_chain);
+    CHECK_FALSE(resolved.occlusion);  // the rays' structures are built from one visible list
+    CHECK(resolved.shadow_cascades == k_default_shadow_cascades);
+    CHECK(std::string(resolved_shadow_name(resolved)) == "hybrid");
+    CHECK(resolved.casters);
+    CHECK(resolved.caster_horizon);
+    CHECK(resolved.caster_horizon_m ==
+          k_default_shadow_ray_distance_m + k_default_shadow_ray_band_m);
+    // A shadow distance nearer than the rays' reach bounds the casters instead, with the horizon
+    // asked for; without it the rays' reach does.
+    RenderSettings nearer = asked;
+    nearer.shadow_distance = 50.0f;
+    nearer.rt_caster_horizon = true;
+    resolve_settings(nearer, rtx, nullptr, resolved);
+    CHECK(resolved.caster_horizon_m == 50.0f);
+    nearer.rt_caster_horizon = false;
+    resolve_settings(nearer, rtx, nullptr, resolved);
+    CHECK(resolved.caster_horizon_m ==
+          k_default_shadow_ray_distance_m + k_default_shadow_ray_band_m);
+    // The explicit modes are what they were: rt has no maps and no horizon, csm no rays.
+    RenderSettings rays;
+    rays.shadows = ShadowMode::RayTraced;
+    resolve_settings(rays, rtx, nullptr, resolved);
+    CHECK(resolved.shadows);
+    CHECK_FALSE(resolved.csm);
+    CHECK_FALSE(resolved.hybrid);
+    CHECK_FALSE(resolved.caster_horizon);
+    CHECK(std::string(resolved_shadow_name(resolved)) == "rt");
+    // The hybrid asked for on the ray path is its rays; on a device that cannot trace, its maps.
+    RenderSettings hybrid;
+    hybrid.shadows = ShadowMode::Hybrid;
+    hybrid.raster = RasterMode::RayTrace;
+    resolve_settings(hybrid, rtx, nullptr, resolved);
+    CHECK(resolved.shadows);
+    CHECK_FALSE(resolved.csm);
+    CHECK_FALSE(resolved.hybrid);
+    hybrid.raster = RasterMode::Hardware;
+    resolve_settings(hybrid, rtx, nullptr, resolved);
+    CHECK(resolved.hybrid);
+  }
+  resolve_settings(settings, rtx, nullptr, resolved);
   resolve_settings(settings, pascal, nullptr, resolved);
   CHECK_FALSE(resolved.shadows);
   CHECK(resolved.csm);  // maps where it cannot
@@ -382,6 +432,15 @@ TEST_CASE("renderer: shadows resolve to maps without ray queries and to rays wit
   CHECK(parse_shadow_mode("csm", parsed));
   CHECK(parsed == ShadowMode::Cascaded);
   CHECK(std::string(shadow_name(ShadowMode::Cascaded)) == "csm");
+  CHECK(parse_shadow_mode("hybrid", parsed));
+  CHECK(parsed == ShadowMode::Hybrid);
+  CHECK(std::string(shadow_name(ShadowMode::Hybrid)) == "hybrid");
+  // The hybrid on the TITAN Xp is its maps.
+  settings.shadows = ShadowMode::Hybrid;
+  resolve_settings(settings, pascal, nullptr, resolved);
+  CHECK(resolved.csm);
+  CHECK_FALSE(resolved.hybrid);
+  CHECK(check_availability(resolved, pascal) == RenderAvailability::Ok);
 }
 
 namespace {
@@ -1141,6 +1200,112 @@ TEST_CASE("renderer: mapped and ray-traced shadows agree away from the filter's 
             << " black or white against the rays), 3x3 bilinear PCF");
     CHECK(a.shadowed > 200);
     CHECK(a.differ == 0);
+  }
+}
+
+// ---- rays near, maps far (renderer.md, "Rays near, maps far"; R102) ----------------------------
+//
+// The hybrid against the two it is made of, on every caster through the renderer's own chain (the
+// cluster structures, the cascades, the casters' horizon): with the rays' distance at the median
+// distance of the shadow the rays draw, every ground pixel nearer than it is the traced picture's
+// byte, every one past it plus the band the mapped picture's, and every one in the band between the
+// two; the same ids throughout. With the distance past the scene the hybrid is the traced picture
+// whole, and with none the mapped one whole.
+TEST_CASE("renderer: the hybrid draws the rays' shadow near the eye and the maps' far from it") {
+  Gpu gpu;
+  if (!gpu.ok) {
+    MESSAGE("renderer unavailable here: " << gpu.why);
+    return;
+  }
+  if (!gpu.device.features().cluster_acceleration_structure || !gpu.device.features().ray_query) {
+    MESSAGE("ray-traced shadows unavailable here: " << unavailable_reason(
+                RenderAvailability::NoAccelerationStructures, gpu.device));
+    return;
+  }
+  for (const Caster caster : k_casters) {
+    ShotOptions options;
+    options.depth = true;
+    options.shadows = ShadowMode::RayTraced;
+    const Shot traced = render(gpu.device, caster, options);
+    options.shadows = ShadowMode::Cascaded;
+    const Shot mapped = render(gpu.device, caster, options);
+    REQUIRE(traced.frame.depth.size() == k_width * k_height);
+    // Each pixel's distance from the eye, off its depth through the view's own matrix.
+    const Mat4 inverse_view_proj = inverse(traced.view_proj);
+    Vector<f32> distance(k_width * k_height, 0.0f);
+    Vector<f32> shadowed_distances;
+    for (u32 p = 0; p < k_width * k_height; ++p) {
+      const f32 depth = traced.frame.depth[p];
+      if (depth <= 0.0f) continue;
+      const f32 x =
+          (static_cast<f32>(p % k_width) + 0.5f) / static_cast<f32>(k_width) * 2.0f - 1.0f;
+      const f32 y =
+          1.0f - (static_cast<f32>(p / k_width) + 0.5f) / static_cast<f32>(k_height) * 2.0f;
+      distance[p] = length(unproject(inverse_view_proj, x, y, depth));
+      if (is_ground(traced, p) && shadowed(traced, p)) shadowed_distances.push_back(distance[p]);
+    }
+    REQUIRE(shadowed_distances.size() > 200);
+    std::sort(shadowed_distances.begin(), shadowed_distances.end());
+    const f32 ray_distance = shadowed_distances[shadowed_distances.size() / 2];
+    constexpr f32 k_band = 0.25f;
+    // A millimetre of slack: the matrix's inverse against the resolve's own reconstruction.
+    constexpr f32 k_slack = 1.0e-3f;
+    options.shadows = ShadowMode::Hybrid;
+    options.shadow_ray_distance_m = ray_distance;
+    options.shadow_ray_band_m = k_band;
+    const Shot hybrid = render(gpu.device, caster, options);
+    REQUIRE(hybrid.hybrid);
+    CHECK(id_differences(hybrid, traced) == 0);
+    // The rays with the same casters: the hybrid's end at its reach, so the traced picture it is
+    // held to near the eye is the one with R94's horizon there (what the horizon itself costs a
+    // near pixel is counted against the plain rays beside it).
+    ShotOptions horizon = options;
+    horizon.shadows = ShadowMode::RayTraced;
+    horizon.rt_caster_horizon = true;
+    horizon.shadow_distance = ray_distance + k_band;
+    const Shot traced_horizon = render(gpu.device, caster, horizon);
+    u32 n_near = 0, near_shadowed = 0, near_differ = 0, near_plain = 0;
+    u32 n_far = 0, far_shadowed = 0, far_differ = 0;
+    u32 n_band = 0, band_outside = 0;
+    for (u32 p = 0; p < k_width * k_height; ++p) {
+      if (distance[p] <= 0.0f) continue;
+      const u8 got = hybrid.frame.color[u64{p} * 4];
+      const u8 ray = traced_horizon.frame.color[u64{p} * 4];
+      const u8 map = mapped.frame.color[u64{p} * 4];
+      if (distance[p] < ray_distance - k_slack) {
+        ++n_near;
+        near_shadowed += ray == 0 ? 1u : 0u;
+        near_differ += got != ray ? 1u : 0u;
+        near_plain += got != traced.frame.color[u64{p} * 4] ? 1u : 0u;
+      } else if (distance[p] > ray_distance + k_band + k_slack) {
+        ++n_far;
+        far_shadowed += map == 0 ? 1u : 0u;
+        far_differ += got != map ? 1u : 0u;
+      } else {
+        ++n_band;
+        band_outside += got + 1 < std::min(ray, map) || got > std::max(ray, map) + 1 ? 1u : 0u;
+      }
+    }
+    MESSAGE(std::string(caster_name(caster))
+            << ": rays within " << ray_distance << " m, maps past " << ray_distance + k_band
+            << " m: " << n_near << " near pixels (" << near_shadowed << " shadowed), "
+            << near_differ << " not the rays' (" << near_plain << " not the rays' without the "
+            << "horizon); " << n_far << " far (" << far_shadowed << " shadowed), " << far_differ
+            << " not the maps'; " << n_band << " in the band, " << band_outside
+            << " outside the two; " << hybrid.horizon_casters << " casters past the horizon");
+    CHECK(near_shadowed > 50);
+    CHECK(far_shadowed > 50);
+    CHECK(near_differ == 0);
+    CHECK(far_differ == 0);
+    CHECK(band_outside == 0);
+    // The two ends.
+    options.shadow_ray_distance_m = 1.0e6f;
+    const Shot all_rays = render(gpu.device, caster, options);
+    CHECK(colour_differences(all_rays, traced) == 0);
+    options.shadow_ray_distance_m = 0.0f;
+    options.shadow_ray_band_m = 0.0f;
+    const Shot all_maps = render(gpu.device, caster, options);
+    CHECK(colour_differences(all_maps, mapped) == 0);
   }
 }
 

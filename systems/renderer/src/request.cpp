@@ -455,7 +455,11 @@ bool read_protocol_settings(const protocol::RenderSettings& in, RenderRequest& o
     return false;
   }
   if (!parse_shadow_mode(in.shadows, s.shadows)) {
-    error = "shadows must be off, rt, csm, or auto; got '" + in.shadows + "'";
+    error = "shadows must be off, rt, csm, hybrid, or auto; got '" + in.shadows + "'";
+    return false;
+  }
+  if (!(in.shadow_ray_distance_m >= 0.0f) || !(in.shadow_ray_band_m >= 0.0f)) {
+    error = "shadow_ray_distance_m and shadow_ray_band_m must not be negative";
     return false;
   }
   if (!parse_view_mode(in.view, s.view_mode)) {
@@ -560,6 +564,8 @@ bool read_protocol_settings(const protocol::RenderSettings& in, RenderRequest& o
   s.shadow_cascades = in.shadow_cascades;
   s.shadow_map = in.shadow_map;
   s.shadow_distance = in.shadow_distance;
+  s.shadow_ray_distance_m = in.shadow_ray_distance_m;
+  s.shadow_ray_band_m = in.shadow_ray_band_m;
   s.lights = in.lights;
   s.orbit_lights = in.orbit_lights;
   s.sun_azimuth_deg = in.sun_azimuth_deg;
