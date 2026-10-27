@@ -15,7 +15,7 @@ Its numerical terrain results are not transferred to this authored mountain.
 Read-only inputs: the POC's `reports/quality-v15/engine-c1ee971d/runs/ridge-csm-wide-20261026-191449/scene.json`,
 `run.json` and `Reproduce.cmd`, `surface-audit/markers.json` (entry 5, one-based), and the cook
 `world/v14/ddc/tilesets/0642f2422dcb4e1a/manifest.json`. The manifest and source descriptor say
-**0.5 m**, 4097×7169 samples, origin (-1024,-768) m, source hash `bd4d4be5d83f1bd6`, far filters
+**0.5 m**, 4097×7169 samples, origin (-1024,-768) m, data hash `bd4d4be5d83f1bd6`, far filters
 16,32,64,128,256,512 m. The scene has **64 m** world tiles and ring cells 128,64,32,16 (4 m at
 the outside), radius 20 tiles. These correct the brief's 1 m source/32 m tiles. The actual ridge
 camera is (590,259.1289978027344,1430), looking at (150,560,2000); tag 5 is
@@ -224,10 +224,184 @@ One 1920×1080 windowed flight of the path at 100 m/s, as [the window's page](wo
 - The far ground's haze past 32 km: the sky's aerial table.
 - Far dunes past the cascades at a low sun: the horizon-angle term.
 
-Range histogram (box counts; bin upper edges in metres):
+## 2026-10-26 F20 qualification: captures, capacity and shared-machine costs
+
+**Frozen-data verification.** The measured source and frozen `region.f32` both have SHA-256
+`b4cd3ecf8e6d7a0cbea86fd41ad2fd6463f4487cd060c392bf6dae8a3f2ef75b`. The descriptor differs
+only in its rewritten data path. Scratch `verify-cook.ps1` compared every finest archive record
+against the frozen float32 data quantized to millimetres: **7,345 records, 32,971,705 samples,
+zero mismatches**, including aprons and clamped edges. The copied cook has 64 cells per tile,
+also correcting the initial brief's 32. The measured ranges therefore describe the frozen cook.
+
+**Final chains.** The default remains six levels, 16,32,64,128,256,512 m. With the measured
+percentile proxy `terrain_far_error_per_m=0.75`, error 1 and 2 pixels are refused at both
+resolutions, on both requested cameras; their `report.json` records exit 1 and the sentence
+"no legal far spacing meets terrain_far_error_px with the supplied measured bounds". There
+is no capture from a refused layout. To measure feasible finer layouts as well, error **8**
+selects seven levels, **4,8,16,32,64,128,256 m**, and error **16** selects seven levels,
+**8,16,32,64,128,256,512 m**, at both resolutions. These are relaxed statistical proxies, not
+one/two-pixel guarantees. Starts, finest first, in metres:
+
+| mode | starts | worst-camera reach |
+|---|---|---:|
+| default | 1040,2048,4096,8192,16384,32768 | 65536 m |
+| 8 px | 1040,1664,3328,6656,13312,26624,53248 | 106496 m |
+| 16 px | 1040,1600,3200,6400,12800,25600,51200 | 102400 m |
+
+An initial prototype also preserved the coarsest spacing; that unnecessarily reserved an eighth
+level for 8 px, about 167 MiB of extra arenas plus fields and slot metadata. The final rule keeps
+reach alone. Raw `*-px8` runs are that superseded prototype and are excluded below; **use
+`*-px8-final`** for the final seven-level layout. `*-px16` is unchanged by that correction.
+
+**Reproduction.** All renders used this worktree's release engine-view, offscreen, hardware
+raster, cascaded shadows, lod 1, terrain time rate 0, world rate 1, hour 15, no point lights,
+64 MiB pool, 1024 MiB RT budget, flora wind strength 0.7, 120 measured frames after 30 warmup,
+`--wait-quiet 10`. The exact argument arrays, startup trace, frames, report and capture are in
+each scratch run directory. The scene's embedded terrain DDC and the CLI DDC both point to the
+scratch copy; the finer chain was cooked there from identical source data. Nothing wrote to the
+POC. The final measured executable SHA-256 is
+`452f6e529936665fe3df2f358d9a8953974cb78264e0444c120cfdccc2e36221` (built while the F20 code
+was uncommitted; its stamp records `ec17b831` dirty, the C++ subsequently committed as `7039c2ff`).
+
+**Machine state: all timings are upper bounds, not isolated costs.** RTX 5090 (32607 MiB),
+Core i9-10980XE, NVIDIA 617.42. The session was unlocked and the GPU lock was ours in every
+sample, but other work remained active and every completed run reports `quiet:false`.
+The per-run start/end samples are below and preserved in `report.json`; several wide frames
+were heavily disturbed. Do not infer speedups or slowdown ratios from their total GPU times.
+There is no far-only hardware-pass timestamp: the HW column is the whole primary hardware
+pass; delta is its difference from the matching no-far control, including changed border
+geometry and run noise, **not a separately measured far draw**.
+
+Capacity columns sum only the far levels: DAG vertex arena capacity and reserved cluster-pair
+space (two slots per tile), not source-grid vertices or visible pairs. Arena bytes use the actual
+CSM reservation formula: `100 * pairs + 14 * vertices + 4 * packed_triangles`. This excludes
+field pairs, per-slot/per-instance tables and common scene buffers. Device MiB is the engine's
+whole-scene device allocation report. All successful runs counted zero frame-loop allocations
+and zero buffer creations.
+
+| run (under scratch/runs) | far | vertex capacity | pair capacity | far arenas MiB | HW / delta ms | total GPU ms | whole-device MiB |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| beach-11520x2160-baseline-final | 6 | 5789760 | 114048 | 118.26 | 3.441 / 0.028 | 50.955 | 5810 |
+| beach-11520x2160-no-far-final | 0 | 0 | 0 | 0.00 | 3.413 / 0.000 | 129.817 | 5692 |
+| beach-11520x2160-px16-final | 7 | 15106864 | 303264 | 308.96 | 3.428 / 0.015 | 51.298 | 6000 |
+| beach-11520x2160-px8-final | 7 | 60621088 | 1213056 | 1238.45 | 3.480 / 0.067 | 109.974 | 6926 |
+| beach-2560x1440-baseline-final | 6 | 5789760 | 114048 | 118.26 | 0.473 / 0.001 | 16.017 | 4804 |
+| beach-2560x1440-no-far-final | 0 | 0 | 0 | 0.00 | 0.472 / 0.000 | 38.916 | 4665 |
+| beach-2560x1440-px16-final | 7 | 15106864 | 303264 | 308.96 | 0.474 / 0.002 | 16.167 | 5028 |
+| beach-2560x1440-px8-final | 7 | 60621088 | 1213056 | 1238.45 | 0.483 / 0.011 | 17.078 | 6377 |
+| ridge-11520x2160-baseline | 6 | 5770176 | 109440 | 117.57 | 0.561 / 0.003 | 25.081 | 5743 |
+| ridge-11520x2160-no-far | 0 | 0 | 0 | 0.00 | 0.559 / 0.000 | 24.675 | 5606 |
+| ridge-11520x2160-px16 | 7 | 15071224 | 295488 | 307.77 | 0.560 / 0.001 | 36.546 | 5967 |
+| ridge-11520x2160-px8-final | 7 | 60496672 | 1213056 | 1236.79 | 0.561 / 0.003 | 26.314 | 6925 |
+| ridge-2560x1440-baseline | 6 | 5770176 | 109440 | 117.57 | 0.111 / 0.001 | 24.503 | 3974 |
+| ridge-2560x1440-no-far | 0 | 0 | 0 | 0.00 | 0.110 / 0.000 | 27.796 | 3839 |
+| ridge-2560x1440-px16 | 7 | 15071224 | 295488 | 307.77 | 0.113 / 0.003 | 27.460 | 4195 |
+| ridge-2560x1440-px8-final | 7 | 60496672 | 1213056 | 1236.79 | 0.116 / 0.005 | 8.122 | 5639 |
+| tag5-11520x2160-baseline | 6 | 5772480 | 114048 | 118.04 | 0.497 / 0.037 | 53.221 | 5810 |
+| tag5-11520x2160-no-far | 0 | 0 | 0 | 0.00 | 0.460 / 0.000 | 78.555 | 5693 |
+| tag5-11520x2160-px16 | 7 | 15024568 | 295488 | 307.15 | 0.496 / 0.036 | 82.521 | 5999 |
+| tag5-11520x2160-px8-final | 7 | 60154528 | 1213056 | 1232.22 | 0.498 / 0.038 | 37.182 | 6920 |
+| tag5-2560x1440-baseline | 6 | 5772480 | 114048 | 118.04 | 0.083 / 0.002 | 6.654 | 3843 |
+| tag5-2560x1440-no-far | 0 | 0 | 0 | 0.00 | 0.082 / 0.000 | 6.458 | 3707 |
+| tag5-2560x1440-px16 | 7 | 15024568 | 295488 | 307.15 | 0.085 / 0.003 | 6.734 | 4062 |
+| tag5-2560x1440-px8-final | 7 | 60154528 | 1213056 | 1232.22 | 0.089 / 0.007 | 6.884 | 5489 |
+
+| run | other CPU %, start/end | GPU %, start/end | global GPU MiB, start/end |
+|---|---:|---:|---:|
+| beach-11520x2160-baseline-final | 9.4 / 10.6 | 1 / 30 | 17706 / 19749 |
+| beach-11520x2160-no-far-final | 32.7 / 25.5 | 100 / 99 | 19067 / 21250 |
+| beach-11520x2160-px16-final | 13.5 / 16.5 | 1 / 1 | 17917 / 19959 |
+| beach-11520x2160-px8-final | 25.2 / 15.6 | 100 / 100 | 17265 / 23972 |
+| beach-2560x1440-baseline-final | 15.1 / 21.1 | 2 / 100 | 17033 / 18748 |
+| beach-2560x1440-no-far-final | 13.2 / 16.5 | 100 / 100 | 18378 / 20073 |
+| beach-2560x1440-px16-final | 8.9 / 9.7 | 2 / 48 | 17223 / 18973 |
+| beach-2560x1440-px8-final | 30.0 / 41.2 | 1 / 100 | 15217 / 19515 |
+| ridge-11520x2160-baseline | 35.1 / 27.8 | 1 / 1 | 20009 / 21990 |
+| ridge-11520x2160-no-far | 18.5 / 22.6 | 2 / 100 | 19907 / 21864 |
+| ridge-11520x2160-px16 | 17.5 / 25.0 | 100 / 100 | 22440 / 16361 |
+| ridge-11520x2160-px8-final | 34.4 / 40.5 | 2 / 1 | 15600 / 17564 |
+| ridge-2560x1440-baseline | 12.3 / 13.7 | 100 / 100 | 23950 / 24833 |
+| ridge-2560x1440-no-far | 24.4 / 27.8 | 100 / 100 | 21448 / 22322 |
+| ridge-2560x1440-px16 | 26.9 / 25.4 | 100 / 100 | 21755 / 22672 |
+| ridge-2560x1440-px8-final | 24.8 / 26.3 | 2 / 1 | 13164 / 14225 |
+| tag5-11520x2160-baseline | 19.0 / 97.4 | 1 / 92 | 18826 / 22922 |
+| tag5-11520x2160-no-far | 23.6 / 18.8 | 100 / 100 | 24508 / 26561 |
+| tag5-11520x2160-px16 | 16.4 / 26.1 | 100 / 100 | 24814 / 26862 |
+| tag5-11520x2160-px8-final | 7.6 / 13.4 | 1 / 100 | 20393 / 23665 |
+| tag5-2560x1440-baseline | 41.8 / 25.8 | 2 / 1 | 14402 / 16625 |
+| tag5-2560x1440-no-far | 9.2 / 16.3 | 1 / 100 | 18036 / 18766 |
+| tag5-2560x1440-px16 | 9.5 / 16.5 | 1 / 99 | 18337 / 19121 |
+| tag5-2560x1440-px8-final | 27.3 / 24.8 | 4 / 100 | 14997 / 15912 |
+
+Per-level reservations, representative tag-5 layout (identical at both pixel sizes):
+
+| mode | spacing m | held tiles | DAG vertices capacity | pairs capacity | arenas MiB | two fields MiB |
+|---|---:|---:|---:|---:|---:|---:|
+| baseline | 16 | 510 | 1220992 | 27648 | 25.28 | 1.14 |
+| baseline | 32 | 432 | 911680 | 17280 | 18.57 | 1.14 |
+| baseline | 64 | 432 | 906496 | 17280 | 18.50 | 1.14 |
+| baseline | 128 | 432 | 909088 | 17280 | 18.54 | 1.14 |
+| baseline | 256 | 432 | 916000 | 17280 | 18.63 | 1.14 |
+| baseline | 512 | 432 | 908224 | 17280 | 18.52 | 1.14 |
+| px16 | 8 | 1000 | 2745952 | 62208 | 56.87 | 2.56 |
+| px16 | 16 | 972 | 2044168 | 38880 | 41.68 | 2.56 |
+| px16 | 32 | 972 | 2050000 | 38880 | 41.76 | 2.56 |
+| px16 | 64 | 972 | 2038336 | 38880 | 41.61 | 2.56 |
+| px16 | 128 | 972 | 2044168 | 38880 | 41.68 | 2.56 |
+| px16 | 256 | 972 | 2059720 | 38880 | 41.89 | 2.56 |
+| px16 | 512 | 972 | 2042224 | 38880 | 41.66 | 2.56 |
+| px8-final | 4 | 3926 | 11011840 | 248832 | 227.83 | 10.18 |
+| px8-final | 8 | 3888 | 8212480 | 186624 | 170.17 | 10.18 |
+| px8-final | 16 | 3888 | 8173600 | 155520 | 166.68 | 10.18 |
+| px8-final | 32 | 3888 | 8196928 | 155520 | 166.99 | 10.18 |
+| px8-final | 64 | 3888 | 8150272 | 155520 | 166.37 | 10.18 |
+| px8-final | 128 | 3888 | 8173600 | 155520 | 166.68 | 10.18 |
+| px8-final | 256 | 3888 | 8235808 | 155520 | 167.51 | 10.18 |
+
+**What the captures show.** Tag 5 primarily sees a near slope and rocks; the ridge camera sees
+near trees and the smooth authored ridge. Their broad shape remains similar with finer far
+levels. A supplemental recorded **beach/tag-1** camera sees the opposite shore and mountain:
+the broad rounded profile and distant colour patches remain. Finer samples preserve detail the
+heightfield contains; they do not author ribs/gullies. No claim that these captures repair the
+mountain's authored shape, or R96/R97's colour/material problem, is supported by this experiment.
+
+Baseline-to-final-8-px full-image RGB mean absolute differences (0..255), 1440p / 2160p:
+tag 5 **0.0355 / 0.0627**, ridge **0.0201 / 0.00063**, beach **0.1624 / 0.2615**. This is an
+image comparison including changed shadow fits/casters and foliage, not a geometry-error
+measurement. The controlled no-far-visible byte equality and exact seams remain the existing
+GPU tests' responsibility. Scratch `pixel-differences.json` carries the pixel counts and tails.
+
+**Capture paths**, rooted at `D:/workspace/ge-codex-scratch/sol-far/runs/`:
+
+- `tag5-{2560x1440,11520x2160}-{baseline,px16,px8-final}/view.png`.
+- `ridge-{2560x1440,11520x2160}-{baseline,px16,px8-final}/view.png`.
+- `beach-{2560x1440,11520x2160}-{baseline-final,px16-final,px8-final}/view.png`.
+- Matching `no-far` (beach: `no-far-final`) directories are the marginal-HW controls.
+
+The report artifacts are `costs.json`, `levels.json`, `mountain-errors.json`,
+`reconstruction-errors.json`, `verify-cook.log`, and the exact `arguments.json` in each run.
+All are scratch artifacts, never committed. The initial 8-level prototype is retained for audit.
+
+**Tests.** Three new CPU cases: 154,689 assertions; arithmetic at both actual resolutions,
+starts/spacings, override precedence, missing/error tables, failure immutability, the forest's
+one/two-pixel refusal, reach preservation without an extra coarsest level, and the sixteen-level
+refusal. The unchanged moving-square CPU tiling proof passes 1,338,928 assertions. The Clang
+container passed all 13 selected CTest tests in 171.73 s after two double-promotion errors found
+on its first build were corrected. Its two worktree volumes were pruned (3.65 GB). Windows
+affected qualification is recorded in the scratch REPORT after the final documentation commit.
+
+Range histogram (box counts; upper bin edges in metres):
 
 | spacing | <=1 | (1,2] | (2,4] | (4,8] | (8,16] | (16,32] | (32,64] | (64,128] | >128 |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
 | 16 | 2 | 15 | 94 | 788 | 3610 | 1422 | 41 | 23 | 0 |
 | 32 | 0 | 0 | 1 | 20 | 193 | 912 | 346 | 20 | 0 |
 | 64 | 0 | 0 | 0 | 0 | 4 | 49 | 228 | 87 | 6 |
+
+At the **actual baseline starts**, before cluster simplification or seam fans, the diagnostics project as follows (single-view 55-degree FOV; two pixels allow twice the metre thresholds):
+
+| spacing m | start m | one pixel m, 1440p / 2160p | box-deviation p95 in pixels, 1440p / 2160p | reconstructed-cell p95 in pixels, 1440p / 2160p |
+|---:|---:|---:|---:|---:|
+| 16 | 1040 | 0.752 / 0.501 | 13.93 / 20.89 | 1.69 / 2.54 |
+| 32 | 2048 | 1.481 / 0.987 | 14.30 / 21.46 | 3.36 / 5.04 |
+| 64 | 4096 | 2.961 / 1.974 | 14.27 / 21.41 | 6.78 / 10.17 |
