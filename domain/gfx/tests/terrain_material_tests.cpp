@@ -91,7 +91,7 @@ TEST_CASE(
     const f32 py = -static_cast<f32>(i) * 0.25f;
     const f32 pz = static_cast<f32>(i) * 0.125f;
     const i32 cell[] = {(i & 1) == 0 ? 6548 : -6548, 0, 1562500};
-    const f64 rest[] = {(static_cast<f64>(63.999f) + static_cast<f64>(0.00001f) + px) * 1000.0,
+    const f64 rest[] = {(static_cast<f64>(63.999f) + static_cast<f64>(0.00001f) + static_cast<f64>(px)) * 1000.0,
                         (0.125 + static_cast<f64>(py)) * 1000.0,
                         (-0.25 + static_cast<f64>(pz)) * 1000.0};
     const u32 axis = i % 3;
@@ -112,20 +112,23 @@ TEST_CASE(
     }
     const Vec4* got = values + 3 * k_count + 5 * i;
     const f64 blend = test::terrain_hex_blend_reference(hex, 0.5, x);
-    worst_blend = std::max(worst_blend, std::abs(blend - got[4].x));
+    worst_blend = std::max(worst_blend, std::abs(blend - static_cast<f64>(got[4].x)));
     // Field by field only away from the triangle's edges, where float and double may pick
     // different (zero-weight) corners.
     const f64 edge = std::min({hex.frac[0], hex.frac[1], 1 - hex.frac[0], 1 - hex.frac[1],
                                std::abs(1 - hex.frac[0] - hex.frac[1])});
     if (edge < 1e-3) continue;
     ++compared;
-    const f64 fields[][2] = {
-        {hex.weight[0], got[0].x},   {hex.weight[1], got[0].y},   {hex.weight[2], got[0].z},
-        {hex.gain, got[0].w},        {hex.shift[0][0], got[1].x}, {hex.shift[0][1], got[1].y},
-        {hex.shift[1][0], got[1].z}, {hex.shift[1][1], got[1].w}, {hex.shift[2][0], got[2].x},
-        {hex.shift[2][1], got[2].y}, {hex.turn[0][0], got[2].z},  {hex.turn[0][1], got[2].w},
-        {hex.turn[1][0], got[3].x},  {hex.turn[1][1], got[3].y},  {hex.turn[2][0], got[3].z},
-        {hex.turn[2][1], got[3].w}};
+    const f64 want[] = {hex.weight[0],   hex.weight[1],   hex.weight[2],   hex.gain,
+                        hex.shift[0][0], hex.shift[0][1], hex.shift[1][0], hex.shift[1][1],
+                        hex.shift[2][0], hex.shift[2][1], hex.turn[0][0],  hex.turn[0][1],
+                        hex.turn[1][0],  hex.turn[1][1],  hex.turn[2][0],  hex.turn[2][1]};
+    const auto* have = reinterpret_cast<const f32*>(got);  // four Vec4s: 16 floats in order
+    f64 fields[16][2];
+    for (u32 j = 0; j < 16; ++j) {
+      fields[j][0] = want[j];
+      fields[j][1] = static_cast<f64>(have[j]);
+    }
     for (const auto& f : fields)
       worst_field = std::max(worst_field, std::abs(f[0] - f[1]));
   }
