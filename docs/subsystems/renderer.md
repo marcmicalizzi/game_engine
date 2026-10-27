@@ -2617,6 +2617,44 @@ vertices); and on a GPU, with the ring holding the four tiles round the origin a
 the forest's edge: **937 pixels of far trees** where the scene without the far forest drew none (tree
 pixels 1,090 against 174), **no far pixel in a tile the tail holds**, none at all with every tile
 held, and more with none held (RTX 5090, `msvc-debug`, 2026-10-31).
+## Relief
+
+**Contract, 2026-10-26 (R105, proposed; the engine path is not started).**
+[Ground relief](../experiments/ground-relief.md) records the sources, authoring choices and
+sampling limits. Relief is opt-in; absence must preserve existing geometry, material bytes,
+cache identities and captures.
+
+| Tier | Representation | Picture and self-occlusion | Cascades and rays | Collision | Reference |
+|---|---|---|---|---|---|
+| Authored landform | Source heightfield at its recorded spacing and filtered far chain | Actual triangles and silhouette | The selected triangles | Existing sampled ground | Selected geometry |
+| Synthesized relief | Deterministic height over integer world millimetres, scene seed, mask-level substrate coverage and physical feature parameters | Near lattice vertices displaced in the terrain pool; normal from the same displaced central differences | Every consumer reads the pool's positions; no alternate shadow or RT surface | CPU double mirror at the support lattice; add after the base fields' time blend | Same displaced cut; no shading surrogate for geometry |
+| Sub-lattice detail | Layer normal maps and the shared sand detail function, filtered by pixel footprint | Shading only, no silhouette or geometric self-occlusion | Alters receiver shading only, never the occluder | Does not move support | Same shading function, sampled for convergence |
+
+No parallax tier is selected. A single-valued relief field cannot model overhangs, loose logs,
+root plates or detached boulders. Those remain placed geometry. Relief coverage is mip-0 mask
+coverage, independent of the camera and of texture-height blending; texture height remains
+an optical blend input. A shared vertex uses the **named coarser level's** spacing, height,
+relief and normal on both tiles (ADR-0050), including a corner shared by four levels.
+
+**Sampling rule.** For feature width w and lattice spacing s, multiply its amplitude by
+`F(w/s) = smoothstep(2, 4, w/s)`: zero at two samples, whole at four, continuous between.
+For an enabled maximum spacing M also apply `1 - smoothstep(M/2, M, s)`; s >= M does no
+relief work. The default M is four times the finest spacing, leaving the two finest dyadic
+rings eligible. Each profile is bounded by A in absolute height and mask weights have total
+at most one, so a point's change between spacings s and 2s is bounded by the sum of
+`weight * A * abs(filter(s) - filter(2s))`, never more than the weighted amplitude budget.
+This is an amplitude-continuity bound, **not proof of temporal pop-free LOD**: changing a
+layout discretely still changes triangles. Ring-crossing captures must establish whether a
+spatial/temporal morph is needed before accepting the result.
+
+**Geometry pays for what it carries.** Relief must be present in rest-mesh bounds and LOD
+errors, with conservative padding for the difference between the field and the rest cut.
+Filtering in the pool alone over a flat simplified DAG is insufficient. Far levels and
+levels past the threshold have no relief field, kernel work or allocation. The finer near
+option must feed collision's spacing as well as rendering's. Lattice-point equality alone
+does not establish contact equality between vertices of differently simplified triangles;
+walker acceptance must check that error explicitly. Pool overflow and pair admission remain
+visible refusals/counters, never evidence that the full relief was drawn.
 
 ## The sand close up
 
