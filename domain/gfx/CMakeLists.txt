@@ -68,7 +68,7 @@ engine_shaders(NAME gfx_tests
   SOURCES shaders/fill.slang shaders/scale.slang shaders/bindless_copy.slang shaders/bda_fill.slang
           shaders/triangle.slang shaders/sky_probe.slang shaders/reconstruct_probe.slang
           shaders/world_eye_probe.slang shaders/terrain_material_probe.slang
-          shaders/terrain_mask_probe.slang)
+          shaders/terrain_mask_probe.slang shaders/deform_alloc_reference.slang)
 if(TARGET engine_gfx_tests)
   target_sources(engine_gfx_tests PRIVATE tests/compute_tests.cpp tests/frame_tests.cpp
                                           tests/pipeline_cache_tests.cpp
@@ -82,7 +82,7 @@ if(TARGET engine_gfx_tests)
                                           tests/rt_tests.cpp tests/rt_cluster_tests.cpp
                                           tests/clas_records_tests.cpp tests/scene_tests.cpp
                                           tests/deform_tests.cpp tests/skin_tests.cpp tests/morph_deform_tests.cpp
-                                          tests/flora_deform_tests.cpp
+                                          tests/flora_deform_tests.cpp tests/deform_alloc_tests.cpp
                                           tests/sampling_tests.cpp tests/stream_tests.cpp
                                           tests/ground_detail_tests.cpp
                                           tests/ground_detail_preview_tests.cpp

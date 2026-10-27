@@ -944,11 +944,15 @@ struct DeformParams {
 };
 static_assert(sizeof(DeformParams) == 128);
 
-// Mirrors AllocParams in deform_alloc.slang: the push constants of the pool's allocator. 72
-// bytes. **One workgroup**, once per run of the visible list, looping over the views inside it:
-// the allocation is a prefix sum over the visible entries' vertex counts, and doing it in one
-// workgroup in a fixed order (entry, then view, then run) is what makes *which* entries overflow
-// a function of the cut rather than of how the GPU happened to schedule the dispatch.
+// Mirrors AllocParams in deform_alloc.slang: the push constants of the pool's allocator, 96
+// bytes, shared by its three passes (R104): `deform_alloc_tiles_main` and
+// `deform_alloc_place_main` over `groups` workgroups, `deform_alloc_scan_main` in one, once per
+// run of the visible list, covering every view of the run. The allocation is a prefix sum over the
+// visible entries' vertex counts with a placement rule — an entry is placed when what was
+// *placed* so far plus its own fits the budget — taken in a fixed order (tile of 256 entries, then
+// view, then run), which is what makes *which* entries overflow a function of the cut rather than
+// of how the GPU happened to schedule the dispatch. The answer is word for word the one the
+// single-workgroup allocator before it gave (`deform_alloc_reference.slang`, the tests' reference).
 struct DeformAllocParams {
   u64 clusters = 0;        // geometry::ClusterDesc[]
   u64 instances = 0;       // InstanceDesc[]
@@ -972,11 +976,30 @@ struct DeformAllocParams {
   // (`eye`), so the cascade draws it from the grid (`k_no_pool_slot`). Took the pad word.
   f32 rest_beyond_m = -1.0f;
   u64 eye = 0;  // FrameEye*: the frame's origin, read only for a positive `rest_beyond_m`
+  // u32x2 per tile of 256 entries of this dispatch (`deform_alloc_tile_capacity`): the scratch
+  // the three passes hand the tiles' totals and cursors through. One buffer serves every dispatch
+  // of the frame, since the render graph orders them.
+  u64 blocks = 0;
+  u32 groups = 0;  // workgroups of passes 1 and 3: `deform_alloc_group_count(views, pair_count)`
+  u32 pad = 0;
 };
-static_assert(sizeof(DeformAllocParams) == 80);
+static_assert(sizeof(DeformAllocParams) == 96);
 
 inline constexpr u32 k_deform_workgroup_size = 128;   // numthreads in deform.slang
 inline constexpr u32 k_deform_alloc_workgroup = 256;  // numthreads in deform_alloc.slang
+// The most workgroups passes 1 and 3 dispatch; past it they stride over the tiles. Enough to fill
+// a 170-SM card several groups deep, and few enough that the groups a short cut leaves without a
+// tile (they read the run's count words and leave) cost nothing measurable.
+inline constexpr u32 k_deform_alloc_max_groups = 2048;
+// Tiles a dispatch over `views` runs of at most `pair_count` entries can have: every view's run
+// rounded up to whole tiles.
+inline constexpr u32 deform_alloc_tile_capacity(u32 views, u32 pair_count) noexcept {
+  return views * ((pair_count + k_deform_alloc_workgroup - 1) / k_deform_alloc_workgroup);
+}
+inline constexpr u32 deform_alloc_group_count(u32 views, u32 pair_count) noexcept {
+  const u32 tiles = deform_alloc_tile_capacity(views, pair_count);
+  return tiles == 0 ? 1u : (tiles < k_deform_alloc_max_groups ? tiles : k_deform_alloc_max_groups);
+}
 
 // Mirrors HizParams in hiz_build.slang: the push constants of **one dispatch**, which folds a
 // 32 x 32 tile of mip `src_mip` down through up to `k_hiz_levels_per_dispatch` further mips in

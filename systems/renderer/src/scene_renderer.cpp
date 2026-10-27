@@ -199,7 +199,9 @@ void SceneRenderer::Pipelines::destroy(const gfx::Device& device) noexcept {
   gfx::destroy_compute_pipeline(device, expand);
   gfx::destroy_compute_pipeline(device, deform);
   gfx::destroy_compute_pipeline(device, deform_cache);
-  gfx::destroy_compute_pipeline(device, deform_alloc);
+  gfx::destroy_compute_pipeline(device, deform_alloc_tiles);
+  gfx::destroy_compute_pipeline(device, deform_alloc_scan);
+  gfx::destroy_compute_pipeline(device, deform_alloc_place);
   gfx::destroy_compute_pipeline(device, hiz);
   gfx::destroy_compute_pipeline(device, records);
   gfx::destroy_compute_pipeline(device, record_ranges);
@@ -830,8 +832,14 @@ bool SceneRenderer::create_pipelines(std::string* error) {
         (scene_->morphed() && !gfx::create_compute_pipeline(
                                   device, deform->module, "deform_cache_main", {},
                                   sizeof(gfx::DeformParams), pipelines_.deform_cache, error)) ||
-        !gfx::create_compute_pipeline(device, alloc->module, "deform_alloc_main", {},
-                                      sizeof(gfx::DeformAllocParams), pipelines_.deform_alloc,
+        !gfx::create_compute_pipeline(device, alloc->module, "deform_alloc_tiles_main", {},
+                                      sizeof(gfx::DeformAllocParams), pipelines_.deform_alloc_tiles,
+                                      error) ||
+        !gfx::create_compute_pipeline(device, alloc->module, "deform_alloc_scan_main", {},
+                                      sizeof(gfx::DeformAllocParams), pipelines_.deform_alloc_scan,
+                                      error) ||
+        !gfx::create_compute_pipeline(device, alloc->module, "deform_alloc_place_main", {},
+                                      sizeof(gfx::DeformAllocParams), pipelines_.deform_alloc_place,
                                       error)) {
       return false;
     }
@@ -1915,9 +1923,9 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
   ViewFrame view_frames[k_max_views];
   gfx::ClusterDrawParams draws[k_max_views][k_visible_runs];
   gfx::DeformParams deform_params[k_max_views][k_visible_runs];
-  // One allocation block per run, not per view: the allocator's dispatch is a single workgroup
-  // that walks every view of the run, because the pool's budget is the frame's and the order the
-  // blocks are handed out in has to be a function of the cut and not of the GPU's scheduling.
+  // One allocation block per run, not per view: the allocator's three passes cover every view of
+  // the run in a fixed order, because the pool's budget is the frame's and the order the blocks
+  // are handed out in has to be a function of the cut and not of the GPU's scheduling.
   gfx::DeformAllocParams alloc_params[k_visible_runs];
   auto* cull_blocks = static_cast<gfx::CullParams*>(params_[slot].mapped);
   auto* resolve_bytes = static_cast<u8*>(resolves_[slot].mapped);
@@ -2611,14 +2619,17 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
     shadow_alloc.rest_beyond_m = flora_rest_pose_cascades_m_tunable();
     shadow_alloc.eye = params_[slot].address + sizeof(gfx::CullParams) * (views * 2) +
                        gfx::k_cull_params_eye_offset;
+    shadow_alloc.blocks = scene.deform_blocks.address;
+    shadow_alloc.groups = gfx::deform_alloc_group_count(cascades_drawn, pair_stride);
   }
 
   // ---- the pool's allocator, one block per run ------------------------------------------------
   //
   // The budget is the *frame's*, so the runs share one cursor: run 0 resets it and the later runs
   // carry it forward across the barriers the render graph already puts between them. Each block
-  // covers every view of its run in one dispatch of one workgroup, which is what lets the cursor
-  // advance by what was actually placed rather than by what was asked for. While the cut fits the
+  // covers every view of its run in the allocator's three passes (R104: the tiles' scans, the
+  // tiles' cursors in one workgroup, the blocks), which keep the cursor advancing by what was
+  // actually placed rather than by what was asked for. While the cut fits the
   // budget the order the blocks come out in does not reach the picture — every entry reads its
   // own block — and a capture is byte-identical; past the budget it does, and it is the cull
   // pass's atomics, so it is not reproducible (`deform_alloc.slang` says so at length).
@@ -2638,6 +2649,8 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
       a.views = views;
       a.first_entry = scene.visible_base(0, run);
       a.reset = run == 0 ? 1u : 0u;
+      a.blocks = scene.deform_blocks.address;
+      a.groups = gfx::deform_alloc_group_count(views, pair_stride);
     }
   }
 
@@ -2777,11 +2790,13 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
   gfx::RgBuffer rg_pool{};
   gfx::RgBuffer rg_slots{};
   gfx::RgBuffer rg_alloc{};
+  gfx::RgBuffer rg_blocks{};  // the allocator's tile scratch (R104)
   gfx::RgBuffer rg_deform_args{};
   if (resolved_.deform_pass) {
     rg_pool = graph.import_buffer("deform pool", scene.deform_pool);
     rg_slots = graph.import_buffer("deform slots", scene.deform_slots);
     rg_alloc = graph.import_buffer("deform alloc", scene.deform_alloc);
+    rg_blocks = graph.import_buffer("deform blocks", scene.deform_blocks);
     rg_deform_args = graph.import_buffer("deform args", scene.deform_args);
   }
   // The terrain levels' fields: every field buffer this frame's table names, which the pool pass
@@ -3265,31 +3280,65 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
   // Run 2 is the software rasterizer's, or with shadow casters the casters' (gfx::k_caster_run):
   // either way counted in the software argument blocks, so the allocator and the pass read the
   // same word for both.
-  auto add_deform = [&](u32 run) {
-    const u64 source_offset = run == 2 ? 0 : u64{count_index} * sizeof(u32);
-    const gfx::RgBuffer rg_source = run == 2 ? rg_sw_args : rg_args[run];
-    // Suballocate the pool for this run of every view before anything writes or reads it: one
-    // workgroup, a prefix sum over the entries' vertex counts, and one `deform_slots` word per
-    // entry saying where its block is (or that it did not fit).
+  // **The pool's allocator** (`deform_alloc.slang`, R104): three passes over tiles of 256 entries
+  // — each tile's scan in parallel, the tiles' cursors in one workgroup, each entry's block in
+  // parallel — with the graph's barriers between them, under one timer zone that opens in the
+  // first and closes in the third. `params` lives as long as the graph's recording.
+  auto add_alloc = [&](const char* zone, gfx::RgBuffer rg_source,
+                       const gfx::DeformAllocParams* params) {
+    const auto record = [params](gfx::CommandList cb, const gfx::ComputePipeline& pipeline,
+                                 u32 groups) {
+      cb.bind_pipeline(gfx::BindPoint::Compute, pipeline.pipeline);
+      cb.push_constants(pipeline.layout, gfx::ShaderStage::Compute, 0,
+                        sizeof(gfx::DeformAllocParams), params);
+      cb.dispatch(groups, 1, 1);
+    };
     graph.add_pass(
-        "deform alloc", gfx::PassKind::Compute,
+        "deform alloc tiles", gfx::PassKind::Compute,
         [&, rg_source](gfx::PassBuilder& b) {
           b.read(rg_source, gfx::Access::ComputeRead);
           b.read(rg_visible, gfx::Access::ComputeRead);
           b.write(rg_slots, gfx::Access::ComputeWrite);
-          b.write(rg_alloc, gfx::Access::ComputeReadWrite);
+          b.write(rg_blocks, gfx::Access::ComputeWrite);
           read_pool(b, gfx::Access::ComputeRead);
         },
-        [&, run](gfx::CommandList cb, gfx::RenderGraph&) {
-          // Its own zone rather than a view's: one dispatch covers every view of the run, so
-          // charging it to view 0 would put the whole set's allocation on one monitor's row.
-          timer.begin(cb, "deform alloc");
-          cb.bind_pipeline(gfx::BindPoint::Compute, pipelines.deform_alloc.pipeline);
-          cb.push_constants(pipelines.deform_alloc.layout, gfx::ShaderStage::Compute, 0,
-                            sizeof(gfx::DeformAllocParams), &alloc_params[run]);
-          cb.dispatch(1, 1, 1);
+        [&, zone, record, params](gfx::CommandList cb, gfx::RenderGraph&) {
+          timer.begin(cb, zone);
+          record(cb, pipelines.deform_alloc_tiles, params->groups);
+        });
+    graph.add_pass(
+        "deform alloc scan", gfx::PassKind::Compute,
+        [&, rg_source](gfx::PassBuilder& b) {
+          b.read(rg_source, gfx::Access::ComputeRead);
+          b.read(rg_slots, gfx::Access::ComputeRead);
+          b.write(rg_blocks, gfx::Access::ComputeReadWrite);
+          b.write(rg_alloc, gfx::Access::ComputeReadWrite);
+        },
+        [&, record](gfx::CommandList cb, gfx::RenderGraph&) {
+          record(cb, pipelines.deform_alloc_scan, 1);
+        });
+    graph.add_pass(
+        "deform alloc place", gfx::PassKind::Compute,
+        [&, rg_source](gfx::PassBuilder& b) {
+          b.read(rg_source, gfx::Access::ComputeRead);
+          b.read(rg_blocks, gfx::Access::ComputeRead);
+          b.write(rg_slots, gfx::Access::ComputeReadWrite);
+          b.write(rg_alloc, gfx::Access::ComputeReadWrite);
+        },
+        [&, record, params](gfx::CommandList cb, gfx::RenderGraph&) {
+          record(cb, pipelines.deform_alloc_place, params->groups);
           timer.end(cb);
         });
+  };
+  auto add_deform = [&](u32 run) {
+    const u64 source_offset = run == 2 ? 0 : u64{count_index} * sizeof(u32);
+    const gfx::RgBuffer rg_source = run == 2 ? rg_sw_args : rg_args[run];
+    // Suballocate the pool for this run of every view before anything writes or reads it: a
+    // prefix sum over the entries' vertex counts in three passes, and one `deform_slots` word per
+    // entry saying where its block is (or that it did not fit). Its own zone rather than a view's:
+    // the passes cover every view of the run, so charging them to view 0 would put the whole set's
+    // allocation on one monitor's row.
+    add_alloc("deform alloc", rg_source, &alloc_params[run]);
     graph.add_pass(
         "deform args", gfx::PassKind::Transfer,
         [&, rg_source](gfx::PassBuilder& b) {
@@ -3526,23 +3575,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
     if (deform_on) {
       // The cascades' entries of a deformed instance get pool blocks of their own, allocated after
       // the camera's and deformed by the same pass, so a moving character casts its pose.
-      graph.add_pass(
-          "shadow deform alloc", gfx::PassKind::Compute,
-          [&](gfx::PassBuilder& b) {
-            b.read(rg_shadow_args, gfx::Access::ComputeRead);
-            b.read(rg_visible, gfx::Access::ComputeRead);
-            b.write(rg_slots, gfx::Access::ComputeWrite);
-            b.write(rg_alloc, gfx::Access::ComputeReadWrite);
-            read_pool(b, gfx::Access::ComputeRead);
-          },
-          [&](gfx::CommandList cb, gfx::RenderGraph&) {
-            timer.begin(cb, "shadow");
-            cb.bind_pipeline(gfx::BindPoint::Compute, pipelines.deform_alloc.pipeline);
-            cb.push_constants(pipelines.deform_alloc.layout, gfx::ShaderStage::Compute, 0,
-                              sizeof(gfx::DeformAllocParams), &shadow_alloc);
-            cb.dispatch(1, 1, 1);
-            timer.end(cb);
-          });
+      add_alloc("shadow", rg_shadow_args, &shadow_alloc);
       graph.add_pass(
           "shadow deform args", gfx::PassKind::Transfer,
           [&](gfx::PassBuilder& b) {

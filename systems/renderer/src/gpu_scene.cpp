@@ -679,6 +679,14 @@ bool GpuScene::relayout(std::string* error) {
   relayout_pending_ = false;
   if (flora_grow_ && !grow_flora_tail(error)) return false;
   // The pool's per-entry slots are laid out by the stride, and every mesh record names them.
+  // The allocator's tile scratch follows the same stride (R104).
+  if (deform_ && deform_blocks.size < deform_block_bytes()) {
+    gfx::destroy_buffer(*device_, deform_blocks);
+    if (!gfx::create_buffer(*device_, deform_block_bytes(), k_address, false, deform_blocks,
+                            error)) {
+      return false;
+    }
+  }
   if (deform_ && deform_slots.size < u64{visible_entries()} * sizeof(u32)) {
     gfx::destroy_buffer(*device_, deform_slots);
     if (!gfx::create_buffer(*device_, u64{visible_entries()} * sizeof(u32), k_address, false,
@@ -1872,6 +1880,7 @@ bool GpuScene::upload_geometry(const ResolvedSettings& resolved, std::string* er
             device, sizeof(gfx::DeformAlloc),
             k_address | gfx::BufferUsage::TransferSrc | gfx::BufferUsage::TransferDst, false,
             deform_alloc, error) &&
+        gfx::create_buffer(device, deform_block_bytes(), k_address, false, deform_blocks, error) &&
         gfx::create_buffer(
             device, u64{gfx::k_draw_args_bytes} * (k_visible_runs * view_count_ + cascade_count_),
             k_args, false, deform_args, error);
@@ -4555,6 +4564,7 @@ void GpuScene::destroy() noexcept {
   gfx::destroy_buffer(device, deform_args);
   gfx::destroy_buffer(device, deform_table);
   gfx::destroy_buffer(device, deform_alloc);
+  gfx::destroy_buffer(device, deform_blocks);
   gfx::destroy_buffer(device, deform_slots);
   gfx::destroy_buffer(device, deform_pool);
   for (u32 i = 0; i < 2; ++i) {

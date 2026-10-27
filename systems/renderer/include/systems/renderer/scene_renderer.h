@@ -745,7 +745,11 @@ class SceneRenderer {
     // The static shape stage over one instance's **whole mesh**, not over the cut: a cache the
     // next frame's cut can start from has to cover every cluster the cut might name.
     gfx::ComputePipeline deform_cache;
-    gfx::ComputePipeline deform_alloc;
+    // The pool's allocator, three passes of one shader (R104): the tiles' scans, the tiles'
+    // cursors, the blocks.
+    gfx::ComputePipeline deform_alloc_tiles;
+    gfx::ComputePipeline deform_alloc_scan;
+    gfx::ComputePipeline deform_alloc_place;
     gfx::ComputePipeline hiz;
     gfx::ComputePipeline records;
     gfx::ComputePipeline record_ranges;

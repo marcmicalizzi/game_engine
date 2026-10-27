@@ -387,6 +387,13 @@ class GpuScene {
   u32 visible_entries() const noexcept {
     return (k_visible_runs * view_count_ + cascade_count_) * pair_stride_;
   }
+  // Bytes of `deform_blocks`: two words per tile of 256 entries of the largest allocator dispatch,
+  // a camera run over every view or the cascades' run over every cascade (R104).
+  u64 deform_block_bytes() const noexcept {
+    const u32 widest = view_count_ > cascade_count_ ? view_count_ : cascade_count_;
+    const u32 tiles = gfx::deform_alloc_tile_capacity(widest, pair_stride_);
+    return u64{tiles > 0 ? tiles : 1u} * 2 * sizeof(u32);
+  }
 
   // ---- the sun's cascaded shadow maps (renderer.md, "Shadows") --------------------------------
   //
@@ -970,6 +977,9 @@ class GpuScene {
   gfx::BufferResource deform_pool;   // f32[3 * deform_pool_vertices]; shared by every view
   gfx::BufferResource deform_slots;  // u32 per entry of the visible list: its pool vertex base
   gfx::BufferResource deform_alloc;  // gfx::DeformAlloc: the frame's cursor and overflow counters
+  // u32x2 per tile of 256 entries: the allocator's three passes hand the tiles' totals and cursors
+  // through it (R104, `deform_block_bytes`). Scratch within a dispatch; every dispatch reuses it.
+  gfx::BufferResource deform_blocks;
   gfx::BufferResource deform_table;  // gfx::DeformDesc[] indexed by InstanceDesc::deform
   gfx::BufferResource deform_args;   // one indirect dispatch block per (view, run)
   // Skinning: the frame's bone matrices and the frame's copy of the deform table, both

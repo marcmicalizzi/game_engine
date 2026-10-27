@@ -90,7 +90,10 @@ ENGINE_EXPECT_SIZE(96, 8, gfx::TerrainLevelDesc);
 // view inside it — so it carries the run and the view count rather than a per-view block.
 // 80, not 72 (R95): `rest_beyond_m` took the pad word and `eye` was added, so the cascades'
 // dispatch gives no block to an entry whose caster policy or distance says it casts at rest.
-ENGINE_EXPECT_SIZE(80, 8, gfx::DeformAllocParams);
+// 96, not 80 (R104): the allocator became three passes over tiles of 256 entries, and `blocks`
+// (the tiles' scratch) and `groups` (passes 1 and 3's group count, which they stride by) were
+// added, with a pad word to keep the eight-byte alignment. Still well inside 128 bytes.
+ENGINE_EXPECT_SIZE(96, 8, gfx::DeformAllocParams);
 
 // Unchanged at 96: `deform` took one of the three pad words and `bounds_padding` a second, so a
 // deformed instance can say how far its vertices leave their rest positions without the record
