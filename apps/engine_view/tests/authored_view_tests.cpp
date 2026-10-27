@@ -735,8 +735,11 @@ TEST_CASE("engine-view: a streamed world's first frames under traced shadows are
   REQUIRE(write_text(tmp.file("path.json"),
                      R"({"format":"engine.camera-path.v1","name":"across","fps":10,"keys":[)"
                      R"({"time":0,"position":[-60,14,10],"target":[30,2,0]}]})"));
-  const Run run = traced_dense(tmp, "bench.jsonl", "first.png", 60,
-                               {"--tunable", "renderer.rt.initial_clusters=256"});
+  // The frame's own builds: the grove is rigid, so with the cluster cache (renderer.md, "The
+  // resident cluster structure cache") it would build none and have nothing to size.
+  const Run run = traced_dense(
+      tmp, "bench.jsonl", "first.png", 60,
+      {"--tunable", "renderer.rt.initial_clusters=256", "--tunable", "renderer.rt.cache=false"});
   if (run.exit_code == 3) {
     MESSAGE("engine-view unavailable here: " << run.output);
     return;
@@ -836,13 +839,16 @@ TEST_CASE("engine-view: past the budget the chain drops the same structures ever
   REQUIRE(write_text(tmp.file("path.json"),
                      R"({"format":"engine.camera-path.v1","name":"across","fps":10,"keys":[)"
                      R"({"time":0,"position":[-60,14,10],"target":[30,2,0]}]})"));
-  const Run a = traced_dense(tmp, "a.jsonl", "a.png", 3, {"--rt-budget-mib", "16"});
+  // The frame's own builds past their budget: without the cluster cache, which would build none.
+  const Run a = traced_dense(tmp, "a.jsonl", "a.png", 3,
+                             {"--rt-budget-mib", "16", "--tunable", "renderer.rt.cache=false"});
   if (a.exit_code == 3) {
     MESSAGE("engine-view unavailable here: " << a.output);
     return;
   }
   REQUIRE_MESSAGE(a.exit_code == 0, a.output);
-  const Run b = traced_dense(tmp, "b.jsonl", "b.png", 3, {"--rt-budget-mib", "16"});
+  const Run b = traced_dense(tmp, "b.jsonl", "b.png", 3,
+                             {"--rt-budget-mib", "16", "--tunable", "renderer.rt.cache=false"});
   REQUIRE_MESSAGE(b.exit_code == 0, b.output);
   for (const Run* run : {&a, &b}) {
     const JsonValue summary = summary_of(run->output);
