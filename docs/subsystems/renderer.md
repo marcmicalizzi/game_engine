@@ -697,9 +697,58 @@ millimetres), blends the axis projections by the fourth power of the surface nor
 components, and projects each normal map's slopes into the surface tangent plane. A flat normal
 map preserves the input normal on every slope. Phase comes from integer world cells and the
 frame-local point; map coordinates also come from that point, avoiding chunk-dependent half-UV
-rounding at tile/LOD boundaries. Normals and fine colour/roughness fade across the authored
-near/far eye distances to the layer's linear texel means. `Map` retains its painting, filtered
-by the existing texture mips. These are content settings, not geological altitude rules.
+rounding at tile/LOD boundaries. A tiled layer's normals and fine colour/roughness fade across the
+authored near/far eye distances to the layer's linear texel means; a stochastic layer does not
+fade (below). `Map` retains its painting, filtered by the existing texture mips. These are content
+settings, not geological altitude rules.
+
+#### Stochastic sampling
+
+A triplanar layer may name `"sampling": "Stochastic"` (R96, scene schema `TerrainMaterialLayer`
+version 3; the default `Tiled` draws every scene before it byte for byte and keeps its cache key).
+Each projection then reads its maps at three tiles of a triangle lattice, each tile at its own
+random offset, blends them by Burley's exponentiated weights (power 7) and Heitz and Neyret's
+variance-preserving operator — `mean + (Σ wᵢ (xᵢ − mean)) / √(Σ wᵢ²)` — applied to the texels
+themselves, and saturates the result. **Every map takes the same three places and the same
+weights**, so colour, roughness, height and normal stay coordinated; colour, roughness and height
+blend about the layer's own means (colour and roughness as before; the height map's mean is carried
+in the layer's container entry and moved by upload to `uv_offset.w`), the normal map's slopes
+about zero, the mean slope of any tileable height field. The method, the four papers it is drawn
+from and the numbers it was chosen by are in
+[stochastic terrain sampling](../experiments/stochastic-terrain-sampling-2026-10-26.md); it needs
+no lookup table, no second texture and no container section, and adds no texture residency.
+
+- **No fade.** The lattice leaves no repeat for distance to reveal, so a stochastic layer keeps
+  its detail to the horizon: far pixels read the lattice at the mip their footprint selects
+  (`SampleGrad` with the pixel's own UV derivatives, turned with the tile, never the derivatives of
+  the jittered UV), and `detail_near_m`/`detail_far_m` apply to tiled layers only. Past the
+  distance where a pixel covers a whole repeat the mip is the image's average, and the ground is
+  the mean colour there as before.
+- **Anchored in integers.** The lattice is Deliot and Heitz's skew with 2√3 replaced by 97/28 so
+  that a lattice point's integer part comes from the frame's integer cell in 64-bit integers and
+  only the frame-local rest is a float (ADR-0053); the tile hash is integer-only. Every tile, ring,
+  far level, cut and eye cell that draws a point reads the same three tiles.
+- **Direction.** `rotation_deg` (0 to 180, default 0) turns each tile by a hashed angle up to that
+  bound, and its normal map's stored slope pair by the same rotation (the map's y is the image's up,
+  opposite the UV's v, so in the stored frame the turn is R itself). With 0 nothing turns, so
+  strata, a road's ruts or a directed needle bed keep their direction; a texture with a direction
+  should keep 0 or stay tiled. A `Map` layer cannot be stochastic, and a turn on a tiled layer is
+  refused.
+- **Cost.** Three reads per map per projection where tiling makes one, but the stochastic branch
+  skips a projection whose share is under 1/128 and renormalizes the rest: flat and gently sloped
+  ground reads one projection, nine reads per layer (colour, metallic-roughness with height, normal
+  at three tiles) — the nine a tiled layer makes reading all three projections; a 45° slope reads
+  18 and a three-way corner 27. The resolve's measured cost on the forest is on the experiments
+  page.
+- **What holds it.** `gfx: terrain material phases …` checks the GPU's lattice, weights, shifts,
+  turns and blend against the double mirror in `domain/gfx/tests/terrain_hex_reference.h` at an eye
+  100,000 km out (worst 9 × 10⁻⁶); the CPU cases on the mirror check the statistics (mean to 0.005,
+  variance to 4%, histogram distance below the linear blends'), a directed texture's direction
+  without a turn and the normals' turn against finite differences; `world tiles: a stochastic
+  layer is one function of the world point …` renders albedo across rings, cuts and two eye cells
+  and finds every pixel within 0.26 codes on average of the reference's read at its world point;
+  `renderer: a stochastic layer shades the same ground in the resolve and the path tracer` holds
+  the three readers together by FLIP.
 
 The normal resolve, ray-shadow resolve and reference path tracer share `terrain_material.slang`.
 The water volume tier evaluates it at the analytic bottom hit too; this does not add submerged
@@ -715,8 +764,9 @@ material's; now only an alpha-tested material reads `uv_offset.z`, and a root is
 Each layer adds one table entry with ordinary texture slots, its terrain fields set and read by
 name (`gfx::set_terrain_layer`, `terrain_layer_*` in the shader): its occlusion slot carries
 coverage and is never applied as ambient occlusion; cold containers transport the decoded
-colour/roughness means in the unreferenced layer materials' emissive and metallic factors, and
-upload moves them into the layer's otherwise-unused UV transform. `tools/lint.ps1`
+colour/roughness means in the unreferenced layer materials' emissive and metallic factors (and a
+stochastic layer's height mean in its alpha cutoff), and upload moves them into the layer's
+otherwise-unused UV transform (the height mean and the turn into `uv_offset.zw`). `tools/lint.ps1`
 (`terrain-ungated`) holds every shader call of `sample_terrain_material` behind the root's flag.
 The map frame's offset is converted to float exactly to 17,000 km (split at whole 1,024 mm past
 16.7 km from the map's corner, where a float no longer holds the millimetre; W68's arithmetic,

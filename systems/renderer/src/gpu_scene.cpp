@@ -3634,6 +3634,14 @@ bool GpuScene::upload_materials(const ResolvedSettings& resolved, std::string* e
             fields.weight = layer.weight;
             fields.porosity = layer.porosity;
             fields.pitch_mm = std::round(layer.tile_m * 1000.0f);
+            // A stochastic layer (R96): its largest turn, and its height map's mean, which the
+            // content build carried in the layer's alpha cutoff (terrain_materials.cpp).
+            if (layer.sampling == scene::TerrainSampling::Stochastic &&
+                layer.projection == scene::TerrainProjection::Triplanar) {
+              material.flags |= gfx::k_material_terrain_stochastic;
+              fields.rotation = layer.rotation_deg * (k_pi / 180.0f);
+              fields.mean_height = layer.height.empty() ? 0.0f : source.alpha_cutoff;
+            }
             gfx::set_terrain_layer(material, fields);
             // A layer with height detail reads it from its map's B through the metallic factor,
             // which a terrain layer never uses as metallic.

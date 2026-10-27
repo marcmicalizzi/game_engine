@@ -18,6 +18,8 @@
 //
 // Compiled only where the terrain capability is; each case skips with a message where there is no
 // device.
+#include "terrain_hex_reference.h"
+
 #include <core/hash/hash.h>
 #include <core/jobs/job_system.h>
 #include <core/math/math.h>
@@ -46,6 +48,7 @@
 #include <limits>
 #include <memory>
 #include <mutex>
+#include <numbers>
 #include <string>
 
 using namespace engine;
@@ -521,6 +524,120 @@ TEST_CASE(
         }
       REQUIRE(checked > 10000);
       CHECK(wrong == 0);
+    }
+  }
+}
+
+TEST_CASE(
+    "world tiles: a stochastic layer is one function of the world point across tiles and LOD") {
+  // R96: every pixel's albedo is the double reference's stochastic read of the image at the
+  // pixel's world point (domain/gfx/tests/terrain_hex_reference.h), whichever ring, level, cut or
+  // eye cell drew it: no seam at a tile's border, a ring's or a cut's, and the lattice anchored in
+  // the world rather than in a tile. Flat ground, so one projection, and one image level (no
+  // cache), so the GPU reads mip 0 as the reference does.
+  Gpu gpu;
+  if (!gpu.ok) {
+    MESSAGE(gpu.why);
+    return;
+  }
+  const test::TempDir tmp("stochastic_tiles");
+  constexpr u32 k_n = 64;
+  Vector<u8> codes(k_n * k_n * 4u);
+  for (u32 z = 0; z < k_n; ++z)
+    for (u32 x = 0; x < k_n; ++x) {
+      const u32 p = (z * k_n + x) * 4;
+      const f64 a = 2 * std::numbers::pi * (2.0 * x + z) / k_n;
+      const f64 b = 2 * std::numbers::pi * (1.0 * x - 3.0 * z) / k_n;
+      codes[p] = static_cast<u8>(std::lround(128 + 90 * std::sin(a)));
+      codes[p + 1] = static_cast<u8>(std::lround(128 + 90 * std::cos(b)));
+      codes[p + 2] = 64;
+      codes[p + 3] = 255;
+    }
+  const std::string image = tmp.file("pattern.png");
+  REQUIRE(image::write_png(image, k_n, k_n, 4, {codes.data(), codes.size()}) == io::Status::Ok);
+  const auto linear_of = [](f64 code) {
+    const f64 v = code / 255.0;
+    return v <= 0.04045 ? v / 12.92 : std::pow((v + 0.055) / 1.055, 2.4);
+  };
+  f64 mean[2] = {};
+  for (u32 p = 0; p < k_n * k_n; ++p)
+    for (u32 c = 0; c < 2; ++c)
+      mean[c] += linear_of(codes[p * 4 + c]) / (k_n * k_n);
+  // The sampler's bilinear read, wrapped, of one channel in linear light.
+  const auto texture = [&](u32 channel, f64 u, f64 v) {
+    const f64 x = (u - std::floor(u)) * k_n - 0.5, y = (v - std::floor(v)) * k_n - 0.5;
+    const f64 fx = std::floor(x), fy = std::floor(y);
+    const auto at = [&](i64 i, i64 j) {
+      const i64 n = k_n;
+      return linear_of(
+          codes[static_cast<u32>((((j % n + n) % n) * n + ((i % n + n) % n)) * 4 + channel)]);
+    };
+    const i64 i = static_cast<i64>(fx), j = static_cast<i64>(fy);
+    const f64 ax = x - fx, ay = y - fy;
+    return (1 - ax) * (1 - ay) * at(i, j) + ax * (1 - ay) * at(i + 1, j) +
+           (1 - ax) * ay * at(i, j + 1) + ax * ay * at(i + 1, j + 1);
+  };
+  SceneDesc desc = dune_scene(tmp.file("ddc"), 17, 64.0f);
+  desc.terrain.dune_height = 0.0f;
+  desc.cache = false;
+  desc.terrain.materials.emplace();
+  scene::TerrainMaterialLayer layer;
+  layer.base_color = image;
+  layer.tile_m = 4.0f;
+  layer.sampling = scene::TerrainSampling::Stochastic;
+  desc.terrain.materials->layers.push_back(layer);
+  RenderSettings settings;
+  settings.shadows = ShadowMode::Off;
+  settings.view_mode = static_cast<u32>(gfx::ResolveMode::Albedo);
+  const TerrainTilesDesc tiles = small_tiles();
+  jobs::JobSystem pool(jobs::JobSystemConfig{.performance_workers = 2, .pin_threads = false});
+  TileRig rig;
+  REQUIRE_MESSAGE(rig.build(gpu.device, desc, settings, 192, 128, still_lapse(), &pool, &tiles,
+                            WorldPos::origin()),
+                  rig.error);
+  CaptureChannels channels;
+  channels.depth = true;
+  for (const f32 x : {0.0f, 70.0f}) {  // the second eye in the next 64 m cell
+    const Camera camera = looking_down_at(Vec3{x, 0, 0}, 32.0f);
+    rig.follow(camera);
+    for (const f32 cut : {0.0f, 2.0f}) {
+      FrameDesc frame;
+      frame.camera = camera;
+      frame.lod_px = cut;
+      frame.view_mode = settings.view_mode;
+      CapturedFrame shot;
+      REQUIRE_MESSAGE(rig.renderer.capture(frame, channels, shot, &rig.error), rig.error);
+      const Mat4 inv = inverse(rig.renderer.views()[0].view_proj);
+      u32 checked = 0, wrong = 0;
+      f64 error_sum = 0;
+      for (u32 py = 0; py < shot.height; ++py)
+        for (u32 px = 0; px < shot.width; ++px) {
+          Vec3 point;
+          if (!unproject(shot, inv, relative(camera.position, WorldPos::origin()), px, py, point))
+            continue;
+          const auto hex =
+              test::terrain_hex_reference(0, 0, static_cast<f64>(point.x) * 1000.0,
+                                          static_cast<f64>(point.z) * 1000.0, 4000.0, 0.0);
+          for (u32 c = 0; c < 2; ++c) {
+            f64 reads[3];
+            for (u32 k = 0; k < 3; ++k)
+              reads[k] = texture(c, static_cast<f64>(point.x) / 4.0 + hex.shift[k][0],
+                                 static_cast<f64>(point.z) / 4.0 + hex.shift[k][1]);
+            const f64 lin =
+                std::clamp(test::terrain_hex_blend_reference(hex, mean[c], reads), 0.0, 1.0);
+            const f64 expected = std::pow(lin, 1.0 / 2.2) * 255.0;
+            const f64 error = std::abs(shot.color[4 * (py * shot.width + px) + c] - expected);
+            error_sum += error;
+            wrong += error > 3.0 ? 1u : 0u;
+          }
+          ++checked;
+        }
+      MESSAGE("eye x " << x << ", cut " << cut << ": " << checked << " ground pixels, mean error "
+                       << error_sum / (2.0 * checked) << " codes, " << wrong
+                       << " channel reads over 3");
+      REQUIRE(checked > 10000);
+      CHECK(error_sum / (2.0 * checked) < 1.0);
+      CHECK(wrong < checked / 100);
     }
   }
 }

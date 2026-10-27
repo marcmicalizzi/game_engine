@@ -6,6 +6,7 @@
 static const uint k_material_terrain_layers = 512u;
 static const uint k_material_terrain_map = 1024u;
 static const uint k_material_terrain_height = 2048u;
+static const uint k_material_terrain_stochastic = 4096u;
 static const uint k_terrain_masked = 1u;
 static const uint k_terrain_no_mask_tile = 0xFFFFFFFFu;
 
@@ -198,6 +199,166 @@ float3 terrain_slope(ResolveMaterial layer, float2 uv, float2 dx, float2 dy, flo
 }
 
 
+// ---- Stochastic (hex-tiled) sampling of a triplanar layer (R96) ---------------------------------
+// A layer naming `"sampling": "stochastic"` reads each projection at three tiles of a triangle
+// lattice, each tile its own random offset (and, when the layer allows it, a bounded turn), and
+// blends them by the variance-preserving operator (native-terrain-materials.md, "Stochastic
+// sampling"). Every map of the layer — colour, roughness, height, normal — reads the same three
+// places with the same weights, so the maps stay coordinated.
+//
+// The lattice is Heitz and Neyret's (2018) triangle grid in Deliot and Heitz's (2019) skew,
+// s = [[2√3, -2], [0, 4]] uv, with 2√3 replaced by 97/28 (0.005% long, so the triangles stay
+// equilateral to that) so the skew is rational: a lattice point's integer part then comes from
+// the frame's integer cell in 64-bit integers exactly, and only the frame-local rest is a float
+// (ADR-0053), as in `terrain_phase`. No absolute world position is formed.
+static const float k_terrain_hex_axis_floor = 1.0 / 128.0;  // a projection below this is skipped
+
+float terrain_layer_rotation(ResolveMaterial layer) { return layer.uv_offset.z; }
+float terrain_layer_mean_height(ResolveMaterial layer) { return layer.uv_offset.w; }
+
+// Wellons' lowbias32: integer only, so the CPU reference reproduces it bit for bit.
+uint terrain_hash(uint x) {
+  x ^= x >> 16;
+  x *= 0x7feb352du;
+  x ^= x >> 15;
+  x *= 0x846ca68bu;
+  x ^= x >> 16;
+  return x;
+}
+
+// Three tiles of the lattice at a point of one projection's plane.
+struct TerrainHex {
+  float3 weight;  // Burley's exponentiated weights (power 7), summing to one
+  float gain;     // 1 / sqrt(sum of squared weights): the variance-preserving operator's scale
+  float2 shift[3];  // added to the layer's phase: the tile's offset, and its turn about its centre
+  float2 turn[3];   // the turn's cosine and sine
+};
+
+// `axis` is the projection (0 reads (z, y), 1 (x, z), 2 (x, y), the phases' own pairs);
+// `rotation` the layer's largest turn in radians (0: offsets only, so a directed texture keeps its
+// direction).
+TerrainHex terrain_hex(FrameEye eye, float3 point, uint axis, float pitch_mm, float rotation) {
+  const float3 rest = (eye.local + eye.residual + point) * 1000.0;
+  const int cu = axis == 0 ? eye.cell.z : eye.cell.x;
+  const int cv = axis == 1 ? eye.cell.z : eye.cell.y;
+  const float fu = axis == 0 ? rest.z : rest.x;
+  const float fv = axis == 1 ? rest.z : rest.y;
+  const int64_t pitch = int64_t(pitch_mm);
+  const int64_t den = 28 * pitch;
+  const int64_t iu = int64_t(cu) * int64_t(64000);
+  const int64_t iv = int64_t(cv) * int64_t(64000);
+  const int64_t nx = 97 * iu - 56 * iv;
+  const int64_t ny = 112 * iv;
+  const int64_t qx = terrain_magnitude_floor_div(nx, den);
+  const int64_t qy = terrain_magnitude_floor_div(ny, den);
+  const float fden = float(den);
+  const float2 t = float2(float(nx - qx * den) + (97.0 * fu - 56.0 * fv),
+                          float(ny - qy * den) + 112.0 * fv) / fden;
+  const float2 whole = floor(t);
+  const float2 f = t - whole;
+  const int64_t bx = qx + int64_t(whole.x);
+  const int64_t by = qy + int64_t(whole.y);
+  int2 corner[3];
+  float3 w;
+  const float z = 1.0 - f.x - f.y;
+  if (z > 0.0) {
+    w = float3(z, f.y, f.x);
+    corner[0] = int2(0, 0);
+    corner[1] = int2(0, 1);
+    corner[2] = int2(1, 0);
+  } else {
+    w = float3(-z, 1.0 - f.y, 1.0 - f.x);
+    corner[0] = int2(1, 1);
+    corner[1] = int2(1, 0);
+    corner[2] = int2(0, 1);
+  }
+  // Burley's exponentiated weights (2019, Eq. 5) at Mikkelsen's exponent, 7: below Burley's tile
+  // structure (8 and up), and the closest of the blends measured to the image's histogram.
+  const float3 w2 = w * w;
+  w = w2 * w2 * w2 * w;
+  w /= w.x + w.y + w.z;
+  TerrainHex hex;
+  hex.weight = w;
+  hex.gain = 1.0 / sqrt(dot(w, w));
+  const uint seed = terrain_hash(uint(pitch) ^ 0x9e3779b9u);
+  [unroll] for (uint k = 0; k < 3; ++k) {
+    const uint h0 = terrain_hash(uint(bx + int64_t(corner[k].x)) ^
+                                 terrain_hash(uint(by + int64_t(corner[k].y)) ^ seed));
+    const uint h1 = terrain_hash(h0);
+    const float2 offset = float2(float(h0 >> 8), float(h1 >> 8)) * (1.0 / 16777216.0);
+    hex.shift[k] = offset;
+    hex.turn[k] = float2(1.0, 0.0);
+    if (rotation > 0.0) {
+      const float angle =
+          (float(terrain_hash(h1) >> 8) * (2.0 / 16777216.0) - 1.0) * rotation;
+      const float c = cos(angle);
+      const float s = sin(angle);
+      // The point from its tile's centre, in the layer's uv: s - corner through the skew's inverse.
+      const float2 rel = f - float2(corner[k]);
+      const float2 r = float2(rel.x * (28.0 / 97.0) + rel.y * (14.0 / 97.0), rel.y * 0.25);
+      hex.shift[k] += float2(c * r.x - s * r.y, s * r.x + c * r.y) - r;
+      hex.turn[k] = float2(c, s);
+    }
+  }
+  return hex;
+}
+
+// The operator itself (Heitz and Neyret 2018, Eq. 9, on the texels rather than a Gaussianized
+// copy): mean + gain * sum w (x - mean). For three independent tiles it keeps the texture's mean
+// and variance wherever the weights fall.
+float3 terrain_hex_blend(TerrainHex hex, float3 mean, float3 a, float3 b, float3 c) {
+  return mean + hex.gain * (hex.weight.x * (a - mean) + hex.weight.y * (b - mean) +
+                            hex.weight.z * (c - mean));
+}
+
+// One projection of a stochastic layer: every map read at the hex's three places with the same
+// weights (the maps stay coordinated), each place's UV derivatives turned with its tile so the
+// mip and the anisotropy are the footprint's (Deliot and Heitz 2019: SampleGrad, never the
+// derivative of the jittered UV). The colour, roughness and height blend about the layer's own
+// means; the slopes about zero, the mean slope of any tileable height field.
+void terrain_hex_sample(ResolveMaterial layer, TerrainHex hex, float2 uv, float2 du, float2 dv,
+                        bool filtered, out float3 colour, out float roughness, out float height,
+                        out float2 slope) {
+  const bool normals = layer.normal_texture != k_no_texture && layer.normal_scale != 0.0;
+  const bool grads = filtered && (layer.flags & k_material_mipped) != 0;
+  const uint normal_slot = slot_sampler(layer, layer.samplers_mr_normal, 16);
+  float3 c[3];
+  float r[3];
+  float h[3];
+  float2 d[3];
+  [unroll] for (uint k = 0; k < 3; ++k) {
+    const float2 turn = hex.turn[k];
+    const float2 p = uv + hex.shift[k];
+    const float2 du_k = float2(turn.x * du.x - turn.y * du.y, turn.y * du.x + turn.x * du.y);
+    const float2 dv_k = float2(turn.x * dv.x - turn.y * dv.y, turn.y * dv.x + turn.x * dv.y);
+    const MaterialSample s =
+        filtered ? sample_material_grad(layer, p, du_k, dv_k) : sample_material(layer, p);
+    c[k] = s.albedo;
+    r[k] = s.roughness;
+    h[k] = s.metallic;
+    d[k] = float2(0.0);
+    if (normals) {
+      float4 texel;
+      if (grads)
+        texel = g_textures[NonUniformResourceIndex(layer.normal_texture)].SampleGrad(
+            g_samplers[NonUniformResourceIndex(normal_slot)], p, du_k, dv_k);
+      else
+        texel = g_textures[NonUniformResourceIndex(layer.normal_texture)].SampleLevel(
+            g_samplers[NonUniformResourceIndex(normal_slot)], p, 0);
+      const float3 v = normal_map_vector(layer, texel);
+      const float2 q = v.xy / max(v.z, 0.01);
+      // The tile reads its content turned by R; the map's y is the image's up, opposite the UV's v,
+      // so the stored slope pair turns by R too (Mikkelsen 2022, section 3, in this map's frame).
+      d[k] = float2(turn.x * q.x - turn.y * q.y, turn.y * q.x + turn.x * q.y);
+    }
+  }
+  colour = saturate(terrain_hex_blend(hex, terrain_layer_mean_colour(layer), c[0], c[1], c[2]));
+  roughness = saturate(terrain_hex_blend(hex, float3(terrain_layer_mean_roughness(layer)),
+                                         float3(r[0]), float3(r[1]), float3(r[2])).x);
+  height = saturate(terrain_hex_blend(hex, float3(terrain_layer_mean_height(layer)), float3(h[0]),
+                                      float3(h[1]), float3(h[2])).x);
+  slope = hex.gain * (hex.weight.x * d[0] + hex.weight.y * d[1] + hex.weight.z * d[2]);
+}
 // One layer at a point: its colour, roughness, normal slope and height (0.5 without a height map),
 // projected as it asks, faded to its means past the detail distances.
 struct TerrainLayerSample {
@@ -226,6 +387,36 @@ TerrainLayerSample terrain_layer_sample(SceneGeometry geo, ResolveMaterial layer
     r.height = sample.metallic;
     r.bump = terrain_slope(layer, map_uv, map_dx, map_dy, n, float3(1, 0, 0), float3(0, 0, 1),
                            filtered);
+  } else if ((layer.flags & k_material_terrain_stochastic) != 0) {
+    // R96: no fade. The lattice leaves no repeat for distance to reveal, so the far ground keeps
+    // the texture's own variation at the mip its footprint selects instead of the layer's mean.
+    // A projection whose blend share is under 1/128 is skipped and the rest renormalized: a flat
+    // floor reads one projection's three tiles, the nine reads a tiled layer always makes.
+    const float pitch = terrain_layer_pitch_mm(layer);
+    const float3 phase = terrain_phase3(geo.eye, point, pitch);
+    const float scale = 1000.0 / pitch;
+    const float3 dx = dp_dx * scale;
+    const float3 dy = dp_dy * scale;
+    float3 kept = axes * step(k_terrain_hex_axis_floor, axes);
+    kept /= kept.x + kept.y + kept.z;
+    [unroll] for (uint axis = 0; axis < 3; ++axis) {
+      if (kept[axis] <= 0.0) continue;
+      const float2 uv = axis == 0 ? phase.zy : (axis == 1 ? phase.xz : phase.xy);
+      const float2 du = axis == 0 ? dx.zy : (axis == 1 ? dx.xz : dx.xy);
+      const float2 dv = axis == 0 ? dy.zy : (axis == 1 ? dy.xz : dy.xy);
+      const float3 t = axis == 0 ? float3(0, 0, 1) : float3(1, 0, 0);
+      const float3 b = axis == 1 ? float3(0, 0, 1) : float3(0, 1, 0);
+      const TerrainHex hex = terrain_hex(geo.eye, point, axis, pitch, terrain_layer_rotation(layer));
+      float3 colour;
+      float roughness, height;
+      float2 slope;
+      terrain_hex_sample(layer, hex, uv, du, dv, filtered, colour, roughness, height, slope);
+      r.colour += kept[axis] * colour;
+      r.roughness += kept[axis] * roughness;
+      r.height += kept[axis] * height;
+      if (layer.normal_texture != k_no_texture && layer.normal_scale != 0.0)
+        r.bump += kept[axis] * terrain_project_slope(float3(slope, 1.0), layer.normal_scale, n, t, b);
+    }
   } else if (fade <= 0.0) {
     r.colour = terrain_layer_mean_colour(layer);
     r.roughness = terrain_layer_mean_roughness(layer);

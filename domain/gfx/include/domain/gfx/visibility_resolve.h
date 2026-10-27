@@ -276,6 +276,9 @@ inline constexpr u32 k_material_terrain_layers = 512u;
 inline constexpr u32 k_material_terrain_map = 1024u;
 // A layer whose metallic-roughness map carries height detail in B (the palette's `height`).
 inline constexpr u32 k_material_terrain_height = 2048u;
+// A triplanar layer sampled stochastically (R96; renderer.md, "Stochastic sampling"): three tiles
+// of a triangle lattice, each at its own offset, blended by the variance-preserving operator.
+inline constexpr u32 k_material_terrain_stochastic = 4096u;
 
 // TerrainRecord::flags: the terrain has a mask level (`mask` names its buffer).
 inline constexpr u32 k_terrain_masked = 1u;
@@ -322,18 +325,22 @@ inline ResolveMaterial pack_terrain_record(const TerrainRecord& record) noexcept
 }
 // A layer entry's terrain fields, by name: its linear colour and roughness means (what far detail
 // fades to), its authored weight, the substrate's porosity, and the triplanar repeat in whole
-// millimetres. Its occlusion slot is its W68 coverage mask, not AO.
+// millimetres. Its occlusion slot is its W68 coverage mask, not AO. A stochastic layer (R96) also
+// carries its largest tile turn in radians and its height map's mean, which the variance-preserving
+// blend is taken about; a tiled layer leaves both zero, as they always were.
 struct TerrainLayerFields {
   Vec3 mean_colour{1.0f, 1.0f, 1.0f};
   f32 mean_roughness = 1.0f;
   f32 weight = 1.0f;
   f32 porosity = 0.5f;
   f32 pitch_mm = 1000.0f;
+  f32 rotation = 0.0f;  // radians, [0, pi]
+  f32 mean_height = 0.0f;
 };
 inline void set_terrain_layer(ResolveMaterial& layer, const TerrainLayerFields& f) noexcept {
   layer.uv_scale = f.pitch_mm;
   layer.uv_transform = Vec4{f.mean_colour.x, f.mean_colour.y, f.mean_colour.z, f.mean_roughness};
-  layer.uv_offset = Vec4{f.weight, f.porosity, 0.0f, 0.0f};
+  layer.uv_offset = Vec4{f.weight, f.porosity, f.rotation, f.mean_height};
 }
 // `k_material_alpha_mask`: an alpha-tested material (glTF `alphaMode` MASK; docs/subsystems/
 // renderer.md, "Alpha-tested geometry"). Its clusters are drawn by the rasterizers' masked
