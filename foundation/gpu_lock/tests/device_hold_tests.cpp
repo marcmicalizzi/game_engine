@@ -82,10 +82,18 @@ bool eventually(const std::function<bool()>& condition, int timeout_ms) {
   return condition();
 }
 
+// The keeper refreshes the file by renaming over it, and a reader that opens it in that moment is
+// told it is present and being written (unreadable, not expired; gpu_lock.md). A case that reads
+// once at a fixed time lands in that window now and then (gate b42, 2026-10-27: the keeper case
+// failed on an `expires` it never got), so read again until the file is readable or gone.
 gpu_lock::State lock_at(const std::string& path) {
   gpu_lock::Identity self = gpu_lock::current_identity();
   self.holder_pid = 0;
-  return gpu_lock::read(path, self, now_s());
+  for (int attempt = 0;; ++attempt) {
+    const gpu_lock::State state = gpu_lock::read(path, self, now_s());
+    if (!state.present || state.readable || attempt >= 50) return state;
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
 }
 
 // The variables a run around this one may have set, cleared for one case. The switch is off in
