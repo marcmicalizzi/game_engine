@@ -410,6 +410,12 @@ protocol::RenderFramedCamera framed_camera(const renderer::Camera& camera) {
 
 // render.load keeps GPU upload lazy, but its answer needs the same final terrain account as
 // GpuScene::create. Prepare a CPU layout at the default camera, with no motion or GPU device work.
+// The load has no view, and F20's optional far-ground error rule needs a pixel height to project
+// its envelope, so the layout is predicted at engine-view's default 720 rows: a call at another
+// height or camera resolves its own, and the load's `shadow_casters` and `pair_breakdown` are a
+// prediction of that (docs/subsystems/apps.md, "Pair reporting").
+constexpr u32 k_load_reference_height = 720;
+
 bool resolve_load_settings(const renderer::RenderSettings& settings, const gfx::Device& device,
                            const renderer::SceneData& data, renderer::ResolvedSettings& resolved,
                            JsonValue& pairs, std::string& error) {
@@ -418,7 +424,7 @@ bool resolve_load_settings(const renderer::RenderSettings& settings, const gfx::
   if (renderer::check_availability(resolved, device.features()) ==
           renderer::RenderAvailability::Ok &&
       !ground.prepare(data, resolved, renderer::read_protocol_camera(data, nullptr, nullptr),
-                      &error))
+                      &error, false, k_load_reference_height))
     return false;
   auto* levels = ground.level_set();
   const auto account = renderer::account_pairs(data, resolved, levels);

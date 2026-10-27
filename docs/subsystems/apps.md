@@ -1093,7 +1093,9 @@ scripts over stand-in sets offline.
 
 **Pair reporting (2026-10-26, R100/W73).** `render.load` reports the final pair-account
 `shadow_casters` decision used by `GpuScene`, including admission fallback; GPU upload stays lazy,
-with the terrain's CPU layout accounted at the default framing camera before answering.
+with the terrain's CPU layout accounted at the default framing camera (and, for F20's optional
+error rule, a 720-row view, engine-view's default) before answering, so a load's `shadow_casters`
+and `pair_breakdown` are a prediction that a call at another camera or height resolves again.
 Engine-view's summaries and `render.load` add `pair_breakdown` beside the existing numeric `pairs`:
 `prefix_pairs`, `ring_slot_pairs`, `fixed_pairs`, `tail_floor_pairs`, `tail_live_pairs`,
 `tail_reserved_pairs`, `tail_hole_pairs`, `pair_count`, `limit`, `untraced_pairs`,
