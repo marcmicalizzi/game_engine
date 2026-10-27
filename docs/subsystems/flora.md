@@ -158,7 +158,8 @@ orders through the terminal twig, with individual rectangular leaf quads whose i
 Each pair shares a node; successive pairs turn around the twig, with seeded station, blade-size
 and orientation variation. The complete image maps once to each rectangle, bottom-centre stalk
 at the attachment, preserving the maple lobes instead of squeezing them along a connected strip.
-The 0.10 m card and 0.08 m width are unchanged. Node spacing limits leaf pairs
+G86 retained the 0.10 m card and 0.08 m width; G91 below revises emitted dimensions.
+Node spacing limits leaf pairs
 to the available twig length, so the realised LAI can be below the 4.5 target. The report records
 that realised area. All terminal wood is counted before choosing the source budget;
 an insufficient budget places real-sized blades on retained higher-order shoots. The default
@@ -1861,3 +1862,17 @@ unchanged; removing the redundant tip knot lowers total physical LAI without cha
 or spacing of individual leaves. The footprint used for allocation has a four-leaf-length-squared sapling floor.
 Cache version 10 invalidates old meshes;
 the canonical identity records maturity fields for age-enabled legacy recipes as well as profiles.
+
+### Broadleaf blade dimensions (G91)
+
+Named maple, oak, elm, beech, walnut, ash, aspen and alder use independently
+researched emitted blade length and width, while preserving the existing
+allocation dimensions, terminal leaf counts, attachment spacing and triangle
+plan. Small trees through 3 m retain their previous leaves; a smooth 3–8 m
+authoring blend reaches the adult envelope. Leaves never keep growing with tree
+height beyond that. Walnut/ash dimensions refer to leaflets. Birch and willow
+already have dimensions within or near their researched ranges and retain them.
+The generic broadleaf and orchard remain authored legacy forms. See
+[leaf sizing](../experiments/tree-leaf-sizing.md) for sources, spacing equations,
+material limitations and validation. Cache version 11 rebuilds source meshes and
+their geometry-fitted foliage bakes.

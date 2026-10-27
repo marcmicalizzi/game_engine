@@ -948,10 +948,12 @@ f64 crown_emit_leaves(const Crown& crown, const CrownPlan& plan, Emitter& out, f
       Rng rng = stream_of(crown.leaf_seed, 700000u + static_cast<u64>(&node - crown.nodes.data()));
       if (crown.leaf_placement == LeafPlacement::opposite_compound ||
           crown.leaf_placement == LeafPlacement::alternate_compound) {
-        build_compound_leaves(axis, cards, length, length * crown.leaf_width, angle,
+        build_compound_leaves(axis, cards, length,
+                              length * crown.leaf_width * crown.emitted_width_ratio, angle,
                               crown.leaf_placement, rng, out);
       } else {
-        build_simple_leaves(axis, cards, length, length * crown.leaf_width, angle,
+        build_simple_leaves(axis, cards, length,
+                            length * crown.leaf_width * crown.emitted_width_ratio, angle,
                             crown.leaf_placement, rng, out);
       }
     } else {

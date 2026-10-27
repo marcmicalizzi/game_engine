@@ -63,6 +63,7 @@ Crown grow(const Broadleaf& p, const CrownSpec& spec, const GrowthRules& rules =
   crown.leaf_width = static_cast<f64>(p.leaf_width);
   crown.leaf_length = static_cast<f64>(p.leaf_length_m);
   crown.terminal_leaf = rules.terminal_leaf;
+  crown.emitted_width_ratio = rules.leaf_width_scale / rules.leaf_length_scale;
   const f64 height = static_cast<f64>(p.height_m);
   const f64 r_trunk = trunk_radius_of(p);
   const f64 wander = static_cast<f64>(p.wander_deg) * k_degree;
@@ -410,10 +411,10 @@ bool detail::solve_broadleaf_rules(const Broadleaf& p, const GrowthRules& rules,
   const u32 leaf_vertex = out.positions.size();
   const u32 leaf_first = out.indices.size();
   Vector<SprayRange> spray_ranges;
-  const f64 card_length =
-      crown_emit_leaves(crown, plan.crown, emit, static_cast<f64>(p.leaf_length_m),
-                        static_cast<f64>(p.leaf_angle_deg) * k_degree, 15.0 * k_degree, 0.15,
-                        levels != nullptr ? &spray_ranges : nullptr);
+  const f64 card_length = crown_emit_leaves(
+      crown, plan.crown, emit, static_cast<f64>(p.leaf_length_m) * rules.leaf_length_scale,
+      static_cast<f64>(p.leaf_angle_deg) * k_degree, 15.0 * k_degree, 0.15,
+      levels != nullptr ? &spray_ranges : nullptr);
   assets::Primitive leaves;
   leaves.first_index = leaf_first;
   leaves.index_count = out.indices.size() - leaf_first;

@@ -66,7 +66,8 @@ namespace engine::flora {
 // 8: maple terminal wood and independent opposite leaf blades (G86 follow-up).
 // 9: species-correct terminal foliage and material-dependent canopy LOD (G87).
 // 10: species maturity, four profiles, sapling taper, and bounded trunk-tip crowns (G88).
-inline constexpr u32 k_flora_version = 10;
+// 11: researched broadleaf blade dimensions, independent of retained leaf allocation (G91).
+inline constexpr u32 k_flora_version = 11;
 
 // The species `engine.flora.FloraFile.species` names; the solver reads the parameters of the same
 // member (`palm`, `broadleaf`, `conifer`, `birch`, `willow`, `orchard`, `ancient`).

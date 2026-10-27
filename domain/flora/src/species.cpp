@@ -8,6 +8,8 @@
 
 #include <domain/geometry/flora_species.h>
 
+#include <algorithm>
+
 namespace engine::flora::detail {
 namespace {
 using geometry::FloraSpecies;
@@ -313,6 +315,36 @@ const Profile* find(std::string_view name) {
   return nullptr;
 }
 
+// Card envelopes grounded in tree-leaf-sizing.md. Allocation still uses Profile::leaf:
+// changing that would reduce the owner's accepted counts when a blade gets larger.
+struct Blade {
+  FloraSpecies species;
+  f64 length;
+  f64 width;
+};
+constexpr Blade k_blades[] = {
+    {FloraSpecies::maple, .15, .15},   {FloraSpecies::oak, .20, .10},
+    {FloraSpecies::elm, .13, .065},    {FloraSpecies::beech, .12, .06},
+    {FloraSpecies::walnut, .12, .05},  {FloraSpecies::ash, .12, .05},
+    {FloraSpecies::aspen, .075, .065}, {FloraSpecies::alder, .13, .085},
+};
+
+void size_blades(FloraSpecies species, const Broadleaf& b, GrowthRules& rules) {
+  // A visual authoring blend, not botanical leaf ontogeny. Small stems retain their accepted
+  // blades, including a small old tree on a poor site; large trees do not keep enlarging them.
+  const f64 t = std::clamp((static_cast<f64>(b.height_m) - 3.0) / 5.0, 0.0, 1.0);
+  const f64 blend = t * t * (3.0 - 2.0 * t);
+  if (blend == 0.0) return;
+  for (const Blade& blade : k_blades) {
+    if (blade.species != species) continue;
+    const f64 length = static_cast<f64>(b.leaf_length_m);
+    const f64 width = length * static_cast<f64>(b.leaf_width);
+    rules.leaf_length_scale = 1.0 + blend * (blade.length / length - 1.0);
+    rules.leaf_width_scale = 1.0 + blend * (blade.width / width - 1.0);
+    return;
+  }
+}
+
 struct Resolved {
   Broadleaf broadleaf;
   Conifer conifer;
@@ -440,6 +472,7 @@ Resolved resolve(const Profile& p, const Tree& tree) {
     else
       mature_conifer(c, out.rules, tree, age);
   }
+  if (p.family == Family::branching) size_blades(p.species, b, out.rules);
   return out;
 }
 }  // namespace

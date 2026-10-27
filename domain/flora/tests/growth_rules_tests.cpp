@@ -200,7 +200,8 @@ TEST_CASE("flora: named species share growth and preserve their skeleton across 
   // G87: alternate simple blades and compound leaves; maple's previous aggregate was
   // 16620326556857323731. G88 adds four profiles and bounds the local tip crown;
   // the prior ten-profile aggregate was 7127305501285355394.
-  CHECK_MESSAGE(combined == 6585964004099755467ull, "named profile geometry hash: " << combined);
+  // G91 changes blade geometry only; the G88 aggregate was 6585964004099755467.
+  CHECK_MESSAGE(combined == 6929553177682108527ull, "named profile geometry hash: " << combined);
 }
 
 TEST_CASE("flora: named species reject invalid input and keep distinct material roles") {
@@ -409,6 +410,105 @@ TEST_CASE("flora: a seated continuation buries its open rim without moving its s
       CHECK(std::isfinite(normal.y));
       CHECK(std::isfinite(normal.z));
       CHECK(length(normal) == doctest::Approx(1.0f).epsilon(.001));
+    }
+  }
+}
+
+TEST_CASE("flora: blade dimensions preserve allocation wood and attachment stations") {
+  using namespace flora::detail;
+  for (const u32 budget : {200000u, 8000u}) {
+    flora::Broadleaf params;
+    params.seed = 17;
+    params.leaf_length_m = .1f;
+    params.leaf_width = .8f;
+    params.triangle_budget = budget;
+    params.card_bake_px = 0;
+    params.impostor_px = 0;
+    GrowthRules rules;
+    rules.leaf_placement = LeafPlacement::opposite_simple;
+    assets::MeshData before, after;
+    flora::Motion bm, am;
+    flora::TreeReport br, ar;
+    std::string error;
+    REQUIRE_MESSAGE(solve_broadleaf_rules(params, rules, before, &br, &error, &bm, nullptr), error);
+    rules.leaf_length_scale = 1.5;
+    rules.leaf_width_scale = 1.875;
+    REQUIRE_MESSAGE(solve_broadleaf_rules(params, rules, after, &ar, &error, &am, nullptr), error);
+    CHECK(br.leaf_cards == ar.leaf_cards);
+    CHECK(br.triangles == ar.triangles);
+    CHECK(br.merge_level == ar.merge_level);
+    CHECK(br.steps == ar.steps);
+    REQUIRE(before.positions.size() == after.positions.size());
+    REQUIRE(before.indices == after.indices);
+    REQUIRE(bm.vertex_part == am.vertex_part);
+    REQUIRE(bm.vertex_weight == am.vertex_weight);
+    const auto& bark = before.primitives[0];
+    for (u32 i = bark.first_index; i < bark.first_index + bark.index_count; ++i) {
+      const u32 v = before.indices[i];
+      REQUIRE(std::memcmp(&before.positions[v], &after.positions[v], sizeof(Vec3)) == 0);
+    }
+    const auto& leaves = before.primitives[1];
+    for (u32 i = leaves.first_index; i < leaves.first_index + leaves.index_count; i += 6) {
+      const u32 v = *std::min_element(before.indices.begin() + i, before.indices.begin() + i + 6);
+      const Vec3 b0 = (before.positions[v] + before.positions[v + 1]) * .5f;
+      const Vec3 a0 = (after.positions[v] + after.positions[v + 1]) * .5f;
+      const Vec3 bt = (before.positions[v + 2] + before.positions[v + 3]) * .5f;
+      const Vec3 at = (after.positions[v + 2] + after.positions[v + 3]) * .5f;
+      CHECK(dot(a0 - b0, a0 - b0) < 1e-11f);
+      CHECK(std::sqrt(dot(at - a0, at - a0) / dot(bt - b0, bt - b0)) ==
+            doctest::Approx(1.5).epsilon(.001));
+      const Vec3 bw = before.positions[v + 1] - before.positions[v];
+      const Vec3 aw = after.positions[v + 1] - after.positions[v];
+      CHECK(std::sqrt(dot(aw, aw) / dot(bw, bw)) == doctest::Approx(1.875).epsilon(.001));
+    }
+    CHECK(ar.leaf_area_m2 / br.leaf_area_m2 == doctest::Approx(2.8125).epsilon(.001));
+  }
+}
+
+TEST_CASE("flora: named broadleaf blades retain small trees and reach botanical envelopes") {
+  struct Expected {
+    const char* name;
+    float sapling_length, sapling_width, adult_length, adult_width;
+  };
+  const Expected species[] = {
+      {"maple", .10f, .08f, .15f, .15f},       {"oak", .12f, .054f, .20f, .10f},
+      {"elm", .09f, .0405f, .13f, .065f},      {"beech", .09f, .0405f, .12f, .06f},
+      {"walnut", .08f, .024f, .12f, .05f},     {"ash", .085f, .0255f, .12f, .05f},
+      {"aspen", .065f, .05525f, .075f, .065f}, {"alder", .10f, .065f, .13f, .085f}};
+  for (const auto& s : species) {
+    for (const float height : {2.0f, 8.0f, 16.0f}) {
+      CAPTURE(std::string(s.name));
+      CAPTURE(height);
+      flora::FloraFile f;
+      f.species = s.name;
+      f.tree.height_m = height;
+      f.tree.seed = 17;
+      f.tree.card_bake_px = 0;
+      f.tree.impostor_px = 0;
+      assets::MeshData mesh;
+      flora::Motion motion;
+      flora::TreeReport report;
+      std::string error;
+      REQUIRE_MESSAGE(flora::solve_flora(f, mesh, motion, nullptr, &report, error), error);
+      REQUIRE(report.merge_level == 0);
+      const float expected_length = height <= 3 ? s.sapling_length : s.adult_length;
+      const float expected_width = height <= 3 ? s.sapling_width : s.adult_width;
+      const auto found = std::find_if(mesh.primitives.begin(), mesh.primitives.end(),
+                                      [](const assets::Primitive& p) { return p.material == 1; });
+      REQUIRE(found != mesh.primitives.end());
+      const auto& leaves = *found;
+      REQUIRE(leaves.index_count > 0);
+      for (u32 i = leaves.first_index; i < leaves.first_index + leaves.index_count; i += 6) {
+        const u32 v = *std::min_element(mesh.indices.begin() + i, mesh.indices.begin() + i + 6);
+        const Vec3 base = (mesh.positions[v] + mesh.positions[v + 1]) * .5f;
+        const Vec3 tip = (mesh.positions[v + 2] + mesh.positions[v + 3]) * .5f;
+        const Vec3 across = mesh.positions[v + 1] - mesh.positions[v];
+        const float length = std::sqrt(dot(tip - base, tip - base));
+        const float width = std::sqrt(dot(across, across));
+        REQUIRE(length >= .899f * expected_length);
+        REQUIRE(length <= 1.001f * expected_length);
+        REQUIRE(width / length == doctest::Approx(expected_width / expected_length).epsilon(.001));
+      }
     }
   }
 }

@@ -114,6 +114,9 @@ struct GrowthRules {
   f64 spray_lift = 1.0;
   f64 droop = 0.0;
   f64 renewal = 0.0;  // old crowns carry shoots farther in along existing scaffolds
+  // Emission only: allocation, twig spacing and the triangle plan keep their original dimensions.
+  f64 leaf_length_scale = 1.0;
+  f64 leaf_width_scale = 1.0;
   // Zero preserves legacy solvers. Named profiles use green wood values, not dry specific gravity.
   f64 wood_rupture_mpa = 0.0;
   f64 wood_density = 0.0;
@@ -408,8 +411,9 @@ struct Crown {
   u64 leaf_seed = 1;
   f64 leaf_width = 0.8;  // independent leaf card width / length
   f64 leaf_length = 0.1;
-  bool terminal_leaf = false;  // odd-pinnate compound sprays (ash), only at the finest leaf rung
-  Vector<CrownNode> nodes;     // the named shoots first, then the recursion depth-first
+  f64 emitted_width_ratio = 1.0;  // width scale / length scale; allocation width stays unchanged
+  bool terminal_leaf = false;     // odd-pinnate compound sprays (ash), only at the finest leaf rung
+  Vector<CrownNode> nodes;        // the named shoots first, then the recursion depth-first
   Vector<Axis> axes;
   Vector<StemContinuation> continuations;  // one per continued stem, in stem-node order
   Vector<u32> twigs;                       // node indices of the terminal twigs, depth-first
