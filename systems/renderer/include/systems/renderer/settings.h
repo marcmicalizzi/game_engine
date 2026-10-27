@@ -30,11 +30,19 @@ enum class RasterMode : u8 { Direct, Hardware, Software, Auto, Vertex, RayTrace 
 // How the sun (and, traced, the point lights) cast shadows (docs/subsystems/renderer.md,
 // "Shadows"). `RayTraced` is a ray query per light against the frame's own acceleration
 // structures; `Cascaded` is the sun's cascaded shadow maps, drawn by the cull pass and the
-// rasterizers from the light and filtered in the resolve. `Auto` is ray-traced wherever the device
-// has ray queries and cluster acceleration structures, cascaded maps where it has not, and off on
-// a path that can have neither (direct, sw, auto). Changing the RTX-class default to maps is a
-// decision the flythrough measurements inform, not one made here.
-enum class ShadowMode : u8 { Auto, Off, RayTraced, Cascaded };
+// rasterizers from the light and filtered in the resolve. `Hybrid` is both, chosen per pixel by
+// distance (renderer.md, "Rays near, maps far"; R102): the ray query nearer the eye than
+// `RenderSettings::shadow_ray_distance_m`, the maps past it plus `shadow_ray_band_m`, the two
+// blended across the band. `Auto` is the hybrid wherever the device has ray queries and cluster
+// acceleration structures and the path rasterizes its picture (hw, vertex), the rays alone on the
+// ray path, cascaded maps where the device cannot trace, and off on a path that can have neither
+// (direct, sw, auto). Until 2026-10-26 `Auto` was the rays alone on such a device.
+enum class ShadowMode : u8 { Auto, Off, RayTraced, Cascaded, Hybrid };
+
+// **Rays near, maps far**: the hybrid's defaults (renderer.md, "Rays near, maps far", has the
+// measurement they come from).
+inline constexpr f32 k_default_shadow_ray_distance_m = 100.0f;
+inline constexpr f32 k_default_shadow_ray_band_m = 20.0f;
 
 // The cascaded shadow maps' defaults (docs/subsystems/renderer.md, "Shadows"). Four cascades of
 // 2048 x 2048 texels, side by side in one D32 atlas: 64 MiB, and the cascades split the camera's
@@ -125,6 +133,12 @@ struct RenderSettings {
   // Texels the cascaded maps' lookup leaves the surface along its geometric normal at a grazing
   // surface (gfx::ShadowMapParams::normal_offset); negative is k_shadow_normal_offset_texels.
   f32 shadow_normal_offset = -1.0f;
+  // **Rays near, maps far** (`ShadowMode::Hybrid`): metres from the eye within which a surface's
+  // shadow is the ray query's, and the band past it over which the cascades take over. The rays'
+  // shadow casters end at their sum (the caster horizon, `ResolvedSettings::caster_horizon_m`),
+  // since nothing past it is asked a ray. A negative distance or band is refused by both hosts.
+  f32 shadow_ray_distance_m = k_default_shadow_ray_distance_m;
+  f32 shadow_ray_band_m = k_default_shadow_ray_band_m;
   bool lights = true;  // the two point lights beside the sun
   // They orbit as the frame index advances (lighting.h); off, the default since 2026-09-27, they
   // stand where frame 0 puts them, so a time-lapse's sand is lit the same from frame to frame.
@@ -295,8 +309,13 @@ struct ResolvedSettings {
   bool shadows = false;      // the resolve traces shadow rays
   // The frame draws the sun's cascaded shadow maps and the resolve filters them: `Cascaded`, or
   // `Auto` on a device without ray queries, on a path that rasterizes the picture into the
-  // visibility buffer in one list per pass (hw, vertex). Never together with `shadows`.
+  // visibility buffer in one list per pass (hw, vertex). Together with `shadows` only in the
+  // hybrid.
   bool csm = false;
+  // **Rays near, maps far** (`ShadowMode::Hybrid`, or `Auto` on a device that traces, on the hw and
+  // vertex paths): `shadows` and `csm` both, and the resolve picks between them per pixel by its
+  // distance from the eye (`gfx::k_shadow_hybrid`).
+  bool hybrid = false;
   u32 shadow_cascades = 0;  // the cascades drawn, 1..4 with `csm`, else 0
   bool occlusion = false;   // two-pass occlusion culling runs
   bool rt_chain = false;    // the frame builds acceleration structures from its visible list
@@ -311,8 +330,12 @@ struct ResolvedSettings {
   // rigid form is unchanged by it.
   bool static_forms = false;
   // The casters are bounded by the horizon (`RenderSettings::rt_caster_horizon`): casters on, the
-  // setting or the `renderer.rt.caster_horizon` tunable, and a `shadow_distance` to bound them by.
+  // setting or the `renderer.rt.caster_horizon` tunable, and a `shadow_distance` to bound them by;
+  // or the hybrid with casters, whose rays end at `shadow_ray_distance_m + shadow_ray_band_m`.
   bool caster_horizon = false;
+  // Metres from the eye past which no caster is built (`gfx::CullParams::caster_horizon`): the
+  // hybrid's ray reach, or `shadow_distance` where that is nearer; 0 without `caster_horizon`.
+  f32 caster_horizon_m = 0.0f;
   // The vertex path draws a culled cut with one indexed draw per run (cluster_vertex_indexed.slang)
   // rather than every cluster's triangle capacity: `vertex_path`, the cull pass on, and a device
   // with geometryShader, which the draw's SV_PrimitiveID needs, and fullDrawIndexUint32, which
@@ -409,7 +432,10 @@ bool parse_shadow_mode(std::string_view text, ShadowMode& out) noexcept;
 // "low" or "high" (`RenderSettings::water_quality`).
 const char* water_quality_name(WaterQuality quality) noexcept;
 bool parse_water_quality(std::string_view text, WaterQuality& out) noexcept;
-// What the frame actually shadows with, as a summary reports it: "rt", "csm", or "off".
+// `renderer.shadow.opaque_rays` (false), a measurement switch: the shadow rays force every caster
+// opaque, so the alpha-tested masks are not evaluated (renderer.md, "Rays near, maps far").
+bool shadow_opaque_rays_tunable() noexcept;
+// What the frame actually shadows with, as a summary reports it: "rt", "csm", "hybrid", or "off".
 const char* resolved_shadow_name(const ResolvedSettings& resolved) noexcept;
 // "none", "identity", "wave", or "lattice" into `deform` and `deform_kind`.
 const char* deform_name(const RenderSettings& settings) noexcept;

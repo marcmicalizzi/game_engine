@@ -168,7 +168,8 @@ constexpr const char* k_usage =
     "                   [--deform none|identity|wave|lattice] [--deform-amplitude <a>] [--rt-templates]\n"
     "                   [--rt-budget-mib <n>] [--time-rate <game s per real s>]\n"
     "                   [--stream] [--page-budget <MiB>] [--upload-budget <KiB>]\n"
-    "                   [--shadows off|rt|csm] [--no-shadow-casters]\n"
+    "                   [--shadows off|rt|csm|hybrid] [--no-shadow-casters]\n"
+    "                   [--shadow-ray-distance <m>] [--shadow-ray-band <m>]\n"
     "                   [--shadow-cascades <n>] [--shadow-map <texels>] [--shadow-distance <d>]\n"
     "                   [--views single|surround3|panini] [--side-yaw <deg>]\n"
     "                   [--panini-d <d>] [--peripheral-lod <mult>]\n"
@@ -276,16 +277,22 @@ constexpr const char* k_usage =
     "                   painted by the depth (water.md). render.*'s settings.water_quality\n"
     "  --orbit-lights   the two point lights orbit the scene as the frame number advances (off:\n"
     "                   they stand where frame 0 puts them)\n"
-    "  --shadows <how>  off, rt, or csm. rt: every light in the resolve casts a ray-traced shadow\n"
+    "  --shadows <how>  off, rt, csm, or hybrid. rt: every light in the resolve casts a ray-traced\n"
+    "                   shadow\n"
     "                   against the structures the frame built from its own visible list; in a\n"
     "                   raster mode the frame runs the acceleration structure chain as well, which\n"
     "                   turns two-pass occlusion culling off (one visible list to build from).\n"
     "                   csm: the sun casts through cascaded shadow maps, drawn from the light by\n"
     "                   the cull pass and the picture's own rasterizer and filtered (3x3 PCF) in\n"
     "                   the resolve; the point lights are unshadowed; hw and vertex paths only.\n"
-    "                   The default is rt where the device has cluster acceleration structures\n"
-    "                   and ray queries, csm where it has not; an explicit rt on a device without\n"
-    "                   them exits 3 with the sentence `engine-cli gpu.adapters` reports for it\n"
+    "                   hybrid: rt on a surface nearer the eye than --shadow-ray-distance, csm\n"
+    "                   past it plus --shadow-ray-band, the two blended across the band; hw and\n"
+    "                   vertex paths (the ray path traces alone). The default is hybrid where the\n"
+    "                   device has cluster acceleration structures and ray queries (rt on the ray\n"
+    "                   path), csm where it has not; an explicit rt on a device without them\n"
+    "                   exits 3 with the sentence `engine-cli gpu.adapters` reports for it\n"
+    "  --shadow-ray-distance <m>  hybrid: metres from the eye the rays answer within (default 100)\n"
+    "  --shadow-ray-band <m>  hybrid: metres past that over which the maps take over (default 20)\n"
     "  --shadow-cascades <n>  csm: cascades, 1 to 4 (default 4); a frame whose first cascades\n"
     "                   already hold the whole scene draws fewer\n"
     "  --shadow-map <texels>  csm: texels a side per cascade, a power of two (default 2048)\n"
@@ -1310,7 +1317,7 @@ void note_game_graphics(const gfx::Device& device, const renderer::ResolvedSetti
   };
   if (resolved.vertex_path && !f.mesh_shader)
     reason("raster: no mesh shaders on this device; the vertex-shader baseline tier draws");
-  if (resolved.csm && !rays)
+  if (resolved.csm && !resolved.shadows && !rays)
     reason("shadows: no ray queries on this device; the sun's cascaded shadow maps instead");
   if (resolved.shadows && !resolved.casters)
     reason("shadows: back faces cast no shadow (cones off, or templates that cannot mark them)");
@@ -4026,9 +4033,18 @@ int run_view(int argc, char** argv) {
       if (!next_value(argc, argv, i, a, value)) return k_exit_usage;
       // `auto` is the default, not a spelling the flag takes: it is what no flag means.
       if (value == "auto" || !renderer::parse_shadow_mode(value, options.settings.shadows)) {
-        std::fprintf(stderr, "engine-view: --shadows expects off, rt, or csm\n");
+        std::fprintf(stderr, "engine-view: --shadows expects off, rt, csm, or hybrid\n");
         return k_exit_usage;
       }
+    } else if (a == "--shadow-ray-distance" || a == "--shadow-ray-band") {
+      if (!next_value(argc, argv, i, a, value)) return k_exit_usage;
+      f32 metres = 0.0f;
+      if (!parse_f32(value, metres) || !(metres >= 0.0f)) {
+        std::fprintf(stderr, "engine-view: %s expects metres, 0 or more\n", std::string(a).c_str());
+        return k_exit_usage;
+      }
+      (a == "--shadow-ray-distance" ? options.settings.shadow_ray_distance_m
+                                    : options.settings.shadow_ray_band_m) = metres;
     } else if (a == "--shadow-cascades" || a == "--shadow-map") {
       if (!next_value(argc, argv, i, a, value)) return k_exit_usage;
       u32 n = 0;
@@ -6636,6 +6652,29 @@ int run_view(int argc, char** argv) {
   // The chain's bytes move with its capacity, so the figure is the run's last, not the load's.
   if (stats.rt.bytes > 0) rt_bytes = stats.rt.bytes;
   const std::string rt_text = write_json(rt_summary(stats.rt), JsonWriteOptions{.pretty = false});
+  // **Where the rays end and the maps begin** (renderer.md, "Rays near, maps far"): the hybrid's
+  // distances, the casters' horizon, and the last frame's cascades — each one's camera depths and
+  // the world a texel spans — which is what the ray distance is chosen against.
+  std::string shadow_fit_text;
+  {
+    char line[256];
+    std::snprintf(line, sizeof(line),
+                  "{\"ray_distance_m\":%.2f,\"ray_band_m\":%.2f,\"caster_horizon_m\":%.2f,"
+                  "\"cascades\":[",
+                  resolved.hybrid ? static_cast<f64>(resolved.settings.shadow_ray_distance_m) : 0.0,
+                  resolved.hybrid ? static_cast<f64>(resolved.settings.shadow_ray_band_m) : 0.0,
+                  static_cast<f64>(resolved.caster_horizon_m));
+    shadow_fit_text = line;
+    const renderer::ShadowCascades& fit = view_renderer.shadow_cascades();
+    for (u32 c = 0; resolved.csm && c < fit.count; ++c) {
+      std::snprintf(line, sizeof(line), "%s{\"near_m\":%.3f,\"far_m\":%.3f,\"texel_m\":%.5f}",
+                    c > 0 ? "," : "", static_cast<f64>(fit.splits[c]),
+                    static_cast<f64>(fit.splits[c + 1]),
+                    static_cast<f64>(fit.cascades[c].texel_world));
+      shadow_fit_text += line;
+    }
+    shadow_fit_text += "]}";
+  }
   // The process's own footprint, read before anything is torn down: with a container-backed page
   // source this is the number the whole change is about, so it is taken where it still means
   // something. The peak beside it says whether the load ever *materialized* what it then freed.
@@ -6684,7 +6723,7 @@ int run_view(int argc, char** argv) {
         "\"mesh_primitives\":%u,\"mesh_cache\":\"%s\",\"meshes\":%u,\"instances\":%u,\"pairs\":%u,"
         "\"cull\":%s,\"occlusion\":%s,\"cone\":%s,\"lod_px\":%.2f,\"raster\":\"%s\","
         "\"shadows\":\"%s\",\"shadow_casters\":%s,\"shadow_cascades\":%u,\"shadow_map\":%u,"
-        "\"sw_px\":%.1f,"
+        "\"shadow_fit\":%s,\"sw_px\":%.1f,"
         "\"visible_hw_last\":%u,\"visible_pass2_last\":%u,\"visible_sw_last\":%u,"
         "\"visible_pairs_last\":%u,\"shadow_casters_last\":%u,\"shadow_pairs_last\":%u,"
         "\"shadow_fallback_last\":%u,\"visible_min\":%u,"
@@ -6717,11 +6756,11 @@ int run_view(int argc, char** argv) {
         resolved.settings.cone ? "true" : "false", static_cast<f64>(resolved.settings.lod_px),
         renderer::raster_name(resolved.settings.raster), renderer::resolved_shadow_name(resolved),
         resolved.casters ? "true" : "false", resolved.shadow_cascades,
-        resolved.csm ? resolved.settings.shadow_map : 0u, static_cast<f64>(resolved.settings.sw_px),
-        stats.visible_hw, stats.visible_pass2, stats.visible_sw, stats.visible_pairs(),
-        stats.shadow_casters, stats.shadow_pairs, stats.shadow_fallback, visible_min,
-        stats.visible_max, stats.triangles_hw, stats.vertex_fallback,
-        renderer::deform_name(resolved.settings),
+        resolved.csm ? resolved.settings.shadow_map : 0u, shadow_fit_text.c_str(),
+        static_cast<f64>(resolved.settings.sw_px), stats.visible_hw, stats.visible_pass2,
+        stats.visible_sw, stats.visible_pairs(), stats.shadow_casters, stats.shadow_pairs,
+        stats.shadow_fallback, visible_min, stats.visible_max, stats.triangles_hw,
+        stats.vertex_fallback, renderer::deform_name(resolved.settings),
         static_cast<unsigned long long>(deform_pool_bytes),
         static_cast<unsigned long long>(deform_whole_mesh_bytes),
         static_cast<unsigned long long>(u64{stats.deform_vertices} * 3 * sizeof(f32)),

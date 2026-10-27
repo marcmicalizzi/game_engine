@@ -419,15 +419,18 @@ struct DisplaysResult @version(1) {
 /// field this is `renderer::RenderSettings` in engine-view's spellings and units, read by one
 /// function the renderer owns (`renderer::read_protocol_settings`, systems/renderer/request.h);
 /// `request_tests.cpp` fails when a renderer field has no field here and no reason to have none.
-struct RenderSettings @version(13) {
+struct RenderSettings @version(14) {
   /// direct, hw, vertex, sw, auto, or rt. `hw` and `direct` fall back to `vertex` on a device
   /// without mesh shaders; the result says which one ran.
   raster: string = "hw"
-  /// off, rt, csm, or auto. rt: every light's shadow is a ray query against the frame's own
-  /// acceleration structures. csm: the sun's shadow is filtered out of cascaded shadow maps the
+  /// off, rt, csm, hybrid, or auto. rt: every light's shadow is a ray query against the frame's
+  /// own acceleration structures. csm: the sun's shadow is filtered out of cascaded shadow maps the
   /// cull pass and the picture's rasterizer draw from the light (hw and vertex paths; the point
-  /// lights are unshadowed). auto: rt wherever the device has cluster acceleration structures and
-  /// ray queries, csm where it has not (docs/subsystems/renderer.md, "Shadows").
+  /// lights are unshadowed). hybrid (since version 14): rt on a surface nearer the eye than
+  /// `shadow_ray_distance_m`, csm past it plus `shadow_ray_band_m`, blended across the band (hw and
+  /// vertex paths; the ray path traces alone). auto: hybrid wherever the device has cluster
+  /// acceleration structures and ray queries (rt on the ray path; until version 14 rt everywhere),
+  /// csm where it has not (docs/subsystems/renderer.md, "Shadows", "Rays near, maps far").
   shadows: string = "auto"
   /// id, tri, depth, shaded, normals, uv, shadow (the sun's shadow alone: white where it reaches
   /// the surface, black where a shadow ray is blocked, grey where the surface faces away), albedo,
@@ -560,6 +563,12 @@ struct RenderSettings @version(13) {
   /// "low" is the surface alone — the sky, the sun's glitter and a bottom colour painted by the
   /// depth — the picture before the tier. `engine-view --water-quality low|high`.
   water_quality: string = "high" @since(13)
+  /// hybrid: metres from the eye within which a surface's shadow is the ray query's, and the band
+  /// past it over which the cascaded maps take over; the rays' shadow casters end at their sum
+  /// (docs/subsystems/renderer.md, "Rays near, maps far"). `engine-view --shadow-ray-distance`,
+  /// `--shadow-ray-band`.
+  shadow_ray_distance_m: f32 = 100 @since(14) @unit(m)
+  shadow_ray_band_m: f32 = 20 @since(14) @unit(m)
 }
 
 /// What a frame is drawn at beyond its camera and its number: the world's one clock

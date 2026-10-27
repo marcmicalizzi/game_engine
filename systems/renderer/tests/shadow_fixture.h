@@ -293,6 +293,9 @@ struct Shot {
   u32 deform_entries = 0;   // Stats::deform_entries: entries the pool gave a block
   u32 deform_overflow = 0;  // Stats::deform_overflow_entries: entries it had no room for
   bool csm = false;         // the frame drew cascaded maps
+  bool hybrid = false;      // and traced rays near the eye beside them
+  u32 horizon_casters = 0;  // Stats::horizon_casters
+  Mat4 view_proj;           // the view's, in the frame's space (the eye at the origin)
   bool available = true;
   std::string why;
 };
@@ -319,6 +322,14 @@ struct ShotOptions {
   f32 deform_amplitude = 0.02f;
   u32 deform_pool_kib = 0;
   u64 frame_index = 0;
+  // The hybrid's distances (`ShadowMode::Hybrid`), and whether to capture the depth a case
+  // classifies its pixels by distance with.
+  f32 shadow_ray_distance_m = k_default_shadow_ray_distance_m;
+  f32 shadow_ray_band_m = k_default_shadow_ray_band_m;
+  bool depth = false;
+  // R94's caster horizon at `shadow_distance` (`RenderSettings::rt_caster_horizon`).
+  bool rt_caster_horizon = false;
+  f32 shadow_distance = 0.0f;
 };
 
 // One picture of the scene, with its ids, under the options given.
@@ -341,6 +352,10 @@ inline Shot render(const gfx::Device& device, Caster caster, const ShotOptions& 
   settings.deform_kind = options.deform_kind;
   settings.deform_amplitude = options.deform_amplitude;
   settings.deform_pool_kib = options.deform_pool_kib;
+  settings.shadow_ray_distance_m = options.shadow_ray_distance_m;
+  settings.shadow_ray_band_m = options.shadow_ray_band_m;
+  settings.rt_caster_horizon = options.rt_caster_horizon;
+  settings.shadow_distance = options.shadow_distance;
   ResolvedSettings resolved;
   resolve_settings(settings, device.features(), &data, resolved);
   const RenderAvailability availability = check_availability(resolved, device.features());
@@ -350,6 +365,7 @@ inline Shot render(const gfx::Device& device, Caster caster, const ShotOptions& 
     return shot;
   }
   shot.csm = resolved.csm;
+  shot.hybrid = resolved.hybrid;
   GpuScene scene;
   REQUIRE_MESSAGE(scene.create(device, data, resolved, &error), error);
   SceneRenderer renderer;
@@ -366,7 +382,10 @@ inline Shot render(const gfx::Device& device, Caster caster, const ShotOptions& 
   CaptureChannels channels;
   channels.color = true;
   channels.ids = true;
+  channels.depth = options.depth;
   REQUIRE_MESSAGE(renderer.capture(frame, channels, shot.frame, &error), error);
+  shot.view_proj = renderer.views()[0].view_proj;
+  shot.horizon_casters = renderer.stats().horizon_casters;
   shot.casters = renderer.stats().shadow_casters;
   shot.visible = renderer.stats().visible_pairs();
   shot.shadow_pairs = renderer.stats().shadow_pairs;

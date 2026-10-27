@@ -1862,8 +1862,9 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
     mask_tables.attributes = scene.attributes.address;
   }
   const u32 cascade_runs = csm ? scene.shadow_cascades() : 0u;
-  ENGINE_ASSERT(!csm || (!shadows && !use_sw && !ray_path && !direct),
-                "cascaded shadow maps are drawn on the hw and vertex paths, never beside rays");
+  ENGINE_ASSERT(!csm || ((!shadows || resolved_.hybrid) && !use_sw && !ray_path && !direct),
+                "cascaded shadow maps are drawn on the hw and vertex paths, beside rays only in "
+                "the hybrid");
   // A negative override means "what the settings say", which is every caller but the reference.
   const f32 frame_lod_px = frame.lod_px >= 0.0f ? frame.lod_px : settings.lod_px;
   // **The foliage threshold** (renderer.md, "The foliage threshold"; R91) follows a frame's
@@ -2268,7 +2269,8 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
       cull.casters = vf.run_address[gfx::k_caster_run];
       cull.caster_count = scene.sw_args.address + vf.args_offset;
       // The caster horizon: none farther from the eye than the shadows' distance (R94).
-      cull.caster_horizon = resolved_.caster_horizon ? settings.shadow_distance : 0.0f;
+      // With the hybrid, none past the rays' reach (R102).
+      cull.caster_horizon = resolved_.caster_horizon ? resolved_.caster_horizon_m : 0.0f;
       // And what its frustum rejects but a ray towards a shadowed light could still meet:
       // this view's caster volumes (caster_volume.h), fit from its own frustum, since every view's
       // cull run has its own planes.
@@ -2421,11 +2423,21 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
     resolve.shadow_flags = shadows ? gfx::k_shadow_sun | gfx::k_shadow_lights : 0u;
     // A masked caster is built non-opaque, so the shadow rays test masks (renderer.md,
     // "Alpha-tested geometry").
-    if (shadows && scene.has_masked()) resolve.shadow_flags |= gfx::k_shadow_alpha_masks;
+    // `renderer.shadow.opaque_rays` (measurement only) leaves the masks out and every caster solid.
+    if (shadows && scene.has_masked() && !shadow_opaque_rays_tunable())
+      resolve.shadow_flags |= gfx::k_shadow_alpha_masks;
     resolve.shadow_bias = lighting.shadow_bias;
     resolve.shadow_bias_steps = lighting.shadow_bias_steps;
-    // Or the sun's cascaded maps: the same query, filtered out of the atlas, and the sun alone.
-    if (csm) {
+    if (resolved_.hybrid) {
+      // **Rays near, maps far** (R102): every light is traced as above within the ray distance of
+      // this view's eye, and past it plus the band the maps answer for the light they follow and
+      // every other light is lit, as under the maps alone (renderer.md, "Rays near, maps far").
+      resolve.shadow_flags |= gfx::k_shadow_cascades | gfx::k_shadow_hybrid;
+      resolve.shadow_maps = shadow_maps_address;
+      resolve.shadow_ray_distance = settings.shadow_ray_distance_m;
+      resolve.shadow_ray_band = settings.shadow_ray_band_m;
+    } else if (csm) {
+      // Or the sun's cascaded maps: the same query, filtered out of the atlas, and the sun alone.
       resolve.shadow_flags = gfx::k_shadow_sun | gfx::k_shadow_cascades;
       // On a sky's night the maps are the moon's, a light of the array, which the query then asks.
       if (frame_sky_.moon_key) resolve.shadow_flags |= gfx::k_shadow_lights;

@@ -269,6 +269,23 @@ inline Dvec3 shade(const Surface& s, Dvec3 sun_dir, double sun_intensity, Dvec3 
   return color;
 }
 
+// **Which shadow a hybrid pixel is checked as** (`gfx::k_shadow_hybrid`; renderer.md, "Rays near,
+// maps far"): a surface nearer the eye than the ray distance is a ray-shadowed pixel and is held
+// to the ray's rule, one past the distance plus the band a map-shadowed one held to the maps'
+// (their own band round a shadow's edge left out), and one in the blend band between is neither:
+// it is left out, as an edge is, and the tests hold it between the two answers instead. `margin`
+// is the CPU's own uncertainty in the distance (the resolve's reconstruction against the
+// reference's plane), so a pixel within it of either boundary is in the band too.
+enum class HybridSide : u8 { Ray, Map, Band };
+inline HybridSide hybrid_side(Dvec3 position, Dvec3 eye, double ray_distance, double band,
+                              double margin) {
+  const Dvec3 d = position - eye;
+  const double distance = std::sqrt(dot(d, d));
+  if (distance < ray_distance - margin) return HybridSide::Ray;
+  if (distance > ray_distance + band + margin) return HybridSide::Map;
+  return HybridSide::Band;
+}
+
 // Linear to the byte a UNORM target holds: the 1/2.2 display gamma, then round to 8 bits.
 inline u8 display(double linear) {
   const double v = std::pow(linear < 0.0 ? 0.0 : linear, 1.0 / 2.2);

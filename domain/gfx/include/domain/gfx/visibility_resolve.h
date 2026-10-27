@@ -52,6 +52,23 @@ inline constexpr u32 k_shadow_cascades = 4u;  // the sun's shadow comes from the
 // non-opaque candidate — a masked pair by its mask, a shadow caster as solid — instead of forcing
 // opacity (renderer.md, "Alpha-tested geometry"). Clear, the query is the one it always was.
 inline constexpr u32 k_shadow_alpha_masks = 8u;
+// **Rays near, maps far** (renderer.md, "Rays near, maps far"; R102), set beside
+// `k_shadow_cascades`: a surface nearer this view's eye than `ResolveParams::shadow_ray_distance`
+// asks the ray query, one farther than that plus `shadow_ray_band` asks the maps, and across the
+// band the two visibilities are blended by distance (`shadow_hybrid_weight`). The maps answer the
+// light they follow and leave every other light lit, as they always did, so far from the eye the
+// picture is the maps' and near it the rays'. Clear, the cascades shadow the whole picture.
+inline constexpr u32 k_shadow_hybrid = 16u;
+
+// The maps' share of a hybrid pixel's visibility at `distance` from the eye: 0 nearer than
+// `ray_distance` (the ray's answer alone), 1 past `ray_distance + band` (the maps' alone), linear
+// between. The shader computes exactly this (`hybrid_weight` in visibility_resolve.slang); a band
+// of 0 is a hard switch at the distance.
+inline f32 shadow_hybrid_weight(f32 distance, f32 ray_distance, f32 band) noexcept {
+  if (distance <= ray_distance) return 0.0f;
+  if (!(band > 0.0f) || distance >= ray_distance + band) return 1.0f;
+  return (distance - ray_distance) / band;
+}
 
 // ---- cascaded shadow maps (docs/plan/04-renderer.md §4.4, docs/subsystems/renderer.md) --------
 //
@@ -607,7 +624,8 @@ struct ResolveParams {
   u64 instances = 0;       // InstanceDesc[] (cluster_cull.h)
   u64 visible = 0;         // u32x2[]: the cull pass's visible list; 0 reads {0, pair}
   u32 scene = k_no_scene;  // bindless slot of the top-level structure the shadow rays trace
-  u32 shadow_flags = 0;    // k_shadow_sun | k_shadow_lights [| k_shadow_cascades]; 0: no shadows
+  // k_shadow_sun | k_shadow_lights [| k_shadow_cascades [| k_shadow_hybrid]]; 0: no shadows
+  u32 shadow_flags = 0;
   // How far a shadow ray leaves the surface along its geometric normal: `shadow_bias` world units
   // plus `shadow_bias_steps` (below) steps of the receiver's own 16-bit position grid, through its
   // instance's largest scale — `ray_offset` in material.slang, which the path tracer calls too.
@@ -735,7 +753,12 @@ struct ResolveParams {
   u64 fade = 0;
   u64 fade_meshes = 0;  // MeshDesc[]: how a caster's entry becomes the pair the table is indexed by
   u64 hit_entries = 0;
-  u64 hit_pad = 0;
+  // **Rays near, maps far** (`k_shadow_hybrid`; renderer.md, "Rays near, maps far"): metres from
+  // this view's eye within which the ray query answers, and the band past it over which the maps
+  // take over. Read only with the flag; they took the pad word behind `hit_entries` (2026-10-26),
+  // so the block is still 448 bytes.
+  f32 shadow_ray_distance = 0.0f;
+  f32 shadow_ray_band = 0.0f;
 };
 // The water's period, seconds (`ResolveParams::water_time_s`): long enough that no repeat is seen,
 // short enough that a float holds a millisecond of it.

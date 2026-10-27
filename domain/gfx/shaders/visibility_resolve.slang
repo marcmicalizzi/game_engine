@@ -73,7 +73,7 @@
 // the visibility buffer. A **Panini** view goes one step further: its region holds a wider
 // rectilinear picture, and `panini_x`/`source_x`/`panini_d` map each output pixel back into it.
 //
-// Read through a device address; mirrors gfx::ResolveParams (416 bytes).
+// Read through a device address; mirrors gfx::ResolveParams (448 bytes).
 struct ResolveParams {
   float4 sky;     // rgb, shown for empty pixels and the hemisphere ambient's upper half
   float4 sun;     // xyz normalized direction towards the light, w intensity
@@ -144,7 +144,8 @@ struct ResolveParams {
   uint64_t fade;         // MaskTables::fade for the shadow rays (R91); 0 in a frame with no fade
   uint64_t fade_meshes;  // MeshDesc[], read with ade: a caster's entry to its scene pair
   uint64_t hit_entries;
-  uint64_t hit_pad;
+  float shadow_ray_distance;  // k_shadow_hybrid: the ray query answers nearer the eye than this
+  float shadow_ray_band;      // and the maps past this much farther, blended between
 };
 
 // The resolved pixel, for the cross-fade's hash in the shadow rays (ade_keeps): set once by the
@@ -198,6 +199,8 @@ static const uint k_shadow_lights = 2u;
 static const uint k_shadow_cascades = 4u;  // the sun's shadow is read from the cascaded maps
 // The frame has alpha-tested materials (gfx::k_shadow_alpha_masks): a shadow ray tests their masks.
 static const uint k_shadow_alpha_masks = 8u;
+// Rays near the eye, the maps far from it (gfx::k_shadow_hybrid), beside k_shadow_cascades.
+static const uint k_shadow_hybrid = 16u;
 
 struct FullscreenOut {
   float4 position : SV_Position;
@@ -461,17 +464,44 @@ float cascade_visibility(ShadowMapParams* maps, float3 position, float3 geometri
 // The maps are drawn from one light, `ShadowMapParams::light`: the sun (0) — every map before a sky
 // was, and the only one the lights array ever had — or, on a sky's night, the moon, a directional
 // light of the array (`owner` is the light's index plus one, 0 for the sun).
+//
+// **Rays near, maps far** (`k_shadow_hybrid` beside `k_shadow_cascades`; renderer.md, "Rays near,
+// maps far"): the surface's distance from this view's eye picks the implementation — the ray
+// nearer than `shadow_ray_distance`, the maps past it plus `shadow_ray_band`, and between them
+// the two visibilities blended by distance, so a shadow crossing the band fades from one answer to
+// the other rather than stepping as the camera moves. A pixel asks only what its weight needs: a
+// near pixel traces and reads no map, a far one reads the maps and traces nothing, so near the eye
+// the picture is the rays' to the byte and far from it the maps'.
+float map_visibility(ResolveParams* params, uint owner, float3 position, float3 geometric) {
+  if (params->shadow_maps == 0) return 1.0;
+  ShadowMapParams* maps = (ShadowMapParams*)params->shadow_maps;
+  if (maps->light != owner) return 1.0;
+  return cascade_visibility(maps, position, geometric);
+}
+
+// The maps' share at `position`: gfx::shadow_hybrid_weight, operation for operation.
+float hybrid_weight(ResolveParams* params, float3 position) {
+  const float d = length(position - params->camera.xyz);
+  const float traced = params->shadow_ray_distance;
+  const float band = params->shadow_ray_band;
+  if (d <= traced) return 0.0;
+  if (!(band > 0.0) || d >= traced + band) return 1.0;
+  return (d - traced) / band;
+}
+
 float shadow_visibility(ResolveParams* params, uint bit, uint owner, float3 position,
                         float3 geometric, float offset, float3 direction, float t_max) {
   if ((params->shadow_flags & bit) == 0) return 1.0;
+  float maps_share = 0.0;
   if ((params->shadow_flags & k_shadow_cascades) != 0) {
-    if (params->shadow_maps == 0) return 1.0;
-    ShadowMapParams* maps = (ShadowMapParams*)params->shadow_maps;
-    if (maps->light != owner) return 1.0;
-    return cascade_visibility(maps, position, geometric);
+    maps_share = (params->shadow_flags & k_shadow_hybrid) != 0 ? hybrid_weight(params, position)
+                                                               : 1.0;
+    if (maps_share >= 1.0) return map_visibility(params, owner, position, geometric);
   }
   const float3 origin = position + geometric * offset;
-  return shadow_ray_blocked(params, bit, origin, direction, t_max) ? 0.0 : 1.0;
+  const float ray = shadow_ray_blocked(params, bit, origin, direction, t_max) ? 0.0 : 1.0;
+  if (maps_share <= 0.0) return ray;
+  return lerp(ray, map_visibility(params, owner, position, geometric), maps_share);
 }
 
 // **A water pixel** (water.slang; docs/subsystems/water.md, "Shading"): the waves' normal at the
