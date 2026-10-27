@@ -6,6 +6,8 @@ Read [12-ai-usage-policy](plan/12-ai-usage-policy.md) before extending either: t
 
 ## The rule that comes first: outputs are never committed
 
+The [PBR material enlargement experiment](experiments/pbr-material-upscaling.md) is G30's local prototype: executable ComfyUI workflows compare StableMaterials, texture super-resolution and Krea2 depth conditioning, with repeat checks and Blender relighting. Its scripts and generated maps live under the local root; it is not yet a `generate.ps1` backend.
+
 Generated images and meshes, the owner's ComfyUI workflow files, captures and containers built from generated meshes all live under the **local root** — `$env:ENGINE_LOCAL_ROOT`, else `D:\workspace\game_engine_local` — which is outside the repository on purpose. Both tools **refuse** a root or an output directory inside the repository (either this checkout or, from an agent worktree, the main checkout that contains it), because an output under the tree is one `git add .` from being committed. What *is* committed is text an engineer wrote: the tools, their tests, and subject lists such as [content/generation/e10-desert-props.json](../content/generation/e10-desert-props.json).
 
 ```
