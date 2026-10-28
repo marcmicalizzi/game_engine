@@ -1706,7 +1706,7 @@ void SceneRenderer::note_rt_bytes() noexcept {
   chain.bytes_per_cluster = scene_->rt_bytes_per_cluster();
   chain.geometry_index_max = chain.capacity == 0 ? 0 : chain.capacity - 1;
   chain.geometry_index_required = rt_max_geometry_index(
-      static_cast<u32>(resolved_.pairs.frame_pairs()), resolved_.view_count, resolved_.casters);
+      resolved_.pairs.frame_pairs(), resolved_.view_count, resolved_.casters);
   chain.geometry_index_limit = device_->features().cluster_max_geometry_index;
   chain.limit = scene_->rt_capacity_limit();
   chain.union_clusters = scene_->rt_union_clusters();
