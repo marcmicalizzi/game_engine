@@ -188,6 +188,29 @@ overflow (1.59 million entries refused under `--shadows csm`) is the cascades' a
 agent's tonight. Under the cascades the plants' demand is what fills any floor; on the 12 GB
 runners, which draw the maps and have no chain, that is the number to size against.
 
+## The frame budgets
+
+`tools/frame-budget.ps1 -Preset msvc-release` on this branch's final build, every run under the GPU
+lock (2026-10-27): **five of five within budget**. With the rule the three traced runs take the
+device's 2,025 MiB (`budget_source: device`); none of them comes near it (at most 11,491 structures
+a frame) and none dropped anything.
+
+| run | GPU total median / p99 (budget) | `rt` median: baseline / budget / this run | chain's capacity: first → settled | machine state (start → end) |
+|---|---|---|---|---|
+| overlook-1080p | 0.153 / 0.194 (0.155 / 0.358) | — (no chain) | — | others 7.7 → 8.8% of the CPU, GPU 3 → 80% |
+| erg-walk-1080p-rt | 0.714 / 1.021 (0.724 / 1.214) | 0.368 / 0.455 / 0.364 | 331,827 → 4,096 | 5.3 → 12.7%, GPU 4 → 97% |
+| erg-walk-surround3-rt | 3.433 / 4.102 (3.373 / 4.127) | 0.632 / 0.745 / 0.624 | 331,827 → 8,192 | 8.4 → 8.7%, GPU 2 → 2%; quiet |
+| endless-1080p-csm | 1.116 / 1.846 (3.161 / 5.545) | — (maps) | — | 7.1 → 51.7%, GPU 2 → 4% |
+| endless-surround3-rt | 4.261 / 5.293 (4.436 / 5.418) | 0.951 / 1.096 / 1.067 | 330,125 → 16,384 | 8.5 → 11.4%, GPU 1 → 29% |
+
+The endless surround's `rt` row is where batch 42 left it with the cluster cache off (1.064 ms). What
+moved is the **first capacity**: these scenes' first estimate counts every terrain slot in every
+view, which is past any budget, so they start at the budget — now twice the old one on this card —
+and hold it until their first shrink window (240 frames) ends: the erg's surround peaks at 2.51 GB of
+chain and the endless one at 2.31 GB, then settle at 434 and 293 MB. The overlook needed the
+Khronos samples in the checkout (`content/samples`, git-ignored); an earlier run without them failed
+to load its scene, which was the harness and not the change.
+
 ## What holds it
 
 - `rt capacity: the default budget is a sixteenth of the device, 512 to 4096 MiB` (CPU): the rule on
