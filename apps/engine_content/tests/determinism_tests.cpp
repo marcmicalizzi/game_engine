@@ -486,7 +486,7 @@ TEST_CASE("engine-content: city makes the committed plan, fragment and yield on 
 // G88/version 10: broadleaf tip-crown geometry and its bakes change. Ancient's only changed
 // section is SourceHash (15), from the solver-version identity; every mesh/bake section matches v9.
 // G91/version 11: only SourceHash (15) changes for these two legacy fixtures.
-// R97/texture cache version 2: the embedded impostor atlases' texture build keys (section 33)
+// R97/texture cache version 2: the embedded impostor atlases' texture build keys (section 32)
 // change with the version; geometry and baked image bytes do not. Previous folds:
 // 0x341ebdc8af5aaca1 and 0xa082d1e2d4529b8f.
 constexpr u64 k_broadleaf_container_golden = 0x57e988a4c201cd41ull;
