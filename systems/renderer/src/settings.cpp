@@ -219,10 +219,17 @@ tunables::Bool shadow_opaque_rays{
     "renderer.shadow.opaque_rays", false,
     "Measurement only: the shadow rays treat every caster as opaque, so an alpha-tested leaf "
     "casts its whole card (renderer.md, Rays near, maps far)"};
+// R97: a normal map's variance chain widens the GGX roughness (renderer.md, "Normal filtering").
+tunables::Bool material_normal_filter{
+    "renderer.material.normal_filter", true,
+    "Upload a built normal map's normal-variance chain and widen the GGX roughness by the normal "
+    "variation a pixel no longer resolves; false draws every material as before R97 (read at "
+    "load)"};
 
 }  // namespace
 
 bool shadow_opaque_rays_tunable() noexcept { return shadow_opaque_rays.get(); }
+bool normal_filter_tunable() noexcept { return material_normal_filter.get(); }
 
 DisplayLevels display_levels(const RenderSettings& settings) {
   DisplayLevels out;

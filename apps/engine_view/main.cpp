@@ -5195,6 +5195,8 @@ int run_view(int argc, char** argv) {
   // their own uploads would have taken (renderer.md, "One upload per distinct image").
   u32 textures_shared = 0;
   u64 texture_bytes_saved = 0;
+  u32 normal_variance_textures = 0;  // R97: normal maps uploaded with their variance chain
+  u64 normal_variance_bytes = 0;
   std::string views_text = "{}";
   std::string streaming_text =
       write_json(streaming_summary(renderer::StreamStats{}), JsonWriteOptions{.pretty = false});
@@ -5607,6 +5609,8 @@ int run_view(int argc, char** argv) {
     textures_decoded = scene.textures_decoded();
     textures_shared = scene.textures_shared();
     texture_bytes_saved = scene.texture_bytes_saved();
+    normal_variance_textures = scene.normal_variance_textures();
+    normal_variance_bytes = scene.normal_variance_bytes();
     // Where a streamed page's bytes come from. Attaching the container-backed source is also what
     // releases the merged host streams, so it happens here, after the upload and before the
     // renderer that will read from it.
@@ -6810,7 +6814,8 @@ int run_view(int argc, char** argv) {
         "\"skinned_instances\":%u,\"joints\":%u,\"clip\":\"%s\",\"anim\":%s,"
         "\"template_bytes\":%llu,\"rt_bytes\":%llu,\"geometry_bytes\":%llu,\"stream_bytes\":%llu,"
         "\"textures\":{\"built\":%u,\"decoded\":%u,\"distinct\":%u,\"shared\":%u,\"bytes\":%llu,"
-        "\"bytes_saved\":%llu,\"sharing\":%s},"
+        "\"bytes_saved\":%llu,\"sharing\":%s,\"normal_variance\":%u,\"normal_variance_bytes\":%llu}"
+        ","
         "\"rt\":%s,\"pair_breakdown\":%s,\"views\":%s,\"streaming\":%s,"
         "\"host_memory\":{\"bytes\":%llu,\"peak_bytes\":%llu},"
         "\"gpu_memory\":{\"budget_mib\":%llu,\"used_mib\":%llu,"
@@ -6849,7 +6854,8 @@ int run_view(int argc, char** argv) {
         textures_built + textures_decoded, textures_shared,
         static_cast<unsigned long long>(texture_bytes),
         static_cast<unsigned long long>(texture_bytes_saved),
-        resolved.settings.share_textures ? "true" : "false", rt_text.c_str(), pairs_text.c_str(),
+        resolved.settings.share_textures ? "true" : "false", normal_variance_textures,
+        static_cast<unsigned long long>(normal_variance_bytes), rt_text.c_str(), pairs_text.c_str(),
         views_text.c_str(), streaming_text.c_str(), static_cast<unsigned long long>(host_memory),
         static_cast<unsigned long long>(host_memory_peak),
         static_cast<unsigned long long>(stats.gpu_memory.budget_mib),

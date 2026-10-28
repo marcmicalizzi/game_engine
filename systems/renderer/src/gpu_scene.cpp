@@ -257,7 +257,8 @@ struct BuiltImage {
 // `needed` is how many images the resolve samples; zero leaves the mesh on the old path, which
 // for a mesh with no textures is no path at all. A key `known` already holds is not read again:
 // its identity was checked when the mesh that uploaded it read it, and the file is the same file.
-bool find_built_textures(const SourceMesh& mesh, const SceneTextures& known,
+// `normal_filter` (R97's tunable) off reads a normal map's variance chain as absent.
+bool find_built_textures(const SourceMesh& mesh, const SceneTextures& known, bool normal_filter,
                          Vector<BuiltImage>& out, u32& needed, std::string& why) {
   out.clear();
   needed = 0;
@@ -332,7 +333,7 @@ bool find_built_textures(const SourceMesh& mesh, const SceneTextures& known,
       return false;
     }
     out[i].stored = out[i].data.format;
-    out[i].normal_variance = !out[i].data.normal_variance.empty();
+    out[i].normal_variance = normal_filter && !out[i].data.normal_variance.empty();
   }
   return true;
 }
@@ -3351,6 +3352,9 @@ bool GpuScene::upload_materials(const ResolvedSettings& resolved, std::string* e
   texture_references_ = 0;
   textures_shared_ = 0;
   texture_bytes_saved_ = 0;
+  normal_variance_textures_ = 0;
+  normal_variance_bytes_ = 0;
+  const bool normal_filter = normal_filter_tunable();  // R97, read once per upload
   share_textures_ = resolved.settings.share_textures;
   transform_conflicts_ = 0;
   Vector<gfx::ResolveMaterial> material_table;
@@ -3477,7 +3481,8 @@ bool GpuScene::upload_materials(const ResolvedSettings& resolved, std::string* e
       Vector<BuiltImage> built;
       u32 sampled_images = 0;
       std::string why;
-      bool use_built = find_built_textures(source_mesh, scene_textures, built, sampled_images, why);
+      bool use_built = find_built_textures(source_mesh, scene_textures, normal_filter, built,
+                                           sampled_images, why);
       if (use_built && !device.features().texture_compression_bc) {
         use_built = false;
         why = "the device has no textureCompressionBC";
@@ -3612,6 +3617,8 @@ bool GpuScene::upload_materials(const ResolvedSettings& resolved, std::string* e
           texture_views_.push_back(variance_view);
           texture_bytes_ += variance.bytes;
           made.bytes += variance.bytes;
+          ++normal_variance_textures_;
+          normal_variance_bytes_ += variance.bytes;
           const u32 slot =
               bindless_.add_sampled_image(variance_view, gfx::ImageLayout::ShaderReadOnly);
           if (made.slot == gfx::k_no_texture || slot == gfx::k_no_texture ||
@@ -5019,6 +5026,8 @@ void GpuScene::destroy() noexcept {
   textures_built_ = textures_decoded_ = 0;
   texture_references_ = textures_shared_ = 0;
   texture_bytes_saved_ = 0;
+  normal_variance_textures_ = 0;
+  normal_variance_bytes_ = 0;
   bindless_.destroy();
   instance_table_.clear();
   deform_descs_.clear();

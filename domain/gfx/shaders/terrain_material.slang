@@ -318,10 +318,19 @@ float3 terrain_hex_blend(TerrainHex hex, float3 mean, float3 a, float3 b, float3
 // means; the slopes about zero, the mean slope of any tileable height field.
 void terrain_hex_sample(ResolveMaterial layer, TerrainHex hex, float2 uv, float2 du, float2 dv,
                         bool filtered, out float3 colour, out float roughness, out float height,
-                        out float2 slope) {
+                        out float2 slope, out float loss) {
   const bool normals = layer.normal_texture != k_no_texture && layer.normal_scale != 0.0;
   const bool grads = filtered && (layer.flags & k_material_mipped) != 0;
   const uint normal_slot = slot_sampler(layer, layer.samplers_mr_normal, 16);
+  // R97: the tiles' roughness is read unwidened and the widening applied once to the blend. Read
+  // through `sample_material_grad` each tile would arrive widened, and the variance-preserving
+  // operator scales a tile's departure from the layer's (unwidened) mean by up to √3 — the widening
+  // itself would then vary with the lattice. The tiles' shortening is a plain weighted mean: a
+  // mixture's unresolved variance, not a texel to keep the contrast of.
+  const bool variance = normals && grads && (layer.flags & k_material_normal_variance) != 0;
+  ResolveMaterial plain = layer;
+  plain.flags &= ~k_material_normal_variance;
+  loss = 0.0;
   float3 c[3];
   float r[3];
   float h[3];
@@ -332,7 +341,12 @@ void terrain_hex_sample(ResolveMaterial layer, TerrainHex hex, float2 uv, float2
     const float2 du_k = float2(turn.x * du.x - turn.y * du.y, turn.y * du.x + turn.x * du.y);
     const float2 dv_k = float2(turn.x * dv.x - turn.y * dv.y, turn.y * dv.x + turn.x * dv.y);
     const MaterialSample s =
-        filtered ? sample_material_grad(layer, p, du_k, dv_k) : sample_material(layer, p);
+        filtered ? sample_material_grad(plain, p, du_k, dv_k) : sample_material(plain, p);
+    if (variance)
+      loss += hex.weight[k] *
+              g_textures[NonUniformResourceIndex(layer.normal_texture + 1u)]
+                  .SampleGrad(g_samplers[NonUniformResourceIndex(normal_slot)], p, du_k, dv_k)
+                  .r;
     c[k] = s.albedo;
     r[k] = s.roughness;
     h[k] = s.metallic;
@@ -408,9 +422,12 @@ TerrainLayerSample terrain_layer_sample(SceneGeometry geo, ResolveMaterial layer
       const float3 b = axis == 1 ? float3(0, 0, 1) : float3(0, 1, 0);
       const TerrainHex hex = terrain_hex(geo.eye, point, axis, pitch, terrain_layer_rotation(layer));
       float3 colour;
-      float roughness, height;
+      float roughness, height, loss;
       float2 slope;
-      terrain_hex_sample(layer, hex, uv, du, dv, filtered, colour, roughness, height, slope);
+      terrain_hex_sample(layer, hex, uv, du, dv, filtered, colour, roughness, height, slope, loss);
+      if (loss > 0.0)
+        roughness = brdf_filter_roughness(roughness, brdf_normal_variance(loss, layer.normal_scale),
+                                          0.0);
       r.colour += kept[axis] * colour;
       r.roughness += kept[axis] * roughness;
       r.height += kept[axis] * height;
@@ -451,13 +468,15 @@ TerrainLayerSample terrain_layer_sample(SceneGeometry geo, ResolveMaterial layer
   return r;
 }
 
-// Post-fetch policy only. A variance-bearing layer follows the texture footprint for its normal
-// and roughness; it no longer flattens its normal independently at detail_far_m. The caller fetches
-// it with fade=1, then retains the existing colour and height policy here (R96 owns their sampling).
+// Post-fetch policy only (R97). A tiled layer with a variance chain follows the texture footprint
+// for its normal and roughness: it no longer flattens its normal at detail_far_m, because the
+// chain moves what the footprint stops resolving into the roughness instead. The caller fetches it
+// with fade=1 and the colour and height keep the tiled fade here. A painted (`Map`) layer never
+// faded and a stochastic one does not (R96), so neither is touched.
 TerrainLayerSample terrain_filter_sample(TerrainLayerSample sample, ResolveMaterial layer,
                                          float fade) {
   if ((layer.flags & k_material_normal_variance) != 0 &&
-      (layer.flags & k_material_terrain_map) == 0) {
+      (layer.flags & (k_material_terrain_map | k_material_terrain_stochastic)) == 0) {
     sample.colour = lerp(terrain_layer_mean_colour(layer), sample.colour, fade);
     sample.height = lerp(0.5, sample.height, fade);
   }

@@ -3,6 +3,7 @@
 #include <foundation/image/metrics.h>
 #include <foundation/image/png.h>
 #include <foundation/io/vfs.h>
+#include <foundation/tunables/tunables.h>
 #include <systems/renderer/capture.h>
 #include <systems/renderer/gpu_scene.h>
 #include <systems/renderer/reference.h>
@@ -680,5 +681,230 @@ TEST_CASE(
   reference.destroy();
   renderer.destroy();
   scene.destroy();
+  device.destroy();
+}
+
+namespace {
+// A tunable set for one scope and put back after it, as a test that compares two settings needs.
+struct ScopedTunable {
+  tunables::Tunable* tunable = nullptr;
+  std::string previous;
+  ScopedTunable(const char* name, const char* value) {
+    tunable = tunables::find(name);
+    REQUIRE_MESSAGE(tunable != nullptr, name);
+    tunable->append_value(previous);
+    REQUIRE(tunable->set_from_text(value));
+  }
+  ~ScopedTunable() {
+    if (tunable != nullptr) (void)tunable->set_from_text(previous);
+  }
+};
+
+// sRGB's decode: the resolve and the path tracer both end on the display encode, so their pictures
+// are compared, and averaged, as the light they stand for.
+f64 linear_of(u8 code) {
+  const f64 c = static_cast<f64>(code) / 255.0;
+  return c <= 0.04045 ? c / 12.92 : std::pow((c + 0.055) / 1.055, 2.4);
+}
+
+// The picture's linear RGB, each `factor` x `factor` block averaged in light: a supersampled render
+// brought to the size of the 1x ones.
+Vector<f64> linear_picture(const Vector<u8>& rgba, u32 width, u32 height, u32 factor) {
+  const u32 w = width / factor;
+  const u32 h = height / factor;
+  Vector<f64> out(w * h * 3, 0.0);
+  const f64 share = 1.0 / static_cast<f64>(factor * factor);
+  for (u32 y = 0; y < height; ++y)
+    for (u32 x = 0; x < width; ++x)
+      for (u32 c = 0; c < 3; ++c)
+        out[((y / factor) * w + x / factor) * 3 + c] +=
+            share * linear_of(rgba[(y * width + x) * 4 + c]);
+  return out;
+}
+
+f64 rmse(const Vector<f64>& a, const Vector<f64>& b) {
+  f64 sum = 0.0;
+  for (u32 i = 0; i < a.size(); ++i)
+    sum += (a[i] - b[i]) * (a[i] - b[i]);
+  return std::sqrt(sum / static_cast<f64>(a.size()));
+}
+
+f64 mean_of(const Vector<f64>& a) {
+  f64 sum = 0.0;
+  for (const f64 v : a)
+    sum += v;
+  return sum / static_cast<f64>(a.size());
+}
+}  // namespace
+
+TEST_CASE(
+    "renderer: normal filtering holds a grazing normal-mapped plane to its converged picture") {
+  // R97's fixture (normal-filtering.md, "The plane"): flat ground carrying a fine bump map — 8
+  // periods of sin x sin z in a 64-texel image tiled every 0.5 m, so a bump is 6.25 cm — at a flat
+  // roughness, dark, under a low sun straight ahead, seen at the sun's own elevation so the glint
+  // lies on the image. Three distances, 1, 4 and 16 m, at one grazing angle and a 20° view: the
+  // pixel's footprint grows fourfold each step, from a quarter of a bump to about four. The truth
+  // is the reference path tracer's (level-zero textures, 256 jittered samples a pixel: it
+  // integrates the footprint, and reads no variance chain). Beside it, for the record, the resolve
+  // rendered at 8x a side and box-averaged in linear light: no truth for the unfiltered path, whose
+  // sub-pixels' mips still flatten bumps the footprint holds (normal-filtering.md has the table).
+  // The roughness is 0.7 so that no glint clips and the pictures' light can be compared.
+  gfx::Device device;
+  std::string error;
+  if (!device.create(gfx::DeviceOptions{}, &error)) {
+    MESSAGE("no device: " << error);
+    return;
+  }
+  if (!device.features().texture_compression_bc) {
+    MESSAGE("no BC textures: the variance chain is a built texture's");
+    device.destroy();
+    return;
+  }
+  const test::TempDir tmp("terrain_normal_filter");
+  constexpr u32 k_n = 64;
+  constexpr f64 k_slope = 0.35;  // the bumps' largest slope
+  Vector<u8> normal(k_n * k_n * 4u);
+  for (u32 z = 0; z < k_n; ++z)
+    for (u32 x = 0; x < k_n; ++x) {
+      const u32 p = (z * k_n + x) * 4;
+      const f64 u = 2 * std::numbers::pi * (x + 0.5) / 8.0;
+      const f64 v = 2 * std::numbers::pi * (z + 0.5) / 8.0;
+      const f64 hu = k_slope * std::cos(u) * std::sin(v);
+      const f64 hv = k_slope * std::sin(u) * std::cos(v);
+      const f64 len = std::sqrt(hu * hu + hv * hv + 1);
+      normal[p] = static_cast<u8>(std::lround((-hu / len * 0.5 + 0.5) * 255));
+      normal[p + 1] = static_cast<u8>(std::lround((hv / len * 0.5 + 0.5) * 255));
+      normal[p + 2] = static_cast<u8>(std::lround((1 / len * 0.5 + 0.5) * 255));
+      normal[p + 3] = 255;
+    }
+  REQUIRE(image::write_png(tmp.file("normal.png"), k_n, k_n, 4, {normal.data(), normal.size()}) ==
+          io::Status::Ok);
+  write_pixel(tmp.file("colour.png"), 20, 20, 20);
+  SceneDesc desc;
+  desc.meshes.push_back("");
+  desc.terrain = ground(tmp.file("colour.png"));
+  desc.terrain.extent = 256;
+  scene::TerrainMaterialLayer& layer = desc.terrain.materials->layers[0];
+  layer.normal = tmp.file("normal.png");
+  layer.tile_m = 0.5f;
+  layer.roughness_factor = 0.7f;
+  desc.ddc = tmp.file("ddc");  // built textures: the variance chain is a built texture's section
+  SceneData data;
+  REQUIRE_MESSAGE(load_scene(desc, data, error), error);
+  RenderSettings settings;
+  settings.lights = false;
+  // Traced shadows only so that the frame builds the structures the path tracer traces; a flat
+  // plane casts nothing on itself.
+  settings.shadows = ShadowMode::RayTraced;
+  settings.sun_azimuth_deg = -90.0f;  // straight ahead of a camera looking along -z
+  settings.sun_elevation_deg = 12.0f;
+  ResolvedSettings resolved;
+  resolve_settings(settings, device.features(), &data, resolved);
+  if (check_availability(resolved, device.features()) != RenderAvailability::Ok) {
+    MESSAGE("rendering unavailable on this device");
+    device.destroy();
+    return;
+  }
+  std::string why;
+  if (!reference_available(resolved, device, &why)) {
+    MESSAGE("no reference here: " << why);
+    device.destroy();
+    return;
+  }
+  GpuScene filtered;
+  REQUIRE_MESSAGE(filtered.create(device, data, resolved, &error), error);
+  REQUIRE(filtered.normal_variance_textures() == 1);
+  GpuScene unfiltered;
+  {
+    const ScopedTunable off("renderer.material.normal_filter", "false");
+    REQUIRE_MESSAGE(unfiltered.create(device, data, resolved, &error), error);
+  }
+  CHECK(unfiltered.normal_variance_textures() == 0);
+  CHECK(unfiltered.texture_bytes() + filtered.normal_variance_bytes() == filtered.texture_bytes());
+  constexpr u32 k_w = 160;
+  constexpr u32 k_h = 120;
+  constexpr u32 k_super = 8;
+  SceneRenderer one_f, one_u, eight_f, eight_u;
+  SceneRenderer::Desc rd;
+  rd.width = k_w;
+  rd.height = k_h;
+  REQUIRE_MESSAGE(one_f.create(device, filtered, resolved, rd, &error), error);
+  REQUIRE_MESSAGE(one_u.create(device, unfiltered, resolved, rd, &error), error);
+  SceneRenderer::Desc big = rd;
+  big.width = k_w * k_super;
+  big.height = k_h * k_super;
+  REQUIRE_MESSAGE(eight_f.create(device, filtered, resolved, big, &error), error);
+  REQUIRE_MESSAGE(eight_u.create(device, unfiltered, resolved, big, &error), error);
+  ReferenceRenderer reference;
+  REQUIRE_MESSAGE(reference.create(device, filtered, one_f, {}, &error), error);
+  const auto shoot = [&](SceneRenderer& renderer, const FrameDesc& frame, CapturedFrame& shot) {
+    REQUIRE_MESSAGE(renderer.render_offscreen(frame, &error), error);
+    REQUIRE_MESSAGE(renderer.capture(frame, CaptureChannels{}, shot, &error), error);
+  };
+  const f64 tilt = std::tan(12.0 * std::numbers::pi / 180.0);
+  for (const f64 distance : {1.0, 4.0, 16.0}) {
+    Camera camera;
+    camera.position = WorldPos{0, distance * tilt, 0};
+    camera.target = WorldPos{0, 0, -distance};
+    camera.fov_y = static_cast<f32>(20.0 * std::numbers::pi / 180.0);
+    camera.znear = 0.01f;
+    FrameDesc frame;
+    frame.camera = camera;
+    CapturedFrame f1, u1, f8, u8;
+    shoot(one_f, frame, f1);
+    shoot(one_u, frame, u1);
+    shoot(eight_f, frame, f8);
+    shoot(eight_u, frame, u8);
+    ReferenceSettings rs;
+    rs.spp = 256;
+    rs.max_bounces = 1;
+    ReferenceFrame traced;
+    REQUIRE_MESSAGE(reference.render(camera, rs, traced, &error), error);
+    const Vector<f64> truth = linear_picture(traced.color, k_w, k_h, 1);
+    const Vector<f64> lf1 = linear_picture(f1.color, k_w, k_h, 1);
+    const Vector<f64> lu1 = linear_picture(u1.color, k_w, k_h, 1);
+    const Vector<f64> lf8 = linear_picture(f8.color, k_w * k_super, k_h * k_super, k_super);
+    const Vector<f64> lu8 = linear_picture(u8.color, k_w * k_super, k_h * k_super, k_super);
+    image::Image a, b;
+    a.width = b.width = k_w;
+    a.height = b.height = k_h;
+    a.channels = b.channels = 4;
+    a.pixels = traced.color;
+    b.pixels = f1.color;
+    image::FloatImage map;
+    REQUIRE(image::flip(a, b, map, image::FlipOptions{}, &error));
+    const f32 flip_filtered = image::pool_mean(map);
+    b.pixels = u1.color;
+    REQUIRE(image::flip(a, b, map, image::FlipOptions{}, &error));
+    const f32 flip_unfiltered = image::pool_mean(map);
+    const f64 e_f1 = rmse(lf1, truth);
+    const f64 e_u1 = rmse(lu1, truth);
+    const f64 m_truth = mean_of(truth);
+    MESSAGE("distance " << distance << " m: mean linear, traced " << mean_of(truth)
+                        << ", filtered 1x " << mean_of(lf1) << ", unfiltered 1x " << mean_of(lu1)
+                        << ", 8x filtered " << mean_of(lf8) << ", 8x unfiltered " << mean_of(lu8));
+    MESSAGE("distance " << distance << " m: RMSE against the path tracer, filtered 1x " << e_f1
+                        << ", unfiltered 1x " << e_u1 << ", 8x filtered " << rmse(lf8, truth)
+                        << ", 8x unfiltered " << rmse(lu8, truth)
+                        << "; against the 8x unfiltered resolve, filtered 1x " << rmse(lf1, lu8)
+                        << ", unfiltered 1x " << rmse(lu1, lu8) << "; FLIP against the path "
+                        << "tracer, filtered " << flip_filtered << ", unfiltered "
+                        << flip_unfiltered);
+    // Nearer the truth pixel by pixel at every distance, by at least a third where the bumps are
+    // unresolved; nearer in the picture's light; and no worse by FLIP. (FLIP's 0.05 of the
+    // reference tests is a diffuse plane's: here the path tracer's box-integrated pixel and the
+    // resolve's point sample differ wherever the bumps are resolved, filtered or not.)
+    CHECK(e_f1 < e_u1);
+    if (distance > 1.0) CHECK(e_f1 < e_u1 * (2.0 / 3.0));
+    CHECK(std::abs(mean_of(lf1) - m_truth) < std::abs(mean_of(lu1) - m_truth));
+    CHECK(flip_filtered <= flip_unfiltered);
+  }
+  reference.destroy();
+  eight_u.destroy();
+  eight_f.destroy();
+  one_u.destroy();
+  one_f.destroy();
+  unfiltered.destroy();
+  filtered.destroy();
   device.destroy();
 }

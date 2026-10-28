@@ -30,7 +30,7 @@ skips one it does not know:
 | 2 | `levels` | `TextureFileLevel`, 24 bytes, one per level | width, height, and the offset and length of the level's blocks in `data`; level 0 first |
 | 3 | `data` | `u8` | every level's blocks back to back, each level at a 16-byte aligned offset, the padding zero |
 | 4 | `source_hash` | `u64`, two | the source image's content hash (`hash_bytes` over its encoded bytes as read) and the build key over it and the options |
-| 6 | `normal_variance` | `u8` | optional BC4 UNORM shortening chain beside a normal map; kind 5 reserved for R96 |
+| 5 | `normal_variance` | `u8` | a mipped normal map's normal-variance chain (R97): BC4 UNORM of one less the mean unit normal's length, one level per level of the map, each 16-byte aligned ([below](#normal-variance-r97)) |
 
 Stochastic terrain sampling (R96, 2026-10-26) was expected to need a section here — a histogram
 transform's inverse look-up tables per image and mip, as Heitz and Neyret's and Burley's methods
@@ -107,37 +107,47 @@ by hand. Three modes:
 The kernel is a polynomial rather than a windowed sinc for the determinism rule below. Its small
 negative lobes can take a value a hair outside the source's range; the quantizer clamps.
 
+## Normal variance (R97)
+
+A mipped normal-map build at cache version 2 or later also writes section 5, `normal_variance`:
+`1 - |mean of the unit source normals|` over each level's footprint — Toksvig's shortening — as a
+BC4 UNORM chain with the map's extents and the map's 16-byte level alignment, so it needs no level
+table of its own (`TextureData::normal_variance_level_bytes`). An unmipped map resolves every
+texel it has, so its build writes none, and nothing but a normal map ever carries one; the reader
+refuses a chain whose size is not the map's chain's, or one on a texture that is not a normal map.
+An older file simply has none, and an older reader skips the kind.
+
+**Why a section and not the map's own length.** The map's mips are renormalized and BC5 stores two
+channels and rebuilds the third, so the shortening a mip of averaged normals would show is thrown
+away twice before the shader sees it (Hill 2011 makes the same point about two-channel encodings).
+The chain is built beside the map from the same decoded source (`build_normal_variance_chain`,
+`mips.cpp`): the means are of unit **source** normals, never of the encoded blocks, and never
+renormalized between levels. The filter is the map's Mitchell kernel with its negative lobes
+removed and the rest renormalized — a distribution's mean needs non-negative weights — on the map's
+edge modes. Level 0 is zero (one normal per texel), and a constant map is zero at every level. The
+statistic does not depend on the material's roughness or normal strength, so materials sharing a
+map share its chain. It is built with the same arithmetic as the mips (`std::sqrt`, which every
+toolchain rounds the same, and no other library call), so the determinism table below holds it.
+
+**What it costs.** Half the BC5 chain's block bytes per normal map, plus the small levels'
+alignment: on the forest proof of concept's scene, 56.5 MB beside 429 MB of textures. Built once per
+image, keyed with the map.
+
+**In the renderer** (`renderer.material.normal_filter`, renderer.md "Normal filtering"): the
+chain is uploaded in the bindless slot **immediately after** its normal map — the upload checks the
+adjacency rather than ever sampling another image — and shared with the map by its key; material
+flag 8192 (`gfx::k_material_normal_variance`) says the slot is there, so `ResolveMaterial` stays
+112 bytes. The read uses the normal map's sampler and UV derivatives, mips and anisotropy alike.
+The shortening becomes a variance scaled by the normal strength squared and widens the GGX
+roughness in the shared material code ([normal filtering](../experiments/normal-filtering.md) has
+the formula, its sources and its limits). The reference path tracer reads level zero, whose
+variance is zero: its many rays a pixel do the integration the chain stands in for.
+
+**The cache version** went 1 to 2 for it (2026-10-27): every encoded image's build key changed, so
+the determinism table's PNG container hash moved with the key and its two normal-map container
+hashes with the added section; all eleven block-payload hashes stayed as they were.
+
 ## Block compression
-
-### Normal variance (R97)
-
-Normal-map builds at cache version 2 additionally store `1 - length(mean(unit normal))`
-in a BC4 chain, with the same extents and 16-byte level alignment as the normal chain.
-Section 6 is optional; an older file has an empty `normal_variance`, and older readers
-skip it. `normal_variance_level_bytes` exposes each level without a second level table.
-The reader rejects a chain with the wrong size or attached to a non-normal texture.
-
-The means are formed from normalized **source** vectors, before compression, and
-are never renormalized between levels. The filter is Mitchell with negative taps
-removed and the remaining weights normalized: a normal distribution needs positive
-weights. Edge modes follow the normal map. Level 0 has zero unresolved variance;
-a constant normal has zero at every level. The statistic is independent of the
-material's roughness and normal strength. It costs half the BC5 chain's block bytes,
-plus small-level alignment, and is built once per image. Existing normal blocks are
-unchanged. Source and model limits: [normal filtering](../experiments/normal-filtering.md).
-The renderer uploads the BC4 chain immediately after its normal image in the bindless
-set, checks descriptor adjacency, and shares both by the image key. Material flag 8192
-permits that read; a texture without the section keeps the old path. The 112-byte
-material record is unchanged. The auxiliary read uses the normal sampler and UV
-derivatives, including mip interpolation and anisotropy. Its shortening becomes
-variance scaled by normal strength squared, then widens GGX roughness in the shared
-material code; [normal filtering](../experiments/normal-filtering.md) gives the formula
-and its limits. The reference tracer's level-zero rays have zero unresolved variance;
-the reference average performs the pixel integration itself.
-
-The version bump changes encoded-image build identities. The golden test's two
-normal-container hashes change for the added section, and its PNG-container hash
-changes for the new key; all eleven existing block-payload hashes stay unchanged.
 
 ### Encoders
 

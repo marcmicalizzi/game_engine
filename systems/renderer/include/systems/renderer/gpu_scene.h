@@ -928,6 +928,10 @@ class GpuScene {
   u32 textures_shared() const noexcept { return textures_shared_; }
   u64 texture_bytes_saved() const noexcept { return texture_bytes_saved_; }
   bool share_textures() const noexcept { return share_textures_; }  // the setting it was built with
+  // Of the uploads, the normal maps that took their normal-variance chain with them (R97;
+  // `normal_filter_tunable`), and the chains' device bytes, which `texture_bytes` includes.
+  u32 normal_variance_textures() const noexcept { return normal_variance_textures_; }
+  u64 normal_variance_bytes() const noexcept { return normal_variance_bytes_; }
   // The bindless samplers the materials read through: one per distinct (wrap s, wrap t, filters,
   // mipmapped) combination the scene's slots asked for, however many materials share it
   // (docs/subsystems/renderer.md, "Materials"). The heightfield's own sampler is not counted.
@@ -1355,6 +1359,8 @@ class GpuScene {
   u32 texture_references_ = 0;
   u32 textures_shared_ = 0;
   u64 texture_bytes_saved_ = 0;
+  u32 normal_variance_textures_ = 0;
+  u64 normal_variance_bytes_ = 0;
   bool share_textures_ = true;
   Vector<gfx::InstanceDesc> instance_table_;  // the scene's, with material_base and deform filled
   Vector<gfx::DeformDesc> deform_descs_;      // the static table, kept for each frame's copy

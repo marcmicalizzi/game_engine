@@ -104,6 +104,15 @@ TEST_CASE("texture variance: optional chain round trips and malformed payloads a
   data.normal_variance.resize(8);
   data.flags &= ~k_texture_normal_map;
   CHECK_FALSE(validate_texture(data, &error));
+  // An unmipped map resolves every texel it has: its chain would be one level of zeros, so a build
+  // writes none, and neither does any texture that is not a normal map.
+  options.mips = false;
+  REQUIRE(build_texture({pixels.data(), pixels.size()}, 37, 21, 4, options, data, nullptr, &error));
+  CHECK(data.normal_variance.empty());
+  options.mips = true;
+  options.normal_map = false;
+  REQUIRE(build_texture({pixels.data(), pixels.size()}, 37, 21, 4, options, data, nullptr, &error));
+  CHECK(data.normal_variance.empty());
 }
 
 // A copy of `file` with a section of an unknown kind inserted, the way the cluster container's

@@ -900,6 +900,7 @@ float4 fs_resolve(FullscreenOut in) : SV_Target {
   // R97's measurement channel: sunlight specular alone before aerial scattering or display
   // encoding. Green identifies native ground, including shadowed ground with zero red.
   if (params->mode == 11 || params->mode == 12) {
+    // 512: k_material_terrain_layers, whose name only the terrain variant includes.
     if ((material.flags & 512u) == 0) return float4(0, 0, 0, 1);
     BrdfSurface specular = surface;
     specular.albedo = float3(0);

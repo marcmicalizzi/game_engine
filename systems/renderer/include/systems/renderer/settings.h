@@ -443,6 +443,11 @@ bool parse_water_quality(std::string_view text, WaterQuality& out) noexcept;
 // `renderer.shadow.opaque_rays` (false), a measurement switch: the shadow rays force every caster
 // opaque, so the alpha-tested masks are not evaluated (renderer.md, "Rays near, maps far").
 bool shadow_opaque_rays_tunable() noexcept;
+// `renderer.material.normal_filter` (true), read once per scene at its material upload: a built
+// normal map's normal-variance chain is uploaded beside it and widens the GGX roughness by what the
+// pixel's footprint no longer resolves (R97; renderer.md, "Normal filtering"). False uploads no
+// chain and sets no flag, so every material draws exactly what it drew before R97.
+bool normal_filter_tunable() noexcept;
 // What the frame actually shadows with, as a summary reports it: "rt", "csm", "hybrid", or "off".
 const char* resolved_shadow_name(const ResolvedSettings& resolved) noexcept;
 // "none", "identity", "wave", or "lattice" into `deform` and `deform_kind`.

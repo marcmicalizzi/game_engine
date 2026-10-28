@@ -382,7 +382,8 @@ bool build_texture(std::span<const u8> rgba, u32 width, u32 height, u32 source_c
       target = target < 0.0 ? 0.0 : (target > 1.0 ? 1.0 : target);
     }
   }
-  if (options.normal_map) {
+  if (options.normal_map &&
+      options.mips) {  // an unmipped map resolves every texel: nothing to keep
     Vector<MipLevel> variance;
     build_normal_variance_chain(source, width, height, options.mips, variance, pool, options.edge_x,
                                 options.edge_y);

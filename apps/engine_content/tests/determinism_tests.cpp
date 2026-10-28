@@ -486,8 +486,11 @@ TEST_CASE("engine-content: city makes the committed plan, fragment and yield on 
 // G88/version 10: broadleaf tip-crown geometry and its bakes change. Ancient's only changed
 // section is SourceHash (15), from the solver-version identity; every mesh/bake section matches v9.
 // G91/version 11: only SourceHash (15) changes for these two legacy fixtures.
-constexpr u64 k_broadleaf_container_golden = 0x341ebdc8af5aaca1ull;
-constexpr u64 k_ancient_container_golden = 0xa082d1e2d4529b8full;
+// R97/texture cache version 2: the embedded impostor atlases' texture build keys (section 33)
+// change with the version; geometry and baked image bytes do not. Previous folds:
+// 0x341ebdc8af5aaca1 and 0xa082d1e2d4529b8f.
+constexpr u64 k_broadleaf_container_golden = 0x57e988a4c201cd41ull;
+constexpr u64 k_ancient_container_golden = 0xc1db7f48a4fb3e3cull;
 
 TEST_CASE("engine-content: the allometric crowns build the committed bytes on every toolchain") {
   const test::TempDir tmp("engine_content_flora_determinism");

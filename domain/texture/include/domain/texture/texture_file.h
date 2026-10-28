@@ -96,9 +96,11 @@ enum class TextureSection : u32 {
   // options (`texture_cache_key`). Zero in a texture built from pixels with no file behind them,
   // which an incremental build reads as "rebuild it".
   SourceHash = 4,
-  // Kind 5 is reserved for R96's histogram section. BC4 UNORM of 1 - |mean(unit normal)|,
-  // all mip levels, each 16-byte aligned; extents are the normal texture's extents.
-  NormalVariance = 6,
+  // u8: the normal map's normal-variance chain (R97; texture.md, "Normal variance"), only beside a
+  // mipped normal map built at cache version 2 or later: BC4 UNORM of 1 - |mean(unit source
+  // normal)| over each level's footprint, one level per level of the map, each at a 16-byte aligned
+  // offset, the padding zero. Its extents are the map's, so it has no level table of its own.
+  NormalVariance = 5,
 };
 inline constexpr u32 k_texture_section_kinds = static_cast<u32>(TextureSection::NormalVariance) + 1;
 // The name of a kind this build knows, "unknown" otherwise; for diagnostics and `engine-content
