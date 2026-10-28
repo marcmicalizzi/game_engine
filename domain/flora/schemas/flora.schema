@@ -802,12 +802,56 @@ struct Sward @version(2) {
   fit_lods: bool = true @since(2)
 }
 
+
+/// Local terrain patch for one tree, row-major (z rows, x columns), heights relative
+/// to the tree's ground origin in metres. Absent means an explicitly flat site.
+struct RootGround {
+  min_x_m: f32 = -8.0
+  min_z_m: f32 = -8.0
+  spacing_m: f32 = 0.25
+  columns: u32 = 0
+  rows: u32 = 0
+  heights_m: f32[]
+}
+/// A planting-bed rectangle in the root asset's local x/z plane.
+struct RootBounds {
+  min_x_m: f32 = -1.0
+  min_z_m: f32 = -1.0
+  max_x_m: f32 = 1.0
+  max_z_m: f32 = 1.0
+}
+/// A circular hard-surface/obstacle footprint roots must stay out of.
+struct RootExclusion {
+  x_m: f32 = 0.0
+  z_m: f32 = 0.0
+  radius_m: f32 = 1.0
+}
+/// Exposed structural roots, cooked separately from the shared trunk and canopy.
+/// Turning these off removes this added geometry; the trunk's existing flare remains.
+struct Roots {
+  enabled: bool = true
+  species: string = "oak"
+  seed: u64 = 1
+  trunk_radius_m: f32 = 0.35
+  crown_radius_m: f32 = 6.0
+  /// 0 uses crown radius; otherwise a strict bound including root width.
+  max_radius_m: f32 = 0.0
+  /// Authored site exposure in [0,1], combined with species tendency and stem size.
+  exposure: f32 = 0.65
+  /// 0 chooses 5..9 from stem size; otherwise 3..16.
+  primary_count: u32 = 0
+  triangle_budget: u32 = 12000
+  bounds: RootBounds?
+  exclusions: RootExclusion[]
+  ground: RootGround?
+}
+
 /// A flora file, `<name>.flora.json`: the species and its parameters. A scene's mesh table names
 /// one as it names a glTF, and `engine-content flora` builds one into a container; either way the
 /// build is keyed by the chosen species' canonical parameters, materials and solver version.
-struct FloraFile @version(6) {
+struct FloraFile @version(7) {
   /// The species: "date_palm", "broadleaf", "conifer", "birch", "willow", "orchard", "ancient",
-  /// "shrub", "fern", "tuft" or "herb" read their own parameter block. Named tree profiles
+  /// "shrub", "fern", "tuft", "herb", "sward" or "roots" read their own parameter block. Named tree profiles
   /// in domain/geometry/flora_species.h read `tree`.
   species: string = "date_palm"
   palm: Palm
@@ -828,6 +872,8 @@ struct FloraFile @version(6) {
   tree: Tree @since(5)
   /// Ground-cover patches; distinct from isolated Tuft.
   sward: Sward @since(6)
+  /// Separate terrain-fitted structural roots; species must be roots.
+  roots: Roots @since(7)
 }
 
 /// One density class, shared patches in two resident forms. Paths resolve relative to the scene.

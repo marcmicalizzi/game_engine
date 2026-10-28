@@ -1061,6 +1061,10 @@ The authoring side's own numbers for the mode comparison — true limit against 
 
 ### Flora species catalogue (G86)
 
+G92 adds `roots` as an explicitly rigid (`FloraMotionKind::none`) generated asset.
+It uses the normal caster policy, allocates no wind poses and carries a flagless
+structural row so it does not become a trunk collider; see [surface roots](flora.md#exposed-structural-roots-g92).
+
 `geometry/flora_species.h` is the cold, constexpr catalogue for species identifiers carried by
 flora-generated geometry. It owns names, profile budgets and the four motion compliance classes;
 it is available when the optional flora solver is absent, like the persisted motion-part contract.

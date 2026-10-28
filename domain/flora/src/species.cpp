@@ -477,6 +477,17 @@ Resolved resolve(const Profile& p, const Tree& tree) {
 }
 }  // namespace
 
+bool tree_root_dimensions(std::string_view species, const Tree& tree, f32& radius, f32& reach,
+                          std::string& error) {
+  if (!tree_in_range(species, tree, error)) return false;
+  const Profile& p = *find(species);
+  const Resolved r = resolve(p, tree);
+  radius = p.family == Family::branching ? r.broadleaf.trunk_radius_m : r.conifer.trunk_radius_m;
+  reach = p.family == Family::branching ? r.broadleaf.height_m * r.broadleaf.limb_length
+                                        : r.conifer.crown_radius_m;
+  return true;
+}
+
 bool is_tree_species(std::string_view species) { return find(species) != nullptr; }
 bool is_evergreen_species(std::string_view species) {
   const Profile* p = find(species);

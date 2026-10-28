@@ -8,6 +8,7 @@
 #include <domain/assets/mesh_generator.h>
 #include <domain/flora/flora.h>
 #include <domain/flora/palm.h>
+#include <domain/flora/roots.h>
 #include <domain/flora/sward.h>
 #include <domain/flora/trees.h>
 #include <domain/flora/understory.h>
@@ -19,6 +20,7 @@
 #include <foundation/image/decode.h>
 #include <foundation/image/png.h>
 
+#include <algorithm>
 #include <optional>
 #include <span>
 #include <string>
@@ -79,6 +81,8 @@ bool read_flora_file(std::string_view text, FloraFile& out, std::string& error) 
     in_range = tuft_in_range(checked.tuft, error);
   } else if (checked.species == k_species_herb) {
     in_range = herb_in_range(checked.herb, error);
+  } else if (checked.species == "roots") {
+    in_range = roots_in_range(checked.roots, error);
   } else if (checked.species == "sward") {
     if (checked.materials.has_value()) {
       error = "sward v1 bakes its own blade colour; external material sets are unsupported";
@@ -89,7 +93,8 @@ bool read_flora_file(std::string_view text, FloraFile& out, std::string& error) 
     error = "unknown flora species \"" + checked.species + "\"; available:";
     for (const auto& info : geometry::k_flora_species) {
       // A species no flora solver grows (the cover's mats) is the catalogue's, not a recipe's.
-      if (info.motion != geometry::FloraMotionKind::none) error += " " + std::string(info.name);
+      if (info.motion != geometry::FloraMotionKind::none || info.name == "roots")
+        error += " " + std::string(info.name);
     }
     return false;
   }
@@ -145,6 +150,7 @@ std::span<const PartRole> parts_of(const std::string& species) {
   if (species == k_species_fern) return k_fern_parts;
   if (species == k_species_tuft) return k_tuft_parts;
   if (species == "sward") return k_tuft_parts;
+  if (species == "roots") return std::span<const PartRole>(k_tree_parts, 1);
   if (species == k_species_herb) return k_herb_parts;
   return k_tree_parts;
 }
@@ -268,6 +274,7 @@ const char* species_member(const std::string& species) {
   if (species == k_species_fern) return "fern";
   if (species == k_species_tuft) return "tuft";
   if (species == "sward") return "sward";
+  if (species == "roots") return "roots";
   if (species == k_species_herb) return "herb";
   return "palm";
 }
@@ -293,7 +300,9 @@ u64 flora_source_hash(const FloraFile& file) {
   const std::string canonical = canonical_flora_json(file);
   u64 h = hash_bytes(canonical.data(), canonical.size());
   h = hash_combine(h, hash_bytes(file.species.data(), file.species.size()));
-  return hash_combine(h, file.species == "sward" ? k_sward_version : k_flora_version);
+  return hash_combine(h, file.species == "sward"   ? k_sward_version
+                         : file.species == "roots" ? k_roots_version
+                                                   : k_flora_version);
 }
 
 u64 flora_build_key(u64 source_hash, const geometry::ClusterLodOptions& lod, u32 page_bytes,
@@ -340,6 +349,15 @@ bool solve_flora(const FloraFile& file, assets::MeshData& mesh, Motion& motion,
     return solve_fern(file.fern, mesh, tree_report, &error, &motion);
   if (file.species == k_species_tuft)
     return solve_tuft(file.tuft, mesh, tree_report, &error, &motion);
+  if (file.species == "roots") {
+    RootReport report;
+    const bool ok = solve_roots(file.roots, mesh, motion, report, error);
+    if (tree_report) {
+      *tree_report = {};
+      tree_report->triangles = tree_report->wood_triangles = report.triangles;
+    }
+    return ok;
+  }
   if (file.species == "sward")
     return solve_sward(file.sward, mesh, tree_report, &error, &motion, levels);
   if (file.species == k_species_herb)
@@ -466,12 +484,13 @@ DetailTier flora_detail_tier(const FloraFile& file) {
   if (file.species == k_species_fern) return file.fern.detail_tier;
   if (file.species == k_species_tuft) return file.tuft.detail_tier;
   if (file.species == "sward") return file.sward.detail_tier;
+  if (file.species == "roots") return DetailTier::standard;
   if (file.species == k_species_herb) return file.herb.detail_tier;
   return DetailTier::essential;
 }
 
 bool flora_collides(const FloraFile& file) {
-  if (file.species == "sward") return false;
+  if (file.species == "sward" || file.species == "roots") return false;
   if (file.species == k_species_shrub) return shrub_collides(file.shrub);
   return !(file.species == k_species_fern || file.species == k_species_tuft ||
            file.species == k_species_herb);
@@ -485,6 +504,7 @@ bool build_flora_container(const FloraFile& file, const geometry::ClusterLodOpti
   assets::MeshData mesh;
   Motion motion;
   TreeLevels chain;
+  RootReport root_report;
   Vector<geometry::ClusterFileSwardVertex> sward_attributes;
   if (file.species == "sward") {
     if (file.materials.has_value()) {
@@ -494,6 +514,18 @@ bool build_flora_container(const FloraFile& file, const geometry::ClusterLodOpti
     if (!solve_sward(file.sward, mesh, tree_report, &error, &motion, &chain, &sward_attributes))
       return false;
     out.generator_kind = "sward";
+  } else if (file.species == "roots") {
+    if (!solve_roots(file.roots, mesh, motion, root_report, error)) return false;
+    if (mesh.indices.empty()) {
+      error =
+          "roots: no exposed geometry; omit the roots placement (disabled, small or constrained "
+          "site)";
+      return false;
+    }
+    if (tree_report) {
+      *tree_report = {};
+      tree_report->triangles = tree_report->wood_triangles = root_report.triangles;
+    }
   } else if (!solve_flora(file, mesh, motion, report, tree_report, error, &chain))
     return false;
   // The impostor chain (impostor.h, flora.md "The impostor chain"): the leaves' primitive takes the
@@ -533,7 +565,17 @@ bool build_flora_container(const FloraFile& file, const geometry::ClusterLodOpti
     const bool nested = leaves && chain.leaf_element.size() * 3u == primitive.index_count;
     if (leaves) leaf_part = parts.size();
     bool built = false;
-    if (nested) {
+    if (file.species == "roots") {
+      // Preserve every terrain station at both rungs; generic decimation can bridge a hollow.
+      const geometry::ClusterLodHierarchyLevel root_level{root_report.coarse_indices,
+                                                          root_report.coarse_element,
+                                                          {},
+                                                          root_report.elements,
+                                                          std::max(.0001f, root_report.lod_error)};
+      built = geometry::build_cluster_lod_hierarchy(mesh.positions, range, root_report.fine_element,
+                                                    {&root_level, 1}, options, part, &part_error,
+                                                    attributes);
+    } else if (nested) {
       Vector<geometry::ClusterLodHierarchyLevel> nest;
       for (const TreeLevel& level : chain.levels)
         nest.push_back(geometry::ClusterLodHierarchyLevel{level.indices, level.element_of_triangle,

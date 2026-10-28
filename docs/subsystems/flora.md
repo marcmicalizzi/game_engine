@@ -1876,3 +1876,108 @@ The generic broadleaf and orchard remain authored legacy forms. See
 [leaf sizing](../experiments/tree-leaf-sizing.md) for sources, spacing equations,
 material limitations and validation. Cache version 11 rebuilds source meshes and
 their geometry-fitted foliage bakes.
+
+### Exposed structural roots (G92)
+
+Roots are an optional separate asset, `species: "roots"` with a `roots` parameter
+block, using the same flora cook and bark material block as a tree. Existing tree
+recipes, canopy bakes and cache identities do not change. `k_roots_version` keys
+this asset independently. The grounding and authored numeric choices are in
+[surface roots](../experiments/tree-surface-roots.md).
+
+`Roots.enabled = false` removes all added roots. Stem radii through 4 cm also
+emit none; the authored size blend reaches full root expression at 25 cm. This is
+a visual size policy, not an age/development law. `roots_for_tree` copies seed and
+the resolved maturity/profile dimensions without building the crown, preserving
+the caller's site controls. For a multi-stem clump, cook/place roots at each stem
+base; the helper's birch size describes one stem. The ancient helper estimates
+crown reach as 35% of height; override it for a particular fantasy crown. The existing tree flare remains
+when these separate roots are disabled.
+
+`max_radius_m` caps the footprint (0: crown radius). Optional `bounds` names a
+local x/z planting rectangle; `exclusions` are circular obstacle footprints.
+Both include root width, and exclusions test connecting segments too. Insufficient
+space produces no root geometry rather than stretching, floating or crossing a wall.
+These controls constrain the visible asset; they are not claims that actual urban
+tree roots stop at paving.
+
+`ground` is an optional row-major grid of local terrain heights: 2..513 rows and
+columns, 0.03125..4 m spacing, heights within +/-1000 m. Absent explicitly means a
+flat local site. Supplied grids never extrapolate at their boundary.
+`sample_root_ground` builds this grid from `scene_gen::Ground`, a f64 world
+position, yaw and positive uniform scale. Fit and place roots with the same
+transform as the tree; changing terrain, location, scale or orientation requires
+resampling and recooking. Heights and constraints participate in the cache key.
+
+The source carries primary roots and subordinate laterals, with smooth taper,
+irregular heading and varying exposure. End rings are buried below sampled terrain;
+a steep break terminates a path early and sinks its tail. A finite heightfield
+cannot describe overhangs or unsupported rock bridges. The default 12,000-triangle
+source budget chooses eight or four sides while retaining all terrain stations.
+If four sides still cannot fit, the cook names the insufficient budget. Root
+length, width and count do not inflate when detail is reduced.
+
+The rigid mesh has its own two-level authored hierarchy: full sides and four sides,
+with all terrain stations and buried endpoint vertices preserved. No canopy
+impostor or generic decimation is involved. Roots have zero bend weights and
+flagless structural rows; the geometry catalogue marks them as rigid (`motion: none`),
+so they allocate no wind poses. They are non-colliding standard detail. A consumer can
+omit them from distant placement tiers. `RootReport.exposed` and `root_covers`
+provide a conservative exposed-wood footprint for the consumer's grass mask cook.
+
+`solve_roots` returns success with empty mesh/report for off, small or fully
+constrained sites. **Omit the root placement in that case.** The container cooker
+rejects empty roots with that instruction, rather than manufacturing an invisible
+triangle. Grass masking, automatic roots for every Forest placement and runtime
+terrain edits are consumer integration, not implicit side effects of a tree recipe.
+
+Minimal flat-site companion recipe:
+```json
+{
+  "species": "roots",
+  "roots": {
+    "species": "oak",
+    "seed": 17,
+    "trunk_radius_m": 0.45,
+    "crown_radius_m": 6,
+    "max_radius_m": 1.5,
+    "bounds": {"min_x_m": -1.5, "min_z_m": -1, "max_x_m": 1.5, "max_z_m": 1}
+  }
+}
+```
+Cook it with `engine-content flora roots.flora.json roots.clusters` and place
+at the tree origin. Copy the tree's explicit `materials.bark` for matching bark.
+For sloped terrain, populate `ground` from the actual placement's surface first.
+
+For a terrain-aware C++ content consumer (error handling abbreviated):
+```cpp
+flora::Roots site;
+site.enabled = placement_wants_roots;
+site.max_radius_m = planting_radius;  // 0 uses the resolved crown reach
+if (site.enabled && flora::roots_for_tree(tree_recipe, site, error)) {
+  flora::RootGround patch;
+  const f32 reach = site.max_radius_m > 0
+      ? std::min(site.max_radius_m, site.crown_radius_m) : site.crown_radius_m;
+  if (flora::sample_root_ground(ground, tree_origin, yaw, scale, reach, .25f, patch, error)) {
+    site.ground = std::move(patch);
+    assets::MeshData mesh;
+    flora::Motion motion;
+    flora::RootReport report;
+    if (flora::solve_roots(site, mesh, motion, report, error) && !mesh.indices.empty()) {
+      // Use report.exposed/root_covers while cooking the grass mask.
+      flora::FloraFile recipe;
+      recipe.species = "roots";
+      recipe.roots = std::move(site);
+      recipe.materials = tree_recipe.materials;
+      // Cook recipe with build_flora_container, then place at the tree's exact transform.
+    }
+  }
+}
+```
+
+For very large crowns, choose grid spacing so `ceil(2 * reach / spacing) <= 512`,
+or explicitly limit exposed reach; the sampler reports oversize patches rather
+than silently coarsening the supplied terrain. The example solves once to determine
+whether a placement exists and to collect the grass mask; the container cook solves
+again. This is cold authoring work. Cache the resulting recipe/container per site,
+and omit or stream out distant root placements instead of recooking each frame.
