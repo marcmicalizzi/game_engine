@@ -664,3 +664,32 @@ TEST_CASE("game runner: a state file naming an actor the scene does not is refus
 #endif  // WALK_POC_ACTOR_PATH
 
 #endif  // WALK_POC_PATH
+
+#if defined(WALK_POC_PATH)
+TEST_CASE("game runner: render diagnostics do not advance simulation") {
+  if (in_bundle()) return;
+  test::TempDir tmp("game-render-diagnostics");
+  engine::view::GameRunner runner;
+  const auto map = view::default_fly_map();
+  std::string error;
+  REQUIRE_MESSAGE(runner.start(config_for(place(tmp, WALK_POC_PATH, "walk_poc"), tmp), map, 240, &error), error);
+  runner.note_render_frame(0.0);
+  runner.note_render_frame(-10.0);
+  runner.note_render_frame(std::nan(""));
+  runner.note_render_frame(16.0);
+  runner.note_render_frame(24.0);
+  engine::hotload::GraphicsState graphics;
+  runner.set_graphics(graphics, false, false);
+  runner.set_graphics_size(11520, 2160);
+  const auto summary = runner.summary_json();
+  const auto* g = summary.find("graphics");
+  REQUIRE(g != nullptr);
+  CHECK(g->find("render_frame_ms")->as_float() == 24.0);
+  CHECK(g->find("render_frame_serial")->as_uint() == 2);
+  CHECK(g->find("render_elapsed_s")->as_float() == doctest::Approx(0.04));
+  CHECK(g->find("width")->as_uint() == 11520);
+  CHECK(g->find("height")->as_uint() == 2160);
+  CHECK(runner.ticks() == 0);
+}
+
+#endif
