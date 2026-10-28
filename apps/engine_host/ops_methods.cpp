@@ -1576,11 +1576,17 @@ bool engine_budgets(protocol::Context& ctx, const protocol::BudgetsParams& param
              "Streaming uploads: the page payload one frame may copy into a streamed scene's pool.",
              static_cast<f64>(renderer::k_default_upload_budget), std::nullopt, std::nullopt,
              "bytes/frame", "default", "render.load settings.upload_budget_kib", process);
+  // R107: the tunable is 0 by default, which follows each scene's device (a sixteenth of its
+  // memory, 512 to 4,096 MiB), so the process has no one figure to give until a scene names it.
+  const u32 rt_tunable_mib = renderer::rt_budget_mib_tunable();
   add_budget(out, filter, "renderer.rt",
              "The device memory the per-frame cluster acceleration structures may take; past it a "
-             "frame drops whole instances' structures, shadow casters first.",
-             static_cast<f64>(renderer::rt_budget_mib_tunable()) * k_mib, std::nullopt,
-             std::nullopt, "bytes", "tunable", "renderer.rt.budget_mib", process);
+             "frame drops whole instances' structures, shadow casters first. By default a "
+             "sixteenth of the device's memory, 512 to 4,096 MiB, which each scene reports.",
+             rt_tunable_mib != 0 ? std::optional<f64>(static_cast<f64>(rt_tunable_mib) * k_mib)
+                                 : std::nullopt,
+             std::nullopt, std::nullopt, "bytes", rt_tunable_mib != 0 ? "tunable" : "device",
+             "renderer.rt.budget_mib", process);
 #if defined(ENGINE_HOST_AUDIO)
   add_budget(out, filter, "audio.clips",
              "Decoded clip memory a clip store may hold; a clip past it is refused, not paged.",
@@ -1633,18 +1639,25 @@ bool engine_budgets(protocol::Context& ctx, const protocol::BudgetsParams& param
                    static_cast<f64>(gpu.upload_budget_bytes()), std::nullopt, std::nullopt,
                    "bytes/frame", "setting", "render.load settings.upload_budget_kib", scope);
       }
-      const u32 rt_mib = scene->resolved.settings.rt_budget_mib != 0
-                             ? scene->resolved.settings.rt_budget_mib
-                             : renderer::rt_budget_mib_tunable();
-      add_budget(out, filter, "renderer.rt",
-                 "This scene's acceleration-structure budget, and the bytes its per-frame "
-                 "structures hold now and at their peak (0 when the frame builds none).",
-                 static_cast<f64>(rt_mib) * k_mib, static_cast<f64>(stats.rt.bytes),
-                 static_cast<f64>(stats.rt.peak_bytes), "bytes",
-                 scene->resolved.settings.rt_budget_mib != 0 ? "setting" : "tunable",
-                 scene->resolved.settings.rt_budget_mib != 0 ? "settings.rt_budget_mib"
-                                                             : "renderer.rt.budget_mib",
-                 scope);
+      // The budget the scene's chain was made with and where it came from (R107); a scene
+      // without the chain has none, and says what it would have taken.
+      const renderer::RtBudget rt_budget =
+          gpu.rt_budget_mib() != 0
+              ? renderer::RtBudget{gpu.rt_budget_mib(), gpu.rt_budget_source()}
+              : renderer::resolve_rt_budget(scene->resolved.settings.rt_budget_mib,
+                                            renderer::rt_budget_mib_tunable(), 0);
+      const bool rt_known =
+          gpu.rt_budget_mib() != 0 || rt_budget.source != renderer::RtBudgetSource::Device;
+      add_budget(
+          out, filter, "renderer.rt",
+          "This scene's acceleration-structure budget, and the bytes its per-frame "
+          "structures hold now and at their peak (0 when the frame builds none).",
+          rt_known ? std::optional<f64>(static_cast<f64>(rt_budget.mib) * k_mib) : std::nullopt,
+          static_cast<f64>(stats.rt.bytes), static_cast<f64>(stats.rt.peak_bytes), "bytes",
+          renderer::rt_budget_source_name(rt_budget.source),
+          rt_budget.source == renderer::RtBudgetSource::Setting ? "settings.rt_budget_mib"
+                                                                : "renderer.rt.budget_mib",
+          scope);
     }
 
 #if defined(ENGINE_HOST_AUDIO_SYSTEM)

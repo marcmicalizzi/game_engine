@@ -608,12 +608,14 @@ TEST_CASE("ops: engine.budgets names every budget, with finite numbers, the same
     CAPTURE(name);
     CHECK(has(name));
   }
-  // The rt budget is a tunable, and says which one; the allocation counter is counted, not bounded.
+  // The rt budget follows the device unless its tunable names one (R107: the tunable is 0 by
+  // default), so the process says where it comes from and which key overrides it, and has no one
+  // limit to give; each scene reports its own. The allocation counter is counted, not bounded.
   for (usize i = 0; i < budgets.size(); ++i) {
     if (text(budgets[i], "name") == "renderer.rt") {
-      CHECK(text(budgets[i], "source") == "tunable");
+      CHECK(text(budgets[i], "source") == "device");
       CHECK(text(budgets[i], "key") == "renderer.rt.budget_mib");
-      CHECK(real(budgets[i], "limit") == 1024.0 * 1024.0 * 1024.0);
+      CHECK(at(budgets[i], "limit").is_null());
     }
     if (text(budgets[i], "name") == "memory.allocations") {
       CHECK(at(budgets[i], "limit").is_null());

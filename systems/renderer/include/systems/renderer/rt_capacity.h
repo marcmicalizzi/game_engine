@@ -23,8 +23,9 @@
 // headroom is many frames of warning.
 //
 // **The budget is a ceiling, and what happens above it is stated.** `limit` is the most the
-// capacity may reach (`RenderSettings::rt_budget_mib`, or the `renderer.rt.budget_mib` tunable,
-// turned into clusters by what the driver says one costs). A frame that wants more than the
+// capacity may reach (`RenderSettings::rt_budget_mib`, the `renderer.rt.budget_mib` tunable, or by
+// default a sixteenth of the device's memory — `resolve_rt_budget` — turned into clusters by what
+// the driver says one costs). A frame that wants more than the
 // capacity holds — past the budget, or in the frames before a growth lands — keeps what fits and
 // drops the rest **whole instances at a time, every instance's drawn clusters before any shadow
 // caster** (gfx::ClusterRecordParams): an instance that lost its drawn clusters casts no shadow
@@ -51,7 +52,9 @@ struct RtCapacityConfig {
 };
 
 // The `renderer.rt.*` tunables, read once: the budget in MiB, the headroom, the shrink window and
-// the step. `RenderSettings::rt_budget_mib` overrides the budget when it is not zero.
+// the step. `RenderSettings::rt_budget_mib` overrides the budget when it is not zero, and the
+// budget tunable overrides the device's rule (below) when it is not zero; 0, its default, follows
+// the device.
 u32 rt_budget_mib_tunable() noexcept;
 u32 rt_headroom_pct_tunable() noexcept;
 u32 rt_shrink_frames_tunable() noexcept;
@@ -65,7 +68,38 @@ bool rt_static_forms_tunable() noexcept;
 bool rt_static_build_tunable() noexcept;
 // `renderer.rt.caster_horizon` (false): `RenderSettings::rt_caster_horizon` from the command line.
 bool rt_caster_horizon_tunable() noexcept;
-inline constexpr u32 k_default_rt_budget_mib = 1024;
+// **The default budget follows the device** (renderer.md, "The budget follows the device"; roadmap
+// R107, 2026-10-27). Until then it was 1,024 MiB on every card, chosen on the desert overlook,
+// whose chain peaks at 134 MB; the forest proof of concept's expanded forest at 11520×2160 wants
+// 243,604 structures a frame — 1.46 GiB at the RTX 5090's 6,426 bytes a cluster, 1.84 GiB at the
+// capacity the policy grows to for it (25% headroom, rounded to its step) — and dropped instances
+// on every frame at 1 GiB. The rule is a sixteenth
+// of the device-local heaps (the heaps' size, which `gfx::MemoryBudget::device_local_bytes` knows
+// with or without VK_EXT_memory_budget and which does not move with what other processes hold, so
+// the same card gives the same capacity every run), never under `k_rt_budget_floor_mib` and never
+// over `k_rt_budget_ceiling_mib`: 2,025 MiB on the 32 GB RTX 5090, 1,536 on 24 GB, 1,024 on 16 GB
+// (the old default), 768 on 12 GB, 512 on 8 GB and on anything smaller. The budget is a ceiling,
+// not an allocation: a frame that wants less allocates less (`RtCapacity`), so a bigger ceiling
+// costs only the scenes that use it — but a scene past it holds it from the first frame
+// (`first_rt_capacity`), which is why the share is a sixteenth and not more.
+inline constexpr u32 k_rt_budget_device_share = 16;   // the budget is 1/16 of device-local memory
+inline constexpr u32 k_rt_budget_floor_mib = 512;     // a 6 or 8 GB card
+inline constexpr u32 k_rt_budget_ceiling_mib = 4096;  // a 64 GB card and up
+// The rule alone: `device_local_bytes / k_rt_budget_device_share` in MiB, clamped to the floor and
+// the ceiling. A device that reports no device-local memory gets the floor.
+u32 rt_device_budget_mib(u64 device_local_bytes) noexcept;
+
+// Where a scene's budget came from, which the summaries and the host's budget report say.
+enum class RtBudgetSource : u8 { Setting, Tunable, Device };
+const char* rt_budget_source_name(RtBudgetSource source) noexcept;
+struct RtBudget {
+  u32 mib = 0;
+  RtBudgetSource source = RtBudgetSource::Device;
+};
+// `RenderSettings::rt_budget_mib` when it is not zero, else the `renderer.rt.budget_mib` tunable
+// when that is not zero, else the device's rule. Arithmetic only, so the precedence is tested on
+// the CPU.
+RtBudget resolve_rt_budget(u32 setting_mib, u32 tunable_mib, u64 device_local_bytes) noexcept;
 // The first capacity of a scene too large to hold whole within the budget, before any frame has
 // said what it builds: 65,536 clusters is 400 MB on the RTX 5090, above every first frame the
 // desert overlook's path draws at any resolution. A scene whose every pair in every view fits in

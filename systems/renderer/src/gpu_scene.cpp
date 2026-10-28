@@ -4682,8 +4682,17 @@ bool GpuScene::lay_out_ray_tracing(std::string* error) {
     if (error != nullptr) *error = "the driver gave no marginal frame storage cost";
     return false;
   }
-  const u32 budget_mib = resolved_.settings.rt_budget_mib != 0 ? resolved_.settings.rt_budget_mib
-                                                               : rt_budget_mib_tunable();
+  // **The budget follows the device unless somebody named one** (renderer.md, "The budget follows
+  // the device"; R107): the setting, else the tunable, else a sixteenth of the device-local heaps,
+  // 512 to 4,096 MiB. The heaps' size, not VK_EXT_memory_budget's share of it, so a card gives the
+  // same capacity whatever else is running on it.
+  gfx::MemoryBudget memory;
+  (void)device.memory_budget(memory);
+  const RtBudget budget = resolve_rt_budget(resolved_.settings.rt_budget_mib,
+                                            rt_budget_mib_tunable(), memory.device_local_bytes);
+  const u32 budget_mib = budget.mib;
+  rt_budget_mib_ = budget.mib;
+  rt_budget_source_ = budget.source;
   const u64 budget_clusters = u64{budget_mib} * 1024 * 1024 / rt_bytes_per_cluster_;
   // With a cache the frame's own records are named under bit 23 (gfx::k_cluster_cache_geometry),
   // which a cached structure's name sets: 8,388,608 of them, past any budget's.
@@ -4729,6 +4738,8 @@ bool GpuScene::lay_out_ray_tracing(std::string* error) {
       log::field("union_clusters", rt_union_clusters_), log::field("instances", instance_count_),
       log::field("instance_slots", rt_instance_slots_), log::field("capacity", rt_capacity_),
       log::field("capacity_limit", rt_capacity_limit_), log::field("budget_mib", budget_mib),
+      log::field("budget_source", rt_budget_source_name(budget.source)),
+      log::field("device_local_mib", memory.device_local_bytes >> 20),
       log::field("bytes_per_cluster", rt_bytes_per_cluster_),
       log::field("clas_bytes", clas_set.data.size), log::field("blas_bytes", blas_set.data.size),
       log::field("scratch_bytes", rt_scratch.size), log::field("rt_bytes", rt_bytes_),
@@ -5048,6 +5059,8 @@ void GpuScene::destroy() noexcept {
   max_joints_ = skinned_instances_ = deform_pool_vertices_ = 0;
   visible_run_bytes_ = deform_pool_bytes_ = deform_whole_mesh_bytes_ = 0;
   template_bytes_ = rt_bytes_ = rt_scene_bytes_ = rt_bytes_per_cluster_ = 0;
+  rt_budget_mib_ = 0;
+  rt_budget_source_ = RtBudgetSource::Device;
   rt_capacity_ = rt_capacity_limit_ = rt_union_clusters_ = rt_max_per_instance_ = 0;
   rt_limits_ = gfx::ClusterSetLimits{};
   vertex_index_capacity_ = 0;

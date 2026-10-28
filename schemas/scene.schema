@@ -1762,7 +1762,7 @@ struct OcclusionCheck @version(1) {
 /// without the chain. Version 2 (2026-10-25) adds the static structures of rigid forms (renderer.md,
 /// "Static structures for rigid forms"): the forms built once, their clusters and bytes, and the
 /// instance slots and pairs that referenced one at the end.
-struct FlythroughRt @version(4) {
+struct FlythroughRt @version(5) {
   /// R100: admission fallback and the compact chain's capacity arithmetic.
   caster_index_fallbacks: u32 = 0 @since(3)
   frame_estimate: u64 = 0 @since(3)
@@ -1820,6 +1820,11 @@ struct FlythroughRt @version(4) {
   reference_shrinks: u32 = 0 @since(4)
   references: Percentiles @since(4)
   cache_built: Percentiles @since(4)
+  /// Version 5 (R107): the budget `limit` was made from, in MiB, and where it came from —
+  /// `setting`, `tunable`, or `device` for the default rule, a sixteenth of the device-local
+  /// memory from 512 to 4,096 MiB (docs/subsystems/renderer.md, "The budget follows the device").
+  budget_mib: u32 = 0 @since(5)
+  budget_source: string @since(5)
 }
 
 /// The materials' textures a scene holds on the device (`renderer::GpuScene`): the distinct

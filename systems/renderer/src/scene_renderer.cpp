@@ -1704,6 +1704,8 @@ void SceneRenderer::note_rt_bytes() noexcept {
   chain.caster_index_fallbacks = resolved_.caster_index_fallback ? 1u : 0u;
   chain.frame_estimate = scene_->rt_frame_estimate();
   chain.bytes_per_cluster = scene_->rt_bytes_per_cluster();
+  chain.budget_mib = scene_->rt_budget_mib();
+  chain.budget_source = scene_->rt_budget_source();
   chain.geometry_index_max = chain.capacity == 0 ? 0 : chain.capacity - 1;
   chain.geometry_index_required =
       rt_max_geometry_index(resolved_.pairs.frame_pairs(), resolved_.view_count, resolved_.casters);
