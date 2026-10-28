@@ -1,9 +1,9 @@
 // The rock solver (rocks.h; docs/subsystems/rocks.md, "The model by type").
 //
 // Every body is star-shaped about its centre: a cube-sphere grid of directions, each pushed out to
-// the body's radius in that direction. The radius is the smooth minimum of the unit sphere's and
+// the body's radius in that direction. The radius is the smooth minimum of an enclosing hull's and
 // every planar cut's (a cut is a plane of unit normal `n` at distance `d`; along a direction `u`
-// it is `d / (u . n)` away), so the body before weathering is the convex intersection of a ball and
+// it is `d / (u . n)` away), so the body before weathering is the convex intersection of enclosing
 // half-spaces with the edges rounded; the warp and the surface noise scale that radius, the body
 // is stretched to its half-extents, banded along its bedding, and lowered to its burial. A radial
 // map of a sphere is closed and cannot fold, which is the whole of the topology argument.
@@ -134,6 +134,11 @@ struct Scar {
   f64 depth;
 };
 
+struct Chip {
+  Cut planes[4];
+  f64 width = 0.0;
+};
+
 // One body, everything its radius and its placement need.
 struct Body {
   D3 half;        // half-extents
@@ -160,6 +165,7 @@ struct Body {
   u64 surface_seed = 0;
   Fabric fabric{};
   Scar scars[6]{};
+  Chip chips[16]{};
 };
 
 // Physical-scale structure, evaluated in the common formation frame. Joint positions are
@@ -210,12 +216,33 @@ f64 surface_recess(const Body& b, D3 p, f64 cell) {
 }
 
 // The body's radius along unit direction `u`, in the unit body, with the noise the rung carries.
-f64 radius(const Body& b, D3 u) {
-  f64 r = 1.0;
+f64 hull_radius(const Body& b, D3 u) {
+  f64 r = 1.0e3;
   for (const Cut& c : b.cuts) {
     const f64 along = dot(u, c.n);
     const f64 rc = along > 1e-6 ? c.d / along : 1.0e3;
     r = smooth_min(r, rc, b.smooth * c.wear);
+  }
+  return r;
+}
+
+f64 radius(const Body& b, D3 u) {
+  f64 r = hull_radius(b, u);
+  // A finite removed patch is the intersection of four outward half-spaces. Along a ray,
+  // entering all four takes the greatest plane distance; taking the minimum with the hull
+  // removes just that patch. A plane facing away makes the chip absent on this ray.
+  const f64 cell = (k_pi * 0.5) / static_cast<f64>(b.n);
+  for (const Chip& chip : b.chips) {
+    const f64 weight = fade(clamp01((chip.width / cell - 2.0) * 0.5));
+    if (weight == 0.0) continue;
+    f64 entry = 0.0;
+    for (const Cut& plane : chip.planes) {
+      const f64 along = dot(u, plane.n);
+      const f64 distance = along > 1e-6 ? plane.d / along : 1.0e3;
+      if (distance > entry) entry = distance;
+    }
+    const f64 chipped = smooth_min(r, entry, b.smooth * 0.12);
+    r = lerp(r, chipped, weight);
   }
   // Broad asymmetric removal patches break the regular rounded-box silhouette. Scars stay
   // present across quality rungs; a rounded bowl can end at a narrow, freshly broken lip.
@@ -365,7 +392,7 @@ void emit_body(const Body& b, f64 tile_m, assets::MeshData& out) {
       }
     }
   }
-  // The stretch: the cut body is smaller than the ball it was cut from, so each axis is scaled to
+  // The stretch: the cut hull has seeded dimensions, so each axis is scaled to
   // make the body's box the half-extents asked (an affine map, so a cut stays a plane), centred.
   {
     D3 lo_q{1e30, 1e30, 1e30};
@@ -499,8 +526,7 @@ void weather_body(Body& b, const Weather& w, u64 seed, u32 part) {
   for (Scar& scar : b.scars) {
     scar.direction = scars.direction();
     scar.width = scars.range(0.18, 0.65);
-    scar.depth = scars.range(0.025, 0.13) * b.fabric.irregularity *
-                 (0.35 + b.fabric.model.flaking + b.fabric.model.scar);
+    scar.depth = scars.range(0.025, 0.13) * b.fabric.irregularity * b.fabric.model.scar;
   }
 }
 
@@ -513,6 +539,17 @@ void cut_body(Body& b, const D3 joints[4], u32 sets, u32 facets, u64 seed, u32 p
   for (u32 s = 0; s < sets; ++s)
     b.joints[s] = joints[s];
   Rng rng = stream(seed, part, Stream::cuts);
+  // Strictly enclosing, oblique faces even when the recipe asks for no joint sets. No unit-ball
+  // patches remain between fracture planes. A dominant signed axis exceeds both off-axis
+  // components together, so at least one plane faces every ray and the hull is bounded.
+  Rng hull(mix64(seed ^ (static_cast<u64>(part) << 32) ^ 0x48554C4Cull));
+  for (u32 axis = 0; axis < 3; ++axis) {
+    for (f64 sign : {-1.0, 1.0}) {
+      f64 v[3] = {hull.range(-0.2, 0.2), hull.range(-0.2, 0.2), hull.range(-0.2, 0.2)};
+      v[axis] = sign;
+      b.cuts.push_back(Cut{normalized(D3{v[0], v[1], v[2]}), hull.range(0.82, 1.08)});
+    }
+  }
   for (u32 s = 0; s < sets; ++s) {
     b.cuts.push_back(Cut{joints[s], rng.range(lo, hi)});
     b.cuts.push_back(Cut{joints[s] * -1.0, rng.range(lo, hi)});
@@ -523,6 +560,29 @@ void cut_body(Body& b, const D3 joints[4], u32 sets, u32 facets, u64 seed, u32 p
     const D3 up = normalized(D3{rng.range(-0.05, 0.05), 1.0, rng.range(-0.05, 0.05)});
     b.cuts.push_back(Cut{up, rng.range(lo, hi)});
     b.cuts.push_back(Cut{up * -1.0, rng.range(lo, hi)});
+  }
+  Rng chips(mix64(seed ^ (static_cast<u64>(part) << 32) ^ 0x4348495053ull));
+  for (Chip& chip : b.chips) {
+    const D3 direction = chips.direction();
+    const D3 tangent = normalized(
+        cross(direction, std::fabs(direction.y) < 0.8 ? D3{0.0, 1.0, 0.0} : D3{1.0, 0.0, 0.0}));
+    const D3 bitangent = cross(direction, tangent);
+    const f64 strength = b.fabric.irregularity * (0.35 + b.fabric.model.flaking) *
+                         (1.0 - 0.75 * b.fabric.model.scar);
+    const f64 depth = chips.range(0.035, 0.13) * strength;
+    const f64 width = chips.range(0.12, 0.35);
+    chip.width = width;
+    const f64 top = hull_radius(b, direction);
+    chip.planes[0] = Cut{direction, top - depth};
+    const f64 phase = chips.range(0.0, 2.0 * k_pi);
+    for (u32 side = 0; side < 3; ++side) {
+      const f64 angle = phase + static_cast<f64>(side) * (2.0 * k_pi / 3.0);
+      const D3 across = tangent * det::cos(angle) + bitangent * det::sin(angle);
+      const D3 normal = normalized(direction + across * (2.0 * depth / width));
+      chip.planes[side + 1] = Cut{normal, dot(direction * (top - 1.8 * depth), normal)};
+    }
+    // Zero irregularity is a real off switch, including the smooth-min lip.
+    if (strength == 0.0) chip.width = 0.0;
   }
 }
 

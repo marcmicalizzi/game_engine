@@ -49,9 +49,11 @@ limestone and sandstone can both be resistant, and weathering is exposure in 0�
 `geology` is a `RockGeology` on every shape. `weathering` (0–1, default 0.5) increases old joint
 edge rounding and process exposure; newly cut facets retain only 2–18% of that rounding, so worn
 edges and fresh angular breaks coexist. `irregularity` (0–1, 0.65) controls broad asymmetric removal
-scars and unequal retreat. Six broad concave scars alter each body's outline at every source rung.
-Their profiles have curved bowls and narrower lips; this is an approximation of flake scars,
-not fracture mechanics or detached pieces.
+chips and unequal retreat. G95 replaces generic bowl-shaped damage with sixteen seeded, bounded
+four-plane chips. Their central faces and side walls form angular recesses; the chip's width fades
+over two to four source cells. Six broad curved scars remain weighted by the type's conchoidal
+fracture tendency (strong in obsidian, weak in basalt, absent otherwise). These are surface-removal
+approximations, not fracture mechanics or detached pieces.
 
 `bed_m` (0 off, otherwise 0.01–20 m; absent the type's), `dip_deg` (−85–85, 0),
 `azimuth_deg` (−180–180, 0) and `fold` (0–1, absent the type's) define the geological fabric.
@@ -99,11 +101,13 @@ surface field; the independent geology field still applies. The engine's normal 
 LOD still controls draw cost; these source budgets are not a new runtime graphics-preset switch.
 
 A body's radius along a unit direction `u` is the **smooth minimum** (the polynomial one, a band
-`rounding × (0.04 + 0.3 weathering) × cut wear` wide) of the unit sphere's radius and every planar cut's: a cut is a plane of unit
+`rounding × (0.04 + 0.3 weathering) × cut wear` wide) of the enclosing hull and every planar cut's radius: a cut is a plane of unit
 normal `n` at distance `d` from the centre, `d / (u · n)` away along `u`. Before weathering that is
-the convex intersection of a ball and half-spaces with its edges rounded. The cuts are **joint
+the convex intersection of half-spaces with its edges rounded. Six oblique support planes enclose
+the body even without joint sets; no spherical patches remain between the cuts. The cuts are **joint
 sets** — a pair of parallel planes on opposite sides per set, at seeded distances — and the type's
-**facets**, cuts in seeded directions. Then the **warp** (one low octave of value noise scaling the
+**facets**, cuts in seeded directions. A bounded chip uses the maximum of four plane distances to
+enter its removed volume and the minimum with the hull to remove only that patch. Then the **warp** (one low octave of value noise scaling the
 radius: the body's shape, at every rung) and the **grain** (up to three octaves of finer noise, each
 present only where its wavelength spans four cells of the rung, so a coarse rung is the same rock
 with the detail it cannot carry left out). The cut body is then **stretched** per axis so its box
@@ -135,7 +139,9 @@ rather than bumped.
 ### The boulder
 
 `engine.rocks.Boulder`: one body of half-extents `size_x/y/z`, its joints from the type, cut at
-0.5–0.75 of the unit ball and its facets at 0.58–0.8, the bedding tilted up to 8° from vertical.
+0.5–0.75 in unit-body coordinates and its facets at 0.58–0.8, the bedding tilted up to 8° from vertical.
+`RockReport::cuts` includes the six enclosing support planes per body, but not the bounded chips'
+planes. The existing triangle-budget ladder is unchanged.
 
 ### The outcrop
 
@@ -363,7 +369,8 @@ and only that shape's block (absent is its defaults, except a cliff's, whose lin
 another shape's block is refused). `RockFile` is version 2 since the cliff: its `cliff` block is
 **left out of the canonical parameters when absent**, so a boulder's, an outcrop's or a scree's
 canonical bytes did not change when cliffs were introduced. G89 adds canonical surface fields
-and changes their defaults; G94's solver version 3 invalidates every rock container again. A cliff's fields
+and changes their defaults; G94's solver version 3 invalidates every rock container again. G95's
+version 4 replaces the radial hull and chip geometry, including the cliff's fallen blocks. A cliff's fields
 and ranges are the schema's (`engine.rocks.Cliff`, `CliffPoint`): a line of 2 to 4,096 vertices
 1 to 1,000 m long, `height` 1–200 m (40), `batter` 0–1.5 (0.1), `buried` 0–20 m (2), `depth` 2–200
 m (absent: the carving's reach plus 2 m), `relief` 0–20 m (the type's: granite 4, sandstone 3.5,

@@ -62,7 +62,7 @@ inline constexpr const char* k_determinism = "derived";
 // makes from the same parameters is a new key and never an old container read as the answer. Bump
 // it with any change that moves a byte of a committed recipe's mesh (the determinism test says
 // when one did).
-inline constexpr u32 k_rocks_version = 3;
+inline constexpr u32 k_rocks_version = 4;
 
 // ---- the budget ladder (rocks.md, "The budget ladder") -----------------------------------------
 //
@@ -84,9 +84,9 @@ struct RockReport {
   u32 finest_grid = 0;    // the largest part's `n`
   u32 coarsest_grid = 0;  // the smallest part's `n`
   u32 steps = 0;          // rungs below the top of the ladder the largest part took; 0 is n = 192
-  u32 cuts = 0;           // planar cuts across every part
-  u32 layers = 0;         // bedding layers as built (the type's default when the file gave none)
-  f32 rounding = 0.0f;    // as built
+  u32 cuts = 0;         // hull cuts across every part, including six supports; excludes chip planes
+  u32 layers = 0;       // bedding layers as built (the type's default when the file gave none)
+  f32 rounding = 0.0f;  // as built
 };
 
 // The type's name in a file and a report: "Granite".

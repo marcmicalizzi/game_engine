@@ -141,6 +141,78 @@ TEST_CASE("rocks: invalid geology and enum values fail at the public boundary") 
   CHECK_FALSE(rock_file_in_range(file, error));
 }
 
+TEST_CASE("rocks: a fresh unjointed block has broad planar faces rather than a spherical belt") {
+  Boulder b;
+  b.type = RockType::Basalt;
+  b.joint_sets = 0;
+  b.rounding = 0.0f;
+  b.triangle_budget = 20000;
+  b.surface.strength = 0.0f;
+  b.geology.weathering = 0.0f;
+  b.geology.irregularity = 0.0f;
+  b.geology.bed_m = 0.0f;
+  b.geology.granular = 0.0f;
+  b.geology.dissolution = 0.0f;
+  const auto mesh = body(b);
+  check_closed(mesh, 1);
+  struct Patch {
+    Vec3 normal;
+    f64 area;
+  };
+  std::vector<Patch> patches;
+  f64 total = 0;
+  for (u32 t = 0; t < mesh.indices.size(); t += 3) {
+    const Vec3 a = mesh.positions[mesh.indices[t]];
+    const Vec3 cross_n =
+        cross(mesh.positions[mesh.indices[t + 1]] - a, mesh.positions[mesh.indices[t + 2]] - a);
+    const f32 area = std::sqrt(dot(cross_n, cross_n));
+    REQUIRE(area > 0);
+    const Vec3 n = cross_n * (1.0f / area);
+    total += static_cast<f64>(area);
+    bool joined = false;
+    for (Patch& patch : patches) {
+      if (dot(n, patch.normal) >
+          0.9848f) {  // ten degrees; measures the geometric face, not shading
+        patch.area += static_cast<f64>(area);
+        joined = true;
+        break;
+      }
+    }
+    if (!joined) patches.push_back(Patch{n, static_cast<f64>(area)});
+  }
+  std::sort(patches.begin(), patches.end(),
+            [](const Patch& a, const Patch& other) { return a.area > other.area; });
+  f64 broad_faces = 0;
+  for (size_t i = 0; i < 8 && i < patches.size(); ++i)
+    broad_faces += patches[i].area;
+  MESSAGE("fresh block surface in eight broad normal patches: " << broad_faces / total);
+  CHECK(broad_faces / total > 0.75);
+}
+
+TEST_CASE("rocks: chipped fracture hulls stay closed without joint sets at coarse and fine rungs") {
+  for (RockType type : k_types) {
+    for (u64 seed : {1ull, 73ull, 9001ull}) {
+      for (RockQuality q : {RockQuality::Low, RockQuality::High}) {
+        CAPTURE(std::string(rock_type_name(type)));
+        CAPTURE(seed);
+        CAPTURE(static_cast<u32>(q));
+        Boulder b;
+        b.type = type;
+        b.seed = seed;
+        b.quality = q;
+        b.joint_sets = 0;
+        b.rounding = 0.0f;
+        b.geology.irregularity = 1.0f;
+        b.geology.flaking = 1.0f;
+        b.triangle_budget = 6000;
+        const auto mesh = body(b);
+        check_closed(mesh, 1);
+        CHECK(mesh.indices.size() / 3 <= b.triangle_budget);
+      }
+    }
+  }
+}
+
 TEST_CASE("rocks: PBR scalar overrides survive texturing and source identity") {
   RockFile file;
   std::string error;

@@ -135,3 +135,66 @@ the full debug suite because committed content recipes are inputs to scene and a
 The shared-machine run took 5,192.98 seconds with concurrent builds and GPU users; that elapsed time
 is not a solver-performance measurement. Documentation/link checks and `git diff --check` passed.
 Release, sanitizer, remote-server and frame-budget merge gates were not repeated for this branch.
+
+## G95: angular fracture shapes (2026-10-28)
+
+G94 was fast-forwarded into local main at the owner's request, with merge gates explicitly
+waived. This follow-up remains in the rock worktree. The owner also requested continued improvement.
+
+The [Hong Kong Geological Survey's weathering chapter](https://hkss.cedd.gov.hk/hkss/en/publications-and-resources/educational-materials/hong-kong-geology/chapter-4/index.html)
+describes joint-bounded blocks, preferential corner/edge weathering, and curved exfoliation shells.
+[NPS, Square Blocks to Round Rocks](https://home.nps.gov/articles/000/how-do-square-blocks-become-round-rocks-on-mount-desert-island.htm)
+describes angular granite debris becoming rounded through shoreline abrasion. Together with the
+obsidian source above, these support different fracture surfaces and subsequent edge wear, rather
+than a spherical starting shape and the same bowl-shaped damage on every lithology.
+
+Design: replace the residual unit ball with six enclosing oblique support planes; existing joint
+sets and fresh cuts intersect that hull. Use bounded four-plane chips for crystalline and bedded
+rock, keeping conchoidal bowls proportional to the lithology's glassy-fracture weight. The chip's
+central plane and three side planes describe removal of a finite patch, not another infinite cut
+through the whole body. Positive radial distances retain the closed-shell topology. Weathering
+softens intersections; unresolved chips fade by source cell width. Sixteen seeded chips are a
+representation budget, not a claim about fracture counts in nature. No extra source triangles,
+runtime state, shader pass, or destruction simulation is introduced. Numerical widths, depths and
+angles are authored approximations and will be checked in paired engine captures.
+
+The six support normals have a dominant signed axis of 1 and other components in [-0.2, 0.2],
+then normalize; distances are 0.82–1.08 in the unit body. This makes the hull bounded even with
+zero joint sets. Chip widths are 0.12–0.35 unit lengths; depths are 0.035–0.13 times irregularity,
+the flaking mixture, and reduced glassy weight. The side planes meet deeper than the central face
+so a chip has a flat floor and oblique walls. The lip uses 12% of the old-joint smoothing band.
+These constants are shape controls, not laboratory fracture measurements.
+
+The four paired 1200 × 900 captures in the local `fractures/` directory use the same recipes,
+camera, lighting and finest cut before/after; the camera is closer than the G94 gallery. Granite
+and slate have straighter broken outlines and planar removal faces, while obsidian retains curved
+scars. The geometry still has shallow surface relief and some grid-shaped rim artifacts. This is
+an incremental silhouette improvement, not a photorealistic or detached-flake acceptance.
+
+G95's focused E10 run: all four exports pass at the standard 1 px versus 0.05 px comparison,
+with the same 0.02 mean FLIP limit: granite 0.01298, limestone 0.01945, obsidian 0.01069,
+slate 0.00914. All import without warnings or repairs and pass the collapse/UV criteria. This
+does not revalidate the ten other G94 exports. RTX 5090, current dirty G95 debug binaries based
+on `5377ad30`; offscreen 640-square whole-asset framing, one view each. The harness recorded
+the GPU lock free at both ends but no machine-state sample; no timing claim is made. Raw records
+are in local `fractures/e10/report.json`. Source triangles remain 76,800 for granite and 150,528
+for the other three, identical to G94.
+
+Focused validation includes 33 rock test cases, with a new geometric planarity check (over 75%
+of a fresh unjointed basalt block's area in eight normal groups within ten degrees), plus ten
+lithologies at three seeds, zero joint sets, full chip strength and two source quality levels.
+The first run's only runtime failures were the intentionally obsolete mesh/container fingerprints;
+all topology checks passed. New pins are version 4. The full affected suites and merge gates are
+not repeated for this iteration, following the owner's request to skip gates.
+
+Final focused results: all **33/33 rock cases pass on MSVC debug and Linux Clang debug**, including
+the new version-4 fingerprints; lint, licence and documentation/link checks pass. Clang initially
+rejected three implicit float-to-double promotions in the new area-measurement test; explicit
+casts fixed those warnings without changing solver output. The Windows rock test took 89.89 s
+and Linux 64.11 s on the shared machine; neither is a quiet performance measurement. Offline
+work increases by six support-plane evaluations and up to sixteen four-plane chips per vertex;
+the source triangle budgets and runtime data layouts do not grow. No runtime performance claim
+or full-scene acceptance is made. This checkout's Linux volumes are pruned after validation.
+
+The fresh-block planarity measurement is 0.933778 (93.38% of surface area), above the 75%
+regression threshold. This measures face structure only, not photographic realism.
