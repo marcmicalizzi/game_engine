@@ -61,6 +61,67 @@ constexpr u32 k_deformed = 1;
 constexpr u32 k_pool_bias = 7;
 constexpr u64 k_fake_addresses = 0x1000;  // the shader offsets this into the BLAS records
 
+// Everything before a command after it, which is all these tests ask of a barrier.
+void full_barrier(gfx::CommandList cb) {
+  VkMemoryBarrier2 barrier{};
+  barrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2;
+  barrier.srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+  barrier.srcAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT;
+  barrier.dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+  barrier.dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT;
+  VkDependencyInfo dependency{};
+  dependency.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+  dependency.memoryBarrierCount = 1;
+  dependency.pMemoryBarriers = &barrier;
+  vkCmdPipelineBarrier2(gfx::vk::native(cb), &dependency);
+}
+
+// The ranges' five passes (R106), as the renderer records them: the scan over blocks of instances
+// (`ranges_count_main`, `ranges_main`), then — dispatched from words `ranges_main` writes into
+// `instance_counts`, nothing unless the frame is past its capacity — the walk and the kept
+// instances' scan. `cached` takes the variants a frame with the cluster cache records.
+struct RangesPasses {
+  gfx::ComputePipeline count, ranges, drop, kept_count, kept;
+
+  bool create(const gfx::Device& device, gfx::ShaderModuleHandle module, bool cached,
+              std::string* error) {
+    const u32 push = sizeof(gfx::ClusterRecordParams);
+    const char* names[5] = {cached ? "ranges_count_cached_main" : "ranges_count_main",
+                            cached ? "ranges_cached_main" : "ranges_main",
+                            cached ? "ranges_drop_cached_main" : "ranges_drop_main",
+                            cached ? "ranges_kept_count_cached_main" : "ranges_kept_count_main",
+                            cached ? "ranges_kept_cached_main" : "ranges_kept_main"};
+    gfx::ComputePipeline* outs[5] = {&count, &ranges, &drop, &kept_count, &kept};
+    for (u32 k = 0; k < 5; ++k) {
+      if (!gfx::create_compute_pipeline(device, module, names[k], {}, push, *outs[k], error))
+        return false;
+    }
+    return true;
+  }
+  void destroy(const gfx::Device& device) {
+    for (gfx::ComputePipeline* p : {&count, &ranges, &drop, &kept_count, &kept})
+      gfx::destroy_compute_pipeline(device, *p);
+  }
+  // A barrier before each of the five; `instance_counts` is the buffer `params` names.
+  void record(gfx::CommandList cb, const gfx::ClusterRecordParams& params,
+              const gfx::BufferResource& instance_counts) const {
+    const u32 groups = gfx::cluster_ranges_groups(params.instance_count);
+    const gfx::ComputePipeline* passes[5] = {&count, &ranges, &drop, &kept_count, &kept};
+    for (u32 p = 0; p < 5; ++p) {
+      full_barrier(cb);
+      cb.bind_pipeline(gfx::BindPoint::Compute, passes[p]->pipeline);
+      cb.push_constants(passes[p]->layout, gfx::ShaderStage::Compute, 0, sizeof(params), &params);
+      if (p < 2) {
+        cb.dispatch(groups, 1, 1);
+      } else {
+        cb.dispatch_indirect(instance_counts.buffer,
+                             p == 2 ? gfx::cluster_ranges_drop_args(params.instance_count)
+                                    : gfx::cluster_ranges_kept_args(params.instance_count));
+      }
+    }
+  }
+};
+
 // Two instances of one mesh, a visible list with both interleaved in a scrambled order, and a run
 // of shadow casters for the rigid one; everything the three passes read, uploaded, and the passes
 // themselves. `run(capacity)` records them once with the capacity the set was sized for.
@@ -83,7 +144,8 @@ struct RecordsFixture {
       caster_count_buffer, slots, instance_counts, records, record_count, blas_records, meshes,
       deform_table, deform_slots, pool;
   gfx::ShaderModuleHandle module = {};
-  gfx::ComputePipeline bucket, ranges_count, ranges, emit;
+  gfx::ComputePipeline bucket, emit;
+  RangesPasses ranges;
   bool ready = false;
 
   u32 entry_instance(u32 entry) const { return list[u64{entry} * 2]; }
@@ -192,9 +254,10 @@ struct RecordsFixture {
     REQUIRE(gfx::upload_buffer(device, &mesh_desc, sizeof(mesh_desc), k_storage, meshes, &error));
     REQUIRE(
         gfx::create_buffer(device, u64{pair_count} * sizeof(u32), k_address, false, slots, &error));
-    REQUIRE(gfx::create_buffer(device, sizeof(u32) * gfx::cluster_instance_count_words(k_instances),
-                               k_address | gfx::BufferUsage::TransferDst, true, instance_counts,
-                               &error));
+    REQUIRE(
+        gfx::create_buffer(device, sizeof(u32) * gfx::cluster_instance_count_words(k_instances),
+                           k_address | gfx::BufferUsage::TransferDst | gfx::BufferUsage::Indirect,
+                           true, instance_counts, &error));
     REQUIRE(gfx::create_buffer(device, gfx::k_cluster_build_record_bytes * pair_count, k_address,
                                true, records, &error));
     REQUIRE(gfx::create_buffer(device, sizeof(u32) * gfx::k_cluster_record_count_words, k_address,
@@ -208,9 +271,7 @@ struct RecordsFixture {
     REQUIRE_MESSAGE(
         gfx::create_compute_pipeline(device, module, "records_main", {}, push, bucket, &error),
         error);
-    REQUIRE(gfx::create_compute_pipeline(device, module, "ranges_count_main", {}, push,
-                                         ranges_count, &error));
-    REQUIRE(gfx::create_compute_pipeline(device, module, "ranges_main", {}, push, ranges, &error));
+    REQUIRE_MESSAGE(ranges.create(device, module, false, &error), error);
     REQUIRE(gfx::create_compute_pipeline(device, module, "emit_main", {}, push, emit, &error));
     ready = true;
     return true;
@@ -245,24 +306,13 @@ struct RecordsFixture {
         device,
         [&](gfx::CommandList cb) {
           cb.fill_buffer(instance_counts.buffer, 0, gfx::k_whole_size, 0);
-          VkMemoryBarrier2 barrier{};
-          barrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2;
-          barrier.srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
-          barrier.srcAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT;
-          barrier.dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
-          barrier.dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT;
-          VkDependencyInfo dependency{};
-          dependency.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
-          dependency.memoryBarrierCount = 1;
-          dependency.pMemoryBarriers = &barrier;
-          const gfx::ComputePipeline* passes[4] = {&bucket, &ranges_count, &ranges, &emit};
-          // The bucketing pass covers the drawn run and the caster run; the ranges' two dispatches
-          // the blocks of instances; the emit pass the slots.
-          const u32 range_groups = gfx::cluster_ranges_groups(k_instances);
-          const u32 groups[4] = {(2 * pair_count + 63) / 64, range_groups, range_groups,
-                                 (pair_count + 63) / 64};
-          for (u32 p = 0; p < 4; ++p) {
-            vkCmdPipelineBarrier2(gfx::vk::native(cb), &dependency);
+          // The bucketing pass covers the drawn run and the caster run; the ranges the blocks of
+          // instances; the emit pass the slots.
+          const gfx::ComputePipeline* passes[2] = {&bucket, &emit};
+          const u32 groups[2] = {(2 * pair_count + 63) / 64, (pair_count + 63) / 64};
+          for (u32 p = 0; p < 2; ++p) {
+            if (p == 1) ranges.record(cb, params, instance_counts);
+            full_barrier(cb);
             cb.bind_pipeline(gfx::BindPoint::Compute, passes[p]->pipeline);
             cb.push_constants(passes[p]->layout, gfx::ShaderStage::Compute, 0, sizeof(params),
                               &params);
@@ -377,8 +427,7 @@ struct RecordsFixture {
   ~RecordsFixture() {
     if (!device.valid()) return;
     gfx::destroy_compute_pipeline(device, bucket);
-    gfx::destroy_compute_pipeline(device, ranges_count);
-    gfx::destroy_compute_pipeline(device, ranges);
+    ranges.destroy(device);
     gfx::destroy_compute_pipeline(device, emit);
     if (module.valid()) gfx::destroy_shader_module(device, module);
     for (gfx::BufferResource* b :
@@ -529,153 +578,356 @@ TEST_CASE("clas records: a set sized under the frame keeps whole instances, cast
                       << " of " << wanted << " wanted: whole instances kept, casters first to go");
 }
 
+namespace {
+
+// **The capacity rule on the CPU**, as `drop_serial` in clas_records.slang writes it and as it was
+// the whole of the ranges until R106: every instance kept when both kinds fit; otherwise a rank of
+// the order at a time, its drawn clusters instance by instance — a whole instance or none, its
+// casters going with its drawn clusters — then its casters from what is left, each kind (built
+// this frame, or referenced from the cluster cache) against its own capacity; an instance the
+// order does not name keeps nothing. Writes the kept counts, each instance's first record, its
+// bottom-level record and the six count words, as the shader does.
+struct RangesCase {
+  u32 n = 0;
+  Vector<u32> drawn, casters;
+  Vector<u8> cached;  // per instance: referenced from the cache
+  Vector<u32> order;  // {instance, rank} pairs, or empty for instance order
+  u32 capacity = 0;
+  u32 reference_capacity = 0;
+  u64 references = 0;  // the cache's reference array, or 0 for no cache
+
+  u64 wanted(bool of_cached) const {
+    u64 w = 0;
+    for (u32 i = 0; i < n; ++i)
+      w += (cached[i] != 0) == of_cached ? u64{drawn[i]} + casters[i] : 0u;
+    return w;
+  }
+
+  void reference(Vector<u32>& counts, Vector<u64>& blas, u32 words[6]) const {
+    Vector<u32> d = drawn;
+    Vector<u32> c = casters;
+    Vector<u8> dm = cached;  // the marks the counts carry, each word its own
+    Vector<u8> cm = cached;
+    const u32 wanted_built = static_cast<u32>(wanted(false));
+    const u32 wanted_cached = static_cast<u32>(wanted(true));
+    u32 dropped_drawn = 0;
+    u32 dropped_casters = 0;
+    if (wanted_built > capacity || wanted_cached > reference_capacity) {
+      u32 left[2] = {capacity, reference_capacity};
+      const auto take = [&](bool kind, u32 value) {
+        if (value > left[kind]) return false;
+        left[kind] -= value;
+        return true;
+      };
+      const u32 m = order.empty() ? n : static_cast<u32>(order.size() / 2);
+      const auto entry = [&](u32 k) { return order.empty() ? k : order[2 * k]; };
+      const auto rank = [&](u32 k) { return order.empty() ? 0u : order[2 * k + 1]; };
+      Vector<u8> visited(n, u8{0});
+      u32 begin = 0;
+      while (begin < m) {
+        u32 end = begin;
+        while (end < m && rank(end) == rank(begin)) {
+          const u32 i = entry(end);
+          if (i < n) {
+            if (!take(dm[i] != 0, d[i])) {
+              d[i] = c[i] = 0;
+              dm[i] = cm[i] = 0;
+              ++dropped_drawn;
+            }
+            visited[i] = 1;
+          }
+          ++end;
+        }
+        for (u32 k = begin; k < end; ++k) {
+          const u32 i = entry(k);
+          if (i >= n) continue;
+          if (!take(cm[i] != 0, c[i])) {
+            c[i] = 0;
+            cm[i] = 0;
+            ++dropped_casters;
+          }
+        }
+        begin = end;
+      }
+      for (u32 i = 0; i < n; ++i) {
+        if (visited[i] == 0 && d[i] + c[i] != 0) {
+          d[i] = c[i] = 0;
+          dm[i] = cm[i] = 0;
+          ++dropped_drawn;
+        }
+      }
+    }
+    counts.assign(u64{3} * n, 0u);  // a u64 count: (u32, u32) would read as two iterators
+    blas.assign(2 * n, u64{0});
+    u32 total[2] = {0, 0};
+    for (u32 i = 0; i < n; ++i) {
+      const bool kind = dm[i] != 0 || cm[i] != 0;
+      counts[i] = d[i];
+      counts[n + i] = c[i];
+      counts[2 * n + i] = total[kind];
+      blas[2 * i] = u64{d[i] + c[i]} | (u64{8} << 32);
+      blas[2 * i + 1] = (kind ? references : k_fake_addresses) + u64{total[kind]} * 8;
+      total[kind] += d[i] + c[i];
+    }
+    words[0] = total[0];
+    words[1] = wanted_built;
+    words[2] = dropped_drawn;
+    words[3] = dropped_casters;
+    words[4] = total[1];
+    words[5] = wanted_cached;
+  }
+};
+
+// Runs `c` through the five passes — the cached variants with a minimal cache when `c.references`
+// is not zero: instances of mesh 0 rigid are cached, every other is not — and says how many of the
+// kept counts, bottom-level records and count words differ from the rule's, and through `walked`
+// whether a frame past its capacity took the scan (1) or the one-thread rule (2); 0 if it fit.
+u32 run_ranges(const gfx::Device& device, gfx::ShaderModuleHandle module, const RangesCase& c,
+               std::string& label, u32& walked) {
+  std::string error;
+  const bool cached = c.references != 0;
+  RangesPasses passes;
+  REQUIRE_MESSAGE(passes.create(device, module, cached, &error), error);
+  constexpr gfx::BufferUsage k_address =
+      gfx::BufferUsage::Storage | gfx::BufferUsage::ShaderDeviceAddress;
+  gfx::BufferResource counts, blas, words, order, instances, bases, scratch, args, tables;
+  REQUIRE(gfx::create_buffer(device, sizeof(u32) * gfx::cluster_instance_count_words(c.n),
+                             k_address | gfx::BufferUsage::Indirect, true, counts, &error));
+  REQUIRE(gfx::create_buffer(device, gfx::k_cluster_blas_record_bytes * c.n, k_address, true, blas,
+                             &error));
+  REQUIRE(gfx::create_buffer(device, sizeof(u32) * gfx::k_cluster_record_count_words, k_address,
+                             true, words, &error));
+  std::memset(counts.mapped, 0, sizeof(u32) * gfx::cluster_instance_count_words(c.n));
+  std::memcpy(counts.mapped, c.drawn.data(), sizeof(u32) * c.n);
+  std::memcpy(static_cast<u32*>(counts.mapped) + c.n, c.casters.data(), sizeof(u32) * c.n);
+  std::memset(blas.mapped, 0xcd, gfx::k_cluster_blas_record_bytes * c.n);
+  std::memset(words.mapped, 0xcd, sizeof(u32) * gfx::k_cluster_record_count_words);
+  gfx::ClusterRecordParams params{};
+  params.instance_counts = counts.address;
+  params.record_count = words.address;
+  params.blas_records = blas.address;
+  params.clas_addresses = k_fake_addresses;
+  params.instance_count = c.n;
+  params.mode = gfx::cluster_records_mode(1, false);
+  params.capacity = c.capacity;
+  if (!c.order.empty()) {
+    Vector<u32> laid(2 + c.order.size(), 0u);
+    laid[0] = static_cast<u32>(c.order.size() / 2);
+    std::memcpy(laid.data() + 2, c.order.data(), c.order.size() * sizeof(u32));
+    REQUIRE(gfx::upload_buffer(device, laid.data(), laid.size() * sizeof(u32), k_address, order,
+                               &error));
+    params.drop_order = order.address;
+  }
+  if (cached) {
+    Vector<gfx::InstanceDesc> table(c.n);
+    for (u32 i = 0; i < c.n; ++i) {
+      table[i].mesh = c.cached[i] != 0 ? 0u : 1u;
+      table[i].deform = gfx::k_invalid_deform;
+    }
+    const u32 mesh_bases[2] = {0u, gfx::k_cluster_cache_empty};
+    Vector<u32> zeros(gfx::k_cluster_cache_scratch_words + gfx::k_cluster_cache_args_words, 0u);
+    REQUIRE(gfx::upload_buffer(device, table.data(), table.size() * sizeof(gfx::InstanceDesc),
+                               k_address, instances, &error));
+    REQUIRE(gfx::upload_buffer(device, mesh_bases, sizeof(mesh_bases), k_address, bases, &error));
+    REQUIRE(gfx::upload_buffer(device, zeros.data(),
+                               gfx::k_cluster_cache_scratch_words * sizeof(u32), k_address, scratch,
+                               &error));
+    REQUIRE(gfx::upload_buffer(device, zeros.data(), gfx::k_cluster_cache_args_words * sizeof(u32),
+                               k_address, args, &error));
+    gfx::ClusterCacheTables block{};
+    block.bases = bases.address;
+    block.references = c.references;
+    block.scratch = scratch.address;
+    block.args = args.address;
+    block.mesh_count = 2;
+    block.reference_capacity = c.reference_capacity;
+    REQUIRE(gfx::create_buffer(device, sizeof(block), k_address, true, tables, &error));
+    std::memcpy(tables.mapped, &block, sizeof(block));
+    params.instances = instances.address;
+    params.cache = tables.address;
+  }
+  REQUIRE(gfx::submit_immediate(
+      device, [&](gfx::CommandList cb) { passes.record(cb, params, counts); }, &error));
+  Vector<u32> expected;
+  Vector<u64> expected_blas;
+  u32 expected_words[6] = {};
+  c.reference(expected, expected_blas, expected_words);
+  u32 differing = 0;
+  const auto* got = static_cast<const u32*>(counts.mapped);
+  for (u32 w = 0; w < expected.size(); ++w)
+    differing += got[w] != expected[w];
+  differing +=
+      std::memcmp(blas.mapped, expected_blas.data(), gfx::k_cluster_blas_record_bytes * c.n) != 0;
+  differing += std::memcmp(words.mapped, expected_words, sizeof(expected_words)) != 0;
+  // The drop words' state (clas_records.slang, `k_drop_state`): past the capacity, and by the rule.
+  const u32 state = got[gfx::cluster_ranges_drop_args(c.n) / sizeof(u32) + 6];
+  walked = (state & 1u) == 0 ? 0u : (state & 2u) != 0 ? 2u : 1u;
+  const auto* got_words = static_cast<const u32*>(words.mapped);
+  label = "kept " + std::to_string(got_words[0]) + "/" + std::to_string(got_words[4]) + " of " +
+          std::to_string(got_words[1]) + "/" + std::to_string(got_words[5]) + ", dropped " +
+          std::to_string(got_words[2]) + " drawn and " + std::to_string(got_words[3]) +
+          " casters (the rule: " + std::to_string(expected_words[0]) + "/" +
+          std::to_string(expected_words[4]) + ", " + std::to_string(expected_words[2]) + ", " +
+          std::to_string(expected_words[3]) + ")";
+  for (gfx::BufferResource* b :
+       {&counts, &blas, &words, &order, &instances, &bases, &scratch, &args, &tables})
+    gfx::destroy_buffer(device, *b);
+  passes.destroy(device);
+  return differing;
+}
+
+// Counts from a fixed generator, many of them zero.
+RangesCase random_case(u32 n, u32 seed, bool with_cache) {
+  RangesCase c;
+  c.n = n;
+  u32 state = seed;
+  const auto next = [&](u32 bound) {
+    state = state * 1664525u + 1013904223u;
+    return (state >> 8) % bound;
+  };
+  c.drawn.resize(n);
+  c.casters.resize(n);
+  c.cached.resize(n);
+  for (u32 i = 0; i < n; ++i) {
+    c.drawn[i] = next(4) == 0 ? 0u : next(40);
+    c.casters[i] = next(3) == 0 ? next(12) : 0u;
+    c.cached[i] = with_cache && next(3) == 0 ? u8{1} : u8{0};
+  }
+  if (with_cache) c.references = 0x40000000ull;
+  return c;
+}
+
+// A drop order as the renderer lays one out: ranks rising, a rank's run of any length, every
+// instance named at most once — here most of them, in a scrambled order, and a few entries past
+// the instances, which name nothing.
+void random_order(RangesCase& c, u32 seed) {
+  u32 state = seed;
+  const auto next = [&](u32 bound) {
+    state = state * 22695477u + 1u;
+    return (state >> 8) % bound;
+  };
+  Vector<u32> named;
+  for (u32 i = 0; i < c.n; ++i) {
+    if (next(10) != 0) named.push_back(i);
+  }
+  for (u32 k = named.size(); k > 1; --k)
+    std::swap(named[k - 1], named[next(k)]);
+  for (u32 extra = 0; extra < 3 && named.size() + 3 <= c.n; ++extra)
+    named.push_back(c.n + extra * 7);  // past the instances: no instance, no items
+  u32 rank = 0;
+  for (u32 k = 0; k < named.size(); ++k) {
+    if (next(40) == 0) rank += 1 + next(3);
+    c.order.push_back(named[k]);
+    c.order.push_back(rank);
+  }
+}
+
+}  // namespace
+
 TEST_CASE("clas records: the ranges over many instances are the one-thread rule's, word for word") {
-  // The ranges are a device-wide scan in two dispatches (R106): `ranges_count_main` sums each block
-  // of 1,024 instances, a group a block, and `ranges_main`, over the same groups, has each group
-  // sum the block sums for the totals and its own offset and write its block's instances when the
-  // frame fits the set, and fall back to the one-thread rule on group 0 when it does not. Over
-  // 1,337 instances — two blocks, the second short, and four instances to a thread that do not
-  // divide them — and over 70,001, 69 blocks, with counts from a fixed generator, many of them
-  // zero, both paths must write exactly what the rule below writes: the kept counts, each
-  // instance's first record, its bottom-level record, and the four count words.
+  // The ranges are a device-wide scan (R106): `ranges_count_main` sums each block of 1,024
+  // instances, a group a block, and `ranges_main`, over the same groups, has each group sum the
+  // block sums for the totals and its own offset and write its block when the frame fits the set;
+  // past the capacity three more passes, dispatched indirectly, walk the order and write what it
+  // kept. Over 1,337 instances — two blocks, the second short, and four instances to a thread that
+  // do not divide them — and over 70,001, 69 blocks, with counts from a fixed generator, many of
+  // them zero, every capacity from room to spare to a third of what is wanted must write exactly
+  // what the rule writes: the kept counts, each instance's first record, its bottom-level record,
+  // and the count words. Here with no order: the instances in their own order, one rank.
   gfx::Device device;
   if (!gfx_test::open_device(device)) return;
   std::string error;
   gfx::ShaderModuleHandle module = gfx::create_shader_module(
       device, shaders::k_clas_records_spirv, shaders::k_clas_records_spirv_size, &error);
   REQUIRE(module.valid());
-  gfx::ComputePipeline count_pass, ranges;
-  REQUIRE_MESSAGE(
-      gfx::create_compute_pipeline(device, module, "ranges_count_main", {},
-                                   sizeof(gfx::ClusterRecordParams), count_pass, &error),
-      error);
-  REQUIRE_MESSAGE(gfx::create_compute_pipeline(device, module, "ranges_main", {},
-                                               sizeof(gfx::ClusterRecordParams), ranges, &error),
-                  error);
   u32 differing = 0;
-  for (const u32 k_many : {1337u, 70001u}) {
-    Vector<u32> counts(u64{3} * k_many, 0u);  // drawn, casters, firsts
-    u32 state = 12345u;
-    const auto next = [&](u32 bound) {
-      state = state * 1664525u + 1013904223u;
-      return (state >> 8) % bound;
-    };
-    u32 wanted = 0;
-    for (u32 i = 0; i < k_many; ++i) {
-      counts[i] = next(4) == 0 ? 0u : next(40);
-      counts[k_many + i] = next(3) == 0 ? next(12) : 0u;
-      wanted += counts[i] + counts[k_many + i];
-    }
-    constexpr gfx::BufferUsage k_address =
-        gfx::BufferUsage::Storage | gfx::BufferUsage::ShaderDeviceAddress;
-    gfx::BufferResource instance_counts, blas_records, record_count;
-    REQUIRE(gfx::create_buffer(device, sizeof(u32) * gfx::cluster_instance_count_words(k_many),
-                               k_address, true, instance_counts, &error));
-    REQUIRE(gfx::create_buffer(device, gfx::k_cluster_blas_record_bytes * k_many, k_address, true,
-                               blas_records, &error));
-    REQUIRE(gfx::create_buffer(device, sizeof(u32) * gfx::k_cluster_record_count_words, k_address,
-                               true, record_count, &error));
-
-    // The rule, on the CPU: every instance kept when everything fits; otherwise drawn clusters
-    // first, instance by instance, a whole instance or none, then the casters from what is left.
-    const auto reference = [&](u32 capacity, Vector<u32>& out, u64* blas, u32* words) {
-      out = counts;
-      u32* drawn = out.data();
-      u32* casters = out.data() + k_many;
-      u32* first = out.data() + 2 * k_many;
-      u32 left = capacity;
-      u32 dropped_drawn = 0;
-      u32 dropped_casters = 0;
-      if (wanted > capacity) {
-        for (u32 i = 0; i < k_many; ++i) {
-          if (drawn[i] <= left) {
-            left -= drawn[i];
-          } else {
-            drawn[i] = 0;
-            casters[i] = 0;
-            ++dropped_drawn;
-          }
-        }
-        for (u32 i = 0; i < k_many; ++i) {
-          if (casters[i] <= left) {
-            left -= casters[i];
-          } else {
-            casters[i] = 0;
-            ++dropped_casters;
-          }
-        }
-      }
-      u32 total = 0;
-      for (u32 i = 0; i < k_many; ++i) {
-        first[i] = total;
-        blas[u64{i} * 2] = u64{drawn[i] + casters[i]} | (u64{8} << 32);
-        blas[u64{i} * 2 + 1] = k_fake_addresses + u64{total} * 8;
-        total += drawn[i] + casters[i];
-      }
-      words[0] = total;
-      words[1] = wanted;
-      words[2] = dropped_drawn;
-      words[3] = dropped_casters;
-    };
-
-    const u32 capacities[4] = {wanted + 100, wanted, wanted - 1, wanted / 3};
-    for (const u32 capacity : capacities) {
-      std::memcpy(instance_counts.mapped, counts.data(), counts.size() * sizeof(u32));
-      std::memset(blas_records.mapped, 0xcd, gfx::k_cluster_blas_record_bytes * k_many);
-      std::memset(record_count.mapped, 0xcd, sizeof(u32) * gfx::k_cluster_record_count_words);
-      gfx::ClusterRecordParams params{};
-      params.instance_counts = instance_counts.address;
-      params.record_count = record_count.address;
-      params.blas_records = blas_records.address;
-      params.clas_addresses = k_fake_addresses;
-      params.instance_count = k_many;
-      params.mode = gfx::cluster_records_mode(1, false);
-      params.capacity = capacity;
-      REQUIRE(gfx::submit_immediate(
-          device,
-          [&](gfx::CommandList cb) {
-            VkMemoryBarrier2 barrier{};
-            barrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2;
-            barrier.srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
-            barrier.srcAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT;
-            barrier.dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
-            barrier.dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT;
-            VkDependencyInfo dependency{};
-            dependency.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
-            dependency.memoryBarrierCount = 1;
-            dependency.pMemoryBarriers = &barrier;
-            for (const gfx::ComputePipeline* pass : {&count_pass, &ranges}) {
-              vkCmdPipelineBarrier2(gfx::vk::native(cb), &dependency);
-              cb.bind_pipeline(gfx::BindPoint::Compute, pass->pipeline);
-              cb.push_constants(pass->layout, gfx::ShaderStage::Compute, 0, sizeof(params),
-                                &params);
-              cb.dispatch(gfx::cluster_ranges_groups(k_many), 1, 1);
-            }
-          },
-          &error));
-      Vector<u32> expected;
-      Vector<u64> expected_blas(u64{2} * k_many, 0u);
-      u32 expected_words[4] = {};
-      reference(capacity, expected, expected_blas.data(), expected_words);
-      u32 here = 0;
-      here +=
-          std::memcmp(instance_counts.mapped, expected.data(), expected.size() * sizeof(u32)) != 0;
-      here += std::memcmp(blas_records.mapped, expected_blas.data(),
-                          gfx::k_cluster_blas_record_bytes * k_many) != 0;
-      here += std::memcmp(record_count.mapped, expected_words, sizeof(expected_words)) != 0;
-      CHECK_MESSAGE(here == 0,
-                    k_many << " instances, capacity " << capacity << " of " << wanted << " wanted");
+  for (const u32 n : {1337u, 70001u}) {
+    RangesCase c = random_case(n, 12345u, false);
+    const u32 wanted = static_cast<u32>(c.wanted(false));
+    for (const u32 capacity : {wanted + 100, wanted, wanted - 1, wanted / 3}) {
+      c.capacity = capacity;
+      std::string label;
+      u32 walked = 0;
+      const u32 here = run_ranges(device, module, c, label, walked);
+      CHECK_MESSAGE(here == 0, n << " instances, capacity " << capacity << ": " << label);
+      CHECK(walked == (capacity < wanted ? 1u : 0u));
       differing += here;
     }
-    MESSAGE(k_many << " instances wanting " << wanted
-                   << " records: the blocks' scan and the one-thread rule write the reference's "
-                      "words at four capacities");
-    for (gfx::BufferResource* b : {&instance_counts, &blas_records, &record_count})
-      gfx::destroy_buffer(device, *b);
+    MESSAGE(n << " instances wanting " << wanted
+              << " records: the blocks' scan and the walk write the rule's words at four "
+                 "capacities");
   }
   CHECK(differing == 0);
-  gfx::destroy_compute_pipeline(device, count_pass);
-  gfx::destroy_compute_pipeline(device, ranges);
+  gfx::destroy_shader_module(device, module);
+  device.destroy();
+}
+
+TEST_CASE("clas records: past the capacity the walk keeps what the rule keeps, rank by rank") {
+  // **The capacity rule as a scan** (R106; renderer.md, "The ray tracing chain's memory"). Until
+  // R106 a frame past its capacity walked every instance on one thread — 34 to 44 ms of the forest
+  // proof of concept's chain — and now it lays the drop order out as one sequence of drawn and
+  // caster items, takes whole blocks of it until the crossing, and walks item by item only blocks
+  // that keep part of themselves. Here against the rule on the CPU, word for word: a drop order of
+  // ranks rising in runs of every length, a tenth of the instances not named (they keep nothing)
+  // and entries past the instances (which name nothing); the cluster cache's instances spending
+  // their own capacity beside the frame's; capacities from room to spare to almost none, either
+  // kind or both short; and an order whose ranks fall, which the scan does not take and the rule
+  // walks on one thread as it always did.
+  gfx::Device device;
+  if (!gfx_test::open_device(device)) return;
+  std::string error;
+  gfx::ShaderModuleHandle module = gfx::create_shader_module(
+      device, shaders::k_clas_records_spirv, shaders::k_clas_records_spirv_size, &error);
+  REQUIRE(module.valid());
+  u32 differing = 0;
+  u32 cases = 0;
+  for (const u32 n : {700u, 5003u, 70001u}) {
+    for (const bool with_cache : {false, true}) {
+      RangesCase c = random_case(n, 777u + n, with_cache);
+      random_order(c, 31u * n + (with_cache ? 1u : 0u));
+      const u32 built = static_cast<u32>(c.wanted(false));
+      const u32 refs = static_cast<u32>(c.wanted(true));
+      const u32 capacities[5][2] = {{built + 5, refs + 5},
+                                    {built - built / 4, refs + 5},
+                                    {built + 5, refs / 2},
+                                    {built / 2, refs / 3},
+                                    {7, 3}};
+      for (const auto& capacity : capacities) {
+        if (!with_cache && capacity[1] != refs + 5 && capacity[0] == built + 5) continue;
+        c.capacity = capacity[0];
+        c.reference_capacity = capacity[1];
+        std::string label;
+        u32 walked = 0;
+        const u32 here = run_ranges(device, module, c, label, walked);
+        CHECK_MESSAGE(here == 0, n << " instances" << (with_cache ? " with a cache" : "")
+                                   << ", capacity " << capacity[0] << "/" << capacity[1] << ": "
+                                   << label);
+        const bool over = capacity[0] < built || (with_cache && capacity[1] < refs);
+        CHECK(walked == (over ? 1u : 0u));  // the scan, never the one-thread rule
+        if (n == 70001u && capacity[0] == built / 2) MESSAGE(n << " instances: " << label);
+        differing += here;
+        ++cases;
+      }
+    }
+  }
+  // Ranks that fall: the scan's precondition broken, the one-thread rule takes the frame.
+  {
+    RangesCase c = random_case(3001u, 99u, true);
+    random_order(c, 5u);
+    std::swap(c.order[1], c.order[c.order.size() - 1]);  // the first entry's rank past the last's
+    c.order[1] += 1000;
+    c.capacity = static_cast<u32>(c.wanted(false) / 2);
+    c.reference_capacity = static_cast<u32>(c.wanted(true) / 2);
+    std::string label;
+    u32 walked = 0;
+    const u32 here = run_ranges(device, module, c, label, walked);
+    CHECK_MESSAGE(here == 0, "falling ranks: " << label);
+    CHECK(walked == 2u);  // the one-thread rule
+    differing += here;
+    ++cases;
+  }
+  CHECK(differing == 0);
+  MESSAGE(cases << " cases past or at the capacity: the walk writes the rule's words in every one");
   gfx::destroy_shader_module(device, module);
   device.destroy();
 }

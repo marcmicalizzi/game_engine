@@ -240,9 +240,13 @@ inline constexpr u64 k_cluster_blas_record_bytes = 16;
 //                   sum of what it holds into each instance's dense record base, the total into
 //                   `record_count`, and one 16-byte bottom-level record per instance pointing at
 //                   that instance's run of CLAS addresses. Both dispatch
-//                   `cluster_ranges_groups(instance_count)` groups; a frame past its capacity takes
-//                   the rule below on one thread of the second. With a cache, the `_cached_` entry
-//                   points of the two and of the emit pass (`ClusterRecordParams::cache`).
+//                   `cluster_ranges_groups(instance_count)` groups. A frame past its capacity takes
+//                   the rule below as three more passes, `ranges_drop_main` (one workgroup: the
+//                   walk), `ranges_kept_count_main` and `ranges_kept_main`, dispatched indirectly
+//                   from `cluster_ranges_drop_args` and `cluster_ranges_kept_args` in
+//                   `instance_counts`, which a frame that fits leaves empty. With a cache, the
+//                   `_cached_` entry points of all five and of the emit pass
+//                   (`ClusterRecordParams::cache`).
 //   `emit_main`     one thread per pair slot: move the kept entries down to the dense `records`
 //                   array — an instance's drawn clusters first, then its casters — and write the
 //                   64-byte CLAS build record there. A record's base geometry index is the entry's
@@ -266,8 +270,9 @@ inline constexpr u64 k_cluster_blas_record_bytes = 16;
 //
 // `instance_counts` is three words an instance: the drawn entries, the casters (both counted by
 // `records_main`, and must be zeroed before it; `ranges_main` rewrites each to what was kept, 0 or
-// all of it), and the dense record base; then two words a block of `k_cluster_ranges_block`
-// instances, the ranges' block sums (`cluster_instance_count_words` is the whole). A deformed
+// all of it), and the dense record base; then the ranges' scratch — block sums, the drop words and
+// the order's sequence past the capacity (`k_cluster_ranges_block`; `cluster_instance_count_words`
+// is the whole). The buffer is read as indirect dispatch arguments too. A deformed
 // instance's record points at the frame's deformed-vertex pool (`MeshDesc::deform_pool`) rather
 // than `vertices`, and with the instantiate mode the emit pass writes instantiate records naming
 // each cluster's template
@@ -459,17 +464,28 @@ static_assert(sizeof(TlasReferenceParams) == 88);
 inline constexpr u32 k_tlas_references_workgroup = 64;
 inline constexpr u32 k_cluster_records_workgroup = 64;
 inline constexpr u32 k_cluster_records_instantiate = 1u << 16;  // ClusterRecordParams::mode
-// The ranges' scan (clas_records.slang, `ranges_count_main` and `ranges_main`): a block of 1,024
-// instances to a group of 256 threads, four contiguous instances a thread, and two words a block
-// past `instance_counts`' three thirds.
+// The ranges' scan (clas_records.slang, `ranges_count_main` and `ranges_main`, and past the
+// capacity `ranges_drop_main`, `ranges_kept_count_main` and `ranges_kept_main`): a block of 1,024
+// instances to a group of 256 threads, four contiguous instances a thread. `instance_counts` holds,
+// past its three thirds, per group of the scan (`cluster_ranges_groups`) two words of block sums,
+// two of kept block sums and four of the order's sequence sums, then eight drop words — the drop
+// pass's indirect dispatch, the kept passes', and the state — then the order's sequence, two items
+// of four words an instance. `cluster_ranges_drop_args` and `cluster_ranges_kept_args` are the two
+// dispatches' byte offsets in it.
 inline constexpr u32 k_cluster_ranges_workgroup = 256;
 inline constexpr u32 k_cluster_ranges_block = 1024;
 constexpr u32 cluster_ranges_groups(u32 instance_count) noexcept {
   const u32 blocks = (instance_count + k_cluster_ranges_block - 1) / k_cluster_ranges_block;
   return blocks > 0 ? blocks : 1u;
 }
+constexpr u64 cluster_ranges_drop_args(u32 instance_count) noexcept {
+  return (u64{instance_count} * 3 + u64{8} * cluster_ranges_groups(instance_count)) * 4;
+}
+constexpr u64 cluster_ranges_kept_args(u32 instance_count) noexcept {
+  return cluster_ranges_drop_args(instance_count) + 12;
+}
 constexpr u64 cluster_instance_count_words(u32 instance_count) noexcept {
-  return u64{instance_count} * 3 + u64{2} * cluster_ranges_groups(instance_count);
+  return u64{instance_count} * 11 + u64{8} * cluster_ranges_groups(instance_count) + 8;
 }
 // `record_count`'s words: 0 built (what the frame's own CLAS build reads as its count), 1 wanted, 2
 // instances that lost their drawn clusters, 3 instances that lost their casters; with a cache, 4

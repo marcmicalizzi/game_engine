@@ -4593,12 +4593,14 @@ bool GpuScene::lay_out_ray_tracing(std::string* error) {
                        tlas_bytes.data());
   bool ok = gfx::create_buffer(device, u64{rt_union_clusters_} * sizeof(u32), k_address, false,
                                slots, error) &&
-            // Three words an instance: its drawn clusters, its casters, then its dense record base,
-            // and two a block of 1,024 instances for the ranges' scan (R106;
-            // `gfx::ClusterRecordParams::instance_counts`).
+            // Three words an instance: its drawn clusters, its casters, then its dense record base;
+            // then the ranges' scratch, eight more words an instance and eight a block of 1,024,
+            // which a frame past its capacity lays the drop order out in and dispatches the passes
+            // after the walk from (R106; `gfx::ClusterRecordParams::instance_counts`).
             gfx::create_buffer(
                 device, gfx::cluster_instance_count_words(rt_instance_slots_) * sizeof(u32),
-                k_address | gfx::BufferUsage::TransferDst, false, instance_counts, error) &&
+                k_address | gfx::BufferUsage::TransferDst | gfx::BufferUsage::Indirect, false,
+                instance_counts, error) &&
             // A dynamic scene's set is built over every slot of the capacity, so the records past
             // the frame's instances are cleared to empty structures every frame.
             gfx::create_buffer(device, gfx::k_cluster_blas_record_bytes * rt_instance_slots_,

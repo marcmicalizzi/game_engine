@@ -790,11 +790,14 @@ class SceneRenderer {
     gfx::ComputePipeline deform_alloc_place;
     gfx::ComputePipeline hiz;
     gfx::ComputePipeline records;
-    // clas_records.slang's ranges (two dispatches) and emit pass, each [0] for a frame with no
-    // cache and [1] for one with (R106: the plain variant never asks whether an instance is
-    // cached).
+    // clas_records.slang's ranges (two dispatches, and three more past the capacity) and emit
+    // pass, each [0] for a frame with no cache and [1] for one with (R106: the plain variant never
+    // asks whether an instance is cached).
     gfx::ComputePipeline record_count[2];
     gfx::ComputePipeline record_ranges[2];
+    gfx::ComputePipeline record_drop[2];
+    gfx::ComputePipeline record_kept_count[2];
+    gfx::ComputePipeline record_kept[2];
     gfx::ComputePipeline record_emit[2];
     gfx::ComputePipeline cache[4];         // the cluster cache's scan, evict, assign, references
     gfx::ComputePipeline tlas_references;  // tlas_references.slang: the BLAS addresses in

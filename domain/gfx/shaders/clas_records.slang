@@ -17,7 +17,9 @@
 //                 block of 1,024: each block's sums, then what the set's capacity keeps (below),
 //                 the prefix sum of it, the total record count the CLAS build reads from the
 //                 device, and one 16-byte bottom-level record per instance over that instance's run
-//                 of CLAS addresses.
+//                 of CLAS addresses — and past the capacity three more passes, dispatched only
+//                 then: the walk (ranges_drop_main) and the kept instances' scan
+//                 (ranges_kept_count_main, ranges_kept_main), under "past the capacity" below.
 //   emit_main     one thread per pair slot, moving the kept entries down into the dense
 //                 `records` array — an instance's drawn clusters, then its casters — and writing
 //                 the 64-byte CLAS build record there. A record's cluster id and base geometry
@@ -25,7 +27,7 @@
 //                 cluster} the rasterizer drew, so the ray-traced picture writes the same pair
 //                 (ray_visibility.slang).
 //
-// The last three come in two variants (R106): the plain entry points for a frame with no cache,
+// All but the first come in two variants (R106): the plain entry points for a frame with no cache,
 // which never read an instance record to ask whether it is cached, and their `_cached_` twins for
 // a frame with one (the resident cluster structure cache, at the end of this file).
 //
@@ -313,9 +315,9 @@ void records_main(uint3 thread_id : SV_DispatchThreadID) {
 // desert's tens of thousands of ring slots made a measurable share of its `rt` pass (renderer.md,
 // "The resident cluster structure cache", R106).
 //
-// Only a frame that wants more than the set holds takes the rule further below, on group 0's one
-// thread, because it is the one place that sees every instance's count in order, which is what
-// "whole instances, in order" needs; it writes what it always wrote.
+// A frame that wants more than the set holds takes the rule further below ("past the capacity"),
+// which was one thread over every instance until R106 and is now a scan of its own; it writes what
+// it always wrote.
 //
 // **Two variants of each pass** (the generic `kCache`): `ranges_count_main`/`ranges_main` for a
 // frame with no cache, which never read an instance record, keep one sum and never mark a count —
@@ -402,7 +404,13 @@ void ranges_count<let kCache : int>(uint group, uint t) {
     } else if (t < 6) {
       record_count[k_count_misses + t] = 0;
     }
+    // The drop words: no frame is past its capacity until `ranges_main` says so, and the passes
+    // after it dispatch nothing (`x` 0, `y` and `z` 1).
+    if (t < 8) drop_words()[t] = t == 1 || t == 2 || t == 4 || t == 5 ? 1u : 0u;
   }
+  // The sequence's block sums, which `ranges_main` adds into past the capacity: four words a group
+  // (the sequence has at most twice the instances).
+  if (t < 4) sequence_sums()[4 * group + t] = 0;
   const uint begin = group * k_ranges_block + t * k_ranges_each;
   uint own = 0;
   uint own_cached = 0;
@@ -516,34 +524,183 @@ void ranges<let kCache : int>(uint group, uint t) {
     }
     return;
   }
-  if (group != 0 || t != 0) return;
-  // **Nearest first, and within one distance drawn clusters before casters** (renderer.md, "The
-  // ray tracing chain's memory"). The order is a rank at a time — the prefix, then a streamed
-  // world's rings inside out, each by tile key and slot, which the CPU lays out with the tables —
-  // and within a rank the drawn clusters instance by instance, then the casters: an instance that
-  // does not fit keeps nothing — its casters go with its drawn clusters, since they would cast a
-  // part of its shadow and not the rest — and the next one is tried, so a large instance cannot
-  // starve every small one behind it. So what a frame past its capacity loses is the farthest
-  // ring's casters, then its instances, then the next ring's, never a near tree before a far one,
-  // and the same instances whatever order the atomics ran in. Without an order (a scene read
-  // whole) the instances are one rank in instance order, as before. A cached instance spends the
-  // references' capacity and any other the frame's own (renderer.md, "The resident cluster
-  // structure cache"), by the same rule; an instance dropped loses its counts and with them its
-  // mark, and keeps nothing of either kind.
+  // **Past the capacity** (R106): the rule below as a scan, the one-thread walk only past the
+  // crossing. This dispatch lays the order out as the walk spends it — every order entry's drawn
+  // item and caster item at their places in one sequence (`sequence_items`), each rank's drawn
+  // items and then its casters — and sums each 1,024 items of it; `ranges_drop_main` walks the
+  // sequence; `ranges_kept_count_main` and `ranges_kept_main` write what was kept.
+  over_capacity<kCache>(group, t);
+}
+
+// ---- past the capacity (R106) --------------------------------------------------------------------
+//
+// **Nearest first, and within one distance drawn clusters before casters** (renderer.md, "The
+// ray tracing chain's memory"). The order is a rank at a time — the prefix, then a streamed
+// world's rings inside out, each by tile key and slot, which the CPU lays out with the tables —
+// and within a rank the drawn clusters instance by instance, then the casters: an instance that
+// does not fit keeps nothing — its casters go with its drawn clusters, since they would cast a
+// part of its shadow and not the rest — and the next one is tried, so a large instance cannot
+// starve every small one behind it. So what a frame past its capacity loses is the farthest
+// ring's casters, then its instances, then the next ring's, never a near tree before a far one,
+// and the same instances whatever order the atomics ran in. Without an order (a scene read
+// whole) the instances are one rank in instance order, as before. A cached instance spends the
+// references' capacity and any other the frame's own (renderer.md, "The resident cluster
+// structure cache"), by the same rule; an instance dropped loses its counts and with them its
+// mark, and keeps nothing of either kind.
+//
+// That rule is `drop_serial` below, one thread over every instance, and was the whole of it until
+// R106: 34 to 44 ms of the forest proof of concept's chain at 11520×2160, whose ground alone
+// outgrows the budget every frame. It is still what a frame past its capacity computes, word for
+// word, by four passes:
+//
+//   1. `ranges_main` (above), every group: each order entry's **drawn item** and **caster item**
+//      at their places in the sequence the rule spends — a rank `[b, e)` of the order holds places
+//      `[2b, 2e)`, its drawn items first (`b + k`), then its casters (`e + k`), the rank's bounds
+//      found by a binary search over the order's ranks, which are sorted — and each 1,024 places'
+//      sums per kind. An instance the order names is marked visited.
+//   2. `ranges_drop_main`, one workgroup: the walk. Until the first item that does not fit nothing
+//      is dropped, so whole blocks of the sequence are taken from their sums alone, 256 blocks a
+//      look; from there a block at a time: a kind whose block fits is taken whole, one whose
+//      smallest item does not fit loses every item of it, and only a block that keeps part of
+//      itself is walked item by item, by one thread, over shared memory. After the crossing the
+//      room left is less than the item that crossed it, so those walks are few.
+//   3. `ranges_kept_count_main`: an instance the order did not name is dropped (and counted), and
+//      each block of instances sums what it kept.
+//   4. `ranges_kept_main`: the prefix sums of what was kept, the dense bases and the bottom-level
+//      records, as the fitting frame's `ranges_main` writes them.
+//
+// The last three are dispatched indirectly from the drop words, which `ranges_count_main` empties
+// and `ranges_main` fills only past the capacity, so a frame that fits dispatches none of them. An
+// order whose ranks are not sorted, or that names more entries than there are instances — neither
+// of which the renderer writes — falls back to `drop_serial`, on `ranges_drop_main`'s one thread.
+// The order names an instance at most once (`rt_drop_order` writes each slot once).
+
+static const uint k_count_visited = 0x80000000u;
+static const uint k_drop_over = 1;    // the frame is past its capacity
+static const uint k_drop_serial = 2;  // and its order is one the scan does not take
+static const uint k_item_caster = 1;  // a sequence item's flags
+static const uint k_item_cached = 2;
+
+// The words past the block sums (gfx::cluster_instance_count_words): the kept block sums, two a
+// block; the sequence's block sums, two a block of 1,024 items (at most twice the instance
+// blocks); the drop words — the drop pass's dispatch, the kept passes' dispatch, the state; then
+// the sequence, four words an item, two items an order entry.
+uint* kept_sums() { return block_sums() + 2 * max(ranges_blocks(), 1u); }
+uint* sequence_sums() { return kept_sums() + 2 * max(ranges_blocks(), 1u); }
+uint* drop_words() { return sequence_sums() + 4 * max(ranges_blocks(), 1u); }
+uint* sequence_items() { return drop_words() + 8; }
+static const uint k_drop_args = 0;       // three words: the drop pass's dispatch
+static const uint k_drop_kept_args = 3;  // three words: the kept passes' dispatch
+static const uint k_drop_state = 6;
+
+uint order_count() {
+  uint* order = (uint*)g_params.drop_order;
+  return g_params.drop_order != 0 ? order[0] : g_params.instance_count;
+}
+uint order_instance(uint k) {
+  uint* order = (uint*)g_params.drop_order;
+  return g_params.drop_order != 0 ? order[2 + 2 * k] : k;
+}
+uint order_rank(uint k) {
+  uint* order = (uint*)g_params.drop_order;
+  return g_params.drop_order != 0 ? order[2 + 2 * k + 1] : 0u;
+}
+
+// The first order entry whose rank is at least `rank` (`above` false), or more than it (true).
+uint rank_bound(uint rank, uint m, bool above) {
+  uint lo = 0;
+  uint hi = m;
+  while (lo < hi) {
+    const uint mid = (lo + hi) / 2;
+    const uint r = order_rank(mid);
+    if (above ? r <= rank : r < rank) {
+      lo = mid + 1;
+    } else {
+      hi = mid;
+    }
+  }
+  return lo;
+}
+
+void over_capacity<let kCache : int>(uint group, uint t) {
+  uint* drawn = drawn_counts();
+  uint* casters = caster_counts();
+  uint* words = drop_words();
+  const uint n = g_params.instance_count;
+  const uint m = order_count();
+  const uint groups = max(ranges_blocks(), 1u);
+  if (group == 0 && t == 0) {
+    Atomic<uint>* state = (Atomic<uint>*)(words + k_drop_state);
+    state.or(m > n ? k_drop_over | k_drop_serial : k_drop_over);
+    words[k_drop_args] = 1;
+    words[k_drop_kept_args] = groups;
+  }
+  if (m > n) return;  // more entries than the sequence has room for: the serial rule takes it
+  uint* items = sequence_items();
+  Atomic<uint>* seq_sums = (Atomic<uint>*)sequence_sums();
+  const uint stride = groups * k_ranges_threads;
+  for (uint k = group * k_ranges_threads + t; k < m; k += stride) {
+    const uint i = order_instance(k);
+    const uint rank = order_rank(k);
+    if (k > 0 && order_rank(k - 1) > rank) {
+      ((Atomic<uint>*)(words + k_drop_state)).or(k_drop_serial);
+    }
+    const uint b = g_params.drop_order != 0 ? rank_bound(rank, m, false) : 0u;
+    const uint e = g_params.drop_order != 0 ? rank_bound(rank, m, true) : m;
+    uint d = 0;
+    uint c = 0;
+    uint flags = 0;
+    if (i < n) {
+      d = drawn[i];
+      c = casters[i];
+      if (kCache != 0 && (d & k_count_cached) != 0) flags = k_item_cached;
+      drawn[i] = d | k_count_visited;
+    }
+    d &= k_count_mask;
+    c &= k_count_mask;
+    const uint drawn_at = min(b + k, 2 * m - 1);
+    const uint caster_at = min(e + k, 2 * m - 1);
+    const uint instance = i < n ? i : 0xffffffffu;
+    uint* item = items + 4 * drawn_at;
+    item[0] = d;
+    item[1] = instance;
+    item[2] = flags;
+    item[3] = caster_at;
+    item = items + 4 * caster_at;
+    item[0] = c;
+    item[1] = instance;
+    item[2] = flags | k_item_caster;
+    item[3] = 0xffffffffu;
+    const uint kind = (flags & k_item_cached) != 0 ? 1u : 0u;
+    if (d != 0) seq_sums[2 * (drawn_at / k_ranges_block) + kind].add(d);
+    if (c != 0) seq_sums[2 * (caster_at / k_ranges_block) + kind].add(c);
+  }
+}
+
+// The rule on one thread, over the order and then every instance, as it was before R106: what an
+// order the scan does not take falls back to.
+void drop_serial<let kCache : int>(uint wanted, uint cached_wanted) {
+  uint* drawn = drawn_counts();
+  uint* casters = caster_counts();
+  uint* first = instance_first();
+  BlasRecord* blas = (BlasRecord*)g_params.blas_records;
+  uint* record_count = (uint*)g_params.record_count;
+  const uint n = g_params.instance_count;
+  const uint64_t cached_references = kCache != 0 ? cache_tables()->references : 0;
   uint left = g_params.capacity;
   uint left_cached = reference_capacity();
   uint dropped_drawn = 0;
   uint dropped_casters = 0;
-  const uint k_visited = 0x80000000u;
-  uint* order = (uint*)g_params.drop_order;
-  const uint order_count = g_params.drop_order != 0 ? order[0] : g_params.instance_count;
+  // `over_capacity` marked the instances it reached; this walk marks its own.
+  for (uint i = 0; i < n; ++i)
+    drawn[i] &= ~k_count_visited;
+  const uint m = order_count();
   uint begin_rank = 0;
-  while (begin_rank < order_count) {
-    const uint rank = g_params.drop_order != 0 ? order[2 + 2 * begin_rank + 1] : 0u;
+  while (begin_rank < m) {
+    const uint rank = order_rank(begin_rank);
     uint end_rank = begin_rank;
-    while (end_rank < order_count &&
-           (g_params.drop_order == 0 || order[2 + 2 * end_rank + 1] == rank)) {
-      const uint i = g_params.drop_order != 0 ? order[2 + 2 * end_rank] : end_rank;
+    while (end_rank < m && (g_params.drop_order == 0 || order_rank(end_rank) == rank)) {
+      const uint i = order_instance(end_rank);
       if (i < n) {
         const uint word = drawn[i];
         const bool cached = kCache != 0 && (word & k_count_cached) != 0;
@@ -552,12 +709,12 @@ void ranges<let kCache : int>(uint group, uint t) {
           casters[i] = 0;
           ++dropped_drawn;
         }
-        drawn[i] |= k_visited;
+        drawn[i] |= k_count_visited;
       }
       ++end_rank;
     }
     for (uint k = begin_rank; k < end_rank; ++k) {
-      const uint i = g_params.drop_order != 0 ? order[2 + 2 * k] : k;
+      const uint i = order_instance(k);
       if (i >= n) continue;
       const uint word = casters[i];
       const bool cached = kCache != 0 && (word & k_count_cached) != 0;
@@ -571,8 +728,8 @@ void ranges<let kCache : int>(uint group, uint t) {
   // An instance the order did not name builds nothing (and is counted), so the build never holds
   // more than the capacity whatever the order says.
   for (uint i = 0; i < n; ++i) {
-    if ((drawn[i] & k_visited) != 0) {
-      drawn[i] &= ~k_visited;
+    if ((drawn[i] & k_count_visited) != 0) {
+      drawn[i] &= ~k_count_visited;
     } else if (((drawn[i] | casters[i]) & k_count_mask) != 0) {
       drawn[i] = 0;
       casters[i] = 0;
@@ -581,7 +738,7 @@ void ranges<let kCache : int>(uint group, uint t) {
   }
   uint total = 0;
   uint cached_total = 0;
-  for (uint i = 0; i < g_params.instance_count; ++i) {
+  for (uint i = 0; i < n; ++i) {
     const bool cached = kCache != 0 && ((drawn[i] | casters[i]) & k_count_cached) != 0;
     drawn[i] &= k_count_mask;
     casters[i] &= k_count_mask;
@@ -607,6 +764,283 @@ void ranges<let kCache : int>(uint group, uint t) {
   record_count[k_count_refs_wanted] = cached_wanted;
 }
 
+// The walk's block of the sequence, in shared memory, and what the group says about it.
+groupshared uint4 g_block_items[k_ranges_block];
+groupshared uint g_walk[4];  // the room left of each kind after a serial walk, then a flag
+
+// An item that does not fit: a drawn item takes its instance's casters with it — zeroes the
+// instance's counts, keeping it visited, and its caster item, which comes later in the sequence
+// (in this block's shared copy, or the sequence itself) — and a caster item only the casters.
+void drop_item(uint4 item, uint block_base, inout uint dropped_drawn, inout uint dropped_casters) {
+  const uint i = item.y;
+  if ((item.z & k_item_caster) != 0) {
+    caster_counts()[i] = 0;
+    ++dropped_casters;
+    return;
+  }
+  drawn_counts()[i] = k_count_visited;
+  caster_counts()[i] = 0;
+  ++dropped_drawn;
+  const uint partner = item.w;
+  if (partner >= block_base && partner < block_base + k_ranges_block) {
+    g_block_items[partner - block_base].x = 0;
+  } else {
+    sequence_items()[4 * partner] = 0;
+  }
+}
+
+void ranges_drop<let kCache : int>(uint t) {
+  uint* words = drop_words();
+  const uint state = words[k_drop_state];
+  if ((state & k_drop_over) == 0) return;
+  // The totals again, from the instance blocks' sums, for the words.
+  const uint blocks = ranges_blocks();
+  uint* sums = block_sums();
+  uint4 mine = uint4(0u, 0u, 0u, 0u);
+  for (uint j = t; j < blocks; j += k_ranges_threads) {
+    mine.x += sums[2 * j];
+    mine.y += kCache != 0 ? sums[2 * j + 1] : 0u;
+  }
+  const uint4 all = group_sum(t, mine);
+  if ((state & k_drop_serial) != 0) {
+    if (t == 0) drop_serial<kCache>(all.x, all.y);
+    return;
+  }
+  const uint item_count = 2 * order_count();
+  const uint sequence_blocks = (item_count + k_ranges_block - 1) / k_ranges_block;
+  uint* seq_sums = sequence_sums();
+  uint* items = sequence_items();
+  uint left = g_params.capacity;
+  uint left_cached = kCache != 0 ? reference_capacity() : 0u;
+  uint dropped_drawn = 0;  // this thread's
+  uint dropped_casters = 0;
+  bool failed = false;  // nothing dropped yet: a block's sums are exactly what it holds
+  uint at = 0;          // the next block of the sequence
+  while (at < sequence_blocks) {
+    if (!failed) {
+      // Before the crossing: as many whole blocks as fit, 256 at a look, from their sums alone.
+      const uint j = at + t;
+      const uint2 own = j < sequence_blocks
+                            ? uint2(seq_sums[2 * j], kCache != 0 ? seq_sums[2 * j + 1] : 0u)
+                            : uint2(0u, 0u);
+      const uint2 through = group_exclusive(t, own) + own;
+      const bool fits = j < sequence_blocks && through.x <= left && through.y <= left_cached;
+      const uint4 counted = group_sum(t, uint4(fits ? 1u : 0u, 0u, 0u, 0u));
+      const uint whole = counted.x;  // the fitting blocks are a prefix: the sums only grow
+      if (whole > 0) {
+        GroupMemoryBarrierWithGroupSync();
+        if (t == whole - 1) {
+          g_walk[0] = through.x;
+          g_walk[1] = through.y;
+        }
+        GroupMemoryBarrierWithGroupSync();
+        left -= g_walk[0];
+        left_cached -= g_walk[1];
+        at += whole;
+        continue;
+      }
+    }
+    // A block that does not fit whole: its items, to shared memory.
+    const uint base = at * k_ranges_block;
+    uint4 totals = uint4(0u, 0u, 0xffffffffu, 0xffffffffu);  // per kind: sum, smallest
+    for (uint r = 0; r < k_ranges_each; ++r) {
+      const uint local = t + r * k_ranges_threads;
+      uint4 item = uint4(0u, 0xffffffffu, 0u, 0xffffffffu);
+      if (base + local < item_count) {
+        uint* src = items + 4 * (base + local);
+        item = uint4(src[0], src[1], src[2], src[3]);
+      }
+      g_block_items[local] = item;
+      if (item.x != 0) {
+        if ((item.z & k_item_cached) != 0) {
+          totals.y += item.x;
+          totals.w = min(totals.w, item.x);
+        } else {
+          totals.x += item.x;
+          totals.z = min(totals.z, item.x);
+        }
+      }
+    }
+    const uint4 block = group_sum_min(t, totals);
+    const bool whole_built = block.x <= left;
+    const bool whole_cached = block.y <= left_cached;
+    const bool none_built = !whole_built && block.z > left;
+    const bool none_cached = !whole_cached && block.w > left_cached;
+    if ((!whole_built && !none_built) || (!whole_cached && !none_cached)) {
+      // Part of the block: walked item by item, in order, by one thread over shared memory.
+      if (t == 0) {
+        for (uint k = 0; k < k_ranges_block; ++k) {
+          const uint4 item = g_block_items[k];
+          if (item.x == 0) continue;
+          const bool cached = (item.z & k_item_cached) != 0;
+          if (!take(left, left_cached, cached, item.x)) {
+            drop_item(item, base, dropped_drawn, dropped_casters);
+          }
+        }
+        g_walk[0] = left;
+        g_walk[1] = left_cached;
+      }
+      AllMemoryBarrierWithGroupSync();
+      left = g_walk[0];
+      left_cached = g_walk[1];
+    } else {
+      // Each kind whole or not at all: a kind kept whole spends its sum; one that does not fit at
+      // all loses its drawn items — and with them the casters behind them — and then whatever
+      // casters are left.
+      if (whole_built) left -= block.x;
+      if (whole_cached) left_cached -= block.y;
+      for (uint pass = 0; pass < 2; ++pass) {
+        for (uint r = 0; r < k_ranges_each; ++r) {
+          const uint4 item = g_block_items[t + r * k_ranges_threads];
+          const bool caster = (item.z & k_item_caster) != 0;
+          if (item.x == 0 || caster != (pass == 1)) continue;
+          const bool cached = (item.z & k_item_cached) != 0;
+          if (cached ? none_cached : none_built) {
+            drop_item(item, base, dropped_drawn, dropped_casters);
+          }
+        }
+        AllMemoryBarrierWithGroupSync();
+      }
+    }
+    failed = failed || !whole_built || !whole_cached;
+    ++at;
+  }
+  const uint4 dropped = group_sum(t, uint4(dropped_drawn, dropped_casters, 0u, 0u));
+  if (t == 0) {
+    uint* record_count = (uint*)g_params.record_count;
+    record_count[1] = all.x;
+    record_count[2] = dropped.x;  // `ranges_kept_count_main` adds the instances the order missed
+    record_count[3] = dropped.y;
+    record_count[k_count_refs_wanted] = all.y;
+  }
+}
+
+// The group's sums of the first two words and smallest of the last two.
+uint4 group_sum_min(uint t, uint4 value) {
+  GroupMemoryBarrierWithGroupSync();
+  g_ranges_sum[t] = value;
+  GroupMemoryBarrierWithGroupSync();
+  for (uint step = k_ranges_threads / 2; step > 0; step >>= 1) {
+    if (t < step) {
+      const uint4 a = g_ranges_sum[t];
+      const uint4 b = g_ranges_sum[t + step];
+      g_ranges_sum[t] = uint4(a.x + b.x, a.y + b.y, min(a.z, b.z), min(a.w, b.w));
+    }
+    GroupMemoryBarrierWithGroupSync();
+  }
+  return g_ranges_sum[0];
+}
+
+// What each block of instances kept, after the walk; an instance the order did not name keeps
+// nothing and is counted with the instances that lost their drawn clusters.
+void ranges_kept_count<let kCache : int>(uint group, uint t) {
+  const uint state = drop_words()[k_drop_state];
+  if ((state & k_drop_over) == 0 || (state & k_drop_serial) != 0) return;
+  uint* drawn = drawn_counts();
+  uint* casters = caster_counts();
+  const uint n = g_params.instance_count;
+  const uint begin = group * k_ranges_block + t * k_ranges_each;
+  uint own = 0;
+  uint own_cached = 0;
+  uint unnamed = 0;
+  for (uint k = 0; k < k_ranges_each; ++k) {
+    const uint i = begin + k;
+    if (i >= n) break;
+    uint d = drawn[i];
+    uint c = casters[i];
+    if ((d & k_count_visited) != 0) {
+      d &= ~k_count_visited;
+      drawn[i] = d;
+    } else if (((d | c) & k_count_mask) != 0) {
+      d = 0;
+      c = 0;
+      drawn[i] = 0;
+      casters[i] = 0;
+      ++unnamed;
+    }
+    const uint count = (d & k_count_mask) + (c & k_count_mask);
+    if (kCache != 0 && ((d | c) & k_count_cached) != 0) {
+      own_cached += count;
+    } else {
+      own += count;
+    }
+  }
+  const uint4 sums = group_sum(t, uint4(own, own_cached, unnamed, 0u));
+  if (t == 0 && group < ranges_blocks()) {
+    uint* kept = kept_sums();
+    kept[2 * group] = sums.x;
+    kept[2 * group + 1] = sums.y;
+    if (sums.z != 0) ((Atomic<uint>*)g_params.record_count)[2].add(sums.z);
+  }
+}
+
+// The prefix sums of what was kept, written as the fitting frame's are.
+void ranges_kept<let kCache : int>(uint group, uint t) {
+  const uint state = drop_words()[k_drop_state];
+  if ((state & k_drop_over) == 0 || (state & k_drop_serial) != 0) return;
+  uint* drawn = drawn_counts();
+  uint* casters = caster_counts();
+  uint* first = instance_first();
+  BlasRecord* blas = (BlasRecord*)g_params.blas_records;
+  const uint n = g_params.instance_count;
+  const uint blocks = ranges_blocks();
+  uint* kept = kept_sums();
+  uint4 mine = uint4(0u, 0u, 0u, 0u);
+  for (uint j = t; j < blocks; j += k_ranges_threads) {
+    const uint built = kept[2 * j];
+    const uint cached = kCache != 0 ? kept[2 * j + 1] : 0u;
+    mine += uint4(built, cached, j < group ? built : 0u, j < group ? cached : 0u);
+  }
+  const uint4 all = group_sum(t, mine);
+  const uint64_t cached_references = kCache != 0 ? cache_tables()->references : 0;
+  const uint begin = group * k_ranges_block + t * k_ranges_each;
+  uint own = 0;
+  uint own_cached = 0;
+  for (uint k = 0; k < k_ranges_each; ++k) {
+    const uint i = begin + k;
+    if (i >= n) break;
+    const uint d = drawn[i];
+    const uint c = casters[i];
+    const uint count = (d & k_count_mask) + (c & k_count_mask);
+    if (kCache != 0 && ((d | c) & k_count_cached) != 0) {
+      own_cached += count;
+    } else {
+      own += count;
+    }
+  }
+  const uint2 before = group_exclusive(t, uint2(own, own_cached)) + all.zw;
+  uint total = before.x;
+  uint cached_total = before.y;
+  for (uint k = 0; k < k_ranges_each; ++k) {
+    const uint i = begin + k;
+    if (i >= n) break;
+    uint d = drawn[i];
+    uint c = casters[i];
+    const bool cached = kCache != 0 && ((d | c) & k_count_cached) != 0;
+    d &= k_count_mask;
+    c &= k_count_mask;
+    drawn[i] = d;
+    casters[i] = c;
+    BlasRecord record;
+    record.count = d + c;
+    record.stride = 8;
+    if (cached) {
+      first[i] = cached_total;
+      record.references = cached_references + uint64_t(cached_total) * 8;
+      cached_total += record.count;
+    } else {
+      first[i] = total;
+      record.references = g_params.clas_addresses + uint64_t(total) * 8;
+      total += record.count;
+    }
+    blas[i] = record;
+  }
+  if (group == 0 && t == 0) {
+    uint* record_count = (uint*)g_params.record_count;
+    record_count[0] = all.x;  // what the build reads: never more than the capacity
+    record_count[k_count_refs_kept] = all.y;
+  }
+}
 [shader("compute")]
 [numthreads(256, 1, 1)]
 void ranges_main(uint3 group : SV_GroupID, uint3 group_thread : SV_GroupThreadID) {
@@ -617,6 +1051,43 @@ void ranges_main(uint3 group : SV_GroupID, uint3 group_thread : SV_GroupThreadID
 [numthreads(256, 1, 1)]
 void ranges_cached_main(uint3 group : SV_GroupID, uint3 group_thread : SV_GroupThreadID) {
   ranges<1>(group.x, group_thread.x);
+}
+
+[shader("compute")]
+[numthreads(256, 1, 1)]
+void ranges_drop_main(uint3 group_thread : SV_GroupThreadID) {
+  ranges_drop<0>(group_thread.x);
+}
+
+[shader("compute")]
+[numthreads(256, 1, 1)]
+void ranges_drop_cached_main(uint3 group_thread : SV_GroupThreadID) {
+  ranges_drop<1>(group_thread.x);
+}
+
+[shader("compute")]
+[numthreads(256, 1, 1)]
+void ranges_kept_count_main(uint3 group : SV_GroupID, uint3 group_thread : SV_GroupThreadID) {
+  ranges_kept_count<0>(group.x, group_thread.x);
+}
+
+[shader("compute")]
+[numthreads(256, 1, 1)]
+void ranges_kept_count_cached_main(uint3 group : SV_GroupID,
+                                   uint3 group_thread : SV_GroupThreadID) {
+  ranges_kept_count<1>(group.x, group_thread.x);
+}
+
+[shader("compute")]
+[numthreads(256, 1, 1)]
+void ranges_kept_main(uint3 group : SV_GroupID, uint3 group_thread : SV_GroupThreadID) {
+  ranges_kept<0>(group.x, group_thread.x);
+}
+
+[shader("compute")]
+[numthreads(256, 1, 1)]
+void ranges_kept_cached_main(uint3 group : SV_GroupID, uint3 group_thread : SV_GroupThreadID) {
+  ranges_kept<1>(group.x, group_thread.x);
 }
 
 // Where a cluster's twelve-byte positions live this frame: the mesh's rest-pose float array for
