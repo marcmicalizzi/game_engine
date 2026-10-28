@@ -47,10 +47,11 @@ tunables::Bool rt_caster_horizon{
     "farther from the eye than that distance"};
 
 // The resident cluster structure cache (renderer.md, "The resident cluster structure cache"; R101).
-tunables::Bool rt_cache{"renderer.rt.cache", false,
-                        "Build a rigid mesh's cluster structures once, into a cache every instance "
-                        "and frame references, instead of once per instance per frame; off until a "
-                        "cache that references nothing costs nothing (R101, 2026-10-27)"};
+tunables::Bool rt_cache{
+    "renderer.rt.cache", true,
+    "Build a rigid mesh's cluster structures once, into a cache every instance "
+    "and frame references, instead of once per instance per frame (R101; on "
+    "again since R106, which made a cache that references nothing cost nothing)"};
 tunables::Int rt_cache_mib{"renderer.rt.cache_mib", k_default_rt_cache_mib, 1, 1 << 20,
                            "Most device memory the resident cluster structure cache may take, in "
                            "MiB; it takes what the scene's cached clusters need up to this, and a "

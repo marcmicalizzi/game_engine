@@ -233,10 +233,22 @@ inline constexpr u64 k_cluster_blas_record_bytes = 16;
 //                   from the **top** (the slice's last slot minus a second atomic), so the two
 //                   never mix and the emit pass can tell them apart. Sparse: an instance's slice is
 //                   as long as its mesh, times the number of views whose cuts accumulate here.
-//   `ranges_main`   one thread: decide what the set's `capacity` can hold (below), the prefix sum
-//                   of what it holds into each instance's dense record base, the total into
+//   `ranges_count_main`, then `ranges_main`   a device-wide scan over the instances, a group of
+//                   256 threads a block of `k_cluster_ranges_block`: the first sums each block, the
+//                   second has each group sum the block sums for the totals and its own block's
+//                   offset, decide what the set's `capacity` can hold (below), and write the prefix
+//                   sum of what it holds into each instance's dense record base, the total into
 //                   `record_count`, and one 16-byte bottom-level record per instance pointing at
-//                   that instance's run of CLAS addresses.
+//                   that instance's run of CLAS addresses. Both dispatch
+//                   `cluster_ranges_groups(instance_count)` groups. A frame past its capacity takes
+//                   the rule below as three more passes, `ranges_drop_main` (one workgroup: the
+//                   walk), `ranges_kept_count_main` and `ranges_kept_main`, dispatched indirectly
+//                   from `cluster_ranges_drop_args` and `cluster_ranges_kept_args` in
+//                   `instance_counts`, which a frame that fits leaves empty — when the caller
+//                   records them (`k_cluster_records_drop_scan`); without them the rule runs on
+//                   one thread of `ranges_main`, as it did before R106. With a cache, the
+//                   `_cached_` entry points of all five and of the emit pass
+//                   (`ClusterRecordParams::cache`).
 //   `emit_main`     one thread per pair slot: move the kept entries down to the dense `records`
 //                   array — an instance's drawn clusters first, then its casters — and write the
 //                   64-byte CLAS build record there. A record's base geometry index is the entry's
@@ -260,9 +272,12 @@ inline constexpr u64 k_cluster_blas_record_bytes = 16;
 //
 // `instance_counts` is three words an instance: the drawn entries, the casters (both counted by
 // `records_main`, and must be zeroed before it; `ranges_main` rewrites each to what was kept, 0 or
-// all of it), and the dense record base. A deformed instance's record points at the frame's
-// deformed-vertex pool (`MeshDesc::deform_pool`) rather than `vertices`, and with the instantiate
-// mode the emit pass writes instantiate records naming each cluster's template
+// all of it), and the dense record base; then the ranges' scratch — block sums, the drop words and
+// the order's sequence past the capacity (`k_cluster_ranges_block`; `cluster_instance_count_words`
+// is the whole). The buffer is read as indirect dispatch arguments too. A deformed
+// instance's record points at the frame's deformed-vertex pool (`MeshDesc::deform_pool`) rather
+// than `vertices`, and with the instantiate mode the emit pass writes instantiate records naming
+// each cluster's template
 // (`MeshDesc::templates`) instead of build records.
 //
 // **More than one view** ([04 §4.6](docs/plan/04-renderer.md)): the RT geometry of a
@@ -295,8 +310,9 @@ struct ClusterRecordParams {
   u64 visible = 0;        // u32x2[]: the visible list, {instance, cluster} per entry
   u64 visible_count = 0;  // u32: the cull pass's count word
   u64 slots = 0;          // u32[views * pair_count]: visible index per pair slot (records_main out)
-  // u32[3 * instance_count]: drawn and caster counts per instance (records_main out; zeroed
-  // first; ranges_main rewrites them to what was kept), then each instance's dense record base.
+  // u32[cluster_instance_count_words(instance_count)]: drawn and caster counts per instance
+  // (records_main out; zeroed first; ranges_main rewrites them to what was kept), then each
+  // instance's dense record base, then the ranges' block sums.
   u64 instance_counts = 0;
   // u32: view 0's count of shadow casters, view v's `k_draw_args_bytes` further on; the casters
   // themselves are run `k_caster_run` of the visible list. 0: there is no caster run.
@@ -315,7 +331,9 @@ struct ClusterRecordParams {
   // `pair_count` threads and cannot exceed it, while the set holds `views` runs.
   u32 pair_count = 0;
   // The low 16 bits: how many views' cuts accumulate into this set (see above). Bit 16: write
-  // k_cluster_instantiate_record_bytes records from templates instead of build records.
+  // k_cluster_instantiate_record_bytes records from templates instead of build records. Bit 17
+  // (`k_cluster_records_drop_scan`): the passes that walk a frame past its capacity as a scan are
+  // recorded after the ranges.
   u32 mode = 1;
   u32 capacity = 0;  // the structures the set holds: ranges_main keeps no more (see above)
   // **Alpha-tested materials** (renderer.md, "Alpha-tested geometry"): the scene's material table
@@ -365,13 +383,17 @@ static_assert(sizeof(ClusterRecordParams) == 176);
 // (`hit_visible_entry` and `hit_pair` in shaders/scene.slang). The frame's own dense indices stay
 // under `k_cluster_cache_geometry`, which bounds the per-frame capacity while a cache exists.
 //
-// Five passes run between the emit pass and the builds, over the slots and the references:
+// The emit pass (`emit_cached_main`) addresses a resident key's references itself and lists the
+// rest as pending; then four passes run between it and the builds, each dispatched indirectly from
+// `args`, which the emit pass grows, so a pass with nothing to do dispatches no thread (R106):
 // `cache_scan_main` lists the free slots and counts the occupied ones by how many frames ago they
-// were drawn; `cache_evict_main` frees the least recently drawn — never one this frame drew — until
-// this frame's misses fit (its threshold computed by `cache_threshold_main`, one thread); then
-// `cache_assign_main` gives every miss a slot and writes its build record and destination, and
-// `cache_references_main` writes every cached reference's address. The misses are then built with
-// explicit destinations (`build_cluster_set_explicit`), before the frame's own builds.
+// were drawn, and `cache_evict_main` frees the least recently drawn — never one this frame drew —
+// until this frame's misses fit (each of its groups works the threshold out from the scan's
+// histogram), both over the slots and only on a frame with a miss; `cache_assign_main` gives every
+// miss a slot and writes its build record and destination; and `cache_references_main` writes every
+// pending reference's address. The misses are then built with explicit destinations
+// (`build_cluster_set_explicit`), before the frame's own builds; on a frame with none its count is
+// 0.
 struct ClusterCacheTables {
   u64 bases = 0;              // u32 per mesh: its first cluster's key / 3, or ~0: not cached
   u64 keys = 0;               // u32 per key: its slot, or one of the k_cluster_cache_* marks
@@ -385,12 +407,15 @@ struct ClusterCacheTables {
   u64 reference_keys = 0;     // u32 per reference: the key each one is
   u64 scratch = 0;            // u32[k_cluster_cache_scratch_words]: the passes' counters
   u64 slot_base = 0;          // slot 0's address
+  // u32[k_cluster_cache_args_words], an indirect buffer: the four passes' dispatches (x, y, z each;
+  // k_cluster_cache_args_*), then how many references are pending
+  u64 args = 0;
   u32 slot_stride = 0;
   u32 slot_count = 0;  // slot 0 included
   u32 mesh_count = 0;
   u32 reference_capacity = 0;
 };
-static_assert(sizeof(ClusterCacheTables) == 112);
+static_assert(sizeof(ClusterCacheTables) == 120);
 inline constexpr u32 k_cluster_cache_empty = 0xffffffffu;
 inline constexpr u32 k_cluster_cache_claim = 0xfffffffeu;      // a miss this frame, not yet a slot
 inline constexpr u32 k_cluster_cache_overflow = 0xfffffffdu;   // a miss the cache had no room for
@@ -399,9 +424,20 @@ inline constexpr u32 k_cluster_cache_geometry = 1u << 23;      // a cached struc
 inline constexpr u32 k_cluster_cache_caster = 1u << 22;        // ... and its caster form's
 inline constexpr u32 k_cluster_cache_max_clusters = 1u << 22;  // a cached mesh's most clusters
 inline constexpr u32 k_cluster_cache_ages = 64;                // the eviction's age histogram
-// free count, eviction threshold, quota, taken, then the histogram
-inline constexpr u32 k_cluster_cache_scratch_words = 4 + k_cluster_cache_ages;
+// free count, eviction threshold, quota, taken, then the histogram — cleared every frame by the
+// ranges' first pass — and then the slots occupied, which a frame with no miss leaves as it was
+inline constexpr u32 k_cluster_cache_scratch_occupied = 4 + k_cluster_cache_ages;
+inline constexpr u32 k_cluster_cache_scratch_words = k_cluster_cache_scratch_occupied + 1;
 inline constexpr u32 k_cluster_cache_workgroup = 64;
+// The args block's words: the slot scan's, the eviction's, the misses' and the pending references'
+// dispatches, three words each, then the pending references' count (R106: a pass with nothing to do
+// dispatches no thread).
+inline constexpr u32 k_cluster_cache_args_scan = 0;
+inline constexpr u32 k_cluster_cache_args_evict = 3;
+inline constexpr u32 k_cluster_cache_args_assign = 6;
+inline constexpr u32 k_cluster_cache_args_references = 9;
+inline constexpr u32 k_cluster_cache_args_pending = 12;
+inline constexpr u32 k_cluster_cache_args_words = 13;
 // `tlas_references.slang`'s push block: each instance's bottom-level address, which the frame's
 // implicit-destination build of a `ClusterBlasSet` decided (`ClusterBlasSet::addresses`), written
 // into the reference field — the last eight bytes — of its `k_instance_record_bytes` top-level
@@ -432,14 +468,42 @@ static_assert(sizeof(TlasReferenceParams) == 88);
 inline constexpr u32 k_tlas_references_workgroup = 64;
 inline constexpr u32 k_cluster_records_workgroup = 64;
 inline constexpr u32 k_cluster_records_instantiate = 1u << 16;  // ClusterRecordParams::mode
+// ClusterRecordParams::mode: the three passes after the ranges (`ranges_drop_main`,
+// `ranges_kept_count_main`, `ranges_kept_main`) are recorded, so a frame past its capacity walks
+// its drop order as a scan; without it such a frame takes the one-thread rule in `ranges_main`.
+inline constexpr u32 k_cluster_records_drop_scan = 1u << 17;
+// The ranges' scan (clas_records.slang, `ranges_count_main` and `ranges_main`, and past the
+// capacity `ranges_drop_main`, `ranges_kept_count_main` and `ranges_kept_main`): a block of 1,024
+// instances to a group of 256 threads, four contiguous instances a thread. `instance_counts` holds,
+// past its three thirds, per group of the scan (`cluster_ranges_groups`) two words of block sums,
+// two of kept block sums and four of the order's sequence sums, then eight drop words — the drop
+// pass's indirect dispatch, the kept passes', and the state — then the order's sequence, two items
+// of four words an instance. `cluster_ranges_drop_args` and `cluster_ranges_kept_args` are the two
+// dispatches' byte offsets in it.
+inline constexpr u32 k_cluster_ranges_workgroup = 256;
+inline constexpr u32 k_cluster_ranges_block = 1024;
+constexpr u32 cluster_ranges_groups(u32 instance_count) noexcept {
+  const u32 blocks = (instance_count + k_cluster_ranges_block - 1) / k_cluster_ranges_block;
+  return blocks > 0 ? blocks : 1u;
+}
+constexpr u64 cluster_ranges_drop_args(u32 instance_count) noexcept {
+  return (u64{instance_count} * 3 + u64{8} * cluster_ranges_groups(instance_count)) * 4;
+}
+constexpr u64 cluster_ranges_kept_args(u32 instance_count) noexcept {
+  return cluster_ranges_drop_args(instance_count) + 12;
+}
+constexpr u64 cluster_instance_count_words(u32 instance_count) noexcept {
+  return u64{instance_count} * 11 + u64{8} * cluster_ranges_groups(instance_count) + 8;
+}
 // `record_count`'s words: 0 built (what the frame's own CLAS build reads as its count), 1 wanted, 2
 // instances that lost their drawn clusters, 3 instances that lost their casters; with a cache, 4
 // cached references kept, 5 cached references wanted, 6 misses (keys claimed this frame), 7 misses
 // built into the cache (what its explicit build reads as its count), 8 misses the cache had no
 // room for, 9 slots evicted, 10 slots occupied after the frame, 11 zero.
 inline constexpr u32 k_cluster_record_count_words = 12;
-constexpr u32 cluster_records_mode(u32 views, bool instantiate) noexcept {
-  return (views & 0xffffu) | (instantiate ? k_cluster_records_instantiate : 0u);
+constexpr u32 cluster_records_mode(u32 views, bool instantiate, bool drop_scan = false) noexcept {
+  return (views & 0xffffu) | (instantiate ? k_cluster_records_instantiate : 0u) |
+         (drop_scan ? k_cluster_records_drop_scan : 0u);
 }
 
 // Every instance's cluster bottom-level structure, built by **one** command into one buffer

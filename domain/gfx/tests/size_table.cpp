@@ -127,8 +127,9 @@ ENGINE_EXPECT_SIZE(128, 8, gfx::ClusterDrawParams);
 // 176, not 160: the resident cluster structure cache's tables and the frame's stamp (renderer.md,
 // "The resident cluster structure cache", R101); the compact hit entries had taken 160.
 ENGINE_EXPECT_SIZE(176, 8, gfx::ClusterRecordParams);
-// The cache's tables, read through an address (R101).
-ENGINE_EXPECT_SIZE(112, 8, gfx::ClusterCacheTables);
+// The cache's tables, read through an address (R101). 120, not 112: the args block its passes
+// are dispatched from, so a pass with nothing to do dispatches no thread (R106).
+ENGINE_EXPECT_SIZE(120, 8, gfx::ClusterCacheTables);
 // tlas_references.slang's push block: two addresses and the count (2026-10-04).
 // 80, not 24: the instance table and the frame's eye, because the dispatch writes each record's
 // transform from the eye every frame as well as its reference (ADR-0053, 2026-10-05).
