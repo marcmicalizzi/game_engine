@@ -83,7 +83,7 @@ struct RecordsFixture {
       caster_count_buffer, slots, instance_counts, records, record_count, blas_records, meshes,
       deform_table, deform_slots, pool;
   gfx::ShaderModuleHandle module = {};
-  gfx::ComputePipeline bucket, ranges, emit;
+  gfx::ComputePipeline bucket, ranges_count, ranges, emit;
   bool ready = false;
 
   u32 entry_instance(u32 entry) const { return list[u64{entry} * 2]; }
@@ -192,7 +192,7 @@ struct RecordsFixture {
     REQUIRE(gfx::upload_buffer(device, &mesh_desc, sizeof(mesh_desc), k_storage, meshes, &error));
     REQUIRE(
         gfx::create_buffer(device, u64{pair_count} * sizeof(u32), k_address, false, slots, &error));
-    REQUIRE(gfx::create_buffer(device, sizeof(u32) * k_instances * 3,
+    REQUIRE(gfx::create_buffer(device, sizeof(u32) * gfx::cluster_instance_count_words(k_instances),
                                k_address | gfx::BufferUsage::TransferDst, true, instance_counts,
                                &error));
     REQUIRE(gfx::create_buffer(device, gfx::k_cluster_build_record_bytes * pair_count, k_address,
@@ -208,6 +208,8 @@ struct RecordsFixture {
     REQUIRE_MESSAGE(
         gfx::create_compute_pipeline(device, module, "records_main", {}, push, bucket, &error),
         error);
+    REQUIRE(gfx::create_compute_pipeline(device, module, "ranges_count_main", {}, push,
+                                         ranges_count, &error));
     REQUIRE(gfx::create_compute_pipeline(device, module, "ranges_main", {}, push, ranges, &error));
     REQUIRE(gfx::create_compute_pipeline(device, module, "emit_main", {}, push, emit, &error));
     ready = true;
@@ -253,10 +255,13 @@ struct RecordsFixture {
           dependency.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
           dependency.memoryBarrierCount = 1;
           dependency.pMemoryBarriers = &barrier;
-          const gfx::ComputePipeline* passes[3] = {&bucket, &ranges, &emit};
-          // The bucketing pass covers the drawn run and the caster run; the emit pass the slots.
-          const u32 groups[3] = {(2 * pair_count + 63) / 64, 1, (pair_count + 63) / 64};
-          for (u32 p = 0; p < 3; ++p) {
+          const gfx::ComputePipeline* passes[4] = {&bucket, &ranges_count, &ranges, &emit};
+          // The bucketing pass covers the drawn run and the caster run; the ranges' two dispatches
+          // the blocks of instances; the emit pass the slots.
+          const u32 range_groups = gfx::cluster_ranges_groups(k_instances);
+          const u32 groups[4] = {(2 * pair_count + 63) / 64, range_groups, range_groups,
+                                 (pair_count + 63) / 64};
+          for (u32 p = 0; p < 4; ++p) {
             vkCmdPipelineBarrier2(gfx::vk::native(cb), &dependency);
             cb.bind_pipeline(gfx::BindPoint::Compute, passes[p]->pipeline);
             cb.push_constants(passes[p]->layout, gfx::ShaderStage::Compute, 0, sizeof(params),
@@ -372,6 +377,7 @@ struct RecordsFixture {
   ~RecordsFixture() {
     if (!device.valid()) return;
     gfx::destroy_compute_pipeline(device, bucket);
+    gfx::destroy_compute_pipeline(device, ranges_count);
     gfx::destroy_compute_pipeline(device, ranges);
     gfx::destroy_compute_pipeline(device, emit);
     if (module.valid()) gfx::destroy_shader_module(device, module);
@@ -524,131 +530,152 @@ TEST_CASE("clas records: a set sized under the frame keeps whole instances, cast
 }
 
 TEST_CASE("clas records: the ranges over many instances are the one-thread rule's, word for word") {
-  // `ranges_main` is one workgroup that scans runs of the instances when the frame fits the set
-  // and falls back to the one-thread rule when it does not (it was one thread throughout until the
-  // world's tiles made a scene of 40,000 instances; renderer.md, "The ground from the world's
-  // tiles"). Over 1,337 instances — more than one to each of its 256 threads, and not a multiple of
-  // them — with counts from a fixed generator, many of them zero, both paths must write exactly
-  // what the rule below writes: the kept counts, each instance's first record, its bottom-level
-  // record, and the four count words.
+  // The ranges are a device-wide scan in two dispatches (R106): `ranges_count_main` sums each block
+  // of 1,024 instances, a group a block, and `ranges_main`, over the same groups, has each group
+  // sum the block sums for the totals and its own offset and write its block's instances when the
+  // frame fits the set, and fall back to the one-thread rule on group 0 when it does not. Over
+  // 1,337 instances — two blocks, the second short, and four instances to a thread that do not
+  // divide them — and over 70,001, 69 blocks, with counts from a fixed generator, many of them
+  // zero, both paths must write exactly what the rule below writes: the kept counts, each
+  // instance's first record, its bottom-level record, and the four count words.
   gfx::Device device;
   if (!gfx_test::open_device(device)) return;
   std::string error;
-  constexpr u32 k_many = 1337;
-  Vector<u32> counts(u64{3} * k_many, 0u);  // drawn, casters, firsts
-  u32 state = 12345u;
-  const auto next = [&](u32 bound) {
-    state = state * 1664525u + 1013904223u;
-    return (state >> 8) % bound;
-  };
-  u32 wanted = 0;
-  for (u32 i = 0; i < k_many; ++i) {
-    counts[i] = next(4) == 0 ? 0u : next(40);
-    counts[k_many + i] = next(3) == 0 ? next(12) : 0u;
-    wanted += counts[i] + counts[k_many + i];
-  }
-  constexpr gfx::BufferUsage k_address =
-      gfx::BufferUsage::Storage | gfx::BufferUsage::ShaderDeviceAddress;
-  gfx::BufferResource instance_counts, blas_records, record_count;
-  REQUIRE(gfx::create_buffer(device, sizeof(u32) * 3 * k_many, k_address, true, instance_counts,
-                             &error));
-  REQUIRE(gfx::create_buffer(device, gfx::k_cluster_blas_record_bytes * k_many, k_address, true,
-                             blas_records, &error));
-  REQUIRE(gfx::create_buffer(device, sizeof(u32) * gfx::k_cluster_record_count_words, k_address,
-                             true, record_count, &error));
   gfx::ShaderModuleHandle module = gfx::create_shader_module(
       device, shaders::k_clas_records_spirv, shaders::k_clas_records_spirv_size, &error);
   REQUIRE(module.valid());
-  gfx::ComputePipeline ranges;
+  gfx::ComputePipeline count_pass, ranges;
+  REQUIRE_MESSAGE(
+      gfx::create_compute_pipeline(device, module, "ranges_count_main", {},
+                                   sizeof(gfx::ClusterRecordParams), count_pass, &error),
+      error);
   REQUIRE_MESSAGE(gfx::create_compute_pipeline(device, module, "ranges_main", {},
                                                sizeof(gfx::ClusterRecordParams), ranges, &error),
                   error);
-
-  // The rule, on the CPU: every instance kept when everything fits; otherwise drawn clusters
-  // first, instance by instance, a whole instance or none, then the casters from what is left.
-  const auto reference = [&](u32 capacity, Vector<u32>& out, u64* blas, u32* words) {
-    out = counts;
-    u32* drawn = out.data();
-    u32* casters = out.data() + k_many;
-    u32* first = out.data() + 2 * k_many;
-    u32 left = capacity;
-    u32 dropped_drawn = 0;
-    u32 dropped_casters = 0;
-    if (wanted > capacity) {
-      for (u32 i = 0; i < k_many; ++i) {
-        if (drawn[i] <= left) {
-          left -= drawn[i];
-        } else {
-          drawn[i] = 0;
-          casters[i] = 0;
-          ++dropped_drawn;
-        }
-      }
-      for (u32 i = 0; i < k_many; ++i) {
-        if (casters[i] <= left) {
-          left -= casters[i];
-        } else {
-          casters[i] = 0;
-          ++dropped_casters;
-        }
-      }
-    }
-    u32 total = 0;
-    for (u32 i = 0; i < k_many; ++i) {
-      first[i] = total;
-      blas[u64{i} * 2] = u64{drawn[i] + casters[i]} | (u64{8} << 32);
-      blas[u64{i} * 2 + 1] = k_fake_addresses + u64{total} * 8;
-      total += drawn[i] + casters[i];
-    }
-    words[0] = total;
-    words[1] = wanted;
-    words[2] = dropped_drawn;
-    words[3] = dropped_casters;
-  };
-
   u32 differing = 0;
-  const u32 capacities[4] = {wanted + 100, wanted, wanted - 1, wanted / 3};
-  for (const u32 capacity : capacities) {
-    std::memcpy(instance_counts.mapped, counts.data(), counts.size() * sizeof(u32));
-    std::memset(blas_records.mapped, 0xcd, gfx::k_cluster_blas_record_bytes * k_many);
-    std::memset(record_count.mapped, 0xcd, sizeof(u32) * gfx::k_cluster_record_count_words);
-    gfx::ClusterRecordParams params{};
-    params.instance_counts = instance_counts.address;
-    params.record_count = record_count.address;
-    params.blas_records = blas_records.address;
-    params.clas_addresses = k_fake_addresses;
-    params.instance_count = k_many;
-    params.mode = gfx::cluster_records_mode(1, false);
-    params.capacity = capacity;
-    REQUIRE(gfx::submit_immediate(
-        device,
-        [&](gfx::CommandList cb) {
-          cb.bind_pipeline(gfx::BindPoint::Compute, ranges.pipeline);
-          cb.push_constants(ranges.layout, gfx::ShaderStage::Compute, 0, sizeof(params), &params);
-          cb.dispatch(1, 1, 1);
-        },
-        &error));
-    Vector<u32> expected;
-    Vector<u64> expected_blas(u64{2} * k_many, 0u);
-    u32 expected_words[4] = {};
-    reference(capacity, expected, expected_blas.data(), expected_words);
-    u32 here = 0;
-    here +=
-        std::memcmp(instance_counts.mapped, expected.data(), expected.size() * sizeof(u32)) != 0;
-    here += std::memcmp(blas_records.mapped, expected_blas.data(),
-                        gfx::k_cluster_blas_record_bytes * k_many) != 0;
-    here += std::memcmp(record_count.mapped, expected_words, sizeof(expected_words)) != 0;
-    CHECK_MESSAGE(here == 0, "capacity " << capacity << " of " << wanted << " wanted");
-    differing += here;
+  for (const u32 k_many : {1337u, 70001u}) {
+    Vector<u32> counts(u64{3} * k_many, 0u);  // drawn, casters, firsts
+    u32 state = 12345u;
+    const auto next = [&](u32 bound) {
+      state = state * 1664525u + 1013904223u;
+      return (state >> 8) % bound;
+    };
+    u32 wanted = 0;
+    for (u32 i = 0; i < k_many; ++i) {
+      counts[i] = next(4) == 0 ? 0u : next(40);
+      counts[k_many + i] = next(3) == 0 ? next(12) : 0u;
+      wanted += counts[i] + counts[k_many + i];
+    }
+    constexpr gfx::BufferUsage k_address =
+        gfx::BufferUsage::Storage | gfx::BufferUsage::ShaderDeviceAddress;
+    gfx::BufferResource instance_counts, blas_records, record_count;
+    REQUIRE(gfx::create_buffer(device, sizeof(u32) * gfx::cluster_instance_count_words(k_many),
+                               k_address, true, instance_counts, &error));
+    REQUIRE(gfx::create_buffer(device, gfx::k_cluster_blas_record_bytes * k_many, k_address, true,
+                               blas_records, &error));
+    REQUIRE(gfx::create_buffer(device, sizeof(u32) * gfx::k_cluster_record_count_words, k_address,
+                               true, record_count, &error));
+
+    // The rule, on the CPU: every instance kept when everything fits; otherwise drawn clusters
+    // first, instance by instance, a whole instance or none, then the casters from what is left.
+    const auto reference = [&](u32 capacity, Vector<u32>& out, u64* blas, u32* words) {
+      out = counts;
+      u32* drawn = out.data();
+      u32* casters = out.data() + k_many;
+      u32* first = out.data() + 2 * k_many;
+      u32 left = capacity;
+      u32 dropped_drawn = 0;
+      u32 dropped_casters = 0;
+      if (wanted > capacity) {
+        for (u32 i = 0; i < k_many; ++i) {
+          if (drawn[i] <= left) {
+            left -= drawn[i];
+          } else {
+            drawn[i] = 0;
+            casters[i] = 0;
+            ++dropped_drawn;
+          }
+        }
+        for (u32 i = 0; i < k_many; ++i) {
+          if (casters[i] <= left) {
+            left -= casters[i];
+          } else {
+            casters[i] = 0;
+            ++dropped_casters;
+          }
+        }
+      }
+      u32 total = 0;
+      for (u32 i = 0; i < k_many; ++i) {
+        first[i] = total;
+        blas[u64{i} * 2] = u64{drawn[i] + casters[i]} | (u64{8} << 32);
+        blas[u64{i} * 2 + 1] = k_fake_addresses + u64{total} * 8;
+        total += drawn[i] + casters[i];
+      }
+      words[0] = total;
+      words[1] = wanted;
+      words[2] = dropped_drawn;
+      words[3] = dropped_casters;
+    };
+
+    const u32 capacities[4] = {wanted + 100, wanted, wanted - 1, wanted / 3};
+    for (const u32 capacity : capacities) {
+      std::memcpy(instance_counts.mapped, counts.data(), counts.size() * sizeof(u32));
+      std::memset(blas_records.mapped, 0xcd, gfx::k_cluster_blas_record_bytes * k_many);
+      std::memset(record_count.mapped, 0xcd, sizeof(u32) * gfx::k_cluster_record_count_words);
+      gfx::ClusterRecordParams params{};
+      params.instance_counts = instance_counts.address;
+      params.record_count = record_count.address;
+      params.blas_records = blas_records.address;
+      params.clas_addresses = k_fake_addresses;
+      params.instance_count = k_many;
+      params.mode = gfx::cluster_records_mode(1, false);
+      params.capacity = capacity;
+      REQUIRE(gfx::submit_immediate(
+          device,
+          [&](gfx::CommandList cb) {
+            VkMemoryBarrier2 barrier{};
+            barrier.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2;
+            barrier.srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+            barrier.srcAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT;
+            barrier.dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+            barrier.dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT;
+            VkDependencyInfo dependency{};
+            dependency.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+            dependency.memoryBarrierCount = 1;
+            dependency.pMemoryBarriers = &barrier;
+            for (const gfx::ComputePipeline* pass : {&count_pass, &ranges}) {
+              vkCmdPipelineBarrier2(gfx::vk::native(cb), &dependency);
+              cb.bind_pipeline(gfx::BindPoint::Compute, pass->pipeline);
+              cb.push_constants(pass->layout, gfx::ShaderStage::Compute, 0, sizeof(params),
+                                &params);
+              cb.dispatch(gfx::cluster_ranges_groups(k_many), 1, 1);
+            }
+          },
+          &error));
+      Vector<u32> expected;
+      Vector<u64> expected_blas(u64{2} * k_many, 0u);
+      u32 expected_words[4] = {};
+      reference(capacity, expected, expected_blas.data(), expected_words);
+      u32 here = 0;
+      here +=
+          std::memcmp(instance_counts.mapped, expected.data(), expected.size() * sizeof(u32)) != 0;
+      here += std::memcmp(blas_records.mapped, expected_blas.data(),
+                          gfx::k_cluster_blas_record_bytes * k_many) != 0;
+      here += std::memcmp(record_count.mapped, expected_words, sizeof(expected_words)) != 0;
+      CHECK_MESSAGE(here == 0,
+                    k_many << " instances, capacity " << capacity << " of " << wanted << " wanted");
+      differing += here;
+    }
+    MESSAGE(k_many << " instances wanting " << wanted
+                   << " records: the blocks' scan and the one-thread rule write the reference's "
+                      "words at four capacities");
+    for (gfx::BufferResource* b : {&instance_counts, &blas_records, &record_count})
+      gfx::destroy_buffer(device, *b);
   }
   CHECK(differing == 0);
-  MESSAGE(
-      k_many << " instances wanting " << wanted
-             << " records: the group's scan and the one-thread rule write the reference's words "
-                "at four capacities");
+  gfx::destroy_compute_pipeline(device, count_pass);
   gfx::destroy_compute_pipeline(device, ranges);
   gfx::destroy_shader_module(device, module);
-  for (gfx::BufferResource* b : {&instance_counts, &blas_records, &record_count})
-    gfx::destroy_buffer(device, *b);
   device.destroy();
 }

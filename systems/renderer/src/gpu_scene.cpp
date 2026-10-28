@@ -2303,6 +2303,7 @@ void GpuScene::policy_counts() noexcept {
   flora_stats_.casters_nearest = nearest;
   flora_stats_.casters_rest = rest;
   flora_stats_.untraced = untraced;
+  count_rt_cache_instances();
 }
 
 void GpuScene::flora_counts() noexcept {
@@ -4232,10 +4233,26 @@ bool GpuScene::create_rt_cache(std::string* error) {
     return true;  // a cached structure's name needs all 24 bits (gfx::k_cluster_cache_geometry)
   }
   const SceneData& data = *data_;
+  // **Only a mesh an instance could be served from** (R106). A scene read whole has every instance
+  // it will ever have, so a mesh none of whose instances is rigid and traced — the erg's one
+  // terrain mesh, 741,526 clusters and the whole 256 MiB ceiling of slots, every instance of it
+  // deformed by the terrain stage — gets no keys and no slots; with no such mesh there is no cache.
+  // A scene whose instances come and go keeps every mesh: its tail may place any of them rigid.
+  Vector<u8> served;
+  if (!dynamic_) {
+    served.assign(data.parts.size(), u8{0});
+    for (const gfx::InstanceDesc& instance : instance_table_) {
+      const bool rigid =
+          instance.deform == gfx::k_invalid_deform &&
+          (instance.flags & (gfx::k_instance_static_rt | gfx::k_instance_untraced)) == 0;
+      if (rigid && instance.mesh < served.size()) served[instance.mesh] = 1;
+    }
+  }
   rt_cache_base_.assign(data.parts.size(), ~0u);
   u64 cached = 0;
   for (u32 m = 0; m < data.parts.size(); ++m) {
     if (static_build_ && static_mesh(m)) continue;  // built once already, by its frontier
+    if (!dynamic_ && served[m] == 0) continue;      // no instance of it can be served
     const u32 count = data.parts[m].cluster_count;
     if (count == 0 || count > gfx::k_cluster_cache_max_clusters) continue;
     rt_cache_base_[m] = static_cast<u32>(cached);
@@ -4287,7 +4304,12 @@ bool GpuScene::create_rt_cache(std::string* error) {
   Vector<u32> empty_keys(static_cast<u32>(keys), gfx::k_cluster_cache_empty);
   Vector<u32> owners(slot_count, gfx::k_cluster_cache_empty);
   owners[0] = gfx::k_cluster_cache_claim;
-  Vector<u32> zeros(slot_count, 0u);
+  Vector<u32> zeros(std::max(slot_count, gfx::k_cluster_cache_scratch_words), 0u);
+  // The args block starts every dispatch empty (`ranges_count_cached_main` writes it again every
+  // frame, before anything reads it).
+  u32 empty_args[gfx::k_cluster_cache_args_words] = {};
+  for (u32 w = 0; w + 2 < gfx::k_cluster_cache_args_pending; w += 3)
+    empty_args[w + 1] = empty_args[w + 2] = 1u;
   bool ok =
       gfx::upload_buffer(device, rt_cache_base_.data(), u64{rt_cache_base_.size()} * sizeof(u32),
                          k_address, c.bases, error) &&
@@ -4303,8 +4325,12 @@ bool GpuScene::create_rt_cache(std::string* error) {
                          k_record_usage, false, c.miss_records, error) &&
       gfx::create_buffer(device, u64{slot_count} * sizeof(u64), k_record_usage, false,
                          c.miss_destinations, error) &&
-      gfx::create_buffer(device, u64{gfx::k_cluster_cache_scratch_words} * sizeof(u32), k_address,
-                         false, c.scratch, error) &&
+      // Zeroed: the slots occupied, its last word, carries from frame to frame and starts at none.
+      gfx::upload_buffer(device, zeros.data(),
+                         u64{gfx::k_cluster_cache_scratch_words} * sizeof(u32), k_address,
+                         c.scratch, error) &&
+      gfx::upload_buffer(device, empty_args, sizeof(empty_args),
+                         k_address | gfx::BufferUsage::Indirect, c.args, error) &&
       gfx::create_buffer(device, u64{slot_count} * rt_cache_stride_ + one.alignment, k_structures,
                          false, c.slots, error) &&
       gfx::create_buffer(device, sizeof(gfx::ClusterCacheTables), k_address, true, c.tables, error);
@@ -4361,8 +4387,9 @@ bool GpuScene::create_rt_cache(std::string* error) {
   rt_cache_clusters_ = static_cast<u32>(cached);
   rt_cache_bytes_ = c.bases.size + c.keys.size + c.owners.size + c.stamps.size + c.free_list.size +
                     c.misses.size + c.miss_records.size + c.miss_destinations.size +
-                    c.scratch.size + c.slots.size + c.tables.size;
+                    c.scratch.size + c.args.size + c.slots.size + c.tables.size;
   write_rt_cache_tables();
+  count_rt_cache_instances();
   ENGINE_LOG_INFO(log_renderer, "cluster structure cache ready",
                   log::field("meshes", rt_cache_meshes_), log::field("clusters", cached),
                   log::field("slots", slot_count), log::field("slot_bytes", rt_cache_stride_),
@@ -4386,6 +4413,7 @@ void GpuScene::write_rt_cache_tables() noexcept {
   tables.references = c.references.address;
   tables.reference_keys = c.reference_keys.address;
   tables.scratch = c.scratch.address;
+  tables.args = c.args.address;
   const u64 alignment = rt_cache_alignment != 0 ? rt_cache_alignment : 1;
   tables.slot_base = (c.slots.address + alignment - 1) / alignment * alignment;
   tables.slot_stride = static_cast<u32>(rt_cache_stride_);
@@ -4400,10 +4428,10 @@ void GpuScene::destroy_rt_cache() noexcept {
   RtCacheBuffers& c = rt_cache_buffers;
   for (gfx::BufferResource* b : {&c.tables, &c.bases, &c.keys, &c.owners, &c.stamps, &c.free_list,
                                  &c.misses, &c.miss_records, &c.miss_destinations, &c.scratch,
-                                 &c.slots, &c.references, &c.reference_keys})
+                                 &c.args, &c.slots, &c.references, &c.reference_keys})
     gfx::destroy_buffer(*device_, *b);
   rt_cache_base_.clear();
-  rt_cache_slots_ = rt_cache_meshes_ = rt_cache_clusters_ = 0;
+  rt_cache_slots_ = rt_cache_meshes_ = rt_cache_clusters_ = rt_cache_instances_ = 0;
   rt_cache_bytes_ = rt_cache_stride_ = rt_cache_scratch_bytes_ = 0;
   rt_cache_limits = gfx::ClusterSetLimits{};
   rt_cache_alignment = 0;
@@ -4415,6 +4443,17 @@ bool GpuScene::rt_instance_cached(const gfx::InstanceDesc& instance) const noexc
   if (rt_cache_slots_ == 0 || instance.deform != gfx::k_invalid_deform) return false;
   if ((instance.flags & (gfx::k_instance_static_rt | gfx::k_instance_untraced)) != 0) return false;
   return instance.mesh < rt_cache_base_.size() && rt_cache_base_[instance.mesh] != ~0u;
+}
+
+// **Whether a frame needs the cache at all** (`rt_cache_instances()`; R106): the instances it would
+// serve, over the instance table, whenever the table's deform words or flags change — at the
+// cache's creation and with `policy_counts`, which every change of the instances runs — and never
+// per frame. A dynamic scene's holes name the null mesh, past `rt_cache_base_`, and count as none.
+void GpuScene::count_rt_cache_instances() noexcept {
+  rt_cache_instances_ = 0;
+  if (rt_cache_slots_ == 0) return;
+  for (const gfx::InstanceDesc& instance : instance_table_)
+    rt_cache_instances_ += rt_instance_cached(instance) ? 1u : 0u;
 }
 
 u64 GpuScene::rt_reference_estimate() const noexcept {
@@ -4554,11 +4593,12 @@ bool GpuScene::lay_out_ray_tracing(std::string* error) {
                        tlas_bytes.data());
   bool ok = gfx::create_buffer(device, u64{rt_union_clusters_} * sizeof(u32), k_address, false,
                                slots, error) &&
-            // Three words an instance: its drawn clusters, its casters, then its dense record base
-            // (`gfx::ClusterRecordParams::instance_counts`).
-            gfx::create_buffer(device, u64{rt_instance_slots_} * 3 * sizeof(u32),
-                               k_address | gfx::BufferUsage::TransferDst, false, instance_counts,
-                               error) &&
+            // Three words an instance: its drawn clusters, its casters, then its dense record base,
+            // and two a block of 1,024 instances for the ranges' scan (R106;
+            // `gfx::ClusterRecordParams::instance_counts`).
+            gfx::create_buffer(
+                device, gfx::cluster_instance_count_words(rt_instance_slots_) * sizeof(u32),
+                k_address | gfx::BufferUsage::TransferDst, false, instance_counts, error) &&
             // A dynamic scene's set is built over every slot of the capacity, so the records past
             // the frame's instances are cleared to empty structures every frame.
             gfx::create_buffer(device, gfx::k_cluster_blas_record_bytes * rt_instance_slots_,

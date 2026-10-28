@@ -492,6 +492,13 @@ class GpuScene {
   // of 24 bits. The frame's **references** to it are sized by the frames like the capacity, by a
   // policy of their own (`rt_reference_capacity()`, the `renderer.rt.reference_mib` ceiling).
   bool rt_cache() const noexcept { return rt_cache_slots_ != 0; }
+  // **How many of the scene's instances the cache would serve** (`rt_instance_cached`), counted
+  // when the instances change and never per frame (`policy_counts`). A frame of a scene with none —
+  // every instance deformed, untraced or a static form, as the endless desert's ring slots and a
+  // forest of swaying trees are — records none of the cache's passes and the records chain's plain
+  // variants, as if there were no cache (renderer.md, "The resident cluster structure cache";
+  // R106).
+  u32 rt_cache_instances() const noexcept { return rt_cache_instances_; }
   u32 rt_cache_slots() const noexcept { return rt_cache_slots_; }
   u32 rt_cache_meshes() const noexcept { return rt_cache_meshes_; }
   u32 rt_cache_clusters() const noexcept { return rt_cache_clusters_; }
@@ -1077,6 +1084,7 @@ class GpuScene {
     gfx::BufferResource tables;  // the gfx::ClusterCacheTables block, host visible
     gfx::BufferResource bases, keys, owners, stamps, free_list, misses, miss_records,
         miss_destinations, scratch, slots;
+    gfx::BufferResource args;  // the cache passes' indirect dispatches (gfx::ClusterCacheTables)
     gfx::BufferResource references, reference_keys;
   };
   RtCacheBuffers rt_cache_buffers;
@@ -1458,12 +1466,14 @@ class GpuScene {
   u64 rt_cache_stride_ = 0;
   u64 rt_cache_scratch_bytes_ = 0;
   u32 rt_cache_frame_ = 0;
+  u32 rt_cache_instances_ = 0;  // rt_cache_instances()
   u32 rt_reference_capacity_ = 0;
   u32 rt_reference_limit_ = 0;
   u64 rt_bytes_per_reference_ = 0;
   bool create_rt_cache(std::string* error);
   void write_rt_cache_tables() noexcept;
   void destroy_rt_cache() noexcept;
+  void count_rt_cache_instances() noexcept;
   // Which meshes are static and which of their clusters are the frontier, before the geometry is
   // uploaded: the cut the cull selects for them is patched to the frontier (`patch_static_lods`).
   void plan_static_forms();

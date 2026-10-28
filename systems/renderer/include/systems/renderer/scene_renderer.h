@@ -790,10 +790,13 @@ class SceneRenderer {
     gfx::ComputePipeline deform_alloc_place;
     gfx::ComputePipeline hiz;
     gfx::ComputePipeline records;
-    gfx::ComputePipeline record_ranges;
-    gfx::ComputePipeline record_emit;
-    gfx::ComputePipeline
-        cache[5];  // the cluster cache's scan, threshold, evict, assign, references
+    // clas_records.slang's ranges (two dispatches) and emit pass, each [0] for a frame with no
+    // cache and [1] for one with (R106: the plain variant never asks whether an instance is
+    // cached).
+    gfx::ComputePipeline record_count[2];
+    gfx::ComputePipeline record_ranges[2];
+    gfx::ComputePipeline record_emit[2];
+    gfx::ComputePipeline cache[4];         // the cluster cache's scan, evict, assign, references
     gfx::ComputePipeline tlas_references;  // tlas_references.slang: the BLAS addresses in
     gfx::ComputePipeline trace;
     // pair_expand.slang: a streamed world's changed pair-table entries, from its instance table.
@@ -924,11 +927,15 @@ class SceneRenderer {
   Vector<u32> slot_holes_;
   Vector<u32> slot_table_slots_;  // and what it wrote into the table set it flipped to
   Vector<u32> slot_table_pairs_;
-  Vector<u64> slot_terrain_bytes_;  // per frame slot: the terrain field bytes that frame uploaded
-  Vector<FrameCpu> slot_cpu_;       // per frame slot: where that frame's CPU time went
-  Vector<f32> slot_visibility_;     // per frame slot: what its frame passes reported
-  FrameCpu frame_cpu_;              // the frame being begun and recorded's, until submit_frame
-  GpuScene::TableUpdate tables_;    // the frame being recorded's table update; its copies are kept
+  // Per frame slot: whether the frame recorded the cluster cache's passes (R106: a frame of a scene
+  // the cache serves no instance of records none, and its words say nothing of the slots).
+  Vector<u8> slot_rt_cache_;
+  bool rt_cache_recording_ = false;  // the frame being recorded records them
+  Vector<u64> slot_terrain_bytes_;   // per frame slot: the terrain field bytes that frame uploaded
+  Vector<FrameCpu> slot_cpu_;        // per frame slot: where that frame's CPU time went
+  Vector<f32> slot_visibility_;      // per frame slot: what its frame passes reported
+  FrameCpu frame_cpu_;               // the frame being begun and recorded's, until submit_frame
+  GpuScene::TableUpdate tables_;     // the frame being recorded's table update; its copies are kept
   // The frame being recorded's terrain levels: its table, the fields it copies in and reads.
   GpuScene::TerrainUpdate terrain_frame_;
   // The frame being recorded's record upload: instances moved and ring slots' records since the
