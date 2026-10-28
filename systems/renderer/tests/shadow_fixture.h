@@ -307,6 +307,7 @@ struct ShotOptions {
   bool cone = true;
   bool shadow_casters = true;
   bool shadow_frustum = true;
+  bool shadow_texel_lod = true;  // the renderer's default (R103); false: the picture's cut alone
   u32 view_mode = static_cast<u32>(gfx::ResolveMode::Shadow);
   // The camera, in the fixture's frame.
   Vec3 eye = k_eye_local;
@@ -346,6 +347,7 @@ inline Shot render(const gfx::Device& device, Caster caster, const ShotOptions& 
   settings.shadow_casters = options.shadow_casters;
   settings.off_frustum_casters = options.off_frustum_casters;
   settings.shadow_frustum = options.shadow_frustum;
+  settings.shadow_texel_lod = options.shadow_texel_lod;
   // The sun alone, unless a case asks: its shadow is what the shadow view shows.
   settings.lights = options.lights;
   settings.deform = options.deform;

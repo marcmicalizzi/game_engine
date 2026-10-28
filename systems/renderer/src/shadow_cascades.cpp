@@ -76,20 +76,6 @@ void fit_shadow_cascades(const ViewSet& views, const Camera& camera, Vec3 toward
   const Vec3 scene_center = relative(scene_center_world, camera.position);
   const f32 to_center = length(scene_center - eye);
   const f32 far = fit.distance > 0.0f ? fit.distance : to_center + scene_radius;
-  // Where geometry can begin: the scene's near side, or the camera's near plane when the camera is
-  // inside the bounds. The first slice starts there, and the splits are logarithmic from it —
-  // but never from under a thousandth of the distance, which is what a camera standing inside a
-  // terrain would otherwise spend its first cascade on.
-  f32 first = to_center - scene_radius;
-  first = first > camera.znear ? first : camera.znear;
-  if (!(first < far)) first = far * 0.5f;
-  f32 near = first > far * k_shadow_near_ratio ? first : far * k_shadow_near_ratio;
-  if (!(near < far)) near = far * 0.5f;
-  out.splits[0] = first < near ? first : near;
-  for (u32 i = 1; i <= wanted; ++i) {
-    out.splits[i] = near * std::pow(far / near, static_cast<f32>(i) / static_cast<f32>(wanted));
-  }
-  out.splits[wanted] = far;
 
   // Each view's frame and its frustum as tangents at unit distance, exactly as ViewSet::update
   // builds its matrices: the head's forward turned by the view's yaw about the head's up.
@@ -123,6 +109,36 @@ void fit_shadow_cascades(const ViewSet& views, const Camera& camera, Vec3 toward
       f.top = view.top;
     }
   }
+
+  // Where geometry can begin: the scene's near side, or the camera's near plane when the camera is
+  // inside the bounds. The first slice starts there, and the splits are logarithmic from it —
+  // but never from under a thousandth of the distance, which is what a camera standing inside a
+  // terrain would otherwise spend its first cascade on.
+  f32 first = to_center - scene_radius;
+  first = first > camera.znear ? first : camera.znear;
+  // **Where the maps begin** (`ShadowFit::begin_distance`, the hybrid's ray distance): a point at
+  // least that far from the eye is, in a view whose widest corner ray has secant s, at least
+  // that distance over s deep along the view's axis; the smallest over the views is where the
+  // first slice starts, so every receiver that reads the maps is in one.
+  if (fit.begin_distance > 0.0f && view_count > 0) {
+    f32 begin = fit.begin_distance;
+    for (u32 v = 0; v < view_count; ++v) {
+      const ViewFrame& f = frames[v];
+      const f32 tx = std::fabs(f.left) > std::fabs(f.right_tan) ? f.left : f.right_tan;
+      const f32 ty = std::fabs(f.bottom) > std::fabs(f.top) ? f.bottom : f.top;
+      const f32 depth = fit.begin_distance / std::sqrt(1.0f + tx * tx + ty * ty);
+      begin = depth < begin ? depth : begin;
+    }
+    first = begin > first ? begin : first;
+  }
+  if (!(first < far)) first = far * 0.5f;
+  f32 near = first > far * k_shadow_near_ratio ? first : far * k_shadow_near_ratio;
+  if (!(near < far)) near = far * 0.5f;
+  out.splits[0] = first < near ? first : near;
+  for (u32 i = 1; i <= wanted; ++i) {
+    out.splits[i] = near * std::pow(far / near, static_cast<f32>(i) / static_cast<f32>(wanted));
+  }
+  out.splits[wanted] = far;
 
   const Dvec d_eye = dvec(eye);
   const Dvec d_forward = dvec(forward);

@@ -15,6 +15,19 @@ namespace engine::renderer {
 
 ENGINE_LOG_CATEGORY_DEFINE(log_renderer, "renderer");
 
+namespace {
+tunables::Bool shadow_texel_lod{
+    "renderer.shadow.texel_lod", true,
+    "The sun's cascades also accept a transition by their own texels (R103); false draws every "
+    "cascade from the picture's cut alone"};
+tunables::Float shadow_texel_error{
+    "renderer.shadow.texel_error", static_cast<f64>(k_shadow_texel_error_texels), 0.0, 64.0,
+    "The world error a cascade accepts, in its own texels (R103; a measurement's knob)"};
+tunables::Float shadow_texel_cover{
+    "renderer.shadow.texel_cover", static_cast<f64>(k_shadow_texel_cover_texels), 0.0, 64.0,
+    "The coverage error a cascade accepts, in its own texels (R103; a measurement's knob)"};
+}  // namespace
+
 const char* raster_name(RasterMode mode) noexcept {
   switch (mode) {
     case RasterMode::Direct: return "direct";
@@ -225,11 +238,21 @@ tunables::Bool material_normal_filter{
     "Upload a built normal map's normal-variance chain and widen the GGX roughness by the normal "
     "variation a pixel no longer resolves; false draws every material as before R97 (read at "
     "load)"};
+tunables::Float shadow_rest_texels{
+    "renderer.shadow.rest_texels", static_cast<f64>(k_shadow_rest_texels), 0.0, 64.0,
+    "A cascade past the nearest draws a deformed instance at rest when its reach from the rest "
+    "pose is under this many of its texels (R103); 0 poses every cascade"};
+tunables::Bool shadow_hybrid_fit{
+    "renderer.shadow.hybrid_fit", false,
+    "Under the hybrid, fit the cascades from the ray distance out rather than from the near plane "
+    "(R103; renderer.md, Rays near, maps far)"};
 
 }  // namespace
 
 bool shadow_opaque_rays_tunable() noexcept { return shadow_opaque_rays.get(); }
 bool normal_filter_tunable() noexcept { return material_normal_filter.get(); }
+f32 shadow_rest_texels_tunable() noexcept { return static_cast<f32>(shadow_rest_texels.get()); }
+bool shadow_hybrid_fit_tunable() noexcept { return shadow_hybrid_fit.get(); }
 
 DisplayLevels display_levels(const RenderSettings& settings) {
   DisplayLevels out;
@@ -385,6 +408,10 @@ void resolve_settings(const RenderSettings& requested, const gfx::DeviceFeatures
     s.shadow_map = map;
     if (!(s.shadow_distance >= 0.0f)) s.shadow_distance = 0.0f;
     out.shadow_cascades = s.shadow_cascades;
+    out.shadow_texel_error = static_cast<f32>(shadow_texel_error.get());
+    out.shadow_texel_cover = static_cast<f32>(shadow_texel_cover.get());
+    out.shadow_texel_lod =
+        s.shadow_texel_lod && shadow_texel_lod.get() && out.shadow_texel_error > 0.0f;
   }
   out.rt_chain = out.ray_path || out.shadows;
   // More than one view needs the cull pass: every view's draw reads its own run of the visible

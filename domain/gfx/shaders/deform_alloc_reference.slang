@@ -12,7 +12,7 @@
 
 #include "scene.slang"
 
-// Mirrors gfx::DeformAllocParams (96 bytes).
+// Mirrors gfx::DeformAllocParams (112 bytes).
 struct AllocParams {
   uint64_t clusters;
   uint64_t instances;
@@ -30,6 +30,7 @@ struct AllocParams {
   uint64_t blocks;  // unused here
   uint groups;      // unused here
   uint pad;
+  float4 rest_padding_m;  // the cascades' rest pose per view (R103)
 };
 
 [[vk::push_constant]] ConstantBuffer<AllocParams> g_params;
@@ -73,12 +74,18 @@ void deform_alloc_reference_main(uint3 group_thread : SV_GroupThreadID) {
         const uint2 pair = visible[base_entry + index];
         const InstanceDesc instance = instances[pair.x];
         if (instance.deform != k_invalid_deform) need = clusters[pair.y].vertex_count;
-        if (need != 0 && g_params.rest_beyond_m >= 0.0) {
+        // R103 added the per-cascade rest and the terrain exclusion to `deform_alloc.slang`'s
+        // `entry_need` and here in the same words, so the two keep one answer.
+        if (need != 0 && g_params.rest_beyond_m >= 0.0 && instance.terrain == 0) {
           if ((instance.flags & k_instance_shadow_rest) != 0) {
             need = 0;
           } else if (g_params.rest_beyond_m > 0.0) {
             const float3 from_eye = instance_from_eye(instance, load_eye(g_params.eye));
             if (dot(from_eye, from_eye) > g_params.rest_beyond_m * g_params.rest_beyond_m) need = 0;
+          }
+          if (need != 0 && view < 4) {
+            const float reach = instance.bounds_padding * instance.scale_max;
+            if (reach > 0.0 && reach < g_params.rest_padding_m[view]) need = 0;
           }
         }
       }

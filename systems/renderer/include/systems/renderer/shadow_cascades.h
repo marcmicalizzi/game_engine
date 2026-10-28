@@ -63,6 +63,12 @@ struct ShadowFit {
   u32 cascades = 4;       // 1 .. gfx::k_max_shadow_cascades
   u32 resolution = 2048;  // texels per cascade side
   f32 distance = 0.0f;    // camera depth the last cascade reaches; 0: the scene's far side
+  // **Where the maps begin** (R103; renderer.md, "Rays near, maps far"): the distance from the eye
+  // nearer than which no receiver reads them — the hybrid's ray distance — or 0, where geometry
+  // begins. The first slice then starts at the least view depth a point that far from the eye can
+  // have in any view of the layout (the distance over the view's widest corner's secant), so every
+  // receiver that reads the maps is in a slice and none is spent on the rays' side.
+  f32 begin_distance = 0.0f;
 };
 
 struct ShadowCascades {

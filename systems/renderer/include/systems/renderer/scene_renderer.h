@@ -371,6 +371,7 @@ struct Stats {
   // its index budget sent to the capacity draw. Not visible pairs. One frame late.
   u32 shadow_pairs = 0;
   u32 shadow_fallback = 0;
+  u32 shadow_pairs_per_cascade[gfx::k_max_shadow_cascades] = {};
   u32 visible_min = ~u32{0};
   u32 visible_max = 0;
   // The deformed-vertex pool's suballocation, one frame late like the visible counts and read the

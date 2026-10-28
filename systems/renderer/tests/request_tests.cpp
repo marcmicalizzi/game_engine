@@ -74,6 +74,8 @@ const Row k_settings_rows[] = {
                "the switch for the maps' 'culling never changes the picture' test; no flag"),
     ENGINE_ROW(shadow_lod_scale, nullptr,
                "a measurement's knob for the maps' own LOD question; no flag"),
+    ENGINE_ROW(shadow_texel_lod, nullptr,
+               "camera-cut maps for a test (R103); hosts: renderer.shadow.texel_lod"),
     ENGINE_ROW(shadow_normal_offset, nullptr,
                "the maps' lookup offset, a tests' knob; no flag (k_shadow_normal_offset_texels)"),
     ENGINE_ROW(shadow_ray_distance_m, "shadow_ray_distance_m", ""),
@@ -254,9 +256,9 @@ TEST_CASE("request: every RenderSettings and FrameDesc field says how a request 
   [[maybe_unused]] auto& [s00, s01, s02, s03, s04, s05, s06, s07, s08, s09, s10, s11, s12, s13, s14,
                           s15, s16, s17, s18, s19, s20, s21, s22, s23, s24, s25, s26, s27, s28, s29,
                           s30, s31, s32, s33, s34, s35, s36, s37, s38, s39, s40, s41, s42, s43, s44,
-                          s45, s46, s47, s48, s49, s50, s51, s52, s53, s54, s55, s56, s57, s58,
-                          s59] = settings;
-  static_assert(std::size(k_settings_rows) == 60, "one row per RenderSettings field");
+                          s45, s46, s47, s48, s49, s50, s51, s52, s53, s54, s55, s56, s57, s58, s59,
+                          s60] = settings;
+  static_assert(std::size(k_settings_rows) == 61, "one row per RenderSettings field");
   // The same for `FrameDesc`: a new per-frame input is a call's parameter or a host's own, and
   // the row says which.
   renderer::FrameDesc frame;

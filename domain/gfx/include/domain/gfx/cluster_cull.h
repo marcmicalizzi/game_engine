@@ -284,9 +284,20 @@ struct CullParams {
   u32 horizon_pad[3] = {};
   // **Which cascade this block culls for** (R95): 0 a camera run, c + 1 the sun's cascade c, which
   // keeps out an instance whose caster policy names fewer nearest cascades
-  // (`k_instance_cascade_mask`). Three words of padding keep the block a multiple of 16.
+  // (`k_instance_cascade_mask`).
   u32 cascade = 0;
-  u32 pad[3] = {};
+  // **A cascade's own texel** (renderer.md, "Cascaded shadow maps", R103): on a cascade's block,
+  // the world-space error (`cascade_error_m`) and coverage error (`cascade_cover_m`) its texels
+  // accept. A transition is then acceptable when the camera's test accepts it **or** its error,
+  // times the instance's `scale_max`, is at most `cascade_error_m` (its coverage error at most
+  // `cascade_cover_m`): the camera's rule with a second, orthographic threshold, so the cascade
+  // draws the coarser of the picture's cut and its texels' cut, never a finer one than the picture.
+  // An orthographic error does not depend on where the observer is, so no sphere enters it. 0 on a
+  // camera run, and on a cascade that takes the camera's cut alone (`renderer.shadow.texel_lod`
+  // false). They took two of the three pad words; the block is still 1,744 bytes.
+  f32 cascade_error_m = 0.0f;
+  f32 cascade_cover_m = 0.0f;
+  u32 pad = 0;
 };
 static_assert(sizeof(CullParams) == 1744);
 inline constexpr u64 k_cull_params_eye_offset = 480;  // offsetof(CullParams, eye)
@@ -944,7 +955,7 @@ struct DeformParams {
 };
 static_assert(sizeof(DeformParams) == 128);
 
-// Mirrors AllocParams in deform_alloc.slang: the push constants of the pool's allocator, 96
+// Mirrors AllocParams in deform_alloc.slang: the push constants of the pool's allocator, 112
 // bytes, shared by its three passes (R104): `deform_alloc_tiles_main` and
 // `deform_alloc_place_main` over `groups` workgroups, `deform_alloc_scan_main` in one, once per
 // run of the visible list, covering every view of the run. The allocation is a prefix sum over the
@@ -982,8 +993,18 @@ struct DeformAllocParams {
   u64 blocks = 0;
   u32 groups = 0;  // workgroups of passes 1 and 3: `deform_alloc_group_count(views, pair_count)`
   u32 pad = 0;
+  // **Far casters at rest, per cascade** (renderer.md, "Cascaded shadow maps", R103), read only on
+  // the cascades' dispatch (`rest_beyond_m` ≥ 0), one length per view of it, which is the cascade
+  // (gfx::k_max_shadow_cascades of them): an entry of a deformed instance that is not a terrain
+  // level and states how far its vertices leave the rest pose (`InstanceDesc::bounds_padding` times
+  // its `scale_max`, more than zero) takes no block when that reach is under its cascade's length —
+  // the cascade's texel times `renderer.shadow.rest_texels` — so the cascade draws it at rest,
+  // where the pose and the rest differ by less than a texel. 0 keeps every entry of that cascade
+  // posed, which the nearest cascade always is. It took the block from 96 to 112 bytes, within the
+  // 128 every device pushes.
+  f32 rest_padding_m[4] = {};
 };
-static_assert(sizeof(DeformAllocParams) == 96);
+static_assert(sizeof(DeformAllocParams) == 112);
 
 inline constexpr u32 k_deform_workgroup_size = 128;   // numthreads in deform.slang
 inline constexpr u32 k_deform_alloc_workgroup = 256;  // numthreads in deform_alloc.slang

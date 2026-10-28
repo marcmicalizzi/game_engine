@@ -1378,12 +1378,15 @@ void SceneRenderer::fold_visible(u32 slot) {
   // indexed draw what its index budget sent to the fallback.
   stats_.shadow_pairs = 0;
   stats_.shadow_fallback = 0;
+  for (u32& pairs : stats_.shadow_pairs_per_cascade)
+    pairs = 0;
   if (resolved_.csm) {
     const u32* shadow = stats + shadow_stat_base(view_count());
     const u32 count_word = resolved_.vertex_path ? 1u : 0u;
     for (u32 c = 0; c < scene_->shadow_cascades(); ++c) {
       const u32* block = shadow + u64{c} * k_shadow_stat_words;
       stats_.shadow_pairs += block[count_word];
+      stats_.shadow_pairs_per_cascade[c] = block[count_word];
       if (resolved_.vertex_indexed) stats_.shadow_fallback += block[4];
     }
     if (stats_.shadow_fallback > 0 && !shadow_fallback_warned_) {
@@ -2266,6 +2269,12 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
     fit.cascades = cascade_runs;
     fit.resolution = settings.shadow_map;
     fit.distance = settings.shadow_distance;
+    // Under the hybrid no surface nearer than the ray distance reads the maps, so with
+    // `renderer.shadow.hybrid_fit` the cascades begin there (R103; renderer.md, "Rays near, maps
+    // far"). Off by default until the hybrid's test, which holds its far pixels to the `csm`
+    // picture's bytes, is given a reference drawn from the same fit.
+    fit.begin_distance =
+        resolved_.hybrid && shadow_hybrid_fit_tunable() ? settings.shadow_ray_distance_m : 0.0f;
     // The maps follow the key light: the sun, or on a sky's night the moon, the array's light 0
     // (`gfx::ShadowMapParams::light` is its index plus one).
     const Vec3 key =
@@ -2685,6 +2694,22 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
     cull.coverage = coverage_address;
     cull.foliage_px = frame_foliage_px * lod_view.quality.lod_scale * settings.shadow_lod_scale;
     cull.fade = frame_fade;
+    if (resolved_.shadow_texel_lod) {
+      // **The cascade's own texels** (R103; renderer.md, "Cascaded shadow maps"): a transition the
+      // camera's test refuses is still acceptable here when its world error is at most
+      // `shadow_texel_error` texels of this cascade (its coverage error at most
+      // `shadow_texel_cover` texels), so the cascade draws the coarser of the picture's cut and its
+      // texels', never a finer one than the picture.
+      const f32 texel_m = cascade.texel_world * settings.shadow_lod_scale;
+      cull.cascade_error_m = texel_m * resolved_.shadow_texel_error;
+      cull.cascade_cover_m = texel_m * resolved_.shadow_texel_cover;
+      // The cascades' fade table is one per pair for all of them (`fade_cascade_block`), which
+      // holds while every cascade takes the camera's cut. Cut by its own texels each cascade has
+      // its own transitions, and the last cull would overwrite the others' splits; so a cascade
+      // switches a transition at once. The picture's own fade is untouched.
+      cull.fade = 0.0f;
+      cull.masks.fade = 0;
+    }
     cull.raster = Vec4{settings.sw_px, gfx::k_raster_hardware, 0.0f, 0.0f};
     cull.cluster_count = cluster_count;
     cull.count_index = count_index;
@@ -2760,6 +2785,14 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
     // always, and with `renderer.flora.rest_pose_cascades_m` every deformed instance past it, cast
     // from the grid and take no pool block for it.
     shadow_alloc.rest_beyond_m = flora_rest_pose_cascades_m_tunable();
+    // **Far casters at rest, per cascade** (R103; renderer.md, "Cascaded shadow maps"): past the
+    // nearest cascade, a deformed instance whose reach from its rest pose is under
+    // `renderer.shadow.rest_texels` of the cascade's texels draws its rest pose there, since the
+    // pose it leaves out would move its shadow by less than a texel. Never a terrain level, whose
+    // rest heights are not its field (`deform_alloc.slang`).
+    const f32 rest_texels = shadow_rest_texels_tunable();
+    for (u32 c = 1; c < cascades_drawn && c < gfx::k_max_shadow_cascades; ++c)
+      shadow_alloc.rest_padding_m[c] = cascades_.cascades[c].texel_world * rest_texels;
     shadow_alloc.eye = params_[slot].address + sizeof(gfx::CullParams) * (views * 2) +
                        gfx::k_cull_params_eye_offset;
     shadow_alloc.blocks = scene.deform_blocks.address;
