@@ -51,7 +51,8 @@ const char* k_rocks_usage =
     "                     from (default: <repo>/content/materials, found beside AGENTS.md)\n"
     "      --no-materials no pack: a rock with no set of its own draws its flat colour\n"
     "      --glb <file>   write the solved mesh as a GLB instead (positions, normals, UVs, the\n"
-    "                     material's colour): what tools/e10-harness.ps1 judges\n";
+    "                     material and embedded procedural maps): what tools/e10-harness.ps1 "
+    "judges\n";
 
 [[maybe_unused]] int usage(const char* message) {
   if (message != nullptr) std::fprintf(stderr, "engine-content rocks: %s\n", message);
@@ -99,6 +100,26 @@ Vector<u8> mesh_glb(const assets::MeshData& mesh) {
   put_array(bin, mesh.uvs);
   const u32 index_offset = bin.size();
   put_array(bin, mesh.indices);
+  const u32 index_bytes = bin.size() - index_offset;
+  std::string image_views;
+  std::string images;
+  std::string textures;
+  for (u32 i = 0; i < mesh.images.size(); ++i) {
+    const assets::ImageRef& image = mesh.images[i];
+    while (bin.size() % 4 != 0)
+      bin.push_back(0);
+    image_views += ",{\"buffer\":0,\"byteOffset\":" + std::to_string(bin.size()) +
+                   ",\"byteLength\":" + std::to_string(image.bytes.size()) + "}";
+    put_array(bin, image.bytes);
+    if (i != 0) {
+      images += ',';
+      textures += ',';
+    }
+    images += "{\"bufferView\":" + std::to_string(i + 4) + ",\"mimeType\":\"image/png\"}";
+    textures += "{\"source\":" + std::to_string(i) + "}";
+  }
+  while (bin.size() % 4 != 0)
+    bin.push_back(0);
   Vec3 lo{1e30f, 1e30f, 1e30f};
   Vec3 hi{-1e30f, -1e30f, -1e30f};
   for (const Vec3& p : mesh.positions) {
@@ -108,6 +129,16 @@ Vector<u8> mesh_glb(const assets::MeshData& mesh) {
   const assets::Material& m = mesh.materials[0];
   const auto n = [](u64 v) { return std::to_string(v); };
   const auto f = [](f32 v) { return number(static_cast<f64>(v)); };
+  const auto texture_slot = [](const char* name, i32 index) {
+    return index < 0 ? std::string{}
+                     : ",\"" + std::string(name) + "\":{\"index\":" + std::to_string(index) + "}";
+  };
+  const std::string pbr_maps = texture_slot("baseColorTexture", m.base_color_image) +
+                               texture_slot("metallicRoughnessTexture", m.metallic_roughness_image);
+  const std::string normal_map =
+      m.normal_image < 0 ? std::string{}
+                         : ",\"normalTexture\":{\"index\":" + std::to_string(m.normal_image) +
+                               ",\"scale\":" + f(m.normal_scale) + "}";
   const std::string vertices = n(mesh.positions.size());
   std::string json =
       "{\"asset\":{\"version\":\"2.0\",\"generator\":\"engine-content rocks\"},\"scene\":0,"
@@ -116,7 +147,8 @@ Vector<u8> mesh_glb(const assets::MeshData& mesh) {
       m.name + "\",\"pbrMetallicRoughness\":{\"baseColorFactor\":[" + f(m.base_color.x) + "," +
       f(m.base_color.y) + "," + f(m.base_color.z) + "," + f(m.base_color.w) +
       "],\"metallicFactor\":" + f(m.metallic) + ",\"roughnessFactor\":" + f(m.roughness) +
-      "}}],"
+      pbr_maps + "}" + normal_map +
+      "}],"
       "\"meshes\":[{\"primitives\":[{\"attributes\":{\"POSITION\":0,\"NORMAL\":1,\"TEXCOORD_0\":2},"
       "\"indices\":3,\"material\":0}]}],"
       "\"accessors\":[{\"bufferView\":0,\"componentType\":5126,\"count\":" +
@@ -137,9 +169,11 @@ Vector<u8> mesh_glb(const assets::MeshData& mesh) {
       ",\"byteLength\":" + n(uv_offset - normal_offset) +
       "},{\"buffer\":0,\"byteOffset\":" + n(uv_offset) +
       ",\"byteLength\":" + n(index_offset - uv_offset) +
-      "},{\"buffer\":0,\"byteOffset\":" + n(index_offset) +
-      ",\"byteLength\":" + n(bin.size() - index_offset) +
-      "}],\"buffers\":[{\"byteLength\":" + n(bin.size()) + "}]}";
+      "},{\"buffer\":0,\"byteOffset\":" + n(index_offset) + ",\"byteLength\":" + n(index_bytes) +
+      "}" + image_views + "]" +
+      (mesh.images.empty() ? std::string{}
+                           : ",\"images\":[" + images + "],\"textures\":[" + textures + "]") +
+      ",\"buffers\":[{\"byteLength\":" + n(bin.size()) + "}]}";
   while (json.size() % 4 != 0)
     json += ' ';
   Vector<u8> glb;

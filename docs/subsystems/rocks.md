@@ -428,6 +428,43 @@ LOD, as for every mesh.
 
 ## UVs and materials
 
+### Baked geological surfaces (G96, solver version 5)
+
+`material.surface_maps` opts a Boulder, Outcrop or Scree into a unique PBR atlas. An empty
+block uses 1024-square maps, variation 0.55, 0.025 m grain and no veins. `resolution` accepts
+256, 512, 1024 or 2048 and is a **total per-recipe** budget, independent of `quality` and the
+triangle budget. Three RGB8 maps require at most 36 MiB of uncompressed bake pixels at 2048;
+encoded bytes and temporary mesh data are additional. Runtime memory depends on texture build
+and upload format; this is not a promise of a 36 MiB resident GPU allocation.
+
+`variation` and `veins` are 0–1. `grain_m` is 0.002–1 m, `vein_spacing_m` 0.02–20 m and
+`vein_width_m` 0.001 m to one quarter of spacing. Optional `vein_tint` is linear RGB 0–1;
+the default is pale quartz `(0.75, 0.72, 0.65)`. Body `tint` and `roughness_factor` are baked
+into the maps once; `normal_scale` remains the glTF normal-map multiplier. Metallic is zero.
+Base colour is encoded as sRGB, roughness in linear G (B zero), and normals as tangent-space
+UNORM XYZ. There are no baked shadows, AO or metallic ore deposits.
+
+The baker samples the same pre-recession, pre-placement fabric coordinates as the geological
+geometry. Outcrop bands share a formation field; fallen scree carries its field through its yaw.
+Gneiss gets stronger folded compositional banding; a separate warped plane field supplies optional
+cross-cutting veins. Fine pigment and bump detail fade over two to four texels of wavelength.
+The six charts per body occupy unique square cells, four texels of edge padding on each side,
+with at least sixteen interior texels per chart. A resolution too small for the body count is
+refused with a sentence. More fragments therefore need more atlas resolution for equivalent detail.
+Padding protects the first mip levels; distant mip averaging and chart seams still need visual
+review. The maps add no triangles, renderer pass, shader fields or per-instance state.
+
+The mode takes precedence over a material pack. Combining it with authored image paths is
+refused because those maps expect repeated physical UVs. Without `surface_maps`, the existing
+tiled-map workflow below is unchanged. `build_rock_container` carries the three PNGs inside
+the container, and `engine-content rocks --glb` embeds the same three material slots and images
+for standalone export. Cliff recipes explicitly reject this mode: their face/talus atlas is
+future work. Fresh fracture masks, exposed interiors, detached flakes and mineral-specific
+physical destruction remain future work; veins are visual surface fields, not deposit volumes.
+Sources and authoring approximations: [rock lithology](../experiments/rock-lithology.md#g96-geological-surface-maps).
+
+### External tiled maps
+
 **A box projection by the cube-sphere's faces**: six charts, one per face of the cube the grid was
 made on, each the face's `(i, j)` grid scaled to a quarter circumference of its two in-face
 half-extents over `tile_m` — so a chart is in **repeats of a tiled PBR set**, roughly metres over

@@ -198,3 +198,58 @@ or full-scene acceptance is made. This checkout's Linux volumes are pruned after
 
 The fresh-block planarity measurement is 0.933778 (93.38% of surface area), above the 75%
 regression threshold. This measures face structure only, not photographic realism.
+
+## G96: geological surface maps
+
+The [Polish Geological Institute's vein quartz account](https://www.pgi.gov.pl/en/1263-surowce/resources/rock/14077-vein-quartz.html)
+describes mineral infills cutting rock masses, with variable thickness and orientation.
+[BGS's gneiss classification](https://webapps.bgs.ac.uk/bgsrcs/rcs_details.cfm?code=GNSS)
+describes irregular or discontinuous foliation with contrasting mineralogy between layers.
+Read 2026-10-28. These motivate separate cross-cutting vein and folded compositional-band
+fields, rather than treating every stripe as bedding. They do not supply PBR constants.
+
+This pass bakes authored approximations into ordinary base-colour, metallic-roughness and
+tangent-normal PNGs. The fabric coordinate is shared with geometry; the vein network is a
+separate warped plane family. Colours, widths, grain scales, roughness and relief are artistic
+controls, not measured specimens or deposit predictions. Metallic stays zero for these
+dielectric rocks. No lighting, shadow or ambient occlusion is painted into base colour.
+
+Scope: radial boulders, outcrops and scree. Each body has six padded atlas charts; one total
+texture-size budget covers the entire recipe. Cliff face/talus atlasing and fresh-break masks
+are deferred. Procedural maps and external tiled maps are mutually exclusive because their
+UV layouts differ. The existing renderer, texture mips and cluster LOD consume the baked maps.
+
+The implementation uses 256/512/1024/2048 square atlases independently of source triangle
+quality. Each body gets six charts with four-texel padding; fewer than sixteen interior texels
+per chart is refused. Unused cells and division remainders duplicate filled texels so distant
+mips do not mix in black. A 2048 bake holds 36 MiB of RGB pixels for its three maps, plus encoded
+images and mesh temporaries; runtime decoded/compressed memory is a separate cost. No runtime
+type, shader pass or source triangle count grows. The GLB writer now carries these embedded PNGs
+and material references as well as the container path.
+
+Review artifacts are under the owner's local `rocks/2026-10-28/surfaces/`: `review.html`, three
+paired engine captures, standalone GLBs, camera paths and reproduction scripts. The committed
+recipes are `gneiss-veined`, `granite-minerals` and `sandstone-grain`; each uses 2048 maps and
+the same geometry as its flat-material predecessor. The first 1024 studies were soft at close
+range. A sharpened unwarped value field then printed square grain checks on granite; rotation,
+domain warping and lower pigment contrast removed that obvious lattice. Final grain remains
+mottled and synthetic in places, and radial-grid rims and overly smooth transitions remain.
+These are isolated single-light studies, not photorealistic acceptance or a full-scene benchmark.
+
+Focused final validation: **38/38 rock cases on MSVC debug and Linux Clang debug**, including
+embedded-image determinism, dielectric channels, atlas corner continuity, unchanged positions
+and topology, both grouped shapes, pack precedence, input refusals and padding. **4/4 rock CLI
+cases (70 assertions)** pass on Windows, including a GLB export/reimport with all three map slots
+and no import warning. Lint, license, documentation links and diff whitespace checks pass.
+Full affected suites and merge gates remain waived by the owner for this iteration. The only
+initial test failure after compilation was the expected version-5 container fingerprint; the
+version-4 geometry fingerprints remain unchanged. This checkout's Linux volumes were pruned
+(3.71 GB). The shared-machine test times are not performance measurements.
+
+The final three GLB exports pass all E10 criteria at the standard **1 px versus 0.05 px**
+comparison: gneiss FLIP **0.01491**, granite **0.01422**, sandstone **0.01564** (limit 0.02).
+All import with zero warnings/repairs and six UV islands and pass the LOD-collapse criterion.
+Source triangles are 150,528 / 76,800 / 110,592 respectively, unchanged from their flat versions.
+RTX 5090, debug binaries based on `5a8c001b` plus this G96 change, 640-square whole-asset framing,
+one view each, under `gpu-lock.ps1 run`. Raw records: local `surfaces/e10/report.json`.
+This checks simplification of these three textured studies, not the other recipes or every view.

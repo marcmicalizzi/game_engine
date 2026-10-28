@@ -76,7 +76,22 @@ enum RockShape : u8 {
 /// Paths are relative to the rock file. A block that names an image replaces the material pack's
 /// default for the rock's type (`rock/<type>`); the charts are laid out in whole repeats of the
 /// chosen set's `tile_m`.
-struct RockMaterial @version(3) {
+struct RockSurfaceMaps @version(1) {
+  /// Total atlas side, one of 256, 512, 1024, 2048. Independent of geometry quality.
+  resolution: u32 = 1024
+  /// Mineral colour and roughness variation, 0 to 1.
+  variation: f32 = 0.55
+  /// Grain wavelength, 0.002 to 1 m. Unresolved grain fades out.
+  grain_m: f32 = 0.025 @unit(m)
+  /// Cross-cutting dielectric mineral veins, 0 (off) to 1.
+  veins: f32 = 0.0
+  vein_spacing_m: f32 = 0.45 @unit(m)
+  vein_width_m: f32 = 0.012 @unit(m)
+  /// Linear RGB, separate from body tint; absent uses pale quartz (0.75, 0.72, 0.65).
+  vein_tint: f32[3]?
+}
+
+struct RockMaterial @version(4) {
   base_color: string?
   normal: string?
   roughness: string?
@@ -91,6 +106,8 @@ struct RockMaterial @version(3) {
   tint: f32[3]? @since(3)
   /// Scalar roughness, 0.02 to 1. Multiplies a roughness map when one is assigned.
   roughness_factor: f32? @since(3)
+  /// Optional unique baked PBR atlas, radial shapes only. Cannot combine with image paths.
+  surface_maps: RockSurfaceMaps? @since(4)
 }
 
 /// Surface structure in metres, shared across an outcrop. These are authoring controls, not

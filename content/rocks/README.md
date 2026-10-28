@@ -22,6 +22,13 @@ G94 adds eight lithology studies: `slate-slab`, `gneiss-folded`, `schist-flaked`
 PBR constants so the geometry can be inspected separately from texture detail. Add a material
 set or a pack role to texture them. These are authoring studies, not a photorealistic asset pack.
 
+G96 adds `gneiss-veined`, `granite-minerals` and `sandstone-grain`, each a `.rock.json` pairing
+the corresponding existing geometry with a 2048-square baked PBR atlas. These examples show
+folded mineral bands, cross-cutting pale veins and granular colour/roughness/normal variation.
+Use `material.surface_maps.resolution` (256/512/1024/2048) to trade texture detail and memory
+independently of source geometry quality and runtime LOD. Delete the block to return to flat
+materials or tiled texture packs. See [baked surfaces](../../docs/subsystems/rocks.md#baked-geological-surfaces-g96-solver-version-5).
+
 The original G62/G71 recipes passed E10's four thresholds (rocks.md, "What the harness taught");
 that historical result does not qualify later revisions. G89 review is in
 [rock structure](../../docs/experiments/rock-structure.md); G94 is in

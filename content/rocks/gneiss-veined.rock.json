@@ -1,0 +1,39 @@
+{
+  "shape": "Boulder",
+  "boulder": {
+    "seed": 1804,
+    "type": "Gneiss",
+    "size_x": 1.4,
+    "size_y": 1.05,
+    "size_z": 0.9,
+    "joint_sets": 3,
+    "buried": 0.12,
+    "triangle_budget": 180000,
+    "geology": {
+      "weathering": 0.65,
+      "irregularity": 0.8,
+      "bed_m": 0.22,
+      "dip_deg": 25,
+      "azimuth_deg": 20,
+      "fold": 0.9
+    },
+    "surface": {
+      "strength": 0.5,
+      "joint_spacing_m": 0.9,
+      "joint_width_m": 0.16,
+      "joint_depth_m": 0.08,
+      "relief_m": 0.012
+    },
+    "material": {
+      "surface_maps": {
+        "vein_width_m": 0.018,
+        "variation": 0.7,
+        "vein_spacing_m": 0.65,
+        "veins": 0.85,
+        "grain_m": 0.035,
+        "resolution": 2048
+      }
+    }
+  }
+}
+

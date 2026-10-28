@@ -9,6 +9,7 @@
 // map of a sphere is closed and cannot fold, which is the whole of the topology argument.
 #include "detail.h"
 #include "geology.h"
+#include "surface_bake.h"
 
 #include <core/hash/hash.h>
 #include <core/math/deterministic.h>
@@ -285,12 +286,14 @@ D3 lattice_direction(i64 x, i64 y, i64 z, u32 n) {
 
 // Emits one body: its six charts' grids, outward-wound, with area-weighted normals shared across
 // the charts' seams, box-projected UVs (rocks.md, "UVs and materials"), and the burial applied.
-void emit_body(const Body& b, f64 tile_m, assets::MeshData& out) {
+void emit_body(const Body& b, f64 tile_m, assets::MeshData& out, SurfaceBake* bake = nullptr,
+               u32 part = 0, RockType type = RockType::Granite) {
   const u32 n = b.n;
   const u32 side = n + 1;
   const u32 first = out.positions.size();
   // The surface's positions by lattice point first, then the charts index into them.
   Vector<D3> local;
+  Vector<D3> samples;
   Vector<u32> lattice_of;  // per emitted vertex, its lattice point's slot in `local`
   // Only the cube's shell exists. A volume lookup made high detail pay O(n^3) temporary memory.
   Vector<u32> slot(6u * n * n + 2u, ~0u);
@@ -365,6 +368,9 @@ void emit_body(const Body& b, f64 tile_m, assets::MeshData& out) {
         out.uvs.push_back(
             Vec2{static_cast<f32>(chart_u + extent_b * static_cast<f64>(i) / static_cast<f64>(n)),
                  static_cast<f32>(chart_v + extent_c * static_cast<f64>(j) / static_cast<f64>(n))});
+        if (bake != nullptr)
+          out.uvs.back() =
+              bake->uv(part * 6u + f, static_cast<f64>(i) / n, static_cast<f64>(j) / n);
       }
     }
     for (u32 j = 0; j < n; ++j) {
@@ -426,6 +432,7 @@ void emit_body(const Body& b, f64 tile_m, assets::MeshData& out) {
       // Use the intended resting frame for the formation-wide field, before the final burial
       // correction. Recession remains radial and positive, retaining the closed shell.
       const D3 sample = p + b.at + D3{0.0, b.half.y * (1.0 - 2.0 * b.buried), 0.0};
+      if (bake != nullptr) samples.push_back(sample);
       const f64 recess = surface_recess(b, sample, cell) + fabric_recess(b.fabric, sample, cell);
       const f64 len = length(p);
       const f64 scale_detail = len > 0.0 ? 1.0 - recess / len : 1.0;
@@ -466,6 +473,12 @@ void emit_body(const Body& b, f64 tile_m, assets::MeshData& out) {
     const D3 nn = normalized(normal[s]);
     out.positions[v] = Vec3{static_cast<f32>(p.x), static_cast<f32>(p.y), static_cast<f32>(p.z)};
     out.normals[v] = Vec3{static_cast<f32>(nn.x), static_cast<f32>(nn.y), static_cast<f32>(nn.z)};
+  }
+  if (bake != nullptr) {
+    Vector<D3> chart_samples(lattice_of.size());
+    for (u32 v = 0; v < lattice_of.size(); ++v)
+      chart_samples[v] = samples[lattice_of[v]];
+    bake->body(part, n, first, b.fabric, type, chart_samples, out);
   }
   // A deep joint may put a face beyond the smooth vertex normal's hemisphere. It is a hard
   // fracture edge: give that triangle its own normal rather than shading it inside-out. Position
@@ -861,9 +874,21 @@ bool solve_rock(const RockFile& file, assets::MeshData& out, RockReport* report_
   }
   out.materials.push_back(material_of(type));
   material_factors(material, out.materials[0].base_color, out.materials[0].roughness);
-  for (const Body& b : bodies) {
-    emit_body(b, tile_m, out);
+  SurfaceBake bake;
+  if (material.surface_maps && !bake.init(*material.surface_maps, bodies.size(), error)) {
+    out = assets::MeshData{};
+    if (error_out != nullptr) *error_out = error;
+    return false;
+  }
+  for (u32 i = 0; i < bodies.size(); ++i) {
+    const Body& b = bodies[i];
+    emit_body(b, tile_m, out, material.surface_maps ? &bake : nullptr, i, type);
     report.cuts += b.cuts.size();
+  }
+  if (material.surface_maps && !bake.finish(out, material.normal_scale)) {
+    out = assets::MeshData{};
+    if (error_out != nullptr) *error_out = "rock surface map PNG encoding failed";
+    return false;
   }
   assets::Primitive part;
   part.first_index = 0;

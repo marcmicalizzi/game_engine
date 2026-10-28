@@ -147,6 +147,39 @@ TEST_CASE(
   CHECK(number(line_of(imported), "warnings") == 0);
 }
 
+TEST_CASE("engine-content rocks: procedural PBR maps survive GLB export and reimport") {
+  const test::TempDir tmp("engine_content_rock_maps");
+  REQUIRE(tmp.ok());
+  const std::string params = tmp.file("surface.rock.json");
+  write_text(
+      params,
+      R"({"boulder":{"triangle_budget":2000,"material":{"surface_maps":{"resolution":256,"veins":0.8}}}})");
+  const std::string glb = tmp.file("surface.glb");
+  const Output exported = run({"rocks", params, "--glb", glb});
+  REQUIRE_MESSAGE(exported.exit_code == 0, exported.text);
+  const std::string cluster = tmp.file("surface.clusters");
+  const Output imported = run({"build", glb, cluster});
+  REQUIRE_MESSAGE(imported.exit_code == 0, imported.text);
+  CHECK(number(line_of(imported), "warnings") == 0);
+  const Output info = run({"info", cluster});
+  REQUIRE_MESSAGE(info.exit_code == 0, info.text);
+  // Inspect the standalone GLB itself: three PNG buffer views and three bound texture slots.
+  std::ifstream stream(glb, std::ios::binary);
+  const std::string bytes{std::istreambuf_iterator<char>(stream), std::istreambuf_iterator<char>()};
+  REQUIRE(bytes.size() > 20);
+  const auto byte = [&](usize i) { return static_cast<u32>(static_cast<u8>(bytes[i])); };
+  const u32 json_size = byte(12) | (byte(13) << 8) | (byte(14) << 16) | (byte(15) << 24);
+  REQUIRE(20u + json_size <= bytes.size());
+  JsonValue json;
+  REQUIRE(parse_json(std::string_view(bytes).substr(20, json_size), json).ok);
+  REQUIRE(json.find("images") != nullptr);
+  CHECK(json.find("images")->as_array().size() == 3);
+  const auto& m = json.find("materials")->as_array()[0];
+  CHECK(m.find("normalTexture") != nullptr);
+  CHECK(m.find("pbrMetallicRoughness")->find("baseColorTexture") != nullptr);
+  CHECK(m.find("pbrMetallicRoughness")->find("metallicRoughnessTexture") != nullptr);
+}
+
 TEST_CASE("engine-content rocks: build-all builds a manifest's rock files and then skips them") {
   const test::TempDir tmp("engine_content_rocks_all");
   REQUIRE(tmp.ok());

@@ -530,6 +530,12 @@ bool cliff_in_range(const Cliff& p, std::string& error) {
   };
   const auto in = [](f64 v, f64 lo, f64 hi) { return v >= lo && v <= hi; };
   if (!valid_rock_type(p.type)) return bad("type", "known rock type");
+  if (p.material.surface_maps) {
+    error =
+        "engine.rocks.Cliff.material.surface_maps requires a cliff atlas; supported only "
+        "on Boulder, Outcrop and Scree";
+    return false;
+  }
   if (!valid_quality(p.quality)) return bad("quality", "Low, Medium, High");
   if (!geology_in_range(p.geology, error) || !material_factors_in_range(p.material, error))
     return false;

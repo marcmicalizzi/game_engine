@@ -258,7 +258,9 @@ bool build_rock_container(const RockFile& file_in, const geometry::ClusterLodOpt
   const materials::MaterialSet recipe = set_of(*material_of(file));
   bool from_pack = false;
   const materials::MaterialSet* chosen =
-      materials::resolve_set(&recipe, pack, rock_role(type_of(file)), &from_pack);
+      material_of(file)->surface_maps
+          ? nullptr
+          : materials::resolve_set(&recipe, pack, rock_role(type_of(file)), &from_pack);
   if (from_pack) material_of(file)->tile_m = chosen->tile_m;
   assets::MeshData mesh;
   if (!solve_rock(file, mesh, report, &error)) return false;
@@ -301,13 +303,17 @@ bool build_rock_container(const RockFile& file_in, const geometry::ClusterLodOpt
     out.material_sampling.push_back(
         geometry::encode_material_sampling(m.sampling, m.occlusion_strength));
   }
+  for (assets::ImageRef& image : mesh.images) {
+    out.image_paths.push_back(image.uri);
+    out.images.push_back(geometry::ClusterImage{image.mime_type, std::move(image.bytes)});
+  }
   if (chosen != nullptr && !out.materials.empty()) {
     // The charts are in repeats already: no transform.
     materials::apply_set(*chosen, materials::UvLayout::repeats, out, 0);
     detail::material_factors(*material_of(file), out.materials[0].base_color,
                              out.materials[0].roughness);
-    texture::fill_cluster_texture_records(out);
   }
+  if (!out.image_paths.empty()) texture::fill_cluster_texture_records(out);
   // The identity is the file's as it was given: the pack's repeat is in the key through the pack.
   out.source_hash = rock_source_hash(file_in);
   out.build_key = rock_build_key(out.source_hash, lod, page_bytes, pack);

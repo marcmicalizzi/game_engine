@@ -1,0 +1,36 @@
+{
+  "shape": "Boulder",
+  "boulder": {
+    "seed": 21,
+    "size_x": 1.6,
+    "size_y": 1.0,
+    "size_z": 1.2,
+    "type": "Sandstone",
+    "joint_sets": 2,
+    "geology": {
+      "bed_m": 0.3,
+      "weathering": 0.55,
+      "irregularity": 0.8,
+      "flaking": 0.5
+    },
+    "buried": 0.2,
+    "triangle_budget": 120000,
+    "surface": {
+      "joint_spacing_m": 0.85,
+      "joint_width_m": 0.16,
+      "joint_depth_m": 0.1,
+      "relief_m": 0.015
+    },
+    "material": {
+      "surface_maps": {
+        "vein_width_m": 0.018,
+        "variation": 0.7,
+        "vein_spacing_m": 0.65,
+        "veins": 0,
+        "grain_m": 0.018,
+        "resolution": 2048
+      }
+    }
+  }
+}
+

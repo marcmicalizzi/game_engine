@@ -134,6 +134,32 @@ void material_factors(const RockMaterial& m, Vec4& colour, f32& roughness) {
   if (m.roughness_factor) roughness = *m.roughness_factor;
 }
 bool material_factors_in_range(const RockMaterial& m, std::string& error) {
+  if (m.surface_maps) {
+    const RockSurfaceMaps& s = *m.surface_maps;
+    if (m.base_color || m.normal || m.roughness || m.metallic || m.height) {
+      error = "engine.rocks.RockMaterial.surface_maps cannot combine with tiled image paths";
+      return false;
+    }
+    const auto in = [](f32 v, f32 lo, f32 hi) { return v >= lo && v <= hi; };
+    if ((s.resolution != 256 && s.resolution != 512 && s.resolution != 1024 &&
+         s.resolution != 2048) ||
+        !in(s.variation, 0, 1) || !in(s.grain_m, 0.002f, 1) || !in(s.veins, 0, 1) ||
+        !in(s.vein_spacing_m, 0.02f, 20) || !in(s.vein_width_m, 0.001f, s.vein_spacing_m * 0.25f)) {
+      error =
+          "engine.rocks.RockMaterial.surface_maps: resolution must be 256/512/1024/2048, "
+          "variation and veins 0..1, grain_m .002..1, vein_spacing_m .02..20, "
+          "vein_width_m .001..spacing/4";
+      return false;
+    }
+    if (s.vein_tint) {
+      for (f32 c : *s.vein_tint) {
+        if (!in(c, 0, 1)) {
+          error = "engine.rocks.RockMaterial.surface_maps.vein_tint must be linear RGB 0..1";
+          return false;
+        }
+      }
+    }
+  }
   if (m.tint) {
     for (f32 c : *m.tint) {
       if (!(c >= 0.0f && c <= 1.0f)) {
