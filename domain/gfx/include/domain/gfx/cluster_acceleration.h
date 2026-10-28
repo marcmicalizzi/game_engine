@@ -244,7 +244,9 @@ inline constexpr u64 k_cluster_blas_record_bytes = 16;
 //                   the rule below as three more passes, `ranges_drop_main` (one workgroup: the
 //                   walk), `ranges_kept_count_main` and `ranges_kept_main`, dispatched indirectly
 //                   from `cluster_ranges_drop_args` and `cluster_ranges_kept_args` in
-//                   `instance_counts`, which a frame that fits leaves empty. With a cache, the
+//                   `instance_counts`, which a frame that fits leaves empty — when the caller
+//                   records them (`k_cluster_records_drop_scan`); without them the rule runs on
+//                   one thread of `ranges_main`, as it did before R106. With a cache, the
 //                   `_cached_` entry points of all five and of the emit pass
 //                   (`ClusterRecordParams::cache`).
 //   `emit_main`     one thread per pair slot: move the kept entries down to the dense `records`
@@ -329,7 +331,9 @@ struct ClusterRecordParams {
   // `pair_count` threads and cannot exceed it, while the set holds `views` runs.
   u32 pair_count = 0;
   // The low 16 bits: how many views' cuts accumulate into this set (see above). Bit 16: write
-  // k_cluster_instantiate_record_bytes records from templates instead of build records.
+  // k_cluster_instantiate_record_bytes records from templates instead of build records. Bit 17
+  // (`k_cluster_records_drop_scan`): the passes that walk a frame past its capacity as a scan are
+  // recorded after the ranges.
   u32 mode = 1;
   u32 capacity = 0;  // the structures the set holds: ranges_main keeps no more (see above)
   // **Alpha-tested materials** (renderer.md, "Alpha-tested geometry"): the scene's material table
@@ -464,6 +468,10 @@ static_assert(sizeof(TlasReferenceParams) == 88);
 inline constexpr u32 k_tlas_references_workgroup = 64;
 inline constexpr u32 k_cluster_records_workgroup = 64;
 inline constexpr u32 k_cluster_records_instantiate = 1u << 16;  // ClusterRecordParams::mode
+// ClusterRecordParams::mode: the three passes after the ranges (`ranges_drop_main`,
+// `ranges_kept_count_main`, `ranges_kept_main`) are recorded, so a frame past its capacity walks
+// its drop order as a scan; without it such a frame takes the one-thread rule in `ranges_main`.
+inline constexpr u32 k_cluster_records_drop_scan = 1u << 17;
 // The ranges' scan (clas_records.slang, `ranges_count_main` and `ranges_main`, and past the
 // capacity `ranges_drop_main`, `ranges_kept_count_main` and `ranges_kept_main`): a block of 1,024
 // instances to a group of 256 threads, four contiguous instances a thread. `instance_counts` holds,
@@ -493,8 +501,9 @@ constexpr u64 cluster_instance_count_words(u32 instance_count) noexcept {
 // built into the cache (what its explicit build reads as its count), 8 misses the cache had no
 // room for, 9 slots evicted, 10 slots occupied after the frame, 11 zero.
 inline constexpr u32 k_cluster_record_count_words = 12;
-constexpr u32 cluster_records_mode(u32 views, bool instantiate) noexcept {
-  return (views & 0xffffu) | (instantiate ? k_cluster_records_instantiate : 0u);
+constexpr u32 cluster_records_mode(u32 views, bool instantiate, bool drop_scan = false) noexcept {
+  return (views & 0xffffu) | (instantiate ? k_cluster_records_instantiate : 0u) |
+         (drop_scan ? k_cluster_records_drop_scan : 0u);
 }
 
 // Every instance's cluster bottom-level structure, built by **one** command into one buffer

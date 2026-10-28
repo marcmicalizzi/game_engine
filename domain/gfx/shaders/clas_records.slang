@@ -221,6 +221,7 @@ static const uint k_geometry_opaque = 4;
 static const uint k_draw_args_bytes = 16;  // gfx::k_draw_args_bytes: one block per view
 static const uint k_caster_run = 2;        // gfx::k_caster_run: the casters' run of the list
 static const uint k_instantiate = 0x10000;  // gfx::k_cluster_records_instantiate
+static const uint k_drop_scan = 0x20000;    // gfx::k_cluster_records_drop_scan
 
 uint view_count() { return g_params.mode & 0xffff; }
 bool instantiating() { return (g_params.mode & k_instantiate) != 0; }
@@ -528,7 +529,14 @@ void ranges<let kCache : int>(uint group, uint t) {
   // crossing. This dispatch lays the order out as the walk spends it — every order entry's drawn
   // item and caster item at their places in one sequence (`sequence_items`), each rank's drawn
   // items and then its casters — and sums each 1,024 items of it; `ranges_drop_main` walks the
-  // sequence; `ranges_kept_count_main` and `ranges_kept_main` write what was kept.
+  // sequence; `ranges_kept_count_main` and `ranges_kept_main` write what was kept. **Only when
+  // the renderer recorded those three** (`k_drop_scan` in `mode`): it does on the frames after one
+  // that dropped anything, and a frame past its capacity with no such frame before it takes the
+  // one-thread rule here, so a scene that always fits records no pass for a walk it never takes.
+  if ((g_params.mode & k_drop_scan) == 0) {
+    if (group == 0 && t == 0) drop_serial<kCache>(wanted, cached_wanted);
+    return;
+  }
   over_capacity<kCache>(group, t);
 }
 

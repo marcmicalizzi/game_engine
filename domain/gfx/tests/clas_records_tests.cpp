@@ -299,8 +299,9 @@ struct RecordsFixture {
     params.clas_addresses = k_fake_addresses;
     params.instance_count = k_instances;
     params.pair_count = pair_count;
-    // One view: the run is the whole list and its count word is the first.
-    params.mode = gfx::cluster_records_mode(1, false);
+    // One view: the run is the whole list and its count word is the first; past the capacity, the
+    // drop order's scan.
+    params.mode = gfx::cluster_records_mode(1, false, true);
     params.capacity = capacity;
     REQUIRE(gfx::submit_immediate(
         device,
@@ -681,9 +682,10 @@ struct RangesCase {
 // Runs `c` through the five passes — the cached variants with a minimal cache when `c.references`
 // is not zero: instances of mesh 0 rigid are cached, every other is not — and says how many of the
 // kept counts, bottom-level records and count words differ from the rule's, and through `walked`
-// whether a frame past its capacity took the scan (1) or the one-thread rule (2); 0 if it fit.
+// whether a frame past its capacity took the scan (1) or its one-thread fallback (2); 0 if it fit,
+// or if `scan` is false and the frame took the one-thread rule in `ranges_main`.
 u32 run_ranges(const gfx::Device& device, gfx::ShaderModuleHandle module, const RangesCase& c,
-               std::string& label, u32& walked) {
+               std::string& label, u32& walked, bool scan = true) {
   std::string error;
   const bool cached = c.references != 0;
   RangesPasses passes;
@@ -708,7 +710,7 @@ u32 run_ranges(const gfx::Device& device, gfx::ShaderModuleHandle module, const 
   params.blas_records = blas.address;
   params.clas_addresses = k_fake_addresses;
   params.instance_count = c.n;
-  params.mode = gfx::cluster_records_mode(1, false);
+  params.mode = gfx::cluster_records_mode(1, false, scan);
   params.capacity = c.capacity;
   if (!c.order.empty()) {
     Vector<u32> laid(2 + c.order.size(), 0u);
@@ -846,12 +848,16 @@ TEST_CASE("clas records: the ranges over many instances are the one-thread rule'
     const u32 wanted = static_cast<u32>(c.wanted(false));
     for (const u32 capacity : {wanted + 100, wanted, wanted - 1, wanted / 3}) {
       c.capacity = capacity;
-      std::string label;
-      u32 walked = 0;
-      const u32 here = run_ranges(device, module, c, label, walked);
-      CHECK_MESSAGE(here == 0, n << " instances, capacity " << capacity << ": " << label);
-      CHECK(walked == (capacity < wanted ? 1u : 0u));
-      differing += here;
+      // The scan, and — as a frame records when none before it dropped anything — the one thread.
+      for (const bool scan : {true, false}) {
+        std::string label;
+        u32 walked = 0;
+        const u32 here = run_ranges(device, module, c, label, walked, scan);
+        CHECK_MESSAGE(here == 0, n << " instances, capacity " << capacity
+                                   << (scan ? "" : ", one thread") << ": " << label);
+        CHECK(walked == (scan && capacity < wanted ? 1u : 0u));
+        differing += here;
+      }
     }
     MESSAGE(n << " instances wanting " << wanted
               << " records: the blocks' scan and the walk write the rule's words at four "

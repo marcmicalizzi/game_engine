@@ -1456,6 +1456,7 @@ void SceneRenderer::fold_visible(u32 slot) {
       }
     }
     if (rt[2] + rt[3] > 0) {
+      rt_frames_since_drop_ = 0;  // the drop order's scan stays recorded (R106)
       ++chain.overflow_frames;
       chain.dropped_instances += rt[2];
       chain.dropped_caster_instances += rt[3];
@@ -2831,6 +2832,14 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
   // needs them.
   const bool rt_cache = rt_chain && scene.rt_cache() && scene.rt_cache_instances() > 0;
   rt_cache_recording_ = rt_cache;
+  // **The drop order's scan, on the frames that may need it** (R106; clas_records.slang, "past
+  // the capacity"): its three passes are recorded while a frame read back in the last
+  // `k_drop_scan_frames` dropped anything, and from the start; a frame past its capacity
+  // without them takes the one-thread rule, which writes the same words. So a scene that fits
+  // records no pass for a walk it never takes, and one that does not walks it as a scan from
+  // the frame after its first drop.
+  if (rt_chain && rt_frames_since_drop_ < k_drop_scan_frames) ++rt_frames_since_drop_;
+  const bool drop_scan = rt_frames_since_drop_ < k_drop_scan_frames;
   if (rt_chain) {
     tlas_references.addresses = scene.blas_set.addresses.address;
     tlas_references.records = scene.rt_instances.address;
@@ -2868,7 +2877,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
     // alpha-tested material builds records (renderer.md, "Alpha-tested geometry"), as one with
     // shadow casters does.
     record_params.mode =
-        gfx::cluster_records_mode(views, settings.rt_templates && !scene.has_masked());
+        gfx::cluster_records_mode(views, settings.rt_templates && !scene.has_masked(), drop_scan);
     // What the frame's structures hold room for: the records pass keeps no more, dropping whole
     // instances past it (gfx::ClusterRecordParams). The top-level instance records — one per scene
     // instance, the world transform and the instance as the custom index, shared by every view —
@@ -4027,6 +4036,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
       const u64 drop_args = gfx::cluster_ranges_drop_args(instance_count);
       const u64 kept_args = gfx::cluster_ranges_kept_args(instance_count);
       for (u32 p = 0; p < k_record_passes; ++p) {
+        if (p >= 3 && p <= 5 && !drop_scan) continue;  // no frame of late dropped anything
         graph.add_pass(
             record_names[p], gfx::PassKind::Compute,
             [&, p](gfx::PassBuilder& b) {
@@ -4065,7 +4075,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
               }
               read_pool(b, gfx::Access::ComputeRead);
             },
-            [&, p, record_passes, record_names, record_groups, drop_args, kept_args](
+            [&, p, record_passes, record_names, record_groups, drop_args, kept_args, drop_scan](
                 gfx::CommandList cb, gfx::RenderGraph&) {
               if (p == 0 || p == 1 || p == 6) timer.begin(cb, p == 1 ? "ranges" : record_names[p]);
               cb.bind_pipeline(gfx::BindPoint::Compute, record_passes[p]->pipeline);
@@ -4076,7 +4086,8 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
               } else {
                 cb.dispatch(record_groups[p], 1, 1);
               }
-              if (p == 0 || p == 5 || p == 6) timer.end(cb);
+              // The "ranges" zone ends with the last of its passes the frame recorded.
+              if (p == 0 || p == 6 || p == (drop_scan ? 5u : 2u)) timer.end(cb);
             });
       }  // **The resident cluster structure cache** (renderer.md, "The resident cluster structure
       // cache"; clas_records.slang): the slot scan and the eviction, the misses' slots and records,
