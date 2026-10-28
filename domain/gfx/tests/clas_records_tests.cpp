@@ -905,7 +905,7 @@ TEST_CASE("clas records: past the capacity the walk keeps what the rule keeps, r
         std::string label;
         u32 walked = 0;
         const u32 here = run_ranges(device, module, c, label, walked);
-        CHECK_MESSAGE(here == 0, n << " instances" << (with_cache ? " with a cache" : "")
+        CHECK_MESSAGE(here == 0, n << " instances" << std::string(with_cache ? " with a cache" : "")
                                    << ", capacity " << capacity[0] << "/" << capacity[1] << ": "
                                    << label);
         const bool over = capacity[0] < built || (with_cache && capacity[1] < refs);

@@ -793,7 +793,15 @@ void drop_item(uint4 item, uint block_base, inout uint dropped_drawn, inout uint
   if (partner >= block_base && partner < block_base + k_ranges_block) {
     g_block_items[partner - block_base].x = 0;
   } else {
-    sequence_items()[4 * partner] = 0;
+    // **Atomic, not a plain store** (R106, the Titan Xp): the caster item is in a later block,
+    // which other invocations of this same dispatch load after the group's barrier. The module
+    // is on the GLSL450 memory model, under which a plain store to a storage buffer is not
+    // guaranteed visible to another invocation's plain load in the same dispatch, barrier or no
+    // barrier — Pascal's L1 can hold the line from the previous block's load (the sequence is
+    // only 4-byte aligned, so a line straddles two blocks) and serve the item's old count, and
+    // the walk then drops a caster whose drawn item it already dropped. Atomics go to L2; so
+    // does the load of `.x` in `ranges_drop` that reads it.
+    ((Atomic<uint>*)sequence_items())[4 * partner].store(0u);
   }
 }
 
@@ -856,7 +864,10 @@ void ranges_drop<let kCache : int>(uint t) {
       uint4 item = uint4(0u, 0xffffffffu, 0u, 0xffffffffu);
       if (base + local < item_count) {
         uint* src = items + 4 * (base + local);
-        item = uint4(src[0], src[1], src[2], src[3]);
+        // `.x` may have been zeroed by an earlier block of this dispatch (`drop_item`): an atomic
+        // load, so it is never a stale line in this invocation's L1. The other three words are
+        // written only by `ranges_main`, a dispatch before.
+        item = uint4(((Atomic<uint>*)src)[0].load(), src[1], src[2], src[3]);
       }
       g_block_items[local] = item;
       if (item.x != 0) {
