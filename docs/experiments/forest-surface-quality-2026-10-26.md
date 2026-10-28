@@ -30,6 +30,18 @@ The current contracts in [renderer](../subsystems/renderer.md#native-authored-te
 
 Keep the owner-marked baseline. Validate source roughness convention, normal orientation and physical texture scale, wetness masks, material blending, sun/sky contribution and SDR/HDR output on isolated dry/wet substrate fixtures. A broad highlight by itself is not proof of an error. R97 should preserve unresolved normal variation in the material response rather than merely increasing detail distances or globally raising roughness. Walk from close range through and beyond the existing fade distances, at grazing and overhead angles, in daylight and campfire lighting. Require stable highlight shape, no distance bands or shimmer, and quantified reference error and pass cost.
 
+**R97's finding (2026-10-27; [normal filtering](normal-filtering.md)).** Built normal maps now carry
+a normal-variance chain that widens the GGX roughness by what the pixel's footprint no longer
+resolves, and a tiled layer with one keeps its normal and roughness past the detail distances; on
+by default. On the v18 forest at 2560×1440 the ground's mean sun-specular energy falls 15.2% at tag 1
+(beach, 0.01837 → 0.01558), 8.1% at tag 8 (backshore, 0.01027 → 0.00944) and **2.2% at tag 5**
+(mountain, 0.02949 → 0.02884, the marked camera lifted 3 m because v17's relief buried it), for
++0.10 to +0.26 ms of resolve and 83 MB of textures. The mountain's broad sheen is therefore not
+unresolved normal-map variation: it is the rock layer's own roughness on ground smooth between the
+heightfield's vertices. What would change it is relief at the decimetre-to-metre scale (R98),
+substrate detail within the layered path (R99) and the masks' choice of layer and roughness
+(content), not more filtering.
+
 ### R96: nonrepeating coordinated terrain materials
 
 Keep authored large-scale substrate patches distinct from fine texture sampling. Evaluate a bounded, opt-in stochastic or equivalent nonperiodic sampler for suitable substrates, with identical spatial choices for colour, normal, roughness and height; rotate/reorient normals correctly. Preserve physical grain/leaf scale, mip stability, regional colour identity, integer-world anchoring and tile/ring seams. A road, strata or directed needle bed must be able to retain intentional direction. No random RGB tint or unbounded layer count as the acceptance substitute. Report sample count, texture residency and resolve cost at ordinary and surround resolutions.

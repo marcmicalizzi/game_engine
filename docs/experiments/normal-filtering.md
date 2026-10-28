@@ -1,7 +1,12 @@
 # Normal filtering across scale (R97)
 
-2026-10-26. Work in progress. The starting tree is `5552a2b3`. No appearance or
-performance acceptance is claimed by this research note.
+2026-10-26 to 2026-10-27. Research and the first implementation by a Codex night session on
+`5552a2b3` (0e8cce17, 11bb36e4); reviewed, corrected, held to a path-traced fixture, measured on the
+forest and turned on by default on `dad55f90` (roadmap R97). **Verdict: on by default** — the
+fixture's error against the path tracer falls by half where the bumps are unresolved, the forest's
+ground loses 8–15% of its sun-specular energy at the owner's marked views, and the cost is
+0.1–0.3 ms of resolve at 2560×1440 and 83 MB of textures on the forest; what it does not fix on the
+mountain is [below](#what-r97-does-not-fix).
 
 ## Question and baseline
 
@@ -13,10 +18,8 @@ with supersampled shading, rather than increase distance settings or roughness
 globally. The owner's tags 1, 5 and 8 are the beach, mountain and backshore cameras
 in the read-only POC's `reports/quality-v15/surface-audit/markers.json`.
 
-**Machine state:** the measurements below record the harness's `machine_state`;
-shared-machine times are upper bounds. Captures and logs are in
-`D:/workspace/ge-codex-scratch/astra-filter`, using this worktree's offscreen
-binary and a scratch copy of the frozen v14 DDC.
+**Machine state:** every measurement below names the harness's `machine_state`; numbers taken beside
+other load are upper bounds.
 
 ## Sources and what they establish
 
@@ -51,13 +54,14 @@ binary and a scratch copy of the frozen v14 DDC.
 
 ## Implementation boundary and candidate
 
-Reserve optional texture section **6** for normal statistics; section 5 belongs
-to concurrent R96 histogram work. Existing sections and layouts stay unchanged.
-Store the statistic independently of roughness so the same normal image can be
-shared by materials with different roughness and normal strength. Build it from
-unrenormalized averages of source unit normals, never from reconstructed BC5.
-Positive filter weights are needed for a meaningful distribution; Mitchell's
-negative lobes cannot be interpreted as probabilities.
+The statistic is optional texture section **5** (`normal_variance`; texture.md, "Normal
+variance"). The Codex tree took 6 and left 5 for an R96 histogram section; R96 landed needing no
+section, so 5 is the next kind of an append-only list and nothing was ever written as 6. Existing
+sections and layouts stay unchanged. Store the statistic independently of roughness so the same
+normal image can be shared by materials with different roughness and normal strength. Build it
+from unrenormalized averages of source unit normals, never from reconstructed BC5. Positive filter
+weights are needed for a meaningful distribution; Mitchell's negative lobes cannot be interpreted
+as probabilities. An unmipped map writes no chain: its one level would be zeros.
 
 The compact candidate is isotropic Toksvig shortening with a GGX width fit:
 `v = (1-L)/max(L, epsilon)`, `alpha_filtered^2 = min(1, alpha^2 + 2 v)`.
@@ -73,6 +77,15 @@ Geometry derivatives must come from the hit triangle and `screen_barycentrics`,
 not fullscreen quad differences across unrelated surfaces. The reference path
 tracer's zero-footprint reads must not be widened a second time merely because
 the supersampling reference has many rays.
+
+Two corrections from the review (2026-10-27, d579bed1). **A stochastic layer** (R96) had its colour
+and height faded by the variance path although R96 never fades it, and its widening was applied to
+each of its three tiles before the variance-preserving blend, which scales a tile's departure from
+the layer's (unwidened) mean roughness by up to √3 at a hex's centre: the widening itself would have
+varied with the lattice. The tiles are now read unwidened, their shortening averaged by the hex
+weights as a plain mixture, and the widening applied once per projection. **The switch**:
+`renderer.material.normal_filter`, read at a scene's material upload; off uploads no chain and sets
+no flag, so a capture is main's to the byte.
 
 ## Reference fixture, 2026-10-26
 
@@ -113,89 +126,101 @@ have locally monotone variance. Flat inputs and serial/parallel builder identity
 are separately checked by texture tests. Clang's double-promotion warning requires
 explicit casts in GPU-to-double comparisons; MSVC does not diagnose those.
 
-## Acceptance still required
+## The plane: the filter against the path tracer (2026-10-27)
 
-Deterministic texture bytes across MSVC and Clang; flat-map identity; monotone
-footprint fixture and a stated neighbouring-pixel continuity bound; GPU/double
-agreement; 1 versus 64 samples per pixel error; raster/ray terrain byte agreement;
-zero frame-loop allocations; three 2560x1440 camera captures and ground sun-specular
-means before/after; 11520x2160 resolve timings with machine state. Texture,
-double-reference and focused GPU checks are established, as are the corrected
-forest measurements below. Full Windows affected validation, raster/ray fixture
-parity, frame-loop allocation checks and quiet cost acceptance remain pending.
+`renderer: normal filtering holds a grazing normal-mapped plane to its converged picture`
+(`systems/renderer/tests/terrain_materials_tests.cpp`) is the picture-level check the analytic
+fixture above could not be: flat terrain whose one tiled layer carries a 64-texel map of eight
+periods of `sin x sin z` (slopes to 0.35) every 0.5 m — a bump is 6.25 cm — at a flat roughness of
+0.7 (no glint clips), dark, under a sun 12° up straight ahead, seen at the sun's own elevation with a
+20° view from 1, 4 and 16 m, so the pixel's footprint grows from a quarter of a bump to about four.
+The truth is the reference path tracer at 256 jittered samples a pixel: it reads level zero, which
+has no variance, and integrates the footprint with its rays. The filtered and the unfiltered scene
+are the same load uploaded twice, once with `renderer.material.normal_filter` off. RMSE is over the
+picture's linear RGB (the display encode undone), RTX 5090, msvc-debug:
 
-The texture cache-version bump also changes the embedded impostor texture keys in
-cluster section 33. The broadleaf/ancient full-container golden folds therefore move
-from `50be5dcf910f9bf5` / `6d4e6b50d6180080` to
-`060c68283b28f955` / `daf6c70391dc9df3` (Clang); no geometry or bake algorithm changed.
-The Windows cross-check passed (one case, 318 assertions), matching Clang on both folds.
+| distance | RMSE, filtered 1x | unfiltered 1x | lower by | the picture's light, filtered / unfiltered vs traced | FLIP vs traced, filtered / unfiltered |
+|---:|---:|---:|---:|---|---|
+| 1 m | 0.0477 | 0.0544 | 12% | +7.2% / +9.6% | 0.147 / 0.156 |
+| 4 m | 0.0214 | 0.0462 | 54% | +0.5% / +14.3% | 0.068 / 0.114 |
+| 16 m | 0.0180 | 0.0431 | 58% | −6.6% / +14.9% | 0.112 / 0.115 |
 
-The first POC probes returned identical ground energy with filtering on and off:
-the frozen terrain containers held version-1 embedded texture keys. External image
-keys were recomputed, but embedded keys were trusted unchanged, preventing the
-new derived section from being built. Scene preparation now derives current keys
-for embedded sources as well. The first `after-*` captures and probes therefore
-measure the legacy ground path and are **not evidence of R97's appearance effect**.
-They are retained in scratch as the diagnostic trail; corrected captures must use
-the refreshed cache path. This is why section presence must be checked in cached
-content before interpreting an unchanged image as a shading result.
+The test asserts the filtered picture nearer the truth at every distance, by at least a third at
+4 and 16 m, nearer in its light, and no worse by FLIP. It does not assert the reference tests'
+FLIP bound of 0.05: that is a diffuse plane's, and here the tracer's box-integrated pixel and the
+resolve's point sample differ wherever the bumps are resolved, filtered or not (at 1 m both are
+near 0.15).
 
-## Forest captures, 2026-10-26
+**The supersampled resolve is no truth for the unfiltered path.** The brief's 8x render, box-averaged
+in light, was rendered beside it: against the path tracer its error is 0.039, 0.036 and 0.021
+filtered and 0.039, 0.039 and 0.043 unfiltered — at 16 m the 8x unfiltered picture is still 12%
+too bright, because each of its sub-pixels' mips flattens bumps that sub-pixel still spans. That is
+the defect itself, one octave down, and why the tracer is the reference here.
 
-Own offscreen MSVC-debug engine-view, RTX 5090, frozen v14 scene, CSM shadows,
-120 measured frames after 30 warm-up frames, copied scratch DDC, tags 1/5/8.
-Every timing run used `--wait-quiet 60` under the GPU lock. Other CPU activity
-persisted: these are shared-machine upper bounds, not a clean pass-cost delta.
-Full machine states and inputs are in each scratch `report.json` and `stdout.log`.
+**Where the fit is wrong.** At 16 m the filtered picture is 6.6% dark where the unfiltered one is
+15% bright. The widened lobe's Smith masking and shadowing grows with α′ at grazing, while a normal
+map's bumps occlude nothing (LEADR's point): the fit trades a little energy at grazing for the
+lobe's width. Feeding D the widened roughness and Smith the material's own would be the next
+experiment; it is the BSDF's model, not the roughness term, and was not changed here.
 
-| view | resolve before ms | resolve after ms | other CPU % before start/end | after start/end | GPU % before start/end | after start/end |
-|---|---:|---:|---|---|---|---|
-| tag1-11520 | 5.116016 | 6.835728 | 9.1/12.3 | 9.9/14.0 | 1/1 | 1/100 |
-| tag1-2560 | 0.699184 | 0.906240 | 9.9/12.8 | 41.5/34.9 | 1/1 | 100/100 |
-| tag5-2560 | 0.704080 | 0.897808 | 9.7/14.8 | 93.9/78.1 | 2/100 | 6/100 |
-| tag8-2560 | 0.909344 | 1.163200 | 9.9/9.5 | 41.4/30.3 | 1/1 | 100/100 |
+## The forest (v18), 2026-10-27
 
-Captures are under `D:/workspace/ge-codex-scratch/astra-filter/`:
-`before-tag{1,5,8}-2560/view.png`, `after-refresh-tag{1,5,8}-2560/view.png`,
-and `before-tag1-11520/view.png` / `after-refresh-tag1-11520/view.png`.
-The earlier `after-*` directories without `refresh` predate the cache fix and are not acceptance results.
+Own offscreen msvc-release engine-view on `dad55f90` plus this work, the POC's v18 maps scene
+(`expanded-forest-csm-wide-leaf-wide-20261027-201557/scene.json`) on a scratch copy of
+`world/v18/ddc`, the run's own arguments (`--shadows csm`, `--lod 1`, sway on), each camera held
+still for 60 warm-up and 240 measured frames under the GPU lock with `--wait-quiet 120`; the energy
+from separate 8-frame `--view sun-specular --present-format linear` EXR captures, R averaged where G
+marks ground. "Off" is the same binary with `renderer.material.normal_filter=false`. Tag 5's marked
+camera (262.3 m) stands under the ground v17's authored relief raised there — its probe reads
+1.8 × 10⁻⁸ over 2.9 million ground pixels, the slope's underside — so it is measured 3 m higher, the
+same direction.
 
-| camera | ground pixels | mean sun-specular before | after | reduction | mean roughness before/after |
-|---|---:|---:|---:|---:|---|
-| tag 1 | 1401717 | 0.0198943250 | 0.0165057694 | 17.03% | 0.727135/0.774451 |
-| tag 5 | 2142811 | 0.0312707988 | 0.0305017770 | 2.46% | 0.668045/0.673129 |
-| tag 8 | 2170521 | 0.0299807760 | 0.0251023760 | 16.27% | 0.534245/0.596096 |
+| view, 2560×1440 | ground pixels | sun-specular, off → on | roughness, off → on | resolve ms, off → on | machine state (others' CPU % start/end, GPU % start/end), off; on |
+|---|---:|---|---|---|---|
+| tag 1, beach | 1,396,718 | 0.018365 → 0.015582 (−15.2%) | 0.735 → 0.781 | 0.928 → 1.026 | 8.3/16.5, 2/1; 9.4/13.2, 4/2 |
+| tag 5, mountain (+3 m) | 2,121,327 | 0.029495 → 0.028839 (−2.2%) | 0.667 → 0.672 | 1.501 → 1.756 | 24.2/53.0, 2/8 (busy); 9.8/11.6, 2/2 |
+| tag 8, backshore | 2,155,802 | 0.010272 → 0.009435 (−8.1%) | 0.800 → 0.822 | 1.110 → 1.249 | 8.2/7.3, 2/2; 6.6/8.9, 1/1 |
 
-These are raw linear EXR probes of the shadowed sun term before aerial scattering,
-not brightness measured from PNGs. The legacy probe disables R97; old and refreshed
-runs have identical ground-mask counts and zero nonfinite ground values. Files:
-`sun-specular-legacy-tag{1,5,8}-2560/probe.exr` and
-`refreshed-sun-specular-tag{1,5,8}-2560/probe.exr`. Probe reports retain their
-machine states; those runs measure energy, not pass cost.
+At 11520×2160 on tag 1 the resolve goes 7.328 → 8.138 ms (total 28.90 → 29.67 ms; others' CPU
+8.5/6.9% and GPU 1/1% off, 9.2/11.1% and 3/100% on — the GPU figure at the end is the run's own).
+The cost is the chain's read beside every normal read and, on a tiled layer past `detail_far_m`,
+the reads the fade used to skip: +0.10 to +0.26 ms at 2560×1440 (10–18% of the resolve), +0.81 ms
+(11%) at the surround width. The scene's textures go from 402,573,312 to 485,723,648 bytes: 167
+chains, 83,150,336 bytes, 20.7%.
 
-The scene texture allocation rose from 429,208,064 to 485,723,648 bytes.
-A broad sheen remains visible on the beach and especially the mountain. This
-is a measured reduction, not closure of the surface audit. The triplanar-axis
-covariance, storage-quantization error in the supersampling fixture, requested
-raster/ray fixture byte parity, temporal shimmer and quiet cost acceptance remain
-unproven. R97 stays in progress. Colour-fade policy, relief, shadows and the ray
-acceleration chain were not redesigned.
+Codex's v14 measurement the night before (same cameras, tag 5 unlifted on the v14 ground, a GPU at
+100%) found −17.0%, −2.5% and −16.3%: the same direction and the same mountain.
 
-The first focused GPU run measured a maximum adjacent roughness step of 0.00097394
-and passed the 2e-6 formula comparisons. Its identity assertion used CPU and GPU
-`i/7` as if they were bit-identical: 3/7 and 6/7 differed by division rounding.
-The test now uses exactly representable `i/8` inputs, retaining an exact comparison
-for zero widening. This changes the fixture inputs, not the shading formula or its
-tolerance. The corrected RTX 5090 run passed all three cases and 8,471 assertions;
-the measured maximum adjacent step was 0.00097394. The final production sources
-passed all 13 selected Linux Clang tests; the subsequent test-only input correction
-passed a focused Linux gfx rerun. This checkout's Linux volumes were pruned.
+**The first POC probes measured nothing** — a lesson worth keeping. They returned identical ground
+energy with filtering on and off, because the frozen terrain containers held version-1 embedded
+texture keys, and scene preparation trusted an embedded image's recorded key where it recomputed a
+path image's: the new section was never built. `prepare_scene_textures` now derives every key from
+the source identity and the current options and version (texture.md, end). Check that a cache holds
+the section before reading an unchanged picture as a shading result.
 
-At the 2026-10-27 handoff budget, the Windows affected run had completed 25 of
-29 selected CTests: 23 passed and gfx/renderer skipped after 1,803/1,802 seconds
-waiting for the shared GPU. A separate full gfx rerun passed 105 cases and
-427,889 assertions (two cases skipped). The affected run was stopped during
-engine_view and the renderer retry was stopped without a final result. Therefore
-the Windows affected gate and frame-loop allocation acceptance are not passed.
-The implementation remains uncommitted for continuation; the research/roadmap
-stage is commit `0e8cce17`. No R97 completion is claimed.
+## What R97 does not fix
+
+**The mountain's sheen.** Tag 5 loses 2.2% of its sun-specular energy where the beach loses 15%: the
+broad sheen on the rock is not normal-map variation the footprint lost. The rock layer's own
+roughness (0.67 on average over the view) on a surface smooth between the heightfield's vertices is
+what shines; what would break it up is relief at the decimetre-to-metre scale the heightfield does
+not carry (R98) and substrate detail inside the layered path (R99), and the masks' choice of layer
+and roughness is content. R97 makes the far ground keep the roughness its near ground has; it does
+not make the near ground rougher.
+
+**Not measured.** Temporal shimmer along a moving camera (the fixture is still; the chain is a mip
+like any other and moves nothing between frames, but no flythrough was compared). The rays' path
+(`--raster rt`): R97 changes shading and not visibility, and the fixture draws `hw`. A byte-identity
+capture of the Khronos samples and the desert overlook: neither is in this worktree
+(`tools/fetch-samples.ps1` downloads them), so the identity was taken on desert-erg, desert-endless,
+rock-field and oasis-palms instead (main's engine-view, this one off, this one on: the same bytes
+each; none of them has a chain) and on the forest, which has 167.
+
+## The default
+
+**On** (`renderer.material.normal_filter` true, 2026-10-27): the fixture holds the filtered picture
+nearer the path tracer at every distance and by more than half where the bumps are unresolved; the
+forest's marked views lose the sheen the filter is for and keep the mountain's, which it is not; the
+cost is the table's, 0.1–0.3 ms at 2560×1440 and 0.8 ms at the surround width, and a fifth more
+texture memory on the forest; and with it off, or on a material without a chain, every capture is
+main's to the byte.

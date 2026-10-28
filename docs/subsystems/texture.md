@@ -130,7 +130,7 @@ map share its chain. It is built with the same arithmetic as the mips (`std::sqr
 toolchain rounds the same, and no other library call), so the determinism table below holds it.
 
 **What it costs.** Half the BC5 chain's block bytes per normal map, plus the small levels'
-alignment: on the forest proof of concept's scene, 56.5 MB beside 429 MB of textures. Built once per
+alignment: on the forest proof of concept's v18 scene, 167 chains in 83 MB beside 403 MB of textures. Built once per
 image, keyed with the map.
 
 **In the renderer** (`renderer.material.normal_filter`, renderer.md "Normal filtering"): the
