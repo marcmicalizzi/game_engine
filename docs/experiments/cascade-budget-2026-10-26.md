@@ -1,6 +1,6 @@
 # The expanded forest's cascade budget (R103)
 
-Dates: 2026-10-26 (the opt-in experiment, a Codex night session, below) and 2026-10-27 (the default, its stages). Status: stage 1 (the cascades cut by their own texels) and stage 2 (far casters at rest, per cascade) are the default; the stages after them are in their own sections as they land.
+Dates: 2026-10-26 (the opt-in experiment, a Codex night session, below) and 2026-10-27 (the default, its stages). Status: stage 1 (the cascades cut by their own texels) and stage 2 (far casters at rest, per cascade) are the default, stage 3 found the far side not worth a default distance; the stages after them are in their own sections as they land.
 
 **Question.** On the forest proof of concept's v18 expanded forest at 11520×2160 the cascaded frame was 35.9 ms, of which the four 2048² cascades' depth draws were 20.9 (7.33 million pairs a frame, every cascade a run of the camera's cut at the camera's own LOD to the far side of the scene), and the same frame refused 1.59 million deformed-vertex pool entries after placing 1.12 million in a 768 MiB pool: every swaying tree deformed into each of four maps. The traced frame of the same scene places 245,740 entries and refuses none. How much of that can a cascade leave out by drawing no finer than its own texels, without changing the shadow it casts?
 
@@ -89,6 +89,19 @@ None of the four runs was quiet by the harness's rule; stage 1's run of the "off
 | 1600×900 | the same | 2.8 cm, 16 cm, 88 cm, 4.94 m |
 
 A tree whose sway can reach 1.8 m (the young palm's bound, [renderer](../subsystems/renderer.md#the-flora-stage)) shadows its sway to 150 m at 11520×2160 and to 844 m at 1600×900; one that can reach 2.6 m (the grove's broadleaves) to 844 m at both; nothing sways in the last cascade's shadow unless it can move more than 4.4 m. The reach is the bound at the saturating wind, so at the forest's 0.7 a tree's real sway is smaller than the texel it is held against, and the rule errs towards posing.
+
+## The far side (2026-10-27)
+
+Stage 3. `shadow_distance` ends the receivers, not the casters: every cascade's depth runs to the far side of the scene's bounds towards the light whatever the distance, so the maps omit no caster for it, and the count the brief asked for is zero by construction (the rays' horizon is the one that omits, and it is counted in `Stats::horizon_casters`). What was left to measure is whether the far side costs enough, after stages 1 and 2, to give `shadow_distance` a default other than the scene's far side. The same runs as above with `--shadow-distance 1280` (the proof of concept's tree residency radius), against stage 2's rows:
+
+| frame | shadow distance | cascade depths (m) and texels | pairs in the maps (by cascade) | shadow ms (median / p95) | frame ms | machine state (GPU start→end, other CPU start→end) |
+|---|---|---|---|---:|---:|---|
+| 11520×2160 | the scene's far side (4,745 m) | 26.7 / 150 / 844 / 4,745; 7.4 cm, 41 cm, 2.34 m, 4.44 m | 1,484,413 (174,837 / 1,132,523 / 98,720 / 78,333) | 7.88 / 8.47 | 23.18 | 2→100%, 22.7→10.4% |
+| 11520×2160 | 1,280 m | 7.2 / 40 / 228 / 1,280; 2.0 cm, 11 cm, 63 cm, 3.53 m | 1,261,598 (129,265 / 270,076 / 783,543 / 78,714) | 7.39 / 8.01 | 22.46 | 3→2%, 9.5→20.2% |
+| 1600×900 | the scene's far side | 26.7 / 150 / 844 / 4,745; 2.8 cm, 16 cm, 88 cm, 4.94 m | 601,178 | 5.12 / 5.56 | 7.29 | 2→1%, 50.1→31.9% |
+| 1600×900 | 1,280 m | 7.2 / 40 / 228 / 1,280; 0.75 cm, 4.2 cm, 24 cm, 1.33 m | 605,069 (34,046 / 98,958 / 302,411 / 169,654) | 5.21 / 5.66 | 7.39 | 3→100%, 9.7→7.4% |
+
+Half a millisecond at the widest frame, nothing at 1600×900, and a different picture either way, because the distance moves every split and every texel: at 1600×900 the near cascade's texel goes from 2.8 to 0.75 cm, which is finer shadows near the eye and not a saving. The default stays 0. A scene whose far side is much farther than its interest (a 50 km terrain under a forest scene) is where a stated distance would pay, and `--shadow-distance` is there for it.
 
 ## The opt-in experiment (2026-10-26)
 
