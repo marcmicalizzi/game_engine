@@ -462,6 +462,11 @@ class GpuScene {
   u64 rt_bytes() const noexcept { return rt_bytes_; }
   u32 rt_capacity() const noexcept { return rt_capacity_; }
   u32 rt_capacity_limit() const noexcept { return rt_capacity_limit_; }
+  // The budget `rt_capacity_limit()` was made from, in MiB, and where it came from: the setting,
+  // the tunable or the device's rule (`resolve_rt_budget`; renderer.md, "The budget follows the
+  // device"). Zero without the chain.
+  u32 rt_budget_mib() const noexcept { return rt_budget_mib_; }
+  RtBudgetSource rt_budget_source() const noexcept { return rt_budget_source_; }
   u32 rt_union_clusters() const noexcept { return rt_union_clusters_; }
   // What one cluster of capacity costs in the per-frame part, from the driver's own sizes: the
   // structure, its address and size words, its record, its share of the bottom-level set and of
@@ -1425,6 +1430,8 @@ class GpuScene {
   u64 rt_bytes_per_cluster_ = 0;
   u32 rt_capacity_ = 0;
   u32 rt_capacity_limit_ = 0;
+  u32 rt_budget_mib_ = 0;
+  RtBudgetSource rt_budget_source_ = RtBudgetSource::Device;
   u32 rt_union_clusters_ = 0;
   u32 rt_max_per_instance_ = 0;      // the most references one instance's structure can hold
   gfx::ClusterSetLimits rt_limits_;  // what every per-frame set is created with, but the count

@@ -198,7 +198,9 @@ struct RenderSettings {
   u32 static_shape_kib = 0;
   bool rt_templates = false;  // instantiate prebuilt cluster templates instead of rebuilding
   // The most device memory the per-frame cluster acceleration structures may take, in mebibytes;
-  // 0 takes the `renderer.rt.budget_mib` tunable (1024 by default). The structures are sized by
+  // 0 takes the `renderer.rt.budget_mib` tunable, and that tunable's own 0, its default, takes a
+  // sixteenth of the device's memory, 512 to 4,096 MiB (`resolve_rt_budget`, R107; 1,024 on every
+  // device until 2026-10-27). The structures are sized by
   // what the frames build and only ever reach this under a cut that large; past it a frame drops
   // whole instances' structures, shadow casters first (docs/subsystems/renderer.md, "The ray
   // tracing chain's memory"). It bounds a scene buffer, which is why it lives here.

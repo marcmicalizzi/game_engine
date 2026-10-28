@@ -6,6 +6,7 @@ A write-up is not a benchmark log. It is the page a future contributor reads ins
 
 | Experiment | Page | Settles |
 |---|---|---|
+| R107 | [rt-chain-forest-2026-10-27.md](rt-chain-forest-2026-10-27.md) | The traced chain on the forest proof of concept's v18 expanded forest at 11520×2160: what its 243,604 structures a frame are (the inner rings' swaying trees, 98%), the chain and frame at 1,024, 1,536 and 2,048 MiB (90.3 → 61.0 ms once nothing is dropped), the device-following default budget, why cluster templates cannot run there, and the deformed-vertex pool's floor against the terrain stage's 2.3 MB |
 | R107 pair space | [pair-space-2026-10-27.md](pair-space-2026-10-27.md) | A decision packet, no code: what the forest's 16,770,201 pairs are, the tail's 772,537 pairs of size-class slack against the seven withheld tiles, and every writer, reader, bound, test and page of `pair << 8 \| triangle` that a 25-bit pair with a 128-triangle cluster cap would touch |
 | G91 | [tree-leaf-sizing.md](tree-leaf-sizing.md) | Botanical blade dimensions, retained terminal counts and saplings |
 | G92 | [tree-surface-roots.md](tree-surface-roots.md) | terrain-fitted structural roots, planting-space constraints and independent geometry |

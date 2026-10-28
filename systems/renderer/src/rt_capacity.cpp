@@ -10,9 +10,10 @@ namespace {
 // Read once, when a scene is created or a renderer is (docs/subsystems/renderer.md, "The ray
 // tracing chain's memory"). They live in this file because it is the one every reader links:
 // `GpuScene` turns the budget into a cluster count and `SceneRenderer` reads the other two.
-tunables::Int rt_budget_mib{"renderer.rt.budget_mib", k_default_rt_budget_mib, 16, 1 << 20,
+tunables::Int rt_budget_mib{"renderer.rt.budget_mib", 0, 0, 1 << 20,
                             "Most device memory the per-frame cluster acceleration structures "
-                            "may take, in MiB; a frame past it drops whole instances' structures, "
+                            "may take, in MiB; 0 follows the device (a sixteenth of its memory, "
+                            "512 to 4,096 MiB); a frame past it drops whole instances' structures, "
                             "shadow casters first"};
 tunables::Int rt_headroom_pct{"renderer.rt.headroom_pct", 25, 0, 400,
                               "Room the cluster acceleration structures keep above what recent "
@@ -77,6 +78,28 @@ bool rt_cache_tunable() noexcept { return rt_cache.get(); }
 u32 rt_cache_mib_tunable() noexcept { return static_cast<u32>(rt_cache_mib.get()); }
 u32 rt_reference_mib_tunable() noexcept { return static_cast<u32>(rt_reference_mib.get()); }
 u32 rt_cache_slots_tunable() noexcept { return static_cast<u32>(rt_cache_slots.get()); }
+
+u32 rt_device_budget_mib(u64 device_local_bytes) noexcept {
+  const u64 share = device_local_bytes / k_rt_budget_device_share / (u64{1} << 20);
+  if (share < k_rt_budget_floor_mib) return k_rt_budget_floor_mib;
+  if (share > k_rt_budget_ceiling_mib) return k_rt_budget_ceiling_mib;
+  return static_cast<u32>(share);
+}
+
+const char* rt_budget_source_name(RtBudgetSource source) noexcept {
+  switch (source) {
+    case RtBudgetSource::Setting: return "setting";
+    case RtBudgetSource::Tunable: return "tunable";
+    case RtBudgetSource::Device: return "device";
+  }
+  return "device";
+}
+
+RtBudget resolve_rt_budget(u32 setting_mib, u32 tunable_mib, u64 device_local_bytes) noexcept {
+  if (setting_mib != 0) return {setting_mib, RtBudgetSource::Setting};
+  if (tunable_mib != 0) return {tunable_mib, RtBudgetSource::Tunable};
+  return {rt_device_budget_mib(device_local_bytes), RtBudgetSource::Device};
+}
 
 void rt_drop_order(u32 prefix_slots, std::span<RtDropBlock> blocks, Vector<u32>& out) {
   std::sort(blocks.begin(), blocks.end(), [](const RtDropBlock& a, const RtDropBlock& b) {

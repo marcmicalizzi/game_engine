@@ -354,7 +354,8 @@ constexpr const char* k_usage =
     "  --rt-templates   --raster rt: build one cluster template per cluster at load and\n"
     "                   instantiate the cut's templates each frame instead of rebuilding the CLAS\n"
     "  --rt-budget-mib <n>  the most device memory the per-frame cluster acceleration structures\n"
-    "                   may take (default: the renderer.rt.budget_mib tunable, 1024). They are\n"
+    "                   may take (default: the renderer.rt.budget_mib tunable, or when that is 0,\n"
+    "                   its default, a sixteenth of the device's memory, 512 to 4096). They are\n"
     "                   sized by what the frames build, a step above it; a frame that wants more\n"
     "                   than the budget holds drops whole instances' structures, shadow casters\n"
     "                   first, and the summary's \"rt\" block counts it\n"
@@ -952,6 +953,8 @@ JsonValue rt_summary(const renderer::RtStats& rt) {
   out.set("caster_index_fallbacks", rt.caster_index_fallbacks);
   out.set("frame_estimate", rt.frame_estimate);
   out.set("bytes_per_cluster", rt.bytes_per_cluster);
+  out.set("budget_mib", rt.budget_mib);
+  out.set("budget_source", renderer::rt_budget_source_name(rt.budget_source));
   out.set("geometry_index_need", rt.geometry_index_max);  // compatibility with older reports
   out.set("geometry_index_max", rt.geometry_index_max);
   out.set("geometry_index_required", rt.geometry_index_required);

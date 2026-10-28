@@ -344,6 +344,97 @@ TEST_CASE("rt capacity: the first capacity is the scene's estimate, the budget i
   CHECK(first_rt_capacity(150000, 0, 0, 0) == 1);
 }
 
+// R107: the default budget follows the device — a sixteenth of its device-local memory, never
+// under 512 MiB nor over 4,096 — and the setting, then the tunable, override it. Until 2026-10-27
+// it was 1,024 MiB on every card, which the forest proof of concept's 243,604 structures a frame
+// at 11520×2160 outgrew on a 32 GB card.
+TEST_CASE("rt capacity: the default budget is a sixteenth of the device, 512 to 4096 MiB") {
+  constexpr u64 k_mib = u64{1} << 20;
+  // The card classes the runners and the owner have, by the heaps' size the driver reports.
+  CHECK(rt_device_budget_mib(32404 * k_mib) == 2025);  // RTX 5090
+  CHECK(rt_device_budget_mib(24 * 1024 * k_mib) == 1536);
+  CHECK(rt_device_budget_mib(16 * 1024 * k_mib) == 1024);  // the old default
+  CHECK(rt_device_budget_mib(12 * 1024 * k_mib) == 768);   // TITAN X, TITAN Xp
+  CHECK(rt_device_budget_mib(8 * 1024 * k_mib) == 512);    // an 8 GB laptop card
+  // The floor: a 6 GB card, and a device that reports no device-local memory at all.
+  CHECK(rt_device_budget_mib(6 * 1024 * k_mib) == k_rt_budget_floor_mib);
+  CHECK(rt_device_budget_mib(0) == k_rt_budget_floor_mib);
+  // The ceiling: 64 GB and up.
+  CHECK(rt_device_budget_mib(64 * 1024 * k_mib) == k_rt_budget_ceiling_mib);
+  CHECK(rt_device_budget_mib(96 * 1024 * k_mib) == k_rt_budget_ceiling_mib);
+  CHECK(rt_device_budget_mib(~u64{0}) == k_rt_budget_ceiling_mib);
+  // Rounded down to whole MiB, never up: a budget is a ceiling.
+  CHECK(rt_device_budget_mib(16 * 1024 * k_mib + 15 * k_mib) == 1024);
+
+  // The setting first, then the tunable, then the device.
+  const RtBudget named = resolve_rt_budget(1536, 2048, 32404 * k_mib);
+  CHECK(named.mib == 1536);
+  CHECK(named.source == RtBudgetSource::Setting);
+  const RtBudget tuned = resolve_rt_budget(0, 2048, 32404 * k_mib);
+  CHECK(tuned.mib == 2048);
+  CHECK(tuned.source == RtBudgetSource::Tunable);
+  const RtBudget device = resolve_rt_budget(0, 0, 12 * 1024 * k_mib);
+  CHECK(device.mib == 768);
+  CHECK(device.source == RtBudgetSource::Device);
+  // An explicit budget is not clamped by the rule: a setting below the floor or above the ceiling
+  // is what the caller asked for (the tests' 1 MiB budgets, a measurement's 8 GiB).
+  CHECK(resolve_rt_budget(1, 0, 32404 * k_mib).mib == 1);
+  CHECK(resolve_rt_budget(0, 8192, 32404 * k_mib).mib == 8192);
+  CHECK(std::string(rt_budget_source_name(RtBudgetSource::Setting)) == "setting");
+  CHECK(std::string(rt_budget_source_name(RtBudgetSource::Tunable)) == "tunable");
+  CHECK(std::string(rt_budget_source_name(RtBudgetSource::Device)) == "device");
+}
+
+// The same rule on a real scene: with nothing named, the chain's limit is the device's budget in
+// clusters, and the scene and its renderer say where it came from.
+TEST_CASE("rt capacity: a scene with no budget named takes the device's, and says so") {
+  gfx::Device device;
+  std::string error;
+  if (!device.create(gfx::DeviceOptions{}, &error) || !traces(device)) {
+    MESSAGE("cluster ray tracing unavailable: " << error);
+    return;
+  }
+  gfx::MemoryBudget memory;
+  REQUIRE(device.memory_budget(memory));
+  SceneData data;
+  REQUIRE_MESSAGE(load_scene(terrain_grid(), data, error), error);
+  const auto made = [&](u32 setting_mib, RtBudgetSource source, u32 mib) {
+    RenderSettings settings;
+    settings.shadows = ShadowMode::RayTraced;
+    settings.rt_budget_mib = setting_mib;
+    ResolvedSettings resolved;
+    resolve_settings(settings, device.features(), &data, resolved);
+    GpuScene scene;
+    REQUIRE_MESSAGE(scene.create(device, data, resolved, &error), error);
+    CAPTURE(setting_mib);
+    CHECK(scene.rt_budget_source() == source);
+    CHECK(scene.rt_budget_mib() == mib);
+    REQUIRE(scene.rt_bytes_per_cluster() > 0);
+    const u64 clusters = u64{mib} * 1024 * 1024 / scene.rt_bytes_per_cluster();
+    CHECK(scene.rt_capacity_limit() == std::min<u64>(clusters, scene.rt_union_clusters()));
+    SceneRenderer renderer;
+    SceneRenderer::Desc desc;
+    desc.width = k_width;
+    desc.height = k_height;
+    REQUIRE_MESSAGE(renderer.create(device, scene, resolved, desc, &error), error);
+    REQUIRE(renderer.render_offscreen(FrameDesc{}, &error));
+    CHECK(renderer.stats().rt.budget_mib == mib);
+    CHECK(renderer.stats().rt.budget_source == source);
+    renderer.destroy();
+    scene.destroy();
+  };
+  const u32 rule = rt_device_budget_mib(memory.device_local_bytes);
+  MESSAGE("device-local " << (memory.device_local_bytes >> 20) << " MiB: the default budget is "
+                          << rule << " MiB");
+  made(0, RtBudgetSource::Device, rule);
+  made(64, RtBudgetSource::Setting, 64);
+  {
+    const ScopedTunable tuned("renderer.rt.budget_mib", "96");
+    made(0, RtBudgetSource::Tunable, 96);
+    made(64, RtBudgetSource::Setting, 64);
+  }
+}
+
 // R94: past the capacity a frame spends it nearest first — the prefix, then the rings inside out,
 // one ring's blocks by tile key, a block's slots in order — whatever order the blocks were laid
 // out in, so the same instances are dropped every run.
