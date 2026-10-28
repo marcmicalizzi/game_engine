@@ -230,11 +230,16 @@ tunables::Float shadow_rest_texels{
     "renderer.shadow.rest_texels", static_cast<f64>(k_shadow_rest_texels), 0.0, 64.0,
     "A cascade past the nearest draws a deformed instance at rest when its reach from the rest "
     "pose is under this many of its texels (R103); 0 poses every cascade"};
+tunables::Bool shadow_hybrid_fit{
+    "renderer.shadow.hybrid_fit", false,
+    "Under the hybrid, fit the cascades from the ray distance out rather than from the near plane "
+    "(R103; renderer.md, Rays near, maps far)"};
 
 }  // namespace
 
 bool shadow_opaque_rays_tunable() noexcept { return shadow_opaque_rays.get(); }
 f32 shadow_rest_texels_tunable() noexcept { return static_cast<f32>(shadow_rest_texels.get()); }
+bool shadow_hybrid_fit_tunable() noexcept { return shadow_hybrid_fit.get(); }
 
 DisplayLevels display_levels(const RenderSettings& settings) {
   DisplayLevels out;

@@ -2267,6 +2267,12 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
     fit.cascades = cascade_runs;
     fit.resolution = settings.shadow_map;
     fit.distance = settings.shadow_distance;
+    // Under the hybrid no surface nearer than the ray distance reads the maps, so with
+    // `renderer.shadow.hybrid_fit` the cascades begin there (R103; renderer.md, "Rays near, maps
+    // far"). Off by default until the hybrid's test, which holds its far pixels to the `csm`
+    // picture's bytes, is given a reference drawn from the same fit.
+    fit.begin_distance =
+        resolved_.hybrid && shadow_hybrid_fit_tunable() ? settings.shadow_ray_distance_m : 0.0f;
     // The maps follow the key light: the sun, or on a sky's night the moon, the array's light 0
     // (`gfx::ShadowMapParams::light` is its index plus one).
     const Vec3 key =

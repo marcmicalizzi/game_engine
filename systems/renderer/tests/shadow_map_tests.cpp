@@ -255,6 +255,79 @@ TEST_CASE("renderer: the shadow cascades cover the camera's slices and hold stil
   }
 }
 
+// **The hybrid's cascades begin where its rays hand over** (R103; renderer.md, "Rays near, maps
+// far"). With `ShadowFit::begin_distance` the first slice starts at the least view depth a point
+// that far from the eye can have — the distance over the widest corner ray's secant — so every
+// surface the hybrid reads the maps for (at least the ray distance from the eye) is inside a slice,
+// none of the four is spent on the rays' side, and each is finer for
+// the depth it reaches. A zero begin is the fit it always was.
+TEST_CASE("renderer: the hybrid's cascades begin where its rays hand over") {
+  std::string error;
+  const WorldPos center = WorldPos::origin();
+  const f32 radius = 3600.0f;
+  Camera camera;
+  camera.position = absolute(WorldPos::origin(), Vec3{10.0f, 3.0f, 900.0f});
+  camera.target = absolute(WorldPos::origin(), Vec3{0.0f, 40.0f, 300.0f});
+  camera.znear = 0.1f;
+  ViewSetDesc wide;
+  wide.layout = ViewLayout::Surround3;
+  wide.surround.side_yaw = radians(30.0f);
+  ViewSet layouts[2];
+  REQUIRE(layouts[0].build(ViewSetDesc{}, 1280, 720, &error));
+  REQUIRE(layouts[1].build(wide, 3 * 640, 360, &error));
+  for (ViewSet& views : layouts) {
+    views.update(camera);
+    ShadowFit fit;
+    fit.distance = 2000.0f;
+    ShadowCascades all;
+    fit_shadow_cascades(views, camera, k_sun, center, radius, fit, all);
+    ShadowCascades same;
+    ShadowFit zero = fit;
+    zero.begin_distance = 0.0f;
+    fit_shadow_cascades(views, camera, k_sun, center, radius, zero, same);
+    REQUIRE(same.count == all.count);
+    for (u32 c = 0; c <= all.count; ++c)
+      CHECK(same.splits[c] == all.splits[c]);
+    for (u32 c = 0; c < all.count; ++c) {
+      CHECK(same.radii[c] == all.radii[c]);
+      CHECK(same.centers[c].x == all.centers[c].x);
+      CHECK(same.centers[c].z == all.centers[c].z);
+    }
+    for (const f32 begin : {50.0f, 100.0f, 400.0f}) {
+      fit.begin_distance = begin;
+      ShadowCascades hybrid;
+      fit_shadow_cascades(views, camera, k_sun, center, radius, fit, hybrid);
+      REQUIRE(hybrid.count == 4);
+      // The least depth a point `begin` from the eye has in any view.
+      f32 least = begin;
+      for (u32 v = 0; v < views.size(); ++v) {
+        const Mat4 inv = inverse(views[v].view_proj);
+        for (u32 k = 0; k < 4; ++k) {
+          const Vec3 unit = unproject(inv, (k & 1) != 0 ? 1.0f : -1.0f, (k & 2) != 0 ? 1.0f : -1.0f,
+                                      camera.znear / 1.0f);
+          least = std::min(least, begin / length(unit));
+        }
+      }
+      CHECK(hybrid.splits[0] == doctest::Approx(least).epsilon(1e-3));
+      CHECK(hybrid.splits[4] == all.splits[4]);
+      check_corners(views, camera, hybrid);
+      // Each cascade spans a smaller ratio of depths, so its texel is finer for the depth it ends
+      // at (within the radius's quantization, a 64th of its power of two).
+      for (u32 c = 0; c < 4; ++c) {
+        CHECK(hybrid.cascades[c].texel_world / hybrid.splits[c + 1] <=
+              all.cascades[c].texel_world / all.splits[c + 1] * 1.02f);
+      }
+      MESSAGE(views.size() << " view(s), maps from " << begin << " m: splits " << hybrid.splits[0]
+                           << ", " << hybrid.splits[1] << ", " << hybrid.splits[2] << ", "
+                           << hybrid.splits[3] << ", " << hybrid.splits[4] << " m; texels "
+                           << hybrid.cascades[0].texel_world * 100.0f << " to "
+                           << hybrid.cascades[3].texel_world * 100.0f << " cm (from "
+                           << all.cascades[0].texel_world * 100.0f << " to "
+                           << all.cascades[3].texel_world * 100.0f << ")");
+    }
+  }
+}
+
 // **A texel is a fixed piece of the world for as long as the sun stands still** (renderer.md,
 // "Cascaded shadow maps"). The eye stepped a 1024th of a metre at a time across the corner of a
 // 64 m cell — x = 64 and z = 128 at once — by the origin and 10,000 km out: every cascade's texel

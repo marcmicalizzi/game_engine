@@ -1,6 +1,6 @@
 # The expanded forest's cascade budget (R103)
 
-Dates: 2026-10-26 (the opt-in experiment, a Codex night session, below) and 2026-10-27 (the default, its stages). Status: stage 1 (the cascades cut by their own texels) and stage 2 (far casters at rest, per cascade) are the default, stage 3 found the far side not worth a default distance; the stages after them are in their own sections as they land.
+Dates: 2026-10-26 (the opt-in experiment, a Codex night session, below) and 2026-10-27 (the default, its stages). Status: stage 1 (the cascades cut by their own texels) and stage 2 (far casters at rest, per cascade) are the default, stage 3 found the far side not worth a default distance, and stage 4 re-measured the hybrid over these cascades (it still loses; `auto` stays `rt`). Persistent far cascades (stage 5) were not built.
 
 **Question.** On the forest proof of concept's v18 expanded forest at 11520×2160 the cascaded frame was 35.9 ms, of which the four 2048² cascades' depth draws were 20.9 (7.33 million pairs a frame, every cascade a run of the camera's cut at the camera's own LOD to the far side of the scene), and the same frame refused 1.59 million deformed-vertex pool entries after placing 1.12 million in a 768 MiB pool: every swaying tree deformed into each of four maps. The traced frame of the same scene places 245,740 entries and refuses none. How much of that can a cascade leave out by drawing no finer than its own texels, without changing the shadow it casts?
 
@@ -102,6 +102,45 @@ Stage 3. `shadow_distance` ends the receivers, not the casters: every cascade's 
 | 1600×900 | 1,280 m | 7.2 / 40 / 228 / 1,280; 0.75 cm, 4.2 cm, 24 cm, 1.33 m | 605,069 (34,046 / 98,958 / 302,411 / 169,654) | 5.21 / 5.66 | 7.39 | 3→100%, 9.7→7.4% |
 
 Half a millisecond at the widest frame, nothing at 1600×900, and a different picture either way, because the distance moves every split and every texel: at 1600×900 the near cascade's texel goes from 2.8 to 0.75 cm, which is finer shadows near the eye and not a saving. The default stays 0. A scene whose far side is much farther than its interest (a 50 km terrain under a forest scene) is where a stated distance would pay, and `--shadow-distance` is there for it.
+
+## The hybrid over these cascades (2026-10-27)
+
+Stage 4, R102's measurement taken again over the texel-cut cascades, as [its own write-up](shadow-hybrid-2026-10-26.md) prescribed: `rt`, `csm` and the hybrid at 100 m (20 m band), on the v18 expanded forest and the v18 grass clearing (the same frozen scene, `world/v18/grass-clearing-path.json`), at 2560×1440 and 11520×2160. The hybrid was run twice: as it is ("hybrid"), and with the cascades fit from the ray distance out ("hybrid, fit"; `renderer.shadow.hybrid_fit=true`, `ShadowFit::begin_distance`: the first slice starts at the least view depth a point 100 m from the eye can have, 68.6 m in a 16:9 view and 33.4 m in the 140° wide one). Same harness as above (600 frames, `msvc-release`, offscreen, `--wait-quiet 120`, the GPU lock); medians in milliseconds; the pairs are the last frame's in all four cascades.
+
+| view | shadows | frame | resolve | rt chain | maps (shadow) | hw raster | pairs in the maps | GPU start→end, other CPU start→end |
+|---|---|---:|---:|---:|---:|---:|---:|---|
+| forest 2560×1440 | rt | 15.26 | 6.16 | 4.62 | — | 2.71 | — | 1→100%, 8.1→25.6% |
+| | csm | **9.59** | 0.90 | — | 6.09 | 1.00 | 846,081 | 2→100%, 8.6→7.7% |
+| | hybrid | 31.88 | 5.90 | 4.60 | 16.48 | 2.71 | 5,818,865 | 2→29%, 9.7→9.7% |
+| | hybrid, fit | 38.07 | 5.89 | 4.61 | 22.64 | 2.71 | 8,601,256 | 1→1%, 7.0→8.4% |
+| forest 11520×2160 | rt | 90.85 | 31.60 | 43.86 | — | 11.17 | — | 3→100%, 8.0→6.2% |
+| | csm | **22.69** | 6.43 | — | 7.66 | 5.21 | 1,484,413 | 2→2%, 4.9→6.0% |
+| | hybrid | 121.09 | 29.95 | 43.81 | 31.68 | 11.16 | 13,045,791 | 1→2%, 3.9→7.2% |
+| | hybrid, fit | 129.60 | 29.81 | 43.84 | 40.11 | 11.16 | 17,088,670 | 2→2%, 3.8→4.3% |
+| clearing 2560×1440 | rt | 10.88 | 2.98 | 3.23 | — | 3.05 | — | 2→100%, 7.1→5.6% |
+| | csm | **7.76** | 0.70 | — | 4.30 | 1.57 | 802,878 | 0→100%, 2.4→7.7% |
+| | hybrid | 23.08 | 2.08 | 2.93 | 13.37 | 3.04 | 5,165,298 | 1→22%, 6.9→5.4% |
+| | hybrid, fit | 27.55 | 1.99 | 2.93 | 17.81 | 3.05 | 7,412,774 | 2→3%, 6.4→6.9% |
+| clearing 11520×2160 | rt | 49.11 | 23.14 | 4.94 | — | 16.91 | — | 1→100%, 6.4→9.5% |
+| | csm | **22.85** | 3.97 | — | 6.73 | 9.07 | 1,533,683 | 2→1%, 10.0→11.7% |
+| | hybrid | 73.67 | 17.21 | 4.86 | 30.31 | 16.89 | 13,008,581 | 1→1%, 7.1→10.3% |
+| | hybrid, fit | 81.39 | 16.76 | 4.90 | 38.20 | 16.90 | 16,738,262 | 1→22%, 7.5→10.1% |
+
+**The hybrid still loses, by more than before, and the texel cut is why the gap grew rather than shrank.** The texel cut makes `csm` the cheapest frame on all four views — a quarter of `rt`'s at 11520×2160 on the forest — but the hybrid's maps do not get it. In a frame that builds the ray-tracing chain, a rigid distance form is drawn at its **frontier** at every distance (R94, [renderer](../subsystems/renderer.md#static-structures-for-rigid-forms)): the form's LOD data on the GPU are patched so that no cut but the frontier can be selected, and the cascades read the same data, so a cascade cannot coarsen a form by its texels any more than by the camera's LOD. The far cascades are almost all forms: under `csm` the forest's third and fourth cascades draw 98,720 and 78,333 pairs at 11520×2160, under the hybrid 5,167,146 and 5,165,660. That is the whole of the maps' 31.7 ms against 7.7, and fitting the cascades from the ray distance makes it worse (40.1 ms), because then the first two cascades lie in the forms' rings as well.
+
+**What the hybrid would cost with the forms cut by the cascades' texels.** Replacing the hybrid's maps by `csm`'s (the same cascades, the same cut) estimates it: the forest at 11520×2160 121.1 − 31.7 + 7.7 ≈ 97 ms against `rt`'s 90.9, at 2560×1440 ≈ 21.5 against 15.3; the clearing ≈ 50 against 49.1 at 11520×2160 and ≈ 14.0 against 10.9 at 2560×1440. Still a loss on all four, by 2 to 41%, because the rest of the hybrid's frame is `rt`'s: the chain (43.8 ms on the wide forest, over its capacity), the resolve's rays near the eye (29.9 against `rt`'s 31.6 — the masks, as the first measurement found), and the chain frame's own picture (the forms at their frontier and no occlusion: the hardware rasterizer 11.2 ms against `csm`'s 5.2 on the wide forest, 16.9 against 9.1 on the wide clearing). The maps are no longer what decides it.
+
+So **`auto` stays `rt`** on a device that traces, `renderer.shadow.hybrid_fit` stays off (the hybrid's own test, which holds the far pixels to the `csm` picture's bytes, also refuses it: 12 to 21 far pixels and 2 or 3 in the band differ per caster, because the maps it reads are other maps), and the two levers are rows of their own: the cascades' own cut for rigid forms in a chain frame — an unpatched copy of the forms' LOD data for the cascades' culls, about 50 bytes a cluster — and a cheaper answer for an alpha-tested caster's ray (opacity micromaps, or an opaque shadow proxy for a cluster whose coverage is high), which the first write-up names and which is three quarters of the rays' resolve. The fit's code stays, behind the tunable, for when the first lands.
+
+## Persistent far cascades: not built, and what they would take
+
+Stage 5 was to be built only with stages 1 to 4 proven and time left; it was not built. After stage 1 the far cascades are small on the forest (the last two 98,720 and 78,333 pairs of 1.48 million at 11520×2160, under `csm`), so what a redraw-on-change cascade would save there is a fraction of the 7.9 ms the four cost together — the near two hold 88% of the pairs and move with the camera every frame anyway. What it would take, from the Codex session's constraints (below) and this night's code:
+
+- **The atlas kept between frames.** It is imported into the render graph as undefined and its row cleared whole every frame; a kept tile needs a preserved import layout, a clear per tile, and graph writes for the refreshed tiles only.
+- **When a tile is stale.** Its sphere moved by a texel (the snap makes that a whole-texel step, so "moved" is exact); the key light turned (the sun's rate is 0 by default, so a held sky never invalidates, and a moving day does every frame unless the light's direction is quantized); anything under the tile changed — a streamed tile, a moved instance, terrain deformation, and every swaying tree that is not at rest in it. Stage 2 is what makes the last tractable: a cascade whose texel is coarser than every reach in it draws only rest poses, so the wind does not invalidate it.
+- **One light basis.** `ShadowMapParams` carries a single light frame (`light_right`, `light_up`, `light_dir`) that the lookup and the receiver-plane bias use for every cascade. A far tile drawn under an older sun read with the current basis puts the bias's plane in the wrong frame. Either the light is quantized so every kept tile shares the current basis (a far tile is refreshed whenever the quantized direction steps), or each cascade carries its own basis and the lookup reads it — a change to the resolve's contract, shared with the hybrid, that needs its own image test.
+- **The frame's origin.** A kept tile's matrix is in the frame its eye had; after an origin change it has to be re-expressed at the current eye (the fit already snaps in world f64, so the re-expression is exact).
+- **A counter, and a test** that a held camera under a held sun redraws no far tile after the first frame, and that a moved instance under one redraws exactly that tile.
 
 ## The opt-in experiment (2026-10-26)
 

@@ -475,6 +475,9 @@ bool shadow_opaque_rays_tunable() noexcept;
 // deformed instance at rest when its reach from the rest pose is under this many of its texels
 // (R103; renderer.md, "Cascaded shadow maps"); 0 poses every cascade, as before R103.
 f32 shadow_rest_texels_tunable() noexcept;
+// `renderer.shadow.hybrid_fit` (false): under the hybrid, the cascades begin at the ray distance
+// (`ShadowFit::begin_distance`; R103, renderer.md "Rays near, maps far").
+bool shadow_hybrid_fit_tunable() noexcept;
 // What the frame actually shadows with, as a summary reports it: "rt", "csm", "hybrid", or "off".
 const char* resolved_shadow_name(const ResolvedSettings& resolved) noexcept;
 // "none", "identity", "wave", or "lattice" into `deform` and `deform_kind`.
