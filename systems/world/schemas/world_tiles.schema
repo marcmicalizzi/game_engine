@@ -120,7 +120,7 @@ struct TileHandover @version(2) {
   pairs_after: u32 = 0
 }
 /// A world's run, the last line of engine-view's world log: what the ring did and what it cost.
-struct TileWorldSummary @version(2) {
+struct TileWorldSummary @version(3) {
   format: string = "engine.world-log.v1"
   tile_size: f32 = 0
   radius: f32[]
@@ -170,4 +170,8 @@ struct TileWorldSummary @version(2) {
   authored_forms: u32 = 0 @since(2)
   authored_form_clusters: u32 = 0 @since(2)
   authored_tile_floor: u32 = 0 @since(2)
+  /// The instance and tag room the placement consumer keeps resident for the whole run
+  /// (`PlacementTiles::room_bytes`, version 3): about the authored instance count times a
+  /// `SceneInstance` and a tag, a second copy of them (docs/subsystems/world.md, "The consumers").
+  placement_room_bytes: u64 = 0 @since(3)
 }

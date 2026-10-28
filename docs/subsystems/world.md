@@ -48,6 +48,8 @@ motion keys and placement bytes are unchanged. The CPU regression checks an unse
 arrival, rebuilds, departures and reuse without allocations; the renderer's streamed-tree flight
 holds the complete host/renderer path to zero in its second flight. The
 [allocation hunt](../experiments/streamed-tree-allocations-2026-10-26.md) records attribution and runs.
+
+**What that room keeps resident** (2026-10-27, W80). Every occupied tile of a finite entry holds its instance and tag arrays for the whole run, in the pool or on the active tile, so the world keeps about a second copy of the authored instances' room: `sizeof(SceneInstance)` plus one tag byte per instance, summed across entries sharing a tile, and nothing per empty tile. The scale rule is proportional to the authored instance count and independent of the ring, the tile size and how many tiles are active: 100,334 instances at the forest cost that count times the pair, a city's cost its own count times it. `PlacementTiles::room_bytes()` is the number (the pool, the active tiles and the free list; the tail and the admission scratch, which are sized by the most one commit hands on, are not in it), and engine-view's world summary reports it as `placement_room_bytes` (`TileWorldSummary` version 3). engine-host has no streamed world behind `render.*`, so it has nothing to report. `scene_order_tests.cpp` pins the number to the load's counts, unchanged across arrivals, rebuilds and departures.
 Since R100 (2026-10-26), placements receive the renderer's full fixed reservation, including
 terrain replacement slots, in `PlacementTilesConfig::fixed_pairs`, and its visibility ceiling in
 `max_pairs`. Each admitted tile pays `renderer::reserved_tile_pairs`, the layout's rounded block

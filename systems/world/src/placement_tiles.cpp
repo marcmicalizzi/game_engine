@@ -186,6 +186,21 @@ std::span<const renderer::SceneInstance> PlacementTiles::tile_instances(
   return {block->instances.data(), block->instances.size()};
 }
 
+u64 PlacementTiles::room_bytes() const noexcept {
+  const auto room = [](const TileBlock& block) {
+    return u64{block.instances.capacity()} * sizeof(renderer::SceneInstance) +
+           u64{block.tags.capacity()} * sizeof(u8);
+  };
+  u64 bytes = 0;
+  for (u32 i = 0; i < spare_tiles_.size(); ++i)
+    bytes += room(spare_tiles_.value_at(i));
+  for (u32 i = 0; i < tiles_.size(); ++i)
+    bytes += room(tiles_.value_at(i));
+  for (const TileBlock& block : free_blocks_)
+    bytes += room(block);
+  return bytes;
+}
+
 bool PlacementTiles::withheld(TileCoord tile) const noexcept {
   const TileBlock* block = tiles_.find_value(tile_key(tile));
   return block != nullptr && block->withheld;
