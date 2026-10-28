@@ -309,3 +309,62 @@ pass collapse criteria. These are 640-square whole-asset views, one per rock, un
 lock; the report records no quiet machine-state sample and supports no performance claim.
 Raw records and reproduced binaries are in local `rinds/e10/`. This does not qualify arbitrary
 angles, lower atlas resolutions or all existing recipes for photographic realism.
+
+## G98: fracture rims and sampling
+
+[NPS's obsidian account](https://www.nps.gov/articles/archeology-obsidian-mvp-yellowstone-stones.htm)
+describes smooth glassy fracture surfaces and sharp flaked margins. This motivates preserving
+both smooth faces and sharp transitions rather than globally faceting or rounding the mesh.
+[Kobbelt and Botsch, Feature Sensitive Mesh Processing (2003)](https://cg.cs.tu-dortmund.de/publications/2003-features.pdf),
+sections 2–3, explains why a regular grid crossing a sharp feature produces normal artifacts
+that extra subdivision alone does not eliminate. Read 2026-10-28. Its lesson here is to spend
+existing samples on features and preserve normal discontinuities; this implementation is not
+the paper's extended marching cubes or a complete feature reconstruction algorithm.
+
+The bounded offline pass aligns radial samples near sharp hull-plane intersections, selects
+cell diagonals against the generating surface, and splits shading normals only where adjacent
+surface directions differ sharply. Seeded sub-cell offsets reduce regular rows away from rims.
+Any relocation that would invert or excessively compress an incident directional triangle is
+refused. Rounded blends remain rounded; the feature-fit band fades when the geometric rounding
+is wide enough to resolve. Numerical bounds and shading thresholds are authored discretization
+choices, not geological measurements. No additional triangles or runtime material channels are
+introduced. Radial topology, UV charts and source quality budgets remain the existing contracts.
+
+The sample offset is at most 0.1 cell per free cube coordinate. Rim projection is limited to
+0.45 angular cell, fades by the rounded band relative to 0.4 cell, and retains at least 20%
+of each initial incident directional triangle's area. Diagonal alternatives require each
+triangle to exceed 5% of the directional cell area; otherwise the safe initial connectivity
+is retained. Normal filtering uses cosine 0.8 (about 37 degrees) on fresh/unweathered faces,
+falling to 0.5 (60 degrees) on fully weathered old faces. All are discretization choices.
+Only hull-plane intersections receive explicit fitting; chip and bowl boundaries and later
+surface recession still depend on sampling. The charts remain structured and a full feature
+remesher would be needed to remove that limitation.
+
+Paired 1200-by-900 finest-cut captures at identical cameras and light are in local
+`D:/workspace/game_engine_local/rocks/2026-10-28/sampling/review.html`, alongside the exports,
+camera paths and raw records. Obsidian and slate use scalar PBR; granite uses the baked rind.
+Obsidian/slate breaks are sharper, granite changes more subtly, and patterned furrows remain.
+These images do not establish photographic realism. The existing fresh-block test's area in
+eight broad normal patches rises from 93.38% to 99.26%; this is a planar-face diagnostic, not a
+realism score. A new sharp-edge test finds distinct shading normals on all 398 geometric rims
+turning over 60 degrees, while checking closure, unit normals and the triangle budget.
+
+| Study | Triangles, unchanged | Export vertices before / after | E10 FLIP, 1 px vs 0.05 px | Coarse / finest visible pairs |
+|---|---:|---:|---:|---:|
+| Granite rind | 76,800 | 40,461 / 62,150 | 0.01450 | 307 / 612 |
+| Obsidian fractured | 150,528 | 76,836 / 95,550 | 0.00840 | 94 / 431 |
+| Slate slab | 150,528 | 77,277 / 92,885 | 0.00704 | 127 / 777 |
+
+Crease attributes are not free: these exports add 20–54% vertices. Temporary per-body adjacency,
+directions and face normals are O(surface samples), with no runtime pass or new GPU structure.
+All three standard E10 studies pass the 0.02 FLIP and collapse limits, with zero warnings or
+repairs and six UV islands. E10 uses 640-square whole-asset views with shadows off under the
+GPU lock on the RTX 5090. Its `machine_state` is unsampled; build timings are shared-machine
+upper bounds, not performance claims. The copied binaries and report are under `sampling/e10/`.
+
+Validation: 42 rock cases / 5,660,533 assertions pass on MSVC debug and Linux Clang debug,
+including the intentionally updated v7 mesh/container fingerprints; four CLI cases / 70
+assertions pass. The baker regression checks analytical barycentric fracture interpolation
+on both diagonal orientations. Lint, documentation and whitespace checks pass. Linux checkout
+volumes were pruned. Full affected suites and merge gates were not repeated under the owner's
+explicit gate waiver; this follow-up remains on `codex/rock-structure`, not merged or pushed.

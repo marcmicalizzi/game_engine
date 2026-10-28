@@ -62,7 +62,7 @@ inline constexpr const char* k_determinism = "derived";
 // makes from the same parameters is a new key and never an old container read as the answer. Bump
 // it with any change that moves a byte of a committed recipe's mesh (the determinism test says
 // when one did).
-inline constexpr u32 k_rocks_version = 6;
+inline constexpr u32 k_rocks_version = 7;
 
 // ---- the budget ladder (rocks.md, "The budget ladder") -----------------------------------------
 //

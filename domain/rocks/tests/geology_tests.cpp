@@ -213,6 +213,58 @@ TEST_CASE("rocks: chipped fracture hulls stay closed without joint sets at coars
   }
 }
 
+TEST_CASE("rocks: sharp geometric rims retain distinct shading normals") {
+  Boulder b;
+  b.type = RockType::Basalt;
+  b.rounding = 0.0f;
+  b.joint_sets = 0;
+  b.surface.strength = 0;
+  b.geology.weathering = 0.0f;
+  b.geology.irregularity = 0.0f;
+  b.geology.bed_m = 0.0f;
+  b.triangle_budget = 20000;
+  const auto mesh = body(b);
+  check_closed(mesh, 1);
+  const auto welded = weld(mesh);
+  struct Edge {
+    u32 lo, hi, corner, triangle;
+  };
+  std::vector<Edge> edges;
+  std::vector<Vec3> normals;
+  for (u32 t = 0; t < mesh.indices.size(); t += 3) {
+    const Vec3 a = mesh.positions[mesh.indices[t]];
+    const Vec3 n =
+        cross(mesh.positions[mesh.indices[t + 1]] - a, mesh.positions[mesh.indices[t + 2]] - a);
+    const f32 square = dot(n, n);
+    REQUIRE(square > 0);
+    normals.push_back(n * (1.0f / std::sqrt(square)));
+    for (u32 c = 0; c < 3; ++c) {
+      const u32 va = mesh.indices[t + c], vb = mesh.indices[t + (c + 1) % 3];
+      const u32 wa = welded.weld[va], wb = welded.weld[vb];
+      edges.push_back(Edge{std::min(wa, wb), std::max(wa, wb), wa < wb ? va : vb, t / 3});
+    }
+  }
+  std::sort(edges.begin(), edges.end(), [](const Edge& a, const Edge& other) {
+    return a.lo != other.lo ? a.lo < other.lo : a.hi < other.hi;
+  });
+  u32 sharp = 0, separated = 0;
+  for (size_t e = 0; e < edges.size(); e += 2) {
+    const auto& a = edges[e];
+    const auto& other = edges[e + 1];
+    REQUIRE(a.lo == other.lo);
+    REQUIRE(a.hi == other.hi);
+    if (dot(normals[a.triangle], normals[other.triangle]) >= 0.5f) continue;
+    ++sharp;
+    if (dot(mesh.normals[a.corner], mesh.normals[other.corner]) < 0.9f) ++separated;
+  }
+  MESSAGE("shading separates " << separated << " of " << sharp << " rims over 60 degrees");
+  REQUIRE(sharp > 10);
+  CHECK(static_cast<f64>(separated) / sharp > 0.85);
+  CHECK(mesh.indices.size() / 3 <= b.triangle_budget);
+  for (Vec3 n : mesh.normals)
+    CHECK(dot(n, n) == doctest::Approx(1.0f).epsilon(1e-5));
+}
+
 TEST_CASE("rocks: PBR scalar overrides survive texturing and source identity") {
   RockFile file;
   std::string error;

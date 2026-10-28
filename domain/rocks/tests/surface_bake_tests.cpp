@@ -190,11 +190,15 @@ TEST_CASE("rocks: both grouped shapes keep independent padded charts") {
 
 TEST_CASE("rocks: a rind preserves the complete mineral field on fresh faces") {
   using namespace engine::rocks::detail;
-  const auto bake = [](bool rind, f64 fresh) {
+  const auto bake = [](bool rind, f64 fresh, bool mixed = false) {
     RockSurfaceMaps settings;
     settings.resolution = 256;
     settings.grain_m = 0.025f;
     settings.veins = 1.0f;
+    if (mixed) {
+      settings.veins = 0.0f;
+      settings.variation = 0.0f;
+    }
     if (rind) {
       settings.rind = RockRind{};
       settings.rind->amount = 1.0f;
@@ -215,12 +219,13 @@ TEST_CASE("rocks: a rind preserves the complete mineral field on fresh faces") {
         for (u32 x = 0; x < 2; ++x) {
           mesh.positions.push_back(Vec3{static_cast<f32>(x) * 0.1f, static_cast<f32>(y) * 0.1f, 0});
           samples.push_back(D3{static_cast<f64>(x) * 0.1, static_cast<f64>(y) * 0.1, 0});
-          provenance.push_back(fresh);
+          provenance.push_back(mixed ? (x == 0 && y == 0 ? 0.0 : 1.0) : fresh);
         }
     SurfaceBake surface;
     std::string error;
     REQUIRE(surface.init(settings, 1, error));
-    surface.body(0, 1, 0, fabric, RockType::Gneiss, samples, provenance, mesh);
+    const u8 diagonals[6] = {1, 0, 1, 0, 1, 0};
+    surface.body(0, 1, 0, fabric, RockType::Gneiss, samples, provenance, diagonals, mesh);
     REQUIRE(surface.finish(mesh, 1));
     return mesh;
   };
@@ -229,6 +234,11 @@ TEST_CASE("rocks: a rind preserves the complete mineral field on fresh faces") {
   for (u32 i = 0; i < 3; ++i)
     CHECK(uncoated.images[i].bytes == fresh.images[i].bytes);
   const auto old = bake(true, 0);
+  const auto mixed = decode(bake(true, 1, true), 1);
+  // At chart coordinate (.25,.5), the old corner weighs .5 on AC and .25 on BD.
+  // Roughness blends from 1 to .24: .62 and .81, independently of the mineral field.
+  CHECK(mixed.pixels[(42u * 256u + 23u) * 3u + 1u] == 158);
+  CHECK(mixed.pixels[(42u * 256u + 108u) * 3u + 1u] == 207);
   const auto roughness = decode(old, 1);
   const auto normal = decode(old, 2);
   const auto colour = decode(old, 0);

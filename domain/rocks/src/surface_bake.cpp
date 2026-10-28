@@ -106,7 +106,7 @@ Vec2 SurfaceBake::uv(u32 chart, f64 u, f64 v) const {
 
 void SurfaceBake::body(u32 part, u32 n, u32 first, const Fabric& fabric, RockType type,
                        std::span<const D3> samples, std::span<const f64> fresh,
-                       const assets::MeshData& mesh) {
+                       std::span<const u8> diagonals, const assets::MeshData& mesh) {
   Rng rng(fabric.seed + 0x5645494Eu);
   const assets::Material& material = mesh.materials[0];
   const Field field{
@@ -129,13 +129,14 @@ void SurfaceBake::body(u32 part, u32 n, u32 first, const Fabric& fabric, RockTyp
         const u32 j = std::min(static_cast<u32>(v), n - 1u);
         const f64 a = u - i, b = v - j;
         const u32 q = f * side * side + j * side + i;
-        // The same alternating diagonals as emit_body, including their derivatives.
+        // Exactly the solver's selected diagonal, including its derivatives.
         u32 corners[3];
         f64 weights[3];
         D3 du, dv, wu, wv;
         const auto s = [&](u32 index) { return samples[index]; };
         const auto w = [&](u32 index) { return position(mesh.positions[first + index]); };
-        if (((i + j) & 1u) == 0u && a >= b) {
+        const bool main = diagonals[(f * n + j) * n + i] != 0;
+        if (main && a >= b) {
           corners[0] = q;
           corners[1] = q + 1;
           corners[2] = q + side + 1;
@@ -146,7 +147,7 @@ void SurfaceBake::body(u32 part, u32 n, u32 first, const Fabric& fabric, RockTyp
           dv = s(q + side + 1) - s(q + 1);
           wu = w(q + 1) - w(q);
           wv = w(q + side + 1) - w(q + 1);
-        } else if (((i + j) & 1u) == 0u) {
+        } else if (main) {
           corners[0] = q;
           corners[1] = q + side + 1;
           corners[2] = q + side;

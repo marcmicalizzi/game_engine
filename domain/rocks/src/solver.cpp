@@ -287,18 +287,68 @@ f64 radius(const Body& b, D3 u, f64* fresh = nullptr) {
 }
 
 // The cube-sphere's direction for a lattice point of the cube [0, n]³'s surface: each coordinate
-// mapped to [-1, 1] and through the equal-angle warp, `tan(q pi / 4)`, so the cells are near
-// square on the sphere. A function of the lattice point alone, so the two faces that share an edge
+// offset by at most a tenth of a cell before the equal-angle warp, `tan(q pi / 4)`. Fixed
+// boundary coordinates keep every sample on its chart. A function of the lattice point alone,
+// so the two faces that share an edge
 // compute the same bits for it and the seams weld by position exactly.
-D3 lattice_direction(i64 x, i64 y, i64 z, u32 n) {
-  const auto warp = [n](i64 c) {
+D3 lattice_direction(i64 x, i64 y, i64 z, u32 n, u64 seed) {
+  const auto warp = [=](i64 c, u64 axis) {
     if (c == 0) return -1.0;
     if (c == static_cast<i64>(n)) return 1.0;
-    const f64 q = (2.0 * static_cast<f64>(c) / static_cast<f64>(n) - 1.0) * (k_pi * 0.25);
+    const f64 offset = 0.1 * (2.0 * lattice_value(seed + axis, x, y, z) - 1.0);
+    const f64 q =
+        (2.0 * (static_cast<f64>(c) + offset) / static_cast<f64>(n) - 1.0) * (k_pi * 0.25);
     return det::sin(q) / det::cos(q);
   };
-  return normalized(D3{warp(x), warp(y), warp(z)});
+  return normalized(D3{warp(x, 11), warp(y, 23), warp(z, 37)});
 }
+
+// The equal-radius boundary of two planes is a great circle: u.(d0*n1-d1*n0)=0.
+// Fit only nearby sharp hull rims. Broad weathered blends keep their original sampling.
+D3 rim_direction(const Body& b, D3 u) {
+  const Cut* first = nullptr;
+  const Cut* second = nullptr;
+  f64 near = 1e3, next = 1e3;
+  for (const Cut& cut : b.cuts) {
+    const f64 along = dot(u, cut.n);
+    if (along <= 1e-6) continue;
+    const f64 r = cut.d / along;
+    if (r < near) {
+      second = first;
+      next = near;
+      first = &cut;
+      near = r;
+    } else if (r < next) {
+      second = &cut;
+      next = r;
+    }
+  }
+  if (second == nullptr) return u;
+  const f64 cell = (k_pi * 0.5) / b.n;
+  const f64 fit = clamp01(1.0 - b.smooth * std::min(first->wear, second->wear) / (0.4 * cell));
+  if (fit == 0.0) return u;
+  const D3 boundary = first->n * second->d - second->n * first->d;
+  const f64 square = dot(boundary, boundary);
+  if (square < 1e-12) return u;
+  const D3 projected = normalized(u - boundary * (dot(u, boundary) / square));
+  if (length(projected - u) > 0.45 * cell) return u;
+  return normalized(u + (projected - u) * fit);
+}
+
+// Compact per-welded-vertex triangle adjacency, built in deterministic index order.
+struct Incidence {
+  Vector<u32> offsets, triangles;
+  Incidence(std::span<const u32> indices, std::span<const u32> weld, u32 first, u32 count)
+      : offsets(count + 1, 0), triangles(static_cast<u32>(indices.size())) {
+    for (u32 index : indices)
+      ++offsets[weld[index - first] + 1];
+    for (u32 i = 1; i <= count; ++i)
+      offsets[i] += offsets[i - 1];
+    Vector<u32> cursor = offsets;
+    for (u32 i = 0; i < indices.size(); ++i)
+      triangles[cursor[weld[indices[i] - first]]++] = i / 3;
+  }
+};
 
 // Emits one body: its six charts' grids, outward-wound, with area-weighted normals shared across
 // the charts' seams, box-projected UVs (rocks.md, "UVs and materials"), and the burial applied.
@@ -309,6 +359,7 @@ void emit_body(const Body& b, f64 tile_m, assets::MeshData& out, SurfaceBake* ba
   const u32 first = out.positions.size();
   // The surface's positions by lattice point first, then the charts index into them.
   Vector<D3> local;
+  Vector<D3> directions;
   Vector<D3> samples;
   Vector<f64> fresh;
   Vector<u32> lattice_of;  // per emitted vertex, its lattice point's slot in `local`
@@ -335,14 +386,6 @@ void emit_body(const Body& b, f64 tile_m, assets::MeshData& out, SurfaceBake* ba
                    : 0.0;
   // A groove narrower than four cells of the rung fades out rather than aliasing.
   const f64 groove = b.layers > 0 ? b.layer_depth * clamp01((spacing / cell - 2.0) * 0.5) : 0.0;
-  // The unit body's point along a lattice direction; stretched to the half-extents below.
-  const auto position_of = [&](i64 x, i64 y, i64 z) {
-    const D3 u = lattice_direction(x, y, z, n);
-    f64 provenance = 0.0;
-    const f64 r = radius(b, u, bake != nullptr ? &provenance : nullptr);
-    if (bake != nullptr) fresh.push_back(provenance);
-    return u * r;
-  };
   // Faces: (axis, sign) with in-face axes (b, c) such that b x c points outwards.
   struct Face {
     u32 axis;
@@ -380,7 +423,8 @@ void emit_body(const Body& b, f64 tile_m, assets::MeshData& out, SurfaceBake* ba
             shell_key(static_cast<u32>(c[0]), static_cast<u32>(c[1]), static_cast<u32>(c[2]));
         if (slot[key] == ~0u) {
           slot[key] = local.size();
-          local.push_back(position_of(c[0], c[1], c[2]));
+          directions.push_back(lattice_direction(c[0], c[1], c[2], n, b.noise_seed + 0x53414Du));
+          local.push_back(D3{});
         }
         lattice_of.push_back(slot[key]);
         out.positions.push_back(Vec3{});
@@ -418,6 +462,76 @@ void emit_body(const Body& b, f64 tile_m, assets::MeshData& out, SurfaceBake* ba
       }
     }
   }
+  const u32 index_first = out.indices.size() - 36u * n * n;
+  const auto body_indices = std::span<u32>(out.indices).subspan(index_first);
+  {
+    const Incidence incident(body_indices, lattice_of, first, local.size());
+    Vector<f64> area(static_cast<u32>(body_indices.size() / 3));
+    const auto direction_area = [&](u32 tri, u32 moved, D3 candidate) {
+      D3 p[3];
+      for (u32 c = 0; c < 3; ++c) {
+        const u32 v = lattice_of[body_indices[tri * 3 + c] - first];
+        p[c] = v == moved ? candidate : directions[v];
+      }
+      return dot(p[0], cross(p[1], p[2]));
+    };
+    for (u32 t = 0; t < area.size(); ++t)
+      area[t] = direction_area(t, ~0u, D3{});
+    // Sequential moves preserve a positive directional area in every incident triangle.
+    // The floor is relative to the starting grid, so later moves cannot accumulate collapse.
+    for (u32 v = 0; v < directions.size(); ++v) {
+      const D3 candidate = rim_direction(b, directions[v]);
+      bool safe = true;
+      for (u32 k = incident.offsets[v]; k < incident.offsets[v + 1]; ++k) {
+        const u32 t = incident.triangles[k];
+        if (direction_area(t, v, candidate) < area[t] * 0.2) {
+          safe = false;
+          break;
+        }
+      }
+      if (safe) directions[v] = candidate;
+    }
+  }
+  for (u32 v = 0; v < local.size(); ++v) {
+    f64 provenance = 0.0;
+    local[v] = directions[v] * radius(b, directions[v], &provenance);
+    fresh.push_back(provenance);
+  }
+  // Pick the diagonal whose midpoint best approximates the generating surface. The bake
+  // consumes this same table; choosing connectivity independently would smear its material.
+  Vector<u8> diagonals(6u * n * n);
+  for (u32 f = 0; f < 6; ++f)
+    for (u32 j = 0; j < n; ++j)
+      for (u32 i = 0; i < n; ++i) {
+        const u32 q = f * side * side + j * side + i;
+        const u32 c[4] = {q, q + 1, q + side + 1, q + side};
+        D3 d[4], p[4];
+        for (u32 k = 0; k < 4; ++k) {
+          d[k] = directions[lattice_of[c[k]]];
+          p[k] = local[lattice_of[c[k]]];
+        }
+        const auto error = [&](u32 a, u32 z) {
+          const D3 midpoint = (p[a] + p[z]) * 0.5;
+          return std::fabs(length(midpoint) - radius(b, normalized(midpoint)));
+        };
+        const f64 area_floor = 0.05 * (dot(d[0], cross(d[1], d[2])) + dot(d[0], cross(d[2], d[3])));
+        const bool ac_safe =
+            dot(d[0], cross(d[1], d[2])) > area_floor && dot(d[0], cross(d[2], d[3])) > area_floor;
+        const bool bd_safe =
+            dot(d[0], cross(d[1], d[3])) > area_floor && dot(d[1], cross(d[2], d[3])) > area_floor;
+        const f64 ac = error(0, 2), bd = error(1, 3);
+        // If neither alternative meets the stricter diagonal floor, retain the initial
+        // connectivity whose positive area the relocation pass already guaranteed.
+        const bool initial_main = ((i + j) & 1u) == 0;
+        const bool main = !ac_safe && !bd_safe
+                              ? initial_main
+                              : ac_safe && (!bd_safe || ac < bd || (ac == bd && initial_main));
+        const u32 cell_index = (f * n + j) * n + i;
+        diagonals[cell_index] = main ? 1 : 0;
+        const u32 order_ac[6] = {0, 1, 2, 0, 2, 3}, order_bd[6] = {0, 1, 3, 1, 2, 3};
+        for (u32 k = 0; k < 6; ++k)
+          body_indices[cell_index * 6 + k] = first + c[main ? order_ac[k] : order_bd[k]];
+      }
   // The stretch: the cut hull has seeded dimensions, so each axis is scaled to
   // make the body's box the half-extents asked (an affine map, so a cut stays a plane), centred.
   {
@@ -477,7 +591,6 @@ void emit_body(const Body& b, f64 tile_m, assets::MeshData& out, SurfaceBake* ba
   }
   // Area-weighted normals over the welded surface, so a seam is invisible in the shading.
   Vector<D3> normal(local.size());
-  const u32 index_first = out.indices.size() - 36u * n * n;
   for (u32 t = index_first; t < out.indices.size(); t += 3) {
     const u32 ia = lattice_of[out.indices[t] - first];
     const u32 ib = lattice_of[out.indices[t + 1] - first];
@@ -501,21 +614,36 @@ void emit_body(const Body& b, f64 tile_m, assets::MeshData& out, SurfaceBake* ba
       chart_samples[v] = samples[lattice_of[v]];
       chart_fresh[v] = fresh[lattice_of[v]];
     }
-    bake->body(part, n, first, b.fabric, type, chart_samples, chart_fresh, out);
+    bake->body(part, n, first, b.fabric, type, chart_samples, chart_fresh, diagonals, out);
   }
-  // A deep joint may put a face beyond the smooth vertex normal's hemisphere. It is a hard
-  // fracture edge: give that triangle its own normal rather than shading it inside-out. Position
-  // and UV remain exact copies, so the welded shell and triangle budget are unchanged.
+  const Incidence incident(body_indices, lattice_of, first, local.size());
+  Vector<D3> face_normals(static_cast<u32>(body_indices.size() / 3)),
+      face_area(static_cast<u32>(body_indices.size() / 3));
+  for (u32 t = 0; t < face_normals.size(); ++t) {
+    const D3 a = placed[lattice_of[body_indices[t * 3] - first]];
+    face_area[t] = cross(placed[lattice_of[body_indices[t * 3 + 1] - first]] - a,
+                         placed[lattice_of[body_indices[t * 3 + 2] - first]] - a);
+    face_normals[t] = normalized(face_area[t]);
+  }
+  // Smooth within a face, not across a fracture. Each corner sums compatible incident faces;
+  // copies retain exact positions/UVs, so this adds vertex attributes but never triangles.
   for (u32 t = index_first; t < out.indices.size(); t += 3) {
-    const Vec3 a = out.positions[out.indices[t]];
-    const Vec3 fn =
-        cross(out.positions[out.indices[t + 1]] - a, out.positions[out.indices[t + 2]] - a);
-    const Vec3 vn = out.normals[out.indices[t]] + out.normals[out.indices[t + 1]] +
-                    out.normals[out.indices[t + 2]];
-    if (dot(fn, vn) > 0.65f * std::sqrt(dot(fn, fn) * dot(vn, vn))) continue;
-    const D3 nn = normalized(D3{wide(fn.x), wide(fn.y), wide(fn.z)});
+    const D3 fn = face_normals[(t - index_first) / 3];
     for (u32 corner = 0; corner < 3; ++corner) {
       const u32 old = out.indices[t + corner];
+      const u32 v = lattice_of[old - first];
+      const f64 cosine = lerp(0.8, 0.5, b.fabric.exposure * (1.0 - fresh[v]));
+      D3 sum{};
+      bool split = false;
+      for (u32 k = incident.offsets[v]; k < incident.offsets[v + 1]; ++k) {
+        const u32 neighbour = incident.triangles[k];
+        if (dot(fn, face_normals[neighbour]) >= cosine)
+          sum = sum + face_area[neighbour];
+        else
+          split = true;
+      }
+      if (!split) continue;
+      const D3 nn = normalized(sum);
       const Vec3 position = out.positions[old];
       const Vec2 uv = out.uvs[old];
       out.indices[t + corner] = out.positions.size();

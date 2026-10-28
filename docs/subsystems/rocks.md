@@ -88,8 +88,25 @@ basalt have signed relief; limestone has pits. Each octave fades independently f
 two cells across its wavelength to full at four. A joint fades by its **opening width**, not
 its spacing, so a wide spacing cannot enable an unresolved narrow trench. Recession is clamped
 to 35% of the local radius and outward relief to 5% to protect extreme authoring inputs. The
-shell remains radial; hard fracture triangles whose averaged normals differ by over about 49° receive
-split flat normals at identical positions and UVs. Triangle counts are unchanged by this split.
+shell remains radial. Solver version 7 filters each corner's area-weighted normal to incident
+faces within about 37° on fresh/unweathered surfaces, widening to 60° on fully weathered old
+surfaces. Incompatible corners receive separate attributes at identical positions and UVs;
+smooth regions retain shared normals. Triangle counts stay unchanged, but vertices and cluster
+storage can increase. This replaces the earlier whole-triangle flat-normal fallback.
+
+**Fracture rims and sampling, G98.** Each radial chart begins with equal-angle cube sampling and
+seeded offsets of at most 0.1 cell; chart boundary coordinates stay fixed and seam copies share
+one welded sample. Nearby samples move towards hull-plane intersections, by at most 0.45 angular
+cell, with fitting faded out across resolved rounded blends. A move is rejected if any incident
+directional triangle falls below 20% of its original area. Each cell then chooses the safe diagonal
+whose midpoint better follows the radial generating surface; if neither meets the extra 5%
+cell-area margin, it keeps the already-validated original diagonal. The surface baker uses that
+same connectivity, including for fresh-fracture masks. These are offline bounded engineering
+choices, not geological constants; [grounding and studies](../experiments/rock-lithology.md#g98-fracture-rims-and-sampling).
+Temporary adjacency, direction and normal arrays scale with the body's surface, not its volume.
+The pass fits hull intersections only: chips, conchoidal rims and later bedding/displacement still
+rely on sampling and normal filtering. It is not complete feature-conforming remeshing, and it
+does not remove the radial-shell limitation or all regularity from the surface fields.
 
 The schema's physical controls are `strength` (0–1, default 1), `joint_spacing_m` (0.05–20,
 default 0.65), `joint_width_m` (0.005 to half the spacing, default 0.12), `joint_depth_m`
@@ -495,9 +512,10 @@ and the coordinates stay as near zero as the layout allows: the content build wa
 (`geometry.uv_range`), and the first layout — the charts side by side along u — was what failed
 three of the four recipes on exactly that warning. Why not triplanar: a triplanar material needs no
 UVs, but the engine's materials sample UVs today, and a box projection is triplanar's seams placed
-once, at the cube's edges, where the cluster simplifier can respect them. The seams cost 9.5% of a
-boulder's vertices (each chart carries its own border; the normals are shared across them, so a seam
-is invisible in the shading). A large rock with the default `tile_m` (1 m) passes ±16 at about 4 m
+once, at the cube's edges, where the cluster simplifier can respect them. Each chart carries its
+own border; seam overhead depends on the grid rung and extra crease vertices. Normal filtering
+uses welded incidence across charts, so UV seams do not themselves create shading creases.
+A large rock with the default `tile_m` (1 m) passes ±16 at about 4 m
 of half-extent; such a recipe sets a larger `tile_m`.
 
 **The material is a tiled set, or the flat PBR constant by type** (the table above), one-sided,

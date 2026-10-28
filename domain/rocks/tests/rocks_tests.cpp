@@ -328,13 +328,13 @@ TEST_CASE("rocks: the mesh generator \"rock\" builds what the capability builds"
 TEST_CASE("rocks: the default boulder is the committed bytes on every toolchain") {
   // Taken on MSVC; GCC and Clang at v3 and GCC at v2 must reproduce them. A change that moves
   // them bumps k_rocks_version and these numbers in the same commit.
-  // G95, solver version 4: angular hulls and bounded planar chips.
-  constexpr u64 k_mesh = 0xb1774f2e4eb1d414ull;
+  // G98, solver version 7: feature-aware sampling, diagonals and crease normals.
+  constexpr u64 k_mesh = 0xd8882ed35143a0aeull;
   // 0x7865d56fc786dbd1 until RockMaterial gained `normal_scale` (version 2), which the canonical
   // parameters in the generator section spell out; the mesh did not move.
   // G94 supersedes 0xb2611b877ab5bd4e: new geometry and canonical recipe fields.
-  // G97: solver version 6 adds optional rind controls; geometry stays version-4 identical.
-  constexpr u64 k_container = 0xd849ea7d16afcd40ull;
+  // G98 changes geometry and canonical solver version together.
+  constexpr u64 k_container = 0xb4556854ce5ef71eull;
   const assets::MeshData mesh = solve(boulder());
   geometry::ClusterFileData data;
   std::string error;
@@ -360,22 +360,22 @@ TEST_CASE("rocks: the committed recipes are closed, hold their budgets, and are 
     u64 mesh;
   };
   constexpr Recipe k_recipes[] = {
-      // G95 angular fracture hulls and chips; existing geometry intentionally changes.
+      // G98 feature-aware tessellation; existing geometry intentionally changes.
 
-      {"granite-boulder.rock.json", 1, 0x8a91c34aa002271full},
-      {"sandstone-boulder.rock.json", 1, 0x9bb4b40fea69c148ull},
-      {"basalt-outcrop.rock.json", 7, 0x11533ddd49fa220eull},
-      {"granite-scree.rock.json", 14, 0xc91dccf0cd2d6b94ull},
-      {"jointed-pinnacles.rock.json", 8, 0xad5adcfb10abb439ull},
-      {"shore-rubble.rock.json", 48, 0x79f5a58dc247bdd9ull},
-      {"slate-slab.rock.json", 1, 0x12e4e2a4681b883full},
-      {"gneiss-folded.rock.json", 1, 0xb139d42df2b70815ull},
-      {"schist-flaked.rock.json", 1, 0xf8adc32df1d67842ull},
-      {"obsidian-fractured.rock.json", 1, 0xd8bc411921b7dabfull},
-      {"limestone-dissolved.rock.json", 1, 0x2e6b346782213ce2ull},
-      {"shale-rubble.rock.json", 24, 0x20fa26417486afa1ull},
-      {"marble-weathered.rock.json", 1, 0xa62ad65134eb6e0dull},
-      {"foliated-cliff.rock.json", 8, 0x680e531927931dd5ull},
+      {"granite-boulder.rock.json", 1, 0xbe86ffb94bbde5dfull},
+      {"sandstone-boulder.rock.json", 1, 0x724e43e56405c251ull},
+      {"basalt-outcrop.rock.json", 7, 0xcc84aca4d039fde1ull},
+      {"granite-scree.rock.json", 14, 0xb03d6b09088ee7bfull},
+      {"jointed-pinnacles.rock.json", 8, 0x628545a352bd044eull},
+      {"shore-rubble.rock.json", 48, 0xbf555c94cf8d82f3ull},
+      {"slate-slab.rock.json", 1, 0x54258e46416a1ac8ull},
+      {"gneiss-folded.rock.json", 1, 0x0da877de571f97b7ull},
+      {"schist-flaked.rock.json", 1, 0x8a23c509c0b462eeull},
+      {"obsidian-fractured.rock.json", 1, 0xa4cc36136275991eull},
+      {"limestone-dissolved.rock.json", 1, 0x97a0a0d8e4371a4full},
+      {"shale-rubble.rock.json", 24, 0xfabbed007440bc67ull},
+      {"marble-weathered.rock.json", 1, 0x25f256717817753dull},
+      {"foliated-cliff.rock.json", 8, 0x90071061899015c2ull},
   };
   const std::string dir = test::data_path(ENGINE_SOURCE_DIR "/content/rocks", "content/rocks");
   if (!test::path_exists(dir)) {
