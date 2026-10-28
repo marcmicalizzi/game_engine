@@ -334,3 +334,56 @@ TEST_CASE("mips: the chain is the same bytes for any thread count") {
     }
   }
 }
+
+TEST_CASE("normal variance: flat maps have no shortening at every level") {
+  for (const u32 side : {1u, 7u, 64u}) {
+    Vector<u8> rgba(side * side * 4, 255);
+    for (u32 i = 0; i < side * side; ++i) {
+      rgba[i * 4] = 128;
+      rgba[i * 4 + 1] = 128;
+    }
+    Vector<MipLevel> chain;
+    build_normal_variance_chain({rgba.data(), rgba.size()}, side, side, true, chain);
+    REQUIRE(chain.size() == texture_full_level_count(side, side));
+    for (const auto& level : chain)
+      for (u32 i = 0; i < level.width * level.height; ++i)
+        CHECK(level.rgba[i * 4] == 0);
+  }
+}
+
+TEST_CASE("normal variance: cumulative moments retain unresolved slopes and match across jobs") {
+  constexpr u32 side = 64;
+  Vector<u8> rgba(side * side * 4, 255);
+  for (u32 y = 0; y < side; ++y) {
+    for (u32 x = 0; x < side; ++x) {
+      const u32 at = (y * side + x) * 4;
+      rgba[at] = (x & 1u) != 0 ? 204 : 51;
+      rgba[at + 1] = 128;
+      rgba[at + 2] = 230;
+    }
+  }
+  Vector<MipLevel> serial, parallel;
+  jobs::JobSystem pool(four_workers());
+  build_normal_variance_chain({rgba.data(), rgba.size()}, side, side, true, serial, nullptr,
+                              EdgeMode::repeat, EdgeMode::repeat);
+  build_normal_variance_chain({rgba.data(), rgba.size()}, side, side, true, parallel, &pool,
+                              EdgeMode::repeat, EdgeMode::repeat);
+  const double nx = 204.0 * (2.0 / 255.0) - 1.0;
+  const double ny = 128.0 * (2.0 / 255.0) - 1.0;
+  const double nz = 230.0 * (2.0 / 255.0) - 1.0;
+  const double expected =
+      255.0 * (1.0 - std::sqrt((ny * ny + nz * nz) / (nx * nx + ny * ny + nz * nz)));
+  REQUIRE(serial.size() == parallel.size());
+  u8 previous = 0;
+  for (u32 l = 0; l < serial.size(); ++l) {
+    const auto& a = serial[l];
+    REQUIRE(a.rgba.size() == parallel[l].rgba.size());
+    CHECK(std::memcmp(a.rgba.data(), parallel[l].rgba.data(), a.rgba.size()) == 0);
+    for (u32 i = 0; i < a.width * a.height; ++i) {
+      const u8 shortening = a.rgba[i * 4];
+      CHECK(shortening >= previous);
+      if (l != 0) CHECK(std::abs(static_cast<double>(shortening) - expected) <= 1.0);
+    }
+    previous = a.rgba[0];
+  }
+}

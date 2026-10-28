@@ -77,6 +77,30 @@ inline double alpha_of(double roughness) {
 
 inline Dvec3 f0_of(Dvec3 albedo, double metallic) { return lerp(splat(0.04), albedo, metallic); }
 
+inline double normal_variance(double shortening, double normal_scale) {
+  const double loss = clamp01(shortening);
+  const double length = 1.0 - loss;
+  return normal_scale * normal_scale * loss / (length > 1e-4 ? length : 1e-4);
+}
+
+inline double filter_roughness(double roughness, double variance, double geometric_alpha2 = 0) {
+  const double widening =
+      2.0 * (variance > 0 ? variance : 0) + (geometric_alpha2 > 0 ? geometric_alpha2 : 0);
+  if (widening == 0) return roughness;
+  const double alpha = alpha_of(roughness);
+  return std::sqrt(std::sqrt(clamp01(alpha * alpha + widening)));
+}
+
+inline double geometric_alpha2(Dvec3 dn_dx, Dvec3 dn_dy) {
+  const double kernel = (dot(dn_dx, dn_dx) + dot(dn_dy, dn_dy)) / k_pi;
+  return kernel < 0.18 ? kernel : 0.18;
+}
+
+inline double terrain_filter_combination(double alpha2, double slope_second, Dvec3 mean_slope) {
+  const double unresolved = slope_second - dot(mean_slope, mean_slope);
+  return std::sqrt(std::sqrt(clamp01(alpha2 + (unresolved > 0 ? unresolved : 0))));
+}
+
 inline double d_ggx(double n_dot_h, double alpha) {
   const double a2 = alpha * alpha;
   const double d = n_dot_h * n_dot_h * (a2 - 1.0) + 1.0;

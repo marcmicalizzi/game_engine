@@ -318,10 +318,19 @@ float3 terrain_hex_blend(TerrainHex hex, float3 mean, float3 a, float3 b, float3
 // means; the slopes about zero, the mean slope of any tileable height field.
 void terrain_hex_sample(ResolveMaterial layer, TerrainHex hex, float2 uv, float2 du, float2 dv,
                         bool filtered, out float3 colour, out float roughness, out float height,
-                        out float2 slope) {
+                        out float2 slope, out float loss) {
   const bool normals = layer.normal_texture != k_no_texture && layer.normal_scale != 0.0;
   const bool grads = filtered && (layer.flags & k_material_mipped) != 0;
   const uint normal_slot = slot_sampler(layer, layer.samplers_mr_normal, 16);
+  // R97: the tiles' roughness is read unwidened and the widening applied once to the blend. Read
+  // through `sample_material_grad` each tile would arrive widened, and the variance-preserving
+  // operator scales a tile's departure from the layer's (unwidened) mean by up to √3 — the widening
+  // itself would then vary with the lattice. The tiles' shortening is a plain weighted mean: a
+  // mixture's unresolved variance, not a texel to keep the contrast of.
+  const bool variance = normals && grads && (layer.flags & k_material_normal_variance) != 0;
+  ResolveMaterial plain = layer;
+  plain.flags &= ~k_material_normal_variance;
+  loss = 0.0;
   float3 c[3];
   float r[3];
   float h[3];
@@ -332,7 +341,12 @@ void terrain_hex_sample(ResolveMaterial layer, TerrainHex hex, float2 uv, float2
     const float2 du_k = float2(turn.x * du.x - turn.y * du.y, turn.y * du.x + turn.x * du.y);
     const float2 dv_k = float2(turn.x * dv.x - turn.y * dv.y, turn.y * dv.x + turn.x * dv.y);
     const MaterialSample s =
-        filtered ? sample_material_grad(layer, p, du_k, dv_k) : sample_material(layer, p);
+        filtered ? sample_material_grad(plain, p, du_k, dv_k) : sample_material(plain, p);
+    if (variance)
+      loss += hex.weight[k] *
+              g_textures[NonUniformResourceIndex(layer.normal_texture + 1u)]
+                  .SampleGrad(g_samplers[NonUniformResourceIndex(normal_slot)], p, du_k, dv_k)
+                  .r;
     c[k] = s.albedo;
     r[k] = s.roughness;
     h[k] = s.metallic;
@@ -408,9 +422,12 @@ TerrainLayerSample terrain_layer_sample(SceneGeometry geo, ResolveMaterial layer
       const float3 b = axis == 1 ? float3(0, 0, 1) : float3(0, 1, 0);
       const TerrainHex hex = terrain_hex(geo.eye, point, axis, pitch, terrain_layer_rotation(layer));
       float3 colour;
-      float roughness, height;
+      float roughness, height, loss;
       float2 slope;
-      terrain_hex_sample(layer, hex, uv, du, dv, filtered, colour, roughness, height, slope);
+      terrain_hex_sample(layer, hex, uv, du, dv, filtered, colour, roughness, height, slope, loss);
+      if (loss > 0.0)
+        roughness = brdf_filter_roughness(roughness, brdf_normal_variance(loss, layer.normal_scale),
+                                          0.0);
       r.colour += kept[axis] * colour;
       r.roughness += kept[axis] * roughness;
       r.height += kept[axis] * height;
@@ -451,10 +468,33 @@ TerrainLayerSample terrain_layer_sample(SceneGeometry geo, ResolveMaterial layer
   return r;
 }
 
+// Post-fetch policy only (R97). A tiled layer with a variance chain follows the texture footprint
+// for its normal and roughness: it no longer flattens its normal at detail_far_m, because the
+// chain moves what the footprint stops resolving into the roughness instead. The caller fetches it
+// with fade=1 and the colour and height keep the tiled fade here. A painted (`Map`) layer never
+// faded and a stochastic one does not (R96), so neither is touched.
+TerrainLayerSample terrain_filter_sample(TerrainLayerSample sample, ResolveMaterial layer,
+                                         float fade) {
+  if ((layer.flags & k_material_normal_variance) != 0 &&
+      (layer.flags & (k_material_terrain_map | k_material_terrain_stochastic)) == 0) {
+    sample.colour = lerp(terrain_layer_mean_colour(layer), sample.colour, fade);
+    sample.height = lerp(0.5, sample.height, fade);
+  }
+  return sample;
+}
+
+// Combine already-fetched distributions: the second moment includes separation of their means.
+// Trace of slope covariance widens alpha^2; equal slopes add nothing. This isotropic approximation
+// is deliberately shared with the double reference, not claimed to preserve anisotropy (R97).
+float terrain_filter_combination(float alpha2, float slope_second, float3 mean_slope) {
+  const float unresolved = max(slope_second - dot(mean_slope, mean_slope), 0.0);
+  return sqrt(sqrt(saturate(alpha2 + unresolved)));
+}
+
 MaterialSample sample_terrain_material(SceneGeometry geo, ResolveMaterial root, float2 map_uv,
                                       float2 map_dx, float2 map_dy, float3 point, float3 n,
                                       float3 dp_dx, float3 dp_dy, float distance_m, bool filtered,
-                                      out float3 shading_normal) {
+                                      out float3 shading_normal, bool variance_enabled = true) {
   ResolveMaterial* table = (ResolveMaterial*)geo.materials;
   const TerrainRecord rec = ((TerrainRecord*)geo.materials)[terrain_record_index(root)];
   // All layouts use the same map frame. Reconstruct it from the position rather than half UVs,
@@ -498,6 +538,7 @@ MaterialSample sample_terrain_material(SceneGeometry geo, ResolveMaterial root, 
       float weight[4];
       float total = 0.0;
       bool any_height = false;
+      bool any_variance = false;
       [unroll] for (uint c = 0; c < 4; ++c) {
         const uint index = (mask.table >> (8 * c)) & 0xFFu;
         weight[c] = index == 0xFFu || index >= rec.layer_count ? 0.0 : mask.weights[c];
@@ -506,9 +547,14 @@ MaterialSample sample_terrain_material(SceneGeometry geo, ResolveMaterial root, 
         layers[c].bump = float3(0.0);
         layers[c].height = 0.5;
         if (weight[c] <= 0.0) continue;
-        const ResolveMaterial layer = table[rec.first_layer + index];
+        ResolveMaterial layer = table[rec.first_layer + index];
+        if (!variance_enabled) layer.flags &= ~k_material_normal_variance;
+        const bool variance = (layer.flags & k_material_normal_variance) != 0;
         layers[c] = terrain_layer_sample(geo, layer, map_uv, map_dx, map_dy, point, n, axes, dp_dx,
-                                         dp_dy, fade, filtered);
+                                         dp_dy, variance ? 1.0 : fade, filtered);
+        layers[c] = terrain_filter_sample(layers[c], layer, fade);
+        any_variance = any_variance || variance;
+        result.normal_filter = result.normal_filter || variance;
         any_height = any_height || (layer.flags & k_material_terrain_height) != 0;
         total += weight[c];
       }
@@ -537,6 +583,8 @@ MaterialSample sample_terrain_material(SceneGeometry geo, ResolveMaterial root, 
         float roughness = 0.0;
         float3 bump = float3(0.0);
         float porosity = 0.0;
+        float alpha2 = 0.0;
+        float slope_second = 0.0;
         [unroll] for (uint c = 0; c < 4; ++c) {
           if (blended[c] <= 0.0) continue;
           const float w = blended[c] / sum;
@@ -544,11 +592,19 @@ MaterialSample sample_terrain_material(SceneGeometry geo, ResolveMaterial root, 
           colour += w * layers[c].colour;
           roughness += w * layers[c].roughness;
           bump += w * layers[c].bump;
+          const float a = brdf_alpha(layers[c].roughness);
+          alpha2 += w * a * a;
+          slope_second += w * dot(layers[c].bump, layers[c].bump);
           porosity += w * terrain_layer_porosity(table[rec.first_layer + index]);
         }
         result.albedo = lerp(result.albedo, colour, cover);
+        const float root_alpha = brdf_alpha(result.roughness);
         result.roughness = lerp(result.roughness, roughness, cover);
         slope = bump * cover;
+        if (any_variance) {
+          result.roughness = terrain_filter_combination(
+              lerp(root_alpha * root_alpha, alpha2, cover), slope_second * cover, slope);
+        }
         porosity = lerp(0.5, porosity, cover);
         // Wetness (Lagarde 2013): porous ground darkens by up to 0.8 and loses up to 0.4 of its
         // roughness; rock barely changes. A separate quantity, so no substrate turns glossy dry.
@@ -564,7 +620,8 @@ MaterialSample sample_terrain_material(SceneGeometry geo, ResolveMaterial root, 
     }
   } else {
     for (uint i = 0; i < rec.layer_count; ++i) {
-      const ResolveMaterial layer = table[rec.first_layer + i];
+      ResolveMaterial layer = table[rec.first_layer + i];
+      if (!variance_enabled) layer.flags &= ~k_material_normal_variance;
       float coverage = terrain_layer_weight(layer);
       if (layer.occlusion_texture != k_no_texture) {
         const uint slot = slot_sampler(layer, layer.samplers_occlusion_emissive, 0);
@@ -576,11 +633,20 @@ MaterialSample sample_terrain_material(SceneGeometry geo, ResolveMaterial root, 
               g_samplers[NonUniformResourceIndex(slot)], map_uv, 0).r;
       }
       if (coverage <= 0.0) continue;
-      const TerrainLayerSample s = terrain_layer_sample(geo, layer, map_uv, map_dx, map_dy, point,
-                                                        n, axes, dp_dx, dp_dy, fade, filtered);
+      const bool variance = (layer.flags & k_material_normal_variance) != 0;
+      result.normal_filter = result.normal_filter || variance;
+      TerrainLayerSample s = terrain_layer_sample(geo, layer, map_uv, map_dx, map_dy, point,
+                                                  n, axes, dp_dx, dp_dy,
+                                                  variance ? 1.0 : fade, filtered);
+      s = terrain_filter_sample(s, layer, fade);
+      const float a = brdf_alpha(result.roughness);
+      const float b = brdf_alpha(s.roughness);
+      const float second = lerp(dot(slope, slope), dot(s.bump, s.bump), coverage);
       result.albedo = lerp(result.albedo, s.colour, coverage);
       result.roughness = lerp(result.roughness, s.roughness, coverage);
       slope = lerp(slope, s.bump, coverage);
+      if (result.normal_filter)
+        result.roughness = terrain_filter_combination(lerp(a * a, b * b, coverage), second, slope);
     }
   }
   result.metallic = 0.0;

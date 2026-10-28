@@ -63,6 +63,9 @@ u64 encode(const TextureData& data, std::string& out) {
   add_section(payloads, TextureSection::Data, 1u, data.data.size(), data.data.data());
   const u64 identity[2] = {data.source_hash, data.build_key};
   add_section(payloads, TextureSection::SourceHash, static_cast<u32>(sizeof(u64)), 2u, identity);
+  if (!data.normal_variance.empty())
+    add_section(payloads, TextureSection::NormalVariance, 1u, data.normal_variance.size(),
+                data.normal_variance.data());
 
   u64 offset = k_header_bytes + k_record_bytes * payloads.size();
   for (Payload& payload : payloads) {
@@ -234,6 +237,7 @@ const char* texture_section_name(u32 kind) noexcept {
     case TextureSection::Levels: return "levels";
     case TextureSection::Data: return "data";
     case TextureSection::SourceHash: return "source_hash";
+    case TextureSection::NormalVariance: return "normal_variance";
   }
   return "unknown";
 }
@@ -243,6 +247,19 @@ std::span<const u8> TextureData::level_bytes(u32 index) const noexcept {
   const TextureFileLevel& level = levels[index];
   if (level.offset > data.size() || level.bytes > data.size() - level.offset) return {};
   return std::span<const u8>(data.data() + level.offset, static_cast<usize>(level.bytes));
+}
+
+std::span<const u8> TextureData::normal_variance_level_bytes(u32 index) const noexcept {
+  if (index >= levels.size() || normal_variance.empty()) return {};
+  u64 offset = 0;
+  for (u32 i = 0; i < index; ++i)
+    offset =
+        align_up(offset + texture_level_bytes(TextureFormat::bc4, texture_level_extent(width, i),
+                                              texture_level_extent(height, i)));
+  const u64 bytes = texture_level_bytes(TextureFormat::bc4, texture_level_extent(width, index),
+                                        texture_level_extent(height, index));
+  if (offset > normal_variance.size() || bytes > normal_variance.size() - offset) return {};
+  return {normal_variance.data() + offset, static_cast<usize>(bytes)};
 }
 
 bool validate_texture(const TextureData& data, std::string* error) {
@@ -263,6 +280,17 @@ bool validate_texture(const TextureData& data, std::string* error) {
     return fail(error, "texture has " + std::to_string(data.levels.size()) +
                            " levels, more than a " + std::to_string(data.width) + "x" +
                            std::to_string(data.height) + " chain holds");
+  }
+  if (!data.normal_variance.empty()) {
+    if ((data.flags & k_texture_normal_map) == 0)
+      return fail(error, "normal variance requires a normal map");
+    u64 bytes = 0;
+    for (u32 i = 0; i < data.levels.size(); ++i)
+      bytes = align_up(bytes) + texture_level_bytes(TextureFormat::bc4,
+                                                    texture_level_extent(data.width, i),
+                                                    texture_level_extent(data.height, i));
+    if (bytes != data.normal_variance.size())
+      return fail(error, "normal variance payload does not match the normal mip chain");
   }
   for (u32 i = 0; i < data.levels.size(); ++i) {
     const TextureFileLevel& level = data.levels[i];
@@ -467,6 +495,14 @@ bool read_texture_file_memory(std::span<const u8> bytes, TextureData& out, std::
   if (!read_identity(bytes, std::span<const TextureFileSection>(sections.data(), sections.size()),
                      result.source_hash, result.build_key, error)) {
     return false;
+  }
+  const TextureFileSection* variance = found[static_cast<u32>(TextureSection::NormalVariance)];
+  if (variance != nullptr) {
+    if (variance->element_size != 1) return fail(error, "normal variance requires byte elements");
+    result.normal_variance.resize(static_cast<u32>(variance->element_count));
+    if (variance->element_count != 0)
+      std::memcpy(result.normal_variance.data(), bytes.data() + variance->offset,
+                  static_cast<usize>(variance->element_count));
   }
   if (!validate_texture(result, error)) return false;
   out = std::move(result);

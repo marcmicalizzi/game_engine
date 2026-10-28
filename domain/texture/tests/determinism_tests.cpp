@@ -84,12 +84,12 @@ constexpr Golden k_golden[] = {
     {0xa5e0149565818232ull, 0x5f56dd427532c4c2ull},  // bc7_linear
     {0x276aacf49ff8a935ull, 0xaa429f1812cb6bc5ull},  // bc1_srgb
     {0xb4fc689f3761ef7cull, 0x5f451d1e04c69cadull},  // bc3_srgb
-    {0x3667aee86889668cull, 0x956f656a27da7005ull},  // bc5_normal
+    {0x664c6e58e3598fa2ull, 0x956f656a27da7005ull},  // bc5_normal: section 5, version 2 (R97)
     {0x838478878e8b21d2ull, 0xc681662078f75353ull},  // bc4_grey
     {0x9ffbe791f64659f9ull, 0x72eecca79d48a509ull},  // rgba8_nomips
-    {0x630c069169f3816aull, 0xfd256e6c797136c7ull},  // bc7_png
+    {0x9e3e44481cd09458ull, 0xfd256e6c797136c7ull},  // bc7_png: version 2 build key (R97)
     {0x1adc7d36da7a4d37ull, 0x89e5ef4589f71741ull},  // bc7_srgb_repeat
-    {0x128666fac4f96983ull, 0xb4badd3d1713d530ull},  // bc5_normal_mirror
+    {0xf5e93d7a5f5da5a1ull, 0xb4badd3d1713d530ull},  // bc5_normal_mirror: section 5, version 2
     {0xc78271ddba4d997dull, 0xed264b7a54ed58c8ull},  // bc7_srgb_mask
 };
 static_assert(std::size(k_golden) == std::size(k_cases));

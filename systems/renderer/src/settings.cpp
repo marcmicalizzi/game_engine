@@ -134,6 +134,8 @@ const char* view_mode_name(u32 mode) noexcept {
     case 8: return "occlusion";
     case 9: return "detail";
     case 10: return "ramp";
+    case 11: return "sun-specular";
+    case 12: return "sun-specular-legacy";
     default: return "?";
   }
 }
@@ -161,6 +163,10 @@ bool parse_view_mode(std::string_view text, u32& out) noexcept {
     out = 9;  // the sand's detail as data (gfx::ResolveMode::GroundDetail)
   } else if (text == "ramp") {
     out = 10;  // the output encode's test pattern (gfx::ResolveMode::Ramp, E39)
+  } else if (text == "sun-specular") {
+    out = 11;
+  } else if (text == "sun-specular-legacy") {
+    out = 12;
   } else {
     return false;
   }
@@ -213,10 +219,17 @@ tunables::Bool shadow_opaque_rays{
     "renderer.shadow.opaque_rays", false,
     "Measurement only: the shadow rays treat every caster as opaque, so an alpha-tested leaf "
     "casts its whole card (renderer.md, Rays near, maps far)"};
+// R97: a normal map's variance chain widens the GGX roughness (renderer.md, "Normal filtering").
+tunables::Bool material_normal_filter{
+    "renderer.material.normal_filter", true,
+    "Upload a built normal map's normal-variance chain and widen the GGX roughness by the normal "
+    "variation a pixel no longer resolves; false draws every material as before R97 (read at "
+    "load)"};
 
 }  // namespace
 
 bool shadow_opaque_rays_tunable() noexcept { return shadow_opaque_rays.get(); }
+bool normal_filter_tunable() noexcept { return material_normal_filter.get(); }
 
 DisplayLevels display_levels(const RenderSettings& settings) {
   DisplayLevels out;

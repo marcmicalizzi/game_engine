@@ -45,7 +45,7 @@ role per process, so a scene of a hundred palms says it once.
   metal, and packing a real metallic channel into B would need the solvers to decode and encode
   images, which they do not do (no io, and no image work at solve time);
 - the normal map in the normal slot with the set's `normal_scale`;
-- metallic and height **not at all**: carried in the recipe and the pack, read by nothing yet;
+- metallic and height **not in this generated-mesh adapter**: carried in the recipe and pack; native authored terrain separately packs height into B for substrate blending;
 - for a part whose UVs are in metres (`UvLayout::metres`), a texture transform of scale
   `1 / tile_m` on every slot it fills (`geometry::encode_material_sampling`); a part in whole
   repeats already (`repeats`, a rock's charts) or a card that takes its image whole (`card`) gets
@@ -167,8 +167,13 @@ pipe, not a sandstone.
   greyscale roughness needs one, and BC4 would halve it (the palm's three roughness maps are 8.4 MB
   of its 25.2). A slot record that says "one channel" — or packing roughness and metallic at build
   time — is the fix; it changes texture keys, so it is texture's to decide.
-- **Height and metallic** are carried and read by nothing: parallax or displacement wants the
-  height, and a metal part (a rusted can) the metallic channel packed into B.
+- **Height and metallic in generated meshes** remain carried but unused by `apply_set`.
+  Native authored terrain already reads height for layer blending, not displacement.
+  R97 changes normal/roughness filtering: built normal maps carry a separate BC4
+  variance chain, independent of height and metallic, and unresolved slopes widen GGX
+  roughness instead of flattening a distant normal without compensation
+  ([texture](texture.md#normal-variance-r97)). A metal part still needs its metallic
+  channel packed into B.
 - **A host's pack over the protocol**: engine-host finds the repository's pack only when its cache
   root is looked up; `render.load` has no `materials` field yet, so a client that names its own
   `ddc` draws generated meshes flat.

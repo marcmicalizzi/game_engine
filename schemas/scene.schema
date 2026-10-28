@@ -1828,13 +1828,17 @@ struct FlythroughRt @version(4) {
 /// own copy; the device bytes of what was uploaded, and of what sharing did not upload again
 /// (docs/subsystems/renderer.md, "One upload per distinct image"). `sharing` is
 /// `RenderSettings::share_textures`: false is every mesh its own copy, to measure against.
-struct FlythroughTextures @version(1) {
+struct FlythroughTextures @version(2) {
   built: u32 = 0
   decoded: u32 = 0
   shared: u32 = 0
   bytes: u64 = 0
   bytes_saved: u64 = 0
   sharing: bool = true
+  /// The normal maps uploaded with their normal-variance chain (R97; `renderer.material.normal_filter`,
+  /// renderer.md, "Normal filtering"), and those chains' device bytes, which `bytes` includes.
+  normal_variance: u32 = 0 @since(2)
+  normal_variance_bytes: u64 = 0 @since(2)
 }
 
 /// How a windowed run presented (`engine-view --interactive --benchmark`, and a replay flown in

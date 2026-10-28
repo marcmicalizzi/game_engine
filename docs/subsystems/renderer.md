@@ -528,7 +528,9 @@ UVs leave [0, 1]. It is **all or nothing per mesh**, so no material mixes the tw
 decoded path and a warning naming the feature. `GpuScene::texture_bytes()`, `textures_built()` and
 `textures_decoded()` report what happened — distinct textures, since one upload serves every mesh
 that samples the same image ([below](#one-upload-per-distinct-image)) — and engine-view prints them
-as `"textures":{"built","decoded","distinct","shared","bytes","bytes_saved","sharing"}`.
+as `"textures":{"built","decoded","distinct","shared","bytes","bytes_saved","sharing","normal_variance",
+"normal_variance_bytes"}` (the last two R97's: the normal maps uploaded with a normal-variance chain, and
+the chains' bytes, inside `bytes`; [Normal filtering](#normal-filtering-r97)).
 
 **The renderer builds them itself on a cold cache.** A load through the derived-data cache
 (`SceneDesc::cache`) runs the content build's texture step (`content_build::run_texture_step`,
@@ -606,7 +608,7 @@ need an owner that outlives every scene and a rule for when an entry dies, neith
 one the scene already held, and `texture_bytes_saved()` what their own copies would have cost on the
 device. The load logs it once (`scene textures`: `distinct`, `references`, `shared`, `bytes`,
 `bytes_saved`, `sharing`). engine-view's summary has `"textures":{"built","decoded","distinct",
-"shared","bytes","bytes_saved","sharing"}` and a flythrough's summary line the same block
+"shared","bytes","bytes_saved","sharing","normal_variance","normal_variance_bytes"}` and a flythrough's summary line the same block
 (`engine.scene.FlythroughTextures`, through `summarize_textures`); `render.scenes` and
 `render.unload` add `textures_shared` and `texture_bytes_saved` beside `textures` and
 `texture_bytes`. `RenderSettings::share_textures` false — `engine-view --no-texture-sharing`, the
@@ -749,7 +751,8 @@ components, and projects each normal map's slopes into the surface tangent plane
 map preserves the input normal on every slope. Phase comes from integer world cells and the
 frame-local point; map coordinates also come from that point, avoiding chunk-dependent half-UV
 rounding at tile/LOD boundaries. A tiled layer's normals and fine colour/roughness fade across the
-authored near/far eye distances to the layer's linear texel means; a stochastic layer does not
+authored near/far eye distances to the layer's linear texel means (with a normal-variance chain only
+its colour and height do: "Normal filtering", below); a stochastic layer does not
 fade (below). `Map` retains its painting, filtered by the existing texture mips. These are content
 settings, not geological altitude rules.
 
@@ -802,6 +805,52 @@ no lookup table, no second texture and no container section, and adds no texture
   and finds every pixel within 0.26 codes on average of the reference's read at its world point;
   `renderer: a stochastic layer shades the same ground in the resolve and the path tracer` holds
   the three readers together by FLIP.
+
+#### Normal filtering (R97)
+
+A pixel's footprint averages the normals a normal map holds; the mip of a normal map is their
+mean, renormalized, so far ground used to shade as if it were smoother than it is — a sheen that
+grows with distance — and the old answer was to fade the normal to flat past `detail_far_m`, which
+loses the bumps outright. **A built normal map now carries what the footprint stops resolving**: its
+normal-variance chain (texture.md, "Normal variance"), read with the map's own sampler and
+derivatives, becomes a slope variance `v = s²(1 − L)/L` (Toksvig; `s` the normal strength) that
+widens the GGX lobe, `α′² = min(1, α² + 2v + g)`, where `g` is Tokuyoshi and Kaplanyan's bounded
+projected-space kernel over the hit triangle's own normal derivatives (`screen_geometric_alpha2`,
+from `screen_barycentrics`, never a neighbouring pixel's). The final roughness feeds the GGX
+distribution and Smith's visibility alike (`brdf_filter_roughness` in `brdf.slang`;
+`brdf_reference.h` mirrors it in double). Sources, the fit and its error are in
+[normal filtering](../experiments/normal-filtering.md).
+
+- **On terrain.** A tiled layer with a chain no longer fades its normal or its roughness at the
+  detail distances — the chain does what the fade stood in for — and keeps the colour and height
+  fade (`terrain_filter_sample`). A stochastic layer (R96) never faded; its three tiles are read
+  unwidened and the widening applied once to their blend, the tiles' shortening a plain weighted
+  mean. Layers combine after the fetch as a mixture: the weighted `r⁴` plus the variance between
+  their mean slopes (`terrain_filter_combination`). The fit is isotropic: no anisotropic lobe, no
+  covariance between triplanar projections.
+- **What reads it.** The resolve's grad path (`sample_material_grad`, the terrain layers). The
+  reference path tracer reads level zero, whose variance is zero: its jittered rays integrate the
+  footprint themselves, which is why it is the truth the filter is held to.
+- **The switch.** `renderer.material.normal_filter` (true since 2026-10-27), read once when a
+  scene's materials are uploaded: false uploads no chain and sets no flag, and every material draws
+  the bytes it drew before R97. A material without a chain — a decoded texture, an unmipped map, an
+  older `.tex` — always draws them. The report's `textures.normal_variance` and
+  `normal_variance_bytes` say how many chains a scene took and what they cost.
+- **What holds it.** `renderer: normal filtering holds a grazing normal-mapped plane to its
+  converged picture` (a bumped plane at 1, 4 and 16 m against the path tracer: RMSE 12%, 54% and 58%
+  lower than unfiltered, the picture's light within 7% where unfiltered is 10–15% over);
+  `gfx: normal filtering agrees with the double reference` (2 × 10⁻⁶); `gfx: variance footprint is
+  monotone and continuous between texture mips`; `gfx: filtered GGX is closer to an 8 by 8
+  normal-plane reference`.
+
+The diagnostic views `sun-specular` and `sun-specular-legacy` (`gfx::ResolveMode` 11 and 12) are
+R97's measurement entry points and return linear data: R is the shadowed sun-specular radiance
+luminance of native ground before aerial scattering and exposure, G is 1 on ground and 0
+elsewhere, B is roughness. Capture with `--present-format linear --capture probe.exr` and average
+R where G is 1. The legacy view clears the variance flag in the shader on the same geometry and
+textures, so it is the old normal and roughness fades; with the switch off the plain view is the
+same answer. They change no shadow algorithm and exclude water, other meshes and sky from the
+mask. Measurement views, not display colours.
 
 The normal resolve, ray-shadow resolve and reference path tracer share `terrain_material.slang`.
 The water volume tier evaluates it at the analytic bottom hit too; this does not add submerged

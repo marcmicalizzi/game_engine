@@ -209,6 +209,7 @@ struct SceneTexture {
   // What a built one is stored as: the material's BC5-normal flag reads it for a mesh that shares
   // the texture as well as for the mesh that uploaded it.
   texture::TextureFormat stored = texture::TextureFormat::rgba8;
+  bool normal_variance = false;
 };
 
 // The scene's textures by content. With sharing off it finds nothing, and every mesh uploads its
@@ -243,6 +244,7 @@ struct BuiltImage {
   u64 key = 0;
   texture::TextureData data;
   texture::TextureFormat stored = texture::TextureFormat::rgba8;
+  bool normal_variance = false;
 };
 
 // A mesh's built textures (docs/subsystems/texture.md, "In the renderer"): one per image the
@@ -255,7 +257,8 @@ struct BuiltImage {
 // `needed` is how many images the resolve samples; zero leaves the mesh on the old path, which
 // for a mesh with no textures is no path at all. A key `known` already holds is not read again:
 // its identity was checked when the mesh that uploaded it read it, and the file is the same file.
-bool find_built_textures(const SourceMesh& mesh, const SceneTextures& known,
+// `normal_filter` (R97's tunable) off reads a normal map's variance chain as absent.
+bool find_built_textures(const SourceMesh& mesh, const SceneTextures& known, bool normal_filter,
                          Vector<BuiltImage>& out, u32& needed, std::string& why) {
   out.clear();
   needed = 0;
@@ -312,6 +315,7 @@ bool find_built_textures(const SourceMesh& mesh, const SceneTextures& known,
     out[i].key = key;
     if (const SceneTexture* held = known.find(key, k_form_built); held != nullptr) {
       out[i].stored = held->stored;
+      out[i].normal_variance = held->normal_variance;
       continue;
     }
     const std::string path = texture::texture_cache_path(mesh.texture_ddc, key);
@@ -329,6 +333,7 @@ bool find_built_textures(const SourceMesh& mesh, const SceneTextures& known,
       return false;
     }
     out[i].stored = out[i].data.format;
+    out[i].normal_variance = normal_filter && !out[i].data.normal_variance.empty();
   }
   return true;
 }
@@ -3347,6 +3352,9 @@ bool GpuScene::upload_materials(const ResolvedSettings& resolved, std::string* e
   texture_references_ = 0;
   textures_shared_ = 0;
   texture_bytes_saved_ = 0;
+  normal_variance_textures_ = 0;
+  normal_variance_bytes_ = 0;
+  const bool normal_filter = normal_filter_tunable();  // R97, read once per upload
   share_textures_ = resolved.settings.share_textures;
   transform_conflicts_ = 0;
   Vector<gfx::ResolveMaterial> material_table;
@@ -3473,7 +3481,8 @@ bool GpuScene::upload_materials(const ResolvedSettings& resolved, std::string* e
       Vector<BuiltImage> built;
       u32 sampled_images = 0;
       std::string why;
-      bool use_built = find_built_textures(source_mesh, scene_textures, built, sampled_images, why);
+      bool use_built = find_built_textures(source_mesh, scene_textures, normal_filter, built,
+                                           sampled_images, why);
       if (use_built && !device.features().texture_compression_bc) {
         use_built = false;
         why = "the device has no textureCompressionBC";
@@ -3487,6 +3496,7 @@ bool GpuScene::upload_materials(const ResolvedSettings& resolved, std::string* e
       }
       Vector<u32> image_slot(mesh_data.images.size(), gfx::k_no_texture);
       Vector<bool> image_tried(mesh_data.images.size(), false);
+      bool variance_upload_failed = false;
       const std::string& mesh_dir = source_mesh.image_dir;  // the glTF's or the container's
       auto texture_slot_of = [&](i32 image_index, gfx::Format format) -> u32 {
         if (image_index < 0 || static_cast<u32>(image_index) >= mesh_data.images.size())
@@ -3514,6 +3524,7 @@ bool GpuScene::upload_materials(const ResolvedSettings& resolved, std::string* e
         if (use_built) {
           made.content = built[index].key;
           made.stored = built[index].stored;
+          made.normal_variance = built[index].normal_variance;
           if (share() != nullptr) return image_slot[index];
           // As stored: the blocks of every level, one staging copy, no decode.
           const texture::TextureData& t = built[index].data;
@@ -3580,6 +3591,43 @@ bool GpuScene::upload_materials(const ResolvedSettings& resolved, std::string* e
         image_slot[index] = bindless_.add_sampled_image(view, gfx::ImageLayout::ShaderReadOnly);
         made.slot = image_slot[index];
         made.bytes = uploaded.bytes;
+        if (made.normal_variance) {
+          // Scene creation never frees a descriptor. Publish the auxiliary image immediately
+          // after its normal, and check that contract rather than silently sampling another map.
+          const texture::TextureData& t = built[index].data;
+          Vector<gfx::ImageLevelData> levels;
+          levels.reserve(t.levels.size());
+          for (u32 l = 0; l < t.levels.size(); ++l) {
+            const auto bytes = t.normal_variance_level_bytes(l);
+            levels.push_back(gfx::ImageLevelData{bytes.data(), bytes.size()});
+          }
+          gfx::ImageResource variance;
+          gfx::ImageViewHandle variance_view;
+          if (!gfx::upload_image_2d_levels(
+                  device, t.width, t.height, gfx::Format::Bc4Unorm,
+                  std::span<const gfx::ImageLevelData>(levels.data(), levels.size()), variance,
+                  &image_error) ||
+              !gfx::create_image_view(device, variance, variance_view, &image_error)) {
+            if (variance.image.valid()) gfx::destroy_image(device, variance);
+            variance_upload_failed = true;
+            if (error != nullptr) *error = "normal variance upload: " + image_error;
+            return gfx::k_no_texture;
+          }
+          textures_.push_back(variance);
+          texture_views_.push_back(variance_view);
+          texture_bytes_ += variance.bytes;
+          made.bytes += variance.bytes;
+          ++normal_variance_textures_;
+          normal_variance_bytes_ += variance.bytes;
+          const u32 slot =
+              bindless_.add_sampled_image(variance_view, gfx::ImageLayout::ShaderReadOnly);
+          if (made.slot == gfx::k_no_texture || slot == gfx::k_no_texture ||
+              slot != made.slot + 1u) {
+            variance_upload_failed = true;
+            if (error != nullptr) *error = "normal variance needs an adjacent sampled-image slot";
+            return gfx::k_no_texture;
+          }
+        }
         scene_textures.add(made);
         // A slice: a thread that owns a window keeps its messages flowing between two uploads
         // (profiling::progress_pump; apps.md, "The loading presentation"). Nothing when no one
@@ -3605,6 +3653,7 @@ bool GpuScene::upload_materials(const ResolvedSettings& resolved, std::string* e
             texture_slot_of(source.occlusion_image, gfx::Format::R8G8B8A8Unorm);
         material.emissive_texture =
             texture_slot_of(source.emissive_image, gfx::Format::R8G8B8A8Srgb);
+        if (variance_upload_failed) return false;
         material.normal_scale = source.normal_scale;
         material.occlusion_strength = source.occlusion_strength;
         material.uv_scale = 1.0f;
@@ -3621,6 +3670,10 @@ bool GpuScene::upload_materials(const ResolvedSettings& resolved, std::string* e
               built[static_cast<u32>(normal)].stored == texture::TextureFormat::bc5) {
             material.flags |= gfx::k_material_normal_rg;
           }
+          if (normal >= 0 && static_cast<u32>(normal) < built.size() &&
+              built[static_cast<u32>(normal)].normal_variance &&
+              material.normal_texture != gfx::k_no_texture)
+            material.flags |= gfx::k_material_normal_variance;
         }
         // Each textured slot's own sampler, and one UV transform for the material: the base
         // colour's where it is textured, the first textured slot's otherwise. A slot with no
@@ -4973,6 +5026,8 @@ void GpuScene::destroy() noexcept {
   textures_built_ = textures_decoded_ = 0;
   texture_references_ = textures_shared_ = 0;
   texture_bytes_saved_ = 0;
+  normal_variance_textures_ = 0;
+  normal_variance_bytes_ = 0;
   bindless_.destroy();
   instance_table_.clear();
   deform_descs_.clear();

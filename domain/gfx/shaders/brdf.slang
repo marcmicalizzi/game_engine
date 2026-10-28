@@ -35,6 +35,27 @@ float brdf_alpha(float roughness) {
   return r * r;
 }
 
+// R97: isotropic width fit, not an exact convolution of GGX (whose slope variance diverges).
+// Toksvig's mean-normal shortening is measured before BC5; normal strength scales its variance.
+// The final roughness feeds both D and Smith visibility through brdf_alpha. See normal-filtering.md.
+float brdf_normal_variance(float shortening, float normal_scale) {
+  const float loss = saturate(shortening);
+  return normal_scale * normal_scale * loss / max(1.0 - loss, 1e-4);
+}
+
+float brdf_filter_roughness(float roughness, float normal_variance, float geometric_alpha2) {
+  const float widening = 2.0 * max(normal_variance, 0.0) + max(geometric_alpha2, 0.0);
+  if (widening == 0.0) return roughness;  // absent/flat data retains the legacy value exactly
+  const float alpha = brdf_alpha(roughness);
+  return sqrt(sqrt(min(alpha * alpha + widening, 1.0)));
+}
+
+// Tokuyoshi/Kaplanyan 2021, eq. (13): projected-space conservative isotropic kernel.
+// Derivatives must describe this triangle's unperturbed shading normal, never adjacent ids.
+float brdf_geometric_alpha2(float3 dn_dx, float3 dn_dy) {
+  return min((dot(dn_dx, dn_dx) + dot(dn_dy, dn_dy)) / k_brdf_pi, 0.18);
+}
+
 // Reflectance at normal incidence: 4% for dielectrics, the base color for conductors.
 float3 brdf_f0(float3 albedo, float metallic) { return lerp(float3(0.04), albedo, metallic); }
 

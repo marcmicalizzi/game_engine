@@ -175,6 +175,8 @@ void summarize_textures(const GpuScene& scene, scene::FlythroughTextures& out) {
   out.bytes = scene.texture_bytes();
   out.bytes_saved = scene.texture_bytes_saved();
   out.sharing = scene.share_textures();
+  out.normal_variance = scene.normal_variance_textures();
+  out.normal_variance_bytes = scene.normal_variance_bytes();
 }
 
 bool fly_camera_path(SceneRenderer& renderer, const CameraPath& path, const FlightOptions& options,
