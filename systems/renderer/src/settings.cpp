@@ -554,8 +554,7 @@ void resolve_settings(const RenderSettings& requested, const gfx::DeviceFeatures
   // Drawn and caster entries partition each view's pairs. Past the compact bound, drop
   // casters first; the capacity counts any remaining drops without refusing the scene.
   if (out.casters && index_known) {
-    const u64 caster_index =
-        rt_max_geometry_index(static_cast<u32>(out.pairs.frame_pairs()), index_views, true);
+    const u64 caster_index = rt_max_geometry_index(out.pairs.frame_pairs(), index_views, true);
     if (caster_index > index_limit) {
       out.caster_index_fallback = true;
       out.casters = false;
@@ -618,8 +617,8 @@ void resolve_settings(const RenderSettings& requested, const gfx::DeviceFeatures
   out.settings.stream = out.stream;
 }
 
-u64 rt_max_geometry_index(u32 pair_count, u32 views, bool casters) noexcept {
-  const u64 drawn = u64{pair_count} * (views > 0 ? views : 1u);
+u64 rt_max_geometry_index(u64 pair_count, u32 views, bool casters) noexcept {
+  const u64 drawn = pair_count * (views > 0 ? views : 1u);
   if (drawn == 0) return 0;
   (void)casters;  // drawn and caster entries partition the same pairs
   return drawn - 1;

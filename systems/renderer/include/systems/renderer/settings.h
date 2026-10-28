@@ -397,7 +397,7 @@ enum class RenderAvailability : u8 {
 // Largest compact geometry index for eligible pairs in all views. Drawn and caster entries
 // partition each view's pairs. The allocated capacity supplies the actual build limit;
 // the hit-entry table restores the rasterizer's visible index.
-u64 rt_max_geometry_index(u32 pair_count, u32 views, bool casters) noexcept;
+u64 rt_max_geometry_index(u64 pair_count, u32 views, bool casters) noexcept;
 
 // Applies device and scene overrides in dependency order. GpuScene supplies the final pair
 // account after terrain capacities are known; a preliminary call without it defers admission.

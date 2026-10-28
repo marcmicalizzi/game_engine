@@ -650,9 +650,18 @@ rasterized on the CPU — vertices snapped to 1/256 of a texel, edge functions i
 the top-left rule, 4 × 4 samples a texel, nearest-first by depth along the view — then resolved to an
 RGBA8 colour (sRGB through `texture::linear_to_srgb8`, alpha the samples covered) and an RGBA8
 **tangent-space normal** (the faces' normals turned to the viewer, in the tile's u, v and normal
-axes). It shades with the species' own colours, not a pack's, because the solver has no io to read
-an image; where a pack cuts the near leaves to an outline (a masked card material) the bake cuts its
-leaves to the ellipse the card holds. A branch-group level bakes **16 representative sub-trees**
+axes). **What it shades with** (corrected 2026-10-27, G-area row G93, after the forest proof of
+concept's leaf audit): `bake_chain` reads the pack's **base-colour images** of the bark and leaf
+materials through the host's `read_image` (`MeshGeneratorHosts`) and `surface_sample` samples them,
+bilinearly and wrapped, at each covered sample's interpolated UV: the leaf's alpha, against the
+material's cutoff, cuts the leaf out exactly as the near card is cut, and the bark's image is
+tiled by the pack's own UV scale; the material's base-colour factor multiplies either. Only where
+a material has no image (no host reader, or no path) does the bake fall back to the factor alone,
+and to the ellipse the card holds for a masked leaf. **What it does not carry across** is the
+rest of the pack: the normal is the faces' **geometry normal** and not the material's normal map,
+and the level's material takes the leaf material's **scalar roughness**, so a pack's vein relief
+and roughness variation, which the near leaves have, are gone from every branch-group level and
+the star (roadmap G93). A branch-group level bakes **16 representative sub-trees**
 (spread evenly over the groups' order) into a 4 × 4 atlas of 64-texel tiles, and every card samples
 one of them by its root's hash — tens of thousands of sub-trees each baked would be hundreds of
 megabytes, and a sub-tree's picture is statistically its neighbours'. The tree bakes its five planes

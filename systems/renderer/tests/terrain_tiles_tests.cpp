@@ -1001,6 +1001,23 @@ TEST_CASE("world tiles: the far levels tile the ground to their outermost square
   check_tiling(out, "50 km out");
 }
 
+// A first far level at the outermost ring's own spacing (`far_ratio` 1) is a legal layout, and the
+// measured-error rule picks it (`derive_terrain_far`, roadmap F20): it holds no finer lattice than
+// the ring, but it reaches past the ring's radius at that spacing, so what it adds is distance and
+// not detail. Zero is the refusal.
+TEST_CASE("terrain tiles: a far ratio of 1 is a far level at the outermost ring's spacing") {
+  TerrainTilesDesc t = small_tiles();
+  t.far_levels = 2;
+  t.far_cells = 4;
+  t.far_ratio = 1;
+  std::string error;
+  REQUIRE_MESSAGE(validate_terrain_tiles(t, &error), error);
+  CHECK(terrain_far_level(t, 1).spacing == 2000);  // the outermost ring's 8 m over 4 cells
+  CHECK(terrain_far_level(t, 2).spacing == 4000);
+  t.far_ratio = 0;
+  CHECK_FALSE(validate_terrain_tiles(t, &error));
+}
+
 namespace {
 
 // **A tile set's chain, as a source** (tileset.md): the waves at every point (filter 0), and

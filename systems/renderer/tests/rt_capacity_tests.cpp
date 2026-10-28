@@ -116,6 +116,10 @@ TEST_CASE("rt index space: compact casters share the drawn bound without refusin
   CHECK(rt_max_geometry_index(0, 3, true) == 0);
   CHECK(rt_max_geometry_index(3699274, 3, true) == 11097821);
   CHECK(rt_max_geometry_index(0xffffffffu, 3, true) == u64{3} * 0xffffffffu - 1);
+  // The pair count is a u64 all the way in (`PairAccount::frame_pairs()` is one): a count past
+  // 2^32 must not wrap to a small bound. The layout holds it to k_max_pairs, so this is the guard.
+  CHECK(rt_max_geometry_index(u64{1} << 32, 3, true) == (u64{3} << 32) - 1);
+  CHECK(rt_max_geometry_index(u64{k_max_pairs}, 3, true) == u64{3} * k_max_pairs - 1);
   gfx::DeviceFeatures features;
   features.mesh_shader = features.buffer_int64_atomics = true;
   features.acceleration_structure = features.cluster_acceleration_structure = features.ray_query =

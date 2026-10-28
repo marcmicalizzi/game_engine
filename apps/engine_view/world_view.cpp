@@ -322,6 +322,7 @@ world::TileWorldSummary ViewWorld::summary() const {
   summary.insert_ms = static_cast<f64>(s.sink_ns) / 1.0e6;
   summary.insert_ms_max = static_cast<f64>(s.max_sink_ns) / 1.0e6;
   summary.handed = s.handed;
+  summary.placement_room_bytes = placements_.room_bytes();
   const renderer::GpuScene& scene = renderer_->scene();
   summary.prefix_pairs = scene.static_pair_count();
   summary.slot_pairs = scene.ring_slot_pairs();

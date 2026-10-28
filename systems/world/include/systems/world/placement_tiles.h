@@ -143,6 +143,11 @@ class PlacementTiles {
   // `representation`): a ring change it builds the tile again for, which is a handover a host can
   // measure. A generator with no `representation` draws every ring its own.
   bool redraws(TileCoord tile, u8 from, u8 to) const noexcept;
+  // The bytes of instance and tag room the tile blocks hold, wherever a block is at the moment: the
+  // finite entries' exact per-tile room made at load, the active tiles' and the free list's. It is
+  // about the authored instance count times (sizeof(SceneInstance) + 1), the world over, resident
+  // for the whole run (world.md, "Finite placement storage"). Excludes the tail and its scratch.
+  u64 room_bytes() const noexcept;
   // The instances one active tile holds; empty for another tile.
   std::span<const renderer::SceneInstance> tile_instances(TileCoord tile) const noexcept;
   // Where each active tile's instances sit in the tail, in tile order: what a caller swapping one
