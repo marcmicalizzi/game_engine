@@ -93,7 +93,9 @@ ENGINE_EXPECT_SIZE(96, 8, gfx::TerrainLevelDesc);
 // 96, not 80 (R104): the allocator became three passes over tiles of 256 entries, and `blocks`
 // (the tiles' scratch) and `groups` (passes 1 and 3's group count, which they stride by) were
 // added, with a pad word to keep the eight-byte alignment. Still well inside 128 bytes.
-ENGINE_EXPECT_SIZE(96, 8, gfx::DeformAllocParams);
+// 112, not 96 (R103): `rest_padding_m`, one length per cascade of the cascades' dispatch, under
+// which a deformed instance's reach lets that cascade draw it at rest. Still inside 128 bytes.
+ENGINE_EXPECT_SIZE(112, 8, gfx::DeformAllocParams);
 
 // Unchanged at 96: `deform` took one of the three pad words and `bounds_padding` a second, so a
 // deformed instance can say how far its vertices leave their rest positions without the record

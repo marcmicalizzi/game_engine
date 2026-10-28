@@ -53,6 +53,11 @@ inline constexpr f32 k_shadow_texel_error_texels = 0.5f;
 // filter's 4 x 4-texel footprint. Measured, not derived: 1 and 2 texels moved the forest's picture
 // alike, 5 by three times as much.
 inline constexpr f32 k_shadow_texel_cover_texels = 2.0f;
+// **Far casters at rest, per cascade** (R103; renderer.md, "Cascaded shadow maps"): a cascade past
+// the nearest draws a deformed instance that is not a terrain level from its rest pose when its
+// reach from that pose (`InstanceDesc::bounds_padding` times `scale_max`) is under this many of the
+// cascade's texels, so the pose it leaves out moves its shadow by less than a texel.
+inline constexpr f32 k_shadow_rest_texels = 1.0f;
 
 // The cascaded shadow maps' defaults (docs/subsystems/renderer.md, "Shadows"). Four cascades of
 // 2048 x 2048 texels, side by side in one D32 atlas: 64 MiB, and the cascades split the camera's
@@ -466,6 +471,10 @@ bool parse_water_quality(std::string_view text, WaterQuality& out) noexcept;
 // `renderer.shadow.opaque_rays` (false), a measurement switch: the shadow rays force every caster
 // opaque, so the alpha-tested masks are not evaluated (renderer.md, "Rays near, maps far").
 bool shadow_opaque_rays_tunable() noexcept;
+// `renderer.shadow.rest_texels` (`k_shadow_rest_texels`): a cascade past the nearest draws a
+// deformed instance at rest when its reach from the rest pose is under this many of its texels
+// (R103; renderer.md, "Cascaded shadow maps"); 0 poses every cascade, as before R103.
+f32 shadow_rest_texels_tunable() noexcept;
 // What the frame actually shadows with, as a summary reports it: "rt", "csm", "hybrid", or "off".
 const char* resolved_shadow_name(const ResolvedSettings& resolved) noexcept;
 // "none", "identity", "wave", or "lattice" into `deform` and `deform_kind`.

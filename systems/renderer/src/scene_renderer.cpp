@@ -2777,6 +2777,14 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
     // always, and with `renderer.flora.rest_pose_cascades_m` every deformed instance past it, cast
     // from the grid and take no pool block for it.
     shadow_alloc.rest_beyond_m = flora_rest_pose_cascades_m_tunable();
+    // **Far casters at rest, per cascade** (R103; renderer.md, "Cascaded shadow maps"): past the
+    // nearest cascade, a deformed instance whose reach from its rest pose is under
+    // `renderer.shadow.rest_texels` of the cascade's texels draws its rest pose there, since the
+    // pose it leaves out would move its shadow by less than a texel. Never a terrain level, whose
+    // rest heights are not its field (`deform_alloc.slang`).
+    const f32 rest_texels = shadow_rest_texels_tunable();
+    for (u32 c = 1; c < cascades_drawn && c < gfx::k_max_shadow_cascades; ++c)
+      shadow_alloc.rest_padding_m[c] = cascades_.cascades[c].texel_world * rest_texels;
     shadow_alloc.eye = params_[slot].address + sizeof(gfx::CullParams) * (views * 2) +
                        gfx::k_cull_params_eye_offset;
     shadow_alloc.blocks = scene.deform_blocks.address;

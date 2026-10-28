@@ -65,7 +65,7 @@
 
 #include "scene.slang"
 
-// Mirrors gfx::DeformAllocParams (96 bytes).
+// Mirrors gfx::DeformAllocParams (112 bytes).
 struct AllocParams {
   uint64_t clusters;        // ClusterDesc[]
   uint64_t instances;       // InstanceDesc[]
@@ -89,6 +89,9 @@ struct AllocParams {
   uint64_t blocks;  // uint2 per tile of this dispatch: {total, first} then {cursor, first}
   uint groups;      // workgroups in passes 1 and 3, which stride over the tiles by it
   uint pad;
+  // gfx::DeformAllocParams::rest_padding_m: per view of the cascades' dispatch, the reach under
+  // which a deformed instance (not a terrain level) draws at rest in that cascade; 0 none.
+  float4 rest_padding_m;
 };
 
 [[vk::push_constant]] ConstantBuffer<AllocParams> g_params;
@@ -137,8 +140,12 @@ void locate(uint tile, out uint first_entry, out uint entries) {
 // The vertices one entry asks for: its cluster's count when its instance is deformed, nothing
 // when it is rigid — and, on the cascades' dispatch, nothing when its species casts its rest pose
 // or it stands past the distance the trees' shadows stop swaying at (renderer.md, "The caster
-// policy"); such an entry gets `k_no_pool_slot`, which every reader draws from the grid, and is
-// counted as no overflow because it asked for nothing.
+// policy"), or, since R103, its reach from the rest pose is under its cascade's texel
+// (`rest_padding_m`; renderer.md, "Cascaded shadow maps"); such an entry gets `k_no_pool_slot`,
+// which every reader draws from the grid, and is counted as no overflow because it asked for
+// nothing. **A terrain level is never put at rest**: its pool stage draws the moving field, which
+// its rest heights can be metres from — not a pose a texel hides — so it keeps its block in every
+// cascade whatever the distance rule says.
 uint entry_need(uint entry) {
   ClusterDesc* clusters = (ClusterDesc*)g_params.clusters;
   InstanceDesc* instances = (InstanceDesc*)g_params.instances;
@@ -147,12 +154,18 @@ uint entry_need(uint entry) {
   const InstanceDesc instance = instances[pair.x];
   uint need = 0;
   if (instance.deform != k_invalid_deform) need = clusters[pair.y].vertex_count;
-  if (need != 0 && g_params.rest_beyond_m >= 0.0) {
+  if (need != 0 && g_params.rest_beyond_m >= 0.0 && instance.terrain == 0) {
     if ((instance.flags & k_instance_shadow_rest) != 0) {
       need = 0;
     } else if (g_params.rest_beyond_m > 0.0) {
       const float3 from_eye = instance_from_eye(instance, load_eye(g_params.eye));
       if (dot(from_eye, from_eye) > g_params.rest_beyond_m * g_params.rest_beyond_m) need = 0;
+    }
+    // The view of this dispatch the entry is in is its cascade.
+    const uint view = (entry - g_params.first_entry) / g_params.pair_count;
+    if (need != 0 && view < 4) {
+      const float reach = instance.bounds_padding * instance.scale_max;
+      if (reach > 0.0 && reach < g_params.rest_padding_m[view]) need = 0;
     }
   }
   return need;

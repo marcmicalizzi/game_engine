@@ -10,7 +10,8 @@
 // shapes the placement rule has — everything fits; the budget crossed early, so most of the cut
 // is past the crossing; crossed late; and a cluster bigger than the room left followed by small
 // ones that still have to be placed — plus a cut large enough for passes 1 and 3 to stride, the
-// cascades' rest pose (by flag and by distance), and ten runs of the same input to the same bytes.
+// cascades' rest pose (by flag, by distance and, since R103, by reach per cascade, never a terrain
+// level), and ten runs of the same input to the same bytes.
 //
 // Needs a device with buffer device addresses and 64-bit integers in shaders, which every device
 // the engine opens has.
@@ -43,6 +44,7 @@ struct Dispatch {
   u32 count_offset = 0;  // bytes into the count buffer of view 0's word
   bool reset = false;
   f32 rest_beyond_m = -1.0f;
+  f32 rest_padding_m[4] = {};  // the cascades' rest pose per view (R103)
 };
 
 struct Case {
@@ -87,13 +89,17 @@ Result cpu_allocate(const Case& c) {
           u32 need = inst.deform != gfx::k_invalid_deform
                          ? c.clusters[c.visible[entry * 2 + 1]].vertex_count
                          : 0u;
-          if (need != 0 && d.rest_beyond_m >= 0.0f) {
+          // A terrain level is never at rest; past its species' flag and the distance, an
+          // instance whose reach is under its cascade's length is (R103).
+          if (need != 0 && d.rest_beyond_m >= 0.0f && inst.terrain == 0) {
             if ((inst.flags & gfx::k_instance_shadow_rest) != 0) {
               need = 0;
             } else if (d.rest_beyond_m > 0.0f) {
               const f32 x = inst.rows[0].w, y = inst.rows[1].w, z = inst.rows[2].w;
               if (x * x + y * y + z * z > d.rest_beyond_m * d.rest_beyond_m) need = 0;
             }
+            const f32 reach = inst.bounds_padding * inst.scale_max;
+            if (need != 0 && v < 4 && reach > 0.0f && reach < d.rest_padding_m[v]) need = 0;
           }
           const u32 start = cursor + inclusive;
           inclusive += need;
@@ -220,6 +226,8 @@ bool run_gpu(const gfx::Device& device, const Allocators& a, const Case& c, bool
             p.first_entry = d.first_entry;
             p.reset = d.reset ? 1u : 0u;
             p.rest_beyond_m = d.rest_beyond_m;
+            for (u32 v = 0; v < 4; ++v)
+              p.rest_padding_m[v] = d.rest_padding_m[v];
             p.eye = eye_buffer.address;
             p.blocks = blocks.address;
             p.groups = gfx::deform_alloc_group_count(d.views, c.pair_count);
@@ -274,6 +282,11 @@ void make_population(std::mt19937& rng, u32 cluster_count, u32 instance_count, C
     const u32 roll = pick(rng);
     inst.deform = roll < 66 ? i : gfx::k_invalid_deform;
     if (roll < 10) inst.flags |= gfx::k_instance_shadow_rest;
+    // R103: a reach from rest of 0 to 8 m (a fifth state none), and a few terrain levels, which
+    // the cascades never put at rest.
+    inst.bounds_padding = pick(rng) < 20 ? 0.0f : static_cast<f32>(pick(rng)) * 0.04f;
+    inst.scale_max = 1.0f + static_cast<f32>(pick(rng)) * 0.01f;
+    if (roll >= 60 && roll < 66) inst.terrain = 1;
     inst.rows[0].w = place(rng);
     inst.rows[1].w = place(rng);
     inst.rows[2].w = place(rng);
@@ -313,6 +326,10 @@ void make_frame(std::mt19937& rng, u32 views, u32 cascades, f32 rest_m,
     d.first_entry = 3 * views * c.pair_count;
     d.count_offset = 3 * views * 16;
     d.rest_beyond_m = rest_m;
+    // The cascades' rest by reach (R103): never the nearest, then coarser texels outwards.
+    const f32 lengths[4] = {0.0f, 0.5f, 2.0f, 6.0f};
+    for (u32 v = 0; v < 4; ++v)
+      d.rest_padding_m[v] = rest_m >= 0.0f ? lengths[v] : 0.0f;
     c.dispatches.push_back(d);
   }
 }
@@ -371,6 +388,14 @@ TEST_CASE("deform alloc: the device-wide scan hands out the one-workgroup alloca
   make_frame(rng, 3, 4, 60.0f, {2900, 1, 3500, 0, 2048, 257, 3000}, base);
   const u64 asked = total_need(base);
   REQUIRE(asked > 1000);
+  {
+    // The cascades' rest by reach (R103) leaves entries out of what the frame asks for.
+    Case posed = base;
+    for (Dispatch& d : posed.dispatches)
+      for (f32& length : d.rest_padding_m)
+        length = 0.0f;
+    CHECK(total_need(posed) > asked);
+  }
 
   {
     Case c = base;

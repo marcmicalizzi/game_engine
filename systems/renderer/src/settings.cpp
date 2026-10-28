@@ -226,10 +226,15 @@ tunables::Bool shadow_opaque_rays{
     "renderer.shadow.opaque_rays", false,
     "Measurement only: the shadow rays treat every caster as opaque, so an alpha-tested leaf "
     "casts its whole card (renderer.md, Rays near, maps far)"};
+tunables::Float shadow_rest_texels{
+    "renderer.shadow.rest_texels", static_cast<f64>(k_shadow_rest_texels), 0.0, 64.0,
+    "A cascade past the nearest draws a deformed instance at rest when its reach from the rest "
+    "pose is under this many of its texels (R103); 0 poses every cascade"};
 
 }  // namespace
 
 bool shadow_opaque_rays_tunable() noexcept { return shadow_opaque_rays.get(); }
+f32 shadow_rest_texels_tunable() noexcept { return static_cast<f32>(shadow_rest_texels.get()); }
 
 DisplayLevels display_levels(const RenderSettings& settings) {
   DisplayLevels out;

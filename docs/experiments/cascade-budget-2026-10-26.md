@@ -1,6 +1,6 @@
 # The expanded forest's cascade budget (R103)
 
-Dates: 2026-10-26 (the opt-in experiment, a Codex night session, below) and 2026-10-27 (the default, its stages). Status: stage 1 — the cascades cut by their own texels — is the default; the stages after it are in their own sections as they land.
+Dates: 2026-10-26 (the opt-in experiment, a Codex night session, below) and 2026-10-27 (the default, its stages). Status: stage 1 (the cascades cut by their own texels) and stage 2 (far casters at rest, per cascade) are the default; the stages after them are in their own sections as they land.
 
 **Question.** On the forest proof of concept's v18 expanded forest at 11520×2160 the cascaded frame was 35.9 ms, of which the four 2048² cascades' depth draws were 20.9 (7.33 million pairs a frame, every cascade a run of the camera's cut at the camera's own LOD to the far side of the scene), and the same frame refused 1.59 million deformed-vertex pool entries after placing 1.12 million in a 768 MiB pool: every swaying tree deformed into each of four maps. The traced frame of the same scene places 245,740 entries and refuses none. How much of that can a cascade leave out by drawing no finer than its own texels, without changing the shadow it casts?
 
@@ -65,6 +65,30 @@ A whole texel and half a texel with the coverage at the frame's foliage-to-geome
 ### On a simplified receiver
 
 The fixture's casters are their own roots, so the texel cut cannot move them (its four casters draw the same bytes and pairs either way, on both raster paths). `renderer: a cascade cut by its texels shadows a simplified receiver as the picture's cut does` is the case that can: a 129² heightfield, which shadows itself, from three orbits, at 64², 256² and 2048² maps, 480×270, drawn from the picture's cut, the texel cut, and the texel cut on the vertex path. Outside a band round every shadow edge as wide as the filter's footprint — four texels of the cascade holding the pixel's depth, in that pixel's size — the texel cut gives no opposite answer: 0 of 6,373 to 81,408 interior pixels per view. The pairs fall from 380–395 to 46–62 at 64², to 170–253 at 256², and stay at the picture's at 2048², where every texel is finer than a pixel and the colours are the same bytes; the vertex path's shadow is the mesh path's to the byte at every size, and the picture's ids never change. At 64² no pixel is interior (the footprint is wider than the picture's shadows); that size is there for the pairs and the paths.
+
+## Far casters at rest (2026-10-27)
+
+Stage 2. The rule ([renderer](../subsystems/renderer.md#cascaded-shadow-maps), "Far casters at rest, per cascade"): past the nearest cascade, a deformed instance whose reach from its rest pose (its cull padding, `bounds_padding × scale_max`) is under the cascade's texel takes no pool block there and casts its rest pose; a terrain level never does. The brief asked for no refused entries at the default pool; the texel cut had already given that (stage 1's table), so what is left to show is what the rule costs and gives on top of it, and how far a sway still reaches the shadow.
+
+The same runs as stage 1's table (v18 expanded forest, standing path, 600 frames, `msvc-release`, offscreen, `--wait-quiet 120`, under the GPU lock), "off" being `--tunable renderer.shadow.rest_texels=0`, which is stage 1:
+
+| frame | rest per cascade | shadow ms (median / p95) | frame ms (median / p95) | pool used a frame | pool refused | machine state (GPU start→end, other CPU start→end) |
+|---|---|---:|---:|---:|---:|---|
+| 11520×2160 | off | 9.07 / 9.69 | 24.18 / 25.26 | 425,996,904 B | 0 | 1→2%, 8.3→20.9% |
+| 11520×2160 | on | 7.88 / 8.47 | 23.18 / 24.12 | 422,555,640 B | 0 | 2→100%, 22.7→10.4% |
+| 1600×900 | off | 5.86 / 6.35 | 7.99 / 8.66 | 278,841,600 B | 0 | 1→100%, 10.0→33.6% |
+| 1600×900 | on | 5.12 / 5.56 | 7.29 / 7.91 | 274,267,860 B | 0 | 2→1%, 50.1→31.9% |
+
+None of the four runs was quiet by the harness's rule; stage 1's run of the "off" configuration (9.04 ms wide, 6.10 at 1600×900) is the repeat that says the shadow passes' noise between runs is a few hundredths of a millisecond wide and a quarter of one at 1600×900. The pairs in the maps do not change (the rule changes what an entry reads, not which entries there are). The pool falls by 3.4 MB wide and 4.6 MB at 1600×900, about 290,000 and 380,000 vertices: on this forest the texel cut had already left the far cascades mostly the rigid distance forms of the outer rings, which take no block at all, so the deformed trees still in cascades 1 to 3 are the near rings' few. Where the shadow passes' 0.7 to 1.2 ms comes from with so few vertices left out is not settled here; the pool pass of a swaying tree runs the part-chain bend on each, and the frame's pool pass outside the cascades (`gpu_ms.deform`, 1.55–1.57 wide) did not move.
+
+**How far a sway still reaches the shadow** is set per tree by its reach against the cascade texels the fit gives the frame (`engine-view: shadow fit`):
+
+| frame | cascade depths (m) | texels |
+|---|---|---|
+| 11520×2160 | 0.1–26.7, 26.7–150, 150–844, 844–4,745 | 7.4 cm, 41 cm, 2.34 m, 4.44 m |
+| 1600×900 | the same | 2.8 cm, 16 cm, 88 cm, 4.94 m |
+
+A tree whose sway can reach 1.8 m (the young palm's bound, [renderer](../subsystems/renderer.md#the-flora-stage)) shadows its sway to 150 m at 11520×2160 and to 844 m at 1600×900; one that can reach 2.6 m (the grove's broadleaves) to 844 m at both; nothing sways in the last cascade's shadow unless it can move more than 4.4 m. The reach is the bound at the saturating wind, so at the forest's 0.7 a tree's real sway is smaller than the texel it is held against, and the rule errs towards posing.
 
 ## The opt-in experiment (2026-10-26)
 
