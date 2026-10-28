@@ -6,6 +6,7 @@ A write-up is not a benchmark log. It is the page a future contributor reads ins
 
 | Experiment | Page | Settles |
 |---|---|---|
+| R107 pair space | [pair-space-2026-10-27.md](pair-space-2026-10-27.md) | A decision packet, no code: what the forest's 16,770,201 pairs are, the tail's 772,537 pairs of size-class slack against the seven withheld tiles, and every writer, reader, bound, test and page of `pair << 8 \| triangle` that a 25-bit pair with a 128-triangle cluster cap would touch |
 | G91 | [tree-leaf-sizing.md](tree-leaf-sizing.md) | Botanical blade dimensions, retained terminal counts and saplings |
 | G92 | [tree-surface-roots.md](tree-surface-roots.md) | terrain-fitted structural roots, planting-space constraints and independent geometry |
 | W73 allocations | [streamed-tree-allocations-2026-10-26.md](streamed-tree-allocations-2026-10-26.md) | frame-thread allocation attribution for streamed trees, retained tile storage and the zero-allocation gate |
