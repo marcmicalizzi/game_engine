@@ -485,12 +485,13 @@ class GpuScene {
   // `rt_cache_slots()`, and every bottom-level structure that frame and after references it, until
   // the least recently drawn are evicted to make room. The slots are sized at create, from the
   // scene's cached clusters (twice, for the drawn and the caster forms) up to the
-  // `renderer.rt.cache_mib` ceiling (256), and never grow: a cache that fills evicts. Off by
-  // default (`renderer.rt.cache`, false since 2026-10-27: an idle cache is not free yet), under
-  // templates (instantiated every frame by design), under
-  // geometry streaming (a page's clusters move), and on a device whose geometry indices stop short
-  // of 24 bits. The frame's **references** to it are sized by the frames like the capacity, by a
-  // policy of their own (`rt_reference_capacity()`, the `renderer.rt.reference_mib` ceiling).
+  // `renderer.rt.cache_mib` ceiling (256), and never grow: a cache that fills evicts. Off with
+  // `renderer.rt.cache` false (on by default; off from 2026-10-27 until R106 made an idle cache
+  // free), under templates (instantiated every frame by design), under geometry streaming (a
+  // page's clusters move), on a device whose geometry indices stop short of 24 bits, and — for a
+  // scene read whole — when no instance of it could be served. The frame's **references** to it are
+  // sized by the frames like the capacity, by a policy of their own (`rt_reference_capacity()`, the
+  // `renderer.rt.reference_mib` ceiling).
   bool rt_cache() const noexcept { return rt_cache_slots_ != 0; }
   // **How many of the scene's instances the cache would serve** (`rt_instance_cached`), counted
   // when the instances change and never per frame (`policy_counts`). A frame of a scene with none —
