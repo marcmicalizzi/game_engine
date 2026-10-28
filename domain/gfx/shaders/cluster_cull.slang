@@ -117,9 +117,11 @@ struct CullParams {
   uint horizon_pad1;
   uint horizon_pad2;
   uint cascade;      // 0 a camera run; c + 1 the sun's cascade c (the caster policy, below)
+  // gfx::CullParams::cascade_error_m / cascade_cover_m: a cascade's texels' own threshold, the
+  // world error and coverage error they accept; 0 on a camera run (see cull_pair).
+  float cascade_error_m;
+  float cascade_cover_m;
   uint pad0;
-  uint pad1;
-  uint pad2;
 };
 
 struct CullPush {
@@ -147,6 +149,18 @@ float projected_error(float4 sphere, float error, float3 camera, float znear, fl
 // takes the one-threshold test bit for bit.
 bool transition_acceptable(float geometric, float coverage, float threshold, float foliage) {
   return geometric <= threshold || coverage <= foliage;
+}
+
+// **A cascade's texels' own threshold** (gfx::CullParams::cascade_error_m; renderer.md, "Cascaded
+// shadow maps", R103). The light's projection is orthographic, so a world error is the same number
+// of texels wherever it stands: the test is the error itself against the length the cascade's
+// texels accept, with no sphere and no observer. It is ORed with the camera's test, so a cascade
+// draws the coarser of the two cuts, and since each of the two acceptances holds for a cluster
+// whenever it holds for its parent, so does their union: one cluster on every path, as before. A
+// terminal error and a missing coverage (+inf) are never at or under a finite length.
+bool cascade_accepts(CullParams* params, float error, float coverage) {
+  return params->cascade_error_m > 0.0 &&
+         (error <= params->cascade_error_m || coverage <= params->cascade_cover_m);
 }
 
 float over_threshold(float projected, float threshold) {
@@ -527,11 +541,12 @@ void cull_pair(uint pair, bool vertex_draw) {
                                      lod.own.w * instance.scale_max + padding);
     const float4 parent_sphere = float4(instance_point(instance, from_eye, lod.parent.xyz),
                                         lod.parent.w * instance.scale_max + padding);
-    const float own = projected_error(own_sphere, lod.own_error * instance.scale_max,
-                                      params->camera.xyz, params->camera.w, params->lod.x);
-    const float parent =
-        projected_error(parent_sphere, lod.parent_error * instance.scale_max, params->camera.xyz,
-                        params->camera.w, params->lod.x);
+    const float own_error = lod.own_error * instance.scale_max;
+    const float parent_error = lod.parent_error * instance.scale_max;
+    const float own = projected_error(own_sphere, own_error, params->camera.xyz, params->camera.w,
+                                      params->lod.x);
+    const float parent = projected_error(parent_sphere, parent_error, params->camera.xyz,
+                                         params->camera.w, params->lod.x);
     const float own_cover_error = f16tof32(cover & 0xffffu);
     const float parent_cover_error = f16tof32(cover >> 16);
     const float own_cover = projected_error(own_sphere, own_cover_error * instance.scale_max,
@@ -539,15 +554,21 @@ void cull_pair(uint pair, bool vertex_draw) {
     const float parent_cover =
         projected_error(parent_sphere, parent_cover_error * instance.scale_max, params->camera.xyz,
                         params->camera.w, params->lod.x);
+    // A cascade's block may also accept a transition by its texels (`cascade_accepts`, above).
     const bool own_ok =
-        transition_acceptable(own, own_cover, params->lod.y, params->foliage_px);
+        transition_acceptable(own, own_cover, params->lod.y, params->foliage_px) ||
+        cascade_accepts(params, own_error, own_cover_error * instance.scale_max);
     const bool parent_ok =
-        transition_acceptable(parent, parent_cover, params->lod.y, params->foliage_px);
+        transition_acceptable(parent, parent_cover, params->lod.y, params->foliage_px) ||
+        cascade_accepts(params, parent_error, parent_cover_error * instance.scale_max);
     if (params->streaming == 0) {
       // The cross-fade, for a transition with a coverage error: both sides draw across the band and
       // each keeps the pixels between its splits (alpha_mask.slang, ade_keeps).
-      const bool own_fading = params->fade > 0.0 && own_cover_error < k_terminal_error;
-      const bool parent_fading = params->fade > 0.0 && parent_cover_error < k_terminal_error;
+      // A cascade cut by its texels switches at once: its cut is its own, and the cascades share one
+      // fade table per pair (the renderer passes it no fade; this keeps the rule whole if one did).
+      const bool fade = params->fade > 0.0 && params->cascade_error_m == 0.0;
+      const bool own_fading = fade && own_cover_error < k_terminal_error;
+      const bool parent_fading = fade && parent_cover_error < k_terminal_error;
       if (own_fading || parent_fading) {
         const bool opaque = !pair_masked(params->masks, instance, index);
         split_own = fade_split(own, own_cover, own_fading, params->lod.y, params->foliage_px,

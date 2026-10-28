@@ -43,6 +43,16 @@ enum class ShadowMode : u8 { Auto, Off, RayTraced, Cascaded, Hybrid };
 // measurement they come from).
 inline constexpr f32 k_default_shadow_ray_distance_m = 100.0f;
 inline constexpr f32 k_default_shadow_ray_band_m = 20.0f;
+// **The world error a cascade accepts, in its own texels** (R103; renderer.md, "Cascaded shadow
+// maps"): `RenderSettings::shadow_texel_lod`'s threshold, `renderer.shadow.texel_error`. Half a
+// texel is the constant half of the maps' depth bias (`k_shadow_bias_texels`), so a receiver the
+// map holds coarser than the picture draws it stays inside the bias; a whole texel moved the
+// forest's near dapple measurably (docs/experiments/cascade-budget-2026-10-26.md has the ladder).
+inline constexpr f32 k_shadow_texel_error_texels = 0.5f;
+// The coverage error a cascade accepts, in its own texels (`renderer.shadow.texel_cover`): half the
+// filter's 4 x 4-texel footprint. Measured, not derived: 1 and 2 texels moved the forest's picture
+// alike, 5 by three times as much.
+inline constexpr f32 k_shadow_texel_cover_texels = 2.0f;
 
 // The cascaded shadow maps' defaults (docs/subsystems/renderer.md, "Shadows"). Four cascades of
 // 2048 x 2048 texels, side by side in one D32 atlas: 64 MiB, and the cascades split the camera's
@@ -130,6 +140,12 @@ struct RenderSettings {
   // in the maps than in the picture, which is the question "should a shadow's LOD be the light's
   // own" asked in numbers (docs/subsystems/renderer.md, "Shadows", has the answer).
   f32 shadow_lod_scale = 1.0f;
+  // **The cascades cut by their own texels** (R103; renderer.md, "Cascaded shadow maps"): each
+  // cascade also accepts a transition whose world error is at most `k_shadow_texel_error_texels` of
+  // its texels, so it draws the coarser of the picture's cut and its texels' cut. False draws every
+  // cascade from the picture's cut alone, as before R103; the `renderer.shadow.texel_lod` tunable
+  // (true by default) is the way back without a rebuild, and both have to be on.
+  bool shadow_texel_lod = true;
   // Texels the cascaded maps' lookup leaves the surface along its geometric normal at a grazing
   // surface (gfx::ShadowMapParams::normal_offset); negative is k_shadow_normal_offset_texels.
   f32 shadow_normal_offset = -1.0f;
@@ -325,8 +341,15 @@ struct ResolvedSettings {
   // distance from the eye (`gfx::k_shadow_hybrid`).
   bool hybrid = false;
   u32 shadow_cascades = 0;  // the cascades drawn, 1..4 with `csm`, else 0
-  bool occlusion = false;   // two-pass occlusion culling runs
-  bool rt_chain = false;    // the frame builds acceleration structures from its visible list
+  // The cascades are cut by their own texels as well as the picture's LOD (R103): `csm`, the
+  // setting and the `renderer.shadow.texel_lod` tunable all on. `shadow_texel_error` is the world
+  // error a cascade accepts, in its texels: `renderer.shadow.texel_error`, by default
+  // `k_shadow_texel_error_texels`.
+  bool shadow_texel_lod = false;
+  f32 shadow_texel_error = 0.0f;
+  f32 shadow_texel_cover = 0.0f;  // the coverage error's, `renderer.shadow.texel_cover`
+  bool occlusion = false;         // two-pass occlusion culling runs
+  bool rt_chain = false;          // the frame builds acceleration structures from its visible list
   // The cull pass keeps what its cone test rejects as shadow casters, in the visible list's run
   // `gfx::k_caster_run`, and the chain builds them beside the drawn clusters. True when shadows
   // are traced, the cone test is on, and the records are build records rather than template

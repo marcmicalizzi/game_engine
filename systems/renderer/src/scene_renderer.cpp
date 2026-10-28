@@ -1378,12 +1378,15 @@ void SceneRenderer::fold_visible(u32 slot) {
   // indexed draw what its index budget sent to the fallback.
   stats_.shadow_pairs = 0;
   stats_.shadow_fallback = 0;
+  for (u32& pairs : stats_.shadow_pairs_per_cascade)
+    pairs = 0;
   if (resolved_.csm) {
     const u32* shadow = stats + shadow_stat_base(view_count());
     const u32 count_word = resolved_.vertex_path ? 1u : 0u;
     for (u32 c = 0; c < scene_->shadow_cascades(); ++c) {
       const u32* block = shadow + u64{c} * k_shadow_stat_words;
       stats_.shadow_pairs += block[count_word];
+      stats_.shadow_pairs_per_cascade[c] = block[count_word];
       if (resolved_.vertex_indexed) stats_.shadow_fallback += block[4];
     }
     if (stats_.shadow_fallback > 0 && !shadow_fallback_warned_) {
@@ -2683,6 +2686,22 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
     cull.coverage = coverage_address;
     cull.foliage_px = frame_foliage_px * lod_view.quality.lod_scale * settings.shadow_lod_scale;
     cull.fade = frame_fade;
+    if (resolved_.shadow_texel_lod) {
+      // **The cascade's own texels** (R103; renderer.md, "Cascaded shadow maps"): a transition the
+      // camera's test refuses is still acceptable here when its world error is at most
+      // `shadow_texel_error` texels of this cascade (its coverage error at most
+      // `shadow_texel_cover` texels), so the cascade draws the coarser of the picture's cut and its
+      // texels', never a finer one than the picture.
+      const f32 texel_m = cascade.texel_world * settings.shadow_lod_scale;
+      cull.cascade_error_m = texel_m * resolved_.shadow_texel_error;
+      cull.cascade_cover_m = texel_m * resolved_.shadow_texel_cover;
+      // The cascades' fade table is one per pair for all of them (`fade_cascade_block`), which
+      // holds while every cascade takes the camera's cut. Cut by its own texels each cascade has
+      // its own transitions, and the last cull would overwrite the others' splits; so a cascade
+      // switches a transition at once. The picture's own fade is untouched.
+      cull.fade = 0.0f;
+      cull.masks.fade = 0;
+    }
     cull.raster = Vec4{settings.sw_px, gfx::k_raster_hardware, 0.0f, 0.0f};
     cull.cluster_count = cluster_count;
     cull.count_index = count_index;

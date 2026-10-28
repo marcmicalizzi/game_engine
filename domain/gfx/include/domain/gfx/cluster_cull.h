@@ -284,9 +284,20 @@ struct CullParams {
   u32 horizon_pad[3] = {};
   // **Which cascade this block culls for** (R95): 0 a camera run, c + 1 the sun's cascade c, which
   // keeps out an instance whose caster policy names fewer nearest cascades
-  // (`k_instance_cascade_mask`). Three words of padding keep the block a multiple of 16.
+  // (`k_instance_cascade_mask`).
   u32 cascade = 0;
-  u32 pad[3] = {};
+  // **A cascade's own texel** (renderer.md, "Cascaded shadow maps", R103): on a cascade's block,
+  // the world-space error (`cascade_error_m`) and coverage error (`cascade_cover_m`) its texels
+  // accept. A transition is then acceptable when the camera's test accepts it **or** its error,
+  // times the instance's `scale_max`, is at most `cascade_error_m` (its coverage error at most
+  // `cascade_cover_m`): the camera's rule with a second, orthographic threshold, so the cascade
+  // draws the coarser of the picture's cut and its texels' cut, never a finer one than the picture.
+  // An orthographic error does not depend on where the observer is, so no sphere enters it. 0 on a
+  // camera run, and on a cascade that takes the camera's cut alone (`renderer.shadow.texel_lod`
+  // false). They took two of the three pad words; the block is still 1,744 bytes.
+  f32 cascade_error_m = 0.0f;
+  f32 cascade_cover_m = 0.0f;
+  u32 pad = 0;
 };
 static_assert(sizeof(CullParams) == 1744);
 inline constexpr u64 k_cull_params_eye_offset = 480;  // offsetof(CullParams, eye)

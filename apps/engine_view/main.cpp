@@ -3536,6 +3536,18 @@ int run_offscreen(Options& options, Interactive& interactive) {
     const u64 path_hash = interactive.on ? interactive.log_hash : (have_path ? path.hash : 0);
     describe_run(scene_data, options, path_name, path_hash, resolved, view_renderer, scene,
                  summary);
+    if (resolved.csm) {
+      const auto& stats = view_renderer.stats();
+      std::fprintf(
+          stderr,
+          "engine-view: shadow cascade summary c0=%u c1=%u c2=%u c3=%u "
+          "pool_used_bytes=%llu overflow_entries=%u overflow_bytes=%llu\n",
+          stats.shadow_pairs_per_cascade[0], stats.shadow_pairs_per_cascade[1],
+          stats.shadow_pairs_per_cascade[2], stats.shadow_pairs_per_cascade[3],
+          static_cast<unsigned long long>(u64{stats.deform_vertices} * 3 * sizeof(f32)),
+          stats.deform_overflow_entries,
+          static_cast<unsigned long long>(u64{stats.deform_overflow_vertices} * 3 * sizeof(f32)));
+    }
     summary.device = device.adapter().name;
     summary.frames = frames;
     summary.repeats = measured ? repeats : 0;
@@ -6797,6 +6809,7 @@ int run_view(int argc, char** argv) {
         "\"shadow_fit\":%s,\"sw_px\":%.1f,"
         "\"visible_hw_last\":%u,\"visible_pass2_last\":%u,\"visible_sw_last\":%u,"
         "\"visible_pairs_last\":%u,\"shadow_casters_last\":%u,\"shadow_pairs_last\":%u,"
+        "\"shadow_pairs_per_cascade_last\":[%u,%u,%u,%u],"
         "\"shadow_fallback_last\":%u,\"visible_min\":%u,"
         "\"visible_max\":%u,\"triangles_hw_last\":%u,\"vertex_fallback_last\":%u,"
         "\"deform\":\"%s\",\"deform_pool_bytes\":%llu,"
@@ -6830,8 +6843,10 @@ int run_view(int argc, char** argv) {
         resolved.csm ? resolved.settings.shadow_map : 0u, shadow_fit_text.c_str(),
         static_cast<f64>(resolved.settings.sw_px), stats.visible_hw, stats.visible_pass2,
         stats.visible_sw, stats.visible_pairs(), stats.shadow_casters, stats.shadow_pairs,
-        stats.shadow_fallback, visible_min, stats.visible_max, stats.triangles_hw,
-        stats.vertex_fallback, renderer::deform_name(resolved.settings),
+        stats.shadow_pairs_per_cascade[0], stats.shadow_pairs_per_cascade[1],
+        stats.shadow_pairs_per_cascade[2], stats.shadow_pairs_per_cascade[3], stats.shadow_fallback,
+        visible_min, stats.visible_max, stats.triangles_hw, stats.vertex_fallback,
+        renderer::deform_name(resolved.settings),
         static_cast<unsigned long long>(deform_pool_bytes),
         static_cast<unsigned long long>(deform_whole_mesh_bytes),
         static_cast<unsigned long long>(u64{stats.deform_vertices} * 3 * sizeof(f32)),

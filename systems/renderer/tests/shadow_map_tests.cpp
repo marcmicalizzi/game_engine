@@ -31,6 +31,7 @@
 #include <core/math/math.h>
 #include <domain/gfx/device.h>
 #include <foundation/image/png.h>
+#include <foundation/tunables/tunables.h>
 #include <systems/renderer/capture.h>
 #include <systems/renderer/caster_volume.h>
 #include <systems/renderer/gpu_scene.h>
@@ -1095,6 +1096,165 @@ TEST_CASE("renderer: the off-frustum casters change no pixel's surface on any pa
   }
 }
 
+TEST_CASE("renderer: texel LOD preserves the near fixture on both cascade raster paths") {
+  Gpu gpu;
+  if (!gpu.ok) {
+    MESSAGE("renderer unavailable here: " << gpu.why);
+    return;
+  }
+  for (const Caster caster : {Caster::card, Caster::slab, Caster::cube, Caster::ell}) {
+    ShotOptions options;
+    options.shadows = ShadowMode::Cascaded;
+    options.shadow_texel_lod = false;
+    const Shot before = render(gpu.device, caster, options);
+    options.shadow_texel_lod = true;
+    const Shot texels = render(gpu.device, caster, options);
+    options.raster = RasterMode::Vertex;
+    const Shot vertex = render(gpu.device, caster, options);
+    MESSAGE(std::string(caster_name(caster))
+            << ": camera/texel " << colour_differences(before, texels)
+            << " colour bytes, hw/vertex " << colour_differences(texels, vertex)
+            << " colour bytes; pairs " << before.shadow_pairs << " / " << texels.shadow_pairs);
+    CHECK(colour_differences(before, texels) == 0);
+    CHECK(id_differences(before, texels) == 0);
+    CHECK(colour_differences(texels, vertex) == 0);
+    CHECK(id_differences(texels, vertex) == 0);
+  }
+}
+
+// **The cascades cut by their own texels, on a receiver that is simplified** (R103; renderer.md,
+// "Cascaded shadow maps"). The fixture's casters are their own roots, so the texel cut cannot move
+// them; a heightfield's 129 x 129 grid has a real LOD DAG and shadows itself. Each map size is
+// drawn three times — the picture's cut alone, the texel cut, the texel cut on the vertex path —
+// and held to the rule the Khronos case holds the maps to against the rays: outside a band round
+// every shadow edge as wide as the filter's footprint, the texel cut answers every pixel as the
+// picture's cut does. The band is per pixel: the footprint (`k_footprint_texels` of the cascade
+// that holds the pixel's depth) in the pixel's own size at its depth. The picture (ids) is the
+// same, the two raster paths draw the same shadow to the byte, and the texel cut never draws more
+// pairs into the maps than the picture's (it is the coarser of the two cuts, never a finer one).
+TEST_CASE(
+    "renderer: a cascade cut by its texels shadows a simplified receiver as the picture's cut "
+    "does") {
+  Gpu gpu;
+  if (!gpu.ok) {
+    MESSAGE("renderer unavailable here: " << gpu.why);
+    return;
+  }
+  SceneDesc desc;
+  desc.meshes.push_back("");
+  desc.heightfield_grid = 129;
+  desc.cache = false;
+  SceneData data;
+  std::string error;
+  REQUIRE_MESSAGE(load_scene(desc, data, error), error);
+  constexpr u32 width = 480;
+  constexpr u32 height = 270;
+  // The 3 x 3 bilinear filter's reach: 4 x 4 texels (gfx.md, "The sun's cascaded shadow maps").
+  constexpr f32 k_footprint_texels = 4.0f;
+  struct OrbitView {
+    f32 distance;
+    f32 yaw;
+    f32 pitch;
+  };
+  const OrbitView k_views[] = {{9.0f, 0.8f, 0.35f}, {4.0f, 2.6f, 0.2f}, {2.5f, 4.2f, 0.12f}};
+  u64 opposite_total = 0;
+  for (const u32 resolution : {64u, 256u, 2048u}) {
+    for (const OrbitView& v : k_views) {
+      CapturedFrame shots[3];
+      u32 pairs[3] = {};
+      ShadowCascades fit;
+      FrameDesc frame;
+      frame.camera = orbit_camera_at(data.center, data.radius, v.distance, v.yaw, v.pitch);
+      frame.view_mode = static_cast<u32>(gfx::ResolveMode::Shadow);
+      for (u32 run = 0; run < 3; ++run) {
+        RenderSettings settings;
+        settings.raster = run == 2 ? RasterMode::Vertex : RasterMode::Hardware;
+        settings.shadows = ShadowMode::Cascaded;
+        settings.shadow_map = resolution;
+        settings.shadow_texel_lod = run != 0;
+        settings.lights = false;
+        ResolvedSettings resolved;
+        resolve_settings(settings, gpu.device.features(), &data, resolved);
+        REQUIRE(resolved.shadow_texel_lod == (run != 0));
+        GpuScene scene;
+        REQUIRE_MESSAGE(scene.create(gpu.device, data, resolved, &error), error);
+        SceneRenderer renderer;
+        SceneRenderer::Desc rdesc;
+        rdesc.width = width;
+        rdesc.height = height;
+        REQUIRE_MESSAGE(renderer.create(gpu.device, scene, resolved, rdesc, &error), error);
+        CaptureChannels channels;
+        channels.ids = true;
+        channels.depth = true;
+        REQUIRE_MESSAGE(renderer.capture(frame, channels, shots[run], &error), error);
+        pairs[run] = renderer.stats().shadow_pairs;
+        if (run == 0) fit = renderer.shadow_cascades();
+      }
+      // The band's radius at a pixel: the footprint of the cascade whose slice holds its depth, in
+      // the pixel's own size there (reversed-Z depth is znear over the view depth).
+      const f32 pixel_at_unit =
+          2.0f * std::tan(frame.camera.fov_y * 0.5f) / static_cast<f32>(height);
+      auto band_at = [&](u32 p) -> i32 {
+        const f32 depth = shots[0].depth[p];
+        if (!(depth > 0.0f)) return 0;
+        const f32 view_z = frame.camera.znear / depth;
+        u32 c = 0;
+        while (c + 1 < fit.count && view_z > fit.splits[c + 1])
+          ++c;
+        const f32 reach = k_footprint_texels * fit.cascades[c].texel_world;
+        return static_cast<i32>(std::ceil(reach / (view_z * pixel_at_unit)));
+      };
+      auto answer = [&](const CapturedFrame& f, u32 p) -> i32 {
+        if (f.ids[u64{p} * k_id_words] == k_no_id) return -1;
+        const u8 c = f.color[u64{p} * 4];
+        return c == 0 ? 0 : (c == 255 ? 1 : 2);  // black, white, grey (a penumbra or facing away)
+      };
+      u32 changed = 0;
+      u32 opposite = 0;
+      u32 interior = 0;
+      u32 path_differ = 0;
+      for (u32 y = 0; y < height; ++y) {
+        for (u32 x = 0; x < width; ++x) {
+          const u32 p = y * width + x;
+          const i32 before = answer(shots[0], p);
+          const i32 after = answer(shots[1], p);
+          changed += shots[0].color[u64{p} * 4] != shots[1].color[u64{p} * 4] ? 1u : 0u;
+          path_differ += shots[1].color[u64{p} * 4] != shots[2].color[u64{p} * 4] ? 1u : 0u;
+          if (before < 0 || before == 2) continue;
+          const i32 band = band_at(p);
+          bool inside = true;
+          for (i32 dy = -band; dy <= band && inside; ++dy) {
+            for (i32 dx = -band; dx <= band && inside; ++dx) {
+              const i32 nx = static_cast<i32>(x) + dx;
+              const i32 ny = static_cast<i32>(y) + dy;
+              inside =
+                  nx >= 0 && ny >= 0 && nx < static_cast<i32>(width) &&
+                  ny < static_cast<i32>(height) &&
+                  answer(shots[0], static_cast<u32>(ny) * width + static_cast<u32>(nx)) == before;
+            }
+          }
+          if (!inside) continue;
+          ++interior;
+          if (after != before && after != 2) ++opposite;
+        }
+      }
+      opposite_total += opposite;
+      MESSAGE("map " << resolution << ", view at " << v.distance << " radii: pairs " << pairs[0]
+                     << " -> " << pairs[1] << ", " << fit.count << " cascade(s), texels "
+                     << fit.cascades[0].texel_world << " to "
+                     << fit.cascades[fit.count - 1].texel_world << " m; changed pixels " << changed
+                     << ", interior " << interior << ", opposite there " << opposite
+                     << ", hw/vertex differences " << path_differ);
+      CHECK(pairs[1] <= pairs[0]);
+      CHECK(opposite == 0);
+      CHECK(shots[0].ids == shots[1].ids);
+      CHECK(shots[1].color == shots[2].color);
+      CHECK(shots[1].ids == shots[2].ids);
+    }
+  }
+  MESSAGE("opposite answers inside the footprint's band, every map and view: " << opposite_total);
+}
+
 TEST_CASE("renderer: the cascades' light-view cull never changes the shadow") {
   Gpu gpu;
   if (!gpu.ok) {
@@ -1481,6 +1641,8 @@ struct MapRig {
     // ENGINE_SHADOW_NORMAL_OFFSET=<texels> overrides k_shadow_normal_offset_texels.
     const std::string offset = test::detail::environment("ENGINE_SHADOW_NORMAL_OFFSET");
     if (!offset.empty()) settings.shadow_normal_offset = std::strtof(offset.c_str(), nullptr);
+    // ENGINE_SHADOW_TEXEL_LOD=0 draws the cascades from the picture's cut alone, as before R103.
+    settings.shadow_texel_lod = test::detail::environment("ENGINE_SHADOW_TEXEL_LOD") != "0";
     resolve_settings(settings, device.features(), &data, resolved);
     if (check_availability(resolved, device.features()) != RenderAvailability::Ok) {
       error = "unavailable";
@@ -1530,6 +1692,11 @@ TEST_CASE("renderer: cascaded shadow maps on the Khronos samples" * doctest::ski
   const u32 cascades = cascades_env.empty()
                            ? k_default_shadow_cascades
                            : static_cast<u32>(std::strtoul(cascades_env.c_str(), nullptr, 10));
+  // ENGINE_SHADOW_TEXEL_ERROR=<texels> sets `renderer.shadow.texel_error` for the run (R103).
+  const std::string texel_error_env = test::detail::environment("ENGINE_SHADOW_TEXEL_ERROR");
+  if (!texel_error_env.empty()) {
+    REQUIRE(tunables::apply_overrides("renderer.shadow.texel_error=" + texel_error_env));
+  }
   for (const char* relative : k_samples) {
     const std::string name = std::string(relative).substr(0, std::string(relative).find('/'));
     if (!only.empty() && only.find(name) == std::string::npos) continue;

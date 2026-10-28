@@ -431,6 +431,81 @@ TEST_CASE("cluster cull: GPU selection matches the CPU reference and the cut cov
   CHECK(covered_got == expected_coverage);
   MESSAGE("with coverage errors: visible " << covered_count << ", expected "
                                            << expected_coverage.size());
+  // **A cascade's texels' own threshold** (R103; renderer.md, "Cascaded shadow maps"): on a
+  // cascade's block a transition is acceptable when the camera's test accepts it or its world error
+  // is at most `cascade_error_m` (its coverage error at most `cascade_cover_m`). The oracle is the
+  // camera's own projection (`geometry::projected_error`, the formula `lod_selects` uses) ORed with
+  // that comparison, cluster for cluster over the whole DAG (no frustum). A length too small for
+  // any error leaves the camera's cut exactly, and one past every error leaves the DAG's roots
+  // alone.
+  const auto camera_accepts = [&](const geometry::LodView& v, Vec4 sphere, f32 err, f32 cov) {
+    return geometry::projected_error(sphere, err, v) <= v.threshold_px ||
+           geometry::projected_error(sphere, cov, v) <= v.foliage_px;
+  };
+  for (const f32 error_m : {1.0e-6f, 0.002f, 0.02f, 0.2f, 1.0e6f}) {
+    for (const bool with_coverage : {false, true}) {
+      const geometry::LodView& cam = with_coverage ? foliage_view : view;
+      const f32 cover_m = with_coverage ? error_m * 0.5f : 0.0f;
+      Vector<u32> texel_expected;
+      u32 by_texels = 0;  // clusters the camera alone would not have chosen
+      for (u32 i = 0; i < cluster_count; ++i) {
+        const geometry::ClusterLodDesc& d = lod.lod[i];
+        const f32 own_cov = with_coverage ? geometry::lod_coverage_own(coverage_words[i])
+                                          : geometry::k_lod_terminal_error;
+        const f32 parent_cov = with_coverage ? geometry::lod_coverage_parent(coverage_words[i])
+                                             : geometry::k_lod_terminal_error;
+        const bool own_cam = camera_accepts(cam, d.own, d.own_error, own_cov);
+        const bool parent_cam = camera_accepts(cam, d.parent, d.parent_error, parent_cov);
+        const bool own_ok = own_cam || d.own_error <= error_m || own_cov <= cover_m;
+        const bool parent_ok = parent_cam || d.parent_error <= error_m || parent_cov <= cover_m;
+        if (own_ok && !parent_ok) {
+          texel_expected.push_back(i);
+          if (!(own_cam && !parent_cam)) ++by_texels;
+        }
+      }
+      REQUIRE(!texel_expected.empty());
+      if (error_m < 1.0e-5f) CHECK(by_texels == 0);  // the camera's cut, exactly
+      graph.reset();
+      gfx::CullParams cascade = cull;
+      cascade.cascade = 1;
+      cascade.cascade_error_m = error_m;
+      cascade.cascade_cover_m = cover_m;
+      cascade.lod.w = 0.0f;  // the whole DAG, whatever the clipping volume
+      cascade.coverage = with_coverage ? coverage.address : 0;
+      cascade.foliage_px = with_coverage ? foliage_view.foliage_px : 0.0f;
+      std::memcpy(params.mapped, &cascade, sizeof(cascade));
+      const auto a = graph.import_buffer("args", args);
+      const auto v = graph.import_buffer("visible", visible);
+      const auto ah = graph.import_buffer("args host", args_host);
+      const auto vh = graph.import_buffer("visible host", visible_host);
+      add_cull_passes(a, v);
+      graph.add_pass(
+          "cascade readback", gfx::PassKind::Transfer,
+          [&](gfx::PassBuilder& b) {
+            b.read(a, gfx::Access::TransferRead);
+            b.read(v, gfx::Access::TransferRead);
+            b.write(ah, gfx::Access::TransferWrite);
+            b.write(vh, gfx::Access::TransferWrite);
+          },
+          [&](gfx::CommandList cb, gfx::RenderGraph&) {
+            cb.copy_buffer(args.buffer, args_host.buffer, {0, 0, gfx::k_draw_args_bytes});
+            cb.copy_buffer(visible.buffer, visible_host.buffer, {0, 0, visible_bytes});
+          });
+      REQUIRE_MESSAGE(graph.compile(&error), error);
+      commands = frames.begin_frame();
+      graph.execute(commands);
+      REQUIRE(frames.wait(frames.end_frame()));
+      const u32 selected = raster.survivors(args_out);
+      REQUIRE(selected <= cluster_count);
+      Vector<u32> texel_got;
+      for (u32 i = 0; i < selected; ++i)
+        texel_got.push_back(visible_out[i * 2 + 1]);
+      std::sort(texel_got.begin(), texel_got.end());
+      CHECK(texel_got == texel_expected);
+      MESSAGE("cascade error " << error_m << " m, coverage " << with_coverage << ": " << selected
+                               << " clusters, " << by_texels << " chosen by the texels");
+    }
+  }
   gfx::destroy_buffer(device, coverage);
 
   graph.reset();

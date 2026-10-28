@@ -6,6 +6,7 @@ A write-up is not a benchmark log. It is the page a future contributor reads ins
 
 | Experiment | Page | Settles |
 |---|---|---|
+| R103 | [cascade-budget-2026-10-26.md](cascade-budget-2026-10-26.md) | the cascades cut by their own texels (the threshold ladder, the forest before and after, the Khronos samples and a simplified receiver), and the stages after it |
 | G91 | [tree-leaf-sizing.md](tree-leaf-sizing.md) | Botanical blade dimensions, retained terminal counts and saplings |
 | G92 | [tree-surface-roots.md](tree-surface-roots.md) | terrain-fitted structural roots, planting-space constraints and independent geometry |
 | W73 allocations | [streamed-tree-allocations-2026-10-26.md](streamed-tree-allocations-2026-10-26.md) | frame-thread allocation attribution for streamed trees, retained tile storage and the zero-allocation gate |
