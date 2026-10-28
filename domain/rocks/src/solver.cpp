@@ -303,36 +303,82 @@ D3 lattice_direction(i64 x, i64 y, i64 z, u32 n, u64 seed) {
   return normalized(D3{warp(x, 11), warp(y, 23), warp(z, 37)});
 }
 
-// The equal-radius boundary of two planes is a great circle: u.(d0*n1-d1*n0)=0.
-// Fit only nearby sharp hull rims. Broad weathered blends keep their original sampling.
-D3 rim_direction(const Body& b, D3 u) {
-  const Cut* first = nullptr;
-  const Cut* second = nullptr;
-  f64 near = 1e3, next = 1e3;
+struct SurfacePlane {
+  const Cut* cut = nullptr;
+  const Cut* inside = nullptr;  // second max plane inside a finite chip
+  f64 distance = 1e3;
+};
+struct FracturePlanes {
+  SurfacePlane first, second;
+};
+
+FracturePlanes fracture_planes(const Body& b, D3 u) {
+  FracturePlanes result;
+  const auto insert = [&](SurfacePlane plane) {
+    if (plane.distance < result.first.distance) {
+      result.second = result.first;
+      result.first = plane;
+    } else if (plane.distance < result.second.distance) {
+      result.second = plane;
+    }
+  };
   for (const Cut& cut : b.cuts) {
     const f64 along = dot(u, cut.n);
     if (along <= 1e-6) continue;
-    const f64 r = cut.d / along;
-    if (r < near) {
-      second = first;
-      next = near;
-      first = &cut;
-      near = r;
-    } else if (r < next) {
-      second = &cut;
-      next = r;
-    }
+    insert({&cut, nullptr, cut.d / along});
   }
-  if (second == nullptr) return u;
   const f64 cell = (k_pi * 0.5) / b.n;
-  const f64 fit = clamp01(1.0 - b.smooth * std::min(first->wear, second->wear) / (0.4 * cell));
-  if (fit == 0.0) return u;
-  const D3 boundary = first->n * second->d - second->n * first->d;
-  const f64 square = dot(boundary, boundary);
-  if (square < 1e-12) return u;
-  const D3 projected = normalized(u - boundary * (dot(u, boundary) / square));
-  if (length(projected - u) > 0.45 * cell) return u;
-  return normalized(u + (projected - u) * fit);
+  for (const Chip& chip : b.chips) {
+    // A fading chip has no sharp Boolean intersection to fit. Leave it to the sampler.
+    if (chip.width < 4.0 * cell) continue;
+    SurfacePlane entry{nullptr, nullptr, 0.0};
+    f64 runner = 0.0;
+    for (const Cut& cut : chip.planes) {
+      const f64 along = dot(u, cut.n);
+      const f64 distance = along > 1e-6 ? cut.d / along : 1e3;
+      if (distance > entry.distance) {
+        entry.inside = entry.cut;
+        runner = entry.distance;
+        entry.cut = &cut;
+        entry.distance = distance;
+      } else if (distance > runner) {
+        entry.inside = &cut;
+        runner = distance;
+      }
+    }
+    insert(entry);
+  }
+  return result;
+}
+
+// A boundary of two planes is a great circle: u.(d0*n1-d1*n0)=0. Test both the
+// outer minimum and the winning chip's inner maximum; hidden cutting planes never attract.
+D3 rim_direction(const Body& b, D3 u) {
+  const FracturePlanes planes = fracture_planes(b, u);
+  if (planes.first.cut == nullptr) return u;
+  const Cut& first = *planes.first.cut;
+  const f64 cell = (k_pi * 0.5) / b.n;
+  f64 nearest = 0.45 * cell;
+  D3 chosen = u;
+  for (const Cut* other : {planes.second.cut, planes.first.inside}) {
+    if (other == nullptr) continue;
+    const f64 fit = clamp01(1.0 - b.smooth * std::min(first.wear, other->wear) / (0.4 * cell));
+    if (fit == 0.0) continue;
+    const D3 boundary = first.n * other->d - other->n * first.d;
+    const f64 square = dot(boundary, boundary);
+    if (square < 1e-12) continue;
+    const D3 projected = normalized(u - boundary * (dot(u, boundary) / square));
+    const f64 distance = length(projected - u);
+    if (distance > nearest) continue;
+    const f64 along = dot(projected, first.n);
+    if (along <= 1e-6) continue;
+    const f64 plane_radius = first.d / along;
+    const auto visible = fracture_planes(b, projected);
+    if (std::fabs(visible.first.distance - plane_radius) > 1e-7) continue;
+    chosen = normalized(u + (projected - u) * fit);
+    nearest = distance;
+  }
+  return chosen;
 }
 
 // Compact per-welded-vertex triangle adjacency, built in deterministic index order.
@@ -467,6 +513,22 @@ void emit_body(const Body& b, f64 tile_m, assets::MeshData& out, SurfaceBake* ba
   {
     const Incidence incident(body_indices, lattice_of, first, local.size());
     Vector<f64> area(static_cast<u32>(body_indices.size() / 3));
+    Vector<D3> feature_positions(local.size());
+    for (u32 v = 0; v < directions.size(); ++v)
+      feature_positions[v] = directions[v] * fracture_planes(b, directions[v]).first.distance;
+    // Position accuracy alone does not reject tilted triangles spanning a sharp feature.
+    // Judge the piecewise-planar envelope's face normals as well (before warp/weathering).
+    const auto normal_error = [&](u32 tri, u32 moved, D3 candidate) {
+      D3 p[3];
+      for (u32 c = 0; c < 3; ++c) {
+        const u32 v = lattice_of[body_indices[tri * 3 + c] - first];
+        p[c] = v == moved ? candidate : feature_positions[v];
+      }
+      const D3 fn = cross(p[1] - p[0], p[2] - p[0]);
+      const f64 weight = length(fn);
+      const auto target = fracture_planes(b, normalized(p[0] + p[1] + p[2]));
+      return weight - dot(fn, target.first.cut->n);
+    };
     const auto direction_area = [&](u32 tri, u32 moved, D3 candidate) {
       D3 p[3];
       for (u32 c = 0; c < 3; ++c) {
@@ -481,15 +543,28 @@ void emit_body(const Body& b, f64 tile_m, assets::MeshData& out, SurfaceBake* ba
     // The floor is relative to the starting grid, so later moves cannot accumulate collapse.
     for (u32 v = 0; v < directions.size(); ++v) {
       const D3 candidate = rim_direction(b, directions[v]);
+      if (dot(candidate - directions[v], candidate - directions[v]) < 1e-24) continue;
+      const auto envelope = fracture_planes(b, directions[v]);
+      const bool chip_boundary =
+          envelope.first.inside != nullptr || envelope.second.inside != nullptr;
+      const D3 position = candidate * fracture_planes(b, candidate).first.distance;
       bool safe = true;
+      f64 before = 0.0, after = 0.0;
       for (u32 k = incident.offsets[v]; k < incident.offsets[v + 1]; ++k) {
         const u32 t = incident.triangles[k];
         if (direction_area(t, v, candidate) < area[t] * 0.2) {
           safe = false;
           break;
         }
+        if (chip_boundary) {
+          before += normal_error(t, ~0u, D3{});
+          after += normal_error(t, v, position);
+        }
       }
-      if (safe) directions[v] = candidate;
+      if (safe && (!chip_boundary || after <= before)) {
+        directions[v] = candidate;
+        feature_positions[v] = position;
+      }
     }
   }
   for (u32 v = 0; v < local.size(); ++v) {
@@ -737,13 +812,13 @@ void cut_body(Body& b, const D3 joints[4], u32 sets, u32 facets, u64 seed, u32 p
     const f64 width = chips.range(0.12, 0.35);
     chip.width = width;
     const f64 top = hull_radius(b, direction);
-    chip.planes[0] = Cut{direction, top - depth};
+    chip.planes[0] = Cut{direction, top - depth, 0.12};
     const f64 phase = chips.range(0.0, 2.0 * k_pi);
     for (u32 side = 0; side < 3; ++side) {
       const f64 angle = phase + static_cast<f64>(side) * (2.0 * k_pi / 3.0);
       const D3 across = tangent * det::cos(angle) + bitangent * det::sin(angle);
       const D3 normal = normalized(direction + across * (2.0 * depth / width));
-      chip.planes[side + 1] = Cut{normal, dot(direction * (top - 1.8 * depth), normal)};
+      chip.planes[side + 1] = Cut{normal, dot(direction * (top - 1.8 * depth), normal), 0.12};
     }
     // Zero irregularity is a real off switch, including the smooth-min lip.
     if (strength == 0.0) chip.width = 0.0;

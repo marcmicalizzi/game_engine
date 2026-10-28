@@ -28,6 +28,11 @@ struct Fabric {
   u64 seed;
 };
 Fabric make_fabric(RockType type, const RockGeology& geology, u64 seed);
+struct BedSample {
+  f64 coordinate;  // canonical bed coordinate in metres, shared with the PBR baker
+  f64 thickness;   // actual local distance between the two enclosing stations
+};
+BedSample sample_bed(const Fabric& f, D3 p);
 f64 fabric_coordinate(const Fabric& f, D3 p);
 // Metres removed from a surface. All narrow features fade over 2..4 mesh cells.
 f64 fabric_recess(const Fabric& f, D3 p, f64 cell);

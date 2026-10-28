@@ -57,8 +57,13 @@ approximations, not fracture mechanics or detached pieces.
 
 `bed_m` (0 off, otherwise 0.01–20 m; absent the type's), `dip_deg` (−85–85, 0),
 `azimuth_deg` (−180–180, 0) and `fold` (0–1, absent the type's) define the geological fabric.
-Unequal seeded sheet retreat forms broad surfaces separated by short risers. The transition is at
-least two source cells wide; bedding fades between two and four cells per spacing. `flaking`,
+Unequal seeded sheet retreat forms broad surfaces separated by short risers. Solver v8 also
+varies each station by up to 0.28 authored spacings times `irregularity` (0.2 per-bed offset,
+0.08 smooth lateral wander). Ordered stations yield local thicknesses of 0.44–1.56 spacings
+at maximum irregularity. The continuous coordinate mapping is shared by geometry and baked
+PBR; zero irregularity keeps evenly spaced beds. The transition is at least two source cells
+wide in the local bed; bedding fades between two and four cells across the minimum possible
+thickness, including the baker's texel-footprint filter. `flaking`,
 `dissolution` and `granular` (each 0–1, absent the type's, explicit zero off) mix sheet removal,
 asymmetric solution pockets and three octaves of granular loss. Pocket and grain detail also fade
 when unresolved. Small grains belong in normal/roughness maps.
@@ -104,9 +109,14 @@ cell-area margin, it keeps the already-validated original diagonal. The surface 
 same connectivity, including for fresh-fracture masks. These are offline bounded engineering
 choices, not geological constants; [grounding and studies](../experiments/rock-lithology.md#g98-fracture-rims-and-sampling).
 Temporary adjacency, direction and normal arrays scale with the body's surface, not its volume.
-The pass fits hull intersections only: chips, conchoidal rims and later bedding/displacement still
-rely on sampling and normal filtering. It is not complete feature-conforming remeshing, and it
-does not remove the radial-shell limitation or all regularity from the surface fields.
+Solver v8 extends fitting to fully resolved finite chips: their outer minimum with the shell
+and their internal maximum of four planes. A projected boundary must lie on the visible
+envelope; hidden cut planes are rejected. A chip-boundary move must also improve the incident area-weighted
+normal agreement with that envelope before weathering/warp, avoiding harmful positional fits.
+Cliff macro coordinates filter station variation by the minimum bed width to prevent sub-cell
+offsets from perturbing block faces. Fading chips, curved conchoidal transition bands and
+later bedding/displacement still use sampling and normal filtering. This remains a bounded
+approximation, not complete feature-conforming remeshing or a replacement of radial shells.
 
 The schema's physical controls are `strength` (0–1, default 1), `joint_spacing_m` (0.05–20,
 default 0.65), `joint_width_m` (0.005 to half the spacing, default 0.12), `joint_depth_m`

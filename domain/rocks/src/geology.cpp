@@ -53,14 +53,37 @@ Fabric make_fabric(RockType type, const RockGeology& g, u64 seed) {
   return f;
 }
 
-f64 fabric_coordinate(const Fabric& f, D3 p) {
+BedSample sample_bed(const Fabric& f, D3 p) {
   const f64 wave = f.model.bed * 12.0 + 0.5;
   const f64 along = dot(p, f.tangent) / wave;
   const f64 phase = 6.0 * lattice_value(f.seed, 0, 0, 0);
-  return dot(p, f.normal) + f.model.fold * wave * 0.25 *
-                                (det::sin(along * 2.0 * k_pi + phase) +
-                                 0.28 * det::sin(along * 4.0 * k_pi + p.y / wave));
+  const f64 folded = dot(p, f.normal) + f.model.fold * wave * 0.25 *
+                                            (det::sin(along * 2.0 * k_pi + phase) +
+                                             0.28 * det::sin(along * 4.0 * k_pi + p.y / wave));
+  if (f.model.bed <= 0.0 || f.irregularity == 0.0) return {folded, f.model.bed};
+  // Ordered stations: independent thickness and a continuous lateral wander per bed.
+  // Offsets are bounded by 0.28 beds, so neighbouring stations cannot cross (gap >= 0.44).
+  const f64 t = folded / f.model.bed;
+  const D3 lateral = (p - f.normal * dot(p, f.normal)) * (0.35 / f.model.bed);
+  const auto station = [&](i64 k) {
+    const u64 seed = mix64(f.seed ^ static_cast<u64>(k) ^ 0x42454453ull);
+    const f64 offset = 0.2 * (2.0 * lattice_value(f.seed, k, 31, 17) - 1.0) +
+                       0.08 * (2.0 * noise3(seed, lateral) - 1.0);
+    return static_cast<f64>(k) + f.irregularity * offset;
+  };
+  i64 k = static_cast<i64>(std::floor(t));
+  f64 lo = station(k), hi = station(k + 1);
+  if (t < lo) {
+    hi = lo;
+    lo = station(--k);
+  } else if (t >= hi) {
+    lo = hi;
+    hi = station(++k + 1);
+  }
+  return {(static_cast<f64>(k) + (t - lo) / (hi - lo)) * f.model.bed, (hi - lo) * f.model.bed};
 }
+
+f64 fabric_coordinate(const Fabric& f, D3 p) { return sample_bed(f, p).coordinate; }
 
 f64 fabric_recess(const Fabric& f, D3 p, f64 cell) {
   const auto resolved = [cell](f64 width) { return fade(clamp01((width / cell - 2.0) * 0.5)); };
@@ -69,18 +92,21 @@ f64 fabric_recess(const Fabric& f, D3 p, f64 cell) {
   if (m.bed > 0.0) {
     // Unequal retreat of strata/cleavage sheets; broad plate faces and short risers, not a
     // sinusoidal corrugation. A smooth interval preserves closedness at coarse source rungs.
-    const f64 t = fabric_coordinate(f, p) / m.bed;
+    const BedSample bed = sample_bed(f, p);
+    const f64 t = bed.coordinate / m.bed;
     const f64 k = std::floor(t);
     const f64 u = t - k;
     const f64 authored_edge = 0.09 + 0.18 * f.exposure;
-    const f64 sampled_edge = 2.0 * cell / m.bed;
+    const f64 sampled_edge = 2.0 * cell / bed.thickness;
     const f64 edge = authored_edge > sampled_edge ? authored_edge : sampled_edge;
     const f64 blend = fade(clamp01(u / edge));
     const f64 a = lattice_value(f.seed, static_cast<i64>(k) - 1, 11, 9);
     const f64 b = lattice_value(f.seed, static_cast<i64>(k), 11, 9);
     const f64 retreat = lerp(a, b, blend);
     const f64 patch = fade(clamp01((noise3(f.seed + 5u, p * (0.55 / m.bed)) - 0.25) * 2.0));
-    r += resolved(m.bed) * m.bed * (0.15 + 0.85 * f.irregularity) * (0.25 + 0.75 * f.exposure) *
+    // Filter against the minimum possible bed width so fading cannot jump at a station.
+    r += resolved(m.bed * (1.0 - 0.56 * f.irregularity)) * m.bed * (0.15 + 0.85 * f.irregularity) *
+         (0.25 + 0.75 * f.exposure) *
          (0.65 * retreat + m.flaking * patch * (0.35 + 0.45 * retreat));
   }
   // Local, asymmetric solution pockets. These are depressions, not unsupported holes.

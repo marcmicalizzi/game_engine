@@ -297,7 +297,7 @@ TEST_CASE("cliffs: a kilometre by 200 m face is one mesh, closed, at a million t
 TEST_CASE("cliffs: the committed escarpment is closed, holds its budget, and is its bytes") {
   // content/rocks/sandstone-escarpment.rock.json: what docs/subsystems/rocks.md's numbers and E10
   // were taken on. Its mesh is pinned like the boulders'.
-  constexpr u64 k_mesh = 0x514e0edb35e27484ull;
+  constexpr u64 k_mesh = 0xd60ee81d81f86032ull;
   const std::string dir = test::data_path(ENGINE_SOURCE_DIR "/content/rocks", "content/rocks");
   std::ifstream in(dir + "/sandstone-escarpment.rock.json", std::ios::binary);
   if (!in) {

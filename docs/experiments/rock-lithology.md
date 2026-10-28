@@ -368,3 +368,74 @@ assertions pass. The baker regression checks analytical barycentric fracture int
 on both diagonal orientations. Lint, documentation and whitespace checks pass. Linux checkout
 volumes were pruned. Full affected suites and merge gates were not repeated under the owner's
 explicit gate waiver; this follow-up remains on `codex/rock-structure`, not merged or pushed.
+
+## G99: exposed chip edges and unequal beds
+
+The owner requested these remaining two improvements followed by a local merge with full
+gates deferred to the combined nightly run. Re-read 2026-10-28:
+[Kobbelt and Botsch](https://cg.cs.tu-dortmund.de/publications/2003-features.pdf), sections 2–3,
+on aligning samples with surface discontinuities, and the
+[Hong Kong Geological Survey](https://hkss.cedd.gov.hk/hkss/en/publications-and-resources/educational-materials/hong-kong-geology/chapter-4/index.html)
+on preferential weathering along discontinuities and at block corners. The
+[NPS differential-erosion example](https://www.nps.gov/places/differential-erosion.htm) describes
+harder sandstone layers forming shelves as softer surrounding material retreats. These support
+coherent layers with unequal resistance and exposed fracture boundaries. The procedural station
+distribution below is an authoring approximation, not measured stratigraphy or a metamorphic
+deformation simulation.
+
+Solver v8 follows the minimum of enclosing cuts and the maximum of each finite chip's four
+planes. It fits both chip-to-exterior boundaries and creases within the winning chip, checking
+the projected point against the visible envelope to reject hidden planes. Partially faded chips
+retain regular sampling. G98's movement bound, area guard, diagonal selection and normal filter
+remain; no extra triangles, material channels or runtime pass are introduced.
+
+The zero-rounding basalt stress capture exposed why positional fitting alone is insufficient:
+some snapped vertices sharpened the chip but increased tilted-triangle shading nearby. A move
+at a chip boundary now also has to reduce the incident area-weighted normal disagreement with the unsmoothed
+piecewise-planar envelope (before warp/weathering). This rejects locally harmful fits. It adds
+offline envelope evaluations and one surface-sized position array. It does not claim that a
+fixed chart becomes an exact fracture graph; extremely sharp zero-rounding rims can still show
+sampled steps, and curved scars remain smooth sampled transition bands.
+
+Fabric stations receive a seeded offset of up to 0.2 authored beds plus continuous lateral
+wandering up to 0.08 beds, both scaled by `irregularity`. Consecutive stations therefore remain
+ordered with thickness between 0.44 and 1.56 authored beds. Mapping the enclosing interval back
+to its canonical bed index is continuous; geometry and PBR use the same mapping, preserving
+their alignment. Zero irregularity retains regular stations; zero bed spacing remains unbedded.
+Riser width uses the local thickness and detail fading uses the minimum possible thickness,
+so the lower source rungs do not carry unresolved thin layers. No controls or schema fields are
+added. These numerical bounds are chosen discretization limits, not rock constants.
+
+The initial run also caught a real coarse-cliff regression: sub-cell station offsets entered
+the macro block coordinate even when surface relief had faded out, reducing usable culling
+cones below the existing test's threshold. Macro-coordinate station variation now fades at
+the same minimum-width resolution limit. Applying the normal safeguard to ordinary hull rims
+also degraded coarse-fragment culling, so it is restricted to chip boundaries. The unchanged
+cone test passes; broad folding stays.
+
+The accepted comparison set is in the owner's local
+`D:/workspace/game_engine_local/rocks/2026-10-28/chips/review.html`, with the final E10 report
+under `chips/e10-final/`. Before is solver v7; after is the v8 working tree built over
+`e7204397`. Matching 1200x900 captures isolate geometry; the granite rind also exercises the
+existing material export. These are diagnostic views, not a photorealistic scene benchmark.
+
+| Asset | Triangles (unchanged) | Vertices v7 / v8 | E10 coarse / finest pairs | Whole-frame FLIP |
+|---|---:|---:|---:|---:|
+| Basalt chip stress | 76,800 | 51,641 / 53,533 | 103 / 375 | 0.00592 |
+| Granite rind | 76,800 | 62,150 / 62,150 | 297 / 611 | 0.01401 |
+| Slate slab | 150,528 | 92,885 / 91,852 | 73 / 560 | 0.00614 |
+
+All three pass E10 with zero warnings, zero zero-area/UV repairs and six UV islands. Vertex
+counts change because crease-normal splitting follows the new geometry; triangle budgets do
+not change. E10 uses 640-square whole-asset views with shadows off under the GPU lock on the
+RTX 5090. Its `machine_state` is unsampled; this run makes no offline-build performance claim.
+Slate coverage is 12.3%, so its object-normalized FLIP is not a reliable metric; use the
+whole-frame comparison and heat map. The zero-rounding diagnostic still shows sampled steps,
+so this closes the bounded chip-fitting and unequal-bed work, not exact remeshing of every rim.
+
+Validation: all 43 rock cases pass on MSVC debug and Linux Clang debug, including v8 geometry
+and container fingerprints, mesh closure, source budgets, coarse-cliff culling and the new
+ordered-bed continuity regression. Four exporter cases / 70 assertions pass. Formatting,
+lint, documentation and whitespace checks pass; this checkout's Linux volumes were pruned.
+The owner explicitly waived full affected suites and merge gates for this local merge, with
+those deferred to the combined nightly run. No remote push is part of this change.

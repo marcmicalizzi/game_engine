@@ -47,8 +47,9 @@ struct Field {
       const f64 phase = fabric_coordinate(fabric, p) / fabric.model.bed +
                         0.08 * (noise3(fabric.seed + 61, p * (2.0 / fabric.model.bed)) - 0.5);
       const f64 amplitude = type == RockType::Gneiss ? 0.65 : 0.15;
+      const f64 minimum_bed = fabric.model.bed * (1.0 - 0.56 * fabric.irregularity);
       bands = amplitude * det::sin(phase * 2.0 * k_pi) * (0.65 + 0.7 * broad) *
-              clamp01((fabric.model.bed / footprint - 2.0) * 0.5);
+              clamp01((minimum_bed / footprint - 2.0) * 0.5);
     }
     const f64 spacing = wide(settings.vein_spacing_m);
     const f64 width = wide(settings.vein_width_m);

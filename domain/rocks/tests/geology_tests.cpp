@@ -1,3 +1,4 @@
+#include "../src/geology.h"
 #include "rock_checks.h"
 
 #include <domain/rocks/rocks.h>
@@ -9,6 +10,33 @@
 using namespace engine;
 using namespace engine::rocks;
 using namespace engine::rocks::checks;
+
+TEST_CASE("rocks: irregular beds stay ordered and continuous across their stations") {
+  RockGeology geology;
+  geology.bed_m = 0.3f;
+  geology.fold = 0.0f;
+  geology.irregularity = 1.0f;
+  const auto fabric = detail::make_fabric(RockType::Slate, geology, 792);
+  f64 minimum = 1e3, maximum = 0, last = -1e3;
+  for (u32 i = 0; i <= 8000; ++i) {
+    const f64 y = -4.0 + 0.001 * i;
+    const auto bed = detail::sample_bed(fabric, {0.4, y, 0.7});
+    REQUIRE(bed.coordinate > last);
+    if (i > 0) CHECK(bed.coordinate - last < 0.001 / 0.44 + 1e-9);
+    CHECK(bed.thickness >= fabric.model.bed * 0.44);
+    CHECK(bed.thickness <= fabric.model.bed * 1.56);
+    minimum = std::min(minimum, bed.thickness);
+    maximum = std::max(maximum, bed.thickness);
+    last = bed.coordinate;
+    CHECK(detail::fabric_coordinate(fabric, {0.4, y, 0.7}) == bed.coordinate);
+  }
+  CHECK(maximum - minimum > fabric.model.bed * 0.3);
+  CHECK(detail::fabric_coordinate(fabric, {0.4, 0.5, 0.7}) !=
+        detail::fabric_coordinate(fabric, {2.0, 0.5, 3.0}));
+  geology.irregularity = 0.0f;
+  const auto regular = detail::make_fabric(RockType::Slate, geology, 792);
+  CHECK(detail::fabric_coordinate(regular, {0.4, 0.5, 0.7}) == 0.5);
+}
 
 namespace {
 assets::MeshData body(Boulder b) {

@@ -188,7 +188,11 @@ Pick pick(f64 b, f64 w) {
 // undercut notches it there, which the caller takes off after the face is held up (below).
 f64 carve_at(const Carve& c, f64 s, f64 y, f64 top_y, f64& notch) {
   notch = 0.0;
-  const f64 yd = fabric_coordinate(c.fabric, D3{s, y - c.datum, 0.0});
+  // The macro blocks also consume the fabric coordinate. Suppress sub-cell station
+  // variation here, not just its fine surface relief, or broad block faces acquire aliases.
+  Fabric sampled = c.fabric;
+  sampled.irregularity *= fade_for(sampled.model.bed * 0.44, c.cell);
+  const f64 yd = fabric_coordinate(sampled, D3{s, y - c.datum, 0.0});
   f64 e = -fabric_recess(c.fabric, D3{s, y - c.datum, 0.0}, c.cell);
   // The beds' coordinate, wavy along the face as real beds are; the horizontal joints of a bedded
   // rock are its bedding planes, so the blocks' rows and the beds are one coordinate.
