@@ -46,3 +46,10 @@ G94's standard 1 px runtime LOD picture check passes 12 of 14 studies. `jointed-
 `limestone-dissolved` need 0.5 px in the measured view to pass the same image-error limit, while
 still drawing only 36–38% of their finest visible cluster pairs. See the grounding page for the
 full comparison and limitations; source `quality` does not automatically change the renderer cut.
+
+G97 adds `granite-rind` and `obsidian-rind`: explicit weathered coatings over exposed fracture
+faces. The brown granite coating is darker than its substrate; the obsidian coating is lighter
+and rougher than its glossy breaks. These are authored contrasts, not calibrated specimens.
+Change `material.surface_maps.rind` colour, roughness, amount and grain scale independently;
+remove it for the same geometry and mineral field without a coating. Both keep the 2048 texture
+budget. [Rind controls](../../docs/subsystems/rocks.md#weathered-exteriors-and-fresh-breaks-g97).

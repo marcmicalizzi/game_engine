@@ -105,7 +105,8 @@ Vec2 SurfaceBake::uv(u32 chart, f64 u, f64 v) const {
 }
 
 void SurfaceBake::body(u32 part, u32 n, u32 first, const Fabric& fabric, RockType type,
-                       std::span<const D3> samples, const assets::MeshData& mesh) {
+                       std::span<const D3> samples, std::span<const f64> fresh,
+                       const assets::MeshData& mesh) {
   Rng rng(fabric.seed + 0x5645494Eu);
   const assets::Material& material = mesh.materials[0];
   const Field field{
@@ -180,10 +181,25 @@ void SurfaceBake::body(u32 part, u32 n, u32 first, const Fabric& fabric, RockTyp
           wv = w(q + side + 1) - w(q + 1);
         }
         D3 p{};
-        for (u32 c = 0; c < 3; ++c)
+        f64 fracture = 0.0;
+        for (u32 c = 0; c < 3; ++c) {
           p = p + s(corners[c]) * weights[c];
+          fracture += fresh[corners[c]] * weights[c];
+        }
         const f64 footprint = std::max(1e-6, std::max(length(du), length(dv)) * n / extent);
-        const Sample value = field.at(p, footprint);
+        Sample value = field.at(p, footprint);
+        f64 grain_scale = 1.0;
+        if (settings_.rind) {
+          const RockRind& rind = *settings_.rind;
+          const f64 coating = wide(rind.amount) * fabric.exposure * (1.0 - clamp01(fracture));
+          D3 tint{0.18, 0.12, 0.07};
+          if (rind.tint)
+            tint = {wide((*rind.tint)[0]), wide((*rind.tint)[1]), wide((*rind.tint)[2])};
+          // A coating overlays the existing mineral field; it never reseeds bands or veins.
+          value.colour = value.colour * (1.0 - coating) + tint * coating;
+          value.roughness = lerp(value.roughness, wide(rind.roughness), coating);
+          grain_scale = lerp(1.0, wide(rind.grain_scale), coating);
+        }
         const D3 tangent = normalized(wu);
         const D3 bitangent = normalized(cross(normalized(cross(wu, wv)), tangent));
         const D3 st = du * (1.0 / std::max(length(wu), 1e-9));
@@ -195,7 +211,8 @@ void SurfaceBake::body(u32 part, u32 n, u32 first, const Fabric& fabric, RockTyp
         const f64 dy = (field.at(p + sb * step, footprint).height -
                         field.at(p - sb * step, footprint).height) /
                        (2.0 * step);
-        const D3 nn = normalized(D3{-dx, -dy, 1.0});
+        // Change grain response, not the height of the coating boundary itself.
+        const D3 nn = normalized(D3{-dx * grain_scale, -dy * grain_scale, 1.0});
         const u32 pixel = (((chart / columns_) * cell_ + y) * settings_.resolution +
                            (chart % columns_) * cell_ + x) *
                           3u;

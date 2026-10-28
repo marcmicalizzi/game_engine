@@ -71,12 +71,19 @@ enum RockShape : u8 {
   Cliff
 }
 
-/// The tiled PBR set a rock's material samples (rocks.md, "UVs and materials"), in the shape the
-/// flora's material block takes, and both resolve to one description (docs/subsystems/materials.md).
-/// Paths are relative to the rock file. A block that names an image replaces the material pack's
-/// default for the rock's type (`rock/<type>`); the charts are laid out in whole repeats of the
-/// chosen set's `tile_m`.
-struct RockSurfaceMaps @version(1) {
+/// An authored exterior coating, suppressed where the geometry exposes fresh substrate.
+struct RockRind @version(1) {
+  /// Coverage on old surfaces, multiplied by geology.weathering; fresh breaks suppress it.
+  amount: f32 = 0.8
+  /// Linear RGB 0..1; absent uses a brown coating (0.18, 0.12, 0.07).
+  tint: f32[3]?
+  /// Coating roughness 0.02..1. May be smoother OR rougher than the exposed rock.
+  roughness: f32 = 0.9
+  /// Grain normal amplitude relative to the uncoated rock, 0..2.
+  grain_scale: f32 = 0.6
+}
+
+struct RockSurfaceMaps @version(2) {
   /// Total atlas side, one of 256, 512, 1024, 2048. Independent of geometry quality.
   resolution: u32 = 1024
   /// Mineral colour and roughness variation, 0 to 1.
@@ -89,8 +96,12 @@ struct RockSurfaceMaps @version(1) {
   vein_width_m: f32 = 0.012 @unit(m)
   /// Linear RGB, separate from body tint; absent uses pale quartz (0.75, 0.72, 0.65).
   vein_tint: f32[3]?
+  /// Optional weathered exterior. Colour and roughness are artistic controls, not age in years.
+  rind: RockRind? @since(2)
 }
 
+/// A tiled PBR set or a unique baked atlas. Image paths are relative to the rock file and
+/// replace the material pack's default for `rock/<type>` (docs/subsystems/materials.md).
 struct RockMaterial @version(4) {
   base_color: string?
   normal: string?

@@ -151,6 +151,19 @@ bool material_factors_in_range(const RockMaterial& m, std::string& error) {
           "vein_width_m .001..spacing/4";
       return false;
     }
+    if (s.rind) {
+      const auto& r = *s.rind;
+      if (!in(r.amount, 0, 1) || !in(r.roughness, 0.02f, 1) || !in(r.grain_scale, 0, 2)) {
+        error = "surface_maps.rind requires amount 0..1, roughness .02..1 and grain_scale 0..2";
+        return false;
+      }
+      if (r.tint)
+        for (f32 c : *r.tint)
+          if (!in(c, 0, 1)) {
+            error = "surface_maps.rind.tint must be linear RGB 0..1";
+            return false;
+          }
+    }
     if (s.vein_tint) {
       for (f32 c : *s.vein_tint) {
         if (!in(c, 0, 1)) {

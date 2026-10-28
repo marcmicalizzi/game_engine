@@ -253,3 +253,59 @@ Source triangles are 150,528 / 76,800 / 110,592 respectively, unchanged from the
 RTX 5090, debug binaries based on `5a8c001b` plus this G96 change, 640-square whole-asset framing,
 one view each, under `gpu-lock.ps1 run`. Raw records: local `surfaces/e10/report.json`.
 This checks simplification of these three textured studies, not the other recipes or every view.
+
+## G97: fresh breaks and weathered exteriors
+
+The [USGS fresh-rock field account](https://www.usgs.gov/observatories/calvo/news/when-it-comes-analyzing-rocks-only-freshest-samples-will-do)
+shows both lighter fresh interiors and a lighter altered rind surrounding a darker core: there
+is no universal brightness ordering. [NPS's rock-coating account](https://www.nps.gov/articles/desertvarnish.htm)
+distinguishes thin exterior coatings from the underlying rock, describes varied dark and pale
+coatings, and identifies chipping as a way to expose the substrate. Read 2026-10-28. These
+sources motivate explicit exterior colour and roughness controls, not a claim that every old
+surface is dark, rough, or covered in desert varnish.
+
+The optional `surface_maps.rind` is an authored coating approximation. Its default brown tint
+(0.18, 0.12, 0.07 linear RGB), roughness 0.9, amount 0.8 and grain multiplier 0.6 are artistic
+starting values, not measurements. Coverage is `amount * geology.weathering * (1 - fresh)`.
+The fresh mask follows the same ownership weights as the hull's smooth minimum: support and
+joint planes start old, low-wear facets expose fresh material, bounded chips replace that
+provenance at the same resolution fade used for geometry, and nonzero conchoidal scars expose
+their bowls. The mask is welded before chart duplication and interpolated on the same triangles
+as the material bake. It never invents separate mineral coordinates on a fracture.
+
+The coating blends base colour and roughness and scales grain normals. It introduces no fake
+height edge, lighting or AO into the maps. No runtime mask, extra texture, triangle, or shader
+is added. Temporary masks cost one double per welded point and chart vertex while baking a
+body. A zero amount, zero exposure or fully fresh surface gives the previous uncoated response.
+This is not geological chronology: joint faces may also be fresh in nature, and later flaking,
+dissolution and granular recession are not individually classified by this mask. It is not a
+volumetric weathering rind or a destruction interior. Those remain separate work.
+
+Two new committed recipes, `granite-rind` and `obsidian-rind`, demonstrate opposite brightness
+orderings with explicit colours and roughness. Local `rocks/2026-10-28/rinds/review.html` shows
+paired uncoated/coated renders, produced by `capture.ps1` from identical geometry, lighting and
+camera within each pair. The 2048 maps and triangle counts (76,800 / 150,528) are unchanged
+between each pair. Both preserve exposed mineral fields; the granite study still looks mottled
+and overly smooth, and the obsidian boundary sometimes reveals radial sampling. This is a
+material capability study, not photographic acceptance. All captures use the RTX 5090, 1200x900,
+finest clusters, CSM and a 45/45 sun; machine state was not sampled, so no timing claim is made.
+
+The first Windows run passed every new case and geometry fingerprint; its only failure was
+the intentionally obsolete container key. Version 6 changes that key to `d849ea7d16afcd40`;
+the mesh stays `b1774f2e4eb1d414`. An incremental rebuild then hit Windows LNK1168 because the
+same checkout's engine-view was still doing the paired captures. Finish captures before
+relinking that executable. The focused final build is retried after the captures exit.
+
+Final validation: **41/41 rock cases pass on MSVC debug and Linux Clang debug** (4,349,577
+Windows assertions), including fresh-substrate preservation, unchanged geometry, actual mixed
+provenance for granite/basalt/obsidian, zero amount/exposure, coated chart corners and invalid
+rind input. **4/4 Windows rock CLI cases pass (70 assertions)**. Lint, licensing and documentation
+checks pass. Full affected suites and merge gates remain waived by the owner. No runtime hot
+type grows. This checkout's Linux volumes were pruned (3.71 GB).
+
+Both exports pass the standard E10 **1 px versus 0.05 px** comparison: granite FLIP **0.01538**,
+obsidian **0.01427**, limit 0.02, zero import warnings/repairs and six UV islands each. Both
+pass collapse criteria. These are 640-square whole-asset views, one per rock, under the GPU
+lock; the report records no quiet machine-state sample and supports no performance claim.
+Raw records and reproduced binaries are in local `rinds/e10/`. This does not qualify arbitrary
+angles, lower atlas resolutions or all existing recipes for photographic realism.

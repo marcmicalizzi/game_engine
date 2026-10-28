@@ -10,7 +10,7 @@ class SurfaceBake {
   bool init(const RockSurfaceMaps& settings, u32 bodies, std::string& error);
   Vec2 uv(u32 chart, f64 u, f64 v) const;
   void body(u32 part, u32 n, u32 first, const Fabric& fabric, RockType type,
-            std::span<const D3> samples, const assets::MeshData& mesh);
+            std::span<const D3> samples, std::span<const f64> fresh, const assets::MeshData& mesh);
   bool finish(assets::MeshData& mesh, f32 normal_scale);
 
  private:

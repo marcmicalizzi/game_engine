@@ -1,0 +1,38 @@
+{
+  "shape": "Boulder",
+  "boulder": {
+    "seed": 7,
+    "size_x": 1.3,
+    "size_y": 0.9,
+    "size_z": 1.05,
+    "type": "Granite",
+    "joint_sets": 3,
+    "buried": 0.15,
+    "triangle_budget": 80000,
+    "material": {
+      "surface_maps": {
+        "vein_width_m": 0.018,
+        "variation": 0.7,
+        "vein_spacing_m": 0.65,
+        "veins": 0.55,
+        "grain_m": 0.028,
+        "resolution": 2048,
+        "rind": {
+          "tint": [
+            0.14,
+            0.075,
+            0.035
+          ],
+          "roughness": 0.92,
+          "grain_scale": 0.5,
+          "amount": 0.95
+        }
+      }
+    },
+    "geology": {
+      "flaking": 0.8,
+      "irregularity": 1.0,
+      "weathering": 0.85
+    }
+  }
+}

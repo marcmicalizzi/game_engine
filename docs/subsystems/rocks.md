@@ -459,9 +459,29 @@ refused because those maps expect repeated physical UVs. Without `surface_maps`,
 tiled-map workflow below is unchanged. `build_rock_container` carries the three PNGs inside
 the container, and `engine-content rocks --glb` embeds the same three material slots and images
 for standalone export. Cliff recipes explicitly reject this mode: their face/talus atlas is
-future work. Fresh fracture masks, exposed interiors, detached flakes and mineral-specific
+future work. Fresh fracture masks are described below; exposed interiors, detached flakes and mineral-specific
 physical destruction remain future work; veins are visual surface fields, not deposit volumes.
 Sources and authoring approximations: [rock lithology](../experiments/rock-lithology.md#g96-geological-surface-maps).
+
+### Weathered exteriors and fresh breaks (G97)
+
+Solver version 6 adds optional `material.surface_maps.rind` to radial baked surfaces. The
+existing material tint, bands and veins describe the substrate. The rind is an exterior
+coating with `amount` 0..1 (default 0.8), optional linear RGB `tint` (default brown
+0.18/0.12/0.07), `roughness` .02..1 (default .9), and `grain_scale` 0..2 (default .6).
+Colour can be lighter or darker than the substrate and roughness higher or lower. Defaults
+are authored approximations, not measured rock properties.
+
+Coverage is amount times `geology.weathering` times the old-surface mask. The mask follows the
+actual support planes, fresh facet cuts, bounded chips and conchoidal scars used for geometry;
+it is shared at welded chart seams. Coated areas blend toward rind colour and roughness and
+scale the existing grain normals. Fresh areas retain the uninterrupted mineral field. Zero
+amount or zero weathering disables the effect. Omitting the block preserves the G96 maps.
+No extra runtime textures, shader work or source triangles are required; the same total atlas
+resolution and runtime mip/cluster LOD controls apply. This classification is an artistic
+history approximation, not an erosion simulation or destruction-volume representation.
+Later surface recession is not separately classified. Cliff atlases remain unsupported.
+See [the grounding and validation](../experiments/rock-lithology.md#g97-fresh-breaks-and-weathered-exteriors).
 
 ### External tiled maps
 

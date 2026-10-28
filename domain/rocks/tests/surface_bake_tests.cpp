@@ -1,3 +1,4 @@
+#include "../src/surface_bake.h"
 #include "rock_checks.h"
 
 #include <domain/materials/materials.h>
@@ -88,6 +89,8 @@ TEST_CASE("rocks: chart corner pigments agree across all six UV seams") {
   auto file = recipe();
   file.boulder->material.surface_maps->grain_m = 1.0f;
   file.boulder->material.surface_maps->veins = 0.0f;
+  file.boulder->material.surface_maps->rind = RockRind{};
+  file.boulder->material.surface_maps->rind->amount = 1.0f;
   const auto mesh = solve(file);
   const auto pixels = decode(mesh, 0);
   const u32 n = static_cast<u32>(std::sqrt(static_cast<f64>(mesh.indices.size() / 36u)));
@@ -182,5 +185,125 @@ TEST_CASE("rocks: both grouped shapes keep independent padded charts") {
     const auto mesh = solve(file);
     checks::check_closed(mesh, 3);
     CHECK(mesh.images.size() == 3);
+  }
+}
+
+TEST_CASE("rocks: a rind preserves the complete mineral field on fresh faces") {
+  using namespace engine::rocks::detail;
+  const auto bake = [](bool rind, f64 fresh) {
+    RockSurfaceMaps settings;
+    settings.resolution = 256;
+    settings.grain_m = 0.025f;
+    settings.veins = 1.0f;
+    if (rind) {
+      settings.rind = RockRind{};
+      settings.rind->amount = 1.0f;
+      settings.rind->roughness = 0.24f;
+      settings.rind->grain_scale = 0.0f;
+      settings.rind->tint = std::array<f32, 3>{0.2f, 0.3f, 0.4f};
+    }
+    RockGeology geology;
+    geology.weathering = 1.0f;
+    const auto fabric = make_fabric(RockType::Gneiss, geology, 17);
+    assets::MeshData mesh;
+    mesh.materials.emplace_back();
+    Vector<D3> samples;
+    Vector<f64> provenance;
+    // Six identical planar charts isolate the baker from the shape generator.
+    for (u32 face = 0; face < 6; ++face)
+      for (u32 y = 0; y < 2; ++y)
+        for (u32 x = 0; x < 2; ++x) {
+          mesh.positions.push_back(Vec3{static_cast<f32>(x) * 0.1f, static_cast<f32>(y) * 0.1f, 0});
+          samples.push_back(D3{static_cast<f64>(x) * 0.1, static_cast<f64>(y) * 0.1, 0});
+          provenance.push_back(fresh);
+        }
+    SurfaceBake surface;
+    std::string error;
+    REQUIRE(surface.init(settings, 1, error));
+    surface.body(0, 1, 0, fabric, RockType::Gneiss, samples, provenance, mesh);
+    REQUIRE(surface.finish(mesh, 1));
+    return mesh;
+  };
+  const auto uncoated = bake(false, 0);
+  const auto fresh = bake(true, 1);
+  for (u32 i = 0; i < 3; ++i)
+    CHECK(uncoated.images[i].bytes == fresh.images[i].bytes);
+  const auto old = bake(true, 0);
+  const auto roughness = decode(old, 1);
+  const auto normal = decode(old, 2);
+  const auto colour = decode(old, 0);
+  for (u32 p = 0; p < roughness.pixels.size(); p += 3) {
+    CHECK(roughness.pixels[p + 1] == 61);
+    CHECK(normal.pixels[p] == 128);
+    CHECK(normal.pixels[p + 1] == 128);
+    CHECK(normal.pixels[p + 2] == 255);
+    CHECK(colour.pixels[p] == colour.pixels[0]);
+    CHECK(colour.pixels[p + 1] == colour.pixels[1]);
+    CHECK(colour.pixels[p + 2] == colour.pixels[2]);
+  }
+}
+
+TEST_CASE(
+    "rocks: actual cut provenance gives mixed old and fresh surfaces without geometry changes") {
+  for (RockType type : {RockType::Granite, RockType::Basalt, RockType::Obsidian}) {
+    auto file = recipe();
+    file.boulder->type = type;
+    file.boulder->geology.weathering = 1.0f;
+    file.boulder->triangle_budget = 20000;
+    auto& settings = *file.boulder->material.surface_maps;
+    settings.variation = 0;
+    settings.veins = 0;
+    const auto original = solve(file);
+    settings.rind = RockRind{};
+    settings.rind->amount = 0;
+    const auto disabled = solve(file);
+    for (u32 i = 0; i < 3; ++i)
+      CHECK(original.images[i].bytes == disabled.images[i].bytes);
+    settings.rind->amount = 1;
+    settings.rind->roughness = 1;
+    const auto coated = solve(file);
+    const auto again = solve(file);
+    CHECK(original.indices == coated.indices);
+    REQUIRE(original.positions.size() == coated.positions.size());
+    CHECK(hash_bytes(original.positions.data(), original.positions.size() * sizeof(Vec3)) ==
+          hash_bytes(coated.positions.data(), coated.positions.size() * sizeof(Vec3)));
+    CHECK(coated.images[0].bytes == again.images[0].bytes);
+    const auto roughness = decode(coated, 1);
+    u8 low = 255, high = 0;
+    for (u32 p = 0; p < roughness.pixels.size(); p += 3) {
+      low = std::min(low, roughness.pixels[p + 1]);
+      high = std::max(high, roughness.pixels[p + 1]);
+    }
+    CAPTURE(static_cast<u32>(type));
+    CHECK(high > 245);
+    CHECK(static_cast<u32>(high) - low > 30);
+    file.boulder->geology.weathering = 0;
+    const auto zero_exposure = solve(file);
+    settings.rind.reset();
+    const auto no_rind = solve(file);
+    for (u32 i = 0; i < 3; ++i)
+      CHECK(zero_exposure.images[i].bytes == no_rind.images[i].bytes);
+  }
+}
+
+TEST_CASE("rocks: rind values reject nonfinite and out-of-range input") {
+  auto file = recipe();
+  file.boulder->material.surface_maps->rind = RockRind{};
+  auto& rind = *file.boulder->material.surface_maps->rind;
+  std::string error;
+  for (f32 bad :
+       {-1.0f, 3.0f, std::numeric_limits<f32>::quiet_NaN(), std::numeric_limits<f32>::infinity()}) {
+    rind.amount = bad;
+    CHECK_FALSE(rock_file_in_range(file, error));
+    rind = RockRind{};
+    rind.roughness = bad;
+    CHECK_FALSE(rock_file_in_range(file, error));
+    rind = RockRind{};
+    rind.grain_scale = bad;
+    CHECK_FALSE(rock_file_in_range(file, error));
+    rind = RockRind{};
+    rind.tint = std::array<f32, 3>{0.5f, bad, 0.5f};
+    CHECK_FALSE(rock_file_in_range(file, error));
+    rind = RockRind{};
   }
 }

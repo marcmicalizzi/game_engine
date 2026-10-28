@@ -217,18 +217,29 @@ f64 surface_recess(const Body& b, D3 p, f64 cell) {
 }
 
 // The body's radius along unit direction `u`, in the unit body, with the noise the rung carries.
-f64 hull_radius(const Body& b, D3 u) {
+// Match smooth_min's ownership blend without perturbing the radius arithmetic. A mask is
+// bake-only provenance: support/joint faces are old; the low-wear facets are recent breaks.
+f64 cut_blend(f64 a, f64 b, f64 k) {
+  return k > 0.0 ? clamp01(0.5 + 0.5 * (b - a) / k) : (a < b ? 1.0 : 0.0);
+}
+
+f64 hull_radius(const Body& b, D3 u, f64* fresh = nullptr) {
   f64 r = 1.0e3;
+  if (fresh != nullptr) *fresh = 0.0;
   for (const Cut& c : b.cuts) {
     const f64 along = dot(u, c.n);
     const f64 rc = along > 1e-6 ? c.d / along : 1.0e3;
+    if (fresh != nullptr) {
+      const f64 keep = cut_blend(r, rc, b.smooth * c.wear);
+      *fresh = *fresh * keep + (1.0 - c.wear) * (1.0 - keep);
+    }
     r = smooth_min(r, rc, b.smooth * c.wear);
   }
   return r;
 }
 
-f64 radius(const Body& b, D3 u) {
-  f64 r = hull_radius(b, u);
+f64 radius(const Body& b, D3 u, f64* fresh = nullptr) {
+  f64 r = hull_radius(b, u, fresh);
   // A finite removed patch is the intersection of four outward half-spaces. Along a ray,
   // entering all four takes the greatest plane distance; taking the minimum with the hull
   // removes just that patch. A plane facing away makes the chip absent on this ray.
@@ -243,6 +254,10 @@ f64 radius(const Body& b, D3 u) {
       if (distance > entry) entry = distance;
     }
     const f64 chipped = smooth_min(r, entry, b.smooth * 0.12);
+    if (fresh != nullptr) {
+      const f64 keep = cut_blend(r, entry, b.smooth * 0.12);
+      *fresh = lerp(*fresh, *fresh * keep + (1.0 - keep), weight);
+    }
     r = lerp(r, chipped, weight);
   }
   // Broad asymmetric removal patches break the regular rounded-box silhouette. Scars stay
@@ -253,6 +268,7 @@ f64 radius(const Body& b, D3 u) {
     const f64 rim = fade(clamp01(cap / lip));
     const f64 bowl = 0.45 + 0.55 * cap;
     r -= scar.depth * rim * bowl;
+    if (fresh != nullptr && scar.depth > 0.0) *fresh = lerp(*fresh, 1.0, rim);
   }
   // The warp: one low octave, always (it is the body's shape, not its surface).
   r *= 1.0 + b.warp * (2.0 * noise3(b.noise_seed, u * 1.3 + D3{11.5, 3.25, 7.75}) - 1.0);
@@ -294,6 +310,7 @@ void emit_body(const Body& b, f64 tile_m, assets::MeshData& out, SurfaceBake* ba
   // The surface's positions by lattice point first, then the charts index into them.
   Vector<D3> local;
   Vector<D3> samples;
+  Vector<f64> fresh;
   Vector<u32> lattice_of;  // per emitted vertex, its lattice point's slot in `local`
   // Only the cube's shell exists. A volume lookup made high detail pay O(n^3) temporary memory.
   Vector<u32> slot(6u * n * n + 2u, ~0u);
@@ -321,7 +338,10 @@ void emit_body(const Body& b, f64 tile_m, assets::MeshData& out, SurfaceBake* ba
   // The unit body's point along a lattice direction; stretched to the half-extents below.
   const auto position_of = [&](i64 x, i64 y, i64 z) {
     const D3 u = lattice_direction(x, y, z, n);
-    return u * radius(b, u);
+    f64 provenance = 0.0;
+    const f64 r = radius(b, u, bake != nullptr ? &provenance : nullptr);
+    if (bake != nullptr) fresh.push_back(provenance);
+    return u * r;
   };
   // Faces: (axis, sign) with in-face axes (b, c) such that b x c points outwards.
   struct Face {
@@ -476,9 +496,12 @@ void emit_body(const Body& b, f64 tile_m, assets::MeshData& out, SurfaceBake* ba
   }
   if (bake != nullptr) {
     Vector<D3> chart_samples(lattice_of.size());
-    for (u32 v = 0; v < lattice_of.size(); ++v)
+    Vector<f64> chart_fresh(lattice_of.size());
+    for (u32 v = 0; v < lattice_of.size(); ++v) {
       chart_samples[v] = samples[lattice_of[v]];
-    bake->body(part, n, first, b.fabric, type, chart_samples, out);
+      chart_fresh[v] = fresh[lattice_of[v]];
+    }
+    bake->body(part, n, first, b.fabric, type, chart_samples, chart_fresh, out);
   }
   // A deep joint may put a face beyond the smooth vertex normal's hemisphere. It is a hard
   // fracture edge: give that triangle its own normal rather than shading it inside-out. Position
