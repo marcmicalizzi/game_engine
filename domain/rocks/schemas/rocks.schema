@@ -11,12 +11,52 @@ enum RockType : u8 {
   /// Massive, jointed in three near-orthogonal sets: blocky, a few facets, edges weathered round,
   /// a fine granular surface, grey.
   Granite
-  /// Bedded: banded along its bedding direction (layers on by default), soft edges, warm tan.
+  /// Bedded: differential retreat and granular loss, warm tan.
   Sandstone
   /// Columnar: vertical joints at sixty degrees make a prism, sharp edges, near black.
   Basalt
-  /// Rounded by solution: few facets, the softest edges, a pitted surface, pale.
+  /// Carbonate: solution pockets, worn edges beside fresh fractures, pale.
   Limestone
+  /// Fissile sedimentary mudrock: thin, irregular beds and broken plates.
+  Shale
+  /// Metamorphic slaty cleavage: planar sheets, not sedimentary bedding.
+  Slate
+  /// Metamorphic, scaly and folded foliation.
+  Schist
+  /// Metamorphic compositional bands, folded but more massive than schist.
+  Gneiss
+  /// Massive metamorphic carbonate, susceptible to dissolution.
+  Marble
+  /// Volcanic glass: smooth conchoidal scars, sharp margins and low roughness.
+  Obsidian
+}
+
+/// Origin, derived from RockType rather than an independently contradictory recipe field.
+enum RockFamily : u8 { Igneous Sedimentary Metamorphic }
+
+/// Offline source-mesh budget scale; runtime cluster LOD is independent.
+enum RockQuality : u8 { Low Medium High }
+
+/// Static geological history. Values are artistic process controls, not elapsed years or measured
+/// material constants. Optional processes use the type's mixture; an explicit zero disables one.
+struct RockGeology @version(1) {
+  /// Accumulated exposure, 0 (fresh breaks) to 1 (strongly weathered).
+  weathering: f32 = 0.5
+  /// Irregular large scars and unequal bed retreat, 0 to 1.
+  irregularity: f32 = 0.65
+  /// Physical bedding/cleavage spacing, 0 (off) or 0.01 to 20 m; absent uses the type.
+  bed_m: f32? @unit(m)
+  /// Dip and azimuth of the fabric normal, degrees, -85 to 85 and -180 to 180.
+  dip_deg: f32 = 0.0
+  azimuth_deg: f32 = 0.0
+  /// Fold amplitude as a fraction of the fold wavelength, 0 to 1; absent uses the type.
+  fold: f32?
+  /// Partial sheet removal / flake scars, 0 to 1; absent uses the type.
+  flaking: f32?
+  /// Solution pockets, 0 to 1; absent uses the type.
+  dissolution: f32?
+  /// Granular surface loss, 0 to 1; absent uses the type.
+  granular: f32?
 }
 
 /// Which shape a rock file makes.
@@ -36,7 +76,7 @@ enum RockShape : u8 {
 /// Paths are relative to the rock file. A block that names an image replaces the material pack's
 /// default for the rock's type (`rock/<type>`); the charts are laid out in whole repeats of the
 /// chosen set's `tile_m`.
-struct RockMaterial @version(2) {
+struct RockMaterial @version(3) {
   base_color: string?
   normal: string?
   roughness: string?
@@ -46,12 +86,17 @@ struct RockMaterial @version(2) {
   tile_m: f32 = 1.0 @unit(m)
   /// How far the normal map bends the shading normal, glTF's `normalTexture.scale`: 0 to 4.
   normal_scale: f32 = 1.0 @since(2)
+  /// Linear RGB tint, multiplied with base colour textures; absent uses type colour only when
+  /// no base colour image is assigned. Each channel 0 to 1.
+  tint: f32[3]? @since(3)
+  /// Scalar roughness, 0.02 to 1. Multiplies a roughness map when one is assigned.
+  roughness_factor: f32? @since(3)
 }
 
 /// Surface structure in metres, shared across an outcrop. These are authoring controls, not
 /// measurements of a particular site. Unresolved features fade out with the mesh budget.
 struct RockSurface @version(1) {
-  /// Blend of structural weathering, 0 (simple body) to 1 (full detail).
+  /// Blend of this surface field, 0 (off) to 1 (full detail); geology is independent.
   strength: f32 = 1.0
   /// Mean separation of weathered joints, 0.05 to 20 m.
   joint_spacing_m: f32 = 0.65 @unit(m)
@@ -66,7 +111,7 @@ struct RockSurface @version(1) {
 }
 
 /// A seeded cut body with bedding, physical surface detail and burial (rocks.md, "The boulder").
-struct Boulder @version(2) {
+struct Boulder @version(3) {
   /// Everything the parameters leave to chance. Any u64.
   seed: u64 = 1
   /// The half-extents before cutting, x, y (up) and z: each 0.05 to 20 m.
@@ -78,7 +123,7 @@ struct Boulder @version(2) {
   joint_sets: u32 = 3
   /// How round the cut edges weather, 0 a sharp edge to 1 nearly a pebble; absent takes the type's.
   rounding: f32?
-  /// Bedding layers across the body, 0 for none, up to 64; absent takes the type's.
+  /// Additional count-based grooves, 0 to 64; absent is off. Geology supplies physical bedding.
   layers: u32?
   /// The share of the body's height under the origin, where the ground is: 0 to 0.8.
   buried: f32 = 0.15
@@ -86,13 +131,15 @@ struct Boulder @version(2) {
   /// its ladder that fits (rocks.md, "The budget ladder").
   triangle_budget: u32 = 80000
   surface: RockSurface @since(2)
+  geology: RockGeology @since(3)
+  quality: RockQuality = High @since(3)
   material: RockMaterial
 }
 
 /// An outcrop (rocks.md, "The outcrop"): `count` boulders grown from one bedding plane inside the
 /// half-extents, sharing one joint set, the largest in the middle, sunk deeper than a boulder, as
 /// one mesh.
-struct Outcrop @version(2) {
+struct Outcrop @version(3) {
   seed: u64 = 1
   /// The outcrop's half-extents, x, y (up) and z: each 0.2 to 50 m.
   size_x: f32 = 4.0 @unit(m)
@@ -109,12 +156,14 @@ struct Outcrop @version(2) {
   /// The most triangles of every boulder together: 1,000 to 1,000,000.
   triangle_budget: u32 = 240000
   surface: RockSurface @since(2)
+  geology: RockGeology @since(3)
+  quality: RockQuality = High @since(3)
   material: RockMaterial
 }
 
 /// Scree (rocks.md, "Scree"): `count` small angular fragments lying on the ground inside the
 /// footprint's half-extents, as one mesh.
-struct Scree @version(2) {
+struct Scree @version(3) {
   seed: u64 = 1
   /// The footprint's half-extents, x and z: each 0.1 to 20 m.
   size_x: f32 = 1.0 @unit(m)
@@ -130,6 +179,8 @@ struct Scree @version(2) {
   /// The most triangles of every fragment together: 500 to 500,000.
   triangle_budget: u32 = 24000
   surface: RockSurface @since(2)
+  geology: RockGeology @since(3)
+  quality: RockQuality = High @since(3)
   material: RockMaterial
 }
 
@@ -152,7 +203,7 @@ struct CliffPoint @version(1) {
 /// under a hard one, warped and grained — closed at the ends, the top and a back buried `depth`
 /// behind it, with a talus skirt of the rock's own debris at its foot. Walking along `points`, the
 /// face looks to the right (+z for a line along +x).
-struct Cliff @version(1) {
+struct Cliff @version(2) {
   seed: u64 = 1
   type: RockType = Sandstone
   /// The foot of the face, in order: 2 to 4,096 vertices, a line 1 to 1,000 m long.
@@ -193,6 +244,8 @@ struct Cliff @version(1) {
   /// The most triangles of the face, its skirt and its blocks together: 2,000 to 4,000,000. The
   /// solver takes the finest cell of its ladder that fits (rocks.md, "Cliffs").
   triangle_budget: u32 = 250000
+  geology: RockGeology @since(2)
+  quality: RockQuality = High @since(2)
   material: RockMaterial
 }
 

@@ -18,6 +18,7 @@
 // (ADR-0035), one thread, one seeded stream per purpose: the same parameters give the same bytes on
 // every toolchain.
 #include "detail.h"
+#include "geology.h"
 
 #include <core/containers/hash_map.h>
 #include <core/math/deterministic.h>
@@ -55,6 +56,12 @@ CliffModel cliff_model(RockType type) {
       return {3.5, 2.5, 0.0, 10.0, 14.0, 70.0, 0.4, 0.025, 0.06, 0.0, false};
     case RockType::Basalt: return {2.0, 0.0, 12.0, 1.4, 2.6, 80.0, 0.1, 0.02, 0.04, 0.35, false};
     case RockType::Limestone: return {4.5, 4.0, 0.0, 9.0, 12.0, 60.0, 0.6, 0.03, 0.12, 0.0, true};
+    case RockType::Shale: return {2.5, 0.4, 0.0, 3.0, 6.0, 65.0, 0.15, 0.035, 0.05, 0.0, false};
+    case RockType::Slate: return {2.0, 0.55, 0.0, 4.0, 7.0, 70.0, 0.08, 0.02, 0.02, 0.0, false};
+    case RockType::Schist: return {3.0, 0.7, 0.0, 5.0, 8.0, 60.0, 0.18, 0.04, 0.06, 0.0, false};
+    case RockType::Gneiss: return {4.0, 1.2, 0.0, 7.0, 10.0, 55.0, 0.25, 0.04, 0.06, 0.0, false};
+    case RockType::Marble: return {3.5, 0.0, 5.0, 6.0, 10.0, 60.0, 0.4, 0.025, 0.05, 0.0, true};
+    case RockType::Obsidian: return {3.0, 0.0, 3.0, 4.0, 6.0, 65.0, 0.05, 0.04, 0.01, 0.0, false};
     case RockType::Granite:
     default: return {4.0, 0.0, 6.0, 7.0, 9.0, 55.0, 0.35, 0.03, 0.10, 0.0, false};
   }
@@ -130,6 +137,7 @@ Frame frame_at(const Line& line, f64 s, f64 window) {
 
 struct Carve {
   CliffModel m;
+  Fabric fabric;
   u32 sets = 0;
   f64 relief = 0.0;
   f64 rounding = 0.0;
@@ -180,8 +188,8 @@ Pick pick(f64 b, f64 w) {
 // undercut notches it there, which the caller takes off after the face is held up (below).
 f64 carve_at(const Carve& c, f64 s, f64 y, f64 top_y, f64& notch) {
   notch = 0.0;
-  const f64 yd = y - c.datum;
-  f64 e = 0.0;
+  const f64 yd = fabric_coordinate(c.fabric, D3{s, y - c.datum, 0.0});
+  f64 e = -fabric_recess(c.fabric, D3{s, y - c.datum, 0.0}, c.cell);
   // The beds' coordinate, wavy along the face as real beds are; the horizontal joints of a bedded
   // rock are its bedding planes, so the blocks' rows and the beds are one coordinate.
   f64 tb = 0.0;
@@ -434,6 +442,27 @@ void emit_box(const u32 n[3], const Pos& pos, const Uv& uv, f64 tile_m, assets::
     out.positions[v] = Vec3{static_cast<f32>(p.x), static_cast<f32>(p.y), static_cast<f32>(p.z)};
     out.normals[v] = Vec3{static_cast<f32>(nn.x), static_cast<f32>(nn.y), static_cast<f32>(nn.z)};
   }
+  // Strong folded beds can put the smooth normal behind a small adjacent face. Keep that
+  // fracture sharp; copying positions/UVs leaves the welded shell and triangle budget intact.
+  for (u32 t = first_index; t < out.indices.size(); t += 3) {
+    const Vec3 a = out.positions[out.indices[t]];
+    const Vec3 fn =
+        cross(out.positions[out.indices[t + 1]] - a, out.positions[out.indices[t + 2]] - a);
+    const Vec3 vn = out.normals[out.indices[t]] + out.normals[out.indices[t + 1]] +
+                    out.normals[out.indices[t + 2]];
+    if (dot(fn, vn) > 0.65f * std::sqrt(dot(fn, fn) * dot(vn, vn))) continue;
+    const D3 nn = normalized(D3{wide(fn.x), wide(fn.y), wide(fn.z)});
+    for (u32 corner = 0; corner < 3; ++corner) {
+      const u32 old = out.indices[t + corner];
+      const Vec3 position = out.positions[old];
+      const Vec2 chart_uv = out.uvs[old];
+      out.indices[t + corner] = out.positions.size();
+      out.positions.push_back(position);
+      out.uvs.push_back(chart_uv);
+      out.normals.push_back(
+          Vec3{static_cast<f32>(nn.x), static_cast<f32>(nn.y), static_cast<f32>(nn.z)});
+    }
+  }
 }
 
 u64 box_triangles(u64 a, u64 b, u64 c) { return 4u * (a * b + a * c + b * c); }
@@ -500,6 +529,10 @@ bool cliff_in_range(const Cliff& p, std::string& error) {
     return false;
   };
   const auto in = [](f64 v, f64 lo, f64 hi) { return v >= lo && v <= hi; };
+  if (!valid_rock_type(p.type)) return bad("type", "known rock type");
+  if (!valid_quality(p.quality)) return bad("quality", "Low, Medium, High");
+  if (!geology_in_range(p.geology, error) || !material_factors_in_range(p.material, error))
+    return false;
   if (p.points.size() < 2 || p.points.size() > 4096) return bad("points", "2 to 4,096 vertices");
   f64 length = 0.0;
   for (u32 i = 0; i < p.points.size(); ++i) {
@@ -551,6 +584,7 @@ bool solve_cliff(const Cliff& p, assets::MeshData& out, CliffReport* report_out,
     return false;
   };
   if (!cliff_in_range(p, error)) return fail(error);
+  const u32 budget = quality_budget(p.triangle_budget, p.quality, 2000u);
 
   Solved z;
   z.model = cliff_model(p.type);
@@ -573,11 +607,15 @@ bool solve_cliff(const Cliff& p, assets::MeshData& out, CliffReport* report_out,
 
   // The carving's parameters, the rung's fades set below.
   Carve carve;
+  carve.fabric = make_fabric(p.type, p.geology, p.seed);
   carve.m = m;
   carve.sets = p.joint_sets;
   carve.relief = p.relief.has_value() ? wide(*p.relief) : m.relief;
-  carve.rounding = p.rounding.has_value() ? wide(*p.rounding) : m.rounding;
-  carve.bed = p.bed_m.has_value() ? wide(*p.bed_m) : m.bed_m;
+  carve.rounding = (p.rounding.has_value() ? wide(*p.rounding) : m.rounding) *
+                   (0.2 + 1.6 * carve.fabric.exposure);
+  carve.bed = p.bed_m.has_value()
+                  ? wide(*p.bed_m)
+                  : (p.geology.bed_m.has_value() ? wide(*p.geology.bed_m) : m.bed_m);
   carve.undercut = wide(p.undercut);
   carve.datum = wide(p.datum_y);
   carve.h_spacing = m.h_spacing > 0.0 ? m.h_spacing : (carve.bed > 0.0 ? carve.bed : 3.0);
@@ -626,13 +664,12 @@ bool solve_cliff(const Cliff& p, assets::MeshData& out, CliffReport* report_out,
   // ---- the budget: the blocks first, on a rung of their own, then the face and the skirt -------
   // A budget too small for every block at the coarsest rung within its 8% keeps the first ones it
   // can hold: a coarse rung is the same face with its smaller detail left out.
-  const u32 block_room =
-      static_cast<u32>(0.08 * static_cast<f64>(p.triangle_budget) / triangles_of_grid(4));
+  const u32 block_room = static_cast<u32>(0.08 * static_cast<f64>(budget) / triangles_of_grid(4));
   const u32 blocks = p.talus_blocks < block_room ? p.talus_blocks : block_room;
   u32 block_n = 0;
   u64 block_tris = 0;
   if (blocks > 0) {
-    const f64 share = 0.08 * static_cast<f64>(p.triangle_budget) / static_cast<f64>(blocks);
+    const f64 share = 0.08 * static_cast<f64>(budget) / static_cast<f64>(blocks);
     block_n = k_grid_rungs[0];
     for (u32 r = 0; r < k_grid_rung_count; ++r) {
       if (static_cast<f64>(triangles_of_grid(k_grid_rungs[r])) <= share && k_grid_rungs[r] <= 20u)
@@ -658,7 +695,7 @@ bool solve_cliff(const Cliff& p, assets::MeshData& out, CliffReport* report_out,
       sb = cells_over(slope_max, 2.0 * cell, 1);
       st = box_triangles(sa, sb, 1);
     }
-    if (ft + st + block_tris <= p.triangle_budget) {
+    if (ft + st + block_tris <= budget) {
       rung = r;
       ns = a;
       nh = b;
@@ -693,6 +730,7 @@ bool solve_cliff(const Cliff& p, assets::MeshData& out, CliffReport* report_out,
   carve.fade_columns = fade_for(m.v_spacing, cell);
 
   out.materials.push_back(detail::rock_material(p.type));
+  material_factors(p.material, out.materials[0].base_color, out.materials[0].roughness);
 
   // ---- the face's box --------------------------------------------------------------------------
   Vector<Frame> frames;

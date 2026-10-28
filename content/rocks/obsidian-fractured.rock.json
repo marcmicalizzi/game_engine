@@ -1,0 +1,10 @@
+{
+  "shape": "Boulder",
+  "boulder": {
+    "seed": 924, "type": "Obsidian", "size_x": 1.15, "size_y": 0.85, "size_z": 0.9,
+    "joint_sets": 1, "buried": 0.1, "triangle_budget": 180000,
+    "geology": {"weathering": 0.12, "irregularity": 1.0, "flaking": 0.9},
+    "surface": {"strength": 0.2, "joint_spacing_m": 1.2, "joint_depth_m": 0.04, "relief_m": 0.001},
+    "material": {"roughness_factor": 0.16}
+  }
+}

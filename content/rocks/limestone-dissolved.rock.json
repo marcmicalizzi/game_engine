@@ -1,0 +1,9 @@
+{
+  "shape": "Boulder",
+  "boulder": {
+    "seed": 420, "type": "Limestone", "size_x": 1.4, "size_y": 0.8, "size_z": 1.0,
+    "joint_sets": 3, "buried": 0.15, "triangle_budget": 180000,
+    "geology": {"weathering": 0.9, "irregularity": 0.8, "bed_m": 0.35, "dip_deg": 10, "dissolution": 1.0},
+    "surface": {"strength": 0.7, "joint_spacing_m": 0.85, "joint_width_m": 0.2, "joint_depth_m": 0.15}
+  }
+}

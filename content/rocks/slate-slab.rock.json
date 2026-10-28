@@ -1,0 +1,9 @@
+{
+  "shape": "Boulder",
+  "boulder": {
+    "seed": 792, "type": "Slate", "size_x": 1.5, "size_y": 0.38, "size_z": 1.05,
+    "joint_sets": 3, "buried": 0.02, "triangle_budget": 180000,
+    "geology": {"weathering": 0.3, "irregularity": 0.85, "bed_m": 0.12, "dip_deg": 8, "flaking": 0.95},
+    "surface": {"strength": 0.35, "joint_spacing_m": 0.8, "joint_width_m": 0.12, "joint_depth_m": 0.04, "relief_m": 0.004}
+  }
+}

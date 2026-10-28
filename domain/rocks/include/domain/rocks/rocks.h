@@ -62,7 +62,7 @@ inline constexpr const char* k_determinism = "derived";
 // makes from the same parameters is a new key and never an old container read as the answer. Bump
 // it with any change that moves a byte of a committed recipe's mesh (the determinism test says
 // when one did).
-inline constexpr u32 k_rocks_version = 2;
+inline constexpr u32 k_rocks_version = 3;
 
 // ---- the budget ladder (rocks.md, "The budget ladder") -----------------------------------------
 //
@@ -91,6 +91,8 @@ struct RockReport {
 
 // The type's name in a file and a report: "Granite".
 const char* rock_type_name(RockType type) noexcept;
+// Origin classification, derived from lithology (never an independent contradictory input).
+RockFamily rock_family(RockType type) noexcept;
 const char* rock_shape_name(RockShape shape) noexcept;
 
 // ---- the rock file and its build (rocks.md, "The build") ---------------------------------------
@@ -139,8 +141,9 @@ bool solve_rock(const RockFile& file, assets::MeshData& out, RockReport* report 
 // is a cell edge in metres, coarsest first: the solver takes the finest whose triangles fit the
 // budget, the skirt at twice the face's cell. The features finer than four cells of a rung fade
 // out, as the boulders' grain does, so the coarsest rung is the same face with its detail left out.
-inline constexpr f64 k_cliff_cells_m[] = {32.0, 24.0, 16.0, 12.0, 8.0, 6.0,   4.0, 3.0,
-                                          2.0,  1.5,  1.0,  0.75, 0.5, 0.375, 0.25};
+inline constexpr f64 k_cliff_cells_m[] = {32.0, 24.0,   16.0,  12.0,    8.0,   6.0, 4.0,
+                                          3.0,  2.0,    1.5,   1.0,     0.75,  0.5, 0.375,
+                                          0.25, 0.1875, 0.125, 0.09375, 0.0625};
 inline constexpr u32 k_cliff_cell_count = sizeof(k_cliff_cells_m) / sizeof(k_cliff_cells_m[0]);
 
 // How the solver spent a cliff's budget.

@@ -1,0 +1,10 @@
+{
+  "shape": "Cliff",
+  "cliff": {
+    "seed": 630, "type": "Gneiss", "points": [{"x": -5, "z": 0}, {"x": 5, "z": 0}],
+    "height": 7, "buried": 0.3, "depth": 3, "relief": 0.8, "batter": 0.05,
+    "bed_m": 0.65, "undercut": 0.15, "talus": 0.08, "talus_blocks": 6,
+    "talus_block_m": 0.7, "triangle_budget": 280000,
+    "geology": {"weathering": 0.5, "bed_m": 0.3, "dip_deg": 35, "fold": 0.75}
+  }
+}

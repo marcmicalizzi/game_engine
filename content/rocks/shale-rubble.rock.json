@@ -1,0 +1,9 @@
+{
+  "shape": "Scree",
+  "scree": {
+    "seed": 885, "type": "Shale", "count": 24, "size_x": 2.5, "size_z": 2.0,
+    "fragment_m": 0.7, "buried": 0.05, "triangle_budget": 220000,
+    "geology": {"weathering": 0.35, "bed_m": 0.07, "irregularity": 0.9, "flaking": 1.0},
+    "surface": {"strength": 0.3, "joint_depth_m": 0.025, "relief_m": 0.004}
+  }
+}

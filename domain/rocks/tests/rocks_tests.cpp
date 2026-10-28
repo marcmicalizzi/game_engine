@@ -185,13 +185,14 @@ TEST_CASE("rocks: physical surface detail filters away below its sampling scale"
   // Recesses remove material, without collapsing the body or spending extra triangles.
   CHECK(volume_of(mesh) < volume_of(smooth));
   CHECK(volume_of(mesh) > 0.8 * volume_of(smooth));
-  plain.triangle_budget = 20000;
-  // G62's default mesh: strength zero is also the exact baseline for the G89 capture pairs.
-  CHECK(mesh_hash(solve(boulder(plain))) == 0xee8f6918ba577fabull);
 }
 
 TEST_CASE("rocks: surface lengths scale with the rock and validate as physical lengths") {
   Boulder b;
+  // Isolate RockSurface: geology has its own physical wavelengths, not scaled by these fields.
+  b.geology.bed_m = 0.0f;
+  b.geology.dissolution = 0.0f;
+  b.geology.granular = 0.0f;
   const auto original = solve(boulder(b));
   b.size_x *= 2.0f;
   b.size_y *= 2.0f;
@@ -327,12 +328,12 @@ TEST_CASE("rocks: the mesh generator \"rock\" builds what the capability builds"
 TEST_CASE("rocks: the default boulder is the committed bytes on every toolchain") {
   // Taken on MSVC; GCC and Clang at v3 and GCC at v2 must reproduce them. A change that moves
   // them bumps k_rocks_version and these numbers in the same commit.
-  // G89, rocks version 2: 0xee8f6918ba577fab until physical surface detail and the 80k default.
-  constexpr u64 k_mesh = 0xe7f94e4304b6ea53ull;
+  // G94, solver version 3: lithology, mixed edge wear and canonical geological history.
+  constexpr u64 k_mesh = 0xde430f54b55db26eull;
   // 0x7865d56fc786dbd1 until RockMaterial gained `normal_scale` (version 2), which the canonical
   // parameters in the generator section spell out; the mesh did not move.
-  // G89 supersedes 0x420fa50ebc8196ff: new mesh, canonical surface fields and solver version.
-  constexpr u64 k_container = 0xb2611b877ab5bd4eull;
+  // G94 supersedes 0xb2611b877ab5bd4e: new geometry and canonical recipe fields.
+  constexpr u64 k_container = 0x291ec119f22e8151ull;
   const assets::MeshData mesh = solve(boulder());
   geometry::ClusterFileData data;
   std::string error;
@@ -358,14 +359,22 @@ TEST_CASE("rocks: the committed recipes are closed, hold their budgets, and are 
     u64 mesh;
   };
   constexpr Recipe k_recipes[] = {
-      // G89 surface + budgets; old pins e943fb204d0466dc, b7abeb70a637033a,
-      // 6a2ffb1198db5539, 511edd62e55ef986 respectively (G62).
-      {"granite-boulder.rock.json", 1, 0x5fc64fb011e5cdfaull},
-      {"sandstone-boulder.rock.json", 1, 0xa9cf86119ec92a02ull},
-      {"basalt-outcrop.rock.json", 7, 0xc8a7870ce261e0acull},
-      {"granite-scree.rock.json", 14, 0x74b4161bbefd5f1cull},
-      {"jointed-pinnacles.rock.json", 8, 0x21756d998264c659ull},
-      {"shore-rubble.rock.json", 48, 0x2eb5fb5c3e42b304ull},
+      // G94 lithology and weathering; all existing geometry may change.
+
+      {"granite-boulder.rock.json", 1, 0x831ad355024b04e7ull},
+      {"sandstone-boulder.rock.json", 1, 0xf0f2dbf511d324cbull},
+      {"basalt-outcrop.rock.json", 7, 0xe35a492cb56fb064ull},
+      {"granite-scree.rock.json", 14, 0x00cb002cde7d1522ull},
+      {"jointed-pinnacles.rock.json", 8, 0x3f33bde1012d225dull},
+      {"shore-rubble.rock.json", 48, 0x73c277f3226d1bffull},
+      {"slate-slab.rock.json", 1, 0xa3bb6cb14286aabeull},
+      {"gneiss-folded.rock.json", 1, 0x8c5b4678458d2fe6ull},
+      {"schist-flaked.rock.json", 1, 0xdd6995ace644014dull},
+      {"obsidian-fractured.rock.json", 1, 0x9606a8a6476037f1ull},
+      {"limestone-dissolved.rock.json", 1, 0x2eed79442a69de9dull},
+      {"shale-rubble.rock.json", 24, 0x4fbba65d119fb9ccull},
+      {"marble-weathered.rock.json", 1, 0xfff3027951d63edaull},
+      {"foliated-cliff.rock.json", 8, 0x2ebeb605238fbb46ull},
   };
   const std::string dir = test::data_path(ENGINE_SOURCE_DIR "/content/rocks", "content/rocks");
   if (!test::path_exists(dir)) {

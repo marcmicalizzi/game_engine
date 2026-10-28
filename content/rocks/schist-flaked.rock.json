@@ -1,0 +1,9 @@
+{
+  "shape": "Boulder",
+  "boulder": {
+    "seed": 918, "type": "Schist", "size_x": 1.35, "size_y": 0.7, "size_z": 0.95,
+    "buried": 0.05, "triangle_budget": 180000,
+    "geology": {"weathering": 0.55, "irregularity": 0.95, "bed_m": 0.18, "dip_deg": 18, "fold": 0.4, "flaking": 1.0},
+    "surface": {"strength": 0.4, "joint_depth_m": 0.05, "relief_m": 0.008}
+  }
+}

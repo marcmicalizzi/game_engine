@@ -8,6 +8,7 @@
 // is stretched to its half-extents, banded along its bedding, and lowered to its burial. A radial
 // map of a sphere is closed and cannot fold, which is the whole of the topology argument.
 #include "detail.h"
+#include "geology.h"
 
 #include <core/hash/hash.h>
 #include <core/math/deterministic.h>
@@ -56,6 +57,25 @@ TypeModel model_of(RockType type) {
     case RockType::Limestone:
       return {2,    0.65, 3, 0.6, 0.06, 0.03, 5.0, true, false, Vec4{0.66f, 0.63f, 0.56f, 1.0f},
               0.85f};
+    case RockType::Shale:
+      return {5,   0.12, 0, 0.0, 0.07, 0.008, 10.0, false, false, Vec4{0.20f, 0.19f, 0.17f, 1.0f},
+              0.9f};
+    case RockType::Slate:
+      return {4,    0.06, 0, 0.0, 0.025, 0.003, 12.0, false, false, Vec4{0.17f, 0.22f, 0.24f, 1.0f},
+              0.65f};
+    case RockType::Schist:
+      return {5,   0.14, 0, 0.0, 0.08, 0.008, 10.0, false, false, Vec4{0.32f, 0.34f, 0.30f, 1.0f},
+              0.6f};
+    case RockType::Gneiss:
+      return {4,    0.22, 0, 0.0, 0.08, 0.008, 8.0, false, false, Vec4{0.39f, 0.37f, 0.35f, 1.0f},
+              0.72f};
+    case RockType::Marble:
+      return {3,    0.35, 0, 0.0, 0.04, 0.004, 8.0, true, false, Vec4{0.72f, 0.69f, 0.63f, 1.0f},
+              0.46f};
+    case RockType::Obsidian:
+      return {6,     0.025, 0,     0.0,   0.025,
+              0.001, 8.0,   false, false, Vec4{0.025f, 0.031f, 0.038f, 1.0f},
+              0.16f};
     case RockType::Granite:
     default:
       return {3,    0.3, 0, 0.0, 0.035, 0.012, 7.0, false, false, Vec4{0.40f, 0.38f, 0.36f, 1.0f},
@@ -86,6 +106,10 @@ void joint_directions(RockType type, u32 sets, Rng& rng, D3 out[4]) {
         out[s] = s < 3 ? horizontal(yaw + static_cast<f64>(s) * k_pi / 3.0) : up();
         break;
       case RockType::Sandstone:
+      case RockType::Shale:
+      case RockType::Slate:
+      case RockType::Schist:
+      case RockType::Gneiss:
         out[s] = s == 0 ? up()
                         : (s < 3 ? horizontal(yaw + static_cast<f64>(s - 1) * k_pi * 0.5)
                                  : rng.direction());
@@ -99,8 +123,15 @@ void joint_directions(RockType type, u32 sets, Rng& rng, D3 out[4]) {
 }
 
 struct Cut {
-  D3 n;   // unit normal, in the unit body's frame
-  f64 d;  // distance from the centre
+  D3 n;            // unit normal, in the unit body's frame
+  f64 d;           // distance from the centre
+  f64 wear = 1.0;  // old joints round; fresh fracture margins remain sharp
+};
+
+struct Scar {
+  D3 direction;
+  f64 width;
+  f64 depth;
 };
 
 // One body, everything its radius and its placement need.
@@ -127,6 +158,8 @@ struct Body {
   D3 joints[4]{};
   u32 joint_count = 0;
   u64 surface_seed = 0;
+  Fabric fabric{};
+  Scar scars[6]{};
 };
 
 // Physical-scale structure, evaluated in the common formation frame. Joint positions are
@@ -182,7 +215,16 @@ f64 radius(const Body& b, D3 u) {
   for (const Cut& c : b.cuts) {
     const f64 along = dot(u, c.n);
     const f64 rc = along > 1e-6 ? c.d / along : 1.0e3;
-    r = smooth_min(r, rc, b.smooth);
+    r = smooth_min(r, rc, b.smooth * c.wear);
+  }
+  // Broad asymmetric removal patches break the regular rounded-box silhouette. Scars stay
+  // present across quality rungs; a rounded bowl can end at a narrow, freshly broken lip.
+  for (const Scar& scar : b.scars) {
+    const f64 cap = clamp01((dot(u, scar.direction) - (1.0 - scar.width)) / scar.width);
+    const f64 lip = 0.06 + 0.22 * b.fabric.exposure;
+    const f64 rim = fade(clamp01(cap / lip));
+    const f64 bowl = 0.45 + 0.55 * cap;
+    r -= scar.depth * rim * bowl;
   }
   // The warp: one low octave, always (it is the body's shape, not its surface).
   r *= 1.0 + b.warp * (2.0 * noise3(b.noise_seed, u * 1.3 + D3{11.5, 3.25, 7.75}) - 1.0);
@@ -357,10 +399,10 @@ void emit_body(const Body& b, f64 tile_m, assets::MeshData& out) {
       // Use the intended resting frame for the formation-wide field, before the final burial
       // correction. Recession remains radial and positive, retaining the closed shell.
       const D3 sample = p + b.at + D3{0.0, b.half.y * (1.0 - 2.0 * b.buried), 0.0};
-      const f64 recess = surface_recess(b, sample, cell);
+      const f64 recess = surface_recess(b, sample, cell) + fabric_recess(b.fabric, sample, cell);
       const f64 len = length(p);
       const f64 scale_detail = len > 0.0 ? 1.0 - recess / len : 1.0;
-      p = p * (scale_detail < 0.8 ? 0.8 : (scale_detail > 1.05 ? 1.05 : scale_detail));
+      p = p * (scale_detail < 0.65 ? 0.65 : (scale_detail > 1.05 ? 1.05 : scale_detail));
       q = p;
     }
   }
@@ -401,13 +443,13 @@ void emit_body(const Body& b, f64 tile_m, assets::MeshData& out) {
   // A deep joint may put a face beyond the smooth vertex normal's hemisphere. It is a hard
   // fracture edge: give that triangle its own normal rather than shading it inside-out. Position
   // and UV remain exact copies, so the welded shell and triangle budget are unchanged.
-  for (u32 t = index_first; b.surface.strength > 0.0f && t < out.indices.size(); t += 3) {
+  for (u32 t = index_first; t < out.indices.size(); t += 3) {
     const Vec3 a = out.positions[out.indices[t]];
     const Vec3 fn =
         cross(out.positions[out.indices[t + 1]] - a, out.positions[out.indices[t + 2]] - a);
     const Vec3 vn = out.normals[out.indices[t]] + out.normals[out.indices[t + 1]] +
                     out.normals[out.indices[t + 2]];
-    if (dot(fn, vn) > 0.0f) continue;
+    if (dot(fn, vn) > 0.65f * std::sqrt(dot(fn, fn) * dot(vn, vn))) continue;
     const D3 nn = normalized(D3{wide(fn.x), wide(fn.y), wide(fn.z)});
     for (u32 corner = 0; corner < 3; ++corner) {
       const u32 old = out.indices[t + corner];
@@ -433,12 +475,13 @@ Weather weather_of(RockType type, const std::optional<f32>& rounding,
                    const std::optional<u32>& layers) {
   Weather w{model_of(type), 0.0, 0};
   w.rounding = rounding.has_value() ? static_cast<f64>(*rounding) : w.model.rounding;
-  w.layers = layers.has_value() ? *layers : w.model.layers;
+  // Explicit legacy layer counts still work; physical fabric spacing is the default now.
+  w.layers = layers.value_or(0u);
   return w;
 }
 
 void weather_body(Body& b, const Weather& w, u64 seed, u32 part) {
-  b.smooth = w.rounding * 0.25;
+  b.smooth = w.rounding * (0.04 + 0.3 * b.fabric.exposure);
   b.column_ends = w.model.column_ends;
   b.warp = w.model.warp;
   b.grain = w.model.grain;
@@ -452,6 +495,13 @@ void weather_body(Body& b, const Weather& w, u64 seed, u32 part) {
   Rng noise = stream(seed, part, Stream::noise);
   b.noise_seed = noise.next();
   b.layer_phase = noise.unit();
+  Rng scars(mix64(seed ^ (static_cast<u64>(part) << 32) ^ 0x5343415253ull));
+  for (Scar& scar : b.scars) {
+    scar.direction = scars.direction();
+    scar.width = scars.range(0.18, 0.65);
+    scar.depth = scars.range(0.025, 0.13) * b.fabric.irregularity *
+                 (0.35 + b.fabric.model.flaking + b.fabric.model.scar);
+  }
 }
 
 // Joint cuts (a pair of planes on opposite sides per set) at seeded distances, then the type's
@@ -468,7 +518,7 @@ void cut_body(Body& b, const D3 joints[4], u32 sets, u32 facets, u64 seed, u32 p
     b.cuts.push_back(Cut{joints[s] * -1.0, rng.range(lo, hi)});
   }
   for (u32 f = 0; f < facets; ++f)
-    b.cuts.push_back(Cut{rng.direction(), rng.range(lo + 0.08, hi + 0.05)});
+    b.cuts.push_back(Cut{rng.direction(), rng.range(lo + 0.08, hi + 0.05), rng.range(0.02, 0.18)});
   if (b.column_ends) {
     const D3 up = normalized(D3{rng.range(-0.05, 0.05), 1.0, rng.range(-0.05, 0.05)});
     b.cuts.push_back(Cut{up, rng.range(lo, hi)});
@@ -555,6 +605,9 @@ void detail::emit_fragment(RockType type, D3 half, D3 at, f64 yaw, f64 buried, u
   b.n = n;
   // Cliff talus keeps its existing coarse profile; its face and block budgets are independent.
   b.surface.strength = 0.0f;
+  RockGeology geology;
+  geology.weathering = 0.2f;
+  b.fabric = make_fabric(type, geology, seed);
   weather_body(b, weather, seed, 1);
   Rng joint_rng = stream(seed, 1, Stream::joints);
   D3 joints[4];
@@ -575,6 +628,12 @@ const char* rock_type_name(RockType type) noexcept {
     case RockType::Sandstone: return "Sandstone";
     case RockType::Basalt: return "Basalt";
     case RockType::Limestone: return "Limestone";
+    case RockType::Shale: return "Shale";
+    case RockType::Slate: return "Slate";
+    case RockType::Schist: return "Schist";
+    case RockType::Gneiss: return "Gneiss";
+    case RockType::Marble: return "Marble";
+    case RockType::Obsidian: return "Obsidian";
   }
   return "Granite";
 }
@@ -620,10 +679,14 @@ bool solve_rock(const RockFile& file, assets::MeshData& out, RockReport* report_
   u32 budget = 0;
   const char* budget_field = "";
   Weather weather{};
+  RockMaterial material;
+  RockQuality quality = RockQuality::High;
 
   if (file.shape == RockShape::Boulder) {
     const Boulder p = file.boulder.value_or(Boulder{});
     type = p.type;
+    material = p.material;
+    quality = p.quality;
     tile_m = wide(p.material.tile_m);
     budget = p.triangle_budget;
     budget_field = "engine.rocks.Boulder.triangle_budget";
@@ -635,6 +698,7 @@ bool solve_rock(const RockFile& file, assets::MeshData& out, RockReport* report_
     b.half = D3{wide(p.size_x), wide(p.size_y), wide(p.size_z)};
     b.buried = wide(p.buried);
     b.surface = p.surface;
+    b.fabric = make_fabric(p.type, p.geology, p.seed);
     weather_body(b, weather, p.seed, 0);
     cut_body(b, joints, p.joint_sets, weather.model.facets, p.seed, 0, 0.5, 0.75);
     Rng bed = stream(p.seed, 0, Stream::bedding);
@@ -643,6 +707,8 @@ bool solve_rock(const RockFile& file, assets::MeshData& out, RockReport* report_
   } else if (file.shape == RockShape::Outcrop) {
     const Outcrop p = file.outcrop.value_or(Outcrop{});
     type = p.type;
+    material = p.material;
+    quality = p.quality;
     tile_m = wide(p.material.tile_m);
     budget = p.triangle_budget;
     budget_field = "engine.rocks.Outcrop.triangle_budget";
@@ -672,6 +738,7 @@ bool solve_rock(const RockFile& file, assets::MeshData& out, RockReport* report_
       }
       b.buried = wide(p.buried);
       b.surface = p.surface;
+      b.fabric = make_fabric(p.type, p.geology, p.seed);
       weather_body(b, weather, p.seed, i + 1);
       b.bedding = bedding;
       b.layer_phase = phase + dot(b.at, bedding);  // the beds run on through the boulders
@@ -681,10 +748,13 @@ bool solve_rock(const RockFile& file, assets::MeshData& out, RockReport* report_
   } else {
     const Scree p = file.scree.value_or(Scree{});
     type = p.type;
+    material = p.material;
+    quality = p.quality;
     tile_m = wide(p.material.tile_m);
     budget = p.triangle_budget;
     budget_field = "engine.rocks.Scree.triangle_budget";
-    // Fragments are freshly broken: sharper than the type's weathered boulders, unbedded.
+    // Fragments are freshly broken: sharper than the type's weathered boulders, with inherited
+    // fabric.
     weather = weather_of(p.type, p.rounding, std::optional<u32>(0u));
     if (!p.rounding.has_value()) weather.rounding *= 0.4;
     Rng layout = stream(p.seed, 0, Stream::layout);
@@ -693,7 +763,8 @@ bool solve_rock(const RockFile& file, assets::MeshData& out, RockReport* report_
     for (u32 i = 0; i < p.count; ++i) {
       const f64 size = wide(p.fragment_m) * (i == 0 ? 1.0 : layout.range(0.35, 0.95));
       Body b;
-      b.half = D3{size * layout.range(0.7, 1.0), size * layout.range(0.35, 0.6),
+      b.half = D3{size * layout.range(0.7, 1.0),
+                  size * layout.range(0.5, 0.85) * lithology(p.type).plate,
                   size * layout.range(0.6, 1.0)};
       // Spread over the footprint, a few tries apart from those already placed.
       D3 at{};
@@ -713,6 +784,7 @@ bool solve_rock(const RockFile& file, assets::MeshData& out, RockReport* report_
       b.yaw = layout.range(0.0, 2.0 * k_pi);
       b.buried = wide(p.buried);
       b.surface = p.surface;
+      b.fabric = make_fabric(p.type, p.geology, p.seed + i);
       weather_body(b, weather, p.seed, i + 1);
       Rng joint_rng = stream(p.seed, i + 1, Stream::joints);
       D3 joints[4];
@@ -722,11 +794,13 @@ bool solve_rock(const RockFile& file, assets::MeshData& out, RockReport* report_
     }
   }
 
+  budget = quality_budget(budget, quality, bodies.size() * triangles_of_grid(k_grid_rungs[0]));
   if (!spend(bodies, budget, report, error, budget_field)) {
     if (error_out != nullptr) *error_out = error;
     return false;
   }
   out.materials.push_back(material_of(type));
+  material_factors(material, out.materials[0].base_color, out.materials[0].roughness);
   for (const Body& b : bodies) {
     emit_body(b, tile_m, out);
     report.cuts += b.cuts.size();

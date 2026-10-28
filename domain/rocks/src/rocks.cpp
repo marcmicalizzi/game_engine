@@ -1,5 +1,7 @@
 // The rock file, its key, and the container the solver's mesh is built into (rocks.h), and the
 // mesh generator "rocks" that makes a scene's `.rock.json` a rock.
+#include "geology.h"
+
 #include <core/hash/hash.h>
 #include <core/json/json.h>
 #include <core/schema/json_reflect.h>
@@ -34,7 +36,14 @@ struct Check {
 
 bool material_in_range(const RockMaterial& m, Check& c) {
   if (!c.f(m.tile_m, 0.05f, 20.0f, "material.tile_m", "0.05 to 20 m")) return false;
-  return c.f(m.normal_scale, 0.0f, 4.0f, "material.normal_scale", "0 to 4");
+  return c.f(m.normal_scale, 0.0f, 4.0f, "material.normal_scale", "0 to 4") &&
+         detail::material_factors_in_range(m, c.error);
+}
+
+bool geology_in_range(RockType type, RockQuality quality, const RockGeology& g, Check& c) {
+  return (detail::valid_rock_type(type) || c.bad("type", "known rock type")) &&
+         (detail::valid_quality(quality) || c.bad("quality", "Low, Medium, High")) &&
+         detail::geology_in_range(g, c.error);
 }
 
 bool surface_in_range(const RockSurface& s, Check& c) {
@@ -111,7 +120,8 @@ bool rock_file_in_range(const RockFile& file, std::string& error) {
              weather_in_range(p.rounding, p.layers, c) &&
              c.f(p.buried, 0.0f, 0.8f, "buried", "0 to 0.8") &&
              c.u(p.triangle_budget, 500u, 500000u, "triangle_budget", "500 to 500,000") &&
-             surface_in_range(p.surface, c) && material_in_range(p.material, c);
+             surface_in_range(p.surface, c) && material_in_range(p.material, c) &&
+             geology_in_range(p.type, p.quality, p.geology, c);
     }
     case RockShape::Outcrop: {
       if (file.boulder.has_value()) return other("boulder");
@@ -127,7 +137,8 @@ bool rock_file_in_range(const RockFile& file, std::string& error) {
              weather_in_range(p.rounding, p.layers, c) &&
              c.f(p.buried, 0.0f, 0.8f, "buried", "0 to 0.8") &&
              c.u(p.triangle_budget, 1000u, 1000000u, "triangle_budget", "1,000 to 1,000,000") &&
-             surface_in_range(p.surface, c) && material_in_range(p.material, c);
+             surface_in_range(p.surface, c) && material_in_range(p.material, c) &&
+             geology_in_range(p.type, p.quality, p.geology, c);
     }
     case RockShape::Scree: {
       if (file.boulder.has_value()) return other("boulder");
@@ -142,7 +153,8 @@ bool rock_file_in_range(const RockFile& file, std::string& error) {
              weather_in_range(p.rounding, std::nullopt, c) &&
              c.f(p.buried, 0.0f, 0.8f, "buried", "0 to 0.8") &&
              c.u(p.triangle_budget, 500u, 500000u, "triangle_budget", "500 to 500,000") &&
-             surface_in_range(p.surface, c) && material_in_range(p.material, c);
+             surface_in_range(p.surface, c) && material_in_range(p.material, c) &&
+             geology_in_range(p.type, p.quality, p.geology, c);
     }
     case RockShape::Cliff: {
       if (file.boulder.has_value()) return other("boulder");
@@ -292,6 +304,8 @@ bool build_rock_container(const RockFile& file_in, const geometry::ClusterLodOpt
   if (chosen != nullptr && !out.materials.empty()) {
     // The charts are in repeats already: no transform.
     materials::apply_set(*chosen, materials::UvLayout::repeats, out, 0);
+    detail::material_factors(*material_of(file), out.materials[0].base_color,
+                             out.materials[0].roughness);
     texture::fill_cluster_texture_records(out);
   }
   // The identity is the file's as it was given: the pack's repeat is in the key through the pack.

@@ -11,8 +11,9 @@ recipe is a mesh like a glTF: a scene's mesh table, a scatter layer's kind or `e
 names one, and it is built through the derived-data cache by the mesh-generator registry
 ([assets](assets.md#generated-meshes)). It does not place boulders (a scatter layer or a scene's
 instances do) — but it does place cliffs, through its scene generator `cliffs`, which finds a
-terrain's steep ground and stands faces along it ([The cliffs generator](#the-cliffs-generator)) — texture them (the UVs are laid out for a tiled set that does not exist yet), erode
-them over time, or give them an interior to break.
+terrain's steep ground and stands faces along it ([The cliffs generator](#the-cliffs-generator)).
+It supports tiled PBR sets and static geological weathering. It does not simulate erosion over
+time or give rocks an interior to break.
 
 **Why this shape.** It is the flora capability's shape ([flora](flora.md)) because the problem is
 the same one: a deterministic solver at content-build time, a parameter file whose canonical bytes
@@ -33,6 +34,45 @@ at all but a box bent along a line ([Cliffs](#cliffs)).
 
 ## The model by type
 
+**Lithology, G94 (2026-10-28).** `RockType` selects a mixture of processes rather than a single
+noise style. `rock_family(type)` derives the origin; a recipe cannot contradict its type with an
+independent family. [Rock lithology](../experiments/rock-lithology.md) records the grounding and
+the limits of this representation. These presets are authored examples, not calibrated geology:
+limestone and sandstone can both be resistant, and weathering is exposure in 0–1, not years.
+
+| Family | Types | Dominant representation |
+|---|---|---|
+| Igneous | `Granite`, `Basalt`, `Obsidian` | joint blocks and granular/exfoliation loss; columns; smooth concave fracture scars with sharp lips |
+| Sedimentary | `Sandstone`, `Limestone`, `Shale` | unequal bed retreat and granular loss; dissolution pockets; thin fissile plates |
+| Metamorphic | `Slate`, `Schist`, `Gneiss`, `Marble` | planar cleavage; scaly folded sheets; folded massive bands; massive carbonate solution |
+
+`geology` is a `RockGeology` on every shape. `weathering` (0–1, default 0.5) increases old joint
+edge rounding and process exposure; newly cut facets retain only 2–18% of that rounding, so worn
+edges and fresh angular breaks coexist. `irregularity` (0–1, 0.65) controls broad asymmetric removal
+scars and unequal retreat. Six broad concave scars alter each body's outline at every source rung.
+Their profiles have curved bowls and narrower lips; this is an approximation of flake scars,
+not fracture mechanics or detached pieces.
+
+`bed_m` (0 off, otherwise 0.01–20 m; absent the type's), `dip_deg` (−85–85, 0),
+`azimuth_deg` (−180–180, 0) and `fold` (0–1, absent the type's) define the geological fabric.
+Unequal seeded sheet retreat forms broad surfaces separated by short risers. The transition is at
+least two source cells wide; bedding fades between two and four cells per spacing. `flaking`,
+`dissolution` and `granular` (each 0–1, absent the type's, explicit zero off) mix sheet removal,
+asymmetric solution pockets and three octaves of granular loss. Pocket and grain detail also fade
+when unresolved. Small grains belong in normal/roughness maps.
+
+An outcrop shares the fabric seed and resting-frame field. Scree retains each fragment's fabric
+before yaw. Cliffs evaluate it in (distance along face, height minus datum, 0); their macro beds
+follow the folded coordinate too. This is face-local, not a continuous world-space folded stratum
+across separately traced cliff objects. `Cliff.bed_m` overrides the macro ledge spacing;
+`geology.bed_m` supplies it when the former is absent, and independently controls the finer fabric.
+
+`quality` (`Low`, `Medium`, `High`, default `High`) spends respectively 10%, 35%, or 100% of the
+authored triangle budget, with a floor of 192 triangles per body or 2,000 per cliff and never above
+the authored budget. These are **offline source variants**. The existing cluster DAG and renderer
+LOD error remain the runtime cost controls; this does not add a live graphics-setting switch.
+No runtime pass or per-instance state is added.
+
 **Structural detail, G89 (2026-10-25).** The original cuts, warp and bedding below now carry
 `RockSurface` on boulders, outcrops and scree. Its joint recesses follow the body's joint
 directions, with irregular plane spacing and variable penetration along the plane. An outcrop
@@ -45,8 +85,8 @@ Five octaves of physical-scale surface relief add smaller features. Granite, san
 basalt have signed relief; limestone has pits. Each octave fades independently from absent at
 two cells across its wavelength to full at four. A joint fades by its **opening width**, not
 its spacing, so a wide spacing cannot enable an unresolved narrow trench. Recession is clamped
-to 20% of the local radius and outward relief to 5% to protect extreme authoring inputs. The
-shell remains radial; hard fracture triangles whose averaged normals would face inward receive
+to 35% of the local radius and outward relief to 5% to protect extreme authoring inputs. The
+shell remains radial; hard fracture triangles whose averaged normals differ by over about 49° receive
 split flat normals at identical positions and UVs. Triangle counts are unchanged by this split.
 
 The schema's physical controls are `strength` (0–1, default 1), `joint_spacing_m` (0.05–20,
@@ -54,12 +94,12 @@ default 0.65), `joint_width_m` (0.005 to half the spacing, default 0.12), `joint
 (0–2, default 0.12), `wavelength_m` (0.02–10, default 0.4), and `relief_m` (0 to the smaller
 of 0.5 and a quarter wavelength, default 0.018). These are authoring values, not inferred
 measurements of the owner's photographs. [Rock structure](../experiments/rock-structure.md)
-records the source evidence, engineering bounds and budget trades. `strength: 0` retains the
-simple surface, useful at low budgets and for comparison. The engine's normal runtime cluster
+records the source evidence, engineering bounds and budget trades. `strength: 0` disables this
+surface field; the independent geology field still applies. The engine's normal runtime cluster
 LOD still controls draw cost; these source budgets are not a new runtime graphics-preset switch.
 
 A body's radius along a unit direction `u` is the **smooth minimum** (the polynomial one, a band
-`0.25 rounding` wide) of the unit sphere's radius and every planar cut's: a cut is a plane of unit
+`rounding × (0.04 + 0.3 weathering) × cut wear` wide) of the unit sphere's radius and every planar cut's: a cut is a plane of unit
 normal `n` at distance `d` from the centre, `d / (u · n)` away along `u`. Before weathering that is
 the convex intersection of a ball and half-spaces with its edges rounded. The cuts are **joint
 sets** — a pair of parallel planes on opposite sides per set, at seeded distances — and the type's
@@ -75,11 +115,17 @@ is under y = 0.
 | Type | Joints | Facets | Rounding | Layers | Warp / grain | Colour (linear), roughness |
 |---|---|---|---|---|---|---|
 | `Granite` | near-orthogonal: two horizontal at 90°, one up, the fourth random | 3 | 0.3 | 0 | 3.5% / 1.2% | 0.40 0.38 0.36, 0.75 |
-| `Sandstone` | bedding first (up), then two vertical at 90° | 2 | 0.45 | 7 | 3% / 0.6% | 0.56 0.36 0.21, 0.9 |
+| `Sandstone` | bedding first (up), then two vertical at 90° | 2 | 0.45 | 0 | 3% / 0.6% | 0.56 0.36 0.21, 0.9 |
 | `Basalt` | vertical at 60° (a hexagonal prism), plus a pair of column ends always | 0 | 0.1 | 0 | 1.5% / 0.8% | 0.09 0.09 0.10, 0.7 |
-| `Limestone` | as granite, looser (±0.35 against ±0.15) | 2 | 0.65 | 3 | 6% / 3% pitted | 0.66 0.63 0.56, 0.85 |
+| `Limestone` | as granite, looser (±0.35 against ±0.15) | 2 | 0.65 | 0 | 6% / 3% pitted | 0.66 0.63 0.56, 0.85 |
+| `Shale` | bedding first | 5 | 0.12 | 0 | 7% / 0.8% | 0.20 0.19 0.17, 0.9 |
+| `Slate` | cleavage first | 4 | 0.06 | 0 | 2.5% / 0.3% | 0.17 0.22 0.24, 0.65 |
+| `Schist` | foliation first | 5 | 0.14 | 0 | 8% / 0.8% | 0.32 0.34 0.30, 0.6 |
+| `Gneiss` | foliation first | 4 | 0.22 | 0 | 8% / 0.8% | 0.39 0.37 0.35, 0.72 |
+| `Marble` | near-orthogonal | 3 | 0.35 | 0 | 4% / 0.4% pitted | 0.72 0.69 0.63, 0.46 |
+| `Obsidian` | near-orthogonal | 6 | 0.025 | 0 | 2.5% / 0.1% | 0.025 0.031 0.038, 0.16 |
 
-**Bedding** is a groove at every bedding plane: `t = (p · bedding) / spacing + phase` plus a
+**Additional count-based bedding** (`layers`, absent off) is a groove at every bedding plane: `t = (p · bedding) / spacing + phase` plus a
 little noise so the beds are wavy, and the radius drawn in by `depth · (2 frac(t) − 1)⁸` — sharp at
 the plane, nothing mid-bed — with each bed's depth its own (35–100% of the type's), because beds
 weather at their own rates. The groove fades out where a bed is narrower than four cells of the
@@ -104,9 +150,10 @@ and the renderer draws the union.
 ### Scree
 
 `engine.rocks.Scree`: `count` freshly broken fragments lying on the ground inside the footprint:
-the largest `fragment_m`, the rest 35–95% of it, flattened (height 35–60% of length), each yawed at
-random, with its own three joint sets and two extra facets cut at 0.42–0.75, sharper than the
-type's boulders (40% of its rounding) and unbedded. Fragments are spread with a few tries apart
+the largest `fragment_m`, the rest 35–95% of it, flattened (height 50–85% of length times the
+type's plate factor: 0.16 for slate through 0.8 for granite/basalt), each yawed at random, with
+its own three joint sets and the type's facets plus two, cut at 0.42–0.75, sharper than the
+type's boulders (40% of its rounding) with inherited geological fabric. Fragments are spread with a few tries apart
 from those already placed.
 
 ## Cliffs
@@ -175,11 +222,11 @@ its deepest carving, with two points a metre under the toe's height beneath them
 lattice cannot fold on it. Its height wanders along the face about the share (where more has
 fallen) and tapers to nothing over the last 20 m (or a fifth of the line) at each end; its surface
 is lumpy with two octaves of noise. **The fallen blocks** (`talus_blocks`, `talus_block_m`) are the
-scree's fragments from the radial solver — sharpened, unbedded, three joint sets of their own — lying
+scree's fragments from the radial solver — sharpened, with fresh type-default fabric and three joint sets of their own — lying
 on the skirt, the largest rolled furthest.
 
 **The budget ladder** is a cell edge, coarsest first: 32, 24, 16, 12, 8, 6, 4, 3, 2, 1.5, 1, 0.75,
-0.5, 0.375 and 0.25 m (`k_cliff_cells_m`). The blocks are priced first, each on the finest rung of
+0.5, 0.375, 0.25, 0.1875, 0.125, 0.09375 and 0.0625 m (`k_cliff_cells_m`). The blocks are priced first, each on the finest rung of
 the cube-sphere ladder that 8% of the budget shared among them holds (and no finer than n = 20); a
 budget too small for every block at n = 4 within its 8% keeps the first ones it can. The face then
 takes the finest cell whose box — `4 (ns·nh + ns·nd + nh·nd)` triangles — and the skirt's at twice
@@ -309,13 +356,14 @@ keeps the face in front of the whole profile is what fixed it.
 ## The parameters and ranges
 
 `domain/rocks/schemas/rocks.schema` owns `engine.rocks.*`. Boulder, Outcrop and Scree are
-version 2 with `RockSurface` (version 1); Cliff and CliffPoint remain version 1. A rock file,
+version 3 with `RockSurface` (version 1), `RockGeology` (version 1) and quality; Cliff is version 2,
+CliffPoint remains version 1. A rock file,
 `<name>.rock.json`, is an `engine.rocks.RockFile`: `shape` (`Boulder`, `Outcrop`, `Scree`, `Cliff`)
 and only that shape's block (absent is its defaults, except a cliff's, whose line it must give;
 another shape's block is refused). `RockFile` is version 2 since the cliff: its `cliff` block is
 **left out of the canonical parameters when absent**, so a boulder's, an outcrop's or a scree's
 canonical bytes did not change when cliffs were introduced. G89 adds canonical surface fields
-and changes their defaults; solver version 2 invalidates every rock container. A cliff's fields
+and changes their defaults; G94's solver version 3 invalidates every rock container again. A cliff's fields
 and ranges are the schema's (`engine.rocks.Cliff`, `CliffPoint`): a line of 2 to 4,096 vertices
 1 to 1,000 m long, `height` 1–200 m (40), `batter` 0–1.5 (0.1), `buried` 0–20 m (2), `depth` 2–200
 m (absent: the carving's reach plus 2 m), `relief` 0–20 m (the type's: granite 4, sandstone 3.5,
@@ -333,10 +381,11 @@ are counted from), `triangle_budget` 2,000–4,000,000 (250,000) and the materia
 | `fragment_m` | — | — | 0.02–2 m (0.2) |
 | `joint_sets` | 0–4 (3) | 0–4 (2) | — (three each) |
 | `rounding` | 0–1, absent the type's | the same | the same (absent: 40% of the type's) |
-| `layers` | 0–64, absent the type's | the same | — |
+| `layers` | 0–64, absent off (additional grooves) | the same | — |
 | `buried` | 0–0.8 (0.15) | 0–0.8 (0.3) | 0–0.8 (0.2) |
 | `triangle_budget` | 500–500,000 (80,000) | 1,000–1,000,000 (240,000) | 500–500,000 (24,000) |
 | `surface` | `RockSurface`, above | the same, shared field | the same, fragment frame |
+| `geology`, `quality` | shared controls above | the same | the same |
 | `material` | `RockMaterial` | the same | the same |
 
 A parameter out of range is refused with a sentence naming `engine.rocks.<Shape>.<field>` and its
@@ -391,7 +440,7 @@ of half-extent; such a recipe sets a larger `tile_m`.
 cones on. The set is chosen as the flora's are, through [materials](materials.md): the shape's
 `material` block (`base_color`, `normal`, `roughness`, `metallic`, `height` paths relative to the
 recipe, `tile_m`, `normal_scale`) when it names an image; else the material pack's
-**`rock/<type>`** — `rock/granite`, `rock/sandstone`, `rock/basalt`, `rock/limestone`
+**`rock/<type>`** — the lowercase name of any of the ten types, e.g. `rock/granite`, `rock/slate`, `rock/obsidian`
 (`rocks::rock_role`); else the flat colour. **The set is chosen before the solve**, because the
 charts are laid out in whole repeats of its `tile_m`: a pack's set is solved at the pack's repeat
 (the recipe's own `tile_m` belongs to the recipe's own images), so the UVs need no transform and the
@@ -400,6 +449,16 @@ exactly as before. Roughness alone in the metallic-roughness slot with metallic 
 the set's strength, metallic and height carried and unread ([materials](materials.md#what-the-container-records)).
 A pack set with a small `tile_m` raises the UVs in proportion: a sandstone boulder at 0.5 m is
 twice the coordinates of one at 1 m, so the ±16 warning is reached at half the size.
+
+`RockMaterial` version 3 adds optional `tint` (linear RGB, each channel 0–1) and
+`roughness_factor` (0.02–1). They override the flat constants, or multiply the corresponding
+texture when present, after pack resolution. Unset factors retain the normal material-set
+behaviour. The factors are in canonical parameters and therefore the cache identity.
+Veins, mineral deposits, fine grains and weathering colours can be supplied by these PBR maps;
+this solver does **not** generate vein maps, align texture veins to its fabric, or assign different
+materials to fresh fracture faces. Those remain needed for the photorealism target. UV seams and
+ledge stretching are also still limitations; a smooth normal at a seam does not guarantee that
+two independently oriented texture charts match.
 
 ## The build
 
