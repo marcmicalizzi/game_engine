@@ -6,9 +6,11 @@
 // sub-tree standing for its leaves, merged one order further up at each level — and at the root a
 // **whole-tree impostor**, a star of planes through the trunk. Every card and every plane carries a
 // view of the solver's own finest geometry, **baked on the CPU** into an atlas (colour with the
-// alpha the leaves cut, and a tangent-space normal), so a far card is the near twigs seen from afar
-// and needs no lab image. The levels are what `geometry::build_cluster_lod_levels` takes; the
-// errors are geometric and honest, so the LOD selector needs no change.
+// alpha the leaves cut, a tangent-space normal and, where the pack has a roughness image, a
+// roughness), so a far card is the near twigs seen from afar — with the pack's normal map and
+// roughness carried across (G93) — and needs no lab image. The levels are what
+// `geometry::build_cluster_lod_levels` takes; the errors are geometric and honest, so the LOD
+// selector needs no change.
 //
 // Deterministic like the solver: IEEE + - * / and sqrt only, a rasterizer in integer fixed point,
 // and the same bytes from every toolchain (flora.md, "Determinism").
@@ -99,6 +101,25 @@ struct BakeLook {
   const image::Image* bark_image = nullptr;
   Vec2 bark_scale{1, 1};
   f32 leaf_cutoff = .5f;
+  // **The rest of the pack (G93; flora.md, "The impostor chain")**: optional decoded images of the
+  // two materials' tangent-space normal maps (OpenGL convention, as the lab writes them) and of
+  // their glTF metallic-roughness images (G the roughness). A material with a normal image has each
+  // covered sample's shading normal bent by the map, in the frame of its own triangle's UVs, the
+  // way the near surface bends it, with `*_normal_scale` the material's `normalTexture.scale`; a
+  // material with a roughness image has each sample's roughness read from it times
+  // `*_roughness`, and without one `*_roughness` is the scalar itself. The UV scales are the
+  // sampled slot's own (a bark's are the pack's metres). With no image of either kind the bake is
+  // byte for byte what it was.
+  const image::Image* leaf_normal_image = nullptr;
+  const image::Image* bark_normal_image = nullptr;
+  const image::Image* leaf_roughness_image = nullptr;
+  const image::Image* bark_roughness_image = nullptr;
+  Vec2 bark_normal_uv_scale{1, 1};
+  Vec2 bark_roughness_uv_scale{1, 1};
+  f32 leaf_normal_scale = 1.0f;
+  f32 bark_normal_scale = 1.0f;
+  f32 leaf_roughness = 0.6f;
+  f32 bark_roughness = 0.6f;
 };
 
 // Everything the solver hands the container build beyond its mesh: the levels above the finest
@@ -124,12 +145,17 @@ struct ImpostorSpec {
 };
 
 // A baked atlas: RGBA8 colour (sRGB, alpha the coverage the leaves cut) and RGBA8 tangent-space
-// normal (xyz remapped to 0..1, alpha the same coverage), `width` x `height`, rows top first.
+// normal (xyz remapped to 0..1, alpha the same coverage), `width` x `height`, rows top first. When
+// the look names a roughness image of either material, `roughness` is a third RGBA8 image in glTF's
+// metallic-roughness packing — R 255, G the covered samples' mean roughness, B 0 (metallic), A 255,
+// a texel nothing covers holding G 255 — and otherwise it stays empty, so a bake without one is
+// the two images it always was.
 struct BakedAtlas {
   u32 width = 0;
   u32 height = 0;
   Vector<u8> colour;
   Vector<u8> normal;
+  Vector<u8> roughness;
 };
 
 // Draws one level's jobs over `mesh` into its atlas. `levels.leaf_first_index` says which of the

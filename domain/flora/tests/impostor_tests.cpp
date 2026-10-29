@@ -372,3 +372,266 @@ TEST_CASE("impostor chain: leaf alpha cuts actual pixels and bark ignores image 
   REQUIRE(full_alpha > 0);
   CHECK(static_cast<f64>(half_alpha) / full_alpha == doctest::Approx(.5).epsilon(.01));
 }
+
+// ---- the pack's normal and roughness across the levels (G93) ------------------------------------
+
+namespace {
+
+image::Image solid_image(u8 r, u8 g, u8 b, u8 a) {
+  image::Image out;
+  out.width = 4;
+  out.height = 4;
+  out.channels = 4;
+  out.pixels.assign(64, u8{0});
+  for (u32 p = 0; p < 16; ++p) {
+    out.pixels[4 * p] = r;
+    out.pixels[4 * p + 1] = g;
+    out.pixels[4 * p + 2] = b;
+    out.pixels[4 * p + 3] = a;
+  }
+  return out;
+}
+
+// One unit quad in the z = 0 plane facing +z, drawn by one 16-texel tile that holds it exactly,
+// with `uvs` on its corners: the card's view is the BakeView default (u = x, v = y, normal = z).
+struct QuadBake {
+  assets::MeshData mesh;
+  flora::TreeLevels chain;
+  flora::TreeLevel level;
+  explicit QuadBake(const Vec2 uvs[4], u32 tile_px = 16) {
+    mesh.positions = {{0, 0, 0}, {1, 0, 0}, {1, 1, 0}, {0, 1, 0}};
+    mesh.normals = {{0, 0, 1}, {0, 0, 1}, {0, 0, 1}, {0, 0, 1}};
+    mesh.uvs = {uvs[0], uvs[1], uvs[2], uvs[3]};
+    mesh.indices = {0, 1, 2, 0, 2, 3};
+    chain.leaf_index_end = 6;
+    level.tile_px = tile_px;
+    flora::BakeJob job;
+    job.ranges.push_back({0, 6});
+    level.jobs.push_back(job);
+  }
+  static flora::BakeLook look() {
+    flora::BakeLook l;
+    l.leaf = {1, 1, 1, 1};
+    l.bark = {1, 1, 1, 1};
+    return l;
+  }
+};
+
+// A texel of the atlas's centre, the three channels as 0..1.
+void centre_texel(const Vector<u8>& image, f64 out[3]) {
+  const u32 at = (8 * 16 + 8) * 4;
+  for (u32 k = 0; k < 3; ++k)
+    out[k] = static_cast<f64>(image[at + k]) / 255.0;
+}
+
+}  // namespace
+
+TEST_CASE("impostor bake: a leaf's normal map tilts the baked normal in the card's frame") {
+  const Vec2 aligned[4] = {{0, 0}, {1, 0}, {1, 1}, {0, 1}};
+  // The quad's u runs along its y and its v along its x: the map's x is the card's v.
+  const Vec2 turned[4] = {{0, 0}, {0, 1}, {1, 1}, {1, 0}};
+  // A uniform tilt: x 166/255 -> +0.302, y 128/255 -> +0.004, z rebuilt (the content build's BC5).
+  const image::Image tilt = solid_image(166, 128, 255, 255);
+  const f64 mx = 166.0 / 255.0 * 2.0 - 1.0;
+  const f64 my = 128.0 / 255.0 * 2.0 - 1.0;
+  const f64 mz = std::sqrt(1.0 - mx * mx - my * my);
+  for (const bool is_turned : {false, true}) {
+    QuadBake bake(is_turned ? turned : aligned);
+    flora::BakeLook look = QuadBake::look();
+    look.leaf_normal_image = &tilt;
+    flora::BakedAtlas tilted;
+    flora::bake_level(bake.mesh, bake.chain, bake.level, look, tilted);
+    f64 n[3];
+    centre_texel(tilted.normal, n);
+    // Each channel is a byte of 255 (0.004 a step) and the vector went through f32 (1e-7).
+    const f64 tolerance = 1.5 / 255.0;
+    // T = dP/du and B = dP/dv: aligned, the map's (x, y) are the card's (u, v); turned, its x is
+    // along the card's v and its y along the card's u.
+    CHECK(n[0] == doctest::Approx((is_turned ? my : mx) * 0.5 + 0.5).epsilon(tolerance));
+    CHECK(n[1] == doctest::Approx((is_turned ? mx : my) * 0.5 + 0.5).epsilon(tolerance));
+    CHECK(n[2] == doctest::Approx(mz * 0.5 + 0.5).epsilon(tolerance));
+    // The tilt is real: with no map the same texel is the flat face (0.5, 0.5, 1).
+    flora::BakedAtlas flat;
+    flora::bake_level(bake.mesh, bake.chain, bake.level, QuadBake::look(), flat);
+    f64 f[3];
+    centre_texel(flat.normal, f);
+    CHECK(f[0] == doctest::Approx(0.5).epsilon(tolerance));
+    CHECK(f[2] == doctest::Approx(1.0).epsilon(tolerance));
+    CHECK(std::abs(n[is_turned ? 1 : 0] - f[is_turned ? 1 : 0]) > 0.1);
+    // Colour and alpha are untouched by a map, and the atlas carries no roughness image.
+    CHECK(tilted.colour == flat.colour);
+    CHECK(tilted.roughness.empty());
+  }
+}
+
+TEST_CASE("impostor bake: a flat normal map and a scalar roughness are the bake they always were") {
+  const Vec2 uvs[4] = {{0, 0}, {1, 0}, {1, 1}, {0, 1}};
+  QuadBake bake(uvs);
+  flora::BakedAtlas before;
+  flora::bake_level(bake.mesh, bake.chain, bake.level, QuadBake::look(), before);
+  // (128, 128, 255) is the flat normal to the byte; the bake's own bytes round it back to the face.
+  const image::Image flat = solid_image(128, 128, 255, 255);
+  flora::BakeLook look = QuadBake::look();
+  look.leaf_normal_image = &flat;
+  look.leaf_normal_scale = 0.65f;
+  look.leaf_roughness = 0.7f;  // a scalar with no image: nothing to carry
+  flora::BakedAtlas after;
+  flora::bake_level(bake.mesh, bake.chain, bake.level, look, after);
+  CHECK(after.colour == before.colour);
+  CHECK(after.normal == before.normal);
+  CHECK(after.roughness.empty());
+  CHECK(before.roughness.empty());
+}
+
+TEST_CASE("impostor bake: a roughness image is carried per texel, times the material's factor") {
+  const Vec2 uvs[4] = {{0, 0}, {1, 0}, {1, 1}, {0, 1}};
+  QuadBake bake(uvs);
+  // The image is glTF's: G the roughness; R and B are not read.
+  const image::Image rough = solid_image(7, 100, 9, 255);
+  for (const f32 factor : {1.0f, 0.5f}) {
+    flora::BakeLook look = QuadBake::look();
+    look.leaf_roughness_image = &rough;
+    look.leaf_roughness = factor;
+    flora::BakedAtlas atlas;
+    flora::bake_level(bake.mesh, bake.chain, bake.level, look, atlas);
+    REQUIRE(atlas.roughness.size() == atlas.colour.size());
+    u32 covered = 0;
+    for (u32 p = 0; p < 16 * 16; ++p) {
+      if (atlas.colour[4 * p + 3] != 255) continue;
+      ++covered;
+      CHECK(atlas.roughness[4 * p] == 255);
+      CHECK(static_cast<i32>(atlas.roughness[4 * p + 1]) ==
+            static_cast<i32>(std::floor(100.0 * factor + 0.5)));
+      CHECK(atlas.roughness[4 * p + 2] == 0);  // metallic zero
+      CHECK(atlas.roughness[4 * p + 3] == 255);
+    }
+    CHECK(covered == 16 * 16);
+    // The bake's colour and normal do not depend on it.
+    flora::BakedAtlas plain;
+    flora::bake_level(bake.mesh, bake.chain, bake.level, QuadBake::look(), plain);
+    CHECK(atlas.colour == plain.colour);
+    CHECK(atlas.normal == plain.normal);
+  }
+}
+
+TEST_CASE("impostor bake: a texel's normal is the renormalized mean of the samples it covers") {
+  // One texel over the whole quad, whose map is tilted +x on its left half and -x on its right:
+  // the mean of the two is straight, and the bake renormalizes it to the unit vector it was.
+  const Vec2 uvs[4] = {{0, 0}, {1, 0}, {1, 1}, {0, 1}};
+  QuadBake bake(uvs, 1);
+  image::Image halves = solid_image(0, 128, 255, 255);  // x -1 ... overwritten below
+  for (u32 p = 0; p < 16; ++p) {
+    halves.pixels[4 * p] = p % 4 < 2 ? 220 : 35;  // x +0.725 on the left, -0.725 on the right
+    halves.pixels[4 * p + 1] = 128;
+  }
+  flora::BakeLook look = QuadBake::look();
+  look.leaf_normal_image = &halves;
+  flora::BakedAtlas atlas;
+  flora::bake_level(bake.mesh, bake.chain, bake.level, look, atlas);
+  REQUIRE(atlas.normal.size() == 4);
+  CHECK(atlas.colour[3] > 250);
+  CHECK(static_cast<i32>(atlas.normal[0]) == doctest::Approx(128).epsilon(0.03));  // x straight
+  CHECK(atlas.normal[2] > 250);                                                    // z up again
+  // One side alone is not straight.
+  image::Image left = solid_image(220, 128, 255, 255);
+  look.leaf_normal_image = &left;
+  flora::BakedAtlas tilted;
+  flora::bake_level(bake.mesh, bake.chain, bake.level, look, tilted);
+  CHECK(tilted.normal[0] > 200);
+}
+
+TEST_CASE("impostor chain: a pack's normal and roughness reach the levels and key the tree") {
+  flora::FloraFile file;
+  std::string error;
+  REQUIRE(flora::read_flora_file(
+      R"({"species":"maple","tree":{"height_m":6,"trunk_radius_m":0.15,"card_bake_px":16,"impostor_px":32},)"
+      R"("materials":{"leaf":{"base_color":"leaf.png","normal":"leaf_n.png","roughness":"leaf_r.png",)"
+      R"("tile_m":1,"normal_scale":1}}})",
+      file, error));
+  flora::FloraFile colour_only;
+  REQUIRE(flora::read_flora_file(
+      R"({"species":"maple","tree":{"height_m":6,"trunk_radius_m":0.15,"card_bake_px":16,"impostor_px":32},)"
+      R"("materials":{"leaf":{"base_color":"leaf.png","tile_m":1}}})",
+      colour_only, error));
+  // A solid leaf, a uniform +x tilt and a roughness of 204/255 (0.8).
+  struct Images {
+    Vector<u8> colour, normal, roughness;
+  } images;
+  REQUIRE(image::encode_png(4, 4, 4, solid_image(30, 160, 40, 255).pixels, images.colour));
+  REQUIRE(image::encode_png(4, 4, 4, solid_image(220, 128, 255, 255).pixels, images.normal));
+  REQUIRE(image::encode_png(4, 4, 4, solid_image(204, 204, 204, 255).pixels, images.roughness));
+  assets::MeshGeneratorHosts hosts;
+  hosts.context = &images;
+  hosts.read_image = [](void* context, std::string_view path, Vector<u8>& out, std::string& e) {
+    const Images& i = *static_cast<const Images*>(context);
+    if (path == "leaf.png")
+      out = i.colour;
+    else if (path == "leaf_n.png")
+      out = i.normal;
+    else if (path == "leaf_r.png")
+      out = i.roughness;
+    else {
+      e = "no such image";
+      return false;
+    }
+    return true;
+  };
+  const assets::MeshGeneratorInputs inputs{nullptr, &hosts};
+  geometry::ClusterFileData with, without;
+  REQUIRE_MESSAGE(
+      flora::build_flora_container(file, {}, 0, with, nullptr, error, nullptr, nullptr, &hosts),
+      error);
+  REQUIRE_MESSAGE(flora::build_flora_container(colour_only, {}, 0, without, nullptr, error, nullptr,
+                                               nullptr, &hosts),
+                  error);
+  REQUIRE(!with.impostors.empty());
+  REQUIRE(with.impostors.size() == without.impostors.size());
+  const geometry::ClusterFileMaterial& card = with.materials[with.impostors.front().material];
+  const geometry::ClusterFileMaterial& plain =
+      without.materials[without.impostors.front().material];
+  // The level that has a roughness image names it, with a factor of one; the one without names
+  // none.
+  const i32 rough_slot = geometry::decode_optional_image(card.metallic_roughness_image);
+  REQUIRE(rough_slot >= 0);
+  CHECK(rough_slot == card.base_color_image + 2);
+  CHECK(card.normal_image == card.base_color_image + 1);
+  CHECK(card.roughness == 1.0f);
+  CHECK(card.metallic == 0.0f);
+  CHECK(geometry::decode_optional_image(plain.metallic_roughness_image) == -1);
+  // Every drawn texel of the first branch-group level carries the leaf's roughness, 204 of 255.
+  image::Image rough, colour_with, normal_with, normal_without;
+  REQUIRE(image::decode_image(with.images[rough_slot].bytes, rough, 4, &error));
+  REQUIRE(image::decode_image(with.images[card.base_color_image].bytes, colour_with, 4, &error));
+  u32 drawn = 0;
+  for (u32 p = 0; p < rough.width * rough.height; ++p) {
+    if (colour_with.pixels[4 * p + 3] < 128) continue;  // alpha of the colour atlas
+    ++drawn;
+    CHECK(rough.pixels[4 * p + 1] == 204);
+  }
+  CHECK(drawn > 0);
+  // The normal atlas has relief the colour-only tree's does not.
+  REQUIRE(image::decode_image(with.images[card.normal_image].bytes, normal_with, 4, &error));
+  REQUIRE(image::decode_image(without.images[plain.normal_image].bytes, normal_without, 4, &error));
+  CHECK(normal_with.pixels != normal_without.pixels);
+  // The colour is the colour: the maps move only the normal and the roughness.
+  image::Image colour_without;
+  REQUIRE(
+      image::decode_image(without.images[plain.base_color_image].bytes, colour_without, 4, &error));
+  CHECK(colour_with.pixels == colour_without.pixels);
+
+  // The tree is keyed by the maps it now consumes: an edit to either changes its hash, and a
+  // pack's colour-only leaf hashes as it did (the colour alone).
+  u64 hash = 0, edited = 0, colour_hash = 0;
+  REQUIRE(flora::flora_source_hash_with(file, inputs, hash, error));
+  CHECK(with.source_hash == hash);
+  images.normal.back() ^= 0x55;
+  REQUIRE(flora::flora_source_hash_with(file, inputs, edited, error));
+  CHECK(edited != hash);
+  images.normal.back() ^= 0x55;
+  images.roughness.back() ^= 0x55;
+  REQUIRE(flora::flora_source_hash_with(file, inputs, edited, error));
+  CHECK(edited != hash);
+  REQUIRE(flora::flora_source_hash_with(colour_only, inputs, colour_hash, error));
+  CHECK(colour_hash == without.source_hash);
+  CHECK(colour_hash != hash);
+}

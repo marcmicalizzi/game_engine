@@ -216,8 +216,10 @@ bool flora_source_hash_with(const FloraFile& file, const assets::MeshGeneratorIn
                             u64& out, std::string& error) {
   out = flora_source_hash(file);
   if (inputs.hosts == nullptr || inputs.hosts->read_image == nullptr) return true;
-  // Only base-colour images are sampled by the bake. Normal/roughness maps remain
-  // texture-build dependencies and do not cause the entire tree to be regenerated.
+  // The bake samples a material's base-colour, normal and roughness images (G93), so the three of
+  // each of the two materials key the tree. The key moves exactly when the atlases' bytes can: a
+  // pack with no normal or roughness image hashes the base colours alone, as it did, and the
+  // species that bake no chain take none of this.
   const bool baked = file.species == k_species_broadleaf || file.species == k_species_birch ||
                      file.species == k_species_ancient || file.species == "maple" ||
                      file.species == "oak" || file.species == "elm" || file.species == "beech" ||
@@ -236,26 +238,30 @@ bool flora_source_hash_with(const FloraFile& file, const assets::MeshGeneratorIn
   materials.material_sampling.resize(2);
   apply_flora_materials(file, inputs.materials, materials);
   for (u32 material = 0; material < 2; ++material) {
-    const i32 slot = materials.materials[material].base_color_image;
-    if (slot < 0 || static_cast<u32>(slot) >= materials.image_paths.size() ||
-        materials.image_paths[slot].empty())
-      continue;
-    // The host's hash of the image when it has one (a load's table, a pack's index: no read;
-    // roadmap W75), else the bytes' — the same number, so the key does not depend on which
-    // answered.
-    u64 image_hash = 0;
-    if (inputs.hosts->hash_image != nullptr) {
-      if (!inputs.hosts->hash_image(inputs.hosts->context, materials.image_paths[slot], image_hash,
-                                    error))
-        return false;
-    } else {
-      Vector<u8> bytes;
-      if (!inputs.hosts->read_image(inputs.hosts->context, materials.image_paths[slot], bytes,
-                                    error))
-        return false;
-      image_hash = hash_bytes(bytes.data(), bytes.size());
+    const geometry::ClusterFileMaterial& m = materials.materials[material];
+    const i32 slots[3] = {m.base_color_image, m.normal_image,
+                          geometry::decode_optional_image(m.metallic_roughness_image)};
+    for (const i32 slot : slots) {
+      if (slot < 0 || static_cast<u32>(slot) >= materials.image_paths.size() ||
+          materials.image_paths[slot].empty())
+        continue;
+      // The host's hash of the image when it has one (a load's table, a pack's index: no read;
+      // roadmap W75), else the bytes' — the same number, so the key does not depend on which
+      // answered.
+      u64 image_hash = 0;
+      if (inputs.hosts->hash_image != nullptr) {
+        if (!inputs.hosts->hash_image(inputs.hosts->context, materials.image_paths[slot],
+                                      image_hash, error))
+          return false;
+      } else {
+        Vector<u8> bytes;
+        if (!inputs.hosts->read_image(inputs.hosts->context, materials.image_paths[slot], bytes,
+                                      error))
+          return false;
+        image_hash = hash_bytes(bytes.data(), bytes.size());
+      }
+      out = hash_combine(out, image_hash);
     }
-    out = hash_combine(out, image_hash);
   }
   return true;
 }
@@ -371,6 +377,7 @@ bool solve_flora(const FloraFile& file, assets::MeshData& mesh, Motion& motion,
 namespace {
 
 // Bakes every level of the chain and appends what draws it: per level a colour and a normal atlas
+// (and, where the pack gave the leaf or the bark a roughness image, a metallic-roughness atlas)
 // embedded in the container as PNG (sections 21 and 22; the texture step builds them like any
 // embedded image) and a material — white, masked at one half, two-sided, the atlas's colour and
 // tangent-space normal — at `mesh.materials.size() + k`, the index the clusters were given.
@@ -406,6 +413,47 @@ bool bake_chain(const assets::MeshData& mesh, const TreeLevels& chain,
       }
     }
   }
+  // The rest of the pack (G93): each material's normal map and metallic-roughness image, read the
+  // way the base colour is, so the far cards bend the shading normal and vary the roughness as the
+  // near leaves do. A material with no image keeps the faces' normals and the solver's scalar.
+  image::Image normals[2], roughnesses[2];
+  look.leaf_roughness =
+      mesh.materials.size() > 1 ? mesh.materials[1].roughness : look.leaf_roughness;
+  look.bark_roughness = mesh.materials[0].roughness;
+  if (hosts != nullptr && hosts->read_image != nullptr && out.materials.size() > 1) {
+    for (u32 material = 0; material < 2; ++material) {
+      geometry::TextureSlotSampling slots[geometry::k_material_slots];
+      f32 occlusion = 0;
+      geometry::decode_material_sampling(out.material_sampling[material], slots, occlusion);
+      const geometry::ClusterFileMaterial& source = out.materials[material];
+      const i32 slot_of[2] = {source.normal_image,
+                              geometry::decode_optional_image(source.metallic_roughness_image)};
+      for (u32 kind = 0; kind < 2; ++kind) {
+        const i32 slot = slot_of[kind];
+        if (slot < 0 || static_cast<u32>(slot) >= out.image_paths.size() ||
+            out.image_paths[slot].empty())
+          continue;
+        image::Image& into = kind == 0 ? normals[material] : roughnesses[material];
+        Vector<u8> bytes;
+        if (!hosts->read_image(hosts->context, out.image_paths[slot], bytes, error) ||
+            !image::decode_image(bytes, into, 4, &error))
+          return false;
+        const Vec2 scale =
+            slots[kind == 0 ? geometry::k_slot_normal : geometry::k_slot_metallic_roughness]
+                .transform.scale;
+        if (kind == 0) {
+          (material == 1 ? look.leaf_normal_image : look.bark_normal_image) = &into;
+          (material == 1 ? look.leaf_normal_scale : look.bark_normal_scale) = source.normal_scale;
+          if (material == 0) look.bark_normal_uv_scale = scale;
+        } else {
+          (material == 1 ? look.leaf_roughness_image : look.bark_roughness_image) = &into;
+          // The image is the roughness and the material's factor multiplies it (glTF).
+          (material == 1 ? look.leaf_roughness : look.bark_roughness) = source.roughness;
+          if (material == 0) look.bark_roughness_uv_scale = scale;
+        }
+      }
+    }
+  }
   // A pack's leaf card is cut to the leaf (its image's alpha), so the far card is too.
   look.leaf_outline =
       out.materials.size() > 1 && geometry::alpha_word_mode(out.materials[1].alpha) != 0u;
@@ -431,7 +479,12 @@ bool bake_chain(const assets::MeshData& mesh, const TreeLevels& chain,
       level_coverage = below > 0.0f ? below * (1.0f + 1.0f / 512.0f) : 1e-4f;
     coverage.push_back(level_coverage);
     const i32 colour_image = static_cast<i32>(out.image_paths.size());
-    for (const Vector<u8>* pixels : {&atlas.colour, &atlas.normal}) {
+    // A third image — glTF's metallic-roughness packing — only where the pack gave the bake a
+    // roughness image to carry (G93); otherwise the level is the colour and the normal it was.
+    const bool has_roughness = !atlas.roughness.empty();
+    const Vector<u8>* embedded[3] = {&atlas.colour, &atlas.normal, &atlas.roughness};
+    for (u32 which = 0; which < (has_roughness ? 3u : 2u); ++which) {
+      const Vector<u8>* pixels = embedded[which];
       geometry::ClusterImage image;
       image.mime_type = "image/png";
       if (!image::encode_png(atlas.width, atlas.height, 4, *pixels, image.bytes)) {
@@ -456,7 +509,14 @@ bool bake_chain(const assets::MeshData& mesh, const TreeLevels& chain,
     material.roughness = m.roughness;
     material.base_color_image = colour_image;
     material.normal_image = colour_image + 1;
-    material.metallic_roughness_image = geometry::encode_optional_image(-1);
+    material.metallic_roughness_image =
+        geometry::encode_optional_image(has_roughness ? colour_image + 2 : -1);
+    if (has_roughness) {
+      // The baked G is the roughness itself (the near material's factor already applied), so the
+      // level's factor is one and its metallic zero.
+      material.roughness = 1.0f;
+      material.metallic = 0.0f;
+    }
     material.occlusion_image = geometry::encode_optional_image(-1);
     material.emissive_image = geometry::encode_optional_image(-1);
     material.emissive = m.emissive;

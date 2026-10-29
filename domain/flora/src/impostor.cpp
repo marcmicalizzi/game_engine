@@ -537,10 +537,69 @@ constexpr u32 k_no_triangle = 0xFFFFFFFFu;
 struct Sample {
   f64 depth = -1e300;  // along the view's normal: larger is nearer the viewer
   u32 triangle = k_no_triangle;
-  u32 colour = 0;  // sampled sRGB; uses the former padding, still 16 bytes a sample
+  u32 colour = 0;  // sampled sRGB; uses the former padding
+  // G93: the pack's normal map and roughness, where the look names them. `has_normal` says
+  // `normal` (the shading normal in the view's u, v, normal axes) was bent by a map; without it
+  // the resolve takes the face's normal as it always did.
+  f32 normal[3] = {0.0f, 0.0f, 0.0f};
+  f32 roughness = 0.0f;
+  u32 has_normal = 0;
 };
 
 u32 pack_rgb(const Vec4& linear);
+
+bool usable(const image::Image* image) {
+  return image != nullptr && image->width != 0 && image->height != 0 && image->channels == 4;
+}
+
+// One bilinear, wrapped read of an 8-bit image at a UV, each channel 0..1 and unconverted: the
+// filter `surface_sample` reads the colour with, for the images that are data and not colour.
+void sample_data(const image::Image& image, f64 u, f64 v, f64 rgba[4]) {
+  const f64 x = (u - std::floor(u)) * image.width - .5;
+  const f64 y = (v - std::floor(v)) * image.height - .5;
+  const i64 ix = static_cast<i64>(std::floor(x));
+  const i64 iy = static_cast<i64>(std::floor(y));
+  const f64 fx = x - std::floor(x), fy = y - std::floor(y);
+  for (u32 c = 0; c < 4; ++c)
+    rgba[c] = 0.0;
+  for (u32 j = 0; j < 2; ++j) {
+    for (u32 i = 0; i < 2; ++i) {
+      const u32 sx = static_cast<u32>((ix + i + image.width) % image.width);
+      const u32 sy = static_cast<u32>((iy + j + image.height) % image.height);
+      const u32 at = (sy * image.width + sx) * 4;
+      const f64 weight = (i == 0 ? 1 - fx : fx) * (j == 0 ? 1 - fy : fy);
+      for (u32 c = 0; c < 4; ++c)
+        rgba[c] += weight * static_cast<f64>(image.pixels[at + c]) / 255.0;
+    }
+  }
+}
+
+// A triangle's tangent frame as the material resolve builds it (material.slang, `tangent_frame`):
+// T and B solve the edges against the UV deltas, T made orthogonal to the normal and B to both, B
+// keeping the UV island's handedness. False for a degenerate UV area, where the near surface
+// leaves its normal alone and so does the bake.
+bool triangle_frame(const D3 p[3], const Vec2 uv[3], D3 normal, D3& tangent, D3& bitangent) {
+  const D3 e1 = p[1] - p[0];
+  const D3 e2 = p[2] - p[0];
+  const f64 d1x = static_cast<f64>(uv[1].x) - static_cast<f64>(uv[0].x);
+  const f64 d1y = static_cast<f64>(uv[1].y) - static_cast<f64>(uv[0].y);
+  const f64 d2x = static_cast<f64>(uv[2].x) - static_cast<f64>(uv[0].x);
+  const f64 d2y = static_cast<f64>(uv[2].y) - static_cast<f64>(uv[0].y);
+  const f64 area = d1x * d2y - d2x * d1y;
+  if (std::abs(area) < 1e-12) return false;
+  const f64 r = 1.0 / area;
+  D3 t = (e1 * d2y - e2 * d1y) * r;
+  D3 b = (e2 * d1x - e1 * d2x) * r;
+  t = t - normal * detail::dot(normal, t);
+  const f64 t_length = detail::length_of(t);
+  if (t_length < 1e-12) return false;
+  tangent = t * (1.0 / t_length);
+  b = b - (normal * detail::dot(normal, b) + tangent * detail::dot(tangent, b));
+  const f64 b_length = detail::length_of(b);
+  if (b_length < 1e-12) return false;
+  bitangent = b * (1.0 / b_length);
+  return true;
+}
 
 bool surface_sample(const BakeLook& look, bool leaf, f64 u, f64 v, u32& rgb) {
   const Vec4 factor = leaf ? look.leaf : look.bark;
@@ -589,6 +648,19 @@ void bake_level(const assets::MeshData& mesh, const TreeLevels& levels, const Tr
   out.height = level.rows * px;
   out.colour.assign(static_cast<u32>(out.width) * out.height * 4u, u8{0});
   out.normal.assign(static_cast<u32>(out.width) * out.height * 4u, u8{0});
+  // A roughness image rides only where the pack gave one (G93); a texel nothing covers is the
+  // roughest, which is what a filter blends in at a card's edge least harmfully.
+  const bool bake_roughness =
+      usable(look.leaf_roughness_image) || usable(look.bark_roughness_image);
+  out.roughness.clear();
+  if (bake_roughness) {
+    out.roughness.assign(static_cast<u32>(out.width) * out.height * 4u, u8{0});
+    for (u32 t = 0; t < out.width * out.height; ++t) {
+      out.roughness[4 * t] = 255;
+      out.roughness[4 * t + 1] = 255;
+      out.roughness[4 * t + 3] = 255;
+    }
+  }
   if (depth_out != nullptr) depth_out->assign(out.width * out.height, 0.0f);
   const u32 side = px * k_samples;
   Vector<Sample> samples;
@@ -633,6 +705,29 @@ void bake_level(const assets::MeshData& mesh, const TreeLevels& levels, const Tr
         const Vec2 tb = mesh.uvs[mesh.indices[i + i1]];
         const Vec2 tc = mesh.uvs[mesh.indices[i + i2]];
         const bool leaf = i >= levels.leaf_first_index && i < levels.leaf_index_end;
+        // G93: this triangle's material maps, and the frame they bend the face's normal in (the
+        // face turned to the viewer, T and B from the triangle's UVs as the resolve builds them).
+        const image::Image* normal_map = leaf ? look.leaf_normal_image : look.bark_normal_image;
+        const image::Image* rough_map =
+            leaf ? look.leaf_roughness_image : look.bark_roughness_image;
+        const f32 rough_factor = leaf ? look.leaf_roughness : look.bark_roughness;
+        const Vec2 normal_uv_scale = leaf ? Vec2{1, 1} : look.bark_normal_uv_scale;
+        const Vec2 rough_uv_scale = leaf ? Vec2{1, 1} : look.bark_roughness_uv_scale;
+        const f64 normal_scale =
+            static_cast<f64>(leaf ? look.leaf_normal_scale : look.bark_normal_scale);
+        bool bend = false;
+        D3 frame_t{}, frame_b{}, frame_n{};
+        if (usable(normal_map)) {
+          const D3 corners[3] = {from_f32(mesh.positions[mesh.indices[i]]),
+                                 from_f32(mesh.positions[mesh.indices[i + 1]]),
+                                 from_f32(mesh.positions[mesh.indices[i + 2]])};
+          const Vec2 uvs[3] = {mesh.uvs[mesh.indices[i]], mesh.uvs[mesh.indices[i + 1]],
+                               mesh.uvs[mesh.indices[i + 2]]};
+          frame_n =
+              detail::normalized(detail::cross(corners[1] - corners[0], corners[2] - corners[0]));
+          if (detail::dot(frame_n, n) < 0.0) frame_n = frame_n * -1.0;
+          bend = triangle_frame(corners, uvs, frame_n, frame_t, frame_b);
+        }
         i64 lo_x = ax < bx ? ax : bx;
         lo_x = cx < lo_x ? cx : lo_x;
         i64 hi_x = ax > bx ? ax : bx;
@@ -672,16 +767,49 @@ void bake_level(const assets::MeshData& mesh, const TreeLevels& levels, const Tr
             Sample& sample = samples[static_cast<u32>(sy) * side + static_cast<u32>(sx)];
             if (depth < sample.depth || (depth == sample.depth && i < sample.triangle)) continue;
             u32 colour = pack_rgb(leaf ? look.leaf : look.bark);
-            {
-              const f64 tu = static_cast<f64>(ta.x) * l0 + static_cast<f64>(tb.x) * l1 +
-                             static_cast<f64>(tc.x) * l2;
-              const f64 tv = static_cast<f64>(ta.y) * l0 + static_cast<f64>(tb.y) * l1 +
-                             static_cast<f64>(tc.y) * l2;
-              if (!surface_sample(look, leaf, tu, tv, colour)) continue;
-            }
+            const f64 tu = static_cast<f64>(ta.x) * l0 + static_cast<f64>(tb.x) * l1 +
+                           static_cast<f64>(tc.x) * l2;
+            const f64 tv = static_cast<f64>(ta.y) * l0 + static_cast<f64>(tb.y) * l1 +
+                           static_cast<f64>(tc.y) * l2;
+            if (!surface_sample(look, leaf, tu, tv, colour)) continue;
             sample.depth = depth;
             sample.triangle = i;
             sample.colour = colour;
+            sample.has_normal = 0;
+            if (bend) {
+              // The map's vector as the resolve reads it: x and y from the texel, z rebuilt (the
+              // content build stores a normal map as BC5), x and y widened by the material's
+              // scale and the vector made a unit one; then into the world by the triangle's frame
+              // and into the view's axes.
+              f64 texel[4];
+              sample_data(*normal_map, tu * static_cast<f64>(normal_uv_scale.x),
+                          tv * static_cast<f64>(normal_uv_scale.y), texel);
+              const f64 mx = texel[0] * 2.0 - 1.0;
+              const f64 my = texel[1] * 2.0 - 1.0;
+              const f64 rest = 1.0 - (mx * mx + my * my);
+              f64 vx = mx * normal_scale, vy = my * normal_scale;
+              f64 vz = std::sqrt(rest > 0.0 ? rest : 0.0);
+              const f64 length_sq = vx * vx + vy * vy + vz * vz;
+              if (length_sq > 1e-12) {
+                const f64 inv = 1.0 / std::sqrt(length_sq);
+                const D3 world = detail::normalized(frame_t * (vx * inv) + frame_b * (vy * inv) +
+                                                    frame_n * (vz * inv));
+                sample.normal[0] = static_cast<f32>(detail::dot(world, u));
+                sample.normal[1] = static_cast<f32>(detail::dot(world, v));
+                sample.normal[2] = static_cast<f32>(detail::dot(world, n));
+                sample.has_normal = 1;
+              }
+            }
+            if (bake_roughness) {
+              f64 value = static_cast<f64>(rough_factor);
+              if (usable(rough_map)) {
+                f64 texel[4];
+                sample_data(*rough_map, tu * static_cast<f64>(rough_uv_scale.x),
+                            tv * static_cast<f64>(rough_uv_scale.y), texel);
+                value *= texel[1];
+              }
+              sample.roughness = static_cast<f32>(value);
+            }
           }
         }
       }
@@ -695,6 +823,7 @@ void bake_level(const assets::MeshData& mesh, const TreeLevels& levels, const Tr
         f64 rgb[3] = {0.0, 0.0, 0.0};
         D3 normal{0.0, 0.0, 0.0};
         f64 depth_sum = 0;
+        f64 roughness_sum = 0.0;
         for (u32 sy = 0; sy < k_samples; ++sy) {
           for (u32 sx = 0; sx < k_samples; ++sx) {
             const Sample& s = samples[(py * k_samples + sy) * side + pxi * k_samples + sx];
@@ -712,6 +841,12 @@ void bake_level(const assets::MeshData& mesh, const TreeLevels& levels, const Tr
             rgb[0] += static_cast<f64>(c.x);
             rgb[1] += static_cast<f64>(c.y);
             rgb[2] += static_cast<f64>(c.z);
+            roughness_sum += static_cast<f64>(s.roughness);
+            if (s.has_normal != 0u) {
+              normal = normal + D3{static_cast<f64>(s.normal[0]), static_cast<f64>(s.normal[1]),
+                                   static_cast<f64>(s.normal[2])};
+              continue;
+            }
             const D3 a = from_f32(mesh.positions[mesh.indices[s.triangle]]);
             const D3 b = from_f32(mesh.positions[mesh.indices[s.triangle + 1]]);
             const D3 c3 = from_f32(mesh.positions[mesh.indices[s.triangle + 2]]);
@@ -723,6 +858,13 @@ void bake_level(const assets::MeshData& mesh, const TreeLevels& levels, const Tr
         if (covered == 0) continue;
         const u32 at = ((ty + py) * out.width + tx + pxi) * 4u;
         const f64 inv = 1.0 / static_cast<f64>(covered);
+        if (bake_roughness) {
+          // The coverage-weighted mean of the covered samples' roughness, as a texel's colour is.
+          f64 mean = roughness_sum * inv;
+          mean = mean < 0.0 ? 0.0 : (mean > 1.0 ? 1.0 : mean);
+          out.roughness[at + 1] = static_cast<u8>(std::floor(mean * 255.0 + 0.5));
+          out.roughness[at + 2] = 0;
+        }
         if (depth_out != nullptr) (*depth_out)[at / 4] = static_cast<f32>(depth_sum * inv);
         for (u32 k = 0; k < 3; ++k)
           out.colour[at + k] = texture::linear_to_srgb8(static_cast<f32>(rgb[k] * inv));
