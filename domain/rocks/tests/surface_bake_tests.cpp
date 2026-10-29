@@ -137,6 +137,61 @@ TEST_CASE("rocks: baked container carries maps and ignores a tiled material pack
   CHECK(data.materials[0].base_color.x == 1.0f);
 }
 
+TEST_CASE("rocks: unresolved mineral grains retain resolved surface relief") {
+  using namespace engine::rocks::detail;
+  const auto bake = [](RockType type, u32 resolution, f32 variation, f32 granular) {
+    RockSurfaceMaps settings;
+    settings.resolution = resolution;
+    settings.grain_m = 0.002f;  // below two texels at both resolutions
+    settings.variation = variation;
+    RockGeology geology;
+    geology.granular = granular;
+    const auto fabric = make_fabric(type, geology, 41);
+    assets::MeshData mesh;
+    mesh.materials.emplace_back();
+    Vector<D3> samples;
+    Vector<f64> fresh;
+    for (u32 face = 0; face < 6; ++face)
+      for (u32 y = 0; y < 2; ++y)
+        for (u32 x = 0; x < 2; ++x) {
+          mesh.positions.push_back(Vec3{static_cast<f32>(x), static_cast<f32>(y), 0});
+          samples.push_back(D3{static_cast<f64>(x), static_cast<f64>(y), 0});
+          fresh.push_back(1.0);
+        }
+    SurfaceBake surface;
+    std::string error;
+    REQUIRE(surface.init(settings, 1, error));
+    const u8 diagonals[6] = {};
+    surface.body(0, 1, 0, fabric, type, samples, fresh, diagonals, mesh);
+    REQUIRE(surface.finish(mesh, 1));
+    return decode(mesh, 2);
+  };
+  const auto rms = [](const image::Image& image) {
+    f64 square = 0;
+    u32 count = 0;
+    const u32 cell = image.width / 3;
+    for (u32 y = 4; y < cell - 4; ++y)
+      for (u32 x = 4; x < cell - 4; ++x) {
+        const u32 p = (y * image.width + x) * 3;
+        const f64 nx = (static_cast<f64>(image.pixels[p]) - 127.5) / 127.5;
+        const f64 ny = (static_cast<f64>(image.pixels[p + 1]) - 127.5) / 127.5;
+        square += nx * nx + ny * ny;
+        ++count;
+      }
+    return std::sqrt(square / count);
+  };
+  const f64 coarse = rms(bake(RockType::Granite, 256, 0.6f, 0.65f));
+  const f64 fine = rms(bake(RockType::Granite, 512, 0.6f, 0.65f));
+  CAPTURE(coarse);
+  CAPTURE(fine);
+  CHECK(coarse > 0.015);
+  CHECK(fine > coarse);
+  CHECK(fine < 0.3);  // bounded relief, not near-tangent or inverted normals
+  CHECK(rms(bake(RockType::Obsidian, 256, 0.6f, 0.02f)) < coarse * 0.2);
+  CHECK(rms(bake(RockType::Granite, 256, 0.0f, 0.65f)) < 0.006);
+  CHECK(rms(bake(RockType::Granite, 256, 0.6f, 0.0f)) < 0.006);
+}
+
 TEST_CASE(
     "rocks: baked maps reject ambiguous paths, unsupported cliffs and excessive chart counts") {
   auto file = recipe();

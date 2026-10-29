@@ -11,6 +11,11 @@ A recipe owns its dimensions, seed, source triangle budget and original local gr
 samples. The cook is explicit: a moved feature or modified ground requires a new cook.
 No soil erosion, windthrow mechanics or simulation state runs per frame.
 
+Solver v3 acknowledges rock solver v10 for the pinned embedded-stone dependency. The rock
+changes add cliff terrain contact and opt-in baked normal relief; soil's untextured radial
+stones and their geometry fingerprints are unchanged. The soil cache version changes
+explicitly with that dependency review.
+
 A bank is a closed extrusion along x. Its top joins original ground at the back;
 its front exposes organic, topsoil, subsoil and parent-material bands. The face
 recedes beneath an undercut lip. Ends fade into undisturbed ground. A gully has
@@ -26,7 +31,7 @@ bole continues behind it. These are morphology approximations, not a conserved
 soil-volume reconstruction or a particular tree's uprooted root network.
 
 Embedded stones call `rocks::solve_rock`; the soil capability declares its dependency.
-The implementation pins rock solver version 8 at compile time. A rock-version change requires reviewing soil captures/pins and bumping `k_soil_version` before updating that assertion, so cached soil cannot silently retain old stones or plates. All woody roots here are rigid. Existing living-tree roots can be cooked against the
+The implementation pins rock solver version 10 at compile time. A rock-version change requires reviewing soil captures/pins and bumping `k_soil_version` before updating that assertion, so cached soil cannot silently retain old stones or plates. All woody roots here are rigid. Existing living-tree roots can be cooked against the
 resulting terrain through their usual `scene_gen::Ground` seam; this does not move
 existing trees or alter their root recipes automatically.
 

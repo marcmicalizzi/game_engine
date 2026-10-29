@@ -71,6 +71,8 @@ TEST_CASE("cliffs generator: the foot of a steep band is traced, and flat ground
   REQUIRE_MESSAGE(trace_cliff_block(layer, ground_of(&escarpment), 0, 0, faces, &error), error);
   REQUIRE(faces.size() == 1);
   const CliffFace& face = faces[0];
+  REQUIRE(face.cliff.ground.has_value());
+  CHECK(face.cliff.ground->heights.size() == face.cliff.ground->width * face.cliff.ground->depth);
   const Vector<CliffPoint>& p = face.cliff.points;
   MESSAGE("one face at x " << static_cast<f64>(face.x_mm) / 1000.0 << ", " << face.length
                            << " m long, " << face.mean_height << " m high, batter "

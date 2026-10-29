@@ -439,3 +439,141 @@ ordered-bed continuity regression. Four exporter cases / 70 assertions pass. For
 lint, documentation and whitespace checks pass; this checkout's Linux volumes were pruned.
 The owner explicitly waived full affected suites and merge gates for this local merge, with
 those deferred to the combined nightly run. No remote push is part of this change.
+
+## G103: terrain contact under cliff talus
+
+The 2026-10-29 report points at the forest v20 capture: exposed horizontal shelves under the
+cliffs. Inspection confirmed that the apron used the line's foot height for its toe and a
+flat underside one metre lower, regardless of the descending terrain outside the line.
+The generator measured ground along the cliff foot but serialized no supporting terrain.
+This is a missing contact input, separate from broad face panels and repeating textures.
+
+Grounding: the [BGS talus definition](https://webapps.bgs.ac.uk/lexicon/lexicon.cfm?pub=TALU)
+(read 2026-10-29) describes angular debris accumulating in irregular heaps/sheets at the foot
+of slopes through gravity and weathering. It supports a terrain-supported apron, not a
+suspended plate. This repair does not simulate rockfall transport or infer a stable slope;
+the existing authored talus angle controls nominal extent, not the final terrain-draped slope.
+
+The generator now performs a preliminary solve to measure the debris footprint, samples
+terrain in the recipe's local frame, and serializes `CliffGround` in the derived recipe.
+Sampling starts at half the tracing spacing, capped at 1 m; a one-cell margin protects the
+footprint. Spacing doubles only when needed to stay within the explicit 2049 points per axis
+and 1,048,576 total sample limits, refusing beyond 32 m. These are bounded offline authoring
+costs, not runtime allocations. Heights are bilinearly interpolated; no terrain is modified.
+
+The outer apron progressively takes the terrain height difference with a smooth weight:
+zero at its attachment to the face, one at the toe. The toe remains buried by the existing
+half-burial plus 0.3 m offset. Every underside vertex is at least 1 m below sampled ground
+and the nominal top; fallen blocks receive the same contact correction. These offsets are
+engineering overlap margins, not measured deposit thicknesses. Triangle budgets are unchanged.
+Missing ground retains standalone recipes' old reference-plane behavior. Invalid samples or
+an insufficient patch are refused rather than silently extending its border heights.
+
+Solver v9 invalidates prior generated cliff caches. Soil v2 acknowledges the new pinned rock
+dependency; embedded radial stones are unchanged and their geometry pins must remain unchanged.
+Terrain contact is accurate to the sampled patch and apron mesh; sub-cell ravines, exact
+terrain stitching and self-intersections on tightly bent cliff lines are not solved here.
+
+Validation: 44 rock cases / 5,738,957 assertions on MSVC debug, and the rock suite on Linux
+Clang debug pass. The new falling-slope regression checks every apron underside/toe index at
+Low and High quality, closedness, unchanged triangle budgets, cache sensitivity to terrain and
+refusal of incomplete patches. Seven soil cases / 224,626 assertions pass on both compilers;
+only its version metadata/content hashes changed, with all geometry and cooked-terrain pins
+retained. Five exporter cases / 78 assertions pass. Full affected suites/merge gates were not
+run in this focused follow-up.
+
+The local review lives at `D:/workspace/game_engine_local/rocks/2026-10-29/terrain-contact/`:
+`scene.json` retains frozen v20 terrain, sky, water dependencies and the three cliff generators;
+unrelated instances and placements are removed. Seven cliff recipes acquired 18,901 samples
+total, 1,608–3,444 per patch, all at 1 m. Matching 1600x900 cameras, HW visibility and RT shadows
+show the floating shelves before and ground-supported aprons after. Before uses the pinned
+v20 Release executable (4726acd7); after uses the current branch Debug build over 1a3de3ea.
+This is a geometric diagnostic across those builds, not a pixel-equivalence or performance test.
+Machine state: shared machine, RTX 5090, GPU lock held; no quiet timing measurement.
+
+The first material pack from the frozen replay was refused because unrelated birch map paths
+were absent. Scalar captures are retained as `*-scalar.png`; the textured comparison uses a
+local two-role pack with the retained granite/basalt maps and their original provenance/hashes.
+No frozen source or POC launcher was changed. The broad rectangular cliff faces, exposed end
+walls and repeating material pattern remain visible and require further work; G103 only closes
+the missing terrain-contact input. Existing cached recipes need regeneration by the new
+generator, or an explicit `fit_cliff_ground` bake, to acquire supporting terrain.
+
+## G104: the v20 waxy surface diagnosis
+
+The retained forest v20 geology review shows gneiss variants 03, 09 and 10. A reduced copy
+keeps those exact instances, transforms, terrain, daylight and camera and removes vegetation
+and unrelated placements. It reproduces the broad, soft surfaces. The immutable v20 source
+and the POC launchers are not edited. Separate granite captures isolate the surface bake.
+The default granite roughness is already .75 and gneiss .72; simply raising these would not
+restore missing resolved surface normals.
+
+Grounding (read 2026-10-29): PBRT 4e's
+[microfacet treatment](https://pbr-book.org/4ed/Reflection_Models/Roughness_Using_Microfacet_Theory)
+separates the aggregate scattering of unresolved microgeometry from resolved shape. Its
+[texture sampling treatment](https://pbr-book.org/4ed/Textures_and_Materials/Texture_Sampling_and_Antialiasing)
+requires filtering frequencies against the surface footprint. Those principles motivate
+separately filtered normal detail, rather than increasing roughness or enlarging grains when
+texture resolution falls. The following scales and amplitudes are authored approximations,
+not measured granite or gneiss spectra.
+
+The former bake derived height only from the mineral grain field. Five normal-relief octaves
+now bridge geometry and grains at .12, .06, .03, .015 and .0075 m. Each fades independently
+between two and four atlas texels per wavelength. Their height amplitude is .12 times the
+wavelength, multiplied by lithology's granular response, material variation and
+`.35 + .65 * weathering`; the individual grain coefficient changes from .055 to .16.
+These are height-field coefficients, not the final peak displacement of the mesh: the bake
+only changes tangent normals. Geometry, colour and scalar/texture roughness are unchanged.
+Obsidian's low granular response and explicit zero granular/variation remain respected;
+the existing rind multiplier scales the complete relief without adding coating-border ridges.
+Atlas resolution and memory budgets remain unchanged. Extra evaluation is offline only.
+Runtime normal-map mip variance continues through the existing texture/renderer path.
+
+Solver v10 invalidates previous baked maps, including any local v9 caches from the G103
+terrain-contact review. Soil v3 acknowledges the pinned rock dependency: it does not enable
+baked rock maps and its geometry is unchanged. Full affected suites and merge gates remain
+deferred.
+
+Validation: 45 rock cases / 5,738,978 assertions pass on MSVC debug; rocks and soil pass on
+Linux Clang debug. The new planar-chart regression uses intentionally unresolved 2 mm grains
+at 256 and 512 atlas resolutions, checks that larger relief survives, that higher resolution
+retains more detail, that glass stays much smoother and that zero granular/variation is flat.
+Existing tests retain deterministic pixels, chart-corner colour continuity, rind behavior and
+unchanged geometry. Four rock CLI cases / 70 assertions pass, including embedded-map GLB
+reimport. Lint, documentation, formatting and whitespace checks pass. Linux volumes are pruned.
+
+Local evidence: `D:/workspace/game_engine_local/rocks/2026-10-29/surface/`. Both sides use the
+same Debug build base (1a3de3ea plus the unmerged G103 changes), camera and illumination; only
+the bake changes. Granite and variant 02 normal-XY RMS over the first chart rise from .01898
+to .08004 and .00991 to .06255 respectively (decoded RGB8, every second interior texel).
+Their geometry is unchanged: 76,800 triangles / 57,280 vertices for granite, with identical
+source budgets. This is a normal-strength diagnostic, not a perceptual score.
+The v20 scene's finest-geometry diagnostic looks essentially identical to the 1 px LOD view.
+Multiplying the new normals by four breaks up the face further but produces excessive broad
+bumps; that is retained as a diagnostic, not made the new default. The matched 1024 change is
+subtle and is not accepted as fully fixing the waxy visual by itself. Broad facet smoothness
+and insufficient visible mineral contrast still need authoring attention.
+The 2048 diagnostic restores some finer grain but retains the bland broad material. It has
+four times the pixels per map, so increasing the global default is not justified by this view.
+Machine state: shared machine, RTX 5090, manual captures under the GPU lock; no quiet timings
+or runtime performance gains are claimed. Texture dimensions, shader work and triangle budgets
+are unchanged by the code fix; baking does additional offline field evaluations.
+
+The photographed-material comparison is now verified. The same three rocks with the existing
+local CC0 Poly Haven `rock_boulder_dry` set show substantially stronger mineral colour and
+surface breakup and read more like stone. The capture binds three shared rock textures
+(32 distinct scene textures including 29 terrain textures); this is not a flat fallback.
+The set is a generic stone diagnostic, not a calibrated gneiss specimen. It replaces the
+procedural maps rather than layering with them: the copied recipes omit `material.surface_maps`
+and the local material pack supplies `rock/granite` and `rock/gneiss`. The POC itself is unchanged.
+This separates a repaired normal-bake weakness from the remaining material-authoring gap:
+more geometry, larger atlases or stronger normals alone did not reproduce this improvement.
+Lithology-specific mineral contrast, weathered/fresh surface variation and richer material
+content remain necessary before claiming photorealistic procedural rocks.
+
+Capture lesson: `engine-view --materials` takes the pack directory, and map filenames in
+`pack.json` must be relative to that directory. Absolute map paths are refused. A successful
+render process can still have fallen back to scalar materials, so verify texture bindings and
+the resulting image. `engine-content rocks --glb` does not accept that material-pack option;
+use the scene render path for this comparison. The final local gallery contains the corrected,
+textured capture, and retains the normal-only, resolution and geometry diagnostics separately.
