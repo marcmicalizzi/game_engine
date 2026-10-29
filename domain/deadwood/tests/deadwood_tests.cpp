@@ -1,11 +1,18 @@
 #include <core/hash/hash.h>
+#include <core/json/json.h>
 #include <domain/assets/gltf.h>
 #include <domain/deadwood/deadwood.h>
+#include <domain/materials/materials.h>
+#include <foundation/image/decode.h>
 
 #include <doctest/doctest.h>
+#include <test_paths.h>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
+#include <fstream>
+#include <iterator>
 #include <limits>
 
 using namespace engine;
@@ -41,6 +48,94 @@ void valid(const assets::MeshData& mesh) {
   }
 }
 }  // namespace
+TEST_CASE("deadwood: authored lean contacts the visible supporting trunk") {
+  const auto path = test::data_path(ENGINE_DEADWOOD_CONTENT, "content/test-scenes/deadwood");
+  if (!test::path_exists(path)) {
+    MESSAGE("bundle omits deadwood study");
+    return;
+  }
+  std::ifstream input(path + "/leaning-oak.deadwood.json");
+  const std::string json{std::istreambuf_iterator<char>(input), {}};
+  deadwood::DeadwoodFile p;
+  assets::MeshData mesh, standing;
+  flora::Motion motion, growth;
+  deadwood::Report report;
+  std::string error;
+  REQUIRE_MESSAGE(deadwood::read_file(json, p, error), error);
+  REQUIRE_MESSAGE(deadwood::solve(p, mesh, motion, report, error), error);
+  std::ifstream tree_input(path + "/support-oak.flora.json");
+  const std::string tree_json{std::istreambuf_iterator<char>(tree_input), {}};
+  flora::FloraFile tree;
+  REQUIRE_MESSAGE(flora::read_flora_file(tree_json, tree, error), error);
+  REQUIRE_MESSAGE(flora::solve_flora(tree, standing, growth, nullptr, nullptr, error), error);
+  // Match lean.scene.json's placement and check the actual trunk cross-sections, not just
+  // the capsule the solver used. Edge midpoints catch between-vertex penetration too.
+  std::ifstream scene_input(path + "/lean.scene.json");
+  const std::string scene_json{std::istreambuf_iterator<char>(scene_input), {}};
+  JsonValue scene;
+  REQUIRE(parse_json(scene_json, scene).ok);
+  REQUIRE(scene.find("instances") != nullptr);
+  const auto& instances = scene.find("instances")->as_array();
+  REQUIRE(instances.size() == 2);
+  REQUIRE(instances[1].find("translation") != nullptr);
+  const auto& translation = instances[1].find("translation")->as_array();
+  REQUIRE(translation.size() == 3);
+  f64 xyz[3]{};
+  for (u32 i = 0; i < 3; ++i)
+    REQUIRE(translation[i].get_f64(xyz[i]));
+  const Vec3 placement{static_cast<f32>(xyz[0]), static_cast<f32>(xyz[1]),
+                       static_cast<f32>(xyz[2])};
+  Vector<std::array<Vec3, 3>> trunk;
+  for (const auto& prim : standing.primitives) {
+    if (prim.material != 0) continue;
+    for (u32 i = prim.first_index; i < prim.first_index + prim.index_count; i += 3)
+      if (growth.vertex_part[standing.indices[i]] == 0)
+        trunk.push_back({standing.positions[standing.indices[i]],
+                         standing.positions[standing.indices[i + 1]],
+                         standing.positions[standing.indices[i + 2]]});
+  }
+  f32 minimum = 1000;
+  auto check_sample = [&](Vec3 point) {
+    const Vec3 q = point - placement;
+    u32 crossings = 0;
+    f32 nearest = 1000;
+    for (const auto& triangle : trunk) {
+      Vec3 hit[3];
+      u32 count = 0;
+      for (u32 k = 0; k < 3; ++k) {
+        const Vec3 a = triangle[k];
+        const Vec3 b = triangle[(k + 1) % 3];
+        if ((a.y < q.y) != (b.y < q.y)) hit[count++] = a + (b - a) * ((q.y - a.y) / (b.y - a.y));
+      }
+      if (count != 2) continue;
+      const Vec3 a = hit[0], b = hit[1], d = b - a;
+      const f32 squared = dot(d, d);
+      if (squared < 1e-12f) continue;
+      const Vec3 closest = a + d * clamp(dot(q - a, d) / squared, 0, 1);
+      nearest = std::min(nearest, length(q - closest));
+      if ((a.z > q.z) != (b.z > q.z) && q.x < a.x + (b.x - a.x) * ((q.z - a.z) / (b.z - a.z)))
+        ++crossings;
+    }
+    const f32 gap = (crossings & 1) ? -nearest : nearest;
+    CHECK(gap >= -p.contact_tolerance_m);
+    minimum = std::min(minimum, gap);
+  };
+  for (u32 i = 0; i < mesh.indices.size(); i += 3) {
+    for (u32 k = 0; k < 3; ++k) {
+      const Vec3 a = mesh.positions[mesh.indices[i + k]];
+      const Vec3 b = mesh.positions[mesh.indices[i + (k + 1) % 3]];
+      check_sample(a);
+      check_sample((a + b) * .5f);
+    }
+  }
+  CHECK(minimum <= p.contact_tolerance_m);
+  CHECK(report.minimum_clearance_m >= -p.contact_tolerance_m);
+  const u64 key = deadwood::source_hash(p);
+  p.supports[0].from.z += 2;
+  p.supports[0].to.z += 2;
+  CHECK(deadwood::source_hash(p) != key);
+  CHECK_FALSE(deadwood::solve(p, mesh, motion, report, error));
+}
 TEST_CASE("deadwood: variants preserve species geometry with bounded posed contact") {
   for (const auto kind :
        {deadwood::RemainKind::fallen, deadwood::RemainKind::snag, deadwood::RemainKind::snapped,
@@ -231,4 +326,88 @@ TEST_CASE("deadwood: container keeps wood collision eligibility and texture role
   CHECK(!host.indices.empty());
   for (const auto h : host.holds)
     CHECK(h == 1);
+}
+TEST_CASE("deadwood: native maps and authored material precedence") {
+  auto p = recipe();
+  p.kind = deadwood::RemainKind::log;
+  p.bark = .5f;
+  p.start_m = .3f;
+  p.end_m = 3;
+  p.decay = .7f;
+  p.surface_resolution = 128;
+  geometry::ClusterFileData data;
+  deadwood::Report report;
+  std::string error;
+  REQUIRE_MESSAGE(deadwood::build_container(p, {}, {}, 65536, data, report, error), error);
+  REQUIRE(data.materials.size() >= 4);
+  const u32 first = data.materials.size() - 3;
+  REQUIRE(data.images.size() == 9);
+  CHECK(data.textures.size() == data.images.size());
+  for (u32 role = 0; role < 3; ++role) {
+    const auto& m = data.materials[first + role];
+    REQUIRE(m.base_color_image >= 0);
+    REQUIRE(m.normal_image >= 0);
+    CHECK(m.metallic_roughness_image != 0);
+    image::Image colour, normal;
+    REQUIRE(
+        image::decode_image(data.images[static_cast<u32>(m.base_color_image)].bytes, colour, 3));
+    REQUIRE(image::decode_image(data.images[static_cast<u32>(m.normal_image)].bytes, normal, 3));
+    CHECK(colour.width == 128);
+    CHECK(colour.height == 128);
+    const auto [lo, hi] = std::minmax_element(colour.pixels.begin(), colour.pixels.end());
+    CHECK(*hi - *lo > 25);
+    bool relief = false;
+    for (u32 i = 0; i < normal.pixels.size(); i += 3)
+      relief |= normal.pixels[i] < 124 || normal.pixels[i] > 132 || normal.pixels[i + 1] < 124 ||
+                normal.pixels[i + 1] > 132;
+    CHECK(relief);
+  }
+  for (const auto& v : data.motion_vertices)
+    CHECK(v.part == 0);
+  const u64 fibrous = geometry::cluster_file_hash(data);
+  p.decay_pattern = deadwood::DecayPattern::cubical;
+  REQUIRE(deadwood::build_container(p, {}, {}, 65536, data, report, error));
+  CHECK(geometry::cluster_file_hash(data) != fibrous);
+  p.tree.materials.emplace();
+  p.tree.materials->wood.emplace();
+  p.tree.materials->wood->base_color = "authored-wood.png";
+  REQUIRE(deadwood::build_container(p, {}, {}, 65536, data, report, error));
+  CHECK(data.image_paths.size() == 1);
+  CHECK(data.image_paths[0] == "authored-wood.png");
+  for (u32 role = 0; role < 3; ++role)
+    CHECK(data.materials[first + role].base_color_image == 0);
+  p.tree.materials.reset();
+  p.surface_resolution = 0;
+  REQUIRE(deadwood::build_container(p, {}, {}, 65536, data, report, error));
+  CHECK(data.image_paths.empty());
+  for (u32 bad : {1u, 127u, 255u, 2048u}) {
+    p.surface_resolution = bad;
+    CHECK_FALSE(deadwood::in_range(p, error));
+  }
+}
+TEST_CASE("deadwood: bark partition preserves the solid and hollow surface area") {
+  for (f32 hollow : {0.0f, .7f}) {
+    auto p = recipe();
+    p.kind = deadwood::RemainKind::log;
+    p.start_m = .3f;
+    p.end_m = 3;
+    p.hollow = hollow;
+    assets::MeshData intact, patches;
+    flora::Motion motion;
+    deadwood::Report report;
+    std::string error;
+    REQUIRE(deadwood::solve(p, intact, motion, report, error));
+    p.bark = .5f;
+    REQUIRE(deadwood::solve(p, patches, motion, report, error));
+    const auto area = [](const assets::MeshData& m) {
+      f64 sum = 0;
+      for (u32 i = 0; i < m.indices.size(); i += 3) {
+        const Vec3 a = m.positions[m.indices[i]], b = m.positions[m.indices[i + 1]],
+                   c = m.positions[m.indices[i + 2]];
+        sum += static_cast<f64>(length(cross(b - a, c - a))) * .5;
+      }
+      return sum;
+    };
+    CHECK(area(patches) == doctest::Approx(area(intact)).epsilon(.0001));
+  }
 }

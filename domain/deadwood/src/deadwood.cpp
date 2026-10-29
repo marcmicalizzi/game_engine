@@ -1,3 +1,5 @@
+#include "surface.h"
+
 #include <core/hash/hash.h>
 #include <core/json/json.h>
 #include <core/math/deterministic.h>
@@ -148,6 +150,40 @@ void triangle(Vector<Triangle>& out, Vertex a, Vertex b, Vertex c, u32 material,
     if (dot(v->n, v->n) < .5f) v->n = area / std::sqrt(squared);
   out.push_back({a, b, c, material, part});
 }
+void bark_triangle(Vector<Triangle>& out, const DeadwoodFile& p, u32 wood_material, Vertex a,
+                   Vertex b, Vertex c, u32 part, u32 depth = 0) {
+  for (Vertex* v : {&a, &b, &c})
+    v->w = detail::bark_field(v->uv, p.seed) - p.bark;
+  const f32 lo = std::min({a.w, b.w, c.w}), hi = std::max({a.w, b.w, c.w});
+  const auto span = [](Vec2 u, Vec2 v) {
+    const Vec2 d = u - v;
+    return d.x * d.x + d.y * d.y;
+  };
+  const f32 extent = std::max({span(a.uv, b.uv), span(b.uv, c.uv), span(c.uv, a.uv)});
+  if (depth == 0 || (depth < 3 && lo < .04f && hi > 0 && extent > .0144f)) {
+    const auto mid = [](const Vertex& x, const Vertex& y) {
+      return std::tie(x.p.x, x.p.y, x.p.z) < std::tie(y.p.x, y.p.y, y.p.z) ? blend(x, y, .5f)
+                                                                           : blend(y, x, .5f);
+    };
+    const Vertex ab = mid(a, b), bc = mid(b, c), ca = mid(c, a);
+    bark_triangle(out, p, wood_material, a, ab, ca, part, depth + 1);
+    bark_triangle(out, p, wood_material, ab, b, bc, part, depth + 1);
+    bark_triangle(out, p, wood_material, ca, bc, c, part, depth + 1);
+    bark_triangle(out, p, wood_material, ab, bc, ca, part, depth + 1);
+    return;
+  }
+  Vector<Vertex> bark{a, b, c}, edge = bark, exposed = bark;
+  clip(bark, [](const Vertex& v) { return -v.w; });
+  clip(edge, [](const Vertex& v) { return v.w; });
+  clip(edge, [](const Vertex& v) { return .04f - v.w; });
+  clip(exposed, [](const Vertex& v) { return v.w - .04f; });
+  const Vector<Vertex>* polygons[] = {&bark, &edge, &exposed};
+  const u32 materials[] = {0, wood_material + 2, wood_material};
+  for (u32 role = 0; role < 3; ++role)
+    for (u32 k = 1; k + 1 < polygons[role]->size(); ++k)
+      triangle(out, (*polygons[role])[0], (*polygons[role])[k], (*polygons[role])[k + 1],
+               materials[role], part);
+}
 // Boundary matching is a topology operation on final positions, independent of UV/normal seams.
 // A 10-micrometre key absorbs opposite-edge interpolation rounding; it never moves a vertex.
 using Key = std::array<i64, 3>;
@@ -225,19 +261,23 @@ void cap_solid(Vector<Triangle>& triangles, const Vector<Edge>& edges, u32 mater
     }
     if (!closed || loop.size() < 3) continue;  // overlapping source joins are not welded unions
     centre = centre / (2.0f * static_cast<f32>(loop.size()));
+    Vec3 plane{};
+    for (const u32 index : loop)
+      plane = plane + cross(edges[index].a.p - edges[index].b.p, centre - edges[index].b.p);
+    if (length(plane) < 1e-9f) continue;
+    plane = normalize(plane);
+    const Vec3 u =
+        normalize(cross(std::fabs(plane.y) < .9f ? Vec3{0, 1, 0} : Vec3{1, 0, 0}, plane));
+    const Vec3 v_axis = cross(plane, u);
     for (const u32 index : loop) {
       Vertex a = edges[index].b, b = edges[index].a, c = a;
       c.p = centre;
       const Vec3 n = normalize(cross(b.p - a.p, c.p - a.p));
       a.n = b.n = c.n = n;
-      // Cap islands in metres, projected onto their dominant plane.
-      const u32 axis = std::fabs(n.y) > std::fabs(n.x) && std::fabs(n.y) > std::fabs(n.z)
-                           ? 1u
-                           : (std::fabs(n.x) > std::fabs(n.z) ? 0u : 2u);
+      // One centred plane per entire cut: growth rings stay centred when the tree is posed,
+      // including oblique branch fractures. Keep metre scale for material overrides.
       for (Vertex* v : {&a, &b, &c})
-        v->uv = axis == 1   ? Vec2{v->p.x, v->p.z}
-                : axis == 0 ? Vec2{v->p.y, v->p.z}
-                            : Vec2{v->p.x, v->p.y};
+        v->uv = {dot(v->p - centre, u), dot(v->p - centre, v_axis)};
       triangle(triangles, a, b, c, material);
     }
   }
@@ -264,6 +304,11 @@ bool in_range(const DeadwoodFile& p, std::string& error) {
   if (!(p.foliage == -1 || between(p.foliage, 0, 1))) return fail(error, "foliage");
   if (!between(p.bark, 0, 1) || !between(p.hollow, 0, .9f) || !between(p.collapse, 0, .85f))
     return fail(error, "bark/hollow/collapse");
+  if (!between(p.decay, 0, 1) || static_cast<u32>(p.decay_pattern) > 1)
+    return fail(error, "decay/decay_pattern");
+  if (p.surface_resolution != 0 && (p.surface_resolution < 128 || p.surface_resolution > 1024 ||
+                                    (p.surface_resolution & (p.surface_resolution - 1)) != 0))
+    return fail(error, "surface_resolution must be 0 or a power of two in 128..1024");
   if (p.hollow > 0 && p.kind != RemainKind::log && p.kind != RemainKind::stump)
     return fail(error, "hollow requires a log or stump");
   if (p.hollow > 0 && branch_share(p) != 0) return fail(error, "hollow requires branches=0");
@@ -517,13 +562,7 @@ bool solve(const DeadwoodFile& p, assets::MeshData& mesh, flora::Motion& motion,
         if (radial.y > (1 - p.collapse) * length(radial)) continue;
       }
       u32 material = static_cast<u32>(prim.material);
-      if (woody) {
-        const f32 u = (poly[0].uv.x + poly[1].uv.x + poly[2].uv.x) / 3;
-        const f32 v = (poly[0].uv.y + poly[1].uv.y + poly[2].uv.y) / 3;
-        const u64 cell = hash_combine(static_cast<u64>(static_cast<i64>(std::floor(u * 4))),
-                                      static_cast<u64>(static_cast<i64>(std::floor(v * 1.25f))));
-        if (draw(p.seed, cell) >= p.bark) material = wood_material;
-      }
+      if (woody && p.bark == 0) material = wood_material;
       for (auto& v : poly) {
         v.p = posed(v.p) + shift[id] + bend[id] * (v.w * v.w);
         v.n = frame.pose(v.n);
@@ -596,11 +635,31 @@ bool solve(const DeadwoodFile& p, assets::MeshData& mesh, flora::Motion& motion,
       Vertex a = e.a, b = e.b, ai = inner(a), bi = inner(b);
       const Vec3 n = normalize(cross(a.p - b.p, ai.p - b.p));
       a.n = b.n = ai.n = bi.n = n;
-      triangle(wood, b, a, ai, wood_material);
-      triangle(wood, b, ai, bi, wood_material);
+      const bool transverse = std::fabs(dot(n, frame.pose({0, 1, 0}))) > .5f;
+      if (transverse)
+        for (Vertex* v : {&a, &b, &ai, &bi}) {
+          Vec3 at = v->p;
+          at.y = (at.y - report.lift_m) / (1 - p.collapse);
+          at = frame.unpose(at);
+          v->uv = {at.x, at.z};
+        }
+      triangle(wood, b, a, ai, wood_material + (transverse ? 1 : 2));
+      triangle(wood, b, ai, bi, wood_material + (transverse ? 1 : 2));
     }
   } else
-    cap_solid(wood, edges, wood_material);
+    cap_solid(wood, edges, wood_material + 1);
+  // Physical closures precede material contours. UV seams can split at different points on
+  // either side of one physical edge; those material T-junctions are never holes to cap.
+  if (p.bark > 0 && p.bark < 1) {
+    Vector<Triangle> surfaced;
+    for (const auto& t : wood) {
+      if (t.material == 0)
+        bark_triangle(surfaced, p, wood_material, t.a, t.b, t.c, t.part);
+      else
+        surfaced.push_back(t);
+    }
+    wood = std::move(surfaced);
+  }
   report.wood_triangles = wood.size();
   report.foliage_triangles = foliage.size();
   report.triangles = wood.size() + foliage.size();
@@ -645,6 +704,11 @@ bool solve(const DeadwoodFile& p, assets::MeshData& mesh, flora::Motion& motion,
   exposed.metallic = 0;
   exposed.roughness = .9f;
   result.materials.push_back(exposed);
+  exposed.name = "end_grain";
+  result.materials.push_back(exposed);
+  exposed.name = "bark_fracture";
+  exposed.base_color = {.24f, .13f, .06f, 1};
+  result.materials.push_back(exposed);
   for (u32 material = 0; material < result.materials.size(); ++material) {
     const u32 first = result.indices.size();
     auto emit = [&](const Vector<Triangle>& tris) {
@@ -653,7 +717,7 @@ bool solve(const DeadwoodFile& p, assets::MeshData& mesh, flora::Motion& motion,
           for (const Vertex& v : {t.a, t.b, t.c}) {
             result.indices.push_back(result.positions.size());
             result.positions.push_back(v.p);
-            result.normals.push_back(v.n);
+            result.normals.push_back(normalize(v.n));
             result.uvs.push_back(v.uv);
           }
     };
@@ -673,7 +737,7 @@ bool solve(const DeadwoodFile& p, assets::MeshData& mesh, flora::Motion& motion,
   motion.vertex_part.resize(result.positions.size(), 0);
   motion.vertex_weight.resize(result.positions.size(), 0);
   for (const auto& prim : result.primitives)
-    if (prim.material != 0 && prim.material != static_cast<i32>(wood_material))
+    if (prim.material > 0 && prim.material < static_cast<i32>(wood_material))
       for (u32 i = prim.first_index; i < prim.first_index + prim.index_count; ++i)
         motion.vertex_part[result.indices[i]] = 1;
   mesh = std::move(result);

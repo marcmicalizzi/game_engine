@@ -30,8 +30,10 @@ refused. Part IDs come from the source recipe and can change when that recipe ch
 
 `start_m`/`end_m` select an axial interval. Snapped stems and stumps expose an irregular cross-section;
 logs expose both ends when a positive start is given. `splinter_m=0` is a flat cut. The source
-mesh's tessellation bounds fracture detail. Bark loss assigns coherent UV patches to exposed
-wood; it does not model separate bark thickness. `hollow` adds an inward wall and annular end
+mesh's tessellation bounds fracture detail. Partial bark loss subdivides source faces once and
+refines contour faces up to two more levels, then clips a continuous elongated UV field into bark, a dark fractured edge and exposed wood. It
+does not switch entire source triangles, or model separate bark thickness. Physical end caps and hollow walls are completed before partitioning materials, so UV seams cannot create false closure surfaces. Coverage is a field
+threshold rather than an exact area percentage. `hollow` adds an inward wall and annular end
 rims for bole-only logs/stumps. `collapse` compresses a horizontal log and opens a hollow roof.
 
 The cook applies roll about the source axis, pitch about x, then yaw about y. Detached limbs
@@ -53,7 +55,10 @@ Ground/support penetration remaining in the bole or finished caps is an error.
 `require_support` additionally rejects a pose that touches none. This validates authored leaning
 poses; it does not solve the lean angle, discover a scene tree or simulate a fall. Wood surface
 samples are vertices and edge midpoints; foliage units are rejected by vertex contact. Narrow
-obstacles require sufficient source tessellation.
+obstacles require sufficient source tessellation. The [lean study](../../content/test-scenes/deadwood/README.md#tree-to-tree-lean)
+places an 8 m damaged oak against a visible 12 m oak. Its capsule is authored from the support's
+trunk section at the upper-bole contact; a regression also checks the actual supporting mesh.
+The source support remains a separate tree. Move or resize it and recook the lean recipe.
 
 ## Geometry, materials and collision
 
@@ -62,9 +67,24 @@ duplicates inward-facing wood and joins the boundary rims. Original overlapping 
 overlapping; this is not a watertight Boolean union of the entire source tree. New normals and UV
 islands cover cut faces. Bark/foliage retain source UVs; inner wood and caps use metre-based UVs.
 
-`tree.materials.bark` and `leaf`, and the source species' pack roles, are reused. The existing
-`tree.materials.wood` slot now supplies fracture, exposed and inner wood here; the fallback role is
-`<species>/wood`, then a declared flat stand-in. No texture is generated or copied into the repo.
+`tree.materials.bark` and `leaf`, and the source species' pack roles, are reused. The final three
+material roles are longitudinal `wood`, transverse `end_grain` and `bark_fracture`.
+`tree.materials.wood` explicitly overrides all three. Otherwise the species' corresponding pack
+role wins, with `<species>/wood` as the generic fallback for the two new roles.
+
+Without an authored set, version 2 bakes native sRGB colour, tangent normal and packed roughness
+maps into the container, only for roles used by geometry. `surface_resolution` is 512 by default,
+power-of-two 128–1024, or zero for flat debug materials. Source axial UVs orient side fibres;
+solid caps share one centred planar island per fracture, in metres. A shared end-grain texture
+encloses the largest cut, so branch rings retain metre scale. Subpixel rings fade out. Longitudinal
+splits on a collapsed roof use fracture grain, not transverse rings.
+
+`decay` (0–1, default 0) and `decay_pattern` (`fibrous` or `cubical`) alter exposed surface pigment,
+roughness and relief, independently of hollowing/collapse. Species selects the wood anatomy group
+and palette, never the decay fungus. These are authored appearance approximations; normal relief
+does not change silhouette or collision. See [surface grounding](../experiments/deadwood-surfaces.md)
+for numbers, resolution costs and limitations. Generated image payloads remain in cooked containers
+outside the repository. All three exposed roles retain wood collider eligibility.
 
 Each material builds its own normal cluster DAG, with cones only for one-sided surfaces. Paging,
 the 16-bit grid, normals/cones and texture records follow the standard geometry/material path.
@@ -88,8 +108,8 @@ Near and far geometry use the DAG's projected-error cut. A consumer can use
 `geometry::extract_lod_form` for ring assets. No new far impostor is claimed: using the living
 tree's canopy bake after damage would resurrect missing branches/leaves. Fresh leafy falls retain
 the generic foliage cut and need a damage-specific bake if large distant populations require it.
-The 6 m fresh-oak fixture has 10,586 triangles, 561 DAG clusters and nine levels. At 20 m/960x640,
-its normal 1 px cut draws 198 clusters; coarse-versus-finest FLIP is .000487 at 20 m and .001269
+The version-1 6 m fresh-oak fixture had 10,586 triangles, 561 DAG clusters and nine levels. At 20 m/960x640,
+its normal 1 px cut drew 198 clusters; coarse-versus-finest FLIP was .000487 at 20 m and .001269
 at 60 m. This is sufficient for the fixture, not a large-population impostor claim. See the
 [measurement table](../experiments/deadwood.md#validation-and-measurements).
 All cascades and traced shadows follow the source species policy. Pair/shadow acceptance belongs

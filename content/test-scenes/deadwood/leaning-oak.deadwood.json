@@ -1,0 +1,59 @@
+{
+  "bark": 0.800000011920929,
+  "branches": 0.4000000059604645,
+  "collapse": 0.0,
+  "contact_tolerance_m": 0.009999999776482582,
+  "decay": 0.0,
+  "decay_pattern": "fibrous",
+  "end_m": 6.0,
+  "foliage": 0.0,
+  "ground": null,
+  "ground_y_m": 0.0,
+  "hollow": 0.0,
+  "kind": "fallen",
+  "lift_m": 0.0,
+  "max_bend": 0.15000000596046448,
+  "pitch_deg": 55.0,
+  "require_support": true,
+  "roll_deg": 0.0,
+  "seed": 17,
+  "settle": true,
+  "source_part": 1,
+  "splinter_m": 0.11999999731779099,
+  "start_m": 0.0,
+  "supports": [
+    {
+      "from": [
+        0.4148300588130951,
+        0.0,
+        4.351642608642578
+      ],
+      "radius_m": 0.2546226680278778,
+      "to": [
+        0.4148300588130951,
+        6.0,
+        4.351642608642578
+      ]
+    }
+  ],
+  "surface_resolution": 512,
+  "tree": {
+    "species": "oak",
+    "tree": {
+      "age_years": 0.0,
+      "card_bake_px": 64,
+      "crown_base": -1.0,
+      "crown_scale": 1.0,
+      "growing_space": 0.5,
+      "height_m": 8.0,
+      "impostor_px": 256,
+      "seed": 17,
+      "site_quality": 1.0,
+      "triangle_budget": 60000,
+      "trunk_radius_m": 0.0,
+      "vitality": 1.0
+    }
+  },
+  "triangle_budget": 0,
+  "yaw_deg": 0.0
+}

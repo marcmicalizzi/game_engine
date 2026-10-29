@@ -1,8 +1,13 @@
+#include "surface.h"
+
 #include <domain/deadwood/deadwood.h>
 #include <domain/geometry/cluster_pages.h>
 #include <domain/geometry/material_sampling.h>
 #include <domain/materials/materials.h>
 #include <domain/texture/material_textures.h>
+
+#include <algorithm>
+#include <cmath>
 
 namespace engine::deadwood {
 bool build_container(const DeadwoodFile& file, const assets::MeshGeneratorInputs& inputs,
@@ -56,8 +61,7 @@ bool build_container(const DeadwoodFile& file, const assets::MeshGeneratorInputs
     result.material_sampling.push_back(
         geometry::encode_material_sampling(m.sampling, m.occlusion_strength));
   }
-  // Source roles and explicit sets are reused verbatim. The final material is the previously
-  // unused wood slot: fractures, exposed bark patches and the hollow's inward-facing wall.
+  // Source bark/leaf roles stay intact. Exposed roles can each override the native fallback.
   flora::apply_flora_materials(file.tree, inputs.materials, result);
   materials::MaterialSet wood;
   if (file.tree.materials && file.tree.materials->wood) {
@@ -70,9 +74,33 @@ bool build_container(const DeadwoodFile& file, const assets::MeshGeneratorInputs
     wood.tile_m = w.tile_m;
     wood.normal_scale = w.normal_scale;
   }
-  const std::string role = file.tree.species + "/wood";
-  if (const auto* set = materials::resolve_set(&wood, inputs.materials, role))
-    materials::apply_set(*set, materials::UvLayout::metres, result, result.materials.size() - 1);
+  const u32 first_wood = result.materials.size() - 3;
+  const char* roles[] = {"wood", "end_grain", "bark_fracture"};
+  for (u32 role = 0; role < 3; ++role) {
+    const u32 material = first_wood + role;
+    bool used = false;
+    f32 end_span = .1f;
+    for (const auto& primitive : mesh.primitives) {
+      if (primitive.material != static_cast<i32>(material)) continue;
+      used = true;
+      if (role == 1)
+        for (u32 i = primitive.first_index; i < primitive.first_index + primitive.index_count;
+             ++i) {
+          const auto uv = mesh.uvs[mesh.indices[i]];
+          end_span = std::max(end_span, 2.1f * std::max(std::fabs(uv.x), std::fabs(uv.y)));
+        }
+    }
+    if (!used) continue;
+    const std::string role_name = file.tree.species + "/" + roles[role];
+    const auto* set =
+        materials::names_images(wood) ? &wood : materials::find_role(inputs.materials, role_name);
+    if (set == nullptr && role != 0)
+      set = materials::find_role(inputs.materials, file.tree.species + "/wood");
+    if (set != nullptr)
+      materials::apply_set(*set, materials::UvLayout::metres, result, material);
+    else if (!detail::bake_surface(file, role, material, end_span, result, error))
+      return false;
+  }
   if (!result.image_paths.empty()) texture::fill_cluster_texture_records(result);
   result.source_hash = source_hash(file);
   result.build_key = assets::generated_mesh_build_key(result.source_hash, inputs, lod, page_bytes);

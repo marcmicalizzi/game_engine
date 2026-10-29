@@ -22,8 +22,12 @@ if(_enabled)
 endif()
 
 engine_module(NAME deadwood LAYER domain OPTIONAL WHOLE_ARCHIVE
-  DEPS base containers math hash json schema assets geometry materials texture flora deadwood_schemas
-  SOURCES src/deadwood.cpp src/container.cpp)
+  DEPS base containers math hash json schema image assets geometry materials texture flora deadwood_schemas
+  SOURCES src/deadwood.cpp src/container.cpp src/surface.cpp)
 
 engine_module_tests(NAME deadwood
   SOURCES tests/deadwood_tests.cpp tests/determinism_tests.cpp tests/size_table.cpp)
+if(TARGET engine_deadwood_tests)
+  target_compile_definitions(engine_deadwood_tests PRIVATE
+    ENGINE_DEADWOOD_CONTENT="${CMAKE_SOURCE_DIR}/content/test-scenes/deadwood")
+endif()
