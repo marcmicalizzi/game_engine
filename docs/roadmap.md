@@ -539,7 +539,7 @@ Import, the content build, validation, provenance, generators, scripting and tex
 | G92 | Terrain-fitted exposed structural roots with species rules, maturity scaling and planting-space constraints | done (2026-10-27: separate terrain cook, off/footprint controls, rigid fitted LOD and grass-mask query; owner defers rebuilt test correction and merge gate to overnight) | G88, G91 | M | implemented | [surface roots](experiments/tree-surface-roots.md) |
 | G93 | The impostor bake carries a pack's normal and roughness across the branch LODs: today `bake_chain`/`bake_level` sample the base-colour and alpha images but write the faces' geometry normals and the material's scalar roughness (the forest proof of concept's leaf audit, 2026-10-27), so vein relief and roughness variation vanish in every branch-group level and the star | open | G83 | M | design | [flora](subsystems/flora.md#the-impostor-chain) |
 
-| G101 | Species-derived deadwood: fallen crowns, snags, snapped stems, stumps, hollow/collapsed logs and detached limbs with pose-aware contact damage | in progress (2026-10-28: reserved in 07fdb3e4; renumbered from G100 after a concurrent reservation; validation) | G88, G92 | L | research | [deadwood](subsystems/deadwood.md) |
+| G101 | Species-derived deadwood: fallen crowns, snags, snapped stems, stumps, hollow/collapsed logs and detached limbs with pose-aware contact damage | done (dc2581d5; 2026-10-29: six forms, posed contact damage, source preservation, cross-compiler pins and nine capture fixtures; renumbered from concurrent G100) | G88, G92 | L | research | [deadwood](subsystems/deadwood.md) |
 
 ## T — Tooling and CI
 
