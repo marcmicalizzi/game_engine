@@ -7,11 +7,12 @@
 //   shrub  `engine.flora.Shrub`: basal stems from a stool, each the allometric recursion (G73)
 //          to the species' twig; two primitives, bark (one-sided) and leaves (two-sided)
 //   fern   `engine.flora.Fern`: a crown of pinnate fronds, each a stipe and a rachis of pinna
-//          cards; one two-sided primitive, the fronds
+//          cards; two-sided live fronds and an optional retained-dead primitive (G103)
 //   tuft   `engine.flora.Tuft`: grass blades from one base, each a tapering strip; one two-sided
 //          primitive, the blades
 //   herb   `engine.flora.Herb`: a stem, leaves and flowers of petal cards; two two-sided
-//          primitives, leaf (the stem and the leaves) and flower
+//          primitives, leaf (the stem and the leaves) and flower, plus optional dead leaves.
+//          Basal rosettes keep leaves at the root and omit a nonflowering scape (G103).
 //
 // Every one emits the motion contract and the structural table (structure.h). Part 0 is the root
 // (the stool, the rhizome, the tuft's base, the herb's root): a pivot at the ground with no
@@ -33,6 +34,9 @@
 #include <string>
 
 namespace engine::flora {
+
+// Fern/herb output only; unrelated flora cache identities remain unchanged.
+inline constexpr u32 k_ground_plants_version = 2;
 
 // A shrub's stem stops a walker when its radius at the ground is at least this: 1.25 cm, a stem
 // 2.5 cm across. A green stem bent as a cantilever 1 m long by a walker's 0.3 m stride takes

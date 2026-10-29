@@ -621,7 +621,7 @@ struct Shrub @version(1) {
 /// A fern (flora.md, "The fern"): a crown of pinnate fronds from a rhizome — male fern, lady fern,
 /// a bracken frond — each frond a stipe and a rachis carrying pinnae as cards, the longest a little
 /// below the middle and shortening to the tip. Defaults make a 0.9 m male fern of 14 fronds.
-struct Fern @version(1) {
+struct Fern @version(2) {
   /// Everything left to chance: each frond's turn, spread, length and droop.
   seed: u64 = 1
   /// Fronds in the crown: 1 to 40.
@@ -647,6 +647,13 @@ struct Fern @version(1) {
   triangle_budget: u32 = 4000
   /// The kind's detail tier: a fern never collides, so any; `rich` by default.
   detail_tier: DetailTier = rich
+  /// Use a prescribed arch with increasing curvature; false preserves the legacy axis.
+  /// Also emits individual pinnae with gaps and a narrow rachis instead of the legacy spray.
+  arching: bool = false @since(2)
+  /// Local creeping-rhizome extent, 0 (one crown) to 4 m; fronds emerge separately along it.
+  rhizome_length_m: f32 = 0.0 @unit(m) @since(2)
+  /// Additional retained dead fronds, 0 to 40; part IDs follow the living fronds.
+  dead_fronds: u32 = 0 @since(2)
 }
 
 /// A grass tuft (flora.md, "The grass tuft"): a bunch of blades from one base — tufted hair-grass,
@@ -681,7 +688,7 @@ struct Tuft @version(1) {
 /// A herb (flora.md, "The herb"): a stem with leaves and flowers — a meadow flower's single head,
 /// a foxglove's spike of bells, a nettle's leafy stem with none. Defaults make a 0.6 m ox-eye
 /// daisy-like herb with one white head.
-struct Herb @version(1) {
+struct Herb @version(2) {
   /// Everything left to chance: the stem's lean and wander, each leaf's turn and size.
   seed: u64 = 1
   /// The stem's top above the ground: 0.1 to 2 m.
@@ -726,6 +733,18 @@ struct Herb @version(1) {
   triangle_budget: u32 = 2500
   /// The kind's detail tier: a herb never collides, so any; `rich` by default.
   detail_tier: DetailTier = rich
+  /// Basal leaves parented to the root; the stem is a flower scape, omitted without flowers.
+  rosette: bool = false @since(2)
+  /// Bare petiole preceding each blade, 0 to 0.4 m; independent of blade length.
+  petiole_length_m: f32 = 0.0 @unit(m) @since(2)
+  /// Blade rows, 1 (legacy diamond) or 2 to 12 curved, keeled rows; default 1.
+  leaf_segments: u32 = 1 @since(2)
+  /// Tip turn down along a curved blade, 0 to 90 degrees; default 0.
+  leaf_droop_deg: f32 = 0.0 @unit(deg) @since(2)
+  /// Transverse cupping, 0 to 0.3 of blade width; default 0.05 for curved blades only.
+  leaf_cup: f32 = 0.05 @since(2)
+  /// Additional retained dead leaves, 0 to 40; brown, curled and spread near the root.
+  dead_leaves: u32 = 0 @since(2)
 }
 
 /// Overrides for a named species' rules over the shared branching or evergreen growth structure.

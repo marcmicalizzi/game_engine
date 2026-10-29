@@ -1,0 +1,12 @@
+{
+  "fern": {
+    "droop": 0.9,
+    "frond_length_m": 0.9,
+    "triangle_budget": 4000,
+    "spread_deg": 60,
+    "pinnae": 24,
+    "arching": true,
+    "seed": 17
+  },
+  "species": "fern"
+}

@@ -1,0 +1,318 @@
+{
+  "meshes": [
+    {
+      "name": "fern-arching",
+      "path": "../../flora/fern-arching.flora.json"
+    },
+    {
+      "name": "fern-autumn",
+      "path": "../../flora/fern-autumn.flora.json"
+    },
+    {
+      "name": "fern-creeping",
+      "path": "../../flora/fern-creeping.flora.json"
+    },
+    {
+      "name": "hosta-rosette",
+      "path": "../../flora/hosta-rosette.flora.json"
+    },
+    {
+      "name": "hosta-flowering",
+      "path": "../../flora/hosta-flowering.flora.json"
+    },
+    {
+      "name": "hosta-autumn",
+      "path": "../../flora/hosta-autumn.flora.json"
+    },
+    {
+      "name": "plantain-rosette",
+      "path": "../../flora/plantain-rosette.flora.json"
+    }
+  ],
+  "camera_path": "camera-path.json",
+  "instances": [
+    {
+      "yaw_deg": 0,
+      "mesh": 0,
+      "name": "fern-arching-0",
+      "translation": [
+        -5.4,
+        0,
+        0.0
+      ]
+    },
+    {
+      "yaw_deg": 137,
+      "mesh": 0,
+      "name": "fern-arching-1",
+      "translation": [
+        -5.4,
+        0,
+        -1.1
+      ]
+    },
+    {
+      "yaw_deg": 274,
+      "mesh": 0,
+      "name": "fern-arching-2",
+      "translation": [
+        -5.4,
+        0,
+        -2.2
+      ]
+    },
+    {
+      "yaw_deg": 411,
+      "mesh": 0,
+      "name": "fern-arching-3",
+      "translation": [
+        -5.4,
+        0,
+        -3.3000000000000003
+      ]
+    },
+    {
+      "yaw_deg": 0,
+      "mesh": 1,
+      "name": "fern-autumn-0",
+      "translation": [
+        -3.6,
+        0,
+        0.0
+      ]
+    },
+    {
+      "yaw_deg": 137,
+      "mesh": 1,
+      "name": "fern-autumn-1",
+      "translation": [
+        -3.6,
+        0,
+        -1.1
+      ]
+    },
+    {
+      "yaw_deg": 274,
+      "mesh": 1,
+      "name": "fern-autumn-2",
+      "translation": [
+        -3.6,
+        0,
+        -2.2
+      ]
+    },
+    {
+      "yaw_deg": 411,
+      "mesh": 1,
+      "name": "fern-autumn-3",
+      "translation": [
+        -3.6,
+        0,
+        -3.3000000000000003
+      ]
+    },
+    {
+      "yaw_deg": 0,
+      "mesh": 2,
+      "name": "fern-creeping-0",
+      "translation": [
+        -1.8,
+        0,
+        0.0
+      ]
+    },
+    {
+      "yaw_deg": 137,
+      "mesh": 2,
+      "name": "fern-creeping-1",
+      "translation": [
+        -1.8,
+        0,
+        -1.1
+      ]
+    },
+    {
+      "yaw_deg": 274,
+      "mesh": 2,
+      "name": "fern-creeping-2",
+      "translation": [
+        -1.8,
+        0,
+        -2.2
+      ]
+    },
+    {
+      "yaw_deg": 411,
+      "mesh": 2,
+      "name": "fern-creeping-3",
+      "translation": [
+        -1.8,
+        0,
+        -3.3000000000000003
+      ]
+    },
+    {
+      "yaw_deg": 0,
+      "mesh": 3,
+      "name": "hosta-rosette-0",
+      "translation": [
+        0.0,
+        0,
+        0.0
+      ]
+    },
+    {
+      "yaw_deg": 137,
+      "mesh": 3,
+      "name": "hosta-rosette-1",
+      "translation": [
+        0.0,
+        0,
+        -1.1
+      ]
+    },
+    {
+      "yaw_deg": 274,
+      "mesh": 3,
+      "name": "hosta-rosette-2",
+      "translation": [
+        0.0,
+        0,
+        -2.2
+      ]
+    },
+    {
+      "yaw_deg": 411,
+      "mesh": 3,
+      "name": "hosta-rosette-3",
+      "translation": [
+        0.0,
+        0,
+        -3.3000000000000003
+      ]
+    },
+    {
+      "yaw_deg": 0,
+      "mesh": 4,
+      "name": "hosta-flowering-0",
+      "translation": [
+        1.8,
+        0,
+        0.0
+      ]
+    },
+    {
+      "yaw_deg": 137,
+      "mesh": 4,
+      "name": "hosta-flowering-1",
+      "translation": [
+        1.8,
+        0,
+        -1.1
+      ]
+    },
+    {
+      "yaw_deg": 274,
+      "mesh": 4,
+      "name": "hosta-flowering-2",
+      "translation": [
+        1.8,
+        0,
+        -2.2
+      ]
+    },
+    {
+      "yaw_deg": 411,
+      "mesh": 4,
+      "name": "hosta-flowering-3",
+      "translation": [
+        1.8,
+        0,
+        -3.3000000000000003
+      ]
+    },
+    {
+      "yaw_deg": 0,
+      "mesh": 5,
+      "name": "hosta-autumn-0",
+      "translation": [
+        3.6,
+        0,
+        0.0
+      ]
+    },
+    {
+      "yaw_deg": 137,
+      "mesh": 5,
+      "name": "hosta-autumn-1",
+      "translation": [
+        3.6,
+        0,
+        -1.1
+      ]
+    },
+    {
+      "yaw_deg": 274,
+      "mesh": 5,
+      "name": "hosta-autumn-2",
+      "translation": [
+        3.6,
+        0,
+        -2.2
+      ]
+    },
+    {
+      "yaw_deg": 411,
+      "mesh": 5,
+      "name": "hosta-autumn-3",
+      "translation": [
+        3.6,
+        0,
+        -3.3000000000000003
+      ]
+    },
+    {
+      "yaw_deg": 0,
+      "mesh": 6,
+      "name": "plantain-rosette-0",
+      "translation": [
+        5.4,
+        0,
+        0.0
+      ]
+    },
+    {
+      "yaw_deg": 137,
+      "mesh": 6,
+      "name": "plantain-rosette-1",
+      "translation": [
+        5.4,
+        0,
+        -1.1
+      ]
+    },
+    {
+      "yaw_deg": 274,
+      "mesh": 6,
+      "name": "plantain-rosette-2",
+      "translation": [
+        5.4,
+        0,
+        -2.2
+      ]
+    },
+    {
+      "yaw_deg": 411,
+      "mesh": 6,
+      "name": "plantain-rosette-3",
+      "translation": [
+        5.4,
+        0,
+        -3.3000000000000003
+      ]
+    }
+  ],
+  "format": "engine.scene.v1",
+  "description": "G103 isolated ground-plant habits, with repetition groups.",
+  "name": "ground-plants"
+}

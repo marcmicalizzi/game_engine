@@ -1,5 +1,5 @@
 // The fern's solver (understory.h; docs/subsystems/flora.md, "The fern").
-#include "kit.h"
+#include "ground_plant.h"
 
 #include <domain/flora/structure.h>
 #include <domain/flora/understory.h>
@@ -48,6 +48,38 @@ void profile_of(const Fern& p, f64 length, u32 stations, Vector<f64>& out) {
   }
 }
 
+// Separate pinnae leave real gaps in the silhouette. Their width is 20% of length at full
+// detail; a coarser pair covers at most twice that width, without changing frond structure.
+
+void build_pinnate_frond(const Fern& p, const Axis& axis, u32 pinnae, D3 side, Emitter& emit) {
+  build_blade(resample_axis(axis, fern_rachis_rows(pinnae)), 0.003, side, emit);
+  const f64 angle = static_cast<f64>(p.pinna_angle_deg) * k_degree;
+  const f64 stipe = static_cast<f64>(p.stipe);
+  const f64 merged = static_cast<f64>(p.pinnae) / pinnae;
+  const f64 width_scale = merged < 2.0 ? merged : 2.0;
+  for (u32 i = 0; i < pinnae; ++i) {
+    const f64 u = (static_cast<f64>(i) + 0.5) / pinnae;
+    const f64 t = stipe + (1.0 - stipe) * u;
+    const D3 centre = axis_point(axis, axis.length * t);
+    const D3 tangent = axis_tangent(axis, axis.length * t);
+    const D3 lateral = perpendicular(tangent, side);
+    D3 normal = normalized(cross(lateral, tangent));
+    if (normal.y < 0.0) normal = normal * -1.0;
+    const f64 length =
+        static_cast<f64>(p.pinna_length) * axis.length * det::sin(k_pi * (0.15 + 0.85 * u));
+    for (u32 j = 0; j < 2u; ++j) {
+      const D3 direction =
+          tangent * det::cos(angle) + lateral * ((j == 0u ? -1.0 : 1.0) * det::sin(angle));
+      const D3 across = normalized(cross(direction, normal));
+      emit.weight = t;  // the whole pinna rides its rachis station, with no new motion part
+      const u32 first = emit.mesh.positions.size();
+      build_leaf_card(centre, direction, across, length, length * 0.2 * width_scale, 0.0, emit);
+      for (u32 v = first; v < emit.mesh.positions.size(); ++v)
+        if (emit.mesh.positions[v].y < 0.002f) emit.mesh.positions[v].y = 0.002f;
+    }
+  }
+}
+
 }  // namespace
 
 bool fern_in_range(const Fern& p, std::string& error) {
@@ -70,6 +102,9 @@ bool fern_in_range(const Fern& p, std::string& error) {
     return bad("crown_radius_m", "0.005 to 0.3 m");
   if (!(p.triangle_budget >= 500u && p.triangle_budget <= 100000u))
     return bad("triangle_budget", "500 to 100,000");
+  if (!(p.rhizome_length_m >= 0.0f && p.rhizome_length_m <= 4.0f))
+    return bad("rhizome_length_m", "0 to 4 m");
+  if (p.dead_fronds > 40u) return bad("dead_fronds", "0 to 40");
   return true;
 }
 
@@ -84,7 +119,10 @@ bool solve_fern(const Fern& p, assets::MeshData& out, TreeReport* report, std::s
   // The ladder: the blade's pinnae halved until the fronds fit, never a frond dropped.
   u32 pinnae = p.pinnae;
   u32 steps = 0;
-  const auto triangles = [&](u32 n) { return p.fronds * spray_triangles(stations_of(p, n)); };
+  const auto triangles = [&](u32 n) {
+    return p.fronds * (p.arching ? fern_pinnate_triangles(n) : spray_triangles(stations_of(p, n))) +
+           p.dead_fronds * fern_pinnate_triangles(n);
+  };
   while (triangles(pinnae) > p.triangle_budget && pinnae > k_min_stations) {
     pinnae = (pinnae + 1) / 2 < k_min_stations ? k_min_stations : (pinnae + 1) / 2;
     ++steps;
@@ -100,6 +138,8 @@ bool solve_fern(const Fern& p, assets::MeshData& out, TreeReport* report, std::s
   const u32 stations = stations_of(p, pinnae);
 
   out.materials.push_back(material("frond", Vec4{0.12f, 0.30f, 0.07f, 1.0f}, 0.55f, true));
+  if (p.dead_fronds > 0u)
+    out.materials.push_back(material("dead_frond", Vec4{0.28f, 0.13f, 0.045f, 1.0f}, 0.85f, true));
   Motion parts;
   Emitter emit{out, parts};
   const f64 crown = static_cast<f64>(p.crown_radius_m);
@@ -110,13 +150,18 @@ bool solve_fern(const Fern& p, assets::MeshData& out, TreeReport* report, std::s
   const f64 turn = turn_rng.unit() * 2.0 * k_pi;
   const f64 spread = static_cast<f64>(p.spread_deg) * k_degree;
   Vector<f64> lengths;
-  for (u32 i = 0; i < p.fronds; ++i) {
+  u32 dead_first = 0;
+  for (u32 i = 0; i < p.fronds + p.dead_fronds; ++i) {
+    const bool dead = i >= p.fronds;
+    if (i == p.fronds) dead_first = out.indices.size();
     Rng rng = stream_of(p.seed, k_frond_stream + i);
     // The youngest frond (0) stands nearly upright at the crown's middle, the oldest leans out
     // furthest: a shuttlecock, its spread by the square root of age as the palm's crown's is.
-    const f64 age = (static_cast<f64>(i) + 0.5) / static_cast<f64>(p.fronds);
+    const f64 age = dead ? (static_cast<f64>(i - p.fronds) + 0.5) / p.dead_fronds
+                         : (static_cast<f64>(i) + 0.5) / p.fronds;
     const f64 jitter_spread = rng.unit();
-    const f64 angle = spread * std::sqrt(age) * (0.94 + 0.12 * jitter_spread);
+    const f64 angle = dead ? (78.0 + 8.0 * jitter_spread) * k_degree
+                           : spread * std::sqrt(age) * (0.94 + 0.12 * jitter_spread);
     const f64 jitter_around = rng.symmetric();
     const f64 around = turn + static_cast<f64>(i) * k_golden_angle + 0.15 * jitter_around;
     const D3 heading{det::cos(around), 0.0, det::sin(around)};
@@ -128,22 +173,45 @@ bool solve_fern(const Fern& p, assets::MeshData& out, TreeReport* report, std::s
     const f64 jitter_droop = rng.unit();
     const f64 droop =
         static_cast<f64>(p.droop) * (0.5 + 0.5 * age) * (0.9 + 0.2 * jitter_droop) * 0.5 * k_pi;
-    const D3 base = heading * (crown * std::sqrt(age));
+    D3 base = heading * (crown * std::sqrt(age));
+    if (p.rhizome_length_m > 0.0f) {
+      // Each frond is a ramet on a local meandering rhizome; count is not a field density.
+      const u32 slot = dead ? i - p.fronds : i;
+      const u32 count = dead ? p.dead_fronds : p.fronds;
+      const f64 along = count > 1u ? static_cast<f64>(slot) / (count - 1u) : 0.5;
+      const D3 run{det::cos(turn), 0.0, det::sin(turn)};
+      const D3 across = cross(run, k_up);
+      base = run * ((along - 0.5) * static_cast<f64>(p.rhizome_length_m)) +
+             across * (crown * det::sin(along * 2.0 * k_pi));
+    }
     const Axis axis =
-        grow_axis(base, dir, length, k_fine_rows, k_up * -1.0, droop / length, 0.02, rng);
+        (p.arching || dead)
+            ? ground_plant_axis(base, heading, angle, dead ? 25.0 * k_degree : droop, length)
+            : grow_axis(base, dir, length, k_fine_rows, k_up * -1.0, droop / length, 0.02, rng);
     begin_structural_part(emit, axis.point[0], axis.tangent[0], axis.length, 0, 0.0, 0.0, 0u);
     profile_of(p, length, stations, lengths);
     D3 side = cross(dir, k_up);
     if (dot(side, side) < 1e-9) side = cross(heading, k_up);
-    build_spray_profile(axis, 0.0, stations, lengths,
-                        static_cast<f64>(p.pinna_angle_deg) * k_degree, 8.0 * k_degree, 0.05,
-                        normalized(side), emit);
+    if (p.arching || dead) {
+      build_pinnate_frond(p, axis, pinnae, normalized(side), emit);
+    } else {
+      build_spray_profile(axis, 0.0, stations, lengths,
+                          static_cast<f64>(p.pinna_angle_deg) * k_degree, 8.0 * k_degree, 0.05,
+                          normalized(side), emit);
+    }
   }
   assets::Primitive fronds;
   fronds.first_index = 0;
-  fronds.index_count = out.indices.size();
+  fronds.index_count = p.dead_fronds > 0u ? dead_first : out.indices.size();
   fronds.material = 0;
   out.primitives.push_back(fronds);
+  if (p.dead_fronds > 0u) {
+    assets::Primitive dead;
+    dead.first_index = dead_first;
+    dead.index_count = out.indices.size() - dead_first;
+    dead.material = 1;
+    out.primitives.push_back(dead);
+  }
   smooth_normals(out, 0, 0);
 
   if (report != nullptr) {
@@ -152,8 +220,8 @@ bool solve_fern(const Fern& p, assets::MeshData& out, TreeReport* report, std::s
     report->leaf_triangles = report->triangles;
     report->vertices = out.positions.size();
     report->parts = parts.parts.size();
-    report->sprays = p.fronds;
-    report->cards_per_side = stations;
+    report->sprays = p.fronds + p.dead_fronds;
+    report->cards_per_side = p.arching ? pinnae : stations;
     report->steps = steps;
     report->leaf_cards = report->leaf_triangles / 2;
     report->leaf_area_m2 = static_cast<f32>(triangles_area(out, 0));

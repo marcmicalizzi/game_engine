@@ -1,0 +1,25 @@
+{
+  "herb": {
+    "seed": 17,
+    "flowers": 12,
+    "petal_angle_deg": 25,
+    "leaf_angle_deg": 65,
+    "petals": 6,
+    "leaf_length_m": 0.135,
+    "flower_green": 0.4,
+    "leaf_cup": 0.06,
+    "flower_red": 0.65,
+    "leaf_width": 0.8,
+    "leaves": 16,
+    "flower_blue": 0.7,
+    "rosette": true,
+    "spike": 0.4,
+    "leaf_segments": 8,
+    "petiole_length_m": 0.12,
+    "leaf_droop_deg": 45,
+    "height_m": 0.6,
+    "triangle_budget": 2500,
+    "petal_length_m": 0.04
+  },
+  "species": "herb"
+}

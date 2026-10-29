@@ -27,5 +27,4 @@ engine_module(NAME flora LAYER domain OPTIONAL WHOLE_ARCHIVE
 engine_module_tests(NAME flora
   SOURCES tests/flora_tests.cpp tests/species_tests.cpp tests/allometry_tests.cpp
           tests/impostor_tests.cpp tests/understory_tests.cpp tests/sward_tests.cpp
-          tests/size_table.cpp tests/growth_rules_tests.cpp tests/maturity_tests.cpp tests/roots_tests.cpp
-          tests/shrub_growth_tests.cpp)
+          tests/determinism_tests.cpp tests/size_table.cpp tests/growth_rules_tests.cpp tests/maturity_tests.cpp tests/roots_tests.cpp tests/shrub_growth_tests.cpp)

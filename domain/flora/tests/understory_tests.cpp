@@ -363,7 +363,7 @@ TEST_CASE("understory: the parts sample their roles") {
   CHECK(flora::flora_role("shrub", 0) == "shrub/bark");
   CHECK(flora::flora_role("shrub", 1) == "shrub/leaf");
   CHECK(flora::flora_role("fern", 0) == "fern/frond");
-  CHECK(flora::flora_role("fern", 1).empty());
+  CHECK(flora::flora_role("fern", 1) == "fern/dead_frond");
   CHECK(flora::flora_role("tuft", 0) == "grass/blade");
   CHECK(flora::flora_role("herb", 0) == "herb/leaf");
   CHECK(flora::flora_role("herb", 1) == "herb/flower");
@@ -387,4 +387,135 @@ TEST_CASE("understory: a parameter out of range is refused by name") {
   herb.flower_blue = 1.5f;
   CHECK_FALSE(flora::herb_in_range(herb, error));
   CHECK(error.find("engine.flora.Herb.flower_blue") != std::string::npos);
+}
+
+// G103: first MSVC pins for opt-in habits; legacy G75 geometry pins remain unchanged.
+TEST_CASE("ground plants: arches and creeping colonies preserve every budget part") {
+  flora::Fern crown;
+  crown.arching = true;
+  crown.spread_deg = 60;
+  crown.droop = 0.9f;
+  crown.dead_fronds = 6;
+  check_species("arching fern", crown, flora::solve_fern, {1500u, 500u}, false,
+                0xe6dc052f5488d866ull);
+  flora::Fern colony;
+  colony.arching = true;
+  colony.fronds = 10;
+  colony.frond_length_m = 0.28f;
+  colony.rhizome_length_m = 0.8f;
+  colony.crown_radius_m = 0.06f;
+  check_species("creeping fern", colony, flora::solve_fern, {500u}, false, 0xc0f29746609a198bull);
+  assets::MeshData mesh;
+  flora::Motion motion;
+  REQUIRE(flora::solve_fern(colony, mesh, nullptr, nullptr, &motion));
+  CHECK(length(motion.parts[1].pivot - motion.parts[10].pivot) == doctest::Approx(0.8));
+  CHECK(motion.parts.size() == 11u);
+  crown.fronds = 40;
+  crown.dead_fronds = 40;
+  crown.triangle_budget = 500;
+  std::string error;
+  CHECK_FALSE(flora::solve_fern(crown, mesh, nullptr, &error));
+  CHECK(error.find("coarsest form needs") != std::string::npos);
+}
+
+TEST_CASE("ground plants: broad rosettes carry independent blades and flowering scapes") {
+  flora::Herb p;
+  p.rosette = true;
+  p.leaves = 16;
+  p.leaf_length_m = 0.135f;  // NC State Hosta: 3--6 inches, including seeded +/-10%.
+  p.leaf_width = 0.8f;
+  p.petiole_length_m = 0.12f;
+  p.leaf_segments = 8;
+  p.leaf_angle_deg = 65;
+  p.leaf_droop_deg = 45;
+  p.flowers = 12;
+  p.petals = 5;
+  p.spike = 0.4f;
+  p.dead_leaves = 6;
+  check_species("broad rosette", p, flora::solve_herb, {}, false, 0x8303a099b06b535eull);
+  assets::MeshData mesh;
+  flora::Motion motion;
+  flora::TreeReport report;
+  REQUIRE(flora::solve_herb(p, mesh, &report, nullptr, &motion));
+  for (u32 i = 2; i < 2 + p.leaves; ++i) {
+    CHECK(motion.parts[i].parent == 0u);
+    CHECK(motion.parts[i].pivot.y < 0.02f);
+    CHECK(motion.parts[i].length >= 0.9f * p.leaf_length_m + p.petiole_length_m);
+    CHECK(motion.parts[i].length <= 1.1f * p.leaf_length_m + p.petiole_length_m);
+  }
+  for (u32 i = 2 + p.leaves; i < 2 + p.leaves + p.flowers; ++i)
+    CHECK(motion.parts[i].parent == 1u);
+  p.flowers = 0;
+  REQUIRE(flora::solve_herb(p, mesh, &report, nullptr, &motion));
+  check_plant(mesh, motion, report, p.triangle_budget, false);
+  CHECK(report.shoots == 0u);
+  CHECK(motion.parts.size() == 1u + p.leaves + p.dead_leaves);
+  for (u32 i = 1; i < motion.parts.size(); ++i)
+    CHECK(motion.parts[i].parent == 0u);
+  for (const auto v : mesh.positions)
+    CHECK(v.y >= 0.0f);
+  // A fully senescent rosette has no live primitive or phantom flower stalk.
+  p.leaves = 0;
+  REQUIRE(flora::solve_herb(p, mesh, &report, nullptr, &motion));
+  check_plant(mesh, motion, report, p.triangle_budget, false);
+  REQUIRE(mesh.primitives.size() == 1u);
+  CHECK(mesh.primitives[0].material == 2);
+}
+
+TEST_CASE("ground plants: tessellation and petals yield to the cap before structure") {
+  flora::Herb p;
+  p.rosette = true;
+  p.leaves = 40;
+  p.dead_leaves = 40;
+  p.leaf_segments = 12;
+  p.petiole_length_m = 0.06f;
+  p.flowers = 40;
+  p.petals = 40;
+  p.spike = 0.6f;
+  p.triangle_budget = 50000;
+  check_species("budget rosette", p, flora::solve_herb, {1000u}, false, 0x08cb427a915115c2ull);
+}
+
+TEST_CASE("ground plants: recipes round trip, reject invalid controls and key only their kinds") {
+  flora::FloraFile p, again;
+  std::string error;
+  REQUIRE(
+      read(R"({"species":"fern","fern":{"arching":true,"rhizome_length_m":0.8,"dead_fronds":4}})",
+           p, error));
+  REQUIRE(read(flora::canonical_flora_json(p), again, error));
+  CHECK(flora::flora_source_hash(p) == flora::flora_source_hash(again));
+  again.fern.rhizome_length_m += 0.1f;
+  CHECK(flora::flora_source_hash(p) != flora::flora_source_hash(again));
+  CHECK_FALSE(read(R"({"species":"fern","fern":{"rhizome_length_m":-1}})", p, error));
+  CHECK_FALSE(read(R"({"species":"fern","fern":{"dead_fronds":41}})", p, error));
+  CHECK_FALSE(read(R"({"species":"herb","herb":{"leaf_segments":0}})", p, error));
+  CHECK_FALSE(read(R"({"species":"herb","herb":{"leaf_droop_deg":20}})", p, error));
+  REQUIRE(read(
+      R"({"species":"herb","herb":{"rosette":true,"petiole_length_m":0.1,"leaf_segments":6,"leaf_droop_deg":40,"dead_leaves":5}})",
+      p, error));
+  REQUIRE(read(flora::canonical_flora_json(p), again, error));
+  CHECK(flora::flora_source_hash(p) == flora::flora_source_hash(again));
+  CHECK(flora::flora_role("fern", 1) == "fern/dead_frond");
+  CHECK(flora::flora_role("herb", 2) == "herb/dead_leaf");
+}
+
+TEST_CASE("ground plants: supported rosettes stay above ground at their angle limit") {
+  for (const u32 rows : {1u, 2u, 12u}) {
+    flora::Herb p;
+    p.rosette = true;
+    p.flowers = 0;
+    p.leaf_angle_deg = 100;
+    p.petiole_length_m = 0.4f;
+    p.leaf_length_m = 0.3f;
+    p.leaf_segments = rows;
+    p.leaf_droop_deg = rows == 1u ? 0.0f : 90.0f;
+    p.dead_leaves = 10;
+    assets::MeshData mesh;
+    flora::Motion motion;
+    flora::TreeReport report;
+    REQUIRE(flora::solve_herb(p, mesh, &report, nullptr, &motion));
+    check_plant(mesh, motion, report, p.triangle_budget, false);
+    for (const auto v : mesh.positions)
+      CHECK(v.y >= 0.0f);
+  }
 }
