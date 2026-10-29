@@ -263,6 +263,9 @@ class GameRunner {
   // The display encoding the frames are drawn for ("sdr", "hdr10", "scrgb", "linear"), known once
   // there is a renderer: an HDR one makes an HDR request answerable.
   void set_graphics_display(std::string_view name, bool hdr) noexcept;
+  // Observational start-to-start timing; never advances simulation or persisted state.
+  void note_render_frame(f64 interval_ms) noexcept;
+  void set_graphics_size(u32 width, u32 height) noexcept;
   // Loads the module through `hotload::ModuleHost` (refusals in the host's own words), resolves
   // its `game_tick`, and restores the state file when there is one. `map` is the session's, which
   // the declared actions are looked up in; an action the map lacks (a log recorded before revision

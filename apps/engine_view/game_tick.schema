@@ -7,7 +7,7 @@
 namespace engine.game
 
 /// One tick of the walking session, as a game sees it: no engine types, only values.
-struct GameTick @version(2) {
+struct GameTick @version(3) {
   /// The session's tick (the first is 1) and its length in seconds (1 / the tick rate).
   tick: u64 = 0
   dt: f64 = 0
@@ -47,4 +47,11 @@ struct GameTick @version(2) {
   sky_time_s: f64 = 0 @since(2)
   day_length_s: f64 = 0 @since(2)
   world_rate: f64 = 1 @since(2)
+  /// Observational window-render timing, independent of simulation/world speed. Zero until
+  /// two window frames start; unavailable in offscreen replay. Includes pacing and waits.
+  render_frame_ms: f64 = 0 @since(3)
+  /// Number of measured frame intervals, not simulation ticks or presented scanouts.
+  render_frame_serial: u64 = 0 @since(3)
+  /// Sum of measured render intervals in seconds, for HUD refresh while world time is paused.
+  render_elapsed_s: f64 = 0 @since(3)
 }

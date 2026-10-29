@@ -1471,6 +1471,7 @@ const renderer::OverlayDrawData* game_hud_overlay(renderer::SceneRenderer& rende
   if (g_game == nullptr) return nullptr;
   // The ground's surface time this frame draws, for the state file's clock (game_runner.h).
   g_game->note_surface_time(renderer.scene().ground_time_s());
+  g_game->set_graphics_size(renderer.width(), renderer.height());
   g_game->set_graphics_display(gfx::display_encoding_name(renderer.display()),
                                renderer.display() != gfx::DisplayEncoding::Sdr);
   if (g_hud == nullptr || !g_hud->valid()) return nullptr;
@@ -6021,6 +6022,10 @@ int run_view(int argc, char** argv) {
       // `--report`'s frame times: start to start, as `FrameRecord::frame_ms` is (no-op unasked).
       if (last_frame_start_ns != 0)
         g_report.frames.add(static_cast<f64>(frame_start - last_frame_start_ns) / 1.0e6);
+#if ENGINE_VIEW_GAME
+      if (g_game != nullptr && last_frame_start_ns != 0)
+        g_game->note_render_frame(static_cast<f64>(frame_start - last_frame_start_ns) / 1.0e6);
+#endif
       last_frame_start_ns = frame_start;
       // --inject-input: the log's keys and motion go onto the window's own queue as their ticks
       // come due, and come back out of poll() below like anything the platform delivered.

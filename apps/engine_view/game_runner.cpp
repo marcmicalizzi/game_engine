@@ -1120,6 +1120,17 @@ void GameRunner::set_graphics(const hotload::GraphicsState& state, bool ray_trac
 
 u32 GameRunner::graphics_requests() const noexcept { return impl_->requests; }
 
+void GameRunner::note_render_frame(f64 interval_ms) noexcept {
+  if (!std::isfinite(interval_ms) || interval_ms <= 0.0) return;
+  auto& s = impl_->state;
+  s.render_frame_ms = interval_ms;
+  ++s.render_frame_serial;
+  s.render_elapsed_s += interval_ms / 1000.0;
+}
+void GameRunner::set_graphics_size(u32 width, u32 height) noexcept {
+  impl_->graphics.width = width;
+  impl_->graphics.height = height;
+}
 void GameRunner::set_graphics_display(std::string_view name, bool hdr) noexcept {
   Impl& g = *impl_;
   if (!g.have_graphics) return;
@@ -1524,6 +1535,9 @@ JsonValue GameRunner::summary_json() const {
   // The graphics a module reads (ABI 4) and what it asked for: recorded, applied by nothing yet.
   JsonValue graphics = JsonValue::object();
   graphics.set("known", g.have_graphics);
+  graphics.set("render_frame_ms", g.state.render_frame_ms);
+  graphics.set("render_frame_serial", g.state.render_frame_serial);
+  graphics.set("render_elapsed_s", g.state.render_elapsed_s);
   if (g.have_graphics) {
     const hotload::GraphicsState& s = g.graphics;
     graphics.set("raster", std::string_view(s.raster));

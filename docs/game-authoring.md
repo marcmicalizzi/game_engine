@@ -315,3 +315,12 @@ run 77 s, the package 5 s; 56 checks and 74 s before, on a quieter machine) on t
 beside five other agents' builds; it skips with a sentence where the build
 has no hotload capability. The SDK it exports from `msvc-debug` is 33 MB (a 32 MB Debug `engine-view`),
 87 files.
+
+The window host also exposes `GameTick.render_frame_ms`, `render_frame_serial` and
+`render_elapsed_s` (tick schema v3). These are observation only: the last wall-clock
+start-to-start render interval including present/pacing/waits, its serial, and the
+sum of intervals in seconds. Zero means unavailable (startup or offscreen replay).
+FPS is `1000 / render_frame_ms` when positive. They do not measure GPU duration or
+physical scanouts and must not drive gameplay or deterministic state. Use the render
+elapsed clock to refresh a diagnostic HUD even when world time is paused. Resolved
+`graphics_state` dimensions follow the renderer after a resize/fullscreen change.
