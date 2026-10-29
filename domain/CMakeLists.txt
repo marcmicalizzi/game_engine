@@ -42,3 +42,4 @@ add_subdirectory(rocks)
 add_subdirectory(cover)
 # A scene's own instances a tile at a time: the placement generator "authored" (authored.md).
 add_subdirectory(authored)
+add_subdirectory(deadwood)

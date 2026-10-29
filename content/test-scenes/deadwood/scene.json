@@ -1,0 +1,134 @@
+{
+  "instances": [
+    {
+      "translation": [
+        -8,
+        0,
+        -9.0
+      ],
+      "name": "fresh-oak",
+      "mesh": 0
+    },
+    {
+      "translation": [
+        0,
+        0,
+        -9.0
+      ],
+      "name": "bare-oak",
+      "mesh": 1
+    },
+    {
+      "translation": [
+        8,
+        0,
+        -9.0
+      ],
+      "name": "snag",
+      "mesh": 2
+    },
+    {
+      "translation": [
+        -8,
+        0,
+        0.0
+      ],
+      "name": "snapped",
+      "mesh": 3
+    },
+    {
+      "translation": [
+        0,
+        0,
+        0.0
+      ],
+      "name": "stump",
+      "mesh": 4
+    },
+    {
+      "translation": [
+        8,
+        0,
+        0.0
+      ],
+      "name": "hollow-log",
+      "mesh": 5
+    },
+    {
+      "translation": [
+        -8,
+        0,
+        9.0
+      ],
+      "name": "collapsed-log",
+      "mesh": 6
+    },
+    {
+      "translation": [
+        0,
+        0,
+        9.0
+      ],
+      "name": "limb",
+      "mesh": 7
+    },
+    {
+      "translation": [
+        8,
+        0,
+        9.0
+      ],
+      "name": "fresh-spruce",
+      "mesh": 8
+    }
+  ],
+  "meshes": [
+    {
+      "name": "fresh-oak",
+      "path": "../../deadwood/fresh-oak.deadwood.json"
+    },
+    {
+      "name": "bare-oak",
+      "path": "../../deadwood/bare-oak.deadwood.json"
+    },
+    {
+      "name": "snag",
+      "path": "../../deadwood/snag.deadwood.json"
+    },
+    {
+      "name": "snapped",
+      "path": "../../deadwood/snapped.deadwood.json"
+    },
+    {
+      "name": "stump",
+      "path": "../../deadwood/stump.deadwood.json"
+    },
+    {
+      "name": "hollow-log",
+      "path": "../../deadwood/hollow-log.deadwood.json"
+    },
+    {
+      "name": "collapsed-log",
+      "path": "../../deadwood/collapsed-log.deadwood.json"
+    },
+    {
+      "name": "limb",
+      "path": "../../deadwood/limb.deadwood.json"
+    },
+    {
+      "name": "fresh-spruce",
+      "path": "../../deadwood/fresh-spruce.deadwood.json"
+    }
+  ],
+  "format": "engine.scene.v1",
+  "name": "deadwood",
+  "terrain": {
+    "seed": 7,
+    "size": 65,
+    "dune_wavelength": 40,
+    "dune_height": 0,
+    "generator": "Waves",
+    "extent": 64
+  },
+  "camera_path": "camera-path.json"
+}
