@@ -774,6 +774,15 @@ struct ResolveParams {
   // so the block is still 448 bytes.
   f32 shadow_ray_distance = 0.0f;
   f32 shadow_ray_band = 0.0f;
+  // **The opaque shadow proxy** (renderer.md, "The opaque shadow proxy"; R109): one byte per
+  // cluster, four to a u32, of the alpha coverage `alpha_coverage.slang` baked for every
+  // alpha-tested cluster when the scene was made (0 for every other), `shadow_coverage_count`
+  // clusters of it, and the byte (1–255) at or above which a masked candidate of a shadow ray is
+  // solid without its mask lookup. Read only with `k_shadow_alpha_masks`; 0 is none, and the rays
+  // test every mask exactly as before. A new 16-byte row: the block grew from 448 to 464 bytes.
+  u64 shadow_coverage = 0;
+  u32 shadow_coverage_count = 0;
+  u32 shadow_opaque_coverage = 0;
 };
 // The water's period, seconds (`ResolveParams::water_time_s`): long enough that no repeat is seen,
 // short enough that a float holds a millisecond of it.
@@ -783,7 +792,7 @@ inline f32 water_clock(f64 time_s) noexcept {
   const f64 t = std::fmod(time_s, k_water_period_s);
   return static_cast<f32>(t < 0.0 ? t + k_water_period_s : t);
 }
-static_assert(sizeof(ResolveParams) == 448);
+static_assert(sizeof(ResolveParams) == 464);
 static_assert(sizeof(ResolveParams) % 16 == 0, "the block is read as float4 rows on the GPU");
 
 }  // namespace engine::gfx

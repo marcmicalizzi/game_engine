@@ -15,6 +15,7 @@
 #include <cstddef>
 #include <cstring>
 #include <renderer_log.h>
+#include <shaders/alpha_coverage.spv.h>
 #include <shaders/clas_records.spv.h>
 #include <shaders/cluster_cull.spv.h>
 #include <shaders/cluster_mesh.spv.h>
@@ -552,6 +553,8 @@ bool SceneRenderer::create(const gfx::Device& device, GpuScene& scene,
                         shaders::k_deform_alloc_spirv_size);
   shaders_.add_embedded("pair_expand", shaders::k_pair_expand_spirv,
                         shaders::k_pair_expand_spirv_size);
+  shaders_.add_embedded("alpha_coverage", shaders::k_alpha_coverage_spirv,
+                        shaders::k_alpha_coverage_spirv_size);
   std::string manifest = desc.shader_manifest;
   if (manifest.empty()) {
     const std::string candidate = platform::executable_directory() + "/../shaders/manifest.json";
@@ -582,8 +585,9 @@ bool SceneRenderer::create(const gfx::Device& device, GpuScene& scene,
   }
 
   graph_ = new gfx::RenderGraph(device);
-  if (!create_pipelines(error) || !targets_.create(device, views_, error) ||
-      !create_color_target(error) || !create_shadow_maps(error) ||
+  if (!create_pipelines(error) || !scene.bake_shadow_coverage(shaders_, error) ||
+      !targets_.create(device, views_, error) || !create_color_target(error) ||
+      !create_shadow_maps(error) ||
       !overlay_.create(device, scene.bindless(), shaders_, desc_.color_format,
                        desc_.frames_in_flight, error)) {
     destroy();
@@ -2597,6 +2601,16 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
     // `renderer.shadow.opaque_rays` (measurement only) leaves the masks out and every caster solid.
     if (shadows && scene.has_masked() && !shadow_opaque_rays_tunable())
       resolve.shadow_flags |= gfx::k_shadow_alpha_masks;
+    // **The opaque shadow proxy** (R109; renderer.md, "The opaque shadow proxy"): a masked cluster
+    // whose baked coverage is at or above the threshold is solid to the rays without its mask.
+    if ((resolve.shadow_flags & gfx::k_shadow_alpha_masks) != 0 &&
+        scene.shadow_coverage_clusters() > 0) {
+      const f32 threshold = resolved_.shadow_opaque_coverage;
+      resolve.shadow_coverage = scene.shadow_coverage.address;
+      resolve.shadow_coverage_count = scene.shadow_coverage_clusters();
+      const u32 byte = static_cast<u32>(std::ceil(threshold * 255.0f));
+      resolve.shadow_opaque_coverage = byte < 1u ? 1u : (byte > 255u ? 255u : byte);
+    }
     resolve.shadow_bias = lighting.shadow_bias;
     resolve.shadow_bias_steps = lighting.shadow_bias_steps;
     if (resolved_.hybrid) {

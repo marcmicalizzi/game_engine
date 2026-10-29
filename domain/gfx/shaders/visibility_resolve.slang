@@ -146,6 +146,12 @@ struct ResolveParams {
   uint64_t hit_entries;
   float shadow_ray_distance;  // k_shadow_hybrid: the ray query answers nearer the eye than this
   float shadow_ray_band;      // and the maps past this much farther, blended between
+  // The opaque shadow proxy (R109): a byte of alpha coverage per cluster (alpha_coverage.slang),
+  // `shadow_coverage_count` clusters of it, and the byte at or above which a masked candidate is
+  // solid to a shadow ray without its mask; 0 for none.
+  uint64_t shadow_coverage;
+  uint shadow_coverage_count;
+  uint shadow_opaque_coverage;
 };
 
 // The resolved pixel, for the cross-fade's hash in the shadow rays (ade_keeps): set once by the
@@ -340,6 +346,20 @@ bool shadow_ray_blocked(ResolveParams* params, uint bit, float3 origin, float3 d
       if (params->fade != 0) {
         MeshDesc* meshes = (MeshDesc*)params->fade_meshes;
         pair = pair_of(instance, meshes[instance.mesh], entry.y);
+      }
+      // **The opaque shadow proxy** (renderer.md, "The opaque shadow proxy"; R109): a masked
+      // cluster whose baked coverage is at or above the threshold is solid to a shadow ray — its
+      // hit is kept without the material, the UVs or the mask, and the search ends there. Only
+      // masked clusters carry a byte (anything else non-opaque is solid already), so a cluster
+      // with none, or past the table, reads 0 and asks its mask as before. A fading pair still
+      // keeps only the pixels its band gives it, as the mask's answer would.
+      if (params->shadow_coverage != 0 && entry.y < params->shadow_coverage_count) {
+        uint* coverage = (uint*)params->shadow_coverage;
+        const uint byte = (coverage[entry.y >> 2] >> ((entry.y & 3u) * 8u)) & 0xffu;
+        if (byte >= params->shadow_opaque_coverage) {
+          if (fade_keeps(masks, pair, g_fade_pixel)) masked.CommitNonOpaqueTriangleHit();
+          continue;
+        }
       }
       if (candidate_keeps(masks, params->clusters, params->triangles, instance, entry.y,
                           masked.CandidatePrimitiveIndex(), masked.CandidateTriangleBarycentrics(),
