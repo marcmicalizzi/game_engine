@@ -24,10 +24,14 @@ f32 terrain_delta(const SoilFile& f, f32 x, f32 z) noexcept {
     const f32 mound = std::max(0.0f, 1 - a * a - mz * mz);
     return -f.depth_m * pit * pit + f.mound_height_m * mound * mound;
   }
+  // A source can extend far beyond this local reach. Avoid evaluating seeded
+  // station indices outside it (and leave all such terrain untouched).
+  if (std::abs(x) >= f.width_m * 0.5f) return 0;
   const f32 b = detail::back(f);
+  z -= detail::planform(f, x);
   f32 cross_section = 0;
   if (f.kind == Kind::Gully) {
-    cross_section = detail::smooth((f.length_m * 0.5f + b - std::abs(z)) / 0.25f);
+    cross_section = detail::smooth((detail::half_channel(f, x) + b - std::abs(z)) / 0.25f);
   } else {
     cross_section = detail::smooth((z + b) / 0.25f) * (1 - detail::smooth(z / f.length_m));
   }
