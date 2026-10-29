@@ -280,11 +280,11 @@ TEST_CASE(
     if (!is_ground_px(on, px) || !is_ground_px(off, px)) continue;
     if (off.frame.color[u64{px} * 4] == 0) {
       ++shade;
-      shade_on += a[1];
-      shade_off += b[1];
+      shade_on += static_cast<f64>(a[1]);
+      shade_off += static_cast<f64>(b[1]);
     } else {
       ++lit;
-      lit_on += a[1];
+      lit_on += static_cast<f64>(a[1]);
     }
   }
   REQUIRE(shade > 200);
