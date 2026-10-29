@@ -298,7 +298,9 @@ float2 panini_source_ndc(ResolveParams* params, float2 ndc) {
 // with the terminate-on-first-hit flag, which is what a shadow ray wants: any hit ends the
 // traversal and no hit shader runs. False without the shadow bit, without a scene, when the light
 // is below the surface (the BSDF returns nothing there anyway), or when the bias has already
-// eaten the whole distance to the light.
+// eaten the whole distance to the light. Both queries trace with the caster bit alone
+// (`k_ray_mask_caster`, R110), so an instance the caster policy leaves untraced — drawn by a
+// traced picture, built into its structures — is never met by a shadow ray.
 bool shadow_ray_blocked(ResolveParams* params, uint bit, float3 origin, float3 direction,
                         float t_max) {
 #ifdef RESOLVE_RAY_SHADOWS
@@ -324,7 +326,7 @@ bool shadow_ray_blocked(ResolveParams* params, uint bit, float3 origin, float3 d
     masks.fade = params->fade;
     RayQuery<RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH> masked;
     masked.TraceRayInline(g_scenes[NonUniformResourceIndex(params->scene)],
-                          RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH, 0xff, ray);
+                          RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH, k_ray_mask_caster, ray);
     while (masked.Proceed()) {
       if (masked.CandidateType() != CANDIDATE_NON_OPAQUE_TRIANGLE) continue;
       // A rigid form's static structure names the cluster within its mesh instead (renderer.md,
@@ -350,7 +352,7 @@ bool shadow_ray_blocked(ResolveParams* params, uint bit, float3 origin, float3 d
     return masked.CommittedStatus() != COMMITTED_NOTHING;
   }
   RayQuery<RAY_FLAG_FORCE_OPAQUE | RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH> query;
-  query.TraceRayInline(g_scenes[NonUniformResourceIndex(params->scene)], flags, 0xff, ray);
+  query.TraceRayInline(g_scenes[NonUniformResourceIndex(params->scene)], flags, k_ray_mask_caster, ray);
   while (query.Proceed()) {
   }
   return query.CommittedStatus() != COMMITTED_NOTHING;

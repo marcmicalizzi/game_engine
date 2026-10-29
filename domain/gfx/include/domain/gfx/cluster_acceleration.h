@@ -333,7 +333,8 @@ struct ClusterRecordParams {
   // The low 16 bits: how many views' cuts accumulate into this set (see above). Bit 16: write
   // k_cluster_instantiate_record_bytes records from templates instead of build records. Bit 17
   // (`k_cluster_records_drop_scan`): the passes that walk a frame past its capacity as a scan are
-  // recorded after the ranges.
+  // recorded after the ranges. Bit 18 (`k_cluster_records_untraced_drawn`): a traced-primary
+  // frame, whose records build an untraced instance's drawn entries.
   u32 mode = 1;
   u32 capacity = 0;  // the structures the set holds: ranges_main keeps no more (see above)
   // **Alpha-tested materials** (renderer.md, "Alpha-tested geometry"): the scene's material table
@@ -472,6 +473,14 @@ inline constexpr u32 k_cluster_records_instantiate = 1u << 16;  // ClusterRecord
 // `ranges_kept_count_main`, `ranges_kept_main`) are recorded, so a frame past its capacity walks
 // its drop order as a scan; without it such a frame takes the one-thread rule in `ranges_main`.
 inline constexpr u32 k_cluster_records_drop_scan = 1u << 17;
+// ClusterRecordParams::mode: **a traced-primary frame** (R110; renderer.md, "The caster policy").
+// An instance flagged `k_instance_untraced` is left out of the records — no slot, no count — in a
+// frame without this bit, which is every frame whose picture is rasterized; with it, the
+// instance's **drawn** entries are bucketed, counted and built as any instance's are, so the ray
+// path's primary rays meet it where the rasterizers draw it, while a caster entry of it (which the
+// cull does not write in any case) never is. No light's ray meets it either way: its top-level
+// record's mask has no caster bit (`instance_ray_mask`, cluster_cull.h).
+inline constexpr u32 k_cluster_records_untraced_drawn = 1u << 18;
 // The ranges' scan (clas_records.slang, `ranges_count_main` and `ranges_main`, and past the
 // capacity `ranges_drop_main`, `ranges_kept_count_main` and `ranges_kept_main`): a block of 1,024
 // instances to a group of 256 threads, four contiguous instances a thread. `instance_counts` holds,
@@ -501,9 +510,11 @@ constexpr u64 cluster_instance_count_words(u32 instance_count) noexcept {
 // built into the cache (what its explicit build reads as its count), 8 misses the cache had no
 // room for, 9 slots evicted, 10 slots occupied after the frame, 11 zero.
 inline constexpr u32 k_cluster_record_count_words = 12;
-constexpr u32 cluster_records_mode(u32 views, bool instantiate, bool drop_scan = false) noexcept {
+constexpr u32 cluster_records_mode(u32 views, bool instantiate, bool drop_scan = false,
+                                   bool untraced_drawn = false) noexcept {
   return (views & 0xffffu) | (instantiate ? k_cluster_records_instantiate : 0u) |
-         (drop_scan ? k_cluster_records_drop_scan : 0u);
+         (drop_scan ? k_cluster_records_drop_scan : 0u) |
+         (untraced_drawn ? k_cluster_records_untraced_drawn : 0u);
 }
 
 // Every instance's cluster bottom-level structure, built by **one** command into one buffer

@@ -169,7 +169,7 @@ float3 environment(PathTraceParams* params, float3 direction, bool primary) {
 }
 
 // Anything between `origin` and `t_max` along `direction`? One terminate-on-first-hit query, the
-// same shape the resolve's shadow ray has.
+// same shape the resolve's shadow ray has, and the same mask: the caster bit alone (R110).
 bool occluded(PathTraceParams* params, float3 origin, float3 direction, float t_max) {
   if (t_max <= 0.0) return false;
   RayDesc ray;
@@ -180,7 +180,7 @@ bool occluded(PathTraceParams* params, float3 origin, float3 direction, float t_
   if ((params->flags & k_pt_alpha_masks) != 0) {
     RayQuery<RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH> masked;
     masked.TraceRayInline(g_scenes[NonUniformResourceIndex(params->scene)],
-                          RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH, 0xff, ray);
+                          RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH, k_ray_mask_caster, ray);
     while (masked.Proceed()) {
       if (masked.CandidateType() != CANDIDATE_NON_OPAQUE_TRIANGLE) continue;
       if (pt_candidate_keeps(params, masked.CandidateGeometryIndex(),
@@ -193,7 +193,7 @@ bool occluded(PathTraceParams* params, float3 origin, float3 direction, float t_
   }
   const uint flags = RAY_FLAG_FORCE_OPAQUE | RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH;
   RayQuery<RAY_FLAG_FORCE_OPAQUE | RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH> query;
-  query.TraceRayInline(g_scenes[NonUniformResourceIndex(params->scene)], flags, 0xff, ray);
+  query.TraceRayInline(g_scenes[NonUniformResourceIndex(params->scene)], flags, k_ray_mask_caster, ray);
   while (query.Proceed()) {
   }
   return query.CommittedStatus() != COMMITTED_NOTHING;
@@ -258,8 +258,14 @@ float3 trace_path(PathTraceParams* params, float3 origin, float3 direction, inou
     const bool masked = (params->flags & k_pt_alpha_masks) != 0;
     const uint flags = masked ? RAY_FLAG_NONE
                               : (bounce == 0 ? RAY_FLAG_CULL_NON_OPAQUE : RAY_FLAG_FORCE_OPAQUE);
+    // **Which instances the ray may meet** (R110; gfx.md, "The ray mask"): the camera's ray meets
+    // every instance the picture draws; a bounce carries light, and meets only what a shadow ray
+    // would, so an instance the caster policy leaves untraced is lit by the path and never
+    // shadows, occludes or reflects into it — as the resolve, whose one light query is the shadow
+    // ray, never lets it.
+    const uint ray_mask = bounce == 0 ? k_ray_mask_all : k_ray_mask_caster;
     RayQuery<RAY_FLAG_NONE> query;
-    query.TraceRayInline(g_scenes[NonUniformResourceIndex(params->scene)], flags, 0xff, ray);
+    query.TraceRayInline(g_scenes[NonUniformResourceIndex(params->scene)], flags, ray_mask, ray);
     while (query.Proceed()) {
       if (!masked || query.CandidateType() != CANDIDATE_NON_OPAQUE_TRIANGLE) continue;
       if (pt_candidate_keeps(params, query.CandidateGeometryIndex(), query.CandidateInstanceID(),

@@ -408,11 +408,20 @@ struct PageRequest {
 static const uint k_instance_uniform_scale = 1u;
 // gfx::k_instance_cascade_* / k_instance_shadow_rest / k_instance_untraced: the caster policy of
 // the instance's species (R95). Bits 2-4: 0 every cascade, n + 1 the n nearest alone; bit 5: the
-// cascades draw it at rest; bit 6: never in the ray tracing chain.
+// cascades draw it at rest; bit 6: never met by a light's ray (R110; drawn by a traced picture).
 static const uint k_instance_cascade_shift = 2u;
 static const uint k_instance_cascade_mask = 7u << 2;
 static const uint k_instance_shadow_rest = 1u << 5;
 static const uint k_instance_untraced = 1u << 6;
+// gfx::k_ray_mask_* / instance_ray_mask (cluster_cull.h; gfx.md, "The ray mask"): bit 0 of a
+// top-level instance's mask is the caster bit, which every light query traces with alone; the
+// camera's rays trace with every bit. An untraced instance has every bit but the caster bit.
+static const uint k_ray_mask_caster = 1u;
+static const uint k_ray_mask_all = 0xffu;
+static const uint k_ray_mask_drawn_only = 0xfeu;
+uint instance_ray_mask(uint flags) {
+  return (flags & k_instance_untraced) != 0 ? k_ray_mask_drawn_only : k_ray_mask_all;
+}
 static const uint k_invalid_deform = 0xffffffffu;
 // gfx::k_no_pool_slot: this visible entry has no block in the frame's pool, so every reader takes
 // its rest pose. That is the *only* overflow behaviour there is — never garbage, never a crash.

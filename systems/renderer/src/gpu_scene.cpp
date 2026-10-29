@@ -426,6 +426,9 @@ bool GpuScene::create(const gfx::Device& device, const SceneData& data,
   data_ = &data;
   rings_ = rings;
   ray_tracing_ = resolved.rt_chain;
+  // A traced-primary scene builds its untraced instances' drawn entries (R110), so they count in
+  // what a frame can want (`rt_frame_estimate`).
+  rt_untraced_drawn_ = resolved.rt_chain && resolved.ray_path;
   // A scene deforms when the settings say every instance does, or when any instance is skinned.
   // The two are independent: `--deform wave` on a scene with a skinned character deforms the
   // rigid instances procedurally and skins the skinned one, because a `DeformDesc` names one kind
@@ -734,7 +737,9 @@ gfx::TlasInstance GpuScene::tlas_record(u32 slot) const noexcept {
   if (slot < instance_table_.size())
     record.transform = gfx::instance_matrix(instance_table_[slot], WorldEye{});
   record.custom_index = slot;
-  record.mask = live ? 0xffu : 0u;
+  // The mask from the instance's flags (R110; `gfx::instance_ray_mask`), which the frame's
+  // `tlas_references` dispatch writes again every frame for a live record; a hole stays 0.
+  record.mask = live ? gfx::instance_ray_mask(instance_table_[slot].flags) : 0u;
   record.blas = 0;
   return record;
 }
@@ -4519,8 +4524,11 @@ u64 GpuScene::rt_reference_estimate() const noexcept {
 }
 
 u64 GpuScene::rt_frame_estimate() const noexcept {
-  const u64 excluded =
-      static_pairs_live_ + untraced_pairs_live_ + rt_reference_estimate() / view_count_;
+  // Untraced pairs are built only where the structures are the picture (R110): on the ray path
+  // they are drawn entries like any other, and count; with a rasterized picture they never reach
+  // the records. `untraced_pairs_live_` holds no static form's, which the static pairs count.
+  const u64 untraced = rt_untraced_drawn_ ? 0u : untraced_pairs_live_;
+  const u64 excluded = static_pairs_live_ + untraced + rt_reference_estimate() / view_count_;
   const u64 pairs = u64{pair_stride_} > excluded ? pair_stride_ - excluded : 0;
   return pairs * view_count_;
 }
@@ -4609,7 +4617,9 @@ bool GpuScene::lay_out_ray_tracing(std::string* error) {
   gfx::ClusterSetLimits limits = rt_limits_;
   limits.max_clusters = rt_union_clusters_;
   // The emit pass names a dense record and writes its original visible entry to hit_entries.
-  // Static forms and untraced instances produce no record, so neither consumes this index space.
+  // Static forms produce no record, so they consume none of this index space; untraced instances
+  // produce none in a frame whose picture is rasterized, and their drawn entries' on the ray path
+  // (R110), where `rt_max_geometry_index` counts them (`PairAccount::frame_pairs(true)`).
   gfx::ClusterAsProperties cluster_props;
   if (!gfx::cluster_as_properties(device, cluster_props)) return false;
   const u32 device_max = cluster_props.max_geometry_index;
@@ -5107,7 +5117,7 @@ void GpuScene::destroy() noexcept {
   rt_limits_ = gfx::ClusterSetLimits{};
   vertex_index_capacity_ = 0;
   tlas_slot_ = gfx::BindlessSet::k_invalid_slot;
-  ray_tracing_ = deform_ = skinned_ = streamed_ = false;
+  ray_tracing_ = deform_ = skinned_ = streamed_ = rt_untraced_drawn_ = false;
   flora_field_ = flora_tail_parts_ = false;
   field_deform_.clear();
   mesh_policy_.clear();

@@ -675,12 +675,30 @@ inline constexpr u32 k_instance_static_rt = 1u << 7;
 // (geometry::FloraCasterPolicy; renderer.md, "The caster policy"; R95), all zero for everything
 // that has none, which casts as it always did. Bits 2-4: 0 every cascade, n + 1 the `n` nearest
 // alone (the cull's `CullParams::cascade`). Bit 5: a cascade draws it from its rest pose (the
-// cascades' pool allocation gives its entries no block). Bit 6: never in the ray tracing chain's
-// records, and never a shadow caster of a camera run.
+// cascades' pool allocation gives its entries no block). Bit 6: **never met by a light's ray**
+// (R110): never a shadow caster of a camera run, out of the ray tracing chain's records in a frame
+// whose picture is rasterized, and in a traced-primary frame's records as drawn entries only, under
+// a top-level mask no shadow ray traces with (`instance_ray_mask`, below).
 inline constexpr u32 k_instance_cascade_shift = 2u;
 inline constexpr u32 k_instance_cascade_mask = 7u << k_instance_cascade_shift;
 inline constexpr u32 k_instance_shadow_rest = 1u << 5;
 inline constexpr u32 k_instance_untraced = 1u << 6;
+
+// **The top-level instance mask** (docs/subsystems/gfx.md, "The ray mask"; R110). A ray query
+// meets an instance when the ray's 8-bit mask and the instance's share a bit. Bit 0 is the
+// **caster** bit: every instance a light's ray may meet has it, and the light queries — the
+// resolve's shadow rays, the reference path tracer's shadow rays and its bounces — trace with it
+// alone. Every other bit is every instance's: the camera's rays (the ray path's primary rays and
+// its tie scan, the reference's first ray) trace with all eight. So an instance of the caster
+// policy's `traced = false` takes every bit but the caster bit — drawn, never cast — and every
+// other instance keeps the 0xff it always had, so a scene without one writes the records it wrote.
+// A hole of a dynamic scene's top level is mask 0, met by nothing. Mirrored in shaders/scene.slang.
+inline constexpr u32 k_ray_mask_caster = 1u;
+inline constexpr u32 k_ray_mask_all = 0xffu;
+inline constexpr u32 k_ray_mask_drawn_only = k_ray_mask_all & ~k_ray_mask_caster;
+constexpr u32 instance_ray_mask(u32 flags) noexcept {
+  return (flags & k_instance_untraced) != 0 ? k_ray_mask_drawn_only : k_ray_mask_all;
+}
 
 // GPU-mirrored; keep in step with the InstanceDesc struct in the shaders. 96 bytes, read through
 // a device address. One per instance of the scene, in order of `first_pair`.

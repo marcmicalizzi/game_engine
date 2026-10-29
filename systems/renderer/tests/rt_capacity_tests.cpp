@@ -310,24 +310,36 @@ TEST_CASE("rt capacity: removing the last untraced tile restores the frame estim
   // A synthetic mesh with the field's policy exercises admission without a grass cook.
   data.sources.resize(data.parts.size());
   data.sources[0].species = "sward";
-  RenderSettings settings;
-  settings.shadows = ShadowMode::RayTraced;
-  ResolvedSettings resolved;
-  resolve_settings(settings, device.features(), &data, resolved);
-  GpuScene scene;
-  REQUIRE_MESSAGE(scene.create(device, data, resolved, &error), error);
-  SceneInstance placed;
-  placed.mesh = 0;
-  GpuScene::TileChange added;
-  REQUIRE_MESSAGE(scene.set_dynamic_instances(std::span(&placed, 1), {}, added, nullptr, &error),
-                  error);
-  CHECK(scene.flora_stats().untraced == data.instances.size() + 1);
-  GpuScene::TileChange removed;
-  REQUIRE_MESSAGE(scene.set_dynamic_instances({}, {}, removed, nullptr, &error), error);
-  CHECK(removed.layout.freed == 1);
-  CHECK(removed.slots_written == 0);
-  CHECK(scene.flora_stats().untraced == data.instances.size());
-  CHECK(scene.rt_frame_estimate() == u64{scene.pair_stride()} - data.pair_count);
+  // Both contracts (R110): with a rasterized picture an untraced pair is never built, so the
+  // estimate leaves the grass out; on the ray path its drawn entries are the picture's, so the
+  // estimate counts every pair, the tile's included while it stands.
+  for (const bool ray_path : {false, true}) {
+    CAPTURE(ray_path);
+    RenderSettings settings;
+    settings.shadows = ShadowMode::RayTraced;
+    if (ray_path) settings.raster = RasterMode::RayTrace;
+    ResolvedSettings resolved;
+    resolve_settings(settings, device.features(), &data, resolved);
+    REQUIRE(resolved.ray_path == ray_path);
+    GpuScene scene;
+    REQUIRE_MESSAGE(scene.create(device, data, resolved, &error), error);
+    SceneInstance placed;
+    placed.mesh = 0;
+    GpuScene::TileChange added;
+    REQUIRE_MESSAGE(scene.set_dynamic_instances(std::span(&placed, 1), {}, added, nullptr, &error),
+                    error);
+    CHECK(scene.flora_stats().untraced == data.instances.size() + 1);
+    const u64 untraced_with_tile = u64{data.pair_count} + data.parts[0].cluster_count;
+    CHECK(scene.rt_frame_estimate() ==
+          u64{scene.pair_stride()} - (ray_path ? 0u : untraced_with_tile));
+    GpuScene::TileChange removed;
+    REQUIRE_MESSAGE(scene.set_dynamic_instances({}, {}, removed, nullptr, &error), error);
+    CHECK(removed.layout.freed == 1);
+    CHECK(removed.slots_written == 0);
+    CHECK(scene.flora_stats().untraced == data.instances.size());
+    CHECK(scene.rt_frame_estimate() ==
+          u64{scene.pair_stride()} - (ray_path ? 0u : u64{data.pair_count}));
+  }
 }
 
 // R94: the first capacity is what the scene could want, clamped to the budget and the union, with

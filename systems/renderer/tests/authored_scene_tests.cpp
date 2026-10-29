@@ -129,7 +129,10 @@ TEST_CASE("pair accounting: settings and layout share prefix slots and reserved 
   CHECK(account.slot_pairs == 960);
   CHECK(account.tail_floor == 144);
   CHECK(account.minimum_pairs() == 2104);
-  CHECK(account.frame_pairs() == 1204);
+  CHECK(account.frame_pairs(false) == 1204);
+  // On the ray path the untraced instance's 600 pairs are drawn entries the chain builds and
+  // names (R110); the static form's 300 are still built once.
+  CHECK(account.frame_pairs(true) == 1804);
   gfx::DeviceFeatures features;
   features.mesh_shader = features.buffer_int64_atomics = true;
   features.acceleration_structure = features.cluster_acceleration_structure = features.ray_query =
@@ -156,6 +159,29 @@ TEST_CASE("pair accounting: settings and layout share prefix slots and reserved 
   CHECK(resolved.shadows);
   CHECK(resolved.caster_index_fallback);
   CHECK(pairs_fit(resolved.pairs, &error));
+  // R110: the ray path names the untraced pairs too, so the bound that held the casters on a
+  // rasterized picture (1,203) is past them on a traced one; 1,803 holds them again.
+  features.cluster_max_geometry_index = 1203;
+  settings.raster = RasterMode::RayTrace;
+  resolve_settings(settings, features, &data, resolved, &account);
+  CHECK(resolved.ray_path);
+  CHECK_FALSE(resolved.casters);
+  CHECK(resolved.caster_index_fallback);
+  features.cluster_max_geometry_index = 1803;
+  resolve_settings(settings, features, &data, resolved, &account);
+  CHECK(resolved.casters);
+  CHECK_FALSE(resolved.caster_index_fallback);
+  // An untraced static form is built once on either path: it never counts.
+  data.instances[2].flags = gfx::k_instance_static_rt | gfx::k_instance_untraced;
+  const PairAccount both = account_pairs(data, layout_settings);
+  CHECK(both.untraced_pairs == 900);
+  CHECK(both.untraced_static_pairs == 300);
+  CHECK(both.static_pairs == 0);
+  CHECK(both.minimum_pairs() == 1144);  // the prefix and the tile floor, no rings here
+  CHECK(both.frame_pairs(false) == 244);
+  CHECK(both.frame_pairs(true) == 844);
+  data.instances[2].flags = gfx::k_instance_static_rt;
+  settings.raster = RasterMode::Hardware;
   account.limit = account.fixed_pairs();
   CHECK(pairs_fit(account, &error));  // no room for a tile: the consumer withholds it
   --account.limit;

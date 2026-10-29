@@ -27,6 +27,7 @@
 
 #include <cstring>
 #include <shaders/clas_records.spv.h>
+#include <shaders/tlas_references.spv.h>
 #include <string>
 
 using namespace engine;
@@ -140,6 +141,10 @@ struct RecordsFixture {
   Vector<u32> deform_slot_table;
   // With deformed casters: the caster entries the pool gave no block, which are built not at all.
   Vector<u8> refused;
+  // The caster policy's `traced = false` (R110): the instance flagged `k_instance_untraced`, or
+  // ~0u for none, and whether the frame is traced-primary (`k_cluster_records_untraced_drawn`).
+  u32 untraced = ~0u;
+  bool untraced_drawn = false;
   gfx::BufferResource clusters, vertices, index8, instances, visible_buffer, count_buffer,
       caster_count_buffer, slots, instance_counts, records, record_count, blas_records, meshes,
       deform_table, deform_slots, pool;
@@ -151,8 +156,9 @@ struct RecordsFixture {
   u32 entry_instance(u32 entry) const { return list[u64{entry} * 2]; }
   u32 entry_cluster(u32 entry) const { return list[u64{entry} * 2 + 1]; }
 
-  bool create(bool deformed_casters = false) {
+  bool create(bool deformed_casters = false, u32 untraced_instance = ~0u) {
     if (!gfx_test::open_device(device)) return false;
+    untraced = untraced_instance;
     Vector<Vec3> positions;
     Vector<u32> indices;
     make_grid(33, positions, indices);  // 2,048 triangles
@@ -171,6 +177,7 @@ struct RecordsFixture {
       instance_table[i].first_pair = i * cluster_count;
     }
     instance_table[k_deformed].deform = 0;
+    if (untraced < k_instances) instance_table[untraced].flags |= gfx::k_instance_untraced;
     gfx::DeformDesc deform{};
     deform.stages = gfx::k_deform_stage_procedural | gfx::k_deform_wave;
     // Even clusters of both instances, interleaved, walking down: the last entry is beyond the
@@ -301,7 +308,7 @@ struct RecordsFixture {
     params.pair_count = pair_count;
     // One view: the run is the whole list and its count word is the first; past the capacity, the
     // drop order's scan.
-    params.mode = gfx::cluster_records_mode(1, false, true);
+    params.mode = gfx::cluster_records_mode(1, false, true, untraced_drawn);
     params.capacity = capacity;
     REQUIRE(gfx::submit_immediate(
         device,
@@ -332,14 +339,20 @@ struct RecordsFixture {
                 sizeof(value));
     return value;
   }
-  // The drawn entries and casters the list holds for instance `k`.
+  // Whether the records take instance `k`'s drawn entries and its casters (R110): an untraced
+  // instance's drawn ones in a traced-primary frame alone, its casters never.
+  bool takes_drawn(u32 k) const { return k != untraced || untraced_drawn; }
+  bool takes_casters(u32 k) const { return k != untraced; }
+  // The drawn entries and casters the list holds for instance `k`, as the records take them.
   u32 drawn_of(u32 k) const {
+    if (!takes_drawn(k)) return 0;
     u32 n = 0;
     for (u32 i = 0; i < count; ++i)
       n += visible[i * 2] == k ? 1u : 0u;
     return n;
   }
   u32 casters_of(u32 k) const {
+    if (!takes_casters(k)) return 0;
     u32 n = 0;
     for (u32 i = 0; i < caster_count; ++i)
       n += caster_entries[i * 2] == k && refused[caster_base + i] == 0 ? 1u : 0u;
@@ -353,8 +366,9 @@ struct RecordsFixture {
   }
   // An entry the records hold: a counted drawn one, or a counted caster the pool did not refuse.
   bool listed(u32 entry) const {
-    return entry < count ||
-           (entry >= caster_base && entry < caster_base + caster_count && refused[entry] == 0);
+    if (entry < count) return takes_drawn(entry_instance(entry));
+    return entry >= caster_base && entry < caster_base + caster_count && refused[entry] == 0 &&
+           takes_casters(entry_instance(entry));
   }
 
   // Every record the set holds, checked against the CPU writer: byte-identical for the entry its
@@ -520,6 +534,45 @@ TEST_CASE("clas records: a deformed caster reads its block, and one with none is
   MESSAGE(f.casters_of(k_deformed)
           << " deformed casters built from their blocks, " << f.refused_count()
           << " without one left out, beside " << f.casters_of(0) << " rigid casters");
+}
+
+TEST_CASE(
+    "clas records: an untraced instance is built as drawn entries in a traced picture alone") {
+  // **The caster policy's two contracts** (renderer.md, "The caster policy"; R110). The deformed
+  // instance is flagged `k_instance_untraced` and given casters in the list (which the cull never
+  // writes for it; the records must refuse them anyway). In a frame whose picture is rasterized it
+  // takes nothing — no slot, no count, no record, the other instance's records byte for byte as
+  // without it — and in a traced-primary frame its drawn entries are built from their pool blocks
+  // like any deformed instance's, and its casters still are not.
+  for (const bool primary : {false, true}) {
+    CAPTURE(primary);
+    RecordsFixture f;
+    if (!f.create(true, k_deformed)) return;
+    f.untraced_drawn = primary;
+    REQUIRE(f.casters_of(0) > 0);
+    f.run(f.pair_count);
+    u32 total = 0;
+    for (u32 k = 0; k < k_instances; ++k) {
+      CHECK(f.drawn_out()[k] == f.drawn_of(k));
+      CHECK(f.casters_out()[k] == f.casters_of(k));
+      CHECK(f.first_out()[k] == total);
+      total += f.drawn_of(k) + f.casters_of(k);
+    }
+    CHECK(f.casters_out()[k_deformed] == 0);
+    CHECK((f.drawn_out()[k_deformed] > 0) == primary);
+    CHECK(f.record_word(0) == total);
+    CHECK(f.record_word(1) == total);  // what it does not take, it does not want
+    Vector<u32> seen;
+    f.check_records(total, seen);
+    u32 unseen = 0;
+    for (u32 e = 0; e < seen.size(); ++e)
+      unseen += seen[e] != (f.listed(e) ? 1u : 0u);
+    CHECK(unseen == 0);
+    f.check_blas_records();
+    MESSAGE(std::string(primary ? "traced picture: " : "rasterized picture: ")
+            << f.drawn_out()[k_deformed] << " drawn entries of the untraced instance built, "
+            << total << " records in all");
+  }
 }
 
 TEST_CASE("clas records: a set sized under the frame keeps whole instances, casters last") {
@@ -935,5 +988,91 @@ TEST_CASE("clas records: past the capacity the walk keeps what the rule keeps, r
   CHECK(differing == 0);
   MESSAGE(cases << " cases past or at the capacity: the walk writes the rule's words in every one");
   gfx::destroy_shader_module(device, module);
+  device.destroy();
+}
+
+TEST_CASE("tlas references: a record's mask is its instance's ray mask, and a hole's stays 0") {
+  // **The ray mask** (gfx.md, "The ray mask"; R110). `tlas_references.slang` writes each live
+  // top-level record's mask from its instance's flags every frame — every bit but the caster bit
+  // for an instance the caster policy leaves untraced, 0xff for every other — and leaves a record
+  // whose mask is 0, a dynamic scene's hole, as it is. Every flag word from 0 to 255 is an
+  // instance here, against `gfx::instance_ray_mask` on the CPU, which is what pins the shader's
+  // constants (shaders/scene.slang) to the C++ ones; the custom index beside the mask is kept.
+  gfx::Device device;
+  std::string error;
+  if (!gfx_test::open_device(device)) return;
+  static_assert(gfx::instance_ray_mask(0u) == 0xffu);
+  static_assert(gfx::instance_ray_mask(gfx::k_instance_untraced) == 0xfeu);
+  static_assert((gfx::instance_ray_mask(gfx::k_instance_untraced) & gfx::k_ray_mask_caster) == 0);
+  constexpr u32 k_count = 256;
+  constexpr u32 k_words = static_cast<u32>(gfx::k_instance_record_bytes / 4);
+  Vector<gfx::InstanceDesc> instances(k_count);
+  Vector<u32> records(u64{k_count} * k_words, u32{0});
+  Vector<u64> addresses(k_count, u64{0});
+  const auto hole = [](u32 i) { return i % 7 == 3; };
+  for (u32 i = 0; i < k_count; ++i) {
+    instances[i].flags = i;
+    instances[i].mesh = 0;
+    addresses[i] = 0x10000u + u64{i} * 0x100u;
+    records[u64{i} * k_words + 12] = ((i * 977u) & 0xffffffu) | (hole(i) ? 0u : 0xffu << 24);
+  }
+  constexpr gfx::BufferUsage k_address =
+      gfx::BufferUsage::Storage | gfx::BufferUsage::ShaderDeviceAddress;
+  gfx::BufferResource instance_buffer, record_buffer, address_buffer;
+  REQUIRE(gfx::upload_buffer(device, instances.data(), instances.size() * sizeof(gfx::InstanceDesc),
+                             k_address, instance_buffer, &error));
+  REQUIRE(gfx::create_buffer(device, records.size() * sizeof(u32), k_address, true, record_buffer,
+                             &error));
+  std::memcpy(record_buffer.mapped, records.data(), records.size() * sizeof(u32));
+  REQUIRE(gfx::upload_buffer(device, addresses.data(), addresses.size() * sizeof(u64), k_address,
+                             address_buffer, &error));
+  const gfx::ShaderModuleHandle module = gfx::create_shader_module(
+      device, shaders::k_tlas_references_spirv, shaders::k_tlas_references_spirv_size, &error);
+  REQUIRE(module.valid());
+  gfx::ComputePipeline pass;
+  REQUIRE_MESSAGE(gfx::create_compute_pipeline(device, module, "tlas_references_main", {},
+                                               sizeof(gfx::TlasReferenceParams), pass, &error),
+                  error);
+  gfx::TlasReferenceParams params{};
+  params.addresses = address_buffer.address;
+  params.records = record_buffer.address;
+  params.count = k_count;
+  params.instances = instance_buffer.address;
+  REQUIRE(gfx::submit_immediate(
+      device,
+      [&](gfx::CommandList cb) {
+        cb.bind_pipeline(gfx::BindPoint::Compute, pass.pipeline);
+        cb.push_constants(pass.layout, gfx::ShaderStage::Compute, 0, sizeof(params), &params);
+        cb.dispatch(
+            (k_count + gfx::k_tlas_references_workgroup - 1) / gfx::k_tlas_references_workgroup, 1,
+            1);
+      },
+      &error));
+  const auto* out = static_cast<const u32*>(record_buffer.mapped);
+  u32 wrong_mask = 0;
+  u32 wrong_index = 0;
+  u32 wrong_reference = 0;
+  u32 untraced = 0;
+  for (u32 i = 0; i < k_count; ++i) {
+    const u32 word = out[u64{i} * k_words + 12];
+    const u32 expected = hole(i) ? 0u : gfx::instance_ray_mask(i);
+    wrong_mask += (word >> 24) != expected ? 1u : 0u;
+    wrong_index += (word & 0xffffffu) != ((i * 977u) & 0xffffffu) ? 1u : 0u;
+    u64 reference = 0;
+    std::memcpy(&reference, out + u64{i} * k_words + 14, sizeof(reference));
+    wrong_reference += reference != addresses[i] ? 1u : 0u;
+    untraced += !hole(i) && (i & gfx::k_instance_untraced) != 0 ? 1u : 0u;
+  }
+  MESSAGE(k_count << " records, " << untraced << " live and untraced: " << wrong_mask << " masks, "
+                  << wrong_index << " custom indices and " << wrong_reference
+                  << " references differ");
+  CHECK(untraced > 0);
+  CHECK(wrong_mask == 0);
+  CHECK(wrong_index == 0);
+  CHECK(wrong_reference == 0);
+  gfx::destroy_compute_pipeline(device, pass);
+  gfx::destroy_shader_module(device, module);
+  for (gfx::BufferResource* b : {&instance_buffer, &record_buffer, &address_buffer})
+    gfx::destroy_buffer(device, *b);
   device.destroy();
 }
