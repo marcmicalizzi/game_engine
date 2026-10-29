@@ -488,10 +488,10 @@ TEST_CASE("impostor bake: a roughness image is carried per texel, times the mate
   QuadBake bake(uvs);
   // The image is glTF's: G the roughness; R and B are not read.
   const image::Image rough = solid_image(7, 100, 9, 255);
-  for (const f32 factor : {1.0f, 0.5f}) {
+  for (const f64 factor : {1.0, 0.5}) {
     flora::BakeLook look = QuadBake::look();
     look.leaf_roughness_image = &rough;
-    look.leaf_roughness = factor;
+    look.leaf_roughness = static_cast<f32>(factor);
     flora::BakedAtlas atlas;
     flora::bake_level(bake.mesh, bake.chain, bake.level, look, atlas);
     REQUIRE(atlas.roughness.size() == atlas.colour.size());
