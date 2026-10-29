@@ -1,0 +1,17 @@
+{
+  "fern": {
+    "fronds": 10,
+    "droop": 0.75,
+    "rhizome_length_m": 0.8,
+    "stipe": 0.28,
+    "frond_length_m": 0.28,
+    "seed": 29,
+    "triangle_budget": 4000,
+    "crown_radius_m": 0.06,
+    "pinnae": 16,
+    "pinna_length": 0.12,
+    "spread_deg": 45,
+    "arching": true
+  },
+  "species": "fern"
+}

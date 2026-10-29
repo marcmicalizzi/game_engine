@@ -1,0 +1,17 @@
+{
+  "herb": {
+    "rosette": true,
+    "flowers": 0,
+    "leaf_droop_deg": 18,
+    "triangle_budget": 2500,
+    "seed": 38,
+    "leaves": 12,
+    "petiole_length_m": 0.035,
+    "leaf_width": 0.65,
+    "leaf_angle_deg": 80,
+    "leaf_cup": 0.03,
+    "leaf_segments": 6,
+    "leaf_length_m": 0.14
+  },
+  "species": "herb"
+}

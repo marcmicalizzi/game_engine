@@ -1323,6 +1323,51 @@ The ladder halves the pinnae (down to three a side), never a frond: on 1,500 the
 triangles. `bracken.flora.json` is three tall, wide fronds: a bracken stand is many such plants,
 placed densely, which is placement's (G77).
 
+### Ground-plant forms (G103)
+
+The schema-v2 fern and herb controls extend the existing solvers without changing the shapes
+of default or previously authored recipes. [Grounding and limits](../experiments/ground-plants.md)
+record the sources, numerical choices and validation. `k_ground_plants_version` independently
+invalidates fern/herb caches; other flora identities retain their existing versions.
+
+Fern adds `arching` (false by default), `rhizome_length_m` (0–4 m, default 0) and
+`dead_fronds` (0–40, default 0). The prescribed arch retains a rising stipe and turns increasingly
+near the tip. Arching and dead fronds emit separate two-triangle pinnae and a narrow rachis;
+their actual gaps replace the legacy connected spray silhouette. A positive rhizome extent distributes shoots along a seeded local curve instead
+of one crown; it does not make a terrain placement generator. Dead fronds follow living part IDs,
+lie out around the base, use `fern/dead_frond` and the recipe's `materials.skirt`, and share the
+triangle cap. The ordinary frond material remains slot 0; dead fronds use slot 1.
+
+Herb adds `rosette` (false), `petiole_length_m` (0–.4 m, default 0), `leaf_segments` (1–12,
+default 1), `leaf_droop_deg` (0–90, default 0; nonzero requires at least two rows), `leaf_cup`
+(0–.3, default .05, curved blades only), and `dead_leaves` (0–40, default 0). Basal leaves attach
+to the root and keep their own motion parts. A flowering rosette carries the existing head or
+spike on a separate scape; a nonflowering one emits no stem. A blade's nominal length excludes
+its petiole and retains the existing seeded ±10% variation. Stem leaves still taper with height;
+basal leaves do not. The curved blade has an ovate outline and a keeled, cupped surface.
+Dead leaves have their own stream, curl near the ground, and use material slot 2,
+`herb/dead_leaf` / `materials.skirt`; the flower slot stays 1 even without a flower primitive.
+A rosette without leaves, dead leaves or flowers is refused.
+
+At the same tessellation rung, adding dead organs leaves live geometry unchanged. Budget rungs
+preserve every motion part
+and structural row. Source caps remain 4,000 fern / 2,500 herb by default. The herb ladder reduces
+curved leaf rows before petals and retains the width shoulder at its two-row floor. Explicit
+insufficient fern caps fail with the required coarsest count. UVs map each blade once and map a
+petiole to a narrow strip at the leaf image's base. No new shader, runtime allocation, collider,
+placement contract or catalogue kind is introduced. New demonstration recipes and a standalone
+scene are indexed in [content/flora](../../content/flora/README.md).
+
+Arching ferns use two authored distance levels per frond: the fine mesh, then the same pinnae
+with every fourth rachis row. All pinnae, material roles and motion attachments survive the far
+cut; generic decimation is bypassed because it deleted their disconnected cards. The measured
+rachis deviation supplies the transition error. At 24 pinna pairs this is 127 -> 103 triangles
+per frond; at 16 pairs, 83 -> 69. This conservative floor spends triangles to preserve coverage.
+
+Seasonal states are static recipe choices, not calendar-driven replacement of individual organs.
+Creeping geometry assumes flat local support. Pinnules, veins, organ damage, terrain-conforming
+colonies and a whole-plant impostor chain remain unimplemented.
+
 ### The grass tuft
 
 `blades` blades (120) from a base of `base_radius_m` (4 cm), filling it as a sunflower does, the

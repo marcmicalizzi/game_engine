@@ -1,4 +1,5 @@
 // The flora file, its key, and the container the solver's mesh is built into (flora.h).
+#include "fern_lod.h"
 #include "maturity.h"
 #include "species.h"
 
@@ -139,10 +140,12 @@ constexpr PartRole k_tree_parts[] = {{"bark", materials::UvLayout::metres, Block
 
 // The understory's (flora.md, "The understory"): a fern's fronds, a tuft's blades, a herb's leaves
 // and flowers, every one a card that takes its image whole.
-constexpr PartRole k_fern_parts[] = {{"frond", materials::UvLayout::card, Block::leaf}};
+constexpr PartRole k_fern_parts[] = {{"frond", materials::UvLayout::card, Block::leaf},
+                                     {"dead_frond", materials::UvLayout::card, Block::skirt}};
 constexpr PartRole k_tuft_parts[] = {{"blade", materials::UvLayout::card, Block::leaf}};
 constexpr PartRole k_herb_parts[] = {{"leaf", materials::UvLayout::card, Block::leaf},
-                                     {"flower", materials::UvLayout::card, Block::none}};
+                                     {"flower", materials::UvLayout::card, Block::none},
+                                     {"dead_leaf", materials::UvLayout::card, Block::skirt}};
 
 std::span<const PartRole> parts_of(const std::string& species) {
   if (species == k_species_date_palm) return k_palm_parts;
@@ -308,7 +311,9 @@ u64 flora_source_hash(const FloraFile& file) {
   h = hash_combine(h, hash_bytes(file.species.data(), file.species.size()));
   return hash_combine(h, file.species == "sward"   ? k_sward_version
                          : file.species == "roots" ? k_roots_version
-                                                   : k_flora_version);
+                         : (file.species == k_species_fern || file.species == k_species_herb)
+                             ? k_ground_plants_version
+                             : k_flora_version);
 }
 
 u64 flora_build_key(u64 source_hash, const geometry::ClusterLodOptions& lod, u32 page_bytes,
@@ -565,6 +570,8 @@ bool build_flora_container(const FloraFile& file, const geometry::ClusterLodOpti
   Motion motion;
   TreeLevels chain;
   RootReport root_report;
+  TreeReport local_report;
+  if (tree_report == nullptr) tree_report = &local_report;
   Vector<geometry::ClusterFileSwardVertex> sward_attributes;
   if (file.species == "sward") {
     if (file.materials.has_value()) {
@@ -634,6 +641,13 @@ bool build_flora_container(const FloraFile& file, const geometry::ClusterLodOpti
                                                           std::max(.0001f, root_report.lod_error)};
       built = geometry::build_cluster_lod_hierarchy(mesh.positions, range, root_report.fine_element,
                                                     {&root_level, 1}, options, part, &part_error,
+                                                    attributes);
+    } else if (file.species == k_species_fern && file.fern.arching) {
+      const detail::FernLod fern = detail::fern_lod(mesh, range, tree_report->cards_per_side);
+      const geometry::ClusterLodHierarchyLevel level{
+          fern.indices, fern.coarse_element, {}, fern.elements, fern.error};
+      built = geometry::build_cluster_lod_hierarchy(mesh.positions, range, fern.fine_element,
+                                                    {&level, 1}, options, part, &part_error,
                                                     attributes);
     } else if (nested) {
       Vector<geometry::ClusterLodHierarchyLevel> nest;

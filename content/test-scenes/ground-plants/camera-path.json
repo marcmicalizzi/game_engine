@@ -1,0 +1,61 @@
+{
+  "name": "ground-plants review",
+  "keys": [
+    {
+      "position": [
+        1.0,
+        1.2,
+        5
+      ],
+      "target": [
+        0,
+        0.25,
+        -0.8
+      ],
+      "time": 0
+    },
+    {
+      "position": [
+        1.0,
+        4,
+        20
+      ],
+      "target": [
+        0,
+        0.25,
+        -0.8
+      ],
+      "time": 1
+    },
+    {
+      "position": [
+        1.0,
+        10,
+        60
+      ],
+      "target": [
+        0,
+        0.25,
+        -0.8
+      ],
+      "time": 2
+    }
+  ],
+  "fps": 30,
+  "format": "engine.camera-path.v1",
+  "znear": 0.02,
+  "markers": [
+    {
+      "frame": 0,
+      "name": "5m"
+    },
+    {
+      "frame": 30,
+      "name": "20m"
+    },
+    {
+      "frame": 60,
+      "name": "60m"
+    }
+  ]
+}
