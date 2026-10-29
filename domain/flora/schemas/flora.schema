@@ -846,13 +846,42 @@ struct Roots {
   ground: RootGround?
 }
 
+/// Static shrub or connected thicket, metres from its planting anchor; no time simulation.
+struct ShrubGrowth {
+  /// Independent per-stem streams; every u64 accepted, default 1.
+  seed: u64 = 1
+  /// 0 chooses the profile height, otherwise within its documented height range, metres.
+  height_m: f32 = 0.0 @unit(m)
+  /// Horizontal reach multiplier, 0.5..2, default 1; leaves keep botanical dimensions.
+  spread: f32 = 1.0
+  /// Basal stems per colony, 0 selects the profile, otherwise 1..40.
+  stems: u32 = 0
+  /// Rooted colonies in one mesh, 0 selects the profile, otherwise 1..16.
+  colonies: u32 = 0
+  /// Radius of the colony centres, 0 selects profile spacing, otherwise 0.05..8 m.
+  colony_radius_m: f32 = 0.0 @unit(m)
+  /// Standing dead stems, -1 selects profile, otherwise 0..1. No leaves on their descendants.
+  dead_fraction: f32 = -1.0
+  /// Leaf-node occupancy, 0..1, default 1; no leaf enlargement at lower density or budget.
+  foliage: f32 = 1.0
+  /// Local planting plane gradients dy/dx and dy/dz, each -1..1, default flat.
+  slope_x: f32 = 0.0
+  slope_z: f32 = 0.0
+  /// Total source triangles including the far form: 0 selects profile, otherwise 4000..400000.
+  triangle_budget: u32 = 0
+  /// Far atlas side: 0 disables, or 128, 256, 512, 1024 pixels; default 256.
+  impostor_px: u32 = 256
+  /// Default essential; rich refused when any basal stem meets the shrub collider threshold.
+  detail_tier: DetailTier = essential
+}
+
 /// A flora file, `<name>.flora.json`: the species and its parameters. A scene's mesh table names
 /// one as it names a glTF, and `engine-content flora` builds one into a container; either way the
 /// build is keyed by the chosen species' canonical parameters, materials and solver version.
-struct FloraFile @version(7) {
+struct FloraFile @version(8) {
   /// The species: "date_palm", "broadleaf", "conifer", "birch", "willow", "orchard", "ancient",
   /// "shrub", "fern", "tuft", "herb", "sward" or "roots" read their own parameter block. Named tree profiles
-  /// in domain/geometry/flora_species.h read `tree`.
+  /// in domain/geometry/flora_species.h read `tree`; the five named shrub profiles read `shrub_growth`.
   species: string = "date_palm"
   palm: Palm
   broadleaf: Broadleaf @since(2)
@@ -874,6 +903,8 @@ struct FloraFile @version(7) {
   sward: Sward @since(6)
   /// Separate terrain-fitted structural roots; species must be roots.
   roots: Roots @since(7)
+  /// Named shrub profiles (beaked_hazel, bearberry, blackberry, red_osier_dogwood, big_sagebrush).
+  shrub_growth: ShrubGrowth @since(8)
 }
 
 /// One density class, shared patches in two resident forms. Paths resolve relative to the scene.

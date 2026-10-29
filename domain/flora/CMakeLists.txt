@@ -22,9 +22,10 @@ engine_module(NAME flora LAYER domain OPTIONAL WHOLE_ARCHIVE
   SOURCES src/palm.cpp src/motion.cpp src/kit.cpp src/broadleaf.cpp src/conifer.cpp src/flora.cpp
           src/birch.cpp src/willow.cpp src/orchard.cpp src/ancient.cpp src/impostor.cpp src/shrub.cpp
           src/fern.cpp src/tuft.cpp src/herb.cpp src/companion.cpp src/species.cpp src/maturity.cpp
-          src/sward.cpp src/sward_placement.cpp src/roots.cpp)
+          src/sward.cpp src/sward_placement.cpp src/roots.cpp src/shrub_growth.cpp)
 
 engine_module_tests(NAME flora
   SOURCES tests/flora_tests.cpp tests/species_tests.cpp tests/allometry_tests.cpp
           tests/impostor_tests.cpp tests/understory_tests.cpp tests/sward_tests.cpp
-          tests/size_table.cpp tests/growth_rules_tests.cpp tests/maturity_tests.cpp tests/roots_tests.cpp)
+          tests/size_table.cpp tests/growth_rules_tests.cpp tests/maturity_tests.cpp tests/roots_tests.cpp
+          tests/shrub_growth_tests.cpp)

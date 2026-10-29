@@ -9,6 +9,7 @@
 #include <domain/flora/flora.h>
 #include <domain/flora/palm.h>
 #include <domain/flora/roots.h>
+#include <domain/flora/shrubs.h>
 #include <domain/flora/sward.h>
 #include <domain/flora/trees.h>
 #include <domain/flora/understory.h>
@@ -73,6 +74,8 @@ bool read_flora_file(std::string_view text, FloraFile& out, std::string& error) 
     in_range = orchard_in_range(checked.orchard, error);
   } else if (checked.species == k_species_ancient) {
     in_range = ancient_in_range(checked.ancient, error);
+  } else if (shrub_profile(checked.species) != nullptr) {
+    in_range = shrub_growth_in_range(checked.species, checked.shrub_growth, error);
   } else if (checked.species == k_species_shrub) {
     in_range = shrub_in_range(checked.shrub, error);
   } else if (checked.species == k_species_fern) {
@@ -269,6 +272,7 @@ bool flora_source_hash_with(const FloraFile& file, const assets::MeshGeneratorIn
 namespace {
 // The member of `engine.flora.FloraFile` a species' parameters are in.
 const char* species_member(const std::string& species) {
+  if (shrub_profile(species) != nullptr) return "shrub_growth";
   if (detail::is_tree_species(species)) return "tree";
   if (species == k_species_broadleaf) return "broadleaf";
   if (species == k_species_conifer) return "conifer";
@@ -306,6 +310,7 @@ u64 flora_source_hash(const FloraFile& file) {
   const std::string canonical = canonical_flora_json(file);
   u64 h = hash_bytes(canonical.data(), canonical.size());
   h = hash_combine(h, hash_bytes(file.species.data(), file.species.size()));
+  if (shrub_profile(file.species) != nullptr) return hash_combine(h, k_shrub_growth_version);
   return hash_combine(h, file.species == "sward"   ? k_sward_version
                          : file.species == "roots" ? k_roots_version
                                                    : k_flora_version);
@@ -323,6 +328,9 @@ bool solve_flora(const FloraFile& file, assets::MeshData& mesh, Motion& motion,
                  TreeLevels* levels) {
   if (!detail::maturity_in_range(file.species, file.tree, error)) return false;
   if (levels != nullptr) *levels = TreeLevels{};
+  if (shrub_profile(file.species) != nullptr)
+    return solve_shrub_growth(file.species, file.shrub_growth, mesh, motion, tree_report, error,
+                              levels);
   if (detail::is_tree_species(file.species))
     return detail::solve_tree(file.species, file.tree, mesh, tree_report, error, motion, levels);
   if (file.tree.age_years > 0) {
@@ -537,6 +545,7 @@ bool bake_chain(const assets::MeshData& mesh, const TreeLevels& chain,
 }  // namespace
 
 DetailTier flora_detail_tier(const FloraFile& file) {
+  if (shrub_profile(file.species) != nullptr) return file.shrub_growth.detail_tier;
   // The trees carry no field (it would move every tree's canonical parameters, and with them its
   // pinned source hash and cache key, for a value that cannot differ): a tree collides by its
   // trunk, so it is essential. The understory's species say theirs.
@@ -550,6 +559,8 @@ DetailTier flora_detail_tier(const FloraFile& file) {
 }
 
 bool flora_collides(const FloraFile& file) {
+  if (shrub_profile(file.species) != nullptr)
+    return shrub_growth_collides(file.species, file.shrub_growth);
   if (file.species == "sward" || file.species == "roots") return false;
   if (file.species == k_species_shrub) return shrub_collides(file.shrub);
   return !(file.species == k_species_fern || file.species == k_species_tuft ||

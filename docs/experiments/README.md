@@ -6,6 +6,7 @@ A write-up is not a benchmark log. It is the page a future contributor reads ins
 
 | Experiment | Page | Settles |
 |---|---|---|
+| G107 | [shrub-growth-forms.md](shrub-growth-forms.md) | Species-backed shrub architectures, mixed live/dead stems, local planting planes and a bounded source/far ladder |
 | G101 | [deadwood.md](deadwood.md) | Species-derived remains, independent loss controls and pose-aware contact fitting |
 | R110 | [untraced-primary-2026-10-28.md](untraced-primary-2026-10-28.md) | Untraced species under a traced picture: the grass-only scene and the v20 forest before and after the two contracts (the ray path's grass word for word as with the policy off, 2,308 → 67,934 structures and `rt` 0.54 → 2.00 ms on the grass alone, 247,302 wanted at 11520×2160 and all built at the device default), and the frame budgets' traced runs unmoved |
 | R107 | [rt-chain-forest-2026-10-27.md](rt-chain-forest-2026-10-27.md) | The traced chain on the forest proof of concept's v18 expanded forest at 11520×2160: what its 243,604 structures a frame are (the inner rings' swaying trees, 98%), the chain and frame at 1,024, 1,536 and 2,048 MiB (90.3 → 61.0 ms once nothing is dropped), the device-following default budget, why cluster templates cannot run there, and the deformed-vertex pool's floor against the terrain stage's 2.3 MB |

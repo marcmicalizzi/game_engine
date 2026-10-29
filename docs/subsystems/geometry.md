@@ -1061,6 +1061,12 @@ The authoring side's own numbers for the mode comparison — true limit against 
 
 ### Flora species catalogue (G86)
 
+G107 appends five stable shrub IDs (`beaked_hazel`, `bearberry`, `blackberry`,
+`red_osier_dogwood`, `big_sagebrush`) with per-kind source budgets and the inherited shrub
+motion/caster policy. The catalogue's `profile` flag means the `Tree` recipe family;
+these use flora's separate `ShrubGrowth` recipe, so their flag is false. The catalogue remains
+available with flora disabled. See [shrub rules](flora.md#the-shrub).
+
 G92 adds `roots` as an explicitly rigid (`FloraMotionKind::none`) generated asset.
 It uses the normal caster policy, allocates no wind poses and carries a flagless
 structural row so it does not become a trunk collider; see [surface roots](flora.md#exposed-structural-roots-g92).

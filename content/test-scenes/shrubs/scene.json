@@ -1,0 +1,9 @@
+{
+  "format":"engine.scene.v1", "name":"Researched shrub forms", "camera_path":"camera-path.json",
+  "meshes":[{"path":"hazel.flora.json"},{"path":"bearberry.flora.json"},
+            {"path":"blackberry.flora.json"},{"path":"dogwood.flora.json"},{"path":"sagebrush.flora.json"}],
+  "instances":[{"mesh":0,"translation":[-8,0,0]}, {"mesh":1,"translation":[-4,0,0]},
+               {"mesh":2,"translation":[0,0,0]}, {"mesh":3,"translation":[5,0,0]},
+               {"mesh":4,"translation":[10,0,0]}],
+  "sky":{"latitude_deg":46.5,"day_of_year":200,"turbidity":2.5}
+}
