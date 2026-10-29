@@ -2725,7 +2725,12 @@ casts no shadow there either, the chain wanting its facing clusters and none of 
 reference path tracer (direct light) sees it with its camera ray and lights the ground under it.
 `domain/gfx`'s records test holds the filter at the bytes (a rasterized frame takes nothing of an
 untraced deformed instance, a traced one its drawn entries from their blocks and no caster), and its
-TLAS case the mask.
+TLAS case the mask. **What it costs** ([the experiment](../experiments/untraced-primary-2026-10-28.md)):
+the ray path's grass is word for word what it draws with the policy off (0 of 1,440,000 id words
+differ on the proof of concept's grass-only scene at 1600×900), and the chain builds it — 2,308 →
+67,934 structures and `rt` 0.54 → 2.00 ms on that scene, 99,811 → 100,957 on the v20 forest at
+1600×900, and 247,302 at 11520×2160, all built at the device's default budget and not at the
+proof of concept's pinned 1,024 MiB. A rasterized frame's grass is the bytes it was.
 
 ### A form carries only the parts it uses
 
