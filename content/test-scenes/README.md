@@ -49,3 +49,5 @@ Its thresholds are also the first set from **both** ends: 0.0575 / 0.1870 measur
 | `helmet-grid` | 3×3 instances: a deep LOD cut, many bottom-level structures, inter-object shadows | yes |
 | `thin-geometry` | the Khronos Lantern's thin frame and rope, where triangles fall under a pixel and a rasterized edge and a traced one disagree | yes |
 | `wide-frustum` | 1920×360, a 48:9 frustum: the aspect the project owner plays at, in one view | yes |
+
+[Soil feature studies](soil-features/README.md) contain recipes for scarps, gullies, undercuts and fresh/weathered tree throw, cooked with their terrain outside the repository.

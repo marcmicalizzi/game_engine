@@ -377,6 +377,12 @@ engine-content terrain-synth mountain.json --kind ridge --size 4001 --spacing-mm
 engine-content terrain-tiles mountain.json --ddc ddc
 ```
 
+## engine-content soil-cook: paired ground and soil geometry
+
+`engine-content soil-cook <recipe.soil.json> <heightfield.json> <new-out-dir> <x> <y> <z>`
+writes edited terrain, a fitted feature recipe, provenance and a review scene. It
+requires the soil capability; see [soil](soil.md#cook-and-scene-workflow).
+
 ## engine-content tissue: the tissue definition
 
 `tissue` reads, checks and reports the engine's tissue definition ([tissue](tissue.md)); it is present when the build has the tissue capability (which needs physics), and without it — `ENGINE_WITH_TISSUE=OFF`, `ENGINE_WITH_PHYSICS=OFF`, a minimal build — the command is refused with a sentence and exit 1, as engine-view refuses `--animate` without animation. Every subcommand prints one JSON line.

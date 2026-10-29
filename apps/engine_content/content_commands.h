@@ -62,6 +62,7 @@ int city_command(int argc, char** argv);
 int npcs_command(int argc, char** argv);
 int flora_command(int argc, char** argv);
 int rocks_command(int argc, char** argv);
+int soil_command(int argc, char** argv);
 int vine_command(int argc, char** argv);   // cover_commands.cpp
 int cover_command(int argc, char** argv);  // cover_commands.cpp
 
