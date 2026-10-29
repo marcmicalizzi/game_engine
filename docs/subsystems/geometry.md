@@ -1107,3 +1107,4 @@ G103 adds the shared catalogue kind `litter`: rigid, zero compliance, untraced a
 G113 appends basswood, black_cherry and sycamore to the flora catalogue without changing existing
 IDs, hot struct sizes or motion/caster defaults. Their shared growth profiles and source budgets
 are grounded in [tree species expansion](../experiments/tree-species-expansion.md).
+The flora catalogue appends [wetland plants](wetland.md): emergents use field motion, floating leaves use none; all use one rest-pose cascade and no traced shadows. Old IDs retain their values.

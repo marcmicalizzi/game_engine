@@ -1,0 +1,126 @@
+{
+  "format": "engine.scene.v1",
+  "name": "wetland-form-study",
+  "camera_path": "camera-path.json",
+  "meshes": [
+    {
+      "name": "sedge",
+      "path": "../../wetland/sedge.wetland.json"
+    },
+    {
+      "name": "tussock",
+      "path": "../../wetland/tussock.wetland.json"
+    },
+    {
+      "name": "rush",
+      "path": "../../wetland/rush.wetland.json"
+    },
+    {
+      "name": "reed",
+      "path": "../../wetland/reed.wetland.json"
+    },
+    {
+      "name": "cattail",
+      "path": "../../wetland/cattail.wetland.json"
+    },
+    {
+      "name": "arrowhead",
+      "path": "../../wetland/arrowhead.wetland.json"
+    },
+    {
+      "name": "water_lily",
+      "path": "../../wetland/water_lily.wetland.json"
+    },
+    {
+      "name": "pond_lily",
+      "path": "../../wetland/pond_lily.wetland.json"
+    },
+    {
+      "name": "dead-reeds",
+      "path": "../../wetland/dead-reeds.wetland.json"
+    }
+  ],
+  "instances": [
+    {
+      "mesh": 0,
+      "name": "sedge",
+      "translation": [
+        -2.2,
+        0,
+        -2.2
+      ]
+    },
+    {
+      "mesh": 1,
+      "name": "tussock",
+      "translation": [
+        0,
+        0,
+        -2.2
+      ]
+    },
+    {
+      "mesh": 2,
+      "name": "rush",
+      "translation": [
+        2.2,
+        0,
+        -2.2
+      ]
+    },
+    {
+      "mesh": 3,
+      "name": "reed",
+      "translation": [
+        -2.2,
+        0,
+        0
+      ]
+    },
+    {
+      "mesh": 4,
+      "name": "cattail",
+      "translation": [
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "mesh": 5,
+      "name": "arrowhead",
+      "translation": [
+        2.2,
+        0,
+        0
+      ]
+    },
+    {
+      "mesh": 6,
+      "name": "water_lily",
+      "translation": [
+        -2.2,
+        0,
+        2.2
+      ]
+    },
+    {
+      "mesh": 7,
+      "name": "pond_lily",
+      "translation": [
+        0,
+        0,
+        2.2
+      ]
+    },
+    {
+      "mesh": 8,
+      "name": "dead-reeds",
+      "translation": [
+        2.2,
+        0,
+        2.2
+      ]
+    }
+  ]
+}

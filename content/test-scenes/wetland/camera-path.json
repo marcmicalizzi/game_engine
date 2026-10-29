@@ -1,0 +1,61 @@
+{
+  "format": "engine.camera-path.v1",
+  "name": "wetland-distances",
+  "interpolation": "Linear",
+  "fps": 60,
+  "znear": 0.05,
+  "keys": [
+    {
+      "time": 0,
+      "position": [
+        0,
+        1.7,
+        5
+      ],
+      "target": [
+        0,
+        0.8,
+        0
+      ]
+    },
+    {
+      "time": 5,
+      "position": [
+        0,
+        3.2,
+        20
+      ],
+      "target": [
+        0,
+        0.8,
+        0
+      ]
+    },
+    {
+      "time": 10,
+      "position": [
+        0,
+        7.2,
+        60
+      ],
+      "target": [
+        0,
+        0.8,
+        0
+      ]
+    },
+    {
+      "time": 15,
+      "position": [
+        0,
+        13.2,
+        120
+      ],
+      "target": [
+        0,
+        0.8,
+        0
+      ]
+    }
+  ]
+}

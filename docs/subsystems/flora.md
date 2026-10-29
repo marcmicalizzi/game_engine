@@ -2157,3 +2157,4 @@ materials and the tree placement transform. The optional stem recipe holds 3..33
 Ancient megaflora retain their own authored buttress fins and hollow/village openings.
 The new fitted ring collar is refused for that species because it would bridge those features.
 Their standalone roots and the inexpensive dimension helper remain supported.
+The [wetland capability](wetland.md) reuses the public companion shape kit, motion records and CPU impostor baker for eight new forms. Its profiles are separate; existing flora output is unchanged.

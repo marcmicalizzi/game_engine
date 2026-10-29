@@ -551,6 +551,7 @@ Import, the content build, validation, provenance, generators, scripting and tex
 | G114 | Design species seasonal foliage and matching LOD variants | done (2026-10-29: researched seasonal state, retention and matching-LOD design; implementation deferred by owner) | G87, G113 | M | design | [season design](experiments/tree-seasons.md) |
 
 | G107 | Researched shrub growth forms: upright multistem hazel, prostrate bearberry, arching blackberry, dogwood thickets and sparse dry-site sagebrush, with live/dead stems and bounded distance forms | done (2026-10-29, 6b3d0871: five named ShrubGrowth profiles, seeded live/dead stems, fixed-size blades and a tessellation budget ladder; old shrub output unchanged; Windows affected entries and Linux filtered checks pass; distance captures, authored approximations and the measured CPU pose cost recorded in the grounding page) | G75, G86 | L | research | [flora](subsystems/flora.md#the-shrub), [shrub growth forms](experiments/shrub-growth-forms.md) |
+| G116 | Wetland and waterside plants: sedges, rushes, reeds, tussocks, emergents and floating leaves, dead stems and irregular patches | in progress (2026-10-29: research and isolated implementation started) | G75, G90 | L | research | [flora machinery](subsystems/flora.md) |
 
 ## T — Tooling and CI
 

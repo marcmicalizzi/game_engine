@@ -1,0 +1,66 @@
+namespace engine.wetland
+
+/// One anchored clump, not a whole marsh. Dimensions are metres.
+struct Plant @version(1) {
+  /// sedge, tussock, rush, reed, cattail, arrowhead, water_lily or pond_lily; default sedge.
+  species: string = "sedge"
+  /// Flexible and floating plants do not collide; true is refused.
+  collider: bool = false
+  /// Any u64, default 1. Independent deterministic stream per shoot.
+  seed: u64 = 1
+  /// All source triangles, 0 uses catalogue kind budget; explicit 64..100000.
+  triangle_budget: u32 = 0
+  /// Shoot count, 0 uses profile, explicit 1..256. Never reduced to meet a budget.
+  shoots: u32 = 0
+  /// Fraction dead, 0..1, default .18; dead shoots retain geometry and IDs.
+  dead_share: f32 = 0.18
+  /// Fraction of dead stems broken shorter, 0..1, default .35.
+  broken_share: f32 = 0.35
+  /// Root spread multiplier, .5..2, default 1; individual leaves keep their size.
+  spread: f32 = 1
+  /// Emergent size multiplier, .75..1.25, default 1; ignored by floating leaves.
+  stature: f32 = 1
+  /// Organic crown height, 0..0.5, default .22; tussock only.
+  tussock_height_m: f32 = 0.22
+  /// Floating-leaf surface above the root anchor, .05..2, default .5.
+  water_depth_m: f32 = 0.5
+}
+
+/// One finite ecological band with patchy edges; world positions are f64.
+struct Patch @version(1) {
+  /// Plant kind from the catalogue, default sedge; mesh files must match.
+  species: string = "sedge"
+  /// 1..16 near variants, paths relative to scene; empty default is refused.
+  meshes: string[]
+  /// Optional matching far forms, same count; ring 1 onward, preserves IDs.
+  far_meshes: string[]
+  /// Any u64, default 1, mixed with scene seed.
+  seed: u64 = 1
+  /// Centre, world metres, finite +/-1e8; defaults zero.
+  x_m: f64 = 0
+  z_m: f64 = 0
+  /// Ellipse radii, .5..512 m; defaults 8 and 5.
+  radius_x_m: f32 = 8
+  radius_z_m: f32 = 5
+  /// Candidate spacing, .125..4 m, default .5; window must fit u32 IDs.
+  spacing_m: f32 = 0.5
+  /// Occupancy probability, 0..1, default .8; zero emits nothing.
+  density: f32 = 0.8
+  /// Edge recession and interior gaps, 0..0.75, default .3.
+  irregularity: f32 = 0.3
+  /// Authored static water elevation, world metres, finite +/-10000, default 0.
+  water_y_m: f64 = 0
+  /// Allowed depth (water minus ground), -2..2 m; min <= max.
+  min_depth_m: f32 = -0.15
+  max_depth_m: f32 = 0.15
+  /// Must match floating recipes: .05..2 m, default .5.
+  floating_depth_m: f32 = 0.5
+  /// Extra clearance from earlier footprints, 0..4 m, default .15.
+  clearance_m: f32 = 0.15
+  /// Ground slope limit, 0..60 degrees, default 20.
+  max_slope_deg: f32 = 20
+  /// Cooked mask palette index; -1 disabled (default), 0..253 requires masks.
+  mask_layer: i32 = -1
+  /// Candidates per whole expansion, 1..1000000, default 100000; excess refused.
+  candidate_budget: u32 = 100000
+}

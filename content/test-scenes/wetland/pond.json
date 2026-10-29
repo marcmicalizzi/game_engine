@@ -1,0 +1,75 @@
+{
+  "format": "engine.scene.v1",
+  "name": "wetland-floating-leaves",
+  "meshes": [
+    {
+      "name": "water_lily",
+      "path": "../../wetland/water_lily.wetland.json"
+    },
+    {
+      "name": "pond_lily",
+      "path": "../../wetland/pond_lily.wetland.json"
+    },
+    {
+      "name": "arrowhead",
+      "path": "../../wetland/arrowhead.wetland.json"
+    },
+    {
+      "name": "cattail",
+      "path": "../../wetland/cattail.wetland.json"
+    }
+  ],
+  "instances": [
+    {
+      "mesh": 0,
+      "translation": [
+        -0.7,
+        0,
+        0
+      ]
+    },
+    {
+      "mesh": 1,
+      "translation": [
+        0.7,
+        0,
+        0
+      ]
+    },
+    {
+      "mesh": 2,
+      "translation": [
+        -1.6,
+        0.35,
+        -1
+      ]
+    },
+    {
+      "mesh": 3,
+      "translation": [
+        1.7,
+        0,
+        -1.4
+      ]
+    }
+  ],
+  "water": [
+    {
+      "name": "plant-study",
+      "level_m": 0.5,
+      "shape": {
+        "circle": {
+          "center": [
+            0,
+            0,
+            0
+          ],
+          "radius_m": 3
+        }
+      },
+      "shore_m": 0.25,
+      "wave_amplitude_m": 0,
+      "wave_length_m": 2.5
+    }
+  ]
+}

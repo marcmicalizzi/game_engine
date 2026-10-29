@@ -138,3 +138,4 @@ A GPU measurement adds the renderer's own `gpu_memory` block (`budget_mib`, `use
 Soil morphology: [soil-banks-tree-throw](soil-banks-tree-throw.md), research and validation for G100.
 
 Tree expansion: [species profiles](tree-species-expansion.md) and [season design](tree-seasons.md).
+[G116: wetland plants](wetland-plants.md) records dimensions, authored controls and budget validation.
