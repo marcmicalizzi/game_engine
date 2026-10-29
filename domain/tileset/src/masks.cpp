@@ -620,8 +620,11 @@ bool build_mask_level(const TileSet& set, const MaskInputs& in, const std::strin
         error = "terrain.masks: tile (" + std::to_string(tx) + ", " + std::to_string(tz) + ") at " +
                 place + " names " + std::to_string(table.size()) + " layers (" + names +
                 ") where materials.layer_budget is " + std::to_string(in.budget) +
-                "; narrow a region's feather or margin, or a prior's blend, so fewer meet there, "
-                "or raise the budget";
+                "; narrow a region's feather or margin, or a prior's blend, so fewer meet there";
+        if (in.budget < scene_gen::k_mask_channels)
+          error += "; or raise materials.layer_budget up to 4";
+        else
+          error += "; the mask format supports at most 4 layers per tile; reduce the overlap";
         return false;
       }
       std::fill(tile_words.begin(), tile_words.end(), 0u);

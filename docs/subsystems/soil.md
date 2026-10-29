@@ -11,22 +11,24 @@ A recipe owns its dimensions, seed, source triangle budget and original local gr
 samples. The cook is explicit: a moved feature or modified ground requires a new cook.
 No soil erosion, windthrow mechanics or simulation state runs per frame.
 
-A bank is a closed extrusion along x. Its top joins original ground at the back;
+A bank is a closed sweep along x with a seeded curved planform and variable gully
+width. Meshes, excavation, roots and stones use the same profile. Its top joins original ground at the back;
 its front exposes organic, topsoil, subsoil and parent-material bands. The face
-recedes beneath an undercut lip. Ends fade into undisturbed ground. A gully has
+recedes beneath an undercut lip. Unequal end ramps bury the caps in undisturbed ground. A gully has
 opposed faces and a depressed floor. The native heightfield is excavated beneath
 the bank volume so it cannot fill the undercut cavity with a sloping terrain face.
 The collider for the lip is the mesh's normal 5 cm DAG proxy, and the lower floor
 is the native terrain collider. There is no new collision or renderer path.
 
 Tree throw excavates an elliptical pit and deposits an adjacent smooth mound in the
-actual heightfield. The upright soil plate is an irregular rock-solver body with
-soil materials, rigid branching root spokes and hanging broken tips. A short fallen
+actual heightfield. The upright soil plate is a tapered elliptical envelope with
+seeded torn lobes and attached clods. Rigid curved roots branch twice, each branch
+carrying three finer broken roots. A short fallen
 bole continues behind it. These are morphology approximations, not a conserved
 soil-volume reconstruction or a particular tree's uprooted root network.
 
 Embedded stones call `rocks::solve_rock`; the soil capability declares its dependency.
-The implementation pins rock solver version 8 at compile time. A rock-version change requires reviewing soil captures/pins and bumping `k_soil_version` before updating that assertion, so cached soil cannot silently retain old stones or plates. All woody roots here are rigid. Existing living-tree roots can be cooked against the
+The implementation pins rock solver version 8 at compile time. A rock-version change requires reviewing soil captures/pins and bumping `k_soil_version` before updating that assertion, so cached soil cannot silently retain old stones. All woody roots here are rigid. Existing living-tree roots can be cooked against the
 resulting terrain through their usual `scene_gen::Ground` seam; this does not move
 existing trees or alter their root recipes automatically.
 
@@ -53,7 +55,9 @@ placement streamer; this module adds no random regional placement generator.
 
 Defaults: scarp 12,000, gully and undercut 16,000, tree throw 24,000 source triangles.
 Explicit budgets are 2,000–200,000. The solver tries longitudinal cells of 0.08, 0.125,
-0.2, 0.35 and 0.6 m, eight then four root sides, and 5,000 then 1,200 plate triangles.
+0.2, 0.35 and 0.6 m, eight then four major-root sides, and plate grids of 64 by 10
+then 32 by 6 (2,560 then 768 triangles). Fine roots have four sides, and the 48
+attached clods use twenty triangles each. These are included in the source budget.
 Every root and stone survives; a budget too small for the coarsest form is refused.
 Each stone has a 500-triangle source allowance. Terrain triangles belong to the
 existing terrain budgets and are additional to this mesh budget.
@@ -98,7 +102,21 @@ and the command reports that it needs the capability.
 
 Process simulation, physically conserved excavated volume, fallen full-tree crowns,
 automatic uprooting of living-tree assets, regional bank detection, moving terrain,
-root wind motion, native terrain material-mask painting and automatic grass clearing.
+root wind motion, automatic native terrain material-mask painting and automatic grass clearing.
 The cook is a finite, explicit authored feature. Visual acceptance remains the owner's.
+
+G106 tracks joining the bole to a complete native fallen crown and automatic
+support discovery. Authored leaning tree-to-tree contact belongs to the separate
+deadwood follow-up, using its support capsules; none is supplied by the soil stub. G105 improves one
+continuous authored reach within the existing 32 m span; network junctions and
+regional coverage remain separate work, gated on capture review.
+
+When composing the cook into a terrain with slope priors, paint a local mask
+region with `material: "soil"` (or the chosen palette name) over excavated soil.
+`base` only replaces the prior's soil channel and cannot suppress its bedrock
+on a steep face. Regions composite over priors; feather only where the transition
+belongs. Keep at most four palette layers in any mask tile, including feathered
+neighbours. The cook's simple one-soil-layer scene needs no override; it does not
+automatically insert one into another scene. Wider blends require engine work.
 
 The far-origin study preserves the cook and geometry, but exposed a CSM fitting issue (F24): the shifted world review has no cascade casters. See the grounding page's far-origin evidence; the renderer is unchanged here.

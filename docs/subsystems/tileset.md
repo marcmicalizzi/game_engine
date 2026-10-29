@@ -145,6 +145,12 @@ Sculpting in the editor is W66's second half, not built. What it needs: (1) **th
 
 **Mips that keep the seam exact.** Mip *m* of a tile holds `cells / 2^m + 1` points; each is mip 0's points filtered over its cell (weights 1, 2, …, 2, 1 along each axis, the height chain's box), **except along an axis where the point lies on the tile's edge**, where it is mip 0's edge point alone — so a mip's edge points are computed from points both tiles hold, by the same integer arithmetic, a layer at a time (rounded half up), and the seam stays exact at every mip. Interior mip points never reach past the edge (a cell's half-width is at most its distance from it), so no filter is clamped.
 
+A refusal suggests increasing `materials.layer_budget` only when it is below four,
+and only up to four. At four, it names the format limit and asks for less overlap.
+An explicit region's `material` can keep steep excavated soil from becoming the
+slope prior's bedrock; `base` cannot, because it changes only the soil channel.
+The override and its feather still share the same four-layer per-tile budget.
+
 **The texel density: 1 m by default** (`spacing_mm`, 250 to 4000). A trail or a shore margin is one to a few metres wide and is the narrowest thing the masks must place; a metre resolves it with the bilinear blend, and the layers' own textures carry the centimetre detail at their `tile_m`. Half a metre quadruples the level's bytes for edges the priors' slope transitions (several metres wide) do not need; two metres blurs a trail to a smear. Unreal's landscape weightmaps are of the same order (a component's weightmap at its vertex density, typically a metre).
 
 **Cost**: a tile of 32 cells is 1,873 words (7.5 KB) holding 1,024 m² at 1 m, 7.3 bytes a square metre with its mips; the fixture's 256 m square at 16-cell tiles is 289 tiles and 600 KB. A 4 km square at 1 m is about 117 MB, a 10 km square 730 MB — at 2 m, 183 MB. **The renderer holds every tile of the level resident** (below the block's `resident_mib`, refused above it): streaming them with the terrain's tiles is W25's remainder.

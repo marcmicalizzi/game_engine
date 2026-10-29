@@ -228,6 +228,25 @@ TEST_CASE("tileset masks: the priors lay soil, scree, bedrock and snow where the
   CHECK(w[7] > 0.9);
 }
 
+TEST_CASE("tileset masks: explicit excavated soil overrides the steep bedrock prior") {
+  Fixture fx;
+  Vector<f64> w;
+  f64 wet = 0;
+  auto region = circle("excavated soil", 70, -70, 8);
+  region.base = "soil";
+  fx.in.masks.regions.push_back(region);
+  REQUIRE(mask_point(fx.set, fx.in, 70000, -70000, w, wet, fx.error));
+  CHECK(w[2] > 0.99);  // Replacing the prior's soil is not an override of bedrock.
+  fx.in.masks.regions.back().base.clear();
+  fx.in.masks.regions.back().material = "soil";
+  REQUIRE(mask_point(fx.set, fx.in, 70000, -70000, w, wet, fx.error));
+  CHECK(w[0] > 0.99);
+  CHECK(w[2] == 0);
+  MaskBuildResult built;
+  REQUIRE_MESSAGE(build_mask_level(fx.set, fx.in, fx.tmp.file("soil-override"), built, fx.error),
+                  fx.error);
+}
+
 TEST_CASE("tileset masks: a tile naming more layers than its budget is refused with a sentence") {
   Fixture fx;
   // A region of trail straddling the pond's margin and bed: soil, gravel, sand and trail meet, and
@@ -244,6 +263,11 @@ TEST_CASE("tileset masks: a tile naming more layers than its budget is refused w
   CHECK(fx.error.find("tile (") != std::string::npos);
   CHECK(fx.error.find("layer_budget is 4") != std::string::npos);
   CHECK(fx.error.find("trail") != std::string::npos);
+  CHECK(fx.error.find("at most 4 layers per tile") != std::string::npos);
+  CHECK(fx.error.find("raise") == std::string::npos);
+  fx.in.budget = 2;
+  CHECK_FALSE(build_mask_level(fx.set, fx.in, fx.tmp.file("over-two"), built, fx.error));
+  CHECK(fx.error.find("raise materials.layer_budget up to 4") != std::string::npos);
   // And the inputs a build cannot take.
   Fixture bad;
   bad.in.masks.regions[2].base = "litter";

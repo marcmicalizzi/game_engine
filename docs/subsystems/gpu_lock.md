@@ -71,6 +71,14 @@ gpu-lock: a process this one started gave up waiting for the GPU lock (exit 75);
 
 and CTest's `***Skipped` for the test (`engine_cli`, at 1,801 s), which `tools/dev.ps1 test` turns into exit 75 with that line printed under the names of the tests that did not run. A holder that keeps the GPU for an hour — a gate still wrapping three suites in `gpu-lock.ps1 run`, a diffusion batch — therefore costs a test run its GPU tests, named, rather than a failure; a gate that has to sit behind one can raise the budget for its build (`cmake -DENGINE_TEST_GPU_LOCK_WAIT_S=3600`, and `TIMEOUT` follows). What a suite's wall time is when it has to queue is in [the measurement](../experiments/gpu-lock-per-device-2026-09-30.md).
 
+On Windows, first run `tools/dev.ps1 configure -Preset msvc-debug`, then
+`cmake --preset msvc-debug -DENGINE_TEST_GPU_LOCK_WAIT_S=3600` in the **same
+PowerShell process**, followed by the usual `tools/dev.ps1 test` command. The
+driver establishes the Visual Studio and Ninja environment. Calling CMake from
+an uninitialized shell can invalidate the compiler selection in an existing cache;
+restore it through `dev.ps1 configure` before applying the override. This changes
+the local build's queue allowance and matching CTest timeout, not its assertions.
+
 ## Elsewhere, and the limits
 
 **Linux, the hosted runners, and machines that do not take part.** Nothing waits and nothing fails. A machine without a usable Vulkan device never reaches `vkCreateDevice` — the hosted runners, the Linux container — and so never touches a lock. Off Windows the default lock is `/tmp/gpu.lock`, which has no other holder on the GPU server or in the container (whose `/tmp` is its own, not this desktop's), so a hold is taken and released at once. A machine where the lock's directory does not exist — a self-hosted runner, a machine a test bundle was sent to — does not use the protocol (`NoDirectory`) and runs as if the switch were off; create `D:\workspace` (or point `ENGINE_GPU_LOCK` somewhere) on a machine that should take part.

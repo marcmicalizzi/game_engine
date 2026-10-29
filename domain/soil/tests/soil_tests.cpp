@@ -76,41 +76,44 @@ TEST_CASE("soil ground sampling retains far world millimetres") {
 }
 
 TEST_CASE("soil shells are closed and consistently wound after exact weld") {
-  for (auto kind :
-       {soil::Kind::Scarp, soil::Kind::Gully, soil::Kind::Undercut, soil::Kind::TreeThrow}) {
-    soil::SoilFile f;
-    f.kind = kind;
-    assets::MeshData m;
-    soil::Report r;
-    std::string e;
-    REQUIRE(soil::solve(f, m, r, e));
-    std::map<std::tuple<f32, f32, f32>, u32> vertices;
-    std::vector<u32> ids;
-    for (Vec3 p : m.positions) {
-      const auto [it, inserted] =
-          vertices.try_emplace({p.x, p.y, p.z}, static_cast<u32>(vertices.size()));
-      (void)inserted;
-      ids.push_back(it->second);
+  for (f32 root_radius : {0.005f, 0.045f}) {
+    for (auto kind :
+         {soil::Kind::Scarp, soil::Kind::Gully, soil::Kind::Undercut, soil::Kind::TreeThrow}) {
+      soil::SoilFile f;
+      f.kind = kind;
+      f.root_radius_m = root_radius;
+      assets::MeshData m;
+      soil::Report r;
+      std::string e;
+      REQUIRE(soil::solve(f, m, r, e));
+      std::map<std::tuple<f32, f32, f32>, u32> vertices;
+      std::vector<u32> ids;
+      for (Vec3 p : m.positions) {
+        const auto [it, inserted] =
+            vertices.try_emplace({p.x, p.y, p.z}, static_cast<u32>(vertices.size()));
+        (void)inserted;
+        ids.push_back(it->second);
+      }
+      std::map<std::pair<u32, u32>, u32> edges;
+      f64 volume = 0;
+      for (u32 i = 0; i < m.indices.size(); i += 3) {
+        for (u32 k = 0; k < 3; ++k)
+          ++edges[{ids[m.indices[i + k]], ids[m.indices[i + (k + 1) % 3]]}];
+        const auto a = m.positions[m.indices[i]], b = m.positions[m.indices[i + 1]],
+                   c = m.positions[m.indices[i + 2]];
+        volume += static_cast<f64>(dot(a, cross(b, c))) / 6;
+      }
+      u32 unmatched = 0, repeated = 0;
+      for (const auto& [edge, count] : edges) {
+        repeated += count != 1;
+        const auto it = edges.find({edge.second, edge.first});
+        unmatched += it == edges.end() || it->second != count;
+      }
+      INFO(static_cast<unsigned>(kind));
+      CHECK(unmatched == 0);
+      CHECK(repeated == 0);
+      CHECK(volume > 0);
     }
-    std::map<std::pair<u32, u32>, u32> edges;
-    f64 volume = 0;
-    for (u32 i = 0; i < m.indices.size(); i += 3) {
-      for (u32 k = 0; k < 3; ++k)
-        ++edges[{ids[m.indices[i + k]], ids[m.indices[i + (k + 1) % 3]]}];
-      const auto a = m.positions[m.indices[i]], b = m.positions[m.indices[i + 1]],
-                 c = m.positions[m.indices[i + 2]];
-      volume += static_cast<f64>(dot(a, cross(b, c))) / 6;
-    }
-    u32 unmatched = 0, repeated = 0;
-    for (const auto& [edge, count] : edges) {
-      repeated += count != 1;
-      const auto it = edges.find({edge.second, edge.first});
-      unmatched += it == edges.end() || it->second != count;
-    }
-    INFO(static_cast<unsigned>(kind));
-    CHECK(unmatched == 0);
-    CHECK(repeated == 0);
-    CHECK(volume > 0);
   }
 }
 
@@ -131,4 +134,43 @@ TEST_CASE("soil cook follows sloping ground and keys the original samples") {
   assets::MeshData m;
   soil::Report r;
   REQUIRE(soil::solve(f, m, r, e));
+}
+
+TEST_CASE("long soil banks curve with their excavation and bury their end caps") {
+  for (auto kind : {soil::Kind::Scarp, soil::Kind::Gully, soil::Kind::Undercut}) {
+    soil::SoilFile f;
+    f.kind = kind;
+    f.width_m = 24;
+    f.roots = f.stones = 0;
+    CHECK(soil::terrain_delta(f, std::numeric_limits<f32>::max(), 0) == 0);
+    CHECK(soil::terrain_delta(f, -std::numeric_limits<f32>::max(), 0) == 0);
+    assets::MeshData m;
+    soil::Report r;
+    std::string e;
+    REQUIRE_MESSAGE(soil::solve(f, m, r, e), e);
+    CHECK(r.triangles <= soil::triangle_budget(f));
+    u32 ends = 0;
+    for (auto p : m.positions)
+      if (std::abs(p.x) == 12) {
+        ++ends;
+        CHECK(p.y < 0);
+        CHECK(soil::terrain_delta(f, p.x, p.z) == 0);
+      }
+    CHECK(ends > 0);
+    // Samples along the visible lip must stay over the excavation, including
+    // off-axis bends; otherwise the terrain fills the bank's lower face.
+    f32 min_z = 100, max_z = -100;
+    for (const auto& primitive : m.primitives) {
+      if (primitive.material != 0) continue;
+      for (u32 i = primitive.first_index; i < primitive.first_index + primitive.index_count; ++i) {
+        const auto p = m.positions[m.indices[i]];
+        if (p.y != 0 || std::abs(p.x) > 3) continue;
+        if (soil::terrain_delta(f, p.x, p.z) < -f.depth_m * 0.99f) {
+          min_z = std::min(min_z, p.z);
+          max_z = std::max(max_z, p.z);
+        }
+      }
+    }
+    CHECK(max_z - min_z > 0.1f);
+  }
 }

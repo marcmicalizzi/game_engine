@@ -34,6 +34,8 @@ feature or changed terrain requires a new cook.
 
 ## Validation
 
+### Version 1 validation
+
 MSVC debug builds and the soil tests pass; all 34 container-section hashes for each
 of the four defaults and all four terrain hashes match Clang 18 on Linux. The
 filtered Linux run passed 13/13 tests (soil, scene_gen, renderer, engine_view,
@@ -106,7 +108,7 @@ Keep the schema LF-normalized: an accidentally mixed CRLF documentation line was
 accepted by MSVC but emitted a literal carriage return in a reflected description,
 which Clang correctly rejected. Normalize the source; never patch generated code.
 
-## Explicit authoring and engineering constants
+## Version 1 authoring and engineering constants
 
 These values are not measurements of soil or root mechanics. They are bounded
 source-mesh choices to be evaluated in the engine captures.
@@ -127,6 +129,136 @@ source-mesh choices to be evaluated in the engine captures.
 | Pit and mound | squared positive elliptical paraboloids; mound centre 0.75 pit lengths behind centre | Smooth compact footprints with zero slope at their edges, not a mass-conservation claim |
 | Fallback materials | six linear RGB colours and roughness 0.95, listed in solver.cpp | Preview palette only, no claim of measured reflectance; role-based packs override it |
 
-The sphere-like soil plate uses the existing rock solver's irregular body, not a
-new geological model. Its geometry does not preserve a transported soil stratigraphy.
-No existing solver output or determinism pin is changed.
+The version 1 soil plate used the rock solver's irregular body, not a new geological
+model. Its geometry did not preserve a transported soil stratigraphy. That initial
+implementation changed no pre-existing solver's output or determinism pins.
+
+## Capture review follow-up (G105, 2026-10-29)
+
+Initially reserved as G103/G104 in c8996048; renumbered to G105/G106 after checking
+the concurrent shrub and deadwood branches, which had independently reserved those
+IDs. Authored leaning contact is the deadwood follow-up's; this change adds none.
+
+The v1 close captures were reviewed before changing coverage: plates read as broad
+rectangular slabs with sparse radial roots, and paired banks as straight excavated
+sections. G105 targets their shape within the existing triangle budgets. The original
+studies above remain v1 evidence, not validation of the new output.
+
+[Krisans et al. 2020](https://www.mdpi.com/1999-4907/11/11/1143)
+(also reproduced in the author's [institute-hosted thesis](https://silava.lv/images/Produkti/Promocijas-darbi/2020-Krisans-Oskars-Promocijas-darbs.pdf))
+models spruce root plates with an elliptical footprint and decreasing depth away
+from the stem. This supports a tapered plate instead of an extruded rock slab.
+The Latvian sample is distinct from the Polish dimension reference above: no new
+universal thickness, root count or clod distribution is inferred from either.
+
+[NRCS, Erosion and Sediment Delivery, pp. 4-6](https://www.nrcs.usda.gov/sites/default/files/2022-09/Erosion_%26_sediment_delivery__IA-NRCS_Procedures.pdf)
+distinguishes localized eroding banks, headcuts and stable reaches, and curved
+channel planforms. The visual approximation will share one curved profile between
+mesh, excavation and attachments; it does not simulate drainage or predict bend
+wavelength. Smooth buried ends represent a finite authored reach, not an active
+headcut or a connected watershed network.
+
+Composition remains G106: the bole is a stub, not a complete fallen crown; no
+leaning tree-to-tree support example or automatic support discovery is claimed.
+Steep excavated soil requires an explicit mask region's `material` override,
+not its `base` field (which only replaces the prior's soil). The native mask
+format still carries at most four layers per tile; wider blending remains engine work.
+
+The earlier constants table describes v1. Version 2 changes the following authored
+and engineering choices; the research supports the structure, not these amplitudes.
+
+| Control | Version 2 choice | Budget/representation trade |
+|---|---|---|
+| Bank planform | smooth hash stations every 2.5 m, amplitude min(0.8 m, 12% span, 22% reach); offset measured from the central station | Shared by mesh and cook; finite authored curve, no drainage solver |
+| Gully width | 70-100% nominal half-width, smooth stations every 1.7 m | Opposed banks remain separated; one continuous reach |
+| Ends | smooth ramps over first 28% and last 38% span; 5 cm burial at caps, 2.5% minimum closed depth | Caps disappear below untouched ground; no active headcut claim |
+| Plate | ellipse at 46% height; half-axes 50% width / 54% height; radial factor 0.82 plus 3/7/13 angular harmonics of 0.08/0.07/0.05 with seeded phases | Torn lobes replace rectangular silhouette; not a measured outline spectrum |
+| Plate depth | half-thickness 0.22 m at stem, 0.025 m at rim; 0.055 m relief scaled by r(1-r) | Taper follows the research direction; nominal scale retained from v1 |
+| Sampling | 64 sectors x 10 rings or 32 x 6; matched front/back rim samples | 2,560 or 768 triangles, closed at either rung |
+| Clods | 48 closed aggregates, twenty triangles each, radius 1.8-5.3% of smaller plate dimension; vertex radii 80-120% nominal | 960 triangles at every rung; centimetre/millimetre soil grain still belongs to materials |
+| Root curvature | angular bend 0.3 rad, reach 108-124% envelope; 2.5 cm surface offset plus 0.22 m outward tip and 0.18 m drop | Follows the envelope before hanging free; roots are rigid |
+| Secondary/finer roots | two branches per major, 0.25-0.55 m lateral reach; three four-segment fine roots per branch, 0.12-0.37 m reach, radius 12% major | Four-sided closed tubes; source ladder retains every branch |
+
+The solver cache version moves from 1 to 2. All four container pins change;
+bank terrain pins change with the shared curve and ramps, while tree-throw pit
+and mound heights retain their original equations. No other solver's output changes.
+
+The first clod candidate's eight-face aggregates read as pyramids in the close
+capture. The retained candidate uses twenty-face irregular icosahedra; the rejected
+image is preserved with the local study. Tiny root facets also exposed a numerical
+issue: the general vector normalizer returns zero below its length epsilon. The
+soil builder now normalizes valid facet area explicitly, rejecting only squared
+area below 1e-24; exact-weld closure is checked at both 5 mm and 45 mm root bases.
+
+### Version 2 review and measurements
+
+The paired study is `D:/workspace/game_engine_local/soil/2026-10-29-review/`:
+`before/` holds v1 containers and original terrain; `after-final/` holds v2 cooks,
+recipes and containers. Both draw through the same worktree-built renderer, so the
+intervening shadow-map bias change does not confound the comparison. Cameras,
+provenance and commands are beside the captures. `iteration-1/` preserves the
+rejected eight-face clod image; `after/` is the initial candidate, not the final one.
+
+Close views show the broken plate outline, curved roots and finer branches. The
+24 m gully overview and end view show a continuous curved reach with unequal
+ramps into undisturbed ground. Bands and flat fallback materials still look stylized;
+there is no claim of photo-real soil, a branching drainage network or owner acceptance.
+Regional coverage was not expanded. The 20 m full-frame RGB8 RMS against a
+0.000001-pixel finest cut is 0.57/1.03/0.53/0.24/0.21 for scarp/gully/undercut/
+fresh/weathered throw. It includes terrain and shadows, so it is an observation,
+not a mesh-only error or an acceptance threshold.
+
+RTX 5090, MSVC debug, 1280x720, CSM, sun 120/35 degrees. The matched camera path
+approaches from 20 m to 5 m and crosses the feature; 120 frames, three repeats,
+120 warmup frames, `--wait-quiet 10`, under the GPU lock. **Every before and after
+run was non-quiet; these timings are upper bounds, not incremental costs.**
+
+| Kind | Source triangles before/after | DAG clusters before/after | Container bytes before/after | GPU median before/after (ms) | After p95 (ms) | Shadow-pair median before/after |
+|---|---:|---:|---:|---:|---:|---:|
+| Scarp | 8,880 / 8,880 | 642 / 643 | 1,331,337 / 1,343,081 | 0.1782 / 0.1839 | 0.1942 | 460 / 516.5 |
+| Gully | 11,456 / 11,456 | 813 / 819 | 1,660,984 / 1,669,272 | 0.2075 / 0.2089 | 0.2157 | 670 / 663 |
+| Undercut | 10,128 / 10,128 | 723 / 714 | 1,501,468 / 1,486,796 | 0.1785 / 0.1805 | 0.1913 | 743.5 / 683 |
+| Fresh throw | 12,992 / 14,112 | 983 / 1,028 | 2,033,354 / 2,139,850 | 0.1766 / 0.1785 | 0.1907 | 952 / 1,202 |
+| Weathered throw | 11,264 / 11,424 | 841 / 823 | 1,746,139 / 1,713,547 | 0.1753 / 0.1759 | 0.1837 | 838.5 / 942.5 |
+
+The fresh plate costs more visible and shadow work: visible-pair median 461 to
+618.5 and shadow median 952 to 1,202. The detailed roots are not free. Source
+triangles remain below the unchanged kind budgets, and every measured frame has
+zero engine allocations and device-buffer creations. Reported process GPU memory
+is 194 MiB before and after in every pair; this granularity does not establish a
+zero memory cost. Container sizes above are serialized data, not resident GPU bytes.
+The instance remains the engine's existing 96-byte record; no runtime data is added.
+
+After-run `machine_state` CPU-others start/end percentages, in table order, are
+26.86/26.00, 44.97/23.37, 30.02/21.66, 22.08/26.54 and 31.08/28.47; GPU utilization
+is 1/1, 2/1, 2/69, 1/3 and 3/6 percent. End-of-run host device memory is respectively
+5,887 / 5,896 / 5,836 / 6,102 / 5,824 of 32,607 MiB. All report an unlocked session
+and this run's GPU lock. Full before/after states, counts and timings are retained
+in `measurements.json` and each `summary.json`; the shared machine precludes
+attributing these timing differences to the shape change alone.
+
+### Version 2 verification
+
+The Linux Clang debug filter
+`soil|tileset|scene_gen|renderer|engine_view|engine_content|docs|lint`
+passed 14/14 checks in 174.71 s. A final soil-only run
+after the out-of-footprint guard and stone-helper cleanup passed in 3.41 s;
+the worktree's two Linux build volumes were then pruned. All four container and
+terrain pins match Windows, including every pinned container section.
+
+The Windows debug affected run completed 37 of its 38 checks; `engine_view`
+exhausted the shared GPU queue deadline and was skipped. The affected run took
+5,402.29 s on the busy machine. The final-source soil rebuild/recheck passed in
+6.81 s, but the accompanying viewer retry also exhausted its 1,800 s deadline.
+Neither skipped viewer run counts as a pass. A further focused viewer retry uses
+the documented local queue allowance of 3,600 s (CTest timeout 4,200 s), with the
+same assertions and per-device lock. See [GPU-lock configuration](../subsystems/gpu_lock.md)
+for the Windows environment needed to set that cache override. The initial direct
+CMake attempt outside that environment failed; `dev.ps1 configure` restored the
+configuration before the override and rebuild. No tracked build setting changed.
+
+That final viewer retry passed in 3,182.98 s, completing coverage of all 38
+affected Windows checks. Its long wall time includes shared GPU contention;
+it is not a rendering-cost measurement. Lint, formatting and documentation checks
+also pass. The paired close views, longer gully and LOD comparisons above were
+reviewed before any expansion of regional coverage; composition remains G106.

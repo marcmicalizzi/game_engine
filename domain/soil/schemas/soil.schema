@@ -40,7 +40,8 @@ struct SoilFile @version(1) {
   litter_m: f32 = 0.06
   /// Their sum must be less than depth_m.
   topsoil_m: f32 = 0.22
-  /// Major woody roots, 0..32; default 10. TreeThrow adds two branches per major root.
+  /// Major woody roots, 0..32; default 10. TreeThrow adds two branches per major root,
+  /// each with three finer broken roots; all are retained at every source budget rung.
   roots: u32 = 10
   /// Root base radius, metres, 0.005..0.15; default 0.045, not a botanical measurement.
   root_radius_m: f32 = 0.045
