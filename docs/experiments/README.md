@@ -127,3 +127,5 @@ The harness records it (`foundation/bench`, [bench.md](../subsystems/bench.md#me
 - **`Machine state: not recorded at the time.`** For a page written before the harness knew how to look. Say what the machine is normally doing, and re-measure when a decision turns on the number.
 
 A GPU measurement adds the renderer's own `gpu_memory` block (`budget_mib`, `used_mib`, `device_local_total_mib`), which is what says whether another process was holding the card's memory while the frame was timed.
+
+Soil morphology: [soil-banks-tree-throw](soil-banks-tree-throw.md), research and validation for G100.
