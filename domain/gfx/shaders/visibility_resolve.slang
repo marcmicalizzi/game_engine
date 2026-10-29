@@ -420,7 +420,7 @@ float shadow_block(float4 g, float z, float dzdi, float dzdj, float wx0, float w
 // and beyond. Without it a low-poly curved surface shadows itself twice over: in every concave
 // crease, where the neighbouring triangle rises above the receiver's plane inside the footprint,
 // and along the terminator, where a triangle whose geometric normal just faces away from the sun
-// still has a shading normal that faces it. It is kept small — a quarter of a texel by default
+// still has a shading normal that faces it. It is kept small — three eighths of a texel by default
 // (renderer::k_shadow_normal_offset_texels) — because a shadow ray leaves its surface by one step
 // of the receiver's own grid and so sees a crease's self-shadow; a lookup lifted further than the
 // footprint's own error lights what the rays shadow (F23: three texels, chosen when the rays left

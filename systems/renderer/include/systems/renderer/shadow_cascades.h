@@ -56,7 +56,7 @@ inline constexpr f32 k_shadow_max_slope = 8.0f;
 // How far the lookup leaves the surface along its geometric normal at a grazing or back-facing
 // surface, in texels of the cascade read; (1 - N.L) of it elsewhere (gfx::ShadowMapParams).
 //
-// **A quarter of a texel, measured against the rays as they leave a surface today** (F23,
+// **Three eighths of a texel, measured against the rays as they leave a surface today** (F23,
 // renderer.md "Cascaded shadow maps"). It was three texels from 2026-09-24, chosen against shadow
 // rays that left their surface by a thousandth of the scene's radius — millimetres on a Khronos
 // sample, enough to skim a low-poly crease or terminator clear, which three texels of lift
@@ -64,10 +64,14 @@ inline constexpr f32 k_shadow_max_slope = 8.0f;
 // sees the crease's self-shadow, and three texels of lift lit 192–5,247 interior pixels a sample
 // that the rays shadow. Over the seven samples at 2048 texels (acne / leaks): 3 texels 1 / 9,569,
 // 1 texel 0 / 101, half 0 / 13, three eighths 0 / 3, a quarter 0 / 3, an eighth 6 / 1, a
-// sixteenth 25 / 0, none 1,769 / 0. A quarter sits inside the range with no acne and the fewest
-// leaks, an eighth of a texel from where acne starts; the three leaks left are the FlightHelmet's
+// sixteenth 25 / 0, none 1,769 / 0. Three eighths is the top of the range with no acne and the
+// fewest leaks, a quarter of a texel from where acne starts, and the smallest the world-translation
+// cases
+// (`world_translation_tests.cpp`) hold to the same bytes at every whole-cell move: at a quarter
+// the cubes' grazing faces answer by the texel grid's phase, 26–55 colour bytes outside the
+// shadows' edges. The three leaks left are the FlightHelmet's
 // coiled hose, a caster thinner than the last cascade's texel (0 / 0 at 4,096 texels).
-inline constexpr f32 k_shadow_normal_offset_texels = 0.25f;
+inline constexpr f32 k_shadow_normal_offset_texels = 0.375f;
 // The first split is at least this fraction of the shadow distance from the camera.
 inline constexpr f32 k_shadow_near_ratio = 1.0e-3f;
 
