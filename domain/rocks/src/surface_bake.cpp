@@ -32,6 +32,7 @@ struct Field {
     // square checks onto broad fracture planes, even when the texture has ample resolution.
     D3 grain_p{0.8 * p.x + 0.6 * p.z, 0.36 * p.x + 0.8 * p.y - 0.48 * p.z,
                -0.48 * p.x + 0.6 * p.y + 0.64 * p.z};
+    const D3 detail_p = grain_p;
     grain_p = grain_p * (1.0 / grain);
     const D3 warp{noise3(fabric.seed + 83, grain_p * 0.7) - 0.5,
                   noise3(fabric.seed + 89, grain_p * 0.7) - 0.5,
@@ -67,8 +68,21 @@ struct Field {
                      wide((*settings.vein_tint)[2])};
     const D3 body = base * pigment;
     const f64 r = roughness + variation * (0.15 * grains + (0.12 + 0.08 * fabric.exposure) * broad);
+    // Millimetre relief between the geometry's resolved recession and individual grains.
+    // Keep physical wavelengths fixed: reducing an atlas filters detail, never enlarges it.
+    // Each octave fades separately, so losing the grain does not flatten the entire surface.
+    f64 relief = 0.0;
+    f64 wavelength = 0.12;
+    for (u32 octave = 0; octave < 5; ++octave) {
+      const f64 weight = fade(clamp01((wavelength / footprint - 2.0) * 0.5));
+      const f64 n = noise3(fabric.seed + 113u + octave, detail_p * (1.0 / wavelength));
+      relief += weight * wavelength * 0.12 * (2.0 * n - 1.0);
+      wavelength *= 0.5;
+    }
+    const f64 height = fabric.model.granular * variation *
+                       (relief * (0.35 + 0.65 * fabric.exposure) + grain * 0.16 * grains);
     return {body * (1.0 - vein) + vein_colour * vein, std::clamp(lerp(r, 0.38, vein), 0.02, 1.0),
-            grain * 0.055 * fabric.model.granular * grains * variation};
+            height};
   }
 };
 }  // namespace

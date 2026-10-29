@@ -525,6 +525,27 @@ SkirtStation skirt_station(const Solved& z, f64 s) {
   return st;
 }
 
+f64 ground_height(const CliffGround& g, f64 x, f64 z, bool& covered) {
+  const f64 u = (x - wide(g.min_x_m)) / wide(g.spacing_m);
+  const f64 v = (z - wide(g.min_z_m)) / wide(g.spacing_m);
+  covered =
+      covered && u >= -1e-4 && v >= -1e-4 && u <= g.width - 1.0 + 1e-4 && v <= g.depth - 1.0 + 1e-4;
+  const f64 a = std::clamp(u, 0.0, g.width - 1.0);
+  const f64 b = std::clamp(v, 0.0, g.depth - 1.0);
+  const u32 i = std::min(static_cast<u32>(a), g.width - 2);
+  const u32 j = std::min(static_cast<u32>(b), g.depth - 2);
+  const auto h = [&](u32 dx, u32 dz) { return wide(g.heights[(j + dz) * g.width + i + dx]); };
+  return lerp(lerp(h(0, 0), h(1, 0), a - i), lerp(h(0, 1), h(1, 1), a - i), b - j);
+}
+
+// Keep the inner attachment, progressively drape the apron to the actual terrain at its toe.
+// This is a contact correction, not a simulation of sediment transport or slope stability.
+f64 skirt_ground_shift(const SkirtStation& st, f64 x, f64 ground) {
+  const f64 join = -st.frame.batter * st.skirt_h;
+  const f64 weight = smoothstep((x - join) / (st.x_toe - join));
+  return weight * (ground - st.frame.foot.y);
+}
+
 }  // namespace
 
 bool cliff_in_range(const Cliff& p, std::string& error) {
@@ -534,6 +555,18 @@ bool cliff_in_range(const Cliff& p, std::string& error) {
   };
   const auto in = [](f64 v, f64 lo, f64 hi) { return v >= lo && v <= hi; };
   if (!valid_rock_type(p.type)) return bad("type", "known rock type");
+  if (p.ground) {
+    const auto& g = *p.ground;
+    if (g.width < 2 || g.width > 2049 || g.depth < 2 || g.depth > 2049 ||
+        static_cast<u64>(g.width) * g.depth > 1048576 ||
+        g.heights.size() != static_cast<u64>(g.width) * g.depth)
+      return bad("ground", "2..2049 points per axis, at most 1048576 heights, matching dimensions");
+    if (!in(wide(g.spacing_m), 0.25, 32.0) || !in(wide(g.min_x_m), -1.0e5, 1.0e5) ||
+        !in(wide(g.min_z_m), -1.0e5, 1.0e5))
+      return bad("ground", "spacing 0.25..32 m and origin within 100 km");
+    for (f32 h : g.heights)
+      if (!in(wide(h), -1.0e5, 1.0e5)) return bad("ground.heights", "finite heights within 100 km");
+  }
   if (p.material.surface_maps) {
     error =
         "engine.rocks.Cliff.material.surface_maps requires a cliff atlas; supported only "
@@ -813,6 +846,7 @@ bool solve_cliff(const Cliff& p, assets::MeshData& out, CliffReport* report_out,
   u32 parts = 1;
 
   // ---- the talus skirt -------------------------------------------------------------------------
+  bool ground_covered = true;
   Vector<SkirtStation> skirt;
   if (z.talus > 0.0) {
     skirt.reserve(ns_skirt + 1);
@@ -843,7 +877,15 @@ bool solve_cliff(const Cliff& p, assets::MeshData& out, CliffReport* report_out,
           y += grain_2 * (2.0 * noise3(grain_seed + 1u, D3{along / 3.0, up / 3.0, 0.5}) - 1.0);
         }
       }
-      return D3{st.frame.foot.x + st.frame.n.x * x, y, st.frame.foot.z + st.frame.n.z * x};
+      const f64 px = st.frame.foot.x + st.frame.n.x * x;
+      const f64 pz = st.frame.foot.z + st.frame.n.z * x;
+      if (p.ground) {
+        const f64 ground = ground_height(*p.ground, px, pz, ground_covered);
+        const f64 shift = skirt_ground_shift(st, x, ground);
+        const f64 top = lerp(st.y_toe, st.y_top, t) + shift;
+        y = k == 1 ? y + shift : min2(ground - 1.0, top - 1.0);
+      }
+      return D3{px, y, pz};
     };
     const auto skirt_uv = [&](u32 axis, u32 i, u32 j, u32, const D3& place) {
       const SkirtStation& st = skirt[i];
@@ -879,9 +921,16 @@ bool solve_cliff(const Cliff& p, assets::MeshData& out, CliffReport* report_out,
         const f64 along = 0.85 * u;
         x = lerp(st.x_ground, -f.batter * st.skirt_h, along);
         y = f.foot.y + st.skirt_h * along;
+        if (p.ground) {
+          const f64 ground =
+              ground_height(*p.ground, f.foot.x + f.n.x * x, f.foot.z + f.n.z * x, ground_covered);
+          y += skirt_ground_shift(st, x, ground);
+        }
       } else {
         f = frame_at(z.line, s, z.window);
         y = f.foot.y;
+        if (p.ground)
+          y = ground_height(*p.ground, f.foot.x + f.n.x * x, f.foot.z + f.n.z * x, ground_covered);
       }
       const D3 at{f.foot.x + f.n.x * x, y, f.foot.z + f.n.z * x};
       detail::emit_fragment(p.type, half, at, yaw, 0.3, seed, block_n, tile_m, out);
@@ -889,6 +938,10 @@ bool solve_cliff(const Cliff& p, assets::MeshData& out, CliffReport* report_out,
     }
   }
 
+  if (!ground_covered) {
+    out = assets::MeshData{};
+    return fail("engine.rocks.Cliff.ground does not cover the skirt and fallen blocks");
+  }
   assets::Primitive part;
   part.first_index = 0;
   part.index_count = out.indices.size();

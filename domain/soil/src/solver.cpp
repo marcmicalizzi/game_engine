@@ -11,7 +11,8 @@ namespace engine::soil {
 // Embedded stones are part of this solver's output/cache contract. Do not
 // silently change them when a dependency moves: review captures/pins and bump soil's
 // version together before accepting a new rock solver.
-static_assert(rocks::k_rocks_version == 8,
+// Rock v10 changes opt-in baked normals; soil's untextured radial stone geometry is unchanged.
+static_assert(rocks::k_rocks_version == 10,
               "Review soil output and bump k_soil_version before changing its rock dependency");
 namespace {
 constexpr f64 k_pi = 3.14159265358979323846;

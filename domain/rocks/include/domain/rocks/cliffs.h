@@ -48,6 +48,13 @@ struct CliffFace {
 // gives): false, with a sentence naming the first field out of range, otherwise.
 bool cliff_layer_in_range(const CliffLayer& layer, std::string& error);
 
+// Bake the supporting terrain into a standalone recipe. One preliminary solve measures its
+// footprint; the grid starts at spacing_m (0.25..32 m), coarsening only to meet CliffGround's
+// explicit sample/dimension limits. Origin is the recipe's world placement. No terrain edits.
+// Failure leaves the recipe unchanged. The generator invokes this for each traced face.
+bool fit_cliff_ground(Cliff& cliff, const scene_gen::Ground& ground, WorldPos origin, f32 spacing_m,
+                      std::string* error = nullptr);
+
 // Traces block (bx, bz) of the layer's tracing grid — `block_m` square, world-anchored, block (0,
 // 0) at the origin — over `ground`: the feet of its steep ground as faces, in the order they were
 // found (by the cell their line starts in, rows of x in order of z). A function of the layer, the

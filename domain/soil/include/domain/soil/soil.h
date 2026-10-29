@@ -8,7 +8,7 @@
 #include <string>
 #include <string_view>
 namespace engine::soil {
-inline constexpr u32 k_soil_version = 2;
+inline constexpr u32 k_soil_version = 4;
 inline constexpr const char* k_determinism = "derived";
 struct Report {
   u32 triangles = 0, roots = 0, stones = 0, budget = 0;

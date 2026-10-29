@@ -6,6 +6,7 @@
 #include <core/time/time.h>
 #include <domain/geometry/cluster.h>
 #include <domain/materials/materials.h>
+#include <domain/rocks/cliffs.h>
 #include <domain/rocks/rocks.h>
 
 #include <doctest/doctest.h>
@@ -20,6 +21,66 @@
 using namespace engine;
 using namespace engine::rocks;
 using namespace engine::rocks::checks;
+
+TEST_CASE("cliff: sampled ground buries the apron base and toe on falling terrain") {
+  for (RockQuality quality : {RockQuality::Low, RockQuality::High}) {
+    Cliff c;
+    c.height = 32;
+    c.quality = quality;
+    c.triangle_budget = 30000;
+    c.talus_blocks = 3;
+    c.points.push_back(CliffPoint{});
+    CliffPoint end;
+    end.x = 60;
+    c.points.push_back(end);
+    assets::MeshData before, after;
+    CliffReport a, b;
+    std::string error;
+    REQUIRE_MESSAGE(solve_cliff(c, before, &a, &error), error);
+    scene_gen::Ground ground;
+    ground.surface_fn = [](const void*, i64 x, i64 z) noexcept {
+      return 0.05 * (static_cast<f64>(x) / 1000.0) - 0.65 * (static_cast<f64>(z) / 1000.0);
+    };
+    REQUIRE_MESSAGE(fit_cliff_ground(c, ground, WorldPos{}, 0.5f, &error), error);
+    REQUIRE(c.ground.has_value());
+    REQUIRE_MESSAGE(solve_cliff(c, after, &b, &error), error);
+    CHECK(a.triangles == b.triangles);
+    CHECK(a.parts == b.parts);
+    REQUIRE(before.indices.size() == after.indices.size());
+    check_closed(after, b.parts);
+    u32 base = 0, toe = 0, exposed_before = 0;
+    for (u32 i = a.face_triangles * 3; i < (a.face_triangles + a.skirt_triangles) * 3; ++i) {
+      const u32 v = before.indices[i];
+      const auto old = before.positions[v];
+      const auto now = after.positions[after.indices[i]];
+      const f64 h = 0.05 * static_cast<f64>(now.x) - 0.65 * static_cast<f64>(now.z);
+      if (std::fabs(old.y + 2.3f) < 1e-4f) {
+        CHECK(static_cast<f64>(now.y) <= h - 0.999);
+        if (static_cast<f64>(old.y) > h + 1.0) ++exposed_before;
+        ++base;
+      }
+      if (std::fabs(old.y + 1.3f) < 1e-4f) {
+        CHECK(now.y == doctest::Approx(h - 1.3).epsilon(0.0001));
+        ++toe;
+      }
+    }
+    CHECK(base > 0);
+    CHECK(toe > 0);
+    CHECK(exposed_before > 0);
+    RockFile file;
+    file.shape = RockShape::Cliff;
+    file.cliff = c;
+    const auto hash = rock_source_hash(file);
+    file.cliff->ground->heights[0] += 1.0f;
+    CHECK(rock_source_hash(file) != hash);
+    c.ground->min_x_m += 10000;
+    CHECK_FALSE(solve_cliff(c, after, nullptr, &error));
+    CHECK(after.positions.empty());
+    CHECK(error.find("cover") != std::string::npos);
+    c.ground->heights.pop_back();
+    CHECK_FALSE(cliff_in_range(c, error));
+  }
+}
 
 namespace {
 

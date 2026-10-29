@@ -375,6 +375,65 @@ bool cliff_layer_in_range(const CliffLayer& layer, std::string& error) {
   return true;
 }
 
+bool fit_cliff_ground(Cliff& cliff, const scene_gen::Ground& ground, WorldPos origin, f32 spacing_m,
+                      std::string* error) {
+  if (!(spacing_m >= 0.25f && spacing_m <= 32.0f) || !std::isfinite(origin.x) ||
+      !std::isfinite(origin.y) || !std::isfinite(origin.z)) {
+    if (error) *error = "cliff ground fit needs finite origin and spacing 0.25..32 m";
+    return false;
+  }
+  Cliff candidate = cliff;
+  candidate.ground.reset();
+  assets::MeshData mesh;
+  CliffReport report;
+  if (!solve_cliff(candidate, mesh, &report, error)) return false;
+  if (report.skirt_triangles == 0 && report.block_triangles == 0) {
+    cliff = std::move(candidate);
+    return true;
+  }
+  f64 x0 = 1e9, z0 = 1e9, x1 = -1e9, z1 = -1e9;
+  // Only the apron and its blocks need support; the face's buried back can be much wider.
+  for (u32 i = report.face_triangles * 3; i < mesh.indices.size(); ++i) {
+    const auto p = mesh.positions[mesh.indices[i]];
+    x0 = min2(x0, wide(p.x));
+    z0 = min2(z0, wide(p.z));
+    x1 = max2(x1, wide(p.x));
+    z1 = max2(z1, wide(p.z));
+  }
+  CliffGround patch;
+  f64 spacing = wide(spacing_m);
+  for (;;) {
+    patch.min_x_m = static_cast<f32>(std::floor(x0 / spacing - 1.0) * spacing);
+    patch.min_z_m = static_cast<f32>(std::floor(z0 / spacing - 1.0) * spacing);
+    patch.width = static_cast<u32>(std::ceil((x1 - wide(patch.min_x_m)) / spacing)) + 2;
+    patch.depth = static_cast<u32>(std::ceil((z1 - wide(patch.min_z_m)) / spacing)) + 2;
+    if (patch.width <= 2049 && patch.depth <= 2049 &&
+        static_cast<u64>(patch.width) * patch.depth <= 1048576)
+      break;
+    spacing *= 2.0;
+    if (spacing > 32.0) {
+      if (error) *error = "cliff ground footprint exceeds the sample budget at 32 m";
+      return false;
+    }
+  }
+  patch.spacing_m = static_cast<f32>(spacing);
+  patch.heights.reserve(patch.width * patch.depth);
+  for (u32 j = 0; j < patch.depth; ++j)
+    for (u32 i = 0; i < patch.width; ++i) {
+      const f64 h = ground_at(ground, origin.x + wide(patch.min_x_m) + i * spacing,
+                              origin.z + wide(patch.min_z_m) + j * spacing) -
+                    origin.y;
+      if (!(h >= -1e5 && h <= 1e5)) {
+        if (error) *error = "cliff ground returned a non-finite or out-of-range height";
+        return false;
+      }
+      patch.heights.push_back(static_cast<f32>(h));
+    }
+  candidate.ground = std::move(patch);
+  cliff = std::move(candidate);
+  return true;
+}
+
 bool trace_cliff_block(const CliffLayer& layer, const scene_gen::Ground& ground, i32 bx, i32 bz,
                        Vector<CliffFace>& out, std::string* error) {
   std::string why;
@@ -520,6 +579,7 @@ bool trace_cliff_block(const CliffLayer& layer, const scene_gen::Ground& ground,
     starting[feet[k].from_edge] = k;
     ending[feet[k].to_edge] = k;
   }
+  const u32 first_face = out.size();
   Vector<u8> used(feet.size(), 0);
   const auto walk = [&](u32 k0) {
     Vector<Point2> line;
@@ -539,6 +599,16 @@ bool trace_cliff_block(const CliffLayer& layer, const scene_gen::Ground& ground,
   }
   for (u32 k = 0; k < feet.size(); ++k) {
     if (used[k] == 0) walk(k);
+  }
+  for (u32 i = first_face; i < out.size(); ++i) {
+    auto& face = out[i];
+    const WorldPos origin{static_cast<f64>(face.x_mm) / 1000.0, face.y,
+                          static_cast<f64>(face.z_mm) / 1000.0};
+    if (!fit_cliff_ground(face.cliff, ground, origin,
+                          static_cast<f32>(min2(1.0, wide(layer.spacing_m) * 0.5)), error)) {
+      out.resize(first_face);
+      return false;
+    }
   }
   return true;
 }

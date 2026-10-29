@@ -7,6 +7,10 @@ cook. [Research and numeric choices](../experiments/soil-banks-tree-throw.md).
 
 ## Owned data and model
 
+Solver v4 combines the G105 curved bank and torn plate geometry with rock solver v10.
+The combined content and generator-section pins require integration verification; the
+geometry and terrain fingerprints from G105 remain the comparison baseline.
+
 A recipe owns its dimensions, seed, source triangle budget and original local ground
 samples. The cook is explicit: a moved feature or modified ground requires a new cook.
 No soil erosion, windthrow mechanics or simulation state runs per frame.
@@ -28,7 +32,7 @@ bole continues behind it. These are morphology approximations, not a conserved
 soil-volume reconstruction or a particular tree's uprooted root network.
 
 Embedded stones call `rocks::solve_rock`; the soil capability declares its dependency.
-The implementation pins rock solver version 8 at compile time. A rock-version change requires reviewing soil captures/pins and bumping `k_soil_version` before updating that assertion, so cached soil cannot silently retain old stones. All woody roots here are rigid. Existing living-tree roots can be cooked against the
+The implementation pins rock solver version 10 at compile time. A rock-version change requires reviewing soil captures/pins and bumping `k_soil_version` before updating that assertion, so cached soil cannot silently retain old stones. All woody roots here are rigid. Existing living-tree roots can be cooked against the
 resulting terrain through their usual `scene_gen::Ground` seam; this does not move
 existing trees or alter their root recipes automatically.
 

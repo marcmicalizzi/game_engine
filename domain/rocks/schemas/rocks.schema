@@ -86,7 +86,7 @@ struct RockRind @version(1) {
 struct RockSurfaceMaps @version(2) {
   /// Total atlas side, one of 256, 512, 1024, 2048. Independent of geometry quality.
   resolution: u32 = 1024
-  /// Mineral colour and roughness variation, 0 to 1.
+  /// Mineral colour, roughness and normal-relief variation, 0 to 1.
   variation: f32 = 0.55
   /// Grain wavelength, 0.002 to 1 m. Unresolved grain fades out.
   grain_m: f32 = 0.025 @unit(m)
@@ -225,13 +225,26 @@ struct CliffPoint @version(1) {
   batter: f32?
 }
 
+/// Terrain heights below a cliff's debris, sampled in its local x/z frame, rows of x in z.
+struct CliffGround @version(1) {
+  /// Points along each axis: 2..2049, at most 1,048,576 samples total.
+  width: u32 = 2
+  depth: u32 = 2
+  /// Grid interval in metres: 0.25..32.
+  spacing_m: f32 = 1.0
+  min_x_m: f32 = 0.0
+  min_z_m: f32 = 0.0
+  /// Exactly width * depth finite heights, metres relative to the recipe origin.
+  heights: f32[]
+}
+
 /// A cliff (rocks.md, "Cliffs"): a rock face along a line on the ground — a sheet of quads along
 /// and up the line, carved into blocks by the type's joint sets (ledges where a set is near
 /// horizontal, columns where it is vertical), banded by its beds, undercut where a weak bed lies
 /// under a hard one, warped and grained — closed at the ends, the top and a back buried `depth`
 /// behind it, with a talus skirt of the rock's own debris at its foot. Walking along `points`, the
 /// face looks to the right (+z for a line along +x).
-struct Cliff @version(2) {
+struct Cliff @version(3) {
   seed: u64 = 1
   type: RockType = Sandstone
   /// The foot of the face, in order: 2 to 4,096 vertices, a line 1 to 1,000 m long.
@@ -274,6 +287,9 @@ struct Cliff @version(2) {
   triangle_budget: u32 = 250000
   geology: RockGeology @since(2)
   quality: RockQuality = High @since(2)
+  /// Optional sampled terrain beneath the skirt and fallen blocks, in the recipe's frame.
+  /// The cliffs placement generator fills this; standalone recipes may supply it explicitly.
+  ground: CliffGround? @since(3)
   material: RockMaterial
 }
 

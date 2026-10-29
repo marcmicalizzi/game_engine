@@ -333,8 +333,8 @@ TEST_CASE("rocks: the default boulder is the committed bytes on every toolchain"
   // 0x7865d56fc786dbd1 until RockMaterial gained `normal_scale` (version 2), which the canonical
   // parameters in the generator section spell out; the mesh did not move.
   // G94 supersedes 0xb2611b877ab5bd4e: new geometry and canonical recipe fields.
-  // G99 changes geometry and canonical solver version together.
-  constexpr u64 k_container = 0xf0711ece715a375eull;
+  // G104 changes the solver cache version; untextured radial geometry remains v8-identical.
+  constexpr u64 k_container = 0x04461f283e336786ull;
   const assets::MeshData mesh = solve(boulder());
   geometry::ClusterFileData data;
   std::string error;

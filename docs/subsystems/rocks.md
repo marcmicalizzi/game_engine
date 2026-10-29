@@ -258,6 +258,22 @@ is lumpy with two octaves of noise. **The fallen blocks** (`talus_blocks`, `talu
 scree's fragments from the radial solver — sharpened, with fresh type-default fabric and three joint sets of their own — lying
 on the skirt, the largest rolled furthest.
 
+**Terrain contact (solver v9).** Generated cliffs carry a `ground` patch: local x/z origin,
+spacing, rectangular dimensions and row-major heights relative to the recipe origin. The
+generator measures the debris footprint with a preliminary solve, then samples its `Ground`
+at half the tracing spacing, capped at 1 m (coarsened only to fit the documented sample limit).
+`fit_cliff_ground` exposes the same bake for standalone recipes. It leaves the recipe unchanged
+on failure. Sampling is deterministic and the samples participate in the canonical recipe/cache
+key, so changed supporting terrain invalidates the derived mesh.
+
+With a patch, the skirt's underside follows terrain at least 1 m below it; the toe is also
+buried relative to terrain, not relative to the cliff foot. The top progressively takes the
+ground-height correction between its face attachment and toe, and fallen blocks use that same
+correction (or the terrain directly with no skirt). Coverage and finite samples are checked;
+an undersized patch is refused. No patch preserves the standalone reference-plane behavior.
+This is a sampled terrain-contact correction, not sediment settling or exact terrain stitching;
+see [G117 evidence and limits](../experiments/rock-lithology.md#g117-terrain-contact-under-cliff-talus).
+
 **The budget ladder** is a cell edge, coarsest first: 32, 24, 16, 12, 8, 6, 4, 3, 2, 1.5, 1, 0.75,
 0.5, 0.375, 0.25, 0.1875, 0.125, 0.09375 and 0.0625 m (`k_cliff_cells_m`). The blocks are priced first, each on the finest rung of
 the cube-sphere ladder that 8% of the budget shared among them holds (and no finer than n = 20); a
@@ -468,6 +484,14 @@ and upload format; this is not a promise of a 36 MiB resident GPU allocation.
 `vein_width_m` 0.001 m to one quarter of spacing. Optional `vein_tint` is linear RGB 0–1;
 the default is pale quartz `(0.75, 0.72, 0.65)`. Body `tint` and `roughness_factor` are baked
 into the maps once; `normal_scale` remains the glTF normal-map multiplier. Metallic is zero.
+
+Solver v10 adds independently filtered normal relief at five physical wavelengths, .12 m down
+to .0075 m, between mesh recession and the authored mineral grain. Lower atlas resolutions
+fade each unresolved scale instead of turning the whole normal map flat or enlarging grains.
+Lithology's `granular`, weathering, material `variation` and the existing rind grain multiplier
+control its response; zero granular or variation disables it. Geometry and base roughness are
+unchanged. These are authored relief approximations, not measured specimen spectra; see
+[the v20 surface diagnosis](../experiments/rock-lithology.md#g118-the-v20-waxy-surface-diagnosis).
 Base colour is encoded as sRGB, roughness in linear G (B zero), and normals as tangent-space
 UNORM XYZ. There are no baked shadows, AO or metallic ore deposits.
 
