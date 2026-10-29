@@ -51,3 +51,6 @@ Its thresholds are also the first set from **both** ends: 0.0575 / 0.1870 measur
 | `wide-frustum` | 1920×360, a 48:9 frustum: the aspect the project owner plays at, in one view | yes |
 
 [Soil feature studies](soil-features/README.md) contain recipes for scarps, gullies, undercuts and fresh/weathered tree throw, cooked with their terrain outside the repository.
+
+[Shrub forms](shrubs/README.md) compare upright stools, low spreading plants, arching canes,
+interwoven thickets and sparse dry-site wood, with mixed live/dead stems and fixed-size leaves.

@@ -1,0 +1,6 @@
+{
+  "format":"engine.camera-path.v1", "name":"Shrub specimen row", "fps":30, "znear":0.02,
+  "keys":[{"time":0,"position":[1,4,23],"target":[1,1.5,0]},
+          {"time":4,"position":[-2,1.6,5],"target":[0,1,0]}],
+  "markers":[{"frame":0,"name":"row"},{"frame":119,"name":"canes"}]
+}

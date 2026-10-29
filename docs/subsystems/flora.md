@@ -1286,6 +1286,59 @@ resolution, and its ladder changes only detail — never a stem, a frond, a blad
 
 ### The shrub
 
+**Named shrub growth profiles (G107).** `beaked_hazel`, `bearberry`, `blackberry`,
+`red_osier_dogwood` and `big_sagebrush` use `shrub_growth`, leaving the legacy `shrub`
+block and its output unchanged. [Research, constants and limits](../experiments/shrub-growth-forms.md)
+separate published dimensions from authored scaffold samples. A minimal recipe is
+`{"species":"blackberry","shrub_growth":{"seed":17,"dead_fraction":0.25}}`.
+The five forms are ascending stools, prostrate spreading stems, arching canes, multiple
+overlapping rooted colonies, and sparse dry-site wood. Dogwood scaffolds and leaves are paired;
+blackberry has palmate fans of three/five leaflets. Leaf cards keep species dimensions.
+Dead basal stems and all descendants have no leaves and have blunt tips, sharing the bark material.
+
+`ShrubGrowth` fields: `height_m` 0 for profile or its documented botanical envelope;
+`spread` .5–2; `stems` 0 for profile or 1–40 per colony; `colonies` 0 for profile or 1–16;
+`colony_radius_m` 0 for .75 profile reach or .05–8 m; `dead_fraction` -1 for profile or 0–1;
+`foliage` 0–1 node occupancy; `slope_x`/`slope_z` local dy/dx and dy/dz in -1–1;
+`triangle_budget` 0 for profile or 4,000–400,000; `impostor_px` 0/128/256/512/1024,
+default 256; `detail_tier` essential by default. Basal feet lie on the local planting plane;
+branches are prevented from crossing below it. The caller must fit that plane to the actual site.
+Height is the main-axis reference, not an exact bound on the finished canopy: lateral and
+seasonal shoots and the species-sized blades can extend beyond it, especially at small overrides.
+These parameters and materials enter canonical identity; `k_shrub_growth_version` independently
+invalidates new shrub assets, preserving legacy flora keys.
+
+The default source caps are 30k, 12k, 30k, 90k and 16k triangles in the species order above.
+They count every emitted source triangle plus a 32-triangle far-form reservation. Four rungs
+reduce tube rows and sides; no rung drops a shoot, changes a motion/structural row, enlarges a
+blade or redistributes leaves. An insufficient budget is refused with its required count.
+The near mesh uses ordinary cluster LOD, with one baked sliced whole-shrub form above it.
+The existing coverage/geometric error and fade select that form, not a fixed distance.
+Bare shrubs (`foliage=0` or all dead) keep geometric LOD alone. The vertical sliced form is an
+approximation from overhead, especially for low bearberry; this must be assessed in captures.
+
+Wood UVs are metres, leaf UVs one complete image per blade. Material roles are the catalogue
+name plus `/bark` and `/leaf`; recipe overrides and pack lookup use the ordinary flora path.
+Motion and collision use the existing shrub contract: root part zero has no near geometry,
+every sampled shoot has a parent-first part, only basal stems of radius at least 1.25 cm carry
+the collider flag, none is load-bearing, and `rich` is refused for a colliding profile.
+The far form rides the root and has zero bend weight. Caster policy remains the shrub policy,
+including all cascades and traced shadows; no renderer pass or runtime solver state is added.
+The finer motion hierarchy costs more CPU posing than the legacy shrub: the 64-instance debug
+sample reaches 76,096 parts and 18.26 MB of pose tables for dogwood. The grounding page records
+both the timings and their busy-machine limits; use this cost when choosing stand density.
+
+Public API: `domain/flora/shrubs.h` exposes the profile table, lookup, range/collision checks,
+and `solve_shrub_growth`. This remains inside the optional flora capability, registered through
+the existing mesh generator. New names, budgets and motion coefficients live in the shared
+geometry catalogue; the separate growth table refers to their IDs. `tests/shrub_growth_tests.cpp`
+checks actual leaf dimensions, stream determinism, budget-independent structure, mixed mortality,
+planting planes, canonical identity and baked containers. [Fixtures](../../content/test-scenes/shrubs/README.md)
+exercise all five forms. No runtime placement generator, terrain-mask ecology, age simulation,
+prickles/fruit or collision-aware weaving is implied.
+
+**Legacy shrub.** The following describes the unchanged generic allometric solver.
+
 `stems` basal stems (16) from a stool of `stool_radius_m` (0.25 m), their feet filling its disc as a
 sunflower does with the stoutest at the middle, each leaning out by up to `stem_spread_deg` (28°) the
 further out it stands and turning towards the light by `upturn` (0.4; negative arches the canes

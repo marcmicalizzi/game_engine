@@ -40,7 +40,12 @@ enum class FloraSpecies : u8 {
   litter,
   basswood,
   black_cherry,
-  sycamore
+  sycamore,
+  beaked_hazel,
+  bearberry,
+  blackberry,
+  red_osier_dogwood,
+  big_sagebrush
 };
 // **How a species moves** (renderer.md, "The flora stage"; R95). `parts`: posed per part on the
 // CPU, parent-first, each instance a run of the frame's part-pose table (the trees). `field`: posed
@@ -63,7 +68,7 @@ struct FloraCasterPolicy {
 struct FloraSpeciesInfo {
   FloraSpecies id;
   std::string_view name;
-  bool profile;
+  bool profile;  // the Tree recipe family; named shrub recipes use ShrubGrowth instead
   u32 triangle_budget;
   f32 compliance[4];
   // A tree's defaults: posed by parts, traced, in every cascade, casting its swaying pose.
@@ -126,6 +131,13 @@ inline constexpr FloraSpeciesInfo k_flora_species[] = {
     {FloraSpecies::basswood, "basswood", true, 400000, {.006f, .03f, .07f, .12f}},
     {FloraSpecies::black_cherry, "black_cherry", true, 400000, {.006f, .03f, .07f, .12f}},
     {FloraSpecies::sycamore, "sycamore", true, 600000, {.006f, .03f, .07f, .12f}},
+    // Shrub growth profiles, separate from the tree-profile family. The inherited shrub
+    // compliance is an authored analogue, not measured species biomechanics (G107).
+    {FloraSpecies::beaked_hazel, "beaked_hazel", false, 30000, {.01f, .07f, .10f, .14f}},
+    {FloraSpecies::bearberry, "bearberry", false, 12000, {.01f, .07f, .10f, .14f}},
+    {FloraSpecies::blackberry, "blackberry", false, 30000, {.01f, .07f, .10f, .14f}},
+    {FloraSpecies::red_osier_dogwood, "red_osier_dogwood", false, 90000, {.01f, .07f, .10f, .14f}},
+    {FloraSpecies::big_sagebrush, "big_sagebrush", false, 16000, {.01f, .07f, .10f, .14f}},
 };
 constexpr bool valid_flora_catalogue() {
   for (u32 i = 0; i < sizeof(k_flora_species) / sizeof(k_flora_species[0]); ++i) {
