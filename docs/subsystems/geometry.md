@@ -1096,3 +1096,5 @@ per cascade would pay the pool pass for every blade in every map. Both structs a
 size table (3 and 56 bytes) and neither reaches the GPU; the renderer turns the policy into
 `InstanceDesc` flag bits per mesh ([renderer](renderer.md#the-caster-policy)), and nothing but
 the catalogue names a species.
+
+G103 adds the shared catalogue kind `litter`: rigid, zero compliance, untraced and nearest-cascade only. Its structural flags govern collision, including part zero. See [litter](litter.md).

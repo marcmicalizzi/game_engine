@@ -36,7 +36,8 @@ enum class FloraSpecies : u8 {
   sward,
   cover,
   ivy,
-  roots
+  roots,
+  litter
 };
 // **How a species moves** (renderer.md, "The flora stage"; R95). `parts`: posed per part on the
 // CPU, parent-first, each instance a run of the frame's part-pose table (the trees). `field`: posed
@@ -111,6 +112,14 @@ inline constexpr FloraSpeciesInfo k_flora_species[] = {
     {FloraSpecies::ivy, "ivy", false, 0, {.0168f, .084f, .196f, .336f}},
     // Terrain-fitted tree roots are rigid, with no per-instance wind state.
     {FloraSpecies::roots, "roots", false, 12000, {0, 0, 0, 0}, FloraMotionKind::none},
+    // Fine, settled debris: rigid, untraced and only the nearest cascade (G103).
+    {FloraSpecies::litter,
+     "litter",
+     false,
+     0,
+     {0, 0, 0, 0},
+     FloraMotionKind::none,
+     {false, 1, true}},
 };
 constexpr bool valid_flora_catalogue() {
   for (u32 i = 0; i < sizeof(k_flora_species) / sizeof(k_flora_species[0]); ++i) {
