@@ -1,0 +1,52 @@
+namespace engine.soil
+
+enum Kind : u8 { Scarp Gully Undercut TreeThrow }
+
+/// Original terrain in the feature's local frame. Empty samples mean a flat reference surface.
+struct GroundPatch @version(1) {
+  /// Points on each side, 0 for flat or 2..513; rows of x in increasing z.
+  side: u32 = 0
+  /// Metres between points, 0.025..1; default 0.125.
+  spacing_m: f32 = 0.125
+  /// Local coordinates of the first point, metres; default (-8,-8).
+  min_x_m: f32 = -8
+  min_z_m: f32 = -8
+  /// Heights in metres relative to the placement's y. Exactly side squared, or empty.
+  heights: f32[]
+}
+
+/// Static landform, not a process simulation. Coordinates are x along the bank and +z outwards.
+struct SoilFile @version(1) {
+  /// Shape; default Scarp. TreeThrow dimensions below match one fresh spruce study profile.
+  kind: Kind = Scarp
+  /// Any u64, default 1; independent streams for roots, stones and surface relief.
+  seed: u64 = 1
+  /// Total source triangles, 0 uses kind budget (12k scarp, 16k gully/undercut, 24k throw);
+  /// explicit range 2000..200000. Never silently removes roots or stones to fit.
+  triangle_budget: u32 = 0
+  /// Span along x, metres, 1..32; default 4.23 (fresh spruce pit width).
+  width_m: f32 = 4.23
+  /// Excavation reach along z (full pit length for TreeThrow), metres, 1..16; default 2.74.
+  length_m: f32 = 2.74
+  /// Cut/pit depth, metres, 0.2..3; default 0.95.
+  depth_m: f32 = 0.95
+  /// Undercut into the bank, metres, 0..min(0.6, depth/2); default 0.3, Undercut only.
+  undercut_m: f32 = 0.3
+  /// Root plate height above ground, metres, 0.5..6; default 2.35. TreeThrow only.
+  plate_height_m: f32 = 2.35
+  /// Mineral mound height, metres, 0..1.5; default 0.71. TreeThrow only.
+  mound_height_m: f32 = 0.71
+  /// Authored organic and topsoil horizon thickness, metres, 0.01..0.2 and 0.05..0.6.
+  litter_m: f32 = 0.06
+  /// Their sum must be less than depth_m.
+  topsoil_m: f32 = 0.22
+  /// Major woody roots, 0..32; default 10. TreeThrow adds two branches per major root.
+  roots: u32 = 10
+  /// Root base radius, metres, 0.005..0.15; default 0.045, not a botanical measurement.
+  root_radius_m: f32 = 0.045
+  /// Embedded stones, 0..32, default 8; radius 0.0625..0.25 m, default 0.1.
+  stones: u32 = 8
+  stone_radius_m: f32 = 0.1
+  /// Original ground, captured once by soil-cook. Changed ground requires recooking.
+  ground: GroundPatch
+}

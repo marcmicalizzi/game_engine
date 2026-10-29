@@ -34,7 +34,77 @@ feature or changed terrain requires a new cook.
 
 ## Validation
 
-Implementation and measurements pending. Machine state: no timings taken yet.
+MSVC debug builds and the soil tests pass; all 34 container-section hashes for each
+of the four defaults and all four terrain hashes match Clang 18 on Linux. The
+filtered Linux run passed 13/13 tests (soil, scene_gen, renderer, engine_view,
+engine_content, documentation and lint). The command follow-up passed 7/7 Linux checks after the distant-scene configuration
+fix. Windows `test -Affected` passed 123/123 (5,159 s shared-machine wall time); final-source soil and content-command follow-ups also passed. No existing
+solver pin moved.
+
+The five authored studies live at `D:/workspace/game_engine_local/soil/2026-10-28/`:
+recipe, terrain, scene, provenance, cameras and captures at 5, 20, 60 and 120 m.
+The 20 m comparison uses the same raster path at LOD 1 pixel and 0.000001 pixel;
+it includes terrain, shadows and the feature, not an isolated object mask. Full-frame
+RGB8 RMS differences are 0.54 (scarp), 0.75 (gully), 0.40 (undercut), 0.21 (fresh
+throw), and 0.22 (weathered throw), out of 255. These are observations, not
+acceptance thresholds. At 60/120 m the feature becomes a small silhouette on the
+finite 32 m terrain study; there is no extra impostor switch.
+
+The underside capture shows a recessed face beneath the lip, exposed stones and
+hanging woody roots. Plate shapes and radial roots remain stylized; fallback
+materials lack soil grain, clods and fine roots. The complete fallen tree and
+vegetation clearing are outside this first solver. Visual acceptance is the owner's.
+
+### Shared-machine measurements, 2026-10-28
+
+RTX 5090, MSVC debug, 1280x720, CSM, sun 120/35 degrees, 5 m cameras, 30 frames,
+three repeats, 120 warmup frames and the harness's two-second warmup floor.
+`--wait-quiet 10` was used under the GPU lock. **Every run was non-quiet: these
+numbers are upper bounds, not feature costs.** The before scene is the identical
+cooked terrain with its feature mesh removed. Subtracting these noisy timings is
+not justified (the scarp's after is lower). Raw frames and full `machine_state`
+records are beside each scene and collected in `measurements.json`.
+
+| Study | Source triangles | DAG clusters | Container bytes | GPU median before/after (ms) | After p95 (ms) | Visible pairs | Shadow pairs before/after |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| Scarp | 8,880 | 642 | 1,331,337 | 0.1744 / 0.1692 | 0.1727 | 348 | 31 / 459 |
+| Gully | 11,456 | 813 | 1,660,984 | 0.1990 / 0.2042 | 0.2055 | 383 | 18 / 677 |
+| Undercut | 10,128 | 723 | 1,501,468 | 0.1730 / 0.1764 | 0.1781 | 462 | 32 / 747 |
+| Fresh throw | 12,992 | 983 | 2,033,354 | 0.1712 / 0.1751 | 0.1766 | 476 | 191 / 1,016 |
+| Weathered throw | 11,264 | 841 | 1,746,139 | 0.1707 / 0.1711 | 0.1733 | 419 | 147 / 848 |
+
+The after runs' `machine_state` CPU-others start/end percentages were respectively
+9.73/15.10, 23.50/18.36, 26.04/29.10, 22.91/17.42 and 15.09/24.01. GPU utilization
+start/end was 0/68, 1/56, 0/0, 0/0 and 0/48 percent. All reported an unlocked
+session, the GPU lock held on this run's behalf, and device memory 6,901/32,607 MiB.
+The renderer's own allocation report was 208 MiB both before and after for every
+study; allocator granularity makes this unsuitable for an incremental mesh-memory
+claim. Container bytes above are serialized mesh plus DAG/material/recipe data,
+not resident GPU bytes. Each ordinary instance has the existing 96-byte GPU
+InstanceDesc; pair buffers and collision proxies remain the existing renderer and
+collision costs. These finite studies add 642–983 pairs per feature; total pairs
+are 3,544–3,890, below the 2^24 cap. Every measured frame reported zero engine
+allocations. No regional placement/tile workload was introduced or measured. The
+merge's frame-budget gate is still required; these studies do not replace it.
+
+### Far origin and integration lessons
+
+At (64,000,000, 0, 64,000,000) m, the fitted undercut recipe is byte-identical to
+the origin cook and the surface/mesh alignment remains intact. Its scene uses the
+existing world ground path. That path needs the source far chain to match its
+outer ring: 500 mm, ratio 4, six levels for this study's 8 m / 16-cell outer ring.
+A local `derived` directory is named explicitly because generated terrain outside
+a checkout has no repository cache to discover.
+
+**Unresolved observation (F24):** that far-origin review loses CSM casters. Its
+shadow-fit log reports near/far 90,509,640/90,509,688 m and zero cascade pairs,
+while the local scene reports a 0.1–27.6 m fit and 747 pairs. Geometry is present
+in the saved image, but it lacks those cast shadows. The cause is not diagnosed
+and no renderer code is changed in this capability branch.
+
+Keep the schema LF-normalized: an accidentally mixed CRLF documentation line was
+accepted by MSVC but emitted a literal carriage return in a reflected description,
+which Clang correctly rejected. Normalize the source; never patch generated code.
 
 ## Explicit authoring and engineering constants
 

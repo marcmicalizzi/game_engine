@@ -138,6 +138,8 @@ const char* k_usage =
     "                            tiling texture's levels tile too\n"
     "      --cache               write <ddc>/textures/<key>.tex instead of a named output\n"
     "      --ddc <dir>, --jobs <n>, --log <spec>   as above\n"
+    "  soil-cook <recipe.soil.json> <heightfield.json> <new-out-dir> <x> <y> <z>\n"
+    "                                          cook a static soil feature and its terrain\n"
     "  info <file.clusters|file.tex|file.clip>  print the header, sections, and counts\n"
     "  stats <file.clusters>                   print the content-build metrics of a container\n"
     "  folds <file.clusters>                   a heightfield container's fold census per LOD\n"
@@ -1378,6 +1380,7 @@ int main(int argc, char** argv) {
     return content::tileset_command(argc, argv);
   if (command == "city") return content::city_command(argc, argv);
   if (command == "npcs") return content::npcs_command(argc, argv);
+  if (command == "soil-cook") return content::soil_command(argc, argv);
   if (command == "flora") return content::flora_command(argc, argv);
   if (command == "rocks") return content::rocks_command(argc, argv);
   if (command == "vine") return content::vine_command(argc, argv);
