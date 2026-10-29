@@ -1921,7 +1921,7 @@ TEST_CASE("renderer: cascaded shadow maps on the Khronos samples" * doctest::ski
     // band (0 on all seven samples on the RTX 5090, 2026-09-24). The coarser cuts are measured,
     // not asserted: they are the option that was not taken. Since F23 (2026-10-28) the six
     // others give 0 / 0 and the FlightHelmet 0 acne and 3 leaks, under its coiled hose, a caster
-    // thinner than the texel (roadmap F24): this case fails until F24 is settled.
+    // thinner than the texel (roadmap F25): this case fails until F25 is settled.
     CHECK(counts[0].acne == 0);
     CHECK(counts[0].leak == 0);
 
