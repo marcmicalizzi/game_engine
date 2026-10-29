@@ -8,7 +8,7 @@ cook. [Research and numeric choices](../experiments/soil-banks-tree-throw.md).
 ## Owned data and model
 
 Solver v4 combines the G105 curved bank and torn plate geometry with rock solver v10.
-The combined content and generator-section pins require integration verification; the
+The focused Release fixture verifies only content identity and generator section 15 changed; the
 geometry and terrain fingerprints from G105 remain the comparison baseline.
 
 A recipe owns its dimensions, seed, source triangle budget and original local ground

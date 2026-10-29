@@ -8,9 +8,7 @@ the five named shrub forms, sources and authored numerical choices.
 
 Define embedded recipe structs before `FloraFile` in the schema. The generated C++ header
 follows declaration order; a later definition of an embedded type fails the build.
-Optional deterministic content-build solvers. Public headers are under `include/domain/flora`,
-source recipes are in `schemas/flora.schema`, implementation is in `src`, and regression tests
-are in `tests`. Generated schema code lives only under the build directory.
+Generated schema code lives only under the build directory.
 
 [Subsystem contract](../../docs/subsystems/flora.md),
 [ground-plant grounding](../../docs/experiments/ground-plants.md),
