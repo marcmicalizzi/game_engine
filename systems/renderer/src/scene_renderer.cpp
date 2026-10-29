@@ -1732,8 +1732,8 @@ void SceneRenderer::note_rt_bytes() noexcept {
   chain.budget_mib = scene_->rt_budget_mib();
   chain.budget_source = scene_->rt_budget_source();
   chain.geometry_index_max = chain.capacity == 0 ? 0 : chain.capacity - 1;
-  chain.geometry_index_required =
-      rt_max_geometry_index(resolved_.pairs.frame_pairs(), resolved_.view_count, resolved_.casters);
+  chain.geometry_index_required = rt_max_geometry_index(
+      resolved_.pairs.frame_pairs(resolved_.ray_path), resolved_.view_count, resolved_.casters);
   chain.geometry_index_limit = device_->features().cluster_max_geometry_index;
   chain.limit = scene_->rt_capacity_limit();
   chain.union_clusters = scene_->rt_union_clusters();
@@ -2911,8 +2911,15 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
     // an
     // alpha-tested material builds records (renderer.md, "Alpha-tested geometry"), as one with
     // shadow casters does.
-    record_params.mode =
-        gfx::cluster_records_mode(views, settings.rt_templates && !scene.has_masked(), drop_scan);
+    //
+    // **The caster policy's untraced instances** (renderer.md, "The caster policy"; R110): kept
+    // out of the records where the picture is rasterized, and built from their drawn entries where
+    // the structures are what camera rays see — the ray path, and the reference renderer's frame
+    // (`rt_complete`), whose path tracer's first ray is a camera ray. No light's ray meets them in
+    // either: their top-level masks have no caster bit (`tlas_references`).
+    const bool untraced_drawn = ray_path || frame.rt_complete;
+    record_params.mode = gfx::cluster_records_mode(
+        views, settings.rt_templates && !scene.has_masked(), drop_scan, untraced_drawn);
     // What the frame's structures hold room for: the records pass keeps no more, dropping whole
     // instances past it (gfx::ClusterRecordParams). The top-level instance records — one per scene
     // instance, the world transform and the instance as the custom index, shared by every view —

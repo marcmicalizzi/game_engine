@@ -1468,6 +1468,7 @@ class GpuScene {
   u32 static_instances_live_ = 0;
   u64 static_pairs_live_ = 0;
   u64 untraced_pairs_live_ = 0;
+  bool rt_untraced_drawn_ = false;  // the ray path builds untraced instances' drawn entries (R110)
   gfx::ClusterSet static_clas_;
   gfx::ClusterBlasSet static_blas_;
   // The resident cluster structure cache (`rt_cache()`): per mesh its first cluster's key / 3 or

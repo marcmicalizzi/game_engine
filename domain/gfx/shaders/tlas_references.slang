@@ -39,6 +39,7 @@ struct TlasReferenceParams {
 // eight bytes (gfx::k_instance_record_bytes = 64).
 static const uint k_record_words = 8;
 static const uint k_record_floats = 16;
+static const uint k_record_mask_word = 12;  // the 32-bit word holding the custom index and mask
 
 [shader("compute")]
 [numthreads(64, 1, 1)]
@@ -56,6 +57,16 @@ void tlas_references_main(uint3 thread_id : SV_DispatchThreadID) {
     reference = ((uint64_t*)g_params.static_addresses)[instance.mesh];
   }
   records[uint64_t(i) * k_record_words + (k_record_words - 1)] = reference;
+  // **The record's mask, from the instance's flags** (R110; gfx.md, "The ray mask"): every bit but
+  // the caster bit for an instance no light's ray may meet, 0xff for every other. Written here
+  // every frame, beside the transform, so a flag that changes reaches the top level without the CPU
+  // rewriting the record; a record whose mask is 0 — a dynamic scene's hole, which the CPU writes
+  // so (`GpuScene::tlas_record`) — stays inactive. Word 12 is instanceCustomIndex | mask << 24.
+  uint* words = (uint*)(g_params.records + uint64_t(i) * k_record_floats * 4);
+  const uint index_mask = words[k_record_mask_word];
+  if ((index_mask >> 24) != 0u) {
+    words[k_record_mask_word] = (index_mask & 0xffffffu) | (instance_ray_mask(instance.flags) << 24);
+  }
   const float3 from_eye = instance_from_eye(instance, g_params.eye);
   float4* rows = (float4*)(g_params.records + uint64_t(i) * k_record_floats * 4);
   rows[0] = float4(instance.rows[0].xyz, from_eye.x);

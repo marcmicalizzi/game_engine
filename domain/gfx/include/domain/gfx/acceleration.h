@@ -52,9 +52,11 @@ struct ClusterGeometry {
 
 // One instance of a bottom-level structure in a top-level one.
 struct TlasInstance {
-  Mat4 transform;          // affine; the top three rows go into the record
-  u32 custom_index = 0;    // 24 bits: InstanceID() in shaders
-  u32 mask = 0xff;         // 8 bits
+  Mat4 transform;        // affine; the top three rows go into the record
+  u32 custom_index = 0;  // 24 bits: InstanceID() in shaders
+  // 8 bits: met by a ray whose mask shares one. The engine's convention is `instance_ray_mask`
+  // (cluster_cull.h): 0xff, or every bit but the caster bit for an instance no light's ray meets.
+  u32 mask = 0xff;
   DeviceAddress blas = 0;  // AccelerationStructure::address
   GeometryInstanceFlags flags = GeometryInstanceFlags::TriangleFacingCullDisable;
 };

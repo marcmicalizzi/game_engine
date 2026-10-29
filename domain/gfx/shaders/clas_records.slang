@@ -62,6 +62,11 @@
 // the frustum: a deformed instance is never cone-tested) reads its own pool block like a drawn
 // entry, and one the frame's pool budget had no room for is left out by records_main rather than
 // built at its rest pose.
+//
+// **An untraced instance** (the caster policy's `traced = false`; R110) is left out by
+// records_main in a frame whose picture is rasterized, and built from its drawn entries alone in a
+// traced-primary frame (`k_untraced_drawn` in `mode`); no light's ray meets it in either, by its
+// top-level record's mask (tlas_references.slang, `instance_ray_mask` in scene.slang).
 
 #include "scene.slang"
 
@@ -197,9 +202,13 @@ CacheTables* cache_tables() { return (CacheTables*)g_params.cache; }
 // **A cached instance** (renderer.md, "The resident cluster structure cache"): one whose clusters'
 // structures are the cache's, built once, and not this frame's. Rigid — nothing in the pool moves
 // its vertices, so every instance of its mesh traces the same clusters — and of a mesh the cache
-// keeps. A static form and an untraced instance never reach a records pass that asks.
+// keeps. A static form never reaches a records pass that asks. An untraced instance does in a
+// traced-primary frame (R110), and is never cached: the cache's drawn structure is every
+// instance's, and the CPU's count of the instances the cache serves (`rt_instance_cached`) leaves
+// it out, so the frame builds its drawn entries itself.
 bool instance_cached(InstanceDesc instance) {
   if (g_params.cache == 0 || instance.deform != k_invalid_deform) return false;
+  if ((instance.flags & k_instance_untraced) != 0) return false;
   CacheTables* tables = cache_tables();
   if (instance.mesh >= tables->mesh_count) return false;
   uint* bases = (uint*)tables->bases;
@@ -222,9 +231,12 @@ static const uint k_draw_args_bytes = 16;  // gfx::k_draw_args_bytes: one block 
 static const uint k_caster_run = 2;        // gfx::k_caster_run: the casters' run of the list
 static const uint k_instantiate = 0x10000;  // gfx::k_cluster_records_instantiate
 static const uint k_drop_scan = 0x20000;    // gfx::k_cluster_records_drop_scan
+static const uint k_untraced_drawn = 0x40000;  // gfx::k_cluster_records_untraced_drawn
 
 uint view_count() { return g_params.mode & 0xffff; }
 bool instantiating() { return (g_params.mode & k_instantiate) != 0; }
+// A traced-primary frame: an untraced instance's drawn entries are built (R110).
+bool untraced_drawn() { return (g_params.mode & k_untraced_drawn) != 0; }
 
 // The first visible index of the caster run: nothing below it is a caster.
 uint caster_base() { return k_caster_run * view_count() * g_params.pair_count; }
@@ -274,9 +286,12 @@ void records_main(uint3 thread_id : SV_DispatchThreadID) {
   // static structure (tlas_references.slang). Left out before it is counted, so it is neither
   // built, wanted nor dropped.
   if ((instance.flags & k_instance_static_rt) != 0) return;
-  // **The caster policy's `traced = false`** (renderer.md, "The caster policy"; R95): grass is never
-  // in the frame's structures — no record, no slot, no count — so it costs the chain nothing.
-  if ((instance.flags & k_instance_untraced) != 0) return;
+  // **The caster policy's `traced = false`** (renderer.md, "The caster policy"; R95, R110): grass
+  // is never a caster. In a frame whose picture is rasterized it is in none of the frame's
+  // structures — no record, no slot, no count — so it costs the chain nothing; in a traced-primary
+  // frame its drawn entries are built as any instance's, because there the structures *are* the
+  // picture, and its top-level mask keeps every light's ray off it (tlas_references.slang).
+  if ((instance.flags & k_instance_untraced) != 0 && (caster || !untraced_drawn())) return;
   uint* slots = (uint*)g_params.slots;
   if (caster) {
     // **A deformed caster the pool had no room for is not built** (renderer.md, "Shadows"). A

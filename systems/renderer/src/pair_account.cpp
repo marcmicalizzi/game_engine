@@ -40,9 +40,10 @@ PairAccount account_pairs(const SceneData& scene, const ResolvedSettings& settin
     if (instance.mesh >= scene.parts.size()) continue;
     const u64 pairs = scene.parts[instance.mesh].cluster_count;
     const u32 flags = instance.flags | mesh_caster_policy(scene, instance.mesh);
-    if ((flags & gfx::k_instance_untraced) != 0)
+    if ((flags & gfx::k_instance_untraced) != 0) {
       a.untraced_pairs += pairs;
-    else if ((flags & gfx::k_instance_static_rt) != 0)
+      if ((flags & gfx::k_instance_static_rt) != 0) a.untraced_static_pairs += pairs;
+    } else if ((flags & gfx::k_instance_static_rt) != 0)
       a.static_pairs += pairs;
   }
   if (rings != nullptr && settings.terrain_levels && rings->valid() && !settings.stream) {
@@ -82,7 +83,7 @@ JsonValue pair_account_summary(const PairAccount& a, TerrainLevelSet* rings) {
   out.set("limit", a.limit);
   out.set("untraced_pairs", a.untraced_pairs);
   out.set("static_form_pairs", a.static_pairs);
-  out.set("admission_eligible_pairs", a.frame_pairs());
+  out.set("admission_eligible_pairs", a.frame_pairs(false));
   JsonValue levels = JsonValue::array();
   if (rings != nullptr) {
     for (u32 level = 1; level < rings->level_count(); ++level) {
