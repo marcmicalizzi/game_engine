@@ -146,6 +146,12 @@ struct ResolveParams {
   uint64_t hit_entries;
   float shadow_ray_distance;  // k_shadow_hybrid: the ray query answers nearer the eye than this
   float shadow_ray_band;      // and the maps past this much farther, blended between
+  // The opaque shadow proxy (R109): a byte of alpha coverage per cluster (alpha_coverage.slang),
+  // `shadow_coverage_count` clusters of it, and the byte at or above which a masked candidate is
+  // solid to a shadow ray without its mask; 0 for none.
+  uint64_t shadow_coverage;
+  uint shadow_coverage_count;
+  uint shadow_opaque_coverage;
 };
 
 // The resolved pixel, for the cross-fade's hash in the shadow rays (ade_keeps): set once by the
@@ -343,6 +349,20 @@ bool shadow_ray_blocked(ResolveParams* params, uint bit, float3 origin, float3 d
         MeshDesc* meshes = (MeshDesc*)params->fade_meshes;
         pair = pair_of(instance, meshes[instance.mesh], entry.y);
       }
+      // **The opaque shadow proxy** (renderer.md, "The opaque shadow proxy"; R109): a masked
+      // cluster whose baked coverage is at or above the threshold is solid to a shadow ray — its
+      // hit is kept without the material, the UVs or the mask, and the search ends there. Only
+      // masked clusters carry a byte (anything else non-opaque is solid already), so a cluster
+      // with none, or past the table, reads 0 and asks its mask as before. A fading pair still
+      // keeps only the pixels its band gives it, as the mask's answer would.
+      if (params->shadow_coverage != 0 && entry.y < params->shadow_coverage_count) {
+        uint* coverage = (uint*)params->shadow_coverage;
+        const uint byte = (coverage[entry.y >> 2] >> ((entry.y & 3u) * 8u)) & 0xffu;
+        if (byte >= params->shadow_opaque_coverage) {
+          if (fade_keeps(masks, pair, g_fade_pixel)) masked.CommitNonOpaqueTriangleHit();
+          continue;
+        }
+      }
       if (candidate_keeps(masks, params->clusters, params->triangles, instance, entry.y,
                           masked.CandidatePrimitiveIndex(), masked.CandidateTriangleBarycentrics(),
                           pair, g_fade_pixel)) {
@@ -402,11 +422,13 @@ float shadow_block(float4 g, float z, float dzdi, float dzdj, float wx0, float w
 // and beyond. Without it a low-poly curved surface shadows itself twice over: in every concave
 // crease, where the neighbouring triangle rises above the receiver's plane inside the footprint,
 // and along the terminator, where a triangle whose geometric normal just faces away from the sun
-// still has a shading normal that faces it. A shadow ray lifted off such a triangle skims the
-// convex surface and reaches the sun, and a lookup lifted clear of the footprint does too, so the
-// two implementations answer alike there (docs/subsystems/renderer.md, "Shadows", has the counts
-// on the Khronos samples, and the offset they chose). With no offset a back-facing surface is its
-// own shadow.
+// still has a shading normal that faces it. It is kept small — three eighths of a texel by default
+// (renderer::k_shadow_normal_offset_texels) — because a shadow ray leaves its surface by one step
+// of the receiver's own grid and so sees a crease's self-shadow; a lookup lifted further than the
+// footprint's own error lights what the rays shadow (F23: three texels, chosen when the rays left
+// by a thousandth of the scene, lit 192–5,247 interior pixels a Khronos sample; docs/subsystems/
+// renderer.md, "Cascaded shadow maps", has the counts). With no offset a back-facing surface is
+// its own shadow.
 float cascade_visibility(ShadowMapParams* maps, float3 position, float3 geometric) {
   const float n_d = dot(geometric, maps->light_dir.xyz);
   if (n_d <= 0.0 && maps->normal_offset <= 0.0) return 0.0;

@@ -6,6 +6,8 @@
 #include <domain/geometry/flora_species.h>
 #include <domain/geometry/material_sampling.h>
 #include <domain/gfx/bindless.h>
+#include <domain/gfx/commands.h>
+#include <domain/gfx/pipeline.h>
 #include <domain/texture/texture_build.h>
 #include <domain/texture/texture_file.h>
 #include <foundation/image/decode.h>
@@ -3897,6 +3899,26 @@ bool GpuScene::upload_materials(const ResolvedSettings& resolved, std::string* e
     if ((material.flags & gfx::k_material_terrain_layers) != 0) has_terrain_materials_ = true;
     if ((material.flags & gfx::k_material_alpha_mask) != 0) has_masked_ = true;
   }
+  // The opaque shadow proxy's list (R109): every alpha-tested cluster and its material, for the
+  // bake to measure its coverage. Only a scene read whole: a streamed one's clusters live in a page
+  // pool whose slots change under any table made now.
+  coverage_list_.clear();
+  shadow_coverage_clusters_ = 0;
+  if (resolved.shadow_opaque_coverage > 0.0f && has_masked_ && !streamed_) {
+    for (u32 m = 0; m < data_->parts.size(); ++m) {
+      const geometry::ClusterMeshPart& part = data_->parts[m];
+      for (u32 i = 0; i < part.cluster_count; ++i) {
+        const u32 c = part.first_cluster + i;
+        if (c >= cluster_count_) break;
+        const u32 material = cluster_material[c] + mesh_material_base[m];
+        if (material < material_table.size() &&
+            (material_table[material].flags & gfx::k_material_alpha_mask) != 0) {
+          coverage_list_.push_back(c);
+          coverage_list_.push_back(material);
+        }
+      }
+    }
+  }
   // A rigid form's frontier, drawn at every distance (upload_geometry): its coverage errors follow
   // the geometric ones — the frontier's parent half and every other cluster's own half read +inf,
   // so the foliage threshold cannot move the fixed cut either. And which frontier clusters are
@@ -3943,6 +3965,66 @@ bool GpuScene::upload_materials(const ResolvedSettings& resolved, std::string* e
          (dynamic_ || gfx::upload_buffer(device, instance_table_.data(),
                                          u64{instance_count_} * sizeof(gfx::InstanceDesc),
                                          k_storage, instances, error));
+}
+
+// **The opaque shadow proxy's bake** (alpha_coverage.slang; renderer.md, "The opaque shadow proxy";
+// R109): one dispatch, once, over the alpha-tested clusters `upload_materials` listed, into a
+// zeroed table of a byte per cluster. It waits for the device, as every upload of a scene's
+// creation does, and keeps nothing but the table: the list and the pipeline go with it.
+bool GpuScene::bake_shadow_coverage(gfx::ShaderLibrary& shaders, std::string* error) {
+  if (shadow_coverage.address != 0 || coverage_list_.empty()) return true;
+  ENGINE_STARTUP_STAGE("shadow coverage");
+  const gfx::Device& device = *device_;
+  const u32 count = coverage_list_.size() / 2;
+  const gfx::Shader* shader = shaders.get("alpha_coverage", error);
+  if (shader == nullptr) return false;
+  const gfx::DescriptorSetLayoutHandle set_layout = bindless_.layout();
+  const std::span<const gfx::DescriptorSetLayoutHandle> layouts(&set_layout, 1);
+  gfx::ComputePipeline pipeline;
+  if (!gfx::create_compute_pipeline(device, shader->module, "alpha_coverage_main", layouts,
+                                    sizeof(AlphaCoverageParams), pipeline, error)) {
+    return false;
+  }
+  const Vector<u32> zeros((cluster_count_ + 3) / 4, 0u);
+  gfx::BufferResource list;
+  bool ok = gfx::upload_buffer(device, coverage_list_.data(),
+                               u64{coverage_list_.size()} * sizeof(u32), k_storage, list, error) &&
+            gfx::upload_buffer(device, zeros.data(), u64{zeros.size()} * sizeof(u32), k_storage,
+                               shadow_coverage, error);
+  if (ok) {
+    AlphaCoverageParams params;
+    params.clusters = clusters.address;
+    params.triangles = triangles.address;
+    params.quantized = quantized.address;
+    params.attributes = attributes.address;
+    params.materials = materials.address;
+    params.list = list.address;
+    params.out = shadow_coverage.address;
+    params.count = count;
+    const u32 groups_x = count < k_alpha_coverage_row ? count : k_alpha_coverage_row;
+    const u32 groups_y = (count + k_alpha_coverage_row - 1) / k_alpha_coverage_row;
+    const gfx::BindlessSet& bindless = bindless_;
+    ok = gfx::submit_immediate(
+        device,
+        [&](gfx::CommandList cb) {
+          cb.bind_pipeline(gfx::BindPoint::Compute, pipeline.pipeline);
+          bindless.bind(cb, gfx::BindPoint::Compute);
+          cb.push_constants(pipeline.layout, gfx::ShaderStage::Compute, 0, sizeof(params), &params);
+          cb.dispatch(groups_x, groups_y, 1);
+        },
+        error);
+  }
+  gfx::destroy_buffer(device, list);
+  gfx::destroy_compute_pipeline(device, pipeline);
+  if (!ok) {
+    gfx::destroy_buffer(device, shadow_coverage);
+    return false;
+  }
+  shadow_coverage_clusters_ = cluster_count_;
+  ENGINE_LOG_INFO(log_renderer, "shadow coverage baked", log::field("masked_clusters", count),
+                  log::field("table_bytes", u64{zeros.size()} * sizeof(u32)));
+  coverage_list_ = Vector<u32>{};
+  return true;
 }
 
 bool GpuScene::create_working_set(const ResolvedSettings& resolved, std::string* error) {
@@ -5058,6 +5140,9 @@ void GpuScene::destroy() noexcept {
   gfx::destroy_buffer(device, visible);
   gfx::destroy_buffer(device, cluster_materials);
   gfx::destroy_buffer(device, lod_coverage);
+  gfx::destroy_buffer(device, shadow_coverage);
+  coverage_list_.clear();
+  shadow_coverage_clusters_ = 0;
   gfx::destroy_buffer(device, terrain_masks);
   gfx::destroy_buffer(device, fade);
   gfx::destroy_buffer(device, materials);

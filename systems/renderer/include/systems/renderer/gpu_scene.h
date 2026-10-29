@@ -33,6 +33,7 @@
 #include <domain/gfx/ground_detail.h>
 #include <domain/gfx/resources.h>
 #include <domain/gfx/rhi.h>
+#include <domain/gfx/shader_library.h>
 #include <domain/gfx/visibility_resolve.h>
 #include <systems/renderer/flora_motion.h>
 #include <systems/renderer/flora_poser.h>
@@ -63,6 +64,23 @@ struct PairExpandParams {
 };
 static_assert(sizeof(PairExpandParams) == 40);
 inline constexpr u32 k_pair_expand_workgroup = 64;  // numthreads in pair_expand.slang
+
+// The opaque shadow proxy's bake (alpha_coverage.slang; renderer.md, "The opaque shadow proxy";
+// R109): one workgroup per alpha-tested cluster listed, each writing its coverage byte.
+struct AlphaCoverageParams {
+  u64 clusters = 0;    // geometry::ClusterDesc[]
+  u64 triangles = 0;   // packed local indices
+  u64 quantized = 0;   // the scene's 16-bit positions
+  u64 attributes = 0;  // geometry::VertexAttributes[]: the UVs
+  u64 materials = 0;   // gfx::ResolveMaterial[]
+  u64 list = 0;        // u32x2[count]: {cluster, its material}
+  u64 out = 0;         // u32[(cluster_count + 3) / 4], zeroed: four coverage bytes a word
+  u32 count = 0;
+  u32 pad = 0;
+};
+static_assert(sizeof(AlphaCoverageParams) == 64);
+inline constexpr u32 k_alpha_coverage_workgroup = 64;  // numthreads in alpha_coverage.slang
+inline constexpr u32 k_alpha_coverage_row = 65535;     // groups per row of its 2D dispatch
 
 // The frame's visible list is one array in three runs — the hardware pass 1, the hardware pass
 // 2, and the software rasterizer — so a visibility id names an entry of the whole list however
@@ -357,6 +375,14 @@ class GpuScene {
   // geometry"): the frame draws the masked variants and the ray loops test masks. False keeps every
   // pass the one it always was.
   bool has_masked() const noexcept { return has_masked_; }
+  // **The opaque shadow proxy's coverage** (R109; renderer.md, "The opaque shadow proxy"): one
+  // byte per cluster, four to a word, of the alpha coverage of every alpha-tested cluster, baked
+  // once by `bake_shadow_coverage` when `ResolvedSettings::shadow_opaque_coverage` is on, the scene
+  // has masked materials and is read whole (a streamed scene's pool changes under it). The first
+  // renderer made over the scene bakes it; later ones find it baked. `shadow_coverage_clusters` is
+  // 0 when there is none.
+  bool bake_shadow_coverage(gfx::ShaderLibrary& shaders, std::string* error);
+  u32 shadow_coverage_clusters() const noexcept { return shadow_coverage_clusters_; }
   // A mesh of the scene carries coverage errors (geometry.md, "Two errors"): `lod_coverage` holds
   // them and `fade` the cross-fade's tables.
   bool has_coverage() const noexcept { return has_coverage_; }
@@ -996,6 +1022,7 @@ class GpuScene {
   gfx::BufferResource materials;          // gfx::ResolveMaterial[]
   gfx::BufferResource cluster_materials;  // u32 per cluster
   gfx::BufferResource lod_coverage;       // u32 per cluster (geometry::pack_lod_coverage), or none
+  gfx::BufferResource shadow_coverage;    // u8 per cluster, four a u32: the proxy's (R109), or none
   gfx::BufferResource terrain_masks;  // the terrain's mask level: page table, then tiles, or none
   gfx::BufferResource fade;           // u32x2 per pair per view, and the cascades'
 
@@ -1423,8 +1450,12 @@ class GpuScene {
   bool has_terrain_materials_ = false;  // a native ground root actually exists in the table
   u64 terrain_mask_bytes_ = 0;
   u32 terrain_mask_tiles_ = 0;
-  bool has_water_ = false;     // a material of the table carries gfx::k_material_water
-  bool has_masked_ = false;    // a material of the table carries gfx::k_material_alpha_mask
+  bool has_water_ = false;   // a material of the table carries gfx::k_material_water
+  bool has_masked_ = false;  // a material of the table carries gfx::k_material_alpha_mask
+  // {cluster, material} of every alpha-tested cluster, kept from the material upload until the
+  // proxy's bake (R109) reads it, then released; empty when the proxy is off.
+  Vector<u32> coverage_list_;
+  u32 shadow_coverage_clusters_ = 0;
   bool has_coverage_ = false;  // a mesh carries coverage errors
   u32 triangles_per_cluster_ = 0;
   u32 view_count_ = 1;

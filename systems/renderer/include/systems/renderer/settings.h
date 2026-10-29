@@ -49,6 +49,12 @@ inline constexpr f32 k_default_shadow_ray_band_m = 20.0f;
 // map holds coarser than the picture draws it stays inside the bias; a whole texel moved the
 // forest's near dapple measurably (docs/experiments/cascade-budget-2026-10-26.md has the ladder).
 inline constexpr f32 k_shadow_texel_error_texels = 0.5f;
+// The opaque shadow proxy's threshold (R109): the alpha coverage at or above which a cluster is
+// solid to a shadow ray. 0 is off, and off is the default because no threshold bought the masks'
+// cost without closing the sun flecks under the forest's canopy: 0.5 and above saved nothing, 0.3
+// saved 13% of the expanded forest's resolve at 11520x2160 for 1.5 FLIP points mean, all of it in
+// the flecks (docs/experiments/shadow-proxy-2026-10-28.md).
+inline constexpr f32 k_shadow_opaque_coverage = 0.0f;
 // The coverage error a cascade accepts, in its own texels (`renderer.shadow.texel_cover`): half the
 // filter's 4 x 4-texel footprint. Measured, not derived: 1 and 2 texels moved the forest's picture
 // alike, 5 by three times as much.
@@ -355,8 +361,13 @@ struct ResolvedSettings {
   bool shadow_texel_lod = false;
   f32 shadow_texel_error = 0.0f;
   f32 shadow_texel_cover = 0.0f;  // the coverage error's, `renderer.shadow.texel_cover`
-  bool occlusion = false;         // two-pass occlusion culling runs
-  bool rt_chain = false;          // the frame builds acceleration structures from its visible list
+  // **The opaque shadow proxy** (R109; renderer.md, "The opaque shadow proxy"): with ray-traced
+  // shadows, an alpha-tested cluster whose baked coverage is at least this fraction is solid to a
+  // shadow ray, without its mask. `renderer.shadow.opaque_coverage`, by default
+  // `k_shadow_opaque_coverage`; 0 is off, and so is every frame without the rays.
+  f32 shadow_opaque_coverage = 0.0f;
+  bool occlusion = false;  // two-pass occlusion culling runs
+  bool rt_chain = false;   // the frame builds acceleration structures from its visible list
   // The cull pass keeps what its cone test rejects as shadow casters, in the visible list's run
   // `gfx::k_caster_run`, and the chain builds them beside the drawn clusters. True when shadows
   // are traced, the cone test is on, and the records are build records rather than template

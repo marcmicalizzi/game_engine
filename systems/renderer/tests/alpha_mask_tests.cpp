@@ -9,10 +9,14 @@
 //   write the same ids and the same coverage, pixel for pixel.
 // - A masked cluster never reaches the software rasterizer: with every cluster small enough to go
 //   there, the masked quad is still cut by its mask.
+// - The opaque shadow proxy (R109): a masked cluster whose baked coverage is at or above
+//   `renderer.shadow.opaque_coverage` casts the opaque caster's shadow under the rays, below it the
+//   mask still rules, and the tunable at 0 draws exactly what the rays drew before the proxy.
 
 #include <core/math/math.h>
 #include <domain/gfx/device.h>
 #include <foundation/image/png.h>
+#include <foundation/tunables/tunables.h>
 #include <systems/renderer/capture.h>
 #include <systems/renderer/gpu_scene.h>
 #include <systems/renderer/reference.h>
@@ -519,6 +523,65 @@ TEST_CASE("alpha mask: the cascades and the shadow rays let the sun through the 
     CHECK(disagree <= interior / 50);
   }
 }
+// **The opaque shadow proxy** (renderer.md, "The opaque shadow proxy"; R109). The checker keeps
+// half of the quad, so its baked coverage is a half: with the threshold at 0.45 the masked quad is
+// solid to the shadow rays and casts the opaque quad's shadow on every ground pixel the two
+// pictures share; at 0.55 its mask still decides, and the picture is the one the tunable at 0 —
+// no proxy, every mask looked up as before R109 — draws, byte for byte.
+TEST_CASE("alpha mask: a dense masked cluster is solid to a shadow ray at the proxy's threshold") {
+  Fixture fx;
+  ShotView view;
+  view.eye = Vec3{-2.5f, 4.0f, -2.5f};
+  view.target = Vec3{-0.4f, 0.0f, -0.4f};
+  view.mode = static_cast<u32>(gfx::ResolveMode::Shaded);
+  RenderSettings rays = base_settings(RasterMode::Hardware);
+  rays.shadows = ShadowMode::RayTraced;
+  struct Restore {
+    ~Restore() { (void)tunables::apply_overrides("renderer.shadow.opaque_coverage=0"); }
+  } restore;
+  REQUIRE(tunables::apply_overrides("renderer.shadow.opaque_coverage=0"));
+  const Shot solid = shoot(fx.caster_opaque, rays, view);
+  if (!solid.skip.empty()) {
+    MESSAGE("skipped: " << solid.skip);
+    return;
+  }
+  const Shot off = shoot(fx.caster_masked, rays, view);
+  REQUIRE(tunables::apply_overrides("renderer.shadow.opaque_coverage=0.55"));
+  const Shot below = shoot(fx.caster_masked, rays, view);
+  REQUIRE(tunables::apply_overrides("renderer.shadow.opaque_coverage=0.45"));
+  const Shot above = shoot(fx.caster_masked, rays, view);
+  REQUIRE(off.skip.empty());
+  REQUIRE(below.skip.empty());
+  REQUIRE(above.skip.empty());
+  const ShadowCount full = count_shadow(solid.frame);
+  const ShadowCount mask = count_shadow(off.frame);
+  const ShadowCount proxy = count_shadow(above.frame);
+  MESSAGE("the opaque caster shadows " << full.share() << " of the ground, the masked one "
+                                       << mask.share() << ", the masked one by the proxy "
+                                       << proxy.share());
+  // Below the threshold the mask rules, and the bytes are the tunable at 0's.
+  CHECK(below.frame.color.size() == off.frame.color.size());
+  CHECK(below.frame.color == off.frame.color);
+  CHECK(mask.share() < 0.7 * full.share());
+  // At or above it, the opaque caster's shadow on every ground pixel the two pictures share (the
+  // masked quad lets the camera see ground through its holes that the opaque one hides).
+  u32 shared = 0;
+  u32 differ = 0;
+  u32 changed = 0;
+  for (u32 p = 0; p < k_size * k_size; ++p) {
+    if (full.classes[p] == 0 || proxy.classes[p] == 0) continue;
+    ++shared;
+    if (full.classes[p] != proxy.classes[p]) ++differ;
+    if (mask.classes[p] != 0 && mask.classes[p] != proxy.classes[p]) ++changed;
+  }
+  MESSAGE(shared << " shared ground pixels: " << differ
+                 << " differ from the opaque caster's shadow, " << changed
+                 << " changed by the proxy from the mask's");
+  CHECK(shared > 4000);
+  CHECK(differ == 0);
+  CHECK(changed > 200);  // the witness: the mask's holes were lit, and the proxy closed them
+}
+
 TEST_CASE("alpha mask: the reference path tracer sees through the holes the rasterizer leaves") {
   // The masked quad through the reference (k_pt_alpha_masks: its camera rays decide masked
   // candidates by the mask) and through the real-time frame: a pixel the rasterizer leaves empty is

@@ -26,6 +26,10 @@ tunables::Float shadow_texel_error{
 tunables::Float shadow_texel_cover{
     "renderer.shadow.texel_cover", static_cast<f64>(k_shadow_texel_cover_texels), 0.0, 64.0,
     "The coverage error a cascade accepts, in its own texels (R103; a measurement's knob)"};
+tunables::Float shadow_opaque_coverage{
+    "renderer.shadow.opaque_coverage", static_cast<f64>(k_shadow_opaque_coverage), 0.0, 1.0,
+    "With ray-traced shadows, an alpha-tested cluster whose baked coverage is at least this "
+    "fraction is solid to a shadow ray, without its mask (R109); 0 is off"};
 }  // namespace
 
 const char* raster_name(RasterMode mode) noexcept {
@@ -414,6 +418,9 @@ void resolve_settings(const RenderSettings& requested, const gfx::DeviceFeatures
         s.shadow_texel_lod && shadow_texel_lod.get() && out.shadow_texel_error > 0.0f;
   }
   out.rt_chain = out.ray_path || out.shadows;
+  // The opaque shadow proxy is the shadow rays' (R109): read once, here, so a scene bakes its
+  // clusters' coverage when it is made and every frame of it reads the same threshold.
+  out.shadow_opaque_coverage = out.shadows ? static_cast<f32>(shadow_opaque_coverage.get()) : 0.0f;
   // More than one view needs the cull pass: every view's draw reads its own run of the visible
   // list, and there is no run without one. The direct path draws one view and one only, because
   // it writes color rather than a visibility buffer and has nowhere to put a second rectangle.
