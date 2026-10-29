@@ -1939,8 +1939,11 @@ this asset independently. The grounding and authored numeric choices are in
 `Roots.enabled = false` removes all added roots. Stem radii through 4 cm also
 emit none; the authored size blend reaches full root expression at 25 cm. This is
 a visual size policy, not an age/development law. `roots_for_tree` copies seed and
-the resolved maturity/profile dimensions without building the crown, preserving
-the caller's site controls. For a multi-stem clump, cook/place roots at each stem
+the resolved maturity/profile dimensions cheaply, preserving the caller's site controls.
+Pass bind_stem=true as the fourth argument to solve once and sample its actual lower trunk.
+Cache/copy that bound result per shared tree
+recipe; do not solve it for every placement. Consumers with an already solved tree can call
+fit_root_stem(mesh, motion, roots, error) to bind only the boundary. For a multi-stem clump, cook/place roots at each stem
 base; the helper's birch size describes one stem. The ancient helper estimates
 crown reach as 35% of height; override it for a particular fantasy crown. The existing tree flare remains
 when these separate roots are disabled.
@@ -1966,7 +1969,11 @@ a steep break terminates a path early and sinks its tail. A finite heightfield
 cannot describe overhangs or unsupported rock bridges. The default 12,000-triangle
 source budget chooses eight or four sides while retaining all terrain stations.
 If four sides still cannot fit, the cook names the insufficient budget. Root
-length, width and count do not inflate when detail is reduced.
+length, width and count do not inflate when detail is reduced. Primary roots reinforce upward
+near the stem. The optional resolved stem adds a flared, lobed collar with a buried foot;
+its triangles are identical in both LODs and count against the same budget. If constraints
+cannot contain the whole collar, it is omitted. Standalone old recipes without a stem get
+the swept root ridges only. The junction overlaps the trunk; it is not a Boolean union.
 
 The rigid mesh has its own two-level authored hierarchy: full sides and four sides,
 with all terrain stations and buried endpoint vertices preserved. No canopy
@@ -2005,7 +2012,7 @@ For a terrain-aware C++ content consumer (error handling abbreviated):
 flora::Roots site;
 site.enabled = placement_wants_roots;
 site.max_radius_m = planting_radius;  // 0 uses the resolved crown reach
-if (site.enabled && flora::roots_for_tree(tree_recipe, site, error)) {
+if (site.enabled && flora::roots_for_tree(tree_recipe, site, error, true)) {
   flora::RootGround patch;
   const f32 reach = site.max_radius_m > 0
       ? std::min(site.max_radius_m, site.crown_radius_m) : site.crown_radius_m;
@@ -2032,3 +2039,23 @@ than silently coarsening the supplied terrain. The example solves once to determ
 whether a placement exists and to collect the grass mask; the container cook solves
 again. This is cold authoring work. Cache the resulting recipe/container per site,
 and omit or stream out distant root placements instead of recooking each frame.
+
+## Additional tree profiles and seasonal design (G113/G114)
+
+Basswood, black_cherry and sycamore use the shared branching, maturity and leaf-placement path;
+see [grounding](../experiments/tree-species-expansion.md). Seasons remain
+[a proposed later pass](../experiments/tree-seasons.md), with matched material/retention LODs required;
+no seasonal runtime API is implemented.
+
+A CLI cook can bind the same resolved surface without a custom consumer:
+
+    engine-content flora site-roots.flora.json roots.clusters --root-tree oak.flora.json
+
+The tree path is resolved from the command's working directory. The bound boundary is recorded in
+the container generator parameters/key; neither input file is rewritten. Reuse matching bark
+materials and the tree placement transform. The optional stem recipe holds 3..33 rings and
+8..128 angular sides with a duplicate seam; the helper emits 9 rings and 32 sides.
+
+Ancient megaflora retain their own authored buttress fins and hollow/village openings.
+The new fitted ring collar is refused for that species because it would bridge those features.
+Their standalone roots and the inexpensive dimension helper remain supported.

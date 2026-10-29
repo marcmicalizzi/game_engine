@@ -1096,3 +1096,7 @@ per cascade would pay the pool pass for every blade in every map. Both structs a
 size table (3 and 56 bytes) and neither reaches the GPU; the renderer turns the policy into
 `InstanceDesc` flag bits per mesh ([renderer](renderer.md#the-caster-policy)), and nothing but
 the catalogue names a species.
+
+G113 appends basswood, black_cherry and sycamore to the flora catalogue without changing existing
+IDs, hot struct sizes or motion/caster defaults. Their shared growth profiles and source budgets
+are grounded in [tree species expansion](../experiments/tree-species-expansion.md).

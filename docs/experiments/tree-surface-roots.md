@@ -232,3 +232,63 @@ samples on both fine and coarse triangle surfaces against the declared error.
 The nine focused root cases pass 81,476 assertions on MSVC. These tests cover
 the tessellation checkpoint only; the requested two-rate taper, exposed-section
 morphology and exact flare equality tests still require their implementations.
+
+## 2026-10-29 resolved collar implementation plan
+
+G102 resumes across the schema/resolver boundary identified above. Serialize a sampled lower
+stem surface (positions, normals and bark UVs), extracted from the solved trunk triangles,
+rather than reconstructing species relief from nominal radius. A public binding helper lets
+consumers reuse an already solved tree; the convenience recipe helper may solve once at cook
+time. Keep this boundary in the root recipe/cache key. It is not runtime per-placement work.
+
+Add an outward-flared sleeve, with lobes following the surviving primary root directions.
+Its upper edge embeds slightly into the sampled trunk, with zero flare derivative and matching
+normal/UV there; its lower edge is buried against the same terrain query. This is an overlapping
+separate-asset junction, not a Boolean union or a watertight welded tree/root mesh. The sleeve
+cannot fix different material sets or a consumer that places the companion in a different frame.
+Rigid roots only cover the low-weight trunk base; large wind bends can still separate assets.
+
+Primary root tops gain an asymmetric reinforcing ridge near the stem, declining over three
+basal radii; the lower envelope and buried ends stay unchanged. Use 2 basal radii of added
+height at the hidden origin. These are restrained authored visual scales, not the tropical
+7.9 height/width ratio. Existing root reach, counts, terrain stations and tails stay fixed.
+The collar keeps identical triangles at both LODs so the junction cannot collapse independently.
+Budget accounting includes it; no silent budget overrun. A constrained site that cannot contain
+the entire collar omits it, retaining only the constrained roots. Roots-off omits both.
+
+The shipping candidate uses roots version 3: version 2 already appears in local caches from
+the unaccepted overnight tessellation experiment. This prevents either candidate from reusing
+the other's standalone-root containers. The new collar adds exactly 297 source vertices and
+512 triangles at the helper's 9 x 32 resolution, retained in both authored LODs. Root ridges
+move existing vertices and add no triangles. The 12,000-triangle default still includes both.
+
+The flat review uses a 15 m oak with 0.45 m basal radius. Binding now takes its resolved
+7.2 m crown reach (the older comparison recipe used 6 m), so the distal exposures are not a
+controlled performance comparison. The final candidate's flat source has 9,088 triangles.
+Machine state: shared development machine, captures serialized under the GPU lock; no timing
+or frame-cost conclusions are drawn. Flat, slope, terrain-edge, tight-bed, disabled and coarse
+views are recorded externally under tree-growth/2026-10-29/root-flare-species.
+The earlier E10 default-cut checkpoint above is not declared fixed by these visual comparisons.
+
+The binder reads only the first (bark) primitive and motion part zero. Foliage can inherit that
+motion part, so scanning all vertices for the bottom ring incorrectly treated leaf UV v=0
+as a trunk base. The regression covers beech, cedar, birch, willow, conifer and orchard.
+A tilted ground ring is sampled above its highest rim vertex. The angular seam follows the
+actual bark UV seam at each height, preventing interpolation across the UV wrap.
+
+Ancient trees are deliberately excluded from the fitted sleeve: their source trunk has authored
+buttress fins and recessed openings, so a ring loft would bridge that topology and could narrow a
+village entrance. Their existing buttresses and standalone root ridges remain supported.
+
+## Author validation, 2026-10-29
+
+Windows msvc-debug affected coverage: 60 CTest groups passed; engine_view exhausted the
+whole-executable GPU deadline twice on this shared machine. The same 142 default-enabled
+viewer cases then passed in four ordered, non-overlapping ranges (1–36, 37–72, 73–108,
+109–142). Ranged case lists were checked against the full list, and the separately registered
+frame-loop test passed in the affected run. No assertions, skips or GPU lock rules changed.
+The final ancient-stem safeguard was rebuilt and passed all 10 root cases (37,664 assertions).
+Linux Clang debug passed all 61 affected groups; the final guard passed a further five groups
+(flora, engine_content, lint, licences and docs). Worktree Linux volumes were pruned afterward.
+These are author checks, not the full merge gate or quiet performance measurements.
+The prior root E10 collapse checkpoint remains unresolved.

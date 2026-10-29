@@ -71,6 +71,19 @@ On the tree of 2026-10-03 (70 modules, `msvc-debug`, serial, with the GPU lock f
 | the whole suite | 70 | 35 min |
 
 The times are the sum of those tests' own times in a gate's log, not a quiet measurement.
+A GPU queue skip can exhaust the deadline of the **whole test executable**, not one late
+case: tests/support/test_main.cpp sets one deadline at process start, inherited by its children.
+On 2026-10-29, the 142-case viewer group reached that deadline twice while continuing to
+complete cases on a shared GPU. Repeating the entire group under the same contention wastes
+the completed work. After the normal affected build/run, a bounded follow-up may run the same
+executable with explicit doctest ranges: use --count and --list-test-cases, fix --order-by=file,
+and cover 1 through the reported count exactly once with non-overlapping --first/--last ranges.
+Keep each range's result and verify that concatenating its ranged case list reproduces the full
+list exactly once. Doctest 2.4.11's footer counts cases before range selection, so do not sum its
+reported passed counts across ranges. Preserve
+the default skip policy; separately registered cases such as engine_view.frame_loop still need
+their normal run. This changes process grouping only, not assertions, the GPU lock, or its queue
+budget. Do not wrap these runs in an outer GPU lock or report a skipped range as passed.
 
 ## The gates the rules promised
 

@@ -826,6 +826,24 @@ struct RootExclusion {
   z_m: f32 = 0.0
   radius_m: f32 = 1.0
 }
+/// One sample of the resolved trunk surface, in the shared tree/root local frame.
+struct RootStemSample {
+  x: f32 = 0.0
+  y: f32 = 0.0
+  z: f32 = 0.0
+  nx: f32 = 0.0
+  ny: f32 = 1.0
+  nz: f32 = 0.0
+  u: f32 = 0.0
+  v: f32 = 0.0
+}
+/// Lower stem rings from fit_root_stem: bottom to top, counterclockwise in x/z,
+/// with a duplicate UV seam at the end of each ring.
+struct RootStem {
+  sides: u32 = 32
+  rows: u32 = 9
+  samples: RootStemSample[]
+}
 /// Exposed structural roots, cooked separately from the shared trunk and canopy.
 /// Turning these off removes this added geometry; the trunk's existing flare remains.
 struct Roots {
@@ -844,6 +862,8 @@ struct Roots {
   bounds: RootBounds?
   exclusions: RootExclusion[]
   ground: RootGround?
+  /// Optional resolved trunk boundary; absent retains the standalone root ridges.
+  stem: RootStem?
 }
 
 /// A flora file, `<name>.flora.json`: the species and its parameters. A scene's mesh table names

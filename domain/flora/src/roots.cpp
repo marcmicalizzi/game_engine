@@ -147,6 +147,12 @@ Root grow(const Roots& p, D3 start, f64 heading, f64 reach, f64 radius, bool sec
     if (!secondary) {
       const f64 collar = 1 - smoothstep01(t / .35);
       n.point.y += radius * .65 * collar;
+      // Reinforcement above the axis: preserve the lower envelope and buried tail.
+      const f64 span = std::min(end * .6, 3 * static_cast<f64>(p.trunk_radius_m));
+      const f64 q = 1 - clamp01(n.arc / span);
+      const f64 ridge = 2 * static_cast<f64>(p.trunk_radius_m) * q * q * q;
+      n.vertical += ridge * .5;
+      n.point.y += ridge * .5;
     }
     if (secondary && i == 0) n.point.y = start.y;
   }
@@ -224,6 +230,132 @@ void emit_root(const Root& root, u32 sides, Emitter& emit, RootReport& report) {
         std::max(report.lod_error, static_cast<f32>(.3 * std::max(a.radius, a.vertical)));
   }
 }
+bool collar_face_fits(const Roots& p, D3 a, D3 b, D3 c) {
+  for (const auto& e : p.exclusions) {
+    const D3 centre = from_f32({e.x_m, 0, e.z_m});
+    const D3 vertices[]{a, b, c};
+    f64 signs[3]{};
+    for (u32 i = 0; i < 3; ++i) {
+      const D3 from = vertices[i], to = vertices[(i + 1) % 3];
+      const f64 dx = to.x - from.x, dz = to.z - from.z;
+      const f64 length2 = dx * dx + dz * dz;
+      const f64 t = length2 > 0
+                        ? clamp01(((centre.x - from.x) * dx + (centre.z - from.z) * dz) / length2)
+                        : 0;
+      const f64 ex = from.x + t * dx - centre.x, ez = from.z + t * dz - centre.z;
+      if (ex * ex + ez * ez < static_cast<f64>(e.radius_m) * static_cast<f64>(e.radius_m))
+        return false;
+      signs[i] = dx * (centre.z - from.z) - dz * (centre.x - from.x);
+    }
+    // Nondegenerate projected triangles cannot bridge over an exclusion.
+    const f64 area = (b.x - a.x) * (c.z - a.z) - (b.z - a.z) * (c.x - a.x);
+    if (std::abs(area) > 1e-12 && ((signs[0] >= 0 && signs[1] >= 0 && signs[2] >= 0) ||
+                                   (signs[0] <= 0 && signs[1] <= 0 && signs[2] <= 0)))
+      return false;
+  }
+  return true;
+}
+struct Collar {
+  Vector<D3> points, normals;
+  Vector<Vec2> uv;
+  u32 sides = 0, rows = 0;
+};
+Collar make_collar(const Roots& p, const Vector<Root>& roots) {
+  Collar out;
+  if (!p.stem) return out;
+  const auto& stem = *p.stem;
+  out.sides = stem.sides;
+  out.rows = stem.rows;
+  const f64 r = static_cast<f64>(p.trunk_radius_m);
+  for (u32 row = 0; row < stem.rows; ++row) {
+    D3 centre{};
+    for (u32 j = 0; j < stem.sides; ++j) {
+      const auto& a = stem.samples[row * (stem.sides + 1) + j];
+      centre = centre + from_f32({a.x, a.y, a.z}) * (1.0 / stem.sides);
+    }
+    const f64 t = static_cast<f64>(row) / (stem.rows - 1);
+    const f64 low = (1 - t) * (1 - t) * (1 - t);
+    for (u32 j = 0; j <= stem.sides; ++j) {
+      const auto& a = stem.samples[row * (stem.sides + 1) + j];
+      const D3 radial =
+          normalized(D3{static_cast<f64>(a.x) - centre.x, 0, static_cast<f64>(a.z) - centre.z});
+      f64 lobe = 0;
+      for (const Root& root : roots) {
+        if (root.secondary) continue;
+        const auto& n = root.nodes[2];
+        const D3 direction = normalized(D3{n.point.x, 0, n.point.z});
+        const f64 d = std::max(0.0, dot(radial, direction));
+        const f64 d2 = d * d, d4 = d2 * d2;
+        lobe = std::max(lobe, d4 * d4);
+      }
+      // Slightly embed the rim; flare and its derivative vanish at the top.
+      D3 point = from_f32({a.x, a.y, a.z}) + radial * (r * (.12 + .9 * lobe) * low - .002 * r);
+      const f64 floor = ground_at(p, point.x, point.z);
+      if (!room(p, point, 0) || !std::isfinite(floor)) return {};
+      const f64 foot = floor - .05 - .15 * r;
+      point.y = lerp(foot, point.y, smoothstep01(t));
+      out.points.push_back(point);
+      out.normals.push_back(normalized(from_f32({a.nx, a.ny, a.nz})));
+      out.uv.push_back({a.u, a.v});
+    }
+  }
+  for (u32 row = 0; row + 1 < stem.rows; ++row) {
+    for (u32 j = 0; j < stem.sides; ++j) {
+      const u32 a = row * (stem.sides + 1) + j, b = a + 1;
+      const u32 c = a + stem.sides + 1, d = c + 1;
+      if (!collar_face_fits(p, out.points[a], out.points[c], out.points[b]) ||
+          !collar_face_fits(p, out.points[b], out.points[c], out.points[d]))
+        return {};
+    }
+    for (u32 j = 0; j <= stem.sides; ++j) {
+      const u32 col = j % stem.sides, index = row * (stem.sides + 1) + j;
+      const u32 lo = (row > 0 ? row - 1 : row) * (stem.sides + 1);
+      const u32 hi = (row + 1) * (stem.sides + 1);
+      const D3 along = out.points[hi + col] - out.points[lo + col];
+      const u32 start = row * (stem.sides + 1);
+      const D3 around = out.points[start + (col + 1) % stem.sides] -
+                        out.points[start + (col + stem.sides - 1) % stem.sides];
+      D3 normal = normalized(cross(along, around));
+      if (dot(normal, out.normals[index]) < 0) normal = normal * -1;
+      const f64 blend = smoothstep01((static_cast<f64>(row) / (stem.rows - 1) - .65) / .35);
+      out.normals[index] = normalized(normal * (1 - blend) + out.normals[index] * blend);
+    }
+  }
+  return out;
+}
+void emit_collar(const Collar& collar, Emitter& emit, RootReport& report) {
+  if (collar.points.empty()) return;
+  const u32 first = emit.mesh.positions.size();
+  for (u32 i = 0; i < collar.points.size(); ++i)
+    emit.vertex(collar.points[i], collar.normals[i], static_cast<f64>(collar.uv[i].x),
+                static_cast<f64>(collar.uv[i].y));
+  for (u32 row = 0; row + 1 < collar.rows; ++row) {
+    for (u32 j = 0; j < collar.sides; ++j) {
+      const u32 a = first + row * (collar.sides + 1) + j, b = a + 1;
+      const u32 c = a + collar.sides + 1, d = c + 1;
+      const D3 normal = collar.normals[row * (collar.sides + 1) + j];
+      triangles(emit, nullptr, a, c, b, normal);
+      triangles(emit, nullptr, b, c, d, normal);
+      triangles(emit, &report.coarse_indices, a, c, b, normal);
+      triangles(emit, &report.coarse_indices, b, c, d, normal);
+      for (u32 k = 0; k < 2; ++k) {
+        report.fine_element.push_back(report.elements);
+        report.coarse_element.push_back(report.elements);
+      }
+      report.collar_triangles += 2;
+    }
+  }
+  ++report.elements;
+  D3 centre{};
+  for (u32 j = 0; j < collar.sides; ++j)
+    centre = centre + collar.points[j] * (1.0 / collar.sides);
+  f64 reach = 0;
+  for (const D3 point : collar.points) {
+    const D3 offset{point.x - centre.x, 0, point.z - centre.z};
+    reach = std::max(reach, length_of(offset));
+  }
+  report.exposed.push_back({to_f32(centre), to_f32(centre), static_cast<f32>(reach)});
+}
 }  // namespace
 
 bool roots_in_range(const Roots& p, std::string& error) {
@@ -250,6 +382,38 @@ bool roots_in_range(const Roots& p, std::string& error) {
         !between(static_cast<f64>(e.z_m), -256, 256) ||
         !between(static_cast<f64>(e.radius_m), .001, 256))
       return fail(error, "invalid exclusion");
+  if (p.stem) {
+    const auto& stem = *p.stem;
+    if (stem.sides < 8 || stem.sides > 128 || stem.rows < 3 || stem.rows > 33 ||
+        stem.samples.size() != (stem.sides + 1) * stem.rows)
+      return fail(error, "invalid resolved stem dimensions");
+    for (u32 row = 0; row < stem.rows; ++row) {
+      const auto& first = stem.samples[row * (stem.sides + 1)];
+      const auto& last = stem.samples[(row + 1) * (stem.sides + 1) - 1];
+      if (std::abs(first.x - last.x) + std::abs(first.y - last.y) + std::abs(first.z - last.z) >
+          .0001f)
+        return fail(error, "resolved stem ring is not closed");
+      if (row > 0 && !(first.y > stem.samples[(row - 1) * (stem.sides + 1)].y))
+        return fail(error, "resolved stem rings must rise monotonically");
+      f64 area = 0;
+      for (u32 j = 0; j < stem.sides; ++j) {
+        const auto& a = stem.samples[row * (stem.sides + 1) + j];
+        const auto& b = stem.samples[row * (stem.sides + 1) + j + 1];
+        if (std::abs(a.y - first.y) > .0001f)
+          return fail(error, "resolved stem rings must be horizontal");
+        area += static_cast<f64>(a.x) * static_cast<f64>(b.z) -
+                static_cast<f64>(b.x) * static_cast<f64>(a.z);
+      }
+      if (!(area > 1e-8)) return fail(error, "resolved stem ring has no positive area");
+    }
+    for (const auto& a : stem.samples) {
+      if (!between(a.x, -64, 64) || !between(a.y, -64, 64) || !between(a.z, -64, 64) ||
+          !between(a.nx, -1, 1) || !between(a.ny, -1, 1) || !between(a.nz, -1, 1) ||
+          !between(a.u, -1000, 1000) || !between(a.v, -1000, 1000) ||
+          a.nx * a.nx + a.ny * a.ny + a.nz * a.nz < .5f)
+        return fail(error, "nonfinite or invalid resolved stem sample");
+    }
+  }
   if (p.ground) {
     const auto& g = *p.ground;
     if (g.columns < 2 || g.rows < 2 || g.columns > 513 || g.rows > 513 ||
@@ -300,8 +464,10 @@ bool solve_roots(const Roots& p, assets::MeshData& mesh, Motion& motion, RootRep
   u32 quads = 0;
   for (const auto& r : roots)
     quads += r.nodes.size();  // rows-1 sides + two half cap fans
-  const u32 sides = quads * 16 <= p.triangle_budget ? 8 : 4;
-  if (quads * sides * 2 > p.triangle_budget)
+  const Collar collar = make_collar(p, roots);
+  const u32 collar_cost = collar.points.empty() ? 0 : (collar.rows - 1) * collar.sides * 2;
+  const u32 sides = quads * 16 + collar_cost <= p.triangle_budget ? 8 : 4;
+  if (quads * sides * 2 + collar_cost > p.triangle_budget)
     return fail(
         error,
         "triangle_budget cannot preserve terrain stations; increase budget or constrain reach");
@@ -309,6 +475,7 @@ bool solve_roots(const Roots& p, assets::MeshData& mesh, Motion& motion, RootRep
   begin_structural_part(emit, {}, k_up, 1, 0xFFFFFFFFu, 0, 0, 0);
   for (const auto& r : roots)
     emit_root(r, sides, emit, report);
+  emit_collar(collar, emit, report);
   mesh.materials.push_back(material("root bark", {.24f, .17f, .10f, 1}, .9f, false));
   assets::Primitive primitive;
   primitive.first_index = 0;
@@ -319,7 +486,7 @@ bool solve_roots(const Roots& p, assets::MeshData& mesh, Motion& motion, RootRep
   return true;
 }
 
-bool roots_for_tree(const FloraFile& tree, Roots& roots, std::string& error) {
+bool roots_for_tree(const FloraFile& tree, Roots& roots, std::string& error, bool bind_stem) {
   if (is_tree_species(tree.species)) {
     if (!tree_root_dimensions(tree.species, tree.tree, roots.trunk_radius_m, roots.crown_radius_m,
                               error))
@@ -363,7 +530,15 @@ bool roots_for_tree(const FloraFile& tree, Roots& roots, std::string& error) {
       return fail(error, "tree has no supported structural root profile");
   }
   roots.species = tree.species;
-  return roots_in_range(roots, error);
+  roots.stem.reset();
+  if (!roots_in_range(roots, error)) return false;
+  if (!bind_stem || !roots.enabled || static_cast<f64>(roots.exposure) == 0 ||
+      static_cast<f64>(roots.trunk_radius_m) <= .04)
+    return true;
+  assets::MeshData mesh;
+  Motion motion;
+  if (!solve_flora(tree, mesh, motion, nullptr, nullptr, error)) return false;
+  return fit_root_stem(mesh, motion, roots, error);
 }
 
 bool sample_root_ground(const scene_gen::Ground& ground, WorldPos origin, f32 yaw, f32 scale,
