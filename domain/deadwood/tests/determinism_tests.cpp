@@ -6,10 +6,10 @@
 using namespace engine;
 
 TEST_CASE("deadwood: complete container bytes agree across toolchains") {
-  // Initial G101 pins, k_deadwood_version 1. These include geometry, UVs, normals,
-  // cluster DAG, quantized positions, material roles, fixed motion and recipe identity.
-  // Living flora pins are unchanged. Record any future replacement and its commit here.
-  const u64 goldens[] = {0x237cacf9e023dabfull, 0x76a3cc6c196c3032ull};
+  // G101 (dc2581d5), v1: 237cacf9e023dabf / 76a3cc6c196c3032.
+  // G104, v2: centred cut UVs, coherent bark contours, three exposed roles and embedded
+  // colour/normal/roughness maps. Living flora pins stay unchanged.
+  const u64 goldens[] = {0xd2e2c9f84d2b4f59ull, 0xe1109ed169374c96ull};
   for (u32 i = 0; i < 2; ++i) {
     deadwood::DeadwoodFile p;
     p.tree.species = i == 0 ? "oak" : "spruce";

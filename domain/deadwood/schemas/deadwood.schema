@@ -2,6 +2,7 @@ namespace engine.deadwood
 import "flora.schema"
 
 enum RemainKind : u8 { fallen = 0, snag = 1, snapped = 2, stump = 3, log = 4, limb = 5 }
+enum DecayPattern : u8 { fibrous = 0, cubical = 1 }
 
 /// A support tree/limb approximated by a capsule, in the posed asset's local site frame.
 struct Support @version(1) {
@@ -29,6 +30,12 @@ struct DeadwoodFile @version(1) {
   foliage: f32 = -1.0
   /// Exterior bark coverage, 0..1 (default 1). Lost patches expose the wood material.
   bark: f32 = 1.0
+  /// Surface decay intensity, 0..1; independent of structural collapse and age. Default fresh.
+  decay: f32 = 0.0
+  /// White-rot-like fibres or brown-rot-like checking; not inferred from species.
+  decay_pattern: DecayPattern = fibrous
+  /// Native fallback map resolution, power of two 128..1024; 0 retains flat debug materials.
+  surface_resolution: u32 = 512
   /// Hollow radius / external radius, 0..0.9; default solid. Bole-only log/stump forms.
   hollow: f32 = 0.0
   /// Vertical compression, 0..0.85; default none. Log only; opens the top of a hollow shell.

@@ -1,0 +1,42 @@
+{
+  "meshes": [
+    {
+      "name": "leaning-oak",
+      "path": "leaning-oak.deadwood.json"
+    },
+    {
+      "name": "support-oak",
+      "path": "support-oak.flora.json"
+    }
+  ],
+  "terrain": {
+    "extent": 32,
+    "size": 65,
+    "dune_height": 0,
+    "dune_wavelength": 40,
+    "seed": 7,
+    "generator": "Waves"
+  },
+  "name": "tree-to-tree-lean",
+  "format": "engine.scene.v1",
+  "instances": [
+    {
+      "mesh": 0,
+      "name": "leaning-oak",
+      "translation": [
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "mesh": 1,
+      "name": "support-oak",
+      "translation": [
+        0.425315,
+        0,
+        4.52487
+      ]
+    }
+  ]
+}

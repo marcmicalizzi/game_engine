@@ -6,7 +6,7 @@
 #include <schemas/deadwood.h>
 
 namespace engine::deadwood {
-inline constexpr u32 k_deadwood_version = 1;
+inline constexpr u32 k_deadwood_version = 2;
 
 // Cold cook diagnostics. No solver state or allocations in the frame loop.
 struct Report {

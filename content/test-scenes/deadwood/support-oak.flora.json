@@ -1,0 +1,8 @@
+{
+  "species": "oak",
+  "tree": {
+    "seed": 31,
+    "height_m": 12,
+    "triangle_budget": 60000
+  }
+}

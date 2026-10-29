@@ -2,7 +2,9 @@
 
 Species-derived remains for [G101](../../docs/subsystems/deadwood.md). Every sample uses a
 6 m source tree with a 60,000 triangle source cap and seed 17. The remains' separate caps are
-the kind defaults. Flat material colours deliberately make geometry visible without a texture pack.
+the kind defaults. Version 2 supplies native exposed grain/normal/roughness maps without a pack;
+bark and foliage keep their source fallback colours. `surface_resolution: 0` gives a flat debug
+comparison. The [surface study](../../docs/experiments/deadwood-surfaces.md) documents the controls.
 
 - `fresh-oak`, `fresh-spruce`: fresh horizontal falls, retaining leaves and upper branches.
 - `bare-oak`: leafless fall with partial branch and bark loss.
