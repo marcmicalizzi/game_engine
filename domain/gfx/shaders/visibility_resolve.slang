@@ -400,11 +400,13 @@ float shadow_block(float4 g, float z, float dzdi, float dzdj, float wx0, float w
 // and beyond. Without it a low-poly curved surface shadows itself twice over: in every concave
 // crease, where the neighbouring triangle rises above the receiver's plane inside the footprint,
 // and along the terminator, where a triangle whose geometric normal just faces away from the sun
-// still has a shading normal that faces it. A shadow ray lifted off such a triangle skims the
-// convex surface and reaches the sun, and a lookup lifted clear of the footprint does too, so the
-// two implementations answer alike there (docs/subsystems/renderer.md, "Shadows", has the counts
-// on the Khronos samples, and the offset they chose). With no offset a back-facing surface is its
-// own shadow.
+// still has a shading normal that faces it. It is kept small — a quarter of a texel by default
+// (renderer::k_shadow_normal_offset_texels) — because a shadow ray leaves its surface by one step
+// of the receiver's own grid and so sees a crease's self-shadow; a lookup lifted further than the
+// footprint's own error lights what the rays shadow (F23: three texels, chosen when the rays left
+// by a thousandth of the scene, lit 192–5,247 interior pixels a Khronos sample; docs/subsystems/
+// renderer.md, "Cascaded shadow maps", has the counts). With no offset a back-facing surface is
+// its own shadow.
 float cascade_visibility(ShadowMapParams* maps, float3 position, float3 geometric) {
   const float n_d = dot(geometric, maps->light_dir.xyz);
   if (n_d <= 0.0 && maps->normal_offset <= 0.0) return 0.0;

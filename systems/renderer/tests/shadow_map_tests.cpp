@@ -1641,9 +1641,14 @@ namespace {
 
 constexpr u32 k_sample_w = 1280;
 constexpr u32 k_sample_h = 720;
-// A cascade here is the scene's bounds, 8.5 sample radii across 2048 texels, against a pixel of
-// about 3.3 thousandths of a radius at the orbit's distance: the filter's two-texel reach is about
-// two and a half pixels.
+// The orbit stands 2.4 sample radii from the sample, inside the scene's bounds (4.24 radii: the
+// ground's corners), so the fit draws four cascades from the near plane, and the sample stands in
+// the last: about [1.3, 6.6] radii deep, a sphere of 7 radii, 6.9 thousandths of a radius a texel,
+// against a pixel of about 3.3 thousandths at the orbit's distance. (This comment said until F23
+// that the cascade here is the scene's bounds, 8.5 radii across; the fit's arithmetic for this
+// camera has given four cascades since the maps were written, 385c41ec.) The filter's two-texel
+// reach is about four pixels there, wider than the band, which shows as grey, never as an
+// opposite answer.
 constexpr i32 k_sample_edge = 3;
 
 struct SampleCounts {
@@ -1914,7 +1919,9 @@ TEST_CASE("renderer: cascaded shadow maps on the Khronos samples" * doctest::ski
     }
     // At the picture's own cut the two implementations never give opposite answers inside the
     // band (0 on all seven samples on the RTX 5090, 2026-09-24). The coarser cuts are measured,
-    // not asserted: they are the option that was not taken.
+    // not asserted: they are the option that was not taken. Since F23 (2026-10-28) the six
+    // others give 0 / 0 and the FlightHelmet 0 acne and 3 leaks, under its coiled hose, a caster
+    // thinner than the texel (roadmap F24): this case fails until F24 is settled.
     CHECK(counts[0].acne == 0);
     CHECK(counts[0].leak == 0);
 
