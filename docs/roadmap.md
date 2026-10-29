@@ -542,6 +542,9 @@ Import, the content build, validation, provenance, generators, scripting and tex
 | G100 | Eroded soil banks and tree throw: terrain cook, layered scarps/gullies/undercuts, rooted plates, pits and mounds, embedded stones | done (27451848; 2026-10-28: four static kinds and paired terrain cook, 123/123 Windows affected checks, matched MSVC/Clang section pins and 13/13 Linux checks; capture and measurement limits recorded; F24 remains open) | G92, G94, G35 | L | research | [soil](subsystems/soil.md), [grounding](experiments/soil-banks-tree-throw.md) |
 | G101 | Species-derived deadwood: fallen crowns, snags, snapped stems, stumps, hollow/collapsed logs and detached limbs with pose-aware contact damage | done (dc2581d5; 2026-10-29: six forms, posed contact damage, source preservation, cross-compiler pins and nine capture fixtures; renumbered from concurrent G100) | G88, G92 | L | research | [deadwood](subsystems/deadwood.md) |
 
+| G103 | Soil review follow-up: broken root-plate silhouettes, finer root/clod structure, shared curved bank/cook planforms and buried end transitions; honest four-layer mask diagnostics | in progress (2026-10-29: existing captures reviewed before expanding coverage; composition remains separate) | G100, W72 | M | research | [soil](subsystems/soil.md), [grounding](experiments/soil-banks-tree-throw.md) |
+| G104 | Joined root-plate/deadwood authoring and leaning tree-to-tree examples using native support capsules; automatic support discovery | open (2026-10-29: composition review; soil currently supplies only a short bole stub) | G100, G101 | M | design | [soil](subsystems/soil.md#not-yet), [deadwood](subsystems/deadwood.md) |
+
 ## T — Tooling and CI
 
 Build, CI, test and profiling infrastructure, and the machinery behind the standing rules: [08](plan/08-toolchain.md), [09](plan/09-testing-profiling.md), [11](plan/11-performance-principles.md), [docs/ci](ci/what-to-run.md).
