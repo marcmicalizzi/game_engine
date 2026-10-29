@@ -1365,7 +1365,9 @@ is, in this order:
    two materials (`flora::flora_role`);
 3. else **none**: the flat colour, and one log line naming the role, once per run.
 
-`wood` is recorded and keyed and drawn by nothing ([not yet](#not-yet)).
+`wood` is recorded and keyed but not drawn by the living flora solver. The
+[deadwood capability](deadwood.md) reuses it for exposed patches, fracture caps and hollow walls.
+Runtime cutting by environment destruction remains [not yet](#not-yet).
 
 **The UVs per part**, which decide whether the set's repeat is a transform:
 
@@ -1587,8 +1589,9 @@ threshold that knows a strip's width — not more tuning of the solver.
   it, which is also the coverage-preserving foliage LOD the palms' thin leaflets want
   ([above](#what-the-harness-taught)). The cards' UVs already give each card the whole image.
 - **The interior for environment destruction**: a trunk cut by destruction needs a cross-section
-  material and a cap — the `wood` slot of the materials block is recorded for it and drawn by
-  nothing — and the cut itself needs the tube's rings, which the solver has and does not keep.
+  material and a cap. [Deadwood](deadwood.md) now cooks these from a static source recipe using the
+  `wood` material slot; runtime destruction still needs the tube's rings, which the living solver
+  has and does not keep.
 - **Placement** (G55): a scatter layer naming flora files, so an oasis or a forest is a rule and
   not a list.
 - **More species**: the kit's axis, tube and spray make a new branching species a structure

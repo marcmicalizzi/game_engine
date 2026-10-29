@@ -30,7 +30,7 @@ endif()
 # scene through the renderer's scene reader, which finds a terrain's ground provider (the dunes, or
 # the tile set's `tiles` for a Heightfield record) and a placement's generator by the name the scene
 # gives, and refuses a name this executable does not carry. Nothing here calls one.
-foreach(_gen authored city cover flora rocks ruins scatter sky terrain tileset water)
+foreach(_gen authored city cover deadwood flora rocks ruins scatter sky terrain tileset water)
   if(TARGET engine::${_gen})
     list(APPEND _editor_deps ${_gen})
   endif()

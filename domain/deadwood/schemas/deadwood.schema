@@ -1,0 +1,61 @@
+namespace engine.deadwood
+import "flora.schema"
+
+enum RemainKind : u8 { fallen = 0, snag = 1, snapped = 2, stump = 3, log = 4, limb = 5 }
+
+/// A support tree/limb approximated by a capsule, in the posed asset's local site frame.
+struct Support @version(1) {
+  /// Segment endpoints, metres within +/-1000. They must differ.
+  from: vec3
+  to: vec3
+  /// Capsule radius, 0.01..20 m; default .3 m.
+  radius_m: f32 = 0.3 @unit(m)
+}
+
+/// Cooked remains of one source tree. Ground/support data and pose participate in identity.
+struct DeadwoodFile @version(1) {
+  /// Original schema recipe, with its species, seed, maturity and material parameters intact.
+  tree: engine.flora.FloraFile
+  kind: RemainKind = fallen
+  /// Damage seed, any u64. Independent of the source tree's growth seed.
+  seed: u64 = 1
+  /// Root motion part for a detached limb, >=1; ignored for other kinds. Default 1.
+  source_part: u32 = 1
+  /// Portion along the source root's axis, metres. Start >=0; end 0 means kind default.
+  start_m: f32 = 0.0 @unit(m)
+  end_m: f32 = 0.0 @unit(m)
+  /// Whole-branch and whole foliage-component retention, 0..1. -1 selects kind defaults.
+  branches: f32 = -1.0
+  foliage: f32 = -1.0
+  /// Exterior bark coverage, 0..1 (default 1). Lost patches expose the wood material.
+  bark: f32 = 1.0
+  /// Hollow radius / external radius, 0..0.9; default solid. Bole-only log/stump forms.
+  hollow: f32 = 0.0
+  /// Vertical compression, 0..0.85; default none. Log only; opens the top of a hollow shell.
+  collapse: f32 = 0.0
+  /// Irregular fracture depth, 0..2 m; default .12. Zero produces a flat cross-section.
+  splinter_m: f32 = 0.12 @unit(m)
+  /// Rotation in degrees: roll about source y, pitch about x, then site yaw about y.
+  /// -360..360. Pitch -1 selects 90 for fallen/log/limb and 0 otherwise.
+  yaw_deg: f32 = 0.0 @unit(deg)
+  pitch_deg: f32 = -1.0 @unit(deg)
+  roll_deg: f32 = 0.0 @unit(deg)
+  /// Settle the bole to terrain before branch fitting; default true.
+  settle: bool = true
+  /// Additional vertical lift after settling (or absolute origin height), -1000..1000 m.
+  lift_m: f32 = 0.0 @unit(m)
+  /// Flat site height when ground is absent, -1000..1000 m.
+  ground_y_m: f32 = 0.0 @unit(m)
+  /// Optional local heightfield in the posed x/z frame; no extrapolation beyond its bounds.
+  ground: engine.flora.RootGround?
+  /// Other trees/limbs at this site; maximum 64. Trunk penetration is an error.
+  supports: Support[] = []
+  /// If true at least one support must touch retained wood, within contact_tolerance_m.
+  require_support: bool = false
+  /// Contact allowance, .001..0.1 m (default .01); authored geometric tolerance, not mechanics.
+  contact_tolerance_m: f32 = 0.01 @unit(m)
+  /// Maximum fitted branch deflection / part length, 0..0.5 (default .15); break past it.
+  max_bend: f32 = 0.15
+  /// Source triangle cap, 0 for kind budget; explicit 128..4000000. Insufficient caps fail.
+  triangle_budget: u32 = 0
+}

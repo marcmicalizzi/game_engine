@@ -1,0 +1,16 @@
+{
+  "tree": {
+    "tree": {
+      "triangle_budget": 60000,
+      "height_m": 6,
+      "seed": 17
+    },
+    "species": "oak"
+  },
+  "seed": 17,
+  "kind": "fallen",
+  "bark": 0.4,
+  "foliage": 0,
+  "branches": 0.35,
+  "roll_deg": 25
+}

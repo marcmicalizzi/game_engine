@@ -1,0 +1,13 @@
+{
+  "tree": {
+    "tree": {
+      "triangle_budget": 60000,
+      "height_m": 6,
+      "seed": 17
+    },
+    "species": "spruce"
+  },
+  "seed": 17,
+  "kind": "fallen",
+  "roll_deg": 37
+}
