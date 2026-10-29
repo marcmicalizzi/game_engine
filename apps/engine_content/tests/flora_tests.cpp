@@ -77,6 +77,28 @@ constexpr const char* k_palm =
 
 }  // namespace
 
+TEST_CASE("engine-content flora: root tree binding is keyed and changes with the trunk") {
+  const test::TempDir tmp("engine_content_root_stem");
+  REQUIRE(tmp.ok());
+  const std::string roots = tmp.file("roots.flora.json");
+  const std::string tree = tmp.file("tree.flora.json");
+  const std::string output = tmp.file("roots.clusters");
+  write_text(roots, R"({"species":"roots","roots":{"max_radius_m":2}})");
+  write_text(tree, R"({"species":"oak","tree":{"height_m":8,"trunk_radius_m":0.3}})");
+  const Output first = run({"flora", roots, output, "--root-tree", tree, "--no-materials"});
+  REQUIRE_MESSAGE(first.exit_code == 0, first.text);
+  const auto a = line_of(first);
+  CHECK(number(a, "flora_version") == 3);
+  const Output second = run({"flora", roots, output, "--root-tree", tree, "--no-materials"});
+  REQUIRE_MESSAGE(second.exit_code == 0, second.text);
+  CHECK(flag(line_of(second), "cached"));
+  write_text(tree, R"({"species":"oak","tree":{"height_m":8,"trunk_radius_m":0.4}})");
+  const Output changed = run({"flora", roots, output, "--root-tree", tree, "--no-materials"});
+  REQUIRE_MESSAGE(changed.exit_code == 0, changed.text);
+  CHECK(number(line_of(changed), "build_key") != number(a, "build_key"));
+  CHECK(run({"flora", tree, output, "--root-tree", tree}).exit_code == 2);
+  CHECK(run({"flora", roots, output, "--root-tree"}).exit_code == 2);
+}
 TEST_CASE(
     "engine-content flora: built once per parameter set, through a named output and the cache") {
   const test::TempDir tmp("engine_content_flora");

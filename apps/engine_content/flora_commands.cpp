@@ -19,6 +19,7 @@
 #include <domain/content_build/content_build.h>
 #include <domain/content_build/generator_hosts.h>
 #include <domain/flora/flora.h>
+#include <domain/flora/roots.h>
 #include <domain/flora/sward.h>
 #include <domain/geometry/cluster_file.h>
 #include <domain/geometry/cluster_pages.h>
@@ -51,6 +52,7 @@ const char* k_flora_usage =
     "      --ddc <dir>    the cache root (default: <repo>/ddc, found beside AGENTS.md); implies\n"
     "                     --cache when no output is named\n"
     "      --force        build even when the output is already the answer\n"
+    "      --root-tree <tree.flora.json>  fit a roots recipe to the solved trunk before cooking\n"
     "      --sward-assets <dir>  bake ground PBR and a 20 m distance form beside a sward recipe;\n"
     "                     directory must be outside a checkout (contains no ancestor AGENTS.md)\n"
     "      --materials <dir>  the material pack a part with no set of its own takes its role's\n"
@@ -210,6 +212,7 @@ bool sward_assets(const flora::FloraFile& file, const geometry::ClusterFileData&
 int flora(int argc, char** argv) {
   std::string input;
   std::string sward_directory;
+  std::string root_tree;
   std::string output;
   std::string ddc;
   std::string materials_dir;
@@ -223,6 +226,9 @@ int flora(int argc, char** argv) {
       cache = true;
     } else if (a == "--force") {
       force = true;
+    } else if (a == "--root-tree") {
+      if (i + 1 >= argc) return usage("--root-tree needs a tree recipe");
+      root_tree = argv[++i];
     } else if (a == "--sward-assets") {
       if (i + 1 >= argc) return usage("--sward-assets needs a directory");
       sward_directory = argv[++i];
@@ -265,6 +271,16 @@ int flora(int argc, char** argv) {
   flora::FloraFile file;
   std::string error;
   if (!flora::read_flora_file(text, file, error)) return failed(input + ": " + error);
+  if (!root_tree.empty()) {
+    if (file.species != "roots") return usage("--root-tree requires a roots input recipe");
+    std::string tree_text;
+    flora::FloraFile tree_file;
+    if (io::read_file(root_tree, tree_text) != io::Status::Ok)
+      return failed("cannot read " + root_tree);
+    if (!flora::read_flora_file(tree_text, tree_file, error) ||
+        !flora::roots_for_tree(tree_file, file.roots, error, true))
+      return failed(root_tree + ": " + error);
+  }
 
   // `build`'s defaults, which are the renderer's: the two apps share an entry only when they agree
   // on the options the key is taken over.
@@ -316,8 +332,9 @@ int flora(int argc, char** argv) {
   summary.set("species", JsonValue(file.species));
   summary.set("source_hash", JsonValue(source_hash));
   summary.set("build_key", JsonValue(build_key));
-  summary.set("flora_version",
-              JsonValue(file.species == "sward" ? flora::k_sward_version : flora::k_flora_version));
+  summary.set("flora_version", JsonValue(file.species == "sward"   ? flora::k_sward_version
+                                         : file.species == "roots" ? flora::k_roots_version
+                                                                   : flora::k_flora_version));
   summary.set("triangles", JsonValue(data.mesh.leaf_triangle_count));
   summary.set("clusters", JsonValue(data.mesh.mesh.clusters.size()));
   summary.set("lod_levels", JsonValue(data.mesh.level_cluster_counts.size()));

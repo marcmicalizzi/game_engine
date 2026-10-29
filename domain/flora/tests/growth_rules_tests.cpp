@@ -512,3 +512,39 @@ TEST_CASE("flora: named broadleaf blades retain small trees and reach botanical 
     }
   }
 }
+
+TEST_CASE("flora: added temperate profiles retain maturity and deterministic LOD skeletons") {
+  Vector<u64> hashes;
+  for (const char* species : {"basswood", "black_cherry", "sycamore"}) {
+    CAPTURE(species);
+    flora::FloraFile f;
+    f.species = species;
+    f.tree.seed = 73;
+    f.tree.card_bake_px = 0;
+    f.tree.impostor_px = 0;
+    std::string error;
+    f.tree.age_years = 2;
+    assets::MeshData young, adult, repeated;
+    flora::Motion ym, am, rm;
+    flora::TreeReport report;
+    REQUIRE_MESSAGE(flora::solve_flora(f, young, ym, nullptr, &report, error), error);
+    f.tree.age_years = 200;
+    REQUIRE_MESSAGE(flora::solve_flora(f, adult, am, nullptr, &report, error), error);
+    CHECK(report.triangles <= geometry::flora_species_info(species)->triangle_budget);
+    CHECK(report.leaf_triangles > 0);
+    CHECK(adult.indices.size() > young.indices.size());
+    REQUIRE(flora::solve_flora(f, repeated, rm, nullptr, nullptr, error));
+    const u64 hash = shape_hash(adult);
+    CHECK(shape_hash(repeated) == hash);
+    for (const u64 other : hashes)
+      CHECK(hash != other);
+    hashes.push_back(hash);
+    flora::FloraFile read;
+    REQUIRE(flora::read_flora_file(flora::canonical_flora_json(f), read, error));
+    CHECK(flora::flora_source_hash(read) == flora::flora_source_hash(f));
+    f.tree.triangle_budget = 8000;
+    REQUIRE_MESSAGE(flora::solve_flora(f, repeated, rm, nullptr, &report, error), error);
+    CHECK(report.triangles <= 8000);
+    CHECK(rm.parts.size() == am.parts.size());
+  }
+}

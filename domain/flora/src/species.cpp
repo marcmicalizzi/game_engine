@@ -37,6 +37,60 @@ struct Profile {
 
 // Reference dimensions are representative authored trees. They are not genus-wide limits.
 constexpr Profile k_profiles[] = {
+    {FloraSpecies::basswood,
+     Family::branching,
+     23,
+     .42f,
+     .28f,
+     .44f,
+     58,
+     .10f,
+     .55f,
+     .32f,
+     .45f,
+     .20f,
+     false,
+     false,
+     {.35, .35, .045, .04, .05, 1},
+     45,
+     900,
+     4.5f},
+    {FloraSpecies::black_cherry,
+     Family::branching,
+     24,
+     .34f,
+     .38f,
+     .34f,
+     50,
+     .08f,
+     .5f,
+     .38f,
+     .55f,
+     .15f,
+     false,
+     false,
+     {.25, .28, .035, .04, .07, 1},
+     45,
+     900,
+     3.8f},
+    {FloraSpecies::sycamore,
+     Family::branching,
+     28,
+     .65f,
+     .26f,
+     .49f,
+     62,
+     .12f,
+     .65f,
+     .22f,
+     .45f,
+     .14f,
+     false,
+     true,
+     {.45, .45, .07, .065, .08, 1},
+     45,
+     900,
+     4.2f},
     {FloraSpecies::aspen,
      Family::branching,
      22,
@@ -323,10 +377,12 @@ struct Blade {
   f64 width;
 };
 constexpr Blade k_blades[] = {
-    {FloraSpecies::maple, .15, .15},   {FloraSpecies::oak, .20, .10},
-    {FloraSpecies::elm, .13, .065},    {FloraSpecies::beech, .12, .06},
-    {FloraSpecies::walnut, .12, .05},  {FloraSpecies::ash, .12, .05},
-    {FloraSpecies::aspen, .075, .065}, {FloraSpecies::alder, .13, .085},
+    {FloraSpecies::basswood, .14, .13}, {FloraSpecies::black_cherry, .12, .045},
+    {FloraSpecies::sycamore, .18, .18}, {FloraSpecies::maple, .15, .15},
+    {FloraSpecies::oak, .20, .10},      {FloraSpecies::elm, .13, .065},
+    {FloraSpecies::beech, .12, .06},    {FloraSpecies::walnut, .12, .05},
+    {FloraSpecies::ash, .12, .05},      {FloraSpecies::aspen, .075, .065},
+    {FloraSpecies::alder, .13, .085},
 };
 
 void size_blades(FloraSpecies species, const Broadleaf& b, GrowthRules& rules) {
@@ -453,6 +509,20 @@ Resolved resolve(const Profile& p, const Tree& tree) {
   }
   if (p.species == FloraSpecies::aspen) b.leaf_width = .85f;
   if (p.species == FloraSpecies::alder) b.leaf_width = .65f;
+  if (p.species == FloraSpecies::basswood) {
+    b.leaf_width = .9f;
+    out.rules.trunk_fraction = .85;
+  }
+  if (p.species == FloraSpecies::black_cherry) {
+    b.leaf_width = .375f;
+    out.rules.trunk_fraction = .9;
+  }
+  if (p.species == FloraSpecies::sycamore) {
+    b.leaf_width = 1;
+    b.wander_deg = 10;
+    b.twig_radius_m = .0035f;
+    out.rules.trunk_fraction = .7;
+  }
   if (p.species == FloraSpecies::hemlock) {
     out.rules.irregular_stations = true;
     out.rules.spray_lift = .25;

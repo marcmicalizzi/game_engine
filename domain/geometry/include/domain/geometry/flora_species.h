@@ -37,7 +37,10 @@ enum class FloraSpecies : u8 {
   cover,
   ivy,
   roots,
-  litter
+  litter,
+  basswood,
+  black_cherry,
+  sycamore
 };
 // **How a species moves** (renderer.md, "The flora stage"; R95). `parts`: posed per part on the
 // CPU, parent-first, each instance a run of the frame's part-pose table (the trees). `field`: posed
@@ -120,6 +123,9 @@ inline constexpr FloraSpeciesInfo k_flora_species[] = {
      {0, 0, 0, 0},
      FloraMotionKind::none,
      {false, 1, true}},
+    {FloraSpecies::basswood, "basswood", true, 400000, {.006f, .03f, .07f, .12f}},
+    {FloraSpecies::black_cherry, "black_cherry", true, 400000, {.006f, .03f, .07f, .12f}},
+    {FloraSpecies::sycamore, "sycamore", true, 600000, {.006f, .03f, .07f, .12f}},
 };
 constexpr bool valid_flora_catalogue() {
   for (u32 i = 0; i < sizeof(k_flora_species) / sizeof(k_flora_species[0]); ++i) {

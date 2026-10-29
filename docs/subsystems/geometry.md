@@ -1098,3 +1098,6 @@ size table (3 and 56 bytes) and neither reaches the GPU; the renderer turns the 
 the catalogue names a species.
 
 G103 adds the shared catalogue kind `litter`: rigid, zero compliance, untraced and nearest-cascade only. Its structural flags govern collision, including part zero. See [litter](litter.md).
+G113 appends basswood, black_cherry and sycamore to the flora catalogue without changing existing
+IDs, hot struct sizes or motion/caster defaults. Their shared growth profiles and source budgets
+are grounded in [tree species expansion](../experiments/tree-species-expansion.md).

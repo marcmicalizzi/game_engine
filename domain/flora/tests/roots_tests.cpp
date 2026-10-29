@@ -218,3 +218,97 @@ TEST_CASE(
   CHECK_FALSE(flora::build_flora_container(f, options, 65536, container, nullptr, error));
   CHECK(error.find("omit") != std::string::npos);
 }
+
+TEST_CASE("roots: resolved trunk collar survives LOD and follows the actual surface") {
+  flora::FloraFile tree;
+  tree.species = "oak";
+  tree.tree.height_m = 12;
+  tree.tree.trunk_radius_m = .45f;
+  tree.tree.seed = 17;
+  flora::Roots p;
+  std::string error;
+  REQUIRE_MESSAGE(flora::roots_for_tree(tree, p, error, true), error);
+  REQUIRE(p.stem.has_value());
+  const auto& stem = *p.stem;
+  CHECK(stem.samples.size() == (stem.sides + 1) * stem.rows);
+  assets::MeshData mesh;
+  flora::Motion motion;
+  flora::RootReport report;
+  REQUIRE_MESSAGE(flora::solve_roots(p, mesh, motion, report, error), error);
+  CHECK(report.collar_triangles == 2 * stem.sides * (stem.rows - 1));
+  CHECK(report.elements == report.primary + report.secondary + 1);
+  CHECK(report.triangles <= p.triangle_budget);
+  CHECK(report.fine_element.size() == mesh.indices.size() / 3);
+  CHECK(report.coarse_element.size() == report.coarse_indices.size() / 3);
+  const u32 last = mesh.positions.size() - (stem.sides + 1);
+  const u32 sampled = (stem.rows - 1) * (stem.sides + 1);
+  for (u32 j = 0; j <= stem.sides; ++j) {
+    const auto& a = stem.samples[sampled + j];
+    const Vec3 delta = mesh.positions[last + j] - Vec3{a.x, a.y, a.z};
+    CHECK(length(delta) < .001f);
+    CHECK(dot(mesh.normals[last + j], Vec3{a.nx, a.ny, a.nz}) > .999f);
+  }
+  const u32 first = mesh.positions.size() - stem.samples.size();
+  for (u32 j = 0; j <= stem.sides; ++j)
+    CHECK(mesh.positions[first + j].y < -.05f);
+  flora::FloraFile recipe;
+  recipe.species = "roots";
+  recipe.roots = p;
+  flora::FloraFile reread;
+  REQUIRE(flora::read_flora_file(flora::canonical_flora_json(recipe), reread, error));
+  CHECK(flora::flora_source_hash(recipe) == flora::flora_source_hash(reread));
+  const u64 before = flora::flora_source_hash(recipe);
+  recipe.roots.stem->samples[0].x += .01f;
+  CHECK(flora::flora_source_hash(recipe) != before);
+  p.stem->samples[0].x = std::numeric_limits<f32>::quiet_NaN();
+  CHECK_FALSE(flora::solve_roots(p, mesh, motion, report, error));
+  p.enabled = false;
+  REQUIRE(flora::solve_roots(p, mesh, motion, report, error));
+  CHECK(mesh.positions.empty());
+}
+
+TEST_CASE("roots: malformed binding preserves the previous boundary") {
+  flora::Roots p;
+  p.stem = flora::RootStem{};
+  assets::MeshData mesh;
+  flora::Motion motion;
+  std::string error;
+  CHECK_FALSE(flora::fit_root_stem(mesh, motion, p, error));
+  REQUIRE(p.stem.has_value());
+  CHECK(p.stem->rows == 9);
+  p.species = "ancient";
+  CHECK_FALSE(flora::fit_root_stem(mesh, motion, p, error));
+  CHECK(error.find("buttresses and hollows") != std::string::npos);
+}
+
+TEST_CASE("roots: boundary binding supports broadleaf, conifer and legacy trunk structures") {
+  for (const char* name : {"beech", "cedar", "birch", "willow", "conifer", "orchard"}) {
+    CAPTURE(std::string_view(name));
+    flora::FloraFile tree;
+    tree.species = name;
+    tree.tree.age_years = 60;
+    tree.tree.height_m = 8;
+    tree.tree.trunk_radius_m = .3f;
+    flora::Roots roots;
+    std::string error;
+    REQUIRE_MESSAGE(flora::roots_for_tree(tree, roots, error, true), error);
+    REQUIRE(roots.stem.has_value());
+    roots.ground = patch(.35f);
+    assets::MeshData mesh;
+    flora::Motion motion;
+    flora::RootReport report;
+    REQUIRE_MESSAGE(flora::solve_roots(roots, mesh, motion, report, error), error);
+    CHECK(report.collar_triangles > 0);
+    CHECK(report.triangles <= roots.triangle_budget);
+    roots.bounds = flora::RootBounds{};
+    roots.bounds->min_x_m = -.5f;
+    roots.bounds->max_x_m = .5f;
+    roots.bounds->min_z_m = -.5f;
+    roots.bounds->max_z_m = .5f;
+    REQUIRE_MESSAGE(flora::solve_roots(roots, mesh, motion, report, error), error);
+    for (const auto& p : mesh.positions) {
+      CHECK(std::abs(p.x) <= .5001f);
+      CHECK(std::abs(p.z) <= .5001f);
+    }
+  }
+}
