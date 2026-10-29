@@ -610,14 +610,15 @@ The build host now supplies encoded images through `MeshGeneratorHosts::read_ima
 bake samples actual base-colour RGB and leaf alpha, with sRGB decoding, bilinear repeat sampling,
 material factors, bark UV scale and the material's alpha cutoff. Its coverage measurement uses
 the same sampler. A red maple therefore stays red through the baked levels. The canonical flora
-source hash additionally covers the bytes of both consumed base-colour images; same-path edits
-invalidate the tree. The renderer's generator host and `engine-content flora` share this path. The
+source hash additionally covers the bytes of the consumed base-colour, normal and roughness
+images of both materials (the last two since G93); same-path edits invalidate the tree. The renderer's generator host and `engine-content flora` share this path. The
 hash takes each image's hash from the host's `hash_image` when it has one (since W75: a load's one
 identity per image, a material pack's from its index, so a cooked forest reads no base colour to key
 its trees) and from the bytes otherwise — the same number either way.
-Direct pure calls without an image host retain solver colours and the ellipse fallback. Normal
-and roughness textures are not baked; the existing geometric normals and leaf roughness remain
-the approximation. Solver cache version **9** invalidates the previous geometry and atlases.
+Direct pure calls without an image host retain solver colours and the ellipse fallback, and the
+faces' geometry normals and the leaf's scalar roughness. Solver cache version **9** invalidated
+the previous geometry and atlases. Normal and roughness images are baked since G93 (the bake
+paragraph below).
 
 The geometric foliage changes and explicit source-budget compromises are recorded in
 [G87's audit](../experiments/tree-profile-audit.md#terminal-foliage-and-distance-follow-up).
@@ -657,11 +658,49 @@ bilinearly and wrapped, at each covered sample's interpolated UV: the leaf's alp
 material's cutoff, cuts the leaf out exactly as the near card is cut, and the bark's image is
 tiled by the pack's own UV scale; the material's base-colour factor multiplies either. Only where
 a material has no image (no host reader, or no path) does the bake fall back to the factor alone,
-and to the ellipse the card holds for a masked leaf. **What it does not carry across** is the
-rest of the pack: the normal is the faces' **geometry normal** and not the material's normal map,
-and the level's material takes the leaf material's **scalar roughness**, so a pack's vein relief
-and roughness variation, which the near leaves have, are gone from every branch-group level and
-the star (roadmap G93). A branch-group level bakes **16 representative sub-trees**
+and to the ellipse the card holds for a masked leaf.
+
+**The rest of the pack (G93, 2026-10-28)**: the same read gives the bake each material's
+**normal map** and **metallic-roughness image** (`BakeLook::*_normal_image`, `*_roughness_image`),
+where the pack's set names them, and a covered sample reads them at the UV it reads the colour at,
+with the same bilinear, wrapped filter. *The normal*: the face's geometry normal, turned to the
+viewer, is the base the map perturbs and not a replacement for it. A triangle's tangent frame is
+built the way the resolve builds the near surface's (`tangent_frame` in `material.slang`,
+`triangle_frame` in `impostor.cpp`: T and B from the edges against the UV deltas, T made orthogonal
+to the face normal and B to both, B keeping the UV island's handedness); the map's vector is read
+as the resolve reads it (x and y from the texel, z rebuilt as BC5 stores it, x and y widened by the
+material's `normal_scale`, renormalized), taken into the world by that frame and then into the
+view's u, v and normal axes, so a leaf standing at an angle to its card bends the card's texel by
+what the same leaf bends the near surface. A texel's normal is still the mean of its covered
+samples' vectors, renormalized: it shortens where the samples disagree, the length is lost at the
+bake, and the texture step builds the atlas's R97 variance chain from the bytes like any normal
+map, which is where the lost length comes back as roughness. A triangle with degenerate UVs keeps
+the face's normal, as the near surface leaves its normal alone. *The roughness*: a sample's
+roughness is the image's G times the material's factor (a pack's leaf set carries factor 1), or
+the scalar without an image, and a texel is the covered samples' mean. It is written as a **third
+image per level**, glTF's metallic-roughness packing (R 255, G roughness, B 0), embedded beside the
+colour and the normal; the level's material names it with a factor of one and a metallic of zero.
+**A level whose bark and leaf have no roughness image has no third image and is the two images it
+was**, with the leaf material's scalar. A texel nothing covers holds 255 in G, the roughest, so a
+filter blends the least specular value into a card's edge. The bark's maps ride the star's trunk
+the same way, with the pack's UV scales. What stays as it was: the colour, the alpha, the layout,
+the atlas sizes and the coverage measurement (`measure_level` reads colour alone, so every level's
+coverage error is the number it was). The base also stays the face's where a leaf's vertex normals
+are not: the near surface shades with the interpolated vertex normal, the bake with the face's.
+
+**The key**: the bytes change only where a set names a normal or roughness image, and so does the
+source hash, which mixes in each such image's hash as it does the base colour's, so an entry built
+before is not trusted; a tree of a pack with neither keeps the hash, the key and the bytes it had.
+`k_flora_version` did not move (11): a bump would rebuild every species of every cache for a change
+that reaches only the trees whose pack has these maps. The forest proof of concept's leaf set
+(`broadleaf/leaf` in `world/v5/materials`) has a flat normal map and a constant 0.84 roughness, so
+for it the change is the roughness and a normal that is flat to the byte (measured: the baked
+atlas's mean normal agrees to 0.001 and its roughness is 0.84 where the scalar was the solver's);
+the relief is in the tests (`impostor_tests.cpp`: a uniform tilt reaches the card's frame, in an
+aligned and a turned UV layout; a flat map is the bake's old bytes; a roughness image is carried
+per texel times its factor).
+
+A branch-group level bakes **16 representative sub-trees**
 (spread evenly over the groups' order) into a 4 × 4 atlas of 64-texel tiles, and every card samples
 one of them by its root's hash — tens of thousands of sub-trees each baked would be hundreds of
 megabytes, and a sub-tree's picture is statistically its neighbours'. The tree bakes its five planes
