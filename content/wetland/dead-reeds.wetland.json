@@ -1,0 +1,7 @@
+{
+  "species": "reed",
+  "seed": 7,
+  "dead_share": 0.85,
+  "broken_share": 0.55,
+  "collider": false
+}

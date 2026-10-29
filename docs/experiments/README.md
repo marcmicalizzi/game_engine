@@ -132,3 +132,5 @@ The harness records it (`foundation/bench`, [bench.md](../subsystems/bench.md#me
 A GPU measurement adds the renderer's own `gpu_memory` block (`budget_mib`, `used_mib`, `device_local_total_mib`), which is what says whether another process was holding the card's memory while the frame was timed.
 
 Soil morphology: [soil-banks-tree-throw](soil-banks-tree-throw.md), research and validation for G100.
+
+[G103: wetland plants](wetland-plants.md) records dimensions, authored controls and budget validation.

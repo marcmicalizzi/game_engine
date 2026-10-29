@@ -182,3 +182,5 @@ adapter delegates to `MaskLevel::present`. The renderer uses presence for its re
 count and reads each present tile only in the copy pass. A failed read of a present tile is an
 error, not absence. This is a cold callback table (one extra function pointer), not frame state;
 the frame's GPU material layout and hot-type sizes do not change.
+
+The [wetland generator](wetland.md) registers patch placements with explicit depth bands, slope, optional masks, earlier-footprint clearance and stable finite-window IDs.

@@ -2032,3 +2032,5 @@ than silently coarsening the supplied terrain. The example solves once to determ
 whether a placement exists and to collect the grass mask; the container cook solves
 again. This is cold authoring work. Cache the resulting recipe/container per site,
 and omit or stream out distant root placements instead of recooking each frame.
+
+The [wetland capability](wetland.md) reuses the public companion shape kit, motion records and CPU impostor baker for eight new forms. Its profiles are separate; existing flora output is unchanged.

@@ -1,0 +1,57 @@
+{
+  "format": "engine.scene.v1",
+  "name": "wetland-patches",
+  "placements": [
+    {
+      "generator": "wetland",
+      "params": {
+        "species": "sedge",
+        "meshes": [
+          "../../wetland/sedge.wetland.json"
+        ],
+        "seed": 1,
+        "x_m": -10,
+        "radius_x_m": 4,
+        "radius_z_m": 5,
+        "spacing_m": 1,
+        "density": 0.85,
+        "irregularity": 0.55,
+        "water_y_m": 0
+      }
+    },
+    {
+      "generator": "wetland",
+      "params": {
+        "species": "rush",
+        "meshes": [
+          "../../wetland/rush.wetland.json"
+        ],
+        "seed": 2,
+        "x_m": 0,
+        "radius_x_m": 4,
+        "radius_z_m": 5,
+        "spacing_m": 1,
+        "density": 0.85,
+        "irregularity": 0.55,
+        "water_y_m": 0
+      }
+    },
+    {
+      "generator": "wetland",
+      "params": {
+        "species": "reed",
+        "meshes": [
+          "../../wetland/reed.wetland.json"
+        ],
+        "seed": 3,
+        "x_m": 10,
+        "radius_x_m": 4,
+        "radius_z_m": 5,
+        "spacing_m": 1,
+        "density": 0.85,
+        "irregularity": 0.55,
+        "water_y_m": 0
+      }
+    }
+  ]
+}

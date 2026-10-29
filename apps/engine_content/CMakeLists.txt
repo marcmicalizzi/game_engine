@@ -177,3 +177,7 @@ if(TARGET engine::soil)
     target_compile_definitions(engine_engine_content_tests PRIVATE ENGINE_CONTENT_SOIL=1)
   endif()
 endif()
+
+if(TARGET engine::wetland)
+  target_link_libraries(engine_engine_content PRIVATE engine::wetland)
+endif()

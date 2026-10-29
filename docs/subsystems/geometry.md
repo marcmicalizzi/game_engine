@@ -1096,3 +1096,5 @@ per cascade would pay the pool pass for every blade in every map. Both structs a
 size table (3 and 56 bytes) and neither reaches the GPU; the renderer turns the policy into
 `InstanceDesc` flag bits per mesh ([renderer](renderer.md#the-caster-policy)), and nothing but
 the catalogue names a species.
+
+The flora catalogue appends [wetland plants](wetland.md): emergents use field motion, floating leaves use none; all use one rest-pose cascade and no traced shadows. Old IDs retain their values.
