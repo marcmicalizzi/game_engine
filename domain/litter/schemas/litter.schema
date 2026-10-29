@@ -1,0 +1,53 @@
+namespace engine.litter
+enum Kind : u8 { leaf = 0, needles = 1, cone = 2, bark = 3, twig = 4, tangle = 5 }
+/// Static geometry in a local metre frame. Defaults and sources: experiments/forest-litter.md.
+struct Recipe @version(1) {
+  kind: Kind = leaf
+  /// Any u64; independent streams per particle and purpose.
+  seed: u64 = 1
+  /// 0 uses kind default; otherwise 1..4096 particles. Budget never drops particles.
+  count: u32 = 0
+  /// Particle-centre radius .05..4 m; particles may extend beyond it. Default .45.
+  radius_m: f32 = 0.45 @unit(m)
+  /// Central pile depth 0...25 m; default .025.
+  depth_m: f32 = 0.025 @unit(m)
+  /// 0 uses kind default; otherwise .01..2 m (wood >=.1).
+  length_m: f32 = 0.0 @unit(m)
+  /// 0 uses kind default; otherwise .0005...2 m; wood diameter >=.006 m.
+  width_m: f32 = 0.0 @unit(m)
+  /// Sheet curl / length, 0..1; default .35. Leaves and bark only.
+  curl: f32 = 0.35
+  /// 0 uses kind budget; explicit 32..1000000 source triangles. Insufficient budgets fail.
+  triangle_budget: u32 = 0
+  /// False: fine litter does not block a walker. True enables the standard 5 cm proxy.
+  collider: bool = false
+}
+/// One finite pile at an accepted cell; tile coordinates are inclusive.
+struct Layer @version(1) {
+  meshes: string[] = []
+  seed: u64 = 1
+  min_x: i32 = 0
+  max_x: i32 = 0
+  min_z: i32 = 0
+  max_z: i32 = 0
+  /// Whole metres 1..16, dividing host tile size; default 2.
+  cell_m: u32 = 2 @unit(m)
+  /// Radius enclosing every input mesh, .05..cell_m*.35 m; default .65.
+  extent_m: f32 = 0.65 @unit(m)
+  /// Acceptance away from obstacles on flat ground, 0..1; default .12.
+  background: f32 = 0.12
+  /// Added probability per .1 m depression, clamped 0..1; default .65.
+  hollow_gain: f32 = 0.65
+  /// Added probability at outside edge of earlier footprint, 0..1; default .65.
+  obstacle_gain: f32 = 0.65
+  /// Edge accumulation band .1..4 m; default .8.
+  edge_m: f32 = 0.8 @unit(m)
+  /// Maximum ground rise/run, 0..2; default .6.
+  max_slope: f32 = 0.6
+  /// Cooked ground mask palette index 0..253, or -1 to ignore masks (default).
+  substrate: i32 = -1
+  /// Candidate work budget per tile, 1..65536; default 4096. Excess fails at open.
+  max_cells: u32 = 4096
+  /// Whole-read work budget, 1..4294967295 candidate cells; default 1048576.
+  max_total_cells: u32 = 1048576
+}

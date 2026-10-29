@@ -1,0 +1,90 @@
+{
+  "meshes": [],
+  "camera_path": "camera-path.json",
+  "instances": [],
+  "format": "engine.scene.v1",
+  "placements": [
+    {
+      "generator": "scatter",
+      "params": {
+        "tile_size": 32,
+        "budget": {
+          "per_tile": 4
+        },
+        "region": {
+          "tile_max": [
+            0,
+            0
+          ],
+          "tile_min": [
+            -1,
+            -1
+          ],
+          "kind": "Tiles"
+        },
+        "density": {
+          "per_m2": 0.003,
+          "kind": "Constant"
+        },
+        "name": "obstacles",
+        "kinds": [
+          {
+            "weight": 1,
+            "scale_min": 1,
+            "mesh": "../../deadwood/stump.deadwood.json",
+            "scale_max": 1,
+            "spacing": 12,
+            "name": "stump",
+            "align": true
+          }
+        ],
+        "seed": 71
+      }
+    },
+    {
+      "generator": "litter",
+      "params": {
+        "background": 0.35,
+        "obstacle_gain": 0.65,
+        "max_z": 0,
+        "min_z": -1,
+        "meshes": [
+          "../../litter/leaf.litter.json",
+          "../../litter/needles.litter.json",
+          "../../litter/cone.litter.json",
+          "../../litter/bark.litter.json",
+          "../../litter/twig.litter.json",
+          "../../litter/tangle.litter.json"
+        ],
+        "hollow_gain": 0.65,
+        "cell_m": 4,
+        "max_x": 0,
+        "min_x": -1,
+        "extent_m": 1.3,
+        "seed": 29
+      }
+    }
+  ],
+  "name": "forest-litter",
+  "terrain": {
+    "dune_height": 0.15,
+    "seed": 7,
+    "dune_wavelength": 12,
+    "size": 129,
+    "generator": "Waves",
+    "extent": 96,
+    "materials": {
+      "layers": [
+        {
+          "roughness_factor": 0.95,
+          "tint": [
+            0.075,
+            0.045,
+            0.025
+          ],
+          "name": "soil"
+        }
+      ]
+    }
+  }
+}

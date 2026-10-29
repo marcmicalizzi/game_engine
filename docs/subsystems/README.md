@@ -76,6 +76,7 @@ One page per module, created in the same change that creates the module. Templat
 | deadwood | domain | [deadwood.md](deadwood.md) |
 | deadwood_schemas | domain | [deadwood_schemas.md](deadwood_schemas.md) |
 | soil | domain | [soil.md](soil.md) |
+| litter | domain | [litter.md](litter.md) |
 | renderer | systems | [renderer.md](renderer.md) |
 | animation | systems | [animation.md](animation.md) |
 | audio_system (capability) | systems | [audio_system.md](audio_system.md) |

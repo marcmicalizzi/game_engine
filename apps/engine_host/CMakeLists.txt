@@ -38,7 +38,7 @@ endforeach()
 # which makes an authored terrain draw (docs/subsystems/tileset.md). Nothing here calls one: the
 # scene reader finds
 # each by the name a scene gives.
-foreach(_gen authored city cover deadwood flora rocks ruins scatter sky soil terrain tileset water)
+foreach(_gen authored city cover deadwood litter flora rocks ruins scatter sky soil terrain tileset water)
   if(TARGET engine::${_gen})
     list(APPEND _host_deps ${_gen})
   endif()

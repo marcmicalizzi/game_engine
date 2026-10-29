@@ -80,6 +80,10 @@ endif()
 # `vine` and `cover` the same way, with the cover capability (docs/subsystems/cover.md): a recipe
 # grown over the host it names into the host's companion through the cache. Linked, it is also
 # what makes `build` and `build-all` take a `.vine.json` or a `.cover.json` through the registry.
+if(TARGET engine::litter)
+  list(APPEND _content_deps litter)
+  list(APPEND _content_tests tests/litter_tests.cpp)
+endif()
 if(TARGET engine::deadwood)
   list(APPEND _content_deps deadwood)
 endif()

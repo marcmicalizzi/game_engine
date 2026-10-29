@@ -1,0 +1,107 @@
+{
+  "format": "engine.scene.v1",
+  "name": "forest-litter-study",
+  "terrain": {
+    "dune_height": 0,
+    "seed": 7,
+    "dune_wavelength": 40,
+    "size": 65,
+    "generator": "Waves",
+    "extent": 64,
+    "materials": {
+      "layers": [
+        {
+          "roughness_factor": 0.95,
+          "tint": [
+            0.075,
+            0.045,
+            0.025
+          ],
+          "name": "soil"
+        }
+      ]
+    }
+  },
+  "instances": [
+    {
+      "translation": [
+        0.0,
+        0,
+        0.0
+      ],
+      "name": "leaf",
+      "mesh": 0
+    },
+    {
+      "translation": [
+        1.6,
+        0,
+        0.0
+      ],
+      "name": "needles",
+      "mesh": 1
+    },
+    {
+      "translation": [
+        3.2,
+        0,
+        0.0
+      ],
+      "name": "cone",
+      "mesh": 2
+    },
+    {
+      "translation": [
+        0.0,
+        0,
+        1.6
+      ],
+      "name": "bark",
+      "mesh": 3
+    },
+    {
+      "translation": [
+        1.6,
+        0,
+        1.6
+      ],
+      "name": "twig",
+      "mesh": 4
+    },
+    {
+      "translation": [
+        3.2,
+        0,
+        1.6
+      ],
+      "name": "tangle",
+      "mesh": 5
+    }
+  ],
+  "meshes": [
+    {
+      "path": "../../litter/leaf.litter.json",
+      "name": "leaf"
+    },
+    {
+      "path": "../../litter/needles.litter.json",
+      "name": "needles"
+    },
+    {
+      "path": "../../litter/cone.litter.json",
+      "name": "cone"
+    },
+    {
+      "path": "../../litter/bark.litter.json",
+      "name": "bark"
+    },
+    {
+      "path": "../../litter/twig.litter.json",
+      "name": "twig"
+    },
+    {
+      "path": "../../litter/tangle.litter.json",
+      "name": "tangle"
+    }
+  ]
+}
