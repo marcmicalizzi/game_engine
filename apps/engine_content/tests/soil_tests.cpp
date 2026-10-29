@@ -24,7 +24,7 @@ Output run_soil(std::vector<std::string> args) {
   platform::Process p;
   std::string error;
   Output result;
-  if (!p.spawn(argv, &error)) {
+  if (!p.spawn(argv, &error, /*merge_stderr=*/ true)) {  // the refusal sentence is on stderr
     FAIL(error);
     return result;
   }
