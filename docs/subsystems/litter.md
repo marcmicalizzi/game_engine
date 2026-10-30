@@ -112,7 +112,10 @@ containers, math, hash, json, schema, assets, geometry, materials, texture, scen
 and litter_schemas. The only read of another solver is its public `deadwood::solve` and identity
 API. Hosts link litter conditionally. Registration points are the mesh and placement registries
 and schema descriptions. No protocol method or tunable: all controls are recipe data.
-Determinism is derived and cross-toolchain. With the capability disabled, no cook or placement
+Determinism is derived and cross-toolchain. The twig and tangle container pins follow the
+deadwood solver they reuse: a change to deadwood's geometry or `k_deadwood_version` moves those
+two (and only those two) and re-pins them in `determinism_tests.cpp` with the reason and commit,
+as G104's deadwood v2 did. With the capability disabled, no cook or placement
 runs; minimal configurations omit it. The shared inert catalogue row holds no runtime state.
 
 ## Not yet

@@ -43,7 +43,11 @@ merge coordinator's responsibility.
 The six seed-17 recipes have 3072/2400/1360/1600/2625/8536 source triangles respectively
 (leaf/needles/cone/bark/twig/tangle), all below their profiles' budgets. MSVC debug and Linux
 Clang debug agree on the six complete-container pins. Pins are new; no existing kind's pin or
-shape changes. Tests cover mesh validity, strict budgets, source wood reuse, schema rejection,
+shape changes. (2026-10-30: the twig and tangle pins moved once, when G104's deadwood v2 changed
+the wood geometry litter reuses: tangle went from 285 clusters / 16898 vertices to 281 / 16491
+at the same 8536 triangles, twig kept its 2625 triangles and 90 clusters. The new values are
+the same on MSVC debug and release, Linux Clang debug and GCC release; the four kinds that use
+no deadwood are unchanged.) Tests cover mesh validity, strict budgets, source wood reuse, schema rejection,
 registry round trips, empty output on failure, substrate weights, obstacle bands, hollows,
 tile order, ID/work bounds and precision 16 billion metres from the origin.
 
