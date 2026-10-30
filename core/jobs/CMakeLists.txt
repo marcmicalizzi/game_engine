@@ -5,4 +5,7 @@ engine_module(NAME jobs LAYER core
   SOURCES src/job_system.cpp)
 
 engine_module_tests(NAME jobs
-  SOURCES tests/job_system_tests.cpp tests/queue_tests.cpp tests/size_table.cpp)
+  SOURCES tests/job_system_tests.cpp tests/queue_tests.cpp tests/help_depth_tests.cpp
+          tests/size_table.cpp)
+
+engine_module_bench(NAME jobs SOURCES bench/jobs_bench.cpp)
