@@ -8,7 +8,9 @@
 // (LIFO for the owner, FIFO for thieves); idle workers steal from workers in the same cache
 // domain first and from the rest of their pool second. Pools never steal from each other,
 // so a slow efficiency core cannot pick up critical-path work. Jobs submitted from outside a
-// pool (the main thread, or a worker in the other pool) go through the pool's inbox.
+// pool go through the pool's inbox, except that the first outside thread to submit (normally the
+// main thread) is given the pool's guest deque, a worker's deque the workers steal from, so the
+// chunks of its own parallel_for wait at the end it pops rather than behind the whole inbox.
 //
 // A Job is a plain function pointer plus a context pointer (no std::function, no allocation
 // per job). Completion is tracked with Counters. Waiting on a Counter from a worker thread
@@ -40,7 +42,16 @@ struct Job {
 
 enum class Pool : u8 { Performance = 0, Efficiency = 1, Count = 2 };
 
+namespace detail {
+template <class T>
+class WorkDeque;
+}  // namespace detail
+
 // Counts outstanding jobs. add() before scheduling, the system signals as jobs finish.
+//
+// A counter also names a group: the jobs scheduled with it. A thread waiting on it inside a job
+// it was lent (see JobSystem::wait) runs only that group's jobs, and `queued_` — how many of them
+// sit in a queue rather than running — tells it whether there is any to look for.
 class Counter {
  public:
   Counter() noexcept = default;
@@ -66,7 +77,9 @@ class Counter {
   }
 
  private:
+  friend class JobSystem;
   alignas(64) std::atomic<u32> remaining_{0};
+  std::atomic<u32> queued_{0};  // scheduled with this counter and not yet started; a hint
 };
 
 struct JobSystemConfig {
@@ -94,6 +107,12 @@ struct JobSystemStats {
   u64 sleeps = 0;
   u64 helper_runs = 0;  // executed by a non-worker thread while it waited (includes inline runs)
   u64 inline_runs = 0;  // executed by the submitter because every queue was full
+  // Jobs a waiting thread ran that were not of the group it waited for: each is a job lent to a
+  // stack that was already inside another one. At most one deep per stack (JobSystem::wait).
+  u64 foreign_helps = 0;
+  u64 parked = 0;        // foreign jobs a waiter inside a lent job took and put back in a queue
+  u64 help_escapes = 0;  // parked jobs run in place because every queue they could go to was full
+  u32 max_job_nesting = 0;  // the most jobs one thread has had on its stack at once
 };
 
 class JobSystem {
@@ -111,6 +130,14 @@ class JobSystem {
   // its pool meanwhile; from any other thread it helps the Performance pool briefly and then
   // blocks. Consequently a Performance job may run on the waiting thread, where
   // current_worker() is null; Efficiency jobs only ever run on Efficiency workers.
+  //
+  // Helping is one level deep (docs/subsystems/jobs.md, "Helping is one level deep"): a waiting
+  // thread runs any job of the pool only while no job lent to it by an earlier wait is still on
+  // its stack. A wait nested inside such a lent job runs only the counter's own jobs — the chunks
+  // it is waiting for — and puts back any other job it takes while looking for them. So the stack
+  // a wait borrows holds at most one job that is not the waiter's own work, rather than one per
+  // level of helping, as deep as the pool's queues: F26, where a cold content build's main thread
+  // held a texture build per level until its 1 MB stack ran out.
   void wait(Counter& counter);
 
   // Runs `body(begin, end)` over [0, count) in chunks of at most `grain`, in parallel, and
@@ -163,11 +190,21 @@ class JobSystem {
  private:
   struct Worker;
   struct PoolState;
+  using detail_deque = detail::WorkDeque<Job>;
 
   static void worker_main(JobSystem* self, Worker* worker);
-  bool try_run_one(Worker* worker);
-  bool try_run_one_from_pool(PoolState& pool, Worker* self_worker);
+  // `waited`, when set, is the counter the calling thread is waiting on: a job of another group
+  // is then run as lent (run_helped).
+  bool try_run_one(Worker* worker, const Counter* waited = nullptr);
+  bool try_run_one_from_pool(PoolState& pool, Worker* self_worker, const Counter& waited);
+  void run_taken(const Job& job, Worker* worker, const Counter* waited) noexcept;
+  // `own` is the caller's deque: its worker's, or the guest deque it owns; may be null.
+  bool help_own(Counter& counter, PoolState& pool, Worker* self_worker, detail_deque* own);
+  void park(PoolState& pool, detail_deque* own, Worker* self_worker, const Job& job);
+  detail_deque* guest_of_caller(PoolState& pool) noexcept;
+  detail_deque* own_deque(PoolState& pool) noexcept;
   void run_job(const Job& job, Worker* worker) noexcept;
+  void run_helped(const Job& job, Worker* worker, const Counter& waited) noexcept;
   void wake_one(PoolState& pool) noexcept;
   void build_workers(const JobSystemConfig& config);
 
@@ -179,6 +216,10 @@ class JobSystem {
   std::atomic<bool> running_{false};
   std::atomic<u64> inline_runs_{0};
   std::atomic<u64> helper_runs_{0};
+  std::atomic<u64> foreign_helps_{0};
+  std::atomic<u64> parked_{0};
+  std::atomic<u64> help_escapes_{0};
+  std::atomic<u32> max_job_nesting_{0};
 };
 
 }  // namespace engine::jobs

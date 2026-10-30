@@ -18,6 +18,10 @@ namespace {
 
 thread_local JobSystem* t_current_system = nullptr;
 thread_local const WorkerInfo* t_current_worker = nullptr;
+// Jobs on this thread's stack, and how many of them were lent to it by a wait for a group they do
+// not belong to (at most one: JobSystem::wait).
+thread_local u32 t_job_nesting = 0;
+thread_local u32 t_lent_depth = 0;
 
 constexpr u32 k_max_pool_workers = 4096;
 
@@ -53,15 +57,41 @@ struct alignas(64) JobSystem::Worker {
 // re-checks the queues, then waits for `epoch` to change. A submitter that sees sleepers > 0
 // bumps `epoch` and notifies. Spurious notifications cost a loop iteration and nothing else,
 // unlike a semaphore whose surplus tokens would accumulate.
+//
+// The guest deque is a worker's deque for the one outside thread that claims it first, normally
+// the main thread: what it schedules goes there instead of the inbox, so a parallel_for it runs
+// keeps its chunks at the end of a deque it pops itself, as a worker's are, rather than at the
+// tail of an inbox behind every job queued before them (F26: a cold content build's main thread
+// otherwise waited behind 1,800 queued texture builds for the rows of its own). Workers steal
+// from it like any other deque. Other outside threads use the inbox.
 struct alignas(64) JobSystem::PoolState {
   Pool pool = Pool::Performance;
   SmallVector<Worker*, 64> workers;
   detail::MpmcQueue<Job> inbox;
+  detail::WorkDeque<Job> guest;
+  alignas(64) std::atomic<const void*> guest_owner{nullptr};
   alignas(64) std::atomic<u32> epoch{0};
   alignas(64) std::atomic<u32> sleepers{0};
 
-  explicit PoolState(u32 inbox_capacity) : inbox(inbox_capacity) {}
+  explicit PoolState(u32 capacity) : inbox(capacity), guest(capacity) {}
 };
+
+namespace {
+// The address that names this thread as a guest deque's owner.
+thread_local char t_guest_token = 0;
+}  // namespace
+
+// The guest deque of `pool` when the calling outside thread owns it or can claim it, else null.
+detail::WorkDeque<Job>* JobSystem::guest_of_caller(PoolState& pool) noexcept {
+  const void* me = &t_guest_token;
+  const void* owner = pool.guest_owner.load(std::memory_order_acquire);
+  if (owner == me) return &pool.guest;
+  if (owner == nullptr &&
+      pool.guest_owner.compare_exchange_strong(owner, me, std::memory_order_acq_rel)) {
+    return &pool.guest;
+  }
+  return nullptr;
+}
 
 // --- construction -----------------------------------------------------------------------------
 
@@ -238,7 +268,15 @@ void JobSystem::worker_main(JobSystem* self, Worker* worker) {
 
 void JobSystem::run_job(const Job& job, Worker* worker) noexcept {
   ENGINE_PROFILE_ZONE_NAMED("job");
+  // Every job reaching here was counted into its counter's `queued_` by schedule().
+  if (job.counter != nullptr) job.counter->queued_.fetch_sub(1, std::memory_order_relaxed);
+  const u32 nesting = ++t_job_nesting;
+  u32 deepest = max_job_nesting_.load(std::memory_order_relaxed);
+  while (nesting > deepest &&
+         !max_job_nesting_.compare_exchange_weak(deepest, nesting, std::memory_order_relaxed)) {
+  }
   job.fn(job.data);
+  --t_job_nesting;
   // Count before signaling: a waiter released by the signal may read stats() at once, and the
   // counter's release/acquire pair is what makes the count visible to it.
   if (worker != nullptr) {
@@ -249,21 +287,44 @@ void JobSystem::run_job(const Job& job, Worker* worker) noexcept {
   if (job.counter != nullptr) job.counter->signal();
 }
 
-bool JobSystem::try_run_one(Worker* worker) {
+// A job a thread took from a queue: from the worker loop (`waited` null) it is the thread's own
+// work; from a wait it is lent unless it belongs to the group being waited for.
+void JobSystem::run_taken(const Job& job, Worker* worker, const Counter* waited) noexcept {
+  if (waited != nullptr) {
+    run_helped(job, worker, *waited);
+  } else {
+    run_job(job, worker);
+  }
+}
+
+// A job of the group being waited for is the waiter's own work and runs as a call would. Any
+// other is lent to this stack, and while it is there every wait on this thread helps only its
+// own group (help_own), so a stack carries at most one lent job.
+void JobSystem::run_helped(const Job& job, Worker* worker, const Counter& waited) noexcept {
+  if (job.counter == &waited) {
+    run_job(job, worker);
+    return;
+  }
+  foreign_helps_.fetch_add(1, std::memory_order_relaxed);
+  ++t_lent_depth;
+  run_job(job, worker);
+  --t_lent_depth;
+}
+
+bool JobSystem::try_run_one(Worker* worker, const Counter* waited) {
   Job job;
   if (worker->deque.pop(job)) {
-    run_job(job, worker);
+    run_taken(job, worker, waited);
     return true;
   }
   PoolState& pool = pools_[static_cast<u32>(worker->info.pool)];
   if (pool.inbox.try_pop(job)) {
     ++worker->inbox_pops;
-    run_job(job, worker);
+    run_taken(job, worker, waited);
     return true;
   }
   // Steal: same cache domain first (random start), then remote.
   const u32 n = worker->victims.size();
-  if (n == 0) return false;
   const u32 local = worker->local_victim_count;
   if (local > 0) {
     const u32 start = worker->next_random() % local;
@@ -271,7 +332,7 @@ bool JobSystem::try_run_one(Worker* worker) {
       Worker* victim = pool.workers[worker->victims[(start + k) % local]];
       if (victim->deque.steal(job)) {
         ++worker->steals_local;
-        run_job(job, worker);
+        run_taken(job, worker, waited);
         return true;
       }
     }
@@ -283,29 +344,112 @@ bool JobSystem::try_run_one(Worker* worker) {
       Worker* victim = pool.workers[worker->victims[local + (start + k) % remote]];
       if (victim->deque.steal(job)) {
         ++worker->steals_remote;
-        run_job(job, worker);
+        run_taken(job, worker, waited);
         return true;
       }
     }
+  }
+  // Last, the outside thread's deque: what the main thread scheduled.
+  if (pool.guest.steal(job)) {
+    ++worker->steals_remote;
+    run_taken(job, worker, waited);
+    return true;
   }
   return false;
 }
 
 // Used by outside threads waiting on a counter: drain that pool's inbox and steal from its
 // workers so the waiter contributes instead of idling.
-bool JobSystem::try_run_one_from_pool(PoolState& pool, Worker* self_worker) {
+bool JobSystem::try_run_one_from_pool(PoolState& pool, Worker* self_worker, const Counter& waited) {
   Job job;
+  // The guest deque first when this thread owns it: its own newest work, a worker's order.
+  detail_deque* guest = guest_of_caller(pool);
+  if (guest != nullptr && guest->pop(job)) {
+    run_helped(job, self_worker, waited);
+    return true;
+  }
+  if (guest == nullptr && pool.guest.steal(job)) {
+    run_helped(job, self_worker, waited);
+    return true;
+  }
   if (pool.inbox.try_pop(job)) {
-    run_job(job, self_worker);
+    run_helped(job, self_worker, waited);
     return true;
   }
   for (u32 i = 0; i < pool.workers.size(); ++i) {
     if (pool.workers[i]->deque.steal(job)) {
-      run_job(job, self_worker);
+      run_helped(job, self_worker, waited);
       return true;
     }
   }
   return false;
+}
+
+// The wait of a thread with a lent job on its stack: run `counter`'s own jobs and nothing else.
+// A job of another group taken while looking for them is parked back in a queue, where every
+// thread of the pool can still reach it, so refusing it can never strand it. The search goes
+// where the group's jobs can be: the newest end of the caller's own deque (a parallel_for's
+// chunks are pushed there, by a worker or by the guest), the pool's inbox (another outside
+// thread's chunks, and any that found a deque full), cycled a bounded number of entries at a
+// time, and, when the inbox is empty, the oldest end of the other deques (jobs scheduled by
+// another thread).
+bool JobSystem::help_own(Counter& counter, PoolState& pool, Worker* self_worker,
+                         detail_deque* own) {
+  constexpr u32 k_inbox_scan = 64;
+  // Nothing of the group is queued: every job left is running somewhere, and there is nothing
+  // this thread may take.
+  if (counter.queued_.load(std::memory_order_acquire) == 0) return false;
+  Job job;
+  if (own != nullptr && own->pop(job)) {
+    if (job.counter == &counter) {
+      run_job(job, self_worker);
+      return true;
+    }
+    park(pool, own, self_worker, job);
+  }
+  bool inbox_empty = false;
+  for (u32 k = 0; k < k_inbox_scan; ++k) {
+    if (!pool.inbox.try_pop(job)) {
+      inbox_empty = true;
+      break;
+    }
+    if (job.counter == &counter) {
+      if (self_worker != nullptr) ++self_worker->inbox_pops;
+      run_job(job, self_worker);
+      return true;
+    }
+    park(pool, own, self_worker, job);
+  }
+  if (!inbox_empty) return false;
+  const u32 victims = pool.workers.size();
+  for (u32 i = 0; i <= victims; ++i) {
+    detail_deque* victim = i < victims ? &pool.workers[i]->deque : &pool.guest;
+    if (victim == own || !victim->steal(job)) continue;
+    if (job.counter == &counter) {
+      if (self_worker != nullptr) ++self_worker->steals_remote;
+      run_job(job, self_worker);
+      return true;
+    }
+    park(pool, own, self_worker, job);
+  }
+  return false;
+}
+
+// Puts back a job a bounded waiter took that was not its own: the inbox first, so any thread of
+// the pool can take it, else the caller's own deque. When both are full it runs here, lent, the
+// way schedule() runs a job on its submitter when every queue is full; that is the one way past
+// the one-level bound, and `help_escapes` counts it.
+void JobSystem::park(PoolState& pool, detail_deque* own, Worker* self_worker, const Job& job) {
+  parked_.fetch_add(1, std::memory_order_relaxed);
+  if (pool.inbox.try_push(job) || (own != nullptr && own->push(job))) {
+    wake_one(pool);
+    return;
+  }
+  help_escapes_.fetch_add(1, std::memory_order_relaxed);
+  foreign_helps_.fetch_add(1, std::memory_order_relaxed);
+  ++t_lent_depth;
+  run_job(job, self_worker);
+  --t_lent_depth;
 }
 
 // --- submission -------------------------------------------------------------------------------
@@ -317,16 +461,24 @@ void JobSystem::wake_one(PoolState& pool) noexcept {
   }
 }
 
+// The deque the calling thread pushes to for `pool`: its own when it is one of the pool's workers,
+// the guest deque when it is an outside thread that owns it, else none (the inbox).
+JobSystem::detail_deque* JobSystem::own_deque(PoolState& pool) noexcept {
+  const WorkerInfo* me = t_current_worker;
+  if (me != nullptr && t_current_system == this) {
+    return me->pool == pool.pool ? &pool.workers[me->index]->deque : nullptr;
+  }
+  return guest_of_caller(pool);
+}
+
 void JobSystem::schedule(Pool pool_id, const Job& job) {
   ENGINE_ASSERT(job.fn != nullptr, "JobSystem::schedule: null job function");
+  if (job.counter != nullptr) job.counter->queued_.fetch_add(1, std::memory_order_release);
   PoolState& pool = pools_[static_cast<u32>(pool_id)];
-  const WorkerInfo* me = t_current_worker;
-  if (me != nullptr && t_current_system == this && me->pool == pool_id) {
-    Worker* w = pool.workers[me->index];
-    if (w->deque.push(job)) {
-      wake_one(pool);
-      return;
-    }
+  detail_deque* own = own_deque(pool);
+  if (own != nullptr && own->push(job)) {
+    wake_one(pool);
+    return;
   }
   if (pool.inbox.try_push(job)) {
     wake_one(pool);
@@ -339,16 +491,14 @@ void JobSystem::schedule(Pool pool_id, const Job& job) {
 
 void JobSystem::schedule(Pool pool_id, std::span<const Job> jobs, Counter& counter) {
   counter.add(static_cast<u32>(jobs.size()));
+  counter.queued_.fetch_add(static_cast<u32>(jobs.size()), std::memory_order_release);
   PoolState& pool = pools_[static_cast<u32>(pool_id)];
+  detail_deque* own = own_deque(pool);
   for (const Job& j : jobs) {
     Job job = j;
     job.counter = &counter;
     ENGINE_ASSERT(job.fn != nullptr, "JobSystem::schedule: null job function");
-    const WorkerInfo* me = t_current_worker;
-    bool queued = false;
-    if (me != nullptr && t_current_system == this && me->pool == pool_id) {
-      queued = pool.workers[me->index]->deque.push(job);
-    }
+    bool queued = own != nullptr && own->push(job);
     if (!queued) queued = pool.inbox.try_push(job);
     if (!queued) {
       inline_runs_.fetch_add(1, std::memory_order_relaxed);
@@ -371,10 +521,38 @@ void JobSystem::schedule(Pool pool_id, std::span<const Job> jobs, Counter& count
 void JobSystem::wait(Counter& counter) {
   if (counter.done()) return;
   const WorkerInfo* me = t_current_worker;
-  if (me != nullptr && t_current_system == this) {
+  const bool is_worker = me != nullptr && t_current_system == this;
+  if (t_lent_depth > 0) {
+    // A lent job is on this stack: help only this counter's own group, so the stack never takes
+    // a second lent job (docs/subsystems/jobs.md, "Helping is one level deep"). Backing off when
+    // nothing of ours was found keeps a waiter whose jobs are all running from cycling the queues.
+    PoolState& pool = pools_[static_cast<u32>(is_worker ? me->pool : Pool::Performance)];
+    Worker* w = is_worker ? pool.workers[me->index] : nullptr;
+    detail_deque* own = w != nullptr ? &w->deque : guest_of_caller(pool);
+    u32 backoff = 1;
+    u32 misses = 0;
+    while (!counter.done()) {
+      if (help_own(counter, pool, w, own)) {
+        backoff = 1;
+        continue;
+      }
+      // An outside thread blocks once nothing of its group is left to take, or after as many
+      // fruitless looks as the unbounded wait below spins for (a group in the other pool).
+      if (w == nullptr &&
+          (++misses >= 256 || counter.queued_.load(std::memory_order_acquire) == 0)) {
+        break;
+      }
+      for (u32 i = 0; i < backoff && !counter.done(); ++i)
+        platform::pause_cpu();
+      if (backoff < 1024) backoff *= 2;
+    }
+    counter.wait_blocking();
+    return;
+  }
+  if (is_worker) {
     Worker* w = pools_[static_cast<u32>(me->pool)].workers[me->index];
     while (!counter.done()) {
-      if (!try_run_one(w)) {
+      if (!try_run_one(w, &counter)) {
         // Nothing runnable in our pool; the remaining jobs are in flight elsewhere.
         platform::pause_cpu();
       }
@@ -386,7 +564,7 @@ void JobSystem::wait(Counter& counter) {
   // run Efficiency work here; that would pull background jobs onto the critical thread.
   PoolState& perf = pools_[static_cast<u32>(Pool::Performance)];
   for (u32 spin = 0; spin < 256 && !counter.done(); ++spin) {
-    if (!try_run_one_from_pool(perf, nullptr)) platform::pause_cpu();
+    if (!try_run_one_from_pool(perf, nullptr, counter)) platform::pause_cpu();
   }
   counter.wait_blocking();
 }
@@ -419,6 +597,10 @@ JobSystemStats JobSystem::stats() const noexcept {
   s.helper_runs = helper_runs_.load(std::memory_order_relaxed);
   s.jobs_executed += s.helper_runs;
   s.inline_runs = inline_runs_.load(std::memory_order_relaxed);
+  s.foreign_helps = foreign_helps_.load(std::memory_order_relaxed);
+  s.parked = parked_.load(std::memory_order_relaxed);
+  s.help_escapes = help_escapes_.load(std::memory_order_relaxed);
+  s.max_job_nesting = max_job_nesting_.load(std::memory_order_relaxed);
   return s;
 }
 
