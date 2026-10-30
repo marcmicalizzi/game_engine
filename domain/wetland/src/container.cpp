@@ -32,8 +32,9 @@ flora::TreeLevel cards(assets::MeshData& mesh, flora::Motion& motion) {
   level.error = level.parallax_m + level.texel_m;
   level.feature_m = std::max(.02f, std::min({extent.x, extent.y, extent.z}) * .25f);
   flora::KitWriter writer{mesh, motion};
-  const u32 part = flora::kit_begin_part(writer, {0, 0, 0}, {0, 1, 0}, std::max(.05f, hi.y),
-                                         geometry::k_motion_no_parent, 0, 0, 0);
+  const u32 part =
+      flora::kit_begin_part(writer, {0, 0, 0}, {0, 1, 0}, static_cast<f64>(std::max(.05f, hi.y)),
+                            geometry::k_motion_no_parent, 0, 0, 0);
   for (u32 plane = 0; plane < 3; ++plane) {
     flora::BakeJob job;
     job.tile = job.card_tile = plane;

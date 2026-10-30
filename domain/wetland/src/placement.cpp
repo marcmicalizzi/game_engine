@@ -24,6 +24,8 @@ bool fail(std::string* e, std::string text) {
   return false;
 }
 bool bounded(f64 v, f64 lo, f64 hi) { return v >= lo && v <= hi; }
+// An f32 field is widened to f64 before the comparison, exactly as the implicit promotion did.
+bool bounded(f32 v, f64 lo, f64 hi) { return bounded(static_cast<f64>(v), lo, hi); }
 f64 unit(u64 seed, u64 n) {
   return static_cast<f64>(hash_combine(seed, n) >> 11) / 9007199254740992.0;
 }
@@ -42,20 +44,23 @@ bool open(const JsonValue& json, const sg::Context& c, void** state, std::string
       !bounded(p.radius_z_m, .5, 512) || !bounded(p.spacing_m, .125, 4) ||
       !bounded(p.density, 0, 1) || !bounded(p.irregularity, 0, .75) ||
       !bounded(p.water_y_m, -10000, 10000) || !bounded(p.min_depth_m, -2, 2) ||
-      !bounded(p.max_depth_m, p.min_depth_m, 2) || !bounded(p.floating_depth_m, .05, 2) ||
-      !bounded(p.clearance_m, 0, 4) || !bounded(p.max_slope_deg, 0, 60) || p.mask_layer < -1 ||
+      !bounded(p.max_depth_m, static_cast<f64>(p.min_depth_m), 2) ||
+      !bounded(p.floating_depth_m, .05, 2) || !bounded(p.clearance_m, 0, 4) ||
+      !bounded(p.max_slope_deg, 0, 60) || p.mask_layer < -1 ||
       p.mask_layer >= static_cast<i32>(sg::k_mask_max_palette) || p.candidate_budget < 1 ||
       p.candidate_budget > 1000000 || !bounded(c.tile_size, 1, 1024))
     return fail(error, "Patch field out of range (wetland.schema)");
-  e->nx = static_cast<u32>(std::ceil(2.0 * p.radius_x_m / p.spacing_m));
-  e->nz = static_cast<u32>(std::ceil(2.0 * p.radius_z_m / p.spacing_m));
+  e->nx = static_cast<u32>(
+      std::ceil(2.0 * static_cast<f64>(p.radius_x_m) / static_cast<f64>(p.spacing_m)));
+  e->nz = static_cast<u32>(
+      std::ceil(2.0 * static_cast<f64>(p.radius_z_m) / static_cast<f64>(p.spacing_m)));
   if (static_cast<u64>(e->nx) * e->nz > p.candidate_budget)
     return fail(error, "candidate window exceeds candidate_budget");
-  e->tile_size = c.tile_size;
-  e->min_x = static_cast<i32>(std::floor((p.x_m - p.radius_x_m) / e->tile_size));
-  e->max_x = static_cast<i32>(std::floor((p.x_m + p.radius_x_m) / e->tile_size));
-  e->min_z = static_cast<i32>(std::floor((p.z_m - p.radius_z_m) / e->tile_size));
-  e->max_z = static_cast<i32>(std::floor((p.z_m + p.radius_z_m) / e->tile_size));
+  e->tile_size = static_cast<f64>(c.tile_size);
+  e->min_x = static_cast<i32>(std::floor((p.x_m - static_cast<f64>(p.radius_x_m)) / e->tile_size));
+  e->max_x = static_cast<i32>(std::floor((p.x_m + static_cast<f64>(p.radius_x_m)) / e->tile_size));
+  e->min_z = static_cast<i32>(std::floor((p.z_m - static_cast<f64>(p.radius_z_m)) / e->tile_size));
+  e->max_z = static_cast<i32>(std::floor((p.z_m + static_cast<f64>(p.radius_z_m)) / e->tile_size));
   for (const auto* paths : {&p.meshes, &p.far_meshes})
     for (const auto& path : *paths) {
       if (path.empty()) return fail(error, "empty mesh path");
@@ -107,7 +112,8 @@ bool generate(const Entry& e, const sg::Context& c, const sg::TileCoord* tile, s
               std::string* error) {
   out.clear();
   out.kind = representation(&e, c);
-  if (c.tile_size != e.tile_size) return fail(error, "tile size changed after open");
+  if (static_cast<f64>(c.tile_size) != e.tile_size)
+    return fail(error, "tile size changed after open");
   if (tile && !occupies(&e, *tile)) return true;
   const auto& p = e.p;
   const u64 seed = hash_combine(c.world_seed, p.seed);
@@ -129,35 +135,43 @@ bool generate(const Entry& e, const sg::Context& c, const sg::TileCoord* tile, s
   }
   // Bound iteration to this tile's candidate rows, retaining one-cell jitter margin.
   auto first = [&](f64 low, f64 centre, f64 radius, u32 count) {
-    return static_cast<u32>(std::clamp(std::floor((low - centre + radius) / p.spacing_m) - 1, 0.0,
-                                       static_cast<f64>(count)));
+    return static_cast<u32>(
+        std::clamp(std::floor((low - centre + radius) / static_cast<f64>(p.spacing_m)) - 1, 0.0,
+                   static_cast<f64>(count)));
   };
   auto last = [&](f64 high, f64 centre, f64 radius, u32 count) {
-    return static_cast<u32>(std::clamp(std::ceil((high - centre + radius) / p.spacing_m) + 1, 0.0,
-                                       static_cast<f64>(count)));
+    return static_cast<u32>(
+        std::clamp(std::ceil((high - centre + radius) / static_cast<f64>(p.spacing_m)) + 1, 0.0,
+                   static_cast<f64>(count)));
   };
   u32 x0 = 0, z0 = 0, x1 = e.nx, z1 = e.nz;
   if (tile) {
-    x0 = first(tile->x * e.tile_size, p.x_m, p.radius_x_m, e.nx);
-    x1 = last((static_cast<f64>(tile->x) + 1) * e.tile_size, p.x_m, p.radius_x_m, e.nx);
-    z0 = first(tile->z * e.tile_size, p.z_m, p.radius_z_m, e.nz);
-    z1 = last((static_cast<f64>(tile->z) + 1) * e.tile_size, p.z_m, p.radius_z_m, e.nz);
+    x0 = first(tile->x * e.tile_size, p.x_m, static_cast<f64>(p.radius_x_m), e.nx);
+    x1 = last((static_cast<f64>(tile->x) + 1) * e.tile_size, p.x_m, static_cast<f64>(p.radius_x_m),
+              e.nx);
+    z0 = first(tile->z * e.tile_size, p.z_m, static_cast<f64>(p.radius_z_m), e.nz);
+    z1 = last((static_cast<f64>(tile->z) + 1) * e.tile_size, p.z_m, static_cast<f64>(p.radius_z_m),
+              e.nz);
   }
   for (u32 z = z0; z < z1; ++z)
     for (u32 x = x0; x < x1; ++x) {
       const u32 id = z * e.nx + x + 1;
       const u64 random = hash_combine(seed, id);
-      const f64 lx = -p.radius_x_m + (x + .15 + .7 * unit(random, 0)) * p.spacing_m;
-      const f64 lz = -p.radius_z_m + (z + .15 + .7 * unit(random, 1)) * p.spacing_m;
+      const f64 lx = -static_cast<f64>(p.radius_x_m) +
+                     (x + .15 + .7 * unit(random, 0)) * static_cast<f64>(p.spacing_m);
+      const f64 lz = -static_cast<f64>(p.radius_z_m) +
+                     (z + .15 + .7 * unit(random, 1)) * static_cast<f64>(p.spacing_m);
       const f64 wx = p.x_m + lx, wz = p.z_m + lz;
       if (tile &&
           (std::floor(wx / e.tile_size) != tile->x || std::floor(wz / e.tile_size) != tile->z))
         continue;
-      const f64 nx = lx / p.radius_x_m, nz = lz / p.radius_z_m;
+      const f64 nx = lx / static_cast<f64>(p.radius_x_m), nz = lz / static_cast<f64>(p.radius_z_m);
       const f64 noise = field(seed, lx / 2, lz / 2);
-      const f64 edge = 1 - p.irregularity * (.2 + .8 * noise);
+      const f64 edge = 1 - static_cast<f64>(p.irregularity) * (.2 + .8 * noise);
       if (nx * nx + nz * nz > edge * edge) continue;
-      f64 probability = p.density * (1 - p.irregularity * field(hash_combine(seed, 91), lx, lz));
+      f64 probability =
+          static_cast<f64>(p.density) *
+          (1 - static_cast<f64>(p.irregularity) * field(hash_combine(seed, 91), lx, lz));
       const i64 xm = sg::nearest_mm(wx), zm = sg::nearest_mm(wz);
       if (p.mask_layer >= 0) {
         const i64 mx = sg::mask_floor_div(sg::mask_floor_div(xm, info.spacing_mm), info.cells);
@@ -172,13 +186,14 @@ bool generate(const Entry& e, const sg::Context& c, const sg::TileCoord* tile, s
         f64 weight = 0;
         for (u32 ch = 0; ch < sg::k_mask_channels; ++ch)
           if (((words[0] >> (8 * ch)) & 255u) == static_cast<u32>(p.mask_layer))
-            weight += sample.weight[ch];
+            weight += static_cast<f64>(sample.weight[ch]);
         probability *= weight;
       }
       if (unit(random, 2) >= probability) continue;
       const f64 ground = c.ground.surface_mm(xm, zm), depth = p.water_y_m - ground;
       if (!std::isfinite(ground)) return fail(error, "ground returned non-finite height");
-      if (depth < p.min_depth_m || depth > p.max_depth_m) continue;
+      if (depth < static_cast<f64>(p.min_depth_m) || depth > static_cast<f64>(p.max_depth_m))
+        continue;
       const f64 dx = c.ground.surface_mm(xm + 250, zm) - c.ground.surface_mm(xm - 250, zm);
       const f64 dz = c.ground.surface_mm(xm, zm + 250) - c.ground.surface_mm(xm, zm - 250);
       if (!std::isfinite(dx) || !std::isfinite(dz))
@@ -189,7 +204,7 @@ bool generate(const Entry& e, const sg::Context& c, const sg::TileCoord* tile, s
         if (!(prior.radius > 0)) continue;
         const f64 ax = wx - static_cast<f64>(prior.x_mm) * .001,
                   az = wz - static_cast<f64>(prior.z_mm) * .001;
-        const f64 radius = prior.radius + p.clearance_m;
+        const f64 radius = prior.radius + static_cast<f64>(p.clearance_m);
         if (ax * ax + az * az < radius * radius) {
           excluded = true;
           break;
@@ -200,7 +215,8 @@ bool generate(const Entry& e, const sg::Context& c, const sg::TileCoord* tile, s
       placed.id = id;
       placed.mesh = static_cast<u32>(hash_combine(random, 3) % p.meshes.size()) +
                     (out.kind ? p.meshes.size() : 0);
-      placed.position = {wx, floating ? p.water_y_m - p.floating_depth_m : ground, wz};
+      placed.position = {wx, floating ? p.water_y_m - static_cast<f64>(p.floating_depth_m) : ground,
+                         wz};
       const f64 angle = unit(random, 4) * 3.14159265358979323846;
       placed.rotation = {0, static_cast<f32>(det::sin(angle)), 0,
                          static_cast<f32>(det::cos(angle))};
