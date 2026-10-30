@@ -334,12 +334,16 @@ TEST_CASE("wetland: tussock roots stay inside the crown on every budget rung") {
             motion.vertex_part[ic] != crown)
           continue;
         const Vec3 a = mesh.positions[ia], b = mesh.positions[ib], c = mesh.positions[ic];
-        const f64 ax = a.x - c.x, az = a.z - c.z, bx = b.x - c.x, bz = b.z - c.z;
-        const f64 dx = root.x - c.x, dz = root.z - c.z, det = ax * bz - bx * az;
+        const f64 ax = static_cast<f64>(a.x - c.x), az = static_cast<f64>(a.z - c.z),
+                  bx = static_cast<f64>(b.x - c.x), bz = static_cast<f64>(b.z - c.z);
+        const f64 dx = static_cast<f64>(root.x - c.x), dz = static_cast<f64>(root.z - c.z),
+                  det = ax * bz - bx * az;
         if (std::abs(det) < 1e-12) continue;
         const f64 u = (dx * bz - bx * dz) / det, v = (ax * dz - dx * az) / det;
         if (u >= -1e-6 && v >= -1e-6 && u + v <= 1.000001)
-          surface = std::max(surface, static_cast<f32>(u * a.y + v * b.y + (1 - u - v) * c.y));
+          surface = std::max(
+              surface, static_cast<f32>(u * static_cast<f64>(a.y) + v * static_cast<f64>(b.y) +
+                                        (1 - u - v) * static_cast<f64>(c.y)));
       }
       REQUIRE(surface >= 0);
       CHECK(root.y <= surface + 1e-5f);

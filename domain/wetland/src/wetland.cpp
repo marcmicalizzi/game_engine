@@ -161,41 +161,47 @@ void generate(const Plant& f, const Profile& p, u32 detail, assets::MeshData& me
   const u32 count = f.shoots ? f.shoots : p.shoots;
   const u32 sides = detail == 0 ? 6u : detail == 1 ? 4u : 3u;
   const u32 rows = detail == 0 ? 6u : detail == 1 ? 4u : 2u;
-  const f64 crown = p.species == S::tussock ? f.tussock_height_m : 0;
+  const f64 crown = static_cast<f64>(p.species == S::tussock ? f.tussock_height_m : 0.0f);
   for (u32 i = 0; i < count; ++i) {
     const u64 seed = hash_combine(f.seed, i);
     const f64 angle = 2 * k_pi * random(seed, 0);
-    const f64 rad = p.crown_radius_m * f.spread * std::sqrt(random(seed, 1));
+    const f64 rad = static_cast<f64>(p.crown_radius_m * f.spread) * std::sqrt(random(seed, 1));
     const P heading{det::cos(angle), 0, det::sin(angle)};
     P base = heading * rad;
-    base.y = crown > 0 ? crown * (1 - rad / (1.1 * p.crown_radius_m * f.spread)) - .01 : 0;
-    const bool dead_shoot = random(seed, 2) < f.dead_share;
-    const bool broken = dead_shoot && random(seed, 3) < f.broken_share;
+    base.y = crown > 0 ? crown * (1 - rad / (1.1 * static_cast<f64>(p.crown_radius_m) *
+                                             static_cast<f64>(f.spread))) -
+                             .01
+                       : 0;
+    const bool dead_shoot = random(seed, 2) < static_cast<f64>(f.dead_share);
+    const bool broken = dead_shoot && random(seed, 3) < static_cast<f64>(f.broken_share);
     const f64 shortening = broken ? .35 + .45 * random(seed, 4) : 1;
-    const f64 h = p.height_m * f.stature * (.8 + .2 * random(seed, 5)) * shortening;
+    const f64 h =
+        static_cast<f64>(p.height_m * f.stature) * (.8 + .2 * random(seed, 5)) * shortening;
     const f64 leaf_scale = .85 + .15 * random(seed, 6);
     if (dead_shoot)
       ++report.dead_shoots;
     else
       ++report.live_shoots;
     flora::KitWriter kit{mesh, motion};
-    const f64 part_length = floating(p.species) ? f.water_depth_m : std::max(h, .05);
+    const f64 part_length =
+        floating(p.species) ? static_cast<f64>(f.water_depth_m) : std::max(h, .05);
     w.part = flora::kit_begin_part(kit, base, {0, 1, 0}, part_length, geometry::k_motion_no_parent,
                                    0, 0, 0);
     w.material = dead_shoot ? 0 : 1;
     if (p.species == S::sedge || p.species == S::tussock) {
       for (u32 j = 0; j < 3; ++j) {
         const f64 a = angle + 2 * k_pi * j / 3;
-        w.blade(base, {det::cos(a), 0, det::sin(a)}, h, p.leaf_width_m * leaf_scale,
-                .25 + .25 * random(seed, 7 + j), dead_shoot ? .48 : .26, rows);
+        w.blade(base, {det::cos(a), 0, det::sin(a)}, h,
+                static_cast<f64>(p.leaf_width_m) * leaf_scale, .25 + .25 * random(seed, 7 + j),
+                dead_shoot ? .48 : .26, rows);
       }
       // Three-sided culm; dense terminal spike and subordinate lateral spike.
-      w.tube(base, base + P{0, h, 0}, p.stem_radius_m, 3);
+      w.tube(base, base + P{0, h, 0}, static_cast<f64>(p.stem_radius_m), 3);
       w.material = 0;
       w.tube(base + P{0, h * .85, 0}, base + P{0, h, 0}, .002, 3, .85, 1);
     } else if (p.species == S::rush) {
       const P tip = base + heading * (h * .12) + P{0, h, 0};
-      w.tube(base, tip, p.stem_radius_m, sides);
+      w.tube(base, tip, static_cast<f64>(p.stem_radius_m), sides);
       if (!broken) {
         w.material = 0;
         for (u32 j = 0; j < 4; ++j) {
@@ -206,17 +212,17 @@ void generate(const Plant& f, const Profile& p, u32 detail, assets::MeshData& me
       }
     } else if (p.species == S::reed || p.species == S::cattail) {
       const P tip = base + heading * (h * .07) + P{0, h, 0};
-      w.tube(base, tip, p.stem_radius_m, sides);
+      w.tube(base, tip, static_cast<f64>(p.stem_radius_m), sides);
       const u32 leaves = p.species == S::reed ? 7u : 5u;
       for (u32 j = 0; j < leaves; ++j) {
         const f64 a = angle + j * (p.species == S::reed ? k_pi : 2.399963229728653);
         const f64 station = p.species == S::reed ? .18 + .65 * j / leaves : 0;
         const P leaf_base = base + (tip - base) * station;
-        const f64 l =
-            p.leaf_length_m * leaf_scale * (p.species == S::cattail ? f.stature : 1) * shortening;
-        w.blade(leaf_base, {det::cos(a), 0, det::sin(a)}, l, p.leaf_width_m * leaf_scale,
-                p.species == S::reed ? .85 : .28, dead_shoot ? .65 : .32, rows, station,
-                p.species == S::reed ? station : 1);
+        const f64 l = static_cast<f64>(p.leaf_length_m) * leaf_scale *
+                      static_cast<f64>(p.species == S::cattail ? f.stature : 1.0f) * shortening;
+        w.blade(leaf_base, {det::cos(a), 0, det::sin(a)}, l,
+                static_cast<f64>(p.leaf_width_m) * leaf_scale, p.species == S::reed ? .85 : .28,
+                dead_shoot ? .65 : .32, rows, station, p.species == S::reed ? station : 1);
       }
       if (!broken) {
         w.material = 0;
@@ -242,12 +248,14 @@ void generate(const Plant& f, const Profile& p, u32 detail, assets::MeshData& me
       }
     } else if (p.species == S::arrowhead) {
       const P tip = base + heading * (h * .25) + P{0, h, 0};
-      w.tube(base, tip, p.stem_radius_m, sides);
-      w.leaf(tip, heading, p.leaf_length_m * leaf_scale, p.leaf_width_m * leaf_scale, true, 0, 1);
+      w.tube(base, tip, static_cast<f64>(p.stem_radius_m), sides);
+      w.leaf(tip, heading, static_cast<f64>(p.leaf_length_m) * leaf_scale,
+             static_cast<f64>(p.leaf_width_m) * leaf_scale, true, 0, 1);
     } else {
-      const P tip{base.x, f.water_depth_m + .002, base.z};
-      w.tube({0, 0, 0}, tip, p.stem_radius_m, sides);
-      w.leaf(tip, heading, p.leaf_length_m * leaf_scale, p.leaf_width_m * leaf_scale, false,
+      const P tip{base.x, static_cast<f64>(f.water_depth_m) + .002, base.z};
+      w.tube({0, 0, 0}, tip, static_cast<f64>(p.stem_radius_m), sides);
+      w.leaf(tip, heading, static_cast<f64>(p.leaf_length_m) * leaf_scale,
+             static_cast<f64>(p.leaf_width_m) * leaf_scale, false,
              detail == 0   ? 24u
              : detail == 1 ? 16u
                            : 10u,
@@ -260,8 +268,8 @@ void generate(const Plant& f, const Profile& p, u32 detail, assets::MeshData& me
                                    0, 0, 0);
     kit.weight = 0;
     const auto before = mesh.indices.size();
-    flora::kit_dome(kit, {0, -.01, 0}, {0, 1, 0}, {1, 0, 0}, p.crown_radius_m * f.spread * 1.1,
-                    crown, 1, sides * 4, rows);
+    flora::kit_dome(kit, {0, -.01, 0}, {0, 1, 0}, {1, 0, 0},
+                    static_cast<f64>(p.crown_radius_m * f.spread) * 1.1, crown, 1, sides * 4, rows);
     for (u32 i = before; i < mesh.indices.size(); i += 3)
       w.owners.push_back(0);
   }
