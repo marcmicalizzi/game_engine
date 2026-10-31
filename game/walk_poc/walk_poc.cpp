@@ -270,9 +270,9 @@ void align_actor(ModuleContext* context, Survivor& s, u64 tick) {
       record(s, 8, r);
       if (r == Result::Ok) {
         s.align_sample_height_delta = sample.height - ground;
-        s.align_sample_normal.x = sample.normal[0];
-        s.align_sample_normal.y = sample.normal[1];
-        s.align_sample_normal.z = sample.normal[2];
+        s.align_sample_normal.x = static_cast<f64>(sample.normal[0]);
+        s.align_sample_normal.y = static_cast<f64>(sample.normal[1]);
+        s.align_sample_normal.z = static_cast<f64>(sample.normal[2]);
         const f64 raised[3] = {at[0], sample.height, at[2]};
         record(s, 9, stand(context, bar, raised, yaw, sample.normal));
       }
