@@ -503,19 +503,45 @@ f32 flame_emission_per_m(f32 intensity, f32 radius_m, f32 height_m) noexcept {
   return k_flame_brightness * intensity / area / path;
 }
 
+f32 flame_puff_hz(f32 radius_m) noexcept {
+  if (!(radius_m > 0.0f)) return 0.0f;
+  return k_flame_puff_hz_m / std::sqrt(2.0f * radius_m);
+}
+
+f32 flame_rise_m_s(f32 radius_m) noexcept {
+  // One feature a diameter tall passes a point once a puff.
+  return flame_puff_hz(radius_m) * 2.0f * radius_m;
+}
+
+f32 fire_march_weight(f64 distance_m, f32 radius_m) noexcept {
+  const f64 far = static_cast<f64>(k_fire_march_widths) * 2.0 * 1.6 * static_cast<f64>(radius_m);
+  const f64 near = far * (1.0 - static_cast<f64>(k_fire_march_blend));
+  if (distance_m <= near) return 1.0f;
+  if (distance_m >= far) return 0.0f;
+  const f64 u = (far - distance_m) / (far - near);
+  return static_cast<f32>(u * u * (3.0 - 2.0 * u));
+}
+
 MediumFire medium_fire(const renderer::FrameFire& fire, const WorldPos& eye, const MediumWind& wind,
-                       f64 time_s, bool marched) noexcept {
+                       f64 time_s) noexcept {
   MediumFire out;
   out.base = Vec4{relative(fire.base, eye), fire.radius_m};
   const f32 cell = k_flame_cell * fire.radius_m;
-  // The noise's rise in cells, reduced to its lattice's period in f64 (the clock is years in).
-  const f64 cells = time_s * static_cast<f64>(k_flame_rise_m_s) / static_cast<f64>(cell);
+  const f32 cell_up = k_flame_cell_up * fire.radius_m;
+  // The noise's rise in cells (its cells up), reduced to its lattice's period in f64 (the clock is
+  // years in).
+  const f64 cells = cell_up > 0.0f ? time_s * static_cast<f64>(flame_rise_m_s(fire.radius_m)) /
+                                         static_cast<f64>(cell_up)
+                                   : 0.0;
   const f64 period = static_cast<f64>(k_flame_noise_period);
   const f64 rise = cells - std::floor(cells / period) * period;
   out.flame = Vec4{fire.height_m, k_flame_absorption_per_m, static_cast<f32>(rise), cell};
+  // The share the apply marches, by the eye's distance from the flame's base.
+  const DVec3 d = fire.base - eye;
+  const f32 march = fire_march_weight(std::sqrt(d.x * d.x + d.y * d.y + d.z * d.z), fire.radius_m);
   // The flame burns at the light's mean intensity: the light flickers, the flame's own noise moves.
   const f32 e = flame_emission_per_m(fire.base_intensity, fire.radius_m, fire.height_m);
-  out.emission = Vec4{fire.flame_color * e, 0.0f};
+  out.emission = Vec4{fire.flame_color * e, march};
   const WorldPos light =
       fire.base + DVec3{0.0, static_cast<f64>(renderer::k_fire_light_height * fire.height_m), 0.0};
   out.light = Vec4{relative(light, eye), fire.reach_m};
@@ -523,10 +549,71 @@ MediumFire medium_fire(const renderer::FrameFire& fire, const WorldPos& eye, con
   out.smoke = Vec4{k_smoke_extinction_per_m * fire.smoke_density, fire.smoke_rise_m_s,
                    fire.smoke_spread, k_smoke_fade_m};
   const Vec2 w = wind.direction * (wind.speed_mps * k_smoke_wind);
-  out.wind = Vec4{w.x, k_smoke_start * fire.radius_m, w.y, 0.0f};
+  out.wind = Vec4{w.x, k_smoke_start * fire.radius_m, w.y, cell_up};
   out.ids[0] = fire.seed;
-  out.ids[1] = marched ? 1u : 0u;
+  out.ids[1] = march > 0.0f ? 1u : 0u;
   return out;
+}
+
+namespace {
+
+// Abramowitz & Stegun 7.1.26 (|error| < 1.5e-7), the shader's `erf_approx`.
+f32 erf_approx(f32 x) noexcept {
+  const f32 s = x < 0.0f ? -1.0f : 1.0f;
+  const f32 a = std::fabs(x);
+  const f32 t = 1.0f / (1.0f + 0.3275911f * a);
+  const f32 y =
+      1.0f - (((((1.061405429f * t - 1.453152027f) * t) + 1.421413741f) * t - 0.284496736f) * t +
+              0.254829592f) *
+                 t * std::exp(-a * a);
+  return s * y;
+}
+
+}  // namespace
+
+f32 smoke_cell(const MediumFire& f, const Vec3& dir, f32 t0, f32 t1, const Vec3& at,
+               f32 width) noexcept {
+  if (f.smoke.x <= 0.0f || !(t1 > t0)) return 0.0f;
+  const Vec3 top{f.base.x, f.base.y + f.flame.x, f.base.z};
+  const f32 s = at.y - top.y;
+  if (s < -0.5f * f.flame.x) return 0.0f;
+  const f32 rise = std::max(f.smoke.y, 0.05f);
+  const f32 rs = std::max(s, 0.0f);
+  const f32 slope_x = f.wind.x / rise;
+  const f32 slope_z = f.wind.z / rise;
+  const f32 path = rs * std::sqrt(1.0f + slope_x * slope_x + slope_z * slope_z);
+  const f32 r0 = f.wind.y;
+  const f32 sigma = r0 + f.smoke.z * path;
+  const f32 sigma2 = sigma * sigma + 0.25f * width * width;
+  // The offset from the column's centre along the ray, a t + b: the centre leans downwind above the
+  // top and stands over it below.
+  f32 ax = dir.x, az = dir.z, bx = -top.x, bz = -top.z;
+  if (s > 0.0f) {
+    ax -= slope_x * dir.y;
+    az -= slope_z * dir.y;
+    bx += slope_x * top.y;
+    bz += slope_z * top.y;
+  }
+  const f32 aa = ax * ax + az * az;
+  const f32 ab = ax * bx + az * bz;
+  const f32 bb = bx * bx + bz * bz;
+  f32 mean = 0.0f;
+  if (aa < 1.0e-8f) {
+    if (bb / sigma2 > 18.0f) return 0.0f;
+    mean = std::exp(-0.5f * bb / sigma2);
+  } else {
+    const f32 tc = -ab / aa;
+    const f32 d2 = std::max(bb - ab * ab / aa, 0.0f);
+    if (d2 / sigma2 > 18.0f) return 0.0f;
+    const f32 k = std::sqrt(aa / (2.0f * sigma2));
+    const f32 span = erf_approx((t1 - tc) * k) - erf_approx((t0 - tc) * k);
+    mean = std::exp(-0.5f * d2 / sigma2) * 0.886226925f * span / (k * (t1 - t0));
+  }
+  const f32 fade = std::exp(-path / f.smoke.w);
+  const f32 a = -0.5f * f.flame.x;
+  const f32 u = std::clamp((s - a) / (0.0f - a), 0.0f, 1.0f);
+  const f32 rise_in = u * u * (3.0f - 2.0f * u);
+  return f.smoke.x * (r0 * r0 / sigma2) * fade * rise_in * mean;
 }
 
 f32 smoke_density(const MediumFire& f, const Vec3& x) noexcept {
@@ -800,8 +887,8 @@ u32 MediumPass::build_plumes(const renderer::FramePassContext& c, const MediumWi
 }
 
 // The frame's fires in the medium (volumetrics.md, "Fire"): every fire the renderer burnt this
-// frame, in the eye's frame, into this slot's block; those within k_fire_near_m of the eye marked
-// for the apply's march. How many, and how many of them near.
+// frame, in the eye's frame, into this slot's block, each with the share of its flame the apply
+// marches (`fire_march_weight`). How many, and how many of them the apply marches.
 u32 MediumPass::build_fires(const renderer::FramePassContext& c, const MediumWind& wind,
                             u32& near_count) {
   near_count = 0;
@@ -809,12 +896,8 @@ u32 MediumPass::build_fires(const renderer::FramePassContext& c, const MediumWin
   const u32 n = std::min(c.fire_count, renderer::k_max_fires);
   MediumFire* out = static_cast<MediumFire*>(fire_buffers_[c.slot].mapped);
   for (u32 i = 0; i < n; ++i) {
-    const renderer::FrameFire& fire = c.fires[i];
-    const DVec3 d = fire.base - c.eye_world;
-    const f64 reach = static_cast<f64>(k_fire_near_m) + static_cast<f64>(fire.radius_m);
-    const bool is_near = d.x * d.x + d.y * d.y + d.z * d.z < reach * reach;
-    out[i] = medium_fire(fire, c.eye_world, wind, c.world_time_s, is_near);
-    near_count += is_near ? 1u : 0u;
+    out[i] = medium_fire(c.fires[i], c.eye_world, wind, c.world_time_s);
+    near_count += out[i].ids[1];
   }
   return n;
 }
