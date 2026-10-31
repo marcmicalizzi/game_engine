@@ -356,7 +356,7 @@ TEST_CASE(
   REQUIRE(at(*game_of(summary), {"hud_elements"}) != nullptr);
   CHECK(at(*game_of(summary), {"hud_elements"})->size() == elements->size());
   CHECK(number_at(*game_of(summary), {"abi"}) ==
-        7.0);  // the fixture is built against this header (ABI 7)
+        8.0);  // the fixture is built against this header (ABI 8)
   // ABI 4's graphics state, as the fixture read it on its first tick, is the session's: the same
   // raster path and shadows the report's machine block names; its one request the host can make
   // is recorded, and the one it cannot (no such raster path) refused.
