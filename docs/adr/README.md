@@ -62,3 +62,4 @@ Numbered, dated, and immutable once accepted. To change a decision, write a new 
 | [0056](0056-one-world-clock-and-the-days-length.md) | One world clock, and the day's length: the sky at a day length in real seconds, every animation on a world clock a world rate scales, the dunes riding it (supersedes ADR-0048 decision 5) | Proposed |
 | [0057](0057-ground-providers-expose-their-native-tile-source.md) | A ground provider exposes its native tile source | Proposed |
 | [0058](0058-a-load-trusts-recorded-identities.md) | A load trusts the identities its derived data and a pack's manifest record | Proposed |
+| [0059](0059-the-far-forest-is-the-renderers-per-world-tile.md) | The far forest is the renderer's, one prefix instance per world tile | Proposed |

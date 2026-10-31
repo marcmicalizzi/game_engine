@@ -22,6 +22,7 @@
 #include <domain/geometry/cluster_pages.h>
 #include <domain/gfx/cluster_cull.h>
 #include <domain/gfx/visibility_resolve.h>
+#include <systems/renderer/far_forest.h>
 #include <systems/renderer/fire.h>
 #include <systems/renderer/terrain.h>
 
@@ -273,6 +274,11 @@ struct AuthoredStreaming {
   // placement exists only while the ring holds its tile. The declarations are the scene file's and
   // are known before the load (engine-view's `keep_game_actors`).
   Vector<u32> keep;
+  // **The far forest** (renderer.md, "The far forest"; far_forest.h): the streamed instances'
+  // coarsest forms merged per world tile into prefix instances the renderer draws wherever the
+  // ring's tail does not. Off for a host that does not ask (`RenderSettings::far_forest`, which
+  // `authored_rules` copies here; engine-view's `--far-forest`, on by default).
+  bool far_forest = false;
 };
 
 // The rules a host's session cuts its forms for: its projection (the views' height and vertical
@@ -597,6 +603,10 @@ struct SceneData {
   // Per mesh, 1 for a distance form cut for a ring past `AuthoredStreaming::sway_m`, which a tail
   // instance draws rigid (empty: none).
   Vector<u8> form_rigid;
+  // The far forest the load built (far_forest.h): one mesh and one prefix instance per world tile
+  // with a far tree, which `SceneRenderer` hands off with the tail. Empty when the scene streams
+  // none or the host did not ask (`AuthoredStreaming::far_forest`).
+  FarForestData far_forest;
   // Per loaded instance, the key its sway's seed is hashed from (`SceneInstance::motion_key`, its
   // index when the source named none). Empty: every instance's index.
   Vector<u32> motion_keys;

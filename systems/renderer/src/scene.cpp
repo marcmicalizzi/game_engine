@@ -1,3 +1,4 @@
+#include "far_forest_build.h"
 #include "scene_flora.h"
 
 #include <core/containers/hash_map.h>
@@ -1334,7 +1335,7 @@ void prune_form_parts(SourceMesh& form) {
 // paged; what stays in the prefix is counted by why.
 bool stream_authored(SceneDesc& resolved, Vector<SourceMesh>& sources,
                      Vector<geometry::ClusterLodMesh>& dags, bool paged, SceneData& out,
-                     std::string& error) {
+                     jobs::JobSystem* pool, std::string& error) {
   AuthoredStats& stats = out.authored;
   const AuthoredStreaming& rules = resolved.authored;
   const u32 first = resolved.authored_first;
@@ -1575,6 +1576,35 @@ bool stream_authored(SceneDesc& resolved, Vector<SourceMesh>& sources,
     i = j;
   }
   out.tail_floor_pairs = static_cast<u32>(std::min<u64>(floor_pairs, 0xFFFFFFFFu));
+  // **The far forest** (renderer.md, "The far forest"; ADR-0059): the streamed instances' coarsest
+  // forms merged per world tile, each tile a mesh after every other and an instance after the
+  // prefix, which the renderer draws wherever the ring's tail does not draw that tile.
+  if (rules.far_forest) {
+    Vector<FarForestInstance> far;
+    far.reserve(taken);
+    for (u32 i = 0; i < count; ++i) {
+      if (take[i] == 0) continue;
+      const SceneInstance& instance = resolved.instances[first + i];
+      far.push_back(FarForestInstance{instance.mesh, instance.transform, instance.origin});
+    }
+    Vector<FarForestFit> far_fits(meshes);
+    for (u32 m = 0; m < meshes; ++m)
+      far_fits[m] = FarForestFit{fit[m].scale, fit[m].anchor};
+    FarForestOptions options;
+    far_forest_tunables(options);
+    options.tile_size = tile;
+    options.ddc = resolved.ddc;
+    options.cache = resolved.cache;
+    options.pool = pool;
+    ENGINE_STARTUP_STAGE("far forest");
+    FarForestScene scene{resolved.meshes, resolved.mesh_info, sources,       dags,
+                         out.form_source, out.form_rigid,     kept_instances};
+    if (!build_far_forest(std::span<const FarForestInstance>(far.data(), far.size()),
+                          std::span<const FarForestFit>(far_fits.data(), far_fits.size()), options,
+                          scene, out.far_forest, error)) {
+      return false;
+    }
+  }
   resolved.instances = std::move(kept_instances);
   StreamedPlacements entry;
   entry.generator = "authored";
@@ -2350,7 +2380,10 @@ bool load_scene(const SceneDesc& desc, SceneData& out, std::string& error) {
     bool paged_scene = resolved.stream;
     for (const geometry::ClusterPages& table : tables)
       paged_scene = paged_scene && !table.pages.empty();
-    if (!stream_authored(resolved, out.sources, dags, paged_scene, out, error)) return false;
+    if (!stream_authored(resolved, out.sources, dags, paged_scene, out,
+                         pool.has_value() ? &*pool : nullptr, error)) {
+      return false;
+    }
     tables.resize(dags.size());
   }
   out.terrain = resolved.terrain;

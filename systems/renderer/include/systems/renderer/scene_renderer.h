@@ -39,6 +39,7 @@
 #include <domain/gfx/rhi.h>
 #include <domain/gfx/shader_library.h>
 #include <systems/renderer/capture.h>
+#include <systems/renderer/far_forest_handoff.h>
 #include <systems/renderer/fire.h>
 #include <systems/renderer/frame_pass.h>
 #include <systems/renderer/gpu_scene.h>
@@ -886,6 +887,9 @@ class SceneRenderer {
   // The scene's fires (fire.h): its own and its placed props', found again when the tail changes,
   // and this frame's burnt at the world's clock (reserved once: a frame allocates nothing).
   FireSet fires_;
+  // **The far forest's hand-off** (renderer.md, "The far forest"): which of the load's far tiles
+  // are drawn, moved with every tail handed over (`set_dynamic_instances`).
+  FarForestHandOff far_forest_;
   Vector<FrameFire> frame_fires_;
   // The scene's sky: its provider, tables and pipelines (sky.h), the last frame's state and block.
   SkyPass sky_;

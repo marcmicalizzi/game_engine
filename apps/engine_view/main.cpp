@@ -480,6 +480,9 @@ constexpr const char* k_usage =
     "  --world-instances <how>  a streamed scene's own instances: tiles (default), each tile's\n"
     "                   trees in the distance form its ring allows (renderer.md, \"Authored\n"
     "                   instances per tile\"); whole, every one in the scene's prefix as before\n"
+    "  --far-forest <on|off>  a streamed scene's own trees past what the ring's tail draws, as\n"
+    "                   their coarsest forms merged per world tile (renderer.md, \"The far\n"
+    "                   forest\"); on by default\n"
     "  --world-log <f>  --world: one engine.world.TileFrame per update (tiles, events, the ring's\n"
     "                   microseconds, each consumer's share), then the run's summary\n"
     "  --world-handover <f>  --world offscreen: fly the path again, untimed, and at every tile that\n"
@@ -4464,6 +4467,14 @@ int run_view(int argc, char** argv) {
         return k_exit_usage;
       }
       options.world_instances = how == "tiles";
+    } else if (a == "--far-forest") {
+      std::string how;
+      if (!next_value(argc, argv, i, a, how)) return k_exit_usage;
+      if (how != "on" && how != "off") {
+        std::fprintf(stderr, "engine-view: --far-forest takes on or off, not %s\n", how.c_str());
+        return k_exit_usage;
+      }
+      options.settings.far_forest = how == "on";
     } else if (a == "--world-log") {
       if (!next_value(argc, argv, i, a, options.world_log)) return k_exit_usage;
     } else if (a == "--world-handover") {
