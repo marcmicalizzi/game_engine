@@ -42,9 +42,11 @@ What was not grounded, and why: the flame's brightness (`k_flame_brightness` 0.3
 
 **The fix**: the offset is **interleaved gradient noise** (Jimenez 2014, the neighbours of any 3 × 3 block covering [0, 1) nearly evenly), and the upsample is **a cubic B-spline over the 4 × 4 texels round the pixel**, which filters and upsamples in one; still a function of the frame alone. Against the 384-sample reference, the high-passed difference's RMS in the horizon's crop fell from 0.437 to 0.345 codes and the whole difference's from 1.24 to 0.83; in the high clouds from 0.212 to 0.145 and 0.456 to 0.196. The march's 48 samples and its quarter resolution are unchanged; adaptive steps were not needed for what the pictures showed.
 
+**The forest proof of concept** names no clouds (its block is `{"dust": {"scale": 0}}`); to see the layer there its scene would add `"clouds": {"coverage": 0.3, "type": 0.5, "seed": 7}` beside the dust in its `medium` block (the erg's scratch block above). Without a dune field the layer drifts on the stand-in's steady 16 m/s aloft towards +x, and its fire's smoke leans on the stand-in's 8 m/s, half of it at the fire.
+
 ## What it costs
 
-Below, and on [volumetrics](../subsystems/volumetrics.md#what-it-costs).
+On [volumetrics](../subsystems/volumetrics.md#what-it-costs) (R112's paragraph): the medium's passes within a few hundredths of a millisecond of where they were on all four paths (the campfire 0.266 → 0.267 ms, its orbit 0.252 → 0.267, the erg's walk 0.308 → 0.307, the sky turn 0.506 → 0.505), the machine not quiet: upper bounds.
 
 ## Sources
 
