@@ -14,6 +14,7 @@
 #include <domain/gfx/rhi.h>
 #include <domain/gfx/sky.h>
 #include <domain/gfx/visibility_resolve.h>
+#include <domain/gfx/water_spectrum.h>
 
 #include <cstddef>
 #include <type_traits>
@@ -301,6 +302,9 @@ ENGINE_EXPECT_SIZE(368, 8, gfx::PathTraceParams);
 // cluster's index, so it is a handful of cache lines a frame whatever its size; one transform per
 // material rather than one per slot is what kept it from 208 (gfx.md, "The material table").
 ENGINE_EXPECT_SIZE(112, 4, gfx::ResolveMaterial);
+// An open sea's wave (water_spectrum.h; S93), GPU-mirrored by water.slang's `WaterWave`: sixteen of
+// them fill five material entries after a water material's next one.
+ENGINE_EXPECT_SIZE(32, 4, gfx::WaterWave);
 // A terrain's record (renderer.md, "Ground materials by place"; 2026-10-24): one material-table
 // entry no cluster names, so it is exactly a ResolveMaterial's size and is bit-cast into the table.
 // It gives names to what W68 bit-cast into the root's normal scale, occlusion strength and UV words

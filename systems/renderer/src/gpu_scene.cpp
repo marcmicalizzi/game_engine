@@ -8,6 +8,7 @@
 #include <domain/gfx/bindless.h>
 #include <domain/gfx/commands.h>
 #include <domain/gfx/pipeline.h>
+#include <domain/gfx/water_spectrum.h>
 #include <domain/texture/texture_build.h>
 #include <domain/texture/texture_file.h>
 #include <foundation/image/decode.h>
@@ -3728,6 +3729,18 @@ bool GpuScene::upload_materials(const ResolvedSettings& resolved, std::string* e
         // An open body (water.md, "To the horizon"): its shore by depth, and the sea past it.
         if (water && data_->mesh_info[m].water->body.open)
           material.flags |= gfx::k_material_water_open;
+        // An open sea's waves from the spectrum (water.md, "The spectrum"): the table in the five
+        // entries after the material's next one, which is then always there (empty at the low
+        // tier with no map).
+        const bool spectrum =
+            water && data_->mesh_info[m].water->waves.size() == gfx::k_water_waves;
+        gfx::ResolveMaterial wave_entries[gfx::k_water_wave_entries];
+        if (spectrum) {
+          gfx::WaterWave waves[gfx::k_water_waves];
+          for (u32 w = 0; w < gfx::k_water_waves; ++w)
+            waves[w] = data_->mesh_info[m].water->waves[w];
+          gfx::set_water_spectrum(material, wave_entries, waves);
+        }
         // The volume tier (`RenderSettings::water_quality` high; water.md, "Translucent by
         // volume"): the body's optics in the entry right after its material, which no cluster
         // names (the water mesh has the one material). Its ground — the terrain's material and
@@ -3810,8 +3823,12 @@ bool GpuScene::upload_materials(const ResolvedSettings& resolved, std::string* e
         }
         ++source_material_index;
         material_table.push_back(material);
-        if (volume || (material.flags & gfx::k_material_water_depth_map) != 0)
+        if (volume || spectrum || (material.flags & gfx::k_material_water_depth_map) != 0)
           material_table.push_back(optics);
+        if (spectrum) {
+          for (const gfx::ResolveMaterial& entry : wave_entries)
+            material_table.push_back(entry);
+        }
       }
       const u32 local_count = material_table.size() - mesh_material_base[m];
       gfx::ResolveMaterial plain;

@@ -1206,6 +1206,16 @@ struct WaterBody @version(3) {
   /// the outline. Its shore fades by depth rather than by the distance from the outline, whose sides
   /// facing the sea are not a shore. At most one body of a scene; false: the body it was.
   open: bool = false @since(3)
+  /// **An open sea's waves from a spectrum** (docs/subsystems/water.md, "The spectrum"): the wind
+  /// 10 m above the water, m/s, when the ground gives none (the ground's wind wins where it has
+  /// one and the body follows it). With a wind, an open body's waves are sixteen Gerstner waves
+  /// drawn from the JONSWAP spectrum at that wind and `fetch_km`, spread by Donelan-Banner, in
+  /// place of the four sines (and `wave_amplitude_m`, `wave_length_m` and `chop` are not read);
+  /// 0 with no ground wind: the four sines. A closed body never reads it.
+  wind_m_s: f32 = 0 @since(3) @unit("m/s")
+  /// How far the wind has blown over open water before it reaches the body, km: JONSWAP's fetch,
+  /// which sets how grown the sea is (a longer fetch, longer and higher waves).
+  fetch_km: f32 = 100 @since(3) @unit(km)
 }
 
 /// A scene: meshes, placements of them, and an optional terrain. Version 5 added `placements`,

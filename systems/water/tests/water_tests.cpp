@@ -7,6 +7,7 @@
 #include <core/math/world.h>
 #include <domain/assets/gltf.h>
 #include <domain/gfx/visibility_resolve.h>
+#include <domain/gfx/water_spectrum.h>
 #include <domain/scene_gen/scene_gen.h>
 #include <foundation/io/vfs.h>
 #include <systems/water/water.h>
@@ -16,6 +17,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 #include <span>
 #include <string>
 
@@ -465,6 +467,80 @@ TEST_CASE("water: an open body is the closed one's mesh and map, and its sea goe
                       context, &state, &error),
       error);
   generator->close(state);
+}
+
+// **An open sea's waves from the spectrum** (gfx::water_spectrum; water.md, "The spectrum"; S93):
+// the table's sixteen waves hold the variance JONSWAP puts in the band they are drawn from, centred
+// on the wind with Donelan-Banner's spread, each a whole number of cycles a period, the crests'
+// steepness within its cap, the same table from the same seed — and no waves without a wind.
+TEST_CASE("water: an open sea's waves are JONSWAP's at the wind, spread about it") {
+  const f64 u10 = 10.0;
+  const f64 fetch = 100000.0;
+  const Vec2 wind{0.6f, 0.8f};
+  gfx::WaterWave waves[gfx::k_water_waves];
+  gfx::water_spectrum(u10, fetch, wind, 7, waves);
+  // The fetch laws (ocean-surface.md): at 10 m/s over 100 km, omega_p = 22 (g^2 / (U F))^(1/3).
+  const f64 peak = gfx::jonswap_peak(u10, fetch);
+  const f64 alpha = gfx::jonswap_alpha(u10, fetch);
+  CHECK(peak == doctest::Approx(22.0 * std::cbrt(9.81 * 9.81 / (u10 * fetch))));
+  CHECK(alpha == doctest::Approx(0.076 * std::pow(u10 * u10 / (fetch * 9.81), 0.22)));
+  // gamma = 1 is Pierson-Moskowitz's shape: the enhancement at the peak is gamma itself.
+  CHECK(gfx::jonswap(peak, alpha, peak) / (alpha * 9.81 * 9.81 / std::pow(peak, 5.0) *
+                                           std::exp(-1.25)) ==
+        doctest::Approx(3.3));
+  // The variance: the sixteen sines' a^2 / 2 against JONSWAP integrated over the band.
+  f64 variance = 0.0;
+  f64 mean_cos = 0.0;
+  f64 steepness = 0.0;
+  for (const gfx::WaterWave& w : waves) {
+    const f64 a = static_cast<f64>(w.amplitude);
+    variance += 0.5 * a * a;
+    const f64 c = static_cast<f64>(w.direction.x * wind.x + w.direction.y * wind.y);
+    mean_cos += 0.5 * a * a * c;
+    steepness += static_cast<f64>(w.steepness);
+    CHECK(w.cycles == std::floor(w.cycles));
+    CHECK(w.cycles >= 1.0f);
+    CHECK(w.phase >= 0.0f);
+    CHECK(w.phase < 1.0f);
+    CHECK(std::fabs(std::sqrt(w.direction.x * w.direction.x + w.direction.y * w.direction.y) -
+                    1.0f) < 1e-5f);
+    // Deep water: omega^2 = g k, and the frequency the cycles round it to.
+    const f64 omega = static_cast<f64>(w.cycles) * 6.283185307179586 / 1024.0;
+    CHECK(omega * omega / 9.81 == doctest::Approx(static_cast<f64>(w.k)).epsilon(0.02));
+  }
+  mean_cos /= variance;
+  f64 integral = 0.0;
+  const f64 lo = 0.5 * peak;
+  const f64 hi = 4.0 * peak;
+  constexpr u32 k_steps = 20000;
+  for (u32 i = 0; i < k_steps; ++i) {
+    const f64 omega = lo + (hi - lo) * (static_cast<f64>(i) + 0.5) / k_steps;
+    integral += gfx::jonswap(omega, alpha, peak) * (hi - lo) / k_steps;
+  }
+  MESSAGE("10 m/s over 100 km: peak " << peak << " rad/s (" << 2.0 * 3.14159265 * 9.81 / (peak * peak)
+                                      << " m), alpha " << alpha << ", Hs " << 4.0 * std::sqrt(variance)
+                                      << " m from the waves and " << 4.0 * std::sqrt(integral)
+                                      << " m from the band; energy-weighted cos to the wind "
+                                      << mean_cos << ", steepness " << steepness);
+  CHECK(variance == doctest::Approx(integral).epsilon(0.03));
+  CHECK(mean_cos > 0.8);
+  CHECK(steepness <= gfx::k_water_max_steepness + 1e-6);
+  // The same seed, the same table; another seed, other directions and phases.
+  gfx::WaterWave again[gfx::k_water_waves];
+  gfx::water_spectrum(u10, fetch, wind, 7, again);
+  CHECK(std::memcmp(waves, again, sizeof(waves)) == 0);
+  gfx::water_spectrum(u10, fetch, wind, 8, again);
+  CHECK(std::memcmp(waves, again, sizeof(waves)) != 0);
+  // No wind, no waves.
+  gfx::water_spectrum(0.0, fetch, wind, 7, again);
+  for (const gfx::WaterWave& w : again)
+    CHECK(w.amplitude == 0.0f);
+  // Packed after the material's next entry, raw, with the flag.
+  gfx::ResolveMaterial water;
+  gfx::ResolveMaterial entries[gfx::k_water_wave_entries];
+  gfx::set_water_spectrum(water, entries, waves);
+  CHECK((water.flags & gfx::k_material_water_spectrum) != 0u);
+  CHECK(std::memcmp(entries, waves, sizeof(waves)) == 0);
 }
 
 TEST_CASE("water: a body's shading is packed into its material where only the branch reads it") {

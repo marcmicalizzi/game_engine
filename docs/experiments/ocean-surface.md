@@ -269,7 +269,13 @@ the reflection coming in over `shore_m`) would draw a band of wet sand across th
 polygon's side. An open body's fade is by depth, over the depth the waves already calm in (25 cm),
 on the mesh and the plane alike.
 
-### Stage 1b, designed: the spectrum in the shader (Gerstner waves)
+### Stage 1b, built: the spectrum in the shader (Gerstner waves)
+
+Built on 2026-10-31 as below with N = 16 and the table made on the CPU, with one change from the
+design: the waves' directions are drawn by inverting the spreading's cumulative distribution and
+the steepness is each wave's own k a scaled down only where the sum passes 0.6
+([water](../subsystems/water.md#the-spectrum) has what holds it and what it costs). The design as
+it was written:
 
 Replace an open body's four sines with **N = 16–32 Gerstner (trochoidal) waves** drawn from
 JONSWAP at the scene's wind (`GroundProvider::wind`) and a fetch that becomes a body field, with

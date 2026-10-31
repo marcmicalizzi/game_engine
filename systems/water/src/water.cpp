@@ -197,6 +197,11 @@ bool read_body(const scene::WaterBody& block, Body& out, std::string* error) {
     return fail("its transmission must be within [0, 1]");
   if (!(block.turbidity >= 0.0f) || !finite(block.turbidity))
     return fail("its turbidity must not be negative");
+  // The open sea's spectrum (water.md, "The spectrum").
+  if (!(block.wind_m_s >= 0.0f) || !finite(block.wind_m_s))
+    return fail("its wind_m_s must not be negative");
+  if (!(block.fetch_km > 0.0f) || !finite(block.fetch_km))
+    return fail("its fetch_km must be positive");
   out.shore_m = block.shore_m;
   out.open = block.open;
   return true;

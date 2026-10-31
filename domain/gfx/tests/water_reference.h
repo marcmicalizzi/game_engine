@@ -13,6 +13,7 @@
 
 #include <core/base/types.h>
 #include <domain/gfx/visibility_resolve.h>
+#include <domain/gfx/water_spectrum.h>
 
 #include <algorithm>
 #include <cmath>
@@ -98,6 +99,42 @@ inline Dvec3 normal(const Params& w, double x, double z, double time, double foo
     sz += dz * g;
   }
   return brdf_ref::normalize(Dvec3{-sx, 1.0, -sz});
+}
+
+// water.slang's `water_normal_spectrum` (gfx::k_material_water_spectrum, water_spectrum.h): the
+// table's Gerstner waves summed in double, each wave's numbers the float the GPU reads.
+inline Dvec3 normal_spectrum(const gfx::WaterWave* waves, double x, double z, double time,
+                             double footprint, double depth) {
+  double sx = 0.0;
+  double sz = 0.0;
+  double lift = 0.0;
+  const double calm = brdf_ref::clamp01(depth / k_calm_depth);
+  for (u32 i = 0; i < gfx::k_water_waves; ++i) {
+    const gfx::WaterWave& wave = waves[i];
+    const double k = static_cast<double>(wave.k);
+    const double dx = static_cast<double>(wave.direction.x);
+    const double dz = static_cast<double>(wave.direction.y);
+    const double lambda = k_two_pi / k;
+    const double along = (dx * x + dz * z) / lambda;
+    const double travel = frac(static_cast<double>(wave.cycles) * (time / k_period_s));
+    const double cyc = frac(frac(along) - travel + static_cast<double>(wave.phase));
+    const double keep = footprint > 0.0 ? brdf_ref::clamp01(lambda / (2.0 * footprint) - 1.0) : 1.0;
+    const double share = calm * keep;
+    const double angle = k_two_pi * cyc;
+    const double g = static_cast<double>(wave.amplitude) * k * share * std::cos(angle);
+    sx += dx * g;
+    sz += dz * g;
+    lift += static_cast<double>(wave.steepness) * share * std::sin(angle);
+  }
+  return brdf_ref::normalize(Dvec3{-sx, 1.0 - lift, -sz});
+}
+
+// water.slang's `water_edge`: what the shore fades by — the distance from the outline for a closed
+// body, and for an open one (gfx::k_material_water_open) the shore times the share of the calm
+// depth the water has.
+inline double edge(const Params& w, u32 flags, double from_edge, double depth) {
+  if ((flags & gfx::k_material_water_open) == 0) return from_edge;
+  return w.shore * brdf_ref::clamp01(depth / k_calm_depth);
 }
 
 inline double schlick(double cos_theta) {

@@ -22,6 +22,7 @@
 #include <domain/geometry/cluster_pages.h>
 #include <domain/gfx/cluster_cull.h>
 #include <domain/gfx/visibility_resolve.h>
+#include <domain/gfx/water_spectrum.h>
 #include <systems/renderer/fire.h>
 #include <systems/renderer/terrain.h>
 
@@ -153,6 +154,10 @@ struct SceneWater {
   scene::WaterBody body;
   gfx::WaterShading shading;
   SceneWaterDepth depth{};
+  // An open body's waves from the spectrum (gfx::water_spectrum; water.md, "The spectrum"), made
+  // at load from the wind and the body's fetch: `gfx::k_water_waves` of them, or none (a closed
+  // body, or no wind), and then the four sines.
+  Vector<gfx::WaterWave> waves;
 };
 
 // What a scene file said about one mesh besides its path: what to call it, which bytes it must

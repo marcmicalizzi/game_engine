@@ -22,12 +22,14 @@
 #include <domain/gfx/frame.h>
 #include <domain/gfx/render_graph.h>
 #include <domain/gfx/visibility_resolve.h>
+#include <domain/gfx/water_spectrum.h>
 
 #include <doctest/doctest.h>
 
 #include <algorithm>
 #include <cmath>
 #include <cstdlib>
+#include <cstring>
 #include <shaders/visibility_resolve_water.spv.h>
 #include <string>
 #include <vector>
@@ -39,7 +41,7 @@ namespace wref = engine::water_ref;
 namespace {
 
 constexpr u32 k_size = 128;
-constexpr u32 k_blocks = 11;
+constexpr u32 k_blocks = 13;
 // The synthetic depth maps (water.md, "The depth map"): 64 texels a side over the quad's 10 m.
 constexpr u32 k_map_size = 64;
 constexpr f32 k_map_origin = -5.0f;
@@ -108,7 +110,7 @@ TEST_CASE("material resolve: the water branch matches its CPU reference") {
   silty.absorption = Vec3{0.6f, 0.2f, 0.12f};
   silty.turbidity = 1.0f;
   silty.transmission = 0.6f;
-  gfx::ResolveMaterial material_table[14];
+  gfx::ResolveMaterial material_table[21];
   gfx::set_water_material(material_table[0], wave);
   gfx::set_water_material(material_table[1], sharp);
   gfx::set_water_material(material_table[2], mirror);
@@ -145,7 +147,16 @@ TEST_CASE("material resolve: the water branch matches its CPU reference") {
   gfx::set_water_material(material_table[10], sharp);
   gfx::set_water_optics(material_table[10], material_table[11], clear);
   gfx::set_water_material(material_table[12], wave);
-  const u32 material_index[14] = {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13};
+  // An open sea's waves from the spectrum (water_spectrum.h; S93): the sharp waves' material made
+  // open, its waves sixteen Gerstner waves from JONSWAP at 6 m/s over 5 km of fetch (a 5.9 m peak,
+  // the band 23 m to 0.4 m), its next entry empty and the table in the five after it.
+  gfx::set_water_material(material_table[14], sharp);
+  material_table[14].flags |= gfx::k_material_water_open;
+  gfx::WaterWave spectrum_waves[gfx::k_water_waves];
+  gfx::water_spectrum(6.0, 5000.0, Vec2{0.6f, 0.8f}, 9, spectrum_waves);
+  gfx::set_water_spectrum(material_table[14], &material_table[16], spectrum_waves);
+  const u32 material_index[21] = {0,  1,  2,  3,  4,  5,  6,  7,  8,  9, 10,
+                                  11, 12, 13, 14, 15, 16, 17, 18, 19, 20};
   // Block: material, attributes (0 open, 1 shore, 2 the slope), clock.
   struct Block {
     u32 material;
@@ -154,9 +165,11 @@ TEST_CASE("material resolve: the water branch matches its CPU reference") {
   };
   const Block block_of[k_blocks] = {{0, 0, 0.0f},   {0, 0, 37.25f},  {1, 0, 500.0f}, {2, 0, 0.0f},
                                     {0, 1, 0.0f},   {3, 0, 500.0f},  {3, 2, 37.25f}, {5, 1, 0.0f},
-                                    {8, 0, 37.25f}, {10, 0, 500.0f}, {12, 0, 0.0f}};
+                                    {8, 0, 37.25f}, {10, 0, 500.0f}, {12, 0, 0.0f},
+                                    {14, 0, 37.25f}, {14, 1, 0.0f}};
   // The map each material reads (k_material_water_depth_map), or none.
-  const i32 map_of_material[14] = {-1, -1, -1, -1, -1, -1, -1, -1, 0, -1, 1, -1, 1, -1};
+  const i32 map_of_material[21] = {-1, -1, -1, -1, -1, -1, -1, -1, 0,  -1, 1,
+                                   -1, 1,  -1, -1, -1, -1, -1, -1, -1, -1};
   const f32 slope_of[3] = {0.0f, 0.0f, 0.1f};  // the depth's change a metre along x
 
   constexpr gfx::BufferUsage k_storage = gfx::BufferUsage::Storage;
@@ -390,8 +403,21 @@ TEST_CASE("material resolve: the water branch matches its CPU reference") {
         const double depth = map >= 0       ? wref::depth_sample(depth_map, p.x, p.z)
                              : slope != 0.0 ? 1.0 + slope * p.x
                                             : static_cast<double>(uv.y);
+        // The waves: the spectrum's table where the material has one (S93), the four sines else.
+        const bool spectral = (material.flags & gfx::k_material_water_spectrum) != 0;
+        gfx::WaterWave table[gfx::k_water_waves];
+        if (spectral)
+          std::memcpy(static_cast<void*>(table), &material_table[block_of[b].material + 2],
+                      sizeof(table));
         const ref::Dvec3 n =
-            wref::normal(w, p.x, p.z, static_cast<double>(block_of[b].time), footprint, depth);
+            spectral ? wref::normal_spectrum(table, p.x, p.z,
+                                             static_cast<double>(block_of[b].time), footprint,
+                                             depth)
+                     : wref::normal(w, p.x, p.z, static_cast<double>(block_of[b].time), footprint,
+                                    depth);
+        // The shore's fade: the distance from the edge, or for an open body the depth's share of
+        // the calm depth (water_edge).
+        const double from_edge = wref::edge(w, material.flags, static_cast<double>(uv.x), depth);
         const ref::Dvec3 v = ref::normalize(ref::dvec3(eye) - p);
         ref::Dvec3 linear;
         if (volume) {
@@ -406,11 +432,11 @@ TEST_CASE("material resolve: the water branch matches its CPU reference") {
                                         : ref::dvec3(material_table[optics.sampler].albedo);
           const ref::Dvec3 under = wref::volume(wref::optics_of(optics), path, n_b, albedo, sun_ref,
                                                 ref::splat(1.0), 1.0, 1.0, ambient);
-          linear = wref::radiance_volume(w, n, v, static_cast<double>(uv.x), sun_ref,
-                                         ref::splat(1.0), sky_ref, under);
+          linear = wref::radiance_volume(w, n, v, from_edge, sun_ref, ref::splat(1.0), sky_ref,
+                                         under);
         } else {
-          linear = wref::radiance(w, n, v, static_cast<double>(uv.x), depth, sun_ref,
-                                  ref::splat(1.0), ambient, sky_ref);
+          linear = wref::radiance(w, n, v, from_edge, depth, sun_ref, ref::splat(1.0), ambient,
+                                  sky_ref);
         }
         const u8* got = pixel(b, x, y);
         const u8 expect[3] = {ref::display(linear.x), ref::display(linear.y),

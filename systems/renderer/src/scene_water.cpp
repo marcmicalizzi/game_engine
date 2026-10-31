@@ -11,6 +11,7 @@
 #include <core/math/math.h>
 #include <core/schema/json_reflect.h>
 #include <domain/scene_gen/scene_gen.h>
+#include <domain/gfx/water_spectrum.h>
 #include <foundation/io/vfs.h>
 
 #include <cmath>
@@ -34,8 +35,9 @@ JsonValue water_params(const Vector<scene::WaterBody>& bodies) {
 }
 
 gfx::WaterShading shading_of(const scene::WaterBody& body, const TerrainDesc& terrain,
-                             const TerrainSampler& ground) {
+                             const TerrainSampler& ground, f32& wind) {
   gfx::WaterShading s;
+  wind = 0.0f;
   if (body.shallow.has_value()) s.shallow = *body.shallow;
   if (body.deep.has_value()) s.deep = *body.deep;
   s.roughness = body.roughness;
@@ -54,6 +56,7 @@ gfx::WaterShading shading_of(const scene::WaterBody& body, const TerrainDesc& te
       ground.provider().wind(terrain.time_s, wx, wz) && (wx != 0.0f || wz != 0.0f)) {
     const f32 len = std::sqrt(wx * wx + wz * wz);
     s.direction = Vec2{wx / len, wz / len};
+    wind = len;
   } else {
     const f32 a = radians(body.direction_deg);
     s.direction = Vec2{std::cos(a), std::sin(a)};
@@ -154,7 +157,19 @@ bool read_scene_water(const scene::Scene& file, const std::string& path, const s
     info.origin = "water";
     SceneWater water;
     water.body = file.water[k];
-    water.shading = shading_of(file.water[k], out.terrain, ground);
+    f32 wind = 0.0f;
+    water.shading = shading_of(file.water[k], out.terrain, ground, wind);
+    // An open sea's waves from the spectrum (water.md, "The spectrum"): the ground's wind where it
+    // has one and the body follows it, the body's own otherwise; none, and the four sines.
+    if (wind <= 0.0f) wind = file.water[k].wind_m_s;
+    if (file.water[k].open && wind > 0.0f) {
+      gfx::WaterWave waves[gfx::k_water_waves];
+      gfx::water_spectrum(static_cast<f64>(wind),
+                          static_cast<f64>(file.water[k].fetch_km) * 1000.0,
+                          water.shading.direction, file.water[k].seed, waves);
+      for (const gfx::WaterWave& wave : waves)
+        water.waves.push_back(wave);
+    }
     water.depth = read_depth_map(placed.meshes[k].path);
     info.water = std::move(water);
     out.mesh_info.push_back(std::move(info));

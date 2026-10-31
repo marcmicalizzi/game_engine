@@ -688,7 +688,8 @@ float3 water_pixel(ResolveParams* params, SceneGeometry geo, InstanceDesc instan
     map = water_depth_map_of(materials[index + 1]);
     depth = water_depth_sample(map, local.xz);
   }
-  const float3 n = water_normal(w, local.xz, params->water_time_s, footprint, depth);
+  const float3 n = water_normal_of(w, material.flags, geo.materials, index, local.xz,
+                                   params->water_time_s, footprint, depth);
   const float3 view = normalize(-from_eye);
   const float edge = water_edge(w, material.flags, s.uv.x, depth);
   if ((material.flags & k_material_water_volume) != 0) {
@@ -792,7 +793,8 @@ bool open_water_pixel(ResolveParams* params, float2 source, uint2 noise_pixel, b
   } else if (has_surface) {
     depth = max(centre.y - surface.y, 0.0);
   }
-  const float3 n = water_normal(w, local.xz, params->water_time_s, footprint, depth);
+  const float3 n = water_normal_of(w, material.flags, geo.materials, index, local.xz,
+                                   params->water_time_s, footprint, depth);
   const float3 view = -ray;
   const float edge = water_edge(w, material.flags, 0.0, depth);
   Surface s;
