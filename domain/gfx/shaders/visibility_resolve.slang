@@ -152,6 +152,14 @@ struct ResolveParams {
   uint64_t shadow_coverage;
   uint shadow_coverage_count;
   uint shadow_opaque_coverage;
+  // The open sea (gfx::ResolveParams::water_open_*; docs/subsystems/water.md, "To the horizon"):
+  // the open body's instance (0xffffffff: none) and its water material's index. Only the water
+  // modules declare the row, so the plain ones are the bytes they were.
+#ifdef RESOLVE_WATER
+  uint water_open_instance;
+  uint water_open_material;
+  uint2 water_open_pad;
+#endif
 };
 
 // The resolved pixel, for the cross-fade's hash in the shadow rays (ade_keeps): set once by the
@@ -550,12 +558,15 @@ float shadow_visibility(ResolveParams* params, uint bit, uint owner, float3 posi
 // surface over it, which casts as every surface does), and every position handed to a query is
 // in the frame's space, from body-local metres plus the instance's own place: none is a world
 // coordinate.
+//
+// `index` is the water material's place in the table (its optics are the entry after it), `slope`
+// the bottom's slope over body-local (x, z) where there is no map, and `edge` what the shore fades
+// by (`water_edge`). The open sea's plane (`open_water_pixel`) shades through it too.
 float3 water_pixel_volume(ResolveParams* params, SceneGeometry geo, InstanceDesc instance,
-                          uint cluster, TriangleFetch tri, float3 dp_dx, float3 dp_dy, Surface s,
+                          uint index, float2 slope, float3 dp_dx, float3 dp_dy, Surface s,
                           float3 local, float3 n, float3 view, WaterParams w, float ray_bias,
-                          float depth, bool has_map, WaterDepthMap map) {
+                          float depth, bool has_map, WaterDepthMap map, float edge) {
   ResolveMaterial* materials = (ResolveMaterial*)geo.materials;
-  const uint index = ((uint*)geo.cluster_materials)[cluster] + instance.material_base;
   const WaterOptics o = water_optics_of(materials[index + 1]);
   WaterPath path;
   float3 n_b;
@@ -563,18 +574,6 @@ float3 water_pixel_volume(ResolveParams* params, SceneGeometry geo, InstanceDesc
     // The ground as a height field: the refracted view marched against the body's depth map.
     path = water_path_map(map, local.xz, n, view, depth, n_b);
   } else {
-    // No map: the depth's slope over the triangle, d = d0 + g.(x - x0) through its three corners.
-    float2 slope = float2(0.0, 0.0);
-    if (geo.attributes != 0) {
-      VertexAttributes* attributes = (VertexAttributes*)geo.attributes;
-      const float d0 = decode_half2(attributes[tri.local[0]].uv_half2).y;
-      const float d1 = decode_half2(attributes[tri.local[1]].uv_half2).y - d0;
-      const float d2 = decode_half2(attributes[tri.local[2]].uv_half2).y - d0;
-      const float2 e1 = (tri.p[1] - tri.p[0]).xz;
-      const float2 e2 = (tri.p[2] - tri.p[0]).xz;
-      const float det = e1.x * e2.y - e1.y * e2.x;
-      if (abs(det) > 1e-8) slope = float2(d1 * e2.y - d2 * e1.y, e1.x * d2 - e2.x * d1) / det;
-    }
     path = water_path(n, view, depth, slope);
     n_b = normalize(float3(slope.x, 1.0, slope.y));
   }
@@ -632,38 +631,15 @@ float3 water_pixel_volume(ResolveParams* params, SceneGeometry geo, InstanceDesc
   }
   const float3 under = water_volume(o, path, n_b, albedo, params->sun.xyz, sun, sun_surface,
                                     sun_bottom, ambient);
-  return water_radiance_volume(w, n, view, s.uv, params->sun.xyz, sun * sun_surface, reflected,
-                               under);
+  return water_radiance_volume(w, n, view, float2(edge, s.uv.y), params->sun.xyz,
+                               sun * sun_surface, reflected, under);
 }
 
-float3 water_pixel(ResolveParams* params, SceneGeometry geo, InstanceDesc instance,
-                   uint visible_index, uint cluster, uint triangle, float2 source, Surface s,
-                   float3 from_eye, ResolveMaterial material, float ray_bias) {
-  const WaterParams w = water_of(material);
-  const TriangleFetch tri = fetch_triangle(geo, instance, visible_index, cluster, triangle);
-  float3 dp_dx;
-  float3 dp_dy;
-  screen_position_gradients(tri, source, params->view_proj, params->camera.xyz, params->width,
-                            params->height, dp_dx, dp_dy);
-  const float footprint = max(length(dp_dx), length(dp_dy));
-  const float3 local = s.position - instance_from_eye(instance, params->eye);
-  // The depth under the pixel: the body's depth map where it has one (k_material_water_depth_map,
-  // in the entry after the material), the mesh's interpolated vertex depth otherwise.
-  float depth = s.uv.y;
-  const bool has_map = (material.flags & k_material_water_depth_map) != 0;
-  WaterDepthMap map = {};
-  if (has_map) {
-    ResolveMaterial* materials = (ResolveMaterial*)geo.materials;
-    const uint index = ((uint*)geo.cluster_materials)[cluster] + instance.material_base;
-    map = water_depth_map_of(materials[index + 1]);
-    depth = water_depth_sample(map, local.xz);
-  }
-  const float3 n = water_normal(w, local.xz, params->water_time_s, footprint, depth);
-  const float3 view = normalize(-from_eye);
-  if ((material.flags & k_material_water_volume) != 0) {
-    return water_pixel_volume(params, geo, instance, cluster, tri, dp_dx, dp_dy, s, local, n, view,
-                              w, ray_bias, depth, has_map, map);
-  }
+// The low tier's surface: the sun's glitter through the shadow query on the flat surface, the
+// ambient of a level surface and the sky along the reflected view, over the bottom's colour faded
+// by `depth`, the shore by `edge`.
+float3 water_pixel_low(ResolveParams* params, Surface s, float3 n, float3 view, WaterParams w,
+                       float ray_bias, float depth, float edge) {
   SkyParams* sky = (SkyParams*)params->sky_params;
   const bool has_sky = params->sky_params != 0;
   float3 sun = float3(0.0);
@@ -687,8 +663,170 @@ float3 water_pixel(ResolveParams* params, SceneGeometry geo, InstanceDesc instan
     ambient = ambient_radiance(params->sky.rgb, ground, s.normal);
     reflected = params->sky.rgb;
   }
-  return water_radiance(w, n, view, float2(s.uv.x, depth), params->sun.xyz, sun, ambient,
-                        reflected);
+  return water_radiance(w, n, view, float2(edge, depth), params->sun.xyz, sun, ambient, reflected);
+}
+
+float3 water_pixel(ResolveParams* params, SceneGeometry geo, InstanceDesc instance,
+                   uint visible_index, uint cluster, uint triangle, float2 source, Surface s,
+                   float3 from_eye, ResolveMaterial material, float ray_bias) {
+  const WaterParams w = water_of(material);
+  const TriangleFetch tri = fetch_triangle(geo, instance, visible_index, cluster, triangle);
+  float3 dp_dx;
+  float3 dp_dy;
+  screen_position_gradients(tri, source, params->view_proj, params->camera.xyz, params->width,
+                            params->height, dp_dx, dp_dy);
+  const float footprint = max(length(dp_dx), length(dp_dy));
+  const float3 local = s.position - instance_from_eye(instance, params->eye);
+  const uint index = ((uint*)geo.cluster_materials)[cluster] + instance.material_base;
+  // The depth under the pixel: the body's depth map where it has one (k_material_water_depth_map,
+  // in the entry after the material), the mesh's interpolated vertex depth otherwise.
+  float depth = s.uv.y;
+  const bool has_map = (material.flags & k_material_water_depth_map) != 0;
+  WaterDepthMap map = {};
+  if (has_map) {
+    ResolveMaterial* materials = (ResolveMaterial*)geo.materials;
+    map = water_depth_map_of(materials[index + 1]);
+    depth = water_depth_sample(map, local.xz);
+  }
+  const float3 n = water_normal(w, local.xz, params->water_time_s, footprint, depth);
+  const float3 view = normalize(-from_eye);
+  const float edge = water_edge(w, material.flags, s.uv.x, depth);
+  if ((material.flags & k_material_water_volume) != 0) {
+    // No map: the depth's slope over the triangle, d = d0 + g.(x - x0) through its three corners.
+    float2 slope = float2(0.0, 0.0);
+    if (!has_map && geo.attributes != 0) {
+      VertexAttributes* attributes = (VertexAttributes*)geo.attributes;
+      const float d0 = decode_half2(attributes[tri.local[0]].uv_half2).y;
+      const float d1 = decode_half2(attributes[tri.local[1]].uv_half2).y - d0;
+      const float d2 = decode_half2(attributes[tri.local[2]].uv_half2).y - d0;
+      const float2 e1 = (tri.p[1] - tri.p[0]).xz;
+      const float2 e2 = (tri.p[2] - tri.p[0]).xz;
+      const float det = e1.x * e2.y - e1.y * e2.x;
+      if (abs(det) > 1e-8) slope = float2(d1 * e2.y - d2 * e1.y, e1.x * d2 - e2.x * d1) / det;
+    }
+    return water_pixel_volume(params, geo, instance, index, slope, dp_dx, dp_dy, s, local, n, view,
+                              w, ray_bias, depth, has_map, map, edge);
+  }
+  return water_pixel_low(params, s, n, view, w, ray_bias, depth, edge);
+}
+
+// **The open sea past its body's outline** (docs/subsystems/water.md, "To the horizon"; roadmap
+// S93). The body's water goes on past its polygon as a plane at its level, which no geometry
+// draws: a shaded pixel whose ray meets that plane **before** the surface the visibility buffer
+// holds there - or that holds none and looks down - is the sea, shaded by the branch above at the
+// plane's point. So the sea reaches the horizon (the plane has no edge), its coast is wherever the
+// drawn ground crosses the level, pixel by pixel, and it can neither crack nor double against the
+// body's own mesh: a pixel of that mesh (any water material) never asks, and a pixel it does not
+// cover is the same water at the same level. The waves are taken at the body-local point, the
+// plane's point less the body's instance's place in the frame (`instance_from_eye`), exactly as the
+// mesh's are, so they meet across the outline on the same phase. Drawn from above only: an eye at
+// or below the level sees no plane.
+
+// The ray through `source` (the view's pixel, in its visibility region), unit, in the frame's space
+// from the view's eye: the line the two planes through the eye that clip x and clip y name at the
+// pixel's NDC share, which needs no inverse of the projection. Pointing forwards (w grows).
+float3 open_water_ray(ResolveParams* params, float2 source) {
+  const float2 ndc = float2(source.x / float(params->width) * 2.0 - 1.0,
+                            1.0 - source.y / float(params->height) * 2.0);
+  const float4 r0 = params->view_proj[0];
+  const float4 r1 = params->view_proj[1];
+  const float4 r3 = params->view_proj[3];
+  float3 d = cross((r0 - ndc.x * r3).xyz, (r1 - ndc.y * r3).xyz);
+  if (dot(r3.xyz, d) < 0.0) d = -d;
+  return normalize(d);
+}
+
+// Where the ray through `source` meets the plane at frame height `level` from the eye at `eye`:
+// metres along it, or a negative number where it does not look down at the plane.
+float open_water_distance(ResolveParams* params, float2 source, float3 eye, float level,
+                          out float3 ray) {
+  ray = open_water_ray(params, source);
+  if (!(ray.y < -1e-6)) return -1.0;
+  return (level - eye.y) / ray.y;
+}
+
+// The open sea at this pixel, or false. `has_surface` with `surface_distance` and `surface` (the
+// point the buffer holds, in the frame's space) where the pixel holds a surface that is not water.
+bool open_water_pixel(ResolveParams* params, float2 source, uint2 noise_pixel, bool has_surface,
+                      float surface_distance, float3 surface, out float4 color) {
+  color = float4(0.0, 0.0, 0.0, 1.0);
+  if (params->water_open_instance == 0xffffffffu || params->mode != 3) return false;
+  const SceneGeometry geo = geometry_of(params);
+  const InstanceDesc instance = ((InstanceDesc*)params->instances)[params->water_open_instance];
+  const float3 centre = instance_from_eye(instance, params->eye);
+  const float3 eye = params->camera.xyz;
+  if (!(eye.y > centre.y)) return false;
+  float3 ray;
+  const float t = open_water_distance(params, source, eye, centre.y, ray);
+  if (!(t > 0.0) || (has_surface && !(t < surface_distance))) return false;
+  const float3 position = float3(eye.x + t * ray.x, centre.y, eye.z + t * ray.z);
+  // The footprint: the plane's points through the next pixel across and down, as the mesh's
+  // reconstruction takes its own; a neighbour that looks above the plane is a footprint as wide as
+  // the distance, which calms every wave there.
+  float3 ray_x;
+  float3 ray_y;
+  const float t_x = open_water_distance(params, source + float2(1.0, 0.0), eye, centre.y, ray_x);
+  const float t_y = open_water_distance(params, source + float2(0.0, 1.0), eye, centre.y, ray_y);
+  const float3 dp_dx = t_x > 0.0 ? eye + t_x * ray_x - position : float3(t, 0.0, 0.0);
+  const float3 dp_dy = t_y > 0.0 ? eye + t_y * ray_y - position : float3(0.0, 0.0, t);
+  const float footprint = max(length(dp_dx), length(dp_dy));
+  const float3 local = float3(position.x - centre.x, 0.0, position.z - centre.z);
+  ResolveMaterial* materials = (ResolveMaterial*)geo.materials;
+  const uint index = params->water_open_material;
+  const ResolveMaterial material = materials[index];
+  const WaterParams w = water_of(material);
+  // The depth under the plane: the body's depth map within its square, as the mesh reads it, so the
+  // shading is continuous across the outline; past it, the level less the height of the surface
+  // the pixel would otherwise show (the ground the ray meets under the water); with none, deep.
+  const bool has_map = (material.flags & k_material_water_depth_map) != 0;
+  WaterDepthMap map = {};
+  bool in_map = false;
+  if (has_map) {
+    map = water_depth_map_of(materials[index + 1]);
+    const float2 uv = map.uv_origin + local.xz * map.uv_per_m;
+    in_map = all(uv >= float2(0.0, 0.0)) && all(uv <= float2(1.0, 1.0));
+  }
+  float depth = k_water_open_deep;
+  if (in_map) {
+    depth = water_depth_sample(map, local.xz);
+  } else if (has_surface) {
+    depth = max(centre.y - surface.y, 0.0);
+  }
+  const float3 n = water_normal(w, local.xz, params->water_time_s, footprint, depth);
+  const float3 view = -ray;
+  const float edge = water_edge(w, material.flags, 0.0, depth);
+  Surface s;
+  s.position = position;
+  s.normal = float3(0.0, 1.0, 0.0);
+  s.geometric = float3(0.0, 1.0, 0.0);
+  s.uv = float2(edge, depth);
+  const float ray_bias = ray_offset(geo, instance, params->shadow_bias, params->shadow_bias_steps);
+  float3 radiance;
+  if ((material.flags & k_material_water_volume) != 0) {
+    radiance = water_pixel_volume(params, geo, instance, index, float2(0.0, 0.0), dp_dx, dp_dy, s,
+                                  local, n, view, w, ray_bias, depth, in_map, map, edge);
+  } else {
+    radiance = water_pixel_low(params, s, n, view, w, ray_bias, depth, edge);
+  }
+  // The air between the eye and the plane, the exposure and the output encode, as every surface.
+  float knee = 1.0;
+  if (params->sky_params != 0) {
+    SkyParams* sky = (SkyParams*)params->sky_params;
+    float3 inscatter = float3(0.0);
+    float transmittance = 1.0;
+    sky_aerial(sky, ray, t, inscatter, transmittance);
+    radiance = (radiance * transmittance + inscatter) * sky_exposure((SkyFrame*)sky->frame);
+    knee = sky->shoulder;
+  }
+  color = float4(display_output(radiance, knee, noise_pixel, display_target(params)), 1.0);
+  return true;
+}
+
+// An empty pixel: the open sea where its ray looks down at it, the sky otherwise.
+float4 empty_pixel(ResolveParams* params, float2 source, uint2 noise_pixel) {
+  float4 sea;
+  if (open_water_pixel(params, source, noise_pixel, false, 0.0, float3(0.0), sea)) return sea;
+  return sky_pixel(params, source, noise_pixel);
 }
 #endif
 
@@ -742,12 +880,20 @@ float4 fs_resolve(FullscreenOut in) : SV_Target {
   if (params->coverage != 0) {
     uint* tiles = (uint*)params->coverage;
     if (tiles[(pixel.y >> 5) * params->coverage_pitch + (pixel.x >> 5)] == 0) {
+#ifdef RESOLVE_WATER
+      return empty_pixel(params, source, noise_pixel);
+#else
       return sky_pixel(params, source, noise_pixel);
+#endif
     }
   }
   uint64_t* visibility = (uint64_t*)params->visibility;
   const uint64_t value = visibility[pixel.y * params->width + pixel.x];
+#ifdef RESOLVE_WATER
+  if (value == 0) return empty_pixel(params, source, noise_pixel);
+#else
   if (value == 0) return sky_pixel(params, source, noise_pixel);
+#endif
   const uint id = uint(value & 0xffffffffu);
   const float depth = asfloat(uint(value >> 32));
   // The id's pair is the scene's, and the scene's pair table gives its {instance, cluster} in one
@@ -789,6 +935,15 @@ float4 fs_resolve(FullscreenOut in) : SV_Target {
   if (params->mode == 5) return float4(frac(surface_uv), 0.0, 1.0);
 
   ResolveMaterial material = material_of(geo, instance, entry.y);
+#ifdef RESOLVE_WATER
+  // The open sea in front of a surface that is not water (water.md, "To the horizon"): the ground
+  // below the level, seen through the plane, is under the sea.
+  if ((material.flags & k_material_water) == 0) {
+    float4 sea;
+    if (open_water_pixel(params, source, noise_pixel, true, length(from_eye), s.position, sea))
+      return sea;
+  }
+#endif
   if (params->mode == 12) material.flags &= ~k_material_normal_variance;
   // The material's UV transform (KHR_texture_transform) after the scale, and its linear part on
   // the derivatives: a brick texture authored to tile eight times reads eight tiles.

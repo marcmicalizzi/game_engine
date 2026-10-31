@@ -393,6 +393,13 @@ struct WaterShading {
   u32 seed = 1;
 };
 
+// `k_material_water_open`: the water material's body is **open** (docs/subsystems/water.md, "To
+// the horizon"): its shore fades by depth — over the depth the waves calm in — rather than by the
+// distance from the outline (UV.x), whose sides facing the sea are not a shore, and the resolve
+// draws the same water past the outline as a plane at the level (`ResolveParams::water_open_*`).
+// The GPU scene sets it on the body's water material after `set_water_material`.
+inline constexpr u32 k_material_water_open = 128u;
+
 // Water's numbers into a material (mirrored by water.slang's `water_of`):
 //
 //   albedo        shallow.rgb, roughness       (what every reader takes as the base colour)
@@ -614,7 +621,7 @@ inline f32 panini_oversample(f32 d, f32 half_fov_x) noexcept {
 // their brightness (docs/subsystems/renderer.md, "The sky above, the ground below").
 inline constexpr f32 k_neutral_ground_albedo = 0.2f;
 
-// Mirrors ResolveParams in visibility_resolve.slang. 416 bytes.
+// Mirrors ResolveParams in visibility_resolve.slang. 480 bytes.
 struct ResolveParams {
   Vec4 sky{};  // rgb shown for empty pixels, and the hemisphere ambient's upper half
   Vec4 sun{};  // xyz normalized direction towards the light, w intensity
@@ -783,7 +790,18 @@ struct ResolveParams {
   u64 shadow_coverage = 0;
   u32 shadow_coverage_count = 0;
   u32 shadow_opaque_coverage = 0;
+  // **The open sea** (docs/subsystems/water.md, "To the horizon"; roadmap S93): the instance of the
+  // scene's open water body and the index of its water material, or `k_no_water_open`. Read only
+  // by the resolve's water modules (the plain ones declare the block without this row, so they are
+  // the bytes they were): a shaded pixel whose ray meets the plane at that instance's level before
+  // its surface — or that has no surface and looks down — is that body's water, shaded by the
+  // branch at the plane's point. A new 16-byte row: the block grew from 464 to 480 bytes.
+  u32 water_open_instance = 0xffffffffu;
+  u32 water_open_material = 0;
+  u32 water_open_pad[2] = {0, 0};
 };
+// `ResolveParams::water_open_instance` when the scene has no open water.
+inline constexpr u32 k_no_water_open = 0xffffffffu;
 // The water's period, seconds (`ResolveParams::water_time_s`): long enough that no repeat is seen,
 // short enough that a float holds a millisecond of it.
 inline constexpr f64 k_water_period_s = 1024.0;
@@ -792,7 +810,7 @@ inline f32 water_clock(f64 time_s) noexcept {
   const f64 t = std::fmod(time_s, k_water_period_s);
   return static_cast<f32>(t < 0.0 ? t + k_water_period_s : t);
 }
-static_assert(sizeof(ResolveParams) == 464);
+static_assert(sizeof(ResolveParams) == 480);
 static_assert(sizeof(ResolveParams) % 16 == 0, "the block is read as float4 rows on the GPU");
 
 }  // namespace engine::gfx

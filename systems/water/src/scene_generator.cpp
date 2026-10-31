@@ -67,6 +67,18 @@ bool open(const JsonValue& params, const scene_gen::Context& context, void** sta
       if (error != nullptr) *error = entry->where + " " + std::to_string(i) + ": " + why;
       return false;
     }
+    // One open body a scene (water.md, "To the horizon"): the resolve draws the sea past its
+    // outline as one plane at its level, and a second would be a second sea at another level.
+    if (body.open) {
+      for (const Body& earlier : entry->bodies) {
+        if (!earlier.open) continue;
+        if (error != nullptr)
+          *error = entry->where + " " + std::to_string(i) + ": water body \"" + body.name +
+                   "\" is open, and so is \"" + earlier.name +
+                   "\": a scene has at most one open body, whose sea is one plane at its level";
+        return false;
+      }
+    }
     entry->blocks.push_back(std::move(block));
     entry->bodies.push_back(std::move(body));
   }

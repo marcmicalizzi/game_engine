@@ -57,6 +57,11 @@ struct Body {
   // for a circle.
   Vector<Vec2> outline;
   f32 shore_m = 2.0f;
+  // **Open water** (the block's `open`; water.md, "To the horizon"): the outline is the near shore
+  // of a sea that goes on past it wherever the ground is below the level. The mesh and the depth
+  // map are the closed body's, byte for byte; what differs is what is drawn past the outline (the
+  // renderer's) and where `depth_at` finds water.
+  bool open = false;
   bool circle() const noexcept { return outline.empty(); }
 };
 
@@ -70,8 +75,9 @@ bool read_body(const scene::WaterBody& block, Body& out, std::string* error);
 // circle is exact. Negative outside.
 f32 inside_distance(const Body& body, f32 x, f32 z) noexcept;
 
-// **The depth at a point**: the deepest of the bodies whose outline holds the point's x and z, of
-// its level less the ground's surface there, never below zero; 0 outside every body. A function of
+// **The depth at a point**: the deepest of the bodies whose outline holds the point's x and z — or,
+// for an open body, wherever the point is (its sea goes on past the outline) — of its level less
+// the ground's surface there, never below zero; 0 outside every body. A function of
 // the point and the scene alone, so a walk that asks it replays bit for bit. `ground` absent: the
 // ground is at 0.
 f32 depth_at(std::span<const Body> bodies, const scene_gen::Ground& ground, WorldPos at) noexcept;
@@ -143,10 +149,11 @@ bool read_depth_map(std::span<const u8> bytes, DepthMap& out, std::string* error
 // finds the map from the mesh's path.
 std::string body_file_stem(std::span<const u8> glb, std::span<const u8> map);
 
-// The generator's parameters, as the reader hands them: `{"bodies": [<WaterBody>...]}`. Its
-// `expand` makes one mesh and one placement per body, in the block's order — mesh k and instance k
-// are body k, which is the contract the renderer's reader names a body's material by — the
-// instance at the body's centre and level, unrotated.
+// The generator's parameters, as the reader hands them: `{"bodies": [<WaterBody>...]}`, of which at
+// most one is open (a scene's sea is one plane at one level; `open` refuses a second with a
+// sentence). Its `expand` makes one mesh and one placement per body, in the block's order — mesh k
+// and instance k are body k, which is the contract the renderer's reader names a body's material by
+// — the instance at the body's centre and level, unrotated.
 JsonValue generator_params(std::span<const scene::WaterBody> bodies);
 
 // A sine and cosine in f64 from + - * / alone (a range reduction and a polynomial), so the circle's

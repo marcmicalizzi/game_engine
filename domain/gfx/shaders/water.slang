@@ -148,6 +148,23 @@ float3 water_radiance(WaterParams w, float3 n, float3 v, float2 uv, float3 sun_d
   return under * (1.0 - fresnel * shore) + (sky * fresnel + glitter) * shore;
 }
 
+// **Open water** (gfx::k_material_water_open; docs/subsystems/water.md, "To the horizon"): the
+// body's outline is the near shore of a sea, and the resolve draws the same water past it as a
+// plane at the level. Its sides that face the sea are not a shore, so an open body's shore fades
+// by **depth**, over the depth the waves calm in, rather than by the distance from the outline:
+// `water_edge` is what `water_radiance`'s uv.x (and the volume's) is given — the mesh's distance
+// from the outline for a closed body, unchanged, and for an open one `shore` times the share of
+// `k_water_calm_depth` the water has, so the fade is whole where the waves are.
+static const uint k_material_water_open = 128u;  // gfx::k_material_water_open
+// The depth the plane takes where nothing is under it (past the depth map's square, a pixel with
+// no surface behind the sea): the bottom gone.
+static const float k_water_open_deep = 1000.0;
+
+float water_edge(WaterParams w, uint flags, float edge, float depth) {
+  if ((flags & k_material_water_open) == 0) return edge;
+  return w.shore * clamp(depth / k_water_calm_depth, 0.0, 1.0);
+}
+
 // The direction the reflected view leaves the surface along, kept above the horizon: a steep wave
 // that sends it down sends it into the water, which under the sky the mirror of the sky stands in.
 float3 water_reflected(float3 n, float3 v) {

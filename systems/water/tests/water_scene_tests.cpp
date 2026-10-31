@@ -218,6 +218,7 @@ struct Shot {
   u32 water_instance = ~0u;
   bool has_water = false;  // the GPU scene's answer, which picks the resolve module
   u32 materials = 0;       // the GPU scene's material table's length
+  u32 water_open = ~0u;    // the GPU scene's open body's instance (water.md, "To the horizon")
 };
 
 // One capture of a scene file from above the pool's west shore, towards the sun's reflection.
@@ -251,6 +252,7 @@ void shoot(const gfx::Device& device, const std::string& path, const std::string
   frame.world_time_s = world_time_s >= 0.0 ? world_time_s : sun_time_s;
   CaptureChannels channels;
   channels.ids = true;
+  channels.depth = true;  // the open sea's case reads the surface's distance
   u32 water_instance = ~0u;
   for (u32 i = 0; i < data.instances.size(); ++i) {
     const u32 mesh = data.instances[i].mesh;
@@ -261,6 +263,7 @@ void shoot(const gfx::Device& device, const std::string& path, const std::string
     out[s].water_instance = water_instance;
     out[s].has_water = scene.has_water();
     out[s].materials = scene.material_count();
+    out[s].water_open = scene.water_open_instance();
   }
 }
 
@@ -656,5 +659,117 @@ TEST_CASE("water: the bottom seen through the pool shows no ring or fan of the m
       (void)write_capture(tmp.path(), "planes" + std::to_string(v), planes[v].frame, files, why);
     }
   }
+}
+// **The sea to the horizon** (water.md, "To the horizon"; S93): a pool made open draws the same
+// water past its outline wherever the ground is below its level and to the horizon past the
+// ground's edge, and nowhere else. The camera stands 6 m up looking level along +x over the
+// renderer's own dunes (32 m of them, then nothing), so every pixel's ray is known on the CPU: its
+// rise is ndc_y tan(fov/2) per unit along the view axis, it meets the plane at the level
+// (level - 6) / (ndc_y tan(fov/2)) along that axis, and the buffer's surface is znear / depth along
+// it. Open against closed: the ids and the depth are the same (the plane is no geometry); a pixel
+// changes only where the plane is nearer than the surface or there is none and the ray looks down,
+// and every such pixel changes; the pool's own pixels do not change at all (its shore is 0, so
+// the depth-faded shore of an open body and the outline's of a closed one are both none); nothing
+// above the horizon changes; and the rows just under the horizon past the dunes are sea.
+TEST_CASE("water: an open body's sea goes on past its outline to the horizon, and not over land") {
+  if (!gpu_here()) return;
+  const test::TempDir tmp("water_open_sea");
+  constexpr const char* k_body = R"([{"name": "sea", "level_m": 0.2, "shore_m": 0,
+    "shape": {"circle": {"center": [3, 0, -2], "radius_m": 6}}, "wind_follow": false,
+    "direction_deg": 90, "shallow": [0.2, 0.5, 0.45], "open": OPEN}])";
+  const auto body = [&](bool open) {
+    std::string text = k_body;
+    text.replace(text.find("OPEN"), 4, open ? "true" : "false");
+    return text;
+  };
+  const std::string open_path = tmp.file("open.json");
+  const std::string closed_path = tmp.file("closed.json");
+  REQUIRE(write_text(open_path, scene_text(body(true))));
+  REQUIRE(write_text(closed_path, scene_text(body(false))));
+  const std::string ddc = tmp.file("ddc");
+  gfx::Device device;
+  std::string error;
+  REQUIRE_MESSAGE(device.create(gfx::DeviceOptions{}, &error), error);
+  const WorldPos eye{-14.0, 6.0, -2.0};
+  const WorldPos look{100.0, 6.0, -2.0};
+  for (WaterQuality quality : {WaterQuality::High, WaterQuality::Low}) {
+    Shot open[2];
+    Shot closed[1];
+    shoot(device, open_path, ddc, 0.0, 2, open, quality, eye, look);
+    shoot(device, closed_path, ddc, 0.0, 1, closed, quality, eye, look);
+    const CapturedFrame& a = open[0].frame;
+    const CapturedFrame& b = closed[0].frame;
+    REQUIRE(a.width == b.width);
+    REQUIRE(a.height == b.height);
+    REQUIRE(a.depth.size() == static_cast<usize>(a.width) * a.height);
+    REQUIRE(open[0].water_instance != ~0u);
+    CHECK(open[0].water_open == open[0].water_instance);
+    CHECK(closed[0].water_open == gfx::k_no_water_open);
+    CHECK(std::equal(a.color.begin(), a.color.end(), open[1].frame.color.begin()));
+    const Camera camera;  // the capture's: fov_y and znear at their defaults
+    const f64 rise = std::tan(0.5 * static_cast<f64>(camera.fov_y));
+    const f64 level = 0.2;
+    u32 ids_differ = 0;
+    u32 depth_differ = 0;
+    u32 pool_changed = 0;
+    u32 sea = 0;          // pixels the plane must draw, clear of the coast
+    u32 sea_missing = 0;  // of those, unchanged
+    u32 wrong = 0;        // changed where the plane is behind the surface, clear of the coast
+    u32 above = 0;        // changed above the horizon
+    u32 horizon = 0;      // sea pixels in the eight rows under the horizon with no surface
+    for (u32 y = 0; y < a.height; ++y) {
+      const f64 ndc_y = 1.0 - (static_cast<f64>(y) + 0.5) / static_cast<f64>(a.height) * 2.0;
+      for (u32 x = 0; x < a.width; ++x) {
+        const u32 p = y * a.width + x;
+        for (u32 w = 0; w < k_id_words; ++w)
+          ids_differ += a.ids[p * k_id_words + w] != b.ids[p * k_id_words + w] ? 1u : 0u;
+        depth_differ += a.depth[p] != b.depth[p] ? 1u : 0u;
+        bool same = true;
+        for (u32 c = 0; c < 4; ++c)
+          same = same && a.color[p * 4 + c] == b.color[p * 4 + c];
+        if (a.ids[p * k_id_words] == open[0].water_instance) {
+          pool_changed += same ? 0u : 1u;
+          continue;
+        }
+        if (ndc_y >= 0.0) {
+          above += same ? 0u : 1u;
+          continue;
+        }
+        const f64 plane = (level - eye.y) / (ndc_y * rise);  // along the view axis
+        const bool covered = a.depth[p] > 0.0f;
+        const f64 surface =
+            covered ? static_cast<f64>(camera.znear) / static_cast<f64>(a.depth[p]) : 1e30;
+        // Clear of the coast: the plane and the surface more than 3% apart along the ray.
+        if (plane < surface * 0.97) {
+          ++sea;
+          sea_missing += same ? 1u : 0u;
+          if (!covered && y < a.height / 2 + 8) ++horizon;
+        } else if (plane > surface * 1.03) {
+          wrong += same ? 0u : 1u;
+        }
+      }
+    }
+    MESSAGE(std::string(quality == WaterQuality::High ? "high" : "low")
+            << ": sea " << sea << " pixels (" << sea_missing << " unchanged), " << horizon
+            << " under the horizon past the dunes; changed over land " << wrong
+            << ", above the horizon " << above << ", in the pool " << pool_changed << "; "
+            << a.covered << " pixels covered");
+    if (sea_missing != 0 || wrong != 0 || above != 0 || pool_changed != 0) {
+      tmp.keep();
+      CaptureFiles files;
+      std::string why;
+      (void)write_capture(tmp.path(), "open", a, files, why);
+      (void)write_capture(tmp.path(), "closed", b, files, why);
+    }
+    CHECK(ids_differ == 0u);
+    CHECK(depth_differ == 0u);
+    CHECK(pool_changed == 0u);
+    CHECK(sea > a.width * 8);
+    CHECK(sea_missing == 0u);
+    CHECK(wrong == 0u);
+    CHECK(above == 0u);
+    CHECK(horizon > a.width);
+  }
+  device.destroy();
 }
 #endif

@@ -3725,6 +3725,9 @@ bool GpuScene::upload_materials(const ResolvedSettings& resolved, std::string* e
         // never reads, so every reader but the resolve's water branch draws its shallow colour.
         const bool water = m < data_->mesh_info.size() && data_->mesh_info[m].water.has_value();
         if (water) gfx::set_water_material(material, data_->mesh_info[m].water->shading);
+        // An open body (water.md, "To the horizon"): its shore by depth, and the sea past it.
+        if (water && data_->mesh_info[m].water->body.open)
+          material.flags |= gfx::k_material_water_open;
         // The volume tier (`RenderSettings::water_quality` high; water.md, "Translucent by
         // volume"): the body's optics in the entry right after its material, which no cluster
         // names (the water mesh has the one material). Its ground — the terrain's material and
@@ -3898,6 +3901,21 @@ bool GpuScene::upload_materials(const ResolvedSettings& resolved, std::string* e
     if ((material.flags & gfx::k_material_water) != 0) has_water_ = true;
     if ((material.flags & gfx::k_material_terrain_layers) != 0) has_terrain_materials_ = true;
     if ((material.flags & gfx::k_material_alpha_mask) != 0) has_masked_ = true;
+  }
+  // The open sea (water.md, "To the horizon"): the instance of the scene's open body and its water
+  // material — the mesh's one material, at the mesh's base — which the resolve's water modules draw
+  // the plane past its outline by. The water generator lets a scene have one.
+  water_open_instance_ = gfx::k_no_water_open;
+  water_open_material_ = 0;
+  for (u32 m = 0; m < data_->mesh_info.size() && m < mesh_material_base.size(); ++m) {
+    if (!data_->mesh_info[m].water.has_value() || !data_->mesh_info[m].water->body.open) continue;
+    for (u32 i = 0; i < data_->instances.size(); ++i) {
+      if (data_->instances[i].mesh != m) continue;
+      water_open_instance_ = i;
+      water_open_material_ = mesh_material_base[m];
+      break;
+    }
+    break;
   }
   // The opaque shadow proxy's list (R109): every alpha-tested cluster and its material, for the
   // bake to measure its coverage. Only a scene read whole: a streamed one's clusters live in a page

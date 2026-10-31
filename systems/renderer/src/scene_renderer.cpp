@@ -2549,6 +2549,10 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
     // which the waves move on whatever the day's length, wrapped by `water_clock` so a long
     // session's phase never jumps. The sun's glitter on them is the sun's place at the sky's hour.
     resolve.water_time_s = gfx::water_clock(frame.world_time_s);
+    // The open sea past its body's outline (water.md, "To the horizon"), which only the water
+    // modules read.
+    resolve.water_open_instance = scene.water_open_instance();
+    resolve.water_open_material = scene.water_open_material();
     // The ground below the hemisphere's horizon: the scene's, shared with the reference like the
     // sun and the sky, so its escaped rays see the ground this term stands for.
     resolve.ground = lighting.ground;
