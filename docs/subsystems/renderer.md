@@ -2195,7 +2195,7 @@ and for the conifers G83).
 **How it casts** (ADR-0059 decision 4). The far forest carries no caster policy and casts as any
 rigid instance: under traced shadows its drawn clusters are in the ray tracing chain and cast, and
 its trees shadow each other and the far ground; the cascades take it where their frusta reach it,
-which at 1.3 km and more is the farthest alone. **Untraced was the intent, and is not possible
+which past the ring is the two farthest (their light-space boxes reach past their far splits). **Untraced was the intent, and is not possible
 today**: `GpuScene::place_instances` sets a moved instance's flags from its placement alone
 (`set_instance_placement`), so a policy's bits — and `k_instance_static_rt` — would be gone after
 the first hand-off and the far forest would be traced or not by when its tile last moved. The same
@@ -2214,9 +2214,33 @@ at any job count**.
 
 **The arithmetic.** A far tile's pairs are its clusters: a star is 16 quads, 32 triangles over 64
 vertices, so a cluster holds one tree's star (or two trees' crosses), and a tile of *n* starred
-trees is about *n* clusters at the finest and *n*/2 at the cross. Over the proof of concept's v23
-region the far forest is measured below; on the renderer's test forest (120 trees of 6–10 m over
-160 m, 32 m tiles) it is 25 tiles, 120 trees, 4,860 triangles and 189 clusters — 189 prefix pairs.
+trees is about *n* clusters at the finest and *n*/2 at the cross. On the renderer's test forest (120
+trees of 6–10 m over 160 m, 32 m tiles) it is 25 tiles, 4,860 triangles and 189 clusters — 189
+prefix pairs. **Over the proof of concept's v23 region** ([the measurement](../experiments/far-forest-2026-10-31.md)):
+of 243,808 streamed instances it takes 59,178 (184,593 are under 4 m — the understory, saplings,
+grass, litter and small deadwood — and 37 have a coarsest form past 512 triangles), from 251 meshes,
+into **1,812 far tiles of 2,761,477 triangles and 93,454 clusters**: 46.7 triangles and 1.58 pairs
+a tree (the conifers' decimated tops are heavier than a star), 0.56% of the visibility id's 2^24,
+where the same trees streamed are millions of pairs. The prefix grows from 64,011 to 157,465 pairs,
+and the device memory by 110–190 MiB as measured device-wide. A frame draws what the hand-off left
+at the corners — 771 to 1,136 far tiles, 30,000 to 56,000 pairs and 1.0 to 1.6 million triangles
+before the cull, from the three cameras measured.
+
+**What it measured** (2026-10-31, RTX 5090, `msvc-release`, 1920 × 1080, the owner's flags; a shared
+machine, others at 30–100% of the CPU at every run's start or end, so differences under about 0.3 ms
+are within the runs' spread). GPU median `--far-forest off` → `on`: `ridge` 5.54 → 5.74 ms (hw/csm)
+and 6.36 → 6.74 (rt/rt), `south-lake` 9.63 → 9.79 and 7.58 → 7.26, an overview across the region
+9.31 → 9.64 and 6.44 → 6.77. Under the cascaded maps the cost is the shadow pass (0.16–0.32 ms):
+the far forest is a rigid caster and the farthest cascades reach it; the camera's raster moved 0.02
+ms. **What it draws**: `ridge` looks up a slope inside the ring and sees no far tile (the same
+visible pairs; 36 sampled pixels differ, a far tree's shadow); `south-lake` gains trees on the
+mountain's flanks past the ring; the overview gains the whole band past the ring, the far slope and
+the mountain's flank, where it drew bare ground. **The pair cap's trade**: the prefix's extra pairs
+come off what the world's consumer admits — at the overview 46 outer-ring tiles were withheld with
+the far forest against 33 without, and the 46 are drawn as far tiles where the 33 were drawn by
+nothing. **A side effect**: 1,812 more prefix instances move every tail instance's slot, and the
+masked cross-fade's dither is seeded by the slot (R91), so a fading transition keeps other pixels of
+the same trees — scattered patches in every rasterized before-and-after, none of them far tiles.
 
 **What holds it.** `far_forest_tests.cpp`: the tile key is the world's, bit for bit; the hand-off
 draws exactly the tiles the tail does not hold with instances, parks and restores the right

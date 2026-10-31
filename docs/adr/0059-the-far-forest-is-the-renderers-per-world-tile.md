@@ -27,8 +27,9 @@ Facts that decided it:
   ground's levels exist because the ground is infinite and each level is a filtered lattice.
 - **Pairs are not the budget for a far tile.** A tree's coarsest form is its whole-tree star (16
   planes) or its DAG's decimated top: a tile's trees merged are a handful of clusters. The v23
-  region's whole far forest, every tile at once, is a few hundred thousand pairs in the prefix,
-  where its streamed form was millions (the measurement is on the renderer page).
+  region's whole far forest, every tile at once, is 93,454 pairs in the prefix (1,812 tiles, 59,178
+  trees; [the measurement](../experiments/far-forest-2026-10-31.md)), where its streamed form was
+  millions.
 - **The hand-off must be exact.** The ring decides by world tile, and withholds by world tile, so a
   far form that hands off at any other granularity either draws a tile twice or leaves the
   withheld tiles empty.
@@ -68,7 +69,7 @@ Facts that decided it:
    bits would be lost at the first hand-off, because `GpuScene::place_instances` rewrites an
    instance's flags from its placement alone (reported to the owner of that file). So under traced
    shadows its drawn clusters are in the chain and cast, and the cascades take it where their
-   frusta reach it — only the farthest can, 1.3 km out. Untraced is the intent once a move keeps
+   frusta reach it — the two farthest, at the proof of concept's view distances. Untraced is the intent once a move keeps
    the policy.
 5. **Each far tile is a derived-data entry** (`<ddc>/far_forest/<key>.far`), keyed by
    `k_far_forest_version`, the tile, the world's tile size and every merged instance's mesh form
