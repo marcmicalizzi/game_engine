@@ -217,4 +217,93 @@ TEST_CASE("engine-view: a streamed world draws the ruins its ring holds, as a wh
   const Run deformed = draw("streamed.json", "deform.png", {"--world", "--deform", "wave"});
   CHECK(deformed.exit_code == 2);
 }
+
+TEST_CASE("engine-view: a streamed world's hand-over reads only the tiles it changed") {
+  // W81 (world.md, "The consumers"; renderer.md, "Instances that come and go"): the placements
+  // hand the renderer each tile's own instances and a version, and the renderer keeps a tile whose
+  // version it holds without reading one of its instances. The camera flies east until the four
+  // buildings' tiles have left the rings, one column before the other, and back: every commit's
+  // `compared` — the instances read to tell a block from the one its key held — is zero, while
+  // blocks were kept beside tiles that came and went. Until 2026-10-31 every commit compared every
+  // held tile instance by instance. The picture at the end is the one a camera that never left
+  // draws.
+  const test::TempDir tmp("engine_view_handover");
+  std::string error;
+  REQUIRE_MESSAGE(
+      ruins::write_synthetic_kit(tmp.file("kit"), ruins::SyntheticKitOptions{}, &error, nullptr),
+      error);
+  std::string streamed = scene_text(true);
+  streamed.insert(
+      streamed.size() - 1,
+      R"(,"world":{"tile_size":24,"rings":[{"radius":1.5},{"radius":3},{"radius":5}]})");
+  REQUIRE(write_text(tmp.file("streamed.json"), streamed));
+  REQUIRE(write_text(tmp.file("still.json"),
+                     R"({"format":"engine.camera-path.v1","name":"still","fps":10,"keys":[)"
+                     R"({"time":0,"position":[22,9,30],"target":[-2,1,-4],"fov_deg":60}]})"));
+  REQUIRE(write_text(tmp.file("flight.json"),
+                     R"({"format":"engine.camera-path.v1","name":"east-and-back","fps":10,"keys":[)"
+                     R"({"time":0,"position":[22,9,30],"target":[-2,1,-4],"fov_deg":60},)"
+                     R"({"time":3,"position":[262,9,30],"target":[238,1,-4],"fov_deg":60},)"
+                     R"({"time":6,"position":[22,9,30],"target":[-2,1,-4],"fov_deg":60}]})"));
+  auto draw = [&](const char* path, const char* capture, const char* log) {
+    return view({"--scene", tmp.file("streamed.json"), "--camera-path", tmp.file(path),
+                 "--offscreen", "--frames", "60", "--capture", tmp.file(capture), "--width", "320",
+                 "--height", "180", "--shadows", "off", "--ddc", tmp.file("ddc"), "--world-log",
+                 tmp.file(log)});
+  };
+  const Run flight = draw("flight.json", "flight.png", "flight.jsonl");
+  if (flight.exit_code == 3) {
+    MESSAGE("engine-view unavailable here: " << flight.output);
+    return;
+  }
+  REQUIRE_MESSAGE(flight.exit_code == 0, flight.output);
+  std::ifstream log(tmp.file("flight.jsonl"), std::ios::binary);
+  std::string line;
+  u64 compared = 0;
+  u64 kept = 0;
+  u64 placed = 0;
+  u64 freed = 0;
+  u32 commits = 0;
+  u32 mixed = 0;  // commits that kept some blocks and changed others
+  while (std::getline(log, line)) {
+    JsonValue frame;
+    REQUIRE_MESSAGE(parse_json(line, frame).ok, line);
+    const JsonValue* p = frame.find("placements");
+    if (p == nullptr || !p->is_object()) continue;
+    auto field = [&](const char* name) {
+      u64 v = 0;
+      const JsonValue* x = p->find(name);
+      if (x != nullptr) (void)x->get_u64(v);
+      return v;
+    };
+    if (field("handed") == 0) continue;
+    ++commits;
+    compared += field("compared");
+    kept += field("kept");
+    placed += field("placed");
+    freed += field("freed");
+    const u64 changed = field("placed") + field("freed") + field("rewritten");
+    mixed += field("kept") > 0 && changed > 0 ? 1u : 0u;
+  }
+  MESSAGE("flight: " << commits << " commits, " << kept << " blocks kept, " << placed << " placed, "
+                     << freed << " freed, " << compared << " instances compared");
+  CHECK(commits > 2);
+  CHECK(placed > 0);
+  CHECK(freed > 0);
+  CHECK(mixed > 0);
+  CHECK(compared == 0);
+
+  const Run still = draw("still.json", "still.png", "still.jsonl");
+  REQUIRE_MESSAGE(still.exit_code == 0, still.output);
+  image::Image a;
+  image::Image b;
+  REQUIRE(image::read_image(tmp.file("flight.png"), a) == io::Status::Ok);
+  REQUIRE(image::read_image(tmp.file("still.png"), b) == io::Status::Ok);
+  REQUIRE(a.width == b.width);
+  REQUIRE(a.height == b.height);
+  u32 differing = 0;
+  for (u32 i = 0; i < a.width * a.height * 4; ++i)
+    differing += a.pixels[i] != b.pixels[i] ? 1u : 0u;
+  CHECK(differing == 0);
+}
 #endif

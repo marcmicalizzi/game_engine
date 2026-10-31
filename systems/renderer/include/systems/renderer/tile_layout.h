@@ -32,6 +32,8 @@
 
 namespace engine::renderer {
 
+struct SceneInstance;
+
 // A caller's name for a run of the tail it hands over: a streamed world's tile. The tail's
 // instances `first .. first + count` are the block's, in its order. A block that comes back under
 // the same key with the same instances is the same block and costs nothing; under the same key with
@@ -44,6 +46,16 @@ struct DynamicBlock {
   // tracing chain drops whole instances farthest ring first (renderer.md, "The ray tracing chain's
   // memory").
   u32 ring = 0;
+  // **The block's own instances** (W81): when set, the block's `count` instances are read from here
+  // and not from the tail handed over beside the blocks, so a caller whose tiles keep their own
+  // instances hands them over without writing a tail; `first` is still the block's place in the
+  // tail those blocks make in order, which `GpuScene::tail_index` answers in. Null: the tail's.
+  const SceneInstance* instances = nullptr;
+  // **The caller's version of the key's instances** (W81): a number the caller changes whenever the
+  // block's instances change, never reusing one for a key. A block that comes back under its key
+  // with the version and the count the renderer holds is the same block, and its instances are not
+  // read at all; 0 says nothing, and the renderer compares them as it always did.
+  u64 version = 0;
 };
 
 // The granularities a block's reserved runs are rounded to: sixteen pairs, four instance slots.
@@ -74,6 +86,7 @@ struct TileBlock {
   u32 instances = 0;   // live instances, in the first slots
   u32 pairs = 0;       // their pairs, from `pair_begin`
   u32 tail_first = 0;  // where its instances were in the tail last handed over
+  u64 version = 0;     // the caller's version of these instances (`DynamicBlock::version`), 0 none
   u32 inst_end() const noexcept { return inst_begin + inst_cap; }
   u32 pair_end() const noexcept { return pair_begin + pair_cap; }
 };
@@ -112,6 +125,7 @@ class TileLayout {
     u32 instances = 0;
     u32 pairs = 0;
     bool same = false;
+    u64 version = 0;  // carried into the block (`DynamicBlock::version`)
   };
 
   // Empty, behind the load's own instances and pairs, which never move.

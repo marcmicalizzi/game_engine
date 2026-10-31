@@ -63,6 +63,8 @@ bool PlacementTiles::create(const renderer::SceneData& scene, const PlacementTil
   free_blocks_.clear();
   tail_.clear();
   tail_tags_.clear();
+  tail_stale_ = false;
+  runs_.clear();
   tail_pairs_ = 0;
   stats_ = PlacementTilesStats{};
   // The world block the generators read a ring's representation from: the config's words, with the
@@ -138,6 +140,7 @@ bool PlacementTiles::create(const renderer::SceneData& scene, const PlacementTil
   }
   tiles_.reserve(spare_tiles_.size());
   ranks_.reserve(spare_tiles_.size());
+  runs_.reserve(spare_tiles_.size());
   tail_.reserve(total);
   tail_tags_.reserve(total);
   earlier_.reserve(largest);
@@ -210,11 +213,39 @@ void PlacementTiles::tile_ranges(Vector<TileRange>& out) const {
   out.clear();
   u32 first = 0;
   for (u32 i = 0; i < tiles_.size(); ++i) {
-    if (tiles_.value_at(i).withheld) continue;
-    const u32 count = tiles_.value_at(i).instances.size();
-    out.push_back(TileRange{tiles_.key_at(i), first, count, tiles_.value_at(i).ring});
+    const TileBlock& block = tiles_.value_at(i);
+    if (block.withheld) continue;
+    const u32 count = block.instances.size();
+    out.push_back(TileRange{tiles_.key_at(i), first, count, block.ring, block.instances.data(),
+                            block.version});
     first += count;
   }
+}
+
+// The drawn tiles' instances and tags in tile order: what a commit hands an instance sink, and
+// what `tail()` answers after a commit that handed a run sink the tiles instead (W81).
+void PlacementTiles::write_tail() const {
+  tail_.clear();
+  tail_tags_.clear();
+  for (u32 i = 0; i < tiles_.size(); ++i) {
+    const TileBlock& block = tiles_.value_at(i);
+    if (block.withheld) continue;
+    for (const renderer::SceneInstance& instance : block.instances)
+      tail_.push_back(instance);
+    for (const u8 tag : block.tags)
+      tail_tags_.push_back(tag);
+  }
+  tail_stale_ = false;
+}
+
+std::span<const renderer::SceneInstance> PlacementTiles::tail() const {
+  if (tail_stale_) write_tail();
+  return {tail_.data(), tail_.size()};
+}
+
+std::span<const u8> PlacementTiles::tail_tags() const {
+  if (tail_stale_) write_tail();
+  return {tail_tags_.data(), tail_tags_.size()};
 }
 
 // The tile's placements in `ring`'s representation: every entry's, in the scene's order, each
@@ -291,6 +322,9 @@ bool PlacementTiles::build(TileCoord tile, u8 ring, TileBlock& out, u32 entries,
     out.pairs = 0;  // never drawn: nothing to budget
     return ok;
   }
+  // A new version for the tile's new instances, never one a tile held before (W81): what tells the
+  // renderer a tile no update rebuilt is the block it holds without reading it.
+  out.version = ++next_version_;
   u32 end = 0;
   out.pairs = renderer::pairs_after(*scene_, 0,
                                     std::span<const renderer::SceneInstance>(out.instances.data(),
@@ -510,10 +544,12 @@ void PlacementTiles::commit(void* context) {
   auto* self = static_cast<PlacementTiles*>(context);
   // Every active tile's instances, in tile order: the map is sorted by key, so a scene streamed to
   // a set of tiles has one tail — one numbering of its pairs — whatever order the tiles came in.
+  const i64 admit_start = time::monotonic_ns();
   self->admit();
-  self->tail_.clear();
-  self->tail_tags_.clear();
+  const i64 tail_start = time::monotonic_ns();
+  self->stats_.admit_ns += tail_start - admit_start;
   u32 buildings = 0;
+  u32 instances = 0;
   PlacementTilesStats& stats = self->stats_;
   for (u32 r = 0; r < k_max_rings; ++r) {
     stats.ring_tiles[r] = stats.ring_instances[r] = stats.ring_pairs[r] = 0;
@@ -530,20 +566,35 @@ void PlacementTiles::commit(void* context) {
     stats.ring_instances[ring] += block.instances.size();
     stats.ring_pairs[ring] += block.pairs;
     buildings += block.buildings;
-    for (const renderer::SceneInstance& instance : block.instances)
-      self->tail_.push_back(instance);
-    for (const u8 tag : block.tags)
-      self->tail_tags_.push_back(tag);
+    instances += block.instances.size();
+  }
+  // **The tiles, not a tail** (W81): a run sink is handed each drawn tile's own instances and
+  // version, and nothing is copied — a commit costs its tiles' bookkeeping, and the renderer reads
+  // only the tiles whose version it does not hold. Until 2026-10-31 every commit wrote the whole
+  // tail and the renderer compared all of it: the v23 forest's flight spent 6.3 s of its 40 s
+  // writing it and 2.7 s comparing it (docs/experiments/forest-load-in-2026-10-31.md).
+  if (self->run_sink_ != nullptr) {
+    self->tile_ranges(self->runs_);
+    self->tail_stale_ = true;
+  } else {
+    self->write_tail();
   }
   self->stats_.buildings = buildings;
-  self->stats_.instances = self->tail_.size();
+  self->stats_.instances = instances;
   self->stats_.pairs = self->tail_pairs_;
-  if (self->sink_ == nullptr) return;
+  self->stats_.tail_ns += time::monotonic_ns() - tail_start;
+  if (self->sink_ == nullptr && self->run_sink_ == nullptr) return;
   std::string error;
   const i64 start = time::monotonic_ns();
-  const bool ok = self->sink_(
-      self->sink_context_,
-      std::span<const renderer::SceneInstance>(self->tail_.data(), self->tail_.size()), &error);
+  const bool ok =
+      self->run_sink_ != nullptr
+          ? self->run_sink_(self->run_sink_context_,
+                            std::span<const TileRange>(self->runs_.data(), self->runs_.size()),
+                            &error)
+          : self->sink_(
+                self->sink_context_,
+                std::span<const renderer::SceneInstance>(self->tail_.data(), self->tail_.size()),
+                &error);
   const i64 dt = time::monotonic_ns() - start;
   self->stats_.sink_ns += dt;
   self->stats_.max_sink_ns = dt > self->stats_.max_sink_ns ? dt : self->stats_.max_sink_ns;
@@ -551,7 +602,7 @@ void PlacementTiles::commit(void* context) {
   if (!ok) {
     ++self->stats_.failures;
     ENGINE_LOG_ERROR(log_world_placements, "the renderer refused the placements' instances",
-                     log::field("instances", self->tail_.size()),
+                     log::field("instances", self->stats_.instances),
                      log::field("pairs", self->tail_pairs_), log::field("error", error));
   }
 }
