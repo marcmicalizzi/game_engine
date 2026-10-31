@@ -507,14 +507,41 @@ struct HostCallbacks {
   }
   static Result actor_state(void* host, u32 actor, ActorState* out) {
     const GameServices& g = self(host).game_;
-    if (out == nullptr || out->size < sizeof(ActorState)) return Result::InvalidArgument;
+    if (out == nullptr || out->size < k_actor_state_v5_size) return Result::InvalidArgument;
     if (g.actor_state == nullptr) return Result::Unsupported;
-    ActorState state;  // the host's own size, copied back over the module's
+    ActorState state;  // the host's own size; the module gets as much of it as it asked for
     const Result r = g.actor_state(g.user, actor, state);
     if (r == Result::Ok) {
+      // Since ABI 8 the struct grows at its end, and a module built against 5 to 7 owns 136 bytes:
+      // copying the host's whole struct over it would write past them.
       const u32 size = out->size;
-      *out = state;
+      const usize n = size < sizeof(ActorState) ? size : sizeof(ActorState);
+      std::memcpy(static_cast<void*>(out), &state, n);
       out->size = size;
+    }
+    return r;
+  }
+  static Result actor_place_aligned(void* host, u32 actor, const f64* position, f32 yaw,
+                                    const f32* up, f32 max_tilt_rad) {
+    const GameServices& g = self(host).game_;
+    if (position == nullptr || up == nullptr) return Result::InvalidArgument;
+    if (g.actor_place_aligned == nullptr) return Result::Unsupported;
+    return g.actor_place_aligned(g.user, actor, position, yaw, up, max_tilt_rad);
+  }
+  static Result ground_sample(void* host, f64 x, f64 z, GroundSample* io) {
+    const GameServices& g = self(host).game_;
+    if (io == nullptr || io->size < sizeof(GroundSample)) return Result::InvalidArgument;
+    if (g.ground_sample == nullptr) return Result::Unsupported;
+    // The host's own struct in, so a field past the module's `size` cannot be read from it; the
+    // answer is copied back up to what the module has (all of it, today: ABI 8's is the first).
+    GroundSample sample;
+    sample.footprint_m = io->footprint_m;
+    const Result r = g.ground_sample(g.user, x, z, sample);
+    if (r == Result::Ok) {
+      const u32 size = io->size;
+      const usize n = size < sizeof(GroundSample) ? size : sizeof(GroundSample);
+      std::memcpy(static_cast<void*>(io), &sample, n);
+      io->size = size;
     }
     return r;
   }
@@ -605,6 +632,8 @@ ModuleHost::ModuleHost(HostConfig config) : config_(std::move(config)) {
   api_.ground_height = &HostCallbacks::ground_height;
   api_.hud_image = &HostCallbacks::hud_image;
   api_.hud_font = &HostCallbacks::hud_font;
+  api_.actor_place_aligned = &HostCallbacks::actor_place_aligned;
+  api_.ground_sample = &HostCallbacks::ground_sample;
   context_.api = &api_;
   context_.state = nullptr;
 }
