@@ -38,7 +38,7 @@ A frame of 800 ms to 1 s is the drawn ground building 2 to 27 tiles of the inner
 | the renderer comparing the tail | 2.7 s | every held tile compared instance by instance with what its block holds |
 | what follows the tables | 3.4 s | the chain's drop order over every slot, the policy counts over the instance table (twice when a tree swayed in), the poser's chunks |
 | slots written and buffers fitted | 1.5 s | including 60 compactions a flight, **every one of them tight**: 130,000–177,000 slots each |
-| the rest of the sink | 1.5 s | the props' fires over the tail, the chain's first sizing |
+| the rest of the sink | 1.5 s | the chain's statistics after a change (`note_rt_bytes`, whose estimate summed the cached pairs over the instance table), the props' fires |
 | a relayout's wait | 0.2 s | the stride grew twice |
 
 A commit's share that reads every held tile — the tail written, compared, and the bookkeeping after it — was **10.8 ms at the median** (p90 16.2, worst 23.0), on every commit whatever it changed: 127,000–177,000 instances of the tail at 15.0–15.6 million pairs. **The tail is at the visibility id's ceiling**: the tail's pairs reach 15.6 of the 16.8 million, 34 outer tiles are withheld at 1600×900 (242 at the owner's 11520×2160), and the layout's holes then take its end past the ceiling, so every compaction is the tight one — every slot written again, the table set rewritten whole on the GPU — about once every 18 commits, 25–45 ms each. Those are the worst frames in a window's terms.
@@ -49,6 +49,35 @@ So the dominant cost is the hand-over reading the whole tail on every commit (ab
 
 **The hand-over names each tile with its own instances and a version** (W81). `PlacementTiles::set_run_sink` hands a sink each drawn tile's run — key, place, count, ring, the tile's own instances and a version every build of the tile changes — and writes no tail (`tail()` writes it when asked). `renderer::DynamicBlock` carries the two (`instances`, `version`), and `GpuScene::set_dynamic_instances` keeps a block whose key, count and version it holds without reading one instance; a block with no version is compared as before. engine-view's world hands its tiles over that way, a game's props as one more block from their own list with no version. Nothing about where a block lands, when it is kept, rewritten or placed, or what the frame draws changed: a block kept by its version is one the comparison would have kept.
 
-**What follows a change costs its slots.** The policy counts that every change recounted over the whole instance table (twice when a tree swayed in) are kept slot by slot as the slots are written and trimmed (`GpuScene::policy_count`); a debug build recounts after every change and asserts they agree.
+**What follows a change costs its slots.** The policy counts that every change recounted over the whole instance table (twice when a tree swayed in), and the cached instances' pairs the chain's estimate summed over it for the statistics after every change, are kept slot by slot as the slots are written and trimmed (`GpuScene::policy_count`); a debug build recounts after every change and asserts they agree.
 
+## After
+
+The same path and flags, one flight each, on a busier machine than before (rt: others 40% of the CPU at the start, 59% and the GPU 15% busy at the end; hw: others 35% at both ends, the GPU idle) — so the times are upper bounds, and the counts are exact.
+
+| run | median | p99 | worst | > 33 ms | > 100 ms | window-equivalent: median · p99 · worst · > 33 ms · > 100 ms |
+|---|---:|---:|---:|---:|---:|---|
+| hw, csm, before | 14.3 ms | 678 ms | 830 ms | 551 | 113 | 13.3 · 47.4 · 75.8 ms · 78 · 0 |
+| hw, csm, after | 15.0 ms | 710 ms | 1,134 ms | 459 | 108 | 13.9 · 48.9 · 92.2 ms · 65 · 0 |
+| rt, rt, before | 15.2 ms | 910 ms | 1,066 ms | 627 | 118 | 13.7 · 61.7 · 165.0 ms · 141 · 3 |
+| rt, rt, after | 14.1 ms | 761 ms | 1,134 ms | 512 | 122 | 11.1 · 62.6 · 208.1 ms · 89 · 4 |
+
+| rt, one flight of 2,401 updates and 1,103 commits | before | after |
+|---|---:|---:|
+| the commit writing the tail | 6.34 s | 0.01 s |
+| the renderer reading the tiles (`compare`) | 2.72 s, every held instance every commit | 0.07 s, 159,234 instances in all — tiles built again with the count they had |
+| what follows the tables (`after`) | 3.43 s | 0.25 s |
+| the layout, and the rest of the sink (the chain's statistics' estimate over the table) | 1.54 s | 0.06 s |
+| slots written, buffers fitted (60 tight compactions both) | 1.48 s | 1.95 s |
+| a relayout's wait (the stride grew twice) | 0.16 s | 0.23 s |
+| **the renderer taking the tiles, in all** | **9.33 s** | **2.56 s** |
+| tiles built by their generators (3,437) | 3.60 s | 4.58 s |
+| **the placements on the frame's thread, in all** | **19.4 s** | **7.3 s** |
+| a commit's part that read every held tile, median · p90 · worst | 10.8 · 16.2 · 23.0 ms | 0.42 · 0.66 · 2.55 ms |
+
+In hw the renderer's part went to 2.07 s and the placements' to 7.0 s; the tiles' building is 4.8 s there. The frames over 33 ms in a window's terms fell from 141 to 89 (rt) and 78 to 65 (hw); the worst ones did not move, because they are what is left.
+
+**What is left, in the order it costs.** (1) **The tiles' own building**, 4.6 s a flight, 1.3 ms a tile on the frame's thread, several tiles on a frame of the fast legs: the brief's second candidate, laying a tile on the job system ahead of its activation and committing it when ready. (2) **The tight compactions of a tail at the ceiling**: 60 a flight, every slot written again, 30–56 ms each on the frame's thread and the table set rewritten on the GPU; these are most of the frames over 50 ms. Laying the tail out at its classes first, which always fits a tail admitted at its classes, was tried and was worse — the classes leave less than a tile of room at the ceiling, so the next append compacted again: **467** whole rewrites along the same flight, 15.5 s of slots written. Room the admission leaves the layout, or a compaction that moves only the blocks past the cap, would stop it; neither is built. (3) **The stride's growth**, twice a flight, 80–145 ms each, a wait for the device while the pool's and the chain's per-pair tables are made again. (4) Offscreen only, **the drawn ground's rebuild**, which the offscreen run waits for and a window does not; at the inner ring's 256 cells a 64 m tile it is up to a second of the worker for a few tiles.
+
+The owner's own run is at 11520×2160, where the forms keep more clusters, the tail is as near the ceiling (242 outer tiles withheld), and every frame is slower; the hand-over's per-commit cost is the same instances and the same arithmetic, so what this bought there is the same seconds, and what is left is the same list.
 **What holds it** (each fails without its change): `world ruins: a run sink is handed each drawn tile's own instances, and a new version only for a tile the update built again` (`placement_tiles_tests.cpp`, no device: the runs are the consumer's own instances in tile order, versions distinct, and a step east keeps 46 tiles' versions and gives the 14 it built again new ones); `engine-view: a streamed world's hand-over reads only the tiles it changed` (`ruins_view_tests.cpp`: a flight east until the four buildings' tiles leave the rings one column before the other, and back — every commit's `compared` is 0 while blocks were kept beside tiles placed and freed, and the last frame is the one a camera that never left draws). The renderer's own tail tests (`dynamic_instances_tests.cpp`, `streamed_tail_tests.cpp`) hold the pictures, and run with the debug build's recount after every change.
