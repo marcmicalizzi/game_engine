@@ -232,13 +232,43 @@ inline constexpr f32 k_flame_fill = 0.6f;
 // campfire's captures: at the whole of it every flame is one saturated blob at any exposure that
 // shows the sand it lights, where a real flame's core and its tongues read apart.
 inline constexpr f32 k_flame_brightness = 0.3f;
-inline constexpr f32 k_flame_rise_m_s = 1.4f;       // how fast the flame's noise rises through it
-inline constexpr f32 k_flame_cell = 0.45f;          // the noise's cell, of the flame's radius
+// **The puffing** (docs/experiments/campfire-flame.md): a buoyant diffusion flame of base diameter
+// D sheds a toroidal vortex at f = 1.5 / sqrt(D) Hz (Cetegen & Ahmed 1993, Combust. Flame 93:157;
+// the same D^-1/2 law as Hamins, Yang & Kashiwagi 1992 and Malalasekera et al. 1996's 1.68). The
+// noise's large features are a diameter apart vertically (two cells of r), and they rise at f D,
+// so one passes a point of the flame once a puff: 1.2 m/s and 1.9 Hz for the campfire's 0.64 m
+// base, where the eye's 1.4 m/s through cells of 0.45 r had tongues pass at 9.7 Hz.
+inline constexpr f32 k_flame_puff_hz_m = 1.5f;  // f sqrt(D), Hz m^1/2
+inline constexpr f32 k_flame_cell = 0.45f;      // the noise's cell across, of the flame's radius
+inline constexpr f32 k_flame_cell_up = 1.0f;    // and up: two cells a diameter
 inline constexpr f32 k_flame_noise_period = 64.0f;  // its lattice wraps on y, in cells
-// **The near flame**: a fire whose base is within this of the eye is marched per pixel in the apply
-// with this many steps, where the froxels are a metre deep; past it the froxels hold it.
-inline constexpr f32 k_fire_near_m = 8.0f;
+// The puffing frequency and the speed the flame's features rise at, for a base radius.
+f32 flame_puff_hz(f32 radius_m) noexcept;
+f32 flame_rise_m_s(f32 radius_m) noexcept;
+// **The marched flame** (R112): a fire is marched per pixel in the apply, with this many steps,
+// while its distance is under `k_fire_march_widths` of its bounds' width (2 x 1.6 r): where it is
+// wider than about two froxel columns of the default grid at a 60-degree view. Past it the froxels
+// hold it as a smooth blob of the same light, and over the last `k_fire_march_blend` of that
+// distance the two are blended. Before R112 the switch was a step at 8 m and the froxels sampled
+// the flame's noise once a cell, which a slice 13% of the distance deep missed or caught whole.
+inline constexpr f32 k_fire_march_widths = 60.0f;
+inline constexpr f32 k_fire_march_blend = 0.25f;
 inline constexpr u32 k_flame_steps = 40;
+// The share of the marched flame a fire at `distance_m` from the eye draws, 1 near, 0 past the
+// march distance, smooth across the blend.
+f32 fire_march_weight(f64 distance_m, f32 radius_m) noexcept;
+// **The far flame**: a Gaussian blob of the marched flame's light, across `k_flame_blob_across` of
+// its radius and up `k_flame_blob_up` of its height about `k_flame_blob_centre` of it, holding
+// `k_flame_blob_fill` of the emission at density 1 over the cylinder r^2 pi h. The four are the
+// marched flame's own moments, the noise left out: its emission (density squared, hotter at the
+// base) integrates to 0.129 of the cylinder's; its centroid is 0.26 h up, its spread 0.17 h up and
+// about 0.35 r across. The fill was then measured against the marched flame itself at 30 m (the
+// campfire, smoke off, nothing clipped): 0.15 drew 1.8 times its light — the noise carves more
+// than it adds — so it is 0.08 (docs/experiments/campfire-flame.md).
+inline constexpr f32 k_flame_blob_across = 0.35f;
+inline constexpr f32 k_flame_blob_up = 0.17f;
+inline constexpr f32 k_flame_blob_centre = 0.26f;
+inline constexpr f32 k_flame_blob_fill = 0.08f;
 // **The smoke**: at density 1 this extinction at the flame's top, an albedo darker than the sand's
 // and the dust's phase; the column fades by e over `k_smoke_fade_m` of its path, starts at
 // `k_smoke_start` of the flame's radius, and bends with `k_smoke_wind` of the record's wind (the
@@ -253,12 +283,12 @@ inline constexpr f32 k_smoke_wind = 0.5f;
 struct MediumFire {
   Vec4 base;   // xyz the flame's base (frame space), w its radius
   Vec4 flame;  // x its height, y absorption /m, z the noise's rise (cells, mod the period), w cell
-  Vec4 emission;    // rgb the flame's emission /m at density 1 (raw), w 0
+  Vec4 emission;    // rgb the flame's emission /m at density 1 (raw), w the march's share
   Vec4 light;       // xyz the light (frame space), w its reach
   Vec4 light_rgb;   // rgb its colour times its intensity at this clock (raw), w 0
   Vec4 smoke;       // x extinction /m at the top, y rise m/s, z spread per metre, w fade length m
-  Vec4 wind;        // xz the wind at the fire (m/s), y the smoke's start radius, w 0
-  u32 ids[4] = {};  // x the seed, y 1 when the apply marches this flame
+  Vec4 wind;        // xz the wind at the fire (m/s), y the smoke's start radius, w the cell up
+  u32 ids[4] = {};  // x the seed, y 1 when the apply marches this flame (the share is over 0)
 };
 
 // The flame's emission per metre at density 1, raw: its luminance (`intensity` over `k_flame_fill`
@@ -266,12 +296,20 @@ struct MediumFire {
 f32 flame_emission_per_m(f32 intensity, f32 radius_m, f32 height_m) noexcept;
 // A frame's fire in the frame of the eye at the world's clock, under the hour's wind: the flame's
 // noise offset reduced to its period in f64, the smoke's numbers, the light where the resolve has
-// it. `marched` marks it for the apply's march.
+// it, and the share the apply marches (`fire_march_weight` at the eye's distance).
 MediumFire medium_fire(const renderer::FrameFire& fire, const WorldPos& eye, const MediumWind& wind,
-                       f64 time_s, bool marched) noexcept;
+                       f64 time_s) noexcept;
 // The smoke's extinction at a point of the frame's space (shaders/medium.slang's
 // `smoke_density`, the same arithmetic).
 f32 smoke_density(const MediumFire& fire, const Vec3& x) noexcept;
+// **The smoke a froxel holds** (shaders/medium.slang's `smoke_cell`, the same arithmetic): the mean
+// extinction along the eye's ray `dir` between distances t0 and t1, in closed form for the column
+// as it stands at the point `at` (its centre's line, its radius widened by half of `width`, the
+// cell's width across, its fade), so a slice deeper than the column holds its share of it wherever
+// the slice's boundaries fall rather than all of it or none. R112: the point sample a cell took
+// before missed a column narrower than the slice or caught it whole.
+f32 smoke_cell(const MediumFire& fire, const Vec3& dir, f32 t0, f32 t1, const Vec3& at,
+               f32 width) noexcept;
 
 // ---- the pass
 // ------------------------------------------------------------------------------------

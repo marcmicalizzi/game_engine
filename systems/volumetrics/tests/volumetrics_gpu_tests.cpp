@@ -468,7 +468,7 @@ TEST_CASE("volumetrics: the smoke leaves the flame's top and drifts downwind as 
   fire.smoke_rise_m_s = 1.0f;
   fire.smoke_spread = 0.2f;
   MediumWind wind;  // the record's mean, towards +x: 8 m/s, half of it at a fire's height
-  const MediumFire f = medium_fire(fire, WorldPos{0.0, 0.0, 0.0}, wind, 0.0, false);
+  const MediumFire f = medium_fire(fire, WorldPos{0.0, 0.0, 0.0}, wind, 0.0);
   // At the top of the flame, over it; two metres up, the centre has drifted 2 * 4 / 1 = 8 m
   // downwind, and is thinner there than at the top.
   const f32 top = smoke_density(f, Vec3{10.0f, 0.8f, 0.0f});
@@ -485,12 +485,133 @@ TEST_CASE("volumetrics: the smoke leaves the flame's top and drifts downwind as 
   // No smoke, none anywhere.
   renderer::FrameFire clean = fire;
   clean.smoke_density = 0.0f;
-  CHECK(smoke_density(medium_fire(clean, WorldPos{}, wind, 0.0, false), Vec3{10.0f, 0.8f, 0.0f}) ==
-        0.0f);
+  CHECK(smoke_density(medium_fire(clean, WorldPos{}, wind, 0.0), Vec3{10.0f, 0.8f, 0.0f}) == 0.0f);
   // The flame's noise rises with the clock, reduced to its period: finite years in.
-  const MediumFire late = medium_fire(fire, WorldPos{}, wind, 94687200.0, false);
+  const MediumFire late = medium_fire(fire, WorldPos{}, wind, 94687200.0);
   CHECK(late.flame.z >= 0.0f);
   CHECK(late.flame.z < k_flame_noise_period);
+}
+
+TEST_CASE("volumetrics: the flame puffs at Cetegen and Ahmed's frequency") {
+  // f = 1.5 / sqrt(D): 1.875 Hz for the campfire's 0.64 m base, its features rising a diameter a
+  // puff (1.2 m/s), so the noise's lattice rises two cells up (a feature) once a puff. R85's eye-
+  // tuned 1.4 m/s through cells of 0.45 r rose 5.2 cells a puff: a tongue every 0.1 s.
+  renderer::FrameFire fire;
+  fire.radius_m = 0.32f;
+  fire.height_m = 0.85f;
+  const f32 f = flame_puff_hz(fire.radius_m);
+  CHECK(f == doctest::Approx(1.875).epsilon(1e-4));
+  CHECK(flame_rise_m_s(fire.radius_m) == doctest::Approx(1.2).epsilon(1e-4));
+  // Halving the diameter puffs sqrt(2) times as often.
+  CHECK(flame_puff_hz(0.16f) / f == doctest::Approx(std::sqrt(2.0)).epsilon(1e-4));
+  const MediumWind wind;
+  const f64 period = 1.0 / static_cast<f64>(f);
+  const f64 t0 = 1000.0;
+  const MediumFire a = medium_fire(fire, WorldPos{}, wind, t0);
+  const MediumFire b = medium_fire(fire, WorldPos{}, wind, t0 + period);
+  f64 rose = static_cast<f64>(b.flame.z) - static_cast<f64>(a.flame.z);
+  if (rose < 0.0) rose += static_cast<f64>(k_flame_noise_period);
+  MESSAGE("the noise rose " << rose << " cells in one puff of " << period << " s");
+  CHECK(rose == doctest::Approx(2.0).epsilon(1e-3));
+  CHECK(a.wind.w == doctest::Approx(static_cast<f64>(k_flame_cell_up * fire.radius_m)));
+}
+
+TEST_CASE("volumetrics: the marched flame hands over to the froxels' blob smoothly") {
+  const f32 r = 0.32f;
+  const f64 far = static_cast<f64>(k_fire_march_widths) * 3.2 * static_cast<f64>(r);
+  CHECK(fire_march_weight(0.0, r) == 1.0f);
+  CHECK(fire_march_weight(8.5, r) == 1.0f);  // past R85's step at 8 m the flame is still marched
+  CHECK(fire_march_weight(far * 0.74, r) == 1.0f);
+  CHECK(fire_march_weight(far, r) == 0.0f);
+  CHECK(fire_march_weight(far * 2.0, r) == 0.0f);
+  // Monotone, and no step larger than the band's slope allows: 1,000 samples across it.
+  f32 last = 1.0f;
+  f32 largest = 0.0f;
+  for (u32 i = 0; i <= 1000; ++i) {
+    const f64 d = far * (0.7 + 0.35 * static_cast<f64>(i) / 1000.0);
+    const f32 w = fire_march_weight(d, r);
+    CHECK(w <= last);
+    largest = std::max(largest, last - w);
+    last = w;
+  }
+  CHECK(largest < 0.01f);
+  // The block's share rides in the fire's record: a fire 20 m out is marched whole.
+  renderer::FrameFire fire;
+  fire.base = WorldPos{20.0, 0.0, 0.0};
+  fire.radius_m = r;
+  fire.height_m = 0.85f;
+  const MediumFire m = medium_fire(fire, WorldPos{}, MediumWind{}, 0.0);
+  CHECK(m.emission.w == 1.0f);
+  CHECK(m.ids[1] == 1u);
+  fire.base = WorldPos{far + 1.0, 0.0, 0.0};
+  const MediumFire n = medium_fire(fire, WorldPos{}, MediumWind{}, 0.0);
+  CHECK(n.emission.w == 0.0f);
+  CHECK(n.ids[1] == 0u);
+}
+
+TEST_CASE("volumetrics: a froxel holds the smoke's mean over its depth, wherever its slices fall") {
+  renderer::FrameFire fire;
+  fire.base = WorldPos{0.0, 0.0, 12.0};
+  fire.radius_m = 0.32f;
+  fire.height_m = 0.85f;
+  fire.smoke_density = 0.5f;
+  fire.smoke_rise_m_s = 1.2f;
+  fire.smoke_spread = 0.22f;
+  MediumWind calm;
+  calm.speed_mps = 0.0f;
+  MediumWind windy;  // the record's mean towards +x
+  for (const MediumWind& wind : {calm, windy}) {
+    const MediumFire f = medium_fire(fire, WorldPos{}, wind, 0.0);
+    // Rays from the eye at the origin towards the column a little over the flame's top, slightly
+    // off its axis and up through it.
+    const Vec3 dirs[3] = {normalize(Vec3{0.0f, 1.0f, 12.0f}), normalize(Vec3{0.08f, 1.1f, 12.0f}),
+                          normalize(Vec3{0.3f, 1.6f, 12.0f})};
+    for (const Vec3& dir : dirs) {
+      // The closed form against a fine sum of the point density, over cells 0.2 to 2 m deep.
+      for (const f32 depth : {0.2f, 0.7f, 1.6f}) {
+        const f32 t0 = 12.0f - 0.4f * depth;
+        const f32 t1 = t0 + depth;
+        const Vec3 at = dir * (0.5f * (t0 + t1));
+        const f32 cell = smoke_cell(f, dir, t0, t1, at, 0.0f);
+        f64 sum = 0.0;
+        const u32 n = 4000;
+        for (u32 i = 0; i < n; ++i) {
+          const f32 t = t0 + (static_cast<f32>(i) + 0.5f) * depth / static_cast<f32>(n);
+          // The column as it stands at the cell's centre: its radius and fade there (the cell
+          // freezes them; the sum uses the point density, which moves them a little).
+          sum += static_cast<f64>(smoke_density(f, dir * t));
+        }
+        const f64 mean = sum / n;
+        MESSAGE("depth " << depth << ": cell " << cell << ", sum " << mean);
+        CHECK(static_cast<f64>(cell) == doctest::Approx(mean).epsilon(0.08).scale(0.02));
+      }
+      // Tiled by slices 1.6 m deep at eight offsets, the column's optical depth along the ray is
+      // the same wherever the boundaries fall: a point sample a slice took caught all or nothing.
+      // The cell freezes the column's radius and fade at its centre, which a ray climbing through
+      // it does not see: measured 0.5% to 12% apart across these rays, against R85's point
+      // sample, which caught the column whole or missed it.
+      f64 lo = 1e30, hi = 0.0, point_lo = 1e30, point_hi = 0.0;
+      for (u32 k = 0; k < 8; ++k) {
+        f64 tau = 0.0, point = 0.0;
+        for (f32 t0 = 8.0f + 0.2f * static_cast<f32>(k); t0 < 16.0f; t0 += 1.6f) {
+          const f32 t1 = t0 + 1.6f;
+          const Vec3 at = dir * (0.5f * (t0 + t1));
+          tau += static_cast<f64>(smoke_cell(f, dir, t0, t1, at, 0.0f)) * 1.6;
+          point += static_cast<f64>(smoke_density(f, at)) * 1.6;
+        }
+        lo = std::min(lo, tau);
+        hi = std::max(hi, tau);
+        point_lo = std::min(point_lo, point);
+        point_hi = std::max(point_hi, point);
+      }
+      MESSAGE("optical depth across eight slicings " << lo << " to " << hi << "; a point sample "
+                                                     << point_lo << " to " << point_hi);
+      if (hi > 1e-4) {
+        CHECK(hi / lo < 1.15);
+        CHECK(hi / lo < point_hi / std::max(point_lo, 1e-9));
+      }
+    }
+  }
 }
 
 namespace {
@@ -656,6 +777,89 @@ TEST_CASE("volumetrics: a fire's flame and glow are where the fire is and nowher
     CHECK(gfx::buffers_created_on_thread() == buffers);
     CHECK(mem::allocations_on_thread() == allocations);
     rig.renderer.wait_idle();
+  }
+}
+
+namespace {
+
+// A code of the 8-bit sRGB picture as linear light, 0 to 1.
+f64 linear(u8 code) {
+  const f64 c = static_cast<f64>(code) / 255.0;
+  return c <= 0.04045 ? c / 12.92 : std::pow((c + 0.055) / 1.055, 2.4);
+}
+
+// The light the medium's fires add to a picture: the sum over its pixels of the channels' rise over
+// the same frame with the medium's fires off, in linear light (the codes' curve would weigh a dim
+// wide blob above a bright narrow flame).
+f64 added_light(const CapturedFrame& on, const CapturedFrame& off) {
+  f64 sum = 0.0;
+  const u32 n = static_cast<u32>(on.color.size());
+  for (u32 i = 0; i < n; i += 4)
+    for (u32 c = 0; c < 3; ++c)
+      sum += std::max(0.0, linear(on.color[i + c]) - linear(off.color[i + c]));
+  return sum;
+}
+
+}  // namespace
+
+TEST_CASE("volumetrics: a flame does not vanish or jump as the eye moves away from it") {
+  Gpu gpu;
+  if (!gpu.ok) {
+    MESSAGE("skipped: " << gpu.why);
+    return;
+  }
+  // R112, the owner's campfire: past R85's 8 m the froxels sampled the flame once a cell, in slices
+  // 13% of the distance deep, so walking away from it the flame vanished and came back whole as the
+  // slices' centres crossed it. A flame alone (no dust, no smoke) from 9 to 13 m and across the
+  // march's hand-over to the froxels' blob (46 to 62 m): its light changes smoothly with distance.
+  Rig probe;
+  REQUIRE_MESSAGE(probe.build(gpu.device, false, ShadowMode::Off), probe.error);
+  FireDesc fire;
+  fire.position = probe.data.center + DVec3{0.0, 0.1 * static_cast<f64>(probe.data.radius), 0.0};
+  fire.radius_m = 0.3f;
+  fire.height_m = 0.8f;
+  fire.intensity = 0.12f;  // dim enough that no pixel clips, bright enough to be out of the toe
+  fire.flicker = 0.0f;
+  fire.smoke_density = 0.0f;
+  Rig rig;
+  rig.fire = &fire;
+  rig.lights = false;
+  REQUIRE_MESSAGE(rig.build(gpu.device, false, ShadowMode::Off), rig.error);
+  MediumDesc desc;
+  desc.dust = false;
+  desc.plumes = false;
+  MediumOptions without;
+  without.fires = false;
+  auto light_at = [&](f64 horizontal) {
+    const FireView view = look_at_fire(rig.data, fire, horizontal);
+    CapturedFrame on, off;
+    REQUIRE_MESSAGE(shoot_medium(rig, gpu.device, desc, {}, view.frame, on), rig.error);
+    REQUIRE_MESSAGE(shoot_medium(rig, gpu.device, desc, without, view.frame, off), rig.error);
+    // The flame's light falls as the square of the distance; the figure takes that out.
+    return added_light(on, off) * view.distance * view.distance;
+  };
+  for (const f64 start : {9.0, 46.0}) {
+    const f64 stride = start < 20.0 ? 0.25 : 1.0;
+    f64 lo = 1e30, hi = 0.0, worst = 0.0, last = 0.0;
+    for (u32 i = 0; i <= 16; ++i) {
+      const f64 v = light_at(start + stride * i);
+      MESSAGE("  at " << start + stride * i << " m: " << v);
+      lo = std::min(lo, v);
+      hi = std::max(hi, v);
+      if (i > 0 && last > 0.0) worst = std::max(worst, std::abs(v - last) / last);
+      last = v;
+    }
+    MESSAGE("from " << start << " m: the flame's light times d^2 from " << lo << " to " << hi
+                    << ", the largest step between neighbours " << worst * 100.0 << "%");
+    CHECK(lo > 0.0);  // never gone
+    // Near, the flame is ten pixels tall and its light times d^2 holds within 10% (measured 5.4%,
+    // a slow rise from 9 to 13 m; the largest step 1.5%).
+    // Across the hand-over it is two pixels across, the march's one ray a pixel weighs its core
+    // over its edges and the blob does not, and the figure rises smoothly by about 2
+    // (measured 1.98) from the march's end to the blob's; what the check holds is no step and no
+    // gap.
+    CHECK(hi / lo < (start < 20.0 ? 1.1 : 2.5));
+    CHECK(worst < 0.25);
   }
 }
 
