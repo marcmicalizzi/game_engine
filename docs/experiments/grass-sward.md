@@ -418,3 +418,5 @@ The tested code is integration commit `51ef062a`; the follow-up changes only thi
 roadmap status. Raw results and the reproducible release harness are retained under external
 `sward/2026-10-25-v5/integration`. This focused gate does not close the open grass visual or
 performance acceptance items, nor claim the deferred full matrix has run on this tip.
+
+Grass shadows under traced shadows, what other pipelines do and what the clearing costs: [grass-shadows-2026-10-31.md](grass-shadows-2026-10-31.md) (G119).
