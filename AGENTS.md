@@ -1,6 +1,6 @@
 # Working in this repository
 
-This file is for every contributor, human or agent. It is short on purpose; the detail lives in the linked documents.
+This file is for every contributor, human or agent. It is short on purpose; the detail lives in the linked documents. A change from outside the project also carries what [CONTRIBUTING.md](CONTRIBUTING.md) asks of a pull request.
 
 ## Where things are
 
