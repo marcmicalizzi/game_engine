@@ -704,7 +704,8 @@ TEST_CASE("volumetrics: a fire's flame and glow are where the fire is and nowher
   MediumOptions without;
   without.fires = false;
 
-  // Past the near distance: the flame is the froxels'.
+  // At 10 m the flame is marched per pixel (R112: sixty widths of its bounds), so the fire counts as
+  // near; the froxels' Gaussian glow begins past the march distance.
   {
     const FireView view = look_at_fire(rig.data, fire, 10.0);
     CapturedFrame on, off, again;
@@ -713,7 +714,7 @@ TEST_CASE("volumetrics: a fire's flame and glow are where the fire is and nowher
     REQUIRE_MESSAGE(shoot_medium(rig, gpu.device, desc, without, view.frame, off), rig.error);
     REQUIRE_MESSAGE(shoot_medium(rig, gpu.device, desc, {}, view.frame, again), rig.error);
     CHECK(stats.fires == 1);
-    CHECK(stats.near_fires == 0);
+    CHECK(stats.near_fires == 1);
     CHECK(on.color == again.color);  // the same clock, the same bytes
     // Inside the light's reach seen from the eye, and a froxel column and a half for the apply's
     // bilinear lookup; nothing outside.
