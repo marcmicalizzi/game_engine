@@ -14,6 +14,7 @@
 #include <domain/gfx/rhi.h>
 #include <domain/gfx/sky.h>
 #include <domain/gfx/visibility_resolve.h>
+#include <domain/gfx/water_spectrum.h>
 
 #include <cstddef>
 #include <type_traits>
@@ -247,8 +248,10 @@ ENGINE_EXPECT_SIZE(48, 8, gfx::HizParams);
 // left, so it is a row of its own. 432, not 416: the cross-fade's table for the shadow rays
 // (`fade`, R91; renderer.md, "The cross-fade"), a row of its own again. 448: `hit_entries` and
 // the hybrid's ray distance and band (R100, R102). 464, not 448: the opaque shadow proxy's
-// coverage table, its length and threshold (R109; renderer.md, "The opaque shadow proxy").
-ENGINE_EXPECT_SIZE(464, 8, gfx::ResolveParams);
+// coverage table, its length and threshold (R109; renderer.md, "The opaque shadow proxy"). 480,
+// not 464: the open sea's instance and water material (S93; water.md, "To the horizon"), a row of
+// its own that only the resolve's water modules declare.
+ENGINE_EXPECT_SIZE(480, 8, gfx::ResolveParams);
 
 // The sky (sky.h; docs/subsystems/gfx.md, "The sky"): the air, the lights, the eye, the celestial
 // frame, the exposure, the tables' addresses, and a view's inverse projection and pixel angle for
@@ -299,6 +302,9 @@ ENGINE_EXPECT_SIZE(368, 8, gfx::PathTraceParams);
 // cluster's index, so it is a handful of cache lines a frame whatever its size; one transform per
 // material rather than one per slot is what kept it from 208 (gfx.md, "The material table").
 ENGINE_EXPECT_SIZE(112, 4, gfx::ResolveMaterial);
+// An open sea's wave (water_spectrum.h; S93), GPU-mirrored by water.slang's `WaterWave`: sixteen of
+// them fill five material entries after a water material's next one.
+ENGINE_EXPECT_SIZE(32, 4, gfx::WaterWave);
 // A terrain's record (renderer.md, "Ground materials by place"; 2026-10-24): one material-table
 // entry no cluster names, so it is exactly a ResolveMaterial's size and is bit-cast into the table.
 // It gives names to what W68 bit-cast into the root's normal scale, occlusion strength and UV words

@@ -1156,7 +1156,7 @@ struct WaterShape @version(1) {
 /// mesh carries under each vertex (the level less the ground there, zero where the ground stands
 /// above the water). The walker wades in it and stops at the chest. Append-only: a field added
 /// later has a default that draws what the block drew before it.
-struct WaterBody @version(2) {
+struct WaterBody @version(3) {
   name: string
   /// The surface's height, a world y, metres.
   level_m: f64 = 0 @unit(m)
@@ -1200,6 +1200,22 @@ struct WaterBody @version(2) {
   /// Suspended sediment, >= 0: each unit adds scattering of the sand's colour (0.9, 0.82, 0.68) and
   /// absorption (0.03, 0.06, 0.14) per metre, so a turbid pool turns milky and ochre.
   turbidity: f32 = 0 @since(2)
+  /// **Open water** (docs/subsystems/water.md, "To the horizon"; roadmap S93): the outline is the
+  /// near shore of a sea, and past it the same water goes on to the horizon wherever the ground is
+  /// below the level, drawn by the resolve as a plane at the level, with the waves continuous across
+  /// the outline. Its shore fades by depth rather than by the distance from the outline, whose sides
+  /// facing the sea are not a shore. At most one body of a scene; false: the body it was.
+  open: bool = false @since(3)
+  /// **An open sea's waves from a spectrum** (docs/subsystems/water.md, "The spectrum"): the wind
+  /// 10 m above the water, m/s, when the ground gives none (the ground's wind wins where it has
+  /// one and the body follows it). With a wind, an open body's waves are sixteen Gerstner waves
+  /// drawn from the JONSWAP spectrum at that wind and `fetch_km`, spread by Donelan-Banner, in
+  /// place of the four sines (and `wave_amplitude_m`, `wave_length_m` and `chop` are not read);
+  /// 0 with no ground wind: the four sines. A closed body never reads it.
+  wind_m_s: f32 = 0 @since(3) @unit("m/s")
+  /// How far the wind has blown over open water before it reaches the body, km: JONSWAP's fetch,
+  /// which sets how grown the sea is (a longer fetch, longer and higher waves).
+  fetch_km: f32 = 100 @since(3) @unit(km)
 }
 
 /// A scene: meshes, placements of them, and an optional terrain. Version 5 added `placements`,

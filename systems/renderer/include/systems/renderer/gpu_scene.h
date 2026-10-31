@@ -366,6 +366,11 @@ class GpuScene {
   // then draws with the resolve module that has the water branch, and otherwise with the one that
   // has none, since the branch costs every pixel of every frame (water.md, "Shading").
   bool has_water() const noexcept { return has_water_; }
+  // The open sea (docs/subsystems/water.md, "To the horizon"): the instance of the scene's open
+  // water body, `gfx::k_no_water_open` without one, and the index of its water material in the
+  // table — what `ResolveParams::water_open_instance` and `water_open_material` carry.
+  u32 water_open_instance() const noexcept { return water_open_instance_; }
+  u32 water_open_material() const noexcept { return water_open_material_; }
   bool has_terrain_materials() const noexcept { return has_terrain_materials_; }
   // The terrain's mask level as uploaded (renderer.md, "Ground materials by place"): its bytes on
   // the GPU (page table and tiles) and its resident tiles; zero for a terrain without masks.
@@ -1450,7 +1455,9 @@ class GpuScene {
   bool has_terrain_materials_ = false;  // a native ground root actually exists in the table
   u64 terrain_mask_bytes_ = 0;
   u32 terrain_mask_tiles_ = 0;
-  bool has_water_ = false;   // a material of the table carries gfx::k_material_water
+  bool has_water_ = false;                 // a material of the table carries gfx::k_material_water
+  u32 water_open_instance_ = 0xffffffffu;  // gfx::k_no_water_open
+  u32 water_open_material_ = 0;
   bool has_masked_ = false;  // a material of the table carries gfx::k_material_alpha_mask
   // {cluster, material} of every alpha-tested cluster, kept from the material upload until the
   // proxy's bake (R109) reads it, then released; empty when the proxy is off.

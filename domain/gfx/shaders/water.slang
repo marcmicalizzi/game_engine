@@ -148,6 +148,79 @@ float3 water_radiance(WaterParams w, float3 n, float3 v, float2 uv, float3 sun_d
   return under * (1.0 - fresnel * shore) + (sky * fresnel + glitter) * shore;
 }
 
+// **Open water** (gfx::k_material_water_open; docs/subsystems/water.md, "To the horizon"): the
+// body's outline is the near shore of a sea, and the resolve draws the same water past it as a
+// plane at the level. Its sides that face the sea are not a shore, so an open body's shore fades
+// by **depth**, over the depth the waves calm in, rather than by the distance from the outline:
+// `water_edge` is what `water_radiance`'s uv.x (and the volume's) is given — the mesh's distance
+// from the outline for a closed body, unchanged, and for an open one `shore` times the share of
+// `k_water_calm_depth` the water has, so the fade is whole where the waves are.
+static const uint k_material_water_open = 128u;  // gfx::k_material_water_open
+// The depth the plane takes where nothing is under it (past the depth map's square, a pixel with
+// no surface behind the sea): the bottom gone.
+static const float k_water_open_deep = 1000.0;
+
+float water_edge(WaterParams w, uint flags, float edge, float depth) {
+  if ((flags & k_material_water_open) == 0) return edge;
+  return w.shore * clamp(depth / k_water_calm_depth, 0.0, 1.0);
+}
+
+// **An open sea's waves from a spectrum** (gfx::k_material_water_spectrum, water_spectrum.h;
+// docs/subsystems/water.md, "The spectrum"): in place of the four sines, the sum of
+// `k_water_waves` Gerstner waves drawn from JONSWAP at the scene's wind and the body's fetch with
+// Donelan-Banner spreading, made on the CPU at load and packed raw into the five material entries
+// after the water material's next one. Each wave's phase is reduced to a fraction of a cycle term by
+// term as the four sines' is, its frequency a whole number of cycles a period, its share faded by
+// the footprint and the shore's calm alike; the Gerstner crest sharpens the normal by its
+// steepness (Q k a). The silhouette stays flat: only the normal is evaluated.
+static const uint k_material_water_spectrum = 256u;  // gfx::k_material_water_spectrum
+static const uint k_water_waves = 16;  // gfx::k_water_waves; the entries are scene.slang's 112 bytes
+
+// Mirrors gfx::WaterWave (32 bytes).
+struct WaterWave {
+  float2 direction;
+  float k;
+  float amplitude;
+  float cycles;
+  float phase;
+  float steepness;
+  float pad;
+};
+
+// The table of the water material at `index` of the table at `materials` (an address).
+WaterWave* water_waves(uint64_t materials, uint index) {
+  return (WaterWave*)(materials + uint64_t(index + 2u) * uint64_t(k_resolve_material_bytes));
+}
+
+float3 water_normal_spectrum(WaterWave* waves, float2 p, float time, float footprint,
+                             float depth) {
+  float2 slope = float2(0.0, 0.0);
+  float lift = 0.0;
+  const float calm = clamp(depth / k_water_calm_depth, 0.0, 1.0);
+  for (uint i = 0; i < k_water_waves; ++i) {
+    const WaterWave wave = waves[i];
+    const float lambda = k_water_two_pi / wave.k;
+    const float along = dot(wave.direction, p) / lambda;
+    const float travel = frac(wave.cycles * (time / k_water_period_s));
+    const float cyc = frac(frac(along) - travel + wave.phase);
+    const float keep = footprint > 0.0 ? clamp(lambda / (2.0 * footprint) - 1.0, 0.0, 1.0) : 1.0;
+    const float share = calm * keep;
+    const float angle = k_water_two_pi * cyc;
+    slope += wave.direction * (wave.amplitude * wave.k * share * cos(angle));
+    lift += wave.steepness * share * sin(angle);
+  }
+  return normalize(float3(-slope.x, 1.0 - lift, -slope.y));
+}
+
+// The waves' normal for a water material: the spectrum's where it has one, the four sines'
+// otherwise.
+float3 water_normal_of(WaterParams w, uint flags, uint64_t materials, uint index, float2 p,
+                       float time, float footprint, float depth) {
+  if ((flags & k_material_water_spectrum) != 0)
+    return water_normal_spectrum(water_waves(materials, index), p, time, footprint, depth);
+  return water_normal(w, p, time, footprint, depth);
+}
+
 // The direction the reflected view leaves the surface along, kept above the horizon: a steep wave
 // that sends it down sends it into the water, which under the sky the mirror of the sky stands in.
 float3 water_reflected(float3 n, float3 v) {
