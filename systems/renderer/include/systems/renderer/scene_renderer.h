@@ -731,6 +731,9 @@ class SceneRenderer {
   bool move_instances(std::span<const u32> indices, std::span<const SceneInstance> placements,
                       std::string* error = nullptr);
 
+  // The far forest's hand-off (renderer.md, "The far forest"): which far tiles are drawn now.
+  const FarForestHandOff& far_forest() const noexcept { return far_forest_; }
+
   // The overlay pass (overlay.h, ADR-0054), for its textures; a frame draws it when
   // `FrameDesc::overlay` names lists. A texture is removed only once no frame in flight reads it,
   // which this waits for.

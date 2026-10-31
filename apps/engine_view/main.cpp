@@ -3557,6 +3557,30 @@ int run_offscreen(Options& options, Interactive& interactive) {
           stats.deform_overflow_entries,
           static_cast<unsigned long long>(u64{stats.deform_overflow_vertices} * 3 * sizeof(f32)));
     }
+    // The far forest (renderer.md, "The far forest"): what the load built and what the last
+    // hand-off draws of it, one line beside the cascades' for a measurement to quote.
+    if (!scene_data.far_forest.empty()) {
+      const renderer::FarForestData& far = scene_data.far_forest;
+      const renderer::FarForestHandOff& handoff = view_renderer.far_forest();
+      u64 drawn_pairs = 0;
+      u64 drawn_triangles = 0;
+      for (u32 t = 0; t < far.tiles.size(); ++t) {
+        if (!handoff.drawn(t)) continue;
+        drawn_pairs += scene_data.parts[far.tiles[t].mesh].cluster_count;
+        drawn_triangles += far.tiles[t].triangles;
+      }
+      std::fprintf(stderr,
+                   "engine-view: far forest tiles=%u trees=%u meshes=%u triangles=%llu "
+                   "pairs=%llu small=%u heavy=%u untextured=%u hits=%u misses=%u build_ms=%.1f "
+                   "drawn_tiles=%u drawn_pairs=%llu drawn_triangles=%llu\n",
+                   far.stats.tiles, far.stats.trees, far.stats.meshes,
+                   static_cast<unsigned long long>(far.stats.triangles),
+                   static_cast<unsigned long long>(far.stats.clusters), far.stats.skipped_small,
+                   far.stats.skipped_heavy, far.stats.skipped_textures, far.stats.cache_hits,
+                   far.stats.cache_misses, far.stats.build_ms, handoff.drawn_count(),
+                   static_cast<unsigned long long>(drawn_pairs),
+                   static_cast<unsigned long long>(drawn_triangles));
+    }
     summary.device = device.adapter().name;
     summary.frames = frames;
     summary.repeats = measured ? repeats : 0;
