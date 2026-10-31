@@ -254,6 +254,7 @@ struct GameRunner::Impl {
   void* ground_user = nullptr;
   bool spawn_said = false;
   u64 ground_queries = 0;
+  u64 ground_samples = 0;  // ABI 8's `ground_sample` answers
   // The walker's services (ABI 3): the session they go to, and what they did.
   FlySession* session = nullptr;
   u64 walker_sets = 0;
@@ -861,6 +862,46 @@ struct GameRunner::Impl {
     return self.ground(self.ground_user, x, z, *out) ? hotload::Result::Ok
                                                      : hotload::Result::Unsupported;
   }
+  // ABI 8: the height and the normal. The normal is central differences of the same height
+  // function a half footprint either side of the point in x and z (the Walker's `ground_at` at
+  // the nearest millimetre, so a slope is the one the walker would walk) rather than the drawn
+  // triangle's: an animal's stance spans about a metre, and the lattice triangle under a point
+  // tilts with every cell. The height is the centre's own query, `ground_height`'s to the bit.
+  static hotload::Result ground_sample(void* user, f64 x, f64 z, hotload::GroundSample& io) {
+    Impl& self = *static_cast<Impl*>(user);
+    if (!std::isfinite(x) || !std::isfinite(z)) return hotload::Result::InvalidArgument;
+    const f32 footprint =
+        io.footprint_m == 0.0f ? hotload::k_ground_footprint_default_m : io.footprint_m;
+    if (!(footprint > 0.0f) || footprint > hotload::k_ground_footprint_max_m)
+      return hotload::Result::InvalidArgument;
+    if (self.ground == nullptr) return hotload::Result::Unsupported;
+    const f64 d = 0.5 * static_cast<f64>(footprint);
+    f64 centre = 0.0, east = 0.0, west = 0.0, north = 0.0, south = 0.0;
+    if (!self.ground(self.ground_user, x, z, centre) ||
+        !self.ground(self.ground_user, x + d, z, east) ||
+        !self.ground(self.ground_user, x - d, z, west) ||
+        !self.ground(self.ground_user, x, z + d, north) ||
+        !self.ground(self.ground_user, x, z - d, south)) {
+      return hotload::Result::Unsupported;
+    }
+    ++self.ground_samples;
+    const f64 baseline = 2.0 * d;
+    const f64 gx = (east - west) / baseline;    // d(height)/dx
+    const f64 gz = (north - south) / baseline;  // d(height)/dz
+    const f64 inverse = 1.0 / std::sqrt(gx * gx + 1.0 + gz * gz);
+    io.height = centre;
+    io.normal[0] = static_cast<f32>(-gx * inverse);
+    io.normal[1] = static_cast<f32>(inverse);
+    io.normal[2] = static_cast<f32>(-gz * inverse);
+    return hotload::Result::Ok;
+  }
+  static hotload::Result actor_place_aligned(void* user, u32 actor, const f64* position, f32 yaw,
+                                             const f32* up, f32 max_tilt_rad) {
+    ActorHost* host = nullptr;
+    const hotload::Result r = static_cast<Impl*>(user)->actor_host(actor, host);
+    return r == hotload::Result::Ok ? host->place_aligned(actor, position, yaw, up, max_tilt_rad)
+                                    : r;
+  }
 
   // Sound: not built yet (roadmap P43, the third stage). `Unsupported`, said once.
   static hotload::Result sound_clip(void* user, std::string_view, u32*, std::string*) {
@@ -944,6 +985,8 @@ bool GameRunner::start(const Config& config, const input::ActionMap& map, u32 ti
   services.ground_height = &Impl::ground_height;
   services.hud_image = &Impl::hud_image;
   services.hud_font = &Impl::hud_font;
+  services.actor_place_aligned = &Impl::actor_place_aligned;
+  services.ground_sample = &Impl::ground_sample;
   host.set_game_services(services);
 
   const auto refuse = [&](const std::string& why) {
@@ -1509,6 +1552,7 @@ JsonValue GameRunner::summary_json() const {
     out.set("actors", g.actors->summary_json());
     JsonValue calls = g.actors->calls_json();
     calls.set("ground_queries", g.ground_queries);
+    calls.set("ground_samples", g.ground_samples);
     out.set("actor_calls", std::move(calls));
   } else {
     JsonValue names = JsonValue::array();
@@ -1522,6 +1566,7 @@ JsonValue GameRunner::summary_json() const {
     JsonValue calls = JsonValue::object();
     calls.set("bound", false);
     calls.set("ground_queries", g.ground_queries);
+    calls.set("ground_samples", g.ground_samples);
     out.set("actor_calls", std::move(calls));
   }
   out.set("ground", g.ground != nullptr);

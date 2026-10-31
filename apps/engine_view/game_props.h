@@ -189,6 +189,10 @@ class ActorHost {
  public:
   virtual ~ActorHost() = default;
   virtual hotload::Result place(u32 instance, const f64* position, f32 yaw) = 0;
+  // ABI 8: the same, tipped from +y toward `up` (unit, checked by the implementation) by the
+  // shortest arc, held to `max_tilt_rad` (0: the default); apps.md, "Actors".
+  virtual hotload::Result place_aligned(u32 instance, const f64* position, f32 yaw, const f32* up,
+                                        f32 max_tilt_rad) = 0;
   virtual hotload::Result play(u32 instance, std::string_view clip, f32 fade_s, bool looping) = 0;
   virtual hotload::Result stop(u32 instance, f32 fade_s) = 0;
   virtual hotload::Result speed(u32 instance, f32 speed) = 0;

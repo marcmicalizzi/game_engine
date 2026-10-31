@@ -207,7 +207,15 @@ state. At a tick, `actor_place` stands it (level, its scale kept), `actor_play` 
 with a cross-fade, `actor_stop` fades it to its rest pose, `actor_speed` sets its rate, and
 `actor_state` reads back where it is, what it plays and the hash of its pose; `ground_height(x, z)`
 is the height the walker would stand on, so a tortoise ambles over the dunes rather than through
-them. Everything is applied at the tick it is asked for, so a replay with the same module is the
+them. **On a slope** (ABI 8, 2026-10-31): `actor_place` stands the character level, which on a hill
+puts a deer's feet in it. `ground_sample(x, z, sample)` answers the height and the ground's unit
+normal in one call (its `footprint_m` is how far apart the slope is read: 1 m by default, about the
+animal's body length for a body that should follow the hill), and
+`actor_place_aligned(actor, position, yaw, up, max_tilt_rad)` stands the character at the position
+turned `yaw` and then tipped so its +y is `up`, held to `max_tilt_rad` (0: 30 degrees from vertical).
+Hand it the normal `ground_sample` gave. A host older than ABI 8 answers both `Unsupported`; place
+level with `actor_place` then. `actor_state` reports the `up`, the tilt and whether it was held.
+Everything is applied at the tick it is asked for, so a replay with the same module is the
 same walk; `--game-state` keeps where every actor stood and what it played, and a resumed run puts
 them back. Two limits, both the renderer's for now: a scene that also declares `props` (or streams
 a world) answers `actor_place` with `Unsupported`, and `actor_spawn` — a character made at run time —

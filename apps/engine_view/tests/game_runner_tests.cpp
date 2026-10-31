@@ -64,6 +64,11 @@ void write_text(const std::string& path, std::string_view text) {
   out.write(text.data(), static_cast<std::streamsize>(text.size()));
 }
 
+f64 number_of(const JsonValue* v) {
+  f64 out = -1.0;
+  return v != nullptr && v->get_f64(out) ? out : -1.0;
+}
+
 f64 state_number(const view::GameRunner& runner, const char* field) {
   const JsonValue state = runner.state_json();
   const JsonValue* v = state.find(field);
@@ -513,6 +518,8 @@ struct FakeActors final : view::ActorHost {
   f64 position[3] = {4.0, 1.0, -6.0};
   f32 yaw = 0.0f;
   u32 places = 0;
+  f32 aligned_up[3] = {0.0f, 1.0f, 0.0f};
+  f32 aligned_max_tilt = -1.0f;
   std::string clip;
   f32 fade = -1.0f;
   f32 rate = 1.0f;
@@ -527,6 +534,13 @@ struct FakeActors final : view::ActorHost {
     yaw = y;
     ++places;
     return hotload::Result::Ok;
+  }
+  hotload::Result place_aligned(u32 a, const f64* p, f32 y, const f32* up, f32 max_tilt) override {
+    aligned_up[0] = up[0];
+    aligned_up[1] = up[1];
+    aligned_up[2] = up[2];
+    aligned_max_tilt = max_tilt;
+    return place(a, p, y);
   }
   hotload::Result play(u32, std::string_view c, f32 f, bool) override {
     clip = std::string(c);
@@ -661,6 +675,55 @@ TEST_CASE("game runner: a state file naming an actor the scene does not is refus
   CHECK_FALSE(runner.start(config, map, 240, &error));
   CHECK(error.find("actors[0] is 'tortoise', which the scene does not name") != std::string::npos);
 }
+
+#if defined(WALK_POC_ALIGNED_PATH)
+TEST_CASE(
+    "game runner: ground_sample answers the height and the slope's unit normal, and an aligned "
+    "placement reaches the actor with the normal it was given") {
+  if (in_bundle()) return;
+  const test::TempDir tmp("game_runner_ground_sample");
+  const input::ActionMap map = view::default_fly_map();
+  std::string error;
+  Vector<view::DeclaredActor> bar;
+  bar.push_back(view::DeclaredActor{"bar", 1});
+  view::GameRunner runner;
+  runner.declare_actors(bar);
+  REQUIRE_MESSAGE(
+      runner.start(config_for(place(tmp, WALK_POC_ALIGNED_PATH, "aligned"), tmp), map, 240, &error),
+      error);
+  FakeActors actors;
+  runner.set_actors(&actors);
+  runner.set_ground(&slope, nullptr);  // height = 0.1 x - 0.05 z
+  u64 tick = 0;
+  walk(runner, tick, 480);  // the module's eight one-second phases
+
+  // Phase 5 sampled the ground at the actor's place (4, -6): the height is the query's own, and
+  // the normal is (-dh/dx, 1, -dh/dz) made unit: a plane's differences are exact.
+  const JsonValue state = runner.state_json();
+  const f64 length = std::sqrt(0.1 * 0.1 + 1.0 + 0.05 * 0.05);
+  const JsonValue* normal = state.find("align_sample_normal");
+  REQUIRE(normal != nullptr);
+  CHECK(number_of(&(*normal)[0]) == doctest::Approx(-0.1 / length).epsilon(1e-6));
+  CHECK(number_of(&(*normal)[1]) == doctest::Approx(1.0 / length).epsilon(1e-6));
+  CHECK(number_of(&(*normal)[2]) == doctest::Approx(0.05 / length).epsilon(1e-6));
+  CHECK(state_number(runner, "align_sample_height_delta") == 0.0);
+  // And the placement made with that normal arrived whole (the fake world does not validate: the
+  // validation is `GameActors`', tested end to end).
+  CHECK(actors.aligned_up[0] == doctest::Approx(-0.1 / length).epsilon(1e-6));
+  CHECK(actors.aligned_up[1] == doctest::Approx(1.0 / length).epsilon(1e-6));
+  CHECK(actors.aligned_max_tilt == 0.0f);  // 0: the host's default
+  // The runner refused a negative footprint and one past 64 m before it asked the ground: calls 11
+  // and 12 are InvalidArgument (6) and call 8, the sample itself, Ok (four bits a call).
+  const u64 codes = static_cast<u64>(state_number(runner, "align_codes"));
+  CHECK(((codes >> 32u) & 0xFu) == 0u);  // call 8: Ok
+  CHECK(((codes >> 44u) & 0xFu) == 6u);
+  CHECK(((codes >> 48u) & 0xFu) == 6u);
+  const JsonValue summary = runner.summary_json();
+  CHECK(number_of(summary.find("actor_calls")->find("ground_samples")) ==
+        61.0);  // phase 5's and phase 7's sixty
+  runner.set_actors(nullptr);
+}
+#endif  // WALK_POC_ALIGNED_PATH
 #endif  // WALK_POC_ACTOR_PATH
 
 #endif  // WALK_POC_PATH
@@ -672,7 +735,9 @@ TEST_CASE("game runner: render diagnostics do not advance simulation") {
   engine::view::GameRunner runner;
   const auto map = view::default_fly_map();
   std::string error;
-  REQUIRE_MESSAGE(runner.start(config_for(place(tmp, WALK_POC_PATH, "walk_poc"), tmp), map, 240, &error), error);
+  REQUIRE_MESSAGE(
+      runner.start(config_for(place(tmp, WALK_POC_PATH, "walk_poc"), tmp), map, 240, &error),
+      error);
   runner.note_render_frame(0.0);
   runner.note_render_frame(-10.0);
   runner.note_render_frame(std::nan(""));

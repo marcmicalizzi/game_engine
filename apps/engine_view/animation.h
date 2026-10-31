@@ -257,6 +257,8 @@ class GameActors final : public ActorHost {
 
   // ---- ActorHost ----
   hotload::Result place(u32 instance, const f64* position, f32 yaw) override;
+  hotload::Result place_aligned(u32 instance, const f64* position, f32 yaw, const f32* up,
+                                f32 max_tilt_rad) override;
   hotload::Result play(u32 instance, std::string_view clip, f32 fade_s, bool looping) override;
   hotload::Result stop(u32 instance, f32 fade_s) override;
   hotload::Result speed(u32 instance, f32 speed) override;

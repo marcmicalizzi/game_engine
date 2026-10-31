@@ -31,7 +31,11 @@ using Survivor = walk_poc::Survivor;
 #ifndef WALK_POC_TEST
 // 1: declares an action no map has; 2: fails at tick 30; 3: places no props and touches no walker;
 // 4: named walk_poc_teleport, teleports the walker 10 m ahead at tick 50; 5: named walk_poc_actor,
-// walks the scene's actor `bar` round a circle on the ground (the tests').
+// walks the scene's actor `bar` round a circle on the ground (the tests'); 6: the loading build
+// (ABI 7); 7: named walk_poc_aligned, places `bar` on slopes with `actor_place_aligned` and
+// samples the ground's normal (ABI 8); 8: named walk_poc_abi7, the actor build declared as a
+// module built against ABI 7 is, reading `actor_state` into ABI 5's 136 bytes; 9: named
+// walk_poc_level, build 7 with its first placement made through `actor_place`.
 #define WALK_POC_TEST 0
 #endif
 
@@ -71,7 +75,11 @@ struct Fields {
   bool no_panel = false;
 } g_fields;
 
-#if WALK_POC_TEST == 5
+#if WALK_POC_TEST == 5 || WALK_POC_TEST == 7 || WALK_POC_TEST == 8 || WALK_POC_TEST == 9
+#define WALK_POC_ACTORS 1
+#endif
+
+#if WALK_POC_TEST == 5 || WALK_POC_TEST == 8
 // **The actor build** (apps.md "Actors: the characters a game moves"): the scene's actor `bar`
 // walks a 3 m circle round where it stood, a turn every two seconds, standing on the ground
 // (`ground_height`) and facing along its way; it plays `bend` from its first tick, at twice the
@@ -81,11 +89,61 @@ constexpr f64 k_circle_radius = 3.0;
 constexpr u64 k_circle_ticks = 480;
 constexpr f64 k_two_pi = 6.283185307179586;
 
+struct Seen {
+  f64 position[3] = {0.0, 0.0, 0.0};
+  u64 pose_hash = 0;
+};
+
+#if WALK_POC_TEST == 8
+// **The ABI 7 build** (`walk_poc_abi7`; apps.md "Actors"): the same circle, declared as a module
+// built against ABI 7 is — the actor's state read into the 136 bytes ABI 5 to 7 owned
+// (`k_actor_state_v5_size`), the calls placed with `actor_place`, nothing of ABI 8 touched. A
+// guard of 24 bytes follows the struct, and any that the host overwrote is counted in the state:
+// a host of ABI 8 copies an `ActorState` out only as far as the module's `size`.
+struct ActorStateV5 {
+  u32 size = k_actor_state_v5_size;
+  u32 instance = 0;
+  f64 position[3] = {0.0, 0.0, 0.0};
+  f32 yaw = 0.0f, playhead_s = 0.0f, speed = 1.0f, weight = 1.0f;
+  u32 looping = 0, tier = 0, playing = 0, fading = 0;
+  u64 pose_hash = 0;
+  char clip[64] = {};
+};
+static_assert(sizeof(ActorStateV5) == k_actor_state_v5_size, "ABI 5's ActorState is 136 bytes");
+struct GuardedState {
+  ActorStateV5 state;
+  unsigned char guard[24];
+};
+
+bool read_actor(ModuleContext* context, Survivor& s, u32 bar, Seen& out) {
+  GuardedState g;
+  std::memset(g.guard, 0xAB, sizeof(g.guard));
+  const Result r =
+      context->api->actor_state(context->api->host, bar, reinterpret_cast<ActorState*>(&g.state));
+  for (const unsigned char byte : g.guard) {
+    if (byte != 0xAB) ++s.abi7_overrun;
+  }
+  for (u32 k = 0; k < 3; ++k)
+    out.position[k] = g.state.position[k];
+  out.pose_hash = g.state.pose_hash;
+  return r == Result::Ok;
+}
+#else
+bool read_actor(ModuleContext* context, Survivor&, u32 bar, Seen& out) {
+  ActorState seen;
+  if (actor_state(context, bar, seen) != Result::Ok) return false;
+  for (u32 k = 0; k < 3; ++k)
+    out.position[k] = seen.position[k];
+  out.pose_hash = seen.pose_hash;
+  return true;
+}
+#endif
+
 void walk_actor(ModuleContext* context, Survivor& s, u64 tick) {
   const u32 bar = g_fields.bar;
-  ActorState seen;
+  Seen seen;
   if (!s.actor_started) {
-    if (actor_state(context, bar, seen) != Result::Ok) return;
+    if (!read_actor(context, s, bar, seen)) return;
     s.actor_started = true;
     s.actor_centre.x = seen.position[0];
     s.actor_centre.y = seen.position[1];
@@ -103,8 +161,132 @@ void walk_actor(ModuleContext* context, Survivor& s, u64 tick) {
   actor_place(context, bar, at, static_cast<f32>(yaw));
   if (tick == 120) actor_speed(context, bar, 2.0f);
   if (tick == 240) actor_stop(context, bar, 0.5f);
-  if (actor_state(context, bar, seen) == Result::Ok) s.actor_pose = seen.pose_hash;
+  if (read_actor(context, s, bar, seen)) s.actor_pose = seen.pose_hash;
   ++s.actor_ticks;
+}
+#endif
+
+#if WALK_POC_TEST == 7 || WALK_POC_TEST == 9
+// **The aligned build** (ABI 8; apps.md "Actors"): the scene's actor `bar` stood at one place,
+// eight phases of a second, each placing it a different way on the first tick of the phase and
+// holding it there, so the report's path (a sample at the end of each phase) shows the pose:
+//   0  up = (0,1,0)              level, `actor_place`'s own
+//   1  a 20 degree slope toward +x, the default limit (30)
+//   2  a 60 degree wall, the default limit: held to 30
+//   3  the same 60 with a limit of 70 degrees: 60
+//   4  four refused calls (an up of length 2, a NaN up, a negative limit, one past a right angle):
+//      the actor stays as phase 3 left it
+//   5  `ground_sample` at the place and an aligned placement with the normal it answered
+//   6  `actor_place`: level again; a `ground_height` every tick
+//   7  two refused footprints (negative, 100 m); a `ground_sample` every tick
+// The answer of every call is in the state, and `actor_state`'s tilt after the first four.
+constexpr u64 k_phase_ticks = 60;
+constexpr f32 k_deg = 0.017453292519943295f;
+
+void record(Survivor& s, u32 call, Result r) {
+  s.align_codes |= static_cast<u64>(static_cast<u32>(r) & 0xFu) << (4u * call);
+}
+
+// The level build (`walk_poc_level`, WALK_POC_TEST 9) makes every placement through `actor_place`
+// and ignores the slope: the baseline a capture of the aligned build is held against — the same
+// pictures at `up` = (0,1,0), different ones where the slope tipped the actor.
+Result stand(ModuleContext* context, u32 actor, const f64 (&position)[3], f32 yaw,
+             const f32 (&up)[3], f32 max_tilt_rad = 0.0f) {
+#if WALK_POC_TEST == 9
+  (void)up;
+  (void)max_tilt_rad;
+  return actor_place(context, actor, position, yaw);
+#else
+  return actor_place_aligned(context, actor, position, yaw, up, max_tilt_rad);
+#endif
+}
+
+void align_actor(ModuleContext* context, Survivor& s, u64 tick) {
+  const u32 bar = g_fields.bar;
+  ActorState seen;
+  if (!s.actor_started) {
+    if (actor_state(context, bar, seen) != Result::Ok) return;
+    s.actor_started = true;
+    s.actor_centre.x = seen.position[0];
+    s.actor_centre.y = seen.position[1];
+    s.actor_centre.z = seen.position[2];
+    actor_play(context, bar, "bend", 0.0f, true);
+  }
+  ++s.actor_ticks;
+  const u64 phase = (tick - 1) / k_phase_ticks;
+  const bool first = (tick - 1) % k_phase_ticks == 0;
+  f64 at[3] = {s.actor_centre.x, s.actor_centre.y, s.actor_centre.z};
+  f64 ground = 0.0;
+  // The first tick of a phase asks the height it stands the actor at; phase 6 asks it every tick
+  // and phase 7 asks `ground_sample` every tick (and the height once, on its first), which is what
+  // the end-to-end test counts the walker's ground queries by: one a `ground_height`, five a
+  // sample.
+  if (first || phase == 6) {
+    if (ground_height(context, at[0], at[2], ground) == Result::Ok) at[1] = ground;
+  }
+  if (phase == 7) {
+    GroundSample every_tick;
+    (void)ground_sample(context, at[0], at[2], every_tick);
+  }
+  if (!first) return;
+  const f32 yaw = 0.7f;
+  const f32 level[3] = {0.0f, 1.0f, 0.0f};
+  const f32 slope20[3] = {-std::sin(20.0f * k_deg), std::cos(20.0f * k_deg), 0.0f};
+  const f32 wall60[3] = {-std::sin(60.0f * k_deg), std::cos(60.0f * k_deg), 0.0f};
+  const auto tilt_after = [&](u32 slot) {
+    if (actor_state(context, bar, seen) != Result::Ok) return;
+    s.align_tilt[slot] = static_cast<f64>(seen.tilt_rad);
+    if (slot == 2) s.align_clamped = seen.tilt_clamped;
+  };
+  switch (phase) {
+    case 0:
+      record(s, 0, stand(context, bar, at, yaw, level));
+      tilt_after(0);
+      break;
+    case 1:
+      record(s, 1, stand(context, bar, at, yaw, slope20));
+      tilt_after(1);
+      break;
+    case 2:
+      record(s, 2, stand(context, bar, at, yaw, wall60));
+      tilt_after(2);
+      break;
+    case 3:
+      record(s, 3, stand(context, bar, at, yaw, wall60, 70.0f * k_deg));
+      tilt_after(3);
+      break;
+    case 4: {
+      const f32 too_long[3] = {2.0f, 0.0f, 0.0f};
+      const f32 not_a_number[3] = {std::nanf(""), 1.0f, 0.0f};
+      record(s, 4, stand(context, bar, at, yaw, too_long));
+      record(s, 5, stand(context, bar, at, yaw, not_a_number));
+      record(s, 6, stand(context, bar, at, yaw, level, -1.0f));
+      record(s, 7, stand(context, bar, at, yaw, level, 2.0f));
+      break;
+    }
+    case 5: {
+      GroundSample sample;
+      const Result r = ground_sample(context, at[0], at[2], sample);
+      record(s, 8, r);
+      if (r == Result::Ok) {
+        s.align_sample_height_delta = sample.height - ground;
+        s.align_sample_normal.x = sample.normal[0];
+        s.align_sample_normal.y = sample.normal[1];
+        s.align_sample_normal.z = sample.normal[2];
+        const f64 raised[3] = {at[0], sample.height, at[2]};
+        record(s, 9, stand(context, bar, raised, yaw, sample.normal));
+      }
+      break;
+    }
+    case 6: record(s, 10, actor_place(context, bar, at, yaw)); break;
+    case 7: {
+      GroundSample sample;
+      record(s, 11, ground_sample(context, at[0], at[2], sample, -1.0f));
+      record(s, 12, ground_sample(context, at[0], at[2], sample, 100.0f));
+      break;
+    }
+    default: break;
+  }
 }
 #endif
 
@@ -142,7 +324,7 @@ i32 on_load(ModuleContext* context) {
   // The game's font (ABI 6), when its content directory ships one: a plain answer either way.
   f.has_font = hud_font(context, "hud/font.ttf", 56.0f, f.font) == Result::Ok;
   f.no_panel = false;
-#if WALK_POC_TEST == 5
+#ifdef WALK_POC_ACTORS
   // `Unsupported`: a session with no actors, and the build walks nothing; `NotFound` — a scene
   // with actors and no `bar` — refuses the load by itself, naming it.
   f.has_bar = actor_find(context, "bar", f.bar) == Result::Ok;
@@ -227,8 +409,10 @@ void game_tick(ModuleContext* context, View tick, f32) {
     const f64 at[3] = {s.spring.x, s.spring.y, s.spring.z};
     if (prop_place(context, f.can_mesh, at, 0.0f, 1.0f, s.can) != Result::Ok) s.can = 0;
   }
-#if WALK_POC_TEST == 5
+#if WALK_POC_TEST == 5 || WALK_POC_TEST == 8
   if (f.has_bar) walk_actor(context, s, tick_index);
+#elif WALK_POC_TEST == 7 || WALK_POC_TEST == 9
+  if (f.has_bar) align_actor(context, s, tick_index);
 #endif
   if (s.over) return;
 
@@ -425,12 +609,22 @@ ENGINE_HOTLOAD_DESCRIBE(api, out) {
       export_function<MilestoneFn>("game_ready_milestone", &game_ready_milestone),
 #endif
   };
+#if WALK_POC_TEST == 8
+  out->abi_version = 7;  // what a module built before ABI 8 declares (see `read_actor`)
+#else
   out->abi_version = k_abi_version;
+#endif
   out->desc_size = static_cast<u32>(sizeof(ModuleDesc));
 #if WALK_POC_TEST == 4
   out->name = "walk_poc_teleport";
 #elif WALK_POC_TEST == 5
   out->name = "walk_poc_actor";
+#elif WALK_POC_TEST == 7
+  out->name = "walk_poc_aligned";
+#elif WALK_POC_TEST == 9
+  out->name = "walk_poc_level";
+#elif WALK_POC_TEST == 8
+  out->name = "walk_poc_abi7";
 #elif WALK_POC_TEST == 6
   out->name = "walk_poc_loading";
 #else

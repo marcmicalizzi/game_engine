@@ -324,6 +324,269 @@ TEST_CASE(
   CHECK(moved > 20);
 }
 
+#if defined(WALK_POC_ALIGNED_PATH) && defined(WALK_POC_LEVEL_PATH) && defined(WALK_POC_ABI7_PATH)
+namespace {
+
+constexpr f64 k_pi = 3.14159265358979323846;
+
+f64 deg(f64 degrees) { return degrees * k_pi / 180.0; }
+
+// An `up` array of a path sample, or three NaNs when the sample is level (the report writes `up`
+// only for a tilted actor).
+void up_of(const JsonValue& sample, f64 (&out)[3]) {
+  const JsonValue* up = sample.find("up");
+  for (u32 k = 0; k < 3; ++k)
+    out[k] = up != nullptr && up->is_array() && up->size() == 3 ? number(&(*up)[k]) : -99.0;
+}
+
+void check_up(const JsonValue& sample, f64 x, f64 y, f64 z) {
+  f64 up[3];
+  up_of(sample, up);
+  CHECK(up[0] == doctest::Approx(x).epsilon(1e-5).scale(1.0));
+  CHECK(up[1] == doctest::Approx(y).epsilon(1e-5).scale(1.0));
+  CHECK(up[2] == doctest::Approx(z).epsilon(1e-5).scale(1.0));
+}
+
+}  // namespace
+
+TEST_CASE(
+    "engine-view: actor_place_aligned stands the actor on the slope the game names, holds the tilt "
+    "to its maximum, refuses a bad up and leaves it where it was, and ground_sample answers the "
+    "height and a unit normal") {
+  const test::TempDir tmp("engine_view_actors_aligned");
+  const std::string scene = actor_scene(tmp);
+  const std::string session = stand_session(tmp, scene, 480, "stand.jsonl");
+  const std::string module = fixture(tmp, WALK_POC_ALIGNED_PATH, "walk_poc_aligned");
+  const std::vector<std::string> args = {"--replay-input",
+                                         session,
+                                         "--scene",
+                                         scene,
+                                         "--offscreen",
+                                         "--width",
+                                         "320",
+                                         "--height",
+                                         "200",
+                                         "--ddc",
+                                         tmp.file("ddc"),
+                                         "--anim-lod-scale",
+                                         "100000",
+                                         "--game",
+                                         module};
+  const Run first = run_view(args);
+  if (first.exit_code == 3) {
+    MESSAGE("engine-view unavailable here: " << first.output.substr(0, 300));
+    return;
+  }
+  REQUIRE_MESSAGE(first.exit_code == 0, first.output);
+  JsonValue a;
+  REQUIRE_MESSAGE(summary_of(first, a), first.output);
+  CHECK(number(at(a, {"interactive", "game", "abi"})) == 8.0);
+  const JsonValue* bar = bar_of(a);
+  REQUIRE_MESSAGE(bar != nullptr, first.output.substr(0, 2000));
+  const JsonValue* path = bar->find("path");
+  REQUIRE(path != nullptr);
+  REQUIRE(path->size() == 8);  // the end of each one-second phase: ticks 60, 120, ..., 480
+  MESSAGE("the bar's path: " << write_json(*path).substr(0, 1500));
+
+  // Phase 0 stood `up` = (0,1,0): level, the report names no `up`. Phase 1, a 20 degree slope
+  // toward +x: the actor's +y is the slope's normal. Phase 2, a 60 degree wall against the default
+  // limit: held to 30. Phase 3, the same wall with a limit of 70: 60. Phase 4, four refusals: the
+  // actor stays as phase 3 left it. Phase 5, the ground's own normal. Phases 6 and 7: level again.
+  CHECK((*path)[0].find("up") == nullptr);
+  check_up((*path)[1], -std::sin(deg(20.0)), std::cos(deg(20.0)), 0.0);
+  check_up((*path)[2], -std::sin(deg(30.0)), std::cos(deg(30.0)), 0.0);
+  check_up((*path)[3], -std::sin(deg(60.0)), std::cos(deg(60.0)), 0.0);
+  REQUIRE((*path)[4].find("up") != nullptr);
+  CHECK(write_json(*(*path)[4].find("up")) == write_json(*(*path)[3].find("up")));
+  CHECK((*path)[6].find("up") == nullptr);
+  CHECK((*path)[7].find("up") == nullptr);
+  CHECK(bar->find("up") == nullptr);  // it ends level, so its block is as it always was
+
+  // The module's own record: the answer of every call (four bits a call: 0 Ok, 6 InvalidArgument),
+  // the tilt `actor_state` reported after the first four placements, and the clamp flag.
+  const JsonValue* state = at(a, {"interactive", "game", "state"});
+  REQUIRE(state != nullptr);
+  u64 expected_codes = 0;
+  for (const u32 refused : {4u, 5u, 6u, 7u, 11u, 12u})
+    expected_codes |= u64{6} << (4u * refused);
+  CHECK(number(state->find("align_codes")) == static_cast<f64>(expected_codes));
+  const JsonValue* tilt = state->find("align_tilt");
+  REQUIRE(tilt != nullptr);
+  REQUIRE(tilt->size() == 4);
+  CHECK(number(&(*tilt)[0]) == 0.0);
+  CHECK(number(&(*tilt)[1]) == doctest::Approx(deg(20.0)).epsilon(1e-5));
+  CHECK(number(&(*tilt)[2]) == doctest::Approx(deg(30.0)).epsilon(1e-5));
+  CHECK(number(&(*tilt)[3]) == doctest::Approx(deg(60.0)).epsilon(1e-5));
+  CHECK(number(state->find("align_clamped")) == 1.0);  // the 60 against 30
+
+  // The ground sample: the height is `ground_height`'s to the bit, the normal is unit and upward,
+  // and phase 5's placement with it stands the actor on it (the dunes are gentle, so the tilt is
+  // under the limit and the actor's +y is the normal).
+  CHECK(number(state->find("align_sample_height_delta")) == 0.0);
+  const JsonValue* normal = state->find("align_sample_normal");
+  REQUIRE(normal != nullptr);
+  const f64 nx = number(&(*normal)[0]);
+  const f64 ny = number(&(*normal)[1]);
+  const f64 nz = number(&(*normal)[2]);
+  CHECK(std::sqrt(nx * nx + ny * ny + nz * nz) == doctest::Approx(1.0).epsilon(1e-6));
+  CHECK(ny > 0.99);
+  CHECK(ny < 1.0);  // the waves are not flat there
+  check_up((*path)[5], nx, ny, nz);
+
+  const JsonValue* calls = at(a, {"interactive", "game", "actor_calls"});
+  REQUIRE(calls != nullptr);
+  CHECK(number(calls->find("aligned_places")) == 5.0);  // phases 0, 1, 2, 3 and 5
+  CHECK(number(calls->find("places")) == 6.0);          // and phase 6's level one
+  CHECK(number(calls->find("tilt_clamped")) == 1.0);
+  CHECK(number(calls->find("refused")) == 4.0);
+  CHECK(number(calls->find("ground_samples")) ==
+        61.0);  // phase 5's, and phase 7's sixty (the refused footprints are not answered)
+  CHECK(number(calls->find("flushes")) > 0.0);
+
+  // The same recording again: the same actor block, to the bit.
+  const Run second = run_view(args);
+  REQUIRE_MESSAGE(second.exit_code == 0, second.output);
+  JsonValue b;
+  REQUIRE(summary_of(second, b));
+  REQUIRE(bar_of(b) != nullptr);
+  CHECK(write_json(*bar_of(b)) == write_json(*bar));
+}
+
+TEST_CASE(
+    "engine-view: ground_height costs the walker one ground query and ground_sample five, and the "
+    "frame records say what they cost") {
+  // The aligned build asks `ground_height` once a tick through its sixth second and `ground_sample`
+  // once a tick through its eighth (and the height once, on that phase's first tick). Three replays
+  // of 360, 420 and 480 ticks differ by those phases and by the walker's own queries, which a
+  // standing session makes at the same rate in each: so the second difference of the frame records'
+  // `walk.ground_queries` is the samples' extra, 60 x (5 - 1) plus the one height: 241. Before ABI
+  // 8 there was no sample and the height was the one query; this pins that it still is.
+  const test::TempDir tmp("engine_view_actors_ground_cost");
+  const std::string scene = actor_scene(tmp);
+  const std::string module = fixture(tmp, WALK_POC_ALIGNED_PATH, "walk_poc_aligned");
+  struct Total {
+    f64 queries = 0.0;
+    f64 ms = 0.0;
+  };
+  Total totals[3];
+  const u64 lengths[3] = {360, 420, 480};
+  for (u32 i = 0; i < 3; ++i) {
+    const std::string name = "cost" + std::to_string(lengths[i]);
+    const std::string session = stand_session(tmp, scene, lengths[i], (name + ".jsonl").c_str());
+    const Run run =
+        run_view({"--replay-input", session, "--scene", scene, "--offscreen", "--width", "320",
+                  "--height", "200", "--ddc", tmp.file("ddc"), "--anim-lod-scale", "100000",
+                  "--game", module, "--benchmark", tmp.file(name + ".bench.jsonl")});
+    if (run.exit_code == 3) {
+      MESSAGE("engine-view unavailable here: " << run.output.substr(0, 300));
+      return;
+    }
+    REQUIRE_MESSAGE(run.exit_code == 0, run.output);
+    std::string text_out;
+    REQUIRE(io::read_file(tmp.file(name + ".bench.jsonl"), text_out) == io::Status::Ok);
+    usize begin = 0;
+    while (begin < text_out.size()) {
+      usize end = text_out.find('\n', begin);
+      if (end == std::string::npos) end = text_out.size();
+      JsonValue record;
+      if (end > begin && parse_json(text_out.substr(begin, end - begin), record).ok) {
+        if (const JsonValue* walk = record.find("walk"); walk != nullptr && walk->is_object()) {
+          totals[i].queries += number(walk->find("ground_queries"));
+          totals[i].ms += number(walk->find("ground_query_ms"));
+        }
+      }
+      begin = end + 1;
+    }
+    MESSAGE(lengths[i] << " ticks: " << totals[i].queries << " ground queries, " << totals[i].ms
+                       << " ms in them");
+  }
+  REQUIRE(totals[0].queries > 0.0);  // the records carry the walk
+  const f64 height_phase = totals[1].queries - totals[0].queries;
+  const f64 sample_phase = totals[2].queries - totals[1].queries;
+  MESSAGE("phase 6 (a ground_height a tick): "
+          << height_phase << " queries, " << totals[1].ms - totals[0].ms
+          << " ms; phase 7 (a ground_sample a tick): " << sample_phase << " queries, "
+          << totals[2].ms - totals[1].ms << " ms");
+  CHECK(sample_phase - height_phase == 241.0);
+}
+
+TEST_CASE(
+    "engine-view: the identity up draws the level placement's picture to the pixel, and a 20 "
+    "degree slope draws a different one") {
+  const test::TempDir tmp("engine_view_actors_aligned_pictures");
+  const std::string scene = actor_scene(tmp);
+  const std::string aligned = fixture(tmp, WALK_POC_ALIGNED_PATH, "walk_poc_aligned");
+  const std::string level = fixture(tmp, WALK_POC_LEVEL_PATH, "walk_poc_level");
+  const auto capture = [&](const std::string& module, u64 ticks, const char* name) {
+    const std::string session =
+        stand_session(tmp, scene, ticks, (std::string(name) + ".jsonl").c_str());
+    const std::string png = tmp.file(std::string(name) + ".png");
+    const Run run = run_view({"--replay-input", session, "--scene", scene, "--offscreen", "--width",
+                              "320", "--height", "200", "--ddc", tmp.file("ddc"),
+                              "--anim-lod-scale", "100000", "--game", module, "--capture", png});
+    return std::pair<int, std::string>(run.exit_code, run.exit_code == 0 ? png : run.output);
+  };
+  // 60 ticks: phase 0 only, `up` = (0,1,0) against `actor_place`. 120: phase 1 has tipped the
+  // aligned build's actor 20 degrees, and the level build's stands.
+  const auto aligned_60 = capture(aligned, 60, "aligned60");
+  if (aligned_60.first == 3) {
+    MESSAGE("engine-view unavailable here: " << aligned_60.second.substr(0, 300));
+    return;
+  }
+  REQUIRE_MESSAGE(aligned_60.first == 0, aligned_60.second);
+  const auto level_60 = capture(level, 60, "level60");
+  REQUIRE_MESSAGE(level_60.first == 0, level_60.second);
+  const auto aligned_120 = capture(aligned, 120, "aligned120");
+  REQUIRE_MESSAGE(aligned_120.first == 0, aligned_120.second);
+  const auto level_120 = capture(level, 120, "level120");
+  REQUIRE_MESSAGE(level_120.first == 0, level_120.second);
+  CHECK(differing_pixels(aligned_60.second, level_60.second) == 0);
+  const u64 tipped = differing_pixels(aligned_120.second, level_120.second);
+  MESSAGE("the tipped bar changed " << tipped << " pixels of 64,000");
+  CHECK(tipped > 20);
+}
+
+TEST_CASE(
+    "engine-view: a module that declares ABI 7 loads on the ABI 8 host, places the actor level, "
+    "and its 136-byte ActorState is served without a byte past it") {
+  const test::TempDir tmp("engine_view_actors_abi7");
+  const std::string scene = actor_scene(tmp);
+  const std::string session = stand_session(tmp, scene, 240, "stand.jsonl");
+  const std::string old_module = fixture(tmp, WALK_POC_ABI7_PATH, "walk_poc_abi7");
+  const std::string module = fixture(tmp, WALK_POC_ACTOR_PATH, "walk_poc_actor");
+  JsonValue summaries[2];
+  for (u32 i = 0; i < 2; ++i) {
+    const Run run =
+        run_view({"--replay-input", session, "--scene", scene, "--offscreen", "--width", "320",
+                  "--height", "200", "--ddc", tmp.file("ddc"), "--anim-lod-scale", "100000",
+                  "--game", i == 0 ? old_module : module});
+    if (run.exit_code == 3) {
+      MESSAGE("engine-view unavailable here: " << run.output.substr(0, 300));
+      return;
+    }
+    REQUIRE_MESSAGE(run.exit_code == 0, run.output);
+    REQUIRE_MESSAGE(summary_of(run, summaries[i]), run.output);
+  }
+  const JsonValue& old_run = summaries[0];
+  CHECK(number(at(old_run, {"interactive", "game", "abi"})) == 7.0);
+  CHECK(number(at(summaries[1], {"interactive", "game", "abi"})) == 8.0);
+  // It circled the bar 240 ticks with `actor_place` and read its state each tick without the host
+  // writing past the 136 bytes it owns (the guard behind the struct is counted in its state).
+  CHECK(number(at(old_run, {"interactive", "game", "state", "actor_ticks"})) == 240.0);
+  CHECK(number(at(old_run, {"interactive", "game", "state", "abi7_overrun"})) == 0.0);
+  CHECK(number(at(old_run, {"interactive", "game", "actor_calls", "places"})) == 240.0);
+  CHECK(number(at(old_run, {"interactive", "game", "actor_calls", "aligned_places"})) == 0.0);
+  const JsonValue* bar = bar_of(old_run);
+  REQUIRE(bar != nullptr);
+  CHECK(bar->find("up") == nullptr);  // level
+  // The same circle as the current build of the module walks: the same actor block to the bit, so
+  // the older ABI changed nothing about where the actor stood or which pose it drew.
+  REQUIRE(bar_of(summaries[1]) != nullptr);
+  CHECK(write_json(*bar) == write_json(*bar_of(summaries[1])));
+  CHECK(text(at(old_run, {"animation", "hash"})) == text(at(summaries[1], {"animation", "hash"})));
+}
+#endif  // the ABI 8 builds
+
 #if ENGINE_VIEW_WORLD
 // The actor scene with six rigid boxes before the bar, so the bar is the file's instance 6: read
 // whole, or with a `world` block that streams the boxes (renderer.md, "Authored instances per
