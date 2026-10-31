@@ -6,6 +6,7 @@ A write-up is not a benchmark log. It is the page a future contributor reads ins
 
 | Experiment | Page | Settles |
 |---|---|---|
+| S93 | [ocean-surface.md](ocean-surface.md) | Wind-wave grounding (dispersion, Phillips, Pierson–Moskowitz, JONSWAP, TMA, Mitsuyasu and Donelan–Banner spreading, Tessendorf and Horvath synthesis, web-ocean read as a reference) and the design: the sea to the horizon as an analytic plane in the resolve (built), Gerstner waves from JONSWAP, FFT cascades, underwater |
 | G104 | [deadwood-surfaces.md](deadwood-surfaces.md) | Native grain/decay/fracture materials, coherent bark loss and a visible tree-to-tree support study |
 | G103 | [forest-litter.md](forest-litter.md) | Forest-floor particle sizes, shared wood geometry and accumulation proxies |
 | G107 | [shrub-growth-forms.md](shrub-growth-forms.md) | Species-backed shrub architectures, mixed live/dead stems, local planting planes and a bounded source/far ladder |
