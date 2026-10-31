@@ -48,6 +48,14 @@ if(TARGET engine_hotload_tests)
   engine_game_module(NAME hotload_counter_abi5 OUTPUT_DIRECTORY "${_modules}"
     SOURCES tests/modules/counter_v1/counter.cpp SCHEMAS tests/modules/counter_v1/counter.schema)
   target_compile_definitions(engine_game_hotload_counter_abi5 PRIVATE HOTLOAD_DECLARE_ABI=5)
+  # And declaring ABI 6 and ABI 7: what a module compiled before ABI 7 (the loading exports) and
+  # before ABI 8 (the aligned placement, the ground sample, the grown ActorState) hands the host.
+  engine_game_module(NAME hotload_counter_abi6 OUTPUT_DIRECTORY "${_modules}"
+    SOURCES tests/modules/counter_v1/counter.cpp SCHEMAS tests/modules/counter_v1/counter.schema)
+  target_compile_definitions(engine_game_hotload_counter_abi6 PRIVATE HOTLOAD_DECLARE_ABI=6)
+  engine_game_module(NAME hotload_counter_abi7 OUTPUT_DIRECTORY "${_modules}"
+    SOURCES tests/modules/counter_v1/counter.cpp SCHEMAS tests/modules/counter_v1/counter.schema)
+  target_compile_definitions(engine_game_hotload_counter_abi7 PRIVATE HOTLOAD_DECLARE_ABI=7)
   set(_refusals no_entry describe abi paths drops)
   set(_index 1)
   foreach(_refusal IN LISTS _refusals)
@@ -59,6 +67,7 @@ if(TARGET engine_hotload_tests)
 
   set(_defs "")
   foreach(_m IN ITEMS counter_v1 counter_v2 counter_retyped counter_abi3 counter_abi4 counter_abi5
+                      counter_abi6 counter_abi7
                       refusal_no_entry
                       refusal_describe
                       refusal_abi refusal_paths refusal_drops)

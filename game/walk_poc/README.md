@@ -52,8 +52,15 @@ a teleport 10 m ahead at tick 50; `5`, named `walk_poc_actor`, which finds the s
 playing `bend`, at twice the rate from tick 120, fading to rest from 240; `6`, named
 `walk_poc_loading`, which exports ABI 7's `game_loading` — its own loading line, and the calls,
 the last fraction and any fall counted in its state (`@since(4)`) — and `game_ready_milestone`,
-asking for `ground_collision_ready`) are what engine-view's tests check the refusals, the tail,
-the actors, the loading hooks and the replay rules with.
+asking for `ground_collision_ready`; `7`, named `walk_poc_aligned` (hotload ABI 8), which stands
+`bar` at one place through eight one-second phases — `actor_place_aligned` with a level `up`, a 20
+degree slope, a 60 degree wall held to the default 30 and then let through at 60, four refused
+calls, the ground's own normal from `ground_sample`, a level `actor_place`, and two refused
+footprints — with every call's answer in its state (`@since(5)`); `8`, named `walk_poc_abi7`, the
+actor build declared as a module built against ABI 7 is, reading `actor_state` into ABI 5's
+136-byte struct with a guard behind it; and `9`, `walk_poc_level`, build 7 making every placement
+through `actor_place`, the picture build 7's level phases must reproduce) are what engine-view's
+tests check the refusals, the tail, the actors, the loading hooks and the replay rules with.
 
 **Its own art** (hotload ABI 6): with `hud/panel.png` beside the scene file (or the module), every
 build draws that image nine-sliced as a panel behind the `[E] Pick up` prompt, and with

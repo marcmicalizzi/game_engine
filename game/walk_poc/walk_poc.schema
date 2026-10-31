@@ -4,7 +4,7 @@
 namespace engine.walk_poc
 
 /// What the fixture remembers between ticks and runs.
-struct Survivor @version(4) {
+struct Survivor @version(5) {
   /// Thirst, 100 full and 0 the end of the run.
   thirst: f64 = 100
   /// Game seconds survived, a tick's dt at a time, and metres walked.
@@ -43,4 +43,16 @@ struct Survivor @version(4) {
   loading_calls: u32 = 0 @since(4)
   loading_fraction: f64 = 0 @since(4)
   loading_falls: u32 = 0 @since(4)
+  /// The aligned build's (WALK_POC_TEST 7, `walk_poc_aligned`; ABI 8, apps.md "Actors"): the
+  /// answer of each call it made (a `Result`, four bits a call, call 0 lowest), the tilt `actor_state`
+  /// reported after each of four placements, whether the third (60 degrees against the default 30) was held,
+  /// and what `ground_sample` said against `ground_height` at the same point.
+  align_codes: u64 = 0 @since(5)
+  align_tilt: f64[4] @since(5)
+  align_clamped: u32 = 0 @since(5)
+  align_sample_height_delta: f64 = 0 @since(5)
+  align_sample_normal: dvec3 @since(5)
+  /// The ABI 7 build's (WALK_POC_TEST 8, `walk_poc_abi7`): bytes past the 136 an ABI 5 to 7 module
+  /// owns that `actor_state` wrote anyway (never, if the host copies only as far as `size`).
+  abi7_overrun: u32 = 0 @since(5)
 }

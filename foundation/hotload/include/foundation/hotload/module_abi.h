@@ -80,7 +80,16 @@ namespace engine::hotload {
 // (`MilestoneFn`), the `GameMilestone` the module wants reached before its `game_tick` starts and
 // the player has control. `HostApi` did not change: a module built against 3 to 6 exports neither
 // and loads and runs exactly as it did.
-inline constexpr u32 k_abi_version = 7;
+//
+// **8** (2026-10-31): `HostApi` gained, at its end, **an actor placed on a slope** and **the ground
+// under a point with its normal** (`actor_place_aligned`, `ground_sample`; roadmap P51; apps.md,
+// "Actors: the characters a game moves"), and `ActorState` grew at its end by the orientation the
+// actor holds (`up`, `tilt_rad`, `tilt_clamped`). Additive in the way 4 to 6 were, and for the one
+// struct that grows the way 6's `HudElement` did: **the host copies an `ActorState` out only as
+// far as the module's `size` reaches** (ABI 5 to 7 modules pass `k_actor_state_v5_size`), so a
+// module built against 3 to 7 loads on a host of 8 and runs unchanged, `actor_place` still
+// standing the actor level.
+inline constexpr u32 k_abi_version = 8;
 // The oldest module ABI a host of this header loads (4, above, says why 3 and not 4).
 inline constexpr u32 k_abi_oldest = 3;
 
@@ -294,7 +303,35 @@ struct ActorState {
   u32 fading = 0;      // a cross-fade, a fade in or a fade to rest in flight
   u64 pose_hash = 0;   // over the joint matrices of the last step
   char clip[64] = {};  // the library's name ("bar/bend"); empty when stopped
+  // ---- ABI 8 (2026-10-31): the orientation the actor holds, read by a module only when it passes
+  // a `size` that reaches it (the host copies up to the module's size) ----
+  f32 up[3] = {0.0f, 1.0f,
+               0.0f};    // where the instance's +y points in the world: unit, (0,1,0) level
+  f32 tilt_rad = 0.0f;   // the angle from vertical `up` makes, after the clamp
+  u32 tilt_clamped = 0;  // 1 when the last aligned placement was held to its maximum
+  u32 reserved = 0;
 };
+// ABI 5's `ActorState` (to the end of `clip`): what a module built against 5 to 7 passes as `size`.
+inline constexpr u32 k_actor_state_v5_size = 136;
+
+// **The ground under a point** (ABI 8; apps.md, "Actors"), led by its size like the other structs.
+// `footprint_m` goes in, the rest comes out. The height is `ground_height`'s to the bit; the normal
+// is the surface's slope over a footprint, not the drawn triangle's: central differences of the
+// same height function a half footprint either side of the point in x and z, so an animal's stance
+// (about a metre) reads the hill it stands on and not a pebble.
+struct GroundSample {
+  u32 size = sizeof(GroundSample);
+  f32 footprint_m = 0.0f;              // in: the baseline of the differences, metres; 0 the default
+  f64 height = 0.0;                    // out: world metres, as `ground_height` answers
+  f32 normal[3] = {0.0f, 1.0f, 0.0f};  // out: the unit upward normal, y > 0
+  u32 reserved = 0;
+};
+inline constexpr f32 k_ground_footprint_default_m = 1.0f;
+inline constexpr f32 k_ground_footprint_max_m = 64.0f;
+// `actor_place_aligned`'s `max_tilt_rad` of 0: 30 degrees from vertical, an animal's legs and not a
+// plank. The largest a call may ask for is a right angle.
+inline constexpr f32 k_default_max_tilt_rad = 0.5235987756f;
+inline constexpr f32 k_max_tilt_rad_limit = 1.5707963268f;
 
 // **The startup's milestones** (ABI 7; apps.md, "--startup-trace"), in the order a load reaches
 // them: what `game_ready_milestone` names and `GameLoadProgress::milestones` has a bit for.
@@ -518,6 +555,27 @@ struct HostApi {
   // `HudElement::font`; the same path twice is the same handle. `NotFound` as for an image,
   // `InvalidArgument` for a file that is not a font or a bad size or path, `OutOfRange` past eight.
   Result (*hud_font)(void* host, const char* path, u64 length, f32 size_px, u32* out_font);
+
+  // ---- ABI 8: actors on a slope (roadmap P51; apps.md, "Actors: the characters a game moves")
+  // ----
+  // **Stands the actor at `position` on the ground whose upward normal is `up`** (three f32, unit
+  // length), turned `yaw` radians about +y as `actor_place` turns it and then **tipped from +y
+  // toward `up` by the shortest arc, held to `max_tilt_rad`** (0: `k_default_max_tilt_rad`, 30
+  // degrees; at most `k_max_tilt_rad_limit`): so on level ground, or with `up` = (0,1,0), the
+  // placement is `actor_place`'s to the bit. The scene's scale is kept. The ground's normal is what
+  // a game has (`ground_sample`, a physics contact), and the pitch and roll it implies depend on
+  // the heading, so the host derives them from `up` and `yaw` rather than asking the module to.
+  // `NotFound` for a handle that is not an actor, `InvalidArgument` for a non-finite number, an
+  // `up` whose length is not 1 within 1e-3, a maximum outside [0, k_max_tilt_rad_limit] or a
+  // position outside the world, `Unsupported` where `actor_place` is.
+  Result (*actor_place_aligned)(void* host, u32 actor, const f64* position, f32 yaw, const f32* up,
+                                f32 max_tilt_rad);
+  // **The ground under (x, z) with its normal** (`GroundSample`), into the caller's struct up to
+  // its size; `InvalidArgument` for a struct smaller than ABI 8's, a non-finite coordinate or a
+  // footprint outside [0, k_ground_footprint_max_m], `Unsupported` for a scene with no ground.
+  // `ground_height` is unchanged and costs what it did; this asks the same height function five
+  // times (the point, and a half footprint either side in x and in z).
+  Result (*ground_sample)(void* host, f64 x, f64 z, GroundSample* io);
 };
 
 // Whether the host's table reaches the entry at `offset` (`offsetof(HostApi, hud_element)`): a
@@ -817,6 +875,25 @@ inline Result actor_state(const ModuleContext* context, u32 actor, ActorState& o
 inline Result ground_height(const ModuleContext* context, f64 x, f64 z, f64& height) noexcept {
   if (!ENGINE_HOTLOAD_HAS(context->api, ground_height)) return Result::Unsupported;
   return context->api->ground_height(context->api->host, x, z, &height);
+}
+
+// ---- actors on a slope, and the ground's normal (ABI 8) ----
+
+// `Unsupported` on a host whose table ends before the entry (ABI 7 or older), where the module
+// places the actor level with `actor_place`.
+inline Result actor_place_aligned(const ModuleContext* context, u32 actor, const f64 (&position)[3],
+                                  f32 yaw, const f32 (&up)[3], f32 max_tilt_rad = 0.0f) noexcept {
+  if (!ENGINE_HOTLOAD_HAS(context->api, actor_place_aligned)) return Result::Unsupported;
+  return context->api->actor_place_aligned(context->api->host, actor, position, yaw, up,
+                                           max_tilt_rad);
+}
+
+inline Result ground_sample(const ModuleContext* context, f64 x, f64 z, GroundSample& sample,
+                            f32 footprint_m = 0.0f) noexcept {
+  if (!ENGINE_HOTLOAD_HAS(context->api, ground_sample)) return Result::Unsupported;
+  sample = GroundSample{};
+  sample.footprint_m = footprint_m;
+  return context->api->ground_sample(context->api->host, x, z, &sample);
 }
 
 // ---- the HUD's images and fonts (ABI 6) ----

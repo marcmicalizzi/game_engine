@@ -100,10 +100,10 @@ TEST_CASE("hotload: load, call, read through a view, and a poll that finds no ch
   CHECK(counter.host.module_abi() == k_abi_version);
 }
 
-TEST_CASE("hotload: modules built against ABI 3, 4 and 5 load on an ABI 6 host and run unchanged") {
-  // ABI 4, 5 and 6 appended to the table and moved nothing (module_abi.h, `k_abi_oldest`): a build
-  // that declares 3, 4 or 5 is what a module compiled against that header hands the host. It loads,
-  // its exports run, it reads through a view, and a rebuild against 6 takes over from it with its
+TEST_CASE("hotload: modules built against ABI 3 to 7 load on an ABI 8 host and run unchanged") {
+  // ABI 4 to 8 appended to the table and moved nothing (module_abi.h, `k_abi_oldest`): a build
+  // that declares 3 to 7 is what a module compiled against that header hands the host. It loads,
+  // its exports run, it reads through a view, and a rebuild against 8 takes over from it with its
   // state.
   if (in_bundle()) return;
   struct Old {
@@ -111,7 +111,8 @@ TEST_CASE("hotload: modules built against ABI 3, 4 and 5 load on an ABI 6 host a
     u32 abi;
   };
   for (const Old old : {Old{HOTLOAD_MODULE_COUNTER_ABI3, 3}, Old{HOTLOAD_MODULE_COUNTER_ABI4, 4},
-                        Old{HOTLOAD_MODULE_COUNTER_ABI5, 5}}) {
+                        Old{HOTLOAD_MODULE_COUNTER_ABI5, 5}, Old{HOTLOAD_MODULE_COUNTER_ABI6, 6},
+                        Old{HOTLOAD_MODULE_COUNTER_ABI7, 7}}) {
     INFO("ABI " << old.abi);
     engine::test::TempDir dir("hotload-old-abi");
     const std::string live = place(dir, old.path, "live");
@@ -326,6 +327,113 @@ TEST_CASE("hotload: ABI 5's actor entries and the ground forward, and answer Uns
   CHECK(height == 2.5);
   CHECK(actor_stop(&context, 3, 0.0f) == Result::Unsupported);  // not forwarded: no service
   CHECK(actor_spawn(&context, "bar", at, 0.0f, actor) == Result::Unsupported);
+}
+
+TEST_CASE(
+    "hotload: ABI 8's aligned placement and ground sample forward, and a module built against 7 "
+    "gets as much of ActorState as it owns") {
+  ModuleHost host;
+  const HostApi* api = host.context()->api;
+  CHECK(api->size == sizeof(HostApi));
+  CHECK(ENGINE_HOTLOAD_HAS(api, actor_place_aligned));
+  CHECK(ENGINE_HOTLOAD_HAS(api, ground_sample));
+  // A table as an ABI 7 host built it ends before the two: the helpers do not call them.
+  HostApi v7 = *api;
+  v7.size = static_cast<u32>(offsetof(HostApi, actor_place_aligned));
+  CHECK_FALSE(ENGINE_HOTLOAD_HAS(&v7, actor_place_aligned));
+  CHECK(ENGINE_HOTLOAD_HAS(&v7, hud_font));
+  ModuleContext old_host{&v7, nullptr};
+  const f64 at[3] = {1.0, 2.0, 3.0};
+  const f32 up[3] = {0.0f, 1.0f, 0.0f};
+  GroundSample sample;
+  CHECK(actor_place_aligned(&old_host, 0, at, 0.0f, up) == Result::Unsupported);
+  CHECK(ground_sample(&old_host, 0.0, 0.0, sample) == Result::Unsupported);
+
+  // No game services: both answer Unsupported. The host's own checks come first.
+  ModuleContext context{api, nullptr};
+  CHECK(actor_place_aligned(&context, 0, at, 0.0f, up) == Result::Unsupported);
+  CHECK(ground_sample(&context, 0.0, 0.0, sample) == Result::Unsupported);
+  CHECK(api->actor_place_aligned(api->host, 0, nullptr, 0.0f, up, 0.0f) == Result::InvalidArgument);
+  CHECK(api->actor_place_aligned(api->host, 0, at, 0.0f, nullptr, 0.0f) == Result::InvalidArgument);
+  GroundSample small;
+  small.size = 16;
+  CHECK(api->ground_sample(api->host, 0.0, 0.0, &small) == Result::InvalidArgument);
+  CHECK(api->ground_sample(api->host, 0.0, 0.0, nullptr) == Result::InvalidArgument);
+
+  struct Seen {
+    f32 up[3] = {0.0f, 0.0f, 0.0f};
+    f32 yaw = -1.0f;
+    f32 max_tilt = -1.0f;
+    f32 footprint = -1.0f;
+  } seen;
+  GameServices services;
+  services.user = &seen;
+  services.actor_place_aligned = [](void* user, u32, const f64*, f32 yaw, const f32* u, f32 max) {
+    Seen& s = *static_cast<Seen*>(user);
+    s.yaw = yaw;
+    s.max_tilt = max;
+    for (u32 k = 0; k < 3; ++k)
+      s.up[k] = u[k];
+    return Result::Ok;
+  };
+  services.ground_sample = [](void* user, f64 x, f64 z, GroundSample& io) {
+    static_cast<Seen*>(user)->footprint = io.footprint_m;
+    io.height = x + z;
+    io.normal[0] = 0.6f;
+    io.normal[1] = 0.8f;
+    io.normal[2] = 0.0f;
+    return Result::Ok;
+  };
+  services.actor_state = [](void*, u32 a, ActorState& out) {
+    out.instance = a;
+    out.pose_hash = 0x1234;
+    out.up[0] = 0.5f;
+    out.tilt_rad = 0.25f;
+    out.tilt_clamped = 1;
+    return Result::Ok;
+  };
+  host.set_game_services(services);
+  const f32 slope[3] = {-0.5f, 0.8660254f, 0.0f};
+  CHECK(actor_place_aligned(&context, 3, at, 0.5f, slope, 0.7f) == Result::Ok);
+  CHECK(seen.up[0] == -0.5f);
+  CHECK(seen.yaw == 0.5f);
+  CHECK(seen.max_tilt == 0.7f);
+  CHECK(ground_sample(&context, 2.0, 0.5, sample, 2.5f) == Result::Ok);
+  CHECK(seen.footprint == 2.5f);  // the module's input reached the service
+  CHECK(sample.height == 2.5);
+  CHECK(sample.normal[0] == 0.6f);
+  CHECK(sample.size == sizeof(GroundSample));
+
+  // The state a module built against ABI 7 asks for: the 136 bytes it owns. The memory after them
+  // (here the struct's own ABI 8 fields, holding sentinels) is a neighbour's in a real module, and
+  // the host fills the 136 and writes nothing past; `size` stays the module's. A module of ABI 8
+  // gets the orientation too.
+  ActorState older;
+  older.size = k_actor_state_v5_size;
+  older.up[0] = -9.0f;
+  older.up[1] = -8.0f;
+  older.tilt_rad = -7.0f;
+  older.tilt_clamped = 77;
+  CHECK(api->actor_state(api->host, 3, &older) == Result::Ok);
+  CHECK(older.size == k_actor_state_v5_size);
+  CHECK(older.instance == 3);
+  CHECK(older.pose_hash == 0x1234);
+  CHECK(older.up[0] == -9.0f);
+  CHECK(older.up[1] == -8.0f);
+  CHECK(older.tilt_rad == -7.0f);
+  CHECK(older.tilt_clamped == 77);
+  ActorState current;
+  CHECK(actor_state(&context, 3, current) == Result::Ok);
+  CHECK(current.size == sizeof(ActorState));
+  CHECK(current.up[0] == 0.5f);
+  CHECK(current.tilt_rad == 0.25f);
+  CHECK(current.tilt_clamped == 1);
+  // A size between ABI 5's and ABI 8's is served up to that size, rounded as bytes.
+  ActorState middle;
+  middle.size = k_actor_state_v5_size + 4;
+  CHECK(api->actor_state(api->host, 3, &middle) == Result::Ok);
+  CHECK(middle.up[0] == 0.5f);
+  CHECK(middle.up[1] == 1.0f);  // past the size: the module's own value, untouched
 }
 
 TEST_CASE("hotload: ABI 4's entries forward to the game services, and answer Unsupported without") {

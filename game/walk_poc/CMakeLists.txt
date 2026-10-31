@@ -38,10 +38,27 @@ if(TARGET engine_game_walk_poc AND TARGET engine_engine_view_tests)
   engine_game_module(NAME walk_poc_loading OUTPUT_DIRECTORY "${_tests}"
     SOURCES walk_poc.cpp SCHEMAS walk_poc.schema)
   target_compile_definitions(engine_game_walk_poc_loading PRIVATE WALK_POC_TEST=6)
+  # And two for ABI 8 (roadmap P51; apps.md "Actors"): walk_poc_aligned places the actor `bar` on
+  # slopes with `actor_place_aligned` and samples the ground's normal; walk_poc_abi7 is the actor
+  # build declared as a module built against ABI 7 is, reading the actor's state into ABI 5's
+  # 136 bytes, which a host of ABI 8 must still serve without writing past them.
+  engine_game_module(NAME walk_poc_aligned OUTPUT_DIRECTORY "${_tests}"
+    SOURCES walk_poc.cpp SCHEMAS walk_poc.schema)
+  target_compile_definitions(engine_game_walk_poc_aligned PRIVATE WALK_POC_TEST=7)
+  engine_game_module(NAME walk_poc_abi7 OUTPUT_DIRECTORY "${_tests}"
+    SOURCES walk_poc.cpp SCHEMAS walk_poc.schema)
+  target_compile_definitions(engine_game_walk_poc_abi7 PRIVATE WALK_POC_TEST=8)
+  # And walk_poc_level, the aligned build with its first placement through `actor_place`, for the
+  # test that holds `up` = (0,1,0) to the level placement's picture.
+  engine_game_module(NAME walk_poc_level OUTPUT_DIRECTORY "${_tests}"
+    SOURCES walk_poc.cpp SCHEMAS walk_poc.schema)
+  target_compile_definitions(engine_game_walk_poc_level PRIVATE WALK_POC_TEST=9)
+  add_dependencies(engine_engine_view_tests engine_game_walk_poc_level)
   add_dependencies(engine_engine_view_tests engine_game_walk_poc engine_game_walk_poc_bad_action
                    engine_game_walk_poc_failing engine_game_walk_poc_no_props
                    engine_game_walk_poc_teleport engine_game_walk_poc_actor
-                   engine_game_walk_poc_loading)
+                   engine_game_walk_poc_loading engine_game_walk_poc_aligned
+                   engine_game_walk_poc_abi7)
   target_compile_definitions(engine_engine_view_tests PRIVATE
     WALK_POC_PATH="$<TARGET_FILE:engine_game_walk_poc>"
     WALK_POC_BAD_ACTION_PATH="$<TARGET_FILE:engine_game_walk_poc_bad_action>"
@@ -50,6 +67,9 @@ if(TARGET engine_game_walk_poc AND TARGET engine_engine_view_tests)
     WALK_POC_TELEPORT_PATH="$<TARGET_FILE:engine_game_walk_poc_teleport>"
     WALK_POC_ACTOR_PATH="$<TARGET_FILE:engine_game_walk_poc_actor>"
     WALK_POC_LOADING_PATH="$<TARGET_FILE:engine_game_walk_poc_loading>"
+    WALK_POC_ALIGNED_PATH="$<TARGET_FILE:engine_game_walk_poc_aligned>"
+    WALK_POC_ABI7_PATH="$<TARGET_FILE:engine_game_walk_poc_abi7>"
+    WALK_POC_LEVEL_PATH="$<TARGET_FILE:engine_game_walk_poc_level>"
     WALK_POC_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
   # The hot-reload case compiles a second build of the fixture, a field added, into its own
   # scratch directory with the exported command, as foundation/hotload's tests do.

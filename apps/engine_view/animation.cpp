@@ -678,6 +678,37 @@ f32 yaw_of(Quat q) {
   return std::atan2(-x.z, x.x);
 }
 
+// **An actor tipped onto a slope** (module_abi.h ABI 8 `actor_place_aligned`; apps.md, "Actors"):
+// the heading's turn about +y first, as `actor_place` turns it, then the whole level pose tipped
+// from +y toward `up` by the shortest arc about the horizontal axis +y x up — which is the same as
+// turning `yaw` about `up` from the tipped +x, the frame `core/math` quaternions give a walker's
+// body: y up, a front face counter-clockwise. The tilt is held to `max_tilt`; `tilt` answers the
+// angle used and `clamped` whether the hold applied. An `up` that is +y exactly, or with no
+// horizontal part to name an axis by (straight down: a ceiling is not a ground), tips nothing and
+// the result is the level turn itself, so the identity case is `actor_place`'s bytes.
+Quat aligned_rotation(f32 yaw, Vec3 up, f32 max_tilt, f32& tilt, bool& clamped) {
+  const Quat turn = quat_from_axis_angle(Vec3::unit_y(), yaw);
+  tilt = 0.0f;
+  clamped = false;
+  const f32 horizontal = std::sqrt(up.x * up.x + up.z * up.z);
+  if (horizontal < 1.0e-6f) return turn;
+  f32 angle = std::atan2(horizontal, up.y);
+  if (angle > max_tilt) {
+    angle = max_tilt;
+    clamped = true;
+  }
+  tilt = angle;
+  // cross(+y, up) = (up.z, 0, -up.x)
+  return quat_from_axis_angle(Vec3{up.z, 0.0f, -up.x}, angle) * turn;
+}
+
+JsonValue up_json(const Vec3& up) {
+  JsonValue out = JsonValue::array();
+  for (const f32 v : {up.x, up.y, up.z})
+    out.push_back(JsonValue(static_cast<f64>(v)));
+  return out;
+}
+
 JsonValue position_json(const WorldPos& p) {
   JsonValue out = JsonValue::array();
   for (const f64 v : {p.x, p.y, p.z})
@@ -692,6 +723,7 @@ struct GameActors::Impl {
     u64 tick = 0;
     WorldPos position{};
     f32 yaw = 0.0f;
+    Vec3 up = Vec3::unit_y();  // ABI 8: reported only when the actor was tilted
     u32 clip = animation::Library::k_not_found;
     f32 playhead = 0.0f;
     u64 pose_hash = 0;
@@ -706,6 +738,11 @@ struct GameActors::Impl {
     renderer::SceneInstance placement;
     WorldPos position{};
     f32 yaw = 0.0f;
+    // ABI 8: where the instance's +y points (the rotation applied to it), the angle from vertical
+    // that is, and whether the last aligned placement was held to its maximum. Level: (0,1,0), 0.
+    Vec3 up = Vec3::unit_y();
+    f32 tilt = 0.0f;
+    bool tilt_clamped = false;
     Vec3 centre{};  // the tier sphere's centre from the origin, before the rotation
     bool moved = false;
     // The weight's fade (a stop, or a play from the rest pose), a tick at a time.
@@ -727,6 +764,23 @@ struct GameActors::Impl {
   Vector<u32> move_indices;
   Vector<renderer::SceneInstance> move_placements;
   u64 places = 0, plays = 0, stops = 0, speeds = 0, refused = 0, flushes = 0, moves = 0;
+  u64 aligned = 0,
+      clamped = 0;  // ABI 8: `place_aligned` calls answered Ok, and held to the maximum
+
+  // Stands the actor at `at` in `rotation` (a unit quaternion) and moves its tier row with it.
+  void stand(Actor& a, const WorldPos& at, f32 yaw, Quat rotation, Vec3 up, f32 tilt,
+             bool tilt_clamped) {
+    a.position = at;
+    a.yaw = yaw;
+    a.up = up;
+    a.tilt = tilt;
+    a.tilt_clamped = tilt_clamped;
+    a.placement.origin = at;
+    a.placement.transform.position = Vec3{};
+    a.placement.transform.rotation = rotation;
+    a.moved = true;
+    if (a.row != ~0u) scene->positions[a.row] = at + DVec3{rotate(rotation, a.centre)};
+  }
 
   Actor* find(u32 instance) noexcept {
     for (Actor& a : actors) {
@@ -816,6 +870,7 @@ struct GameActors::Impl {
       s.tick = tick;
       s.position = a.position;
       s.yaw = a.yaw;
+      s.up = a.up;
       animation::AnimationPlayer p;
       bool looping = false;
       if (read(a, p)) s.clip = target_clip(p, s.playhead, looping);
@@ -904,15 +959,37 @@ hotload::Result GameActors::place(u32 instance, const f64* position, f32 yaw) {
   // one (props, a world) through the next frame's table flip (renderer.md, "Instances that come
   // and go"; until 2026-10-19 a dynamic scene refused the move and this answered `Unsupported`).
   // Level: the scene's pitch and roll are dropped, its scale kept, so a character stands up.
-  const Quat turn = quat_from_axis_angle(Vec3::unit_y(), yaw);
-  a->position = at;
-  a->yaw = yaw;
-  a->placement.origin = at;
-  a->placement.transform.position = Vec3{};
-  a->placement.transform.rotation = turn;
-  a->moved = true;
-  if (a->row != ~0u) g.scene->positions[a->row] = at + DVec3{rotate(turn, a->centre)};
+  g.stand(*a, at, yaw, quat_from_axis_angle(Vec3::unit_y(), yaw), Vec3::unit_y(), 0.0f, false);
   ++g.places;
+  return hotload::Result::Ok;
+}
+
+// ABI 8: the same placement, tipped from +y toward `up` and held to `max_tilt_rad` (0: 30 degrees).
+// Validated before anything moves, so a refusal leaves the actor where it stood.
+hotload::Result GameActors::place_aligned(u32 instance, const f64* position, f32 yaw, const f32* up,
+                                          f32 max_tilt_rad) {
+  Impl& g = *impl_;
+  Impl::Actor* a = g.find(instance);
+  if (a == nullptr) return hotload::Result::NotFound;
+  const WorldPos at{position[0], position[1], position[2]};
+  const f32 length2 = up[0] * up[0] + up[1] * up[1] + up[2] * up[2];
+  if (!std::isfinite(at.x) || !std::isfinite(at.y) || !std::isfinite(at.z) || !std::isfinite(yaw) ||
+      !world_cell_valid(at) || !std::isfinite(length2) || std::abs(length2 - 1.0f) > 2.0e-3f ||
+      !std::isfinite(max_tilt_rad) || max_tilt_rad < 0.0f ||
+      max_tilt_rad > hotload::k_max_tilt_rad_limit) {
+    ++g.refused;
+    return hotload::Result::InvalidArgument;
+  }
+  const f32 limit = max_tilt_rad == 0.0f ? hotload::k_default_max_tilt_rad : max_tilt_rad;
+  f32 tilt = 0.0f;
+  bool clamped = false;
+  const f32 inverse = 1.0f / std::sqrt(length2);  // a unit vector to within the tolerance, exactly
+  const Vec3 wanted{up[0] * inverse, up[1] * inverse, up[2] * inverse};
+  const Quat rotation = aligned_rotation(yaw, wanted, limit, tilt, clamped);
+  g.stand(*a, at, yaw, rotation, rotate(rotation, Vec3::unit_y()), tilt, clamped);
+  ++g.places;
+  ++g.aligned;
+  if (clamped) ++g.clamped;
   return hotload::Result::Ok;
 }
 
@@ -1007,6 +1084,11 @@ void GameActors::Impl::fill(const Actor& a, hotload::ActorState& out) const {
   out.position[1] = a.position.y;
   out.position[2] = a.position.z;
   out.yaw = a.yaw;
+  out.up[0] = a.up.x;
+  out.up[1] = a.up.y;
+  out.up[2] = a.up.z;
+  out.tilt_rad = a.tilt;
+  out.tilt_clamped = a.tilt_clamped ? 1u : 0u;
   animation::AnimationPlayer p;
   if (read(a, p)) {
     bool looping = false;
@@ -1048,6 +1130,8 @@ JsonValue GameActors::to_json() const {
     actor.set("instance", a.instance);
     actor.set("position", position_json(a.position));
     actor.set("yaw", static_cast<f64>(a.yaw));
+    if (a.tilt != 0.0f)
+      actor.set("up", up_json(a.up));  // ABI 8; a level actor's entry is as it was
     animation::AnimationPlayer p;
     if (g.read(a, p)) actor.set("player", schema::to_json(p));
     if (a.fading) {
@@ -1105,9 +1189,30 @@ bool GameActors::restore(const JsonValue& actors, std::string& error) {
     }
     // Where it stood: through `place`, the same validation and the same tier row, but not counted
     // as a module's call.
+    // A tilted actor's file carries its `up` (ABI 8), put back through the aligned placement with
+    // the largest hold, since the saved `up` is already the held one.
+    f32 up[3] = {0.0f, 1.0f, 0.0f};
+    bool tilted = false;
+    if (const JsonValue* saved = entry.find("up"); saved != nullptr) {
+      f64 v[3] = {0.0, 0.0, 0.0};
+      if (!saved->is_array() || saved->size() != 3 || !(*saved)[0].get_f64(v[0]) ||
+          !(*saved)[1].get_f64(v[1]) || !(*saved)[2].get_f64(v[2])) {
+        error = where + ": up is not three numbers";
+        return false;
+      }
+      for (u32 k = 0; k < 3; ++k)
+        up[k] = static_cast<f32>(v[k]);
+      tilted = true;
+    }
     const u64 places = g.places;
-    const hotload::Result placed = place(a->instance, p, static_cast<f32>(angle));
+    const u64 aligned = g.aligned;
+    const u64 clamped = g.clamped;
+    const hotload::Result placed = tilted ? place_aligned(a->instance, p, static_cast<f32>(angle),
+                                                          up, hotload::k_max_tilt_rad_limit)
+                                          : place(a->instance, p, static_cast<f32>(angle));
     g.places = places;
+    g.aligned = aligned;
+    g.clamped = clamped;
     if (placed == hotload::Result::InvalidArgument) {
       error = where + ": a position outside the world";
       return false;
@@ -1166,6 +1271,11 @@ JsonValue GameActors::summary_json() const {
     actor.set("instance", a.instance);
     actor.set("position", position_json(a.position));
     actor.set("yaw", static_cast<f64>(a.yaw));
+    if (a.tilt != 0.0f) {  // ABI 8; a level actor's block is as it was
+      actor.set("up", up_json(a.up));
+      actor.set("tilt_rad", static_cast<f64>(a.tilt));
+      actor.set("tilt_clamped", a.tilt_clamped);
+    }
     actor.set("clip", std::string_view(s.clip));
     actor.set("playhead", static_cast<f64>(s.playhead_s));
     actor.set("speed", static_cast<f64>(s.speed));
@@ -1181,6 +1291,8 @@ JsonValue GameActors::summary_json() const {
       p.set("tick", sample.tick);
       p.set("position", position_json(sample.position));
       p.set("yaw", static_cast<f64>(sample.yaw));
+      if (sample.up.x != 0.0f || sample.up.y != 1.0f || sample.up.z != 0.0f)
+        p.set("up", up_json(sample.up));
       p.set("clip", clip_name(sample.clip));
       p.set("playhead", static_cast<f64>(sample.playhead));
       p.set("pose_hash", renderer::hash_hex(sample.pose_hash));
@@ -1200,6 +1312,8 @@ JsonValue GameActors::calls_json() const {
   out.set("actors", g.actors.size());
   out.set("can_move", true);  // in every scene since 2026-10-19, dynamic ones included
   out.set("places", g.places);
+  out.set("aligned_places", g.aligned);  // ABI 8: of the places, the aligned ones...
+  out.set("tilt_clamped", g.clamped);    // ...and how many were held to their maximum
   out.set("plays", g.plays);
   out.set("stops", g.stops);
   out.set("speeds", g.speeds);

@@ -121,6 +121,13 @@ struct GameServices {
   // each answers `Unsupported`.
   Result (*hud_image)(void* user, const HudImage& image) = nullptr;
   Result (*hud_font)(void* user, std::string_view path, f32 size_px, u32* out_font) = nullptr;
+  // ABI 8 (module_abi.h): an actor placed on a slope, and the ground's normal. The host checks the
+  // pointers; `actor_state` copies the host's `ActorState` only as far as the module's `size`. The
+  // values (a unit `up`, the tilt's limit, a footprint's range, a position inside the world) are
+  // the runner's to judge. Null, each answers `Unsupported`.
+  Result (*actor_place_aligned)(void* user, u32 actor, const f64* position, f32 yaw, const f32* up,
+                                f32 max_tilt_rad) = nullptr;
+  Result (*ground_sample)(void* user, f64 x, f64 z, GroundSample& io) = nullptr;
 };
 
 struct HostConfig {

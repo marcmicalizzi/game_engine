@@ -13,9 +13,10 @@ ENGINE_EXPECT_SIZE(48, 8, hotload::Value);
 // ABI 2 added the game runner's five services (136); ABI 3 the ten through which a game acts on the
 // world (props, the walker, sound), 80 bytes of function pointers after them (216); ABI 4 the HUD's
 // elements and the graphics state, four more (248); ABI 5 the seven actor entries and the ground
-// query, eight more (312); ABI 6 the HUD's images and fonts, two more (328). A module built against
-// 3 reads the first 216, one against 4 the first 248, one against 5 the first 312.
-ENGINE_EXPECT_SIZE(328, 8, hotload::HostApi);
+// query, eight more (312); ABI 6 the HUD's images and fonts, two more (328); ABI 8 the aligned
+// placement and the ground sample, two more (344). A module built against 3 reads the first 216,
+// one against 4 the first 248, one against 5 the first 312, one against 6 or 7 the first 328.
+ENGINE_EXPECT_SIZE(344, 8, hotload::HostApi);
 // ABI 4's structs, each led by its own size so it can grow the way the table does: an element is
 // 56 bytes of fixed fields and the text's pointer and length; the graphics state is six words, five
 // 24-byte names (the longest present mode, "fifo-latest-ready", is 17) and four 96-byte reasons; a
@@ -30,8 +31,15 @@ static_assert(offsetof(hotload::HudElement, font) == hotload::k_hud_element_v4_s
 ENGINE_EXPECT_SIZE(528, 4, hotload::GraphicsState);
 ENGINE_EXPECT_SIZE(112, 4, hotload::GraphicsRequest);
 // ABI 5: an actor as the host keeps it, led by its size: two words, the f64 position, eight
-// four-byte fields, the pose hash and a 64-byte clip name.
-ENGINE_EXPECT_SIZE(136, 8, hotload::ActorState);
+// four-byte fields, the pose hash and a 64-byte clip name (136, `k_actor_state_v5_size`, what a
+// module built against ABI 5 to 7 passes as its size). ABI 8 appended the orientation: `up`, the
+// tilt, the clamp flag and a reserved word (160). The prefix may not move.
+ENGINE_EXPECT_SIZE(160, 8, hotload::ActorState);
+static_assert(offsetof(hotload::ActorState, up) == hotload::k_actor_state_v5_size,
+              "ABI 8's fields follow ABI 5's ActorState, which is k_actor_state_v5_size long");
+// ABI 8: the ground under a point, led by its size: two words, the f64 height, the normal and a
+// reserved word.
+ENGINE_EXPECT_SIZE(32, 8, hotload::GroundSample);
 // ABI 7: where a load is, handed to `game_loading`, led by its size: six words, three u64 (bytes,
 // items, elapsed) and the stage's and detail's pointers. The table did not grow.
 ENGINE_EXPECT_SIZE(64, 8, hotload::GameLoadProgress);
