@@ -258,7 +258,19 @@ struct TileStats {
   u64 appended = 0;
   u64 freed = 0;
   u64 compactions = 0;
+  u64 tight =
+      0;  // of the compactions, those packed with no slack because the classes passed the cap
   u64 grows = 0;  // changes that made the per-pair buffers again
+  // Instance slots the changes wrote, and where the changes' CPU time went
+  // (`GpuScene::TileChange`): the blocks compared, the layout, the slots and buffers, what follows
+  // the tables, and the rest of `SceneRenderer::set_dynamic_instances` past them (the fires, the
+  // chain's first sizing).
+  u64 slots_written = 0;
+  u64 compared = 0;  // instances compared with what their key held (`GpuScene::TileChange`)
+  f64 compare_ns = 0.0;
+  f64 layout_ns = 0.0;
+  f64 write_ns = 0.0;
+  f64 after_ns = 0.0;
   // Of those, the ones whose pool or ray tracing chain had to follow, with the device idle
   // (`GpuScene::relayout`), and the wall time they took, the wait included.
   u64 relayouts = 0;

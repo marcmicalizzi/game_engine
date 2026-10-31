@@ -213,6 +213,26 @@ void FireSet::reset(const SceneData& scene) {
 void FireSet::place(std::span<const SceneInstance> tail) noexcept {
   placed_.clear();
   if (prop_fires_.empty()) return;
+  add(tail);
+}
+
+// The tail as blocks that may name their own instances (`DynamicBlock::instances`, W81), in the
+// blocks' order, which is the tail's.
+void FireSet::place(std::span<const SceneInstance> tail,
+                    std::span<const DynamicBlock> blocks) noexcept {
+  placed_.clear();
+  if (prop_fires_.empty()) return;
+  if (blocks.empty()) {
+    add(tail);
+    return;
+  }
+  for (const DynamicBlock& block : blocks) {
+    add(block.instances != nullptr ? std::span<const SceneInstance>(block.instances, block.count)
+                                   : tail.subspan(block.first, block.count));
+  }
+}
+
+void FireSet::add(std::span<const SceneInstance> tail) noexcept {
   for (const SceneInstance& instance : tail) {
     if (fixed_.size() + placed_.size() >= k_max_fires) break;
     if (instance.mesh >= mesh_fire_.size() || mesh_fire_[instance.mesh] == 0) continue;

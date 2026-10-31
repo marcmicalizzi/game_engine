@@ -84,6 +84,10 @@ struct PlacementTilesStats {
   u64 handed = 0;    // tails handed to the sink
   i64 sink_ns = 0;   // the renderer taking the tail: the device wait and the tables' upload
   i64 max_sink_ns = 0;
+  // A commit's own work before the sink: the pair budget's ranking over every tile held (`admit`)
+  // and the tail written out of the drawn tiles.
+  i64 admit_ns = 0;
+  i64 tail_ns = 0;
   // Tiles built again for a moving ground (`restand`), and their wall time.
   u64 restood = 0;
   i64 restand_ns = 0;
@@ -127,14 +131,13 @@ class PlacementTiles {
   // the nearest first. Without one, tile order.
   void set_ring(const TileRing* ring) noexcept { ring_ = ring; }
 
-  // The tail as it was last handed on, in tile order.
-  std::span<const renderer::SceneInstance> tail() const noexcept {
-    return {tail_.data(), tail_.size()};
-  }
+  // The tail as it was last handed on, in tile order. With a run sink (`set_run_sink`) a commit
+  // writes no tail, and this writes it out of the drawn tiles when first asked after a commit.
+  std::span<const renderer::SceneInstance> tail() const;
   // Parallel to `tail()`: each instance's tag, as its generator gave it (the ruins' 1 is rubble — a
   // debris member of a building in sections, a fallen block of one in blocks — and 0 wall). What
   // engine-view's handover pass splits a pop by.
-  std::span<const u8> tail_tags() const noexcept { return {tail_tags_.data(), tail_tags_.size()}; }
+  std::span<const u8> tail_tags() const;
   const PlacementTilesStats& stats() const noexcept { return stats_; }
   const PlacementTilesConfig& config() const noexcept { return config_; }
   // Whether some streamed entry puts anything on `tile`.
@@ -159,8 +162,24 @@ class PlacementTiles {
     // The ring the tile is drawn in: what the renderer's ray tracing chain drops by, farthest first
     // (renderer.md, "The ray tracing chain's memory").
     u8 ring = 0;
+    // The tile's own instances, `count` of them, as the consumer holds them; and their version: a
+    // number that changes whenever the tile's instances are built again, never reused (W81). What
+    // a run sink hands the renderer as a `renderer::DynamicBlock`, so a tile no update changed is
+    // neither copied nor compared.
+    const renderer::SceneInstance* instances = nullptr;
+    u64 version = 0;
   };
   void tile_ranges(Vector<TileRange>& out) const;
+  // **The hand-over that costs the change** (W81; world.md, "The consumers"): with a run sink set,
+  // a commit hands it the drawn tiles' runs — key, place, count, ring, own instances and version —
+  // and writes no tail; the instance sink above is not called. The runs of the last commit stay
+  // readable (`runs`) until the next.
+  using RunSink = bool (*)(void* context, std::span<const TileRange> runs, std::string* error);
+  void set_run_sink(RunSink sink, void* context) noexcept {
+    run_sink_ = sink;
+    run_sink_context_ = context;
+  }
+  std::span<const TileRange> runs() const noexcept { return {runs_.data(), runs_.size()}; }
   // Whether the pair budget left an active tile's placements out of the tail at the last commit.
   bool withheld(TileCoord tile) const noexcept;
   // **A moving ground** (world.md, "The consumers"; scatter.md, "A moving ground"): the time the
@@ -199,6 +218,7 @@ class PlacementTiles {
     Vector<renderer::SceneInstance> instances;
     Vector<u8> tags;  // parallel to `instances`
     f64 stood = 0.0;  // the surface time it was built standing on
+    u64 version = 0;  // changed by every build (`TileRange::version`)
   };
 
   static bool activate(void* context, const TileEvent& event);
@@ -233,8 +253,15 @@ class PlacementTiles {
   // empty record stays in the pool while its tile is active. Other generators reuse free blocks.
   FlatMap<u64, TileBlock> spare_tiles_;
   Vector<TileBlock> free_blocks_;
-  Vector<renderer::SceneInstance> tail_;
-  Vector<u8> tail_tags_;
+  // Written by a commit with no run sink, and otherwise on the first ask after one (	ail).
+  mutable Vector<renderer::SceneInstance> tail_;
+  mutable Vector<u8> tail_tags_;
+  mutable bool tail_stale_ = false;
+  void write_tail() const;
+  Vector<TileRange> runs_;  // the last commit's, for a run sink
+  u64 next_version_ = 0;
+  RunSink run_sink_ = nullptr;
+  void* run_sink_context_ = nullptr;
   u32 tail_pairs_ = 0;
   const TileRing* ring_ = nullptr;
   struct Rank {

@@ -105,7 +105,7 @@ class ViewWorld {
   JsonValue summary_json() const;
 
  private:
-  static bool hand_over(void* context, std::span<const renderer::SceneInstance> tail,
+  static bool hand_over(void* context, std::span<const world::PlacementTiles::TileRange> runs,
                         std::string* error);
 
   const renderer::SceneData* data_ = nullptr;
@@ -120,12 +120,13 @@ class ViewWorld {
   Vector<std::string> kinds_;  // the streamed entries' generator names
   Vector<u32> mesh_kind_;      // per scene mesh, its index in `kinds_` (~0: placed by none)
   world::DrawnTiles drawn_;    // the drawn ground, when the renderer draws the world's tiles
-  Vector<world::PlacementTiles::TileRange> ranges_;  // hand_over's: the tail's tiles
-  Vector<renderer::DynamicBlock> blocks_;            // and the blocks they are
+  Vector<renderer::DynamicBlock> blocks_;  // hand_over's: the tiles' blocks, and the props'
   bool compact_next_ = false;  // the next hand-over lays the tiles out from scratch (a restart)
   const Vector<renderer::SceneInstance>* extra_ = nullptr;  // the appended block's instances
   u64 extra_key_ = 0;
-  Vector<renderer::SceneInstance> combined_;  // the tiles' tail and the extra block, kept
+  // The run's counters before an update, for the log line's `placements` (W81).
+  world::PlacementTilesStats placements_before_;
+  renderer::TileStats tiles_before_;
 };
 
 }  // namespace engine::view

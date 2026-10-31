@@ -1250,8 +1250,8 @@ bool SceneRenderer::set_dynamic_instances(std::span<const SceneInstance> tail,
     frames_.defer_destroy(buffer);
   retired_.clear();
   // The props' fires stand where the tail now places them (fire.h): a game lights a fire by placing
-  // the prop. The whole tail, because the change is the whole tail.
-  fires_.place(tail);
+  // the prop. The whole tail, block by block, since a block may name its own instances (W81).
+  fires_.place(tail, blocks);
   // **The far forest's hand-off** (renderer.md, "The far forest"): every world tile the tail now
   // draws parks its far instance, every other one stands at its corner. The moves ride the same
   // flip as the tail's change, so no frame draws a tile twice or not at all. A refusal leaves the
@@ -1329,7 +1329,14 @@ bool SceneRenderer::set_dynamic_instances(std::span<const SceneInstance> tail,
   tiles.appended += change.layout.appended;
   tiles.freed += change.layout.freed;
   tiles.compactions += change.layout.compacted ? 1u : 0u;
+  tiles.tight += change.layout.tight ? 1u : 0u;
   tiles.grows += change.grew ? 1u : 0u;
+  tiles.slots_written += change.slots_written;
+  tiles.compared += change.compared;
+  tiles.compare_ns += static_cast<f64>(change.compare_ns);
+  tiles.layout_ns += static_cast<f64>(change.layout_ns);
+  tiles.write_ns += static_cast<f64>(change.write_ns);
+  tiles.after_ns += static_cast<f64>(change.after_ns);
   const f64 ns = static_cast<f64>(time::monotonic_ns() - started);
   tiles.change_ns += ns;
   tiles.change_ns_max = ns > tiles.change_ns_max ? ns : tiles.change_ns_max;

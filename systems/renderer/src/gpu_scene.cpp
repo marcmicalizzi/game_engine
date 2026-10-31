@@ -1,3 +1,4 @@
+#include <core/base/assert.h>
 #include <core/containers/hash_map.h>
 #include <core/hash/hash.h>
 #include <core/profiling/startup_trace.h>  // stages only: timing, never logic
@@ -28,6 +29,14 @@
 namespace engine::renderer {
 
 namespace {
+
+// A tail block's instances (renderer.md, "Instances that come and go"; W81): its own, when the
+// caller named them, or its run of the tail handed over beside the blocks.
+std::span<const SceneInstance> block_instances(std::span<const SceneInstance> tail,
+                                               const DynamicBlock& block) noexcept {
+  if (block.instances != nullptr) return {block.instances, block.count};
+  return tail.subspan(block.first, block.count);
+}
 
 constexpr gfx::BufferUsage k_storage = gfx::BufferUsage::Storage;
 constexpr gfx::BufferUsage k_address = k_storage | gfx::BufferUsage::ShaderDeviceAddress;
@@ -1081,6 +1090,7 @@ bool GpuScene::set_dynamic_instances(std::span<const SceneInstance> tail,
   // instance names a mesh the scene has and is rigid, and — in the layout — the keys are distinct
   // and the pairs fit the visibility id.
   u64 next = 0;
+  bool own = !blocks.empty();  // every block names its own instances: no tail is handed over
   for (const DynamicBlock& block : blocks) {
     if (block.first != next) {
       if (error != nullptr) {
@@ -1091,32 +1101,46 @@ bool GpuScene::set_dynamic_instances(std::span<const SceneInstance> tail,
       return false;
     }
     next += block.count;
+    own = own && (block.instances != nullptr || block.count == 0);
   }
-  if (next != tail.size()) {
+  if (next != tail.size() && !(own && tail.empty())) {
     if (error != nullptr) {
       *error = "the tail's blocks cover " + std::to_string(next) + " of its " +
                std::to_string(tail.size()) + " instances";
     }
     return false;
   }
+  i64 mark = time::monotonic_ns();
+  const auto lap = [&mark](i64& into) {
+    const i64 now = time::monotonic_ns();
+    into += now - mark;
+    mark = now;
+  };
   requests_.resize(static_cast<u32>(blocks.size()));
   for (u32 b = 0; b < blocks.size(); ++b) {
     const DynamicBlock& block = blocks[b];
+    const std::span<const SceneInstance> run = block_instances(tail, block);
     TileLayout::Request& request = requests_[b];
     request = TileLayout::Request{};
     request.key = block.key;
     request.first = block.first;
     request.instances = block.count;
-    // The same key holding exactly these instances is the same block, and costs nothing but this
-    // comparison — which is the one part of a change that still reads the whole tail, because the
-    // caller hands it over whole. A slot's key names only a mesh the scene has, so a block that
-    // matches needs no other check and its pairs are what it held.
+    request.version = block.version;
+    // **A block the caller says is unchanged costs nothing** (W81): the same key, count and
+    // version the layout holds is the same block, and none of its instances is read. Every block a
+    // caller names no version for is compared instance by instance, as before; a slot's key names
+    // only a mesh the scene has, so a block that matches needs no other check and its pairs are
+    // what it held.
     const TileBlock* held = layout_.find(block.key);
     if (held != nullptr && held->instances == block.count) {
-      bool same = true;
-      for (u32 k = 0; k < block.count && same; ++k) {
-        const SceneInstance& source = tail[block.first + k];
-        same = source.joints == 0 && tail_keys_[held->inst_begin + k] == key_of(source);
+      bool same = block.version != 0 && held->version == block.version;
+      if (!same) {
+        same = true;
+        change.compared += block.count;
+        for (u32 k = 0; k < block.count && same; ++k) {
+          const SceneInstance& source = run[k];
+          same = source.joints == 0 && tail_keys_[held->inst_begin + k] == key_of(source);
+        }
       }
       if (same) {
         request.same = true;
@@ -1125,8 +1149,9 @@ bool GpuScene::set_dynamic_instances(std::span<const SceneInstance> tail,
       }
     }
     u64 pairs = 0;
-    for (u32 i = block.first; i < block.first + block.count; ++i) {
-      const SceneInstance& source = tail[i];
+    for (u32 k = 0; k < block.count; ++k) {
+      const u32 i = block.first + k;
+      const SceneInstance& source = run[k];
       gfx::InstanceDesc probe;
       // The placement's own checks: a mesh the scene has not is refused with its sentence.
       if (source.mesh >= data_->parts.size()) {
@@ -1164,8 +1189,8 @@ bool GpuScene::set_dynamic_instances(std::span<const SceneInstance> tail,
     u64 parts = flora_parts_;
     for (u32 b = 0; b < blocks.size(); ++b) {
       if (requests_[b].same) continue;
-      for (u32 i = blocks[b].first; i < blocks[b].first + blocks[b].count; ++i) {
-        const u32 mesh = tail[i].mesh;
+      for (const SceneInstance& source : block_instances(tail, blocks[b])) {
+        const u32 mesh = source.mesh;
         if (!tail_sways(mesh) || flora_meshes_[mesh].field) continue;
         const u32 n = flora_meshes_[mesh].part_count();
         ++entries;
@@ -1195,30 +1220,36 @@ bool GpuScene::set_dynamic_instances(std::span<const SceneInstance> tail,
       return false;
     }
   }
+  lap(change.compare_ns);
   if (!layout_.apply(std::span<const TileLayout::Request>(requests_.data(), requests_.size()),
                      compact_pct_, compact, pair_limit_, writes_, change.layout, error)) {
     return false;
   }
+  lap(change.layout_ns);
   // Committed: the slots the layout wrote, then the buffers grown to hold them.
   if (!write_slots(tail, blocks, std::span<const SlotWrite>(writes_.data(), writes_.size()),
                    change.slots_written, error) ||
       !fit_tables(change, retired, error)) {
     return false;
   }
+  lap(change.write_ns);
   if (change.layout.compacted) ++compactions_;
   if (change.slots_written > 0 || change.grew) tables_changed_ = true;
   // The drop order follows the tables (renderer.md, "The ray tracing chain's memory").
   if (ray_tracing_ && (change.slots_written > 0 || change.grew)) lay_out_rt_order();
-  // Trimming the last block writes no surviving slots, but its excluded pairs have gone too.
-  if (change.slots_written > 0 || change.layout.freed > 0) policy_counts();
+  // The policy counts followed the slots as they were written, and the ones trimmed off the end
+  // (`policy_count`, W81): until 2026-10-31 every change counted the whole instance table again,
+  // twice when a tree swayed in.
+  ENGINE_ASSERT(policy_counts_match(), "the policy counts kept slot by slot are the recount's");
   // The poser's chunks follow the trees, cut again in place (renderer.md, "Streamed trees sway").
   if (flora_recut_) {
     flora_recut_ = false;
     flora_poser_.recut(
         std::span<const FloraInstance>(flora_instances_.data(), flora_instances_.size()),
         std::span<const FloraMesh>(flora_meshes_.data(), flora_meshes_.size()));
-    flora_counts();
+    flora_counts(false);
   }
+  lap(change.after_ns);
   return true;
 }
 
@@ -1233,10 +1264,17 @@ bool GpuScene::write_slots(std::span<const SceneInstance> tail,
       release_tail_tree(slot);
     if (tail_tree_of_slot_.size() < end) tail_tree_of_slot_.resize(end, ~0u);
   }
-  for (u32 slot = end; slot < instance_table_.size(); ++slot)
+  for (u32 slot = end; slot < instance_table_.size(); ++slot) {
     uncount_static(slot);
+    policy_count(instance_table_[slot], false);
+  }
+  const u32 had = instance_table_.size();
   instance_table_.resize(end);
   tail_keys_.resize(end);
+  // The policy counts follow the table slot by slot (W81): a slot made here counts as what it holds
+  // until it is written below, as `policy_counts` would count it.
+  for (u32 slot = had; slot < end; ++slot)
+    policy_count(instance_table_[slot], true);
   for (const SlotWrite& write : writes) {
     if (write.inst_count == 0) continue;
     u32 first_pair = write.pair_begin;
@@ -1247,8 +1285,9 @@ bool GpuScene::write_slots(std::span<const SceneInstance> tail,
       // if its mesh sways in the tail (renderer.md, "Streamed trees sway").
       if (flora_tail_) release_tail_tree(slot);
       uncount_static(slot);
+      policy_count(instance_table_[slot], false);
       if (block != nullptr && k < write.live) {
-        const SceneInstance& source = tail[block->first + k];
+        const SceneInstance& source = block_instances(tail, *block)[k];
         gfx::InstanceDesc& desc = instance_table_[slot];
         if (!make_instance(*data_, source, first_pair, desc, error)) return false;
         if (source.mesh < mesh_policy_.size()) desc.flags |= mesh_policy_[source.mesh];
@@ -1273,6 +1312,7 @@ bool GpuScene::write_slots(std::span<const SceneInstance> tail,
         instance_table_[slot] = null_instance(first_pair);
         tail_keys_[slot] = InstanceKey{};
       }
+      policy_count(instance_table_[slot], true);
     }
     // Every set has to take these slots, each when a frame next flips to it.
     for (TableSet& set : sets_) {
@@ -2319,8 +2359,66 @@ void GpuScene::policy_counts() noexcept {
   count_rt_cache_instances();
 }
 
-void GpuScene::flora_counts() noexcept {
-  policy_counts();
+void GpuScene::policy_count(const gfx::InstanceDesc& placed, bool add) noexcept {
+  const auto step = [add](auto& counter, auto by) {
+    if (add) {
+      counter += by;
+    } else {
+      counter -= by;
+    }
+  };
+  if (flora_field_ && placed.mesh < field_deform_.size() && field_deform_[placed.mesh] != ~0u &&
+      placed.deform == field_deform_[placed.mesh]) {
+    step(flora_stats_.field_instances, 1u);
+  }
+  if (placed.flags != 0) {
+    if ((placed.flags & gfx::k_instance_cascade_mask) != 0) step(flora_stats_.casters_nearest, 1u);
+    if ((placed.flags & gfx::k_instance_shadow_rest) != 0) step(flora_stats_.casters_rest, 1u);
+    if ((placed.flags & gfx::k_instance_untraced) != 0) {
+      step(flora_stats_.untraced, 1u);
+      if (placed.mesh < data_->parts.size() && (placed.flags & gfx::k_instance_static_rt) == 0)
+        step(untraced_pairs_live_, u64{data_->parts[placed.mesh].cluster_count});
+    }
+  }
+  if (rt_cache_slots_ != 0 && rt_instance_cached(placed)) {
+    step(rt_cache_instances_, 1u);
+    step(rt_cache_pairs_, u64{data_->parts[placed.mesh].cluster_count});
+  }
+}
+
+bool GpuScene::policy_counts_match() const noexcept {
+  u32 field = 0;
+  u32 nearest = 0;
+  u32 rest = 0;
+  u32 untraced = 0;
+  u64 untraced_pairs = 0;
+  u32 cached = 0;
+  u64 cached_pairs = 0;
+  for (const gfx::InstanceDesc& placed : instance_table_) {
+    if (flora_field_ && placed.mesh < field_deform_.size() && field_deform_[placed.mesh] != ~0u &&
+        placed.deform == field_deform_[placed.mesh]) {
+      ++field;
+    }
+    if ((placed.flags & gfx::k_instance_cascade_mask) != 0) ++nearest;
+    if ((placed.flags & gfx::k_instance_shadow_rest) != 0) ++rest;
+    if ((placed.flags & gfx::k_instance_untraced) != 0) {
+      ++untraced;
+      if (placed.mesh < data_->parts.size() && (placed.flags & gfx::k_instance_static_rt) == 0)
+        untraced_pairs += data_->parts[placed.mesh].cluster_count;
+    }
+    if (rt_cache_slots_ != 0 && rt_instance_cached(placed)) {
+      ++cached;
+      cached_pairs += data_->parts[placed.mesh].cluster_count;
+    }
+  }
+  return field == flora_stats_.field_instances && nearest == flora_stats_.casters_nearest &&
+         rest == flora_stats_.casters_rest && untraced == flora_stats_.untraced &&
+         untraced_pairs == untraced_pairs_live_ && cached == rt_cache_instances_ &&
+         cached_pairs == rt_cache_pairs_;
+}
+
+void GpuScene::flora_counts(bool policy) noexcept {
+  if (policy) policy_counts();
   flora_stats_.instances = flora_instances_.size();
   flora_stats_.tail_instances = flora_instances_.size() - load_flora_;
   flora_stats_.parts = flora_parts_;
@@ -4607,6 +4705,7 @@ void GpuScene::destroy_rt_cache() noexcept {
     gfx::destroy_buffer(*device_, *b);
   rt_cache_base_.clear();
   rt_cache_slots_ = rt_cache_meshes_ = rt_cache_clusters_ = rt_cache_instances_ = 0;
+  rt_cache_pairs_ = 0;
   rt_cache_bytes_ = rt_cache_stride_ = rt_cache_scratch_bytes_ = 0;
   rt_cache_limits = gfx::ClusterSetLimits{};
   rt_cache_alignment = 0;
@@ -4626,18 +4725,22 @@ bool GpuScene::rt_instance_cached(const gfx::InstanceDesc& instance) const noexc
 // per frame. A dynamic scene's holes name the null mesh, past `rt_cache_base_`, and count as none.
 void GpuScene::count_rt_cache_instances() noexcept {
   rt_cache_instances_ = 0;
+  rt_cache_pairs_ = 0;
   if (rt_cache_slots_ == 0) return;
-  for (const gfx::InstanceDesc& instance : instance_table_)
-    rt_cache_instances_ += rt_instance_cached(instance) ? 1u : 0u;
+  for (const gfx::InstanceDesc& instance : instance_table_) {
+    if (!rt_instance_cached(instance)) continue;
+    ++rt_cache_instances_;
+    rt_cache_pairs_ += data_->parts[instance.mesh].cluster_count;
+  }
 }
 
+// The cached instances' pairs in every view, from the count the instance table keeps as it changes
+// (`policy_count`, W81): until 2026-10-31 a sum over the whole table, which every change of a
+// streamed world's tail paid through the chain's statistics — 2.8 ms a commit on the forest's
+// 180,000 slots (docs/experiments/forest-load-in-2026-10-31.md).
 u64 GpuScene::rt_reference_estimate() const noexcept {
   if (rt_cache_slots_ == 0) return 0;
-  u64 pairs = 0;
-  for (const gfx::InstanceDesc& instance : instance_table_) {
-    if (rt_instance_cached(instance)) pairs += data_->parts[instance.mesh].cluster_count;
-  }
-  return pairs * view_count_;
+  return rt_cache_pairs_ * view_count_;
 }
 
 u64 GpuScene::rt_frame_estimate() const noexcept {
@@ -5287,8 +5390,15 @@ bool GpuScene::place_instances(std::span<const u32> indices,
   for (usize i = 0; i < indices.size(); ++i) {
     gfx::InstanceDesc& entry = instance_table_[indices[i]];
     const Mat4& fit = data_->mesh_fit[placements[i].mesh];
+    // **A move changes the placement and nothing else**: `set_instance_placement` writes the flags
+    // from the scale alone, so every other bit — the species' caster policy, the static-structure
+    // bit — is kept across it and only the uniform-scale bit is the new placement's. Until
+    // 2026-10-31 a moved instance lost them (an untraced one became traced, a static form was built
+    // per frame); found by R111, whose tile hand-off moves instances.
+    const u32 kept = entry.flags & ~gfx::k_instance_uniform_scale;
     gfx::set_instance_placement(entry, mat4_from_transform(placements[i].transform) * fit,
                                 instance_translation(placements[i], fit));
+    entry.flags |= kept;
   }
   // **A move rides the next frame** (renderer.md, "Moving an instance"). In a dynamic scene the
   // slot is marked pending for every table set, as a tail block's slots are, so the next frame

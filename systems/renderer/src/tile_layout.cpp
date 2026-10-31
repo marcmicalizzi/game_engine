@@ -129,6 +129,7 @@ bool TileLayout::place(const Request& request, u32 source, TileBlock& out,
   out.instances = request.instances;
   out.pairs = request.pairs;
   out.tail_first = request.first;
+  out.version = request.version;
   if (best != ~u32{0}) {
     FreeRun& run = free_[best];
     const u32 inst = want_inst < run.inst_cap ? want_inst : run.inst_cap;
@@ -184,6 +185,7 @@ void TileLayout::lay_out_again(std::span<const Request> requests, bool tight,
     block.instances = request.instances;
     block.pairs = request.pairs;
     block.tail_first = request.first;
+    block.version = request.version;
     block.inst_begin = inst_end_;
     block.pair_begin = pair_end_;
     block.inst_cap =
@@ -271,12 +273,14 @@ bool TileLayout::apply(std::span<const Request> requests, u32 compact_pct, bool 
     if (action_[r] == 1) {
       block = live_[old_block_[r]];
       block.tail_first = request.first;
+      block.version = request.version;
       ++change.kept;
     } else if (action_[r] == 2) {
       block = live_[old_block_[r]];
       block.instances = request.instances;
       block.pairs = request.pairs;
       block.tail_first = request.first;
+      block.version = request.version;
       writes.push_back(
           SlotWrite{block.inst_begin, block.inst_cap, block.pair_begin, r, block.instances});
       ++change.rewritten;
@@ -306,7 +310,10 @@ bool TileLayout::apply(std::span<const Request> requests, u32 compact_pct, bool 
     change.compacted = true;
   }
   // The classes' slack can take a layout past the visibility id's pairs that the tiles alone fit;
-  // packed with none it is the layout a scene loaded with this tail has.
+  // packed with none it is the layout a scene loaded with this tail has. (W81 tried laying it out
+  // at the classes first: at the ceiling that left less than a tile of room, so the next append
+  // compacted again — 467 whole rewrites along the forest's flight against tight's 60;
+  // docs/experiments/forest-load-in-2026-10-31.md.)
   if (pair_end_ > max_pairs) {
     lay_out_again(requests, true, writes);
     change.compacted = true;

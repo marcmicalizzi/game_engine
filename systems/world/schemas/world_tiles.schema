@@ -38,9 +38,50 @@ struct TileConsumerFrame @version(1) {
   max_ms: f64 = 0
 }
 
+/// What one update's placements cost, engine-view's world log (docs/subsystems/world.md, "The world
+/// log"; W81): the tiles generated, the commit's own work, and the renderer taking the tail, split
+/// as `renderer::TileStats` splits it — the part a streamed world's load-in is made of. Each number
+/// is this update's, the difference of the run's counters across it.
+struct TilePlacementsFrame @version(1) {
+  /// Tiles the generators built (activations, ring changes that redraw, re-stood tiles) and their
+  /// wall milliseconds.
+  built: u32 = 0
+  build_ms: f64 = 0
+  /// The commits' ranking of the held tiles for the pair budget, and the tail written out of the
+  /// drawn tiles; the tails handed to the renderer and the instances the last one held.
+  admit_ms: f64 = 0
+  tail_ms: f64 = 0
+  handed: u32 = 0
+  tail_instances: u32 = 0
+  /// The renderer taking the tail (`SceneRenderer::set_dynamic_instances`), wall milliseconds, and
+  /// its parts: the blocks compared with what each key holds, the layout, the slots written and the
+  /// buffers fitted, what follows the tables (the drop order, the policy counts, the poser's
+  /// chunks), and a relayout's wait for the device.
+  sink_ms: f64 = 0
+  compare_ms: f64 = 0
+  layout_ms: f64 = 0
+  write_ms: f64 = 0
+  after_ms: f64 = 0
+  relayout_ms: f64 = 0
+  /// Instance slots written, and the instances read to tell whether a block was the one its key
+  /// held (a block handed over with the version the renderer holds is not read at all); the blocks
+  /// kept, rewritten in place, placed and freed; the compactions (and of them the tight ones) and
+  /// relayouts.
+  slots_written: u64 = 0
+  compared: u64 = 0
+  kept: u32 = 0
+  rewritten: u32 = 0
+  placed: u32 = 0
+  freed: u32 = 0
+  compactions: u32 = 0
+  tight: u32 = 0
+  relayouts: u32 = 0
+}
+
 /// One world update, as engine-view's `--world-log` and a headless run record it
 /// (docs/subsystems/world.md, "The world log"): the tiles, the events, and what each cost.
-struct TileFrame @version(1) {
+/// Version 2 (W81): `placements`, what the update's placements cost, where engine-view has them.
+struct TileFrame @version(2) {
   /// The flythrough's repeat and path frame, or zero; the tick the update ran before.
   repeat: u32 = 0
   frame: u32 = 0
@@ -69,6 +110,8 @@ struct TileFrame @version(1) {
   pairs: u32 = 0
   buildings: u32 = 0
   ruin_instances: u32 = 0
+  /// engine-view's streamed placements this update; null where nothing streams placements.
+  placements: TilePlacementsFrame? = null @since(2)
 }
 
 /// One tile of a streamed world changing the representation its ruins are drawn in, seen from the

@@ -21,6 +21,7 @@
 #include <core/containers/vector.h>
 #include <core/math/math.h>
 #include <core/math/world.h>
+#include <systems/renderer/tile_layout.h>
 
 #include <span>
 #include <string>
@@ -132,6 +133,8 @@ class FireSet {
   // and position, the fire's offset turned by its rotation and scaled by its largest scale. At most
   // `k_max_fires` with the scene's, in the tail's order.
   void place(std::span<const SceneInstance> tail) noexcept;
+  // The same over a tail handed over as blocks, each its own run or the tail's (W81).
+  void place(std::span<const SceneInstance> tail, std::span<const DynamicBlock> blocks) noexcept;
   // This frame's fires at the world's clock, in the frame's light units (`burn_fire`), into `out`
   // (cleared first).
   void burn(f64 time_s, f32 units, Vector<FrameFire>& out) const;
@@ -148,6 +151,7 @@ class FireSet {
   Vector<FireDesc> prop_fires_;  // one per prop that declares one
   Vector<u32> mesh_fire_;        // per scene mesh: its prop's fire + 1, or 0
   Vector<Placed> placed_;
+  void add(std::span<const SceneInstance> instances) noexcept;
 };
 
 }  // namespace engine::renderer

@@ -20,6 +20,7 @@
 #include <test_temp_dir.h>
 
 #include <fstream>
+#include <map>
 #include <string>
 
 using namespace engine;
@@ -398,4 +399,91 @@ TEST_CASE("world ruins: a streamed scene keeps its kits' meshes and none of its 
   std::string error;
   CHECK_FALSE(renderer::read_scene_file(whole.tmp.file("scene.json"), options, forced, error));
   CHECK(error.find("one grid") != std::string::npos);
+}
+
+TEST_CASE(
+    "world ruins: a run sink is handed each drawn tile's own instances, and a new version "
+    "only for a tile the update built again") {
+  // W81 (world.md, "The consumers"): the hand-over that costs the change. Each drawn tile goes to
+  // the sink as its own run — its instances where the consumer holds them, its place in the tail
+  // and a version — and a tile no update built again keeps its version, which is what lets the
+  // renderer keep its block without reading it. No tail is written for the sink; `tail()` writes
+  // it when asked.
+  Fixture f;
+  PlacementTilesConfig config;
+  config.tile_size = 24.0f;
+  PlacementTiles ruins;
+  std::string error;
+  REQUIRE_MESSAGE(ruins.create(f.scene, config, &error), error);
+  struct Runs {
+    u32 calls = 0;
+    Vector<PlacementTiles::TileRange> last;
+    static bool take(void* c, std::span<const PlacementTiles::TileRange> runs, std::string*) {
+      auto* self = static_cast<Runs*>(c);
+      ++self->calls;
+      self->last.assign(runs.begin(), runs.end());
+      return true;
+    }
+  } runs;
+  ruins.set_run_sink(&Runs::take, &runs);
+  World world(rings());
+  world.add_consumer(ruins.consumer());
+  ruins.set_ring(&world.ring());
+
+  world.update(at(12.0f, 12.0f), 0);
+  REQUIRE(runs.calls == 1);
+  REQUIRE(runs.last.size() > 20);
+  std::map<u64, u64> version_of;     // engine-lint: allow-std-container a test's bookkeeping
+  std::map<u64, bool> version_seen;  // engine-lint: allow-std-container a test's bookkeeping
+  u64 newest = 0;
+  u32 first = 0;
+  for (const PlacementTiles::TileRange& run : runs.last) {
+    const std::span<const renderer::SceneInstance> held =
+        ruins.tile_instances(tile_of_key(run.key));
+    CHECK(run.first == first);
+    CHECK(run.count == held.size());
+    CHECK(run.instances == held.data());  // the consumer's own, not a copy
+    CHECK(run.version != 0);
+    CHECK(version_seen.count(run.version) == 0);  // never two tiles' one version
+    version_seen[run.version] = true;
+    version_of[run.key] = run.version;
+    newest = run.version > newest ? run.version : newest;
+    first += run.count;
+  }
+  CHECK(ruins.stats().instances == first);
+  // The tail, written when asked, is the runs in order.
+  const std::span<const renderer::SceneInstance> tail = ruins.tail();
+  REQUIRE(tail.size() == first);
+  for (const PlacementTiles::TileRange& run : runs.last) {
+    CHECK(same(tail.subspan(run.first, run.count),
+               std::span<const renderer::SceneInstance>(run.instances, run.count)));
+  }
+  CHECK(ruins.tail_tags().size() == first);
+
+  // A step east: the tiles the update built again (arrivals, and ring changes that draw the tile
+  // in another form) carry new versions, newer than any before; every other tile keeps its own.
+  world.update(at(36.0f, 12.0f), 1);
+  REQUIRE(runs.calls == 2);
+  std::map<u64, bool> rebuilt;  // engine-lint: allow-std-container a test's bookkeeping
+  for (const TileEvent& event : world.last_events()) {
+    if (event.kind == TileEventKind::Activate || (event.kind == TileEventKind::ChangeRing &&
+                                                  ruins.redraws(event.tile, event.from, event.to)))
+      rebuilt[tile_key(event.tile)] = true;
+  }
+  u32 kept = 0;
+  u32 fresh = 0;
+  for (const PlacementTiles::TileRange& run : runs.last) {
+    CAPTURE(run.key);
+    if (rebuilt.count(run.key) != 0) {
+      CHECK(run.version > newest);
+      ++fresh;
+    } else {
+      REQUIRE(version_of.count(run.key) == 1);
+      CHECK(run.version == version_of[run.key]);
+      ++kept;
+    }
+  }
+  MESSAGE("a step east: " << kept << " tiles kept their version, " << fresh << " built again");
+  CHECK(kept > 20);
+  CHECK(fresh > 0);
 }

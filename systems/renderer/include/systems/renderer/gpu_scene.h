@@ -262,6 +262,17 @@ class GpuScene {
     TileLayoutChange layout;
     bool grew = false;
     u32 slots_written = 0;
+    // Instances read to tell whether a block is the one its key holds: a block with no version, or
+    // another one, is compared instance by instance; one with the version held, not at all (W81).
+    u64 compared = 0;
+    // Where the change's CPU time went (renderer.md, "Instances that come and go", "What a change
+    // costs"): the blocks checked against what each key holds, the layout, the slots written and
+    // the buffers fitted, and what follows the tables (the drop order, the policy counts, the
+    // poser's chunks). Nanoseconds.
+    i64 compare_ns = 0;
+    i64 layout_ns = 0;
+    i64 write_ns = 0;
+    i64 after_ns = 0;
   };
   // Replaces the tail. `blocks` cover it in order; none is the whole tail as one block (key 0).
   // `compact` lays every block out again in the tail's order with no free blocks, which a change
@@ -289,6 +300,11 @@ class GpuScene {
   // of another mesh, or a translation off the world grid.
   bool place_instances(std::span<const u32> indices, std::span<const SceneInstance> placements,
                        std::string* error = nullptr);
+  // An instance's `gfx::InstanceDesc::flags` as the CPU's table holds them (0 past the table): what
+  // a move must keep but for the uniform-scale bit (the tests).
+  u32 instance_flags(u32 index) const noexcept {
+    return index < instance_table_.size() ? instance_table_[index].flags : 0u;
+  }
   u64 compactions() const noexcept { return compactions_; }
   // Where instance slot `slot` came from in the tail last handed over; ~0 for the load's own, a
   // hole and past the end. What a test compares a streamed scene's ids with a loaded one's through,
@@ -1179,7 +1195,9 @@ class GpuScene {
   bool create_flora(std::string* error);
   bool make_flora_poses(std::string* error);
   bool make_deform_tables(bool frames, std::string* error);
-  void flora_counts() noexcept;
+  // `policy`: count the instance table's policies again too (`policy_counts`); a change of the tail
+  // keeps them slot by slot instead (`policy_count`, W81).
+  void flora_counts(bool policy = true) noexcept;
   // The tail's trees (renderer.md, "Streamed trees sway").
   bool tail_sways(u32 mesh) const noexcept;
   f32 flora_padding_of(u32 mesh);
@@ -1370,6 +1388,11 @@ class GpuScene {
   bool flora_tail_parts_ = false;  // the tail may name a mesh posed by parts: it reserves room
   Vector<u32> mesh_policy_;
   void policy_counts() noexcept;
+  // One instance's share of `policy_counts`, added or taken away: what a change of the tail adjusts
+  // slot by slot rather than counting the whole table again (W81). `policy_counts_match` is the
+  // recount, for a debug build's check after every change.
+  void policy_count(const gfx::InstanceDesc& placed, bool add) noexcept;
+  bool policy_counts_match() const noexcept;
   // The tail's room past which a commit is refused, bytes (`renderer.flora.tail_budget_mib`).
   u64 tail_budget_bytes_ = 0;
   // A region of the pose table: the field block, then the poses.
@@ -1520,6 +1543,8 @@ class GpuScene {
   u64 rt_cache_scratch_bytes_ = 0;
   u32 rt_cache_frame_ = 0;
   u32 rt_cache_instances_ = 0;  // rt_cache_instances()
+  u64 rt_cache_pairs_ =
+      0;  // their pairs, what `rt_reference_estimate` counts (W81: kept, not summed)
   u32 rt_reference_capacity_ = 0;
   u32 rt_reference_limit_ = 0;
   u64 rt_bytes_per_reference_ = 0;

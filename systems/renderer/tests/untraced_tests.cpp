@@ -170,6 +170,54 @@ u32 shadowed_ground(const Picture& p) {
 
 }  // namespace
 
+TEST_CASE("renderer: a moved instance keeps its caster policy and every flag but the scale's") {
+  // A move changes the placement and nothing else (renderer.md, "Moving an instance").
+  // `gfx::set_instance_placement` writes the flags from the scale alone; until 2026-10-31
+  // `place_instances` let it, so a moved instance lost its species' caster policy (an untraced one
+  // became traced, a one-cascade one cast into every cascade) and its static-structure bit.
+  Gpu gpu;
+  if (!gpu.ok) {
+    MESSAGE("renderer unavailable here: " << gpu.why);
+    return;
+  }
+  const ScopedPolicy policy(true);
+  SceneData data;
+  std::string error;
+  REQUIRE_MESSAGE(make_scene(Caster::cube, data, error), error);
+  data.sources[k_cube].species = "sward";  // untraced, one cascade, at rest
+  RenderSettings settings;
+  settings.shadows = ShadowMode::Cascaded;
+  ResolvedSettings resolved;
+  resolve_settings(settings, gpu.device.features(), &data, resolved);
+  const u32 cube_mesh = data.instances[k_cube].mesh;
+  data.mesh_fit.resize(data.parts.size(), Mat4::identity());  // the fixture's meshes are not fitted
+  GpuScene scene;
+  REQUIRE_MESSAGE(scene.create(gpu.device, data, resolved, &error), error);
+  const u32 before = scene.instance_flags(k_cube);
+  REQUIRE((before & gfx::k_instance_untraced) != 0);
+  REQUIRE((before & gfx::k_instance_cascade_mask) != 0);
+  SceneInstance moved;
+  CAPTURE(cube_mesh);
+  moved.mesh = scene.instance_mesh(k_cube);
+  REQUIRE(moved.mesh == cube_mesh);
+  moved.transform.position = Vec3{0.5f, 0.0f, -0.25f};
+  moved.transform.scale = Vec3{1.5f, 1.0f, 1.0f};  // not uniform: the one bit a move may change
+  const u32 index = k_cube;
+  REQUIRE_MESSAGE(scene.place_instances(std::span<const u32>(&index, 1),
+                                        std::span<const SceneInstance>(&moved, 1), &error),
+                  error);
+  const u32 after = scene.instance_flags(k_cube);
+  CHECK((after & ~gfx::k_instance_uniform_scale) == (before & ~gfx::k_instance_uniform_scale));
+  CHECK((after & gfx::k_instance_uniform_scale) == 0);
+  // And back to a uniform scale: the bit is the placement's again.
+  moved.transform.scale = Vec3{2.0f, 2.0f, 2.0f};
+  REQUIRE_MESSAGE(scene.place_instances(std::span<const u32>(&index, 1),
+                                        std::span<const SceneInstance>(&moved, 1), &error),
+                  error);
+  CHECK(scene.instance_flags(k_cube) ==
+        ((before & ~gfx::k_instance_uniform_scale) | gfx::k_instance_uniform_scale));
+}
+
 TEST_CASE("renderer: an untraced instance is drawn by the ray path and met by no light's ray") {
   Gpu gpu;
   if (!gpu.ok) {

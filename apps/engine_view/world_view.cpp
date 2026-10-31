@@ -89,7 +89,7 @@ bool ViewWorld::create(const renderer::SceneData& data, renderer::SceneRenderer&
     placements_config_.max_pairs = renderer.scene().pair_limit();
     placements_config_.fixed_pairs = renderer.scene().static_pair_count();
     if (!placements_.create(data, placements_config_, error)) return false;
-    placements_.set_sink(&ViewWorld::hand_over, this);
+    placements_.set_run_sink(&ViewWorld::hand_over, this);
     world::add_scene_consumers(world_, nullptr, &placements_);
     // Each scene mesh's kind for `nearest_placement`: the generator of the streamed entry whose
     // resident meshes it is (`StreamedPlacements::meshes`), by the generator's registered name.
@@ -119,32 +119,27 @@ bool ViewWorld::create(const renderer::SceneData& data, renderer::SceneRenderer&
 // named by the tile's key, so a change costs the renderer the tiles that changed and not the whole
 // tail (docs/subsystems/renderer.md, "Instances that come and go"). The ranges are the ruins
 // consumer's own, for the tail it is handing over.
-bool ViewWorld::hand_over(void* context, std::span<const renderer::SceneInstance> tail,
+bool ViewWorld::hand_over(void* context, std::span<const world::PlacementTiles::TileRange> runs,
                           std::string* error) {
   auto* self = static_cast<ViewWorld*>(context);
+  // **Each tile's own instances and version** (W81): the renderer reads only the tiles whose
+  // version it does not hold, and nothing writes a tail. Until 2026-10-31 the consumer wrote the
+  // whole tail every commit and the renderer compared every tile of it against what it held.
   self->blocks_.clear();
-  if (!self->data_->streamed.empty()) {
-    self->placements_.tile_ranges(self->ranges_);
-    for (const world::PlacementTiles::TileRange& range : self->ranges_)
-      self->blocks_.push_back(
-          renderer::DynamicBlock{range.key, range.first, range.count, range.ring});
+  u32 total = 0;
+  for (const world::PlacementTiles::TileRange& range : runs) {
+    self->blocks_.push_back(renderer::DynamicBlock{range.key, range.first, range.count, range.ring,
+                                                   range.instances, range.version});
+    total = range.first + range.count;
   }
-  // The appended block (game_props.h): after the tiles, under its own key. Both runs are copied
-  // into one tail because the renderer takes one span; the copy is the tail's size, kept between
-  // hand-overs, and happens only on a frame something changed. With no extra block the tail goes
-  // over as it came.
-  std::span<const renderer::SceneInstance> whole = tail;
+  // The appended block (game_props.h): after the tiles, under its own key, from the props' own
+  // list. It carries no version, so the renderer compares its few instances each time.
   if (self->extra_ != nullptr && !self->extra_->empty()) {
-    self->combined_.clear();
-    for (const renderer::SceneInstance& instance : tail)
-      self->combined_.push_back(instance);
-    for (const renderer::SceneInstance& instance : *self->extra_)
-      self->combined_.push_back(instance);
-    self->blocks_.push_back(renderer::DynamicBlock{self->extra_key_, static_cast<u32>(tail.size()),
-                                                   static_cast<u32>(self->extra_->size())});
-    whole =
-        std::span<const renderer::SceneInstance>(self->combined_.data(), self->combined_.size());
+    self->blocks_.push_back(renderer::DynamicBlock{self->extra_key_, total,
+                                                   static_cast<u32>(self->extra_->size()), 0,
+                                                   self->extra_->data(), 0});
   }
+  const std::span<const renderer::SceneInstance> whole;  // every block names its own
   // A world started over (a flythrough's repeat) is laid out again from scratch, as its first fill
   // was: without it each repeat would inherit where the last one's tiles ended up, and the repeats'
   // occlusion histories — and so their visible pair counts — would differ where their pictures
@@ -158,9 +153,10 @@ bool ViewWorld::hand_over(void* context, std::span<const renderer::SceneInstance
 
 bool ViewWorld::hand_over_now(std::string* error) {
   if (!valid()) return true;
-  const std::span<const renderer::SceneInstance> tail =
-      data_->streamed.empty() ? std::span<const renderer::SceneInstance>() : placements_.tail();
-  return hand_over(this, tail, error);
+  const std::span<const world::PlacementTiles::TileRange> runs =
+      data_->streamed.empty() ? std::span<const world::PlacementTiles::TileRange>()
+                              : placements_.runs();
+  return hand_over(this, runs, error);
 }
 
 bool ViewWorld::nearest_placement(std::string_view kind, const WorldPos& from, f64 radius,
@@ -273,6 +269,8 @@ bool ViewWorld::update(const renderer::Camera& camera, u64 tick, Mode mode, u32 
     // frame, the ring's times for the summary) a flight leaves out of the frame-loop count.
     const renderer::FlightBookkeeping bookkeeping;
     log_.before(world_);
+    placements_before_ = placements_.stats();
+    tiles_before_ = renderer_->stats().tiles;
   }
   world_.update(observers_, tick, mode != Mode::Budgeted);
   // **A moving ground** (scatter.md, "A moving ground"): the sand the renderer draws stands at its
@@ -294,6 +292,44 @@ bool ViewWorld::update(const renderer::Camera& camera, u64 tick, Mode mode, u32 
   line.ruin_instances = placements_.stats().instances;
   line.instances += placements_.stats().instances;
   line.pairs += placements_.stats().pairs;
+  if (!data_->streamed.empty()) {
+    // What this update's placements cost, the difference of the run's counters across it (W81).
+    const world::PlacementTilesStats& now = placements_.stats();
+    const world::PlacementTilesStats& then = placements_before_;
+    const renderer::TileStats& t = renderer_->stats().tiles;
+    const renderer::TileStats& t0 = tiles_before_;
+    const auto ms = [](f64 ns) { return ns / 1.0e6; };
+    world::TilePlacementsFrame p;
+    // Every generator call that built a tile, re-stood ones included (`build` counts each once).
+    i64 build_ns = 0;
+    u64 built = 0;
+    for (u32 k = 0; k < world::k_placement_kinds; ++k) {
+      build_ns += now.build_ns[k] - then.build_ns[k];
+      built += now.built[k] - then.built[k];
+    }
+    p.built = static_cast<u32>(built);
+    p.build_ms = ms(static_cast<f64>(build_ns));
+    p.admit_ms = ms(static_cast<f64>(now.admit_ns - then.admit_ns));
+    p.tail_ms = ms(static_cast<f64>(now.tail_ns - then.tail_ns));
+    p.handed = static_cast<u32>(now.handed - then.handed);
+    p.tail_instances = now.instances;
+    p.sink_ms = ms(static_cast<f64>(now.sink_ns - then.sink_ns));
+    p.compare_ms = ms(t.compare_ns - t0.compare_ns);
+    p.layout_ms = ms(t.layout_ns - t0.layout_ns);
+    p.write_ms = ms(t.write_ns - t0.write_ns);
+    p.after_ms = ms(t.after_ns - t0.after_ns);
+    p.relayout_ms = ms(t.relayout_ns - t0.relayout_ns);
+    p.slots_written = t.slots_written - t0.slots_written;
+    p.compared = t.compared - t0.compared;
+    p.kept = static_cast<u32>(t.kept - t0.kept);
+    p.rewritten = static_cast<u32>(t.rewritten - t0.rewritten);
+    p.placed = static_cast<u32>((t.reused - t0.reused) + (t.appended - t0.appended));
+    p.freed = static_cast<u32>(t.freed - t0.freed);
+    p.compactions = static_cast<u32>(t.compactions - t0.compactions);
+    p.tight = static_cast<u32>(t.tight - t0.tight);
+    p.relayouts = static_cast<u32>(t.relayouts - t0.relayouts);
+    line.placements = std::move(p);
+  }
   log_text_ += write_json(schema::to_json(line), JsonWriteOptions{.pretty = false});
   log_text_ += '\n';
   return true;
