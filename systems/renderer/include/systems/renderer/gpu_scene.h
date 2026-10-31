@@ -300,6 +300,11 @@ class GpuScene {
   // of another mesh, or a translation off the world grid.
   bool place_instances(std::span<const u32> indices, std::span<const SceneInstance> placements,
                        std::string* error = nullptr);
+  // An instance's `gfx::InstanceDesc::flags` as the CPU's table holds them (0 past the table): what
+  // a move must keep but for the uniform-scale bit (the tests).
+  u32 instance_flags(u32 index) const noexcept {
+    return index < instance_table_.size() ? instance_table_[index].flags : 0u;
+  }
   u64 compactions() const noexcept { return compactions_; }
   // Where instance slot `slot` came from in the tail last handed over; ~0 for the load's own, a
   // hole and past the end. What a test compares a streamed scene's ids with a loaded one's through,

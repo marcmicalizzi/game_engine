@@ -5355,8 +5355,15 @@ bool GpuScene::place_instances(std::span<const u32> indices,
   for (usize i = 0; i < indices.size(); ++i) {
     gfx::InstanceDesc& entry = instance_table_[indices[i]];
     const Mat4& fit = data_->mesh_fit[placements[i].mesh];
+    // **A move changes the placement and nothing else**: `set_instance_placement` writes the flags
+    // from the scale alone, so every other bit — the species' caster policy, the static-structure
+    // bit — is kept across it and only the uniform-scale bit is the new placement's. Until
+    // 2026-10-31 a moved instance lost them (an untraced one became traced, a static form was built
+    // per frame); found by R111, whose tile hand-off moves instances.
+    const u32 kept = entry.flags & ~gfx::k_instance_uniform_scale;
     gfx::set_instance_placement(entry, mat4_from_transform(placements[i].transform) * fit,
                                 instance_translation(placements[i], fit));
+    entry.flags |= kept;
   }
   // **A move rides the next frame** (renderer.md, "Moving an instance"). In a dynamic scene the
   // slot is marked pending for every table set, as a tail block's slots are, so the next frame
