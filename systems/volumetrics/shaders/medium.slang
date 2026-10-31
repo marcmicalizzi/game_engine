@@ -389,6 +389,15 @@ bool cloud_slab(MediumParams* p, float3 dir, out float t0, out float t1) {
   return t1 > t0;
 }
 
+// Interleaved gradient noise (Jimenez 2014): a per-pixel offset in [0, 1) whose neighbours in any
+// 3 x 3 block cover the interval nearly evenly, so a filter as small as the upsample's averages the
+// march's sampling error away where a white hash leaves salt — a fixed screen pattern that the
+// clouds then drift through, the "static" (volumetrics.md, "The march"). No frame in it: the same
+// frame is the same bytes.
+float gradient_noise(float2 pixel) {
+  return frac(52.9829189 * frac(dot(pixel, float2(0.06711056, 0.00583715))));
+}
+
 float cloud_phase(float mu) {
   return lerp(hg_phase(mu, k_cloud_phase_back), hg_phase(mu, k_cloud_phase_forward), k_cloud_phase_mix);
 }
@@ -462,7 +471,7 @@ void cloud_march_main(uint3 id : SV_DispatchThreadID) {
   float t0, t1;
   if (cloud_slab(p, dir, t0, t1)) {
     const float step = (t1 - t0) / float(k_cloud_steps);
-    const float jitter = cloud_unit(cloud_hash(int(id.x), int(id.y), 0, 0x68e31da4u));
+    const float jitter = gradient_noise(float2(id.xy));
     const float mu = dot(p->sun.xyz, dir);
     const float phase = cloud_phase(mu);
     const float3 ambient = ambient_at(p);
@@ -509,18 +518,38 @@ void cloud_march_main(uint3 id : SV_DispatchThreadID) {
   ((uint2*)p->clouds)[id.y * cw + id.x] = pack_halves(float4(light * frame_exposure(p), transmittance));
 }
 
-// The march's texels at a full-resolution pixel of the view, bilinear.
+// The cubic B-spline's four weights at fraction f: a smoothing kernel, not an interpolating one.
+float4 bspline_weights(float f) {
+  const float g = 1.0 - f;
+  return float4(g * g * g, 4.0 - 6.0 * f * f + 3.0 * f * f * f, 4.0 - 6.0 * g * g + 3.0 * g * g * g,
+                f * f * f) /
+         6.0;
+}
+
+// The march's texels at a full-resolution pixel of the view: **a cubic B-spline over the 4 x 4
+// texels round it**, which upsamples and filters in one — the march's per-texel sampling error
+// (its offset and its 48 samples) averaged over its neighbours instead of drawn as 4 x 4-pixel
+// salt, as a bilinear upsample drew it (R112). No depth weights: every texel is the sky's.
 float4 clouds_at(MediumParams* p, uint2 pixel) {
-  const uint cw = uint(p->cloud_size.x);
-  const uint ch = uint(p->cloud_size.y);
-  const float2 c = clamp((float2(pixel) + 0.5) / 4.0 - 0.5, float2(0.0), float2(float(cw) - 1.0, float(ch) - 1.0));
-  const uint2 c0 = uint2(c);
-  const uint2 c1 = min(c0 + 1, uint2(cw - 1, ch - 1));
-  const float2 f = c - float2(c0);
+  const int cw = int(p->cloud_size.x);
+  const int ch = int(p->cloud_size.y);
+  const float2 c = (float2(pixel) + 0.5) / 4.0 - 0.5;
+  const float2 base = floor(c);
+  const float2 f = c - base;
+  const float4 wx = bspline_weights(f.x);
+  const float4 wy = bspline_weights(f.y);
   uint2* t = (uint2*)p->clouds;
-  const float4 a = lerp(unpack_halves(t[c0.y * cw + c0.x]), unpack_halves(t[c0.y * cw + c1.x]), f.x);
-  const float4 b = lerp(unpack_halves(t[c1.y * cw + c0.x]), unpack_halves(t[c1.y * cw + c1.x]), f.x);
-  return lerp(a, b, f.y);
+  float4 sum = float4(0.0);
+  for (int j = 0; j < 4; ++j) {
+    const int y = clamp(int(base.y) - 1 + j, 0, ch - 1);
+    float4 row = float4(0.0);
+    for (int i = 0; i < 4; ++i) {
+      const int x = clamp(int(base.x) - 1 + i, 0, cw - 1);
+      row += wx[i] * unpack_halves(t[y * cw + x]);
+    }
+    sum += wy[j] * row;
+  }
+  return sum;
 }
 
 // ---- fire (R85) --------------------------------------------------------------------------------
