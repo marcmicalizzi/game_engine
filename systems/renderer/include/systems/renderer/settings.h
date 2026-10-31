@@ -258,6 +258,11 @@ struct RenderSettings {
   // the picture to the same bytes, not as a mode. It decides what the scene's textures are, which
   // is why it lives here, where a change forces a rebuild.
   bool share_textures = true;
+  // **The far forest** (renderer.md, "The far forest"; ADR-0059): a streamed world's own trees past
+  // what its ring's tail draws, as their coarsest forms merged per world tile into prefix
+  // instances. Read at the load (`authored_rules` copies it into `AuthoredStreaming::far_forest`),
+  // so a change takes a reload. engine-view's `--far-forest on|off`.
+  bool far_forest = true;
   // The water's tier (`WaterQuality`). It decides what the material table holds — the volume
   // tier's optics after each water material, `gfx::set_water_optics` — which is uploaded once a
   // scene, so it lives here, where a change rebuilds the scene; the resolve module is the same.

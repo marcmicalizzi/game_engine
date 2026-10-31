@@ -116,6 +116,9 @@ const Row k_settings_rows[] = {
                "the per-frame build of rigid forms, to measure against and to test that the static "
                "structures trace the same bytes; the renderer.rt.static_forms tunable reaches it"),
     ENGINE_ROW(share_textures, "share_textures", ""),
+    ENGINE_ROW(far_forest, nullptr,
+               "read at the load (authored_rules), not per call: engine-view's --far-forest; "
+               "engine-host's render.load takes the default, on (renderer.md, \"The far forest\")"),
     ENGINE_ROW(water_quality, "water_quality", ""),
     ENGINE_ROW(time_rate, "time_rate", ""),
     ENGINE_ROW(time_rate_live, nullptr,
@@ -257,8 +260,8 @@ TEST_CASE("request: every RenderSettings and FrameDesc field says how a request 
                           s15, s16, s17, s18, s19, s20, s21, s22, s23, s24, s25, s26, s27, s28, s29,
                           s30, s31, s32, s33, s34, s35, s36, s37, s38, s39, s40, s41, s42, s43, s44,
                           s45, s46, s47, s48, s49, s50, s51, s52, s53, s54, s55, s56, s57, s58, s59,
-                          s60] = settings;
-  static_assert(std::size(k_settings_rows) == 61, "one row per RenderSettings field");
+                          s60, s61] = settings;
+  static_assert(std::size(k_settings_rows) == 62, "one row per RenderSettings field");
   // The same for `FrameDesc`: a new per-frame input is a call's parameter or a host's own, and
   // the row says which.
   renderer::FrameDesc frame;

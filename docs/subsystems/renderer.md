@@ -2121,6 +2121,139 @@ The world's tiles end at the world's outermost ring — 64 tiles, 2 km, on the e
 
 **Settled on 2026-10-03**, the two things the first version reported and did not hold. *A far tile's rest heights are its level's filtered answer* (`TerrainTileSet::build_tile` asks the source with the level's `filter_mm`, as the fields do): they were the ground at each point, so a far tile's padding was the gap between the point-sampled and the filtered ground (a metre on the test's dunes) and its DAG was simplified over heights it never draws; and a set built ahead, which keeps its finest lattice only where it was built, answered zeros past it — flat rest meshes, three metres of padding, and a grazing view whose rings drew 10,733 pixels differently from the procedural source's (how a far level's rest meshes reached the rings' pixels was not traced further once the cause was gone). Both sources now draw every view to the pixel, and every level's padding is zero while the sand stands still. *Between two far tiles of one level there is no seam*: the census's 0.137 radians against the inside's 0.086 at one grazing view was a crease of the surface that a border pair happened to cross (its pairs out there are a 4 m cell apart), and the test now holds the seam by the picture instead — the same far levels cut into tiles of six cells rather than four draw the same depth, normal and colour on every pixel of far ground both layouts draw clear of a ring and of a square's border, some 1,900 to 31,500 pixels a view and 40% of them on a border of the four-cell layout.
 
+## The far forest
+
+Roadmap R111 (2026-10-31), [ADR-0059](../adr/0059-the-far-forest-is-the-renderers-per-world-tile.md)
+(proposed). **A streamed world's own trees go on past its ring.** Inside the world's outer ring a
+tile's authored trees are their distance forms ([Authored instances per tile](#authored-instances-per-tile));
+past it nothing was drawn, so from the forest proof of concept's mountain top the forest ended in a
+line 1,280 m out, and the tiles the pair cap withholds inside the ring (242 in the owner's v23 run)
+were holes. The far forest draws every one of those tiles' trees as their coarsest form.
+
+**What it is.** When the world streams its authored instances and the host asks
+(`RenderSettings::far_forest`, which `authored_rules` copies into `AuthoredStreaming::far_forest`;
+engine-view's `--far-forest on|off`, on by default; engine-host's `render.load` takes the default),
+`stream_authored` takes every streamed instance and merges them **per world tile** into one rigid
+mesh (`far_forest.cpp`, `build_far_forest`): each instance's **coarsest form** — the clusters of its
+mesh's DAG whose parent error is terminal, which for a tree with an impostor chain is its whole-tree
+star of at most 16 planes ([flora](flora.md#the-impostor-chain)) and for any other mesh the top of
+its decimated chain — with the instance's fit and transform applied, the tile's corner its origin,
+one part per (mesh, material) and the clusters two-sided (no cone). Each far tile is a mesh after
+every other mesh and **an instance after the prefix**, at its corner: the far forest is its own run
+of the prefix, laid out once, and the prefix never moves (`SceneData::far_forest`,
+`FarForestData`, one `FarForestTile` a tile, sorted by key). What it takes is ruled by two tunables:
+an instance shorter than `renderer.far_forest.min_height_m` (4 m: the fitted mesh's height times its
+largest scale) takes none — **the understory does not fit**: a fern or a shrub is under 4 m and a
+pixel at 1.3 km, and the proof of concept's ground cover alone is 115,629 grass instances — and a
+mesh whose coarsest form passes `renderer.far_forest.max_triangles` (512) takes none: **a rock's
+coarsest rung fits**, at a few dozen triangles, and is taken like a tree's when it is that tall.
+
+**Why a star and not a sprite.** A camera-facing quad has no shader here, and the visibility buffer's
+masked variants need geometry whose coverage every rasterizer, the ray loops and the cascades compute
+alike ([Impostors are masked clusters](#impostors-are-masked-clusters)); a quad turned to the view
+would make the coverage a function of the view, which is R92's question and not this one's. The
+star is the engine's own far form, drawn by the masked variants with no new shader, its baked
+colour and normal atlases shaded by the frame's lights.
+
+**The hand-off: one world tile is one far tile.** A world tile is drawn by the ring's tail or by the
+far forest, never both and never neither. The tail's blocks are named by the world's tile key
+(`far_tile_key` mirrors `world::tile_key`), so `SceneRenderer::set_dynamic_instances`, after the
+GPU scene took the tail, asks the hand-off (`FarForestHandOff`, `far_forest_handoff.h`) which far
+tiles change: a far tile is drawn unless the tail holds a block of its key **with instances in it**.
+A tile the ring does not hold, and one it holds but withholds for the pair cap, is therefore the far
+forest's. The far instances that change move through `place_instances`, which marks them pending
+for every table set, so they ride **the same flip as the tail's change** and no frame draws a tile
+twice or not at all; a refused move is logged and leaves the far tiles as they were. The hand-off
+allocates nothing after load (its lists are sized for every tile).
+
+**Parked, not hidden.** A far tile the tail draws is moved a million kilometres below its corner
+(`k_far_park_depth_m`): outside every view's frustum, every cascade's (which reach toward the light,
+above) and every camera ray's, its pairs culled as any pair out of view is. The GPU scene has no
+per-instance switch, and its slot records — the terrain levels' way of drawing nothing in a slot —
+are another stage's file; parking needs neither.
+
+**Why one world tile and not ADR-0051's squares** (the ADR has the rest). The far ground has
+coarser levels because the ground is a lattice it can filter; the forest is a finite authored set,
+and its coarsest form is already the tree's own. Its hand-off has to be by world tile because the
+ring decides and withholds by world tile, so a far tile larger than a world tile would need its mesh
+rebuilt round a hole mask whenever the ring moved. One world tile is a few clusters, so the whole
+authored set fits in the prefix: below.
+
+**The cut thins it by measured errors.** A star's part carries a second level, the **cross**: the
+star's planes in two of its four directions a right angle apart (directions found from the planes'
+own normals; every triangle vertical and at least three directions, else it is not a star), held to
+the largest distance any vertex of a dropped plane lies from a kept plane — measured on the mesh,
+times the fit and the instance's largest scale, the largest over the tile's trees — the error
+flora.md holds the star itself to, measured the same way (`build_cluster_lod_hierarchy`, an
+element a tree, so two or three trees share a cluster and a group's sphere is theirs). Every other
+part is one level that never coarsens: what its mesh draws from that far. The cross is drawn where
+its error projects under the threshold — a 5 m crown's cross (3.5 m) past 3.6 km at 1080p — so the
+proof of concept's 2 km region draws stars; a world larger than its ring takes the cross. No
+coarser stand-in is invented: a coverage-keeping coarser form is the flora capability's to bake (R92,
+and for the conifers G83).
+
+**How it casts** (ADR-0059 decision 4). The far forest carries no caster policy and casts as any
+rigid instance: under traced shadows its drawn clusters are in the ray tracing chain and cast, and
+its trees shadow each other and the far ground; the cascades take it where their frusta reach it,
+which past the ring is the two farthest (their light-space boxes reach past their far splits). **Untraced was the intent, and is not possible
+today**: `GpuScene::place_instances` sets a moved instance's flags from its placement alone
+(`set_instance_placement`), so a policy's bits — and `k_instance_static_rt` — would be gone after
+the first hand-off and the far forest would be traced or not by when its tile last moved. The same
+loses an untraced actor's policy when a game moves it; the fix is that file's (reported).
+
+**The derived-data entry.** Each far tile is `<ddc>/far_forest/<key>.far` (`k_far_forest_version`),
+its DAG's streams and the part of every cluster, keyed by the version, the tile, the world's tile
+size and every merged instance's mesh form — its coarsest clusters' bytes and materials — fit and
+placement, so a changed tree, scale or position rebuilds its tile and nothing else. The materials are
+copied from the instances' meshes at every load, one per part, with their images' built-texture
+records and **none of their bytes**: the GPU scene finds the textures the species' own meshes
+uploaded, by key ([One upload per distinct image](#one-upload-per-distinct-image)), so a far tile
+uploads no texture and holds no image; a load with no derived-data cache has no records, and then
+the bytes go along. A tile is built by one job in a fixed order, so the entries are **the same bytes
+at any job count**.
+
+**The arithmetic.** A far tile's pairs are its clusters: a star is 16 quads, 32 triangles over 64
+vertices, so a cluster holds one tree's star (or two trees' crosses), and a tile of *n* starred
+trees is about *n* clusters at the finest and *n*/2 at the cross. On the renderer's test forest (120
+trees of 6–10 m over 160 m, 32 m tiles) it is 25 tiles, 4,860 triangles and 189 clusters — 189
+prefix pairs. **Over the proof of concept's v23 region** ([the measurement](../experiments/far-forest-2026-10-31.md)):
+of 243,808 streamed instances it takes 59,178 (184,593 are under 4 m — the understory, saplings,
+grass, litter and small deadwood — and 37 have a coarsest form past 512 triangles), from 251 meshes,
+into **1,812 far tiles of 2,761,477 triangles and 93,454 clusters**: 46.7 triangles and 1.58 pairs
+a tree (the conifers' decimated tops are heavier than a star), 0.56% of the visibility id's 2^24,
+where the same trees streamed are millions of pairs. The prefix grows from 64,011 to 157,465 pairs,
+and the device memory by 110–190 MiB as measured device-wide. A frame draws what the hand-off left
+at the corners — 771 to 1,136 far tiles, 30,000 to 56,000 pairs and 1.0 to 1.6 million triangles
+before the cull, from the three cameras measured.
+
+**What it measured** (2026-10-31, RTX 5090, `msvc-release`, 1920 × 1080, the owner's flags; a shared
+machine, others at 30–100% of the CPU at every run's start or end, so differences under about 0.3 ms
+are within the runs' spread). GPU median `--far-forest off` → `on`: `ridge` 5.54 → 5.74 ms (hw/csm)
+and 6.36 → 6.74 (rt/rt), `south-lake` 9.63 → 9.79 and 7.58 → 7.26, an overview across the region
+9.31 → 9.64 and 6.44 → 6.77. Under the cascaded maps the cost is the shadow pass (0.16–0.32 ms):
+the far forest is a rigid caster and the farthest cascades reach it; the camera's raster moved 0.02
+ms. **What it draws**: `ridge` looks up a slope inside the ring and sees no far tile (the same
+visible pairs; 36 sampled pixels differ, a far tree's shadow); `south-lake` gains trees on the
+mountain's flanks past the ring; the overview gains the whole band past the ring, the far slope and
+the mountain's flank, where it drew bare ground. **The pair cap's trade**: the prefix's extra pairs
+come off what the world's consumer admits — at the overview 46 outer-ring tiles were withheld with
+the far forest against 33 without, and the 46 are drawn as far tiles where the 33 were drawn by
+nothing. **A side effect**: 1,812 more prefix instances move every tail instance's slot, and the
+masked cross-fade's dither is seeded by the slot (R91), so a fading transition keeps other pixels of
+the same trees — scattered patches in every rasterized before-and-after, none of them far tiles.
+
+**What holds it.** `far_forest_tests.cpp`: the tile key is the world's, bit for bit; the hand-off
+draws exactly the tiles the tail does not hold with instances, parks and restores the right
+instances, commits only an accepted move, and an empty forest is no hand-off; a streamed load with
+the far forest off is the scene it was, and on builds a far tile per occupied world tile, each a mesh
+and a prefix instance at its corner with no cone and its part per cluster, crosses where the oak's
+star is, adds exactly its clusters to the prefix's pairs, writes entries that are **the same bytes
+with one load job and with six**, and a second load reads every tile back (hits, no misses, the same
+vertices); and on a GPU, with the ring holding the four tiles round the origin and a camera 230 m off
+the forest's edge: **937 pixels of far trees** where the scene without the far forest drew none (tree
+pixels 1,090 against 174), **no far pixel in a tile the tail holds**, none at all with every tile
+held, and more with none held (RTX 5090, `msvc-debug`, 2026-10-31).
+
 ## The sand close up
 
 The owner walked the erg for the first time on 2026-09-28 (`engine-view --walk`): the dunes' scale read, the sand did not — from eye height a smooth shaded surface with a vertex every 50 cm to 1.5 m. He asked for a sand texture and normals, and named the difficulty: **it has to look natural and it must not create seams.** A tiled image fails both on terrain this size: it repeats, and it has edges. So the detail is **a function, not an image**: wind ripples and grain evaluated per pixel in the resolve from the pixel's world (x, z), the scene's seed and the wind, with no texture coordinates, no tiles and nothing to meet at an edge (2026-09-29; the function is gfx's, "The ground's detail" in [gfx](gfx.md), `ground_detail.slang`).
@@ -2722,6 +2855,7 @@ defaults sets none, so every existing scene's instances are the bytes they were.
   swaying plants): GPU total 3.83 / 3.30 ms at 0 (off) / 100 m and the pool pass 0.097 / 0.093 ms,
   with the 50 m run (6.00 ms) taken beside a busy GPU (3% → 98%). Ring 0's trees are near enough
   that the option moves little there; it stays off until a view with swaying trees far off asks.
+- **The far forest carries no policy** ([The far forest](#the-far-forest), ADR-0059): a moved instance's flags are its placement's alone (`GpuScene::place_instances`), so a policy on an instance the hand-off moves would not survive its first move; it casts as a rigid tree does.
 - `renderer.flora.caster_policy=false` casts every species as a tree does, for a before-and-after.
   `FloraStats::casters_nearest`, `casters_rest` and `untraced` count the instances by policy, when
   the instances change.
@@ -2871,6 +3005,7 @@ What stays a host's: where the world's tiles come from (engine-view's world ring
 - `systems/renderer/caster_volume.h` — `CasterVolume`, `CasterBounds`, `fit_directional_caster_volume`, `fit_point_caster_volume`, `caster_volume_contains_sphere`, `closed_frustum`: the volumes a shadow caster outside the camera's frustum is kept in, fit per view on the CPU (see [Ray-traced](#ray-traced)).
 - `systems/renderer/reference.h` — `ReferenceSettings` (including `world_time_s` and `sky_time_s`), `ReferenceFrame`, `ReferenceProgress`, `reference_available` (which takes the `gfx::Device`, so its refusal can quote the verdict), `ReferenceRenderer` (see [Reference renderer](#reference-renderer)).
 - `systems/renderer/sky.h` — `ExposureRequest`, `FrameSky`, `SkyPass`, `sky_star_cell`, `build_star_cells`, `star_irradiance`, and the exposure's tunables `sky_exposure_compensation_tunable`, `sky_exposure_knee_tunable`, `sky_exposure_slope_tunable` ([The sky](#the-sky)); beside it `FrameDesc::exposure`, `SceneRenderer::sky`, `frame_sky` and `sky_params_address`, `SkyStats` in `Stats::sky`, `FrameStats::gpu_sky`, `RenderSettings::exposure_ev` and `exposure_ev100`, `SceneDesc::sky` and `SceneData::sky`, `frame_lighting`'s sky overload, and `FlightOptions::sky_start_s` and `world_rate`, and `clocks.h`'s `WorldClocks`, `day_length_of_rate` and `sun_rate_of_day`.
+- `systems/renderer/far_forest.h` — `far_tile_key`, `FarForestTile`, `FarForestStats`, `FarForestData`, `k_far_park_depth_m`; `systems/renderer/far_forest_handoff.h` — `FarForestHandOff`, `far_tile_placement` ([The far forest](#the-far-forest)).
 
 ## What engine-view still owns
 

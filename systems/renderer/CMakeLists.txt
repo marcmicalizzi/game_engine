@@ -39,7 +39,7 @@ engine_module(NAME renderer LAYER systems
           src/terrain_time.cpp
           src/terrain_rings.cpp src/terrain_tiles.cpp src/sky.cpp src/request.cpp
           src/overlay.cpp src/scene_water.cpp src/scene_flora.cpp src/flora_motion.cpp
-          src/flora_poser.cpp src/scene_fire.cpp)
+          src/flora_poser.cpp src/scene_fire.cpp src/far_forest.cpp)
 # The renderer's own shader: the output encode after the frame passes (frame_pass.h,
 # shaders/frame_encode.slang), which includes domain/gfx's display.slang by its path.
 engine_shaders(NAME renderer SOURCES shaders/frame_encode.slang)
@@ -82,6 +82,9 @@ set(_renderer_tests tests/renderer_tests.cpp tests/reference_tests.cpp tests/str
                     # A scene's `.flora.json` mesh through the mesh-generator registry: built and
                     # read back where the flora capability is, refused with its sentence where not.
                     tests/flora_scene_tests.cpp tests/authored_scene_tests.cpp tests/cooked_load_tests.cpp
+                    # The far forest (R111): the load's per-tile meshes, their cache entries and
+                    # their bytes at any job count, the hand-off, and on a GPU the trees past the ring.
+                    tests/far_forest_tests.cpp
                     # A tree's impostor chain drawn, against the full tree from a baked view (R89).
                     tests/impostor_view_tests.cpp
                     # Trees move: the flora stage's poses on the CPU, and a palm drawn through it.

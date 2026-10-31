@@ -480,6 +480,9 @@ constexpr const char* k_usage =
     "  --world-instances <how>  a streamed scene's own instances: tiles (default), each tile's\n"
     "                   trees in the distance form its ring allows (renderer.md, \"Authored\n"
     "                   instances per tile\"); whole, every one in the scene's prefix as before\n"
+    "  --far-forest <on|off>  a streamed scene's own trees past what the ring's tail draws, as\n"
+    "                   their coarsest forms merged per world tile (renderer.md, \"The far\n"
+    "                   forest\"); on by default\n"
     "  --world-log <f>  --world: one engine.world.TileFrame per update (tiles, events, the ring's\n"
     "                   microseconds, each consumer's share), then the run's summary\n"
     "  --world-handover <f>  --world offscreen: fly the path again, untimed, and at every tile that\n"
@@ -3554,6 +3557,30 @@ int run_offscreen(Options& options, Interactive& interactive) {
           stats.deform_overflow_entries,
           static_cast<unsigned long long>(u64{stats.deform_overflow_vertices} * 3 * sizeof(f32)));
     }
+    // The far forest (renderer.md, "The far forest"): what the load built and what the last
+    // hand-off draws of it, one line beside the cascades' for a measurement to quote.
+    if (!scene_data.far_forest.empty()) {
+      const renderer::FarForestData& far = scene_data.far_forest;
+      const renderer::FarForestHandOff& handoff = view_renderer.far_forest();
+      u64 drawn_pairs = 0;
+      u64 drawn_triangles = 0;
+      for (u32 t = 0; t < far.tiles.size(); ++t) {
+        if (!handoff.drawn(t)) continue;
+        drawn_pairs += scene_data.parts[far.tiles[t].mesh].cluster_count;
+        drawn_triangles += far.tiles[t].triangles;
+      }
+      std::fprintf(stderr,
+                   "engine-view: far forest tiles=%u trees=%u meshes=%u triangles=%llu "
+                   "pairs=%llu small=%u heavy=%u untextured=%u hits=%u misses=%u build_ms=%.1f "
+                   "drawn_tiles=%u drawn_pairs=%llu drawn_triangles=%llu\n",
+                   far.stats.tiles, far.stats.trees, far.stats.meshes,
+                   static_cast<unsigned long long>(far.stats.triangles),
+                   static_cast<unsigned long long>(far.stats.clusters), far.stats.skipped_small,
+                   far.stats.skipped_heavy, far.stats.skipped_textures, far.stats.cache_hits,
+                   far.stats.cache_misses, far.stats.build_ms, handoff.drawn_count(),
+                   static_cast<unsigned long long>(drawn_pairs),
+                   static_cast<unsigned long long>(drawn_triangles));
+    }
     summary.device = device.adapter().name;
     summary.frames = frames;
     summary.repeats = measured ? repeats : 0;
@@ -4464,6 +4491,14 @@ int run_view(int argc, char** argv) {
         return k_exit_usage;
       }
       options.world_instances = how == "tiles";
+    } else if (a == "--far-forest") {
+      std::string how;
+      if (!next_value(argc, argv, i, a, how)) return k_exit_usage;
+      if (how != "on" && how != "off") {
+        std::fprintf(stderr, "engine-view: --far-forest takes on or off, not %s\n", how.c_str());
+        return k_exit_usage;
+      }
+      options.settings.far_forest = how == "on";
     } else if (a == "--world-log") {
       if (!next_value(argc, argv, i, a, options.world_log)) return k_exit_usage;
     } else if (a == "--world-handover") {

@@ -606,6 +606,19 @@ against all far slices. These replace the single-plane groups and unsliced star 
 historical R89/R91 measurements below. They preserve volume across viewing angles without a
 runtime camera-facing billboard or a new shader; high overhead views remain an approximation.
 
+**What the far forest reads** (R111, 2026-10-31; [renderer](renderer.md#the-far-forest),
+[ADR-0059](../adr/0059-the-far-forest-is-the-renderers-per-world-tile.md)). Past a streamed world's
+ring the renderer merges each world tile's trees into one mesh of their **coarsest form** — the
+clusters of the container's DAG whose parent error is terminal, which for a tree with this chain is
+the star and nothing else (the bark's last level is the empty one at the star's error) — with the
+star's material and its atlases as the container has them, found again by their built textures' keys,
+so the far form adds no bake and no texture. It finds the star's four directions from the planes'
+own normals and draws, past its measured error, a cross of two of them (the farthest vertex of a
+dropped plane from a kept one, as the star's own error is measured here). A conifer has no chain
+yet (G83), so the far forest takes its decimated top, which is heavier and not a star; anything
+under `renderer.far_forest.min_height_m` (4 m) is left out. Nothing here changed for it:
+`k_flora_version` and the solver's bytes are as they were.
+
 The build host now supplies encoded images through `MeshGeneratorHosts::read_image`. The CPU
 bake samples actual base-colour RGB and leaf alpha, with sRGB decoding, bilinear repeat sampling,
 material factors, bark UV scale and the material's alpha cutoff. Its coverage measurement uses

@@ -318,6 +318,7 @@ bool SceneRenderer::create(const gfx::Device& device, GpuScene& scene,
   scene_ = &scene;
   // The scene's fires (fire.h): its own, and the props' that a tail may place.
   fires_.reset(scene.data());
+  far_forest_.reset(&scene.data().far_forest);
   frame_fires_.clear();
   frame_fires_.reserve(k_max_fires);
   resolved_ = resolved;
@@ -1251,6 +1252,18 @@ bool SceneRenderer::set_dynamic_instances(std::span<const SceneInstance> tail,
   // The props' fires stand where the tail now places them (fire.h): a game lights a fire by placing
   // the prop. The whole tail, because the change is the whole tail.
   fires_.place(tail);
+  // **The far forest's hand-off** (renderer.md, "The far forest"): every world tile the tail now
+  // draws parks its far instance, every other one stands at its corner. The moves ride the same
+  // flip as the tail's change, so no frame draws a tile twice or not at all. A refusal leaves the
+  // far tiles as they were drawn, which is the old hand-off over the new tail: said, not hidden.
+  if (far_forest_.active() && far_forest_.hand_over(blocks) > 0) {
+    std::string why;
+    if (scene_->place_instances(far_forest_.indices(), far_forest_.placements(), &why)) {
+      far_forest_.commit();
+    } else {
+      ENGINE_LOG_WARN(log_renderer, "far forest hand-off refused", log::field("error", why));
+    }
+  }
   // **The one wait**: a change that grew the stride or the instance capacity of a scene with the
   // deformed-vertex pool or the ray tracing chain makes their per-entry and per-instance buffers
   // again, which every frame in flight reads by address (renderer.md, "Instances that come and
