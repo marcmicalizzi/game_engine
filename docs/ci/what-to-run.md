@@ -20,6 +20,14 @@ gated one at a time to find which; that is the price of a failure and not of eve
 follow-up commit that changes only a test or a page is gated by the tests it changes, in the
 presets that build them, not by the whole gate again.
 
+**An agent's worktree is removed at the merge.** A session's agents work in throwaway worktrees under
+`.claude/worktrees/`, and nothing removes them: on 2026-11-01 about a hundred of them, merged weeks
+before, still held their builds. A persistent worktree per agent was tried and the harness refuses
+it (an isolated agent may write only in its own worktree; one launched from the repository root may
+not switch into another), so the rule is the cheap one: whoever merges a branch removes its worktree
+once the branch is on `main` (`git worktree remove --force <path>`, then `git worktree prune`; the
+branch stays), and a worktree whose branch was never merged is listed for the owner, not removed.
+
 ## What "affected" means
 
 `tools/dev.ps1 test -Affected [-Base main]` (the rule is `tools/lib/Affected.psm1`, tested by
