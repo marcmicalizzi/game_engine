@@ -199,6 +199,7 @@ bool fly_camera_path(SceneRenderer& renderer, const CameraPath& path, const Flig
     f64 frame_ms = 0.0;
     u64 allocations = 0;
     u64 buffers = 0;
+    scene::FrameWorld world;  // with `measure_world`: the host's turn before it (W82)
   };
   Vector<Submission> submissions;
   submissions.reserve((options.warmup + frames) * repeats + options.frames_in_flight);
@@ -229,7 +230,9 @@ bool fly_camera_path(SceneRenderer& renderer, const CameraPath& path, const Flig
     const std::pair<u64, u64> turn = counted();
     // The host's turn, between two frames: a streamed world updates its ring from this camera and
     // hands the renderer its instances (FlightOptions::before_frame). It is in the frame's wall
-    // time and not in its CPU milliseconds, which are the renderer's own; the hook measures itself.
+    // time and not in its CPU milliseconds, which are the renderer's own; the record's `world`
+    // names it (W82), its whole measured here and its parts by the hook.
+    scene::FrameWorld world;
     if (options.before_frame != nullptr) {
       FlightStep step;
       step.repeat = repeat;
@@ -237,7 +240,12 @@ bool fly_camera_path(SceneRenderer& renderer, const CameraPath& path, const Flig
       step.warmup = warmup;
       step.recorded = recorded;
       step.camera = camera_path_frame(path, f, frames);
+      step.world = options.measure_world ? &world : nullptr;
+      const i64 hook_started = time::monotonic_ns();
       if (!options.before_frame(options.before_frame_context, step, error)) return false;
+      world.total_ms = static_cast<f64>(time::monotonic_ns() - hook_started) / 1.0e6;
+      world.other_ms = world.total_ms - (world.update_ms + world.ground_ms + world.props_ms +
+                                         world.ticks_ms + world.input_ms);
     }
     renderer.begin_frame();
     const std::pair<u64, u64> begun = counted();
@@ -257,6 +265,7 @@ bool fly_camera_path(SceneRenderer& renderer, const CameraPath& path, const Flig
           record.frame_ms = done.frame_ms;
           record.allocations = static_cast<u32>(std::min<u64>(done.allocations, ~0u));
           record.buffers = static_cast<u32>(std::min<u64>(done.buffers, ~0u));
+          if (options.measure_world) record.world = done.world;
           out.records.push_back(std::move(record));
         }
       }
@@ -269,6 +278,7 @@ bool fly_camera_path(SceneRenderer& renderer, const CameraPath& path, const Flig
     frame.world_time_s = options.world_rate * static_cast<f64>(f) / 60.0;
     frame.sky_time_s = options.sky_start_s + options.sun_rate * static_cast<f64>(f) / 60.0;
     submissions.push_back(Submission{repeat, f, recorded});
+    submissions[submissions.size() - 1].world = world;
     const std::pair<u64, u64> before_submit = counted();
 #if ENGINE_DEBUG
     (void)mem::pause_allocation_capture(false);

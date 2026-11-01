@@ -9,6 +9,7 @@
 #include <core/json/json.h>
 #include <core/log/log.h>
 #include <core/schema/json_reflect.h>
+#include <core/time/time.h>
 #include <foundation/io/vfs.h>
 #include <systems/renderer/capture.h>
 #include <systems/renderer/flythrough.h>
@@ -255,15 +256,57 @@ void ViewWorld::close_log() {
   log_text_.clear();
 }
 
+ViewWorld::Counters ViewWorld::counters() const noexcept {
+  Counters c;
+  c.placements = placements_.stats();
+  if (renderer_ != nullptr) c.tiles = renderer_->stats().tiles;
+  return c;
+}
+
+void ViewWorld::add_parts(const Counters& then, scene::FrameWorld& out) const noexcept {
+  if (renderer_ == nullptr) return;
+  const world::PlacementTilesStats& p = placements_.stats();
+  const world::PlacementTilesStats& p0 = then.placements;
+  const renderer::TileStats& t = renderer_->stats().tiles;
+  const renderer::TileStats& t0 = then.tiles;
+  const auto ms = [](f64 ns) { return ns / 1.0e6; };
+  out.tiles_built += static_cast<u32>(p.tiles_built - p0.tiles_built);
+  out.tiles_ms += ms(static_cast<f64>(p.tiles_ns - p0.tiles_ns));
+  out.admit_ms += ms(static_cast<f64>(p.admit_ns - p0.admit_ns));
+  out.withheld = p.withheld;
+  out.pending = p.pending;
+  out.commit_ms += ms(static_cast<f64>(p.tail_ns - p0.tail_ns));
+  out.handover_ms += ms(t.change_ns - t0.change_ns);
+  out.compare_ms += ms(t.compare_ns - t0.compare_ns);
+  out.layout_ms += ms(t.layout_ns - t0.layout_ns);
+  out.write_ms += ms(t.write_ns - t0.write_ns);
+  out.slots_written += static_cast<u32>(t.slots_written - t0.slots_written);
+  out.compactions += static_cast<u32>(t.compactions - t0.compactions);
+  out.tight += static_cast<u32>(t.tight - t0.tight);
+  out.after_ms += ms(t.after_ns - t0.after_ns);
+  out.fires_ms += ms(t.fires_ns - t0.fires_ns);
+  out.far_ms += ms(t.far_ns - t0.far_ns);
+  out.place_ms += ms(t.place_ns - t0.place_ns);
+  out.relayout_ms += ms(t.relayout_ns - t0.relayout_ns);
+}
+
 bool ViewWorld::update(const renderer::Camera& camera, u64 tick, Mode mode, u32 repeat, u32 frame,
                        bool recorded, std::string* error) {
+  last_update_ms_ = 0.0;
   if (renderer_ == nullptr) return true;
+  const i64 started = time::monotonic_ns();
   if (mode == Mode::Restart) {
     world_.clear(tick);
     compact_next_ = true;
   }
   observers_.clear();  // kept, so a frame's update allocates nothing for it
   observers_.add(camera.position, 1.0f);
+  // **The placements' build budget** (W82; world.md, "The consumers"): a moving camera's update
+  // builds at most the tunable's tiles, nearest first, and the rest of a burst waits for the next
+  // updates; a restart or a complete fill builds every tile it holds.
+  // The handover pass builds every tile in its event, since it measures each tile's pop there.
+  placements_.begin_update(mode == Mode::Budgeted && !whole_builds_ ? world::max_builds_tunable()
+                                                                    : 0u);
   {
     // The world log is the measurement's and not the frame loop's: what it allocates (a line a
     // frame, the ring's times for the summary) a flight leaves out of the frame-loop count.
@@ -273,6 +316,8 @@ bool ViewWorld::update(const renderer::Camera& camera, u64 tick, Mode mode, u32 
     tiles_before_ = renderer_->stats().tiles;
   }
   world_.update(observers_, tick, mode != Mode::Budgeted);
+  // The due tiles a burst left, on an update whose events did not touch the placements.
+  if (!data_->streamed.empty()) (void)placements_.end_update();
   // **A moving ground** (scatter.md, "A moving ground"): the sand the renderer draws stands at its
   // surface time, and the placements standing on it follow, a few tiles an update, nearest first
   // (`world::PlacementTiles::restand`). Nothing when the ground does not move.
@@ -282,6 +327,9 @@ bool ViewWorld::update(const renderer::Camera& camera, u64 tick, Mode mode, u32 
   // A consumer that could not take a tile says so in its own log line and counts it; the frame
   // draws what the scene has, so nothing here fails the run. `error` is for the hook's contract.
   (void)error;
+  // The update's own wall time, before the log's line is written (and the log's `before` above,
+  // a copy of a few counters, inside it).
+  last_update_ms_ = static_cast<f64>(time::monotonic_ns() - started) / 1.0e6;
   const renderer::FlightBookkeeping bookkeeping;
   world::TileFrame line = log_.after(world_, repeat, frame, recorded);
   if (log_path_.empty()) return true;
@@ -456,6 +504,11 @@ bool ViewWorld::fly_handovers(const renderer::CameraPath& camera_path, u32 frame
     if (!placed && count > 0) blocks.push_back(renderer::DynamicBlock{key, first, count});
     return std::span<const renderer::DynamicBlock>(blocks.data(), blocks.size());
   };
+  whole_builds_ = true;
+  struct Restore {
+    bool& flag;
+    ~Restore() { flag = false; }
+  } restore{whole_builds_};
   for (u32 f = 0; f < frames && ok; ++f) {
     renderer::FrameDesc frame;
     frame.camera = renderer::camera_path_frame(camera_path, f, frames);

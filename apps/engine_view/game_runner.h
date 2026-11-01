@@ -265,6 +265,9 @@ class GameRunner {
   void set_graphics_display(std::string_view name, bool hdr) noexcept;
   // Observational start-to-start timing; never advances simulation or persisted state.
   void note_render_frame(f64 interval_ms) noexcept;
+  // The wall time the module's ticks have taken on the frame's thread so far, nanoseconds: what a
+  // frame record's `world.game_ms` is the difference of across the frame's ticks (W82).
+  i64 tick_ns() const noexcept;
   void set_graphics_size(u32 width, u32 height) noexcept;
   // Loads the module through `hotload::ModuleHost` (refusals in the host's own words), resolves
   // its `game_tick`, and restores the state file when there is one. `map` is the session's, which

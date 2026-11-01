@@ -20,6 +20,17 @@ tunables::Int ring_max_activations{"world.ring.max_activations", 8, 0, 1 << 16,
 tunables::Int ring_max_deactivations{"world.ring.max_deactivations", 16, 0, 1 << 16,
                                      "Tiles the ring deactivates or moves outward per update, "
                                      "farthest first. 0 is unlimited"};
+// W82 (docs/experiments/forest-load-in-2026-10-31.md, "W82"): the v24 forest builds a tile in 2.6
+// to 3.5 ms on the frame's thread, and a dash of a kilometre in under a second activated 577 in one
+// update, 1.5 s of one frame. Four a commit is 13-22 ms at that cost and above what a steady flight
+// at 100 m/s activates (about one a frame), so only a burst waits; eight measured worse (106 frames
+// over 33 ms along the owner's flight against four's 29, twice the tight compactions), since its
+// commits pass a frame's time on their own.
+tunables::Int placements_max_builds{"world.placements.max_builds", 4, 0, 1 << 16,
+                                    "Tiles the placements consumer builds per commit of a budgeted "
+                                    "update, innermost ring first, then nearest; the rest draw "
+                                    "what they held (or nothing) until a later commit. 0 is "
+                                    "unlimited"};
 
 bool in_rings(u8 mask, u8 ring) noexcept { return ring < 8 && ((mask >> ring) & 1u) != 0; }
 
@@ -27,6 +38,7 @@ bool in_rings(u8 mask, u8 ring) noexcept { return ring < 8 && ((mask >> ring) & 
 
 u32 max_activations_tunable() noexcept { return static_cast<u32>(ring_max_activations.get()); }
 u32 max_deactivations_tunable() noexcept { return static_cast<u32>(ring_max_deactivations.get()); }
+u32 max_builds_tunable() noexcept { return static_cast<u32>(placements_max_builds.get()); }
 
 bool World::configure(const RingParams& params, const char** error) {
   if (!valid_ring_params(params, error)) return false;

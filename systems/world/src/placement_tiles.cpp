@@ -252,7 +252,9 @@ std::span<const u8> PlacementTiles::tail_tags() const {
 // exactly what the whole read put on the tile. False when a generator refused the tile (a kit whose
 // footprints do not fit it); what did build is kept.
 bool PlacementTiles::build(TileCoord tile, u8 ring, TileBlock& out, u32 entries, bool for_query) {
+  const i64 build_started = time::monotonic_ns();
   out.ring = ring;
+  if (!for_query) out.due = out.fresh = false;  // its instances are its ring's from here
   out.instances.clear();
   out.tags.clear();
   out.buildings = 0;
@@ -332,6 +334,8 @@ bool PlacementTiles::build(TileCoord tile, u8 ring, TileBlock& out, u32 entries,
                                     renderer::k_max_pairs, end)
                   ? end
                   : renderer::k_max_pairs + 1u;
+  ++stats_.tiles_built;
+  stats_.tiles_ns += time::monotonic_ns() - build_started;
   return ok;
 }
 
@@ -395,6 +399,7 @@ u32 PlacementTiles::restand(f64 surface_time_s, u32 budget) {
   ranks_.clear();
   for (u32 i = 0; i < tiles_.size(); ++i) {
     if (tiles_.value_at(i).stood == stand_time_) continue;
+    if (tiles_.value_at(i).due) continue;  // built at the surface's time when its turn comes
     Rank rank;
     rank.ring = tiles_.value_at(i).ring;
     rank.score = ring_ != nullptr ? ring_->score_of(tile_of_key(tiles_.key_at(i))) : 0.0f;
@@ -418,13 +423,43 @@ u32 PlacementTiles::restand(f64 surface_time_s, u32 budget) {
   }
   stats_.restood += built;
   stats_.restand_ns += time::monotonic_ns() - start;
-  commit(this);
+  commit_tail();  // the update's own commit built its budget's due tiles already
   return built;
 }
 
 bool PlacementTiles::take(const TileEvent& event) {
   const u64 key = tile_key(event.tile);
   TileBlock* held = tiles_.find_value(key);
+  // A tile no entry occupies is never built: its build would come out empty and be let go.
+  if (held == nullptr && !occupied(event.tile)) return true;
+  if (build_budget_ != 0) {
+    // **Built at a commit, within its budget** (W82, `build_due`): a held tile keeps drawing what
+    // it holds until then, and a new one is held empty and drawn as nothing.
+    if (held != nullptr) {
+      held->ring = event.to;
+      held->due = true;
+      ++stats_.deferred;
+      return true;
+    }
+    ++stats_.deferred;
+    TileBlock block;
+    if (TileBlock* spare = spare_tiles_.find_value(key)) {
+      block = std::move(*spare);
+    } else if (!free_blocks_.empty()) {
+      block = std::move(free_blocks_.back());
+      free_blocks_.pop_back();
+    }
+    block.instances.clear();
+    block.tags.clear();
+    block.buildings = 0;
+    block.pairs = 0;
+    block.ring = event.to;
+    block.withheld = false;
+    block.due = true;
+    block.fresh = true;
+    tiles_.insert_or_assign(key, std::move(block));
+    return true;
+  }
   if (held != nullptr) {
     const bool built = build(event.tile, event.to, *held);
     if (!built) ++stats_.failures;
@@ -492,10 +527,52 @@ void PlacementTiles::deactivate(void* context, const TileEvent& event) {
 // nearest first — then in tile order, admitted while the scene stays within its pair budget and
 // none after the first that does not fit, so every tile drawn outranks every tile withheld. A
 // function of the tiles held, their rings and the observers, like the ring itself.
+// The due tiles a commit builds (W82): the first `build_budget_` of them in the pair budget's order
+// — innermost ring, nearest, tile order — or all of them with no budget. A build that puts nothing
+// on its tile lets the tile go, as an event's build does.
+void PlacementTiles::build_due() {
+  ranks_.clear();
+  for (u32 i = 0; i < tiles_.size(); ++i) {
+    if (!tiles_.value_at(i).due) continue;
+    const u64 key = tiles_.key_at(i);
+    Rank rank;
+    rank.ring = tiles_.value_at(i).ring;
+    rank.score = ring_ != nullptr ? ring_->score_of(tile_of_key(key)) : 0.0f;
+    rank.key = key;
+    rank.index = i;
+    ranks_.push_back(rank);
+  }
+  if (ranks_.empty()) return;
+  std::sort(ranks_.begin(), ranks_.end(), [](const Rank& a, const Rank& b) {
+    if (a.ring != b.ring) return a.ring < b.ring;
+    if (a.score != b.score) return a.score < b.score;
+    return a.key < b.key;
+  });
+  const u32 count =
+      build_budget_ == 0 || build_budget_ > ranks_.size() ? ranks_.size() : build_budget_;
+  emptied_.clear();
+  for (u32 r = 0; r < count; ++r) {
+    TileBlock& block = tiles_.value_at(ranks_[r].index);
+    if (!build(tile_of_key(ranks_[r].key), block.ring, block)) ++stats_.failures;
+    if (block.instances.empty()) emptied_.push_back(ranks_[r].key);
+  }
+  for (const u64 key : emptied_) {
+    TileBlock* block = tiles_.find_value(key);
+    if (block == nullptr) continue;
+    recycle(key, std::move(*block));
+    tiles_.erase(key);
+  }
+}
+
 void PlacementTiles::admit() {
   ranks_.clear();
   for (u32 i = 0; i < tiles_.size(); ++i) {
     const u64 key = tiles_.key_at(i);
+    // A tile held and never built is not drawn and takes nothing of the budget (W82).
+    if (tiles_.value_at(i).fresh) {
+      tiles_.value_at(i).withheld = true;
+      continue;
+    }
     Rank rank;
     rank.ring = tiles_.value_at(i).ring;
     rank.score = ring_ != nullptr ? ring_->score_of(tile_of_key(key)) : 0.0f;
@@ -542,6 +619,20 @@ void PlacementTiles::admit() {
 
 void PlacementTiles::commit(void* context) {
   auto* self = static_cast<PlacementTiles*>(context);
+  self->committed_ = true;
+  self->build_due();
+  self->commit_tail();
+}
+
+u32 PlacementTiles::end_update() {
+  if (committed_ || stats_.pending == 0) return 0;
+  const u64 before = stats_.tiles_built;
+  commit(this);
+  return static_cast<u32>(stats_.tiles_built - before);
+}
+
+void PlacementTiles::commit_tail() {
+  PlacementTiles* self = this;
   // Every active tile's instances, in tile order: the map is sorted by key, so a scene streamed to
   // a set of tiles has one tail — one numbering of its pairs — whatever order the tiles came in.
   const i64 admit_start = time::monotonic_ns();
@@ -555,9 +646,12 @@ void PlacementTiles::commit(void* context) {
     stats.ring_tiles[r] = stats.ring_instances[r] = stats.ring_pairs[r] = 0;
     stats.ring_withheld[r] = 0;
   }
+  u32 pending = 0;
   for (u32 i = 0; i < self->tiles_.size(); ++i) {
     const TileBlock& block = self->tiles_.value_at(i);
     const u32 ring = block.ring < k_max_rings ? block.ring : k_max_rings - 1;
+    pending += block.due ? 1u : 0u;
+    if (block.fresh) continue;  // not built yet: neither drawn nor withheld (W82)
     if (block.withheld) {
       ++stats.ring_withheld[ring];
       continue;
@@ -580,6 +674,7 @@ void PlacementTiles::commit(void* context) {
     self->write_tail();
   }
   self->stats_.buildings = buildings;
+  self->stats_.pending = pending;
   self->stats_.instances = instances;
   self->stats_.pairs = self->tail_pairs_;
   self->stats_.tail_ns += time::monotonic_ns() - tail_start;

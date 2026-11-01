@@ -16,6 +16,8 @@
 #include <test_paths.h>
 #include <test_temp_dir.h>
 
+#include <algorithm>
+#include <cmath>
 #include <cstdlib>
 #include <fstream>
 #include <string>
@@ -305,5 +307,123 @@ TEST_CASE("engine-view: a streamed world's hand-over reads only the tiles it cha
   for (u32 i = 0; i < a.width * a.height * 4; ++i)
     differing += a.pixels[i] != b.pixels[i] ? 1u : 0u;
   CHECK(differing == 0);
+}
+TEST_CASE(
+    "engine-view: a streamed world's flight names the turn between frames, and a commit "
+    "builds no more tiles than the budget") {
+  // W82 (apps.md, "The frame record's world"; world.md, "The consumers"): a flight's record carries
+  // `world`, the host's turn before the frame — the world's update and what it did inside it, the
+  // ground's frame, the rest — measured whole and split into disjoint parts that sum to it, each
+  // nested where the record says, and the turn and the renderer's own milliseconds both fit in the
+  // wall time to the next frame. Until 2026-11-01 the record named none of it, and the owner's v24
+  // flight spent 1.5 s of a 1.6 s frame outside every section it had. The budget: with
+  // `world.placements.max_builds` at 1, no frame's update builds more than one tile, where the
+  // town's columns come back two tiles at a time, and the second waits as due.
+  const test::TempDir tmp("engine_view_world_turn");
+  std::string error;
+  REQUIRE_MESSAGE(
+      ruins::write_synthetic_kit(tmp.file("kit"), ruins::SyntheticKitOptions{}, &error, nullptr),
+      error);
+  std::string streamed = scene_text(true);
+  streamed.insert(
+      streamed.size() - 1,
+      R"(,"world":{"tile_size":24,"rings":[{"radius":1.5},{"radius":3},{"radius":5}]})");
+  REQUIRE(write_text(tmp.file("streamed.json"), streamed));
+  REQUIRE(write_text(tmp.file("flight.json"),
+                     R"({"format":"engine.camera-path.v1","name":"east-and-back","fps":10,"keys":[)"
+                     R"({"time":0,"position":[22,9,30],"target":[-2,1,-4],"fov_deg":60},)"
+                     R"({"time":3,"position":[262,9,30],"target":[238,1,-4],"fov_deg":60},)"
+                     R"({"time":6,"position":[22,9,30],"target":[-2,1,-4],"fov_deg":60}]})"));
+  const Run run = view({"--scene",
+                        tmp.file("streamed.json"),
+                        "--camera-path",
+                        tmp.file("flight.json"),
+                        "--offscreen",
+                        "--frames",
+                        "60",
+                        "--width",
+                        "320",
+                        "--height",
+                        "180",
+                        "--shadows",
+                        "off",
+                        "--ddc",
+                        tmp.file("ddc"),
+                        "--repeat",
+                        "1",
+                        "--benchmark",
+                        tmp.file("frames.jsonl"),
+                        "--tunable",
+                        "world.placements.max_builds=1"});
+  if (run.exit_code == 3) {
+    MESSAGE("engine-view unavailable here: " << run.output);
+    return;
+  }
+  REQUIRE_MESSAGE(run.exit_code == 0, run.output);
+  std::ifstream lines(tmp.file("frames.jsonl"), std::ios::binary);
+  std::string line;
+  struct Frame {
+    u64 frame = 0;
+    f64 frame_ms = 0.0;
+    f64 cpu_ms = 0.0;
+    f64 total = 0.0;
+    u64 tiles = 0;
+  };
+  std::vector<Frame> frames;
+  u64 built = 0;
+  u64 most = 0;
+  u64 pending_seen = 0;
+  f64 handover = 0.0;
+  while (std::getline(lines, line)) {
+    JsonValue r;
+    REQUIRE_MESSAGE(parse_json(line, r).ok, line);
+    const JsonValue* w = r.find("world");
+    if (r.find("frame") == nullptr) continue;  // the summary
+    REQUIRE_MESSAGE(w != nullptr, line);
+    REQUIRE(w->is_object());
+    auto num = [](const JsonValue* o, const char* name) {
+      f64 v = 0.0;
+      const JsonValue* x = o->find(name);
+      if (x != nullptr) (void)x->get_f64(v);
+      return v;
+    };
+    const f64 total = num(w, "total_ms");
+    const f64 parts = num(w, "update_ms") + num(w, "ground_ms") + num(w, "props_ms") +
+                      num(w, "ticks_ms") + num(w, "input_ms");
+    CAPTURE(line);
+    CHECK(total >= 0.0);
+    CHECK(num(w, "other_ms") >= -0.001);  // the named parts lie inside the measured turn
+    CHECK(std::abs(total - (parts + num(w, "other_ms"))) < 0.001);
+    // Nested: the placements' and the renderer's shares inside the update, the hand-over's inside
+    // the hand-over.
+    CHECK(num(w, "tiles_ms") + num(w, "admit_ms") + num(w, "commit_ms") + num(w, "handover_ms") <=
+          num(w, "update_ms") + 0.01);
+    CHECK(num(w, "compare_ms") + num(w, "layout_ms") + num(w, "write_ms") + num(w, "after_ms") +
+              num(w, "fires_ms") + num(w, "far_ms") + num(w, "relayout_ms") <=
+          num(w, "handover_ms") + 0.01);
+    const u64 tiles = static_cast<u64>(num(w, "tiles_built"));
+    built += tiles;
+    pending_seen = std::max(pending_seen, static_cast<u64>(num(w, "pending")));
+    handover += num(w, "handover_ms");
+    frames.push_back(Frame{static_cast<u64>(num(&r, "frame")), num(&r, "frame_ms"),
+                           num(&r, "cpu_ms"), total, tiles});
+  }
+  REQUIRE(frames.size() == 60);
+  std::sort(frames.begin(), frames.end(),
+            [](const Frame& a, const Frame& b) { return a.frame < b.frame; });
+  // The turn before frame f and its renderer's milliseconds lie inside the wall time from f's
+  // start to f + 1's.
+  for (usize i = 0; i + 1 < frames.size(); ++i) {
+    CAPTURE(frames[i].frame);
+    // The first frame's update is the restart's complete fill, which the budget does not bound.
+    if (frames[i + 1].frame != 0) most = frames[i + 1].tiles > most ? frames[i + 1].tiles : most;
+    CHECK(frames[i + 1].frame_ms + 0.001 >= frames[i].total + frames[i].cpu_ms);
+  }
+  MESSAGE("flight: " << built << " tiles built, at most " << most << " in a frame; hand-over "
+                     << handover << " ms");
+  CHECK(built > 0);
+  CHECK(handover > 0.0);
+  CHECK(most <= 1);
+  CHECK(pending_seen > 0);
 }
 #endif

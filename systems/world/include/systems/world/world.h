@@ -73,6 +73,9 @@ inline constexpr const char* k_determinism = "hashed";
 // `world.ring.max_deactivations`), read once by whoever builds a `RingParams`.
 u32 max_activations_tunable() noexcept;
 u32 max_deactivations_tunable() noexcept;
+// The placements consumer's per-commit build budget (`world.placements.max_builds`, W82;
+// `PlacementTiles::set_build_budget`), read once an update by whoever drives one.
+u32 max_builds_tunable() noexcept;
 
 // One consumer's row. Every function pointer may be null. `activate` and `change_ring` return
 // false to say the tile could not be taken (counted, and logged by the world); the tile stays

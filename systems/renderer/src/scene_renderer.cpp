@@ -1251,19 +1251,27 @@ bool SceneRenderer::set_dynamic_instances(std::span<const SceneInstance> tail,
   retired_.clear();
   // The props' fires stand where the tail now places them (fire.h): a game lights a fire by placing
   // the prop. The whole tail, block by block, since a block may name its own instances (W81).
+  const i64 fires_started = time::monotonic_ns();
   fires_.place(tail, blocks);
+  const i64 far_started = time::monotonic_ns();
+  stats_.tiles.fires_ns += static_cast<f64>(far_started - fires_started);
   // **The far forest's hand-off** (renderer.md, "The far forest"): every world tile the tail now
   // draws parks its far instance, every other one stands at its corner. The moves ride the same
   // flip as the tail's change, so no frame draws a tile twice or not at all. A refusal leaves the
   // far tiles as they were drawn, which is the old hand-off over the new tail: said, not hidden.
   if (far_forest_.active() && far_forest_.hand_over(blocks) > 0) {
     std::string why;
-    if (scene_->place_instances(far_forest_.indices(), far_forest_.placements(), &why)) {
+    const i64 place_started = time::monotonic_ns();
+    const bool placed =
+        scene_->place_instances(far_forest_.indices(), far_forest_.placements(), &why);
+    stats_.tiles.place_ns += static_cast<f64>(time::monotonic_ns() - place_started);
+    if (placed) {
       far_forest_.commit();
     } else {
       ENGINE_LOG_WARN(log_renderer, "far forest hand-off refused", log::field("error", why));
     }
   }
+  stats_.tiles.far_ns += static_cast<f64>(time::monotonic_ns() - far_started);
   // **The one wait**: a change that grew the stride or the instance capacity of a scene with the
   // deformed-vertex pool or the ray tracing chain makes their per-entry and per-instance buffers
   // again, which every frame in flight reads by address (renderer.md, "Instances that come and

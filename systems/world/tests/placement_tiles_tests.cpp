@@ -487,3 +487,72 @@ TEST_CASE(
   CHECK(kept > 20);
   CHECK(fresh > 0);
 }
+
+TEST_CASE(
+    "world ruins: a build budget builds a jump's tiles a few a commit, innermost first, and ends "
+    "on "
+    "the tail an unbudgeted consumer holds") {
+  // W82 (world.md, "The consumers"; docs/experiments/forest-load-in-2026-10-31.md, "W82"): a camera
+  // that jumps into the town activates every tile of it in one update, and without a budget the
+  // commit builds them all on the frame's thread (577 tiles, 1.5 s, on the owner's v24 dash). With
+  // one, each commit builds at most the budget — the innermost ring and the nearest first — the
+  // rest wait as due tiles drawn as nothing, a camera that stops still gets them (`end_update`),
+  // and the tail it ends on is the unbudgeted consumer's, tile for tile, in the same order.
+  Fixture f;
+  PlacementTilesConfig config;
+  config.tile_size = 24.0f;
+  PlacementTiles whole;
+  PlacementTiles budgeted;
+  std::string error;
+  REQUIRE_MESSAGE(whole.create(f.scene, config, &error), error);
+  REQUIRE_MESSAGE(budgeted.create(f.scene, config, &error), error);
+  Sink a;
+  Sink b;
+  whole.set_sink(&Sink::take, &a);
+  budgeted.set_sink(&Sink::take, &b);
+  World wa(rings());
+  World wb(rings());
+  wa.add_consumer(whole.consumer());
+  wb.add_consumer(budgeted.consumer());
+  whole.set_ring(&wa.ring());
+  budgeted.set_ring(&wb.ring());
+  wa.update(at(5000.0f, 0.0f), 0);  // far from the town: nothing held
+  wb.update(at(5000.0f, 0.0f), 0);
+  REQUIRE(whole.stats().tiles_built == 0);
+
+  constexpr u32 k_budget = 3;
+  wa.update(at(12.0f, 12.0f), 1);
+  const u64 jump = whole.stats().tiles_built;
+  REQUIRE(jump > 4 * k_budget);  // the jump's tiles, all built by its one commit
+  budgeted.begin_update(k_budget);
+  wb.update(at(12.0f, 12.0f), 1);
+  CHECK(budgeted.end_update() == 0);  // the world's own commit built this update's
+  CHECK(budgeted.stats().tiles_built == k_budget);
+  CHECK(budgeted.stats().pending == jump - k_budget);
+  CHECK(budgeted.stats().deferred == jump);
+  // The nearest first: the camera's own tile is among them, and every drawn tile is in ring 0.
+  CHECK(!budgeted.tile_instances(TileCoord{0, 0}).empty());
+  CHECK(budgeted.stats().ring_tiles[0] == k_budget);
+  CHECK(b.last.size() < a.last.size());
+
+  // The camera stands still: no event touches the consumer, and each update's `end_update` builds
+  // the next budget's worth until none is due.
+  u32 updates = 1;
+  u64 tick = 2;
+  while (budgeted.stats().pending > 0 && updates < 100) {
+    budgeted.begin_update(k_budget);
+    const u64 before = budgeted.stats().tiles_built;
+    wb.update(at(12.0f, 12.0f), tick++);
+    const u32 built = budgeted.end_update();
+    CHECK(built <= k_budget);
+    CHECK(budgeted.stats().tiles_built - before == built);
+    ++updates;
+  }
+  CHECK(budgeted.stats().pending == 0);
+  CHECK(updates == (jump + k_budget - 1) / k_budget);
+  CHECK(budgeted.stats().instances == whole.stats().instances);
+  CHECK(same(std::span<const renderer::SceneInstance>(b.last.data(), b.last.size()),
+             std::span<const renderer::SceneInstance>(a.last.data(), a.last.size())));
+  MESSAGE("a jump of " << jump << " tiles, built " << k_budget << " a commit over " << updates
+                       << " updates");
+}

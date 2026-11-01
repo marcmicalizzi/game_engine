@@ -1500,6 +1500,56 @@ struct FrameWalk @version(2) {
   terrain_stage: u32 = 0
 }
 
+/// **The host's time between frames, by what it did** (W82; docs/subsystems/apps.md, "The frame
+/// record's world"): everything engine-view does on the frame's thread outside the renderer's
+/// `begin_frame` and `submit_frame`, wall milliseconds. `total_ms` is measured whole, and the
+/// named parts below it are disjoint and sum to it with `other_ms`, the remainder: a window's
+/// `cpu_ms` is `total_ms` plus `submit_ms`; a flight's and an offscreen replay's `cpu_ms` is the
+/// renderer's own, and `total_ms` is the host's turn before the frame, in `frame_ms` beside it.
+///
+/// The parts: the streamed world's update (`update_ms`: its ring, the tiles' building and the
+/// commit, `world::World::update` and the moving ground's re-standing), the drawn ground's frame
+/// (`ground_ms`, `TerrainMotion::frame`, which offscreen waits for a rebuild), the game's props
+/// handed over (`props_ms`), the session's ticks (`ticks_ms`: the walker's steps and the game's
+/// calls, of which `game_ms` is the module's tick), the window's input (`input_ms`). Inside
+/// `update_ms`, and not added to the sum again: the tiles the placements built and their wall time
+/// (`tiles_built`, `tiles_ms`), the pair budget's admission over every tile held (`admit_ms`, and
+/// `withheld` tiles after it), the commit's runs (`commit_ms`) and the renderer taking them
+/// (`handover_ms`, `SceneRenderer::set_dynamic_instances`). Inside `handover_ms`: the blocks
+/// compared, laid out, written (`compare_ms`, `layout_ms`, `write_ms`, with `slots_written`,
+/// `compactions` and how many of them `tight`), what follows the tables (`after_ms`), the props'
+/// fires (`fires_ms`), the far forest's hand-off (`far_ms`, of which `place_ms` is
+/// `GpuScene::place_instances`), and a relayout's wait for the device (`relayout_ms`).
+struct FrameWorld @version(1) {
+  total_ms: f64 = 0
+  update_ms: f64 = 0
+  ground_ms: f64 = 0
+  props_ms: f64 = 0
+  ticks_ms: f64 = 0
+  game_ms: f64 = 0
+  input_ms: f64 = 0
+  other_ms: f64 = 0
+  tiles_built: u32 = 0
+  tiles_ms: f64 = 0
+  admit_ms: f64 = 0
+  withheld: u32 = 0
+  /// Tiles held whose build waits for a later commit's budget (`world.placements.max_builds`).
+  pending: u32 = 0
+  commit_ms: f64 = 0
+  handover_ms: f64 = 0
+  compare_ms: f64 = 0
+  layout_ms: f64 = 0
+  write_ms: f64 = 0
+  slots_written: u32 = 0
+  compactions: u32 = 0
+  tight: u32 = 0
+  after_ms: f64 = 0
+  fires_ms: f64 = 0
+  far_ms: f64 = 0
+  place_ms: f64 = 0
+  relayout_ms: f64 = 0
+}
+
 /// One frame of a flythrough benchmark, or of an interactive session measured with
 /// `engine-view --interactive --benchmark`. One line of the `.jsonl` a run writes.
 ///
@@ -1511,7 +1561,9 @@ struct FrameWalk @version(2) {
 /// (AGENTS.md, "No allocations in the frame loop in steady state").
 ///
 /// Version 11: `walk`, a walking session's frame (`FrameWalk`).
-struct FrameRecord @version(12) {
+///
+/// Version 13: `world`, the host's time between frames by what it did (`FrameWorld`, W82).
+struct FrameRecord @version(13) {
   /// Which pass over the path, from 0.
   repeat: u32 = 0
   /// The path frame, from 0; an interactive session's frame, from 0.
@@ -1639,6 +1691,9 @@ struct FrameRecord @version(12) {
   buffers: u32 = 0 @since(10)
   /// With a walker: where the frame's ticks spent wall time; null without one.
   walk: FrameWalk? = null @since(11)
+  /// engine-view's time between frames, by what it did (see `FrameWorld`); null from a host that
+  /// does not measure it (`render.benchmark`).
+  world: FrameWorld? = null @since(13)
 }
 
 /// What a flight's frame loop allocated on the frame's thread, over its recorded frames (every
