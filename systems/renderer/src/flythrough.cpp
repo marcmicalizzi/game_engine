@@ -199,7 +199,7 @@ bool fly_camera_path(SceneRenderer& renderer, const CameraPath& path, const Flig
     f64 frame_ms = 0.0;
     u64 allocations = 0;
     u64 buffers = 0;
-    scene::FrameWorld world;  // with `measure_world`: the host's turn before it (W82)
+    scene::FrameWorld world{};  // with `measure_world`: the host's turn before it (W82)
   };
   Vector<Submission> submissions;
   submissions.reserve((options.warmup + frames) * repeats + options.frames_in_flight);
