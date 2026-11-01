@@ -554,7 +554,7 @@ float4 clouds_at(MediumParams* p, uint2 pixel) {
 
 // ---- fire (R85) --------------------------------------------------------------------------------
 //
-// volumetrics.md, "Fire". Each fire of the frame (renderer::FrameFire, its light already in the
+// volumetrics.md, "Fire" (R113 reworks the flame's top). Each fire of the frame (renderer::FrameFire, its light already in the
 // resolve's array) is three things here: **a flame**, an emissive, weakly absorbing volume of
 // seeded noise rising over the base radius and height at the puffing's cadence — marched per pixel
 // in the apply while it is wider than about two froxel columns (`k_fire_march_widths`), a smooth
@@ -570,7 +570,7 @@ struct MediumFire {
   float4 flame;     // x its height, y absorption /m, z the noise's rise (cells, mod the period), w cell
   float4 emission;  // rgb the flame's emission /m at density 1 (raw, not exposed), w the march's share
   float4 light;     // xyz the light (frame space), w its reach
-  float4 light_rgb; // rgb its colour times its intensity at this clock (raw)
+  float4 light_rgb; // rgb its colour times its intensity at this clock (raw), w the flame's top, of its height
   float4 smoke;     // x extinction /m at the top, y rise m/s, z spread per metre, w fade length m
   float4 wind;      // xz the wind at the fire (m/s), y the smoke's start radius, w the noise's cell up
   uint4 ids;        // x the seed, y 1 when the apply marches this flame, zw 0
@@ -578,7 +578,12 @@ struct MediumFire {
 
 static const float k_fire_noise_period = 64.0;  // the noise's lattice wraps on y, in cells
 static const float k_flame_reach = 1.6;         // the flame's bounds, of its radius across
-static const float k_flame_top = 1.3;           // and of its height up
+// The field's envelope reaches zero here, of the flame's height (R113). Above it the noise's term
+// has the same amplitude at every height, so the field has no top of its own: it is windowed to
+// nothing between here and the flame's top, `MediumFire::light_rgb.w` (volumetrics.h `flame_top`:
+// the end of McCaffrey's intermittent region, 1.5 of the height for the campfire), where the
+// bounds end too.
+static const float k_flame_envelope_end = 1.12;
 
 // Value noise whose lattice wraps at `period` cells on y only: the flame's rise is an offset the
 // CPU reduced to the period, so the noise is seamless at any clock.
@@ -600,12 +605,15 @@ float fire_noise(float3 q, int period, uint seed) {
 
 // The flame's density at a point, [0, 1]: an envelope narrow at the very base, widest a fifth of
 // the way up and tapering to the top, whose axis sways with height, carved by two octaves of noise
-// rising through it — little at the base, tongues higher up.
+// rising through it — little at the base, tongues higher up — and windowed to nothing between the
+// envelope's end and the flame's top, so a tongue the noise carries above the envelope fades out
+// rather than ending at the bounds (R113).
 float flame_density(MediumFire f, float3 x) {
   const float3 d = x - f.base.xyz;
   const float height = f.flame.x;
   const float h = d.y / height;
-  if (h < -0.05 || h > k_flame_top) return 0.0;
+  const float top = f.light_rgb.w;
+  if (h < -0.05 || h > top) return 0.0;
   const float radius = f.base.w;
   const float reach = k_flame_reach * radius;
   if (dot(d.xz, d.xz) > reach * reach) return 0.0;
@@ -618,9 +626,11 @@ float flame_density(MediumFire f, float3 x) {
   const float2 sway = (float2(fire_noise(qs, period, seed + 2u), fire_noise(qs, period, seed + 3u)) - 0.5) *
                       (1.1 * radius * saturate(h));
   const float r = length(d.xz - sway) / radius;
-  const float envelope = (0.75 + 0.25 * smoothstep(0.0, 0.2, h)) * pow(saturate(1.12 - h), 0.8);
+  const float envelope =
+      (0.75 + 0.25 * smoothstep(0.0, 0.2, h)) * pow(saturate(k_flame_envelope_end - h), 0.8);
   const float shape = envelope - r + (n - 0.5) * (0.35 + 0.9 * saturate(h));
-  return saturate(shape * 1.6) * smoothstep(-0.05, 0.03, h);
+  return saturate(shape * 1.6) * smoothstep(-0.05, 0.03, h) *
+         (1.0 - smoothstep(k_flame_envelope_end, top, h));
 }
 
 // The flame's emission at a point (raw): as the density's square, so the core outshines the
@@ -786,7 +796,7 @@ void fire_sources(MediumParams* p, float3 x, float3 dir, float t0, float t1, flo
 }
 
 // Where the eye's ray along `dir` is inside a flame's bounds (a vertical cylinder from just below
-// its base to `k_flame_top` of its height), before `limit`.
+// its base to its top, `light_rgb.w` of its height, where the field is nothing), before `limit`.
 bool flame_chord(MediumFire f, float3 dir, float limit, out float t0, out float t1) {
   t0 = 0.0;
   t1 = 0.0;
@@ -808,7 +818,7 @@ bool flame_chord(MediumFire f, float3 dir, float limit, out float t0, out float 
     hi = (-b + s) / a;
   }
   const float y0 = f.base.y - 0.05 * f.flame.x;
-  const float y1 = f.base.y + k_flame_top * f.flame.x;
+  const float y1 = f.base.y + f.light_rgb.w * f.flame.x;
   if (abs(dir.y) > 1.0e-7) {
     const float ta = y0 / dir.y;
     const float tb = y1 / dir.y;

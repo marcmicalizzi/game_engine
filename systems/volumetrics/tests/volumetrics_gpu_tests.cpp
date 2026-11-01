@@ -549,6 +549,96 @@ TEST_CASE("volumetrics: the marched flame hands over to the froxels' blob smooth
   CHECK(n.ids[1] == 0u);
 }
 
+TEST_CASE("volumetrics: the flame's top is the end of McCaffrey's intermittent region") {
+  // R113: the field has no top of its own above its envelope (1.12 h), so R112's bounds, a
+  // cylinder to 1.3 h, cut a tongue the noise carried up flat. The top is now where McCaffrey's
+  // (1979, NBSIR 79-1910) intermittent region ends, z / Q^(2/5) = 0.2 m/kW^(2/5), with Q from
+  // Heskestad's mean luminous height, L = 0.235 Q^(2/5) - 1.02 D, taken as the scene's height.
+  const f32 r = 0.32f;
+  const f32 h = 0.85f;
+  const f32 top = flame_top(r, h);
+  const f64 q25 = (static_cast<f64>(h) + 1.02 * 2.0 * static_cast<f64>(r)) / 0.235;
+  MESSAGE("the campfire: Q^(2/5) "
+          << q25 << " (Q " << std::pow(q25, 2.5) << " kW), the continuous flame ends at "
+          << 0.08 * q25 << " m, the mean flame at " << h << " m (z/Q^(2/5) "
+          << static_cast<f64>(h) / q25 << "), the intermittent region at " << 0.2 * q25
+          << " m = " << top << " h");
+  CHECK(top == doctest::Approx(0.2 * q25 / static_cast<f64>(h)).epsilon(1e-4));
+  CHECK(top == doctest::Approx(1.505).epsilon(2e-3));
+  CHECK(top > 1.3f);  // R112's cylinder ended below it
+  // The mean luminous flame stands inside the intermittent region, where Heskestad puts it.
+  CHECK(static_cast<f64>(h) / q25 > 0.08);
+  CHECK(static_cast<f64>(h) / q25 < 0.2);
+  // A fire outside Heskestad's range keeps a window wider than the envelope's end and a bounded
+  // cost: a wide, low fire is clamped at 2 h, a thin, tall one at 1.25 h.
+  CHECK(flame_top(1.0f, 0.5f) == k_flame_top_max);
+  CHECK(flame_top(0.01f, 1.0f) == k_flame_top_min);
+  CHECK(flame_top(0.0f, 1.0f) == k_flame_top_min);
+  CHECK(k_flame_top_min > k_flame_envelope_end);
+  // The shader reads it from the fire's record, one number for the window and the bounds.
+  renderer::FrameFire fire;
+  fire.radius_m = r;
+  fire.height_m = h;
+  const MediumFire f = medium_fire(fire, WorldPos{}, MediumWind{}, 0.0);
+  CHECK(f.light_rgb.w == top);
+  // The far blob is a Gaussian of the flame's light 0.26 h up and 0.17 h of spread: at the flame's
+  // top it is 7 spreads out, so it holds nothing the near flame's window has taken (the near
+  // flame's own moments with and without the flare above the envelope agree to 0.01%, the page's
+  // table), and a hard cut of it there would only draw the line the owner saw.
+  const f64 spreads = (static_cast<f64>(top) - static_cast<f64>(k_flame_blob_centre)) /
+                      static_cast<f64>(k_flame_blob_up);
+  MESSAGE("the blob's tail at the flame's top: " << spreads << " spreads");
+  CHECK(spreads > 7.0);
+  CHECK(std::exp(-0.5 * spreads * spreads) < 1e-9);
+}
+
+TEST_CASE(
+    "volumetrics: the flame's field has no top of its own above its envelope, so it is windowed") {
+  // R113. Above the envelope's end (1.12 h) the noise's term has the same amplitude at every
+  // height, so the density the shader would compute without a window is positive at every height
+  // where a tongue stands; R112's march ended it at 1.3 h, in a plane. A lap of the campfire's
+  // noise (seed 7; the lattice wraps every 64 cells at 3.75 cells/s), the field over a grid of
+  // points in its bounds, at heights from the old top to past the new.
+  renderer::FrameFire fire;
+  fire.radius_m = 0.32f;
+  fire.height_m = 0.85f;
+  fire.seed = 7;
+  const f32 top = flame_top(fire.radius_m, fire.height_m);
+  const f64 lap =
+      static_cast<f64>(k_flame_noise_period) / (static_cast<f64>(flame_rise_m_s(fire.radius_m)) /
+                                                static_cast<f64>(k_flame_cell_up * fire.radius_m));
+  f32 peak_over_old = 0.0f;  // the highest density found between R112's top and the new one
+  f32 peak_at_top = 0.0f;    // ... in the last 0.03 h under the new top
+  f32 worst_excess = 0.0f;   // the most any sample's density exceeds the window's value there
+  f32 beyond = 0.0f;         // the highest at or above the top
+  for (u32 k = 0; k < 64; ++k) {
+    const MediumFire f =
+        medium_fire(fire, WorldPos{}, MediumWind{}, lap * static_cast<f64>(k) / 64.0);
+    for (f32 hh = 1.20f; hh <= top + 0.5f; hh += 0.02f) {
+      const f32 t =
+          std::clamp((hh - k_flame_envelope_end) / (top - k_flame_envelope_end), 0.0f, 1.0f);
+      const f32 window = 1.0f - t * t * (3.0f - 2.0f * t);
+      for (f32 px = -0.5f; px <= 0.5f; px += 0.04f) {
+        for (f32 pz = -0.5f; pz <= 0.5f; pz += 0.04f) {
+          const f32 d = flame_density(f, Vec3{px, hh * fire.height_m, pz});
+          worst_excess = std::max(worst_excess, d - window);
+          if (hh >= top) beyond = std::max(beyond, d);
+          if (hh > 1.3f && hh < top) peak_over_old = std::max(peak_over_old, d);
+          if (hh > top - 0.03f && hh < top) peak_at_top = std::max(peak_at_top, d);
+        }
+      }
+    }
+  }
+  MESSAGE("the field over R112's top (1.3 h) peaks at "
+          << peak_over_old << ", in the last 0.03 h under the new top (" << top << " h) at "
+          << peak_at_top << ", at and above it at " << beyond
+          << "; the most any sample exceeds the window is " << worst_excess);
+  CHECK(peak_over_old > 0.1f);   // a tongue crosses the old plane: R112 cut it flat
+  CHECK(beyond == 0.0f);         // nothing at or above the top
+  CHECK(worst_excess <= 1e-6f);  // and nowhere more than the window lets through
+  CHECK(peak_at_top < 0.03f);    // so it is nothing under the top: no plane at the new one either
+}
+
 TEST_CASE("volumetrics: a froxel holds the smoke's mean over its depth, wherever its slices fall") {
   renderer::FrameFire fire;
   fire.base = WorldPos{0.0, 0.0, 12.0};
@@ -704,8 +794,8 @@ TEST_CASE("volumetrics: a fire's flame and glow are where the fire is and nowher
   MediumOptions without;
   without.fires = false;
 
-  // At 10 m the flame is marched per pixel (R112: sixty widths of its bounds), so the fire counts as
-  // near; the froxels' Gaussian glow begins past the march distance.
+  // At 10 m the flame is marched per pixel (R112: sixty widths of its bounds), so the fire counts
+  // as near; the froxels' Gaussian glow begins past the march distance.
   {
     const FireView view = look_at_fire(rig.data, fire, 10.0);
     CapturedFrame on, off, again;
@@ -862,6 +952,113 @@ TEST_CASE("volumetrics: a flame does not vanish or jump as the eye moves away fr
     CHECK(hi / lo < (start < 20.0 ? 1.1 : 2.5));
     CHECK(worst < 0.25);
   }
+}
+
+TEST_CASE(
+    "volumetrics: a flare above the flame's envelope fades out, it is not cut at R112's bounds") {
+  Gpu gpu;
+  if (!gpu.ok) {
+    MESSAGE("skipped: " << gpu.why);
+    return;
+  }
+  // R113, the owner's v24 walk: "at the top the flame clips, so we get a horizontal line as the
+  // flame flares up a bit and it doesn't continue beyond it". The field above its envelope (1.12 h)
+  // has the same noise amplitude at every height, so a tongue there ran to the march's bounds, a
+  // cylinder to 1.3 h, and ended in a plane. A flame alone, from the side at 2 m with the eye at
+  // the old top's height so a picture's row is a height above the base, through one lap of its
+  // noise (the lattice wraps every 64 cells): the light the flame adds in the rows between the old
+  // top and the new, which was nothing. How fast the flare falls is the CPU mirror's test above
+  // (`flame_density`): the picture's exposure clips a bright tongue, so a row's light is not
+  // proportional to the density and says only that the flare is there and the bounds hold it.
+  Rig probe;
+  REQUIRE_MESSAGE(probe.build(gpu.device, false, ShadowMode::Off), probe.error);
+  FireDesc fire;
+  fire.position = probe.data.center + DVec3{0.0, 0.1 * static_cast<f64>(probe.data.radius), 0.0};
+  fire.radius_m = 0.3f;
+  fire.height_m = 0.8f;
+  fire.intensity = 0.12f;  // as the hand-over's test: no pixel clips, so a row's light is radiance
+  fire.flicker = 0.0f;
+  fire.smoke_density = 0.0f;
+  Rig rig;
+  rig.fire = &fire;
+  rig.lights = false;
+  REQUIRE_MESSAGE(rig.build(gpu.device, false, ShadowMode::Off), rig.error);
+  MediumDesc desc;
+  desc.dust = false;
+  desc.plumes = false;
+  MediumOptions without;
+  without.fires = false;
+
+  const f64 height = static_cast<f64>(fire.height_m);
+  const f64 old_top = 1.3 * height;  // R112's cylinder
+  const f64 new_top = static_cast<f64>(flame_top(fire.radius_m, fire.height_m)) * height;
+  const f64 distance = 2.0;
+  FrameDesc frame;
+  frame.camera.position = fire.position + DVec3{0.0, old_top, distance};
+  frame.camera.target = fire.position + DVec3{0.0, old_top, 0.0};
+  frame.camera.fov_y = 60.0f * 3.14159265f / 180.0f;
+  frame.camera.znear = 0.05f;
+  const f64 tan_half = std::tan(0.5 * 60.0 * 3.14159265358979 / 180.0);
+  // A row's height above the fire's base, where the ray crosses the fire's axis.
+  auto row_height = [&](u32 y) {
+    return old_top + (1.0 - (static_cast<f64>(y) + 0.5) / k_height * 2.0) * tan_half * distance;
+  };
+  // The light the flame adds in the rows from `lo` to `hi` metres above its base.
+  auto band = [&](const CapturedFrame& on, const CapturedFrame& off, f64 lo, f64 hi) {
+    f64 sum = 0.0;
+    for (u32 y = 0; y < k_height; ++y) {
+      const f64 m = row_height(y);
+      if (m < lo || m >= hi) continue;
+      for (u32 x = 0; x < k_width; ++x) {
+        const u32 i = (y * k_width + x) * 4;
+        for (u32 c = 0; c < 3; ++c)
+          sum += std::max(0.0, linear(on.color[i + c]) - linear(off.color[i + c]));
+      }
+    }
+    return sum;
+  };
+
+  CapturedFrame off;
+  REQUIRE_MESSAGE(shoot_medium(rig, gpu.device, desc, without, frame, off), rig.error);
+  MediumPass pass;
+  REQUIRE_MESSAGE(pass.create(gpu.device, rig.renderer, rig.data, desc, {}, &rig.error), rig.error);
+  const f64 cells_per_s = static_cast<f64>(flame_rise_m_s(fire.radius_m)) /
+                          static_cast<f64>(k_flame_cell_up * fire.radius_m);
+  const f64 lap = static_cast<f64>(k_flame_noise_period) / cells_per_s;
+  const u32 phases = 64;
+  const f64 edge = 0.04;  // metres: the rows beside the old top
+  f64 most_upper = 0.0, best_ratio = 0.0, most_beyond = 0.0, most_below = 0.0;
+  u32 upper_phases = 0;
+  for (u32 k = 0; k < phases; ++k) {
+    FrameDesc at = frame;
+    at.world_time_s = lap * static_cast<f64>(k) / phases;
+    CapturedFrame on;
+    REQUIRE_MESSAGE(shoot(rig, at, on), rig.error);
+    const f64 upper = band(on, off, old_top, new_top);
+    const f64 below = band(on, off, old_top - edge, old_top);
+    const f64 above = band(on, off, old_top, old_top + edge);
+    const f64 beyond = band(on, off, new_top + 0.02, 10.0);
+    most_upper = std::max(most_upper, upper);
+    most_below = std::max(most_below, below);
+    most_beyond = std::max(most_beyond, beyond);
+    if (upper > 0.0) ++upper_phases;
+    // Where the flare crosses the old top, the light beside it above is a share of the light below.
+    if (below > 0.0 && above / below > best_ratio) best_ratio = above / below;
+    MESSAGE("  phase " << k << ": below the old top " << below << ", above " << above
+                       << ", up to the new top " << upper << ", beyond it " << beyond);
+  }
+  pass.destroy();
+  MESSAGE("old top " << old_top << " m, new top " << new_top << " m over the base; the flame added "
+                     << most_upper << " in the band between them at its best of " << phases
+                     << " phases (" << upper_phases << " of them above zero), " << most_beyond
+                     << " beyond the new top; the best above/below ratio at the old top "
+                     << best_ratio);
+  CHECK(most_below > 0.0);    // the flame is there
+  CHECK(most_upper > 0.0);    // a flare reaches past R112's top: it was a plane, 0
+  CHECK(most_beyond == 0.0);  // and the bounds hold what the window leaves
+  CHECK(best_ratio > 0.05);   // at the old top the flare goes on, it does not end in a line
+  CHECK(upper_phases >
+        phases / 4);  // and it is most of the lap's phases, not one (measured 52 of 64)
 }
 
 TEST_CASE("volumetrics: a fire's smoke drifts downwind") {

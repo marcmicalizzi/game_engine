@@ -245,6 +245,25 @@ inline constexpr f32 k_flame_noise_period = 64.0f;  // its lattice wraps on y, i
 // The puffing frequency and the speed the flame's features rise at, for a base radius.
 f32 flame_puff_hz(f32 radius_m) noexcept;
 f32 flame_rise_m_s(f32 radius_m) noexcept;
+// **The flame's top** (R113, docs/experiments/campfire-flame.md, "The flame's top"). The field's
+// envelope reaches zero at `k_flame_envelope_end` of the height; above it the noise's term has the
+// same amplitude at every height, so the field has no top of its own and bounds alone cut it flat
+// (R112's cylinder ended at 1.3 h). The field is windowed to nothing between the envelope's end and
+// the end of the intermittent region of McCaffrey 1979 (NBSIR 79-1910: the continuous flame to
+// z/Q^(2/5) = 0.08 m/kW^(2/5), the intermittent region to 0.2, the plume above), and the bounds end
+// there. The scene's height is the mean luminous height, Heskestad's L = 0.235 Q^(2/5) - 1.02 D
+// (kW, m), which fixes Q^(2/5) from L and D = 2 r, and so the end of the intermittent region at
+// 0.2 Q^(2/5): 1.50 L for the campfire. Clamped to a window that stays wider than the envelope's
+// end and bounded in cost for a fire outside Heskestad's range (7 < Q^(2/5)/D < 700).
+inline constexpr f32 k_flame_envelope_end = 1.12f;  // of the height: the envelope's zero
+inline constexpr f32 k_flame_heskestad_a = 0.235f;  // L = a Q^(2/5) - b D
+inline constexpr f32 k_flame_heskestad_b = 1.02f;
+inline constexpr f32 k_flame_intermittent_end = 0.2f;  // McCaffrey: z / Q^(2/5), m/kW^(2/5)
+inline constexpr f32 k_flame_continuous_end = 0.08f;   // and where the continuous flame ends
+inline constexpr f32 k_flame_top_min = 1.25f;          // of the height
+inline constexpr f32 k_flame_top_max = 2.0f;
+// The end of the intermittent region, of the flame's height, for a base radius and a mean height.
+f32 flame_top(f32 radius_m, f32 height_m) noexcept;
 // **The marched flame** (R112): a fire is marched per pixel in the apply, with this many steps,
 // while its distance is under `k_fire_march_widths` of its bounds' width (2 x 1.6 r): where it is
 // wider than about two froxel columns of the default grid at a 60-degree view. Past it the froxels
@@ -285,7 +304,8 @@ struct MediumFire {
   Vec4 flame;  // x its height, y absorption /m, z the noise's rise (cells, mod the period), w cell
   Vec4 emission;    // rgb the flame's emission /m at density 1 (raw), w the march's share
   Vec4 light;       // xyz the light (frame space), w its reach
-  Vec4 light_rgb;   // rgb its colour times its intensity at this clock (raw), w 0
+  Vec4 light_rgb;   // rgb its colour times its intensity at this clock (raw), w the flame's top
+                    // (R113)
   Vec4 smoke;       // x extinction /m at the top, y rise m/s, z spread per metre, w fade length m
   Vec4 wind;        // xz the wind at the fire (m/s), y the smoke's start radius, w the cell up
   u32 ids[4] = {};  // x the seed, y 1 when the apply marches this flame (the share is over 0)
@@ -302,6 +322,10 @@ MediumFire medium_fire(const renderer::FrameFire& fire, const WorldPos& eye, con
 // The smoke's extinction at a point of the frame's space (shaders/medium.slang's
 // `smoke_density`, the same arithmetic).
 f32 smoke_density(const MediumFire& fire, const Vec3& x) noexcept;
+// The flame's density at a point of the frame's space, [0, 1] (shaders/medium.slang's
+// `flame_density`, the same arithmetic, R113): the envelope carved by the noise and windowed to
+// nothing between `k_flame_envelope_end` and the flame's top (`MediumFire::light_rgb.w`).
+f32 flame_density(const MediumFire& fire, const Vec3& x) noexcept;
 // **The smoke a froxel holds** (shaders/medium.slang's `smoke_cell`, the same arithmetic): the mean
 // extinction along the eye's ray `dir` between distances t0 and t1, in closed form for the column
 // as it stands at the point `at` (its centre's line, its radius widened by half of `width`, the
