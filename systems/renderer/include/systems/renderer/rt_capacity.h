@@ -110,17 +110,34 @@ u32 rt_initial_clusters_tunable() noexcept;
 // **The resident cluster structure cache** (renderer.md, "The resident cluster structure cache";
 // R101): `renderer.rt.cache` (true; off from 2026-10-27 until R106 made a cache that references
 // nothing cost nothing) builds a rigid mesh's cluster structures once and references them;
-// `renderer.rt.cache_mib` (256) is the most its slots may take, which a scene needing less does not
-// reach; `renderer.rt.reference_mib` (256) the ceiling of the frame's references to it, the cache's
-// counterpart of the budget.
+// `renderer.rt.cache_mib` is the most its slots may take, which a scene needing less does not
+// reach — 0, the default since R114, the device's (`rt_device_cache_mib`); `renderer.rt.
+// reference_mib` (256) the ceiling of the frame's references to it, the cache's counterpart of the
+// budget.
 bool rt_cache_tunable() noexcept;
 u32 rt_cache_mib_tunable() noexcept;
 u32 rt_reference_mib_tunable() noexcept;
 // `renderer.rt.cache_slots` (0, none): a ceiling in slots beside the MiB, slot 0 included, for a
 // measurement or a test that wants a cache of a known size.
 u32 rt_cache_slots_tunable() noexcept;
-inline constexpr u32 k_default_rt_cache_mib = 256;
 inline constexpr u32 k_default_rt_reference_mib = 256;
+// **The cache's ceiling follows the device** (renderer.md, "The resident cluster structure cache";
+// roadmap R114, 2026-11-01). It was 256 MiB on every card — 43,690 slots at the RTX 5090's 6,144
+// bytes — and the forest proof of concept's v24 walk references 53,000 to 55,000 cached clusters a
+// frame, so every frame of it overflowed. The rule is a sixty-fourth of the device-local heaps (as
+// the chain's budget reads them, `rt_device_budget_mib`), never under `k_rt_cache_floor_mib` and
+// never over `k_rt_cache_ceiling_mib`: 506 MiB on the 32 GB RTX 5090 (86,357 slots), 384 on 24 GB,
+// 256 — the old ceiling — on 16 GB and below. It sits beside the chain's sixteenth, so the two take
+// at most five sixty-fourths of the card, and a scene with more cached clusters than that holds —
+// v24's 1.39 million, twice over for the caster forms — allocates the whole of it at create; the
+// smallest power-of-two share that holds v24's wanted set with room on the card it runs on. Past
+// it a frame builds what the cache cannot place itself, so the picture never depends on it.
+inline constexpr u32 k_rt_cache_device_share = 64;   // 1/64 of device-local memory
+inline constexpr u32 k_rt_cache_floor_mib = 256;     // the ceiling before R114: 16 GB and below
+inline constexpr u32 k_rt_cache_ceiling_mib = 1024;  // a 64 GB card and up
+u32 rt_device_cache_mib(u64 device_local_bytes) noexcept;
+// The `renderer.rt.cache_mib` tunable when it is not zero, else the device's rule, and which.
+RtBudget resolve_rt_cache_mib(u32 tunable_mib, u64 device_local_bytes) noexcept;
 
 // **The first capacity, from what the scene knows** (renderer.md, "The first capacity"). Before any
 // frame has said what it builds, the chain is sized for `estimate` — every pair a frame could

@@ -536,8 +536,11 @@ class GpuScene {
   // the first frame any instance draws a cluster builds its structure into a slot of
   // `rt_cache_slots()`, and every bottom-level structure that frame and after references it, until
   // the least recently drawn are evicted to make room. The slots are sized at create, from the
-  // scene's cached clusters (twice, for the drawn and the caster forms) up to the
-  // `renderer.rt.cache_mib` ceiling (256), and never grow: a cache that fills evicts. Off with
+  // scene's cached clusters (twice, for the drawn and the caster forms) up to the ceiling —
+  // `renderer.rt.cache_mib`, 0 by default, which is a sixty-fourth of the device, 256 to 1,024 MiB
+  // (R114; `rt_cache_ceiling_mib()`) — and never grow: a cache that fills evicts, and what a frame
+  // cannot place in it (more new clusters than every slot it did not draw) the frame builds in its
+  // own set, so the picture never depends on the cache's size. Off with
   // `renderer.rt.cache` false (on by default; off from 2026-10-27 until R106 made an idle cache
   // free), under templates (instantiated every frame by design), under geometry streaming (a
   // page's clusters move), on a device whose geometry indices stop short of 24 bits, and — for a
@@ -553,6 +556,10 @@ class GpuScene {
   // R106).
   u32 rt_cache_instances() const noexcept { return rt_cache_instances_; }
   u32 rt_cache_slots() const noexcept { return rt_cache_slots_; }
+  // The ceiling the slots were sized under, in MiB, and where it came from (the tunable, or the
+  // device's sixty-fourth); 0 without a cache.
+  u32 rt_cache_ceiling_mib() const noexcept { return rt_cache_ceiling_mib_; }
+  RtBudgetSource rt_cache_ceiling_source() const noexcept { return rt_cache_ceiling_source_; }
   u32 rt_cache_meshes() const noexcept { return rt_cache_meshes_; }
   u32 rt_cache_clusters() const noexcept { return rt_cache_clusters_; }
   u64 rt_cache_bytes() const noexcept { return rt_cache_bytes_; }
@@ -1541,6 +1548,8 @@ class GpuScene {
   u64 rt_cache_bytes_ = 0;
   u64 rt_cache_stride_ = 0;
   u64 rt_cache_scratch_bytes_ = 0;
+  u32 rt_cache_ceiling_mib_ = 0;  // rt_cache_ceiling_mib()
+  RtBudgetSource rt_cache_ceiling_source_ = RtBudgetSource::Device;
   u32 rt_cache_frame_ = 0;
   u32 rt_cache_instances_ = 0;  // rt_cache_instances()
   u64 rt_cache_pairs_ =
