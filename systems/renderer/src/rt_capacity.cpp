@@ -52,10 +52,13 @@ tunables::Bool rt_cache{
     "Build a rigid mesh's cluster structures once, into a cache every instance "
     "and frame references, instead of once per instance per frame (R101; on "
     "again since R106, which made a cache that references nothing cost nothing)"};
-tunables::Int rt_cache_mib{"renderer.rt.cache_mib", k_default_rt_cache_mib, 1, 1 << 20,
-                           "Most device memory the resident cluster structure cache may take, in "
-                           "MiB; it takes what the scene's cached clusters need up to this, and a "
-                           "full cache evicts the least recently drawn"};
+tunables::Int rt_cache_mib{
+    "renderer.rt.cache_mib", 0, 0, 1 << 20,
+    "Most device memory the resident cluster structure cache may take, in "
+    "MiB; 0 follows the device (a sixty-fourth of its memory, 256 to 1,024 "
+    "MiB); it takes what the scene's cached clusters need up to this, a full "
+    "cache evicts the least recently drawn, and what a frame cannot place "
+    "in it the frame builds itself"};
 tunables::Int rt_cache_slots{"renderer.rt.cache_slots", 0, 0, 1 << 30,
                              "A ceiling on the cluster cache's slots beside its MiB, for "
                              "measurement and the eviction test; 0 is none"};
@@ -100,6 +103,18 @@ RtBudget resolve_rt_budget(u32 setting_mib, u32 tunable_mib, u64 device_local_by
   if (setting_mib != 0) return {setting_mib, RtBudgetSource::Setting};
   if (tunable_mib != 0) return {tunable_mib, RtBudgetSource::Tunable};
   return {rt_device_budget_mib(device_local_bytes), RtBudgetSource::Device};
+}
+
+u32 rt_device_cache_mib(u64 device_local_bytes) noexcept {
+  const u64 share = device_local_bytes / k_rt_cache_device_share / (u64{1} << 20);
+  if (share < k_rt_cache_floor_mib) return k_rt_cache_floor_mib;
+  if (share > k_rt_cache_ceiling_mib) return k_rt_cache_ceiling_mib;
+  return static_cast<u32>(share);
+}
+
+RtBudget resolve_rt_cache_mib(u32 tunable_mib, u64 device_local_bytes) noexcept {
+  if (tunable_mib != 0) return {tunable_mib, RtBudgetSource::Tunable};
+  return {rt_device_cache_mib(device_local_bytes), RtBudgetSource::Device};
 }
 
 void rt_drop_order(u32 prefix_slots, std::span<RtDropBlock> blocks, Vector<u32>& out) {

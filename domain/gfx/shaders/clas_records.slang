@@ -150,7 +150,7 @@ struct CacheTables {
   uint64_t owners;             // uint per slot: its key, or k_cache_empty
   uint64_t stamps;             // uint per slot: the last frame that drew it
   uint64_t free_list;          // uint per slot
-  uint64_t misses;             // uint4 per slot: key, cluster, geometry word, 0
+  uint64_t misses;             // uint4 per reference: key, cluster, geometry word, 0
   uint64_t miss_records;       // ClusterRecord per slot
   uint64_t miss_destinations;  // uint64_t per slot
   uint64_t references;         // uint64_t per cached reference
@@ -171,6 +171,9 @@ struct CacheTables {
 static const uint k_cache_empty = 0xffffffffu;     // gfx::k_cluster_cache_empty
 static const uint k_cache_claim = 0xfffffffeu;     // gfx::k_cluster_cache_claim
 static const uint k_cache_overflow = 0xfffffffdu;  // gfx::k_cluster_cache_overflow
+// gfx::k_cluster_cache_frame: a key's value at or above it is no slot. Under the three marks, it
+// names the frame's own record that built the key's structure this frame (R114).
+static const uint k_cache_frame = 0x80000000u;
 static const uint k_cache_forms = 3;               // gfx::k_cluster_cache_forms
 static const uint k_cache_geometry = 1u << 23;     // gfx::k_cluster_cache_geometry
 static const uint k_cache_caster = 1u << 22;       // gfx::k_cluster_cache_caster
@@ -180,6 +183,9 @@ static const uint k_cache_workgroup = 64;          // gfx::k_cluster_cache_workg
 // them, which only a frame with misses changes (gfx::k_cluster_cache_scratch_occupied).
 static const uint k_scratch_cleared = 4 + k_cache_ages;
 static const uint k_scratch_occupied = k_scratch_cleared;
+// The frame's own records before its misses (gfx::k_cluster_cache_scratch_built): word 0 of the
+// record count as the ranges left it, copied by the slot scan, which `cache_assign_main` raises.
+static const uint k_scratch_built = k_scratch_occupied + 1;
 // The args block (gfx::k_cluster_cache_args_*): four dispatches of three words — the slot scan, the
 // eviction, the misses' slots, the pending references — then the pending references' count.
 static const uint k_args_scan = 0;
@@ -196,6 +202,7 @@ static const uint k_count_miss_built = 7;
 static const uint k_count_miss_overflow = 8;
 static const uint k_count_evicted = 9;
 static const uint k_count_occupied = 10;
+static const uint k_count_miss_unbuilt = 11;
 
 CacheTables* cache_tables() { return (CacheTables*)g_params.cache; }
 
@@ -1169,7 +1176,9 @@ void emit_cached(uint dense, uint cluster_id, MeshDesc mesh, InstanceDesc instan
   Atomic<uint>* keys = (Atomic<uint>*)tables->keys;
   const uint value = keys[key].load();
   uint64_t* references = (uint64_t*)tables->references;
-  if (value < k_cache_overflow) {
+  // A slot. A key the frame built in its own set last frame (`k_cache_frame`, R114), or that
+  // nothing had room for, is missing again, like an empty one.
+  if (value < k_cache_frame) {
     uint* stamps = (uint*)tables->stamps;
     stamps[value] = g_params.frame;
     references[dense] = tables->slot_base + uint64_t(value) * tables->slot_stride;
@@ -1191,15 +1200,14 @@ void emit_cached(uint dense, uint cluster_id, MeshDesc mesh, InstanceDesc instan
     args[k_args_scan].store(slot_groups);
     args[k_args_evict].store(slot_groups);
   }
-  if (index < tables->slot_count && index % k_cache_workgroup == 0) {
-    args[k_args_assign].add(1);
-  }
-  if (index >= tables->slot_count) {
-    // More misses than the cache has slots: no room whatever is evicted.
-    keys[key].store(k_cache_overflow);
-    counts[k_count_miss_overflow].add(1);
+  // Every miss is listed, past the slots too (R114): `cache_assign_main` gives the ones the cache
+  // has no slot for a record in the frame's own set. A miss is a pending reference's key claimed
+  // once, so the list, as long as the references, always has room; the guard is for its bound.
+  if (index >= tables->reference_capacity) {
+    keys[key].store(k_cache_overflow);  // counted by `cache_assign_main`, from word 6
     return;
   }
+  if (index % k_cache_workgroup == 0) args[k_args_assign].add(1);
   const bool opaque = !caster && !masked;
   const uint geometry = local | k_cache_geometry | (caster ? k_cache_caster : 0u);
   uint4* misses = (uint4*)tables->misses;
@@ -1320,7 +1328,14 @@ void emit_cached_main(uint3 thread_id : SV_DispatchThreadID) {
 void cache_scan_main(uint3 thread_id : SV_DispatchThreadID) {
   CacheTables* tables = cache_tables();
   const uint slot = thread_id.x;
-  if (slot == 0 || slot >= tables->slot_count) return;
+  if (slot == 0) {
+    // The frame's own records as the ranges kept them, for `cache_assign_main` to append the misses
+    // without a slot after (R114) while its thread 0 raises the count the build reads.
+    uint* words = (uint*)tables->scratch;
+    words[k_scratch_built] = ((uint*)g_params.record_count)[0];
+    return;
+  }
+  if (slot >= tables->slot_count) return;
   uint* owners = (uint*)tables->owners;
   Atomic<uint>* scratch = (Atomic<uint>*)tables->scratch;
   if (owners[slot] == k_cache_empty) {
@@ -1398,46 +1413,10 @@ void cache_evict_main(uint3 thread_id : SV_DispatchThreadID,
   counts[k_count_evicted].add(1);
 }
 
-// Every miss its slot, in miss order, and its build record and destination; a miss past the free
-// slots — only when this frame's own new clusters outnumber every slot it did not draw — is marked
-// so its references take the inactive structure, and counted. Thread 0 writes the count the
-// explicit build reads and how many slots are occupied after it, which the scratch keeps for the
-// frames with no miss (`ranges_count_cached_main` copies it into theirs).
-[shader("compute")]
-[numthreads(64, 1, 1)]
-void cache_assign_main(uint3 thread_id : SV_DispatchThreadID) {
-  CacheTables* tables = cache_tables();
-  uint* record_count = (uint*)g_params.record_count;
-  uint* scratch = (uint*)tables->scratch;
-  const uint misses = min(record_count[k_count_misses], tables->slot_count);
-  const uint free = scratch[0];
-  const uint assigned = min(misses, free);
-  const uint i = thread_id.x;
-  if (i == 0) {
-    const uint occupied = tables->slot_count - 1 - free + assigned;
-    record_count[k_count_miss_built] = assigned;
-    record_count[k_count_occupied] = occupied;
-    scratch[k_scratch_occupied] = occupied;
-  }
-  if (i >= misses) return;
-  uint4* list = (uint4*)tables->misses;
-  const uint4 miss = list[i];
-  Atomic<uint>* keys = (Atomic<uint>*)tables->keys;
-  if (i >= free) {
-    keys[miss.x].store(k_cache_overflow);
-    Atomic<uint>* counts = (Atomic<uint>*)g_params.record_count;
-    counts[k_count_miss_overflow].add(1);
-    return;
-  }
-  uint* free_list = (uint*)tables->free_list;
-  const uint slot = free_list[i];
-  uint* owners = (uint*)tables->owners;
-  uint* stamps = (uint*)tables->stamps;
-  owners[slot] = miss.x;
-  stamps[slot] = g_params.frame;
-  keys[miss.x].store(slot);
-  // The record as the emit pass writes a rigid entry's, from the rest-pose float positions, but
-  // named by the cluster within its mesh (`miss.z`) rather than by a visible entry.
+// A miss's build record, as the emit pass writes a rigid entry's — from the rest-pose float
+// positions — but named by the cluster within its mesh (`miss.z`) rather than by a visible entry:
+// the same record whether it is built into a slot or into the frame's own set.
+ClusterRecord cache_record(uint4 miss) {
   ClusterDesc* clusters = (ClusterDesc*)g_params.clusters;
   const ClusterDesc cluster = clusters[miss.y];
   ClusterRecord record;
@@ -1453,15 +1432,80 @@ void cache_assign_main(uint3 thread_id : SV_DispatchThreadID) {
   record.geometry_buffer = 0;
   record.omm_array = 0;
   record.omm_indices = 0;
+  return record;
+}
+
+// Every miss its slot, in miss order, and its build record and destination. **A miss past the free
+// slots** — only when this frame's own new clusters outnumber every slot it did not draw — **is
+// built in the frame's own set** (R114): its record appended to the frame's records after the
+// ones the ranges kept, while the set has room (the frame's capacity), and its key marked with that
+// record's index for `cache_references_main`, which runs after the frame's build. Thread 0 raises
+// the frame's count, which that build reads, and its wanted, which the capacity policy reads, by
+// those misses, so a frame that keeps overflowing grows its own set to hold them; only a miss the
+// set has no room for either takes the inactive structure, and draws nothing that frame. Thread 0
+// also writes the count the explicit build reads and how many slots are occupied after it, which
+// the scratch keeps for the frames with no miss (`ranges_count_cached_main` copies it into theirs).
+//
+// Which misses take the slots follows the atomics, as before; it changes which structures are
+// built where and never what they are, so the picture is the same whichever it is.
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void cache_assign_main(uint3 thread_id : SV_DispatchThreadID) {
+  CacheTables* tables = cache_tables();
+  uint* record_count = (uint*)g_params.record_count;
+  uint* scratch = (uint*)tables->scratch;
+  const uint claimed = record_count[k_count_misses];
+  const uint misses = min(claimed, tables->reference_capacity);
+  const uint free = scratch[0];
+  const uint assigned = min(misses, free);
+  // The frame's own records as the ranges kept them (the slot scan's copy: word 0 is this pass's
+  // thread 0's to raise), and what its set holds past them.
+  const uint built = scratch[k_scratch_built];
+  const uint room = g_params.capacity > built ? g_params.capacity - built : 0u;
+  const uint i = thread_id.x;
+  if (i == 0) {
+    const uint occupied = tables->slot_count - 1 - free + assigned;
+    record_count[k_count_miss_built] = assigned;
+    record_count[k_count_occupied] = occupied;
+    scratch[k_scratch_occupied] = occupied;
+    const uint placed = min(misses - assigned, room);
+    record_count[k_count_miss_overflow] = claimed - assigned;
+    record_count[k_count_miss_unbuilt] = claimed - assigned - placed;
+    record_count[0] = built + placed;
+    record_count[1] += claimed - assigned;
+  }
+  if (i >= misses) return;
+  uint4* list = (uint4*)tables->misses;
+  const uint4 miss = list[i];
+  Atomic<uint>* keys = (Atomic<uint>*)tables->keys;
+  if (i >= free) {
+    const uint own = i - free;
+    if (own >= room) {
+      keys[miss.x].store(k_cache_overflow);  // neither had room: the inactive structure
+      return;
+    }
+    ClusterRecord* records = (ClusterRecord*)g_params.records;
+    records[built + own] = cache_record(miss);
+    keys[miss.x].store(k_cache_frame | (built + own));
+    return;
+  }
+  uint* free_list = (uint*)tables->free_list;
+  const uint slot = free_list[i];
+  uint* owners = (uint*)tables->owners;
+  uint* stamps = (uint*)tables->stamps;
+  owners[slot] = miss.x;
+  stamps[slot] = g_params.frame;
+  keys[miss.x].store(slot);
   ClusterRecord* records = (ClusterRecord*)tables->miss_records;
-  records[i] = record;
+  records[i] = cache_record(miss);
   uint64_t* destinations = (uint64_t*)tables->miss_destinations;
   destinations[i] = tables->slot_base + uint64_t(slot) * tables->slot_stride;
 }
 
 // Every pending reference's address — its key, parked in the reference by the emit pass, now has
-// its slot, or the inactive structure for a key the cache had no room for this frame. A resident
-// key's references were addressed by the emit pass itself.
+// its slot; or, for a miss the frame built in its own set (R114), the address that set's build
+// wrote, which is why this pass runs after it; or the inactive structure for a key nothing had
+// room for. A resident key's references were addressed by the emit pass itself.
 [shader("compute")]
 [numthreads(64, 1, 1)]
 void cache_references_main(uint3 thread_id : SV_DispatchThreadID) {
@@ -1473,7 +1517,12 @@ void cache_references_main(uint3 thread_id : SV_DispatchThreadID) {
   const uint dense = reference_keys[p];
   uint64_t* references = (uint64_t*)tables->references;
   uint* keys = (uint*)tables->keys;
-  const uint slot = keys[uint(references[dense])];
-  references[dense] =
-      tables->slot_base + (slot < k_cache_overflow ? uint64_t(slot) * tables->slot_stride : 0u);
+  const uint value = keys[uint(references[dense])];
+  uint64_t address = tables->slot_base;  // slot 0
+  if (value < k_cache_frame) {
+    address = tables->slot_base + uint64_t(value) * tables->slot_stride;
+  } else if (value < k_cache_overflow) {
+    address = ((uint64_t*)g_params.clas_addresses)[value - k_cache_frame];
+  }
+  references[dense] = address;
 }

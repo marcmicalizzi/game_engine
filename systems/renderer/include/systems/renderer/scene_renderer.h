@@ -333,7 +333,9 @@ struct RtStats {
   // `renderer.rt.reference_mib` ceiling over `bytes_per_reference`), the peak wanted, and the
   // policy's resizes; the last frame's misses (keys first drawn, or drawn again after an eviction),
   // what it built into the cache, and the slots occupied after it; over the run, what was built
-  // into the cache, the frames that built anything, the misses it had no room for, and the slots
+  // into the cache, the frames that built anything, the misses it had no slot for — which the frame
+  // built in its own set since R114, counted in `built` and `wanted` — and of those the ones the
+  // frame's set had no room for either, which drew nothing (`cache_unbuilt`), and the slots
   // evicted. All zero without a cache. A cached instance's references that do not fit the
   // reference capacity drop the instance whole, counted with `dropped_instances` as before.
   u32 cache_meshes = 0;
@@ -355,6 +357,7 @@ struct RtStats {
   u64 cache_built_total = 0;
   u64 cache_build_frames = 0;
   u64 cache_overflow = 0;
+  u64 cache_unbuilt = 0;
   u64 cache_evictions = 0;
 };
 

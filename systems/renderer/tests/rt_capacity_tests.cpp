@@ -401,6 +401,29 @@ TEST_CASE("rt capacity: the default budget is a sixteenth of the device, 512 to 
   CHECK(std::string(rt_budget_source_name(RtBudgetSource::Device)) == "device");
 }
 
+// The cluster cache's ceiling follows the device too (R114): a sixty-fourth of the heaps, never
+// under the 256 MiB every card had before nor over 1,024; the tunable, when it is not zero, as
+// given.
+TEST_CASE("rt capacity: the cache's ceiling is a sixty-fourth of the device, 256 to 1024 MiB") {
+  constexpr u64 k_mib = u64{1} << 20;
+  CHECK(rt_device_cache_mib(32404 * k_mib) == 506);  // RTX 5090: 86,357 slots at 6,144 bytes
+  CHECK(rt_device_cache_mib(24 * 1024 * k_mib) == 384);
+  CHECK(rt_device_cache_mib(16 * 1024 * k_mib) == 256);  // the old ceiling, on every card
+  CHECK(rt_device_cache_mib(12 * 1024 * k_mib) == k_rt_cache_floor_mib);
+  CHECK(rt_device_cache_mib(8 * 1024 * k_mib) == k_rt_cache_floor_mib);
+  CHECK(rt_device_cache_mib(0) == k_rt_cache_floor_mib);
+  CHECK(rt_device_cache_mib(64 * 1024 * k_mib) == k_rt_cache_ceiling_mib);
+  CHECK(rt_device_cache_mib(~u64{0}) == k_rt_cache_ceiling_mib);
+  // v24's wanted set, 53,000 to 55,000 cached clusters a frame, fits the 5090's with room.
+  CHECK(u64{rt_device_cache_mib(32404 * k_mib)} * k_mib / 6144 > 55000);
+  const RtBudget device = resolve_rt_cache_mib(0, 32404 * k_mib);
+  CHECK(device.mib == 506);
+  CHECK(device.source == RtBudgetSource::Device);
+  const RtBudget tuned = resolve_rt_cache_mib(64, 32404 * k_mib);
+  CHECK(tuned.mib == 64);
+  CHECK(tuned.source == RtBudgetSource::Tunable);
+}
+
 // The same rule on a real scene: with nothing named, the chain's limit is the device's budget in
 // clusters, and the scene and its renderer say where it came from.
 TEST_CASE("rt capacity: a scene with no budget named takes the device's, and says so") {
@@ -861,6 +884,88 @@ TEST_CASE("rt cache: a full cache evicts the least recently drawn and the pictur
     const RtStats& rt = small.renderer.stats().rt;
     CHECK(rt.cache_evictions > 0);  // the flight did not fit: the cache evicted, and counted it
     CHECK(rt.cache_overflow == 0);  // every frame on its own did
+    CHECK(differ.colour == 0);
+    CHECK(differ.ids == 0);
+  }
+  device.destroy();
+}
+
+// **A frame that wants more than the cache holds** (R114): the case the eviction test does not
+// cover. One frame's cut has more distinct cached clusters than the cache has slots, so no eviction
+// makes room — the forest proof of concept's v24 walk, whose 53,000 to 55,000 cached clusters a
+// frame met 43,690 slots and flickered as the overflow pointed a different set at the inactive slot
+// every frame. The clusters the cache cannot place are built in the frame's own set and referenced
+// from there: the picture is the per-frame build's, colour and ids, frame after frame, on the ray
+// path (where a missing structure is a hole in the ids) and under traced shadows, and
+// `cache_overflow` counts what the cache kept out.
+TEST_CASE("rt cache: a frame wanting more than the cache holds builds the rest itself") {
+  ScopedTunable on("renderer.rt.cache", "true");  // whatever the default (true since R106)
+  gfx::Device device;
+  std::string error;
+  if (!device.create(gfx::DeviceOptions{}, &error) || !traces(device)) {
+    MESSAGE("tracing unavailable: " << error);
+    return;
+  }
+  for (const RasterMode raster : {RasterMode::RayTrace, RasterMode::Hardware}) {
+    RenderSettings settings;
+    settings.raster = raster;
+    settings.shadows = ShadowMode::RayTraced;
+    settings.lights = false;
+    // A quarter-pixel threshold up close: a cut of several hundred distinct clusters (the starved
+    // budget case's), against a cache of a few hundred slots.
+    settings.lod_px = 0.25f;
+    constexpr u32 k_slots = 200;
+    Rig per_frame;
+    {
+      ScopedTunable off("renderer.rt.cache", "false");
+      REQUIRE_MESSAGE(per_frame.build(device, settings, error), error);
+    }
+    Rig small;
+    {
+      ScopedTunable tight("renderer.rt.cache_slots", std::to_string(k_slots).c_str());
+      REQUIRE_MESSAGE(small.build(device, settings, error), error);
+    }
+    REQUIRE(small.scene.rt_cache());
+    REQUIRE(small.scene.rt_cache_slots() == k_slots);
+    const f32 distance = 0.8f;
+    const u32 shadow_view = static_cast<u32>(gfx::ResolveMode::Shadow);
+    const u32 view = raster == RasterMode::RayTrace ? ~u32{0} : shadow_view;
+    u64 frame_index = 0;
+    REQUIRE_MESSAGE(per_frame.renderer.render_offscreen(
+                        frame_at(per_frame.data, distance, frame_index), &error),
+                    error);
+    REQUIRE_MESSAGE(
+        small.renderer.render_offscreen(frame_at(small.data, distance, frame_index), &error),
+        error);
+    ++frame_index;
+    // Two frames running, each against the per-frame build of the same cut: an overflow that drew
+    // a different set as nothing each frame differs in both.
+    Pictures differ;
+    for (u32 f = 0; f < 2; ++f, ++frame_index) {
+      CapturedFrame a;
+      CapturedFrame b;
+      REQUIRE_MESSAGE(
+          per_frame.renderer.capture(frame_at(per_frame.data, distance, frame_index, view),
+                                     {.color = true, .ids = true}, a, &error),
+          error);
+      REQUIRE_MESSAGE(small.renderer.capture(frame_at(small.data, distance, frame_index, view),
+                                             {.color = true, .ids = true}, b, &error),
+                      error);
+      const Pictures d = compare(a, b);
+      differ.colour += d.colour;
+      differ.ids += d.ids;
+      const RtStats& rt = small.renderer.stats().rt;
+      MESSAGE(std::string(raster_name(raster))
+              << " frame " << f << ": " << rt.references << " references, " << rt.cache_misses
+              << " misses, " << rt.cache_occupied << " of " << rt.cache_slots
+              << " slots occupied, the frame built " << rt.built << " of " << rt.wanted
+              << " itself; " << rt.cache_overflow << " misses without a slot so far; " << d.colour
+              << " colour bytes and " << d.ids << " id words differ");
+    }
+    const RtStats& rt = small.renderer.stats().rt;
+    CHECK(rt.cache_overflow > 0);  // the case: more new clusters than the cache has slots
+    CHECK(rt.built > 0);           // ... which the frame built itself
+    CHECK(rt.built == rt.wanted);  // ... all of them: the frame's own set had the room
     CHECK(differ.colour == 0);
     CHECK(differ.ids == 0);
   }

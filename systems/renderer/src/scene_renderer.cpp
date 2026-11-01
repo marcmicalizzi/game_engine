@@ -1471,14 +1471,21 @@ void SceneRenderer::fold_visible(u32 slot) {
         chain.cache_built_total += rt[7];
         chain.cache_build_frames += rt[7] > 0 ? 1u : 0u;
         chain.cache_overflow += rt[8];
+        chain.cache_unbuilt += rt[11];
         chain.cache_evictions += rt[9];
       }
+      // Said once: a cost, not a change of the picture since R114 — those misses were built in the
+      // frame's own set, which is the per-frame build the cache exists to save — unless the frame's
+      // set had no room for them either (word 11), which is the chain's budget question.
       if (fresh && rt[8] > 0 && !rt_cache_overflow_warned_) {
         rt_cache_overflow_warned_ = true;
         ENGINE_LOG_WARN(log_renderer,
-                        "the cluster structure cache had no room for a frame's misses",
-                        log::field("misses", rt[6]), log::field("unbuilt", rt[8]),
+                        "the cluster structure cache had no room for a frame's misses; the frame "
+                        "built them itself",
+                        log::field("misses", rt[6]), log::field("frame_built", rt[8] - rt[11]),
+                        log::field("unbuilt", rt[11]),
                         log::field("slots", scene_->rt_cache_slots()),
+                        log::field("ceiling_mib", scene_->rt_cache_ceiling_mib()),
                         log::field("remedy", "raise the renderer.rt.cache_mib tunable"));
       }
     }
@@ -4170,50 +4177,59 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
               if (p == 0 || p == 6 || p == (drop_scan ? 5u : 2u)) timer.end(cb);
             });
       }  // **The resident cluster structure cache** (renderer.md, "The resident cluster structure
-      // cache"; clas_records.slang): the slot scan and the eviction, the misses' slots and records,
-      // and the pending references' addresses — four dispatches, a pass each so the graph orders
-      // them, each taking its size from the args block the emit pass grew (R106), so a frame that
-      // misses nothing walks no slot and one whose references are all resident addresses none here;
-      // timed as one zone, "cache" — and then the misses' build, into their slots, whose count is
-      // the record count's word 7: zero on a frame that drew nothing new.
+      // cache"; clas_records.slang): the slot scan and the eviction, the misses' slots and records
+      // — and, for a miss the cache has no slot for, its record in the frame's own set (R114) —
+      // three dispatches, a pass each so the graph orders them, each taking its size from the args
+      // block the emit pass grew (R106), so a frame that misses nothing walks no slot; timed as one
+      // zone, "cache" — and then the misses' build, into their slots, whose count is the record
+      // count's word 7: zero on a frame that drew nothing new. The pending references' addresses
+      // come after the frame's own build, below, which decides where the misses built there are.
+      static constexpr const char* k_cache_names[4] = {"cache scan", "cache evict", "cache assign",
+                                                       "cache references"};
+      static constexpr u32 k_cache_args[4] = {
+          gfx::k_cluster_cache_args_scan, gfx::k_cluster_cache_args_evict,
+          gfx::k_cluster_cache_args_assign, gfx::k_cluster_cache_args_references};
+      const auto add_cache_pass = [&](u32 k) {
+        graph.add_pass(
+            k_cache_names[k], gfx::PassKind::Compute,
+            [&, k](gfx::PassBuilder& b) {
+              b.read(rt.cache_args, gfx::Access::IndirectRead);
+              if (k == 3) {
+                b.read(rt.cache_args, gfx::Access::ComputeRead);  // the pending count
+                // The addresses of the misses the frame built itself (R114).
+                b.read(rt.clas_addresses, gfx::Access::ComputeRead);
+              }
+              b.write(rt.record_count, gfx::Access::ComputeReadWrite);
+              b.write(rt.cache_scratch, gfx::Access::ComputeReadWrite);
+              b.write(rt.cache_keys, gfx::Access::ComputeReadWrite);
+              b.write(rt.cache_owners, gfx::Access::ComputeReadWrite);
+              b.write(rt.cache_stamps, gfx::Access::ComputeReadWrite);
+              b.write(rt.cache_free, gfx::Access::ComputeReadWrite);
+              b.read(rt.cache_misses, gfx::Access::ComputeRead);
+              if (k == 2) {
+                b.write(rt.cache_miss_records, gfx::Access::ComputeWrite);
+                b.write(rt.cache_miss_destinations, gfx::Access::ComputeWrite);
+                // A miss without a slot is appended to the frame's own records (R114).
+                b.write(rt.records, gfx::Access::ComputeWrite);
+              }
+              if (k == 3) {
+                b.read(rt.cache_reference_keys, gfx::Access::ComputeRead);
+                b.write(rt.cache_references, gfx::Access::ComputeReadWrite);
+              }
+            },
+            [&, k](gfx::CommandList cb, gfx::RenderGraph&) {
+              if (k == 0 || k == 3) timer.begin(cb, "cache");
+              cb.bind_pipeline(gfx::BindPoint::Compute, pipelines.cache[k].pipeline);
+              cb.push_constants(pipelines.cache[k].layout, gfx::ShaderStage::Compute, 0,
+                                sizeof(record_params), &record_params);
+              cb.dispatch_indirect(scene.rt_cache_buffers.args.buffer,
+                                   u64{k_cache_args[k]} * sizeof(u32));
+              if (k == 2 || k == 3) timer.end(cb);
+            });
+      };
       if (rt_cache) {
-        static constexpr const char* k_cache_names[4] = {"cache scan", "cache evict",
-                                                         "cache assign", "cache references"};
-        static constexpr u32 k_cache_args[4] = {
-            gfx::k_cluster_cache_args_scan, gfx::k_cluster_cache_args_evict,
-            gfx::k_cluster_cache_args_assign, gfx::k_cluster_cache_args_references};
-        for (u32 k = 0; k < 4; ++k) {
-          graph.add_pass(
-              k_cache_names[k], gfx::PassKind::Compute,
-              [&, k](gfx::PassBuilder& b) {
-                b.read(rt.cache_args, gfx::Access::IndirectRead);
-                if (k == 3) b.read(rt.cache_args, gfx::Access::ComputeRead);  // the pending count
-                b.write(rt.record_count, gfx::Access::ComputeReadWrite);
-                b.write(rt.cache_scratch, gfx::Access::ComputeReadWrite);
-                b.write(rt.cache_keys, gfx::Access::ComputeReadWrite);
-                b.write(rt.cache_owners, gfx::Access::ComputeReadWrite);
-                b.write(rt.cache_stamps, gfx::Access::ComputeReadWrite);
-                b.write(rt.cache_free, gfx::Access::ComputeReadWrite);
-                b.read(rt.cache_misses, gfx::Access::ComputeRead);
-                if (k == 2) {
-                  b.write(rt.cache_miss_records, gfx::Access::ComputeWrite);
-                  b.write(rt.cache_miss_destinations, gfx::Access::ComputeWrite);
-                }
-                if (k == 3) {
-                  b.read(rt.cache_reference_keys, gfx::Access::ComputeRead);
-                  b.write(rt.cache_references, gfx::Access::ComputeReadWrite);
-                }
-              },
-              [&, k](gfx::CommandList cb, gfx::RenderGraph&) {
-                if (k == 0) timer.begin(cb, "cache");
-                cb.bind_pipeline(gfx::BindPoint::Compute, pipelines.cache[k].pipeline);
-                cb.push_constants(pipelines.cache[k].layout, gfx::ShaderStage::Compute, 0,
-                                  sizeof(record_params), &record_params);
-                cb.dispatch_indirect(scene.rt_cache_buffers.args.buffer,
-                                     u64{k_cache_args[k]} * sizeof(u32));
-                if (k == 3) timer.end(cb);
-              });
-        }
+        for (u32 k = 0; k < 3; ++k)
+          add_cache_pass(k);
         graph.add_pass(
             "clas cache", gfx::PassKind::Compute,
             [&](gfx::PassBuilder& b) {
@@ -4259,6 +4275,10 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
                                    scene.record_count.address, scene.rt_scratch);
             timer.end(cb);
           });
+      // Every pending reference's address — a slot's, or for a miss the frame built itself the
+      // address its build just wrote (R114) — before the bottom-level build reads them; timed with
+      // the cache's other passes.
+      if (rt_cache) add_cache_pass(3);
       graph.add_pass(
           "blas", gfx::PassKind::Compute,
           [&](gfx::PassBuilder& b) {

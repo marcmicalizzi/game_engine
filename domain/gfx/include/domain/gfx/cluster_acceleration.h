@@ -385,23 +385,36 @@ static_assert(sizeof(ClusterRecordParams) == 176);
 // under `k_cluster_cache_geometry`, which bounds the per-frame capacity while a cache exists.
 //
 // The emit pass (`emit_cached_main`) addresses a resident key's references itself and lists the
-// rest as pending; then four passes run between it and the builds, each dispatched indirectly from
+// rest as pending; then three passes run between it and the builds, each dispatched indirectly from
 // `args`, which the emit pass grows, so a pass with nothing to do dispatches no thread (R106):
 // `cache_scan_main` lists the free slots and counts the occupied ones by how many frames ago they
 // were drawn, and `cache_evict_main` frees the least recently drawn — never one this frame drew —
 // until this frame's misses fit (each of its groups works the threshold out from the scan's
 // histogram), both over the slots and only on a frame with a miss; `cache_assign_main` gives every
-// miss a slot and writes its build record and destination; and `cache_references_main` writes every
-// pending reference's address. The misses are then built with explicit destinations
-// (`build_cluster_set_explicit`), before the frame's own builds; on a frame with none its count is
-// 0.
+// miss a slot and writes its build record and destination. The misses are then built with explicit
+// destinations (`build_cluster_set_explicit`), before the frame's own builds; on a frame with none
+// its count is 0.
+//
+// **A miss the cache has no slot for is built in the frame's own set** (R114; renderer.md, "The
+// resident cluster structure cache"): one past every free and evictable slot — only when the
+// frame's own new clusters outnumber every slot it did not draw — gets the record the cache would
+// have built, named as the cache names it, appended to the frame's records past what the ranges
+// kept (`cache_assign_main` raises the frame's count, word 0, and its wanted, word 1, by them, so
+// the capacity policy grows for them too); its key holds `k_cluster_cache_frame` and the record's
+// index. `cache_references_main` runs **after** the frame's own build, so it reads that record's
+// address from the frame's `clas_addresses`. Only a miss neither has room for — the frame's set
+// full too — takes slot 0, the inactive structure, and draws nothing that frame (counted, word 11):
+// the picture never depends on the cache, only on the frame's budget, as everything else in it
+// does.
 struct ClusterCacheTables {
-  u64 bases = 0;              // u32 per mesh: its first cluster's key / 3, or ~0: not cached
-  u64 keys = 0;               // u32 per key: its slot, or one of the k_cluster_cache_* marks
-  u64 owners = 0;             // u32 per slot: the key it holds, or k_cluster_cache_empty (free)
-  u64 stamps = 0;             // u32 per slot: the last frame that drew it
-  u64 free_list = 0;          // u32 per slot: this frame's free slots, scan then eviction order
-  u64 misses = 0;             // uint4 per slot: key, cluster, geometry word, 0
+  u64 bases = 0;      // u32 per mesh: its first cluster's key / 3, or ~0: not cached
+  u64 keys = 0;       // u32 per key: its slot, or one of the k_cluster_cache_* marks
+  u64 owners = 0;     // u32 per slot: the key it holds, or k_cluster_cache_empty (free)
+  u64 stamps = 0;     // u32 per slot: the last frame that drew it
+  u64 free_list = 0;  // u32 per slot: this frame's free slots, scan then eviction order
+  // k_cluster_cache_miss_bytes per reference (a miss is a pending reference's key, claimed once):
+  // key, cluster, geometry word, 0
+  u64 misses = 0;
   u64 miss_records = 0;       // k_cluster_build_record_bytes per slot: the misses' builds
   u64 miss_destinations = 0;  // u64 per slot: each miss's slot address
   u64 references = 0;         // u64 per reference: the frame's cached instances' CLAS addresses
@@ -418,17 +431,25 @@ struct ClusterCacheTables {
 };
 static_assert(sizeof(ClusterCacheTables) == 120);
 inline constexpr u32 k_cluster_cache_empty = 0xffffffffu;
-inline constexpr u32 k_cluster_cache_claim = 0xfffffffeu;      // a miss this frame, not yet a slot
-inline constexpr u32 k_cluster_cache_overflow = 0xfffffffdu;   // a miss the cache had no room for
+inline constexpr u32 k_cluster_cache_claim = 0xfffffffeu;     // a miss this frame, not yet a slot
+inline constexpr u32 k_cluster_cache_overflow = 0xfffffffdu;  // a miss nothing had room for
+// A key's value with this bit and under the marks: built this frame in the frame's own set, at the
+// record its low bits name (R114). A slot is always under it (`renderer.rt.cache_slots` stops at
+// 2^31 - 1).
+inline constexpr u32 k_cluster_cache_frame = 0x80000000u;
+inline constexpr u32 k_cluster_cache_miss_bytes = 16;          // a miss's entry in `misses`
 inline constexpr u32 k_cluster_cache_forms = 3;                // keys per cluster
 inline constexpr u32 k_cluster_cache_geometry = 1u << 23;      // a cached structure's index bit
 inline constexpr u32 k_cluster_cache_caster = 1u << 22;        // ... and its caster form's
 inline constexpr u32 k_cluster_cache_max_clusters = 1u << 22;  // a cached mesh's most clusters
 inline constexpr u32 k_cluster_cache_ages = 64;                // the eviction's age histogram
 // free count, eviction threshold, quota, taken, then the histogram — cleared every frame by the
-// ranges' first pass — and then the slots occupied, which a frame with no miss leaves as it was
+// ranges' first pass — and then the slots occupied, which a frame with no miss leaves as it was,
+// and the frame's own records before the misses it builds (R114: the slot scan copies word 0 of the
+// record count there, which `cache_assign_main` then raises)
 inline constexpr u32 k_cluster_cache_scratch_occupied = 4 + k_cluster_cache_ages;
-inline constexpr u32 k_cluster_cache_scratch_words = k_cluster_cache_scratch_occupied + 1;
+inline constexpr u32 k_cluster_cache_scratch_built = k_cluster_cache_scratch_occupied + 1;
+inline constexpr u32 k_cluster_cache_scratch_words = k_cluster_cache_scratch_built + 1;
 inline constexpr u32 k_cluster_cache_workgroup = 64;
 // The args block's words: the slot scan's, the eviction's, the misses' and the pending references'
 // dispatches, three words each, then the pending references' count (R106: a pass with nothing to do
@@ -508,7 +529,9 @@ constexpr u64 cluster_instance_count_words(u32 instance_count) noexcept {
 // instances that lost their drawn clusters, 3 instances that lost their casters; with a cache, 4
 // cached references kept, 5 cached references wanted, 6 misses (keys claimed this frame), 7 misses
 // built into the cache (what its explicit build reads as its count), 8 misses the cache had no
-// room for, 9 slots evicted, 10 slots occupied after the frame, 11 zero.
+// room for — built in the frame's own set since R114, and counted in words 0 and 1 — 9 slots
+// evicted, 10 slots occupied after the frame, 11 of word 8's the frame's set had no room for
+// either, which drew nothing that frame.
 inline constexpr u32 k_cluster_record_count_words = 12;
 constexpr u32 cluster_records_mode(u32 views, bool instantiate, bool drop_scan = false,
                                    bool untraced_drawn = false) noexcept {
