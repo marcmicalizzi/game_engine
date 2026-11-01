@@ -61,6 +61,18 @@ class ViewWorld {
   // One update from `camera`, the log line with it.
   bool update(const renderer::Camera& camera, u64 tick, Mode mode, u32 repeat, u32 frame,
               bool recorded, std::string* error);
+  // **The frame record's `world`** (W82; `engine.scene.FrameWorld`): the last update's wall time on
+  // the frame's thread — the ring, the tiles' building, the commit and the renderer taking it, the
+  // moving ground's re-standing — less the world log's own writing; and the run's counters, whose
+  // difference across a stretch the host times (`add_parts`) names what that stretch spent inside
+  // the placements and the renderer's hand-over. Plain numbers: reading them allocates nothing.
+  f64 last_update_ms() const noexcept { return last_update_ms_; }
+  struct Counters {
+    world::PlacementTilesStats placements;
+    renderer::TileStats tiles;
+  };
+  Counters counters() const noexcept;
+  void add_parts(const Counters& then, scene::FrameWorld& out) const noexcept;
   // The untimed handover pass (`--world-handover`): the path flown one frame at a time, and for
   // every tile an update moves to another representation, the frame drawn as the update left it and
   // with only that tile's instances put back as they were, and the two compared; one
@@ -127,6 +139,8 @@ class ViewWorld {
   // The run's counters before an update, for the log line's `placements` (W81).
   world::PlacementTilesStats placements_before_;
   renderer::TileStats tiles_before_;
+  f64 last_update_ms_ = 0.0;
+  bool whole_builds_ = false;  // the handover pass: every tile built in its event (W82)
 };
 
 }  // namespace engine::view

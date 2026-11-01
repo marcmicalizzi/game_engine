@@ -1547,6 +1547,7 @@ void game_release() {
 }
 bool game_held() { return g_game != nullptr && g_game->held(); }
 u64 game_first_tick() { return g_game != nullptr ? g_game->first_tick() : 0; }
+i64 game_tick_ns() { return g_game != nullptr ? g_game->tick_ns() : 0; }  // FrameWorld::game_ms
 #else
 f32 g_hud_display_scale = 1.0f;  // the loading overlay's, set by the windowed loop
 bool game_draws_loading() { return false; }
@@ -1555,6 +1556,7 @@ void game_hold(u64) {}
 void game_release() {}
 bool game_held() { return false; }
 u64 game_first_tick() { return 0; }
+i64 game_tick_ns() { return 0; }
 void game_loading_call(bool) {}
 void note_game_graphics(const gfx::Device&, const renderer::ResolvedSettings&, u32, u32) {}
 void poll_game() {}
@@ -1652,6 +1654,8 @@ struct PendingFrame {
   std::optional<scene::FrameTerrain> terrain;
   // The walker's ticks of this frame (FrameRecord's `walk`).
   std::optional<scene::FrameWalk> walk;
+  // The host's time between frames, by what it did (FrameRecord's `world`, W82).
+  std::optional<scene::FrameWorld> world;
 };
 constexpr u32 k_pending_frames = 8;  // more than the most frames in flight (3) + 1
 
@@ -1682,6 +1686,7 @@ void take_folded(const renderer::SceneRenderer& renderer, u64& folded,
   record.pose_time = p.pose_time;
   record.terrain = p.terrain;
   record.walk = p.walk;
+  record.world = p.world;
   records.push_back(std::move(record));
   if (present_ids != nullptr) present_ids->push_back(p.present_id);
 }
@@ -2952,8 +2957,10 @@ int run_offscreen(Options& options, Interactive& interactive) {
       break;
     }
     u64 world_tick = 0;
+    // `parts`, when given, gets the frame record's `world` parts this turn spent (W82): the world's
+    // update and what it did inside it, and the ground's frame.
     auto world_before = [&](const renderer::Camera& camera, WorldStep step, u32 repeat, u32 f,
-                            bool recorded) {
+                            bool recorded, scene::FrameWorld* parts = nullptr) {
       const view::ViewWorld::Mode mode = step == WorldStep::restart ? view::ViewWorld::Mode::Restart
                                          : step == WorldStep::complete
                                              ? view::ViewWorld::Mode::Complete
@@ -2961,15 +2968,26 @@ int run_offscreen(Options& options, Interactive& interactive) {
       // The world first: its ring hands the tile set the tiles it holds, which the time-lapse's
       // frame then asks to rebuild (a world without tiles has no terrain levels, and a terrain
       // with levels and no world has no ring, so the order changes nothing else).
+      const view::ViewWorld::Counters then = view_world.counters();
       const bool ok = !view_world.valid() ||
                       view_world.update(camera, world_tick++, mode, repeat, f, recorded, &error);
+      const i64 ground_started = time::monotonic_ns();
       time_lapse.frame(1.0 / view::k_frame_index_hz, camera.position);
+      if (parts != nullptr) {
+        parts->update_ms += view_world.last_update_ms();
+        parts->ground_ms += static_cast<f64>(time::monotonic_ns() - ground_started) / 1.0e6;
+        view_world.add_parts(then, *parts);
+      }
       return ok;
     };
 #else
-    auto world_before = [&](const renderer::Camera& camera, WorldStep, u32, u32, bool) {
+    auto world_before = [&](const renderer::Camera& camera, WorldStep, u32, u32, bool,
+                            scene::FrameWorld* parts = nullptr) {
+      const i64 ground_started = time::monotonic_ns();
       ground.follow_tiles(camera.position);
       time_lapse.frame(1.0 / view::k_frame_index_hz, camera.position);
+      if (parts != nullptr)
+        parts->ground_ms += static_cast<f64>(time::monotonic_ns() - ground_started) / 1.0e6;
       return true;
     };
 #endif
@@ -3057,15 +3075,18 @@ int run_offscreen(Options& options, Interactive& interactive) {
         const i64 start = time::monotonic_ns();
         ENGINE_STARTUP_STAGE("frame");
         profiling::trace_items(f);
+        // The record's `world` (W82): this loop's time outside `begin_frame` and `submit_frame`.
+        scene::FrameWorld world_parts;
         // A streamed world follows the camera a frame behind: the tail changes between frames, and
         // this frame's camera is only known once its ticks have run, after `begin_frame`.
         if (!world_before(session.camera(), f == 0 ? WorldStep::restart : WorldStep::budgeted, 0, f,
-                          true)) {
+                          true, &world_parts)) {
           ok = false;
           break;
         }
         // The game's props, on a frame a prop changed (game_props.h): a tail change is between
         // frames, like the world's.
+        const i64 props_started = time::monotonic_ns();
 #if ENGINE_VIEW_WORLD
         if (!hand_over_game_props(&view_world, view_renderer, &error)) {
 #else
@@ -3074,7 +3095,10 @@ int run_offscreen(Options& options, Interactive& interactive) {
           ok = false;
           break;
         }
+        const i64 begin_started = time::monotonic_ns();
+        world_parts.props_ms = static_cast<f64>(begin_started - props_started) / 1.0e6;
         view_renderer.begin_frame();
+        const i64 begun = time::monotonic_ns();
         take_folded(view_renderer, folded, pending, records);
         startup.frame(readiness());
         const i64 ready = time::monotonic_ns();
@@ -3083,7 +3107,11 @@ int run_offscreen(Options& options, Interactive& interactive) {
         walker.set_drawn(drawn_ground(time_lapse, scene_data));
         poll_game();  // a rebuilt game module, between this frame's ticks and the last's
         walk_probe.begin(time_lapse.recentre_stage());
+        const i64 ticks_started = time::monotonic_ns();
+        const i64 game_before = game_tick_ns();
         cursor = session.run(interactive.log.events(), cursor, SimTick{to});
+        world_parts.ticks_ms = static_cast<f64>(time::monotonic_ns() - ticks_started) / 1.0e6;
+        world_parts.game_ms = static_cast<f64>(game_tick_ns() - game_before) / 1.0e6;
         const scene::FrameWalk walked = walk_probe.end();
         renderer::FrameDesc frame;
         frame.camera = session.camera();
@@ -3092,6 +3120,7 @@ int run_offscreen(Options& options, Interactive& interactive) {
         set_clocks(frame);
         frame.overlay = game_hud_overlay(view_renderer);  // the game's HUD, when it has one
         animate_frame(frame, 0);                          // the ticks above stepped the world
+        const i64 before_submit = time::monotonic_ns();
         if (view_renderer.submit_frame(frame, &error) == 0) {
           ok = false;
           break;
@@ -3102,6 +3131,14 @@ int run_offscreen(Options& options, Interactive& interactive) {
         p.terrain = renderer::frame_terrain(time_lapse);
         p.walk.reset();
         if (walker.available()) p.walk = walked;
+        // Everything but `begin_frame` and `submit_frame`, from the top of the loop; its parts were
+        // timed above, and what they leave is `other`.
+        world_parts.total_ms =
+            static_cast<f64>((begin_started - start) + (before_submit - begun)) / 1.0e6;
+        world_parts.other_ms =
+            world_parts.total_ms - (world_parts.update_ms + world_parts.ground_ms +
+                                    world_parts.props_ms + world_parts.ticks_ms);
+        p.world = world_parts;
         p.ticks = static_cast<u32>(session.tick().value - before_tick);
         p.time = static_cast<f64>(session.tick().value) / static_cast<f64>(tick_hz);
         p.cpu_ms = static_cast<f64>(time::monotonic_ns() - ready) / 1.0e6;
@@ -3171,7 +3208,7 @@ int run_offscreen(Options& options, Interactive& interactive) {
             step.warmup == 0 || (hook->no_warmup && step.recorded && step.frame == 0);
         const bool ok =
             (*hook->before)(step.camera, first_step ? WorldStep::restart : WorldStep::budgeted,
-                            step.repeat, step.frame, step.recorded);
+                            step.repeat, step.frame, step.recorded, step.world);
         const u32 at = step.repeat * hook->frames + step.frame;
         if (step.recorded && at < hook->terrain->size()) {
           // The record's time-lapse state is the benchmark's, not the frame loop's.
@@ -3181,6 +3218,7 @@ int run_offscreen(Options& options, Interactive& interactive) {
         return ok;
       };
       flight_options.before_frame_context = &world_hook;
+      flight_options.measure_world = true;  // the record's `world` (W82)
       renderer::Flight flight;
       if (!renderer::fly_camera_path(view_renderer, path, flight_options, flight, &error)) {
         exit_code = fail("frame", error);
@@ -6072,6 +6110,9 @@ int run_view(int argc, char** argv) {
         }
         ++inject_cursor;
       }
+      // The record's `world` (W82): the loop's time outside `begin_frame`, the waits and
+      // `submit_frame`, by what it did; the window's input first.
+      scene::FrameWorld world_parts;
       window::Event event;
       while (window.poll(event)) {
         // ---- Alt+Enter: the window's, not the game's -----------------------------------------
@@ -6163,6 +6204,7 @@ int run_view(int argc, char** argv) {
         pointer_gate.captured = pointer_captured;
         if (live) edge.add(event, session.next(), pointer_gate.looking(event));
       }
+      world_parts.input_ms = static_cast<f64>(time::monotonic_ns() - frame_start) / 1.0e6;
       if (!running) break;
 
       // Hot reload: recompile edited shaders four times a second and rebuild every pipeline.
@@ -6199,6 +6241,7 @@ int run_view(int argc, char** argv) {
 #if ENGINE_VIEW_WORLD
       // The streamed world from the last frame's camera, before this frame begins: the first
       // frame fills the ring whole round where the camera starts.
+      const view::ViewWorld::Counters world_then = view_world.counters();
       if (view_world.valid() && world_camera_set &&
           !view_world.update(
               world_camera, rendered,
@@ -6207,11 +6250,17 @@ int run_view(int argc, char** argv) {
         exit_code = fail("world", error);
         break;
       }
+      world_parts.update_ms =
+          view_world.valid() && world_camera_set ? view_world.last_update_ms() : 0.0;
+      view_world.add_parts(world_then, world_parts);
 #else
+      const i64 world_started = time::monotonic_ns();
       ground.follow_tiles(terrain_camera.position);
+      world_parts.ground_ms = static_cast<f64>(time::monotonic_ns() - world_started) / 1.0e6;
 #endif
       // The game's props, on a frame a prop changed (game_props.h): between frames, after the
       // world's own update so the two go over as one tail where there is a world.
+      const i64 props_started = time::monotonic_ns();
 #if ENGINE_VIEW_WORLD
       if (!hand_over_game_props(&view_world, view_renderer, &error)) {
 #else
@@ -6225,8 +6274,11 @@ int run_view(int argc, char** argv) {
       // timed on its own, because which of them a frame's time went to is the whole question
       // presentation pacing asks (docs/subsystems/apps.md, "Pacing").
       // The rings follow the last frame's camera, as the streamed world does.
+      const i64 ground_started = time::monotonic_ns();
+      world_parts.props_ms = static_cast<f64>(ground_started - props_started) / 1.0e6;
       time_lapse.frame(1.0 / view::k_frame_index_hz, terrain_camera.position);
       const i64 before_waits = time::monotonic_ns();
+      world_parts.ground_ms += static_cast<f64>(before_waits - ground_started) / 1.0e6;
       view_renderer.begin_frame();
       const i64 slot_free = time::monotonic_ns();
       if (window_records) {
@@ -6284,6 +6336,8 @@ int run_view(int argc, char** argv) {
         walker.set_drawn(drawn_ground(time_lapse, scene_data));
         poll_game();  // a rebuilt game module, between the last frame's ticks and this one's
         walk_probe.begin(time_lapse.recentre_stage());
+        const i64 ticks_started = time::monotonic_ns();
+        const i64 game_before = game_tick_ns();
         if (interactive.replay) {
           replay_cursor = session.run(interactive.log.events(), replay_cursor, SimTick{to});
         } else {
@@ -6325,6 +6379,8 @@ int run_view(int argc, char** argv) {
           pointer_gate.relative = window.relative_mouse();
           pointer_gate.relative_since_ns = window.relative_mouse_since_ns();
         }
+        world_parts.ticks_ms = static_cast<f64>(time::monotonic_ns() - ticks_started) / 1.0e6;
+        world_parts.game_ms = static_cast<f64>(game_tick_ns() - game_before) / 1.0e6;
         ticks_this_frame = static_cast<u32>(session.tick().value - before);
         // The time-lapse keys at the ticks they were pressed on — live, and in a replay in the
         // window, which presses them where its recording did (an offscreen replay never reaches
@@ -6535,6 +6591,16 @@ int run_view(int argc, char** argv) {
           p.pace_ms = static_cast<f64>(paced_ns) / 1.0e6;
           p.pace_depth = paced_depth;
           p.submit_ms = static_cast<f64>(submitted_ns - before_submit) / 1.0e6;
+          // The world section: the CPU's share less the renderer's submission, by its parts.
+          world_parts.total_ms =
+              static_cast<f64>((before_waits - frame_start) + (before_acquire - slot_free) +
+                               (before_submit - after_waits)) /
+              1.0e6;
+          world_parts.other_ms =
+              world_parts.total_ms -
+              (world_parts.update_ms + world_parts.ground_ms + world_parts.props_ms +
+               world_parts.ticks_ms + world_parts.input_ms);
+          p.world = world_parts;
           p.present_ms = 0.0;  // after the present, below
           p.present_id = 0;
           p.pose = drawn;

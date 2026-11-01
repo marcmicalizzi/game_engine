@@ -275,6 +275,12 @@ struct TileStats {
   // (`GpuScene::relayout`), and the wall time they took, the wait included.
   u64 relayouts = 0;
   f64 relayout_ns = 0.0;
+  // The props' fires placed over the new tail, and the far forest's hand-off — every world tile's
+  // far instance parked or stood — of which `GpuScene::place_instances` is `place_ns` (W82: the
+  // frame record's `world` names each).
+  f64 fires_ns = 0.0;
+  f64 far_ns = 0.0;
+  f64 place_ns = 0.0;
   u64 table_frames = 0;
   u64 table_slots = 0;
   u64 table_pairs = 0;

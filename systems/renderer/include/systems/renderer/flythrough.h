@@ -53,6 +53,10 @@ struct FlightStep {
   u32 warmup = ~0u;       // its place in its repeat's warm-up, or ~0 for a path frame or the drain
   bool recorded = false;  // a path frame whose numbers the flight records
   Camera camera;          // the camera the frame is drawn from
+  // With `FlightOptions::measure_world`: the frame record's `world` (W82), whose parts the hook
+  // fills — the world's update, the ground's frame — and whose `total_ms` and `other_ms` the flight
+  // fills from the hook's own wall time. Null otherwise.
+  scene::FrameWorld* world = nullptr;
 };
 // Called before every submission, warm-ups and the drain included, between two frames: where a
 // host that changes the scene as the camera moves — a streamed world (docs/subsystems/world.md) —
@@ -91,6 +95,10 @@ class FlightBookkeeping {
 struct FlightOptions {
   FlightHook before_frame = nullptr;
   void* before_frame_context = nullptr;
+  // Each record carries `world`: the hook's wall time as `total_ms`, split by the parts the hook
+  // names in `FlightStep::world` and the rest as `other_ms` (W82). A flight's `cpu_ms` stays the
+  // renderer's own; the hook's turn is in `frame_ms`, and now named beside it.
+  bool measure_world = false;
   u32 frames = 0;
   u32 repeats = 1;
   u32 warmup = 0;  // frames at the path's first camera before every repeat

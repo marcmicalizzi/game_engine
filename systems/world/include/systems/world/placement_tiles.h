@@ -78,6 +78,15 @@ struct PlacementTilesStats {
   // numbering, `scene_gen::Placements::kind`), and their wall time.
   u64 built[k_placement_kinds] = {};
   i64 build_ns[k_placement_kinds] = {};
+  // Every tile built for the ring (activated, moved between rings that draw it differently, or
+  // re-stood), whatever its generators put on it, and the whole build's wall time: the generators'
+  // calls above and the tile's pair count after them (W82: the frame record's `world.tiles_ms`).
+  u64 tiles_built = 0;
+  i64 tiles_ns = 0;
+  // With a build budget (`set_build_budget`): the activations and redrawing ring changes whose
+  // build waited for a later commit, over the run; and now, the held tiles still waiting.
+  u64 deferred = 0;
+  u32 pending = 0;
   u64 dropped = 0;   // tiles whose instances were dropped
   u64 refused = 0;   // tiles the pair budget withheld: each time one new or drawn is not drawn
   u64 failures = 0;  // generator or sink failures
@@ -190,6 +199,25 @@ class PlacementTiles {
   u32 restand(f64 surface_time_s, u32 budget);
   f64 stand_time() const noexcept { return stand_time_; }
 
+  // **The build budget** (W82; world.md, "The consumers"): with `budget` above zero, a tile that
+  // activates — or moves to a ring that draws it differently — is not built in the event: it is
+  // held as due, and each commit builds at most `budget` due tiles, by ring, innermost first, then
+  // nearest, then in tile order (the pair budget's order), before it admits the tail. A due tile
+  // draws what it held (a ring change's old representation) or nothing (a new tile) until its
+  // build. Zero, the default, builds every tile in its event, as before. Which tiles a commit
+  // builds is a function of the tiles held, their rings, the observers and the budget, never of
+  // timing, so the tail is too. A host brackets each update of the world with `begin_update`, the
+  // budget for it — zero for an update that must be whole (a restart, a capture's complete fill),
+  // the tunable's otherwise — and `end_update`, which commits the next due tiles when the world
+  // committed nothing (it commits only a consumer an event touched, and a camera that stopped
+  // after a burst touches none). Returns the tiles `end_update` built.
+  void begin_update(u32 budget) noexcept {
+    build_budget_ = budget;
+    committed_ = false;
+  }
+  u32 end_update();
+  u32 build_budget() const noexcept { return build_budget_; }
+
   // **A query's tile** (world.md "The consumers", "Placements answered from the scene"; apps.md
   // "The game contract"; roadmap P44): the tile's placements as a function of the scene alone — the
   // first `entries` streamed entries in the scene's order, in the **innermost ring's**
@@ -213,6 +241,10 @@ class PlacementTiles {
   struct TileBlock {
     u8 ring = k_inactive;
     bool withheld = false;  // held, and left out of the tail by the pair budget
+    // With a build budget: its instances are not its ring's yet (`due`), and it was never built
+    // since it activated, so it holds none (`fresh`) and is not drawn.
+    bool due = false;
+    bool fresh = false;
     u32 pairs = 0;
     u32 buildings = 0;
     Vector<renderer::SceneInstance> instances;
@@ -232,7 +264,12 @@ class PlacementTiles {
   bool build(TileCoord tile, u8 ring, TileBlock& out, u32 entries = ~0u, bool for_query = false);
   bool take(const TileEvent& event);
   void recycle(u64 key, TileBlock&& block);
+  void build_due();
+  void commit_tail();  // a commit past `build_due`: the admission, the runs, the sink
   void admit();
+  u32 build_budget_ = 0;
+  bool committed_ = false;  // this update's world committed (`begin_update`, `end_update`)
+  Vector<u64> emptied_;     // build_due's: tiles whose build came out empty
   // The query cache: a tile's instances and how many entries made them.
   struct QueryTile {
     u32 entries = 0;

@@ -4,6 +4,7 @@
 
 #include <core/json/json.h>
 #include <core/schema/json_reflect.h>
+#include <core/time/time.h>
 #include <foundation/hotload/module_host.h>
 #include <foundation/image/decode.h>
 #include <foundation/io/vfs.h>
@@ -207,6 +208,7 @@ struct GameRunner::Impl {
   bool held = false;
   u64 hold_until = 0;
   u64 held_ticks = 0;
+  i64 tick_ns = 0;  // the module's ticks' wall time (`GameRunner::tick_ns`)
   u64 first_tick = 0;
   bool ticked = false;
   u64 loading_calls = 0;
@@ -1264,8 +1266,12 @@ void GameRunner::observe(void* user, const FlySession& session, const input::Inp
   in.sun_faster = session.control_presses(ViewControl::sun_faster);
   in.world_slower = session.control_presses(ViewControl::dunes_slower);
   in.world_faster = session.control_presses(ViewControl::dunes_faster);
+  const i64 started = time::monotonic_ns();
   self.tick(in);
+  g.tick_ns += time::monotonic_ns() - started;
 }
+
+i64 GameRunner::tick_ns() const noexcept { return impl_->tick_ns; }
 
 bool GameRunner::has_loading() const noexcept { return impl_->host && impl_->game_loading.valid(); }
 
