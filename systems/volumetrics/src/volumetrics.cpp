@@ -513,6 +513,14 @@ f32 flame_rise_m_s(f32 radius_m) noexcept {
   return flame_puff_hz(radius_m) * 2.0f * radius_m;
 }
 
+f32 flame_top(f32 radius_m, f32 height_m) noexcept {
+  if (!(radius_m > 0.0f) || !(height_m > 0.0f)) return k_flame_top_min;
+  // Heskestad: Q^(2/5) = (L + b D) / a; McCaffrey's intermittent region ends at 0.2 of it.
+  const f32 q25 = (height_m + k_flame_heskestad_b * 2.0f * radius_m) / k_flame_heskestad_a;
+  const f32 top = k_flame_intermittent_end * q25 / height_m;
+  return std::min(std::max(top, k_flame_top_min), k_flame_top_max);
+}
+
 f32 fire_march_weight(f64 distance_m, f32 radius_m) noexcept {
   const f64 far = static_cast<f64>(k_fire_march_widths) * 2.0 * 1.6 * static_cast<f64>(radius_m);
   const f64 near = far * (1.0 - static_cast<f64>(k_fire_march_blend));
@@ -545,7 +553,7 @@ MediumFire medium_fire(const renderer::FrameFire& fire, const WorldPos& eye, con
   const WorldPos light =
       fire.base + DVec3{0.0, static_cast<f64>(renderer::k_fire_light_height * fire.height_m), 0.0};
   out.light = Vec4{relative(light, eye), fire.reach_m};
-  out.light_rgb = Vec4{fire.color * fire.intensity, 0.0f};
+  out.light_rgb = Vec4{fire.color * fire.intensity, flame_top(fire.radius_m, fire.height_m)};
   out.smoke = Vec4{k_smoke_extinction_per_m * fire.smoke_density, fire.smoke_rise_m_s,
                    fire.smoke_spread, k_smoke_fade_m};
   const Vec2 w = wind.direction * (wind.speed_mps * k_smoke_wind);
@@ -614,6 +622,58 @@ f32 smoke_cell(const MediumFire& f, const Vec3& dir, f32 t0, f32 t1, const Vec3&
   const f32 u = std::clamp((s - a) / (0.0f - a), 0.0f, 1.0f);
   const f32 rise_in = u * u * (3.0f - 2.0f * u);
   return f.smoke.x * (r0 * r0 / sigma2) * fade * rise_in * mean;
+}
+
+namespace {
+
+// medium.slang's `fire_noise`: value noise whose lattice wraps at `period` cells on y only.
+f32 fire_noise(f32 x, f32 y, f32 z, i32 period, u32 seed) noexcept {
+  const f32 fx = std::floor(x), fy = std::floor(y), fz = std::floor(z);
+  const i32 ix = static_cast<i32>(fx), iy = static_cast<i32>(fy), iz = static_cast<i32>(fz);
+  f32 tx = x - fx, ty = y - fy, tz = z - fz;
+  tx = tx * tx * (3.0f - 2.0f * tx);
+  ty = ty * ty * (3.0f - 2.0f * ty);
+  tz = tz * tz * (3.0f - 2.0f * tz);
+  f32 c[8];
+  for (u32 k = 0; k < 8; ++k) {
+    c[k] = unit(cloud_hash(ix + static_cast<i32>(k & 1u),
+                           wrap(iy + static_cast<i32>((k >> 1) & 1u), period),
+                           iz + static_cast<i32>(k >> 2), seed));
+  }
+  const f32 x00 = c[0] + (c[1] - c[0]) * tx, x10 = c[2] + (c[3] - c[2]) * tx;
+  const f32 x01 = c[4] + (c[5] - c[4]) * tx, x11 = c[6] + (c[7] - c[6]) * tx;
+  const f32 y0 = x00 + (x10 - x00) * ty, y1 = x01 + (x11 - x01) * ty;
+  return y0 + (y1 - y0) * tz;
+}
+
+}  // namespace
+
+f32 flame_density(const MediumFire& f, const Vec3& x) noexcept {
+  const f32 dx = x.x - f.base.x, dy = x.y - f.base.y, dz = x.z - f.base.z;
+  const f32 height = f.flame.x;
+  const f32 h = dy / height;
+  const f32 top = f.light_rgb.w;
+  if (h < -0.05f || h > top) return 0.0f;
+  const f32 radius = f.base.w;
+  const f32 reach = 1.6f * radius;  // `k_flame_reach` in the shader
+  if (dx * dx + dz * dz > reach * reach) return 0.0f;
+  const f32 cell = f.flame.w;
+  const i32 period = static_cast<i32>(k_flame_noise_period);
+  const f32 qx = dx / cell, qy = dy / f.wind.w - f.flame.z, qz = dz / cell;
+  const u32 seed = f.ids[0];
+  const f32 n = 0.65f * fire_noise(qx, qy, qz, period, seed) +
+                0.35f * fire_noise(2.0f * qx, 2.0f * qy, 2.0f * qz, 2 * period, seed + 1u);
+  const f32 sway_scale = 1.1f * radius * saturate(h);
+  const f32 sx =
+      (fire_noise(qx * 0.35f, qy * 0.35f, qz * 0.35f, period, seed + 2u) - 0.5f) * sway_scale;
+  const f32 sz =
+      (fire_noise(qx * 0.35f, qy * 0.35f, qz * 0.35f, period, seed + 3u) - 0.5f) * sway_scale;
+  const f32 r = std::sqrt((dx - sx) * (dx - sx) + (dz - sz) * (dz - sz)) / radius;
+  const f32 envelope = (0.75f + 0.25f * smoothstep(0.0f, 0.2f, h)) *
+                       std::pow(saturate(k_flame_envelope_end - h), 0.8f);
+  const f32 shape = envelope - r + (n - 0.5f) * (0.35f + 0.9f * saturate(h));
+  return saturate(shape * 1.6f) * smoothstep(-0.05f, 0.03f, h) *
+         (1.0f - smoothstep(k_flame_envelope_end, top, h));
 }
 
 f32 smoke_density(const MediumFire& f, const Vec3& x) noexcept {
