@@ -621,6 +621,33 @@ inline f32 panini_oversample(f32 d, f32 half_fov_x) noexcept {
 // their brightness (docs/subsystems/renderer.md, "The sky above, the ground below").
 inline constexpr f32 k_neutral_ground_albedo = 0.2f;
 
+// **The resolve's split** (`ResolveParams::resolve_stop`; docs/subsystems/renderer.md, "Where the
+// resolve's time goes"; roadmap R115). A measurement word, never a picture: the resolve is one
+// pass, so a timer cannot divide it, and a frame drawn with the word set ends each pixel's work
+// after the named stage and writes what it has. One frame per stage is then the pass's cost as a
+// cumulative curve, stage on stage, in the order the shader does them. `None` is the picture, and
+// it is the only value anything but a measurement sets. The word is read once per pixel and every
+// test of it is uniform over the draw.
+enum class ResolveStop : u32 {
+  None = 0,  // everything, the water last: the picture
+  // The visibility word and the pair table: the (instance, cluster) colour, empty pixels the
+  // stand-in's flat sky.
+  Decode = 1,
+  Reconstruct = 2,  // + the triangle's corners and attributes at the pixel: the shading normal
+  // + the material: its UV transform and derivatives, its textures, the normal map, the ground's
+  // detail: the albedo.
+  Material = 3,
+  // + the BSDF: the sun, the lights and the ambient (a sky's light and its harmonics), every light
+  // unshadowed, before the air.
+  Lighting = 4,
+  SunShadow = 5,     // + the sun's shadow query
+  LightShadows = 6,  // + the lights' shadow queries
+  // + the air between the eye and the surface, the exposure, and the physical sky behind an empty
+  // pixel. What is left after it is the water: the open sea's plane and the water materials.
+  Sky = 7,
+};
+inline constexpr u32 k_resolve_stops = 8;
+
 // Mirrors ResolveParams in visibility_resolve.slang. 480 bytes.
 struct ResolveParams {
   Vec4 sky{};  // rgb shown for empty pixels, and the hemisphere ambient's upper half
@@ -798,7 +825,18 @@ struct ResolveParams {
   // branch at the plane's point. A new 16-byte row: the block grew from 464 to 480 bytes.
   u32 water_open_instance = 0xffffffffu;
   u32 water_open_material = 0;
-  u32 water_open_pad[2] = {0, 0};
+  // **The resolve's split** (`ResolveStop`, above; R115): 0 draws the picture, and anything else is
+  // a measurement. Every module declares it (the plain ones pad the open sea's two words in front
+  // of it). It took the row's first pad word, so the block is still 480 bytes.
+  u32 resolve_stop = 0;
+  // **A light too faint to test** (renderer.md, "A light too faint to test"; R115, after Ward's
+  // adaptive shadow testing, 1991): with the lights' shadows traced, a light whose unshadowed
+  // contribution to the pixel is at most this fraction of the pixel's luminance from the sun, the
+  // ambient and the emission is added at the visibility the pixel's own sun ray found, and no ray
+  // is traced for it. 0 traces every light, which is what a block a caller fills itself gets; the
+  // renderer sets `renderer.shadow.light_tolerance` (2^-12). It took the row's last pad word, so
+  // the block is still 480 bytes.
+  f32 light_tolerance = 0.0f;
 };
 // `ResolveParams::water_open_instance` when the scene has no open water.
 inline constexpr u32 k_no_water_open = 0xffffffffu;

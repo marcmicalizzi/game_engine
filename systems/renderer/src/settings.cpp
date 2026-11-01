@@ -10,6 +10,7 @@
 #include <systems/renderer/view_set.h>
 
 #include <algorithm>
+#include <iterator>
 
 namespace engine::renderer {
 
@@ -236,6 +237,28 @@ tunables::Bool shadow_opaque_rays{
     "renderer.shadow.opaque_rays", false,
     "Measurement only: the shadow rays treat every caster as opaque, so an alpha-tested leaf "
     "casts its whole card (renderer.md, Rays near, maps far)"};
+// A measurement switch, never a default (R115): the resolve ends its work after the named stage,
+// so its milliseconds split by stage (renderer.md, "Where the resolve's time goes"). The choices
+// are indexed by `gfx::ResolveStop`, and `cycle`, one past them, steps through every stage a frame
+// at a time — frame f draws stage f % k_resolve_stops — so one flight measures the whole curve.
+constexpr const char* k_resolve_stop_choices[] = {"none",          "decode",   "reconstruct",
+                                                  "material",      "lighting", "sun_shadow",
+                                                  "light_shadows", "sky",      "cycle"};
+static_assert(std::size(k_resolve_stop_choices) == gfx::k_resolve_stops + 1);
+tunables::Enum<gfx::ResolveStop> resolve_stop_after{
+    "renderer.resolve.stop_after", gfx::ResolveStop::None, k_resolve_stop_choices,
+    "Measurement only: the resolve ends each pixel's work after this stage and writes what it has "
+    "(none: the picture; cycle: frame f stops after stage f % 8; renderer.md, Where the resolve's "
+    "time goes)"};
+// R115: a light whose contribution is this small a fraction of the rest of the pixel's light is not
+// tested for its shadow (renderer.md, "A light too faint to test"; Ward 1991). 2^-12 is a
+// thirty-sixth of the finest code step of the 8-bit and the PQ encodes (0.87% and 0.90%), so six
+// lights skipped at the bound move a pixel a sixth of a step.
+tunables::Float shadow_light_tolerance{
+    "renderer.shadow.light_tolerance", 1.0 / 4096.0, 0.0, 1.0,
+    "A traced light whose unshadowed contribution is at most this fraction of the pixel's light "
+    "from the sun, the ambient and the emission takes the sun ray's answer instead of a ray of its "
+    "own; 0 traces every light (renderer.md, A light too faint to test)"};
 // R97: a normal map's variance chain widens the GGX roughness (renderer.md, "Normal filtering").
 tunables::Bool material_normal_filter{
     "renderer.material.normal_filter", true,
@@ -254,6 +277,14 @@ tunables::Bool shadow_hybrid_fit{
 }  // namespace
 
 bool shadow_opaque_rays_tunable() noexcept { return shadow_opaque_rays.get(); }
+f32 shadow_light_tolerance_tunable() noexcept {
+  return static_cast<f32>(shadow_light_tolerance.get());
+}
+u32 resolve_stop_tunable(u64 frame_index) noexcept {
+  const u32 choice = static_cast<u32>(resolve_stop_after.get());
+  if (choice < gfx::k_resolve_stops) return choice;
+  return static_cast<u32>(frame_index % gfx::k_resolve_stops);
+}
 bool normal_filter_tunable() noexcept { return material_normal_filter.get(); }
 f32 shadow_rest_texels_tunable() noexcept { return static_cast<f32>(shadow_rest_texels.get()); }
 bool shadow_hybrid_fit_tunable() noexcept { return shadow_hybrid_fit.get(); }

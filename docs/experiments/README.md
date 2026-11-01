@@ -6,6 +6,7 @@ A write-up is not a benchmark log. It is the page a future contributor reads ins
 
 | Experiment | Page | Settles |
 |---|---|---|
+| R115 | [forest-resolve-2026-11-01.md](forest-resolve-2026-11-01.md) | Where the v24 forest's resolve goes at 11520×2160 and 3840×2160 under traced shadows, by stage at three poses (RTX 5090, shared machine, machine state quoted). The shadows are three quarters of it: the moon's and the campfire's rays carry nothing in daylight and cost 12–15 ms, the sun's ray 11–19 ms, 85% of that its alpha masks, and the material 5–6 ms. The levers are ranked by what they return. The first, Ward's adaptive shadow testing, gave back 12.4–15.4 ms of the resolve and moved 0.01% of the pixels by one code. |
 | S93 | [ocean-surface.md](ocean-surface.md) | Wind-wave grounding (dispersion, Phillips, Pierson–Moskowitz, JONSWAP, TMA, Mitsuyasu and Donelan–Banner spreading, Tessendorf and Horvath synthesis, web-ocean read as a reference) and the design: the sea to the horizon as an analytic plane in the resolve (built), Gerstner waves from JONSWAP, FFT cascades, underwater |
 | G104 | [deadwood-surfaces.md](deadwood-surfaces.md) | Native grain/decay/fracture materials, coherent bark loss and a visible tree-to-tree support study |
 | G103 | [forest-litter.md](forest-litter.md) | Forest-floor particle sizes, shared wood geometry and accumulation proxies |
