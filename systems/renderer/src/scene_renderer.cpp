@@ -2573,6 +2573,9 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
     // modules read.
     resolve.water_open_instance = scene.water_open_instance();
     resolve.water_open_material = scene.water_open_material();
+    // The resolve's split (R115; renderer.md, "Where the resolve's time goes"): 0, the picture,
+    // unless `renderer.resolve.stop_after` measures a stage.
+    resolve.resolve_stop = resolve_stop_tunable(frame.frame_index);
     // The ground below the hemisphere's horizon: the scene's, shared with the reference like the
     // sun and the sky, so its escaped rays see the ground this term stands for.
     resolve.ground = lighting.ground;
@@ -2637,6 +2640,9 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
     }
     resolve.shadow_bias = lighting.shadow_bias;
     resolve.shadow_bias_steps = lighting.shadow_bias_steps;
+    // A light too faint to test (R115; renderer.md): read by the resolve only while the lights'
+    // shadows are traced, and 0 traces every light.
+    resolve.light_tolerance = shadow_light_tolerance_tunable();
     if (resolved_.hybrid) {
       // **Rays near, maps far** (R102): every light is traced as above within the ray distance of
       // this view's eye, and past it plus the band the maps answer for the light they follow and

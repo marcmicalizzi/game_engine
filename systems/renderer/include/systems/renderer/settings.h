@@ -489,6 +489,15 @@ bool parse_water_quality(std::string_view text, WaterQuality& out) noexcept;
 // `renderer.shadow.opaque_rays` (false), a measurement switch: the shadow rays force every caster
 // opaque, so the alpha-tested masks are not evaluated (renderer.md, "Rays near, maps far").
 bool shadow_opaque_rays_tunable() noexcept;
+// `renderer.resolve.stop_after` (none), a measurement switch: the `gfx::ResolveStop` the frame of
+// that index draws its resolve to — the tunable's stage, or under `cycle` the frame index modulo
+// `gfx::k_resolve_stops` — and 0, the picture, by default (R115; renderer.md, "Where the resolve's
+// time goes").
+u32 resolve_stop_tunable(u64 frame_index) noexcept;
+// `renderer.shadow.light_tolerance` (2^-12): `gfx::ResolveParams::light_tolerance`, the share of a
+// pixel's other light below which a traced light is not tested for its shadow (R115; renderer.md,
+// "A light too faint to test"). 0 traces every light.
+f32 shadow_light_tolerance_tunable() noexcept;
 // `renderer.material.normal_filter` (true), read once per scene at its material upload: a built
 // normal map's normal-variance chain is uploaded beside it and widens the GGX roughness by what the
 // pixel's footprint no longer resolves (R97; renderer.md, "Normal filtering"). False uploads no

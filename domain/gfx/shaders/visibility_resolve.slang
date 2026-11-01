@@ -73,7 +73,7 @@
 // the visibility buffer. A **Panini** view goes one step further: its region holds a wider
 // rectilinear picture, and `panini_x`/`source_x`/`panini_d` map each output pixel back into it.
 //
-// Read through a device address; mirrors gfx::ResolveParams (448 bytes).
+// Read through a device address; mirrors gfx::ResolveParams (480 bytes).
 struct ResolveParams {
   float4 sky;     // rgb, shown for empty pixels and the hemisphere ambient's upper half
   float4 sun;     // xyz normalized direction towards the light, w intensity
@@ -154,13 +154,37 @@ struct ResolveParams {
   uint shadow_opaque_coverage;
   // The open sea (gfx::ResolveParams::water_open_*; docs/subsystems/water.md, "To the horizon"):
   // the open body's instance (0xffffffff: none) and its water material's index. Only the water
-  // modules declare the row, so the plain ones are the bytes they were.
+  // modules name the two words; the plain ones pad them, for the split's word behind them.
 #ifdef RESOLVE_WATER
   uint water_open_instance;
   uint water_open_material;
-  uint2 water_open_pad;
+#else
+  uint2 water_open_unread;
 #endif
+  // The resolve's split (gfx::ResolveStop; R115, renderer.md "Where the resolve's time goes"): 0
+  // draws the picture; a measurement ends each pixel's work after that stage (`g_stop`, below).
+  uint resolve_stop;
+  // A light too faint to test (renderer.md; R115): the share of the pixel's other light at or below
+  // which a traced light takes the sun query's answer instead of a ray; 0 traces every light.
+  float light_tolerance;
 };
+
+// **The resolve's split** (gfx::ResolveStop; renderer.md, "Where the resolve's time goes"; R115).
+// The pass is one draw, so its time is divided by frames that end each pixel's work after a named
+// stage and write what they have: the stages below in the order the shader does them, the water
+// last, after the air. `g_stop` is the word, read once per pixel by the entry point; 0 is the
+// picture, and every test of it is uniform over the draw.
+static const uint k_stop_decode = 1u;
+static const uint k_stop_reconstruct = 2u;
+static const uint k_stop_material = 3u;
+static const uint k_stop_lighting = 4u;
+static const uint k_stop_sun_shadow = 5u;
+static const uint k_stop_light_shadows = 6u;
+static const uint k_stop_sky = 7u;
+static const uint k_stop_water = 8u;  // never a word: what only the picture (0) does
+static uint g_stop = 0u;
+// Whether this frame leaves `stage` out: it stops at a stage before it.
+bool stop_skips(uint stage) { return g_stop != 0u && g_stop < stage; }
 
 // The resolved pixel, for the cross-fade's hash in the shadow rays (ade_keeps): set once by the
 // entry point, so the shading functions between need no new parameter.
@@ -238,6 +262,8 @@ struct FullscreenOut {
 // is not: it has no gradient to band, and it is the clear the pass already wrote.
 float4 sky_pixel(ResolveParams* params, float2 source, uint2 pixel) {
   if (params->mode == 11 || params->mode == 12) return float4(0, 0, 0, 1);
+  // The split before the sky's stage: the stand-in's flat colour, written (R115).
+  if (stop_skips(k_stop_sky)) return params->sky;
   if (params->sky_params == 0) {
     if (params->sky_is_clear != 0) discard;
     return params->sky;
@@ -827,7 +853,9 @@ bool open_water_pixel(ResolveParams* params, float2 source, uint2 noise_pixel, b
 // An empty pixel: the open sea where its ray looks down at it, the sky otherwise.
 float4 empty_pixel(ResolveParams* params, float2 source, uint2 noise_pixel) {
   float4 sea;
-  if (open_water_pixel(params, source, noise_pixel, false, 0.0, float3(0.0), sea)) return sea;
+  if (!stop_skips(k_stop_water) &&
+      open_water_pixel(params, source, noise_pixel, false, 0.0, float3(0.0), sea))
+    return sea;
   return sky_pixel(params, source, noise_pixel);
 }
 #endif
@@ -835,6 +863,7 @@ float4 empty_pixel(ResolveParams* params, float2 source, uint2 noise_pixel) {
 [shader("fragment")]
 float4 fs_resolve(FullscreenOut in) : SV_Target {
   ResolveParams* params = (ResolveParams*)g_push.params;
+  g_stop = params->resolve_stop;
   // SV_Position is in the target's pixels; this view's rectangle starts at (view_x, view_y).
   // Without a resample the picture's extent *is* the source's, so `out_width` and `out_height` are
   // read only where they can differ — which is why a caller that draws one rectilinear view fills
@@ -916,6 +945,7 @@ float4 fs_resolve(FullscreenOut in) : SV_Target {
     case 2: return float4(depth, depth, depth, 1.0);
     default: break;
   }
+  if (g_stop == k_stop_decode) return float4(id_color(entry), depth);
   const SceneGeometry geo = geometry_of(params);
   InstanceDesc* instances = (InstanceDesc*)params->instances;
   const InstanceDesc instance = instances[entry.x];
@@ -928,6 +958,9 @@ float4 fs_resolve(FullscreenOut in) : SV_Target {
                                        params->view_proj, params->camera.xyz, params->width,
                                        params->height, from_eye);
   if (params->mode == 4) return float4(s.normal * 0.5 + 0.5, 1.0);
+  if (g_stop == k_stop_reconstruct) {
+    return float4(s.normal * 0.5 + 0.5 + s.geometric * 0.125, frac(s.uv.x + s.uv.y));
+  }
   // A world tile's UVs are from its corner (gfx::k_instance_uv_from_corner): the corner's place in
   // the scene grid's UV frame puts them back in the frame its maps are baked over. A constant per
   // instance, so the derivatives below are the interpolated UVs' own.
@@ -940,7 +973,7 @@ float4 fs_resolve(FullscreenOut in) : SV_Target {
 #ifdef RESOLVE_WATER
   // The open sea in front of a surface that is not water (water.md, "To the horizon"): the ground
   // below the level, seen through the plane, is under the sea.
-  if ((material.flags & k_material_water) == 0) {
+  if ((material.flags & k_material_water) == 0 && !stop_skips(k_stop_water)) {
     float4 sea;
     if (open_water_pixel(params, source, noise_pixel, true, length(from_eye), s.position, sea))
       return sea;
@@ -1044,6 +1077,11 @@ float4 fs_resolve(FullscreenOut in) : SV_Target {
     roughness = ground.roughness;
   }
   if (params->mode == 9) return float4(0.0, 0.0, 0.0, 1.0);
+  // Everything the material gave, so none of it is left out of the stage's time.
+  if (g_stop == k_stop_material) {
+    return float4(lerp(albedo, shading_normal * 0.5 + 0.5, 0.25) + sampled.emissive,
+                  roughness * (1.0 - 0.5 * sampled.metallic));
+  }
   BrdfSurface surface;
   surface.albedo = albedo;
   surface.normal = shading_normal;
@@ -1106,42 +1144,26 @@ float4 fs_resolve(FullscreenOut in) : SV_Target {
   // The plain modules have no branch at all (RESOLVE_WATER, above), and draw a water material, as
   // every reader but this one does, as an untextured dielectric of its shallow colour.
 #ifdef RESOLVE_WATER
-  if ((material.flags & k_material_water) != 0) {
+  if ((material.flags & k_material_water) != 0 && !stop_skips(k_stop_water)) {
     color = water_pixel(params, geo, instance, visible_index, entry.y, id & 0xff, source, s,
                         from_eye, material, ray_bias);
   } else
 #endif
   {
+    // What the pixel's own sun query found, for a light too faint to test (below): 1 where the sun
+    // was not asked.
+    float sun_visibility = 1.0;
     if (dot(surface.normal, params->sun.xyz) > 0.0) {
-      const float v = shadow_visibility(params, k_shadow_sun, 0u, s.position, s.geometric, ray_bias,
-                                        params->sun.xyz, 1e30);
+      const float v = stop_skips(k_stop_sun_shadow)
+                          ? 1.0
+                          : shadow_visibility(params, k_shadow_sun, 0u, s.position, s.geometric,
+                                              ray_bias, params->sun.xyz, 1e30);
+      sun_visibility = v;
       if (v > 0.0) {
         float3 sun = float3(params->sun.w);
         if (has_sky) sun = sky_light_at(sky, s.position, params->sun.xyz, sky->sun_illuminance.rgb);
         color = brdf_direct(surface, params->sun.xyz, sun * v);
       }
-    }
-    // The analytic lights: inverse square windowed to zero at the radius, spots by their cone, and
-    // a shadow ray that stops short of the light itself; a directional light (the moon) has neither
-    // falloff nor end. The cascaded maps shadow only the light they were drawn from.
-    ResolveLight* lights = (ResolveLight*)params->lights;
-    for (uint i = 0; i < params->light_count; ++i) {
-      float3 light_dir;
-      float3 radiance;
-      float light_distance;
-      if (!light_sample(lights[i], s.position, light_dir, radiance, light_distance)) continue;
-      float v = 1.0;
-      if (dot(surface.normal, light_dir) > 0.0) {
-        v = shadow_visibility(params, k_shadow_lights, i + 1u, s.position, s.geometric, ray_bias,
-                              light_dir, light_distance - ray_bias);
-        if (v <= 0.0) continue;
-      }
-      if (has_sky && lights[i].direction_type.w >= 1.5) {
-        radiance = sky_light_at(sky, s.position, light_dir, radiance);
-      }
-      // A filtered map answers a fraction; a ray, or no shadow at all, answers 1 or 0, and a 1
-      // multiplies nothing, so a picture drawn before the maps could follow a light is the same.
-      color += brdf_direct(surface, light_dir, v < 1.0 ? radiance * v : radiance);
     }
     // The hemisphere is the whole indirect term until the lighting passes exist: the sky above the
     // horizon and the ground below it — the scene's ground albedo under this frame's sun and sky,
@@ -1177,12 +1199,55 @@ float4 fs_resolve(FullscreenOut in) : SV_Target {
     if (material.occlusion_texture != k_no_texture) {
       indirect *= sample_occlusion(material, uv, duv_dx, duv_dy);
     }
+    // **A light too faint to test** (renderer.md; R115, after Ward, "Adaptive Shadow Testing for
+    // Ray Tracing", 1991): with the lights' shadows traced, a light whose unshadowed contribution
+    // here is at most `light_tolerance` of the rest of the pixel's light — the sun as its query
+    // left it, the ambient and the emission — is not tested. It is added at the visibility the
+    // pixel's own sun query found, Ward's estimate from the sources that were tested, so where the
+    // two agree the pixel is the bytes it was and where they do not it moves by at most the
+    // tolerance (2^-12, a thirty-sixth of a code step of either encode). In daylight that is the
+    // moon, a millionth of the sun, and a fire past a few metres; at night they are the light, and
+    // are traced. The rays leave nothing else out: the sum below keeps its order.
+    const bool weigh = params->light_tolerance > 0.0 &&
+                       (params->shadow_flags & (k_shadow_lights | k_shadow_cascades)) ==
+                           k_shadow_lights;
+    const float3 k_luma = float3(0.2126, 0.7152, 0.0722);
+    const float rest = params->light_tolerance * dot(color + indirect + sampled.emissive, k_luma);
+    // The analytic lights: inverse square windowed to zero at the radius, spots by their cone, and
+    // a shadow ray that stops short of the light itself; a directional light (the moon) has neither
+    // falloff nor end. The cascaded maps shadow only the light they were drawn from.
+    ResolveLight* lights = (ResolveLight*)params->lights;
+    for (uint i = 0; i < params->light_count; ++i) {
+      float3 light_dir;
+      float3 radiance;
+      float light_distance;
+      if (!light_sample(lights[i], s.position, light_dir, radiance, light_distance)) continue;
+      if (has_sky && lights[i].direction_type.w >= 1.5) {
+        radiance = sky_light_at(sky, s.position, light_dir, radiance);
+      }
+      const float3 lit = brdf_direct(surface, light_dir, radiance);
+      float v = 1.0;
+      if (dot(surface.normal, light_dir) > 0.0 && !stop_skips(k_stop_light_shadows)) {
+        if (weigh && max(lit.r, max(lit.g, lit.b)) <= rest) {
+          v = sun_visibility;
+        } else {
+          v = shadow_visibility(params, k_shadow_lights, i + 1u, s.position, s.geometric,
+                                ray_bias, light_dir, light_distance - ray_bias);
+        }
+        if (v <= 0.0) continue;
+      }
+      // A filtered map answers a fraction; a ray, or no shadow at all, answers 1 or 0, and a 1
+      // multiplies nothing, so a picture drawn before the maps could follow a light is the same.
+      color += v < 1.0 ? brdf_direct(surface, light_dir, radiance * v) : lit;
+    }
     color += indirect;
     // Emission — the factor times the emissive texture — is radiance the surface gives off, added
     // after the lighting and touched by no shadow and no occlusion.
     color += sampled.emissive;
   }
-  if (has_sky) {
+  // The split before the sky's stage writes the radiance as it stands: no air, no exposure (R115).
+  const bool air = has_sky && !stop_skips(k_stop_sky);
+  if (air) {
     // The air between the eye and the surface: what it takes out of the surface's light on the way
     // and what it scatters in, out of the frame's aerial table, which is the sky-view table's
     // parameterization with a distance, so a surface at the table's far end is the sky beyond it.
@@ -1199,6 +1264,6 @@ float4 fs_resolve(FullscreenOut in) : SV_Target {
   // scene without a sky has none: its knee is 1, the SDR picture's clip), then the transfer and
   // the dither by the target's steps: the one output encode, SDR or HDR (display.slang).
   float knee = 1.0;
-  if (has_sky) knee = sky->shoulder;  // never a read through the null block
+  if (air) knee = sky->shoulder;  // never a read through the null block
   return float4(display_output(color, knee, noise_pixel, display_target(params)), 1.0);
 }
