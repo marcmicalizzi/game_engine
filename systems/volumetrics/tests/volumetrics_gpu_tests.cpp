@@ -560,8 +560,9 @@ TEST_CASE("volumetrics: the flame's top is the end of McCaffrey's intermittent r
   const f64 q25 = (static_cast<f64>(h) + 1.02 * 2.0 * static_cast<f64>(r)) / 0.235;
   MESSAGE("the campfire: Q^(2/5) "
           << q25 << " (Q " << std::pow(q25, 2.5) << " kW), the continuous flame ends at "
-          << 0.08 * q25 << " m, the mean flame at " << h << " m (z/Q^(2/5) " << h / q25
-          << "), the intermittent region at " << 0.2 * q25 << " m = " << top << " h");
+          << 0.08 * q25 << " m, the mean flame at " << h << " m (z/Q^(2/5) "
+          << static_cast<f64>(h) / q25 << "), the intermittent region at " << 0.2 * q25
+          << " m = " << top << " h");
   CHECK(top == doctest::Approx(0.2 * q25 / static_cast<f64>(h)).epsilon(1e-4));
   CHECK(top == doctest::Approx(1.505).epsilon(2e-3));
   CHECK(top > 1.3f);  // R112's cylinder ended below it
@@ -584,7 +585,8 @@ TEST_CASE("volumetrics: the flame's top is the end of McCaffrey's intermittent r
   // top it is 7 spreads out, so it holds nothing the near flame's window has taken (the near
   // flame's own moments with and without the flare above the envelope agree to 0.01%, the page's
   // table), and a hard cut of it there would only draw the line the owner saw.
-  const f64 spreads = (static_cast<f64>(top) - k_flame_blob_centre) / k_flame_blob_up;
+  const f64 spreads = (static_cast<f64>(top) - static_cast<f64>(k_flame_blob_centre)) /
+                      static_cast<f64>(k_flame_blob_up);
   MESSAGE("the blob's tail at the flame's top: " << spreads << " spreads");
   CHECK(spreads > 7.0);
   CHECK(std::exp(-0.5 * spreads * spreads) < 1e-9);
