@@ -954,7 +954,7 @@ TEST_CASE("renderer: a layer's sand or snow response parses, packs and keeps eve
   CHECK(snow.occlusion_strength == 0.9f);
   const gfx::ResolveMaterial beach = pack(layers[2]);
   CHECK(beach.flags == (gfx::k_material_terrain_sand | gfx::k_material_terrain_beach));
-  CHECK(beach.emissive.x == 0.03f);  // the sand block's default glints
+  CHECK(beach.emissive.x == 0.15f);  // the sand block's default glints
   CHECK(beach.emissive.y == 0.5f);
   const gfx::ResolveMaterial erg = pack(layers[3]);
   CHECK(erg.flags == gfx::k_material_terrain_sand);

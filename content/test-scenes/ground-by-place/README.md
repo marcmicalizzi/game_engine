@@ -61,7 +61,7 @@ Two layers carry a **response** ([renderer](../../../docs/subsystems/renderer.md
 [sand and snow](../../../docs/experiments/sand-and-snow-substrates-2026-11-02.md)):
 
 - `snow`, where the priors put it (above 150 m, 25 m lower on the north face), is `"response":
-  "Snow"` at the defaults — a 0.25 mm grain, the dielectric lobe, glints 0.1, thickness 0.7 — with
+  "Snow"` at the defaults — a 0.25 mm grain, the dielectric lobe, glints 0.5, thickness 0.7 — with
   no tint and roughness 0.8: its colour is its grain's albedo, so it is a white a little bluer than
   any tint, it sparkles where sun, facet and eye line up, and it lies on the meadow and scree in
   the height blend.

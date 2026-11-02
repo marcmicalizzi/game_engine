@@ -962,7 +962,7 @@ TEST_CASE("gfx: sand and snow responses agree with their double references") {
     const u32 h2 = test::terrain_hash(h1);
     const f64 u1 = static_cast<f64>(h1 >> 8) / 16777216.0;
     const f64 u2 = static_cast<f64>(h2 >> 8) / 16777216.0;
-    const f64 tan_t = alpha * std::sqrt(u1 / (1.0 - u1));
+    const f64 tan_t = std::min(alpha * std::sqrt(u1 / (1.0 - u1)), std::tan(25.0 * std::numbers::pi / 180.0));
     const f64 cos_t = 1.0 / std::sqrt(1.0 + tan_t * tan_t);
     const f64 sin_t = tan_t * cos_t;
     const f64 phi = (2.0 * u2 - 1.0) * std::numbers::pi;

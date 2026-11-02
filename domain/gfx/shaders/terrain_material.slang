@@ -534,9 +534,14 @@ float3 terrain_wet_darkening(float3 a) {
 // Glints (Jakob et al. 2014; Zirr and Kaplanyan 2016; Deliot and Belcour 2023, simplified): the
 // ground in world-anchored cells of the smallest power-of-two millimetres at least the footprint,
 // each cell holding a glinting facet with chance `density * min(1, 4 mm / footprint)`, none past a
-// 256 mm footprint; a facet's normal is drawn from GGX of the layer's alpha about the macro normal
-// (Walter et al. 2007), its own lobe 0.2 rough. Design choices, all of them (the page says so).
-static const float k_terrain_glint_roughness = 0.2;
+// 256 mm footprint; a facet's normal is drawn from GGX of alpha 0.15 about the macro normal (Walter
+// et al. 2007), turned at most 25 degrees, its own lobe 0.1 rough. Design choices, all of them (the
+// page says so): a facet replaces the pixel's one normal, so its diffuse turns with it, and a facet
+// turned far enough to glint with the sun behind the eye would speckle the snow with dark pixels
+// (the first captures did); the near-normal facets glint towards the sun, where snow sparkles most.
+static const float k_terrain_glint_roughness = 0.1;
+static const float k_terrain_glint_tilt = 0.15;
+static const float k_terrain_glint_max_tan = 0.466307658;  // tan 25 degrees
 static const float k_terrain_glint_full_mm = 4.0;
 static const float k_terrain_glint_far_mm = 256.0;
 
@@ -587,7 +592,7 @@ TerrainGlint terrain_glint(FrameEye eye, float3 point, float3 n, float footprint
   const uint h2 = terrain_hash(h1);
   const float u1 = float(h1 >> 8) * (1.0 / 16777216.0);
   const float u2 = float(h2 >> 8) * (1.0 / 16777216.0);
-  const float tan_t = alpha * sqrt(u1 / (1.0 - u1));
+  const float tan_t = min(alpha * sqrt(u1 / (1.0 - u1)), k_terrain_glint_max_tan);
   const float cos_t = 1.0 / sqrt(1.0 + tan_t * tan_t);
   const float sin_t = tan_t * cos_t;
   const float phi = (2.0 * u2 - 1.0) * 3.14159265358979;
@@ -625,7 +630,7 @@ TerrainLayerSample terrain_respond(FrameEye eye, ResolveMaterial layer, TerrainL
   }
   if (filtered && footprint_mm > 0.0) {
     const TerrainGlint g = terrain_glint(eye, point, n, footprint_mm, terrain_layer_glints(layer),
-                                         brdf_alpha(s.roughness), seed);
+                                         k_terrain_glint_tilt, seed);
     if (g.lit) {
       s.bump = g.normal / max(dot(g.normal, n), 0.05) - n;
       s.roughness = k_terrain_glint_roughness;

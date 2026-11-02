@@ -1032,9 +1032,9 @@ each defaulted from the page:
 
 ```json
 {"name": "snow", "response": "Snow", "roughness_factor": 0.8,
- "snow": {"grain_mm": 0.25, "lobe": 1, "glints": 0.1, "thickness": 0.7}},
+ "snow": {"grain_mm": 0.25, "lobe": 1, "glints": 0.5, "thickness": 0.7}},
 {"name": "beach_sand", "tint": [0.62, 0.55, 0.42], "porosity": 0.9, "response": "Sand",
- "sand": {"kind": "Beach", "wet_darkening": 1, "glints": 0.03}}
+ "sand": {"kind": "Beach", "wet_darkening": 1, "glints": 0.15}}
 ```
 
 - **Snow** needs no maps. Its albedo is its grain's — Kokhanovsky's spherical albedo
@@ -1058,7 +1058,8 @@ each defaulted from the page:
   millimetres at least the pixel's footprint (from the frame's integer cell, never a world float);
   a cell's integer hash decides whether it holds a facet, with chance `glints × min(1, 4 mm /
   footprint)`, none past a 256 mm footprint; a facet replaces the layer's slope with its own normal,
-  drawn from GGX of the layer's roughness, and its roughness with 0.2. The resolve's own GGX lights
+  drawn from GGX of alpha 0.15 and turned at most 25° (a facet turned further would speckle the
+  diffuse: it replaces the pixel's one normal), and its roughness with 0.1. The resolve's own GGX lights
   it for every light and shadows it as the pixel, so a facet flashes where sun, facet and eye line
   up and twinkles as the eye moves. The path tracer has no footprint and draws none.
 

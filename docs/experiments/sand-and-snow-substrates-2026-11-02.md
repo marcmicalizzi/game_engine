@@ -161,8 +161,8 @@ ground is cut into world-anchored square cells whose side is the smallest power-
 at least the pixel's footprint (from the frame's integer cell and its local millimetres, never a
 world float, as the mask and the lattice are), each cell's integer hash decides whether it holds a
 glinting facet, and a facet that is there replaces the layer's slope with its own normal — drawn
-from GGX of the layer's own roughness about the macro normal (Walter et al. 2007's sampling, so the
-glints are the lobe's discrete members) — and its roughness with a facet's, 0.2. The resolve then
+from GGX of alpha 0.15 about the macro normal (Walter et al. 2007's sampling), turned at most 25° —
+and its roughness with a facet's, 0.1. The resolve then
 lights it with its own GGX for every light, shadowed like the pixel, so a facet flashes only where
 the sun, the facet and the eye line up and twinkles as the eye moves, as real snow does. The chance
 a cell holds one is
@@ -171,10 +171,15 @@ a cell holds one is
 
 full up to a 4 mm footprint, falling as one over the footprint past it (the screen's glints thin
 with distance, each one footprint in size), and none past 256 mm. **Every number of it is a design
-choice, stated as one**: snow's density 0.1, sand's 0.03, the facet roughness 0.2, the 4 mm and
-256 mm. A glint replaces a pixel's normal, so its diffuse term moves with the facet's tilt too: a
-grain-scale speckle in the few pixels holding one, which the coverage weights and the footprint
-fade bound. The path tracer has no footprint and draws none (its many samples a pixel converge to
+choice, stated as one**: snow's density 0.5, sand's 0.15, the facets' tilt (GGX alpha 0.15, at most
+25°), their roughness 0.1, the 4 mm and 256 mm. **Why the facets lean so little**: a glint replaces
+the pixel's one normal, so its diffuse term turns with the facet too. The first captures drew the
+facets from the layer's own lobe (alpha 0.64 at roughness 0.8, a third of them past 30°) at density
+0.1, and the snow read as peppered: most facets miss the sun, and a pixel turned 30° from the sun
+or towards the browner ground of the sky's ambient is a dark speck. Facets within 25° of the normal
+move a pixel's diffuse by at most a tenth and glint where the half vector is near the normal — towards
+the sun, where snow sparkles most; a backlit glint, which needs a facet turned past 40°, is the
+resolve's to draw (it needs the light). The path tracer has no footprint and draws none (its many samples a pixel converge to
 the lobe the glints are drawn from).
 
 ### Sand: the desert's and the beach's

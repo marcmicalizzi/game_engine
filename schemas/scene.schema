@@ -735,7 +735,7 @@ struct TerrainSand @version(1) {
   wet_darkening: f32 = 1
   /// [0, 1]: the fraction of 4 mm footprint cells holding a glinting grain (quartz, mica); it falls
   /// as the footprint grows. A design choice, not a measurement.
-  glints: f32 = 0.03
+  glints: f32 = 0.15
 }
 
 /// A `Snow` layer's numbers (same page).
@@ -748,7 +748,7 @@ struct TerrainSnow @version(1) {
   lobe: f32 = 1
   /// [0, 1]: the fraction of 4 mm footprint cells holding a glinting facet; it falls as the
   /// footprint grows. A design choice, not a measurement.
-  glints: f32 = 0.1
+  glints: f32 = 0.5
   /// [0, 2]: the snow's height in the height blend; a layer without a height map stands at 0.5, so
   /// 0.7 lies on litter and soil where its weight is within 0.2 of theirs, and high rock shows.
   thickness: f32 = 0.7
