@@ -203,3 +203,39 @@ The rule: a change under a few codes in the penumbra's texture is the trade; a c
 3. **(c) Opacity micromaps**: the cluster structures take them. `VkClusterAccelerationStructureBuildTriangleClusterInfoNV` (VK_NV_cluster_acceleration_structure) carries `opacityMicromapArray` (0 disables micromaps for that cluster), `opacityMicromapIndexBuffer` (0: the triangle's own index), `opacityMicromapIndexType` and its stride, and VUID-10881 asks for `VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_CLUSTER_OPACITY_MICROMAPS_BIT_NV` in the build's input flags ([the reference page](https://docs.vulkan.org/refpages/latest/refpages/source/VkClusterAccelerationStructureBuildTriangleClusterInfoNV.html)). A micromap array is built once per mesh from its mask and UVs (R109's page has the bake through meshoptimizer and the memory: kilobytes to megabytes per species after deduplication), so what the frame pays is its cluster build with the arrays attached, not a build of micromaps for the cut. A two-state array would let the traversal decide a card's interior and corners and hand the shader only its edge — at the 99th percentile's 12 masks, most of them. Whether the template instantiation path carries the same fields was not read. **This is the lever, and it is the chain's** (`clas_records.slang`, `cluster_acceleration.h`): a request, not built here. Its proof is the counting bit: the masks a ray samples should fall from 1.6 to the edges'.
 
 What it would return is bounded by the opaque rule: the sun stage at 2.4 ms against 14.6 at 11520, 12.2 ms of the frame's 42.9; the material stage (5.6 ms at 11520) is next after it, and its terrain-against-flora split (this stage's item 4) was not taken.
+
+## Stage 3: the owner's own path, with the module (2026-11-02; the proof of concept's session measured it)
+
+Roadmap R127. Stage 2's replay carried no game module and resolved the v25 woods in 22.5 ms at 11520×2160 where the owner's record said 38–43; the split of what the live run adds could only come from the live run. The proof of concept's own session took it, through its launcher, on the owner's latest body-free recording (`reports/lab/20261102-152929-957/input.jsonl`, 29,011 ticks at 240 Hz, 120.9 s): the v26 scene, 416 animated animals and their loops, the HDR10 swapchain, the visible 11520×2160 window, `renderer.resolve.stop_after=cycle` with `renderer.shadow.sweep=true`. Its report is `D:\workspace\forest_wildlife_poc\reports\r127\` (`HANDOFF.md`, `STAGES.md`, `analysis.json`, the two runs' folders), outside this repository and read here as text. **Upper bounds**: a shared machine, other CPU 9.1% at the start and 13.5% at the end of the sweep, the GPU lock held, the harness's `quiet` false; the normal run quiet, other CPU 3.5% to 8.4%. The numbers are medians of interleaved samples over the woods interval (80–120 s of the recording, chosen before the sweep was read), 10–32 samples a cell, and a stage's increment is a difference of medians, not a paired subtraction. One caveat of method the engine should remove (roadmap T70): in a windowed session the stage a frame drew is not `record.frame mod 8` but `round(time × 240) / 4 mod 8`, which the analysis derived from the tick count and checked against the session's length.
+
+Cumulative resolve milliseconds by stage, the frame as set and with every caster solid (`rt` primary visibility):
+
+| stage | as set | every caster solid |
+|---|---:|---:|
+| decode | 0.37 | 0.37 |
+| reconstruct | 1.09 | 1.10 |
+| material | 6.64 | 6.68 |
+| lighting | 7.61 | 7.41 |
+| sun shadow | 28.25 | 10.61 |
+| light shadows | 28.99 | 11.02 |
+| sky | 29.50 | 11.09 |
+| **the picture** | **29.72** | **11.39** |
+
+The sun's ray is **20.6 ms of the 29.7**, 69% of the resolve, and **3.2 ms** with every caster solid: the alpha masks are about **17.4 ms** of the owner's frame at full width, against 12.2 on stage 2's replay. The proxies behave as on the replay — 0.5 saves 0.7 ms, 0.3 saves 3.6, 0.2 saves 9.4 (the picture at 29.0, 26.1 and 20.3) — and none ships, for stage 2's reason. The material stage is 5.5 ms after the reconstruction, the replay's number.
+
+The frame's passes, the sweep (`rt` primary, quiet false) and the normal run (`hw` primary, the same recording, no tunables, quiet true), medians over the woods:
+
+| ms | `rt`, the sweep's as-set picture frames (20) | `hw`, the normal run (792) |
+|---|---:|---:|
+| primary visibility: the trace or the mesh rasterizer | 15.40 | 5.25 |
+| the chain | 6.26 | 5.93 |
+| the deformed-vertex pool | 1.62 | 1.42 |
+| resolve | 29.72 | 31.69 |
+| **GPU frame** | **56.91** | **50.10** |
+
+**What the live run adds, against stage 2's replay at the same width**: the frame 56.9 against 42.9. The sun's stage is 20.6 against 14.6, the primary trace 15.4 against 9.6, the chain 6.3 against 7.1, the pool 1.6 against 1.9, the material the same. Two thirds of the 14 ms is in the two traversals, and nothing else moved. What the module brings a traversal is 416 deforming instances — cluster templates instantiated every frame, each its own bottom-level structure — and the v26 woods are not the v25 woods (G120's conifer forms, a different cut), so **whether the animals are the cause is not established**: a matched ablation, the same recording at population 0, is the next measurement, and the launcher's population setting takes it. The mesh rasterizer's 5.3 against the trace's 15.4 is the one clean lever here, and the launcher's default is the mesh path with traced shadows since this run; 56.9 against 50.1 is not a clean A/B (sample counts, poses, the sweep's own rules and the background load differ).
+
+**Two findings for the chain's capacity** (roadmap R128). One frame of the sweep (record 3,233, at 72.85 s, before the woods interval) built 172,032 structures against a wanted 178,141 and dropped 4,933 instances, while the log's current capacity already read 338,115: the frame was built against the capacity before a growth, and the report names the one the GPU's counts returned to, so raising the budget would not have helped. The normal run had the same once (162 instances, 13 casters), and its swapped growth took 254.75 ms, 248.6 of it allocating the bottom-level set — on the frame thread, swapped or not.
+
+**Where that leaves full width.** At 11520×2160 on the owner's path the frame is 50 ms with the mesh rasterizer: the resolve 31.7 (the sun's ray about 21, the material 5.5), the rasterizer 5.3, the chain 5.9, the pool 1.4, the rest about 6. Opacity micromaps (R120) are bounded by the solid row at about 17 ms; a shading rate by region (R126) at about 10 of the resolve's remainder; the hidden forest (R122) is where the rasterizer's and the chain's milliseconds are. At 3840×2160 the v26 handoff's 35 s walk presented 14.6 ms median and 28.1 p95 on the lake's shore, and the woods are the measurement still to take there.
+
