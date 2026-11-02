@@ -3,6 +3,7 @@
 
 #include <doctest/doctest.h>
 
+#include <algorithm>
 #include <cmath>
 #include <string>
 
@@ -131,6 +132,124 @@ TEST_CASE("cluster lod: view-dependent selection coarsens with distance") {
   const f32 far_error = projected_error(sphere, 0.01f, view);
   CHECK(near_error > far_error * 9.0f);
   CHECK(near_error < far_error * 11.0f);
+}
+
+// R118 (renderer.md, "Occlusion-aware LOD"): the rule with a factor per transition. Factors of 1
+// are the rule; one factor for every transition is the rule at a scaled threshold; and a factor
+// that is any function of the transition's own sphere — the cull pass's is its hidden share in the
+// Hi-Z, here a hash standing in for an arbitrary pyramid — leaves no hole in the cut, which is
+// checked by covering the terrain's ground plan cell by cell with the cut's triangles. A factor
+// that grows up the DAG faster than the errors do may draw two levels over one cell; that is
+// counted, not refused.
+TEST_CASE("cluster lod: the occlusion term's per-transition factor keeps the cut whole") {
+  Vector<Vec3> positions;
+  Vector<u32> indices;
+  make_terrain(65, 10.0f, positions, indices);  // 8,192 triangles over [-10, 10]^2
+  ClusterLodMesh lod;
+  std::string error;
+  REQUIRE(build_cluster_lod(positions, indices, ClusterLodOptions{}, lod, &error));
+  LodView view;
+  view.znear = 0.1f;
+  view.proj_scale = 1.0f / std::tan(radians(60.0f) * 0.5f) * 1080.0f * 0.5f;
+  view.threshold_px = 1.0f;
+  view.camera = Vec3{0.0f, 30.0f, 0.0f};
+
+  CHECK(lod_occluded_scale(0.0f, 4.0f) == 1.0f);
+  CHECK(lod_occluded_scale(1.0f, 4.0f) == 5.0f);
+  CHECK(lod_occluded_scale(2.0f, 4.0f) == 5.0f);   // the share is clamped to 1
+  CHECK(lod_occluded_scale(0.5f, 0.0f) == 1.0f);   // k 0 is off
+  CHECK(lod_occluded_scale(0.5f, -1.0f) == 1.0f);  // and so is a k below it
+
+  // A stand-in hidden share: any function of the sphere alone.
+  const auto hidden = [](Vec4 sphere) {
+    const f32 s =
+        std::sin(sphere.x * 12.9898f + sphere.z * 78.233f + sphere.w * 37.719f) * 43758.5f;
+    return s - std::floor(s);
+  };
+  const auto cut_with = [&](f32 k, bool per_transition, Vector<u32>& out) {
+    out.clear();
+    for (u32 c = 0; c < lod.lod.size(); ++c) {
+      const ClusterLodDesc& d = lod.lod[c];
+      const f32 own = per_transition ? lod_occluded_scale(hidden(d.own), k) : 1.0f + k;
+      const f32 parent = per_transition ? lod_occluded_scale(hidden(d.parent), k) : 1.0f + k;
+      if (lod_selects(d, view, k_lod_no_coverage, own, parent)) out.push_back(c);
+    }
+  };
+  // How many times each cell centre of a 96 x 96 grid over the inner 90% of the ground plan is
+  // covered by the cut's triangles, seen from above.
+  constexpr u32 k_cells = 96;
+  const auto coverage = [&](const Vector<u32>& cut, u32& holes, u32& doubled) {
+    Vector<u8> hits(k_cells * k_cells, u8{0});
+    const f32 lo = -9.0f;
+    const f32 step = 18.0f / k_cells;
+    for (const u32 c : cut) {
+      const geometry::ClusterDesc& cluster = lod.mesh.clusters[c];
+      for (u32 t = 0; t < cluster.triangle_count; ++t) {
+        const u32 packed = lod.mesh.triangles[cluster.triangle_offset + t];
+        const Vec3 a = lod.mesh.vertices[cluster.vertex_offset + (packed & 0xFFu)];
+        const Vec3 b = lod.mesh.vertices[cluster.vertex_offset + ((packed >> 8) & 0xFFu)];
+        const Vec3 p = lod.mesh.vertices[cluster.vertex_offset + ((packed >> 16) & 0xFFu)];
+        const f32 min_x = std::min(a.x, std::min(b.x, p.x));
+        const f32 max_x = std::max(a.x, std::max(b.x, p.x));
+        const f32 min_z = std::min(a.z, std::min(b.z, p.z));
+        const f32 max_z = std::max(a.z, std::max(b.z, p.z));
+        const f32 area = (b.x - a.x) * (p.z - a.z) - (b.z - a.z) * (p.x - a.x);
+        if (area == 0.0f) continue;
+        for (u32 j = 0; j < k_cells; ++j) {
+          const f32 z = lo + (static_cast<f32>(j) + 0.5f) * step;
+          if (z < min_z || z > max_z) continue;
+          for (u32 i = 0; i < k_cells; ++i) {
+            const f32 x = lo + (static_cast<f32>(i) + 0.5f) * step;
+            if (x < min_x || x > max_x) continue;
+            const f32 w0 = (b.x - x) * (p.z - z) - (b.z - z) * (p.x - x);
+            const f32 w1 = (p.x - x) * (a.z - z) - (p.z - z) * (a.x - x);
+            const f32 w2 = (a.x - x) * (b.z - z) - (a.z - z) * (b.x - x);
+            const bool inside = area > 0.0f ? (w0 >= 0.0f && w1 >= 0.0f && w2 >= 0.0f)
+                                            : (w0 <= 0.0f && w1 <= 0.0f && w2 <= 0.0f);
+            if (inside && hits[j * k_cells + i] < 255) ++hits[j * k_cells + i];
+          }
+        }
+      }
+    }
+    holes = 0;
+    doubled = 0;
+    for (const u8 h : hits) {
+      holes += h == 0 ? 1u : 0u;
+      doubled += h > 1 ? 1u : 0u;
+    }
+  };
+
+  // Factors of 1 are the rule, and one factor everywhere is the rule at a scaled threshold.
+  Vector<u32> plain;
+  select_lod(lod, view, plain);
+  Vector<u32> cut;
+  cut_with(0.0f, false, cut);
+  CHECK(cut == plain);
+  for (const f32 k : {1.0f, 3.0f}) {
+    cut_with(k, false, cut);
+    Vector<u32> scaled;
+    select_lod(lod, lod_view_scaled(view, 1.0f + k), scaled);
+    CHECK(cut == scaled);
+    CHECK(cut.size() < plain.size());
+  }
+  u32 holes = 0;
+  u32 doubled = 0;
+  coverage(plain, holes, doubled);
+  CHECK(holes == 0);
+  const u32 plain_doubled = doubled;  // cells on a shared edge count twice; the baseline
+  // A factor per transition, from its own sphere: coarser, and whole.
+  for (const f32 k : {1.0f, 3.0f, 8.0f}) {
+    cut_with(k, true, cut);
+    coverage(cut, holes, doubled);
+    MESSAGE("k " << k << ": " << cut.size() << " clusters against " << plain.size() << ", "
+                 << triangles_of(lod, cut) << " triangles against " << triangles_of(lod, plain)
+                 << "; cells doubled " << doubled << " against " << plain_doubled);
+    CHECK(holes == 0);
+    // A factor of at most 2 may move no transition at this view (k 1 moved none on 2026-11-02);
+    // from 4 up it must.
+    CHECK(triangles_of(lod, cut) <= triangles_of(lod, plain));
+    if (k >= 3.0f) CHECK(triangles_of(lod, cut) < triangles_of(lod, plain));
+  }
 }
 
 TEST_CASE("cluster lod: options and bad input") {

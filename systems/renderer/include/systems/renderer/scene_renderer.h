@@ -998,6 +998,8 @@ class SceneRenderer {
   u64 recorded_ = 0;
   u64 collected_ = 0;  // the timeline value whose statistics were last folded in
   bool flags_dirty_ = true;
+  // The last frame recorded built the occlusion term's Hi-Z (R118), so this one may read it.
+  bool hiz_lod_built_ = false;
   bool recording_ = false;
   bool joint_overflow_warned_ = false;     // a span longer than the scene was sized for, said once
   bool deform_overflow_warned_ = false;    // the pool budget refused a pair, said once

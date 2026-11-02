@@ -42,7 +42,7 @@ struct StreamParams {
 static const uint k_caster_volume_planes = 13;
 static const uint k_max_caster_volumes = 5;
 
-// Read through a device address; mirrors gfx::CullParams (1728 bytes).
+// Read through a device address; mirrors gfx::CullParams (1744 bytes).
 struct CullParams {
   float4 planes[6];  // inward-facing, normalized: dot(n, p) + w >= 0 inside
   float4 camera;     // xyz this view's eye in the frame's space, w = znear
@@ -113,16 +113,28 @@ struct CullParams {
   float foliage_px;  // the coverage errors' threshold
   float fade;        // the cross-fade's half band, a fraction of the threshold; 0 switches at once
   float caster_horizon;  // gfx::CullParams::caster_horizon: no caster farther from the eye; 0 none
-  uint horizon_pad0;
-  uint horizon_pad1;
-  uint horizon_pad2;
+  // gfx::CullParams::occluded_scale (R118): the LOD thresholds' occlusion term, 0 off (see
+  // `occluded_threshold_scale`), and its debug counters, 0 none.
+  float occluded_scale;
+  uint64_t hidden_counts;
   uint cascade;      // 0 a camera run; c + 1 the sun's cascade c (the caster policy, below)
   // gfx::CullParams::cascade_error_m / cascade_cover_m: a cascade's texels' own threshold, the
   // world error and coverage error they accept; 0 on a camera run (see cull_pair).
   float cascade_error_m;
   float cascade_cover_m;
-  uint pad0;
+  uint hiz_flags;    // gfx::k_cull_hiz_*: the Hi-Z feeds the term only; the term's mip bias
 };
+
+// gfx::CullParams::hiz_flags and the debug counters' layout (gfx::k_hidden_*).
+static const uint k_cull_hiz_lod_only = 1;
+static const uint k_cull_hiz_bias_shift = 4;
+static const uint k_hidden_bins = 11;
+static const uint k_hidden_undefined = 22;
+static const uint k_hidden_casters = 23;
+static const uint k_hidden_band = 24;
+static const uint k_hidden_coarser = 25;
+static const uint k_hidden_finer = 26;
+static const uint k_hidden_reach = 27;  // four words: a mostly hidden drawn pair's room to coarsen
 
 struct CullPush {
   uint64_t params;
@@ -260,27 +272,56 @@ bool run_resident(CullParams* params, StreamParams* stream, uint first, uint cou
   return complete;
 }
 
-// True when every pixel the sphere's screen rectangle touches holds a surface nearer than the
-// sphere's nearest point. Conservative: anything touching the near plane counts as visible.
-bool occluded(CullParams* params, float3 center, float radius) {
+// A sphere's footprint in the Hi-Z: its screen rectangle's texels at one mip, and the depth of its
+// nearest point. `valid` false when a corner of its box or its nearest point is behind the eye, or
+// the eye is inside it, or the nearest point is past the near plane: nothing is known about it.
+struct HizFootprint {
+  bool valid;
+  bool on_screen;  // the rectangle meets the screen at all (it is clamped onto it either way)
+  float depth;     // reversed Z: larger is nearer
+  uint base;       // the mip's first element
+  uint mip_w;
+  uint tx0;
+  uint tx1;
+  uint ty0;
+  uint ty1;
+};
+
+// `bias` mips finer than the occlusion test's own choice, which is the mip whose texels are at
+// least a quarter of the rectangle, so the footprint is at most 5x5 texels and stays close to the
+// rectangle (a 2x2 footprint at the next coarser mips would cover up to four times the area and
+// touch far-away depth, culling less). Each mip finer is up to four times the reads.
+HizFootprint hiz_footprint(CullParams* params, float3 center, float radius, uint bias) {
+  HizFootprint f;
+  f.valid = false;
+  f.on_screen = false;
+  f.depth = 0.0;
+  f.base = 0;
+  f.mip_w = 0;
+  f.tx0 = 0;
+  f.tx1 = 0;
+  f.ty0 = 0;
+  f.ty1 = 0;
   float2 lo = float2(1e30, 1e30);
   float2 hi = float2(-1e30, -1e30);
   for (uint i = 0; i < 8; ++i) {
     const float3 corner = center + radius * float3((i & 1) != 0 ? 1.0 : -1.0, (i & 2) != 0 ? 1.0 : -1.0,
                                                    (i & 4) != 0 ? 1.0 : -1.0);
     const float4 clip = mul(params->view_proj, float4(corner, 1.0));
-    if (clip.w <= 1e-5) return false;
+    if (clip.w <= 1e-5) return f;
     const float2 ndc = clip.xy / clip.w;
     lo = min(lo, ndc);
     hi = max(hi, ndc);
   }
   const float3 to_camera = params->camera.xyz - center;
   const float distance = length(to_camera);
-  if (distance <= radius) return false;
+  if (distance <= radius) return f;
   const float4 nearest = mul(params->view_proj, float4(center + to_camera * (radius / distance), 1.0));
-  if (nearest.w <= 1e-5) return false;
-  const float depth = nearest.z / nearest.w;  // reversed Z: larger is nearer
-  if (depth >= 1.0) return false;
+  if (nearest.w <= 1e-5) return f;
+  f.depth = nearest.z / nearest.w;
+  if (f.depth >= 1.0) return f;
+  f.valid = true;
+  f.on_screen = lo.x <= 1.0 && hi.x >= -1.0 && lo.y <= 1.0 && hi.y >= -1.0;
 
   const float w = float(params->hiz_width);
   const float h = float(params->hiz_height);
@@ -288,28 +329,112 @@ bool occluded(CullParams* params, float3 center, float radius) {
   const int ix1 = int(clamp(floor((hi.x * 0.5 + 0.5) * w), 0.0, w - 1.0));
   const int iy0 = int(clamp(floor((0.5 - hi.y * 0.5) * h), 0.0, h - 1.0));
   const int iy1 = int(clamp(floor((0.5 - lo.y * 0.5) * h), 0.0, h - 1.0));
-  // Pick the mip whose texels are at least a quarter of the rectangle, so the footprint is at
-  // most 5x5 texels and stays close to the rectangle (a 2x2 footprint at the next coarser
-  // mips would cover up to four times the area and touch far-away depth, culling less).
   const uint size = uint(max(ix1 - ix0, iy1 - iy0)) + 1;
   const uint coarse = size <= 1 ? 0 : firstbithigh(size - 1) + 1;  // 2^coarse >= size
-  uint mip = coarse >= 2 ? coarse - 2 : 0;
+  uint mip = coarse >= 2 + bias ? coarse - 2 - bias : 0;
   mip = min(mip, params->hiz_mips - 1);
-  const uint mip_w = (params->hiz_width + (1u << mip) - 1) >> mip;
+  f.mip_w = (params->hiz_width + (1u << mip) - 1) >> mip;
   const uint mip_h = (params->hiz_height + (1u << mip) - 1) >> mip;
-  const uint tx0 = uint(ix0) >> mip;
-  const uint tx1 = min(uint(ix1) >> mip, mip_w - 1);
-  const uint ty0 = uint(iy0) >> mip;
-  const uint ty1 = min(uint(iy1) >> mip, mip_h - 1);
+  f.tx0 = uint(ix0) >> mip;
+  f.tx1 = min(uint(ix1) >> mip, f.mip_w - 1);
+  f.ty0 = uint(iy0) >> mip;
+  f.ty1 = min(uint(iy1) >> mip, mip_h - 1);
+  f.base = params->hiz_offsets[mip];
+  return f;
+}
+
+// True when every pixel the sphere's screen rectangle touches holds a surface nearer than the
+// sphere's nearest point. Conservative: anything touching the near plane counts as visible.
+bool occluded(CullParams* params, float3 center, float radius) {
+  const HizFootprint f = hiz_footprint(params, center, radius, 0);
+  if (!f.valid) return false;
   float* hiz = (float*)params->hiz;
-  const uint base = params->hiz_offsets[mip];
   float farthest = 1e30;
-  for (uint ty = ty0; ty <= ty1; ++ty) {
-    for (uint tx = tx0; tx <= tx1; ++tx) {
-      farthest = min(farthest, hiz[base + ty * mip_w + tx]);
+  for (uint ty = f.ty0; ty <= f.ty1; ++ty) {
+    for (uint tx = f.tx0; tx <= f.tx1; ++tx) {
+      farthest = min(farthest, hiz[f.base + ty * f.mip_w + tx]);
     }
   }
-  return depth < farthest;
+  return f.depth < farthest;
+}
+
+// **The hidden share of a sphere** (renderer.md, "Occlusion-aware LOD"; R118): the share of the
+// texels of its footprint, `bias` mips finer than the occlusion test reads, whose farthest depth is
+// nearer than the sphere's nearest point — screen area where nothing of the sphere can show. The
+// occlusion test is this share being 1 at bias 0. Conservative the same way: a texel with one pixel
+// of sky, of the sphere itself, or of anything farther, is not hidden, so a crown seen through the
+// gaps of a nearer one reads only the blocks the nearer one covers whole. 0 when nothing is known
+// (`HizFootprint::valid`) or the rectangle is off the screen (a caster outside the frustum): a
+// function of the sphere and the Hi-Z alone, whichever pair asks.
+float hidden_fraction(CullParams* params, float3 center, float radius, uint bias) {
+  const HizFootprint f = hiz_footprint(params, center, radius, bias);
+  if (!f.valid || !f.on_screen) return 0.0;
+  float* hiz = (float*)params->hiz;
+  uint hidden = 0;
+  for (uint ty = f.ty0; ty <= f.ty1; ++ty) {
+    for (uint tx = f.tx0; tx <= f.tx1; ++tx) {
+      if (f.depth < hiz[f.base + ty * f.mip_w + tx]) ++hidden;
+    }
+  }
+  const uint total = (f.tx1 - f.tx0 + 1) * (f.ty1 - f.ty0 + 1);
+  return float(hidden) / float(total);
+}
+
+// **The occlusion term of a transition's thresholds** (gfx::CullParams::occluded_scale; R118): the
+// factor `1 + k h` both thresholds of the transition whose sphere this is are multiplied by, h its
+// hidden share. Only a transition the factor could decide reads the Hi-Z: one whose smaller ratio
+// of projected error to threshold lies in (1 - fade, (1 + k)(1 + fade)]; below it the transition is
+// accepted (split 0) at any factor of at least 1, and above it refused (split 1) at any factor of at
+// most 1 + k. The skip is a function of the same inputs as the factor, so every pair that tests the
+// transition skips it or reads it alike, and the cut stays one decision per transition.
+void count_hidden(CullParams* params, uint word) {
+  Atomic<uint>* counts = (Atomic<uint>*)params->hidden_counts;
+  counts[word].add(1u);
+}
+
+float occluded_threshold_scale(CullParams* params, float4 sphere, float geometric, float coverage,
+                               bool count) {
+  const float k = params->occluded_scale;
+  const float ratio =
+      min(over_threshold(geometric, params->lod.y), over_threshold(coverage, params->foliage_px));
+  if (!(ratio > 1.0 - params->fade) || ratio > (1.0 + k) * (1.0 + params->fade)) return 1.0;
+  if (count) count_hidden(params, k_hidden_band);
+  const uint bias = (params->hiz_flags >> k_cull_hiz_bias_shift) & 15u;
+  return 1.0 + k * hidden_fraction(params, sphere.xyz, sphere.w, bias);
+}
+
+// A drawn pair into the debug counters (gfx::k_hidden_*): its bounding sphere's hidden share at the
+// occlusion test's mip and one finer, binned by tenths, or its being unknown; and whether the term
+// drew it where the thresholds alone would not have.
+//
+// And for a drawn pair at least half hidden, how far its parent transition is from being accepted —
+// the most any factor on the thresholds could move it: at the root (no coarser level at all), within
+// a factor of 2 of its threshold, of 5, or farther (`parent_ratio`, the smaller of its two projected
+// errors over their plain thresholds).
+void count_drawn(CullParams* params, float3 center, float radius, bool plain_drawn,
+                 float parent_ratio) {
+  Atomic<uint>* counts = (Atomic<uint>*)params->hidden_counts;
+  bool known = false;
+  if (params->hiz != 0) {
+    const HizFootprint probe = hiz_footprint(params, center, radius, 0);
+    known = probe.valid && probe.on_screen;
+  }
+  if (!known) {
+    counts[k_hidden_undefined].add(1u);
+  } else {
+    const float h0 = hidden_fraction(params, center, radius, 0);
+    const float h1 = hidden_fraction(params, center, radius, 1);
+    counts[min(uint(h0 * 10.0), 10u)].add(1u);
+    counts[k_hidden_bins + min(uint(h1 * 10.0), 10u)].add(1u);
+    if (h0 >= 0.5) {
+      const uint reach = parent_ratio >= k_terminal_error ? 0u
+                         : parent_ratio <= 2.0            ? 1u
+                         : parent_ratio <= 5.0            ? 2u
+                                                          : 3u;
+      counts[k_hidden_reach + reach].add(1u);
+    }
+  }
+  if (!plain_drawn) counts[k_hidden_coarser].add(1u);
 }
 
 // meshoptimizer's cone test on the snorm8 packing (geometry::cluster_backfacing is the CPU
@@ -532,6 +657,11 @@ void cull_pair(uint pair, bool vertex_draw) {
   // The splits this pair keeps between (the cross-fade's; 0 and 1 outside every band).
   float split_own = 0.0;
   float split_parent = 1.0;
+  // The occlusion term's debug counters (gfx::k_hidden_*), and whether the thresholds alone would
+  // have drawn this pair, which only they read.
+  const bool counting = params->hidden_counts != 0;
+  bool plain_drawn = true;
+  float parent_ratio = k_terminal_error;
   if (params->lod.z > 0.0) {
     ClusterLodDesc* lods = (ClusterLodDesc*)params->lods;
     const ClusterLodDesc lod = lods[index];
@@ -554,12 +684,37 @@ void cull_pair(uint pair, bool vertex_draw) {
     const float parent_cover =
         projected_error(parent_sphere, parent_cover_error * instance.scale_max, params->camera.xyz,
                         params->camera.w, params->lod.x);
+    // **The occlusion term** (renderer.md, "Occlusion-aware LOD"; R118): each transition's two
+    // thresholds grow with its own sphere's hidden share, so a crown mostly behind nearer leaves
+    // falls to a coarser cut — and past its DAG's root to its star — while what is in front keeps
+    // its detail. Each factor is a function of its sphere alone (`occluded_threshold_scale`): the
+    // finer side's parent test and the coarser side's own test read the same one, and the cut has no
+    // hole. Off (factor 1, every threshold the same float) at `occluded_scale` 0, without a Hi-Z,
+    // and on a cascade's block.
+    float own_scale = 1.0;
+    float parent_scale = 1.0;
+    if (params->occluded_scale > 0.0 && params->hiz != 0 && params->cascade == 0) {
+      own_scale = occluded_threshold_scale(params, own_sphere, own, own_cover, counting);
+      parent_scale = occluded_threshold_scale(params, parent_sphere, parent, parent_cover, counting);
+    }
+    const float own_threshold = params->lod.y * own_scale;
+    const float own_foliage = params->foliage_px * own_scale;
+    const float parent_threshold = params->lod.y * parent_scale;
+    const float parent_foliage = params->foliage_px * parent_scale;
+    if (counting) {
+      plain_drawn = transition_acceptable(own, own_cover, params->lod.y, params->foliage_px) &&
+                    !transition_acceptable(parent, parent_cover, params->lod.y, params->foliage_px);
+      parent_ratio = parent_error >= k_terminal_error
+                         ? k_terminal_error
+                         : min(over_threshold(parent, params->lod.y),
+                               over_threshold(parent_cover, params->foliage_px));
+    }
     // A cascade's block may also accept a transition by its texels (`cascade_accepts`, above).
     const bool own_ok =
-        transition_acceptable(own, own_cover, params->lod.y, params->foliage_px) ||
+        transition_acceptable(own, own_cover, own_threshold, own_foliage) ||
         cascade_accepts(params, own_error, own_cover_error * instance.scale_max);
     const bool parent_ok =
-        transition_acceptable(parent, parent_cover, params->lod.y, params->foliage_px) ||
+        transition_acceptable(parent, parent_cover, parent_threshold, parent_foliage) ||
         cascade_accepts(params, parent_error, parent_cover_error * instance.scale_max);
     if (params->streaming == 0) {
       // The cross-fade, for a transition with a coverage error: both sides draw across the band and
@@ -571,12 +726,16 @@ void cull_pair(uint pair, bool vertex_draw) {
       const bool parent_fading = fade && parent_cover_error < k_terminal_error;
       if (own_fading || parent_fading) {
         const bool opaque = !pair_masked(params->masks, instance, index);
-        split_own = fade_split(own, own_cover, own_fading, params->lod.y, params->foliage_px,
+        split_own = fade_split(own, own_cover, own_fading, own_threshold, own_foliage,
                                params->fade, opaque);
-        split_parent = fade_split(parent, parent_cover, parent_fading, params->lod.y,
-                                  params->foliage_px, params->fade, opaque);
-        if (!(split_own < split_parent)) return;
+        split_parent = fade_split(parent, parent_cover, parent_fading, parent_threshold,
+                                  parent_foliage, params->fade, opaque);
+        if (!(split_own < split_parent)) {
+          if (counting && plain_drawn) count_hidden(params, k_hidden_finer);
+          return;
+        }
       } else if (!(own_ok && !parent_ok)) {
+        if (counting && plain_drawn) count_hidden(params, k_hidden_finer);
         return;
       }
     } else {
@@ -607,7 +766,12 @@ void cull_pair(uint pair, bool vertex_draw) {
       }
     }
   }
-  if (params->hiz != 0 && occluded(params, center, radius)) return;
+  // A Hi-Z that feeds the occlusion term alone (`k_cull_hiz_lod_only`: last frame's, on a path that
+  // keeps every pair it does not draw as a caster) culls nothing.
+  if (params->hiz != 0 && (params->hiz_flags & k_cull_hiz_lod_only) == 0 &&
+      occluded(params, center, radius)) {
+    return;
+  }
   // The cut read this page: the CPU manager's LRU is only as good as this bit, because a page
   // nothing asks for and nothing draws out of is exactly the page that should go first.
   if (params->streaming != 0) {
@@ -630,12 +794,14 @@ void cull_pair(uint pair, bool vertex_draw) {
     // An instance the policy keeps out of the ray tracing chain (`k_instance_untraced`) casts no
     // traced shadow, so it is no caster: the chain would build it only to have nothing trace it.
     if ((instance.flags & k_instance_untraced) != 0) return;
+    if (counting) count_hidden(params, k_hidden_casters);
     Atomic<uint>* count = (Atomic<uint>*)params->caster_count;
     const uint slot = count->add(1);
     uint2* casters = (uint2*)params->casters;
     casters[slot] = uint2(instance_index, index);
     return;
   }
+  if (counting) count_drawn(params, center, radius, plain_drawn, parent_ratio);
   if (params->pass != 0) {
     uint* flags = (uint*)params->flags;
     flags[pair] = 1;

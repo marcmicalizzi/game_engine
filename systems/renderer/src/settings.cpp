@@ -228,6 +228,42 @@ tunables::Float lod_foliage_px{
 tunables::Float lod_fade{"renderer.lod.fade", 0.1, 0.0, 0.5,
                          "The cross-fade's half band at a foliage switch, a fraction of the "
                          "threshold; 0 switches at once"};
+// R118, the occlusion term of the LOD threshold (renderer.md, "Occlusion-aware LOD"): k, the most a
+// wholly hidden transition's thresholds are multiplied by is 1 + k; the term's footprint's mip
+// bias; and two measurement switches, never defaults — k cycled over a flight, and the debug
+// counters.
+tunables::Float lod_occluded_k{
+    "renderer.lod.occluded_scale", static_cast<f64>(k_lod_occluded_scale), 0.0, 64.0,
+    "The LOD thresholds of a transition the Hi-Z shows hidden by a share h are multiplied by "
+    "1 + k h, so a crown behind nearer leaves is drawn coarser; 0 is off (renderer.md, "
+    "Occlusion-aware LOD)"};
+tunables::Int lod_occluded_bias{
+    "renderer.lod.occluded_bias", static_cast<i64>(k_lod_occluded_bias), 0, 4,
+    "How many mips finer than the occlusion test's the term reads a transition's hidden share at; "
+    "each is up to four times the reads"};
+tunables::Int lod_occluded_cycle{
+    "renderer.lod.occluded_cycle", 0, 0, 1 << 20,
+    "Measurement only: n > 0 holds k at 0, k/2 and k for n frames each in turn (frame f takes "
+    "(f / n) % 3), so one flight measures the three"};
+tunables::Bool lod_occluded_histogram{
+    "renderer.lod.occluded_histogram", false,
+    "Measurement only: count the drawn pairs' hidden shares and what the occlusion term changed, "
+    "one log line a frame, building the Hi-Z where nothing else does"};
+}  // namespace
+
+f32 lod_occluded_scale_tunable(u64 frame_index) noexcept {
+  const f32 k = static_cast<f32>(lod_occluded_k.get());
+  const i64 cycle = lod_occluded_cycle.get();
+  if (cycle <= 0) return k;
+  return k * 0.5f * static_cast<f32>((frame_index / static_cast<u64>(cycle)) % 3);
+}
+bool lod_occluded_active_tunable() noexcept {
+  return lod_occluded_k.get() > 0.0 || lod_occluded_histogram.get();
+}
+u32 lod_occluded_bias_tunable() noexcept { return static_cast<u32>(lod_occluded_bias.get()); }
+bool lod_occluded_histogram_tunable() noexcept { return lod_occluded_histogram.get(); }
+
+namespace {
 tunables::Float display_paper_white{"renderer.display.paper_white_nits", 0.0, 0.0, 10000.0,
                                     "The luminance an HDR picture shows a diffuse white at, nits "
                                     "(0: Windows' SDR white level for the display, else 200)"};

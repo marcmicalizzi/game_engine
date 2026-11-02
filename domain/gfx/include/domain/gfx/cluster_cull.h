@@ -281,7 +281,21 @@ struct CullParams {
   // the eye is not kept, and is counted instead in the second word of the view's software argument
   // block (`caster_count + 4`), which a frame with casters never dispatches. 0 keeps every caster.
   f32 caster_horizon = 0.0f;
-  u32 horizon_pad[3] = {};
+  // **The occlusion term of the LOD threshold** (renderer.md, "Occlusion-aware LOD"; R118): with a
+  // Hi-Z (`hiz`) and LOD selection on, a transition's thresholds — `lod.y` and `foliage_px` — are
+  // multiplied by `1 + occluded_scale * h`, where h is the share of the transition's own sphere's
+  // screen rectangle that the Hi-Z says is wholly in front of the sphere's nearest point
+  // (`k_hidden_*`, below). A function of the sphere alone, so the two clusters that test one
+  // transition — the finer side as its parent, the coarser as its own — still agree, and the cut
+  // has no hole; it may draw two levels over each other where a parent's sphere is more hidden than
+  // its child's by more than the errors grow (renderer.md says how often). 0 is off, and then every
+  // threshold is the same float and the cut the one it was, bit for bit. A cascade's block never
+  // applies it. `geometry::lod_selects` with two scales is the same rule on the CPU.
+  f32 occluded_scale = 0.0f;
+  // The term's debug counters (`k_hidden_words` u32 per view, `renderer.lod.occluded_histogram`):
+  // the hidden share of every drawn pair's bounding sphere, binned, and what the term changed. 0
+  // counts nothing.
+  u64 hidden_counts = 0;
   // **Which cascade this block culls for** (R95): 0 a camera run, c + 1 the sun's cascade c, which
   // keeps out an instance whose caster policy names fewer nearest cascades
   // (`k_instance_cascade_mask`).
@@ -297,9 +311,38 @@ struct CullParams {
   // false). They took two of the three pad words; the block is still 1,744 bytes.
   f32 cascade_error_m = 0.0f;
   f32 cascade_cover_m = 0.0f;
-  u32 pad = 0;
+  // `k_cull_hiz_*` (R118): bit 0, the Hi-Z feeds the occlusion term only and culls nothing — a
+  // frame with no two-pass occlusion culling (the ray path, ray-traced shadows), whose Hi-Z is last
+  // frame's and whose occluded pairs must stay, drawn or casting; bits 4-7, how many mips finer
+  // than the occlusion test's the term's footprint is read at. The term and its counters took the
+  // last four pad words; the block is still 1,744 bytes.
+  u32 hiz_flags = 0;
 };
 static_assert(sizeof(CullParams) == 1744);
+static_assert(offsetof(CullParams, hidden_counts) % 8 == 0);
+
+// CullParams::hiz_flags.
+inline constexpr u32 k_cull_hiz_lod_only = 1u;
+inline constexpr u32 k_cull_hiz_bias_shift = 4u;
+inline constexpr u32 k_cull_hiz_bias_mask = 0xF0u;
+// The term's debug counters, per view (CullParams::hidden_counts): `k_hidden_bins` bins of the
+// hidden share h of each drawn pair's bounding sphere at the occlusion test's own mip (bin
+// floor(10 h), and bin 10 for a wholly hidden one), the same at one mip finer, then the drawn pairs
+// with no h (their rectangle off the screen or the near plane crossed), the casters, the
+// transitions the term read the Hi-Z for, and the drawn pairs the term added (coarser than the
+// threshold alone draws) and took away (finer); then, of the drawn pairs at least half hidden, how
+// far their parent transition is from being accepted — at the DAG's root, within 2 times its
+// threshold, within 5, farther. The last word is the CPU's: the frame they count.
+inline constexpr u32 k_hidden_bins = 11;
+inline constexpr u32 k_hidden_undefined = 2 * k_hidden_bins;
+inline constexpr u32 k_hidden_casters = k_hidden_undefined + 1;
+inline constexpr u32 k_hidden_band = k_hidden_undefined + 2;
+inline constexpr u32 k_hidden_coarser = k_hidden_undefined + 3;
+inline constexpr u32 k_hidden_finer = k_hidden_undefined + 4;
+inline constexpr u32 k_hidden_reach = k_hidden_undefined + 5;  // four words
+inline constexpr u32 k_hidden_frame = 31;
+static_assert(k_hidden_reach + 4 == k_hidden_frame);
+inline constexpr u32 k_hidden_words = 32;
 inline constexpr u64 k_cull_params_eye_offset = 480;  // offsetof(CullParams, eye)
 static_assert(sizeof(CullParams) % 16 == 0, "the block is read as float4 rows on the GPU");
 

@@ -479,9 +479,13 @@ bool SceneRenderer::create(const gfx::Device& device, GpuScene& scene,
   for (u32 slot = 0; slot < desc.frames_in_flight && ok; ++slot) {
     // Two cull blocks per view and one per shadow cascade behind them, one resolve block per view
     // with the frame's lights behind the last, the shadow maps' block behind those, the ground's
-    // detail behind that and the sky's block last, and one statistics block per view.
-    ok = gfx::create_buffer(device, sizeof(gfx::CullParams) * (2 * views + cascades), k_address,
-                            true, params_[slot], error) &&
+    // detail behind that and the sky's block last, and one statistics block per view. The cull
+    // blocks end with the occlusion term's debug counters, one set per view (R118), which the GPU
+    // counts into where the CPU reads them, the buffer being host-visible.
+    ok = gfx::create_buffer(device,
+                            sizeof(gfx::CullParams) * (2 * views + cascades) +
+                                u64{views} * gfx::k_hidden_words * sizeof(u32),
+                            k_address, true, params_[slot], error) &&
          gfx::create_buffer(device, sky_params_offset(views) + sizeof(gfx::SkyParams), k_address,
                             true, resolves_[slot], error) &&
          gfx::create_buffer(device, stat_bytes, gfx::BufferUsage::TransferDst, true,
@@ -2037,6 +2041,13 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
   const bool shadows = resolved_.shadows;
   const bool occlusion = resolved_.occlusion;
   const bool rt_chain = resolved_.rt_chain;
+  // **The occlusion term of the LOD threshold** (R118; renderer.md, "Occlusion-aware LOD"): this
+  // frame's k, and whether a frame without two-pass occlusion culling — the ray path, ray-traced
+  // shadows — builds a Hi-Z at its end, which the next frame's one cull pass reads for the term
+  // alone. Neither costs a frame anything while k is 0 and the counters are off.
+  const f32 occluded_k = lod_occluded_scale_tunable(frame.frame_index);
+  const bool occluded_hist = lod_occluded_histogram_tunable();
+  const bool hiz_lod = !occlusion && settings.cull && !direct && lod_occluded_active_tunable();
   const bool use_hw = settings.raster != RasterMode::Software && !ray_path;
   const bool use_sw = !direct && !ray_path && settings.raster != RasterMode::Hardware &&
                       settings.raster != RasterMode::Vertex && settings.cull;
@@ -2366,6 +2377,42 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
               : lighting.sun.w > 0.0f);
   const CasterBounds caster_bounds{relative(data.center, frame.camera.position), data.radius};
 
+  // The occlusion term's debug counters (gfx::k_hidden_*; `renderer.lod.occluded_histogram`),
+  // behind this slot's cull blocks: what the frame that last had the slot counted — the slot is the
+  // GPU's no longer — logged and zeroed for this frame, whose number goes in the last word.
+  const u64 hidden_bytes = u64{gfx::k_hidden_words} * sizeof(u32);
+  const u64 hidden_offset = params_[slot].size - u64{views} * hidden_bytes;
+  if (occluded_hist) {
+    for (u32 v = 0; v < views; ++v) {
+      auto* counts = reinterpret_cast<u32*>(static_cast<u8*>(params_[slot].mapped) + hidden_offset +
+                                            v * hidden_bytes);
+      if (counts[gfx::k_hidden_frame] != 0) {
+        std::string bins;
+        std::string finer;
+        for (u32 b = 0; b < gfx::k_hidden_bins; ++b) {
+          bins += std::to_string(counts[b]) + (b + 1 < gfx::k_hidden_bins ? "," : "");
+          finer += std::to_string(counts[gfx::k_hidden_bins + b]) +
+                   (b + 1 < gfx::k_hidden_bins ? "," : "");
+        }
+        ENGINE_LOG_INFO(log_renderer, "occlusion lod counters",
+                        log::field("frame", counts[gfx::k_hidden_frame] - 1u),
+                        log::field("view", v), log::field("hidden_tenths", bins),
+                        log::field("hidden_tenths_finer", finer),
+                        log::field("unknown", counts[gfx::k_hidden_undefined]),
+                        log::field("casters", counts[gfx::k_hidden_casters]),
+                        log::field("band", counts[gfx::k_hidden_band]),
+                        log::field("coarser", counts[gfx::k_hidden_coarser]),
+                        log::field("finer", counts[gfx::k_hidden_finer]),
+                        log::field("hidden_at_root", counts[gfx::k_hidden_reach]),
+                        log::field("hidden_within_2", counts[gfx::k_hidden_reach + 1]),
+                        log::field("hidden_within_5", counts[gfx::k_hidden_reach + 2]),
+                        log::field("hidden_farther", counts[gfx::k_hidden_reach + 3]));
+      }
+      std::memset(counts, 0, hidden_bytes);
+      counts[gfx::k_hidden_frame] = static_cast<u32>(frame.frame_index) + 1u;
+    }
+  }
+
   for (u32 v = 0; v < views; ++v) {
     const View& view = views_[v];
     const ViewTarget& target = targets_.views[v];
@@ -2521,7 +2568,28 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
       cull.hiz_mips = target.hiz_mips;
       std::memcpy(cull.hiz_offsets, target.hiz_offsets, sizeof(cull.hiz_offsets));
       cull.pass = 1;
+      cull.occluded_scale = occluded_k;  // pass 1 reads last frame's pyramid, pass 2 pass 1's
+    } else if (hiz_lod) {
+      // **The term's own Hi-Z** (R118): last frame's, built at the end of its visibility writes
+      // (below, after the trace), read for the term alone — culling against it here would drop a
+      // pair that moved into view since, and a pair hidden from the eye must still cast. In a frame
+      // that builds acceleration structures every view reads the cut view's pyramid through its
+      // projection, so one sphere has one hidden share in every view and the views' cuts stay one
+      // cut ("One cut for every view", above). Nothing here reads `view_proj` but the Hi-Z tests.
+      const u32 hv = rt_chain ? shadow_lod_view : v;
+      const ViewTarget& lod_target = targets_.views[hv];
+      cull.view_proj = views_[hv].view_proj;
+      cull.hiz = targets_.hiz.address;
+      cull.hiz_width = lod_target.width;
+      cull.hiz_height = lod_target.height;
+      cull.hiz_mips = lod_target.hiz_mips;
+      std::memcpy(cull.hiz_offsets, lod_target.hiz_offsets, sizeof(cull.hiz_offsets));
+      cull.hiz_flags = gfx::k_cull_hiz_lod_only;
+      cull.occluded_scale = occluded_k;
     }
+    cull.hiz_flags |= lod_occluded_bias_tunable() << gfx::k_cull_hiz_bias_shift;
+    if (occluded_hist)
+      cull.hidden_counts = params_[slot].address + hidden_offset + v * hidden_bytes;
     cull_blocks[v * 2] = cull;
     gfx::CullParams& cull_pass2 = cull_blocks[v * 2 + 1];
     cull_pass2 = cull;
@@ -3273,7 +3341,10 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
     sb_sky.aerial = graph.import_buffer("sky aerial", sky_.aerial);
     sb_sky.frame = graph.import_buffer("sky frame", sky_.frame);
   }
-  const bool fill_hiz = occlusion && targets.hiz_dirty;
+  // The term's Hi-Z (R118) starts empty — everything far, nothing hidden — on a frame whose last
+  // one built none, so its first frame reads no stale pyramid.
+  const bool fill_hiz =
+      (occlusion && targets.hiz_dirty) || (hiz_lod && (targets.hiz_dirty || !hiz_lod_built_));
   const bool fill_flags = occlusion && flags_dirty_;
   const bool cull_on = settings.cull;
   const bool deform_on = resolved_.deform_pass;
@@ -3530,6 +3601,8 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
             b.read(rg_hiz, gfx::Access::ComputeRead);
             b.read(rg_flags[prev_flags], gfx::Access::ComputeRead);
             b.write(rg_flags[cur_flags], gfx::Access::ComputeReadWrite);
+          } else if (hiz_lod) {
+            b.read(rg_hiz, gfx::Access::ComputeRead);  // last frame's, for the term (R118)
           }
           read_pool(b, gfx::Access::ComputeRead);
           read_tables(b, gfx::Access::ComputeRead, false);
@@ -4378,6 +4451,11 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
             }
           });
     }
+    // **The occlusion term's Hi-Z** (R118): from the frame's finished visibility buffer — traced,
+    // rasterized, or both — for the next frame's cull pass, as the two-pass scheme's second build
+    // is. It writes no tile mask: the resolve reads one only under two-pass occlusion culling.
+    if (hiz_lod) add_hiz(0);
+    hiz_lod_built_ = hiz_lod;
     if (csm) add_shadow_maps();
     // The sky (sky.h, sky_luts.slang): the scene's two tables on its first frame, then every frame
     // the sky from the eye and the air to a surface, and the frame's sums from the first — all four
