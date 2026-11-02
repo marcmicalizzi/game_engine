@@ -52,9 +52,12 @@ bool write_text(const std::string& path, const std::string& text) {
 constexpr const char* k_oak =
     R"({"species":"broadleaf","broadleaf":{"seed":3,"height_m":8,"trunk_radius_m":0.25,)"
     R"("triangle_budget":8000,"card_bake_px":16,"impostor_px":32}})";
+// The spruce bakes no chain (`card_bake_px` and `impostor_px` 0): since G120 a conifer bakes one by
+// default, which costs a fresh debug cook ten seconds, and this spruce is the decimated-top case.
 constexpr const char* k_spruce =
     R"({"species":"conifer","conifer":{"seed":5,"height_m":6,"trunk_radius_m":0.1,)"
-    R"("whorls":6,"branches_per_whorl":4,"crown_radius_m":1.5,"triangle_budget":8000}})";
+    R"("whorls":6,"branches_per_whorl":4,"crown_radius_m":1.5,"triangle_budget":8000,)"
+    R"("card_bake_px":0,"impostor_px":0}})";  // no chain (G120): the decimated top, cooked in a second
 
 std::string scene_text(const char* world) {
   std::string text =

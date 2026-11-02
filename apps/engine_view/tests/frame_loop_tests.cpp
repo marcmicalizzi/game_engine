@@ -308,7 +308,8 @@ TEST_CASE("frame loop: a streamed world's swaying trees allocate nothing in thei
       R"("triangle_budget":8000,"card_bake_px":16,"impostor_px":32}})";
   const std::string spruce =
       R"({"species":"conifer","conifer":{"seed":5,"height_m":6,"trunk_radius_m":0.1,)"
-      R"("whorls":6,"branches_per_whorl":4,"crown_radius_m":1.5,"triangle_budget":8000}})";
+      R"("whorls":6,"branches_per_whorl":4,"crown_radius_m":1.5,"triangle_budget":8000,)"
+      R"("card_bake_px":0,"impostor_px":0}})";  // no chain (G120): the decimated top
   REQUIRE(io::write_file(tmp.file("oak.flora.json"), oak) == io::Status::Ok);
   REQUIRE(io::write_file(tmp.file("spruce.flora.json"), spruce) == io::Status::Ok);
   const std::string scene =
