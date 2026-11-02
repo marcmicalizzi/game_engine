@@ -1,7 +1,7 @@
 {
   "format": "engine.scene.v1",
   "name": "ground-by-place",
-  "description": "Ground materials authored by place (roadmap W72; docs/subsystems/renderer.md 'Ground materials by place'): a 1 km authored heightfield with a 185 m mountain and two ponds at nearly one height on a forest plain, drawn from a palette of eleven substrates of which each 32 m mask tile names at most four. The generated priors lay alpine meadow, scree, bedrock and snow on the mountain by slope, height and aspect; regions give the plain its forest litter, a trail and a clearing, and each pond its own bed: wave-washed sand with a gravel margin in one, organic mud in the other. Its heightfield is written first by engine-content terrain-synth (README.md).",
+  "description": "Ground materials authored by place (roadmap W72; docs/subsystems/renderer.md 'Ground materials by place'): a 1 km authored heightfield with a 185 m mountain and two ponds at nearly one height on a forest plain, drawn from a palette of twelve substrates of which each 32 m mask tile names at most four. The generated priors lay alpine meadow, scree, bedrock and snow (a snow response, R99) on the mountain by slope, height and aspect; regions give the plain its forest litter, a trail and a clearing, and each pond its own bed: sand with a wave-washed beach margin in one, organic mud in the other. Its heightfield is written first by engine-content terrain-synth (README.md).",
   "camera_path": "camera-path.json",
   "sky": {"latitude_deg": 46.5, "day_of_year": 200, "turbidity": 2.5},
   "terrain": {
@@ -17,12 +17,14 @@
       {"name": "alpine_meadow", "tint": [0.19, 0.23, 0.11], "roughness_factor": 0.9, "porosity": 0.6, "tile_m": 1.5},
       {"name": "scree", "tint": [0.24, 0.23, 0.21], "roughness_factor": 0.85, "porosity": 0.3, "tile_m": 1.2},
       {"name": "bedrock", "tint": [0.12, 0.115, 0.11], "roughness_factor": 0.75, "porosity": 0.05, "tile_m": 1.8},
-      {"name": "snow", "tint": [0.86, 0.88, 0.92], "roughness_factor": 0.6, "porosity": 0.2, "tile_m": 2},
+      {"name": "snow", "roughness_factor": 0.8, "porosity": 0.2, "tile_m": 2, "response": "Snow"},
       {"name": "trail", "tint": [0.31, 0.24, 0.16], "roughness_factor": 0.9, "porosity": 0.6, "tile_m": 1},
       {"name": "clearing_grass", "tint": [0.24, 0.3, 0.11], "roughness_factor": 0.9, "porosity": 0.6, "tile_m": 1.5},
       {"name": "sand", "tint": [0.62, 0.55, 0.42], "roughness_factor": 0.85, "porosity": 0.9, "tile_m": 1},
       {"name": "gravel", "tint": [0.45, 0.43, 0.4], "roughness_factor": 0.8, "porosity": 0.4, "tile_m": 1},
-      {"name": "organic_mud", "tint": [0.1, 0.08, 0.05], "roughness_factor": 0.9, "porosity": 1, "tile_m": 1.3}
+      {"name": "organic_mud", "tint": [0.1, 0.08, 0.05], "roughness_factor": 0.9, "porosity": 1, "tile_m": 1.3},
+      {"name": "beach_sand", "tint": [0.62, 0.55, 0.42], "roughness_factor": 0.8, "porosity": 0.9, "tile_m": 1,
+       "response": "Sand", "sand": {"kind": "Beach"}}
       ]
     },
     "masks": {
@@ -41,7 +43,7 @@
         {"name": "trail", "polygon": [[-232, 0, 214], [-140, 0, 118], [-40, 0, 40], [-20, 0, 25],
                                       [-17.5, 0, 28], [-37.5, 0, 43], [-137.5, 0, 121], [-229.5, 0, 217]],
          "material": "trail", "feather_m": 0.75},
-        {"name": "sandy pond", "water_body": "sandy-pond", "bed": "sand", "margin": "gravel",
+        {"name": "sandy pond", "water_body": "sandy-pond", "bed": "sand", "margin": "beach_sand",
          "margin_m": 3, "feather_m": 1.5, "wet_m": 8},
         {"name": "boggy pond", "water_body": "boggy-pond", "bed": "organic_mud", "margin": "organic_mud",
          "margin_m": 5, "feather_m": 3, "wet_m": 16}

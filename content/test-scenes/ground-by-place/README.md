@@ -4,7 +4,7 @@
 [tileset](../../../docs/subsystems/tileset.md#the-mask-level), the grounding in
 [ground materials](../../../docs/experiments/ground-materials-grounding.md)): a 1 km authored
 ground with a mountain, a forest plain with a trail and a clearing, and two ponds at nearly one
-height with different beds, drawn from a palette of eleven substrates of which each 32 m mask tile
+height with different beds, drawn from a palette of twelve substrates of which each 32 m mask tile
 names at most four.
 
 ## Write the heightfield first
@@ -36,7 +36,7 @@ out, on a plain rising 8 m from south to north, with two bowls 2.5 m deep at (-2
 | region "forest floor" | the whole map, after "alpine" | `base`: forest litter for what soil is left — the plain |
 | region "clearing" | a 22 m circle at (-140, 120), 6 m feather | clearing grass outright |
 | region "trail" | a 4 m strip from the sandy pond to the mountain's foot | trail outright, a 0.75 m feather |
-| region "sandy pond" | the `sandy-pond` water body's circle | `bed` sand inside (1.5 m feather), `margin` gravel within 3 m outside, wet to 8 m: the exposed shore |
+| region "sandy pond" | the `sandy-pond` water body's circle | `bed` sand inside (1.5 m feather), `margin` beach sand (a `Beach` response, R99; gravel until 2026-11-02) within 3 m outside, wet to 8 m: the exposed shore |
 | region "boggy pond" | the `boggy-pond` water body's circle | `bed` and `margin` organic mud (5 m, 3 m feather), wet to 16 m: the sheltered, swampy one |
 
 The two ponds stand at 1.9 m and 1.3 m: the priors give both the same soil, so their beds are
@@ -53,6 +53,27 @@ north face, the scree band below the bedrock, the meadow at the foot), `sandy-sh
 `sandy-under` (gravel margin, the sand bed under the volume-tier water), `boggy-shore` (the dark wet
 mud margin), `trail`, and `shore-night` (22:00, the shore fire on the gravel margin,
 `--exposure-ev100 1`).
+
+## Sand and snow (R99)
+
+Two layers carry a **response** ([renderer](../../../docs/subsystems/renderer.md#ground-materials-by-place),
+"Sand and snow"; the research in
+[sand and snow](../../../docs/experiments/sand-and-snow-substrates-2026-11-02.md)):
+
+- `snow`, where the priors put it (above 150 m, 25 m lower on the north face), is `"response":
+  "Snow"` at the defaults — a 0.25 mm grain, the dielectric lobe, glints 0.5, thickness 0.7 — with
+  no tint and roughness 0.8: its colour is its grain's albedo, so it is a white a little bluer than
+  any tint, it sparkles where sun, facet and eye line up, and it lies on the meadow and scree in
+  the height blend.
+- `beach_sand`, new, is `"response": "Sand"` of kind `Beach`: the sandy pond's `margin` (3 m
+  outside its water, wet to 8 m), which was gravel. It darkens where wet by Lekner and Dorf rather
+  than by porosity, and has no ripples (a beach's sand is wave-washed).
+
+What a world author adds to a palette for the same: `"response": "Snow"` (and a `snow` block only
+to move a default) on the layer the snow prior or a region names, and `"response": "Sand"` with
+`"sand": {"kind": "Beach"}` on the layer a water region's `margin` or `bed` names; a desert's
+palette gives its sand `"kind": "Wind"` and may then name the scene's `detail` block beside
+`materials`.
 
 The camera path (`camera-path.json`) goes over the sandy shore, along the trail past the clearing,
 to the mountain's foot and up it, and over the boggy pond; it is the path the resolve's costs were

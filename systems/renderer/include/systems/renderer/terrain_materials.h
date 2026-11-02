@@ -14,6 +14,12 @@ bool validate_terrain_materials(const scene::TerrainMaterials& materials, std::s
 bool append_terrain_materials(const TerrainDesc& terrain, assets::MeshData& mesh,
                               std::string* error);
 u64 terrain_materials_hash(const scene::TerrainMaterials& materials);
+// **A layer's response** (R99; renderer.md, "Sand and snow"): the scene's `response` and its block
+// as the record's fields (`gfx::set_terrain_layer` packs them), every other field at its default.
+gfx::TerrainLayerFields terrain_layer_response(const scene::TerrainMaterialLayer& layer);
+// Whether a palette names wind sand, the one response that draws the scene's `detail` block: such
+// a terrain may name both, and its root keeps `gfx::k_material_ground_detail`.
+bool terrain_materials_wind_sand(const scene::TerrainMaterials& materials);
 
 // **The mask level as the GPU reads it** (renderer.md, "Ground materials by place"): the terrain's
 // ground provider asked for its masks (`scene_gen::GroundOps::masks`, built on a miss), and every

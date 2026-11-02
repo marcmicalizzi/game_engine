@@ -59,8 +59,59 @@ bool validate_terrain_materials(const scene::TerrainMaterials& m, std::string* e
     for (const auto* path : {&l.base_color, &l.normal, &l.roughness, &l.mask, &l.height}) {
       if (!path->empty() && !io::exists(*path)) return fail(l.name + ": missing image " + *path);
     }
+    // The response (R99; renderer.md, "Sand and snow"): its block only beside its own response,
+    // and each number inside the range the grounding page gives it.
+    if (l.response != scene::TerrainResponse::Default &&
+        l.response != scene::TerrainResponse::Sand && l.response != scene::TerrainResponse::Snow)
+      return fail(l.name + ": unknown response");
+    if (l.sand.has_value() && l.response != scene::TerrainResponse::Sand)
+      return fail(l.name + ": a sand block needs \"response\": \"Sand\"");
+    if (l.snow.has_value() && l.response != scene::TerrainResponse::Snow)
+      return fail(l.name + ": a snow block needs \"response\": \"Snow\"");
+    if (l.response == scene::TerrainResponse::Sand) {
+      const scene::TerrainSand s = l.sand.value_or(scene::TerrainSand{});
+      if (s.kind != scene::TerrainSandKind::Wind && s.kind != scene::TerrainSandKind::Beach)
+        return fail(l.name + ": unknown sand kind");
+      if (!(s.wet_darkening >= 0 && s.wet_darkening <= 1 && s.glints >= 0 && s.glints <= 1))
+        return fail(l.name + ": sand wet_darkening and glints must be in [0,1]");
+    }
+    if (l.response == scene::TerrainResponse::Snow) {
+      const scene::TerrainSnow s = l.snow.value_or(scene::TerrainSnow{});
+      if (!(s.grain_mm >= 0.03f && s.grain_mm <= 5.0f))
+        return fail(l.name + ": snow grain_mm must be in [0.03,5]");
+      if (!(s.lobe >= 1 && s.lobe <= 4)) return fail(l.name + ": snow lobe must be in [1,4]");
+      if (!(s.glints >= 0 && s.glints <= 1 && s.thickness >= 0 && s.thickness <= 2))
+        return fail(l.name + ": snow glints must be in [0,1] and thickness in [0,2]");
+    }
   }
   return true;
+}
+
+bool terrain_materials_wind_sand(const scene::TerrainMaterials& m) {
+  for (const auto& l : m.layers)
+    if (l.response == scene::TerrainResponse::Sand &&
+        l.sand.value_or(scene::TerrainSand{}).kind == scene::TerrainSandKind::Wind)
+      return true;
+  return false;
+}
+
+gfx::TerrainLayerFields terrain_layer_response(const scene::TerrainMaterialLayer& layer) {
+  gfx::TerrainLayerFields f;
+  if (layer.response == scene::TerrainResponse::Sand) {
+    const scene::TerrainSand s = layer.sand.value_or(scene::TerrainSand{});
+    f.response = s.kind == scene::TerrainSandKind::Beach ? gfx::TerrainResponse::BeachSand
+                                                         : gfx::TerrainResponse::WindSand;
+    f.glints = s.glints;
+    f.wet_darkening = s.wet_darkening;
+  } else if (layer.response == scene::TerrainResponse::Snow) {
+    const scene::TerrainSnow s = layer.snow.value_or(scene::TerrainSnow{});
+    f.response = gfx::TerrainResponse::Snow;
+    f.glints = s.glints;
+    f.grain_mm = s.grain_mm;
+    f.lobe = s.lobe;
+    f.thickness = s.thickness;
+  }
+  return f;
 }
 
 bool append_terrain_materials(const TerrainDesc& terrain, assets::MeshData& mesh,
@@ -199,6 +250,11 @@ u64 terrain_materials_hash(const scene::TerrainMaterials& materials) {
       if (layer.is_object()) {
         layer.as_object().erase(std::string("sampling"));
         layer.as_object().erase(std::string("rotation_deg"));
+        // The response (R99) is shading read at upload, like the sampling: no container carries
+        // it, so no scene's key moves when a layer gains one.
+        layer.as_object().erase(std::string("response"));
+        layer.as_object().erase(std::string("sand"));
+        layer.as_object().erase(std::string("snow"));
       }
   const std::string text = write_json(json);
   // 2: the terrain record entry after the layers (2026-10-24), so a container built before it,

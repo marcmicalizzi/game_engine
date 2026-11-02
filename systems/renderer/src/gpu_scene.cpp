@@ -3952,17 +3952,24 @@ bool GpuScene::upload_materials(const ResolvedSettings& resolved, std::string* e
                 *error = "terrain.materials: the terrain's own material cannot be alpha-tested";
               return false;
             }
-            material.flags &= ~gfx::k_material_ground_detail;
+            // The sand's detail draws on a layered terrain only through a wind-sand layer, weighted
+            // by its share (R99; renderer.md, "Sand and snow"); otherwise the paths stay apart.
+            if (!terrain_materials_wind_sand(terrain_materials))
+              material.flags &= ~gfx::k_material_ground_detail;
             gfx::set_terrain_root(material, mesh_material_base[m] + layers + 1);
           } else if (source_material_index <= layers) {
             const auto& layer = terrain_materials.layers[source_material_index - 1];
             material.flags &= ~(gfx::k_material_uv_transform | gfx::k_material_ground_detail);
             if (layer.projection == scene::TerrainProjection::Map)
               material.flags |= gfx::k_material_terrain_map;
-            gfx::TerrainLayerFields fields;
+            gfx::TerrainLayerFields fields = terrain_layer_response(layer);
             fields.mean_colour =
                 Vec3{material.emissive.x, material.emissive.y, material.emissive.z};
             fields.mean_roughness = material.emissive.w;  // the container's transport of the means
+            // A layer with height detail reads it from its map's B through the metallic factor,
+            // which a terrain layer never uses as metallic; the factor's rgb carries the
+            // response's numbers (R99), which `set_terrain_layer` packs below.
+            material.emissive = Vec4{0, 0, 0, layer.height.empty() ? 0.0f : 1.0f};
             fields.weight = layer.weight;
             fields.porosity = layer.porosity;
             fields.pitch_mm = std::round(layer.tile_m * 1000.0f);
@@ -3975,9 +3982,6 @@ bool GpuScene::upload_materials(const ResolvedSettings& resolved, std::string* e
               fields.mean_height = layer.height.empty() ? 0.0f : source.alpha_cutoff;
             }
             gfx::set_terrain_layer(material, fields);
-            // A layer with height detail reads it from its map's B through the metallic factor,
-            // which a terrain layer never uses as metallic.
-            material.emissive = Vec4{0, 0, 0, layer.height.empty() ? 0.0f : 1.0f};
             if (!layer.height.empty()) material.flags |= gfx::k_material_terrain_height;
           } else if (source_material_index == layers + 1) {
             gfx::TerrainRecord record = terrain_mask_record;
