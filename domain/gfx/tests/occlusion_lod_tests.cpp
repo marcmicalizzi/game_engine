@@ -275,12 +275,13 @@ TEST_CASE("occlusion lod: a crown behind a screen is cut coarser, and only its s
   // One configuration, four frames: the Hi-Z starts empty (nothing hidden, the plain cut), and each
   // frame's cull reads the pyramid the frame before it built.
   constexpr u32 k_frames = 4;
-  const auto run = [&](f32 k, bool with_screen, Run& out) {
+  const auto run = [&](f32 k, bool with_screen, Run& out, u32 extra_flags = 0) {
     gfx::CullParams cull{};
     gfx::set_frustum(cull, frustum_from_view_proj(view_proj));
     cull.view_proj = view_proj;
     cull.camera = Vec4{eye, znear};
-    cull.lod = Vec4{proj_scale, 0.5f, 1.0f, 1.0f};
+    // A threshold fine enough that the crown's cut is well inside its DAG, not at its root.
+    cull.lod = Vec4{proj_scale, 0.15f, 1.0f, 1.0f};
     cull.raster = Vec4{0.0f, gfx::k_raster_hardware, 0.0f, 0.0f};
     cull.cluster_count = cluster_count;
     cull.count_index = raster.count_index();
@@ -297,7 +298,7 @@ TEST_CASE("occlusion lod: a crown behind a screen is cut coarser, and only its s
     cull.hiz_height = k_h;
     cull.hiz_mips = hiz_mips;
     std::memcpy(cull.hiz_offsets, hiz_offsets, sizeof(hiz_offsets));
-    cull.hiz_flags = gfx::k_cull_hiz_lod_only | (1u << gfx::k_cull_hiz_bias_shift);
+    cull.hiz_flags = gfx::k_cull_hiz_lod_only | (1u << gfx::k_cull_hiz_bias_shift) | extra_flags;
     cull.occluded_scale = k;
     frames.wait_idle();
     *block = cull;
@@ -412,12 +413,27 @@ TEST_CASE("occlusion lod: a crown behind a screen is cut coarser, and only its s
   run(k_scale, false, alone_on);
   run(0.0f, true, behind_off);
   run(k_scale, true, behind_on);
+  // The renderer's default moves the foliage threshold alone, and this crown has no coverage error:
+  // its cut, like a trunk's, does not move.
+  Run behind_foliage;
+  run(k_scale, true, behind_foliage, gfx::k_cull_hiz_term_foliage);
+  CHECK(behind_foliage.crown_triangles == behind_off.crown_triangles);
+  CHECK(behind_foliage.picture == behind_off.picture);
   MESSAGE(std::string(raster.name())
           << " path; crown triangles: alone " << alone_off.crown_triangles << " (k 0) and "
           << alone_on.crown_triangles << " (k " << k_scale << "), behind the screen "
           << behind_off.crown_triangles << " and " << behind_on.crown_triangles
           << "; screen triangles " << behind_off.screen_triangles << " and "
           << behind_on.screen_triangles);
+  // The crown's plain cut has somewhere coarser to go: finer than its root level.
+  u32 root_triangles = 0;
+  for (u32 c = parts[0].first_cluster; c < parts[0].first_cluster + crown_pairs; ++c) {
+    if (!(lod.lod[c].parent_error < geometry::k_lod_terminal_error)) {
+      root_triangles += lod.mesh.clusters[c].triangle_count;
+    }
+  }
+  MESSAGE("the crown's root level: " << root_triangles << " triangles");
+  REQUIRE(behind_off.crown_triangles > root_triangles);
   // Off, the cut does not depend on what stands in front.
   CHECK(alone_off.crown_triangles == behind_off.crown_triangles);
   CHECK(alone_off.crown_triangles > 0);

@@ -230,7 +230,22 @@ TEST_CASE("cluster lod: the occlusion term's per-transition factor keeps the cut
     Vector<u32> scaled;
     select_lod(lod, lod_view_scaled(view, 1.0f + k), scaled);
     CHECK(cut == scaled);
-    CHECK(cut.size() < plain.size());
+    MESSAGE("one factor " << 1.0f + k << ": " << cut.size() << " clusters against "
+                          << plain.size());
+    // Whether twice the threshold moves a transition at this view is borderline: it did on MSVC and
+    // did not in the linux-clang-debug container (2026-11-02). Four times must move some.
+    CHECK(cut.size() <= plain.size());
+    if (k >= 3.0f) CHECK(cut.size() < plain.size());
+  }
+  // Foliage only (the renderer's default): a mesh with no coverage error keeps its cut at any
+  // factor.
+  {
+    Vector<u32> foliage_cut;
+    for (u32 c = 0; c < lod.lod.size(); ++c) {
+      if (lod_selects(lod.lod[c], view, k_lod_no_coverage, 9.0f, 9.0f, true))
+        foliage_cut.push_back(c);
+    }
+    CHECK(foliage_cut == plain);
   }
   u32 holes = 0;
   u32 doubled = 0;

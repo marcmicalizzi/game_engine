@@ -73,5 +73,115 @@ some).
 | drawn, coarser than the plain cut | 9,175 | 17,027 | 15,386 |
 | plain cut's pairs not drawn | 1,496 | 41,804 | 48,912 |
 
-The frame's timings, the captures and the default follow in this page's next revision (R118's measurement flights were queued behind R115's and R116's for the GPU).
+### Why so little moves: where the hidden pairs' next level is
+
+A second counters flight (the two markers held, the world frozen) asked of every drawn pair at least
+half hidden how far its parent transition was from being accepted. At marker 1 (k = 0), of 947,258
+such pairs:
+
+| the parent transition | pairs | share |
+|---|---|---|
+| none: the pair is at its DAG's root | 600,001 | 63.3 % |
+| within 2 × the threshold | 9,386 | 1.0 % |
+| within 5 × | 875 | 0.1 % |
+| farther (but not the root) | 336,996 | 35.6 % |
+
+Marker 2: 472,752 at the root, 7,578 within 2, 1,455 within 5 and 232,575 farther. **Nearly two
+thirds of what is hidden is already at its coarsest form** — the far forest's distance forms and the
+trees' stars — and almost all the rest is more than five times its threshold from the next level,
+past what any k on this page reaches. A threshold factor can move about one hidden pair in a
+hundred. The forest behind the forest costs what it costs because it is *built at all*, not because
+it is built too fine: the lever that would return it is a different one (below).
+
+### Timings on the walk
+
+msvc-release, RTX 5090, `--repeat 1 --wait-quiet 120` (no quiet machine was found: others held 51–71 %
+of the CPU at the end of each flight; the GPU lock was this flight's, so no other engine flight shared
+the GPU — every number is an upper bound). Medians of the 150 walk frames of each repetition, GPU ms.
+"Both" is the term on both thresholds (`renderer.lod.occluded_foliage_only false`), "foliage" on the
+coverage threshold alone (the default since). `rt_built` is the cluster structures the frame built.
+
+| 1920 × 1080 `--raster rt` | k = 0 | both, k = 4 | both, k = 8 | foliage, k = 4 | foliage, k = 8 |
+|---|---|---|---|---|---|
+| visible pairs | 796,529 | 810,612 | 803,607 | 826,055 | 821,716 |
+| structures built | 130,768 | 99,374 | 89,867 | 116,124 | 110,589 |
+| cull / hiz | 0.49 / 0.01 | 0.51 / 0.01 | 0.51 / 0.01 | 0.51 / 0.01 | 0.51 / 0.01 |
+| CLAS build | 3.02 | 2.30 | 2.11 | 2.87 | 2.65 |
+| chain (rt) | 5.15 | 4.38 | 4.13 | 4.94 | 4.71 |
+| trace | 1.19 | 1.14 | 1.14 | 1.39 | 1.34 |
+| resolve | 2.44 | 2.45 | 2.45 | 2.35 | 2.35 |
+| **frame** | **11.17** | **10.46** | **10.19** | **11.45** | **11.14** |
+
+(The foliage flight's k = 0 column read 11.64 ms, 3.03 CLAS, 5.15 chain: the same frames a flight
+later; compare each flight's columns with its own k = 0.)
+
+| 11520 × 2160 `--raster rt`, both thresholds | k = 0 | k = 4 | k = 8 |
+|---|---|---|---|
+| visible pairs | 1,467,433 | 1,451,296 | 1,432,156 |
+| structures built | 264,272 | 212,028 | 188,442 |
+| cull / hiz | 0.51 / 0.20 | 0.56 / 0.20 | 0.56 / 0.20 |
+| CLAS build | 6.08 | 4.80 | 4.35 |
+| chain (rt) | 8.08 | 6.83 | 6.19 |
+| trace | 10.26 | 10.00 | 9.92 |
+| resolve | 23.26 | 23.30 | 23.38 |
+| **frame** | **45.96** | **44.35** | **43.88** |
+
+| 1920 × 1080 `--raster hw --shadows rt`, both thresholds | k = 0 | k = 4 | k = 8 |
+|---|---|---|---|
+| visible pairs | 796,529 | 814,254 | 805,439 |
+| structures built | 121,115 | 91,943 | 81,939 |
+| CLAS build | 2.87 | 2.23 | 1.94 |
+| chain (rt) | 4.94 | 4.26 | 4.03 |
+| resolve | 2.37 | 2.27 | 2.27 |
+| **frame** | **11.55** | **10.89** | **10.54** |
+
+The term's own costs: the pyramid is 0.01 ms at 1080p and 0.20 ms at 11520 × 2160, the cull pass's
+reads 0.02–0.05 ms. What it returns is in the CLAS build of the swaying trees (deformed, rebuilt every
+frame), which is where a coarser hidden crown saves anything: the visible pair count does not fall —
+it rises a little, because across a scaled threshold the cross-fade's band is wider, and both sides of
+a fading transition are drawn.
+
+### The captures
+
+Marker 1 and marker 2, each held 16 frames per k (`holds.json`, `occluded_cycle 16`) with the world
+frozen (`--world-rate 0`, so nothing sways between the captures — the first capture flight, at world
+rate 1, differed in half its pixels, mostly from the wind), 1920 × 1080, colour and ids. Changed pixels
+against k = 0 at the same pose:
+
+| | ids changed | colour changed | colour by more than 16 codes |
+|---|---|---|---|
+| both, k = 4, marker 1 | 7.8 % | 6.9 % | 3.4 % |
+| both, k = 8, marker 1 | 12.7 % | 12.4 % | 7.6 % |
+| both, k = 4, marker 2 | 10.9 % | 9.4 % | 3.6 % |
+| both, k = 8, marker 2 | 16.1 % | 15.7 % | 6.9 % |
+| foliage, k = 4, marker 1 | 2.2 % | 2.4 % | 1.7 % |
+| foliage, k = 8, marker 1 | 7.0 % | 7.3 % | 5.5 % |
+| foliage, k = 4, marker 2 | 2.1 % | 3.0 % | 2.0 % |
+| foliage, k = 8, marker 2 | 6.2 % | 7.7 % | 4.6 % |
+
+**Where.** On both thresholds the changed pixels are mostly **visible mid-distance trunks** (the same
+instance, another cluster: a level down) and the crowns around them. The hidden share is the
+*bounding rectangle's*, and a trunk is a thin thing in a large rectangle: in a forest the rectangle
+of a trunk 20 m off is mostly nearer trees' leaves, so the trunk reads as hidden while every pixel of it
+shows. The owner asked for exactly the opposite — keep the trunk, coarsen the crown — so the term now
+moves the foliage threshold alone by default (`renderer.lod.occluded_foliage_only`). Then the changes
+are a handful of mid-distance trees behind nearer ones, whose whole tree — the star is the whole tree,
+trunk included — switches to its next card level or its star; the shadows of those trees on the
+ground move with them (blue in the masks; `IdDiff.cs` in the scratch directory draws them).
+
+## The decision
+
+**`renderer.lod.occluded_scale` stays 0 (off).** On the owner's flags the term returns 0.2–0.5 ms of an
+11.6 ms 1080p frame on the foliage threshold alone, 0.7–1.0 ms on both (1.6–2.1 ms of 46 ms at
+11520 × 2160), for 2–16 % of the picture changed, and on both thresholds the change falls on what is
+in plain view. That is not the trade the subjective-fidelity rule welcomes. It is built, tested and
+measured, and a session can turn it on (`--tunable renderer.lod.occluded_scale=4`).
+
+**What would return the hidden forest.** The histogram is the finding: four drawn pairs in five are
+wholly hidden from the eye and nearly two thirds of them are already at their coarsest form. Under
+`--raster rt` they are built because a shadow ray may meet them. Two levers follow, neither built:
+a visibility measure that is the pair's own and not its rectangle's (last frame's ids give, per pair,
+the pixels it actually showed — the trunk problem disappears), and, for a wholly hidden pair, a
+representation for the shadow rays alone (an opaque proxy or a cheaper caster set built less often),
+since the eye sees none of it.
 

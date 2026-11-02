@@ -127,6 +127,7 @@ struct CullParams {
 
 // gfx::CullParams::hiz_flags and the debug counters' layout (gfx::k_hidden_*).
 static const uint k_cull_hiz_lod_only = 1;
+static const uint k_cull_hiz_term_foliage = 2;
 static const uint k_cull_hiz_bias_shift = 4;
 static const uint k_hidden_bins = 11;
 static const uint k_hidden_undefined = 22;
@@ -697,9 +698,13 @@ void cull_pair(uint pair, bool vertex_draw) {
       own_scale = occluded_threshold_scale(params, own_sphere, own, own_cover, counting);
       parent_scale = occluded_threshold_scale(params, parent_sphere, parent, parent_cover, counting);
     }
-    const float own_threshold = params->lod.y * own_scale;
+    // `k_cull_hiz_term_foliage`: the factor moves the coverage threshold alone, so a transition with
+    // no coverage error — a trunk's, the ground's — keeps its geometric threshold whatever is in
+    // front of it, and only foliage (leaves, cards, the star) goes coarser behind nearer leaves.
+    const bool foliage_only = (params->hiz_flags & k_cull_hiz_term_foliage) != 0;
+    const float own_threshold = foliage_only ? params->lod.y : params->lod.y * own_scale;
     const float own_foliage = params->foliage_px * own_scale;
-    const float parent_threshold = params->lod.y * parent_scale;
+    const float parent_threshold = foliage_only ? params->lod.y : params->lod.y * parent_scale;
     const float parent_foliage = params->foliage_px * parent_scale;
     if (counting) {
       plain_drawn = transition_acceptable(own, own_cover, params->lod.y, params->foliage_px) &&

@@ -313,8 +313,9 @@ struct CullParams {
   f32 cascade_cover_m = 0.0f;
   // `k_cull_hiz_*` (R118): bit 0, the Hi-Z feeds the occlusion term only and culls nothing — a
   // frame with no two-pass occlusion culling (the ray path, ray-traced shadows), whose Hi-Z is last
-  // frame's and whose occluded pairs must stay, drawn or casting; bits 4-7, how many mips finer
-  // than the occlusion test's the term's footprint is read at. The term and its counters took the
+  // frame's and whose occluded pairs must stay, drawn or casting; bit 1, the term moves the foliage
+  // threshold alone; bits 4-7, how many mips finer than the occlusion test's the term's footprint
+  // is read at. The term and its counters took the
   // last four pad words; the block is still 1,744 bytes.
   u32 hiz_flags = 0;
 };
@@ -323,6 +324,9 @@ static_assert(offsetof(CullParams, hidden_counts) % 8 == 0);
 
 // CullParams::hiz_flags.
 inline constexpr u32 k_cull_hiz_lod_only = 1u;
+// The term multiplies the coverage (foliage) threshold alone: a transition with no coverage error —
+// a trunk's, the ground's — keeps its geometric threshold (`renderer.lod.occluded_foliage_only`).
+inline constexpr u32 k_cull_hiz_term_foliage = 2u;
 inline constexpr u32 k_cull_hiz_bias_shift = 4u;
 inline constexpr u32 k_cull_hiz_bias_mask = 0xF0u;
 // The term's debug counters, per view (CullParams::hidden_counts): `k_hidden_bins` bins of the

@@ -2588,6 +2588,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
       cull.occluded_scale = occluded_k;
     }
     cull.hiz_flags |= lod_occluded_bias_tunable() << gfx::k_cull_hiz_bias_shift;
+    if (lod_occluded_foliage_only_tunable()) cull.hiz_flags |= gfx::k_cull_hiz_term_foliage;
     if (occluded_hist)
       cull.hidden_counts = params_[slot].address + hidden_offset + v * hidden_bytes;
     cull_blocks[v * 2] = cull;

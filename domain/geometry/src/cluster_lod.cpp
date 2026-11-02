@@ -1381,19 +1381,19 @@ bool lod_selects(const ClusterLodDesc& lod, const LodView& view, u32 coverage) n
   return lod_selects(lod, view, coverage, 1.0f, 1.0f);
 }
 
-LodView lod_view_scaled(const LodView& view, f32 scale) noexcept {
+LodView lod_view_scaled(const LodView& view, f32 scale, bool foliage_only) noexcept {
   LodView scaled = view;
-  scaled.threshold_px = view.threshold_px * scale;
+  if (!foliage_only) scaled.threshold_px = view.threshold_px * scale;
   scaled.foliage_px = view.foliage_px * scale;
   return scaled;
 }
 
 bool lod_selects(const ClusterLodDesc& lod, const LodView& view, u32 coverage, f32 own_scale,
-                 f32 parent_scale) noexcept {
+                 f32 parent_scale, bool foliage_only) noexcept {
   return transition_acceptable(lod.own, lod.own_error, lod_coverage_own(coverage),
-                               lod_view_scaled(view, own_scale)) &&
+                               lod_view_scaled(view, own_scale, foliage_only)) &&
          !transition_acceptable(lod.parent, lod.parent_error, lod_coverage_parent(coverage),
-                                lod_view_scaled(view, parent_scale));
+                                lod_view_scaled(view, parent_scale, foliage_only));
 }
 
 f32 lod_occluded_scale(f32 hidden, f32 k) noexcept {

@@ -241,6 +241,10 @@ tunables::Int lod_occluded_bias{
     "renderer.lod.occluded_bias", static_cast<i64>(k_lod_occluded_bias), 0, 4,
     "How many mips finer than the occlusion test's the term reads a transition's hidden share at; "
     "each is up to four times the reads"};
+tunables::Bool lod_occluded_foliage_only{
+    "renderer.lod.occluded_foliage_only", true,
+    "The occlusion term moves the foliage (coverage) threshold alone, so a trunk or the ground "
+    "keeps its geometric threshold whatever stands in front of it; false moves both"};
 tunables::Int lod_occluded_cycle{
     "renderer.lod.occluded_cycle", 0, 0, 1 << 20,
     "Measurement only: n > 0 holds k at 0, k/2 and k for n frames each in turn (frame f takes "
@@ -262,6 +266,7 @@ bool lod_occluded_active_tunable() noexcept {
 }
 u32 lod_occluded_bias_tunable() noexcept { return static_cast<u32>(lod_occluded_bias.get()); }
 bool lod_occluded_histogram_tunable() noexcept { return lod_occluded_histogram.get(); }
+bool lod_occluded_foliage_only_tunable() noexcept { return lod_occluded_foliage_only.get(); }
 
 namespace {
 tunables::Float display_paper_white{"renderer.display.paper_white_nits", 0.0, 0.0, 10000.0,

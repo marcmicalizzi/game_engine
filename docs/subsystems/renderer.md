@@ -1298,8 +1298,27 @@ captures count those pixels with the rest. The cascaded maps keep the camera's p
 blocks have no Hi-Z). The Hi-Z is last frame's, so a cut follows a camera move one frame late; a still
 scene's cut settles (`occlusion_lod_tests.cpp` holds its last two frames equal).
 
-**Knobs.** `renderer.lod.occluded_scale` (k; default `k_lod_occluded_scale`), `renderer.lod.occluded_bias`
-(1), and two measurement switches: `renderer.lod.occluded_cycle` n (frame f takes k × ((f / n) mod 3) / 2,
+**Foliage only, by default.** The hidden share is the bounding *rectangle's*, and a trunk is a thin
+thing in a large one: in a forest the rectangle of a trunk 20 m off is mostly nearer trees' leaves, so
+on both thresholds the term coarsened visible mid-distance trunks — the opposite of the owner's ask.
+`renderer.lod.occluded_foliage_only` (true; `gfx::k_cull_hiz_term_foliage`) moves the coverage
+threshold alone, so a transition with no coverage error — a trunk's, the ground's — keeps its own, and
+only foliage goes coarser; a tree whose next level is its star still switches whole, trunk included,
+because the star is the whole tree.
+
+**Off by default, measured.** On the owner's v25 walk (`--raster rt --shadows rt`, 1080p) the term
+returned 0.2–0.5 ms of an 11.6 ms frame on the foliage threshold at k 4–8 and 0.7–1.0 ms on both
+(1.6–2.1 ms of 46 ms at 11520 × 2160), all of it in the CLAS build of hidden swaying crowns, for 2–7 %
+of the pixels changed at the markers on foliage alone and 8–16 % on both. **81 % of the drawn pairs
+were wholly hidden**, but of those at least half hidden 63 % were already at their DAG's root and 36 %
+more than five times from their next level: a threshold factor reaches about one in a hundred. So
+`k_lod_occluded_scale` is 0 and the frame is the one it was; [the measurements](../experiments/occlusion-lod-2026-11-02.md)
+name the two levers that would return the hidden forest (a pair's own visible pixels from last
+frame's ids instead of its rectangle, and a shadow-only representation for what the eye never sees).
+
+**Knobs.** `renderer.lod.occluded_scale` (k; default `k_lod_occluded_scale`, 0),
+`renderer.lod.occluded_foliage_only` (true), `renderer.lod.occluded_bias` (1), and two measurement
+switches: `renderer.lod.occluded_cycle` n (frame f takes k × ((f / n) mod 3) / 2,
 so one flight measures 0, k/2 and k) and `renderer.lod.occluded_histogram` (the drawn pairs' hidden
 shares by tenths and what the term changed, one log line a frame, counted by the GPU into the cull
 blocks' host-visible buffer — `gfx::k_hidden_*`).
@@ -1307,8 +1326,9 @@ blocks' host-visible buffer — `gfx::k_hidden_*`).
 **What holds.** `occlusion_lod_tests.cpp`: a bumpy sphere's DAG behind a screen pierced by holes, one
 cull pass a frame against last frame's pyramid — at k 0 the crown's cut is the same behind the screen
 and alone; at k 4 it is coarser than at k 0 and than alone, the screen's cut does not move, every
-changed pixel is one where the crown shows in one picture or the other, and the last two frames draw
-the same pairs. `cluster_lod_tests.cpp`: the CPU rule's factors, and no hole under any per-transition
+changed pixel is one where the crown shows in one picture or the other, the last two frames draw
+the same pairs, and on the foliage threshold alone this crown, which has no coverage error, keeps its
+cut and its picture byte for byte. `cluster_lod_tests.cpp`: the CPU rule's factors, and no hole under any per-transition
 factor. The two-pass occlusion test, the cull test's GPU-against-CPU cut and the cone test run with
 the term off and are unchanged.
 
