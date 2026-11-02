@@ -454,6 +454,16 @@ fresh worktree's compiles and most of its links; with the cache warm the compile
 what it saves is the links and the lookups. ([what to run](what-to-run.md#what-affected-means)
 has the rest of the rule.)
 
+**A link that fails on one corrupt object is the cache's, not the change's** (2026-11-02). Twice in
+batch 48 an MSVC link stopped on a single object with `LNK1236: corrupt or invalid COFF sections` or
+`LNK1123` (`engine_ruins_impl.lib(synthetic_blocks.cpp.obj)` in the gate's `msvc-debug`, an object
+of `systems/muscle`'s tests in an agent worktree's `msvc-no-ecs`), both in trees the cache served
+with several checkouts compiling at once; the object's bytes were wrong, nothing in the change
+touched it, and deleting that one `.obj` under `build/<preset>/` and building again linked clean
+in a minute. The cause is not yet pinned (a result read while another checkout's ccache was still
+writing it is the suspect); until it is, the answer is that deletion, not a clean build, and a
+third occurrence should become a row.
+
 ### Size, and getting it back
 
 Measured on 2026-09-22 after all four presets had been built once, in two fresh checkouts of the
