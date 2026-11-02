@@ -89,7 +89,15 @@ namespace engine::hotload {
 // far as the module's `size` reaches** (ABI 5 to 7 modules pass `k_actor_state_v5_size`), so a
 // module built against 3 to 7 loads on a host of 8 and runs unchanged, `actor_place` still
 // standing the actor level.
-inline constexpr u32 k_abi_version = 8;
+//
+// **9** (2026-11-01): `HostApi` gained, at its end, **an actor's shape** — its static morph
+// weights, its uniform scale and its channels' count and names (`actor_morph`, `actor_scale`,
+// `actor_morph_info`; roadmap P52, the creator; apps.md, "Actors: the characters a game moves") —
+// and `ActorState` grew at its end again, by the `scale` and the `morph_count` the actor holds,
+// read as ABI 8's fields are: the host copies out only as far as the module's `size` (an ABI 8
+// module passes `k_actor_state_v8_size`). Additive as 4 to 8 were: a module built against 3 to 8
+// loads on a host of 9 and runs unchanged, and an actor nobody shapes is drawn exactly as it was.
+inline constexpr u32 k_abi_version = 9;
 // The oldest module ABI a host of this header loads (4, above, says why 3 and not 4).
 inline constexpr u32 k_abi_oldest = 3;
 
@@ -310,9 +318,36 @@ struct ActorState {
   f32 tilt_rad = 0.0f;   // the angle from vertical `up` makes, after the clamp
   u32 tilt_clamped = 0;  // 1 when the last aligned placement was held to its maximum
   u32 reserved = 0;
+  // ---- ABI 9 (2026-11-01): the actor's shape, read by a module only when its `size` reaches it --
+  f32 scale = 1.0f;     // `actor_scale`'s factor on the scene's own scale; 1 as the scene placed it
+  u32 morph_count = 0;  // the morph channels its mesh has: the most `actor_morph` takes
 };
 // ABI 5's `ActorState` (to the end of `clip`): what a module built against 5 to 7 passes as `size`.
 inline constexpr u32 k_actor_state_v5_size = 136;
+// ABI 8's (to the end of `reserved`): what a module built against 8 passes as `size`.
+inline constexpr u32 k_actor_state_v8_size = 160;
+
+// **An actor's morph channels** (ABI 9; apps.md, "Actors"), led by its size like the other structs:
+// `index` goes in, the rest comes out. `count` is the channels the actor's mesh has (0: none, and
+// `actor_morph` answers `Unsupported`); `name` is channel `index`'s as the asset named it (glTF
+// `extras.targetNames`; the content build's `<mesh>.<k>` where the file named none), borrowed —
+// NUL-terminated, valid while the session's scene is loaded — and empty for an `index` past
+// `count`.
+struct MorphInfo {
+  u32 size = sizeof(MorphInfo);
+  u32 index = 0;               // in: the channel whose name is asked
+  u32 count = 0;               // out: the actor's channels
+  u32 reserved = 0;            // zero: the next field's place
+  const char* name = nullptr;  // out: borrowed
+  u64 name_length = 0;         // out: bytes, the NUL not counted
+};
+// `actor_scale`'s range: a factor on the scene's scale, so a typo cannot make a 100 m body.
+inline constexpr f32 k_actor_scale_min = 0.25f;
+inline constexpr f32 k_actor_scale_max = 4.0f;
+// `actor_morph`'s range for one weight: glTF's weights live in [0, 1] and a creator may push a
+// channel past it, but not so far that the cull's padding (|weight| x the channel's reach) is a
+// building.
+inline constexpr f32 k_morph_weight_limit = 4.0f;
 
 // **The ground under a point** (ABI 8; apps.md, "Actors"), led by its size like the other structs.
 // `footprint_m` goes in, the rest comes out. The height is `ground_height`'s to the bit; the normal
@@ -576,6 +611,28 @@ struct HostApi {
   // `ground_height` is unchanged and costs what it did; this asks the same height function five
   // times (the point, and a half footprint either side in x and in z).
   Result (*ground_sample)(void* host, f64 x, f64 z, GroundSample* io);
+
+  // ---- ABI 9: an actor's shape (roadmap P52, the creator; apps.md, "Actors: the characters a
+  // game moves") ----
+  // **The actor's static morph weights**: `weights[k]` for channel k of its mesh, `count` of them
+  // (at most the mesh's channels; the channels past `count` go to 0, so `count` 0 is the rest
+  // shape). They are the shape the actor keeps — the half of the renderer's weights its static
+  // shape cache serves — so a change costs the cache one dispatch over the mesh on the next frame
+  // and then nothing; the clip's own weight tracks still play on top of them, as the renderer
+  // composes the two halves. `NotFound` for a handle that is not an actor, `InvalidArgument` for a
+  // `count` past the mesh's channels, a null `weights` with a `count`, or a weight that is not
+  // finite or past `k_morph_weight_limit`, `Unsupported` for an actor whose mesh has no channels.
+  Result (*actor_morph)(void* host, u32 actor, const f32* weights, u32 count);
+  // **The actor's uniform scale**, a factor on the scene's own (1 as the scene placed it), within
+  // [`k_actor_scale_min`, `k_actor_scale_max`]; kept by every later `actor_place` and
+  // `actor_place_aligned` as the scene's scale is. The picture takes it on the next frame, as a
+  // move. `NotFound` for a handle that is not an actor, `InvalidArgument` outside the range or not
+  // finite, leaving the actor as it was; `Unsupported` where `actor_place` is.
+  Result (*actor_scale)(void* host, u32 actor, f32 scale);
+  // **The actor's morph channels** (`MorphInfo`): their count, and channel `index`'s name, into the
+  // caller's struct up to its size. `NotFound` for a handle that is not an actor, `InvalidArgument`
+  // for a struct smaller than ABI 9's.
+  Result (*actor_morph_info)(void* host, u32 actor, MorphInfo* io);
 };
 
 // Whether the host's table reaches the entry at `offset` (`offsetof(HostApi, hud_element)`): a
@@ -894,6 +951,30 @@ inline Result ground_sample(const ModuleContext* context, f64 x, f64 z, GroundSa
   sample = GroundSample{};
   sample.footprint_m = footprint_m;
   return context->api->ground_sample(context->api->host, x, z, &sample);
+}
+
+// ---- an actor's shape (ABI 9) ----
+// Each answers `Unsupported` on a host whose table ends before the entry (ABI 8 or older), where
+// the actor keeps the scene's shape and size.
+
+inline Result actor_morph(const ModuleContext* context, u32 actor, const f32* weights,
+                          u32 count) noexcept {
+  if (!ENGINE_HOTLOAD_HAS(context->api, actor_morph)) return Result::Unsupported;
+  return context->api->actor_morph(context->api->host, actor, weights, count);
+}
+
+inline Result actor_scale(const ModuleContext* context, u32 actor, f32 scale) noexcept {
+  if (!ENGINE_HOTLOAD_HAS(context->api, actor_scale)) return Result::Unsupported;
+  return context->api->actor_scale(context->api->host, actor, scale);
+}
+
+// `info.count` and channel `index`'s name; `info` is reset first, so only `index` is the caller's.
+inline Result actor_morph_info(const ModuleContext* context, u32 actor, u32 index,
+                               MorphInfo& info) noexcept {
+  if (!ENGINE_HOTLOAD_HAS(context->api, actor_morph_info)) return Result::Unsupported;
+  info = MorphInfo{};
+  info.index = index;
+  return context->api->actor_morph_info(context->api->host, actor, &info);
 }
 
 // ---- the HUD's images and fonts (ABI 6) ----

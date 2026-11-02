@@ -100,10 +100,10 @@ TEST_CASE("hotload: load, call, read through a view, and a poll that finds no ch
   CHECK(counter.host.module_abi() == k_abi_version);
 }
 
-TEST_CASE("hotload: modules built against ABI 3 to 7 load on an ABI 8 host and run unchanged") {
-  // ABI 4 to 8 appended to the table and moved nothing (module_abi.h, `k_abi_oldest`): a build
-  // that declares 3 to 7 is what a module compiled against that header hands the host. It loads,
-  // its exports run, it reads through a view, and a rebuild against 8 takes over from it with its
+TEST_CASE("hotload: modules built against ABI 3 to 8 load on an ABI 9 host and run unchanged") {
+  // ABI 4 to 9 appended to the table and moved nothing (module_abi.h, `k_abi_oldest`): a build
+  // that declares 3 to 8 is what a module compiled against that header hands the host. It loads,
+  // its exports run, it reads through a view, and a rebuild against 9 takes over from it with its
   // state.
   if (in_bundle()) return;
   struct Old {
@@ -112,7 +112,7 @@ TEST_CASE("hotload: modules built against ABI 3 to 7 load on an ABI 8 host and r
   };
   for (const Old old : {Old{HOTLOAD_MODULE_COUNTER_ABI3, 3}, Old{HOTLOAD_MODULE_COUNTER_ABI4, 4},
                         Old{HOTLOAD_MODULE_COUNTER_ABI5, 5}, Old{HOTLOAD_MODULE_COUNTER_ABI6, 6},
-                        Old{HOTLOAD_MODULE_COUNTER_ABI7, 7}}) {
+                        Old{HOTLOAD_MODULE_COUNTER_ABI7, 7}, Old{HOTLOAD_MODULE_COUNTER_ABI8, 8}}) {
     INFO("ABI " << old.abi);
     engine::test::TempDir dir("hotload-old-abi");
     const std::string live = place(dir, old.path, "live");
@@ -434,6 +434,124 @@ TEST_CASE(
   CHECK(api->actor_state(api->host, 3, &middle) == Result::Ok);
   CHECK(middle.up[0] == 0.5f);
   CHECK(middle.up[1] == 1.0f);  // past the size: the module's own value, untouched
+}
+
+TEST_CASE(
+    "hotload: ABI 9's actor shape entries forward, answer Unsupported without services or through "
+    "a table that ends before them, and a module built against 8 gets as much of ActorState as it "
+    "owns") {
+  ModuleHost host;
+  const HostApi* api = host.context()->api;
+  CHECK(api->size == sizeof(HostApi));
+  CHECK(ENGINE_HOTLOAD_HAS(api, actor_morph));
+  CHECK(ENGINE_HOTLOAD_HAS(api, actor_scale));
+  CHECK(ENGINE_HOTLOAD_HAS(api, actor_morph_info));
+  // A table as an ABI 8 host built it ends before the three: the helpers do not call them.
+  HostApi v8 = *api;
+  v8.size = static_cast<u32>(offsetof(HostApi, actor_morph));
+  CHECK_FALSE(ENGINE_HOTLOAD_HAS(&v8, actor_morph));
+  CHECK_FALSE(ENGINE_HOTLOAD_HAS(&v8, actor_morph_info));
+  CHECK(ENGINE_HOTLOAD_HAS(&v8, ground_sample));
+  ModuleContext old_host{&v8, nullptr};
+  const f32 weights[2] = {0.5f, -0.25f};
+  MorphInfo info;
+  CHECK(actor_morph(&old_host, 0, weights, 2) == Result::Unsupported);
+  CHECK(actor_scale(&old_host, 0, 1.1f) == Result::Unsupported);
+  CHECK(actor_morph_info(&old_host, 0, 0, info) == Result::Unsupported);
+
+  // No game services: all three answer Unsupported. The host's own checks come first: a null
+  // `weights` with a count, a null or short `MorphInfo`.
+  ModuleContext context{api, nullptr};
+  CHECK(actor_morph(&context, 0, weights, 2) == Result::Unsupported);
+  CHECK(actor_morph(&context, 0, nullptr, 0) == Result::Unsupported);  // count 0: no weights needed
+  CHECK(actor_scale(&context, 0, 1.1f) == Result::Unsupported);
+  CHECK(actor_morph_info(&context, 0, 0, info) == Result::Unsupported);
+  CHECK(api->actor_morph(api->host, 0, nullptr, 2) == Result::InvalidArgument);
+  CHECK(api->actor_morph_info(api->host, 0, nullptr) == Result::InvalidArgument);
+  MorphInfo small;
+  small.size = 16;
+  CHECK(api->actor_morph_info(api->host, 0, &small) == Result::InvalidArgument);
+
+  struct Seen {
+    u32 actor = ~0u;
+    u32 count = ~0u;
+    f32 first = 0.0f;
+    f32 scale = 0.0f;
+    u32 index = ~0u;
+  } seen;
+  GameServices services;
+  services.user = &seen;
+  services.actor_morph = [](void* user, u32 actor, const f32* w, u32 count) {
+    Seen& s = *static_cast<Seen*>(user);
+    s.actor = actor;
+    s.count = count;
+    s.first = count > 0 ? w[0] : 0.0f;
+    return Result::Ok;
+  };
+  services.actor_scale = [](void* user, u32, f32 scale) {
+    static_cast<Seen*>(user)->scale = scale;
+    return Result::Ok;
+  };
+  services.actor_morph_info = [](void* user, u32, MorphInfo& io) {
+    static_cast<Seen*>(user)->index = io.index;
+    io.count = 2;
+    io.name = io.index == 1 ? "bend" : "girth";
+    io.name_length = io.index == 1 ? 4u : 5u;
+    return Result::Ok;
+  };
+  services.actor_state = [](void*, u32 a, ActorState& out) {
+    out.instance = a;
+    out.pose_hash = 0x5678;
+    out.tilt_rad = 0.125f;
+    out.scale = 1.1f;
+    out.morph_count = 2;
+    return Result::Ok;
+  };
+  host.set_game_services(services);
+  CHECK(actor_morph(&context, 4, weights, 2) == Result::Ok);
+  CHECK(seen.actor == 4);
+  CHECK(seen.count == 2);
+  CHECK(seen.first == 0.5f);
+  CHECK(actor_scale(&context, 4, 1.1f) == Result::Ok);
+  CHECK(seen.scale == 1.1f);
+  // The module's `index` reaches the service; the answer comes back whole, `size` the module's.
+  CHECK(actor_morph_info(&context, 4, 1, info) == Result::Ok);
+  CHECK(seen.index == 1);
+  CHECK(info.size == sizeof(MorphInfo));
+  CHECK(info.count == 2);
+  REQUIRE(info.name != nullptr);
+  CHECK(std::string(info.name, info.name_length) == "bend");
+  // A bigger struct (a later ABI's) gets ABI 9's fields and keeps its own size.
+  struct Bigger {
+    MorphInfo info;
+    u64 later = 0x77;
+  } bigger;
+  bigger.info.size = sizeof(Bigger);
+  CHECK(api->actor_morph_info(api->host, 4, &bigger.info) == Result::Ok);
+  CHECK(bigger.info.size == sizeof(Bigger));
+  CHECK(bigger.info.count == 2);
+  CHECK(bigger.later == 0x77);
+
+  // The state a module built against ABI 8 asks for: the 160 bytes it owns. The memory after them
+  // (the struct's own ABI 9 fields, holding sentinels) is a neighbour's in a real module, and the
+  // host fills the 160 and writes nothing past; `size` stays the module's. A module of ABI 9 gets
+  // the shape too.
+  ActorState older;
+  older.size = k_actor_state_v8_size;
+  older.scale = -9.0f;
+  older.morph_count = 99;
+  CHECK(api->actor_state(api->host, 4, &older) == Result::Ok);
+  CHECK(older.size == k_actor_state_v8_size);
+  CHECK(older.instance == 4);
+  CHECK(older.pose_hash == 0x5678);
+  CHECK(older.tilt_rad == 0.125f);
+  CHECK(older.scale == -9.0f);
+  CHECK(older.morph_count == 99);
+  ActorState current;
+  CHECK(actor_state(&context, 4, current) == Result::Ok);
+  CHECK(current.size == sizeof(ActorState));
+  CHECK(current.scale == 1.1f);
+  CHECK(current.morph_count == 2);
 }
 
 TEST_CASE("hotload: ABI 4's entries forward to the game services, and answer Unsupported without") {

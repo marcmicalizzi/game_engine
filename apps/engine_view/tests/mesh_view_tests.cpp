@@ -328,7 +328,11 @@ std::string file_text(const std::string& path) {
 // itself. What this one is for is different anyway: `--animate` end to end, so it needs a mesh
 // the renderer will actually draw and a clip whose phase is visible in a capture, not a rig whose
 // keyframe values are hand-checkable.
-bool write_skinned_glb(const std::string& path) {
+//
+// With `morphs`, the bar is also morphed (roadmap P52's creator): two targets named through
+// `extras.targetNames`, **girth** — the middle row 0.3 m out to each side at weight 1 — and
+// **bend**, the top row 0.4 m and the middle 0.1 m toward +x, so one asset is skinned and morphed.
+bool write_skinned_glb(const std::string& path, bool morphs = false) {
   std::vector<u8> bin;
   const Vec3 positions[6] = {{-0.5f, 0.0f, 0.0f}, {0.5f, 0.0f, 0.0f},  {-0.5f, 1.0f, 0.0f},
                              {0.5f, 1.0f, 0.0f},  {-0.5f, 2.0f, 0.0f}, {0.5f, 2.0f, 0.0f}};
@@ -374,6 +378,35 @@ bool write_skinned_glb(const std::string& path) {
   const f32 keys[8] = {0, 0, 0, 1, 0, 0, half, half};
   for (const f32 v : keys)
     put_f32(bin, v);
+  const u32 girth_offset = static_cast<u32>(bin.size());
+  const Vec3 girth[6] = {{}, {}, {-0.3f, 0.0f, 0.0f}, {0.3f, 0.0f, 0.0f}, {}, {}};
+  const Vec3 bend[6] = {
+      {}, {}, {0.1f, 0.0f, 0.0f}, {0.1f, 0.0f, 0.0f}, {0.4f, 0.0f, 0.0f}, {0.4f, 0.0f, 0.0f}};
+  if (morphs) {
+    for (const Vec3* target : {girth, bend}) {
+      for (u32 v = 0; v < 6; ++v) {
+        put_f32(bin, target[v].x);
+        put_f32(bin, target[v].y);
+        put_f32(bin, target[v].z);
+      }
+    }
+  }
+  const std::string targets =
+      morphs ? std::string(",\"targets\":[{\"POSITION\":7},{\"POSITION\":8}]") : std::string();
+  const std::string names =
+      morphs ? std::string(",\"extras\":{\"targetNames\":[\"girth\",\"bend\"]}") : std::string();
+  const std::string target_accessors =
+      morphs ? std::string(
+                   ",{\"bufferView\":7,\"componentType\":5126,\"count\":6,\"type\":\"VEC3\","
+                   "\"min\":[-0.3,0,0],\"max\":[0.3,0,0]},"
+                   "{\"bufferView\":8,\"componentType\":5126,\"count\":6,\"type\":\"VEC3\","
+                   "\"min\":[0,0,0],\"max\":[0.4,0,0]}")
+             : std::string();
+  const std::string target_views =
+      morphs ? ",{\"buffer\":0,\"byteOffset\":" + n(girth_offset) +
+                   ",\"byteLength\":72},{\"buffer\":0,\"byteOffset\":" + n(girth_offset + 72) +
+                   ",\"byteLength\":72}"
+             : std::string();
 
   const std::string json =
       "{\"asset\":{\"version\":\"2.0\"},\"scene\":0,\"scenes\":[{\"nodes\":[0,1]}],"
@@ -384,7 +417,9 @@ bool write_skinned_glb(const std::string& path) {
       "\"interpolation\":\"LINEAR\"}],\"channels\":[{\"sampler\":0,"
       "\"target\":{\"node\":2,\"path\":\"rotation\"}}]}],"
       "\"meshes\":[{\"primitives\":[{\"attributes\":{\"POSITION\":0,\"JOINTS_0\":1,"
-      "\"WEIGHTS_0\":2},\"indices\":3,\"material\":0}]}],"
+      "\"WEIGHTS_0\":2},\"indices\":3,\"material\":0" +
+      targets + "}]" + names +
+      "}],"
       "\"materials\":[{\"pbrMetallicRoughness\":{\"baseColorFactor\":[0.7,0.7,0.8,1],"
       "\"metallicFactor\":0,\"roughnessFactor\":0.5},\"doubleSided\":true}],"
       "\"accessors\":["
@@ -396,7 +431,9 @@ bool write_skinned_glb(const std::string& path) {
       "{\"bufferView\":4,\"componentType\":5126,\"count\":2,\"type\":\"MAT4\"},"
       "{\"bufferView\":5,\"componentType\":5126,\"count\":2,\"type\":\"SCALAR\","
       "\"min\":[0],\"max\":[1]},"
-      "{\"bufferView\":6,\"componentType\":5126,\"count\":2,\"type\":\"VEC4\"}],"
+      "{\"bufferView\":6,\"componentType\":5126,\"count\":2,\"type\":\"VEC4\"}" +
+      target_accessors +
+      "],"
       "\"bufferViews\":["
       "{\"buffer\":0,\"byteOffset\":0,\"byteLength\":" +
       n(joints_offset) + "},{\"buffer\":0,\"byteOffset\":" + n(joints_offset) +
@@ -407,7 +444,8 @@ bool write_skinned_glb(const std::string& path) {
       "},{\"buffer\":0,\"byteOffset\":" + n(inverse_bind_offset) +
       ",\"byteLength\":128},{\"buffer\":0,\"byteOffset\":" + n(times_offset) +
       ",\"byteLength\":8},{\"buffer\":0,\"byteOffset\":" + n(rotations_offset) +
-      ",\"byteLength\":32}],"
+      ",\"byteLength\":32}" + target_views +
+      "],"
       "\"buffers\":[{\"byteLength\":" +
       n(static_cast<u32>(bin.size())) + "}]}";
   std::vector<u8> chunk(json.begin(), json.end());
@@ -453,6 +491,8 @@ std::string content_app() {
 // The skinned bar, for the game's actor cases (game_actors_view_tests.cpp).
 namespace engine::view_test {
 bool write_skinned_bar_glb(const std::string& path) { return write_skinned_glb(path); }
+// The same bar, also morphed: `girth` and `bend` (the creator's cases, roadmap P52).
+bool write_morphed_bar_glb(const std::string& path) { return write_skinned_glb(path, true); }
 }  // namespace engine::view_test
 
 TEST_CASE("engine-view: renders a glTF mesh with one cluster DAG per material") {

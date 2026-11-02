@@ -22,6 +22,8 @@
 
 #include <cmath>
 #include <cstdio>
+#include <cstring>
+#include <limits>
 #include <schemas/walk_poc.h>
 
 using namespace engine;
@@ -35,8 +37,20 @@ using Survivor = walk_poc::Survivor;
 // (ABI 7); 7: named walk_poc_aligned, places `bar` on slopes with `actor_place_aligned` and
 // samples the ground's normal (ABI 8); 8: named walk_poc_abi7, the actor build declared as a
 // module built against ABI 7 is, reading `actor_state` into ABI 5's 136 bytes; 9: named
-// walk_poc_level, build 7 with its first placement made through `actor_place`.
+// walk_poc_level, build 7 with its first placement made through `actor_place`; 10: named
+// walk_poc_shape, the creator with its actor's clip stopped, its first tick's refused shape calls
+// recorded and no survival lines on the HUD, so a capture is the actor's shape and nothing else.
 #define WALK_POC_TEST 0
+#endif
+// **The creator** (roadmap P52, ABI 9): the build `walk_poc_creator` (WALK_POC_CREATOR 1) and its
+// test build `walk_poc_shape` (WALK_POC_TEST 10). Its own build, so `walk_poc` declares the two
+// actions and draws the HUD it always did.
+#if WALK_POC_TEST == 10
+#undef WALK_POC_CREATOR
+#define WALK_POC_CREATOR 1
+#endif
+#ifndef WALK_POC_CREATOR
+#define WALK_POC_CREATOR 0
 #endif
 
 namespace {
@@ -54,9 +68,10 @@ constexpr const char* k_tick = "engine.game.GameTick";
 
 struct Fields {
   FieldRef tick, dt, feet, heading, pitch, walking, sprinting, moved, world_time, day_fraction;
-  FieldRef pressed;
+  FieldRef pressed, held;
   u32 interact = 0;
   u32 use = 0;
+  u32 game[4] = {0, 0, 0, 0};  // `game_1`..`game_4`: the creator's keys (1 to 4)
   // The props, when the scene declares them (`prop_mesh` answered Ok for both).
   bool props = false;
   u32 can_mesh = 0;
@@ -290,6 +305,240 @@ void align_actor(ModuleContext* context, Survivor& s, u64 tick) {
 }
 #endif
 
+#if WALK_POC_CREATOR
+// **The creator** (roadmap P52, ABI 9; README "The creator"). `game_1` (1) opens and closes it; in
+// it `game_2`/`game_3` (2, 3) select the previous/next parameter and `use`/`game_4` (Q, 4) take a
+// step down/up — on the press, and while held again ten times a second of the **tick** clock, so a
+// replay steps the same. The parameters are the height (the actor's scale, 0.85 to 1.15 in
+// hundredths) and one per morph channel of the actor (0 to 1 in tenths), named as the asset names
+// them, else `shape n`, at most 16. It acts on the actor `player` when the scene names one, else on
+// `bar` (the tests'), looked up at a tick and not in `on_load`, where a scene with other actors
+// would refuse the load. What it sets is the appearance in the state (walk_poc.schema): **the shape
+// is the game's**, so the host keeps none of it, and the module says it to the actor again at its
+// first tick after any load — a cold restore, a replay's restore, a rebuild.
+constexpr u32 k_max_shapes = 16;
+constexpr f64 k_height_min = 0.85;
+constexpr f64 k_height_max = 1.15;
+constexpr f64 k_height_step = 0.01;
+constexpr f64 k_shape_min = 0.0;
+constexpr f64 k_shape_max = 1.0;
+constexpr f64 k_shape_step = 0.1;
+constexpr f64 k_repeat_s = 0.1;   // held: a step a tenth of a second
+constexpr u32 k_creator_id = 40;  // the title line; the parameters are 41 on, one each
+
+struct Creator {
+  bool resolved = false;  // the actor looked for: found and answering, or there is none
+  bool has_actor = false;
+  u32 actor = 0;
+  u32 channels = 0;  // the actor's morph channels, at most 16
+  char names[k_max_shapes][32] = {};
+  bool applied = false;  // the appearance said to the actor since this build loaded
+  bool probed = false;   // the shape build's refusals made
+  u64 held_ticks = 0;    // ticks the step key has been held since it was pressed
+  u32 placed = 0;        // parameter elements on the HUD, so closing removes them all
+} g_creator;
+
+f64 snap(f64 value, f64 step) { return std::round(value / step) * step; }
+f64 clamp_to(f64 value, f64 lo, f64 hi) { return value < lo ? lo : (value > hi ? hi : value); }
+
+f64 weight_of(const Survivor& s, u32 k) {
+  return k < s.appearance_count && k < k_max_shapes ? s.appearance_weights[k] : 0.0;
+}
+
+// The actor and its channels, once it answers (a found actor answers `Unsupported` until the
+// animated world is bound, and the look is made again next tick).
+void creator_find(ModuleContext* context) {
+  Creator& c = g_creator;
+  if (c.resolved) return;
+  u32 actor = 0;
+  if (actor_find(context, "player", actor) != Result::Ok &&
+      actor_find(context, "bar", actor) != Result::Ok) {
+    c.resolved = true;  // nothing to shape: the creator lists the height and changes no actor
+    return;
+  }
+  MorphInfo info;
+  if (actor_morph_info(context, actor, 0, info) != Result::Ok) return;
+  c.resolved = true;
+  c.has_actor = true;
+  c.actor = actor;
+  c.channels = info.count < k_max_shapes ? info.count : k_max_shapes;
+  for (u32 k = 0; k < c.channels; ++k) {
+    if (actor_morph_info(context, actor, k, info) == Result::Ok && info.name_length > 0) {
+      const u64 n = info.name_length < 31 ? info.name_length : 31;
+      std::memcpy(c.names[k], info.name, n);
+      c.names[k][n] = '\0';
+    } else {
+      std::snprintf(c.names[k], sizeof(c.names[k]), "shape %u", k + 1);
+    }
+  }
+}
+
+void creator_apply_scale(ModuleContext* context, const Survivor& s) {
+  actor_scale(context, g_creator.actor, static_cast<f32>(s.appearance_scale));
+}
+
+void creator_apply_shape(ModuleContext* context, const Survivor& s) {
+  const Creator& c = g_creator;
+  if (c.channels == 0) return;
+  f32 weights[k_max_shapes] = {};
+  const u32 n = s.appearance_count < c.channels ? s.appearance_count : c.channels;
+  for (u32 k = 0; k < n; ++k)
+    weights[k] = static_cast<f32>(s.appearance_weights[k]);
+  actor_morph(context, c.actor, weights, n);
+}
+
+void creator_step(ModuleContext* context, Survivor& s, f64 direction) {
+  const Creator& c = g_creator;
+  s.appearance_set = true;
+  if (s.creator_selected == 0) {
+    s.appearance_scale =
+        clamp_to(snap(s.appearance_scale + direction * k_height_step, k_height_step), k_height_min,
+                 k_height_max);
+    if (c.has_actor) creator_apply_scale(context, s);
+    return;
+  }
+  const u32 k = s.creator_selected - 1;
+  for (u32 j = s.appearance_count; j < c.channels; ++j)
+    s.appearance_weights[j] = 0.0;
+  if (s.appearance_count < c.channels) s.appearance_count = c.channels;
+  s.appearance_weights[k] =
+      clamp_to(snap(s.appearance_weights[k] + direction * k_shape_step, k_shape_step), k_shape_min,
+               k_shape_max);
+  if (c.has_actor) creator_apply_shape(context, s);
+}
+
+void creator_close(ModuleContext* context) {
+  Creator& c = g_creator;
+  hud_remove(context, k_creator_id);
+  for (u32 p = 0; p < c.placed; ++p)
+    hud_remove(context, k_creator_id + 1 + p);
+  c.placed = 0;
+}
+
+// The parameters as elements down the top-right, the selected one in amber, and its value as a
+// meter in the host's stack.
+void creator_hud(ModuleContext* context, const Survivor& s) {
+  Creator& c = g_creator;
+  HudElement title;
+  title.id = k_creator_id;
+  title.anchor = HudAnchor::TopRight;
+  title.align = HudAlign::Right;
+  title.size_px = 24.0f;
+  title.outline_px = 2.0f;
+  title.text = "creator   1 close   2/3 choose   Q/4 adjust";
+  hud_element(context, title);
+  const u32 params = 1 + c.channels;
+  char line[64];
+  for (u32 p = 0; p < params; ++p) {
+    HudElement e;
+    e.id = k_creator_id + 1 + p;
+    e.anchor = HudAnchor::TopRight;
+    e.align = HudAlign::Right;
+    e.offset_px[1] = 34.0f + 26.0f * static_cast<f32>(p);
+    e.size_px = 22.0f;
+    e.outline_px = 2.0f;
+    if (p == s.creator_selected) {
+      const u8 amber[4] = {255, 200, 64, 255};
+      std::memcpy(e.color, amber, sizeof(amber));
+    }
+    if (p == 0) {
+      std::snprintf(line, sizeof(line), "height  %.2f", s.appearance_scale);
+    } else {
+      std::snprintf(line, sizeof(line), "%s  %.1f", c.names[p - 1], weight_of(s, p - 1));
+    }
+    e.text = line;
+    hud_element(context, e);
+  }
+  c.placed = params;
+  if (s.creator_selected == 0) {
+    hud_meter(context, "height", s.appearance_scale - k_height_min, k_height_max - k_height_min);
+  } else {
+    hud_meter(context, c.names[s.creator_selected - 1],
+              weight_of(s, s.creator_selected - 1) - k_shape_min, k_shape_max - k_shape_min);
+  }
+}
+
+#if WALK_POC_TEST == 10
+// **The shape build's refusals** (`walk_poc_shape`), once, when the actor answers: too many
+// weights, a NaN weight, a scale past each end of its range and a NaN scale — each a `Result` in
+// four bits of `shape_codes` — and the actor's clip stopped, so its pose is the rest pose in every
+// run and a capture differs by its shape alone.
+void shape_probe(ModuleContext* context, Survivor& s) {
+  const Creator& c = g_creator;
+  f32 too_many[k_max_shapes + 1] = {};
+  const f32 nan = std::numeric_limits<f32>::quiet_NaN();
+  const Result codes[5] = {
+      actor_morph(context, c.actor, too_many, c.channels + 1),
+      actor_morph(context, c.actor, &nan, 1),
+      actor_scale(context, c.actor, 5.0f),
+      actor_scale(context, c.actor, 0.1f),
+      actor_scale(context, c.actor, nan),
+  };
+  s.shape_codes = 0;
+  for (u32 i = 0; i < 5; ++i)
+    s.shape_codes |= static_cast<u64>(codes[i]) << (4u * i);
+  actor_stop(context, c.actor, 0.0f);
+}
+#endif
+
+void creator_tick(ModuleContext* context, Survivor& s, const Value& pressed, const Value& held,
+                  f64 dt) {
+  Creator& c = g_creator;
+  const Fields& f = g_fields;
+  creator_find(context);
+  if (c.resolved && !c.applied) {
+    c.applied = true;
+#if WALK_POC_TEST == 10
+    if (c.has_actor && !c.probed) {
+      c.probed = true;
+      shape_probe(context, s);
+    }
+#endif
+    // The appearance a load brought (a state file, a replay's restore, a rebuild's state), said
+    // again: the host does not keep it.
+    if (c.has_actor && s.appearance_set) {
+      creator_apply_scale(context, s);
+      creator_apply_shape(context, s);
+    }
+  }
+  if (action_set(pressed, f.game[0])) {
+    s.creator_open = !s.creator_open;
+    if (!s.creator_open) creator_close(context);
+    c.held_ticks = 0;
+  }
+  if (s.creator_open) {
+    const u32 params = 1 + c.channels;
+    if (s.creator_selected >= params) s.creator_selected = 0;
+    if (action_set(pressed, f.game[1]))
+      s.creator_selected = (s.creator_selected + params - 1) % params;
+    if (action_set(pressed, f.game[2])) s.creator_selected = (s.creator_selected + 1) % params;
+    const bool up = action_set(pressed, f.game[3]) || action_set(held, f.game[3]);
+    const bool down = action_set(pressed, f.use) || action_set(held, f.use);
+    if (up != down) {
+      const f64 direction = up ? 1.0 : -1.0;
+      const f64 ticks = dt > 0.0 ? std::round(k_repeat_s / dt) : 24.0;
+      const u64 repeat = ticks >= 1.0 ? static_cast<u64>(ticks) : 1u;
+      if (action_set(pressed, up ? f.game[3] : f.use)) {
+        c.held_ticks = 0;
+        creator_step(context, s, direction);
+      } else if (++c.held_ticks % repeat == 0) {
+        creator_step(context, s, direction);
+      }
+    } else {
+      c.held_ticks = 0;
+    }
+    creator_hud(context, s);
+  }
+#if WALK_POC_TEST == 10
+  ActorState seen;
+  if (c.has_actor && actor_state(context, c.actor, seen) == Result::Ok) {
+    s.shape_seen_scale = static_cast<f64>(seen.scale);
+    s.shape_seen_channels = seen.morph_count;
+  }
+#endif
+}
+#endif  // WALK_POC_CREATOR
+
 constexpr u32 k_prompt_id = 1;  // the pick-up prompt's HUD element
 constexpr u32 k_panel_id = 2;   // the image behind it (ABI 6)
 constexpr u32 k_title_id = 3;   // the title line in the game's font (ABI 6)
@@ -310,6 +559,13 @@ i32 on_load(ModuleContext* context) {
   resolve(context, k_tick, "actions_pressed", f.pressed);
   game_action(context, "interact", f.interact);
   game_action(context, "use", f.use);
+#if WALK_POC_CREATOR
+  resolve(context, k_tick, "actions_held", f.held);
+  const char* const numbered[4] = {"game_1", "game_2", "game_3", "game_4"};
+  for (u32 n = 0; n < 4; ++n)
+    game_action(context, numbered[n], f.game[n]);
+  g_creator = Creator{};  // a load looks for its actor again and says the appearance again
+#endif
 #if WALK_POC_TEST == 1
   u32 dance = 0;
   game_action(context, "dance", dance);  // no such action: the load is refused, naming it
@@ -414,6 +670,16 @@ void game_tick(ModuleContext* context, View tick, f32) {
 #elif WALK_POC_TEST == 7 || WALK_POC_TEST == 9
   if (f.has_bar) align_actor(context, s, tick_index);
 #endif
+#if WALK_POC_CREATOR
+  // The creator (ABI 9), before the run's end: an ended run still wears its appearance.
+  {
+    Value pressed;
+    Value held;
+    read(context, tick, f.pressed, pressed);
+    read(context, tick, f.held, held);
+    creator_tick(context, s, pressed, held, dt);
+  }
+#endif
   if (s.over) return;
 
   // Water: a ruin within reach, or the spring.
@@ -472,7 +738,12 @@ void game_tick(ModuleContext* context, View tick, f32) {
       log(context, LogLevel::Info, at_water ? "walk_poc: you drink" : "walk_poc: nothing here");
     }
   }
-  if (action_set(v, f.use) && f.props) {
+#if WALK_POC_CREATOR
+  const bool place_marker = !s.creator_open;  // in the creator Q is a step down
+#else
+  const bool place_marker = true;
+#endif
+  if (action_set(v, f.use) && f.props && place_marker) {
     u32 marker = 0;
     if (prop_place(context, f.marker_mesh, feet, static_cast<f32>(heading), 1.0f, marker) ==
         Result::Ok) {
@@ -491,9 +762,11 @@ void game_tick(ModuleContext* context, View tick, f32) {
   }
 #endif
 
-  // The HUD, said again every tick.
+  // The HUD, said again every tick. The shape build says none of the run's lines, so a capture
+  // after a restore (whose seconds go on from the saved ones) is the same picture.
   char line[96];
   hud_meter(context, "thirst", s.thirst > 0.0 ? s.thirst : 0.0, 100.0);
+#if WALK_POC_TEST != 10
   std::snprintf(line, sizeof(line), "day %u   %.0f s survived   %.0f m walked", s.days + 1,
                 s.seconds, s.walked_m);
   hud_text(context, 0, line);
@@ -518,6 +791,7 @@ void game_tick(ModuleContext* context, View tick, f32) {
                   s.markers, s.markers == 1 ? "" : "s");
     hud_text(context, 3, line);
   }
+#endif
 
   // **The pick-up prompt** (ABI 4, a structured element): outlined text with no panel, below the
   // picture's centre, shown while the can is in reach. The host keeps an element until it is
@@ -627,6 +901,10 @@ ENGINE_HOTLOAD_DESCRIBE(api, out) {
   out->name = "walk_poc_abi7";
 #elif WALK_POC_TEST == 6
   out->name = "walk_poc_loading";
+#elif WALK_POC_TEST == 10
+  out->name = "walk_poc_shape";
+#elif WALK_POC_CREATOR
+  out->name = "walk_poc_creator";
 #else
   out->name = "walk_poc";
 #endif

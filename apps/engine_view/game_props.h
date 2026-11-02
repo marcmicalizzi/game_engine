@@ -202,6 +202,12 @@ class ActorHost {
   virtual hotload::Result stop(u32 instance, f32 fade_s) = 0;
   virtual hotload::Result speed(u32 instance, f32 speed) = 0;
   virtual hotload::Result state(u32 instance, hotload::ActorState& out) = 0;
+  // ABI 9: the actor's shape — its static morph weights (`count` of them, the rest at 0), its scale
+  // as a factor on the scene's, and its channels' count and names; apps.md, "Actors". The values
+  // are checked by the implementation.
+  virtual hotload::Result morph(u32 instance, const f32* weights, u32 count) = 0;
+  virtual hotload::Result scale(u32 instance, f32 scale) = 0;
+  virtual hotload::Result morph_info(u32 instance, hotload::MorphInfo& io) = 0;
   // The state file's `actors` (every bound actor's placement and player), and the summary's.
   virtual JsonValue to_json() const = 0;
   virtual JsonValue summary_json() const = 0;

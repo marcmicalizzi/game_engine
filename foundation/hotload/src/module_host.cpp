@@ -545,6 +545,33 @@ struct HostCallbacks {
     }
     return r;
   }
+  static Result actor_morph(void* host, u32 actor, const f32* weights, u32 count) {
+    const GameServices& g = self(host).game_;
+    if (weights == nullptr && count > 0) return Result::InvalidArgument;
+    if (g.actor_morph == nullptr) return Result::Unsupported;
+    return g.actor_morph(g.user, actor, weights, count);
+  }
+  static Result actor_scale(void* host, u32 actor, f32 scale) {
+    const GameServices& g = self(host).game_;
+    if (g.actor_scale == nullptr) return Result::Unsupported;
+    return g.actor_scale(g.user, actor, scale);
+  }
+  static Result actor_morph_info(void* host, u32 actor, MorphInfo* io) {
+    const GameServices& g = self(host).game_;
+    if (io == nullptr || io->size < sizeof(MorphInfo)) return Result::InvalidArgument;
+    if (g.actor_morph_info == nullptr) return Result::Unsupported;
+    // The host's own struct in, as `ground_sample` does: only `index` is read from the module's.
+    MorphInfo info;
+    info.index = io->index;
+    const Result r = g.actor_morph_info(g.user, actor, info);
+    if (r == Result::Ok) {
+      const u32 size = io->size;
+      const usize n = size < sizeof(MorphInfo) ? size : sizeof(MorphInfo);
+      std::memcpy(static_cast<void*>(io), &info, n);
+      io->size = size;
+    }
+    return r;
+  }
   static Result ground_height(void* host, f64 x, f64 z, f64* out_height) {
     const GameServices& g = self(host).game_;
     if (out_height == nullptr) return Result::InvalidArgument;
@@ -634,6 +661,9 @@ ModuleHost::ModuleHost(HostConfig config) : config_(std::move(config)) {
   api_.hud_font = &HostCallbacks::hud_font;
   api_.actor_place_aligned = &HostCallbacks::actor_place_aligned;
   api_.ground_sample = &HostCallbacks::ground_sample;
+  api_.actor_morph = &HostCallbacks::actor_morph;
+  api_.actor_scale = &HostCallbacks::actor_scale;
+  api_.actor_morph_info = &HostCallbacks::actor_morph_info;
   context_.api = &api_;
   context_.state = nullptr;
 }
