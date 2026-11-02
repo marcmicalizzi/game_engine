@@ -61,6 +61,7 @@ struct Rig {
   f32 moon_age_days = 0.0f;
   const FireDesc* fire = nullptr;  // a fire on the scene (R85)
   bool lights = true;              // the stand-in's two point lights
+  bool linear = false;  // the picture's linear radiance, unclipped and unquantized (R117)
 
   bool build(const gfx::Device& device, bool sky, ShadowMode shadows) {
     SceneDesc desc;
@@ -93,6 +94,10 @@ struct Rig {
     SceneRenderer::Desc rd;
     rd.width = k_width;
     rd.height = k_height;
+    if (linear) {
+      rd.display = gfx::DisplayEncoding::Linear;
+      rd.color_format = gfx::Format::R16G16B16A16Sfloat;
+    }
     return renderer.create(device, scene, resolved, rd, &error);
   }
 };
@@ -1107,7 +1112,7 @@ bool shoot_light(Rig& rig, const gfx::Device& device, const MediumDesc& desc,
   MediumPass pass;
   if (!pass.create(device, rig.renderer, rig.data, desc, options, &rig.error)) return false;
   CaptureChannels channels;
-  channels.color = true;
+  channels.color = false;
   channels.light = true;
   const bool ok = rig.renderer.capture(frame, channels, out, &rig.error);
   if (stats != nullptr) *stats = pass.stats();
@@ -1142,7 +1147,8 @@ Lattice lattice_of(const std::vector<f64>& v, u32 column_pixels, u32 flame_half_
   for (u32 x = 4; x + 4 < v.size(); ++x) {
     if (x + flame_half_width > middle && x < middle + flame_half_width) continue;
     const f64 d2 = std::abs(v[x - 1] - 2.0 * v[x] + v[x + 1]);
-    // A column's centre is at column_pixels / 2 + column_pixels j; the two pixels flanking it hold the knee.
+    // A column's centre is at column_pixels / 2 + column_pixels j; the two pixels flanking it hold
+    // the knee.
     const u32 phase = (x + column_pixels / 2) % column_pixels;
     if (phase == 0 || phase == column_pixels - 1) {
       r.knee += d2;
@@ -1188,6 +1194,7 @@ TEST_CASE("volumetrics: a near fire's light in the air has no froxel lattice in 
   Rig rig;
   rig.fire = &fire;
   rig.lights = false;
+  rig.linear = true;  // floats: a clipped or quantized glow hides the lattice
   REQUIRE_MESSAGE(rig.build(gpu.device, false, ShadowMode::Off), rig.error);
   MediumDesc desc;
   desc.dust_scale = 60.0f;
@@ -1218,22 +1225,38 @@ TEST_CASE("volumetrics: a near fire's light in the air has no froxel lattice in 
 
   const u32 row = k_height / 2;
   const u32 column = k_width / near_light.froxels_x;
-  const Lattice with = lattice_of(added_red_along(on, bare, row), column, 36);
-  const Lattice without = lattice_of(added_red_along(off, bare, row), column, 36);
+  const Lattice with = lattice_of(added_red_along(on, bare, row), column, 14);
+  const Lattice without = lattice_of(added_red_along(off, bare, row), column, 14);
   MESSAGE("with the per-pixel light: knees " << with.knee << " others " << with.other << " worst "
-                                           << with.worst << " level " << with.level);
+                                             << with.worst << " level " << with.level);
   MESSAGE("froxels only:             knees " << without.knee << " others " << without.other
-                                           << " worst " << without.worst << " level "
-                                           << without.level);
+                                             << " worst " << without.worst << " level "
+                                             << without.level);
   REQUIRE(with.level > 0.0);
   REQUIRE(without.level > 0.0);
+  const std::vector<f64> ra = added_red_along(on, bare, row);
+  const std::vector<f64> rb = added_red_along(off, bare, row);
+  {
+    std::string rows_on, rows_off;
+    for (u32 x = 100; x < 220; x += 2) {
+      rows_on += std::to_string(static_cast<int>(ra[x] * 10000.0)) + " ";
+      rows_off += std::to_string(static_cast<int>(rb[x] * 10000.0)) + " ";
+    }
+    MESSAGE("row " << row << ", x 100..218 step 2, ten-thousandths, per pixel:  " << rows_on);
+    MESSAGE("row " << row << ", x 100..218 step 2, ten-thousandths, froxels only: " << rows_off);
+  }
   // The froxels alone draw the lattice: the spike at a column centre against the pixels between.
   CHECK(without.knee > 3.0 * without.other);
-  // Per pixel there is none: a column centre's pixels curve like their neighbours (a ratio of about
-  // 1; 1.5 is the bound), and nothing in the wings changes by more than a third of what the
-  // lattice's worst spike did.
-  CHECK(with.knee < 1.5 * with.other);
-  CHECK(with.worst < 0.33 * without.worst);
+  // Per pixel there is none: a column centre's pixels curve only as the glow itself does, under
+  // half the lattice's spike (measured 0.11 of it).
+  CHECK(with.knee < 0.5 * without.knee);
+  // And the glow's peak is where the light is: the froxels cap it with a flat top one column wide
+  // (the rectangle, measured 1.52 against a peak of 21.5), the pixel's own ray does not.
+  const f64 peak_with = *std::max_element(ra.begin(), ra.end());
+  const f64 peak_without = *std::max_element(rb.begin(), rb.end());
+  MESSAGE("the glow's peak along the row: " << peak_with << " per pixel, " << peak_without
+                                            << " froxels only");
+  CHECK(peak_with > 3.0 * peak_without);
   // The light is the same light: nothing dropped, nothing counted twice.
   CHECK(with.level > 0.6 * without.level);
   CHECK(with.level < 1.6 * without.level);

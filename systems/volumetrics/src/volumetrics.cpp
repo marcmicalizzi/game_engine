@@ -35,6 +35,19 @@ tunables::Float froxel_near{"volumetrics.froxels.near_m", 0.5, 0.05, 50.0,
 tunables::Float froxel_far{"volumetrics.froxels.far_m", 1500.0, 50.0, 50000.0,
                            "Where the last froxel slice ends; the dust past it is closed form."};
 
+// The near fires' light taken per pixel (R117, volumetrics.md "Fire"): read once, when a pass is
+// made. `near_light` off is the froxels' alone, as before R117 (a measurement and a test switch);
+// the samples are the angular midpoints along a pixel's ray; the depths are how many slice depths
+// at the fire, as seen along the ray's closest approach to the light, the per-pixel term covers
+// before the froxels take over (its weight is 1 inside 0.4 of it).
+tunables::Bool fire_near_light{"volumetrics.fire.near_light", true,
+                               "Take the near fires' light in the air per pixel, not per froxel."};
+tunables::Int fire_light_samples{"volumetrics.fire.light_samples", 12, 2, 64,
+                                 "Samples along a pixel's ray for a near fire's light in the air."};
+tunables::Float fire_light_depths{
+    "volumetrics.fire.light_depths", 5.0, 0.5, 40.0,
+    "Slice depths at the fire, across the ray, the per-pixel light covers."};
+
 // The cascaded maps' depth bias for a froxel, in texels of the cascade it reads: no receiver
 // plane, so a few texels for the point's own surface.
 constexpr f32 k_froxel_shadow_bias_texels = 2.0f;
@@ -727,6 +740,7 @@ bool MediumPass::create(const gfx::Device& device, renderer::SceneRenderer& rend
   if (options_.near_m <= 0.0f) options_.near_m = static_cast<f32>(froxel_near.get());
   if (options_.far_m <= 0.0f) options_.far_m = static_cast<f32>(froxel_far.get());
   if (options_.far_m <= options_.near_m * 2.0f) options_.far_m = options_.near_m * 2.0f;
+  if (!fire_near_light.get()) options_.near_fire_light = false;
   // The sources this pass draws: the block's, or the one the debug view asks for alone.
   sources_ = 0;
   if (desc_.dust) sources_ |= k_source_dust;
@@ -1008,7 +1022,8 @@ bool MediumPass::ensure_buffers(const renderer::FramePassContext& context, std::
   // transmittance grid after all views' (the per-pixel fire light, R117).
   const u64 cells = u64{options_.froxels_x} * options_.froxels_y * options_.froxels_z;
   const u64 grids = (sources_ & k_source_fire) != 0 ? 2u : 1u;
-  return gfx::create_buffer(*device_, cells * 8 * views_ * grids, k_address, false, froxels_, error);
+  return gfx::create_buffer(*device_, cells * 8 * views_ * grids, k_address, false, froxels_,
+                            error);
 }
 
 f64 MediumPass::corner_height(i64 x, i64 z) {
@@ -1154,7 +1169,9 @@ bool MediumPass::record(const renderer::FramePassContext& c, std::string* error)
       p.fires = fire_buffers_[c.slot].address;
       p.fire_count = stats_.fires;
       p.fire_near = near_fires;
-      p.fire_terms = Vec4{k_smoke_albedo, static_cast<f32>(k_flame_steps), 0.0f, 0.0f};
+      p.fire_terms = Vec4{k_smoke_albedo, static_cast<f32>(k_flame_steps),
+                          static_cast<f32>(fire_light_samples.get()),
+                          static_cast<f32>(fire_light_depths.get())};
       if (options_.near_fire_light && near_fires > 0)
         p.fire_scatter = froxels_.address + cells * 8 * (u64{views_} + v);
     }

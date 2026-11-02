@@ -82,7 +82,7 @@ struct MediumParams {
   uint64_t fires;         // MediumFire[fire_count] (R85)
   uint fire_count;
   uint fire_near;         // how many of them the apply marches as a near flame
-  float4 fire_terms;      // x the smoke's albedo, y the near flames' steps, zw unused
+  float4 fire_terms;      // x the smoke's albedo, y the near flames' steps, z the per-pixel fire light's samples, w its reach in slice depths
   uint64_t fire_scatter;  // uint2[x * y * z]: this view's scatter x transmittance grid, 0 without near fires (R117)
   uint pad[10];
 };
@@ -682,11 +682,9 @@ float smoke_density(MediumFire f, float3 x) {
 // fire's light against that along the pixel's own ray, in the angle the ray subtends at the light
 // (the substitution t = t_c + D tan(a) of Sun, Ramamoorthi, Narasimhan & Nayar 2005's airlight
 // integral, which makes 1 / d^2 flat and leaves only the smooth factors to sample).
-static const uint k_fire_light_samples = 12;
-// The per-pixel term's weight is 1 within `inner` slice depths (at the fire) of the light and falls
-// to 0 at `outer`: past it a cell holds the light's gradient to a few per cent.
-static const float k_fire_light_inner = 2.0;
-static const float k_fire_light_outer = 5.0;
+// The per-pixel term's weight is 1 within 0.4 of `fire_terms.w` slice depths (at the fire) of the
+// light and falls to 0 at it: past it a cell holds the light's gradient to a few per cent.
+static const float k_fire_light_inner_share = 0.4;
 
 // How much of fire `f`'s in-scatter along a ray `dir` the apply takes per pixel: the march's share
 // of the fire (by the eye's distance, so the hand-over in distance is the flame's) times 1 within the
@@ -696,7 +694,8 @@ float fire_pixel_weight(MediumParams* p, MediumFire f, float3 dir) {
   const float3 at = f.light.xyz;
   const float depth = length(at) * (exp(p->slices.z / float(p->grid.z)) - 1.0);
   const float across = length(cross(dir, at));
-  return f.emission.w * (1.0 - smoothstep(k_fire_light_inner * depth, k_fire_light_outer * depth, across));
+  const float outer = p->fire_terms.w * depth;
+  return f.emission.w * (1.0 - smoothstep(k_fire_light_inner_share * outer, outer, across));
 }
 
 // The fires' light arriving at a point, raw, through the phase towards the eye along `dir`: the
@@ -771,9 +770,10 @@ float3 near_fire_light(MediumParams* p, float3 dir, float limit, float2 uv) {
     const float h = max(sqrt(d2), f.base.w);
     const float a0 = atan((ta - tc) / h);
     const float a1 = atan((tb - tc) / h);
-    const float da = (a1 - a0) / float(k_fire_light_samples);
+    const uint samples = uint(p->fire_terms.z);
+    const float da = (a1 - a0) / float(samples);
     float3 acc = float3(0.0);
-    for (uint k = 0; k < k_fire_light_samples; ++k) {
+    for (uint k = 0; k < samples; ++k) {
       const float u = tan(a0 + (float(k) + 0.5) * da);
       const float t = tc + h * u;
       const float dt = h * (1.0 + u * u) * da;
