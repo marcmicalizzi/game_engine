@@ -23,6 +23,7 @@
 #include <cmath>
 #include <cstdlib>
 #include <string>
+#include <vector>
 
 using namespace engine;
 using namespace engine::renderer;
@@ -60,6 +61,7 @@ struct Rig {
   f32 moon_age_days = 0.0f;
   const FireDesc* fire = nullptr;  // a fire on the scene (R85)
   bool lights = true;              // the stand-in's two point lights
+  bool linear = false;  // the picture's linear radiance, unclipped and unquantized (R117)
 
   bool build(const gfx::Device& device, bool sky, ShadowMode shadows) {
     SceneDesc desc;
@@ -92,6 +94,10 @@ struct Rig {
     SceneRenderer::Desc rd;
     rd.width = k_width;
     rd.height = k_height;
+    if (linear) {
+      rd.display = gfx::DisplayEncoding::Linear;
+      rd.color_format = gfx::Format::R16G16B16A16Sfloat;
+    }
     return renderer.create(device, scene, resolved, rd, &error);
   }
 };
@@ -1094,4 +1100,164 @@ TEST_CASE("volumetrics: a fire's smoke drifts downwind") {
   MESSAGE("the smoke changed " << n << " pixels, their mean column " << mean_x << " of "
                                << k_width);
   CHECK(mean_x > 0.6 * k_width);
+}
+
+namespace {
+
+// One capture's linear light (`CaptureChannels::light`: RGB per pixel, no 8-bit codes between the
+// air's gradient and the number) with a medium pass made for it and gone after it.
+bool shoot_light(Rig& rig, const gfx::Device& device, const MediumDesc& desc,
+                 const MediumOptions& options, const FrameDesc& frame, CapturedFrame& out,
+                 MediumStats* stats = nullptr) {
+  MediumPass pass;
+  if (!pass.create(device, rig.renderer, rig.data, desc, options, &rig.error)) return false;
+  CaptureChannels channels;
+  channels.color = false;
+  channels.light = true;
+  const bool ok = rig.renderer.capture(frame, channels, out, &rig.error);
+  if (stats != nullptr) *stats = pass.stats();
+  pass.destroy();
+  return ok;
+}
+
+// The red light `f` adds over `base` along picture row `y`, left to right: the same frame without
+// the fires, so the sun's and the sky's haze (a smooth ramp of its own) is taken out exactly.
+std::vector<f64> added_red_along(const CapturedFrame& f, const CapturedFrame& base, u32 y) {
+  std::vector<f64> row;
+  for (u32 x = 0; x < f.width; ++x) {
+    const u32 i = (y * f.width + x) * 3;
+    row.push_back(static_cast<f64>(f.light[i]) - static_cast<f64>(base.light[i]));
+  }
+  return row;
+}
+
+// How much a row's glow curves at the froxel columns' centres against everywhere else, over the
+// wings of the picture (the flame's own few tens of pixels are the march's, per pixel with or
+// without the near fire's light in the air).
+struct Lattice {
+  f64 knee = 0.0;   // the mean |second difference| at the pixels beside a column centre
+  f64 other = 0.0;  // and everywhere else in the wings
+  f64 worst = 0.0;  // the largest anywhere in the wings
+  f64 level = 0.0;  // the wings' mean light
+};
+Lattice lattice_of(const std::vector<f64>& v, u32 column_pixels, u32 flame_half_width) {
+  Lattice r;
+  u32 nk = 0, no = 0, n = 0;
+  const u32 middle = static_cast<u32>(v.size() / 2);
+  for (u32 x = 4; x + 4 < v.size(); ++x) {
+    if (x + flame_half_width > middle && x < middle + flame_half_width) continue;
+    const f64 d2 = std::abs(v[x - 1] - 2.0 * v[x] + v[x + 1]);
+    // A column's centre is at column_pixels / 2 + column_pixels j; the two pixels flanking it hold
+    // the knee.
+    const u32 phase = (x + column_pixels / 2) % column_pixels;
+    if (phase == 0 || phase == column_pixels - 1) {
+      r.knee += d2;
+      ++nk;
+    } else {
+      r.other += d2;
+      ++no;
+    }
+    r.worst = std::max(r.worst, d2);
+    r.level += v[x];
+    ++n;
+  }
+  r.knee /= std::max(nk, 1u);
+  r.other /= std::max(no, 1u);
+  r.level /= std::max(n, 1u);
+  return r;
+}
+
+}  // namespace
+
+// R117: the near fire's light in the air is taken along each pixel's own ray. A froxel holds the
+// light at its centre and the picture is the trilinear reconstruction of the cells: along a row the
+// air's glow is **piecewise linear with a knee at every column centre**, the second difference zero
+// between the knees and a spike at each. Taken per pixel, the glow has no lattice in it.
+TEST_CASE("volumetrics: a near fire's light in the air has no froxel lattice in it") {
+  Gpu gpu;
+  if (!gpu.ok) {
+    MESSAGE("skipped: " << gpu.why);
+    return;
+  }
+  Rig probe;
+  REQUIRE_MESSAGE(probe.build(gpu.device, false, ShadowMode::Off), probe.error);
+  // A fire in a thick haze (the only scatterer: no smoke, no sun worth the name), bright enough to
+  // light the air for ten metres, seen from seven metres on its own level, so the row through the
+  // light is the flame's height and the light is at a boundary between two columns and two rows.
+  FireDesc fire;
+  fire.position = probe.data.center + DVec3{0.0, 0.1 * static_cast<f64>(probe.data.radius), 0.0};
+  fire.radius_m = 0.3f;
+  fire.height_m = 0.8f;
+  fire.intensity = 40.0f;  // 8-bit light: what the fire adds must stand well over a code's step
+  fire.flicker = 0.0f;
+  fire.smoke_density = 0.0f;
+  Rig rig;
+  rig.fire = &fire;
+  rig.lights = false;
+  rig.linear = true;  // floats: a clipped or quantized glow hides the lattice
+  REQUIRE_MESSAGE(rig.build(gpu.device, false, ShadowMode::Off), rig.error);
+  MediumDesc desc;
+  desc.dust_scale = 60.0f;
+  // A coarse grid, so a cell is wide enough in the picture (20 x 18 pixels at 320 x 180) for its
+  // knees to stand out of the picture's own curvature; 16 columns put the light on a boundary.
+  MediumOptions near_light;
+  near_light.froxels_x = 16;
+  near_light.froxels_y = 10;
+  near_light.froxels_z = 16;
+  MediumOptions froxels_only = near_light;
+  froxels_only.near_fire_light = false;
+  MediumOptions no_fires = near_light;
+  no_fires.fires = false;
+
+  const WorldPos light =
+      fire.position + DVec3{0.0, static_cast<f64>(k_fire_light_height * fire.height_m), 0.0};
+  FrameDesc frame;
+  frame.camera.position = light + DVec3{0.0, 0.0, 7.0};
+  frame.camera.target = light;
+  frame.camera.fov_y = 60.0f * 3.14159265f / 180.0f;
+  frame.camera.znear = 0.05f;
+  CapturedFrame on, off, bare;
+  MediumStats stats;
+  REQUIRE_MESSAGE(shoot_light(rig, gpu.device, desc, no_fires, frame, bare), rig.error);
+  REQUIRE_MESSAGE(shoot_light(rig, gpu.device, desc, near_light, frame, on, &stats), rig.error);
+  REQUIRE_MESSAGE(shoot_light(rig, gpu.device, desc, froxels_only, frame, off), rig.error);
+  CHECK(stats.near_fires == 1);
+
+  const u32 row = k_height / 2;
+  const u32 column = k_width / near_light.froxels_x;
+  const Lattice with = lattice_of(added_red_along(on, bare, row), column, 14);
+  const Lattice without = lattice_of(added_red_along(off, bare, row), column, 14);
+  MESSAGE("with the per-pixel light: knees " << with.knee << " others " << with.other << " worst "
+                                             << with.worst << " level " << with.level);
+  MESSAGE("froxels only:             knees " << without.knee << " others " << without.other
+                                             << " worst " << without.worst << " level "
+                                             << without.level);
+  REQUIRE(with.level > 0.0);
+  REQUIRE(without.level > 0.0);
+  const std::vector<f64> ra = added_red_along(on, bare, row);
+  const std::vector<f64> rb = added_red_along(off, bare, row);
+  {
+    std::string rows_on, rows_off;
+    for (u32 x = 100; x < 220; x += 2) {
+      rows_on += std::to_string(static_cast<int>(ra[x] * 10000.0)) + " ";
+      rows_off += std::to_string(static_cast<int>(rb[x] * 10000.0)) + " ";
+    }
+    MESSAGE("row " << row << ", x 100..218 step 2, ten-thousandths, per pixel:  " << rows_on);
+    MESSAGE("row " << row << ", x 100..218 step 2, ten-thousandths, froxels only: " << rows_off);
+  }
+  // The froxels alone draw the lattice: the spike at a column centre against the pixels between.
+  CHECK(without.knee > 3.0 * without.other);
+  // Per pixel there is none: a column centre's pixels curve only as the glow itself does, under
+  // half the lattice's spike (measured 0.11 of it).
+  CHECK(with.knee < 0.5 * without.knee);
+  // And the glow's peak is where the light is: the froxels cap it with a flat top one column wide
+  // (the rectangle, measured 1.52 against a peak of 21.5), the pixel's own ray does not.
+  const f64 peak_with = *std::max_element(ra.begin(), ra.end());
+  const f64 peak_without = *std::max_element(rb.begin(), rb.end());
+  MESSAGE("the glow's peak along the row: " << peak_with << " per pixel, " << peak_without
+                                            << " froxels only");
+  CHECK(peak_with > 3.0 * peak_without);
+  // The light is the same light: nothing dropped, nothing counted twice.
+  CHECK(with.level > 0.6 * without.level);
+  CHECK(with.level < 1.6 * without.level);
 }
