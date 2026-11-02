@@ -386,16 +386,26 @@ bool conifer_in_range(const Conifer& p, std::string& error) {
   if (!(p.sparse_whorls >= 0.0f && p.sparse_whorls <= 0.5f))
     return bad("sparse_whorls", "0 to 0.5");
   if (!(p.dead_share >= 0.0f && p.dead_share <= 0.9f)) return bad("dead_share", "0 to 0.9");
+  if (p.card_bake_px != 0u && !(p.card_bake_px >= 16u && p.card_bake_px <= 256u))
+    return bad("card_bake_px", "0, or 16 to 256");
+  if (p.impostor_px != 0u && !(p.impostor_px >= 32u && p.impostor_px <= 1024u))
+    return bad("impostor_px", "0, or 32 to 1024");
   return true;
 }
 
 bool solve_conifer(const Conifer& p, assets::MeshData& out, TreeReport* report, std::string* error,
                    Motion* motion) {
-  return detail::solve_conifer_rules(p, GrowthRules{}, out, report, error, motion);
+  return detail::solve_conifer_rules(p, GrowthRules{}, out, report, error, motion, nullptr);
+}
+
+bool solve_conifer_chain(const Conifer& p, assets::MeshData& out, TreeReport* report,
+                         std::string* error, Motion* motion, TreeLevels* levels) {
+  return detail::solve_conifer_rules(p, GrowthRules{}, out, report, error, motion, levels);
 }
 
 bool detail::solve_conifer_rules(const Conifer& p, const GrowthRules& rules, assets::MeshData& out,
-                                 TreeReport* report, std::string* error, Motion* motion) {
+                                 TreeReport* report, std::string* error, Motion* motion,
+                                 TreeLevels* levels) {
   out = assets::MeshData{};
   std::string message;
   if (!conifer_in_range(p, message)) {
@@ -458,6 +468,31 @@ bool detail::solve_conifer_rules(const Conifer& p, const GrowthRules& rules, ass
   const f64 pendulous = static_cast<f64>(p.pendulous);
   u32 sprays = 1;
   u32 cards_built = 0;
+  // The impostor chain's crown (G120; flora.md, "The impostor chain"): the conifer grows no
+  // allometric crown, so the chain gathers on one of the conifer's own shoots — the trunk and
+  // every branch a part, every lateral a shoot riding its branch. `crown_levels` walks it by the
+  // broadleaf's rule, never past a part: a lateral's spray gathers on its branch, a branch's own
+  // spray is its branch's, the leader's tuft the trunk's, so the first card level is one group a
+  // live branch and no step merges past it. Built only when the chain is asked for; it records
+  // where each spray landed and moves no byte of the mesh.
+  Crown shoots;
+  Vector<SprayRange> spray_ranges;
+  const auto add_shoot = [&](u32 parent, u32 flags, u32 part, f64 weight) {
+    CrownNode node;
+    node.parent = parent;
+    node.flags = flags;
+    node.part = part;
+    node.carrier = (flags & k_crown_part) != 0u ? shoots.nodes.size() : parent;
+    node.weight = weight;
+    shoots.nodes.push_back(node);
+    return shoots.nodes.size() - 1;
+  };
+  const auto record = [&](u32 node, u32 first_vertex, u32 first_index) {
+    spray_ranges.push_back(SprayRange{node, first_index, out.indices.size() - first_index,
+                                      first_vertex, out.positions.size() - first_vertex});
+  };
+  const u32 trunk_node =
+      levels != nullptr ? add_shoot(k_crown_none, k_crown_part, k_trunk_part, 0.0) : 0u;
   for (u32 i = 0; i < s.branches.size(); ++i) {
     const Branch& b = s.branches[i];
     if (b.dead) continue;
@@ -466,13 +501,19 @@ bool detail::solve_conifer_rules(const Conifer& p, const GrowthRules& rules, ass
     if (dot(side, side) < 1e-6) side = D3{1.0, 0.0, 0.0};
     const f64 from = plan.branch_tubes ? b.needled_from : 0.0;
     const u32 own = cards_of(b.cards, plan);
+    const u32 branch_node =
+        levels != nullptr ? add_shoot(trunk_node, k_crown_part, part_of[i], 0.0) : 0u;
+    u32 first_vertex = out.positions.size();
+    u32 first_index = out.indices.size();
     build_spray(b.axis, from, own, plan.merge_laterals ? merged_card : needle, 55.0 * k_degree,
                 b.lift, 0.1, normalized(side), emit);
+    if (levels != nullptr) record(branch_node, first_vertex, first_index);
     ++sprays;
     cards_built += 2 * own;
     if (plan.merge_laterals) continue;
     for (const Lateral& l : b.laterals) {
       const u32 first = out.positions.size();
+      first_index = out.indices.size();
       const u32 cards = cards_of(l.cards, plan);
       build_spray(l.axis, 0.0, cards, lateral_card, 50.0 * k_degree, b.lift, 0.15 + 0.2 * pendulous,
                   l.side, emit);
@@ -480,14 +521,20 @@ bool detail::solve_conifer_rules(const Conifer& p, const GrowthRules& rules, ass
         const f64 along = static_cast<f64>(parts.vertex_weight[v]) * l.axis.length;
         parts.vertex_weight[v] = static_cast<f32>(clamp01((l.attach + along) / b.axis.length));
       }
+      if (levels != nullptr)
+        record(add_shoot(branch_node, 0u, part_of[i], clamp01(l.attach / b.axis.length)), first,
+               first_index);
       ++sprays;
       cards_built += 2 * cards;
     }
   }
   emit.part = k_trunk_part;
   const u32 tuft = cards_of(p.needle_cards, plan);
+  const u32 tuft_vertex = out.positions.size();
+  const u32 tuft_index = out.indices.size();
   build_spray(s.trunk, 0.9 * s.trunk.length, tuft, 0.6 * needle, 30.0 * k_degree, 0.0, 0.0,
               D3{1.0, 0.0, 0.0}, emit);
+  if (levels != nullptr) record(trunk_node, tuft_vertex, tuft_index);
   cards_built += 2 * tuft;
   assets::Primitive needles;
   needles.first_index = leaf_first;
@@ -516,6 +563,23 @@ bool detail::solve_conifer_rules(const Conifer& p, const GrowthRules& rules, ass
     report->steps = steps;
     report->leaf_cards = cards_built;
     report->leaf_area_m2 = static_cast<f32>(triangles_area(out, leaf_first));
+  }
+  // The impostor chain above the finest needles (impostor.h; G120): appended past everything, so
+  // the mesh above is the bytes it is without it. The bake keeps the needle mass's coverage
+  // (`ImpostorSpec::coverage_dither`): a foliated-shoot image is a quarter to a third opaque, so a
+  // texel of one or two shoots deep is under the mask's one half and a plain bake would cut it.
+  if (levels != nullptr) {
+    *levels = TreeLevels{};
+    levels->leaf_first_index = leaf_first;
+    levels->leaf_index_end = out.indices.size();
+    ImpostorSpec chain_spec;
+    chain_spec.card_px = p.card_bake_px;
+    chain_spec.tree_px = p.impostor_px;
+    chain_spec.coverage_dither = true;
+    CrownPlan chain_plan;
+    chain_plan.merge = plan.merge_laterals ? 1u : 0u;
+    crown_levels(shoots, chain_plan, spray_ranges, chain_spec, emit, *levels);
+    tree_star(chain_spec, k_trunk_part, emit, *levels);
   }
   if (motion != nullptr) *motion = std::move(parts);
   return true;

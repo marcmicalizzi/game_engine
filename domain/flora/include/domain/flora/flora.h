@@ -69,6 +69,16 @@ namespace engine::flora {
 // 11: researched broadleaf blade dimensions, independent of retained leaf allocation (G91).
 inline constexpr u32 k_flora_version = 11;
 
+// The conifers' impostor chain (G120; flora.md, "The impostor chain"): mixed into the source hash
+// of every species the conifer solver builds (`conifer` and the evergreen profiles: pine, spruce,
+// cedar, fir, hemlock, juniper) after `k_flora_version`, so their entries rebuild with the chain
+// and every other species keeps its key, where a bump of `k_flora_version` would rebuild every
+// tree of every cache. Bump it with a change to the conifers' chain alone.
+//
+// 1: the conifers gain the chain — one three-plane card group a live branch and the whole-tree
+//    star — baked with the needles' coverage kept (`ImpostorSpec::coverage_dither`).
+inline constexpr u32 k_conifer_chain_version = 1;
+
 // The species `engine.flora.FloraFile.species` names; the solver reads the parameters of the same
 // member (`palm`, `broadleaf`, `conifer`, `birch`, `willow`, `orchard`, `ancient`).
 inline constexpr const char* k_species_date_palm = "date_palm";

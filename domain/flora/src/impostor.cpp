@@ -12,6 +12,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <utility>
 
 namespace engine::flora {
 
@@ -295,6 +296,7 @@ void crown_levels(const Crown& crown, const CrownPlan& plan, const Vector<SprayR
     TreeLevel level;
     level.kind = ImpostorKind::branch_group;
     level.merge = plan.merge + step;
+    level.coverage_dither = spec.coverage_dither;
     const u32 planes = ImpostorSpec::k_card_planes;
     level.groups = groups * planes;
     level.tile_px = spec.card_px;
@@ -413,6 +415,7 @@ void tree_star(const ImpostorSpec& spec, u32 part, Emitter& out, TreeLevels& lev
   const D3 normals[4] = {{1.0, 0.0, 0.0}, {s, 0.0, s}, {0.0, 0.0, 1.0}, {-s, 0.0, s}};
   TreeLevel level;
   level.kind = ImpostorKind::tree;
+  level.coverage_dither = spec.coverage_dither;
   level.groups = 0;
   level.tile_px = spec.tree_px;
   level.columns = 1;
@@ -550,6 +553,38 @@ u32 pack_rgb(const Vec4& linear);
 
 bool usable(const image::Image* image) {
   return image != nullptr && image->width != 0 && image->height != 0 && image->channels == 4;
+}
+
+constexpr u32 k_texel_samples = k_samples * k_samples;
+constexpr u32 k_match_steps = 3;  // `bake_matched`'s regula falsi steps
+
+// A texel's mask threshold for the coverage-kept bake (G120): uniform over 0 to 16 x 256 - 1, from
+// the texel's place in the atlas through splitmix64's finalizer, so neighbouring texels and the
+// depth slices' tiles of one direction draw independent thresholds. Integers only.
+u32 dither_threshold(u32 x, u32 y) {
+  u64 h = ((static_cast<u64>(y) << 32) | static_cast<u64>(x)) + 0x9E3779B97F4A7C15ull;
+  h = (h ^ (h >> 30)) * 0xBF58476D1CE4E5B9ull;
+  h = (h ^ (h >> 27)) * 0x94D049BB133111EBull;
+  h ^= h >> 31;
+  return static_cast<u32>(h % static_cast<u64>(k_texel_samples * 256u));
+}
+
+// The coverage under the mask (G120; `ImpostorSpec::coverage_dither`): a texel of `covered`
+// samples passes the one-half mask exactly when its samples times the level's scale (256 one)
+// exceed its threshold — so with the probability of its coverage times the scale, and at the full
+// scale a texel every sample covers always — and its alpha keeps its coverage's order on its side
+// of the mask: 128 + c or c, c = covered x 127 / 16 rounded, which is one to one, so the coverage
+// can be read back from the alpha (`covered_of`).
+u8 kept_alpha(u32 covered, u32 scale, u32 x, u32 y) {
+  const u32 below = (covered * 127u + k_texel_samples / 2u) / k_texel_samples;
+  return static_cast<u8>(covered * scale > dither_threshold(x, y) ? 128u + below : below);
+}
+
+u32 covered_of(u8 alpha) {
+  const u32 below = alpha >= 128u ? alpha - 128u : alpha;
+  for (u32 covered = 0; covered <= k_texel_samples; ++covered)
+    if ((covered * 127u + k_texel_samples / 2u) / k_texel_samples == below) return covered;
+  return 0;
 }
 
 // One bilinear, wrapped read of an 8-bit image at a UV, each channel 0..1 and unconverted: the
@@ -868,8 +903,9 @@ void bake_level(const assets::MeshData& mesh, const TreeLevels& levels, const Tr
         if (depth_out != nullptr) (*depth_out)[at / 4] = static_cast<f32>(depth_sum * inv);
         for (u32 k = 0; k < 3; ++k)
           out.colour[at + k] = texture::linear_to_srgb8(static_cast<f32>(rgb[k] * inv));
-        const u8 alpha = static_cast<u8>((covered * 255u + k_samples * k_samples / 2u) /
-                                         (k_samples * k_samples));
+        u8 alpha = static_cast<u8>((covered * 255u + k_texel_samples / 2u) / k_texel_samples);
+        if (level.coverage_dither)
+          alpha = kept_alpha(covered, level.coverage_scale, tx + pxi, ty + py);
         out.colour[at + 3] = alpha;
         const D3 m = detail::normalized(normal);
         const f64 nm[3] = {m.x, m.y, m.z};
@@ -978,12 +1014,15 @@ struct Difference {
   f64 coverage_union = 0.0;  // sum over texels of max(a, b)
   f64 colour_delta = 0.0;    // sum over texels both cover of the mean channel difference / 255
   f64 colour_count = 0.0;
+  f64 geometry = 0.0;  // sum over texels of a, the finest geometry's coverage
+  f64 cards = 0.0;     // sum over texels of b, the cards'
 };
 
 }  // namespace
 
 f32 measure_level(const assets::MeshData& mesh, const TreeLevels& levels, const TreeLevel& level,
-                  const BakeLook& look, const BakedAtlas& baked) {
+                  const BakeLook& look, const BakedAtlas& baked, LevelMeasure* detail) {
+  if (detail != nullptr) *detail = LevelMeasure{};
   if (level.jobs.empty() || baked.width == 0 || level.feature_m <= 0.0f) return 0.0f;
   const u32 leaf_rgb = pack_rgb(look.leaf);
   const u32 bark_rgb = pack_rgb(look.bark);
@@ -1127,6 +1166,8 @@ f32 measure_level(const assets::MeshData& mesh, const TreeLevels& levels, const 
           const f64 n = static_cast<f64>(k_measure_samples * k_measure_samples);
           sum.coverage_delta += (a > b ? a - b : b - a) / n;
           sum.coverage_union += (a > b ? a : b) / n;
+          sum.geometry += a / n;
+          sum.cards += b / n;
           if (a > 0.0 && b > 0.0) {
             f64 delta = 0.0;
             for (u32 k = 0; k < 3; ++k) {
@@ -1142,7 +1183,69 @@ f32 measure_level(const assets::MeshData& mesh, const TreeLevels& levels, const 
   }
   const f64 coverage = sum.coverage_union > 0.0 ? sum.coverage_delta / sum.coverage_union : 0.0;
   const f64 colour = sum.colour_count > 0.0 ? sum.colour_delta / sum.colour_count : 0.0;
+  if (detail != nullptr) {
+    detail->coverage = coverage;
+    detail->colour = colour;
+    detail->geometry = sum.geometry;
+    detail->cards = sum.cards;
+    detail->kept = sum.geometry > 0.0 ? sum.cards / sum.geometry : 0.0;
+  }
   return static_cast<f32>(1.0 - (1.0 - coverage) * (1.0 - colour));
+}
+
+f32 bake_matched(const assets::MeshData& mesh, const TreeLevels& levels, TreeLevel& level,
+                 const BakeLook& look, BakedAtlas& out, LevelMeasure* detail) {
+  LevelMeasure measure;
+  bake_level(mesh, levels, level, look, out);
+  f32 difference = measure_level(mesh, levels, level, look, out, &measure);
+  if (level.coverage_dither && measure.kept > 1.0) {
+    // kept(scale) = 1 by regula falsi from (0, 0)-(scale, kept): a level that draws nothing
+    // keeps nothing, and the cards' coverage grows with the scale, more slowly than in proportion
+    // where its planes overlap. A trial is the same bake under another mask — every texel's
+    // coverage read back from its alpha (`covered_of`) and tested again — and a measure; the
+    // nearest is kept.
+    const auto off_one = [](f64 kept) { return kept > 1.0 ? kept - 1.0 : 1.0 - kept; };
+    u32 lo = 0;
+    f64 kept_lo = 0.0;
+    u32 hi = level.coverage_scale;
+    f64 kept_hi = measure.kept;
+    u32 best = level.coverage_scale;
+    f64 best_off = off_one(measure.kept);
+    BakedAtlas trial;
+    for (u32 step = 0; step < k_match_steps && hi > lo + 1u; ++step) {
+      const f64 t = (1.0 - kept_lo) / (kept_hi - kept_lo);
+      f64 at = std::floor(static_cast<f64>(lo) + t * static_cast<f64>(hi - lo) + 0.5);
+      at = at < static_cast<f64>(lo + 1u) ? static_cast<f64>(lo + 1u) : at;
+      at = at > static_cast<f64>(hi - 1u) ? static_cast<f64>(hi - 1u) : at;
+      level.coverage_scale = static_cast<u32>(at);
+      LevelMeasure m;
+      trial = out;
+      for (u32 texel = 0; texel < trial.width * trial.height; ++texel) {
+        const u8 alpha = kept_alpha(covered_of(trial.colour[4u * texel + 3u]), level.coverage_scale,
+                                    texel % trial.width, texel / trial.width);
+        trial.colour[4u * texel + 3u] = alpha;
+        trial.normal[4u * texel + 3u] = alpha;
+      }
+      const f32 d = measure_level(mesh, levels, level, look, trial, &m);
+      if (off_one(m.kept) < best_off) {
+        best_off = off_one(m.kept);
+        best = level.coverage_scale;
+        std::swap(out, trial);
+        difference = d;
+        measure = m;
+      }
+      if (m.kept > 1.0) {
+        hi = level.coverage_scale;
+        kept_hi = m.kept;
+      } else {
+        lo = level.coverage_scale;
+        kept_lo = m.kept;
+      }
+    }
+    level.coverage_scale = best;
+  }
+  if (detail != nullptr) *detail = measure;
+  return difference;
 }
 
 }  // namespace engine::flora

@@ -137,7 +137,8 @@ bool solve_broadleaf_rules(const Broadleaf& params, const GrowthRules& rules, as
                            TreeReport* report, std::string* error, Motion* motion,
                            TreeLevels* levels);
 bool solve_conifer_rules(const Conifer& params, const GrowthRules& rules, assets::MeshData& out,
-                         TreeReport* report, std::string* error, Motion* motion);
+                         TreeReport* report, std::string* error, Motion* motion,
+                         TreeLevels* levels);
 
 struct Emitter {
   assets::MeshData& mesh;

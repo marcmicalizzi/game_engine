@@ -2233,8 +2233,8 @@ element a tree, so two or three trees share a cluster and a group's sphere is th
 part is one level that never coarsens: what its mesh draws from that far. The cross is drawn where
 its error projects under the threshold — a 5 m crown's cross (3.5 m) past 3.6 km at 1080p — so the
 proof of concept's 2 km region draws stars; a world larger than its ring takes the cross. No
-coarser stand-in is invented: a coverage-keeping coarser form is the flora capability's to bake (R92,
-and for the conifers G83).
+coarser stand-in is invented: a coverage-keeping coarser form is the flora capability's to bake (R92);
+the conifers have had a star of their own since G120 ([flora](flora.md#the-conifers-chain-g120)).
 
 **How it casts** (ADR-0059 decision 4). The far forest carries no caster policy and casts as any
 rigid instance: under traced shadows its drawn clusters are in the ray tracing chain and cast, and
@@ -2264,7 +2264,7 @@ prefix pairs. **Over the proof of concept's v23 region** ([the measurement](../e
 of 243,808 streamed instances it takes 59,178 (184,593 are under 4 m — the understory, saplings,
 grass, litter and small deadwood — and 37 have a coarsest form past 512 triangles), from 251 meshes,
 into **1,812 far tiles of 2,761,477 triangles and 93,454 clusters**: 46.7 triangles and 1.58 pairs
-a tree (the conifers' decimated tops are heavier than a star), 0.56% of the visibility id's 2^24,
+a tree (the conifers' decimated tops, before G120 gave them stars, are heavier than a star), 0.56% of the visibility id's 2^24,
 where the same trees streamed are millions of pairs. The prefix grows from 64,011 to 157,465 pairs,
 and the device memory by 110–190 MiB as measured device-wide. A frame draws what the hand-off left
 at the corners — 771 to 1,136 far tiles, 30,000 to 56,000 pairs and 1.0 to 1.6 million triangles

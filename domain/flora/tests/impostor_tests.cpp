@@ -635,3 +635,256 @@ TEST_CASE("impostor chain: a pack's normal and roughness reach the levels and ke
   CHECK(colour_hash == without.source_hash);
   CHECK(colour_hash != hash);
 }
+
+// ---- the conifers' chain (G120) -----------------------------------------------------------------
+
+namespace {
+
+// A smaller spruce than the default, its tiles smaller than the defaults, so the chain and its bake
+// build in a debug test's seconds.
+flora::Conifer small_spruce() {
+  flora::Conifer p;
+  p.height_m = 8.0f;
+  p.trunk_radius_m = 0.15f;
+  p.crown_radius_m = 1.8f;
+  p.whorls = 12;
+  p.triangle_budget = 20000;
+  p.card_bake_px = 32;
+  p.impostor_px = 64;
+  return p;
+}
+
+// A foliated shoot's image as a pack's should be (flora.md, "What a pack's needle image should
+// be"): needles along v, one texel column in three opaque, so a third of the card is needle.
+image::Image needle_image() {
+  image::Image out;
+  out.width = 24;
+  out.height = 24;
+  out.channels = 4;
+  out.pixels.assign(24u * 24u * 4u, u8{0});
+  for (u32 y = 0; y < 24; ++y) {
+    for (u32 x = 0; x < 24; ++x) {
+      const u32 at = (y * 24 + x) * 4;
+      out.pixels[at] = 40;
+      out.pixels[at + 1] = 90;
+      out.pixels[at + 2] = 50;
+      out.pixels[at + 3] = x % 3 == 0 ? 255 : 0;
+    }
+  }
+  return out;
+}
+
+}  // namespace
+
+TEST_CASE("impostor chain: a conifer's needles gather on their branches under a star") {
+  const flora::Conifer p = small_spruce();
+  assets::MeshData plain;
+  flora::Motion plain_motion;
+  REQUIRE(flora::solve_conifer(p, plain, nullptr, nullptr, &plain_motion));
+  assets::MeshData mesh;
+  flora::Motion motion;
+  flora::TreeLevels levels;
+  std::string error;
+  REQUIRE_MESSAGE(flora::solve_conifer_chain(p, mesh, nullptr, &error, &motion, &levels), error);
+  // Everything the plain solve makes comes first, unchanged; the cards follow.
+  REQUIRE(mesh.positions.size() > plain.positions.size());
+  CHECK(std::memcmp(mesh.positions.data(), plain.positions.data(),
+                    plain.positions.size() * sizeof(Vec3)) == 0);
+  REQUIRE(mesh.indices.size() == plain.indices.size());
+  CHECK(std::memcmp(mesh.indices.data(), plain.indices.data(),
+                    plain.indices.size() * sizeof(u32)) == 0);
+  CHECK(motion.parts.size() == plain_motion.parts.size());
+  CHECK(motion.vertex_part.size() == mesh.positions.size());
+
+  // Two levels: one three-plane group a live branch (the leader's tuft one on the trunk), then the
+  // star, both baked with the needles' coverage kept.
+  REQUIRE(levels.levels.size() == 2u);
+  const flora::TreeLevel& cards = levels.levels.front();
+  const flora::TreeLevel& star = levels.levels.back();
+  CHECK(cards.kind == flora::ImpostorKind::branch_group);
+  CHECK(star.kind == flora::ImpostorKind::tree);
+  CHECK(star.groups == 16u);
+  CHECK(star.elements == 1u);
+  CHECK(cards.coverage_dither);
+  CHECK(star.coverage_dither);
+  CHECK(cards.groups == cards.elements * 3u);
+  CHECK(cards.error < star.error);
+  CHECK(cards.feature_m > 0.0f);
+  CHECK(star.feature_m > 0.0f);
+  // A group is a branch: every needle triangle of one group rides one part, and the groups are as
+  // many as the parts the needles ride (every live branch and the trunk's tuft).
+  REQUIRE(levels.leaf_element.size() * 3u == levels.leaf_index_end - levels.leaf_first_index);
+  Vector<u32> part_of_group(cards.elements, ~0u);
+  Vector<u32> groups_of_part(motion.parts.size(), 0u);
+  for (u32 t = 0; t < levels.leaf_element.size(); ++t) {
+    const u32 g = levels.leaf_element[t];
+    REQUIRE(g < cards.elements);
+    const u32 part = motion.vertex_part[mesh.indices[levels.leaf_first_index + 3u * t]];
+    if (part_of_group[g] == ~0u) {
+      part_of_group[g] = part;
+      ++groups_of_part[part];
+    }
+    CHECK(part_of_group[g] == part);
+  }
+  u32 needled_parts = 0;
+  for (const u32 n : groups_of_part) {
+    CHECK(n <= 1u);
+    needled_parts += n;
+  }
+  CHECK(needled_parts == cards.elements);
+  MESSAGE("spruce chain: " << cards.elements << " branch groups, card error " << cards.error
+                           << " m, star error " << star.error << " m");
+  // Every group nests in the one star.
+  REQUIRE(cards.parent_of_element.size() == cards.elements);
+  for (const u32 parent : cards.parent_of_element)
+    CHECK(parent == 0u);
+  for (const flora::TreeLevel& level : levels.levels)
+    for (const u32 i : level.indices)
+      CHECK(i >= plain.positions.size());
+
+  // Asked for none, it builds none.
+  flora::Conifer off = p;
+  off.card_bake_px = 0;
+  off.impostor_px = 0;
+  REQUIRE(flora::solve_conifer_chain(off, mesh, nullptr, nullptr, nullptr, &levels));
+  CHECK(levels.levels.empty());
+  CHECK(mesh.positions.size() == plain.positions.size());
+}
+
+TEST_CASE("impostor chain: the conifer profiles and the matured conifer build it and key it") {
+  std::string error;
+  for (const char* recipe :
+       {R"({"species":"pine","tree":{"height_m":8,"triangle_budget":20000,)"
+        R"("card_bake_px":32,"impostor_px":64}})",
+        R"({"species":"spruce","tree":{"height_m":8,"triangle_budget":20000,)"
+        R"("card_bake_px":32,"impostor_px":64}})",
+        R"({"species":"conifer","tree":{"age_years":40},"conifer":{"height_m":8,)"
+        R"("trunk_radius_m":0.15,"crown_radius_m":1.8,"whorls":12,"triangle_budget":20000,)"
+        R"("card_bake_px":32,"impostor_px":64}})"}) {
+    CAPTURE(recipe);
+    flora::FloraFile file;
+    REQUIRE_MESSAGE(flora::read_flora_file(recipe, file, error), error);
+    geometry::ClusterFileData data;
+    REQUIRE_MESSAGE(flora::build_flora_container(file, {}, 0, data, nullptr, error), error);
+    REQUIRE(data.impostors.size() == 2u);
+    CHECK(data.impostors.front().kind == static_cast<u32>(flora::ImpostorKind::branch_group));
+    CHECK(data.impostors.back().kind == static_cast<u32>(flora::ImpostorKind::tree));
+    for (const geometry::ClusterFileImpostor& r : data.impostors) {
+      MESSAGE(file.species << " level: error " << r.error << " m, coverage " << r.coverage
+                           << " m, difference " << r.difference);
+      CHECK(r.difference > 0.0f);
+      CHECK(r.difference < 1.0f);
+    }
+    CHECK(data.impostors.back().coverage > data.impostors.front().coverage);
+    // The key: the conifers' chain version after the solver's, which no other species takes.
+    const std::string canonical = flora::canonical_flora_json(file);
+    const u64 h = hash_combine(hash_bytes(canonical.data(), canonical.size()),
+                               hash_bytes(file.species.data(), file.species.size()));
+    CHECK(flora::flora_source_hash(file) ==
+          hash_combine(hash_combine(h, flora::k_flora_version), flora::k_conifer_chain_version));
+  }
+  // A broadleaf profile keys as it did.
+  flora::FloraFile oak;
+  REQUIRE(flora::read_flora_file(R"({"species":"oak"})", oak, error));
+  const std::string canonical = flora::canonical_flora_json(oak);
+  CHECK(flora::flora_source_hash(oak) ==
+        hash_combine(hash_combine(hash_bytes(canonical.data(), canonical.size()),
+                                  hash_bytes(oak.species.data(), oak.species.size())),
+                     flora::k_flora_version));
+  // Off is the container it was: no level, no atlas.
+  flora::FloraFile off;
+  REQUIRE(flora::read_flora_file(R"({"species":"pine","tree":{"height_m":8,)"
+                                 R"("triangle_budget":20000,"card_bake_px":0,"impostor_px":0}})",
+                                 off, error));
+  geometry::ClusterFileData plain;
+  REQUIRE_MESSAGE(flora::build_flora_container(off, {}, 0, plain, nullptr, error), error);
+  CHECK(plain.impostors.empty());
+  CHECK(plain.images.empty());
+  CHECK(plain.materials.size() == 2u);
+}
+
+TEST_CASE("impostor bake: a conifer's levels draw its needle mass, no less and no more") {
+  const flora::Conifer p = small_spruce();
+  assets::MeshData mesh;
+  flora::TreeLevels levels;
+  REQUIRE(flora::solve_conifer_chain(p, mesh, nullptr, nullptr, nullptr, &levels));
+  REQUIRE(levels.levels.size() == 2u);
+  const image::Image needles = needle_image();
+  flora::BakeLook look;
+  look.leaf_image = &needles;
+  look.leaf = {1, 1, 1, 1};
+  look.leaf_outline = true;
+  for (u32 k = 0; k < levels.levels.size(); ++k) {
+    CAPTURE(k);
+    REQUIRE(levels.levels[k].coverage_dither);
+    flora::TreeLevel kept = levels.levels[k];
+    flora::TreeLevel plain = kept;
+    plain.coverage_dither = false;
+    flora::BakedAtlas with, without;
+    flora::LevelMeasure m_with, m_without;
+    const f32 d_with = flora::bake_matched(mesh, levels, kept, look, with, &m_with);
+    const f32 d_without = flora::bake_matched(mesh, levels, plain, look, without, &m_without);
+    CHECK(plain.coverage_scale == 256u);  // a plain level is one bake, unfitted
+    MESSAGE((k == 0 ? "branch cards" : "star")
+            << ": a plain bake draws " << m_without.kept << " of the needles' coverage (D "
+            << d_without << "), the coverage-kept bake " << m_with.kept << " at scale "
+            << kept.coverage_scale << "/256 (D " << d_with << ")");
+    // A third of a card is needle. The plain mask tosses a coin at one half on every texel — the
+    // cards draw too little, and the star, every needle in each of its four directions, too much
+    // — and the coverage-kept bake draws within a tenth of what the needles do, nearer than the
+    // plain one.
+    const auto off_one = [](f64 v) { return v > 1.0 ? v - 1.0 : 1.0 - v; };
+    CHECK(m_with.kept > 0.9);
+    CHECK(m_with.kept < 1.1);
+    CHECK(off_one(m_with.kept) < off_one(m_without.kept));
+    // The colour is the needles' either way and the same texels are drawn at all: only the mask
+    // moves.
+    REQUIRE(with.colour.size() == without.colour.size());
+    for (u32 t = 0; t < with.width * with.height; ++t) {
+      CHECK(with.colour[4 * t] == without.colour[4 * t]);
+      CHECK((with.colour[4 * t + 3] == 0u) == (without.colour[4 * t + 3] == 0u));
+      CHECK(with.colour[4 * t + 3] == with.normal[4 * t + 3]);
+    }
+  }
+}
+
+TEST_CASE("impostor chain: a conifer's bake is the same bytes every time and on every toolchain") {
+  const flora::Conifer p = small_spruce();
+  assets::MeshData mesh;
+  flora::TreeLevels levels;
+  REQUIRE(flora::solve_conifer_chain(p, mesh, nullptr, nullptr, nullptr, &levels));
+  REQUIRE(levels.levels.size() == 2u);
+  const image::Image needles = needle_image();
+  flora::BakeLook look;
+  look.leaf_image = &needles;
+  look.leaf_outline = true;
+  test::TempDir tmp("impostor_conifer_bake");
+  flora::TreeLevel cards = levels.levels.front();
+  flora::TreeLevel tree = levels.levels.back();
+  flora::BakedAtlas a, b, t;
+  const f32 first = flora::bake_matched(mesh, levels, cards, look, a);
+  flora::TreeLevel again = levels.levels.front();
+  CHECK(first == flora::bake_matched(mesh, levels, again, look, b));
+  CHECK(a.colour == b.colour);
+  CHECK(a.normal == b.normal);
+  CHECK(again.coverage_scale == cards.coverage_scale);
+  maybe_keep(tmp, a, "spruce_cards");
+  flora::bake_matched(mesh, levels, tree, look, t);
+  maybe_keep(tmp, t, "spruce_tree");
+  const u64 hashes[4] = {bytes_hash(a.colour), bytes_hash(a.normal), bytes_hash(t.colour),
+                         bytes_hash(t.normal)};
+  char line[160];
+  std::snprintf(
+      line, sizeof(line), "0x%016llxull, 0x%016llxull, 0x%016llxull, 0x%016llxull",
+      static_cast<unsigned long long>(hashes[0]), static_cast<unsigned long long>(hashes[1]),
+      static_cast<unsigned long long>(hashes[2]), static_cast<unsigned long long>(hashes[3]));
+  MESSAGE("spruce bake hashes: " << line << "; scales " << cards.coverage_scale << " and "
+                                 << tree.coverage_scale);
+  // Pinned on MSVC 14.51 (G120, 2026-11-01); GCC and Clang reproduce them (flora.md,
+  // "Determinism"). The mask is integers from the texel's place and the fit is the coverage bake's
+  // own numbers, so the coverage-kept bake adds nothing a toolchain could move.
+  constexpr u64 k_golden[4] = {0x618d2ec59d250c70ull, 0xd2cad8a88487eb1aull, 0xcbb185d12f629b3cull,
+                               0xb90598dda6dbe5cfull};
+  for (u32 k = 0; k < 4; ++k)
+    CHECK(hashes[k] == k_golden[k]);
+}
