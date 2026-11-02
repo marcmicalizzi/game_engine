@@ -77,8 +77,11 @@ struct PlayerRig {
   // **The rig faces +z** (glTF's convention: "the front of a glTF asset faces +Z"), and the
   // engine's heading 0 looks along -z, so the body is turned a half turn past the heading.
   f32 facing_yaw = k_pi;
-  std::string walk_clip;  // the library's name of the clip played walking, empty: none
-  std::string idle_clip;  // and standing; empty: the rest pose
+  // The library's name of the clip played walking (`view.player.walk_clip`: by name, any case; a
+  // name the rig lacks is its first clip), empty: none (`none`, or a rig with no clip).
+  std::string walk_clip;
+  // And standing (`view.player.idle_clip`); empty: the rest pose (`none`, or a rig without that name).
+  std::string idle_clip;
 };
 
 // The rig's head joint (above) and the collapse mask built from it: the head and every joint below

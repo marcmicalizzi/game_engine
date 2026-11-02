@@ -28,6 +28,7 @@
 #include <core/json/json_value.h>
 
 #include <atomic>
+#include <mutex>
 #include <span>
 #include <string>
 #include <string_view>
@@ -35,7 +36,7 @@
 
 namespace engine::tunables {
 
-enum class Kind : u8 { Bool, Int, Float, Enum };
+enum class Kind : u8 { Bool, Int, Float, Enum, String };
 const char* kind_name(Kind kind) noexcept;
 
 // Type-erased view of one tunable, for registries, config loaders, and the protocol. Names are
@@ -213,6 +214,41 @@ class Enum final : public EnumBase {
   E get() const noexcept { return static_cast<E>(index()); }
   bool set(E value) noexcept { return set_index(static_cast<u32>(value)); }
   E default_value() const noexcept { return static_cast<E>(default_index()); }
+};
+
+// A free-form text value: the name of a thing that is data rather than a dimension (a clip, a
+// file stem), where an `Enum` would need the list of its values at compile time. **Not for a hot
+// path**: `get()` takes a lock and copies, so read it once, at load. The value is any text without a
+// newline, trimmed of the spaces around it as every text form is; a command line's
+// "name=value,name=value" cannot carry a comma in it (`apply_overrides` splits there), a JSON file
+// can. Text and JSON both set it to exactly the text; `max_length` (the default 256) bounds it.
+class String final : public Tunable {
+ public:
+  String(const char* name, const char* default_value, const char* doc,
+         usize max_length = 256) noexcept;
+  ~String() override = default;
+
+  std::string get() const;
+  // False, and unchanged, when the value is longer than `max_length` or holds a newline.
+  bool set(std::string_view value);
+  const std::string& default_value() const noexcept { return default_; }
+  usize max_length() const noexcept { return max_length_; }
+
+  bool is_default() const noexcept override;
+  void reset() noexcept override { (void)set(default_); }
+  bool set_from_text(std::string_view text, std::string* error) override;
+  void append_value(std::string& out) const override;
+  void append_default(std::string& out) const override { out.append(default_); }
+  bool set_from_json(const JsonValue& value, std::string* error) override;
+  JsonValue value_json() const override;
+  JsonValue default_json() const override { return JsonValue(default_); }
+
+ private:
+  void describe_range(JsonValue& object) const override;
+  mutable std::mutex lock_;
+  std::string value_;
+  std::string default_;
+  usize max_length_;
 };
 
 // ---- registry --------------------------------------------------------------------------------

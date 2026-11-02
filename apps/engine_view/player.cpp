@@ -23,6 +23,14 @@ tunables::Float player_scale{"view.player.scale", 1.0, 0.1, 10.0,
 tunables::Bool player_collapse_head{"view.player.collapse_head", true,
                                     "First person: collapse the player's head joint and the joints "
                                     "below it to the head's position (--player)"};
+tunables::String player_walk_clip{
+    "view.player.walk_clip", "walk",
+    "The clip the player's body plays while the walker moves, by name, any case (--player); a "
+    "name the rig lacks plays its first clip; 'none' plays no clip, the body stays at rest"};
+tunables::String player_idle_clip{
+    "view.player.idle_clip", "idle",
+    "The clip the player's body plays while the walker stands, by name, any case (--player); a "
+    "name the rig lacks, or 'none', stands the rest pose"};
 
 // The library's own name for a file's assets, as animation.cpp's `path_stem` gives it, so a clip
 // named here is the one the animated world's library holds.
@@ -55,6 +63,9 @@ bool clip_named(const std::string& name, std::string_view want) noexcept {
   }
   return true;
 }
+
+// The tunables' `none`: no clip, any case.
+bool names_no_clip(const std::string& want) noexcept { return clip_named(want, "none"); }
 
 constexpr f32 k_gait_fade_s = 0.2f;  // walking to standing and back
 
@@ -177,13 +188,23 @@ bool measure_player_rig(const std::string& path, f32 target_height_m, f32 eye_he
     const f32 up = eye_height_m - out.origin_above_feet_m - head.y;
     out.eye_from_head = Vec3{head.x, up, head.z};
   }
+  // The clips by the tunables' names (`view.player.walk_clip`, `idle_clip`; the defaults are the
+  // names this always looked for). Read here, once, before any device.
+  const std::string want_walk = player_walk_clip.get();
+  const std::string want_idle = player_idle_clip.get();
+  const bool walk_none = names_no_clip(want_walk);
+  const bool idle_none = names_no_clip(want_idle);
   for (u32 i = 0; i < library.clip_count(); ++i) {
     const animation::ClipAsset& clip = library.clip(i);
     if (clip.skeleton != 0) continue;
-    if (out.walk_clip.empty() && clip_named(clip.name, "walk")) out.walk_clip = clip.name;
-    if (out.idle_clip.empty() && clip_named(clip.name, "idle")) out.idle_clip = clip.name;
+    if (!walk_none && out.walk_clip.empty() && clip_named(clip.name, want_walk))
+      out.walk_clip = clip.name;
+    if (!idle_none && out.idle_clip.empty() && clip_named(clip.name, want_idle))
+      out.idle_clip = clip.name;
   }
-  if (out.walk_clip.empty()) {
+  // A walk the rig does not name plays its first clip (an unnamed one is the walk of RiggedFigure);
+  // an idle it does not name is the rest pose. `none` is neither: it plays nothing.
+  if (out.walk_clip.empty() && !walk_none) {
     for (u32 i = 0; i < library.clip_count(); ++i) {
       if (library.clip(i).skeleton == 0) {
         out.walk_clip = library.clip(i).name;
@@ -307,7 +328,13 @@ void PlayerBody::tick(const FlySession& session) {
   gait_ = gait;
   if (moving) {
     ++walking_ticks_;
-    if (!rig_.walk_clip.empty()) (void)actors_->play(k_player_actor, rig_.walk_clip, fade, true);
+    // No walk clip (`view.player.walk_clip=none`): the body is at rest while it walks, so what it
+    // played before (the first clip it started on, or the idle) is stopped, as standing does.
+    if (!rig_.walk_clip.empty()) {
+      (void)actors_->play(k_player_actor, rig_.walk_clip, fade, true);
+    } else {
+      (void)actors_->stop(k_player_actor, fade);
+    }
   } else if (!rig_.idle_clip.empty()) {
     (void)actors_->play(k_player_actor, rig_.idle_clip, fade, true);
   } else {
@@ -340,8 +367,9 @@ JsonValue PlayerBody::summary_json(const GameActors* actors) const {
   out.set("collapse_head", collapse_ && scene_ != nullptr && scene_->collapse_on);
   out.set("collapsed_joints", static_cast<u64>(mask_.size()));
   out.set("collapse_steps", scene_ != nullptr ? scene_->collapse_steps : u64{0});
-  out.set("walk_clip", rig_.walk_clip);
-  out.set("idle_clip", rig_.idle_clip);
+  // `none` where no clip plays: the tunable said so, or the rig has no idle (the rest pose).
+  out.set("walk_clip", rig_.walk_clip.empty() ? std::string("none") : rig_.walk_clip);
+  out.set("idle_clip", rig_.idle_clip.empty() ? std::string("none") : rig_.idle_clip);
   out.set("places", places_);
   out.set("refused", refused_);
   out.set("walking_ticks", walking_ticks_);

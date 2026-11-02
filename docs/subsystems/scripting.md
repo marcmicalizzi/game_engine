@@ -78,7 +78,7 @@ The engine API is the global `engine`, typed in the definition file:
 | Function | What |
 |---|---|
 | `engine.log(level, message, fields?)` | a record in the `scripting` log category with the script's chunk and line as the fields `script` and `line`, plus up to 14 typed fields; levels `trace`, `debug`, `info`, `warn`, `error` — no `fatal`, a script does not get to stop the engine. The position is a field rather than the record's `file` because sinks keep `file` as a pointer and expect `__FILE__` |
-| `engine.tunable(name)` | a tunable's value: number, boolean, or an enum's choice name. A lookup scans the registry, so read it once. Tunables are hardware-selected knobs; a script that lets one change its *output* makes that output machine-dependent |
+| `engine.tunable(name)` | a tunable's value: number, boolean, an enum's choice name, or a string tunable's text. A lookup scans the registry, so read it once. Tunables are hardware-selected knobs; a script that lets one change its *output* makes that output machine-dependent |
 | `engine.tick()`, `engine.fixed_step()` | what the host set with `set_time()` — its fixed-step clock, never the wall clock |
 | `engine.random(seed, index)` | the index-th number in [0, 1) of the stream named by seed: `mix64`/`hash_combine` from `core/hash`, a pure function |
 | `engine.object(id)` | the resolver, above |

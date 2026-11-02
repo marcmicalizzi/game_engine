@@ -86,6 +86,7 @@ const char* kind_name(Kind kind) noexcept {
     case Kind::Int: return "int";
     case Kind::Float: return "float";
     case Kind::Enum: return "enum";
+    case Kind::String: return "string";
   }
   return "?";
 }
@@ -352,6 +353,73 @@ void EnumBase::describe_range(JsonValue& object) const {
   for (const char* c : choices_)
     choices.push_back(JsonValue(c));
   object.set("choices", std::move(choices));
+}
+
+// ---- String ----------------------------------------------------------------------------------
+
+String::String(const char* name, const char* default_value, const char* doc,
+               usize max_length) noexcept
+    : Tunable(name, doc, Kind::String),
+      value_(default_value != nullptr ? default_value : ""),
+      default_(value_),
+      max_length_(max_length) {
+  ENGINE_VERIFY(max_length > 0 && default_.size() <= max_length &&
+                    default_.find('\n') == std::string::npos,
+                "tunables::String: the default is longer than max_length or holds a newline");
+}
+
+std::string String::get() const {
+  std::lock_guard guard(lock_);
+  return value_;
+}
+
+bool String::is_default() const noexcept {
+  std::lock_guard guard(lock_);
+  return value_ == default_;
+}
+
+bool String::set(std::string_view value) {
+  if (value.size() > max_length_ || value.find('\n') != std::string_view::npos) return false;
+  {
+    std::lock_guard guard(lock_);
+    if (value_ == value) return true;
+    value_.assign(value);
+  }
+  changed();
+  return true;
+}
+
+bool String::set_from_text(std::string_view text, std::string* error) {
+  text = trim(text);
+  if (!set(text)) {
+    set_error(error, *this, "expected text on one line of at most " + std::to_string(max_length_) +
+                                " characters");
+    return false;
+  }
+  return true;
+}
+
+void String::append_value(std::string& out) const {
+  std::lock_guard guard(lock_);
+  out.append(value_);
+}
+
+bool String::set_from_json(const JsonValue& value, std::string* error) {
+  std::string_view text;
+  if (!value.get_string(text)) {
+    set_error(error, *this, "expected a string");
+    return false;
+  }
+  return set_from_text(text, error);
+}
+
+JsonValue String::value_json() const {
+  std::lock_guard guard(lock_);
+  return JsonValue(value_);
+}
+
+void String::describe_range(JsonValue& object) const {
+  object.set("max_length", JsonValue(static_cast<u64>(max_length_)));
 }
 
 // ---- registry --------------------------------------------------------------------------------

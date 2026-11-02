@@ -243,7 +243,7 @@ int api_log(lua_State* L) {
 }
 
 // engine.tunable(name) — a tunable's current value: numbers for Int and Float, a boolean for Bool,
-// the choice's name for Enum. A lookup by name scans the registry, so read it once, at load or at
+// the choice's name for Enum, the text for String. A lookup by name scans the registry, so read it once, at load or at
 // the top of a call, not inside a loop.
 int api_tunable(lua_State* L) {
   size_t len = 0;
@@ -263,6 +263,11 @@ int api_tunable(lua_State* L) {
     case tunables::Kind::Enum: {
       const auto* e = static_cast<const tunables::EnumBase*>(tunable);
       lua_pushstring(L, e->choice_name(e->index()));
+      break;
+    }
+    case tunables::Kind::String: {
+      const std::string text = static_cast<const tunables::String*>(tunable)->get();
+      lua_pushlstring(L, text.data(), text.size());
       break;
     }
   }

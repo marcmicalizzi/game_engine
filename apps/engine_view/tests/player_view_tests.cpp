@@ -244,6 +244,67 @@ TEST_CASE(
 }
 
 TEST_CASE(
+    "engine-view: view.player.walk_clip=none keeps the body at rest while it walks, and a name the "
+    "rig lacks plays its first clip") {
+  const std::string rig = rigged_figure();
+  if (rig.empty()) return;
+  const test::TempDir tmp("engine_view_player_clip");
+  const std::string scene = ground_scene(tmp);
+  const std::string walking = session(tmp, scene, 240, 0.6f, -0.1f, true, "walk.jsonl");
+  const std::string standing = session(tmp, scene, 240, 0.6f, -0.1f, false, "stand.jsonl");
+  const auto run_with = [&](const std::string& log, std::vector<std::string> extra) {
+    std::vector<std::string> args = replay(tmp, log, scene);
+    args.insert(args.end(), {"--player", rig});
+    args.insert(args.end(), extra.begin(), extra.end());
+    return run_view(args);
+  };
+  const Run played = run_with(walking, {});
+  if (unavailable(played)) return;
+  REQUIRE_MESSAGE(played.exit_code == 0, played.output);
+  const Run rest = run_with(walking, {"--tunable", "view.player.walk_clip=none"});
+  REQUIRE_MESSAGE(rest.exit_code == 0, rest.output);
+  const Run stood = run_with(standing, {});
+  REQUIRE_MESSAGE(stood.exit_code == 0, stood.output);
+  const Run lacking = run_with(walking, {"--tunable", "view.player.walk_clip=Sprint"});
+  REQUIRE_MESSAGE(lacking.exit_code == 0, lacking.output);
+  JsonValue a;
+  JsonValue b;
+  JsonValue c;
+  JsonValue d;
+  REQUIRE(summary_of(played, a));
+  REQUIRE(summary_of(rest, b));
+  REQUIRE(summary_of(stood, c));
+  REQUIRE(summary_of(lacking, d));
+  const JsonValue* with_clip = at(a, {"interactive", "player"});
+  const JsonValue* no_clip = at(b, {"interactive", "player"});
+  REQUIRE(with_clip != nullptr);
+  REQUIRE(no_clip != nullptr);
+  // The summary names the clip played; `none` where none plays (RiggedFigure has no idle).
+  CHECK(text(with_clip->find("walk_clip")) == "RiggedFigure/animation0");
+  CHECK(text(no_clip->find("walk_clip")) == "none");
+  CHECK(text(with_clip->find("idle_clip")) == "none");
+  // A name the rig lacks is today's behaviour: the first clip.
+  CHECK(text(at(d, {"interactive", "player", "walk_clip"})) == "RiggedFigure/animation0");
+  CHECK(write_json(*at(d, {"interactive", "player"})) == write_json(*with_clip));
+  // The walk is the same walk: the same placements, the same distance, the same ticks counted
+  // walking, and the body at the same place; only the pose differs.
+  CHECK(number(no_clip->find("places")) == 240.0);
+  CHECK(number(no_clip->find("places")) == number(with_clip->find("places")));
+  CHECK(number(no_clip->find("walking_ticks")) == number(with_clip->find("walking_ticks")));
+  CHECK(number(no_clip->find("walking_ticks")) > 100.0);
+  CHECK(write_json(*at(b, {"interactive", "player", "actor", "position"})) ==
+        write_json(*at(a, {"interactive", "player", "actor", "position"})));
+  CHECK(write_json(*at(b, {"interactive", "player", "actor", "yaw"})) ==
+        write_json(*at(a, {"interactive", "player", "actor", "yaw"})));
+  CHECK(text(at(b, {"interactive", "trajectory", "hash"})) ==
+        text(at(a, {"interactive", "trajectory", "hash"})));
+  CHECK(text(at(b, {"interactive", "player", "actor", "clip"})).empty());
+  // No clip advanced: the walking body's animation hash is a standing body's.
+  CHECK(number(at(c, {"interactive", "player", "walking_ticks"})) == 0.0);
+  CHECK(text(at(b, {"animation", "hash"})) == text(at(c, {"animation", "hash"})));
+}
+
+TEST_CASE(
     "engine-view: --player's body is seen looking down, its collapsed head is not seen looking "
     "ahead, and the head is without the collapse") {
   const std::string rig = rigged_figure();
