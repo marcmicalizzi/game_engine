@@ -14,13 +14,28 @@
 //
 // **Grow ahead, shrink late, never every frame.** The demand is known one to `frames_in_flight`
 // frames late (the renderer never reads a buffer back inside a frame), so the capacity keeps
-// `headroom` above it: it grows as soon as a frame's demand eats into half of that headroom, to the
-// demand plus the whole headroom rounded up to a `step`, and it shrinks only when a whole window of
-// `shrink_frames` frames has peaked below half of what it holds — to that peak plus the headroom.
-// Between those events nothing is allocated: a resize is a wait for the device and a new set of
-// buffers, which is a hitch, so it happens on a trend and not on a frame. Along the desert path the
-// demand moves by at most 1.7% a frame (docs/experiments/flythrough-desert-overlook.md), so a 25%
-// headroom is many frames of warning.
+// `headroom` above it: it grows as soon as a frame's demand eats into half of that headroom, and it
+// shrinks only when a whole window — `shrink_seconds` of wall time and `shrink_frames` frames, both
+// — has peaked below half of what it holds. Between those events nothing is allocated: a resize is
+// a new set of buffers, which is a hitch, so it happens on a trend and not on a frame. Along the
+// desert path the demand moves by at most 1.7% a frame
+// (docs/experiments/flythrough-desert-overlook.md), so a 25% headroom is many frames of warning.
+//
+// **A view that comes back regrows once, and a glance frees nothing** (roadmap R116, 2026-11-02;
+// docs/experiments/rt-capacity-2026-11-02.md). The policy remembers the largest capacity it held in
+// the last `peak_seconds` (a minute) or `peak_frames` frames, whichever is longer. A growth goes to
+// the larger of the demand plus the headroom and that peak, so the first growth after a shrink goes
+// straight back to what the chain held, and a shrink goes to the larger of the window's peak plus
+// the headroom and `floor_pct` of that peak (a half), so a shrink after a forest is to half the
+// forest's chain, and the chain halves at most once a minute while the frames keep wanting little.
+// Until then the window was 240 frames and the growth the demand plus the headroom: on the owner's
+// v25 walk the load's fast frames were a whole window three seconds after the start (336,348 →
+// 40,960), a look at the sea another (→ 12,288), and each way back grew in runs of five to eight
+// resizes a second behind a demand that grew faster than the headroom, 48 resizes of 30–153 ms
+// while 754 frames built less than they wanted. Wall time alone is not enough either way: a replay
+// of that walk whose ground took a second a frame made a ten-second window of 14 frames and forgot
+// a minute's peak within 90, so a window needs its frames too (the old 240), and a peak is kept for
+// its frames too (3,600, a minute at 60 a second).
 //
 // **The budget is a ceiling, and what happens above it is stated.** `limit` is the most the
 // capacity may reach (`RenderSettings::rt_budget_mib`, the `renderer.rt.budget_mib` tunable, or by
@@ -45,20 +60,32 @@
 namespace engine::renderer {
 
 struct RtCapacityConfig {
-  u32 limit = 0;          // the most the capacity may be, in clusters: the budget
-  u32 step = 4096;        // capacities are multiples of this (and at least one step)
-  u32 headroom_pct = 25;  // kept above the demand
-  u32 shrink_frames = 240;
+  u32 limit = 0;              // the most the capacity may be, in clusters: the budget
+  u32 step = 4096;            // capacities are multiples of this (and at least one step)
+  u32 headroom_pct = 25;      // kept above the demand
+  f64 shrink_seconds = 10.0;  // a shrink is judged by a window of this much wall time
+  f64 peak_seconds = 60.0;    // how long a capacity held is remembered: the regrowth and the floor
+  u32 floor_pct = 50;         // a shrink keeps at least this share of the peak
+  u32 shrink_frames = 240;    // a window also holds at least this many frames
+  u32 peak_frames = 3600;     // a capacity is also remembered for at least this many frames
 };
 
-// The `renderer.rt.*` tunables, read once: the budget in MiB, the headroom, the shrink window and
-// the step. `RenderSettings::rt_budget_mib` overrides the budget when it is not zero, and the
-// budget tunable overrides the device's rule (below) when it is not zero; 0, its default, follows
-// the device.
+// The `renderer.rt.*` tunables, read once: the budget in MiB, the headroom, the shrink window, the
+// peak's memory, the floor and the step. `RenderSettings::rt_budget_mib` overrides the budget when
+// it is not zero, and the budget tunable overrides the device's rule (below) when it is not zero;
+// 0, its default, follows the device.
 u32 rt_budget_mib_tunable() noexcept;
 u32 rt_headroom_pct_tunable() noexcept;
+f64 rt_shrink_seconds_tunable() noexcept;
+f64 rt_peak_seconds_tunable() noexcept;
+u32 rt_floor_pct_tunable() noexcept;
 u32 rt_shrink_frames_tunable() noexcept;
+u32 rt_peak_frames_tunable() noexcept;
 u32 rt_step_tunable() noexcept;
+// `renderer.rt.swap_resize` (true): a resize makes the new buffers while the frames in flight read
+// the old ones and frees those when they complete, instead of waiting for the device (R116;
+// `GpuScene::resize_ray_tracing`'s `retired`). Read at each resize; false is the comparison.
+bool rt_swap_resize_tunable() noexcept;
 // `renderer.rt.static_forms` (true): rigid distance forms keep structures built once
 // (`RenderSettings::rt_static_forms`; renderer.md, "Static structures for rigid forms").
 bool rt_static_forms_tunable() noexcept;
@@ -165,32 +192,63 @@ struct RtDropBlock {
 };
 void rt_drop_order(u32 prefix_slots, std::span<RtDropBlock> blocks, Vector<u32>& out);
 
+// Every time is wall time in seconds on one monotonic clock (the renderer's `time::monotonic_ns`),
+// so a test drives the policy with made-up times.
 class RtCapacity {
  public:
-  // Starts at `capacity` (clamped to the limit) with an empty shrink window.
-  void reset(const RtCapacityConfig& config, u32 capacity) noexcept;
-  // One completed frame wanted `wanted` structures. Returns the capacity the set should have from
-  // now on, which is `capacity()` unless this frame crossed a threshold; the caller resizes when
-  // the two differ and then calls `resized`.
-  u32 observe(u32 wanted) noexcept;
+  // Starts at `capacity` (clamped to the limit) at time `now`, with an empty shrink window; the
+  // capacity it starts at is held from `now`, like any other.
+  void reset(const RtCapacityConfig& config, u32 capacity, f64 now) noexcept;
+  // One completed frame wanted `wanted` structures, read at `now`. Returns the capacity the set
+  // should have from now on, which is `capacity()` unless this frame crossed a threshold; the
+  // caller resizes when the two differ and then calls `resized`.
+  u32 observe(u32 wanted, f64 now) noexcept;
   // The capacity that holds `wanted` with the headroom, rounded up to the step and clamped to the
-  // limit. What `observe` grows to.
+  // limit.
   u32 target(u32 wanted) const noexcept;
+  // What a growth for `wanted` goes to: `target(wanted)` or `peak(now)`, whichever is larger.
+  u32 grow_target(u32 wanted, f64 now) const noexcept;
+  // The largest capacity held at any time in the last `peak_seconds` before `now` or in the last
+  // `peak_frames` observed frames, whichever reaches further back, the current one included.
+  u32 peak(f64 now) const noexcept;
+  // The least a shrink at `now` may leave: `floor_pct` of `peak(now)`, rounded up to the step.
+  u32 floor(f64 now) const noexcept;
   // What a caller that must not drop anything this frame (a frame somebody waits for) grows to:
-  // `target(wanted)`, with the shrink window restarted from `wanted`, so the growth is not undone
-  // by a window that never saw the frame that asked for it.
-  u32 grow_to(u32 wanted) noexcept;
-  void resized(u32 capacity) noexcept;
+  // `grow_target(wanted, now)`, with the shrink window restarted from `wanted`, so the growth is
+  // not undone by a window that never saw the frame that asked for it.
+  u32 grow_to(u32 wanted, f64 now) noexcept;
+  void resized(u32 capacity, f64 now) noexcept;
+  // A new limit (the scene's union grew with its stride) and the capacity the scene holds after it,
+  // keeping the shrink window and the capacities held: a relayout is not a new scene.
+  void relimit(u32 limit, u32 capacity, f64 now) noexcept;
 
   u32 capacity() const noexcept { return capacity_; }
   u32 limit() const noexcept { return config_.limit; }
   const RtCapacityConfig& config() const noexcept { return config_; }
 
+  // The capacities held before the current one, newest last, each with the time it stopped being
+  // held. Only those that can still be the peak are kept — each larger than every one after it —
+  // so the bottom is the largest; a run of more than `k_held` falling capacities inside one
+  // `peak_seconds` forgets the oldest, which is also the first to expire.
+  static constexpr u32 k_held = 32;
+
  private:
+  void hold(u32 previous, f64 until) noexcept;
+  bool remembered(f64 until, u64 until_frame, f64 now) const noexcept;
+  struct Held {
+    u32 capacity = 0;
+    f64 until = 0.0;
+    u64 until_frame = 0;
+  };
   RtCapacityConfig config_;
   u32 capacity_ = 0;
   u32 window_peak_ = 0;
-  u32 window_frames_ = 0;
+  f64 window_start_ = 0.0;
+  u64 window_start_frame_ = 0;
+  u64 frames_ = 0;  // frames observed
+  Held held_[k_held] = {};
+  u32 held_first_ = 0;
+  u32 held_count_ = 0;
 };
 
 }  // namespace engine::renderer

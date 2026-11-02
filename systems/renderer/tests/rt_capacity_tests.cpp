@@ -2,8 +2,9 @@
 // memory"). Three things hold it:
 //
 // - the capacity policy's arithmetic, on the CPU: it grows ahead of the demand, shrinks only after
-//   a whole window has peaked below half of what it holds, rounds to its step, and never passes
-//   its limit;
+//   a whole window of wall time has peaked below half of what it holds, rounds to its step, and
+//   never passes its limit; and since R116 a growth goes back to the largest capacity of the last
+//   minute and a shrink keeps half of it, so a view that returns regrows once;
 // - a renderer whose chain shrinks to its frames and grows back **draws exactly what a renderer
 //   whose chain holds the whole scene draws**, colour and ids, frame after frame, while the camera
 //   moves between a cut that wants little and one that wants much — on the mesh path with traced
@@ -20,6 +21,7 @@
 // cases skip on a device without cluster acceleration structures and ray queries.
 #include <core/log/log.h>
 #include <domain/gfx/device.h>
+#include <domain/gfx/resources.h>
 #include <foundation/tunables/tunables.h>
 #include <systems/renderer/capture.h>
 #include <systems/renderer/flythrough.h>
@@ -263,8 +265,15 @@ TEST_CASE("rt capacity: grows ahead, shrinks late, steps, and stops at the limit
   config.step = 4096;
   config.headroom_pct = 25;
   config.shrink_frames = 8;
+  // R107's arithmetic alone: a window of frames with no seconds to it, and neither the peak's
+  // memory nor the floor (R116; the cases below hold those).
+  config.shrink_seconds = 0.0;
+  config.peak_seconds = 0.0;
+  config.peak_frames = 0;
+  config.floor_pct = 0;
   RtCapacity policy;
-  policy.reset(config, 65536);
+  f64 t = 0.0;
+  policy.reset(config, 65536, t);
   CHECK(policy.capacity() == 65536);
   CHECK(policy.target(1000) == 4096);     // 1,250 rounds up to one step
   CHECK(policy.target(4000) == 8192);     // 5,000 rounds up to two
@@ -272,29 +281,164 @@ TEST_CASE("rt capacity: grows ahead, shrinks late, steps, and stops at the limit
 
   // A window of frames that want little: nothing moves until the window is whole.
   for (u32 f = 0; f < 7; ++f)
-    CHECK(policy.observe(1000) == 65536);
-  const u32 shrunk = policy.observe(1000);
+    CHECK(policy.observe(1000, t += 1.0) == 65536);
+  const u32 shrunk = policy.observe(1000, t += 1.0);
   CHECK(shrunk == 4096);
-  policy.resized(shrunk);
+  policy.resized(shrunk, t);
 
   // Into the headroom but not past half of it: no growth. Past half of it: growth, to the demand
   // plus the whole headroom, in steps.
-  CHECK(policy.observe(3600) == 4096);     // 3,600 + 12.5% = 4,050 still fits
-  const u32 grown = policy.observe(3700);  // 4,162.5 does not
+  CHECK(policy.observe(3600, t += 1.0) == 4096);     // 3,600 + 12.5% = 4,050 still fits
+  const u32 grown = policy.observe(3700, t += 1.0);  // 4,162.5 does not
   CHECK(grown == 8192);
-  policy.resized(grown);
+  policy.resized(grown, t);
 
   // A demand that swings between two cuts settles on the larger: the window's peak is what a
   // shrink is judged by, and 3,300 with its headroom still rounds up to the 8,192 it holds.
   for (u32 f = 0; f < 32; ++f)
-    CHECK(policy.observe(f % 2 == 0 ? 500u : 3300u) == 8192);
+    CHECK(policy.observe(f % 2 == 0 ? 500u : 3300u, t += 1.0) == 8192);
 
   // Past the limit there is nothing to grow into: the capacity stops there and stays.
-  const u32 limited = policy.observe(250000);
+  const u32 limited = policy.observe(250000, t += 1.0);
   CHECK(limited == 100000);
-  policy.resized(limited);
-  CHECK(policy.observe(250000) == 100000);
+  policy.resized(limited, t);
+  CHECK(policy.observe(250000, t += 1.0) == 100000);
   CHECK(policy.capacity() == 100000);
+}
+
+// R116's rules, from the owner's v25 walk (docs/experiments/rt-capacity-2026-11-02.md): the
+// defaults, a limit of the RTX 5090's budget, and frames at 60 a second unless a case says.
+namespace {
+
+RtCapacityConfig v25_config() {
+  RtCapacityConfig config;
+  config.limit = 336348;
+  return config;
+}
+
+// Feeds `frames` frames of `wanted`, `dt` seconds apart, from `t`, and resizes on every answer the
+// way the renderer does; counts the growths and shrinks.
+struct Driven {
+  RtCapacity policy;
+  f64 t = 0.0;
+  u32 grows = 0;
+  u32 shrinks = 0;
+  u32 least = ~u32{0};
+  void run(u32 wanted, u32 frames, f64 dt = 1.0 / 60.0) {
+    for (u32 f = 0; f < frames; ++f) {
+      t += dt;
+      const u32 before = policy.capacity();
+      const u32 next = policy.observe(wanted, t);
+      if (next != before) {
+        grows += next > before ? 1u : 0u;
+        shrinks += next < before ? 1u : 0u;
+        // A shrink never takes away what the frame that asked for it built, with half the headroom.
+        if (next < before) CHECK(u64{next} * 200 >= u64{wanted} * 225);
+        policy.resized(next, t);
+      }
+      least = std::min(least, policy.capacity());
+    }
+  }
+};
+
+}  // namespace
+
+TEST_CASE("rt capacity: a demand that falls to a tenth and returns regrows once, to the peak") {
+  Driven drive;
+  drive.policy.reset(v25_config(), 65536, 0.0);
+  // The forest: one growth, to 200,000 and its headroom.
+  drive.run(200000, 30 * 60);
+  const u32 forest = drive.policy.capacity();
+  CHECK(forest == 253952);  // 250,000 rounded up to the step
+  CHECK(drive.grows == 1);
+
+  // A second at a tenth of it — a glance at the sky — frees nothing: the window is ten seconds.
+  drive.run(20000, 60);
+  drive.run(200000, 60);
+  CHECK(drive.shrinks == 0);
+  CHECK(drive.grows == 1);
+  CHECK(drive.policy.capacity() == forest);
+
+  // Twenty-five seconds at a tenth — a look at the sea — holds a whole window: one shrink, to the
+  // floor.
+  drive.run(20000, 25 * 60);
+  CHECK(drive.shrinks == 1);
+  CHECK(drive.policy.capacity() == 126976);  // half the forest's, rounded up to the step
+  CHECK(drive.policy.capacity() == drive.policy.floor(drive.t));
+
+  // And back: the demand climbs faster than the headroom (the walk's 47,773 → 58,308 → 205,282),
+  // which grew in a staircase of resizes; now the first growth goes straight to the peak.
+  const u32 grows = drive.grows;
+  for (const u32 wanted : {40000u, 60000u, 120000u, 200000u, 210000u})
+    drive.run(wanted, 1);
+  drive.run(200000, 60);
+  CHECK(drive.grows == grows + 1);
+  CHECK(drive.policy.capacity() == forest);
+}
+
+TEST_CASE("rt capacity: a window of fast frames does not shrink") {
+  // A streamed world's load draws frames that want little as fast as it can; 240 of them were a
+  // whole window three seconds after the owner's v25 walk began (336,348 → 40,960).
+  Driven drive;
+  drive.policy.reset(v25_config(), 336348, 0.0);
+  drive.run(31447, 2000, 0.001);  // two seconds of 1 ms frames
+  CHECK(drive.shrinks == 0);
+  CHECK(drive.policy.capacity() == 336348);
+  // A whole window of wall time is: to half of what the chain held, not to the load's demand.
+  drive.run(31447, 9000, 0.001);
+  CHECK(drive.shrinks == 1);
+  CHECK(drive.policy.capacity() == 172032);  // 168,174 rounded up to the step
+  // And the world arriving grows it once, back to what it held.
+  drive.run(54701, 1);
+  drive.run(206379, 1);
+  drive.run(206379, 60);
+  CHECK(drive.grows == 1);
+  CHECK(drive.policy.capacity() == 336348);
+
+  // Nor does a handful of slow frames — a replay whose ground took a second a frame made a window
+  // of ten seconds out of 14 frames — and a peak is kept for its frames as well as its minute.
+  // 200 s of frames wanting little: the window that closes in them began in the forest's frames,
+  // and the next is twenty frames old.
+  drive.run(20000, 200, 1.0);
+  CHECK(drive.shrinks == 1);
+  drive.run(20000, 250, 1.0);  // a whole window of them now, to half of what it held
+  CHECK(drive.shrinks == 2);
+  CHECK(drive.policy.capacity() == 172032);
+  drive.run(20000, 100, 1.0);  // 130 s on: the peak is past its minute but not its 3,600 frames
+  drive.run(206379, 1, 1.0);
+  CHECK(drive.grows == 2);
+  CHECK(drive.policy.capacity() == 336348);
+}
+
+TEST_CASE("rt capacity: the floor holds half the last minute's peak, and halves once a minute") {
+  Driven drive;
+  drive.policy.reset(v25_config(), 65536, 0.0);
+  drive.run(260000, 20 * 60);
+  const u32 forest = drive.policy.capacity();
+  CHECK(forest == 327680);  // 325,000 rounded up to the step
+  // Nothing in view for ten minutes: the chain gives half back at the first window, and half of
+  // what is left once the minute in which it held more is over, and so on down to the demand.
+  Vector<u32> capacities;
+  Vector<f64> times;
+  for (u32 f = 0; f < 600 * 60; ++f) {
+    const u32 before = drive.policy.capacity();
+    drive.run(1000, 1);
+    if (drive.policy.capacity() != before) {
+      capacities.push_back(drive.policy.capacity());
+      times.push_back(drive.t);
+    }
+  }
+  REQUIRE(capacities.size() >= 2);
+  CHECK(drive.grows == 1);
+  CHECK(capacities[0] == forest / 2);        // 163,840: the floor, not the demand's 4,096
+  CHECK(times[0] - 20.0 <= 2 * 10.0 + 0.1);  // the first whole window after the fall
+  for (u32 i = 1; i < capacities.size(); ++i) {
+    CAPTURE(i);
+    CHECK(capacities[i] < capacities[i - 1]);
+    CHECK(u64{capacities[i]} * 2 >= capacities[i - 1]);  // never below half of what it held
+    CHECK(times[i] - times[i - 1] >= 60.0);              // and that held for a minute
+  }
+  CHECK(drive.policy.capacity() == drive.policy.target(1000));  // and in the end the demand
 }
 
 TEST_CASE("rt capacity: removing the last untraced tile restores the frame estimate") {
@@ -526,10 +670,15 @@ TEST_CASE("rt capacity: a chain sized by the frame draws what a chain sized by t
       REQUIRE_MESSAGE(whole.build(device, settings, error), error);
     }
     // The frame-sized one: a window of four frames, no headroom and a step of 64 clusters, so it
-    // shrinks onto its cut at once and has to grow for every cut larger than the last.
+    // shrinks onto its cut at once and has to grow for every cut larger than the last — with R116's
+    // seconds, floor and memory of a peak switched off, which would hold it at the first cut's.
     Rig frame;
     {
       ScopedTunable soon("renderer.rt.shrink_frames", "4");
+      ScopedTunable no_seconds("renderer.rt.shrink_seconds", "0");
+      ScopedTunable no_floor("renderer.rt.floor_pct", "0");
+      ScopedTunable no_peak("renderer.rt.peak_seconds", "0");
+      ScopedTunable no_peak_frames("renderer.rt.peak_frames", "0");
       ScopedTunable tight("renderer.rt.headroom_pct", "0");
       ScopedTunable fine("renderer.rt.step_clusters", "64");
       REQUIRE_MESSAGE(frame.build(device, settings, error), error);
@@ -968,6 +1117,97 @@ TEST_CASE("rt cache: a frame wanting more than the cache holds builds the rest i
     CHECK(rt.built == rt.wanted);  // ... all of them: the frame's own set had the room
     CHECK(differ.colour == 0);
     CHECK(differ.ids == 0);
+  }
+  device.destroy();
+}
+
+// ---- the resize swapped at a frame boundary (renderer.md, "The ray tracing chain's memory"; R116)
+
+// A chain that resizes while frames are in flight — its new buffers made beside the old ones,
+// swapped in at the frame boundary, the old ones freed once the frames that imported them have
+// completed — draws exactly what a chain that never resizes draws, and never stops for the device
+// to do it; the same chain resized by waiting (`renderer.rt.swap_resize=false`, every resize
+// before R116) stops once a resize. Frames go in flight two at a time, as a window's do: the
+// demand of a frame reaches the policy two frames later, so every resize here is made while the
+// frames before it are still running.
+TEST_CASE(
+    "rt capacity: a resize swapped in while frames are in flight draws what a whole chain draws") {
+  gfx::Device device;
+  std::string error;
+  if (!device.create(gfx::DeviceOptions{}, &error) || !traces(device)) {
+    MESSAGE("tracing unavailable: " << error);
+    return;
+  }
+  // The per-frame chain: with the cache the rigid grid builds nothing per frame to resize.
+  ScopedTunable per_frame("renderer.rt.cache", "false");
+  for (const RasterMode raster : {RasterMode::RayTrace, RasterMode::Hardware}) {
+    RenderSettings settings;
+    settings.raster = raster;
+    settings.shadows = ShadowMode::RayTraced;
+    Rig whole;
+    {
+      ScopedTunable never("renderer.rt.shrink_seconds", "86400");
+      REQUIRE_MESSAGE(whole.build(device, settings, error), error);
+    }
+    for (const bool swap : {true, false}) {
+      CAPTURE(swap);
+      // Resizing on every cut, as the frame-sized case above: no window, floor, memory of a peak
+      // or headroom, and a step of 64 clusters.
+      Rig moving;
+      {
+        ScopedTunable soon("renderer.rt.shrink_seconds", "0");
+        ScopedTunable one("renderer.rt.shrink_frames", "1");
+        ScopedTunable no_floor("renderer.rt.floor_pct", "0");
+        ScopedTunable no_peak("renderer.rt.peak_seconds", "0");
+        ScopedTunable no_peak_frames("renderer.rt.peak_frames", "0");
+        ScopedTunable tight("renderer.rt.headroom_pct", "0");
+        ScopedTunable fine("renderer.rt.step_clusters", "64");
+        REQUIRE_MESSAGE(moving.build(device, settings, error), error);
+      }
+      ScopedTunable swapping("renderer.rt.swap_resize", swap ? "true" : "false");
+      const f32 distances[] = {9.0f, 1.4f, 9.0f, 0.8f, 5.0f, 1.4f};
+      u64 frame_index = 0;
+      u64 waits = 0;
+      u32 resizes = 0;
+      Pictures differ;
+      for (const f32 distance : distances) {
+        const u32 before = moving.renderer.stats().rt.grows + moving.renderer.stats().rt.shrinks;
+        const u64 waited = gfx::device_waits_on_thread();
+        for (u32 k = 0; k < 6; ++k, ++frame_index) {
+          moving.renderer.begin_frame();
+          REQUIRE_MESSAGE(moving.renderer.submit_frame(frame_at(moving.data, distance, frame_index),
+                                                       &error) != 0,
+                          error);
+        }
+        waits += gfx::device_waits_on_thread() - waited;
+        resizes += moving.renderer.stats().rt.grows + moving.renderer.stats().rt.shrinks - before;
+        // The next frame with the last six still running, and the whole chain's of the same pose.
+        CapturedFrame a;
+        CapturedFrame b;
+        REQUIRE_MESSAGE(whole.renderer.capture(frame_at(whole.data, distance, frame_index),
+                                               {.color = true, .ids = true}, a, &error),
+                        error);
+        REQUIRE_MESSAGE(moving.renderer.capture(frame_at(moving.data, distance, frame_index),
+                                                {.color = true, .ids = true}, b, &error),
+                        error);
+        ++frame_index;
+        const Pictures d = compare(a, b);
+        differ.colour += d.colour;
+        differ.ids += d.ids;
+      }
+      MESSAGE(std::string(raster_name(raster))
+              << std::string(swap ? " swapped" : " waited") << ": " << resizes
+              << " resizes in flight, " << waits << " stops for the device, " << differ.colour
+              << " colour bytes and " << differ.ids << " id words differ from the whole chain");
+      CHECK(resizes > 0);  // the case: the chain did resize between frames in flight
+      CHECK(differ.colour == 0);
+      CHECK(differ.ids == 0);
+      if (swap) {
+        CHECK(waits == 0);  // and never waited for the device to do it
+      } else {
+        CHECK(waits >= resizes);  // the comparison: every waited resize stops once
+      }
+    }
   }
   device.destroy();
 }
