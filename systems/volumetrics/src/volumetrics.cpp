@@ -1004,8 +1004,11 @@ bool MediumPass::ensure_buffers(const renderer::FramePassContext& context, std::
       }
     }
   }
+  // The grids a view holds: its cells' light and extinction, and with fires the scatter x
+  // transmittance grid after all views' (the per-pixel fire light, R117).
   const u64 cells = u64{options_.froxels_x} * options_.froxels_y * options_.froxels_z;
-  return gfx::create_buffer(*device_, cells * 8 * views_, k_address, false, froxels_, error);
+  const u64 grids = (sources_ & k_source_fire) != 0 ? 2u : 1u;
+  return gfx::create_buffer(*device_, cells * 8 * views_ * grids, k_address, false, froxels_, error);
 }
 
 f64 MediumPass::corner_height(i64 x, i64 z) {
@@ -1152,6 +1155,8 @@ bool MediumPass::record(const renderer::FramePassContext& c, std::string* error)
       p.fire_count = stats_.fires;
       p.fire_near = near_fires;
       p.fire_terms = Vec4{k_smoke_albedo, static_cast<f32>(k_flame_steps), 0.0f, 0.0f};
+      if (options_.near_fire_light && near_fires > 0)
+        p.fire_scatter = froxels_.address + cells * 8 * (u64{views_} + v);
     }
     if (stats_.plume_segments > 0) {
       p.plumes = plumes_->segment_buffers[c.slot].address;

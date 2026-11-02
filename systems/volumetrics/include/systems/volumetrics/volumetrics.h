@@ -343,6 +343,11 @@ struct MediumOptions {
   // Draw the frame's fires (R85) in the medium. Off, the medium draws as if the scene had none (the
   // fires' lights stay in the resolve's array: they are the renderer's).
   bool fires = true;
+  // The near fires' light scattered in the air, taken along each pixel's own ray (R117, `near_fire_light`
+  // in the shader). Off, the froxels alone carry it, as before R117: a point light's inverse square
+  // across a cell near the fire is drawn as blocks. It exists for the test that shows that, and for
+  // measuring what the per-pixel term costs.
+  bool near_fire_light = true;
   // The froxel grid and its slices; zero takes the tunables (`volumetrics.froxels.*`).
   u32 froxels_x = 0;
   u32 froxels_y = 0;
@@ -404,7 +409,8 @@ struct MediumParams {
   u32 fire_count = 0;
   u32 fire_near = 0;  // how many of them the apply marches as a near flame
   Vec4 fire_terms;    // x the smoke's albedo, y the near flames' steps
-  u32 pad[12] = {};
+  u64 fire_scatter = 0;  // uint2[x * y * z]: this view's scatter x transmittance grid (R117), 0 without
+  u32 pad[10] = {};
 };
 
 inline constexpr u32 k_source_dust = 1u;

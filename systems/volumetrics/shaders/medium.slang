@@ -83,7 +83,8 @@ struct MediumParams {
   uint fire_count;
   uint fire_near;         // how many of them the apply marches as a near flame
   float4 fire_terms;      // x the smoke's albedo, y the near flames' steps, zw unused
-  uint4 pad[3];
+  uint64_t fire_scatter;  // uint2[x * y * z]: this view's scatter x transmittance grid, 0 without near fires (R117)
+  uint pad[10];
 };
 
 struct MediumPush {
@@ -668,9 +669,39 @@ float smoke_density(MediumFire f, float3 x) {
   return f.smoke.x * (r0 / sigma) * (r0 / sigma) * fade * rise_in * exp(-0.5 * across);
 }
 
+// ---- the near fires' light in the air, per pixel (R117) ------------------------------------------
+//
+// volumetrics.md, "Fire". A fire's light is a point light's windowed inverse square, and a froxel
+// takes it at its centre: but the froxel is a cell 13% of its distance deep and a few centimetres
+// to a metre across, and near the light (the ray's closest approach D within a cell's depth of it)
+// the light changes by a factor of many across one cell. The trilinear reconstruction of cell
+// centres then draws it as blocks (the owner's rectangles, v25). The scatterer is smooth, the
+// light is not, so **the light is taken per pixel and the scatterer from the froxels**: the fill
+// writes each cell's scatter per metre (`fire_scatter`, beside the froxels) and the integration
+// turns it into scatter x the transmittance to the cell's middle, and the apply integrates the
+// fire's light against that along the pixel's own ray, in the angle the ray subtends at the light
+// (the substitution t = t_c + D tan(a) of Sun, Ramamoorthi, Narasimhan & Nayar 2005's airlight
+// integral, which makes 1 / d^2 flat and leaves only the smooth factors to sample).
+static const uint k_fire_light_samples = 12;
+// The per-pixel term's weight is 1 within `inner` slice depths (at the fire) of the light and falls
+// to 0 at `outer`: past it a cell holds the light's gradient to a few per cent.
+static const float k_fire_light_inner = 2.0;
+static const float k_fire_light_outer = 5.0;
+
+// How much of fire `f`'s in-scatter along a ray `dir` the apply takes per pixel: the march's share
+// of the fire (by the eye's distance, so the hand-over in distance is the flame's) times 1 within the
+// ray's closest approach to the light being a few froxel depths there. The fill takes the rest.
+float fire_pixel_weight(MediumParams* p, MediumFire f, float3 dir) {
+  if (p->fire_scatter == 0 || f.ids.y == 0) return 0.0;
+  const float3 at = f.light.xyz;
+  const float depth = length(at) * (exp(p->slices.z / float(p->grid.z)) - 1.0);
+  const float across = length(cross(dir, at));
+  return f.emission.w * (1.0 - smoothstep(k_fire_light_inner * depth, k_fire_light_outer * depth, across));
+}
+
 // The fires' light arriving at a point, raw, through the phase towards the eye along `dir`: the
 // resolve's windowed inverse square (brdf.slang's `brdf_distance_attenuation`), no closer than the
-// flame's radius, unshadowed.
+// flame's radius, unshadowed. The share of a fire the apply takes per pixel is left out (R117).
 float3 fire_light(MediumParams* p, float3 x, float3 dir) {
   MediumFire* fires = (MediumFire*)p->fires;
   float3 sum = float3(0.0);
@@ -683,9 +714,79 @@ float3 fire_light(MediumParams* p, float3 x, float3 dir) {
     const float ratio = d2 / (reach * reach);
     const float window = 1.0 - ratio * ratio;
     const float mu = dot(to, dir) * rsqrt(max(dot(to, to), 1.0e-8));
-    sum += f.light_rgb.rgb * (window * window / d2 * hg_phase(mu, p->dust_albedo.w));
+    sum += (1.0 - fire_pixel_weight(p, f, dir)) *
+           (f.light_rgb.rgb * (window * window / d2 * hg_phase(mu, p->dust_albedo.w)));
   }
   return sum;
+}
+
+// The scatter grid at a pixel's froxel coordinate `uv` and a distance `t`: the cells' scatter per
+// metre times the transmittance to them, trilinear between cell centres (the froxel at slice k
+// stands at slice coordinate k + 1/2).
+float3 fire_scatter_at(MediumParams* p, float2 uv, float t) {
+  const float2 c = clamp(uv - 0.5, float2(0.0), float2(float(p->grid.x) - 1.0, float(p->grid.y) - 1.0));
+  const uint2 c0 = uint2(c);
+  const uint2 c1 = min(c0 + 1, uint2(p->grid.x - 1, p->grid.y - 1));
+  const float2 f = c - float2(c0);
+  const float z = clamp(log(max(t, p->slices.x) / p->slices.x) * p->slices.w - 0.5, 0.0, float(p->grid.z - 1));
+  const uint k0 = uint(floor(z));
+  const uint k1 = min(k0 + 1, p->grid.z - 1);
+  const float fz = z - float(k0);
+  uint2* cells = (uint2*)p->fire_scatter;
+  float3 sum = float3(0.0);
+  for (uint corner = 0; corner < 4; ++corner) {
+    const uint2 cc = uint2((corner & 1) != 0 ? c1.x : c0.x, (corner & 2) != 0 ? c1.y : c0.y);
+    const float w = ((corner & 1) != 0 ? f.x : 1.0 - f.x) * ((corner & 2) != 0 ? f.y : 1.0 - f.y);
+    const float3 v0 = unpack_halves(cells[(k0 * p->grid.y + cc.y) * p->grid.x + cc.x]).rgb;
+    const float3 v1 = unpack_halves(cells[(k1 * p->grid.y + cc.y) * p->grid.x + cc.x]).rgb;
+    sum += w * lerp(v0, v1, fz);
+  }
+  return sum;
+}
+
+// **The near fires' light scattered along the pixel's own ray**, exposed, to `limit`: for each fire
+// with a weight, the ray from its closest approach to the light out to the light's reach on both
+// sides (cut at the eye and at `limit`), `k_fire_light_samples` midpoints equal in the angle a ray
+// point subtends at the light as seen from the closest approach (so the sampling is dense where the
+// light is strong and sparse where it is faint, whatever the ray's distance from it), each taking
+// the scatter x transmittance the froxels hold there, the light and its phase exactly. A function of
+// the pixel's ray alone: no jitter, no frame.
+float3 near_fire_light(MediumParams* p, float3 dir, float limit, float2 uv) {
+  MediumFire* fires = (MediumFire*)p->fires;
+  float3 sum = float3(0.0);
+  for (uint i = 0; i < p->fire_count; ++i) {
+    const MediumFire f = fires[i];
+    const float weight = fire_pixel_weight(p, f, dir);
+    if (weight <= 0.0) continue;
+    const float3 at = f.light.xyz;
+    const float reach = f.light.w;
+    const float tc = dot(at, dir);
+    const float d2 = max(dot(at, at) - tc * tc, 0.0);
+    if (d2 >= reach * reach) continue;
+    const float chord = sqrt(reach * reach - d2);
+    const float ta = max(tc - chord, 0.0);
+    const float tb = min(tc + chord, limit);
+    if (!(tb > ta)) continue;
+    // The closest approach stands no nearer than the flame's radius: the light is flat inside it.
+    const float h = max(sqrt(d2), f.base.w);
+    const float a0 = atan((ta - tc) / h);
+    const float a1 = atan((tb - tc) / h);
+    const float da = (a1 - a0) / float(k_fire_light_samples);
+    float3 acc = float3(0.0);
+    for (uint k = 0; k < k_fire_light_samples; ++k) {
+      const float u = tan(a0 + (float(k) + 0.5) * da);
+      const float t = tc + h * u;
+      const float dt = h * (1.0 + u * u) * da;
+      const float3 to = at - dir * t;
+      const float dd = max(dot(to, to), f.base.w * f.base.w);
+      const float ratio = dd / (reach * reach);
+      const float window = 1.0 - ratio * ratio;
+      const float mu = dot(to, dir) * rsqrt(max(dot(to, to), 1.0e-8));
+      acc += fire_scatter_at(p, uv, t) * (window * window / dd * hg_phase(mu, p->dust_albedo.w) * dt);
+    }
+    sum += weight * f.light_rgb.rgb * acc;
+  }
+  return sum * frame_exposure(p);
 }
 
 // Abramowitz & Stegun 7.1.26 (|error| < 1.5e-7); volumetrics.cpp's `erf_approx`.
@@ -923,6 +1024,10 @@ void froxel_fill_main(uint3 id : SV_DispatchThreadID) {
   if (fires) light += emission * frame_exposure(p);
   const uint index = (id.z * p->grid.y + id.y) * p->grid.x + id.x;
   ((uint2*)p->froxels)[index] = pack_halves(float4(light, sigma));
+  // The scatter per metre beside it, for the apply's per-pixel fire light (R117): the integration
+  // makes it scatter x transmittance.
+  if (fires && p->fire_scatter != 0 && p->fire_near != 0)
+    ((uint2*)p->fire_scatter)[index] = pack_halves(float4(scatter, 0.0));
 }
 
 // ---- (b) the integration -----------------------------------------------------------------------
@@ -939,6 +1044,8 @@ void froxel_integrate_main(uint3 id : SV_DispatchThreadID) {
   float3 light = float3(0.0);
   float transmittance = 1.0;
   uint2* cells = (uint2*)p->froxels;
+  const bool near_fires = p->fire_scatter != 0 && p->fire_near != 0;
+  uint2* scatter = (uint2*)p->fire_scatter;
   for (uint k = 0; k < p->grid.z; ++k) {
     const uint index = (k * p->grid.y + id.y) * p->grid.x + id.x;
     const float4 cell = unpack_halves(cells[index]);
@@ -946,6 +1053,9 @@ void froxel_integrate_main(uint3 id : SV_DispatchThreadID) {
     const float s = cell.w;
     const float slice_t = exp(-s * length);
     const float3 added = s > 1.0e-7 ? cell.rgb * (1.0 - slice_t) / s : cell.rgb * length;
+    // The scatter x the transmittance to the cell's middle, for the per-pixel fire light (R117).
+    if (near_fires)
+      scatter[index] = pack_halves(float4(unpack_halves(scatter[index]).rgb * (transmittance * exp(-0.5 * s * length)), 0.0));
     light += transmittance * added;
     transmittance *= slice_t;
     cells[index] = pack_halves(float4(light, transmittance));
@@ -1024,6 +1134,9 @@ void medium_apply_main(uint3 id : SV_DispatchThreadID) {
   const float4 inside = integrated_at(p, uv, s);
   float3 light = inside.rgb;
   float transmittance = inside.a;
+  // The near fires' light in the air along this pixel's own ray (R117), where the fill left it out.
+  if ((p->grid.w & k_source_fire) != 0 && p->fire_near != 0 && p->fire_scatter != 0)
+    light += near_fire_light(p, dir, min(distance, far), uv);
   if (distance > far && (p->grid.w & k_source_dust) != 0) {
     const float tau = dust_optical_depth(p, dir.y, far, distance);
     const float tail_t = exp(-min(tau, 80.0));
