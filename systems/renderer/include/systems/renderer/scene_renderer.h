@@ -752,6 +752,16 @@ class SceneRenderer {
   bool move_instances(std::span<const u32> indices, std::span<const SceneInstance> placements,
                       std::string* error = nullptr);
 
+  // **One loaded instance's static morph weights** (renderer.md, "Morphed instances"; roadmap P52):
+  // `weights[c]` for channel c of the instance's mesh, the rest at 0 — the shape it keeps, beside
+  // the scene's `RenderSettings::morph_static_weights` that every instance of a mesh shares. The
+  // next frame rebuilds that instance's static shape cache (one dispatch over its mesh) and the
+  // frames after it pay nothing; its cull padding is priced from the new weights. Refused, with
+  // nothing written, for an instance with no morph channels or more weights than it has. Never
+  // between `begin_frame` and `submit_frame`.
+  bool set_instance_morph_weights(u32 instance, std::span<const f32> weights,
+                                  std::string* error = nullptr);
+
   // The far forest's hand-off (renderer.md, "The far forest"): which far tiles are drawn now.
   const FarForestHandOff& far_forest() const noexcept { return far_forest_; }
 

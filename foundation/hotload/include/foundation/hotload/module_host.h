@@ -128,6 +128,13 @@ struct GameServices {
   Result (*actor_place_aligned)(void* user, u32 actor, const f64* position, f32 yaw, const f32* up,
                                 f32 max_tilt_rad) = nullptr;
   Result (*ground_sample)(void* user, f64 x, f64 z, GroundSample& io) = nullptr;
+  // ABI 9 (module_abi.h): an actor's shape. The host checks the pointers and a `MorphInfo`'s size,
+  // and copies the answer back only as far as the module's; the values (a count against the mesh's
+  // channels, a weight's and a scale's range) are the runner's to judge. Null, each answers
+  // `Unsupported`.
+  Result (*actor_morph)(void* user, u32 actor, const f32* weights, u32 count) = nullptr;
+  Result (*actor_scale)(void* user, u32 actor, f32 scale) = nullptr;
+  Result (*actor_morph_info)(void* user, u32 actor, MorphInfo& io) = nullptr;
 };
 
 struct HostConfig {

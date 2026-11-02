@@ -2230,6 +2230,9 @@ bool GpuScene::create_morph(const ResolvedSettings& resolved, std::string* error
   // conservative in the honest direction — a sphere too big draws a cluster that might have been
   // culled, a sphere too small drops a limb off the screen — and it is a per-instance float, so
   // tightening it later costs nothing to anyone.
+  static_cache_pending_.assign(deform_descs_.size(), u8{0});
+  static_cache_rebuild_.assign(deform_descs_.size(), u8{0});
+  morph_base_padding_.assign(deform_descs_.size(), 0.0f);
   for (u32 d = 0; d < deform_descs_.size(); ++d) {
     const gfx::DeformDesc& desc = deform_descs_[d];
     if (desc.channel_count == 0) continue;
@@ -2244,8 +2247,12 @@ bool GpuScene::create_morph(const ResolvedSettings& resolved, std::string* error
       padding += (magnitude + 1.0f) * channel.max_displacement;
     }
     gfx::InstanceDesc& instance = instance_table_[deform_instance_[d]];
+    morph_base_padding_[d] = instance.bounds_padding;
     instance.bounds_padding += padding;
   }
+  // `set_static_weights` above marked every entry before the vectors were sized: mark them now.
+  for (u32 d = 0; d < deform_descs_.size(); ++d)
+    static_cache_pending_[d] = 1;
   // Re-upload the table now that the caches and the weights are on it. A morphed scene needs the
   // **per-frame** table even when nothing is skinned, because the pose weights live in a per-slot
   // region and the record has to point at this slot's. A skinned scene already has one; this is
@@ -2275,7 +2282,74 @@ void GpuScene::set_static_weights(std::span<const f32> weights) {
         statics[c] = first + c < weights.size() ? weights[first + c] : 0.0f;
     }
   }
+  for (u8& pending : static_cache_pending_)
+    pending = 1;
   static_cache_dirty_ = true;
+}
+
+u32 GpuScene::instance_morph_channels(u32 instance) const noexcept {
+  if (morph_channel_count_ == 0 || instance >= instance_table_.size()) return 0;
+  const u32 d = instance_table_[instance].deform;
+  // The weights' regions hold the load's entries (`morph_weight_floats`); a tail's have none.
+  return d < deform_descs_.size() && d < load_deforms_ && deform_instance_[d] == instance
+             ? deform_descs_[d].channel_count
+             : 0u;
+}
+
+bool GpuScene::set_instance_static_weights(u32 instance, std::span<const f32> weights,
+                                           std::string* error) {
+  const u32 channels = instance_morph_channels(instance);
+  if (channels == 0 || morph_weights.mapped == nullptr) {
+    if (error != nullptr)
+      *error = "instance " + std::to_string(instance) + " has no morph channels";
+    return false;
+  }
+  if (weights.size() > channels) {
+    if (error != nullptr) {
+      *error = std::to_string(weights.size()) + " weights for instance " +
+               std::to_string(instance) + "'s " + std::to_string(channels) + " morph channels";
+    }
+    return false;
+  }
+  const u32 d = instance_table_[instance].deform;
+  // Every slot, as `set_static_weights` writes them: a slot the frame loop has not reached yet
+  // must already hold the new shape. Only this entry's static half; every other instance keeps its.
+  for (u32 slot = 0; slot < k_joint_slots; ++slot) {
+    f32* statics = morph_weight_slot(slot) + u64{d} * 2 * morph_channel_count_;
+    for (u32 c = 0; c < channels; ++c)
+      statics[c] = c < weights.size() ? weights[c] : 0.0f;
+  }
+  // The cull's padding from the new static weights, priced as the load priced it: |static| + 1 (the
+  // pose half at its range) times each channel's reach, on the instance's padding before any morph.
+  const geometry::ClusterMesh& mesh = data_->lod.mesh;
+  const gfx::DeformDesc& desc = deform_descs_[d];
+  f32 padding = 0.0f;
+  for (u32 c = 0; c < channels; ++c) {
+    const f32 weight = c < weights.size() ? weights[c] : 0.0f;
+    const f32 magnitude = weight < 0.0f ? -weight : weight;
+    padding += (magnitude + 1.0f) * mesh.morph_channels[desc.first_channel + c].max_displacement;
+  }
+  if (d < morph_base_padding_.size()) {
+    instance_table_[instance].bounds_padding = morph_base_padding_[d] + padding;
+    mark_instance_written(instance);
+  }
+  if (d < static_cache_pending_.size()) static_cache_pending_[d] = 1;
+  static_cache_dirty_ = true;
+  return true;
+}
+
+u32 GpuScene::take_static_cache_rebuilds() noexcept {
+  u32 rebuilds = 0;
+  for (u32 d = 0; d < static_cache_rebuild_.size(); ++d) {
+    const bool due = d < static_cache_pending_.size() && static_cache_pending_[d] != 0 &&
+                     d < deform_descs_.size() && deform_descs_[d].cache != 0;
+    static_cache_rebuild_[d] = due ? u8{1} : u8{0};
+    if (due) ++rebuilds;
+  }
+  for (u8& pending : static_cache_pending_)
+    pending = 0;
+  static_cache_dirty_ = false;
+  return rebuilds;
 }
 
 // **The trees' device side** (renderer.md, "The flora stage"): the scene's motion vertex stream —
@@ -5349,6 +5423,9 @@ void GpuScene::destroy() noexcept {
   morph_channel_count_ = static_cached_instances_ = 0;
   static_cache_bytes_ = 0;
   static_cache_dirty_ = false;
+  static_cache_pending_.clear();
+  static_cache_rebuild_.clear();
+  morph_base_padding_.clear();
   device_ = nullptr;
   data_ = nullptr;
   cluster_count_ = leaf_count_ = instance_count_ = pair_count_ = material_count_ = 0;

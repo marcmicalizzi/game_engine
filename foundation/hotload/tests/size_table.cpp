@@ -14,9 +14,11 @@ ENGINE_EXPECT_SIZE(48, 8, hotload::Value);
 // world (props, the walker, sound), 80 bytes of function pointers after them (216); ABI 4 the HUD's
 // elements and the graphics state, four more (248); ABI 5 the seven actor entries and the ground
 // query, eight more (312); ABI 6 the HUD's images and fonts, two more (328); ABI 8 the aligned
-// placement and the ground sample, two more (344). A module built against 3 reads the first 216,
-// one against 4 the first 248, one against 5 the first 312, one against 6 or 7 the first 328.
-ENGINE_EXPECT_SIZE(344, 8, hotload::HostApi);
+// placement and the ground sample, two more (344); ABI 9 an actor's shape — its morph weights, its
+// scale and its channels' names — three more (368). A module built against 3 reads the first 216,
+// one against 4 the first 248, one against 5 the first 312, one against 6 or 7 the first 328, one
+// against 8 the first 344.
+ENGINE_EXPECT_SIZE(368, 8, hotload::HostApi);
 // ABI 4's structs, each led by its own size so it can grow the way the table does: an element is
 // 56 bytes of fixed fields and the text's pointer and length; the graphics state is six words, five
 // 24-byte names (the longest present mode, "fifo-latest-ready", is 17) and four 96-byte reasons; a
@@ -33,10 +35,16 @@ ENGINE_EXPECT_SIZE(112, 4, hotload::GraphicsRequest);
 // ABI 5: an actor as the host keeps it, led by its size: two words, the f64 position, eight
 // four-byte fields, the pose hash and a 64-byte clip name (136, `k_actor_state_v5_size`, what a
 // module built against ABI 5 to 7 passes as its size). ABI 8 appended the orientation: `up`, the
-// tilt, the clamp flag and a reserved word (160). The prefix may not move.
-ENGINE_EXPECT_SIZE(160, 8, hotload::ActorState);
+// tilt, the clamp flag and a reserved word (160, `k_actor_state_v8_size`). ABI 9 appended the
+// shape: the scale and the morph channel count (168). The prefixes may not move.
+ENGINE_EXPECT_SIZE(168, 8, hotload::ActorState);
 static_assert(offsetof(hotload::ActorState, up) == hotload::k_actor_state_v5_size,
               "ABI 8's fields follow ABI 5's ActorState, which is k_actor_state_v5_size long");
+static_assert(offsetof(hotload::ActorState, scale) == hotload::k_actor_state_v8_size,
+              "ABI 9's fields follow ABI 8's ActorState, which is k_actor_state_v8_size long");
+// ABI 9: an actor's morph channels, led by its size: four words (size, index in, count out, a
+// reserved word) and the borrowed name's pointer and length.
+ENGINE_EXPECT_SIZE(32, 8, hotload::MorphInfo);
 // ABI 8: the ground under a point, led by its size: two words, the f64 height, the normal and a
 // reserved word.
 ENGINE_EXPECT_SIZE(32, 8, hotload::GroundSample);

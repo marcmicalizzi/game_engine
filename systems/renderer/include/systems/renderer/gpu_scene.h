@@ -949,6 +949,23 @@ class GpuScene {
   // caller's array is indexed by the **scene's** channel, and each instance takes its mesh's run
   // of it, which is what lets one array drive a scene of several rigs.
   void set_static_weights(std::span<const f32> weights);
+  // **One instance's static weights** (renderer.md, "Morphed instances"; roadmap P52's creator):
+  // `weights[c]` for channel c of the instance's own mesh, the channels past the span at 0, into
+  // the static half of that instance's deform entry in every frame slot. Only that entry's cache is
+  // marked for a rebuild (one `deform_cache_main` dispatch over its mesh on the next frame), and
+  // the instance's cull padding is priced again from the new weights, so a shape the weights pushed
+  // past the load's padding is never culled away. False, with `error`, for an instance that is not
+  // the scene's, has no morph channels, or more weights than its channels.
+  bool set_instance_static_weights(u32 instance, std::span<const f32> weights, std::string* error);
+  // The morph channels instance `instance`'s mesh has (0: none, or not an instance).
+  u32 instance_morph_channels(u32 instance) const noexcept;
+  // **The cache rebuilds a frame owes**: the cached entries whose weights changed since the last
+  // frame took them, moved to the frame's set (`static_cache_rebuilds`) and cleared; returns how
+  // many. The frame dispatches `deform_cache_main` for those entries only.
+  u32 take_static_cache_rebuilds() noexcept;
+  bool static_cache_rebuild(u32 d) const noexcept {
+    return d < static_cache_rebuild_.size() && static_cache_rebuild_[d] != 0;
+  }
 
   // ---- geometry streaming (04 §4.3 step 3, §4.9; docs/subsystems/renderer.md) -----------------
   //
@@ -1503,6 +1520,13 @@ class GpuScene {
   u32 morph_channel_count_ = 0;
   u64 static_cache_bytes_ = 0;
   u32 static_cached_instances_ = 0;
+  // Per deform entry: a weights change the cache has not taken yet, and the frame's own copy of
+  // them (`take_static_cache_rebuilds`); the instance's padding before the morph's was added, and
+  // the morph's, so a per-instance change prices it again from the base (renderer.md, "Morphed
+  // instances"). Sized at `create_morph`; a tail's entries past them have no cache.
+  Vector<u8> static_cache_pending_;
+  Vector<u8> static_cache_rebuild_;
+  Vector<f32> morph_base_padding_;
   bool static_cache_dirty_ = false;
   u32 deform_pool_vertices_ = 0;
   u64 deform_pool_bytes_ = 0;

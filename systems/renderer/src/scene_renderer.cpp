@@ -2211,10 +2211,9 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
       if (d < weighted) table[d].weights = weights_base + u64{d} * 2 * channels * sizeof(f32);
     }
     deform_table_address = scene.deform_frame_address(slot);
-    if (scene.static_cache_dirty()) {
-      cache_rebuilds = scene.static_cached_instances();
-      scene.clear_static_cache_dirty();
-    }
+    // The cached entries whose static weights changed since the last frame (all of them after a
+    // scene-wide change, one after an instance's; renderer.md, "Morphed instances").
+    if (scene.static_cache_dirty()) cache_rebuilds = scene.take_static_cache_rebuilds();
   }
 
   // The frame's lights, shared by every view and living behind the last view's params block in
@@ -3573,7 +3572,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
           const std::span<const gfx::DeformDesc> statics = scene.deform_descs();
           const std::span<const u32> owners = scene.deform_instances();
           for (u32 d = 0; d < statics.size(); ++d) {
-            if (statics[d].cache == 0) continue;
+            if (statics[d].cache == 0 || !scene.static_cache_rebuild(d)) continue;
             gfx::DeformParams p = deform_params[0][0];
             // `deform_cache_main` reads these two with a different meaning, and says so where it
             // uses them: the instance to rebuild, and how many clusters its mesh has.
@@ -4804,6 +4803,16 @@ bool SceneRenderer::move_instances(std::span<const u32> indices,
   // here and wrote the table with a blocking submission, which made a host that moves actors every
   // frame pay its CPU and GPU time one after the other (docs/experiments/forest-cpu-2026-10-21.md).
   return scene_->place_instances(indices, placements, error);
+}
+
+bool SceneRenderer::set_instance_morph_weights(u32 instance, std::span<const f32> weights,
+                                               std::string* error) {
+  ENGINE_ASSERT(!recording_,
+                "SceneRenderer::set_instance_morph_weights: between begin_frame and submit_frame");
+  // Written into the static half of every frame slot at once, as the scene's static weights are;
+  // the next frame rebuilds this instance's shape cache and nothing else (renderer.md, "Morphed
+  // instances").
+  return scene_->set_instance_static_weights(instance, weights, error);
 }
 
 bool SceneRenderer::capture(const FrameDesc& frame, const CaptureChannels& channels,
