@@ -88,6 +88,7 @@
 
 #if ENGINE_VIEW_ANIMATION
 #include "animation.h"
+#include "player.h"  // empty without the animation and hotload capabilities
 
 #include <core/ids/id128.h>
 #include <domain/ecs/sim_world.h>
@@ -522,6 +523,11 @@ constexpr const char* k_usage =
     "                   implies --interactive; ticked every tick after the walker, rebuilt and\n"
     "                   swapped in while it runs, its HUD drawn, its result or error in the\n"
     "                   summary's interactive.game. A replay of a --game recording plays it again\n"
+    "  --player <rig.glb>  stand a skinned character at the walker's feet as the actor `player`,\n"
+    "                   scaled to view.walk.height x view.player.scale, its walk clip played\n"
+    "                   while it walks, its head collapsed for the first-person camera\n"
+    "                   (view.player.collapse_head); its numbers in the summary's\n"
+    "                   interactive.player. Needs a session over a scene\n"
     "  --game-state <f> --game: restore the module's state from <f> at start when it exists, and\n"
     "                   save it there at exit, so a run can be left and resumed\n"
     "  --on-end panel|quit  --game, in a live window: when the module ends the run, stay on a\n"
@@ -769,6 +775,8 @@ struct Options {
   // `--game`: a game module run from the session (game_runner.h); `--game-state`: its state file.
   std::string game;
   std::string game_state;
+  // `--player <rig.glb>`: the player's body, a load-time actor stood on the walker (player.h).
+  std::string player;
   // `--on-end panel|quit` (brief P44): what a live window does when the module calls `end_run` —
   // stays on the result panel, or ends the session as a replay does. Empty: the panel for a
   // session somebody is at, and quit for an injected one (the tests depend on it).
@@ -1294,17 +1302,48 @@ void attach_game(view::FlySession& session, f64 sun_offset_s, f64 sun_rate, f64 
 // first tick, and hooked round the world's step. A scene that names none, or a run without a game,
 // binds nothing and costs nothing. `g_actors` is the table the frames flush moves from.
 view::GameActors* g_actors = nullptr;
+// **The player's body** (player.h; apps.md "The player's body"): `--player`'s rig, measured before
+// any device, appended to the scene's whole read before the load, bound with the actors — with a
+// game or without one — and stood on the walker every tick. Null without `--player`.
+view::PlayerBody* g_player = nullptr;
+WorldPos g_player_start{};  // where it stands until the walker first does: under the start camera
+// Before `prepare_animation`: the body at the end of the whole read, and its index given to the
+// game's declared `player` (declared, with its fixed handle, before the module loaded).
+void append_player(renderer::SceneDesc& desc) {
+  if (g_player == nullptr) return;
+  g_player->append(desc, g_player_start);
+  if (g_game != nullptr) {
+    Vector<view::DeclaredActor> declared = g_game->declared_actors();
+    for (view::DeclaredActor& a : declared) {
+      if (a.instance == view::k_player_actor) a.read = g_player->read_index();
+    }
+    g_game->declare_actors(declared);
+  }
+}
+// After the game's tick observer and before the animation world's: the body stands before the
+// module's tick, and the world steps after both.
+void chain_player(view::FlySession& session) {
+  if (g_player != nullptr) g_player->chain(session);
+}
 bool attach_game_actors(view::GameActors& actors, view::AnimatedScene* animated,
                         view::AnimationTicks& ticks, const renderer::SceneDesc& desc, u32 tick_hz,
                         std::string& error) {
-  if (g_game == nullptr || animated == nullptr || g_game->declared_actors().empty()) return true;
-  if (!actors.bind(*animated, desc, g_game->declared_actors(), tick_hz, error)) return false;
-  if (const JsonValue* restored = g_game->restored_actors(); restored != nullptr) {
-    if (!actors.restore(*restored, error)) return false;
+  const bool game = g_game != nullptr && !g_game->declared_actors().empty();
+  if (animated == nullptr || (!game && g_player == nullptr)) return true;
+  // With a game the player is one of its declared actors; without one, the only one.
+  Vector<view::DeclaredActor> alone;
+  if (!game) alone.push_back(g_player->declared());
+  if (!actors.bind(*animated, desc, game ? g_game->declared_actors() : alone, tick_hz, error))
+    return false;
+  if (game) {
+    if (const JsonValue* restored = g_game->restored_actors(); restored != nullptr) {
+      if (!actors.restore(*restored, error)) return false;
+    }
   }
   actors.hook(ticks);
-  g_game->set_actors(&actors);
+  if (game) g_game->set_actors(&actors);
   g_actors = &actors;
+  if (g_player != nullptr && !g_player->bind(*animated, actors, error)) return false;
   return true;
 }
 // Whatever way a run's loop ends, the table it bound goes with it.
@@ -1314,6 +1353,9 @@ struct GameActorsScope {
     g_actors = nullptr;
   }
 };
+#else
+void append_player(renderer::SceneDesc&) {}
+void chain_player(view::FlySession&) {}
 #endif
 // Between frames: a rebuilt module swapped in with its state carried (hotload's poll).
 void poll_game() {
@@ -1550,6 +1592,8 @@ u64 game_first_tick() { return g_game != nullptr ? g_game->first_tick() : 0; }
 i64 game_tick_ns() { return g_game != nullptr ? g_game->tick_ns() : 0; }  // FrameWorld::game_ms
 #else
 f32 g_hud_display_scale = 1.0f;  // the loading overlay's, set by the windowed loop
+void append_player(renderer::SceneDesc&) {}
+void chain_player(view::FlySession&) {}
 bool game_draws_loading() { return false; }
 u32 game_ready_milestone() { return 5; }  // player_controllable
 void game_hold(u64) {}
@@ -1967,6 +2011,10 @@ JsonValue interactive_summary(const Interactive& it, const view::FlySession& ses
   }
   out.set("trajectory", std::move(trajectory));
   if (session.walker() != nullptr) out.set("walk", walk_summary(session, *session.walker()));
+#if ENGINE_VIEW_ANIMATION && ENGINE_VIEW_GAME
+  // --player: the rig, the collapse and the body's actor block (player.h).
+  if (g_player != nullptr) out.set("player", g_player->summary_json(g_actors));
+#endif
 #if ENGINE_VIEW_GAME
   if (g_game != nullptr && g_game->started()) {
     JsonValue game = g_game->summary_json();
@@ -2741,6 +2789,7 @@ int run_offscreen(Options& options, Interactive& interactive) {
                        "not draw");
       break;
     }
+    append_player(desc);  // --player: the body at the end of the whole read (player.h)
 #if ENGINE_VIEW_ANIMATION
     // ---- the animated world, as the window has it: the clips, then the entities -------------
     {
@@ -3011,6 +3060,7 @@ int run_offscreen(Options& options, Interactive& interactive) {
 #if ENGINE_VIEW_GAME
       attach_game(session, clock.sky_start_s, clock.sun_rate, clock.world_rate, scene_data, walker);
 #endif
+      chain_player(session);  // the body stands before the module's tick (player.h)
       // ABI 7: a replay holds the module to the tick the live session released it at.
       if (interactive.header.game_release_tick != 0)
         game_hold(interactive.header.game_release_tick);
@@ -4485,6 +4535,8 @@ int run_view(int argc, char** argv) {
     } else if (a == "--game") {
       if (!next_value(argc, argv, i, a, options.game)) return k_exit_usage;
       options.interactive = true;  // a game is played from the session, live or replayed
+    } else if (a == "--player") {  // P52: the player's body (player.h)
+      if (!next_value(argc, argv, i, a, options.player)) return k_exit_usage;
     } else if (a == "--game-state") {
       if (!next_value(argc, argv, i, a, options.game_state)) return k_exit_usage;
     } else if (a == "--on-end") {  // brief P44: the run's end, seen
@@ -4790,6 +4842,20 @@ int run_view(int argc, char** argv) {
         "");
   }
 #endif
+#if !(ENGINE_VIEW_ANIMATION && ENGINE_VIEW_GAME)
+  if (!options.player.empty()) {
+    return unavailable(
+        "--player stands a skinned body through the animation capability and the actors, and "
+        "this build has neither both (ENGINE_WITH_ANIMATION and ENGINE_WITH_HOTLOAD)",
+        "");
+  }
+#endif
+  if (!options.player.empty() && (!options.interactive || options.reference != 0)) {
+    std::fprintf(stderr,
+                 "engine-view: --player stands a body on the walking session's walker: add "
+                 "--interactive, --replay-input, --inject-input or --game\n");
+    return k_exit_usage;
+  }
   if (options.walk && !live) {
     std::fprintf(stderr,
                  "engine-view: --walk starts a live --interactive session walking; a replay "
@@ -5048,6 +5114,38 @@ int run_view(int argc, char** argv) {
                               "), whose calls can move the walker; replay it with --game and that "
                               "module, or it would walk somewhere else without saying so");
   }
+#if ENGINE_VIEW_ANIMATION && ENGINE_VIEW_GAME
+  // **--player: the rig measured before any device** (player.h), so a mesh with no skin is refused
+  // at once, by name: its skinned bind pose's height, the scale to the header's walker height times
+  // `view.player.scale`, its head and where the eye sits from it, its walk and idle clips.
+  std::unique_ptr<view::PlayerBody> player_body;
+  struct PlayerScope {
+    ~PlayerScope() { g_player = nullptr; }
+  } player_scope;
+  if (!options.player.empty()) {
+    if (options.scene.empty()) {
+      log::remove_sink(&stderr_sink);
+      return fail("player", "--player stands a body on a scene's ground; name one with --scene");
+    }
+    const view::WalkParams& walk = interactive.header.walk;
+    view::PlayerRig rig;
+    std::string why;
+    if (!view::measure_player_rig(options.player, walk.height, walk.eye_height, rig, why)) {
+      log::remove_sink(&stderr_sink);
+      return fail("player", why);
+    }
+    std::fprintf(stderr,
+                 "engine-view: player: %s, %u joints, %.3f m tall (x%.4f of its bind pose), head "
+                 "%s (%s)\n",
+                 rig.mesh.c_str(), rig.joints, static_cast<f64>(rig.target_height_m),
+                 static_cast<f64>(rig.scale),
+                 rig.head_name.empty() ? "none" : rig.head_name.c_str(), rig.head_from);
+    player_body = std::make_unique<view::PlayerBody>(std::move(rig));
+    g_player = player_body.get();
+    const WorldPos start = interactive.header.start.position;
+    g_player_start = WorldPos{start.x, start.y - static_cast<f64>(walk.eye_height), start.z};
+  }
+#endif
 #if ENGINE_VIEW_GAME
   // --game: the module loaded before any window or device, so one the host refuses — no entry
   // point, another ABI, an action no map has, a state file of another type — is refused at once.
@@ -5088,6 +5186,19 @@ int run_view(int argc, char** argv) {
       if (!view::read_scene_actors(options.scene, options.animate, actors, game_error)) {
         log::remove_sink(&stderr_sink);
         return fail("scene", game_error);
+      }
+      // --player: the body is the actor `player`, with its fixed handle, so the module finds it in
+      // `on_load` and a state file that kept it restores it (player.h `k_player_actor`).
+      if (g_player != nullptr) {
+        for (const view::DeclaredActor& a : actors) {
+          if (a.name == view::k_player_name) {
+            log::remove_sink(&stderr_sink);
+            return fail("player", "the scene's instance " + std::to_string(a.instance) +
+                                      " is named \"player\", which --player's body is called; "
+                                      "rename it or leave out --player");
+          }
+        }
+        actors.push_back(g_player->declared());
       }
       game.declare_actors(actors);
 #endif
@@ -5504,6 +5615,7 @@ int run_view(int argc, char** argv) {
       }
       scene_file_stage.end();
 
+      append_player(desc);  // --player: the body at the end of the whole read (player.h)
 #if ENGINE_VIEW_ANIMATION
       // ---- the animated world, part one: the clips, and which instances play them --------------
       profiling::TraceStage clips_stage("animation clips");
@@ -5838,6 +5950,7 @@ int run_view(int argc, char** argv) {
         attach_game(session, sky_offset, start.sun_rate, start.world_rate, scene_data, walker);
       }
 #endif
+      chain_player(session);  // the body stands before the module's tick (player.h)
       // ABI 7's hand-over: a module that asked for a milestone later than the walker's first tick
       // is held until it (below, in the loop); a replay holds it to the tick the recording says.
       if (interactive.replay) {

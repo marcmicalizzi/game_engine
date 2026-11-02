@@ -160,6 +160,11 @@ class GameProps {
 struct DeclaredActor {
   std::string name;
   u32 instance = 0;
+  // **The whole read's index when it is not the handle**: the player's body (player.h), whose
+  // handle `k_player_actor` is fixed before the read and which the read appends at its end. `~0u`
+  // for a scene file's actor, whose handle is its index.
+  u32 read = ~0u;
+  u32 read_index() const noexcept { return read != ~0u ? read : instance; }
 };
 
 // The scene file's actors, in instance order; a name given twice is the first instance's (the

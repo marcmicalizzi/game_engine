@@ -106,6 +106,8 @@ One upload per frame for the whole population rather than one per instance — w
 
 The tick is not the renderer's. A game that animates characters writes the code below, and `engine-view --animate` ([apps](apps.md)) is it, so this is what to copy:
 
+**A host may hand the renderer other matrices than the pool's** (2026-11-01, roadmap P52): engine-view's first-person player collapses its head joint's subtree to the head's position in a copy of `joint_matrices()` made after each step (`AnimatedScene::JointCollapse`, [apps](apps.md#the-players-body)), and hands the frame the copy. Nothing in this capability changed for it: the pool, the pose and every hash a host takes over them stay the capability's, and the renderer's contract — one contiguous span and a run per instance — is the same span length.
+
 ```cpp
 ecs::SimWorld sim;                          // the fixed step; 60 Hz by default
 animation::Library library;                 // the skins and clips of the model files
