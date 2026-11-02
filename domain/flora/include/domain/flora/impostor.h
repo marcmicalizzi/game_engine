@@ -88,6 +88,11 @@ struct TreeLevel {
   f32 difference = 0.0f;
   f32 coverage_m = 0.0f;
   f32 alpha_cutoff = 0.5f;  // baked card material and coverage measurement use the same threshold
+  // The bake keeps the geometry's coverage under the mask (G120; `ImpostorSpec::coverage_dither`),
+  // each covered texel passing it with the probability of its coverage times `coverage_scale` /
+  // 256, which `bake_matched` fits so the cards draw as much as the geometry does.
+  bool coverage_dither = false;
+  u32 coverage_scale = 256;
 };
 
 // Linear factors and optional decoded material images. Pure callers without images use the
@@ -140,6 +145,18 @@ struct ImpostorSpec {
   u32 tree_px = 256;
   u32 representatives = 16;  // tiles a branch-group level's cards share (flora.md has why)
   u32 most_levels = 6;       // branch-group levels at most
+  // **Coverage kept under the mask** (G120; flora.md, "The coverage under the mask"): a texel's
+  // alpha is the share of its samples the geometry covers, and the card is alpha-tested at one
+  // half, so a texel a quarter covered draws nothing and one three quarters covered draws whole —
+  // a coin the broadleaf's opaque leaves hardly notice and a conifer's foliated-shoot images, a
+  // quarter to a third opaque, toss on most of the crown. With this set each covered texel passes
+  // the mask with the probability of its coverage times the level's `coverage_scale`, against a
+  // threshold hashed from its place in the atlas (alpha distribution, Yuksel 2018; hashed alpha
+  // testing, Wyman and McGuire 2017, done once at the bake), and `bake_matched` fits the scale so
+  // the level draws as much as the geometry does: the share of a region's texels the mask keeps is
+  // then a number the bake chose, and the texture step's coverage-preserving mips keep that share
+  // at every level. Off, the bake is byte for byte what it was.
+  bool coverage_dither = false;
   static constexpr u32 k_card_planes = 3;  // orthogonal views retain edge-on volume
   static constexpr u32 k_tree_slices = 4;  // depth layers in each far-tree vertical view
 };
@@ -171,7 +188,32 @@ void bake_level(const assets::MeshData& mesh, const TreeLevels& levels, const Tr
 // coverage difference (the summed absolute difference over the summed larger coverage, a soft one
 // minus the overlap) and the colour difference where both draw, combined as 1 - (1 - a)(1 - c).
 // Returns that difference, 0..1. Pure; the same bytes on every toolchain.
+//
+// `detail`, when given, receives what was pooled (G120): the two terms, and the coverage each side
+// drew summed over every texel of every view, so a caller can say how much of the geometry's
+// silhouette — a crown's needle mass — the level keeps (`kept`, the cards' over the geometry's).
+struct LevelMeasure {
+  f64 coverage = 0.0;  // the summed |a - b| over the summed max(a, b)
+  f64 colour = 0.0;    // the mean colour difference where both draw, 0..1
+  f64 geometry = 0.0;  // the summed coverage of the finest geometry, in texels
+  f64 cards = 0.0;     // the summed coverage of the level's cards, in texels
+  f64 kept = 0.0;      // cards / geometry
+};
 f32 measure_level(const assets::MeshData& mesh, const TreeLevels& levels, const TreeLevel& level,
-                  const BakeLook& look, const BakedAtlas& baked);
+                  const BakeLook& look, const BakedAtlas& baked, LevelMeasure* detail = nullptr);
+
+// **The coverage match** (G120; flora.md, "The coverage under the mask"): bakes the level and
+// measures it, and returns `measure_level`'s difference. A level without `coverage_dither` is one
+// bake and one measure, the bytes they always were. A coverage-kept level whose cards draw more
+// than the geometry over the measuring ring (`LevelMeasure::kept` above one: a star's four
+// directions each carry every needle, so a sparse crown is drawn up to four times over between its
+// planes) is fitted: `coverage_scale` is solved for kept = 1 by three steps of regula falsi from
+// the bracket (0, 0)–(256, kept), the scales on a 1/256 grid, each trial the same bake under
+// another mask (the coverage is read back from the alpha, so nothing is drawn again) and one
+// measure, and the trial whose kept is nearest one is the answer — deterministic, and never above
+// 256 (a texel cannot draw more needle than it has). `level.coverage_scale` is set to the one kept;
+// `detail` receives its measure.
+f32 bake_matched(const assets::MeshData& mesh, const TreeLevels& levels, TreeLevel& level,
+                 const BakeLook& look, BakedAtlas& out, LevelMeasure* detail = nullptr);
 
 }  // namespace engine::flora

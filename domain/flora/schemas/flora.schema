@@ -137,7 +137,7 @@ struct Broadleaf @version(3) {
 /// `pendulous` — and every shoot a spray of foliated-shoot cards; the seed leaves some branches
 /// out and thins some whorls, and the lowest `dead_share` of the crown is dead, bare wood.
 /// Defaults make a 16 m Norway spruce.
-struct Conifer @version(2) {
+struct Conifer @version(3) {
   /// Everything left to chance: the lean's azimuth, every whorl's turn, every branch's spread, and
   /// (on streams of their own) the laterals and which branches are missing or dead.
   seed: u64 = 1
@@ -194,6 +194,11 @@ struct Conifer @version(2) {
   /// The share of the crown's whorls, from the lowest, whose branches are dead — bare, thinner,
   /// broken short and drooping (a spruce keeps its dead branches): 0 to 0.9.
   dead_share: f32 = 0.12 @since(2)
+  /// A branch-group card's baked tile, texels a side; 0 bakes no branch-group level (flora.md, "The
+  /// impostor chain": one three-plane group a live branch, G120): 0, or 16 to 256.
+  card_bake_px: u32 = 64 @since(3)
+  /// A whole-tree impostor view, texels a side; 0 makes no impostor: 0, or 32 to 1024.
+  impostor_px: u32 = 256 @since(3)
 }
 
 /// A birch (flora.md, "The birch"; the grounding is docs/experiments/birch.md): one slender white
@@ -770,9 +775,10 @@ struct Tree @version(3) {
   crown_scale: f32 = 1.0
   /// 0 uses the species catalogue budget; otherwise 8,000 to 2,000,000 triangles.
   triangle_budget: u32 = 0
-  /// Broadleaf branch-card tile size, 0 or 16 to 256. Conifer profiles do not yet bake a chain.
+  /// Branch-card tile size, 0 or 16 to 256: a broadleaf's sub-tree cards, a conifer's one
+  /// three-plane group a live branch (since G120).
   card_bake_px: u32 = 64
-  /// Broadleaf whole-tree tile size, 0 or 32 to 1024.
+  /// Whole-tree tile size, 0 or 32 to 1024, for every profile (the conifers' since G120).
   impostor_px: u32 = 256
 }
 

@@ -123,6 +123,11 @@ bool solve_ancient_chain(const Ancient& params, assets::MeshData& out, TreeRepor
                          std::string* error, Motion* motion, TreeLevels* levels);
 bool solve_birch_chain(const Birch& params, assets::MeshData& out, TreeReport* report,
                        std::string* error, Motion* motion, TreeLevels* levels);
+// The conifer's (G120): one three-plane branch-group card a live branch, the needle sprays of its
+// laterals gathered on it, and the whole-tree star, baked with the needles' coverage kept
+// (`ImpostorSpec::coverage_dither`; flora.md, "The impostor chain").
+bool solve_conifer_chain(const Conifer& params, assets::MeshData& out, TreeReport* report,
+                         std::string* error, Motion* motion, TreeLevels* levels);
 
 // The crown's structure as the solver grows it, independent of the budget (G72): what the pipe
 // rule, the twig size and the order count are checked against. False for parameters out of range.

@@ -491,6 +491,10 @@ TEST_CASE("engine-content: city makes the committed plan, fragment and yield on 
 // 0x341ebdc8af5aaca1 and 0xa082d1e2d4529b8f.
 constexpr u64 k_broadleaf_container_golden = 0x57e988a4c201cd41ull;
 constexpr u64 k_ancient_container_golden = 0xc1db7f48a4fb3e3cull;
+// G120 (2026-11-01, MSVC 14.51): a pine, the conifer solver's chain — one three-plane card group a
+// live branch and the star, coverage-kept and fitted to the needles' coverage — at small tiles so
+// a debug run builds it in seconds. Its section 15 carries `k_conifer_chain_version`.
+constexpr u64 k_pine_container_golden = 0x1d5da835900c331eull;
 
 TEST_CASE("engine-content: the allometric crowns build the committed bytes on every toolchain") {
   const test::TempDir tmp("engine_content_flora_determinism");
@@ -502,6 +506,10 @@ TEST_CASE("engine-content: the allometric crowns build the committed bytes on ev
       {"broadleaf", "{\"species\":\"broadleaf\"}", k_broadleaf_container_golden},
       {"ancient", "{\"species\":\"ancient\",\"ancient\":{\"triangle_budget\":100000}}",
        k_ancient_container_golden},
+      {"pine",
+       "{\"species\":\"pine\",\"tree\":{\"height_m\":10,\"triangle_budget\":20000,"
+       "\"card_bake_px\":32,\"impostor_px\":64}}",
+       k_pine_container_golden},
   };
   for (const auto& tree : trees) {
     CAPTURE(tree.name);

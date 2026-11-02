@@ -120,7 +120,7 @@ These provisional, owner-tunable budgets retain individual leaves on the referen
 a million or more is an explicit allowance for a particularly large tree. The runtime cluster cut and baked chain
 choose the rendered detail. An explicitly small source budget can still reach the existing coarse,
 merged-card fallback; it is a quality trade, not a new botanical leaf size. `card_bake_px` and `impostor_px` have the broadleaf
-fields' meanings; evergreen profiles still have no baked chain (G83). Canonical JSON and cache
+fields' meanings, and since G120 the evergreen profiles bake theirs from them too ([the conifer's chain](#the-conifers-chain-g120)). Canonical JSON and cache
 identity include only the active `tree` block, species name and materials.
 
 Maple and ash grow opposite, decussate lateral pairs; elm's ascending scaffolds carry spreading,
@@ -614,8 +614,9 @@ the star and nothing else (the bark's last level is the empty one at the star's 
 star's material and its atlases as the container has them, found again by their built textures' keys,
 so the far form adds no bake and no texture. It finds the star's four directions from the planes'
 own normals and draws, past its measured error, a cross of two of them (the farthest vertex of a
-dropped plane from a kept one, as the star's own error is measured here). A conifer has no chain
-yet (G83), so the far forest takes its decimated top, which is heavier and not a star; anything
+dropped plane from a kept one, as the star's own error is measured here). A conifer had no chain
+until G120 and the far forest took its decimated top, heavier and not a star — the needle-less far
+pines the owner saw on v25 ([below](#the-conifers-chain-g120)); anything
 under `renderer.far_forest.min_height_m` (4 m) is left out. Nothing here changed for it:
 `k_flora_version` and the solver's bytes are as they were.
 
@@ -641,7 +642,8 @@ allometry](../experiments/tree-allometry.md#what-the-aaa-pipelines-do-with-a-mil
 budget ladder above picks **one** rung for a whole tree; the chain gives the same tree's coarser
 forms to the cluster DAG as **authored levels** above its finest leaves
 ([geometry](geometry.md#authored-levels)), so a far tree draws them and a near one its leaves, with no
-preset chosen. The broadleaf, the ancient tree and (since G81) the birch build it (`card_bake_px`, default 64, and
+preset chosen. The broadleaf, the ancient tree, (since G81) the birch and (since G120) the conifers —
+`engine.flora.Conifer` and the evergreen profiles — build it (`card_bake_px`, default 64, and
 `impostor_px`, default 256; 0 turns either off); every other species is the container it was.
 
 | Level | What it is | Its error |
@@ -744,13 +746,87 @@ A card differs from its leaves by eight or nine tenths at four texels a leaf —
 
 **What it holds**: the solver's mesh is its bytes with the chain asked for (the cards are appended
 after everything, their triangles kept apart); the atlases and the coverage bake are the same bytes every time and on
-every toolchain (`impostor_tests.cpp` pins the 8 m oak's card and tree atlases); every card names a parent and every leaf a card; the star is chosen 1 % past its switch distance and not 1 % inside it, by the geometric error alone and by the coverage error under a foliage threshold, with nothing else drawn past it; some distance draws the crown's near leaves and far cards at once; sections 38 and 39 round-trip. Drawn (`systems/renderer/tests/impostor_view_tests.cpp`), the 8 m oak's star from its +z plane's baked view shares 63% of its silhouette with the finest leaves' and is within 12.5 of 255 in colour where both draw — bounds of one half and 50 held by the test ([tree allometry](../experiments/tree-allometry.md#what-r89-built-and-where-it-switches-2026-10-21) has the costs). **Not built**: a true octahedral
+every toolchain (`impostor_tests.cpp` pins the 8 m oak's card and tree atlases, and since G120 an 8 m spruce's); every card names a parent and every leaf a card; the star is chosen 1 % past its switch distance and not 1 % inside it, by the geometric error alone and by the coverage error under a foliage threshold, with nothing else drawn past it; some distance draws the crown's near leaves and far cards at once; sections 38 and 39 round-trip. Drawn (`systems/renderer/tests/impostor_view_tests.cpp`), the 8 m oak's star from its +z plane's baked view shares 63% of its silhouette with the finest leaves' and is within 12.5 of 255 in colour where both draw — bounds of one half and 50 held by the test ([tree allometry](../experiments/tree-allometry.md#what-r89-built-and-where-it-switches-2026-10-21) has the costs). **Not built**: a true octahedral
 atlas (the brief's 8 × 8 views blended by direction) needs coverage that depends on the view, and
 R65's mask is a function of the UV alone on every path — the rasterizers, the rays and the shadow
 maps — which a static star of planes satisfies and a view-chosen octahedral frame does not; and the
 dithered cross-fade at a switch, which needs both levels drawn across a band (roadmap rows in
 [tree allometry](../experiments/tree-allometry.md#what-the-aaa-pipelines-do-with-a-million-leaves)).
 
+#### The conifer's chain (G120)
+
+**Why the conifers had none** (2026-11-01, the owner's v25 flight: the far pines and spruces read
+sparse and popped in at the far forest's hand-over). Not a stale build: `engine-content flora` at
+83af2e3c over the proof of concept's `pine-0` recipe makes source hash 0x9598e6eef2b0d6b9 and build key
+0x995d988f97abd8d0, and the POC's cache holds exactly that entry, 1,559 clusters and no section 38.
+The conifer solver took no `TreeLevels` at all: `solve_tree` handed the chain to the branching
+profiles only, `resolve` never copied `Tree::card_bake_px`/`impostor_px` into the `Conifer` it
+builds, and `engine.flora.Conifer` had neither field — so every pine, spruce, cedar, fir, hemlock,
+juniper and bare `conifer` container's coarsest form was the simplifier's top of a needle-card DAG,
+which is what R111's far forest drew past the ring.
+
+**What it builds.** The conifer grows no allometric crown, so the chain gathers on a crown of the
+conifer's own shoots, built beside the needles only when the chain is asked for: the trunk and
+every branch a part, every lateral a shoot riding its branch. `crown_levels` walks it by the
+broadleaf's rule, never past a part, so a lateral's spray gathers on its branch, a branch's own
+spray is its branch's and the leader's tuft is the trunk's: **one branch-group level, one
+three-plane card group a live branch** (a whole branch with its curtains of laterals is the
+sub-tree a far eye resolves: a 17 m spruce's branches are 0.3 to 3.6 m long), riding the branch's
+part at 0.7, then **the star**, exactly the broadleaf's (`tree_star`, four directions of four depth
+slices). A plan that folds the laterals into their branch's spray has one spray a branch, so the
+step merges nothing and the star stands over the needles alone. The mesh up to the cards is the
+plain solve's bytes. `engine.flora.Conifer` carries the two fields (`@version(3)`: `card_bake_px`
+64, `impostor_px` 256, 0 turns either off) and the evergreen profiles take `Tree`'s. The key:
+`k_conifer_chain_version` (1) is mixed into the source hash a container of every species the
+conifer solver builds records, and no other's, and the bake's images key them as they key the
+broadleaves (`flora_source_hash_with`), so every conifer entry rebuilds and no broadleaf's moves —
+`k_flora_version` stays 11, since a bump would rebuild every tree of every cache. The version is
+not in `flora_source_hash`, the tree's parameters, because the deadwood keys the tree it kills by
+that and solves it without the chain: mixed there first, it rebuilt 569 dead spruces and pines of
+the v25 cache for a star none of them draws ([the measurement](../experiments/conifer-far-form-2026-11-01.md)).
+
+#### The coverage under the mask
+
+A baked texel's alpha is the share of its 4 × 4 samples the geometry covers, and every level is
+alpha-tested at one half, so a texel a third covered draws nothing and one two thirds covered
+draws whole. A broadleaf's opaque leaves hardly notice; a foliated-shoot image is a quarter to a
+third opaque by design ([conifer shoots](../experiments/conifer-shoots.md)), so on a conifer the
+mask is a coin tossed on most of the crown. **The conifer's levels are baked with the coverage
+kept** (`ImpostorSpec::coverage_dither`): a covered texel passes the mask with the probability of
+its coverage times the level's `coverage_scale`, against a threshold hashed from its place in the
+atlas (splitmix64, integers only), and its alpha keeps its coverage's order on its side of the
+mask — the bake-time form of hashed alpha testing (Wyman and McGuire, [*Hashed Alpha
+Testing*](https://research.nvidia.com/labs/rtr/publication/wyman2017hashed), I3D 2017) and of
+alpha distribution (Yuksel, [*Alpha Distribution for Alpha
+Testing*](https://cemyuksel.com/research/alphadistribution/), PACM CGIT, I3D 2018): the share of a
+region's texels the mask keeps is a number the bake chose, and the texture step's
+coverage-preserving mips keep that share at every level. Then **`bake_matched` chooses it**: the
+coverage bake's own comparison (`measure_level`, now reporting `LevelMeasure` — the coverage each
+side draws over the ring of sixteen views, and `kept`, the cards' over the geometry's) is solved for
+kept = 1 by three steps of regula falsi on `coverage_scale` from (0, 0)–(256, kept), each trial the
+same bake under another mask (the coverage reads back from the alpha), and the nearest is kept;
+never above 256, so a level that draws less than its needles keeps all it has. **Why it fits down
+and not up**: the star draws every needle in each of its four directions, so between its planes a
+sparse crown is drawn up to four times over, and a plain star of a pine draws 1.6 times the needles'
+coverage — a far pine denser than its near form, which pops the other way at the switch. Measured
+over the proof of concept's recipes with its pack (`engine-content flora --materials
+world/v22/materials`, msvc-debug):
+
+| level | `pine-0` (60,000 budget): kept, D | `spruce-0` (17 m `conifer`): kept, D |
+|---|---|---|
+| branch cards, plain mask | 1.150, 0.644 | 1.025, 0.580 |
+| branch cards, coverage kept and fitted | 0.999 (scale 215), 0.652 | 0.944 (256), 0.585 |
+| star, plain mask | 1.621, 0.502 | 1.341, 0.307 |
+| star, coverage kept and fitted | 1.024 (scale 110), 0.514 | 1.079 (139), 0.310 |
+
+`impostor_tests.cpp` holds it on a test spruce with a needle image a third opaque: the plain cards
+draw 0.86 and the plain star 1.23 of the needles; kept, 0.95 and 1.07 (scale 143). D hardly moves,
+since its coverage term counts texels that differ and both masks are a dither at the
+measurement's scale, so the switch distances stay where the plain bake put them. **What it costs**:
+the bake is drawn once and measured up to four times; `pine-0`'s container went from 0.97 s to 42 s
+in msvc-debug (the star's 16 tiles of 256 texels and its measures, as every broadleaf's star
+costs). **Not done**: the broadleaf keeps the plain mask, byte for byte (its pins hold); its stars
+over-cover the same way where a crown is sparse, which the same flag would fit.
 ### The broadleaf
 
 An oak by default (12 m, `content/flora/oak.flora.json`). The **trunk** leans by `lean_deg` towards
@@ -1715,7 +1791,7 @@ threshold that knows a strip's width — not more tuning of the solver.
 ## Not yet
 
 - **After G79–G81 (2026-10-22)**: the emergent megaflora's crown is too thin for its references
-  (G82); the conifer has no impostor chain, so a lone spruce at 60 m is still specks (G83); the
+  (G82); the conifer had no impostor chain until G120, so a lone spruce at 60 m was specks (G83); the
   forest's frame after its spruces and birches doubled and tripled their triangles is unmeasured
   (G84). **What the two consumer games should change** (neither repo was edited): the forest stress
   test (`forest_wildlife_poc`) needs a `conifer/needles` image that is one irregular foliated shoot
@@ -1799,7 +1875,7 @@ structural table) in `tests/species_tests.cpp`; a change that moves one bumps
 `flora::k_flora_version` and the number in the same commit. The second batch was added without
 moving the first three's pins: its helpers are appended to the kit and change none of the old
 ones' output, and its species are new members of the flora file that the canonical form of a palm,
-an oak or a spruce does not carry. **The impostor chain (R89)** moved neither the solver's pins nor `k_flora_version`: its cards are appended after the mesh the plain solve makes, and its two fields (`card_bake_px`, `impostor_px`, `@version(3)`) change the broadleaf's and the ancient tree's canonical parameters and so their keys; its atlases are pinned by hash in `tests/impostor_tests.cpp`, and both trees' whole containers, chain included, by engine-content's `determinism_tests.cpp`, whose rows GCC and Clang reproduce. **The conifer's shoots (G80) moved the conifer's pin and not
+an oak or a spruce does not carry. **The impostor chain (R89)** moved neither the solver's pins nor `k_flora_version`: its cards are appended after the mesh the plain solve makes, and its two fields (`card_bake_px`, `impostor_px`, `@version(3)`) change the broadleaf's and the ancient tree's canonical parameters and so their keys; its atlases are pinned by hash in `tests/impostor_tests.cpp`, and both trees' whole containers, chain included, by engine-content's `determinism_tests.cpp`, whose rows GCC and Clang reproduce. **The conifers' chain (G120)** moved no solver pin and not `k_flora_version` either: its cards are appended past the plain solve's mesh, `Conifer`'s two fields (`@version(3)`) move the bare conifer's canonical parameters and `k_conifer_chain_version` the evergreen profiles' keys, the test spruce's coverage-kept atlases are pinned by hash in `tests/impostor_tests.cpp` (the mask is integers from the texel's place, the fit the coverage bake's own numbers) and a pine's whole container by engine-content's `determinism_tests.cpp`. **The conifer's shoots (G80) moved the conifer's pin and not
 `k_flora_version`**, for the reason the allometric crown gives next: its new fields (`@version(2)`)
 are in every conifer file's canonical parameters, so every conifer key changed anyway, a version-1
 recipe's included, and no other species' did. **The allometric crown (G73) moved the broadleaf's and the
@@ -1925,7 +2001,7 @@ data, rebuilt from its parameters.
   (`flora_scene_tests.cpp`).
 
 **Public API.** `include/domain/flora/palm.h` (the solver: `palm_in_range`, `solve_palm`,
-`PalmReport`), `include/domain/flora/trees.h` (the branching species: `broadleaf_in_range`, `conifer_in_range`, `birch_in_range`, `willow_in_range`, `orchard_in_range`, `ancient_in_range`, `solve_broadleaf`, `solve_conifer`, `solve_birch`, `solve_willow`, `solve_orchard`, `solve_ancient`, `TreeReport`, and the allometric crowns' structure: `CrownShoot`, `broadleaf_crown`, `ancient_crown`, `birch_crown`; the birch's `solve_birch_chain` and its seeded stem count, `birch_stems`), `include/domain/flora/understory.h` (the understory: `shrub_in_range`, `fern_in_range`, `tuft_in_range`, `herb_in_range`, `shrub_collides`, `k_shrub_collider_radius_m`, `solve_shrub`, `solve_fern`, `solve_tuft`, `solve_herb`), `include/domain/flora/motion.h` (the motion contract: `Motion` with its `structure`, `MotionPart`,
+`PalmReport`), `include/domain/flora/trees.h` (the branching species: `broadleaf_in_range`, `conifer_in_range`, `birch_in_range`, `willow_in_range`, `orchard_in_range`, `ancient_in_range`, `solve_broadleaf`, `solve_conifer` (and since G120 `solve_conifer_chain`), `solve_birch`, `solve_willow`, `solve_orchard`, `solve_ancient`, `TreeReport`, and the allometric crowns' structure: `CrownShoot`, `broadleaf_crown`, `ancient_crown`, `birch_crown`; the birch's `solve_birch_chain` and its seeded stem count, `birch_stems`), `include/domain/flora/understory.h` (the understory: `shrub_in_range`, `fern_in_range`, `tuft_in_range`, `herb_in_range`, `shrub_collides`, `k_shrub_collider_radius_m`, `solve_shrub`, `solve_fern`, `solve_tuft`, `solve_herb`), `include/domain/flora/motion.h` (the motion contract: `Motion` with its `structure`, `MotionPart`,
 `k_trunk_part`, `encode_bend_weight`, `decode_bend_weight`, `motion_records`), `include/domain/flora/structure.h` (the structural table: `StructuralPart`, `k_load_bearing`, `k_straight`, `k_collider`, `structural_point`, `structural_radius`, `load_bearing_min_radius`, `Hollow`, `ancient_hollows`), `include/domain/flora/flora.h` (the capability: `k_flora_version`,
 `k_species_date_palm`, `k_species_broadleaf`, `k_species_conifer`, `k_species_birch`, `k_species_willow`, `k_species_orchard`, `k_species_ancient`, `k_species_shrub`, `k_species_fern`, `k_species_tuft`, `k_species_herb`, `solve_flora`, `flora_detail_tier`, `flora_collides`, `read_flora_file`, `canonical_flora_json`, `flora_source_hash`,
 `flora_build_key` (with the pack), `flora_role`, `apply_flora_materials`, `build_flora_container`

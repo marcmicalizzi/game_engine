@@ -482,6 +482,9 @@ Resolved resolve(const Profile& p, const Tree& tree) {
   c.needle_length_m = p.leaf;
   c.lateral_length_m = p.twig;
   c.triangle_budget = budget;
+  // The chain's tiles (G120): the conifer profiles bake the broadleaf's, from the same fields.
+  c.card_bake_px = tree.card_bake_px;
+  c.impostor_px = tree.impostor_px;
   if (p.species == FloraSpecies::pine) {
     c.whorls = 16;
     c.branches_per_whorl = 6;
@@ -601,6 +604,6 @@ bool solve_tree(std::string_view species, const Tree& tree, assets::MeshData& me
   const Resolved r = resolve(p, tree);
   return p.family == Family::branching
              ? solve_broadleaf_rules(r.broadleaf, r.rules, mesh, report, &error, &motion, levels)
-             : solve_conifer_rules(r.conifer, r.rules, mesh, report, &error, &motion);
+             : solve_conifer_rules(r.conifer, r.rules, mesh, report, &error, &motion, levels);
 }
 }  // namespace engine::flora::detail

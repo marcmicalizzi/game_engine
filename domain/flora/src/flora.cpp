@@ -218,18 +218,36 @@ void apply_flora_materials(const FloraFile& file, const materials::Pack* pack,
   if (!out.image_paths.empty()) texture::fill_cluster_texture_records(out);
 }
 
+namespace {
+// The species the conifer solver builds: the bare `conifer` and every evergreen profile, whose
+// chain (G120) keys their containers apart from every other species'.
+bool builds_conifer(const std::string& species) {
+  return species == k_species_conifer || detail::is_evergreen_species(species);
+}
+
+// A container's identity before the bake's images: the parameters' (`flora_source_hash`), and for
+// the conifers the chain's version (G120). Mixed here and not into `flora_source_hash`, which is
+// also a tree's shape to the deadwood that solves it without the chain and whose key it is part
+// of, so a dead spruce's entry does not rebuild for a star it never draws.
+u64 container_hash(const FloraFile& file) {
+  const u64 h = flora_source_hash(file);
+  return builds_conifer(file.species) ? hash_combine(h, k_conifer_chain_version) : h;
+}
+}  // namespace
+
 bool flora_source_hash_with(const FloraFile& file, const assets::MeshGeneratorInputs& inputs,
                             u64& out, std::string& error) {
-  out = flora_source_hash(file);
+  out = container_hash(file);
   if (inputs.hosts == nullptr || inputs.hosts->read_image == nullptr) return true;
   // The bake samples a material's base-colour, normal and roughness images (G93), so the three of
   // each of the two materials key the tree. The key moves exactly when the atlases' bytes can: a
   // pack with no normal or roughness image hashes the base colours alone, as it did, and the
-  // species that bake no chain take none of this.
+  // species that bake no chain take none of this. The conifers bake one since G120.
   const bool baked = file.species == k_species_broadleaf || file.species == k_species_birch ||
                      file.species == k_species_ancient || file.species == "maple" ||
                      file.species == "oak" || file.species == "elm" || file.species == "beech" ||
-                     file.species == "ash" || file.species == "walnut";
+                     file.species == "ash" || file.species == "walnut" ||
+                     builds_conifer(file.species);
   if (!baked) return true;
   const bool enabled = file.species == k_species_broadleaf
                            ? file.broadleaf.card_bake_px != 0 || file.broadleaf.impostor_px != 0
@@ -237,6 +255,8 @@ bool flora_source_hash_with(const FloraFile& file, const assets::MeshGeneratorIn
                            ? file.birch.card_bake_px != 0 || file.birch.impostor_px != 0
                        : file.species == k_species_ancient
                            ? file.ancient.card_bake_px != 0 || file.ancient.impostor_px != 0
+                       : file.species == k_species_conifer
+                           ? file.conifer.card_bake_px != 0 || file.conifer.impostor_px != 0
                            : file.tree.card_bake_px != 0 || file.tree.impostor_px != 0;
   if (!enabled) return true;
   geometry::ClusterFileData materials;
@@ -347,13 +367,13 @@ bool solve_flora(const FloraFile& file, assets::MeshData& mesh, Motion& motion,
                                            &motion, levels);
     if (file.species == k_species_conifer)
       return detail::solve_conifer_rules(resolved.conifer, rules, mesh, tree_report, &error,
-                                         &motion);
+                                         &motion, levels);
     return solve_flora(resolved, mesh, motion, palm_report, tree_report, error, levels);
   }
   if (file.species == k_species_broadleaf)
     return solve_broadleaf_chain(file.broadleaf, mesh, tree_report, &error, &motion, levels);
   if (file.species == k_species_conifer)
-    return solve_conifer(file.conifer, mesh, tree_report, &error, &motion);
+    return solve_conifer_chain(file.conifer, mesh, tree_report, &error, &motion, levels);
   if (file.species == k_species_birch)
     return solve_birch_chain(file.birch, mesh, tree_report, &error, &motion, levels);
   if (file.species == k_species_willow)
@@ -482,10 +502,12 @@ bool bake_chain(const assets::MeshData& mesh, const TreeLevels& chain,
       continue;
     }
     BakedAtlas atlas;
-    bake_level(mesh, chain, level, look, atlas);
-    // The coverage error ("The coverage bake"): the feature the level stands in for, times what it
-    // changes at the pixel, kept rising so the cut's foliage term is monotonic along every path.
-    const f32 difference = measure_level(mesh, chain, level, look, atlas);
+    // The bake and the coverage error ("The coverage bake"): the feature the level stands in for,
+    // times what it changes at the pixel, kept rising so the cut's foliage term is monotonic along
+    // every path. A coverage-kept level (a conifer's, G120) is fitted to draw as much as the
+    // geometry does first (`bake_matched`).
+    TreeLevel fitted = level;
+    const f32 difference = bake_matched(mesh, chain, fitted, look, atlas);
     f32 level_coverage = level.feature_m * difference;
     const f32 below = coverage.empty() ? 0.0f : coverage.back();
     if (!(level_coverage > below))
@@ -826,7 +848,7 @@ std::string_view text_of(std::span<const u8> bytes) {
 bool generator_source_hash(std::span<const u8> bytes, u64& out, std::string& error) {
   FloraFile file;
   if (!read_flora_file(text_of(bytes), file, error)) return false;
-  out = flora_source_hash(file);
+  out = container_hash(file);
   return true;
 }
 
