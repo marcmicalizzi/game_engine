@@ -75,13 +75,10 @@ struct AlphaCoverageParams {
   u64 materials = 0;   // gfx::ResolveMaterial[]
   u64 list = 0;        // u32x2[count]: {cluster, its material}
   u64 out = 0;         // u32[(cluster_count + 3) / 4], zeroed: four coverage bytes a word
-  // u32[(cluster_count + 3) / 4], zeroed: four level-0 texel bytes a word, for the mask at the sun
-  // ray's footprint (R115 stage 2; renderer.md, "The mask at the ray's footprint"), or 0.
-  u64 out_texel = 0;
   u32 count = 0;
   u32 pad = 0;
 };
-static_assert(sizeof(AlphaCoverageParams) == 72);
+static_assert(sizeof(AlphaCoverageParams) == 64);
 inline constexpr u32 k_alpha_coverage_workgroup = 64;  // numthreads in alpha_coverage.slang
 inline constexpr u32 k_alpha_coverage_row = 65535;     // groups per row of its 2D dispatch
 
@@ -401,12 +398,10 @@ class GpuScene {
   bool has_masked() const noexcept { return has_masked_; }
   // **The opaque shadow proxy's coverage** (R109; renderer.md, "The opaque shadow proxy"): one
   // byte per cluster, four to a word, of the alpha coverage of every alpha-tested cluster, baked
-  // once by `bake_shadow_coverage` when `ResolvedSettings::shadow_opaque_coverage` is on — or the
-  // mask at the sun ray's footprint, `shadow_mask_footprint`, or the sweep, which bake the texel
-  // table `shadow_texel` beside it (R115 stage 2) — the scene
-  // has masked materials and is read whole (a streamed scene's pool changes under it). The first
-  // renderer made over the scene bakes it; later ones find it baked. `shadow_coverage_clusters` is
-  // 0 when there is none.
+  // once by `bake_shadow_coverage` when `ResolvedSettings::shadow_coverage_table` is on (the
+  // proxy's threshold or the measurement sweep, R115 stage 2), the scene has masked materials and
+  // is read whole (a streamed scene's pool changes under it). The first renderer made over the
+  // scene bakes it; later ones find it baked. `shadow_coverage_clusters` is 0 when there is none.
   bool bake_shadow_coverage(gfx::ShaderLibrary& shaders, std::string* error);
   u32 shadow_coverage_clusters() const noexcept { return shadow_coverage_clusters_; }
   // A mesh of the scene carries coverage errors (geometry.md, "Two errors"): `lod_coverage` holds
@@ -1056,9 +1051,6 @@ class GpuScene {
   gfx::BufferResource cluster_materials;  // u32 per cluster
   gfx::BufferResource lod_coverage;       // u32 per cluster (geometry::pack_lod_coverage), or none
   gfx::BufferResource shadow_coverage;    // u8 per cluster, four a u32: the proxy's (R109), or none
-  // u8 per cluster, four a u32: the level-0 mask texel the sun ray's footprint is measured against
-  // (R115 stage 2), baked beside shadow_coverage, or none.
-  gfx::BufferResource shadow_texel;
   gfx::BufferResource terrain_masks;  // the terrain's mask level: page table, then tiles, or none
   gfx::BufferResource fade;           // u32x2 per pair per view, and the cascades'
 
@@ -1501,7 +1493,6 @@ class GpuScene {
   // proxy's bake (R109) reads it, then released; empty when the proxy is off.
   Vector<u32> coverage_list_;
   u32 shadow_coverage_clusters_ = 0;
-  bool bake_texel_ = false;    // the bake writes shadow_texel too (R115 stage 2)
   bool has_coverage_ = false;  // a mesh carries coverage errors
   u32 triangles_per_cluster_ = 0;
   u32 view_count_ = 1;

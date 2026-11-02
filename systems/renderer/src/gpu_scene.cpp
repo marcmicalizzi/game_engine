@@ -4037,11 +4037,8 @@ bool GpuScene::upload_materials(const ResolvedSettings& resolved, std::string* e
   // pool whose slots change under any table made now.
   coverage_list_.clear();
   shadow_coverage_clusters_ = 0;
-  // The mask at the sun ray's footprint (R115 stage 2) measures its cone against each masked
-  // cluster's level-0 texel, which the same bake writes into a second table.
-  bake_texel_ = resolved.shadow_texel_table;
-  if ((resolved.shadow_opaque_coverage > 0.0f || resolved.shadow_texel_table) && has_masked_ &&
-      !streamed_) {
+  // The sweep's proxy rules (R115 stage 2, `renderer.shadow.sweep`) read the table too.
+  if (resolved.shadow_coverage_table && has_masked_ && !streamed_) {
     for (u32 m = 0; m < data_->parts.size(); ++m) {
       const geometry::ClusterMeshPart& part = data_->parts[m];
       for (u32 i = 0; i < part.cluster_count; ++i) {
@@ -4124,13 +4121,10 @@ bool GpuScene::bake_shadow_coverage(gfx::ShaderLibrary& shaders, std::string* er
   }
   const Vector<u32> zeros((cluster_count_ + 3) / 4, 0u);
   gfx::BufferResource list;
-  bool ok =
-      gfx::upload_buffer(device, coverage_list_.data(), u64{coverage_list_.size()} * sizeof(u32),
-                         k_storage, list, error) &&
-      gfx::upload_buffer(device, zeros.data(), u64{zeros.size()} * sizeof(u32), k_storage,
-                         shadow_coverage, error) &&
-      (!bake_texel_ || gfx::upload_buffer(device, zeros.data(), u64{zeros.size()} * sizeof(u32),
-                                          k_storage, shadow_texel, error));
+  bool ok = gfx::upload_buffer(device, coverage_list_.data(),
+                               u64{coverage_list_.size()} * sizeof(u32), k_storage, list, error) &&
+            gfx::upload_buffer(device, zeros.data(), u64{zeros.size()} * sizeof(u32), k_storage,
+                               shadow_coverage, error);
   if (ok) {
     AlphaCoverageParams params;
     params.clusters = clusters.address;
@@ -4140,7 +4134,6 @@ bool GpuScene::bake_shadow_coverage(gfx::ShaderLibrary& shaders, std::string* er
     params.materials = materials.address;
     params.list = list.address;
     params.out = shadow_coverage.address;
-    params.out_texel = shadow_texel.address;
     params.count = count;
     const u32 groups_x = count < k_alpha_coverage_row ? count : k_alpha_coverage_row;
     const u32 groups_y = (count + k_alpha_coverage_row - 1) / k_alpha_coverage_row;
@@ -4159,13 +4152,11 @@ bool GpuScene::bake_shadow_coverage(gfx::ShaderLibrary& shaders, std::string* er
   gfx::destroy_compute_pipeline(device, pipeline);
   if (!ok) {
     gfx::destroy_buffer(device, shadow_coverage);
-    gfx::destroy_buffer(device, shadow_texel);
     return false;
   }
   shadow_coverage_clusters_ = cluster_count_;
   ENGINE_LOG_INFO(log_renderer, "shadow coverage baked", log::field("masked_clusters", count),
-                  log::field("table_bytes", u64{zeros.size()} * sizeof(u32)),
-                  log::field("texel_table", bake_texel_));
+                  log::field("table_bytes", u64{zeros.size()} * sizeof(u32)));
   coverage_list_ = Vector<u32>{};
   return true;
 }
@@ -5316,7 +5307,6 @@ void GpuScene::destroy() noexcept {
   gfx::destroy_buffer(device, cluster_materials);
   gfx::destroy_buffer(device, lod_coverage);
   gfx::destroy_buffer(device, shadow_coverage);
-  gfx::destroy_buffer(device, shadow_texel);
   coverage_list_.clear();
   shadow_coverage_clusters_ = 0;
   gfx::destroy_buffer(device, terrain_masks);

@@ -269,22 +269,13 @@ tunables::Float shadow_rest_texels{
     "renderer.shadow.rest_texels", static_cast<f64>(k_shadow_rest_texels), 0.0, 64.0,
     "A cascade past the nearest draws a deformed instance at rest when its reach from the rest "
     "pose is under this many of its texels (R103); 0 poses every cascade"};
-// R115 stage 2: the mask at the sun ray's footprint (renderer.md, "The mask at the ray's
-// footprint"), its cone's spread, and the measurement sweep over the sun ray's rules.
-tunables::Bool shadow_mask_footprint{
-    "renderer.shadow.mask_footprint", k_shadow_mask_footprint,
-    "A masked candidate of the sun's shadow ray samples its mask at the level the ray's cone "
-    "selects at the hit, not level 0 (renderer.md, The mask at the ray's footprint; the bake is "
-    "made at load)"};
-tunables::Float shadow_mask_cone_mrad{
-    "renderer.shadow.mask_cone_mrad", static_cast<f64>(k_shadow_mask_cone_mrad), 0.0, 100.0,
-    "Milliradians the sun ray's cone widens by along the ray beyond the receiver pixel's "
-    "footprint (9.305: the sun's disc)"};
+// R115 stage 2: the measurement sweep over the sun ray's rules (renderer.md, "Where the resolve's
+// time goes").
 tunables::Bool shadow_sweep{
     "renderer.shadow.sweep", false,
-    "Measurement only: frame f takes the sun ray's rule (f / 8) % 8 — as set, opaque, the proxy "
-    "at 0.5, 0.3, 0.2, the footprint with the pixel's cone, with the sun's disc, as set counting "
-    "(renderer.md, The mask at the ray's footprint; the bake is made at load)"};
+    "Measurement only: frame f takes the sun ray's rule (f / 8) % 6 — as set, opaque, the proxy "
+    "at 0.5, 0.3, 0.2, as set counting the sun ray's work (renderer.md, Where the resolve's time "
+    "goes; the proxy's table is baked at load)"};
 tunables::Bool shadow_hybrid_fit{
     "renderer.shadow.hybrid_fit", false,
     "Under the hybrid, fit the cascades from the ray distance out rather than from the near plane "
@@ -305,29 +296,26 @@ ShadowRayRule shadow_ray_rule(u64 frame_index, f32 opaque_coverage) noexcept {
   ShadowRayRule rule;
   rule.opaque = shadow_opaque_rays.get();
   rule.opaque_coverage = opaque_coverage;
-  rule.footprint = shadow_mask_footprint.get();
-  rule.cone_spread = static_cast<f32>(shadow_mask_cone_mrad.get()) * 1.0e-3f;
   if (!shadow_sweep.get()) return rule;
-  const u64 index = (frame_index / gfx::k_resolve_stops) % k_shadow_sweeps;
-  if (index == 0) return rule;  // the frame as set
-  rule = ShadowRayRule{};
-  switch (index) {
-    case 1: rule.opaque = true; break;
-    case 2: rule.opaque_coverage = 0.5f; break;
-    case 3: rule.opaque_coverage = 0.3f; break;
-    case 4: rule.opaque_coverage = 0.2f; break;
-    case 5: rule.footprint = true; break;
-    case 6:
-      rule.footprint = true;
-      rule.cone_spread = k_sun_disc_mrad * 1.0e-3f;
+  switch ((frame_index / gfx::k_resolve_stops) % k_shadow_sweeps) {
+    case 1:
+      rule = ShadowRayRule{};
+      rule.opaque = true;
       break;
-    default:
-      rule.opaque = shadow_opaque_rays.get();
-      rule.opaque_coverage = opaque_coverage;
-      rule.footprint = shadow_mask_footprint.get();
-      rule.cone_spread = static_cast<f32>(shadow_mask_cone_mrad.get()) * 1.0e-3f;
-      rule.count = true;
+    case 2:
+      rule = ShadowRayRule{};
+      rule.opaque_coverage = 0.5f;
       break;
+    case 3:
+      rule = ShadowRayRule{};
+      rule.opaque_coverage = 0.3f;
+      break;
+    case 4:
+      rule = ShadowRayRule{};
+      rule.opaque_coverage = 0.2f;
+      break;
+    case 5: rule.count = true; break;
+    default: break;  // the frame as set
   }
   return rule;
 }
@@ -499,9 +487,9 @@ void resolve_settings(const RenderSettings& requested, const gfx::DeviceFeatures
   // The opaque shadow proxy is the shadow rays' (R109): read once, here, so a scene bakes its
   // clusters' coverage when it is made and every frame of it reads the same threshold.
   out.shadow_opaque_coverage = out.shadows ? static_cast<f32>(shadow_opaque_coverage.get()) : 0.0f;
-  // The mask at the sun ray's footprint (R115 stage 2) needs each masked cluster's texel, baked at
-  // load beside the coverage, which the bake then writes too; the sweep's rules read both.
-  out.shadow_texel_table = out.shadows && (shadow_mask_footprint.get() || shadow_sweep.get());
+  // The proxy's table, baked at load, which the measurement sweep's proxy rules read too (R115).
+  out.shadow_coverage_table =
+      out.shadows && (out.shadow_opaque_coverage > 0.0f || shadow_sweep.get());
   // More than one view needs the cull pass: every view's draw reads its own run of the visible
   // list, and there is no run without one. The direct path draws one view and one only, because
   // it writes color rather than a visibility buffer and has nowhere to put a second rectangle.

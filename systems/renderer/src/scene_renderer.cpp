@@ -2650,18 +2650,12 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
         scene.shadow_coverage_clusters() > 0) {
       // **The opaque shadow proxy** (R109; renderer.md, "The opaque shadow proxy"): a masked
       // cluster whose baked coverage is at or above the threshold is solid to the rays without its
-      // mask. The table may be baked for the footprint alone, so a threshold of 0 hands none over.
-      resolve.shadow_coverage_count = scene.shadow_coverage_clusters();
+      // mask. The sweep bakes the table for its proxy rules, so a threshold of 0 hands none over.
       if (rule.opaque_coverage > 0.0f) {
         resolve.shadow_coverage = scene.shadow_coverage.address;
+        resolve.shadow_coverage_count = scene.shadow_coverage_clusters();
         const u32 byte = static_cast<u32>(std::ceil(rule.opaque_coverage * 255.0f));
         resolve.shadow_opaque_coverage = byte < 1u ? 1u : (byte > 255u ? 255u : byte);
-      }
-      // **The mask at the sun ray's footprint** (R115 stage 2; renderer.md, "The mask at the ray's
-      // footprint"): the sun ray's masked candidates sample the level its cone selects.
-      if (rule.footprint && scene.shadow_texel.address != 0) {
-        resolve.shadow_texel = scene.shadow_texel.address;
-        resolve.shadow_cone_spread = rule.cone_spread;
       }
     }
     // The stop word's counting bit (R115 stage 2): the sun ray's candidates and masks, as codes.
