@@ -225,5 +225,63 @@ the glints, since W42 has its own pages.
 
 ## What was built
 
-(Filled in with the change: the response per layer, its composition, the scene, the captures and
-the costs.)
+A palette layer names a `response` (`TerrainMaterialLayer` version 4, `Terrain` version 10) with a
+`snow` or `sand` block whose fields default to the numbers pinned above; the renderer's page has the
+rules ([renderer](../subsystems/renderer.md#ground-materials-by-place), "Sand and snow"). In
+`terrain_material.slang`, `terrain_respond` applies a layer's response where the layer is sampled,
+once per layer on its record's flags; the blend then weighs it by its coverage and the height blend
+as before. The snow's lobe weight and the wind sand's share are the two blend-level outputs
+(`MaterialSample::metallic` and `detail_mask`), zero unless a layer responds. The test scene
+(`content/test-scenes/ground-by-place`) gives its prior-placed `snow` the response and its sandy
+pond a `beach_sand` margin in place of gravel.
+
+**The tests**, each failing without the change: `gfx: sand and snow responses agree with their
+double references` (the probe's `response_main` against the formulas above computed from the
+papers' own numbers — χ, λ, ξ, n, r_e — the glint cell's integer hash exactly, its chance and facet
+to float precision); `renderer: a snow layer whitens by its grain, a beach darkens wet, a default is
+its bytes` (the mask probe's two layers: the east, default, layer byte-identical beside a snow
+layer; the snow's albedo the table's 0.9765, 0.9856, 0.9958 within 0.006; a saturated beach's blue
+at 0.733 of its dry, Lekner and Dorf's 0.735, where porosity 1 left 0.2); `renderer: a layer's sand
+or snow response parses, packs and keeps every key` (the schema's new fields, the record's words, a
+`Default` layer packing no word, the container key unmoved, the refusals).
+
+## What it measured
+
+Captures under the GPU lock, `msvc-release`, RTX 5090, 1920 × 1080, `--offscreen --terrain-tiles
+--terrain-far 2`, `--wait-quiet 120` (the machine was never quiet: other agents' CPU at 65–100 %),
+four held poses of one camera path (`r99-poses`, under the session's scratch): the north face's
+snow from eye height looking uphill, the same place looking west, the snow cap from 50 m over the
+slope, and the sandy pond's margin from eye height; at noon (sun 63.7° up) and at 19:00 (low sun).
+"Before" is `main` at 83af2e3c drawing the scene as it was (snow a 0.86/0.88/0.92 tint at
+roughness 0.6, a gravel margin); "after" the change drawing the scene with its responses.
+
+| Pose | Noon: pixels changed (over 8 codes) | Low sun: changed (over 8) |
+|---|---|---|
+| Snow, eye height, uphill | 62.3 % (40.7 %) | 62.3 % (28.3 %) |
+| Snow, eye height, west | 35.2 % (32.9 %) | 35.0 % (13.5 %) |
+| Snow cap from 50 m | 44.1 % (30.6 %) | 44.2 % (27.8 %) |
+| Pond margin, eye height | 56.6 % (47.2 %) | 55.8 % (44.5 %) |
+| **The scene's old palette, all `Default`, after the change** | **0 of 2,073,600 at every pose** | |
+
+What they read as. **The snow** is white rather than the old tint's grey, and from eye height uphill at noon it is strewn with single-pixel glints — mostly bright,
+a few grey where a facet turns from the sun; looking west into the low sun its lit face is warm
+white with a dense sparkle, and some sparkles are blue, facets turned to the sky. **The first
+version peppered it** (the facets drawn from the layer's own lobe: most specks dark and brownish,
+facets turned from the sun and towards the sky's ground term), which is why the facets lean at most
+25° (above). From 50 m the glints thin with the footprint as designed and the cap reads as smooth
+snow. **The beach** reads as tan sand where the gravel was grey, wet and so darker towards the
+water by Lekner and Dorf's factor, with sparse sand glints; it has no swash marks yet.
+
+**The material stage** (`--tunable renderer.resolve.stop_after=material`, the scene's own 20 s
+path flown three times, `gpu_ms.resolve` per frame):
+
+| Build, palette | Median ms | p95 ms | Machine (CPU others, start → end) |
+|---|---|---|---|
+| before, all `Default` | 0.443 | 0.575 | 80 % → 100 % |
+| after, all `Default` | 0.408 | 0.845 | 100 % → 70 % |
+| after, with the responses | 0.293 | 0.371 | 66 % → 82 % |
+
+The three runs differ by more than any difference the change could make (the responses' run was the
+fastest), so on this shared machine the stage's cost is **held to the noise**, with the `Default`
+palette drawing the same bytes. The responses' run was taken with the first glint constants; the
+change to them moves no operation in or out of the path.

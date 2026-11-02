@@ -1075,7 +1075,10 @@ shader sits behind an `any_snow`/`any_beach`/`any_wind` that such a palette neve
 draws its bytes; the response is also left out of the container's key, so no scene rebuilds. How
 many layers a tile may give a response is the per-tile budget's: any of its four. Not built (the
 page's remainder): a wrap or forward lobe shaped otherwise than GGX's, which need the light and so
-the resolve; the beach's swash marks and rills.
+the resolve; the beach's swash marks and rills. **Measured** (the page): the test scene's old palette,
+all Default, draws 0 changed pixels of 2,073,600 at every pose after the change, and the material
+stage's median (enderer.resolve.stop_after=material) stays within the shared machine's noise,
+0.41–0.44 ms at 1080p with or without the change and 0.29 ms with the responses.
 **What a material table entry carries** (`gfx::ResolveMaterial`, 112 bytes; [gfx](gfx.md), "The
 material table"): the factors, five texture slots — base colour, metallic-roughness, normal,
 occlusion, emissive — a bindless sampler per slot, the occlusion strength, and one UV transform.
