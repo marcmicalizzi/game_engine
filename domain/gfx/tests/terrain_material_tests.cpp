@@ -786,3 +786,209 @@ TEST_CASE("gfx: a turned stochastic tile turns its normal map's slopes with its 
   CHECK(checked > 100);
   CHECK(worst < 0.02);
 }
+
+namespace {
+// R99's responses in double, from the sources' own numbers (docs/experiments/
+// sand-and-snow-substrates-2026-11-02.md), so the shader's constants are held to the papers.
+namespace r99 {
+// Warren and Brandt (2008): ice's imaginary index at the three channels' wavelengths, the blue
+// linear between its 460 and 470 nm rows.
+constexpr double k_lambda[3] = {610e-9, 550e-9, 465e-9};
+constexpr double k_chi[3] = {6.890e-9, 2.289e-9, 0.5 * (1.325e-10 + 1.956e-10)};
+// Kokhanovsky (2021): the effective absorption length is 16 grain diameters.
+constexpr double k_shape = 16.0;
+double snow_albedo(int c, double grain_mm) {
+  const double alpha = 4.0 * std::numbers::pi * k_chi[c] / k_lambda[c];
+  return std::exp(-std::sqrt(alpha * k_shape * grain_mm * 1e-3));
+}
+// The lobe's weight w as the metallic word m with the diffuse kept: 0.04 (1 - m) + a m / (1 - m)
+// = 0.04 w, solved here by bisection rather than by the shader's closed form.
+double lobe_metallic(double a, double w) {
+  if (w <= 1.0) return 0.0;
+  double lo = 0.0, hi = 0.9;
+  for (int k = 0; k < 200; ++k) {
+    const double m = 0.5 * (lo + hi);
+    (0.04 * (1.0 - m) + a * m / (1.0 - m) < 0.04 * w ? lo : hi) = m;
+  }
+  return 0.5 * (lo + hi);
+}
+// Lekner and Dorf (1988) over Angstrom: water's diffuse external reflectance 0.066 and n = 1.333.
+double wet_darkening(double a) {
+  const double re = 0.066, n = 1.333;
+  const double ri = 1.0 - (1.0 - re) / (n * n);
+  return (1.0 - re) * (1.0 - ri) / (1.0 - ri * a);
+}
+// Duff et al. (2017), as the shader builds it.
+void basis(const double n[3], double t[3], double b[3]) {
+  const double s = n[2] >= 0.0 ? 1.0 : -1.0;
+  const double a = -1.0 / (s + n[2]);
+  const double c = n[0] * n[1] * a;
+  t[0] = 1.0 + s * n[0] * n[0] * a;
+  t[1] = s * c;
+  t[2] = -s * n[0];
+  b[0] = c;
+  b[1] = s + n[1] * n[1] * a;
+  b[2] = -n[1];
+}
+f64 smoothstep(f64 e0, f64 e1, f64 x) {
+  const f64 t = std::clamp((x - e0) / (e1 - e0), 0.0, 1.0);
+  return t * t * (3.0 - 2.0 * t);
+}
+}  // namespace r99
+}  // namespace
+
+TEST_CASE("gfx: sand and snow responses agree with their double references") {
+  gfx::Device device;
+  std::string error;
+  if (!device.create(gfx::DeviceOptions{}, &error)) {
+    MESSAGE("no device: " << error);
+    return;
+  }
+  const auto module =
+      gfx::create_shader_module(device, shaders::k_terrain_material_probe_spirv,
+                                shaders::k_terrain_material_probe_spirv_size, &error);
+  REQUIRE_MESSAGE(module.valid(), error);
+  gfx::ComputePipeline pipeline;
+  REQUIRE_MESSAGE(
+      gfx::create_compute_pipeline(device, module, "response_main", {}, 16, pipeline, &error),
+      error);
+  constexpr u32 k_count = 2048;
+  gfx::BufferResource output;
+  REQUIRE_MESSAGE(
+      gfx::create_buffer(device, k_count * 4 * sizeof(Vec4),
+                         gfx::BufferUsage::Storage | gfx::BufferUsage::ShaderDeviceAddress, true,
+                         output, &error),
+      error);
+  struct Params {
+    u64 output;
+    u32 count;
+    u32 pad;
+  };
+  const Params params{output.address, k_count, 0};
+  REQUIRE_MESSAGE(gfx::submit_immediate(
+                      device,
+                      [&](gfx::CommandList cb) {
+                        cb.bind_pipeline(gfx::BindPoint::Compute, pipeline.pipeline);
+                        cb.push_constants(pipeline.layout, gfx::ShaderStage::Compute, 0,
+                                          sizeof(params), &params);
+                        cb.dispatch(k_count / 64, 1, 1);
+                      },
+                      &error),
+                  error);
+  const auto* v = static_cast<const Vec4*>(output.mapped);
+  u32 lit = 0, unlit = 0, borderline = 0;
+  f64 worst_albedo = 0, worst_lobe = 0, worst_wet = 0, worst_normal = 0;
+  for (u32 i = 0; i < k_count; ++i) {
+    // The snow's albedo (Kokhanovsky and Zege's spherical albedo) per channel.
+    const f64 grain = static_cast<f64>(0.03f + static_cast<f32>(i % 64) * 0.078f);
+    const f64 albedo[3] = {static_cast<f64>(v[4 * i].x), static_cast<f64>(v[4 * i].y),
+                           static_cast<f64>(v[4 * i].z)};
+    for (int c = 0; c < 3; ++c)
+      worst_albedo = std::max(worst_albedo, std::abs(albedo[c] - r99::snow_albedo(c, grain)));
+    // The lobe: its metallic word gives the weight's F0 and keeps the diffuse.
+    const f64 a = static_cast<f64>(i % 17) / 16.0;
+    const f64 w = 1.0 + static_cast<f64>(i % 7) * 0.5;
+    if (a > 0.1)
+      worst_lobe =
+          std::max(worst_lobe, std::abs(static_cast<f64>(v[4 * i].w) - r99::lobe_metallic(a, w)));
+    if (w == 1.0) CHECK(v[4 * i].w == 0.0f);  // weight 1: the dielectric exactly, no metallic
+    // Wet darkening.
+    const f64 wet[3] = {a, 0.5 * a, 0.1};
+    const f64 got_wet[3] = {static_cast<f64>(v[4 * i + 1].x), static_cast<f64>(v[4 * i + 1].y),
+                            static_cast<f64>(v[4 * i + 1].z)};
+    for (int c = 0; c < 3; ++c)
+      worst_wet = std::max(worst_wet, std::abs(got_wet[c] - r99::wet_darkening(wet[c])));
+    // The glint: its cell's draw is the integer hash of the frame's cell and millimetres, so it is
+    // compared exactly; the chance to float precision; the facet normal to the GPU's sin and cos.
+    const i32 cell_x = (i & 1) == 0 ? 6548 : -6548;
+    const i32 cell_z = (i & 2) == 0 ? 1562500 : -3;
+    const f32 fi = static_cast<f32>(i);
+    const f32 local_x = (63.999f + 0.00001f + fi * 0.0173f) * 1000.0f;
+    const f32 local_z = (-0.25f + 0.0f + fi * -0.0291f) * 1000.0f;
+    const f64 footprint = static_cast<f64>(0.3f + fi * 0.137f);
+    const f64 density = (i % 4) == 0 ? 1.0 : static_cast<f64>(0.6f);
+    const f64 alpha = static_cast<f64>(0.1f + static_cast<f32>(i % 9) * 0.07f);
+    const u32 seed = (i % 2) == 0 ? 0x534E4F57u : 0x53414E44u;
+    const Vec4 got_normal = v[4 * i + 2];
+    const Vec4 got = v[4 * i + 3];
+    if (footprint >= 256.0) {
+      CHECK(got_normal.w == 0.0f);
+      continue;
+    }
+    // A point within a hundredth of a millimetre of a whole one may floor either way on a GPU
+    // that fuses its multiply-add; those are not compared.
+    const auto near_whole = [](f32 mm) {
+      const f32 r = mm - std::floor(mm);
+      return r < 0.01f || r > 0.99f;
+    };
+    if (near_whole(local_x) || near_whole(local_z)) {
+      ++borderline;
+      continue;
+    }
+    // The cell is a power of two at least the footprint (1 mm under a millimetre).
+    const u32 size = static_cast<u32>(got.z);
+    REQUIRE(std::has_single_bit(size));
+    CHECK(static_cast<f64>(size) >= std::max(footprint, 1.0) * 0.999);
+    CHECK(static_cast<f64>(size) < std::max(footprint, 1.0) * 2.001);
+    const u32 level = static_cast<u32>(std::countr_zero(size));
+    const i64 ix = test::terrain_floor_div(
+        i64{cell_x} * 64000 + static_cast<i64>(std::floor(local_x)), static_cast<i64>(size));
+    const i64 iz = test::terrain_floor_div(
+        i64{cell_z} * 64000 + static_cast<i64>(std::floor(local_z)), static_cast<i64>(size));
+    const u32 h0 = test::terrain_hash(static_cast<u32>(static_cast<u64>(ix)) ^
+                                      test::terrain_hash(static_cast<u32>(static_cast<u64>(iz)) ^
+                                                         test::terrain_hash(level ^ seed)));
+    const f64 draw = static_cast<f64>(h0 >> 8) / 16777216.0;
+    CHECK(static_cast<f64>(got.y) == draw);
+    const f64 chance = density * std::min(1.0, 4.0 / std::max(footprint, 1.0)) *
+                       (1.0 - r99::smoothstep(128.0, 256.0, footprint));
+    CHECK(std::abs(static_cast<f64>(got.x) - chance) < 2e-6);
+    if (std::abs(draw - chance) < 1e-5) {
+      ++borderline;
+      continue;
+    }
+    CHECK((got_normal.w == 1.0f) == (draw < chance));
+    if (draw >= chance) {
+      ++unlit;
+      continue;
+    }
+    ++lit;
+    // A GGX-distributed facet about the probe's normal (Walter et al. 2007's sampling).
+    f64 n[3] = {static_cast<f64>(i % 3) - 1.0, 2.5, static_cast<f64>(i % 5) - 2.0};
+    const f64 len = std::sqrt(n[0] * n[0] + n[1] * n[1] + n[2] * n[2]);
+    for (f64& c : n)
+      c /= len;
+    const u32 h1 = test::terrain_hash(h0 ^ 0x68e31da4u);
+    const u32 h2 = test::terrain_hash(h1);
+    const f64 u1 = static_cast<f64>(h1 >> 8) / 16777216.0;
+    const f64 u2 = static_cast<f64>(h2 >> 8) / 16777216.0;
+    const f64 tan_t = alpha * std::sqrt(u1 / (1.0 - u1));
+    const f64 cos_t = 1.0 / std::sqrt(1.0 + tan_t * tan_t);
+    const f64 sin_t = tan_t * cos_t;
+    const f64 phi = (2.0 * u2 - 1.0) * std::numbers::pi;
+    f64 t[3], b[3], f[3];
+    r99::basis(n, t, b);
+    for (int c = 0; c < 3; ++c)
+      f[c] = t[c] * sin_t * std::cos(phi) + b[c] * sin_t * std::sin(phi) + n[c] * cos_t;
+    const f64 fl = std::sqrt(f[0] * f[0] + f[1] * f[1] + f[2] * f[2]);
+    worst_normal = std::max({worst_normal, std::abs(static_cast<f64>(got_normal.x) - f[0] / fl),
+                             std::abs(static_cast<f64>(got_normal.y) - f[1] / fl),
+                             std::abs(static_cast<f64>(got_normal.z) - f[2] / fl)});
+    CHECK(static_cast<f64>(got_normal.x) * n[0] + static_cast<f64>(got_normal.y) * n[1] +
+              static_cast<f64>(got_normal.z) * n[2] >
+          0.0);
+  }
+  MESSAGE("albedo " << worst_albedo << ", lobe " << worst_lobe << ", wet " << worst_wet
+                    << ", facet normal " << worst_normal << "; glints lit " << lit << ", unlit "
+                    << unlit << ", borderline " << borderline);
+  CHECK(worst_albedo < 2e-6);
+  CHECK(worst_lobe < 2e-5);
+  CHECK(worst_wet < 2e-6);
+  CHECK(worst_normal < 1e-3);
+  CHECK(lit > 100);
+  CHECK(unlit > 100);
+  gfx::destroy_buffer(device, output);
+  gfx::destroy_compute_pipeline(device, pipeline);
+  gfx::destroy_shader_module(device, module);
+  device.destroy();
+}

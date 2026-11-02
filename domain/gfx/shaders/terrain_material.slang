@@ -7,6 +7,11 @@ static const uint k_material_terrain_layers = 512u;
 static const uint k_material_terrain_map = 1024u;
 static const uint k_material_terrain_height = 2048u;
 static const uint k_material_terrain_stochastic = 4096u;
+// A layer's response (R99; gfx::k_material_terrain_snow, _sand, _beach; renderer.md, "Sand and
+// snow"). Neither bit: the layer as W68 and W72 draw it.
+static const uint k_material_terrain_snow = 16384u;
+static const uint k_material_terrain_sand = 32768u;
+static const uint k_material_terrain_beach = 65536u;
 static const uint k_terrain_masked = 1u;
 static const uint k_terrain_no_mask_tile = 0xFFFFFFFFu;
 
@@ -483,6 +488,152 @@ TerrainLayerSample terrain_filter_sample(TerrainLayerSample sample, ResolveMater
   return sample;
 }
 
+// ---- Sand and snow: a response per layer (R99) -------------------------------------------------
+// The grounding, every number's source and which are design choices:
+// docs/experiments/sand-and-snow-substrates-2026-11-02.md. The CPU mirror is
+// domain/gfx/tests/terrain_material_tests.cpp, over terrain_material_probe.slang's response_main.
+// The numbers ride in words a layer never reads otherwise (gfx::set_terrain_layer).
+float terrain_layer_glints(ResolveMaterial layer) { return layer.emissive.x; }
+float terrain_snow_grain_mm(ResolveMaterial layer) { return layer.emissive.y; }
+float terrain_snow_lobe(ResolveMaterial layer) { return layer.emissive.z; }
+float terrain_snow_thickness(ResolveMaterial layer) { return layer.occlusion_strength; }
+float terrain_beach_wet(ResolveMaterial layer) { return layer.emissive.y; }
+
+// Ice's absorption coefficient 4 pi chi / lambda, per metre, at the channels' wavelengths 610, 550
+// and 465 nm (Warren and Brandt 2008's chi: 6.890e-9, 2.289e-9, and 1.640e-10 between its 460 and
+// 470 nm rows), and Kokhanovsky's shape factor: the absorption length is 16 grain diameters.
+static const float3 k_terrain_ice_absorption = float3(0.141938186, 0.0522989497, 0.00443336150);
+static const float k_terrain_snow_shape = 16.0;
+
+// Snow's spherical albedo per channel from its optical grain diameter (Kokhanovsky and Zege 2004):
+// exp(-sqrt(alpha l)). 0.977, 0.986, 0.996 at 0.25 mm; bluer as the grain coarsens.
+float3 terrain_snow_albedo(float grain_mm) {
+  return exp(-sqrt(k_terrain_ice_absorption * (k_terrain_snow_shape * 0.001 * grain_mm)));
+}
+
+// The specular lobe's weight w (in multiples of the dielectric F0 = 0.04) as the BSDF's metallic
+// word m, with the diffuse kept: 0.04 (1 - m) + a' m = 0.04 w and a' (1 - m) = a give
+// k m^2 + b m - c = 0, taken in its cancellation-free form. w = 1 is m = 0 exactly.
+float terrain_lobe_metallic(float a, float w) {
+  const float k = 0.04;
+  const float c = k * (w - 1.0);
+  if (c <= 0.0) return 0.0;
+  const float b = a + k * (w - 2.0);
+  return 2.0 * c / (b + sqrt(b * b + 4.0 * k * c));
+}
+
+// Lekner and Dorf (1988) over Angstrom (1925): a water film over a dry albedo a returns
+// (1 - r_e)(1 - r_i) a / (1 - r_i a) of the light, with water's diffuse external reflectance
+// r_e = 0.066 and internal r_i = 1 - (1 - r_e) / n^2 = 0.4744 (n = 1.333). This is the factor.
+static const float k_terrain_wet_through = 0.490946;
+static const float k_terrain_wet_internal = 0.474362;
+float3 terrain_wet_darkening(float3 a) {
+  return k_terrain_wet_through / (1.0 - k_terrain_wet_internal * a);
+}
+
+// Glints (Jakob et al. 2014; Zirr and Kaplanyan 2016; Deliot and Belcour 2023, simplified): the
+// ground in world-anchored cells of the smallest power-of-two millimetres at least the footprint,
+// each cell holding a glinting facet with chance `density * min(1, 4 mm / footprint)`, none past a
+// 256 mm footprint; a facet's normal is drawn from GGX of the layer's alpha about the macro normal
+// (Walter et al. 2007), its own lobe 0.2 rough. Design choices, all of them (the page says so).
+static const float k_terrain_glint_roughness = 0.2;
+static const float k_terrain_glint_full_mm = 4.0;
+static const float k_terrain_glint_far_mm = 256.0;
+
+struct TerrainGlint {
+  float3 normal;  // the facet's, or the macro normal without one
+  bool lit;
+  float chance;   // the cell's chance of a facet
+  float draw;     // the cell's hash in [0, 1): a facet when below the chance
+  uint size_mm;   // the cell's side
+};
+
+// An orthonormal basis about n (Duff et al. 2017, "Building an orthonormal basis, revisited").
+void terrain_basis(float3 n, out float3 t, out float3 b) {
+  const float s = n.z >= 0.0 ? 1.0 : -1.0;
+  const float a = -1.0 / (s + n.z);
+  const float c = n.x * n.y * a;
+  t = float3(1.0 + s * n.x * n.x * a, s * c, -s * n.x);
+  b = float3(c, s + n.y * n.y * a, -n.y);
+}
+
+int64_t terrain_glint_axis(int cell, float local_mm, int64_t size) {
+  const float whole = floor(local_mm);
+  return terrain_magnitude_floor_div(int64_t(cell) * int64_t(64000) + int64_t(whole), size);
+}
+
+TerrainGlint terrain_glint(FrameEye eye, float3 point, float3 n, float footprint_mm, float density,
+                           float alpha, uint seed) {
+  TerrainGlint g;
+  g.normal = n;
+  g.lit = false;
+  g.chance = 0.0;
+  g.draw = 1.0;
+  g.size_mm = 0u;
+  if (density <= 0.0 || footprint_mm >= k_terrain_glint_far_mm) return g;
+  const uint level = uint(max(ceil(log2(max(footprint_mm, 1.0))), 0.0));
+  const uint size = 1u << level;
+  g.size_mm = size;
+  const int64_t ix = terrain_glint_axis(
+      eye.cell.x, (eye.local.x + eye.residual.x + point.x) * 1000.0, int64_t(size));
+  const int64_t iz = terrain_glint_axis(
+      eye.cell.z, (eye.local.z + eye.residual.z + point.z) * 1000.0, int64_t(size));
+  const uint h0 = terrain_hash(uint(ix) ^ terrain_hash(uint(iz) ^ terrain_hash(level ^ seed)));
+  g.chance = density * min(1.0, k_terrain_glint_full_mm / max(footprint_mm, 1.0)) *
+             (1.0 - smoothstep(0.5 * k_terrain_glint_far_mm, k_terrain_glint_far_mm, footprint_mm));
+  g.draw = float(h0 >> 8) * (1.0 / 16777216.0);
+  if (g.draw >= g.chance) return g;
+  const uint h1 = terrain_hash(h0 ^ 0x68e31da4u);
+  const uint h2 = terrain_hash(h1);
+  const float u1 = float(h1 >> 8) * (1.0 / 16777216.0);
+  const float u2 = float(h2 >> 8) * (1.0 / 16777216.0);
+  const float tan_t = alpha * sqrt(u1 / (1.0 - u1));
+  const float cos_t = 1.0 / sqrt(1.0 + tan_t * tan_t);
+  const float sin_t = tan_t * cos_t;
+  const float phi = (2.0 * u2 - 1.0) * 3.14159265358979;
+  float3 t;
+  float3 b;
+  terrain_basis(n, t, b);
+  g.normal = normalize(t * (sin_t * cos(phi)) + b * (sin_t * sin(phi)) + n * cos_t);
+  g.lit = true;
+  return g;
+}
+
+// The layer's response, once per layer on its record word (never per texel): snow's albedo by its
+// grain (times its tint, and its map over the map's mean) and its thickness as its height; the
+// beach's wet darkening, per channel, at the place's wetness; and both responses' glints at the
+// footprint. A layer with neither bit returns its sample untouched.
+TerrainLayerSample terrain_respond(FrameEye eye, ResolveMaterial layer, TerrainLayerSample s,
+                                   float3 point, float3 n, float footprint_mm, bool filtered,
+                                   float wet) {
+  if ((layer.flags & (k_material_terrain_snow | k_material_terrain_sand)) == 0u) return s;
+  uint seed;
+  if ((layer.flags & k_material_terrain_snow) != 0u) {
+    const float3 mean = max(terrain_layer_mean_colour(layer), float3(1e-4));
+    s.colour = terrain_snow_albedo(terrain_snow_grain_mm(layer)) * layer.albedo.rgb *
+               saturate(s.colour / mean);
+    s.height = terrain_snow_thickness(layer);
+    seed = 0x534E4F57u;  // "SNOW"
+  } else {
+    if ((layer.flags & k_material_terrain_beach) != 0u && wet > 0.0) {
+      const float3 dark = terrain_wet_darkening(s.colour);
+      const float amount = wet * terrain_beach_wet(layer);
+      s.colour *= lerp(float3(1.0), dark, amount);
+      s.roughness *= lerp(1.0, (dark.x + dark.y + dark.z) * (1.0 / 3.0), 0.5 * amount);
+    }
+    seed = 0x53414E44u;  // "SAND"
+  }
+  if (filtered && footprint_mm > 0.0) {
+    const TerrainGlint g = terrain_glint(eye, point, n, footprint_mm, terrain_layer_glints(layer),
+                                         brdf_alpha(s.roughness), seed);
+    if (g.lit) {
+      s.bump = g.normal / max(dot(g.normal, n), 0.05) - n;
+      s.roughness = k_terrain_glint_roughness;
+    }
+  }
+  return s;
+}
+
 // Combine already-fetched distributions: the second moment includes separation of their means.
 // Trace of slope covariance widens alpha^2; equal slopes add nothing. This isotropic approximation
 // is deliberately shared with the double reference, not claimed to preserve anisotropy (R97).
@@ -524,21 +675,33 @@ MaterialSample sample_terrain_material(SceneGeometry geo, ResolveMaterial root, 
   axes *= axes;
   axes /= max(axes.x + axes.y + axes.z, 1e-12);
   const float fade = 1.0 - smoothstep(rec.detail_near_m, rec.detail_far_m, distance_m);
+  // The pixel's footprint on the ground, millimetres (zero for the path tracer, whose rays carry
+  // none): the mask's mip and R99's glint cells follow it.
+  const float footprint_mm = 1000.0 * max(length(dp_dx), length(dp_dy));
+  // R99's two blend-level outputs: the specular lobe's metallic word (snow) and the wind sand's
+  // share, the detail share the resolve weights W42's ripples by. Zero unless a layer responds.
+  float metallic = 0.0;
+  float detail = 0.0;
+  const uint k_responses =
+      k_material_terrain_snow | k_material_terrain_sand | k_material_terrain_beach;
   if ((rec.flags & k_terrain_masked) != 0) {
     // **Ground materials by place**: the tile's table names up to four palette layers and the mask
     // weighs them; the mip follows the pixel's footprint on the ground (none for the path tracer,
     // whose rays carry no footprint, as its texture reads take level 0).
-    const float footprint_mm = 1000.0 * max(length(dp_dx), length(dp_dy));
     const float level = filtered && footprint_mm > 0.0
                             ? log2(max(footprint_mm / float(rec.mask_spacing_mm), 1.0))
                             : 0.0;
     const TerrainMaskSample mask = terrain_mask_sample(rec, geo.eye, point, level);
     if (mask.valid) {
+      const float wet = max(rec.wetness, mask.wetness);
       TerrainLayerSample layers[4];
       float weight[4];
+      uint response[4];
       float total = 0.0;
       bool any_height = false;
       bool any_variance = false;
+      bool any_snow = false;
+      bool any_wind = false;
       [unroll] for (uint c = 0; c < 4; ++c) {
         const uint index = (mask.table >> (8 * c)) & 0xFFu;
         weight[c] = index == 0xFFu || index >= rec.layer_count ? 0.0 : mask.weights[c];
@@ -546,6 +709,7 @@ MaterialSample sample_terrain_material(SceneGeometry geo, ResolveMaterial root, 
         layers[c].roughness = 0.0;
         layers[c].bump = float3(0.0);
         layers[c].height = 0.5;
+        response[c] = 0u;
         if (weight[c] <= 0.0) continue;
         ResolveMaterial layer = table[rec.first_layer + index];
         if (!variance_enabled) layer.flags &= ~k_material_normal_variance;
@@ -553,9 +717,19 @@ MaterialSample sample_terrain_material(SceneGeometry geo, ResolveMaterial root, 
         layers[c] = terrain_layer_sample(geo, layer, map_uv, map_dx, map_dy, point, n, axes, dp_dx,
                                          dp_dy, variance ? 1.0 : fade, filtered);
         layers[c] = terrain_filter_sample(layers[c], layer, fade);
+        // R99: the layer's response, on its record word, once per layer.
+        response[c] = layer.flags & k_responses;
+        if (response[c] != 0u) {
+          layers[c] = terrain_respond(geo.eye, layer, layers[c], point, n, footprint_mm, filtered,
+                                      wet);
+          any_snow = any_snow || (response[c] & k_material_terrain_snow) != 0u;
+          any_wind = any_wind || response[c] == k_material_terrain_sand;
+        }
         any_variance = any_variance || variance;
         result.normal_filter = result.normal_filter || variance;
-        any_height = any_height || (layer.flags & k_material_terrain_height) != 0;
+        // Snow lies on what is under it by its thickness, through the height blend (R99).
+        any_height = any_height || (layer.flags & k_material_terrain_height) != 0 ||
+                     (response[c] & k_material_terrain_snow) != 0u;
         total += weight[c];
       }
       if (total > 0.0) {
@@ -585,6 +759,8 @@ MaterialSample sample_terrain_material(SceneGeometry geo, ResolveMaterial root, 
         float porosity = 0.0;
         float alpha2 = 0.0;
         float slope_second = 0.0;
+        float lobe = 0.0;
+        float wind = 0.0;
         [unroll] for (uint c = 0; c < 4; ++c) {
           if (blended[c] <= 0.0) continue;
           const float w = blended[c] / sum;
@@ -595,7 +771,16 @@ MaterialSample sample_terrain_material(SceneGeometry geo, ResolveMaterial root, 
           const float a = brdf_alpha(layers[c].roughness);
           alpha2 += w * a * a;
           slope_second += w * dot(layers[c].bump, layers[c].bump);
-          porosity += w * terrain_layer_porosity(table[rec.first_layer + index]);
+          // A beach's wetness is its own (Lekner and Dorf, applied to its colour above), so its
+          // share takes none of the porosity rule's.
+          const ResolveMaterial entry = table[rec.first_layer + index];
+          porosity += w * ((response[c] & k_material_terrain_beach) != 0u
+                               ? 0.0
+                               : terrain_layer_porosity(entry));
+          if (any_snow)
+            lobe += w * ((response[c] & k_material_terrain_snow) != 0u ? terrain_snow_lobe(entry)
+                                                                         : 1.0);
+          if (response[c] == k_material_terrain_sand) wind += w;
         }
         result.albedo = lerp(result.albedo, colour, cover);
         const float root_alpha = brdf_alpha(result.roughness);
@@ -608,17 +793,29 @@ MaterialSample sample_terrain_material(SceneGeometry geo, ResolveMaterial root, 
         porosity = lerp(0.5, porosity, cover);
         // Wetness (Lagarde 2013): porous ground darkens by up to 0.8 and loses up to 0.4 of its
         // roughness; rock barely changes. A separate quantity, so no substrate turns glossy dry.
-        const float wet = max(rec.wetness, mask.wetness);
         const float darkening = lerp(1.0, 0.2, porosity);
         result.albedo *= lerp(1.0, darkening, wet);
         result.roughness *= lerp(1.0, darkening, 0.5 * wet);
+        // R99: the snow's lobe weight, through the metallic word with the diffuse kept; the wind
+        // sand's share, for the resolve's W42 detail.
+        if (any_snow) {
+          metallic = terrain_lobe_metallic(dot(result.albedo, float3(1.0 / 3.0)),
+                                           lerp(1.0, lobe, cover));
+          result.albedo /= 1.0 - metallic;
+        }
+        if (any_wind) detail = wind * cover;
       } else {
-        const float wet = max(rec.wetness, mask.wetness);
         result.albedo *= lerp(1.0, 0.6, wet);
         result.roughness *= lerp(1.0, 0.6, 0.5 * wet);
       }
     }
   } else {
+    // R99 in W68's layers: each responds as a palette layer does (no wetness here), and the lobe
+    // and the wind share follow the layers' coverage as everything else does. Both stay exactly
+    // 1 and 0 through layers without a response.
+    bool any_snow = false;
+    float lobe = 1.0;
+    float wind = 0.0;
     for (uint i = 0; i < rec.layer_count; ++i) {
       ResolveMaterial layer = table[rec.first_layer + i];
       if (!variance_enabled) layer.flags &= ~k_material_normal_variance;
@@ -639,6 +836,17 @@ MaterialSample sample_terrain_material(SceneGeometry geo, ResolveMaterial root, 
                                                   n, axes, dp_dx, dp_dy,
                                                   variance ? 1.0 : fade, filtered);
       s = terrain_filter_sample(s, layer, fade);
+      const uint response = layer.flags & k_responses;
+      if (response != 0u) {
+        s = terrain_respond(geo.eye, layer, s, point, n, footprint_mm, filtered, 0.0);
+        any_snow = any_snow || (response & k_material_terrain_snow) != 0u;
+        lobe = lerp(lobe, (response & k_material_terrain_snow) != 0u ? terrain_snow_lobe(layer) : 1.0,
+                    coverage);
+        wind = lerp(wind, response == k_material_terrain_sand ? 1.0 : 0.0, coverage);
+      } else if (any_snow || wind > 0.0) {
+        lobe = lerp(lobe, 1.0, coverage);
+        wind = lerp(wind, 0.0, coverage);
+      }
       const float a = brdf_alpha(result.roughness);
       const float b = brdf_alpha(s.roughness);
       const float second = lerp(dot(slope, slope), dot(s.bump, s.bump), coverage);
@@ -648,10 +856,15 @@ MaterialSample sample_terrain_material(SceneGeometry geo, ResolveMaterial root, 
       if (result.normal_filter)
         result.roughness = terrain_filter_combination(lerp(a * a, b * b, coverage), second, slope);
     }
+    if (any_snow) {
+      metallic = terrain_lobe_metallic(dot(result.albedo, float3(1.0 / 3.0)), lobe);
+      result.albedo /= 1.0 - metallic;
+    }
+    detail = wind;
   }
-  result.metallic = 0.0;
+  result.metallic = metallic;
   result.emissive = float3(0.0);
-  result.detail_mask = 0.0;
+  result.detail_mask = detail;
   shading_normal = normalize(n + slope);
   return result;
 }

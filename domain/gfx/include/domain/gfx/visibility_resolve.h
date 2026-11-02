@@ -300,6 +300,16 @@ inline constexpr u32 k_material_terrain_stochastic = 4096u;
 // of 1 - |mean unit normal| per mip, in the bindless slot immediately after `normal_texture`, which
 // widens the GGX roughness by what the footprint's normals no longer resolve.
 inline constexpr u32 k_material_normal_variance = 8192u;
+// A palette layer's **response** (R99; renderer.md, "Sand and snow"): what the substrate does
+// beyond its maps, branched on once per layer in `terrain_material.slang`, never per texel. No
+// response bit is a layer as W68 and W72 draw it. Snow: albedo from its grain (Kokhanovsky's
+// asymptotic theory over Warren and Brandt's ice), a stated forward-lobe weight, glints at the
+// footprint, and a thickness in the height blend. Sand: glints, and either wind (W42's ripples and
+// grain, weighted by the layer's share) or, with `k_material_terrain_beach`, a beach (Lekner and
+// Dorf's wet darkening, no ripples).
+inline constexpr u32 k_material_terrain_snow = 16384u;
+inline constexpr u32 k_material_terrain_sand = 32768u;
+inline constexpr u32 k_material_terrain_beach = 65536u;
 
 // TerrainRecord::flags: the terrain has a mask level (`mask` names its buffer).
 inline constexpr u32 k_terrain_masked = 1u;
@@ -349,6 +359,13 @@ inline ResolveMaterial pack_terrain_record(const TerrainRecord& record) noexcept
 // millimetres. Its occlusion slot is its W68 coverage mask, not AO. A stochastic layer (R96) also
 // carries its largest tile turn in radians and its height map's mean, which the variance-preserving
 // blend is taken about; a tiled layer leaves both zero, as they always were.
+//
+// A layer's response (R99) rides in words a layer entry never reads otherwise: the emissive
+// factor's rgb (a layer's sample has its emission discarded; `.w` stays the height map's factor)
+// and, for snow, the occlusion strength (a layer's occlusion slot is its W68 coverage, read
+// without it). A `Default` response writes none of them and sets no bit, so a palette without
+// responses packs the table it packed, word for word.
+enum class TerrainResponse : u32 { Default = 0, WindSand = 1, BeachSand = 2, Snow = 3 };
 struct TerrainLayerFields {
   Vec3 mean_colour{1.0f, 1.0f, 1.0f};
   f32 mean_roughness = 1.0f;
@@ -357,11 +374,34 @@ struct TerrainLayerFields {
   f32 pitch_mm = 1000.0f;
   f32 rotation = 0.0f;  // radians, [0, pi]
   f32 mean_height = 0.0f;
+  TerrainResponse response = TerrainResponse::Default;
+  f32 glints = 0.0f;         // sand and snow: the fraction of 4 mm footprint cells holding a glint
+  f32 grain_mm = 0.0f;       // snow: optical grain diameter
+  f32 lobe = 0.0f;           // snow: the specular lobe's weight, in multiples of F0 = 0.04
+  f32 thickness = 0.0f;      // snow: its height in the height blend (a layer without a map: 0.5)
+  f32 wet_darkening = 0.0f;  // beach: the share of Lekner and Dorf's darkening at saturation
 };
 inline void set_terrain_layer(ResolveMaterial& layer, const TerrainLayerFields& f) noexcept {
   layer.uv_scale = f.pitch_mm;
   layer.uv_transform = Vec4{f.mean_colour.x, f.mean_colour.y, f.mean_colour.z, f.mean_roughness};
   layer.uv_offset = Vec4{f.weight, f.porosity, f.rotation, f.mean_height};
+  layer.flags &= ~(k_material_terrain_snow | k_material_terrain_sand | k_material_terrain_beach);
+  switch (f.response) {
+    case TerrainResponse::Default: break;
+    case TerrainResponse::WindSand:
+      layer.flags |= k_material_terrain_sand;
+      layer.emissive = Vec4{f.glints, 0.0f, 0.0f, layer.emissive.w};
+      break;
+    case TerrainResponse::BeachSand:
+      layer.flags |= k_material_terrain_sand | k_material_terrain_beach;
+      layer.emissive = Vec4{f.glints, f.wet_darkening, 0.0f, layer.emissive.w};
+      break;
+    case TerrainResponse::Snow:
+      layer.flags |= k_material_terrain_snow;
+      layer.emissive = Vec4{f.glints, f.grain_mm, f.lobe, layer.emissive.w};
+      layer.occlusion_strength = f.thickness;
+      break;
+  }
 }
 // `k_material_alpha_mask`: an alpha-tested material (glTF `alphaMode` MASK; docs/subsystems/
 // renderer.md, "Alpha-tested geometry"). Its clusters are drawn by the rasterizers' masked

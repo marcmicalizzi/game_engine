@@ -15,8 +15,10 @@
 
 #include <bit>
 #include <cmath>
+#include <cstring>
 #include <limits>
 #include <numbers>
+#include <tuple>
 
 using namespace engine;
 using namespace engine::renderer;
@@ -906,5 +908,216 @@ TEST_CASE(
   one_f.destroy();
   unfiltered.destroy();
   filtered.destroy();
+  device.destroy();
+}
+
+TEST_CASE("renderer: a layer's sand or snow response parses, packs and keeps every key") {
+  const test::TempDir tmp("terrain_response_parse");
+  const std::string scene = tmp.file("scene.json");
+  REQUIRE(io::write_file(scene, R"({"format":"engine.scene.v1","terrain":{"size":17,"extent":8,
+    "materials":{"layers":[{"name":"litter"},
+      {"name":"snow","response":"Snow","snow":{"grain_mm":1.5,"lobe":2,"glints":0.2,"thickness":0.9}},
+      {"name":"beach","response":"Sand","sand":{"kind":"Beach","wet_darkening":0.5}},
+      {"name":"erg","response":"Sand"}]}}})") == io::Status::Ok);
+  SceneDesc d;
+  std::string error;
+  REQUIRE_MESSAGE(read_scene_file(scene, d, error), error);
+  REQUIRE(d.terrain.materials.has_value());
+  const auto& layers = d.terrain.materials->layers;
+  CHECK(layers[0].response == scene::TerrainResponse::Default);
+  CHECK(layers[1].response == scene::TerrainResponse::Snow);
+  CHECK(layers[1].snow->grain_mm == 1.5f);
+  CHECK(layers[2].sand->kind == scene::TerrainSandKind::Beach);
+  CHECK_FALSE(layers[3].sand.has_value());
+  CHECK(terrain_materials_wind_sand(*d.terrain.materials));
+  // Packed into the record's words: a default layer writes none of them and sets no bit, so a
+  // palette without responses packs the table it always packed.
+  const auto pack = [](const scene::TerrainMaterialLayer& l) {
+    gfx::ResolveMaterial m;
+    m.emissive = Vec4{0, 0, 0, 1};
+    gfx::set_terrain_layer(m, terrain_layer_response(l));
+    return m;
+  };
+  const gfx::ResolveMaterial plain = pack(layers[0]);
+  CHECK(plain.flags == 0u);
+  CHECK(plain.emissive.x == 0.0f);
+  CHECK(plain.emissive.y == 0.0f);
+  CHECK(plain.emissive.z == 0.0f);
+  CHECK(plain.emissive.w == 1.0f);
+  CHECK(plain.occlusion_strength == 1.0f);
+  const gfx::ResolveMaterial snow = pack(layers[1]);
+  CHECK(snow.flags == gfx::k_material_terrain_snow);
+  CHECK(snow.emissive.x == 0.2f);
+  CHECK(snow.emissive.y == 1.5f);
+  CHECK(snow.emissive.z == 2.0f);
+  CHECK(snow.emissive.w == 1.0f);
+  CHECK(snow.occlusion_strength == 0.9f);
+  const gfx::ResolveMaterial beach = pack(layers[2]);
+  CHECK(beach.flags == (gfx::k_material_terrain_sand | gfx::k_material_terrain_beach));
+  CHECK(beach.emissive.x == 0.03f);  // the sand block's default glints
+  CHECK(beach.emissive.y == 0.5f);
+  const gfx::ResolveMaterial erg = pack(layers[3]);
+  CHECK(erg.flags == gfx::k_material_terrain_sand);
+  // The response is shading read at upload: no scene's container key moves with it.
+  scene::TerrainMaterials bare = *d.terrain.materials;
+  const u64 key = terrain_materials_hash(bare);
+  for (auto& l : bare.layers) {
+    l.response = scene::TerrainResponse::Default;
+    l.sand.reset();
+    l.snow.reset();
+  }
+  CHECK(terrain_materials_hash(bare) == key);
+  CHECK_FALSE(terrain_materials_wind_sand(bare));
+  // Refusals, each a sentence: a block beside another response, and numbers out of their ranges.
+  scene::TerrainMaterials m = *d.terrain.materials;
+  m.layers[0].snow = scene::TerrainSnow{};
+  CHECK_FALSE(validate_terrain_materials(m, &error));
+  CHECK(error.find("snow block") != std::string::npos);
+  m = *d.terrain.materials;
+  m.layers[1].snow->grain_mm = 6;
+  CHECK_FALSE(validate_terrain_materials(m, &error));
+  m.layers[1].snow->grain_mm = 1;
+  m.layers[1].snow->lobe = 0.5f;
+  CHECK_FALSE(validate_terrain_materials(m, &error));
+  m.layers[1].snow->lobe = 1;
+  CHECK(validate_terrain_materials(m, &error));
+  m.layers[2].sand->wet_darkening = 1.5f;
+  CHECK_FALSE(validate_terrain_materials(m, &error));
+  // The sand's detail block and a palette: alternatives, unless the palette has wind sand.
+  REQUIRE(io::write_file(scene, R"({"format":"engine.scene.v1","terrain":{
+    "materials":{"layers":[{"response":"Sand","sand":{"kind":"Beach"}}]},"detail":{}}})") ==
+          io::Status::Ok);
+  CHECK_FALSE(read_scene_file(scene, d, error));
+  CHECK(error.find("alternative surface-detail") != std::string::npos);
+  REQUIRE(io::write_file(scene, R"({"format":"engine.scene.v1","terrain":{
+    "materials":{"layers":[{"response":"Sand"}]},"detail":{}}})") == io::Status::Ok);
+  CHECK_MESSAGE(read_scene_file(scene, d, error), error);
+}
+
+TEST_CASE(
+    "renderer: a snow layer whitens by its grain, a beach darkens wet, a default is its bytes") {
+  gfx::Device device;
+  std::string error;
+  if (!device.create(gfx::DeviceOptions{}, &error)) {
+    MESSAGE("no device: " << error);
+    return;
+  }
+  const test::TempDir tmp("terrain_response_gpu");
+  // West: layer 0, white; east: layer 1, blue; north of z = 8 m both wet (the probe's masks).
+  const auto shoot = [&](scene::TerrainResponse west, scene::TerrainResponse east,
+                         CapturedFrame& out, Mat4& inv) {
+    SceneDesc desc;
+    desc.meshes.push_back("");
+    desc.terrain.enabled = true;
+    desc.terrain.size = 17;
+    desc.terrain.extent = 32;
+    desc.terrain.provider = "mask_probe";
+    desc.terrain.materials.emplace();
+    desc.terrain.materials->layer_budget = 2;
+    for (const auto& [name, tint, response] :
+         {std::tuple{"west", Vec3{1.0f, 1.0f, 1.0f}, west},
+          std::tuple{"east", Vec3{0.05f, 0.05f, 0.7f}, east}}) {
+      scene::TerrainMaterialLayer l;
+      l.name = name;
+      l.tint = tint;
+      l.porosity = 1.0f;
+      l.response = response;
+      if (response == scene::TerrainResponse::Sand) {
+        l.sand.emplace();
+        l.sand->kind = scene::TerrainSandKind::Beach;
+      }
+      desc.terrain.materials->layers.push_back(l);
+    }
+    desc.terrain.masks.emplace();
+    desc.cache = false;
+    desc.ddc = tmp.file("ddc");
+    SceneData data;
+    REQUIRE_MESSAGE(load_scene(desc, data, error), error);
+    RenderSettings settings;
+    settings.shadows = ShadowMode::Off;
+    ResolvedSettings resolved;
+    resolve_settings(settings, device.features(), &data, resolved);
+    if (check_availability(resolved, device.features()) != RenderAvailability::Ok) return false;
+    GpuScene scene;
+    REQUIRE_MESSAGE(scene.create(device, data, resolved, &error), error);
+    SceneRenderer renderer;
+    SceneRenderer::Desc rd;
+    rd.width = 160;
+    rd.height = 120;
+    REQUIRE_MESSAGE(renderer.create(device, scene, resolved, rd, &error), error);
+    FrameDesc frame;
+    frame.camera.position = WorldPos{0, 18, 14};
+    frame.camera.target = WorldPos{0, 0, 2};
+    frame.view_mode = static_cast<u32>(gfx::ResolveMode::Albedo);
+    CaptureChannels channels;
+    channels.depth = true;
+    REQUIRE_MESSAGE(renderer.render_offscreen(frame, &error), error);
+    REQUIRE_MESSAGE(renderer.capture(frame, channels, out, &error), error);
+    inv = inverse(renderer.views()[0].view_proj);
+    renderer.destroy();
+    scene.destroy();
+    return true;
+  };
+  CapturedFrame plain, snow, beach;
+  Mat4 inv;
+  if (!shoot(scene::TerrainResponse::Default, scene::TerrainResponse::Default, plain, inv)) {
+    MESSAGE("rendering unavailable on this device");
+    device.destroy();
+    return;
+  }
+  REQUIRE(shoot(scene::TerrainResponse::Snow, scene::TerrainResponse::Default, snow, inv));
+  REQUIRE(shoot(scene::TerrainResponse::Snow, scene::TerrainResponse::Sand, beach, inv));
+  const auto decode = [](f64 byte) {
+    const f64 c = byte / 255.0;
+    return c <= 0.04045 ? c / 12.92 : std::pow((c + 0.055) / 1.055, 2.4);
+  };
+  u32 east_changed = 0, east = 0, snow_dry = 0, beach_dry = 0, beach_wet = 0;
+  f64 snow_sum[3] = {}, plain_wet = 0, beach_dry_sum = 0, beach_wet_sum = 0;
+  for (u32 py = 0; py < plain.height; ++py)
+    for (u32 px = 0; px < plain.width; ++px) {
+      const u32 i = py * plain.width + px;
+      if (plain.depth[i] == 0) continue;
+      const f32 ndc_x = (static_cast<f32>(px) + 0.5f) / plain.width * 2.0f - 1.0f;
+      const f32 ndc_y = 1.0f - (static_cast<f32>(py) + 0.5f) / plain.height * 2.0f;
+      const Vec4 h = inv * Vec4{ndc_x, ndc_y, plain.depth[i], 1.0f};
+      const f32 x = h.x / h.w, z = h.z / h.w + 14.0f;
+      if (std::abs(x) < 2.5f || std::abs(z - 8.0f) < 2.5f || std::abs(x) > 30 || std::abs(z) > 30)
+        continue;
+      if (x > 0) {
+        // A layer without a response draws its bytes beside a snow layer.
+        ++east;
+        if (std::memcmp(&plain.color[i * 4], &snow.color[i * 4], 4) != 0) ++east_changed;
+        const f64 b = decode(beach.color[i * 4 + 2]);
+        if (z > 8) {
+          ++beach_wet;
+          beach_wet_sum += b;
+          plain_wet += decode(plain.color[i * 4 + 2]);
+        } else {
+          ++beach_dry;
+          beach_dry_sum += b;
+        }
+      } else if (z < 8) {
+        ++snow_dry;
+        for (u32 c = 0; c < 3; ++c)
+          snow_sum[c] += decode(snow.color[i * 4 + c]);
+      }
+    }
+  REQUIRE(east > 200);
+  REQUIRE(snow_dry > 200);
+  REQUIRE(beach_dry > 200);
+  REQUIRE(beach_wet > 200);
+  CHECK(east_changed == 0);
+  // Kokhanovsky's albedo at the default 0.25 mm grain: 0.9765, 0.9856, 0.9958 (the page's table),
+  // within the dither's code step.
+  const f64 want[3] = {0.9765, 0.9856, 0.9958};
+  for (u32 c = 0; c < 3; ++c)
+    CHECK(std::abs(snow_sum[c] / snow_dry - want[c]) < 0.006);
+  CHECK(snow_sum[2] > snow_sum[0]);
+  // The beach, saturated, keeps Lekner and Dorf's 0.735 of its blue (0.7) where porosity 1 kept
+  // Lagarde's 0.2.
+  const f64 ratio = (beach_wet_sum / beach_wet) / (beach_dry_sum / beach_dry);
+  MESSAGE("beach wet/dry " << ratio << ", plain wet " << plain_wet / beach_wet);
+  CHECK(std::abs(ratio - 0.4909 / (1.0 - 0.4744 * 0.7)) < 0.02);
+  CHECK(plain_wet / beach_wet < 0.2);
   device.destroy();
 }

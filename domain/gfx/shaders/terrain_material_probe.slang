@@ -88,3 +88,32 @@ void footprint_main(uint3 id : SV_DispatchThreadID) {
   const float mix = terrain_filter_combination(0.0625, loss, float3(loss, 0, 0));
   ((float4*)g_probe.output)[id.x] = float4(filtered, loss, legacy, mix);
 }
+
+// R99's responses (renderer.md, "Sand and snow"): the snow's albedo by grain, the lobe's weight as
+// the metallic word, Lekner and Dorf's wet darkening, and the glint at a footprint, at the far eye
+// probe_main uses, each against its double mirror in terrain_material_tests.cpp.
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void response_main(uint3 id : SV_DispatchThreadID) {
+  if (id.x >= g_probe.count) return;
+  const int i = int(id.x);
+  FrameEye eye = (FrameEye)0;
+  eye.cell = int3((i & 1) == 0 ? 6548 : -6548, 0, (i & 2) == 0 ? 1562500 : -3);
+  eye.local = float3(63.999, 0.125, -0.25);
+  eye.residual = float3(0.00001, 0, 0);
+  const float3 point = float3(float(i) * 0.0173, -float(i) * 0.25, float(i) * -0.0291);
+  const float3 n = normalize(float3(float(i % 3) - 1.0, 2.5, float(i % 5) - 2.0));
+  const float grain = 0.03 + float(i % 64) * 0.078;
+  const float a = float(i % 17) / 16.0;
+  const float w = 1.0 + float(i % 7) * 0.5;
+  const float footprint = 0.3 + float(i) * 0.137;
+  const float density = (i % 4) == 0 ? 1.0 : 0.6;
+  const float alpha = 0.1 + float(i % 9) * 0.07;
+  const TerrainGlint g =
+      terrain_glint(eye, point, n, footprint, density, alpha, (i % 2) == 0 ? 0x534E4F57u : 0x53414E44u);
+  float4* output = (float4*)g_probe.output;
+  output[4 * i] = float4(terrain_snow_albedo(grain), terrain_lobe_metallic(a, w));
+  output[4 * i + 1] = float4(terrain_wet_darkening(float3(a, 0.5 * a, 0.1)), 0.0);
+  output[4 * i + 2] = float4(g.normal, g.lit ? 1.0 : 0.0);
+  output[4 * i + 3] = float4(g.chance, g.draw, float(g.size_mm), 0.0);
+}

@@ -806,7 +806,8 @@ may be colour factors alone or name base colour (sRGB), an OpenGL (+Y) tangent-s
 and linear roughness read from R. Image paths resolve against the scene file. Missing images,
 invalid numbers, empty layers and a count exceeding the scene's `layer_budget` are refused.
 `materials` and the legacy sand `detail` block are alternative surface-detail paths; naming both
-is refused, so an authored block never silently disables requested sand ripples.
+is refused, so an authored block never silently disables requested sand ripples — unless a layer
+is wind sand, which draws the ripples over its own share (R99, "Sand and snow" below).
 
 ```json
 "materials": {
@@ -1022,6 +1023,58 @@ the resolve's median per frame against the plain palette, and the level's bytes,
 section. The level is held whole (`resident_mib`, 256 by default, refused above): the 1 km test
 scene is 1,089 tiles and 8.2 MB, 7.5 KB a 32 m tile; streaming it with the terrain's tiles is
 W25's remainder.
+
+**Sand and snow: a response per layer** (roadmap R99, 2026-11-02; the research and the numbers:
+[sand and snow](../experiments/sand-and-snow-substrates-2026-11-02.md)). A palette layer may name a
+`response` (`engine.scene.TerrainMaterialLayer` version 4, `Terrain` version 10) — `Default`, the
+layer as its maps and colour draw it, to the bit; `Sand`; or `Snow` — with its block of numbers,
+each defaulted from the page:
+
+```json
+{"name": "snow", "response": "Snow", "roughness_factor": 0.8,
+ "snow": {"grain_mm": 0.25, "lobe": 1, "glints": 0.1, "thickness": 0.7}},
+{"name": "beach_sand", "tint": [0.62, 0.55, 0.42], "porosity": 0.9, "response": "Sand",
+ "sand": {"kind": "Beach", "wet_darkening": 1, "glints": 0.03}}
+```
+
+- **Snow** needs no maps. Its albedo is its grain's — Kokhanovsky's spherical albedo
+  `exp(-sqrt(4πχ/λ · 16 d))` over Warren and Brandt's ice at 610, 550 and 465 nm, 0.977, 0.986,
+  0.996 at the default 0.25 mm and bluer as the grain coarsens — times the layer's `tint` (an old
+  snow's soot and dust) and, where the layer has a colour map, the map over its mean. `lobe` weighs
+  the specular lobe in multiples of the dielectric F0 0.04, carried exactly through the metallic word
+  with the diffuse kept (1, the default, is metallic 0: the visible's measured near-Lambertian snow
+  at roughness 0.8). `thickness` is the snow's height in the height blend (a layer without a height
+  map stands at 0.5), so snow lies on litter and soil and high rock shows through it.
+- **Sand** of `kind` `Wind` draws the scene's `detail` block — W42's ripples and grain,
+  [The sand close up](#the-sand-close-up) — over the wind-sand layers' blended share, which
+  `sample_terrain_material` returns as the detail share the resolve already weights the detail by;
+  a palette with a wind-sand layer is the one that may name `detail` beside `materials` (any other
+  is still refused), and only its root keeps `k_material_ground_detail`. `Beach` draws no ripples
+  and darkens where wet by Lekner and Dorf instead of by porosity: per channel, `0.4909 / (1 -
+  0.4744 a)` of its dry albedo `a` at saturation, scaled by the place's wetness and by
+  `wet_darkening`, so wet sand turns darker and more saturated (0.6 of a 0.4 sand, where porosity
+  0.9 gave 0.28), and its roughness loses half that factor.
+- **Glints**, both: the ground is cut into world-anchored cells of the smallest power-of-two
+  millimetres at least the pixel's footprint (from the frame's integer cell, never a world float);
+  a cell's integer hash decides whether it holds a facet, with chance `glints × min(1, 4 mm /
+  footprint)`, none past a 256 mm footprint; a facet replaces the layer's slope with its own normal,
+  drawn from GGX of the layer's roughness, and its roughness with 0.2. The resolve's own GGX lights
+  it for every light and shadows it as the pixel, so a facet flashes where sun, facet and eye line
+  up and twinkles as the eye moves. The path tracer has no footprint and draws none.
+
+**The composition.** Each layer's response is applied where the layer is sampled, once per layer on
+its record's `flags` (`k_material_terrain_snow`, `_sand`, `_beach`), never per texel; the layers then
+blend by their weights and the height blend exactly as before, so a response is weighted by its
+layer's coverage at the pixel, faded with its maps by the footprint, and shared by every reader of
+`sample_terrain_material` — the resolve, the ray-shadow resolve, the water's bottom and the path
+tracer. The response's numbers ride in the layer entry's emissive rgb and, for snow, its occlusion
+strength (`gfx::set_terrain_layer`): words a layer never read, so no record grows. A palette whose
+layers all say `Default` writes none of them and sets no bit, and every added operation in the
+shader sits behind an `any_snow`/`any_beach`/`any_wind` that such a palette never sets, so it
+draws its bytes; the response is also left out of the container's key, so no scene rebuilds. How
+many layers a tile may give a response is the per-tile budget's: any of its four. Not built (the
+page's remainder): a wrap or forward lobe shaped otherwise than GGX's, which need the light and so
+the resolve; the beach's swash marks and rills.
 **What a material table entry carries** (`gfx::ResolveMaterial`, 112 bytes; [gfx](gfx.md), "The
 material table"): the factors, five texture slots — base colour, metallic-roughness, normal,
 occlusion, emissive — a bindless sampler per slot, the occlusion strength, and one UV transform.

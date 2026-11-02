@@ -709,9 +709,54 @@ enum TerrainSampling : u8 {
   Stochastic
 }
 
+/// What a layer's substrate does beyond its maps (renderer.md, "Sand and snow"; R99). `Default` is
+/// the layer as its maps and colour draw it, to the bit; `Sand` adds glints and either wind
+/// ripples or a beach's wet darkening; `Snow` takes its albedo from its grain and adds glints, a
+/// forward-lobe weight and a thickness in the height blend, and needs no maps.
+enum TerrainResponse : u8 {
+  Default
+  Sand
+  Snow
+}
+
+/// Which sand (`TerrainSand.kind`): `Wind`, a desert's, draws the scene's `detail` ripples and
+/// grain over the layer's share; `Beach`, wave-washed and sorted, draws none and darkens where wet
+/// by Lekner and Dorf (1988) rather than by porosity.
+enum TerrainSandKind : u8 {
+  Wind
+  Beach
+}
+
+/// A `Sand` layer's numbers (renderer.md, "Sand and snow"; the grounding in
+/// docs/experiments/sand-and-snow-substrates-2026-11-02.md).
+struct TerrainSand @version(1) {
+  kind: TerrainSandKind = Wind
+  /// [0, 1]: how much of Lekner and Dorf's darkening a saturated beach shows (1, the model's own).
+  wet_darkening: f32 = 1
+  /// [0, 1]: the fraction of 4 mm footprint cells holding a glinting grain (quartz, mica); it falls
+  /// as the footprint grows. A design choice, not a measurement.
+  glints: f32 = 0.03
+}
+
+/// A `Snow` layer's numbers (same page).
+struct TerrainSnow @version(1) {
+  /// Optical grain diameter, [0.03, 5] mm: 0.1 to 0.4 for most snow (Kokhanovsky 2021), more as it
+  /// ages. The albedo follows from it per channel.
+  grain_mm: f32 = 0.25 @unit(mm)
+  /// [1, 4]: the specular lobe's weight in multiples of the engine's dielectric (F0 = 0.04). 1 is
+  /// the visible's measured near-Lambertian snow.
+  lobe: f32 = 1
+  /// [0, 1]: the fraction of 4 mm footprint cells holding a glinting facet; it falls as the
+  /// footprint grows. A design choice, not a measurement.
+  glints: f32 = 0.1
+  /// [0, 2]: the snow's height in the height blend; a layer without a height map stands at 0.5, so
+  /// 0.7 lies on litter and soil where its weight is within 0.2 of theirs, and high rock shows.
+  thickness: f32 = 0.7
+}
+
 /// One native-ground layer. Colour is sRGB; normals are OpenGL (+Y); roughness and mask are
 /// linear, read from R. Paths are relative to the scene. Layers composite in array order.
-struct TerrainMaterialLayer @version(3) {
+struct TerrainMaterialLayer @version(4) {
   name: string
   base_color: string
   normal: string
@@ -741,6 +786,12 @@ struct TerrainMaterialLayer @version(3) {
   /// normal map's slopes turn with it. 0 (the default) turns nothing, so strata, a road's ruts or
   /// a directed needle bed keep their direction.
   rotation_deg: f32 = 0 @since(3) @unit(deg)
+  /// The substrate's response (R99): `Default` draws exactly what the layer drew before it.
+  response: TerrainResponse = Default @since(4)
+  /// With `Sand` (absent: the block's defaults); refused with another response.
+  sand: TerrainSand? @since(4)
+  /// With `Snow` (absent: the block's defaults); refused with another response.
+  snow: TerrainSnow? @since(4)
 }
 
 struct TerrainMaterials @version(1) {
@@ -854,9 +905,10 @@ struct TerrainMasks @version(1) {
 /// file; every default added later is the record as it was, to the bit. Version 2 added the
 /// generator (a version 1 terrain reads as the waves it always drew), version 4 the provider name
 /// (ADR-0046), version 5 the wind's day and the storms' gains, version 6 sand detail, version 7
-/// authored tile sets, version 8 authored materials, and version 9 `masks`, ground materials by
-/// place. Absent optional blocks preserve the earlier behavior.
-struct Terrain @version(9) {
+/// authored tile sets, version 8 authored materials, version 9 `masks`, ground materials by
+/// place, and version 10 a material layer's `response` (sand and snow, R99). Absent optional
+/// blocks preserve the earlier behavior.
+struct Terrain @version(10) {
   /// Vertices a side. 2 to 4097.
   size: u32 = 1025
   /// Half the side, in metres: the terrain spans [-extent, extent] in x and z.

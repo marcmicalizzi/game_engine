@@ -611,8 +611,13 @@ void adopt_container(geometry::ClusterFileData& container_data, const std::strin
 // and only exists when the heightfield is the whole scene).
 bool load_terrain(const SceneDesc& desc, SourceMesh& out, geometry::ClusterLodMesh& lod,
                   geometry::ClusterPages& pages, std::string& error) {
-  if (desc.terrain.materials.has_value() && desc.terrain.has_detail) {
-    error = "terrain.materials and terrain.detail are alternative surface-detail paths; name one";
+  // A palette with a wind-sand layer draws the detail over that layer's share (R99, renderer.md
+  // "Sand and snow"); any other palette and the detail stay alternatives.
+  if (desc.terrain.materials.has_value() && desc.terrain.has_detail &&
+      !terrain_materials_wind_sand(*desc.terrain.materials)) {
+    error =
+        "terrain.materials and terrain.detail are alternative surface-detail paths; name one, or "
+        "give the palette a layer with \"response\": \"Sand\" of kind Wind";
     return false;
   }
   if (desc.terrain.materials.has_value() &&
@@ -2068,10 +2073,11 @@ bool read_scene_file(const std::string& path, const SceneFileOptions& options, S
     // The sand's detail (renderer.md, "The sand close up"): the scene's numbers, checked here so a
     // number the mechanism cannot draw is refused with the file rather than drawn wrong.
     out.terrain.has_detail = t.detail.has_value();
-    if (out.terrain.has_detail && out.terrain.materials.has_value()) {
-      error =
-          path +
-          ": terrain.materials and terrain.detail are alternative surface-detail paths; name one";
+    if (out.terrain.has_detail && out.terrain.materials.has_value() &&
+        !terrain_materials_wind_sand(*out.terrain.materials)) {
+      error = path +
+              ": terrain.materials and terrain.detail are alternative surface-detail paths; name "
+              "one, or give the palette a layer with \"response\": \"Sand\" of kind Wind";
       return false;
     }
     out.terrain.detail = t.detail.has_value() ? *t.detail : scene::TerrainDetail{};
