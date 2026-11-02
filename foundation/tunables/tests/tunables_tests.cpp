@@ -21,6 +21,8 @@ constexpr const char* k_variants[] = {"scalar", "avx2", "avx512"};
 tunables::Enum<Variant> t_variant{"test.tunables.variant", Variant::Scalar, k_variants,
                                   "Kernel variant"};
 
+tunables::String t_text{"test.tunables.text", "walk", "A name", 12};
+
 struct ResetAll {
   ResetAll() { tunables::reset_all(); }
   ~ResetAll() { tunables::reset_all(); }
@@ -134,6 +136,54 @@ TEST_CASE("tunables: Float, Bool, and Enum text and JSON forms") {
   CHECK(t_variant.set(Variant::Scalar));
   CHECK(t_variant.value_json() == JsonValue("scalar"));
   CHECK(t_variant.choices().size() == 3);
+}
+
+TEST_CASE("tunables: String holds one line of text, in text and JSON forms") {
+  ResetAll guard;
+  CHECK(t_text.kind() == tunables::Kind::String);
+  CHECK(std::string_view(tunables::kind_name(tunables::Kind::String)) == "string");
+  CHECK(t_text.get() == "walk");
+  CHECK(t_text.is_default());
+  const u32 v0 = t_text.version();
+  std::string error;
+  CHECK(t_text.set_from_text("  Walk Fast  ", &error));  // the spaces around it go, the case stays
+  CHECK(t_text.get() == "Walk Fast");
+  CHECK_FALSE(t_text.is_default());
+  CHECK(t_text.version() == v0 + 1);
+  CHECK(t_text.set("Walk Fast"));  // the same text: accepted, no version bump
+  CHECK(t_text.version() == v0 + 1);
+  CHECK(text_of(t_text) == "Walk Fast");
+  CHECK_FALSE(t_text.set_from_text("a name of thirteen", &error));  // past max_length 12
+  CHECK(error.find("test.tunables.text") != std::string::npos);
+  CHECK(error.find("12") != std::string::npos);
+  CHECK_FALSE(t_text.set("two\nlines"));
+  CHECK(t_text.get() == "Walk Fast");
+  CHECK(t_text.set_from_text("none", &error));
+  CHECK(t_text.set_from_text("", &error));  // empty is a value
+  CHECK(t_text.get().empty());
+  CHECK(t_text.set_from_json(JsonValue("a, b=c"), &error));  // JSON carries what a command line cannot
+  CHECK(t_text.get() == "a, b=c");
+  CHECK_FALSE(t_text.set_from_json(JsonValue(3), &error));
+  CHECK(error.find("string") != std::string::npos);
+  CHECK(t_text.value_json() == JsonValue("a, b=c"));
+  CHECK(t_text.default_json() == JsonValue("walk"));
+  const JsonValue d = t_text.describe();
+  CHECK(at(d, "kind") == JsonValue("string"));
+  CHECK(at(d, "max_length") == JsonValue(u64{12}));
+  CHECK(at(d, "modified") == JsonValue(true));
+  CHECK_FALSE(d.contains("min"));
+  // A command line sets it, and a JSON round trip restores it.
+  tunables::reset_all();
+  CHECK(t_text.get() == "walk");
+  CHECK(tunables::apply_overrides("test.tunables.text=idle2", &error));
+  CHECK(t_text.get() == "idle2");
+  const JsonValue saved = tunables::save_json();
+  tunables::reset_all();
+  Vector<std::string> problems;
+  CHECK(tunables::load_json(saved, &problems));
+  CHECK(t_text.get() == "idle2");
+  t_text.reset();
+  CHECK(t_text.is_default());
 }
 
 TEST_CASE("tunables: describe carries range or choices") {
