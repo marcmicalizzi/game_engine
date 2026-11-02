@@ -69,11 +69,13 @@ namespace engine::flora {
 // 11: researched broadleaf blade dimensions, independent of retained leaf allocation (G91).
 inline constexpr u32 k_flora_version = 11;
 
-// The conifers' impostor chain (G120; flora.md, "The impostor chain"): mixed into the source hash
-// of every species the conifer solver builds (`conifer` and the evergreen profiles: pine, spruce,
-// cedar, fir, hemlock, juniper) after `k_flora_version`, so their entries rebuild with the chain
-// and every other species keeps its key, where a bump of `k_flora_version` would rebuild every
-// tree of every cache. Bump it with a change to the conifers' chain alone.
+// The conifers' impostor chain (G120; flora.md, "The conifer's chain"): mixed into the source hash
+// a container of a species the conifer solver builds records (`conifer` and the evergreen profiles:
+// pine, spruce, cedar, fir, hemlock, juniper; `flora_source_hash_with` and the mesh generator's
+// plain hash), after `k_flora_version`, so their entries rebuild with the chain and every other
+// species keeps its key, where a bump of `k_flora_version` would rebuild every tree of every cache.
+// Not in `flora_source_hash` itself, the tree's shape, which the deadwood's key takes and which
+// the chain does not change. Bump it with a change to the conifers' chain alone.
 //
 // 1: the conifers gain the chain — one three-plane card group a live branch and the whole-tree
 //    star — baked with the needles' coverage kept (`ImpostorSpec::coverage_dither`).
@@ -108,8 +110,10 @@ bool read_flora_file(std::string_view text, FloraFile& out, std::string& error);
 // its generator section.
 std::string canonical_flora_json(const FloraFile& file);
 
-// The source hash a flora container records and its cache key is taken over: the canonical
-// parameters' bytes, the species, and `k_flora_version`.
+// The tree's parameters as a hash: the canonical parameters' bytes, the species, and
+// `k_flora_version` — what a flora container's source hash starts from (`flora_source_hash_with`
+// adds the conifers' `k_conifer_chain_version` and the bake's images) and what the deadwood keys
+// the tree it kills by.
 u64 flora_source_hash(const FloraFile& file);
 
 // Includes the bytes of base-colour images consumed by the LOD bake. Pure without a host;

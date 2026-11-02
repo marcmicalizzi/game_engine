@@ -220,15 +220,24 @@ void apply_flora_materials(const FloraFile& file, const materials::Pack* pack,
 
 namespace {
 // The species the conifer solver builds: the bare `conifer` and every evergreen profile, whose
-// chain (G120) keys them apart from every other species.
+// chain (G120) keys their containers apart from every other species'.
 bool builds_conifer(const std::string& species) {
   return species == k_species_conifer || detail::is_evergreen_species(species);
+}
+
+// A container's identity before the bake's images: the parameters' (`flora_source_hash`), and for
+// the conifers the chain's version (G120). Mixed here and not into `flora_source_hash`, which is
+// also a tree's shape to the deadwood that solves it without the chain and whose key it is part
+// of, so a dead spruce's entry does not rebuild for a star it never draws.
+u64 container_hash(const FloraFile& file) {
+  const u64 h = flora_source_hash(file);
+  return builds_conifer(file.species) ? hash_combine(h, k_conifer_chain_version) : h;
 }
 }  // namespace
 
 bool flora_source_hash_with(const FloraFile& file, const assets::MeshGeneratorInputs& inputs,
                             u64& out, std::string& error) {
-  out = flora_source_hash(file);
+  out = container_hash(file);
   if (inputs.hosts == nullptr || inputs.hosts->read_image == nullptr) return true;
   // The bake samples a material's base-colour, normal and roughness images (G93), so the three of
   // each of the two materials key the tree. The key moves exactly when the atlases' bytes can: a
@@ -325,16 +334,11 @@ u64 flora_source_hash(const FloraFile& file) {
   u64 h = hash_bytes(canonical.data(), canonical.size());
   h = hash_combine(h, hash_bytes(file.species.data(), file.species.size()));
   if (shrub_profile(file.species) != nullptr) return hash_combine(h, k_shrub_growth_version);
-  const u64 versioned =
-      hash_combine(h, file.species == "sward"   ? k_sward_version
-                      : file.species == "roots" ? k_roots_version
-                      : (file.species == k_species_fern || file.species == k_species_herb)
-                          ? k_ground_plants_version
-                          : k_flora_version);
-  // The conifers' chain (G120) keys the species the conifer solver builds and no other, so their
-  // entries rebuild with the star and every other species keeps the key it had.
-  return builds_conifer(file.species) ? hash_combine(versioned, k_conifer_chain_version)
-                                      : versioned;
+  return hash_combine(h, file.species == "sward"   ? k_sward_version
+                         : file.species == "roots" ? k_roots_version
+                         : (file.species == k_species_fern || file.species == k_species_herb)
+                             ? k_ground_plants_version
+                             : k_flora_version);
 }
 
 u64 flora_build_key(u64 source_hash, const geometry::ClusterLodOptions& lod, u32 page_bytes,
@@ -844,7 +848,7 @@ std::string_view text_of(std::span<const u8> bytes) {
 bool generator_source_hash(std::span<const u8> bytes, u64& out, std::string& error) {
   FloraFile file;
   if (!read_flora_file(text_of(bytes), file, error)) return false;
-  out = flora_source_hash(file);
+  out = container_hash(file);
   return true;
 }
 

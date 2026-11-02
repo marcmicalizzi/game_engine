@@ -777,10 +777,13 @@ slices). A plan that folds the laterals into their branch's spray has one spray 
 step merges nothing and the star stands over the needles alone. The mesh up to the cards is the
 plain solve's bytes. `engine.flora.Conifer` carries the two fields (`@version(3)`: `card_bake_px`
 64, `impostor_px` 256, 0 turns either off) and the evergreen profiles take `Tree`'s. The key:
-`k_conifer_chain_version` (1) is mixed into the source hash of every species the conifer solver
-builds and no other, and the bake's images key them as they key the broadleaves
-(`flora_source_hash_with`), so every conifer entry rebuilds and no broadleaf's moves —
-`k_flora_version` stays 11, since a bump would rebuild every tree of every cache.
+`k_conifer_chain_version` (1) is mixed into the source hash a container of every species the
+conifer solver builds records, and no other's, and the bake's images key them as they key the
+broadleaves (`flora_source_hash_with`), so every conifer entry rebuilds and no broadleaf's moves —
+`k_flora_version` stays 11, since a bump would rebuild every tree of every cache. The version is
+not in `flora_source_hash`, the tree's parameters, because the deadwood keys the tree it kills by
+that and solves it without the chain: mixed there first, it rebuilt 569 dead spruces and pines of
+the v25 cache for a star none of them draws ([the measurement](../experiments/conifer-far-form-2026-11-01.md)).
 
 #### The coverage under the mask
 
