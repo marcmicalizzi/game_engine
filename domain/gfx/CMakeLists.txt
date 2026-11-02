@@ -76,7 +76,7 @@ if(TARGET engine_gfx_tests)
                                           tests/raster_tests.cpp tests/mesh_shader_tests.cpp
                                           tests/capture_tests.cpp tests/swapchain_tests.cpp
                                           tests/shader_library_tests.cpp tests/cull_tests.cpp
-                                          tests/visibility_tests.cpp tests/occlusion_tests.cpp
+                                          tests/visibility_tests.cpp tests/occlusion_tests.cpp tests/occlusion_lod_tests.cpp
                                           tests/shading_tests.cpp tests/attributes_tests.cpp
                                           tests/vertex_path_tests.cpp tests/cone_tests.cpp
                                           tests/rt_tests.cpp tests/rt_cluster_tests.cpp

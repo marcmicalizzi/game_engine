@@ -528,6 +528,23 @@ f32 shadow_rest_texels_tunable() noexcept;
 // `renderer.shadow.hybrid_fit` (false): under the hybrid, the cascades begin at the ray distance
 // (`ShadowFit::begin_distance`; R103, renderer.md "Rays near, maps far").
 bool shadow_hybrid_fit_tunable() noexcept;
+// **The occlusion term of the LOD threshold** (R118; renderer.md, "Occlusion-aware LOD"): k, the
+// `renderer.lod.occluded_scale` default — a wholly hidden transition's thresholds are multiplied by
+// 1 + k — and the mip bias of the hidden share's footprint, `renderer.lod.occluded_bias`.
+// 0, off: on the v25 walk it returned 0.2-1.0 ms of an 11.6 ms 1080p frame for 2-16 % of the pixels
+// (docs/experiments/occlusion-lod-2026-11-02.md).
+inline constexpr f32 k_lod_occluded_scale = 0.0f;
+inline constexpr u32 k_lod_occluded_bias = 1u;
+// k for this frame: the tunable, or under `renderer.lod.occluded_cycle` n the cycle 0, k/2, k of n
+// frames each (frame f takes (f / n) % 3). Measurement aside, the tunable.
+f32 lod_occluded_scale_tunable(u64 frame_index) noexcept;
+// k or the debug counters on: a frame with no two-pass occlusion culling builds a Hi-Z for the
+// term.
+bool lod_occluded_active_tunable() noexcept;
+u32 lod_occluded_bias_tunable() noexcept;
+bool lod_occluded_histogram_tunable() noexcept;
+// `renderer.lod.occluded_foliage_only` (true): the term moves the coverage threshold alone.
+bool lod_occluded_foliage_only_tunable() noexcept;
 // What the frame actually shadows with, as a summary reports it: "rt", "csm", "hybrid", or "off".
 const char* resolved_shadow_name(const ResolvedSettings& resolved) noexcept;
 // "none", "identity", "wave", or "lattice" into `deform` and `deform_kind`.

@@ -269,6 +269,22 @@ struct LodView {
 f32 projected_error(Vec4 sphere, f32 error, const LodView& view) noexcept;
 bool lod_selects(const ClusterLodDesc& lod, const LodView& view) noexcept;
 bool lod_selects(const ClusterLodDesc& lod, const LodView& view, u32 coverage) noexcept;
+// **The occlusion term** (renderer.md, "Occlusion-aware LOD"; R118): the same rule with each
+// transition's two thresholds (`threshold_px` and `foliage_px`) multiplied by its own factor —
+// `own_scale` for the cluster's own transition, `parent_scale` for its parent's — which the cull
+// pass takes from each transition's sphere's hidden share in the Hi-Z (`lod_occluded_scale`). A
+// factor that is a function of the transition alone keeps the cut free of holes; scales of 1 are
+// the rule above bit for bit, which the two overloads above are.
+// `foliage_only` moves the coverage threshold alone (the renderer's default,
+// `renderer.lod.occluded_foliage_only`): a transition with no coverage error keeps its own.
+bool lod_selects(const ClusterLodDesc& lod, const LodView& view, u32 coverage, f32 own_scale,
+                 f32 parent_scale, bool foliage_only = false) noexcept;
+// `1 + k * h`, h the hidden share clamped to [0, 1] and k (`renderer.lod.occluded_scale`) at least
+// 0: the factor cluster_cull.slang's `occluded_threshold_scale` returns for a transition it reads.
+f32 lod_occluded_scale(f32 hidden, f32 k) noexcept;
+// `view` with both thresholds — or with `foliage_only` the coverage one — multiplied by `scale`,
+// the way the cull pass multiplies them.
+LodView lod_view_scaled(const LodView& view, f32 scale, bool foliage_only = false) noexcept;
 // The cross-fade's split of one transition: 0 when its coarser side is acceptable outright, 1 when
 // it is not at all, and between them across the band, by the smaller of the two projected errors
 // over its threshold. A cluster draws the pixels whose stable hash h (in [0, 1)) has

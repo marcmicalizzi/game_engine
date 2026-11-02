@@ -1263,6 +1263,105 @@ not built. The cull pass writes one 8-byte table entry per drawn pair and the ma
 one (`cull` 0.023 → 0.019 ms, `hw` 0.092 → 0.055: the band's cost is inside the noise of fewer pairs).
 The fade's tables are a `u32x2` per pair per view and one for the cascades (2.2 MB at the elder
 grove's 136,464 pairs).
+
+### Occlusion-aware LOD
+
+R118 (2026-11-02; [the measurements](../experiments/occlusion-lod-2026-11-02.md)). **The owner's idea**:
+a crown in a ring that does not lower its LOD, mostly hidden behind nearer leaves, gains nothing
+the eye can see from keeping its polygons — the few pixels it still shows would not tell its parent
+from it — while the trunk in front should keep them. The occlusion test was a yes or no, so a cluster
+with one visible pixel drew at the LOD its projected error earned, as if whole. The literature has
+the same move: Andújar, Saona-Vázquez, Navazo and Brunet's *hardly-visible sets* (Eurographics 2000,
+CGF 19(3)) lower an object's LOD by how much of it the occluders leave visible, and Zhang et al.'s
+hierarchical occlusion maps (SIGGRAPH 1997) cull approximately by an opacity threshold.
+
+**The rule.** Each transition's two thresholds — `lod.y` and `foliage_px` — are multiplied by
+`1 + k h`, where k is `renderer.lod.occluded_scale` and h is the **hidden share of the transition's own
+sphere**: the share of the texels of its screen rectangle in the Hi-Z (`occluded_bias` mips finer
+than the occlusion test reads, so at most 9 × 9 at the default 1) whose farthest depth is nearer than
+the sphere's nearest point (`hidden_fraction`, `cluster_cull.slang`). It is conservative as the test
+is: a texel holding one pixel of sky, of the crown itself or of anything farther is not hidden, so a
+crown seen through a nearer one's gaps reads only the blocks the nearer one covers whole. A wholly
+hidden transition's thresholds are `1 + k` times the plain ones, which bounds how far the term moves
+any cut: at most log2(1 + k) levels on a DAG whose error doubles a level. Past the root of a tree's
+DAG is its star ([Impostors are masked clusters](#impostors-are-masked-clusters)), so a crown far
+enough behind others falls to the star while the trunk in front keeps its polygons.
+
+**Why per transition and not per pair.** The cut is crack-free because the two clusters that test one
+transition — the finer side as its parent, the coarser side as its own — compute the same answer
+from the same sphere and error. A factor taken from each *cluster's* rectangle would break that and
+open holes. A factor that is any function of the transition's sphere keeps it: a transition is
+accepted or not, whoever asks, so a region is always covered by its finer side or its coarser side
+(`cluster_lod_tests.cpp` covers a terrain's ground plan cell by cell under a hash standing in for an
+arbitrary pyramid). What it gives up is the **monotone** cut: a parent sphere more hidden than its
+child's by more than the errors grow may accept a coarser level while the finer one still draws, and
+both cover that region — an overlap, never a hole, and only where the Hi-Z says the region is
+hidden. The CPU mirror is `geometry::lod_selects(lod, view, coverage, own_scale, parent_scale)`;
+scales of 1 are the rule bit for bit, and the cull pass's every threshold is the same float at k 0.
+
+**Only a transition the factor could decide reads the Hi-Z**: one whose smaller ratio of projected
+error to threshold lies in (1 − fade, (1 + k)(1 + fade)]. Below it the transition is accepted at any
+factor of at least 1, above it refused at any factor of at most 1 + k, and the skip is a function of
+the same inputs as the factor, so every pair that tests a transition skips or reads it alike.
+
+**Where the Hi-Z comes from.** Under two-pass occlusion culling (`--raster hw`/`vertex` without
+traced shadows) pass 1 reads last frame's pyramid and pass 2 pass 1's, the ones the culling reads;
+a pair pass 1 drew under last frame's factor is not tested again, so in motion the two passes may
+overlap a transition for a frame. **A frame without it — the ray path, and every frame with traced
+shadows, which is the owner's — had no Hi-Z at all** (`resolve_settings` turns occlusion culling off
+there, because the structures are built from one visible list). With the term on, such a frame builds
+one at the end of its visibility writes (after the trace, the rasterizers, or both), and the next
+frame's one cull pass reads it **for the term alone** (`gfx::k_cull_hiz_lod_only`): culling against
+last frame's depth there would drop a pair that came into view since, and a pair hidden from the eye
+must still be built, drawn or casting. So on the ray path the gain is the cut's level, not its pair
+count. In a frame that builds acceleration structures every view reads the cut view's pyramid
+through its projection, so one sphere has one hidden share in every view and [one cut for every
+view](#one-cut-for-every-view) holds. A frame whose last one built none starts from an empty pyramid
+(nothing hidden). The build costs `hiz`'s zone; k 0 with the counters off builds nothing and changes
+nothing.
+
+**What it changes, stated** (subjective fidelity, the owner 2026-11-01): pixels where a mostly hidden
+transition shows — a crown's slivers between nearer leaves, a crown's far side at its silhouette —
+are drawn from a coarser level. **Shadows follow the cut**: under traced shadows the structures are
+the frame's cut, so a hidden crown casts its coarser level's shadow, which falls on visible ground; the
+captures count those pixels with the rest. The cascaded maps keep the camera's plain cut (their
+blocks have no Hi-Z). The Hi-Z is last frame's, so a cut follows a camera move one frame late; a still
+scene's cut settles (`occlusion_lod_tests.cpp` holds its last two frames equal).
+
+**Foliage only, by default.** The hidden share is the bounding *rectangle's*, and a trunk is a thin
+thing in a large one: in a forest the rectangle of a trunk 20 m off is mostly nearer trees' leaves, so
+on both thresholds the term coarsened visible mid-distance trunks — the opposite of the owner's ask.
+`renderer.lod.occluded_foliage_only` (true; `gfx::k_cull_hiz_term_foliage`) moves the coverage
+threshold alone, so a transition with no coverage error — a trunk's, the ground's — keeps its own, and
+only foliage goes coarser; a tree whose next level is its star still switches whole, trunk included,
+because the star is the whole tree.
+
+**Off by default, measured.** On the owner's v25 walk (`--raster rt --shadows rt`, 1080p) the term
+returned 0.2–0.5 ms of an 11.6 ms frame on the foliage threshold at k 4–8 and 0.7–1.0 ms on both
+(1.6–2.1 ms of 46 ms at 11520 × 2160), all of it in the CLAS build of hidden swaying crowns, for 2–7 %
+of the pixels changed at the markers on foliage alone and 8–16 % on both. **81 % of the drawn pairs
+were wholly hidden**, but of those at least half hidden 63 % were already at their DAG's root and 36 %
+more than five times from their next level: a threshold factor reaches about one in a hundred. So
+`k_lod_occluded_scale` is 0 and the frame is the one it was; [the measurements](../experiments/occlusion-lod-2026-11-02.md)
+name the two levers that would return the hidden forest (a pair's own visible pixels from last
+frame's ids instead of its rectangle, and a shadow-only representation for what the eye never sees).
+
+**Knobs.** `renderer.lod.occluded_scale` (k; default `k_lod_occluded_scale`, 0),
+`renderer.lod.occluded_foliage_only` (true), `renderer.lod.occluded_bias` (1), and two measurement
+switches: `renderer.lod.occluded_cycle` n (frame f takes k × ((f / n) mod 3) / 2,
+so one flight measures 0, k/2 and k) and `renderer.lod.occluded_histogram` (the drawn pairs' hidden
+shares by tenths and what the term changed, one log line a frame, counted by the GPU into the cull
+blocks' host-visible buffer — `gfx::k_hidden_*`).
+
+**What holds.** `occlusion_lod_tests.cpp`: a bumpy sphere's DAG behind a screen pierced by holes, one
+cull pass a frame against last frame's pyramid — at k 0 the crown's cut is the same behind the screen
+and alone; at k 4 it is coarser than at k 0 and than alone, the screen's cut does not move, every
+changed pixel is one where the crown shows in one picture or the other, the last two frames draw
+the same pairs, and on the foliage threshold alone this crown, which has no coverage error, keeps its
+cut and its picture byte for byte. `cluster_lod_tests.cpp`: the CPU rule's factors, and no hole under any per-transition
+factor. The two-pass occlusion test, the cull test's GPU-against-CPU cut and the cone test run with
+the term off and are unchanged.
+
 ### The opaque shadow proxy
 
 Roadmap R109, stage 1 (2026-10-28; [the measurement](../experiments/shadow-proxy-2026-10-28.md)). Under ray-traced shadows an alpha-tested caster is built non-opaque, and the resolve's shadow query decides each of its candidates itself (`shadow_ray_blocked` in `visibility_resolve.slang`): the candidate's entry, its instance, its cluster's material, the triangle's three UVs, and a level-0 sample of the base colour's alpha — and a candidate the mask rejects lets the traversal go on to the next one. On the forest that loop is most of the rays' cost: 34.3 ms of the resolve at 11520×2160 on the expanded forest, against 11.6 with every caster forced solid (`renderer.shadow.opaque_rays`, a measurement switch that draws the wrong picture).

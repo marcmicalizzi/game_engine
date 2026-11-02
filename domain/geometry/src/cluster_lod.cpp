@@ -1378,8 +1378,28 @@ f32 over_threshold(f32 projected, f32 threshold) noexcept {
 }  // namespace
 
 bool lod_selects(const ClusterLodDesc& lod, const LodView& view, u32 coverage) noexcept {
-  return transition_acceptable(lod.own, lod.own_error, lod_coverage_own(coverage), view) &&
-         !transition_acceptable(lod.parent, lod.parent_error, lod_coverage_parent(coverage), view);
+  return lod_selects(lod, view, coverage, 1.0f, 1.0f);
+}
+
+LodView lod_view_scaled(const LodView& view, f32 scale, bool foliage_only) noexcept {
+  LodView scaled = view;
+  if (!foliage_only) scaled.threshold_px = view.threshold_px * scale;
+  scaled.foliage_px = view.foliage_px * scale;
+  return scaled;
+}
+
+bool lod_selects(const ClusterLodDesc& lod, const LodView& view, u32 coverage, f32 own_scale,
+                 f32 parent_scale, bool foliage_only) noexcept {
+  return transition_acceptable(lod.own, lod.own_error, lod_coverage_own(coverage),
+                               lod_view_scaled(view, own_scale, foliage_only)) &&
+         !transition_acceptable(lod.parent, lod.parent_error, lod_coverage_parent(coverage),
+                                lod_view_scaled(view, parent_scale, foliage_only));
+}
+
+f32 lod_occluded_scale(f32 hidden, f32 k) noexcept {
+  if (!(k > 0.0f)) return 1.0f;
+  const f32 h = hidden > 0.0f ? (hidden < 1.0f ? hidden : 1.0f) : 0.0f;
+  return 1.0f + k * h;
 }
 
 f32 lod_fade_split(Vec4 sphere, f32 error, f32 coverage, const LodView& view,
