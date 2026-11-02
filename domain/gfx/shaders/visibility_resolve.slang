@@ -183,6 +183,15 @@ static const uint k_stop_light_shadows = 6u;
 static const uint k_stop_sky = 7u;
 static const uint k_stop_water = 8u;  // never a word: what only the picture (0) does
 static uint g_stop = 0u;
+// The word's counting bit (gfx::k_resolve_count_rays; R115 stage 2): a pixel that asks the sun ray
+// writes what the ray did — its non-opaque candidates and the masks it sampled — instead of a
+// colour. `g_count` is the bit, and the two counters are the sun ray's, which `shadow_ray_blocked`
+// adds to only while `g_count_sun` says the ray it traces is the sun's.
+static const uint k_stop_count = 0x100u;
+static bool g_count = false;
+static bool g_count_sun = false;
+static uint g_sun_candidates = 0u;
+static uint g_sun_masks = 0u;
 // Whether this frame leaves `stage` out: it stops at a stage before it.
 bool stop_skips(uint stage) { return g_stop != 0u && g_stop < stage; }
 
@@ -262,6 +271,8 @@ struct FullscreenOut {
 // is not: it has no gradient to band, and it is the clear the pass already wrote.
 float4 sky_pixel(ResolveParams* params, float2 source, uint2 pixel) {
   if (params->mode == 11 || params->mode == 12) return float4(0, 0, 0, 1);
+  // The sun ray's counts (R115 stage 2): an empty pixel asks nothing.
+  if (g_count) return float4(0, 0, 0, 1);
   // The split before the sky's stage: the stand-in's flat colour, written (R115).
   if (stop_skips(k_stop_sky)) return params->sky;
   if (params->sky_params == 0) {
@@ -334,6 +345,21 @@ float2 panini_source_ndc(ResolveParams* params, float2 ndc) {
   return float2(tan(theta) / params->source_x, ndc.y / max(s * cos_theta, 1e-6));
 }
 
+// `candidate_keeps` (alpha_mask.slang), counting the masks the sun's ray samples (`g_sun_masks`)
+// for the stop word's counting bit (R115 stage 2).
+bool candidate_keeps_counted(MaskTables tables, uint64_t clusters, uint64_t triangles,
+                        InstanceDesc instance, uint cluster_index, uint primitive,
+                        float2 barycentrics, uint pair, uint2 pixel) {
+  if (tables.materials == 0) return true;
+  const uint material = pair_material(tables, instance, cluster_index);
+  if (!material_is_masked(tables, material)) return true;
+  if (!fade_keeps(tables, pair, pixel)) return false;
+  if (g_count_sun) ++g_sun_masks;
+  ClusterDesc* all = (ClusterDesc*)clusters;
+  const float2 uv = hit_uv(tables, triangles, all[cluster_index], primitive, barycentrics);
+  return mask_keeps_level0(mask_material(tables, material), uv);
+}
+
 // Is anything between `origin` and a light `t_max` away in direction `direction`? One ray query
 // with the terminate-on-first-hit flag, which is what a shadow ray wants: any hit ends the
 // traversal and no hit shader runs. False without the shadow bit, without a scene, when the light
@@ -389,6 +415,7 @@ bool shadow_ray_blocked(ResolveParams* params, uint bit, float3 origin, float3 d
       // masked clusters carry a byte (anything else non-opaque is solid already), so a cluster
       // with none, or past the table, reads 0 and asks its mask as before. A fading pair still
       // keeps only the pixels its band gives it, as the mask's answer would.
+      if (g_count_sun) ++g_sun_candidates;
       if (params->shadow_coverage != 0 && entry.y < params->shadow_coverage_count) {
         uint* coverage = (uint*)params->shadow_coverage;
         const uint byte = (coverage[entry.y >> 2] >> ((entry.y & 3u) * 8u)) & 0xffu;
@@ -397,9 +424,9 @@ bool shadow_ray_blocked(ResolveParams* params, uint bit, float3 origin, float3 d
           continue;
         }
       }
-      if (candidate_keeps(masks, params->clusters, params->triangles, instance, entry.y,
-                          masked.CandidatePrimitiveIndex(), masked.CandidateTriangleBarycentrics(),
-                          pair, g_fade_pixel)) {
+      if (candidate_keeps_counted(masks, params->clusters, params->triangles, instance, entry.y,
+                             masked.CandidatePrimitiveIndex(),
+                             masked.CandidateTriangleBarycentrics(), pair, g_fade_pixel)) {
         masked.CommitNonOpaqueTriangleHit();
       }
     }
@@ -863,7 +890,8 @@ float4 empty_pixel(ResolveParams* params, float2 source, uint2 noise_pixel) {
 [shader("fragment")]
 float4 fs_resolve(FullscreenOut in) : SV_Target {
   ResolveParams* params = (ResolveParams*)g_push.params;
-  g_stop = params->resolve_stop;
+  g_stop = params->resolve_stop & 0xffu;
+  g_count = (params->resolve_stop & k_stop_count) != 0u;
   // SV_Position is in the target's pixels; this view's rectangle starts at (view_x, view_y).
   // Without a resample the picture's extent *is* the source's, so `out_width` and `out_height` are
   // read only where they can differ — which is why a caller that draws one rectilinear view fills
@@ -912,6 +940,7 @@ float4 fs_resolve(FullscreenOut in) : SV_Target {
     uint* tiles = (uint*)params->coverage;
     if (tiles[(pixel.y >> 5) * params->coverage_pitch + (pixel.x >> 5)] == 0) {
 #ifdef RESOLVE_WATER
+      if (g_count) return float4(0, 0, 0, 1);
       return empty_pixel(params, source, noise_pixel);
 #else
       return sky_pixel(params, source, noise_pixel);
@@ -921,6 +950,7 @@ float4 fs_resolve(FullscreenOut in) : SV_Target {
   uint64_t* visibility = (uint64_t*)params->visibility;
   const uint64_t value = visibility[pixel.y * params->width + pixel.x];
 #ifdef RESOLVE_WATER
+  if (value == 0 && g_count) return float4(0, 0, 0, 1);
   if (value == 0) return empty_pixel(params, source, noise_pixel);
 #else
   if (value == 0) return sky_pixel(params, source, noise_pixel);
@@ -973,7 +1003,7 @@ float4 fs_resolve(FullscreenOut in) : SV_Target {
 #ifdef RESOLVE_WATER
   // The open sea in front of a surface that is not water (water.md, "To the horizon"): the ground
   // below the level, seen through the plane, is under the sea.
-  if ((material.flags & k_material_water) == 0 && !stop_skips(k_stop_water)) {
+  if ((material.flags & k_material_water) == 0 && !stop_skips(k_stop_water) && !g_count) {
     float4 sea;
     if (open_water_pixel(params, source, noise_pixel, true, length(from_eye), s.position, sea))
       return sea;
@@ -1144,6 +1174,7 @@ float4 fs_resolve(FullscreenOut in) : SV_Target {
   // The plain modules have no branch at all (RESOLVE_WATER, above), and draw a water material, as
   // every reader but this one does, as an untextured dielectric of its shallow colour.
 #ifdef RESOLVE_WATER
+  if (g_count && (material.flags & k_material_water) != 0) return float4(0.0, 0.0, 64.0 / 255.0, 1.0);
   if ((material.flags & k_material_water) != 0 && !stop_skips(k_stop_water)) {
     color = water_pixel(params, geo, instance, visible_index, entry.y, id & 0xff, source, s,
                         from_eye, material, ray_bias);
@@ -1154,10 +1185,17 @@ float4 fs_resolve(FullscreenOut in) : SV_Target {
     // was not asked.
     float sun_visibility = 1.0;
     if (dot(surface.normal, params->sun.xyz) > 0.0) {
+      g_count_sun = g_count;
       const float v = stop_skips(k_stop_sun_shadow)
                           ? 1.0
                           : shadow_visibility(params, k_shadow_sun, 0u, s.position, s.geometric,
                                               ray_bias, params->sun.xyz, 1e30);
+      g_count_sun = false;
+      // The sun ray's counts (gfx::k_resolve_count_rays): candidates, masks, and what it found.
+      if (g_count) {
+        return float4(float(min(g_sun_candidates, 255u)) / 255.0,
+                      float(min(g_sun_masks, 255u)) / 255.0, v > 0.0 ? 1.0 : 128.0 / 255.0, 1.0);
+      }
       sun_visibility = v;
       if (v > 0.0) {
         float3 sun = float3(params->sun.w);
@@ -1165,6 +1203,7 @@ float4 fs_resolve(FullscreenOut in) : SV_Target {
         color = brdf_direct(surface, params->sun.xyz, sun * v);
       }
     }
+    if (g_count) return float4(0.0, 0.0, 64.0 / 255.0, 1.0);  // the sun was not asked
     // The hemisphere is the whole indirect term until the lighting passes exist: the sky above the
     // horizon and the ground below it — the scene's ground albedo under this frame's sun and sky,
     // `ground_radiance` — blended by how much of the normal's cosine lobe each half fills

@@ -269,6 +269,13 @@ tunables::Float shadow_rest_texels{
     "renderer.shadow.rest_texels", static_cast<f64>(k_shadow_rest_texels), 0.0, 64.0,
     "A cascade past the nearest draws a deformed instance at rest when its reach from the rest "
     "pose is under this many of its texels (R103); 0 poses every cascade"};
+// R115 stage 2: the measurement sweep over the sun ray's rules (renderer.md, "Where the resolve's
+// time goes").
+tunables::Bool shadow_sweep{
+    "renderer.shadow.sweep", false,
+    "Measurement only: frame f takes the sun ray's rule (f / 8) % 6 — as set, opaque, the proxy "
+    "at 0.5, 0.3, 0.2, as set counting the sun ray's work (renderer.md, Where the resolve's time "
+    "goes; the proxy's table is baked at load)"};
 tunables::Bool shadow_hybrid_fit{
     "renderer.shadow.hybrid_fit", false,
     "Under the hybrid, fit the cascades from the ray distance out rather than from the near plane "
@@ -284,6 +291,33 @@ u32 resolve_stop_tunable(u64 frame_index) noexcept {
   const u32 choice = static_cast<u32>(resolve_stop_after.get());
   if (choice < gfx::k_resolve_stops) return choice;
   return static_cast<u32>(frame_index % gfx::k_resolve_stops);
+}
+ShadowRayRule shadow_ray_rule(u64 frame_index, f32 opaque_coverage) noexcept {
+  ShadowRayRule rule;
+  rule.opaque = shadow_opaque_rays.get();
+  rule.opaque_coverage = opaque_coverage;
+  if (!shadow_sweep.get()) return rule;
+  switch ((frame_index / gfx::k_resolve_stops) % k_shadow_sweeps) {
+    case 1:
+      rule = ShadowRayRule{};
+      rule.opaque = true;
+      break;
+    case 2:
+      rule = ShadowRayRule{};
+      rule.opaque_coverage = 0.5f;
+      break;
+    case 3:
+      rule = ShadowRayRule{};
+      rule.opaque_coverage = 0.3f;
+      break;
+    case 4:
+      rule = ShadowRayRule{};
+      rule.opaque_coverage = 0.2f;
+      break;
+    case 5: rule.count = true; break;
+    default: break;  // the frame as set
+  }
+  return rule;
 }
 bool normal_filter_tunable() noexcept { return material_normal_filter.get(); }
 f32 shadow_rest_texels_tunable() noexcept { return static_cast<f32>(shadow_rest_texels.get()); }
@@ -453,6 +487,9 @@ void resolve_settings(const RenderSettings& requested, const gfx::DeviceFeatures
   // The opaque shadow proxy is the shadow rays' (R109): read once, here, so a scene bakes its
   // clusters' coverage when it is made and every frame of it reads the same threshold.
   out.shadow_opaque_coverage = out.shadows ? static_cast<f32>(shadow_opaque_coverage.get()) : 0.0f;
+  // The proxy's table, baked at load, which the measurement sweep's proxy rules read too (R115).
+  out.shadow_coverage_table =
+      out.shadows && (out.shadow_opaque_coverage > 0.0f || shadow_sweep.get());
   // More than one view needs the cull pass: every view's draw reads its own run of the visible
   // list, and there is no run without one. The direct path draws one view and one only, because
   // it writes color rather than a visibility buffer and has nowhere to put a second rectangle.

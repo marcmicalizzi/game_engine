@@ -119,3 +119,87 @@ The shore pose draws the same bytes run after run, and there the lever moved 86 
 - One frame clock, at 15:00, with the moon up and one fire. A night, a dusk with the fire as the key light, or a scene with the stand-in lights on (`--no-lights` off: two orbiting point lights the size of the scene) are other cases. There the rule traces what is bright, by construction, but nothing here measures it.
 - The owner's interactive frame also carries the game module, the animals' animation and the present. The GPU frames here are offscreen and without the game. The owner's 55–80 ms in the forest against 52.9 here, and this page's sea view against the owner's 12 ms, are different views: a single 11520 view spans 141°.
 - The split's stages are cumulative and measured on separate frames. A stage's cost is the difference of two medians of 8, each within about ±1.5% frame to frame. The increments under 0.1 ms are at the noise.
+
+## Stage 2: the walk through the woods, and the sun ray's split (2026-11-01)
+
+The owner walked v25 through denser woods (the lab run `reports/lab/20261101-115716-655`, markers 1 → 2, 19 s) and recorded 62 ms a frame — the resolve 38, the primary trace 12.8, the cluster build 5.3 — over 1.44 million visible clusters and 7.8 thousand shadow casters, and plays it at 15–20 fps at 11520×2160. This stage flies that walk at both widths with every resolve stage and every sun-ray rule interleaved in one flight, counts what the sun's ray does per pixel, and weighs the levers against the masks' cost ([renderer](../subsystems/renderer.md#what-the-sun-rays-masks-cost-and-what-does-not-buy-it-back) has the rules that follow).
+
+### How it was measured
+
+- **The walk** is a camera path of the run's records 6693–6993 (marker 1 at pose time 197.7 s to marker 2 at 216.6 s), one key a record at the records' `pose_position`, `pose_yaw` and `pose_pitch`, fov 55°, four path frames a record (1,201 frames: the walk flown four times slower than walked, so the cycles see all of it), after W82's `make-path.ps1`.
+- **One flight measures everything**: `renderer.resolve.stop_after=cycle` (frame f stops after stage f mod 8) with `renderer.shadow.sweep=true` (frame f takes the sun ray's rule (f / 8) mod 8 in the build measured, f0f4ade7: as set, every caster solid, the proxy at 0.5, 0.3 and 0.2, the mask at the ray's footprint with the pixel's cone and with the sun's disc, as set with the counting bit; the two footprint rules were taken out after this measurement and the sweep now has six). `--benchmark` writes each path frame three times (its repeats), so every cell — a stage of a rule — is the **median of 57 frames** spread along the whole walk. 120 warm-up frames at marker 1.
+- **The flags** are the owner's without the game module: the v25 `scene.json`, the v22 materials, the coordinator's copy of the derived-data cache (not written to), `--terrain-tiles --terrain-far 6 --time-rate 0 --world-rate 1 --time-of-day 15 --no-lights --lod 1 --deform-pool-mib 64 --rt-budget-mib 0 --raster rt --shadows rt`, flora motion at wind 0.7, offscreen, 8-bit; and the same with `--raster hw`.
+- **The machine**: RTX 5090, `msvc-release` at f0f4ade7, each run under the GPU lock with `--wait-quiet 120`. At the start of every run the GPU was idle (0%) with 19.7–20.3 GB of its memory held by other processes, and other processes used 7.8–20.1% of the CPU; at the end 7.5–27.1%, and the GPU 0–100% (the run's own last frames). The GPU numbers are the pass timers'.
+- **The pictures and the counts**: one more process at 3840×2160 held marker 1's pose and marker 2's (`--world-rate 0 --no-medium`, so every capture is the same instant and the codes are the resolve's), `--marker-captures` at frames whose rule is each rule once and the as-set rule twice. The as-set captures of each marker are **identical run to run** (0 pixels differ), so every difference below is the rule's.
+
+**What this replay does not reproduce.** At 11520×2160 the flight draws the owner's cut — 1.47 million visible clusters at the median, the cluster build 5.3 ms — but resolves in 22.5 ms where the owner's record says 38–43, and traces its primary rays in 9.6 where it says 12.8–16; at 3840×2160 it draws 0.86 million clusters and resolves in 7.2. The owner's run carried the game module (416 animals, their decisions, the fire), an HDR10 window and a live session, none of which an agent may run. The game adds no lights (no light call in its sources), so the gap is something else it brings or the session's own load; the owner's walk with `--tunable renderer.resolve.stop_after=cycle` would split it the same way.
+
+### The walk's curves
+
+Cumulative resolve milliseconds by stage, the frame as set (`--shadows rt`):
+
+| stage | 3840, `rt` | 11520, `rt` | 3840, `hw` | 11520, `hw` |
+|---|---:|---:|---:|---:|
+| decode | 0.12 | 0.36 | 0.12 | 0.35 |
+| reconstruct | 0.38 | 1.04 | 0.37 | 1.01 |
+| material | 2.21 | 6.66 | 2.20 | 6.59 |
+| lighting | 2.49 | 7.58 | 2.48 | 7.48 |
+| sun shadow | 7.06 | 22.21 | 6.93 | 22.50 |
+| light shadows | 7.14 | 21.88 | 6.96 | 22.37 |
+| sky | 7.44 | 22.44 | — | — |
+| **the picture (+ water)** | **7.19** | **22.52** | **7.06** | **22.99** |
+
+The frame's passes (medians of the picture's frames):
+
+| ms | 3840, `rt` | 11520, `rt` | 3840, `hw` | 11520, `hw` |
+|---|---:|---:|---:|---:|
+| primary visibility: the trace (`trace`) or the mesh rasterizer (`hw`) | 3.87 | 9.58 | 3.00 | 7.51 |
+| the chain (`rt`: records, cluster build, bottom and top level) | 5.56 | 7.14 | 5.53 | 6.78 |
+| of it the cluster build (`clas`) | 3.93 | 5.31 | 3.74 | 5.01 |
+| the deformed-vertex pool (`deform`) | 1.30 | 1.85 | 1.67 | 2.19 |
+| cull | 0.38 | 0.39 | 0.38 | 0.39 |
+| frame passes (the medium) | 0.82 | 1.87 | 0.81 | 2.04 |
+| resolve | 7.19 | 22.52 | 7.06 | 22.99 |
+| **GPU frame** | **19.00** | **42.91** | **18.69** | **42.71** |
+| visible clusters / shadow casters | 855,220 / 4,247 | 1,467,152 / 10,926 | the same | the same |
+
+- **The sun's ray is two thirds of the resolve** at both widths: 14.6 of 22.5 ms at 11520, 4.6 of 7.2 at 3840. The lights' stage is nothing (stage 1's lever), the sky and the water 0.3–0.6, and the material 5.6 at 11520 and 1.8 at 3840, still the second item.
+- **The mesh rasterizer against the trace**: 7.5 against 9.6 ms at 11520 and 3.0 against 3.9 at 3840 over the same 1.47 million clusters, and the resolve does not change with it (23.0 against 22.5, inside the noise). The frame does not either (42.7 against 42.9): the shadows keep the chain, and the hw path's pool pass is 0.3 ms dearer, which takes most of the 2 ms back. Under traced shadows the trace is not the lever.
+
+### The sun ray's split
+
+The sun stage's own milliseconds (the sun-shadow stage less the lighting stage, each a median of 57 frames) by rule, and the picture's change at marker 1 (3840×2160, against the as-set capture; pixels whose largest channel moved, and how many by more than 16 codes):
+
+| rule | 3840 `rt` | 11520 `rt` | 3840 `hw` | 11520 `hw` | marker 1: pixels changed (> 16 codes) |
+|---|---:|---:|---:|---:|---|
+| as set: every mask at level 0 | **4.57** | **14.63** | 4.45 | 15.02 | — (0 run to run) |
+| every caster solid (`opaque_rays`) | 0.69 | 2.43 | 0.67 | 2.60 | 1,019,878, 12.3% (910,338) |
+| the proxy at 0.5 | 4.12 | 14.41 | 4.01 | 14.89 | 362,738, 4.4% (353,281) |
+| the proxy at 0.3 | 3.69 | 11.90 | 3.58 | 12.41 | 408,761, 4.9% (394,234) |
+| the proxy at 0.2 | 2.92 | 8.98 | 2.78 | 9.29 | 776,305, 9.4% (698,570) |
+| the mask at the footprint, the pixel's cone | 5.44 | 16.37 | 5.27 | 17.13 | 363,804, 4.4% (328,051) |
+| the mask at the footprint, the sun's disc | 7.60 | 25.11 | 7.34 | 25.80 | 1,506,631, 18.2% (1,443,597) |
+
+At marker 2 the footprint moved 177,345 pixels (2.1%) with the pixel's cone and 2,171,646 (26.2%) with the disc's. The largest channel difference was 108–109 codes at marker 1 and 201 at marker 2 for every rule: whole patches of sun turned to shade or back.
+
+**What the ray does**, counted (the stop word's counting bit, marker 1 and marker 2 at 3840×2160, the rule as set):
+
+| | marker 1 | marker 2 |
+|---|---:|---:|
+| pixels asking the sun / reaching it / blocked | 6,291,256 / 2,806,539 / 3,484,717 | 4,648,999 / 1,084,872 / 3,564,127 |
+| non-opaque candidates per ray: mean (reaching / blocked) | 1.77 (1.11 / 2.31) | 1.87 (1.33 / 2.04) |
+| candidates per ray: median, 90th, 99th percentile | 1, 5, 13 | 1, 4, 13 |
+| masks sampled per ray: mean (reaching / blocked) | 1.61 (1.04 / 2.07) | 1.76 (1.29 / 1.90) |
+| masks sampled per ray: median, 90th, 99th percentile | 1, 4, 12 | 1, 4, 12 |
+
+**A pixel buys one or two mask decisions in dense canopy, and the tail a dozen.** The masks' 3.9 ms at 3840 is about ten million decisions. The cost is the shape of each: a dozen dependent loads (the hit's entry, its pair, the instance, the cluster's material, the material, the cluster, the triangle, three UVs, the texel) behind the traversal's hand-back to the shader, and a warp of 32 rays waits for its longest, which the 90th and 99th percentiles put at 5 to 13. That is why the footprint lost: the texel fetch is one link of the chain, and the lever added three (the texel table, the mesh's grid step, the receiver's derivatives for every pixel that asks), while a coarse level, which keeps a card's coverage but not its holes, changed which rays get through. With the disc's cone (a 20 m crown's cone is 19 cm across) the decisions were coarse enough to move a fifth of the picture, and its added time suggests the rays that went through met more candidates (not counted: the counting bit was flown with the rule as set only).
+
+### The levers, against the brief's rule
+
+The rule: a change under a few codes in the penumbra's texture is the trade; a changed shadow edge is not.
+
+1. **(a) The mask at the ray's footprint**: slower at both widths and both cones (+1.7 and +10.5 ms at 11520), and 4.4% to 26% of the pixels moved by more than 16 codes. Removed; it is in the history at f0f4ade7, behind `renderer.shadow.mask_footprint`.
+2. **(b) A stricter proxy for the sun alone**: the time comes only with the shadow's shape. At 0.5 it saves 0.2 ms at 11520 and moves 4.4% of the pixels (R109's v20 forest moved nothing at 0.5; v25's woods have dense clusters — far crowns and impostors — that pass it); 0.3 saves 2.7 ms for 4.9%; 0.2 saves 5.6 ms for 9.4%. Every one closes sunflecks and moves shadow edges, so none ships. The eye reads a canopy's shadow for its density (the sunflecks are pinhole images of the sun's disc, a leaf's umbra ending about 107 of its widths behind it; Anderson and Miller 1975, "Forest cover as a solar camera: penumbral effects in plant canopies"), and the proxy changes the density.
+3. **(c) Opacity micromaps**: the cluster structures take them. `VkClusterAccelerationStructureBuildTriangleClusterInfoNV` (VK_NV_cluster_acceleration_structure) carries `opacityMicromapArray` (0 disables micromaps for that cluster), `opacityMicromapIndexBuffer` (0: the triangle's own index), `opacityMicromapIndexType` and its stride, and VUID-10881 asks for `VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_CLUSTER_OPACITY_MICROMAPS_BIT_NV` in the build's input flags ([the reference page](https://docs.vulkan.org/refpages/latest/refpages/source/VkClusterAccelerationStructureBuildTriangleClusterInfoNV.html)). A micromap array is built once per mesh from its mask and UVs (R109's page has the bake through meshoptimizer and the memory: kilobytes to megabytes per species after deduplication), so what the frame pays is its cluster build with the arrays attached, not a build of micromaps for the cut. A two-state array would let the traversal decide a card's interior and corners and hand the shader only its edge — at the 99th percentile's 12 masks, most of them. Whether the template instantiation path carries the same fields was not read. **This is the lever, and it is the chain's** (`clas_records.slang`, `cluster_acceleration.h`): a request, not built here. Its proof is the counting bit: the masks a ray samples should fall from 1.6 to the edges'.
+
+What it would return is bounded by the opaque rule: the sun stage at 2.4 ms against 14.6 at 11520, 12.2 ms of the frame's 42.9; the material stage (5.6 ms at 11520) is next after it, and its terrain-against-flora split (this stage's item 4) was not taken.

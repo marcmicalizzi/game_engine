@@ -4037,7 +4037,8 @@ bool GpuScene::upload_materials(const ResolvedSettings& resolved, std::string* e
   // pool whose slots change under any table made now.
   coverage_list_.clear();
   shadow_coverage_clusters_ = 0;
-  if (resolved.shadow_opaque_coverage > 0.0f && has_masked_ && !streamed_) {
+  // The sweep's proxy rules (R115 stage 2, `renderer.shadow.sweep`) read the table too.
+  if (resolved.shadow_coverage_table && has_masked_ && !streamed_) {
     for (u32 m = 0; m < data_->parts.size(); ++m) {
       const geometry::ClusterMeshPart& part = data_->parts[m];
       for (u32 i = 0; i < part.cluster_count; ++i) {

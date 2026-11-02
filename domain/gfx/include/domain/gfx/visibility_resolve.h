@@ -647,6 +647,12 @@ enum class ResolveStop : u32 {
   Sky = 7,
 };
 inline constexpr u32 k_resolve_stops = 8;
+// The stop word's counting bit (R115 stage 2; renderer.md, "Where the resolve's time goes"): with
+// it, a pixel that asks the sun ray writes what the ray did instead of a colour — red the
+// non-opaque candidates it met, green the masks it sampled (each clamped at 255), blue 255 where it
+// reached the sun, 128 where it was blocked, 64 where the sun was not asked and 0 for an empty
+// pixel — straight into the target's codes, for a capture to count. A measurement, never a picture.
+inline constexpr u32 k_resolve_count_rays = 0x100u;
 
 // Mirrors ResolveParams in visibility_resolve.slang. 480 bytes.
 struct ResolveParams {

@@ -398,10 +398,10 @@ class GpuScene {
   bool has_masked() const noexcept { return has_masked_; }
   // **The opaque shadow proxy's coverage** (R109; renderer.md, "The opaque shadow proxy"): one
   // byte per cluster, four to a word, of the alpha coverage of every alpha-tested cluster, baked
-  // once by `bake_shadow_coverage` when `ResolvedSettings::shadow_opaque_coverage` is on, the scene
-  // has masked materials and is read whole (a streamed scene's pool changes under it). The first
-  // renderer made over the scene bakes it; later ones find it baked. `shadow_coverage_clusters` is
-  // 0 when there is none.
+  // once by `bake_shadow_coverage` when `ResolvedSettings::shadow_coverage_table` is on (the
+  // proxy's threshold or the measurement sweep, R115 stage 2), the scene has masked materials and
+  // is read whole (a streamed scene's pool changes under it). The first renderer made over the
+  // scene bakes it; later ones find it baked. `shadow_coverage_clusters` is 0 when there is none.
   bool bake_shadow_coverage(gfx::ShaderLibrary& shaders, std::string* error);
   u32 shadow_coverage_clusters() const noexcept { return shadow_coverage_clusters_; }
   // A mesh of the scene carries coverage errors (geometry.md, "Two errors"): `lod_coverage` holds

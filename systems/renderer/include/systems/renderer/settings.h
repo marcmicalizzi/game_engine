@@ -371,6 +371,9 @@ struct ResolvedSettings {
   // shadow ray, without its mask. `renderer.shadow.opaque_coverage`, by default
   // `k_shadow_opaque_coverage`; 0 is off, and so is every frame without the rays.
   f32 shadow_opaque_coverage = 0.0f;
+  // The scene bakes the proxy's coverage table: with the rays, when the threshold above is on or
+  // the measurement sweep (`renderer.shadow.sweep`, R115 stage 2) may ask for the proxy.
+  bool shadow_coverage_table = false;
   bool occlusion = false;  // two-pass occlusion culling runs
   bool rt_chain = false;   // the frame builds acceleration structures from its visible list
   // The cull pass keeps what its cone test rejects as shadow casters, in the visible list's run
@@ -498,6 +501,21 @@ u32 resolve_stop_tunable(u64 frame_index) noexcept;
 // pixel's other light below which a traced light is not tested for its shadow (R115; renderer.md,
 // "A light too faint to test"). 0 traces every light.
 f32 shadow_light_tolerance_tunable() noexcept;
+// **The sun ray's rule for alpha-tested casters this frame** (R115 stage 2): the opaque proxy's
+// threshold, whether every caster is forced solid, and the stop word's counting bit. From the
+// tunables — `renderer.shadow.opaque_rays` and the resolved threshold — unless
+// `renderer.shadow.sweep` (a measurement switch, off) steps through `k_shadow_sweeps` fixed rules,
+// one for every `gfx::k_resolve_stops` frames: frame f takes rule (f / 8) % 6, so a flight under
+// `renderer.resolve.stop_after=cycle` measures every stage of every rule (renderer.md, "Where the
+// resolve's time goes"). The rules: 0 the frame as set, 1 every caster solid, 2-4 the proxy at 0.5,
+// 0.3 and 0.2, 5 the frame as set with the counting bit.
+struct ShadowRayRule {
+  bool opaque = false;
+  f32 opaque_coverage = 0.0f;
+  bool count = false;
+};
+inline constexpr u32 k_shadow_sweeps = 6;
+ShadowRayRule shadow_ray_rule(u64 frame_index, f32 opaque_coverage) noexcept;
 // `renderer.material.normal_filter` (true), read once per scene at its material upload: a built
 // normal map's normal-variance chain is uploaded beside it and widens the GGX roughness by what the
 // pixel's footprint no longer resolves (R97; renderer.md, "Normal filtering"). False uploads no
