@@ -12,6 +12,8 @@
 // - The opaque shadow proxy (R109): a masked cluster whose baked coverage is at or above
 //   `renderer.shadow.opaque_coverage` casts the opaque caster's shadow under the rays, below it the
 //   mask still rules, and the tunable at 0 draws exactly what the rays drew before the proxy.
+// - The mask at the sun ray's footprint (R115 stage 2) on a one-level mask is the masks' picture,
+//   and the measurement sweep steps the sun ray's rules eight frames at a time.
 
 #include <core/math/math.h>
 #include <domain/gfx/device.h>
@@ -580,6 +582,86 @@ TEST_CASE("alpha mask: a dense masked cluster is solid to a shadow ray at the pr
   CHECK(shared > 4000);
   CHECK(differ == 0);
   CHECK(changed > 200);  // the witness: the mask's holes were lit, and the proxy closed them
+}
+
+// **The mask at the sun ray's footprint** (renderer.md, "The mask at the ray's footprint"; R115
+// stage 2). The fixture's mask is decoded from its glTF, one level, so whatever level the sun ray's
+// cone selects clamps to level 0 and the picture is the masks' byte for byte — with the pixel's
+// cone alone and with the widest spread the knob takes. What it holds is the mechanism around the
+// level: the texel table baked beside the coverage, the cone computed and carried, and the coverage
+// table that bake made for the footprint never handed to the rays while the proxy's threshold is 0
+// (it would make every masked cluster with any coverage solid).
+TEST_CASE("alpha mask: the sun ray's footprint on a one-level mask draws the masks' picture") {
+  Fixture fx;
+  ShotView view;
+  view.eye = Vec3{-2.5f, 4.0f, -2.5f};
+  view.target = Vec3{-0.4f, 0.0f, -0.4f};
+  view.mode = static_cast<u32>(gfx::ResolveMode::Shaded);
+  RenderSettings rays = base_settings(RasterMode::Hardware);
+  rays.shadows = ShadowMode::RayTraced;
+  struct Restore {
+    ~Restore() {
+      (void)tunables::apply_overrides("renderer.shadow.mask_footprint=false");
+      (void)tunables::apply_overrides("renderer.shadow.mask_cone_mrad=0");
+    }
+  } restore;
+  REQUIRE(tunables::apply_overrides("renderer.shadow.mask_footprint=false"));
+  const Shot off = shoot(fx.caster_masked, rays, view);
+  if (!off.skip.empty()) {
+    MESSAGE("skipped: " << off.skip);
+    return;
+  }
+  REQUIRE(tunables::apply_overrides("renderer.shadow.mask_footprint=true"));
+  const Shot pixel = shoot(fx.caster_masked, rays, view);
+  REQUIRE(tunables::apply_overrides("renderer.shadow.mask_cone_mrad=100"));
+  const Shot wide = shoot(fx.caster_masked, rays, view);
+  REQUIRE(pixel.skip.empty());
+  REQUIRE(wide.skip.empty());
+  const ShadowCount mask = count_shadow(off.frame);
+  MESSAGE("the masked caster shadows " << mask.share() << " of the ground");
+  CHECK(mask.share() > 0.0);
+  CHECK(pixel.frame.color.size() == off.frame.color.size());
+  CHECK(pixel.frame.color == off.frame.color);
+  CHECK(wide.frame.color == off.frame.color);
+}
+
+// The sweep the experiment flies (R115 stage 2; renderer.md, "The mask at the ray's footprint"):
+// with `renderer.shadow.sweep`, frame f takes the sun ray's rule (f / 8) % 8, so a flight under
+// `renderer.resolve.stop_after=cycle` measures every stage of every rule; without it every frame
+// takes the tunables'. CPU only.
+TEST_CASE("alpha mask: the shadow sweep steps the sun ray's rules eight frames at a time") {
+  struct Restore {
+    ~Restore() { (void)tunables::apply_overrides("renderer.shadow.sweep=false"); }
+  } restore;
+  REQUIRE(tunables::apply_overrides("renderer.shadow.sweep=false"));
+  for (u64 f : {u64{0}, u64{8}, u64{40}, u64{63}}) {
+    const ShadowRayRule rule = shadow_ray_rule(f, 0.25f);
+    CHECK(rule.opaque == false);
+    CHECK(rule.opaque_coverage == 0.25f);
+    CHECK(rule.footprint == k_shadow_mask_footprint);
+    CHECK(rule.count == false);
+  }
+  REQUIRE(tunables::apply_overrides("renderer.shadow.sweep=true"));
+  for (u64 period : {u64{0}, u64{64}}) {
+    for (u64 within : {u64{0}, u64{7}}) {
+      const u64 base = period + within;
+      CHECK(shadow_ray_rule(base, 0.25f).opaque_coverage == 0.25f);  // as set
+      CHECK(shadow_ray_rule(base + 8, 0.25f).opaque);
+      CHECK(shadow_ray_rule(base + 16, 0.25f).opaque_coverage == 0.5f);
+      CHECK(shadow_ray_rule(base + 24, 0.25f).opaque_coverage == 0.3f);
+      CHECK(shadow_ray_rule(base + 32, 0.25f).opaque_coverage == 0.2f);
+      const ShadowRayRule pixel = shadow_ray_rule(base + 40, 0.25f);
+      CHECK(pixel.footprint);
+      CHECK(pixel.cone_spread == 0.0f);
+      CHECK(pixel.opaque_coverage == 0.0f);
+      const ShadowRayRule sun = shadow_ray_rule(base + 48, 0.25f);
+      CHECK(sun.footprint);
+      CHECK(sun.cone_spread == k_sun_disc_mrad * 1.0e-3f);
+      const ShadowRayRule count = shadow_ray_rule(base + 56, 0.25f);
+      CHECK(count.count);
+      CHECK(count.opaque_coverage == 0.25f);
+    }
+  }
 }
 
 TEST_CASE("alpha mask: the reference path tracer sees through the holes the rasterizer leaves") {

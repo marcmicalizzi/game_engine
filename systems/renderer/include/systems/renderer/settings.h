@@ -55,6 +55,16 @@ inline constexpr f32 k_shadow_texel_error_texels = 0.5f;
 // saved 13% of the expanded forest's resolve at 11520x2160 for 1.5 FLIP points mean, all of it in
 // the flecks (docs/experiments/shadow-proxy-2026-10-28.md).
 inline constexpr f32 k_shadow_opaque_coverage = 0.0f;
+// **The mask at the sun ray's footprint** (R115 stage 2; renderer.md, "The mask at the ray's
+// footprint"): a masked candidate of the sun's shadow ray samples its mask at the level the ray's
+// cone selects at the hit — the receiver pixel's footprint across the ray, widened by
+// `k_shadow_mask_cone_mrad` a metre along it — instead of level 0. `renderer.shadow.mask_footprint`
+// and `renderer.shadow.mask_cone_mrad`.
+inline constexpr bool k_shadow_mask_footprint = false;
+inline constexpr f32 k_shadow_mask_cone_mrad = 0.0f;
+// The sun's angular diameter, milliradians: 32 arcminutes, its mean (the Astronomical Almanac's
+// 959.63" semidiameter at 1 au), the cone a sun fleck under a canopy is the pinhole image of.
+inline constexpr f32 k_sun_disc_mrad = 9.305f;
 // The coverage error a cascade accepts, in its own texels (`renderer.shadow.texel_cover`): half the
 // filter's 4 x 4-texel footprint. Measured, not derived: 1 and 2 texels moved the forest's picture
 // alike, 5 by three times as much.
@@ -371,6 +381,10 @@ struct ResolvedSettings {
   // shadow ray, without its mask. `renderer.shadow.opaque_coverage`, by default
   // `k_shadow_opaque_coverage`; 0 is off, and so is every frame without the rays.
   f32 shadow_opaque_coverage = 0.0f;
+  // The scene's bake writes each masked cluster's level-0 texel beside its coverage, for the mask
+  // at the sun ray's footprint (R115 stage 2): with the rays, when `renderer.shadow.mask_footprint`
+  // or the sweep (`renderer.shadow.sweep`) is on when the renderer is made.
+  bool shadow_texel_table = false;
   bool occlusion = false;  // two-pass occlusion culling runs
   bool rt_chain = false;   // the frame builds acceleration structures from its visible list
   // The cull pass keeps what its cone test rejects as shadow casters, in the visible list's run
@@ -498,6 +512,25 @@ u32 resolve_stop_tunable(u64 frame_index) noexcept;
 // pixel's other light below which a traced light is not tested for its shadow (R115; renderer.md,
 // "A light too faint to test"). 0 traces every light.
 f32 shadow_light_tolerance_tunable() noexcept;
+// **The sun ray's rule for alpha-tested casters this frame** (R115 stage 2): the opaque proxy's
+// threshold, whether every caster is forced solid, the mask at the ray's footprint and its cone,
+// and the stop word's counting bit. From the tunables — `renderer.shadow.opaque_rays`, the resolved
+// threshold, `renderer.shadow.mask_footprint`, `renderer.shadow.mask_cone_mrad` — unless
+// `renderer.shadow.sweep` (a measurement switch, off) steps through `k_shadow_sweeps` fixed rules,
+// one for every `gfx::k_resolve_stops` frames: frame f takes rule (f / 8) % 8, so a flight under
+// `renderer.resolve.stop_after=cycle` measures every stage of every rule (renderer.md, "The mask
+// at the ray's footprint"). The rules: 0 the frame as set, 1 every caster solid, 2-4 the proxy at
+// 0.5, 0.3 and 0.2, 5 the footprint with the pixel's cone alone, 6 with the sun's disc, 7 the frame
+// as set with the counting bit.
+struct ShadowRayRule {
+  bool opaque = false;
+  f32 opaque_coverage = 0.0f;
+  bool footprint = false;
+  f32 cone_spread = 0.0f;  // radians a unit of distance
+  bool count = false;
+};
+inline constexpr u32 k_shadow_sweeps = 8;
+ShadowRayRule shadow_ray_rule(u64 frame_index, f32 opaque_coverage) noexcept;
 // `renderer.material.normal_filter` (true), read once per scene at its material upload: a built
 // normal map's normal-variance chain is uploaded beside it and widens the GGX roughness by what the
 // pixel's footprint no longer resolves (R97; renderer.md, "Normal filtering"). False uploads no

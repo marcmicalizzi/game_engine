@@ -2641,18 +2641,31 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
     // A masked caster is built non-opaque, so the shadow rays test masks (renderer.md,
     // "Alpha-tested geometry").
     // `renderer.shadow.opaque_rays` (measurement only) leaves the masks out and every caster solid.
-    if (shadows && scene.has_masked() && !shadow_opaque_rays_tunable())
+    // The rule is the tunables', or under `renderer.shadow.sweep` one of the measurement's fixed
+    // rules for this frame (R115 stage 2; `shadow_ray_rule`).
+    const ShadowRayRule rule = shadow_ray_rule(frame.frame_index, resolved_.shadow_opaque_coverage);
+    if (shadows && scene.has_masked() && !rule.opaque)
       resolve.shadow_flags |= gfx::k_shadow_alpha_masks;
-    // **The opaque shadow proxy** (R109; renderer.md, "The opaque shadow proxy"): a masked cluster
-    // whose baked coverage is at or above the threshold is solid to the rays without its mask.
     if ((resolve.shadow_flags & gfx::k_shadow_alpha_masks) != 0 &&
         scene.shadow_coverage_clusters() > 0) {
-      const f32 threshold = resolved_.shadow_opaque_coverage;
-      resolve.shadow_coverage = scene.shadow_coverage.address;
+      // **The opaque shadow proxy** (R109; renderer.md, "The opaque shadow proxy"): a masked
+      // cluster whose baked coverage is at or above the threshold is solid to the rays without its
+      // mask. The table may be baked for the footprint alone, so a threshold of 0 hands none over.
       resolve.shadow_coverage_count = scene.shadow_coverage_clusters();
-      const u32 byte = static_cast<u32>(std::ceil(threshold * 255.0f));
-      resolve.shadow_opaque_coverage = byte < 1u ? 1u : (byte > 255u ? 255u : byte);
+      if (rule.opaque_coverage > 0.0f) {
+        resolve.shadow_coverage = scene.shadow_coverage.address;
+        const u32 byte = static_cast<u32>(std::ceil(rule.opaque_coverage * 255.0f));
+        resolve.shadow_opaque_coverage = byte < 1u ? 1u : (byte > 255u ? 255u : byte);
+      }
+      // **The mask at the sun ray's footprint** (R115 stage 2; renderer.md, "The mask at the ray's
+      // footprint"): the sun ray's masked candidates sample the level its cone selects.
+      if (rule.footprint && scene.shadow_texel.address != 0) {
+        resolve.shadow_texel = scene.shadow_texel.address;
+        resolve.shadow_cone_spread = rule.cone_spread;
+      }
     }
+    // The stop word's counting bit (R115 stage 2): the sun ray's candidates and masks, as codes.
+    if (rule.count) resolve.resolve_stop |= gfx::k_resolve_count_rays;
     resolve.shadow_bias = lighting.shadow_bias;
     resolve.shadow_bias_steps = lighting.shadow_bias_steps;
     // A light too faint to test (R115; renderer.md): read by the resolve only while the lights'

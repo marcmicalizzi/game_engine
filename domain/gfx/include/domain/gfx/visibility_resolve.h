@@ -647,8 +647,14 @@ enum class ResolveStop : u32 {
   Sky = 7,
 };
 inline constexpr u32 k_resolve_stops = 8;
+// The stop word's counting bit (R115 stage 2; renderer.md, "Where the resolve's time goes"): with
+// it, a pixel that asks the sun ray writes what the ray did instead of a colour — red the
+// non-opaque candidates it met, green the masks it sampled (each clamped at 255), blue 255 where it
+// reached the sun, 128 where it was blocked, 64 where the sun was not asked and 0 for an empty
+// pixel — straight into the target's codes, for a capture to count. A measurement, never a picture.
+inline constexpr u32 k_resolve_count_rays = 0x100u;
 
-// Mirrors ResolveParams in visibility_resolve.slang. 480 bytes.
+// Mirrors ResolveParams in visibility_resolve.slang. 496 bytes.
 struct ResolveParams {
   Vec4 sky{};  // rgb shown for empty pixels, and the hemisphere ambient's upper half
   Vec4 sun{};  // xyz normalized direction towards the light, w intensity
@@ -837,6 +843,20 @@ struct ResolveParams {
   // renderer sets `renderer.shadow.light_tolerance` (2^-12). It took the row's last pad word, so
   // the block is still 480 bytes.
   f32 light_tolerance = 0.0f;
+  // **The mask at the sun ray's footprint** (renderer.md, "The mask at the ray's footprint"; R115
+  // stage 2, after Akenine-Möller et al., "Texture Level of Detail Strategies for Real-Time Ray
+  // Tracing", Ray Tracing Gems ch. 20, 2019): one byte per cluster, four to a u32, of the size of
+  // an alpha-tested cluster's level-0 mask texel in steps of its mesh's grid,
+  // `alpha_coverage.slang` baked beside the proxy's coverage (`shadow_coverage_count` clusters of
+  // it; 0 for every other cluster: level 0), and the sun ray's cone — the receiver pixel's
+  // footprint across the ray, widened by `shadow_cone_spread` radians a unit of distance along it.
+  // A masked candidate of the sun's ray samples its mask at the level that cone selects at the hit,
+  // so a far card decides from its averaged (coverage-preserving) alpha and a near one keeps its
+  // holes. Read only with `k_shadow_alpha_masks`; 0 is none, and every candidate samples level 0 as
+  // before. A new 16-byte row: the block grew from 480 to 496 bytes.
+  u64 shadow_texel = 0;
+  f32 shadow_cone_spread = 0.0f;
+  u32 shadow_texel_pad = 0;
 };
 // `ResolveParams::water_open_instance` when the scene has no open water.
 inline constexpr u32 k_no_water_open = 0xffffffffu;
@@ -848,7 +868,7 @@ inline f32 water_clock(f64 time_s) noexcept {
   const f64 t = std::fmod(time_s, k_water_period_s);
   return static_cast<f32>(t < 0.0 ? t + k_water_period_s : t);
 }
-static_assert(sizeof(ResolveParams) == 480);
+static_assert(sizeof(ResolveParams) == 496);
 static_assert(sizeof(ResolveParams) % 16 == 0, "the block is read as float4 rows on the GPU");
 
 }  // namespace engine::gfx

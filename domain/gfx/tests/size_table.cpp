@@ -250,8 +250,10 @@ ENGINE_EXPECT_SIZE(48, 8, gfx::HizParams);
 // the hybrid's ray distance and band (R100, R102). 464, not 448: the opaque shadow proxy's
 // coverage table, its length and threshold (R109; renderer.md, "The opaque shadow proxy"). 480,
 // not 464: the open sea's instance and water material (S93; water.md, "To the horizon"), a row of
-// its own that only the resolve's water modules declare.
-ENGINE_EXPECT_SIZE(480, 8, gfx::ResolveParams);
+// its own that only the resolve's water modules declare. 496, not 480: the mask at the sun ray's
+// footprint — the per-cluster texel table and the cone's spread (R115 stage 2; renderer.md, "The
+// mask at the ray's footprint"), a row of its own, read once per masked candidate of a sun ray.
+ENGINE_EXPECT_SIZE(496, 8, gfx::ResolveParams);
 
 // The sky (sky.h; docs/subsystems/gfx.md, "The sky"): the air, the lights, the eye, the celestial
 // frame, the exposure, the tables' addresses, and a view's inverse projection and pixel angle for

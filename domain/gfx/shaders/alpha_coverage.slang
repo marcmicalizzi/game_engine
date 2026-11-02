@@ -14,10 +14,15 @@
 //
 // Only alpha-tested clusters are listed: anything else is solid to a shadow ray already, and a
 // cluster the bake never wrote reads 0, which is "ask the mask".
+//
+// **Beside it, the size of the cluster's level-0 mask texel** (R115 stage 2; renderer.md, "The
+// mask at the ray's footprint"), when the caller hands a second table: the same triangles' area
+// over their area in texels of the mask, which the sun ray's cone is measured against to pick the
+// level its candidate samples (`ResolveParams::shadow_texel`).
 
 #include "alpha_mask.slang"
 
-// Mirrors renderer::AlphaCoverageParams (64 bytes).
+// Mirrors renderer::AlphaCoverageParams (72 bytes).
 struct AlphaCoverageParams {
   uint64_t clusters;    // ClusterDesc[]
   uint64_t triangles;   // uint[]: packed local indices
@@ -26,6 +31,8 @@ struct AlphaCoverageParams {
   uint64_t materials;   // ResolveMaterial[]
   uint64_t list;        // uint2[count]: {cluster, its material}
   uint64_t out;         // uint[(cluster_count + 3) / 4], zeroed: the coverage bytes
+  // uint[(cluster_count + 3) / 4], zeroed: the level-0 texel bytes (below), or 0 for none
+  uint64_t out_texel;
   uint count;
   uint pad;
 };
@@ -38,6 +45,7 @@ static const uint k_alpha_coverage_row = 65535;
 
 groupshared float g_kept[k_alpha_coverage_workgroup];
 groupshared float g_area[k_alpha_coverage_workgroup];
+groupshared float g_texels[k_alpha_coverage_workgroup];
 
 int3 grid_position(uint vertex) {
   uint* words = (uint*)g_params.quantized;
@@ -58,6 +66,7 @@ void alpha_coverage_main(uint3 group : SV_GroupID, uint3 thread : SV_GroupThread
   const uint lane = thread.x;
   float kept = 0.0;
   float area = 0.0;
+  float texels = 0.0;  // the triangles' area in level-0 texels, twice over like `area`
   uint cluster_index = 0;
   if (item < g_params.count) {
     uint2* list = (uint2*)g_params.list;
@@ -89,6 +98,17 @@ void alpha_coverage_main(uint3 group : SV_GroupID, uint3 thread : SV_GroupThread
       const float2 uv0 = vertex_uv(tables, v0);
       const float2 uv1 = vertex_uv(tables, v1);
       const float2 uv2 = vertex_uv(tables, v2);
+      // The triangle's area in texels of its mask's level 0, through the material's UV transform,
+      // for the texel's size (below).
+      if (material.albedo_texture != k_no_texture) {
+        uint w = 0;
+        uint h = 0;
+        g_textures[NonUniformResourceIndex(material.albedo_texture)].GetDimensions(w, h);
+        const float2 t0 = material_uv(material, uv0);
+        const float2 d1 = material_uv(material, uv1) - t0;
+        const float2 d2 = material_uv(material, uv2) - t0;
+        texels += abs(d1.x * d2.y - d1.y * d2.x) * float(w) * float(h);
+      }
       uint hits = 0;
       for (uint i = 0; i < n; ++i) {
         for (uint j = 0; i + j < n; ++j) {
@@ -107,11 +127,13 @@ void alpha_coverage_main(uint3 group : SV_GroupID, uint3 thread : SV_GroupThread
   }
   g_kept[lane] = kept;
   g_area[lane] = area;
+  g_texels[lane] = texels;
   GroupMemoryBarrierWithGroupSync();
   for (uint stride = k_alpha_coverage_workgroup / 2; stride > 0; stride >>= 1) {
     if (lane < stride) {
       g_kept[lane] += g_kept[lane + stride];
       g_area[lane] += g_area[lane + stride];
+      g_texels[lane] += g_texels[lane + stride];
     }
     GroupMemoryBarrierWithGroupSync();
   }
@@ -121,5 +143,15 @@ void alpha_coverage_main(uint3 group : SV_GroupID, uint3 thread : SV_GroupThread
     const uint coverage = min(uint(fraction * 255.0 + 0.5), 255u);
     uint* out = (uint*)g_params.out;
     InterlockedOr(out[cluster_index >> 2], coverage << ((cluster_index & 3u) * 8u));
+    // **The level-0 texel's size** (renderer.md, "The mask at the ray's footprint"; R115 stage 2):
+    // the side of the patch of the cluster's surface one texel covers, sqrt(area / texels), in
+    // steps of the mesh's grid, as log2 in eighths of a stop from 2^-16 (byte 1) to 2^15.9 (255);
+    // 0, a cluster with no area or no texture, samples level 0.
+    if (g_params.out_texel != 0 && g_area[0] > 0.0 && g_texels[0] > 0.0) {
+      const float log_step = 0.5 * log2(g_area[0] / g_texels[0]);
+      const uint texel = uint(clamp(round((log_step + 16.0) * 8.0), 1.0, 255.0));
+      uint* out_texel = (uint*)g_params.out_texel;
+      InterlockedOr(out_texel[cluster_index >> 2], texel << ((cluster_index & 3u) * 8u));
+    }
   }
 }

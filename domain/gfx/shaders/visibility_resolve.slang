@@ -73,7 +73,7 @@
 // the visibility buffer. A **Panini** view goes one step further: its region holds a wider
 // rectilinear picture, and `panini_x`/`source_x`/`panini_d` map each output pixel back into it.
 //
-// Read through a device address; mirrors gfx::ResolveParams (480 bytes).
+// Read through a device address; mirrors gfx::ResolveParams (496 bytes).
 struct ResolveParams {
   float4 sky;     // rgb, shown for empty pixels and the hemisphere ambient's upper half
   float4 sun;     // xyz normalized direction towards the light, w intensity
@@ -167,6 +167,13 @@ struct ResolveParams {
   // A light too faint to test (renderer.md; R115): the share of the pixel's other light at or below
   // which a traced light takes the sun query's answer instead of a ray; 0 traces every light.
   float light_tolerance;
+  // The mask at the sun ray's footprint (renderer.md, "The mask at the ray's footprint"; R115 stage
+  // 2): a byte per cluster of its level-0 mask texel in grid steps (alpha_coverage.slang;
+  // `shadow_coverage_count` of them), and the radians the sun ray's cone widens by a unit of
+  // distance; 0 for none, and every candidate samples level 0.
+  uint64_t shadow_texel;
+  float shadow_cone_spread;
+  uint shadow_texel_pad;
 };
 
 // **The resolve's split** (gfx::ResolveStop; renderer.md, "Where the resolve's time goes"; R115).
@@ -183,6 +190,19 @@ static const uint k_stop_light_shadows = 6u;
 static const uint k_stop_sky = 7u;
 static const uint k_stop_water = 8u;  // never a word: what only the picture (0) does
 static uint g_stop = 0u;
+// The word's counting bit (gfx::k_resolve_count_rays; R115 stage 2): a pixel that asks the sun ray
+// writes what the ray did — its non-opaque candidates and the masks it sampled — instead of a
+// colour. `g_count` is the bit, and the two counters are the sun ray's, which `shadow_ray_blocked`
+// adds to only while `g_count_sun` says the ray it traces is the sun's.
+static const uint k_stop_count = 0x100u;
+static bool g_count = false;
+static bool g_count_sun = false;
+static uint g_sun_candidates = 0u;
+static uint g_sun_masks = 0u;
+// The sun ray's cone (renderer.md, "The mask at the ray's footprint"): the receiver pixel's
+// footprint across the ray, world units, set by the entry point for the sun's query alone and 0
+// for every other ray, which then samples its masks at level 0.
+static float g_sun_cone = 0.0;
 // Whether this frame leaves `stage` out: it stops at a stage before it.
 bool stop_skips(uint stage) { return g_stop != 0u && g_stop < stage; }
 
@@ -262,6 +282,8 @@ struct FullscreenOut {
 // is not: it has no gradient to band, and it is the clear the pass already wrote.
 float4 sky_pixel(ResolveParams* params, float2 source, uint2 pixel) {
   if (params->mode == 11 || params->mode == 12) return float4(0, 0, 0, 1);
+  // The sun ray's counts (R115 stage 2): an empty pixel asks nothing.
+  if (g_count) return float4(0, 0, 0, 1);
   // The split before the sky's stage: the stand-in's flat colour, written (R115).
   if (stop_skips(k_stop_sky)) return params->sky;
   if (params->sky_params == 0) {
@@ -334,6 +356,36 @@ float2 panini_source_ndc(ResolveParams* params, float2 ndc) {
   return float2(tan(theta) / params->source_x, ndc.y / max(s * cos_theta, 1e-6));
 }
 
+// A shadow ray's mask test at level `lod` of the base colour's alpha (alpha_mask.slang's
+// `mask_keeps_level0` at level 0, which is what every ray but the sun's asks): the mip chain keeps
+// level 0's coverage at the cutoff on every level (texture.md, "Alpha-tested masks"), so a coarser
+// level keeps the same share of a card at that level's grain.
+bool mask_keeps_at(ResolveMaterial material, float2 uv, float lod) {
+  float alpha = material.uv_offset.w;
+  if (material.albedo_texture != k_no_texture) {
+    alpha *= g_textures[NonUniformResourceIndex(material.albedo_texture)]
+                 .SampleLevel(g_samplers[NonUniformResourceIndex(material.sampler)],
+                              material_uv(material, uv), lod)
+                 .a;
+  }
+  return alpha >= mask_cutoff(material);
+}
+
+// `candidate_keeps` (alpha_mask.slang) with the mask at level `lod`, counting the masks the sun's
+// ray samples (`g_sun_masks`) for the stop word's counting bit.
+bool candidate_keeps_at(MaskTables tables, uint64_t clusters, uint64_t triangles,
+                        InstanceDesc instance, uint cluster_index, uint primitive,
+                        float2 barycentrics, uint pair, uint2 pixel, float lod) {
+  if (tables.materials == 0) return true;
+  const uint material = pair_material(tables, instance, cluster_index);
+  if (!material_is_masked(tables, material)) return true;
+  if (!fade_keeps(tables, pair, pixel)) return false;
+  if (g_count_sun) ++g_sun_masks;
+  ClusterDesc* all = (ClusterDesc*)clusters;
+  const float2 uv = hit_uv(tables, triangles, all[cluster_index], primitive, barycentrics);
+  return mask_keeps_at(mask_material(tables, material), uv, lod);
+}
+
 // Is anything between `origin` and a light `t_max` away in direction `direction`? One ray query
 // with the terminate-on-first-hit flag, which is what a shadow ray wants: any hit ends the
 // traversal and no hit shader runs. False without the shadow bit, without a scene, when the light
@@ -389,6 +441,7 @@ bool shadow_ray_blocked(ResolveParams* params, uint bit, float3 origin, float3 d
       // masked clusters carry a byte (anything else non-opaque is solid already), so a cluster
       // with none, or past the table, reads 0 and asks its mask as before. A fading pair still
       // keeps only the pixels its band gives it, as the mask's answer would.
+      if (g_count_sun) ++g_sun_candidates;
       if (params->shadow_coverage != 0 && entry.y < params->shadow_coverage_count) {
         uint* coverage = (uint*)params->shadow_coverage;
         const uint byte = (coverage[entry.y >> 2] >> ((entry.y & 3u) * 8u)) & 0xffu;
@@ -397,9 +450,29 @@ bool shadow_ray_blocked(ResolveParams* params, uint bit, float3 origin, float3 d
           continue;
         }
       }
-      if (candidate_keeps(masks, params->clusters, params->triangles, instance, entry.y,
-                          masked.CandidatePrimitiveIndex(), masked.CandidateTriangleBarycentrics(),
-                          pair, g_fade_pixel)) {
+      // **The mask at the ray's footprint** (renderer.md; R115 stage 2): the level the sun ray's
+      // cone selects where it meets the candidate — the cone's width there over the cluster's
+      // level-0 texel in the world, which is the baked texel in grid steps times the mesh's grid
+      // step times the instance's scale (Akenine-Möller et al. 2019, the ray cone's
+      // log2(width / texel), with the card's slant to the ray left out, so the level is never
+      // coarser than the cone's own). Level 0 for every other ray, and for a cluster with no byte.
+      float lod = 0.0;
+      if (g_sun_cone > 0.0 && params->shadow_texel != 0 &&
+          entry.y < params->shadow_coverage_count) {
+        uint* texels = (uint*)params->shadow_texel;
+        const uint byte = (texels[entry.y >> 2] >> ((entry.y & 3u) * 8u)) & 0xffu;
+        if (byte != 0u) {
+          MeshDesc* meshes = (MeshDesc*)params->mesh;
+          const float texel = exp2(float(byte) * (1.0 / 8.0) - 16.0) *
+                              meshes[instance.mesh].quant.w * instance.scale_max;
+          const float width =
+              g_sun_cone + params->shadow_cone_spread * masked.CandidateTriangleRayT();
+          lod = max(log2(width / texel), 0.0);
+        }
+      }
+      if (candidate_keeps_at(masks, params->clusters, params->triangles, instance, entry.y,
+                             masked.CandidatePrimitiveIndex(),
+                             masked.CandidateTriangleBarycentrics(), pair, g_fade_pixel, lod)) {
         masked.CommitNonOpaqueTriangleHit();
       }
     }
@@ -863,7 +936,8 @@ float4 empty_pixel(ResolveParams* params, float2 source, uint2 noise_pixel) {
 [shader("fragment")]
 float4 fs_resolve(FullscreenOut in) : SV_Target {
   ResolveParams* params = (ResolveParams*)g_push.params;
-  g_stop = params->resolve_stop;
+  g_stop = params->resolve_stop & 0xffu;
+  g_count = (params->resolve_stop & k_stop_count) != 0u;
   // SV_Position is in the target's pixels; this view's rectangle starts at (view_x, view_y).
   // Without a resample the picture's extent *is* the source's, so `out_width` and `out_height` are
   // read only where they can differ — which is why a caller that draws one rectilinear view fills
@@ -912,6 +986,7 @@ float4 fs_resolve(FullscreenOut in) : SV_Target {
     uint* tiles = (uint*)params->coverage;
     if (tiles[(pixel.y >> 5) * params->coverage_pitch + (pixel.x >> 5)] == 0) {
 #ifdef RESOLVE_WATER
+      if (g_count) return float4(0, 0, 0, 1);
       return empty_pixel(params, source, noise_pixel);
 #else
       return sky_pixel(params, source, noise_pixel);
@@ -921,6 +996,7 @@ float4 fs_resolve(FullscreenOut in) : SV_Target {
   uint64_t* visibility = (uint64_t*)params->visibility;
   const uint64_t value = visibility[pixel.y * params->width + pixel.x];
 #ifdef RESOLVE_WATER
+  if (value == 0 && g_count) return float4(0, 0, 0, 1);
   if (value == 0) return empty_pixel(params, source, noise_pixel);
 #else
   if (value == 0) return sky_pixel(params, source, noise_pixel);
@@ -973,7 +1049,7 @@ float4 fs_resolve(FullscreenOut in) : SV_Target {
 #ifdef RESOLVE_WATER
   // The open sea in front of a surface that is not water (water.md, "To the horizon"): the ground
   // below the level, seen through the plane, is under the sea.
-  if ((material.flags & k_material_water) == 0 && !stop_skips(k_stop_water)) {
+  if ((material.flags & k_material_water) == 0 && !stop_skips(k_stop_water) && !g_count) {
     float4 sea;
     if (open_water_pixel(params, source, noise_pixel, true, length(from_eye), s.position, sea))
       return sea;
@@ -1144,6 +1220,7 @@ float4 fs_resolve(FullscreenOut in) : SV_Target {
   // The plain modules have no branch at all (RESOLVE_WATER, above), and draw a water material, as
   // every reader but this one does, as an untextured dielectric of its shallow colour.
 #ifdef RESOLVE_WATER
+  if (g_count && (material.flags & k_material_water) != 0) return float4(0.0, 0.0, 64.0 / 255.0, 1.0);
   if ((material.flags & k_material_water) != 0 && !stop_skips(k_stop_water)) {
     color = water_pixel(params, geo, instance, visible_index, entry.y, id & 0xff, source, s,
                         from_eye, material, ray_bias);
@@ -1154,10 +1231,30 @@ float4 fs_resolve(FullscreenOut in) : SV_Target {
     // was not asked.
     float sun_visibility = 1.0;
     if (dot(surface.normal, params->sun.xyz) > 0.0) {
+      // The sun ray's cone (renderer.md, "The mask at the ray's footprint"): this pixel's footprint
+      // on its surface — the reconstruction's own derivatives, as the ground's detail takes them —
+      // across the ray, the larger of its two axes, as a texture's level takes the larger.
+      if (params->shadow_texel != 0 && !stop_skips(k_stop_sun_shadow)) {
+        const TriangleFetch tri = fetch_triangle(geo, instance, visible_index, entry.y, id & 0xff);
+        float3 dp_dx;
+        float3 dp_dy;
+        screen_position_gradients(tri, source, params->view_proj, params->camera.xyz,
+                                  params->width, params->height, dp_dx, dp_dy);
+        const float3 l = params->sun.xyz;
+        g_sun_cone = max(length(dp_dx - dot(dp_dx, l) * l), length(dp_dy - dot(dp_dy, l) * l));
+      }
+      g_count_sun = g_count;
       const float v = stop_skips(k_stop_sun_shadow)
                           ? 1.0
                           : shadow_visibility(params, k_shadow_sun, 0u, s.position, s.geometric,
                                               ray_bias, params->sun.xyz, 1e30);
+      g_count_sun = false;
+      g_sun_cone = 0.0;
+      // The sun ray's counts (gfx::k_resolve_count_rays): candidates, masks, and what it found.
+      if (g_count) {
+        return float4(float(min(g_sun_candidates, 255u)) / 255.0,
+                      float(min(g_sun_masks, 255u)) / 255.0, v > 0.0 ? 1.0 : 128.0 / 255.0, 1.0);
+      }
       sun_visibility = v;
       if (v > 0.0) {
         float3 sun = float3(params->sun.w);
@@ -1165,6 +1262,7 @@ float4 fs_resolve(FullscreenOut in) : SV_Target {
         color = brdf_direct(surface, params->sun.xyz, sun * v);
       }
     }
+    if (g_count) return float4(0.0, 0.0, 64.0 / 255.0, 1.0);  // the sun was not asked
     // The hemisphere is the whole indirect term until the lighting passes exist: the sky above the
     // horizon and the ground below it — the scene's ground albedo under this frame's sun and sky,
     // `ground_radiance` — blended by how much of the normal's cosine lobe each half fills
