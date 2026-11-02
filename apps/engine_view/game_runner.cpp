@@ -904,6 +904,44 @@ struct GameRunner::Impl {
     return r == hotload::Result::Ok ? host->place_aligned(actor, position, yaw, up, max_tilt_rad)
                                     : r;
   }
+  // ---- ABI 9: an actor's shape (apps.md, "Actors": the creator's services) ----
+  // The runner judges what the ABI promises before anything reaches the animated world: the
+  // handle, the count against the channels the actor's mesh has (`morph_info`), each weight finite
+  // and within `k_morph_weight_limit`, the scale finite and within its range. A refusal leaves the
+  // actor as it was. `GameActors` checks the same again for a caller that is not the runner.
+  static hotload::Result actor_morph(void* user, u32 actor, const f32* weights, u32 count) {
+    ActorHost* host = nullptr;
+    const hotload::Result r = static_cast<Impl*>(user)->actor_host(actor, host);
+    if (r != hotload::Result::Ok) return r;
+    hotload::MorphInfo info;
+    const hotload::Result channels = host->morph_info(actor, info);
+    if (channels != hotload::Result::Ok) return channels;
+    if (info.count == 0) return hotload::Result::Unsupported;
+    if (count > info.count || (weights == nullptr && count > 0)) {
+      return hotload::Result::InvalidArgument;
+    }
+    for (u32 c = 0; c < count; ++c) {
+      if (!std::isfinite(weights[c]) || std::abs(weights[c]) > hotload::k_morph_weight_limit) {
+        return hotload::Result::InvalidArgument;
+      }
+    }
+    return host->morph(actor, weights, count);
+  }
+  static hotload::Result actor_scale(void* user, u32 actor, f32 scale) {
+    ActorHost* host = nullptr;
+    const hotload::Result r = static_cast<Impl*>(user)->actor_host(actor, host);
+    if (r != hotload::Result::Ok) return r;
+    if (!std::isfinite(scale) || scale < hotload::k_actor_scale_min ||
+        scale > hotload::k_actor_scale_max) {
+      return hotload::Result::InvalidArgument;
+    }
+    return host->scale(actor, scale);
+  }
+  static hotload::Result actor_morph_info(void* user, u32 actor, hotload::MorphInfo& io) {
+    ActorHost* host = nullptr;
+    const hotload::Result r = static_cast<Impl*>(user)->actor_host(actor, host);
+    return r == hotload::Result::Ok ? host->morph_info(actor, io) : r;
+  }
 
   // Sound: not built yet (roadmap P43, the third stage). `Unsupported`, said once.
   static hotload::Result sound_clip(void* user, std::string_view, u32*, std::string*) {
@@ -989,6 +1027,9 @@ bool GameRunner::start(const Config& config, const input::ActionMap& map, u32 ti
   services.hud_font = &Impl::hud_font;
   services.actor_place_aligned = &Impl::actor_place_aligned;
   services.ground_sample = &Impl::ground_sample;
+  services.actor_morph = &Impl::actor_morph;
+  services.actor_scale = &Impl::actor_scale;
+  services.actor_morph_info = &Impl::actor_morph_info;
   host.set_game_services(services);
 
   const auto refuse = [&](const std::string& why) {

@@ -549,6 +549,17 @@ bool attach_instances(AnimatedScene& scene, const renderer::SceneDesc& desc,
   // `bounds_padding` the cull pass inflates the cluster spheres by, so an instance whose limb
   // swings out of its rest-pose bounds still counts as on screen. `scale_max` multiplies both, the
   // way `cluster_cull.slang` multiplies them.
+  // Each mesh's run of the scene's morph channels and their names, for a game's actors (ABI 9's
+  // `actor_morph_info`; apps.md, "Actors"): the merged mesh keeps one name per channel.
+  scene.mesh_first_channel.assign(data.parts.size(), 0u);
+  scene.mesh_channel_count.assign(data.parts.size(), 0u);
+  for (u32 m = 0; m < data.parts.size(); ++m) {
+    scene.mesh_first_channel[m] = data.parts[m].first_morph_channel;
+    scene.mesh_channel_count[m] = data.parts[m].morph_channel_count;
+  }
+  scene.morph_names.clear();
+  for (const std::string& name : data.lod.mesh.morph_names)
+    scene.morph_names.push_back(name);
   Vector<Vec3> mesh_center(data.parts.size());
   Vector<f32> mesh_radius(data.parts.size(), 0.0f);
   for (u32 m = 0; m < data.parts.size(); ++m) {
@@ -745,6 +756,19 @@ struct GameActors::Impl {
     bool tilt_clamped = false;
     Vec3 centre{};  // the tier sphere's centre from the origin, before the rotation
     bool moved = false;
+    // ABI 9: the shape. `scale` is the module's factor on the scene's own scale (`scene_scale`), so
+    // the placement's scale is their product and every later stand keeps it; the tier sphere's
+    // centre and radius (`base_radius`, the scene's) grow with it. `weights` are the static morph
+    // weights of the mesh's `channel_count` channels (from `first_channel` of the scene's), sent to
+    // the renderer at the next flush when `morph_dirty`; `shaped` once a module has set them.
+    Vec3 scene_scale{1.0f, 1.0f, 1.0f};
+    f32 scale = 1.0f;
+    f32 base_radius = 0.0f;
+    u32 first_channel = 0;
+    u32 channel_count = 0;
+    Vector<f32> weights;
+    bool shaped = false;
+    bool morph_dirty = false;
     // The weight's fade (a stop, or a play from the rest pose), a tick at a time.
     bool fading = false;
     bool stop_at_end = false;
@@ -766,6 +790,7 @@ struct GameActors::Impl {
   u64 places = 0, plays = 0, stops = 0, speeds = 0, refused = 0, flushes = 0, moves = 0;
   u64 aligned = 0,
       clamped = 0;  // ABI 8: `place_aligned` calls answered Ok, and held to the maximum
+  u64 morphs = 0, scales = 0, morph_writes = 0;  // ABI 9: calls answered Ok, and renderer writes
 
   // Stands the actor at `at` in `rotation` (a unit quaternion) and moves its tier row with it.
   void stand(Actor& a, const WorldPos& at, f32 yaw, Quat rotation, Vec3 up, f32 tilt,
@@ -779,7 +804,7 @@ struct GameActors::Impl {
     a.placement.transform.position = Vec3{};
     a.placement.transform.rotation = rotation;
     a.moved = true;
-    if (a.row != ~0u) scene->positions[a.row] = at + DVec3{rotate(rotation, a.centre)};
+    if (a.row != ~0u) scene->positions[a.row] = at + DVec3{rotate(rotation, a.centre * a.scale)};
   }
 
   Actor* find(u32 instance) noexcept {
@@ -919,12 +944,19 @@ bool GameActors::bind(AnimatedScene& scene, const renderer::SceneDesc& desc,
     a.skeleton = source.mesh < scene.mesh_skeleton.size() ? scene.mesh_skeleton[source.mesh]
                                                           : animation::Library::k_not_found;
     a.placement = source;
+    a.scene_scale = source.transform.scale;
+    if (source.mesh < scene.mesh_channel_count.size()) {
+      a.first_channel = scene.mesh_first_channel[source.mesh];
+      a.channel_count = scene.mesh_channel_count[source.mesh];
+    }
+    a.weights.resize(a.channel_count, 0.0f);
     a.position = source.origin + DVec3{source.transform.position};
     a.yaw = yaw_of(source.transform.rotation);
     for (u32 r = 0; r < scene.row_instance.size(); ++r) {
       if (scene.row_instance[r] == loaded) a.row = r;
     }
     if (a.row != ~0u) {
+      a.base_radius = scene.radii[a.row];
       const DVec3 offset = scene.positions[a.row] - a.position;
       a.centre = rotate(
           inverse(normalize(source.transform.rotation)),
@@ -1078,8 +1110,72 @@ hotload::Result GameActors::speed(u32 instance, f32 rate) {
   return hotload::Result::Ok;
 }
 
+// ABI 9: the actor's static morph weights. Checked whole before anything is kept, so a refusal
+// leaves the shape as it was; the renderer takes it at the next flush.
+hotload::Result GameActors::morph(u32 instance, const f32* weights, u32 count) {
+  Impl& g = *impl_;
+  Impl::Actor* a = g.find(instance);
+  if (a == nullptr) return hotload::Result::NotFound;
+  if (a->channel_count == 0) return hotload::Result::Unsupported;
+  bool valid = count <= a->channel_count && (weights != nullptr || count == 0);
+  for (u32 c = 0; valid && c < count; ++c) {
+    valid = std::isfinite(weights[c]) && std::abs(weights[c]) <= hotload::k_morph_weight_limit;
+  }
+  if (!valid) {
+    ++g.refused;
+    return hotload::Result::InvalidArgument;
+  }
+  for (u32 c = 0; c < a->channel_count; ++c)
+    a->weights[c] = c < count ? weights[c] : 0.0f;
+  a->shaped = true;
+  a->morph_dirty = true;
+  ++g.morphs;
+  return hotload::Result::Ok;
+}
+
+// ABI 9: the actor's scale, a factor on the scene's. The placement keeps it, so every later stand
+// draws it; the move reaches the renderer with the rest of the transform.
+hotload::Result GameActors::scale(u32 instance, f32 factor) {
+  Impl& g = *impl_;
+  Impl::Actor* a = g.find(instance);
+  if (a == nullptr) return hotload::Result::NotFound;
+  if (!std::isfinite(factor) || factor < hotload::k_actor_scale_min ||
+      factor > hotload::k_actor_scale_max) {
+    ++g.refused;
+    return hotload::Result::InvalidArgument;
+  }
+  a->scale = factor;
+  a->placement.transform.scale = a->scene_scale * factor;
+  a->moved = true;
+  if (a->row != ~0u) {
+    g.scene->positions[a->row] =
+        a->position + DVec3{rotate(a->placement.transform.rotation, a->centre * factor)};
+    g.scene->radii[a->row] = a->base_radius * factor;
+  }
+  ++g.scales;
+  return hotload::Result::Ok;
+}
+
+hotload::Result GameActors::morph_info(u32 instance, hotload::MorphInfo& io) {
+  Impl& g = *impl_;
+  const Impl::Actor* a = g.find(instance);
+  if (a == nullptr) return hotload::Result::NotFound;
+  io.count = a->channel_count;
+  io.name = "";
+  io.name_length = 0;
+  const u32 at = a->first_channel + io.index;
+  if (io.index < a->channel_count && at < g.scene->morph_names.size()) {
+    const std::string& name = g.scene->morph_names[at];  // the scene's, alive while it is loaded
+    io.name = name.c_str();
+    io.name_length = name.size();
+  }
+  return hotload::Result::Ok;
+}
+
 void GameActors::Impl::fill(const Actor& a, hotload::ActorState& out) const {
   out.instance = a.instance;
+  out.scale = a.scale;
+  out.morph_count = a.channel_count;
   out.position[0] = a.position.x;
   out.position[1] = a.position.y;
   out.position[2] = a.position.z;
@@ -1276,6 +1372,14 @@ JsonValue GameActors::summary_json() const {
       actor.set("tilt_rad", static_cast<f64>(a.tilt));
       actor.set("tilt_clamped", a.tilt_clamped);
     }
+    // ABI 9: the shape a module gave it; an actor nobody shaped has the block it always had.
+    if (a.scale != 1.0f) actor.set("scale", static_cast<f64>(a.scale));
+    if (a.shaped) {
+      JsonValue weights = JsonValue::array();
+      for (const f32 w : a.weights)
+        weights.push_back(JsonValue(static_cast<f64>(w)));
+      actor.set("morph", std::move(weights));
+    }
     actor.set("clip", std::string_view(s.clip));
     actor.set("playhead", static_cast<f64>(s.playhead_s));
     actor.set("speed", static_cast<f64>(s.speed));
@@ -1314,6 +1418,9 @@ JsonValue GameActors::calls_json() const {
   out.set("places", g.places);
   out.set("aligned_places", g.aligned);  // ABI 8: of the places, the aligned ones...
   out.set("tilt_clamped", g.clamped);    // ...and how many were held to their maximum
+  out.set("morphs", g.morphs);           // ABI 9: `morph` and `scale` calls answered Ok, and the
+  out.set("scales", g.scales);           // weights written to the renderer (one per actor a frame
+  out.set("morph_writes", g.morph_writes);  // whose weights changed since the last)
   out.set("plays", g.plays);
   out.set("stops", g.stops);
   out.set("speeds", g.speeds);
@@ -1325,6 +1432,17 @@ JsonValue GameActors::calls_json() const {
 
 bool GameActors::flush(renderer::SceneRenderer& renderer, std::string* error) {
   Impl& g = *impl_;
+  // ABI 9: the weights an actor was given since the last frame, the last call of them, into the
+  // static half its instance's shape cache serves; the cache rebuilds on the next frame.
+  for (Impl::Actor& a : g.actors) {
+    if (!a.morph_dirty) continue;
+    a.morph_dirty = false;
+    ++g.morph_writes;
+    if (!renderer.set_instance_morph_weights(
+            a.loaded, std::span<const f32>(a.weights.data(), a.weights.size()), error)) {
+      return false;
+    }
+  }
   g.move_indices.clear();
   g.move_placements.clear();
   for (Impl::Actor& a : g.actors) {

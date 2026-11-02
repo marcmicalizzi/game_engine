@@ -4,7 +4,7 @@
 namespace engine.walk_poc
 
 /// What the fixture remembers between ticks and runs.
-struct Survivor @version(5) {
+struct Survivor @version(6) {
   /// Thirst, 100 full and 0 the end of the run.
   thirst: f64 = 100
   /// Game seconds survived, a tick's dt at a time, and metres walked.
@@ -55,4 +55,23 @@ struct Survivor @version(5) {
   /// The ABI 7 build's (WALK_POC_TEST 8, `walk_poc_abi7`): bytes past the 136 an ABI 5 to 7 module
   /// owns that `actor_state` wrote anyway (never, if the host copies only as far as `size`).
   abi7_overrun: u32 = 0 @since(5)
+  /// **The creator** (ABI 9; README "The creator"; roadmap P52): whether it is open, and the
+  /// parameter selected (0 the height, then one per morph channel).
+  creator_open: bool = false @since(6)
+  creator_selected: u32 = 0 @since(6)
+  /// **The appearance**: the shape the creator gave the actor `player` (or `bar`) — the game's
+  /// state, not the engine's, so the host keeps none of it: saved here by `--game-state` and said
+  /// to the actor again at the module's first tick after a cold restore or a replay's restore. The
+  /// height is `actor_scale`'s factor (0.85 to 1.15); the weights are `actor_morph`'s, the first
+  /// `appearance_count` of them (at most 16, the channels the actor has).
+  appearance_set: bool = false @since(6)
+  appearance_scale: f64 = 1 @since(6)
+  appearance_count: u32 = 0 @since(6)
+  appearance_weights: f64[16] @since(6)
+  /// The shape build's (WALK_POC_TEST 10, `walk_poc_shape`): the answers of its first tick's refused
+  /// calls (a `Result`, four bits a call, call 0 lowest), and what `actor_state` reported after the
+  /// tick's shape was said: the scale and the morph channel count.
+  shape_codes: u64 = 0 @since(6)
+  shape_seen_scale: f64 = 0 @since(6)
+  shape_seen_channels: u32 = 0 @since(6)
 }

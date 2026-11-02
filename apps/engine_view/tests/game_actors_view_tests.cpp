@@ -587,6 +587,274 @@ TEST_CASE(
 }
 #endif  // the ABI 8 builds
 
+#if defined(WALK_POC_SHAPE_PATH)
+namespace engine::view_test {
+bool write_morphed_bar_glb(const std::string& path);  // mesh_view_tests.cpp
+}  // namespace engine::view_test
+
+namespace {
+
+// The creator's scene (roadmap P52): the waves and the bar, skinned **and** morphed (`girth`,
+// `bend`), named `bar` and standing 10 m ahead of the walker; or, with `bar` false, the same bar 30
+// m behind the walker, where no frame sees it — the same scene's picture with nothing in front,
+// which is how a capture's bar pixels are found.
+std::string creator_scene(const test::TempDir& tmp, bool bar) {
+  REQUIRE(view_test::write_morphed_bar_glb(tmp.file("morphed.glb")));
+  const std::string scene = tmp.file(bar ? "creator.json" : "behind.json");
+  std::string body = R"({"format":"engine.scene.v1","name":"creator",
+      "terrain":{"size":65,"extent":64,"seed":3,"dune_height":0.2,"dune_wavelength":30},
+      "meshes":[{"path":"morphed.glb"}],
+      "instances":[{"mesh":0,"name":"bar","translation":)";
+  body += bar ? "[0,0,0]" : "[0,0,40]";
+  body += R"(,"ground":true,"animation":{"clip":"bend"}}]})";
+  REQUIRE(io::write_file(scene, body) == io::Status::Ok);
+  return scene;
+}
+
+// Standing as `stand_session` stands, `ticks` long, with these keys pressed for one tick each:
+// (tick, scancode) — 1 to 4 are 30 to 33, Q is 20.
+std::string creator_session(const test::TempDir& tmp, const std::string& scene, u64 ticks,
+                            const char* name, std::initializer_list<std::pair<u64, u32>> presses) {
+  input::InputLog keys;
+  keys.set_map(view::default_fly_map());
+  for (const auto& [tick, code] : presses) {
+    keys.record(input::RawEvent{SimTick{tick}, input::Source::Key, code, 1.0f, 0});
+    keys.record(input::RawEvent{SimTick{tick + 1}, input::Source::Key, code, 0.0f, 0});
+  }
+  view::SessionHeader header;
+  header.ticks = ticks;
+  header.scene = scene;
+  header.start.position = WorldPos{0.0, 3.0, 10.0};
+  header.start.yaw = 0.0f;
+  header.start.pitch = -0.15f;
+  header.has_walk = true;
+  header.walking = true;
+  keys.set_session(view::session_to_json(header));
+  const std::string path = tmp.file(name);
+  REQUIRE(keys.save(path) == io::Status::Ok);
+  return path;
+}
+
+struct Picture {
+  u32 width = 0;
+  u32 height = 0;
+  std::vector<u8> rgb;
+};
+
+Picture picture(const std::string& path) {
+  image::Image image;
+  REQUIRE(image::read_image(path, image) == io::Status::Ok);
+  Picture out;
+  out.width = image.width;
+  out.height = image.height;
+  for (u32 i = 0; i + 3 < image.pixels.size(); i += 4) {
+    out.rgb.push_back(image.pixels[i]);
+    out.rgb.push_back(image.pixels[i + 1]);
+    out.rgb.push_back(image.pixels[i + 2]);
+  }
+  return out;
+}
+
+// Pixel p differs between the two pictures.
+std::vector<u8> differs(const Picture& a, const Picture& b) {
+  REQUIRE(a.width == b.width);
+  REQUIRE(a.height == b.height);
+  std::vector<u8> out(usize{a.width} * a.height, u8{0});
+  for (usize p = 0; p < out.size(); ++p) {
+    out[p] = a.rgb[3 * p] != b.rgb[3 * p] || a.rgb[3 * p + 1] != b.rgb[3 * p + 1] ||
+                     a.rgb[3 * p + 2] != b.rgb[3 * p + 2]
+                 ? u8{1}
+                 : u8{0};
+  }
+  return out;
+}
+
+u64 count(const std::vector<u8>& mask) {
+  u64 n = 0;
+  for (const u8 m : mask)
+    n += m;
+  return n;
+}
+
+// The rows a mask spans, top to bottom: the bar's drawn height.
+u32 rows(const std::vector<u8>& mask, u32 width) {
+  u32 top = ~0u;
+  u32 bottom = 0;
+  for (usize p = 0; p < mask.size(); ++p) {
+    if (mask[p] == 0) continue;
+    const u32 y = static_cast<u32>(p / width);
+    if (y < top) top = y;
+    if (y > bottom) bottom = y;
+  }
+  return top == ~0u ? 0u : bottom - top + 1;
+}
+
+}  // namespace
+
+TEST_CASE(
+    "engine-view: the creator shapes the actor through ABI 9, the state file keeps the shape, a "
+    "cold restore draws it again to the pixel, and its height is the actor's scale") {
+  // walk_poc_shape (the creator every walk_poc build has, the bar's clip stopped so its pose is the
+  // rest pose in every run, and no survival lines on the HUD) over 300 ticks, shadows off so the
+  // bar is the only thing its shape can change: (A) the creator opened, the second parameter
+  // (`girth`) chosen and + pressed five times, closed; (B) nothing pressed; (A2) A again; (C) B's
+  // recording with A's state file, a cold restore; (D) the height raised ten hundredths to 1.10;
+  // (E) B with the bar behind the walker.
+  const test::TempDir tmp("engine_view_creator");
+  const std::string scene = creator_scene(tmp, true);
+  const std::string behind = creator_scene(tmp, false);
+  const std::string module = fixture(tmp, WALK_POC_SHAPE_PATH, "walk_poc_shape");
+  const std::string girth = creator_session(
+      tmp, scene, 300, "girth.jsonl",
+      {{20, 30}, {40, 32}, {60, 33}, {80, 33}, {100, 33}, {120, 33}, {140, 33}, {200, 30}});
+  const std::string plain = creator_session(tmp, scene, 300, "plain.jsonl", {});
+  const std::string taller = creator_session(tmp, scene, 300, "taller.jsonl",
+                                             {{20, 30},
+                                              {40, 33},
+                                              {50, 33},
+                                              {60, 33},
+                                              {70, 33},
+                                              {80, 33},
+                                              {90, 33},
+                                              {100, 33},
+                                              {110, 33},
+                                              {120, 33},
+                                              {130, 33},
+                                              {200, 30}});
+  const std::string plain_behind = creator_session(tmp, behind, 300, "behind.jsonl", {});
+  const auto run = [&](const std::string& session, const std::string& scene_path,
+                       const std::string& state, const char* png, JsonValue& summary) {
+    std::vector<std::string> args = {"--replay-input",
+                                     session,
+                                     "--scene",
+                                     scene_path,
+                                     "--offscreen",
+                                     "--width",
+                                     "640",
+                                     "--height",
+                                     "400",
+                                     "--ddc",
+                                     tmp.file("ddc"),
+                                     "--anim-lod-scale",
+                                     "100000",
+                                     "--shadows",
+                                     "off",
+                                     "--game",
+                                     module,
+                                     "--capture",
+                                     tmp.file(png)};
+    if (!state.empty()) args.insert(args.end(), {"--game-state", state});
+    const Run r = run_view(args);
+    if (r.exit_code == 0) REQUIRE_MESSAGE(summary_of(r, summary), r.output);
+    return r;
+  };
+  JsonValue a, b, a2, c, d, e;
+  const Run first = run(girth, scene, tmp.file("a.state.json"), "a.png", a);
+  if (first.exit_code == 3) {
+    MESSAGE("engine-view unavailable here: " << first.output.substr(0, 300));
+    return;
+  }
+  REQUIRE_MESSAGE(first.exit_code == 0, first.output);
+  CHECK(number(at(a, {"interactive", "game", "abi"})) == 9.0);
+  // The first tick's five refused calls (four bits each): too many weights, a NaN weight, a scale
+  // of 5, of 0.1 and NaN, all InvalidArgument (6); and the actor kept its scale through them.
+  const JsonValue* state_a = at(a, {"interactive", "game", "state"});
+  REQUIRE(state_a != nullptr);
+  CHECK(number(state_a->find("shape_codes")) == static_cast<f64>(6u * 0x11111u));
+  CHECK(number(state_a->find("shape_seen_scale")) == 1.0);
+  CHECK(number(state_a->find("shape_seen_channels")) == 2.0);
+  const JsonValue* bar_a = bar_of(a);
+  REQUIRE_MESSAGE(bar_a != nullptr, first.output.substr(0, 2000));
+  const JsonValue* morph_a = bar_a->find("morph");
+  REQUIRE(morph_a != nullptr);
+  REQUIRE(morph_a->size() == 2);
+  CHECK(number(&(*morph_a)[0]) == 0.5);
+  CHECK(number(&(*morph_a)[1]) == 0.0);
+  CHECK(bar_a->find("scale") == nullptr);  // the height was not touched
+  CHECK(number(at(a, {"interactive", "game", "actor_calls", "morphs"})) == 5.0);
+  // One renderer write a frame whose actor's weights changed: the five steps are 20 ticks apart.
+  const f64 writes = number(at(a, {"interactive", "game", "actor_calls", "morph_writes"}));
+  MESSAGE("the five steps reached the renderer in " << writes << " writes");
+  CHECK(writes >= 1.0);
+  CHECK(writes <= 5.0);
+
+  // The state file holds the vector.
+  std::string saved_text;
+  REQUIRE(io::read_file(tmp.file("a.state.json"), saved_text) == io::Status::Ok);
+  JsonValue saved;
+  REQUIRE(parse_json(saved_text, saved).ok);
+  const JsonValue* kept = saved.find("state");
+  REQUIRE(kept != nullptr);
+  CHECK(kept->find("appearance_set")->as_bool());
+  CHECK(number(kept->find("appearance_count")) == 2.0);
+  CHECK(number(kept->find("appearance_scale")) == 1.0);
+  REQUIRE(kept->find("appearance_weights") != nullptr);
+  CHECK(number(&(*kept->find("appearance_weights"))[0]) == doctest::Approx(0.5));
+  CHECK(number(&(*kept->find("appearance_weights"))[1]) == 0.0);
+
+  REQUIRE(run(plain, scene, "", "b.png", b).exit_code == 0);
+  REQUIRE(run(plain_behind, behind, "", "e.png", e).exit_code == 0);
+  const Picture pa = picture(tmp.file("a.png"));
+  const Picture pb = picture(tmp.file("b.png"));
+  const Picture pe = picture(tmp.file("e.png"));
+  const std::vector<u8> bar_pixels_a = differs(pa, pe);
+  const std::vector<u8> bar_pixels_b = differs(pb, pe);
+  const std::vector<u8> shaped = differs(pa, pb);
+  u64 outside = 0;
+  for (usize p = 0; p < shaped.size(); ++p) {
+    if (shaped[p] != 0 && bar_pixels_a[p] == 0 && bar_pixels_b[p] == 0) ++outside;
+  }
+  MESSAGE("the bar covers " << count(bar_pixels_b) << " pixels of 256,000; girth 0.5 changed "
+                            << count(shaped) << ", " << outside << " of them outside the bar");
+  CHECK(count(bar_pixels_b) > 500);
+  CHECK(count(shaped) > 50);
+  CHECK(outside == 0);
+
+  // A second replay writes the same state file, byte for byte.
+  REQUIRE(run(girth, scene, tmp.file("a2.state.json"), "a2.png", a2).exit_code == 0);
+  std::string again_text;
+  REQUIRE(io::read_file(tmp.file("a2.state.json"), again_text) == io::Status::Ok);
+  CHECK(again_text == saved_text);
+  CHECK(differing_pixels(tmp.file("a.png"), tmp.file("a2.png")) == 0);
+
+  // A cold restore from A's state file, nothing pressed: the module says the shape again at its
+  // first tick, and the picture is A's to the pixel.
+  {
+    std::error_code ec;
+    std::filesystem::copy_file(std::filesystem::path(tmp.file("a.state.json")),
+                               std::filesystem::path(tmp.file("c.state.json")),
+                               std::filesystem::copy_options::overwrite_existing, ec);
+    REQUIRE(!ec);
+  }
+  REQUIRE(run(plain, scene, tmp.file("c.state.json"), "c.png", c).exit_code == 0);
+  CHECK(at(c, {"interactive", "game", "restored"})->as_bool());
+  const JsonValue* bar_c = bar_of(c);
+  REQUIRE(bar_c != nullptr);
+  const JsonValue* morph_c = bar_c->find("morph");
+  REQUIRE(morph_c != nullptr);
+  REQUIRE(morph_c->size() == 2);
+  CHECK(number(&(*morph_c)[0]) == 0.5);
+  CHECK(number(&(*morph_c)[1]) == 0.0);
+  CHECK(number(at(c, {"interactive", "game", "state", "shape_seen_channels"})) == 2.0);
+  CHECK(differing_pixels(tmp.file("a.png"), tmp.file("c.png")) == 0);
+
+  // The height: ten steps to 1.10, which `actor_state` reports and the summary names, and the bar
+  // drawn that much taller — counted in rows of the capture against the bar behind the walker.
+  REQUIRE(run(taller, scene, "", "d.png", d).exit_code == 0);
+  CHECK(number(at(d, {"interactive", "game", "state", "shape_seen_scale"})) ==
+        doctest::Approx(1.1).epsilon(1e-6));
+  REQUIRE(bar_of(d) != nullptr);
+  CHECK(number(bar_of(d)->find("scale")) == doctest::Approx(1.1).epsilon(1e-6));
+  CHECK(bar_of(d)->find("morph") == nullptr);
+  const Picture pd = picture(tmp.file("d.png"));
+  const u32 rows_b = rows(bar_pixels_b, pb.width);
+  const u32 rows_d = rows(differs(pd, pe), pd.width);
+  MESSAGE("the bar is " << rows_b << " rows tall at 1.00 and " << rows_d << " at 1.10");
+  REQUIRE(rows_b > 20);
+  CHECK(static_cast<f64>(rows_d) / static_cast<f64>(rows_b) == doctest::Approx(1.1).epsilon(0.05));
+}
+#endif  // WALK_POC_SHAPE_PATH
+
 #if ENGINE_VIEW_WORLD
 // The actor scene with six rigid boxes before the bar, so the bar is the file's instance 6: read
 // whole, or with a `world` block that streams the boxes (renderer.md, "Authored instances per

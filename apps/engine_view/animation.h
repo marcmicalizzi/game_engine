@@ -81,10 +81,15 @@ struct AnimatedScene {
   Vector<Id128> entities;                 // one per scene instance; null where it is rigid
   Vector<renderer::InstanceJoints> runs;  // refilled every step; what the renderer reads
   Vector<u32> mesh_skeleton;              // the skeleton each scene mesh's file contributed
-  Vector<u32> instance_clip;              // the library clip each instance was attached with
-  u32 joints = 0;                         // the widest skeleton attached
-  u32 instances = 0;                      // entities attached
-  std::string clip_name;                  // what the summary reports
+  // Each scene mesh's run of the scene's morph channels and the channels' names (the merged mesh's
+  // `morph_names`), taken at `attach_instances`: what a game's actor is told it can shape (ABI 9).
+  Vector<u32> mesh_first_channel;
+  Vector<u32> mesh_channel_count;
+  Vector<std::string> morph_names;
+  Vector<u32> instance_clip;  // the library clip each instance was attached with
+  u32 joints = 0;             // the widest skeleton attached
+  u32 instances = 0;          // entities attached
+  std::string clip_name;      // what the summary reports
   // **The whole read's index of each scene instance, and back** (renderer.md, "The whole read's
   // index"): everything above is indexed by the loaded instance, and everything a scene file or a
   // game names — an animation block, an actor's handle, the summary's `instance` — by the whole
@@ -263,12 +268,20 @@ class GameActors final : public ActorHost {
   hotload::Result stop(u32 instance, f32 fade_s) override;
   hotload::Result speed(u32 instance, f32 speed) override;
   hotload::Result state(u32 instance, hotload::ActorState& out) override;
+  // ABI 9 (apps.md, "Actors"): the shape is applied at the tick — `state` reports it at once — and
+  // reaches the renderer at `flush`, the weights through `set_instance_morph_weights` and the scale
+  // in the move's transform. **The shape is the game's state, not the host's**: `to_json` does not
+  // write it and a cold restore stands the actor at the scene's shape until the module says it
+  // again.
+  hotload::Result morph(u32 instance, const f32* weights, u32 count) override;
+  hotload::Result scale(u32 instance, f32 scale) override;
+  hotload::Result morph_info(u32 instance, hotload::MorphInfo& io) override;
   JsonValue to_json() const override;
   JsonValue summary_json() const override;
   JsonValue calls_json() const override;
 
-  // Between frames: every actor moved since the last call, in one `move_instances`. True when
-  // nothing moved.
+  // Between frames: every actor moved since the last call, in one `move_instances`, and every actor
+  // whose weights changed, one `set_instance_morph_weights` each. True when nothing moved.
   bool flush(renderer::SceneRenderer& renderer, std::string* error);
   u32 count() const noexcept;
 

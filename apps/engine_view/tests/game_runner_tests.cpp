@@ -562,6 +562,34 @@ struct FakeActors final : view::ActorHost {
     for (u32 k = 0; k < 3; ++k)
       out.position[k] = position[k];
     out.pose_hash = 0xABCDu + places;
+    out.scale = scale_value;
+    out.morph_count = channels;
+    return hotload::Result::Ok;
+  }
+  // ABI 9: the shape as the runner hands it on — only what it did not refuse arrives here.
+  u32 channels = 2;  // named `girth` and `bend`
+  f32 weights[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+  u32 morph_count = 0;
+  u32 morph_calls = 0;
+  f32 scale_value = 1.0f;
+  u32 scale_calls = 0;
+  hotload::Result morph(u32, const f32* w, u32 count) override {
+    ++morph_calls;
+    morph_count = count;
+    for (u32 k = 0; k < 4; ++k)
+      weights[k] = k < count ? w[k] : 0.0f;
+    return hotload::Result::Ok;
+  }
+  hotload::Result scale(u32, f32 s) override {
+    ++scale_calls;
+    scale_value = s;
+    return hotload::Result::Ok;
+  }
+  hotload::Result morph_info(u32, hotload::MorphInfo& io) override {
+    static constexpr const char* k_names[2] = {"girth", "bend"};
+    io.count = channels;
+    io.name = io.index < channels && io.index < 2 ? k_names[io.index] : "";
+    io.name_length = std::string_view(io.name).size();
     return hotload::Result::Ok;
   }
   JsonValue to_json() const override { return JsonValue::array(); }
@@ -724,6 +752,131 @@ TEST_CASE(
   runner.set_actors(nullptr);
 }
 #endif  // WALK_POC_ALIGNED_PATH
+
+#if defined(WALK_POC_SHAPE_PATH)
+namespace {
+const view::GameHud::Element* element_of(const view::GameHud& hud, u32 id) {
+  for (u32 i = 0; i < hud.element_count; ++i) {
+    if (hud.elements[i].id == id) return &hud.elements[i];
+  }
+  return nullptr;
+}
+}  // namespace
+
+TEST_CASE(
+    "game runner: ABI 9's shape calls are judged before the actor sees them, and the creator "
+    "steps, "
+    "names, repeats and saves the shape") {
+  if (in_bundle()) return;
+  const test::TempDir tmp("game_runner_creator");
+  const input::ActionMap map = view::default_fly_map();
+  std::string error;
+  Vector<view::DeclaredActor> bar;
+  bar.push_back(view::DeclaredActor{"bar", 1});
+  // An actor whose mesh has no channels: the two morph refusals are `Unsupported` (4), the three
+  // scales out of range or NaN `InvalidArgument` (6), and none of them reached the actor.
+  {
+    view::GameRunner runner;
+    runner.declare_actors(bar);
+    REQUIRE_MESSAGE(
+        runner.start(config_for(place(tmp, WALK_POC_SHAPE_PATH, "plain"), tmp), map, 240, &error),
+        error);
+    FakeActors actors;
+    actors.channels = 0;
+    runner.set_actors(&actors);
+    u64 tick = 0;
+    walk(runner, tick, 2, 0.0);
+    CHECK(state_number(runner, "shape_codes") == static_cast<f64>(0x66644u));
+    CHECK(actors.morph_calls == 0);
+    CHECK(actors.scale_calls == 0);
+    CHECK(state_number(runner, "shape_seen_channels") == 0.0);
+    runner.set_actors(nullptr);
+  }
+
+  view::GameRunner runner;
+  runner.declare_actors(bar);
+  REQUIRE_MESSAGE(
+      runner.start(config_for(place(tmp, WALK_POC_SHAPE_PATH, "shape"), tmp), map, 240, &error),
+      error);
+  FakeActors actors;
+  runner.set_actors(&actors);
+  input::InputState input(map);
+  u64 tick = 0;
+  const auto advance = [&](std::initializer_list<std::pair<u32, f32>> events) {
+    input.begin_tick(SimTick{tick + 1});
+    for (const auto& [code, value] : events)
+      input.feed(input::RawEvent{SimTick{tick + 1}, input::Source::Key, code, value, 0});
+    input.end_tick();
+    walk(runner, tick, 1, 0.0, &input);
+  };
+  const auto press = [&](u32 code) {
+    advance({{code, 1.0f}});
+    advance({{code, 0.0f}});
+  };
+  advance({});
+  // Too many weights, a NaN weight, a scale of 5, of 0.1, and NaN: all InvalidArgument, none of
+  // them reached the actor, and its scale is the one it had.
+  CHECK(state_number(runner, "shape_codes") == static_cast<f64>(6u * 0x11111u));
+  CHECK(actors.morph_calls == 0);
+  CHECK(actors.scale_calls == 0);
+  CHECK(state_number(runner, "shape_seen_scale") == 1.0);
+  CHECK(state_number(runner, "shape_seen_channels") == 2.0);
+  CHECK(element_of(runner.hud(), 40) == nullptr);  // closed: no creator on the HUD
+
+  // 1 opens it: the title and three parameters, named from `actor_morph_info`, the height selected.
+  press(30);
+  REQUIRE(element_of(runner.hud(), 40) != nullptr);
+  REQUIRE(element_of(runner.hud(), 41) != nullptr);
+  REQUIRE(element_of(runner.hud(), 42) != nullptr);
+  REQUIRE(element_of(runner.hud(), 43) != nullptr);
+  CHECK(element_of(runner.hud(), 44) == nullptr);
+  CHECK(std::string_view(element_of(runner.hud(), 41)->text) == "height  1.00");
+  CHECK(std::string_view(element_of(runner.hud(), 42)->text) == "girth  0.0");
+  CHECK(std::string_view(element_of(runner.hud(), 43)->text) == "bend  0.0");
+  CHECK(element_of(runner.hud(), 41)->color[2] == 64);   // amber: selected
+  CHECK(element_of(runner.hud(), 42)->color[2] == 255);  // white
+
+  // 3 selects `girth`, 4 five times: 0.5, the second channel at 0, both weights handed on.
+  press(32);
+  for (u32 i = 0; i < 5; ++i)
+    press(33);
+  CHECK(actors.morph_calls == 5);
+  CHECK(actors.morph_count == 2);
+  CHECK(actors.weights[0] == 0.5f);
+  CHECK(actors.weights[1] == 0.0f);
+  CHECK(std::string_view(element_of(runner.hud(), 42)->text) == "girth  0.5");
+  CHECK(element_of(runner.hud(), 42)->color[2] == 64);
+
+  // 2 goes back to the height, 4 three times: 1.03.
+  press(31);
+  for (u32 i = 0; i < 3; ++i)
+    press(33);
+  CHECK(actors.scale_calls == 3);
+  CHECK(actors.scale_value == doctest::Approx(1.03f));
+  // Q held for 48 ticks after its press: a step on the press and one every 24 ticks held (ten a
+  // second of the 240 Hz clock), three in all, back to 1.00.
+  advance({{20, 1.0f}});
+  for (u32 i = 0; i < 48; ++i)
+    advance({});
+  advance({{20, 0.0f}});
+  CHECK(actors.scale_calls == 6);
+  CHECK(actors.scale_value == doctest::Approx(1.0f));
+
+  // 1 closes it: every element it placed is gone. The shape is in the state.
+  press(30);
+  CHECK(element_of(runner.hud(), 40) == nullptr);
+  CHECK(element_of(runner.hud(), 41) == nullptr);
+  CHECK(element_of(runner.hud(), 43) == nullptr);
+  const JsonValue state = runner.state_json();
+  CHECK(state.find("appearance_set")->as_bool());
+  CHECK(number_of(state.find("appearance_count")) == 2.0);
+  CHECK(number_of(state.find("appearance_scale")) == doctest::Approx(1.0));
+  REQUIRE(state.find("appearance_weights") != nullptr);
+  CHECK(number_of(&(*state.find("appearance_weights"))[0]) == doctest::Approx(0.5));
+  CHECK_FALSE(state.find("creator_open")->as_bool());
+  runner.set_actors(nullptr);
+}
+#endif  // WALK_POC_SHAPE_PATH
 #endif  // WALK_POC_ACTOR_PATH
 
 #endif  // WALK_POC_PATH

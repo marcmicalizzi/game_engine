@@ -5,6 +5,15 @@
 engine_game_module(NAME walk_poc
   SOURCES walk_poc.cpp
   SCHEMAS walk_poc.schema)
+# The same fixture with the creator (roadmap P52, hotload ABI 9; README "The creator"): its own
+# build, so `walk_poc` keeps its two actions and its HUD, and run the same way
+# (`--game build/<preset>/bin/game/walk_poc_creator.dll`).
+engine_game_module(NAME walk_poc_creator
+  SOURCES walk_poc.cpp
+  SCHEMAS walk_poc.schema)
+if(TARGET engine_game_walk_poc_creator)
+  target_compile_definitions(engine_game_walk_poc_creator PRIVATE WALK_POC_CREATOR=1)
+endif()
 
 # engine-view's end-to-end cases run it, and two test builds of it the runner must handle: one that
 # declares an action no map has (refused when it loads) and one that fails from game_tick (the
@@ -53,7 +62,13 @@ if(TARGET engine_game_walk_poc AND TARGET engine_engine_view_tests)
   engine_game_module(NAME walk_poc_level OUTPUT_DIRECTORY "${_tests}"
     SOURCES walk_poc.cpp SCHEMAS walk_poc.schema)
   target_compile_definitions(engine_game_walk_poc_level PRIVATE WALK_POC_TEST=9)
-  add_dependencies(engine_engine_view_tests engine_game_walk_poc_level)
+  # And walk_poc_shape for ABI 9 (roadmap P52, the creator; apps.md "Actors"): the creator every
+  # build has, with the actor's clip stopped, its first tick's refused shape calls recorded and the
+  # run's HUD lines unsaid, so a capture differs by the actor's shape alone.
+  engine_game_module(NAME walk_poc_shape OUTPUT_DIRECTORY "${_tests}"
+    SOURCES walk_poc.cpp SCHEMAS walk_poc.schema)
+  target_compile_definitions(engine_game_walk_poc_shape PRIVATE WALK_POC_TEST=10)
+  add_dependencies(engine_engine_view_tests engine_game_walk_poc_level engine_game_walk_poc_shape)
   add_dependencies(engine_engine_view_tests engine_game_walk_poc engine_game_walk_poc_bad_action
                    engine_game_walk_poc_failing engine_game_walk_poc_no_props
                    engine_game_walk_poc_teleport engine_game_walk_poc_actor
@@ -70,6 +85,7 @@ if(TARGET engine_game_walk_poc AND TARGET engine_engine_view_tests)
     WALK_POC_ALIGNED_PATH="$<TARGET_FILE:engine_game_walk_poc_aligned>"
     WALK_POC_ABI7_PATH="$<TARGET_FILE:engine_game_walk_poc_abi7>"
     WALK_POC_LEVEL_PATH="$<TARGET_FILE:engine_game_walk_poc_level>"
+    WALK_POC_SHAPE_PATH="$<TARGET_FILE:engine_game_walk_poc_shape>"
     WALK_POC_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
   # The hot-reload case compiles a second build of the fixture, a field added, into its own
   # scratch directory with the exported command, as foundation/hotload's tests do.
@@ -78,5 +94,5 @@ endif()
 # engine-view itself depends on the fixture being built, so `--game build/<preset>/bin/game/
 # walk_poc.dll` works after building the app alone.
 if(TARGET engine_game_walk_poc AND TARGET engine_engine_view)
-  add_dependencies(engine_engine_view engine_game_walk_poc)
+  add_dependencies(engine_engine_view engine_game_walk_poc engine_game_walk_poc_creator)
 endif()

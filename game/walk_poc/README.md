@@ -33,6 +33,21 @@ roadmap P18); nothing here is its design, and its survival meters are its own (r
   spring), the E count, and the can and markers taken and placed. And, once the can stands, a
   structured element (hotload ABI 4, `hud_element`): `[E] Pick up`, outlined text with no panel
   centred below the picture's middle, shown while the can is in reach and hidden otherwise.
+- **The creator** (hotload ABI 9, roadmap P52), in its own build, **`walk_poc_creator`** (`--game build/<preset>/bin/game/walk_poc_creator.dll`; `walk_poc` itself declares its two actions and draws its HUD as it always did): **1** (`game_1`) opens and closes it. In it, **2**
+  and **3** (`game_2`, `game_3`) select the previous and next parameter, and **Q** and **4** (`use`,
+  `game_4`) take a step down and up — on the press, and while the key is held again ten times a
+  second of the tick clock, so a replay steps the same (Q places no marker while it is open). The
+  parameters: **height**, the actor's scale (`actor_scale`), 0.85 to 1.15 in hundredths; then one
+  per morph channel of the actor (`actor_morph`, the static weights), 0 to 1 in tenths, named as the
+  asset names it (`actor_morph_info`; glTF `extras.targetNames`) and `shape n` where it names none,
+  at most 16. The HUD lists them down the top-right as elements, the selected one in amber, with its
+  value as a meter in the top-left stack; closing removes them. It shapes the actor **`player`**
+  when the scene names one, else **`bar`** (the tests' actor), looked up at a tick — not in
+  `on_load`, where a scene with other actors would refuse the load — and does nothing where there is
+  neither. **The shape is the game's state, not the engine's**: the appearance (`appearance_set`,
+  `appearance_scale`, `appearance_count`, `appearance_weights`, `@since(6)`) is saved by
+  `--game-state` and said to the actor again on the first tick after any load — a cold restore, a
+  replay's restored header, a rebuild — because the host keeps no actor's shape.
 - **The graphics** (ABI 4): on its first tick it logs the raster path and shadows the session
   resolved (`graphics_state`), and makes one request the host records (`shadows: csm`) and one it
   refuses (`raster: warp`), so a test sees both answers.
@@ -59,8 +74,13 @@ calls, the ground's own normal from `ground_sample`, a level `actor_place`, and 
 footprints — with every call's answer in its state (`@since(5)`); `8`, named `walk_poc_abi7`, the
 actor build declared as a module built against ABI 7 is, reading `actor_state` into ABI 5's
 136-byte struct with a guard behind it; and `9`, `walk_poc_level`, build 7 making every placement
-through `actor_place`, the picture build 7's level phases must reproduce) are what engine-view's
-tests check the refusals, the tail, the actors, the loading hooks and the replay rules with.
+through `actor_place`, the picture build 7's level phases must reproduce; and `10`, named
+`walk_poc_shape` (hotload ABI 9), the creator build with the actor's clip stopped at its first tick, five
+refused shape calls' answers in its state (`shape_codes`: too many weights, a NaN weight, a scale of
+5, of 0.1 and NaN), what `actor_state` reports of its scale and channels each tick, and none of the
+run's HUD lines, so a capture after a restore is the picture of the shape alone) are what
+engine-view's tests check the refusals, the tail, the actors, the loading hooks, the creator and the
+replay rules with.
 
 **Its own art** (hotload ABI 6): with `hud/panel.png` beside the scene file (or the module), every
 build draws that image nine-sliced as a panel behind the `[E] Pick up` prompt, and with
