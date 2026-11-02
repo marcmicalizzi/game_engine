@@ -431,13 +431,19 @@ bool SceneRenderer::create(const gfx::Device& device, GpuScene& scene,
     RtCapacityConfig config;
     config.limit = scene.rt_capacity_limit();
     config.headroom_pct = rt_headroom_pct_tunable();
+    config.shrink_seconds = rt_shrink_seconds_tunable();
+    config.peak_seconds = rt_peak_seconds_tunable();
+    config.floor_pct = rt_floor_pct_tunable();
     config.shrink_frames = rt_shrink_frames_tunable();
+    config.peak_frames = rt_peak_frames_tunable();
     config.step = rt_step_tunable();
-    rt_capacity_.reset(config, scene.rt_capacity());
+    // The policy's clock is wall time (R116): seconds on the monotonic clock.
+    const f64 now = static_cast<f64>(time::monotonic_ns()) / 1.0e9;
+    rt_capacity_.reset(config, scene.rt_capacity(), now);
     // The cache's references: the same arithmetic against their own ceiling.
     RtCapacityConfig references = config;
     references.limit = scene.rt_reference_limit();
-    rt_reference_policy_.reset(references, scene.rt_reference_capacity());
+    rt_reference_policy_.reset(references, scene.rt_reference_capacity(), now);
     note_rt_bytes();
   }
   if (!frames_.create(device, desc.frames_in_flight, error) ||
@@ -1286,12 +1292,12 @@ bool SceneRenderer::set_dynamic_instances(std::span<const SceneInstance> tail,
     // frames wanted more than the prefix ever could was dropped instance by instance, every frame,
     // even from a frame drawn complete. A world on tile ground never showed it: its prefix, every
     // tile slot, is the larger part of any frame.
+    // A relayout keeps the policy's window and the capacities it held (R116).
     if (resolved_.rt_chain) {
-      RtCapacityConfig config = rt_capacity_.config();
-      config.limit = scene_->rt_capacity_limit();
-      rt_capacity_.reset(config, scene_->rt_capacity());
-      config.limit = scene_->rt_reference_limit();
-      rt_reference_policy_.reset(config, scene_->rt_reference_capacity());
+      const f64 now = static_cast<f64>(time::monotonic_ns()) / 1.0e9;
+      rt_capacity_.relimit(scene_->rt_capacity_limit(), scene_->rt_capacity(), now);
+      rt_reference_policy_.relimit(scene_->rt_reference_limit(), scene_->rt_reference_capacity(),
+                                   now);
     }
     ++stats_.tiles.relayouts;
     stats_.tiles.relayout_ns += static_cast<f64>(time::monotonic_ns() - waited);
@@ -1317,8 +1323,9 @@ bool SceneRenderer::set_dynamic_instances(std::span<const SceneInstance> tail,
       } else {
         frames_.wait_idle();
         if (!scene_->resize_ray_tracing(capacity, error, false, references)) return false;
-        rt_capacity_.resized(scene_->rt_capacity());
-        rt_reference_policy_.resized(scene_->rt_reference_capacity());
+        const f64 now = static_cast<f64>(time::monotonic_ns()) / 1.0e9;
+        rt_capacity_.resized(scene_->rt_capacity(), now);
+        rt_reference_policy_.resized(scene_->rt_reference_capacity(), now);
       }
     }
   }
@@ -1703,10 +1710,11 @@ void SceneRenderer::begin_frame() {
     // demand crossed a threshold, never as a matter of course.
     if (resolved_.rt_chain && !rt_hold_) {
       rt_observed_ = true;
-      const u32 next = rt_capacity_.observe(stats_.rt.wanted);
+      const f64 now = static_cast<f64>(begin_started) / 1.0e9;
+      const u32 next = rt_capacity_.observe(stats_.rt.wanted, now);
       // The cache's references by a policy of their own, the same arithmetic (rt_capacity.h).
       const u32 next_references =
-          scene_->rt_cache() ? rt_reference_policy_.observe(stats_.rt.references_wanted) : 0u;
+          scene_->rt_cache() ? rt_reference_policy_.observe(stats_.rt.references_wanted, now) : 0u;
       const bool references_moved =
           scene_->rt_cache() && next_references != scene_->rt_reference_capacity();
       if ((next != scene_->rt_capacity() || references_moved) &&
@@ -1730,19 +1738,56 @@ bool SceneRenderer::apply_rt_capacity(u32 capacity, std::string* error, bool bey
   const u32 references_before = scene.rt_reference_capacity();
   if (references == 0) references = references_before;
   if (capacity == before && references == references_before) return true;
-  // Every frame in flight imports the chain's buffers by handle; none may still be reading them.
   const i64 started = time::monotonic_ns();
-  frames_.wait_idle();
-  if (!scene.resize_ray_tracing(capacity, error, beyond_budget, references)) return false;
-  // A resize waits for the device and makes the chain's buffers again: a hitch in a window, named
-  // when it is one (the slow frames' line, submit_frame).
+  // **Swapped at the frame boundary, not waited for** (R116, renderer.md "The ray tracing chain's
+  // memory"): the new buffers are made while the frames in flight still read the old ones, which
+  // this slot's deferred frees release once the frame recorded next has completed — so a resize
+  // costs the allocation and no wait. Until 2026-11-02 every resize waited for the device first,
+  // 30 to 153 ms on the owner's v25 walk. A resize that changes the cache's references (its one
+  // table names them) or that the device cannot hold beside the old set waits, as before.
+  bool swapped = false;
+  // Both sets at once must fit what the device lets this process hold: past that the driver makes
+  // room by evicting, which made one swapped growth on the replay 524 ms where the waited one was
+  // 37 (the experiment) — so a device without the room waits and frees first.
+  gfx::MemoryBudget budget;
+  const bool room =
+      !device_->memory_budget(budget) || !budget.valid ||
+      budget.used_bytes + u64{capacity} * scene.rt_bytes_per_cluster() <= budget.budget_bytes;
+  if (rt_swap_resize_tunable() && room) {
+    GpuScene::RtRetired retired;
+    if (scene.resize_ray_tracing(capacity, nullptr, beyond_budget, references, &retired)) {
+      for (u32 i = 0; i < retired.count; ++i)
+        frames_.defer_destroy(retired.buffers[i]);
+      swapped = true;
+    }
+  }
+  i64 waited = 0;
+  if (!swapped) {
+    // Every frame in flight imports the chain's buffers by handle; none may still be reading them.
+    frames_.wait_idle();
+    waited = time::monotonic_ns() - started;
+    if (!scene.resize_ray_tracing(capacity, error, beyond_budget, references)) return false;
+  }
+  // A resize makes the chain's buffers again, and without the swap waits for the device first: a
+  // hitch in a window, named when it is one (the slow frames' line, submit_frame), with what it was
+  // slow at.
   if (time::monotonic_ns() - started > k_slow_frame_ns) {
+    const GpuScene::RtResizeCost& cost = scene.rt_resize_cost();
     ENGINE_LOG_WARN(log_renderer, "the ray tracing chain's resize was slow",
                     log::field("from", before), log::field("to", scene.rt_capacity()),
-                    log::field("ms", static_cast<f64>(time::monotonic_ns() - started) / 1.0e6));
+                    log::field("ms", static_cast<f64>(time::monotonic_ns() - started) / 1.0e6),
+                    log::field("swapped", swapped),
+                    log::field("wait_ms", static_cast<f64>(waited) / 1.0e6),
+                    log::field("free_ms", static_cast<f64>(cost.free_ns) / 1.0e6),
+                    log::field("records_ms", static_cast<f64>(cost.records_ns) / 1.0e6),
+                    log::field("clas_ms", static_cast<f64>(cost.clas_ns) / 1.0e6),
+                    log::field("references_ms", static_cast<f64>(cost.references_ns) / 1.0e6),
+                    log::field("blas_ms", static_cast<f64>(cost.blas_ns) / 1.0e6),
+                    log::field("scratch_ms", static_cast<f64>(cost.scratch_ns) / 1.0e6));
   }
-  rt_capacity_.resized(scene.rt_capacity());
-  rt_reference_policy_.resized(scene.rt_reference_capacity());
+  const f64 now = static_cast<f64>(time::monotonic_ns()) / 1.0e9;
+  rt_capacity_.resized(scene.rt_capacity(), now);
+  rt_reference_policy_.resized(scene.rt_reference_capacity(), now);
   RtStats& chain = stats_.rt;
   if (scene.rt_capacity() > before) {
     ++chain.grows;
@@ -1922,13 +1967,14 @@ bool SceneRenderer::render_offscreen(const FrameDesc& frame, std::string* error)
                                   scene_->rt_reference_capacity() < reference_ceiling;
     if (attempt > 0 || !resolved_.rt_chain || (!short_built && !short_references)) break;
     u32 capacity = scene_->rt_capacity();
+    const f64 now = static_cast<f64>(time::monotonic_ns()) / 1.0e9;
     if (short_built) {
-      capacity = rt_capacity_.grow_to(stats_.rt.wanted);
+      capacity = rt_capacity_.grow_to(stats_.rt.wanted, now);
       if (frame.rt_complete) capacity = std::max(capacity, std::min(stats_.rt.wanted, ceiling));
     }
     u32 references = 0;
     if (short_references) {
-      references = rt_reference_policy_.grow_to(stats_.rt.references_wanted);
+      references = rt_reference_policy_.grow_to(stats_.rt.references_wanted, now);
       if (frame.rt_complete) {
         references = std::max(references, std::min(stats_.rt.references_wanted, reference_ceiling));
       }

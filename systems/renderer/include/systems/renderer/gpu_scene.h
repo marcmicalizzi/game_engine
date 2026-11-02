@@ -583,8 +583,27 @@ class GpuScene {
   // nothing else.
   // `references` replaces the cache's reference capacity too (0 keeps it): the bottom-level set is
   // sized for both.
+  // **Swapped, not waited for** (roadmap R116): with `retired`, the new buffers are made first and
+  // the old ones handed to `retired` instead of destroyed, for the caller to free once the frames
+  // in flight that imported them have completed (`gfx::FrameContext::defer_destroy`) — so the
+  // device need not be idle. That needs the cache's references to keep their capacity, because the
+  // cache's one host-visible table names them and frames in flight read it; a call that would
+  // change them, or a device that cannot hold both sets at once, returns false with `retired`
+  // empty and nothing changed, and the caller waits and calls again without it.
+  struct RtRetired {
+    static constexpr u32 k_buffers = 8;  // records, hit entries, the CLAS set's three, the BLAS
+                                         // set's two, the scratch
+    gfx::BufferResource buffers[k_buffers];
+    u32 count = 0;
+  };
   bool resize_ray_tracing(u32 capacity, std::string* error = nullptr, bool beyond_budget = false,
-                          u32 references = 0);
+                          u32 references = 0, RtRetired* retired = nullptr);
+  // What the last `resize_ray_tracing` spent making each part, in nanoseconds: what a slow resize
+  // was slow at (R116).
+  struct RtResizeCost {
+    i64 free_ns = 0, records_ns = 0, clas_ns = 0, references_ns = 0, blas_ns = 0, scratch_ns = 0;
+  };
+  const RtResizeCost& rt_resize_cost() const noexcept { return rt_resize_cost_; }
   // **Static structures for rigid forms** (docs/subsystems/renderer.md, "Static structures for
   // rigid forms"; `ResolvedSettings::static_forms`). A rigid distance form drawn at its frontier is
   // a fixed cut, so its cluster structures and one bottom-level structure are built here once, at
@@ -1512,6 +1531,7 @@ class GpuScene {
   u64 rt_scene_bytes_ = 0;  // the chain's scene-sized part, which a resize leaves alone
   u64 rt_bytes_per_cluster_ = 0;
   u32 rt_capacity_ = 0;
+  RtResizeCost rt_resize_cost_;
   u32 rt_capacity_limit_ = 0;
   u32 rt_budget_mib_ = 0;
   RtBudgetSource rt_budget_source_ = RtBudgetSource::Device;

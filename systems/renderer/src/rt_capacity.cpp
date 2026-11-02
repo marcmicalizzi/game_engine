@@ -18,9 +18,29 @@ tunables::Int rt_budget_mib{"renderer.rt.budget_mib", 0, 0, 1 << 20,
 tunables::Int rt_headroom_pct{"renderer.rt.headroom_pct", 25, 0, 400,
                               "Room the cluster acceleration structures keep above what recent "
                               "frames built, as a percentage of it"};
-tunables::Int rt_shrink_frames{"renderer.rt.shrink_frames", 240, 1, 1 << 20,
-                               "Frames the ray tracing chain's demand must stay under half its "
-                               "capacity before the capacity shrinks"};
+// R116 (2026-11-02): the window is wall time, not frames — a load's fast frames were a whole window
+// of 240 three seconds after the start — and a shrink keeps half the last minute's peak, which a
+// growth goes straight back to (rt_capacity.h).
+tunables::Float rt_shrink_seconds{"renderer.rt.shrink_seconds", 10.0, 0.0, 86400.0,
+                                  "Seconds of wall time the ray tracing chain's demand must stay "
+                                  "under half its capacity before the capacity shrinks"};
+tunables::Float rt_peak_seconds{"renderer.rt.peak_seconds", 60.0, 0.0, 86400.0,
+                                "Seconds the ray tracing chain remembers the largest capacity it "
+                                "held: a growth goes back to it, and a shrink keeps a share of it"};
+tunables::Int rt_floor_pct{"renderer.rt.floor_pct", 50, 0, 100,
+                           "The least share of the last peak_seconds' largest capacity a shrink "
+                           "of the ray tracing chain leaves, as a percentage"};
+tunables::Int rt_shrink_frames{"renderer.rt.shrink_frames", 240, 0, 1 << 24,
+                               "Frames a shrink window of the ray tracing chain holds at the "
+                               "least, beside its shrink_seconds"};
+tunables::Int rt_peak_frames{"renderer.rt.peak_frames", 3600, 0, 1 << 24,
+                             "Frames the ray tracing chain remembers the largest capacity it held "
+                             "for at the least, beside peak_seconds"};
+tunables::Bool rt_swap_resize{
+    "renderer.rt.swap_resize", true,
+    "Make the ray tracing chain's new buffers while the frames in flight read "
+    "the old ones and free those when the frames complete, instead of waiting "
+    "for the device first (R116)"};
 tunables::Int rt_step{"renderer.rt.step_clusters", 4096, 1, 1 << 24,
                       "The ray tracing chain's capacity moves in multiples of this many clusters "
                       "(4,096 is 24 MiB of cluster structures on the RTX 5090)"};
@@ -72,8 +92,13 @@ u64 round_up(u64 value, u64 step) noexcept { return (value + step - 1) / step * 
 
 u32 rt_budget_mib_tunable() noexcept { return static_cast<u32>(rt_budget_mib.get()); }
 u32 rt_headroom_pct_tunable() noexcept { return static_cast<u32>(rt_headroom_pct.get()); }
+f64 rt_shrink_seconds_tunable() noexcept { return rt_shrink_seconds.get(); }
+f64 rt_peak_seconds_tunable() noexcept { return rt_peak_seconds.get(); }
+u32 rt_floor_pct_tunable() noexcept { return static_cast<u32>(rt_floor_pct.get()); }
 u32 rt_shrink_frames_tunable() noexcept { return static_cast<u32>(rt_shrink_frames.get()); }
+u32 rt_peak_frames_tunable() noexcept { return static_cast<u32>(rt_peak_frames.get()); }
 u32 rt_step_tunable() noexcept { return static_cast<u32>(rt_step.get()); }
+bool rt_swap_resize_tunable() noexcept { return rt_swap_resize.get(); }
 bool rt_static_forms_tunable() noexcept { return rt_static_forms.get(); }
 bool rt_static_build_tunable() noexcept { return rt_static_build.get(); }
 bool rt_caster_horizon_tunable() noexcept { return rt_caster_horizon.get(); }
@@ -149,13 +174,23 @@ u32 first_rt_capacity(u32 limit, u32 union_clusters, u64 estimate, u32 floor) no
   return static_cast<u32>(first > 0 ? first : 1);
 }
 
-void RtCapacity::reset(const RtCapacityConfig& config, u32 capacity) noexcept {
+void RtCapacity::reset(const RtCapacityConfig& config, u32 capacity, f64 now) noexcept {
   config_ = config;
   if (config_.step == 0) config_.step = 1;
-  if (config_.shrink_frames == 0) config_.shrink_frames = 1;
+  if (!(config_.shrink_seconds >= 0.0)) config_.shrink_seconds = 0.0;
+  if (!(config_.peak_seconds >= 0.0)) config_.peak_seconds = 0.0;
+  if (config_.floor_pct > 100) config_.floor_pct = 100;
   capacity_ = capacity < config_.limit ? capacity : config_.limit;
   window_peak_ = 0;
-  window_frames_ = 0;
+  window_start_ = now;
+  window_start_frame_ = 0;
+  frames_ = 0;
+  held_first_ = 0;
+  held_count_ = 0;
+}
+
+bool RtCapacity::remembered(f64 until, u64 until_frame, f64 now) const noexcept {
+  return now - until <= config_.peak_seconds || frames_ - until_frame <= config_.peak_frames;
 }
 
 u32 RtCapacity::target(u32 wanted) const noexcept {
@@ -165,37 +200,101 @@ u32 RtCapacity::target(u32 wanted) const noexcept {
   return static_cast<u32>(capacity);
 }
 
-u32 RtCapacity::observe(u32 wanted) noexcept {
+u32 RtCapacity::peak(f64 now) const noexcept {
+  u32 most = capacity_;
+  // The bottom that has not expired is the largest that has not (`hold` keeps them falling).
+  for (u32 i = 0; i < held_count_; ++i) {
+    const Held& held = held_[(held_first_ + i) % k_held];
+    if (remembered(held.until, held.until_frame, now)) {
+      most = held.capacity > most ? held.capacity : most;
+      break;
+    }
+  }
+  return most;
+}
+
+u32 RtCapacity::floor(f64 now) const noexcept {
+  const u64 share = u64{peak(now)} * config_.floor_pct / 100;
+  if (share == 0) return 0;
+  u64 least = round_up(share, config_.step);
+  if (least > config_.limit) least = config_.limit;
+  return static_cast<u32>(least);
+}
+
+u32 RtCapacity::grow_target(u32 wanted, f64 now) const noexcept {
+  const u32 fit = target(wanted);
+  const u32 most = peak(now);
+  return fit > most ? fit : most;
+}
+
+u32 RtCapacity::observe(u32 wanted, f64 now) noexcept {
+  ++frames_;
   window_peak_ = wanted > window_peak_ ? wanted : window_peak_;
-  ++window_frames_;
   // Grow as soon as the demand has eaten half the headroom: the next frames are already in flight
-  // and will want about as much again, and the demand is only known this late.
+  // and will want about as much again, and the demand is only known this late. To the peak of the
+  // last minute when that is more, so a view that comes back regrows in one step and not in a
+  // staircase behind a demand that grows faster than the headroom.
   const u64 trigger = u64{wanted} + u64{wanted} * config_.headroom_pct / 200;
   if (trigger > capacity_ && capacity_ < config_.limit) {
     window_peak_ = wanted;
-    window_frames_ = 0;
-    return target(wanted) > capacity_ ? target(wanted) : capacity_;
+    window_start_ = now;
+    window_start_frame_ = frames_;
+    const u32 grown = grow_target(wanted, now);
+    return grown > capacity_ ? grown : capacity_;
   }
-  // Shrink only on a whole window, and only when even its peak left more than half unused, so a
-  // path that swings between two cuts settles on the larger rather than resizing on every swing.
-  if (window_frames_ >= config_.shrink_frames) {
-    const u32 fit = target(window_peak_);
+  // Shrink only on a whole window — its seconds and its frames, so neither a load's fast frames nor
+  // a handful of slow ones make one — and only when even its peak left more than half unused, so a
+  // path that swings between two cuts settles on the larger rather than resizing on every swing;
+  // and never below the floor, so a look away keeps half the chain it looked away from. The
+  // window's peak includes this frame, and the headroom is kept above it, so the shrink never
+  // takes away what this frame built.
+  if (now - window_start_ >= config_.shrink_seconds &&
+      frames_ - window_start_frame_ >= config_.shrink_frames) {
+    u32 fit = target(window_peak_);
     window_peak_ = 0;
-    window_frames_ = 0;
-    if (u64{fit} * 2 <= capacity_) return fit;
+    window_start_ = now;
+    window_start_frame_ = frames_;
+    if (u64{fit} * 2 <= capacity_) {
+      const u32 least = floor(now);
+      fit = fit > least ? fit : least;
+      if (fit < capacity_) return fit;
+    }
   }
   return capacity_;
 }
 
-u32 RtCapacity::grow_to(u32 wanted) noexcept {
+u32 RtCapacity::grow_to(u32 wanted, f64 now) noexcept {
   window_peak_ = wanted;
-  window_frames_ = 0;
-  const u32 fit = target(wanted);
+  window_start_ = now;
+  window_start_frame_ = frames_;
+  const u32 fit = grow_target(wanted, now);
   return fit > capacity_ ? fit : capacity_;
 }
 
-void RtCapacity::resized(u32 capacity) noexcept {
-  capacity_ = capacity < config_.limit ? capacity : config_.limit;
+void RtCapacity::hold(u32 previous, f64 until) noexcept {
+  // A capacity no larger than one held after it can never be the peak again: drop it from the top.
+  while (held_count_ > 0) {
+    const Held& last = held_[(held_first_ + held_count_ - 1) % k_held];
+    if (last.capacity > previous) break;
+    --held_count_;
+  }
+  if (held_count_ == k_held) {
+    held_first_ = (held_first_ + 1) % k_held;
+    --held_count_;
+  }
+  held_[(held_first_ + held_count_) % k_held] = Held{previous, until, frames_};
+  ++held_count_;
+}
+
+void RtCapacity::relimit(u32 limit, u32 capacity, f64 now) noexcept {
+  config_.limit = limit;
+  resized(capacity, now);
+}
+
+void RtCapacity::resized(u32 capacity, f64 now) noexcept {
+  const u32 next = capacity < config_.limit ? capacity : config_.limit;
+  if (next != capacity_) hold(capacity_, now);
+  capacity_ = next;
 }
 
 }  // namespace engine::renderer
