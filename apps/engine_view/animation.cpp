@@ -360,6 +360,57 @@ void step_animation(AnimatedScene& scene) {
     if (!animation::lod_plan(tier).skin) continue;  // the rest pose, deliberately
     scene.system.joint_run(scene.entities[i], run.first, run.count);
   }
+  apply_joint_collapse(scene);
+}
+
+// ---- the joint collapse (animation.h `JointCollapse`; apps.md, "The player's body") -----------
+
+void set_joint_collapse(AnimatedScene& scene, u32 instance, const anim::Skeleton& skeleton,
+                        u32 head, std::span<const u32> joints) {
+  AnimatedScene::JointCollapse c;
+  c.instance = instance;
+  c.head = head;
+  // The head where its skinning matrix starts from: the bind position its inverse bind undoes.
+  // Not the skeleton's own model-space bind, which differs by any ancestor the file's inverse binds
+  // leave out (RiggedFigure's Z_UP; animation.md, "The mesh node's own transform").
+  if (head < skeleton.inverse_bind.size())
+    c.head_bind = transform_point(inverse(skeleton.inverse_bind[head]), Vec3{});
+  c.joints.reserve(static_cast<u32>(joints.size()));
+  for (const u32 j : joints)
+    c.joints.push_back(j);
+  scene.collapse.push_back(std::move(c));
+  apply_joint_collapse(scene);
+}
+
+void set_joint_collapse_on(AnimatedScene& scene, bool on) {
+  scene.collapse_on = on;
+  apply_joint_collapse(scene);
+}
+
+void apply_joint_collapse(AnimatedScene& scene) {
+  scene.collapse_ready = false;
+  if (scene.collapse.empty() || !scene.collapse_on) return;
+  const std::span<const anim::JointMatrix> matrices = scene.system.joint_matrices();
+  const u32 count = static_cast<u32>(matrices.size());
+  if (scene.collapsed.size() != count) scene.collapsed.resize(count);  // with the pool, only
+  if (count == 0) return;
+  std::memcpy(scene.collapsed.data(), matrices.data(), usize{count} * sizeof(anim::JointMatrix));
+  for (const AnimatedScene::JointCollapse& c : scene.collapse) {
+    if (c.instance >= scene.runs.size()) continue;
+    const renderer::InstanceJoints run = scene.runs[c.instance];
+    // A run of nothing — LOD2, LOD3, no slot — draws the rest pose, head and all: nothing to do.
+    if (run.count == 0 || c.head >= run.count || u64{run.first} + run.count > count) continue;
+    const Vec3 at = anim::transform_point(matrices[run.first + c.head], c.head_bind);
+    anim::JointMatrix point;
+    point.rows[0] = Vec4{0.0f, 0.0f, 0.0f, at.x};
+    point.rows[1] = Vec4{0.0f, 0.0f, 0.0f, at.y};
+    point.rows[2] = Vec4{0.0f, 0.0f, 0.0f, at.z};
+    for (const u32 j : c.joints) {
+      if (j < run.count) scene.collapsed[run.first + j] = point;
+    }
+  }
+  ++scene.collapse_steps;
+  scene.collapse_ready = true;
 }
 
 u32 advance_animation(AnimatedScene& scene, renderer::SceneRenderer& renderer,
@@ -413,7 +464,11 @@ void AnimationTicks::observe(void* user, const FlySession& session,
 }
 
 void set_frame_joints(const AnimatedScene& scene, renderer::FrameDesc& frame) noexcept {
-  frame.joints = scene.system.joint_matrices();
+  // With a collapse (the first-person player's head), the copy that carries it.
+  frame.joints =
+      scene.collapse_ready && scene.collapse_on
+          ? std::span<const anim::JointMatrix>(scene.collapsed.data(), scene.collapsed.size())
+          : scene.system.joint_matrices();
   frame.instance_joints = {scene.runs.data(), scene.runs.size()};
 }
 
@@ -903,7 +958,7 @@ bool GameActors::bind(AnimatedScene& scene, const renderer::SceneDesc& desc,
       return false;
     }
     if (loaded == renderer::k_not_loaded || loaded >= scene.entities.size() ||
-        d.instance >= desc.instances.size() || scene.entities[loaded].is_null()) {
+        d.read_index() >= desc.instances.size() || scene.entities[loaded].is_null()) {
       std::fprintf(stderr,
                    "engine-view: game: the scene names instance %u \"%s\", which does not animate "
                    "(its mesh has no skin); it is not an actor\n",
@@ -915,7 +970,7 @@ bool GameActors::bind(AnimatedScene& scene, const renderer::SceneDesc& desc,
     a.instance = d.instance;
     a.loaded = loaded;
     a.entity = scene.entities[loaded];
-    const renderer::SceneInstance& source = desc.instances[d.instance];
+    const renderer::SceneInstance& source = desc.instances[d.read_index()];
     a.skeleton = source.mesh < scene.mesh_skeleton.size() ? scene.mesh_skeleton[source.mesh]
                                                           : animation::Library::k_not_found;
     a.placement = source;

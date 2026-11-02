@@ -127,8 +127,44 @@ struct AnimatedScene {
   f64 tick_ns = 0.0;  // summed over the run, for the summary
   f64 lod_ns = 0.0;
 
+  // ---- the joint collapse (player.h; apps.md, "The player's body") -----------------------------
+  //
+  // **A joint collapse mask per animated slot**: the joints whose skinning matrix the renderer is
+  // handed as the head joint's position with a zero linear part, so every vertex skinned to them
+  // lands on that one point, inside the neck — the first-person player's head. It is applied
+  // **after** the capability's `build_skinning_matrices`, to a copy of the pool's matrices
+  // (`collapsed`, refreshed at the end of every step), and never to the pool itself: the pose and
+  // the matrices the summary's `pose_hash` is taken over stay the animation's, so the hashes are
+  // the same with the head collapsed or not, and a third-person toggle leaves them alone. The copy
+  // is the whole span (one contiguous span is the renderer's contract): 48 bytes a joint of the
+  // pool a step, sized with the pool and grown only when the pool grows. Empty, or `collapse_on`
+  // false, and the renderer reads the pool's own span as before. Why here and not in
+  // `systems/animation`: the span the renderer reads is built here (`set_frame_joints`), and the
+  // capability's matrices are reachable read-only, which is all this needs.
+  struct JointCollapse {
+    u32 instance = 0;    // the loaded instance whose run it collapses
+    u32 head = 0;        // the joint the others collapse to, the skeleton's index
+    Vec3 head_bind{};    // the head joint in the mesh's bind space: inverse(inverse_bind[head])'s
+                         // translation, which its skinning matrix takes to where it stands
+    Vector<u32> joints;  // the head and every joint below it, the skeleton's indices
+  };
+  Vector<JointCollapse> collapse;
+  bool collapse_on = true;
+  Vector<anim::JointMatrix> collapsed;  // the pool's span with the collapse, as of the last step
+  bool collapse_ready = false;          // `collapsed` matches the pool's span
+  u64 collapse_steps = 0;               // steps whose matrices were collapsed, for the summary
+
   AnimatedScene() : system(library) {}
 };
+
+// The collapse of one animated instance's `joints` onto its skeleton's `head` (above), applied at
+// once to the matrices the last step left and after every step from now on. `on` false keeps the
+// mask and hands the renderer the pool's matrices (third person).
+void set_joint_collapse(AnimatedScene& scene, u32 instance, const anim::Skeleton& skeleton,
+                        u32 head, std::span<const u32> joints);
+void set_joint_collapse_on(AnimatedScene& scene, bool on);
+// Refreshes `collapsed` from the pool's matrices; `step_animation` calls it after every step.
+void apply_joint_collapse(AnimatedScene& scene);
 
 // A stable, reproducible id per scene instance (ADR-0028 seam 3), from the instance index rather
 // than a counter, so a capture is deterministic across runs.

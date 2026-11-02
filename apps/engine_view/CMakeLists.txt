@@ -23,7 +23,9 @@ if(TARGET engine::animation)
   # The glue itself is animation.cpp (animation.h): which meshes are clip sources, which instances
   # play, the world on the session's tick, the summary's hashes; compiled only with the capability.
   list(APPEND _view_deps ids assets animation)
-  set(_view_animation animation.cpp)
+  # The player's body (player.cpp, `--player`; apps.md "The player's body") is a load-time actor:
+  # compiled with the glue, empty without the hotload capability that carries the actors.
+  set(_view_animation animation.cpp player.cpp)
 endif()
 
 # The camera and the conversion are compiled into the tests as well as the app: the trajectory of
@@ -114,6 +116,7 @@ if(TARGET engine::hotload)
   set(_view_game game_runner.cpp game_hud.cpp game_props.cpp)
   list(APPEND _view_tests tests/game_runner_tests.cpp tests/game_props_tests.cpp
                           tests/game_props_view_tests.cpp tests/game_actors_view_tests.cpp
+                          tests/player_view_tests.cpp
                           game_runner.cpp game_props.cpp)
   # How a run ends and what clock its frames are drawn by (roadmap P44): the result panel, the new
   # run, and the drawn sun on the runner's clock, end to end (tests/game_end_tests.cpp). The HUD's
