@@ -1084,10 +1084,14 @@ each defaulted from the page:
   0.4744 a)` of its dry albedo `a` at saturation, scaled by the place's wetness and by
   `wet_darkening`, so wet sand turns darker and more saturated (0.6 of a 0.4 sand, where porosity
   0.9 gave 0.28), and its roughness loses half that factor.
-- **Glints**, both: the ground is cut into world-anchored cells of the smallest power-of-two
-  millimetres at least the pixel's footprint (from the frame's integer cell, never a world float);
-  a cell's integer hash decides whether it holds a facet, with chance `glints × min(1, 4 mm /
-  footprint)`, none past a 256 mm footprint; a facet replaces the layer's slope with its own normal,
+- **Glints**, both: the ground is cut into world-anchored cells of power-of-two millimetres (from
+  the frame's integer cell, never a world float), at **two levels about the footprint**, the finer
+  `floor(log2 footprint)` and the one above it (R125); each level's cell hash decides whether it
+  holds a facet, the pixel's chance `p = glints × min(1, 4 mm / footprint)` split between them by
+  the footprint's fractional log so that either drawing has chance p exactly, the finer facet
+  winning where both draw, none past a 256 mm footprint. A curve of equal footprint (a screen row on
+  flat ground) therefore never re-draws the facets: one level that doubled its cell there drew them
+  in bands ([sand and snow](../experiments/sand-and-snow-substrates-2026-11-02.md#glints)). A facet replaces the layer's slope with its own normal,
   drawn from GGX of alpha 0.15 and turned at most 25° (a facet turned further would speckle the
   diffuse: it replaces the pixel's one normal), and its roughness with 0.1. The resolve's own GGX lights
   it for every light and shadows it as the pixel, so a facet flashes where sun, facet and eye line

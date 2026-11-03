@@ -182,6 +182,47 @@ the sun, where snow sparkles most; a backlit glint, which needs a facet turned p
 resolve's to draw (it needs the light). The path tracer has no footprint and draws none (its many samples a pixel converge to
 the lobe the glints are drawn from).
 
+**Two levels, not one: the bands (R125, 2026-11-02).** The owner's v26 walk on the beach and the
+snow, the sun off to one side, showed the glints gathered in bands of one facet size that slid up
+or down the screen with the walker, and stood on a slope along the ground's contour. R99's cell was
+the smallest power of two at least the footprint, its hash seeded by that level: wherever the
+footprint crossed a power of two the cell doubled **and the facets were another random set**, and a
+curve of equal footprint is a row of the screen on flat ground and a contour on a slope, moving
+with the eye. The chance was continuous; the cell was not, and the facets per area fell fourfold
+across the curve (the test below measures 31,368 → 7,787 per m² across 4 mm at snow's density).
+
+The cure is the multiscale rule the three papers share in some form. Zirr and Kaplanyan (2016)
+evaluate two grid levels about the footprint and interpolate between them (as Deliot and Belcour's §3
+describes them); Deliot and Belcour
+(2023, §5.2) bracket the footprint between the cell sizes below and above it and **distribute the
+glint count between the two levels** rather than blending their outputs, because a linear blend of
+two levels' outputs does not keep the count of glints (their §3 and §7.2, of ZK16 and of Chermain et
+al. 2020). R125 does the counting version in the stage's one-facet-a-pixel form: the finer level
+`l0 = floor(log2 footprint)` and the coarser `l0 + 1` each draw their own world-anchored cell with
+its own hash (seeded by its level, as before), level 0 with chance `x (1 − t)` and level 1 with `x t`
+for the fractional log `t = log2 footprint − l0`, and where both draw the finer facet wins (two
+facets in one pixel are one normal). `x` is the root that makes the chance either draws exactly the
+footprint's p: two independent draws light `x − x² t (1 − t)`, so
+
+    x = 2p / (1 + sqrt(1 − 4 t (1 − t) p))      (x = p at t = 0 and t = 1)
+
+— without it, midway between two levels at snow's p = 0.5 an eighth of the lit pixels would go
+dark (0.4375 lit instead of 0.5), a smooth ripple once an octave that the eye could read as a softer band. At `t → 1`
+level 1 holds all of p and is exactly the next octave's level 0 — the same cells, the same hash, the
+same chance — so the set the eye sees does not change as a footprint crosses a power of two; it only
+thins by the octave's own continuous fade. D&B weight the two levels linearly in footprint *area*;
+the fractional log is used here because it is the level's own coordinate, and with the count
+distributed either weight is continuous. The cost is a second cell hash (three integer hashes and two
+64-bit divisions) a glinting pixel; the facet's normal is drawn once, from whichever level lit.
+
+The test (`gfx: glint facets per area are continuous across a cell size's step`, CPU, on the double
+reference the probe holds the shader to) counts every visible facet over a field 512 steps square
+at ±0.2 % about 4 mm and 64 mm, snow's density 0.5: **31,674 → 31,285 per m² across 4 mm and 7.771
+→ 7.649 across 64 mm (−1.2 % and −1.6 %, the octave's own slope), where the one-level rule fell
+fourfold (31,368 → 7,787 and 7.692 → 1.946)**; the lit share stays p (0.5019 → 0.5009 and 0.0315 →
+0.0314), and midway between two levels it is p to 0.6 % (0.50006 at p = 0.5, 0.04393 at 0.04419).
+A second test moves the eye a world cell and inside its cell and finds the same draws and the same
+facet at eight footprints from 0.7 to 200 mm.
 ### Sand: the desert's and the beach's
 
 W42's detail (renderer.md, "The sand close up"; [the fifth pass](sand-fifth-pass-2026-10-04.md))

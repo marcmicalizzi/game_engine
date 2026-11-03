@@ -532,13 +532,20 @@ float3 terrain_wet_darkening(float3 a) {
 }
 
 // Glints (Jakob et al. 2014; Zirr and Kaplanyan 2016; Deliot and Belcour 2023, simplified): the
-// ground in world-anchored cells of the smallest power-of-two millimetres at least the footprint,
-// each cell holding a glinting facet with chance `density * min(1, 4 mm / footprint)`, none past a
-// 256 mm footprint; a facet's normal is drawn from GGX of alpha 0.15 about the macro normal (Walter
-// et al. 2007), turned at most 25 degrees, its own lobe 0.1 rough. Design choices, all of them (the
-// page says so): a facet replaces the pixel's one normal, so its diffuse turns with it, and a facet
-// turned far enough to glint with the sun behind the eye would speckle the snow with dark pixels
-// (the first captures did); the near-normal facets glint towards the sun, where snow sparkles most.
+// ground in world-anchored cells of power-of-two millimetres, the pixel holding a glinting facet
+// with chance p = `density * min(1, 4 mm / footprint)`, none past a 256 mm footprint; a facet's
+// normal is drawn from GGX of alpha 0.15 about the macro normal (Walter et al. 2007), turned at most
+// 25 degrees, its own lobe 0.1 rough. Two levels about the footprint draw (R125): the finer cell
+// l0 = floor(log2 footprint) and the coarser l0 + 1, each with its own world-anchored hash seeded by
+// its level, the coarser's chance growing and the finer's fading by the fractional log t, scaled so
+// the chance either draws is p exactly; where both draw the finer's facet wins. At t = 1 the
+// coarser level holds all of p and is the next octave's finer one, the same cells and the same
+// hash, so no curve of equal footprint re-draws the set (one level, as before R125, doubled its
+// cell and re-drew its facets along every such curve, which on flat ground is a row of the screen).
+// Design choices, all of them (the page says so): a facet replaces the pixel's one normal, so its
+// diffuse turns with it, and a facet turned far enough to glint with the sun behind the eye would
+// speckle the snow with dark pixels (the first captures did); the near-normal facets glint towards
+// the sun, where snow sparkles most.
 static const float k_terrain_glint_roughness = 0.1;
 static const float k_terrain_glint_tilt = 0.15;
 static const float k_terrain_glint_max_tan = 0.466307658;  // tan 25 degrees
@@ -548,9 +555,14 @@ static const float k_terrain_glint_far_mm = 256.0;
 struct TerrainGlint {
   float3 normal;  // the facet's, or the macro normal without one
   bool lit;
-  float chance;   // the cell's chance of a facet
-  float draw;     // the cell's hash in [0, 1): a facet when below the chance
-  uint size_mm;   // the cell's side
+  float chance;   // the footprint's chance p of a facet in the pixel
+  float blend;    // the fractional log t: the coarser level's share
+  float chance0;  // the finer level's chance, x (1 - t)
+  float chance1;  // the coarser level's chance, x t
+  float draw0;    // the finer cell's hash in [0, 1): a facet when below its chance
+  float draw1;    // the coarser cell's
+  uint size_mm;   // the finer cell's side; the coarser's is twice it
+  uint level_lit; // 0 the finer level's facet, 1 the coarser's, 2 none
 };
 
 // An orthonormal basis about n (Duff et al. 2017, "Building an orthonormal basis, revisited").
@@ -567,28 +579,59 @@ int64_t terrain_glint_axis(int cell, float local_mm, int64_t size) {
   return terrain_magnitude_floor_div(int64_t(cell) * int64_t(64000) + int64_t(whole), size);
 }
 
+// The hash of the cell of side 2^level millimetres holding the point: the frame's integer cell and
+// its local millimetres, never a world float, so a cell draws the same on every frame and eye.
+uint terrain_glint_cell(FrameEye eye, float3 point, uint level, uint seed) {
+  const int64_t size = int64_t(1u << level);
+  const int64_t ix = terrain_glint_axis(eye.cell.x, (eye.local.x + eye.residual.x + point.x) * 1000.0,
+                                        size);
+  const int64_t iz = terrain_glint_axis(eye.cell.z, (eye.local.z + eye.residual.z + point.z) * 1000.0,
+                                        size);
+  return terrain_hash(uint(ix) ^ terrain_hash(uint(iz) ^ terrain_hash(level ^ seed)));
+}
+
 TerrainGlint terrain_glint(FrameEye eye, float3 point, float3 n, float footprint_mm, float density,
                            float alpha, uint seed) {
   TerrainGlint g;
   g.normal = n;
   g.lit = false;
   g.chance = 0.0;
-  g.draw = 1.0;
+  g.blend = 0.0;
+  g.chance0 = 0.0;
+  g.chance1 = 0.0;
+  g.draw0 = 1.0;
+  g.draw1 = 1.0;
   g.size_mm = 0u;
+  g.level_lit = 2u;
   if (density <= 0.0 || footprint_mm >= k_terrain_glint_far_mm) return g;
-  const uint level = uint(max(ceil(log2(max(footprint_mm, 1.0))), 0.0));
-  const uint size = 1u << level;
-  g.size_mm = size;
-  const int64_t ix = terrain_glint_axis(
-      eye.cell.x, (eye.local.x + eye.residual.x + point.x) * 1000.0, int64_t(size));
-  const int64_t iz = terrain_glint_axis(
-      eye.cell.z, (eye.local.z + eye.residual.z + point.z) * 1000.0, int64_t(size));
-  const uint h0 = terrain_hash(uint(ix) ^ terrain_hash(uint(iz) ^ terrain_hash(level ^ seed)));
+  const float lf = log2(max(footprint_mm, 1.0));
+  const float fl = floor(lf);
+  const uint level = uint(max(fl, 0.0));
+  const float t = saturate(lf - fl);
+  g.size_mm = 1u << level;
+  g.blend = t;
   g.chance = density * min(1.0, k_terrain_glint_full_mm / max(footprint_mm, 1.0)) *
              (1.0 - smoothstep(0.5 * k_terrain_glint_far_mm, k_terrain_glint_far_mm, footprint_mm));
-  g.draw = float(h0 >> 8) * (1.0 / 16777216.0);
-  if (g.draw >= g.chance) return g;
-  const uint h1 = terrain_hash(h0 ^ 0x68e31da4u);
+  // x (1 - t) and x t drawn independently light a pixel with chance x - x^2 t (1 - t); that is p
+  // at x = 2p / (1 + sqrt(1 - 4 t (1 - t) p)), the root without cancellation (x = p at t = 0 or 1).
+  const float x = 2.0 * g.chance / (1.0 + sqrt(max(1.0 - 4.0 * t * (1.0 - t) * g.chance, 0.0)));
+  g.chance0 = x * (1.0 - t);
+  g.chance1 = x * t;
+  const uint h0 = terrain_glint_cell(eye, point, level, seed);
+  const uint hc = terrain_glint_cell(eye, point, level + 1u, seed);
+  g.draw0 = float(h0 >> 8) * (1.0 / 16777216.0);
+  g.draw1 = float(hc >> 8) * (1.0 / 16777216.0);
+  uint h;
+  if (g.draw0 < g.chance0) {
+    h = h0;
+    g.level_lit = 0u;
+  } else if (g.draw1 < g.chance1) {
+    h = hc;
+    g.level_lit = 1u;
+  } else {
+    return g;
+  }
+  const uint h1 = terrain_hash(h ^ 0x68e31da4u);
   const uint h2 = terrain_hash(h1);
   const float u1 = float(h1 >> 8) * (1.0 / 16777216.0);
   const float u2 = float(h2 >> 8) * (1.0 / 16777216.0);
@@ -596,14 +639,13 @@ TerrainGlint terrain_glint(FrameEye eye, float3 point, float3 n, float footprint
   const float cos_t = 1.0 / sqrt(1.0 + tan_t * tan_t);
   const float sin_t = tan_t * cos_t;
   const float phi = (2.0 * u2 - 1.0) * 3.14159265358979;
-  float3 t;
-  float3 b;
-  terrain_basis(n, t, b);
-  g.normal = normalize(t * (sin_t * cos(phi)) + b * (sin_t * sin(phi)) + n * cos_t);
+  float3 tx;
+  float3 bx;
+  terrain_basis(n, tx, bx);
+  g.normal = normalize(tx * (sin_t * cos(phi)) + bx * (sin_t * sin(phi)) + n * cos_t);
   g.lit = true;
   return g;
 }
-
 // The layer's response, once per layer on its record word (never per texel): snow's albedo by its
 // grain (times its tint, and its map over the map's mean) and its thickness as its height; the
 // beach's wet darkening, per channel, at the place's wetness; and both responses' glints at the
