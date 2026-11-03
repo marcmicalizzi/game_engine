@@ -2494,7 +2494,8 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
   // before the resolve: wherever the resolve traces the sun (the rays, or the rays near and the
   // maps far), in the shaded picture and the shadow view. Sides 0 and no centre — the default on a
   // frame no wider than 2.5:1 — records no pass, and the frame is the one it was.
-  const f32 half_sides = gfx::half_rate_sides(half_rate_sides_tunable(), width_, height_);
+  const f32 half_sides =
+      gfx::half_rate_sides(half_rate_sides_tunable(frame.frame_index), width_, height_);
   const bool half_centre = half_rate_centre_tunable();
   gfx::HalfRateWindow half_windows[k_max_views];
   gfx::RgBuffer rg_half{};  // the answers, in the graph while the pass is recorded

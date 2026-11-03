@@ -302,6 +302,13 @@ tunables::Bool resolve_half_rate_centre{
     "renderer.resolve.half_rate_centre", false,
     "The centre's sun ray at half rate too, so the whole frame's (renderer.md, A shading rate by "
     "region)"};
+// A measurement switch, never a default (R126): the sides by the frame, so one flight under
+// `renderer.resolve.stop_after=cycle` measures every stage at every share.
+tunables::Bool resolve_half_rate_sweep{
+    "renderer.resolve.half_rate_sweep", false,
+    "Measurement only: frame f takes the sides' share (f / 8) % 3 - none, as set, a half "
+    "(renderer.md, A shading rate by region)"};
+
 // R115: a light whose contribution is this small a fraction of the rest of the pixel's light is not
 // tested for its shadow (renderer.md, "A light too faint to test"; Ward 1991). 2^-12 is a
 // thirty-sixth of the finest code step of the 8-bit and the PQ encodes (0.87% and 0.90%), so six
@@ -339,7 +346,15 @@ bool shadow_opaque_rays_tunable() noexcept { return shadow_opaque_rays.get(); }
 f32 shadow_light_tolerance_tunable() noexcept {
   return static_cast<f32>(shadow_light_tolerance.get());
 }
-f32 half_rate_sides_tunable() noexcept { return static_cast<f32>(resolve_half_rate_sides.get()); }
+f32 half_rate_sides_tunable(u64 frame_index) noexcept {
+  const f32 as_set = static_cast<f32>(resolve_half_rate_sides.get());
+  if (!resolve_half_rate_sweep.get()) return as_set;
+  switch ((frame_index / gfx::k_resolve_stops) % k_half_rate_sweeps) {
+    case 0: return 0.0f;
+    case 1: return as_set;
+    default: return 0.5f;
+  }
+}
 bool half_rate_centre_tunable() noexcept { return resolve_half_rate_centre.get(); }
 
 u32 resolve_stop_tunable(u64 frame_index) noexcept {

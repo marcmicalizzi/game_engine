@@ -503,7 +503,11 @@ u32 resolve_stop_tunable(u64 frame_index) noexcept;
 // third at each side of a frame wider than 2.5:1, a surround; none otherwise) — and
 // `renderer.resolve.half_rate_centre` (false), the centre at half rate too. A shading rule that
 // changes the picture in the regions it names; 0 and false draw every pixel's own ray.
-f32 half_rate_sides_tunable() noexcept;
+// Under `renderer.resolve.half_rate_sweep` (a measurement switch, off) frame f takes the sides'
+// share (f / 8) % 3 — 0, the tunable as set, and a half — so a flight under
+// `renderer.resolve.stop_after=cycle` measures every stage at each.
+f32 half_rate_sides_tunable(u64 frame_index) noexcept;
+inline constexpr u32 k_half_rate_sweeps = 3;
 bool half_rate_centre_tunable() noexcept;
 // `renderer.shadow.light_tolerance` (2^-12): `gfx::ResolveParams::light_tolerance`, the share of a
 // pixel's other light below which a traced light is not tested for its shadow (R115; renderer.md,

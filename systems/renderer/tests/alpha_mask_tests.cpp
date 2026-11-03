@@ -935,3 +935,24 @@ TEST_CASE(
   CHECK(half_rate_diff(low[0], low[1], third).taken > 20);  // the witness: the rule changed it
   CHECK(half_rate_diff(slant[0], slant[1], third).mixed_blocks > 50);  // and mixed blocks exist
 }
+
+// The measurement sweep (renderer.md, "A shading rate by region"): with
+// `renderer.resolve.half_rate_sweep`, frame f takes the sides' share (f / 8) % 3 — none, as set, a
+// half — so a flight under `renderer.resolve.stop_after=cycle` measures every stage at each;
+// without it every frame takes the tunable. CPU only.
+TEST_CASE("half rate: the sweep steps the sides' share eight frames at a time") {
+  HalfRateRestore restore;
+  struct SweepRestore {
+    ~SweepRestore() { (void)tunables::apply_overrides("renderer.resolve.half_rate_sweep=false"); }
+  } sweep_restore;
+  REQUIRE(tunables::apply_overrides("renderer.resolve.half_rate_sides=0.25"));
+  for (u64 f : {u64{0}, u64{8}, u64{16}, u64{47}})
+    CHECK(half_rate_sides_tunable(f) == 0.25f);
+  REQUIRE(tunables::apply_overrides("renderer.resolve.half_rate_sweep=true"));
+  for (u64 base : {u64{0}, u64{24}, u64{240}}) {
+    CHECK(half_rate_sides_tunable(base) == 0.0f);
+    CHECK(half_rate_sides_tunable(base + 7) == 0.0f);
+    CHECK(half_rate_sides_tunable(base + 8) == 0.25f);
+    CHECK(half_rate_sides_tunable(base + 16) == 0.5f);
+  }
+}
