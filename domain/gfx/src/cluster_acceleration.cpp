@@ -690,9 +690,8 @@ void build_cluster_blas_set(CommandList commands, const ClusterBlasSet& set, Dev
   VkClusterAccelerationStructureClustersBottomLevelInputNV clusters;
   VkClusterAccelerationStructureCommandsInfoNV info{};
   info.sType = VK_STRUCTURE_TYPE_CLUSTER_ACCELERATION_STRUCTURE_COMMANDS_INFO_NV;
-  info.input =
-      blas_input(set.max_clusters, clusters, set.max_structures, set.max_clusters_per_structure,
-                 set.opacity_micromaps);
+  info.input = blas_input(set.max_clusters, clusters, set.max_structures,
+                          set.max_clusters_per_structure, set.opacity_micromaps);
   info.dstImplicitData = align_up(set.data.address, set.alignment);
   info.scratchData = align_up(scratch.address, set.alignment);
   info.dstAddressesArray = {set.addresses.address, sizeof(u64), set.addresses.size};

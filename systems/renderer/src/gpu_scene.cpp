@@ -5287,10 +5287,10 @@ bool GpuScene::resize_ray_tracing(u32 capacity, std::string* error, bool beyond_
   }
   // One bottom-level set over both: an instance references the frame's own structures or the
   // cache's, never both, so its most is the larger of the two capacities.
-  ok = ok && gfx::create_cluster_blas_set(
-                 device, rt_instance_slots_, capacity + references,
-                 std::min(rt_max_per_instance_, std::max(capacity, references)), made_blas, error,
-                 rt_limits_.opacity_micromaps);
+  ok = ok &&
+       gfx::create_cluster_blas_set(device, rt_instance_slots_, capacity + references,
+                                    std::min(rt_max_per_instance_, std::max(capacity, references)),
+                                    made_blas, error, rt_limits_.opacity_micromaps);
   lap(rt_resize_cost_.blas_ns);
   if (ok) {
     u64 scratch_bytes = made_clas.build_scratch_bytes;

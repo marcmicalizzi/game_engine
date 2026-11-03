@@ -262,9 +262,9 @@ bool build_opacity_micromap(const Device& device, std::span<const u32> data,
   const u64 data_bytes = std::max<u64>(u64{data.size()} * sizeof(u32), 4);
   const u64 triangle_bytes = u64{triangles.size()} * sizeof(MicromapTriangle);
   BufferResource input;
-  if (!create_buffer(device, k_input_alignment * 2 + align_up(data_bytes, k_input_alignment) +
-                                 triangle_bytes,
-                     k_input, true, input, error)) {
+  if (!create_buffer(
+          device, k_input_alignment * 2 + align_up(data_bytes, k_input_alignment) + triangle_bytes,
+          k_input, true, input, error)) {
     return false;
   }
   const u64 data_address = align_up(input.address, k_input_alignment);
@@ -501,8 +501,8 @@ bool bake_opacity_micromaps(const Device& device, ShaderLibrary& shaders,
   stats.micro_unknown = counted[2];
 
   // The build: one micromap, its usage counts per level.
-  const bool built = build_micromap(device, stats.entries_per_level, data_address, triangle_array,
-                                    out, error);
+  const bool built =
+      build_micromap(device, stats.entries_per_level, data_address, triangle_array, out, error);
   destroy_buffer(device, entries_aligned);
   if (!built) return fail();
 

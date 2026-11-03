@@ -322,13 +322,15 @@ tunables::Bool shadow_sweep{
 // micromaps"). The budget's default is from the v25 forest's bake (forest-resolve-2026-11-01.md,
 // stage 4).
 tunables::Bool shadow_micromaps{
-    "renderer.shadow.micromaps", true,
+    "renderer.shadow.micromaps", false,
     "Bake opacity micromaps for the alpha-tested clusters and attach them to the ray tracing "
-    "chain's structures where the device has VK_EXT_opacity_micromap; the picture is the same. "
-    "Not with the opaque shadow proxy on, whose solid clusters a micromap's transparent "
-    "micro-triangles would open again (R120; renderer.md, Opacity micromaps; read at load)"};
+    "chain's structures where the device has VK_EXT_opacity_micromap; the picture is the same "
+    "at the same chain capacity. Off: on the v25 forest they took the sun stage 14.8 to 13.3 ms "
+    "at 11520x2160 for 1.15 GB resident and a third of the chain's capacity under the same "
+    "budget. Not with the opaque shadow proxy on (R120; renderer.md, Opacity micromaps; read at "
+    "load)"};
 tunables::Int micromap_mib{
-    "renderer.rt.micromap_mib", 256, 0, 65536,
+    "renderer.rt.micromap_mib", 1024, 0, 65536,
     "The opacity micromaps' bake budget in MiB, states, indices and triangle "
     "records together: a level is dropped until it fits (0: no budget)"};
 tunables::Float micromap_texels{

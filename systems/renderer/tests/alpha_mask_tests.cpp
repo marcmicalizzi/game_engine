@@ -865,7 +865,7 @@ TEST_CASE("alpha mask: opacity micromaps leave the shadow rays' and the ray path
     TunableScope cache(c.cache, "renderer.rt.cache=true");
     MicromapShot on;
     {
-      TunableScope set("renderer.shadow.micromaps=true", "renderer.shadow.micromaps=true");
+      TunableScope set("renderer.shadow.micromaps=true", "renderer.shadow.micromaps=false");
       on = shoot_micromaps(c.mesh, c.settings, c.view);
     }
     if (!on.skip.empty()) {
@@ -874,7 +874,7 @@ TEST_CASE("alpha mask: opacity micromaps leave the shadow rays' and the ray path
     }
     MicromapShot off;
     {
-      TunableScope set("renderer.shadow.micromaps=false", "renderer.shadow.micromaps=true");
+      TunableScope set("renderer.shadow.micromaps=false", "renderer.shadow.micromaps=false");
       off = shoot_micromaps(c.mesh, c.settings, c.view);
     }
     REQUIRE(off.skip.empty());
@@ -918,7 +918,7 @@ TEST_CASE("alpha mask: a forced-solid shadow ray still skips a micromap's transp
   TunableScope cap("renderer.rt.micromap_level=6", "renderer.rt.micromap_level=4");
   MicromapShot on;
   {
-    TunableScope set("renderer.shadow.micromaps=true", "renderer.shadow.micromaps=true");
+    TunableScope set("renderer.shadow.micromaps=true", "renderer.shadow.micromaps=false");
     on = shoot_micromaps(fx.caster_masked, rays, micromap_shadow_view());
   }
   if (!on.skip.empty() || !on.baked) {
@@ -927,7 +927,7 @@ TEST_CASE("alpha mask: a forced-solid shadow ray still skips a micromap's transp
   }
   MicromapShot off;
   {
-    TunableScope set("renderer.shadow.micromaps=false", "renderer.shadow.micromaps=true");
+    TunableScope set("renderer.shadow.micromaps=false", "renderer.shadow.micromaps=false");
     off = shoot_micromaps(fx.caster_masked, rays, micromap_shadow_view());
   }
   REQUIRE(off.skip.empty());
@@ -935,8 +935,8 @@ TEST_CASE("alpha mask: a forced-solid shadow ray still skips a micromap's transp
   const ShadowCount without = count_shadow(off.frame);
   MESSAGE("forced solid: " << without.share() << " of the ground shadowed without micromaps, "
                            << with.share() << " with them");
-  const f64 micro = static_cast<f64>(on.stats.micro_opaque + on.stats.micro_transparent +
-                                     on.stats.micro_unknown);
+  const f64 micro =
+      static_cast<f64>(on.stats.micro_opaque + on.stats.micro_transparent + on.stats.micro_unknown);
   REQUIRE(micro > 0.0);
   const f64 transparent = static_cast<f64>(on.stats.micro_transparent) / micro;
   REQUIRE(transparent > 0.0);
@@ -950,7 +950,7 @@ TEST_CASE("alpha mask: a device without opacity micromaps draws what it drew") {
   rays.shadows = ShadowMode::RayTraced;
   MicromapShot without;
   {
-    TunableScope set("renderer.shadow.micromaps=true", "renderer.shadow.micromaps=true");
+    TunableScope set("renderer.shadow.micromaps=true", "renderer.shadow.micromaps=false");
     without = shoot_micromaps(fx.caster_masked, rays, micromap_shadow_view(), true);
   }
   if (!without.skip.empty()) {
@@ -959,7 +959,7 @@ TEST_CASE("alpha mask: a device without opacity micromaps draws what it drew") {
   }
   MicromapShot off;
   {
-    TunableScope set("renderer.shadow.micromaps=false", "renderer.shadow.micromaps=true");
+    TunableScope set("renderer.shadow.micromaps=false", "renderer.shadow.micromaps=false");
     off = shoot_micromaps(fx.caster_masked, rays, micromap_shadow_view());
   }
   REQUIRE(off.skip.empty());
