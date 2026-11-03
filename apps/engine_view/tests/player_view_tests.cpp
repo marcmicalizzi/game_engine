@@ -702,10 +702,14 @@ TEST_CASE(
   const f64 dz = element(boom, 2) - element(eye, 2);
   CHECK(std::sqrt(dx * dx + dz * dz) == doctest::Approx(2.5).epsilon(1e-4));
   CHECK(element(boom, 1) - element(eye, 1) == doctest::Approx(0.4).epsilon(1e-4));
-  // ...behind it: the look from the eye to the camera is the look reversed.
-  const f64 yaw = number((*trajectory_markers)[1].find("yaw"));
-  CHECK(dx * std::sin(yaw) + dz * -std::cos(yaw) == doctest::Approx(-2.5).epsilon(1e-4));
-  CHECK(std::fabs(dx * std::cos(yaw) + dz * std::sin(yaw)) < 1e-4);  // and on the look's line
+  // ...behind it: the displacement from the eye to the camera is the look's own forward reversed,
+  // `fly_forward` on the level look of the marker's yaw (-sin yaw, 0, -cos yaw): the convention the
+  // boom and the trajectory share, held here through the same function rather than re-derived.
+  view::FlyState level;
+  level.yaw = static_cast<f32>(number((*trajectory_markers)[1].find("yaw")));
+  const auto forward = view::fly_forward(level);
+  CHECK(std::fabs(dx + 2.5 * static_cast<f64>(forward.x)) < 1e-3);
+  CHECK(std::fabs(dz + 2.5 * static_cast<f64>(forward.z)) < 1e-3);
 
   // (a) The bare scene from each camera: before V the central third is the bare scene's to the
   // pixel (P58's face), after it the body stands in front of the boom and the central third
