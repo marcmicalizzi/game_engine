@@ -378,8 +378,9 @@ struct ResolvedSettings {
   // alpha-tested clusters at load and the chain's drawn alpha-tested records name it, so the
   // traversal decides a micro-triangle the mask would decide the same way everywhere on it and the
   // ray loops see only the rest. On where the frame builds the chain on a device with
-  // VK_EXT_opacity_micromap beside the cluster extension and `renderer.shadow.micromaps` is on (off
-  // by default until the traversal is shown to use them; read at load). `micromap_level` is the
+  // VK_EXT_opacity_micromap beside the cluster extension, `renderer.shadow.micromaps` is on (the
+  // default since R120b; read at load) and the opaque shadow proxy is off (its solid clusters would
+  // be opened again by the transparent micro-triangles). `micromap_level` is the
   // level cap (`renderer.rt.micromap_level`, at most the device's) and `micromap_budget_bytes` the
   // bake's budget (`renderer.rt.micromap_mib`), which lowers the cap a level at a time until the
   // bake fits.

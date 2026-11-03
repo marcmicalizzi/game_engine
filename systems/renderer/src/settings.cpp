@@ -322,11 +322,11 @@ tunables::Bool shadow_sweep{
 // micromaps"). The budget's default is from the v25 forest's bake (forest-resolve-2026-11-01.md,
 // stage 4).
 tunables::Bool shadow_micromaps{
-    "renderer.shadow.micromaps", false,
+    "renderer.shadow.micromaps", true,
     "Bake opacity micromaps for the alpha-tested clusters and attach them to the ray tracing "
     "chain's structures where the device has VK_EXT_opacity_micromap; the picture is the same. "
-    "Off until the traversal is shown to use them (R120; renderer.md, Opacity micromaps; read at "
-    "load)"};
+    "Not with the opaque shadow proxy on, whose solid clusters a micromap's transparent "
+    "micro-triangles would open again (R120; renderer.md, Opacity micromaps; read at load)"};
 tunables::Int micromap_mib{
     "renderer.rt.micromap_mib", 256, 0, 65536,
     "The opacity micromaps' bake budget in MiB, states, indices and triangle "
@@ -553,9 +553,12 @@ void resolve_settings(const RenderSettings& requested, const gfx::DeviceFeatures
   // The proxy's table, baked at load, which the measurement sweep's proxy rules read too (R115).
   out.shadow_coverage_table =
       out.shadows && (out.shadow_opaque_coverage > 0.0f || shadow_sweep.get());
-  // Opacity micromaps (R120), read once: a scene bakes them when it is made.
+  // Opacity micromaps (R120), read once: a scene bakes them when it is made. Not under the opaque
+  // proxy: it makes a cluster solid in the loop, and the traversal never hands the loop a
+  // micromap's transparent micro-triangle to make solid.
   out.shadow_micromaps = out.rt_chain && features.cluster_acceleration_structure &&
-                         features.opacity_micromap && shadow_micromaps.get();
+                         features.opacity_micromap && shadow_micromaps.get() &&
+                         out.shadow_opaque_coverage <= 0.0f;
   out.micromap_level = static_cast<u32>(micromap_level.get());
   out.micromap_budget_bytes = static_cast<u64>(micromap_mib.get()) << 20;
   out.micromap_texels = static_cast<f32>(micromap_texels.get());

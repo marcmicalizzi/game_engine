@@ -865,7 +865,7 @@ TEST_CASE("alpha mask: opacity micromaps leave the shadow rays' and the ray path
     TunableScope cache(c.cache, "renderer.rt.cache=true");
     MicromapShot on;
     {
-      TunableScope set("renderer.shadow.micromaps=true", "renderer.shadow.micromaps=false");
+      TunableScope set("renderer.shadow.micromaps=true", "renderer.shadow.micromaps=true");
       on = shoot_micromaps(c.mesh, c.settings, c.view);
     }
     if (!on.skip.empty()) {
@@ -874,7 +874,7 @@ TEST_CASE("alpha mask: opacity micromaps leave the shadow rays' and the ray path
     }
     MicromapShot off;
     {
-      TunableScope set("renderer.shadow.micromaps=false", "renderer.shadow.micromaps=false");
+      TunableScope set("renderer.shadow.micromaps=false", "renderer.shadow.micromaps=true");
       off = shoot_micromaps(c.mesh, c.settings, c.view);
     }
     REQUIRE(off.skip.empty());
@@ -918,7 +918,7 @@ TEST_CASE("alpha mask: a forced-solid shadow ray still skips a micromap's transp
   TunableScope cap("renderer.rt.micromap_level=6", "renderer.rt.micromap_level=4");
   MicromapShot on;
   {
-    TunableScope set("renderer.shadow.micromaps=true", "renderer.shadow.micromaps=false");
+    TunableScope set("renderer.shadow.micromaps=true", "renderer.shadow.micromaps=true");
     on = shoot_micromaps(fx.caster_masked, rays, micromap_shadow_view());
   }
   if (!on.skip.empty() || !on.baked) {
@@ -927,7 +927,7 @@ TEST_CASE("alpha mask: a forced-solid shadow ray still skips a micromap's transp
   }
   MicromapShot off;
   {
-    TunableScope set("renderer.shadow.micromaps=false", "renderer.shadow.micromaps=false");
+    TunableScope set("renderer.shadow.micromaps=false", "renderer.shadow.micromaps=true");
     off = shoot_micromaps(fx.caster_masked, rays, micromap_shadow_view());
   }
   REQUIRE(off.skip.empty());
@@ -950,7 +950,7 @@ TEST_CASE("alpha mask: a device without opacity micromaps draws what it drew") {
   rays.shadows = ShadowMode::RayTraced;
   MicromapShot without;
   {
-    TunableScope set("renderer.shadow.micromaps=true", "renderer.shadow.micromaps=false");
+    TunableScope set("renderer.shadow.micromaps=true", "renderer.shadow.micromaps=true");
     without = shoot_micromaps(fx.caster_masked, rays, micromap_shadow_view(), true);
   }
   if (!without.skip.empty()) {
@@ -959,7 +959,7 @@ TEST_CASE("alpha mask: a device without opacity micromaps draws what it drew") {
   }
   MicromapShot off;
   {
-    TunableScope set("renderer.shadow.micromaps=false", "renderer.shadow.micromaps=false");
+    TunableScope set("renderer.shadow.micromaps=false", "renderer.shadow.micromaps=true");
     off = shoot_micromaps(fx.caster_masked, rays, micromap_shadow_view());
   }
   REQUIRE(off.skip.empty());
