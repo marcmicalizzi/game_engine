@@ -581,6 +581,7 @@ bool attach_instances(AnimatedScene& scene, const renderer::SceneDesc& desc,
   scene.entities.resize(count, Id128{});
   scene.runs.resize(count, renderer::InstanceJoints{});
   scene.instance_clip.resize(count, animation::Library::k_not_found);
+  scene.instance_skeleton.resize(count, animation::Library::k_not_found);
   // The grid is expanded inside `load_scene`, so its instances have no `SceneInstance` of their
   // own to carry a block; they take the command line's clip and speed and a phase each. Every
   // other instance the scene has is `desc.instances[read]`, `read` its index in the whole read
@@ -627,15 +628,24 @@ bool attach_instances(AnimatedScene& scene, const renderer::SceneDesc& desc,
       request.speed *= options.speed;
     }
     const u32 clip_index = find_clip(scene.library, skeleton_index, request.clip);
-    if (clip_index == animation::Library::k_not_found) {
-      error = request.clip.empty()
-                  ? "instance " + std::to_string(read) + ": the skin has no animation to play"
-                  : "instance " + std::to_string(read) + ": no clip named '" + request.clip + "'";
+    // **A skin with no clip stands at its bind pose** (P61): an authored export (a module
+    // assembly, a textured preset) arrives with no animation at all, and its only pose is the
+    // rest pose every skin starts a tick from. No name asked for and none to find is that skin;
+    // a name asked for and not found is still an error, and names what the skin has.
+    const bool clipless = clip_index == animation::Library::k_not_found && request.clip.empty();
+    if (clip_index == animation::Library::k_not_found && !clipless) {
+      std::string have;
+      for (u32 c = 0; c < scene.library.clip_count(); ++c) {
+        if (scene.library.clip(c).skeleton != skeleton_index) continue;
+        have += (have.empty() ? "'" : ", '") + scene.library.clip(c).name + "'";
+      }
+      error = "instance " + std::to_string(read) + ": no clip named '" + request.clip +
+              "'; the skin has " + (have.empty() ? std::string("no clips") : "clips " + have);
       return false;
     }
     const Id128 id = instance_id(read);
     if (!scene.system.attach(id, scene.library.skeleton(skeleton_index).id,
-                             scene.library.clip(clip_index).id)) {
+                             clipless ? Id128{} : scene.library.clip(clip_index).id)) {
       error = "the animation library does not hold this skin's skeleton";
       return false;
     }
@@ -643,7 +653,7 @@ bool attach_instances(AnimatedScene& scene, const renderer::SceneDesc& desc,
     // clip is not a crowd of clones. Every copy still starts at a value that is a function of its
     // index alone, so two runs of `--frames N` draw the same picture — the whole read's index over
     // the whole read's count, so a streamed world's kept character is at the whole read's phase.
-    const f32 duration = scene.library.clip_data(clip_index).duration;
+    const f32 duration = clipless ? 0.0f : scene.library.clip_data(clip_index).duration;
     f32 phase = request.phase;
     if (phase == 0.0f && scene.read_count > 1 && duration > 0.0f)
       phase = duration * static_cast<f32>(read) / static_cast<f32>(scene.read_count);
@@ -651,8 +661,14 @@ bool attach_instances(AnimatedScene& scene, const renderer::SceneDesc& desc,
     scene.system.set_playhead(id, phase, request.speed);
     scene.entities[i] = id;
     scene.instance_clip[i] = clip_index;
+    scene.instance_skeleton[i] = skeleton_index;
     ++scene.instances;
     scene.joints = scene.joints > data.instance_joints[i] ? scene.joints : data.instance_joints[i];
+    if (clipless) {
+      // Nothing moves a vertex off the rest-pose spheres the cull pass tests: no padding.
+      data.instances[i].bounds_padding = 0.0f;
+      continue;
+    }
     if (scene.clip_name.empty()) scene.clip_name = scene.library.clip(clip_index).name;
 
     // The cull pass tests this instance by its **rest-pose** spheres, and a skinned vertex is not

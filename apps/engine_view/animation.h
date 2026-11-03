@@ -86,10 +86,13 @@ struct AnimatedScene {
   Vector<u32> mesh_first_channel;
   Vector<u32> mesh_channel_count;
   Vector<std::string> morph_names;
-  Vector<u32> instance_clip;  // the library clip each instance was attached with
-  u32 joints = 0;             // the widest skeleton attached
-  u32 instances = 0;          // entities attached
-  std::string clip_name;      // what the summary reports
+  // The library clip each instance was attached with; `Library::k_not_found` for a skin that has
+  // none, which stands at its bind pose (P61).
+  Vector<u32> instance_clip;
+  Vector<u32> instance_skeleton;  // the library skeleton each instance was attached with
+  u32 joints = 0;                 // the widest skeleton attached
+  u32 instances = 0;              // entities attached
+  std::string clip_name;          // what the summary reports
   // **The whole read's index of each scene instance, and back** (renderer.md, "The whole read's
   // index"): everything above is indexed by the loaded instance, and everything a scene file or a
   // game names — an animation block, an actor's handle, the summary's `instance` — by the whole

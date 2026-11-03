@@ -379,6 +379,26 @@ bool measure_player_rig(const std::string& path, f32 target_height_m, f32 eye_he
   const std::string want_idle = player_idle_clip.get();
   const bool walk_none = names_no_clip(want_walk);
   const bool idle_none = names_no_clip(want_idle);
+  // A body with no clip at all stands at its bind pose (P61), and the soft names above (`walk` and
+  // `idle`, the defaults, which a rig that lacks them answers with its first clip or the rest pose)
+  // are then simply the rest pose. A name the author *chose* — anything but `none` and the
+  // default — is a clip the body cannot play, and is refused naming what it has.
+  bool has_clip = false;
+  for (u32 i = 0; i < library.clip_count(); ++i)
+    has_clip = has_clip || library.clip(i).skeleton == 0;
+  if (!has_clip) {
+    const auto chosen = [](const tunables::String& t, bool none) {
+      return !none && !t.is_default();
+    };
+    const bool walk_chosen = chosen(player_walk_clip, walk_none);
+    const bool idle_chosen = chosen(player_idle_clip, idle_none);
+    if (walk_chosen || idle_chosen) {
+      error = "--player " + path + ": no clip named '" + (walk_chosen ? want_walk : want_idle) +
+              "'; the skin has no clips (view.player." + (walk_chosen ? "walk" : "idle") +
+              "_clip=none, or leave it unset, stands the body at rest)";
+      return false;
+    }
+  }
   for (u32 i = 0; i < library.clip_count(); ++i) {
     const animation::ClipAsset& clip = library.clip(i);
     if (clip.skeleton != 0) continue;
@@ -449,10 +469,8 @@ bool PlayerBody::bind(AnimatedScene& scene, GameActors& actors, std::string& err
     error = "--player " + rig_.mesh + ": the body's instance does not animate";
     return false;
   }
-  const u32 skeleton = loaded < scene.instance_clip.size() &&
-                               scene.instance_clip[loaded] < scene.library.clip_count()
-                           ? scene.library.clip(scene.instance_clip[loaded]).skeleton
-                           : 0u;
+  const u32 skeleton = loaded < scene.instance_skeleton.size() ? scene.instance_skeleton[loaded]
+                                                               : animation::Library::k_not_found;
   if (skeleton >= scene.library.skeleton_count()) return true;
   const animation::SkeletonAsset& asset = scene.library.skeleton(skeleton);
   const char* from = "none";
