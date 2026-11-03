@@ -93,6 +93,7 @@ scene::FrameRecord frame_record(const FrameStats& stats, u32 repeat, u32 frame, 
   out.gpu_ms.tables = stats.gpu_tables;
   out.gpu_ms.sky = stats.gpu_sky;
   out.gpu_ms.frame_passes = stats.gpu_frame_passes;
+  out.gpu_ms.half_sun = stats.gpu_half_sun;
   out.uploads = stats.uploads;
   out.upload_bytes = stats.upload_bytes;
   out.evictions = stats.evictions;

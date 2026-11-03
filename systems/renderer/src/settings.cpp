@@ -291,6 +291,17 @@ tunables::Enum<gfx::ResolveStop> resolve_stop_after{
     "Measurement only: the resolve ends each pixel's work after this stage and writes what it has "
     "(none: the picture; cycle: frame f stops after stage f % 8; renderer.md, Where the resolve's "
     "time goes)"};
+// R126: a shading rate by region (renderer.md, "A shading rate by region"). The sides' default is
+// a rule rather than a number, so a surround gets its outer thirds and every other frame nothing.
+tunables::Float resolve_half_rate_sides{
+    "renderer.resolve.half_rate_sides", -1.0, -1.0, 0.5,
+    "The share of the frame's width at each side whose sun ray is asked once per 2x2 block of one "
+    "pair; negative: a third on a frame wider than 2.5:1, none otherwise (renderer.md, A shading "
+    "rate by region)"};
+tunables::Bool resolve_half_rate_centre{
+    "renderer.resolve.half_rate_centre", false,
+    "The centre's sun ray at half rate too, so the whole frame's (renderer.md, A shading rate by "
+    "region)"};
 // R115: a light whose contribution is this small a fraction of the rest of the pixel's light is not
 // tested for its shadow (renderer.md, "A light too faint to test"; Ward 1991). 2^-12 is a
 // thirty-sixth of the finest code step of the 8-bit and the PQ encodes (0.87% and 0.90%), so six
@@ -328,6 +339,9 @@ bool shadow_opaque_rays_tunable() noexcept { return shadow_opaque_rays.get(); }
 f32 shadow_light_tolerance_tunable() noexcept {
   return static_cast<f32>(shadow_light_tolerance.get());
 }
+f32 half_rate_sides_tunable() noexcept { return static_cast<f32>(resolve_half_rate_sides.get()); }
+bool half_rate_centre_tunable() noexcept { return resolve_half_rate_centre.get(); }
+
 u32 resolve_stop_tunable(u64 frame_index) noexcept {
   const u32 choice = static_cast<u32>(resolve_stop_after.get());
   if (choice < gfx::k_resolve_stops) return choice;

@@ -1389,8 +1389,8 @@ struct CameraPath @version(1) {
 }
 
 /// GPU milliseconds of one frame, pass by pass, from `gfx::GpuTimer` (`renderer::Stats` names).
-/// Version 5 added `sky`. Version 6 added `frame_passes`.
-struct PassMs @version(6) {
+/// Version 5 added `sky`. Version 6 added `frame_passes`. Version 7 added `half_sun`.
+struct PassMs @version(7) {
   cull: f64 = 0
   hw: f64 = 0
   sw: f64 = 0
@@ -1422,6 +1422,10 @@ struct PassMs @version(6) {
   /// The frame passes (docs/subsystems/renderer.md, "Frame passes": a medium) and the encode after
   /// them. Zero in a frame with none.
   frame_passes: f64 = 0 @since(6)
+  /// The half-rate sun pass (docs/subsystems/renderer.md, "A shading rate by region"; R126): the
+  /// sun's ray once per 2x2 block of the half-rate columns, every view's. What it saves the resolve
+  /// is in `resolve`. Zero in a frame at full rate.
+  half_sun: f64 = 0 @since(7)
 }
 
 /// One terrain level's surface in one frame of a time-lapse (`engine-view --time-rate`;

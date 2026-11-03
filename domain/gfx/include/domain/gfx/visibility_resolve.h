@@ -694,7 +694,7 @@ inline constexpr u32 k_resolve_stops = 8;
 // pixel — straight into the target's codes, for a capture to count. A measurement, never a picture.
 inline constexpr u32 k_resolve_count_rays = 0x100u;
 
-// Mirrors ResolveParams in visibility_resolve.slang. 480 bytes.
+// Mirrors ResolveParams in visibility_resolve.slang. 496 bytes.
 struct ResolveParams {
   Vec4 sky{};  // rgb shown for empty pixels, and the hemisphere ambient's upper half
   Vec4 sun{};  // xyz normalized direction towards the light, w intensity
@@ -883,6 +883,16 @@ struct ResolveParams {
   // renderer sets `renderer.shadow.light_tolerance` (2^-12). It took the row's last pad word, so
   // the block is still 480 bytes.
   f32 light_tolerance = 0.0f;
+  // **A shading rate by region** (renderer.md, "A shading rate by region"; R126): the sun's ray
+  // once per 2x2 block of this view's visibility region outside the full-rate columns
+  // [`half_x0`, `half_x1`), where the block's four pixels share one pair. `half_sun` is the half
+  // pass's answer per block (`k_half_sun_not_taken`, or the pair << 1 | blocked), written by
+  // resolve_half_sun.slang from this same block and read by the resolve's sun query; 0 is none —
+  // every pixel traces its own ray, as the resolve always did, and the two words are not read. Only
+  // the ray-traced modules read the row. A new 16-byte row: the block grew from 480 to 496 bytes.
+  u64 half_sun = 0;
+  u32 half_x0 = 0;
+  u32 half_x1 = 0;
 };
 // `ResolveParams::water_open_instance` when the scene has no open water.
 inline constexpr u32 k_no_water_open = 0xffffffffu;
@@ -894,7 +904,89 @@ inline f32 water_clock(f64 time_s) noexcept {
   const f64 t = std::fmod(time_s, k_water_period_s);
   return static_cast<f32>(t < 0.0 ? t + k_water_period_s : t);
 }
-static_assert(sizeof(ResolveParams) == 480);
+static_assert(sizeof(ResolveParams) == 496);
 static_assert(sizeof(ResolveParams) % 16 == 0, "the block is read as float4 rows on the GPU");
+
+// ---- a shading rate by region (renderer.md, "A shading rate by region"; R126) -------------------
+//
+// The half pass (resolve_half_sun.slang) asks the sun's ray once per 2x2 block of a view's
+// visibility region in the half-rate columns, and only where the block's four pixels hold one pair
+// — one (instance, cluster), so one material, since a pair's material is its cluster's index plus
+// its instance's base; the resolve's sun query then takes the block's answer for a pixel of that
+// pair instead of tracing. A silhouette, a mask's edge and a material's boundary are a second pair
+// in the block, so they stay per pixel by construction. A shading rule that changes the picture in
+// the regions it names — never an upscaler, and no image of the whole picture at a lower size.
+
+// What the half pass writes for a block it did not take (`ResolveParams::half_sun`).
+inline constexpr u32 k_half_sun_not_taken = 0xffffffffu;
+// The half pass's workgroup: 8 x 8 blocks, a thread a block.
+inline constexpr u32 k_half_sun_workgroup = 8;
+// Above this width over height a frame is a surround, and its sides go to half rate by default.
+inline constexpr f32 k_half_rate_surround_aspect = 2.5f;
+// The sides' default share of a surround frame's width at each side: its outer monitors.
+inline constexpr f32 k_half_rate_surround_sides = 1.0f / 3.0f;
+
+// The share of the frame's width at each side that is half rate: `requested` in [0, 1/2] as it is,
+// or, negative (`renderer.resolve.half_rate_sides`' default), a third for a frame wider than 2.5:1
+// and none otherwise — so 4K, 16:9 and a 21:9 monitor change nothing unless asked.
+inline f32 half_rate_sides(f32 requested, u32 frame_width, u32 frame_height) noexcept {
+  if (requested < 0.0f) {
+    return static_cast<f32>(frame_width) >
+                   k_half_rate_surround_aspect * static_cast<f32>(frame_height)
+               ? k_half_rate_surround_sides
+               : 0.0f;
+  }
+  return requested > 0.5f ? 0.5f : requested;
+}
+
+// One view's full-rate columns of its visibility region, in its pixels, both even: a pixel is
+// half rate where x < x0 or x >= x1. `columns` is the half-rate block columns — the half pass's
+// dispatch is that wide — and 0 is a view the rule leaves at full rate, for which no pass is
+// recorded.
+struct HalfRateWindow {
+  u32 x0 = 0;
+  u32 x1 = 0;
+  u32 columns = 0;
+};
+
+// The window of a view whose output rectangle starts at `view_x` and is `out_width` wide in a frame
+// `frame_width` wide, resolving a visibility region `source_width` wide: the frame's sides —
+// `sides` of its width at each edge — or, with `centre`, the whole frame, cut to the view and
+// scaled into its source. A Panini view's source maps to its output nonlinearly; the window is
+// scaled linearly, which moves its edges by a few columns and nothing else. The edges round
+// outwards to whole blocks of the source, so a block is wholly at one rate.
+inline HalfRateWindow half_rate_window(f32 sides, bool centre, u32 frame_width, u32 view_x,
+                                       u32 out_width, u32 source_width) noexcept {
+  HalfRateWindow w;
+  const u32 blocks = (source_width + 1) / 2;
+  if (centre) {
+    w.columns = blocks;
+    return w;
+  }
+  const f64 side = static_cast<f64>(sides) * static_cast<f64>(frame_width);
+  // The full-rate band of the frame, [side, width - side), in this view's output pixels.
+  auto clamp_out = [&](f64 x) {
+    const f64 local = x - static_cast<f64>(view_x);
+    const f64 right = static_cast<f64>(out_width);
+    return local < 0.0 ? 0.0 : (local > right ? right : local);
+  };
+  const f64 a = clamp_out(side);
+  const f64 b = clamp_out(static_cast<f64>(frame_width) - side);
+  const f64 scale =
+      out_width > 0 ? static_cast<f64>(source_width) / static_cast<f64>(out_width) : 1.0;
+  u32 b0 = static_cast<u32>(a * scale / 2.0);  // floor: the full-rate band grows, never shrinks
+  u32 b1 = static_cast<u32>(std::ceil(b * scale / 2.0));
+  if (b1 > blocks) b1 = blocks;
+  if (b0 > b1) b0 = b1;
+  w.x0 = b0 * 2;
+  w.x1 = b1 * 2;
+  w.columns = b0 + (blocks - b1);
+  return w;
+}
+
+// The half pass's words for a view's region: one u32 per 2x2 block.
+inline u64 half_rate_blocks(u32 source_width, u32 source_height) noexcept {
+  return u64{(source_width + 1) / 2} * ((source_height + 1) / 2);
+}
 
 }  // namespace engine::gfx

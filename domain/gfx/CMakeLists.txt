@@ -16,6 +16,7 @@ engine_shaders(NAME gfx SOURCES shaders/cluster_mesh.slang shaders/cluster_cull.
                              shaders/visibility_resolve_rt_terrain.slang
                              shaders/visibility_resolve_water_terrain.slang
                              shaders/visibility_resolve_rt_water_terrain.slang
+                             shaders/resolve_half_sun.slang
                              shaders/path_trace_terrain.slang
                              shaders/hiz_build.slang shaders/cluster_vertex.slang
                              shaders/cluster_vertex_indexed.slang shaders/vertex_expand.slang
@@ -61,7 +62,9 @@ engine_module_tests(NAME gfx
           tests/size_table.cpp
           # The output encode's CPU side (display.h): steps, the noise, the dither's ends, and a
           # 10-bit capture's reduction to 8 bits; no device.
-          tests/display_tests.cpp)
+          tests/display_tests.cpp
+          # A shading rate by region's sides and windows (visibility_resolve.h, R126); no device.
+          tests/half_rate_tests.cpp)
 
 # Shaders used by the RHI's own tests: the first .slang through the toolchain.
 engine_shaders(NAME gfx_tests

@@ -29,6 +29,7 @@
 #include <shaders/overlay.spv.h>
 #include <shaders/pair_expand.spv.h>
 #include <shaders/ray_visibility.spv.h>
+#include <shaders/resolve_half_sun.spv.h>
 #include <shaders/tlas_references.spv.h>
 #include <shaders/vertex_expand.spv.h>
 #include <shaders/visibility_resolve.spv.h>
@@ -220,6 +221,7 @@ void SceneRenderer::Pipelines::destroy(const gfx::Device& device) noexcept {
     gfx::destroy_compute_pipeline(device, pass);
   gfx::destroy_compute_pipeline(device, tlas_references);
   gfx::destroy_compute_pipeline(device, trace);
+  gfx::destroy_compute_pipeline(device, half_sun);
   gfx::destroy_compute_pipeline(device, pair_expand);
   direct = hardware = vertex = vertex_fallback = shadow = shadow_fallback = resolve = {};
   resolve_linear = encode = {};
@@ -264,6 +266,13 @@ bool SceneRenderer::Targets::create(const gfx::Device& device, const ViewSet& se
     target.coverage_offset = hiz_elements;
     hiz_elements += target.coverage_pitch * gfx::hiz_coverage_pitch(target.height);
   }
+  // The half pass's answers (R126): a word per 2x2 block of each view's region, back to back. Only
+  // the offsets here; the buffer is made by the first frame that records the pass.
+  half_words = 0;
+  for (u32 v = 0; v < set.size(); ++v) {
+    views[v].half_offset = half_words;
+    half_words += gfx::half_rate_blocks(views[v].width, views[v].height);
+  }
   hiz_levels.resize(level_base);
   hiz_dirty = true;
   // TRANSFER_SRC on the visibility buffer is what a capture's id and depth channels read back;
@@ -283,9 +292,12 @@ void SceneRenderer::Targets::destroy(const gfx::Device& device) noexcept {
   if (depth.image.valid()) gfx::destroy_image(device, depth);
   gfx::destroy_buffer(device, vis);
   gfx::destroy_buffer(device, hiz);
+  gfx::destroy_buffer(device, half);
   depth = gfx::ImageResource{};
   vis = gfx::BufferResource{};
   hiz = gfx::BufferResource{};
+  half = gfx::BufferResource{};
+  half_words = 0;
   views.clear();
   hiz_levels.clear();
 }
@@ -559,6 +571,8 @@ bool SceneRenderer::create(const gfx::Device& device, GpuScene& scene,
                         shaders::k_frame_encode_spirv_size);
   shaders_.add_embedded("ray_visibility", shaders::k_ray_visibility_spirv,
                         shaders::k_ray_visibility_spirv_size);
+  shaders_.add_embedded("resolve_half_sun", shaders::k_resolve_half_sun_spirv,
+                        shaders::k_resolve_half_sun_spirv_size);
   shaders_.add_embedded("deform", shaders::k_deform_spirv, shaders::k_deform_spirv_size);
   shaders_.add_embedded("deform_alloc", shaders::k_deform_alloc_spirv,
                         shaders::k_deform_alloc_spirv_size);
@@ -955,6 +969,20 @@ bool SceneRenderer::create_pipelines(std::string* error) {
             device, trace->module, "trace_main",
             std::span<const gfx::DescriptorSetLayoutHandle>(&set_layout, 1), sizeof(u64),
             pipelines_.trace, error)) {
+      return false;
+    }
+  }
+  // The half-rate sun pass (R126; renderer.md, "A shading rate by region"): wherever the resolve
+  // traces shadows, so a tunable can turn it on in any frame. One small module; nothing runs it
+  // until a frame records the pass.
+  if (resolved_.shadows) {
+    const gfx::Shader* half = shaders_.get("resolve_half_sun", error);
+    if (half == nullptr) return false;
+    const gfx::DescriptorSetLayoutHandle set_layout = bindless.layout();
+    if (!gfx::create_compute_pipeline(
+            device, half->module, "half_sun_main",
+            std::span<const gfx::DescriptorSetLayoutHandle>(&set_layout, 1), sizeof(u64),
+            pipelines_.half_sun, error)) {
       return false;
     }
   }
@@ -1618,6 +1646,7 @@ void SceneRenderer::collect_slot(u32 slot) {
     last.gpu_tables = timer_.ms("table copy") + last.gpu_pair_expand;
     last.gpu_terrain_upload = timer_.ms("terrain upload");
     last.gpu_sky = timer_.ms("sky");
+    last.gpu_half_sun = timer_.ms("half sun");
     for (u32 p = 0; p < frame_pass_count_; ++p)
       last.gpu_frame_passes += timer_.ms(frame_passes_[p].zone);
     last.gpu_frame_passes += timer_.ms("frame encode");
@@ -1664,6 +1693,8 @@ void SceneRenderer::collect_slot(u32 slot) {
     stats_.gpu_terrain_upload += timer_.ms("terrain upload");
     // The sky's passes are drawn once for every view: the frame's cost.
     stats_.gpu_sky += timer_.ms("sky");
+    // The half-rate sun pass, every view's under one name.
+    stats_.gpu_half_sun += timer_.ms("half sun");
     // The frame passes and their encode, the frame's too.
     for (u32 p = 0; p < frame_pass_count_; ++p)
       stats_.gpu_frame_passes += timer_.ms(frame_passes_[p].zone);
@@ -2458,6 +2489,37 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
     }
   }
 
+  // ---- a shading rate by region (R126; renderer.md, "A shading rate by region") --------------
+  // The sun's ray once per 2x2 block of one pair in the frame's sides, by a quarter-size pass
+  // before the resolve: wherever the resolve traces the sun (the rays, or the rays near and the
+  // maps far), in the shaded picture and the shadow view. Sides 0 and no centre — the default on a
+  // frame no wider than 2.5:1 — records no pass, and the frame is the one it was.
+  const f32 half_sides = gfx::half_rate_sides(half_rate_sides_tunable(), width_, height_);
+  const bool half_centre = half_rate_centre_tunable();
+  gfx::HalfRateWindow half_windows[k_max_views];
+  gfx::RgBuffer rg_half{};  // the answers, in the graph while the pass is recorded
+  bool half_on = !direct && shadows && (!csm || resolved_.hybrid) &&
+                 pipelines_.half_sun.pipeline.valid() && (half_sides > 0.0f || half_centre) &&
+                 (shade_mode == static_cast<u32>(gfx::ResolveMode::Shaded) ||
+                  shade_mode == static_cast<u32>(gfx::ResolveMode::Shadow));
+  if (half_on) {
+    bool any = false;
+    for (u32 v = 0; v < views; ++v) {
+      half_windows[v] = gfx::half_rate_window(half_sides, half_centre, width_, views_[v].rect.x,
+                                              views_[v].rect.width, targets_.views[v].width);
+      any = any || half_windows[v].columns > 0;
+    }
+    half_on = any;
+  }
+  // The answers' buffer, made once by the first frame that wants it and kept with the targets.
+  if (half_on && !targets_.half.buffer.valid()) {
+    if (!gfx::create_buffer(*device_, targets_.half_words * sizeof(u32),
+                            gfx::BufferUsage::Storage | gfx::BufferUsage::ShaderDeviceAddress,
+                            false, targets_.half, error)) {
+      return false;
+    }
+  }
+
   for (u32 v = 0; v < views; ++v) {
     const View& view = views_[v];
     const ViewTarget& target = targets_.views[v];
@@ -2801,6 +2863,13 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
     resolve.terrain_uv_z0_mm = static_cast<i32>(scene.terrain_uv().z0_mm);
     resolve.terrain_uv_per_mm =
         static_cast<f32>(1.0 / static_cast<f64>(scene.terrain_uv().size_mm));
+    // A shading rate by region (R126): this view's full-rate columns and its blocks' answers, which
+    // the half pass writes from this same block before the resolve reads them.
+    if (half_on && half_windows[v].columns > 0) {
+      resolve.half_sun = targets_.half.address + target.half_offset * sizeof(u32);
+      resolve.half_x0 = half_windows[v].x0;
+      resolve.half_x1 = half_windows[v].x1;
+    }
     std::memcpy(resolve_bytes + sizeof(gfx::ResolveParams) * v, &resolve, sizeof(resolve));
 
     // ---- the deformed-vertex pool, one block per run ------------------------------------------
@@ -4551,6 +4620,49 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
       add_sky("sky frame", sky_.frame_pipeline, 1, 1, sb_sky.frame, sb_sky.view,
               sb_sky.transmittance);
     }
+    // **The half-rate sun pass** (R126; renderer.md, "A shading rate by region"): one thread per
+    // 2x2 block of each view's half-rate columns, reading the view's own resolve block, tracing the
+    // sun's ray from the block's top-left pixel where the block holds one pair, and writing an
+    // answer per block that the resolve takes instead of tracing. A pass of its own, not three
+    // lanes of a quad masked off, because a masked lane saves no warp time.
+    if (half_on) {
+      rg_half = graph.import_buffer("half sun", targets_.half);
+      graph.add_pass(
+          "half sun", gfx::PassKind::Compute,
+          [&](gfx::PassBuilder& b) {
+            b.read(rg_vis, gfx::Access::ComputeRead);
+            if (cull_on && deform_on) b.read(rg_pair_entries, gfx::Access::ComputeRead);
+            if (occlusion) b.read(rg_hiz, gfx::Access::ComputeRead);  // the tiles' coverage
+            if (deform_on) {
+              b.read(rg_pool, gfx::Access::ComputeRead);
+              b.read(rg_slots, gfx::Access::ComputeRead);
+            }
+            read_tables(b, gfx::Access::ComputeRead, true);
+            if (fading) b.read(rg_fade, gfx::Access::ComputeRead);
+            read_pool(b, gfx::Access::ComputeRead);
+            b.read(rt.tlas, gfx::Access::RayQueryRead);
+            b.read(rt.hit_entries, gfx::Access::ComputeRead);
+            b.read(rt.blas_data, gfx::Access::RayQueryRead);
+            b.read(rt.clas_data, gfx::Access::RayQueryRead);
+            if (rt_cache) b.read(rt.cache_slots, gfx::Access::RayQueryRead);
+            b.write(rg_half, gfx::Access::ComputeWrite);
+          },
+          [&](gfx::CommandList cb, gfx::RenderGraph&) {
+            cb.bind_pipeline(gfx::BindPoint::Compute, pipelines.half_sun.pipeline);
+            bindless.bind(cb, gfx::BindPoint::Compute);
+            timer.begin(cb, "half sun");
+            for (u32 v = 0; v < views; ++v) {
+              if (half_windows[v].columns == 0) continue;
+              cb.push_constants(pipelines.half_sun.layout, gfx::ShaderStage::Compute, 0,
+                                sizeof(u64), &view_frames[v].resolve_address);
+              const u32 rows = (view_frames[v].height + 1) / 2;
+              cb.dispatch((half_windows[v].columns + gfx::k_half_sun_workgroup - 1) /
+                              gfx::k_half_sun_workgroup,
+                          (rows + gfx::k_half_sun_workgroup - 1) / gfx::k_half_sun_workgroup, 1);
+            }
+            timer.end(cb);
+          });
+    }
     // One resolve pass, one fullscreen draw per view through that view's rectangle of the target.
     // The clear covers the whole target once, so a pixel no view owns keeps the sky.
     graph.add_pass(
@@ -4590,6 +4702,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
             b.read(rt.clas_data, gfx::Access::FragmentRayQueryRead);
             if (rt_cache) b.read(rt.cache_slots, gfx::Access::FragmentRayQueryRead);
           }
+          if (half_on) b.read(rg_half, gfx::Access::FragmentRead);  // the half pass's answers
         },
         [&](gfx::CommandList cb, gfx::RenderGraph&) {
           cb.bind_pipeline(gfx::BindPoint::Graphics,
