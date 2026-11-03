@@ -525,8 +525,8 @@ constexpr const char* k_usage =
     "                   summary's interactive.game. A replay of a --game recording plays it again\n"
     "  --player <rig.glb>  stand a skinned character at the walker's feet as the actor `player`,\n"
     "                   scaled to view.walk.height x view.player.scale, its walk clip played\n"
-    "                   while it walks, its head collapsed for the first-person camera\n"
-    "                   (view.player.collapse_head); its numbers in the summary's\n"
+    "                   while it walks, the first-person camera at its face\n"
+    "                   (view.player.eye; V is third person); its numbers in the summary's\n"
     "                   interactive.player. Needs a session over a scene\n"
     "  --game-state <f> --game: restore the module's state from <f> at start when it exists, and\n"
     "                   save it there at exit, so a run can be left and resumed\n"
@@ -1325,17 +1325,41 @@ void append_player(renderer::SceneDesc& desc) {
 void chain_player(view::FlySession& session) {
   if (g_player != nullptr) g_player->chain(session);
 }
+// `view.camera.boom_m` and `view.camera.boom_height_m`, read once at the first third-person frame
+// (after the command line's `--tunable`s), never per frame.
+view::FlyBoom third_person_boom() {
+  static const view::FlyBoom boom = view::fly_boom_from_tunables();
+  return boom;
+}
 // **The frame's camera with a body worn** (P58; apps.md "The eye at the face"): under
 // `view.player.eye=face`, while the session walks, the eye at the face carried by the posed head
 // (which also sets the head-look layer the frame draws), from `drawn` — the state this frame draws,
 // a tick's or a live frame's interpolation; otherwise `walker_camera`, the session's own. The
 // session's state, its trajectory and its hash are never touched: this is the drawn camera alone.
 renderer::Camera player_camera(const view::FlySession& session, const view::FlyState& drawn,
-                               const renderer::Camera& walker_camera, u64 marker_tick = ~u64{0}) {
+                               const renderer::Camera& walker_camera, bool third,
+                               u64 marker_tick = ~u64{0}) {
+  const bool walking = session.walking();
+  // The head's collapse follows the frame's mode before the camera is built (P53).
+  if (g_player != nullptr) g_player->set_third_person(third && walking);
+  if (!walking) return walker_camera;
+  const view::SessionHeader& header = session.header();
+  if (third) {
+    // **Third person** (P53; apps.md "Third person"): the walker's eye moved back along the look.
+    // With a body worn it also sets the head-look layer and draws the head whole; without one it
+    // is the camera alone.
+    const view::FlyBoom boom = third_person_boom();
+    renderer::Camera behind;
+    if (g_player != nullptr && g_player->boom_camera(drawn, header.walk.eye_height, boom,
+                                                     header.fov_y, header.znear, behind)) {
+      if (marker_tick != ~u64{0}) g_player->note_marker(marker_tick);
+      return behind;
+    }
+    return view::fly_boom_view(drawn, boom, header.fov_y, header.znear);
+  }
   renderer::Camera face;
-  if (g_player == nullptr || !session.walking() ||
-      !g_player->face_camera(drawn, session.header().walk.eye_height, session.header().fov_y,
-                             session.header().znear, face))
+  if (g_player == nullptr ||
+      !g_player->face_camera(drawn, header.walk.eye_height, header.fov_y, header.znear, face))
     return walker_camera;
   if (marker_tick != ~u64{0}) g_player->note_marker(marker_tick);
   return face;
@@ -1372,7 +1396,7 @@ struct GameActorsScope {
 void append_player(renderer::SceneDesc&) {}
 void chain_player(view::FlySession&) {}
 renderer::Camera player_camera(const view::FlySession&, const view::FlyState&,
-                               const renderer::Camera& walker_camera, u64 = ~u64{0}) {
+                               const renderer::Camera& walker_camera, bool, u64 = ~u64{0}) {
   return walker_camera;
 }
 #endif
@@ -1614,7 +1638,7 @@ f32 g_hud_display_scale = 1.0f;  // the loading overlay's, set by the windowed l
 void append_player(renderer::SceneDesc&) {}
 void chain_player(view::FlySession&) {}
 renderer::Camera player_camera(const view::FlySession&, const view::FlyState&,
-                               const renderer::Camera& walker_camera, u64 = ~u64{0}) {
+                               const renderer::Camera& walker_camera, bool, u64 = ~u64{0}) {
   return walker_camera;
 }
 bool game_draws_loading() { return false; }
@@ -2036,7 +2060,19 @@ JsonValue interactive_summary(const Interactive& it, const view::FlySession& ses
   if (session.walker() != nullptr) out.set("walk", walk_summary(session, *session.walker()));
 #if ENGINE_VIEW_ANIMATION && ENGINE_VIEW_GAME
   // --player: the rig, the collapse and the body's actor block (player.h).
-  if (g_player != nullptr) out.set("player", g_player->summary_json(g_actors));
+  if (g_player != nullptr) {
+    JsonValue player = g_player->summary_json(g_actors);
+    // The camera's mode at the end (P53): `first` or `third`, the presses of `camera` that
+    // switched it, the ticks walked in third person, and the boom the third-person camera stands
+    // on.
+    player.set("camera", session.third_person() ? "third" : "first");
+    player.set("camera_toggles", static_cast<u64>(session.camera_toggles()));
+    player.set("third_person_ticks", session.third_person_ticks());
+    const view::FlyBoom boom = third_person_boom();
+    player.set("boom_m", static_cast<f64>(boom.back_m));
+    player.set("boom_height_m", static_cast<f64>(boom.up_m));
+    out.set("player", std::move(player));
+  }
 #endif
 #if ENGINE_VIEW_GAME
   if (g_game != nullptr && g_game->started()) {
@@ -3188,7 +3224,8 @@ int run_offscreen(Options& options, Interactive& interactive) {
         const scene::FrameWalk walked = walk_probe.end();
         renderer::FrameDesc frame;
         // The session's camera, or with a body worn the eye at its face (P58; player.h).
-        frame.camera = player_camera(session, session.state(), session.camera());
+        frame.camera =
+            player_camera(session, session.state(), session.camera(), session.third_person());
         frame.frame_index = session.frame_index();
         view::set_frame_walker(walker, session.walking(), frame.flora);  // the trees' push
         set_clocks(frame);
@@ -3558,7 +3595,8 @@ int run_offscreen(Options& options, Interactive& interactive) {
             view::fly_view(marker.state, interactive.header.fov_y, interactive.header.znear);
         // With a body worn, the eye at its face for the marker's look, on the pose the replay ended
         // on (P58; player.h).
-        frame.camera = player_camera(session, marker.state, frame.camera, marker.tick);
+        frame.camera =
+            player_camera(session, marker.state, frame.camera, marker.third_person, marker.tick);
         frame.frame_index = marker.tick * view::k_frame_index_hz / tick_hz;
         frame.sky_time_s = sun_at(frame.frame_index);
         frame.world_time_s = clock.world_at(frame.frame_index);
@@ -3631,7 +3669,8 @@ int run_offscreen(Options& options, Interactive& interactive) {
       frame.camera = camera_at(frames > 0 ? frames - 1 : 0);
       frame.frame_index = frames > 0 ? frames - 1 : 0;
       if (interactive.on) {  // where the replay ended
-        frame.camera = player_camera(session, session.state(), session.camera());
+        frame.camera =
+            player_camera(session, session.state(), session.camera(), session.third_person());
         frame.frame_index = session.frame_index();
       }
       set_clocks(frame);
@@ -6035,7 +6074,8 @@ int run_view(int argc, char** argv) {
     // The time-lapse keys' presses acted on so far (fly_camera.h, `ViewControl`), whether an
     // Escape asked the session to end, and whether the title has something new to say.
     u32 control_seen[view::k_view_controls] = {};
-    u32 modes_seen = 0;  // the walk mode's switches acted on (a console line and the title)
+    u32 modes_seen = 0;   // the walk mode's switches acted on (a console line and the title)
+    u32 camera_seen = 0;  // the same for first person and third person (P53)
     bool exit_requested = false;
     // **The run's end, seen** (`--on-end`, game_result_panel above): a live window stays on the
     // result panel when its module ends the run — the default for somebody at the window; an
@@ -6535,6 +6575,12 @@ int run_view(int argc, char** argv) {
         }
         // The walk mode's switch, once however many ticks it took: a line on the console and the
         // title at once.
+        if (camera_seen != session.camera_toggles()) {
+          camera_seen = session.camera_toggles();
+          title_dirty = true;
+          std::fprintf(stderr, "engine-view: %s person\n",
+                       session.third_person() ? "third" : "first");
+        }
         if (modes_seen != session.mode_changes()) {
           modes_seen = session.mode_changes();
           title_dirty = true;
@@ -6567,7 +6613,7 @@ int run_view(int argc, char** argv) {
         // With a body worn, the eye at its face, from the same interpolated look (P58; player.h).
         frame.camera = player_camera(
             session, view::fly_interpolate(session.previous(), session.state(), alpha),
-            frame.camera);
+            frame.camera, session.third_person());
         frame.frame_index = session.frame_index();
         view::set_frame_walker(walker, session.walking(), frame.flora);  // the trees' push
         // What the frame draws, for the frame log: the pose and the simulated time it stands for.
@@ -6762,6 +6808,7 @@ int run_view(int argc, char** argv) {
                         : std::strcmp(walker.collision(), "physics") == 0
                             ? view::TitleMode::walking
                             : view::TitleMode::walking_ground;
+          status.third_person = session.walking() && session.third_person();
           // The sky's hour as the last frame drew it, the day's length and the world's rate.
           status.has_hour = view_renderer.stats().sky.active;
           status.hour = static_cast<f64>(view_renderer.stats().sky.hour);

@@ -112,9 +112,13 @@ usize format_status(const TitleStatus& status, char* out, usize size) noexcept {
     case TitleMode::walking_ground: mode = "walking (ground only)"; break;
   }
   const char* after_mode = mode[0] != '\0' ? k_dot : "";
+  // `third person` follows the mode (a camera behind the walker; the first-person default says
+  // nothing).
+  const char* camera = status.third_person ? "third person" : "";
+  const char* after_camera = status.third_person ? k_dot : "";
   const char* after_hour = status.has_hour ? k_dot : "";
-  const int n = std::snprintf(out, size, "%s%s%s%sday %s%sworld %s%s", mode, after_mode, hour,
-                              after_hour, day, k_dot, k_times, world);
+  const int n = std::snprintf(out, size, "%s%s%s%s%s%sday %s%sworld %s%s", mode, after_mode, camera,
+                              after_camera, hour, after_hour, day, k_dot, k_times, world);
   if (n < 0) {
     out[0] = '\0';
     return 0;

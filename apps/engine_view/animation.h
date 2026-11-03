@@ -194,6 +194,10 @@ void apply_joint_collapse(AnimatedScene& scene);
 // turns (each with the joints below it). Applied at once, as the collapse is.
 void set_joint_look(AnimatedScene& scene, u32 entry, const anim::Skeleton& skeleton,
                     bool collapse_head, std::span<const u32> pivots);
+// Whether collapse entry `entry` collapses its head and the joints below it: the rule
+// `set_joint_look` set, changed between frames (third person draws the head whole whatever the rule
+// was, P53). The run is written again at once when the rule changed; the same rule is a no-op.
+void set_joint_collapse_head(AnimatedScene& scene, u32 entry, bool collapse_head);
 // Each pivot's share of the look, radians, `down` and `turn` as `LookJoint`'s, the same count as
 // `pivots`; refreshes that entry's run of `collapsed` from the pool alone (the run's joints, not
 // the whole span), so a frame may set the look it draws with between two steps.

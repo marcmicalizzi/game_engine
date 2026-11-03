@@ -276,6 +276,18 @@ TEST_CASE("walk: the title says whether the camera flies or walks, and on what")
   status.mode = view::TitleMode::flying;
   (void)view::format_status(status, text, sizeof(text));
   CHECK(std::string(text).rfind("flying \xC2\xB7 day", 0) == 0);
+  // The camera behind the walker (P53): `third person` after the mode, before the hour.
+  status.mode = view::TitleMode::walking;
+  status.third_person = true;
+  (void)view::format_status(status, text, sizeof(text));
+  CHECK(std::string(text) ==
+        "walking \xC2\xB7 third person \xC2\xB7 day still \xC2\xB7 world \xC3\x97"
+        "1");
+  status.has_hour = true;
+  status.hour = 7.5;
+  (void)view::format_status(status, text, sizeof(text));
+  CHECK(std::string(text).rfind("walking \xC2\xB7 third person \xC2\xB7 07:30 \xC2\xB7 day", 0) ==
+        0);
 }
 
 #if ENGINE_VIEW_TESTS_DUNES && ENGINE_VIEW_WALK_PHYSICS

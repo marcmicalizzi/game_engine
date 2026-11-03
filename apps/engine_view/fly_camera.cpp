@@ -2,6 +2,7 @@
 
 #include <core/hash/hash.h>
 #include <foundation/input/input_log.h>
+#include <foundation/tunables/tunables.h>
 
 #include <bit>
 #include <cmath>
@@ -22,6 +23,7 @@ constexpr u32 k_key_q = 20;
 constexpr u32 k_key_s = 22;
 constexpr u32 k_key_w = 26;
 constexpr u32 k_key_escape = 41;
+constexpr u32 k_key_v = 25;
 constexpr u32 k_key_space = 44;
 constexpr u32 k_key_0 = 39;
 constexpr u32 k_key_1 = 30;  // 1 to 4 are 30 to 33
@@ -45,6 +47,7 @@ constexpr u32 k_pad_right_y = 3;
 constexpr u32 k_pad_left_trigger = 4;
 constexpr u32 k_pad_right_trigger = 5;
 constexpr u32 k_pad_south = 1;
+constexpr u32 k_pad_east = 2;
 constexpr u32 k_pad_west = 3;
 constexpr u32 k_pad_north = 4;
 constexpr u32 k_pad_back = 5;
@@ -258,6 +261,14 @@ input::ActionMap default_fly_map(u32 revision) {
     const input::ActionId id = map.add_action(numbered[n], input::ActionKind::Button);
     map.bind(id, Binding{Source::Key, k_key_1 + n});
   }
+  if (revision < 6) return map;
+
+  // Revision 6 (2026-11-02): `camera`, first person or third person while walking (P53). V was
+  // bound to nothing, sits beside WASD, and leaves C for crouching (P54); on a pad it is East, the
+  // one face button nothing else takes (South jumps, West interacts, North marks).
+  const input::ActionId camera = map.add_action("camera", input::ActionKind::Button);
+  map.bind(camera, Binding{Source::Key, k_key_v});
+  map.bind(camera, Binding{Source::GamepadButton, k_pad_east});
   return map;
 }
 
@@ -318,7 +329,7 @@ bool resolve_fly_actions(const input::ActionMap& map, FlyActions& out, std::stri
   const struct {
     const char* name;
     input::ActionId* slot;
-  } walking[] = {{"walk", &out.walk}, {"jump", &out.jump}};
+  } walking[] = {{"walk", &out.walk}, {"jump", &out.jump}, {"camera", &out.camera}};
   for (const auto& w : walking) {
     const input::ActionId id = map.find_action(w.name);
     *w.slot = input::k_invalid_action;
@@ -472,6 +483,31 @@ renderer::Camera fly_view(const FlyState& state, f32 fov_y, f32 znear) noexcept 
   camera.fov_y = fov_y;
   camera.znear = znear;
   return camera;
+}
+
+namespace {
+tunables::Float camera_boom{"view.camera.boom_m", 2.5, 0.0, 50.0,
+                            "Third person (the camera action, V): metres behind the walker's eye "
+                            "along the look the camera stands (--player; drawn only)"};
+tunables::Float camera_boom_height{"view.camera.boom_height_m", 0.4, -5.0, 20.0,
+                                   "Third person: metres above the walker's eye the camera "
+                                   "stands, on top of the boom"};
+}  // namespace
+
+FlyBoom fly_boom_from_tunables() noexcept {
+  FlyBoom boom;
+  boom.back_m = static_cast<f32>(camera_boom.get());
+  boom.up_m = static_cast<f32>(camera_boom_height.get());
+  return boom;
+}
+
+renderer::Camera fly_boom_view(const FlyState& drawn, const FlyBoom& boom, f32 fov_y,
+                               f32 znear) noexcept {
+  const Vec3 forward = fly_forward(drawn);
+  FlyState at = drawn;
+  at.position = drawn.position + DVec3{forward} * -static_cast<f64>(boom.back_m) +
+                DVec3{0.0, static_cast<f64>(boom.up_m), 0.0};
+  return fly_view(at, fov_y, znear);
 }
 
 FlyState fly_interpolate(const FlyState& from, const FlyState& to, f32 t) noexcept {
@@ -728,6 +764,9 @@ bool FlySession::start(const input::ActionMap& map, const SessionHeader& header,
     presses = 0;
   walking_ = false;
   mode_changes_ = 0;
+  third_person_ = false;
+  camera_toggles_ = 0;
+  third_person_ticks_ = 0;
   teleport_pending_ = false;
   teleports_ = 0;
   // A session that starts walking (`--walk`) stands on the ground under its start camera before
@@ -774,6 +813,16 @@ void FlySession::on_tick(void* user, SimTick tick, const input::InputState& stat
     // tiles already made (walk.h, `look_ahead`); nothing of the flight depends on it.
     if (self.can_walk()) self.walker_->look_ahead(self.state_.position);
   }
+  // **First person or third person** (P53): `camera` switches at the tick it was pressed on, and
+  // only while the session walks. Nothing above or below reads the mode — the camera is drawn, not
+  // simulated — so the state and the hash are the same in both, and a replay of the recorded
+  // presses reaches the same mode at the same ticks.
+  const input::ActionId camera = self.actions_.camera;
+  if (camera != input::k_invalid_action && state.pressed(camera) && self.walking_) {
+    self.third_person_ = !self.third_person_;
+    ++self.camera_toggles_;
+  }
+  if (self.walking_ && self.third_person_) ++self.third_person_ticks_;
   self.tick_ = tick;
   // The capture and view-control presses are counted before the observer runs, so the game runner
   // reads this tick's presses (its sun ladder steps at the tick a key was pressed on, as the
@@ -807,7 +856,8 @@ void FlySession::on_tick(void* user, SimTick tick, const input::InputState& stat
   if (self.walking_) self.trajectory_.hash = hash_combine(self.trajectory_.hash, 0x57414c4bull);
   self.trajectory_.last = self.state_;
   if (state.pressed(self.actions_.marker)) {
-    self.trajectory_.markers.push_back(FlyMarker{tick.value, self.state_});
+    self.trajectory_.markers.push_back(
+        FlyMarker{tick.value, self.state_, self.walking_ && self.third_person_});
   }
 }
 

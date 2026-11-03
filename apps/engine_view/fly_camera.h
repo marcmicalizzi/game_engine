@@ -155,6 +155,10 @@ struct FlyActions {
   // session only flies. `walk` switches between flying and walking; `jump` jumps while walking.
   input::ActionId walk = input::k_invalid_action;
   input::ActionId jump = input::k_invalid_action;
+  // Button, the sixth revision's (P53): while the session walks, a press switches the drawn camera
+  // between first person and third person. `k_invalid_action` in a map of an earlier revision,
+  // where the key presses nothing.
+  input::ActionId camera = input::k_invalid_action;
 };
 
 // **The map's revisions.** 1 is the eight actions the camera reads (2026-09-24); 2 appends the
@@ -162,23 +166,24 @@ struct FlyActions {
 // the pad's South) (2026-09-28); 4 appends a sky's three exposure keys, `-`, `=` and `0`
 // (2026-09-30); 5 appends the six game actions a `--game` module may read, `interact` (E, the
 // pad's West), `use` (Q) and `game_1`..`game_4` (1 to 4) (2026-10-16), which the camera itself
-// never reads. A revision appends and never reorders, and a log names the hash
+// never reads; 6 appends `camera` (V, the pad's East), first person or third person while walking
+// (2026-11-02, P53). A revision appends and never reorders, and a log names the hash
 // of the map it was recorded against, so a log recorded against an earlier revision is replayed
 // with that revision (`default_fly_map_for`) rather than refused as a rebind: under it every key
 // means what it meant when the session was flown, and a key a later revision binds — a `.` pressed
 // before it meant anything, an F pressed before it walked — does nothing, as it did then.
-inline constexpr u32 k_fly_map_revision = 5;
+inline constexpr u32 k_fly_map_revision = 6;
 // The bindings engine-view ships (content/input-maps/engine-view.json is the latest revision, byte
 // for byte, and a test holds the two together): WASD to move, E/Space up and Q/Ctrl down, pointer
 // motion to look while the window holds the pointer, Shift fast, Alt slow, Escape to give back the
 // pointer (or, with it given back, to end the session), M to drop a marker, `[` `]` the sun's day
 // slower and faster and `,` `.` the dunes', F to walk or fly and Space to jump while walking, `-`
 // `=` a sky's exposure darker and brighter and `0` to hold it, E to interact and Q to use while
-// walking and 1 to 4 a game's own four; and
+// walking, 1 to 4 a game's own four and V first person or third person while walking; and
 // on a gamepad the left stick to move, the triggers up and down, the right stick to turn, the stick
-// clicks fast and slow, Back as Escape, North to mark, South to jump and West to interact.
-// `revision` 1 is the map without the four time-lapse keys, 2 the map without the walk mode's, 3
-// without the exposure's, 4 without the game actions.
+// clicks fast and slow, Back as Escape, North to mark, South to jump, West to interact and East to
+// switch the camera. `revision` 1 is the map without the four time-lapse keys, 2 the map without
+// the walk mode's, 3 without the exposure's, 4 without the game actions, 5 without `camera`.
 input::ActionMap default_fly_map(u32 revision = k_fly_map_revision);
 // The shipped map, of whichever revision hashes to `hash`, into `out`: false when none does (a
 // player's own map, which only `--input-map` can supply).
@@ -213,6 +218,21 @@ void fly_look(FlyState& state, const input::InputState& input, const FlyActions&
 // `renderer::Camera` holds), a target 100 m along forward added in f64 (the camera paths' reach for
 // an orientation key), and the header's field of view and near plane.
 renderer::Camera fly_view(const FlyState& state, f32 fov_y, f32 znear) noexcept;
+
+// **The third-person boom** (P53; apps.md "The player's body"): how far behind the walker's eye the
+// drawn camera stands, along the look, and how far above it. `view.camera.boom_m` (2.5) and
+// `view.camera.boom_height_m` (0.4); drawn-only, so not part of a recording.
+struct FlyBoom {
+  f32 back_m = 2.5f;
+  f32 up_m = 0.4f;
+};
+// The two tunables, read now (the caller reads them once, outside the frame loop).
+FlyBoom fly_boom_from_tunables() noexcept;
+// The camera on the boom: `drawn`'s position moved back along its look by `back_m` and up (world
+// +y) by `up_m`, with the look's own orientation. No collision: the ground and the trees may cut
+// through it (roadmap P14).
+renderer::Camera fly_boom_view(const FlyState& drawn, const FlyBoom& boom, f32 fov_y,
+                               f32 znear) noexcept;
 
 // **The camera between two ticks**, `t` of the way from `from` to `to` (0 is `from`, 1 is `to`):
 // the position on the segment between them (in f64), the pitch between theirs, and the yaw the
@@ -311,6 +331,9 @@ inline bool trajectory_comparable(const SessionHeader& header) noexcept {
 struct FlyMarker {
   u64 tick = 0;
   FlyState state;
+  // Whether the session's drawn camera was in third person at that tick (P53): a marker capture
+  // draws the mode of the tick it captures. Not part of the trajectory's hash or its JSON.
+  bool third_person = false;
 };
 
 // What a session flew: its length, a hash over every tick's state bit for bit, where it ended,
@@ -409,6 +432,15 @@ class FlySession {
   // Whether the camera is on the walker now, and how often a `walk` press switched it.
   bool walking() const noexcept { return walking_; }
   u32 mode_changes() const noexcept { return mode_changes_; }
+  // **First person or third person** (P53): session state, starting at first person, switched by
+  // a press of `camera` at the tick it was pressed on while the session walks (a press while
+  // flying switches nothing), so a recording replays to the mode it was flown in. It changes only
+  // the camera a frame is drawn from — the state, the walker and the trajectory's hash never read
+  // it. `third_person()` is the mode; the camera is third person only while `walking()` too.
+  bool third_person() const noexcept { return third_person_; }
+  u32 camera_toggles() const noexcept { return camera_toggles_; }
+  // Ticks the session walked in third person (the ticks a boom camera was drawn for).
+  u64 third_person_ticks() const noexcept { return third_person_ticks_; }
   const Walker* walker() const noexcept { return walker_; }
 
   // **A game's requests at a tick** (game_runner.h, `walker_teleport` and `walker_set`): made from
@@ -445,6 +477,9 @@ class FlySession {
   Walker* walker_ = nullptr;
   bool walking_ = false;
   u32 mode_changes_ = 0;
+  bool third_person_ = false;
+  u32 camera_toggles_ = 0;
+  u64 third_person_ticks_ = 0;
   TickObserver observer_ = nullptr;
   void* observer_user_ = nullptr;
   bool teleport_pending_ = false;

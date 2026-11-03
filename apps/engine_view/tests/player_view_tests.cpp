@@ -613,4 +613,196 @@ TEST_CASE("engine-view: --player's body stays in a streamed world and walks with
                                                    : std::string("none")));
 }
 
+// Third person (P53): a standing walking session that marks at tick 60, presses V (scancode 25) at
+// tick 100 and marks again at tick 160, under `map` (the latest revision's, or an earlier one).
+static std::string third_person_log(const test::TempDir& tmp, const std::string& scene,
+                                    const char* name, const input::ActionMap& map, bool press_v,
+                                    const WorldPos& start, f32 pitch, bool walking) {
+  input::InputLog keys;
+  keys.set_map(map);
+  const auto key = [&](u64 tick, u32 code, bool down) {
+    keys.record(input::RawEvent{SimTick{tick}, input::Source::Key, code, down ? 1.0f : 0.0f, 0});
+  };
+  key(60, 16, true);  // M
+  key(61, 16, false);
+  if (press_v) {
+    key(100, 25, true);  // V
+    key(101, 25, false);
+  }
+  key(160, 16, true);
+  key(161, 16, false);
+  view::SessionHeader header;
+  header.ticks = 200;
+  header.scene = scene;
+  header.start.position = start;
+  header.start.yaw = 0.6f;
+  header.start.pitch = pitch;
+  header.has_walk = true;
+  header.walking = walking;
+  keys.set_session(view::session_to_json(header));
+  const std::string path = tmp.file(name);
+  REQUIRE(keys.save(path) == io::Status::Ok);
+  return path;
+}
+
+TEST_CASE(
+    "engine-view: V switches --player to third person: the camera stands back along the look, the "
+    "body is in front of it, and the trajectory is the first person's") {
+  const std::string rig = rigged_figure();
+  if (rig.empty()) return;
+  const test::TempDir tmp("engine_view_player_third");
+  const std::string scene = ground_scene(tmp);
+  const WorldPos start{0.0, 3.0, 0.0};
+  const input::ActionMap latest = view::default_fly_map();
+  const std::string log =
+      third_person_log(tmp, scene, "third.jsonl", latest, true, start, 0.0f, true);
+  const auto capture = [&](const std::string& session_log, const char* name,
+                           std::vector<std::string> extra) {
+    std::vector<std::string> args = replay(tmp, session_log, scene);
+    args.insert(args.end(), {"--marker-captures", tmp.file(name)});
+    args.insert(args.end(), extra.begin(), extra.end());
+    return run_view(args);
+  };
+  const auto png = [&](const char* name, const char* tick) {
+    return tmp.file(std::string(name) + "/tick-" + tick + ".png");
+  };
+  const Run third = capture(log, "third", {"--player", rig});
+  if (unavailable(third)) return;
+  REQUIRE_MESSAGE(third.exit_code == 0, third.output);
+  JsonValue s;
+  REQUIRE(summary_of(third, s));
+  const JsonValue* player = at(s, {"interactive", "player"});
+  REQUIRE(player != nullptr);
+  // The mode at the end, the presses that switched it and the ticks walked in it.
+  CHECK(text(player->find("camera")) == "third");
+  CHECK(number(player->find("camera_toggles")) == 1.0);
+  const f64 third_ticks = number(player->find("third_person_ticks"));
+  MESSAGE("third-person ticks: " << third_ticks << " of 200; boom "
+                                 << number(player->find("boom_m")) << " m, "
+                                 << number(player->find("boom_height_m")) << " m up");
+  CHECK(third_ticks >= 99.0);
+  CHECK(third_ticks <= 101.0);
+  CHECK(number(player->find("boom_m")) == doctest::Approx(2.5));
+  CHECK(number(player->find("boom_height_m")) == doctest::Approx(0.4));
+  const JsonValue* markers = at(*player, {"look", "markers"});
+  REQUIRE(markers != nullptr);
+  REQUIRE(markers->size() == 2);
+  const JsonValue& before = (*markers)[0];  // tick 60: first person (P58's face camera)
+  const JsonValue& after = (*markers)[1];   // tick 160: third person
+  CHECK(before.find("third_person") == nullptr);
+  REQUIRE(after.find("third_person") != nullptr);
+  // The boom: the walker's eye (the trajectory's marker) 2.5 m back along the level look and 0.4 m
+  // up.
+  const JsonValue* trajectory_markers = at(s, {"interactive", "trajectory", "markers"});
+  REQUIRE(trajectory_markers != nullptr);
+  REQUIRE(trajectory_markers->size() == 2);
+  const JsonValue* eye = (*trajectory_markers)[1].find("position");
+  const JsonValue* boom = after.find("position");
+  const f64 dx = element(boom, 0) - element(eye, 0);
+  const f64 dz = element(boom, 2) - element(eye, 2);
+  CHECK(std::sqrt(dx * dx + dz * dz) == doctest::Approx(2.5).epsilon(1e-4));
+  CHECK(element(boom, 1) - element(eye, 1) == doctest::Approx(0.4).epsilon(1e-4));
+  // ...behind it: the look from the eye to the camera is the look reversed.
+  const f64 yaw = number((*trajectory_markers)[1].find("yaw"));
+  CHECK(dx * std::sin(yaw) + dz * -std::cos(yaw) == doctest::Approx(-2.5).epsilon(1e-4));
+  CHECK(std::fabs(dx * std::cos(yaw) + dz * std::sin(yaw)) < 1e-4);  // and on the look's line
+
+  // (a) The bare scene from each camera: before V the central third is the bare scene's to the
+  // pixel (P58's face), after it the body stands in front of the boom and the central third
+  // differs.
+  const auto start_of = [&](const JsonValue& m) {
+    const JsonValue* p = m.find("position");
+    return WorldPos{element(p, 0), element(p, 1), element(p, 2)};
+  };
+  const Run bare_before = capture(third_person_log(tmp, scene, "bare-before.jsonl", latest, false,
+                                                   start_of(before), 0.0f, false),
+                                  "bare-before", {});
+  REQUIRE_MESSAGE(bare_before.exit_code == 0, bare_before.output);
+  const Run bare_after = capture(
+      third_person_log(tmp, scene, "bare-after.jsonl", latest, false, start_of(after), 0.0f, false),
+      "bare-after", {});
+  REQUIRE_MESSAGE(bare_after.exit_code == 0, bare_after.output);
+  const Diff first_person = diff(png("bare-before", "0000060"), png("third", "0000060"));
+  const Diff behind = diff(png("bare-after", "0000160"), png("third", "0000160"));
+  MESSAGE("first person at tick 60: "
+          << first_person.central << " central-third pixels differ from "
+          << "the bare scene (" << first_person.total << " in all); "
+          << "third person at tick 160: " << behind.central << " (" << behind.total << " in all)");
+  CHECK(first_person.central == 0);
+  CHECK(behind.central > 100);
+
+  // (b) The mode is the drawn camera alone: the trajectory and animation hashes of the same log
+  // with no body, and of the same standing without the press, are the third-person run's.
+  const Run bodiless = run_view(replay(tmp, log, scene));
+  REQUIRE_MESSAGE(bodiless.exit_code == 0, bodiless.output);
+  JsonValue n;
+  REQUIRE(summary_of(bodiless, n));
+  const std::string hash = text(at(s, {"interactive", "trajectory", "hash"}));
+  CHECK(!hash.empty());
+  CHECK(text(at(n, {"interactive", "trajectory", "hash"})) == hash);
+  std::vector<std::string> first_args = replay(
+      tmp, third_person_log(tmp, scene, "first.jsonl", latest, false, start, 0.0f, true), scene);
+  first_args.insert(first_args.end(), {"--player", rig});
+  const Run first = run_view(first_args);
+  REQUIRE_MESSAGE(first.exit_code == 0, first.output);
+  JsonValue f;
+  REQUIRE(summary_of(first, f));
+  CHECK(text(at(f, {"interactive", "trajectory", "hash"})) == hash);
+  CHECK(text(at(f, {"animation", "hash"})) == text(at(s, {"animation", "hash"})));
+  CHECK(text(at(f, {"interactive", "player", "camera"})) == "first");
+  CHECK(number(at(f, {"interactive", "player", "camera_toggles"})) == 0.0);
+  CHECK(number(at(f, {"interactive", "player", "third_person_ticks"})) == 0.0);
+
+  // (c) A log recorded against the map's fifth revision replays with it, and its V presses nothing.
+  const Run old = capture(third_person_log(tmp, scene, "fifth.jsonl", view::default_fly_map(5),
+                                           true, start, 0.0f, true),
+                          "fifth", {"--player", rig});
+  REQUIRE_MESSAGE(old.exit_code == 0, old.output);
+  JsonValue o;
+  REQUIRE(summary_of(old, o));
+  REQUIRE(at(o, {"interactive", "map"}) != nullptr);
+  CHECK(write_json(*at(o, {"interactive", "map"})) != write_json(*at(s, {"interactive", "map"})));
+  CHECK(text(at(o, {"interactive", "player", "camera"})) == "first");
+  CHECK(number(at(o, {"interactive", "player", "camera_toggles"})) == 0.0);
+  CHECK(number(at(o, {"interactive", "player", "third_person_ticks"})) == 0.0);
+  CHECK(at(o, {"interactive", "player", "look", "markers"})->size() == 2);
+  CHECK((*at(o, {"interactive", "player", "look", "markers"}))[1].find("third_person") == nullptr);
+}
+
+TEST_CASE(
+    "engine-view: third person draws the head whole under the walker's eye whatever "
+    "view.player.collapse_head says") {
+  const std::string rig = rigged_figure();
+  if (rig.empty()) return;
+  const test::TempDir tmp("engine_view_player_third_head");
+  const std::string scene = ground_scene(tmp);
+  // Looking down at the ground ahead, so the head's shadow and the body fall in view.
+  const std::string log = third_person_log(tmp, scene, "head.jsonl", view::default_fly_map(), true,
+                                           WorldPos{0.0, 3.0, 0.0}, -0.5f, true);
+  const auto capture = [&](const char* name, const char* collapse) {
+    std::vector<std::string> args = replay(tmp, log, scene);
+    args.insert(args.end(), {"--marker-captures", tmp.file(name), "--player", rig, "--tunable",
+                             "view.player.eye=walker", "--tunable",
+                             std::string("view.player.collapse_head=") + collapse});
+    return run_view(args);
+  };
+  const Run collapsed = capture("collapsed", "true");
+  if (unavailable(collapsed)) return;
+  REQUIRE_MESSAGE(collapsed.exit_code == 0, collapsed.output);
+  const Run whole = capture("whole", "false");
+  REQUIRE_MESSAGE(whole.exit_code == 0, whole.output);
+  const auto png = [&](const char* name, const char* tick) {
+    return tmp.file(std::string(name) + "/tick-" + tick + ".png");
+  };
+  // First person under the walker's eye: the collapsed head and the whole one are different
+  // pictures (the control, so the test cannot pass because the rule does nothing). Third person:
+  // the rule is off, and the two are the same pixels.
+  const Diff first_person = diff(png("collapsed", "0000060"), png("whole", "0000060"));
+  const Diff third_person = diff(png("collapsed", "0000160"), png("whole", "0000160"));
+  MESSAGE("collapse_head true against false, first person: "
+          << first_person.total << " pixels; third person: " << third_person.total);
+  CHECK(first_person.total > 0);
+  CHECK(third_person.total == 0);
+}
+
 #endif  // ENGINE_VIEW_GAME && ENGINE_VIEW_ANIMATION
