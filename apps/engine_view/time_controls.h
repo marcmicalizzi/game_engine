@@ -88,12 +88,14 @@ const char* format_hour(f64 hour, char* out, usize size) noexcept;
 // **The window title's status**, in UTF-8: `walking · 07:30 · day 1 h · world ×1 · mouse captured
 // (Esc frees it)`. The mode comes first (`flying`, `walking`, or `walking (ground only)` for a
 // walker that follows the ground and collides with nothing, walk.h), and not at all for a caller
-// that gives none; the sky's hour (`has_hour`, a scene with a sky) next; then the day's length and
-// the world's rate; a replay (`live` false) has no pointer of its own and says nothing about it.
-// Returns the length written, which a `size` of 160 always holds.
+// that gives none, followed by `third person` while the camera stands behind the walker
+// (`third_person`, P53); the sky's hour (`has_hour`, a scene with a sky) next; then the day's
+// length and the world's rate; a replay (`live` false) has no pointer of its own and says nothing
+// about it. Returns the length written, which a `size` of 160 always holds.
 enum class TitleMode : u8 { none, flying, walking, walking_ground };
 struct TitleStatus {
   TitleMode mode = TitleMode::none;
+  bool third_person = false;  // the camera stands behind the walker (P53): says `third person`
   bool has_hour = false;
   f64 hour = 0.0;  // the sky's local hour, [0, 24)
   f64 sun_rate = 0.0;

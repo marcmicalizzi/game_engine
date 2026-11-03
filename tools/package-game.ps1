@@ -255,16 +255,17 @@ the engine runs on other machines and to collect bug reports - not a finished ga
 How to run it: unzip the folder anywhere and double-click run.cmd. A window opens on the
 desert; you are on foot. Close the window, or press Escape twice, to end the run.
 
-Keys (engine-view's action map, revision 5):
+Keys (engine-view's action map, revision 6):
   W A S D        walk            Shift           sprint
   mouse          look            Space           jump
   E              interact        Q               use
   1 2 3 4        the game's own  F               fly / walk
+  V              third person / first person (while walking)
   Escape         give the mouse back; again to end
   [ ]            the day longer / shorter (starts at a game day in $([math]::Round(86400 / [math]::Max($SunRate, 1) / 60)) minutes; a rung is 24 h, 4 h, 1 h, 24 min, 4 min, 1 min, 10 s or still)
   , .            the world slower / faster: the water, smoke, trees and dunes (1 is real time, 0 paused; the sky keeps its pace)
   - = 0          exposure darker / brighter / hold
-  A gamepad: left stick walks, right stick looks, South jumps, West interacts.
+  A gamepad: left stick walks, right stick looks, South jumps, West interacts, East switches the camera.
 
 What to send back: report.json, which appears in this folder when the run ends (whether it
 went well or not). It holds the machine (graphics adapter, driver, Windows version, CPU),

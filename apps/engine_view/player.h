@@ -197,7 +197,19 @@ class PlayerBody {
   // set) under the walker's rule, before `bind`, or with no head: the caller keeps its camera.
   bool face_camera(const FlyState& drawn, f32 eye_height, f32 fov_y, f32 znear,
                    renderer::Camera& out);
-  // A marker capture's camera was the last `face_camera`: kept for the summary (at most 16).
+  // **The frame's camera in third person** (P53; apps.md "Third person"): the walker's eye
+  // (`drawn`'s position) moved back along the look and up by `boom` (`fly_boom_view`), with the
+  // look's own orientation. The head is drawn whole whatever `view.player.collapse_head` says
+  // (`set_third_person`), and the head-look layer runs from `drawn`'s pitch as in first person —
+  // the body looks where the player looks. No collision. False (nothing set) before `bind`.
+  bool boom_camera(const FlyState& drawn, f32 eye_height, const FlyBoom& boom, f32 fov_y, f32 znear,
+                   renderer::Camera& out);
+  // Whether the frame draws in third person: the head's collapse is off while it does (the rule
+  // `view.player.collapse_head` resolved, restored when it stops). Idempotent; called every frame
+  // before the camera is built, so the mode of the frame decides what is drawn.
+  void set_third_person(bool on);
+  // A marker capture's camera was the last `face_camera` or `boom_camera`: kept for the summary
+  // (at most 16).
   void note_marker(u64 tick);
 
   // `interactive.player`: the rig's numbers, the collapse, the placements made and the body's
@@ -207,6 +219,9 @@ class PlayerBody {
  private:
   static void observe(void* user, const FlySession& session, const input::InputState& input);
   void tick(const FlySession& session);
+  // The head-look layer's shares for `drawn`'s pitch, set on the body's entry when the rig has the
+  // layer; returned either way (what `face_camera` and `boom_camera` both record).
+  LookShares set_look(const FlyState& drawn);
 
   PlayerRig rig_;
   u32 read_ = ~0u;
@@ -229,9 +244,12 @@ class PlayerBody {
     LookShares shares;
     Vec3 eye{};  // the body's frame, metres from the soles
     WorldPos position{};
+    bool third = false;  // the boom's camera (`boom_camera`): `eye` is then the walker's
   };
   FaceEye last_;
   u64 face_frames_ = 0;
+  u64 boom_frames_ = 0;  // frames drawn in third person (`boom_camera`)
+  bool third_ = false;   // `set_third_person`
   Vector<FaceEye> markers_;
   u64 places_ = 0;         // ticks the session stood the body
   u64 flying_ticks_ = 0;   // ticks the body was left where the walker last stood

@@ -201,8 +201,20 @@ TEST_CASE("fly camera: the default map is the committed file, and every action i
   // The camera's eight, the time-lapse's four keys appended after them (revision 2), the walk
   // mode's two after those (revision 3): `walk` on F and `jump` on Space, and a sky's exposure
   // keys after those (revision 4): `-`, `=` and `0`; and the six game actions a `--game` module may
-  // read after those (revision 5), which the camera never resolves.
-  CHECK(map.action_count() == 23);
+  // read after those (revision 5), which the camera never resolves; and `camera`, first person or
+  // third person, last (revision 6, P53), which a revision 5 session does not have and whose V
+  // then presses nothing.
+  CHECK(map.action_count() == 24);
+  CHECK(view::default_fly_map(5).action_count() == 23);
+  CHECK(map.find_action("camera") == map.action_count() - 1);
+  CHECK(view::default_fly_map(5).find_action("camera") == input::k_invalid_action);
+  CHECK(actions.camera != input::k_invalid_action);
+  view::FlyActions fifth;
+  REQUIRE(view::resolve_fly_actions(view::default_fly_map(5), fifth, &error));
+  CHECK(fifth.camera == input::k_invalid_action);
+  input::ActionMap fifth_found;
+  CHECK(view::default_fly_map_for(view::default_fly_map(5).hash(), fifth_found));
+  CHECK(fifth_found.action_count() == 23);
   CHECK(view::default_fly_map(4).action_count() == 17);
   CHECK(map.find_action("interact") != input::k_invalid_action);
   CHECK(map.find_action("game_4") != input::k_invalid_action);

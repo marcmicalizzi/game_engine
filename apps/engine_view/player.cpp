@@ -485,13 +485,11 @@ bool PlayerBody::bind(AnimatedScene& scene, GameActors& actors, std::string& err
   return true;
 }
 
-bool PlayerBody::face_camera(const FlyState& drawn, f32 eye_height, f32 fov_y, f32 znear,
-                             renderer::Camera& out) {
-  if (!rig_.eye_face || scene_ == nullptr || entry_ >= scene_->collapse.size()) return false;
-  // The look as the frame draws it. In first person the body turns to the heading, so the look's
+LookShares PlayerBody::set_look(const FlyState& drawn) {
+  // The look as the frame draws it. The body turns to the heading in both modes, so the look's
   // yaw relative to the body is zero; the term is there for a camera that does not turn the body.
   const LookShares shares = player_look_shares(rig_, drawn.pitch, 0.0f);
-  if (look_) {
+  if (look_ && scene_ != nullptr) {
     // The pivots set in `bind` are a prefix of torso, neck, head: the shares of the ones present.
     f32 down[3];
     f32 turn[3];
@@ -506,6 +504,36 @@ bool PlayerBody::face_camera(const FlyState& drawn, f32 eye_height, f32 fov_y, f
     set_joint_look_angles(*scene_, entry_, std::span<const f32>(down, n),
                           std::span<const f32>(turn, n));
   }
+  return shares;
+}
+
+void PlayerBody::set_third_person(bool on) {
+  third_ = on;
+  if (scene_ == nullptr || entry_ >= scene_->collapse.size()) return;
+  // Third person draws the head whole whatever the rule was; first person gets the rule back.
+  set_joint_collapse_head(*scene_, entry_, on ? false : rig_.collapse_head);
+}
+
+bool PlayerBody::boom_camera(const FlyState& drawn, f32 eye_height, const FlyBoom& boom, f32 fov_y,
+                             f32 znear, renderer::Camera& out) {
+  if (scene_ == nullptr) return false;
+  set_third_person(true);
+  const LookShares shares = set_look(drawn);
+  out = fly_boom_view(drawn, boom, fov_y, znear);
+  last_.pitch = drawn.pitch;
+  last_.shares = shares;
+  last_.eye = Vec3{0.0f, eye_height, 0.0f};  // the walker's eye over the soles, not the face's
+  last_.position = out.position;
+  last_.third = true;
+  ++boom_frames_;
+  return true;
+}
+
+bool PlayerBody::face_camera(const FlyState& drawn, f32 eye_height, f32 fov_y, f32 znear,
+                             renderer::Camera& out) {
+  if (!rig_.eye_face || scene_ == nullptr || entry_ >= scene_->collapse.size()) return false;
+  set_third_person(false);
+  const LookShares shares = set_look(drawn);
   const AnimatedScene::JointCollapse& c = scene_->collapse[entry_];
   const anim::JointMatrix& head = c.head_posed_valid ? c.head_posed : rig_.head_rest;
   const Vec3 eye = anim::transform_point(head, rig_.eye_bind);  // mesh units, the body's frame
@@ -531,12 +559,13 @@ bool PlayerBody::face_camera(const FlyState& drawn, f32 eye_height, f32 fov_y, f
   last_.shares = shares;
   last_.eye = Vec3{-local.x, local.y + rig_.origin_above_feet_m, local.z};
   last_.position = at.position;
+  last_.third = false;
   ++face_frames_;
   return true;
 }
 
 void PlayerBody::note_marker(u64 tick) {
-  if (face_frames_ == 0 || markers_.size() >= 16) return;
+  if ((face_frames_ == 0 && boom_frames_ == 0) || markers_.size() >= 16) return;
   FaceEye marker = last_;
   marker.tick = tick;
   markers_.push_back(marker);
@@ -656,9 +685,11 @@ JsonValue PlayerBody::summary_json(const GameActors* actors) const {
     look.set("neck_m", vec(rig_.neck_point));
     look.set("head_m", vec(rig_.head_point));
     look.set("frames", face_frames_);
+    look.set("boom_frames", boom_frames_);
     const auto eye_json = [&](const FaceEye& e) {
       JsonValue o = JsonValue::object();
-      if (e.tick != 0) o.set("tick", e.tick);  // a marker's; the last frame's has none
+      if (e.tick != 0) o.set("tick", e.tick);    // a marker's; the last frame's has none
+      if (e.third) o.set("third_person", true);  // the boom's camera (P53)
       o.set("pitch_deg", static_cast<f64>(e.pitch) * k_to_deg);
       JsonValue down = JsonValue::array();
       for (const f32 d : e.shares.down)

@@ -482,6 +482,16 @@ void set_joint_look(AnimatedScene& scene, u32 entry, const anim::Skeleton& skele
   apply_joint_collapse(scene);
 }
 
+void set_joint_collapse_head(AnimatedScene& scene, u32 entry, bool collapse_head) {
+  if (entry >= scene.collapse.size()) return;
+  AnimatedScene::JointCollapse& c = scene.collapse[entry];
+  if (c.collapse_head == collapse_head) return;
+  c.collapse_head = collapse_head;
+  // The run written since the last step carries the old rule: write it again from the pool.
+  if (scene.collapse_ready && scene.collapse_on)
+    apply_collapse_entry(scene, scene.system.joint_matrices(), c, true);
+}
+
 void set_joint_look_angles(AnimatedScene& scene, u32 entry, std::span<const f32> down,
                            std::span<const f32> turn) {
   if (entry >= scene.collapse.size()) return;
