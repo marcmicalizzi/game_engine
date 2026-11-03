@@ -223,7 +223,45 @@ fourfold (31,368 → 7,787 and 7.692 → 1.946)**; the lit share stays p (0.5019
 0.0314), and midway between two levels it is p to 0.6 % (0.50006 at p = 0.5, 0.04393 at 0.04419).
 A second test moves the eye a world cell and inside its cell and finds the same draws and the same
 facet at eight footprints from 0.7 to 200 mm.
-### Sand: the desert's and the beach's
+
+**The picture and its band measure** (`msvc-release`, RTX 5090, `--offscreen`, 1920×1080, the
+ground-by-place scene with `--terrain-tiles --terrain-far 2 --time-rate 0 --time-of-day 15`, its sky
+putting the sun at azimuth 160.5°, elevation 45.5°; two two-second walks of five keys each, written
+for the measure: west along the sandy pond's north beach, the sun ahead and to the left, and down the
+mountain's north snow from 16 m below the summit, the sun to the left; frames 14, 29, …, 119 of
+each captured, before at 643e0854 and after). A **glint pixel** is one whose luminance (Rec. 709
+weights on the 8-bit sRGB values) exceeds the mean of its 5×5 neighbourhood, itself excluded, by 40
+of 255 on the sand and 12 on the snow (the snow is near white, so its glints clip within a few
+levels). Per screen row the glint pixels are counted, over the ground's rows (from row 260 on the
+beach, 600 on the snow); the **step** at a row is the difference of the counts in the 8 rows below
+and the 8 above, less the linear trend the next 8 on each side imply, over its Poisson noise; and
+the rows' lag-1 autocorrelation is taken after a 31-row moving mean is removed. Means over the eight
+frames:
+
+| walk | glint px a frame | step's RMS (Poisson units) | largest step | largest / own RMS | lag-1 autocorrelation |
+|---|---|---|---|---|---|
+| beach, one level | 3,983 | 2.00 | 5.47 | 2.73 | 0.23 |
+| beach, two levels | 4,353 | 1.58 | 4.45 | 2.83 | 0.09 |
+| snow, one level | 17,510 | 1.78 | 5.52 | 3.10 | 0.22 |
+| snow, two levels | 21,078 | 1.32 | 4.19 | 3.15 | 0.05 |
+
+The one-level rule's rows are correlated (0.22–0.23: a band is several rows of one density) and
+their steps a third larger than the two-level rows'; with two levels the autocorrelation is noise's
+(−0.02 to 0.18 a frame) and the largest step about three times the rows' own RMS, which is what
+the largest of some hundred independent windows of noise is. The steps' RMS stays above 1 with two
+levels because a glint is often two or three pixels, so the counts are clumpier than Poisson. There
+are 9 % (sand) and 20 % (snow) more glint pixels: the lit share is p either way, but the finer
+level's cells are below the footprint where the one level's were above it, so more of the facets
+are single bright pixels that pass the neighbourhood test. The captures are in the agent's scratch
+(not committed); the v25 forest's shore was not flown (one load of that scene costs minutes of a GPU
+four agents were sharing, and the rule is the same on any ground).
+
+**The cost** (the same flights' `--benchmark`, 120 frames each, `--wait-quiet 120`; the before
+snow run was quiet, the others not — the GPU was 12 %, 75 % and 37 % busy with another agent's work
+at their ends, so those are upper bounds): the resolve, where the material stage runs, **0.4988 →
+0.4980 ms median on the beach and 0.4926 → 0.4962 ms on the snow**, the frame's GPU total 0.899 →
+0.909 and 0.899 → 0.904 ms. The second level's three hashes and two divisions a glinting pixel are
+within the run-to-run noise at this size (≤ 0.004 ms, under 1 %).### Sand: the desert's and the beach's
 
 W42's detail (renderer.md, "The sand close up"; [the fifth pass](sand-fifth-pass-2026-10-04.md))
 is desert sand under wind: ripples across the wind, grain, grainflow. A beach is another surface:
