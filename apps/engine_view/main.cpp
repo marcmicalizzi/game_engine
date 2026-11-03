@@ -1325,6 +1325,21 @@ void append_player(renderer::SceneDesc& desc) {
 void chain_player(view::FlySession& session) {
   if (g_player != nullptr) g_player->chain(session);
 }
+// **The frame's camera with a body worn** (P58; apps.md "The eye at the face"): under
+// `view.player.eye=face`, while the session walks, the eye at the face carried by the posed head
+// (which also sets the head-look layer the frame draws), from `drawn` — the state this frame draws,
+// a tick's or a live frame's interpolation; otherwise `walker_camera`, the session's own. The
+// session's state, its trajectory and its hash are never touched: this is the drawn camera alone.
+renderer::Camera player_camera(const view::FlySession& session, const view::FlyState& drawn,
+                               const renderer::Camera& walker_camera, u64 marker_tick = ~u64{0}) {
+  renderer::Camera face;
+  if (g_player == nullptr || !session.walking() ||
+      !g_player->face_camera(drawn, session.header().walk.eye_height, session.header().fov_y,
+                             session.header().znear, face))
+    return walker_camera;
+  if (marker_tick != ~u64{0}) g_player->note_marker(marker_tick);
+  return face;
+}
 bool attach_game_actors(view::GameActors& actors, view::AnimatedScene* animated,
                         view::AnimationTicks& ticks, const renderer::SceneDesc& desc, u32 tick_hz,
                         std::string& error) {
@@ -1356,6 +1371,10 @@ struct GameActorsScope {
 #else
 void append_player(renderer::SceneDesc&) {}
 void chain_player(view::FlySession&) {}
+renderer::Camera player_camera(const view::FlySession&, const view::FlyState&,
+                               const renderer::Camera& walker_camera, u64 = ~u64{0}) {
+  return walker_camera;
+}
 #endif
 // Between frames: a rebuilt module swapped in with its state carried (hotload's poll).
 void poll_game() {
@@ -1594,6 +1613,10 @@ i64 game_tick_ns() { return g_game != nullptr ? g_game->tick_ns() : 0; }  // Fra
 f32 g_hud_display_scale = 1.0f;  // the loading overlay's, set by the windowed loop
 void append_player(renderer::SceneDesc&) {}
 void chain_player(view::FlySession&) {}
+renderer::Camera player_camera(const view::FlySession&, const view::FlyState&,
+                               const renderer::Camera& walker_camera, u64 = ~u64{0}) {
+  return walker_camera;
+}
 bool game_draws_loading() { return false; }
 u32 game_ready_milestone() { return 5; }  // player_controllable
 void game_hold(u64) {}
@@ -3164,7 +3187,8 @@ int run_offscreen(Options& options, Interactive& interactive) {
         world_parts.game_ms = static_cast<f64>(game_tick_ns() - game_before) / 1.0e6;
         const scene::FrameWalk walked = walk_probe.end();
         renderer::FrameDesc frame;
-        frame.camera = session.camera();
+        // The session's camera, or with a body worn the eye at its face (P58; player.h).
+        frame.camera = player_camera(session, session.state(), session.camera());
         frame.frame_index = session.frame_index();
         view::set_frame_walker(walker, session.walking(), frame.flora);  // the trees' push
         set_clocks(frame);
@@ -3532,6 +3556,9 @@ int run_offscreen(Options& options, Interactive& interactive) {
         renderer::FrameDesc frame;
         frame.camera =
             view::fly_view(marker.state, interactive.header.fov_y, interactive.header.znear);
+        // With a body worn, the eye at its face for the marker's look, on the pose the replay ended
+        // on (P58; player.h).
+        frame.camera = player_camera(session, marker.state, frame.camera, marker.tick);
         frame.frame_index = marker.tick * view::k_frame_index_hz / tick_hz;
         frame.sky_time_s = sun_at(frame.frame_index);
         frame.world_time_s = clock.world_at(frame.frame_index);
@@ -3604,7 +3631,7 @@ int run_offscreen(Options& options, Interactive& interactive) {
       frame.camera = camera_at(frames > 0 ? frames - 1 : 0);
       frame.frame_index = frames > 0 ? frames - 1 : 0;
       if (interactive.on) {  // where the replay ended
-        frame.camera = session.camera();
+        frame.camera = player_camera(session, session.state(), session.camera());
         frame.frame_index = session.frame_index();
       }
       set_clocks(frame);
@@ -5136,10 +5163,11 @@ int run_view(int argc, char** argv) {
     }
     std::fprintf(stderr,
                  "engine-view: player: %s, %u joints, %.3f m tall (x%.4f of its bind pose), head "
-                 "%s (%s)\n",
+                 "%s (%s), eye %s (%s)\n",
                  rig.mesh.c_str(), rig.joints, static_cast<f64>(rig.target_height_m),
                  static_cast<f64>(rig.scale),
-                 rig.head_name.empty() ? "none" : rig.head_name.c_str(), rig.head_from);
+                 rig.head_name.empty() ? "none" : rig.head_name.c_str(), rig.head_from,
+                 rig.eye_face ? "at the face" : "the walker's", rig.eye_from);
     player_body = std::make_unique<view::PlayerBody>(std::move(rig));
     g_player = player_body.get();
     const WorldPos start = interactive.header.start.position;
@@ -6536,6 +6564,10 @@ int run_view(int argc, char** argv) {
         const f32 alpha =
             session.tick().value == clock.tick().value ? clock.interpolation_alpha() : 1.0f;
         frame.camera = session.camera_at(alpha);
+        // With a body worn, the eye at its face, from the same interpolated look (P58; player.h).
+        frame.camera = player_camera(
+            session, view::fly_interpolate(session.previous(), session.state(), alpha),
+            frame.camera);
         frame.frame_index = session.frame_index();
         view::set_frame_walker(walker, session.walking(), frame.flora);  // the trees' push
         // What the frame draws, for the frame log: the pose and the simulated time it stands for.

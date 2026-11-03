@@ -146,15 +146,34 @@ struct AnimatedScene {
   // false, and the renderer reads the pool's own span as before. Why here and not in
   // `systems/animation`: the span the renderer reads is built here (`set_frame_joints`), and the
   // capability's matrices are reachable read-only, which is all this needs.
+  //
+  // **The head-look layer** (P58, apps.md "The head-look layer") rides the same copy: before the
+  // collapse, each `LookJoint` — outermost first, the torso, the neck, the head — turns its joint
+  // and every joint below it about the joint's posed position, `skin' = T(p) R T(-p) skin`, by
+  // its share of the look (`down` about the body's +x, then `turn` about its +y; the rig faces
+  // +z). The pose and the pool stay the animation's, so a replay draws the same body and the
+  // hashes hold. `head_posed` keeps the head's matrix after the look and before the collapse: the
+  // first-person eye is carried by it (player.h `PlayerBody::face_camera`).
+  struct LookJoint {
+    u32 joint = 0;       // the skeleton's index
+    Vec3 bind{};         // the joint in the mesh's bind space, as `head_bind` below
+    f32 down = 0.0f;     // radians about the body's +x: positive turns +z (ahead) toward -y (down)
+    f32 turn = 0.0f;     // radians about its +y
+    Vector<u32> joints;  // the joint and every joint below it
+  };
   struct JointCollapse {
     u32 instance = 0;    // the loaded instance whose run it collapses
     u32 head = 0;        // the joint the others collapse to, the skeleton's index
     Vec3 head_bind{};    // the head joint in the mesh's bind space: inverse(inverse_bind[head])'s
                          // translation, which its skinning matrix takes to where it stands
     Vector<u32> joints;  // the head and every joint below it, the skeleton's indices
+    bool collapse_head = true;     // false: the joints are drawn whole (the look alone)
+    Vector<LookJoint> look;        // outermost first; empty: no look layer
+    anim::JointMatrix head_posed;  // the head's skinning matrix after the look, before the collapse
+    bool head_posed_valid = false;  // false: a run of nothing (the rest pose is drawn)
   };
   Vector<JointCollapse> collapse;
-  bool collapse_on = true;
+  bool collapse_on = true;  // the copy is handed to the renderer (a collapse or a look is on)
   Vector<anim::JointMatrix> collapsed;  // the pool's span with the collapse, as of the last step
   bool collapse_ready = false;          // `collapsed` matches the pool's span
   u64 collapse_steps = 0;               // steps whose matrices were collapsed, for the summary
@@ -170,6 +189,16 @@ void set_joint_collapse(AnimatedScene& scene, u32 instance, const anim::Skeleton
 void set_joint_collapse_on(AnimatedScene& scene, bool on);
 // Refreshes `collapsed` from the pool's matrices; `step_animation` calls it after every step.
 void apply_joint_collapse(AnimatedScene& scene);
+// The head-look layer on collapse entry `entry` (the order `set_joint_collapse` added them):
+// `collapse_head` false draws the head whole; `pivots`, outermost first, are the joints the look
+// turns (each with the joints below it). Applied at once, as the collapse is.
+void set_joint_look(AnimatedScene& scene, u32 entry, const anim::Skeleton& skeleton,
+                    bool collapse_head, std::span<const u32> pivots);
+// Each pivot's share of the look, radians, `down` and `turn` as `LookJoint`'s, the same count as
+// `pivots`; refreshes that entry's run of `collapsed` from the pool alone (the run's joints, not
+// the whole span), so a frame may set the look it draws with between two steps.
+void set_joint_look_angles(AnimatedScene& scene, u32 entry, std::span<const f32> down,
+                           std::span<const f32> turn);
 
 // A stable, reproducible id per scene instance (ADR-0028 seam 3), from the instance index rather
 // than a counter, so a capture is deterministic across runs.
