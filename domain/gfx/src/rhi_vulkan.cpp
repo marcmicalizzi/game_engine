@@ -91,6 +91,9 @@ static_assert(bits(BufferUsage::AccelerationBuildInput) ==
               VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR);
 static_assert(bits(BufferUsage::AccelerationStorage) ==
               VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR);
+static_assert(bits(BufferUsage::MicromapBuildInput) ==
+              VK_BUFFER_USAGE_MICROMAP_BUILD_INPUT_READ_ONLY_BIT_EXT);
+static_assert(bits(BufferUsage::MicromapStorage) == VK_BUFFER_USAGE_MICROMAP_STORAGE_BIT_EXT);
 static_assert(bits(ImageUsage::TransferSrc) == VK_IMAGE_USAGE_TRANSFER_SRC_BIT);
 static_assert(bits(ImageUsage::TransferDst) == VK_IMAGE_USAGE_TRANSFER_DST_BIT);
 static_assert(bits(ImageUsage::Sampled) == VK_IMAGE_USAGE_SAMPLED_BIT);

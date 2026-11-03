@@ -228,6 +228,12 @@ constexpr Requirement k_requirements[] = {
      "only structures the renderer builds today, so --raster rt, ray-traced shadows and the "
      "reference path tracer all need this; ADR-0025's KHR fallback draws the same picture in "
      "gfx's tests and is not wired into the renderer yet."},
+    {"VK_EXT_opacity_micromap", "extension", RequirementLevel::Optional, Unit::Flag,
+     &DeviceCaps::opacity_micromap, 1, "cluster-acceleration-structures",
+     "opacity micromaps on the alpha-tested clusters' structures (R120), so the traversal decides "
+     "a leaf card's interior and corners and the shadow ray's mask loop sees only its edge. "
+     "Counted only beside VK_NV_cluster_acceleration_structure; without it the loops decide every "
+     "masked candidate, as before, and draw the same picture."},
     {"maxDescriptorSetUpdateAfterBindAccelerationStructures", "limit", RequirementLevel::Optional,
      Unit::Count, &DeviceCaps::max_set_uab_acceleration_structures, k_min_acceleration_structures,
      "ray-tracing",

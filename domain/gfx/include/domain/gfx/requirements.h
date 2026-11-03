@@ -139,6 +139,7 @@ struct DeviceCaps {
   u32 ray_tracing_pipeline = 0;
   u32 ray_query = 0;
   u32 cluster_acceleration_structure = 0;
+  u32 opacity_micromap = 0;  // VK_EXT_opacity_micromap, counted only beside the cluster extension
   u32 descriptor_buffer = 0;
   u32 memory_decompression = 0;
   u32 memory_budget = 0;

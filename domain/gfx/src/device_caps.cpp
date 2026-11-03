@@ -47,6 +47,7 @@ void read_device_caps(VkPhysicalDevice physical, DeviceCaps& out) {
   const bool ext_rt = ext_as && has("VK_KHR_ray_tracing_pipeline");
   const bool ext_rq = ext_as && has("VK_KHR_ray_query");
   const bool ext_cluster = ext_as && has("VK_NV_cluster_acceleration_structure");
+  const bool ext_micromap = ext_cluster && has("VK_EXT_opacity_micromap");
   const bool ext_descriptor_buffer = has("VK_EXT_descriptor_buffer");
   const bool ext_decompression = has("VK_EXT_memory_decompression");
   out.swapchain = flag(ext_swapchain ? VK_TRUE : VK_FALSE);
@@ -77,6 +78,10 @@ void read_device_caps(VkPhysicalDevice physical, DeviceCaps& out) {
   VkPhysicalDeviceClusterAccelerationStructureFeaturesNV cluster{};
   cluster.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_CLUSTER_ACCELERATION_STRUCTURE_FEATURES_NV;
 #endif
+#if defined(VK_EXT_opacity_micromap)
+  VkPhysicalDeviceOpacityMicromapFeaturesEXT micromap{};
+  micromap.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_OPACITY_MICROMAP_FEATURES_EXT;
+#endif
 #if defined(VK_EXT_memory_decompression)
   VkPhysicalDeviceMemoryDecompressionFeaturesEXT decompression{};
   decompression.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_DECOMPRESSION_FEATURES_EXT;
@@ -99,6 +104,9 @@ void read_device_caps(VkPhysicalDevice physical, DeviceCaps& out) {
   if (ext_descriptor_buffer) link(reinterpret_cast<VkBaseOutStructure*>(&db));
 #if defined(VK_NV_cluster_acceleration_structure)
   if (ext_cluster) link(reinterpret_cast<VkBaseOutStructure*>(&cluster));
+#endif
+#if defined(VK_EXT_opacity_micromap)
+  if (ext_micromap) link(reinterpret_cast<VkBaseOutStructure*>(&micromap));
 #endif
 #if defined(VK_EXT_memory_decompression)
   if (ext_decompression) link(reinterpret_cast<VkBaseOutStructure*>(&decompression));
@@ -171,6 +179,14 @@ void read_device_caps(VkPhysicalDevice physical, DeviceCaps& out) {
                                            : 0u;
 #else
   out.cluster_acceleration_structure = 0u;
+#endif
+#if defined(VK_EXT_opacity_micromap)
+  // Counted only beside the cluster extension, which is where the device enables it (R120).
+  out.opacity_micromap =
+      ext_micromap && out.cluster_acceleration_structure != 0 ? flag(micromap.micromap) : 0u;
+#else
+  (void)ext_micromap;
+  out.opacity_micromap = 0u;
 #endif
 #if defined(VK_EXT_memory_decompression)
   out.memory_decompression = ext_decompression ? flag(decompression.memoryDecompression) : 0u;

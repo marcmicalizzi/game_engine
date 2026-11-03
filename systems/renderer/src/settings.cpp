@@ -1,6 +1,7 @@
 #include <core/log/log.h>
 #include <domain/gfx/cluster_cull.h>
 #include <domain/gfx/display.h>
+#include <domain/gfx/opacity_micromap.h>
 #include <domain/gfx/requirements.h>
 #include <foundation/tunables/tunables.h>
 #include <systems/renderer/flora_motion.h>
@@ -317,6 +318,27 @@ tunables::Bool shadow_sweep{
     "Measurement only: frame f takes the sun ray's rule (f / 8) % 6 — as set, opaque, the proxy "
     "at 0.5, 0.3, 0.2, as set counting the sun ray's work (renderer.md, Where the resolve's time "
     "goes; the proxy's table is baked at load)"};
+// R120: opacity micromaps on the alpha-tested clusters' structures (renderer.md, "Opacity
+// micromaps"). The budget's default is from the v25 forest's bake (forest-resolve-2026-11-01.md,
+// stage 4).
+tunables::Bool shadow_micromaps{
+    "renderer.shadow.micromaps", false,
+    "Bake opacity micromaps for the alpha-tested clusters and attach them to the ray tracing "
+    "chain's structures where the device has VK_EXT_opacity_micromap; the picture is the same. "
+    "Off until the traversal is shown to use them (R120; renderer.md, Opacity micromaps; read at "
+    "load)"};
+tunables::Int micromap_mib{
+    "renderer.rt.micromap_mib", 256, 0, 65536,
+    "The opacity micromaps' bake budget in MiB, states, indices and triangle "
+    "records together: a level is dropped until it fits (0: no budget)"};
+tunables::Float micromap_texels{
+    "renderer.rt.micromap_texels", static_cast<f64>(gfx::k_micromap_target_texels), 0.01, 4096.0,
+    "The opacity micromaps' level per triangle: the smallest whose micro-triangles cover at most "
+    "this many of the mask's level-0 texels (then the level cap)"};
+tunables::Int micromap_level{
+    "renderer.rt.micromap_level", 4, 0, 12,
+    "The opacity micromaps' subdivision level cap (each level is four times "
+    "the micro-triangles; at most the device's)"};
 tunables::Bool shadow_hybrid_fit{
     "renderer.shadow.hybrid_fit", false,
     "Under the hybrid, fit the cascades from the ray distance out rather than from the near plane "
@@ -531,6 +553,12 @@ void resolve_settings(const RenderSettings& requested, const gfx::DeviceFeatures
   // The proxy's table, baked at load, which the measurement sweep's proxy rules read too (R115).
   out.shadow_coverage_table =
       out.shadows && (out.shadow_opaque_coverage > 0.0f || shadow_sweep.get());
+  // Opacity micromaps (R120), read once: a scene bakes them when it is made.
+  out.shadow_micromaps = out.rt_chain && features.cluster_acceleration_structure &&
+                         features.opacity_micromap && shadow_micromaps.get();
+  out.micromap_level = static_cast<u32>(micromap_level.get());
+  out.micromap_budget_bytes = static_cast<u64>(micromap_mib.get()) << 20;
+  out.micromap_texels = static_cast<f32>(micromap_texels.get());
   // More than one view needs the cull pass: every view's draw reads its own run of the visible
   // list, and there is no run without one. The direct path draws one view and one only, because
   // it writes color rather than a visibility buffer and has nowhere to put a second rectangle.

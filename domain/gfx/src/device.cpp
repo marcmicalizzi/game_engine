@@ -564,6 +564,10 @@ bool Device::create(const DeviceOptions& options, std::string* error) {
   }
   const bool ext_cluster = ext_as && enable_ext("VK_NV_cluster_acceleration_structure",
                                                 caps_.cluster_acceleration_structure);
+  // Opacity micromaps (R120) only beside the cluster extension: the cluster records are the only
+  // structures the renderer attaches them to.
+  const bool ext_micromap =
+      ext_cluster && enable_ext("VK_EXT_opacity_micromap", caps_.opacity_micromap);
   const bool ext_descriptor_buffer =
       enable_ext("VK_EXT_descriptor_buffer", caps_.descriptor_buffer);
   const bool ext_decompression =
@@ -659,6 +663,11 @@ bool Device::create(const DeviceOptions& options, std::string* error) {
   cluster.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_CLUSTER_ACCELERATION_STRUCTURE_FEATURES_NV;
   cluster.clusterAccelerationStructure = VK_TRUE;
 #endif
+#if defined(VK_EXT_opacity_micromap)
+  VkPhysicalDeviceOpacityMicromapFeaturesEXT micromap{};
+  micromap.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_OPACITY_MICROMAP_FEATURES_EXT;
+  micromap.micromap = VK_TRUE;
+#endif
 #if defined(VK_EXT_memory_decompression)
   VkPhysicalDeviceMemoryDecompressionFeaturesEXT decompression{};
   decompression.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_DECOMPRESSION_FEATURES_EXT;
@@ -710,6 +719,14 @@ bool Device::create(const DeviceOptions& options, std::string* error) {
     vkGetPhysicalDeviceProperties2(h.physical, &properties);
     impl->features.cluster_max_geometry_index = limits.maxClusterGeometryIndex;
   }
+#endif
+#if defined(VK_EXT_opacity_micromap)
+  if (ext_micromap) {
+    link(reinterpret_cast<VkBaseOutStructure*>(&micromap));
+    impl->features.opacity_micromap = true;
+  }
+#else
+  (void)ext_micromap;
 #endif
 #if defined(VK_EXT_memory_decompression)
   if (ext_decompression) {

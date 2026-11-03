@@ -38,6 +38,10 @@ VkClusterAccelerationStructureInputInfoNV op_input(
   info.sType = VK_STRUCTURE_TYPE_CLUSTER_ACCELERATION_STRUCTURE_INPUT_INFO_NV;
   info.maxAccelerationStructureCount = limits.max_clusters;
   info.flags = VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR;
+  // VUID-10881: a build whose records may name a micromap array says so on its input (R120).
+  if (limits.opacity_micromaps) {
+    info.flags |= VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_CLUSTER_OPACITY_MICROMAPS_BIT_NV;
+  }
   info.opType = op;
   info.opMode = VK_CLUSTER_ACCELERATION_STRUCTURE_OP_MODE_IMPLICIT_DESTINATIONS_NV;
   info.opInput.pTriangleClusters = &triangles;
@@ -136,6 +140,16 @@ bool cluster_as_properties(const Device& device, ClusterAsProperties& out) noexc
   out.scratch_alignment = cluster.clusterScratchByteAlignment;
   out.bottom_level_alignment = cluster.clusterBottomLevelByteAlignment;
   out.template_alignment = cluster.clusterTemplateByteAlignment;
+  if (device.features().opacity_micromap) {
+    VkPhysicalDeviceOpacityMicromapPropertiesEXT omm{};
+    omm.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_OPACITY_MICROMAP_PROPERTIES_EXT;
+    VkPhysicalDeviceProperties2 more{};
+    more.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
+    more.pNext = &omm;
+    vkGetPhysicalDeviceProperties2(device.handles().physical, &more);
+    out.max_opacity_2state_level = omm.maxOpacity2StateSubdivisionLevel;
+    out.max_opacity_4state_level = omm.maxOpacity4StateSubdivisionLevel;
+  }
   return true;
 }
 
@@ -160,19 +174,21 @@ void fill_triangle_record(Record& record, const ClusterBuildInput& c) noexcept {
   record.vertexCount = c.vertex_count & 0x1ffu;
   record.positionTruncateBitCount = 0;
   record.indexType = VK_CLUSTER_ACCELERATION_STRUCTURE_INDEX_FORMAT_8BIT_NV;
-  record.opacityMicromapIndexType = 0;
+  record.opacityMicromapIndexType =
+      c.omm_array != 0 ? static_cast<u32>(VK_CLUSTER_ACCELERATION_STRUCTURE_INDEX_FORMAT_32BIT_NV)
+                       : 0u;
   record.baseGeometryIndexAndGeometryFlags.geometryIndex = c.cluster_id & 0xffffffu;
   record.baseGeometryIndexAndGeometryFlags.geometryFlags =
       c.opaque ? static_cast<u32>(VK_CLUSTER_ACCELERATION_STRUCTURE_GEOMETRY_OPAQUE_BIT_NV) : 0u;
   record.indexBufferStride = 1;
   record.vertexBufferStride = sizeof(f32) * 3;
   record.geometryIndexAndFlagsBufferStride = 0;
-  record.opacityMicromapIndexBufferStride = 0;
+  record.opacityMicromapIndexBufferStride = c.omm_array != 0 ? sizeof(i32) : 0;
   record.indexBuffer = c.indices;
   record.vertexBuffer = c.vertices;
   record.geometryIndexAndFlagsBuffer = 0;
-  record.opacityMicromapArray = 0;
-  record.opacityMicromapIndexBuffer = 0;
+  record.opacityMicromapArray = c.omm_array;
+  record.opacityMicromapIndexBuffer = c.omm_array != 0 ? c.omm_indices : 0;
 }
 
 }  // namespace

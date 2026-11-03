@@ -1615,7 +1615,7 @@ struct FrameWorld @version(1) {
 /// Version 11: `walk`, a walking session's frame (`FrameWalk`).
 ///
 /// Version 13: `world`, the host's time between frames by what it did (`FrameWorld`, W82).
-struct FrameRecord @version(13) {
+struct FrameRecord @version(14) {
   /// Which pass over the path, from 0.
   repeat: u32 = 0
   /// The path frame, from 0; an interactive session's frame, from 0.
@@ -1709,6 +1709,10 @@ struct FrameRecord @version(13) {
   rt_references: u32 = 0 @since(12)
   rt_cache_built: u32 = 0 @since(12)
   rt_cache_evicted: u32 = 0 @since(12)
+  /// Whether the frame's cluster structures named the scene's opacity micromaps (R120;
+  /// docs/subsystems/renderer.md, "Opacity micromaps"): its drawn alpha-tested records carried them.
+  /// False without the chain, without masks, or with `renderer.shadow.micromaps` off.
+  rt_micromaps: bool = false @since(14)
   /// The scene the frame culled: its instances and its (instance, cluster) pairs, one cull thread
   /// each. Constant for a scene read whole; a streamed world's tiles move both between frames.
   instances: u32 = 0 @since(5)

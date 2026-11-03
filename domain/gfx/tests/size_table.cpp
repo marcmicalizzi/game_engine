@@ -127,7 +127,7 @@ ENGINE_EXPECT_SIZE(128, 8, gfx::ClusterDrawParams);
 // "The ray tracing chain's memory", 2026-10-25).
 // 176, not 160: the resident cluster structure cache's tables and the frame's stamp (renderer.md,
 // "The resident cluster structure cache", R101); the compact hit entries had taken 160.
-ENGINE_EXPECT_SIZE(176, 8, gfx::ClusterRecordParams);
+ENGINE_EXPECT_SIZE(192, 8, gfx::ClusterRecordParams);
 // The cache's tables, read through an address (R101). 120, not 112: the args block its passes
 // are dispatched from, so a pass with nothing to do dispatches no thread (R106).
 ENGINE_EXPECT_SIZE(120, 8, gfx::ClusterCacheTables);

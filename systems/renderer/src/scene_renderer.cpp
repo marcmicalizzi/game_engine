@@ -26,6 +26,7 @@
 #include <shaders/deform_alloc.spv.h>
 #include <shaders/frame_encode.spv.h>
 #include <shaders/hiz_build.spv.h>
+#include <shaders/opacity_micromap_bake.spv.h>
 #include <shaders/overlay.spv.h>
 #include <shaders/pair_expand.spv.h>
 #include <shaders/ray_visibility.spv.h>
@@ -566,6 +567,8 @@ bool SceneRenderer::create(const gfx::Device& device, GpuScene& scene,
                         shaders::k_pair_expand_spirv_size);
   shaders_.add_embedded("alpha_coverage", shaders::k_alpha_coverage_spirv,
                         shaders::k_alpha_coverage_spirv_size);
+  shaders_.add_embedded("opacity_micromap_bake", shaders::k_opacity_micromap_bake_spirv,
+                        shaders::k_opacity_micromap_bake_spirv_size);
   std::string manifest = desc.shader_manifest;
   if (manifest.empty()) {
     const std::string candidate = platform::executable_directory() + "/../shaders/manifest.json";
@@ -597,8 +600,8 @@ bool SceneRenderer::create(const gfx::Device& device, GpuScene& scene,
 
   graph_ = new gfx::RenderGraph(device);
   if (!create_pipelines(error) || !scene.bake_shadow_coverage(shaders_, error) ||
-      !targets_.create(device, views_, error) || !create_color_target(error) ||
-      !create_shadow_maps(error) ||
+      !scene.bake_micromaps(shaders_, error) || !targets_.create(device, views_, error) ||
+      !create_color_target(error) || !create_shadow_maps(error) ||
       !overlay_.create(device, scene.bindless(), shaders_, desc_.color_format,
                        desc_.frames_in_flight, error)) {
     destroy();
@@ -1592,6 +1595,7 @@ void SceneRenderer::collect_slot(u32 slot) {
   last.rt_capacity = scene_->rt_capacity();
   last.rt_references = stats_.rt.references;
   last.rt_cache_built = stats_.rt.cache_built;
+  last.rt_micromaps = rt_micromaps_;
   last.rt_cache_evicted = static_cast<u32>(stats_.rt.cache_evictions - rt_evictions_folded_);
   rt_evictions_folded_ = stats_.rt.cache_evictions;
   ++stats_.folded;
@@ -3117,6 +3121,17 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
       record_params.cache = scene.rt_cache_tables_address();
       record_params.frame = scene.next_rt_cache_frame();
     }
+    rt_micromaps_ = false;
+    // A drawn alpha-tested pair's record names the scene's micromap (R120; renderer.md, "Opacity
+    // micromaps"), but not a pair inside a cross-fade band, whose hits the loops keep by the pixel.
+    if (mask_tables.materials != 0) {
+      record_params.omm = scene.micromap_tables_address();
+      rt_micromaps_ = record_params.omm != 0;
+      if (record_params.omm != 0 && frame_fade > 0.0f && scene.fade.address != 0) {
+        record_params.omm_fade = scene.fade_address(0);
+        record_params.fade_stride = scene.pair_stride();
+      }
+    }
   }
 
   gfx::RenderGraph& graph = *graph_;
@@ -4279,6 +4294,8 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
               b.write(rt.instance_counts, gfx::Access::ComputeReadWrite);
               if (p != 0) b.write(rt.records, gfx::Access::ComputeWrite);
               if (p == 6) b.write(rt.hit_entries, gfx::Access::ComputeWrite);
+              // The cross-fade's splits, which keep a fading pair's record free of its micromap.
+              if (p == 6 && record_params.omm_fade != 0) b.read(rg_fade, gfx::Access::ComputeRead);
               // The ranges' first dispatch clears the cache's words of the record count, the
               // rest write the others and the bottom-level records.
               if (p >= 1 && p <= 5) b.write(rt.record_count, gfx::Access::ComputeReadWrite);

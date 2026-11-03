@@ -374,8 +374,21 @@ struct ResolvedSettings {
   // The scene bakes the proxy's coverage table: with the rays, when the threshold above is on or
   // the measurement sweep (`renderer.shadow.sweep`, R115 stage 2) may ask for the proxy.
   bool shadow_coverage_table = false;
-  bool occlusion = false;  // two-pass occlusion culling runs
-  bool rt_chain = false;   // the frame builds acceleration structures from its visible list
+  // **Opacity micromaps** (R120; renderer.md, "Opacity micromaps"): the scene bakes one for its
+  // alpha-tested clusters at load and the chain's drawn alpha-tested records name it, so the
+  // traversal decides a micro-triangle the mask would decide the same way everywhere on it and the
+  // ray loops see only the rest. On where the frame builds the chain on a device with
+  // VK_EXT_opacity_micromap beside the cluster extension and `renderer.shadow.micromaps` is on (off
+  // by default until the traversal is shown to use them; read at load). `micromap_level` is the
+  // level cap (`renderer.rt.micromap_level`, at most the device's) and `micromap_budget_bytes` the
+  // bake's budget (`renderer.rt.micromap_mib`), which lowers the cap a level at a time until the
+  // bake fits.
+  bool shadow_micromaps = false;
+  u32 micromap_level = 0;
+  u64 micromap_budget_bytes = 0;
+  f32 micromap_texels = 0.0f;  // `renderer.rt.micromap_texels`: a micro-triangle's most texels
+  bool occlusion = false;      // two-pass occlusion culling runs
+  bool rt_chain = false;       // the frame builds acceleration structures from its visible list
   // The cull pass keeps what its cone test rejects as shadow casters, in the visible list's run
   // `gfx::k_caster_run`, and the chain builds them beside the drawn clusters. True when shadows
   // are traced, the cone test is on, and the records are build records rather than template

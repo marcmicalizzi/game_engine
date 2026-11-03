@@ -62,6 +62,9 @@ struct DeviceFeatures {
   bool ray_tracing_pipeline = false;
   bool ray_query = false;
   bool cluster_acceleration_structure = false;
+  // VK_EXT_opacity_micromap (opacity_micromap.h, R120): enabled only beside the cluster extension,
+  // whose structures are the only ones the renderer attaches micromaps to.
+  bool opacity_micromap = false;
   bool descriptor_buffer = false;
   bool memory_decompression = false;
   bool shader_int64 = false;
