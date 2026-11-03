@@ -834,6 +834,58 @@ f64 smoothstep(f64 e0, f64 e1, f64 x) {
   const f64 t = std::clamp((x - e0) / (e1 - e0), 0.0, 1.0);
   return t * t * (3.0 - 2.0 * t);
 }
+// The chance a pixel holds a facet at a footprint, density times min(1, 4 mm / footprint), none
+// past 256 mm.
+f64 glint_chance(f64 footprint, f64 density) {
+  return density * std::min(1.0, 4.0 / std::max(footprint, 1.0)) *
+         (1.0 - smoothstep(128.0, 256.0, footprint));
+}
+// A glint cell's hash: the cell's integer indices on the 2^level millimetre grid, the level, and
+// the response's seed, as terrain_glint_cell builds it.
+u32 glint_hash(i64 ix, i64 iz, u32 level, u32 seed) {
+  return test::terrain_hash(static_cast<u32>(static_cast<u64>(ix)) ^
+                            test::terrain_hash(static_cast<u32>(static_cast<u64>(iz)) ^
+                                               test::terrain_hash(level ^ seed)));
+}
+i64 glint_axis(i32 cell, f32 local_mm, u32 level) {
+  return test::terrain_floor_div(i64{cell} * 64000 + static_cast<i64>(std::floor(local_mm)),
+                                 i64{1} << level);
+}
+f64 glint_unit(u32 h) { return static_cast<f64>(h >> 8) / 16777216.0; }
+// R125's two-level glint: the finer cell floor(log2 footprint) and the coarser one above it, each
+// level's chance x (1 - t) and x t of the fractional log t, x the root that makes the chance
+// either draws p; the finer's facet wins where both draw.
+struct Glint {
+  f64 chance = 0, blend = 0, chance0 = 0, chance1 = 0, draw0 = 1, draw1 = 1;
+  u32 level = 0, level_lit = 2, hash = 0;
+};
+Glint glint(i32 cell_x, i32 cell_z, f32 x_mm, f32 z_mm, f64 footprint, f64 density, u32 seed) {
+  Glint g;
+  if (density <= 0.0 || footprint >= 256.0) return g;
+  const f64 lf = std::log2(std::max(footprint, 1.0));
+  const f64 fl = std::floor(lf);
+  g.level = static_cast<u32>(fl);
+  g.blend = lf - fl;
+  g.chance = glint_chance(footprint, density);
+  const f64 t = g.blend;
+  const f64 x = 2.0 * g.chance / (1.0 + std::sqrt(1.0 - 4.0 * t * (1.0 - t) * g.chance));
+  g.chance0 = x * (1.0 - t);
+  g.chance1 = x * t;
+  const u32 h0 = glint_hash(glint_axis(cell_x, x_mm, g.level), glint_axis(cell_z, z_mm, g.level),
+                            g.level, seed);
+  const u32 hc = glint_hash(glint_axis(cell_x, x_mm, g.level + 1),
+                            glint_axis(cell_z, z_mm, g.level + 1), g.level + 1, seed);
+  g.draw0 = glint_unit(h0);
+  g.draw1 = glint_unit(hc);
+  if (g.draw0 < g.chance0) {
+    g.level_lit = 0;
+    g.hash = h0;
+  } else if (g.draw1 < g.chance1) {
+    g.level_lit = 1;
+    g.hash = hc;
+  }
+  return g;
+}
 }  // namespace r99
 }  // namespace
 
@@ -855,7 +907,7 @@ TEST_CASE("gfx: sand and snow responses agree with their double references") {
   constexpr u32 k_count = 2048;
   gfx::BufferResource output;
   REQUIRE_MESSAGE(
-      gfx::create_buffer(device, k_count * 4 * sizeof(Vec4),
+      gfx::create_buffer(device, k_count * 5 * sizeof(Vec4),
                          gfx::BufferUsage::Storage | gfx::BufferUsage::ShaderDeviceAddress, true,
                          output, &error),
       error);
@@ -876,13 +928,14 @@ TEST_CASE("gfx: sand and snow responses agree with their double references") {
                       &error),
                   error);
   const auto* v = static_cast<const Vec4*>(output.mapped);
-  u32 lit = 0, unlit = 0, borderline = 0;
-  f64 worst_albedo = 0, worst_lobe = 0, worst_wet = 0, worst_normal = 0;
+  u32 lit = 0, lit_coarse = 0, unlit = 0, borderline = 0;
+  f64 worst_albedo = 0, worst_lobe = 0, worst_wet = 0, worst_normal = 0, worst_chance = 0,
+      worst_blend = 0;
   for (u32 i = 0; i < k_count; ++i) {
     // The snow's albedo (Kokhanovsky and Zege's spherical albedo) per channel.
     const f64 grain = static_cast<f64>(0.03f + static_cast<f32>(i % 64) * 0.078f);
-    const f64 albedo[3] = {static_cast<f64>(v[4 * i].x), static_cast<f64>(v[4 * i].y),
-                           static_cast<f64>(v[4 * i].z)};
+    const f64 albedo[3] = {static_cast<f64>(v[5 * i].x), static_cast<f64>(v[5 * i].y),
+                           static_cast<f64>(v[5 * i].z)};
     for (int c = 0; c < 3; ++c)
       worst_albedo = std::max(worst_albedo, std::abs(albedo[c] - r99::snow_albedo(c, grain)));
     // The lobe: its metallic word gives the weight's F0 and keeps the diffuse.
@@ -890,16 +943,17 @@ TEST_CASE("gfx: sand and snow responses agree with their double references") {
     const f64 w = 1.0 + static_cast<f64>(i % 7) * 0.5;
     if (a > 0.1)
       worst_lobe =
-          std::max(worst_lobe, std::abs(static_cast<f64>(v[4 * i].w) - r99::lobe_metallic(a, w)));
-    if (w == 1.0) CHECK(v[4 * i].w == 0.0f);  // weight 1: the dielectric exactly, no metallic
+          std::max(worst_lobe, std::abs(static_cast<f64>(v[5 * i].w) - r99::lobe_metallic(a, w)));
+    if (w == 1.0) CHECK(v[5 * i].w == 0.0f);  // weight 1: the dielectric exactly, no metallic
     // Wet darkening.
     const f64 wet[3] = {a, 0.5 * a, 0.1};
-    const f64 got_wet[3] = {static_cast<f64>(v[4 * i + 1].x), static_cast<f64>(v[4 * i + 1].y),
-                            static_cast<f64>(v[4 * i + 1].z)};
+    const f64 got_wet[3] = {static_cast<f64>(v[5 * i + 1].x), static_cast<f64>(v[5 * i + 1].y),
+                            static_cast<f64>(v[5 * i + 1].z)};
     for (int c = 0; c < 3; ++c)
       worst_wet = std::max(worst_wet, std::abs(got_wet[c] - r99::wet_darkening(wet[c])));
-    // The glint: its cell's draw is the integer hash of the frame's cell and millimetres, so it is
-    // compared exactly; the chance to float precision; the facet normal to the GPU's sin and cos.
+    // The glint: each level's draw is the integer hash of the frame's cell and millimetres, so it
+    // is compared exactly; the chances and the blend to float precision (the GPU's log2 and sqrt);
+    // the facet normal to the GPU's sin and cos.
     const i32 cell_x = (i & 1) == 0 ? 6548 : -6548;
     const i32 cell_z = (i & 2) == 0 ? 1562500 : -3;
     const f32 fi = static_cast<f32>(i);
@@ -909,51 +963,53 @@ TEST_CASE("gfx: sand and snow responses agree with their double references") {
     const f64 density = (i % 4) == 0 ? 1.0 : static_cast<f64>(0.6f);
     const f64 alpha = static_cast<f64>(0.1f + static_cast<f32>(i % 9) * 0.07f);
     const u32 seed = (i % 2) == 0 ? 0x534E4F57u : 0x53414E44u;
-    const Vec4 got_normal = v[4 * i + 2];
-    const Vec4 got = v[4 * i + 3];
+    const Vec4 got_normal = v[5 * i + 2];
+    const Vec4 got = v[5 * i + 3];
+    const Vec4 got_levels = v[5 * i + 4];
     if (footprint >= 256.0) {
       CHECK(got_normal.w == 0.0f);
       continue;
     }
     // A point within a hundredth of a millimetre of a whole one may floor either way on a GPU
-    // that fuses its multiply-add; those are not compared.
+    // that fuses its multiply-add, and a footprint at a power of two may take either level on a
+    // GPU's log2; those are not compared.
     const auto near_whole = [](f32 mm) {
       const f32 r = mm - std::floor(mm);
       return r < 0.01f || r > 0.99f;
     };
-    if (near_whole(local_x) || near_whole(local_z)) {
+    const f64 lf = std::log2(std::max(footprint, 1.0));
+    if (near_whole(local_x) || near_whole(local_z) ||
+        (footprint > 1.0 && std::abs(lf - std::round(lf)) < 1e-5)) {
       ++borderline;
       continue;
     }
-    // The cell is a power of two at least the footprint (1 mm under a millimetre).
+    const r99::Glint ref = r99::glint(cell_x, cell_z, local_x, local_z, footprint, density, seed);
+    // The finer cell is the largest power of two at most the footprint (1 mm under a millimetre).
     const u32 size = static_cast<u32>(got.z);
     REQUIRE(std::has_single_bit(size));
-    CHECK(static_cast<f64>(size) >= std::max(footprint, 1.0) * 0.999);
-    CHECK(static_cast<f64>(size) < std::max(footprint, 1.0) * 2.001);
-    const u32 level = static_cast<u32>(std::countr_zero(size));
-    const i64 ix = test::terrain_floor_div(
-        i64{cell_x} * 64000 + static_cast<i64>(std::floor(local_x)), static_cast<i64>(size));
-    const i64 iz = test::terrain_floor_div(
-        i64{cell_z} * 64000 + static_cast<i64>(std::floor(local_z)), static_cast<i64>(size));
-    const u32 h0 = test::terrain_hash(static_cast<u32>(static_cast<u64>(ix)) ^
-                                      test::terrain_hash(static_cast<u32>(static_cast<u64>(iz)) ^
-                                                         test::terrain_hash(level ^ seed)));
-    const f64 draw = static_cast<f64>(h0 >> 8) / 16777216.0;
-    CHECK(static_cast<f64>(got.y) == draw);
-    const f64 chance = density * std::min(1.0, 4.0 / std::max(footprint, 1.0)) *
-                       (1.0 - r99::smoothstep(128.0, 256.0, footprint));
-    CHECK(std::abs(static_cast<f64>(got.x) - chance) < 2e-6);
-    if (std::abs(draw - chance) < 1e-5) {
+    CHECK(static_cast<f64>(size) <= std::max(footprint, 1.0) * 1.001);
+    CHECK(static_cast<f64>(size) > std::max(footprint, 1.0) * 0.499);
+    CHECK(static_cast<u32>(std::countr_zero(size)) == ref.level);
+    CHECK(static_cast<f64>(got_levels.y) == ref.draw0);
+    CHECK(static_cast<f64>(got_levels.w) == ref.draw1);
+    worst_chance = std::max({worst_chance, std::abs(static_cast<f64>(got.x) - ref.chance),
+                             std::abs(static_cast<f64>(got_levels.x) - ref.chance0),
+                             std::abs(static_cast<f64>(got_levels.z) - ref.chance1)});
+    worst_blend = std::max(worst_blend, std::abs(static_cast<f64>(got.y) - ref.blend));
+    if (std::abs(ref.draw0 - ref.chance0) < 1e-4 || std::abs(ref.draw1 - ref.chance1) < 1e-4) {
       ++borderline;
       continue;
     }
-    CHECK((got_normal.w == 1.0f) == (draw < chance));
-    if (draw >= chance) {
+    CHECK(static_cast<u32>(got.w) == ref.level_lit);
+    CHECK((got_normal.w == 1.0f) == (ref.level_lit != 2));
+    if (ref.level_lit == 2) {
       ++unlit;
       continue;
     }
     ++lit;
-    // A GGX-distributed facet about the probe's normal (Walter et al. 2007's sampling).
+    if (ref.level_lit == 1) ++lit_coarse;
+    const u32 h0 = ref.hash;  // A GGX-distributed facet about the probe's normal (Walter et al.
+                              // 2007's sampling).
     f64 n[3] = {static_cast<f64>(i % 3) - 1.0, 2.5, static_cast<f64>(i % 5) - 2.0};
     const f64 len = std::sqrt(n[0] * n[0] + n[1] * n[1] + n[2] * n[2]);
     for (f64& c : n)
@@ -962,7 +1018,8 @@ TEST_CASE("gfx: sand and snow responses agree with their double references") {
     const u32 h2 = test::terrain_hash(h1);
     const f64 u1 = static_cast<f64>(h1 >> 8) / 16777216.0;
     const f64 u2 = static_cast<f64>(h2 >> 8) / 16777216.0;
-    const f64 tan_t = std::min(alpha * std::sqrt(u1 / (1.0 - u1)), std::tan(25.0 * std::numbers::pi / 180.0));
+    const f64 tan_t =
+        std::min(alpha * std::sqrt(u1 / (1.0 - u1)), std::tan(25.0 * std::numbers::pi / 180.0));
     const f64 cos_t = 1.0 / std::sqrt(1.0 + tan_t * tan_t);
     const f64 sin_t = tan_t * cos_t;
     const f64 phi = (2.0 * u2 - 1.0) * std::numbers::pi;
@@ -979,17 +1036,137 @@ TEST_CASE("gfx: sand and snow responses agree with their double references") {
           0.0);
   }
   MESSAGE("albedo " << worst_albedo << ", lobe " << worst_lobe << ", wet " << worst_wet
-                    << ", facet normal " << worst_normal << "; glints lit " << lit << ", unlit "
-                    << unlit << ", borderline " << borderline);
+                    << ", facet normal " << worst_normal << ", glint chance " << worst_chance
+                    << ", blend " << worst_blend << "; glints lit " << lit << " (" << lit_coarse
+                    << " by the coarser level), unlit " << unlit << ", borderline " << borderline);
   CHECK(worst_albedo < 2e-6);
   CHECK(worst_lobe < 2e-5);
   CHECK(worst_wet < 2e-6);
   CHECK(worst_normal < 1e-3);
-  // Both branches are exercised: 81 of the 2,048 points hold a lit facet at the probe's chances.
+  CHECK(worst_chance < 1e-5);
+  CHECK(worst_blend < 1e-5);
+  // Every branch is exercised: lit by either level, and unlit.
   CHECK(lit > 50);
+  CHECK(lit_coarse > 10);
   CHECK(unlit > 100);
   gfx::destroy_buffer(device, output);
   gfx::destroy_compute_pipeline(device, pipeline);
   gfx::destroy_shader_module(device, module);
   device.destroy();
+}
+
+namespace {
+// R125's band measure: over a square of side `side_mm` from the frame's origin, the facets per
+// square metre (every facet that lights some point) and the share of the finer cells lit, by the
+// two-level rule, or with `one_level` by the rule before it (one cell of the smallest power of two
+// at least the footprint, its own chance p, its own hash).
+struct GlintField {
+  f64 facets_per_m2 = 0;
+  f64 lit_share = 0;
+};
+GlintField glint_field(f64 footprint, f64 density, u32 seed, i64 side_mm, bool one_level) {
+  GlintField out;
+  const f64 area_m2 = static_cast<f64>(side_mm) * static_cast<f64>(side_mm) * 1e-6;
+  const f64 p = r99::glint_chance(footprint, density);
+  const f64 lf = std::log2(std::max(footprint, 1.0));
+  if (one_level) {
+    const u32 level = static_cast<u32>(std::ceil(lf));
+    const i64 n = side_mm >> level;
+    u64 count = 0;
+    for (i64 iz = 0; iz < n; ++iz)
+      for (i64 ix = 0; ix < n; ++ix)
+        count += r99::glint_unit(r99::glint_hash(ix, iz, level, seed)) < p ? 1 : 0;
+    out.facets_per_m2 = static_cast<f64>(count) / area_m2;
+    out.lit_share = static_cast<f64>(count) / static_cast<f64>(n * n);
+    return out;
+  }
+  const u32 level = static_cast<u32>(std::floor(lf));
+  const f64 t = lf - std::floor(lf);
+  const f64 x = 2.0 * p / (1.0 + std::sqrt(1.0 - 4.0 * t * (1.0 - t) * p));
+  const i64 n0 = side_mm >> level;
+  const i64 n1 = n0 / 2;
+  std::vector<u8> lit0(static_cast<usize>(n0 * n0));
+  u64 facets = 0, lit_points = 0;
+  for (i64 iz = 0; iz < n0; ++iz)
+    for (i64 ix = 0; ix < n0; ++ix) {
+      const bool on = r99::glint_unit(r99::glint_hash(ix, iz, level, seed)) < x * (1.0 - t);
+      lit0[static_cast<usize>(iz * n0 + ix)] = on ? 1 : 0;
+      facets += on ? 1 : 0;
+    }
+  for (i64 iz = 0; iz < n1; ++iz)
+    for (i64 ix = 0; ix < n1; ++ix) {
+      u32 under = 0;
+      for (i64 k = 0; k < 4; ++k)
+        under += lit0[static_cast<usize>((2 * iz + k / 2) * n0 + 2 * ix + k % 2)];
+      const bool on = r99::glint_unit(r99::glint_hash(ix, iz, level + 1, seed)) < x * t;
+      // The finer facet wins where both draw: the coarser one lights the finer cells left dark.
+      lit_points += on ? 4 : under;
+      facets += on && under < 4 ? 1 : 0;
+    }
+  out.facets_per_m2 = static_cast<f64>(facets) / area_m2;
+  out.lit_share = static_cast<f64>(lit_points) / static_cast<f64>(n0 * n0);
+  return out;
+}
+}  // namespace
+
+TEST_CASE("gfx: glint facets per area are continuous across a cell size's step") {
+  // A footprint crossing a power of two is a curve on the ground (a screen row on flat ground, a
+  // contour on a slope). Before R125 the cell doubled there and its facets re-drew: the facets per
+  // area fell fourfold across the curve, and the eye read the step as a band (the owner's v26
+  // walk, 2026-11-02). Two levels blended by the fractional log hand the coarser level the whole
+  // chance by the step, whose cells and hash are the next octave's finer level.
+  constexpr f64 k_density = 0.5;  // the snow's
+  constexpr u32 k_seed = 0x534E4F57u;
+  for (const f64 step : {4.0, 64.0}) {
+    const i64 side = 512 * static_cast<i64>(step);
+    const f64 below = step * 0.998, above = step * 1.002;
+    const GlintField b = glint_field(below, k_density, k_seed, side, false);
+    const GlintField a = glint_field(above, k_density, k_seed, side, false);
+    const GlintField ob = glint_field(below, k_density, k_seed, side, true);
+    const GlintField oa = glint_field(above, k_density, k_seed, side, true);
+    MESSAGE("step " << step << " mm: facets per m^2 " << b.facets_per_m2 << " -> "
+                    << a.facets_per_m2 << " (one level: " << ob.facets_per_m2 << " -> "
+                    << oa.facets_per_m2 << "); lit share " << b.lit_share << " -> " << a.lit_share);
+    CHECK(std::abs(a.facets_per_m2 / b.facets_per_m2 - 1.0) < 0.05);
+    CHECK(std::abs(a.lit_share / b.lit_share - 1.0) < 0.05);
+    // The measure sees the old rule's step: a fourfold fall.
+    CHECK(ob.facets_per_m2 / oa.facets_per_m2 > 3.0);
+  }
+  // Midway between two levels each draws half the chance; the share of the ground lit stays p,
+  // where two independent draws of p / 2 would light p - p^2 / 4.
+  for (const f64 footprint : {2.0 * std::numbers::sqrt2, 32.0 * std::numbers::sqrt2}) {
+    const GlintField g = glint_field(footprint, k_density, k_seed, 512 * 64, false);
+    const f64 p = r99::glint_chance(footprint, k_density);
+    MESSAGE("footprint " << footprint << " mm: lit share " << g.lit_share << ", p " << p);
+    CHECK(std::abs(g.lit_share / p - 1.0) < 0.02);
+  }
+}
+
+TEST_CASE("gfx: a glint's facet does not move with the eye") {
+  // The same ground point seen from two eyes a world cell apart (and at different places inside
+  // their cells) draws the same cells and the same facet at every footprint: the cells are
+  // anchored to the world's integer cell and millimetres, never to the eye. Points on a 1/2048 m
+  // lattice keep every sum exact in f32, as the shader's are for these eyes.
+  constexpr u32 k_seed = 0x53414E44u;
+  u32 compared = 0, lit = 0;
+  for (u32 k = 0; k < 4096; ++k) {
+    const f32 px = static_cast<f32>((k * 37u) % 8192u) / 2048.0f;
+    const f32 pz = static_cast<f32>((k * 101u) % 8192u) / 2048.0f;
+    // Eye A: cell (5, -2), local (60, 3.5); eye B: cell (6, -1), local (0.25, 1.0).
+    const f32 ax = (60.0f + 0.0f + px) * 1000.0f, az = (3.5f + 0.0f + pz) * 1000.0f;
+    const f32 bpx = px + 60.0f - 64.0f - 0.25f, bpz = pz + 3.5f - 64.0f - 1.0f;
+    const f32 bx = (0.25f + 0.0f + bpx) * 1000.0f, bz = (1.0f + 0.0f + bpz) * 1000.0f;
+    for (const f64 footprint : {0.7, 1.5, 3.9, 4.1, 11.0, 63.0, 65.0, 200.0}) {
+      const r99::Glint a = r99::glint(5, -2, ax, az, footprint, 0.5, k_seed);
+      const r99::Glint b = r99::glint(6, -1, bx, bz, footprint, 0.5, k_seed);
+      CHECK(a.draw0 == b.draw0);
+      CHECK(a.draw1 == b.draw1);
+      CHECK(a.level_lit == b.level_lit);
+      CHECK(a.hash == b.hash);
+      ++compared;
+      lit += a.level_lit != 2 ? 1 : 0;
+    }
+  }
+  MESSAGE(compared << " points compared, " << lit << " lit");
+  CHECK(lit > 100);
 }

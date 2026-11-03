@@ -91,7 +91,8 @@ void footprint_main(uint3 id : SV_DispatchThreadID) {
 
 // R99's responses (renderer.md, "Sand and snow"): the snow's albedo by grain, the lobe's weight as
 // the metallic word, Lekner and Dorf's wet darkening, and the glint at a footprint, at the far eye
-// probe_main uses, each against its double mirror in terrain_material_tests.cpp.
+// probe_main uses, each against its double mirror in terrain_material_tests.cpp; five float4 a
+// point, the glint's two levels (R125) in the last two.
 [shader("compute")]
 [numthreads(64, 1, 1)]
 void response_main(uint3 id : SV_DispatchThreadID) {
@@ -112,8 +113,9 @@ void response_main(uint3 id : SV_DispatchThreadID) {
   const TerrainGlint g =
       terrain_glint(eye, point, n, footprint, density, alpha, (i % 2) == 0 ? 0x534E4F57u : 0x53414E44u);
   float4* output = (float4*)g_probe.output;
-  output[4 * i] = float4(terrain_snow_albedo(grain), terrain_lobe_metallic(a, w));
-  output[4 * i + 1] = float4(terrain_wet_darkening(float3(a, 0.5 * a, 0.1)), 0.0);
-  output[4 * i + 2] = float4(g.normal, g.lit ? 1.0 : 0.0);
-  output[4 * i + 3] = float4(g.chance, g.draw, float(g.size_mm), 0.0);
+  output[5 * i] = float4(terrain_snow_albedo(grain), terrain_lobe_metallic(a, w));
+  output[5 * i + 1] = float4(terrain_wet_darkening(float3(a, 0.5 * a, 0.1)), 0.0);
+  output[5 * i + 2] = float4(g.normal, g.lit ? 1.0 : 0.0);
+  output[5 * i + 3] = float4(g.chance, g.blend, float(g.size_mm), float(g.level_lit));
+  output[5 * i + 4] = float4(g.chance0, g.draw0, g.chance1, g.draw1);
 }

@@ -182,7 +182,86 @@ the sun, where snow sparkles most; a backlit glint, which needs a facet turned p
 resolve's to draw (it needs the light). The path tracer has no footprint and draws none (its many samples a pixel converge to
 the lobe the glints are drawn from).
 
-### Sand: the desert's and the beach's
+**Two levels, not one: the bands (R125, 2026-11-02).** The owner's v26 walk on the beach and the
+snow, the sun off to one side, showed the glints gathered in bands of one facet size that slid up
+or down the screen with the walker, and stood on a slope along the ground's contour. R99's cell was
+the smallest power of two at least the footprint, its hash seeded by that level: wherever the
+footprint crossed a power of two the cell doubled **and the facets were another random set**, and a
+curve of equal footprint is a row of the screen on flat ground and a contour on a slope, moving
+with the eye. The chance was continuous; the cell was not, and the facets per area fell fourfold
+across the curve (the test below measures 31,368 → 7,787 per m² across 4 mm at snow's density).
+
+The cure is the multiscale rule the three papers share in some form. Zirr and Kaplanyan (2016)
+evaluate two grid levels about the footprint and interpolate between them (as Deliot and Belcour's §3
+describes them); Deliot and Belcour
+(2023, §5.2) bracket the footprint between the cell sizes below and above it and **distribute the
+glint count between the two levels** rather than blending their outputs, because a linear blend of
+two levels' outputs does not keep the count of glints (their §3 and §7.2, of ZK16 and of Chermain et
+al. 2020). R125 does the counting version in the stage's one-facet-a-pixel form: the finer level
+`l0 = floor(log2 footprint)` and the coarser `l0 + 1` each draw their own world-anchored cell with
+its own hash (seeded by its level, as before), level 0 with chance `x (1 − t)` and level 1 with `x t`
+for the fractional log `t = log2 footprint − l0`, and where both draw the finer facet wins (two
+facets in one pixel are one normal). `x` is the root that makes the chance either draws exactly the
+footprint's p: two independent draws light `x − x² t (1 − t)`, so
+
+    x = 2p / (1 + sqrt(1 − 4 t (1 − t) p))      (x = p at t = 0 and t = 1)
+
+— without it, midway between two levels at snow's p = 0.5 an eighth of the lit pixels would go
+dark (0.4375 lit instead of 0.5), a smooth ripple once an octave that the eye could read as a softer band. At `t → 1`
+level 1 holds all of p and is exactly the next octave's level 0 — the same cells, the same hash, the
+same chance — so the set the eye sees does not change as a footprint crosses a power of two; it only
+thins by the octave's own continuous fade. D&B weight the two levels linearly in footprint *area*;
+the fractional log is used here because it is the level's own coordinate, and with the count
+distributed either weight is continuous. The cost is a second cell hash (three integer hashes and two
+64-bit divisions) a glinting pixel; the facet's normal is drawn once, from whichever level lit.
+
+The test (`gfx: glint facets per area are continuous across a cell size's step`, CPU, on the double
+reference the probe holds the shader to) counts every visible facet over a field 512 steps square
+at ±0.2 % about 4 mm and 64 mm, snow's density 0.5: **31,674 → 31,285 per m² across 4 mm and 7.771
+→ 7.649 across 64 mm (−1.2 % and −1.6 %, the octave's own slope), where the one-level rule fell
+fourfold (31,368 → 7,787 and 7.692 → 1.946)**; the lit share stays p (0.5019 → 0.5009 and 0.0315 →
+0.0314), and midway between two levels it is p to 0.6 % (0.50006 at p = 0.5, 0.04393 at 0.04419).
+A second test moves the eye a world cell and inside its cell and finds the same draws and the same
+facet at eight footprints from 0.7 to 200 mm.
+
+**The picture and its band measure** (`msvc-release`, RTX 5090, `--offscreen`, 1920×1080, the
+ground-by-place scene with `--terrain-tiles --terrain-far 2 --time-rate 0 --time-of-day 15`, its sky
+putting the sun at azimuth 160.5°, elevation 45.5°; two two-second walks of five keys each, written
+for the measure: west along the sandy pond's north beach, the sun ahead and to the left, and down the
+mountain's north snow from 16 m below the summit, the sun to the left; frames 14, 29, …, 119 of
+each captured, before at 643e0854 and after). A **glint pixel** is one whose luminance (Rec. 709
+weights on the 8-bit sRGB values) exceeds the mean of its 5×5 neighbourhood, itself excluded, by 40
+of 255 on the sand and 12 on the snow (the snow is near white, so its glints clip within a few
+levels). Per screen row the glint pixels are counted, over the ground's rows (from row 260 on the
+beach, 600 on the snow); the **step** at a row is the difference of the counts in the 8 rows below
+and the 8 above, less the linear trend the next 8 on each side imply, over its Poisson noise; and
+the rows' lag-1 autocorrelation is taken after a 31-row moving mean is removed. Means over the eight
+frames:
+
+| walk | glint px a frame | step's RMS (Poisson units) | largest step | largest / own RMS | lag-1 autocorrelation |
+|---|---|---|---|---|---|
+| beach, one level | 3,983 | 2.00 | 5.47 | 2.73 | 0.23 |
+| beach, two levels | 4,353 | 1.58 | 4.45 | 2.83 | 0.09 |
+| snow, one level | 17,510 | 1.78 | 5.52 | 3.10 | 0.22 |
+| snow, two levels | 21,078 | 1.32 | 4.19 | 3.15 | 0.05 |
+
+The one-level rule's rows are correlated (0.22–0.23: a band is several rows of one density) and
+their steps a third larger than the two-level rows'; with two levels the autocorrelation is noise's
+(−0.02 to 0.18 a frame) and the largest step about three times the rows' own RMS, which is what
+the largest of some hundred independent windows of noise is. The steps' RMS stays above 1 with two
+levels because a glint is often two or three pixels, so the counts are clumpier than Poisson. There
+are 9 % (sand) and 20 % (snow) more glint pixels: the lit share is p either way, but the finer
+level's cells are below the footprint where the one level's were above it, so more of the facets
+are single bright pixels that pass the neighbourhood test. The captures are in the agent's scratch
+(not committed); the v25 forest's shore was not flown (one load of that scene costs minutes of a GPU
+four agents were sharing, and the rule is the same on any ground).
+
+**The cost** (the same flights' `--benchmark`, 120 frames each, `--wait-quiet 120`; the before
+snow run was quiet, the others not — the GPU was 12 %, 75 % and 37 % busy with another agent's work
+at their ends, so those are upper bounds): the resolve, where the material stage runs, **0.4988 →
+0.4980 ms median on the beach and 0.4926 → 0.4962 ms on the snow**, the frame's GPU total 0.899 →
+0.909 and 0.899 → 0.904 ms. The second level's three hashes and two divisions a glinting pixel are
+within the run-to-run noise at this size (≤ 0.004 ms, under 1 %).### Sand: the desert's and the beach's
 
 W42's detail (renderer.md, "The sand close up"; [the fifth pass](sand-fifth-pass-2026-10-04.md))
 is desert sand under wind: ripples across the wind, grain, grainflow. A beach is another surface:
