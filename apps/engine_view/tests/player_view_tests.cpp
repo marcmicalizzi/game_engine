@@ -206,7 +206,9 @@ TEST_CASE(
   CHECK(number(player->find("places")) == 240.0);  // walking from the first tick
   CHECK(number(player->find("refused")) == 0.0);
   CHECK(number(player->find("walking_ticks")) > 100.0);
-  CHECK(player->find("collapse_head")->as_bool());
+  // The face's eye is the default (P58), and under it the head is drawn whole.
+  CHECK(text(player->find("eye")) == "face");
+  CHECK_FALSE(player->find("collapse_head")->as_bool());
   const JsonValue* actor = player->find("actor");
   REQUIRE(actor != nullptr);
   CHECK(text(actor->find("name")) == "player");
@@ -241,6 +243,24 @@ TEST_CASE(
   CHECK(text(at(b, {"interactive", "trajectory", "hash"})) ==
         text(at(a, {"interactive", "trajectory", "hash"})));
   CHECK(text(at(b, {"animation", "hash"})) == text(at(a, {"animation", "hash"})));
+
+  // (c, P58) The walker's eye with its collapse: the same actor block, the same trajectory and the
+  // same animation hash as the face's: the eye and the look are the drawn camera and the matrices
+  // the renderer is handed, never the pose or the walk.
+  std::vector<std::string> walker_args = args;
+  walker_args.insert(walker_args.end(), {"--tunable", "view.player.eye=walker"});
+  const Run third = run_view(walker_args);
+  REQUIRE_MESSAGE(third.exit_code == 0, third.output);
+  JsonValue c;
+  REQUIRE(summary_of(third, c));
+  CHECK(text(at(c, {"interactive", "player", "eye"})) == "walker");
+  CHECK(at(c, {"interactive", "player", "collapse_head"})->as_bool());
+  const JsonValue* walker_actor = at(c, {"interactive", "player", "actor"});
+  REQUIRE(walker_actor != nullptr);
+  CHECK(write_json(*walker_actor) == write_json(*actor));
+  CHECK(text(at(c, {"interactive", "trajectory", "hash"})) ==
+        text(at(a, {"interactive", "trajectory", "hash"})));
+  CHECK(text(at(c, {"animation", "hash"})) == text(at(a, {"animation", "hash"})));
 }
 
 TEST_CASE(
@@ -348,10 +368,13 @@ TEST_CASE(
   const Run bare = capture("bare", {});
   if (unavailable(bare)) return;
   REQUIRE_MESSAGE(bare.exit_code == 0, bare.output);
-  const Run collapsed = capture("body", {"--player", rig});
+  // The walker's eye and its collapse (P58's "eye=walker"): what this case held before the face's
+  // eye became the default, drawn exactly as it was.
+  const Run collapsed = capture("body", {"--player", rig, "--tunable", "view.player.eye=walker"});
   REQUIRE_MESSAGE(collapsed.exit_code == 0, collapsed.output);
   const Run whole =
-      capture("whole", {"--player", rig, "--tunable", "view.player.collapse_head=false"});
+      capture("whole", {"--player", rig, "--tunable", "view.player.collapse_head=false",
+                        "--tunable", "view.player.eye=walker"});
   REQUIRE_MESSAGE(whole.exit_code == 0, whole.output);
   JsonValue s;
   REQUIRE(summary_of(collapsed, s));
@@ -381,6 +404,169 @@ TEST_CASE(
   CHECK_FALSE(at(w, {"interactive", "player", "collapse_head"})->as_bool());
   // The collapse is in the matrices the renderer is handed, not the pose: the hashes are the same.
   CHECK(text(at(w, {"animation", "hash"})) == text(at(s, {"animation", "hash"})));
+}
+
+// (P58) The eye at the face: one standing session with two markers — at tick 60 looking ahead, at
+// tick 160 looking 60 degrees down (the pointer 476 pixels down at tick 100) — replayed with the
+// body under the face's eye (the default) and with its head forced collapsed, and the bare scene
+// flown from each marker's face camera (a flying session started where the summary says the face
+// camera stood), so every comparison is from the same camera.
+TEST_CASE(
+    "engine-view: --player's eye at the face sees no head ahead, draws the head whole, and looking "
+    "down carries the eye forward and down") {
+  const std::string rig = rigged_figure();
+  if (rig.empty()) return;
+  const test::TempDir tmp("engine_view_player_face");
+  const std::string scene = ground_scene(tmp);
+  const f32 yaw = 0.6f;
+  const auto standing = [&](const char* name, const WorldPos& start, f32 pitch, bool walking,
+                            bool look_down) {
+    input::InputLog keys;
+    keys.set_map(view::default_fly_map());
+    const auto key = [&](u64 tick, bool down) {
+      keys.record(input::RawEvent{SimTick{tick}, input::Source::Key, 16, down ? 1.0f : 0.0f, 0});
+    };
+    key(60, true);  // M
+    key(61, false);
+    if (look_down)
+      keys.record(input::RawEvent{SimTick{100}, input::Source::MouseAxis, 1, 476.0f, 0});
+    key(160, true);
+    key(161, false);
+    view::SessionHeader header;
+    header.ticks = 200;
+    header.scene = scene;
+    header.start.position = start;
+    header.start.yaw = yaw;
+    header.start.pitch = pitch;
+    header.has_walk = true;
+    header.walking = walking;
+    keys.set_session(view::session_to_json(header));
+    const std::string log = tmp.file(name);
+    REQUIRE(keys.save(log) == io::Status::Ok);
+    return log;
+  };
+  const std::string log = standing("face.jsonl", WorldPos{0.0, 3.0, 0.0}, 0.0f, true, true);
+  const auto capture = [&](const std::string& session, const char* name,
+                           std::vector<std::string> extra) {
+    std::vector<std::string> args = replay(tmp, session, scene);
+    args.insert(args.end(), {"--marker-captures", tmp.file(name)});
+    args.insert(args.end(), extra.begin(), extra.end());
+    return run_view(args);
+  };
+  const auto png = [&](const char* name, const char* tick) {
+    return tmp.file(std::string(name) + "/tick-" + tick + ".png");
+  };
+  const Run face = capture(log, "face", {"--player", rig});
+  if (unavailable(face)) return;
+  REQUIRE_MESSAGE(face.exit_code == 0, face.output);
+  const Run collapsed =
+      capture(log, "collapsed", {"--player", rig, "--tunable", "view.player.collapse_head=true"});
+  REQUIRE_MESSAGE(collapsed.exit_code == 0, collapsed.output);
+  JsonValue s;
+  REQUIRE(summary_of(face, s));
+  const JsonValue* player = at(s, {"interactive", "player"});
+  REQUIRE(player != nullptr);
+  MESSAGE("the face's eye: " << write_json(*player).substr(0, 2500));
+  CHECK(text(player->find("eye")) == "face");
+  CHECK(text(player->find("eye_from")) == "head");
+  CHECK_FALSE(player->find("collapse_head")->as_bool());
+  const JsonValue* look = player->find("look");
+  REQUIRE(look != nullptr);
+  CHECK(look->find("on")->as_bool());
+  const JsonValue* markers = look->find("markers");
+  REQUIRE(markers != nullptr);
+  REQUIRE(markers->size() == 2);
+  const JsonValue& ahead = (*markers)[0];
+  const JsonValue& down = (*markers)[1];
+  CHECK(number(ahead.find("tick")) == 60.0);
+  CHECK(number(down.find("tick")) == 160.0);
+  const JsonValue* trajectory_markers = at(s, {"interactive", "trajectory", "markers"});
+  REQUIRE(trajectory_markers != nullptr);
+  REQUIRE(trajectory_markers->size() == 2);
+  const f64 down_pitch = number((*trajectory_markers)[1].find("pitch"));
+  CHECK(std::fabs(down_pitch + 1.0471976) < 1e-4);
+
+  // (b) Looking 60 degrees down the eye goes forward and down by the arithmetic of the ranges:
+  // the rest eye turned in the body's y-z plane by the torso's share about the torso, then the
+  // neck's about the neck where the torso left it, then the head's about the head.
+  const JsonValue* e0 = ahead.find("eye_m");
+  const JsonValue* e1 = down.find("eye_m");
+  CHECK(std::fabs(element(e0, 1) - element(player->find("eye_point_m"), 1)) < 1e-4);
+  CHECK(std::fabs(element(e0, 2) - element(player->find("eye_point_m"), 2)) < 1e-4);
+  f64 eye[2] = {element(e0, 1), element(e0, 2)};
+  f64 pivots[3][2] = {{element(look->find("torso_m"), 1), element(look->find("torso_m"), 2)},
+                      {element(look->find("neck_m"), 1), element(look->find("neck_m"), 2)},
+                      {element(look->find("head_m"), 1), element(look->find("head_m"), 2)}};
+  const JsonValue* shares = down.find("down_deg");
+  REQUIRE(shares != nullptr);
+  const f64 flexion = number(look->find("flexion_deg"));
+  const f64 deg = 60.0;
+  // The shares: the cervical range to the neck and head (24% the head's), the rest the torso's.
+  CHECK(element(shares, 0) == doctest::Approx(deg - flexion).epsilon(1e-3));
+  CHECK(element(shares, 2) == doctest::Approx(flexion * 0.24).epsilon(1e-3));
+  CHECK(element(shares, 1) == doctest::Approx(flexion * 0.76).epsilon(1e-3));
+  for (u32 i = 0; i < 3; ++i) {
+    const f64 a = element(shares, i) * 3.14159265358979 / 180.0;
+    const f64 c = std::cos(a);
+    const f64 sn = std::sin(a);
+    const f64 py = pivots[i][0];
+    const f64 pz = pivots[i][1];
+    // The point and the pivots inside this joint's subtree turn: y' = y cos - z sin, z' = y sin
+    // + z cos about the pivot (ahead toward down).
+    const auto turn = [&](f64* p) {
+      const f64 y = p[0] - py;
+      const f64 z = p[1] - pz;
+      p[0] = py + y * c - z * sn;
+      p[1] = pz + y * sn + z * c;
+    };
+    turn(eye);
+    for (u32 j = i + 1; j < 3; ++j)
+      turn(pivots[j]);
+  }
+  MESSAGE("the eye looking ahead (y, z) "
+          << element(e0, 1) << ", " << element(e0, 2) << "; 60 degrees down " << element(e1, 1)
+          << ", " << element(e1, 2) << "; the ranges say " << eye[0] << ", " << eye[1]);
+  CHECK(element(e1, 1) < element(e0, 1) - 0.02);  // down
+  CHECK(element(e1, 2) > element(e0, 2) + 0.02);  // and forward
+  CHECK(std::fabs(element(e1, 1) - eye[0]) < 2e-3);
+  CHECK(std::fabs(element(e1, 2) - eye[1]) < 2e-3);
+
+  // The bare scene from each face camera: a flying session started where it stood.
+  const auto start_of = [&](const JsonValue& m) {
+    const JsonValue* p = m.find("position");
+    return WorldPos{element(p, 0), element(p, 1), element(p, 2)};
+  };
+  const Run bare_ahead =
+      capture(standing("bare-ahead.jsonl", start_of(ahead), 0.0f, false, false), "bare-ahead", {});
+  REQUIRE_MESSAGE(bare_ahead.exit_code == 0, bare_ahead.output);
+  const Run bare_down = capture(
+      standing("bare-down.jsonl", start_of(down), static_cast<f32>(down_pitch), false, false),
+      "bare-down", {});
+  REQUIRE_MESSAGE(bare_down.exit_code == 0, bare_down.output);
+
+  // (a) The dome test (P57), generalised: looking ahead, the central third with the body is the
+  // bare scene's to the byte — nothing of the head is in front of the camera — and so it is with
+  // the head forced collapsed.
+  const Diff ahead_bare = diff(png("bare-ahead", "0000060"), png("face", "0000060"));
+  const Diff ahead_head = diff(png("collapsed", "0000060"), png("face", "0000060"));
+  MESSAGE("looking ahead, the body changes "
+          << ahead_bare.central << " pixels of the central third (" << ahead_bare.total
+          << " in all); the whole head " << ahead_head.total << " against the collapsed one");
+  CHECK(ahead_bare.central == 0);
+  CHECK(ahead_head.central == 0);
+  // The head is drawn: with the head whole and with it collapsed, from the same camera, the
+  // pictures differ only where the head's shadow falls (the camera sees none of the head).
+  const Diff down_head = diff(png("collapsed", "0000160"), png("face", "0000160"));
+  MESSAGE("looking down, the whole head against the collapsed one: "
+          << down_head.total << " pixels, " << down_head.central << " of the central third");
+  CHECK(down_head.total > 0);
+  // (b) Looking down, the chest and the shoulders are seen from the face, as they were from the
+  // walker's eye: the body changes the lower half against the bare scene from the same camera.
+  const Diff down_bare = diff(png("bare-down", "0000160"), png("face", "0000160"));
+  MESSAGE("looking down, the body changes " << down_bare.total << " pixels: " << down_bare.lower
+                                            << " in the lower half, " << down_bare.central
+                                            << " of the central third");
+  CHECK(down_bare.lower > 500);
 }
 
 TEST_CASE("engine-view: --player refuses a mesh with no skin by name before a device") {

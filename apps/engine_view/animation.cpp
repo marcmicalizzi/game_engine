@@ -387,6 +387,59 @@ void set_joint_collapse_on(AnimatedScene& scene, bool on) {
   apply_joint_collapse(scene);
 }
 
+namespace {
+
+// `m` turned by `q` about the point `p`: T(p) R T(-p) m, on a 3x4. Its three linear columns are
+// rotated and its translation is rotated about `p`.
+void rotate_about(anim::JointMatrix& m, Quat q, Vec3 p) noexcept {
+  const Vec3 c0 = rotate(q, Vec3{m.rows[0].x, m.rows[1].x, m.rows[2].x});
+  const Vec3 c1 = rotate(q, Vec3{m.rows[0].y, m.rows[1].y, m.rows[2].y});
+  const Vec3 c2 = rotate(q, Vec3{m.rows[0].z, m.rows[1].z, m.rows[2].z});
+  const Vec3 t = rotate(q, Vec3{m.rows[0].w - p.x, m.rows[1].w - p.y, m.rows[2].w - p.z}) + p;
+  m.rows[0] = Vec4{c0.x, c1.x, c2.x, t.x};
+  m.rows[1] = Vec4{c0.y, c1.y, c2.y, t.y};
+  m.rows[2] = Vec4{c0.z, c1.z, c2.z, t.z};
+}
+
+// One entry's run of `collapsed`: copied from the pool when `copy` (the whole span was not just
+// copied), turned by the look, its head kept, then collapsed.
+void apply_collapse_entry(AnimatedScene& scene, std::span<const anim::JointMatrix> matrices,
+                          AnimatedScene::JointCollapse& c, bool copy) {
+  c.head_posed_valid = false;
+  if (c.instance >= scene.runs.size()) return;
+  const renderer::InstanceJoints run = scene.runs[c.instance];
+  const u64 count = matrices.size();
+  // A run of nothing — LOD2, LOD3, no slot — draws the rest pose, head and all: nothing to do.
+  if (run.count == 0 || c.head >= run.count || u64{run.first} + run.count > count ||
+      scene.collapsed.size() != count)
+    return;
+  anim::JointMatrix* out = scene.collapsed.data() + run.first;
+  if (copy) std::memcpy(out, matrices.data() + run.first, usize{run.count} * sizeof(*out));
+  // The look, outermost first: each pivot where the turns outside it have put it.
+  for (const AnimatedScene::LookJoint& look : c.look) {
+    if (look.joint >= run.count || (look.down == 0.0f && look.turn == 0.0f)) continue;
+    const Vec3 p = anim::transform_point(out[look.joint], look.bind);
+    const Quat q = quat_from_axis_angle(Vec3::unit_y(), look.turn) *
+                   quat_from_axis_angle(Vec3::unit_x(), look.down);
+    for (const u32 j : look.joints) {
+      if (j < run.count) rotate_about(out[j], q, p);
+    }
+  }
+  c.head_posed = out[c.head];
+  c.head_posed_valid = true;
+  if (!c.collapse_head) return;
+  const Vec3 at = anim::transform_point(out[c.head], c.head_bind);
+  anim::JointMatrix point;
+  point.rows[0] = Vec4{0.0f, 0.0f, 0.0f, at.x};
+  point.rows[1] = Vec4{0.0f, 0.0f, 0.0f, at.y};
+  point.rows[2] = Vec4{0.0f, 0.0f, 0.0f, at.z};
+  for (const u32 j : c.joints) {
+    if (j < run.count) out[j] = point;
+  }
+}
+
+}  // namespace
+
 void apply_joint_collapse(AnimatedScene& scene) {
   scene.collapse_ready = false;
   if (scene.collapse.empty() || !scene.collapse_on) return;
@@ -395,22 +448,55 @@ void apply_joint_collapse(AnimatedScene& scene) {
   if (scene.collapsed.size() != count) scene.collapsed.resize(count);  // with the pool, only
   if (count == 0) return;
   std::memcpy(scene.collapsed.data(), matrices.data(), usize{count} * sizeof(anim::JointMatrix));
-  for (const AnimatedScene::JointCollapse& c : scene.collapse) {
-    if (c.instance >= scene.runs.size()) continue;
-    const renderer::InstanceJoints run = scene.runs[c.instance];
-    // A run of nothing — LOD2, LOD3, no slot — draws the rest pose, head and all: nothing to do.
-    if (run.count == 0 || c.head >= run.count || u64{run.first} + run.count > count) continue;
-    const Vec3 at = anim::transform_point(matrices[run.first + c.head], c.head_bind);
-    anim::JointMatrix point;
-    point.rows[0] = Vec4{0.0f, 0.0f, 0.0f, at.x};
-    point.rows[1] = Vec4{0.0f, 0.0f, 0.0f, at.y};
-    point.rows[2] = Vec4{0.0f, 0.0f, 0.0f, at.z};
-    for (const u32 j : c.joints) {
-      if (j < run.count) scene.collapsed[run.first + j] = point;
-    }
-  }
+  for (AnimatedScene::JointCollapse& c : scene.collapse)
+    apply_collapse_entry(scene, matrices, c, false);
   ++scene.collapse_steps;
   scene.collapse_ready = true;
+}
+
+void set_joint_look(AnimatedScene& scene, u32 entry, const anim::Skeleton& skeleton,
+                    bool collapse_head, std::span<const u32> pivots) {
+  if (entry >= scene.collapse.size()) return;
+  AnimatedScene::JointCollapse& c = scene.collapse[entry];
+  c.collapse_head = collapse_head;
+  c.look.clear();
+  const u32 n = skeleton.joint_count();
+  for (const u32 pivot : pivots) {
+    if (pivot >= n) continue;
+    AnimatedScene::LookJoint look;
+    look.joint = pivot;
+    if (pivot < skeleton.inverse_bind.size())
+      look.bind = transform_point(inverse(skeleton.inverse_bind[pivot]), Vec3{});
+    // A joint's parent comes before it (skeleton.h): one forward pass finds the subtree.
+    Vector<u8> in(n, u8{0});
+    for (u32 j = pivot; j < n; ++j) {
+      const i32 parent = skeleton.parents[j];
+      if (j == pivot ||
+          (parent >= 0 && static_cast<u32>(parent) < j && in[static_cast<u32>(parent)] != 0)) {
+        in[j] = 1;
+        look.joints.push_back(j);
+      }
+    }
+    c.look.push_back(std::move(look));
+  }
+  apply_joint_collapse(scene);
+}
+
+void set_joint_look_angles(AnimatedScene& scene, u32 entry, std::span<const f32> down,
+                           std::span<const f32> turn) {
+  if (entry >= scene.collapse.size()) return;
+  AnimatedScene::JointCollapse& c = scene.collapse[entry];
+  bool same = true;
+  for (u32 i = 0; i < c.look.size(); ++i) {
+    const f32 d = i < down.size() ? down[i] : 0.0f;
+    const f32 t = i < turn.size() ? turn[i] : 0.0f;
+    same = same && c.look[i].down == d && c.look[i].turn == t;
+    c.look[i].down = d;
+    c.look[i].turn = t;
+  }
+  // Unchanged since the run was last written: nothing to do (a replay's frames between steps).
+  if (same || !scene.collapse_ready || !scene.collapse_on) return;
+  apply_collapse_entry(scene, scene.system.joint_matrices(), c, true);
 }
 
 u32 advance_animation(AnimatedScene& scene, renderer::SceneRenderer& renderer,

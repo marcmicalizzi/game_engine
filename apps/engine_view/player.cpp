@@ -20,9 +20,44 @@ namespace {
 tunables::Float player_scale{"view.player.scale", 1.0, 0.1, 10.0,
                              "The player's body's standing height as a multiple of "
                              "view.walk.height (--player)"};
-tunables::Bool player_collapse_head{"view.player.collapse_head", true,
-                                    "First person: collapse the player's head joint and the joints "
-                                    "below it to the head's position (--player)"};
+// `auto` collapses the head under the walker's eye (inside the skull) and draws it whole under the
+// face's (P58); `true` and `false` force it either way.
+enum class CollapseHead : u32 { Auto, True, False };
+constexpr const char* k_collapse_choices[] = {"auto", "true", "false"};
+tunables::Enum<CollapseHead> player_collapse_head{
+    "view.player.collapse_head", CollapseHead::Auto, k_collapse_choices,
+    "First person: collapse the player's head joint and the joints below it to the head's "
+    "position (--player); auto: under view.player.eye=walker only"};
+enum class EyeRule : u32 { Face, Walker };
+constexpr const char* k_eye_choices[] = {"face", "walker"};
+tunables::Enum<EyeRule> player_eye{
+    "view.player.eye", EyeRule::Face, k_eye_choices,
+    "First person (--player): face puts the camera just past the face's furthest forward point at "
+    "the eye line, carried by the posed head; walker keeps the walker's eye and collapses the "
+    "head"};
+tunables::Float player_eye_step{
+    "view.player.eye_step_m", 0.02, 0.0, 0.5,
+    "view.player.eye=face: metres past the face's furthest forward point the eye stands"};
+tunables::Float player_eye_line{
+    "view.player.eye_line", 0.48, -1.0, 1.0,
+    "view.player.eye=face: the eye line's depth below the top of the head's vertices, as a "
+    "fraction of their height (Farkas's canon: about half); negative keeps the furthest point's "
+    "own height. A rig with eye joints uses their mean height"};
+tunables::Bool player_head_look{
+    "view.player.head_look", true,
+    "view.player.eye=face: the look's pitch turns the neck and the head within the cervical "
+    "ranges, the torso past them (--player)"};
+tunables::Float player_neck_flexion{
+    "view.player.neck_flexion_deg", 57.7, 0.0, 120.0,
+    "The cervical spine's flexion (looking down) the head-look layer holds the neck and head to, "
+    "degrees (Apti et al. 2023: 57.7 in young adults)"};
+tunables::Float player_neck_extension{
+    "view.player.neck_extension_deg", 59.1, 0.0, 120.0,
+    "The cervical spine's extension (looking up), degrees (Apti et al. 2023: 59.1)"};
+tunables::Float player_neck_rotation{
+    "view.player.neck_rotation_deg", 70.7, 0.0, 120.0,
+    "The cervical spine's axial rotation each way, degrees (Apti et al. 2023: 71.1 right, 70.2 "
+    "left)"};
 tunables::String player_walk_clip{
     "view.player.walk_clip", "walk",
     "The clip the player's body plays while the walker moves, by name, any case (--player); a "
@@ -69,7 +104,66 @@ bool names_no_clip(const std::string& want) noexcept { return clip_named(want, "
 
 constexpr f32 k_gait_fade_s = 0.2f;  // walking to standing and back
 
+constexpr f32 k_deg = 0.017453292519943295f;
+
+bool names_an_eye(const std::string& name) noexcept {
+  for (usize i = 0; i + 3 <= name.size(); ++i) {
+    if (lower(name[i]) == 'e' && lower(name[i + 1]) == 'y' && lower(name[i + 2]) == 'e')
+      return true;
+  }
+  return false;
+}
+
+bool is_ancestor(const anim::Skeleton& skeleton, i32 ancestor, i32 joint) noexcept {
+  if (ancestor < 0) return false;
+  for (i32 j = joint; j >= 0 && static_cast<u32>(j) < skeleton.joint_count();
+       j = skeleton.parents[static_cast<u32>(j)]) {
+    if (j == ancestor) return true;
+  }
+  return false;
+}
+
+// The look's pivots under `head`: the neck (the standard skeleton's `Neck`, when it is above the
+// head), else none; the torso (the parent of the neck, else of the head).
+void look_pivots(const anim::Skeleton& skeleton, const anim::JointMapping& mapping, i32 head,
+                 i32& torso, i32& neck) noexcept {
+  torso = -1;
+  neck = -1;
+  if (head < 0) return;
+  const i32 mapped = mapping[anim::StandardJoint::Neck];
+  if (mapped != anim::k_no_joint && mapped != head && is_ancestor(skeleton, mapped, head))
+    neck = mapped;
+  const i32 below = neck >= 0 ? neck : head;
+  torso = skeleton.parents[static_cast<u32>(below)];
+  if (torso < 0) torso = -1;
+}
+
+f32 clamp_to(f32 v, f32 lo, f32 hi) noexcept { return v < lo ? lo : (v > hi ? hi : v); }
+
 }  // namespace
+
+LookShares player_look_shares(const PlayerRig& rig, f32 pitch, f32 yaw_relative) noexcept {
+  LookShares out;
+  const f32 down = -pitch;  // the session's pitch is up positive; a flexion turns the face down
+  const f32 cervical = clamp_to(down, -rig.extension, rig.flexion);
+  const f32 turned = clamp_to(yaw_relative, -rig.rotation, rig.rotation);
+  // The head (the craniocervical junction) takes its part; the neck the rest of the range, or
+  // the head all of it where the rig has no neck joint; the torso what is past the range.
+  if (rig.neck >= 0) {
+    out.down[2] = cervical * k_head_flexion_share;
+    out.down[1] = cervical - out.down[2];
+    out.turn[2] = turned * k_head_rotation_share;
+    out.turn[1] = turned - out.turn[2];
+  } else {
+    out.down[2] = cervical;
+    out.turn[2] = turned;
+  }
+  if (rig.torso >= 0) {
+    out.down[0] = down - cervical;
+    out.turn[0] = yaw_relative - turned;
+  }
+  return out;
+}
 
 i32 player_head_joint(const anim::Skeleton& skeleton, const anim::JointMapping& mapping,
                       const char*& from) noexcept {
@@ -188,6 +282,97 @@ bool measure_player_rig(const std::string& path, f32 target_height_m, f32 eye_he
     const f32 up = eye_height_m - out.origin_above_feet_m - head.y;
     out.eye_from_head = Vec3{head.x, up, head.z};
   }
+  // **The eye at the face** (P58; apps.md "The eye at the face"), from the rig alone: over the
+  // vertices weighted to the head's subtree above the neck joint, in the skinned bind pose (the
+  // body faces +z there), the furthest forward point, `eye_step_m` past it, raised to the eye line
+  // — the eye joints' mean height where the head's subtree names one, else `eye_line` of the way
+  // down the head's vertices' box, else (negative) the point's own height.
+  out.eye_step_m = static_cast<f32>(player_eye_step.get());
+  out.eye_line = static_cast<f32>(player_eye_line.get());
+  out.flexion = static_cast<f32>(player_neck_flexion.get()) * k_deg;
+  out.extension = static_cast<f32>(player_neck_extension.get()) * k_deg;
+  out.rotation = static_cast<f32>(player_neck_rotation.get()) * k_deg;
+  out.head_rest = out.head >= 0 ? matrices[static_cast<u32>(out.head)] : anim::JointMatrix{};
+  look_pivots(skeleton, asset.mapping, out.head, out.torso, out.neck);
+  if (out.torso >= 0 && static_cast<u32>(out.torso) < skeleton.names.size())
+    out.torso_name = skeleton.names[static_cast<u32>(out.torso)];
+  if (out.neck >= 0 && static_cast<u32>(out.neck) < skeleton.names.size())
+    out.neck_name = skeleton.names[static_cast<u32>(out.neck)];
+  // A joint where it stands at rest, in the body's frame (x its right, y from the soles, z ahead).
+  const auto body_point = [&](i32 joint) {
+    if (joint < 0) return Vec3{};
+    const Vec3 p = transform_point(model[static_cast<u32>(joint)], Vec3{}) * out.scale;
+    return Vec3{-p.x, p.y + out.origin_above_feet_m, p.z};
+  };
+  out.torso_point = body_point(out.torso);
+  out.neck_point = body_point(out.neck);
+  out.head_point = body_point(out.head);
+  if (out.head >= 0 && player_eye.get() == EyeRule::Face) {
+    Vector<u32> subtree;
+    player_collapse_mask(skeleton, out.head, subtree);
+    Vector<u8> in_head(out.joints, u8{0});
+    for (const u32 j : subtree)
+      in_head[j] = 1;
+    Vec3 box_lo{1e30f, 1e30f, 1e30f};
+    Vec3 box_hi{-1e30f, -1e30f, -1e30f};
+    Vec3 tip{};
+    // Any weight on the head's subtree, at or above the neck joint: a rig may blend the whole head
+    // between the neck and the head (RiggedFigure: only its crown is weighted mostly to
+    // `neck_joint_2`), and one may weight its neck and upper chest to the head (the owner's
+    // authored bodies, P57), which the neck joint's height leaves out — the chest stands further
+    // forward than the nose and would take the eye down to it.
+    const f32 floor_y =
+        out.neck >= 0 ? transform_point(model[static_cast<u32>(out.neck)], Vec3{}).y : -1e30f;
+    for (u32 v = 0; v < skinned.size(); ++v) {
+      const geometry::SkinBinding& b = mesh.skin_bindings[v];
+      u32 weight = 0;
+      for (u32 k = 0; k < 4; ++k) {
+        if (b.joints[k] < out.joints && in_head[b.joints[k]] != 0) weight += b.weights[k];
+      }
+      const Vec3 p = skinned[v];
+      if (weight == 0 || p.y < floor_y) continue;
+      if (out.head_vertices == 0 || p.z > tip.z) tip = p;
+      ++out.head_vertices;
+      box_lo = Vec3{std::min(box_lo.x, p.x), std::min(box_lo.y, p.y), std::min(box_lo.z, p.z)};
+      box_hi = Vec3{std::max(box_hi.x, p.x), std::max(box_hi.y, p.y), std::max(box_hi.z, p.z)};
+    }
+    if (out.head_vertices > 0) {
+      // The box in the body's frame (x its right: the rig's -x), for the summary.
+      out.head_lo = Vec3{-box_hi.x * out.scale, box_lo.y * out.scale + out.origin_above_feet_m,
+                         box_lo.z * out.scale};
+      out.head_hi = Vec3{-box_lo.x * out.scale, box_hi.y * out.scale + out.origin_above_feet_m,
+                         box_hi.z * out.scale};
+      f32 eyes = 0.0f;
+      u32 eye_joints = 0;
+      for (const u32 j : subtree) {
+        if (j < skeleton.names.size() && names_an_eye(skeleton.names[j])) {
+          eyes += transform_point(model[j], Vec3{}).y;
+          ++eye_joints;
+        }
+      }
+      f32 height = tip.y;
+      if (eye_joints > 0) {
+        height = eyes / static_cast<f32>(eye_joints);
+        out.eye_from = "eyes";
+      } else if (out.eye_line >= 0.0f) {
+        height = box_hi.y - out.eye_line * (box_hi.y - box_lo.y);
+        out.eye_from = "head";
+      } else {
+        out.eye_from = "face";
+      }
+      // On the head's midline (the box's centre: a nose is on it, and a blocky head's furthest
+      // points are a whole face wide), at the furthest point's depth plus the step.
+      const Vec3 at{0.5f * (box_lo.x + box_hi.x), height, tip.z + out.eye_step_m / out.scale};
+      out.eye_bind = transform_point(inverse(anim::mat4_from_joint(out.head_rest)), at);
+      out.eye_point =
+          Vec3{-at.x * out.scale, at.y * out.scale + out.origin_above_feet_m, at.z * out.scale};
+      out.eye_face = true;
+      out.head_look = player_head_look.get();
+    }
+  }
+  const CollapseHead collapse = player_collapse_head.get();
+  out.collapse_head =
+      collapse == CollapseHead::Auto ? !out.eye_face : collapse == CollapseHead::True;
   // The clips by the tunables' names (`view.player.walk_clip`, `idle_clip`; the defaults are the
   // names this always looked for). Read here, once, before any device.
   const std::string want_walk = player_walk_clip.get();
@@ -282,9 +467,79 @@ bool PlayerBody::bind(AnimatedScene& scene, GameActors& actors, std::string& err
   player_collapse_mask(asset.skeleton, head, mask_);
   set_joint_collapse(scene, loaded, asset.skeleton, static_cast<u32>(head),
                      std::span<const u32>(mask_.data(), mask_.size()));
-  collapse_ = true;
-  set_joint_collapse_on(scene, player_collapse_head.get());
+  entry_ = static_cast<u32>(scene.collapse.size() - 1);
+  collapse_ = rig_.collapse_head;
+  // The head-look layer under the face's eye (P58): the torso, the neck and the head, outermost
+  // first, the joints `measure_player_rig` found in the same file. Under the walker's eye, none.
+  Vector<u32> pivots;
+  if (rig_.eye_face && rig_.head_look) {
+    if (rig_.torso >= 0) pivots.push_back(static_cast<u32>(rig_.torso));
+    if (rig_.neck >= 0) pivots.push_back(static_cast<u32>(rig_.neck));
+    pivots.push_back(static_cast<u32>(head));
+  }
+  look_ = !pivots.empty();
+  set_joint_look(scene, entry_, asset.skeleton, collapse_,
+                 std::span<const u32>(pivots.data(), pivots.size()));
+  // The copy is handed when it carries something: the collapse, or the look.
+  set_joint_collapse_on(scene, collapse_ || look_);
   return true;
+}
+
+bool PlayerBody::face_camera(const FlyState& drawn, f32 eye_height, f32 fov_y, f32 znear,
+                             renderer::Camera& out) {
+  if (!rig_.eye_face || scene_ == nullptr || entry_ >= scene_->collapse.size()) return false;
+  // The look as the frame draws it. In first person the body turns to the heading, so the look's
+  // yaw relative to the body is zero; the term is there for a camera that does not turn the body.
+  const LookShares shares = player_look_shares(rig_, drawn.pitch, 0.0f);
+  if (look_) {
+    // The pivots set in `bind` are a prefix of torso, neck, head: the shares of the ones present.
+    f32 down[3];
+    f32 turn[3];
+    u32 n = 0;
+    for (u32 i = 0; i < 3; ++i) {
+      const bool present = i == 2 || (i == 0 ? rig_.torso >= 0 : rig_.neck >= 0);
+      if (!present) continue;
+      down[n] = shares.down[i];
+      turn[n] = shares.turn[i];
+      ++n;
+    }
+    set_joint_look_angles(*scene_, entry_, std::span<const f32>(down, n),
+                          std::span<const f32>(turn, n));
+  }
+  const AnimatedScene::JointCollapse& c = scene_->collapse[entry_];
+  const anim::JointMatrix& head = c.head_posed_valid ? c.head_posed : rig_.head_rest;
+  const Vec3 eye = anim::transform_point(head, rig_.eye_bind);  // mesh units, the body's frame
+  // Scaled as the actor is (a module's `actor_scale` steps it about the feet), placed as the
+  // session places it: at the walker's feet, its origin `origin_above_feet_m` up, turned to the
+  // heading plus a half turn, level.
+  f32 scale = rig_.scale;
+  if (actors_ != nullptr) {
+    hotload::ActorState state;
+    if (actors_->state(k_player_actor, state) == hotload::Result::Ok) scale = scale * state.scale;
+  }
+  const Vec3 local = eye * scale;
+  const Vec3 turned =
+      rotate(quat_from_axis_angle(Vec3::unit_y(), drawn.yaw + rig_.facing_yaw), local);
+  const WorldPos origin{
+      drawn.position.x,
+      drawn.position.y - static_cast<f64>(eye_height) + static_cast<f64>(rig_.origin_above_feet_m),
+      drawn.position.z};
+  FlyState at = drawn;
+  at.position = origin + DVec3{turned};
+  out = fly_view(at, fov_y, znear);
+  last_.pitch = drawn.pitch;
+  last_.shares = shares;
+  last_.eye = Vec3{-local.x, local.y + rig_.origin_above_feet_m, local.z};
+  last_.position = at.position;
+  ++face_frames_;
+  return true;
+}
+
+void PlayerBody::note_marker(u64 tick) {
+  if (face_frames_ == 0 || markers_.size() >= 16) return;
+  FaceEye marker = last_;
+  marker.tick = tick;
+  markers_.push_back(marker);
 }
 
 void PlayerBody::observe(void* user, const FlySession& session, const input::InputState& input) {
@@ -362,8 +617,68 @@ JsonValue PlayerBody::summary_json(const GameActors* actors) const {
   out.set("head_joint", rig_.head_name);
   out.set("head_from", rig_.head_from);
   out.set("eye_height_m", static_cast<f64>(rig_.eye_height_m));
-  // The eye less the head joint, in the body's frame: x its right, y up, z ahead.
-  if (rig_.head >= 0) out.set("eye_from_head_m", vec(rig_.eye_from_head));
+  // The eye's rule (P58): `face` or `walker`, and where its height came from.
+  out.set("eye", rig_.eye_face ? "face" : "walker");
+  out.set("eye_from", rig_.eye_from);
+  // The eye less the head joint, in the body's frame: x its right, y up, z ahead — the rule in
+  // effect's (under `face`, the eye at rest).
+  if (rig_.head >= 0) {
+    Vec3 from = rig_.eye_from_head;
+    if (rig_.eye_face) {
+      const Vec3 head = rig_.head_bind * rig_.scale;
+      from = rig_.eye_point - Vec3{-head.x, head.y + rig_.origin_above_feet_m, head.z};
+    }
+    out.set("eye_from_head_m", vec(from));
+  }
+  if (rig_.eye_face) {
+    // The eye at rest in the body's frame, metres from the soles; the face's vertices it came from.
+    out.set("eye_point_m", vec(rig_.eye_point));
+    out.set("eye_step_m", static_cast<f64>(rig_.eye_step_m));
+    out.set("eye_line", static_cast<f64>(rig_.eye_line));
+    out.set("head_vertices", static_cast<u64>(rig_.head_vertices));
+    out.set("head_lo_m", vec(rig_.head_lo));
+    out.set("head_hi_m", vec(rig_.head_hi));
+    // The head-look layer: its pivots, the ranges (degrees), and the last face camera — the look's
+    // shares, the eye in the body's frame and in the world — and each marker capture's.
+    JsonValue look = JsonValue::object();
+    look.set("on", look_);
+    look.set("torso", rig_.torso_name);
+    look.set("neck", rig_.neck_name);
+    look.set("head", rig_.head_name);
+    constexpr f64 k_to_deg = 57.29577951308232;
+    look.set("flexion_deg", static_cast<f64>(rig_.flexion) * k_to_deg);
+    look.set("extension_deg", static_cast<f64>(rig_.extension) * k_to_deg);
+    look.set("rotation_deg", static_cast<f64>(rig_.rotation) * k_to_deg);
+    look.set("head_flexion_share", static_cast<f64>(k_head_flexion_share));
+    look.set("head_rotation_share", static_cast<f64>(k_head_rotation_share));
+    // The pivots at rest in the body's frame (metres from the soles), for the arithmetic.
+    look.set("torso_m", vec(rig_.torso_point));
+    look.set("neck_m", vec(rig_.neck_point));
+    look.set("head_m", vec(rig_.head_point));
+    look.set("frames", face_frames_);
+    const auto eye_json = [&](const FaceEye& e) {
+      JsonValue o = JsonValue::object();
+      if (e.tick != 0) o.set("tick", e.tick);  // a marker's; the last frame's has none
+      o.set("pitch_deg", static_cast<f64>(e.pitch) * k_to_deg);
+      JsonValue down = JsonValue::array();
+      for (const f32 d : e.shares.down)
+        down.push_back(static_cast<f64>(d) * k_to_deg);
+      o.set("down_deg", down);  // torso, neck, head
+      o.set("eye_m", vec(e.eye));
+      JsonValue p = JsonValue::array();
+      p.push_back(e.position.x);
+      p.push_back(e.position.y);
+      p.push_back(e.position.z);
+      o.set("position", p);
+      return o;
+    };
+    if (face_frames_ > 0) look.set("last", eye_json(last_));
+    JsonValue markers = JsonValue::array();
+    for (const FaceEye& e : markers_)
+      markers.push_back(eye_json(e));
+    look.set("markers", markers);
+    out.set("look", look);
+  }
   out.set("collapse_head", collapse_ && scene_ != nullptr && scene_->collapse_on);
   out.set("collapsed_joints", static_cast<u64>(mask_.size()));
   out.set("collapse_steps", scene_ != nullptr ? scene_->collapse_steps : u64{0});
