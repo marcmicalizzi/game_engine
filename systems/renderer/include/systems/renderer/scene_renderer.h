@@ -191,6 +191,8 @@ struct FrameStats {
   u32 rt_references = 0;
   u32 rt_cache_built = 0;
   u32 rt_cache_evicted = 0;
+  // The frame's drawn alpha-tested records named the scene's opacity micromaps (R120).
+  bool rt_micromaps = false;
   // The scene this frame culled: its instances and its (instance, cluster) pairs — one cull thread
   // each. Constant for a scene read whole; a streamed world's tiles move both between frames.
   u32 instances = 0;
@@ -1033,6 +1035,7 @@ class SceneRenderer {
   bool rt_overflow_warned_ = false;        // a frame dropped instances' structures, said once
   bool rt_cache_overflow_warned_ = false;  // the cluster cache had no room for misses, said once
   u64 rt_evictions_folded_ = 0;  // the evictions the last folded frame's record took off the sum
+  bool rt_micromaps_ = false;    // the last recorded frame's records named the micromaps (R120)
   Vector<u64> rt_cache_folded_;  // per frame slot: the submission whose cache words were summed
   bool rt_hold_ = false;         // render_offscreen is redrawing a frame it grew the chain for
   bool rt_observed_ = false;     // a frame's demand has reached the capacity policy

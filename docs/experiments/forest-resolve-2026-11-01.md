@@ -296,3 +296,27 @@ With the whole frame at half rate the left and right halves change 2.5% and 3.5%
 ### What is left
 
 The material stage at half rate (R126's second step) is not built: its two side thirds at a quarter of the rate are at most 2.8 ms of its 6.9 at 11520, less the same share of mixed blocks this stage found (perhaps half of that), with a quarter-size G-buffer of the block's material and a second pass. Opacity micromaps (R120) attack the cost this rule cannot take — the masks' candidates in mixed blocks — and the two compose: a micromap makes a taken block's one ray cheaper and a mixed block's four.
+
+## Stage 5: opacity micromaps on the walk (2026-11-03)
+
+Roadmap R120 (the rule and the cause of the first agent's open probe are on [renderer, "Opacity micromaps"](../subsystems/renderer.md#opacity-micromaps)). Stage 2's walk, flown again with micromaps off and on: the same path (`walk.json`, records 6693–6993, four path frames a record), the same flags with `--raster rt --shadows rt`, `renderer.resolve.stop_after=cycle` and `renderer.shadow.sweep=true` (now six rules: as set, every caster solid, the proxy at 0.5, 0.3 and 0.2, as set counting), `--warmup 120 --wait-quiet 120`, `msvc-release` at R120b's 46d0092c with the default flipped per run (`renderer.shadow.micromaps=false|true`, the bake unbudgeted, `renderer.rt.micromap_mib=0`, level cap 4), `ENGINE_PIPELINE_CACHE=0` so the copied cache's directory was not written. Every cell is the median of 75 frames. **The machine**: RTX 5090, driver 617.42, each run under the GPU lock; at the starts the GPU idle (0%) with 20.2–22.2 GB of its memory held by others and other processes using 2.4–4.5% of the CPU, at the ends 1.2–3.1%.
+
+| ms | 11520 off | 11520 on | 3840 off | 3840 on |
+|---|---:|---:|---:|---:|
+| sun stage, as set | **14.79** | **13.29** | **5.20** | **4.26** |
+| sun stage, every caster solid | 2.18 | (2.56) | 0.79 | (0.83) |
+| sun stage, the proxy at 0.5 / 0.3 / 0.2 | 14.62 / 12.08 / 9.04 | 12.84 / 9.72 / 7.86 | 4.98 / 4.16 / 3.16 | 3.94 / 3.16 / 2.44 |
+| resolve (the picture) | 23.02 | 21.38 | 7.91 | 6.97 |
+| cluster build (`clas`) | 4.84 | 4.47 | 3.57 | 3.66 |
+| bottom level (`blas`) | 1.47 | 1.48 | 1.39 | 1.43 |
+| the chain (`rt`) | 7.15 | 7.29 | 5.65 | 5.77 |
+| GPU frame | 45.18 | 42.29 | 19.09 | 17.85 |
+| the chain's capacity / instances dropped | 338,115 / 7,080 | 231,909 / 8,159 | 338,115 / 4,346 | 231,909 / 4,346 |
+
+The solid row comes from the off flights; with micromaps on the forced rule lets the sun through their transparent micro-triangles, so its "on" cells (in brackets) are not the ceiling. The micromaps' rows under the proxy are measurement only: at load the proxy's tunable switches them off.
+
+**The bake** (one short load with `--log info`, the same flags): 13,798,240 masked triangles of 427,775 masked clusters; 12,968,952 with data, all at the cap (level 4, 256 micro-triangles each; the budget dropped nothing), 827,410 wholly opaque, 636 wholly transparent and 1,242 wholly unknown by the special index; of the 3.32 billion micro-triangles with data **2.63 billion (79.1 %) unknown** and 0.69 billion known; 830 MB of states, 1.15 GB resident with the indices, the per-cluster table and the driver's micromap; 1.52 s. Per level only level 4 was used, so the bytes per level are the format's: 64 a triangle at 4, 16 at 3, 4 at 2, with 8 of triangle record and 4 of index each (989, 366 and 211 MB for this scene).
+
+**What it says.** A tenth of the masks' 12.6 ms comes back at 11520 and a fifth of their 4.4 at 3840, because four micro-triangles in five are unknown and still reach the loop: the conservative rule (every 2x2 footprint a micro-triangle of about four level-0 texels could read) leaves almost every micro-triangle of a leaf card straddling an alpha edge. The price is the memory and, unexpectedly, the chain: `ALLOW_CLUSTER_OPACITY_MICROMAPS` makes the driver reserve 8,832 bytes a CLAS slot instead of 6,144, so the same 2,025 MiB budget holds a third fewer clusters and v25 at 11520 drops 1,079 more instances' structures — which changes the shadows and may account for part of the saving. So the switch stays off by default. The levers left: a budget raised with it (the slots' 44 %), a finer level (four times the memory a level, for fewer unknowns), and the two-state answer for the sun alone, which decides every unknown micro-triangle by its centre sample and never runs the loop for it.
+
+**Drawn against casters.** A caster's record carries no micromap. The frame's casters are 10,884 of 1,519,758 entries at 11520 (0.7 %) and 3,852 of 876,262 at 3840 (0.4 %), so even if every caster were alpha-tested they would be a small share of the masked entries; a caster-side answer would buy little. (Counted from the records, not from a split of the masked entries by kind, which the records pass does not count.)

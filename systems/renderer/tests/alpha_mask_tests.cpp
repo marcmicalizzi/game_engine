@@ -956,3 +956,239 @@ TEST_CASE("half rate: the sweep steps the sides' share eight frames at a time") 
     CHECK(half_rate_sides_tunable(base + 16) == 0.5f);
   }
 }
+
+// **Opacity micromaps** (renderer.md, "Opacity micromaps"; R120). The scene bakes a conservative
+// 4-state micromap for every masked triangle and the chain's drawn alpha-tested records name it, so
+// the traversal decides a micro-triangle its mask decides the same way everywhere on it and hands
+// the loops the rest. Nothing a ray loop decides changes, so the picture is the same bytes with
+// micromaps and without: on the per-frame build and on the cache's, under the shadow rays and the
+// ray path, and on a device that has no micromaps at all.
+namespace {
+
+struct MicromapShot {
+  CapturedFrame frame;
+  std::string skip;
+  gfx::MicromapStats stats;
+  bool baked = false;
+};
+
+struct TunableScope {
+  TunableScope(const char* set, const char* restore) : restore_(restore) {
+    REQUIRE(tunables::apply_overrides(set));
+  }
+  ~TunableScope() { (void)tunables::apply_overrides(restore_); }
+  TunableScope(const TunableScope&) = delete;
+  TunableScope& operator=(const TunableScope&) = delete;
+  const char* restore_;
+};
+
+MicromapShot shoot_micromaps(const std::string& mesh, RenderSettings settings, ShotView view,
+                             bool without_extension = false) {
+  MicromapShot out;
+  gfx::Device device;
+  std::string error;
+  gfx::DeviceOptions options;
+  if (without_extension) options.overrides.absent.push_back("VK_EXT_opacity_micromap");
+  if (!device.create(options, &error)) {
+    out.skip = "device unavailable: " + error;
+    return out;
+  }
+  if (!device.features().cluster_acceleration_structure || !device.features().ray_query) {
+    out.skip = "no cluster acceleration structures and ray queries on this device";
+    device.destroy();
+    return out;
+  }
+  SceneData data;
+  GpuScene scene;
+  SceneRenderer renderer;
+  SceneDesc desc;
+  desc.meshes.push_back(mesh);
+  desc.cache = false;
+  settings.view_mode = view.mode;
+  REQUIRE_MESSAGE(load_scene(desc, data, error), "scene: " << error);
+  ResolvedSettings resolved;
+  resolve_settings(settings, device.features(), &data, resolved);
+  if (check_availability(resolved, device.features()) != RenderAvailability::Ok) {
+    out.skip = "unavailable here";
+    device.destroy();
+    return out;
+  }
+  REQUIRE_MESSAGE(scene.create(device, data, resolved, &error), "gpu scene: " << error);
+  SceneRenderer::Desc rd;
+  rd.width = k_size;
+  rd.height = k_size;
+  REQUIRE_MESSAGE(renderer.create(device, scene, resolved, rd, &error), "renderer: " << error);
+  out.baked = scene.micromap_tables_address() != 0;
+  out.stats = scene.micromap_stats();
+  FrameDesc frame;
+  frame.camera.position = absolute(WorldPos::origin(), view.eye);
+  frame.camera.target = absolute(WorldPos::origin(), view.target);
+  frame.camera.fov_y = k_fov;
+  frame.view_mode = view.mode;
+  CaptureChannels channels;
+  channels.ids = true;
+  channels.depth = true;
+  REQUIRE_MESSAGE(renderer.capture(frame, channels, out.frame, &error), error);
+  renderer.destroy();
+  scene.destroy();
+  device.destroy();
+  return out;
+}
+
+u32 differing_pixels(const CapturedFrame& a, const CapturedFrame& b) {
+  REQUIRE(a.color.size() == b.color.size());
+  REQUIRE(a.ids.size() == b.ids.size());
+  const u32 pixels = a.width * a.height;
+  const u32 id_words = pixels == 0 ? 0u : static_cast<u32>(a.ids.size() / pixels);
+  u32 differ = 0;
+  for (u32 p = 0; p < pixels; ++p) {
+    bool same = std::memcmp(&a.color[p * 4], &b.color[p * 4], 4) == 0;
+    for (u32 w = 0; w < id_words && same; ++w)
+      same = a.ids[p * id_words + w] == b.ids[p * id_words + w];
+    if (!same) ++differ;
+  }
+  return differ;
+}
+
+ShotView micromap_shadow_view() {
+  ShotView view;
+  view.eye = Vec3{-2.5f, 4.0f, -2.5f};
+  view.target = Vec3{-0.4f, 0.0f, -0.4f};
+  view.mode = static_cast<u32>(gfx::ResolveMode::Shaded);
+  return view;
+}
+
+}  // namespace
+
+TEST_CASE("alpha mask: opacity micromaps leave the shadow rays' and the ray path's picture alone") {
+  Fixture fx;
+  RenderSettings rays = base_settings(RasterMode::Hardware);
+  rays.shadows = ShadowMode::RayTraced;
+  RenderSettings traced = base_settings(RasterMode::RayTrace);
+  traced.shadows = ShadowMode::RayTraced;
+  ShotView traced_view;
+  traced_view.mode = static_cast<u32>(gfx::ResolveMode::Shaded);
+  struct Case {
+    const char* name;
+    std::string mesh;
+    RenderSettings settings;
+    ShotView view;
+    const char* cache;
+  };
+  const Case cases[] = {
+      {"shadow rays, per-frame build", fx.caster_masked, rays, micromap_shadow_view(),
+       "renderer.rt.cache=false"},
+      {"shadow rays, the cache", fx.caster_masked, rays, micromap_shadow_view(),
+       "renderer.rt.cache=true"},
+      {"ray path, per-frame build", fx.masked, traced, traced_view, "renderer.rt.cache=false"},
+      {"ray path, the cache", fx.masked, traced, traced_view, "renderer.rt.cache=true"},
+  };
+  // Micro-triangles an eighth of a texel across (level 6): the quad maps the 8x8 mask exactly, so
+  // every micro-triangle edge falls on a texel boundary and a coarser one always reads two blocks.
+  TunableScope fine("renderer.rt.micromap_texels=0.01", "renderer.rt.micromap_texels=4");
+  TunableScope cap("renderer.rt.micromap_level=6", "renderer.rt.micromap_level=4");
+  for (const Case& c : cases) {
+    TunableScope cache(c.cache, "renderer.rt.cache=true");
+    MicromapShot on;
+    {
+      TunableScope set("renderer.shadow.micromaps=true", "renderer.shadow.micromaps=false");
+      on = shoot_micromaps(c.mesh, c.settings, c.view);
+    }
+    if (!on.skip.empty()) {
+      MESSAGE(c.name << " skipped: " << on.skip);
+      continue;
+    }
+    MicromapShot off;
+    {
+      TunableScope set("renderer.shadow.micromaps=false", "renderer.shadow.micromaps=false");
+      off = shoot_micromaps(c.mesh, c.settings, c.view);
+    }
+    REQUIRE(off.skip.empty());
+    CHECK_FALSE(off.baked);
+    if (!on.baked) {
+      MESSAGE(c.name << ": no micromaps on this device; nothing to compare");
+      continue;
+    }
+    // The bake decided something: the quad's two triangles keep data, and the checker leaves
+    // micro-triangles of every kind — known ones the traversal settles, unknown ones along the
+    // blocks' edges, which the loops still ask.
+    CHECK(on.stats.triangles == 2);
+    CHECK(on.stats.micro_opaque > 0);
+    CHECK(on.stats.micro_transparent > 0);
+    CHECK(on.stats.micro_unknown > 0);
+    const u32 differ = differing_pixels(on.frame, off.frame);
+    MESSAGE(c.name << ": " << on.stats.micro_opaque << " opaque, " << on.stats.micro_transparent
+                   << " transparent and " << on.stats.micro_unknown
+                   << " unknown micro-triangles at level cap " << on.stats.level_cap << "; "
+                   << differ << " pixels differ");
+    CHECK(differ == 0);
+  }
+}
+
+// The micromaps are really in the structures: `renderer.shadow.opaque_rays` forces every caster
+// solid, which a micromap's transparent micro-triangle is not — the traversal never reports it,
+// forced or not — so with micromaps the forced shadow loses the bake's transparent micro-triangles,
+// and without them it is the opaque quad's. The one picture that is meant to move, and by how much
+// is the bake's own count: the micro-triangles of one level are of one area, so the shadow shrinks
+// by the transparent share of them (576 of 8,192 here, 7.0 %; measured 6.9 %), within half of it
+// either way for the pixels along the shadow's edge.
+// It failed from R120's first commit until the pipelines of a device with micromaps were keyed
+// apart (device.cpp, `micromap_key`): the driver handed the resolve a compile it had made on a
+// device without the extension, whose ray queries trace every micromap as absent (R120b).
+TEST_CASE("alpha mask: a forced-solid shadow ray still skips a micromap's transparent interior") {
+  Fixture fx;
+  RenderSettings rays = base_settings(RasterMode::Hardware);
+  rays.shadows = ShadowMode::RayTraced;
+  TunableScope forced("renderer.shadow.opaque_rays=true", "renderer.shadow.opaque_rays=false");
+  TunableScope fine("renderer.rt.micromap_texels=0.01", "renderer.rt.micromap_texels=4");
+  TunableScope cap("renderer.rt.micromap_level=6", "renderer.rt.micromap_level=4");
+  MicromapShot on;
+  {
+    TunableScope set("renderer.shadow.micromaps=true", "renderer.shadow.micromaps=false");
+    on = shoot_micromaps(fx.caster_masked, rays, micromap_shadow_view());
+  }
+  if (!on.skip.empty() || !on.baked) {
+    MESSAGE("skipped: " << (on.skip.empty() ? std::string("no micromaps here") : on.skip));
+    return;
+  }
+  MicromapShot off;
+  {
+    TunableScope set("renderer.shadow.micromaps=false", "renderer.shadow.micromaps=false");
+    off = shoot_micromaps(fx.caster_masked, rays, micromap_shadow_view());
+  }
+  REQUIRE(off.skip.empty());
+  const ShadowCount with = count_shadow(on.frame);
+  const ShadowCount without = count_shadow(off.frame);
+  MESSAGE("forced solid: " << without.share() << " of the ground shadowed without micromaps, "
+                           << with.share() << " with them");
+  const f64 micro =
+      static_cast<f64>(on.stats.micro_opaque + on.stats.micro_transparent + on.stats.micro_unknown);
+  REQUIRE(micro > 0.0);
+  const f64 transparent = static_cast<f64>(on.stats.micro_transparent) / micro;
+  REQUIRE(transparent > 0.0);
+  CHECK(with.share() < without.share() * (1.0 - 0.5 * transparent));
+  CHECK(with.share() > without.share() * (1.0 - 1.5 * transparent));
+}
+
+TEST_CASE("alpha mask: a device without opacity micromaps draws what it drew") {
+  Fixture fx;
+  RenderSettings rays = base_settings(RasterMode::Hardware);
+  rays.shadows = ShadowMode::RayTraced;
+  MicromapShot without;
+  {
+    TunableScope set("renderer.shadow.micromaps=true", "renderer.shadow.micromaps=false");
+    without = shoot_micromaps(fx.caster_masked, rays, micromap_shadow_view(), true);
+  }
+  if (!without.skip.empty()) {
+    MESSAGE("skipped: " << without.skip);
+    return;
+  }
+  MicromapShot off;
+  {
+    TunableScope set("renderer.shadow.micromaps=false", "renderer.shadow.micromaps=false");
+    off = shoot_micromaps(fx.caster_masked, rays, micromap_shadow_view());
+  }
+  REQUIRE(off.skip.empty());
+  CHECK_FALSE(without.baked);
+  CHECK(differing_pixels(without.frame, off.frame) == 0);
+}

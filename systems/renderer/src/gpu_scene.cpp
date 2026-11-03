@@ -4131,6 +4131,29 @@ bool GpuScene::upload_materials(const ResolvedSettings& resolved, std::string* e
       }
     }
   }
+  // The opacity micromaps' list (R120): the same clusters as the proxy's, each with its triangle
+  // count, for `bake_micromaps`. Only a scene read whole, for the proxy's reason.
+  micromap_list_.clear();
+  micromap_triangles_.clear();
+  micromap_level_ = resolved.micromap_level;
+  micromap_budget_ = resolved.micromap_budget_bytes;
+  micromap_texels_ = resolved.micromap_texels;
+  if (resolved.shadow_micromaps && ray_tracing_ && has_masked_ && !streamed_) {
+    for (u32 m = 0; m < data_->parts.size(); ++m) {
+      const geometry::ClusterMeshPart& part = data_->parts[m];
+      for (u32 i = 0; i < part.cluster_count; ++i) {
+        const u32 c = part.first_cluster + i;
+        if (c >= cluster_count_) break;
+        const u32 material = cluster_material[c] + mesh_material_base[m];
+        if (material < material_table.size() &&
+            (material_table[material].flags & gfx::k_material_alpha_mask) != 0) {
+          micromap_list_.push_back(c);
+          micromap_list_.push_back(material);
+          micromap_triangles_.push_back(data_->lod.mesh.clusters[c].triangle_count);
+        }
+      }
+    }
+  }
   // A rigid form's frontier, drawn at every distance (upload_geometry): its coverage errors follow
   // the geometric ones — the frontier's parent half and every other cluster's own half read +inf,
   // so the foliage threshold cannot move the fixed cut either. And which frontier clusters are
@@ -4236,6 +4259,54 @@ bool GpuScene::bake_shadow_coverage(gfx::ShaderLibrary& shaders, std::string* er
   ENGINE_LOG_INFO(log_renderer, "shadow coverage baked", log::field("masked_clusters", count),
                   log::field("table_bytes", u64{zeros.size()} * sizeof(u32)));
   coverage_list_ = Vector<u32>{};
+  return true;
+}
+
+// **The opacity micromaps' bake** (gfx/opacity_micromap.h; renderer.md, "Opacity micromaps";
+// R120): once, over the alpha-tested clusters `upload_materials` listed, blocking as every upload
+// of a scene's creation is. Then the rigid forms' static structures, built at create before the
+// shaders existed, are built again naming the micromaps, before any frame references them.
+bool GpuScene::bake_micromaps(gfx::ShaderLibrary& shaders, std::string* error) {
+  if (micromaps_.address != 0 || micromap_list_.empty()) return true;
+  ENGINE_STARTUP_STAGE("opacity micromaps");
+  const gfx::Device& device = *device_;
+  gfx::MicromapBakeInput in;
+  in.clusters = clusters.address;
+  in.triangles = triangles.address;
+  in.attributes = attributes.address;
+  in.materials = materials.address;
+  in.items = std::span<const u32>(micromap_list_.data(), micromap_list_.size());
+  in.triangle_counts = std::span<const u32>(micromap_triangles_.data(), micromap_triangles_.size());
+  in.cluster_count = cluster_count_;
+  u32 limit_2 = 0;
+  u32 limit_4 = 0;
+  gfx::opacity_micromap_limits(device, limit_2, limit_4);
+  in.max_level = std::min(micromap_level_, limit_4);
+  in.budget_bytes = micromap_budget_;
+  in.target_texels = micromap_texels_;
+  if (!gfx::bake_opacity_micromaps(device, shaders, bindless_, in, micromaps_, error)) {
+    return false;
+  }
+  micromap_list_ = Vector<u32>{};
+  micromap_triangles_ = Vector<u32>{};
+  const gfx::MicromapStats& s = micromaps_.stats;
+  u32 entries = 0;
+  for (u32 l = 0; l <= gfx::k_micromap_max_level; ++l)
+    entries += s.entries_per_level[l];
+  ENGINE_LOG_INFO(
+      log_renderer, "opacity micromaps baked", log::field("triangles", s.triangles),
+      log::field("with_data", entries), log::field("fully_opaque", s.special_opaque),
+      log::field("fully_transparent", s.special_transparent),
+      log::field("fully_unknown", s.special_unknown), log::field("micro_unknown", s.micro_unknown),
+      log::field("micro_known", s.micro_opaque + s.micro_transparent),
+      log::field("level_cap", s.level_cap), log::field("levels_dropped", s.levels_dropped),
+      log::field("data_bytes", s.data_bytes), log::field("resident_bytes", micromap_bytes()),
+      log::field("bake_ms", s.bake_ms));
+  if (micromaps_.address != 0 && static_build_ && static_clusters_ > 0) {
+    gfx::destroy_cluster_set(device, static_clas_);
+    gfx::destroy_cluster_blas_set(device, static_blas_);
+    if (!build_static_forms(error)) return false;
+  }
   return true;
 }
 
@@ -4358,6 +4429,9 @@ bool GpuScene::create_ray_tracing(const ResolvedSettings& resolved, std::string*
   // an alpha-tested material builds records instead (renderer.md, "Alpha-tested geometry").
   const bool templates = resolved.settings.rt_templates && !has_masked_;
   limits.instantiate = templates;
+  // Every set, the cache's slots and the static forms are sized and built allowing micromaps when
+  // the scene will bake them (R120), since the bake comes after this, with the renderer's shaders.
+  limits.opacity_micromaps = !micromap_list_.empty();
   rt_limits_ = limits;
   constexpr gfx::BufferUsage k_record_usage = k_address | gfx::BufferUsage::AccelerationBuildInput;
   bool ok = (streamed_ || upload_room(device, packed.data(), packed.size(),
@@ -4492,6 +4566,14 @@ bool GpuScene::build_static_forms(std::string* error) {
       in.vertices = vertices.address + u64{desc.vertex_offset} * sizeof(Vec3);
       in.indices = indices8.address + u64{desc.triangle_offset} * 3;
       in.opaque = !(k < static_masked_.size() && static_masked_[k] != 0);
+      // A masked frontier cluster names its micromap (R120): a static form never fades (its LOD is
+      // the fixed frontier), so nothing a ray loop decides by the pixel is taken from it.
+      if (!in.opaque && micromaps_.address != 0 && c < micromaps_.cluster_first_host.size() &&
+          micromaps_.cluster_first_host[c] != gfx::k_micromap_none) {
+        in.omm_array = micromaps_.address;
+        in.omm_indices =
+            micromaps_.indices.address + u64{micromaps_.cluster_first_host[c]} * sizeof(i32);
+      }
       inputs.push_back(in);
     }
   }
@@ -4512,7 +4594,7 @@ bool GpuScene::build_static_forms(std::string* error) {
                                k_record_usage, true, blas_records_once, error) &&
             gfx::create_cluster_set(device, limits, static_clas_, error) &&
             gfx::create_cluster_blas_set(device, mesh_count, static_clusters_, most_per_form,
-                                         static_blas_, error);
+                                         static_blas_, error, limits.opacity_micromaps);
   if (ok) {
     ok = gfx::create_scratch(
         device, std::max(static_clas_.build_scratch_bytes, static_blas_.build_scratch_bytes),
@@ -5014,7 +5096,8 @@ bool GpuScene::lay_out_ray_tracing(std::string* error) {
   gfx::ClusterBuildSizes blas_sizes;
   if (!gfx::cluster_set_build_sizes(device, probe, set_sizes) ||
       !gfx::cluster_blas_set_build_sizes(device, rt_instance_slots_, k_probe,
-                                         std::min(rt_max_per_instance_, k_probe), blas_sizes)) {
+                                         std::min(rt_max_per_instance_, k_probe), blas_sizes,
+                                         limits.opacity_micromaps)) {
     if (error != nullptr) {
       *error = "the driver gave no cluster acceleration structure sizes for " +
                std::to_string(k_probe) + " clusters over " + std::to_string(rt_instance_slots_) +
@@ -5039,7 +5122,8 @@ bool GpuScene::lay_out_ray_tracing(std::string* error) {
   probe.max_clusters = 2 * k_probe;
   if (!gfx::cluster_set_build_sizes(device, probe, set_sizes) ||
       !gfx::cluster_blas_set_build_sizes(device, rt_instance_slots_, 2 * k_probe,
-                                         std::min(rt_max_per_instance_, k_probe), blas_sizes)) {
+                                         std::min(rt_max_per_instance_, k_probe), blas_sizes,
+                                         limits.opacity_micromaps)) {
     if (error != nullptr) *error = "the driver gave no sizes for the second frame-budget probe";
     return false;
   }
@@ -5203,9 +5287,10 @@ bool GpuScene::resize_ray_tracing(u32 capacity, std::string* error, bool beyond_
   }
   // One bottom-level set over both: an instance references the frame's own structures or the
   // cache's, never both, so its most is the larger of the two capacities.
-  ok = ok && gfx::create_cluster_blas_set(
-                 device, rt_instance_slots_, capacity + references,
-                 std::min(rt_max_per_instance_, std::max(capacity, references)), made_blas, error);
+  ok = ok &&
+       gfx::create_cluster_blas_set(device, rt_instance_slots_, capacity + references,
+                                    std::min(rt_max_per_instance_, std::max(capacity, references)),
+                                    made_blas, error, rt_limits_.opacity_micromaps);
   lap(rt_resize_cost_.blas_ns);
   if (ok) {
     u64 scratch_bytes = made_clas.build_scratch_bytes;
@@ -5277,6 +5362,9 @@ void GpuScene::destroy() noexcept {
   if (device_ == nullptr) return;
   const gfx::Device& device = *device_;
   // A dynamic scene's `instances` and `pair_table` name one of its table sets, which own them.
+  gfx::destroy_opacity_micromaps(device, micromaps_);
+  micromap_list_.clear();
+  micromap_triangles_.clear();
   if (!sets_.empty()) {
     instances = gfx::BufferResource{};
     pair_table = gfx::BufferResource{};

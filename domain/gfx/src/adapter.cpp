@@ -23,6 +23,7 @@ constexpr const char* k_extensions[] = {
     "VK_KHR_ray_tracing_maintenance1",
     "VK_EXT_mesh_shader",
     "VK_NV_cluster_acceleration_structure",
+    "VK_EXT_opacity_micromap",
     "VK_NV_partitioned_acceleration_structure",
     "VK_EXT_memory_decompression",
     "VK_NV_memory_decompression",

@@ -31,6 +31,7 @@
 #include <domain/gfx/cluster_acceleration.h>
 #include <domain/gfx/cluster_cull.h>
 #include <domain/gfx/ground_detail.h>
+#include <domain/gfx/opacity_micromap.h>
 #include <domain/gfx/resources.h>
 #include <domain/gfx/rhi.h>
 #include <domain/gfx/shader_library.h>
@@ -404,6 +405,17 @@ class GpuScene {
   // scene bakes it; later ones find it baked. `shadow_coverage_clusters` is 0 when there is none.
   bool bake_shadow_coverage(gfx::ShaderLibrary& shaders, std::string* error);
   u32 shadow_coverage_clusters() const noexcept { return shadow_coverage_clusters_; }
+  // **Opacity micromaps** (R120; renderer.md, "Opacity micromaps"; gfx/opacity_micromap.h): baked
+  // once, by the first renderer made over the scene, when `ResolvedSettings::shadow_micromaps` is
+  // on and the scene has alpha-tested clusters and is read whole; the rigid forms' static
+  // structures are built again with them. `micromap_tables_address` is
+  // `gfx::ClusterRecordParams::omm`, 0 with none, and `micromap_stats` what the bake measured.
+  bool bake_micromaps(gfx::ShaderLibrary& shaders, std::string* error);
+  u64 micromap_tables_address() const noexcept {
+    return micromaps_.address != 0 ? micromaps_.tables.address : 0u;
+  }
+  const gfx::MicromapStats& micromap_stats() const noexcept { return micromaps_.stats; }
+  u64 micromap_bytes() const noexcept { return micromaps_.resident_bytes(); }
   // A mesh of the scene carries coverage errors (geometry.md, "Two errors"): `lod_coverage` holds
   // them and `fade` the cross-fade's tables.
   bool has_coverage() const noexcept { return has_coverage_; }
@@ -1528,6 +1540,14 @@ class GpuScene {
   // {cluster, material} of every alpha-tested cluster, kept from the material upload until the
   // proxy's bake (R109) reads it, then released; empty when the proxy is off.
   Vector<u32> coverage_list_;
+  // The opacity micromaps' list ({cluster, material} per alpha-tested cluster) and each one's
+  // triangle count, kept from `upload_materials` until `bake_micromaps` (R120).
+  Vector<u32> micromap_list_;
+  Vector<u32> micromap_triangles_;
+  u32 micromap_level_ = 0;
+  u64 micromap_budget_ = 0;
+  f32 micromap_texels_ = 0.0f;
+  gfx::OpacityMicromapSet micromaps_;
   u32 shadow_coverage_clusters_ = 0;
   bool has_coverage_ = false;  // a mesh carries coverage errors
   u32 triangles_per_cluster_ = 0;

@@ -18,14 +18,17 @@
 #include <domain/gfx/device.h>
 #include <domain/gfx/frame.h>
 #include <domain/gfx/gpu_timer.h>
+#include <domain/gfx/opacity_micromap.h>
 #include <domain/gfx/ray_visibility.h>
 #include <domain/gfx/render_graph.h>
 
 #include <doctest/doctest.h>
 
+#include <algorithm>
 #include <cmath>
 #include <cstring>
 #include <shaders/cluster_vertex.spv.h>
+#include <shaders/micromap_probe.spv.h>
 #include <shaders/ray_visibility.spv.h>
 #include <string>
 
@@ -524,5 +527,411 @@ TEST_CASE("cluster acceleration structures: the cut traced through CLAS matches 
   // the whole-mesh case.
   run_comparison(device, 129, 1.0f, 640, 480);
   run_comparison(device, 257, 0.0f, 1280, 720);
+  device.destroy();
+}
+
+namespace {
+
+// What one quad's cluster carries in the micromap test below.
+enum class QuadMicromap : u8 {
+  None,                // no micromap: the record is the one before R120
+  SpecialTransparent,  // both triangles VK_OPACITY_MICROMAP_SPECIAL_INDEX_FULLY_TRANSPARENT_EXT
+  SpecialOpaque,       // both FULLY_OPAQUE
+  DataTransparent,     // both index entry 0, a level-0 entry whose one state is transparent
+  DataOpaque,          // the same entry, opaque
+};
+
+// One quad (two triangles, one cluster) built as a CLAS, under a cluster bottom-level structure and
+// a one-instance top-level structure, traced straight on by `ray_visibility.slang` (opaque
+// geometry, RAY_FLAG_CULL_NON_OPAQUE). Returns the pixels it covered.
+u32 trace_quad(gfx::Device& device, QuadMicromap variant, bool khr, const char* entry) {
+  constexpr u32 k_w = 64;
+  constexpr u32 k_h = 64;
+  std::string error;
+  Vector<Vec3> positions;
+  Vector<u32> indices;
+  make_terrain(2, 1.0f, positions, indices);
+  geometry::ClusterLodMesh lod;
+  REQUIRE_MESSAGE(
+      geometry::build_cluster_lod(positions, indices, geometry::ClusterLodOptions{}, lod, &error),
+      error);
+  REQUIRE(lod.mesh.clusters.size() == 1);
+  const geometry::ClusterDesc& desc = lod.mesh.clusters[0];
+  REQUIRE(desc.triangle_count == 2);
+
+  constexpr gfx::BufferUsage k_storage = gfx::BufferUsage::Storage;
+  constexpr gfx::BufferUsage k_address = k_storage | gfx::BufferUsage::ShaderDeviceAddress;
+  gfx_test::SingleInstance scene;
+  REQUIRE(scene.create(device, lod.mesh, 1, &error));
+  gfx::BufferResource vertices;
+  gfx::BufferResource index8;
+  gfx::BufferResource cut_buffer;
+  Vector<u8> packed8;
+  gfx::pack_cluster_indices(
+      std::span<const u32>(lod.mesh.triangles.data() + desc.triangle_offset, desc.triangle_count),
+      packed8);
+  const u32 visible_entry[2] = {0, 0};
+  REQUIRE(gfx::upload_buffer(device, lod.mesh.vertices.data(),
+                             lod.mesh.vertices.size() * sizeof(Vec3),
+                             k_storage | gfx::k_build_input_usage, vertices, &error));
+  REQUIRE(gfx::upload_buffer(device, packed8.data(), packed8.size(), gfx::k_build_input_usage,
+                             index8, &error));
+  REQUIRE(gfx::upload_buffer(device, visible_entry, sizeof(visible_entry), k_storage, cut_buffer,
+                             &error));
+
+  // The micromap: one level-0 entry (one micro-triangle, two bits), and the quad's two indices.
+  gfx::OpacityMicromapSet micromap;
+  gfx::BufferResource omm_indices;
+  const bool with = variant != QuadMicromap::None;
+  if (with) {
+    const u32 state =
+        variant == QuadMicromap::DataOpaque ? gfx::k_micromap_opaque : gfx::k_micromap_transparent;
+    const u32 data[1] = {state};
+    const gfx::MicromapTriangle triangle{};
+    REQUIRE_MESSAGE(gfx::build_opacity_micromap(
+                        device, std::span<const u32>(data, 1),
+                        std::span<const gfx::MicromapTriangle>(&triangle, 1), micromap, &error),
+                    error);
+    i32 index = 0;
+    if (variant == QuadMicromap::SpecialTransparent) index = gfx::k_micromap_fully_transparent;
+    if (variant == QuadMicromap::SpecialOpaque) index = gfx::k_micromap_fully_opaque;
+    const i32 per_triangle[2] = {index, index};
+    REQUIRE(gfx::upload_buffer(device, per_triangle, sizeof(per_triangle), gfx::k_build_input_usage,
+                               omm_indices, &error));
+  }
+
+  gfx::ClusterSetLimits limits;
+  limits.max_clusters = 1;
+  limits.max_triangles_per_cluster = geometry::ClusterLodOptions{}.max_triangles;
+  limits.max_vertices_per_cluster = geometry::ClusterLodOptions{}.max_vertices;
+  limits.max_geometry_index = 0;
+  limits.opacity_micromaps = with;
+  gfx::ClusterSet set;
+  gfx::ClusterBlas blas;
+  REQUIRE_MESSAGE(gfx::create_cluster_set(device, limits, set, &error), error);
+  REQUIRE_MESSAGE(gfx::create_cluster_blas(device, 1, blas, &error, with), error);
+  gfx::ClusterBuildInput in;
+  in.cluster_id = 0;
+  in.triangle_count = desc.triangle_count;
+  in.vertex_count = desc.vertex_count;
+  in.vertices = vertices.address + u64{desc.vertex_offset} * sizeof(Vec3);
+  in.indices = index8.address;
+  in.omm_array = with ? micromap.address : 0;
+  in.omm_indices = with ? omm_indices.address : 0;
+  gfx::BufferResource records;
+  REQUIRE(gfx::create_buffer(device, gfx::k_cluster_build_record_bytes, gfx::k_build_input_usage,
+                             true, records, &error));
+  gfx::write_cluster_build_records(std::span<const gfx::ClusterBuildInput>(&in, 1), records.mapped);
+  gfx::AccelerationStructure tlas;
+  REQUIRE(gfx::create_tlas(device, 1, gfx::k_build_fast_trace, tlas, &error));
+  gfx::BufferResource scratch;
+  REQUIRE(gfx::create_scratch(
+      device,
+      std::max({set.build_scratch_bytes, blas.build_scratch_bytes, tlas.build_scratch_bytes}),
+      scratch, &error));
+  gfx::BufferResource instances;
+  REQUIRE(gfx::create_buffer(device, gfx::k_instance_record_bytes, gfx::k_build_input_usage, true,
+                             instances, &error));
+  gfx::BindlessSet bindless;
+  REQUIRE(bindless.create(device, gfx::BindlessConfig{}, &error));
+  const u32 slot = bindless.add_acceleration_structure(tlas.handle);
+  REQUIRE(slot != gfx::BindlessSet::k_invalid_slot);
+
+  // `trace_main` is the engine's own camera-ray pass (ray_visibility.slang), the others the
+  // probe's.
+  const bool engine_pass = std::strcmp(entry, "trace_main") == 0;
+  gfx::ShaderModuleHandle trace_module =
+      engine_pass ? gfx::create_shader_module(device, shaders::k_ray_visibility_spirv,
+                                              shaders::k_ray_visibility_spirv_size, &error)
+                  : gfx::create_shader_module(device, shaders::k_micromap_probe_spirv,
+                                              shaders::k_micromap_probe_spirv_size, &error);
+  REQUIRE(trace_module.valid());
+  const gfx::DescriptorSetLayoutHandle set_layout = bindless.layout();
+  struct ProbeParams {
+    u64 output = 0;
+    u32 scene = 0;
+    u32 size = 0;
+  };
+  gfx::ComputePipeline trace_pipeline;
+  REQUIRE(gfx::create_compute_pipeline(
+      device, trace_module, entry, std::span<const gfx::DescriptorSetLayoutHandle>(&set_layout, 1),
+      engine_pass ? sizeof(u64) : sizeof(ProbeParams), trace_pipeline, &error));
+
+  const u64 vis_bytes = u64{k_w} * k_h * sizeof(u64);
+  gfx::BufferResource vis;
+  gfx::BufferResource params;
+  REQUIRE(gfx::create_buffer(device, vis_bytes, k_address | gfx::BufferUsage::TransferDst, true,
+                             vis, &error));
+  REQUIRE(gfx::create_buffer(device, sizeof(gfx::RayVisibilityParams), k_address, true, params,
+                             &error));
+  ProbeParams probe;
+  probe.output = vis.address;
+  probe.scene = slot;
+  probe.size = k_w;
+  {
+    const Vec3 eye{0.0f, 3.0f, 2.0f};
+    const Mat4 projection =
+        perspective_reversed_z(radians(60.0f), static_cast<f32>(k_w) / k_h, 0.1f);
+    const Mat4 eye_view = look_at(eye, Vec3{}, Vec3{0, 1, 0});
+    gfx::RayVisibilityParams ray{};
+    ray.view_proj = projection * eye_view;
+    ray.clip_to_ray = gfx::clip_to_ray(projection, eye_view);
+    ray.camera = Vec4{eye, 0.0f};
+    ray.output = vis.address;
+    ray.width = k_w;
+    ray.height = k_h;
+    ray.scene = slot;
+    ray.visible = cut_buffer.address;
+    ray.instances = scene.instances.address;
+    ray.meshes = scene.meshes.address;
+    std::memcpy(params.mapped, &ray, sizeof(ray));
+  }
+  std::memset(vis.mapped, 0, vis_bytes);
+
+  // The KHR path, for the bisection: the same quad as one triangle geometry whose micromap rides
+  // on VkAccelerationStructureTrianglesOpacityMicromapEXT, as VK_EXT_opacity_micromap specifies.
+  gfx::AccelerationStructure khr_blas;
+  gfx::BufferResource index16;
+  VkAccelerationStructureGeometryKHR geometry{};
+  VkAccelerationStructureBuildGeometryInfoKHR khr_build{};
+  VkAccelerationStructureTrianglesOpacityMicromapEXT khr_omm{};
+  VkMicromapUsageEXT khr_usage{};
+  if (khr) {
+    Vector<u16> packed16;
+    gfx::expand_packed_triangles(
+        std::span<const u32>(lod.mesh.triangles.data() + desc.triangle_offset, desc.triangle_count),
+        packed16);
+    REQUIRE(gfx::upload_buffer(device, packed16.data(), packed16.size() * sizeof(u16),
+                               gfx::k_build_input_usage, index16, &error));
+    geometry.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR;
+    geometry.geometryType = VK_GEOMETRY_TYPE_TRIANGLES_KHR;
+    geometry.flags = VK_GEOMETRY_OPAQUE_BIT_KHR;
+    VkAccelerationStructureGeometryTrianglesDataKHR& tri = geometry.geometry.triangles;
+    tri.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_TRIANGLES_DATA_KHR;
+    tri.vertexFormat = VK_FORMAT_R32G32B32_SFLOAT;
+    tri.vertexData.deviceAddress = in.vertices;
+    tri.vertexStride = sizeof(f32) * 3;
+    tri.maxVertex = desc.vertex_count - 1;
+    tri.indexType = VK_INDEX_TYPE_UINT16;
+    tri.indexData.deviceAddress = index16.address;
+    if (with) {
+      const bool data =
+          variant == QuadMicromap::DataOpaque || variant == QuadMicromap::DataTransparent;
+      khr_usage.count = data ? 2u : 0u;
+      khr_usage.subdivisionLevel = 0;
+      khr_usage.format = gfx::k_micromap_format_4state;
+      khr_omm.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_TRIANGLES_OPACITY_MICROMAP_EXT;
+      khr_omm.indexType = VK_INDEX_TYPE_UINT32;
+      khr_omm.indexBuffer.deviceAddress = omm_indices.address;
+      khr_omm.indexStride = sizeof(i32);
+      khr_omm.baseTriangle = 0;
+      khr_omm.usageCountsCount = data ? 1u : 0u;
+      khr_omm.pUsageCounts = data ? &khr_usage : nullptr;
+      khr_omm.micromap = gfx::vk::native(micromap.handle);
+      tri.pNext = &khr_omm;
+    }
+    khr_build.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR;
+    khr_build.type = VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR;
+    khr_build.flags = VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR;
+    khr_build.mode = VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR;
+    khr_build.geometryCount = 1;
+    khr_build.pGeometries = &geometry;
+    const u32 primitives = desc.triangle_count;
+    VkAccelerationStructureBuildSizesInfoKHR sizes{};
+    sizes.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_SIZES_INFO_KHR;
+    vkGetAccelerationStructureBuildSizesKHR(device.handles().device,
+                                            VK_ACCELERATION_STRUCTURE_BUILD_TYPE_DEVICE_KHR,
+                                            &khr_build, &primitives, &sizes);
+    REQUIRE(gfx::create_buffer(
+        device, sizes.accelerationStructureSize,
+        gfx::BufferUsage::AccelerationStorage | gfx::BufferUsage::ShaderDeviceAddress, false,
+        khr_blas.buffer, &error));
+    VkAccelerationStructureCreateInfoKHR create{};
+    create.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_CREATE_INFO_KHR;
+    create.buffer = gfx::vk::native(khr_blas.buffer.buffer);
+    create.size = sizes.accelerationStructureSize;
+    create.type = VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR;
+    VkAccelerationStructureKHR structure = VK_NULL_HANDLE;
+    REQUIRE(vkCreateAccelerationStructureKHR(device.handles().device, &create, nullptr,
+                                             &structure) == VK_SUCCESS);
+    khr_blas.handle = gfx::vk::wrap(structure);
+    VkAccelerationStructureDeviceAddressInfoKHR address_info{};
+    address_info.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_DEVICE_ADDRESS_INFO_KHR;
+    address_info.accelerationStructure = structure;
+    khr_blas.address =
+        vkGetAccelerationStructureDeviceAddressKHR(device.handles().device, &address_info);
+    gfx::destroy_buffer(device, scratch);
+    REQUIRE(gfx::create_scratch(device,
+                                std::max({sizes.buildScratchSize, tlas.build_scratch_bytes}) + 256,
+                                scratch, &error));
+    khr_build.dstAccelerationStructure = structure;
+    khr_build.scratchData.deviceAddress = (scratch.address + 255) / 256 * 256;
+  }
+
+  gfx::FrameContext frames;
+  REQUIRE(frames.create(device, 1, &error));
+  if (khr) {
+    gfx::CommandList cb = frames.begin_frame();
+    const VkAccelerationStructureBuildRangeInfoKHR range{desc.triangle_count, 0, 0, 0};
+    const VkAccelerationStructureBuildRangeInfoKHR* ranges = &range;
+    vkCmdBuildAccelerationStructuresKHR(gfx::vk::native(cb), 1, &khr_build, &ranges);
+    gfx::acceleration_build_barrier(cb, gfx::PipelineStage::AllCommands,
+                                    gfx::MemoryAccess::MemoryRead);
+    REQUIRE(frames.wait(frames.end_frame()));
+  } else {
+    gfx::CommandList cb = frames.begin_frame();
+    gfx::build_cluster_set(cb, set, records.address, 0, scratch);
+    gfx::acceleration_build_barrier(cb, gfx::PipelineStage::AccelerationBuild,
+                                    gfx::MemoryAccess::AccelerationStructureRead |
+                                        gfx::MemoryAccess::AccelerationStructureWrite);
+    gfx::build_cluster_blas(cb, blas, set.addresses.address, 1, scratch);
+    gfx::acceleration_build_barrier(cb, gfx::PipelineStage::AllCommands,
+                                    gfx::MemoryAccess::MemoryRead);
+    REQUIRE(frames.wait(frames.end_frame()));
+  }
+  if (!khr && variant != QuadMicromap::DataOpaque && variant != QuadMicromap::DataTransparent) {
+    // A record that names a micromap builds a larger structure (384 bytes and 512 for this quad on
+    // the RTX 5090): the CLAS does take it in, whatever the traversal then does.
+    const u32 bytes = static_cast<const u32*>(set.sizes.mapped)[0];
+    MESSAGE("quad CLAS: " << bytes << " bytes, micromap " << (with ? 1 : 0));
+  }
+  gfx::TlasInstance instance;
+  instance.blas = khr ? khr_blas.address : blas.address;
+  gfx::write_instances(std::span<const gfx::TlasInstance>(&instance, 1), instances.mapped);
+  {
+    gfx::CommandList cb = frames.begin_frame();
+    gfx::build_tlas(cb, tlas, instances.address, 1, gfx::k_build_fast_trace, scratch);
+    gfx::acceleration_build_barrier(cb, gfx::PipelineStage::ComputeShader,
+                                    gfx::MemoryAccess::AccelerationStructureRead);
+    cb.bind_pipeline(gfx::BindPoint::Compute, trace_pipeline.pipeline);
+    bindless.bind(cb, gfx::BindPoint::Compute);
+    if (engine_pass) {
+      const u64 address = params.address;
+      cb.push_constants(trace_pipeline.layout, gfx::ShaderStage::Compute, 0, sizeof(u64), &address);
+    } else {
+      cb.push_constants(trace_pipeline.layout, gfx::ShaderStage::Compute, 0, sizeof(probe), &probe);
+    }
+    cb.dispatch((k_w + 7) / 8, (k_h + 7) / 8, 1);
+    gfx::acceleration_build_barrier(cb, gfx::PipelineStage::AllCommands,
+                                    gfx::MemoryAccess::MemoryRead);
+    REQUIRE(frames.wait(frames.end_frame()));
+  }
+  u32 covered = 0;
+  for (u32 i = 0; i < k_w * k_h; ++i) {
+    covered += (engine_pass ? static_cast<const u64*>(vis.mapped)[i]
+                            : static_cast<const u32*>(vis.mapped)[i]) != 0
+                   ? 1u
+                   : 0u;
+  }
+
+  frames.destroy();
+
+  gfx::destroy_compute_pipeline(device, trace_pipeline);
+  gfx::destroy_shader_module(device, trace_module);
+  bindless.destroy();
+  gfx::destroy_acceleration_structure(device, tlas);
+  if (khr) gfx::destroy_acceleration_structure(device, khr_blas);
+  gfx::destroy_cluster_set(device, set);
+  gfx::destroy_cluster_blas(device, blas);
+  gfx::destroy_opacity_micromaps(device, micromap);
+  scene.destroy(device);
+  for (gfx::BufferResource* b : {&vertices, &index8, &index16, &cut_buffer, &omm_indices, &records,
+                                 &scratch, &instances, &vis, &params}) {
+    gfx::destroy_buffer(device, *b);
+  }
+  return covered;
+}
+
+}  // namespace
+
+// **The record-level identity R120 needs** (renderer.md, "Opacity micromaps"): a cluster record
+// that names a micromap is one the traversal honours, isolated from the renderer. A quad whose two
+// triangles are transparent by the special index alone, or by a data entry, is missed by a ray
+// that meets it head on; opaque by either, it is hit as it is with no micromap.
+TEST_CASE("cluster acceleration structures: a CLAS's opacity micromap decides the traversal") {
+  gfx::Device device;
+  if (!gfx_test::open_device(device)) return;
+  if (!gfx_test::require(device, {gfx_test::Need::VisibilityBuffer, gfx_test::Need::RayQuery,
+                                  gfx_test::Need::ClusterAccelerationStructure})) {
+    return;
+  }
+  if (!device.features().opacity_micromap) {
+    MESSAGE("skipped: the device has no VK_EXT_opacity_micromap");
+    device.destroy();
+    return;
+  }
+  // Each variant, on the cluster path and on the KHR path (the same micromap through
+  // VkAccelerationStructureTrianglesOpacityMicromapEXT), traced by the probe and by the engine's
+  // own camera-ray pass (ray_visibility.slang).
+  for (const char* entry : {"probe_eye", "trace_main"}) {
+    for (const bool khr : {false, true}) {
+      const u32 none = trace_quad(device, QuadMicromap::None, khr, entry);
+      const u32 special_transparent =
+          trace_quad(device, QuadMicromap::SpecialTransparent, khr, entry);
+      const u32 special_opaque = trace_quad(device, QuadMicromap::SpecialOpaque, khr, entry);
+      const u32 data_transparent = trace_quad(device, QuadMicromap::DataTransparent, khr, entry);
+      const u32 data_opaque = trace_quad(device, QuadMicromap::DataOpaque, khr, entry);
+      MESSAGE(std::string(entry) << (khr ? " KHR" : " CLAS") << ": no micromap " << none
+                                 << ", special transparent " << special_transparent
+                                 << ", special opaque " << special_opaque << ", data transparent "
+                                 << data_transparent << ", data opaque " << data_opaque);
+      CHECK(none > 64);
+      CHECK(special_opaque == none);
+      CHECK(data_opaque == none);
+      CHECK(special_transparent == 0);
+      CHECK(data_transparent == 0);
+    }
+  }
+  device.destroy();
+}
+// **A compile the driver made without micromaps is never traced with them** (device.cpp,
+// `micromap_key`; renderer.md, "Opacity micromaps"). The driver keeps compiled shaders in a cache
+// of its own whose key does not include VK_EXT_opacity_micromap, and a ray query from a compile
+// made on a device without it traces every micromap as absent. Here a device without the extension
+// compiles the probe first, then one with it traces a quad transparent by its special index: it
+// must miss. Without the key every run after the first failed it on driver 617.42 (1,998 pixels
+// hit of 1,998).
+TEST_CASE(
+    "cluster acceleration structures: a shader compiled without micromaps is not reused "
+    "with them") {
+  {
+    gfx::DeviceOptions options;
+    options.overrides.absent.push_back("VK_EXT_opacity_micromap");
+    gfx::Device plain;
+    if (!gfx_test::open_device(plain, options)) return;
+    if (!gfx_test::require(
+            plain, {gfx_test::Need::RayQuery, gfx_test::Need::ClusterAccelerationStructure})) {
+      return;
+    }
+    REQUIRE(!plain.features().opacity_micromap);
+    std::string error;
+    gfx::ShaderModuleHandle module = gfx::create_shader_module(
+        plain, shaders::k_micromap_probe_spirv, shaders::k_micromap_probe_spirv_size, &error);
+    REQUIRE(module.valid());
+    gfx::BindlessSet bindless;
+    REQUIRE(bindless.create(plain, gfx::BindlessConfig{}, &error));
+    const gfx::DescriptorSetLayoutHandle set_layout = bindless.layout();
+    gfx::ComputePipeline pipeline;
+    REQUIRE(gfx::create_compute_pipeline(
+        plain, module, "probe_eye", std::span<const gfx::DescriptorSetLayoutHandle>(&set_layout, 1),
+        16, pipeline, &error));
+    gfx::destroy_compute_pipeline(plain, pipeline);
+    gfx::destroy_shader_module(plain, module);
+    bindless.destroy();
+    plain.destroy();
+  }
+  gfx::Device device;
+  if (!gfx_test::open_device(device)) return;
+  if (!device.features().opacity_micromap) {
+    MESSAGE("skipped: the device has no VK_EXT_opacity_micromap");
+    device.destroy();
+    return;
+  }
+  const u32 none = trace_quad(device, QuadMicromap::None, false, "probe_eye");
+  const u32 transparent = trace_quad(device, QuadMicromap::SpecialTransparent, false, "probe_eye");
+  MESSAGE("after a compile without micromaps: no micromap " << none << ", special transparent "
+                                                            << transparent);
+  CHECK(none > 64);
+  CHECK(transparent == 0);
   device.destroy();
 }

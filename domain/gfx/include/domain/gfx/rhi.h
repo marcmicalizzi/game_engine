@@ -60,6 +60,7 @@ using ImageHandle = Handle<struct ImageTag>;
 using ImageViewHandle = Handle<struct ImageViewTag>;
 using SamplerHandle = Handle<struct SamplerTag>;
 using AccelerationStructureHandle = Handle<struct AccelerationStructureTag>;
+using MicromapHandle = Handle<struct MicromapTag>;  // an opacity micromap (opacity_micromap.h)
 // The allocator's record of a resource's memory (VMA's allocation today).
 using AllocationHandle = Handle<struct AllocationTag>;
 // Shaders and pipelines.
@@ -118,6 +119,10 @@ enum class BufferUsage : u32 {
   AccelerationBuildInput = 0x80000,
   // Holds acceleration structures.
   AccelerationStorage = 0x100000,
+  // Read by an opacity micromap build: the state bits and the triangle array (R120).
+  MicromapBuildInput = 0x800000,
+  // Holds opacity micromaps.
+  MicromapStorage = 0x1000000,
 };
 ENGINE_GFX_FLAGS(BufferUsage)
 

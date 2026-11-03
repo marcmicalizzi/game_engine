@@ -564,6 +564,10 @@ bool Device::create(const DeviceOptions& options, std::string* error) {
   }
   const bool ext_cluster = ext_as && enable_ext("VK_NV_cluster_acceleration_structure",
                                                 caps_.cluster_acceleration_structure);
+  // Opacity micromaps (R120) only beside the cluster extension: the cluster records are the only
+  // structures the renderer attaches them to.
+  const bool ext_micromap =
+      ext_cluster && enable_ext("VK_EXT_opacity_micromap", caps_.opacity_micromap);
   const bool ext_descriptor_buffer =
       enable_ext("VK_EXT_descriptor_buffer", caps_.descriptor_buffer);
   const bool ext_decompression =
@@ -659,6 +663,11 @@ bool Device::create(const DeviceOptions& options, std::string* error) {
   cluster.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_CLUSTER_ACCELERATION_STRUCTURE_FEATURES_NV;
   cluster.clusterAccelerationStructure = VK_TRUE;
 #endif
+#if defined(VK_EXT_opacity_micromap)
+  VkPhysicalDeviceOpacityMicromapFeaturesEXT micromap{};
+  micromap.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_OPACITY_MICROMAP_FEATURES_EXT;
+  micromap.micromap = VK_TRUE;
+#endif
 #if defined(VK_EXT_memory_decompression)
   VkPhysicalDeviceMemoryDecompressionFeaturesEXT decompression{};
   decompression.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_DECOMPRESSION_FEATURES_EXT;
@@ -710,6 +719,14 @@ bool Device::create(const DeviceOptions& options, std::string* error) {
     vkGetPhysicalDeviceProperties2(h.physical, &properties);
     impl->features.cluster_max_geometry_index = limits.maxClusterGeometryIndex;
   }
+#endif
+#if defined(VK_EXT_opacity_micromap)
+  if (ext_micromap) {
+    link(reinterpret_cast<VkBaseOutStructure*>(&micromap));
+    impl->features.opacity_micromap = true;
+  }
+#else
+  (void)ext_micromap;
 #endif
 #if defined(VK_EXT_memory_decompression)
   if (ext_decompression) {
@@ -1019,6 +1036,30 @@ void destroy_shader_module(const Device& device, ShaderModuleHandle module) noex
   if (module) vkDestroyShaderModule(device.handles().device, vk::native(module), nullptr);
 }
 
+namespace {
+
+// **The driver's shader cache does not know the micromaps** (R120b; renderer.md, "Opacity
+// micromaps"). On the RTX 5090's driver 617.42 a pipeline the driver compiled on a device without
+// VK_EXT_opacity_micromap — every run before R120, any run that removed the row — is found again in
+// its own disk cache by a device with the extension, and its ray queries then trace every micromap
+// as if it were not there: the same quad, fully transparent by its special index, was hit on 1,998
+// of 1,998 pixels by the reused compile and on 0 by a fresh one (rt_cluster_tests.cpp, "a shader
+// compiled without micromaps is not reused with them"). So every pipeline a device with micromaps
+// makes carries one specialization constant no shader declares: the same behaviour (a map entry for
+// an id the module does not use changes nothing, by the Vulkan spec) and a different key in the
+// driver's cache and in ours (pipeline_cache.h), so the two devices never share a compile.
+constexpr u32 k_micromap_key_id = 0x7e0a0120u;
+constexpr u32 k_micromap_key_value = 0x314d4d4fu;  // "OMM1"
+
+const VkSpecializationInfo* micromap_key(const Device& device) noexcept {
+  static constexpr VkSpecializationMapEntry k_entry{k_micromap_key_id, 0, sizeof(u32)};
+  static constexpr u32 k_value = k_micromap_key_value;
+  static const VkSpecializationInfo k_info{1, &k_entry, sizeof(u32), &k_value};
+  return device.features().opacity_micromap ? &k_info : nullptr;
+}
+
+}  // namespace
+
 bool create_compute_pipeline(const Device& device, ShaderModuleHandle module, const char* entry,
                              std::span<const DescriptorSetLayoutHandle> set_layouts,
                              u32 push_constant_bytes, ComputePipeline& out, std::string* error) {
@@ -1051,6 +1092,7 @@ bool create_compute_pipeline(const Device& device, ShaderModuleHandle module, co
   info.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
   info.stage.module = vk::native(module);
   info.stage.pName = entry;
+  info.stage.pSpecializationInfo = micromap_key(device);
   info.layout = layout;
   VkPipeline pipeline = VK_NULL_HANDLE;
   if (const VkResult r =
@@ -1089,6 +1131,8 @@ bool create_graphics_pipeline(const Device& device, const GraphicsPipelineDesc& 
   stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
   stages[1].module = vk::native(desc.fragment);
   stages[1].pName = desc.fragment_entry;
+  stages[0].pSpecializationInfo = micromap_key(device);
+  stages[1].pSpecializationInfo = micromap_key(device);
   // No fragment module is a depth-only pipeline: rasterization writes depth, nothing is shaded.
   const u32 stage_count = desc.fragment ? 2u : 1u;
   const VkFormat color_format = vk::native(desc.color_format);
@@ -1208,6 +1252,8 @@ bool create_mesh_pipeline(const Device& device, const MeshPipelineDesc& desc, Pi
     stages[stage_count].pName = desc.fragment_entry;
     ++stage_count;
   }
+  for (u32 s = 0; s < stage_count; ++s)
+    stages[s].pSpecializationInfo = micromap_key(device);
   const VkFormat color_format = vk::native(desc.color_format);
 
   VkPipelineViewportStateCreateInfo viewport{};

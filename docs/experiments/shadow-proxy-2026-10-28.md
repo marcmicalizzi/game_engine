@@ -46,7 +46,9 @@ The brief's rule — a threshold that moves the picture by more than a few FLIP 
 
 **What it costs.** One byte per cluster of the scene, resident: 1.37 MB on the v20 forest, of which 319,484 clusters are masked and carry a non-zero byte. The bake is one dispatch at load: 11.7 ms on the v20 forest on the RTX 5090, within the renderer's creation (the startup trace's `shadow coverage` stage). `ResolveParams` grows by one 16-byte row (448 → 464). A frame with the tunable at 0 reads nothing new.
 
-## Stage 2: what opacity micromaps would take (written down, not built)
+## Stage 2: what opacity micromaps would take (written down; built in part by R120)
+
+**Status (2026-11-03, R120b): built and measured.** The device, the bake, the records' two addresses on the per-frame build, the cache and the static forms are built; the traversal uses them since the pipelines of a micromap device are keyed apart from the driver's older compiles, and the picture is the same bytes with them and without. Measured on the v25 walk ([forest-resolve, stage 5](forest-resolve-2026-11-01.md#stage-5-opacity-micromaps-on-the-walk-2026-11-03)): the sun stage 14.8 → 13.3 ms at 11520×2160, 79 % of the micro-triangles unknown at level 4, 1.15 GB resident, and the CLAS slots' worst case 44 % larger; off by default. [renderer.md, "Opacity micromaps"](../subsystems/renderer.md#opacity-micromaps) has the rule.
 
 An **opacity micromap** subdivides a triangle into 4^L micro-triangles and stores 1 bit (2-state: opaque, transparent) or 2 bits (4-state: also "unknown opaque" and "unknown transparent") for each; the traversal hardware resolves the known states itself, and only an unknown micro-triangle reaches the candidate loop. For a leaf card that is most of its area decided without the shader — the transparent corners never become candidates and the leaf's interior commits as opaque — and the mask is looked up only along the leaf's edge. Where the proxy trades the picture for time, micromaps keep the picture (4-state, with the edge left to the mask) and pay in memory and build time.
 

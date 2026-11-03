@@ -103,7 +103,7 @@ struct BlasRecord {
   uint64_t references;
 };
 
-// Mirrors gfx::ClusterRecordParams (160 bytes: past the 128 every device guarantees, which this
+// Mirrors gfx::ClusterRecordParams (192 bytes: past the 128 every device guarantees, which this
 // pass may take because it runs only where VK_NV_cluster_acceleration_structure does, and every
 // such device has 256).
 struct RecordParams {
@@ -140,7 +140,13 @@ struct RecordParams {
   // gfx::ClusterCacheTables): its tables, or 0 for none; and the frame's stamp.
   uint64_t cache;
   uint frame;
-  uint cache_pad;
+  uint fade_stride;  // the fade table's stride between views, in pairs
+  // **Opacity micromaps** (gfx::MicromapTables, opacity_micromap.h; R120): the micromap, the
+  // scene's index buffer and each cluster's first index, or 0 for none. A drawn alpha-tested
+  // pair's record names them; a caster's never does, because a primary ray would commit its opaque
+  // micro-triangles where the caster must be passed through.
+  uint64_t omm;
+  uint64_t omm_fade;  // the cross-fade table, view 0's block, or 0
 };
 
 // Mirrors gfx::ClusterCacheTables (120 bytes).
@@ -174,7 +180,7 @@ static const uint k_cache_overflow = 0xfffffffdu;  // gfx::k_cluster_cache_overf
 // gfx::k_cluster_cache_frame: a key's value at or above it is no slot. Under the three marks, it
 // names the frame's own record that built the key's structure this frame (R114).
 static const uint k_cache_frame = 0x80000000u;
-static const uint k_cache_forms = 3;               // gfx::k_cluster_cache_forms
+static const uint k_cache_forms = 4;               // gfx::k_cluster_cache_forms
 static const uint k_cache_geometry = 1u << 23;     // gfx::k_cluster_cache_geometry
 static const uint k_cache_caster = 1u << 22;       // gfx::k_cluster_cache_caster
 static const uint k_cache_ages = 64;               // gfx::k_cluster_cache_ages
@@ -205,6 +211,45 @@ static const uint k_count_occupied = 10;
 static const uint k_count_miss_unbuilt = 11;
 
 CacheTables* cache_tables() { return (CacheTables*)g_params.cache; }
+
+// Mirrors gfx::MicromapTables (24 bytes).
+struct MicromapTables {
+  uint64_t array;          // the micromap's address, or 0: every triangle a special index
+  uint64_t indices;        // int per masked triangle
+  uint64_t cluster_first;  // uint per cluster: its first index, or k_micromap_none
+};
+static const uint k_micromap_none = 0xffffffffu;  // gfx::k_micromap_none
+static const uint k_index_type_32bit = 4;         // gfx::k_cluster_index_type_32bit
+
+// Whether pair (instance, cluster) is inside a cross-fade band in any view this frame (R120): its
+// hits then keep only the pixels its band gives them, which the ray loops decide by the pixel, so
+// its record names no micromap (an opaque micro-triangle would commit without asking).
+bool pair_fading(InstanceDesc instance, MeshDesc mesh, uint cluster_id) {
+  if (g_params.omm_fade == 0) return false;
+  uint2* table = (uint2*)g_params.omm_fade;
+  const uint pair = pair_of(instance, mesh, cluster_id);
+  for (uint v = 0; v < (g_params.mode & 0xffffu); ++v) {
+    const uint split = table[uint64_t(v) * g_params.fade_stride + pair].x;
+    if ((split & 0xffffu) != 0u || (split >> 16) != 0xffffu) return true;
+  }
+  return false;
+}
+
+// Attaches the cluster's micromap to a record, where the scene baked one for it (R120). Only an
+// alpha-tested drawn record asks: its states are conservative, so the traversal decides only what
+// the mask would have decided the same way and hands the loops every unknown micro-triangle.
+void attach_micromap(inout ClusterRecord record, uint cluster_id) {
+  if (g_params.omm == 0) return;
+  MicromapTables* tables = (MicromapTables*)g_params.omm;
+  if (tables->array == 0) return;
+  uint* first = (uint*)tables->cluster_first;
+  const uint index = first[cluster_id];
+  if (index == k_micromap_none) return;
+  record.counts |= k_index_type_32bit << 28;
+  record.strides1 |= 4u << 16;
+  record.omm_array = tables->array;
+  record.omm_indices = tables->indices + uint64_t(index) * 4u;
+}
 
 // **A cached instance** (renderer.md, "The resident cluster structure cache"): one whose clusters'
 // structures are the cache's, built once, and not this frame's. Rigid — nothing in the pool moves
@@ -1169,7 +1214,10 @@ void emit_cached(uint dense, uint cluster_id, MeshDesc mesh, InstanceDesc instan
   // The three forms a cluster's structure can take differ in their flags and their name, and the
   // structure carries both: the drawn opaque one, the drawn alpha-tested one (non-opaque, so the
   // ray loops test its mask), and the caster (non-opaque, and named as one).
-  const uint form = caster ? 2u : (masked ? 1u : 0u);
+  // A fourth, since R120: drawn alpha-tested inside a fade band, the second form without its
+  // micromap (`pair_fading`).
+  const uint form =
+      caster ? 2u : (masked ? (pair_fading(instance, mesh, cluster_id) ? 3u : 1u) : 0u);
   const uint local = cluster_id - mesh.first_cluster;
   uint* bases = (uint*)tables->bases;
   const uint key = (bases[instance.mesh] + local) * k_cache_forms + form;
@@ -1285,8 +1333,9 @@ void emit<let kCache : int>(uint slot) {
   MaskTables masks = no_mask_tables();
   masks.materials = g_params.mask_materials;
   masks.cluster_materials = g_params.mask_cluster_materials;
-  const bool opaque = (g_params.caster_count == 0 || visible_index < caster_base()) &&
-                      !pair_masked(masks, instance, cluster_id);
+  const bool not_caster = g_params.caster_count == 0 || visible_index < caster_base();
+  const bool masked = pair_masked(masks, instance, cluster_id);
+  const bool opaque = not_caster && !masked;
   record.geometry = (geometry_index & 0xffffff) | ((opaque ? k_geometry_opaque : 0u) << 29);
   record.strides0 = 1 | (12 << 16);
   record.strides1 = 0;
@@ -1295,6 +1344,9 @@ void emit<let kCache : int>(uint slot) {
   record.geometry_buffer = 0;
   record.omm_array = 0;
   record.omm_indices = 0;
+  if (not_caster && masked && !pair_fading(instance, mesh, cluster_id)) {
+    attach_micromap(record, cluster_id);
+  }
   ClusterRecord* records = (ClusterRecord*)g_params.records;
   records[dense] = record;
 }
@@ -1432,6 +1484,9 @@ ClusterRecord cache_record(uint4 miss) {
   record.geometry_buffer = 0;
   record.omm_array = 0;
   record.omm_indices = 0;
+  // The drawn alpha-tested form (key % 3 == 1) carries the cluster's micromap; the opaque and the
+  // caster forms never do (R120).
+  if (miss.x % k_cache_forms == 1u) attach_micromap(record, miss.y);
   return record;
 }
 

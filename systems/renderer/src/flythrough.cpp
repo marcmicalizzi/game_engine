@@ -107,6 +107,7 @@ scene::FrameRecord frame_record(const FrameStats& stats, u32 repeat, u32 frame, 
   out.rt_capacity = stats.rt_capacity;
   out.rt_references = stats.rt_references;
   out.rt_cache_built = stats.rt_cache_built;
+  out.rt_micromaps = stats.rt_micromaps;
   out.rt_cache_evicted = stats.rt_cache_evicted;
   out.instances = stats.instances;
   out.pairs = stats.pairs;

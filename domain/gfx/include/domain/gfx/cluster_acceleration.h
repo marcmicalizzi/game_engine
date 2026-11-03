@@ -47,6 +47,10 @@ struct ClusterSetLimits {
   // structures it holds, so a scene can exceed it where no frame's cut is large.
   u32 max_geometry_index = 0;
   bool instantiate = false;  // the set holds instantiated templates, not rebuilt clusters
+  // The build may take opacity micromaps (R120): VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_CLUSTER_
+  // OPACITY_MICROMAPS_BIT_NV on its input, which VUID-10881 asks of any build whose records name a
+  // micromap array. A set, a cache or a template set built with it is sized with it too.
+  bool opacity_micromaps = false;
 };
 
 struct ClusterAsProperties {
@@ -57,6 +61,9 @@ struct ClusterAsProperties {
   u32 scratch_alignment = 0;
   u32 bottom_level_alignment = 0;
   u32 template_alignment = 0;
+  // VkPhysicalDeviceOpacityMicromapPropertiesEXT, 0 without the extension (opacity_micromap.h).
+  u32 max_opacity_2state_level = 0;
+  u32 max_opacity_4state_level = 0;
 };
 bool cluster_as_properties(const Device& device, ClusterAsProperties& out) noexcept;
 
@@ -72,6 +79,11 @@ struct ClusterBuildInput {
   // out of the picture but not out of the shadows (ClusterRecordParams) — is not, so a primary ray
   // that culls non-opaque geometry passes through it and a shadow ray that forces opacity stops.
   bool opaque = true;
+  // **An opacity micromap** (opacity_micromap.h; R120): the micromap's address and this cluster's
+  // first entry of the scene's index buffer (i32 a triangle, special indices negative). Zero for
+  // none, and then the record is byte for byte what it was before micromaps.
+  DeviceAddress omm_array = 0;
+  DeviceAddress omm_indices = 0;
 };
 inline constexpr u64 k_cluster_build_record_bytes = 64;  // one triangle-cluster build record
 // Appends three bytes per packed cluster triangle (i0 | i1 << 8 | i2 << 16).
@@ -212,10 +224,11 @@ void write_cluster_instantiate_records(std::span<const ClusterInstantiateInput> 
 // vertex_count << 9, position_truncate << 18, and index_type << 24; u32 geometry, the base
 // geometry index in 24 bits with the geometry flags << 29 (4 = opaque); u32 strides0, the index
 // stride (1) with the vertex stride (12) << 16; u32 strides1, the geometry-index stride with the
-// opacity-micromap index stride << 16 (both 0); then five u64 addresses: index_buffer,
-// vertex_buffer, geometry_buffer, omm_array, omm_indices.
-inline constexpr u32 k_cluster_index_type_8bit = 1;  // ..._INDEX_FORMAT_8BIT_NV
-inline constexpr u32 k_cluster_geometry_opaque = 4;  // ..._GEOMETRY_OPAQUE_BIT_NV
+// opacity-micromap index stride << 16 (0, and 4 with a micromap); then five u64 addresses:
+// index_buffer, vertex_buffer, geometry_buffer, omm_array, omm_indices.
+inline constexpr u32 k_cluster_index_type_8bit = 1;   // ..._INDEX_FORMAT_8BIT_NV
+inline constexpr u32 k_cluster_geometry_opaque = 4;   // ..._GEOMETRY_OPAQUE_BIT_NV
+inline constexpr u32 k_cluster_index_type_32bit = 4;  // ..._INDEX_FORMAT_32BIT_NV: micromap indices
 
 // The 16-byte record of a cluster bottom-level build: u32 reference count, u32 stride (8), u64
 // address of the CLAS address array. A GPU-driven cut writes it from a shader.
@@ -363,9 +376,24 @@ struct ClusterRecordParams {
   // draws, which is what the least-recently-drawn eviction reads.
   u64 cache = 0;
   u32 frame = 0;
-  u32 cache_pad = 0;
+  // The cross-fade table's stride between views, in pairs (`omm_fade` below), 0 without one.
+  u32 fade_stride = 0;
+  // **Opacity micromaps** (opacity_micromap.h, `MicromapTables`; R120): the scene's micromap, its
+  // index buffer and each cluster's first index, or 0 for none — every record is then the bytes it
+  // was. With one, a **drawn alpha-tested** pair's record (and the cache's alpha-tested form) names
+  // the micromap; a caster's never does, since a primary ray would commit its opaque
+  // micro-triangles where the caster must be passed through. Its sets are built with
+  // `ClusterSetLimits:: opacity_micromaps`. 192 bytes: the push block every cluster device takes is
+  // 256.
+  u64 omm = 0;
+  // **The cross-fade** (renderer.md, "The cross-fade"): the frame's fade table, view 0's block, or
+  // 0 in a frame with no fade. A pair inside a fade band in any view keeps only the pixels its band
+  // gives it, which the ray loops decide by the pixel and a micromap's opaque micro-triangle would
+  // not: its record names no micromap, and a cached one takes the fourth form, alpha-tested
+  // without.
+  u64 omm_fade = 0;
 };
-static_assert(sizeof(ClusterRecordParams) == 176);
+static_assert(sizeof(ClusterRecordParams) == 192);
 
 // **The resident cluster structure cache's tables** (docs/subsystems/renderer.md, "The resident
 // cluster structure cache"; R101), one device block the records passes read through
@@ -438,7 +466,7 @@ inline constexpr u32 k_cluster_cache_overflow = 0xfffffffdu;  // a miss nothing 
 // 2^31 - 1).
 inline constexpr u32 k_cluster_cache_frame = 0x80000000u;
 inline constexpr u32 k_cluster_cache_miss_bytes = 16;          // a miss's entry in `misses`
-inline constexpr u32 k_cluster_cache_forms = 3;                // keys per cluster
+inline constexpr u32 k_cluster_cache_forms = 4;                // keys per cluster
 inline constexpr u32 k_cluster_cache_geometry = 1u << 23;      // a cached structure's index bit
 inline constexpr u32 k_cluster_cache_caster = 1u << 22;        // ... and its caster form's
 inline constexpr u32 k_cluster_cache_max_clusters = 1u << 22;  // a cached mesh's most clusters
@@ -560,12 +588,17 @@ struct ClusterBlasSet {
   u32 max_clusters = 0;    // CLAS references over all of them
   u32 max_clusters_per_structure = 0;
   u32 alignment = 0;
+  // The structures may reference CLAS that carry opacity micromaps (R120): the bottom-level build's
+  // input says ALLOW_CLUSTER_OPACITY_MICROMAPS too, in the size query and in every build, exactly
+  // as the cluster builds' inputs do (ClusterSetLimits::opacity_micromaps).
+  bool opacity_micromaps = false;
 };
 bool cluster_blas_set_build_sizes(const Device& device, u32 max_structures, u32 max_clusters,
-                                  u32 max_clusters_per_structure, ClusterBuildSizes& out) noexcept;
+                                  u32 max_clusters_per_structure, ClusterBuildSizes& out,
+                                  bool opacity_micromaps = false) noexcept;
 bool create_cluster_blas_set(const Device& device, u32 max_structures, u32 max_clusters,
                              u32 max_clusters_per_structure, ClusterBlasSet& out,
-                             std::string* error = nullptr);
+                             std::string* error = nullptr, bool opacity_micromaps = false);
 // Builds one structure per 16-byte record at `records` (k_cluster_blas_record_bytes each, as
 // clas_records.slang's `ranges_main` writes them); `count` is a device address of a u32 count, or
 // 0 for `max_structures`. The records' reference counts must sum to at most `max_clusters` and
@@ -585,9 +618,10 @@ struct ClusterBlas {
   u64 build_scratch_bytes = 0;
   u32 max_clusters = 0;
   u32 alignment = 0;
+  bool opacity_micromaps = false;  // as ClusterBlasSet::opacity_micromaps
 };
 bool create_cluster_blas(const Device& device, u32 max_clusters, ClusterBlas& out,
-                         std::string* error = nullptr);
+                         std::string* error = nullptr, bool opacity_micromaps = false);
 // Writes the record on the host (`references`: a u64 array of CLAS addresses; `count` how
 // many) and records the build.
 void build_cluster_blas(CommandList commands, const ClusterBlas& blas, DeviceAddress references,
