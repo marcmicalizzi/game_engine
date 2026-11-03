@@ -211,6 +211,9 @@ struct FrameStats {
   f64 gpu_terrain_upload = 0.0;
   // A sky's passes (renderer.md, "The sky"): its tables, the sky from the eye, the air, the sums.
   f64 gpu_sky = 0.0;
+  // The half-rate sun pass (R126; renderer.md, "A shading rate by region"), every view's: zero in
+  // a frame at full rate.
+  f64 gpu_half_sun = 0.0;
   // The frame passes' zones (frame_pass.h) and the encode that follows them; zero in a frame with
   // none. `visibility_m` is what they reported (`Stats::visibility_m`), negative for none.
   f64 gpu_frame_passes = 0.0;
@@ -432,6 +435,8 @@ struct Stats {
   // adds to the resolve is in `gpu_resolve`.
   f64 gpu_sky = 0.0;
   SkyStats sky;
+  // The half-rate sun pass (`FrameStats::gpu_half_sun`), summed; what it saves is in `gpu_resolve`.
+  f64 gpu_half_sun = 0.0;
   // The frame passes' zones (frame_pass.h, renderer.md "Frame passes") and the encode they end on,
   // summed: the frame's cost and no view's. Zero in every frame without a pass registered.
   f64 gpu_frame_passes = 0.0;
@@ -482,6 +487,7 @@ struct Stats {
   f64 shadow_cull_ms() const noexcept { return gpu_shadow_cull / timed(); }
   f64 sky_ms() const noexcept { return gpu_sky / timed(); }
   f64 frame_passes_ms() const noexcept { return gpu_frame_passes / timed(); }
+  f64 half_sun_ms() const noexcept { return gpu_half_sun / timed(); }
   f64 total_ms() const noexcept { return gpu_total / timed(); }
   // What one view cost a frame, everything but the shared acceleration structure chain.
   f64 view_ms(u32 view) const noexcept {
@@ -842,6 +848,9 @@ class SceneRenderer {
     gfx::ComputePipeline cache[4];         // the cluster cache's scan, evict, assign, references
     gfx::ComputePipeline tlas_references;  // tlas_references.slang: the BLAS addresses in
     gfx::ComputePipeline trace;
+    // resolve_half_sun.slang: the sun's ray once per 2x2 block of the half-rate columns (R126;
+    // renderer.md, "A shading rate by region"), built only where the resolve traces shadows.
+    gfx::ComputePipeline half_sun;
     // pair_expand.slang: a streamed world's changed pair-table entries, from its instance table.
     gfx::ComputePipeline pair_expand;
     // A frame with a frame pass: the resolve into the linear colour image, and the output encode
@@ -865,12 +874,18 @@ class SceneRenderer {
     u32 level_base = 0;       // first of this view's blocks in `hiz_levels`
     u32 coverage_offset = 0;  // this view's per-tile mask, behind every view's pyramid
     u32 coverage_pitch = 0;   // tiles per row of it
+    u64 half_offset = 0;      // this view's first word of the half pass's answers (R126)
   };
   // Screen-sized resources, recreated on resize.
   struct Targets {
     gfx::ImageResource depth;  // the direct path's depth buffer
     gfx::BufferResource vis;   // the visibility buffer: u64 per pixel, the views back to back
     gfx::BufferResource hiz;   // the Hi-Z pyramids of the farthest depth, the views back to back
+    // The half pass's answers, one u32 per 2x2 block of every view's region, back to back (R126;
+    // renderer.md, "A shading rate by region"): made by the first frame that records the pass,
+    // so a frame at full rate keeps none resident.
+    gfx::BufferResource half;
+    u64 half_words = 0;
     Vector<ViewTarget> views;
     u32 width = 0;  // the largest source rectangle: the raster passes' render area
     u32 height = 0;

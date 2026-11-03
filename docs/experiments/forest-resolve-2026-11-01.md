@@ -239,3 +239,60 @@ The frame's passes, the sweep (`rt` primary, quiet false) and the normal run (`h
 
 **Where that leaves full width.** At 11520×2160 on the owner's path the frame is 50 ms with the mesh rasterizer: the resolve 31.7 (the sun's ray about 21, the material 5.5), the rasterizer 5.3, the chain 5.9, the pool 1.4, the rest about 6. Opacity micromaps (R120) are bounded by the solid row at about 17 ms; a shading rate by region (R126) at about 10 of the resolve's remainder; the hidden forest (R122) is where the rasterizer's and the chain's milliseconds are. At 3840×2160 the v26 handoff's 35 s walk presented 14.6 ms median and 28.1 p95 on the lake's shore, and the woods are the measurement still to take there.
 
+## Stage 4: a shading rate by region (2026-11-02)
+
+Roadmap R126 ([renderer](../subsystems/renderer.md#a-shading-rate-by-region) has the rule and why it is shaped so). The sun's ray asked once per 2×2 block of one pair in the frame's sides by a quarter-size pass, `resolve_half_sun.slang`, and taken by the resolve for the block's other three pixels; the default is a third at each side of a frame wider than 2.5:1 and nothing otherwise. A shading rule that changes the picture in the regions it names, measured here as what it returns and what it moves.
+
+### How it was measured
+
+- **The walk** is stage 2's path (records 6693–6993, four path frames a record, 1,201 frames, `walk.json` of stage 2's scratch, copied), flown with stage 2's flags but without `renderer.shadow.sweep`: the v25 `scene.json`, the v22 materials, the coordinator's derived-data cache (nothing cooked into it), `--terrain-tiles --terrain-far 6 --time-rate 0 --world-rate 1 --time-of-day 15 --no-lights --lod 1 --deform-pool-mib 64 --rt-budget-mib 0 --raster rt --shadows rt`, flora motion at wind 0.7, offscreen, 8-bit, `--warmup 120 --wait-quiet 120`, three repeats.
+- **One flight a width measures every cell**: `renderer.resolve.stop_after=cycle` (frame f stops after stage f mod 8) with `renderer.resolve.half_rate_sweep=true` (frame f takes the sides' share (f / 8) mod 3: none, as set, a half — the half is the whole frame), so every cell — a stage at a share — is the **median of 150 frames** along the whole walk.
+- **The pictures**: one more process at 11520×2160 held markers 1, 2 and 3 (marker 3 at (6.63, 1.33, −24.95), yaw 170.2°, pitch −0.7°) 48 frames each with `--world-rate 0 --no-medium`, captured by `--marker-captures` at each pose's frames 0 (full rate), 8 (a third), 16 (a half) and 24 (full rate again). A pixel's change is its largest channel difference in codes.
+- **The machine**: RTX 5090, `msvc-release` at the branch's head (R126's two commits on 643e0854), each run under the GPU lock. The 11520 flight was **not quiet** (`quiet` false): other processes held 9.2% of the CPU at its start and 28.8% at its end, the GPU 66% busy at the end (the run's own frames), 22.3 GB of its memory in use; the 3840 flight was quiet (3.2% and 2.5%). The GPU numbers are the pass timers'.
+
+### What it returns
+
+Cumulative resolve milliseconds by stage, and the frame's passes, at each share of the sides:
+
+| stage | 11520, none | 11520, a third (default) | 11520, a half (all) | 3840, none | 3840, as set (default: none) | 3840, a half (all) |
+|---|---:|---:|---:|---:|---:|---:|
+| decode | 0.36 | 0.35 | 0.35 | 0.12 | 0.12 | 0.12 |
+| reconstruct | 1.08 | 1.07 | 1.08 | 0.40 | 0.40 | 0.39 |
+| material | 6.93 | 6.87 | 6.85 | 2.32 | 2.32 | 2.33 |
+| lighting | 7.94 | 7.82 | 7.79 | 2.61 | 2.63 | 2.67 |
+| sun shadow | 23.27 | 18.92 | 17.67 | 7.43 | 7.58 | 6.04 |
+| light shadows | 23.21 | 18.95 | 17.56 | 7.47 | 7.55 | 6.07 |
+| sky | 23.48 | 19.21 | 17.77 | 7.65 | 7.67 | 6.17 |
+| **the picture (+ water)** | **23.43** | **19.25** | **18.04** | **7.62** | **7.84** | **6.20** |
+| the half pass (`half_sun`) | 0.00 | 1.20 | 1.72 | 0.00 | 0.00 | 0.67 |
+| **resolve + half pass** | **23.43** | **20.45** | **19.76** | **7.62** | **7.84** | **6.87** |
+| the sun's stage (sun shadow − lighting) | 15.34 | 11.10 | 9.88 | 4.82 | 4.95 | 3.37 |
+| **GPU frame** | **44.18** | **40.90** | **39.65** | **19.03** | **19.28** | **18.32** |
+
+- **At the owner's width the default returns 3.0 ms of the resolve net of its pass, 3.3 of the GPU frame** (44.2 → 40.9); the whole frame at half rate 3.7 and 4.5. The replay's full-rate numbers are stage 2's (23.4 against 22.5 for the resolve, 44.2 against 42.9 for the frame, on a busier machine).
+- **It is not the bound the row set** (about 10 ms): the sun's stage falls from 15.3 to 11.1 ms where a quarter rate over two thirds of the frame would leave 7.7. The rule takes only blocks of one pair, and the rays that cost — a leaf's edge, the ground behind a card, a thin branch, the masks' candidates — are in the blocks it cannot take. The stage's drop is three quarters of the taken blocks' cost, so the taken blocks carried about 5.6 ms of the sides' 10.2 (2/3 of 15.3): about 45% of the sides' sun cost is in blocks of two pairs or more, and stays per pixel by design.
+- **At 3840×2160 the default changes nothing**: the as-set share records no pass (0.00 ms in every frame) and its resolve is the full rate's within the noise (7.84 against 7.62, the same work). The whole frame at half rate there would save 0.75 ms of 7.6.
+
+### What it moves
+
+At 11520×2160, against the full-rate capture of the same frame:
+
+| marker | region | pixels changed | share of the region | mean change (codes) | 99th percentile | by more than 16 codes | largest |
+|---|---|---:|---:|---:|---:|---:|---:|
+| 1 | left third | 183,621 | 2.21% | 40.2 | 72 | 169,295 | 109 |
+| 1 | centre third | 0 | 0 | — | — | 0 | 0 |
+| 1 | right third | 300,616 | 3.62% | 40.7 | 70 | 283,562 | 106 |
+| 2 | left third | 126,043 | 1.52% | 40.3 | 75 | 111,332 | 101 |
+| 2 | centre third | 0 | 0 | — | — | 0 | 0 |
+| 2 | right third | 339,226 | 4.09% | 59.3 | 97 | 335,435 | 173 |
+| 3 | left third | 257,527 | 3.11% | 42.1 | 72 | 248,776 | 107 |
+| 3 | centre third | 0 | 0 | — | — | 0 | 0 |
+| 3 | right third | 254,984 | 3.07% | 84.2 | 129 | 253,752 | 187 |
+
+With the whole frame at half rate the left and right halves change 2.5% and 3.5% (marker 1), 1.5% and 3.6% (marker 2), 2.6% and 2.7% (marker 3), by the same codes. **Run to run the captures are identical** at markers 2 and 3 (0 pixels between frames 48 and 72, 96 and 120); at marker 1 the path's first frame differs from its 24th in 258 pixels of the left third, the flight settling on its first frame, so marker 1's left count carries up to 258 pixels that are not the rule's.
+
+**What the change is.** A changed pixel is one of a block's three that took its top-left pixel's answer where the sun's edge passes between them: a sunfleck or a shadow's edge moved by up to one pixel, so it is lit where it was shaded or the reverse — which is why nearly every change is a large one (the 16-code line is the whole of it) and there are no small ones. On the outer monitors of the owner's surround a shadow's edge is drawn on a 2×2 staircase; everything else — the material, the lighting, the silhouettes, the centre monitor — is the full-rate picture to the byte. Whether that is a trade the eye accepts at the periphery is the owner's to read in the captures; the lever is a tunable (`renderer.resolve.half_rate_sides`, 0 turns it off).
+
+### What is left
+
+The material stage at half rate (R126's second step) is not built: its two side thirds at a quarter of the rate are at most 2.8 ms of its 6.9 at 11520, less the same share of mixed blocks this stage found (perhaps half of that), with a quarter-size G-buffer of the block's material and a second pass. Opacity micromaps (R120) attack the cost this rule cannot take — the masks' candidates in mixed blocks — and the two compose: a micromap makes a taken block's one ray cheaper and a mixed block's four.

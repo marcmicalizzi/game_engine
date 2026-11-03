@@ -250,8 +250,9 @@ ENGINE_EXPECT_SIZE(48, 8, gfx::HizParams);
 // the hybrid's ray distance and band (R100, R102). 464, not 448: the opaque shadow proxy's
 // coverage table, its length and threshold (R109; renderer.md, "The opaque shadow proxy"). 480,
 // not 464: the open sea's instance and water material (S93; water.md, "To the horizon"), a row of
-// its own that only the resolve's water modules declare.
-ENGINE_EXPECT_SIZE(480, 8, gfx::ResolveParams);
+// its own that only the resolve's water modules declare. 496, not 480: the half pass's answers and
+// the view's full-rate columns (R126; renderer.md, "A shading rate by region"), a row of its own.
+ENGINE_EXPECT_SIZE(496, 8, gfx::ResolveParams);
 
 // The sky (sky.h; docs/subsystems/gfx.md, "The sky"): the air, the lights, the eye, the celestial
 // frame, the exposure, the tables' addresses, and a view's inverse projection and pixel angle for

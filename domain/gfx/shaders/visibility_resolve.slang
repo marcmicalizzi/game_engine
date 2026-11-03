@@ -73,7 +73,7 @@
 // the visibility buffer. A **Panini** view goes one step further: its region holds a wider
 // rectilinear picture, and `panini_x`/`source_x`/`panini_d` map each output pixel back into it.
 //
-// Read through a device address; mirrors gfx::ResolveParams (480 bytes).
+// Read through a device address; mirrors gfx::ResolveParams (496 bytes).
 struct ResolveParams {
   float4 sky;     // rgb, shown for empty pixels and the hemisphere ambient's upper half
   float4 sun;     // xyz normalized direction towards the light, w intensity
@@ -167,6 +167,12 @@ struct ResolveParams {
   // A light too faint to test (renderer.md; R115): the share of the pixel's other light at or below
   // which a traced light takes the sun query's answer instead of a ray; 0 traces every light.
   float light_tolerance;
+  // A shading rate by region (gfx::ResolveParams::half_sun; renderer.md, "A shading rate by
+  // region"; R126): the half pass's answer per 2x2 block outside the full-rate columns
+  // [half_x0, half_x1), or 0 for none. Only the ray-traced modules read it.
+  uint64_t half_sun;
+  uint half_x0;
+  uint half_x1;
 };
 
 // **The resolve's split** (gfx::ResolveStop; renderer.md, "Where the resolve's time goes"; R115).
@@ -198,6 +204,30 @@ bool stop_skips(uint stage) { return g_stop != 0u && g_stop < stage; }
 // The resolved pixel, for the cross-fade's hash in the shadow rays (ade_keeps): set once by the
 // entry point, so the shading functions between need no new parameter.
 static uint2 g_fade_pixel = uint2(0, 0);
+
+// **A shading rate by region** (renderer.md, "A shading rate by region"; R126). The half pass
+// (resolve_half_sun.slang) asked the sun's ray once for a 2x2 block of the half-rate columns whose
+// four pixels hold one pair — at the block's top-left pixel, through this file's own
+// `shadow_ray_blocked` — and wrote the pair << 1 | blocked, or `k_half_sun_not_taken`. While the
+// resolve asks the sun's query for a pixel of that block and that pair, `g_sun_block` holds the
+// block's answer (0 lit, 1 blocked) and `shadow_ray_blocked` returns it instead of tracing; any
+// other pixel, and every other query (the lights', the water's), traces as it always did.
+static const uint k_half_sun_not_taken = 0xffffffffu;
+static const uint k_half_none = 2u;
+static uint g_sun_block = k_half_none;
+
+// The block's answer for `pixel` of `pair`, or k_half_none: no half pass, a full-rate column, a
+// block not taken, or a block taken for another pair (a Panini view's output pixel reads a source
+// pixel of some block, and the pair is checked there too).
+uint half_sun_answer(ResolveParams* params, uint2 pixel, uint pair) {
+  if (params->half_sun == 0 || (pixel.x >= params->half_x0 && pixel.x < params->half_x1)) {
+    return k_half_none;
+  }
+  const uint word =
+      ((uint*)params->half_sun)[(pixel.y >> 1) * ((params->width + 1u) >> 1) + (pixel.x >> 1)];
+  if (word == k_half_sun_not_taken || (word >> 1) != pair) return k_half_none;
+  return word & 1u;
+}
 
 // The output encode's target, gathered from the block (display.slang's `DisplayTarget`).
 DisplayTarget display_target(ResolveParams* params) {
@@ -289,6 +319,9 @@ float4 sky_pixel(ResolveParams* params, float2 source, uint2 pixel) {
                 1.0);
 }
 
+// The half pass (resolve_half_sun.slang) includes this file for its functions and has an entry
+// point of its own; the resolve's two are left out of it.
+#ifndef RESOLVE_HALF_PASS
 [shader("vertex")]
 FullscreenOut vs_fullscreen(uint vertex_id : SV_VertexID) {
   // One triangle covering the viewport: (-1,-1), (3,-1), (-1,3).
@@ -298,6 +331,7 @@ FullscreenOut vs_fullscreen(uint vertex_id : SV_VertexID) {
   out.position = float4(x, y, 0.0, 1.0);
   return out;
 }
+#endif
 
 // One color per (instance, cluster), so two instances of a mesh are told apart in the debug view.
 float3 id_color(uint2 entry) {
@@ -373,6 +407,8 @@ bool shadow_ray_blocked(ResolveParams* params, uint bit, float3 origin, float3 d
   if ((params->shadow_flags & bit) == 0 || params->scene == k_no_scene || t_max <= 0.0) {
     return false;
   }
+  // The half pass's answer for this pixel's block (above): the same question, asked once a block.
+  if (bit == k_shadow_sun && g_sun_block != k_half_none) return g_sun_block != 0u;
   const uint flags = RAY_FLAG_FORCE_OPAQUE | RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH;
   RayDesc ray;
   ray.Origin = origin;
@@ -887,6 +923,7 @@ float4 empty_pixel(ResolveParams* params, float2 source, uint2 noise_pixel) {
 }
 #endif
 
+#ifndef RESOLVE_HALF_PASS
 [shader("fragment")]
 float4 fs_resolve(FullscreenOut in) : SV_Target {
   ResolveParams* params = (ResolveParams*)g_push.params;
@@ -1135,6 +1172,9 @@ float4 fs_resolve(FullscreenOut in) : SV_Target {
   // the cascaded maps answer the filtered fraction, so their penumbra is grey between the two.
   if (params->mode == 6) {
     if (dot(surface.normal, params->sun.xyz) <= 0.0) return float4(0.5, 0.5, 0.5, 1.0);
+#ifdef RESOLVE_RAY_SHADOWS
+    g_sun_block = half_sun_answer(params, pixel, pair);
+#endif
     const float v = shadow_visibility(params, k_shadow_sun, 0u, s.position, s.geometric, ray_bias,
                                       params->sun.xyz, 1e30);
     return float4(v, v, v, 1.0);
@@ -1186,11 +1226,18 @@ float4 fs_resolve(FullscreenOut in) : SV_Target {
     float sun_visibility = 1.0;
     if (dot(surface.normal, params->sun.xyz) > 0.0) {
       g_count_sun = g_count;
+#ifdef RESOLVE_RAY_SHADOWS
+      // The half pass's answer where this pixel's block was taken for its pair (R126).
+      g_sun_block = half_sun_answer(params, pixel, pair);
+#endif
       const float v = stop_skips(k_stop_sun_shadow)
                           ? 1.0
                           : shadow_visibility(params, k_shadow_sun, 0u, s.position, s.geometric,
                                               ray_bias, params->sun.xyz, 1e30);
       g_count_sun = false;
+#ifdef RESOLVE_RAY_SHADOWS
+      g_sun_block = k_half_none;  // the lights' queries trace their own rays
+#endif
       // The sun ray's counts (gfx::k_resolve_count_rays): candidates, masks, and what it found.
       if (g_count) {
         return float4(float(min(g_sun_candidates, 255u)) / 255.0,
@@ -1306,3 +1353,4 @@ float4 fs_resolve(FullscreenOut in) : SV_Target {
   if (air) knee = sky->shoulder;  // never a read through the null block
   return float4(display_output(color, knee, noise_pixel, display_target(params)), 1.0);
 }
+#endif

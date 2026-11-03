@@ -17,6 +17,7 @@
 
 #include <core/math/math.h>
 #include <domain/gfx/device.h>
+#include <domain/gfx/visibility_resolve.h>
 #include <foundation/image/png.h>
 #include <foundation/tunables/tunables.h>
 #include <systems/renderer/capture.h>
@@ -32,10 +33,12 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <initializer_list>
 #include <map>
 #include <optional>
 #include <span>
 #include <string>
+#include <utility>
 #include <vector>
 
 using namespace engine;
@@ -729,4 +732,227 @@ TEST_CASE("alpha mask: the reference path tracer sees through the holes the rast
   renderer.destroy();
   scene.destroy();
   device.destroy();
+}
+
+// ---- a shading rate by region (R126; renderer.md, "A shading rate by region") ------------------
+namespace {
+
+// The half-rate tunables a case sets, put back to their defaults however it ends.
+struct HalfRateRestore {
+  ~HalfRateRestore() {
+    (void)tunables::apply_overrides("renderer.resolve.half_rate_sides=-1");
+    (void)tunables::apply_overrides("renderer.resolve.half_rate_centre=false");
+  }
+};
+
+// The sides' tunable at exactly the default's third (1/3 as a float), so an explicit third draws
+// what the default does.
+constexpr const char* k_third = "0.3333333432674408";
+
+// From just under the masked quad, looking almost straight down at its shadow: the ground (one
+// pair) fills the frame and the mask's checker of shadow crosses every third of it.
+ShotView half_rate_low_view() {
+  ShotView v;
+  v.eye = Vec3{-0.5f, 0.9f, -0.56f};
+  v.target = Vec3{-0.5f, 0.0f, -0.5f};
+  v.mode = static_cast<u32>(gfx::ResolveMode::Shaded);
+  return v;
+}
+
+// The masked caster under the sun's rays, shaded, `width` x k_size from `view`, captured once per
+// entry of `sides` (the sides' tunable as text) in order, through one renderer: the frames after
+// the first are drawn by a renderer that has drawn the ones before.
+std::vector<CapturedFrame> shoot_half_rate(const std::string& mesh, u32 width, const ShotView& view,
+                                           std::initializer_list<const char*> sides,
+                                           std::string& skip) {
+  std::vector<CapturedFrame> out;
+  gfx::Device device;
+  std::string error;
+  if (!device.create(gfx::DeviceOptions{}, &error)) {
+    skip = "device unavailable: " + error;
+    return out;
+  }
+  SceneData data;
+  GpuScene scene;
+  SceneRenderer renderer;
+  SceneDesc desc;
+  desc.meshes.push_back(mesh);
+  desc.cache = false;
+  RenderSettings settings = base_settings(RasterMode::Hardware);
+  settings.shadows = ShadowMode::RayTraced;
+  settings.view_mode = view.mode;
+  REQUIRE_MESSAGE(load_scene(desc, data, error), "scene: " << error);
+  ResolvedSettings resolved;
+  resolve_settings(settings, device.features(), &data, resolved);
+  const RenderAvailability availability = check_availability(resolved, device.features());
+  if (availability != RenderAvailability::Ok || !resolved.shadows) {
+    skip = availability != RenderAvailability::Ok
+               ? "unavailable here: " + unavailable_reason(availability, device)
+               : std::string("no ray-traced shadows on this device");
+    device.destroy();
+    return out;
+  }
+  REQUIRE_MESSAGE(scene.create(device, data, resolved, &error), "gpu scene: " << error);
+  SceneRenderer::Desc rd;
+  rd.width = width;
+  rd.height = k_size;
+  REQUIRE_MESSAGE(renderer.create(device, scene, resolved, rd, &error), "renderer: " << error);
+  FrameDesc frame;
+  frame.camera.position = absolute(WorldPos::origin(), view.eye);
+  frame.camera.target = absolute(WorldPos::origin(), view.target);
+  frame.camera.fov_y = k_fov;
+  frame.view_mode = view.mode;
+  CaptureChannels channels;
+  channels.ids = true;
+  channels.depth = true;
+  for (const char* s : sides) {
+    REQUIRE(tunables::apply_overrides(std::string("renderer.resolve.half_rate_sides=") + s));
+    CapturedFrame captured;
+    REQUIRE_MESSAGE(renderer.capture(frame, channels, captured, &error), error);
+    out.push_back(std::move(captured));
+  }
+  renderer.destroy();
+  scene.destroy();
+  device.destroy();
+  return out;
+}
+
+bool same_pixel(const CapturedFrame& a, const CapturedFrame& b, u32 p) {
+  for (u32 c = 0; c < 4; ++c)
+    if (a.color[p * 4 + c] != b.color[p * 4 + c]) return false;
+  return true;
+}
+
+// The pair a pixel holds: its instance and cluster.
+bool same_pair(const CapturedFrame& f, u32 p, u32 q) {
+  return f.ids[p * k_id_words] == f.ids[q * k_id_words] &&
+         f.ids[p * k_id_words + 1] == f.ids[q * k_id_words + 1];
+}
+
+// How a half-rate picture differs from the full-rate one, pixel by pixel, sorted by where.
+struct HalfRateDiff {
+  u32 centre = 0;    // differing pixels in the full-rate columns
+  u32 mixed = 0;     // in a half-rate block whose four pixels are not one covered pair
+  u32 top_left = 0;  // a one-pair block's top-left pixel, whose own ray the block took
+  u32 taken = 0;     // a one-pair block's other three: the shading rule's own change
+  u32 one_pair_blocks = 0;
+  u32 mixed_blocks = 0;
+};
+
+HalfRateDiff half_rate_diff(const CapturedFrame& full, const CapturedFrame& half, f32 sides) {
+  HalfRateDiff d;
+  const u32 w = full.width;
+  const gfx::HalfRateWindow window = gfx::half_rate_window(sides, false, w, 0, w, w);
+  for (u32 by = 0; by < (k_size + 1) / 2; ++by) {
+    for (u32 bx = 0; bx < (w + 1) / 2; ++bx) {
+      const u32 x = bx * 2;
+      const u32 y = by * 2;
+      const bool half_rate = x < window.x0 || x >= window.x1;
+      const u32 p[4] = {y * w + x, y * w + x + 1, (y + 1) * w + x, (y + 1) * w + x + 1};
+      bool one_pair = x + 1 < w && y + 1 < k_size;
+      for (u32 i = 0; one_pair && i < 4; ++i)
+        one_pair = covered(full, p[i]) && same_pair(full, p[0], p[i]);
+      if (half_rate) ++(one_pair ? d.one_pair_blocks : d.mixed_blocks);
+      for (u32 i = 0; i < 4; ++i) {
+        if (p[i] >= w * k_size || same_pixel(full, half, p[i])) continue;
+        if (!half_rate) {
+          ++d.centre;
+        } else if (!one_pair) {
+          ++d.mixed;
+        } else if (i == 0) {
+          ++d.top_left;
+        } else {
+          ++d.taken;
+        }
+      }
+    }
+  }
+  return d;
+}
+
+}  // namespace
+
+// (a) and (c): the rule off draws the full-rate bytes, on a frame before and after one drawn at
+// half rate; a surround's default is its sides and a narrower frame's is nothing.
+TEST_CASE("half rate: off is the full-rate picture, and the default is the sides of a surround") {
+  Fixture fx;
+  HalfRateRestore restore;
+  std::string skip;
+  // 3:1, a surround: the default's thirds are on.
+  const std::vector<CapturedFrame> wide = shoot_half_rate(
+      fx.caster_masked, 3 * k_size, half_rate_low_view(), {"0", k_third, "0", "-1"}, skip);
+  if (!skip.empty()) {
+    MESSAGE("skipped: " << skip);
+    return;
+  }
+  REQUIRE(wide.size() == 4);
+  CHECK(wide[0].color == wide[2].color);        // off after a frame at half rate: the same bytes
+  CHECK_FALSE(wide[0].color == wide[1].color);  // the witness: the thirds changed something
+  CHECK(wide[3].color == wide[1].color);        // the default is the thirds
+  // 2:1: the default is off.
+  const std::vector<CapturedFrame> narrow = shoot_half_rate(
+      fx.caster_masked, 2 * k_size, half_rate_low_view(), {"0", "-1", k_third}, skip);
+  REQUIRE(narrow.size() == 3);
+  CHECK(narrow[1].color == narrow[0].color);
+  CHECK_FALSE(narrow[2].color == narrow[0].color);  // the thirds would have changed it
+}
+
+// (b): at a third a side the centre is the full-rate picture to the byte, and a side pixel differs
+// only where its 2x2 block holds one pair and it is not the block's top-left pixel, whose ray the
+// block took — so a silhouette, a mask's edge and a material's boundary are drawn at full rate.
+TEST_CASE(
+    "half rate: the sides change only the pixels of one-pair blocks that took another's ray") {
+  Fixture fx;
+  HalfRateRestore restore;
+  const f32 third = 1.0f / 3.0f;
+  std::string skip;
+  // From under the quad: the ground's shadow, one pair in nearly every block.
+  const std::vector<CapturedFrame> low =
+      shoot_half_rate(fx.caster_masked, k_size, half_rate_low_view(), {"0", k_third}, skip);
+  if (!skip.empty()) {
+    MESSAGE("skipped: " << skip);
+    return;
+  }
+  REQUIRE(low.size() == 2);
+  // From above, the masked quad over its shadow: blocks across the mask's edges hold two pairs.
+  ShotView above;
+  above.eye = Vec3{-2.5f, 4.0f, -2.5f};
+  above.target = Vec3{-0.4f, 0.0f, -0.4f};
+  above.mode = static_cast<u32>(gfx::ResolveMode::Shaded);
+  const std::vector<CapturedFrame> slant =
+      shoot_half_rate(fx.caster_masked, k_size, above, {"0", k_third}, skip);
+  REQUIRE(slant.size() == 2);
+  for (const std::vector<CapturedFrame>* shots : {&low, &slant}) {
+    const HalfRateDiff d = half_rate_diff((*shots)[0], (*shots)[1], third);
+    MESSAGE("half-rate blocks: " << d.one_pair_blocks << " of one pair, " << d.mixed_blocks
+                                 << " mixed; differing pixels: " << d.taken << " taken, "
+                                 << d.top_left << " top-left, " << d.mixed << " mixed, " << d.centre
+                                 << " centre");
+    CHECK(d.centre == 0);
+    CHECK(d.mixed == 0);
+    CHECK(d.top_left == 0);
+  }
+  CHECK(half_rate_diff(low[0], low[1], third).taken > 20);  // the witness: the rule changed it
+  CHECK(half_rate_diff(slant[0], slant[1], third).mixed_blocks > 50);  // and mixed blocks exist
+}
+
+// The measurement sweep (renderer.md, "A shading rate by region"): with
+// `renderer.resolve.half_rate_sweep`, frame f takes the sides' share (f / 8) % 3 — none, as set, a
+// half — so a flight under `renderer.resolve.stop_after=cycle` measures every stage at each;
+// without it every frame takes the tunable. CPU only.
+TEST_CASE("half rate: the sweep steps the sides' share eight frames at a time") {
+  HalfRateRestore restore;
+  struct SweepRestore {
+    ~SweepRestore() { (void)tunables::apply_overrides("renderer.resolve.half_rate_sweep=false"); }
+  } sweep_restore;
+  REQUIRE(tunables::apply_overrides("renderer.resolve.half_rate_sides=0.25"));
+  for (u64 f : {u64{0}, u64{8}, u64{16}, u64{47}})
+    CHECK(half_rate_sides_tunable(f) == 0.25f);
+  REQUIRE(tunables::apply_overrides("renderer.resolve.half_rate_sweep=true"));
+  for (u64 base : {u64{0}, u64{24}, u64{240}}) {
+    CHECK(half_rate_sides_tunable(base) == 0.0f);
+    CHECK(half_rate_sides_tunable(base + 7) == 0.0f);
+    CHECK(half_rate_sides_tunable(base + 8) == 0.25f);
+    CHECK(half_rate_sides_tunable(base + 16) == 0.5f);
+  }
 }
