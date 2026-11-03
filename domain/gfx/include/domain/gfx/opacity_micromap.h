@@ -179,6 +179,22 @@ bool bake_opacity_micromaps(const Device& device, ShaderLibrary& shaders,
                             OpacityMicromapSet& out, std::string* error = nullptr);
 void destroy_opacity_micromaps(const Device& device, OpacityMicromapSet& set) noexcept;
 
+// One entry of a micromap's triangle array (VkMicromapTriangleEXT, 8 bytes): where its states
+// start in the data, its level, and its format (`k_micromap_format_4state`).
+struct MicromapTriangle {
+  u32 data_offset = 0;
+  u16 level = 0;
+  u16 format = static_cast<u16>(k_micromap_format_4state);
+};
+static_assert(sizeof(MicromapTriangle) == k_micromap_triangle_bytes);
+// Builds a micromap from states written on the host (`data`, two bits a micro-triangle, least
+// significant first) and its triangle array, blocking: the same build the bake ends with, for a
+// test or a tool that knows its states. Sets `out.handle`, `out.storage`, `out.address` and
+// `out.stats.storage_bytes`; the index tables stay empty (the caller's).
+bool build_opacity_micromap(const Device& device, std::span<const u32> data,
+                            std::span<const MicromapTriangle> triangles, OpacityMicromapSet& out,
+                            std::string* error = nullptr);
+
 // The bake shader's push block (opacity_micromap_bake.slang mirrors it, 104 bytes). `mode` 0
 // classifies — each triangle's level and the states its micro-triangles took, into `codes` — and 1
 // writes each data-carrying triangle's states at the offset its triangle-array entry names.

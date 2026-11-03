@@ -156,6 +156,134 @@ void destroy_opacity_micromaps(const Device& device, OpacityMicromapSet& set) no
   set = OpacityMicromapSet{};
 }
 
+namespace {
+
+// **The build**, shared by the bake and `build_opacity_micromap`: one `VkMicromapEXT` over
+// `per_level[l]` 4-state entries at each level, its states at `data_address` and its
+// `VkMicromapTriangleEXT`s at `triangle_array` (both 256-aligned), into `out.storage` at offset 0.
+// Blocking; the scratch is its own.
+bool build_micromap(const Device& device, const u32* per_level, u64 data_address,
+                    u64 triangle_array, OpacityMicromapSet& out, std::string* error) {
+  Vector<VkMicromapUsageEXT> usage;
+  for (u32 l = 0; l <= k_micromap_max_level; ++l) {
+    if (per_level[l] == 0) continue;
+    VkMicromapUsageEXT u{};
+    u.count = per_level[l];
+    u.subdivisionLevel = l;
+    u.format = k_micromap_format_4state;
+    usage.push_back(u);
+  }
+  VkMicromapBuildInfoEXT build{};
+  build.sType = VK_STRUCTURE_TYPE_MICROMAP_BUILD_INFO_EXT;
+  build.type = VK_MICROMAP_TYPE_OPACITY_MICROMAP_EXT;
+  build.flags = VK_BUILD_MICROMAP_PREFER_FAST_TRACE_BIT_EXT;
+  build.mode = VK_BUILD_MICROMAP_MODE_BUILD_EXT;
+  build.usageCountsCount = static_cast<u32>(usage.size());
+  build.pUsageCounts = usage.data();
+  VkMicromapBuildSizesInfoEXT sizes{};
+  sizes.sType = VK_STRUCTURE_TYPE_MICROMAP_BUILD_SIZES_INFO_EXT;
+  const VkDevice vk_device = device.handles().device;
+  vkGetMicromapBuildSizesEXT(vk_device, VK_ACCELERATION_STRUCTURE_BUILD_TYPE_DEVICE_KHR, &build,
+                             &sizes);
+  if (sizes.micromapSize == 0) {
+    set_message(error, "build_micromap: the driver gave no size for the micromap");
+    return false;
+  }
+  constexpr BufferUsage k_storage = BufferUsage::Storage | BufferUsage::ShaderDeviceAddress;
+  const u32 scratch_alignment = 256;
+  BufferResource scratch;
+  if (!create_buffer(device, sizes.micromapSize,
+                     BufferUsage::MicromapStorage | BufferUsage::ShaderDeviceAddress, false,
+                     out.storage, error) ||
+      !create_buffer(device, std::max<u64>(sizes.buildScratchSize, 4) + scratch_alignment,
+                     k_storage, false, scratch, error)) {
+    destroy_buffer(device, scratch);
+    return false;
+  }
+  VkMicromapCreateInfoEXT create{};
+  create.sType = VK_STRUCTURE_TYPE_MICROMAP_CREATE_INFO_EXT;
+  create.buffer = vk::native(out.storage.buffer);
+  create.offset = 0;
+  create.size = sizes.micromapSize;
+  create.type = VK_MICROMAP_TYPE_OPACITY_MICROMAP_EXT;
+  VkMicromapEXT micromap = VK_NULL_HANDLE;
+  if (const VkResult r = vkCreateMicromapEXT(vk_device, &create, nullptr, &micromap);
+      r != VK_SUCCESS) {
+    destroy_buffer(device, scratch);
+    set_message(error, "build_micromap: vkCreateMicromapEXT failed (" +
+                           std::to_string(static_cast<i32>(r)) + ")");
+    return false;
+  }
+  out.handle = vk::wrap(micromap);
+  // The micromap lives at its storage's start: that is the address a cluster record names.
+  out.address = out.storage.address;
+  build.dstMicromap = micromap;
+  build.data.deviceAddress = data_address;
+  build.scratchData.deviceAddress = align_up(scratch.address, scratch_alignment);
+  build.triangleArray.deviceAddress = triangle_array;
+  build.triangleArrayStride = k_micromap_triangle_bytes;
+  const bool built = submit_immediate(
+      device,
+      [&](CommandList cb) {
+        vkCmdBuildMicromapsEXT(vk::native(cb), 1, &build);
+        acceleration_build_barrier(cb, PipelineStage::AllCommands,
+                                   MemoryAccess::MemoryRead | MemoryAccess::MemoryWrite);
+      },
+      error);
+  destroy_buffer(device, scratch);
+  return built;
+}
+
+}  // namespace
+
+bool build_opacity_micromap(const Device& device, std::span<const u32> data,
+                            std::span<const MicromapTriangle> triangles, OpacityMicromapSet& out,
+                            std::string* error) {
+  destroy_opacity_micromaps(device, out);
+  if (!device.features().opacity_micromap) {
+    set_message(error, "build_opacity_micromap: the device has no VK_EXT_opacity_micromap");
+    return false;
+  }
+  if (triangles.empty()) {
+    set_message(error, "build_opacity_micromap: no triangles");
+    return false;
+  }
+  u32 per_level[k_micromap_max_level + 1] = {};
+  for (const MicromapTriangle& t : triangles) {
+    if (t.level > k_micromap_max_level || t.format != k_micromap_format_4state) {
+      set_message(error, "build_opacity_micromap: a triangle names a level or format it cannot");
+      return false;
+    }
+    ++per_level[t.level];
+  }
+  constexpr BufferUsage k_input = BufferUsage::Storage | BufferUsage::ShaderDeviceAddress |
+                                  BufferUsage::MicromapBuildInput |
+                                  BufferUsage::AccelerationBuildInput;
+  const u64 data_bytes = std::max<u64>(u64{data.size()} * sizeof(u32), 4);
+  const u64 triangle_bytes = u64{triangles.size()} * sizeof(MicromapTriangle);
+  BufferResource input;
+  if (!create_buffer(device, k_input_alignment * 2 + align_up(data_bytes, k_input_alignment) +
+                                 triangle_bytes,
+                     k_input, true, input, error)) {
+    return false;
+  }
+  const u64 data_address = align_up(input.address, k_input_alignment);
+  const u64 triangle_array = data_address + align_up(data_bytes, k_input_alignment);
+  auto* bytes = static_cast<u8*>(input.mapped);
+  if (!data.empty()) {
+    std::memcpy(bytes + (data_address - input.address), data.data(), data.size() * sizeof(u32));
+  }
+  std::memcpy(bytes + (triangle_array - input.address), triangles.data(), triangle_bytes);
+  const bool built = build_micromap(device, per_level, data_address, triangle_array, out, error);
+  destroy_buffer(device, input);
+  if (!built) {
+    destroy_opacity_micromaps(device, out);
+    return false;
+  }
+  out.stats.storage_bytes = out.storage.size;
+  return true;
+}
+
 bool bake_opacity_micromaps(const Device& device, ShaderLibrary& shaders,
                             const BindlessSet& bindless, const MicromapBakeInput& in,
                             OpacityMicromapSet& out, std::string* error) {
@@ -373,71 +501,8 @@ bool bake_opacity_micromaps(const Device& device, ShaderLibrary& shaders,
   stats.micro_unknown = counted[2];
 
   // The build: one micromap, its usage counts per level.
-  Vector<VkMicromapUsageEXT> usage;
-  for (u32 l = 0; l <= k_micromap_max_level; ++l) {
-    if (stats.entries_per_level[l] == 0) continue;
-    VkMicromapUsageEXT u{};
-    u.count = stats.entries_per_level[l];
-    u.subdivisionLevel = l;
-    u.format = k_micromap_format_4state;
-    usage.push_back(u);
-  }
-  VkMicromapBuildInfoEXT build{};
-  build.sType = VK_STRUCTURE_TYPE_MICROMAP_BUILD_INFO_EXT;
-  build.type = VK_MICROMAP_TYPE_OPACITY_MICROMAP_EXT;
-  build.flags = VK_BUILD_MICROMAP_PREFER_FAST_TRACE_BIT_EXT;
-  build.mode = VK_BUILD_MICROMAP_MODE_BUILD_EXT;
-  build.usageCountsCount = static_cast<u32>(usage.size());
-  build.pUsageCounts = usage.data();
-  VkMicromapBuildSizesInfoEXT sizes{};
-  sizes.sType = VK_STRUCTURE_TYPE_MICROMAP_BUILD_SIZES_INFO_EXT;
-  const VkDevice vk_device = device.handles().device;
-  vkGetMicromapBuildSizesEXT(vk_device, VK_ACCELERATION_STRUCTURE_BUILD_TYPE_DEVICE_KHR, &build,
-                             &sizes);
-  if (sizes.micromapSize == 0) {
-    destroy_buffer(device, entries_aligned);
-    set_message(error, "bake_opacity_micromaps: the driver gave no size for the micromap");
-    return fail();
-  }
-  const u32 scratch_alignment = 256;
-  if (!create_buffer(device, sizes.micromapSize,
-                     BufferUsage::MicromapStorage | BufferUsage::ShaderDeviceAddress, false,
-                     out.storage, error) ||
-      !create_buffer(device, sizes.buildScratchSize + scratch_alignment, k_storage, false, scratch,
-                     error)) {
-    destroy_buffer(device, entries_aligned);
-    return fail();
-  }
-  VkMicromapCreateInfoEXT create{};
-  create.sType = VK_STRUCTURE_TYPE_MICROMAP_CREATE_INFO_EXT;
-  create.buffer = vk::native(out.storage.buffer);
-  create.offset = 0;
-  create.size = sizes.micromapSize;
-  create.type = VK_MICROMAP_TYPE_OPACITY_MICROMAP_EXT;
-  VkMicromapEXT micromap = VK_NULL_HANDLE;
-  if (const VkResult r = vkCreateMicromapEXT(vk_device, &create, nullptr, &micromap);
-      r != VK_SUCCESS) {
-    destroy_buffer(device, entries_aligned);
-    set_message(error, "bake_opacity_micromaps: vkCreateMicromapEXT failed (" +
-                           std::to_string(static_cast<i32>(r)) + ")");
-    return fail();
-  }
-  out.handle = vk::wrap(micromap);
-  // The micromap lives at its storage's start: that is the address a cluster record names.
-  out.address = out.storage.address;
-  build.dstMicromap = micromap;
-  build.data.deviceAddress = data_address;
-  build.scratchData.deviceAddress = align_up(scratch.address, scratch_alignment);
-  build.triangleArray.deviceAddress = triangle_array;
-  build.triangleArrayStride = k_micromap_triangle_bytes;
-  const bool built = submit_immediate(
-      device,
-      [&](CommandList cb) {
-        vkCmdBuildMicromapsEXT(vk::native(cb), 1, &build);
-        acceleration_build_barrier(cb, PipelineStage::AllCommands,
-                                   MemoryAccess::MemoryRead | MemoryAccess::MemoryWrite);
-      },
-      error);
+  const bool built = build_micromap(device, stats.entries_per_level, data_address, triangle_array,
+                                    out, error);
   destroy_buffer(device, entries_aligned);
   if (!built) return fail();
 

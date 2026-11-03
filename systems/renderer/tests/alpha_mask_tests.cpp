@@ -901,13 +901,15 @@ TEST_CASE("alpha mask: opacity micromaps leave the shadow rays' and the ray path
 
 // The micromaps are really in the structures: `renderer.shadow.opaque_rays` forces every caster
 // solid, which a micromap's transparent micro-triangle is not — the traversal never reports it,
-// forced or not — so with micromaps the forced shadow has the checker's interior holes back, and
-// without them it is the opaque quad's. The one picture that is meant to move.
-// **Open (R120, 2026-11-02): this fails on the RTX 5090 at driver 617.42** — the forced shadow is
-// the same with micromaps and without, so the traversal is not using them; HANDOFF in the report.
-// Marked may_fail until the cause is found, so it reports without failing the suite.
-TEST_CASE("alpha mask: a forced-solid shadow ray still skips a micromap's transparent interior" *
-          doctest::may_fail()) {
+// forced or not — so with micromaps the forced shadow loses the bake's transparent micro-triangles,
+// and without them it is the opaque quad's. The one picture that is meant to move, and by how much
+// is the bake's own count: the micro-triangles of one level are of one area, so the shadow shrinks
+// by the transparent share of them (576 of 8,192 here, 7.0 %; measured 6.9 %), within half of it
+// either way for the pixels along the shadow's edge.
+// It failed from R120's first commit until the pipelines of a device with micromaps were keyed
+// apart (device.cpp, `micromap_key`): the driver handed the resolve a compile it had made on a
+// device without the extension, whose ray queries trace every micromap as absent (R120b).
+TEST_CASE("alpha mask: a forced-solid shadow ray still skips a micromap's transparent interior") {
   Fixture fx;
   RenderSettings rays = base_settings(RasterMode::Hardware);
   rays.shadows = ShadowMode::RayTraced;
@@ -933,8 +935,13 @@ TEST_CASE("alpha mask: a forced-solid shadow ray still skips a micromap's transp
   const ShadowCount without = count_shadow(off.frame);
   MESSAGE("forced solid: " << without.share() << " of the ground shadowed without micromaps, "
                            << with.share() << " with them");
-  CHECK(with.share() < 0.9 * without.share());
-  CHECK(with.share() > 0.2 * without.share());
+  const f64 micro = static_cast<f64>(on.stats.micro_opaque + on.stats.micro_transparent +
+                                     on.stats.micro_unknown);
+  REQUIRE(micro > 0.0);
+  const f64 transparent = static_cast<f64>(on.stats.micro_transparent) / micro;
+  REQUIRE(transparent > 0.0);
+  CHECK(with.share() < without.share() * (1.0 - 0.5 * transparent));
+  CHECK(with.share() > without.share() * (1.0 - 1.5 * transparent));
 }
 
 TEST_CASE("alpha mask: a device without opacity micromaps draws what it drew") {

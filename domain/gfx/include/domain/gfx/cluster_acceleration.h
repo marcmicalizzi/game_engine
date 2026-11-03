@@ -588,12 +588,17 @@ struct ClusterBlasSet {
   u32 max_clusters = 0;    // CLAS references over all of them
   u32 max_clusters_per_structure = 0;
   u32 alignment = 0;
+  // The structures may reference CLAS that carry opacity micromaps (R120): the bottom-level build's
+  // input says ALLOW_CLUSTER_OPACITY_MICROMAPS too, in the size query and in every build, exactly
+  // as the cluster builds' inputs do (ClusterSetLimits::opacity_micromaps).
+  bool opacity_micromaps = false;
 };
 bool cluster_blas_set_build_sizes(const Device& device, u32 max_structures, u32 max_clusters,
-                                  u32 max_clusters_per_structure, ClusterBuildSizes& out) noexcept;
+                                  u32 max_clusters_per_structure, ClusterBuildSizes& out,
+                                  bool opacity_micromaps = false) noexcept;
 bool create_cluster_blas_set(const Device& device, u32 max_structures, u32 max_clusters,
                              u32 max_clusters_per_structure, ClusterBlasSet& out,
-                             std::string* error = nullptr);
+                             std::string* error = nullptr, bool opacity_micromaps = false);
 // Builds one structure per 16-byte record at `records` (k_cluster_blas_record_bytes each, as
 // clas_records.slang's `ranges_main` writes them); `count` is a device address of a u32 count, or
 // 0 for `max_structures`. The records' reference counts must sum to at most `max_clusters` and
@@ -613,9 +618,10 @@ struct ClusterBlas {
   u64 build_scratch_bytes = 0;
   u32 max_clusters = 0;
   u32 alignment = 0;
+  bool opacity_micromaps = false;  // as ClusterBlasSet::opacity_micromaps
 };
 bool create_cluster_blas(const Device& device, u32 max_clusters, ClusterBlas& out,
-                         std::string* error = nullptr);
+                         std::string* error = nullptr, bool opacity_micromaps = false);
 // Writes the record on the host (`references`: a u64 array of CLAS addresses; `count` how
 // many) and records the build.
 void build_cluster_blas(CommandList commands, const ClusterBlas& blas, DeviceAddress references,

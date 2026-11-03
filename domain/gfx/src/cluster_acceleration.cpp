@@ -68,7 +68,7 @@ VkClusterAccelerationStructureInputInfoNV set_input(
 
 VkClusterAccelerationStructureInputInfoNV blas_input(
     u32 max_clusters, VkClusterAccelerationStructureClustersBottomLevelInputNV& clusters,
-    u32 max_structures = 1, u32 max_per_structure = 0) {
+    u32 max_structures = 1, u32 max_per_structure = 0, bool opacity_micromaps = false) {
   clusters = VkClusterAccelerationStructureClustersBottomLevelInputNV{};
   clusters.sType = VK_STRUCTURE_TYPE_CLUSTER_ACCELERATION_STRUCTURE_CLUSTERS_BOTTOM_LEVEL_INPUT_NV;
   clusters.maxTotalClusterCount = max_clusters;
@@ -78,6 +78,9 @@ VkClusterAccelerationStructureInputInfoNV blas_input(
   info.sType = VK_STRUCTURE_TYPE_CLUSTER_ACCELERATION_STRUCTURE_INPUT_INFO_NV;
   info.maxAccelerationStructureCount = max_structures;
   info.flags = VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR;
+  if (opacity_micromaps) {
+    info.flags |= VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_CLUSTER_OPACITY_MICROMAPS_BIT_NV;
+  }
   info.opType = VK_CLUSTER_ACCELERATION_STRUCTURE_OP_TYPE_BUILD_CLUSTERS_BOTTOM_LEVEL_NV;
   info.opMode = VK_CLUSTER_ACCELERATION_STRUCTURE_OP_MODE_IMPLICIT_DESTINATIONS_NV;
   info.opInput.pClustersBottomLevel = &clusters;
@@ -548,7 +551,7 @@ void destroy_cluster_templates(const Device& device, ClusterTemplateSet& set) no
 }
 
 bool create_cluster_blas(const Device& device, u32 max_clusters, ClusterBlas& out,
-                         std::string* error) {
+                         std::string* error, bool opacity_micromaps) {
   out = ClusterBlas{};
   ClusterAsProperties props;
   if (!cluster_as_properties(device, props)) {
@@ -560,13 +563,15 @@ bool create_cluster_blas(const Device& device, u32 max_clusters, ClusterBlas& ou
     return false;
   }
   VkClusterAccelerationStructureClustersBottomLevelInputNV clusters;
-  VkClusterAccelerationStructureInputInfoNV input = blas_input(max_clusters, clusters);
+  VkClusterAccelerationStructureInputInfoNV input =
+      blas_input(max_clusters, clusters, 1, 0, opacity_micromaps);
   input.opMode = VK_CLUSTER_ACCELERATION_STRUCTURE_OP_MODE_EXPLICIT_DESTINATIONS_NV;
   VkAccelerationStructureBuildSizesInfoKHR sizes{};
   sizes.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_SIZES_INFO_KHR;
   vkGetClusterAccelerationStructureBuildSizesNV(device.handles().device, &input, &sizes);
   out.alignment = props.bottom_level_alignment;
   out.max_clusters = max_clusters;
+  out.opacity_micromaps = opacity_micromaps;
   out.build_scratch_bytes = sizes.buildScratchSize + props.scratch_alignment;
   static_assert(sizeof(VkClusterAccelerationStructureBuildClustersBottomLevelInfoNV) ==
                 k_cluster_blas_record_bytes);
@@ -590,7 +595,7 @@ void build_cluster_blas_indirect(CommandList commands, const ClusterBlas& blas,
   VkClusterAccelerationStructureClustersBottomLevelInputNV clusters;
   VkClusterAccelerationStructureCommandsInfoNV info{};
   info.sType = VK_STRUCTURE_TYPE_CLUSTER_ACCELERATION_STRUCTURE_COMMANDS_INFO_NV;
-  info.input = blas_input(blas.max_clusters, clusters);
+  info.input = blas_input(blas.max_clusters, clusters, 1, 0, blas.opacity_micromaps);
   info.input.opMode = VK_CLUSTER_ACCELERATION_STRUCTURE_OP_MODE_EXPLICIT_DESTINATIONS_NV;
   info.dstImplicitData = 0;
   info.scratchData = align_up(scratch.address, blas.alignment);
@@ -621,7 +626,8 @@ void destroy_cluster_blas(const Device& device, ClusterBlas& blas) noexcept {
 }
 
 bool cluster_blas_set_build_sizes(const Device& device, u32 max_structures, u32 max_clusters,
-                                  u32 max_clusters_per_structure, ClusterBuildSizes& out) noexcept {
+                                  u32 max_clusters_per_structure, ClusterBuildSizes& out,
+                                  bool opacity_micromaps) noexcept {
   out = ClusterBuildSizes{};
   ClusterAsProperties props;
   if (!cluster_as_properties(device, props) || max_structures == 0 || max_clusters == 0) {
@@ -631,7 +637,8 @@ bool cluster_blas_set_build_sizes(const Device& device, u32 max_structures, u32 
   const VkClusterAccelerationStructureInputInfoNV input = blas_input(
       max_clusters, clusters, max_structures,
       std::min(max_clusters_per_structure != 0 ? max_clusters_per_structure : max_clusters,
-               max_clusters));
+               max_clusters),
+      opacity_micromaps);
   VkAccelerationStructureBuildSizesInfoKHR sizes{};
   sizes.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_SIZES_INFO_KHR;
   vkGetClusterAccelerationStructureBuildSizesNV(device.handles().device, &input, &sizes);
@@ -643,7 +650,7 @@ bool cluster_blas_set_build_sizes(const Device& device, u32 max_structures, u32 
 
 bool create_cluster_blas_set(const Device& device, u32 max_structures, u32 max_clusters,
                              u32 max_clusters_per_structure, ClusterBlasSet& out,
-                             std::string* error) {
+                             std::string* error, bool opacity_micromaps) {
   out = ClusterBlasSet{};
   ClusterAsProperties props;
   if (!cluster_as_properties(device, props)) {
@@ -658,7 +665,8 @@ bool create_cluster_blas_set(const Device& device, u32 max_structures, u32 max_c
   const u32 per_structure = std::min(
       max_clusters_per_structure != 0 ? max_clusters_per_structure : max_clusters, max_clusters);
   ClusterBuildSizes sizes;
-  if (!cluster_blas_set_build_sizes(device, max_structures, max_clusters, per_structure, sizes)) {
+  if (!cluster_blas_set_build_sizes(device, max_structures, max_clusters, per_structure, sizes,
+                                    opacity_micromaps)) {
     set_message(error, "create_cluster_blas_set: the driver gave no sizes");
     return false;
   }
@@ -666,6 +674,7 @@ bool create_cluster_blas_set(const Device& device, u32 max_structures, u32 max_c
   out.max_structures = max_structures;
   out.max_clusters = max_clusters;
   out.max_clusters_per_structure = per_structure;
+  out.opacity_micromaps = opacity_micromaps;
   out.build_scratch_bytes = sizes.scratch_bytes;
   if (!create_buffer(device, sizes.data_bytes, k_structure_usage, false, out.data, error) ||
       !create_buffer(device, u64{max_structures} * sizeof(u64), k_blas_address_usage, false,
@@ -682,7 +691,8 @@ void build_cluster_blas_set(CommandList commands, const ClusterBlasSet& set, Dev
   VkClusterAccelerationStructureCommandsInfoNV info{};
   info.sType = VK_STRUCTURE_TYPE_CLUSTER_ACCELERATION_STRUCTURE_COMMANDS_INFO_NV;
   info.input =
-      blas_input(set.max_clusters, clusters, set.max_structures, set.max_clusters_per_structure);
+      blas_input(set.max_clusters, clusters, set.max_structures, set.max_clusters_per_structure,
+                 set.opacity_micromaps);
   info.dstImplicitData = align_up(set.data.address, set.alignment);
   info.scratchData = align_up(scratch.address, set.alignment);
   info.dstAddressesArray = {set.addresses.address, sizeof(u64), set.addresses.size};

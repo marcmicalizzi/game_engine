@@ -4594,7 +4594,7 @@ bool GpuScene::build_static_forms(std::string* error) {
                                k_record_usage, true, blas_records_once, error) &&
             gfx::create_cluster_set(device, limits, static_clas_, error) &&
             gfx::create_cluster_blas_set(device, mesh_count, static_clusters_, most_per_form,
-                                         static_blas_, error);
+                                         static_blas_, error, limits.opacity_micromaps);
   if (ok) {
     ok = gfx::create_scratch(
         device, std::max(static_clas_.build_scratch_bytes, static_blas_.build_scratch_bytes),
@@ -5096,7 +5096,8 @@ bool GpuScene::lay_out_ray_tracing(std::string* error) {
   gfx::ClusterBuildSizes blas_sizes;
   if (!gfx::cluster_set_build_sizes(device, probe, set_sizes) ||
       !gfx::cluster_blas_set_build_sizes(device, rt_instance_slots_, k_probe,
-                                         std::min(rt_max_per_instance_, k_probe), blas_sizes)) {
+                                         std::min(rt_max_per_instance_, k_probe), blas_sizes,
+                                         limits.opacity_micromaps)) {
     if (error != nullptr) {
       *error = "the driver gave no cluster acceleration structure sizes for " +
                std::to_string(k_probe) + " clusters over " + std::to_string(rt_instance_slots_) +
@@ -5121,7 +5122,8 @@ bool GpuScene::lay_out_ray_tracing(std::string* error) {
   probe.max_clusters = 2 * k_probe;
   if (!gfx::cluster_set_build_sizes(device, probe, set_sizes) ||
       !gfx::cluster_blas_set_build_sizes(device, rt_instance_slots_, 2 * k_probe,
-                                         std::min(rt_max_per_instance_, k_probe), blas_sizes)) {
+                                         std::min(rt_max_per_instance_, k_probe), blas_sizes,
+                                         limits.opacity_micromaps)) {
     if (error != nullptr) *error = "the driver gave no sizes for the second frame-budget probe";
     return false;
   }
@@ -5287,7 +5289,8 @@ bool GpuScene::resize_ray_tracing(u32 capacity, std::string* error, bool beyond_
   // cache's, never both, so its most is the larger of the two capacities.
   ok = ok && gfx::create_cluster_blas_set(
                  device, rt_instance_slots_, capacity + references,
-                 std::min(rt_max_per_instance_, std::max(capacity, references)), made_blas, error);
+                 std::min(rt_max_per_instance_, std::max(capacity, references)), made_blas, error,
+                 rt_limits_.opacity_micromaps);
   lap(rt_resize_cost_.blas_ns);
   if (ok) {
     u64 scratch_bytes = made_clas.build_scratch_bytes;
