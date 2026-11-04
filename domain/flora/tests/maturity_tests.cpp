@@ -189,7 +189,7 @@ TEST_CASE("flora maturity: stem-tip crowns are local shoots rather than a second
     MESSAGE(std::string_view(birch ? "birch" : "broadleaf")
             << ": " << top << " tip twigs, " << lateral << " lateral twigs, " << shoots.size()
             << " shoots");
-    CHECK(top == 0);
+    CHECK(top == 1);  // one axial twig, never a second recursive crown
     CHECK(top < lateral / 10);
     // Every terminal twig belongs to a named scaffold; there is no duplicate stem-tip crown.
     CHECK(shoots[0].tip_radius <= shoots[0].base_radius);
@@ -266,122 +266,7 @@ TEST_CASE("flora maturity: old best-site and explicit large low-budget outputs s
                                 << report.twigs << " twigs, " << motion.parts.size() << " parts");
   }
 }
-TEST_CASE("flora maturity: upper continuation preserves attachments and joins a living scaffold") {
-  using namespace flora::detail;
-  for (f64 radius : {.003, .35, 2.0}) {
-    for (f64 child_length : {.1, 3.0}) {
-      for (f64 angle : {15.0, 45.0, 75.0}) {
-        CAPTURE(radius);
-        CAPTURE(child_length);
-        CAPTURE(angle);
-        Rng rng = stream_of(1, 1);
-        const Axis original = grow_axis({}, k_up, 10, 20, k_up, 0, 0, rng);
-        Crown crown;
-        const u32 stem = crown_add_named(crown, original, radius, .5 * radius, k_crown_none);
-        constexpr f64 station = 8.5;
-        const f64 parent_radius = lerp(radius, .5 * radius, station / original.length);
-        const D3 direction{det::sin(angle * k_degree), det::cos(angle * k_degree), 0};
-        const Axis child =
-            grow_axis(axis_point(original, station) + D3{.5 * parent_radius, 0, 0}, direction,
-                      child_length, 16, k_up, .2 / child_length, .03, rng);
-        const u32 branch = crown_add_named(crown, child, .4 * radius, .2 * radius, stem);
-        crown_continue_stem(crown, stem, branch, station);
-        const Axis& axis = crown.axes[crown.nodes[stem].axis];
-        const auto& join = crown.continuations[0];
-        CHECK(crown.nodes[stem].length == axis.length);
-        CHECK(length_of(crown.nodes[stem].tip - axis.point.back()) < 1e-12);
-        CHECK(length_of(crown.axes[branch].point.back() - child.point.back()) < 1e-12);
-        CHECK(dot(axis.tangent.back(), axis_tangent(child, join.child_arc)) ==
-              doctest::Approx(1).epsilon(1e-12));
-        CHECK(length_of(axis_point(axis, station) - axis_point(original, station)) < 1e-12);
-        CHECK(dot(axis_tangent(axis, station), k_up) == doctest::Approx(1).epsilon(1e-12));
-        for (f64 s : {1.0, 5.0, 8.0, station}) {
-          CHECK(length_of(axis_point(axis, s) - axis_point(original, s)) < 1e-12);
-          CHECK(continuation_radius(radius, crown.nodes[stem].r1, axis.length, join, s) ==
-                lerp(radius, .5 * radius, s / original.length));
-        }
-        f64 previous = parent_radius;
-        for (u32 i = 1; i <= 100; ++i) {
-          const f64 s = station + (axis.length - station) * static_cast<f64>(i) / 100;
-          const f64 r = continuation_radius(radius, crown.nodes[stem].r1, axis.length, join, s);
-          CHECK(r > 0);
-          CHECK(r <= previous + 1e-12);
-          previous = r;
-          CHECK(std::isfinite(length_of(axis_point(axis, s))));
-          CHECK(dot(axis_tangent(axis, s), direction + k_up) > 0);
-        }
-        for (u32 rows : {3u, 8u, 32u}) {
-          assets::MeshData mesh;
-          flora::Motion motion;
-          Emitter emit{mesh, motion};
-          emit.begin_part({}, k_up, axis.length, geometry::k_motion_no_parent);
-          const Axis sampled = resample_continuation(axis, rows, join);
-          build_tube(sampled, radius, crown.nodes[stem].r1, 8, {}, emit, true, &join);
-          CHECK(mesh.indices.size() / 3 == tube_triangles(rows + k_continuation_rows, 8) - 2);
-          CHECK(sampled.arc[rows] == station);
-          const u32 last = rows + k_continuation_rows;
-          for (u32 ring = 0; ring <= last; ++ring) {
-            const D3 v = from_f32(mesh.positions[ring * 9]);
-            const f64 expected = continuation_radius(radius, crown.nodes[stem].r1, axis.length,
-                                                     join, sampled.arc[ring]);
-            CHECK(length_of(v - sampled.point[ring]) == doctest::Approx(expected).epsilon(1e-3));
-            const Vec3 n = mesh.normals[ring * 9];
-            CHECK(std::isfinite(n.x + n.y + n.z));
-            CHECK(dot(n, n) == doctest::Approx(1).epsilon(1e-5));
-          }
-          // A flat buried cap adds no point beyond the continuing branch's junction.
-          CHECK(mesh.positions.size() == (last + 1) * 9);
-          // The continuing child's reserved ring passes through exactly the same centre even
-          // at its coarsest rung. Check actual polygons, including independently phased relief.
-          for (u32 child_sides : {3u, 4u, 8u}) {
-            assets::MeshData wood;
-            flora::Motion wood_motion;
-            Emitter bark{wood, wood_motion};
-            bark.wood = WoodProfile{.35, .3, .12, .08, .12, 17};
-            bark.begin_part({}, k_up, axis.length, geometry::k_motion_no_parent);
-            build_tube(sampled, radius, crown.nodes[stem].r1, 8, {}, bark, true, &join);
-            const u32 child_first = wood.positions.size();
-            const Axis joined_child = resample_continuing_child(child, rows, join.child_arc);
-            u32 reserved = 0;
-            for (u32 r = 1; r < joined_child.arc.size(); ++r) {
-              if (joined_child.arc[r] == join.child_arc) reserved = r;
-              CHECK(joined_child.arc[r] - joined_child.arc[r - 1] <=
-                    2.0 * child.length / (rows + 1));
-              CHECK(length_of(joined_child.point[r] - axis_point(child, joined_child.arc[r])) <
-                    1e-12);
-            }
-            REQUIRE(reserved != 0);
-            CHECK(length_of(joined_child.point[reserved] - axis.point.back()) < 1e-12);
-            bark.begin_part(child.point[0], child.tangent[0], child.length, 0);
-            build_tube(joined_child, .4 * radius, .2 * radius, child_sides, {}, bark);
-            CHECK((wood.indices.size() / 3) == tube_triangles(rows + k_continuation_rows, 8) - 2 +
-                                                   tube_triangles(rows + 1, child_sides));
-            const u32 child_ring = child_first + reserved * (child_sides + 1);
-            bool inside = true;
-            for (u32 j = 0; j < child_sides; ++j) {
-              const D3 a = from_f32(wood.positions[child_ring + j]);
-              const D3 b = from_f32(wood.positions[child_ring + (j + 1) % child_sides]);
-              for (u32 v = 0; v < 8; ++v) {
-                const D3 p = from_f32(wood.positions[last * 9 + v]);
-                inside &= dot(cross(b - a, p - a), axis.tangent.back()) >= -1e-8;
-              }
-            }
-            CHECK(inside);
-            bind_continuation_cap(sampled, radius, crown.nodes[stem].r1, 8, 0, join, 0, 1,
-                                  child.length, wood_motion);
-            CHECK(wood_motion.parts[0].length == static_cast<f32>(sampled.arc[last - 1]));
-            CHECK(wood_motion.vertex_weight[(last - 1) * 9] == 1.0f);
-            CHECK(wood_motion.vertex_part[last * 9] == 1);
-            CHECK(flora::encode_bend_weight(wood_motion.vertex_weight[last * 9]) ==
-                  flora::encode_bend_weight(wood_motion.vertex_weight[child_ring]));
-          }
-        }
-      }
-    }
-  }
-}
-
-TEST_CASE("flora maturity: continuation shoulder remains affordable at minimum budgets") {
+TEST_CASE("flora maturity: tapered terminal leader remains affordable at minimum budgets") {
   for (const char* species : {"broadleaf", "birch", "oak", "aspen", "alder"}) {
     flora::FloraFile source;
     source.species = species;

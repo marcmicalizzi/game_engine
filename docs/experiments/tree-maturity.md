@@ -99,7 +99,8 @@ on only the upper 10–14% of the stem. Radius-only recursion then made many gen
 lengths hit the same terminal-shoot floor. This created a compact knot of wood and foliage and
 spent polygons on it. Willow and orchard have no such extra recursive tip crown.
 
-The owner rejected the first correction's exposed conical termination. The final topology
+Historical G88 result, superseded by [G124's branch-aware taper](tree-branch-taper.md):
+the owner rejected the first correction's exposed conical termination. That topology
 continues each stem into an existing upper scaffold, with no redundant recursive top crown.
 [NC State Extension's architecture guidance](https://content.ces.ncsu.edu/before-the-cut)
 distinguishes excurrent central leaders (including some young oaks) from decurrent spreading

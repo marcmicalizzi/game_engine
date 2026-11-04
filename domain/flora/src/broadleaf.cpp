@@ -54,7 +54,7 @@ CrownSpec spec_of(const Broadleaf& p, const GrowthRules& rules = {}) {
   return s;
 }
 
-// The structure: the trunk continues into an existing upper scaffold; every named limb bears
+// The structure: a stem carrying its support into upper scaffolds; every named limb bears
 // recursion to the species' twig. Grown once; it never depends on the budget.
 Crown grow(const Broadleaf& p, const CrownSpec& spec, const GrowthRules& rules = {}) {
   Crown crown;
@@ -69,7 +69,7 @@ Crown grow(const Broadleaf& p, const CrownSpec& spec, const GrowthRules& rules =
   const f64 wander = static_cast<f64>(p.wander_deg) * k_degree;
   const f64 upturn = static_cast<f64>(p.upturn) * 40.0 * k_degree;
   const f64 inv = 1.0 / spec.area_exponent;
-  // The pipe rule at the trunk: its leader top keeps `leader_share`, the limbs share the rest.
+  // Initial area allocation: the trunk reserves `leader_share`, the limbs share the rest.
   const f64 r_top = crown_leader_radius(spec, r_trunk);
   const f64 r_limb =
       r_trunk * det::exp(det::log((1.0 - spec.leader_share) / static_cast<f64>(p.limbs)) * inv);
@@ -89,8 +89,6 @@ Crown grow(const Broadleaf& p, const CrownSpec& spec, const GrowthRules& rules =
   const f64 turn = limb_rng.unit() * 2.0 * k_pi;
   const f64 base = std::min(0.8, static_cast<f64>(p.crown_base) / rules.trunk_fraction);
   Vector<CrownRoot> roots;
-  u32 continuation = 0;
-  f64 last_station = 0;
   for (u32 i = 0; i < p.limbs; ++i) {
     const f64 f = rules.opposite
                       ? (static_cast<f64>(i / 2u) + 0.5) / static_cast<f64>((p.limbs + 1u) / 2u)
@@ -121,20 +119,19 @@ Crown grow(const Broadleaf& p, const CrownSpec& spec, const GrowthRules& rules =
     CrownRoot root;
     root.node =
         crown_add_named(crown, limb, branch_radius, crown_leader_radius(spec, branch_radius), 0);
+    crown.nodes[root.node].parent_arc = s;
     root.radius = branch_radius;
     root.laterals = p.branches;
     root.lateral_length = static_cast<f64>(p.branch_length) * length;
     root.from = 0.25 - 0.13 * rules.renewal;
     root.to = 0.95;
     roots.push_back(root);
-    // Opposite siblings share a station; retain both axes and continue the more upright one.
-    if (s > last_station || (s == last_station && dir.y > crown.nodes[continuation].dir.y)) {
-      continuation = root.node;
-      last_station = s;
-    }
   }
-  crown_continue_stem(crown, 0, continuation, last_station);
+  crown_finish_stem(crown, 0);
   crown_grow(crown, spec, roots, 2);
+  crown_add_apex(crown, 0, spec);
+  crown_taper(crown, spec.area_exponent);
+  crown_join_relays(crown);
   return crown;
 }
 
@@ -147,9 +144,8 @@ struct Plan {
 };
 
 u32 count_triangles(const Broadleaf& p, const Crown& crown, const Plan& plan) {
-  return (tube_triangles(plan.rows[0] + k_continuation_rows, plan.sides[0]) - 2) +
-         p.limbs * tube_triangles(plan.rows[1], plan.sides[1]) + 2 * plan.sides[1] +
-         crown_triangles(crown, plan.crown);
+  return tube_triangles(plan.rows[0], plan.sides[0]) +
+         p.limbs * tube_triangles(plan.rows[1], plan.sides[1]) + crown_triangles(crown, plan.crown);
 }
 
 // The ladder (flora.md, "The budget"): the finest wood first (a twig's few millimetres are under a
@@ -353,21 +349,16 @@ bool detail::solve_broadleaf_rules(const Broadleaf& p, const GrowthRules& rules,
     const Axis& axis = crown.axes[n.axis];
     n.part = emit.begin_part(axis.point[0], axis.tangent[0], axis.length,
                              i == 0 ? geometry::k_motion_no_parent : crown.nodes[0].part);
-    const StemContinuation& stem_join = crown.continuations[0];
-    const StemContinuation* join = i == 0 ? &stem_join : nullptr;
     named_first.push_back(out.positions.size());
-    build_tube(join != nullptr ? resample_continuation(axis, plan.rows[order], *join)
-               : i == stem_join.child
-                   ? resample_continuing_child(axis, plan.rows[order], stem_join.child_arc)
-                   : resample_axis(axis, plan.rows[order]),
-               n.r0, n.r1, plan.sides[order], {}, emit, join != nullptr, join);
+    crown_seat(crown, i, emit);
+    build_tube(i == 0 ? crown_sample_stem(crown, i, plan.rows[order])
+                      : crown_sample_branch(crown, i, plan.rows[order], emit.seat_length),
+               n.r0, n.r1, plan.sides[order], {}, emit, (n.flags & k_crown_stem_relay) != 0u);
   }
-  const StemContinuation& join = crown.continuations[0];
-  const CrownNode& stem = crown.nodes[0];
-  const CrownNode& child = crown.nodes[join.child];
-  bind_continuation_cap(resample_continuation(crown.axes[stem.axis], plan.rows[0], join), stem.r0,
-                        stem.r1, plan.sides[0], named_first[0], join, stem.part, child.part,
-                        crown.axes[child.axis].length, parts);
+  emit.seated = false;
+  emit.seat_length = 0;
+  crown_bind_relays(crown, named_first, plan.rows[0], plan.sides[0], plan.rows[1], plan.sides[1],
+                    out, parts);
   crown_emit_wood(crown, plan.crown, emit, false);
   assets::Primitive bark;
   bark.first_index = 0;
@@ -421,6 +412,7 @@ bool detail::solve_broadleaf_rules(const Broadleaf& p, const GrowthRules& rules,
   leaves.material = 1;
   out.primitives.push_back(leaves);
   smooth_normals(out, leaf_vertex, leaf_first);
+  crown_fit_motion(crown, parts);
 
   if (report != nullptr) {
     *report = TreeReport{};

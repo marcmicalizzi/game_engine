@@ -204,7 +204,7 @@ TEST_CASE("deposits: mesh identity and cluster container are deterministic") {
   REQUIRE(solve_deposit(p, mesh, error));
   const u64 hash = checks::mesh_hash(mesh);
   MESSAGE("deposit mesh pin: ", hash);
-  // G124 initial MSVC pin; the existing rock solver pins remain unchanged.
+  // G128 initial MSVC pin; the existing rock solver pins remain unchanged.
   CHECK(hash == 6863964757150498499ull);
   geometry::ClusterFileData a, b;
   REQUIRE_MESSAGE(build_deposit_container(p, {}, 0, a, error), error);

@@ -70,12 +70,19 @@ D3 axis_tangent(const Axis& a, f64 arc) {
   return normalized(a.tangent[i] * (1.0 - t) + a.tangent[i + 1] * t);
 }
 
-Axis resample_axis(const Axis& a, u32 rows) {
+Axis resample_axis(const Axis& a, u32 rows, f64 seat_length) {
   Axis r;
   r.length = a.length;
+  r.radii = a.radii;
+  r.uniform_steps = seat_length <= 0 || rows < 2;
   D3 n = a.normal[0];
   for (u32 i = 0; i <= rows; ++i) {
-    const f64 s = a.length * static_cast<f64>(i) / static_cast<f64>(rows);
+    const u32 seat_rows = std::min(4u, std::max(1u, rows / 2));
+    const f64 span = std::min(seat_length, .4 * a.length);
+    const f64 s = r.uniform_steps  ? a.length * static_cast<f64>(i) / static_cast<f64>(rows)
+                  : i <= seat_rows ? span * static_cast<f64>(i) / seat_rows
+                                   : span + (a.length - span) * static_cast<f64>(i - seat_rows) /
+                                                (rows - seat_rows);
     const D3 t = axis_tangent(a, s);
     n = perpendicular(t, n);
     r.point.push_back(i == rows ? a.point.back() : axis_point(a, s));
@@ -86,132 +93,17 @@ Axis resample_axis(const Axis& a, u32 rows) {
   return r;
 }
 
-f64 continuation_radius(f64 r0, f64 r1, f64 length, const StemContinuation& join, f64 arc) {
-  const f64 slope = (join.reference_tip - r0) / join.reference_length;
-  if (arc <= join.from) return lerp(r0, join.reference_tip, arc / join.reference_length);
-  const f64 span = length - join.from;
-  const f64 u = clamp01((arc - join.from) / span);
-  const f64 u2 = u * u;
-  const f64 u3 = u2 * u;
-  const f64 start = r0 + slope * join.from;
-  // Monotone endpoint slopes cannot overshoot the positive radius envelope.
-  const f64 limit = 1.5 * (start - r1) / span;
-  const f64 m0 = std::clamp(slope, -limit, 0.0) * span;
-  const f64 m1 = std::clamp(join.end_slope, -limit, 0.0) * span;
-  return (2 * u3 - 3 * u2 + 1) * start + (u3 - 2 * u2 + u) * m0 + (-2 * u3 + 3 * u2) * r1 +
-         (u3 - u2) * m1;
+D3 tube_sweep_offset(const Axis& axis, const Emitter& out, f64 arc, bool derivative) {
+  const f64 length = out.seat_length;
+  const D3 offset = out.seat_origin - axis.point[0];
+  const D3 handle = out.seat_tangent * (length + length_of(offset)) - axis.tangent[0] * length;
+  const f64 q = clamp01(arc / length);
+  if (derivative)
+    return offset * ((6 * q * q - 6 * q) / length) + handle * ((3 * q * q - 4 * q + 1) / length);
+  return offset * (2 * q * q * q - 3 * q * q + 1) + handle * (q * q * q - 2 * q * q + q);
 }
-
-Axis resample_continuation(const Axis& a, u32 rows, const StemContinuation& join) {
-  Axis r;
-  r.length = a.length;
-  r.uniform_steps = false;
-  D3 n = a.normal[0];
-  for (u32 i = 0; i <= rows + k_continuation_rows; ++i) {
-    const f64 s = i == rows                         ? join.from
-                  : i == rows + k_continuation_rows ? a.length
-                  : i <= rows ? join.from * static_cast<f64>(i) / rows
-                              : join.from + (a.length - join.from) * static_cast<f64>(i - rows) /
-                                                k_continuation_rows;
-    const D3 t = axis_tangent(a, s);
-    n = perpendicular(t, n);
-    r.point.push_back(i == rows + k_continuation_rows ? a.point.back() : axis_point(a, s));
-    r.tangent.push_back(t);
-    r.normal.push_back(n);
-    r.arc.push_back(s);
-  }
-  return r;
-}
-
-Axis resample_continuing_child(const Axis& a, u32 rows, f64 station) {
-  Axis r;
-  r.length = a.length;
-  r.uniform_steps = false;
-  D3 n = a.normal[0];
-  const u32 before =
-      std::clamp(static_cast<u32>(static_cast<f64>(rows + 1) * station / a.length + .5), 1u, rows);
-  for (u32 i = 0; i <= rows + 1; ++i) {
-    const f64 s = i == before     ? station
-                  : i == rows + 1 ? a.length
-                  : i <= before   ? station * static_cast<f64>(i) / before
-                                  : station + (a.length - station) * static_cast<f64>(i - before) /
-                                                  (rows + 1 - before);
-    const D3 t = axis_tangent(a, s);
-    n = perpendicular(t, n);
-    r.point.push_back(i == rows + 1 ? a.point.back() : axis_point(a, s));
-    r.tangent.push_back(t);
-    r.normal.push_back(n);
-    r.arc.push_back(s);
-  }
-  return r;
-}
-
-void crown_continue_stem(Crown& crown, u32 stem, u32 child, f64 station) {
-  CrownNode& node = crown.nodes[stem];
-  const CrownNode& branch = crown.nodes[child];
-  const Axis original = crown.axes[node.axis];
-  const Axis& target = crown.axes[branch.axis];
-  StemContinuation join;
-  join.from = station;
-  join.reference_length = original.length;
-  join.reference_tip = node.r1;
-  const f64 radius = lerp(node.r0, node.r1, station / original.length);
-  // The shoulder has physical extent, but cannot consume more than the available scaffold.
-  const f64 reach = std::min(.65 * target.length, std::max(4.0 * radius, .12 * target.length));
-  const D3 start = axis_point(original, station);
-  const D3 end = axis_point(target, reach);
-  const D3 t0 = axis_tangent(original, station);
-  const D3 t1 = axis_tangent(target, reach);
-  const D3 delta = end - start;
-  const f64 distance = length_of(delta);
-  // A thick short stem can have much more lateral offset than rise. Bound the handles by
-  // displacement along both tangents as well, so the shoulder cannot fold back on itself.
-  const f64 handle =
-      std::min(.7 * distance, std::max(1e-6 * distance, std::min(dot(delta, t0), dot(delta, t1))));
-  const D3 m0 = t0 * handle;
-  const D3 m1 = t1 * handle;
-  Axis axis;
-  axis.uniform_steps = false;
-  for (u32 i = 0; i < original.point.size() && original.arc[i] < station; ++i) {
-    axis.point.push_back(original.point[i]);
-    axis.tangent.push_back(original.tangent[i]);
-    axis.normal.push_back(original.normal[i]);
-    axis.arc.push_back(original.arc[i]);
-  }
-  D3 n = perpendicular(t0, axis.normal.back());
-  axis.point.push_back(start);
-  axis.tangent.push_back(t0);
-  axis.normal.push_back(n);
-  axis.arc.push_back(station);
-  constexpr u32 samples = 32;  // structure resolution; independent of the polygon ladder
-  for (u32 i = 1; i <= samples; ++i) {
-    const f64 u = static_cast<f64>(i) / samples;
-    const f64 u2 = u * u;
-    const f64 u3 = u2 * u;
-    const D3 p = start * (2 * u3 - 3 * u2 + 1) + m0 * (u3 - 2 * u2 + u) + end * (-2 * u3 + 3 * u2) +
-                 m1 * (u3 - u2);
-    const D3 t = normalized(start * (6 * u2 - 6 * u) + m0 * (3 * u2 - 4 * u + 1) +
-                            end * (-6 * u2 + 6 * u) + m1 * (3 * u2 - 2 * u));
-    n = perpendicular(t, n);
-    axis.arc.push_back(axis.arc.back() + length_of(p - axis.point.back()));
-    axis.point.push_back(p);
-    axis.tangent.push_back(t);
-    axis.normal.push_back(n);
-  }
-  axis.length = axis.arc.back();
-  // A flat cap is buried in the continuing branch, whose outer axis and pipe remain unchanged.
-  node.r1 = std::min(.9 * radius, .25 * lerp(branch.r0, branch.r1, reach / target.length));
-  join.end_slope = .25 * (branch.r1 - branch.r0) / target.length;
-  join.child = child;
-  join.child_arc = reach;
-  node.tip = axis.point.back();
-  node.length = axis.length;
-  crown.axes[node.axis] = std::move(axis);
-  crown.continuations.push_back(join);
-}
-
 void build_tube(const Axis& axis, f64 r0, f64 r1, u32 sides, Vec2 uv_offset, Emitter& out,
-                bool flat_tip, const StemContinuation* continuation) {
+                bool flat_tip) {
   const u32 rows = axis.point.size();
   const f64 round = 2.0 * k_pi * 0.5 * (r0 + r1);  // metres once round, at the mean radius
   const f64 u0 = static_cast<f64>(uv_offset.x);
@@ -224,20 +116,24 @@ void build_tube(const Axis& axis, f64 r0, f64 r1, u32 sides, Vec2 uv_offset, Emi
   const bool root = out.part < out.motion.parts.size() &&
                     out.motion.parts[out.part].parent == geometry::k_motion_no_parent;
   const WoodProfile& w = out.wood;
-  const bool shaped = !straight && (continuation != nullptr || out.seated ||
+  const f64 seat_length = out.seat_length > 0 ? out.seat_length : 2.0 * r0;
+  const auto sweep_offset = [&](f64 arc, bool derivative) {
+    return tube_sweep_offset(axis, out, arc, derivative);
+  };
+  const bool swept = out.seated && out.swept_seat && !straight;
+  const bool shaped = !straight && (!axis.radii.empty() || out.seated ||
                                     w.collar + w.flare + w.fluting + w.oval + w.knots > 0.0);
   Rng shape_rng = stream_of(w.seed, 9000000ull + out.part);
   const f64 phase = shape_rng.unit() * 2.0 * k_pi;
   const f64 knot_at = 0.2 + 0.6 * shape_rng.unit();
   const f64 collar_span = std::min(0.3 * axis.length, 3.0 * r0);
   const auto nominal_radius = [&](f64 u) {
-    return continuation != nullptr
-               ? continuation_radius(r0, r1, axis.length, *continuation, u * axis.length)
-               : lerp(r0, r1, u);
+    return axis.radii.empty() ? lerp(r0, r1, u) : axis_radius(axis, r0, r1, u * axis.length);
   };
   const auto radius_at = [&](f64 arc, f64 phi, D3 radial, D3 tangent) {
     const f64 u = clamp01(arc / axis.length);
-    const f64 blend = out.seated ? smoothstep01(arc / (2.0 * r0)) : 1.0;
+    const f64 blend =
+        out.seated ? smoothstep01(arc / (swept ? .25 * seat_length : seat_length)) : 1.0;
     const f64 nominal = nominal_radius(u);
     const f64 core = out.seated ? lerp(out.seat_radius, nominal, blend) : nominal;
     const f64 basal = 1.0 - smoothstep01(arc / (collar_span + 1e-9));
@@ -258,12 +154,19 @@ void build_tube(const Axis& axis, f64 r0, f64 r1, u32 sides, Vec2 uv_offset, Emi
     // Preserve the existing operation order, including derivative normals, for other species.
     return core * (1.0 + basal * collar + w.fluting * flute * (1.0 - 0.65 * u) + oval + knot);
   };
+  D3 sweep_normal = axis.normal[0];
   for (u32 r = 0; r < rows; ++r) {
     const f64 s = axis.arc[r] / axis.length;
     out.weight = s;
     const f64 radius = nominal_radius(s);
-    const D3 t = axis.tangent[r];
-    const D3 n = axis.normal[r];
+    const D3 sweep_velocity = axis.tangent[r] + (swept ? sweep_offset(axis.arc[r], true) : D3{});
+    const f64 stretch = swept ? length_of(sweep_velocity) : 1.0;
+    const D3 t = swept ? normalized(sweep_velocity) : axis.tangent[r];
+    const D3 reference = swept ? sweep_normal : axis.normal[r];
+    const D3 hint =
+        std::abs(dot(t, reference)) < .95 ? reference : cross(axis.tangent[r], axis.normal[r]);
+    const D3 n = swept ? perpendicular(t, hint) : axis.normal[r];
+    if (swept) sweep_normal = n;
     const D3 b = cross(t, n);
     for (u32 i = 0; i <= sides; ++i) {
       const f64 angle = 2.0 * k_pi * static_cast<f64>(i) / static_cast<f64>(sides);
@@ -281,20 +184,21 @@ void build_tube(const Axis& axis, f64 r0, f64 r1, u32 sides, Vec2 uv_offset, Emi
                            radius_at(axis.arc[r] - epsilon, angle, radial, t)) /
                           (2.0 * epsilon);
         normal = radial - (n * -det::sin(angle) + b * det::cos(angle)) * (angular / actual_radius) -
-                 t * axial;
-        if (out.seated) {
-          const f64 q = clamp01(axis.arc[r] / (2.0 * r0));
+                 t * (axial / stretch);
+        if (out.seated && !swept) {
+          const f64 q = clamp01(axis.arc[r] / seat_length);
           const D3 derivative =
-              t - (out.seat_origin - axis.point[0]) * (6.0 * q * (1.0 - q) / (2.0 * r0));
+              t - (out.seat_origin - axis.point[0]) * (6.0 * q * (1.0 - q) / seat_length);
           const f64 along = dot(derivative, t);
           normal = radial -
                    (n * -det::sin(angle) + b * det::cos(angle)) * (angular / actual_radius) -
                    t * ((axial + dot(radial, derivative)) / along);
         }
       }
-      const f64 join = out.seated ? 1.0 - smoothstep01(axis.arc[r] / (2.0 * r0)) : 0.0;
-      const D3 centre =
-          out.seated ? axis.point[r] + (out.seat_origin - axis.point[0]) * join : axis.point[r];
+      const f64 join = out.seated ? 1.0 - smoothstep01(axis.arc[r] / seat_length) : 0.0;
+      const D3 centre = swept        ? axis.point[r] + sweep_offset(axis.arc[r], false)
+                        : out.seated ? axis.point[r] + (out.seat_origin - axis.point[0]) * join
+                                     : axis.point[r];
       out.vertex(centre + radial * actual_radius, normal,
                  u0 + round * static_cast<f64>(i) / static_cast<f64>(sides), v0 + axis.arc[r]);
     }
@@ -328,28 +232,6 @@ void build_tube(const Axis& axis, f64 r0, f64 r1, u32 sides, Vec2 uv_offset, Emi
   }
 }
 
-void bind_continuation_cap(const Axis& sampled, f64 r0, f64 r1, u32 sides, u32 first,
-                           const StemContinuation& join, u32 stem_part, u32 child_part,
-                           f64 child_length, Motion& motion) {
-  const u32 last = sampled.arc.size() - 1;
-  const f64 stem_length = sampled.arc[last - 1];
-  motion.parts[stem_part].length = static_cast<f32>(stem_length);
-  if (stem_part < motion.structure.size()) {
-    motion.structure[stem_part].tip_radius =
-        static_cast<f32>(continuation_radius(r0, r1, sampled.length, join, stem_length));
-  }
-  for (u32 ring = 0; ring <= last; ++ring) {
-    const bool cap = ring == last;
-    const u32 part = cap ? child_part : stem_part;
-    const f32 weight =
-        static_cast<f32>(cap ? join.child_arc / child_length : sampled.arc[ring] / stem_length);
-    for (u32 side = 0; side <= sides; ++side) {
-      const u32 vertex = first + ring * (sides + 1) + side;
-      motion.vertex_part[vertex] = part;
-      motion.vertex_weight[vertex] = weight;
-    }
-  }
-}
 void build_spray(const Axis& axis, f64 from, u32 cards, f64 card_length, f64 angle, f64 lift,
                  f64 droop, D3 side, Emitter& out) {
   // The centre line's stations, shared by the cards either side of them.
@@ -478,7 +360,8 @@ u32 emit_tube_part(Emitter& out, const Axis& axis, f64 r0, f64 r1, u32 rows, u32
                    u32 flags) {
   const u32 part = begin_structural_part(out, axis.point[0], axis.tangent[0], axis.length, parent,
                                          r0, r1, flags);
-  build_tube(resample_axis(axis, rows), r0, r1, sides, Vec2{0.0f, 0.0f}, out);
+  build_tube(resample_axis(axis, rows, out.seated ? out.seat_length : 0.0), r0, r1, sides,
+             Vec2{0.0f, 0.0f}, out);
   return part;
 }
 
@@ -630,6 +513,7 @@ struct Grower {
       child.r1 = terminal ? 0.6 * r : r * power(spec.leader_share, inv);
       child.length = length;
       child.parent = index;
+      child.parent_arc = s;
       child.generation = parent.generation + 1;
       child.cls = terminal ? 0 : class_of(spec, r);
       const bool part = (parent.flags & k_crown_part) != 0u && child.cls >= crown.part_class;
@@ -901,6 +785,7 @@ void crown_emit_wood(Crown& crown, const CrownPlan& plan, Emitter& out, bool str
                           crown.leaf_placement == LeafPlacement::alternate_compound);
   for (u32 i = crown.first_recursion; i < crown.nodes.size(); ++i) {
     CrownNode& node = crown.nodes[i];
+    crown_seat(crown, i, out);
     if (compound && (node.flags & k_crown_terminal) != 0u) {
       if ((node.flags & k_crown_part) != 0u)
         node.part = out.begin_part(node.base, normalized(node.tip - node.base), node.length,
@@ -917,7 +802,8 @@ void crown_emit_wood(Crown& crown, const CrownPlan& plan, Emitter& out, bool str
         node.part = emit_tube_part(out, axis, node.r0, node.r1, rows, sides, parent_part, 0u);
       } else {
         node.part = out.begin_part(axis.point[0], axis.tangent[0], axis.length, parent_part);
-        build_tube(resample_axis(axis, rows), node.r0, node.r1, sides, Vec2{0.0f, 0.0f}, out);
+        build_tube(resample_axis(axis, rows, out.seated ? out.seat_length : 0.0), node.r0, node.r1,
+                   sides, Vec2{0.0f, 0.0f}, out);
       }
       continue;
     }
@@ -929,6 +815,8 @@ void crown_emit_wood(Crown& crown, const CrownPlan& plan, Emitter& out, bool str
     for (u32 v = first; v < out.mesh.positions.size(); ++v)
       out.motion.vertex_weight[v] = static_cast<f32>(node.weight);
   }
+  out.seated = false;
+  out.seat_length = 0;
 }
 
 f64 crown_emit_leaves(const Crown& crown, const CrownPlan& plan, Emitter& out, f64 card_length,

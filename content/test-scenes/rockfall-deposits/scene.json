@@ -1,7 +1,7 @@
 {
   "format": "engine.scene.v1",
   "name": "rockfall-deposits",
-  "description": "G124: source-connected deposits under a narrow rocky ridge, with a shallow drainage hollow. Static analytic terrain; no external assets required.",
+  "description": "G128: source-connected deposits under a narrow rocky ridge, with a shallow drainage hollow. Static analytic terrain; no external assets required.",
   "camera_path": "camera-path.json",
   "terrain": {
     "size": 257,

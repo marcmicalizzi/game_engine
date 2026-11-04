@@ -91,9 +91,10 @@ f64 leaf_area(const assets::MeshData& mesh) {
 // The pipe rule at every node of the recursion, and every twig at the species' radius: the
 // children's base radii to the power D sum to the parent's (a named root's: the radius its
 // children share, which is its base radius for a limb), and a terminal twig is no thinner than
-// `twig_radius` and less than one pipe step thicker.
+// `twig_radius` and less than one pipe step thicker, before the explicitly bounded
+// redistribution of the named stem reserve among existing scaffolds.
 void check_crown(const Vector<flora::CrownShoot>& crown, f64 exponent, f64 twig_radius, f64 step,
-                 u32& nodes_checked, f64& worst) {
+                 u32& nodes_checked, f64& worst, bool tapered = false, f64 scaffold_gain = 1.0) {
   std::vector<f64> sums(crown.size(), 0.0);
   std::vector<u32> named_children(crown.size(), 0u);
   for (u32 i = 0; i < crown.size(); ++i) {
@@ -114,12 +115,20 @@ void check_crown(const Vector<flora::CrownShoot>& crown, f64 exponent, f64 twig_
     if ((s.flags & flora::k_crown_shoot_terminal) != 0u) {
       ++twigs;
       CAPTURE(i);
-      CHECK(static_cast<f64>(s.base_radius) >= twig_radius * (1.0 - 1e-5));
-      CHECK(static_cast<f64>(s.base_radius) < twig_radius * step * (1.0 + 1e-5));
+      u32 depth = 0;
+      for (u32 parent = s.parent; parent != 0xFFFFFFFFu; parent = crown[parent].parent)
+        ++depth;
+      const f64 taper_floor = tapered ? std::pow(.95, static_cast<f64>(depth)) : 1.0;
+      CHECK(static_cast<f64>(s.base_radius) >= twig_radius * taper_floor * (1.0 - 1e-5));
+      CHECK(static_cast<f64>(s.base_radius) < twig_radius * step * scaffold_gain * (1.0 + 1e-5));
       continue;
     }
     if (sums[i] == 0.0 || named_children[i] != 0u) continue;
     const f64 own = std::pow(static_cast<f64>(s.base_radius), exponent);
+    if (tapered) {
+      CHECK(sums[i] / own <= 1.0 + 1e-5);
+      CHECK(sums[i] / own >= std::pow(.95, exponent) - 1e-5);
+    }
     const f64 error = std::abs(sums[i] / own - 1.0);
     worst = std::max(worst, error);
     ++nodes_checked;
@@ -203,7 +212,7 @@ TEST_CASE("flora allometry: the order count grows with the log of trunk over twi
   }
 }
 
-TEST_CASE("flora allometry: the pipe rule holds at every node and every twig is the species'") {
+TEST_CASE("flora allometry: area allocation accounts for axial taper and bounded terminal twigs") {
   for (const f32 exponent : {2.0f, 2.3f}) {
     CAPTURE(exponent);
     flora::Broadleaf b;
@@ -215,11 +224,12 @@ TEST_CASE("flora allometry: the pipe rule holds at every node and every twig is 
     check_crown(crown, static_cast<f64>(exponent), static_cast<f64>(b.twig_radius_m),
                 smallest_step(static_cast<f64>(b.leader_share),
                               std::min(b.branching_ratio - 1, b.twigs), static_cast<f64>(exponent)),
-                nodes, worst);
+                nodes, worst, true,
+                std::pow(1.0 / (1.0 - static_cast<f64>(b.leader_share)), 1.0 / exponent));
     MESSAGE("broadleaf, exponent " << exponent << ": " << crown.size() << " shoots, " << nodes
                                    << " nodes, the worst within " << worst);
     CHECK(nodes > 100);
-    CHECK(worst < 0.02);
+    CHECK(worst <= 1.0 - std::pow(.95, static_cast<f64>(exponent)) + 1e-5);
     // The ancient tree at 2.3 is a million and a half shoots: the broadleaf says the same thing at
     // that exponent for a fraction of the time.
     if (exponent != 2.0f) continue;

@@ -1,6 +1,6 @@
 #pragma once
 
-// Static, terrain-aware rockfall and sediment authoring (G124; docs/subsystems/rocks.md).
+// Static, terrain-aware rockfall and sediment authoring (G128; docs/subsystems/rocks.md).
 #include <domain/rocks/rocks.h>
 #include <domain/scene_gen/scene_gen.h>
 

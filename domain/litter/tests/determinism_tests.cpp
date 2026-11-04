@@ -12,8 +12,9 @@ TEST_CASE("litter: complete containers agree across toolchains") {
   // move. The new values are the same on MSVC debug and release and on Linux Clang debug and GCC
   // release (not a build-configuration difference); with domain/deadwood put back at 31607f4f the
   // old two return.
+  // G124: twig/tangle inherit the oak taper and its source key; other kinds are unchanged.
   constexpr u64 expected[] = {0x341e406800665f85ull, 0xabfbd865a0676d1dull, 0xdefb0dd9440f730aull,
-                              0xf94b5a4d69cd7d2cull, 0xd18a644ef32ae659ull, 0xe945763ffe1039d8ull};
+                              0xf94b5a4d69cd7d2cull, 0xdcad92b7e904545eull, 0xe81e9c28fb364160ull};
   for (u32 k = 0; k < 6; ++k) {
     litter::Recipe p;
     p.kind = static_cast<litter::Kind>(k);

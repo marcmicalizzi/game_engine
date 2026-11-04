@@ -1,4 +1,4 @@
-# Rockfall and sediment deposition (G124)
+# Rockfall and sediment deposition (G128)
 
 Research read 2026-11-04. This is static content authoring, not a rockfall hazard model,
 geomorphic time integration, sediment mass balance or a hydraulic transport solver.

@@ -54,12 +54,15 @@ bool fit_root_stem(const assets::MeshData& mesh, const Motion& motion, Roots& ro
       continue;
     const Vec3 pa = mesh.positions[a], pb = mesh.positions[b], pc = mesh.positions[c];
     if (!finite(pa) || !finite(pb) || !finite(pc)) return bad(error, "nonfinite trunk vertex");
-    for (const u32 v : {a, b, c})
-      if (std::abs(mesh.uvs[v].y) < 1e-6f)
-        bottom = std::max(bottom, static_cast<f64>(mesh.positions[v].y));
+
     if (static_cast<f64>(std::min({pa.y, pb.y, pc.y})) > origin_y + height ||
         static_cast<f64>(std::max({pa.y, pb.y, pc.y})) < origin_y)
       continue;
+    // Folded terminal wood can ride the trunk's part and restart its UVs high in the crown.
+    // Only lower-trunk faces may establish the root collar's basal edge.
+    for (const u32 v : {a, b, c})
+      if (std::abs(mesh.uvs[v].y) < 1e-6f)
+        bottom = std::max(bottom, static_cast<f64>(mesh.positions[v].y));
     faces.push_back(i);
   }
   if (faces.empty()) return bad(error, "no lower trunk faces");

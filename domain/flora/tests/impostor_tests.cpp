@@ -153,8 +153,9 @@ TEST_CASE("impostor chain: the bake is the same bytes every time and on every to
   // Clang reproduce both; the leaf-only cards remain byte-identical.
   // G87: three orthogonal group planes and four depth slices per far-tree direction.
   // G88: the local trunk-tip crown changes leaf/wood groups and their coverage.
-  constexpr u64 k_golden[4] = {0x2c54e962dfb33177ull, 0x814e39ddea5d3d29ull, 0x10d253a81a6aa4ccull,
-                               0x66dc658f1c1b0cc2ull};
+  // G129: branch taper moves wood and attachment seats, so both baked levels follow.
+  constexpr u64 k_golden[4] = {0x3a96fb5843f3f893ull, 0x320a6dd729488876ull, 0x62faa7f2ea0db47eull,
+                               0x89d872cb314a8812ull};
   for (u32 k = 0; k < 4; ++k)
     CHECK(hashes[k] == k_golden[k]);
 }
@@ -788,14 +789,15 @@ TEST_CASE("impostor chain: the conifer profiles and the matured conifer build it
     CHECK(container == hash_combine(h, flora::k_conifer_chain_version));
     CHECK(data.source_hash == container);
   }
-  // A broadleaf profile keys as it did, its container and its tree alike.
+  // A broadleaf profile carries the G129 shape salt, but never the conifer chain salt.
   flora::FloraFile oak;
   REQUIRE(flora::read_flora_file(R"({"species":"oak"})", oak, error));
   const std::string canonical = flora::canonical_flora_json(oak);
-  const u64 oak_hash =
+  const u64 old_oak_hash =
       hash_combine(hash_combine(hash_bytes(canonical.data(), canonical.size()),
                                 hash_bytes(oak.species.data(), oak.species.size())),
                    flora::k_flora_version);
+  const u64 oak_hash = hash_combine(old_oak_hash, flora::k_branch_taper_version);
   CHECK(flora::flora_source_hash(oak) == oak_hash);
   u64 oak_container = 0;
   REQUIRE(flora::flora_source_hash_with(oak, {}, oak_container, error));

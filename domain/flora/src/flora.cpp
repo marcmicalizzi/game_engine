@@ -355,6 +355,9 @@ u64 flora_source_hash(const FloraFile& file) {
   if (file.regeneration) return hash_combine(h, k_regeneration_version);
   if (alpine_profile(file.species) != nullptr) return hash_combine(h, k_alpine_version);
   if (shrub_profile(file.species) != nullptr) return hash_combine(h, k_shrub_growth_version);
+  if (file.species == k_species_broadleaf || file.species == k_species_birch ||
+      (detail::is_tree_species(file.species) && !detail::is_evergreen_species(file.species)))
+    return hash_combine(hash_combine(h, k_flora_version), k_branch_taper_version);
   return hash_combine(h, file.species == "sward"   ? k_sward_version
                          : file.species == "roots" ? k_roots_version
                          : (file.species == k_species_fern || file.species == k_species_herb)
