@@ -907,3 +907,13 @@ Public API: [deposits.h](../../domain/rocks/include/domain/rocks/deposits.h), `D
 `build_deposit_container`. Tests in `tests/deposits_tests.cpp` cover source connectivity, empty
 flat terrain, channel convergence, translated world coordinates, budgets, topology, deterministic
 meshes and keys, reverse tile arrival, earlier footprints and input refusals.
+
+### Foothill exposure and repeated-material limits
+
+[G132's v29 controls](../experiments/v29-cliff-diagnosis.md) distinguish the continuous authored
+wall from runtime LOD, identify the legacy skirt's rectangular apron lobes, and show a separate
+shadow defect persisting after all cliff meshes are removed. A narrower/lower authoring probe
+became mostly buried, so it is not an accepted replacement recipe. Terrain-aware placement of
+the finished carved face, exposed interval termination and separate visible-front versus hidden
+closure tessellation remain solver gaps. Coherent stochastic cliff PBR and coarse geological
+material layers also remain unimplemented; terrain's stochastic flag is not a RockMaterial switch.

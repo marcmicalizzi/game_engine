@@ -605,6 +605,8 @@ Import, the content build, validation, provenance, generators, scripting and tex
 
 | G131 | Connected two-sided rock ridges and pinnacles: shared broken crest, formation-space geology and bounded source/LOD cost | open (2026-11-04: contract assessment and grounded proposal complete; implementation, captures and performance qualification pending) | G127 | L | design | [ridge proposal](experiments/rock-ridges.md), [rocks](subsystems/rocks.md) |
 
+| G132 | Diagnose v29 retaining-wall cliffs and repeated PBR; terrain-limited exposed bands, source detail allocation and coherent cliff material sampling | open (2026-11-04: isolated diagnosis complete; exposed-band placement, visible-front allocation and coherent stochastic cliff materials remain unimplemented) | G127, G128 | M | research | [v29 diagnosis](experiments/v29-cliff-diagnosis.md) |
+
 ## T — Tooling and CI
 
 Build, CI, test and profiling infrastructure, and the machinery behind the standing rules: [08](plan/08-toolchain.md), [09](plan/09-testing-profiling.md), [11](plan/11-performance-principles.md), [docs/ci](ci/what-to-run.md).
