@@ -15,6 +15,8 @@
 #include <cmath>
 #include <fstream>
 #include <iterator>
+#include <limits>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -26,6 +28,7 @@ TEST_CASE("cliff: sampled ground buries the apron base and toe on falling terrai
   for (RockQuality quality : {RockQuality::Low, RockQuality::High}) {
     Cliff c;
     c.height = 32;
+    c.talus = 0.2f;  // A broad apron must expose the old reference-plane defect.
     c.quality = quality;
     c.triangle_budget = 30000;
     c.talus_blocks = 3;
@@ -48,19 +51,28 @@ TEST_CASE("cliff: sampled ground buries the apron base and toe on falling terrai
     CHECK(a.parts == b.parts);
     REQUIRE(before.indices.size() == after.indices.size());
     check_closed(after, b.parts);
+    // Ground-dependent UV chart sorting may reorder triangles. Match vertical columns by
+    // position instead of assuming equal index order in two differently draped meshes.
+    std::map<std::pair<f32, f32>, std::vector<f32>> columns;
+    for (u32 i = b.face_triangles * 3; i < (b.face_triangles + b.skirt_triangles) * 3; ++i) {
+      const auto p = after.positions[after.indices[i]];
+      columns[{p.x, p.z}].push_back(p.y);
+    }
     u32 base = 0, toe = 0, exposed_before = 0;
     for (u32 i = a.face_triangles * 3; i < (a.face_triangles + a.skirt_triangles) * 3; ++i) {
       const u32 v = before.indices[i];
       const auto old = before.positions[v];
-      const auto now = after.positions[after.indices[i]];
-      const f64 h = 0.05 * static_cast<f64>(now.x) - 0.65 * static_cast<f64>(now.z);
+      REQUIRE(columns.contains({old.x, old.z}));
+      const auto& heights = columns.at({old.x, old.z});
+      const f64 h = 0.05 * static_cast<f64>(old.x) - 0.65 * static_cast<f64>(old.z);
       if (std::fabs(old.y + 2.3f) < 1e-4f) {
-        CHECK(static_cast<f64>(now.y) <= h - 0.999);
+        CHECK(static_cast<f64>(*std::min_element(heights.begin(), heights.end())) <= h - 0.999);
         if (static_cast<f64>(old.y) > h + 1.0) ++exposed_before;
         ++base;
       }
       if (std::fabs(old.y + 1.3f) < 1e-4f) {
-        CHECK(now.y == doctest::Approx(h - 1.3).epsilon(0.0001));
+        CHECK(std::any_of(heights.begin(), heights.end(),
+                          [&](f32 y) { return y == doctest::Approx(h - 1.3).epsilon(0.0001); }));
         ++toe;
       }
     }
@@ -161,8 +173,8 @@ std::vector<Hit> vertical_hits(const assets::MeshData& mesh, f64 x, f64 z) {
 }  // namespace
 
 TEST_CASE("cliffs: every type is closed, two-manifold and wound outwards at every rung") {
-  for (const RockType type :
-       {RockType::Granite, RockType::Sandstone, RockType::Basalt, RockType::Limestone}) {
+  for (const RockType type : {RockType::Granite, RockType::Sandstone, RockType::Basalt,
+                              RockType::Limestone, RockType::Quartzite, RockType::Dolostone}) {
     for (const u32 budget : {2000u, 20000u, 120000u}) {
       for (const f32 undercut : {0.0f, 0.7f}) {
         CAPTURE(std::string(rock_type_name(type)));
@@ -310,7 +322,9 @@ TEST_CASE("cliffs: a cliff's container is built like any rock's, and samples its
   u32 coneless = 0;
   for (const geometry::ClusterDesc& cluster : plain.mesh.mesh.clusters)
     coneless += (cluster.cone >> 24) == 0x7fu ? 1u : 0u;
-  CHECK(coneless < plain.mesh.mesh.clusters.size() / 4);  // closed and one-sided: cones on
+  // Joint recesses and disconnected visible talus increase mixed-facing clusters; keep at
+  // least two thirds cullable rather than pinning the old flat panels' three-quarter share.
+  CHECK(coneless < plain.mesh.mesh.clusters.size() / 3);
   // A pack with `rock/limestone` gives the face the pack's set, at the pack's strength.
   const char* k_pack =
       R"({"format":"engine.materials.pack/1","name":"stand-in","version":"1","roles":{)"
@@ -358,7 +372,7 @@ TEST_CASE("cliffs: a kilometre by 200 m face is one mesh, closed, at a million t
 TEST_CASE("cliffs: the committed escarpment is closed, holds its budget, and is its bytes") {
   // content/rocks/sandstone-escarpment.rock.json: what docs/subsystems/rocks.md's numbers and E10
   // were taken on. Its mesh is pinned like the boulders'.
-  constexpr u64 k_mesh = 0xd60ee81d81f86032ull;
+  constexpr u64 k_mesh = 5793705113405651943ull;
   const std::string dir = test::data_path(ENGINE_SOURCE_DIR "/content/rocks", "content/rocks");
   std::ifstream in(dir + "/sandstone-escarpment.rock.json", std::ios::binary);
   if (!in) {
@@ -386,4 +400,68 @@ TEST_CASE("cliffs: the committed escarpment is closed, holds its budget, and is 
           << ", blocks " << report.block_triangles << " (n " << report.block_grid << "), uv to "
           << extreme << ", mesh " << h);
   CHECK(h == k_mesh);
+}
+
+TEST_CASE("cliffs: local talus leaves buried gaps and occupied deposits within the budget") {
+  Cliff c = straight(80.0f, 24.0f, 120000);
+  c.talus_blocks = 0;
+  c.talus = 0.12f;
+  for (RockQuality quality : {RockQuality::Medium, RockQuality::High}) {
+    c.quality = quality;
+    CliffReport r;
+    const auto mesh = solve(c, &r);
+    check_closed(mesh, r.parts);
+    CHECK(r.triangles <= c.triangle_budget);
+    std::vector<f32> tops(81, -1e6f);
+    for (u32 i = 3 * r.face_triangles; i < 3 * (r.face_triangles + r.skirt_triangles); ++i) {
+      const auto p = mesh.positions[mesh.indices[i]];
+      if (p.z <= 0.0f) continue;
+      const auto station = static_cast<u32>(std::clamp(p.x, 0.0f, 80.0f));
+      tops[station] = std::max(tops[station], p.y);
+    }
+    u32 gaps = 0, deposits = 0;
+    for (u32 i = 3; i < 78; ++i) {
+      if (tops[i] > -1e5f && tops[i] < 0.0f) ++gaps;
+      if (tops[i] > 0.3f) ++deposits;
+    }
+    CHECK(gaps >= 10);
+    CHECK(deposits >= 10);
+  }
+  c.talus_coverage = 0.0f;
+  std::string error;
+  CHECK_FALSE(cliff_in_range(c, error));
+  c.talus_coverage = 0.6f;
+  c.talus_patch_m = std::numeric_limits<f32>::infinity();
+  CHECK_FALSE(cliff_in_range(c, error));
+}
+
+TEST_CASE("cliffs: coarse carbonate faces retain broad relief after close joints filter out") {
+  Cliff c = straight(60.0f, 24.0f, 250000);
+  c.type = RockType::Limestone;
+  c.seed = 47;
+  c.quality = RockQuality::Low;
+  c.batter = 0.0f;
+  c.undercut = 0.0f;
+  c.talus = 0.0f;
+  c.talus_blocks = 0;
+  c.geology.weathering = 0.0f;
+  c.geology.irregularity = 0.0f;
+  const auto spread = [](const assets::MeshData& mesh) {
+    f32 lo = 1e6f, hi = -1e6f;
+    for (u32 i = 0; i < mesh.positions.size(); ++i) {
+      const auto p = mesh.positions[i];
+      if (p.x < 5.0f || p.x > 55.0f || p.y < 4.0f || p.y > 18.0f || mesh.normals[i].z < 0.5f)
+        continue;
+      lo = std::min(lo, p.z);
+      hi = std::max(hi, p.z);
+    }
+    REQUIRE(hi >= lo);
+    return hi - lo;
+  };
+  c.relief = 0.0f;
+  const f32 unjointed = spread(solve(c));
+  c.relief = 8.0f;
+  const auto coarse = solve(c);
+  CHECK(spread(coarse) > unjointed + 0.1f);
+  CHECK(coarse.indices.size() / 3 <= 25000);
 }

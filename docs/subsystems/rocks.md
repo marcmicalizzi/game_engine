@@ -43,8 +43,8 @@ limestone and sandstone can both be resistant, and weathering is exposure in 0�
 | Family | Types | Dominant representation |
 |---|---|---|
 | Igneous | `Granite`, `Basalt`, `Obsidian` | joint blocks and granular/exfoliation loss; columns; smooth concave fracture scars with sharp lips |
-| Sedimentary | `Sandstone`, `Limestone`, `Shale` | unequal bed retreat and granular loss; dissolution pockets; thin fissile plates |
-| Metamorphic | `Slate`, `Schist`, `Gneiss`, `Marble` | planar cleavage; scaly folded sheets; folded massive bands; massive carbonate solution |
+| Sedimentary | `Sandstone`, `Limestone`, `Dolostone`, `Shale` | unequal bed retreat and granular loss; dissolution pockets; thin fissile plates |
+| Metamorphic | `Slate`, `Schist`, `Gneiss`, `Marble`, `Quartzite` | planar cleavage; scaly folded sheets; folded massive bands; massive carbonate solution |
 
 `geology` is a `RockGeology` on every shape. `weathering` (0–1, default 0.5) increases old joint
 edge rounding and process exposure; newly cut facets retain only 2–18% of that rounding, so worn
@@ -248,15 +248,19 @@ in front. The top is a flat cap from the crest to the back's top, the bottom one
 **A cliff on flat ground is a wall** whose back is seen from behind; it is meant to stand against a
 slope, as the generator stands it, with the back inside the hill.
 
-**The talus skirt** (`talus`, `talus_angle_deg`): a second box of the same kind under the foot, its
-cross-section the quadrilateral from a toe sunk half the burial under the foot, up the talus angle
-(35° by default) to a height `talus` of the face's, and on up the same slope into the face behind
-its deepest carving, with two points a metre under the toe's height beneath them — convex, so the
-lattice cannot fold on it. Its height wanders along the face about the share (where more has
-fallen) and tapers to nothing over the last 20 m (or a fifth of the line) at each end; its surface
-is lumpy with two octaves of noise. **The fallen blocks** (`talus_blocks`, `talus_block_m`) are the
-scree's fragments from the radial solver — sharpened, with fresh type-default fabric and three joint sets of their own — lying
-on the skirt, the largest rolled furthest.
+**Patchy talus (solver v11).** A second closed box beneath the face represents deposited debris.
+`talus` is its height fraction (default 0.08), `talus_angle_deg` its interior slope (default 35°).
+`talus_patch_m` is the mean along-face deposition interval (2–100 m, default 14), and
+`talus_coverage` the occupied share of an interval (0.1–1, default 0.6). Unequal station intervals
+and smooth deposit envelopes vary the height and toe width. In gaps the entire surface sinks
+below the reference ground; the shared closed substrate remains buried. Coverage 1 restores a
+continuous apron. End tapers and two resolved noise octaves soften the deposits' boundaries.
+These are authored deposition envelopes, not a transport or angle-of-repose simulation.
+
+The fallen blocks (`talus_blocks`, `talus_block_m`) remain closed fragments from the radial solver,
+sharpened with fresh type-default fabric. Their size varies with distance from the face. The
+terrain patch corrects both their placement and the deposit; bare gaps take the full correction.
+The internal apron is one connected mesh even when its visible deposits are disconnected.
 
 **Terrain contact (solver v9).** Generated cliffs carry a `ground` patch: local x/z origin,
 spacing, rectangular dimensions and row-major heights relative to the recipe origin. The
@@ -306,7 +310,7 @@ far away.
 
 **UVs** are a box projection by the box's orientation, in metres over the set's repeat: the front
 and the back in (along, up), the top and the bottom in (along, back), the ends in (back, up) — and
-cut into **charts 24 repeats square**, each moved by a whole number of charts to sit round zero, so
+cut into **charts 16 repeats square**, each moved by a whole number of charts to sit round zero, so
 a tiled set samples every chart from the same phase (a chart's seam is invisible), a kilometre face
 stays inside ±16 (`geometry.uv_range`) while a cell is under four repeats, and E10's atlas sees
 separate islands. What the box projection cannot do is follow a ledge's top: the front's charts are
@@ -405,7 +409,7 @@ keeps the face in front of the whole profile is what fixed it.
 ## The parameters and ranges
 
 `domain/rocks/schemas/rocks.schema` owns `engine.rocks.*`. Boulder, Outcrop and Scree are
-version 3 with `RockSurface` (version 1), `RockGeology` (version 1) and quality; Cliff is version 2,
+version 3 with `RockSurface` (version 1), `RockGeology` (version 1) and quality; Cliff is version 4,
 CliffPoint remains version 1. A rock file,
 `<name>.rock.json`, is an `engine.rocks.RockFile`: `shape` (`Boulder`, `Outcrop`, `Scree`, `Cliff`)
 and only that shape's block (absent is its defaults, except a cliff's, whose line it must give;
@@ -417,8 +421,8 @@ version 4 replaces the radial hull and chip geometry, including the cliff's fall
 and ranges are the schema's (`engine.rocks.Cliff`, `CliffPoint`): a line of 2 to 4,096 vertices
 1 to 1,000 m long, `height` 1–200 m (40), `batter` 0–1.5 (0.1), `buried` 0–20 m (2), `depth` 2–200
 m (absent: the carving's reach plus 2 m), `relief` 0–20 m (the type's: granite 4, sandstone 3.5,
-basalt 2, limestone 4.5), `joint_sets` 0–3 (3), `rounding`, `bed_m` 0 or 0.25–50 m (sandstone 2.5,
-limestone 4, the others none), `undercut` 0–1 (0), `talus` 0–0.6 (0.2), `talus_angle_deg` 20–45
+basalt 2, limestone 3, dolostone 3.5, quartzite 4), `joint_sets` 0–3 (3), `rounding`, `bed_m` 0 or 0.25–50 m (sandstone 2.5,
+limestone 1.6, dolostone 2.2, quartzite 3; other types have their own presets), `undercut` 0–1 (0), `talus` 0–0.6 (0.08), `talus_angle_deg` 20–45
 (35), `talus_blocks` 0–256 (12), `talus_block_m` 0.1–10 m (1.5), `datum_y` (the height the beds
 are counted from), `triangle_budget` 2,000–4,000,000 (250,000) and the material block.
 
@@ -556,7 +560,7 @@ of half-extent; such a recipe sets a larger `tile_m`.
 cones on. The set is chosen as the flora's are, through [materials](materials.md): the shape's
 `material` block (`base_color`, `normal`, `roughness`, `metallic`, `height` paths relative to the
 recipe, `tile_m`, `normal_scale`) when it names an image; else the material pack's
-**`rock/<type>`** — the lowercase name of any of the ten types, e.g. `rock/granite`, `rock/slate`, `rock/obsidian`
+**`rock/<type>`** — the lowercase name of any of the twelve types, e.g. `rock/granite`, `rock/slate`, `rock/obsidian`
 (`rocks::rock_role`); else the flat colour. **The set is chosen before the solve**, because the
 charts are laid out in whole repeats of its `tile_m`: a pack's set is solved at the pack's repeat
 (the recipe's own `tile_m` belongs to the recipe's own images), so the UVs need no transform and the
@@ -791,3 +795,35 @@ the scheduler, or another capability, and it can be removed from the build the s
 module, its schema types and its tests; the module disappears from `build/<preset>/modules.json`
 and is listed there under `disabled_capabilities`. Everything else must still build and pass, and
 `engine-content rocks` and a `.rock.json` mesh are refused with a sentence.
+
+### Lithology, irregular masses and rounding (solver v11)
+
+[G127 grounding](../experiments/rock-lithology.md#g127-cliff-masses-and-weathered-boulders-2026-11-04)
+records the geological and environment-art sources. Limestone and dolostone are separate carbonate
+presets: solution weathering accompanies blocky ledges and relatively close joints. Quartzite is a
+metamorphic preset with resistant, less rounded masses, wider ledges and much weaker dissolution.
+All three work in Boulder, Outcrop, Scree and Cliff, with roles `rock/limestone`, `rock/dolostone`
+and `rock/quartzite`. Colours and roughnesses are starting points, not measured mineral constants.
+
+Cliff relief reserves 35% of its envelope for broad buttresses, sampled consistently across source quality tiers. Close-joint relief uses the remaining 65% and filters independently, so Low can drop fine bedding without losing all broad relief. These are authored scale weights, not measured rock constants.
+
+Cliff joint stations have unequal intervals, block faces have seeded independent tilts, and the
+oblique fracture set fades through intact bridges. Some adjacent blocks share a face across a minor joint, producing larger unequal masses. Bedding and joints still share the formation's
+datum and fabric. The sheet remains a single-valued outward displacement: localized bed undercuts
+are supported; arbitrary caves and disconnected overhangs are not. The existing support constraint
+and closed back remain. This is greater shape variety, not yet a photorealistic cliff asset system.
+
+For radial rocks, `rounding` above 0.45 progressively retreats the old hull's corners toward an
+inscribed ellipsoid. At 1 it retains 10% of the unequal hull; the affine shape, macro warp, physical
+surface detail and fresh finite chips remain. The old planar rim fitting is disabled for this
+retreated envelope because those planes no longer describe its edges. Lower values retain the
+previous edge-wear behavior. Rounded does not mean polished: PBR roughness is independent.
+
+Cliff and debris UVs receive a bounded continuous variation at a 7 m wavelength (up to 1 m per
+axis at full strength). All PBR channels use the same coordinates and actual UV-derived tangents;
+whole-repeat chart offsets still preserve chart continuity. This breaks aligned rows of repeated
+features, but cannot hide a distinctive repeated motif. There are no additional texture fetches
+or runtime shader changes. The radial unique surface bake remains unavailable to cliffs.
+
+Solver v11 changes cache keys, cliff defaults and geometry, and high-rounding radial geometry.
+Soil v5 tracks this dependency; the default granite stones use rounding 0.3 and keep their geometry.

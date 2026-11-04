@@ -8,10 +8,12 @@ RockFamily rock_family(RockType type) noexcept {
   switch (type) {
     case RockType::Sandstone:
     case RockType::Limestone:
+    case RockType::Dolostone:
     case RockType::Shale: return RockFamily::Sedimentary;
     case RockType::Slate:
     case RockType::Schist:
     case RockType::Gneiss:
+    case RockType::Quartzite:
     case RockType::Marble: return RockFamily::Metamorphic;
     default: return RockFamily::Igneous;
   }
@@ -31,6 +33,8 @@ Lithology lithology(RockType type) {
     case RockType::Marble: return {0.0, 0.0, 0.15, 0.7, 0.25, 0.7, 0.0};
     case RockType::Obsidian: return {0.0, 0.0, 0.55, 0.0, 0.02, 0.5, 1.0};
     case RockType::Basalt: return {0.0, 0.0, 0.3, 0.05, 0.3, 0.8, 0.1};
+    case RockType::Quartzite: return {0.8, 0.03, 0.2, 0.02, 0.12, 0.8, 0.0};
+    case RockType::Dolostone: return {0.7, 0.02, 0.25, 0.55, 0.2, 0.7, 0.0};
     default: return {0.0, 0.0, 0.6, 0.05, 0.65, 0.8, 0.0};
   }
 }
@@ -127,7 +131,7 @@ f64 fabric_recess(const Fabric& f, D3 p, f64 cell) {
 }
 
 bool valid_rock_type(RockType type) {
-  return static_cast<u32>(type) <= static_cast<u32>(RockType::Obsidian);
+  return static_cast<u32>(type) <= static_cast<u32>(RockType::Dolostone);
 }
 bool valid_quality(RockQuality q) {
   return q == RockQuality::Low || q == RockQuality::Medium || q == RockQuality::High;

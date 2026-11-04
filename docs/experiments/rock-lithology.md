@@ -577,3 +577,86 @@ render process can still have fallen back to scalar materials, so verify texture
 the resulting image. `engine-content rocks --glb` does not accept that material-pack option;
 use the scene render path for this comparison. The final local gallery contains the corrected,
 textured capture, and retains the normal-only, resolution and geometry diagnostics separately.
+
+## G127: cliff masses and weathered boulders (2026-11-04)
+
+Grounding read before implementation:
+
+- [Escarpment Biosphere Conservancy, geology](https://escarpment.ca/about/escarpment-geology):
+  resistant limestone/dolostone and sandstone alternate with weaker shale; water exploits
+  cracks and undercut beds release blocks. Niagara references are carbonate morphology targets,
+  not proof that every photographed face is limestone. Expose dolostone separately.
+- [NPS, quarrying Sioux quartzite](https://www.nps.gov/articles/quarrying-and-grit-what-it-takes.htm):
+  resistant quartzite has strata and vertical fractures that bound separable blocks. Preserve
+  broad resistant faces and ledges, with less dissolution than the carbonate presets.
+- [USGS, Joshua Tree geology](https://www.usgs.gov/geology-and-ecology-of-national-parks/geology-joshua-tree-national-park):
+  joints, chemical alteration and mechanical erosion produce spheroidal granite and peeling
+  sheets. Edge rounding alone cannot represent the rounded bodies beside fresh fracture faces.
+- [NPS, Yosemite rockfall](https://home.nps.gov/yose/learn/nature/rockfall.htm):
+  joint-bounded slabs detach and accumulate below cliffs. Local deposits and fallen blocks are
+  the visual target; the solver does not model rockfall trajectories or sediment transport.
+- [Stefan Groenewoud, Horizon Forbidden West procedural materials](https://www.stefangroenewoud.com/projects/0354ay):
+  the contributing artist describes high-to-low detail baking and rock-type-specific detail
+  maps/masks. This supports separating macro shape, weathering and material detail. No claims
+  about undocumented God of War or Assassin's Creed implementations are made.
+
+Implementation scope: unequal joint intervals, tilted block faces, joined neighbouring masses and interrupted fractures;
+carbonate versus quartzite presets; localized debris envelopes whose gaps bury into the terrain;
+whole-body rounding at the high end of the existing control, with subsequent fresh chips retained.
+A continuous low-frequency UV deformation breaks the straight alignment of repeated PBR features;
+it does **not** make a single tiled photograph unique. It uses the existing texture/tangent path,
+without extra runtime samples. Unique cliff weathering masks and stochastic material blending
+remain separate work.
+
+All dimensions, roughnesses and process weights are authored approximations, not measured constants
+or universal properties of a rock name. Budget filtering and closed mesh topology remain binding.
+
+Validation and review for this increment:
+
+- Windows Debug: all 48 rock cases (6,319,185 assertions) and all 8 soil cases
+  (232,916 assertions) pass. The sampled-ground test matches spatial columns because UV chart
+  sorting can legitimately change triangle order when the terrain changes. New cases cover
+  rounded-body closure across three seeds, both new lithologies across source budgets, visible
+  deposit gaps, invalid deposit controls, and the existing winding/undercut/UV contracts.
+- The richer cliff has more mixed-facing clusters. The cone test now requires two thirds of
+  clusters to retain culling cones instead of three quarters; this is a geometry/culling tradeoff,
+  not a renderer change. No GPU struct or per-frame allocation changes are introduced.
+- A 60 x 24 m limestone example with seed 47, 40 fallen blocks and a 250,000-triangle ceiling
+  exports 185,860 triangles / 117,021 vertices at High; 82,160 / 55,837 at Medium;
+  21,064 / 15,290 at Low. The baseline v10 example exports 207,620 / 127,319. These are
+  footprint measurements, not performance timings. The machine was shared with builds and GPU
+  work, so no quiet-time speed or frame-rate claim is made.
+- Local artifacts: `D:/workspace/game_engine_local/rocks/2026-11-04/cliffs/review.html`, with
+  recipes, exported meshes, fixed cameras, capture scripts and logs. Source geometry comparisons
+  use bare material constants; a separate diagnostic uses the existing CC0 Poly Haven
+  `rock_boulder_dry` set, retaining its provenance in the local `pack.json`. It is not a calibrated
+  limestone or quartzite set. Captures disable the derived-data cache while iterating within one
+  solver version, so an earlier v11 mesh cannot silently mask a later edit.
+
+The remaining representation limits matter: a standalone cliff is a closed wall whose back is
+intended to be buried in a hillside; some bed rows remain too regular; the debris envelopes need
+more fragment dressing to stop reading as smooth ramps. Distinctive tiled texture motifs are
+still visible. None of this constitutes a claim of AAA photorealism.
+
+The Low preview exposed an all-or-nothing joint fade: close carbonate beds disappeared together
+with the broad blocks. A separate low-frequency field now retains 35% of the relief envelope
+at every rung; joints use the remaining 65%. A coarse-carbonate regression compares against
+zero relief within the same quality budget. Low remains an aggressive reduction of bedding
+and is not a substitute for the High source mesh's runtime cluster LOD.
+
+Linux Clang Debug: the full build and filtered rocks/soil suites pass on the same source
+(including the deterministic mesh pins). The first attempt exposed implicit double promotion
+in the new test's radius calculation; explicitly cast every coordinate before arithmetic.
+The checkout's two Linux build volumes were pruned after validation; shared caches remain.
+Final photographic diagnostic captures ran eight frames with ray-traced shadows and decoded
+five texture images (50,339,840 bytes), confirming that the material did not fall back to constants.
+
+The wider Windows affected run passed lint/docs/licences, soil, renderer and its bench,
+doc_scene, animation, audio_system, kinematics, world, npc, scene_collision, scatter, muscle,
+muscle_sim, volumetrics, water, engine_host and host_ws (including their selected benches).
+Its first rock invocation used an obsolete geometry pin; the final 48-case rerun above passes.
+The run was stopped during engine_cli under the owner's standing instruction to defer long
+gates to the overnight batch; remaining application checks and full merge gates are unverified.
+No timing from this contended run is a performance measurement. A concurrent rebuild initially
+met Windows LNK1168 because this run held engine-host.exe open; rebuild after stopping the
+owned test processes, rather than modifying or terminating another checkout's processes.

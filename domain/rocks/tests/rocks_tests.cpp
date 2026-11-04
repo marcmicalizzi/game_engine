@@ -334,7 +334,7 @@ TEST_CASE("rocks: the default boulder is the committed bytes on every toolchain"
   // parameters in the generator section spell out; the mesh did not move.
   // G94 supersedes 0xb2611b877ab5bd4e: new geometry and canonical recipe fields.
   // G104 changes the solver cache version; untextured radial geometry remains v8-identical.
-  constexpr u64 k_container = 0x04461f283e336786ull;
+  constexpr u64 k_container = 0x565532020aced4e2ull;
   const assets::MeshData mesh = solve(boulder());
   geometry::ClusterFileData data;
   std::string error;
@@ -372,10 +372,10 @@ TEST_CASE("rocks: the committed recipes are closed, hold their budgets, and are 
       {"gneiss-folded.rock.json", 1, 0x39f69f776724ad49ull},
       {"schist-flaked.rock.json", 1, 0x9ecfa229bfd234faull},
       {"obsidian-fractured.rock.json", 1, 0x2bb570ab3aab2049ull},
-      {"limestone-dissolved.rock.json", 1, 0x751047648ed39f0cull},
+      {"limestone-dissolved.rock.json", 1, 0xeb4dd6b72e30962eull},
       {"shale-rubble.rock.json", 24, 0xf89ee6c61141d0efull},
       {"marble-weathered.rock.json", 1, 0x5871b78f9aa7fc67ull},
-      {"foliated-cliff.rock.json", 8, 0xb9da1572e3bc7037ull},
+      {"foliated-cliff.rock.json", 8, 14158755937272687152ull},
   };
   const std::string dir = test::data_path(ENGINE_SOURCE_DIR "/content/rocks", "content/rocks");
   if (!test::path_exists(dir)) {
