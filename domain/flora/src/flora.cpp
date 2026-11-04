@@ -7,6 +7,7 @@
 #include <core/json/json.h>
 #include <core/schema/json_reflect.h>
 #include <domain/assets/mesh_generator.h>
+#include <domain/flora/alpine.h>
 #include <domain/flora/flora.h>
 #include <domain/flora/palm.h>
 #include <domain/flora/roots.h>
@@ -75,6 +76,8 @@ bool read_flora_file(std::string_view text, FloraFile& out, std::string& error) 
     in_range = orchard_in_range(checked.orchard, error);
   } else if (checked.species == k_species_ancient) {
     in_range = ancient_in_range(checked.ancient, error);
+  } else if (alpine_profile(checked.species) != nullptr) {
+    in_range = alpine_in_range(checked.species, checked.alpine, error);
   } else if (shrub_profile(checked.species) != nullptr) {
     in_range = shrub_growth_in_range(checked.species, checked.shrub_growth, error);
   } else if (checked.species == k_species_shrub) {
@@ -97,7 +100,8 @@ bool read_flora_file(std::string_view text, FloraFile& out, std::string& error) 
     error = "unknown flora species \"" + checked.species + "\"; available:";
     for (const auto& info : geometry::k_flora_species) {
       // A species no flora solver grows (the cover's mats) is the catalogue's, not a recipe's.
-      if (info.motion != geometry::FloraMotionKind::none || info.name == "roots")
+      if (info.motion != geometry::FloraMotionKind::none || info.name == "roots" ||
+          alpine_profile(info.name) != nullptr)
         error += " " + std::string(info.name);
     }
     return false;
@@ -247,9 +251,10 @@ bool flora_source_hash_with(const FloraFile& file, const assets::MeshGeneratorIn
                      file.species == k_species_ancient || file.species == "maple" ||
                      file.species == "oak" || file.species == "elm" || file.species == "beech" ||
                      file.species == "ash" || file.species == "walnut" ||
-                     builds_conifer(file.species);
+                     builds_conifer(file.species) || alpine_profile(file.species) != nullptr;
   if (!baked) return true;
-  const bool enabled = file.species == k_species_broadleaf
+  const bool enabled = alpine_profile(file.species) != nullptr ? file.alpine.impostor_px != 0
+                       : file.species == k_species_broadleaf
                            ? file.broadleaf.card_bake_px != 0 || file.broadleaf.impostor_px != 0
                        : file.species == k_species_birch
                            ? file.birch.card_bake_px != 0 || file.birch.impostor_px != 0
@@ -295,6 +300,7 @@ bool flora_source_hash_with(const FloraFile& file, const assets::MeshGeneratorIn
 namespace {
 // The member of `engine.flora.FloraFile` a species' parameters are in.
 const char* species_member(const std::string& species) {
+  if (alpine_profile(species) != nullptr) return "alpine";
   if (shrub_profile(species) != nullptr) return "shrub_growth";
   if (detail::is_tree_species(species)) return "tree";
   if (species == k_species_broadleaf) return "broadleaf";
@@ -333,6 +339,7 @@ u64 flora_source_hash(const FloraFile& file) {
   const std::string canonical = canonical_flora_json(file);
   u64 h = hash_bytes(canonical.data(), canonical.size());
   h = hash_combine(h, hash_bytes(file.species.data(), file.species.size()));
+  if (alpine_profile(file.species) != nullptr) return hash_combine(h, k_alpine_version);
   if (shrub_profile(file.species) != nullptr) return hash_combine(h, k_shrub_growth_version);
   return hash_combine(h, file.species == "sward"   ? k_sward_version
                          : file.species == "roots" ? k_roots_version
@@ -353,6 +360,8 @@ bool solve_flora(const FloraFile& file, assets::MeshData& mesh, Motion& motion,
                  TreeLevels* levels) {
   if (!detail::maturity_in_range(file.species, file.tree, error)) return false;
   if (levels != nullptr) *levels = TreeLevels{};
+  if (alpine_profile(file.species) != nullptr)
+    return solve_alpine(file.species, file.alpine, mesh, motion, tree_report, error, levels);
   if (shrub_profile(file.species) != nullptr)
     return solve_shrub_growth(file.species, file.shrub_growth, mesh, motion, tree_report, error,
                               levels);
@@ -574,6 +583,7 @@ bool bake_chain(const assets::MeshData& mesh, const TreeLevels& chain,
 }  // namespace
 
 DetailTier flora_detail_tier(const FloraFile& file) {
+  if (alpine_profile(file.species) != nullptr) return file.alpine.detail_tier;
   if (shrub_profile(file.species) != nullptr) return file.shrub_growth.detail_tier;
   // The trees carry no field (it would move every tree's canonical parameters, and with them its
   // pinned source hash and cache key, for a value that cannot differ): a tree collides by its
@@ -588,6 +598,7 @@ DetailTier flora_detail_tier(const FloraFile& file) {
 }
 
 bool flora_collides(const FloraFile& file) {
+  if (alpine_profile(file.species) != nullptr) return false;
   if (shrub_profile(file.species) != nullptr)
     return shrub_growth_collides(file.species, file.shrub_growth);
   if (file.species == "sward" || file.species == "roots") return false;

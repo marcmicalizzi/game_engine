@@ -53,7 +53,10 @@ enum class FloraSpecies : u8 {
   cattail,
   arrowhead,
   water_lily,
-  pond_lily
+  pond_lily,
+  silene_acaulis,
+  saxifraga_paniculata,
+  salix_herbacea
 };
 // **How a species moves** (renderer.md, "The flora stage"; R95). `parts`: posed per part on the
 // CPU, parent-first, each instance a run of the frame's part-pose table (the trees). `field`: posed
@@ -200,6 +203,28 @@ inline constexpr FloraSpeciesInfo k_flora_species[] = {
      "pond_lily",
      false,
      2000,
+     {0, 0, 0, 0},
+     FloraMotionKind::none,
+     {false, 1, true}},
+    // G125: centimetre-high alpine mats are rigid, noncolliding, nearest-cascade cover.
+    {FloraSpecies::silene_acaulis,
+     "silene_acaulis",
+     false,
+     32000,
+     {0, 0, 0, 0},
+     FloraMotionKind::none,
+     {false, 1, true}},
+    {FloraSpecies::saxifraga_paniculata,
+     "saxifraga_paniculata",
+     false,
+     4000,
+     {0, 0, 0, 0},
+     FloraMotionKind::none,
+     {false, 1, true}},
+    {FloraSpecies::salix_herbacea,
+     "salix_herbacea",
+     false,
+     8000,
      {0, 0, 0, 0},
      FloraMotionKind::none,
      {false, 1, true}},

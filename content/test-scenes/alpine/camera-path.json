@@ -1,0 +1,12 @@
+{
+ "format":"engine.camera-path.v1","name":"Alpine forms at botanical scale","fps":30,"znear":0.002,
+ "keys":[{"time":0,"position":[0.1,0.9,1.4],"target":[0.1,0.01,0]},
+         {"time":2,"position":[-0.55,0.16,0.25],"target":[-0.55,0.015,0]},
+         {"time":4,"position":[-0.15,0.12,0.18],"target":[-0.15,0.01,0]},
+         {"time":6,"position":[0.23,0.16,0.32],"target":[0.23,0.015,0]},
+         {"time":8,"position":[0.7,0.16,0.27],"target":[0.7,0.005,0]},
+         {"time":10,"position":[0.1,8,14],"target":[0.1,0.01,0]}],
+ "markers":[{"frame":0,"name":"forms"},{"frame":60,"name":"cushion"},
+            {"frame":120,"name":"rosettes"},{"frame":180,"name":"dwarf-scrub"},
+            {"frame":240,"name":"rock-pockets"},{"frame":299,"name":"distance"}]
+}

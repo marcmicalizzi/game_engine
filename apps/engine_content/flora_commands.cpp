@@ -18,6 +18,7 @@
 #include <core/time/time.h>
 #include <domain/content_build/content_build.h>
 #include <domain/content_build/generator_hosts.h>
+#include <domain/flora/alpine.h>
 #include <domain/flora/flora.h>
 #include <domain/flora/roots.h>
 #include <domain/flora/sward.h>
@@ -332,9 +333,11 @@ int flora(int argc, char** argv) {
   summary.set("species", JsonValue(file.species));
   summary.set("source_hash", JsonValue(source_hash));
   summary.set("build_key", JsonValue(build_key));
-  summary.set("flora_version", JsonValue(file.species == "sward"   ? flora::k_sward_version
-                                         : file.species == "roots" ? flora::k_roots_version
-                                                                   : flora::k_flora_version));
+  summary.set("flora_version",
+              JsonValue(flora::alpine_profile(file.species) != nullptr ? flora::k_alpine_version
+                        : file.species == "sward"                      ? flora::k_sward_version
+                        : file.species == "roots"                      ? flora::k_roots_version
+                                                                       : flora::k_flora_version));
   summary.set("triangles", JsonValue(data.mesh.leaf_triangle_count));
   summary.set("clusters", JsonValue(data.mesh.mesh.clusters.size()));
   summary.set("lod_levels", JsonValue(data.mesh.level_cluster_counts.size()));
