@@ -813,6 +813,12 @@ datum and fabric. The sheet remains a single-valued outward displacement: locali
 are supported; arbitrary caves and disconnected overhangs are not. The existing support constraint
 and closed back remain. This is greater shape variety, not yet a photorealistic cliff asset system.
 
+A narrow ridge with two exposed steep flanks and one connected broken crest is outside this
+cliff contract. Exposing its buried back or overlapping two cliffs does not supply that shape.
+[G131's ridge proposal](../experiments/rock-ridges.md) describes a separate closed ridge solver,
+shared formation coordinates, budgets and the precision limit on long climbing-distance meshes.
+It is a design only: no `Ridge` recipe is accepted yet, and the existing cliff path is unchanged.
+
 For radial rocks, `rounding` above 0.45 progressively retreats the old hull's corners toward an
 inscribed ellipsoid. At 1 it retains 10% of the unequal hull; the affine shape, macro warp, physical
 surface detail and fresh finite chips remain. The old planar rim fitting is disabled for this

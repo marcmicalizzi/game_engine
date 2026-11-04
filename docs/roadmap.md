@@ -603,6 +603,8 @@ Import, the content build, validation, provenance, generators, scripting and tex
 
 | G128 | Terrain-aware rockfall and sediment deposits: connected cliff-foot talus, scree tongues, mixed fragments and drainage accumulation | done (54091abe; terrain-aware deposits, deterministic invariants and budgeted review captures; PBR sampling crash fixed with explicit/pack regressions) | G62, G71, W72 | L | research | [rocks](subsystems/rocks.md) |
 
+| G131 | Connected two-sided rock ridges and pinnacles: shared broken crest, formation-space geology and bounded source/LOD cost | open (2026-11-04: contract assessment and grounded proposal complete; implementation, captures and performance qualification pending) | G127 | L | design | [ridge proposal](experiments/rock-ridges.md), [rocks](subsystems/rocks.md) |
+
 ## T — Tooling and CI
 
 Build, CI, test and profiling infrastructure, and the machinery behind the standing rules: [08](plan/08-toolchain.md), [09](plan/09-testing-profiling.md), [11](plan/11-performance-principles.md), [docs/ci](ci/what-to-run.md).

@@ -7,6 +7,7 @@ A write-up is not a benchmark log. It is the page a future contributor reads ins
 | Experiment | Page | Settles |
 |---|---|---|
 | R132 | [ledge-shadow-2026-11-04.md](ledge-shadow-2026-11-04.md) | What cast the detached block shadow on the forest proof of concept's v29 foothill ledge under the cascaded maps: the ground itself, its coarser clusters drawn by R103's texel cut and standing above the finer cut the picture draws (34,436 pixels, gone with the cut off); the hypotheses one variable at a time with a capture and a pixel count each, and why a terrain level now takes the picture's cut in every cascade |
+| G131 | [rock-ridges.md](rock-ridges.md) | Proposed connected two-sided ridges and pinnacles: current authoring boundary, geological grounding, shared crest and formation coordinates, source budgets and precision limits; implementation pending |
 | G124 | [surface-colonization.md](surface-colonization.md) | Explicit cover substrates, crevice preference, wood fungi and nurse-log establishment; approximations and validation |
 | G125 | [alpine-growth-forms.md](alpine-growth-forms.md) | Botanical grounding, budget rungs and verification for alpine cushions, basal rosettes and prostrate dwarf willow, with authored rock-pocket support. |
 | G126 | [flora-regeneration.md](flora-regeneration.md) | Species-specific seedlings, suppressed saplings, damaged leaders, browsed shrubs and local obstacle clearance |
