@@ -160,60 +160,152 @@ TEST_CASE("flora taper: heavy off-takes keep their open rim buried at every name
   }
 }
 
-TEST_CASE("flora taper: a mature stem carries its remaining wood into upper scaffolds") {
-  for (u32 count : {1u, 2u}) {
+TEST_CASE("flora taper: explicit upper leaders share support without promoting a lateral") {
+  for (f64 exponent : {1.8, 2., 3.}) {
     Crown crown;
     shoot(crown, k_crown_none, 0, 1);
-    for (u32 i = 0; i < count; ++i)
-      shoot(crown, 0, 8, .4, {i == 0 ? .6 : -.6, .8, 0});
-    crown.first_recursion = crown.nodes.size();
-    crown_finish_stem(crown, 0);
-    CHECK(crown.nodes[0].length == 8);
-    CHECK((crown.nodes[0].flags & k_crown_stem_relay) != 0u);
-    // A straight outgoing limb turns gradually away from the incoming stem. A short
-    // endpoint-constrained connector overshoots this heading, then turns back: the kink.
-    const Axis& continuation = crown.axes[crown.nodes[1].axis];
-    CHECK(dot(continuation.tangent.front(), k_up) == doctest::Approx(1));
-    f64 previous_turn = 0;
-    for (u32 i = 0; i < continuation.point.size(); ++i) {
-      const f64 turn = continuation.tangent[i].x;
-      CHECK(turn >= previous_turn - 1e-12);
-      CHECK(turn <= .6 + 1e-12);
-      previous_turn = turn;
-      if (i > 0)
-        CHECK(dot(continuation.point[i] - continuation.point[i - 1],
-                  continuation.tangent[i] + continuation.tangent[i - 1]) > 0);
+    Vector<CrownRoot> roots;
+    for (u32 i = 0; i < 2; ++i) {
+      const u32 index = shoot(crown, 0, 8, .4, {i == 0 ? .6 : -.6, .8, 0});
+      CrownNode& node = crown.nodes[index];
+      Axis& axis = crown.axes[node.axis];
+      const f64 scale = i == 0 ? .6 : .3;
+      for (u32 sample = 0; sample < axis.point.size(); ++sample) {
+        axis.point[sample] = node.base + (axis.point[sample] - node.base) * scale;
+        axis.arc[sample] *= scale;
+      }
+      axis.length *= scale;
+      node.length = axis.length;
+      node.tip = axis.point.back();
+      CrownRoot root;
+      root.node = index;
+      root.radius = .4;
+      root.laterals = 3;
+      root.lateral_length = .4 * node.length;
+      roots.push_back(root);
     }
-    CHECK(continuation.tangent.back().x == doctest::Approx(.6));
     CrownSpec spec;
+    spec.area_exponent = exponent;
     spec.twig_radius = .002;
+    const Axis lateral = crown.axes[crown.nodes[2].axis];
+    // Merely being last must not redirect a mature stem.
+    crown_finish_stem(crown, 0, exponent);
+    CHECK(crown.nodes[0].length == 10);
+    REQUIRE(crown_allocate_upper(crown, roots, 0, spec));
+    REQUIRE(roots.size() == 3);
+    const u32 leader = roots.back().node;
+    REQUIRE((crown.nodes[leader].flags & k_crown_continuation) != 0u);
+    CHECK(crown.nodes[leader].length == 2);
+    CHECK(dot(crown.nodes[leader].dir, k_up) == doctest::Approx(1));
+    CHECK(length_of(crown.nodes[leader].tip - D3{0, 10, 0}) < 1e-12);
+    f64 budget = 0;
+    for (const CrownRoot& root : roots)
+      budget += std::pow(root.radius, exponent);
+    CHECK(budget == doctest::Approx(2 * std::pow(.4, exponent)).epsilon(1e-10));
+    CHECK(std::pow(roots[0].radius / roots[1].radius, exponent) == doctest::Approx(4));
+    CHECK(roots[0].radius > roots[2].radius);  // the chosen leader need not be the thickest
+    const f64 leader_area = std::pow(roots[2].radius, exponent);
+    CHECK(leader_area / budget >= spec.leader_share - 1e-10);
+    crown.first_recursion = crown.nodes.size();
+    crown_finish_stem(crown, 0, exponent);
+    CHECK(crown.nodes[0].length == 8);
+    // The unequal final laterals pull the leader away from the larger off-take,
+    // rather than shrinking it concentrically into a bottle-shaped shoulder.
+    CHECK(crown.nodes[leader].tip.x < 0);
+    const Axis& unchanged_lateral = crown.axes[crown.nodes[2].axis];
+    for (u32 i = 0; i < lateral.point.size(); ++i)
+      CHECK(length_of(unchanged_lateral.point[i] - lateral.point[i]) == 0);
+    const u32 before_apex = crown.nodes.size();
     crown_add_apex(crown, 0, spec);
-    crown_taper(crown, 2);
+    CHECK(crown.nodes.size() == before_apex);  // no phantom twig between the real axes
+    crown_taper(crown, exponent);
+    CHECK(length_of(crown.nodes[1].base - crown.axes[0].point.back()) > 0);
+    CHECK(length_of(crown.nodes[leader].base - crown.axes[0].point.back()) < 1e-10);
     const Axis& stem = crown.axes[0];
-    // A section without side off-takes has only the slow authored axial taper.
     CHECK(axis_radius(stem, 1, crown.nodes[0].r1, 4) == doctest::Approx(.975));
     CHECK(crown.nodes[0].r1 == doctest::Approx(.95));
     f64 outgoing = 0;
     for (u32 i = 1; i < crown.nodes.size(); ++i)
-      outgoing += crown.nodes[i].r0 * crown.nodes[i].r0;
-    CHECK(outgoing == doctest::Approx(.95 * .95));
-    CHECK(crown.nodes.back().r0 <= spec.twig_radius);
+      outgoing += std::pow(crown.nodes[i].r0, exponent);
+    CHECK(outgoing == doctest::Approx(std::pow(.95, exponent)));
     crown_join_relays(crown);
     REQUIRE(crown.relays.size() == 1);
-    CHECK(crown.relays[0].child >= 1);
-    CHECK(crown.relays[0].child <= count);
+    CHECK(crown.relays[0].child == leader);
     for (u32 rows : {4u, 12u, 24u}) {
       const Axis mesh = crown_sample_stem(crown, 0, rows);
       CHECK(mesh.point.size() == rows + 1);
-      CHECK(length_of(mesh.point.back() -
-                      axis_point(crown.axes[crown.nodes[crown.relays[0].child].axis],
-                                 crown.relays[0].child_arc)) < 1e-10);
+      CHECK(length_of(mesh.point.back() - axis_point(crown.axes[crown.nodes[leader].axis],
+                                                     crown.relays[0].child_arc)) < 1e-10);
     }
   }
+  // Small shoots can share a motion part; test branching on growth nodes themselves.
+  Crown growing;
+  shoot(growing, k_crown_none, 0, 1);
+  const u32 lateral = shoot(growing, 0, 8, .4, {.6, .8, 0});
+  Vector<CrownRoot> growing_roots;
+  CrownRoot growing_root;
+  growing_root.node = lateral;
+  growing_root.radius = .4;
+  growing_roots.push_back(growing_root);
+  CrownSpec growing_spec;
+  growing_spec.twig_radius = .02;
+  REQUIRE(crown_allocate_upper(growing, growing_roots, 0, growing_spec));
+  const u32 upper = growing_roots.back().node;
+  crown_finish_stem(growing, 0);
+  crown_grow(growing, growing_spec, growing_roots, 2);
+  u32 children = 0;
+  for (const CrownNode& node : growing.nodes)
+    children += node.parent == upper ? 1u : 0u;
+  CHECK(children >= 2);
+
   Crown sapling;
   shoot(sapling, k_crown_none, 0, .01);
   shoot(sapling, 0, 8, .003);
+  Vector<CrownRoot> roots;
+  CrownRoot root;
+  root.node = 1;
+  root.radius = .003;
+  roots.push_back(root);
+  CHECK_FALSE(crown_allocate_upper(sapling, roots, 0, CrownSpec{}));
   crown_finish_stem(sapling, 0);
+  CHECK(sapling.nodes.size() == 2);
   CHECK(sapling.nodes[0].length == 10);
   CHECK((sapling.nodes[0].flags & k_crown_stem_relay) == 0u);
+}
+
+TEST_CASE("flora taper: Forest beech 10408 keeps an upright branching upper leader") {
+  flora::FloraFile file;
+  file.species = "beech";
+  file.tree.seed = 10408;
+  file.tree.age_years = 260;
+  file.tree.height_m = 26;
+  file.tree.trunk_radius_m = .66f;
+  file.tree.crown_base = .34f;
+  file.tree.crown_scale = 1.15f;
+  file.tree.site_quality = .9f;
+  file.tree.growing_space = .65f;
+  file.tree.vitality = .95f;
+  file.tree.card_bake_px = file.tree.impostor_px = 0;
+  for (u32 budget : {8000u, 1000000u}) {
+    file.tree.triangle_budget = budget;
+    assets::MeshData mesh;
+    flora::Motion motion;
+    flora::TreeReport report;
+    std::string error;
+    REQUIRE_MESSAGE(flora::solve_flora(file, mesh, motion, nullptr, &report, error), error);
+    CHECK(report.triangles <= budget);
+    u32 highest = 0;
+    for (u32 i = 1; i < motion.parts.size(); ++i)
+      if (motion.parts[i].parent == 0 && motion.parts[i].pivot.y > motion.parts[highest].pivot.y)
+        highest = i;
+    REQUIRE(highest != 0);
+    CHECK(motion.parts[highest].direction.y > .95f);
+    CHECK(motion.parts[highest].length < .2f * file.tree.height_m);
+    u32 children = 0;
+    for (const auto& part : motion.parts)
+      children += part.parent == highest ? 1u : 0u;
+    CHECK(children >= 2);  // this specimen has multiple substantial upper shoots
+    MESSAGE("beech 10408 budget=" << budget << " triangles=" << report.triangles << " upper length="
+                                  << motion.parts[highest].length << " children=" << children);
+  }
 }

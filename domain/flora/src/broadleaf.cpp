@@ -127,7 +127,8 @@ Crown grow(const Broadleaf& p, const CrownSpec& spec, const GrowthRules& rules =
     root.to = 0.95;
     roots.push_back(root);
   }
-  crown_finish_stem(crown, 0);
+  crown_allocate_upper(crown, roots, 0, spec);
+  crown_finish_stem(crown, 0, spec.area_exponent);
   crown_grow(crown, spec, roots, 2);
   crown_add_apex(crown, 0, spec);
   crown_taper(crown, spec.area_exponent);
@@ -143,9 +144,10 @@ struct Plan {
   CrownPlan crown;
 };
 
-u32 count_triangles(const Broadleaf& p, const Crown& crown, const Plan& plan) {
+u32 count_triangles(const Broadleaf&, const Crown& crown, const Plan& plan) {
   return tube_triangles(plan.rows[0], plan.sides[0]) +
-         p.limbs * tube_triangles(plan.rows[1], plan.sides[1]) + crown_triangles(crown, plan.crown);
+         (crown.first_recursion - 1) * tube_triangles(plan.rows[1], plan.sides[1]) +
+         crown_triangles(crown, plan.crown);
 }
 
 // The ladder (flora.md, "The budget"): the finest wood first (a twig's few millimetres are under a

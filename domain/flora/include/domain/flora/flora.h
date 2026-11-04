@@ -69,7 +69,7 @@ namespace engine::flora {
 // 11: researched broadleaf blade dimensions, independent of retained leaf allocation (G91).
 inline constexpr u32 k_flora_version = 11;
 // G129: broadleaf/birch shape and baked-LOD invalidation, without rebuilding other architectures.
-inline constexpr u32 k_branch_taper_version = 1;
+inline constexpr u32 k_branch_taper_version = 2;
 
 // The conifers' impostor chain (G120; flora.md, "The conifer's chain"): mixed into the source hash
 // a container of a species the conifer solver builds records (`conifer` and the evergreen profiles:

@@ -31,7 +31,65 @@ f64 axis_radius(const Axis& axis, f64 r0, f64 r1, f64 arc) {
   return lerp(a.radius, upper->radius, (arc - a.arc) / (upper->arc - a.arc));
 }
 
-void crown_finish_stem(Crown& crown, u32 stem) {
+bool crown_allocate_upper(Crown& crown, Vector<CrownRoot>& roots, u32 stem, const CrownSpec& spec) {
+  const CrownNode parent = crown.nodes[stem];
+  if (parent.r0 < .03) return false;
+  const Axis original = crown.axes[parent.axis];
+  f64 last = 0, budget = 0, demand = 0;
+  for (const CrownRoot& root : roots) {
+    const CrownNode& node = crown.nodes[root.node];
+    if (node.parent != stem) continue;
+    last = std::max(last, node.parent_arc);
+    budget += power(root.radius, spec.area_exponent);
+    demand += node.length * node.length;
+  }
+  if (last <= 0 || last >= original.length || budget <= 0) return false;
+  Axis leader;
+  leader.length = original.length - last;
+  leader.uniform_steps = true;
+  D3 normal = original.normal[0];
+  constexpr u32 steps = 16;
+  for (u32 i = 0; i <= steps; ++i) {
+    const f64 arc = leader.length * static_cast<f64>(i) / steps;
+    const D3 tangent = axis_tangent(original, last + arc);
+    normal = perpendicular(tangent, normal);
+    leader.arc.push_back(arc);
+    leader.point.push_back(axis_point(original, last + arc));
+    leader.tangent.push_back(tangent);
+    leader.normal.push_back(normal);
+  }
+  // A continuing leader retains the species' local apical allocation at the final fork.
+  // Length alone underestimates its crown because this is only the remaining stem segment.
+  f64 final_lateral = 0;
+  for (const CrownRoot& root : roots) {
+    const CrownNode& node = crown.nodes[root.node];
+    if (node.parent == stem && node.parent_arc == last) final_lateral += node.length * node.length;
+  }
+  const f64 leader_demand = std::max(leader.length * leader.length,
+                                     final_lateral * spec.leader_share / (1.0 - spec.leader_share));
+  demand += leader_demand;
+  const f64 inverse = 1.0 / spec.area_exponent;
+  for (CrownRoot& root : roots) {
+    CrownNode& node = crown.nodes[root.node];
+    if (node.parent != stem) continue;
+    root.radius = power(budget * node.length * node.length / demand, inverse);
+    node.r0 = root.radius;
+    node.r1 = crown_leader_radius(spec, node.r0);
+  }
+  CrownRoot upper;
+  upper.radius = power(budget * leader_demand / demand, inverse);
+  upper.node =
+      crown_add_named(crown, leader, upper.radius, crown_leader_radius(spec, upper.radius), stem);
+  crown.nodes[upper.node].parent_arc = last;
+  crown.nodes[upper.node].flags |= k_crown_continuation;
+  upper.laterals = spec.laterals;
+  upper.lateral_length = .4 * leader.length;
+  upper.from = spec.from;
+  upper.to = .9;
+  roots.push_back(upper);
+  return true;
+}
+void crown_finish_stem(Crown& crown, u32 stem, f64 exponent) {
   CrownNode& node = crown.nodes[stem];
   // Fine young leaders already approach shoot dimensions; do not shorten their natural tip.
   if (node.r0 < .03) return;
@@ -39,6 +97,10 @@ void crown_finish_stem(Crown& crown, u32 stem) {
   for (const CrownNode& child : crown.nodes)
     if (child.parent == stem) last = std::max(last, child.parent_arc);
   if (last <= 0 || last >= node.length) return;
+  bool has_continuation = false;
+  for (const CrownNode& child : crown.nodes)
+    has_continuation |= child.parent == stem && (child.flags & k_crown_continuation) != 0u;
+  if (!has_continuation) return;
   Axis& axis = crown.axes[node.axis];
   const D3 point = axis_point(axis, last);
   const D3 tangent = axis_tangent(axis, last);
@@ -66,12 +128,33 @@ void crown_finish_stem(Crown& crown, u32 stem) {
   for (u32 i = 0; i < crown.nodes.size(); ++i) {
     const CrownNode& child = crown.nodes[i];
     if (child.parent == stem && child.parent_arc == last &&
-        (chosen == k_crown_none || child.r0 > crown.nodes[chosen].r0))
+        (child.flags & k_crown_continuation) != 0u)
       chosen = i;
   }
   if (chosen == k_crown_none) return;
   CrownNode& child = crown.nodes[chosen];
   const Axis original = crown.axes[child.axis];
+  // Shift the continuing section away from the off-take: a concentric contraction
+  // makes a bottle-shaped shoulder rather than an asymmetric fork.
+  f64 total = 0, fork = 0, lateral = 0;
+  D3 off_take{};
+  for (const CrownNode& sibling : crown.nodes) {
+    if (sibling.parent != stem) continue;
+    const f64 share = power(sibling.r0, exponent);
+    total += share;
+    if (sibling.parent_arc != last) continue;
+    fork += share;
+    if ((sibling.flags & k_crown_continuation) != 0u) continue;
+    const D3 radial = sibling.dir - tangent * dot(sibling.dir, tangent);
+    const f64 reach = length_of(radial);
+    if (reach > 1e-9) off_take = off_take + radial * (share / reach);
+    lateral += share;
+  }
+  const f64 fork_radius = node.r0 * .95 * power(fork / total, 1.0 / exponent);
+  const f64 leader_radius =
+      node.r0 * .95 * power(power(child.r0, exponent) / total, 1.0 / exponent);
+  const D3 displacement =
+      lateral > 0 ? off_take * (-(fork_radius - leader_radius) / lateral) : D3{};
   const f64 span = std::min(.4 * child.length, 8.0 * child.r0);
   Vector<f64> stations = original.arc;
   for (u32 i = 0; i <= 32; ++i)
@@ -92,10 +175,12 @@ void crown_finish_stem(Crown& crown, u32 stem) {
       center = center + normalized(previous_tangent + direction) * (arc - previous_arc);
     else
       center = center + axis_point(original, arc) - axis_point(original, previous_arc);
-    frame = perpendicular(direction, frame);
+    const f64 q = clamp01(arc / span);
+    const D3 shifted_tangent = normalized(direction + displacement * (6.0 * q * (1.0 - q) / span));
+    frame = perpendicular(shifted_tangent, frame);
     curved.arc.push_back(arc);
-    curved.point.push_back(center);
-    curved.tangent.push_back(direction);
+    curved.point.push_back(center + displacement * smoothstep01(q));
+    curved.tangent.push_back(shifted_tangent);
     curved.normal.push_back(frame);
     previous_arc = arc;
     previous_tangent = direction;
@@ -105,6 +190,8 @@ void crown_finish_stem(Crown& crown, u32 stem) {
   crown.axes[child.axis] = std::move(curved);
 }
 void crown_add_apex(Crown& crown, u32 stem, const CrownSpec& spec) {
+  for (const CrownNode& child : crown.nodes)
+    if (child.parent == stem && (child.flags & k_crown_continuation) != 0u) return;
   const CrownNode& parent = crown.nodes[stem];
   const Axis& axis = crown.axes[parent.axis];
   CrownNode twig;
@@ -214,10 +301,15 @@ void crown_taper(Crown& crown, f64 exponent) {
       const D3 center = point_at(crown, node, outlet.arc);
       const D3 offset = child.base + translation[i] - center;
       const f64 old_radius = lerp(original_base[i], original_tip[i], u);
-      // End-on leaders are concentric, not a lateral offset pretending to be a fork.
-      const D3 seat = outlet.arc == node.length
-                          ? center
-                          : center + offset * (radius_at(outlet.arc) / old_radius);
+      // Trimming a stem at its last lateral does not make that lateral end-on.
+      // Retain its radial seat; only actual continuations share the stem center.
+      const D3 parent_tangent =
+          node.axis == k_crown_none ? node.dir : axis_tangent(crown.axes[node.axis], outlet.arc);
+      const bool end_on =
+          outlet.arc == node.length &&
+          ((child.flags & k_crown_continuation) != 0u || (child.flags & k_crown_named) == 0u ||
+           dot(child.dir, parent_tangent) > .999);
+      const D3 seat = end_on ? center : center + offset * (radius_at(outlet.arc) / old_radius);
       const D3 shift = seat - child.base;
       translation[outlet.child] = shift;
       child.base = seat;
@@ -239,7 +331,7 @@ void crown_join_relays(Crown& crown) {
     for (u32 i = 0; i < crown.first_recursion; ++i) {
       const CrownNode& child = crown.nodes[i];
       if (child.parent == stem && child.parent_arc == parent.length &&
-          (chosen == k_crown_none || child.r0 > crown.nodes[chosen].r0))
+          (child.flags & k_crown_continuation) != 0u)
         chosen = i;
     }
     if (chosen == k_crown_none) continue;

@@ -2148,7 +2148,8 @@ data, rebuilt from its parameters.
   the realised LAI, measured as the leaf cards' area over the convex hull of their vertices, is
   within a fifth of the field on the default broadleaf and ancient tree; a recipe setting the old
   fields (`sub_branches`, `twigs`, `leaves`) validates, builds and is capped by them; the parts are
-  dense and parent-first, 145 on the default broadleaf and 625 on the default ancient tree
+  dense and parent-first; the default ancient tree has 625, while broadleaf counts follow the
+  funded named and recursive crown allocation
   (`flora_tests.cpp`, `species_tests.cpp`); and down the ladder every rung holds its budget, merges
   no less finely than the rung above, and keeps the part list and the structural table byte for
   byte, with the load-bearing surfaces' movement between the finest rung and the floor measured;
@@ -2275,14 +2276,22 @@ length floors follow height. Load-bearing flags still require the published radi
 The broadleaf/birch stem-tip density correction intentionally improves age-zero defaults too:
 the redundant extra tip crown is removed. G129 makes taper follow the outgoing branch areas:
 coincident outlets are accounted for together, and unbranched spans taper slowly. Substantial
-stems continue through their final scaffold(s), retaining a tiny residual shoot instead of a
-thick trunk tail forced rapidly to twig size. One dominant continuation is valid as well as a
-multi-axis fork. Large lateral bases sweep out of supporting wood; small shoots have compact
-attachments. The continuation turns before its laterals grow, rather than bending back to an
-old straight ray. The visible overlap fits the child's actual section; only its hidden cap is
-inset inside that polygon and bound to the matching ring's wind transform. Existing
-ring budgets sample both junction forms; no extra recursive top crown or shoulder ring reserve
-is added. Fine folded shoots retain a two-ring approximation.
+stems retain an explicit upper leader along the original stem path. Being the highest or
+thickest lateral does not make a branch the continuing trunk. Lateral support is weighted by
+squared axis length, an authored crown-area proxy. The leader shares that same initial budget
+and retains at least the species' `leader_share` of the final fork's radius-power allocation;
+using its short remaining stem length alone made it too thin. This is a species-controlled
+architectural rule, not a measured universal percentage by height. Its own smaller recursive
+crown branches toward twig scale; it receives neither a second full-trunk budget nor a phantom
+terminal spike. Fine saplings retain their existing paths.
+
+Large lateral bases sweep out of supporting wood; small shoots have compact attachments.
+The upper leader shifts smoothly away from the final off-take to form an asymmetric fork;
+opposing outlets cancel that shift. Descendant shoots grow along the resulting axis.
+The visible stem/leader overlap fits the child's actual section; only its hidden cap is inset
+inside that polygon and bound to the matching ring's wind transform. Existing ring budgets
+sample the junction; one extra named upper axis is included in the budget ladder. Fine folded
+shoots retain a two-ring approximation.
 See [the grounding and limitations](../experiments/tree-branch-taper.md). The scoped
 branch-taper version invalidates these species' shapes and baked LODs; other architectures
 keep their keys. The footprint used for allocation has a four-leaf-length-squared sapling floor.

@@ -1,6 +1,6 @@
 # Branch-aware broadleaf taper and junctions (G129)
 
-Status: current refinement committed for requested integration without gates, 2026-11-04; validation follow-ups remain open.
+Status: reviewed upper-crown follow-up prepared for approved integration, 2026-11-04; broad validation remains with the coordinator.
 Machine state: shared development machine; geometry counts only, no timing claim.
 
 ## Grounding
@@ -26,7 +26,7 @@ the whole transition as a shape, rather than inserting a cylinder. Their example
 are not universal species constants. The owner's annotated mature-tree reference likewise
 traces a substantial trunk through successive branching zones with broad, smooth limb bases.
 
-## Growth and taper
+## Integrated checkpoint: growth and taper
 
 The broadleaf and birch solvers share the correction, including profiles routed through them.
 Willow, orchard, conifers and ancient-tree architectures retain their own rules.
@@ -130,3 +130,76 @@ placement/capsule was fitted to that earlier prototype; its current contact need
 against the final mesh with the existing 1 cm tolerance. No tolerance was relaxed to hide this.
 Full affected Windows and matching Linux checks have not run on this current geometry.
 G129 remains in progress until these follow-ups are completed.
+## Upper-crown allocation follow-up (2026-11-04, in progress)
+
+The Forest specimen `habitat-v14-tree-017888` uses `beech-old`, seed 10408,
+260 years, 26 m height and 0.66 m basal radius. The first refinement promoted the
+highest lateral to a continuation even when its orientation and crown were lateral.
+Equal initial scaffold radii also made short upper branches disproportionately thick.
+
+The follow-up gives the remaining original stem path an explicit leader role, before
+recursion grows. Only that role can receive the stem's curved mesh continuation; being
+last or thickest is insufficient. Lateral and leader support share the existing named
+crown allocation, weighted by squared axis length as a projected-crown-area proxy.
+Species reach, layering, angle and maturity rules still supply those axes. This proxy
+is authored, not a measured universal length/diameter law: Sone et al. support a link
+between branch section and distal foliage, while Minamino and Tateno show why loading
+and angle prevent exact universal pipe equality. Neither establishes a height-only
+percentage cap. This implementation does not simulate light competition or cambial growth.
+
+The first follow-up weighted the upper leader only by its remaining length. The owner identified
+the resulting rapid shoulder taper in a native close-up: the requested junction is an asymmetric
+V, with a substantial continuing stem beside the lateral. The allocator therefore retains at
+least the existing species `leader_share` in radius-power units at the final fork. For paired
+outlets this considers their combined demand. It redistributes the same budget; it does not
+inflate the trunk or claim a universal botanical diameter cap. This architectural floor is an
+authored use of the species' existing apical-allocation control.
+
+The shoulder also used a concentric reduction, giving the exposed outline a bottle-neck shape.
+The continuing axis now shifts away from the final lateral(s) across its existing smooth sweep.
+The offset is the difference between the incoming fork radius and continuing radius, directed
+opposite the radius-power-weighted lateral directions; opposing outlets cancel. This preserves
+the outer bark line approximately while the inside forms the crotch of an asymmetric V. The
+smoothstep displacement has zero derivative at both ends and is applied before descendant
+shoots grow, so descendants follow the resulting axis. This is an authored geometric model of
+the curved union, not a measured cambial-growth law. It adds no mesh rings or growth nodes.
+
+The upper leader's recursive shoots use its own remaining length and allocated radius,
+not the full trunk's dimensions. It is funded from the same initial radius-power sum
+as the lateral crowns, so this does not add a second full-budget crown at the top.
+Existing fine sapling axes (below the existing 3 cm radius boundary) retain their paths.
+One named upper-leader tube per mature stem is accounted for by the existing budget
+ladder. Both normal recursion and progressive area debit continue down to twig scale.
+Shared sweep, visible cross-section matching and strong-wind binding remain in use.
+A lateral at the trimmed stem endpoint retains its radial seat; endpoint position alone no
+longer makes a named lateral concentric with the continuing trunk.
+The scoped branch-taper cache version advances; unrelated architectures keep their keys.
+
+Pending: final current golden values, dependent contact validation, reduced-LOD visual review
+and full affected Windows / matching Linux validation.
+
+### Upper-crown review evidence
+
+Reviewed integration revision: Windows affected build passed; focused flora taper,
+maturity and allometry checks passed 22 cases / 572,880 assertions. The two renderer wind
+attachment cases passed 130,882 assertions, including coarser budget rungs. Lint and docs checks
+passed. Native beech close-ups from two sides, whole foliage, maple/birch wood and a maple
+sapling are under `D:/workspace/game_engine_local/tree-growth/2026-11-04/upper-crown/review.html`.
+The 26 m beech uses 421,432 triangles at its million-triangle cap, versus 453,316 at the prior
+checkpoint; its 8,000 budget solve uses 4,264 triangles. These are geometry counts on the shared
+machine, not performance measurements. The full affected selection, Linux and the previously
+listed goldens/contact follow-ups remain pending; these focused results do not replace them.
+### Approved upper-crown integration checkpoint (2026-11-04)
+
+The owner approved this reviewed offset-V revision for the Forest coordinator to merge and
+rebuild. The author branch was verified against current main `e67b2906` before packaging; no
+fast-forward was needed and no shared checkout or release build was changed by the author.
+Broad suites and merge gates remain deferred to the coordinator, as requested.
+
+The focused checks above are the evidence for this revision. Full affected Windows and matching
+Linux runs have not been performed for it. This new geometry also supersedes the previous
+checkpoint's default broadleaf golden and part-count expectation; current broadleaf/birch and
+named-profile geometry, baked LOD and dependent content/deadwood/litter baselines need updating
+and cross-toolchain verification. The earlier authored deadwood contact fixture still needs
+validation at its existing 1 cm tolerance. No golden or contact tolerance was relaxed here.
+G129 remains in progress until those recorded follow-ups close.

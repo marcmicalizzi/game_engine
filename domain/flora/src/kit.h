@@ -338,10 +338,11 @@ void smooth_normals(assets::MeshData& mesh, u32 first_vertex, u32 first_index);
 // not at all by the plan, its leaves always.
 
 inline constexpr u32 k_crown_none = 0xFFFFFFFFu;
-inline constexpr u32 k_crown_terminal = 1u;    // a terminal twig: it carries leaves
-inline constexpr u32 k_crown_part = 2u;        // a motion part with a grown axis
-inline constexpr u32 k_crown_stem_relay = 8u;  // final scaffold(s) continue the stem
-inline constexpr u32 k_crown_named = 4u;       // a shoot of the species' named orders
+inline constexpr u32 k_crown_terminal = 1u;       // a terminal twig: it carries leaves
+inline constexpr u32 k_crown_part = 2u;           // a motion part with a grown axis
+inline constexpr u32 k_crown_continuation = 16u;  // explicit continuation of a named stem
+inline constexpr u32 k_crown_stem_relay = 8u;     // final scaffold(s) continue the stem
+inline constexpr u32 k_crown_named = 4u;          // a shoot of the species' named orders
 
 struct CrownSpec {
   bool opposite = false;    // paired lateral buds, successive pairs decussate
@@ -430,8 +431,10 @@ struct Crown {
 // The leader's radius under a node of base radius `radius`: what a root's own tube tapers to.
 f64 crown_leader_radius(const CrownSpec& spec, f64 radius);
 
-// Trim a mature stem and grow its upper continuation smoothly before crown_grow.
-void crown_finish_stem(Crown& crown, u32 stem);
+// Share named crown support with an explicit upper leader before growing recursion.
+bool crown_allocate_upper(Crown& crown, Vector<CrownRoot>& roots, u32 stem, const CrownSpec& spec);
+// Trim a mature stem and grow its explicit continuation smoothly before crown_grow.
+void crown_finish_stem(Crown& crown, u32 stem, f64 exponent = 2.0);
 void crown_join_relays(Crown& crown);
 void crown_fit_motion(const Crown& crown, Motion& motion);
 Axis crown_sample_stem(const Crown& crown, u32 stem, u32 rows);

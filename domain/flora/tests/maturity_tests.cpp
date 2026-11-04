@@ -165,7 +165,7 @@ TEST_CASE("flora maturity: input identity and legacy opt-in are explicit") {
   CHECK_FALSE(flora::solve_flora(f, mesh, motion, nullptr, nullptr, error));
 }
 
-TEST_CASE("flora maturity: stem-tip crowns are local shoots rather than a second whole crown") {
+TEST_CASE("flora maturity: upper crowns share named support without a duplicate trunk-tip crown") {
   for (bool birch : {false, true}) {
     Vector<flora::CrownShoot> shoots;
     if (birch) {
@@ -189,7 +189,17 @@ TEST_CASE("flora maturity: stem-tip crowns are local shoots rather than a second
     MESSAGE(std::string_view(birch ? "birch" : "broadleaf")
             << ": " << top << " tip twigs, " << lateral << " lateral twigs, " << shoots.size()
             << " shoots");
-    CHECK(top == 1);  // one axial twig, never a second recursive crown
+    CHECK(top == 0);  // the upper crown is a funded named axis, not an extra trunk-tip crown
+    u32 upper = 0;
+    for (u32 i = 1; i < shoots.size(); ++i)
+      if (shoots[i].parent == 0 && (shoots[i].flags & flora::k_crown_shoot_named) != 0) upper = i;
+    REQUIRE(upper != 0);
+    CHECK(shoots[upper].length < .25f * shoots[0].length);
+    CHECK(shoots[upper].base_radius < shoots[0].base_radius);
+    u32 upper_children = 0;
+    for (const auto& shoot : shoots)
+      upper_children += shoot.parent == upper ? 1u : 0u;
+    CHECK(upper_children >= 2);
     CHECK(top < lateral / 10);
     // Every terminal twig belongs to a named scaffold; there is no duplicate stem-tip crown.
     CHECK(shoots[0].tip_radius <= shoots[0].base_radius);

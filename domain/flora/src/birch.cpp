@@ -167,7 +167,9 @@ Crown grow(const Birch& p, const CrownSpec& spec) {
     }
   }
   for (u32 k = 0; k < stems; ++k)
-    crown_finish_stem(crown, k);
+    crown_allocate_upper(crown, roots, k, spec);
+  for (u32 k = 0; k < stems; ++k)
+    crown_finish_stem(crown, k, spec.area_exponent);
   crown_grow(crown, spec, roots, 2);
   for (u32 k = 0; k < stems; ++k)
     crown_add_apex(crown, k, spec);
