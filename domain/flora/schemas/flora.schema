@@ -920,13 +920,48 @@ struct ShrubGrowth {
   detail_tier: DetailTier = essential
 }
 
+/// Authored soil pocket in metres relative to the mesh anchor. Plants may overhang its rim.
+struct AlpinePocket {
+  /// Horizontal offsets, -8..8 m, default zero.
+  x: f32 = 0.0 @unit(m)
+  z: f32 = 0.0 @unit(m)
+  /// Height offset from the planting plane, -8..8 m, default zero.
+  y: f32 = 0.0 @unit(m)
+  /// Root distribution radius, 0.005..0.2 m, default 0.03 m.
+  radius_m: f32 = 0.03 @unit(m)
+}
+
+/// Vegetative alpine patch; biological leaf size is independent of patch radius and budget.
+struct Alpine {
+  /// Independent shoot streams, any u64, default 1.
+  seed: u64 = 1
+  /// Zero uses the profile; otherwise 0.04..0.2 m. Ignored when explicit pockets are supplied.
+  radius_m: f32 = 0.0 @unit(m)
+  /// Zero uses the profile; otherwise 1..2048 total shoots/rosettes, at least one per pocket.
+  shoots: u32 = 0
+  /// Occupied noncentral shoots, 0.05..1, default 1. Every pocket retains its central shoot.
+  occupancy: f32 = 1.0
+  /// Local dy/dx, dy/dz, -1..1, default flat; the author fits this to supporting ground.
+  slope_x: f32 = 0.0
+  slope_z: f32 = 0.0
+  /// Optional explicit soil pockets, 0..16; empty grows one patch about the origin.
+  pockets: AlpinePocket[]
+  /// All source triangles plus far cards; 0 selects species cap, otherwise 64..200000.
+  triangle_budget: u32 = 0
+  /// Tile resolution in pixels, 0 disables far cards, otherwise 64/128/256; default 128.
+  impostor_px: u32 = 128
+  /// Any tier; default rich. These low plants never collide.
+  detail_tier: DetailTier = rich
+}
+
 /// A flora file, `<name>.flora.json`: the species and its parameters. A scene's mesh table names
 /// one as it names a glTF, and `engine-content flora` builds one into a container; either way the
 /// build is keyed by the chosen species' canonical parameters, materials and solver version.
-struct FloraFile @version(8) {
+struct FloraFile @version(9) {
   /// The species: "date_palm", "broadleaf", "conifer", "birch", "willow", "orchard", "ancient",
   /// "shrub", "fern", "tuft", "herb", "sward" or "roots" read their own parameter block. Named tree profiles
   /// in domain/geometry/flora_species.h read `tree`; the five named shrub profiles read `shrub_growth`.
+  /// The three named alpine profiles read `alpine`.
   species: string = "date_palm"
   palm: Palm
   broadleaf: Broadleaf @since(2)
@@ -950,6 +985,8 @@ struct FloraFile @version(8) {
   roots: Roots @since(7)
   /// Named shrub profiles (beaked_hazel, bearberry, blackberry, red_osier_dogwood, big_sagebrush).
   shrub_growth: ShrubGrowth @since(8)
+  /// Moss campion, encrusted saxifrage and snowbed willow use this alpine growth block.
+  alpine: Alpine @since(9)
 }
 
 /// One density class, shared patches in two resident forms. Paths resolve relative to the scene.

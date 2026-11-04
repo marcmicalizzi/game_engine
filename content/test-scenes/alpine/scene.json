@@ -1,0 +1,13 @@
+{
+ "format":"engine.scene.v1","name":"Alpine vegetative forms","camera_path":"camera-path.json",
+ "meshes":[{"path":"campion.flora.json"},{"path":"saxifrage.flora.json"},
+           {"path":"willow.flora.json"},{"path":"pockets.flora.json"},{"path":"rock.rock.json"}],
+ "instances":[{"mesh":0,"translation":[-0.55,0,0]},
+              {"mesh":1,"translation":[-0.15,0,0]},
+              {"mesh":2,"translation":[0.23,0,0]},
+              {"mesh":3,"translation":[0.7,0,0]},
+              {"mesh":4,"translation":[0.67,-0.015,-0.11]},
+              {"mesh":4,"translation":[0.56,-0.015,0.01],"yaw_deg":75},
+              {"mesh":4,"translation":[0.82,-0.015,-0.035],"yaw_deg":150}],
+ "sky":{"latitude_deg":46.5,"day_of_year":200,"turbidity":2.5}
+}

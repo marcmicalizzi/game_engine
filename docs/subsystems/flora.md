@@ -1347,6 +1347,62 @@ walker stays on its crest the length of it.
 
 ## The understory
 
+### Alpine mats, rosettes and dwarf scrub (G125)
+
+Three named profiles use `engine.flora.Alpine`: `silene_acaulis` (a domed cushion of
+narrow, opposite leaves), `saxifraga_paniculata` (basal, cupped rosettes) and
+`salix_herbacea` (low leafy shoots connected by prostrate woody axes). Their botanical
+dimensions, source ranges and deliberate sampling approximations are recorded in
+[alpine growth forms](../experiments/alpine-growth-forms.md). They share the flora mesh
+registry, material bake, distance cuts and authored/scatter placement; no scene generator
+or per-frame/GPU record is added. See the [specimen scene](../../content/test-scenes/alpine/README.md).
+
+An isolated rock-pocket rosette, for example:
+
+```json
+{"species":"saxifraga_paniculata","alpine":{"seed":17,"shoots":1,
+ "pockets":[{"x":0,"z":0,"y":0.015,"radius_m":0.02}]}}
+```
+
+`radius_m` is a root-distribution radius, default zero selects the profile (0.08, 0.065,
+0.16 m respectively); an override is 0.04–0.2 m. It never scales a leaf. `shoots` is
+zero for the profile (1536, 7, 96) or 1–2048; `occupancy` is 0.05–1, default 1. Each
+shoot owns a random stream, so thinning preserves retained roots and organ sizes.
+Up to 16 `pockets` override that single disc with authored discs: `x`, `z`, `y` in
+[-8,8] m and `radius_m` in [0.005,0.2] m. At least one shoot is required per pocket;
+the centred shoot always survives thinning. All roots lie on
+`y = pocket.y + slope_x*x + slope_z*z`; slopes are [-1,1], default zero. Leaves may
+overhang their rooting discs. Authors supply soil-filled, sheltered locations: this
+does not infer shelter, conform to a rock mesh, or simulate alpine ecology.
+
+Source budgets are 32,000 / 4,000 / 8,000 triangles. `triangle_budget=0` selects that
+profile, otherwise 64–200,000. A full blade has four intervals, the coarse rung two;
+woody tubes drop from five to three sides. Rungs keep every sampled shoot, leaf and
+attachment. A budget below the coarsest complete form fails before emitting geometry.
+The cap reserves six triangles for the optional far form, including in mesh-only solves.
+`impostor_px` is 0 (disabled), 64, 128 (default) or 256. Its three baked orthogonal
+planes include a top view for low mats; the whole-patch eight-pixel coverage floor
+keeps separated pocket plants geometric at walking distance. The existing selection
+accepts a transition when either its geometric or its coverage error fits; the
+coverage floor delays this very low form beyond the individual leaf's scale.
+An authored leaf hierarchy preserves the entire patch until that transition:
+ordinary decimation erased most of its small independent blades at 5 m. Disabling
+impostors also disables this hierarchy and returns to generic geometric LOD.
+
+The standard `bark` and `leaf` roles accept the existing material/image overrides;
+consumed basecolor, normal and roughness image bytes participate in the cache key.
+`k_alpine_version=2` independently versions these cooks without moving existing flora
+pins; version 2 invalidates development cooks made before the coverage correction.
+`engine-content flora` reports this version for alpine recipes. `detail_tier` defaults
+to rich and accepts essential/standard/rich. These low
+forms are rigid, noncolliding and cast into the nearest shadow cascade only (no
+traced shadow participation). Flowering, lime pores/serrations, seasonal state and
+wind deformation are not modeled. The public entry points are in
+`include/domain/flora/alpine.h`; `tests/alpine_tests.cpp` checks source geometry,
+budgets, pocket support, schema validation, containers, cuts and deterministic hashes.
+
+### Existing understory forms
+
 **The shrub, herb and ground layers under the canopy** (roadmap G75, 2026-10-21; the research, the
 constants and the measurements are [the understory](../experiments/understory.md)): four species a
 forest's floor is made of, `engine.flora.Shrub`, `Fern`, `Tuft` and `Herb`, each a struct of the
