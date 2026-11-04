@@ -1211,3 +1211,88 @@ TEST_CASE(
   }
   device.destroy();
 }
+
+// The cache's references swap the same way (R130): each frame slot reads its own copy of the
+// cache's table, so a step of the references made while frames are in flight draws what a chain
+// that never steps draws and never stops for the device. Until 2026-11-03 such a step waited, 180
+// to 190 ms of `begin_frame` on the owner's v27 walk; `renderer.rt.swap_references=false` is that
+// rule, and stops once a step.
+TEST_CASE("rt capacity: a step of the cache's references swapped in flight draws the same") {
+  gfx::Device device;
+  std::string error;
+  if (!device.create(gfx::DeviceOptions{}, &error) || !traces(device)) {
+    MESSAGE("tracing unavailable: " << error);
+    return;
+  }
+  RenderSettings settings;
+  settings.raster = RasterMode::RayTrace;
+  settings.shadows = ShadowMode::RayTraced;
+  // Every rig goes before the device does.
+  for (const bool swap : {true, false}) {
+    CAPTURE(swap);
+    Rig whole;
+    {
+      ScopedTunable never("renderer.rt.shrink_seconds", "86400");
+      REQUIRE_MESSAGE(whole.build(device, settings, error), error);
+    }
+    Rig moving;
+    {
+      ScopedTunable soon("renderer.rt.shrink_seconds", "0");
+      ScopedTunable one("renderer.rt.shrink_frames", "1");
+      ScopedTunable no_floor("renderer.rt.floor_pct", "0");
+      ScopedTunable no_peak("renderer.rt.peak_seconds", "0");
+      ScopedTunable no_peak_frames("renderer.rt.peak_frames", "0");
+      ScopedTunable tight("renderer.rt.headroom_pct", "0");
+      ScopedTunable fine("renderer.rt.step_clusters", "64");
+      ScopedTunable first("renderer.rt.initial_clusters", "64");
+      REQUIRE_MESSAGE(moving.build(device, settings, error), error);
+    }
+    if (!moving.renderer.scene().rt_cache()) {
+      MESSAGE("no cluster structure cache on this device");
+      break;
+    }
+    ScopedTunable swapping("renderer.rt.swap_references", swap ? "true" : "false");
+    const f32 distances[] = {9.0f, 1.4f, 9.0f, 0.8f, 5.0f, 1.4f};
+    u64 frame_index = 0;
+    u64 waits = 0;
+    u32 steps = 0;
+    Pictures differ;
+    for (const f32 distance : distances) {
+      const RtStats& rt = moving.renderer.stats().rt;
+      const u32 before = rt.reference_grows + rt.reference_shrinks;
+      const u64 waited = gfx::device_waits_on_thread();
+      for (u32 k = 0; k < 6; ++k, ++frame_index) {
+        moving.renderer.begin_frame();
+        REQUIRE_MESSAGE(
+            moving.renderer.submit_frame(frame_at(moving.data, distance, frame_index), &error) != 0,
+            error);
+      }
+      waits += gfx::device_waits_on_thread() - waited;
+      steps += rt.reference_grows + rt.reference_shrinks - before;
+      CapturedFrame a;
+      CapturedFrame b;
+      REQUIRE_MESSAGE(whole.renderer.capture(frame_at(whole.data, distance, frame_index),
+                                             {.color = true, .ids = true}, a, &error),
+                      error);
+      REQUIRE_MESSAGE(moving.renderer.capture(frame_at(moving.data, distance, frame_index),
+                                              {.color = true, .ids = true}, b, &error),
+                      error);
+      ++frame_index;
+      const Pictures d = compare(a, b);
+      differ.colour += d.colour;
+      differ.ids += d.ids;
+    }
+    MESSAGE(std::string(swap ? "swapped" : "waited")
+            << ": " << steps << " reference steps in flight, " << waits << " stops for the device, "
+            << differ.colour << " colour bytes and " << differ.ids << " id words differ");
+    CHECK(steps > 0);  // the case: the references did step between frames in flight
+    CHECK(differ.colour == 0);
+    CHECK(differ.ids == 0);
+    if (swap) {
+      CHECK(waits == 0);  // and never waited for the device to do it
+    } else {
+      CHECK(waits >= steps);  // the comparison: every waited step stops once
+    }
+  }
+  device.destroy();
+}

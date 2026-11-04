@@ -41,6 +41,15 @@ tunables::Bool rt_swap_resize{
     "Make the ray tracing chain's new buffers while the frames in flight read "
     "the old ones and free those when the frames complete, instead of waiting "
     "for the device first (R116)"};
+tunables::Bool rt_swap_references{
+    "renderer.rt.swap_references", true,
+    "Swap a step of the cluster cache's references like the chain's own buffers, "
+    "each frame slot reading its own copy of the cache's table, instead of "
+    "waiting for the device (R130)"};
+tunables::Bool rt_scan_near_capacity{
+    "renderer.rt.scan_near_capacity", true,
+    "Record the drop order's scan while the last read-back demand is at least half "
+    "the ray tracing chain's capacity, not only after a frame that dropped (R130)"};
 tunables::Int rt_step{"renderer.rt.step_clusters", 4096, 1, 1 << 24,
                       "The ray tracing chain's capacity moves in multiples of this many clusters "
                       "(4,096 is 24 MiB of cluster structures on the RTX 5090)"};
@@ -99,6 +108,8 @@ u32 rt_shrink_frames_tunable() noexcept { return static_cast<u32>(rt_shrink_fram
 u32 rt_peak_frames_tunable() noexcept { return static_cast<u32>(rt_peak_frames.get()); }
 u32 rt_step_tunable() noexcept { return static_cast<u32>(rt_step.get()); }
 bool rt_swap_resize_tunable() noexcept { return rt_swap_resize.get(); }
+bool rt_swap_references_tunable() noexcept { return rt_swap_references.get(); }
+bool rt_scan_near_capacity_tunable() noexcept { return rt_scan_near_capacity.get(); }
 bool rt_static_forms_tunable() noexcept { return rt_static_forms.get(); }
 bool rt_static_build_tunable() noexcept { return rt_static_build.get(); }
 bool rt_caster_horizon_tunable() noexcept { return rt_caster_horizon.get(); }

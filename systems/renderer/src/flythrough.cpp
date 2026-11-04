@@ -94,6 +94,15 @@ scene::FrameRecord frame_record(const FrameStats& stats, u32 repeat, u32 frame, 
   out.gpu_ms.sky = stats.gpu_sky;
   out.gpu_ms.frame_passes = stats.gpu_frame_passes;
   out.gpu_ms.half_sun = stats.gpu_half_sun;
+  out.gpu_ms.rt_records = stats.gpu_rt_records;
+  out.gpu_ms.rt_ranges = stats.gpu_rt_ranges;
+  out.gpu_ms.rt_drop = stats.gpu_rt_drop;
+  out.gpu_ms.rt_emit = stats.gpu_rt_emit;
+  out.gpu_ms.rt_cache = stats.gpu_rt_cache;
+  out.gpu_ms.clas_cache = stats.gpu_clas_cache;
+  out.gpu_ms.tlas = stats.gpu_tlas;
+  out.gpu_ms.terrain_upload = stats.gpu_terrain_upload;
+  out.gpu_ms.unbucketed = stats.gpu_unbucketed;
   out.uploads = stats.uploads;
   out.upload_bytes = stats.upload_bytes;
   out.evictions = stats.evictions;
@@ -124,6 +133,28 @@ scene::FrameRecord frame_record(const FrameStats& stats, u32 repeat, u32 frame, 
   out.cpu.submit = stats.cpu.submit_ms;
   out.cpu.slowest_pass = stats.cpu.slowest_pass != nullptr ? stats.cpu.slowest_pass : "";
   out.cpu.slowest_pass_ms = stats.cpu.slowest_pass_ms;
+  out.cpu.resize = stats.cpu.resize_ms;
+  return out;
+}
+
+scene::FrameSections frame_sections(const FrameSpans& s) {
+  scene::FrameSections out;
+  out.wall_ms = static_cast<f64>(s.next_start - s.start) / 1.0e6;
+  out.host_ms = s.host_ms;
+  // The renderer's wait is measured inside the call, so it can never exceed it.
+  out.slot_wait_ms = std::min(s.slot_wait_ms, s.begin_call_ms);
+  out.begin_ms = s.begin_call_ms - out.slot_wait_ms;
+  out.resize_ms = s.resize_ms;
+  out.fold_ms = s.fold_ms;
+  out.acquire_ms = s.acquire_ms;
+  out.ticks_ms = s.ticks_ms;
+  out.submit_ms = s.submit_ms;
+  out.after_ms = s.after_ms;
+  out.present_ms = s.present_ms;
+  out.tail_ms = s.next_start > s.end ? static_cast<f64>(s.next_start - s.end) / 1.0e6 : 0.0;
+  out.other_ms =
+      out.wall_ms - (out.host_ms + out.slot_wait_ms + out.begin_ms + out.fold_ms + out.acquire_ms +
+                     out.ticks_ms + out.submit_ms + out.after_ms + out.present_ms + out.tail_ms);
   return out;
 }
 
@@ -202,6 +233,16 @@ bool fly_camera_path(SceneRenderer& renderer, const CameraPath& path, const Flig
     u64 allocations = 0;
     u64 buffers = 0;
     scene::FrameWorld world{};  // with `measure_world`: the host's turn before it (W82)
+    // The frame's sections (R130, `scene::FrameSections`): its start, the host's turn, the
+    // `begin_frame` call whole, the fold and setup after it, the submission, and when the call
+    // returned; the slot's wait and the resize inside `begin_frame` come from the renderer's own
+    // record of the frame when it folds, and the tail from the next submission's start.
+    i64 start = 0;
+    i64 end = 0;
+    f64 host_ms = 0.0;
+    f64 begin_call_ms = 0.0;
+    f64 fold_ms = 0.0;
+    f64 submit_ms = 0.0;
   };
   Vector<Submission> submissions;
   submissions.reserve((options.warmup + frames) * repeats + options.frames_in_flight);
@@ -249,7 +290,9 @@ bool fly_camera_path(SceneRenderer& renderer, const CameraPath& path, const Flig
       world.other_ms = world.total_ms - (world.update_ms + world.ground_ms + world.props_ms +
                                          world.ticks_ms + world.input_ms);
     }
+    const i64 before_begin = time::monotonic_ns();
     renderer.begin_frame();
+    const i64 after_begin = time::monotonic_ns();
     const std::pair<u64, u64> begun = counted();
 #if ENGINE_DEBUG
     (void)mem::pause_allocation_capture(true);
@@ -268,6 +311,23 @@ bool fly_camera_path(SceneRenderer& renderer, const CameraPath& path, const Flig
           record.allocations = static_cast<u32>(std::min<u64>(done.allocations, ~0u));
           record.buffers = static_cast<u32>(std::min<u64>(done.buffers, ~0u));
           if (options.measure_world) record.world = done.world;
+          // Its interval ends where the next submission began: that one's start, or this call's
+          // when this call is the next (one frame in flight).
+          const u64 index = stats.last.submission;
+          const i64 next_start = index + 1 < submissions.size()
+                                     ? submissions[static_cast<u32>(index + 1)].start
+                                     : start;
+          FrameSpans spans;
+          spans.start = done.start;
+          spans.end = done.end;
+          spans.next_start = next_start;
+          spans.host_ms = done.host_ms;
+          spans.begin_call_ms = done.begin_call_ms;
+          spans.slot_wait_ms = record.cpu.wait;
+          spans.resize_ms = record.cpu.resize;
+          spans.fold_ms = done.fold_ms;
+          spans.submit_ms = done.submit_ms;
+          record.sections = frame_sections(spans);
           out.records.push_back(std::move(record));
         }
       }
@@ -285,12 +345,20 @@ bool fly_camera_path(SceneRenderer& renderer, const CameraPath& path, const Flig
 #if ENGINE_DEBUG
     (void)mem::pause_allocation_capture(false);
 #endif
+    const i64 before_submit_ns = time::monotonic_ns();
     const bool ok = renderer.submit_frame(frame, error) != 0;
+    const i64 after_submit_ns = time::monotonic_ns();
 #if ENGINE_DEBUG
     (void)mem::pause_allocation_capture(true);
 #endif
     const std::pair<u64, u64> submitted = counted();
     Submission& mine = submissions[submissions.size() - 1];
+    mine.start = start;
+    mine.end = after_submit_ns;
+    mine.host_ms = static_cast<f64>(before_begin - start) / 1.0e6;
+    mine.begin_call_ms = static_cast<f64>(after_begin - before_begin) / 1.0e6;
+    mine.fold_ms = static_cast<f64>(before_submit_ns - after_begin) / 1.0e6;
+    mine.submit_ms = static_cast<f64>(after_submit_ns - before_submit_ns) / 1.0e6;
     mine.allocations = (begun.first - turn.first) + (submitted.first - before_submit.first);
     mine.buffers = (begun.second - turn.second) + (submitted.second - before_submit.second);
     mine.cpu_ms = static_cast<f64>(time::monotonic_ns() - ready) / 1.0e6;

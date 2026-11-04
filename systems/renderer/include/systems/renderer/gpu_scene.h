@@ -576,7 +576,11 @@ class GpuScene {
   u32 rt_cache_clusters() const noexcept { return rt_cache_clusters_; }
   u64 rt_cache_bytes() const noexcept { return rt_cache_bytes_; }
   u64 rt_cache_slot_bytes() const noexcept { return rt_cache_stride_; }
-  u64 rt_cache_tables_address() const noexcept { return rt_cache_buffers.tables.address; }
+  // The cache's table for the frame recorded in frame slot `slot`, written now with the buffers
+  // the scene holds (R130): one copy a slot, so a frame in flight keeps the copy it was recorded
+  // with across a swapped resize of the references. 0 without the cache.
+  static constexpr u32 k_rt_cache_table_copies = 4;  // more than the most frames in flight (3)
+  u64 rt_cache_tables_address(u32 slot) noexcept;
   // The frame's stamp for the cache's least-recently-drawn rule: a new one every recorded frame.
   u32 next_rt_cache_frame() noexcept { return ++rt_cache_frame_; }
   // Whether `instance`'s structures come from the cache: the records pass's `instance_cached`.
@@ -598,13 +602,17 @@ class GpuScene {
   // **Swapped, not waited for** (roadmap R116): with `retired`, the new buffers are made first and
   // the old ones handed to `retired` instead of destroyed, for the caller to free once the frames
   // in flight that imported them have completed (`gfx::FrameContext::defer_destroy`) — so the
-  // device need not be idle. That needs the cache's references to keep their capacity, because the
-  // cache's one host-visible table names them and frames in flight read it; a call that would
-  // change them, or a device that cannot hold both sets at once, returns false with `retired`
-  // empty and nothing changed, and the caller waits and calls again without it.
+  // device need not be idle. **The cache's references swap too** (R130): their table has a copy
+  // per frame slot (`rt_cache_tables_address(slot)`), written when that slot's frame is recorded,
+  // so a frame in flight keeps reading the copy that names the old references while the next one
+  // names the new — until 2026-11-03 there was one table, a step of the references waited for the
+  // device, and on the owner's v27 walk that wait was 180-190 ms of `begin_frame`. A device that
+  // cannot hold both sets at once returns false with `retired` empty and nothing changed, and the
+  // caller waits and calls again without it. `renderer.rt.swap_references` (true) false keeps the
+  // old rule, a references step that waits: the comparison the measurement makes.
   struct RtRetired {
-    static constexpr u32 k_buffers = 8;  // records, hit entries, the CLAS set's three, the BLAS
-                                         // set's two, the scratch
+    static constexpr u32 k_buffers = 11;  // records, hit entries, the CLAS set's three, the BLAS
+                                          // set's two, the scratch, the cache's three references
     gfx::BufferResource buffers[k_buffers];
     u32 count = 0;
   };
@@ -1622,7 +1630,8 @@ class GpuScene {
   u32 rt_reference_limit_ = 0;
   u64 rt_bytes_per_reference_ = 0;
   bool create_rt_cache(std::string* error);
-  void write_rt_cache_tables() noexcept;
+  // Every copy of the cache's table, or with `copy` below `k_rt_cache_table_copies` that one.
+  void write_rt_cache_tables(u32 copy = ~0u) noexcept;
   void destroy_rt_cache() noexcept;
   void count_rt_cache_instances() noexcept;
   // Which meshes are static and which of their clusters are the frontier, before the geometry is

@@ -1830,6 +1830,10 @@ struct PendingFrame {
   std::optional<scene::FrameWalk> walk;
   // The host's time between frames, by what it did (FrameRecord's `world`, W82).
   std::optional<scene::FrameWorld> world;
+  // Every span of the loop around the frame (FrameRecord's `sections`, R130); `next_start` is set
+  // when the next iteration starts, and the slot's wait and the resize come from the renderer's
+  // record of the frame when it folds.
+  renderer::FrameSpans spans;
 };
 constexpr u32 k_pending_frames = 8;  // more than the most frames in flight (3) + 1
 
@@ -1861,6 +1865,12 @@ void take_folded(const renderer::SceneRenderer& renderer, u64& folded,
   record.terrain = p.terrain;
   record.walk = p.walk;
   record.world = p.world;
+  if (p.spans.next_start != 0) {
+    renderer::FrameSpans spans = p.spans;
+    spans.slot_wait_ms = record.cpu.wait;
+    spans.resize_ms = record.cpu.resize;
+    record.sections = renderer::frame_sections(spans);
+  }
   records.push_back(std::move(record));
   if (present_ids != nullptr) present_ids->push_back(p.present_id);
 }
@@ -3278,6 +3288,11 @@ int run_offscreen(Options& options, Interactive& interactive) {
       bool ok = true;
       for (u32 f = 0; f < frames; ++f) {
         const i64 start = time::monotonic_ns();
+        // The last frame's interval ends here (FrameRecord's `sections`, R130).
+        if (submissions > 0) {
+          PendingFrame& before = pending[(submissions - 1) % k_pending_frames];
+          if (before.submission == submissions - 1) before.spans.next_start = start;
+        }
         ENGINE_STARTUP_STAGE("frame");
         profiling::trace_items(f);
         // The record's `world` (W82): this loop's time outside `begin_frame` and `submit_frame`.
@@ -3332,9 +3347,20 @@ int run_offscreen(Options& options, Interactive& interactive) {
           ok = false;
           break;
         }
+        const i64 submitted = time::monotonic_ns();
         PendingFrame& p = pending[submissions % k_pending_frames];
         p.submission = submissions;
         p.frame = f;
+        // The loop's spans in its order (renderer::FrameSpans): the host's turn, `begin_frame`, the
+        // fold and the readiness, the ticks and the frame's setup, the submission.
+        p.spans = renderer::FrameSpans{};
+        p.spans.start = start;
+        p.spans.host_ms = static_cast<f64>(begin_started - start) / 1.0e6;
+        p.spans.begin_call_ms = static_cast<f64>(begun - begin_started) / 1.0e6;
+        p.spans.fold_ms = static_cast<f64>(ready - begun) / 1.0e6;
+        p.spans.ticks_ms = static_cast<f64>(before_submit - ready) / 1.0e6;
+        p.spans.submit_ms = static_cast<f64>(submitted - before_submit) / 1.0e6;
+        p.spans.end = submitted;
         p.terrain = renderer::frame_terrain(time_lapse);
         p.walk.reset();
         if (walker.available()) p.walk = walked;
@@ -3363,7 +3389,13 @@ int run_offscreen(Options& options, Interactive& interactive) {
         break;
       }
       // The last frames' numbers fold in when their slots come around again; bring those around
-      // with nothing drawn in them, rather than drawing frames nobody asked for.
+      // with nothing drawn in them, rather than drawing frames nobody asked for. The last frame's
+      // interval ends where they start.
+      if (submissions > 0) {
+        PendingFrame& final_frame = pending[(submissions - 1) % k_pending_frames];
+        if (final_frame.submission == submissions - 1)
+          final_frame.spans.next_start = time::monotonic_ns();
+      }
       for (u32 d = 0; d < k_frames_in_flight; ++d) {
         view_renderer.begin_frame();
         take_folded(view_renderer, folded, pending, records);
@@ -6377,6 +6409,12 @@ int run_view(int argc, char** argv) {
         g_game->note_render_frame(static_cast<f64>(frame_start - last_frame_start_ns) / 1.0e6);
 #endif
       last_frame_start_ns = frame_start;
+      // The last frame's interval ends here (FrameRecord's `sections`, R130): its tail — a pacer's
+      // or the ceiling's wait above — is the time from its present to this start.
+      if (window_records && submissions > 0) {
+        PendingFrame& before = pending[(submissions - 1) % k_pending_frames];
+        if (before.submission == submissions - 1) before.spans.next_start = frame_start;
+      }
       // --inject-input: the log's keys and motion go onto the window's own queue as their ticks
       // come due, and come back out of poll() below like anything the platform delivered.
       const std::span<const input::RawEvent> injected = interactive.injected.events();
@@ -6888,6 +6926,16 @@ int run_view(int argc, char** argv) {
               (world_parts.update_ms + world_parts.ground_ms + world_parts.props_ms +
                world_parts.ticks_ms + world_parts.input_ms);
           p.world = world_parts;
+          // The loop's spans, in its order (renderer::FrameSpans); the present's below.
+          p.spans = renderer::FrameSpans{};
+          p.spans.start = frame_start;
+          p.spans.host_ms = static_cast<f64>(before_waits - frame_start) / 1.0e6;
+          p.spans.begin_call_ms = static_cast<f64>(slot_free - before_waits) / 1.0e6;
+          p.spans.fold_ms = static_cast<f64>(before_acquire - slot_free) / 1.0e6;
+          p.spans.acquire_ms = p.acquire_ms;
+          p.spans.ticks_ms = static_cast<f64>(before_submit - after_waits) / 1.0e6;
+          p.spans.submit_ms = p.submit_ms;
+          p.spans.end = submitted_ns;
           p.present_ms = 0.0;  // after the present, below
           p.present_id = 0;
           p.pose = drawn;
@@ -6991,6 +7039,13 @@ int run_view(int argc, char** argv) {
       if (window_records) {
         PendingFrame& p = pending[(submissions - 1) % k_pending_frames];
         p.present_ms = static_cast<f64>(after_present - before_present) / 1.0e6;
+        // What followed the submission before the present — the title, a last frame's capture —
+        // and the present itself; the tail runs from here to the next start.
+        if (p.spans.end != 0) {
+          p.spans.after_ms = static_cast<f64>(before_present - p.spans.end) / 1.0e6;
+          p.spans.present_ms = p.present_ms;
+          p.spans.end = after_present;
+        }
         p.present_id = swapchain.last_present_id();
         if (timed_display) display.sampled(p.present_id, sampled_ns);
       }

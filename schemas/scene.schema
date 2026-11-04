@@ -1390,7 +1390,7 @@ struct CameraPath @version(1) {
 
 /// GPU milliseconds of one frame, pass by pass, from `gfx::GpuTimer` (`renderer::Stats` names).
 /// Version 5 added `sky`. Version 6 added `frame_passes`. Version 7 added `half_sun`.
-struct PassMs @version(7) {
+struct PassMs @version(8) {
   cull: f64 = 0
   hw: f64 = 0
   sw: f64 = 0
@@ -1426,6 +1426,24 @@ struct PassMs @version(7) {
   /// sun's ray once per 2x2 block of the half-rate columns, every view's. What it saves the resolve
   /// is in `resolve`. Zero in a frame at full rate.
   half_sun: f64 = 0 @since(7)
+  /// Version 8 (R130; docs/subsystems/renderer.md, "The ray tracing chain's memory"): the rest of
+  /// `rt`, zone by zone, so that with `clas` and `blas` the chain is named whole — the bucketing
+  /// (`rt_records`), the ranges' scan (`rt_ranges`), the walk a frame past its capacity makes and
+  /// the kept instances' scan after it (`rt_drop`, zero on a frame that did not record them, when a
+  /// frame past its capacity takes the one-thread rule inside `rt_ranges`), the emit pass
+  /// (`rt_emit`), the cache's slot passes (`rt_cache`) and its build of the frame's misses
+  /// (`clas_cache`), and the top-level build (`tlas`); a moving terrain's field copies
+  /// (`terrain_upload`); and `unbucketed`, `total` less every top-level bucket — what the timer
+  /// measured that the record names nowhere, zero when every zone has a bucket.
+  rt_records: f64 = 0 @since(8)
+  rt_ranges: f64 = 0 @since(8)
+  rt_drop: f64 = 0 @since(8)
+  rt_emit: f64 = 0 @since(8)
+  rt_cache: f64 = 0 @since(8)
+  clas_cache: f64 = 0 @since(8)
+  tlas: f64 = 0 @since(8)
+  terrain_upload: f64 = 0 @since(8)
+  unbucketed: f64 = 0 @since(8)
 }
 
 /// One terrain level's surface in one frame of a time-lapse (`engine-view --time-rate`;
@@ -1454,7 +1472,7 @@ struct TerrainLevelFrame @version(1) {
 /// records, declaring the passes, the render graph's compile and recording, and the submission.
 /// `slowest_pass` names the pass whose recording took longest and `slowest_pass_ms` says how long.
 /// What `cpu_ms` holds beyond the stages is the host's own (a window's input and camera ticks).
-struct CpuMs @version(1) {
+struct CpuMs @version(2) {
   wait: f64 = 0
   begin: f64 = 0
   tables: f64 = 0
@@ -1465,6 +1483,45 @@ struct CpuMs @version(1) {
   submit: f64 = 0
   slowest_pass: string
   slowest_pass_ms: f64 = 0
+  /// Version 2 (R130): inside `begin`, a step of the ray tracing chain's capacity or of the
+  /// cache's references — its allocation and, when it was not swapped, its wait for the device.
+  /// Zero on a frame with no step.
+  resize: f64 = 0 @since(2)
+}
+
+/// **Every millisecond of one frame, by what the frame's thread did** (R130, roadmap T71 part 3;
+/// docs/subsystems/apps.md, "The frame record's sections"). `wall_ms` is the frame's own interval,
+/// from its loop iteration's start to the next one's — the *next* record's `frame_ms` — and the
+/// parts below partition it: they are disjoint and sum to it, `other_ms` being the remainder,
+/// which a test holds near zero. `cpu_ms`, `wait_ms` and the `cpu` and `world` blocks stay what
+/// they were; this block is the one that adds up.
+///
+/// The parts, in the order the loop runs them: the host's turn before the frame (`host_ms`: a
+/// window's input, the streamed world's update, the ground, the game's props — the `world` block
+/// names them; a flight's `before_frame` hook), the wait for the frame slot (`slot_wait_ms`, the
+/// GPU finishing the frame that last used it), the rest of the renderer's `begin_frame`
+/// (`begin_ms`: the slot's fold, its deferred frees, and a step of the ray tracing chain's
+/// capacity, which is `resize_ms` inside it and not added again), the record's own fold of an
+/// older frame's numbers (`fold_ms`), the wait for a swapchain image (`acquire_ms`), the session's
+/// ticks and the frame's setup (`ticks_ms`: a window's camera, the game module's tick, the
+/// animation's pose), the renderer's `submit_frame` (`submit_ms`), what follows it before the
+/// present — the title, a capture (`after_ms`), the present call (`present_ms`), and the loop's
+/// tail until the next iteration starts (`tail_ms`: a pacer's or the ceiling's wait, the shader
+/// reload's look, a resize of the window).
+struct FrameSections @version(1) {
+  wall_ms: f64 = 0
+  host_ms: f64 = 0
+  slot_wait_ms: f64 = 0
+  begin_ms: f64 = 0
+  resize_ms: f64 = 0
+  fold_ms: f64 = 0
+  acquire_ms: f64 = 0
+  ticks_ms: f64 = 0
+  submit_ms: f64 = 0
+  after_ms: f64 = 0
+  present_ms: f64 = 0
+  tail_ms: f64 = 0
+  other_ms: f64 = 0
 }
 
 /// A time-lapse's frame (`engine-view --time-rate`): the game time, the surface clock's latency
@@ -1619,7 +1676,7 @@ struct FrameWorld @version(1) {
 /// Version 11: `walk`, a walking session's frame (`FrameWalk`).
 ///
 /// Version 13: `world`, the host's time between frames by what it did (`FrameWorld`, W82).
-struct FrameRecord @version(14) {
+struct FrameRecord @version(15) {
   /// Which pass over the path, from 0.
   repeat: u32 = 0
   /// The path frame, from 0; an interactive session's frame, from 0.
@@ -1754,6 +1811,9 @@ struct FrameRecord @version(14) {
   /// engine-view's time between frames, by what it did (see `FrameWorld`); null from a host that
   /// does not measure it (`render.benchmark`).
   world: FrameWorld? = null @since(13)
+  /// Version 15 (R130): every millisecond of the frame's own interval, by what the frame's thread
+  /// did (see `FrameSections`); null from a host that does not measure it (`render.benchmark`).
+  sections: FrameSections? = null @since(15)
 }
 
 /// What a flight's frame loop allocated on the frame's thread, over its recorded frames (every
