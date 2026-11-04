@@ -59,3 +59,75 @@ The star's coverage error is at least the basal stems' mean diameter times the d
 threshold (5 px), so it reaches the threshold where a mean stem is one pixel; and the star is baked
 with the coverage kept. The dogwood's star now switches at 24.2 m from its centre at 1080p and
 45.5 m at 2160 rows (test-measured, `select_lod` 1 % either side).
+
+## The fixture, drawn
+
+`engine-view` msvc-release at 85eda802 (before) and at G123's commit (after), offscreen,
+1920×1080, the POC's `isolated.json` (the dogwood alone at its scene transform, no ground), its v22
+material pack, a derived-data cache of the fixture's own, `--raster rt --shadows rt --no-lights
+--time-of-day 15 --lod 1 --lod-fade 0 --tunable renderer.flora.motion=false`, a camera path holding
+the owner's two marker poses (12.5 and 10.1 m, yaw as the owner looked) and then two more on the
+same bearing at 25 and 50 m from the plant, each captured with `--marker-captures` and
+`--capture-channels ids`. **The levers**: `--foliage-lod 0.001` forces the near mesh (every
+coverage error is then too large), `--foliage-lod 1000` forces the star. The number is the id
+capture's `covered` (pixels with any id; nothing else is in the picture):
+
+| camera | near mesh | before: default | before: star forced | after: default | after: star forced |
+|---|---|---|---|---|---|
+| 12.5 m (marker 1) | 23,651 | 31,144 (the star, +31.7%) | 31,144 | **23,651 (the mesh)** | 28,397 (+20.1%) |
+| 10.1 m (marker 2) | 36,526 | 48,255 (the star, +32.1%) | 48,255 | **36,526 (the mesh)** | 43,882 (+20.1%) |
+| 25 m | 5,734 | — | 7,756 (+35.3%) | 7,093 (the star, +23.7%) | 7,093 |
+| 50 m | 1,358 | — | 1,923 (+41.6%) | 1,760 (the star, +29.6%) | 1,760 |
+
+At the owner's two poses the default now draws the near mesh pixel for pixel. Drawn, the fitted
+star still covers a fifth to three tenths more pixels than the mesh, where the coverage bake's
+ring measured 1.07: a pixel here is one sample of the visibility buffer, the atlas is filtered
+(bilinear, its mips coverage-preserving) before the half mask, and the camera is within 3° of the
+horizon between two of the star's directions, where the doubling is largest, while the ring pools
+eight such views with eight at ±30°. It is a
+third less excess than before at every distance; closing the rest is the G121 kind of work (the
+fit against the drawn coverage, not the ring's), and the stem rule keeps it to where a stem is
+sub-pixel.
+
+## What it costs
+
+The owner's v27 scene (`reports/lab/20261103-081847-467/scene.json`: 6,024 meshes, 244,225
+instances, of which the shrub-growth species are 5,014 bearberry, 1,795 hazel, 973 blackberry, 131
+sagebrush and 60 dogwood, over 15 meshes), flown along R115 stage 2's walk — the v25 run's records
+6693–6993, marker 1 to marker 2, one key a record (301 frames), after W82's `make-path.ps1` — with
+the owner's flags (`--terrain-tiles --terrain-far 6 --time-rate 0 --world-rate 1 --time-of-day 15
+--no-lights --lod 1 --deform-pool-mib 64 --rt-budget-mib 0 --raster rt --shadows rt --tunable
+renderer.flora.motion=true --tunable renderer.flora.wind_strength=0.7`), no game module (so no
+animal moves), offscreen at 2160 rows, `--wait-quiet 120`, under the GPU lock, the shared v24
+derived-data copy. Every run recorded `quiet: false`: other agents were building beside it (CPU
+others 7–98% at a run's start, GPU 2–5% busy at its start, so the GPU itself was ours). Each pair
+was flown twice, the second time in the reverse order; Δ is the median over the 301 frames of
+each frame's after minus before, with its quartiles. Shrub pairs are the census's visible pairs of
+the 15 shrub-growth meshes (a cluster is at most 128 triangles).
+
+| width | flight | GPU median, before → after (ms) | p95 | Δ median (p25…p75) | trace pass | shrub pairs, median | visible pairs |
+|---|---|---|---|---|---|---|---|
+| 3840 | 1 | 21.34 → 21.02 | 29.20 → 28.77 | −0.17 (−0.92…+0.48) | 4.84 → 4.22 | 770 → 1,227 | 882k |
+| 3840 | 2, reversed | 21.02 → 20.82 | 28.33 → 28.35 | −0.11 (−0.73…+0.73) | 4.30 → 4.54 | — | — |
+| 11520 | 1 | 44.27 → 45.21 | 59.23 → 60.77 | **+2.28 (+1.43…+3.10)** | 11.13 → 12.89 | 1,248 → 1,823 | 1.52 M |
+| 11520 | 2, reversed | 43.65 → 44.98 | 58.14 → 60.00 | **+1.93 (+1.05…+2.93)** | 11.03 → 12.70 | — | — |
+
+At 3840×2160 the change is inside the run-to-run spread. At 11520×2160 it costs about 2 ms of
+44 (4.5%), all of it in the trace pass (+1.7 ms; the cluster builds, the deformation and the
+resolve did not move): the surround view's sides pass close beside the walk's shrubs, and a ray
+through a shrub's alpha-masked leaves and thin stems costs more than one through sixteen quads.
+The visible pairs moved by under 600 of 1.5 million. **What the run cooked**: the after binary
+built the 15 shrub-growth containers again (36.2 MB) and their 30 star atlases (50 MB) into the
+shared v24 cache copy, keyed by `k_shrub_growth_version` 2; the before binary cooked nothing.
+
+**The knob**: `k_stem_px` (one pixel of mean basal stem) in `shrub_growth.cpp`; two pixels would
+halve every shrub's switch distance and so quarter the extra ground the near meshes cover, at the
+price of a doubled stem two pixels wide when the star comes in. `--foliage-lod` moves it with every
+foliage switch at run time.
+
+## What belongs to the growth solver
+
+Nothing measured here does. The near mesh is right at both of the owner's distances (the default
+now draws it, pixel for pixel the forced near mesh); the doubling is the star's four directions
+each carrying the whole thicket, and its distance was a coverage error scaled by a leaf. The
+recipe's stems set the rule only as the size a far eye must not resolve.

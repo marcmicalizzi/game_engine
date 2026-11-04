@@ -1432,6 +1432,10 @@ its centre at 1080p and 46 m at 2160 rows; the five species' mean basal stems ar
 stars come in where those are a pixel (5, 11, 21, 31 and 37 m from the sphere's edge at 1080p).
 Nothing in the growth solver moved: the near mesh, the motion rows and the source budgets are the
 bytes they were; `k_shrub_growth_version` 2 rebuilds every shrub-growth container (only those).
+**What it costs** (the v27 scene along R115's walk, twice each way): nothing measurable at
+3840×2160; about 2 ms of 44 at 11520×2160, all in the trace pass, where the surround view's sides
+pass close beside the shrubs. Drawn at 1080p the fitted star still covers 20–30% more pixels than
+the mesh (the ring measured 1.07), a third less excess than before. `k_stem_px` is the knob.
 `tests/shrub_far_form_tests.cpp` holds both on the dogwood and the five profiles.
 
 Wood UVs are metres, leaf UVs one complete image per blade. Material roles are the catalogue
