@@ -126,6 +126,11 @@ struct FrameCpu {
   f64 submit_ms = 0.0;
   const char* slowest_pass = "";
   f64 slowest_pass_ms = 0.0;
+  // Inside `begin_ms`: a step of the ray tracing chain's capacity or of the cache's references
+  // (`apply_rt_capacity`), its allocation and, when it could not be swapped, its wait for the
+  // device (R130). Zero on a frame with no step. `render_offscreen`'s regrowth of a short frame
+  // happens between its two attempts, outside any frame's `begin_frame`, and is not counted here.
+  f64 resize_ms = 0.0;
 };
 
 // One frame's numbers, as the renderer folds them in when that frame's slot comes around again
@@ -168,6 +173,20 @@ struct FrameStats {
   f64 gpu_trace = 0.0;
   f64 gpu_total = 0.0;
   f64 gpu_blas = 0.0;  // the bottom-level build inside `gpu_rt`
+  // **The rest of `gpu_rt`, zone by zone** (R130): the bucketing ("records"), the ranges' scan
+  // ("ranges"), the walk a frame past its capacity makes and the kept instances' scan after it
+  // ("ranges drop", zero on a frame that fits), the emit pass ("emit"), the cache's slot passes
+  // ("cache"), and the top-level build ("tlas"); `gpu_clas_cache` is the cache's build. With `clas`
+  // and `blas` they sum to `gpu_rt`.
+  f64 gpu_rt_records = 0.0;
+  f64 gpu_rt_ranges = 0.0;
+  f64 gpu_rt_drop = 0.0;
+  f64 gpu_rt_emit = 0.0;
+  f64 gpu_rt_cache = 0.0;
+  f64 gpu_tlas = 0.0;
+  // What the timer measured that no bucket of the record names: `gpu_total` less every bucket.
+  // Zero when every zone is named (R124's rule; R130).
+  f64 gpu_unbucketed = 0.0;
   u32 uploads = 0;
   u64 upload_bytes = 0;
   u32 evictions = 0;

@@ -38,6 +38,31 @@ namespace engine::renderer {
 // the frame loop (`fly_camera_path` below, engine-view's interactive loop), which the renderer
 // does not see.
 scene::FrameRecord frame_record(const FrameStats& stats, u32 repeat, u32 frame, f64 time);
+
+// **Every millisecond of a frame** (R130, roadmap T71 part 3; `scene::FrameSections`): what a
+// frame loop measured around one frame, in its order, on `time::monotonic_ns`'s clock. `start` is
+// the loop iteration's start, `end` when the last measured part returned, `next_start` the next
+// iteration's start; the parts are the loop's own spans in milliseconds, zero for a part the loop
+// does not have (a flight has no acquire, ticks or present). `begin_call_ms` is the whole
+// `begin_frame` call, which the renderer's own `FrameCpu::wait_ms` (`slot_wait_ms`) splits into the
+// slot's wait and the rest, and `resize_ms` is inside the rest. The loop's tail is
+// `next_start - end`, and `other_ms` what the parts leave of the wall time.
+struct FrameSpans {
+  i64 start = 0;
+  i64 end = 0;
+  i64 next_start = 0;
+  f64 host_ms = 0.0;
+  f64 begin_call_ms = 0.0;
+  f64 slot_wait_ms = 0.0;
+  f64 resize_ms = 0.0;
+  f64 fold_ms = 0.0;
+  f64 acquire_ms = 0.0;
+  f64 ticks_ms = 0.0;
+  f64 submit_ms = 0.0;
+  f64 after_ms = 0.0;
+  f64 present_ms = 0.0;
+};
+scene::FrameSections frame_sections(const FrameSpans& spans);
 // The run's ray tracing chain into the summary's `rt` block, all but the per-frame percentiles
 // `summarize_frames` fills; both hosts call it after the flight so the numbers are the run's.
 void summarize_rt(const RtStats& stats, scene::FlythroughRt& out);

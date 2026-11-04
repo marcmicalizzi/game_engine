@@ -29,12 +29,14 @@
 
 #include <algorithm>
 #include <bit>
+#include <chrono>
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <string>
+#include <thread>
 #include <vector>
 
 using namespace engine;
@@ -985,6 +987,60 @@ TEST_CASE("flythrough: the same path draws the same pairs, frame by frame, and s
   for (u32 f = 3; f < a.size(); ++f)  // the first frames still see the last flight's history
     again += a[f] != c[f] ? 1u : 0u;
   CHECK(again == 0);
+}
+
+// **Every millisecond of a frame is named** (R130, roadmap T71 part 3; apps.md, "The frame record's
+// sections"): on a flight, each record's sections partition its own interval — host, slot wait,
+// begin, fold, submission, tail — and sum to the wall time, which is the next record's `frame_ms`.
+// A host's turn that sleeps lands in `host_ms`, not in a remainder. Before R130 the record's
+// fields summed to a fraction of the frame on the owner's hitches and named none of the rest.
+TEST_CASE("flythrough: a frame's sections sum to its wall time, and a slow host turn is named") {
+  Gpu gpu;
+  if (!gpu.ok) {
+    MESSAGE("renderer unavailable here: " << gpu.why);
+    return;
+  }
+  World world;
+  REQUIRE_MESSAGE(world.write(), world.error);
+  Rig rig;
+  REQUIRE_MESSAGE(rig.build(gpu.device, world.desc, RenderSettings{}, 160, 96), rig.error);
+  CameraPath path;
+  REQUIRE_MESSAGE(parse_camera_path(k_path_json, &rig.data.terrain, path, world.error),
+                  world.error);
+  FlightOptions options;
+  options.frames = 12;
+  options.warmup = 2;
+  options.frames_in_flight = 2;
+  options.measure_world = true;
+  // Frame 5's host turn sleeps 30 ms: it must come back as that frame's `host_ms`.
+  struct Sleeper {
+    static bool turn(void*, const FlightStep& step, std::string*) {
+      if (step.recorded && step.frame == 5) std::this_thread::sleep_for(std::chrono::milliseconds(30));
+      return true;
+    }
+  };
+  options.before_frame = &Sleeper::turn;
+  Flight flight;
+  std::string error;
+  REQUIRE_MESSAGE(fly_camera_path(rig.renderer, path, options, flight, &error), error);
+  REQUIRE(flight.records.size() == 12);
+  for (u32 i = 0; i < flight.records.size(); ++i) {
+    const scene::FrameRecord& r = flight.records[i];
+    CAPTURE(i);
+    REQUIRE(r.sections.has_value());
+    const scene::FrameSections& s = *r.sections;
+    const f64 sum = s.host_ms + s.slot_wait_ms + s.begin_ms + s.fold_ms + s.acquire_ms +
+                    s.ticks_ms + s.submit_ms + s.after_ms + s.present_ms + s.tail_ms;
+    CHECK(s.wall_ms > 0.0);
+    CHECK(std::abs(sum - s.wall_ms) < 0.01);  // the parts partition the frame
+    CHECK(std::abs(s.other_ms) < 0.01);
+    CHECK(s.resize_ms <= s.begin_ms + 1e-9);
+    // The interval is the next record's frame time, measured by the same clock.
+    if (i + 1 < flight.records.size())
+      CHECK(std::abs(flight.records[i + 1].frame_ms - s.wall_ms) < 0.01);
+  }
+  CHECK(flight.records[5].sections->host_ms >= 30.0);
+  CHECK(flight.records[4].sections->host_ms < 30.0);
 }
 
 TEST_CASE("flythrough: occlusion culling changes no pixel on the path, and culls what is hidden") {

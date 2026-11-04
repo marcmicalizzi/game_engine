@@ -4781,7 +4781,9 @@ bool GpuScene::create_rt_cache(std::string* error) {
                          k_address | gfx::BufferUsage::Indirect, c.args, error) &&
       gfx::create_buffer(device, u64{slot_count} * rt_cache_stride_ + one.alignment, k_structures,
                          false, c.slots, error) &&
-      gfx::create_buffer(device, sizeof(gfx::ClusterCacheTables), k_address, true, c.tables, error);
+      // One copy a frame slot (R130, `rt_cache_tables_address`).
+      gfx::create_buffer(device, sizeof(gfx::ClusterCacheTables) * k_rt_cache_table_copies,
+                         k_address, true, c.tables, error);
   // Slot 0: one triangle whose every vertex's x is NaN, which the device treats as inactive — a
   // structure nothing can hit, for a reference whose key had no slot.
   if (ok) {
@@ -4848,7 +4850,16 @@ bool GpuScene::create_rt_cache(std::string* error) {
   return true;
 }
 
-void GpuScene::write_rt_cache_tables() noexcept {
+u64 GpuScene::rt_cache_tables_address(u32 slot) noexcept {
+  const RtCacheBuffers& c = rt_cache_buffers;
+  if (c.tables.mapped == nullptr) return c.tables.address;
+  ENGINE_ASSERT(slot < k_rt_cache_table_copies, "more frames in flight than the table's copies");
+  const u32 copy = slot % k_rt_cache_table_copies;
+  write_rt_cache_tables(copy);
+  return c.tables.address + u64{copy} * sizeof(gfx::ClusterCacheTables);
+}
+
+void GpuScene::write_rt_cache_tables(u32 copy) noexcept {
   const RtCacheBuffers& c = rt_cache_buffers;
   if (c.tables.mapped == nullptr) return;
   gfx::ClusterCacheTables tables;
@@ -4870,7 +4881,11 @@ void GpuScene::write_rt_cache_tables() noexcept {
   tables.slot_count = rt_cache_slots_ != 0 ? rt_cache_slots_ : rt_cache_limits.max_clusters;
   tables.mesh_count = rt_cache_base_.size();
   tables.reference_capacity = c.references.address != 0 ? rt_reference_capacity_ : 0u;
-  std::memcpy(c.tables.mapped, &tables, sizeof(tables));
+  for (u32 i = 0; i < k_rt_cache_table_copies; ++i) {
+    if (copy < k_rt_cache_table_copies && i != copy) continue;
+    std::memcpy(static_cast<u8*>(c.tables.mapped) + u64{i} * sizeof(tables), &tables,
+                sizeof(tables));
+  }
 }
 
 void GpuScene::destroy_rt_cache() noexcept {
@@ -5225,10 +5240,13 @@ bool GpuScene::resize_ray_tracing(u32 capacity, std::string* error, bool beyond_
   } else {
     references = 0;
   }
-  // **The swap** (R116): the cache's one host-visible table names the references, and frames in
-  // flight read it, so the references must keep their buffers; a resize that changes them waits.
+  // **The swap** (R116): the old buffers go to `retired`. The cache's references swap with them
+  // (R130): each frame slot reads its own copy of the cache's table, written when its frame is
+  // recorded (`rt_cache_tables_address`), so a frame in flight keeps the copy naming the old ones.
+  // `renderer.rt.swap_references` false is the old rule, a references step that waits.
   const bool swap = retired != nullptr;
-  if (swap && references != rt_reference_capacity_) {
+  const bool swap_references = swap && references != rt_reference_capacity_;
+  if (swap_references && !rt_swap_references_tunable()) {
     if (error != nullptr) *error = "the cache's references change: the resize must wait";
     return false;
   }
@@ -5273,6 +5291,18 @@ bool GpuScene::resize_ray_tracing(u32 capacity, std::string* error, bool beyond_
   lap(rt_resize_cost_.records_ns);
   ok = ok && gfx::create_cluster_set(device, limits, made_clas, error);
   lap(rt_resize_cost_.clas_ns);
+  // Swapped, new references are made beside the old ones, which go to `retired` below.
+  gfx::BufferResource made_references, made_reference_keys, made_misses;
+  if (swap_references) {
+    ok = ok &&
+         gfx::create_buffer(device, u64{references} * sizeof(u64), k_record_usage, false,
+                            made_references, error) &&
+         gfx::create_buffer(device, u64{references} * sizeof(u32), k_address, false,
+                            made_reference_keys, error) &&
+         gfx::create_buffer(device, u64{references} * gfx::k_cluster_cache_miss_bytes, k_address,
+                            false, made_misses, error);
+    lap(rt_resize_cost_.references_ns);
+  }
   if (!swap) {
     ok = ok && (references == 0 ||
                 (gfx::create_buffer(device, u64{references} * sizeof(u64), k_record_usage, false,
@@ -5308,6 +5338,9 @@ bool GpuScene::resize_ray_tracing(u32 capacity, std::string* error, bool beyond_
     gfx::destroy_cluster_set(device, made_clas);
     gfx::destroy_cluster_blas_set(device, made_blas);
     gfx::destroy_buffer(device, made_scratch);
+    gfx::destroy_buffer(device, made_references);
+    gfx::destroy_buffer(device, made_reference_keys);
+    gfx::destroy_buffer(device, made_misses);
     // Swapped, the old set is untouched and still the scene's: the caller waits and tries again.
     if (swap) return false;
     gfx::destroy_buffer(device, rt_cache_buffers.references);
@@ -5324,6 +5357,17 @@ bool GpuScene::resize_ray_tracing(u32 capacity, std::string* error, bool beyond_
          {&records, &hit_entries, &clas_set.data, &clas_set.addresses, &clas_set.sizes,
           &blas_set.data, &blas_set.addresses, &rt_scratch}) {
       retired->buffers[retired->count++] = *old;
+    }
+    if (swap_references) {
+      for (gfx::BufferResource* old : {&rt_cache_buffers.references,
+                                       &rt_cache_buffers.reference_keys, &rt_cache_buffers.misses})
+        retired->buffers[retired->count++] = *old;
+      rt_cache_buffers.references = made_references;
+      rt_cache_buffers.reference_keys = made_reference_keys;
+      rt_cache_buffers.misses = made_misses;
+      // The table's copies are written when each slot's frame is recorded, never here: the frames
+      // in flight read theirs.
+      rt_reference_capacity_ = references;
     }
   }
   records = made_records;

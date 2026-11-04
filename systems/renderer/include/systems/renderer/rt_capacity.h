@@ -86,6 +86,10 @@ u32 rt_step_tunable() noexcept;
 // the old ones and frees those when they complete, instead of waiting for the device (R116;
 // `GpuScene::resize_ray_tracing`'s `retired`). Read at each resize; false is the comparison.
 bool rt_swap_resize_tunable() noexcept;
+// `renderer.rt.swap_references` (true): a step of the cluster cache's references swaps too, each
+// frame slot reading its own copy of the cache's table (R130; `GpuScene::resize_ray_tracing`).
+// False waits for the device on such a step, as before: the comparison.
+bool rt_swap_references_tunable() noexcept;
 // `renderer.rt.static_forms` (true): rigid distance forms keep structures built once
 // (`RenderSettings::rt_static_forms`; renderer.md, "Static structures for rigid forms").
 bool rt_static_forms_tunable() noexcept;

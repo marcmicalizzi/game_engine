@@ -10,6 +10,8 @@
 
 **Instrumented today.** Job workers (thread names, a zone per executed job), protocol dispatch, document store load and save, and the startup stages below (each is a Tracy zone of the same name in a Tracy build).
 
+**A frame's time, attributed whole, without Tracy** (roadmap T71 part 3, landed 2026-11-03 with R130; parts 1 and 2, the profile shader variant and a timestamp pair a dispatch, are open). Every frame record a benchmark writes carries `sections` (`engine.scene.FrameSections`): the frame loop's spans in its order — the host's turn, the slot's wait, the rest of `begin_frame` with the chain's resize inside it, the fold, the acquire, the ticks, the submission, what follows it, the present and the tail — which partition the frame's own interval and sum to it, so a hitch is never "unattributed" again; and `gpu_ms.unbucketed`, the timer's total less every bucket, which names GPU time folded into no bucket. They are measured with the clock reads the loop already made, in every build, at no cost a frame worth stating ([apps](apps.md#flythroughs) has the fields; the test is `flythrough: a frame's sections sum to its wall time, and a slow host turn is named`). Tracy's GPU zones for the live view are still part 3's to do.
+
 ## The startup trace
 
 `core/profiling/startup_trace.h` (roadmap W69): what a process did between its launch and the moment it was ready, recorded only while a host has turned it on (`engine-view --startup-trace`, `render.load` with `startup_trace`; [apps](apps.md#--startup-trace-from-launch-to-ready)). Flat memory over a load cannot tell a wait from CPU work, IO, a cache check or the driver; this can, because every stage carries what tells them apart.

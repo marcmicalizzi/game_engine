@@ -468,8 +468,9 @@ bool SceneRenderer::create(const gfx::Device& device, GpuScene& scene,
       // one cull zone and at most two per cascade plus two (index expansion, pool pass and its
       // allocation, the depth raster), twelve; a streamed world's table update two more; a sky's
       // tables, sky-view, air and sums four more; the frame passes eight (frame_pass.h), the encode
-      // after them one; the cluster cache's five passes and its build six.
-      !timer_.create(device, desc.frames_in_flight, 62 + 16 * (views - 1), error)) {
+      // after them one; the cluster cache's five passes and its build six; the chain's walk past
+      // its capacity one (R130, "ranges drop").
+      !timer_.create(device, desc.frames_in_flight, 63 + 16 * (views - 1), error)) {
     destroy();
     return false;
   }
@@ -1639,11 +1640,17 @@ void SceneRenderer::collect_slot(u32 slot) {
       last.gpu_trace += timer_.ms(k_zone_names[k_zone_trace][v]);
     }
     last.gpu_deform_alloc = timer_.ms("deform alloc");
-    last.gpu_rt = timer_.ms("records") + timer_.ms("ranges") + timer_.ms("emit") +
-                  timer_.ms("clas") + timer_.ms("blas") + timer_.ms("tlas") + cache_ms(timer_);
+    last.gpu_rt_records = timer_.ms("records");
+    last.gpu_rt_ranges = timer_.ms("ranges");
+    last.gpu_rt_drop = timer_.ms("ranges drop");
+    last.gpu_rt_emit = timer_.ms("emit");
+    last.gpu_rt_cache = timer_.ms("cache");
+    last.gpu_tlas = timer_.ms("tlas");
     last.gpu_clas = timer_.ms("clas");
     last.gpu_clas_cache = timer_.ms("clas cache");
     last.gpu_blas = timer_.ms("blas");
+    last.gpu_rt = last.gpu_rt_records + last.gpu_rt_ranges + last.gpu_rt_drop + last.gpu_rt_emit +
+                  last.gpu_clas + last.gpu_blas + last.gpu_tlas + cache_ms(timer_);
     last.gpu_shadow_cull = timer_.ms("shadow cull");
     last.gpu_shadow = last.gpu_shadow_cull + timer_.ms("shadow");
     last.gpu_pair_expand = timer_.ms("pair expand");
@@ -1655,6 +1662,14 @@ void SceneRenderer::collect_slot(u32 slot) {
       last.gpu_frame_passes += timer_.ms(frame_passes_[p].zone);
     last.gpu_frame_passes += timer_.ms("frame encode");
     last.gpu_total = timer_.total_ms();
+    // What no bucket names (R130): the record's buckets are disjoint — `clas`, `blas` and the
+    // chain's other zones inside `rt`, `shadow_cull` inside `shadow` — so the total less the
+    // top-level ones is what the timer measured and the record would otherwise fold into none.
+    const f64 named = last.gpu_cull + last.gpu_hw + last.gpu_sw + last.gpu_hiz + last.gpu_resolve +
+                      last.gpu_deform + last.gpu_deform_alloc + last.gpu_trace + last.gpu_rt +
+                      last.gpu_shadow + last.gpu_tables + last.gpu_terrain_upload + last.gpu_sky +
+                      last.gpu_frame_passes + last.gpu_half_sun;
+    last.gpu_unbucketed = std::max(0.0, last.gpu_total - named);
     stats_.tiles.gpu_tables += last.gpu_tables;
     stats_.tiles.gpu_pair_expand += last.gpu_pair_expand;
   }
@@ -1686,8 +1701,9 @@ void SceneRenderer::collect_slot(u32 slot) {
     stats_.gpu_deform_alloc += timer_.ms("deform alloc");
     // The acceleration structure chain is built once from the union of the views' cuts, so it is
     // the frame's cost and no view's.
-    stats_.gpu_rt += timer_.ms("records") + timer_.ms("ranges") + timer_.ms("emit") +
-                     timer_.ms("clas") + timer_.ms("blas") + timer_.ms("tlas") + cache_ms(timer_);
+    stats_.gpu_rt += timer_.ms("records") + timer_.ms("ranges") + timer_.ms("ranges drop") +
+                     timer_.ms("emit") + timer_.ms("clas") + timer_.ms("blas") + timer_.ms("tlas") +
+                     cache_ms(timer_);
     stats_.gpu_clas += timer_.ms("clas");
     stats_.gpu_clas_cache += timer_.ms("clas cache");
     stats_.gpu_blas += timer_.ms("blas");
@@ -1756,14 +1772,18 @@ void SceneRenderer::begin_frame() {
           scene_->rt_cache() ? rt_reference_policy_.observe(stats_.rt.references_wanted, now) : 0u;
       const bool references_moved =
           scene_->rt_cache() && next_references != scene_->rt_reference_capacity();
-      if ((next != scene_->rt_capacity() || references_moved) &&
-          !apply_rt_capacity(next, nullptr, false, next_references)) {
+      const i64 resize_started = time::monotonic_ns();
+      const bool step = next != scene_->rt_capacity() || references_moved;
+      if (step && !apply_rt_capacity(next, nullptr, false, next_references)) {
         // The allocation failed: the device is out of memory. Say so and fall back to the smallest
         // step, which a frame can still record into, rather than drawing with nothing.
         ENGINE_LOG_ERROR(log_renderer, "the ray tracing chain could not be resized",
                          log::field("capacity", next));
         (void)apply_rt_capacity(rt_capacity_.config().step, nullptr);
       }
+      // The step's own share of `begin_ms` (R130): an unswapped step's wait for the device lands
+      // here, never in `wait_ms`, which is the slot's.
+      if (step) frame_cpu_.resize_ms = static_cast<f64>(time::monotonic_ns() - resize_started) / 1.0e6;
     }
   }
   frame_cpu_.begin_ms = static_cast<f64>(time::monotonic_ns() - begin_started) / 1.0e6;
@@ -1782,8 +1802,10 @@ bool SceneRenderer::apply_rt_capacity(u32 capacity, std::string* error, bool bey
   // memory"): the new buffers are made while the frames in flight still read the old ones, which
   // this slot's deferred frees release once the frame recorded next has completed — so a resize
   // costs the allocation and no wait. Until 2026-11-02 every resize waited for the device first,
-  // 30 to 153 ms on the owner's v25 walk. A resize that changes the cache's references (its one
-  // table names them) or that the device cannot hold beside the old set waits, as before.
+  // 30 to 153 ms on the owner's v25 walk. Since 2026-11-03 a step of the cache's references swaps
+  // too (R130: each slot reads its own copy of the cache's table; until then such a step waited,
+  // 180-190 ms on the owner's v27 walk). A resize the device cannot hold beside the old set waits,
+  // as before, and so does a references step under `renderer.rt.swap_references` false.
   bool swapped = false;
   // Both sets at once must fit what the device lets this process hold: past that the driver makes
   // room by evicting, which made one swapped growth on the replay 524 ms where the waited one was
@@ -1791,7 +1813,10 @@ bool SceneRenderer::apply_rt_capacity(u32 capacity, std::string* error, bool bey
   gfx::MemoryBudget budget;
   const bool room =
       !device_->memory_budget(budget) || !budget.valid ||
-      budget.used_bytes + u64{capacity} * scene.rt_bytes_per_cluster() <= budget.budget_bytes;
+      budget.used_bytes + u64{capacity} * scene.rt_bytes_per_cluster() +
+              (references != references_before ? u64{references} * scene.rt_bytes_per_reference()
+                                               : 0u) <=
+          budget.budget_bytes;
   if (rt_swap_resize_tunable() && room) {
     GpuScene::RtRetired retired;
     if (scene.resize_ray_tracing(capacity, nullptr, beyond_budget, references, &retired)) {
@@ -3188,7 +3213,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
     // A rigid instance references the cache's structures and builds none of its own (renderer.md,
     // "The resident cluster structure cache"); the stamp is this frame's for the eviction.
     if (rt_cache) {
-      record_params.cache = scene.rt_cache_tables_address();
+      record_params.cache = scene.rt_cache_tables_address(slot);  // this slot's copy (R130)
       record_params.frame = scene.next_rt_cache_frame();
     }
     rt_micromaps_ = false;
@@ -4389,9 +4414,14 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
               }
               read_pool(b, gfx::Access::ComputeRead);
             },
-            [&, p, record_passes, record_names, record_groups, drop_args, kept_args, drop_scan](
+            [&, p, record_passes, record_names, record_groups, drop_args, kept_args](
                 gfx::CommandList cb, gfx::RenderGraph&) {
-              if (p == 0 || p == 1 || p == 6) timer.begin(cb, p == 1 ? "ranges" : record_names[p]);
+              // The walk past the capacity and the kept scan after it are their own zone, "ranges
+              // drop" (R130): on the owner's v27 walk the chain cost 118-164 ms on the frames past
+              // their capacity, none of it in `clas` or `blas`, and one zone over all five passes
+              // could not say which.
+              if (p == 0 || p == 1 || p == 3 || p == 6)
+                timer.begin(cb, p == 1 ? "ranges" : record_names[p]);
               cb.bind_pipeline(gfx::BindPoint::Compute, record_passes[p]->pipeline);
               cb.push_constants(record_passes[p]->layout, gfx::ShaderStage::Compute, 0,
                                 sizeof(record_params), &record_params);
@@ -4400,8 +4430,8 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
               } else {
                 cb.dispatch(record_groups[p], 1, 1);
               }
-              // The "ranges" zone ends with the last of its passes the frame recorded.
-              if (p == 0 || p == 6 || p == (drop_scan ? 5u : 2u)) timer.end(cb);
+              // "ranges" ends with its scan, "ranges drop" with the kept scan.
+              if (p == 0 || p == 2 || p == 5 || p == 6) timer.end(cb);
             });
       }  // **The resident cluster structure cache** (renderer.md, "The resident cluster structure
       // cache"; clas_records.slang): the slot scan and the eviction, the misses' slots and records
