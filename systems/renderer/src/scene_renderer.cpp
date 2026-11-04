@@ -3152,8 +3152,23 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
   // without them takes the one-thread rule, which writes the same words. So a scene that fits
   // records no pass for a walk it never takes, and one that does not walks it as a scan from
   // the frame after its first drop.
+  //
+  // **And while the demand is within reach of the capacity** (R130): the demand reaches this
+  // thread two frames late, so the frames that first pass the capacity at a turn into the woods
+  // were always recorded without the scan, and the one-thread rule cost 120-122 ms of the GPU's
+  // frame each on the replay of the owner's v27 walk, two frames a step (the record's
+  // `gpu_ms.rt_ranges`). A frame whose last read-back demand — its own structures or the cache's
+  // references — is at least half of what the chain holds records the scan too: a jump past the
+  // capacity within two frames is a jump of more than half of it, which the walk has not shown
+  // (its largest was 38%). Recorded on a frame that fits, the scan's three dispatches are of no
+  // group and cost 7 µs (the replay's median over 212 such frames).
   if (rt_chain && rt_frames_since_drop_ < k_drop_scan_frames) ++rt_frames_since_drop_;
-  const bool drop_scan = rt_frames_since_drop_ < k_drop_scan_frames;
+  const bool near_capacity =
+      rt_chain && rt_scan_near_capacity_tunable() &&
+      (u64{stats_.rt.wanted} * 2 >= scene.rt_capacity() ||
+                   (scene.rt_cache() &&
+                    u64{stats_.rt.references_wanted} * 2 >= scene.rt_reference_capacity()));
+  const bool drop_scan = rt_frames_since_drop_ < k_drop_scan_frames || near_capacity;
   if (rt_chain) {
     tlas_references.addresses = scene.blas_set.addresses.address;
     tlas_references.records = scene.rt_instances.address;

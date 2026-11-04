@@ -90,6 +90,10 @@ bool rt_swap_resize_tunable() noexcept;
 // frame slot reading its own copy of the cache's table (R130; `GpuScene::resize_ray_tracing`).
 // False waits for the device on such a step, as before: the comparison.
 bool rt_swap_references_tunable() noexcept;
+// `renderer.rt.scan_near_capacity` (true): a frame records the drop order's scan while the last
+// read-back demand is at least half the capacity, not only within 64 frames of one that dropped
+// (R130; renderer.md, "A resize is swapped in, not waited for"). False is the comparison.
+bool rt_scan_near_capacity_tunable() noexcept;
 // `renderer.rt.static_forms` (true): rigid distance forms keep structures built once
 // (`RenderSettings::rt_static_forms`; renderer.md, "Static structures for rigid forms").
 bool rt_static_forms_tunable() noexcept;

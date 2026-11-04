@@ -5284,13 +5284,22 @@ bool GpuScene::resize_ray_tracing(u32 capacity, std::string* error, bool beyond_
   gfx::ClusterSet made_clas;
   gfx::ClusterBlasSet made_blas;
   gfx::BufferResource made_scratch;
-  bool ok = gfx::create_buffer(device, record_bytes * capacity, k_record_usage, false, made_records,
-                               error) &&
-            gfx::create_buffer(device, sizeof(u32) * u64{capacity}, k_address, false,
-                               made_hit_entries, error);
-  lap(rt_resize_cost_.records_ns);
-  ok = ok && gfx::create_cluster_set(device, limits, made_clas, error);
-  lap(rt_resize_cost_.clas_ns);
+  // **A step of the references alone keeps the frame's own set** (R130): the records, the
+  // record-to-entry table and the CLAS set are sized by the capacity, so a swapped step that leaves
+  // it alone makes only the references, the bottom-level set and, when it must grow, the scratch.
+  // Making the CLAS set again beside the old one was 937 ms in the driver on the v27 replay, on a
+  // card other processes held 21 GB of.
+  const bool keep_frame_set = swap && capacity == rt_capacity_ && rt_capacity_ != 0;
+  bool ok = true;
+  if (!keep_frame_set) {
+    ok = gfx::create_buffer(device, record_bytes * capacity, k_record_usage, false, made_records,
+                            error) &&
+         gfx::create_buffer(device, sizeof(u32) * u64{capacity}, k_address, false,
+                            made_hit_entries, error);
+    lap(rt_resize_cost_.records_ns);
+    ok = ok && gfx::create_cluster_set(device, limits, made_clas, error);
+    lap(rt_resize_cost_.clas_ns);
+  }
   // Swapped, new references are made beside the old ones, which go to `retired` below.
   gfx::BufferResource made_references, made_reference_keys, made_misses;
   if (swap_references) {
@@ -5322,14 +5331,19 @@ bool GpuScene::resize_ray_tracing(u32 capacity, std::string* error, bool beyond_
                                     std::min(rt_max_per_instance_, std::max(capacity, references)),
                                     made_blas, error, rt_limits_.opacity_micromaps);
   lap(rt_resize_cost_.blas_ns);
+  bool scratch_made = false;
   if (ok) {
-    u64 scratch_bytes = made_clas.build_scratch_bytes;
+    u64 scratch_bytes =
+        keep_frame_set ? clas_set.build_scratch_bytes : made_clas.build_scratch_bytes;
     scratch_bytes = std::max(scratch_bytes, made_blas.build_scratch_bytes);
     scratch_bytes = std::max(scratch_bytes, tlas.build_scratch_bytes);
     // The cache's misses build in the same chain, one pass before the frame's own (the graph
     // orders the two), so they share it.
     scratch_bytes = std::max(scratch_bytes, rt_cache_scratch_bytes_);
-    ok = gfx::create_scratch(device, scratch_bytes, made_scratch, error);
+    if (!keep_frame_set || scratch_bytes > rt_scratch.size) {
+      ok = gfx::create_scratch(device, scratch_bytes, made_scratch, error);
+      scratch_made = ok;
+    }
   }
   lap(rt_resize_cost_.scratch_ns);
   if (!ok) {
@@ -5353,11 +5367,14 @@ bool GpuScene::resize_ray_tracing(u32 capacity, std::string* error, bool beyond_
   if (swap) {
     // The frames in flight imported these by handle; they are the caller's to free once those
     // frames have completed.
-    for (gfx::BufferResource* old :
-         {&records, &hit_entries, &clas_set.data, &clas_set.addresses, &clas_set.sizes,
-          &blas_set.data, &blas_set.addresses, &rt_scratch}) {
-      retired->buffers[retired->count++] = *old;
+    if (!keep_frame_set) {
+      for (gfx::BufferResource* old :
+           {&records, &hit_entries, &clas_set.data, &clas_set.addresses, &clas_set.sizes})
+        retired->buffers[retired->count++] = *old;
     }
+    for (gfx::BufferResource* old : {&blas_set.data, &blas_set.addresses})
+      retired->buffers[retired->count++] = *old;
+    if (scratch_made) retired->buffers[retired->count++] = rt_scratch;
     if (swap_references) {
       for (gfx::BufferResource* old : {&rt_cache_buffers.references,
                                        &rt_cache_buffers.reference_keys, &rt_cache_buffers.misses})
@@ -5370,11 +5387,13 @@ bool GpuScene::resize_ray_tracing(u32 capacity, std::string* error, bool beyond_
       rt_reference_capacity_ = references;
     }
   }
-  records = made_records;
-  hit_entries = made_hit_entries;
-  clas_set = made_clas;
+  if (!keep_frame_set) {
+    records = made_records;
+    hit_entries = made_hit_entries;
+    clas_set = made_clas;
+  }
   blas_set = made_blas;
-  rt_scratch = made_scratch;
+  if (scratch_made || !swap) rt_scratch = made_scratch;
   rt_capacity_ = capacity;
   if (!swap) {
     rt_reference_capacity_ = references;
