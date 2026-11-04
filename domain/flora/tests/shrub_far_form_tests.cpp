@@ -68,7 +68,8 @@ TEST_CASE("shrub far form: the dogwood's star waits until its stems are sub-pixe
                          << " m, mean basal stem " << stem_m << " m");
   // The coverage error is the stems' floor: at the default foliage threshold it projects to it
   // exactly where a mean stem projects to one pixel.
-  CHECK(static_cast<f64>(star.coverage) >= stem_m * geometry::k_default_foliage_px * 0.999);
+  CHECK(static_cast<f64>(star.coverage) >=
+        stem_m * static_cast<f64>(geometry::k_default_foliage_px) * 0.999);
 
   // The owner's view: 55 degrees of vertical field at 1080 and 2160 rows, the default thresholds,
   // the camera on the owner's bearing (yaw 232.7 degrees in the scene; the shrub stands at its own
