@@ -597,7 +597,7 @@ Import, the content build, validation, provenance, generators, scripting and tex
 
 | G126 | Regeneration and damaged young growth: species-specific seedlings and saplings, seedling groups, suppression, broken leaders, browsing and authored obstacles within flora | done (a85b9ea3, 2026-11-04: seven juvenile profiles, authored damage and obstacles, twelve specimens; deterministic Windows/Linux pins and affected checks pass) | G88, G107 | M | research | [flora](subsystems/flora.md#regeneration-and-damaged-young-growth) |
 
-| G128 | Terrain-aware rockfall and sediment deposits: connected cliff-foot talus, scree tongues, mixed fragments and drainage accumulation | done (54091abe; terrain-aware deposits, deterministic invariants and budgeted review captures) | G62, G71, W72 | L | research | [rocks](subsystems/rocks.md) |
+| G128 | Terrain-aware rockfall and sediment deposits: connected cliff-foot talus, scree tongues, mixed fragments and drainage accumulation | done (54091abe; terrain-aware deposits, deterministic invariants and budgeted review captures; PBR sampling crash fixed with explicit/pack regressions) | G62, G71, W72 | L | research | [rocks](subsystems/rocks.md) |
 
 ## T — Tooling and CI
 

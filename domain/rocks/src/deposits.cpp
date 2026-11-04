@@ -6,6 +6,7 @@
 #include <core/schema/json_reflect.h>
 #include <domain/assets/mesh_generator.h>
 #include <domain/geometry/cluster_pages.h>
+#include <domain/geometry/material_sampling.h>
 #include <domain/materials/materials.h>
 #include <domain/rocks/deposits.h>
 #include <domain/texture/material_textures.h>
@@ -419,6 +420,10 @@ bool build_deposit_container(const DepositPatch& input, const geometry::ClusterL
   material.roughness = mesh.materials[0].roughness;
   out.materials.push_back(material);
   if (chosen) {
+    // apply_set requires a sampling record beside the material. Keep the optional section
+    // absent for untextured deposits so their existing container bytes remain unchanged.
+    out.material_sampling.push_back(geometry::encode_material_sampling(
+        mesh.materials[0].sampling, mesh.materials[0].occlusion_strength));
     materials::apply_set(*chosen, materials::UvLayout::repeats, out, 0);
     material_factors(p.material, out.materials[0].base_color, out.materials[0].roughness);
   }

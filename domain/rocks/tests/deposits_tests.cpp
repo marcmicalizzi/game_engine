@@ -2,6 +2,8 @@
 
 #include <core/schema/json_reflect.h>
 #include <domain/assets/mesh_generator.h>
+#include <domain/geometry/material_sampling.h>
+#include <domain/materials/materials.h>
 #include <domain/rocks/deposits.h>
 #include <foundation/io/vfs.h>
 
@@ -210,7 +212,8 @@ TEST_CASE("deposits: mesh identity and cluster container are deterministic") {
   REQUIRE_MESSAGE(build_deposit_container(p, {}, 0, a, error), error);
   REQUIRE(build_deposit_container(p, {}, 0, b, error));
   MESSAGE("deposit container pin: ", geometry::cluster_file_hash(a));
-  CHECK(geometry::cluster_file_hash(a) == 16297439944098904797ull);
+  // Rock solver v11 changes the source/build identity, not the deposit mesh above.
+  CHECK(geometry::cluster_file_hash(a) == 17513793063602312493ull);
   CHECK(geometry::cluster_file_hash(a) == geometry::cluster_file_hash(b));
   CHECK(a.source_hash == deposit_source_hash(p));
   CHECK(a.source_hash == b.source_hash);
@@ -222,6 +225,72 @@ TEST_CASE("deposits: mesh identity and cluster container are deterministic") {
   changed = p;
   ++changed.seed;
   CHECK(deposit_source_hash(changed) != a.source_hash);
+}
+TEST_CASE("deposits: explicit and pack PBR sets have sampling records") {
+  auto p = patch();
+  p.fragments = 0;
+  p.type = RockType::Sandstone;
+  materials::Pack pack;
+  std::string error;
+  REQUIRE(materials::parse_pack(
+      R"({"format":"engine.materials.pack/1","name":"stand-in","version":"1","roles":{)"
+      R"("rock/sandstone":{"tile_m":0.5,"normal_scale":0.6,"normal_convention":"opengl","maps":{)"
+      R"("base_color":{"file":"c.png"},"normal":{"file":"n.png"},)"
+      R"("roughness":{"file":"r.png"},"metallic":{"file":"m.png"},"height":{"file":"h.png"}}}}})",
+      "C:/stand-in", pack, error));
+  std::string prefix;
+  f32 normal_scale = 0;
+  SUBCASE("explicit maps override the pack") {
+    p.material.base_color = "own/c.png";
+    p.material.normal = "own/n.png";
+    p.material.roughness = "own/r.png";
+    p.material.tile_m = 2.0f;
+    p.material.normal_scale = .75f;
+    prefix = "own/";
+    normal_scale = .75f;
+  }
+  SUBCASE("pack supplies all maps") {
+    prefix = "C:/stand-in/";
+    normal_scale = .6f;
+  }
+  geometry::ClusterFileData data;
+  REQUIRE_MESSAGE(build_deposit_container(p, {}, 0, data, error, &pack), error);
+  REQUIRE(data.materials.size() == 1);
+  REQUIRE(data.material_sampling.size() == data.materials.size());
+  REQUIRE(data.image_paths.size() == 3);
+  const auto& m = data.materials[0];
+  REQUIRE(m.base_color_image >= 0);
+  REQUIRE(m.normal_image >= 0);
+  CHECK(data.image_paths[static_cast<u32>(m.base_color_image)] == prefix + "c.png");
+  CHECK(data.image_paths[static_cast<u32>(m.normal_image)] == prefix + "n.png");
+  CHECK(std::find(data.image_paths.begin(), data.image_paths.end(), prefix + "r.png") !=
+        data.image_paths.end());
+  CHECK(m.normal_scale == doctest::Approx(normal_scale));
+  CHECK(m.metallic == 0);
+  CHECK(m.roughness == 1);
+  CHECK(data.textures.size() == data.image_paths.size());
+  geometry::TextureSlotSampling slots[geometry::k_material_slots];
+  f32 occlusion = 0;
+  geometry::decode_material_sampling(data.material_sampling[0], slots, occlusion);
+  for (const auto& slot : slots)
+    CHECK(slot.transform.identity());  // UVs already carry the chosen repeat.
+  CHECK(occlusion == 1);
+
+  // Material setup must not rewrite the solved geometry or any vertex attributes/masks.
+  auto expected = p;
+  if (!p.material.base_color) expected.material.tile_m = pack.roles[0].set.tile_m;
+  expected.material.base_color.reset();
+  expected.material.normal.reset();
+  expected.material.roughness.reset();
+  geometry::ClusterFileData plain;
+  REQUIRE(build_deposit_container(expected, {}, 0, plain, error));
+  const auto same_bytes = [](const auto& a, const auto& b) {
+    return a.size() == b.size() && hash_bytes(a.data(), a.size() * sizeof(a[0])) ==
+                                       hash_bytes(b.data(), b.size() * sizeof(b[0]));
+  };
+  CHECK(same_bytes(data.mesh.mesh.vertices, plain.mesh.mesh.vertices));
+  CHECK(same_bytes(data.mesh.mesh.attributes, plain.mesh.mesh.attributes));
+  CHECK(same_bytes(data.cover_mask, plain.cover_mask));
 }
 TEST_CASE("deposits: whole expansion equals reversed tile arrival with stable ids and exclusion") {
   test::TempDir scratch;

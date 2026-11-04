@@ -885,6 +885,16 @@ Materials use `rock/<type>` from the pack, overridden by the patch's `RockMateri
 existing flat lithology colour. The bed projects x/z in metres per repeat; fragment charts use
 the existing box projection. Baked `surface_maps` are refused for patches. Fine grain appearance
 requires a suitable tiled material; this feature does not generate sediment PBR maps.
+A textured deposit initializes its material-sampling record from the solved material before
+applying either explicit maps or the pack's set. UVs already contain physical repeats, so all
+slot transforms remain identity. An untextured deposit still omits the optional sampling
+section, preserving its existing container bytes and pins. Material setup does not rewrite
+geometry, vertex attributes or cover masks. The regression covers explicit and pack-supplied
+base-colour, normal and roughness maps: the missing sampling record previously caused an
+out-of-bounds write in materials::apply_set during scene startup.
+The v11 rock solver identity also changes the deposit container pin to 17513793063602312493;
+the deposit mesh pin remains 6863964757150498499. This identity change is present before the
+sampling fix; it follows the deposit source hash's existing dependency on the rock solver version.
 
 Public API: [deposits.h](../../domain/rocks/include/domain/rocks/deposits.h), `DepositPlan`,
 `plan_deposits`, `deposit_patch_in_range`, `solve_deposit`, `deposit_source_hash`,
