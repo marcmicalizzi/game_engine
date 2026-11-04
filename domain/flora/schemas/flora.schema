@@ -920,10 +920,48 @@ struct ShrubGrowth {
   detail_tier: DetailTier = essential
 }
 
+/// Local spherical obstacle, including all solid space the juvenile must grow around.
+struct RegenerationObstacle {
+  /// Centre in mesh-local metres, each coordinate -16..16, default zero.
+  x_m: f32 = 0.0 @unit(m)
+  y_m: f32 = 0.0 @unit(m)
+  z_m: f32 = 0.0 @unit(m)
+  /// Sphere radius, 0.01..8 m, default 0.25.
+  radius_m: f32 = 0.25 @unit(m)
+}
+
+/// Static established seedlings/saplings; not germination or a yearly growth simulation.
+struct Regeneration {
+  /// Independent streams per plant and shoot; any u64, default 1.
+  seed: u64 = 1
+  /// Reference shoot height before suppression/damage, 0.15..4 m, default 0.6.
+  height_m: f32 = 0.6 @unit(m)
+  /// Plant centres, 1..64, default 1. Multiple plants require positive group_radius_m.
+  plants: u32 = 1
+  /// Radius of the authored group, 0..8 m, default 0; does not bound foliage overhang.
+  group_radius_m: f32 = 0.0 @unit(m)
+  /// Prescribed suppression, 0..1, default 0; reduces extension, not blade dimensions.
+  suppression: f32 = 0.0
+  /// Removed fraction of each leading shoot, 0..0.8, default 0.
+  leader_loss: f32 = 0.0
+  /// Recovery extension, 0..1, default 0; requires leader_loss, or browsing of oak/hazel/dogwood.
+  recovery: f32 = 0.0
+  /// Accessible browse zone from ground to this height, 0..4 m, default 0 (off).
+  browse_height_m: f32 = 0.0 @unit(m)
+  /// Fraction of accessible lateral tips browsed, 0..1, default 0; requires browse height.
+  browse_fraction: f32 = 0.0
+  /// Explicit local obstacles, at most 64; roots inside a sphere are refused.
+  obstacles: RegenerationObstacle[]
+  /// Total source cap including far cards, 0 selects profile cap or 256..200000 triangles.
+  triangle_budget: u32 = 0
+  /// Whole-group far atlas tile: 0 disables, or 128/256/512 pixels; default 128.
+  impostor_px: u32 = 128
+}
+
 /// A flora file, `<name>.flora.json`: the species and its parameters. A scene's mesh table names
 /// one as it names a glTF, and `engine-content flora` builds one into a container; either way the
 /// build is keyed by the chosen species' canonical parameters, materials and solver version.
-struct FloraFile @version(8) {
+struct FloraFile @version(9) {
   /// The species: "date_palm", "broadleaf", "conifer", "birch", "willow", "orchard", "ancient",
   /// "shrub", "fern", "tuft", "herb", "sward" or "roots" read their own parameter block. Named tree profiles
   /// in domain/geometry/flora_species.h read `tree`; the five named shrub profiles read `shrub_growth`.
@@ -950,6 +988,9 @@ struct FloraFile @version(8) {
   roots: Roots @since(7)
   /// Named shrub profiles (beaked_hazel, bearberry, blackberry, red_osier_dogwood, big_sagebrush).
   shrub_growth: ShrubGrowth @since(8)
+  /// Optional juvenile model for maple/oak/birch/pine/spruce/beaked_hazel/red_osier_dogwood.
+  /// When present, replaces the species' adult parameter block; absence preserves old output.
+  regeneration: Regeneration? @since(9)
 }
 
 /// One density class, shared patches in two resident forms. Paths resolve relative to the scene.

@@ -1,5 +1,6 @@
 #include <core/hash/hash.h>
 #include <domain/flora/flora.h>
+#include <domain/flora/regeneration.h>
 #include <domain/flora/trees.h>
 #include <foundation/io/vfs.h>
 
@@ -10,6 +11,60 @@
 #include <cstring>
 
 using namespace engine;
+
+TEST_CASE("regeneration: every cooked section has a cross-compiler pin") {
+  // All 39 serialized sections, folded in section order; first MSVC pins, juvenile version 1.
+  constexpr u64 pins[] = {14638356608917655802ull, 924883813919887783ull,  3543767975535335084ull,
+                          17023047174142128883ull, 9673179043758828519ull, 12990953087382750004ull,
+                          613653092068049302ull};
+  u32 n = 0;
+  for (const auto& profile : flora::regeneration_profiles()) {
+    flora::FloraFile recipe;
+    recipe.species = geometry::flora_species_info(profile.species).name;
+    recipe.regeneration.emplace();
+    recipe.regeneration->height_m = .7f;
+    recipe.regeneration->leader_loss = .3f;
+    recipe.regeneration->recovery = .8f;
+    geometry::ClusterFileData data;
+    std::string error;
+    REQUIRE_MESSAGE(flora::build_flora_container(recipe, {}, 65536, data, nullptr, error), error);
+    test::TempDir temp("regeneration_sections");
+    const auto path = temp.file("plant.clusters");
+    REQUIRE(geometry::write_cluster_file(path, data, &error));
+    std::string bytes;
+    REQUIRE(io::read_file(path, bytes) == io::Status::Ok);
+    geometry::ClusterFileHeader header;
+    std::memcpy(&header, bytes.data(), sizeof(header));
+    REQUIRE(header.section_count == 39u);
+    u64 combined = 0;
+    for (u32 i = 0; i < header.section_count; ++i) {
+      geometry::ClusterFileSection section;
+      std::memcpy(&section, bytes.data() + sizeof(header) + i * sizeof(section), sizeof(section));
+      combined =
+          hash_combine(combined, hash_bytes(bytes.data() + section.offset,
+                                            u64{section.element_size} * section.element_count));
+    }
+    INFO(recipe.species);
+    CHECK(combined == pins[n++]);
+    geometry::ClusterFileData back;
+    REQUIRE(geometry::read_cluster_file(path, back, &error));
+    CHECK(geometry::cluster_file_hash(data) == geometry::cluster_file_hash(back));
+    for (const f32 distance : {5.0f, 20.0f, 60.0f, 200.0f}) {
+      geometry::LodFormCut cut;
+      cut.distance = distance;
+      cut.proj_scale = 1080;
+      geometry::ClusterLodMesh form;
+      geometry::LodFormMap map;
+      Vector<u32> coverage;
+      REQUIRE(geometry::extract_lod_form(data.mesh, {}, cut, form, coverage, map, &error));
+      CHECK_FALSE(form.mesh.clusters.empty());
+      for (const u32 v : map.vertices)
+        CHECK(v < data.motion_vertices.size());
+      for (const u32 c : map.clusters)
+        CHECK(c < data.cluster_material.size());
+    }
+  }
+}
 
 namespace {
 // G103's first committed MSVC container pins, ground-plants version 2. No accepted pin moves.

@@ -1,0 +1,27 @@
+{
+  "znear": 0.02,
+  "format": "engine.camera-path.v1",
+  "keys": [
+    {
+      "position": [
+        0,
+        4,
+        14
+      ],
+      "target": [
+        0,
+        0.7,
+        -1
+      ],
+      "time": 0
+    }
+  ],
+  "name": "Regeneration specimens",
+  "markers": [
+    {
+      "frame": 0,
+      "name": "row"
+    }
+  ],
+  "fps": 30
+}

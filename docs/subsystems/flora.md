@@ -1,5 +1,89 @@
 # flora (domain, capability)
 
+## Regeneration and damaged young growth
+
+G126 adds an optional `regeneration` block to `FloraFile` version 9. It selects a static
+juvenile solver for `maple`, `oak`, `birch`, `pine`, `spruce`, `beaked_hazel` and
+`red_osier_dogwood`. It replaces the species' adult parameter block, including its age controls;
+recipes without it retain their existing canonical key and geometry. Species are resolved through
+the existing catalogue. No new capability, renderer pass or per-frame growth state is introduced.
+[Research and authored coefficients](../experiments/flora-regeneration.md),
+[recipes](../../content/flora/regeneration/README.md), and
+[specimen scene](../../content/test-scenes/regeneration/README.md).
+
+```json
+{"species":"pine","regeneration":{"seed":42,"height_m":2,
+ "leader_loss":0.4,"recovery":0.8}}
+```
+
+| Control | Range; default | Meaning |
+|---|---|---|
+| `seed` | u64; 1 | Independent plant, shoot and leaf streams |
+| `height_m` | 0.15..4 m; 0.6 | Reference shoot length before suppression/loss; not a height-from-age prediction |
+| `plants` | 1..64; 1 | Plant centres in this mesh; shrubs carry three basal stems per plant |
+| `group_radius_m` | 0..8 m; 0 | Centre radius, positive for groups; a single plant stays at the origin; foliage may overhang |
+| `suppression` | 0..1; 0 | Shorter extension, relatively wider branches and fewer occupied leaf nodes |
+| `leader_loss` | 0..0.8; 0 | Fraction removed from each basal leading axis, with a flat broken tip |
+| `recovery` | 0..1; 0 | One replacement episode; needs leader loss, or browsing for oak/hazel/dogwood |
+| `browse_height_m` | 0..4 m; 0 | Top of the accessible browse zone |
+| `browse_fraction` | 0..1; 0 | Seeded fraction of accessible lateral tips shortened and leaf nodes removed; positive needs a positive height |
+| `obstacles` | 0..64; empty | Local spheres: `x_m/y_m/z_m` -16..16 m, `radius_m` 0.01..8 m (default 0.25) |
+| `triangle_budget` | 0 or 256..200000; 0 | Source triangles, including the far star; zero uses the species cap |
+| `impostor_px` | 0, 128, 256, 512; 128 | Whole-group far atlas tile; zero disables it |
+
+Maple and dogwood carry opposite/decussate leaves; the other broadleaves alternate. Pine and
+spruce carry whorled lateral cohorts, with five-needle pine fascicles and spiral spruce needles.
+Below 45 cm, established
+seedlings carry foliage directly on their main axes. Blade dimensions remain species-sized
+through suppression and every budget rung. Needles are narrow two-triangle ribbons at sampled
+density; cotyledons and germination are not represented. Juvenile birch has brown stems; it
+does not inherit adult white bark.
+
+Leader loss removes attachments above the break. Maple and conifers develop two representative
+competing leaders below it; oak, hazel and dogwood recover from low on the surviving stem. Pine
+never coppices from the base. Browsing shortens selected lateral axes to 45% and makes their
+tips flat; it removes accessible leaf nodes separately. A recovery shoot shorter than 1 mm is
+refused explicitly (increase recovery or set it to zero), before floating-point rounding can
+collapse its stations. Recovery is a prescribed static episode,
+not an estimate of time to heal. Broken faces currently use the stem material without splinters.
+
+Each axis retains 16 longitudinal intervals. Obstacle steering tests every segment swept by its
+maximum stem radius plus 1 mm clearance. Leaves whose conservative bounding capsule touches an
+obstacle are omitted. A root/attachment inside a solid or a step with no free candidate is an
+explicit error; the solver never relocates roots or silently drops structural shoots. The
+obstacles are supplied local authoring constraints, not world collision queries. Clearance is
+for the rest pose: wind deformation and the far atlas are visual approximations. Instances in
+the group are not tested against each other. Author groups with sufficient spacing.
+
+The source budget ladder reduces tube sides 8 -> 6 -> 4 while preserving all axes, structural
+parts and blade dimensions; if four sides do not fit, cooking fails with the required count.
+Default caps are 12,000 triangles for maple/oak/birch, 18,000 for pine/spruce and 24,000 for
+hazel/dogwood. The cap is per whole mesh, including a group, not per plant. The far form is the
+existing 32-triangle four-direction sliced tree star, baked from the solved mesh, coverage
+dithered and subject to the basal-width handoff floor. Completely defoliated forms have no
+star. The ordinary geometry hierarchy simplifies the stems between source and far; all authored
+motion/structural metadata is retained. Existing bark/leaf material roles and normal/colour
+bakes are used, including external image bytes in the generated-container cache key. Juvenile
+conifers use `pine/juvenile_needle` and `spruce/juvenile_needle` (or an explicit `materials.leaf`
+binding) so an adult whole-spray alpha image is not stretched over each narrow needle.
+
+Every shoot is a parent-first motion/structural part, under a geometryless root. Only basal stems
+at least 12.5 mm in radius are colliders; none is load-bearing. The existing species catalogue
+supplies wind and shadow policy. Small seedlings still use the tree/shrub caster policy: this
+extension does not add a reduced-distance juvenile shadow policy. The mesh is `essential`;
+scene authors may place it directly or through an existing placement generator. There is no
+new recruitment/density placement solver. Memory consists of existing cooked geometry, motion
+and structure records; no new hot type or instance-side allocation is added.
+
+Public cold API: `regeneration_profiles`, `regeneration_profile`, `regeneration_in_range`,
+`regeneration_collides`, and `solve_regeneration` in `domain/flora/regeneration.h`.
+`k_regeneration_version` invalidates only opt-in juvenile recipes. `ENGINE_WITH_FLORA` owns the
+schema, solver and registry path; disabling it removes the feature without adding dependencies.
+Tests in `regeneration_tests.cpp` cover all seven profiles, dimensions, damage, clearance,
+budget refusal and round trips; `determinism_tests.cpp` pins all cooked sections and checks
+5/20/60/200 m extracted forms. Run `tools/dev.ps1 test -Affected` and the matching Linux module
+tests before handoff.
+
 ## Grass sward (G90)
 
 `engine.flora.Sward` in a `.flora.json` (`species: "sward"`) builds grass as square patches,

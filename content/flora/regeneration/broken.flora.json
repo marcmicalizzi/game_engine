@@ -1,0 +1,9 @@
+{
+  "regeneration": {
+    "leader_loss": 0.4,
+    "seed": 42,
+    "recovery": 0.8,
+    "height_m": 2
+  },
+  "species": "pine"
+}

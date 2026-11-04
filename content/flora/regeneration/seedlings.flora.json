@@ -1,0 +1,9 @@
+{
+  "regeneration": {
+    "seed": 42,
+    "plants": 9,
+    "height_m": 0.3,
+    "group_radius_m": 0.65
+  },
+  "species": "maple"
+}

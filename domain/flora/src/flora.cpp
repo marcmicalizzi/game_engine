@@ -9,6 +9,7 @@
 #include <domain/assets/mesh_generator.h>
 #include <domain/flora/flora.h>
 #include <domain/flora/palm.h>
+#include <domain/flora/regeneration.h>
 #include <domain/flora/roots.h>
 #include <domain/flora/shrubs.h>
 #include <domain/flora/sward.h>
@@ -52,6 +53,9 @@ bool read_flora_file(std::string_view text, FloraFile& out, std::string& error) 
     error = text_errors.empty() ? std::string("not an engine.flora.FloraFile") : text_errors;
     return false;
   }
+  if (out.regeneration)
+    return regeneration_in_range(out.species, *out.regeneration, error) &&
+           materials_in_range(out, error);
   if (!detail::maturity_in_range(out.species, out.tree, error)) return false;
   FloraFile resolved;
   if (!detail::is_tree_species(out.species) &&
@@ -208,8 +212,12 @@ void apply_flora_materials(const FloraFile& file, const materials::Pack* pack,
       const std::optional<MaterialSet>& set = block_set(*file.materials, parts[i].block);
       if (set.has_value()) recipe = set_of(*set);
     }
-    if (const materials::MaterialSet* chosen =
-            materials::resolve_set(&recipe, pack, flora_role(file.species, i)))
+    // Juveniles carry individual needle ribbons, not the adult spray image's whole shoot.
+    const std::string role =
+        file.regeneration && detail::is_evergreen_species(file.species) && i == 1
+            ? file.species + "/juvenile_needle"
+            : flora_role(file.species, i);
+    if (const materials::MaterialSet* chosen = materials::resolve_set(&recipe, pack, role))
       materials::apply_set(*chosen, parts[i].layout, out, i);
   }
   // Where each image's built texture will be — its roles and options, and a zero key, since an
@@ -231,7 +239,9 @@ bool builds_conifer(const std::string& species) {
 // of, so a dead spruce's entry does not rebuild for a star it never draws.
 u64 container_hash(const FloraFile& file) {
   const u64 h = flora_source_hash(file);
-  return builds_conifer(file.species) ? hash_combine(h, k_conifer_chain_version) : h;
+  return !file.regeneration && builds_conifer(file.species)
+             ? hash_combine(h, k_conifer_chain_version)
+             : h;
 }
 }  // namespace
 
@@ -243,13 +253,14 @@ bool flora_source_hash_with(const FloraFile& file, const assets::MeshGeneratorIn
   // each of the two materials key the tree. The key moves exactly when the atlases' bytes can: a
   // pack with no normal or roughness image hashes the base colours alone, as it did, and the
   // species that bake no chain take none of this. The conifers bake one since G120.
-  const bool baked = file.species == k_species_broadleaf || file.species == k_species_birch ||
-                     file.species == k_species_ancient || file.species == "maple" ||
-                     file.species == "oak" || file.species == "elm" || file.species == "beech" ||
-                     file.species == "ash" || file.species == "walnut" ||
+  const bool baked = file.regeneration.has_value() || file.species == k_species_broadleaf ||
+                     file.species == k_species_birch || file.species == k_species_ancient ||
+                     file.species == "maple" || file.species == "oak" || file.species == "elm" ||
+                     file.species == "beech" || file.species == "ash" || file.species == "walnut" ||
                      builds_conifer(file.species);
   if (!baked) return true;
-  const bool enabled = file.species == k_species_broadleaf
+  const bool enabled = file.regeneration ? file.regeneration->impostor_px != 0
+                       : file.species == k_species_broadleaf
                            ? file.broadleaf.card_bake_px != 0 || file.broadleaf.impostor_px != 0
                        : file.species == k_species_birch
                            ? file.birch.card_bake_px != 0 || file.birch.impostor_px != 0
@@ -318,11 +329,13 @@ std::string canonical_flora_json(const FloraFile& file) {
   // palm's key does not move when the broadleaf's defaults do. The writer sorts the keys.
   const JsonValue whole = schema::to_json(file);
   JsonValue canonical = JsonValue::object();
-  for (const char* key : {"species", species_member(file.species), "materials"}) {
+  for (const char* key :
+       {"species", file.regeneration ? "regeneration" : species_member(file.species),
+        "materials"}) {
     const JsonValue* value = whole.find(key);
     if (value != nullptr && !value->is_null()) canonical.set(key, *value);
   }
-  if (!detail::is_tree_species(file.species) && file.tree.age_years > 0)
+  if (!file.regeneration && !detail::is_tree_species(file.species) && file.tree.age_years > 0)
     canonical.set("tree", schema::to_json(file.tree));
   JsonWriteOptions compact;
   compact.pretty = false;
@@ -333,6 +346,7 @@ u64 flora_source_hash(const FloraFile& file) {
   const std::string canonical = canonical_flora_json(file);
   u64 h = hash_bytes(canonical.data(), canonical.size());
   h = hash_combine(h, hash_bytes(file.species.data(), file.species.size()));
+  if (file.regeneration) return hash_combine(h, k_regeneration_version);
   if (shrub_profile(file.species) != nullptr) return hash_combine(h, k_shrub_growth_version);
   return hash_combine(h, file.species == "sward"   ? k_sward_version
                          : file.species == "roots" ? k_roots_version
@@ -351,6 +365,9 @@ u64 flora_build_key(u64 source_hash, const geometry::ClusterLodOptions& lod, u32
 bool solve_flora(const FloraFile& file, assets::MeshData& mesh, Motion& motion,
                  PalmReport* palm_report, TreeReport* tree_report, std::string& error,
                  TreeLevels* levels) {
+  if (file.regeneration)
+    return solve_regeneration(file.species, *file.regeneration, mesh, motion, tree_report, error,
+                              levels);
   if (!detail::maturity_in_range(file.species, file.tree, error)) return false;
   if (levels != nullptr) *levels = TreeLevels{};
   if (shrub_profile(file.species) != nullptr)
@@ -574,6 +591,7 @@ bool bake_chain(const assets::MeshData& mesh, const TreeLevels& chain,
 }  // namespace
 
 DetailTier flora_detail_tier(const FloraFile& file) {
+  if (file.regeneration) return DetailTier::essential;
   if (shrub_profile(file.species) != nullptr) return file.shrub_growth.detail_tier;
   // The trees carry no field (it would move every tree's canonical parameters, and with them its
   // pinned source hash and cache key, for a value that cannot differ): a tree collides by its
@@ -588,6 +606,7 @@ DetailTier flora_detail_tier(const FloraFile& file) {
 }
 
 bool flora_collides(const FloraFile& file) {
+  if (file.regeneration) return regeneration_collides(file.species, *file.regeneration);
   if (shrub_profile(file.species) != nullptr)
     return shrub_growth_collides(file.species, file.shrub_growth);
   if (file.species == "sward" || file.species == "roots") return false;
@@ -601,6 +620,8 @@ bool build_flora_container(const FloraFile& file, const geometry::ClusterLodOpti
                            std::string& error, const materials::Pack* pack, TreeReport* tree_report,
                            const assets::MeshGeneratorHosts* hosts) {
   out = geometry::ClusterFileData{};
+  if (file.regeneration && !regeneration_in_range(file.species, *file.regeneration, error))
+    return false;
   assets::MeshData mesh;
   Motion motion;
   TreeLevels chain;

@@ -1,5 +1,8 @@
 # Flora recipes
 
+[Juvenile regeneration recipes](regeneration/README.md) extend seven tree/shrub species with
+seedling groups, suppression, leader loss, browsing, recovery and local obstacle constraints.
+
 Source recipes for the flora mesh generator. See [flora](../../docs/subsystems/flora.md).
 
 ## Ground plants (G103)

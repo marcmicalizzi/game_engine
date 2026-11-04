@@ -1,5 +1,8 @@
 # test-scenes
 
+[Regeneration specimens](regeneration/README.md) show seven juvenile tree/shrub species and
+seedling groups, suppressed saplings, broken leaders, browsing and obstacle deflection.
+
 The versioned scene corpus of [04 §4.8](../../docs/plan/04-renderer.md#48-reference-renderer-and-objective-optimization): the scenes the real-time path is compared against the reference path tracer on, and the per-scene error each comparison is allowed. `tools/ci/reference-compare.ps1` runs every file here through `render.evaluate` and fails when a scene's FLIP exceeds its threshold. See [renderer](../../docs/subsystems/renderer.md#reference-renderer) for what the reference is and [apps](../../docs/subsystems/apps.md) for the method.
 
 **One file is one scene, and it holds everything about it**: what to load, what to draw it with, where the camera is, how many samples the reference spends, and how far the two pictures may differ. Splitting the threshold into a second file beside the scene was the other option and it buys nothing: a threshold is a property of *this scene at this resolution from this camera*, and a scene whose camera moved needs a new threshold in the same commit.

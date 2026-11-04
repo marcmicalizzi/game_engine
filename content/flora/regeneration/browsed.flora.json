@@ -1,0 +1,10 @@
+{
+  "regeneration": {
+    "recovery": 0.6,
+    "browse_fraction": 0.8,
+    "height_m": 1.2,
+    "seed": 42,
+    "browse_height_m": 0.6
+  },
+  "species": "beaked_hazel"
+}
