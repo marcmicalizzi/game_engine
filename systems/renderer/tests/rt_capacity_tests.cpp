@@ -1263,9 +1263,9 @@ TEST_CASE("rt capacity: a step of the cache's references swapped in flight draws
       const u64 waited = gfx::device_waits_on_thread();
       for (u32 k = 0; k < 6; ++k, ++frame_index) {
         moving.renderer.begin_frame();
-        REQUIRE_MESSAGE(moving.renderer.submit_frame(frame_at(moving.data, distance, frame_index),
-                                                     &error) != 0,
-                        error);
+        REQUIRE_MESSAGE(
+            moving.renderer.submit_frame(frame_at(moving.data, distance, frame_index), &error) != 0,
+            error);
       }
       waits += gfx::device_waits_on_thread() - waited;
       steps += rt.reference_grows + rt.reference_shrinks - before;

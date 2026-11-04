@@ -1015,7 +1015,8 @@ TEST_CASE("flythrough: a frame's sections sum to its wall time, and a slow host 
   // Frame 5's host turn sleeps 30 ms: it must come back as that frame's `host_ms`.
   struct Sleeper {
     static bool turn(void*, const FlightStep& step, std::string*) {
-      if (step.recorded && step.frame == 5) std::this_thread::sleep_for(std::chrono::milliseconds(30));
+      if (step.recorded && step.frame == 5)
+        std::this_thread::sleep_for(std::chrono::milliseconds(30));
       return true;
     }
   };

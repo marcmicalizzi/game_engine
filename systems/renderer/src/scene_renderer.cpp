@@ -1783,7 +1783,8 @@ void SceneRenderer::begin_frame() {
       }
       // The step's own share of `begin_ms` (R130): an unswapped step's wait for the device lands
       // here, never in `wait_ms`, which is the slot's.
-      if (step) frame_cpu_.resize_ms = static_cast<f64>(time::monotonic_ns() - resize_started) / 1.0e6;
+      if (step)
+        frame_cpu_.resize_ms = static_cast<f64>(time::monotonic_ns() - resize_started) / 1.0e6;
     }
   }
   frame_cpu_.begin_ms = static_cast<f64>(time::monotonic_ns() - begin_started) / 1.0e6;
@@ -3166,8 +3167,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
   const bool near_capacity =
       rt_chain && rt_scan_near_capacity_tunable() &&
       (u64{stats_.rt.wanted} * 2 >= scene.rt_capacity() ||
-                   (scene.rt_cache() &&
-                    u64{stats_.rt.references_wanted} * 2 >= scene.rt_reference_capacity()));
+       (scene.rt_cache() && u64{stats_.rt.references_wanted} * 2 >= scene.rt_reference_capacity()));
   const bool drop_scan = rt_frames_since_drop_ < k_drop_scan_frames || near_capacity;
   if (rt_chain) {
     tlas_references.addresses = scene.blas_set.addresses.address;
@@ -4431,10 +4431,10 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
             },
             [&, p, record_passes, record_names, record_groups, drop_args, kept_args](
                 gfx::CommandList cb, gfx::RenderGraph&) {
-              // The walk past the capacity and the kept scan after it are their own zone, "ranges
+              // The scan past the capacity and the kept scan after it are their own zone, "ranges
               // drop" (R130): on the owner's v27 walk the chain cost 118-164 ms on the frames past
               // their capacity, none of it in `clas` or `blas`, and one zone over all five passes
-              // could not say which.
+              // could not say which (it was the one-thread rule, in "ranges").
               if (p == 0 || p == 1 || p == 3 || p == 6)
                 timer.begin(cb, p == 1 ? "ranges" : record_names[p]);
               cb.bind_pipeline(gfx::BindPoint::Compute, record_passes[p]->pipeline);

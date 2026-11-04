@@ -152,9 +152,9 @@ scene::FrameSections frame_sections(const FrameSpans& s) {
   out.after_ms = s.after_ms;
   out.present_ms = s.present_ms;
   out.tail_ms = s.next_start > s.end ? static_cast<f64>(s.next_start - s.end) / 1.0e6 : 0.0;
-  out.other_ms = out.wall_ms - (out.host_ms + out.slot_wait_ms + out.begin_ms + out.fold_ms +
-                                out.acquire_ms + out.ticks_ms + out.submit_ms + out.after_ms +
-                                out.present_ms + out.tail_ms);
+  out.other_ms =
+      out.wall_ms - (out.host_ms + out.slot_wait_ms + out.begin_ms + out.fold_ms + out.acquire_ms +
+                     out.ticks_ms + out.submit_ms + out.after_ms + out.present_ms + out.tail_ms);
   return out;
 }
 

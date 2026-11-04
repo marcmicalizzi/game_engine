@@ -1429,7 +1429,8 @@ struct PassMs @version(8) {
   /// Version 8 (R130; docs/subsystems/renderer.md, "The ray tracing chain's memory"): the rest of
   /// `rt`, zone by zone, so that with `clas` and `blas` the chain is named whole — the bucketing
   /// (`rt_records`), the ranges' scan (`rt_ranges`), the walk a frame past its capacity makes and
-  /// the kept instances' scan after it (`rt_drop`, zero on a frame that fits), the emit pass
+  /// the kept instances' scan after it (`rt_drop`, zero on a frame that did not record them, when a
+  /// frame past its capacity takes the one-thread rule inside `rt_ranges`), the emit pass
   /// (`rt_emit`), the cache's slot passes (`rt_cache`) and its build of the frame's misses
   /// (`clas_cache`), and the top-level build (`tlas`); a moving terrain's field copies
   /// (`terrain_upload`); and `unbucketed`, `total` less every top-level bucket — what the timer

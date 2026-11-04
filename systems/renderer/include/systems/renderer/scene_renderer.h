@@ -175,7 +175,9 @@ struct FrameStats {
   f64 gpu_blas = 0.0;  // the bottom-level build inside `gpu_rt`
   // **The rest of `gpu_rt`, zone by zone** (R130): the bucketing ("records"), the ranges' scan
   // ("ranges"), the walk a frame past its capacity makes and the kept instances' scan after it
-  // ("ranges drop", zero on a frame that fits), the emit pass ("emit"), the cache's slot passes
+  // ("ranges drop", zero on a frame that did not record them; a frame past its capacity without
+  // them takes the one-thread rule inside "ranges"), the emit pass ("emit"), the cache's slot
+  // passes
   // ("cache"), and the top-level build ("tlas"); `gpu_clas_cache` is the cache's build. With `clas`
   // and `blas` they sum to `gpu_rt`.
   f64 gpu_rt_records = 0.0;

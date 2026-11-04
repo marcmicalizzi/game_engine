@@ -5294,8 +5294,8 @@ bool GpuScene::resize_ray_tracing(u32 capacity, std::string* error, bool beyond_
   if (!keep_frame_set) {
     ok = gfx::create_buffer(device, record_bytes * capacity, k_record_usage, false, made_records,
                             error) &&
-         gfx::create_buffer(device, sizeof(u32) * u64{capacity}, k_address, false,
-                            made_hit_entries, error);
+         gfx::create_buffer(device, sizeof(u32) * u64{capacity}, k_address, false, made_hit_entries,
+                            error);
     lap(rt_resize_cost_.records_ns);
     ok = ok && gfx::create_cluster_set(device, limits, made_clas, error);
     lap(rt_resize_cost_.clas_ns);
