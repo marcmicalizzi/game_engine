@@ -63,7 +63,8 @@ std::string compact(const JsonValue& value) {
 u64 source_hash_of(const std::string& canonical, const char* generator, u64 host_identity) {
   u64 h = hash_bytes(canonical.data(), canonical.size());
   h = hash_combine(h, hash_bytes(generator, std::string_view(generator).size()));
-  h = hash_combine(h, k_cover_version);
+  h = hash_combine(
+      h, std::string_view(generator) == k_vine_generator ? k_vine_version : k_cover_version);
   return hash_combine(h, host_identity);
 }
 
@@ -182,7 +183,7 @@ bool build_companion_container(const assets::MeshData& mesh, flora::Motion& moti
     const materials::MaterialSet none;
     if (const materials::MaterialSet* chosen = materials::resolve_set(&none, pack, roles[i])) {
       const std::string_view role = roles[i];
-      const bool card = role == "vine/leaf";
+      const bool card = role == "vine/leaf" || role == "cover/plant";
       materials::apply_set(*chosen, card ? materials::UvLayout::card : materials::UvLayout::metres,
                            out, i);
     }
@@ -221,10 +222,10 @@ bool build_cover_container(const CoverFile& file, const Host& host, u64 host_ide
   if (!solve_cover(host.surface, host.bvh, file.site, file.cover, mesh, motion, &mask, report,
                    &error))
     return false;
-  // The roles of the materials the cover emitted, in its order (moss, lichen, algae, fungus).
+  // Emission order: moss, lichen, algae, fungus, and optional nurse-log plants.
   if (!build_companion_container(mesh, motion,
-                                 std::span<const char* const>(k_cover_roles, k_cover_kinds), lod,
-                                 page_bytes, pack, out, error))
+                                 std::span<const char* const>(k_cover_roles, mesh.materials.size()),
+                                 lod, page_bytes, pack, out, error))
     return false;
   out.cover_mask = std::move(mask);
   out.source_hash = cover_source_hash(file, host_identity);

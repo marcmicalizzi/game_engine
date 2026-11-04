@@ -21,7 +21,7 @@ engine_schema_library(NAME cover_schemas SCHEMAS schemas/cover.schema CAPABILITY
 
 engine_module(NAME cover LAYER domain OPTIONAL WHOLE_ARCHIVE
   DEPS base containers math hash json schema assets geometry materials texture flora cover_schemas
-  SOURCES src/host.cpp src/vine.cpp src/growth.cpp src/cover.cpp)
+  SOURCES src/host.cpp src/habitat.cpp src/vine.cpp src/growth.cpp src/cover.cpp)
 
 engine_module_tests(NAME cover
   SOURCES tests/cover_tests.cpp tests/size_table.cpp)

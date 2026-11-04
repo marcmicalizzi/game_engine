@@ -47,7 +47,7 @@ const char* k_cover_usage =
     "      --ddc <dir>    the cache root (default: <repo>/ddc); implies --cache without an output\n"
     "      --force        build even when the output is already the answer\n"
     "      --materials <dir>  the material pack the parts take vine/stem, vine/leaf, moss/mat,\n"
-    "                     lichen/crust, algae/film and fungus/cap from\n"
+    "                     lichen/crust, algae/film, fungus/cap and cover/plant from\n"
     "      --no-materials no pack: the parts draw their flat colours\n";
 
 [[maybe_unused]] int usage(const char* command, const char* message) {
@@ -100,6 +100,8 @@ JsonValue cover_json(const cover::CoverReport& r) {
   out.set("tufts", JsonValue(r.tufts));
   out.set("brackets", JsonValue(r.brackets));
   out.set("mushrooms", JsonValue(r.mushrooms));
+  out.set("plants", JsonValue(r.plants));
+  out.set("plant_area_m2", JsonValue(r.plant_area_m2));
   out.set("triangles", JsonValue(r.triangles));
   out.set("film_threshold", JsonValue(static_cast<f64>(r.film_threshold)));
   out.set("density_scale", JsonValue(r.density_scale));
@@ -219,7 +221,7 @@ int build(const char* command, bool is_vine, int argc, char** argv) {
   summary.set("host_identity", JsonValue(identity));
   summary.set("source_hash", JsonValue(source_hash));
   summary.set("build_key", JsonValue(build_key));
-  summary.set("cover_version", JsonValue(cover::k_cover_version));
+  summary.set("cover_version", JsonValue(is_vine ? cover::k_vine_version : cover::k_cover_version));
   summary.set("triangles", JsonValue(data.mesh.leaf_triangle_count));
   summary.set("clusters", JsonValue(data.mesh.mesh.clusters.size()));
   summary.set("lod_levels", JsonValue(data.mesh.level_cluster_counts.size()));

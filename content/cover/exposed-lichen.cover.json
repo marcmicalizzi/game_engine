@@ -1,0 +1,10 @@
+{
+  "host": "../rocks/granite-boulder.rock.json",
+  "site": {"wetness": 0.3},
+  "cover": {
+    "seed": 32, "age_years": 100,
+    "habitat": {"substrate": "siliceous_rock"}, "lichen_substrate": "siliceous",
+    "moss": 0, "algae": 0, "fungus": 0,
+    "film_threshold": 0.25, "triangle_budget": 12000
+  }
+}
