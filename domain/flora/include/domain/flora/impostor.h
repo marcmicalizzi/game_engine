@@ -93,6 +93,10 @@ struct TreeLevel {
   // 256, which `bake_matched` fits so the cards draw as much as the geometry does.
   bool coverage_dither = false;
   u32 coverage_scale = 256;
+  // The least coverage error the level may carry, in metres (G123; flora.md, "The shrub"): the
+  // container build takes the larger of this and `feature_m` times the measured difference. Zero,
+  // every level but a shrub's star, is the measured error alone.
+  f32 coverage_floor_m = 0.0f;
 };
 
 // Linear factors and optional decoded material images. Pure callers without images use the
@@ -157,6 +161,12 @@ struct ImpostorSpec {
   // then a number the bake chose, and the texture step's coverage-preserving mips keep that share
   // at every level. Off, the bake is byte for byte what it was.
   bool coverage_dither = false;
+  // **The star's least coverage error** (G123; flora.md, "The shrub"), metres, copied into the
+  // star's `TreeLevel::coverage_floor_m`. A star standing straight over the finest geometry (no
+  // branch-group level beneath it, as a shrub's) measures its difference at a leaf's scale, so its
+  // coverage error is a leaf's and it replaces a thicket a few metres out, every stem drawn once a
+  // direction; the shrub sets this from its stems so the star waits until they are sub-pixel.
+  f32 coverage_floor_m = 0.0f;
   static constexpr u32 k_card_planes = 3;  // orthogonal views retain edge-on volume
   static constexpr u32 k_tree_slices = 4;  // depth layers in each far-tree vertical view
 };

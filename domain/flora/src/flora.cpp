@@ -509,6 +509,8 @@ bool bake_chain(const assets::MeshData& mesh, const TreeLevels& chain,
     TreeLevel fitted = level;
     const f32 difference = bake_matched(mesh, chain, fitted, look, atlas);
     f32 level_coverage = level.feature_m * difference;
+    // A shrub's star waits for its stems (G123; `TreeLevel::coverage_floor_m`).
+    if (level_coverage < level.coverage_floor_m) level_coverage = level.coverage_floor_m;
     const f32 below = coverage.empty() ? 0.0f : coverage.back();
     if (!(level_coverage > below))
       level_coverage = below > 0.0f ? below * (1.0f + 1.0f / 512.0f) : 1e-4f;

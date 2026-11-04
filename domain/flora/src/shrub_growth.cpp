@@ -3,6 +3,7 @@
 
 #include <domain/flora/shrubs.h>
 #include <domain/flora/structure.h>
+#include <domain/geometry/cluster_lod.h>
 
 #include <algorithm>
 #include <cmath>
@@ -116,6 +117,9 @@ constexpr ShrubProfile k_profiles[] = {
 };
 constexpr u32 k_axis_rows = 16;
 constexpr u32 k_far_triangles = 2 * 4 * ImpostorSpec::k_tree_slices;
+// G123: the basal stems' mean diameter, in pixels, at which the whole-shrub star may replace the
+// near mesh (flora.md, "The shrub"; docs/experiments/shrub-far-form-2026-11-03.md).
+constexpr f64 k_stem_px = 1.0;
 
 f64 height_of(const ShrubProfile& profile, const ShrubGrowth& p) {
   return static_cast<f64>(p.height_m == 0 ? profile.height_m : p.height_m);
@@ -461,6 +465,26 @@ bool solve_shrub_growth(std::string_view species, const ShrubGrowth& p, assets::
     ImpostorSpec spec;
     spec.card_px = 0;
     spec.tree_px = p.impostor_px;
+    // **The far form waits for the stems (G123; flora.md, "The shrub").** The star's four
+    // directions each carry the whole thicket, so between two of them every stem is drawn twice, up
+    // to the star's parallax apart (a dogwood's 0.48 m), and the difference it measures at a leaf's
+    // scale made its coverage error a leaf's: a dogwood's star stood in at 2.9 m from its sphere at
+    // 1080p. It now carries at least the coverage error that projects to the foliage threshold
+    // where the basal stems' mean diameter projects to one pixel, so a doubled stem is sub-pixel
+    // when the star comes in and moves with the threshold as every foliage switch does; and it is
+    // baked with the coverage kept (G120), since the four directions draw 1.3 to 2.1 times the
+    // shrub's silhouette.
+    f64 diameters = 0.0;
+    u32 stems = 0;
+    for (const Shoot& s : shoots) {
+      if (s.order != 0) continue;
+      diameters += 2.0 * s.radius;
+      ++stems;
+    }
+    const f64 stem_m = stems == 0 ? 0.0 : diameters / static_cast<f64>(stems);
+    spec.coverage_floor_m =
+        static_cast<f32>(stem_m * static_cast<f64>(geometry::k_default_foliage_px) / k_stem_px);
+    spec.coverage_dither = true;
     tree_star(spec, 0, emit, *levels);
   }
   return true;

@@ -1406,6 +1406,34 @@ The existing coverage/geometric error and fade select that form, not a fixed dis
 Bare shrubs (`foliage=0` or all dead) keep geometric LOD alone. The vertical sliced form is an
 approximation from overhead, especially for low bearberry; this must be assessed in captures.
 
+**The far form waits for the stems (G123, 2026-11-03;
+[the measurement](../experiments/shrub-far-form-2026-11-03.md)).** The owner saw a red-osier
+dogwood (the forest proof of concept's `understory-v22-dogwood-2`, seed 220164, standard detail)
+dense and doubled from 10–12.5 m, gone when the fine geometry was forced. The star is the
+broadleaf's (four vertical directions 45° apart, four depth slices each), and each direction carries
+the whole thicket, so between two of them every stem is drawn once a direction, up to the star's
+parallax apart (the dogwood's is 0.48 m). Two things let it in that near. *The selection*: a star
+with no branch-group level beneath it takes a leaf as the feature its coverage error scales
+(`TreeLevel::feature_m`, "The coverage bake"), so the dogwood's coverage error was 4.3 cm × D 0.32 =
+1.4 cm, which projects to the 5 px foliage threshold 2.9 m outside its 2.9 m sphere at 1080p — the
+near mesh drew only inside about 6 m (9 m at 2160 rows). *The coverage*: baked with the plain mask,
+the star drew 1.35 (dogwood), 1.72 (hazel), 1.90 (bearberry), 2.04 (blackberry) and 2.06
+(sagebrush) times the geometry's silhouette over the coverage bake's ring. **The rule now**: the
+shrub's finishing step gives its star a **coverage floor** (`ImpostorSpec::coverage_floor_m`, carried
+by `TreeLevel::coverage_floor_m`; the container build takes the larger of it and the measured
+`feature_m × D`) of the basal stems' mean diameter times `geometry::k_default_foliage_px` — the
+coverage error that reaches the foliage threshold exactly where a mean basal stem projects to one
+pixel (`k_stem_px`, 1) — and bakes the star with the coverage kept (`coverage_dither`, G120), which
+`bake_matched` fits to 0.998–1.074 of the silhouette (scales 105 to 137 of 256). A doubled stem is
+then sub-pixel when the star comes in, and the floor moves with `--foliage-lod` as every foliage
+switch does (at 10 px a stem is 2 px at the switch). The dogwood's star now switches in at 24 m from
+its centre at 1080p and 46 m at 2160 rows; the five species' mean basal stems are 5.1 mm
+(bearberry), 10 mm (blackberry), 21 mm (dogwood), 30 mm (sagebrush) and 36 mm (hazel), so their
+stars come in where those are a pixel (5, 11, 21, 31 and 37 m from the sphere's edge at 1080p).
+Nothing in the growth solver moved: the near mesh, the motion rows and the source budgets are the
+bytes they were; `k_shrub_growth_version` 2 rebuilds every shrub-growth container (only those).
+`tests/shrub_far_form_tests.cpp` holds both on the dogwood and the five profiles.
+
 Wood UVs are metres, leaf UVs one complete image per blade. Material roles are the catalogue
 name plus `/bark` and `/leaf`; recipe overrides and pack lookup use the ordinary flora path.
 Motion and collision use the existing shrub contract: root part zero has no near geometry,
