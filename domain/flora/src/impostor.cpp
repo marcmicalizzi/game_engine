@@ -416,6 +416,7 @@ void tree_star(const ImpostorSpec& spec, u32 part, Emitter& out, TreeLevels& lev
   TreeLevel level;
   level.kind = ImpostorKind::tree;
   level.coverage_dither = spec.coverage_dither;
+  level.coverage_floor_m = spec.coverage_floor_m;
   level.groups = 0;
   level.tile_px = spec.tree_px;
   level.columns = 1;

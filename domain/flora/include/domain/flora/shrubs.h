@@ -8,7 +8,8 @@
 #include <string_view>
 
 namespace engine::flora {
-inline constexpr u32 k_shrub_growth_version = 1;
+// 2 (G123): the star is baked with the coverage kept and carries its stems' coverage floor.
+inline constexpr u32 k_shrub_growth_version = 2;
 enum class ShrubForm : u8 { upright, spreading, arching, thicket, sparse };
 // Cold botanical/profile metadata, never a per-instance or GPU record.
 struct ShrubProfile {
