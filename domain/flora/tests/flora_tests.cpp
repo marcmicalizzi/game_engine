@@ -855,7 +855,7 @@ TEST_CASE("flora: the broadleaf grows trunk, limbs, branches and leafy twigs, in
   CHECK(parts == 145u);  // G88 removes the dense extra trunk-tip crown.
   // 0x80af7e3dd0bf4804 until the crown became the allometric recursion (G72).
   // G85 changes the wood surface; the growth skeleton and leaf budget are unchanged.
-  check_species("broadleaf", p, flora::solve_broadleaf, parts, 0x828f1d81f018bc92ull);
+  check_species("broadleaf", p, flora::solve_broadleaf, parts, 0x765d7bb485f8687dull);
 }
 
 TEST_CASE("flora: the conifer grows whorls of needled branches thinning upward, in its budget") {

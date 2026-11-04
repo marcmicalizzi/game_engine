@@ -236,7 +236,7 @@ TEST_CASE("flora: the birch — a narrow ovoid crown of fine pendulous branchlet
   full.stems = 1;
   full.triangle_budget = 400000;
   check_species(flora::k_species_birch, full, flora::solve_birch, birch_parts(full),
-                {50000u, 36000u, 20000u, 12000u, 8000u}, 0x522a0f57999c30f4ull);
+                {50000u, 36000u, 20000u, 12000u, 8000u}, 0x94bd56a376299bfdull);
   assets::MeshData mesh;
   flora::Motion motion;
   flora::TreeReport report;
@@ -404,7 +404,7 @@ TEST_CASE("flora: a birch clump — seeded stems from one root collar, each load
   clump.seed = 5;
   clump.triangle_budget = 400000;
   check_species(flora::k_species_birch, clump, flora::solve_birch, birch_parts(clump),
-                {50000u, 36000u, 12000u}, 0x23849586a088959dull);
+                {50000u, 36000u, 12000u}, 0x539954b98363c339ull);
 }
 
 TEST_CASE("flora: the willow — a short trunk, arching limbs, curtains hanging to the ground") {

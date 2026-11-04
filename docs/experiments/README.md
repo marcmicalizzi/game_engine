@@ -152,3 +152,4 @@ Soil morphology: [soil-banks-tree-throw](soil-banks-tree-throw.md), research and
 
 Tree expansion: [species profiles](tree-species-expansion.md) and [season design](tree-seasons.md).
 [G116: wetland plants](wetland-plants.md) records dimensions, authored controls and budget validation.
+[G124: branch-aware broadleaf taper](tree-branch-taper.md) replaces the single-scaffold trunk shoulder.

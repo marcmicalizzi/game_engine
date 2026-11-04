@@ -544,7 +544,7 @@ and the other [0, −1]), so a one-leaf image sampled with repeat lies on every 
 **A bigger tree is more tree, not a scaled-up one** (roadmap G73, 2026-10-20; the sources, the
 constants and the measurements are [tree allometry](../experiments/tree-allometry.md)). The
 broadleaf's and the ancient tree's crowns (and the shrub's and, since G81, the [birch's](#the-birch)) are one recursion (`kit.h`, "the allometric crown") from
-the shoots of their named orders — the broadleaf's limbs and its trunk's top, the ancient tree's
+the shoots of their named orders — the broadleaf's limbs, the ancient tree's
 limbs past their runs and its trunk's top — down to a **terminal twig of the species' own size**,
 and the leaves on it are **one leaf a card, at the species' size**, on a 3 m tree and a 150 m one.
 Until G73 the ancient tree was the broadleaf scaled up, six fixed orders ending in 5 m twigs of
@@ -561,6 +561,17 @@ Until G73 the ancient tree was the broadleaf scaled up, six fixed orders ending 
 | The broadleaf's `trunk_radius_m` of 0 is 0.35 m × (H / 12 m)^(1 / `allometry_exponent`) | the exponent the species' (2/3) | McMahon's elastic similarity, H ∝ D^(2/3) |
 | The crown's radius is the limbs' reach, a share of the height for the broadleaf | scales as H ∝ D^(2/3) | crown ∝ D^0.6–0.8 |
 | The lowest limbs shed, apical control weak in an old crown | `crown_base` / `limb_low_m` and `leader_share`, the recipe's | Hallé, Oldeman and Tomlinson 1978; deriving them from age is G74 |
+
+These are the initial growth allocations. G124 reconciles broadleaf/birch wood afterward:
+outgoing area is removed as each branch emerges, with a five-percent authored radius taper
+per axis. Mature stems redistribute unused leader support to the existing scaffolds; terminal
+class bounds include that maximum gain, without adding growth orders or changing bud counts.
+The trunk retains a small residual shoot and continues through its upper scaffold(s). The
+continuation grows its turn before its lateral shoots, and the meshed overlap shares its actual
+cross-section. Branch bases start buried and sweep outward; existing ring intervals sample
+their junctions. Motion pivots and weights follow the swept path's arc length.
+The [branch-taper grounding](../experiments/tree-branch-taper.md) separates these approximations
+from the measurements and records dependent deadwood/litter changes.
 
 **The structure never depends on the budget.** Every shoot is grown once, from a splitmix64 stream of
 its own (its index in the depth-first order), so a draw added to one shoot moves no other. Shoots of
@@ -838,13 +849,13 @@ ones down to half); by the pipe rule the trunk's top keeps `leader_share` of its
 the limbs share the rest. From every limb (`branches` laterals from a quarter of the way out, each
 `branch_length` of the limb) the [allometric recursion](#allometry) grows to
 the 4 mm, 0.7 m twig; a leafy twig is a spray of its cards a side, `leaf_length_m` long and
-`leaf_width` of that wide, at the twig's tip, its plane laid level so the cards face the sky. On the
-default: 2,312 twigs over 7 orders, 3,073 shoots, 16,638 cards over a 120 m² footprint — a realised
+`leaf_width` of that wide, at the twig's tip, its plane laid level so the cards face the sky. In the
+pre-G124 default snapshot: 2,312 twigs over 7 orders, 3,073 shoots, 16,638 cards over a 120 m² footprint — a realised
 LAI of 3.9 (3.67 measured over the leaves' own hull) — and **145 parts**: the trunk, the 8 limbs
-and the 136 recursion shoots of the part class (3) and up. The stem continues through a curved shoulder into an existing upper scaffold, with no extra top crown; named outer scaffold pipes retain their envelope. The broadleaf emits no structural table.
+and the 136 recursion shoots of the part class (3) and up. G124 gives the stem and scaffolds branch-aware taper and smooth continuation through the upper scaffold(s), with no extra recursive top crown. The broadleaf emits no structural table.
 
-**The budget** (default 60,000; 8,000 to 2,000,000). The default is 45,280 triangles at full detail
-(bark 12,004: the trunk 12 sides × 38 rows (including eight shoulder intervals), limbs 8 × 14, the recursion's parts by the plan's edge
+**The budget** (default 60,000; 8,000 to 2,000,000). The pre-G124 default was 45,280 triangles at full detail
+(bark 12,004: the trunk 12 sides × 38 rows, limbs 8 × 14, the recursion's parts by the plan's edge
 and row steps and its shoots of class 1 and up a row each; leaves 33,276) with no rung walked. The
 ladder ([above](#the-budget-of-a-crown)): class 2's wood folded; limb rows 8 and the parts' rows
 halved; the cross-sections; the folded classes one by one to the part class; the trunk's rows
@@ -2122,14 +2133,19 @@ The native solver minimum height is now .35 m and minimum stem radius .003 m. Sm
 use subordinate branch/tip radii rather than adult absolute floors; small willow/orchard scaffold
 length floors follow height. Load-bearing flags still require the published radius threshold.
 The broadleaf/birch stem-tip density correction intentionally improves age-zero defaults too:
-the redundant extra tip crown is removed. The stem retains its lower radius profile through the
-last scaffold station, then a tangent-matched cubic shoulder joins an existing upper scaffold.
-Eight shoulder intervals and the child's exact junction ring are reserved on every budget rung.
-The buried cap stays inside the child's coarse polygon and shares that ring's runtime bend
-transform. Stem motion ends at the preceding fixed shoulder ring; its arc weights are
-renormalized, preserving the same motion table across budgets. Existing scaffold axes and pipes stay
-unchanged; removing the redundant tip knot lowers total physical LAI without changing the size
-or spacing of individual leaves. The footprint used for allocation has a four-leaf-length-squared sapling floor.
+the redundant extra tip crown is removed. G124 makes taper follow the outgoing branch areas:
+coincident outlets are accounted for together, and unbranched spans taper slowly. Substantial
+stems continue through their final scaffold(s), retaining a tiny residual shoot instead of a
+thick trunk tail forced rapidly to twig size. One dominant continuation is valid as well as a
+multi-axis fork. Large lateral bases sweep out of supporting wood; small shoots have compact
+attachments. The continuation turns before its laterals grow, rather than bending back to an
+old straight ray. The visible overlap fits the child's actual section; only its hidden cap is
+inset inside that polygon and bound to the matching ring's wind transform. Existing
+ring budgets sample both junction forms; no extra recursive top crown or shoulder ring reserve
+is added. Fine folded shoots retain a two-ring approximation.
+See [the grounding and limitations](../experiments/tree-branch-taper.md). The scoped
+branch-taper version invalidates these species' shapes and baked LODs; other architectures
+keep their keys. The footprint used for allocation has a four-leaf-length-squared sapling floor.
 Cache version 10 invalidates old meshes;
 the canonical identity records maturity fields for age-enabled legacy recipes as well as profiles.
 

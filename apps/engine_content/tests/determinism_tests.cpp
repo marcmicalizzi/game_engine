@@ -489,7 +489,8 @@ TEST_CASE("engine-content: city makes the committed plan, fragment and yield on 
 // R97/texture cache version 2: the embedded impostor atlases' texture build keys (section 32)
 // change with the version; geometry and baked image bytes do not. Previous folds:
 // 0x341ebdc8af5aaca1 and 0xa082d1e2d4529b8f.
-constexpr u64 k_broadleaf_container_golden = 0x57e988a4c201cd41ull;
+// G124: broadleaf branch-aware taper, swept seats, terminal twig and scoped shape salt.
+constexpr u64 k_broadleaf_container_golden = 0xaa0c75b7f769b5d8ull;
 constexpr u64 k_ancient_container_golden = 0xc1db7f48a4fb3e3cull;
 // G120 (2026-11-01, MSVC 14.51): a pine, the conifer solver's chain — one three-plane card group a
 // live branch and the star, coverage-kept and fitted to the needles' coverage — at small tiles so

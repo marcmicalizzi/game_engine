@@ -75,7 +75,7 @@ f64 ovoid(f64 f) {
   return e < 0.12 ? 0.35 : std::sqrt(e);
 }
 
-// The structure: stems from one root collar continue into existing upper scaffolds; every limb
+// The structure: axial stems from one root collar end in twigs; every limb
 // bears recursion to the species' branchlet. Grown once; it never depends on the budget.
 Crown grow(const Birch& p, const CrownSpec& spec) {
   Crown crown;
@@ -119,8 +119,8 @@ Crown grow(const Birch& p, const CrownSpec& spec) {
 
   // The limbs, up every stem's crown on the golden angle from `crown_base`: many, slender and
   // steep (`limb_angle_deg` at the lowest, the upper ones a half more upright), their lengths
-  // following the ovoid, their ends arching down by the droop. By the pipe rule the stem's top
-  // keeps `leader_share` of its cross-section and the limbs share the rest.
+  // following the ovoid, their ends arching down by the droop. The initial allocation
+  // reserves `leader_share` of its cross-section and the limbs share the rest.
   Rng limb_rng = stream_of(p.seed, static_cast<u64>(Stream::limbs));
   const f64 base = static_cast<f64>(p.crown_base);
   const f64 droop = static_cast<f64>(p.droop);
@@ -135,8 +135,6 @@ Crown grow(const Birch& p, const CrownSpec& spec) {
     const f64 r_top = crown.nodes[k].r1;
     const f64 r_limb =
         r0 * det::exp(det::log((1.0 - spec.leader_share) / static_cast<f64>(limbs)) * inv);
-    u32 continuation = 0;
-    f64 last_station = 0;
     for (u32 i = 0; i < limbs; ++i) {
       const Axis& stem = crown.axes[k];
       const f64 f = (static_cast<f64>(i) + 0.5) / static_cast<f64>(limbs);
@@ -159,18 +157,22 @@ Crown grow(const Birch& p, const CrownSpec& spec) {
       CrownRoot root;
       root.node =
           crown_add_named(crown, limb, branch_radius, crown_leader_radius(spec, branch_radius), k);
+      crown.nodes[root.node].parent_arc = s;
       root.radius = branch_radius;
       root.laterals = p.branches;
       root.lateral_length = 0.4 * length;
       root.from = 0.2;
       root.to = 0.95;
       roots.push_back(root);
-      continuation = root.node;
-      last_station = s;
     }
-    crown_continue_stem(crown, k, continuation, last_station);
   }
+  for (u32 k = 0; k < stems; ++k)
+    crown_finish_stem(crown, k);
   crown_grow(crown, spec, roots, 2);
+  for (u32 k = 0; k < stems; ++k)
+    crown_add_apex(crown, k, spec);
+  crown_taper(crown, spec.area_exponent);
+  crown_join_relays(crown);
   return crown;
 }
 
@@ -184,9 +186,9 @@ struct Plan {
 };
 
 u32 count_triangles(const Crown& crown, u32 stems, const Plan& plan) {
-  return stems * (tube_triangles(plan.rows[0] + k_continuation_rows, plan.sides[0]) - 2) +
+  return stems * tube_triangles(plan.rows[0], plan.sides[0]) +
          (crown.first_recursion - stems) * tube_triangles(plan.rows[1], plan.sides[1]) +
-         stems * 2 * plan.sides[1] + crown_triangles(crown, plan.crown);
+         crown_triangles(crown, plan.crown);
 }
 
 // The smallest card the branchlets hold with the whole leaf area on them: one leaf of the species'
@@ -446,27 +448,20 @@ bool solve_birch_chain(const Birch& p, assets::MeshData& out, TreeReport* report
                               : (stem ? crown.nodes[0].part : crown.nodes[n.parent].part);
     const u32 order = stem ? 0u : 1u;
     const Axis& axis = crown.axes[n.axis];
-    const StemContinuation& stem_join = crown.continuations[stem ? i : n.parent];
-    const StemContinuation* join = stem ? &stem_join : nullptr;
     n.part = begin_structural_part(
         emit, axis.point[0], axis.tangent[0], axis.length, parent, n.r0, n.r1,
         stem && n.r0 >= static_cast<f64>(load_bearing_min_radius("birch")) ? k_load_bearing : 0u);
     named_first.push_back(out.positions.size());
-    build_tube(join != nullptr ? resample_continuation(axis, plan.rows[order], *join)
-               : i == stem_join.child
-                   ? resample_continuing_child(axis, plan.rows[order], stem_join.child_arc)
-                   : resample_axis(axis, plan.rows[order]),
-               n.r0, n.r1, plan.sides[order], {}, emit, join != nullptr, join);
+    crown_seat(crown, i, emit);
+    build_tube(stem ? crown_sample_stem(crown, i, plan.rows[order])
+                    : crown_sample_branch(crown, i, plan.rows[order], emit.seat_length),
+               n.r0, n.r1, plan.sides[order], {}, emit, (n.flags & k_crown_stem_relay) != 0u);
     if (stem && n.r0 >= static_cast<f64>(load_bearing_min_radius("birch"))) ++load_bearing;
   }
-  for (u32 i = 0; i < stems; ++i) {
-    const StemContinuation& join = crown.continuations[i];
-    const CrownNode& stem = crown.nodes[i];
-    const CrownNode& child = crown.nodes[join.child];
-    bind_continuation_cap(resample_continuation(crown.axes[stem.axis], plan.rows[0], join), stem.r0,
-                          stem.r1, plan.sides[0], named_first[i], join, stem.part, child.part,
-                          crown.axes[child.axis].length, parts);
-  }
+  emit.seated = false;
+  emit.seat_length = 0;
+  crown_bind_relays(crown, named_first, plan.rows[0], plan.sides[0], plan.rows[1], plan.sides[1],
+                    out, parts);
   crown_emit_wood(crown, plan.crown, emit, true);
   assets::Primitive bark;
   bark.first_index = 0;
@@ -487,6 +482,7 @@ bool solve_birch_chain(const Birch& p, assets::MeshData& out, TreeReport* report
   leaves.material = 1;
   out.primitives.push_back(leaves);
   smooth_normals(out, leaf_vertex, leaf_first);
+  crown_fit_motion(crown, parts);
 
   if (report != nullptr) {
     *report = TreeReport{};

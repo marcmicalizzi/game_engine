@@ -150,7 +150,10 @@ struct Emitter {
   // the parent's terminal wood; the structural axis and motion pivot remain unchanged.
   bool seated = false;
   D3 seat_origin{};
+  D3 seat_tangent{};
+  bool swept_seat = false;
   f64 seat_radius = 0.0;
+  f64 seat_length = 0.0;  // zero preserves the legacy two-radius seat
   u32 vertex(D3 position, D3 normal, f64 u, f64 v) {
     const u32 index = mesh.positions.size();
     mesh.positions.push_back(to_f32(position));
@@ -210,13 +213,18 @@ inline assets::Material material(const char* name, Vec4 colour, f32 roughness, b
 // up to `wiggle` radians a step from the seed. Parallel-transported frames go with it, so a tube
 // swept along it never twists.
 
+struct RadiusKnot {
+  f64 arc = 0;
+  f64 radius = 0;
+};
 struct Axis {
+  Vector<RadiusKnot> radii;  // cold branch-aware profile; empty keeps legacy linear taper
   Vector<D3> point;
   Vector<D3> tangent;
   Vector<D3> normal;  // a frame across the tangent, transported along it
   Vector<f64> arc;
   f64 length = 0.0;
-  bool uniform_steps = true;  // continuations retain original stem rows and add a curved shoulder
+  bool uniform_steps = true;
 };
 
 Axis grow_axis(D3 base, D3 direction, f64 length, u32 rows, D3 pull, f64 pull_per_m, f64 wiggle,
@@ -228,23 +236,9 @@ D3 axis_tangent(const Axis& axis, f64 arc);
 
 // The same axis at `rows` even steps, its frame transported anew: how a shoot grown at the
 // structure's resolution is meshed at the budget's, so the budget never moves a shoot.
-Axis resample_axis(const Axis& axis, u32 rows);
-// Cold data for a stem handing off to an existing upper scaffold. Below from, the original
-// radius-vs-distance is exact. Above it a Hermite shoulder ends inside the continuing branch.
-struct StemContinuation {
-  f64 from = 0;
-  f64 reference_length = 0;
-  f64 reference_tip = 0;
-  f64 end_slope = 0;
-  f64 child_arc = 0;
-  u32 child = 0;
-};
-inline constexpr u32 k_continuation_rows = 8;
-f64 continuation_radius(f64 r0, f64 r1, f64 length, const StemContinuation& join, f64 arc);
-Axis resample_continuation(const Axis& axis, u32 rows, const StemContinuation& join);
-// One extra junction ring, with rows + 1 intervals shared proportionally on both sides.
-Axis resample_continuing_child(const Axis& axis, u32 rows, f64 station);
-
+Axis resample_axis(const Axis& axis, u32 rows, f64 seat_length = 0.0);
+D3 tube_sweep_offset(const Axis& axis, const Emitter& out, f64 arc, bool derivative);
+f64 axis_radius(const Axis& axis, f64 r0, f64 r1, f64 arc);
 // ---- a tube -------------------------------------------------------------------------------------
 //
 // A tapered closed tube along an axis: `sides` round (one seam column), the radius linear from `r0`
@@ -256,13 +250,8 @@ Axis resample_continuing_child(const Axis& axis, u32 rows, f64 station);
 
 inline u32 tube_triangles(u32 rows, u32 sides) { return rows * sides * 2 + sides; }
 void build_tube(const Axis& axis, f64 r0, f64 r1, u32 sides, Vec2 uv_offset, Emitter& out,
-                bool flat_tip = false, const StemContinuation* continuation = nullptr);
+                bool flat_tip = false);
 
-// Bind the buried cap to the exact child junction transform. The preceding shoulder ring is
-// the stem motion endpoint; its arc is budget-independent because the shoulder has fixed rows.
-void bind_continuation_cap(const Axis& sampled, f64 r0, f64 r1, u32 sides, u32 first,
-                           const StemContinuation& join, u32 stem_part, u32 child_part,
-                           f64 child_length, Motion& motion);
 // ---- a spray of cards ---------------------------------------------------------------------------
 //
 // Leaves or needle bundles on a twig: the twig's centre line from `from` to the axis's tip divided
@@ -349,9 +338,10 @@ void smooth_normals(assets::MeshData& mesh, u32 first_vertex, u32 first_index);
 // not at all by the plan, its leaves always.
 
 inline constexpr u32 k_crown_none = 0xFFFFFFFFu;
-inline constexpr u32 k_crown_terminal = 1u;  // a terminal twig: it carries leaves
-inline constexpr u32 k_crown_part = 2u;      // a motion part with a grown axis
-inline constexpr u32 k_crown_named = 4u;     // a shoot of the species' named orders
+inline constexpr u32 k_crown_terminal = 1u;    // a terminal twig: it carries leaves
+inline constexpr u32 k_crown_part = 2u;        // a motion part with a grown axis
+inline constexpr u32 k_crown_stem_relay = 8u;  // final scaffold(s) continue the stem
+inline constexpr u32 k_crown_named = 4u;       // a shoot of the species' named orders
 
 struct CrownSpec {
   bool opposite = false;    // paired lateral buds, successive pairs decussate
@@ -384,6 +374,7 @@ struct CrownNode {
   f64 r0 = 0.0;
   f64 r1 = 0.0;
   f64 length = 0.0;
+  f64 parent_arc = 0.0;        // attachment station, independent of mesh resolution
   u32 parent = k_crown_none;   // index into the nodes
   u32 generation = 0;          // below the named orders
   i32 cls = 0;                 // radius class: twigs are 0, each class a pipe step thicker
@@ -407,7 +398,16 @@ struct CrownRoot {
   f64 spread_scale = 1.0;
 };
 
+struct StemRelay {
+  u32 stem = 0;
+  u32 child = 0;
+  f64 station = 0;
+  f64 child_arc = 0;
+  Axis mesh_axis;
+};
 struct Crown {
+  Vector<StemRelay> relays;
+  bool tapered = false;  // opt-in profiles also bury and sweep their branch bases
   LeafPlacement leaf_placement = LeafPlacement::spray;
   u64 leaf_seed = 1;
   f64 leaf_width = 0.8;  // independent leaf card width / length
@@ -416,8 +416,7 @@ struct Crown {
   bool terminal_leaf = false;     // odd-pinnate compound sprays (ash), only at the finest leaf rung
   Vector<CrownNode> nodes;        // the named shoots first, then the recursion depth-first
   Vector<Axis> axes;
-  Vector<StemContinuation> continuations;  // one per continued stem, in stem-node order
-  Vector<u32> twigs;                       // node indices of the terminal twigs, depth-first
+  Vector<u32> twigs;  // node indices of the terminal twigs, depth-first
   u32 first_recursion = 0;
   i32 part_class = 0;  // recursion shoots of this class and up are parts
   u32 recursion_parts = 0;
@@ -431,9 +430,19 @@ struct Crown {
 // The leader's radius under a node of base radius `radius`: what a root's own tube tapers to.
 f64 crown_leader_radius(const CrownSpec& spec, f64 radius);
 
-// Replace a stem beyond its last scaffold station with a smooth continuation into that scaffold.
-// Other named axes are untouched. Call after all named scaffolds are grown, before crown_grow.
-void crown_continue_stem(Crown& crown, u32 stem, u32 child, f64 station);
+// Trim a mature stem and grow its upper continuation smoothly before crown_grow.
+void crown_finish_stem(Crown& crown, u32 stem);
+void crown_join_relays(Crown& crown);
+void crown_fit_motion(const Crown& crown, Motion& motion);
+Axis crown_sample_stem(const Crown& crown, u32 stem, u32 rows);
+Axis crown_sample_branch(const Crown& crown, u32 index, u32 rows, f64 seat_length);
+void crown_bind_relays(Crown& crown, const Vector<u32>& first, u32 rows, u32 sides, u32 child_rows,
+                       u32 child_sides, assets::MeshData& mesh, Motion& motion);
+// Add the small residual axial shoot after crown_grow; never another recursive crown.
+void crown_add_apex(Crown& crown, u32 stem, const CrownSpec& spec);
+// Reconcile cross-sections, taper and attachment seats, parents first. Opt-in for broadleaf/birch.
+void crown_taper(Crown& crown, f64 exponent);
+void crown_seat(const Crown& crown, u32 node, Emitter& out);
 
 // Adds a named shoot (with its grown axis) and returns its node.
 u32 crown_add_named(Crown& crown, const Axis& axis, f64 r0, f64 r1, u32 parent);

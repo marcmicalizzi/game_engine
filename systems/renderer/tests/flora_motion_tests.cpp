@@ -19,9 +19,11 @@
 #include <doctest/doctest.h>
 #include <test_temp_dir.h>
 
+#include <algorithm>
 #include <cmath>
 #include <cstring>
 #include <fstream>
+#include <limits>
 #include <span>
 #include <string>
 
@@ -562,6 +564,100 @@ TEST_CASE("flora motion: a walker through the crown is replayed to the same byte
 #endif  // ENGINE_RENDERER_TESTS_FLORA
 
 #if ENGINE_RENDERER_TESTS_FLORA
+TEST_CASE("flora motion: swept scaffold openings stay buried in strong wind") {
+  for (const char* species : {"maple", "beech", "birch", "oak"}) {
+    for (u32 budget : {8000u, 240000u}) {
+      CAPTURE(std::string_view(species));
+      CAPTURE(budget);
+      flora::FloraFile file;
+      file.species = species;
+      file.tree.seed = file.birch.seed = 17;
+      file.tree.triangle_budget = file.birch.triangle_budget = budget;
+      file.birch.stems = 1;
+      file.tree.card_bake_px = file.tree.impostor_px = 0;
+      file.birch.card_bake_px = file.birch.impostor_px = 0;
+      if (std::string_view(species) == "oak" && budget == 240000) {
+        file.tree.age_years = 600;
+        file.tree.height_m = 24;
+        file.tree.trunk_radius_m = .9f;
+        file.tree.growing_space = .7f;
+      }
+      assets::MeshData generated;
+      flora::Motion motion;
+      std::string error;
+      REQUIRE_MESSAGE(flora::solve_flora(file, generated, motion, nullptr, nullptr, error), error);
+      u32 end = 0;
+      while (end < generated.positions.size() && motion.vertex_part[end] == 0)
+        ++end;
+      REQUIRE(end > 4);
+      u32 trunk_end = end;
+      const u32 cap_part = motion.vertex_part[end];
+      const f32 cap_weight = motion.vertex_weight[end];
+      while (trunk_end < generated.positions.size() && motion.vertex_part[trunk_end] == cap_part &&
+             motion.vertex_weight[trunk_end] == cap_weight)
+        ++trunk_end;
+      Vector<u32> openings, trunk_faces;
+      u32 bark_vertices = 0;
+      for (u32 i = 0; i < generated.primitives[0].index_count; ++i)
+        bark_vertices = std::max(bark_vertices, generated.indices[i] + 1);
+      for (u32 v = end; v < bark_vertices; ++v) {
+        const u32 part = motion.vertex_part[v];
+        if (part != 0 && motion.parts[part].parent == 0 && motion.vertex_weight[v] == 0)
+          openings.push_back(v);
+      }
+      for (u32 t = 0; t < generated.primitives[0].index_count; t += 3) {
+        if (generated.indices[t] < trunk_end && generated.indices[t + 1] < trunk_end &&
+            generated.indices[t + 2] < trunk_end)
+          trunk_faces.push_back(t);
+      }
+      REQUIRE(!openings.empty());
+      const FloraMesh mesh = mesh_of(motion.parts, motion.structure, species);
+      Vector<FloraPartState> state(mesh.part_count(), FloraPartState{});
+      Vector<gfx::FloraPartPose> poses(mesh.part_count(), gfx::FloraPartPose{});
+      for (u32 direction = 0; direction < 8; ++direction) {
+        const f32 angle = static_cast<f32>(direction) * .785398163f;
+        const FloraWind wind{Vec3{std::cos(angle), 0, std::sin(angle)}, k_flora_max_wind};
+        for (u32 sample = 0; sample < 24; ++sample) {
+          pose(mesh, wind, static_cast<f64>(sample) * .375, FloraPush{}, 1, state, poses);
+          const auto moved = [&](u32 vertex) {
+            Vec3 position, normal;
+            gfx::flora_bend(
+                poses[motion.vertex_part[vertex]],
+                flora::decode_bend_weight(flora::encode_bend_weight(motion.vertex_weight[vertex])),
+                generated.positions[vertex], generated.normals[vertex], position, normal);
+            return position;
+          };
+          // An upward oblique ray cannot leave through the trunk's open ground base.
+          // Odd crossings prove every scaffold's opening stays inside the actual coarse/fine
+          // trunk surface, including its relief and deformation, not just an ideal cylinder.
+          const Vec3 ray = normalize(Vec3{1, .137f, .271f});
+          for (u32 vertex : openings) {
+            const Vec3 origin = moved(vertex);
+            u32 hits = 0;
+            for (u32 t : trunk_faces) {
+              const Vec3 a = moved(generated.indices[t]);
+              const Vec3 e1 = moved(generated.indices[t + 1]) - a;
+              const Vec3 e2 = moved(generated.indices[t + 2]) - a;
+              const Vec3 h = cross(ray, e2);
+              const f32 determinant = dot(e1, h);
+              if (std::abs(determinant) < 1e-9f) continue;
+              const f32 inv = 1 / determinant;
+              const Vec3 delta = origin - a;
+              const f32 u = inv * dot(delta, h);
+              const Vec3 q = cross(delta, e1);
+              const f32 v = inv * dot(ray, q);
+              if (u >= 0 && v >= 0 && u + v <= 1 && inv * dot(e2, q) > 1e-6f) ++hits;
+            }
+            CHECK((hits & 1u) == 1u);
+          }
+        }
+      }
+    }
+  }
+}
+#endif
+
+#if ENGINE_RENDERER_TESTS_FLORA
 TEST_CASE("flora motion: continued stem caps stay inside the scaffold in strong wind") {
   struct Case {
     const char* species;
@@ -570,7 +666,7 @@ TEST_CASE("flora motion: continued stem caps stay inside the scaffold in strong 
   };
   for (const Case entry :
        {Case{"maple", 0, 0}, Case{"beech", 0, 0}, Case{"birch", 0, 0}, Case{"maple", 8000, 0},
-        Case{"beech", 8000, 0}, Case{"birch", 8000, 0}, Case{"oak", 24000, 600}}) {
+        Case{"beech", 8000, 0}, Case{"birch", 8000, 0}, Case{"oak", 240000, 600}}) {
     const char* species = entry.species;
     CAPTURE(entry.budget);
     CAPTURE(entry.age);
@@ -581,10 +677,10 @@ TEST_CASE("flora motion: continued stem caps stay inside the scaffold in strong 
     file.tree.age_years = static_cast<f32>(entry.age);
     if (entry.budget != 0) file.tree.triangle_budget = file.birch.triangle_budget = entry.budget;
     if (entry.age != 0) {
-      file.tree.height_m = 12;
-      file.tree.trunk_radius_m = .6f;
+      file.tree.height_m = 24;
+      file.tree.trunk_radius_m = .9f;
       file.tree.site_quality = 1.5f;
-      file.tree.growing_space = 1;
+      file.tree.growing_space = .7f;
     }
     file.tree.card_bake_px = file.tree.impostor_px = 0;
     file.birch.seed = 17;
@@ -651,11 +747,26 @@ TEST_CASE("flora motion: continued stem caps stay inside the scaffold in strong 
     const FloraMesh mesh = mesh_of(motion.parts, motion.structure, species);
     Vector<FloraPartState> state(mesh.part_count(), FloraPartState{});
     Vector<gfx::FloraPartPose> poses(mesh.part_count(), gfx::FloraPartPose{});
+    // A motion part also carries folded shoots. Those open tubes are not the containing
+    // scaffold shell, and their extra ray crossings cannot define its inside/outside parity.
+    u32 child_first = child->first;
+    while (child_first > 0 && motion.vertex_part[child_first - 1] == child->part)
+      --child_first;
+    u32 child_end = child->first;
+    while (child_end < motion.vertex_part.size() && motion.vertex_part[child_end] == child->part)
+      ++child_end;
     Vector<u32> child_indices;
     for (u32 t = 0; t < generated.primitives[0].index_count; t += 3) {
       const u32 a = generated.indices[t], b = generated.indices[t + 1],
                 c = generated.indices[t + 2];
-      if (motion.vertex_part[a] == child->part && motion.vertex_part[b] == child->part &&
+      // The hidden stem cap is bound to this child for motion, but is not part of the
+      // surrounding child shell. Including it lets the ray count its own start surface.
+      const auto on_cap = [&](u32 vertex) {
+        return vertex >= cap->first && vertex <= cap->first + cap->count;
+      };
+      if (a >= child_first && a < child_end && b >= child_first && b < child_end &&
+          c >= child_first && c < child_end && !(on_cap(a) && on_cap(b) && on_cap(c)) &&
+          motion.vertex_part[a] == child->part && motion.vertex_part[b] == child->part &&
           motion.vertex_part[c] == child->part) {
         child_indices.push_back(a);
         child_indices.push_back(b);
@@ -704,14 +815,15 @@ TEST_CASE("flora motion: continued stem caps stay inside the scaffold in strong 
           const Vec3 e1 = b - a, e2 = c - a;
           const Vec3 h = cross(normal, e2);
           const f32 det = dot(e1, h);
-          if (std::abs(det) < 1e-9f) return false;
+          if (std::abs(det) < 1e-9f) return 0.0f;
           const f32 inv = 1.0f / det;
           const Vec3 delta = origin - a;
           const f32 u = inv * dot(delta, h);
-          if (u < 0 || u > 1) return false;
+          if (u < 0 || u > 1) return 0.0f;
           const Vec3 q = cross(delta, e1);
           const f32 v = inv * dot(normal, q);
-          return v >= 0 && u + v <= 1 && inv * dot(e2, q) > 1e-6f;
+          const f32 distance = inv * dot(e2, q);
+          return v >= 0 && u + v <= 1 && distance > 1e-6f ? distance : 0.0f;
         };
         const auto bent_vertex = [&](u32 index) {
           Vec3 p, n;
@@ -723,10 +835,22 @@ TEST_CASE("flora motion: continued stem caps stay inside the scaffold in strong 
         };
         for (u32 v = 0; v < cap->count; ++v) {
           const Vec3 point = deform(*cap, v);
-          u32 crossings = 0;
+          Vector<f32> hits;
           for (u32 t = 0; t < child_indices.size(); t += 3) {
             const u32 a = child_indices[t], b = child_indices[t + 1], c = child_indices[t + 2];
-            if (hit(point, bent_vertex(a), bent_vertex(b), bent_vertex(c))) ++crossings;
+            const f32 distance = hit(point, bent_vertex(a), bent_vertex(b), bent_vertex(c));
+            if (distance > 0) hits.push_back(distance);
+          }
+          std::sort(hits.begin(), hits.end());
+          u32 crossings = 0;
+          f32 previous = 0;
+          for (const f32 distance : hits) {
+            // Shared-edge hits are one surface crossing, even if both triangles accept it.
+            // Maple direction 0/sample 9 hits two triangles at 2.91732 m. Deduplicate only
+            // floating-point coincidence; retain separate entry/exit surfaces along the ray.
+            const f32 epsilon = 16 * std::numeric_limits<f32>::epsilon() * std::max(1.0f, distance);
+            if (crossings == 0 || distance - previous > epsilon) ++crossings;
+            previous = distance;
           }
           if ((crossings & 1u) == 0u) ++outside;
         }
@@ -751,4 +875,5 @@ TEST_CASE("flora motion: continued stem caps stay inside the scaffold in strong 
     CHECK(worst_margin >= -1e-5f);
   }
 }
+
 #endif
