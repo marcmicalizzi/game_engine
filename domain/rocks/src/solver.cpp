@@ -81,6 +81,12 @@ TypeModel model_of(RockType type) {
     default:
       return {3,    0.3, 0, 0.0, 0.035, 0.012, 7.0, false, false, Vec4{0.40f, 0.38f, 0.36f, 1.0f},
               0.75f};
+    case RockType::Quartzite:
+      return {4,    0.22, 2, 0.35, 0.04, 0.007, 10.0, false, false, Vec4{0.57f, 0.55f, 0.51f, 1.0f},
+              0.78f};
+    case RockType::Dolostone:
+      return {3,    0.45, 3, 0.5, 0.045, 0.02, 6.0, true, false, Vec4{0.55f, 0.52f, 0.46f, 1.0f},
+              0.86f};
   }
 }
 
@@ -146,7 +152,8 @@ struct Body {
   D3 at;          // the body's centre in the mesh, x and z; y is set by the burial
   f64 yaw = 0.0;  // about +y
   f64 buried = 0.0;
-  f64 smooth = 0.0;  // the smooth minimum's band, in the unit body
+  f64 smooth = 0.0;   // the smooth minimum's band, in the unit body
+  f64 rounded = 0.0;  // spheroidal retreat of old surfaces; fresh chips are applied afterwards
   Vector<Cut> cuts;
   f64 warp = 0.0;
   f64 grain = 0.0;
@@ -225,6 +232,7 @@ f64 cut_blend(f64 a, f64 b, f64 k) {
 
 f64 hull_radius(const Body& b, D3 u, f64* fresh = nullptr) {
   f64 r = 1.0e3;
+  f64 inner = 1.0e3;
   if (fresh != nullptr) *fresh = 0.0;
   for (const Cut& c : b.cuts) {
     const f64 along = dot(u, c.n);
@@ -234,6 +242,14 @@ f64 hull_radius(const Body& b, D3 u, f64* fresh = nullptr) {
       *fresh = *fresh * keep + (1.0 - c.wear) * (1.0 - keep);
     }
     r = smooth_min(r, rc, b.smooth * c.wear);
+    inner = std::min(inner, c.d);
+  }
+  // Retreat convex corners toward an inscribed ellipsoid (the later affine stretch supplies
+  // its axes). Keep some of the original unequal faces even at maximum rounding. This is
+  // accumulated wear, not a transport simulation. Macro warp and finite fresh chips follow.
+  if (b.rounded > 0.0) {
+    r = lerp(r, std::min(r, inner), b.rounded);
+    if (fresh != nullptr) *fresh *= 1.0 - b.rounded;
   }
   return r;
 }
@@ -354,6 +370,9 @@ FracturePlanes fracture_planes(const Body& b, D3 u) {
 // A boundary of two planes is a great circle: u.(d0*n1-d1*n0)=0. Test both the
 // outer minimum and the winning chip's inner maximum; hidden cutting planes never attract.
 D3 rim_direction(const Body& b, D3 u) {
+  // Old cutting planes cease to describe the retreated envelope. Do not snap its smooth
+  // samples back to obsolete intersections; fresh chips still get sampled and sharp normals.
+  if (b.rounded > 0.0) return u;
   const FracturePlanes planes = fracture_planes(b, u);
   if (planes.first.cut == nullptr) return u;
   const Cut& first = *planes.first.cut;
@@ -748,6 +767,7 @@ Weather weather_of(RockType type, const std::optional<f32>& rounding,
 
 void weather_body(Body& b, const Weather& w, u64 seed, u32 part) {
   b.smooth = w.rounding * (0.04 + 0.3 * b.fabric.exposure);
+  b.rounded = 0.9 * fade(clamp01((w.rounding - 0.45) / 0.55));
   b.column_ends = w.model.column_ends;
   b.warp = w.model.warp;
   b.grain = w.model.grain;
@@ -933,6 +953,8 @@ const char* rock_type_name(RockType type) noexcept {
     case RockType::Gneiss: return "Gneiss";
     case RockType::Marble: return "Marble";
     case RockType::Obsidian: return "Obsidian";
+    case RockType::Quartzite: return "Quartzite";
+    case RockType::Dolostone: return "Dolostone";
   }
   return "Granite";
 }

@@ -55,7 +55,9 @@ CliffModel cliff_model(RockType type) {
     case RockType::Sandstone:
       return {3.5, 2.5, 0.0, 10.0, 14.0, 70.0, 0.4, 0.025, 0.06, 0.0, false};
     case RockType::Basalt: return {2.0, 0.0, 12.0, 1.4, 2.6, 80.0, 0.1, 0.02, 0.04, 0.35, false};
-    case RockType::Limestone: return {4.5, 4.0, 0.0, 9.0, 12.0, 60.0, 0.6, 0.03, 0.12, 0.0, true};
+    case RockType::Limestone: return {3.0, 1.6, 0.0, 3.8, 7.0, 65.0, 0.45, 0.03, 0.12, 0.0, true};
+    case RockType::Dolostone: return {3.5, 2.2, 0.0, 4.5, 8.0, 70.0, 0.3, 0.025, 0.09, 0.0, true};
+    case RockType::Quartzite: return {4.0, 3.0, 0.0, 6.0, 11.0, 75.0, 0.15, 0.02, 0.04, 0.0, false};
     case RockType::Shale: return {2.5, 0.4, 0.0, 3.0, 6.0, 65.0, 0.15, 0.035, 0.05, 0.0, false};
     case RockType::Slate: return {2.0, 0.55, 0.0, 4.0, 7.0, 70.0, 0.08, 0.02, 0.02, 0.0, false};
     case RockType::Schist: return {3.0, 0.7, 0.0, 5.0, 8.0, 60.0, 0.18, 0.04, 0.06, 0.0, false};
@@ -163,9 +165,37 @@ struct Carve {
   u64 seed_gully = 0;
 };
 
-f64 own_extent(const Carve& c, i64 kv, i64 kh, i64 kd) {
+f64 own_extent(const Carve& c, i64 kv, i64 kh, i64 kd, f64 bv, f64 bh) {
+  // Some joints end inside the mass. Merge adjacent cells in unequal rectangular groups,
+  // so a bedding interval does not force a new protruding block at every intersection.
+  const i64 group_v = static_cast<i64>(std::floor(static_cast<f64>(kv) * 0.5));
+  const i64 group_h = static_cast<i64>(std::floor(static_cast<f64>(kh) * 0.5));
+  const f64 grouping = lattice_value(c.seed_blocks + 5u, group_v, group_h, 0);
+  const bool join_v = c.sets >= 2 && (grouping < 0.25 || (grouping >= 0.55 && grouping < 0.75));
+  const bool join_h = grouping < 0.55;
+  if (join_v) kv = 2 * group_v;
+  if (join_h) kh = 2 * group_h;
+  const f64 centre_v = static_cast<f64>(kv) + (join_v ? 1.0 : 0.5);
+  const f64 centre_h = static_cast<f64>(kh) + (join_h ? 1.0 : 0.5);
   const f64 u = lattice_value(c.seed_blocks, kv, kh, kd);
-  return -c.relief * u;
+  const f64 tilt_s = 2.0 * lattice_value(c.seed_blocks + 1u, kv, kh, kd) - 1.0;
+  const f64 tilt_y = 2.0 * lattice_value(c.seed_blocks + 2u, kv, kh, kd) - 1.0;
+  const f64 tilt = 0.22 * c.fabric.irregularity *
+                   (tilt_s * std::clamp(bv - centre_v, -0.5, 0.5) +
+                    tilt_y * std::clamp(bh - centre_h, -0.5, 0.5));
+  return -c.relief * clamp01(0.12 + 0.76 * u + tilt);
+}
+
+// Strictly ordered, unequal stations. The minimum interval is 0.4 spacings; the continuous
+// coordinate retains the same boundaries on every detail rung instead of re-rolling blocks.
+f64 joint_coordinate(f64 q, u64 seed, f64 irregularity) {
+  const i64 k = static_cast<i64>(std::floor(q));
+  const auto station = [&](i64 i) {
+    return static_cast<f64>(i) + 0.6 * irregularity * (lattice_value(seed, i, 0, 0) - 0.5);
+  };
+  const i64 lo = q < station(k) ? k - 1 : (q >= station(k + 1) ? k + 1 : k);
+  const f64 a = station(lo), b = station(lo + 1);
+  return static_cast<f64>(lo) + (q - a) / (b - a);
 }
 
 // Which blocks a coordinate `b` (in spacings) sees and how much of each: a single block inside,
@@ -199,25 +229,39 @@ f64 carve_at(const Carve& c, f64 s, f64 y, f64 top_y, f64& notch) {
   f64 tb = 0.0;
   if (c.bed > 0.0) {
     tb = yd / c.bed + 0.2 * (noise3(c.seed_wave + 2u, D3{s / (8.0 * c.bed), 2.5, 2.5}) - 0.5);
+    tb = joint_coordinate(tb, c.seed_beds, c.fabric.irregularity);
   }
+  // Broad buttresses survive when the close joints cannot be sampled. Allocate part of the
+  // same relief envelope to this low-frequency field at every rung, so reducing quality does
+  // not turn a finely bedded rock into a flat wall or invent a different coarse silhouette.
+  const f64 mass_s = max2(12.0, 2.0 * c.m.v_spacing);
+  const f64 mass_y = max2(8.0, 4.0 * max2(c.bed, c.h_spacing));
+  const f64 mass = noise3(c.seed_blocks + 6u, D3{s / mass_s, yd / mass_y, 0.75});
+  const f64 mass_fade = fade_for(min2(mass_s, mass_y), c.cell);
+  e -= 0.35 * c.relief * (0.5 + (mass - 0.5) * mass_fade);
   if (c.sets > 0 && c.fade_blocks > 0.0) {
-    const f64 bh =
-        c.m.h_spacing > 0.0
-            ? yd / c.h_spacing +
-                  0.15 * (noise3(c.seed_wave, D3{s / (4.0 * c.h_spacing), 0.5, 0.5}) - 0.5)
-            : tb;
-    const f64 bv = c.sets >= 2
-                       ? s / c.m.v_spacing +
-                             0.4 * (noise3(c.seed_wave + 1u, D3{s / (3.0 * c.m.v_spacing),
-                                                                yd / (3.0 * c.m.v_spacing), 1.5}) -
-                                    0.5)
-                       : 0.0;
-    const f64 bd = c.sets >= 3 ? (s * c.d_cos + yd * c.d_sin) / c.m.d_spacing : 0.0;
+    f64 bh = c.m.h_spacing > 0.0
+                 ? yd / c.h_spacing +
+                       0.15 * (noise3(c.seed_wave, D3{s / (4.0 * c.h_spacing), 0.5, 0.5}) - 0.5)
+                 : tb;
+    f64 bv = c.sets >= 2
+                 ? s / c.m.v_spacing +
+                       0.4 * (noise3(c.seed_wave + 1u, D3{s / (3.0 * c.m.v_spacing),
+                                                          yd / (3.0 * c.m.v_spacing), 1.5}) -
+                              0.5)
+                 : 0.0;
+    if (c.m.h_spacing > 0.0) bh = joint_coordinate(bh, c.seed_beds, c.fabric.irregularity);
+    if (c.sets >= 2) bv = joint_coordinate(bv, c.seed_blocks, c.fabric.irregularity);
+    const f64 bd = c.sets >= 3 ? joint_coordinate((s * c.d_cos + yd * c.d_sin) / c.m.d_spacing,
+                                                  c.seed_blocks + 3u, c.fabric.irregularity)
+                               : 0.0;
     const f64 wh = max2(0.02, min2(0.2, c.rounding * 0.1));
     const f64 wv = max2(0.02, min2(0.3, c.rounding * 0.15));
     const Pick ph = pick(bh, wh);
     const Pick pv = c.sets >= 2 ? pick(bv, wv) : Pick{};
     const Pick pd = c.sets >= 3 ? pick(bd, wv) : Pick{};
+    const f64 broken = smoothstep(
+        (noise3(c.seed_blocks + 4u, D3{s / c.m.d_spacing, yd / c.m.d_spacing, 0.5}) - 0.25) * 2.5);
     f64 value = 0.0;
     for (u32 corner = 0; corner < 8; ++corner) {
       const bool uh = (corner & 1u) != 0;
@@ -225,15 +269,20 @@ f64 carve_at(const Carve& c, f64 s, f64 y, f64 top_y, f64& notch) {
       const bool ud = (corner & 4u) != 0;
       const f64 w = (uh ? ph.t : 1.0 - ph.t) * (uv ? pv.t : 1.0 - pv.t) * (ud ? pd.t : 1.0 - pd.t);
       if (w <= 0.0) continue;
-      value += w * own_extent(c, uv ? pv.k1 : pv.k0, uh ? ph.k1 : ph.k0, ud ? pd.k1 : pd.k0);
+      const i64 kv = uv ? pv.k1 : pv.k0, kh = uh ? ph.k1 : ph.k0, kd = ud ? pd.k1 : pd.k0;
+      // The oblique set is discontinuous: intact bridges join some neighbouring masses.
+      value +=
+          w * lerp(own_extent(c, kv, kh, 0, bv, bh), own_extent(c, kv, kh, kd, bv, bh), broken);
     }
     const f64 mean = -c.relief * 0.5;  // a block's extent is -relief u, u uniform
-    e += mean + (value - mean) * c.fade_blocks;
+    e += 0.65 * (mean + (value - mean) * c.fade_blocks);
     // Basalt's columns: each a prism whose faces meet in a ridge mid-column, the joints recessed.
     if (c.m.column_relief > 0.0 && c.sets >= 2 && c.fade_columns > 0.0) {
       const f64 f = bv - std::floor(bv);
       e -= c.m.column_relief * std::fabs(2.0 * f - 1.0) * c.fade_columns;
     }
+  } else if (c.sets > 0) {
+    e -= 0.65 * c.relief * 0.5;
   }
   if (c.bed > 0.0 && c.fade_beds > 0.0) {
     const f64 kb = std::floor(tb);
@@ -287,7 +336,7 @@ f64 carve_at(const Carve& c, f64 s, f64 y, f64 top_y, f64& notch) {
 // of charts to sit round zero — so a tiled set samples every chart from the same phase, a chart's
 // seam is invisible, and no coordinate passes ±16 while a cell is under four repeats (the content
 // build warns past that, `geometry.uv_range`).
-constexpr f64 k_chart = 24.0;
+constexpr f64 k_chart = 16.0;
 
 u64 lattice_key(u32 i, u32 j, u32 k) {
   return (static_cast<u64>(i) << 42) | (static_cast<u64>(j) << 21) | static_cast<u64>(k);
@@ -297,6 +346,14 @@ struct ChartUv {
   f64 a = 0.0;
   f64 b = 0.0;
 };
+
+// Smooth one-to-one-ish metric variation, not random UV islands. Every PBR channel shares
+// these coordinates and the renderer derives its tangent frame from them. This disrupts
+// straight repeat rows without extra runtime samples; it cannot erase repeated motifs.
+ChartUv weathered_uv(ChartUv uv, u64 seed, f64 amount) {
+  const D3 q{uv.a / 7.0, uv.b / 7.0, 0.25};
+  return {uv.a + amount * (noise3(seed, q) - 0.5), uv.b + amount * (noise3(seed + 1u, q) - 0.5)};
+}
 
 // Emits one closed box: `n` cells along (i, j, k), `pos(i, j, k)` the lattice point's place and
 // `uv(axis, i, j, k, place)` its two chart coordinates in metres on the faces across `axis`.
@@ -349,11 +406,18 @@ void emit_box(const u32 n[3], const Pos& pos, const Uv& uv, f64 tile_m, assets::
     }
     // Each cell's chart, from its first corner; the cells sorted by chart, then in grid order.
     const auto chart_of = [&](u32 p, u32 q, i64& cu, i64& cv) {
-      u32 c[3];
-      lattice(p, q, c);
-      const ChartUv m = uv(face.axis, c[0], c[1], c[2], place[slots[q * side + p]]);
-      cu = static_cast<i64>(std::floor((m.a / tile_m + k_chart * 0.5) / k_chart));
-      cv = static_cast<i64>(std::floor((m.b / tile_m + k_chart * 0.5) / k_chart));
+      ChartUv middle;
+      for (u32 dy = 0; dy <= 1; ++dy) {
+        for (u32 dx = 0; dx <= 1; ++dx) {
+          u32 c[3];
+          lattice(p + dx, q + dy, c);
+          const ChartUv m = uv(face.axis, c[0], c[1], c[2], place[slots[(q + dy) * side + p + dx]]);
+          middle.a += 0.25 * m.a;
+          middle.b += 0.25 * m.b;
+        }
+      }
+      cu = static_cast<i64>(std::floor((middle.a / tile_m + k_chart * 0.5) / k_chart));
+      cv = static_cast<i64>(std::floor((middle.b / tile_m + k_chart * 0.5) / k_chart));
     };
     Vector<u64> order;
     order.reserve(nb * nc);
@@ -487,6 +551,7 @@ struct SkirtStation {
   f64 y_top = 0.0;
   f64 x_ground = 0.0;  // where the skirt's surface meets the foot's height
   f64 skirt_h = 0.0;
+  f64 deposit = 1.0;
 };
 
 struct Solved {
@@ -498,6 +563,8 @@ struct Solved {
   f64 window = 2.0;
   f64 buried = 0.0;
   f64 talus = 0.0;
+  f64 coverage = 0.6;
+  f64 patch_m = 14.0;
   f64 ramp = 20.0;
   u64 seed_skyline = 0;
 };
@@ -507,9 +574,14 @@ SkirtStation skirt_station(const Solved& z, f64 s) {
   st.frame = frame_at(z.line, s, z.window);
   const Frame& f = st.frame;
   const f64 end = min2(s, z.line.length - s);
-  // The skirt is heaped where more has fallen: its height wanders along the face about the share.
+  // Deposition lobes with bare intervals. A closed substrate remains below ground in the gaps,
+  // so no new open edges or disconnected sliver triangles are needed at any quality setting.
+  const f64 phase = joint_coordinate(s / z.patch_m, z.seed_skyline + 9u, 1.0);
+  const f64 middle = std::fabs(phase - std::floor(phase) - 0.5) * 2.0;
+  st.deposit = z.coverage >= 1.0 ? 1.0 : smoothstep((z.coverage - middle) / (0.4 * z.coverage));
   const f64 heap = 0.55 + 0.9 * noise3(z.seed_skyline + 7u, D3{s / 18.0, 0.5, 0.5});
-  const f64 ht = min2(0.7 * f.height, z.talus * f.height * heap * smoothstep(end / z.ramp));
+  const f64 ht =
+      min2(0.7 * f.height, z.talus * f.height * heap * smoothstep(end / z.ramp)) * st.deposit;
   const f64 foot = f.foot.y;
   const f64 x0 = -f.batter * ht;
   st.skirt_h = ht;
@@ -520,8 +592,8 @@ SkirtStation skirt_station(const Solved& z, f64 s) {
   f64 y_top = foot + ht + (z.depth - 1.0) * z.tan_a;
   if (y_top > foot + f.height - 0.5) y_top = foot + f.height - 0.5;
   if (y_top < foot + ht + 0.25) y_top = foot + ht + 0.25;
-  st.y_top = y_top;
   st.x_top = x0 - (y_top - foot - ht) / z.tan_a;
+  st.y_top = lerp(st.y_toe + 0.2, y_top, st.deposit);
   return st;
 }
 
@@ -543,7 +615,7 @@ f64 ground_height(const CliffGround& g, f64 x, f64 z, bool& covered) {
 f64 skirt_ground_shift(const SkirtStation& st, f64 x, f64 ground) {
   const f64 join = -st.frame.batter * st.skirt_h;
   const f64 weight = smoothstep((x - join) / (st.x_toe - join));
-  return weight * (ground - st.frame.foot.y);
+  return lerp(1.0, weight, st.deposit) * (ground - st.frame.foot.y);
 }
 
 }  // namespace
@@ -607,6 +679,8 @@ bool cliff_in_range(const Cliff& p, std::string& error) {
     return bad("bed_m", "0, or 0.25 to 50 m");
   if (!in(wide(p.undercut), 0.0, 1.0)) return bad("undercut", "0 to 1");
   if (!in(wide(p.talus), 0.0, 0.6)) return bad("talus", "0 to 0.6");
+  if (!in(wide(p.talus_coverage), 0.1, 1.0)) return bad("talus_coverage", "0.1 to 1");
+  if (!in(wide(p.talus_patch_m), 2.0, 100.0)) return bad("talus_patch_m", "2 to 100 m");
   if (!in(wide(p.talus_angle_deg), 20.0, 45.0)) return bad("talus_angle_deg", "20 to 45");
   if (p.talus_blocks > 256) return bad("talus_blocks", "0 to 256");
   if (!in(wide(p.talus_block_m), 0.1, 10.0)) return bad("talus_block_m", "0.1 to 10 m");
@@ -687,6 +761,8 @@ bool solve_cliff(const Cliff& p, assets::MeshData& out, CliffReport* report_out,
   z.window = max2(1.0, 0.5 * z.depth);
   z.buried = wide(p.buried);
   z.talus = wide(p.talus);
+  z.coverage = wide(p.talus_coverage);
+  z.patch_m = wide(p.talus_patch_m);
   z.ramp = max2(1.0, min2(20.0, 0.2 * z.line.length));
   const f64 angle = wide(p.talus_angle_deg) * k_pi / 180.0;
   z.sin_a = det::sin(angle);
@@ -837,9 +913,10 @@ bool solve_cliff(const Cliff& p, assets::MeshData& out, CliffReport* report_out,
   // the bottom in (along, back), the ends in (back, up), all in metres.
   const auto face_uv = [&](u32 axis, u32 i, u32, u32 k, const D3& place) {
     const f64 back = depth * static_cast<f64>(nd - k) / static_cast<f64>(nd);
-    if (axis == 2) return ChartUv{frames[i].s, place.y};
-    if (axis == 1) return ChartUv{frames[i].s, back};
-    return ChartUv{back, place.y};
+    const ChartUv uv = axis == 2
+                           ? ChartUv{frames[i].s, place.y}
+                           : (axis == 1 ? ChartUv{frames[i].s, back} : ChartUv{back, place.y});
+    return weathered_uv(uv, carve.seed_grain, 2.0 * carve.fabric.irregularity);
   };
   const u32 face_n[3] = {ns, nh, nd};
   emit_box(face_n, face_point, face_uv, tile_m, out);
@@ -873,8 +950,10 @@ bool solve_cliff(const Cliff& p, assets::MeshData& out, CliffReport* report_out,
         if (i > 0 && i < ns_skirt && j > 0 && j < nt) {
           const f64 along = st.frame.s;
           const f64 up = t * 12.0;
-          y += grain_1 * (2.0 * noise3(grain_seed, D3{along / 6.0, up / 6.0, 0.5}) - 1.0);
-          y += grain_2 * (2.0 * noise3(grain_seed + 1u, D3{along / 3.0, up / 3.0, 0.5}) - 1.0);
+          y += st.deposit * grain_1 *
+               (2.0 * noise3(grain_seed, D3{along / 6.0, up / 6.0, 0.5}) - 1.0);
+          y += st.deposit * grain_2 *
+               (2.0 * noise3(grain_seed + 1u, D3{along / 3.0, up / 3.0, 0.5}) - 1.0);
         }
       }
       const f64 px = st.frame.foot.x + st.frame.n.x * x;
@@ -892,9 +971,10 @@ bool solve_cliff(const Cliff& p, assets::MeshData& out, CliffReport* report_out,
       const f64 dx = st.x_top - st.x_toe;
       const f64 dy = st.y_top - st.y_toe;
       const f64 up = std::sqrt(dx * dx + dy * dy) * static_cast<f64>(j) / static_cast<f64>(nt);
-      if (axis == 2) return ChartUv{st.frame.s, up};
-      if (axis == 1) return ChartUv{st.frame.s, place.y};
-      return ChartUv{up, place.y};
+      const ChartUv uv = axis == 2
+                             ? ChartUv{st.frame.s, up}
+                             : (axis == 1 ? ChartUv{st.frame.s, place.y} : ChartUv{up, place.y});
+      return weathered_uv(uv, grain_seed, 2.0);
     };
     const u32 skirt_n[3] = {ns_skirt, nt, 1};
     emit_box(skirt_n, skirt_point, skirt_uv, tile_m, out);

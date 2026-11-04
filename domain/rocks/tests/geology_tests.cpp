@@ -50,13 +50,15 @@ assets::MeshData body(Boulder b) {
 constexpr RockType k_types[] = {RockType::Granite,   RockType::Basalt,    RockType::Obsidian,
                                 RockType::Sandstone, RockType::Limestone, RockType::Shale,
                                 RockType::Slate,     RockType::Schist,    RockType::Gneiss,
-                                RockType::Marble};
+                                RockType::Marble,    RockType::Quartzite, RockType::Dolostone};
 }  // namespace
 
 TEST_CASE("rocks: lithology families and all quality tiers produce closed distinct bodies") {
   CHECK(rock_family(RockType::Obsidian) == RockFamily::Igneous);
   CHECK(rock_family(RockType::Shale) == RockFamily::Sedimentary);
   CHECK(rock_family(RockType::Gneiss) == RockFamily::Metamorphic);
+  CHECK(rock_family(RockType::Quartzite) == RockFamily::Metamorphic);
+  CHECK(rock_family(RockType::Dolostone) == RockFamily::Sedimentary);
   std::vector<u64> hashes;
   for (RockType type : k_types) {
     CAPTURE(std::string(rock_type_name(type)));
@@ -338,5 +340,40 @@ TEST_CASE("rocks: new cliff fabrics stay closed with dipping folded beds") {
     REQUIRE_MESSAGE(solve_cliff(cliff, mesh, &report, &error), error);
     check_closed(mesh, 1);
     CHECK(report.triangles <= cliff.triangle_budget);
+  }
+}
+
+TEST_CASE("rocks: high rounding retreats corners while keeping irregular closed bodies") {
+  for (u64 seed : {7u, 17u, 43u}) {
+    Boulder b;
+    b.seed = seed;
+    b.size_x = b.size_y = b.size_z = 1.0f;
+    b.buried = 0.5f;
+    b.triangle_budget = 20000;
+    b.surface.strength = 0.0f;
+    b.geology.weathering = 0.0f;
+    b.geology.irregularity = 0.0f;
+    const auto radial_span = [](const assets::MeshData& m) {
+      f64 low = 1e9, high = 0.0;
+      for (auto p : m.positions) {
+        const f64 x = static_cast<f64>(p.x), y = static_cast<f64>(p.y), z = static_cast<f64>(p.z);
+        const f64 r = std::sqrt(x * x + y * y + z * z);
+        low = std::min(low, r);
+        high = std::max(high, r);
+      }
+      return high - low;
+    };
+    b.rounding = 0.0f;
+    const auto sharp = body(b);
+    b.rounding = 1.0f;
+    const auto round = body(b);
+    check_closed(round, 1);
+    CHECK(radial_span(round) < 0.65 * radial_span(sharp));
+    CHECK(radial_span(round) > 0.01);
+    CHECK(mesh_hash(round) == mesh_hash(body(b)));
+    b.geology.irregularity = 1.0f;
+    const auto chipped = body(b);
+    check_closed(chipped, 1);
+    CHECK(mesh_hash(chipped) != mesh_hash(round));
   }
 }

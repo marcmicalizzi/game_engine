@@ -12,7 +12,7 @@ namespace engine::soil {
 // silently change them when a dependency moves: review captures/pins and bump soil's
 // version together before accepting a new rock solver.
 // Rock v10 changes opt-in baked normals; soil's untextured radial stone geometry is unchanged.
-static_assert(rocks::k_rocks_version == 10,
+static_assert(rocks::k_rocks_version == 11,
               "Review soil output and bump k_soil_version before changing its rock dependency");
 namespace {
 constexpr f64 k_pi = 3.14159265358979323846;

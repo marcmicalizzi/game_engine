@@ -32,7 +32,7 @@ bole continues behind it. These are morphology approximations, not a conserved
 soil-volume reconstruction or a particular tree's uprooted root network.
 
 Embedded stones call `rocks::solve_rock`; the soil capability declares its dependency.
-The implementation pins rock solver version 10 at compile time. A rock-version change requires reviewing soil captures/pins and bumping `k_soil_version` before updating that assertion, so cached soil cannot silently retain old stones. All woody roots here are rigid. Existing living-tree roots can be cooked against the
+The implementation pins rock solver version 11 at compile time. A rock-version change requires reviewing soil captures/pins and bumping `k_soil_version` before updating that assertion, so cached soil cannot silently retain old stones. All woody roots here are rigid. Existing living-tree roots can be cooked against the
 resulting terrain through their usual `scene_gen::Ground` seam; this does not move
 existing trees or alter their root recipes automatically.
 
@@ -124,3 +124,5 @@ neighbours. The cook's simple one-soil-layer scene needs no override; it does no
 automatically insert one into another scene. Wider blends require engine work.
 
 The far-origin study preserves the cook and geometry, but exposed a CSM fitting issue (F24): the shifted world review has no cascade casters. See the grounding page's far-origin evidence; the renderer is unchanged here.
+
+Soil solver v5 tracks rock v11 (G127). Its default granite uses rounding 0.3, below the new whole-body rounding range; soil geometry pins remain unchanged while cache/container pins change.

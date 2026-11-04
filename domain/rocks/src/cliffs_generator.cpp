@@ -176,7 +176,9 @@ f64 relief_of(const CliffLayer& layer, RockType type) {
   switch (type) {
     case RockType::Sandstone: return 3.5;
     case RockType::Basalt: return 2.0;
-    case RockType::Limestone: return 4.5;
+    case RockType::Limestone: return 3.0;
+    case RockType::Dolostone: return 3.5;
+    case RockType::Quartzite: return 4.0;
     case RockType::Shale: return 2.5;
     case RockType::Slate: return 2.0;
     case RockType::Schist: return 3.0;

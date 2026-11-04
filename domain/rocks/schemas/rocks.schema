@@ -29,6 +29,10 @@ enum RockType : u8 {
   Marble
   /// Volcanic glass: smooth conchoidal scars, sharp margins and low roughness.
   Obsidian
+  /// Resistant metamorphic quartz-rich rock: jointed masses and relict beds.
+  Quartzite
+  /// Bedded carbonate: blocky ledges with localized solution weathering.
+  Dolostone
 }
 
 /// Origin, derived from RockType rather than an independently contradictory recipe field.
@@ -244,7 +248,7 @@ struct CliffGround @version(1) {
 /// under a hard one, warped and grained — closed at the ends, the top and a back buried `depth`
 /// behind it, with a talus skirt of the rock's own debris at its foot. Walking along `points`, the
 /// face looks to the right (+z for a line along +x).
-struct Cliff @version(3) {
+struct Cliff @version(4) {
   seed: u64 = 1
   type: RockType = Sandstone
   /// The foot of the face, in order: 2 to 4,096 vertices, a line 1 to 1,000 m long.
@@ -271,7 +275,7 @@ struct Cliff @version(3) {
   /// far a block may stand out over the one below: 0 (nothing overhangs) to 1.
   undercut: f32 = 0.0
   /// The talus skirt's height against the face, a share of the face's height: 0 (none) to 0.6.
-  talus: f32 = 0.2
+  talus: f32 = 0.08
   /// The skirt's slope, degrees: 20 to 45.
   talus_angle_deg: f32 = 35.0
   /// Fallen blocks lying on the skirt: 0 to 256.
@@ -290,6 +294,10 @@ struct Cliff @version(3) {
   /// Optional sampled terrain beneath the skirt and fallen blocks, in the recipe's frame.
   /// The cliffs placement generator fills this; standalone recipes may supply it explicitly.
   ground: CliffGround? @since(3)
+  /// Share of each deposition interval occupied by debris: 0.1..1; 1 gives a continuous apron.
+  talus_coverage: f32 = 0.6 @since(4)
+  /// Average along-cliff interval between deposits, metres: 2..100.
+  talus_patch_m: f32 = 14.0 @since(4)
   material: RockMaterial
 }
 
