@@ -485,7 +485,7 @@ TEST_CASE("engine-content morphs appends the controls' targets by canonical id")
   const std::vector<double> more = reference_delta(f, {1, 2});
   std::vector<double> pos;
   for (float p : f.export_pos)
-    pos.push_back(p);
+    pos.push_back(static_cast<double>(p));
   const std::vector<double> n0 = reference_normals(f, pos);
   for (u32 side = 0; side < 2; ++side) {
     const std::vector<double>& ref = side == 0 ? less : more;

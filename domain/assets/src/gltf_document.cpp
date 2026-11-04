@@ -527,7 +527,8 @@ bool parse_document_json(std::string_view text, DocValue& out, std::string* erro
   if (text.size() >= 3 && static_cast<u8>(text[0]) == 0xEF && static_cast<u8>(text[1]) == 0xBB &&
       static_cast<u8>(text[2]) == 0xBF)
     text.remove_prefix(3);
-  Parser p{text};
+  Parser p;
+  p.s = text;
   DocValue value;
   if (!p.value(value, 0)) {
     return set_error(error, p.message);
