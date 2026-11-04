@@ -1,0 +1,101 @@
+{
+  "format": "engine.camera-path.v1",
+  "name": "rockfall-deposits",
+  "interpolation": "Smooth",
+  "fps": 30,
+  "znear": 0.1,
+  "keys": [
+    {
+      "time": 0,
+      "position": [
+        60,
+        25,
+        -22
+      ],
+      "target": [
+        -1,
+        3,
+        0
+      ]
+    },
+    {
+      "time": 2,
+      "position": [
+        20,
+        7,
+        -6
+      ],
+      "target": [
+        -1,
+        2,
+        0
+      ]
+    },
+    {
+      "time": 4,
+      "position": [
+        5,
+        2,
+        -3
+      ],
+      "target": [
+        -1,
+        1.5,
+        0
+      ]
+    },
+    {
+      "time": 6,
+      "position": [
+        22,
+        8,
+        24
+      ],
+      "target": [
+        9,
+        0,
+        16
+      ]
+    },
+    {
+      "time": 8,
+      "position": [
+        80,
+        40,
+        -40
+      ],
+      "target": [
+        -6,
+        5,
+        0
+      ]
+    }
+  ],
+  "markers": [
+    {
+      "frame": 0,
+      "name": "60m",
+      "note": "connected apron and drainage context"
+    },
+    {
+      "frame": 60,
+      "name": "20m",
+      "note": "scree tongues and toe"
+    },
+    {
+      "frame": 120,
+      "name": "5m",
+      "note": "contact and mixed fragment sizes"
+    },
+    {
+      "frame": 180,
+      "name": "drainage",
+      "note": "fine deposits in the drainage hollow"
+    },
+    {
+      "frame": 240,
+      "name": "far",
+      "note": "normal cluster-DAG reduction"
+    }
+  ]
+}

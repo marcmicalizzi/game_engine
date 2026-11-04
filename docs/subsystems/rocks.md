@@ -777,17 +777,17 @@ the scheduler, or another capability, and it can be removed from the build the s
 | Registration point | This capability | Status |
 |---|---|---|
 | Capabilities it requires | none | this capability stands alone |
-| Component and event types | `domain/rocks/schemas/rocks.schema`: `RockType`, `RockShape`, `RockMaterial`, `Boulder`, `Outcrop`, `Scree`, `CliffPoint`, `Cliff`, `RockFile` | parameters, not components: a rock has no runtime state |
+| Component and event types | `domain/rocks/schemas/rocks.schema`: `RockType`, `RockShape`, `RockMaterial`, `Boulder`, `Outcrop`, `Scree`, `CliffPoint`, `Cliff`, `RockFile`, `DepositPatch`, `DepositLayer` | parameters, not components: a rock has no runtime state |
 | Tick scheduler entry | none | the solver runs at content-build time and has no tick |
 | Render-graph passes | none | a rock is a cluster mesh like any other |
-| Content-build derived step | `engine-content rocks`, the mesh generator `rock` (and through it `build`, `build-all`) | [the build](#the-build): keyed by the canonical parameters and `k_rocks_version` |
-| Scene generator | `cliffs`, a placement generator (`src/cliffs_generator.cpp`) | [The cliffs generator](#the-cliffs-generator) |
+| Content-build derived step | `engine-content rocks`, mesh generators `rock` and `deposit` (and through them `build`, `build-all`) | [the build](#the-build): keyed by the canonical parameters and `k_rocks_version` |
+| Scene generator | `cliffs` and `deposits`, placement generators | [The cliffs generator](#the-cliffs-generator) |
 | Protocol methods | none | not needed |
 | Tunables | none | everything the solver reads is a parameter of the file |
 | LOD policy | the budget ladder, then the cluster DAG's | [the budget ladder](#the-budget-ladder) |
 | Determinism | `rocks::k_determinism` = `derived`; the same bytes on every toolchain | [above](#determinism) |
-| Zero cost when unused | nothing runs unless something names a `.rock.json` | plan 11 §11.10: absent work |
-| Tests and size table | `tests/rocks_tests.cpp`, `tests/cliff_tests.cpp`, `tests/size_table.cpp` (`RockReport`, 36 bytes; `CliffReport`, 76) | written |
+| Zero cost when unused | nothing runs unless a scene names `cliffs` / `deposits` or a `.rock.json` / `.deposit.json` mesh | plan 11 §11.10: absent work |
+| Tests and size table | `tests/rocks_tests.cpp`, `tests/cliff_tests.cpp`, `tests/deposits_tests.cpp`, `tests/size_table.cpp` (`RockReport`, 36 bytes; `CliffReport`, 76; `DepositPlan`, 96) | written |
 | Bench | none | no hot path |
 | Removal proof | `ENGINE_WITH_ROCKS`, off in the minimal build | works |
 
@@ -827,3 +827,67 @@ or runtime shader changes. The radial unique surface bake remains unavailable to
 
 Solver v11 changes cache keys, cliff defaults and geometry, and high-rounding radial geometry.
 Soil v5 tracks this dependency; the default granite stones use rounding 0.3 and keep their geometry.
+
+## Terrain-aware deposits (G128)
+
+The opt-in `deposits` placement generator adds connected cliff-foot talus, scree tongues,
+mixed fragments, gravel pockets and sediment in drainage channels. It belongs to this rocks
+capability and uses the existing scree fragment kernel. Existing `.rock.json` output and version
+10 keys are unchanged. [Research and bounds](../experiments/rockfall-deposits.md) distinguish
+observed talus geometry from authored controls.
+
+`engine.rocks.DepositLayer` supplies a finite `region_min` / `region_max` in world metres,
+`spacing_m`, an explicit `max_samples`, and the source, repose, runout and channel controls.
+`plan_deposits` samples static `scene_gen::Ground` in whole millimetres, routes D8 contributing
+area in height/index order, and propagates a descending source envelope along nonascending
+terrain. Only source-connected locations receive talus. A declining envelope produces the toe;
+the depth cap bounds authoring volume. Channel sediment occupies low-gradient cells above the
+contributing-area threshold. Pits retain sediment and terminate drainage. No water simulation,
+erosion rate, volume conservation or rockfall hazard prediction is implied.
+
+The region is the complete catchment for this bake. Its boundary admits no unknown inflow.
+Changing it can change drainage and deposits. The entire region is solved once on `open`, then
+split into patches aligned to world tiles (`patch_m`, default 8 m), each at most 32 m and
+64 cells across. The patch edge divides the tile and is a whole number of sample spacings.
+`expand` and
+`tile` use the same immutable plan and mesh list. IDs are candidate-patch indices plus one, kept
+in order even when empty patches or earlier footprints omit an instance. Earlier footprints
+clear entire overlapping patches, with `clear_m` added; `avoid_earlier: false` explicitly allows
+composition with earlier source cliffs whose bounding footprints would otherwise clear their
+own talus; the existing same-tile footprint limit
+of streamed scenes still applies. `Context::stand` is refused: changing terrain requires a
+rebake. The height source's own material masks are not rewritten or assumed to be geology.
+
+Each patch is a schema recipe `deposit-<hash>.deposit.json` under `<ddc>/deposits/`, keyed by sampled
+terrain, thickness, coarse share, seed, material, budgets, `k_deposit_version` and
+`k_rocks_version`. The mesh-generator registry builds it through `engine-content build`,
+`build-all` and scene loading. No new app flag, renderer pass, scheduler work or dependency on
+another capability is added. With no deposits entry there is no work or persistent storage.
+
+The near mesh is a continuous sampled bed with a buried underside and boundary walls, plus
+representative angular fragments in three overlapping size groups. Small visible gravel is
+8-64 mm across; finer sediment is the bed/material. Coarse fragments become larger towards
+the toe. The fragment kernel retains lithology and fresh angular facets. A local support shear
+fits each fragment to the same triangular surface the bed draws; this is contact fitting, not
+rigid-body settling. Normals follow the support slope. Cells with less than 1 mm depth disappear. At diagonal-only contacts a buried zero-depth cell joins the underside, avoiding a four-way boundary edge; this adds no visible thickness and is charged to the triangle budget.
+
+The patch's `triangle_budget` covers bed and every requested fragment: surface triangles first,
+then each fragment receives the finest existing cube-grid rung up to 20 that fits its equal
+share. A budget below all fragments at rung 4 is refused, with no silent count reduction.
+Default 96 fragments / 32000 triangles per patch; `max_samples` defaults to 262144 vertices.
+CPU temporary storage and mesh builds scale with that finite region and its explicit budgets;
+this first version is an offline bake and does not promise constant-time world opening.
+At distance the normal cluster DAG reduces geometry; the streamed host's ordinary distance-form
+cuts apply. Opaque geometry casts standard shadows and receives the existing 5 cm collision cut. The example scene and its before/after budget and LOD image comparisons are recorded on the grounding page.
+There is no additional impostor chain or cover mask.
+
+Materials use `rock/<type>` from the pack, overridden by the patch's `RockMaterial`, else the
+existing flat lithology colour. The bed projects x/z in metres per repeat; fragment charts use
+the existing box projection. Baked `surface_maps` are refused for patches. Fine grain appearance
+requires a suitable tiled material; this feature does not generate sediment PBR maps.
+
+Public API: [deposits.h](../../domain/rocks/include/domain/rocks/deposits.h), `DepositPlan`,
+`plan_deposits`, `deposit_patch_in_range`, `solve_deposit`, `deposit_source_hash`,
+`build_deposit_container`. Tests in `tests/deposits_tests.cpp` cover source connectivity, empty
+flat terrain, channel convergence, translated world coordinates, budgets, topology, deterministic
+meshes and keys, reverse tile arrival, earlier footprints and input refusals.
