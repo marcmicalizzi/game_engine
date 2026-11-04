@@ -58,6 +58,18 @@ tunables::Float player_neck_rotation{
     "view.player.neck_rotation_deg", 70.7, 0.0, 120.0,
     "The cervical spine's axial rotation each way, degrees (Apti et al. 2023: 71.1 right, 70.2 "
     "left)"};
+tunables::Float player_eye_pitch_down{
+    "view.player.eye_pitch_down_deg", 30.0, 0.0, 60.0,
+    "The ocular share of a look down, degrees: the eyes turn in their sockets this far before the "
+    "neck, the head or the torso turn at all (apps.md 'The head-look layer'; 0 turns the eyes "
+    "off)"};
+tunables::Float player_eye_pitch_up{
+    "view.player.eye_pitch_up_deg", 20.0, 0.0, 60.0,
+    "The ocular share of a look up, degrees (smaller than down: the eyes' upgaze is the shorter)"};
+tunables::Float player_eye_yaw{
+    "view.player.eye_yaw_deg", 22.0, 0.0, 60.0,
+    "The ocular share of a look to either side, degrees (Stahl 1999: the customary oculomotor "
+    "range, 44 degrees wide, so 22 each way)"};
 tunables::String player_walk_clip{
     "view.player.walk_clip", "walk",
     "The clip the player's body plays while the walker moves, by name, any case (--player); a "
@@ -144,7 +156,15 @@ f32 clamp_to(f32 v, f32 lo, f32 hi) noexcept { return v < lo ? lo : (v > hi ? hi
 
 LookShares player_look_shares(const PlayerRig& rig, f32 pitch, f32 yaw_relative) noexcept {
   LookShares out;
-  const f32 down = -pitch;  // the session's pitch is up positive; a flexion turns the face down
+  // The session's pitch is up positive; a flexion turns the face down. The eyes take the first part
+  // of the look (the ocular share: no joint turns), the pivots the remainder.
+  const f32 look_down = -pitch;
+  const f32 ocular_pitch = clamp_to(look_down, -rig.eye_up, rig.eye_down);
+  const f32 ocular_yaw = clamp_to(yaw_relative, -rig.eye_yaw, rig.eye_yaw);
+  out.ocular_pitch = ocular_pitch;
+  out.ocular_yaw = ocular_yaw;
+  const f32 down = look_down - ocular_pitch;
+  yaw_relative -= ocular_yaw;
   const f32 cervical = clamp_to(down, -rig.extension, rig.flexion);
   const f32 turned = clamp_to(yaw_relative, -rig.rotation, rig.rotation);
   // The head (the craniocervical junction) takes its part; the neck the rest of the range, or
@@ -292,6 +312,9 @@ bool measure_player_rig(const std::string& path, f32 target_height_m, f32 eye_he
   out.flexion = static_cast<f32>(player_neck_flexion.get()) * k_deg;
   out.extension = static_cast<f32>(player_neck_extension.get()) * k_deg;
   out.rotation = static_cast<f32>(player_neck_rotation.get()) * k_deg;
+  out.eye_down = static_cast<f32>(player_eye_pitch_down.get()) * k_deg;
+  out.eye_up = static_cast<f32>(player_eye_pitch_up.get()) * k_deg;
+  out.eye_yaw = static_cast<f32>(player_eye_yaw.get()) * k_deg;
   out.head_rest = out.head >= 0 ? matrices[static_cast<u32>(out.head)] : anim::JointMatrix{};
   look_pivots(skeleton, asset.mapping, out.head, out.torso, out.neck);
   if (out.torso >= 0 && static_cast<u32>(out.torso) < skeleton.names.size())
@@ -696,6 +719,9 @@ JsonValue PlayerBody::summary_json(const GameActors* actors) const {
     look.set("flexion_deg", static_cast<f64>(rig_.flexion) * k_to_deg);
     look.set("extension_deg", static_cast<f64>(rig_.extension) * k_to_deg);
     look.set("rotation_deg", static_cast<f64>(rig_.rotation) * k_to_deg);
+    look.set("eye_pitch_down_deg", static_cast<f64>(rig_.eye_down) * k_to_deg);
+    look.set("eye_pitch_up_deg", static_cast<f64>(rig_.eye_up) * k_to_deg);
+    look.set("eye_yaw_deg", static_cast<f64>(rig_.eye_yaw) * k_to_deg);
     look.set("head_flexion_share", static_cast<f64>(k_head_flexion_share));
     look.set("head_rotation_share", static_cast<f64>(k_head_rotation_share));
     // The pivots at rest in the body's frame (metres from the soles), for the arithmetic.
@@ -713,6 +739,7 @@ JsonValue PlayerBody::summary_json(const GameActors* actors) const {
       for (const f32 d : e.shares.down)
         down.push_back(static_cast<f64>(d) * k_to_deg);
       o.set("down_deg", down);  // torso, neck, head
+      o.set("ocular_pitch_deg", static_cast<f64>(e.shares.ocular_pitch) * k_to_deg);
       o.set("eye_m", vec(e.eye));
       JsonValue p = JsonValue::array();
       p.push_back(e.position.x);
