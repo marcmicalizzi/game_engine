@@ -95,9 +95,9 @@ list(REMOVE_DUPLICATES _content_deps)
 engine_app(NAME engine_content OUTPUT engine-content
   SOURCES main.cpp tissue_commands.cpp ruins_commands.cpp city_commands.cpp limit_dump.cpp
           normal_cases.cpp clip_commands.cpp terrain_commands.cpp tileset_commands.cpp npc_commands.cpp
-          flora_commands.cpp rocks_commands.cpp cover_commands.cpp soil_commands.cpp
+          flora_commands.cpp rocks_commands.cpp cover_commands.cpp soil_commands.cpp morphs.cpp
   DEPS ${_content_deps}
-  E2E_TESTS ${_content_tests} tests/soil_tests.cpp)
+  E2E_TESTS ${_content_tests} tests/soil_tests.cpp tests/morphs_tests.cpp)
 
 if(TARGET engine::tissue)
   target_compile_definitions(engine_engine_content PRIVATE ENGINE_CONTENT_TISSUE=1)

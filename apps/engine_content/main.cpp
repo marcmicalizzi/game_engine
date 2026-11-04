@@ -183,6 +183,11 @@ const char* k_usage =
     "                                          grow a vine or organic cover over the host its\n"
     "                                          recipe names into the host's companion container\n"
     "                                          (vine --help); present with the cover capability\n"
+    "  morphs <body.gltf|body.glb> --mapping <control-data.json> --controls <body-controls.json>\n"
+    "         --targets <dir> --references <makehuman dir> --sex male|female --out <dir>\n"
+    "         [--id <revision>]                MakeHuman shape targets appended to a canonical-\n"
+    "                                          topology body as morph channels by canonical id\n"
+    "                                          (morphs --help)\n"
     "  --version                           the commit this binary was built from, as JSON\n"
     "\n"
     "the build-all manifest:\n"
@@ -1385,5 +1390,6 @@ int main(int argc, char** argv) {
   if (command == "rocks") return content::rocks_command(argc, argv);
   if (command == "vine") return content::vine_command(argc, argv);
   if (command == "cover") return content::cover_command(argc, argv);
+  if (command == "morphs") return content::morphs_command(argc, argv);
   return usage("unknown command");
 }
