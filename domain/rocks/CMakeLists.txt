@@ -6,11 +6,11 @@
 # rest of the tree still builds and passes — a scene's `.rock.json` mesh is then refused with the
 # mesh-generator registry's sentence. That is the proof that the capability is additive.
 # WHOLE_ARCHIVE keeps the module's static registration objects — its schema types and the mesh
-# generator "rock" — from being dropped by the linker because nothing references them.
+# generators "rock" and "deposit" — from being dropped by the linker because nothing references them.
 #
 # Pure CPU arithmetic over core modules and the mesh types it emits: `assets` for the mesh
 # (`assets::MeshData`) and the generator registry, `geometry` for the cluster build its container
-# is made by. No GPU, no ECS, no io: the callers read the file and hand over its text.
+# is made by. No GPU or ECS. The placement generators write sampled recipes through io.
 
 # The capability's own types (ADR-0007): the shapes' parameters and the rock file. CAPABILITY ties
 # them to the same switch, so they leave the build with it.
@@ -20,11 +20,11 @@ engine_module(NAME rocks LAYER domain OPTIONAL WHOLE_ARCHIVE
   DEPS base containers math hash json schema log io image assets geometry materials texture scene_gen
        rocks_schemas
   SOURCES src/solver.cpp src/cliff.cpp src/rocks.cpp src/cliffs_generator.cpp src/geology.cpp
-          src/surface_bake.cpp)
+          src/surface_bake.cpp src/deposits.cpp src/deposits_generator.cpp)
 
 engine_module_tests(NAME rocks
   SOURCES tests/rocks_tests.cpp tests/cliff_tests.cpp tests/cliffs_generator_tests.cpp
-          tests/size_table.cpp tests/geology_tests.cpp tests/surface_bake_tests.cpp)
+          tests/size_table.cpp tests/geology_tests.cpp tests/surface_bake_tests.cpp tests/deposits_tests.cpp)
 
 # The committed recipes in content/rocks/ are pinned by hash; the test finds them through
 # test_paths.h, by this path or in a test bundle.

@@ -1,0 +1,99 @@
+{
+  "format": "engine.scene.v1",
+  "name": "rockfall-deposits",
+  "description": "G124: source-connected deposits under a narrow rocky ridge, with a shallow drainage hollow. Static analytic terrain; no external assets required.",
+  "camera_path": "camera-path.json",
+  "terrain": {
+    "size": 257,
+    "extent": 64,
+    "seed": 19,
+    "dune_height": 0.3,
+    "dune_wavelength": 100,
+    "ridges": [
+      {
+        "from": [
+          -12,
+          -28
+        ],
+        "to": [
+          -12,
+          28
+        ],
+        "height": 25,
+        "width": 14,
+        "roughness": 0.12
+      }
+    ],
+    "basins": [
+      {
+        "center": [
+          9,
+          16
+        ],
+        "radius": 17,
+        "depth": 1.5
+      }
+    ]
+  },
+  "placements": [
+    {
+      "params": {
+        "region_min": [
+          -32,
+          -32
+        ],
+        "min_height_m": 4,
+        "min_length_m": 8,
+        "standoff_m": 1,
+        "seed": 124,
+        "region_max": [
+          32,
+          32
+        ],
+        "block_m": 64,
+        "name": "source ridge",
+        "spacing_m": 2,
+        "face": {
+          "talus_blocks": 0,
+          "type": "Granite",
+          "triangle_budget": 40000,
+          "relief": 1,
+          "material": {
+            "tile_m": 2
+          },
+          "talus": 0
+        }
+      },
+      "generator": "cliffs"
+    },
+    {
+      "generator": "deposits",
+      "params": {
+        "seed": 124,
+        "region_min": [
+          -32,
+          -32
+        ],
+        "region_max": [
+          32,
+          32
+        ],
+        "spacing_m": 0.5,
+        "talus_depth_m": 2.5,
+        "runout_m": 32,
+        "channel_area_m2": 12,
+        "sediment_depth_m": 0.1,
+        "patch": {
+          "type": "Granite",
+          "fragments": 256,
+          "fragment_m": 0.25,
+          "triangle_budget": 64000,
+          "material": {
+            "tile_m": 2
+          }
+        },
+        "avoid_earlier": false
+      }
+    }
+  ]
+}

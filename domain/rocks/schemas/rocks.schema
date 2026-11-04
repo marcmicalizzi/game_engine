@@ -356,3 +356,61 @@ struct CliffLayer @version(1) {
   /// root's `cliffs/`, else the repository's, else `cliffs` beside the scene.
   recipes: string
 }
+
+/// A terrain-fitted sediment patch, written by deposits as <hash>.deposit.json.
+/// Heights and depths are sampled at vertices; all lengths are local metres.
+struct DepositPatch @version(1) {
+  seed: u64 = 1
+  type: RockType = Granite
+  /// Grid points per axis, 2..65, with exactly width*depth values in each array.
+  width: u32 = 2
+  depth: u32 = 2
+  /// Metres between samples, 0.25..8; patch span must not exceed 32 m.
+  spacing_m: f32 = 1.0 @unit(m)
+  ground: f32[]
+  /// Nonnegative deposit thickness, 0..20 m. Zero denotes bare substrate.
+  thickness: f32[]
+  /// Coarse rockfall share, 0..1; zero is channel sediment and gravel.
+  coarse: f32[]
+  /// Number of visible representative fragments, 0..4096 (not a grain inventory).
+  fragments: u32 = 96
+  /// Largest fragment half-length, 0.02..2 m, no larger than half spacing_m.
+  fragment_m: f32 = 0.4 @unit(m)
+  /// Whole patch surface plus all fragments, 500..1,000,000 triangles.
+  triangle_budget: u32 = 32000
+  material: RockMaterial
+}
+
+/// Static deposition authoring over a finite terrain window; not a hazard or fluid simulation.
+struct DepositLayer @version(1) {
+  seed: u64 = 1
+  /// World metres, finite within +/-1e8; max exceeds min, aligned to spacing_m.
+  region_min: f64[2]
+  region_max: f64[2]
+  /// Terrain sample interval, 0.25..8 m; no more than max_samples grid vertices.
+  spacing_m: f32 = 1.0 @unit(m)
+  /// Patch edge, 1..32 m, at least spacing_m; divides the world tile and is a whole number of spacings.
+  patch_m: f32 = 8.0 @unit(m)
+  /// Explicit working-grid budget, 4..1,048,576 vertices. Excess is refused.
+  max_samples: u32 = 262144
+  /// Rockfall-source slope, 40..85 degrees, above repose_deg.
+  source_deg: f32 = 50.0
+  /// Runout envelope descent angle, 25..40 degrees (natural talus commonly ~35).
+  repose_deg: f32 = 35.0
+  /// Maximum rockfall thickness, 0..20 m; zero disables talus.
+  talus_depth_m: f32 = 3.0 @unit(m)
+  /// Maximum downstream travel from a steep source, 1..1000 m.
+  runout_m: f32 = 40.0 @unit(m)
+  /// Catchment area required for channel deposits, 1..1e6 square metres.
+  channel_area_m2: f32 = 24.0
+  /// Channel deposition permitted below this slope, 1..30 degrees.
+  channel_deg: f32 = 12.0
+  /// Maximum fine-sediment thickness, 0..2 m; zero disables channel deposits.
+  sediment_depth_m: f32 = 0.12 @unit(m)
+  /// Respect earlier placement footprints. Disable explicitly when earlier entries are source cliffs.
+  avoid_earlier: bool = true
+  /// Clearance beyond earlier footprints, 0..100 m; overlapping patches are omitted.
+  clear_m: f32 = 0.0 @unit(m)
+  /// Patch geometry and material defaults; sampled arrays and dimensions are replaced.
+  patch: DepositPatch
+}
