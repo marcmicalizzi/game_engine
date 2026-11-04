@@ -383,6 +383,17 @@ engine-content terrain-tiles mountain.json --ddc ddc
 writes edited terrain, a fitted feature recipe, provenance and a review scene. It
 requires the soil capability; see [soil](soil.md#cook-and-scene-workflow).
 
+## engine-content morphs: MakeHuman targets as morph channels
+
+```
+engine-content morphs <body.gltf|body.glb> --mapping <control-data.json> --controls <body-controls.json>
+    --targets <dir> --references <makehuman dir> --sex male|female --out <dir> [--id <revision>]
+```
+
+appends the catalogue's MakeHuman shape targets to every mesh of the body whose vertices carry `_CANONICAL_ID`, one channel a control side (`shape.<key>.less`, `shape.<key>.more`; a control marked `"female": true` only with `--sex female`), with `POSITION` and recomputed `NORMAL` deltas, pads every animation's `weights` track with zero channels, and writes `<out>/body.gltf`, `body.bin`, `body.identity.json` (the source's identity file with this revision, the new file's hash and where it came from; one made from the file when a GLB brings none) and `provenance.json` (the inputs and their hashes, the scale, each channel's files and how far it moves, the meshes morphed and left alone, the recipe with this binary's commit). A `.glb` reads as readily as a `.gltf` and writes a `.gltf` and its `.bin`; a mesh without the attribute is left exactly as it was and named under `meshes_left_unchanged` in the summary line. The mapping rule (a canonical id is not a MakeHuman index), the scale and the normals are on [assets](assets.md#morph-channels-from-makehuman-targets). One JSON line on stdout: the input and output kinds, the meshes, `channels_added`, `tracks_padded`, `scale_raw_to_m`, `pinned_targets_checked`, and the two output files' sha256. Exit 1 on a refused input (a mapping that is not the base's body group, an id outside it, an identity file that disagrees, a target that is not its pinned download), 2 on usage. Every line break it writes is `\r\n`, on every platform, because the files it reproduces were written so.
+
+**Who calls it.** The forest proof of concept's player-body recipe (P59, `scripts/build-player-asset.ps1`, its `Invoke-MorphStep` line) builds a creator body from an authoring release with this in place of its Python step, and its `-Verify` is the proof: `body.gltf`, `body.bin` and `body.identity.json` of both v1 creator bodies come out sha256-identical to the shipped ones (C59, 2026-11-03).
+
 ## engine-content tissue: the tissue definition
 
 `tissue` reads, checks and reports the engine's tissue definition ([tissue](tissue.md)); it is present when the build has the tissue capability (which needs physics), and without it — `ENGINE_WITH_TISSUE=OFF`, `ENGINE_WITH_PHYSICS=OFF`, a minimal build — the command is refused with a sentence and exit 1, as engine-view refuses `--animate` without animation. Every subcommand prints one JSON line.

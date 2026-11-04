@@ -65,6 +65,9 @@ int rocks_command(int argc, char** argv);
 int soil_command(int argc, char** argv);
 int vine_command(int argc, char** argv);   // cover_commands.cpp
 int cover_command(int argc, char** argv);  // cover_commands.cpp
+// MakeHuman shape targets appended to a canonical-topology body as morph channels (morphs.cpp,
+// docs/subsystems/assets.md); present in every configuration.
+int morphs_command(int argc, char** argv);
 
 // The texture step `build --cache` runs, for a generated mesh's container (flora, rocks): every
 // image its records name built into `<ddc>/textures/<key>.tex`, or found there, with the paths
