@@ -501,10 +501,16 @@ TEST_CASE(
   REQUIRE(shares != nullptr);
   const f64 flexion = number(look->find("flexion_deg"));
   const f64 deg = 60.0;
-  // The shares: the cervical range to the neck and head (24% the head's), the rest the torso's.
-  CHECK(element(shares, 0) == doctest::Approx(deg - flexion).epsilon(1e-3));
-  CHECK(element(shares, 2) == doctest::Approx(flexion * 0.24).epsilon(1e-3));
-  CHECK(element(shares, 1) == doctest::Approx(flexion * 0.76).epsilon(1e-3));
+  // P60: the eyes take the first 30 degrees (the ocular share), so the neck and head turn the
+  // remaining 30, inside the cervical range, and the torso none. The remainder goes to the neck and
+  // head (24% the head's).
+  const f64 ocular = number(down.find("ocular_pitch_deg"));
+  CHECK(ocular == doctest::Approx(30.0).epsilon(1e-3));
+  const f64 remainder = deg - ocular;
+  CHECK(remainder < flexion);
+  CHECK(element(shares, 0) == doctest::Approx(0.0).scale(1.0).epsilon(1e-3));
+  CHECK(element(shares, 2) == doctest::Approx(remainder * 0.24).epsilon(1e-3));
+  CHECK(element(shares, 1) == doctest::Approx(remainder * 0.76).epsilon(1e-3));
   for (u32 i = 0; i < 3; ++i) {
     const f64 a = element(shares, i) * 3.14159265358979 / 180.0;
     const f64 c = std::cos(a);
