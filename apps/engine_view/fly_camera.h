@@ -101,10 +101,18 @@ struct FlyParams {
 
 // The camera between ticks. `yaw` is kept in [-pi, pi] and `pitch` in [-limit, limit]; `position`
 // is the eye in the world, f64 (see the file comment).
+//
+// **`look_yaw`, the orbit mode's camera** (P14; apps.md "Third person"): in a session whose header
+// says `orbit`, while it walks, `yaw` is the walker's heading — the way the body faces and turns
+// toward — and `look_yaw` the camera's own, which the mouse turns round the body
+// (`FlySession::view_state` puts it back in `yaw` for a drawn camera). Everywhere else the two are
+// the same number. It is not in `hash_fly_state` or `state_json`: an orbit session adds it to its
+// chain itself, so every other session hashes and writes what it always did.
 struct FlyState {
   WorldPos position{};
   f32 yaw = 0.0f;
   f32 pitch = 0.0f;
+  f32 look_yaw = 0.0f;
 };
 
 // **The viewer's controls** beside the camera's (docs/subsystems/apps.md): buttons the session
@@ -197,6 +205,10 @@ bool resolve_fly_actions(const input::ActionMap& map, FlyActions& out, std::stri
 // round to f32. Not a general replacement for the C library — slower, and meant for angles within
 // a few turns of zero — but the same bits on every compiler and platform the tree builds for.
 void fly_sin_cos(f32 angle, f32& sin_out, f32& cos_out) noexcept;
+// atan2(y, x) the same way (P14's orbit mode): in [-pi, pi], from `+ - * / sqrt` in f64 — two
+// half-angle reductions and a Taylor series good to about 1e-16 — so a stick's heading is the same
+// bits on every compiler. 0 for (0, 0).
+f32 fly_atan2(f32 y, f32 x) noexcept;
 
 // Where the camera looks, and its right, from the state's yaw and pitch through `fly_sin_cos`.
 Vec3 fly_forward(const FlyState& state) noexcept;
@@ -222,15 +234,30 @@ renderer::Camera fly_view(const FlyState& state, f32 fov_y, f32 znear) noexcept;
 // **The third-person boom** (P53; apps.md "The player's body"): how far behind the walker's eye the
 // drawn camera stands, along the look, and how far above it. `view.camera.boom_m` (2.5) and
 // `view.camera.boom_height_m` (0.4); drawn-only, so not part of a recording.
+//
+// **The boom pulls in** (P14, 2026-11-03): under `view.camera.collision=pull` (the default) a
+// sphere of `view.camera.boom_radius_m` (0.25: the near plane, 0.1, and a margin, so the near plane
+// never cuts what the camera stands against) is swept from the walker's eye back along the look
+// against the static collision the walker stands among (`Walker::cast_boom`), and the boom is as
+// long as the sphere travels before it touches something, never under `view.camera.boom_min_m`
+// (0.3); the height is added after, at the end of the shortened boom. `off` keeps P53's boom, which
+// the ground and the trees may cut through. All four are drawn-only, so not part of a recording.
 struct FlyBoom {
   f32 back_m = 2.5f;
   f32 up_m = 0.4f;
+  f32 radius_m = 0.25f;
+  f32 min_m = 0.3f;
+  bool pull = true;
 };
-// The two tunables, read now (the caller reads them once, outside the frame loop).
+// The tunables, read now (the caller reads them once, outside the frame loop).
 FlyBoom fly_boom_from_tunables() noexcept;
+// **The boom's length against the scene**: `boom.back_m`, or under `pull` and with a walker that
+// has a collision world, the free length `Walker::cast_boom` finds from `drawn`'s position back
+// along its look, held to at least `min_m` (or `back_m`, when that is shorter).
+f32 fly_boom_length(const FlyState& drawn, const FlyBoom& boom, const Walker* walker) noexcept;
 // The camera on the boom: `drawn`'s position moved back along its look by `back_m` and up (world
-// +y) by `up_m`, with the look's own orientation. No collision: the ground and the trees may cut
-// through it (roadmap P14).
+// +y) by `up_m`, with the look's own orientation. The caller that pulls the boom in puts
+// `fly_boom_length`'s answer in `back_m` first.
 renderer::Camera fly_boom_view(const FlyState& drawn, const FlyBoom& boom, f32 fov_y,
                                f32 znear) noexcept;
 
@@ -311,6 +338,14 @@ struct SessionHeader {
   f64 world_rate = 1.0;
   f64 time_rate = 0.0;
   f64 time_of_day_h = -1.0;
+  // **The camera's mode** (P14, 2026-11-03; apps.md "Third person"): `follow` — the body faces the
+  // look's yaw, every session before it — or `orbit`, where the mouse turns the camera round the
+  // body, the movement keys go relative to the camera and the body turns to the way it walks at
+  // `turn_rate_deg_s`. It changes what is simulated, so it is recorded: the header's `orbit` block
+  // `{"turn_rate_deg_s"}`, written only for an orbit session, so a follow header is the bytes it
+  // always was and a header without the block reads as `follow`.
+  bool orbit = false;
+  f32 turn_rate_deg_s = 180.0f;
 };
 
 JsonValue session_to_json(const SessionHeader& header);
@@ -352,7 +387,11 @@ u64 hash_fly_state(u64 seed, const FlyState& state) noexcept;
 // {"format","version","tick_hz","ticks","hash","last","markers":[{"tick","position","yaw","pitch"}]}
 // with every position a JSON double and every angle the f64 of its f32, so the text reads back to
 // the same bits.
-JsonValue trajectory_to_json(const Trajectory& trajectory, u32 tick_hz);
+// `look_yaw`: an orbit session's, which adds each state's `look_yaw` beside its `yaw` (the camera's
+// beside the heading); every other session writes what it always did.
+JsonValue trajectory_to_json(const Trajectory& trajectory, u32 tick_hz, bool look_yaw = false);
+// `view.camera.mode` now: true for `orbit`. Read once when a live session starts, into its header.
+bool fly_orbit_from_tunables();
 
 // ---- the session -------------------------------------------------------------------------------
 
@@ -401,8 +440,20 @@ class FlySession {
   // The camera at the last tick boundary: what a replay's frames and every marker capture draw,
   // because they are tick-aligned by construction.
   renderer::Camera camera() const noexcept {
-    return fly_view(state_, header_.fov_y, header_.znear);
+    return fly_view(view_state(state_), header_.fov_y, header_.znear);
   }
+  // **The look a camera is drawn along** (P14): `state` itself, or in an orbit session `state`
+  // with the camera's `look_yaw` in `yaw` — the heading is the body's, the look the camera's.
+  FlyState view_state(const FlyState& state) const noexcept {
+    if (!header_.orbit) return state;
+    FlyState out = state;
+    out.yaw = state.look_yaw;
+    return out;
+  }
+  bool orbit() const noexcept { return header_.orbit; }
+  // Orbit ticks whose turn the rate held short of the heading the keys asked for (the bounded turn
+  // at work): the summary's.
+  u64 turn_limited_ticks() const noexcept { return turn_limited_ticks_; }
   // **The camera a live frame draws**: `alpha` of a tick past `previous()`, where `alpha` is the
   // fraction of a tick the clock had accumulated past the last tick it ran when the frame sampled
   // it (`FixedStepClock::interpolation_alpha`). A frame that sampled the state at the last tick
@@ -413,7 +464,8 @@ class FlySession {
   // interpolated, moves the drawn camera by exactly the frame's own time. It reads the state and
   // never writes it, so the trajectory and the replay guarantee are untouched.
   renderer::Camera camera_at(f32 alpha) const noexcept {
-    return fly_view(fly_interpolate(previous_, state_, alpha), header_.fov_y, header_.znear);
+    return fly_view(view_state(fly_interpolate(previous_, state_, alpha)), header_.fov_y,
+                    header_.znear);
   }
   // `FrameDesc::frame_index` for a frame drawn now: the tick at `k_frame_index_hz`.
   u64 frame_index() const noexcept {
@@ -480,6 +532,7 @@ class FlySession {
   bool third_person_ = false;
   u32 camera_toggles_ = 0;
   u64 third_person_ticks_ = 0;
+  u64 turn_limited_ticks_ = 0;
   TickObserver observer_ = nullptr;
   void* observer_user_ = nullptr;
   bool teleport_pending_ = false;

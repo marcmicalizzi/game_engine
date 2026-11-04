@@ -53,6 +53,15 @@ tunables::Float walk_gravity{"view.walk.gravity", 9.81, 0.0, 100.0,
                              "Metres a second squared, down, on the walker"};
 tunables::Float walk_jump{"view.walk.jump_speed", 4.0, 0.0, 50.0,
                           "The walker's upward speed at the start of a jump (Space)"};
+// The orbit mode's bounded turn (apps.md, "Third person"): 180 degrees a second, the top of the
+// peak yaw velocities measured in healthy adults' 90 to 180 degree turns (Khobkhun, Hollands and
+// Richards 2022, about 103 to 173 degrees a second). Recorded in the session header's orbit block.
+tunables::Float walk_turn_rate{"view.walk.turn_rate_deg_s", 180.0, 1.0, 3600.0,
+                               "Orbit mode (view.camera.mode=orbit): how fast the body turns to "
+                               "the way it walks, degrees a second"};
+
+constexpr f32 k_pi_f = 3.14159265f;
+constexpr f32 k_two_pi_f = 6.28318531f;
 
 u32 bits(f32 v) noexcept {
   if (v == 0.0f) v = 0.0f;
@@ -266,6 +275,10 @@ struct Walker::Impl {
   physics::CharacterBody body;
   sim::ObserverSet observers;
   u64 ring_tick = 0;
+  // The third-person boom's sphere (`cast_boom`), made once at `start` so a session and its replay
+  // make the same shapes in the same order whether a frame ever casts it.
+  physics::ShapeId boom_sphere{};
+  bool has_boom_sphere = false;
 
   physics::CharacterConfig character_config() const {
     physics::CharacterConfig c;
@@ -473,6 +486,10 @@ bool Walker::start(const WalkParams& params, u32 tick_hz, const renderer::SceneD
     // `why` says what
   } else {
     w.ring.add_consumer(w.consumer.consumer());
+    // The boom's sphere (`cast_boom`): its radius is drawn-only, read now and never recorded.
+    const f32 boom_radius = fly_boom_from_tunables().radius_m;
+    w.has_boom_sphere = boom_radius > 0.0f &&
+                        w.world.create_sphere(boom_radius, w.boom_sphere) == physics::Status::Ok;
     w.physical = true;
     w.collision = "physics";
     w.why.clear();
@@ -530,6 +547,65 @@ WorldPos Walker::eye() const noexcept {
 }
 
 WorldPos Walker::feet() const noexcept { return impl_->feet; }
+
+bool Walker::cast_boom(WorldPos from, Vec3 direction, f32 length, f32& out) const noexcept {
+#if ENGINE_VIEW_WALK_PHYSICS
+  const Impl& w = *impl_;
+  if (!w.physical || !w.has_boom_sphere) return false;
+  if (!(length > 0.0f)) {
+    out = 0.0f;
+    return true;
+  }
+  physics::BodyTransform start;
+  start.position = from;
+  physics::ShapeHit hit;
+  // The static bodies alone: the ground, the placements and the scene's meshes. The character's
+  // capsule is not a body of the world, so the cast never meets the walker it starts inside.
+  const physics::LayerMask statics = physics::LayerMask::of(physics::Layer::Static);
+  if (!w.world.cast_shape(w.boom_sphere, start, direction * length, hit, statics)) {
+    out = length;
+    return true;
+  }
+  const f32 f = hit.fraction < 0.0f ? 0.0f : (hit.fraction > 1.0f ? 1.0f : hit.fraction);
+  out = f * length;
+  return true;
+#else
+  (void)from;
+  (void)direction;
+  (void)length;
+  (void)out;
+  return false;
+#endif
+}
+
+f32 walk_turn_rate_from_tunables() { return static_cast<f32>(walk_turn_rate.get()); }
+
+// The orbit mode's heading (walk.h): the move's direction from the camera, by `fly_atan2`.
+bool walk_move_heading(Vec2 move, f32 look_yaw, f32& out) noexcept {
+  if (move.x == 0.0f && move.y == 0.0f) return false;
+  // Forward at yaw is (-sin yaw, 0, -cos yaw) and right (cos yaw, 0, -sin yaw): a move of x right
+  // and y forward is the look turned by atan2(-x, y) (a turn to the right is a smaller yaw).
+  f32 yaw = look_yaw + fly_atan2(-move.x, move.y);
+  if (yaw > k_pi_f) yaw -= k_two_pi_f;
+  if (yaw < -k_pi_f) yaw += k_two_pi_f;
+  out = yaw;
+  return true;
+}
+
+f32 walk_turn_toward(f32 heading, f32 target, f32 max_step) noexcept {
+  f32 turn = target - heading;
+  if (turn > k_pi_f) turn -= k_two_pi_f;
+  if (turn < -k_pi_f) turn += k_two_pi_f;
+  f32 out = target;
+  if (turn > max_step) {
+    out = heading + max_step;
+  } else if (turn < -max_step) {
+    out = heading - max_step;
+  }
+  if (out > k_pi_f) out -= k_two_pi_f;
+  if (out < -k_pi_f) out += k_two_pi_f;
+  return out;
+}
 
 // The ground-follow's own `ground_at`, so a game's answer is the height the walker would stand on
 // there. Its one-point cache is a cache: asked elsewhere, the walker's next look recomputes the

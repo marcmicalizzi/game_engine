@@ -93,6 +93,20 @@ struct WalkInput {
   bool jump = false;
 };
 
+// **The orbit mode's heading** (apps.md, "Third person"; roadmap P14): the movement keys are read
+// relative to the camera, and the body turns to the way it walks. `walk_move_heading` is the yaw
+// of the direction `move` points (x right, y forward, as `WalkInput::move`) seen from a camera at
+// `look_yaw` — W away from the camera, S toward it, A and D across it — wrapped into [-pi, pi], and
+// false for no movement, when the heading keeps its last value. `walk_turn_toward` turns `heading`
+// toward `target` the short way round by at most `max_step` radians and wraps the result into
+// [-pi, pi]: the bounded turn, a fixed step a tick on the tick's state, so it replays bit for bit.
+// Both are `+ - * / sqrt` and `fly_atan2` (fly_camera.h), never the C library's trigonometry.
+bool walk_move_heading(Vec2 move, f32 look_yaw, f32& out) noexcept;
+f32 walk_turn_toward(f32 heading, f32 target, f32 max_step) noexcept;
+// `view.walk.turn_rate_deg_s` (180) now: the orbit mode's bounded turn, degrees a second, read
+// once when a live session starts into its header's orbit block.
+f32 walk_turn_rate_from_tunables();
+
 // The ground as the frames draw it (renderer.md, "The dunes in time-lapse"): the lattice of the
 // scene's terrain grid, and a still ground or the pair of fields and the blend the frames draw.
 // Set once a frame, before its ticks. Where the frames draw the world's tiles (renderer.md, "The
@@ -249,6 +263,15 @@ class Walker {
   // terrain's own time on still ground, the drawn pair blended as the frame draws it on moving
   // ground. False without a ground (no terrain). Asking changes nothing the walker computes.
   bool ground_height(f64 x, f64 z, f64& out);
+  // **The third-person boom's cast** (apps.md, "Third person"; roadmap P14): a sphere of the radius
+  // `view.camera.boom_radius_m` had when `start` ran, swept from `from` along `direction` (a unit
+  // vector) for `length` metres against the static bodies the walker stands among — the ground's
+  // heightfields, the placements' proxies, the scene's own meshes — and the distance its centre
+  // travels before it touches one into `out`: `length` where it touches none, 0 where it starts in
+  // one. False, `out` left alone, where there is no collision world to cast in (the ground-follow,
+  // or before `start`). Drawn only: it reads the world at its state now and changes nothing a step
+  // computes, so a session and its replay walk the same whether it is asked or not.
+  bool cast_boom(WorldPos from, Vec3 direction, f32 length, f32& out) const noexcept;
 
   const WalkStats& stats() const noexcept;
   // The walk's wall time so far, by where it went (`WalkTiming`).

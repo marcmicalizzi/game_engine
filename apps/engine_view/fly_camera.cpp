@@ -345,6 +345,40 @@ bool resolve_fly_actions(const input::ActionMap& map, FlyActions& out, std::stri
   return true;
 }
 
+f32 fly_atan2(f32 y_in, f32 x_in) noexcept {
+  const f64 y = static_cast<f64>(y_in);
+  const f64 x = static_cast<f64>(x_in);
+  if (!std::isfinite(y) || !std::isfinite(x) || (y == 0.0 && x == 0.0)) return 0.0f;
+  const f64 ay = y < 0.0 ? -y : y;
+  const f64 ax = x < 0.0 ? -x : x;
+  // Into [0, 1] by atan(z) = pi/2 - atan(1/z), then twice through the half angle,
+  // atan(z) = 2 atan(z / (1 + sqrt(1 + z^2))), to |z| <= tan(pi/16) = 0.199, where the series
+  // through z^21 leaves out a term of 4e-18. `sqrt` is correctly rounded by IEEE, so every step is
+  // the same bits on every compiler, and Horner's order is the source's (ADR-0035).
+  const bool swapped = ay > ax;
+  f64 z = swapped ? ax / ay : ay / ax;
+  z = z / (1.0 + std::sqrt(1.0 + z * z));
+  z = z / (1.0 + std::sqrt(1.0 + z * z));
+  const f64 z2 = z * z;
+  f64 a = -1.0 / 21.0;
+  a = a * z2 + 1.0 / 19.0;
+  a = a * z2 - 1.0 / 17.0;
+  a = a * z2 + 1.0 / 15.0;
+  a = a * z2 - 1.0 / 13.0;
+  a = a * z2 + 1.0 / 11.0;
+  a = a * z2 - 1.0 / 9.0;
+  a = a * z2 + 1.0 / 7.0;
+  a = a * z2 - 1.0 / 5.0;
+  a = a * z2 + 1.0 / 3.0;
+  a = a * z2 - 1.0;
+  a = -(a * z);  // z - z^3/3 + z^5/5 - ...
+  a = 4.0 * a;
+  if (swapped) a = k_half_pi - a;
+  if (x < 0.0) a = k_pi - a;
+  if (y < 0.0) a = -a;
+  return static_cast<f32>(a);
+}
+
 void fly_sin_cos(f32 angle, f32& sin_out, f32& cos_out) noexcept {
   f64 x = static_cast<f64>(angle);
   if (!(x >= -k_angle_limit && x <= k_angle_limit)) x = 0.0;
@@ -492,13 +526,48 @@ tunables::Float camera_boom{"view.camera.boom_m", 2.5, 0.0, 50.0,
 tunables::Float camera_boom_height{"view.camera.boom_height_m", 0.4, -5.0, 20.0,
                                    "Third person: metres above the walker's eye the camera "
                                    "stands, on top of the boom"};
+// P14 (2026-11-03): the boom pulls in against the scene, and the orbit mode.
+enum class BoomCollision : u32 { Pull, Off };
+constexpr const char* k_collision_choices[] = {"pull", "off"};
+tunables::Enum<BoomCollision> camera_collision{
+    "view.camera.collision", BoomCollision::Pull, k_collision_choices,
+    "Third person: pull the boom in against what stands behind the "
+    "walker (a sphere cast), or off (P53's boom, which cuts through)"};
+tunables::Float camera_boom_radius{"view.camera.boom_radius_m", 0.25, 0.01, 2.0,
+                                   "Third person: the radius of the sphere the boom is cast with, "
+                                   "metres: the near plane and a margin"};
+tunables::Float camera_boom_min{"view.camera.boom_min_m", 0.3, 0.0, 50.0,
+                                "Third person: the shortest the boom is pulled in to, metres"};
+enum class CameraMode : u32 { Follow, Orbit };
+constexpr const char* k_mode_choices[] = {"follow", "orbit"};
+tunables::Enum<CameraMode> camera_mode{
+    "view.camera.mode", CameraMode::Follow, k_mode_choices,
+    "Walking: follow (the body faces the look) or orbit (the mouse turns "
+    "the camera round the body, the keys move relative to the camera and "
+    "the body turns to the way it walks); recorded in the session header"};
 }  // namespace
 
 FlyBoom fly_boom_from_tunables() noexcept {
   FlyBoom boom;
   boom.back_m = static_cast<f32>(camera_boom.get());
   boom.up_m = static_cast<f32>(camera_boom_height.get());
+  boom.radius_m = static_cast<f32>(camera_boom_radius.get());
+  boom.min_m = static_cast<f32>(camera_boom_min.get());
+  boom.pull = camera_collision.get() == BoomCollision::Pull;
   return boom;
+}
+
+bool fly_orbit_from_tunables() { return camera_mode.get() == CameraMode::Orbit; }
+
+f32 fly_boom_length(const FlyState& drawn, const FlyBoom& boom, const Walker* walker) noexcept {
+  if (!boom.pull || walker == nullptr) return boom.back_m;
+  // From the walker's eye, before the height: the point the body stands under, so whatever is
+  // between the eye and the camera is what the cast meets, and the height is added at the end.
+  const Vec3 back = fly_forward(drawn) * -1.0f;
+  f32 free = boom.back_m;
+  if (!walker->cast_boom(drawn.position, back, boom.back_m, free)) return boom.back_m;
+  const f32 floor = boom.min_m < boom.back_m ? boom.min_m : boom.back_m;
+  return free < floor ? floor : free;
 }
 
 renderer::Camera fly_boom_view(const FlyState& drawn, const FlyBoom& boom, f32 fov_y,
@@ -518,13 +587,17 @@ FlyState fly_interpolate(const FlyState& from, const FlyState& to, f32 t) noexce
   out.pitch = from.pitch + (to.pitch - from.pitch) * t;
   // The yaw is kept in [-pi, pi], so a turn across the seam is a jump of nearly a whole turn in
   // the stored numbers and a few milliradians on the screen; interpolate the few milliradians.
-  f32 turn = to.yaw - from.yaw;
-  if (turn > k_pi_f) turn -= k_two_pi_f;
-  if (turn < -k_pi_f) turn += k_two_pi_f;
-  f32 yaw = from.yaw + turn * t;
-  if (yaw > k_pi_f) yaw -= k_two_pi_f;
-  if (yaw < -k_pi_f) yaw += k_two_pi_f;
-  out.yaw = yaw;
+  const auto between = [t](f32 a, f32 b) {
+    f32 turn = b - a;
+    if (turn > k_pi_f) turn -= k_two_pi_f;
+    if (turn < -k_pi_f) turn += k_two_pi_f;
+    f32 yaw = a + turn * t;
+    if (yaw > k_pi_f) yaw -= k_two_pi_f;
+    if (yaw < -k_pi_f) yaw += k_two_pi_f;
+    return yaw;
+  };
+  out.yaw = between(from.yaw, to.yaw);
+  out.look_yaw = between(from.look_yaw, to.look_yaw);  // an orbit session's camera (P14)
   return out;
 }
 
@@ -597,6 +670,11 @@ JsonValue session_to_json(const SessionHeader& header) {
     clock.set("time_rate", header.time_rate);
     if (header.time_of_day_h >= 0.0) clock.set("time_of_day", header.time_of_day_h);
     out.set("clock", std::move(clock));
+  }
+  if (header.orbit) {
+    JsonValue orbit = JsonValue::object();
+    orbit.set("turn_rate_deg_s", JsonValue(header.turn_rate_deg_s));
+    out.set("orbit", std::move(orbit));
   }
   return out;
 }
@@ -706,6 +784,14 @@ bool session_from_json(const JsonValue& value, SessionHeader& out, std::string* 
     }
     h.has_clock = true;
   }
+  // The orbit block, from 2026-11-03 (P14): the camera's mode. Absent: `follow`.
+  if (const JsonValue* orbit = value.find("orbit"); orbit != nullptr) {
+    if (!orbit->is_object() || !read_f32(*orbit, "turn_rate_deg_s", h.turn_rate_deg_s) ||
+        !(h.turn_rate_deg_s > 0.0f)) {
+      return fail("the orbit block does not give a turn rate above zero");
+    }
+    h.orbit = true;
+  }
   out = std::move(h);
   return true;
 }
@@ -724,17 +810,22 @@ u64 trajectory_seed(const FlyState& start) noexcept {
   return hash_fly_state(hash_combine(k_hash_seed, k_fly_version), start);
 }
 
-JsonValue trajectory_to_json(const Trajectory& trajectory, u32 tick_hz) {
+JsonValue trajectory_to_json(const Trajectory& trajectory, u32 tick_hz, bool look_yaw) {
+  const auto state = [look_yaw](const FlyState& s) {
+    JsonValue o = state_json(s);
+    if (look_yaw) o.set("look_yaw", static_cast<f64>(s.look_yaw));  // the orbit's camera (P14)
+    return o;
+  };
   JsonValue out = JsonValue::object();
   out.set("format", k_trajectory_format);
   out.set("version", static_cast<u64>(k_fly_version));
   out.set("tick_hz", static_cast<u64>(tick_hz));
   out.set("ticks", trajectory.ticks);
   out.set("hash", hex16(trajectory.hash));
-  out.set("last", state_json(trajectory.last));
+  out.set("last", state(trajectory.last));
   JsonValue markers = JsonValue::array();
   for (const FlyMarker& marker : trajectory.markers) {
-    JsonValue m = state_json(marker.state);
+    JsonValue m = state(marker.state);
     m.set("tick", marker.tick);
     markers.push_back(std::move(m));
   }
@@ -754,7 +845,8 @@ bool FlySession::start(const input::ActionMap& map, const SessionHeader& header,
   input_.set_map(map);
   header_ = header;
   state_ = header.start;
-  previous_ = header.start;
+  state_.look_yaw = state_.yaw;  // the camera starts where the body faces (P14)
+  previous_ = state_;
   tick_ = SimTick{0};
   trajectory_ = Trajectory{};
   trajectory_.hash = trajectory_seed(state_);
@@ -767,6 +859,7 @@ bool FlySession::start(const input::ActionMap& map, const SessionHeader& header,
   third_person_ = false;
   camera_toggles_ = 0;
   third_person_ticks_ = 0;
+  turn_limited_ticks_ = 0;
   teleport_pending_ = false;
   teleports_ = 0;
   // A session that starts walking (`--walk`) stands on the ground under its start camera before
@@ -797,9 +890,40 @@ void FlySession::on_tick(void* user, SimTick tick, const input::InputState& stat
   if (walk != input::k_invalid_action && state.pressed(walk) && self.can_walk()) {
     self.walking_ = !self.walking_;
     ++self.mode_changes_;
-    if (self.walking_) self.state_.position = self.walker_->drop(self.state_.position);
+    if (self.walking_) {
+      self.state_.position = self.walker_->drop(self.state_.position);
+    } else {
+      self.state_.yaw = self.state_.look_yaw;  // an orbit's flight goes on along the camera's look
+    }
   }
-  if (self.walking_) {
+  const bool orbit = self.header_.orbit;
+  if (self.walking_ && orbit) {
+    // **The orbit mode** (P14; apps.md "Third person"): the mouse turns the camera (`look_yaw`,
+    // and the pitch as ever); the keys are read relative to the camera's yaw, so the walker is fed
+    // the camera's yaw and walks the way the keys point by `walk.*`'s own arithmetic; the body's
+    // heading (`yaw`) turns toward that way at the header's rate, and keeps its last value while
+    // nothing is pressed, so the camera orbits a standing body.
+    FlyState look = self.state_;
+    look.yaw = self.state_.look_yaw;
+    fly_look(look, state, self.actions_, self.header_.params);
+    self.state_.look_yaw = look.yaw;
+    self.state_.pitch = look.pitch;
+    WalkInput in;
+    in.move = state.axis2(self.actions_.move);
+    in.yaw = look.yaw;
+    in.sprint = state.held(self.actions_.fast);
+    in.jump = self.actions_.jump != input::k_invalid_action && state.pressed(self.actions_.jump);
+    self.state_.position = self.walker_->step(in);
+    f32 target = 0.0f;
+    if (walk_move_heading(in.move, look.yaw, target)) {
+      constexpr f32 k_deg = 0.0174532925f;
+      const f32 step =
+          self.header_.turn_rate_deg_s * k_deg / static_cast<f32>(self.header_.params.tick_hz);
+      const f32 turned = walk_turn_toward(self.state_.yaw, target, step);
+      if (turned != target) ++self.turn_limited_ticks_;
+      self.state_.yaw = turned;
+    }
+  } else if (self.walking_) {
     fly_look(self.state_, state, self.actions_, self.header_.params);
     WalkInput in;
     in.move = state.axis2(self.actions_.move);
@@ -807,8 +931,10 @@ void FlySession::on_tick(void* user, SimTick tick, const input::InputState& stat
     in.sprint = state.held(self.actions_.fast);
     in.jump = self.actions_.jump != input::k_invalid_action && state.pressed(self.actions_.jump);
     self.state_.position = self.walker_->step(in);
+    self.state_.look_yaw = self.state_.yaw;
   } else {
     fly_tick(self.state_, state, self.actions_, self.header_.params);
+    self.state_.look_yaw = self.state_.yaw;
     // The ground and placements under the camera built ahead, so that walking here starts on
     // tiles already made (walk.h, `look_ahead`); nothing of the flight depends on it.
     if (self.can_walk()) self.walker_->look_ahead(self.state_.position);
@@ -841,6 +967,7 @@ void FlySession::on_tick(void* user, SimTick tick, const input::InputState& stat
     ++self.teleports_;
     const f32 limit = self.header_.params.pitch_limit;
     self.state_.yaw = self.teleport_heading_;
+    self.state_.look_yaw = self.teleport_heading_;  // an orbit's camera cuts behind the heading
     self.state_.pitch = self.teleport_pitch_ > limit    ? limit
                         : self.teleport_pitch_ < -limit ? -limit
                                                         : self.teleport_pitch_;
@@ -854,6 +981,10 @@ void FlySession::on_tick(void* user, SimTick tick, const input::InputState& stat
   // A walking tick is marked in the chain, so a walk and a flight that happened to reach the same
   // camera still hash apart; a session that never walks hashes as it always did.
   if (self.walking_) self.trajectory_.hash = hash_combine(self.trajectory_.hash, 0x57414c4bull);
+  // An orbit session's camera is its own state (P14): its yaw joins the chain, so two orbits that
+  // walked alike and looked apart hash apart. A follow session hashes as it always did.
+  if (orbit)
+    self.trajectory_.hash = hash_combine(self.trajectory_.hash, bits(self.state_.look_yaw));
   self.trajectory_.last = self.state_;
   if (state.pressed(self.actions_.marker)) {
     self.trajectory_.markers.push_back(

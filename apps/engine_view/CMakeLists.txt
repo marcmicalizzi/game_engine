@@ -117,6 +117,7 @@ if(TARGET engine::hotload)
   list(APPEND _view_tests tests/game_runner_tests.cpp tests/game_props_tests.cpp
                           tests/game_props_view_tests.cpp tests/game_actors_view_tests.cpp
                           tests/player_view_tests.cpp tests/player_rest_tests.cpp
+                          tests/player_boom_tests.cpp tests/player_orbit_tests.cpp
                           game_runner.cpp game_props.cpp)
   # How a run ends and what clock its frames are drawn by (roadmap P44): the result panel, the new
   # run, and the drawn sun on the runner's clock, end to end (tests/game_end_tests.cpp). The HUD's

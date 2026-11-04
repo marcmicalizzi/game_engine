@@ -1331,6 +1331,78 @@ view::FlyBoom third_person_boom() {
   static const view::FlyBoom boom = view::fly_boom_from_tunables();
   return boom;
 }
+// **What the boom's cast did** (P14; apps.md "Third person"), for the summary's
+// `interactive.camera.boom`: the casts, how many pulled the boom in, their wall time, and the last
+// camera drawn on it — and each marker capture's — with the boom's length then. Counters only.
+struct BoomStats {
+  u64 casts = 0;
+  u64 pulled = 0;
+  i64 cast_ns = 0;
+  i64 max_cast_ns = 0;
+  f32 shortest_m = -1.0f;
+  bool have_last = false;
+  WorldPos last{};
+  f32 last_m = 0.0f;
+  struct Marker {
+    u64 tick = 0;
+    WorldPos camera{};
+    f32 length_m = 0.0f;
+  };
+  Vector<Marker> markers;
+};
+BoomStats g_boom;
+void note_boom(const view::FlyBoom& boom, f32 full, i64 cast_ns, const renderer::Camera& camera,
+               u64 marker_tick) {
+  ++g_boom.casts;
+  if (boom.back_m < full) ++g_boom.pulled;
+  g_boom.cast_ns += cast_ns;
+  if (cast_ns > g_boom.max_cast_ns) g_boom.max_cast_ns = cast_ns;
+  if (g_boom.shortest_m < 0.0f || boom.back_m < g_boom.shortest_m) g_boom.shortest_m = boom.back_m;
+  if (marker_tick != ~u64{0}) {
+    if (g_boom.markers.size() < 64)
+      g_boom.markers.push_back(BoomStats::Marker{marker_tick, camera.position, boom.back_m});
+    return;  // a capture after the run, not the last frame's camera
+  }
+  g_boom.have_last = true;
+  g_boom.last = camera.position;
+  g_boom.last_m = boom.back_m;
+}
+JsonValue boom_json(const view::FlySession& session) {
+  const view::FlyBoom boom = third_person_boom();
+  const auto point = [](const WorldPos& p) {
+    JsonValue a = JsonValue::array();
+    a.push_back(p.x);
+    a.push_back(p.y);
+    a.push_back(p.z);
+    return a;
+  };
+  JsonValue out = JsonValue::object();
+  out.set("collision", boom.pull ? "pull" : "off");
+  out.set("cast", session.walker() != nullptr ? session.walker()->collision() : "none");
+  out.set("radius_m", static_cast<f64>(boom.radius_m));
+  out.set("min_m", static_cast<f64>(boom.min_m));
+  out.set("casts", g_boom.casts);
+  out.set("pulled", g_boom.pulled);
+  out.set("cast_us_mean", g_boom.casts > 0 ? static_cast<f64>(g_boom.cast_ns) / 1.0e3 /
+                                                 static_cast<f64>(g_boom.casts)
+                                           : 0.0);
+  out.set("cast_us_max", static_cast<f64>(g_boom.max_cast_ns) / 1.0e3);
+  if (g_boom.shortest_m >= 0.0f) out.set("shortest_m", static_cast<f64>(g_boom.shortest_m));
+  if (g_boom.have_last) {
+    out.set("last", point(g_boom.last));
+    out.set("last_m", static_cast<f64>(g_boom.last_m));
+  }
+  JsonValue markers = JsonValue::array();
+  for (const BoomStats::Marker& m : g_boom.markers) {
+    JsonValue o = JsonValue::object();
+    o.set("tick", m.tick);
+    o.set("position", point(m.camera));
+    o.set("length_m", static_cast<f64>(m.length_m));
+    markers.push_back(std::move(o));
+  }
+  out.set("markers", std::move(markers));
+  return out;
+}
 // **The frame's camera with a body worn** (P58; apps.md "The eye at the face"): under
 // `view.player.eye=face`, while the session walks, the eye at the face carried by the posed head
 // (which also sets the head-look layer the frame draws), from `drawn` — the state this frame draws,
@@ -1344,23 +1416,34 @@ renderer::Camera player_camera(const view::FlySession& session, const view::FlyS
   if (g_player != nullptr) g_player->set_third_person(third && walking);
   if (!walking) return walker_camera;
   const view::SessionHeader& header = session.header();
+  // **The orbit mode's look** (P14): the camera's yaw in place of the body's heading. Handed to the
+  // body's head-look layer as it is, whose yaw relative to the body is zero (player.cpp): so the
+  // head looks the way the body walks, at the camera's pitch, and never turns round to the camera.
+  const view::FlyState look = session.view_state(drawn);
   if (third) {
-    // **Third person** (P53; apps.md "Third person"): the walker's eye moved back along the look.
-    // With a body worn it also sets the head-look layer and draws the head whole; without one it
-    // is the camera alone.
-    const view::FlyBoom boom = third_person_boom();
+    // **Third person** (P53; apps.md "Third person"): the walker's eye moved back along the look,
+    // and under `view.camera.collision=pull` (P14) pulled in to what stands behind it. With a body
+    // worn it also sets the head-look layer and draws the head whole; without one it is the camera
+    // alone.
+    view::FlyBoom boom = third_person_boom();
+    const i64 cast_started = time::monotonic_ns();
+    const f32 full = boom.back_m;
+    boom.back_m = view::fly_boom_length(look, boom, session.walker());
+    const i64 cast_ns = time::monotonic_ns() - cast_started;
     renderer::Camera behind;
-    if (g_player != nullptr && g_player->boom_camera(drawn, header.walk.eye_height, boom,
-                                                     header.fov_y, header.znear, behind)) {
-      if (marker_tick != ~u64{0}) g_player->note_marker(marker_tick);
-      return behind;
+    if (g_player == nullptr || !g_player->boom_camera(look, header.walk.eye_height, boom,
+                                                      header.fov_y, header.znear, behind)) {
+      behind = view::fly_boom_view(look, boom, header.fov_y, header.znear);
+    } else if (marker_tick != ~u64{0}) {
+      g_player->note_marker(marker_tick);
     }
-    return view::fly_boom_view(drawn, boom, header.fov_y, header.znear);
+    note_boom(boom, full, cast_ns, behind, marker_tick);
+    return behind;
   }
   renderer::Camera face;
   if (g_player == nullptr ||
-      !g_player->face_camera(drawn, header.walk.eye_height, header.fov_y, header.znear, face))
-    return walker_camera;
+      !g_player->face_camera(look, header.walk.eye_height, header.fov_y, header.znear, face))
+    return session.orbit() ? view::fly_view(look, header.fov_y, header.znear) : walker_camera;
   if (marker_tick != ~u64{0}) g_player->note_marker(marker_tick);
   return face;
 }
@@ -1931,6 +2014,10 @@ view::SessionHeader live_header(const Options& options, const renderer::SceneDat
   h.has_walk = true;
   h.walking = options.walk;
   h.walk = view::walk_params_from_tunables();
+  // The camera's mode (P14): `view.camera.mode`, read once and recorded, with the orbit's turn
+  // rate.
+  h.orbit = view::fly_orbit_from_tunables();
+  h.turn_rate_deg_s = view::walk_turn_rate_from_tunables();
   // The clocks the session runs on (R88): a replay runs on them too.
   h.has_clock = true;
   h.sun_rate = options.sun_rate.value_or(renderer::sun_rate_tunable());
@@ -2044,7 +2131,8 @@ JsonValue interactive_summary(const Interactive& it, const view::FlySession& ses
   view::SessionHeader header = session.header();
   header.ticks = session.tick().value;
   out.set("session", view::session_to_json(header));
-  JsonValue trajectory = view::trajectory_to_json(session.trajectory(), header.params.tick_hz);
+  JsonValue trajectory =
+      view::trajectory_to_json(session.trajectory(), header.params.tick_hz, header.orbit);
   if (!view::trajectory_comparable(header)) {
     // A session recorded with float32 positions, flown in f64 (fly_camera.h, `k_fly_version`): the
     // same session, a different trajectory, so its hash says nothing about the recording's.
@@ -2058,6 +2146,13 @@ JsonValue interactive_summary(const Interactive& it, const view::FlySession& ses
   }
   out.set("trajectory", std::move(trajectory));
   if (session.walker() != nullptr) out.set("walk", walk_summary(session, *session.walker()));
+  // The camera's mode (P14): `follow` or `orbit`, and an orbit's turn rate and the ticks the rate
+  // held the body's turn short of the way the keys pointed.
+  out.set("camera_mode", header.orbit ? "orbit" : "follow");
+  if (header.orbit) {
+    out.set("turn_rate_deg_s", static_cast<f64>(header.turn_rate_deg_s));
+    out.set("turn_limited_ticks", session.turn_limited_ticks());
+  }
 #if ENGINE_VIEW_ANIMATION && ENGINE_VIEW_GAME
   // --player: the rig, the collapse and the body's actor block (player.h).
   if (g_player != nullptr) {
@@ -2071,6 +2166,7 @@ JsonValue interactive_summary(const Interactive& it, const view::FlySession& ses
     const view::FlyBoom boom = third_person_boom();
     player.set("boom_m", static_cast<f64>(boom.back_m));
     player.set("boom_height_m", static_cast<f64>(boom.up_m));
+    player.set("boom", boom_json(session));  // the cast (P14)
     out.set("player", std::move(player));
   }
 #endif
