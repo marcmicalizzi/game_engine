@@ -77,6 +77,58 @@ distance, the canopy's shade and the climate's wetness. **Not yet**: the content
 them from a scene (the terrain under the host, the nearest water body, Beer–Lambert under the placed
 canopy, G77's light field); a recipe says them.
 
+## Host substrates and nurse logs (G124)
+
+`CoverGrowth.habitat` declares `HostHabitat`: substrate, decay intensity, penetrable rooting depth
+and existing bryophyte-mat depth. `regions` override it in inclusive axis-aligned boxes in the
+host's local frame; the last matching box wins. Inputs are validated and included in canonical
+recipe identity. This information is independent of rendering roughness and surface age.
+Queries scan boxes in reverse order, so content-build lookup cost grows linearly with region count;
+the examples use whole-host habitats and do not measure a large region set.
+The [grounding](../experiments/surface-colonization.md) distinguishes evidence from authored
+response widths. `habitat_at` is the public query another content-time consumer can use.
+
+Substrates are legacy (the original model), siliceous rock, calcareous rock, masonry, living bark,
+dead wood, soil and sealed. Sealed is an authoring exclusion, not a claim that real sealed surfaces
+remain sterile. The `lichen_substrate` guild can
+require siliceous rock, calcareous rock, bark or wood; `any` accepts the existing crustose guild
+on rock, masonry, bark and wood, but does not introduce terricolous lichens on explicit soil.
+`dead_wood` remains a compatibility flag only on legacy substrate. Explicit wood fungi require
+dead wood with nonzero decay, independently of `age_years`; this is not a rule for all fungi.
+Smoothing reapplies eligibility every pass, and shape roots check the actual sampled position.
+The four-channel mask remains unchanged, including its host-vertex ordering.
+
+`moss_crevice_bias` (default zero) multiplies moss suitability by `1 - bias * sky`, making moss
+follow sheltered geometry already measured by the host BVH. Material normal maps do not supply
+crevices. Local boxes are sampled at refined triangle centroids and vertices; thin ecological
+boundaries are approximated at `sample_m`, not clipped into new host triangles.
+
+`plants_per_m2` (default zero) adds representative juvenile rosettes on upward decaying wood
+with penetrable rooting depth. Suitability multiplies damp by smoothstep of decay (0..0.25),
+rooting depth (0..3 cm), upward normal (0..1), and one minus the mat-depth ramp (4..8 cm).
+This is an authored establishment proxy, not a species or population simulator. Each rosette
+is six radial leaf cards, twelve triangles; `plant_leaf_m` defaults to 12 cm. Plants use their
+own seeded stream and material `cover/plant` (whole-card UVs, two-sided, alpha-tested with a pack).
+They share the companion's film-first, density-halving budget ladder and zero-weight, flagless
+motion parts: no new instance, collision body, per-frame growth solver or mask channel. CLI reports add
+`plants` and `plant_area_m2` (the suitability integral). As with the original shaped cover, sampled
+triangle counts cap at 64 pieces; use finer `sample_m` for dense large surfaces.
+
+Hosts include `.deadwood.json` through the existing generator host seam, with no dependency on
+the deadwood capability. Its visual `decay` is not silently interpreted as an ecological seedbed:
+state the habitat explicitly. Recipe examples and a gallery live in
+[content/cover](../../content/cover/README.md). A companion still needs the host's exact transform
+and must use the same placement fitting; automatic placement and moving-host binding remain open.
+
+Cover version 2 invalidates cover caches for the expanded canonical recipe. Vine retains version
+1. The legacy-container regression restores only old metadata and requires the original whole-file
+hash, proving existing cover geometry, materials, mask, motion and LOD unchanged. New tests cover
+substrate exclusion, local precedence, validation, suppression through 32 smoothing passes,
+seedbed depth/orientation, budget and deterministic plant geometry. `HostHabitat` is 16 bytes,
+4-aligned, content-time only; existing 24-byte `Exposure` and `P3` do not grow.
+Build-time scratch adds one eligibility byte per welded sample and, only with plants enabled,
+one f64 weight per refined triangle. No habitat buffer is uploaded per runtime instance.
+
 ## The vine
 
 `solve_vine` (vine.h). **Seeds** on holding surface reaching into `seed_band_m` above the host's
@@ -163,8 +215,8 @@ already has; the film's triangles then go away. It needs the material system's s
 attribute stream more in `gfx::MeshDesc`.
 
 **The budget**: the film's threshold rises by 0.1 to 1.0, then the pieces' density halves, until the
-triangles fit. Four primitives, one a kind: moss (the film and the cushions), lichen (two-sided:
-the tufts are cards), algae, fungi.
+triangles fit. Up to five primitives, one per emitted kind: moss (film and cushions), lichen
+(two-sided: the tufts are cards), algae, fungi, and optional nurse-log plants.
 
 ## The build
 
@@ -188,9 +240,10 @@ A rock's moss does not trip a walker and a wall's ivy does not stop one.
 
 The same recipe and host give the same bytes on every toolchain: f64 arithmetic with IEEE `+ − × /`
 and `sqrt`, the deterministic sines and `exp`, splitmix64 streams per seed, per stem and per
-triangle, the weld and the BVH by total orders, one thread. `k_cover_version` is in every source
-hash; bump it with any change that moves a pinned companion's bytes. The vine on the test cube and
-the two containers are pinned in `tests/cover_tests.cpp`.
+triangle, the weld and the BVH by total orders, one thread. Each generator's version
+(`k_cover_version` or `k_vine_version`) is in its source hash; bump the corresponding version with
+any change that moves a pinned companion's bytes. Vine, legacy cover and nurse-log plants have
+mesh/container regressions in `tests/cover_tests.cpp`.
 
 ## Not yet
 

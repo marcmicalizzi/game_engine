@@ -3,6 +3,7 @@
 
 #include <core/math/deterministic.h>
 #include <domain/cover/growth.h>
+#include <domain/cover/habitat.h>
 #include <domain/flora/companion.h>
 #include <domain/geometry/cluster_file.h>
 
@@ -203,6 +204,7 @@ void host_mask(const HostSurface& host, const HostSurface& fine, const Vector<f3
 }  // namespace
 
 bool cover_in_range(const CoverGrowth& c, std::string& error) {
+  if (!habitat_in_range(c, error)) return false;
   const auto bad = [&](const char* field) {
     error = std::string("cover.") + field + " is out of range (cover.md, \"The cover\")";
     return false;
@@ -212,6 +214,9 @@ bool cover_in_range(const CoverGrowth& c, std::string& error) {
   if (!in(c.lichen, 0.0, 2.0)) return bad("lichen");
   if (!in(c.algae, 0.0, 2.0)) return bad("algae");
   if (!in(c.fungus, 0.0, 2.0)) return bad("fungus");
+  if (!in(c.moss_crevice_bias, 0.0, 1.0)) return bad("moss_crevice_bias");
+  if (!in(c.plants_per_m2, 0.0, 400.0)) return bad("plants_per_m2");
+  if (!in(c.plant_leaf_m, static_cast<f64>(0.02f), 0.5)) return bad("plant_leaf_m");
   if (!in(c.crevice_radius_m, 0.05, 10.0)) return bad("crevice_radius_m");
   if (!in(c.sample_m, 0.02, 5.0)) return bad("sample_m");
   if (!in(c.patchiness, 0.0, 1.0)) return bad("patchiness");
@@ -232,7 +237,8 @@ bool cover_in_range(const CoverGrowth& c, std::string& error) {
 }
 
 Suitability cover_suitability(const Exposure& e, f64 roughness, const HostSite& site,
-                              const CoverGrowth& params) {
+                              const CoverGrowth& params, const HostHabitat* habitat) {
+  const HostHabitat& h = habitat != nullptr ? *habitat : params.habitat;
   Suitability s;
   const f64 sun = static_cast<f64>(e.sun);
   const f64 sky = static_cast<f64>(e.sky);
@@ -259,8 +265,14 @@ Suitability cover_suitability(const Exposure& e, f64 roughness, const HostSite& 
       (0.3 + 0.7 * light) * (1.0 - 0.6 * damp) * (0.5 + 0.5 * r) * (up > -0.5 ? 1.0 : 0.4);
   // Algae: a green film where it is damp and shaded, on any substrate, smooth included.
   s.kind[k_algae] = clamp01(1.2 * damp) * (1.0 - 0.9 * sun);
-  // Fungi fruit only on dead or dying wood, where it is damp and shaded.
-  s.kind[k_fungus] = params.dead_wood ? clamp01(1.3 * damp) * (1.0 - 0.8 * sun) : 0.0;
+  // This guild is wood-decay fungi; substrate is independent of material roughness and age.
+  s.kind[k_fungus] =
+      substrate_allows(h, params, k_fungus) ? clamp01(1.3 * damp) * (1.0 - 0.8 * sun) : 0.0;
+  if (h.substrate == Substrate::dead_wood)
+    s.kind[k_fungus] *= smoothstep(0.0, 0.25, static_cast<f64>(h.decay));
+  s.kind[k_moss] *= 1.0 - static_cast<f64>(params.moss_crevice_bias) * sky;
+  for (u32 k = 0; k < k_cover_kinds; ++k)
+    if (!substrate_allows(h, params, k)) s.kind[k] = 0.0;
   return s;
 }
 
@@ -283,8 +295,8 @@ void solve_cover_mask(const HostSurface& surface, const Vector<Exposure>& exposu
   area.resize(surface.welded, 0.0);
   for (u32 t = 0; t < triangles; ++t) {
     if (surface.holds[t] == 0 || surface.face_area[t] <= 0.0) continue;
-    const Suitability s =
-        cover_suitability(exposure[t], static_cast<f64>(surface.roughness[t]), site, params);
+    const Suitability s = cover_suitability(exposure[t], static_cast<f64>(surface.roughness[t]),
+                                            site, params, &habitat_at(params, surface.centroid(t)));
     // Colonies: each kind establishes in patches, a seeded value noise over the surface at
     // `patch_m` scaling its share by 1 - patchiness + patchiness * noise.
     const P3 at = surface.centroid(t);
@@ -314,6 +326,20 @@ void solve_cover_mask(const HostSurface& surface, const Vector<Exposure>& exposu
     for (u32 k = 0; k < k_cover_kinds; ++k)
       value[w * k_cover_kinds + k] = sum[w * k_cover_kinds + k] / area[w];
   }
+  // A welded vertex has one habitat at its position. Do not diffuse a forbidden channel through
+  // a sealed region or across a substrate boundary, even when the host has duplicated vertices.
+  Vector<u8> allowed;
+  allowed.resize(surface.welded, 0u);
+  for (u32 v = 0; v < surface.positions.size(); ++v) {
+    const HostHabitat& h = habitat_at(params, surface.positions[v]);
+    const u32 w = surface.weld[v];
+    for (u32 k = 0; k < k_cover_kinds; ++k) {
+      if (substrate_allows(h, params, k))
+        allowed[w] |= static_cast<u8>(1u << k);
+      else
+        value[w * k_cover_kinds + k] = 0.0;
+    }
+  }
   // Smoothing along the surface (Jacobi: every vertex from the last pass's neighbours), over the
   // vertices that carry cover, so a leaf's or an empty part's zero does not bleed in.
   Vector<f64> next;
@@ -335,7 +361,9 @@ void solve_cover_mask(const HostSurface& surface, const Vector<Exposure>& exposu
       if (count == 0) continue;
       for (u32 k = 0; k < k_cover_kinds; ++k)
         next[w * k_cover_kinds + k] =
-            0.5 * value[w * k_cover_kinds + k] + 0.5 * total[k] / static_cast<f64>(count);
+            (allowed[w] & (1u << k)) != 0
+                ? 0.5 * value[w * k_cover_kinds + k] + 0.5 * total[k] / static_cast<f64>(count)
+                : 0.0;
     }
     value.swap(next);
   }
@@ -389,9 +417,26 @@ bool solve_cover(const HostSurface& host, const HostBvh& bvh, const HostSite& si
     Vector<f32> at_host;
     host_mask(host, surface, mask, at_host);
     pack_cover_mask(host, at_host, *mask_out);
+    for (u32 v = 0; v < host.positions.size(); ++v) {
+      const HostHabitat& h = habitat_at(params, host.positions[v]);
+      for (u32 k = 0; k < k_cover_kinds; ++k)
+        if (!substrate_allows(h, params, k)) (*mask_out)[v] &= ~(0xffu << (8u * k));
+    }
   }
   CoverReport report;
   const u32 triangles = surface.triangle_count();
+  Vector<f64> plant_weight;
+  if (params.plants_per_m2 > 0.0f) {
+    plant_weight.resize(triangles, 0.0);
+    for (u32 t = 0; t < triangles; ++t) {
+      if (surface.holds[t] == 0) continue;
+      const HostHabitat& h = habitat_at(params, surface.centroid(t));
+      const Suitability s =
+          cover_suitability(exposure[t], static_cast<f64>(surface.roughness[t]), site, params, &h);
+      plant_weight[t] = nurse_log_suitability(h, exposure[t], s.damp);
+      report.plant_area_m2 += surface.face_area[t] * plant_weight[t];
+    }
+  }
   for (u32 t = 0; t < triangles; ++t) {
     if (surface.holds[t] == 0) continue;
     const f64 a = surface.face_area[t];
@@ -406,6 +451,7 @@ bool solve_cover(const HostSurface& host, const HostBvh& bvh, const HostSite& si
   for (u32 k = 0; k < k_cover_kinds; ++k)
     report.mean[k] = report.holding_area_m2 > 0.0 ? report.mean[k] / report.holding_area_m2 : 0.0;
   const auto corner_mean = [&](u32 t, u32 k) {
+    if (!substrate_allows(habitat_at(params, surface.centroid(t)), params, k)) return 0.0;
     f64 c = 0.0;
     for (u32 j = 0; j < 3; ++j)
       c += static_cast<f64>(mask[surface.weld[surface.indices[t * 3u + j]] * k_cover_kinds + k]);
@@ -422,6 +468,9 @@ bool solve_cover(const HostSurface& host, const HostBvh& bvh, const HostSite& si
     out.materials.push_back(material("lichen crust", Vec4{0.56f, 0.60f, 0.48f, 1.0f}, 0.9f, true));
     out.materials.push_back(material("algae film", Vec4{0.15f, 0.29f, 0.11f, 1.0f}, 0.8f, false));
     out.materials.push_back(material("fungus cap", Vec4{0.52f, 0.38f, 0.24f, 1.0f}, 0.7f, false));
+    if (!plant_weight.empty())
+      out.materials.push_back(
+          material("nurse log leaf", Vec4{0.16f, 0.34f, 0.07f, 1.0f}, 0.8f, true));
     flora::KitWriter writer{out, motion};
     const P3 root = surface.lo;
     flora::kit_begin_part(writer, flora::KitPoint{root.x, root.y, root.z},
@@ -431,10 +480,11 @@ bool solve_cover(const HostSurface& host, const HostBvh& bvh, const HostSite& si
                           flora::KitPoint{0.0, 1.0, 0.0}, 0.0, 0u, 0.0, 0.0, 0u);
     writer.weight = 0.0;
     const f64 offset = static_cast<f64>(params.film_offset_m);
-    for (u32 kind = 0; kind < k_cover_kinds; ++kind) {
+    const u32 emitted_kinds = k_cover_kinds + (plant_weight.empty() ? 0u : 1u);
+    for (u32 kind = 0; kind < emitted_kinds; ++kind) {
       const u32 first_index = out.indices.size();
       // (c) The film of this kind: the triangles whose strongest smooth kind it is.
-      if (kind != k_fungus) {
+      if (kind < k_fungus) {
         film_vertex.clear();
         film_vertex.resize(surface.welded, ~0u);
         for (u32 t = 0; t < triangles; ++t) {
@@ -479,13 +529,15 @@ bool solve_cover(const HostSurface& host, const HostBvh& bvh, const HostSite& si
       // (b) The shaped cover of this kind.
       for (u32 t = 0; t < triangles; ++t) {
         if (surface.holds[t] == 0) continue;
-        const f64 c = corner_mean(t, kind);
+        const bool plant = kind == k_cover_kinds;
+        const f64 c = plant ? plant_weight[t] : corner_mean(t, kind);
         if (c <= 0.0) continue;
         const P3 n = surface.face_normal[t];
         f64 density = 0.0;
         if (kind == k_moss) density = static_cast<f64>(params.cushions_per_m2);
         if (kind == k_lichen) density = static_cast<f64>(params.tufts_per_m2);
         if (kind == k_algae) continue;  // algae is a film and nothing else
+        if (plant) density = static_cast<f64>(params.plants_per_m2);
         bool bracket = false;
         if (kind == k_fungus) {
           // A bracket on a steep face, a mushroom on a face that looks up.
@@ -493,7 +545,8 @@ bool solve_cover(const HostSurface& host, const HostBvh& bvh, const HostSite& si
           density = static_cast<f64>(bracket ? params.brackets_per_m2 : params.mushrooms_per_m2);
           if (!bracket && n.y < 0.6) continue;
         }
-        Rng rng = stream_of(params.seed, (static_cast<u64>(t) << 2) | kind);
+        Rng rng = stream_of(
+            params.seed, plant ? (0x8000000000000000ull | t) : (static_cast<u64>(t) << 2) | kind);
         const f64 expected = surface.face_area[t] * density * c * rung.density;
         u32 pieces = static_cast<u32>(std::floor(expected + rng.unit()));
         pieces = pieces > k_pieces_per_triangle ? k_pieces_per_triangle : pieces;
@@ -509,7 +562,25 @@ bool solve_cover(const HostSurface& host, const HostBvh& bvh, const HostSite& si
           const P3 along = normalized(cross(n, rng.direction()));
           const u32 variant = static_cast<u32>(rng.next() % 3u);
           const f64 size = 0.7 + 0.3 * static_cast<f64>(variant) + 0.2 * rng.unit();
-          if (kind == k_moss) {
+          const HostHabitat& at_piece = habitat_at(params, p);
+          if (plant) {
+            if (nurse_log_suitability(at_piece, exposure[t], 1.0) <= 0.0) continue;
+            ++counts.plants;
+            if (count_only) continue;
+            const f64 leaf = static_cast<f64>(params.plant_leaf_m) * (0.8 + 0.2 * size);
+            const P3 base = p + n * offset;
+            for (u32 j = 0; j < 6; ++j) {
+              const f64 turn = 1.0471975511965976 * static_cast<f64>(j);
+              const P3 radial =
+                  normalized(along * det::cos(turn) + cross(n, along) * det::sin(turn));
+              const P3 dir = normalized(n + radial);
+              const P3 side = normalized(cross(n, radial));
+              flora::kit_leaf_card(writer, {base.x, base.y, base.z}, {dir.x, dir.y, dir.z},
+                                   {side.x, side.y, side.z}, leaf, 0.3 * leaf, 0.1);
+            }
+          } else if (!substrate_allows(at_piece, params, kind)) {
+            continue;
+          } else if (kind == k_moss) {
             ++counts.cushions;
             if (count_only) continue;
             const f64 r = static_cast<f64>(params.cushion_radius_m) * size;
@@ -566,10 +637,10 @@ bool solve_cover(const HostSurface& host, const HostBvh& bvh, const HostSite& si
     }
     if (count_only) {
       // The pieces' triangles, by the kit's shapes (counted, not built).
-      triangles_out = counts.film_triangles + static_cast<u64>(counts.cushions) * 42u +
-                      static_cast<u64>(counts.tufts) * 6u +
-                      static_cast<u64>(counts.brackets) * 24u +
-                      static_cast<u64>(counts.mushrooms) * 55u;
+      triangles_out =
+          counts.film_triangles + static_cast<u64>(counts.cushions) * 42u +
+          static_cast<u64>(counts.tufts) * 6u + static_cast<u64>(counts.brackets) * 24u +
+          static_cast<u64>(counts.mushrooms) * 55u + static_cast<u64>(counts.plants) * 12u;
     } else {
       triangles_out = out.indices.size() / 3u;
     }
@@ -578,6 +649,7 @@ bool solve_cover(const HostSurface& host, const HostBvh& bvh, const HostSite& si
     report.tufts = counts.tufts;
     report.brackets = counts.brackets;
     report.mushrooms = counts.mushrooms;
+    report.plants = counts.plants;
   };
   Rung rung;
   rung.threshold = static_cast<f64>(params.film_threshold);

@@ -1,0 +1,18 @@
+{
+  "format": "engine.scene.v1", "name": "surface-colonization",
+  "meshes": [
+    {"name": "granite", "path": "../../rocks/granite-boulder.rock.json"},
+    {"name": "crevice moss", "path": "../../cover/crevice-moss.cover.json"},
+    {"name": "exposed lichen", "path": "../../cover/exposed-lichen.cover.json"},
+    {"name": "old log", "path": "../../cover/nurse-log.deadwood.json"},
+    {"name": "log colonists", "path": "../../cover/nurse-log.cover.json"}
+  ],
+  "instances": [
+    {"mesh": 0, "translation": [-3, 0, 0]},
+    {"mesh": 1, "translation": [-3, 0, 0]},
+    {"mesh": 0, "translation": [0, 0, 0]},
+    {"mesh": 2, "translation": [0, 0, 0]},
+    {"mesh": 3, "translation": [3, 0, 0]},
+    {"mesh": 4, "translation": [3, 0, 0]}
+  ]
+}

@@ -1,0 +1,6 @@
+{
+  "tree": {"species": "oak", "tree": {"height_m": 9, "seed": 17, "triangle_budget": 60000}},
+  "kind": "log", "seed": 17, "start_m": 0.3, "end_m": 4,
+  "bark": 0.25, "decay": 0.65, "hollow": 0.45,
+  "triangle_budget": 20000
+}

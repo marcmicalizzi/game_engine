@@ -77,7 +77,7 @@ constexpr const char* k_vine =
     "{\"host\":\"small.rock.json\",\"vine\":{\"seeds\":2,\"max_length_m\":1.5}}";
 constexpr const char* k_cover =
     "{\"host\":\"small.rock.json\",\"site\":{\"wetness\":0.8,\"canopy_shade\":0.6},"
-    "\"cover\":{\"age_years\":40}}";
+    "\"cover\":{\"age_years\":40,\"plant_leaf_m\":0.02}}";  // The inclusive f32 minimum.
 
 }  // namespace
 
@@ -94,6 +94,7 @@ TEST_CASE("engine-content vine and cover: grown over a host, keyed by it, built 
   const Output first = run({"vine", vine, out, "--no-materials"});
   REQUIRE_MESSAGE(first.exit_code == 0, first.text);
   const JsonValue a = line_of(first);
+  CHECK(number(a, "cover_version") == 1u);
   CHECK_FALSE(flag(a, "cached"));
   const JsonValue* report = a.find("vine");
   REQUIRE(report != nullptr);
@@ -125,6 +126,7 @@ TEST_CASE("engine-content vine and cover: grown over a host, keyed by it, built 
   const Output grown = run({"cover", cover, tmp.file("moss.clusters"), "--no-materials"});
   REQUIRE_MESSAGE(grown.exit_code == 0, grown.text);
   const JsonValue d = line_of(grown);
+  CHECK(number(d, "cover_version") == 2u);
   CHECK(number(d, "cover_mask") > 0u);
   CHECK(d.find("cover") != nullptr);
 }

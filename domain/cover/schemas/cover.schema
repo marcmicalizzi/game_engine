@@ -105,10 +105,65 @@ struct VineFile @version(1) {
   vine: Vine
 }
 
-/// Organic cover over a host (cover.md, "The cover"): the cover mask solved from the exposure
-/// terms by the ecology's rules, the shaped cover scattered where it is dense, and, until the
-/// blended cover layer (roadmap R90) exists, a stand-in film over the host where the smooth cover is.
-struct CoverGrowth @version(1) {
+/// Ecological substrate; legacy preserves old recipes, sealed explicitly disables colonization.
+enum Substrate : u8 {
+  legacy = 0
+  siliceous_rock = 1
+  calcareous_rock = 2
+  masonry = 3
+  living_bark = 4
+  dead_wood = 5
+  soil = 6
+  sealed = 7
+}
+
+/// Habitat guild of the crustose lichen, not a species identification.
+enum LichenSubstrate : u8 {
+  any = 0
+  siliceous = 1
+  calcareous = 2
+  bark = 3
+  wood = 4
+}
+
+/// Explicit ecological information, independent of the host's rendering material and age.
+/// Defaults preserve the original cover model; no substrate is inferred from a file name.
+struct HostHabitat @version(1) {
+  substrate: Substrate = legacy
+  /// Authored wood softening, 0 (fresh) to 1 (strongly decomposed), default 0; not years or a
+  /// field-survey decay class. Used only on dead_wood, independently of cover.age_years.
+  decay: f32 = 0.0
+  /// Penetrable humus/soft wood depth, 0..1 m, default 0 (no vascular establishment).
+  rooting_depth_m: f32 = 0.0 @unit(m)
+  /// Existing bryophyte mat depth, 0..1 m, default 0. Thick mats can exclude seedlings.
+  bryophyte_depth_m: f32 = 0.0 @unit(m)
+}
+
+/// Local override, inclusive box in host mesh metres; last matching region wins. No world
+/// coordinates or material colours. The bounds must be finite with min < max on every axis.
+struct HabitatRegion @version(1) {
+  min: vec3 @unit(m)
+  max: vec3 @unit(m)
+  habitat: HostHabitat
+}
+
+/// Organic cover over a host (cover.md, "The cover"): a mask solved from exposure and habitat,
+/// shaped colonies and optional nurse-log plants. Film stands in for roadmap R90's blended layer.
+struct CoverGrowth @version(2) {
+  /// Whole-host fallback; regions override this at the sampled surface point.
+  habitat: HostHabitat @since(2)
+  regions: HabitatRegion[] = [] @since(2)
+  /// The lichen's substrate guild. Default any retains the existing generic crustose cover.
+  lichen_substrate: LichenSubstrate = any @since(2)
+  /// Extra moss preference for host crevices, 0..1, default 0 (legacy). Multiplies moss by
+  /// 1 - moss_crevice_bias * sky; never invents a crack not present in the host geometry.
+  moss_crevice_bias: f32 = 0.0 @since(2)
+  /// Small vascular rosettes per square metre of suitable nurse-log surface, 0..400, default
+  /// 0 (off). Separate from section 40's four coating channels, within the same triangle budget.
+  plants_per_m2: f32 = 0.0 @since(2)
+  /// Representative juvenile rosette leaf length, 0.02..0.5 m, default 0.12; an authored
+  /// establishment proxy rather than a new botanical species or a mature tree.
+  plant_leaf_m: f32 = 0.12 @unit(m) @since(2)
   /// Everything left to chance: where every shaped piece stands, its size and its turn.
   seed: u64 = 1
   /// Years the surface has stood: 0 to 500. Each kind approaches its cover as 1 - exp(-age / tau):
@@ -119,7 +174,8 @@ struct CoverGrowth @version(1) {
   lichen: f32 = 1.0
   algae: f32 = 1.0
   fungus: f32 = 1.0
-  /// Whether the host is dead or dying wood, the only place fungi fruit: a log, a stump, a snag.
+  /// Compatibility flag for the original wood-fungus guild. Used only on legacy substrate;
+  /// an explicit habitat always wins. This does not claim all fungi grow on wood.
   dead_wood: bool = false
   /// The radius the crevice term looks round a surface for its own shelter: 0.05 to 10 m.
   crevice_radius_m: f32 = 0.6 @unit(m)

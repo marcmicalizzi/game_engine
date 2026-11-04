@@ -50,6 +50,8 @@ struct CoverReport {
   u32 tufts = 0;
   u32 brackets = 0;
   u32 mushrooms = 0;
+  u32 plants = 0;
+  f64 plant_area_m2 = 0.0;  // integral of nurse-log establishment weight
   u32 triangles = 0;
   f32 film_threshold = 0.0f;  // the threshold the budget left
   f64 density_scale = 1.0;    // and the share of the shaped pieces
@@ -63,7 +65,7 @@ struct Suitability {
   f64 damp = 0.0;
 };
 Suitability cover_suitability(const Exposure& e, f64 roughness, const HostSite& site,
-                              const CoverGrowth& params);
+                              const CoverGrowth& params, const HostHabitat* habitat = nullptr);
 
 // The mask: `k_cover_kinds` floats per welded vertex (`surface.welded`), in [0, 1].
 void solve_cover_mask(const HostSurface& surface, const Vector<Exposure>& exposure,

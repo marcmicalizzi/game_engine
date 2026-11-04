@@ -4,14 +4,17 @@
 // north crevice by the ground over a sunlit smooth top) and its shaped pieces following the mask,
 // and the two generators' containers.
 #include <core/hash/hash.h>
+#include <core/json/json.h>
 #include <domain/assets/mesh_generator.h>
 #include <domain/cover/cover.h>
+#include <domain/cover/habitat.h>
 
 #include <doctest/doctest.h>
 #include <test_temp_dir.h>
 
 #include <cmath>
 #include <cstdio>
+#include <limits>
 #include <string>
 
 using namespace engine;
@@ -343,6 +346,198 @@ TEST_CASE("the shaped cover's count follows the mask") {
   CHECK(static_cast<f64>(old.cushions) < expected + 4.0 * std::sqrt(expected) + 2.0);
 }
 
+TEST_CASE("surface colonization separates substrate from roughness and surface age") {
+  cover::CoverGrowth g;
+  g.dead_wood = true;  // explicit stone overrides this compatibility flag
+  g.habitat.substrate = cover::Substrate::siliceous_rock;
+  g.age_years = 500.0f;
+  cover::Exposure e{1.0f, 0.0f, 0.7f, 1.0f, 1.0f, 1000.0f};
+  const auto suitable = [&] { return cover::cover_suitability(e, 0.9, site(), g); };
+  CHECK(suitable().kind[cover::k_fungus] == 0.0);
+  g.lichen_substrate = cover::LichenSubstrate::calcareous;
+  CHECK(suitable().kind[cover::k_lichen] == 0.0);
+  g.habitat.substrate = cover::Substrate::calcareous_rock;
+  CHECK(suitable().kind[cover::k_lichen] > 0.0);
+  g.habitat.substrate = cover::Substrate::dead_wood;
+  CHECK(suitable().kind[cover::k_fungus] == 0.0);  // old surface, fresh wood
+  g.habitat.decay = 0.5f;
+  CHECK(suitable().kind[cover::k_fungus] > 0.0);
+  g.habitat.substrate = cover::Substrate::living_bark;
+  CHECK(suitable().kind[cover::k_fungus] == 0.0);
+  g.habitat.substrate = cover::Substrate::sealed;
+  for (const f64 s : suitable().kind)
+    CHECK(s == 0.0);
+  g.habitat.substrate = cover::Substrate::siliceous_rock;
+  g.moss_crevice_bias = 1.0f;
+  CHECK(suitable().kind[cover::k_moss] == 0.0);
+  e.sky = 0.1f;
+  CHECK(suitable().kind[cover::k_moss] > 0.0);
+}
+
+TEST_CASE("nurse-log establishment needs upward decayed penetrable wood and a shallow mat") {
+  cover::HostHabitat h;
+  cover::Exposure e{1, 0, 0, 0.5f, 1, 1000};
+  h.substrate = cover::Substrate::dead_wood;
+  h.decay = 0.5f;
+  h.rooting_depth_m = 0.04f;
+  const f64 good = cover::nurse_log_suitability(h, e, 0.8);
+  CHECK(good > 0.0);
+  h.bryophyte_depth_m = 0.1f;
+  CHECK(cover::nurse_log_suitability(h, e, 0.8) == 0.0);
+  h.bryophyte_depth_m = 0.0f;
+  h.rooting_depth_m = 0.0f;
+  CHECK(cover::nurse_log_suitability(h, e, 0.8) == 0.0);
+  h.rooting_depth_m = 0.04f;
+  h.decay = 0.0f;
+  CHECK(cover::nurse_log_suitability(h, e, 0.8) == 0.0);
+  h.decay = 0.5f;
+  e.up = 0.0f;
+  CHECK(cover::nurse_log_suitability(h, e, 0.8) == 0.0);
+  e.up = -1.0f;
+  CHECK(cover::nurse_log_suitability(h, e, 0.8) == 0.0);
+  e.up = 1.0f;
+  h.substrate = cover::Substrate::soil;
+  CHECK(cover::nurse_log_suitability(h, e, 0.8) == 0.0);
+}
+
+TEST_CASE("surface habitat validation and canonical identity include every ecological input") {
+  cover::CoverFile file;
+  std::string error;
+  REQUIRE(cover::read_cover_file(R"({"host":"log.deadwood.json","cover":{
+    "habitat":{"substrate":"dead_wood","decay":0.5,"rooting_depth_m":0.04},
+    "plants_per_m2":20,"moss_crevice_bias":0.5}})",
+                                 file, error));
+  const u64 key = cover::cover_source_hash(file, 42);
+  cover::CoverFile copy;
+  REQUIRE(cover::read_cover_file(cover::canonical_cover_json(file), copy, error));
+  CHECK(cover::cover_source_hash(copy, 42) == key);
+  auto endpoint = copy.cover;
+  endpoint.plant_leaf_m = 0.02f;
+  CHECK(cover::cover_in_range(endpoint, error));
+  endpoint.plant_leaf_m = 0.019f;
+  CHECK_FALSE(cover::cover_in_range(endpoint, error));
+  file.cover.habitat.decay = 0.6f;
+  CHECK(cover::cover_source_hash(file, 42) != key);
+  file.cover.habitat.decay = std::numeric_limits<f32>::quiet_NaN();
+  CHECK_FALSE(cover::cover_in_range(file.cover, error));
+  file.cover = copy.cover;
+  cover::HabitatRegion r;
+  r.min = {-1, -1, -1};
+  r.max = {1, 1, 1};
+  r.habitat.substrate = cover::Substrate::sealed;
+  file.cover.regions.push_back(r);
+  CHECK(cover::cover_source_hash(file, 42) != key);
+  CHECK(cover::habitat_at(file.cover, {0, 0, 0}).substrate == cover::Substrate::sealed);
+  CHECK(cover::habitat_at(file.cover, {2, 0, 0}).substrate == cover::Substrate::dead_wood);
+  r.habitat.substrate = cover::Substrate::living_bark;
+  file.cover.regions.push_back(r);
+  CHECK(cover::habitat_at(file.cover, {0, 0, 0}).substrate == cover::Substrate::living_bark);
+  file.cover.regions[0].max.x = file.cover.regions[0].min.x;
+  CHECK_FALSE(cover::cover_in_range(file.cover, error));
+  CHECK(error.find("regions[0]") != std::string::npos);
+  CHECK_FALSE(cover::read_cover_file(R"({"host":"x","cover":{"habitat":{"substrate":"bogus"}}})",
+                                     copy, error));
+}
+
+TEST_CASE("surface masks do not diffuse fungi onto stone or any cover through sealed regions") {
+  cover::Host host;
+  std::string error;
+  REQUIRE(cover::prepare_host(cube(0.9f, 4), host, error));
+  cover::CoverGrowth g;
+  g.habitat.substrate = cover::Substrate::dead_wood;
+  g.habitat.decay = 0.7f;
+  g.patchiness = 0.0f;
+  g.smoothing = 32;
+  cover::HabitatRegion r;
+  r.min = {0, -1, -2};
+  r.max = {2, 3, 2};
+  r.habitat.substrate = cover::Substrate::siliceous_rock;
+  g.regions.push_back(r);
+  Vector<cover::Exposure> exposure;
+  exposure.resize(host.surface.triangle_count(), cover::Exposure{1, 1, 0, 0.2f, 0, 0});
+  Vector<f32> mask;
+  cover::solve_cover_mask(host.surface, exposure, site(), g, mask);
+  u32 fungi = 0;
+  for (u32 v = 0; v < host.surface.positions.size(); ++v) {
+    const f32 value = mask[host.surface.weld[v] * 4 + cover::k_fungus];
+    if (host.surface.positions[v].x >= 0)
+      CHECK(value == 0.0f);
+    else if (value > 0.0f)
+      ++fungi;
+  }
+  CHECK(fungi > 0);
+  g.regions[0].habitat.substrate = cover::Substrate::sealed;
+  cover::solve_cover_mask(host.surface, exposure, site(), g, mask);
+  for (u32 v = 0; v < host.surface.positions.size(); ++v)
+    if (host.surface.positions[v].x >= 0)
+      for (u32 k = 0; k < 4; ++k)
+        CHECK(mask[host.surface.weld[v] * 4 + k] == 0.0f);
+}
+
+TEST_CASE("nurse-log plants share the cover budget and are deterministic noncolliding companions") {
+  cover::Host host;
+  std::string error;
+  REQUIRE(cover::prepare_host(cube(0.9f, 2), host, error));
+  cover::CoverGrowth g;
+  g.habitat.substrate = cover::Substrate::dead_wood;
+  g.habitat.decay = 0.7f;
+  g.habitat.rooting_depth_m = 0.04f;
+  g.plants_per_m2 = 200;
+  g.moss = g.lichen = g.algae = g.fungus = 0;
+  g.triangle_budget = 500;
+  auto s = site();
+  s.wetness = 1;
+  s.canopy_shade = 0.8f;
+  assets::MeshData mesh, again;
+  flora::Motion motion, again_motion;
+  cover::CoverReport report;
+  Vector<u32> mask;
+  REQUIRE(cover::solve_cover(host.surface, host.bvh, s, g, mesh, motion, &mask, &report, &error));
+  CHECK(report.plants > 0);
+  CHECK(report.triangles == report.plants * 12);
+  CHECK(report.triangles <= g.triangle_budget);
+  CHECK(report.plant_area_m2 > 0);
+  CHECK(report.density_scale < 1.0);
+  for (const u32 word : mask)
+    CHECK(word == 0);
+  for (const auto& part : motion.structure)
+    CHECK(part.flags == 0);
+  for (const auto weight : motion.vertex_weight)
+    CHECK(weight == 0.0f);
+  REQUIRE(cover::solve_cover(host.surface, host.bvh, s, g, again, again_motion, nullptr, nullptr,
+                             &error));
+  CHECK(mesh_hash(mesh) == mesh_hash(again));
+  char pin[32];
+  std::snprintf(pin, sizeof(pin), "%016llx", static_cast<unsigned long long>(mesh_hash(mesh)));
+  MESSAGE("nurse-log mesh: " << pin << "; plants " << report.plants);
+  CHECK(std::string(pin) ==
+        "25201b473dd0580a");  // G124, first MSVC pin; 25 plants / 300 triangles.
+
+  cover::CoverFile recipe;
+  recipe.host = "nurse-log.clusters";
+  recipe.site = s;
+  recipe.cover = g;
+  geometry::ClusterFileData container;
+  REQUIRE(cover::build_cover_container(recipe, host, 123, {}, 65536, nullptr, container, nullptr,
+                                       error));
+  CHECK(container.cover_mask.size() == host.surface.positions.size());
+  CHECK(container.materials.size() == 5);
+  std::snprintf(pin, sizeof(pin), "%016llx",
+                static_cast<unsigned long long>(geometry::cluster_file_hash(container)));
+  MESSAGE("nurse-log container: " << pin);
+  CHECK(std::string(pin) == "4fa3b4dddeb82baf");  // G124, section-40/motion/LOD/container pin.
+
+  // Nonholding host parts must not inflate the reported suitable seedbed area.
+  u32 top = 0;
+  for (u32 t = 0; t < host.surface.triangle_count(); ++t)
+    if (host.surface.face_normal[t].y > 0.5 && (++top % 2u) == 0) host.surface.holds[t] = 0;
+  cover::CoverReport restricted;
+  REQUIRE(cover::solve_cover(host.surface, host.bvh, s, g, again, again_motion, nullptr,
+                             &restricted, &error));
+  CHECK(restricted.plant_area_m2 > 0.0);
+  CHECK(restricted.plant_area_m2 < report.plant_area_m2);
+}
+
 TEST_CASE("the generators build companions through the host seam, the mask in section 40") {
   const assets::MeshGeneratorRegistry& registry = assets::MeshGeneratorRegistry::global();
   const assets::MeshGeneratorDesc* vine = registry.find("vine");
@@ -402,5 +597,23 @@ TEST_CASE("the generators build companions through the host seam, the mask in se
                 static_cast<unsigned long long>(geometry::cluster_file_hash(vine_data)),
                 static_cast<unsigned long long>(geometry::cluster_file_hash(cover_data)));
   MESSAGE("containers: " << text);
-  CHECK(std::string(text) == "9cb906a303a4611a 09e1eaf9313d8022");
+  // G124: cover version 2 records habitat inputs; the vine stays at its version-1 pin.
+  // Before G124 (base 86d76acd): cover 09e1eaf9313d8022. Only canonical metadata moved.
+  CHECK(std::string(text) == "9cb906a303a4611a e3e7eb494653eab9");
+  // Restore only version-1 metadata, and the entire legacy container must match its old pin.
+  // This proves geometry, materials, mask, motion and LOD are unchanged, not merely repeatable.
+  JsonValue legacy;
+  REQUIRE(parse_json(cover_data.generator_params, legacy).ok);
+  auto& old_growth = legacy.find("cover")->as_object();
+  for (const char* field : {"habitat", "regions", "lichen_substrate", "moss_crevice_bias",
+                            "plants_per_m2", "plant_leaf_m"})
+    old_growth.erase(std::string(field));
+  cover_data.generator_params = write_json(legacy, JsonWriteOptions{.pretty = false});
+  u64 old_hash = hash_bytes(cover_data.generator_params.data(), cover_data.generator_params.size());
+  old_hash = hash_combine(old_hash, hash_bytes("cover", 5));
+  old_hash = hash_combine(old_hash, 1);
+  old_hash = hash_combine(old_hash, context.mesh.identity);
+  cover_data.source_hash = old_hash;
+  cover_data.build_key = assets::generated_mesh_build_key(old_hash, inputs, lod, 65536u);
+  CHECK(geometry::cluster_file_hash(cover_data) == 0x09e1eaf9313d8022ull);
 }

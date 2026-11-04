@@ -1,0 +1,12 @@
+{
+  "host": "nurse-log.deadwood.json",
+  "site": {"wetness": 0.9, "canopy_shade": 0.65, "water_distance_m": 4},
+  "cover": {
+    "seed": 33, "age_years": 40,
+    "habitat": {"substrate": "dead_wood", "decay": 0.65, "rooting_depth_m": 0.04, "bryophyte_depth_m": 0.02},
+    "lichen_substrate": "wood", "moss_crevice_bias": 0.5,
+    "plants_per_m2": 45, "plant_leaf_m": 0.16,
+    "brackets_per_m2": 30, "mushrooms_per_m2": 20,
+    "sample_m": 0.12, "triangle_budget": 12000
+  }
+}

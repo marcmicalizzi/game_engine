@@ -52,7 +52,8 @@ namespace engine::cover {
 // from the same recipe and host is a new key and never an old container read as the answer. Bump
 // it with any change that moves a byte of a pinned companion (the determinism test says when one
 // did).
-inline constexpr u32 k_cover_version = 1;
+inline constexpr u32 k_cover_version = 2;
+inline constexpr u32 k_vine_version = 1;  // G124 changes no vine recipe or geometry.
 
 // The generators' names, as a recipe's file name gives them: `<name>.vine.json`,
 // `<name>.cover.json`.
@@ -61,10 +62,10 @@ inline constexpr const char* k_cover_generator = "cover";
 inline constexpr const char* k_species_ivy = "ivy";
 
 // The material roles a pack is looked up by (materials.md): the vine's stems and leaves; the
-// cover's moss, lichen, algae and fungi.
+// cover's moss, lichen, algae, fungi and optional nurse-log plants.
 inline constexpr const char* k_vine_roles[2] = {"vine/stem", "vine/leaf"};
-inline constexpr const char* k_cover_roles[k_cover_kinds] = {"moss/mat", "lichen/crust",
-                                                             "algae/film", "fungus/cap"};
+inline constexpr const char* k_cover_roles[k_cover_kinds + 1] = {
+    "moss/mat", "lichen/crust", "algae/film", "fungus/cap", "cover/plant"};
 
 // Reads a recipe's text: the schema's type, a species the solver has, parameters in range and a
 // host named. False, with a sentence naming the field, otherwise.
@@ -75,7 +76,7 @@ bool read_cover_file(std::string_view text, CoverFile& out, std::string& error);
 std::string canonical_vine_json(const VineFile& file);
 std::string canonical_cover_json(const CoverFile& file);
 
-// The source hash: the canonical recipe, the generator, `k_cover_version` and the host's identity.
+// Source hash: canonical recipe, generator, its corresponding version, and host identity.
 u64 vine_source_hash(const VineFile& file, u64 host_identity);
 u64 cover_source_hash(const CoverFile& file, u64 host_identity);
 

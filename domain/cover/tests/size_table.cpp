@@ -7,3 +7,4 @@ using namespace engine;
 
 ENGINE_EXPECT_SIZE(24, 8, cover::P3);
 ENGINE_EXPECT_SIZE(24, 4, cover::Exposure);
+ENGINE_EXPECT_SIZE(16, 4, cover::HostHabitat);
