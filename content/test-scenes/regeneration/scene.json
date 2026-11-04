@@ -1,0 +1,146 @@
+{
+  "camera_path": "camera-path.json",
+  "format": "engine.scene.v1",
+  "instances": [
+    {
+      "mesh": 0,
+      "translation": [
+        -6,
+        0,
+        0.0
+      ]
+    },
+    {
+      "mesh": 1,
+      "translation": [
+        -4,
+        0,
+        0.0
+      ]
+    },
+    {
+      "mesh": 2,
+      "translation": [
+        -2,
+        0,
+        0.0
+      ]
+    },
+    {
+      "mesh": 3,
+      "translation": [
+        0,
+        0,
+        0.0
+      ]
+    },
+    {
+      "mesh": 4,
+      "translation": [
+        2,
+        0,
+        0.0
+      ]
+    },
+    {
+      "mesh": 5,
+      "translation": [
+        4,
+        0,
+        0.0
+      ]
+    },
+    {
+      "mesh": 6,
+      "translation": [
+        6,
+        0,
+        0.0
+      ]
+    },
+    {
+      "mesh": 7,
+      "translation": [
+        -6,
+        0,
+        -3.0
+      ]
+    },
+    {
+      "mesh": 8,
+      "translation": [
+        -4,
+        0,
+        -3.0
+      ]
+    },
+    {
+      "mesh": 9,
+      "translation": [
+        -2,
+        0,
+        -3.0
+      ]
+    },
+    {
+      "mesh": 10,
+      "translation": [
+        0,
+        0,
+        -3.0
+      ]
+    },
+    {
+      "mesh": 11,
+      "translation": [
+        2,
+        0,
+        -3.0
+      ]
+    }
+  ],
+  "name": "Juvenile species and regeneration",
+  "meshes": [
+    {
+      "path": "../../flora/regeneration/maple.flora.json"
+    },
+    {
+      "path": "../../flora/regeneration/oak.flora.json"
+    },
+    {
+      "path": "../../flora/regeneration/birch.flora.json"
+    },
+    {
+      "path": "../../flora/regeneration/pine.flora.json"
+    },
+    {
+      "path": "../../flora/regeneration/spruce.flora.json"
+    },
+    {
+      "path": "../../flora/regeneration/beaked_hazel.flora.json"
+    },
+    {
+      "path": "../../flora/regeneration/red_osier_dogwood.flora.json"
+    },
+    {
+      "path": "../../flora/regeneration/seedlings.flora.json"
+    },
+    {
+      "path": "../../flora/regeneration/suppressed.flora.json"
+    },
+    {
+      "path": "../../flora/regeneration/broken.flora.json"
+    },
+    {
+      "path": "../../flora/regeneration/browsed.flora.json"
+    },
+    {
+      "path": "../../flora/regeneration/obstacle.flora.json"
+    }
+  ],
+  "sky": {
+    "latitude_deg": 46.5,
+    "turbidity": 2.5,
+    "day_of_year": 200
+  }
+}

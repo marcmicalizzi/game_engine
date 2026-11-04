@@ -595,6 +595,8 @@ Import, the content build, validation, provenance, generators, scripting and tex
 
 | G124 | Surface colonization: explicit host substrates, crevice moss, exposed-surface lichens, wood fungi and nurse-log plants through cover | done (6d97c4a3: recipe-owned habitats and regions, substrate gates, crevice moss and budgeted nurse-log plants; Windows affected tests plus viewer retry and Linux Clang passed; captures and measured limits in the grounding report) | G78, G101 | M | research | [cover](subsystems/cover.md), [grounding](experiments/surface-colonization.md) |
 
+| G126 | Regeneration and damaged young growth: species-specific seedlings and saplings, seedling groups, suppression, broken leaders, browsing and authored obstacles within flora | done (a85b9ea3, 2026-11-04: seven juvenile profiles, authored damage and obstacles, twelve specimens; deterministic Windows/Linux pins and affected checks pass) | G88, G107 | M | research | [flora](subsystems/flora.md#regeneration-and-damaged-young-growth) |
+
 ## T — Tooling and CI
 
 Build, CI, test and profiling infrastructure, and the machinery behind the standing rules: [08](plan/08-toolchain.md), [09](plan/09-testing-profiling.md), [11](plan/11-performance-principles.md), [docs/ci](ci/what-to-run.md).

@@ -22,7 +22,8 @@ this README stays. **No default is hosted yet**: the first pack is built locally
 The repository's own hosts find the pack here, beside the derived-data cache: `engine-content
 flora`, `rocks`, `build` and `build-all`, and the renderer when it looks up `<repo>/ddc`
 (engine-view, engine-host). Elsewhere: `engine-content ... --materials <dir>` and `engine-view
---materials <dir>`; `--no-materials` for a flat build. A pack is in a generated mesh's cache key, so
+--materials <dir>`; `engine-content` accepts `--no-materials` for a flat build (engine-view does
+not accept that flag; view the resulting container, or use a checkout without a pack). A pack is in a generated mesh's cache key, so
 fetching one rebuilds the generated meshes (a second each) and their textures.
 
 ## Packing

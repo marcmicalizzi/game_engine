@@ -10,6 +10,11 @@ Define embedded recipe structs before `FloraFile` in the schema. The generated C
 follows declaration order; a later definition of an embedded type fails the build.
 Generated schema code lives only under the build directory.
 
+`regeneration.cpp` implements the opt-in juvenile profiles and their static damage/recovery
+forms. [Grounding](../../docs/experiments/flora-regeneration.md) records species sources and
+authored coefficients; [recipes](../../content/flora/regeneration/README.md) exercise groups,
+suppression, browsing, leader loss and obstacle clearance. The adult solvers stay unchanged.
+
 [Subsystem contract](../../docs/subsystems/flora.md),
 [ground-plant grounding](../../docs/experiments/ground-plants.md),
 [recipe corpus](../../content/flora/README.md).
