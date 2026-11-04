@@ -124,6 +124,11 @@ struct PlayerRig {
   f32 flexion = 0.0f;
   f32 extension = 0.0f;
   f32 rotation = 0.0f;
+  // The ocular share (radians; `view.player.eye_pitch_down_deg`, `eye_pitch_up_deg`,
+  // `eye_yaw_deg`): the look the eyes take before any joint turns.
+  f32 eye_down = 0.0f;
+  f32 eye_up = 0.0f;
+  f32 eye_yaw = 0.0f;
   // `view.player.collapse_head` resolved: `auto` collapses under the walker's eye and not under
   // the face's; `true` and `false` force it.
   bool collapse_head = true;
@@ -138,6 +143,8 @@ struct PlayerRig {
 struct LookShares {
   f32 down[3] = {0.0f, 0.0f, 0.0f};
   f32 turn[3] = {0.0f, 0.0f, 0.0f};
+  f32 ocular_pitch = 0.0f;  // the eyes' part of the look's flexion (down positive); no joint turns
+  f32 ocular_yaw = 0.0f;
 };
 LookShares player_look_shares(const PlayerRig& rig, f32 pitch, f32 yaw_relative) noexcept;
 // The craniocervical junction's part of the cervical motion: occiput–C1 is 24% of the cervical
