@@ -221,23 +221,11 @@ static const float k_terrain_hex_axis_floor = 1.0 / 128.0;  // a projection belo
 float terrain_layer_rotation(ResolveMaterial layer) { return layer.uv_offset.z; }
 float terrain_layer_mean_height(ResolveMaterial layer) { return layer.uv_offset.w; }
 
-// Wellons' lowbias32: integer only, so the CPU reference reproduces it bit for bit.
-uint terrain_hash(uint x) {
-  x ^= x >> 16;
-  x *= 0x7feb352du;
-  x ^= x >> 15;
-  x *= 0x846ca68bu;
-  x ^= x >> 16;
-  return x;
-}
-
-// Three tiles of the lattice at a point of one projection's plane.
-struct TerrainHex {
-  float3 weight;  // Burley's exponentiated weights (power 7), summing to one
-  float gain;     // 1 / sqrt(sum of squared weights): the variance-preserving operator's scale
-  float2 shift[3];  // added to the layer's phase: the tile's offset, and its turn about its centre
-  float2 turn[3];   // the turn's cosine and sine
-};
+// The hash, the tiles and the blend are hex_lattice.slang's (R131 moved them there, unchanged, to
+// share them with the mesh materials); these names are the terrain's, kept for its callers and its
+// probe.
+uint terrain_hash(uint x) { return hex_hash(x); }
+typealias TerrainHex = HexTiles;
 
 // `axis` is the projection (0 reads (z, y), 1 (x, z), 2 (x, y), the phases' own pairs);
 // `rotation` the layer's largest turn in radians (0: offsets only, so a directed texture keeps its
@@ -263,57 +251,12 @@ TerrainHex terrain_hex(FrameEye eye, float3 point, uint axis, float pitch_mm, fl
   const float2 f = t - whole;
   const int64_t bx = qx + int64_t(whole.x);
   const int64_t by = qy + int64_t(whole.y);
-  int2 corner[3];
-  float3 w;
-  const float z = 1.0 - f.x - f.y;
-  if (z > 0.0) {
-    w = float3(z, f.y, f.x);
-    corner[0] = int2(0, 0);
-    corner[1] = int2(0, 1);
-    corner[2] = int2(1, 0);
-  } else {
-    w = float3(-z, 1.0 - f.y, 1.0 - f.x);
-    corner[0] = int2(1, 1);
-    corner[1] = int2(1, 0);
-    corner[2] = int2(0, 1);
-  }
-  // Burley's exponentiated weights (2019, Eq. 5) at Mikkelsen's exponent, 7: below Burley's tile
-  // structure (8 and up), and the closest of the blends measured to the image's histogram.
-  const float3 w2 = w * w;
-  w = w2 * w2 * w2 * w;
-  w /= w.x + w.y + w.z;
-  TerrainHex hex;
-  hex.weight = w;
-  hex.gain = 1.0 / sqrt(dot(w, w));
   const uint seed = terrain_hash(uint(pitch) ^ 0x9e3779b9u);
-  [unroll] for (uint k = 0; k < 3; ++k) {
-    const uint h0 = terrain_hash(uint(bx + int64_t(corner[k].x)) ^
-                                 terrain_hash(uint(by + int64_t(corner[k].y)) ^ seed));
-    const uint h1 = terrain_hash(h0);
-    const float2 offset = float2(float(h0 >> 8), float(h1 >> 8)) * (1.0 / 16777216.0);
-    hex.shift[k] = offset;
-    hex.turn[k] = float2(1.0, 0.0);
-    if (rotation > 0.0) {
-      const float angle =
-          (float(terrain_hash(h1) >> 8) * (2.0 / 16777216.0) - 1.0) * rotation;
-      const float c = cos(angle);
-      const float s = sin(angle);
-      // The point from its tile's centre, in the layer's uv: s - corner through the skew's inverse.
-      const float2 rel = f - float2(corner[k]);
-      const float2 r = float2(rel.x * (28.0 / 97.0) + rel.y * (14.0 / 97.0), rel.y * 0.25);
-      hex.shift[k] += float2(c * r.x - s * r.y, s * r.x + c * r.y) - r;
-      hex.turn[k] = float2(c, s);
-    }
-  }
-  return hex;
+  return hex_tiles(uint(bx), uint(by), f, seed, rotation);
 }
 
-// The operator itself (Heitz and Neyret 2018, Eq. 9, on the texels rather than a Gaussianized
-// copy): mean + gain * sum w (x - mean). For three independent tiles it keeps the texture's mean
-// and variance wherever the weights fall.
 float3 terrain_hex_blend(TerrainHex hex, float3 mean, float3 a, float3 b, float3 c) {
-  return mean + hex.gain * (hex.weight.x * (a - mean) + hex.weight.y * (b - mean) +
-                            hex.weight.z * (c - mean));
+  return hex_blend(hex, mean, a, b, c);
 }
 
 // One projection of a stochastic layer: every map read at the hex's three places with the same
