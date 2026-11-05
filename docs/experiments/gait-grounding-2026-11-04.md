@@ -86,6 +86,25 @@ steps a minute.
 the run at 3.2 m/s strides 1.79 in 0.560 s. Worn by the player at 1.8 m it is scaled about 1.24
 (its standing height 1.45 through its joints), so its leg is about 0.71 m.
 
+## Worn by the owner's base body (2026-11-04)
+
+The male base body (r014, 23 joints that `map_joints` reads by name; the owner's file outside the
+repository, never a fixture) under `view.player.walk_clip=gait`, `msvc-debug`, offscreen at
+640 × 400, `--raster hw`, in the forest proof of concept's v1 world at `--time-of-day 12`; a copy of
+its `walk-test.jsonl` replay with the current map, the orbit camera, V for third person at tick 20
+and D held, so the body walks across the view; three marker frames 30 ticks (0.125 s, an eighth of
+the cycle) apart. The summary: leg 0.952 m, walk 1.49 m stride, 0.995 s cycle, 121 steps/min at
+1.5 m/s; run 3.61 m, 0.723 s, 166 steps/min at 5 m/s; 13 joints driven; 61 and 44 keys.
+
+**It reads as a walk in the legs**: the frames show a stride — one knee bent and forward, the other
+leg trailing, then the legs closing — with the body facing the way it moves and the pelvis level.
+**The arms do not read as well**: the rig's rest is an A-pose, the gait swings each arm about the
+body's lateral axis from that rest as the clip is defined to, so the hands swing forward and back
+held out from the hips rather than hanging at the sides. Bringing the arms down to the sides first
+(an adduction to a hanging rest, a per-rig rest correction) is the next refinement. A near tree's
+leaves cover part of two frames. The frames were looked at and are kept in the session's scratch,
+not in the repository.
+
 ## Stated simplifications
 
 - Amplitudes fixed per band at the band's reference speed; the speed changes the stride and the
