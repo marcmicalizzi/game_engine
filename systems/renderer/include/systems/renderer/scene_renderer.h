@@ -207,6 +207,9 @@ struct FrameStats {
   u32 rt_built = 0;
   u32 rt_wanted = 0;
   u32 rt_capacity = 0;
+  // The capacity the frame was recorded against, which `rt_capacity` — the scene's when the frame
+  // was folded — is not once a growth landed between the two (R128). Zero without the chain.
+  u32 rt_built_capacity = 0;
   // The cluster cache's part of the frame (RtStats): its references, what it built into the cache
   // (zero once the flight's clusters are resident), and the slots it evicted.
   u32 rt_references = 0;
@@ -1008,6 +1011,7 @@ class SceneRenderer {
   Vector<u64> slot_submission_;
   Vector<u32> slot_pairs_;  // and the scene it culled, which a world changes between frames
   Vector<u32> slot_instances_;
+  Vector<u32> slot_rt_capacity_;  // the chain's capacity each slot's frame was recorded against
   Vector<u32> slot_holes_;
   Vector<u32> slot_table_slots_;  // and what it wrote into the table set it flipped to
   Vector<u32> slot_table_pairs_;
@@ -1059,7 +1063,12 @@ class SceneRenderer {
   bool rt_micromaps_ = false;    // the last recorded frame's records named the micromaps (R120)
   Vector<u64> rt_cache_folded_;  // per frame slot: the submission whose cache words were summed
   bool rt_hold_ = false;         // render_offscreen is redrawing a frame it grew the chain for
-  bool rt_observed_ = false;     // a frame's demand has reached the capacity policy
+  // The chain's retired buffers, released on a worker when their slot comes round (R128,
+  // `renderer.rt.free_on_worker`): made on the first resize that retires anything.
+  struct RtFreer* rt_freer_ = nullptr;
+  void retire_rt_buffer(const gfx::BufferResource& buffer);
+  void release_rt_retired(u32 slot);
+  bool rt_observed_ = false;  // a frame's demand has reached the capacity policy
   // The ray tracing chain's capacity policy (rt_capacity.h): fed every folded frame's demand, and
   // the reason `GpuScene::resize_ray_tracing` is ever called.
   RtCapacity rt_capacity_;

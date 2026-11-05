@@ -68,6 +68,12 @@ struct RtCapacityConfig {
   u32 floor_pct = 50;         // a shrink keeps at least this share of the peak
   u32 shrink_frames = 240;    // a window also holds at least this many frames
   u32 peak_frames = 3600;     // a capacity is also remembered for at least this many frames
+  // **A growth while the demand rises reaches ahead of it** (R128, 2026-11-04): by the demand's
+  // rise since the last observed frame times this many frames — the read-back's two and the frames
+  // in flight, the frames recorded before the new capacity is the one a frame builds into. 0 — the
+  // default here, so the arithmetic of a config built by hand is the rule before — grows to the
+  // demand alone; the renderer sets `renderer.rt.slope_frames`, 4.
+  u32 slope_frames = 0;
 };
 
 // The `renderer.rt.*` tunables, read once: the budget in MiB, the headroom, the shrink window, the
@@ -94,6 +100,20 @@ bool rt_swap_references_tunable() noexcept;
 // read-back demand is at least half the capacity, not only within 64 frames of one that dropped
 // (R130; renderer.md, "A resize is swapped in, not waited for"). False is the comparison.
 bool rt_scan_near_capacity_tunable() noexcept;
+// `renderer.rt.scan_every_frame` (true): every frame records the drop order's scan, so no frame
+// past its capacity takes the one-thread rule in `ranges_main` (R128; renderer.md, "A resize is
+// swapped in, not waited for"). False is R130's rule above, the comparison; read every frame.
+bool rt_scan_every_frame_tunable() noexcept;
+// `renderer.rt.free_on_worker` (true): the buffers a swapped resize retires are freed on a worker
+// once the frames that could read them have completed, not on the frame's thread when their slot
+// comes round (R128; renderer.md, "A resize is swapped in, not waited for"). Freeing a 1.6-2 GB
+// CLAS set there was 30-70 ms of `begin_frame` two frames after every large growth on the replay.
+// A step waits for a free still running before it allocates (the two contend in the driver), so a
+// burst of steps gets the free back as that wait. False is the frame's thread
+// (`gfx::FrameContext::defer_destroy`), the comparison.
+bool rt_free_on_worker_tunable() noexcept;
+// `renderer.rt.slope_frames` (4): `RtCapacityConfig::slope_frames`.
+u32 rt_slope_frames_tunable() noexcept;
 // `renderer.rt.static_forms` (true): rigid distance forms keep structures built once
 // (`RenderSettings::rt_static_forms`; renderer.md, "Static structures for rigid forms").
 bool rt_static_forms_tunable() noexcept;
@@ -209,8 +229,12 @@ class RtCapacity {
   void reset(const RtCapacityConfig& config, u32 capacity, f64 now) noexcept;
   // One completed frame wanted `wanted` structures, read at `now`. Returns the capacity the set
   // should have from now on, which is `capacity()` unless this frame crossed a threshold; the
-  // caller resizes when the two differ and then calls `resized`.
+  // caller resizes when the two differ and then calls `resized`. While the demand rises the
+  // threshold and the growth are judged by `ahead(wanted)`, not by `wanted`.
   u32 observe(u32 wanted, f64 now) noexcept;
+  // The demand `slope_frames` frames on at the rise from the last observed frame to `wanted`
+  // (`wanted` itself when it did not rise), at most the limit.
+  u32 ahead(u32 wanted) const noexcept;
   // The capacity that holds `wanted` with the headroom, rounded up to the step and clamped to the
   // limit.
   u32 target(u32 wanted) const noexcept;
@@ -253,7 +277,8 @@ class RtCapacity {
   u32 window_peak_ = 0;
   f64 window_start_ = 0.0;
   u64 window_start_frame_ = 0;
-  u64 frames_ = 0;  // frames observed
+  u64 frames_ = 0;       // frames observed
+  u32 last_wanted_ = 0;  // the last observed frame's demand, for its rise
   Held held_[k_held] = {};
   u32 held_first_ = 0;
   u32 held_count_ = 0;

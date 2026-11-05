@@ -34,7 +34,9 @@
 #include <doctest/doctest.h>
 
 #include <algorithm>
+#include <cstring>
 #include <string>
+#include <vector>
 
 using namespace engine;
 using namespace engine::renderer;
@@ -1292,6 +1294,345 @@ TEST_CASE("rt capacity: a step of the cache's references swapped in flight draws
       CHECK(waits == 0);  // and never waited for the device to do it
     } else {
       CHECK(waits >= steps);  // the comparison: every waited step stops once
+    }
+  }
+  device.destroy();
+}
+
+// ---- R128: the chain's remaining hitch causes (docs/experiments/frame-hitches-2026-11-04.md) ----
+
+namespace {
+
+// The renderer's latency, on the CPU: the frame recorded at `t` is built against the capacity the
+// policy answered after observing the frame `lag` earlier (its read-back), as `begin_frame` does
+// with two frames in flight. Counts the frames whose demand passed the capacity they were built
+// against, and the growths.
+struct Lagged {
+  RtCapacity policy;
+  u32 short_frames = 0;
+  u32 grows = 0;
+  void run(const Vector<u32>& wanted, u32 lag = 2) {
+    f64 t = 0.0;
+    for (u32 f = 0; f < wanted.size(); ++f) {
+      t += 1.0 / 60.0;
+      if (f >= lag) {
+        const u32 before = policy.capacity();
+        const u32 next = policy.observe(wanted[f - lag], t);
+        if (next != before) {
+          grows += next > before ? 1u : 0u;
+          policy.resized(next, t);
+        }
+      }
+      short_frames += wanted[f] > policy.capacity() ? 1u : 0u;
+    }
+  }
+};
+
+}  // namespace
+
+// A turn into the woods (R128): on the owner's v27 walk the demand rose by up to 38% of the
+// capacity between frames, and it reaches the policy two frames late, so a growth to the demand
+// plus its headroom landed behind a demand already past it and the frames between dropped
+// instances. While the demand rises a growth reaches ahead by the rise times `slope_frames`, so the
+// frames after it build everything they want. Without the slope (0, the rule before) the same ramp
+// leaves frames short.
+TEST_CASE("rt capacity: a rising demand is met without a short frame") {
+  Vector<u32> wanted;
+  for (u32 f = 0; f < 60; ++f)
+    wanted.push_back(45000);  // a clearing, inside the first capacity and its half headroom
+  // The turn: 15% of the first capacity a frame, its first two frames still inside it — no rule
+  // can see those coming, since the demand reaches the policy two frames late.
+  for (u32 f = 1; f <= 10; ++f)
+    wanted.push_back(45000 + f * 10000);
+  for (u32 f = 0; f < 60; ++f)
+    wanted.push_back(145000);  // the woods
+  RtCapacityConfig config = v25_config();
+  config.slope_frames = 0;
+  Lagged before;
+  before.policy.reset(config, 65536, 0.0);
+  before.run(wanted);
+  config.slope_frames = 4;
+  Lagged after;
+  after.policy.reset(config, 65536, 0.0);
+  after.run(wanted);
+  MESSAGE("the ramp at a fixed headroom: " << before.short_frames << " short frames, "
+                                           << before.grows << " growths; following the slope: "
+                                           << after.short_frames << " short, " << after.grows
+                                           << " growths");
+  CHECK(before.short_frames > 0);  // the case: the rule before drops on this ramp
+  CHECK(after.short_frames == 0);
+  CHECK(after.policy.capacity() <= config.limit);
+  // A steady demand is judged as before: no rise, no reach.
+  RtCapacity steady;
+  steady.reset(config, 65536, 0.0);
+  CHECK(steady.observe(40000, 1.0) == 65536);
+  CHECK(steady.ahead(40000) == 40000);
+  CHECK(steady.ahead(50000) == 90000);          // a rise of 10,000, four frames on
+  CHECK(steady.ahead(300000) == config.limit);  // never past the limit on a projection
+  CHECK(steady.observe(39000, 2.0) == 65536);   // a fall is no rise
+}
+
+// A frame's counts name the capacity they were built against (R128): `rt_capacity` in the record
+// is the scene's when the frame is folded, two frames after it was recorded, and a growth between
+// the two moved it — R127 saw a frame that built 172,032 against a wanted 178,141 while its record
+// said 338,115. `rt_built_capacity` is the one the frame was recorded with.
+TEST_CASE("rt capacity: a frame's record names the capacity it was built against") {
+  gfx::Device device;
+  std::string error;
+  if (!device.create(gfx::DeviceOptions{}, &error) || !traces(device)) {
+    MESSAGE("tracing unavailable: " << error);
+    return;
+  }
+  ScopedTunable per_frame("renderer.rt.cache", "false");
+  {
+    RenderSettings settings;
+    settings.raster = RasterMode::RayTrace;
+    settings.shadows = ShadowMode::RayTraced;
+    Rig moving;
+    {
+      ScopedTunable soon("renderer.rt.shrink_seconds", "0");
+      ScopedTunable one("renderer.rt.shrink_frames", "1");
+      ScopedTunable no_floor("renderer.rt.floor_pct", "0");
+      ScopedTunable no_peak("renderer.rt.peak_seconds", "0");
+      ScopedTunable no_peak_frames("renderer.rt.peak_frames", "0");
+      ScopedTunable tight("renderer.rt.headroom_pct", "0");
+      ScopedTunable fine("renderer.rt.step_clusters", "64");
+      ScopedTunable first("renderer.rt.initial_clusters", "64");
+      REQUIRE_MESSAGE(moving.build(device, settings, error), error);
+    }
+    const f32 distances[] = {9.0f, 1.4f, 9.0f, 0.8f, 5.0f, 1.4f};
+    u32 recorded_at[64] = {};
+    u64 frame_index = 0;
+    u32 folded = 0;
+    u32 moved = 0;
+    for (const f32 distance : distances) {
+      for (u32 k = 0; k < 6; ++k, ++frame_index) {
+        moving.renderer.begin_frame();
+        const FrameStats& last = moving.renderer.stats().last;
+        if (moving.renderer.stats().folded > 0 && last.frame < frame_index) {
+          ++folded;
+          CHECK(last.rt_built_capacity == recorded_at[last.frame % 64]);
+          moved += last.rt_built_capacity != last.rt_capacity ? 1u : 0u;
+          const scene::FrameRecord record = frame_record(last, 0, 0, 0.0);
+          CHECK(record.rt_built_capacity == last.rt_built_capacity);
+          CHECK(record.rt_capacity == last.rt_capacity);
+        }
+        // What this frame is recorded against: begin_frame's step, if any, has already landed.
+        recorded_at[frame_index % 64] = moving.renderer.scene().rt_capacity();
+        REQUIRE_MESSAGE(
+            moving.renderer.submit_frame(frame_at(moving.data, distance, frame_index), &error) != 0,
+            error);
+      }
+    }
+    moving.renderer.wait_idle();
+    MESSAGE(folded << " frames folded, " << moved
+                   << " of them read back after the capacity had moved");
+    CHECK(folded > 0);
+    CHECK(moved > 0);  // the case: a growth or a shrink landed between a frame and its read-back
+  }
+  device.destroy();
+}
+
+namespace {
+
+bool read_back(const gfx::Device& device, const gfx::BufferResource& source, u64 bytes,
+               Vector<u8>& out, std::string* error) {
+  gfx::BufferResource staging;
+  if (!gfx::create_buffer(device, bytes, gfx::BufferUsage::TransferDst, true, staging, error))
+    return false;
+  const bool ok = gfx::submit_immediate(
+      device,
+      [&](gfx::CommandList cb) {
+        const gfx::BufferCopy copy{0, 0, bytes};
+        cb.copy_buffer(source.buffer, staging.buffer, copy);
+      },
+      error);
+  if (ok) {
+    out.resize(static_cast<u32>(bytes));
+    std::memcpy(out.data(), staging.mapped, bytes);
+  }
+  gfx::destroy_buffer(device, staging);
+  return ok;
+}
+
+struct ChainBytes {
+  Vector<u8> count;
+  Vector<u8> records;
+  Vector<u8> blas;
+};
+
+// The kept records as a set: within an instance's dense range the order is the bucketing pass's
+// atomics', and a record names its own dense index (its cluster id and the low 24 bits of its
+// geometry word, VkClusterAccelerationStructureBuildTriangleClusterInfoNV), so those are cleared
+// and the records sorted. Which instance kept how many, and where, is the bottom-level records'.
+std::vector<std::string> kept_records(const Vector<u8>& bytes) {
+  const u64 size = gfx::k_cluster_build_record_bytes;
+  std::vector<std::string> out;
+  for (u64 at = 0; at + size <= bytes.size(); at += size) {
+    std::string record(reinterpret_cast<const char*>(bytes.data() + at), size);
+    std::memset(record.data(), 0, 4);       // clusterID
+    std::memset(record.data() + 12, 0, 3);  // the base geometry index; its flags kept
+    out.push_back(std::move(record));
+  }
+  std::sort(out.begin(), out.end());
+  return out;
+}
+
+// The drop rule's result after the last frame: the record count's words, the kept records and
+// every instance's bottom-level record.
+ChainBytes chain_bytes(const gfx::Device& device, const GpuScene& scene) {
+  ChainBytes out;
+  std::string error;
+  REQUIRE_MESSAGE(read_back(device, scene.record_count,
+                            sizeof(u32) * gfx::k_cluster_record_count_words, out.count, &error),
+                  error);
+  u32 built = 0;
+  std::memcpy(&built, out.count.data(), sizeof(u32));
+  const u64 record_bytes = gfx::k_cluster_build_record_bytes;
+  if (built > 0) {
+    REQUIRE_MESSAGE(read_back(device, scene.records, record_bytes * built, out.records, &error),
+                    error);
+  }
+  REQUIRE_MESSAGE(
+      read_back(device, scene.blas_records,
+                gfx::k_cluster_blas_record_bytes * scene.instance_count(), out.blas, &error),
+      error);
+  return out;
+}
+
+}  // namespace
+
+// The scan on every frame writes what the one-thread rule wrote (R128). R130 recorded the drop
+// order's scan only after a drop or while the demand was within half the capacity; a frame past
+// its capacity without it took the one-thread rule in `ranges_main`, 118-168 ms at 225,000
+// instances, and one such frame remained on the replay of the owner's walk. Pinned first: a frame
+// past its capacity after a stretch that fitted, recorded under R130's rule — so without the scan,
+// on the one thread — and then the same pose recorded with the scan, whose words and bottom-level
+// records must be the same bytes and whose records the same set (`kept_records`).
+TEST_CASE("rt capacity: the drop order's scan on every frame writes the one-thread rule's bytes") {
+  gfx::Device device;
+  std::string error;
+  if (!device.create(gfx::DeviceOptions{}, &error) || !traces(device)) {
+    MESSAGE("tracing unavailable: " << error);
+    return;
+  }
+  {
+    ScopedTunable per_frame("renderer.rt.cache", "false");
+    ScopedTunable never("renderer.rt.shrink_seconds", "86400");
+    RenderSettings settings;
+    settings.raster = RasterMode::Hardware;
+    settings.shadows = ShadowMode::RayTraced;
+    settings.lights = false;
+    settings.lod_px = 0.25f;
+    settings.rt_budget_mib = 1;  // about 165 clusters: the near pose wants several times that
+    Rig rig;
+    REQUIRE_MESSAGE(rig.build(device, settings, error), error);
+    ScopedTunable old_rule("renderer.rt.scan_every_frame", "false");
+    ScopedTunable not_near("renderer.rt.scan_near_capacity", "false");
+    // A stretch that fits, longer than the 64 frames after a drop the scan stays recorded for.
+    u64 frame_index = 0;
+    // (SceneRenderer::k_drop_scan_frames, 64, and eight more.)
+    for (; frame_index < 72; ++frame_index) {
+      rig.renderer.begin_frame();
+      REQUIRE_MESSAGE(
+          rig.renderer.submit_frame(frame_at(rig.data, 40.0f, frame_index), &error) != 0, error);
+    }
+    rig.renderer.wait_idle();
+    REQUIRE(rig.renderer.stats().rt.overflow_frames == 0);  // the far pose fits the budget
+    // Past the capacity on the one thread: the CPU has seen no drop for 64 frames.
+    rig.renderer.begin_frame();
+    REQUIRE_MESSAGE(rig.renderer.submit_frame(frame_at(rig.data, 0.8f, frame_index++), &error) != 0,
+                    error);
+    rig.renderer.wait_idle();
+    const ChainBytes serial = chain_bytes(device, rig.scene);
+    u32 words[2] = {};
+    std::memcpy(words, serial.count.data(), sizeof(words));
+    MESSAGE("past the capacity of " << rig.scene.rt_capacity() << ": built " << words[0] << " of "
+                                    << words[1] << " wanted");
+    REQUIRE(words[1] > rig.scene.rt_capacity());  // the case: the frame dropped
+    // The same pose with the scan.
+    ScopedTunable scan("renderer.rt.scan_every_frame", "true");
+    rig.renderer.begin_frame();
+    REQUIRE_MESSAGE(rig.renderer.submit_frame(frame_at(rig.data, 0.8f, frame_index++), &error) != 0,
+                    error);
+    rig.renderer.wait_idle();
+    const ChainBytes scanned = chain_bytes(device, rig.scene);
+    CHECK(scanned.count.size() == serial.count.size());
+    CHECK(std::memcmp(scanned.count.data(), serial.count.data(), serial.count.size()) == 0);
+    REQUIRE(scanned.records.size() == serial.records.size());
+    CHECK(kept_records(scanned.records) == kept_records(serial.records));
+    REQUIRE(scanned.blas.size() == serial.blas.size());
+    CHECK(std::memcmp(scanned.blas.data(), serial.blas.data(), serial.blas.size()) == 0);
+  }
+  device.destroy();
+}
+// Class C of the owner's v27 hitches (R128): frame 7390 spent 103 ms in `blas`, the first
+// bottom-level build after the capacity stepped. Neither replay of the walk reproduced it — 25
+// steps on the owner's pace with a capacity that follows the demand, every first build within the
+// builds at an unchanged capacity (docs/experiments/frame-hitches-2026-11-04.md) — so the build
+// itself does not cost more at a new capacity: no build over the whole set, no first touch the
+// frame pays. This holds that as a bound on the recorded `blas` milliseconds, where the device
+// times the frames: a chain resizing at every cut, two frames in flight, and the first build at
+// each new capacity no slower than four times the slowest build at an unchanged one (or 2 ms,
+// whichever is more, for a timer's noise at this size).
+TEST_CASE(
+    "rt capacity: a first build at a new capacity costs what a build at an unchanged one does") {
+  gfx::Device device;
+  std::string error;
+  if (!device.create(gfx::DeviceOptions{}, &error) || !traces(device)) {
+    MESSAGE("tracing unavailable: " << error);
+    return;
+  }
+  ScopedTunable per_frame("renderer.rt.cache", "false");
+  {
+    RenderSettings settings;
+    settings.raster = RasterMode::RayTrace;
+    settings.shadows = ShadowMode::RayTraced;
+    Rig moving;
+    {
+      ScopedTunable soon("renderer.rt.shrink_seconds", "0");
+      ScopedTunable one("renderer.rt.shrink_frames", "1");
+      ScopedTunable no_floor("renderer.rt.floor_pct", "0");
+      ScopedTunable no_peak("renderer.rt.peak_seconds", "0");
+      ScopedTunable no_peak_frames("renderer.rt.peak_frames", "0");
+      ScopedTunable tight("renderer.rt.headroom_pct", "0");
+      ScopedTunable fine("renderer.rt.step_clusters", "64");
+      ScopedTunable first("renderer.rt.initial_clusters", "64");
+      REQUIRE_MESSAGE(moving.build(device, settings, error), error);
+    }
+    const f32 distances[] = {9.0f, 1.4f, 9.0f, 0.8f, 5.0f, 1.4f, 9.0f, 0.8f};
+    u64 frame_index = 0;
+    u32 previous = 0;
+    f64 first_most = 0.0;
+    f64 unchanged_most = 0.0;
+    u32 firsts = 0;
+    u32 unchanged = 0;
+    for (const f32 distance : distances) {
+      for (u32 k = 0; k < 8; ++k, ++frame_index) {
+        moving.renderer.begin_frame();
+        const FrameStats& last = moving.renderer.stats().last;
+        if (moving.renderer.stats().folded > 0 && last.timed && last.rt_built_capacity != 0) {
+          if (previous != 0 && last.rt_built_capacity != previous) {
+            ++firsts;
+            first_most = std::max(first_most, last.gpu_blas);
+          } else if (previous != 0) {
+            ++unchanged;
+            unchanged_most = std::max(unchanged_most, last.gpu_blas);
+          }
+          previous = last.rt_built_capacity;
+        }
+        REQUIRE_MESSAGE(
+            moving.renderer.submit_frame(frame_at(moving.data, distance, frame_index), &error) != 0,
+            error);
+      }
+    }
+    moving.renderer.wait_idle();
+    MESSAGE(firsts << " first builds at a new capacity, the slowest " << first_most << " ms; "
+                   << unchanged << " at an unchanged one, the slowest " << unchanged_most << " ms");
+    if (firsts == 0 || unchanged == 0) {
+      MESSAGE("the frames were not timed: nothing to bound");
+    } else {
+      CHECK(first_most <= std::max(2.0, 4.0 * unchanged_most));
     }
   }
   device.destroy();

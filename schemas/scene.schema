@@ -1676,7 +1676,9 @@ struct FrameWorld @version(1) {
 /// Version 11: `walk`, a walking session's frame (`FrameWalk`).
 ///
 /// Version 13: `world`, the host's time between frames by what it did (`FrameWorld`, W82).
-struct FrameRecord @version(15) {
+///
+/// Version 16: `rt_built_capacity`, the capacity the frame's structures were built against (R128).
+struct FrameRecord @version(16) {
   /// Which pass over the path, from 0.
   repeat: u32 = 0
   /// The path frame, from 0; an interactive session's frame, from 0.
@@ -1763,6 +1765,11 @@ struct FrameRecord @version(15) {
   rt_built: u32 = 0 @since(2)
   rt_wanted: u32 = 0 @since(2)
   rt_capacity: u32 = 0 @since(2)
+  /// The capacity the frame was recorded against — what `rt_built` and `rt_wanted` are read against
+  /// (R128). `rt_capacity` is the scene's when the frame's counts were read back, two frames later,
+  /// which a growth in between has already moved: a frame short of its demand read against it
+  /// looked short of a capacity it never had. Zero without the chain, and in a record before 16.
+  rt_built_capacity: u32 = 0 @since(16)
   /// The resident cluster structure cache (docs/subsystems/renderer.md, "The resident cluster
   /// structure cache", R101): the frame's references to cached structures, the structures it built
   /// into the cache — the first frames of a flight build its clusters, a steady one none — and the

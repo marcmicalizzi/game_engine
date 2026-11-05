@@ -5079,9 +5079,11 @@ bool GpuScene::lay_out_ray_tracing(std::string* error) {
                 instance_counts, error) &&
             // A dynamic scene's set is built over every slot of the capacity, so the records past
             // the frame's instances are cleared to empty structures every frame.
-            gfx::create_buffer(device, gfx::k_cluster_blas_record_bytes * rt_instance_slots_,
-                               k_record_usage | gfx::BufferUsage::TransferDst, false, blas_records,
-                               error) &&
+            // A transfer source too, so a test can read the drop rule's result back (R128).
+            gfx::create_buffer(
+                device, gfx::k_cluster_blas_record_bytes * rt_instance_slots_,
+                k_record_usage | gfx::BufferUsage::TransferDst | gfx::BufferUsage::TransferSrc,
+                false, blas_records, error) &&
             gfx::create_tlas(device, rt_instance_slots_, gfx::k_build_fast_trace, tlas, error) &&
             gfx::upload_buffer(device, tlas_bytes.data(), tlas_bytes.size(),
                                gfx::k_build_input_usage | gfx::BufferUsage::TransferDst | k_storage,
@@ -5276,7 +5278,10 @@ bool GpuScene::resize_ray_tracing(u32 capacity, std::string* error, bool beyond_
   // With a cache the frame's set also builds what the cache could not place (R114), named as the
   // cache names it — the cluster within its mesh under bit 23 — so its indices reach 24 bits.
   limits.max_geometry_index = rt_cache() ? gfx::k_cluster_cache_geometry * 2 - 1 : capacity - 1;
-  constexpr gfx::BufferUsage k_record_usage = k_address | gfx::BufferUsage::AccelerationBuildInput;
+  // The frame's records are a transfer source too, so a test can read the drop rule's result back
+  // and hold the scan to the one-thread rule's bytes (R128).
+  constexpr gfx::BufferUsage k_record_usage =
+      k_address | gfx::BufferUsage::AccelerationBuildInput | gfx::BufferUsage::TransferSrc;
   const u64 record_bytes = limits.instantiate ? gfx::k_cluster_instantiate_record_bytes
                                               : gfx::k_cluster_build_record_bytes;
   gfx::BufferResource made_records;
