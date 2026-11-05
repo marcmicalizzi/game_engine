@@ -225,7 +225,7 @@ TEST_CASE("flora allometry: area allocation accounts for axial taper and bounded
                 smallest_step(static_cast<f64>(b.leader_share),
                               std::min(b.branching_ratio - 1, b.twigs), static_cast<f64>(exponent)),
                 nodes, worst, true,
-                std::pow(1.0 / (1.0 - static_cast<f64>(b.leader_share)), 1.0 / exponent));
+                std::pow(1.0 / (1.0 - static_cast<f64>(b.leader_share)), 1.0 / static_cast<f64>(exponent)));
     MESSAGE("broadleaf, exponent " << exponent << ": " << crown.size() << " shoots, " << nodes
                                    << " nodes, the worst within " << worst);
     CHECK(nodes > 100);
