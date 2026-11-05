@@ -159,6 +159,22 @@ bool geology_in_range(const RockGeology& g, std::string& error) {
          (!g.granular || check(*g.granular, 0, 1, "granular"));
 }
 
+void drop_absent_sampling(JsonValue& json) {
+  if (json.is_object()) {
+    for (auto&& [key, value] : json.as_object()) {
+      if (key == "material" && value.is_object()) {
+        const JsonValue* sampling = value.find("sampling");
+        if (sampling != nullptr && sampling->is_null())
+          value.as_object().erase(std::string("sampling"));
+      }
+      drop_absent_sampling(value);
+    }
+  } else if (json.is_array()) {
+    for (JsonValue& element : json.as_array())
+      drop_absent_sampling(element);
+  }
+}
+
 void material_factors(const RockMaterial& m, Vec4& colour, f32& roughness) {
   if (m.tint) colour = Vec4{(*m.tint)[0], (*m.tint)[1], (*m.tint)[2], 1.0f};
   if (m.roughness_factor) roughness = *m.roughness_factor;

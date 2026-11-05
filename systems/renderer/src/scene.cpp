@@ -520,6 +520,9 @@ void adopt_container(geometry::ClusterFileData& container_data, const std::strin
     material.alpha_cutoff = geometry::alpha_word_cutoff(source.alpha);
     out.data.materials.push_back(std::move(material));
     out.part_material.push_back(static_cast<i32>(out.part_material.size()));
+    // How it places its texels (R131): stochastic or plain, which the upload reads.
+    out.material_sampling_flags.push_back(
+        geometry::cluster_material_sampling(container_data, m).flags);
   }
   // The images: a path names a file beside the source mesh, and an image the source embedded
   // travels inside the container, so everything below is the same code for both and a container

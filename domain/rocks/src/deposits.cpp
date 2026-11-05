@@ -42,7 +42,9 @@ f64 step(u32 d, f64 spacing) { return (k_dx[d] != 0 && k_dz[d] != 0) ? spacing *
 std::string canonical(const DepositPatch& p) {
   JsonWriteOptions o;
   o.pretty = false;
-  return write_json(schema::to_json(p), o);
+  JsonValue json = schema::to_json(p);
+  drop_absent_sampling(json);
+  return write_json(json, o);
 }
 struct Front {
   f64 head;
@@ -424,7 +426,11 @@ bool build_deposit_container(const DepositPatch& input, const geometry::ClusterL
     // absent for untextured deposits so their existing container bytes remain unchanged.
     out.material_sampling.push_back(geometry::encode_material_sampling(
         mesh.materials[0].sampling, mesh.materials[0].occlusion_strength));
-    materials::apply_set(*chosen, materials::UvLayout::repeats, out, 0);
+    // The patch's `sampling`, when it names one, places the chosen set's texels (R131).
+    materials::MaterialSet applied = *chosen;
+    if (p.material.sampling.has_value())
+      applied.stochastic = *p.material.sampling == RockSampling::Stochastic;
+    materials::apply_set(applied, materials::UvLayout::repeats, out, 0);
     material_factors(p.material, out.materials[0].base_color, out.materials[0].roughness);
   }
   if (!out.image_paths.empty()) texture::fill_cluster_texture_records(out);

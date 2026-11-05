@@ -474,9 +474,14 @@ struct SourceMesh {
   // reordered with it. A generated tree with an impostor chain carries them.
   Vector<u32> lod_coverage;
   Vector<i32> part_material;  // the material of every part, -1 for none
-  std::string image_dir;      // what the relative image paths are relative to
-  std::string path;    // the mesh as the scene named it (a form: its source's); for sentences
-  u32 primitives = 0;  // glTF primitives merged into it; 0 from a container
+  // Parallel to `data.materials`, or empty (every material plain): the container's
+  // `ClusterFileMaterialSampling::flags` (`k_material_sampling_stochastic`, R131), which the upload
+  // turns into `gfx::k_material_stochastic` (renderer.md, "Stochastic mesh materials"). A glTF has
+  // no way to say it.
+  Vector<u32> material_sampling_flags;
+  std::string image_dir;  // what the relative image paths are relative to
+  std::string path;       // the mesh as the scene named it (a form: its source's); for sentences
+  u32 primitives = 0;     // glTF primitives merged into it; 0 from a container
   const char* cache = "none";  // "file", "hit", "miss", or "none"
   // The `.clusters` container this mesh's bytes are in: the file a `--mesh x.clusters` named, the
   // derived-data entry a glTF hit, or the one this load just wrote. Empty when there is none —

@@ -19,7 +19,9 @@
     height.png                         greyscale, linear, uncalibrated
     material.json                      the material lab's record: `tile_m` (or `tile_width_m`),
                                        `normal_convention`, and the normal strength
-                                       (`normal_scale`, or the lab's `normal_strength_preview`)
+                                       (`normal_scale`, or the lab's `normal_strength_preview`),
+                                       and optionally `sampling` (tiled or stochastic;
+                                       absent: stochastic for a rock/* role, tiled otherwise)
     provenance.json                    what made it: `models`, a list of {name, revision}, and
                                        the `seed` and `settings` the run used
 
@@ -168,9 +170,15 @@ foreach ($entry in $roleDirs) {
   foreach ($field in @('id', 'label', 'seed', 'prompt', 'transforms', 'native_resolution', 'tile_m_status')) {
     if ($null -ne $material.$field -and -not $record.Contains("lab_$field")) { $record["lab_$field"] = $material.$field }
   }
+  # How the set's texels are placed (R131; materials.md, "A pack"): material.json's `sampling`
+  # when it names one, else stochastic for every rock role — a rock set is laid over cliffs many times
+  # its repeat, where a tiled set's repeat is what the eye sees first — and tiled for the rest.
+  $sampling = if ($null -ne $material.sampling) { "$($material.sampling)" } elseif ($role -like 'rock/*') { 'stochastic' } else { 'tiled' }
+  if ($sampling -notin @('tiled', 'stochastic')) { Fail "$role has a sampling of '$sampling' in material.json (tiled or stochastic)" }
   $roles[$role] = [ordered]@{
     tile_m            = $tile
     normal_scale      = $strength
+    sampling          = $sampling
     normal_convention = 'opengl'
     maps              = $mapRecords
     provenance        = $record

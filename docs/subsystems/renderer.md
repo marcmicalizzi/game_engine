@@ -904,7 +904,9 @@ no lookup table, no second texture and no container section, and adds no texture
 - **Anchored in integers.** The lattice is Deliot and Heitz's skew with 2√3 replaced by 97/28 so
   that a lattice point's integer part comes from the frame's integer cell in 64-bit integers and
   only the frame-local rest is a float (ADR-0053); the tile hash is integer-only. Every tile, ring,
-  far level, cut and eye cell that draws a point reads the same three tiles.
+  far level, cut and eye cell that draws a point reads the same three tiles. The lattice and the
+  operator live in `hex_lattice.slang` since R131, shared with the mesh materials ("Stochastic mesh
+  materials", below).
 - **Direction.** `rotation_deg` (0 to 180, default 0) turns each tile by a hashed angle up to that
   bound, and its normal map's stored slope pair by the same rotation (the map's y is the image's up,
   opposite the UV's v, so in the stored frame the turn is R itself). With 0 nothing turns, so
@@ -1005,6 +1007,71 @@ remaining W25 work; this surface contract makes no claim of bounded texture resi
 arbitrarily large coverage image.
 Changing a layer or image currently rebuilds the grid's cached container too; geometry and material
 cache identities are not split. A streamed terrain keeps that grid as its small material carrier.
+
+### Stochastic mesh materials
+
+**A mesh material may place its texels stochastically** (R131, 2026-11-04; the forest proof of
+concept's v29 hand-off: a generated cliff repeated its one 1.8 m PBR set across 40 m of face, and
+"enlarging the same small PBR to mountain scale is not the solution"). `gfx::k_material_stochastic`
+on a `ResolveMaterial` makes every map of it — base colour, metallic-roughness, normal, occlusion,
+emissive — read at three tiles of the terrain's lattice ("Stochastic sampling", above) **in the
+material's own UV plane** (the mesh's UVs after the material's transform, in repeats: no
+triplanar, no world position), each tile at its own hashed offset, with the UV derivatives turned
+with the tile and `SampleGrad` at the footprint's level, and blends them by the same
+variance-preserving operator: colour and roughness about the material's means, the normal map's
+slope pairs about zero, metallic, emissive and occlusion as the tiles' weighted mean (no mean is
+carried for them; a rock's metallic is a constant 0, and a widened occlusion would darken where the
+tiles part). With a normal-variance chain the tiles' roughness is read unwidened and the widening
+applied once to the blend, as the terrain does (R97). **Offsets only**: a mesh material takes no
+turn, so a bedded or streaked set keeps its direction. The lattice is a function of the UV alone, so
+every frame, view, cut and eye cell reads the same tiles.
+
+- **One lattice, shared.** The hash, the tiles (`hex_tiles`, Burley's weights at power 7, Heitz and
+  Neyret's gain) and the operator (`hex_blend`) moved from `terrain_material.slang` into
+  `domain/gfx/shaders/hex_lattice.slang`, without changing an operation; the terrain keeps its
+  names (`terrain_hash`, `TerrainHex`, `terrain_hex`, `terrain_hex_blend`) as wrappers, takes the
+  skewed point's integer part from the frame's cell in 64-bit integers as before and hands the
+  shared code its low 32 bits (all the hash reads), and every terrain test passes unchanged. A
+  mesh's skewed UV is split into its floor and fraction in floats: its UVs are a few hundred
+  repeats at most. `engine_shaders()` walks the include graph itself, so no `DEPENDS` names it.
+- **The means.** `uv_offset.z`'s bits hold four bytes, the square roots of the linear mean colour's
+  r, g, b and of the mean roughness, factors included (`gfx::set_stochastic`,
+  `pack_stochastic_means`; the root spends the eight bits where a dark rock's colour is: a step of
+  under 0.4% of 0.05). The upload makes them from the **built** textures: the first level of at most
+  16 × 16 texels of the base colour and metallic-roughness `.tex`, decoded as the GPU samples it,
+  sRGB to linear, averaged (`built_texture_mean` in `gpu_scene.cpp`) — the chain is filtered in
+  linear light by a normalized kernel, so that is the image's mean to within the kernel's and the
+  block coding's rounding, at the cost of decoding 256 texels. A texture shared with an earlier mesh
+  carries its mean with its slot.
+- **What refuses it.** `uv_offset.z` is an alpha-tested material's cutoff, a water material's and a
+  terrain root's word, so `set_stochastic` refuses all three (and `set_alpha_mask` clears the flag,
+  in either order), the shader reads a row carrying both as plain, and the upload draws plain —
+  with a warning naming the mesh and the material — a material whose textures are decoded rather
+  than built (no small mips to take the means from, no gradients for the tiles) or that belongs to
+  the terrain mesh, whose layers have their own stochastic path.
+- **Where it comes from.** A material set's `sampling` key (a pack role's `"sampling":
+  "stochastic"`, a rock recipe's `material.sampling`; [materials](materials.md)) becomes
+  `geometry::k_material_sampling_stochastic` in the container's material sampling record (section
+  33's `flags` word, what was its `pad`, so every older container reads plain), which
+  `adopt_container` keeps in `SourceMesh::material_sampling_flags` and the upload turns into the
+  bit. A glTF material has no way to say it, and no scene-level override exists yet. The upload logs
+  `stochastic materials` with the count when any are drawn.
+- **The reference path tracer** reads materials through the same `sample_material` and
+  `apply_normal_map`, which dispatch on the flag, so a stochastic material reads the same three tiles
+  there, at level 0 as every material does in it.
+- **Cost.** Three reads per map where tiling makes one — colour, metallic-roughness, normal (and
+  the variance chain and occlusion where the material has them) — and the lattice's ALU, three
+  times per pixel (the material, the normal map and the occlusion each compute it). On the v29 ledge
+  repro at 1920 × 1080 the resolve rose 0.02–0.03 ms (+3%) with a third of the picture on the cliff
+  and 0.09 ms (+17%) with three quarters, about 0.06 ns a stochastic pixel (a shared machine; upper
+  bounds), and texture residency did not change: [stochastic mesh
+  materials](../experiments/stochastic-mesh-materials-2026-11-04.md).
+- **What holds it.** `material resolve: stochastic mesh materials keep the mean and lose the repeat`
+  (`domain/gfx/tests/stochastic_material_tests.cpp`) draws a noise texture over eight repeats plain
+  and stochastic: the stochastic albedo's mean within 1% of the plain picture's per channel, its
+  deviation above 0.8 of the plain one's (contrast held), more than half the pixels different, two
+  frames byte-identical, and an alpha-tested row carrying the bit drawn as the plain alpha-tested
+  row; the helper's refusals and the means' packing on the CPU.
 
 ### Ground materials by place
 

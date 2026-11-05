@@ -105,6 +105,21 @@ caught only where a missing texture is built from it. `pack_at(dir)` reads a dir
 process and keeps it (null for no `pack.json`, said once in the log); `default_pack_dir(start)` is
 `<repo>/content/materials` beside the `<repo>/ddc` that `geometry::find_ddc_root` finds.
 
+**How a role's texels are placed** (R131). A role may say `"sampling": "stochastic"` (or
+`"tiled"`, the default, which every pack before the key reads as); anything else refuses the pack.
+A stochastic set is drawn at three tiles of a triangle lattice in the material's UV plane, each at
+its own offset, blended so the set's mean and contrast hold — no visible repeat over a cliff many
+times the set's size ([renderer](renderer.md#stochastic-mesh-materials)). `MaterialSet::stochastic`
+carries it, and `apply_set` writes it as `geometry::k_material_sampling_stochastic` in the material's
+sampling record's `flags` word (what was its `pad`, zero in every older container), so a tiled set's
+container is the bytes it always was. A rock recipe's `material.sampling` (`Tiled` or `Stochastic`,
+rocks schema `RockMaterial` version 5) overrides the chosen set's — the recipe's own images, which
+are tiled unless it says so, or the pack role's — for boulders, outcrops, scree, cliffs and
+deposits alike, and an absent one leaves the recipe's key what it was. `tools/pack-materials.ps1`
+writes `sampling` from a role's `material.json` when it names one, and **otherwise `stochastic` for
+every `rock/*` role** and `tiled` for the rest: a rock set is laid over cliffs many times its repeat.
+The pack in `content/materials/` today predates the key and stays tiled until it is repacked.
+
 **A pack is in the build key, not the source hash.** `assets::generated_mesh_build_key` combines
 `pack_key` — a hash over `pack.json`'s text and the pack's directory — into the generated mesh's
 cache key when the pack has roles, so a palm built with a pack's defaults and one built flat are two

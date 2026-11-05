@@ -104,9 +104,18 @@ struct RockSurfaceMaps @version(2) {
   rind: RockRind? @since(2)
 }
 
+/// How a tiled set's texels are placed (R131; renderer.md, "Stochastic mesh materials"). `Tiled`
+/// repeats the image every `tile_m`; `Stochastic` reads three tiles of a triangle lattice in the
+/// UV plane, each at its own random offset, blended so the set's mean and variance hold: no visible
+/// repeat over a cliff many times the set's size.
+enum RockSampling : u8 {
+  Tiled
+  Stochastic
+}
+
 /// A tiled PBR set or a unique baked atlas. Image paths are relative to the rock file and
 /// replace the material pack's default for `rock/<type>` (docs/subsystems/materials.md).
-struct RockMaterial @version(4) {
+struct RockMaterial @version(5) {
   base_color: string?
   normal: string?
   roughness: string?
@@ -123,6 +132,10 @@ struct RockMaterial @version(4) {
   roughness_factor: f32? @since(3)
   /// Optional unique baked PBR atlas, radial shapes only. Cannot combine with image paths.
   surface_maps: RockSurfaceMaps? @since(4)
+  /// How the set's texels are placed, the recipe's images or the pack's set alike; absent takes the
+  /// set's own (a pack role's `sampling`; `Tiled` for the recipe's images), and keeps the recipe's
+  /// key what it was.
+  sampling: RockSampling? @since(5)
 }
 
 /// Surface structure in metres, shared across an outcrop. These are authoring controls, not
