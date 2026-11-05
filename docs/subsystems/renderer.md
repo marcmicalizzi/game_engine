@@ -1047,7 +1047,18 @@ every frame, view, cut and eye cell reads the same tiles.
   shared code its low 32 bits (all the hash reads), and every terrain test passes unchanged. A
   mesh's skewed UV is split into its floor and fraction in floats: its UVs are a few hundred
   repeats at most. `engine_shaders()` walks the include graph itself, so no `DEPENDS` names it.
-- **The means.** `uv_offset.z`'s bits hold four bytes, the square roots of the linear mean colour's
+- **Only a scene that has one pays for it.** The stochastic path is compiled only into modules that
+  define `MATERIAL_STOCHASTIC`: eight `visibility_resolve*_stochastic.slang` wrappers, one per
+  combination of shadow rays, water and terrain, and the reference path tracer, which always has it.
+  Without the define `material.slang`'s reads keep their pre-R131 names and bodies and the
+  dispatch does not exist, so the four plain modules without terrain materials compile to the bytes
+  they did at efe7e9c5 (compared after an `msvc-release` build); the four terrain ones differ only by
+  the lattice's move into `hex_lattice.slang`, the same operations. `GpuScene::has_stochastic_materials` is set at upload when a material row
+  carries the flag, and `resolve_module` picks the `_stochastic` module from it, as it picks the
+  water and terrain ones. The first build had the dispatch in every resolve: the frame budgets'
+  `endless-surround3-rt`, which has no stochastic material, went from 2.11 to 2.24 ms of resolve
+  (registers, not reads); the numbers are on the [experiments
+  page](../experiments/stochastic-mesh-materials-2026-11-04.md#the-plain-kernel-the-frame-budgets-follow-up).- **The means.** `uv_offset.z`'s bits hold four bytes, the square roots of the linear mean colour's
   r, g, b and of the mean roughness, factors included (`gfx::set_stochastic`,
   `pack_stochastic_means`; the root spends the eight bits where a dark rock's colour is: a step of
   under 0.4% of 0.05). The upload makes them from the **built** textures: the first level of at most

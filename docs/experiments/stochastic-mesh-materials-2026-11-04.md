@@ -67,6 +67,26 @@ both, `crop-compare.png`), and looked at:
   0.06 ns more per stochastic pixel, so a full-width 11520 × 2160 picture wholly of such rock would
   pay on the order of 1.5 ms; a cliff in a forest view is a fraction of that.
 
+## The plain kernel: the frame budgets' follow-up
+
+The merged stack's frame budgets (2026-11-05, gate) put `endless-surround3-rt`'s resolve over
+budget with **no stochastic material in the scene**. The first build put the dispatch and the
+three-tile reads in every resolve kernel, so the plain path paid the stochastic one's registers.
+Attributed in the agent's worktree, `msvc-release`, `tools/frame-budget.ps1 -Run
+endless-surround3-rt -WaitQuiet 120` (budget 1.885 ms, limit 2.1235):
+
+| build | resolve median | p99 | total median | machine state (the harness's) |
+|---|---|---|---|---|
+| efe7e9c5 (before R131) | 2.108 ms | 2.483 | 4.439 | busy: start 5.2% others, GPU 0%; end GPU 24% |
+| R131 as first merged (dispatch in every kernel) | 2.240 ms | 2.631 | 4.550 | busy: start 3.3% others; end GPU 25% |
+| R131 with the stochastic variant | 2.109 ms | 2.473 | 4.436 | quiet |
+
+The fix compiles the stochastic path only into eight `*_stochastic` resolve modules that the
+renderer selects when a material row carries the flag ([renderer](../subsystems/renderer.md#stochastic-mesh-materials)).
+The four plain modules without terrain materials are now byte-identical to efe7e9c5's, which is
+why the resolve is back to 2.108 ms to the microsecond. `erg-walk-surround3-rt` with the fix:
+resolve 2.454 ms median (budget 2.318, limit 2.600), total 3.710 (budget 3.373, limit 3.760),
+within budget, on a machine the harness called busy (the GPU 99% at the end).
 ## What was not measured
 
 - **The lake-range camera with the full v29 scene** (`world/v29/lake-range-path.json`): not flown,

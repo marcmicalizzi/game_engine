@@ -22,7 +22,9 @@
 
 #include "brdf.slang"
 #include "display.slang"
+#ifdef MATERIAL_STOCHASTIC
 #include "hex_lattice.slang"
+#endif
 #include "scene.slang"
 
 [[vk::binding(0, 0)]] Texture2D<float4> g_textures[];
@@ -42,8 +44,20 @@ static const uint k_material_ground_detail = 8u;
 static const uint k_material_water = 16u;
 static const uint k_material_normal_variance = 8192u;
 // Stochastic (hex-tiled) sampling of the material's own UV plane (gfx::k_material_stochastic, R131;
-// "Stochastic mesh materials" below).
+// "Stochastic mesh materials" below) is compiled only into a module that defines
+// MATERIAL_STOCHASTIC (the `*_stochastic` resolve variants and the path tracer), which the renderer
+// draws with only when a material of the scene carries the flag: three reads a map in the same
+// kernel raise every pixel's registers whether it takes them or not. Without it the reads below
+// keep the names and bodies they had before R131, so the plain kernel is the one it was.
+#ifdef MATERIAL_STOCHASTIC
 static const uint k_material_stochastic = 131072u;
+#else
+#define sample_material_plain sample_material
+#define sample_material_plain_grad sample_material_grad
+#define sample_occlusion_plain sample_occlusion
+#define apply_normal_map_plain apply_normal_map
+#define apply_normal_map_plain_grad apply_normal_map_grad
+#endif
 // A per-slot sampler half that borrows the material's `sampler` (gfx::k_same_sampler).
 static const uint k_same_sampler = 0xffffu;
 
@@ -642,6 +656,7 @@ float3 apply_normal_map_plain_grad(ResolveMaterial material, float2 uv, float2 d
                    normal * tangent_normal.z);
 }
 
+#ifdef MATERIAL_STOCHASTIC
 // ---- Stochastic mesh materials (R131) -----------------------------------------------------------
 // A material flagged `k_material_stochastic` reads every map at three tiles of the hex lattice in
 // its own UV plane (hex_lattice.slang, the terrain's R96 lattice and operator, shared): each tile
@@ -808,6 +823,7 @@ float3 apply_normal_map_grad(ResolveMaterial material, float2 uv, float2 duv_dx,
                                        bitangent);
   return apply_normal_map_plain_grad(material, uv, duv_dx, duv_dy, normal, tangent, bitangent);
 }
+#endif  // MATERIAL_STOCHASTIC
 
 // One analytic light at a surface point: the direction towards it, the radiance that arrives,
 // and how far away it is, with the windowed inverse square and the spot cone already in the

@@ -3,6 +3,8 @@
 #ifndef ENGINE_TERRAIN_MATERIAL_SLANG
 #define ENGINE_TERRAIN_MATERIAL_SLANG
 
+#include "hex_lattice.slang"  // the lattice and the blend, shared with stochastic mesh materials
+
 static const uint k_material_terrain_layers = 512u;
 static const uint k_material_terrain_map = 1024u;
 static const uint k_material_terrain_height = 2048u;

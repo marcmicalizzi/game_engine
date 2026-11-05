@@ -34,6 +34,11 @@
 // is what lets the two pictures be compared at all. `k_pt_uniform_sky` replaces both with a
 // constant, which is the white furnace the integrator is checked with.
 
+// The reference reads a stochastic mesh material as the resolve's stochastic variant does (R131):
+// its cost is no budget's, so it always carries the path.
+#ifndef MATERIAL_STOCHASTIC
+#define MATERIAL_STOCHASTIC 1
+#endif
 #include "alpha_mask.slang"
 #include "brdf.slang"
 #include "display.slang"
