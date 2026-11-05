@@ -570,6 +570,18 @@ bool AnimationSystem::set_playhead(const Id128& entity, f32 time, f32 speed) {
   return true;
 }
 
+bool AnimationSystem::set_playhead(const Id128& entity, f32 time, f32 fade_time, f32 speed) {
+  if (world_ == nullptr) return false;
+  const flecs::entity found = ecs::entity_for(*world_, entity);
+  if (found == 0) return false;
+  AnimationPlayer* player = found.try_get_mut<AnimationPlayer>();
+  if (player == nullptr) return false;
+  player->time = time;
+  if (!player->fade_clip.is_null()) player->fade_time = fade_time;
+  player->speed = speed;
+  return true;
+}
+
 bool AnimationSystem::joint_run(const Id128& entity, u32& first, u32& count) const {
   first = 0;
   count = 0;

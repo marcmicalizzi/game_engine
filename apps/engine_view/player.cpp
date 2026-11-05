@@ -10,6 +10,7 @@
 #include <foundation/tunables/tunables.h>
 #include <systems/animation/library.h>
 
+#include <cmath>
 #include <cstdio>
 #include <span>
 
@@ -73,7 +74,9 @@ tunables::Float player_eye_yaw{
 tunables::String player_walk_clip{
     "view.player.walk_clip", "walk",
     "The clip the player's body plays while the walker moves, by name, any case (--player); a "
-    "name the rig lacks plays its first clip; 'none' plays no clip, the body stays at rest"};
+    "name the rig lacks plays its first clip; 'none' plays no clip, the body stays at rest; "
+    "'gait' generates a walk and a run for the rig (the run while sprinting), the playhead "
+    "driven by the distance walked"};
 tunables::String player_idle_clip{
     "view.player.idle_clip", "idle",
     "The clip the player's body plays while the walker stands, by name, any case (--player); a "
@@ -400,6 +403,33 @@ bool measure_player_rig(const std::string& path, f32 target_height_m, f32 eye_he
   // names this always looked for). Read here, once, before any device.
   const std::string want_walk = player_walk_clip.get();
   const std::string want_idle = player_idle_clip.get();
+  // **The procedural gait** (C60): `gait` generates the walk and the run for this rig. It needs
+  // the hips and both legs in the standard skeleton's roles, refused here, before any device.
+  if (clip_named(want_walk, "gait")) {
+    // The roles by name, completed from the rest pose where the names say nothing (gait.h).
+    const anim::JointMapping roles = animation::gait_mapping(skeleton, asset.mapping);
+    std::string missing;
+    if (!animation::gait_roles_present(roles, missing)) {
+      error = "--player " + path +
+              ": view.player.walk_clip=gait needs the hips and both legs in the standard "
+              "skeleton's roles, and this rig maps no " +
+              missing;
+      return false;
+    }
+    out.gait = true;
+    out.walk_clip = stem_of(path) + "/gait-walk";
+    out.run_clip = stem_of(path) + "/gait-run";
+    out.leg_length_m = animation::gait_leg_length_m(skeleton, roles, out.scale);
+    const WalkParams walk = walk_params_from_tunables();
+    out.walk_speed_mps = walk.speed;
+    out.run_speed_mps = walk.sprint;
+    for (u32 i = 0; i < library.clip_count(); ++i) {
+      if (library.clip(i).skeleton == 0 && !names_no_clip(want_idle) &&
+          clip_named(library.clip(i).name, want_idle) && out.idle_clip.empty())
+        out.idle_clip = library.clip(i).name;
+    }
+    return true;
+  }
   const bool walk_none = names_no_clip(want_walk);
   const bool idle_none = names_no_clip(want_idle);
   // A body with no clip at all stands at its bind pose (P61), and the soft names above (`walk` and
@@ -466,6 +496,13 @@ void PlayerBody::append(renderer::SceneDesc& desc, const WorldPos& start) {
   instance.origin = start;
   instance.transform.scale = Vec3{rig_.scale, rig_.scale, rig_.scale};
   instance.animation.play = true;  // its first clip; the session picks walk or rest at tick 1
+  if (rig_.gait) {
+    // The generated run, held at rate 0: what the cull padding is computed for (player.h).
+    mesh_ = mesh;
+    instance.animation.clip = rig_.run_clip;
+    instance.animation.speed = 0.0f;
+    set_generated_clips(&PlayerBody::generate, this);
+  }
   read_ = static_cast<u32>(desc.instances.size());
   desc.instances.push_back(instance);
 }
@@ -491,6 +528,17 @@ bool PlayerBody::bind(AnimatedScene& scene, GameActors& actors, std::string& err
   if (loaded >= scene.entities.size() || scene.entities[loaded].is_null()) {
     error = "--player " + rig_.mesh + ": the body's instance does not animate";
     return false;
+  }
+  loaded_ = loaded;
+  if (rig_.gait) {
+    if (!generated_) {
+      error = "--player " + rig_.mesh +
+              ": view.player.walk_clip=gait: the animated world was not handed the gait's clips";
+      return false;
+    }
+    // Attached on the run at rate 0 for its padding (`append`); it stands at rest until the walker
+    // first moves.
+    (void)actors.stop(k_player_actor, 0.0f);
   }
   const u32 skeleton = loaded < scene.instance_skeleton.size() ? scene.instance_skeleton[loaded]
                                                                : animation::Library::k_not_found;
@@ -614,8 +662,108 @@ void PlayerBody::note_marker(u64 tick) {
 
 void PlayerBody::observe(void* user, const FlySession& session, const input::InputState& input) {
   auto* self = static_cast<PlayerBody*>(user);
-  self->tick(session);
+  self->tick(session, input);
   if (self->next_ != nullptr) self->next_(self->next_user_, session, input);
+}
+
+PlayerBody::~PlayerBody() {
+  if (rig_.gait && !generated_) set_generated_clips(nullptr, nullptr);
+}
+
+// **The gait's clips, generated into the animated world's library** before any instance attaches
+// (`set_generated_clips`, animation.h): the walk timed for the walker's speed and the run for its
+// sprint, for the skeleton the body's mesh contributed, at the scale it is stood at. Once.
+bool PlayerBody::generate(void* user, AnimatedScene& scene, std::string& error) {
+  auto* self = static_cast<PlayerBody*>(user);
+  set_generated_clips(nullptr, nullptr);
+  const PlayerRig& rig = self->rig_;
+  const u32 skeleton = self->mesh_ < scene.mesh_skeleton.size() ? scene.mesh_skeleton[self->mesh_]
+                                                                : animation::Library::k_not_found;
+  if (skeleton >= scene.library.skeleton_count()) {
+    error = "--player " + rig.mesh + ": view.player.walk_clip=gait: the body's mesh brought no "
+            "skeleton to the animated world";
+    return false;
+  }
+  for (u32 band = 0; band < 2; ++band) {
+    const animation::SkeletonAsset& asset = scene.library.skeleton(skeleton);
+    animation::GaitParams params;
+    params.band = band == 0 ? animation::GaitBand::Walk : animation::GaitBand::Run;
+    params.speed_mps = band == 0 ? rig.walk_speed_mps : rig.run_speed_mps;
+    params.metres_per_unit = rig.scale;
+    params.leg_length_m = rig.leg_length_m;
+    animation::ClipAsset clip;
+    clip.name = band == 0 ? rig.walk_clip : rig.run_clip;
+    clip.id = animation::Library::clip_id(clip.name);
+    clip.skeleton = skeleton;
+    animation::GaitCycle& cycle = band == 0 ? self->walk_cycle_ : self->run_cycle_;
+    std::string why;
+    const anim::JointMapping roles = animation::gait_mapping(asset.skeleton, asset.mapping);
+    if (!animation::generate_gait_clip(asset, roles, params, clip, cycle, why)) {
+      error = "--player " + rig.mesh + ": " + why;
+      return false;
+    }
+    (void)scene.library.add_clip(std::move(clip));
+  }
+  self->generated_ = true;
+  return true;
+}
+
+// **The gait's tick** (`view.player.walk_clip=gait`): walking, running (the session's `fast`
+// action held while the walker moves — its sprint) or standing, the change faded as the clips'
+// change is; and while it moves, the cycle's phase advanced by this tick's distance over the stride
+// at this tick's speed (gait.h, `gait_stride_m`), and both clips of a fade in flight put at that
+// phase with rate 0 — so the feet keep their place on the ground at any speed in the band, and
+// standing holds the pose where it stopped. A function of the walker's state and the input at the
+// tick, so a replay reproduces it.
+void PlayerBody::tick_gait(const FlySession& session, const input::InputState& input,
+                           f64 walked) {
+  const f64 step = walked - walked_;
+  walked_ = walked;
+  const bool moving = step > 0.0;
+  if (!fast_found_) {
+    fast_found_ = true;
+    fast_ = input.map() != nullptr ? input.map()->find_action("fast") : input::k_invalid_action;
+  }
+  const bool sprint = moving && fast_ != input::k_invalid_action && input.held(fast_);
+  const u8 gait = moving ? (sprint ? u8{3} : u8{1}) : u8{2};
+  if (gait != gait_) {
+    const f32 fade = gait_ == 0 ? 0.0f : k_gait_fade_s;
+    if (gait_ != 0) ++gait_changes_;
+    gait_ = gait;
+    if (moving) {
+      (void)actors_->play(k_player_actor, sprint ? rig_.run_clip : rig_.walk_clip, fade, true);
+    } else if (!rig_.idle_clip.empty()) {
+      // The idle plays at its own rate; the gait's clips are held at 0 and driven by distance.
+      (void)actors_->play(k_player_actor, rig_.idle_clip, fade, true);
+      (void)actors_->speed(k_player_actor, 1.0f);
+    } else {
+      (void)actors_->stop(k_player_actor, fade);
+    }
+  }
+  if (!moving) return;
+  ++walking_ticks_;
+  if (sprint) ++running_ticks_;
+  const u32 hz = session.header().params.tick_hz;
+  const f64 speed = step * static_cast<f64>(hz > 0 ? hz : 1u);
+  const animation::GaitBand band = sprint ? animation::GaitBand::Run : animation::GaitBand::Walk;
+  const f32 stride =
+      animation::gait_stride_m(band, static_cast<f32>(speed), (sprint ? run_cycle_ : walk_cycle_).leg_length_m);
+  if (stride > 0.0f) {
+    const f64 advance = step / static_cast<f64>(stride);
+    cycles_ = cycles_ + advance;
+    phase_ = phase_ + advance;
+    phase_ = phase_ - std::floor(phase_);
+  }
+  if (scene_ == nullptr || loaded_ >= scene_->entities.size()) return;
+  const Id128 entity = scene_->entities[loaded_];
+  animation::AnimationPlayer player;
+  if (!scene_->system.player(entity, player)) return;
+  const auto time_of = [&](const Id128& clip) {
+    const u32 index = scene_->library.clip_index(clip);
+    if (index == animation::Library::k_not_found) return 0.0f;
+    return static_cast<f32>(phase_ * static_cast<f64>(scene_->library.clip_data(index).duration));
+  };
+  (void)scene_->system.set_playhead(entity, time_of(player.clip), time_of(player.fade_clip), 0.0f);
 }
 
 // **After the walker's step, before the module's tick and the world's step**: the body at the
@@ -623,7 +771,7 @@ void PlayerBody::observe(void* user, const FlySession& session, const input::Inp
 // while it moves over the ground, the rest pose (or `idle`) while it stands. Flying, nothing: the
 // body stays where the walker last stood. Everything here is a function of the walker's state at
 // the tick, so a recorded walk replays with the body where it was.
-void PlayerBody::tick(const FlySession& session) {
+void PlayerBody::tick(const FlySession& session, const input::InputState& input) {
   if (actors_ == nullptr) return;
   const Walker* walker = session.walker();
   if (walker == nullptr || !session.walking()) {
@@ -640,6 +788,10 @@ void PlayerBody::tick(const FlySession& session) {
     ++refused_;
   }
   const f64 walked = walker->stats().distance_m;
+  if (rig_.gait) {
+    tick_gait(session, input, walked);
+    return;
+  }
   const bool moving = walked - walked_ > 0.0;
   walked_ = walked;
   const u8 gait = moving ? u8{1} : u8{2};
@@ -765,6 +917,30 @@ JsonValue PlayerBody::summary_json(const GameActors* actors) const {
   out.set("refused", refused_);
   out.set("walking_ticks", walking_ticks_);
   out.set("gait_changes", gait_changes_);
+  if (rig_.gait) {
+    // The procedural gait (C60): the clips, the leg they were built for, each band's stride and
+    // cycle at the speed it was timed for, and how far the phase went.
+    out.set("run_clip", rig_.run_clip);
+    out.set("running_ticks", running_ticks_);
+    JsonValue gait = JsonValue::object();
+    gait.set("leg_length_m", static_cast<f64>(walk_cycle_.leg_length_m));
+    const auto band = [](const animation::GaitCycle& c) {
+      JsonValue o = JsonValue::object();
+      o.set("speed_mps", static_cast<f64>(c.speed_mps));
+      o.set("stride_m", static_cast<f64>(c.stride_m));
+      o.set("cycle_s", static_cast<f64>(c.cycle_s));
+      o.set("cadence_spm", static_cast<f64>(c.cadence_spm));
+      o.set("stance", static_cast<f64>(c.stance));
+      o.set("keys", static_cast<u64>(c.keys));
+      o.set("joints", static_cast<u64>(c.joints_driven));
+      return o;
+    };
+    gait.set("walk", band(walk_cycle_));
+    gait.set("run", band(run_cycle_));
+    gait.set("phase", phase_);
+    gait.set("cycles", cycles_);
+    out.set("gait", gait);
+  }
   // A flying session is a developer's view: the body stays where the walker last stood.
   out.set("flying_ticks", flying_ticks_);
   if (actors != nullptr) {
