@@ -4188,6 +4188,9 @@ bool GpuScene::upload_materials(const ResolvedSettings& resolved, std::string* e
     if ((material.flags & gfx::k_material_terrain_layers) != 0) has_terrain_materials_ = true;
     if ((material.flags & gfx::k_material_alpha_mask) != 0) has_masked_ = true;
   }
+  // The resolve's stochastic variant is the one only such a scene draws with (scene_renderer.cpp,
+  // `resolve_module`).
+  has_stochastic_materials_ = stochastic != 0;
   if (stochastic != 0)
     ENGINE_LOG_INFO(log_renderer, "stochastic materials", log::field("materials", stochastic));
   // The open sea (water.md, "To the horizon"): the instance of the scene's open body and its water

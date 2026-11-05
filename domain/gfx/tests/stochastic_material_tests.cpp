@@ -5,7 +5,9 @@
 // its contrast, must not be the plain picture, and must be the same bytes in two frames (the
 // lattice is a function of the UV alone). An alpha-tested material is refused by
 // `gfx::set_stochastic`, and one whose row carries both bits anyway is drawn plain by the resolve.
-// Through the device's own raster path (raster_path.h); skips only without 64-bit buffer atomics.
+// Drawn with the resolve's stochastic variant, the module the renderer selects for a scene with a
+// flagged material. Through the device's own raster path (raster_path.h); skips only without
+// 64-bit buffer atomics.
 #include "raster_path.h"
 #include "scene_fixture.h"
 
@@ -23,7 +25,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
-#include <shaders/visibility_resolve.spv.h>
+#include <shaders/visibility_resolve_stochastic.spv.h>
 #include <span>
 #include <string>
 #include <vector>
@@ -197,8 +199,8 @@ TEST_CASE("material resolve: stochastic mesh materials keep the mean and lose th
   gfx::FrameContext frames;
   REQUIRE(frames.create(device, 2, &error));
   gfx::ShaderModuleHandle resolve_module =
-      gfx::create_shader_module(device, shaders::k_visibility_resolve_spirv,
-                                shaders::k_visibility_resolve_spirv_size, &error);
+      gfx::create_shader_module(device, shaders::k_visibility_resolve_stochastic_spirv,
+                                shaders::k_visibility_resolve_stochastic_spirv_size, &error);
   REQUIRE(resolve_module.valid());
   gfx_test::ClusterRaster raster;
   REQUIRE_MESSAGE(raster.create(device, bindless.pipeline_layout(),

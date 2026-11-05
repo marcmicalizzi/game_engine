@@ -35,12 +35,20 @@
 #include <shaders/vertex_expand.spv.h>
 #include <shaders/visibility_resolve.spv.h>
 #include <shaders/visibility_resolve_rt.spv.h>
+#include <shaders/visibility_resolve_rt_stochastic.spv.h>
 #include <shaders/visibility_resolve_rt_terrain.spv.h>
+#include <shaders/visibility_resolve_rt_terrain_stochastic.spv.h>
 #include <shaders/visibility_resolve_rt_water.spv.h>
+#include <shaders/visibility_resolve_rt_water_stochastic.spv.h>
 #include <shaders/visibility_resolve_rt_water_terrain.spv.h>
+#include <shaders/visibility_resolve_rt_water_terrain_stochastic.spv.h>
+#include <shaders/visibility_resolve_stochastic.spv.h>
 #include <shaders/visibility_resolve_terrain.spv.h>
+#include <shaders/visibility_resolve_terrain_stochastic.spv.h>
 #include <shaders/visibility_resolve_water.spv.h>
+#include <shaders/visibility_resolve_water_stochastic.spv.h>
 #include <shaders/visibility_resolve_water_terrain.spv.h>
+#include <shaders/visibility_resolve_water_terrain_stochastic.spv.h>
 
 namespace engine::renderer {
 
@@ -173,14 +181,21 @@ bool read_buffer(const gfx::Device& device, const gfx::BufferResource& source, u
 // raises the fragment shader's register allocation for every pixel, water or not — 0.48 ms of
 // resolve on a ray-traced surround frame with no water in it (2026-10-18) — so a scene without
 // water draws with the module that has none, which is the bytes the resolve was before water.
-const char* resolve_module(bool shadows, bool water, bool terrain) noexcept {
-  if (terrain) {
-    if (water)
-      return shadows ? "visibility_resolve_rt_water_terrain" : "visibility_resolve_water_terrain";
-    return shadows ? "visibility_resolve_rt_terrain" : "visibility_resolve_terrain";
-  }
-  if (water) return shadows ? "visibility_resolve_rt_water" : "visibility_resolve_water";
-  return shadows ? "visibility_resolve_rt" : "visibility_resolve";
+// The stochastic mesh materials (R131; renderer.md, "Stochastic mesh materials") are the same kind
+// of branch: three reads a map in the kernel cost every pixel registers, so only a scene with a
+// flagged material draws with the `_stochastic` module of its combination.
+const char* resolve_module(bool shadows, bool water, bool terrain, bool stochastic) noexcept {
+  static const char* const k_modules[2][2][2][2] = {
+      {{{"visibility_resolve", "visibility_resolve_rt"},
+        {"visibility_resolve_water", "visibility_resolve_rt_water"}},
+       {{"visibility_resolve_terrain", "visibility_resolve_rt_terrain"},
+        {"visibility_resolve_water_terrain", "visibility_resolve_rt_water_terrain"}}},
+      {{{"visibility_resolve_stochastic", "visibility_resolve_rt_stochastic"},
+        {"visibility_resolve_water_stochastic", "visibility_resolve_rt_water_stochastic"}},
+       {{"visibility_resolve_terrain_stochastic", "visibility_resolve_rt_terrain_stochastic"},
+        {"visibility_resolve_water_terrain_stochastic",
+         "visibility_resolve_rt_water_terrain_stochastic"}}}};
+  return k_modules[stochastic ? 1 : 0][terrain ? 1 : 0][water ? 1 : 0][shadows ? 1 : 0];
 }
 
 }  // namespace
@@ -564,6 +579,31 @@ bool SceneRenderer::create(const gfx::Device& device, GpuScene& scene,
   shaders_.add_embedded("visibility_resolve_rt_water_terrain",
                         shaders::k_visibility_resolve_rt_water_terrain_spirv,
                         shaders::k_visibility_resolve_rt_water_terrain_spirv_size);
+  // The eight with stochastic mesh materials (R131), drawn only by a scene that has one.
+  shaders_.add_embedded("visibility_resolve_stochastic",
+                        shaders::k_visibility_resolve_stochastic_spirv,
+                        shaders::k_visibility_resolve_stochastic_spirv_size);
+  shaders_.add_embedded("visibility_resolve_rt_stochastic",
+                        shaders::k_visibility_resolve_rt_stochastic_spirv,
+                        shaders::k_visibility_resolve_rt_stochastic_spirv_size);
+  shaders_.add_embedded("visibility_resolve_water_stochastic",
+                        shaders::k_visibility_resolve_water_stochastic_spirv,
+                        shaders::k_visibility_resolve_water_stochastic_spirv_size);
+  shaders_.add_embedded("visibility_resolve_rt_water_stochastic",
+                        shaders::k_visibility_resolve_rt_water_stochastic_spirv,
+                        shaders::k_visibility_resolve_rt_water_stochastic_spirv_size);
+  shaders_.add_embedded("visibility_resolve_terrain_stochastic",
+                        shaders::k_visibility_resolve_terrain_stochastic_spirv,
+                        shaders::k_visibility_resolve_terrain_stochastic_spirv_size);
+  shaders_.add_embedded("visibility_resolve_rt_terrain_stochastic",
+                        shaders::k_visibility_resolve_rt_terrain_stochastic_spirv,
+                        shaders::k_visibility_resolve_rt_terrain_stochastic_spirv_size);
+  shaders_.add_embedded("visibility_resolve_water_terrain_stochastic",
+                        shaders::k_visibility_resolve_water_terrain_stochastic_spirv,
+                        shaders::k_visibility_resolve_water_terrain_stochastic_spirv_size);
+  shaders_.add_embedded("visibility_resolve_rt_water_terrain_stochastic",
+                        shaders::k_visibility_resolve_rt_water_terrain_stochastic_spirv,
+                        shaders::k_visibility_resolve_rt_water_terrain_stochastic_spirv_size);
   shaders_.add_embedded("clas_records", shaders::k_clas_records_spirv,
                         shaders::k_clas_records_spirv_size);
   shaders_.add_embedded("tlas_references", shaders::k_tlas_references_spirv,
@@ -701,7 +741,8 @@ bool SceneRenderer::create_frame_pass_pipelines(std::string* error) {
   if (pipelines_.encode.valid()) gfx::destroy_pipeline(device, pipelines_.encode);
   pipelines_.resolve_linear = pipelines_.encode = {};
   const gfx::Shader* resolve = shaders_.get(
-      resolve_module(resolved_.shadows, scene_->has_water(), scene_->has_terrain_materials()),
+      resolve_module(resolved_.shadows, scene_->has_water(), scene_->has_terrain_materials(),
+                     scene_->has_stochastic_materials()),
       error);
   const gfx::Shader* encode = resolve != nullptr ? shaders_.get("frame_encode", error) : nullptr;
   if (encode == nullptr) return false;
@@ -882,7 +923,8 @@ bool SceneRenderer::create_pipelines(std::string* error) {
   const gfx::Shader* vertex = hiz != nullptr ? shaders_.get("cluster_vertex", error) : nullptr;
   const gfx::Shader* resolve =
       hiz != nullptr ? shaders_.get(resolve_module(resolved_.shadows, scene_->has_water(),
-                                                   scene_->has_terrain_materials()),
+                                                   scene_->has_terrain_materials(),
+                                                   scene_->has_stochastic_materials()),
                                     error)
                      : nullptr;
   if (resolve == nullptr || vertex == nullptr) return false;

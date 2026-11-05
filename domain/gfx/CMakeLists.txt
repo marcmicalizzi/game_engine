@@ -16,6 +16,14 @@ engine_shaders(NAME gfx SOURCES shaders/cluster_mesh.slang shaders/cluster_cull.
                              shaders/visibility_resolve_rt_terrain.slang
                              shaders/visibility_resolve_water_terrain.slang
                              shaders/visibility_resolve_rt_water_terrain.slang
+                             # R131: the same eight with stochastic mesh materials, drawn only by a scene that has one.
+                             shaders/visibility_resolve_stochastic.slang shaders/visibility_resolve_rt_stochastic.slang
+                             shaders/visibility_resolve_water_stochastic.slang
+                             shaders/visibility_resolve_rt_water_stochastic.slang
+                             shaders/visibility_resolve_terrain_stochastic.slang
+                             shaders/visibility_resolve_rt_terrain_stochastic.slang
+                             shaders/visibility_resolve_water_terrain_stochastic.slang
+                             shaders/visibility_resolve_rt_water_terrain_stochastic.slang
                              shaders/resolve_half_sun.slang
                              shaders/path_trace_terrain.slang
                              shaders/hiz_build.slang shaders/cluster_vertex.slang
