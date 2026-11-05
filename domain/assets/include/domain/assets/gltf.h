@@ -62,9 +62,13 @@ namespace engine::assets {
 // UNSIGNED_SHORT or UNSIGNED_INT, not normalized — the glTF 2.0 core reserves UNSIGNED_INT for
 // indices, but an id space past 65,536 needs it, and the importer takes it; or FLOAT holding whole
 // numbers from 0 to 2^24, which is what a DCC tool that exports integer attributes as floats
-// writes and is exact over that range. `geometry::k_no_vertex_id` (0xFFFFFFFF) is reserved and
-// refused. A signed or normalized type, another shape, a sparse accessor, a fraction, a negative
-// number or a count that differs from POSITION's fails the load with a sentence. In a file where
+// writes and is exact over that range. `geometry::k_no_vertex_id` (0xFFFFFFFF) is the statement
+// "this vertex has no id", and a file may make it per vertex: a UNSIGNED_INT 0xFFFFFFFF or a FLOAT
+// exactly -1 reads as `k_no_vertex_id` (G130: the authoring tools write -1 on every vertex that is
+// not a point of the base, and accepting the reserved value confuses nothing). Such a vertex welds
+// with nothing by id, exactly as a vertex of a primitive with no attribute. A signed or normalized
+// type, another shape, a sparse accessor, a fraction, any other negative number or a count that
+// differs from POSITION's fails the load with a sentence. In a file where
 // some primitives carry it and some do not, the vertices of those that do not get
 // `k_no_vertex_id`, and the mesh's ids are still `authored`.
 inline constexpr const char k_canonical_id_attribute[] = "_CANONICAL_ID";
