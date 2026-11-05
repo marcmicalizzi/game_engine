@@ -57,7 +57,8 @@ constexpr const char* k_oak =
 constexpr const char* k_spruce =
     R"({"species":"conifer","conifer":{"seed":5,"height_m":6,"trunk_radius_m":0.1,)"
     R"("whorls":6,"branches_per_whorl":4,"crown_radius_m":1.5,"triangle_budget":8000,)"
-    R"("card_bake_px":0,"impostor_px":0}})";  // no chain (G120): the decimated top, cooked in a second
+    R"("card_bake_px":0,"impostor_px":0}})";  // no chain (G120): the decimated top, cooked in a
+                                              // second
 
 std::string scene_text(const char* world) {
   std::string text =
@@ -693,15 +694,30 @@ TEST_CASE("engine-view: a streamed world's cached structures trace the per-frame
 
 namespace {
 
-// A denser grove than `scene_text`'s — 400 of each tree, a wider inner ring — so that a frame
-// under traced shadows wants a few thousand structures, past what 16 MiB of them hold.
+// A denser grove than `scene_text`'s — 1,200 of each tree, a wider inner ring — so that a frame
+// under traced shadows wants several thousand structures, well past what 16 MiB of them hold.
+// It was 400 until 2026-11-04, when main's flora commits made the trees lighter and the frame's
+// demand fell to 2,574 structures, under the 2,621 that 16 MiB holds: nothing overflowed.
 std::string dense_scene_text() {
   std::string text = scene_text(R"({"tile_size":16,"rings":[{"radius":4},{"radius":8}]})");
   for (usize at = text.find(R"("count":70)"); at != std::string::npos;
        at = text.find(R"("count":70)", at)) {
-    text.replace(at, 10, R"("count":400)");
+    text.replace(at, 10, R"("count":1200)");
   }
   return text;
+}
+
+// The most structures a frame of a run wanted, from its benchmark records (`rt_wanted`).
+u64 wanted_most(const std::string& bench) {
+  std::ifstream log(bench, std::ios::binary);
+  std::string line;
+  u64 most = 0;
+  while (std::getline(log, line)) {
+    JsonValue record;
+    if (!parse_json(line, record).ok || record.find("frame") == nullptr) continue;
+    most = std::max(most, field_u64(record, "rt_wanted"));
+  }
+  return most;
 }
 
 // The most shadow casters a frame of the run kept (the summary's percentiles; still frames).
@@ -873,6 +889,14 @@ TEST_CASE("engine-view: four rings with static forms and grass keep traced caste
   const JsonValue limited = summary_of(small.output);
   const JsonValue* limited_rt = limited.find("rt");
   REQUIRE(limited_rt != nullptr);
+  // What the frame wanted against the 1 MiB budget, and what it dropped (R128: since main's lighter
+  // flora the frame's drawn clusters fit and only casters go, so dropped_instances is 0).
+  MESSAGE("1 MiB: " << wanted_most(tmp.file("small.jsonl"))
+                    << " structures wanted against a limit of " << field_u64(*limited_rt, "limit")
+                    << "; " << field_u64(*limited_rt, "overflow_frames") << " frames past it, "
+                    << field_u64(*limited_rt, "dropped_instances") << " instances and "
+                    << field_u64(*limited_rt, "dropped_caster_instances")
+                    << " instances' casters dropped");
   CHECK(field_u64(*limited_rt, "overflow_frames") > 0);
   CHECK(field_u64(*limited_rt, "dropped_instances") > 0);
   CHECK(field_u64(*limited.find("world"), "refused") == 0);
@@ -904,9 +928,13 @@ TEST_CASE("engine-view: past the budget the chain drops the same structures ever
     const JsonValue summary = summary_of(run->output);
     const JsonValue* rt = summary.find("rt");
     REQUIRE(rt != nullptr);
-    MESSAGE(field_u64(*rt, "overflow_frames")
-            << " frames past " << field_u64(*rt, "limit") << " structures, "
-            << field_u64(*rt, "dropped_caster_instances") << " casters' instances dropped");
+    // The premise: the frame wants well more than 16 MiB holds.
+    const u64 wanted = wanted_most(tmp.file(run == &a ? "a.jsonl" : "b.jsonl"));
+    REQUIRE_MESSAGE(wanted >= 2 * field_u64(*rt, "limit"),
+                    wanted << " structures wanted against a limit of " << field_u64(*rt, "limit"));
+    MESSAGE(wanted << " wanted, " << field_u64(*rt, "overflow_frames") << " frames past "
+                   << field_u64(*rt, "limit") << " structures, "
+                   << field_u64(*rt, "dropped_caster_instances") << " casters' instances dropped");
     CHECK(field_u64(*rt, "overflow_frames") > 0);
   }
   CHECK(differing_pixels(tmp.file("a.png"), tmp.file("b.png")) == 0);

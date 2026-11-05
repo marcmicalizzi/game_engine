@@ -50,6 +50,23 @@ tunables::Bool rt_scan_near_capacity{
     "renderer.rt.scan_near_capacity", true,
     "Record the drop order's scan while the last read-back demand is at least half "
     "the ray tracing chain's capacity, not only after a frame that dropped (R130)"};
+// R128 (2026-11-04): the drop order's scan on every frame, so no frame past its capacity takes the
+// one-thread rule (rt_capacity.h).
+tunables::Bool rt_scan_every_frame{
+    "renderer.rt.scan_every_frame", true,
+    "Record the drop order's scan on every frame of the ray tracing chain, so a frame past "
+    "its capacity never takes the one-thread rule (R128); false is R130's rule"};
+// R128 (2026-11-04): the chain's retired buffers freed on a worker, not on the frame's thread.
+tunables::Bool rt_free_on_worker{
+    "renderer.rt.free_on_worker", true,
+    "Free the ray tracing chain's buffers a resize retired on a worker once their frames "
+    "have completed, instead of on the frame's thread (R128); false is the frame's thread"};
+// R128 (2026-11-04): a growth while the demand rises reaches past it by the rise per frame times
+// this many frames (rt_capacity.h, `RtCapacityConfig::slope_frames`).
+tunables::Int rt_slope_frames{"renderer.rt.slope_frames", 4, 0, 64,
+                              "Frames of the demand's rise a growth of the ray tracing chain "
+                              "reaches ahead by while the demand rises: the read-back's two and "
+                              "the frames in flight; 0 grows to the demand alone"};
 tunables::Int rt_step{"renderer.rt.step_clusters", 4096, 1, 1 << 24,
                       "The ray tracing chain's capacity moves in multiples of this many clusters "
                       "(4,096 is 24 MiB of cluster structures on the RTX 5090)"};
@@ -110,6 +127,9 @@ u32 rt_step_tunable() noexcept { return static_cast<u32>(rt_step.get()); }
 bool rt_swap_resize_tunable() noexcept { return rt_swap_resize.get(); }
 bool rt_swap_references_tunable() noexcept { return rt_swap_references.get(); }
 bool rt_scan_near_capacity_tunable() noexcept { return rt_scan_near_capacity.get(); }
+bool rt_scan_every_frame_tunable() noexcept { return rt_scan_every_frame.get(); }
+bool rt_free_on_worker_tunable() noexcept { return rt_free_on_worker.get(); }
+u32 rt_slope_frames_tunable() noexcept { return static_cast<u32>(rt_slope_frames.get()); }
 bool rt_static_forms_tunable() noexcept { return rt_static_forms.get(); }
 bool rt_static_build_tunable() noexcept { return rt_static_build.get(); }
 bool rt_caster_horizon_tunable() noexcept { return rt_caster_horizon.get(); }
@@ -196,6 +216,7 @@ void RtCapacity::reset(const RtCapacityConfig& config, u32 capacity, f64 now) no
   window_start_ = now;
   window_start_frame_ = 0;
   frames_ = 0;
+  last_wanted_ = 0;
   held_first_ = 0;
   held_count_ = 0;
 }
@@ -238,19 +259,34 @@ u32 RtCapacity::grow_target(u32 wanted, f64 now) const noexcept {
   return fit > most ? fit : most;
 }
 
+u32 RtCapacity::ahead(u32 wanted) const noexcept {
+  if (frames_ == 0 || wanted <= last_wanted_) return wanted;
+  const u64 reach = u64{wanted} + u64{wanted - last_wanted_} * config_.slope_frames;
+  // Never past the limit on a projection: the frame's own demand is what may pass it.
+  if (reach <= config_.limit) return static_cast<u32>(reach);
+  return wanted > config_.limit ? wanted : config_.limit;
+}
+
 u32 RtCapacity::observe(u32 wanted, f64 now) noexcept {
+  // **While the demand rises, judge it where it will be** (R128): the demand reaches the policy two
+  // frames late and a growth lands on the frame recorded next, so a demand that rises by r a frame
+  // is about `slope_frames * r` past this one when the frames recorded meanwhile build. A turn into
+  // the woods on the owner's v27 walk raised it by 38% of the capacity between two frames, which
+  // the headroom (25%) could not hold: the frames before the growth landed dropped instances.
+  const u32 seen = ahead(wanted);
+  last_wanted_ = wanted;
   ++frames_;
   window_peak_ = wanted > window_peak_ ? wanted : window_peak_;
   // Grow as soon as the demand has eaten half the headroom: the next frames are already in flight
   // and will want about as much again, and the demand is only known this late. To the peak of the
   // last minute when that is more, so a view that comes back regrows in one step and not in a
   // staircase behind a demand that grows faster than the headroom.
-  const u64 trigger = u64{wanted} + u64{wanted} * config_.headroom_pct / 200;
+  const u64 trigger = u64{seen} + u64{seen} * config_.headroom_pct / 200;
   if (trigger > capacity_ && capacity_ < config_.limit) {
     window_peak_ = wanted;
     window_start_ = now;
     window_start_frame_ = frames_;
-    const u32 grown = grow_target(wanted, now);
+    const u32 grown = grow_target(seen, now);
     return grown > capacity_ ? grown : capacity_;
   }
   // Shrink only on a whole window — its seconds and its frames, so neither a load's fast frames nor

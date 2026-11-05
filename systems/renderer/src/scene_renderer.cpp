@@ -1,5 +1,6 @@
 #include <core/base/assert.h>
 #include <core/containers/small_vector.h>
+#include <core/jobs/job_system.h>
 #include <core/platform/process.h>
 #include <core/profiling/startup_trace.h>
 #include <core/time/time.h>
@@ -14,6 +15,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstring>
+#include <memory>
 #include <renderer_log.h>
 #include <shaders/alpha_coverage.spv.h>
 #include <shaders/clas_records.spv.h>
@@ -184,6 +186,55 @@ const char* resolve_module(bool shadows, bool water, bool terrain) noexcept {
 }
 
 }  // namespace
+
+// **The retired set is freed on a worker** (R128; renderer.md, "A resize is swapped in, not waited
+// for"). A swapped resize hands the old buffers back, and until R128 they went to the slot's
+// deferred frees, which the frame's thread runs when the slot comes round: freeing a 1.6-2 GB CLAS
+// set there was 30-70 ms of `begin_frame` two frames after every large growth on the replay of the
+// owner's walk, the largest CPU cost a step had left once R116 and R130 swapped it. The buffers
+// wait in the slot's `pending` list for the same moment — the slot's last frame complete, so every
+// frame that could have imported them is — and a job frees them while the frame records. VMA's
+// allocator is internally synchronized, and nothing else names these buffers once they are retired.
+struct RtFreer {
+  struct Batch {
+    const gfx::Device* device = nullptr;
+    Vector<gfx::BufferResource> pending;  // retired while this slot's frame was recorded
+    Vector<gfx::BufferResource> freeing;  // the worker's, until `done`
+    jobs::Counter done;
+  };
+  static jobs::JobSystemConfig config() noexcept {
+    jobs::JobSystemConfig out;
+    out.performance_workers = 1;
+    out.efficiency_workers = 1;  // never used; 0 would be one a CPU
+    out.pin_threads = false;     // a free is the driver's, not a kernel's: let the OS place it
+    return out;
+  }
+  static void run(void* data) {
+    Batch& batch = *static_cast<Batch*>(data);
+    for (gfx::BufferResource& buffer : batch.freeing)
+      gfx::destroy_buffer(*batch.device, buffer);
+    batch.freeing.clear();
+  }
+  RtFreer(const gfx::Device& device, u32 slots)
+      : jobs(config()), batches(std::make_unique<Batch[]>(slots)), slot_count(slots) {
+    for (u32 s = 0; s < slots; ++s) {
+      batches[s].device = &device;
+      batches[s].pending.reserve(2 * GpuScene::RtRetired::k_buffers);
+      batches[s].freeing.reserve(2 * GpuScene::RtRetired::k_buffers);
+    }
+  }
+  // Every job done and everything still pending freed here: the device is idle.
+  ~RtFreer() {
+    for (u32 s = 0; s < slot_count; ++s) {
+      batches[s].done.wait_blocking();
+      for (gfx::BufferResource& buffer : batches[s].pending)
+        gfx::destroy_buffer(*batches[s].device, buffer);
+    }
+  }
+  jobs::JobSystem jobs;
+  std::unique_ptr<Batch[]> batches;
+  u32 slot_count = 0;
+};
 
 void SceneRenderer::Pipelines::destroy(const gfx::Device& device) noexcept {
   if (direct.valid()) gfx::destroy_pipeline(device, direct);
@@ -450,6 +501,7 @@ bool SceneRenderer::create(const gfx::Device& device, GpuScene& scene,
     config.shrink_frames = rt_shrink_frames_tunable();
     config.peak_frames = rt_peak_frames_tunable();
     config.step = rt_step_tunable();
+    config.slope_frames = rt_slope_frames_tunable();
     // The policy's clock is wall time (R116): seconds on the monotonic clock.
     const f64 now = static_cast<f64>(time::monotonic_ns()) / 1.0e9;
     rt_capacity_.reset(config, scene.rt_capacity(), now);
@@ -487,6 +539,7 @@ bool SceneRenderer::create(const gfx::Device& device, GpuScene& scene,
   slot_table_slots_.assign(desc.frames_in_flight, 0);
   slot_table_pairs_.assign(desc.frames_in_flight, 0);
   slot_rt_cache_.assign(desc.frames_in_flight, u8{0});
+  slot_rt_capacity_.assign(desc.frames_in_flight, 0);
   slot_terrain_bytes_.assign(desc.frames_in_flight, 0);
   slot_cpu_.assign(desc.frames_in_flight, FrameCpu{});
   slot_visibility_.assign(desc.frames_in_flight, -1.0f);
@@ -1181,6 +1234,9 @@ void SceneRenderer::destroy() noexcept {
                     log::field("pairs", scene_->pair_count()));
   }
   frames_.wait_idle();
+  // The chain's retired buffers: the worker's finished, the rest freed now (the device is idle).
+  delete rt_freer_;
+  rt_freer_ = nullptr;
   if (graph_ != nullptr) {
     graph_->reset();
     delete graph_;
@@ -1622,6 +1678,10 @@ void SceneRenderer::collect_slot(u32 slot) {
   last.rt_built = stats_.rt.built;
   last.rt_wanted = stats_.rt.wanted;
   last.rt_capacity = scene_->rt_capacity();
+  // The capacity the frame was recorded against (R128): `rt_capacity` is the scene's when the
+  // frame is folded, which a growth between the two has already moved, so a frame short of its
+  // demand read against it looked short of a capacity it never had.
+  last.rt_built_capacity = slot < slot_rt_capacity_.size() ? slot_rt_capacity_[slot] : 0u;
   last.rt_references = stats_.rt.references;
   last.rt_cache_built = stats_.rt.cache_built;
   last.rt_micromaps = rt_micromaps_;
@@ -1756,6 +1816,9 @@ void SceneRenderer::begin_frame() {
   frame_cpu_ = FrameCpu{};
   frame_cpu_.wait_ms = static_cast<f64>(begin_started - wait_started) / 1.0e6;
   commands_ = frames_.begin_frame();
+  // The slot's last frame has completed: the chain's buffers retired while it was recorded go to
+  // the worker (R128), as the slot's deferred frees did in `begin_frame` above.
+  release_rt_retired(frames_.slot());
   timer_.begin_frame(commands_, frames_.slot());
   // The frame that last used this slot has completed: its statistics are readable.
   if (submitted_ >= frames_.frames_in_flight()) {
@@ -1791,6 +1854,27 @@ void SceneRenderer::begin_frame() {
   recording_ = true;
 }
 
+void SceneRenderer::retire_rt_buffer(const gfx::BufferResource& buffer) {
+  if (!rt_free_on_worker_tunable()) {
+    frames_.defer_destroy(buffer);
+    return;
+  }
+  if (rt_freer_ == nullptr) rt_freer_ = new RtFreer(*device_, frames_.frames_in_flight());
+  rt_freer_->batches[frames_.slot()].pending.push_back(buffer);
+}
+
+void SceneRenderer::release_rt_retired(u32 slot) {
+  if (rt_freer_ == nullptr || slot >= rt_freer_->slot_count) return;
+  RtFreer::Batch& batch = rt_freer_->batches[slot];
+  if (batch.pending.empty()) return;
+  batch.done.wait_blocking();  // the last batch of this slot, frames_in_flight frames ago
+  for (const gfx::BufferResource& buffer : batch.pending)
+    batch.freeing.push_back(buffer);
+  batch.pending.clear();
+  batch.done.add(1);
+  rt_freer_->jobs.schedule(jobs::Pool::Performance, jobs::Job{&RtFreer::run, &batch, &batch.done});
+}
+
 bool SceneRenderer::apply_rt_capacity(u32 capacity, std::string* error, bool beyond_budget,
                                       u32 references) {
   GpuScene& scene = *scene_;
@@ -1799,6 +1883,16 @@ bool SceneRenderer::apply_rt_capacity(u32 capacity, std::string* error, bool bey
   if (references == 0) references = references_before;
   if (capacity == before && references == references_before) return true;
   const i64 started = time::monotonic_ns();
+  // **A free still running on the worker finishes first** (R128): on the replay, a growth made
+  // while the worker freed the set two steps back took 272 ms in the driver's allocation where the
+  // same step without the overlap took 7-20 — the two contend there — and the memory the free
+  // returns is what the room below is asked of. So a step waits for the frees it would contend
+  // with; a frame with no step never does.
+  if (rt_freer_ != nullptr) {
+    for (u32 s = 0; s < rt_freer_->slot_count; ++s)
+      rt_freer_->batches[s].done.wait_blocking();
+  }
+  const i64 freed = time::monotonic_ns();
   // **Swapped at the frame boundary, not waited for** (R116, renderer.md "The ray tracing chain's
   // memory"): the new buffers are made while the frames in flight still read the old ones, which
   // this slot's deferred frees release once the frame recorded next has completed — so a resize
@@ -1822,7 +1916,7 @@ bool SceneRenderer::apply_rt_capacity(u32 capacity, std::string* error, bool bey
     GpuScene::RtRetired retired;
     if (scene.resize_ray_tracing(capacity, nullptr, beyond_budget, references, &retired)) {
       for (u32 i = 0; i < retired.count; ++i)
-        frames_.defer_destroy(retired.buffers[i]);
+        retire_rt_buffer(retired.buffers[i]);
       swapped = true;
     }
   }
@@ -1830,7 +1924,7 @@ bool SceneRenderer::apply_rt_capacity(u32 capacity, std::string* error, bool bey
   if (!swapped) {
     // Every frame in flight imports the chain's buffers by handle; none may still be reading them.
     frames_.wait_idle();
-    waited = time::monotonic_ns() - started;
+    waited = time::monotonic_ns() - freed;
     if (!scene.resize_ray_tracing(capacity, error, beyond_budget, references)) return false;
   }
   // A resize makes the chain's buffers again, and without the swap waits for the device first: a
@@ -1842,6 +1936,7 @@ bool SceneRenderer::apply_rt_capacity(u32 capacity, std::string* error, bool bey
                     log::field("from", before), log::field("to", scene.rt_capacity()),
                     log::field("ms", static_cast<f64>(time::monotonic_ns() - started) / 1.0e6),
                     log::field("swapped", swapped),
+                    log::field("free_wait_ms", static_cast<f64>(freed - started) / 1.0e6),
                     log::field("wait_ms", static_cast<f64>(waited) / 1.0e6),
                     log::field("free_ms", static_cast<f64>(cost.free_ns) / 1.0e6),
                     log::field("records_ms", static_cast<f64>(cost.records_ns) / 1.0e6),
@@ -1941,6 +2036,7 @@ u64 SceneRenderer::submit_frame(const FrameDesc& frame, std::string* error) {
     slot_table_slots_[slot] = tables_.write ? tables_.slots : 0u;
     slot_table_pairs_[slot] = tables_.write ? static_cast<u32>(tables_.pairs) : 0u;
     slot_rt_cache_[slot] = rt_cache_recording_ ? u8{1} : u8{0};
+    slot_rt_capacity_[slot] = resolved_.rt_chain ? scene_->rt_capacity() : 0u;
   }
   ++recorded_;
   ++submitted_;
@@ -3163,12 +3259,19 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
   // capacity within two frames is a jump of more than half of it, which the walk has not shown
   // (its largest was 38%). Recorded on a frame that fits, the scan's three dispatches are of no
   // group and cost 7 µs (the replay's median over 212 such frames).
+  //
+  // **And on every frame** (R128): one such frame remained on the replay, a demand that went from
+  // under half the capacity to past it within two frames, and nothing the frame thread reads can
+  // see that coming. Recorded on a frame that fits the scan costs its three empty dispatches and
+  // their barriers (7 µs, R130's median); the one-thread rule cost 118-168 ms a frame at 225,000
+  // instances. `renderer.rt.scan_every_frame=false` is R130's rule above, the comparison.
   if (rt_chain && rt_frames_since_drop_ < k_drop_scan_frames) ++rt_frames_since_drop_;
   const bool near_capacity =
       rt_chain && rt_scan_near_capacity_tunable() &&
       (u64{stats_.rt.wanted} * 2 >= scene.rt_capacity() ||
        (scene.rt_cache() && u64{stats_.rt.references_wanted} * 2 >= scene.rt_reference_capacity()));
-  const bool drop_scan = rt_frames_since_drop_ < k_drop_scan_frames || near_capacity;
+  const bool drop_scan = (rt_chain && rt_scan_every_frame_tunable()) ||
+                         rt_frames_since_drop_ < k_drop_scan_frames || near_capacity;
   if (rt_chain) {
     tlas_references.addresses = scene.blas_set.addresses.address;
     tlas_references.records = scene.rt_instances.address;
