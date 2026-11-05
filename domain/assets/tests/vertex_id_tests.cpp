@@ -97,20 +97,23 @@ Strip make_strip() {
   return s;
 }
 
-// How the `_CANONICAL_ID` accessor is written. The first four are the forms the importer takes;
-// the rest are the ones it refuses.
+// How the `_CANONICAL_ID` accessor is written. The first four are the forms the importer takes
+// with every vertex named; `uint_no_id` and `float_no_id` say "no id" on vertices 4 and 5 (b0 and
+// b1) and are taken too (G130); the rest are the ones it refuses.
 enum class IdForm {
   u32,
   u16,
   u8,
   f32,
+  uint_no_id,
+  float_no_id,
   none,
   vec2,
   signed16,
   normalized8,
   fraction,
-  negative,
-  reserved
+  negative,  // -2: only exactly -1 is the no-id value
+  past_range
 };
 
 // The strip as a .gltf with an embedded buffer. `second_primitive` adds a second primitive over the
@@ -140,9 +143,10 @@ std::string strip_gltf(const Strip& s, IdForm form, bool second_primitive = fals
     switch (form) {
       case IdForm::u32:
       case IdForm::none: append_raw(buffer, s.ids.data(), n); break;
-      case IdForm::reserved: {
+      case IdForm::uint_no_id: {
         std::vector<std::uint32_t> ids = s.ids;
-        ids[7] = 0xffffffffu;
+        ids[4] = 0xffffffffu;
+        ids[5] = 0xffffffffu;
         append_raw(buffer, ids.data(), n);
         break;
       }
@@ -166,13 +170,17 @@ std::string strip_gltf(const Strip& s, IdForm form, bool second_primitive = fals
         break;
       }
       case IdForm::f32:
+      case IdForm::float_no_id:
       case IdForm::fraction:
+      case IdForm::past_range:
       case IdForm::negative: {
         std::vector<float> ids;
         for (const std::uint32_t id : s.ids)
           ids.push_back(static_cast<float>(id));
         if (form == IdForm::fraction) ids[4] = 1.5f;
-        if (form == IdForm::negative) ids[4] = -1.0f;
+        if (form == IdForm::negative) ids[4] = -2.0f;
+        if (form == IdForm::past_range) ids[4] = 16777218.0f;
+        if (form == IdForm::float_no_id) ids[4] = ids[5] = -1.0f;
         append_raw(buffer, ids.data(), n);
         component = 5126;
         break;
@@ -386,7 +394,7 @@ TEST_CASE("vertex ids: a malformed _CANONICAL_ID fails the load with a sentence"
   const Case cases[] = {
       {IdForm::vec2, "not a scalar"},           {IdForm::signed16, "signed"},
       {IdForm::normalized8, "normalized"},      {IdForm::fraction, "not a whole number"},
-      {IdForm::negative, "not a whole number"}, {IdForm::reserved, "reserved"},
+      {IdForm::negative, "not a whole number"}, {IdForm::past_range, "not a whole number"},
   };
   for (const Case& c : cases) {
     MeshData mesh;
@@ -524,5 +532,45 @@ TEST_CASE("vertex ids: the Khronos skinned and morph samples keep every vertex's
     CHECK(identity.wrong == 0);
     // Every position the weld kept is still named, and by the name it had.
     CHECK(kept.distinct <= imported.distinct);
+  }
+}
+
+// G130: the authoring tools write -1 (a float) on every vertex that is not a point of the base. It
+// is the statement k_no_vertex_id already makes, so the reader takes it per vertex; any other
+// negative number, a fraction and a float past 2^24 still refuse (the malformed case above).
+TEST_CASE("vertex ids: -1 and 0xFFFFFFFF in _CANONICAL_ID read as a vertex with no id") {
+  const Strip strip = make_strip();
+  for (const IdForm form : {IdForm::float_no_id, IdForm::uint_no_id}) {
+    MeshData source;
+    std::string error;
+    REQUIRE_MESSAGE(load(strip_gltf(strip, form), source, error), error);
+    CHECK(source.vertex_id_source == geometry::VertexIdSource::authored);
+    REQUIRE(source.vertex_ids.size() == strip.ids.size());
+    for (u32 v = 0; v < strip.ids.size(); ++v) {
+      if (v == 4 || v == 5)
+        CHECK(source.vertex_ids[v] == geometry::k_no_vertex_id);
+      else
+        CHECK(source.vertex_ids[v] == strip.ids[v]);
+    }
+    // The weld: b0 (4) has a1's (1) position and attributes but no id, so it is not merged into
+    // the named vertex, and b1 (5) stays apart from c0 (8, id 100). Only b2 = c3 merges: 12
+    // become 11 (10 when every vertex was named, where a1 = b0 merged too).
+    MeshData welded = source;
+    CHECK(weld_vertices(welded) == 11);
+    u32 no_id = 0;
+    for (const u32 id : welded.vertex_ids)
+      no_id += id == geometry::k_no_vertex_id ? 1u : 0u;
+    CHECK(no_id == 2);
+
+    // And the builder carries them through the DAG: every cluster copy has its source's value,
+    // k_no_vertex_id included, and the mesh validates.
+    Vector<geometry::ClusterLodMesh> parts;
+    REQUIRE_MESSAGE(build_parts(welded, parts, error), error);
+    const Identity identity = check_identity(
+        source, welded, std::span<const geometry::ClusterLodMesh>(parts.data(), parts.size()));
+    CHECK(identity.copies == 12);
+    CHECK(identity.wrong == 0);
+    REQUIRE(parts.size() == 1);
+    CHECK(parts[0].mesh.vertex_id_source == geometry::VertexIdSource::authored);
   }
 }

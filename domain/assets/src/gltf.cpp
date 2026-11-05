@@ -355,7 +355,9 @@ bool append_skin_bindings(Context& ctx, const cgltf_primitive& primitive, u32 ba
 // `MeshData::vertex_ids`, which the caller has already grown to cover this primitive's vertices
 // with `k_no_vertex_id`. An id is a name, so every form that could round it, wrap it or scale it is
 // refused rather than converted: a signed or normalized component, a fraction, a negative number,
-// a float past 2^24 (where whole numbers stop being exact), and the reserved `k_no_vertex_id`.
+// a float past 2^24 (where whole numbers stop being exact). The one exception is the value that
+// *is* the statement of no id: a float -1 and a uint 0xFFFFFFFF read as `k_no_vertex_id` for that
+// vertex (G130), which is what the authoring tools write for a vertex that is not a base point.
 bool append_vertex_ids(Context& ctx, const cgltf_primitive& primitive, u32 base, u32 vertices) {
   const cgltf_accessor* ids = nullptr;
   for (cgltf_size a = 0; a < primitive.attributes_count; ++a) {
@@ -394,7 +396,12 @@ bool append_vertex_ids(Context& ctx, const cgltf_primitive& primitive, u32 base,
       if (cgltf_accessor_read_float(ids, i, &value, 1) == 0)
         return fail(ctx.error, "glTF: could not read " + std::string(k_canonical_id_attribute));
       // 2^24 is where a float stops holding every whole number, so an id past it could already
-      // have been rounded onto its neighbour's by whoever wrote the file.
+      // have been rounded onto its neighbour's by whoever wrote the file. Exactly -1 is the one
+      // negative taken: the authoring tools' spelling of "this vertex has no id".
+      if (value == -1.0f) {
+        out.vertex_ids[base + i] = geometry::k_no_vertex_id;
+        continue;
+      }
       if (!(value >= 0.0f && value <= 16777216.0f) || std::floor(value) != value) {
         return fail(ctx.error, what + " holds " + std::to_string(value) + " at vertex " +
                                    std::to_string(i) +
@@ -402,10 +409,7 @@ bool append_vertex_ids(Context& ctx, const cgltf_primitive& primitive, u32 base,
       }
       id = static_cast<u32>(value);
     }
-    if (id == geometry::k_no_vertex_id) {
-      return fail(ctx.error, what + " holds 0xFFFFFFFF at vertex " + std::to_string(i) +
-                                 ", which is reserved for a vertex with no id");
-    }
+    // 0xFFFFFFFF from a uint accessor is `k_no_vertex_id` itself and is stored as it is.
     out.vertex_ids[base + i] = id;
   }
   ctx.saw_ids = true;
