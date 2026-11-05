@@ -63,5 +63,5 @@ Reading the steps' `sections` found the cost a growth had left on the CPU. `cpu.
 
 ## What is next
 
-- **Allocate the next step ahead, on a worker.** The steps' remaining cost is the driver's allocation of the new set, 1 to 349 ms for the same step from one flight to the next on this shared card: a policy that knows the next step (the demand's slope says so two frames early) could make it on a worker and swap it in when it is asked for. The worker's own pool is there now.
+- **Allocate the next step ahead, on a worker** (roadmap R133). The steps' remaining cost is the driver's allocation of the new set, 1 to 349 ms for the same step from one flight to the next on this shared card: a policy that knows the next step (the demand's slope says so two frames early) could make it on a worker and swap it in when it is asked for. The worker's own pool is there now.
 - **Class C on the owner's machine.** The record's `rt_built_capacity` names the first frame at a new capacity; a recording that shows a slow first `blas` again says which, with the card's memory beside it.
