@@ -230,6 +230,15 @@ u32 find_morph_clip(const animation::Library& library, std::string_view request)
 bool prepare_animation(std::unique_ptr<AnimatedScene>& out, renderer::SceneDesc& desc,
                        const AnimationOptions& options, std::string& error);
 
+// **Clips a host makes rather than loads** (roadmap C60: the player's procedural gait, player.h).
+// `prepare_animation` calls it once its library holds every file's skeletons and clips and before
+// any instance attaches, so an instance's animation block may name a generated clip and
+// `attach_instances` pads the instance's cull spheres for it — a clip added after the attach would
+// move vertices outside spheres padded for another. One source at a time; null clears it. False
+// refuses the load with `error`.
+using GeneratedClips = bool (*)(void* user, AnimatedScene& scene, std::string& error);
+void set_generated_clips(GeneratedClips source, void* user) noexcept;
+
 // Part two: one entity per skinned instance, its clip and its phase, the padding its bounds need,
 // and the tier rows. After the scene has loaded (the renderer's joint buffer is sized by the pose
 // pool, which only knows its size once the population is attached).

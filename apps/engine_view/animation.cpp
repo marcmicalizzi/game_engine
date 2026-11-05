@@ -216,6 +216,16 @@ u32 find_morph_clip(const animation::Library& library, std::string_view request)
 //     a sentence naming the instance otherwise);
 //   - `--animate` makes every instance whose mesh carries a skin play, the rest stay rigid;
 //   - a `--mesh` run with no scene file has one instance, made here, or the grid's copies.
+namespace {
+GeneratedClips g_generated_clips = nullptr;
+void* g_generated_clips_user = nullptr;
+}  // namespace
+
+void set_generated_clips(GeneratedClips source, void* user) noexcept {
+  g_generated_clips = source;
+  g_generated_clips_user = user;
+}
+
 bool prepare_animation(std::unique_ptr<AnimatedScene>& out, renderer::SceneDesc& desc,
                        const AnimationOptions& options, std::string& error) {
   bool any_block = false;
@@ -240,6 +250,9 @@ bool prepare_animation(std::unique_ptr<AnimatedScene>& out, renderer::SceneDesc&
   }
   if (!load_clips(*out, desc, std::span<const ClipSource>(role.data(), role.size()),
                   std::span<const u32>(named_by.data(), named_by.size()), error)) {
+    return false;
+  }
+  if (g_generated_clips != nullptr && !g_generated_clips(g_generated_clips_user, *out, error)) {
     return false;
   }
   auto joints_of_mesh = [&](u32 mesh) {

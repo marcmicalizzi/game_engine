@@ -201,6 +201,10 @@ class AnimationSystem {
   // Puts the playhead at `time` seconds and the rate at `speed`, which is how a crowd built from
   // one clip is spread out of lockstep: same clip, one phase offset each.
   bool set_playhead(const Id128& entity, f32 time, f32 speed);
+  // The same, and the incoming clip's time while a cross-fade is in flight (ignored when none is).
+  // A host that drives the playhead itself — engine-view's player, whose gait's phase is the
+  // distance walked (gait.h) — keeps both clips of a walk-to-run fade on one phase with it.
+  bool set_playhead(const Id128& entity, f32 time, f32 fade_time, f32 speed);
   // Where this entity's bone matrices are inside `joint_matrices()`, as the two numbers a
   // renderer's per-instance record wants. False when the entity has no pose slot — LOD3, or never
   // attached — which a renderer reads as "this instance draws its rest pose this frame".

@@ -35,6 +35,8 @@
 #include <core/math/math.h>
 #include <domain/anim/skeleton.h>
 #include <domain/anim/standard_skeleton.h>
+#include <foundation/input/input.h>
+#include <systems/animation/gait.h>
 #include <systems/renderer/scene.h>
 
 #include <string>
@@ -87,6 +89,20 @@ struct PlayerRig {
   // And standing (`view.player.idle_clip`); empty: the rest pose (`none`, or a rig without that
   // name).
   std::string idle_clip;
+
+  // ---- the procedural gait (C60; apps.md "The procedural gait") -------------------------------
+  //
+  // `view.player.walk_clip=gait`: a walk and a run generated at load for this rig
+  // (systems/animation/gait.h), `walk_clip` and `run_clip` naming them in the library
+  // (`<stem>/gait-walk`, `<stem>/gait-run`), played walking and sprinting with the playhead driven
+  // by the distance walked. The leg length is measured from the joints at `scale`; the clips are
+  // timed for the walker's speeds as the tunables stood at load (the phase follows whatever speed
+  // the walker has, so a recording's own speeds still plant the feet).
+  bool gait = false;
+  std::string run_clip;
+  f32 leg_length_m = 0.0f;
+  f32 walk_speed_mps = 0.0f;  // `view.walk.speed`, `view.walk.sprint` at load
+  f32 run_speed_mps = 0.0f;
 
   // ---- the first-person eye (P58; apps.md "The eye at the face") ------------------------------
   //
@@ -171,6 +187,7 @@ bool measure_player_rig(const std::string& path, f32 target_height_m, f32 eye_he
 class PlayerBody {
  public:
   explicit PlayerBody(PlayerRig rig) : rig_(std::move(rig)) {}
+  ~PlayerBody();
   PlayerBody(const PlayerBody&) = delete;
   PlayerBody& operator=(const PlayerBody&) = delete;
 
@@ -183,7 +200,10 @@ class PlayerBody {
   // scene's whole read, named nowhere in the file, uniformly scaled, standing at `start` until the
   // walker first stands it, with an animation block (its first clip) so the animated world attaches
   // it. Its index in the whole read is kept. After the whole read, so a streamed world never hands
-  // it to the ring (it is past the run `stream_authored` may stream).
+  // it to the ring (it is past the run `stream_authored` may stream). Under the gait, the block
+  // names the generated run at rate 0 — the larger swing of the two, so the cull padding the
+  // attach computes for it covers the walk too — and the gait's clips are handed to the animated
+  // world's library through `set_generated_clips`, before any instance attaches.
   void append(renderer::SceneDesc& desc, const WorldPos& start);
   u32 read_index() const noexcept { return read_; }
 
@@ -225,7 +245,12 @@ class PlayerBody {
 
  private:
   static void observe(void* user, const FlySession& session, const input::InputState& input);
-  void tick(const FlySession& session);
+  void tick(const FlySession& session, const input::InputState& input);
+  // The gait's tick (`rig_.gait`): walk, run (the `fast` action held while moving) or stand, and
+  // the phase advanced by the distance this tick over the stride at this tick's speed.
+  void tick_gait(const FlySession& session, const input::InputState& input, f64 walked);
+  // `GeneratedClips` (animation.h): the walk and the run into the animated world's library.
+  static bool generate(void* user, AnimatedScene& scene, std::string& error);
   // The head-look layer's shares for `drawn`'s pitch, set on the body's entry when the rig has the
   // layer; returned either way (what `face_camera` and `boom_camera` both record).
   LookShares set_look(const FlyState& drawn);
@@ -263,6 +288,17 @@ class PlayerBody {
   u64 walking_ticks_ = 0;  // ticks it played the walk clip
   u64 gait_changes_ = 0;
   u64 refused_ = 0;  // placements the actors refused
+  // ---- the procedural gait's state (`rig_.gait`) ----
+  u32 mesh_ = ~0u;  // the body's mesh in the scene, for its skeleton in the library
+  u32 loaded_ = ~0u;
+  bool generated_ = false;
+  animation::GaitCycle walk_cycle_;
+  animation::GaitCycle run_cycle_;
+  f64 phase_ = 0.0;   // the cycle's phase, [0, 1): the distance walked over the stride
+  f64 cycles_ = 0.0;  // whole and part cycles walked, for the summary
+  u64 running_ticks_ = 0;
+  input::ActionId fast_ = input::k_invalid_action;
+  bool fast_found_ = false;
 };
 
 }  // namespace engine::view

@@ -136,9 +136,13 @@ class Library {
 
   void clear() noexcept;
 
+  // **Adds a clip made elsewhere** — the procedural gait (gait.h) is the first — and returns its
+  // index. The asset's `id` must be `clip_id(name)` and `skeleton` an index of this library; a name
+  // already held is replaced in place, as a load replaces it, so an id that names it stays valid.
+  u32 add_clip(ClipAsset&& asset);
+
  private:
   u32 add_skeleton(SkeletonAsset&& asset);
-  u32 add_clip(ClipAsset&& asset);
 
   Vector<SkeletonAsset> skeletons_;
   Vector<ClipAsset> clips_;
