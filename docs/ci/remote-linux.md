@@ -366,7 +366,11 @@ By 2026-10-20 the `renderer` suite alone takes about 37 minutes there (2,195 s o
 `linux-server` presets set `ENGINE_TEST_WORK_TIMEOUT_S` to 3,600 (`CMakePresets.json`): the
 default 600 s of work plus the 1,800 s lock wait was being spent on work alone, and batch 33's
 heavier flora scenes (G73, R65) ran it past 2,400 s and into a timeout on 2026-10-21. A test's
-ceiling there is now 5,400 s.
+ceiling there was then 5,400 s. By 2026-11-04 the suite took 4,361 s there (gate b51), and on
+2026-11-05 batch 52's new renderer tests (the cascade cut at three sun elevations, the chain's
+capacity cases, the stochastic material case) ran it past 5,400 and into a timeout (gate b52), so the
+presets now set 7,200: a ceiling of 9,000 s. The suite grows with every batch and the card does not;
+splitting it into parts CTest runs side by side is the next answer, not a third raise.
 
 **Disk: 2.1 GB for one preset, 3.6 GB for both** — checkout and build trees 1.5 GB, downloaded
 dependencies 2.2 GB — under `~/game_engine-remote/<checkout-id>/`, on a volume with 8.6 TB free.
