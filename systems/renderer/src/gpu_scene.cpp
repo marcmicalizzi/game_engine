@@ -222,7 +222,47 @@ struct SceneTexture {
   // the texture as well as for the mesh that uploaded it.
   texture::TextureFormat stored = texture::TextureFormat::rgba8;
   bool normal_variance = false;
+  // A built one's linear mean texel (`built_texture_mean`), which a stochastic material's means
+  // are made from (R131); `has_mean` false for a decoded one.
+  Vec4 mean{};
+  bool has_mean = false;
 };
+
+// **A built texture's mean** (R131; renderer.md, "Stochastic mesh materials"): the texels of its
+// first level of at most 16 x 16, decoded as the GPU samples them, sRGB taken to linear, averaged.
+// The chain is filtered in linear light by a normalized kernel with the sampler's edges, so a small
+// level's mean is the image's to within that kernel's and the block encoding's rounding — and
+// decoding at most 256 texels costs nothing at load, where reading level 0 back would cost a
+// decode of the whole image. False for a chain that will not decode.
+bool built_texture_mean(const texture::TextureData& t, Vec4& mean) {
+  if (t.levels.empty()) return false;
+  u32 level = t.levels.size() - 1u;
+  for (u32 l = 0; l < t.levels.size(); ++l) {
+    if (u64{t.levels[l].width} * t.levels[l].height <= 256u) {
+      level = l;
+      break;
+    }
+  }
+  Vector<u8> rgba;
+  if (!texture::decode_level(t.format, t.level_bytes(level), t.levels[level].width,
+                             t.levels[level].height, rgba))
+    return false;
+  const bool srgb = t.color_space == texture::ColorSpace::srgb;
+  f64 sum[4] = {0.0, 0.0, 0.0, 0.0};
+  const u32 texels = static_cast<u32>(rgba.size() / 4u);
+  if (texels == 0) return false;
+  for (u32 i = 0; i < texels; ++i) {
+    for (u32 c = 0; c < 4; ++c) {
+      const u8 code = rgba[i * 4u + c];
+      sum[c] += c < 3 && srgb ? static_cast<f64>(texture::srgb8_to_linear(code))
+                              : static_cast<f64>(code) / 255.0;
+    }
+  }
+  const f64 n = static_cast<f64>(texels);
+  mean = Vec4{static_cast<f32>(sum[0] / n), static_cast<f32>(sum[1] / n),
+              static_cast<f32>(sum[2] / n), static_cast<f32>(sum[3] / n)};
+  return true;
+}
 
 // The scene's textures by content. With sharing off it finds nothing, and every mesh uploads its
 // own as every build before 2026-09-25 did. A 64-bit collision between two different (content,
@@ -3677,6 +3717,7 @@ bool GpuScene::upload_materials(const ResolvedSettings& resolved, std::string* e
       }
       Vector<u32> image_slot(mesh_data.images.size(), gfx::k_no_texture);
       Vector<bool> image_tried(mesh_data.images.size(), false);
+      Vector<SceneTexture> image_made(mesh_data.images.size());  // its mean, for R131
       bool variance_upload_failed = false;
       const std::string& mesh_dir = source_mesh.image_dir;  // the glTF's or the container's
       auto texture_slot_of = [&](i32 image_index, gfx::Format format) -> u32 {
@@ -3700,6 +3741,7 @@ bool GpuScene::upload_materials(const ResolvedSettings& resolved, std::string* e
           ++textures_shared_;
           texture_bytes_saved_ += held->bytes;
           image_slot[index] = held->slot;
+          image_made[index] = *held;
           return held;
         };
         if (use_built) {
@@ -3722,6 +3764,7 @@ bool GpuScene::upload_materials(const ResolvedSettings& resolved, std::string* e
                gfx::create_image_view(device, uploaded, view, &image_error);
           if (!ok && uploaded.image.valid()) gfx::destroy_image(device, uploaded);
           if (ok) ++textures_built_;
+          if (ok) made.has_mean = built_texture_mean(t, made.mean);
         } else {
           // The encoded bytes — embedded, or the file as it is now — are what a decoded texture
           // is keyed by, so they are read and hashed before anything is decoded: a repeat costs
@@ -3810,6 +3853,7 @@ bool GpuScene::upload_materials(const ResolvedSettings& resolved, std::string* e
           }
         }
         scene_textures.add(made);
+        image_made[index] = made;
         // A slice: a thread that owns a window keeps its messages flowing between two uploads
         // (profiling::progress_pump; apps.md, "The loading presentation"). Nothing when no one
         // pumps, which is every caller but engine-view's window.
@@ -3901,6 +3945,49 @@ bool GpuScene::upload_materials(const ResolvedSettings& resolved, std::string* e
         // An open body (water.md, "To the horizon"): its shore by depth, and the sea past it.
         if (water && data_->mesh_info[m].water->body.open)
           material.flags |= gfx::k_material_water_open;
+        // **Stochastic sampling** (R131; renderer.md, "Stochastic mesh materials"): a material
+        // whose set asked for it (`ClusterFileMaterialSampling::flags`) reads its maps at three
+        // tiles of the hex lattice, blended about its means — the factors times the built
+        // textures' mean texels. Built textures only, since the means come from their small mips
+        // and the tiles from their gradients; and never an alpha-tested, water or terrain
+        // material, whose `uv_offset.z` is theirs (`set_stochastic` refuses). A refusal draws the
+        // material plain, and says so.
+        const bool wants_stochastic =
+            source_material_index < source_mesh.material_sampling_flags.size() &&
+            (source_mesh.material_sampling_flags[source_material_index] &
+             geometry::k_material_sampling_stochastic) != 0;
+        if (wants_stochastic) {
+          const auto mean_of = [&](i32 image, Vec4& out) {
+            out = Vec4{1.0f, 1.0f, 1.0f, 1.0f};
+            if (image < 0) return true;
+            const SceneTexture& made = image_made[static_cast<u32>(image)];
+            if (!made.has_mean) return false;
+            out = made.mean;
+            return true;
+          };
+          Vec4 colour_texel;
+          Vec4 roughness_texel;
+          const char* refused = nullptr;
+          if (!use_built) {
+            refused = "its textures are not built (the means come from the built chain)";
+          } else if (m == data_->terrain_mesh) {
+            refused = "a terrain material is sampled by its own layers";
+          } else if (!mean_of(source.base_color_image, colour_texel) ||
+                     !mean_of(source.metallic_roughness_image, roughness_texel)) {
+            refused = "a texture's mean did not decode";
+          } else if (!gfx::set_stochastic(material,
+                                          Vec3{material.albedo.x * colour_texel.x,
+                                               material.albedo.y * colour_texel.y,
+                                               material.albedo.z * colour_texel.z},
+                                          material.albedo.w * roughness_texel.y)) {
+            refused = "the material is alpha-tested or water, whose word the means would take";
+          }
+          if (refused != nullptr) {
+            ENGINE_LOG_WARN(log_renderer, "stochastic sampling refused; the material draws plain",
+                            log::field("mesh", m), log::field("material", source_material_index),
+                            log::field("reason", refused));
+          }
+        }
         // An open sea's waves from the spectrum (water.md, "The spectrum"): the table in the five
         // entries after the material's next one, which is then always there (empty at the low
         // tier with no map).
@@ -4090,11 +4177,19 @@ bool GpuScene::upload_materials(const ResolvedSettings& resolved, std::string* e
   has_water_ = false;
   has_terrain_materials_ = false;
   has_masked_ = false;
+  u32 stochastic = 0;
   for (const gfx::ResolveMaterial& material : material_table) {
+    // (A terrain record's words are not flags, so the count is of materials that read as such.)
+    if ((material.flags & (gfx::k_material_stochastic | gfx::k_material_water |
+                           gfx::k_material_terrain_layers | gfx::k_material_alpha_mask)) ==
+        gfx::k_material_stochastic)
+      ++stochastic;
     if ((material.flags & gfx::k_material_water) != 0) has_water_ = true;
     if ((material.flags & gfx::k_material_terrain_layers) != 0) has_terrain_materials_ = true;
     if ((material.flags & gfx::k_material_alpha_mask) != 0) has_masked_ = true;
   }
+  if (stochastic != 0)
+    ENGINE_LOG_INFO(log_renderer, "stochastic materials", log::field("materials", stochastic));
   // The open sea (water.md, "To the horizon"): the instance of the scene's open body and its water
   // material — the mesh's one material, at the mesh's base — which the resolve's water modules draw
   // the plane past its outline by. The water generator lets a scene have one.

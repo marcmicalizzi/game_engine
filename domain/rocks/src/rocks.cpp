@@ -67,6 +67,7 @@ materials::MaterialSet set_of(const RockMaterial& m) {
   out.height = m.height.value_or(std::string());
   out.tile_m = m.tile_m;
   out.normal_scale = m.normal_scale;
+  out.stochastic = m.sampling.has_value() && *m.sampling == RockSampling::Stochastic;
   return out;
 }
 
@@ -217,6 +218,7 @@ std::string canonical_rock_json(const RockFile& file) {
   // outcrop's or a scree's parameters — and the key over them — are the bytes they were before
   // the cliff was (rocks.md, "The build").
   if (json.is_object() && !filled.cliff.has_value()) json.as_object().erase(std::string("cliff"));
+  detail::drop_absent_sampling(json);
   JsonWriteOptions compact;
   compact.pretty = false;
   return write_json(json, compact);
@@ -308,8 +310,12 @@ bool build_rock_container(const RockFile& file_in, const geometry::ClusterLodOpt
     out.images.push_back(geometry::ClusterImage{image.mime_type, std::move(image.bytes)});
   }
   if (chosen != nullptr && !out.materials.empty()) {
-    // The charts are in repeats already: no transform.
-    materials::apply_set(*chosen, materials::UvLayout::repeats, out, 0);
+    // The charts are in repeats already: no transform. The recipe's `sampling`, when it names
+    // one, places the chosen set's texels whichever set it is (R131).
+    materials::MaterialSet applied = *chosen;
+    if (material_of(file)->sampling.has_value())
+      applied.stochastic = *material_of(file)->sampling == RockSampling::Stochastic;
+    materials::apply_set(applied, materials::UvLayout::repeats, out, 0);
     detail::material_factors(*material_of(file), out.materials[0].base_color,
                              out.materials[0].roughness);
   }

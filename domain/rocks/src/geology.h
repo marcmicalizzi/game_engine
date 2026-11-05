@@ -2,6 +2,8 @@
 
 #include "detail.h"
 
+#include <core/json/json_value.h>
+
 #include <string>
 
 namespace engine::rocks::detail {
@@ -42,5 +44,9 @@ bool valid_quality(RockQuality quality);
 u32 quality_budget(u32 budget, RockQuality quality, u32 floor);
 void material_factors(const RockMaterial& source, Vec4& colour, f32& roughness);
 bool material_factors_in_range(const RockMaterial& m, std::string& error);
+// A recipe's canonical JSON without the material blocks' absent `sampling` (R131, RockMaterial
+// version 5): the reflection writes an absent optional as null, and leaving it in would move every
+// rock's and deposit's source hash for a field that says nothing. A `sampling` that is set stays.
+void drop_absent_sampling(JsonValue& json);
 
 }  // namespace engine::rocks::detail

@@ -151,6 +151,35 @@ TEST_CASE("materials: a pack's manifest is read whole or refused with the role n
   CHECK(error.find("tile_m") != std::string::npos);
 }
 
+TEST_CASE("materials: a role's sampling places its texels, and the container records it") {
+  std::string error;
+  materials::Pack pack;
+  // Absent: tiled, as every pack before the key (R131).
+  REQUIRE(materials::parse_pack(pack_text("rock/granite"), "D:/p", pack, error));
+  CHECK_FALSE(pack.roles[0].set.stochastic);
+  REQUIRE_MESSAGE(materials::parse_pack(pack_text("rock/granite", R"("sampling":"stochastic",)"),
+                                        "D:/p", pack, error),
+                  error);
+  CHECK(pack.roles[0].set.stochastic);
+  REQUIRE(materials::parse_pack(pack_text("rock/granite", R"("sampling":"tiled",)"), "D:/p", pack,
+                                error));
+  CHECK_FALSE(pack.roles[0].set.stochastic);
+  CHECK_FALSE(materials::parse_pack(pack_text("rock/granite", R"("sampling":"hex",)"), "D:/p", pack,
+                                    error));
+  CHECK(error.find("sampling") != std::string::npos);
+
+  // The set's bit in the material's sampling record; a tiled set leaves the word zero, so its
+  // container is the bytes it always was.
+  geometry::ClusterFileData data = flat(1);
+  materials::MaterialSet set = bark_set();
+  materials::apply_set(set, materials::UvLayout::repeats, data, 0);
+  CHECK(data.material_sampling[0].flags == 0u);
+  set.stochastic = true;
+  geometry::ClusterFileData flagged = flat(1);
+  materials::apply_set(set, materials::UvLayout::repeats, flagged, 0);
+  CHECK(flagged.material_sampling[0].flags == geometry::k_material_sampling_stochastic);
+}
+
 TEST_CASE("materials: pack_at reads a directory's pack once and none where there is none") {
   engine::test::TempDir tmp("materials");
   const std::string dir = tmp.file("pack");

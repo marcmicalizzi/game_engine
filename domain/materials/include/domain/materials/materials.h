@@ -18,7 +18,9 @@
 // greyscale image decodes to G = the grey — with a roughness factor of 1 and a **metallic factor of
 // 0**, so the B channel the grey also fills reads as no metal: bark, leaves and stone are not
 // metal, and packing a metallic channel at build time would need image io the solvers do not have.
-// The normal map goes in the normal slot with the set's `normal_scale`. Metallic and height are
+// The normal map goes in the normal slot with the set's `normal_scale`. A stochastic set (R131)
+// sets `geometry::k_material_sampling_stochastic` in the material's sampling record, which the
+// renderer reads as `gfx::k_material_stochastic`. Metallic and height are
 // carried in the pack and the recipe and read by nothing yet. For a part whose UVs are in metres,
 // every sampled slot gets a texture transform of scale `1 / tile_m`; a part whose UVs are already
 // in repeats, or are a whole card per image, gets none.
@@ -53,6 +55,11 @@ struct MaterialSet {
   std::string height;
   f32 tile_m = 1.0f;
   f32 normal_scale = 1.0f;
+  // How its texels are placed (R131): false repeats the set every `tile_m`; true reads it at three
+  // tiles of the hex lattice in the UV plane, blended so its mean and variance hold and no repeat
+  // shows (renderer.md, "Stochastic mesh materials"). A pack role's `sampling` key, a rock
+  // recipe's `material.sampling`.
+  bool stochastic = false;
 };
 
 // True when the set names any image — the test of whether a recipe's block for a part replaces the
@@ -99,8 +106,9 @@ struct Pack {
 
 // Parses a `pack.json`'s text for the pack in `dir`: `format`, `name`, `version` and `roles`, each
 // role's `maps` (`base_color`, `normal`, `roughness`, `metallic`, `height`, each `{"file": ...}`
-// relative to `dir`), `tile_m`, `normal_scale` (1 when absent) and `normal_convention`, which must
-// be "opengl". A role that is malformed refuses the whole pack: a pack is fetched and verified as a
+// relative to `dir`), `tile_m`, `normal_scale` (1 when absent), `sampling` ("tiled", the default,
+// or "stochastic"; R131) and `normal_convention`, which must be "opengl". A role that is
+// malformed refuses the whole pack: a pack is fetched and verified as a
 // unit. `hash` is over the text and `dir`, so a pack moved or changed is a new key. Pure.
 bool parse_pack(std::string_view text, std::string_view dir, Pack& out, std::string& error);
 

@@ -22,6 +22,7 @@
 
 #include "brdf.slang"
 #include "display.slang"
+#include "hex_lattice.slang"
 #include "scene.slang"
 
 [[vk::binding(0, 0)]] Texture2D<float4> g_textures[];
@@ -40,6 +41,9 @@ static const uint k_material_ground_detail = 8u;
 // numbers gfx::set_water_material packed into slots an untextured material never reads.
 static const uint k_material_water = 16u;
 static const uint k_material_normal_variance = 8192u;
+// Stochastic (hex-tiled) sampling of the material's own UV plane (gfx::k_material_stochastic, R131;
+// "Stochastic mesh materials" below).
+static const uint k_material_stochastic = 131072u;
 // A per-slot sampler half that borrows the material's `sampler` (gfx::k_same_sampler).
 static const uint k_same_sampler = 0xffffu;
 
@@ -60,7 +64,8 @@ struct ResolveMaterial {
   uint samplers_mr_normal;          // low half metallic-roughness, high half normal
   uint samplers_occlusion_emissive; // low half occlusion, high half emissive
   float4 uv_transform;              // u' = x u + y v + offset.x, v' = z u + w v + offset.y
-  float4 uv_offset;                 // xy; zw unused
+  float4 uv_offset;                 // xy; z an alpha-tested material's cutoff or a stochastic one's
+                                    // means, w the alpha-tested one's factor alpha
 };
 
 // The bindless sampler a slot reads with: its half of a per-slot word, or the material's own
@@ -495,7 +500,7 @@ struct MaterialSample {
 // colour, so it samples linear — and the sum is **radiance leaving the surface**, which both
 // integrators add as it is: the resolve to the pixel, the path tracer wherever a ray lands on it
 // (docs/subsystems/renderer.md, "Materials").
-MaterialSample sample_material(ResolveMaterial material, float2 uv) {
+MaterialSample sample_material_plain(ResolveMaterial material, float2 uv) {
   MaterialSample sampled;
   sampled.normal_filter = (material.flags & k_material_normal_variance) != 0;
   sampled.albedo = material.albedo.rgb;
@@ -529,9 +534,9 @@ MaterialSample sample_material(ResolveMaterial material, float2 uv) {
 // material whose textures are the content build's mipmapped ones samples them at the level and
 // with the anisotropy those derivatives select; every other material is exactly
 // `sample_material`, level 0, the reads it always made.
-MaterialSample sample_material_grad(ResolveMaterial material, float2 uv, float2 duv_dx,
-                                    float2 duv_dy) {
-  if ((material.flags & k_material_mipped) == 0) return sample_material(material, uv);
+MaterialSample sample_material_plain_grad(ResolveMaterial material, float2 uv, float2 duv_dx,
+                                          float2 duv_dy) {
+  if ((material.flags & k_material_mipped) == 0) return sample_material_plain(material, uv);
   MaterialSample sampled;
   sampled.normal_filter = (material.flags & k_material_normal_variance) != 0;
   sampled.albedo = material.albedo.rgb;
@@ -577,7 +582,7 @@ MaterialSample sample_material_grad(ResolveMaterial material, float2 uv, float2 
 // exists): an occlusion map is a baked estimate of how much of the hemisphere a point sees, which
 // is what direct light's shadows and a path tracer's bounces already compute, so applying it to
 // either would count the same occlusion twice (docs/subsystems/texture.md, "Occlusion").
-float sample_occlusion(ResolveMaterial material, float2 uv, float2 duv_dx, float2 duv_dy) {
+float sample_occlusion_plain(ResolveMaterial material, float2 uv, float2 duv_dx, float2 duv_dy) {
   if (material.occlusion_texture == k_no_texture) return 1.0;
   const uint s = slot_sampler(material, material.samplers_occlusion_emissive, 0);
   float texel;
@@ -605,8 +610,8 @@ float3 normal_map_vector(ResolveMaterial material, float4 texel) {
 // The normal map: a UNORM texture whose xyz are a unit vector remapped to 0..1 in the triangle's
 // own tangent frame. `normal_scale` widens or flattens the tangential part before the vector is
 // renormalized, so 0 gives the interpolated normal back exactly.
-float3 apply_normal_map(ResolveMaterial material, float2 uv, float3 normal, float3 tangent,
-                        float3 bitangent) {
+float3 apply_normal_map_plain(ResolveMaterial material, float2 uv, float3 normal, float3 tangent,
+                              float3 bitangent) {
   const uint s = slot_sampler(material, material.samplers_mr_normal, 16);
   float3 tangent_normal = normal_map_vector(
       material, g_textures[NonUniformResourceIndex(material.normal_texture)].SampleLevel(
@@ -620,10 +625,10 @@ float3 apply_normal_map(ResolveMaterial material, float2 uv, float3 normal, floa
 }
 
 // `apply_normal_map` with the UV's derivatives, as `sample_material_grad` is to `sample_material`.
-float3 apply_normal_map_grad(ResolveMaterial material, float2 uv, float2 duv_dx, float2 duv_dy,
-                             float3 normal, float3 tangent, float3 bitangent) {
+float3 apply_normal_map_plain_grad(ResolveMaterial material, float2 uv, float2 duv_dx,
+                                   float2 duv_dy, float3 normal, float3 tangent, float3 bitangent) {
   if ((material.flags & k_material_mipped) == 0) {
-    return apply_normal_map(material, uv, normal, tangent, bitangent);
+    return apply_normal_map_plain(material, uv, normal, tangent, bitangent);
   }
   const uint s = slot_sampler(material, material.samplers_mr_normal, 16);
   float3 tangent_normal = normal_map_vector(
@@ -635,6 +640,173 @@ float3 apply_normal_map_grad(ResolveMaterial material, float2 uv, float2 duv_dx,
   tangent_normal *= rsqrt(length_sq);
   return normalize(tangent * tangent_normal.x + bitangent * tangent_normal.y +
                    normal * tangent_normal.z);
+}
+
+// ---- Stochastic mesh materials (R131) -----------------------------------------------------------
+// A material flagged `k_material_stochastic` reads every map at three tiles of the hex lattice in
+// its own UV plane (hex_lattice.slang, the terrain's R96 lattice and operator, shared): each tile
+// its own random offset, the UV derivatives turned with the tile, and the colour and roughness
+// blended by the variance-preserving operator about the material's means, so one small PBR set
+// over a 40 m cliff stops repeating without washing out (renderer.md, "Stochastic mesh
+// materials"). The lattice is a function of the UV alone — the mesh's own coordinate, never a
+// world position — so every frame, view and cut reads the same tiles. Offsets only: a mesh
+// material takes no turn, so a bedded or streaked set keeps its direction.
+//
+// The means (gfx::set_stochastic): `uv_offset.z`'s bits, four bytes of the square root of the
+// linear mean colour's r, g, b and the mean roughness, factors included. That word is an
+// alpha-tested material's cutoff, so the flag is refused on one (the helper refuses it, and this
+// test reads it as plain if a row carried both); a water or terrain root's `uv_offset` is theirs too.
+bool material_stochastic(ResolveMaterial material) {
+  return (material.flags & k_material_stochastic) != 0 &&
+         (material.flags & (k_material_masked | k_material_water | 512u)) == 0;
+}
+
+float4 material_stochastic_means(ResolveMaterial material) {
+  const uint w = asuint(material.uv_offset.z);
+  const float4 root = float4(float(w & 0xffu), float((w >> 8) & 0xffu), float((w >> 16) & 0xffu),
+                             float(w >> 24)) * (1.0 / 255.0);
+  return root * root;
+}
+
+// The lattice at a UV (in repeats, after the material's transform). The skew of a UV point is
+// split into its floor and fraction in floats: a mesh's UVs are small numbers of repeats.
+HexTiles material_hex(float2 uv) {
+  const float2 t = float2((97.0 / 28.0) * uv.x - 2.0 * uv.y, 4.0 * uv.y);
+  const float2 whole = floor(t);
+  return hex_tiles(uint(int(whole.x)), uint(int(whole.y)), t - whole,
+                   hex_hash(0x6d657368u ^ 0x9e3779b9u), 0.0);
+}
+
+// `sample_material_grad` at the three tiles. The colour and roughness blend about the material's
+// means; metallic, emissive and the detail mask are the tiles' weighted mean (no mean is carried
+// for them, and a rock's metallic is a constant 0). As the terrain does (R97), each tile's
+// roughness is read unwidened and the normal-variance widening applied once to the blend.
+MaterialSample sample_material_stochastic(ResolveMaterial material, float2 uv, float2 duv_dx,
+                                          float2 duv_dy, bool filtered) {
+  const HexTiles hex = material_hex(uv);
+  const bool grads = filtered && (material.flags & k_material_mipped) != 0;
+  const bool variance = grads && (material.flags & k_material_normal_variance) != 0 &&
+                        material.normal_texture != k_no_texture;
+  ResolveMaterial plain = material;
+  plain.flags &= ~(k_material_stochastic | k_material_normal_variance);
+  const uint normal_slot = slot_sampler(material, material.samplers_mr_normal, 16);
+  float3 c[3];
+  float r[3];
+  float loss = 0.0;
+  MaterialSample sampled;
+  sampled.normal_filter = (material.flags & k_material_normal_variance) != 0;
+  sampled.metallic = 0.0;
+  sampled.emissive = float3(0.0);
+  sampled.detail_mask = 0.0;
+  [unroll] for (uint k = 0; k < 3; ++k) {
+    const float2 p = uv + hex.shift[k];
+    const float2 dx = hex_turn(hex, k, duv_dx);
+    const float2 dy = hex_turn(hex, k, duv_dy);
+    const MaterialSample s =
+        grads ? sample_material_plain_grad(plain, p, dx, dy) : sample_material_plain(plain, p);
+    if (variance)
+      loss += hex.weight[k] *
+              g_textures[NonUniformResourceIndex(material.normal_texture + 1u)]
+                  .SampleGrad(g_samplers[NonUniformResourceIndex(normal_slot)], p, dx, dy)
+                  .r;
+    c[k] = s.albedo;
+    r[k] = s.roughness;
+    sampled.metallic += hex.weight[k] * s.metallic;
+    sampled.emissive += hex.weight[k] * s.emissive;
+    sampled.detail_mask += hex.weight[k] * s.detail_mask;
+  }
+  const float4 means = material_stochastic_means(material);
+  sampled.albedo = saturate(hex_blend(hex, means.rgb, c[0], c[1], c[2]));
+  sampled.roughness =
+      saturate(hex_blend(hex, float3(means.a), float3(r[0]), float3(r[1]), float3(r[2])).x);
+  if (loss > 0.0)
+    sampled.roughness = brdf_filter_roughness(
+        sampled.roughness, brdf_normal_variance(loss, material.normal_scale), 0.0);
+  return sampled;
+}
+
+// The normal map at the three tiles: each tile's slope pair (x/z, y/z) turned with its tile and
+// blended about zero, the mean slope of any tileable height field, by the same operator — so the
+// relief keeps its strength where the weights fall between tiles instead of flattening there —
+// then scaled and rebuilt as `apply_normal_map` builds one (for a single tile the two agree).
+float3 apply_normal_map_stochastic(ResolveMaterial material, float2 uv, float2 duv_dx,
+                                   float2 duv_dy, bool filtered, float3 normal, float3 tangent,
+                                   float3 bitangent) {
+  const HexTiles hex = material_hex(uv);
+  const bool grads = filtered && (material.flags & k_material_mipped) != 0;
+  const uint s = slot_sampler(material, material.samplers_mr_normal, 16);
+  float2 slope = float2(0.0);
+  [unroll] for (uint k = 0; k < 3; ++k) {
+    const float2 p = uv + hex.shift[k];
+    float4 texel;
+    if (grads)
+      texel = g_textures[NonUniformResourceIndex(material.normal_texture)].SampleGrad(
+          g_samplers[NonUniformResourceIndex(s)], p, hex_turn(hex, k, duv_dx),
+          hex_turn(hex, k, duv_dy));
+    else
+      texel = g_textures[NonUniformResourceIndex(material.normal_texture)].SampleLevel(
+          g_samplers[NonUniformResourceIndex(s)], p, 0);
+    const float3 v = normal_map_vector(material, texel);
+    slope += hex.weight[k] * hex_turn(hex, k, v.xy / max(v.z, 0.01));
+  }
+  float3 tangent_normal = float3(hex.gain * slope * material.normal_scale, 1.0);
+  tangent_normal *= rsqrt(dot(tangent_normal, tangent_normal));
+  return normalize(tangent * tangent_normal.x + bitangent * tangent_normal.y +
+                   normal * tangent_normal.z);
+}
+
+// The occlusion map at the three tiles, the weighted mean of `sample_occlusion_plain` (linear in
+// the texel, so the strength is applied once): a factor on the indirect term, which a widened
+// contrast would darken where the tiles part.
+float sample_occlusion_stochastic(ResolveMaterial material, float2 uv, float2 duv_dx,
+                                  float2 duv_dy) {
+  const HexTiles hex = material_hex(uv);
+  ResolveMaterial plain = material;
+  plain.flags &= ~k_material_stochastic;
+  float o = 0.0;
+  [unroll] for (uint k = 0; k < 3; ++k)
+    o += hex.weight[k] * sample_occlusion_plain(plain, uv + hex.shift[k],
+                                                hex_turn(hex, k, duv_dx), hex_turn(hex, k, duv_dy));
+  return o;
+}
+
+// ---- what both integrators call -----------------------------------------------------------------
+// The plain reads above, or the stochastic ones for a material that asks for them. The reference
+// path tracer calls the level-0 forms, so a stochastic material reads the same three tiles there
+// at level 0, as every material does in it.
+MaterialSample sample_material(ResolveMaterial material, float2 uv) {
+  if (material_stochastic(material))
+    return sample_material_stochastic(material, uv, float2(0.0), float2(0.0), false);
+  return sample_material_plain(material, uv);
+}
+
+MaterialSample sample_material_grad(ResolveMaterial material, float2 uv, float2 duv_dx,
+                                    float2 duv_dy) {
+  if (material_stochastic(material))
+    return sample_material_stochastic(material, uv, duv_dx, duv_dy, true);
+  return sample_material_plain_grad(material, uv, duv_dx, duv_dy);
+}
+
+float sample_occlusion(ResolveMaterial material, float2 uv, float2 duv_dx, float2 duv_dy) {
+  if (material.occlusion_texture != k_no_texture && material_stochastic(material))
+    return sample_occlusion_stochastic(material, uv, duv_dx, duv_dy);
+  return sample_occlusion_plain(material, uv, duv_dx, duv_dy);
+}
+
+float3 apply_normal_map(ResolveMaterial material, float2 uv, float3 normal, float3 tangent,
+                        float3 bitangent) {
+  if (material_stochastic(material))
+    return apply_normal_map_stochastic(material, uv, float2(0.0), float2(0.0), false, normal,
+                                       tangent, bitangent);
+  return apply_normal_map_plain(material, uv, normal, tangent, bitangent);
+}
+
+float3 apply_normal_map_grad(ResolveMaterial material, float2 uv, float2 duv_dx, float2 duv_dy,
+                             float3 normal, float3 tangent, float3 bitangent) {
+  if (material_stochastic(material))
+    return apply_normal_map_stochastic(material, uv, duv_dx, duv_dy, true, normal, tangent,
+                                       bitangent);
+  return apply_normal_map_plain_grad(material, uv, duv_dx, duv_dy, normal, tangent, bitangent);
 }
 
 // One analytic light at a surface point: the direction towards it, the radiance that arrives,

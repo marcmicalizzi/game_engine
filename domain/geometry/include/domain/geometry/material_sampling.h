@@ -106,10 +106,18 @@ struct ClusterFileSlotSampling {
 // One material, 128 bytes, parallel to the `Materials` section. `occlusion_strength` is glTF's
 // `occlusionTexture.strength` — `occlusion = 1 + strength * (texel - 1)` — which the 64-byte
 // material record had no word left for.
+//
+// `flags` (what was `pad`, so zero in every file written before it and read as "none") holds how
+// the material places its texels: `k_material_sampling_stochastic` asks the renderer to read every
+// slot at three tiles of the hex lattice in the material's UV plane (R131; renderer.md, "Stochastic
+// mesh materials"), which a material set's `sampling` key sets (materials.md). A bit this build
+// does not know is ignored.
+inline constexpr u32 k_material_sampling_stochastic = 1u;
+
 struct ClusterFileMaterialSampling {
   ClusterFileSlotSampling slots[k_material_slots];
   f32 occlusion_strength = 1.0f;
-  u32 pad = 0;
+  u32 flags = 0;
 };
 
 static_assert(sizeof(ClusterFileSlotSampling) == 24, "a slot's sampling record is 24 bytes");

@@ -232,7 +232,8 @@ struct ResolveMaterial {
   u32 samplers_occlusion_emissive = k_same_samplers;  // low half occlusion, high emissive
   // The UV transform, read with k_material_uv_transform: u' = x u + y v + offset.x and
   // v' = z u + w v + offset.y. `uv_offset.z` and `.w` are an alpha-tested material's cutoff and its
-  // base colour factor's alpha (`set_alpha_mask`), and unused otherwise.
+  // base colour factor's alpha (`set_alpha_mask`); `.z` is a stochastic material's means
+  // (`set_stochastic`, which refuses an alpha-tested one); unused otherwise.
   Vec4 uv_transform{1.0f, 0.0f, 0.0f, 1.0f};
   Vec4 uv_offset{};
 };
@@ -410,13 +411,50 @@ inline void set_terrain_layer(ResolveMaterial& layer, const TerrainLayerFields& 
 // mask, and never go to the software rasterizer. Packed by `set_alpha_mask`, after any
 // `set_uv_transform` (which clears those two words).
 inline constexpr u32 k_material_alpha_mask = 32u;
+// `k_material_stochastic` (R131): see `set_stochastic` below.
+inline constexpr u32 k_material_stochastic = 131072u;
 
 // Marks `material` alpha-tested at `cutoff` (0..1), with the base colour factor's alpha
 // `factor_alpha`, which multiplies the texture's as glTF says.
 inline void set_alpha_mask(ResolveMaterial& material, f32 cutoff, f32 factor_alpha) noexcept {
   material.flags |= k_material_alpha_mask;
+  // The cutoff takes the word a stochastic material's means are in (below): an alpha-tested
+  // material is never stochastic, in either order of the two calls.
+  material.flags &= ~k_material_stochastic;
   material.uv_offset.z = cutoff;
   material.uv_offset.w = factor_alpha;
+}
+
+// `k_material_stochastic` (R131; renderer.md, "Stochastic mesh materials"): a mesh material read
+// at three tiles of the hex lattice in its own UV plane (`hex_lattice.slang`, the terrain's R96
+// lattice and operator, shared), each tile its own offset, blended by the variance-preserving
+// operator about the material's means, so a small tiled set over a large surface stops repeating.
+// Every map — base colour, metallic-roughness, normal, occlusion, emissive — reads the same three
+// places. The means ride in `uv_offset.z`'s bits: four bytes, the square roots of the linear mean
+// colour's r, g, b and of the mean roughness, each factor included and clamped to 0..1 (the root
+// spends the eight bits where a dark rock's colour is). That word is an alpha-tested material's
+// cutoff, so an alpha-tested material is refused; so is a water material and a terrain root, whose
+// `uv_offset` is theirs. Call it after `set_uv_transform`, which clears the word. (The bit is
+// defined above `set_alpha_mask`, which clears it.)
+inline u32 pack_stochastic_means(Vec3 mean_colour, f32 mean_roughness) noexcept {
+  const auto byte = [](f32 v) -> u32 {
+    const f32 clamped = v > 0.0f ? (v < 1.0f ? v : 1.0f) : 0.0f;  // a NaN reads 0
+    return static_cast<u32>(std::sqrt(clamped) * 255.0f + 0.5f);
+  };
+  return byte(mean_colour.x) | (byte(mean_colour.y) << 8) | (byte(mean_colour.z) << 16) |
+         (byte(mean_roughness) << 24);
+}
+
+// Marks `material` stochastic with its means, or refuses (false, nothing changed) an alpha-tested,
+// water or terrain-root material.
+inline bool set_stochastic(ResolveMaterial& material, Vec3 mean_colour,
+                           f32 mean_roughness) noexcept {
+  if ((material.flags & (k_material_alpha_mask | k_material_water | k_material_terrain_layers)) !=
+      0)
+    return false;
+  material.flags |= k_material_stochastic;
+  material.uv_offset.z = std::bit_cast<f32>(pack_stochastic_means(mean_colour, mean_roughness));
+  return true;
 }
 // One water body's shading numbers (engine.scene.WaterBody, as the renderer's reader resolved
 // them): what `set_water_material` packs and water.slang reads.

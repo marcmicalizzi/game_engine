@@ -92,6 +92,9 @@ void apply_set(const MaterialSet& set, UvLayout layout, geometry::ClusterFileDat
     m.normal_scale = set.normal_scale;
     scale_slot(sampling, geometry::k_slot_normal, scale);
   }
+  // Stochastic placement (R131): one bit in the record's flags word, zero for a tiled set, so a
+  // tiled set's container is the bytes it always was.
+  if (set.stochastic) sampling.flags |= geometry::k_material_sampling_stochastic;
 }
 
 // ---- packs
@@ -168,6 +171,15 @@ bool parse_pack(std::string_view text, std::string_view dir, Pack& out, std::str
       return false;
     }
     held.set.normal_scale = static_cast<f32>(normal_scale);
+    // How the set's texels are placed (R131): "tiled" when absent, as every pack before the key.
+    if (const JsonValue* sampling = entry.find("sampling"); sampling != nullptr) {
+      std::string word;
+      if (!string_of(sampling, word) || (word != "tiled" && word != "stochastic")) {
+        error = where + ".sampling is not \"tiled\" or \"stochastic\"";
+        return false;
+      }
+      held.set.stochastic = word == "stochastic";
+    }
     std::string convention;
     if (!string_of(entry.find("normal_convention"), convention) || convention != "opengl") {
       // The renderer reads glTF's tangent space, +Y up; a DirectX map would light every bump
