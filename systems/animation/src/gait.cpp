@@ -1,11 +1,10 @@
 // The procedural gait (gait.h; docs/subsystems/animation.md, "The procedural gait"; the sources
 // and the fits on docs/experiments/gait-grounding-2026-11-04.md; roadmap C60).
-#include <systems/animation/gait.h>
-
 #include <core/containers/vector.h>
 #include <core/math/math.h>
 #include <domain/anim/clip.h>
 #include <domain/anim/skeleton.h>
+#include <systems/animation/gait.h>
 
 #include <cmath>
 #include <span>
@@ -45,8 +44,8 @@ struct Series {
 //  elbow  Murray et al. 1967: 10 flexion with the shoulder extended, 30 with it flexed.
 constexpr Series k_walk_hip{{11.7342, 17.3280, -3.9456, -3.7229, -1.4954, 0.1119, 0.9214, -0.3999,
                              -0.0197, -0.0221, 0.0443}};
-constexpr Series k_walk_knee{{22.4917, -3.2693, -19.2852, -12.7453, 7.5349, -1.7644, 3.0607,
-                              0.3502, 0.8622, -0.6470, -0.3118}};
+constexpr Series k_walk_knee{{22.4917, -3.2693, -19.2852, -12.7453, 7.5349, -1.7644, 3.0607, 0.3502,
+                              0.8622, -0.6470, -0.3118}};
 constexpr Series k_walk_ankle{{-1.2217, -1.1718, 5.0401, 1.5110, -7.5538, -2.4880, 1.7525, 2.7479,
                                -0.4193, -0.5531, -0.4933}};
 constexpr Series k_walk_shoulder{{-8.0, -15.7685, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0}};
@@ -121,9 +120,8 @@ Vec3 column_position(const Mat4& m) noexcept { return Vec3{m.c[3].x, m.c[3].y, m
 
 using SJ = anim::StandardJoint;
 
-constexpr SJ k_required[] = {SJ::Hips,         SJ::LeftUpperLeg,  SJ::LeftLowerLeg,
-                             SJ::LeftFoot,     SJ::RightUpperLeg, SJ::RightLowerLeg,
-                             SJ::RightFoot};
+constexpr SJ k_required[] = {SJ::Hips,          SJ::LeftUpperLeg,  SJ::LeftLowerLeg, SJ::LeftFoot,
+                             SJ::RightUpperLeg, SJ::RightLowerLeg, SJ::RightFoot};
 
 // The rig's rest pose in model space: positions, and rotations composed down the hierarchy.
 struct Rest {
@@ -153,9 +151,7 @@ struct Axes {
 };
 
 bool axes_of(const Rest& rest, const anim::JointMapping& m, Axes& out) {
-  const auto at = [&](SJ role) {
-    return column_position(rest.model[static_cast<u32>(m[role])]);
-  };
+  const auto at = [&](SJ role) { return column_position(rest.model[static_cast<u32>(m[role])]); };
   const Vec3 hips = (at(SJ::LeftUpperLeg) + at(SJ::RightUpperLeg)) * 0.5f;
   const Vec3 feet = (at(SJ::LeftFoot) + at(SJ::RightFoot)) * 0.5f;
   const Vec3 rise = hips - feet;
@@ -309,7 +305,7 @@ f64 gait_curve(GaitBand band, GaitCurve curve, f64 phase) noexcept {
 }
 
 f32 gait_stride_m(GaitBand band, f32 speed_mps, f32 leg_length_m) noexcept {
-  constexpr f64 k_ref_leg = 0.93;     // 0.530 of a 1.75 m stature (Winter)
+  constexpr f64 k_ref_leg = 0.93;  // 0.530 of a 1.75 m stature (Winter)
   const f64 leg = leg_length_m > 0.0f ? static_cast<f64>(leg_length_m) : k_ref_leg;
   if (band == GaitBand::Walk) {
     const f64 v = static_cast<f64>(speed_mps < k_walk_range.lo   ? k_walk_range.lo
@@ -317,8 +313,8 @@ f32 gait_stride_m(GaitBand band, f32 speed_mps, f32 leg_length_m) noexcept {
                                                                  : speed_mps);
     // Calibrated at Perry & Burnfield's free walk: 1.41 m at 1.37 m/s on the reference leg.
     constexpr f64 k_exponent = 0.42;  // Grieve 1968
-    const f64 a = (1.41 / k_ref_leg) /
-                  std::pow(1.37 / std::sqrt(k_gravity * k_ref_leg), k_exponent);
+    const f64 a =
+        (1.41 / k_ref_leg) / std::pow(1.37 / std::sqrt(k_gravity * k_ref_leg), k_exponent);
     return static_cast<f32>(a * leg * std::pow(v / std::sqrt(k_gravity * leg), k_exponent));
   }
   const f64 v = static_cast<f64>(speed_mps < k_run_range.lo   ? k_run_range.lo
@@ -377,11 +373,11 @@ bool generate_gait_clip(const SkeletonAsset& asset, const anim::JointMapping& ma
   const f32 speed = params.speed_mps > 0.0f
                         ? params.speed_mps
                         : (run ? k_gait_run_reference_mps : k_gait_walk_reference_mps);
-  const f32 leg = params.leg_length_m > 0.0f
-                      ? params.leg_length_m
-                      : static_cast<f32>(static_cast<f64>(axes.leg_units) *
-                                         static_cast<f64>(params.metres_per_unit) *
-                                         k_leg_from_ankle);
+  const f32 leg =
+      params.leg_length_m > 0.0f
+          ? params.leg_length_m
+          : static_cast<f32>(static_cast<f64>(axes.leg_units) *
+                             static_cast<f64>(params.metres_per_unit) * k_leg_from_ankle);
   cycle = GaitCycle{};
   cycle.band = band;
   cycle.speed_mps = speed;
@@ -392,8 +388,8 @@ bool generate_gait_clip(const SkeletonAsset& asset, const anim::JointMapping& ma
   cycle.cycle_s = cycle.stride_m / timed;
   cycle.cadence_spm = 120.0f / cycle.cycle_s;
   cycle.stance = run ? 0.39f : 0.62f;
-  const u32 segments = static_cast<u32>(std::lround(static_cast<f64>(cycle.cycle_s) *
-                                                    static_cast<f64>(k_gait_key_hz)));
+  const u32 segments = static_cast<u32>(
+      std::lround(static_cast<f64>(cycle.cycle_s) * static_cast<f64>(k_gait_key_hz)));
   const u32 n = segments < 8 ? 8u : segments;
   cycle.keys = n + 1;
 
@@ -453,16 +449,17 @@ bool generate_gait_clip(const SkeletonAsset& asset, const anim::JointMapping& ma
         Quat body = Quat::identity();
         switch (d.kind) {
           case Kind::Pelvis:
-            body = axis_degrees(axes.up, gait_curve(band, GaitCurve::PelvisRotation, phase)) *
-                   axis_degrees(axes.forward,
-                                -gait_curve(band, GaitCurve::PelvisObliquity, phase)) *
-                   axis_degrees(axes.right, -gait_curve(band, GaitCurve::PelvisTilt, phase));
+            body =
+                axis_degrees(axes.up, gait_curve(band, GaitCurve::PelvisRotation, phase)) *
+                axis_degrees(axes.forward, -gait_curve(band, GaitCurve::PelvisObliquity, phase)) *
+                axis_degrees(axes.right, -gait_curve(band, GaitCurve::PelvisTilt, phase));
             break;
           case Kind::Trunk:
-            body = axis_degrees(axes.up,
-                                d.share * gait_curve(band, GaitCurve::TrunkRotation, phase));
+            body =
+                axis_degrees(axes.up, d.share * gait_curve(band, GaitCurve::TrunkRotation, phase));
             break;
-          case Kind::Hip: body = axis_degrees(axes.right, gait_curve(band, GaitCurve::Hip, phase));
+          case Kind::Hip:
+            body = axis_degrees(axes.right, gait_curve(band, GaitCurve::Hip, phase));
             break;
           case Kind::Knee:
             body = axis_degrees(axes.right, -gait_curve(band, GaitCurve::Knee, phase));

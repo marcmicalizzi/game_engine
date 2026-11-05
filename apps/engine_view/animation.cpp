@@ -252,8 +252,7 @@ bool prepare_animation(std::unique_ptr<AnimatedScene>& out, renderer::SceneDesc&
                   std::span<const u32>(named_by.data(), named_by.size()), error)) {
     return false;
   }
-  if (g_generated_clips != nullptr &&
-      !g_generated_clips(g_generated_clips_user, *out, error)) {
+  if (g_generated_clips != nullptr && !g_generated_clips(g_generated_clips_user, *out, error)) {
     return false;
   }
   auto joints_of_mesh = [&](u32 mesh) {

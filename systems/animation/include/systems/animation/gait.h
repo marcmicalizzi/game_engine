@@ -72,8 +72,8 @@ struct GaitCycle {
   GaitBand band = GaitBand::Walk;
   f32 speed_mps = 0.0f;
   f32 leg_length_m = 0.0f;
-  f32 stride_m = 0.0f;  // one cycle: two steps
-  f32 cycle_s = 0.0f;   // the clip's duration, stride over speed
+  f32 stride_m = 0.0f;     // one cycle: two steps
+  f32 cycle_s = 0.0f;      // the clip's duration, stride over speed
   f32 cadence_spm = 0.0f;  // steps a minute
   f32 stance = 0.0f;       // the fraction of the cycle a foot is on the ground (toe-off's phase)
   u32 keys = 0;            // keys per track (the last repeats the first)

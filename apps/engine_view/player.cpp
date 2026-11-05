@@ -680,7 +680,8 @@ bool PlayerBody::generate(void* user, AnimatedScene& scene, std::string& error) 
   const u32 skeleton = self->mesh_ < scene.mesh_skeleton.size() ? scene.mesh_skeleton[self->mesh_]
                                                                 : animation::Library::k_not_found;
   if (skeleton >= scene.library.skeleton_count()) {
-    error = "--player " + rig.mesh + ": view.player.walk_clip=gait: the body's mesh brought no "
+    error = "--player " + rig.mesh +
+            ": view.player.walk_clip=gait: the body's mesh brought no "
             "skeleton to the animated world";
     return false;
   }
@@ -715,8 +716,7 @@ bool PlayerBody::generate(void* user, AnimatedScene& scene, std::string& error) 
 // phase with rate 0 — so the feet keep their place on the ground at any speed in the band, and
 // standing holds the pose where it stopped. A function of the walker's state and the input at the
 // tick, so a replay reproduces it.
-void PlayerBody::tick_gait(const FlySession& session, const input::InputState& input,
-                           f64 walked) {
+void PlayerBody::tick_gait(const FlySession& session, const input::InputState& input, f64 walked) {
   const f64 step = walked - walked_;
   walked_ = walked;
   const bool moving = step > 0.0;
@@ -746,8 +746,8 @@ void PlayerBody::tick_gait(const FlySession& session, const input::InputState& i
   const u32 hz = session.header().params.tick_hz;
   const f64 speed = step * static_cast<f64>(hz > 0 ? hz : 1u);
   const animation::GaitBand band = sprint ? animation::GaitBand::Run : animation::GaitBand::Walk;
-  const f32 stride =
-      animation::gait_stride_m(band, static_cast<f32>(speed), (sprint ? run_cycle_ : walk_cycle_).leg_length_m);
+  const f32 stride = animation::gait_stride_m(band, static_cast<f32>(speed),
+                                              (sprint ? run_cycle_ : walk_cycle_).leg_length_m);
   if (stride > 0.0f) {
     const f64 advance = step / static_cast<f64>(stride);
     cycles_ = cycles_ + advance;

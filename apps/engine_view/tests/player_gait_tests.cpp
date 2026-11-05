@@ -103,7 +103,8 @@ std::string session(const test::TempDir& tmp, const std::string& scene, bool wal
   keys.set_map(view::default_fly_map());
   if (walk) {
     keys.record(input::RawEvent{SimTick{10}, input::Source::Key, k_key_w, 1.0f, 0});
-    if (sprint) keys.record(input::RawEvent{SimTick{10}, input::Source::Key, k_key_lshift, 1.0f, 0});
+    if (sprint)
+      keys.record(input::RawEvent{SimTick{10}, input::Source::Key, k_key_lshift, 1.0f, 0});
     if (release != 0) {
       keys.record(input::RawEvent{SimTick{release}, input::Source::Key, k_key_w, 0.0f, 0});
       if (sprint)
@@ -153,10 +154,21 @@ TEST_CASE("engine-view: --player walks and runs RiggedFigure on the procedural g
   const std::string standing = session(tmp, scene, false, false, 240, 0, "stand.jsonl");
   const std::string sprinting = session(tmp, scene, true, true, 240, 0, "sprint.jsonl");
   const auto run_with = [&](const std::string& log, std::vector<std::string> extra) {
-    std::vector<std::string> args = {"--replay-input", log,       "--scene",  scene,
-                                     "--offscreen",    "--width", "320",      "--height",
-                                     "200",            "--ddc",   tmp.file("ddc"),
-                                     "--anim-lod-scale", "100000", "--player", rig};
+    std::vector<std::string> args = {"--replay-input",
+                                     log,
+                                     "--scene",
+                                     scene,
+                                     "--offscreen",
+                                     "--width",
+                                     "320",
+                                     "--height",
+                                     "200",
+                                     "--ddc",
+                                     tmp.file("ddc"),
+                                     "--anim-lod-scale",
+                                     "100000",
+                                     "--player",
+                                     rig};
     args.insert(args.end(), extra.begin(), extra.end());
     return run_view(args);
   };
@@ -192,8 +204,8 @@ TEST_CASE("engine-view: --player walks and runs RiggedFigure on the procedural g
   REQUIRE(body != nullptr);
 
   // At rest while walking, and standing on the gait: both pose the body differently.
-  const Run rest = run_with(walking, {"--tunable",
-                                      "view.player.walk_clip=none,view.player.idle_clip=none"});
+  const Run rest =
+      run_with(walking, {"--tunable", "view.player.walk_clip=none,view.player.idle_clip=none"});
   const Run stood = run_with(standing, gait);
   REQUIRE_MESSAGE(rest.exit_code == 0, rest.output);
   REQUIRE_MESSAGE(stood.exit_code == 0, stood.output);
@@ -272,8 +284,8 @@ TEST_CASE("engine-view: view.player.walk_clip=gait refuses a rig with no legs be
   REQUIRE(view_test::write_skinned_bar_glb(bar));
   const std::string scene = ground_scene(tmp);
   const std::string log = session(tmp, scene, true, false, 60, 0, "walk.jsonl");
-  const Run run = run_view({"--replay-input", log, "--scene", scene, "--offscreen", "--width", "320",
-                            "--height", "200", "--ddc", tmp.file("ddc"), "--player", bar,
+  const Run run = run_view({"--replay-input", log, "--scene", scene, "--offscreen", "--width",
+                            "320", "--height", "200", "--ddc", tmp.file("ddc"), "--player", bar,
                             "--tunable", "view.player.walk_clip=gait"});
   CHECK(run.exit_code == 1);
   CHECK_MESSAGE(run.output.find("view.player.walk_clip=gait needs the hips and both legs") !=

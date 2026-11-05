@@ -8,14 +8,13 @@
 // No literal hash of a generated clip is pinned: the curves go through the C library's sin and
 // cos, which may differ in a double's last bit between toolchains (gait.h).
 
-#include <systems/animation/gait.h>
-#include <systems/animation/library.h>
-
 #include <core/math/math.h>
 #include <domain/anim/clip.h>
-#include <domain/assets/gltf.h>
 #include <domain/anim/skeleton.h>
 #include <domain/anim/standard_skeleton.h>
+#include <domain/assets/gltf.h>
+#include <systems/animation/gait.h>
+#include <systems/animation/library.h>
 
 #include <doctest/doctest.h>
 #include <test_paths.h>
@@ -139,8 +138,8 @@ bool generate(const Library& library, GaitBand band, ClipAsset& out, GaitCycle& 
   out.id = Library::clip_id(out.name);
   out.skeleton = 0;
   std::string error;
-  const bool ok =
-      generate_gait_clip(asset, gait_mapping(asset.skeleton, asset.mapping), params, out, cycle, error);
+  const bool ok = generate_gait_clip(asset, gait_mapping(asset.skeleton, asset.mapping), params,
+                                     out, cycle, error);
   CHECK_MESSAGE(ok, error);
   return ok;
 }
@@ -298,9 +297,12 @@ TEST_CASE("gait: RiggedFigure's walk follows the curves, the sides half a cycle 
     f64 offset;
   };
   const Check checks[] = {
-      {SJ::RightUpperLeg, GaitCurve::Hip, 1.0, 0.0},   {SJ::LeftUpperLeg, GaitCurve::Hip, 1.0, 0.5},
-      {SJ::RightLowerLeg, GaitCurve::Knee, -1.0, 0.0}, {SJ::LeftLowerLeg, GaitCurve::Knee, -1.0, 0.5},
-      {SJ::RightFoot, GaitCurve::Ankle, 1.0, 0.0},     {SJ::LeftFoot, GaitCurve::Ankle, 1.0, 0.5},
+      {SJ::RightUpperLeg, GaitCurve::Hip, 1.0, 0.0},
+      {SJ::LeftUpperLeg, GaitCurve::Hip, 1.0, 0.5},
+      {SJ::RightLowerLeg, GaitCurve::Knee, -1.0, 0.0},
+      {SJ::LeftLowerLeg, GaitCurve::Knee, -1.0, 0.5},
+      {SJ::RightFoot, GaitCurve::Ankle, 1.0, 0.0},
+      {SJ::LeftFoot, GaitCurve::Ankle, 1.0, 0.5},
   };
   f64 worst = 0.0;
   for (const Check& c : checks) {

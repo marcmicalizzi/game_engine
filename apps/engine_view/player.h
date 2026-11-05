@@ -294,8 +294,8 @@ class PlayerBody {
   bool generated_ = false;
   animation::GaitCycle walk_cycle_;
   animation::GaitCycle run_cycle_;
-  f64 phase_ = 0.0;  // the cycle's phase, [0, 1): the distance walked over the stride
-  f64 cycles_ = 0.0;   // whole and part cycles walked, for the summary
+  f64 phase_ = 0.0;   // the cycle's phase, [0, 1): the distance walked over the stride
+  f64 cycles_ = 0.0;  // whole and part cycles walked, for the summary
   u64 running_ticks_ = 0;
   input::ActionId fast_ = input::k_invalid_action;
   bool fast_found_ = false;
