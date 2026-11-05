@@ -197,7 +197,9 @@ TEST_CASE("gait: stride and cycle time follow speed and leg length") {
   // Cadences (steps a minute) inside normative adult ranges at each speed: Perry's free walk is
   // 113 +- 9 at 1.37 m/s; slow walking near 1 m/s runs 90-110, brisk walking near 1.8 m/s 120-145
   // (Grieve & Gear 1966's adults span these).
-  const auto cadence = [](f32 speed, f32 stride) { return 120.0 * speed / stride; };
+  const auto cadence = [](f32 speed, f32 stride) {
+    return 120.0 * static_cast<f64>(speed) / static_cast<f64>(stride);
+  };
   CHECK(cadence(1.0f, s10) > 88.0);
   CHECK(cadence(1.0f, s10) < 110.0);
   CHECK(cadence(1.4f, s14) > 104.0);
