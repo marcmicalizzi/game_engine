@@ -48,6 +48,9 @@ inline constexpr f32 k_default_shadow_ray_band_m = 20.0f;
 // texel is the constant half of the maps' depth bias (`k_shadow_bias_texels`), so a receiver the
 // map holds coarser than the picture draws it stays inside the bias; a whole texel moved the
 // forest's near dapple measurably (docs/experiments/cascade-budget-2026-10-26.md has the ladder).
+// A terrain level never takes it (R132): its DAG error bounds its rest heights, not the field the
+// pool draws, and its coarser clusters shadowed the v29 ground (renderer.md, "The ground takes the
+// picture's cut in every cascade").
 inline constexpr f32 k_shadow_texel_error_texels = 0.5f;
 // The opaque shadow proxy's threshold (R109): the alpha coverage at or above which a cluster is
 // solid to a shadow ray. 0 is off, and off is the default because no threshold bought the masks'

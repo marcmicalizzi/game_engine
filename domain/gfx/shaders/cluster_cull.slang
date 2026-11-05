@@ -714,13 +714,22 @@ void cull_pair(uint pair, bool vertex_draw) {
                          : min(over_threshold(parent, params->lod.y),
                                over_threshold(parent_cover, params->foliage_px));
     }
-    // A cascade's block may also accept a transition by its texels (`cascade_accepts`, above).
+    // A cascade's block may also accept a transition by its texels (`cascade_accepts`, above) —
+    // **except a terrain level's** (R132; renderer.md, "The ground takes the picture's cut in
+    // every cascade"). The ground is the receiver under everything, and a receiver's own triangles
+    // have to be in the map at the depth the resolve's receiver plane predicts: a coarser cluster
+    // standing its error e off the ground puts it e / (N.L) deeper along the light, which the
+    // half-texel bias covers only for a sun overhead. At 15:00 on the v29 ledge (34 degrees) a
+    // tile's coarser clusters shadowed a 10 m patch of open ground; the camera's cut alone, as for
+    // every receiver before R103, draws none of it.
+    const bool by_texels = instance.terrain == 0;
     const bool own_ok =
         transition_acceptable(own, own_cover, own_threshold, own_foliage) ||
-        cascade_accepts(params, own_error, own_cover_error * instance.scale_max);
+        (by_texels && cascade_accepts(params, own_error, own_cover_error * instance.scale_max));
     const bool parent_ok =
         transition_acceptable(parent, parent_cover, parent_threshold, parent_foliage) ||
-        cascade_accepts(params, parent_error, parent_cover_error * instance.scale_max);
+        (by_texels &&
+         cascade_accepts(params, parent_error, parent_cover_error * instance.scale_max));
     if (params->streaming == 0) {
       // The cross-fade, for a transition with a coverage error: both sides draw across the band and
       // each keeps the pixels between its splits (alpha_mask.slang, ade_keeps).

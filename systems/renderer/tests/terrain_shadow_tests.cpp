@@ -77,12 +77,14 @@ struct Shot {
   CapturedFrame frame;
   u32 casters = 0;
   u32 overflow = 0;
+  u32 shadow_pairs = 0;  // the pairs the cascades drew
   bool available = true;
   std::string why;
 };
 
 Shot shoot(const gfx::Device& device, const SceneDesc& desc, ShadowMode shadows, f32 azimuth,
-           bool off_frustum_casters, const Camera& camera, jobs::JobSystem& pool) {
+           bool off_frustum_casters, const Camera& camera, jobs::JobSystem& pool,
+           f32 elevation = k_sun_elevation, bool texel_lod = true) {
   Shot shot;
   SceneData data;
   std::string error;
@@ -92,7 +94,8 @@ Shot shoot(const gfx::Device& device, const SceneDesc& desc, ShadowMode shadows,
   settings.occlusion = false;
   settings.lights = false;
   settings.sun_azimuth_deg = azimuth;
-  settings.sun_elevation_deg = k_sun_elevation;
+  settings.sun_elevation_deg = elevation;
+  settings.shadow_texel_lod = texel_lod;
   settings.off_frustum_casters = off_frustum_casters;
   // A moving terrain at a standing rate: the levels, drawn through the pool's terrain stage.
   settings.time_rate_live = true;
@@ -128,6 +131,7 @@ Shot shoot(const gfx::Device& device, const SceneDesc& desc, ShadowMode shadows,
   REQUIRE_MESSAGE(renderer.capture(frame, channels, shot.frame, &error), error);
   shot.casters = renderer.stats().shadow_casters;
   shot.overflow = renderer.stats().deform_overflow_entries;
+  shot.shadow_pairs = renderer.stats().shadow_pairs;
   return shot;
 }
 
@@ -273,4 +277,58 @@ TEST_CASE("terrain shadows: the dunes behind the camera cast their traced shadow
   // The traced shadow is the maps' away from the band: what the old cull lost is back.
   CHECK(old.differ > 500);
   CHECK(now.differ * 200 <= now.compared);
+}
+
+// **The ground takes the picture's cut in every cascade** (roadmap R132; renderer.md, "Cascaded
+// shadow maps"). A cascade cut by its texels (R103) also accepts a transition whose DAG error is
+// under half its texel, which keeps a rigid receiver inside the maps' bias. A terrain level's DAG
+// error bounds its rest heights only: the pool's terrain stage draws the field, a tile's shared
+// vertices a coarser level's, so a coarser cluster of the ground can stand well off the finer one
+// the picture draws, and the ground under a lower sun shadowed itself in patches. On the forest
+// proof of concept's v29 ledge at 15:00 (the sun 34 degrees up) that was a ten-metre block of
+// shadow on open ground, gone with `renderer.shadow.texel_lod` off. So a terrain level never takes
+// the texel cut: with it on and off the cascades draw the same ground and the view the same bytes.
+TEST_CASE("terrain shadows: the ground takes the picture's cut in every cascade") {
+  Gpu gpu;
+  if (!gpu.ok) {
+    MESSAGE("renderer unavailable here: " << gpu.why);
+    return;
+  }
+  test::TempDir tmp{"engine_renderer_terrain_texel_cut"};
+  const SceneDesc desc = dunes((tmp.native() / "ddc").generic_string());
+  jobs::JobSystem pool(jobs::JobSystemConfig{.performance_workers = 2, .pin_threads = false});
+  SceneData probe;
+  std::string error;
+  REQUIRE_MESSAGE(load_scene(desc, probe, error), error);
+  // The v29 ledge's sun at 15:00, and two lower ones, with the camera of the case above.
+  const Camera camera = facing_away(probe.terrain, k_sun_azimuth);
+  for (const f32 elevation : {34.0f, 20.0f, 12.0f}) {
+    const Shot texels = shoot(gpu.device, desc, ShadowMode::Cascaded, k_sun_azimuth, true, camera,
+                              pool, elevation, true);
+    if (!texels.available) {
+      MESSAGE("cascaded shadows unavailable here: " << texels.why);
+      return;
+    }
+    const Shot picture = shoot(gpu.device, desc, ShadowMode::Cascaded, k_sun_azimuth, true, camera,
+                               pool, elevation, false);
+    REQUIRE(picture.available);
+    // The self-shadow the texel cut drew: sand black with it and lit without it.
+    u32 self_shadowed = 0;
+    u32 differ = 0;
+    for (u32 p = 0; p < k_width * k_height; ++p) {
+      if (!sand(picture, p)) continue;
+      self_shadowed += shade(texels, p) == 0 && shade(picture, p) == 255 ? 1u : 0u;
+      differ += shade(texels, p) != shade(picture, p) ? 1u : 0u;
+    }
+    MESSAGE("the sun " << elevation << " degrees up: the cascades drew " << texels.shadow_pairs
+                       << " pairs with the texel cut and " << picture.shadow_pairs << " without; "
+                       << differ << " sand pixels differ, " << self_shadowed
+                       << " black with it and lit without; black sand " << black(texels) << " and "
+                       << black(picture));
+    CHECK(id_differences(texels, picture) == 0);
+    CHECK(texels.shadow_pairs == picture.shadow_pairs);
+    CHECK(self_shadowed == 0);
+    CHECK(texels.frame.color == picture.frame.color);
+    CHECK(texels.overflow == 0);
+  }
 }
