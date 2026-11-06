@@ -1963,6 +1963,7 @@ bool read_scene_file(const std::string& path, const SceneFileOptions& options, S
     }
     out.terrain.provider = t.provider;
     out.terrain.materials = t.materials;
+    out.terrain.formation = file.formation;
     if (out.terrain.materials.has_value()) {
       for (auto& layer : out.terrain.materials->layers) {
         for (auto* p :
@@ -1970,6 +1971,10 @@ bool read_scene_file(const std::string& path, const SceneFileOptions& options, S
           if (!p->empty() && !dir.empty() && !io::is_absolute_path(*p)) *p = io::join_path(dir, *p);
       }
       if (!validate_terrain_materials(*out.terrain.materials, &error, t.masks.has_value())) {
+        error = path + ": " + error;
+        return false;
+      }
+      if (!validate_terrain_formation(*out.terrain.materials, out.terrain.formation, &error)) {
         error = path + ": " + error;
         return false;
       }

@@ -99,6 +99,9 @@ struct TerrainDesc {
   // file's directory. Empty for every other ground.
   std::optional<scene::TerrainTileSet> tiles;
   std::optional<scene::TerrainMaterials> materials;
+  // The scene's formation (`Scene.formation`, W85; renderer.md, "Formation bands"): read by the
+  // layers that opt in. Shading only: not in the terrain's hash, so no cache entry moves for it.
+  std::optional<scene::Formation> formation;
   // Ground materials by place (`Terrain.masks`, version 9; renderer.md): the palette's per-tile
   // weights, built by the `tiles` provider beside its set, its images' paths resolved and its water
   // bodies' outlines copied in by the scene reader. Empty: the layers draw as W68 drew them.

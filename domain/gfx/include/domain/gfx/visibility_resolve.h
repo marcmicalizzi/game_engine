@@ -311,6 +311,11 @@ inline constexpr u32 k_material_normal_variance = 8192u;
 inline constexpr u32 k_material_terrain_snow = 16384u;
 inline constexpr u32 k_material_terrain_sand = 32768u;
 inline constexpr u32 k_material_terrain_beach = 65536u;
+// A layer banded by the scene's formation (W85; renderer.md, "Formation bands"): its sampled colour
+// times the bed's and the macro bed's tint, its roughness plus their offsets, box-filtered across
+// the beds over the wider of the field's soft width and the pixel's footprint. Bit 18; read only
+// where `TerrainRecord::formation` is not zero.
+inline constexpr u32 k_material_terrain_formation = 262144u;
 
 // TerrainRecord::flags: the terrain has a mask level (`mask` names its buffer).
 inline constexpr u32 k_terrain_masked = 1u;
@@ -339,7 +344,11 @@ struct TerrainRecord {
   u32 mask_mips = 0;
   f32 wetness = 0.0f;       // the scene's, everywhere
   f32 height_blend = 0.0f;  // depth of the height blend; 0 linear
-  u32 pad[8] = {};
+  // The scene's formation (W85; `FormationParams`, formation.h): the device address of its one
+  // block, read by a layer with `k_material_terrain_formation`; zero is none. Two of the eight pad
+  // words this record always had, so a scene without a formation uploads the bytes it did.
+  u64 formation = 0;
+  u32 pad[6] = {};
 };
 static_assert(sizeof(TerrainRecord) == 112, "a terrain record is one material-table entry");
 inline constexpr u32 k_terrain_no_mask_tile = 0xFFFFFFFFu;

@@ -57,13 +57,33 @@ Fabric make_fabric(RockType type, const RockGeology& g, u64 seed) {
   return f;
 }
 
+Fabric make_fabric(RockType type, const RockGeology& g, u64 seed, const scene::Formation* formation,
+                   const WorldPos& origin) {
+  Fabric f = make_fabric(type, g, seed);
+  if (formation == nullptr || !g.from_formation) return f;
+  gfx::FormationParams block;
+  // The recipe's range check is the caller's; a field out of range leaves the face's own beds.
+  if (!gfx::pack_formation(*formation, block, nullptr)) return f;
+  f.world = true;
+  f.field = gfx::formation_frame(block);
+  f.origin = D3{origin.x, origin.y, origin.z};
+  f.normal = D3{f.field.normal[0], f.field.normal[1], f.field.normal[2]};
+  f.tangent = D3{f.field.dip[0], f.field.dip[1], f.field.dip[2]};
+  f.model.fold = 0.0;  // the field's folds replace the type's
+  return f;
+}
+
 BedSample sample_bed(const Fabric& f, D3 p) {
   const f64 wave = f.model.bed * 12.0 + 0.5;
   const f64 along = dot(p, f.tangent) / wave;
   const f64 phase = 6.0 * lattice_value(f.seed, 0, 0, 0);
-  const f64 folded = dot(p, f.normal) + f.model.fold * wave * 0.25 *
-                                            (det::sin(along * 2.0 * k_pi + phase) +
-                                             0.28 * det::sin(along * 4.0 * k_pi + p.y / wave));
+  const f64 folded =
+      f.world
+          ? gfx::formation_coordinate(f.field, f.origin.x + p.x, f.origin.y + p.y, f.origin.z + p.z)
+                .coordinate
+          : dot(p, f.normal) + f.model.fold * wave * 0.25 *
+                                   (det::sin(along * 2.0 * k_pi + phase) +
+                                    0.28 * det::sin(along * 4.0 * k_pi + p.y / wave));
   if (f.model.bed <= 0.0 || f.irregularity == 0.0) return {folded, f.model.bed};
   // Ordered stations: independent thickness and a continuous lateral wander per bed.
   // Offsets are bounded by 0.28 beds, so neighbouring stations cannot cross (gap >= 0.44).
@@ -157,6 +177,24 @@ bool geology_in_range(const RockGeology& g, std::string& error) {
          (!g.flaking || check(*g.flaking, 0, 1, "flaking")) &&
          (!g.dissolution || check(*g.dissolution, 0, 1, "dissolution")) &&
          (!g.granular || check(*g.granular, 0, 1, "granular"));
+}
+
+void drop_default_formation(JsonValue& json) {
+  if (json.is_object()) {
+    const JsonValue* from = json.find("from_formation");
+    if (from != nullptr && from->is_bool() && from->as_bool())
+      json.as_object().erase(std::string("from_formation"));
+    const JsonValue* field = json.find("formation");
+    if (field != nullptr && field->is_null() && json.find("world_origin") != nullptr) {
+      json.as_object().erase(std::string("formation"));
+      json.as_object().erase(std::string("world_origin"));
+    }
+    for (auto&& [key, value] : json.as_object())
+      drop_default_formation(value);
+  } else if (json.is_array()) {
+    for (JsonValue& element : json.as_array())
+      drop_default_formation(element);
+  }
 }
 
 void drop_absent_sampling(JsonValue& json) {

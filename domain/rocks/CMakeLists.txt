@@ -10,21 +10,25 @@
 #
 # Pure CPU arithmetic over core modules and the mesh types it emits: `assets` for the mesh
 # (`assets::MeshData`) and the generator registry, `geometry` for the cluster build its container
-# is made by. No GPU or ECS. The placement generators write sampled recipes through io.
+# is made by. `gfx` for one header, `domain/gfx/formation.h`: the world formation's f64 twin the
+# shader is held to (W85), which a cliff's bedding reads so its beds are the terrain's bands; no
+# device is ever made. No GPU or ECS. The placement generators write sampled recipes through io.
 
 # The capability's own types (ADR-0007): the shapes' parameters and the rock file. CAPABILITY ties
 # them to the same switch, so they leave the build with it.
-engine_schema_library(NAME rocks_schemas SCHEMAS schemas/rocks.schema CAPABILITY rocks)
+# DEPS schemas: a cliff carries the scene's `engine.scene.Formation` (W85; rocks.md, "Geology").
+engine_schema_library(NAME rocks_schemas SCHEMAS schemas/rocks.schema DEPS schemas CAPABILITY rocks)
 
 engine_module(NAME rocks LAYER domain OPTIONAL WHOLE_ARCHIVE
   DEPS base containers math hash json schema log io image assets geometry materials texture scene_gen
-       rocks_schemas
+       gfx rocks_schemas
   SOURCES src/solver.cpp src/cliff.cpp src/rocks.cpp src/cliffs_generator.cpp src/geology.cpp
           src/surface_bake.cpp src/deposits.cpp src/deposits_generator.cpp)
 
 engine_module_tests(NAME rocks
   SOURCES tests/rocks_tests.cpp tests/cliff_tests.cpp tests/cliffs_generator_tests.cpp
-          tests/size_table.cpp tests/geology_tests.cpp tests/surface_bake_tests.cpp tests/deposits_tests.cpp)
+          tests/size_table.cpp tests/geology_tests.cpp tests/surface_bake_tests.cpp tests/deposits_tests.cpp
+          tests/formation_tests.cpp)
 
 # The committed recipes in content/rocks/ are pinned by hash; the test finds them through
 # test_paths.h, by this path or in a test bundle.

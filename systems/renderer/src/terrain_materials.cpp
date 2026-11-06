@@ -87,6 +87,26 @@ bool validate_terrain_materials(const scene::TerrainMaterials& m, std::string* e
   return true;
 }
 
+bool validate_terrain_formation(const scene::TerrainMaterials& m,
+                                const std::optional<scene::Formation>& formation,
+                                std::string* error) {
+  // W85 (renderer.md, "Formation bands"): the field in its ranges, and a layer that asks to be
+  // banded only where the scene has one to band it by.
+  if (formation.has_value()) {
+    gfx::FormationParams unused;
+    return gfx::pack_formation(*formation, unused, error);
+  }
+  for (const auto& l : m.layers)
+    if (l.formation) {
+      if (error != nullptr)
+        *error =
+            "terrain.materials: " + l.name +
+            ": \"formation\": true needs the scene's \"formation\"; give one, or drop the flag";
+      return false;
+    }
+  return true;
+}
+
 bool terrain_materials_wind_sand(const scene::TerrainMaterials& m) {
   for (const auto& l : m.layers)
     if (l.response == scene::TerrainResponse::Sand &&
@@ -255,6 +275,8 @@ u64 terrain_materials_hash(const scene::TerrainMaterials& materials) {
         layer.as_object().erase(std::string("response"));
         layer.as_object().erase(std::string("sand"));
         layer.as_object().erase(std::string("snow"));
+        // The formation band (W85) is shading read at upload too.
+        layer.as_object().erase(std::string("formation"));
       }
   const std::string text = write_json(json);
   // 2: the terrain record entry after the layers (2026-10-24), so a container built before it,

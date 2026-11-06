@@ -1111,7 +1111,8 @@ class GpuScene {
   gfx::BufferResource lod_coverage;       // u32 per cluster (geometry::pack_lod_coverage), or none
   gfx::BufferResource shadow_coverage;    // u8 per cluster, four a u32: the proxy's (R109), or none
   gfx::BufferResource terrain_masks;  // the terrain's mask level: page table, then tiles, or none
-  gfx::BufferResource fade;           // u32x2 per pair per view, and the cascades'
+  gfx::BufferResource terrain_formation;  // the scene's formation block (W85), or none
+  gfx::BufferResource fade;               // u32x2 per pair per view, and the cascades'
 
   // ---- the frame's working set, sized by the scene and the view count --------------------------
   gfx::BufferResource visible;  // u32x2[3 * views * pair_count]: {instance, cluster} per entry

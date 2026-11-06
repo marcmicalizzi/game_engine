@@ -79,6 +79,8 @@ set(_renderer_tests tests/renderer_tests.cpp tests/reference_tests.cpp tests/str
                     # the set's keys, rebuilds and windows, from a tile source of the test's own.
                     tests/terrain_tiles_tests.cpp
                     tests/terrain_materials_tests.cpp
+                    # The world formation on the ground (W85): bands across the dip, none without.
+                    tests/formation_scene_tests.cpp
                     # A scene's `.flora.json` mesh through the mesh-generator registry: built and
                     # read back where the flora capability is, refused with its sentence where not.
                     tests/flora_scene_tests.cpp tests/authored_scene_tests.cpp tests/cooked_load_tests.cpp

@@ -219,6 +219,7 @@ std::string canonical_rock_json(const RockFile& file) {
   // the cliff was (rocks.md, "The build").
   if (json.is_object() && !filled.cliff.has_value()) json.as_object().erase(std::string("cliff"));
   detail::drop_absent_sampling(json);
+  detail::drop_default_formation(json);
   JsonWriteOptions compact;
   compact.pretty = false;
   return write_json(json, compact);

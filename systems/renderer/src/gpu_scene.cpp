@@ -3544,6 +3544,22 @@ bool GpuScene::upload_materials(const ResolvedSettings& resolved, std::string* e
                       log::field("palette", data_->terrain.materials->layers.size()));
     }
   }
+  // The scene's formation (W85; renderer.md, "Formation bands"): one block the terrain's record
+  // names by address, uploaded only when a layer asks to be banded by it, so a scene without one
+  // holds nothing more and uploads the record it did.
+  if (data_->terrain.enabled && data_->terrain.formation.has_value() &&
+      data_->terrain.materials.has_value()) {
+    bool banded = false;
+    for (const auto& layer : data_->terrain.materials->layers)
+      banded = banded || layer.formation;
+    if (banded) {
+      gfx::FormationParams block;
+      if (!gfx::pack_formation(*data_->terrain.formation, block, error)) return false;
+      if (!gfx::upload_buffer(*device_, &block, sizeof(block), k_storage, terrain_formation, error))
+        return false;
+      terrain_mask_record.formation = terrain_formation.address;
+    }
+  }
   ENGINE_STARTUP_STAGE("upload materials");
   const gfx::Device& device = *device_;
   const geometry::ClusterLodMesh& lod = data_->lod;
@@ -4070,6 +4086,7 @@ bool GpuScene::upload_materials(const ResolvedSettings& resolved, std::string* e
             }
             gfx::set_terrain_layer(material, fields);
             if (!layer.height.empty()) material.flags |= gfx::k_material_terrain_height;
+            if (layer.formation) material.flags |= gfx::k_material_terrain_formation;
           } else if (source_material_index == layers + 1) {
             gfx::TerrainRecord record = terrain_mask_record;
             record.first_layer = mesh_material_base[m] + 1;
@@ -5693,6 +5710,7 @@ void GpuScene::destroy() noexcept {
   coverage_list_.clear();
   shadow_coverage_clusters_ = 0;
   gfx::destroy_buffer(device, terrain_masks);
+  gfx::destroy_buffer(device, terrain_formation);
   gfx::destroy_buffer(device, fade);
   gfx::destroy_buffer(device, materials);
   gfx::destroy_buffer(device, skin);

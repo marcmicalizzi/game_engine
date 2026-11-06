@@ -74,6 +74,36 @@ follow the folded coordinate too. This is face-local, not a continuous world-spa
 across separately traced cliff objects. `Cliff.bed_m` overrides the macro ledge spacing;
 `geology.bed_m` supplies it when the former is absent, and independently controls the finer fabric.
 
+### Geology on the world formation (W85)
+
+A cliff can take its bedding from the scene's formation (`engine.scene.Formation`, scene.schema;
+[renderer](renderer.md#formation-bands) draws the same field on the ground;
+[grounding](../experiments/formation-field.md)). The recipe carries the field itself,
+`Cliff.formation` (version 5), and where its origin stands in the world, `Cliff.world_origin`, so
+the build stays a function of the recipe: a face cut from a world with a field is keyed by the
+field. With both, `detail::make_fabric` takes the field's normal and dip direction (as integers
+over 2^24, the GPU's definition), switches the type's own fold off, and `sample_bed` counts the beds
+by `gfx::formation_coordinate` (`domain/gfx/formation.h`) — the f64 twin the terrain's shader is
+held to — at `world_origin` plus the point **on the face's mean plane in the recipe's frame**, not
+the face-local (along, height − datum) it reads without one. So the bed coordinate at a point of
+the foot line is the one the terrain's band at that point is drawn from, and a dipping or folded
+bed runs from the ground into the face and out of its far end. The stations, the unequal retreat
+and the ledges (`Cliff.bed_m`, the type's spacing) still space the face's own beds along that
+coordinate: the orientation, the fold and the phase are the field's, the ledge spacing is not yet
+the field's sequence (the exposed-bedrock solver's, W85's "Next").
+
+**The override rule.** `RockGeology.from_formation` (version 2) defaults to **true**: a face in a
+world with a field joins it unless its recipe opts out, because the point of a field is that every
+face agrees and a face that silently kept its own dip would draw beds crossing the ground's. With
+`false` the recipe's own `dip_deg`, `azimuth_deg` and `fold` stand. The canonical parameters leave
+`from_formation` out while it is true and `formation` and `world_origin` out while the field is
+absent, so no recipe written before keeps anything but the key it had (`canonical_rock_json`). A
+field out of the scene's ranges is refused with the scene's sentence, prefixed
+`engine.rocks.Cliff.`. Boulders, outcrops and scree do not read the field yet (their recipes have
+no world origin), and the `cliffs` generator does not yet copy the scene's field into the faces it
+writes (its owner's change): a hand-written recipe, or a generator that fills both fields, is how a
+face joins it today.
+
 `quality` (`Low`, `Medium`, `High`, default `High`) spends respectively 10%, 35%, or 100% of the
 authored triangle budget, with a floor of 192 triangles per body or 2,000 per cliff and never above
 the authored budget. These are **offline source variants**. The existing cluster DAG and renderer
