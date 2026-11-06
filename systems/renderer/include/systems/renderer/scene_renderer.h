@@ -323,7 +323,9 @@ struct TileStats {
 // in the run, `limit` the budget in clusters. `built` and `wanted` are the last frame's, one frame
 // late like the visible counts. `overflow_frames` counts frames that wanted more than the capacity
 // held and so dropped whole instances' structures — `dropped_instances` of them lost their drawn
-// clusters and `dropped_caster_instances` only their shadow casters, summed over those frames —
+// clusters and `dropped_caster_instances` only their shadow casters, summed over those frames,
+// each submitted frame once and only the frames the caller counts (`count_frames`: a flight's
+// measured frames, not its warm-up) —
 // which is zero on any run whose demand stays under the budget and moves by less than the headroom
 // between two resizes.
 struct RtStats {
@@ -674,6 +676,12 @@ class SceneRenderer {
   }
   const Stats& stats() const noexcept { return stats_; }
   void reset_stats() noexcept;
+  // Whether the frames submitted from now on count in the run's ray tracing drop sums
+  // (`RtStats::overflow_frames`, `dropped_instances`, `dropped_caster_instances`; default true). A
+  // flight turns it off for its warm-up and drain frames, which are drawn and not measured, so the
+  // sums cover the frames its records cover (G133: a dozen-frame run reported thousands of frames
+  // past the budget, its seconds of warm-up). Every other number folds as before.
+  void count_frames(bool counted) noexcept { count_frames_ = counted; }
   // The scene the renderer draws, for a host that has to turn a capture's instance slots back into
   // what it handed over (`GpuScene::tail_index`).
   const GpuScene& scene() const noexcept { return *scene_; }
@@ -1062,7 +1070,10 @@ class SceneRenderer {
   u64 rt_evictions_folded_ = 0;  // the evictions the last folded frame's record took off the sum
   bool rt_micromaps_ = false;    // the last recorded frame's records named the micromaps (R120)
   Vector<u64> rt_cache_folded_;  // per frame slot: the submission whose cache words were summed
-  bool rt_hold_ = false;         // render_offscreen is redrawing a frame it grew the chain for
+  Vector<u64> rt_drop_folded_;   // per frame slot: the submission whose drop words were summed
+  Vector<u8> slot_counted_;      // per frame slot: its frame counts in the drop sums
+  bool count_frames_ = true;
+  bool rt_hold_ = false;  // render_offscreen is redrawing a frame it grew the chain for
   // The chain's retired buffers, released on a worker when their slot comes round (R128,
   // `renderer.rt.free_on_worker`): made on the first resize that retires anything.
   struct RtFreer* rt_freer_ = nullptr;

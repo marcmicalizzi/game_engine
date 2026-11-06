@@ -964,7 +964,7 @@ the 4 mm, 0.7 m twig; a leafy twig is a spray of its cards a side, `leaf_length_
 `leaf_width` of that wide, at the twig's tip, its plane laid level so the cards face the sky. In the
 pre-G129 default snapshot: 2,312 twigs over 7 orders, 3,073 shoots, 16,638 cards over a 120 m² footprint — a realised
 LAI of 3.9 (3.67 measured over the leaves' own hull) — and **145 parts**: the trunk, the 8 limbs
-and the 136 recursion shoots of the part class (3) and up. G129 gives the stem and scaffolds branch-aware taper and smooth continuation through the upper scaffold(s), with no extra recursive top crown. The broadleaf emits no structural table.
+and the 136 recursion shoots of the part class (3) and up. G129 gives the stem and scaffolds branch-aware taper and smooth continuation through the upper scaffold(s), with no extra recursive top crown. With its leader fix (efe7e9c5) the default is 2,925 twigs over 7 orders, 3,890 shoots, 17,092 cards over a 123 m² footprint (LAI 3.90) and **220 parts**: the trunk, the 8 limbs, the upper leader and 210 recursion shoots of the part class (2) and up. The rise from 145 is the leader fix's allocation, not a new rule: the named budget is shared by squared axis length, so the longest limb is 0.151 m at its base where every limb was 0.1035 m, and the long lower limbs carry 42 and 36 part-class shoots where each carried 17 (the upper leader carries 4); the part class is still the finest whose shoots fit the 400-part cap. What it costs ([renderer](renderer.md#streamed-trees-sway)): 75 more parts are 75 × 80 bytes of pose in each of the table's three slot regions plus a 16-byte push state, 19.2 kB per swaying instance of a loaded scene, and about 9 µs of warm CPU posing per tree per frame at the 0.115 µs a part R93 measured; a streamed tail record stays in the 256-part class it was in at 145, so the tail's room does not move (G133). The broadleaf emits no structural table.
 
 **The budget** (default 60,000; 8,000 to 2,000,000). The pre-G129 default was 45,280 triangles at full detail
 (bark 12,004: the trunk 12 sides × 38 rows, limbs 8 × 14, the recursion's parts by the plan's edge
@@ -1083,15 +1083,19 @@ species' own leaf (5 cm, `leaf_width` 0.7), as many as `leaf_area_index` (4.5) o
 footprint asks, end to end along each side of a branchlet from its tip, lifted 30° out of the
 spray's plane so a hanging branchlet's cards are not edge-on from half the azimuths. The default
 reaches 4.3 m from its foot at 14 m. The bark is white (`bark`, cones on), its tubes' UVs in metres.
-Parts: every stem and limb and the recursion's shoots of the part class and up (at most 160 recursive parts) — 161
-on the default; the birch emits the structural table (stems load-bearing, the rest not) and builds
+Parts: every stem and limb and the recursion's shoots of the part class and up (at most 160 recursive parts) — 156
+on the default since the G129 leader fix (161 before); the birch emits the structural table (stems load-bearing, the rest not) and builds
 the [impostor chain](#the-impostor-chain) like the broadleaf (`card_bake_px`, `impostor_px`).
 
 **The budget** (default 50,000; 8,000 to 2,000,000). At unrestricted physical leaf detail the
-single-stem default has 2,340 branchlets, 73,210 cards of 5 cm and 178,240 triangles (31,820 wood).
-Its realised LAI is 2.964 over a 39.03 m² allocation footprint: the finite branchlets and physical
-leaf spacing bound coverage. At the normal forest budget the existing aggregate-card mode
-represents more leaves with each card: 50,000 triangles, 19,620 cards of 11.31 cm, LAI 4.227.
+single-stem default has 2,347 branchlets, 73,444 cards of 5 cm and 178,698 triangles (31,810 wood)
+since the G129 leader fix (2,340, 73,210 and 178,240 before it).
+Its realised LAI is 2.79 over a 41.66 m² allocation footprint (2.964 over 39.03 m² before: the
+continuing leader widened the hull, and the leaf area stayed 116 m²): the finite branchlets and
+physical leaf spacing bound coverage. The test holds it above 2.5, the low edge of silver birch
+stands' measured 2.5–4.4 ([birch](../experiments/birch.md)), and not at the solver's own number (G133). At the normal forest budget the existing aggregate-card mode
+represents more leaves with each card: 49,995 triangles, 19,654 cards of 11.67 cm, LAI 4.229
+(50,000, 19,620 of 11.31 cm and 4.227 before the G129 leader fix).
 Wood gives way before the cards grow beyond the configured aggregate range; only then does the
 ladder merge into branch-group cards, halve cards and reduce the last rows. No rung moves a
 shoot or drops a part. The default on 36,000/20,000/12,000/8,000 produces

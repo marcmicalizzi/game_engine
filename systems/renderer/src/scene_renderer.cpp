@@ -554,6 +554,8 @@ bool SceneRenderer::create(const gfx::Device& device, GpuScene& scene,
   slot_table_slots_.assign(desc.frames_in_flight, 0);
   slot_table_pairs_.assign(desc.frames_in_flight, 0);
   slot_rt_cache_.assign(desc.frames_in_flight, u8{0});
+  slot_counted_.assign(desc.frames_in_flight, u8{1});
+  rt_drop_folded_.assign(desc.frames_in_flight, ~u64{0});
   slot_rt_capacity_.assign(desc.frames_in_flight, 0);
   slot_terrain_bytes_.assign(desc.frames_in_flight, 0);
   slot_cpu_.assign(desc.frames_in_flight, FrameCpu{});
@@ -1342,6 +1344,9 @@ void SceneRenderer::reset_stats() noexcept {
   note_rt_bytes();  // what the chain holds is state, not a count: it survives a reset
   fill_view_layout();
   submitted_ = 0;
+  // Submissions are numbered from zero again, so a slot's last folded number means nothing now.
+  for (u64& folded : rt_drop_folded_)
+    folded = ~u64{0};
   rt_observed_ = false;
   sample_gpu_memory();  // a reset must not leave a summary with no memory figure at all
 }
@@ -1640,9 +1645,18 @@ void SceneRenderer::fold_visible(u32 slot) {
     }
     if (rt[2] + rt[3] > 0) {
       rt_frames_since_drop_ = 0;  // the drop order's scan stays recorded (R106)
-      ++chain.overflow_frames;
-      chain.dropped_instances += rt[2];
-      chain.dropped_caster_instances += rt[3];
+      // The sums take each submitted frame once, as the cache's do: a frame somebody waited for
+      // (`render_offscreen`, a capture) is folded when it finishes and again when its slot comes
+      // round, from the same words — which counted every blocking frame twice (G133). And only a
+      // frame the caller counts (`count_frames`): a flight's warm-up is not its run.
+      const u64 submission = slot < slot_submission_.size() ? slot_submission_[slot] : 0;
+      const bool fresh = slot >= rt_drop_folded_.size() || rt_drop_folded_[slot] != submission;
+      if (slot < rt_drop_folded_.size()) rt_drop_folded_[slot] = submission;
+      if (fresh && (slot >= slot_counted_.size() || slot_counted_[slot] != 0)) {
+        ++chain.overflow_frames;
+        chain.dropped_instances += rt[2];
+        chain.dropped_caster_instances += rt[3];
+      }
       // Said once, because it is a capacity question: those instances cast no shadow this frame
       // (and under the ray path were not in the picture), the casters' lost only the shadows of
       // what faces away from the camera. Frames before a growth lands can do it; a run that keeps
@@ -2078,6 +2092,7 @@ u64 SceneRenderer::submit_frame(const FrameDesc& frame, std::string* error) {
     slot_table_slots_[slot] = tables_.write ? tables_.slots : 0u;
     slot_table_pairs_[slot] = tables_.write ? static_cast<u32>(tables_.pairs) : 0u;
     slot_rt_cache_[slot] = rt_cache_recording_ ? u8{1} : u8{0};
+    slot_counted_[slot] = count_frames_ ? u8{1} : u8{0};
     slot_rt_capacity_[slot] = resolved_.rt_chain ? scene_->rt_capacity() : 0u;
   }
   ++recorded_;

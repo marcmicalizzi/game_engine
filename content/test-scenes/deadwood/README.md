@@ -16,11 +16,11 @@ captures, measurements, mesh containers and their camera/recipe copies live unde
 `lean.scene.json` pairs `leaning-oak.deadwood.json` with `support-oak.flora.json`.
 The damaged 8 m oak is pitched 55 degrees, retains 40% of its branches and no leaves;
 its upper bole rests against the visible 12 m oak's trunk at approximately
-(0.485, 3.578, 4.769) m. The standing oak is translated by (0.425315, 0, 5.225189) m.
-The support capsule is in the leaning asset's site frame, radius .257172 m, extending
+(0.444, 3.459, 4.619) m. The standing oak is translated by (0.425315, 0, 5.114494) m.
+The support capsule is in the leaning asset's site frame, radius .294731 m, extending
 from y=0 to y=6. It approximates the trunk at contact, not its whole taper and branches.
 The initial G124 prototype refit the placement and capsule to branch-aware taper (about 2 mm surface
-clearance at contact), keeping the 1 cm contact tolerance and the same damaged-tree parameters. The later G124 continuation refinement has not yet revalidated this fixture; see the [integration checkpoint](../../../docs/experiments/tree-branch-taper.md#requested-integration-checkpoint-2026-11-04).
+clearance at contact), keeping the 1 cm contact tolerance and the same damaged-tree parameters. G133 refit it to the final G129 mesh, where the old fit left a 50 mm gap and the solve refused the pose: 3.0 mm from the trunk's actual section at contact, the same tolerance and parameters ([how](../../../docs/experiments/tree-branch-taper.md#baselines-recaptured-g133-2026-11-05)).
 The contact test also checks the visible trunk's horizontal sections at every leaning
 wood vertex and edge midpoint. Moving the capsule away must refuse `require_support`.
 

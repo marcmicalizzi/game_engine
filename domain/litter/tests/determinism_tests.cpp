@@ -13,8 +13,11 @@ TEST_CASE("litter: complete containers agree across toolchains") {
   // release (not a build-configuration difference); with domain/deadwood put back at 31607f4f the
   // old two return.
   // G124: twig/tangle inherit the oak taper and its source key; other kinds are unchanged.
+  // G133: dcad92b7.. / e81e9c28.. were an earlier G129 prototype's. With the final taper the 0.35 m
+  // oak the twig cuts its log from grows the taper's axial terminal twig and a 0.245 m trunk part
+  // (0.225 m at 86d76acd): the twig 2,625 -> 1,351 triangles, the tangle 8,536 -> 8,520.
   constexpr u64 expected[] = {0x341e406800665f85ull, 0xabfbd865a0676d1dull, 0xdefb0dd9440f730aull,
-                              0xf94b5a4d69cd7d2cull, 0xdcad92b7e904545eull, 0xe81e9c28fb364160ull};
+                              0xf94b5a4d69cd7d2cull, 0x8defceb2249dd50bull, 0xd1cc9c417dcf3e40ull};
   for (u32 k = 0; k < 6; ++k) {
     litter::Recipe p;
     p.kind = static_cast<litter::Kind>(k);
