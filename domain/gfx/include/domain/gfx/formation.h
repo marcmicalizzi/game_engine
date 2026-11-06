@@ -123,7 +123,8 @@ inline bool validate_formation(const scene::Formation& f, std::string* error) {
 
 inline void pack_formation_sequence(const Vector<scene::FormationBed>& beds,
                                     FormationSequence& out) {
-  out = FormationSequence{};
+  const FormationSequence empty;
+  out = empty;
   out.count = static_cast<u32>(beds.size());
   u64 start_mm = 0;
   f64 integral[4] = {};
@@ -154,7 +155,10 @@ inline void pack_formation_sequence(const Vector<scene::FormationBed>& beds,
 // The scene's formation into its GPU block: false, with the validation's sentence, when it is out
 // of range.
 inline bool pack_formation(const scene::Formation& f, FormationParams& out, std::string* error) {
-  out = FormationParams{};
+  // A named default rather than `FormationParams{}`: GCC 13 at -O2 stops with an internal compiler
+  // error (gimplify.cc:774) on that temporary of nested default-initialized arrays.
+  const FormationParams empty;
+  out = empty;
   if (!validate_formation(f, error)) return false;
   out.origin_mm[0] = std::llround(f.origin.x * 1000.0);
   out.origin_mm[1] = std::llround(f.origin.y * 1000.0);
