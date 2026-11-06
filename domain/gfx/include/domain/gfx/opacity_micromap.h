@@ -128,9 +128,24 @@ struct MicromapStats {
   u32 special_transparent = 0;
   u32 special_opaque = 0;
   u32 special_unknown = 0;
-  u64 micro_transparent = 0;  // micro-triangles of the entries with data, by state
+  u64 micro_transparent = 0;  // micro-triangles of the triangles with data, by state
   u64 micro_opaque = 0;
   u64 micro_unknown = 0;
+  // The unknown ones whose three corners and centre, sampled as the ray loop samples, all give
+  // one answer: unknown for the bilinear footprint's sake rather than an edge seen to cross them.
+  u64 micro_unknown_filter = 0;
+  // Per level: the micro-triangles of the triangles with data, the unknown ones, and the triangles
+  // that wanted the level (the texel target's, before the cap), with data or not.
+  u64 micro_per_level[k_micromap_max_level + 1] = {};
+  u64 unknown_per_level[k_micromap_max_level + 1] = {};
+  u32 wanted_per_level[k_micromap_max_level + 1] = {};
+  // **Deduplication** (R120 stage 3): entries with data are shared by every triangle of the same
+  // material and UVs, word for word; `unique_entries` is what is stored and `entries_per_level`
+  // counts triangles, as before. `dedup_mismatches` are triangles whose key matched another's
+  // and whose words did not (a hash collision), given entries of their own.
+  u32 unique_entries = 0;
+  u32 unique_per_level[k_micromap_max_level + 1] = {};
+  u32 dedup_mismatches = 0;
   u32 level_cap = 0;       // the cap the bake used
   u32 levels_dropped = 0;  // how far a budget lowered it
   u64 data_bytes = 0;      // the states, as uploaded
@@ -195,27 +210,34 @@ bool build_opacity_micromap(const Device& device, std::span<const u32> data,
                             std::span<const MicromapTriangle> triangles, OpacityMicromapSet& out,
                             std::string* error = nullptr);
 
-// The bake shader's push block (opacity_micromap_bake.slang mirrors it, 104 bytes). `mode` 0
-// classifies — each triangle's level and the states its micro-triangles took, into `codes` — and 1
-// writes each data-carrying triangle's states at the offset its triangle-array entry names.
+// The bake shader's push block (opacity_micromap_bake.slang mirrors it, 120 bytes). `mode` 0
+// classifies — each triangle's level, the level the texel target wanted, the states its
+// micro-triangles took, into `codes`, and its dedup key into `keys`; 2 verifies that every
+// triangle sharing an entry is its writer's material and UVs word for word; and 1 writes each
+// entry's states, one thread an entry, at the offset its triangle-array entry names.
 struct MicromapBakeParams {
   u64 clusters = 0;
   u64 triangles = 0;
   u64 attributes = 0;
   u64 materials = 0;
-  u64 items = 0;     // uint2 per item: {cluster, material}
-  u64 refs = 0;      // uint2 per masked triangle: {item, triangle within the cluster}
-  u64 codes = 0;     // uint per triangle (classify out): level | states seen << 4
-  u64 indices = 0;   // int per triangle (write in): the special index, or the entry
-  u64 entries = 0;   // VkMicromapTriangleEXT per entry (write in)
-  u64 data = 0;      // the states (write out)
-  u64 counters = 0;  // u64 x3 (write out): transparent, opaque, unknown micro-triangles
-  u32 count = 0;     // masked triangles
-  u32 mode = 0;      // bits 0..7: 0 classify, 1 write; bits 8..11: the level cap
+  u64 items = 0;    // uint2 per item: {cluster, material}
+  u64 refs = 0;     // uint2 per masked triangle: {item, triangle within the cluster}
+  u64 codes = 0;    // uint per triangle (classify out): level | states seen << 4
+  u64 indices = 0;  // int per triangle (write in): the special index, or the entry
+  u64 entries = 0;  // VkMicromapTriangleEXT per entry (write in)
+  u64 data = 0;     // the states (write out)
+  // u64 [13][4] (write out): per level, the transparent, opaque and unknown micro-triangles and
+  // the unknown ones whose corners and centre agree, each counted once per triangle using it
+  u64 counters = 0;
+  u64 keys = 0;     // uint2 per triangle (classify out): the dedup key
+  u64 writers = 0;  // uint2 per entry: {the triangle that writes it, its uses} (write, verify in)
+  u32 count = 0;    // masked triangles (classify, verify), entries (write)
+  u32 mode = 0;     // bits 0..7: 0 classify, 1 write, 2 verify; bits 8..11: the level cap
   f32 target_texels = k_micromap_target_texels;  // a micro-triangle's most level-0 texels
   u32 pad = 0;
 };
-static_assert(sizeof(MicromapBakeParams) == 104);
+static_assert(sizeof(MicromapBakeParams) == 120);
+inline constexpr u32 k_micromap_counter_columns = 4;
 inline constexpr u32 k_micromap_bake_workgroup = 64;
 inline constexpr u32 k_micromap_bake_row = 65535;  // groups per row of the 2D dispatch
 

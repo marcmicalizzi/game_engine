@@ -389,6 +389,10 @@ struct ResolvedSettings {
   // bake's budget (`renderer.rt.micromap_mib`), which lowers the cap a level at a time until the
   // bake fits.
   bool shadow_micromaps = false;
+  // The shadow rays read the micromaps two-state (`renderer.shadow.micromap_2state`, R120 stage
+  // 3): an unknown micro-triangle is its centre sample's answer in the traversal, so the mask loop
+  // never runs for it; the primary rays keep the four states. Only beside `shadow_micromaps`.
+  bool micromap_2state = false;
   u32 micromap_level = 0;
   u64 micromap_budget_bytes = 0;
   f32 micromap_texels = 0.0f;  // `renderer.rt.micromap_texels`: a micro-triangle's most texels

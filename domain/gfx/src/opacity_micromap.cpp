@@ -328,8 +328,9 @@ bool bake_opacity_micromaps(const Device& device, ShaderLibrary& shaders,
   BufferResource items;
   BufferResource refs_buffer;
   BufferResource codes;
+  BufferResource keys;
   BufferResource counters;
-  BufferResource indices_staging;
+  BufferResource writers;
   BufferResource entries;
   BufferResource data;
   BufferResource scratch;
@@ -337,8 +338,9 @@ bool bake_opacity_micromaps(const Device& device, ShaderLibrary& shaders,
     destroy_buffer(device, items);
     destroy_buffer(device, refs_buffer);
     destroy_buffer(device, codes);
+    destroy_buffer(device, keys);
     destroy_buffer(device, counters);
-    destroy_buffer(device, indices_staging);
+    destroy_buffer(device, writers);
     destroy_buffer(device, entries);
     destroy_buffer(device, data);
     destroy_buffer(device, scratch);
@@ -349,15 +351,18 @@ bool bake_opacity_micromaps(const Device& device, ShaderLibrary& shaders,
     destroy_opacity_micromaps(device, out);
     return false;
   };
+  constexpr u64 k_counter_bytes =
+      u64{k_micromap_max_level + 1} * k_micromap_counter_columns * sizeof(u64);
   if (!upload_buffer(device, in.items.data(), u64{item_count} * 2 * sizeof(u32), k_storage, items,
                      error) ||
       !upload_buffer(device, refs.data(), u64{refs.size()} * sizeof(u32), k_storage, refs_buffer,
                      error) ||
       !create_buffer(device, u64{triangle_count} * sizeof(u32), k_storage, true, codes, error) ||
-      !create_buffer(device, 3 * sizeof(u64), k_storage, true, counters, error)) {
+      !create_buffer(device, u64{triangle_count} * 2 * sizeof(u32), k_storage, true, keys, error) ||
+      !create_buffer(device, k_counter_bytes, k_storage, true, counters, error)) {
     return fail();
   }
-  std::memset(counters.mapped, 0, 3 * sizeof(u64));
+  std::memset(counters.mapped, 0, k_counter_bytes);
   refs = Vector<u32>{};
 
   MicromapBakeParams params;
@@ -368,13 +373,14 @@ bool bake_opacity_micromaps(const Device& device, ShaderLibrary& shaders,
   params.items = items.address;
   params.refs = refs_buffer.address;
   params.codes = codes.address;
+  params.keys = keys.address;
   params.counters = counters.address;
   params.count = triangle_count;
   params.target_texels = in.target_texels > 0.0f ? in.target_texels : k_micromap_target_texels;
-  const u32 groups = (triangle_count + k_micromap_bake_workgroup - 1) / k_micromap_bake_workgroup;
-  const u32 groups_x = groups < k_micromap_bake_row ? groups : k_micromap_bake_row;
-  const u32 groups_y = (groups + k_micromap_bake_row - 1) / k_micromap_bake_row;
   auto dispatch = [&](const MicromapBakeParams& p) {
+    const u32 groups = (p.count + k_micromap_bake_workgroup - 1) / k_micromap_bake_workgroup;
+    const u32 groups_x = groups < k_micromap_bake_row ? groups : k_micromap_bake_row;
+    const u32 groups_y = (groups + k_micromap_bake_row - 1) / k_micromap_bake_row;
     return submit_immediate(
         device,
         [&](CommandList cb) {
@@ -388,22 +394,41 @@ bool bake_opacity_micromaps(const Device& device, ShaderLibrary& shaders,
 
   // Classify at the cap, then lower it a level at a time while the budget is short: a coarser
   // level is never less conservative, only less decided.
+  //
+  // **Deduplication** (R120 stage 3): a triangle's states are a function of its material and its
+  // UVs alone, and a forest's leaf cards repeat a few atlas regions, so the triangles with data are
+  // sorted by (key, level) and every run of one key shares one entry, written once by its first
+  // triangle. The key is a hash; the verify pass below compares the words, so a collision costs
+  // an entry and never a wrong state.
+  struct Keyed {
+    u64 key;
+    u32 level;
+    u32 triangle;
+  };
   u32 cap = std::min({in.max_level, limit_4, k_micromap_max_level, 15u});
   const u32 first_cap = cap;
   Vector<i32> index_host(triangle_count, 0);
-  Vector<u32> entry_host;
+  Vector<u32> entry_host;   // {data offset, level | format << 16} per entry
+  Vector<u32> writer_host;  // {triangle, uses} per entry
+  Vector<Keyed> keyed;
   u64 data_bytes = 0;
   MicromapStats stats;
   for (;;) {
     params.mode = 0u | (cap << 8);
+    params.count = triangle_count;
     if (!dispatch(params)) return fail();
     const auto* code = static_cast<const u32*>(codes.mapped);
+    const auto* key = static_cast<const u64*>(keys.mapped);
     stats = MicromapStats{};
     entry_host.clear();
+    writer_host.clear();
+    keyed.clear();
     data_bytes = 0;
     for (u32 t = 0; t < triangle_count; ++t) {
       const u32 level = code[t] & 0xfu;
-      const u32 seen = code[t] >> 4;
+      const u32 seen = (code[t] >> 4) & 0xfu;
+      const u32 wanted = (code[t] >> 8) & 0xfu;
+      ++stats.wanted_per_level[wanted <= k_micromap_max_level ? wanted : k_micromap_max_level];
       if (seen == (1u << k_micromap_transparent)) {
         index_host[t] = k_micromap_fully_transparent;
         ++stats.special_transparent;
@@ -417,22 +442,40 @@ bool bake_opacity_micromaps(const Device& device, ShaderLibrary& shaders,
         index_host[t] = k_micromap_fully_unknown_transparent;
         ++stats.special_unknown;
       } else {
-        index_host[t] = static_cast<i32>(entry_host.size() / 2);
-        entry_host.push_back(static_cast<u32>(data_bytes));
-        entry_host.push_back(level | (k_micromap_format_4state << 16));
-        data_bytes += micromap_entry_bytes(level);
+        keyed.push_back(Keyed{key[t], level, t});
         ++stats.entries_per_level[level];
       }
+    }
+    std::sort(keyed.begin(), keyed.end(), [](const Keyed& a, const Keyed& b) {
+      if (a.key != b.key) return a.key < b.key;
+      if (a.level != b.level) return a.level < b.level;
+      return a.triangle < b.triangle;
+    });
+    for (u32 k = 0; k < keyed.size();) {
+      u32 end = k + 1;
+      while (end < keyed.size() && keyed[end].key == keyed[k].key &&
+             keyed[end].level == keyed[k].level)
+        ++end;
+      const i32 entry = static_cast<i32>(entry_host.size() / 2);
+      for (u32 j = k; j < end; ++j)
+        index_host[keyed[j].triangle] = entry;
+      entry_host.push_back(static_cast<u32>(data_bytes));
+      entry_host.push_back(keyed[k].level | (k_micromap_format_4state << 16));
+      writer_host.push_back(keyed[k].triangle);
+      writer_host.push_back(static_cast<u32>(end - k));
+      data_bytes += micromap_entry_bytes(keyed[k].level);
+      ++stats.unique_per_level[keyed[k].level];
+      k = end;
     }
     const u64 total = data_bytes + u64{triangle_count} * sizeof(i32) +
                       u64{entry_host.size() / 2} * k_micromap_triangle_bytes;
     if (in.budget_bytes == 0 || total <= in.budget_bytes || cap == 0) break;
     --cap;
   }
+  keyed = Vector<Keyed>{};
   stats.triangles = triangle_count;
   stats.level_cap = cap;
   stats.levels_dropped = first_cap - cap;
-  stats.data_bytes = data_bytes;
   stats.index_bytes = u64{triangle_count} * sizeof(i32);
   if (stats.levels_dropped != 0) {
     ENGINE_LOG_WARN(log_micromap, "opacity micromap budget lowered the level cap",
@@ -440,10 +483,49 @@ bool bake_opacity_micromaps(const Device& device, ShaderLibrary& shaders,
                     log::field("budget_bytes", in.budget_bytes));
   }
 
+  // The verify pass: every triangle that shares an entry must be its writer's words; one that is
+  // not (a key collision) gets an entry of its own.
+  if (!entry_host.empty()) {
+    if (!upload_buffer(device, index_host.data(), u64{triangle_count} * sizeof(i32), k_storage,
+                       out.indices, error) ||
+        !upload_buffer(device, writer_host.data(), u64{writer_host.size()} * sizeof(u32), k_storage,
+                       writers, error)) {
+      return fail();
+    }
+    params.mode = 2u | (cap << 8);
+    params.count = triangle_count;
+    params.indices = out.indices.address;
+    params.writers = writers.address;
+    if (!dispatch(params)) return fail();
+    const auto* code = static_cast<const u32*>(codes.mapped);
+    for (u32 t = 0; t < triangle_count; ++t) {
+      if ((code[t] & 0x80000000u) == 0) continue;
+      const u32 shared = static_cast<u32>(index_host[t]);
+      const u32 level = entry_host[2 * shared + 1] & 0xffffu;
+      --writer_host[2 * shared + 1];
+      index_host[t] = static_cast<i32>(entry_host.size() / 2);
+      entry_host.push_back(static_cast<u32>(data_bytes));
+      entry_host.push_back(level | (k_micromap_format_4state << 16));
+      writer_host.push_back(t);
+      writer_host.push_back(1u);
+      data_bytes += micromap_entry_bytes(level);
+      ++stats.unique_per_level[level];
+      ++stats.dedup_mismatches;
+    }
+    if (stats.dedup_mismatches != 0) {
+      destroy_buffer(device, out.indices);
+      destroy_buffer(device, writers);
+    }
+  }
+  stats.data_bytes = data_bytes;
+  for (u32 l = 0; l <= k_micromap_max_level; ++l)
+    stats.unique_entries += stats.unique_per_level[l];
+
   // The tables the records read, and the per-triangle indices (special or entry).
   out.cluster_first_host = std::move(cluster_first);
-  if (!upload_buffer(device, index_host.data(), u64{triangle_count} * sizeof(i32), k_storage,
-                     out.indices, error) ||
+  if ((out.indices.size == 0 &&
+       !upload_buffer(device, index_host.data(), u64{triangle_count} * sizeof(i32), k_storage,
+                      out.indices, error)) ||
       !upload_buffer(device, out.cluster_first_host.data(),
                      u64{std::max<u32>(in.cluster_count, 1u)} * sizeof(u32), k_storage,
                      out.cluster_first, error)) {
@@ -466,13 +548,17 @@ bool bake_opacity_micromaps(const Device& device, ShaderLibrary& shaders,
     return true;
   }
 
-  // The data pass, into a 256-aligned input buffer.
-  if (!upload_buffer(device, entry_host.data(), u64{entry_host.size()} * sizeof(u32), k_input,
+  // The data pass, one thread an entry, into a 256-aligned input buffer.
+  if ((writers.size == 0 &&
+       !upload_buffer(device, writer_host.data(), u64{writer_host.size()} * sizeof(u32), k_storage,
+                      writers, error)) ||
+      !upload_buffer(device, entry_host.data(), u64{entry_host.size()} * sizeof(u32), k_input,
                      entries, error) ||
       !create_buffer(device, align_up(std::max<u64>(data_bytes, 4), 4) + k_input_alignment, k_input,
                      false, data, error)) {
     return fail();
   }
+  writer_host = Vector<u32>{};
   const u64 data_address = align_up(data.address, k_input_alignment);
   const u64 entries_address = entries.address;  // re-uploaded below if it is not aligned
   BufferResource entries_aligned;
@@ -488,7 +574,9 @@ bool bake_opacity_micromaps(const Device& device, ShaderLibrary& shaders,
         entry_host.data(), u64{entry_host.size()} * sizeof(u32));
   }
   params.mode = 1u | (cap << 8);
+  params.count = entry_count;
   params.indices = out.indices.address;
+  params.writers = writers.address;
   params.entries = triangle_array;
   params.data = data_address;
   if (!dispatch(params)) {
@@ -496,13 +584,19 @@ bool bake_opacity_micromaps(const Device& device, ShaderLibrary& shaders,
     return fail();
   }
   const auto* counted = static_cast<const u64*>(counters.mapped);
-  stats.micro_transparent = counted[0];
-  stats.micro_opaque = counted[1];
-  stats.micro_unknown = counted[2];
+  for (u32 l = 0; l <= k_micromap_max_level; ++l) {
+    const u64* row = counted + u64{l} * k_micromap_counter_columns;
+    stats.micro_transparent += row[0];
+    stats.micro_opaque += row[1];
+    stats.micro_unknown += row[2];
+    stats.micro_unknown_filter += row[3];
+    stats.micro_per_level[l] = row[0] + row[1] + row[2];
+    stats.unknown_per_level[l] = row[2];
+  }
 
-  // The build: one micromap, its usage counts per level.
+  // The build: one micromap, its usage counts per level (the stored entries, not the triangles).
   const bool built =
-      build_micromap(device, stats.entries_per_level, data_address, triangle_array, out, error);
+      build_micromap(device, stats.unique_per_level, data_address, triangle_array, out, error);
   destroy_buffer(device, entries_aligned);
   if (!built) return fail();
 

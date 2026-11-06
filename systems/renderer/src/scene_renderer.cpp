@@ -2991,6 +2991,11 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
     const ShadowRayRule rule = shadow_ray_rule(frame.frame_index, resolved_.shadow_opaque_coverage);
     if (shadows && scene.has_masked() && !rule.opaque)
       resolve.shadow_flags |= gfx::k_shadow_alpha_masks;
+    // The shadow rays' two-state micromaps (R120 stage 3; renderer.md, "Opacity micromaps"):
+    // only where the scene baked them, so a device without the extension never sees the flag.
+    if ((resolve.shadow_flags & gfx::k_shadow_alpha_masks) != 0 && resolved_.micromap_2state &&
+        scene.micromap_tables_address() != 0)
+      resolve.shadow_flags |= gfx::k_shadow_micromap_2state;
     if ((resolve.shadow_flags & gfx::k_shadow_alpha_masks) != 0 &&
         scene.shadow_coverage_clusters() > 0) {
       // **The opaque shadow proxy** (R109; renderer.md, "The opaque shadow proxy"): a masked

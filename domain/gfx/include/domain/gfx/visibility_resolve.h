@@ -59,6 +59,12 @@ inline constexpr u32 k_shadow_alpha_masks = 8u;
 // light they follow and leave every other light lit, as they always did, so far from the eye the
 // picture is the maps' and near it the rays'. Clear, the cascades shadow the whole picture.
 inline constexpr u32 k_shadow_hybrid = 16u;
+// **The shadow rays read the opacity micromaps two-state** (renderer.md, "Opacity micromaps"; R120
+// stage 3), set beside `k_shadow_alpha_masks` only where the scene baked micromaps: the masked
+// shadow query adds `RAY_FLAG_FORCE_OMM_2_STATE` (SPIR-V's ForceOpacityMicromap2StateEXT, 0x400),
+// so an unknown micro-triangle takes its centre sample's answer in the traversal and never reaches
+// the mask loop. The primary rays never carry it. Clear, the query is the one it always was.
+inline constexpr u32 k_shadow_micromap_2state = 32u;
 
 // The maps' share of a hybrid pixel's visibility at `distance` from the eye: 0 nearer than
 // `ray_distance` (the ray's answer alone), 1 past `ray_distance + band` (the maps' alone), linear

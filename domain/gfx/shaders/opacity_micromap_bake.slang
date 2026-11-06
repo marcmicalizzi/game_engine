@@ -33,9 +33,12 @@ struct MicromapBakeParams {
   uint64_t indices;   // int per triangle (mode 1 in)
   uint64_t entries;   // uint2 per entry: {data offset, level | format << 16} (mode 1 in)
   uint64_t data;      // uint[] (mode 1 out)
-  uint64_t counters;  // uint64_t[3] (mode 1 out): transparent, opaque, unknown micro-triangles
+  uint64_t counters;  // uint64_t[13][4] (mode 1 out): per level, transparent, opaque, unknown,
+                      // and the unknown ones the point samples agree on; each times the entry's uses
+  uint64_t keys;      // uint2 per triangle (mode 0 out): the dedup key over material and UVs
+  uint64_t writers;   // uint2 per entry: {its triangle, its uses} (modes 1 and 2 in)
   uint count;
-  uint mode;  // bits 0..7: 0 classify, 1 write; bits 8..11: the level cap
+  uint mode;  // bits 0..7: 0 classify, 1 write, 2 verify; bits 8..11: the level cap
   float target_texels;  // a micro-triangle's most level-0 texels
   uint pad;
 };
@@ -130,13 +133,29 @@ uint micro_state(ResolveMaterial material, float2 dims, float2 t0, float2 t1, fl
   return alpha >= cutoff ? k_unknown_opaque : k_unknown_transparent;
 }
 
-[shader("compute")]
-[numthreads(64, 1, 1)]
-void omm_bake_main(uint3 group : SV_GroupID, uint3 thread : SV_GroupThreadID) {
-  const uint t = (group.y * k_row + group.x) * k_workgroup + thread.x;
-  if (t >= g_params.count) return;
-  const uint mode = g_params.mode & 0xffu;
-  const uint cap = (g_params.mode >> 8) & 0xfu;
+// One bilinear sample of the mask at level 0, as the ray loop's `mask_keeps_level0` reads it.
+bool point_keeps(ResolveMaterial material, float2 uv) {
+  const float factor = material.uv_offset.w;
+  if (material.albedo_texture == k_no_texture) return factor >= mask_cutoff(material);
+  const float alpha =
+      factor * g_textures[NonUniformResourceIndex(material.albedo_texture)]
+                   .SampleLevel(g_samplers[NonUniformResourceIndex(material.sampler)], uv, 0)
+                   .a;
+  return alpha >= mask_cutoff(material);
+}
+
+// A masked triangle's material and its UVs with the material's transform applied: what its states
+// are a function of, and so what two triangles must share to share an entry.
+struct BakeTriangle {
+  ResolveMaterial material;
+  uint material_index;
+  float2 uv0;
+  float2 uv1;
+  float2 uv2;
+  float2 dims;
+};
+
+BakeTriangle load_triangle(uint t) {
   uint2* refs = (uint2*)g_params.refs;
   const uint2 ref = refs[t];
   uint2* items = (uint2*)g_params.items;
@@ -146,60 +165,146 @@ void omm_bake_main(uint3 group : SV_GroupID, uint3 thread : SV_GroupThreadID) {
   MaskTables tables = no_mask_tables();
   tables.materials = g_params.materials;
   tables.attributes = g_params.attributes;
-  const ResolveMaterial material = mask_material(tables, item.y);
+  BakeTriangle out;
+  out.material_index = item.y;
+  out.material = mask_material(tables, item.y);
   uint* packed_triangles = (uint*)g_params.triangles;
   const uint packed = packed_triangles[cluster.triangle_offset + ref.y];
-  const float2 uv0 = material_uv(material, vertex_uv(tables, cluster.vertex_offset + (packed & 0xffu)));
-  const float2 uv1 =
-      material_uv(material, vertex_uv(tables, cluster.vertex_offset + ((packed >> 8) & 0xffu)));
-  const float2 uv2 =
-      material_uv(material, vertex_uv(tables, cluster.vertex_offset + ((packed >> 16) & 0xffu)));
-  float2 dims = float2(1.0, 1.0);
-  if (material.albedo_texture != k_no_texture) {
+  out.uv0 = material_uv(out.material, vertex_uv(tables, cluster.vertex_offset + (packed & 0xffu)));
+  out.uv1 = material_uv(out.material,
+                        vertex_uv(tables, cluster.vertex_offset + ((packed >> 8) & 0xffu)));
+  out.uv2 = material_uv(out.material,
+                        vertex_uv(tables, cluster.vertex_offset + ((packed >> 16) & 0xffu)));
+  out.dims = float2(1.0, 1.0);
+  if (out.material.albedo_texture != k_no_texture) {
     uint w = 1u;
     uint h = 1u;
-    g_textures[NonUniformResourceIndex(material.albedo_texture)].GetDimensions(w, h);
-    dims = float2(float(max(w, 1u)), float(max(h, 1u)));
+    g_textures[NonUniformResourceIndex(out.material.albedo_texture)].GetDimensions(w, h);
+    out.dims = float2(float(max(w, 1u)), float(max(h, 1u)));
+  }
+  return out;
+}
+
+uint mix32(uint h, uint k) {
+  k *= 0xcc9e2d51u;
+  k = (k << 15) | (k >> 17);
+  k *= 0x1b873593u;
+  h ^= k;
+  h = (h << 13) | (h >> 19);
+  return h * 5u + 0xe6546b64u;
+}
+
+uint finish32(uint h) {
+  h ^= h >> 16;
+  h *= 0x85ebca6bu;
+  h ^= h >> 13;
+  h *= 0xc2b2ae35u;
+  return h ^ (h >> 16);
+}
+
+// The dedup key: two hashes of the material and the six UV words, under two seeds. Equal keys only
+// propose a share; the verify pass compares the words themselves.
+uint2 triangle_key(BakeTriangle tri) {
+  const uint words[7] = { tri.material_index, asuint(tri.uv0.x), asuint(tri.uv0.y),
+                          asuint(tri.uv1.x),  asuint(tri.uv1.y), asuint(tri.uv2.x),
+                          asuint(tri.uv2.y) };
+  uint a = 0x9747b28cu;
+  uint b = 0x5bd1e995u;
+  for (uint i = 0u; i < 7u; ++i) {
+    a = mix32(a, words[i]);
+    b = mix32(b, words[i] ^ 0xa5a5a5a5u);
+  }
+  return uint2(finish32(a ^ 28u), finish32(b ^ 0x1cu));
+}
+
+bool same_triangle(BakeTriangle a, BakeTriangle b) {
+  return a.material_index == b.material_index && all(asuint(a.uv0) == asuint(b.uv0)) &&
+         all(asuint(a.uv1) == asuint(b.uv1)) && all(asuint(a.uv2) == asuint(b.uv2));
+}
+
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void omm_bake_main(uint3 group : SV_GroupID, uint3 thread : SV_GroupThreadID) {
+  const uint i = (group.y * k_row + group.x) * k_workgroup + thread.x;
+  if (i >= g_params.count) return;
+  const uint mode = g_params.mode & 0xffu;
+  const uint cap = (g_params.mode >> 8) & 0xfu;
+  uint* codes = (uint*)g_params.codes;
+  uint2* writers = (uint2*)g_params.writers;
+
+  if (mode == 2u) {
+    // Verify: a triangle whose index names an entry another triangle writes must be that
+    // triangle's material and UVs word for word, or the host gives it an entry of its own.
+    int* indices = (int*)g_params.indices;
+    const int index = indices[i];
+    if (index < 0) return;
+    const uint writer = writers[uint(index)].x;
+    if (writer == i) return;
+    if (!same_triangle(load_triangle(i), load_triangle(writer))) codes[i] |= 0x80000000u;
+    return;
   }
 
+  // Mode 1 runs one thread an entry, on the triangle that writes it; mode 0 one a triangle.
+  const uint t = mode == 1u ? writers[i].x : i;
+  const BakeTriangle tri = load_triangle(t);
+  const ResolveMaterial material = tri.material;
+  const float2 uv0 = tri.uv0;
+  const float2 uv1 = tri.uv1;
+  const float2 uv2 = tri.uv2;
+  const float2 dims = tri.dims;
+
   uint level = 0u;
+  uint wanted = 0u;
   if (mode == 0u) {
     const float2 e1 = (uv1 - uv0) * dims;
     const float2 e2 = (uv2 - uv0) * dims;
     const float area = abs(e1.x * e2.y - e1.y * e2.x) * 0.5;
     float micro = area;
-    while (level < cap && micro > g_params.target_texels) {
+    // The level the texel target asks for, up to the format's 12, and the cap's.
+    while (wanted < 12u && micro > g_params.target_texels) {
       micro *= 0.25;
-      ++level;
+      ++wanted;
     }
+    level = min(wanted, cap);
   } else {
-    int* indices = (int*)g_params.indices;
-    const int index = indices[t];
-    if (index < 0) return;  // a special index: no data
-    uint2* entries = (uint2*)g_params.entries;
-    const uint2 entry = entries[uint(index)];
+    const uint2 entry = ((uint2*)g_params.entries)[i];
+    const uint uses = writers[i].y;
     level = entry.y & 0xffffu;
     const uint count = 1u << (2u * level);
     uint* data = (uint*)g_params.data;
     const uint base = entry.x >> 2;
-    uint counts[4] = { 0u, 0u, 0u, 0u };
+    uint counts[5] = { 0u, 0u, 0u, 0u, 0u };
     for (uint w = 0u; w * 16u < count; ++w) {
       uint word = 0u;
       for (uint k = 0u; k < 16u && w * 16u + k < count; ++k) {
         float2 b0, b1, b2;
         micro_triangle(w * 16u + k, level, b0, b1, b2);
-        const uint state = micro_state(material, dims, uv0 + b0.x * (uv1 - uv0) + b0.y * (uv2 - uv0),
-                                       uv0 + b1.x * (uv1 - uv0) + b1.y * (uv2 - uv0),
-                                       uv0 + b2.x * (uv1 - uv0) + b2.y * (uv2 - uv0));
+        const float2 t0 = uv0 + b0.x * (uv1 - uv0) + b0.y * (uv2 - uv0);
+        const float2 t1 = uv0 + b1.x * (uv1 - uv0) + b1.y * (uv2 - uv0);
+        const float2 t2 = uv0 + b2.x * (uv1 - uv0) + b2.y * (uv2 - uv0);
+        const uint state = micro_state(material, dims, t0, t1, t2);
         word |= state << (2u * k);
         counts[state] += 1u;
+        if (state >= k_unknown_transparent) {
+          // Diagnosis only (R120 stage 3): an unknown micro-triangle whose corners and centre all
+          // give one answer is unknown because of the filter's footprint, not because the mask's
+          // edge is seen to cross it.
+          const bool c = point_keeps(material, (t0 + t1 + t2) * (1.0 / 3.0));
+          if (point_keeps(material, t0) == c && point_keeps(material, t1) == c &&
+              point_keeps(material, t2) == c) {
+            counts[4] += 1u;
+          }
+        }
       }
       data[base + w] = word;
     }
     Atomic<uint64_t>* counters = (Atomic<uint64_t>*)g_params.counters;
-    counters[0].add(uint64_t(counts[k_transparent]));
-    counters[1].add(uint64_t(counts[k_opaque]));
-    counters[2].add(uint64_t(counts[k_unknown_transparent] + counts[k_unknown_opaque]));
+    const uint row = level * 4u;
+    counters[row + 0u].add(uint64_t(counts[k_transparent]) * uses);
+    counters[row + 1u].add(uint64_t(counts[k_opaque]) * uses);
+    counters[row + 2u].add(uint64_t(counts[k_unknown_transparent] + counts[k_unknown_opaque]) *
+                           uses);
+    counters[row + 3u].add(uint64_t(counts[4]) * uses);
     return;
   }
   uint seen = 0u;
@@ -214,6 +319,6 @@ void omm_bake_main(uint3 group : SV_GroupID, uint3 thread : SV_GroupThreadID) {
     // Two states seen already decide that the triangle needs data; the rest cannot undo it.
     if (countbits(seen) > 1u) break;
   }
-  uint* codes = (uint*)g_params.codes;
-  codes[t] = level | (seen << 4);
+  codes[t] = level | (seen << 4) | (wanted << 8);
+  ((uint2*)g_params.keys)[t] = triangle_key(tri);
 }

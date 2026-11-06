@@ -347,6 +347,13 @@ tunables::Bool shadow_micromaps{
     "at 11520x2160 for 1.15 GB resident and a third of the chain's capacity under the same "
     "budget. Not with the opaque shadow proxy on (R120; renderer.md, Opacity micromaps; read at "
     "load)"};
+tunables::Bool shadow_micromap_2state{
+    "renderer.shadow.micromap_2state", false,
+    "With opacity micromaps on, the shadow rays read them two-state "
+    "(RAY_FLAG_FORCE_OMM_2_STATE): an unknown micro-triangle is decided by its centre sample in "
+    "the traversal and never reaches the mask loop, for a shadow edge at most a micro-triangle "
+    "wide; primary rays keep the four states (R120 stage 3; renderer.md, Opacity micromaps; read "
+    "at load)"};
 tunables::Int micromap_mib{
     "renderer.rt.micromap_mib", 1024, 0, 65536,
     "The opacity micromaps' bake budget in MiB, states, indices and triangle "
@@ -590,6 +597,7 @@ void resolve_settings(const RenderSettings& requested, const gfx::DeviceFeatures
   out.shadow_micromaps = out.rt_chain && features.cluster_acceleration_structure &&
                          features.opacity_micromap && shadow_micromaps.get() &&
                          out.shadow_opaque_coverage <= 0.0f;
+  out.micromap_2state = out.shadow_micromaps && shadow_micromap_2state.get();
   out.micromap_level = static_cast<u32>(micromap_level.get());
   out.micromap_budget_bytes = static_cast<u64>(micromap_mib.get()) << 20;
   out.micromap_texels = static_cast<f32>(micromap_texels.get());

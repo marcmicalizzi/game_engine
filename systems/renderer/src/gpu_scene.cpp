@@ -4389,17 +4389,36 @@ bool GpuScene::bake_micromaps(gfx::ShaderLibrary& shaders, std::string* error) {
   micromap_triangles_ = Vector<u32>{};
   const gfx::MicromapStats& s = micromaps_.stats;
   u32 entries = 0;
-  for (u32 l = 0; l <= gfx::k_micromap_max_level; ++l)
+  // Per level, `level:triangles wanting it`, `level:triangles/stored entries`, and
+  // `level:unknown/micro-triangles` (R120 stage 3's histogram), as text for the log line.
+  std::string wanted;
+  std::string stored;
+  std::string unknown;
+  for (u32 l = 0; l <= gfx::k_micromap_max_level; ++l) {
     entries += s.entries_per_level[l];
+    if (s.wanted_per_level[l] != 0)
+      wanted += std::to_string(l) + ":" + std::to_string(s.wanted_per_level[l]) + " ";
+    if (s.entries_per_level[l] != 0)
+      stored += std::to_string(l) + ":" + std::to_string(s.entries_per_level[l]) + "/" +
+                std::to_string(s.unique_per_level[l]) + " ";
+    if (s.micro_per_level[l] != 0)
+      unknown += std::to_string(l) + ":" + std::to_string(s.unknown_per_level[l]) + "/" +
+                 std::to_string(s.micro_per_level[l]) + " ";
+  }
   ENGINE_LOG_INFO(
       log_renderer, "opacity micromaps baked", log::field("triangles", s.triangles),
-      log::field("with_data", entries), log::field("fully_opaque", s.special_opaque),
+      log::field("with_data", entries), log::field("unique_entries", s.unique_entries),
+      log::field("dedup_mismatches", s.dedup_mismatches),
+      log::field("fully_opaque", s.special_opaque),
       log::field("fully_transparent", s.special_transparent),
       log::field("fully_unknown", s.special_unknown), log::field("micro_unknown", s.micro_unknown),
+      log::field("micro_unknown_filter", s.micro_unknown_filter),
       log::field("micro_known", s.micro_opaque + s.micro_transparent),
       log::field("level_cap", s.level_cap), log::field("levels_dropped", s.levels_dropped),
-      log::field("data_bytes", s.data_bytes), log::field("resident_bytes", micromap_bytes()),
-      log::field("bake_ms", s.bake_ms));
+      log::field("wanted", std::string_view{wanted}),
+      log::field("stored", std::string_view{stored}),
+      log::field("unknown", std::string_view{unknown}), log::field("data_bytes", s.data_bytes),
+      log::field("resident_bytes", micromap_bytes()), log::field("bake_ms", s.bake_ms));
   if (micromaps_.address != 0 && static_build_ && static_clusters_ > 0) {
     gfx::destroy_cluster_set(device, static_clas_);
     gfx::destroy_cluster_blas_set(device, static_blas_);
