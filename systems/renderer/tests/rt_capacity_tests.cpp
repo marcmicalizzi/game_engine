@@ -545,6 +545,42 @@ TEST_CASE("rt capacity: the default budget is a sixteenth of the device, 512 to 
   CHECK(std::string(rt_budget_source_name(RtBudgetSource::Setting)) == "setting");
   CHECK(std::string(rt_budget_source_name(RtBudgetSource::Tunable)) == "tunable");
   CHECK(std::string(rt_budget_source_name(RtBudgetSource::Device)) == "device");
+  CHECK(std::string(rt_budget_source_name(RtBudgetSource::DeviceMicromaps)) == "device-micromaps");
+}
+
+// R120, batch 53: the device's rule follows the micromaps' slot growth, so the chain holds as many
+// clusters with them as without — 8,832 bytes a slot over 6,144 on the RTX 5090 is 1.4375 — before
+// the floor and the ceiling, and a named budget is untouched.
+TEST_CASE("rt capacity: the device's budget is scaled by the micromaps' slot growth") {
+  constexpr u64 k_mib = u64{1} << 20;
+  constexpr u64 k_gib = u64{1} << 30;
+  CHECK(rt_device_budget_mib(32 * k_gib, 8832, 6144) == 2944);
+  CHECK(rt_device_budget_mib(32404 * k_mib, 8832, 6144) == 2910);  // the RTX 5090's heaps
+  const RtBudget scaled = resolve_rt_budget(0, 0, 32 * k_gib, 8832, 6144);
+  CHECK(scaled.mib == 2944);
+  CHECK(scaled.source == RtBudgetSource::DeviceMicromaps);
+  // No growth, no ratio, or a slot cheaper than its base: the rule as it was, and its name.
+  const RtBudget same = resolve_rt_budget(0, 0, 32 * k_gib, 6144, 6144);
+  CHECK(same.mib == 2048);
+  CHECK(same.source == RtBudgetSource::Device);
+  CHECK(resolve_rt_budget(0, 0, 32 * k_gib, 8832, 0).source == RtBudgetSource::Device);
+  CHECK(rt_device_budget_mib(32 * k_gib, 6144, 8832) == 2048);
+  CHECK(rt_device_budget_mib(32 * k_gib) == 2048);
+  // An explicit budget is exactly what was named.
+  const RtBudget named = resolve_rt_budget(1536, 2048, 32 * k_gib, 8832, 6144);
+  CHECK(named.mib == 1536);
+  CHECK(named.source == RtBudgetSource::Setting);
+  const RtBudget tuned = resolve_rt_budget(0, 2048, 32 * k_gib, 8832, 6144);
+  CHECK(tuned.mib == 2048);
+  CHECK(tuned.source == RtBudgetSource::Tunable);
+  // The floor and the ceiling still apply, after the ratio: 4 GiB's 256 MiB times 1.4375 is 368,
+  // under the floor; 64 GiB's 4,096 times it is 5,888, over the ceiling; 2,048 MiB of a 48 GiB
+  // card's 3,072 times it is 4,416, over the ceiling too.
+  CHECK(rt_device_budget_mib(4 * k_gib, 8832, 6144) == k_rt_budget_floor_mib);
+  CHECK(rt_device_budget_mib(64 * k_gib, 8832, 6144) == k_rt_budget_ceiling_mib);
+  CHECK(rt_device_budget_mib(48 * k_gib, 8832, 6144) == k_rt_budget_ceiling_mib);
+  CHECK(rt_device_budget_mib(16 * k_gib, 8832, 6144) == 1472);
+  CHECK(rt_device_budget_mib(~u64{0}, 8832, 6144) == k_rt_budget_ceiling_mib);
 }
 
 // The cluster cache's ceiling follows the device too (R114): a sixty-fourth of the heaps, never

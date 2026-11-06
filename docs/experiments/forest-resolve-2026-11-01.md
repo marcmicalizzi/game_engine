@@ -320,3 +320,53 @@ The solid row comes from the off flights; with micromaps on the forced rule lets
 **What it says.** A tenth of the masks' 12.6 ms comes back at 11520 and a fifth of their 4.4 at 3840, because four micro-triangles in five are unknown and still reach the loop: the conservative rule (every 2x2 footprint a micro-triangle of about four level-0 texels could read) leaves almost every micro-triangle of a leaf card straddling an alpha edge. The price is the memory and, unexpectedly, the chain: `ALLOW_CLUSTER_OPACITY_MICROMAPS` makes the driver reserve 8,832 bytes a CLAS slot instead of 6,144, so the same 2,025 MiB budget holds a third fewer clusters and v25 at 11520 drops 1,079 more instances' structures — which changes the shadows and may account for part of the saving. So the switch stays off by default. The levers left: a budget raised with it (the slots' 44 %), a finer level (four times the memory a level, for fewer unknowns), and the two-state answer for the sun alone, which decides every unknown micro-triangle by its centre sample and never runs the loop for it.
 
 **Drawn against casters.** A caster's record carries no micromap. The frame's casters are 10,884 of 1,519,758 entries at 11520 (0.7 %) and 3,852 of 876,262 at 3840 (0.4 %), so even if every caster were alpha-tested they would be a small share of the masked entries; a caster-side answer would buy little. (Counted from the records, not from a split of the masked entries by kind, which the records pass does not count.)
+
+## Stage 6: two-state micromaps for the shadow rays (2026-11-05)
+
+Roadmap R120 stage 3 (the rule is on [renderer, "Opacity micromaps"](../subsystems/renderer.md#opacity-micromaps)). Stage 5's walk flown again, the same path (`walk.json`, records 6693–6993), flags, sweep and `stop_after=cycle`, `--warmup 120 --wait-quiet 120`, `msvc-release` at 4adc7aaa plus this change, `ENGINE_PIPELINE_CACHE=0`, one flight per configuration: micromaps off; on at level 4 (four states, unbudgeted); on at level 4 with the shadow rays two-state; on at level 6, two-state (`renderer.rt.micromap_mib=2048`); and the last with `--rt-budget-mib 2920`. Every cell is the median of 75 frames of the as-set rule; "sun" is the resolve's sun stage (its lighting-to-sun-shadow step) and "half" R126's half pass, which since stage 5 asks the side thirds' sun once a 2x2 block (it runs at 11520 only). **The machine**: RTX 5090, driver 617.42, each run under the GPU lock; at the starts the GPU idle (0%) with 18.6–21.1 GB of its memory held, other processes at 6.3–9.8% of the CPU except the level-6 flight at 11520 (47% at its start, 18% at its end); at the ends 5–77% (the raised-budget flight ended beside another agent's build).
+
+| 11520×2160, ms | off | L4 | L4, 2-state | L6, 2-state | L6, 2-state, budget 2920 |
+|---|---:|---:|---:|---:|---:|
+| sun stage + half pass | 9.91 + 1.50 | 8.86 + 1.09 | **5.06 + 0.81** | **5.04 + 0.81** | 5.04 + 0.80 |
+| resolve (the picture) | 18.33 | 17.20 | 13.51 | 13.41 | 13.42 |
+| cluster build (`clas`) | 4.99 | 4.47 | 4.48 | 4.49 | 5.13 |
+| bottom level (`blas`) | 1.55 | 1.54 | 1.54 | 1.57 | 1.60 |
+| the chain (`rt`) | 7.40 | 7.35 | 7.37 | 7.38 | 7.60 |
+| GPU frame | 41.30 | 40.06 | 36.52 | 34.23 | 34.91 |
+| capacity / built / wanted, clusters | 338,115 / 250,964 / 250,964 | 231,909 / 231,909 / 250,964 | the same | the same | 334,408 / 250,964 / 250,964 |
+
+| 3840×2160, ms | off | L4 | L4, 2-state | L6, 2-state |
+|---|---:|---:|---:|---:|
+| sun stage | 4.45 | 4.06 | **2.38** | **2.29** |
+| resolve | 7.09 | 6.69 | 4.93 | 4.92 |
+| `clas` / `blas` / `rt` | 3.72 / 1.44 / 5.78 | 3.82 / 1.51 / 5.94 | 3.82 / 1.50 / 6.13 | 3.84 / 1.50 / 6.05 |
+| GPU frame | 18.76 | 18.90 | 17.06 | 16.47 |
+
+(At 3840 the walk builds 188,293 clusters, under both capacities, so nothing is dropped either way.)
+
+**The pictures** (three held poses of the walk, marker 1, its middle and marker 2, at 1600×900 with the clock stopped, against micromaps off; `engine-image compare --flip`, and the pixels whose 8-bit colour moved):
+
+| configuration | FLIP mean | FLIP p95 | changed pixels (of 1,440,000) |
+|---|---|---|---|
+| L4, four states | 0 / 0 / 0 | 0 / 0 / 0 | 0 / 0 / 0 |
+| L4, two-state | 0.024 / 0.018 / 0.022 | 0.120 / 0.113 / 0.122 | 39,450 / 19,308 / 22,306 |
+| L6, two-state | 0.018 / 0.012 / 0.015 | 0.097 / 0.077 / 0.091 | 24,577 / 11,133 / 13,609 |
+
+**Where the change is.** The heat maps put it in the crowns: faint isolated speckle through the sunlit foliage of every tree in view, a leaf's self-shadow or its neighbour's moving by a micro-triangle, densest where the far canopy is a few pixels a leaf, and next to none on the ground's sun flecks near the eye, which the proxy's 0.3 had moved. The level-6 map halves the level-4 one, as a micro-triangle a quarter the area should.
+
+**What it says.** The two-state answer is the lever the masks needed: it takes half the sun stage at both widths (9.9 → 5.0 ms at 11520, 4.5 → 2.3 at 3840) where four states took a tenth, because an unknown micro-triangle no longer runs the loop. The level then buys the picture, not the time — level 6 traces as fast as level 4 (5.04 against 5.06) and moves half the pixels — and its cost is memory: the level-6 bake (one short load with `--log info`) stores 642,061 deduplicated entries for 12,529,841 data-carrying triangles of 13,358,865, 641 MB of states and 715 MB resident, in 4.7 s, with 20.1 % of the micro-triangles unknown (79.1 % at level 4) and 56 % of those unknown only for the bilinear footprint; the texel target wanted level 7 or 8 for 10.5 million triangles, so the level-4 cap was the first cause of the unknowns. Per level wanted / stored triangles / stored entries / unknown share: level 5, 1,590,516 / 1,588,994 / 21,835 / 27.9 %; level 6, 21,920 / 10,940,775 / 620,220 / 19.8 % (the stored level-6 triangles include every one that wanted more). The default stays off for the chain's sake: the CLAS slots' 44 % keep cutting the capacity under the default budget below what the walk builds at 11520, and the budget is not this row's to move; with it raised the frame keeps every structure and is 34.9 ms against 41.3.
+
+**The confirming flight with the defaults** (R120, batch 53, 2026-11-06). The micromaps went on by default — two-state for the shadow rays, level 6 — and the chain's default budget now follows the slots' growth ([renderer, "The budget follows the device"](../subsystems/renderer.md#the-budget-follows-the-device)), so the walk was flown once more with **no micromap flag at all**: the owner's flags, `--rt-budget-mib 0`, the same path, sweep and `stop_after=cycle`, `--warmup 120 --wait-quiet 120`, `msvc-release` at 00e2fb32 plus this change, `ENGINE_PIPELINE_CACHE=0`, under the GPU lock. The machine: at the start the GPU 1 % busy with 21.0 GB of its memory held and other processes on 7.2 % of the CPU; at the end the GPU idle, 22.9 GB held, others on 14.8 % — so by the harness's rule an upper bound.
+
+| 11520×2160, ms | off | L6, 2-state (default budget, by hand) | L6, 2-state, budget 2920 (by hand) | **the defaults** |
+|---|---:|---:|---:|---:|
+| sun stage + half pass | 9.91 + 1.50 | 5.04 + 0.81 | 5.04 + 0.80 | **5.02 + 0.79** |
+| resolve (the picture) | 18.33 | 13.41 | 13.42 | **13.40** |
+| `clas` / `blas` / `rt` | 4.99 / 1.55 / 7.40 | 4.49 / 1.57 / 7.38 | 5.13 / 1.60 / 7.60 | **5.12 / 1.60 / 7.57** |
+| GPU frame | 41.30 | 34.23 | 34.91 | **35.02** |
+| capacity / built / wanted, clusters | 338,115 / 250,964 / 250,964 | 231,909 / 231,909 / 250,964 | 334,408 / 250,964 / 250,964 | **338,072 / 250,964 / 250,964** |
+| budget, source | 2,025 MiB, device | 2,025, device | 2,920, setting | **2,952, device-micromaps** |
+| bytes a cluster of capacity | 6,280 | — | — | **9,156** |
+| the chain's resident bytes (`rt.bytes`) | 4.40 GB | — | — | **5.82 GB** |
+
+The defaults land where the by-hand configuration with the raised budget did (35.02 against 34.91 ms, within the two flights' machine states), every cluster of the walk built: the budget the device's rule gave, 2,025 MiB × 9,156 / 6,280 = 2,952, holds 338,072 clusters where the rule held 338,115 without the micromaps. Over the whole flight, load and warm-up included, the defaults dropped what micromaps off dropped (609 frames past the capacity in both, the first frames' 418,496 wanted; 4,476,153 against 4,476,024 instance drops), none of them in the measured stretch. The chain's resident bytes grow by 1.42 GB: the capacity's slots at 9,156 bytes instead of 6,280 (+0.97 GB), the static forms' structures built allowing micromaps (1.21 GB against 0.84), and the micromap; the cluster cache, whose ceiling is not scaled, holds 60,074 slots where it held 86,357 and evicted 380,779 against 297,817, with no overflow.

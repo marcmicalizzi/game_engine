@@ -278,6 +278,10 @@ static const uint k_shadow_cascades = 4u;  // the sun's shadow is read from the 
 static const uint k_shadow_alpha_masks = 8u;
 // Rays near the eye, the maps far from it (gfx::k_shadow_hybrid), beside k_shadow_cascades.
 static const uint k_shadow_hybrid = 16u;
+// The masked shadow query reads the micromaps two-state (gfx::k_shadow_micromap_2state, R120).
+static const uint k_shadow_micromap_2state = 32u;
+// RAY_FLAG_FORCE_OMM_2_STATE, SPIR-V's ForceOpacityMicromap2StateEXT.
+static const uint k_ray_flag_force_omm_2_state = 0x400u;
 
 struct FullscreenOut {
   float4 position : SV_Position;
@@ -426,9 +430,19 @@ bool shadow_ray_blocked(ResolveParams* params, uint bit, float3 origin, float3 d
     masks.cluster_materials = params->cluster_materials;
     masks.attributes = params->attributes;
     masks.fade = params->fade;
+    // **Two-state micromaps** (R120 stage 3; renderer.md, "Opacity micromaps"): with the bit the
+    // traversal decides an unknown micro-triangle by its centre sample (the bake's sub-state) and
+    // only a triangle without a micromap reaches the loop below. The flag is a run-time operand,
+    // set only where the scene baked micromaps on a device with the extension; the module does not
+    // declare RayTracingOpacityMicromapEXT, which a device without it would refuse, and the
+    // two-state test in alpha_mask_tests.cpp is what shows the driver honours the bit.
+    const uint masked_flags =
+        RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH |
+        ((params->shadow_flags & k_shadow_micromap_2state) != 0 ? k_ray_flag_force_omm_2_state
+                                                                : 0u);
     RayQuery<RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH> masked;
-    masked.TraceRayInline(g_scenes[NonUniformResourceIndex(params->scene)],
-                          RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH, k_ray_mask_caster, ray);
+    masked.TraceRayInline(g_scenes[NonUniformResourceIndex(params->scene)], masked_flags,
+                          k_ray_mask_caster, ray);
     while (masked.Proceed()) {
       if (masked.CandidateType() != CANDIDATE_NON_OPAQUE_TRIANGLE) continue;
       // A rigid form's static structure names the cluster within its mesh instead (renderer.md,

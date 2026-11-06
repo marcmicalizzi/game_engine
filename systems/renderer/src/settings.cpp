@@ -340,13 +340,21 @@ tunables::Bool shadow_sweep{
 // micromaps"). The budget's default is from the v25 forest's bake (forest-resolve-2026-11-01.md,
 // stage 4).
 tunables::Bool shadow_micromaps{
-    "renderer.shadow.micromaps", false,
+    "renderer.shadow.micromaps", true,
     "Bake opacity micromaps for the alpha-tested clusters and attach them to the ray tracing "
     "chain's structures where the device has VK_EXT_opacity_micromap; the picture is the same "
-    "at the same chain capacity. Off: on the v25 forest they took the sun stage 14.8 to 13.3 ms "
-    "at 11520x2160 for 1.15 GB resident and a third of the chain's capacity under the same "
-    "budget. Not with the opaque shadow proxy on (R120; renderer.md, Opacity micromaps; read at "
-    "load)"};
+    "at the same chain capacity, and the device's default chain budget grows by their slot cost "
+    "so the capacity is the same too. On since R120 batch 53: with the shadow rays' two-state "
+    "answer at level 6 the v25 walk's GPU frame went 41.3 to 34.2 ms at 11520x2160, for 715 MB "
+    "resident and a bake of about 5 s at load; false is the old picture and cost. Not with the "
+    "opaque shadow proxy on (R120; renderer.md, Opacity micromaps; read at load)"};
+tunables::Bool shadow_micromap_2state{
+    "renderer.shadow.micromap_2state", true,
+    "With opacity micromaps on, the shadow rays read them two-state "
+    "(RAY_FLAG_FORCE_OMM_2_STATE): an unknown micro-triangle is decided by its centre sample in "
+    "the traversal and never reaches the mask loop, for a shadow edge at most a micro-triangle "
+    "wide; primary rays keep the four states (R120 stage 3; renderer.md, Opacity micromaps; read "
+    "at load)"};
 tunables::Int micromap_mib{
     "renderer.rt.micromap_mib", 1024, 0, 65536,
     "The opacity micromaps' bake budget in MiB, states, indices and triangle "
@@ -356,7 +364,7 @@ tunables::Float micromap_texels{
     "The opacity micromaps' level per triangle: the smallest whose micro-triangles cover at most "
     "this many of the mask's level-0 texels (then the level cap)"};
 tunables::Int micromap_level{
-    "renderer.rt.micromap_level", 4, 0, 12,
+    "renderer.rt.micromap_level", 6, 0, 12,
     "The opacity micromaps' subdivision level cap (each level is four times "
     "the micro-triangles; at most the device's)"};
 tunables::Bool shadow_hybrid_fit{
@@ -590,6 +598,7 @@ void resolve_settings(const RenderSettings& requested, const gfx::DeviceFeatures
   out.shadow_micromaps = out.rt_chain && features.cluster_acceleration_structure &&
                          features.opacity_micromap && shadow_micromaps.get() &&
                          out.shadow_opaque_coverage <= 0.0f;
+  out.micromap_2state = out.shadow_micromaps && shadow_micromap_2state.get();
   out.micromap_level = static_cast<u32>(micromap_level.get());
   out.micromap_budget_bytes = static_cast<u64>(micromap_mib.get()) << 20;
   out.micromap_texels = static_cast<f32>(micromap_texels.get());

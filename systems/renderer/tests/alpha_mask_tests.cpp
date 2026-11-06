@@ -30,10 +30,13 @@
 #include <doctest/doctest.h>
 #include <test_temp_dir.h>
 
+#include <algorithm>
+#include <cmath>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <initializer_list>
+#include <iterator>
 #include <map>
 #include <optional>
 #include <span>
@@ -1086,12 +1089,17 @@ TEST_CASE("alpha mask: opacity micromaps leave the shadow rays' and the ray path
   // Micro-triangles an eighth of a texel across (level 6): the quad maps the 8x8 mask exactly, so
   // every micro-triangle edge falls on a texel boundary and a coarser one always reads two blocks.
   TunableScope fine("renderer.rt.micromap_texels=0.01", "renderer.rt.micromap_texels=4");
-  TunableScope cap("renderer.rt.micromap_level=6", "renderer.rt.micromap_level=4");
+  TunableScope cap("renderer.rt.micromap_level=6", "renderer.rt.micromap_level=6");
   for (const Case& c : cases) {
     TunableScope cache(c.cache, "renderer.rt.cache=true");
+    // Four states pinned: the shadow rays' two-state answer (on by default since R120 batch 53) is
+    // meant to move a shadow edge's band, which the case below bounds; this one asserts nothing
+    // moves.
+    TunableScope four("renderer.shadow.micromap_2state=false",
+                      "renderer.shadow.micromap_2state=true");
     MicromapShot on;
     {
-      TunableScope set("renderer.shadow.micromaps=true", "renderer.shadow.micromaps=false");
+      TunableScope set("renderer.shadow.micromaps=true", "renderer.shadow.micromaps=true");
       on = shoot_micromaps(c.mesh, c.settings, c.view);
     }
     if (!on.skip.empty()) {
@@ -1100,7 +1108,7 @@ TEST_CASE("alpha mask: opacity micromaps leave the shadow rays' and the ray path
     }
     MicromapShot off;
     {
-      TunableScope set("renderer.shadow.micromaps=false", "renderer.shadow.micromaps=false");
+      TunableScope set("renderer.shadow.micromaps=false", "renderer.shadow.micromaps=true");
       off = shoot_micromaps(c.mesh, c.settings, c.view);
     }
     REQUIRE(off.skip.empty());
@@ -1140,11 +1148,14 @@ TEST_CASE("alpha mask: a forced-solid shadow ray still skips a micromap's transp
   RenderSettings rays = base_settings(RasterMode::Hardware);
   rays.shadows = ShadowMode::RayTraced;
   TunableScope forced("renderer.shadow.opaque_rays=true", "renderer.shadow.opaque_rays=false");
+  // Written against the four-state answer, which was the default until R120 batch 53.
+  TunableScope four("renderer.shadow.micromap_2state=false",
+                    "renderer.shadow.micromap_2state=true");
   TunableScope fine("renderer.rt.micromap_texels=0.01", "renderer.rt.micromap_texels=4");
-  TunableScope cap("renderer.rt.micromap_level=6", "renderer.rt.micromap_level=4");
+  TunableScope cap("renderer.rt.micromap_level=6", "renderer.rt.micromap_level=6");
   MicromapShot on;
   {
-    TunableScope set("renderer.shadow.micromaps=true", "renderer.shadow.micromaps=false");
+    TunableScope set("renderer.shadow.micromaps=true", "renderer.shadow.micromaps=true");
     on = shoot_micromaps(fx.caster_masked, rays, micromap_shadow_view());
   }
   if (!on.skip.empty() || !on.baked) {
@@ -1153,7 +1164,7 @@ TEST_CASE("alpha mask: a forced-solid shadow ray still skips a micromap's transp
   }
   MicromapShot off;
   {
-    TunableScope set("renderer.shadow.micromaps=false", "renderer.shadow.micromaps=false");
+    TunableScope set("renderer.shadow.micromaps=false", "renderer.shadow.micromaps=true");
     off = shoot_micromaps(fx.caster_masked, rays, micromap_shadow_view());
   }
   REQUIRE(off.skip.empty());
@@ -1176,7 +1187,7 @@ TEST_CASE("alpha mask: a device without opacity micromaps draws what it drew") {
   rays.shadows = ShadowMode::RayTraced;
   MicromapShot without;
   {
-    TunableScope set("renderer.shadow.micromaps=true", "renderer.shadow.micromaps=false");
+    TunableScope set("renderer.shadow.micromaps=true", "renderer.shadow.micromaps=true");
     without = shoot_micromaps(fx.caster_masked, rays, micromap_shadow_view(), true);
   }
   if (!without.skip.empty()) {
@@ -1185,10 +1196,329 @@ TEST_CASE("alpha mask: a device without opacity micromaps draws what it drew") {
   }
   MicromapShot off;
   {
-    TunableScope set("renderer.shadow.micromaps=false", "renderer.shadow.micromaps=false");
+    TunableScope set("renderer.shadow.micromaps=false", "renderer.shadow.micromaps=true");
     off = shoot_micromaps(fx.caster_masked, rays, micromap_shadow_view());
   }
   REQUIRE(off.skip.empty());
   CHECK_FALSE(without.baked);
   CHECK(differing_pixels(without.frame, off.frame) == 0);
+}
+
+// **The shadow rays' two-state answer** (renderer.md, "Opacity micromaps"; R120 stage 3). With
+// `renderer.shadow.micromap_2state` the masked shadow query forces the micromaps two-state, so an
+// unknown micro-triangle is decided by its centre sample in the traversal. What may move is the
+// shadow's edge, by at most one micro-triangle: every pixel that changes lies within that band of
+// a lit/shadowed boundary of the four-state picture, the band narrows as the level rises, and the
+// primary rays never carry the flag, so the ray path's ids are the same words. Something must
+// change at the coarser level, or the driver ignored the bit (the module does not declare the
+// capability; the flag is a run-time operand). Measured: 63 flips at level 4 and 6 at level 7.
+namespace {
+
+// The quad is 2 m across; at `level` a micro-triangle's leg is 2 / 2^level m and its longest side
+// sqrt(2) of that. Two states move the shadow's edge by at most that side, which the shadow on
+// the ground draws at most as many pixels long as the disc's shadow draws its 1.28 m diameter
+// along its longer axis (the sun's slant stretches one axis; the scale is measured, not assumed).
+// So a changed pixel lies within this many pixels of a boundary of the four-state picture.
+u32 two_state_band_pixels(u32 level, const CapturedFrame& four) {
+  const ShadowCount reference = count_shadow(four);
+  u32 x0 = four.width;
+  u32 y0 = four.height;
+  u32 x1 = 0;
+  u32 y1 = 0;
+  for (u32 p = 0; p < four.width * four.height; ++p) {
+    if (reference.classes[p] != 2) continue;
+    const u32 x = p % four.width;
+    const u32 y = p / four.width;
+    x0 = std::min(x0, x);
+    y0 = std::min(y0, y);
+    x1 = std::max(x1, x);
+    y1 = std::max(y1, y);
+  }
+  const f64 extent = x1 >= x0 ? static_cast<f64>(std::max(x1 - x0, y1 - y0) + 1u) : 0.0;
+  const f64 pixels_per_m = extent / 1.28125;
+  const f64 side_m = std::sqrt(2.0) * 2.0 / static_cast<f64>(1u << level);
+  return 1u + static_cast<u32>(std::ceil(side_m * pixels_per_m));
+}
+
+struct TwoStateChange {
+  u32 changed = 0;      // pixels whose colour or ids differ
+  u32 ids_changed = 0;  // pixels whose ids differ
+  u32 flipped = 0;      // ground pixels lit in one picture and shadowed in the other
+  u32 outside = 0;      // flipped pixels farther than the band from a boundary
+};
+
+TwoStateChange two_state_change(const CapturedFrame& four, const CapturedFrame& two, u32 band) {
+  TwoStateChange out;
+  const u32 pixels = four.width * four.height;
+  const u32 id_words = pixels == 0 ? 0u : static_cast<u32>(four.ids.size() / pixels);
+  const ShadowCount reference = count_shadow(four);
+  const ShadowCount moved = count_shadow(two);
+  for (u32 p = 0; p < pixels; ++p) {
+    bool ids_same = true;
+    for (u32 w = 0; w < id_words && ids_same; ++w)
+      ids_same = four.ids[p * id_words + w] == two.ids[p * id_words + w];
+    const bool same = ids_same && std::memcmp(&four.color[p * 4], &two.color[p * 4], 4) == 0;
+    if (!ids_same) ++out.ids_changed;
+    if (same) continue;
+    ++out.changed;
+    // Only a sun-shadow flip is the sun's edge; a few codes elsewhere are the array lights' own
+    // shadow edges, which take the flag too and whose boundaries this map does not draw.
+    const u8 mine = reference.classes[p];
+    if (mine == 0 || moved.classes[p] == 0 || moved.classes[p] == mine) continue;
+    ++out.flipped;
+    const i32 x = static_cast<i32>(p % four.width);
+    const i32 y = static_cast<i32>(p / four.width);
+    const i32 r = static_cast<i32>(band);
+    bool near = false;
+    for (i32 dy = -r; dy <= r && !near; ++dy) {
+      for (i32 dx = -r; dx <= r && !near; ++dx) {
+        const i32 qx = x + dx;
+        const i32 qy = y + dy;
+        if (qx < 0 || qy < 0 || qx >= static_cast<i32>(four.width) ||
+            qy >= static_cast<i32>(four.height))
+          continue;
+        const u8 other =
+            reference.classes[static_cast<u32>(qy) * four.width + static_cast<u32>(qx)];
+        near = other != 0 && other != mine;
+      }
+    }
+    if (!near) ++out.outside;
+  }
+  return out;
+}
+
+// The caster scene with a **disc** for its mask instead of the checker, sampled bilinearly: the
+// checker's edges lie on texel boundaries, which the micro-triangles of an aligned quad never
+// cross, so every unknown micro-triangle there is unknown for the filter's footprint and its centre
+// gives the exact answer — two states would move nothing. A disc's edge crosses micro-triangles at
+// every level. 64 x 64 texels, radius 20.5 about (32.37, 31.81), alpha ramping across two texels so
+// the bilinear lookup's 0.5 contour is the circle. Returns the scene's path.
+std::string write_disc_caster(const Fixture& fx) {
+  const std::filesystem::path dir(fx.tmp.path());
+  constexpr u32 n = 64;
+  std::vector<u8> rgba(n * n * 4);
+  for (u32 y = 0; y < n; ++y) {
+    for (u32 x = 0; x < n; ++x) {
+      const f64 dx = static_cast<f64>(x) + 0.5 - 32.37;
+      const f64 dy = static_cast<f64>(y) + 0.5 - 31.81;
+      const f64 a = std::clamp(0.5 + (20.5 - std::sqrt(dx * dx + dy * dy)) * 0.5, 0.0, 1.0);
+      u8* t = &rgba[(y * n + x) * 4];
+      t[0] = t[1] = t[2] = 255;
+      t[3] = static_cast<u8>(std::lround(a * 255.0));
+    }
+  }
+  Vector<u8> png;
+  REQUIRE(image::encode_png(n, n, 4, std::span<const u8>(rgba.data(), rgba.size()), png));
+  REQUIRE(write_file((dir / "disc.png").string(), png.data(), png.size()));
+  std::ifstream in((dir / "caster_masked.gltf").string(), std::ios::binary);
+  std::string json((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+  const auto replace = [&](const std::string& from, const std::string& to) {
+    const usize at = json.find(from);
+    REQUIRE(at != std::string::npos);
+    json.replace(at, from.size(), to);
+  };
+  replace("\"uri\":\"mask.png\"", "\"uri\":\"disc.png\"");
+  replace("\"magFilter\":9728,\"minFilter\":9728", "\"magFilter\":9729,\"minFilter\":9729");
+  const std::string path = (dir / "caster_disc.gltf").string();
+  REQUIRE(write_file(path, json.data(), json.size()));
+  return path;
+}
+
+}  // namespace
+
+TEST_CASE("alpha mask: two-state micromaps move only a shadow edge's band, never a primary ray") {
+  Fixture fx;
+  const std::string disc = write_disc_caster(fx);
+  RenderSettings rays = base_settings(RasterMode::Hardware);
+  rays.shadows = ShadowMode::RayTraced;
+  RenderSettings traced = base_settings(RasterMode::RayTrace);
+  traced.shadows = ShadowMode::RayTraced;
+  TunableScope fine("renderer.rt.micromap_texels=0.01", "renderer.rt.micromap_texels=4");
+  TunableScope maps("renderer.shadow.micromaps=true", "renderer.shadow.micromaps=true");
+  u32 changed_at[2] = {0, 0};
+  const u32 levels[2] = {4, 7};
+  for (u32 i = 0; i < 2; ++i) {
+    const std::string cap = "renderer.rt.micromap_level=" + std::to_string(levels[i]);
+    TunableScope level(cap.c_str(), "renderer.rt.micromap_level=6");
+    MicromapShot four;
+    {
+      TunableScope set("renderer.shadow.micromap_2state=false",
+                       "renderer.shadow.micromap_2state=true");
+      four = shoot_micromaps(disc, rays, micromap_shadow_view());
+    }
+    if (!four.skip.empty() || !four.baked) {
+      MESSAGE("skipped: " << (four.skip.empty() ? std::string("no micromaps here") : four.skip));
+      return;
+    }
+    MicromapShot two;
+    {
+      TunableScope set("renderer.shadow.micromap_2state=true",
+                       "renderer.shadow.micromap_2state=true");
+      two = shoot_micromaps(disc, rays, micromap_shadow_view());
+    }
+    REQUIRE(two.skip.empty());
+    REQUIRE(two.baked);
+    REQUIRE(four.stats.level_cap == levels[i]);
+    const u32 band = two_state_band_pixels(levels[i], four.frame);
+    const TwoStateChange change = two_state_change(four.frame, two.frame, band);
+    MESSAGE("level " << levels[i] << ": " << change.changed << " pixels changed, " << change.flipped
+                     << " lit/shadowed flips, " << change.outside << " of them outside the " << band
+                     << "-pixel band, " << four.stats.micro_unknown << " unknown micro-triangles");
+    CHECK(change.ids_changed == 0);
+    CHECK(change.outside == 0);
+    changed_at[i] = change.changed;
+  }
+  // The flag reaches the traversal (the coarser level's centre answers differ from the loop's
+  // somewhere along the checker's edges), and a finer level moves fewer pixels.
+  CHECK(changed_at[0] > 0);
+  CHECK(changed_at[1] <= changed_at[0]);
+
+  // The ray path: its primary rays never carry the flag, so its ids are the same words.
+  {
+    TunableScope level("renderer.rt.micromap_level=5", "renderer.rt.micromap_level=6");
+    MicromapShot four;
+    {
+      TunableScope set("renderer.shadow.micromap_2state=false",
+                       "renderer.shadow.micromap_2state=true");
+      four = shoot_micromaps(disc, traced, micromap_shadow_view());
+    }
+    MicromapShot two;
+    {
+      TunableScope set("renderer.shadow.micromap_2state=true",
+                       "renderer.shadow.micromap_2state=true");
+      two = shoot_micromaps(disc, traced, micromap_shadow_view());
+    }
+    if (four.skip.empty() && two.skip.empty()) {
+      const TwoStateChange change =
+          two_state_change(four.frame, two.frame, two_state_band_pixels(5, four.frame));
+      MESSAGE("ray path: " << change.ids_changed << " ids changed, " << change.changed
+                           << " pixels changed");
+      CHECK(change.ids_changed == 0);
+      CHECK(change.outside == 0);
+    }
+  }
+
+  // A device without the extension bakes nothing and never sees the flag: what it drew.
+  {
+    MicromapShot without;
+    {
+      TunableScope set("renderer.shadow.micromap_2state=true",
+                       "renderer.shadow.micromap_2state=true");
+      without = shoot_micromaps(disc, rays, micromap_shadow_view(), true);
+    }
+    MicromapShot off;
+    {
+      TunableScope set("renderer.shadow.micromaps=false", "renderer.shadow.micromaps=true");
+      off = shoot_micromaps(disc, rays, micromap_shadow_view());
+    }
+    REQUIRE(without.skip.empty());
+    CHECK_FALSE(without.baked);
+    CHECK(differing_pixels(without.frame, off.frame) == 0);
+  }
+}
+
+// **On by default where the device has them** (R120, batch 53; renderer.md, "Opacity micromaps"):
+// a device with VK_EXT_opacity_micromap beside the cluster extension resolves to micromaps on, the
+// shadow rays' two-state answer, level 6 and the 1,024 MiB bake budget with no tunable named; the
+// scene's chain budget is the device's sixteenth scaled by the micromaps' slot growth, so it holds
+// as many clusters as it would without them, and a named budget is left as named; the defaults
+// draw what every flag set by hand draws; a device without the extension resolves to off.
+TEST_CASE(
+    "alpha mask: micromaps are the default where the device has them, and the budget follows") {
+  Fixture fx;
+  RenderSettings rays = base_settings(RasterMode::Hardware);
+  rays.shadows = ShadowMode::RayTraced;
+  gfx::Device device;
+  std::string error;
+  if (!device.create(gfx::DeviceOptions{}, &error)) {
+    MESSAGE("skipped: device unavailable: " << error);
+    return;
+  }
+  if (!device.features().cluster_acceleration_structure || !device.features().ray_query) {
+    MESSAGE("skipped: no cluster acceleration structures and ray queries on this device");
+    device.destroy();
+    return;
+  }
+  SceneData data;
+  SceneDesc desc;
+  desc.meshes.push_back(fx.caster_masked);
+  desc.cache = false;
+  REQUIRE_MESSAGE(load_scene(desc, data, error), "scene: " << error);
+  const bool has = device.features().opacity_micromap;
+  ResolvedSettings resolved;
+  resolve_settings(rays, device.features(), &data, resolved);
+  CHECK(resolved.shadow_micromaps == has);
+  CHECK(resolved.micromap_2state == has);
+  CHECK(resolved.micromap_level == 6);
+  CHECK(resolved.micromap_budget_bytes == (u64{1024} << 20));
+  gfx::MemoryBudget memory;
+  REQUIRE(device.memory_budget(memory));
+  {
+    GpuScene scene;
+    REQUIRE_MESSAGE(scene.create(device, data, resolved, &error), "gpu scene: " << error);
+    REQUIRE(scene.rt_bytes_per_cluster() > 0);
+    MESSAGE("a cluster of capacity: "
+            << scene.rt_bytes_per_cluster() << " bytes, " << scene.rt_bytes_per_cluster_plain()
+            << " without the micromap flag; the budget " << scene.rt_budget_mib() << " MiB ("
+            << std::string(rt_budget_source_name(scene.rt_budget_source())) << ")");
+    if (has) {
+      CHECK(scene.rt_budget_source() == RtBudgetSource::DeviceMicromaps);
+      CHECK(scene.rt_bytes_per_cluster() > scene.rt_bytes_per_cluster_plain());
+      CHECK(scene.rt_budget_mib() == rt_device_budget_mib(memory.device_local_bytes,
+                                                          scene.rt_bytes_per_cluster(),
+                                                          scene.rt_bytes_per_cluster_plain()));
+      // The same clusters as the unscaled budget would hold without the flag, to a MiB's worth.
+      const u64 with = u64{scene.rt_budget_mib()} * 1024 * 1024 / scene.rt_bytes_per_cluster();
+      const u64 without = u64{rt_device_budget_mib(memory.device_local_bytes)} * 1024 * 1024 /
+                          scene.rt_bytes_per_cluster_plain();
+      CHECK(with + 1024 * 1024 / scene.rt_bytes_per_cluster() + 1 >= without);
+      CHECK(with <= without);
+    } else {
+      CHECK(scene.rt_budget_source() == RtBudgetSource::Device);
+      CHECK(scene.rt_bytes_per_cluster() == scene.rt_bytes_per_cluster_plain());
+    }
+    scene.destroy();
+  }
+  {
+    RenderSettings named = rays;
+    named.rt_budget_mib = 64;
+    ResolvedSettings resolved_named;
+    resolve_settings(named, device.features(), &data, resolved_named);
+    GpuScene scene;
+    REQUIRE_MESSAGE(scene.create(device, data, resolved_named, &error), "gpu scene: " << error);
+    CHECK(scene.rt_budget_source() == RtBudgetSource::Setting);
+    CHECK(scene.rt_budget_mib() == 64);
+    scene.destroy();
+  }
+  device.destroy();
+
+  // A device without the extension resolves to off, whatever the tunables say.
+  {
+    gfx::Device bare;
+    gfx::DeviceOptions options;
+    options.overrides.absent.push_back("VK_EXT_opacity_micromap");
+    REQUIRE_MESSAGE(bare.create(options, &error), error);
+    ResolvedSettings off;
+    resolve_settings(rays, bare.features(), &data, off);
+    CHECK_FALSE(off.shadow_micromaps);
+    CHECK_FALSE(off.micromap_2state);
+    bare.destroy();
+  }
+
+  // The defaults draw what every flag set by hand draws.
+  const MicromapShot defaults = shoot_micromaps(fx.caster_masked, rays, micromap_shadow_view());
+  MicromapShot by_hand;
+  {
+    TunableScope maps("renderer.shadow.micromaps=true", "renderer.shadow.micromaps=true");
+    TunableScope two("renderer.shadow.micromap_2state=true",
+                     "renderer.shadow.micromap_2state=true");
+    TunableScope level("renderer.rt.micromap_level=6", "renderer.rt.micromap_level=6");
+    TunableScope budget("renderer.rt.micromap_mib=1024", "renderer.rt.micromap_mib=1024");
+    by_hand = shoot_micromaps(fx.caster_masked, rays, micromap_shadow_view());
+  }
+  REQUIRE(defaults.skip.empty());
+  REQUIRE(by_hand.skip.empty());
+  CHECK(defaults.baked == has);
+  CHECK(by_hand.baked == has);
+  CHECK(differing_pixels(defaults.frame, by_hand.frame) == 0);
 }
