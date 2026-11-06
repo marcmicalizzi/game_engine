@@ -812,6 +812,11 @@ void run_starved(const gfx::Device& device) {
   CHECK(rt.capacity == rt.limit);
   CHECK(rt.overflow_frames > 0);
   CHECK(rt.dropped_instances + rt.dropped_caster_instances > 0);
+  // G133: the drop sums take each frame once. The starved renderer drew seven frames, each waited
+  // for (six `render_offscreen` and the capture's), and each wants the same cut past the same
+  // budget; a waited-for frame was folded when it finished and again when its slot came round, so
+  // the sums said up to twice as many frames as were drawn.
+  CHECK(rt.overflow_frames == 7);
   // The surfaces are the rasterizer's and did not change; the shadows lost casters, so no pixel
   // is in shadow that the full chain left lit.
   REQUIRE(a.ids.size() == b.ids.size());

@@ -374,12 +374,20 @@ bool fly_camera_path(SceneRenderer& renderer, const CameraPath& path, const Flig
 #endif
     return ok;
   };
+  // A refused frame returns from inside the loops; the renderer counts its frames again after.
+  struct Counting {
+    SceneRenderer& renderer;
+    ~Counting() { renderer.count_frames(true); }
+  } counting{renderer};
   for (u32 r = 0; r < repeats; ++r) {
     const i64 warm_from = time::monotonic_ns();
     const i64 warm_ns = static_cast<i64>(options.warmup_seconds * 1.0e9);
+    // The warm-up is drawn and not measured: it stays out of the run's drop sums (G133).
+    renderer.count_frames(false);
     for (u32 w = 0; w < options.warmup || time::monotonic_ns() - warm_from < warm_ns; ++w) {
       if (!submit(0, false, r, w)) return false;
     }
+    renderer.count_frames(true);
     const i64 started = time::monotonic_ns();
     for (u32 f = 0; f < frames; ++f) {
       if (!submit(f, true, r, ~0u)) return false;
@@ -388,9 +396,11 @@ bool fly_camera_path(SceneRenderer& renderer, const CameraPath& path, const Flig
   }
   // A frame's numbers fold in when its slot comes around, so the last path frames need that many
   // submissions behind them; these are drawn and not recorded.
+  renderer.count_frames(false);
   for (u32 d = 0; d < options.frames_in_flight; ++d) {
     if (!submit(frames - 1, false, repeats - 1, ~0u)) return false;
   }
+  renderer.count_frames(true);
   renderer.wait_idle();
   out.submitted = submissions.size();
   return true;

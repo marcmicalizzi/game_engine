@@ -707,6 +707,18 @@ std::string dense_scene_text() {
   return text;
 }
 
+// How many frame records a run's benchmark wrote: the frames its summary's sums cover.
+u64 records_of(const std::string& bench) {
+  std::ifstream log(bench, std::ios::binary);
+  std::string line;
+  u64 records = 0;
+  while (std::getline(log, line)) {
+    JsonValue record;
+    if (parse_json(line, record).ok && record.find("frame") != nullptr) ++records;
+  }
+  return records;
+}
+
 // The most structures a frame of a run wanted, from its benchmark records (`rt_wanted`).
 u64 wanted_most(const std::string& bench) {
   std::ifstream log(bench, std::ios::binary);
@@ -882,9 +894,14 @@ TEST_CASE("engine-view: four rings with static forms and grass keep traced caste
     REQUIRE(withheld->as_array()[i].get_u64(count));
     CHECK(count == 0);
   }
-  const Run small = traced_dense(
-      tmp, "small.jsonl", "small.png", 12,
-      {"--raster", "hw", "--rt-budget-mib", "1", "--tunable", "renderer.flora.motion=true"});
+  // Past the budget: the frame's own builds, without the cluster cache (G133). With it the rigid
+  // grove's structures are the cache's references and the frame built 248 of its own against the
+  // 163 that 1 MiB holds, which dropping casters alone fits under since R128's drop order (drawn
+  // clusters before any caster) — so no instance dropped and the case asserted nothing about it.
+  const Run small =
+      traced_dense(tmp, "small.jsonl", "small.png", 12,
+                   {"--raster", "hw", "--rt-budget-mib", "1", "--tunable",
+                    "renderer.flora.motion=true", "--tunable", "renderer.rt.cache=false"});
   REQUIRE_MESSAGE(small.exit_code == 0, small.output);
   const JsonValue limited = summary_of(small.output);
   const JsonValue* limited_rt = limited.find("rt");
@@ -898,6 +915,9 @@ TEST_CASE("engine-view: four rings with static forms and grass keep traced caste
                     << field_u64(*limited_rt, "dropped_caster_instances")
                     << " instances' casters dropped");
   CHECK(field_u64(*limited_rt, "overflow_frames") > 0);
+  // G133: the run's drop sums are its measured frames', not its warm-up's (seconds of frames
+  // at the path's first camera, which the sums counted: 7,426 frames for this run of a dozen).
+  CHECK(field_u64(*limited_rt, "overflow_frames") <= records_of(tmp.file("small.jsonl")));
   CHECK(field_u64(*limited_rt, "dropped_instances") > 0);
   CHECK(field_u64(*limited.find("world"), "refused") == 0);
 }
