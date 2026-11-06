@@ -139,8 +139,13 @@ u32 rt_cache_mib_tunable() noexcept { return static_cast<u32>(rt_cache_mib.get()
 u32 rt_reference_mib_tunable() noexcept { return static_cast<u32>(rt_reference_mib.get()); }
 u32 rt_cache_slots_tunable() noexcept { return static_cast<u32>(rt_cache_slots.get()); }
 
-u32 rt_device_budget_mib(u64 device_local_bytes) noexcept {
-  const u64 share = device_local_bytes / k_rt_budget_device_share / (u64{1} << 20);
+u32 rt_device_budget_mib(u64 device_local_bytes, u64 slot_bytes, u64 base_slot_bytes) noexcept {
+  u64 share = device_local_bytes / k_rt_budget_device_share / (u64{1} << 20);
+  // The micromaps' slot growth, before the floor and the ceiling (rt_capacity.h). The share is at
+  // most 2^40 MiB and a slot a few kilobytes, so the product cannot overflow; past the ceiling it
+  // is clamped below anyway.
+  if (base_slot_bytes != 0 && slot_bytes > base_slot_bytes && share <= (u64{1} << 40))
+    share = share * slot_bytes / base_slot_bytes;
   if (share < k_rt_budget_floor_mib) return k_rt_budget_floor_mib;
   if (share > k_rt_budget_ceiling_mib) return k_rt_budget_ceiling_mib;
   return static_cast<u32>(share);
@@ -151,14 +156,18 @@ const char* rt_budget_source_name(RtBudgetSource source) noexcept {
     case RtBudgetSource::Setting: return "setting";
     case RtBudgetSource::Tunable: return "tunable";
     case RtBudgetSource::Device: return "device";
+    case RtBudgetSource::DeviceMicromaps: return "device-micromaps";
   }
   return "device";
 }
 
-RtBudget resolve_rt_budget(u32 setting_mib, u32 tunable_mib, u64 device_local_bytes) noexcept {
+RtBudget resolve_rt_budget(u32 setting_mib, u32 tunable_mib, u64 device_local_bytes, u64 slot_bytes,
+                           u64 base_slot_bytes) noexcept {
   if (setting_mib != 0) return {setting_mib, RtBudgetSource::Setting};
   if (tunable_mib != 0) return {tunable_mib, RtBudgetSource::Tunable};
-  return {rt_device_budget_mib(device_local_bytes), RtBudgetSource::Device};
+  const bool scaled = base_slot_bytes != 0 && slot_bytes > base_slot_bytes;
+  return {rt_device_budget_mib(device_local_bytes, slot_bytes, base_slot_bytes),
+          scaled ? RtBudgetSource::DeviceMicromaps : RtBudgetSource::Device};
 }
 
 u32 rt_device_cache_mib(u64 device_local_bytes) noexcept {

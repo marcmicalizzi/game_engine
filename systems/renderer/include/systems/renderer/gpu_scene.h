@@ -534,6 +534,9 @@ class GpuScene {
   // structure, its address and size words, its record, its share of the bottom-level set and of
   // the scratch. It is what turns the byte budget into `rt_capacity_limit()`.
   u64 rt_bytes_per_cluster() const noexcept { return rt_bytes_per_cluster_; }
+  // The same without the opacity micromap build flag: equal to it where the scene allows none, and
+  // the base of the ratio the device's budget is scaled by where it does (R120, batch 53).
+  u64 rt_bytes_per_cluster_plain() const noexcept { return rt_bytes_per_cluster_plain_; }
   // The most structures a frame can ask for, from what the scene knows now: its pairs — the
   // prefix, the rings' slots and the tail as laid out, holes included — less the static forms'
   // (built once) and untraced pairs, in every view. What the first capacity is sized from
@@ -1586,6 +1589,7 @@ class GpuScene {
   u64 rt_bytes_ = 0;
   u64 rt_scene_bytes_ = 0;  // the chain's scene-sized part, which a resize leaves alone
   u64 rt_bytes_per_cluster_ = 0;
+  u64 rt_bytes_per_cluster_plain_ = 0;
   u32 rt_capacity_ = 0;
   RtResizeCost rt_resize_cost_;
   u32 rt_capacity_limit_ = 0;

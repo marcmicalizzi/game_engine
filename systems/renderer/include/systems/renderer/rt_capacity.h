@@ -142,10 +142,21 @@ inline constexpr u32 k_rt_budget_floor_mib = 512;     // a 6 or 8 GB card
 inline constexpr u32 k_rt_budget_ceiling_mib = 4096;  // a 64 GB card and up
 // The rule alone: `device_local_bytes / k_rt_budget_device_share` in MiB, clamped to the floor and
 // the ceiling. A device that reports no device-local memory gets the floor.
-u32 rt_device_budget_mib(u64 device_local_bytes) noexcept;
+//
+// **The budget follows the micromaps** (renderer.md, "The budget follows the device"; R120, batch
+// 53): a scene whose structures allow opacity micromaps pays more for every cluster slot (the
+// driver's worst case on the RTX 5090 is 8,832 bytes instead of 6,144), so a sixteenth of the
+// device would hold a third fewer clusters with them than without, and the v25 walk's 250,964
+// would not fit. The share is multiplied by `slot_bytes / base_slot_bytes` — what a cluster of
+// capacity costs with the micromap build flag over what it costs without, both measured by the
+// scene's driver probes — before the floor and the ceiling, so the chain holds the same number of
+// clusters either way. A zero, or a slot no dearer than its base, leaves the share alone.
+u32 rt_device_budget_mib(u64 device_local_bytes, u64 slot_bytes = 0,
+                         u64 base_slot_bytes = 0) noexcept;
 
 // Where a scene's budget came from, which the summaries and the host's budget report say.
-enum class RtBudgetSource : u8 { Setting, Tunable, Device };
+// `DeviceMicromaps` is the device's rule scaled by the micromaps' slot growth ("device-micromaps").
+enum class RtBudgetSource : u8 { Setting, Tunable, Device, DeviceMicromaps };
 const char* rt_budget_source_name(RtBudgetSource source) noexcept;
 struct RtBudget {
   u32 mib = 0;
@@ -153,8 +164,10 @@ struct RtBudget {
 };
 // `RenderSettings::rt_budget_mib` when it is not zero, else the `renderer.rt.budget_mib` tunable
 // when that is not zero, else the device's rule. Arithmetic only, so the precedence is tested on
-// the CPU.
-RtBudget resolve_rt_budget(u32 setting_mib, u32 tunable_mib, u64 device_local_bytes) noexcept;
+// the CPU. Only the device's rule takes the micromaps' ratio (`slot_bytes` over `base_slot_bytes`):
+// a budget somebody named is exactly what they named.
+RtBudget resolve_rt_budget(u32 setting_mib, u32 tunable_mib, u64 device_local_bytes,
+                           u64 slot_bytes = 0, u64 base_slot_bytes = 0) noexcept;
 // The first capacity of a scene too large to hold whole within the budget, before any frame has
 // said what it builds: 65,536 clusters is 400 MB on the RTX 5090, above every first frame the
 // desert overlook's path draws at any resolution. A scene whose every pair in every view fits in

@@ -5272,10 +5272,36 @@ bool GpuScene::lay_out_ray_tracing(std::string* error) {
   // the device"; R107): the setting, else the tunable, else a sixteenth of the device-local heaps,
   // 512 to 4,096 MiB. The heaps' size, not VK_EXT_memory_budget's share of it, so a card gives the
   // same capacity whatever else is running on it.
+  // **And it follows the micromaps** (R120, batch 53; rt_capacity.h): a scene that allows them pays
+  // more for every cluster slot, so the device's rule is scaled by the slope with the micromap flag
+  // over the slope without it — the same two probes again, without the flag — and the chain holds
+  // as many clusters with micromaps as it would without. A named budget is left as named.
+  u64 plain_bytes_per_cluster = rt_bytes_per_cluster_;
+  if (limits.opacity_micromaps) {
+    gfx::ClusterSetLimits plain = limits;
+    plain.opacity_micromaps = false;
+    gfx::ClusterBuildSizes plain_set[2];
+    gfx::ClusterBuildSizes plain_blas[2];
+    bool sized = true;
+    for (u32 i = 0; i < 2 && sized; ++i) {
+      const u32 count = k_probe * (i + 1);
+      plain.max_clusters = count;
+      sized = gfx::cluster_set_build_sizes(device, plain, plain_set[i]) &&
+              gfx::cluster_blas_set_build_sizes(device, rt_instance_slots_, count,
+                                                std::min(rt_max_per_instance_, k_probe),
+                                                plain_blas[i], false);
+    }
+    const u64 once = sized ? bytes(plain_set[0], plain_blas[0], k_probe) : 0;
+    const u64 twice = sized ? bytes(plain_set[1], plain_blas[1], 2 * k_probe) : 0;
+    // A driver that gives no plain sizes leaves the budget unscaled, which is the old rule.
+    plain_bytes_per_cluster = twice > once ? (twice - once + k_probe - 1) / k_probe : 0;
+  }
+  rt_bytes_per_cluster_plain_ = plain_bytes_per_cluster;
   gfx::MemoryBudget memory;
   (void)device.memory_budget(memory);
-  const RtBudget budget = resolve_rt_budget(resolved_.settings.rt_budget_mib,
-                                            rt_budget_mib_tunable(), memory.device_local_bytes);
+  const RtBudget budget =
+      resolve_rt_budget(resolved_.settings.rt_budget_mib, rt_budget_mib_tunable(),
+                        memory.device_local_bytes, rt_bytes_per_cluster_, plain_bytes_per_cluster);
   const u32 budget_mib = budget.mib;
   rt_budget_mib_ = budget.mib;
   rt_budget_source_ = budget.source;
@@ -5329,6 +5355,7 @@ bool GpuScene::lay_out_ray_tracing(std::string* error) {
       log::field("budget_source", rt_budget_source_name(budget.source)),
       log::field("device_local_mib", memory.device_local_bytes >> 20),
       log::field("bytes_per_cluster", rt_bytes_per_cluster_),
+      log::field("bytes_per_cluster_plain", plain_bytes_per_cluster),
       log::field("clas_bytes", clas_set.data.size), log::field("blas_bytes", blas_set.data.size),
       log::field("scratch_bytes", rt_scratch.size), log::field("rt_bytes", rt_bytes_),
       log::field("templates", limits.instantiate ? cluster_count_ : 0u),
@@ -5767,6 +5794,7 @@ void GpuScene::destroy() noexcept {
   max_joints_ = skinned_instances_ = deform_pool_vertices_ = 0;
   visible_run_bytes_ = deform_pool_bytes_ = deform_whole_mesh_bytes_ = 0;
   template_bytes_ = rt_bytes_ = rt_scene_bytes_ = rt_bytes_per_cluster_ = 0;
+  rt_bytes_per_cluster_plain_ = 0;
   rt_budget_mib_ = 0;
   rt_budget_source_ = RtBudgetSource::Device;
   rt_capacity_ = rt_capacity_limit_ = rt_union_clusters_ = rt_max_per_instance_ = 0;
