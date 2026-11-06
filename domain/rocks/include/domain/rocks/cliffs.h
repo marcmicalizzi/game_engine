@@ -59,7 +59,10 @@ bool fit_cliff_ground(Cliff& cliff, const scene_gen::Ground& ground, WorldPos or
 // 0) at the origin — over `ground`: the feet of its steep ground as faces, in the order they were
 // found (by the cell their line starts in, rows of x in order of z). A function of the layer, the
 // block and the ground's heights over the block and a margin round it, and nothing else.
+// A face whose smoothed line folds is merged to the recipe validator's vertex gap; one that
+// collapses under it is left out and counted in `faces_skipped`.
 bool trace_cliff_block(const CliffLayer& layer, const scene_gen::Ground& ground, i32 bx, i32 bz,
-                       Vector<CliffFace>& out, std::string* error = nullptr);
+                       Vector<CliffFace>& out, std::string* error = nullptr,
+                       u32* faces_skipped = nullptr);
 
 }  // namespace engine::rocks

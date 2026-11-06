@@ -38,6 +38,11 @@ ENGINE_LOG_CATEGORY_DEFINE(log_cliffs, "cliffs");
 f64 min2(f64 a, f64 b) { return a < b ? a : b; }
 f64 max2(f64 a, f64 b) { return a > b ? a : b; }
 
+// Consecutive vertices of a written line stay at least this far apart: the recipe validator's 5 cm
+// (cliff.cpp, "consecutive vertices at least 5 cm apart") with a hair of slack for the float32
+// rounding of the face-local coordinates.
+constexpr f64 k_min_gap = 0.0505;
+
 // ---- the block's lattice -----------------------------------------------------------------------
 
 struct Lattice {
@@ -192,7 +197,8 @@ f64 relief_of(const CliffLayer& layer, RockType type) {
 
 // One traced line into faces: measured up the slope, stood off, cut, and written as recipes.
 void faces_of_line(const CliffLayer& layer, const scene_gen::Ground& ground, const Lattice& l,
-                   i32 bx, i32 bz, const Vector<Point2>& traced, Vector<CliffFace>& out) {
+                   i32 bx, i32 bz, const Vector<Point2>& traced, Vector<CliffFace>& out,
+                   u32* skipped) {
   const f64 step = l.spacing;
   Vector<Point2> line = resample(traced, step);
   smooth(line, 3);
@@ -294,6 +300,35 @@ void faces_of_line(const CliffLayer& layer, const scene_gen::Ground& ground, con
       mean += height[i];
     mean /= static_cast<f64>(last - begin + 1);
     if (mean < wide(layer.min_height_m)) continue;
+    // **The line the recipe is written with is merged to the validator's bound.** The stood-off
+    // foot line can fold where the ground bends sharper than the standoff (the inside of a
+    // hairpin): consecutive vertices then come within `k_min_gap` of each other, which `Cliff`'s
+    // validation refuses, and one such face refuses the whole scene. Keep the first, drop each next
+    // one while it is within the gap of the last kept; a piece left under two vertices or a metre
+    // of line is skipped and counted.
+    Vector<u32> kept;
+    for (u32 i = begin; i <= last; ++i) {
+      if (!kept.empty()) {
+        const f64 dx = foot_x[i] - foot_x[kept[kept.size() - 1]];
+        const f64 dz = foot_z[i] - foot_z[kept[kept.size() - 1]];
+        if (dx * dx + dz * dz < k_min_gap * k_min_gap) continue;
+      }
+      kept.push_back(i);
+    }
+    f64 kept_length = 0.0;
+    for (u32 q = 1; q < kept.size(); ++q) {
+      const f64 dx = foot_x[kept[q]] - foot_x[kept[q - 1]];
+      const f64 dz = foot_z[kept[q]] - foot_z[kept[q - 1]];
+      kept_length += std::sqrt(dx * dx + dz * dz);
+    }
+    if (kept.size() < 2 || kept_length < 1.0) {
+      if (skipped != nullptr) ++*skipped;
+      ENGINE_LOG_INFO(log_cliffs, "cliff face skipped: its line collapsed under the vertex gap",
+                      log::field("block_x", static_cast<i64>(bx)),
+                      log::field("block_z", static_cast<i64>(bz)),
+                      log::field("vertices", static_cast<u64>(last - begin + 1)));
+      continue;
+    }
     CliffFace face;
     face.x_mm = scene_gen::nearest_mm(foot_x[begin]);
     face.z_mm = scene_gen::nearest_mm(foot_z[begin]);
@@ -305,8 +340,8 @@ void faces_of_line(const CliffLayer& layer, const scene_gen::Ground& ground, con
     face.length = length;
     face.mean_height = mean;
     // The identity: the line in whole millimetres and its heights in centimetres.
-    u64 id = mix64(0x434C4946ull ^ static_cast<u64>(last - begin + 1));
-    for (u32 i = begin; i <= last; ++i) {
+    u64 id = mix64(0x434C4946ull ^ static_cast<u64>(kept.size()));
+    for (const u32 i : kept) {
       id = hash_combine(id, static_cast<u64>(scene_gen::nearest_mm(foot_x[i])));
       id = hash_combine(id, static_cast<u64>(scene_gen::nearest_mm(foot_z[i])));
       id =
@@ -321,7 +356,7 @@ void faces_of_line(const CliffLayer& layer, const scene_gen::Ground& ground, con
     c.datum_y = static_cast<f32>(-face.y);
     const f64 ox = static_cast<f64>(face.x_mm) / 1000.0;
     const f64 oz = static_cast<f64>(face.z_mm) / 1000.0;
-    for (u32 i = begin; i <= last; ++i) {
+    for (const u32 i : kept) {
       CliffPoint p;
       p.x = static_cast<f32>(foot_x[i] - ox);
       p.y = static_cast<f32>(foot_y[i] - face.y);
@@ -437,7 +472,7 @@ bool fit_cliff_ground(Cliff& cliff, const scene_gen::Ground& ground, WorldPos or
 }
 
 bool trace_cliff_block(const CliffLayer& layer, const scene_gen::Ground& ground, i32 bx, i32 bz,
-                       Vector<CliffFace>& out, std::string* error) {
+                       Vector<CliffFace>& out, std::string* error, u32* faces_skipped) {
   std::string why;
   if (!cliff_layer_in_range(layer, why)) {
     if (error != nullptr) *error = why;
@@ -594,7 +629,7 @@ bool trace_cliff_block(const CliffLayer& layer, const scene_gen::Ground& ground,
       if (next == nullptr) break;
       k = *next;
     }
-    faces_of_line(layer, ground, l, bx, bz, line, out);
+    faces_of_line(layer, ground, l, bx, bz, line, out, faces_skipped);
   };
   for (u32 k = 0; k < feet.size(); ++k) {
     if (used[k] == 0 && ending.find_value(feet[k].from_edge) == nullptr) walk(k);
@@ -687,11 +722,12 @@ bool open(const JsonValue& params, const scene_gen::Context& context, void** sta
   const i64 bz1 = floor_div(z1 - 1, block_mm);
   if ((bx1 - bx0 + 1) * (bz1 - bz0 + 1) > 65536)
     return fail(entry->where + ": its region is more than 65,536 blocks of block_m");
+  u32 skipped = 0;
   for (i64 bz = bz0; bz <= bz1; ++bz) {
     for (i64 bx = bx0; bx <= bx1; ++bx) {
       Vector<CliffFace> faces;
       if (!trace_cliff_block(layer, context.ground, static_cast<i32>(bx), static_cast<i32>(bz),
-                             faces, &why))
+                             faces, &why, &skipped))
         return fail(entry->where + ": " + why);
       for (const CliffFace& face : faces) {
         if (face.anchor_x_mm >= x0 && face.anchor_x_mm < x1 && face.anchor_z_mm >= z0 &&
@@ -728,6 +764,7 @@ bool open(const JsonValue& params, const scene_gen::Context& context, void** sta
   }
   ENGINE_LOG_INFO(log_cliffs, "cliffs traced", log::field("entry", entry->where),
                   log::field("layer", layer.name), log::field("faces", entry->faces.size()),
+                  log::field("skipped", static_cast<u64>(skipped)),
                   log::field("blocks", static_cast<u64>((bx1 - bx0 + 1) * (bz1 - bz0 + 1))));
   *state = entry.release();
   return true;

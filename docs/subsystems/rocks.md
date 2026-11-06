@@ -347,6 +347,20 @@ here. A scene names it as `{"generator": "cliffs", "params": {...}}`, an `engine
   `min_height_m` high on average. **A line the block's edge cut runs on 12 m past it**, so the face
   the next block traced overlaps its end instead of leaving the ground showing between two capped
   ends and two tapering skirts.
+- **The written line is merged to the recipe's vertex gap** (2026-11-05, G127). The stood-off foot
+  line can fold where the ground bends sharper than the standoff (the inside of a hairpin, the
+  round end of a pit: the offset curve of a bend of radius ρ moves at a rate 1 − standoff/ρ and
+  stops at ρ = standoff), so consecutive vertices come within centimetres of each other, which
+  `Cliff`'s validation refuses ("consecutive vertices at least 5 cm apart") — and a refused recipe
+  refuses the whole scene (the v31 hand-off's `spacing_m` 2 site did exactly that). A face's
+  vertices are therefore kept first-to-last, each next one dropped while it is within 5.05 cm of the
+  last one kept (`k_min_gap`: the validator's bound and a hair for the float32 rounding of the
+  face-local coordinates), before the identity is hashed and the recipe written, so a line the
+  generator writes always passes its own recipe's validation and the validator is untouched. A
+  piece left under two vertices or a metre of line is **skipped and counted** (`faces_skipped` of
+  `trace_cliff_block`, a `skipped` field of the "cliffs traced" log line, and one log line naming
+  the block); the existing `total < min_length_m` test drops a wholly collapsed line first, so this
+  is a net for a line that folds back on itself, not a case the tests can build.
 - **The rock** is the first of `bands` whose `below_m` the face's foot is under, else `face.type`;
   everything else is the layer's `face` block (a `Cliff` without its line), its seed mixed with the
   face's identity, its `datum_y` the world's zero so faces cut from one mass share their beds.
@@ -377,7 +391,11 @@ the band's run over its rise, looking downhill, whose recipe solves; flat ground
 block beside the band find none; a block traced alone is the same face as in a region of four, and
 `tile` over every tile in reverse order is `expand`, recipe for recipe; a footprint on a face's line
 clears that face and one far away nothing; a layer out of range is refused by field; and the
-escarpment scene's own layer over its ridge dresses both flanks.
+escarpment scene's own layer over its ridge dresses both flanks; and on a stadium-shaped pit (a
+5 m floor radius round each end, 60° walls), a sweep of 141 standoffs from 3.5 to 7 m through the
+radius of the ends writes faces that all validate with no gap under 5 cm, with fewer vertices at
+the standoffs that fold the line (93 to 96) — without the merge the same sweep fails the trace
+itself on the validator's refusal.
 
 ### The escarpment
 
