@@ -894,14 +894,9 @@ TEST_CASE("engine-view: four rings with static forms and grass keep traced caste
     REQUIRE(withheld->as_array()[i].get_u64(count));
     CHECK(count == 0);
   }
-  // Past the budget: the frame's own builds, without the cluster cache (G133). With it the rigid
-  // grove's structures are the cache's references and the frame built 248 of its own against the
-  // 163 that 1 MiB holds, which dropping casters alone fits under since R128's drop order (drawn
-  // clusters before any caster) — so no instance dropped and the case asserted nothing about it.
-  const Run small =
-      traced_dense(tmp, "small.jsonl", "small.png", 12,
-                   {"--raster", "hw", "--rt-budget-mib", "1", "--tunable",
-                    "renderer.flora.motion=true", "--tunable", "renderer.rt.cache=false"});
+  const Run small = traced_dense(
+      tmp, "small.jsonl", "small.png", 12,
+      {"--raster", "hw", "--rt-budget-mib", "1", "--tunable", "renderer.flora.motion=true"});
   REQUIRE_MESSAGE(small.exit_code == 0, small.output);
   const JsonValue limited = summary_of(small.output);
   const JsonValue* limited_rt = limited.find("rt");
@@ -915,9 +910,9 @@ TEST_CASE("engine-view: four rings with static forms and grass keep traced caste
                     << field_u64(*limited_rt, "dropped_caster_instances")
                     << " instances' casters dropped");
   CHECK(field_u64(*limited_rt, "overflow_frames") > 0);
-  // G133: the run's drop sums are its measured frames', not its warm-up's (seconds of frames
-  // at the path's first camera, which the sums counted: 7,426 frames for this run of a dozen).
-  CHECK(field_u64(*limited_rt, "overflow_frames") <= records_of(tmp.file("small.jsonl")));
+  // G133: the run's drop sums are its measured frames' and the capture's, not its warm-up's
+  // (seconds of frames at the path's first camera, which the sums counted: 7,426 for this run).
+  CHECK(field_u64(*limited_rt, "overflow_frames") <= records_of(tmp.file("small.jsonl")) + 1);
   CHECK(field_u64(*limited_rt, "dropped_instances") > 0);
   CHECK(field_u64(*limited.find("world"), "refused") == 0);
 }
@@ -956,6 +951,9 @@ TEST_CASE("engine-view: past the budget the chain drops the same structures ever
                    << field_u64(*rt, "limit") << " structures, "
                    << field_u64(*rt, "dropped_caster_instances") << " casters' instances dropped");
     CHECK(field_u64(*rt, "overflow_frames") > 0);
+    // G133: three path frames a repeat and the capture, never the warm-up (8,313 before).
+    CHECK(field_u64(*rt, "overflow_frames") <=
+          records_of(tmp.file(run == &a ? "a.jsonl" : "b.jsonl")) + 1);
   }
   CHECK(differing_pixels(tmp.file("a.png"), tmp.file("b.png")) == 0);
 }
