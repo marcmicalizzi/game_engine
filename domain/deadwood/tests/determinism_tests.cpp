@@ -10,7 +10,9 @@ TEST_CASE("deadwood: complete container bytes agree across toolchains") {
   // G104, v2: centred cut UVs, coherent bark contours, three exposed roles and embedded
   // colour/normal/roughness maps. Living flora pins stay unchanged.
   // G124: oak source taper and shape identity change; spruce remains byte-identical.
-  const u64 goldens[] = {0x1363173e6482228dull, 0xe1109ed169374c96ull};
+  // G133: 1363173e6482228d was an earlier G129 prototype's oak; the final taper and the leader fix
+  // (k_branch_taper_version 2 in the source key) move the oak only.
+  const u64 goldens[] = {0x89525862dfd8a785ull, 0xe1109ed169374c96ull};
   for (u32 i = 0; i < 2; ++i) {
     deadwood::DeadwoodFile p;
     p.tree.species = i == 0 ? "oak" : "spruce";

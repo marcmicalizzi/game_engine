@@ -153,9 +153,11 @@ TEST_CASE("impostor chain: the bake is the same bytes every time and on every to
   // Clang reproduce both; the leaf-only cards remain byte-identical.
   // G87: three orthogonal group planes and four depth slices per far-tree direction.
   // G88: the local trunk-tip crown changes leaf/wood groups and their coverage.
-  // G129: branch taper moves wood and attachment seats, so both baked levels follow.
-  constexpr u64 k_golden[4] = {0x3a96fb5843f3f893ull, 0x320a6dd729488876ull, 0x62faa7f2ea0db47eull,
-                               0x89d872cb314a8812ull};
+  // G129: branch taper moves wood and attachment seats, so both baked levels follow (an earlier
+  // prototype pinned 3a96fb58.., 320a6dd7.., 62faa7f2.., 89d872cb..). G133: the final taper and the
+  // leader fix's small oak; the spruce chain's four hashes below are unchanged since 86d76acd.
+  constexpr u64 k_golden[4] = {0xe6c5190a149887c9ull, 0x1481aee8d76a7cd2ull, 0xa1c3679229499d6dull,
+                               0x46c2a28edf9215bcull};
   for (u32 k = 0; k < 4; ++k)
     CHECK(hashes[k] == k_golden[k]);
 }

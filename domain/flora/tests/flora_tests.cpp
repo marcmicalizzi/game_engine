@@ -845,17 +845,22 @@ void check_species(const std::string& name, const Params& params, Solve solve, u
 
 TEST_CASE("flora: the broadleaf grows trunk, limbs, branches and leafy twigs, in its budget") {
   const flora::Broadleaf p;
-  // Parts: the trunk, the limbs and the recursion's shoots of the part class and up — 230 on the
-  // default (flora.md, "The broadleaf"); every finer shoot and every twig rides one of them.
+  // Parts: the trunk, the limbs, the upper leader and the recursion's shoots of the part class and
+  // up — 220 on the default (flora.md, "The broadleaf"); every finer shoot and twig rides one.
   Vector<flora::CrownShoot> crown;
   REQUIRE(flora::broadleaf_crown(p, crown));
   u32 parts = 0;
   for (const flora::CrownShoot& s : crown)
     parts += (s.flags & flora::k_crown_shoot_part) != 0u ? 1u : 0u;
-  CHECK(parts == 145u);  // G88 removes the dense extra trunk-tip crown.
+  // G88 removed the dense extra trunk-tip crown (145). G133: the G129 leader fix (efe7e9c5) adds
+  // the upper leader and shares the named budget by squared length, so the long lower limbs carry
+  // 42 and 36 part-class shoots where the equal limbs carried 17 each: 220, under the 400 cap.
+  CHECK(parts == 220u);
   // 0x80af7e3dd0bf4804 until the crown became the allometric recursion (G72).
   // G85 changes the wood surface; the growth skeleton and leaf budget are unchanged.
-  check_species("broadleaf", p, flora::solve_broadleaf, parts, 0x765d7bb485f8687dull);
+  // G129 taper checkpoint: 0x765d7bb485f8687d. G133: the leader fix's tree (2,925 twigs where 2,312
+  // were, 49,136 triangles where 45,280 were, LAI 3.90 as 3.89).
+  check_species("broadleaf", p, flora::solve_broadleaf, parts, 0x4c6c1a58938013e7ull);
 }
 
 TEST_CASE("flora: the conifer grows whorls of needled branches thinning upward, in its budget") {

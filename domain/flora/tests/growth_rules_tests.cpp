@@ -201,8 +201,11 @@ TEST_CASE("flora: named species share growth and preserve their skeleton across 
   // 16620326556857323731. G88 adds four profiles and bounds the local tip crown;
   // the prior ten-profile aggregate was 7127305501285355394.
   // G91 changes blade geometry only; the G88 aggregate was 6585964004099755467.
-  // G129: supported-axis taper and one axial terminal twig.
-  CHECK_MESSAGE(combined == 6349184079384354209ull, "named profile geometry hash: " << combined);
+  // G129: supported-axis taper and one axial terminal twig (an earlier prototype's aggregate,
+  // 6349184079384354209). G133: the final taper and the leader fix move the eight broadleaf-
+  // architecture profiles (maple, oak, elm, walnut, beech, ash, aspen, alder); the six conifers
+  // hash as they did at 86d76acd.
+  CHECK_MESSAGE(combined == 12739116931385525735ull, "named profile geometry hash: " << combined);
 }
 
 TEST_CASE("flora: named species reject invalid input and keep distinct material roles") {

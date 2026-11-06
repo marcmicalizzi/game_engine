@@ -235,8 +235,10 @@ TEST_CASE("flora: the birch — a narrow ovoid crown of fine pendulous branchlet
   flora::Birch full;
   full.stems = 1;
   full.triangle_budget = 400000;
+  // G133: 0x94bd56a376299bfd was an earlier G129 prototype's; the final taper and the leader fix
+  // add the stem's continuing leader (22 named axes where 21 were; 156 parts, 2,347 branchlets).
   check_species(flora::k_species_birch, full, flora::solve_birch, birch_parts(full),
-                {50000u, 36000u, 20000u, 12000u, 8000u}, 0x94bd56a376299bfdull);
+                {50000u, 36000u, 20000u, 12000u, 8000u}, 0x67522f26f96462aeull);
   assets::MeshData mesh;
   flora::Motion motion;
   flora::TreeReport report;
@@ -248,8 +250,15 @@ TEST_CASE("flora: the birch — a narrow ovoid crown of fine pendulous branchlet
           << " m, LAI " << report.leaf_area_index << " over " << report.footprint_m2
           << " m2, twig slope " << report.twig_slope);
   CHECK(report.card_length <= 1.25f * full.leaf_length_m);
-  // G88 removes redundant tip foliage; physically spaced outer branchlets remain intact.
-  CHECK(report.leaf_area_index > 2.9f);
+  // G88 removes redundant tip foliage; physically spaced outer branchlets remain intact. At full
+  // detail the cards are the 5 cm leaf, spaced along finite branchlets, so the realised LAI is the
+  // physical spacing's and not the asked 4.5. The floor was 2.9, the pre-G129 solver's 2.964 less a
+  // margin, not a measurement; G133 sets it at the low edge of silver birch stands' measured LAI,
+  // 2.5 (Varik, Aosaar and Uri 2011, Baltic Forestry, doi 10.2478/v10132-011-0073-y: 2.5-4.4 over
+  // stands of 14, 32 and 45 years; docs/experiments/birch.md). The G129 leader fix's tree
+  // reads 2.79 (116.1 m2 of leaf over a 41.66 m2 hull, 115.7 over 39.03 before): the hull widened,
+  // the leaves did not thin.
+  CHECK(report.leaf_area_index > 2.5f);
   CHECK(report.leaf_area_index < 1.15f * full.leaf_area_index);
   flora::Birch p;
   p.stems = 1;
@@ -403,8 +412,9 @@ TEST_CASE("flora: a birch clump — seeded stems from one root collar, each load
   clump.stems = 3;
   clump.seed = 5;
   clump.triangle_budget = 400000;
+  // G133: 0x539954b98363c339 was an earlier G129 prototype's; the leader fix on each stem.
   check_species(flora::k_species_birch, clump, flora::solve_birch, birch_parts(clump),
-                {50000u, 36000u, 12000u}, 0x539954b98363c339ull);
+                {50000u, 36000u, 12000u}, 0x9e9dee595238433full);
 }
 
 TEST_CASE("flora: the willow — a short trunk, arching limbs, curtains hanging to the ground") {

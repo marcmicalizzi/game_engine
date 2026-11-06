@@ -203,3 +203,29 @@ named-profile geometry, baked LOD and dependent content/deadwood/litter baseline
 and cross-toolchain verification. The earlier authored deadwood contact fixture still needs
 validation at its existing 1 cm tolerance. No golden or contact tolerance was relaxed here.
 G129 remains in progress until those recorded follow-ups close.
+### Baselines recaptured (G133, 2026-11-05)
+
+The gate on `main` at 4adc7aaa failed eleven tests on this geometry; G133 compared each against
+the same test built at 86d76acd (before G124–G129) on MSVC debug. Every golden that moved names a
+broadleaf-architecture tree or what is cut from one, and nothing else moved: the six conifer
+profiles, the spruce impostor chain, the spruce deadwood container, the ancient and pine content
+containers and the four deadwood-free litter kinds hash as they did. Recaptured: the default
+broadleaf (220 parts, 49,136 triangles; [flora](../subsystems/flora.md#the-broadleaf) has why the
+parts rose and what they cost), the named-profile aggregate (maple, oak, elm, walnut, beech, ash,
+aspen and alder moved), the small oak's four bake hashes, the birch single and clump, the oak
+deadwood container, the twig and tangle litter (the 0.35 m oak the twig cuts its log from has the
+axial terminal twig and a 0.245 m trunk part where it had 0.225 m: 2,625 → 1,351 triangles), and
+the content build's broadleaf container. The birch's full-detail LAI floor moved from the old
+solver's 2.9 to the measured stands' 2.5 (it reads 2.79). The authored lean was refitted (below).
+Not resolved: the content build's young broadleaf (6 m, LAI 4 asked, 30,000) realises LAI 2.85
+where it realised 3.22, under its "within a fifth" bound and under the 3–7 of closed broadleaf
+forest; the leader fix's length-weighted radii leave it 312 twigs (320 before) under a hull 9%
+wider, and the spray's cards, already more than its twigs hold at the leaf's spacing, share the
+shorter twig length. That is a solver question for this row, not a bound to move.
+
+The authored lean's contact was 50 mm off the final support trunk (and the solver refused the
+pose). Its placement and capsule were refitted to the final mesh by the same method, the 1 cm
+tolerance and the damaged tree unchanged: the standing oak is translated to z = 5.11449 m (from
+5.22519) so the nearest leaning-wood sample sits 3.0 mm from the trunk's actual section at
+y = 3.459 m, and the capsule is that section's centre (0.40466, 4.91408) with radius 0.29473 m,
+the section's reach towards the contact less the 3 mm.
