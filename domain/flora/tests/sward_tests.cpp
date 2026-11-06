@@ -287,3 +287,178 @@ TEST_CASE("sward: palette density, stable IDs across tile order and empty outer 
   CHECK(again.instances.empty());
   gen->close(state);
 }
+
+namespace {
+constexpr f64 k_tan10 = 0.17632698070846498;
+constexpr f64 k_tan20 = 0.36397023426620234;
+f64 rising_20(const void*, i64 x_mm, i64) noexcept {
+  return k_tan20 * static_cast<f64>(x_mm) * .001;
+}
+f64 rising_10(const void*, i64 x_mm, i64) noexcept {
+  return k_tan10 * static_cast<f64>(x_mm) * .001;
+}
+f64 level(const void*, i64, i64) noexcept { return 3.0; }
+
+// One 64 m tile of 1 m patches, all grass, over `surface`, placed with `max_tilt_deg`.
+struct Meadow {
+  MaskGround ground;
+  scene_gen::Context ctx;
+  flora::SwardPlacements p;
+  void* state = nullptr;
+  const scene_gen::PlacementGeneratorDesc* gen = nullptr;
+  Meadow(scene_gen::HeightFn surface, f32 max_tilt_deg) {
+    ground.info.cells = 64;
+    ground.info.spacing_mm = 1000;
+    ground.info.palette = 2;
+    ground.info.tile_max_x = 0;
+    ground.info.tile_max_z = 0;
+    ground.words.resize(scene_gen::mask_tile_words(64), 0);
+    ground.words[0] = 0xffff0001u;
+    for (u32 i = 0; i < scene_gen::mask_points(64); ++i)
+      ground.words[i + 1] = 255;
+    ctx.tile_size = 64;
+    ctx.ground.context = &ground;
+    ctx.ground.surface_fn = surface;
+    ctx.ground.masks_fn = [](const void* s, scene_gen::GroundMasks& out, std::string*) {
+      out = {&k_masks, s};
+      return true;
+    };
+    p.layer = 1;
+    p.max_tilt_deg = max_tilt_deg;
+    flora::SwardFamily family;
+    family.near.push_back("near.clusters");
+    family.cards.push_back("cards.clusters");
+    p.families.push_back(family);
+    gen = scene_gen::GeneratorRegistry::global().find_placement("sward");
+    std::string error;
+    REQUIRE(gen != nullptr);
+    REQUIRE_MESSAGE(gen->open(schema::to_json(p), ctx, &state, &error), error);
+  }
+  ~Meadow() {
+    if (gen != nullptr && state != nullptr) gen->close(state);
+  }
+  scene_gen::Placements tile(u8 ring = 0) {
+    ctx.ring = ring;
+    scene_gen::Placements out;
+    std::string error;
+    REQUIRE_MESSAGE(gen->tile(state, {0, 0}, ctx, out, &error), error);
+    return out;
+  }
+};
+// The angle between a patch's up and the world's, degrees.
+f64 tilt_deg(const scene_gen::Placement& placed) {
+  const Vec3 up = rotate(placed.rotation, Vec3::unit_y());
+  return std::acos(std::min(1.0, static_cast<f64>(up.y))) * 57.29577951308232;
+}
+}  // namespace
+
+TEST_CASE("sward: a patch's place and turn are its hash's, in every ring and request order") {
+  Meadow first(&rising_20, 15.0f), second(&rising_20, 15.0f);
+  const auto a0 = first.tile(0);
+  const auto a1 = first.tile(1);
+  const auto b1 = second.tile(1);  // the other order, on a fresh state
+  const auto b0 = second.tile(0);
+  const auto a0_again = first.tile(0);
+  REQUIRE(a0.instances.size() == 64 * 64);
+  REQUIRE(a1.instances.size() == a0.instances.size());
+  for (u32 i = 0; i < a0.instances.size(); ++i) {
+    const auto same = [&](const scene_gen::Placement& l, const scene_gen::Placement& r) {
+      return l.id == r.id && std::memcmp(&l.position, &r.position, sizeof(l.position)) == 0 &&
+             l.rotation == r.rotation && l.scale == r.scale;
+    };
+    CHECK(same(a0.instances[i], a0_again.instances[i]));
+    CHECK(same(a0.instances[i], a1.instances[i]));
+    CHECK(same(a0.instances[i], b0.instances[i]));
+    CHECK(same(a0.instances[i], b1.instances[i]));
+  }
+}
+
+TEST_CASE("sward: patches turn uniformly about their axes and stay inside a quarter cell") {
+  Meadow meadow(&level, 15.0f);
+  const auto out = meadow.tile();
+  REQUIRE(out.instances.size() == 64 * 64);
+  u32 bins[8] = {};
+  f64 cos_sum = 0, sin_sum = 0, worst = 0;
+  bool all_equal = true;
+  for (const auto& placed : out.instances) {
+    // Level ground: no tilt, so the turn is the yaw alone, 2 atan2(q.y, q.w).
+    CHECK(std::fabs(placed.rotation.x) < 1e-6f);
+    CHECK(std::fabs(placed.rotation.z) < 1e-6f);
+    f64 yaw =
+        2.0 * std::atan2(static_cast<f64>(placed.rotation.y), static_cast<f64>(placed.rotation.w));
+    if (yaw < 0) yaw += 6.283185307179586;
+    all_equal = all_equal && placed.rotation == out.instances[0].rotation;
+    ++bins[std::min(7u, static_cast<u32>(yaw / 6.283185307179586 * 8))];
+    cos_sum += std::cos(yaw);
+    sin_sum += std::sin(yaw);
+    CHECK(placed.scale == Vec3::one());
+    // Cell (x, z) is id - 1 = z * 64 + x; its centre is at (x + .5, z + .5).
+    const u32 cell = placed.id - 1;
+    worst = std::max(worst, std::fabs(placed.position.x - (cell % 64 + .5)));
+    worst = std::max(worst, std::fabs(placed.position.z - (cell / 64 + .5)));
+    CHECK(placed.position.y == 3.0);
+  }
+  CHECK_FALSE(all_equal);
+  // 4096 turns: each eighth of the circle holds 512 (sigma 21), the mean direction ~0 (sigma
+  // 0.011).
+  for (u32 count : bins) {
+    CHECK(count > 512 - 90);
+    CHECK(count < 512 + 90);
+  }
+  CHECK(std::fabs(cos_sum) / 4096 < 0.05);
+  CHECK(std::fabs(sin_sum) / 4096 < 0.05);
+  // Moved, and never more than a quarter cell a side.
+  CHECK(worst <= 0.25 + 1e-9);
+  CHECK(worst > 0.24);
+}
+
+TEST_CASE("sward: a patch tips onto the slope, capped, and a cap of zero keeps it upright") {
+  {
+    Meadow steep(&rising_20, 15.0f);  // 20 degrees of slope, a 15 degree cap
+    for (const auto& placed : steep.tile().instances) {
+      CHECK(tilt_deg(placed) == doctest::Approx(15.0).epsilon(0.001));
+      // The ground rises with +x, so its normal and the patch's up lean toward -x, not along z.
+      const Vec3 up = rotate(placed.rotation, Vec3::unit_y());
+      CHECK(up.x < 0);
+      CHECK(std::fabs(up.z) < 1e-4f);
+    }
+  }
+  {
+    Meadow gentle(&rising_10, 15.0f);  // under the cap: the full slope
+    for (const auto& placed : gentle.tile().instances)
+      CHECK(tilt_deg(placed) == doctest::Approx(10.0).epsilon(0.001));
+  }
+  {
+    Meadow wide(&rising_20, 45.0f);  // the cap above the slope: the slope, 20 degrees
+    for (const auto& placed : wide.tile().instances)
+      CHECK(tilt_deg(placed) == doctest::Approx(20.0).epsilon(0.001));
+  }
+  {
+    Meadow upright(&rising_20, 0.0f);  // today's flat patch, still turned and moved
+    for (const auto& placed : upright.tile().instances) {
+      const Vec3 up = rotate(placed.rotation, Vec3::unit_y());
+      CHECK(up.x == 0.0f);
+      CHECK(up.z == 0.0f);
+      CHECK(up.y == doctest::Approx(1.0));
+    }
+  }
+}
+
+TEST_CASE("sward: a tilt cap out of range is refused") {
+  scene_gen::Context ctx;
+  ctx.tile_size = 4;
+  flora::SwardPlacements p;
+  flora::SwardFamily family;
+  family.near.push_back("n.clusters");
+  family.cards.push_back("c.clusters");
+  p.families.push_back(family);
+  const auto* gen = scene_gen::GeneratorRegistry::global().find_placement("sward");
+  REQUIRE(gen != nullptr);
+  for (const f32 bad : {-1.0f, 45.5f}) {
+    p.max_tilt_deg = bad;
+    void* state = nullptr;
+    std::string error;
+    CHECK_FALSE(gen->open(schema::to_json(p), ctx, &state, &error));
+    CHECK(error.find("max_tilt_deg") != std::string::npos);
+  }
+}

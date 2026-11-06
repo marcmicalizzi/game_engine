@@ -305,3 +305,69 @@ TEST_CASE("cliffs generator: the escarpment scene's layer dresses both flanks of
     }
   }
 }
+
+namespace {
+
+// A stadium-shaped pit: a flat floor within 5 m of the segment from (88, 128) to (168, 128), then
+// walls at 60 degrees to a 40 m rim. Its foot is a closed loop, straight along the sides and a
+// 5 m radius round each end.
+f64 pit(const void*, i64 x_mm, i64 z_mm) noexcept {
+  const f64 x = static_cast<f64>(x_mm) / 1000.0;
+  const f64 z = static_cast<f64>(z_mm) / 1000.0 - 128.0;
+  const f64 along = std::min(168.0, std::max(88.0, x));
+  const f64 d = std::sqrt((x - along) * (x - along) + z * z);
+  return d < 5.0 ? 0.0 : std::min(40.0, (d - 5.0) * 1.73);
+}
+
+f64 gap_of(const CliffPoint& a, const CliffPoint& b) {
+  const f64 dx = static_cast<f64>(b.x) - static_cast<f64>(a.x);
+  const f64 dz = static_cast<f64>(b.z) - static_cast<f64>(a.z);
+  return std::sqrt(dx * dx + dz * dz);
+}
+
+}  // namespace
+
+// The mechanism: a face is stood off downhill of the traced foot along the line's normal, so on the
+// inside of a bend tighter than the standoff the offset line folds. At a standoff equal to the
+// radius of the stadium pit's rounded ends the vertices of each end's foot land on its centre, and
+// near that they come within centimetres of each other while the long sides keep the line well over
+// the minimum length. The recipe's validator refuses vertices under 5 cm apart, and one refusal
+// fails the whole scene. The sweep passes through that standoff (the foot's radius is only about
+// the floor's, the lattice being 2 m), and in this build writes gaps under 5 cm at several of its
+// steps without the merge.
+TEST_CASE("cliffs generator: a line the stand-off folds is merged to the recipe's vertex gap") {
+  u32 skipped_total = 0;
+  u32 faces_total = 0;
+  u32 most = 0;
+  u32 least = 1000000;
+  for (u32 step = 0; step <= 140; ++step) {
+    CliffLayer layer = layer_over(0, 0, 256, 256);
+    layer.spacing_m = 2.0f;
+    layer.min_slope_deg = 48.0f;
+    layer.standoff_m = 3.5f + 0.025f * static_cast<f32>(step);
+    Vector<CliffFace> faces;
+    std::string error;
+    u32 skipped = 0;
+    REQUIRE_MESSAGE(trace_cliff_block(layer, ground_of(&pit), 0, 0, faces, &error, &skipped),
+                    error);
+    skipped_total += skipped;
+    for (const CliffFace& face : faces) {
+      ++faces_total;
+      std::string why;
+      CHECK_MESSAGE(cliff_in_range(face.cliff, why),
+                    "standoff " << *layer.standoff_m << ": " << why);
+      for (u32 i = 1; i < face.cliff.points.size(); ++i)
+        CHECK(gap_of(face.cliff.points[i - 1], face.cliff.points[i]) >= 0.05);
+      most = std::max(most, face.cliff.points.size());
+      least = std::min(least, face.cliff.points.size());
+    }
+  }
+  MESSAGE("faces " << faces_total << ", skipped " << skipped_total << ", vertices " << least
+                   << " to " << most);
+  CHECK(faces_total > 0);
+  // The resampled line has the same vertices at every standoff, so the standoffs that fold it are
+  // the ones that wrote fewer: a vertex dropped for being within 5 cm of the one before it.
+  CHECK(least < most);
+  // A line that merely folds is merged, never left out.
+  CHECK(skipped_total == 0);
+}

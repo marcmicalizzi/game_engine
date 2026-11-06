@@ -97,6 +97,34 @@ cascade only, its rest pose" (R95, 2026-10-25): the renderer poses its blades on
 travelling gust field with no CPU state and no pose table, at Tuft's blade compliance (0.20), and
 the CPU poser no longer sees a sward ([renderer: the field kind](renderer.md#the-field-kind)).
 
+**The placement's patches are turned, moved and tipped, each from its cell's hash** (2026-11-05,
+`src/sward_placement.cpp`; the v31 hand-off's "banding": every patch at its cell's exact centre,
+identity rotation, so the cards faced world X and Z everywhere and on a slope stepped in rows). From
+independent streams of the placement's existing hash `random` (world seed, entry seed, cell ID: so
+the field is identical in every ring and no request order participates):
+
+- **A yaw**, uniform in [0, 2π), about the patch's own axis.
+- **A jitter** of the patch's centre up to a quarter cell a side. The bound is chosen so that
+  neighbours' edges stay within half a cell of touching (their leaves overhang the rest) and so the
+  exclusion stays exact: a square patch's half-diagonal is the same at any yaw, so the exclusion
+  against an earlier structure's footprint (radius plus the cell's half-diagonal) is now tested at
+  the *moved* centre, and the whole patch still clears it. The density interpolation (the
+  unbiased pick between adjacent classes) is untouched, and so is the mask lookup, which stays at
+  the cell's centre.
+- **A tilt to the ground's normal**, from central differences of the ground half a cell to each
+  side of the moved centre (the scale the patch covers), composed after the yaw and **capped** by
+  `max_tilt_deg` (0 to 45, default 15). **The trade:** a tilted patch leans its blades with it,
+  and grass grows vertical, so the cap buys a base that follows the ground (no rows of steps on a
+  slope) at the price of blades leaning by up to the cap on a slope steeper than it. The scale
+  stays 1: silently scaling real leaf dimensions is forbidden. The next step, proposed and not
+  built, is the field kind's pool pass grounding each blade's base per vertex, so the blades stay
+  vertical on a tilted patch. A cap of 0 keeps every patch upright, as before (still turned and
+  moved).
+
+Every existing sward scene's placements therefore move: each patch is shifted by up to 25 cm a
+side and turned, and on a slope tipped by up to the cap, so their pictures change (the field's
+density and ID order do not).
+
 A cell is 1 or 2 m, centred on its anchor. Natural blade dimensions stay within the profile's
 source ranges. Sward v2 groups `leaves_per_tiller` (1–8, default 4) into a common basal shoot,
 and `tillers_per_clump` (1–32, default 4) around a crown. `clumpiness` (0–1, default 0.35)
