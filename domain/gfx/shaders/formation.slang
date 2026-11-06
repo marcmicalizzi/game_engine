@@ -168,12 +168,15 @@ float4 formation_filtered(FormationSequence* s, float coordinate, float width) {
 }
 
 // The band at a point: both sequences' tints multiplied, their roughness offsets added, each
-// box-filtered over the wider of the field's `soft_m` and the pixel's footprint across the beds
-// (the coordinate's change along the pixel's two edges; zero for the path tracer's rays).
+// box-filtered over the wider of the field's `soft_m` and **two** pixels' footprint across the beds
+// (the coordinate's change along the pixel's two edges; zero for the path tracer's rays). Two,
+// because a box nulls a period only as wide as itself: a one-pixel box left a sequence of a
+// two-pixel period alternating row by row on a far hill (the v31 capture, 2026-11-05), and a
+// two-pixel box nulls everything past Nyquist that a one-pixel one let through.
 float4 formation_band(uint64_t address, FormationPoint p, float3 dp_dx, float3 dp_dy) {
   FormationParams* f = (FormationParams*)address;
   const float across = max(abs(dot(p.gradient, dp_dx)), abs(dot(p.gradient, dp_dy)));
-  const float width = max(f->soft_m, across);
+  const float width = max(f->soft_m, 2.0 * across);
   const float4 bed = formation_filtered((FormationSequence*)(address + k_formation_beds_offset), p.bed, width);
   const float4 macro = formation_filtered((FormationSequence*)(address + k_formation_macro_offset), p.macro, width);
   return float4(bed.rgb * macro.rgb, bed.w + macro.w);

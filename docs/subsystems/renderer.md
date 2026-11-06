@@ -1313,9 +1313,10 @@ coordinate reduced modulo each sequence's period and its gradient; `formation_be
 fraction across, tint, roughness and resistance; `formation_filtered` the sequence's value
 **box-filtered** over a width, from the sequence's running integral (two lookups whatever the
 width), so a pixel shows the mean of the beds it spans and a sequence finer than a pixel reads as
-its mean. The width is the wider of the field's `soft_m` (default 0.1 m) and the pixel's footprint
-across the beds, `max(|∇c · dp/dx|, |∇c · dp/dy|)` — the coordinate's change along the pixel's
-edges, from the same derivatives the mask sampler's footprint comes from; the path tracer, whose
+its mean. The width is the wider of the field's `soft_m` (default 0.1 m) and **two** pixels' footprint
+across the beds, `2 max(|∇c · dp/dx|, |∇c · dp/dy|)` — the coordinate's change along the pixel's
+edges, doubled because a box nulls only a period as wide as itself: the first v31 capture's far hill,
+with a one-pixel box, kept a two-pixel period alternating row by row — from the same derivatives the mask sampler's footprint comes from; the path tracer, whose
 rays carry no footprint, draws `soft_m`. `domain/gfx/formation.h` holds the f64 twin of all three,
 which the rocks solver calls, and `formation_tests.cpp` holds the shader to it over a lattice round
 the origin and 10 km and 10,000 km out.
@@ -1332,7 +1333,17 @@ from the origin. The twin evaluates the same definition — the quantized direct
 origin, thicknesses and wavelengths — in f64 without a reduction, which is why the two can be held
 to 1e-3 m anywhere.
 
-**What it costs.** COST_PLACEHOLDER
+**What it costs.** Measured on the forest proof of concept's v31 terrain (`repro-terrain-hex/scene-norot.json` with a four-bed sequence and three macro beds, the bedrock, weathered-rock and gravel layers banded), `msvc-release`, RTX 5090, 1920 × 1080, `--raster hw --shadows csm --terrain-tiles --terrain-far 6`, the median of 35 frames a pose over three held poses, with and without the field (2026-11-05; the field run on a quiet machine, the control's harness saw the GPU 54% busy and calls its numbers upper bounds): the resolve **1.574 → 1.660 ms** on the fell slope, **0.883 → 0.928 ms** on the lakeside trail and **0.528 → 0.566 ms** looking 2.9 km across the lake at the granite summit — 0.04 to 0.09 ms, 5 to 7%, all of it on the pixels of a banded layer. A scene without a field pays nothing: the layers carry no bit and the branch returns first. The block is 928 bytes once per scene.
+
+**What it looks like** (the same captures). On the fells the bands follow the ground's form: they
+bend round every spur and gully as an outcrop pattern does (the rule of Vs where a dipping bed
+crosses a valley), never a screen line and never a contour. Close, the metre beds read as regular
+fine lines over the macro members' broad tones — more stripe than rock, because nothing yet ties a
+bed to relief: the band is colour and roughness only, where a real resistant bed is also a ledge
+(the exposed-bedrock solver's, W85's "Next"). At 2.9 km across the lake the macro members survive
+as dipping bands on the granite summit while the beds have averaged out under the pixel. With a
+one-pixel box a far hill kept a two-pixel period alternating row by row; the two-pixel box removed
+most of it, and a faint row-to-row residue is left where the beds' period is near two pixels.
 
 ## Alpha-tested geometry
 

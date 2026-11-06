@@ -263,8 +263,12 @@ TEST_CASE("formation: the shader's coordinate, bed and filter are its f64 twin's
                               << worst_gradient << ", filter " << worst_filter << "; " << compared
                               << " beds compared, " << edges << " within a millimetre of an edge");
   CHECK(worst_gradient < 1e-4);
-  // The box's edges move with the coordinate: a millimetre of it in a box of 0.25 m changes the
-  // average by at most 1/250 of the step between two beds.
-  CHECK(worst_filter < 1e-2);
+  // The box's edges move with the coordinate, by the coordinate's error, a few micrometres.
+  CHECK(worst_filter < 1e-3);
   CHECK(compared > points.size() / 2);
+  for (gfx::BufferResource* b : {&block, &input, &output})
+    gfx::destroy_buffer(device, *b);
+  gfx::destroy_compute_pipeline(device, pipeline);
+  gfx::destroy_shader_module(device, module);
+  device.destroy();
 }
