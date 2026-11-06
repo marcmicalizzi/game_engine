@@ -16,6 +16,33 @@ struct Entry {
   Vector<u32> family_base;
   u32 cells = 0;
 };
+// How far a patch's centre moves from its cell's, a side, as a fraction of the cell.
+constexpr f64 k_jitter = 0.25;
+// Uniform in [0, 1) from stream `stream` of a patch's hash.
+f64 unit_of(u64 random, u64 stream) {
+  return static_cast<f64>(hash_combine(random, stream) >> 11) / 9007199254740992.0;
+}
+// The patch's turn: `yaw` about +y, then the tip of +y onto the ground's normal at the patch,
+// capped at `max_tilt_deg`. The normal is from central differences of the ground half a cell to
+// each side (the scale the patch covers), so a patch follows the ground it stands on and not a
+// bump a few millimetres wide. The tip is about the axis up x normal, so it leans downhill.
+Quat patch_rotation(const scene_gen::Ground& ground, i64 x_mm, i64 z_mm, f64 cell_m,
+                    f32 max_tilt_deg, f64 yaw) {
+  const Quat turn = quat_from_axis_angle(Vec3::unit_y(), static_cast<f32>(yaw));
+  if (!(max_tilt_deg > 0)) return turn;
+  const i64 d = std::max<i64>(1, scene_gen::nearest_mm(.5 * cell_m));
+  const f64 gx = (ground.surface_mm(x_mm + d, z_mm) - ground.surface_mm(x_mm - d, z_mm)) /
+                 static_cast<f64>(2 * d) * 1000.0;
+  const f64 gz = (ground.surface_mm(x_mm, z_mm + d) - ground.surface_mm(x_mm, z_mm - d)) /
+                 static_cast<f64>(2 * d) * 1000.0;
+  const f64 slope = std::sqrt(gx * gx + gz * gz);
+  if (!(slope > 1e-9)) return turn;
+  const f64 cap = static_cast<f64>(max_tilt_deg) * 0.017453292519943295;
+  const f64 angle = std::min(std::atan(slope), cap);
+  // The normal's horizontal part points downhill, -grad/|grad|; up x n = (n.z, 0, -n.x).
+  const Vec3 axis{static_cast<f32>(-gz / slope), 0.0f, static_cast<f32>(gx / slope)};
+  return quat_from_axis_angle(axis, static_cast<f32>(angle)) * turn;
+}
 bool fail(std::string* error, std::string text) {
   if (error) *error = "sward: " + text;
   return false;
@@ -32,6 +59,8 @@ bool open(const JsonValue& params, const scene_gen::Context& context, void** sta
       context.tile_size > 1024 || std::fmod(context.tile_size, p.cell_m) != 0)
     return fail(error, "cell_m must be 1 or 2 and divide the tile size (at most 1024 m)");
   entry->cells = static_cast<u32>(context.tile_size / p.cell_m);
+  if (!(p.max_tilt_deg >= 0 && p.max_tilt_deg <= 45))
+    return fail(error, "max_tilt_deg must be 0..45");
   if (p.min_x > p.max_x || p.min_z > p.max_z || p.layer >= scene_gen::k_mask_max_palette)
     return fail(error, "invalid tile window or palette layer");
   const u64 width = static_cast<u64>(static_cast<i64>(p.max_x) - p.min_x + 1);
@@ -125,22 +154,31 @@ bool tile(void* state, scene_gen::TileCoord at, const scene_gen::Context& contex
       for (u32 ch = 0; ch < scene_gen::k_mask_channels; ++ch)
         if (((words[0] >> (ch * 8)) & 255u) == p.layer) density += sample.weight[ch];
       if (!(density > 0)) continue;
+      const u32 id =
+          static_cast<u32>(tile_id * entry.cells * entry.cells + z * entry.cells + x + 1);
+      const u64 random = hash_combine(hash_combine(context.world_seed, p.seed), id);
+      // The patch's own place, turn and lean come from independent streams of the same hash, so
+      // they are the patch's whatever the ring, the tile order or the density that kept it. The
+      // centre moves up to `k_jitter` of a cell a side: a patch's half-diagonal is the same at
+      // any yaw, so the exclusion below tests the *moved* centre against the same radius and the
+      // whole patch still clears an earlier structure. (A quarter cell keeps neighbours' edges
+      // within half a cell of touching; their leaves overhang the rest.)
+      const f64 cell = static_cast<f64>(p.cell_m);
+      const f64 px = wx + (unit_of(random, 1) * 2 - 1) * k_jitter * cell;
+      const f64 pz = wz + (unit_of(random, 2) * 2 - 1) * k_jitter * cell;
       bool excluded = false;
       for (const auto& earlier : context.earlier) {
         if (!(earlier.radius > 0)) continue;
-        const f64 dx = wx - static_cast<f64>(earlier.x_mm) * .001;
-        const f64 dz = wz - static_cast<f64>(earlier.z_mm) * .001;
+        const f64 dx = px - static_cast<f64>(earlier.x_mm) * .001;
+        const f64 dz = pz - static_cast<f64>(earlier.z_mm) * .001;
         // The full patch clears earlier structures, not merely its centre.
-        const f64 radius = earlier.radius + .7071067811865476 * static_cast<f64>(p.cell_m);
+        const f64 radius = earlier.radius + .7071067811865476 * cell;
         if (dx * dx + dz * dz < radius * radius) {
           excluded = true;
           break;
         }
       }
       if (excluded) continue;
-      const u32 id =
-          static_cast<u32>(tile_id * entry.cells * entry.cells + z * entry.cells + x + 1);
-      const u64 random = hash_combine(hash_combine(context.world_seed, p.seed), id);
       // Unbiased stochastic interpolation between adjacent authored density classes. The field
       // is identical in all rings; ring and request order never participate in the hash.
       u32 upper = 0;
@@ -158,9 +196,13 @@ bool tile(void* state, scene_gen::TileCoord at, const scene_gen::Context& contex
       placed.id = id;
       placed.mesh = entry.family_base[upper] + static_cast<u32>(random % family.near.size()) +
                     (out.kind == 1 ? family.near.size() : 0);
-      placed.position = {wx, context.ground.surface_mm(x_mm, z_mm), wz};
-      // A height field is sampled per patch. Slope conformity and wetness-specific morphology
-      // require separately cooked families; silently scaling real leaf dimensions is forbidden.
+      const i64 px_mm = scene_gen::nearest_mm(px), pz_mm = scene_gen::nearest_mm(pz);
+      placed.position = {px, context.ground.surface_mm(px_mm, pz_mm), pz};
+      placed.rotation = patch_rotation(context.ground, px_mm, pz_mm, cell, p.max_tilt_deg,
+                                       unit_of(random, 3) * 6.283185307179586);
+      // A height field is sampled per patch, which is turned about its axis, moved in its cell and
+      // tipped onto the ground. Wetness-specific morphology requires separately cooked families,
+      // and the scale stays 1: silently scaling real leaf dimensions is forbidden.
       out.instances.push_back(placed);
     }
   }

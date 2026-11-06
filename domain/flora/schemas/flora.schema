@@ -1051,5 +1051,12 @@ struct SwardPlacements {
   min_z: i32 = 0
   max_x: i32 = 0
   max_z: i32 = 0
+  /// How far a patch may lean to follow the ground, degrees from vertical, 0..45. Each patch is
+  /// turned about its own axis by a hash of its cell, moved up to a quarter cell a side from the
+  /// cell's centre, and tipped onto the ground's normal (central differences at the cell's scale)
+  /// up to this angle. The patch's base follows the ground but its blades lean with it, though
+  /// grass grows vertical, so the cap trades a stepped, row-like slope for a lean: 0 keeps every
+  /// patch upright, as before.
+  max_tilt_deg: f32 = 15.0 @unit(deg)
   families: SwardFamily[]
 }
