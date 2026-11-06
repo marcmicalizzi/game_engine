@@ -10,7 +10,9 @@ using namespace engine;
 ENGINE_EXPECT_SIZE(36, 4, rocks::RockReport);
 ENGINE_EXPECT_SIZE(76, 4, rocks::CliffReport);
 ENGINE_EXPECT_SIZE(24, 4, rocks::RockSurface);
-// Offline recipe controls; no runtime instance grows with this geological history.
-ENGINE_EXPECT_SIZE(56, 4, rocks::RockGeology);
+// Offline recipe controls; no runtime instance grows with this geological history. 60 since W85
+// (2026-11-05): `from_formation`, one bool and its padding, which says whether a recipe that
+// carries the scene's formation takes its beds from it.
+ENGINE_EXPECT_SIZE(60, 4, rocks::RockGeology);
 
 ENGINE_EXPECT_SIZE(96, 8, rocks::DepositPlan);

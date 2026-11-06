@@ -3,6 +3,7 @@
 // owns: a build without the capability refuses a `.rock.json` mesh by the mesh-generator registry's
 // sentence, and never needs to read one.
 namespace engine.rocks
+import "scene.schema"
 
 /// What the rock is made of (rocks.md, "The model by type"). The type sets what a recipe leaves to
 /// it: how many extra planar facets a boulder is cut by, how round its edges weather, its bedding
@@ -43,7 +44,7 @@ enum RockQuality : u8 { Low Medium High }
 
 /// Static geological history. Values are artistic process controls, not elapsed years or measured
 /// material constants. Optional processes use the type's mixture; an explicit zero disables one.
-struct RockGeology @version(1) {
+struct RockGeology @version(2) {
   /// Accumulated exposure, 0 (fresh breaks) to 1 (strongly weathered).
   weathering: f32 = 0.5
   /// Irregular large scars and unequal bed retreat, 0 to 1.
@@ -61,6 +62,12 @@ struct RockGeology @version(1) {
   dissolution: f32?
   /// Granular surface loss, 0 to 1; absent uses the type.
   granular: f32?
+  /// Where the recipe carries the scene's formation (`Cliff.formation`, W85): true (the default)
+  /// takes the beds' dip, azimuth and fold from the field and counts the beds from the world
+  /// position, so the face's beds are the terrain's bands; false keeps this block's own `dip_deg`,
+  /// `azimuth_deg` and `fold`, an override. Read nowhere without a formation; left out of the
+  /// canonical parameters while true, so no key moves for it.
+  from_formation: bool = true @since(2)
 }
 
 /// Which shape a rock file makes.
@@ -261,7 +268,7 @@ struct CliffGround @version(1) {
 /// under a hard one, warped and grained — closed at the ends, the top and a back buried `depth`
 /// behind it, with a talus skirt of the rock's own debris at its foot. Walking along `points`, the
 /// face looks to the right (+z for a line along +x).
-struct Cliff @version(4) {
+struct Cliff @version(5) {
   seed: u64 = 1
   type: RockType = Sandstone
   /// The foot of the face, in order: 2 to 4,096 vertices, a line 1 to 1,000 m long.
@@ -312,6 +319,13 @@ struct Cliff @version(4) {
   /// Average along-cliff interval between deposits, metres: 2..100.
   talus_patch_m: f32 = 14.0 @since(4)
   material: RockMaterial
+  /// The scene's formation (`engine.scene.Formation`, W85; rocks.md, "Geology"), copied in by
+  /// whoever places the face: with it (and `geology.from_formation`), the beds are the field's,
+  /// evaluated at `world_origin` plus the recipe's point. Absent: the face-local beds, as before;
+  /// left out of the canonical parameters then, with `world_origin`.
+  formation: engine.scene.Formation? @since(5)
+  /// Where the recipe's origin stands in the world, metres: read only with `formation`.
+  world_origin: worldpos @since(5)
 }
 
 /// A rock file, `<name>.rock.json`: the shape and its parameters. Only the shape's own block may

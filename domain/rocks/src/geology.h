@@ -3,6 +3,7 @@
 #include "detail.h"
 
 #include <core/json/json_value.h>
+#include <domain/gfx/formation.h>
 
 #include <string>
 
@@ -28,8 +29,18 @@ struct Fabric {
   f64 exposure;
   f64 irregularity;
   u64 seed;
+  // W85: the bedding is the world formation's (rocks.md, "Geology"): `normal` and `tangent` are
+  // the field's, the type's own fold is off, and the coordinate is the field's at `origin` plus
+  // the recipe's point (`gfx::formation_coordinate`, the shader's twin).
+  bool world = false;
+  gfx::FormationFrame field{};
+  D3 origin{};
 };
 Fabric make_fabric(RockType type, const RockGeology& geology, u64 seed);
+// The same with the scene's formation, when the recipe carries one and its geology does not opt
+// out (`from_formation`): `origin` is where the recipe's origin stands in the world.
+Fabric make_fabric(RockType type, const RockGeology& geology, u64 seed,
+                   const scene::Formation* formation, const WorldPos& origin);
 struct BedSample {
   f64 coordinate;  // canonical bed coordinate in metres, shared with the PBR baker
   f64 thickness;   // actual local distance between the two enclosing stations
@@ -48,5 +59,9 @@ bool material_factors_in_range(const RockMaterial& m, std::string& error);
 // version 5): the reflection writes an absent optional as null, and leaving it in would move every
 // rock's and deposit's source hash for a field that says nothing. A `sampling` that is set stays.
 void drop_absent_sampling(JsonValue& json);
+// The same for the formation (W85, RockGeology version 2, Cliff version 5): `from_formation` while
+// it is the default true, and a cliff's `formation` and `world_origin` while it carries none, so
+// every recipe without a field keeps the key it had.
+void drop_default_formation(JsonValue& json);
 
 }  // namespace engine::rocks::detail

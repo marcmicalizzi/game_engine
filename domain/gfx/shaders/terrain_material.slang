@@ -4,6 +4,7 @@
 #define ENGINE_TERRAIN_MATERIAL_SLANG
 
 #include "hex_lattice.slang"  // the lattice and the blend, shared with stochastic mesh materials
+#include "formation.slang"    // W85: the world formation's bands (gfx::FormationParams)
 
 static const uint k_material_terrain_layers = 512u;
 static const uint k_material_terrain_map = 1024u;
@@ -14,6 +15,7 @@ static const uint k_material_terrain_stochastic = 4096u;
 static const uint k_material_terrain_snow = 16384u;
 static const uint k_material_terrain_sand = 32768u;
 static const uint k_material_terrain_beach = 65536u;
+static const uint k_material_terrain_formation = 262144u;  // W85 (gfx::k_material_terrain_formation)
 static const uint k_terrain_masked = 1u;
 static const uint k_terrain_no_mask_tile = 0xFFFFFFFFu;
 
@@ -39,8 +41,7 @@ struct TerrainRecord {
   uint mask_mips;
   float wetness;
   float height_blend;
-  uint pad0;
-  uint pad1;
+  uint2 formation;  // W85: the FormationParams block's device address, low word first; 0 none
   uint pad2;
   uint pad3;
   uint pad4;
@@ -433,6 +434,25 @@ TerrainLayerSample terrain_filter_sample(TerrainLayerSample sample, ResolveMater
   return sample;
 }
 
+// W85: a layer banded by the scene's formation (renderer.md, "Formation bands"), after the detail
+// fade and the variance policy so the band survives where the layer's texture has faded to its
+// mean: its colour times the bed's and the macro bed's tint, its roughness plus their offsets,
+// box-filtered over the pixel's footprint across the beds. A layer without the bit, or a terrain
+// whose record names no formation, is returned as it came.
+TerrainLayerSample terrain_formation_band(TerrainRecord rec, ResolveMaterial layer,
+                                          TerrainLayerSample sample, FrameEye eye, float3 point,
+                                          float3 dp_dx, float3 dp_dy) {
+  if ((layer.flags & k_material_terrain_formation) == 0u) return sample;
+  const uint64_t address = uint64_t(rec.formation.x) | (uint64_t(rec.formation.y) << 32);
+  if (address == 0u) return sample;
+  const FormationPoint p =
+      formation_coordinate((FormationParams*)address, eye.cell, eye.local + eye.residual + point);
+  const float4 band = formation_band(address, p, dp_dx, dp_dy);
+  sample.colour *= band.rgb;
+  sample.roughness = saturate(sample.roughness + band.w);
+  return sample;
+}
+
 // ---- Sand and snow: a response per layer (R99) -------------------------------------------------
 // The grounding, every number's source and which are design choices:
 // docs/experiments/sand-and-snow-substrates-2026-11-02.md. The CPU mirror is
@@ -709,6 +729,7 @@ MaterialSample sample_terrain_material(SceneGeometry geo, ResolveMaterial root, 
         layers[c] = terrain_layer_sample(geo, layer, map_uv, map_dx, map_dy, point, n, axes, dp_dx,
                                          dp_dy, variance ? 1.0 : fade, filtered);
         layers[c] = terrain_filter_sample(layers[c], layer, fade);
+        layers[c] = terrain_formation_band(rec, layer, layers[c], geo.eye, point, dp_dx, dp_dy);
         // R99: the layer's response, on its record word, once per layer.
         response[c] = layer.flags & k_responses;
         if (response[c] != 0u) {
@@ -828,6 +849,7 @@ MaterialSample sample_terrain_material(SceneGeometry geo, ResolveMaterial root, 
                                                   n, axes, dp_dx, dp_dy,
                                                   variance ? 1.0 : fade, filtered);
       s = terrain_filter_sample(s, layer, fade);
+      s = terrain_formation_band(rec, layer, s, geo.eye, point, dp_dx, dp_dy);
       const uint response = layer.flags & k_responses;
       if (response != 0u) {
         s = terrain_respond(geo.eye, layer, s, point, n, footprint_mm, filtered, 0.0);

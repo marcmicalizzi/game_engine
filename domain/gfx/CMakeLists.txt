@@ -81,7 +81,8 @@ engine_shaders(NAME gfx_tests
   SOURCES shaders/fill.slang shaders/scale.slang shaders/bindless_copy.slang shaders/bda_fill.slang
           shaders/triangle.slang shaders/sky_probe.slang shaders/reconstruct_probe.slang
           shaders/world_eye_probe.slang shaders/terrain_material_probe.slang shaders/micromap_probe.slang
-          shaders/terrain_mask_probe.slang shaders/deform_alloc_reference.slang)
+          shaders/terrain_mask_probe.slang shaders/deform_alloc_reference.slang
+          shaders/formation_probe.slang)
 if(TARGET engine_gfx_tests)
   target_sources(engine_gfx_tests PRIVATE tests/compute_tests.cpp tests/frame_tests.cpp
                                           tests/pipeline_cache_tests.cpp
@@ -102,7 +103,8 @@ if(TARGET engine_gfx_tests)
                                           tests/sky_tests.cpp tests/reconstruct_tests.cpp
                                           tests/world_eye_tests.cpp
                                           tests/water_shading_tests.cpp tests/terrain_material_tests.cpp
-                                          tests/stochastic_material_tests.cpp)
+                                          tests/stochastic_material_tests.cpp
+                                          tests/formation_tests.cpp)
   # ENGINE_SOURCE_DIR is where the morph test looks for the Khronos samples tools/fetch-samples.ps1
   # fetches into content/samples (through tests/support/test_paths.h, so a bundle made with
   # -WithSamples finds its own copy); without them that case says so and passes.

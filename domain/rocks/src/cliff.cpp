@@ -216,14 +216,17 @@ Pick pick(f64 b, f64 w) {
 // How far the face stands back from its mean plane at (s, y) — never in front of it but by the
 // grain — with `top_y` the face's top there for the crest's rounding; and, apart, how deep the
 // undercut notches it there, which the caller takes off after the face is held up (below).
-f64 carve_at(const Carve& c, f64 s, f64 y, f64 top_y, f64& notch) {
+// `at` is the point in the recipe's frame on the face's mean plane, where a world formation's beds
+// are read (W85); without one the beds are counted face-locally from the datum, as they were.
+f64 carve_at(const Carve& c, f64 s, f64 y, f64 top_y, D3 at, f64& notch) {
   notch = 0.0;
+  const D3 bedding = c.fabric.world ? at : D3{s, y - c.datum, 0.0};
   // The macro blocks also consume the fabric coordinate. Suppress sub-cell station
   // variation here, not just its fine surface relief, or broad block faces acquire aliases.
   Fabric sampled = c.fabric;
   sampled.irregularity *= fade_for(sampled.model.bed * 0.44, c.cell);
-  const f64 yd = fabric_coordinate(sampled, D3{s, y - c.datum, 0.0});
-  f64 e = -fabric_recess(c.fabric, D3{s, y - c.datum, 0.0}, c.cell);
+  const f64 yd = fabric_coordinate(sampled, bedding);
+  f64 e = -fabric_recess(c.fabric, bedding, c.cell);
   // The beds' coordinate, wavy along the face as real beds are; the horizontal joints of a bedded
   // rock are its bedding planes, so the blocks' rows and the beds are one coordinate.
   f64 tb = 0.0;
@@ -685,6 +688,17 @@ bool cliff_in_range(const Cliff& p, std::string& error) {
   if (p.talus_blocks > 256) return bad("talus_blocks", "0 to 256");
   if (!in(wide(p.talus_block_m), 0.1, 10.0)) return bad("talus_block_m", "0.1 to 10 m");
   if (!in(wide(p.datum_y), -1.0e5, 1.0e5)) return bad("datum_y", "within 100 km");
+  if (p.formation.has_value()) {
+    // W85: the field by the scene's own ranges (gfx::validate_formation), and the origin inside
+    // the world the field is exact in.
+    std::string why;
+    if (!gfx::validate_formation(*p.formation, &why)) {
+      error = "engine.rocks.Cliff." + why;
+      return false;
+    }
+    for (const f64 v : {p.world_origin.x, p.world_origin.y, p.world_origin.z})
+      if (!in(v, -1.0e8, 1.0e8)) return bad("world_origin", "within 100,000 km");
+  }
   if (p.triangle_budget < 2000 || p.triangle_budget > 4000000)
     return bad("triangle_budget", "2,000 to 4,000,000");
   if (!in(wide(p.material.tile_m), 0.05, 20.0)) return bad("material.tile_m", "0.05 to 20 m");
@@ -724,7 +738,9 @@ bool solve_cliff(const Cliff& p, assets::MeshData& out, CliffReport* report_out,
 
   // The carving's parameters, the rung's fades set below.
   Carve carve;
-  carve.fabric = make_fabric(p.type, p.geology, p.seed);
+  // W85: with the scene's formation the beds are the world's (rocks.md, "Geology").
+  carve.fabric = make_fabric(p.type, p.geology, p.seed,
+                             p.formation.has_value() ? &*p.formation : nullptr, p.world_origin);
   carve.m = m;
   carve.sets = p.joint_sets;
   carve.relief = p.relief.has_value() ? wide(*p.relief) : m.relief;
@@ -885,7 +901,8 @@ bool solve_cliff(const Cliff& p, assets::MeshData& out, CliffReport* report_out,
       const f64 y = row_y(f, j);
       const f64 mean = -f.batter * max2(0.0, y - f.foot.y);
       f64 notch = 0.0;
-      f64 o = mean + carve_at(carve, f.s, y, top, notch);
+      const D3 at{f.foot.x + f.n.x * mean, y, f.foot.z + f.n.z * mean};
+      f64 o = mean + carve_at(carve, f.s, y, top, at, notch);
       if (j > 0 && o > below + k_lean * (y - below_y)) o = below + k_lean * (y - below_y);
       below = o;
       below_y = y;

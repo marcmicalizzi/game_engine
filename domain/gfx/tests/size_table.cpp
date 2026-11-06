@@ -7,6 +7,7 @@
 #include <domain/gfx/cluster_cull.h>
 #include <domain/gfx/commands.h>
 #include <domain/gfx/flora_motion.h>
+#include <domain/gfx/formation.h>
 #include <domain/gfx/ground_detail.h>
 #include <domain/gfx/path_trace.h>
 #include <domain/gfx/pipeline.h>
@@ -314,6 +315,17 @@ ENGINE_EXPECT_SIZE(32, 4, gfx::WaterWave);
 // for the mask buffer's device address.
 ENGINE_EXPECT_SIZE(112, 8, gfx::TerrainRecord);
 static_assert(offsetof(gfx::TerrainRecord, mask) == 32);
+// W85: the formation block's address in two of the pad words, read as `uint2 formation` at 80.
+static_assert(offsetof(gfx::TerrainRecord, formation) == 80);
+// The world formation's block (formation.h, W85), GPU-mirrored by formation.slang: one per scene,
+// read per banded pixel. 928 bytes: the origin and the two directions as int64 (the precision
+// argument), the folds, then two sequences of eight 48-byte beds each with their integrals, so the
+// box filter is two lookups rather than a loop over the beds it spans.
+ENGINE_EXPECT_SIZE(48, 4, gfx::FormationBedGpu);
+ENGINE_EXPECT_SIZE(416, 4, gfx::FormationSequence);
+ENGINE_EXPECT_SIZE(928, 8, gfx::FormationParams);
+static_assert(offsetof(gfx::FormationParams, beds) == 96);
+static_assert(offsetof(gfx::FormationParams, macro) == 512);
 
 ENGINE_EXPECT_SIZE(64, 4, gfx::ResolveLight);
 

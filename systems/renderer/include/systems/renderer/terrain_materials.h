@@ -2,6 +2,7 @@
 
 #include <core/containers/vector.h>
 #include <domain/assets/gltf.h>
+#include <domain/gfx/formation.h>
 #include <domain/gfx/visibility_resolve.h>
 #include <systems/renderer/terrain.h>
 
@@ -20,6 +21,11 @@ gfx::TerrainLayerFields terrain_layer_response(const scene::TerrainMaterialLayer
 // Whether a palette names wind sand, the one response that draws the scene's `detail` block: such
 // a terrain may name both, and its root keeps `gfx::k_material_ground_detail`.
 bool terrain_materials_wind_sand(const scene::TerrainMaterials& materials);
+// W85: the scene's formation in its ranges, and no layer banded without one (renderer.md,
+// "Formation bands").
+bool validate_terrain_formation(const scene::TerrainMaterials& materials,
+                                const std::optional<scene::Formation>& formation,
+                                std::string* error);
 
 // **The mask level as the GPU reads it** (renderer.md, "Ground materials by place"): the terrain's
 // ground provider asked for its masks (`scene_gen::GroundOps::masks`, built on a miss), and every

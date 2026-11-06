@@ -1272,6 +1272,68 @@ every level included, against **213.9 MB** decoded at one level; the resolve mov
 3% against the parent commit either way (2–3% slower up close for the derivative pass, 3% faster
 far away at 4K); and the decoded path's capture is byte-identical to the parent commit's.
 
+### Formation bands
+
+**A world formation drawn as a band layer** (roadmap W85, 2026-11-05; the grounding:
+[formation field](../experiments/formation-field.md); the cliffs' side:
+[rocks](rocks.md#geology-on-the-world-formation-w85)). A scene's `formation`
+(`engine.scene.Formation`, `Scene` version 10) is one set of beds through the world: an origin, a
+dip and an azimuth (rocks' convention: the beds go down along (cos az, 0, sin az)), up to two
+cylindrical folds — the beds displaced along their normal by A sin(2π u / L), u the distance along
+the dip direction, so the hinges run along the strike — a **bed sequence** of up to eight beds
+(each a thickness, a tint, a roughness offset and a resistance) and a **macro sequence** of up to
+eight more at tens of metres, both repeating along the folded coordinate. A terrain layer opts in
+with `formation: true` (`TerrainMaterialLayer` version 5; refused without a field): its sampled
+colour is multiplied by the bed's tint and the macro bed's, and their roughness offsets are added.
+So a band follows the ground's form — on a slope it is the line where the slope cuts a dipping,
+folded plane, never a line on the screen or a contour — and a band on a steep face is as thin as
+the bed is, which no plan-view mask could hold.
+
+**The flag, the address and the one block.** The layer's flag is `k_material_terrain_formation`,
+bit 18 of `ResolveMaterial::flags` (R131 took 17). The field is one 928-byte
+`gfx::FormationParams` block (`domain/gfx/formation.h`, pinned by the size table, mirrored once in
+`formation.slang`), uploaded at scene load only when a layer asks for it, and named by
+`TerrainRecord::formation`, a device address in two of the eight pad words the terrain's record
+always had. **Beside the terrain record and not in `ResolveParams`**: the field is the terrain's
+and fixed for the scene, the record is already the one entry every banded pixel has read, and a
+`ResolveParams` field would be a per-frame word every resolve variant carries for the one that
+reads it. A scene without a formation uploads the record with that word zero and the layers
+without the bit, and the shader returns before any of its arithmetic, so **every existing scene
+draws the bytes it drew** (`formation_scene_tests.cpp` pins a palette scene with and without the
+unused field byte for byte).
+
+**Where it is applied.** `terrain_formation_band` (terrain_material.slang) runs on a layer's sample
+after the detail fade and the variance policy (`terrain_filter_sample`), at the two places a layer
+is sampled (the masked palette's four and W68's layers): a band applied inside
+`terrain_layer_sample` would be faded back to the layer's untinted mean by the variance policy past
+`detail_far_m`, which is exactly where a mountainside's bands are wanted.
+
+**The function and its twin.** `formation_coordinate` (`formation.slang`) gives the folded
+coordinate reduced modulo each sequence's period and its gradient; `formation_bed` the bed, its
+fraction across, tint, roughness and resistance; `formation_filtered` the sequence's value
+**box-filtered** over a width, from the sequence's running integral (two lookups whatever the
+width), so a pixel shows the mean of the beds it spans and a sequence finer than a pixel reads as
+its mean. The width is the wider of the field's `soft_m` (default 0.1 m) and the pixel's footprint
+across the beds, `max(|∇c · dp/dx|, |∇c · dp/dy|)` — the coordinate's change along the pixel's
+edges, from the same derivatives the mask sampler's footprint comes from; the path tracer, whose
+rays carry no footprint, draws `soft_m`. `domain/gfx/formation.h` holds the f64 twin of all three,
+which the rocks solver calls, and `formation_tests.cpp` holds the shader to it over a lattice round
+the origin and 10 km and 10,000 km out.
+
+**Why the precision holds at 10 km — and at 10,000.** No absolute position is formed
+(ADR-0053). The shader has the frame's eye cell and a float offset from its corner; the field's
+origin is whole millimetres. It forms `D = cell * 64000 - origin_mm` in int64, dots it with the
+normal and the dip direction **defined as integers over 2^24** (an exact int64 sum while
+|D| < 2^37 mm, 137,000 km), and reduces the sum modulo each sequence's period — whole millimetres,
+shifted by 24 bits — and modulo each fold's wavelength before anything is a float. What reaches
+float is a remainder under one period plus the frame-local part dotted with the same directions as
+floats (exact: a 24-bit integer over 2^24), so the error is a few micrometres whatever the distance
+from the origin. The twin evaluates the same definition — the quantized directions, the millimetre
+origin, thicknesses and wavelengths — in f64 without a reduction, which is why the two can be held
+to 1e-3 m anywhere.
+
+**What it costs.** COST_PLACEHOLDER
+
 ## Alpha-tested geometry
 
 Roadmap R65 (plan 04 §4.3). A material whose glTF `alphaMode` is `MASK` draws nothing where its base
