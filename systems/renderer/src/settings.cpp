@@ -853,6 +853,18 @@ u64 rt_max_geometry_index(u64 pair_count, u32 views, bool casters) noexcept {
   return drawn - 1;
 }
 
+u32 flora_tail_device_budget_mib(u64 device_local_bytes) noexcept {
+  const u64 share = device_local_bytes / k_flora_tail_device_share / (u64{1} << 20);
+  if (share < k_flora_tail_floor_mib) return k_flora_tail_floor_mib;
+  if (share > k_flora_tail_ceiling_mib) return k_flora_tail_ceiling_mib;
+  return static_cast<u32>(share);
+}
+
+FloraTailBudget resolve_flora_tail_budget(u32 tunable_mib, u64 device_local_bytes) noexcept {
+  if (tunable_mib != 0) return {tunable_mib, false};
+  return {flora_tail_device_budget_mib(device_local_bytes), true};
+}
+
 RenderAvailability check_availability(const ResolvedSettings& resolved,
                                       const gfx::DeviceFeatures& features) noexcept {
   if (!features.buffer_int64_atomics) return RenderAvailability::NoVisibilityBuffer;
