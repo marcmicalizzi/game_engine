@@ -10,6 +10,7 @@
 #include <domain/geometry/cluster_file.h>
 #include <domain/scene_gen/scene_gen.h>
 #include <foundation/io/vfs.h>
+#include <systems/water/channel.h>
 #include <systems/water/water.h>
 
 #include <filesystem>
@@ -156,6 +157,108 @@ bool expand(void* state, const scene_gen::Context& context, scene_gen::Placement
 constexpr scene_gen::PlacementGeneratorDesc k_water{
     .name = "water", .open = &open, .close = &close, .expand = &expand};
 const scene_gen::Registrar k_water_registrar{k_water};
+
+// **Channels** (channel.h; water.md, "Channels"; roadmap S96): the scene's `water_channels`, which
+// the renderer's reader hands to the generator "water_channel" after the bodies, as
+// `{"channels": [...]}`. One mesh and one placement per channel, in order — mesh k and instance k
+// are channel k — the instance at the channel's origin, unrotated. The files are a body's: the GLB
+// and the depth map beside it under one hash of both, in the same directory.
+struct ChannelEntry {
+  std::string where;
+  std::string dir;
+  Vector<Channel> channels;
+};
+
+bool open_channels(const JsonValue& params, const scene_gen::Context& context, void** state,
+                   std::string* error) {
+  auto entry = std::make_unique<ChannelEntry>();
+  entry->where = std::string(context.where);
+  entry->dir = std::string(context.dir);
+  const JsonValue* channels = params.find("channels");
+  if (channels == nullptr || !channels->is_array()) {
+    if (error != nullptr)
+      *error = entry->where + ": the water channel generator's params have no \"channels\"";
+    return false;
+  }
+  for (usize i = 0; i < channels->size(); ++i) {
+    scene::WaterChannel block;
+    schema::ReadContext ctx;
+    if (!schema::from_json(block, (*channels)[i], ctx) || !ctx.ok()) {
+      if (error != nullptr)
+        *error = entry->where + " " + std::to_string(i) + ": " + schema_errors(ctx);
+      return false;
+    }
+    Channel channel;
+    std::string why;
+    if (!read_channel(block, channel, &why)) {
+      if (error != nullptr) *error = entry->where + " " + std::to_string(i) + ": " + why;
+      return false;
+    }
+    entry->channels.push_back(std::move(channel));
+  }
+  *state = entry.release();
+  return true;
+}
+
+void close_channels(void* state) noexcept { delete static_cast<ChannelEntry*>(state); }
+
+bool expand_channels(void* state, const scene_gen::Context& context, scene_gen::Placements& out,
+                     std::string* error) {
+  const ChannelEntry& entry = *static_cast<const ChannelEntry*>(state);
+  std::string ddc(context.ddc);
+  if (ddc.empty()) {
+    std::error_code ec;
+    const std::filesystem::path from = std::filesystem::absolute(
+        std::filesystem::path(entry.dir.empty() ? std::string(".") : entry.dir), ec);
+    if (!ec) ddc = geometry::find_ddc_root(from.generic_string());
+  }
+  const std::string mesh_dir =
+      !ddc.empty() ? io::join_path(ddc, "water") : resolve(entry.dir, "water");
+  for (u32 k = 0; k < entry.channels.size(); ++k) {
+    const Channel& channel = entry.channels[k];
+    ChannelMesh mesh;
+    build_channel_mesh(channel, mesh);
+    const Vector<u8> glb = mesh_glb(mesh.mesh, Vec3{0.30f, 0.55f, 0.50f}, 0.08f);
+    DepthMap map;
+    build_channel_depth_map(channel, mesh, map);
+    const Vector<u8> map_file = depth_map_bytes(map);
+    const std::span<const u8> bytes(glb.data(), glb.size());
+    const std::span<const u8> map_bytes(map_file.data(), map_file.size());
+    const std::string stem = io::join_path(mesh_dir, body_file_stem(bytes, map_bytes));
+    scene_gen::PlacementMesh placed;
+    placed.path = stem + ".glb";
+    placed.name = "water/" + (channel.name.empty() ? "channel" + std::to_string(k) : channel.name);
+    const std::string map_path = stem + ".depth";
+    for (const auto& [path, file] :
+         {std::pair<const std::string*, std::span<const u8>>{&map_path, map_bytes},
+          std::pair<const std::string*, std::span<const u8>>{&placed.path, bytes}}) {
+      if (io::exists(*path)) continue;
+      if (io::make_directories(mesh_dir) != io::Status::Ok) {
+        if (error != nullptr) *error = entry.where + ": cannot create " + mesh_dir;
+        return false;
+      }
+      const io::Status status = io::write_file_atomic(
+          *path, std::string_view(reinterpret_cast<const char*>(file.data()), file.size()));
+      if (status != io::Status::Ok) {
+        if (error != nullptr)
+          *error = entry.where + ": cannot write " + *path + ": " + io::status_name(status);
+        return false;
+      }
+    }
+    out.meshes.push_back(std::move(placed));
+    scene_gen::Placement placement;
+    placement.position = channel.origin;
+    placement.mesh = k;
+    out.instances.push_back(placement);
+  }
+  return true;
+}
+
+constexpr scene_gen::PlacementGeneratorDesc k_water_channel{.name = "water_channel",
+                                                            .open = &open_channels,
+                                                            .close = &close_channels,
+                                                            .expand = &expand_channels};
+const scene_gen::Registrar k_water_channel_registrar{k_water_channel};
 
 }  // namespace
 

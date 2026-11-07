@@ -182,4 +182,98 @@ bool read_scene_water(const scene::Scene& file, const std::string& path, const s
   return true;
 }
 
+// **Channels** (scene_water.h; docs/subsystems/water.md, "Channels"; roadmap S96).
+namespace {
+
+// A channel's optics as a body carries them, so the GPU scene packs its material, its volume
+// optics and its depth map exactly as it does a body's: the same names, the same defaults
+// (engine.scene.WaterChannel). The body has no shape, which `water::read_body` refuses, so a host
+// that wades in the scene's bodies (engine-view's walker) leaves a channel out.
+scene::WaterBody channel_body(const scene::WaterChannel& channel) {
+  scene::WaterBody body;
+  body.name = channel.name;
+  body.level_m = channel.points.empty() ? 0.0 : channel.points[0].y;
+  body.shore_m = channel.shore_m;
+  body.shallow = channel.shallow;
+  body.deep = channel.deep;
+  body.depth_fade_m = channel.depth_fade_m;
+  body.roughness = channel.roughness;
+  body.seed = static_cast<u32>(channel.seed ^ (channel.seed >> 32));
+  body.absorption = channel.absorption;
+  body.scattering = channel.scattering;
+  body.transmission = channel.transmission;
+  body.turbidity = channel.turbidity;
+  return body;
+}
+
+}  // namespace
+
+bool read_scene_water_channels(const scene::Scene& file, const std::string& path,
+                               const std::string& dir, const TerrainSampler& ground,
+                               SceneDesc& out, std::string& error) {
+  if (file.water_channels.empty()) return true;
+  const scene_gen::GeneratorRegistry& registry = scene_gen::GeneratorRegistry::global();
+  const scene_gen::PlacementGeneratorDesc* generator = registry.find_placement("water_channel");
+  if (generator == nullptr) {
+    error = path +
+            ": the scene has water channels, and this build carries no water capability "
+            "(ENGINE_WITH_WATER is off): " +
+            registry.unknown_placement("water_channel");
+    return false;
+  }
+  scene_gen::Context context;
+  context.world_seed = out.terrain.enabled ? out.terrain.seed : 0;
+  context.dir = dir;
+  const std::string where = path + ": water_channels";
+  context.where = where;
+  context.ddc = out.ddc;
+  if (out.terrain.enabled) context.ground = ground.provider().view();
+  JsonValue list = JsonValue::array();
+  for (const scene::WaterChannel& channel : file.water_channels)
+    list.push_back(schema::to_json(channel));
+  JsonValue params = JsonValue::object();
+  params.set("channels", std::move(list));
+  void* state = nullptr;
+  if (!generator->open(params, context, &state, &error)) return false;
+  struct Close {
+    const scene_gen::PlacementGeneratorDesc* generator;
+    void* state;
+    ~Close() { generator->close(state); }
+  } close{generator, state};
+  scene_gen::Placements placed;
+  if (!generator->expand(state, context, placed, &error)) return false;
+  const u32 count = file.water_channels.size();
+  if (placed.meshes.size() != count || placed.instances.size() != count) {
+    error = where + ": the water channel generator made " + std::to_string(placed.meshes.size()) +
+            " meshes for " + std::to_string(count) + " channels";
+    return false;
+  }
+  for (u32 k = 0; k < count; ++k) {
+    const u32 mesh = out.meshes.size();
+    out.meshes.push_back(placed.meshes[k].path);
+    SceneMeshInfo info;
+    info.name = placed.meshes[k].name;
+    info.origin = "water";
+    SceneWater water;
+    water.body = channel_body(file.water_channels[k]);
+    const scene::WaterChannel& c = file.water_channels[k];
+    if (c.shallow.has_value()) water.shading.shallow = *c.shallow;
+    if (c.deep.has_value()) water.shading.deep = *c.deep;
+    water.shading.roughness = c.roughness;
+    water.shading.depth_fade_m = c.depth_fade_m;
+    water.shading.shore_m = c.shore_m;
+    water.shading.seed = water.body.seed;
+    water.channel = true;
+    water.depth = read_depth_map(placed.meshes[k].path);
+    info.water = std::move(water);
+    out.mesh_info.push_back(std::move(info));
+    SceneInstance instance;
+    instance.mesh = mesh;
+    instance.transform = placed.instances[k].turn();
+    instance.origin = placed.instances[k].position;
+    out.instances.push_back(instance);
+  }
+  return true;
+}
+
 }  // namespace engine::renderer

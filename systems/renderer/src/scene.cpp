@@ -2249,6 +2249,7 @@ bool read_scene_file(const std::string& path, const SceneFileOptions& options, S
   placements_stage.end();
   profiling::TraceStage water_stage("water");
   if (!read_scene_water(file, path, dir, ground, out, error)) return false;  // water.md
+  if (!read_scene_water_channels(file, path, dir, ground, out, error)) return false;  // S96
   water_stage.end();
   if (file.instances.empty() && file.scatters.empty() && file.ruins.empty() &&
       file.placements.empty()) {

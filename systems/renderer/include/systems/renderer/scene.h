@@ -159,6 +159,10 @@ struct SceneWater {
   // at load from the wind and the body's fetch: `gfx::k_water_waves` of them, or none (a closed
   // body, or no wind), and then the four sines.
   Vector<gfx::WaterWave> waves;
+  // A channel of flowing water's (`engine.scene.WaterChannel`; water.md, "Channels"; S96): the
+  // mesh's UV.x is the flow phase, and the GPU scene sets `gfx::k_material_water_channel` on its
+  // material. `body` then holds the channel's name and optics under a body's names, and no shape.
+  bool channel = false;
 };
 
 // What a scene file said about one mesh besides its path: what to call it, which bytes it must

@@ -486,6 +486,16 @@ struct WaterShading {
   u32 seed = 1;
 };
 
+// `k_material_water_channel`: the water material is a **channel's** (docs/subsystems/water.md,
+// "Channels"; roadmap S96): its mesh's UV.x is the flow phase — the travel time from the channel's
+// head, seconds, wrapped every 8 s — not a distance from an outline, and the resolve's water branch
+// draws ripples advected downstream at the speed the phase's gradient gives, roughness and foam
+// rising with the Froude number, and white water on a stretch steeper than 45 degrees (a fall).
+// The shore fades by depth, as an open body's does. A bit of its own (1 << 20, above every other
+// material flag) so no other water bit changes meaning. The GPU scene sets it on a channel's water
+// material after `set_water_material` (renderer::SceneWater::channel), as it does the open bit.
+inline constexpr u32 k_material_water_channel = 1u << 20;
+
 // `k_material_water_open`: the water material's body is **open** (docs/subsystems/water.md, "To
 // the horizon"): its shore fades by depth — over the depth the waves calm in — rather than by the
 // distance from the outline (UV.x), whose sides facing the sea are not a shore, and the resolve

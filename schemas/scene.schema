@@ -1274,6 +1274,49 @@ struct WaterBody @version(3) {
   fetch_km: f32 = 100 @since(3) @unit(km)
 }
 
+/// **A channel of flowing water** (docs/subsystems/water.md, "Channels"; roadmap S96; the grounding,
+/// docs/experiments/flowing-water.md): a stream, a river or a waterfall as a ribbon of water along
+/// a centreline, drawn as a water material that moves. The description is the contract between the
+/// drainage generator that finds channels in the ground (roadmap W86, which writes JSON of this
+/// shape) and the water capability that draws them: `name`, `points`, `width_m`, `depth_m`,
+/// `slope` and `seed` are version 1 exactly; the fields after `seed` have defaults, and the optics
+/// among them are `WaterBody`'s under the same names with the same defaults, so a writer that knows
+/// only the contract draws clear fresh water. The speed at each point is Manning's,
+/// v = (1/n) d^(2/3) S^(1/2) with the depth for the hydraulic radius; where the line between two
+/// points falls at 45 degrees or steeper the water is in free fall and that stretch is a waterfall.
+/// Refused with a sentence: fewer than two points, arrays of unequal length, a width or depth that
+/// is not positive, a slope that is negative where the line descends.
+struct WaterChannel @version(1) {
+  name: string
+  /// The centreline, downstream, world positions; each point's y is the **water surface's**
+  /// height there.
+  points: worldpos[]
+  /// The surface's width across the line at each point, metres, > 0.
+  width_m: f32[]
+  /// The bed's depth below the surface at each point, metres, > 0: the deepest at the line, the
+  /// bed a parabola across the width.
+  depth_m: f32[]
+  /// The surface's fall per metre along the line at each point (m/m; not negative where the line
+  /// descends): Manning's S.
+  slope: f32[]
+  /// What the surface's ripples are drawn from.
+  seed: u64 = 1
+  /// Manning's roughness n of the bed: 0.030 to 0.050 for a mountain stream over gravel, cobbles
+  /// and a few boulders (Chow 1959), 0.04 the middle. Not part of the W86 contract.
+  manning_n: f32 = 0.04
+  /// The optics, as `WaterBody`'s (same names, same defaults). `shore_m` fades the surface in by
+  /// depth at the edges (as an open body's does) rather than by a distance from an outline.
+  shore_m: f32 = 2 @unit(m)
+  shallow: vec3?
+  deep: vec3?
+  depth_fade_m: f32 = 3 @unit(m)
+  roughness: f32 = 0.08
+  absorption: vec3?
+  scattering: vec3?
+  transmission: f32 = 1
+  turbidity: f32 = 0
+}
+
 /// One bed of a formation's sequence (`Formation`; renderer.md, "Formation bands"; the grounding,
 /// docs/experiments/formation-field.md). A bed is a layer of rock between two bedding planes: its
 /// thickness across the bed, what it does to a terrain layer that opts in (`tint` multiplies the
@@ -1330,8 +1373,8 @@ struct Formation @version(1) {
 
 /// A scene: meshes, placements of them, and an optional terrain. Version 5 added `placements`,
 /// version 6 `sky`, version 7 `props`, version 8 `water` and `medium`, version 9 `fires`, version 10
-/// `formation`.
-struct Scene @version(10) {
+/// `formation`, version 11 `water_channels`.
+struct Scene @version(11) {
   /// "engine.scene.v1". Empty is accepted, for the files written before the field existed.
   format: string
   name: string
@@ -1380,6 +1423,12 @@ struct Scene @version(10) {
   /// The world's formation (`Formation`, W85). Null: none, and every scene draws exactly what it
   /// drew.
   formation: Formation? @since(10)
+  /// Channels of flowing water (`WaterChannel`; docs/subsystems/water.md, "Channels"; roadmap
+  /// S96): each a ribbon of water down its centreline, built by the water capability when the scene
+  /// is read, after the water bodies and before the terrain, and shaded as water that flows, with
+  /// rapids and falls. A build without the capability refuses a scene that has any, with a
+  /// sentence. Empty: no channels, and the scene reads and draws exactly as it did.
+  water_channels: WaterChannel[] @since(11)
 }
 
 /// Where the owner's replacements for a scene's placeholders are: a local file, never committed.

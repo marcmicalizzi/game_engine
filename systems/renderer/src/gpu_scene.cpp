@@ -3961,6 +3961,9 @@ bool GpuScene::upload_materials(const ResolvedSettings& resolved, std::string* e
         // An open body (water.md, "To the horizon"): its shore by depth, and the sea past it.
         if (water && data_->mesh_info[m].water->body.open)
           material.flags |= gfx::k_material_water_open;
+        // A channel (water.md, "Channels"; S96): its UV.x is the flow phase.
+        if (water && data_->mesh_info[m].water->channel)
+          material.flags |= gfx::k_material_water_channel;
         // **Stochastic sampling** (R131; renderer.md, "Stochastic mesh materials"): a material
         // whose set asked for it (`ClusterFileMaterialSampling::flags`) reads its maps at three
         // tiles of the hex lattice, blended about its means — the factors times the built
