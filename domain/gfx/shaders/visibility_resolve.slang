@@ -182,6 +182,14 @@ struct ResolveParams {
   uint gi_stride;
   float gi_cell_scale;
   uint gi_pad;
+  // The wet band (gfx::ResolveParams::water_shores; docs/subsystems/water.md, "The shore"): the
+  // scene's water bodies' WaterShore records and their count. Only the water modules declare the
+  // row, so the plain ones are the bytes they were.
+#ifdef RESOLVE_WATER
+  uint64_t water_shores;
+  uint water_shore_count;
+  uint water_shore_pad;
+#endif
 };
 
 // **The resolve's split** (gfx::ResolveStop; renderer.md, "Where the resolve's time goes"; R115).
@@ -677,7 +685,7 @@ float shadow_visibility(ResolveParams* params, uint bit, uint owner, float3 posi
 float3 water_pixel_volume(ResolveParams* params, SceneGeometry geo, InstanceDesc instance,
                           uint index, float2 slope, float3 dp_dx, float3 dp_dy, Surface s,
                           float3 local, float3 n, float3 view, WaterParams w, float ray_bias,
-                          float depth, bool has_map, WaterDepthMap map, float edge) {
+                          float depth, bool has_map, WaterDepthMap map, float edge, float foam) {
   ResolveMaterial* materials = (ResolveMaterial*)geo.materials;
   const WaterOptics o = water_optics_of(materials[index + 1]);
   WaterPath path;
@@ -743,15 +751,16 @@ float3 water_pixel_volume(ResolveParams* params, SceneGeometry geo, InstanceDesc
   }
   const float3 under = water_volume(o, path, n_b, albedo, params->sun.xyz, sun, sun_surface,
                                     sun_bottom, ambient);
-  return water_radiance_volume(w, n, view, float2(edge, s.uv.y), params->sun.xyz,
-                               sun * sun_surface, reflected, under);
+  const float3 radiance = water_radiance_volume(w, n, view, float2(edge, s.uv.y), params->sun.xyz,
+                                               sun * sun_surface, reflected, under);
+  return water_foam_over(radiance, foam, sun * sun_surface, params->sun.xyz, ambient);
 }
 
 // The low tier's surface: the sun's glitter through the shadow query on the flat surface, the
 // ambient of a level surface and the sky along the reflected view, over the bottom's colour faded
 // by `depth`, the shore by `edge`.
 float3 water_pixel_low(ResolveParams* params, Surface s, float3 n, float3 view, WaterParams w,
-                       float ray_bias, float depth, float edge) {
+                       float ray_bias, float depth, float edge, float foam) {
   SkyParams* sky = (SkyParams*)params->sky_params;
   const bool has_sky = params->sky_params != 0;
   float3 sun = float3(0.0);
@@ -775,7 +784,9 @@ float3 water_pixel_low(ResolveParams* params, Surface s, float3 n, float3 view, 
     ambient = ambient_radiance(params->sky.rgb, ground, s.normal);
     reflected = params->sky.rgb;
   }
-  return water_radiance(w, n, view, float2(edge, depth), params->sun.xyz, sun, ambient, reflected);
+  const float3 radiance =
+      water_radiance(w, n, view, float2(edge, depth), params->sun.xyz, sun, ambient, reflected);
+  return water_foam_over(radiance, foam, sun, params->sun.xyz, ambient);
 }
 
 float3 water_pixel(ResolveParams* params, SceneGeometry geo, InstanceDesc instance,
@@ -803,7 +814,16 @@ float3 water_pixel(ResolveParams* params, SceneGeometry geo, InstanceDesc instan
   const float3 n = water_normal_of(w, material.flags, geo.materials, index, local.xz,
                                    params->water_time_s, footprint, depth);
   const float3 view = normalize(-from_eye);
-  const float edge = water_edge(w, material.flags, s.uv.x, depth);
+  float edge = water_edge(w, material.flags, s.uv.x, depth);
+  // The shore where the level meets the ground (k_material_water_shore; water.md, "The shore"):
+  // the fade over the distance from the map's waterline, not from the mesh's edge, and the foam
+  // line along it. Only with the map, which the flag needs.
+  float foam = 0.0;
+  if ((material.flags & k_material_water_shore) != 0 && has_map) {
+    edge = water_shore_distance(map, local.xz, depth);
+    const float foam_m = ((ResolveMaterial*)geo.materials)[index + 1].normal_scale;
+    foam = water_foam(w, foam_m, local.xz, edge, params->water_time_s, footprint);
+  }
   if ((material.flags & k_material_water_volume) != 0) {
     // No map: the depth's slope over the triangle, d = d0 + g.(x - x0) through its three corners.
     float2 slope = float2(0.0, 0.0);
@@ -818,9 +838,9 @@ float3 water_pixel(ResolveParams* params, SceneGeometry geo, InstanceDesc instan
       if (abs(det) > 1e-8) slope = float2(d1 * e2.y - d2 * e1.y, e1.x * d2 - e2.x * d1) / det;
     }
     return water_pixel_volume(params, geo, instance, index, slope, dp_dx, dp_dy, s, local, n, view,
-                              w, ray_bias, depth, has_map, map, edge);
+                              w, ray_bias, depth, has_map, map, edge, foam);
   }
-  return water_pixel_low(params, s, n, view, w, ray_bias, depth, edge);
+  return water_pixel_low(params, s, n, view, w, ray_bias, depth, edge, foam);
 }
 
 // **The open sea past its body's outline** (docs/subsystems/water.md, "To the horizon"; roadmap
@@ -918,9 +938,9 @@ bool open_water_pixel(ResolveParams* params, float2 source, uint2 noise_pixel, b
   float3 radiance;
   if ((material.flags & k_material_water_volume) != 0) {
     radiance = water_pixel_volume(params, geo, instance, index, float2(0.0, 0.0), dp_dx, dp_dy, s,
-                                  local, n, view, w, ray_bias, depth, in_map, map, edge);
+                                  local, n, view, w, ray_bias, depth, in_map, map, edge, 0.0);
   } else {
-    radiance = water_pixel_low(params, s, n, view, w, ray_bias, depth, edge);
+    radiance = water_pixel_low(params, s, n, view, w, ray_bias, depth, edge, 0.0);
   }
   // The air between the eye and the plane, the exposure and the output encode, as every surface.
   float knee = 1.0;
@@ -1359,6 +1379,25 @@ float4 fs_resolve(FullscreenOut in) : SV_Target {
     // Emission — the factor times the emissive texture — is radiance the surface gives off, added
     // after the lighting and touched by no shadow and no occlusion.
     color += sampled.emissive;
+#ifdef RESOLVE_WATER
+    // The wet band (water.md, "The shore"; water.slang's water_wet_factor): a terrain pixel
+    // just above a body's level, within the body's bounds, darkened as wet ground is - after the
+    // lighting, a multiplier on the shaded colour. The water stage's: a measurement that skips it
+    // skips this too.
+    if (params->water_shore_count != 0 && !stop_skips(k_stop_water)) {
+      WaterShore* shores = (WaterShore*)params->water_shores;
+      // Ground: a terrain's material, a terrain tile, or the scene's terrain mesh.
+      const bool ground = (material.flags & k_water_wet_materials) != 0 ||
+                          (instance.flags & k_instance_uv_from_corner) != 0 || instance.terrain != 0 ||
+                          instance.mesh == shores[0].terrain_mesh;
+      for (uint b = 0; ground && b < params->water_shore_count; ++b) {
+        const WaterShore shore = shores[b];
+        const float3 local = s.position - instance_from_eye(instances[shore.instance], params->eye);
+        if (any(local.xz < shore.lo) || any(local.xz > shore.hi)) continue;
+        color *= water_wet_factor(albedo, local.y, shore.wet_m);
+      }
+    }
+#endif
   }
   // The split before the sky's stage writes the radiance as it stands: no air, no exposure (R115).
   const bool air = has_sky && !stop_skips(k_stop_sky);

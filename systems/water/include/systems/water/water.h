@@ -44,6 +44,28 @@ inline constexpr std::string_view k_generator = "water";
 // wrong names a new one.
 inline constexpr u32 k_mesh_version = 1;
 
+// **A body that fills** (the block's `shape.fill`; water.md, "A body that fills"; roadmap S97): the
+// lattice its flood ran on, about the seed. Node (i, j) stands at body-local (origin.x + i spacing,
+// origin.y + j spacing), row j along +z, and `value[j * nx + i]` is the level less the ground
+// there where the node is in the flooded region (> 0), and at most `-k_fill_outside` where it is
+// not — the ground at or above the level, or a hollow below it the flood did not reach. The region
+// is the nodes that are positive; its edge is where the bilinear value crosses zero, which is what
+// the mesh, `inside_distance` and `depth_at` all read, and `loops` are that edge traced (marching
+// squares) and simplified to a quarter of the spacing: `loop_starts[k]` the first point of loop k,
+// the points metres from the centre in (x, z).
+inline constexpr f32 k_fill_outside = 1e-3f;
+struct FillRegion {
+  f32 spacing = 0.0f;
+  Vec2 origin{};
+  u32 nx = 0;
+  u32 nz = 0;
+  Vector<f32> value;
+  u32 inside = 0;     // nodes in the region
+  u32 crossings = 0;  // lattice edges the region's edge crosses: the mesh's boundary vertices
+  Vector<Vec2> loop_points;
+  Vector<u32> loop_starts;
+};
+
 // One body as this capability uses it: the block's shape about its centre, metres.
 struct Body {
   std::string name;
@@ -62,7 +84,16 @@ struct Body {
   // map are the closed body's, byte for byte; what differs is what is drawn past the outline (the
   // renderer's) and where `depth_at` finds water.
   bool open = false;
-  bool circle() const noexcept { return outline.empty(); }
+  // A body that fills: its centre is the seed (x and z, y the level), and `region` is empty until
+  // `fill_body` has flooded the ground, which needs the ground and so is not `read_body`'s.
+  bool fill = false;
+  f32 fill_extent_m = 0.0f;
+  FillRegion region;
+  // The wet band and the foam line (the block's `wet_m` and `foam_m`; water.md, "The shore").
+  f32 wet_m = 0.3f;
+  f32 foam_m = 0.6f;
+  bool circle() const noexcept { return !fill && outline.empty(); }
+  bool filled() const noexcept { return fill && region.nx > 0; }
 };
 
 // The block, checked: exactly one shape, a positive radius, a polygon of at least three points
@@ -104,7 +135,30 @@ struct Mesh {
 inline constexpr u32 k_max_vertices = 65536;
 // The spacing a body asks for: a third of its shore, within [0.25, 1] m.
 f32 spacing_for(const Body& body) noexcept;
+// A body that fills is meshed by `build_fill_mesh` (below) from its region; an unflooded one has
+// an empty mesh. The circle and the polygon are rings to a fan, the bytes they always were.
 void build_mesh(const Body& body, const scene_gen::Ground& ground, Mesh& out);
+
+// **The flood** (src/fill.cpp; water.md, "A body that fills"): the region of the ground below the
+// body's level connected to its seed through the lattice's four neighbours, on a lattice at
+// `spacing_for(body)` grown by a quarter until the mesh it makes keeps under `k_max_vertices`,
+// within `fill_extent_m` of the seed in x and z. False with a sentence when the seed's ground is
+// at or above the level, or the flood reaches the bound (the level spills out of the hollow). The
+// region is a function of the ground at the lattice's nodes alone — the flood on integer indices,
+// the trace in f32 + - * / — so it is the same bits at any job count and on every toolchain.
+bool fill_body(Body& body, const scene_gen::Ground& ground, std::string* error);
+// The region's bilinear value at (x, z), metres from the centre: about the depth inside the region
+// (positive), at most zero outside it and outside the lattice; -1 for a body not yet flooded.
+// `inside_distance` answers this for a body that fills.
+f32 fill_value(const Body& body, f32 x, f32 z) noexcept;
+// **The general mesher**: the lattice's cells over the region, a cell whose four nodes are inside
+// two triangles and a cell the edge crosses clipped to the edge by marching squares (its inside
+// polygon, the edge's points on the lattice's edges where the bilinear value is zero, fanned), so
+// the mesh covers the region and nothing above the level at the nodes, and two cells that share a
+// lattice edge share its vertices. A saddle is joined when the cell's mean is inside. The UV is
+// (the distance from the edge, by a chamfer over the nodes; the depth under the vertex), as the
+// rings' is.
+void build_fill_mesh(const Body& body, const scene_gen::Ground& ground, Mesh& out);
 
 // The mesh as a GLB: positions, normals, TEXCOORD_0 and indices, one primitive with one material
 // named "water" whose base colour is `shallow` and roughness `roughness` — what stage 1 drew, and

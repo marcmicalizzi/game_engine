@@ -423,6 +423,13 @@ class GpuScene {
   // table — what `ResolveParams::water_open_instance` and `water_open_material` carry.
   u32 water_open_instance() const noexcept { return water_open_instance_; }
   u32 water_open_material() const noexcept { return water_open_material_; }
+  // The wet band (water.md, "The shore"; roadmap S97): the scene's water bodies' gfx::WaterShore
+  // records, one a body with a depth map and a wet_m, and their count — what
+  // ResolveParams::water_shores and water_shore_count carry; 0 and 0 for none.
+  u64 water_shores_address() const noexcept {
+    return water_shore_count_ != 0 ? water_shores_.address : 0u;
+  }
+  u32 water_shore_count() const noexcept { return water_shore_count_; }
   bool has_terrain_materials() const noexcept { return has_terrain_materials_; }
   // A material row carries gfx::k_material_stochastic (R131): the resolve draws with its
   // `_stochastic` module, which only such a scene pays for.
@@ -1270,6 +1277,7 @@ class GpuScene {
  private:
   bool upload_geometry(const ResolvedSettings& resolved, std::string* error);
   bool upload_materials(const ResolvedSettings& resolved, std::string* error);
+  bool upload_water_shores(std::string* error);
   bool create_working_set(const ResolvedSettings& resolved, std::string* error);
   bool upload_pair_table(std::string* error);
   // ---- a dynamic scene's tables ----
@@ -1636,6 +1644,8 @@ class GpuScene {
   bool has_water_ = false;                 // a material of the table carries gfx::k_material_water
   u32 water_open_instance_ = 0xffffffffu;  // gfx::k_no_water_open
   u32 water_open_material_ = 0;
+  gfx::BufferResource water_shores_;
+  u32 water_shore_count_ = 0;
   bool has_masked_ = false;  // a material of the table carries gfx::k_material_alpha_mask
   // {cluster, material} of every alpha-tested cluster, kept from the material upload until the
   // proxy's bake (R109) reads it, then released; empty when the proxy is off.

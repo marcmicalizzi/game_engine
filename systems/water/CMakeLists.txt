@@ -14,14 +14,14 @@
 # No renderer: the water material and the resolve's branch are the renderer's and gfx's.
 engine_module(NAME water LAYER systems OPTIONAL WHOLE_ARCHIVE
   DEPS base containers math hash json schema schemas io log geometry scene_gen
-  SOURCES src/water.cpp src/scene_generator.cpp)
+  SOURCES src/water.cpp src/fill.cpp src/scene_generator.cpp)
 
 # water_tests.cpp: the shapes, the mesh and its depths over a synthetic ground, `depth_at`, the
 # GLB, the generator through the registry, and the renderer's material packing; no device.
 # water_scene_tests.cpp: the renderer's reader over a scene with a `water` block (meshes, instances,
 # materials, the collision mark), and on a GPU the oasis pool's captures with and without it.
 engine_module_tests(NAME water
-  SOURCES tests/water_tests.cpp tests/water_scene_tests.cpp tests/size_table.cpp
+  SOURCES tests/water_tests.cpp tests/water_scene_tests.cpp tests/fill_tests.cpp tests/shore_scene_tests.cpp tests/size_table.cpp
   DEPS renderer gfx)
 if(TARGET engine_water_tests)
   target_compile_definitions(engine_water_tests PRIVATE ENGINE_SOURCE_DIR="${CMAKE_SOURCE_DIR}")

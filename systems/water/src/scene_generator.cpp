@@ -109,7 +109,14 @@ bool expand(void* state, const scene_gen::Context& context, scene_gen::Placement
   // the depths of the read until the scene is read again (water.md, "The mesh").
   const scene_gen::Ground& ground = context.stand.present() ? context.stand : context.ground;
   for (u32 k = 0; k < entry.bodies.size(); ++k) {
-    const Body& body = entry.bodies[k];
+    // A body that fills is flooded here, where the ground is known (water.md, "A body that
+    // fills"); a flood that spills or a seed above the level refuses the scene with a sentence.
+    Body body = entry.bodies[k];
+    std::string why;
+    if (!fill_body(body, ground, &why)) {
+      if (error != nullptr) *error = entry.where + " " + std::to_string(k) + ": " + why;
+      return false;
+    }
     const scene::WaterBody& block = entry.blocks[k];
     Mesh mesh;
     build_mesh(body, ground, mesh);
