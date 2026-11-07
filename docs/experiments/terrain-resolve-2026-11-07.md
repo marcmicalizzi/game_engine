@@ -78,7 +78,23 @@ the footprint rules it loses most of that again (1.659), which is why it ships a
 
 ## 11520 × 2160
 
-To be measured: base, tiles by weight and all five on the same flight (see the hand-off).
+The same flight at the owner's width, one group under the lock; other processes on 28–99% of the
+CPU (two agents' builds), the GPU idle at each start.
+
+| Variant | Resolve ms | Frame ms | Changed (of 24,883,200) | > 2 codes | > 8 codes | Worst | FLIP |
+|---|---|---|---|---|---|---|---|
+| base | 14.263 | 17.160 | — | | | | |
+| **16 tiles by weight (shipped)** | **11.658** | **14.454** | 795,662 (3.2%), even over the thirds | 4,429 | 1,099 | 116 | **0.0018** |
+| 31 all five | 14.921 | 17.720 | 796,811 | 4,437 | 1,099 | 116 | 0.0018 |
+
+Tiles by weight returns **2.6 ms of 14.3**, 18% of the resolve and of the frame. The footprint
+rules change 1,149 more pixels than it does at this width and cost 3.3 ms — as at 1920, they buy
+nothing on this view. The picture's change is under the bound by FLIP, but it is not "under a code
+step" everywhere: 1,099 pixels move by more than eight codes, up to 116. Those are the sward's sun
+glints: a tile's normal slope enters the specular lobe, so a 1/128 share of a steep blade's slope,
+renormalized away, can turn a highlight on or off at one pixel. A tighter band (1/512 to 1/256)
+would keep more of them and read more tiles; this page did not measure it, and it is the first
+thing to try if the owner sees glints flicker where they did not.
 
 ## The v25 walk
 
