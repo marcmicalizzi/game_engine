@@ -81,7 +81,8 @@ f64 mesh_area(const water::Mesh& mesh) {
     const Vec3 b = mesh.positions[mesh.indices[t + 1]];
     const Vec3 c = mesh.positions[mesh.indices[t + 2]];
     area += 0.5 *
-            (static_cast<f64>(c.x - a.x) * (b.z - a.z) - static_cast<f64>(b.x - a.x) * (c.z - a.z));
+            (static_cast<f64>(c.x - a.x) * static_cast<f64>(b.z - a.z) -
+                   static_cast<f64>(b.x - a.x) * static_cast<f64>(c.z - a.z));
   }
   return area;
 }
@@ -124,7 +125,8 @@ TEST_CASE("water fill: over a paraboloid the outline is the level's circle, with
   for (u32 v = 0; v < mesh.positions.size(); ++v) {
     const Vec3 p = mesh.positions[v];
     CHECK(p.y == 0.0f);
-    const WorldPos at{body.center.x + p.x, 0.0, body.center.z + p.z};
+    const WorldPos at{body.center.x + static_cast<f64>(p.x), 0.0,
+                      body.center.z + static_cast<f64>(p.z)};
     const f64 ground_y = ground.surface(at);
     CHECK(ground_y <= 0.005);
     CHECK(mesh.uvs[v].y == static_cast<f32>(std::max(0.0, -ground_y)));
@@ -137,8 +139,8 @@ TEST_CASE("water fill: over a paraboloid the outline is the level's circle, with
     const Vec3 c = mesh.positions[mesh.indices[t + 2]];
     const f32 ny = (c.x - a.x) * (b.z - a.z) - (b.x - a.x) * (c.z - a.z);
     CHECK(ny >= 0.0f);
-    const WorldPos mid{body.center.x + (a.x + b.x + c.x) / 3.0, 0.0,
-                       body.center.z + (a.z + b.z + c.z) / 3.0};
+    const WorldPos mid{body.center.x + static_cast<f64>(a.x + b.x + c.x) / 3.0, 0.0,
+                       body.center.z + static_cast<f64>(a.z + b.z + c.z) / 3.0};
     if (ground.surface(mid) > 0.005) ++above;
   }
   CHECK(above == 0u);
@@ -181,7 +183,7 @@ TEST_CASE("water fill: a hollow the flood does not reach stays dry") {
   water::Mesh mesh;
   water::build_mesh(body, ground, mesh);
   for (const Vec3& p : mesh.positions)
-    CHECK(body.center.x + p.x < 111.0);
+    CHECK(body.center.x + static_cast<f64>(p.x) < 111.0);
   // Without its flood (a holder that read the block but never had the ground) the body answers
   // the ground below the level within its bound, the other hollow included: said on the page.
   water::Body unflooded;

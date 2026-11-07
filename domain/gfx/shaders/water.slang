@@ -478,9 +478,11 @@ float3 water_ground_albedo(ResolveMaterial g, float2 uv, float2 duv_dx, float2 d
 // Not mirrored by water_reference.h: the shading test's blocks carry no shore flag, and draw the
 // branch they always did; the shore is held by the scene tests' counts instead (shore_scene_tests).
 static const uint k_material_water_shore = 1048576u;  // gfx::k_material_water_shore
-// Fresh foam's reflectance in the visible: whitecaps average about 40% (Dierssen 2019's review of
-// the measurements since Whitlock, Bartlett and Gurganus 1982), lit as a Lambertian surface.
-static const float k_water_foam_albedo = 0.4;
+// Fresh, dense foam's reflectance in the visible: about 55% for a fresh whitecap (Koepke 1984,
+// whose effective 22% is that times the coverage of a whitecap's life), the measurements since
+// Whitlock, Bartlett and Gurganus 1982 averaging about 40% over whole whitecaps (Dierssen 2019).
+// A swash's foam line is fresh foam; lit as a Lambertian surface.
+static const float k_water_foam_albedo = 0.55;
 // The wave amplitude at which the foam line is whole: the pond's default 2 cm.
 static const float k_water_foam_full_amplitude = 0.02;
 // Lekner and Dorf (1988) over Angstrom (1925), as terrain_material.slang's beach takes it: a water

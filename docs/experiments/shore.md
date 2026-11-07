@@ -25,7 +25,7 @@ Lekner and Dorf (1988, after Ångström 1925): a water film over a dry albedo *a
 
 ## The foam line: what it is drawn from
 
-**Reflectance.** Fresh, dense foam in the visible reflects about 40% (whitecaps measured on average about 40% across the visible: Dierssen 2019's review in *Frontiers in Earth Science*, of the measurements since Whitlock, Bartlett and Gurganus 1982, *Geophysical Research Letters* 9, 719–722, whose visible numbers it flags as uncertain). Pinned: **`k_water_foam_albedo` = 0.4**, lit as a level Lambertian surface by the sun as it reaches the water (its shadow included) and the sky's light.
+**Reflectance.** Fresh, dense foam reflects about 55% in the visible (Koepke 1984, *Applied Optics* 23, 1816–1824: a fresh whitecap's reflectance, whose effective 22% is that times the share of a whitecap's life it is fresh); whole whitecaps measured since average about 40% across the visible (Dierssen 2019's review in *Frontiers in Earth Science*, of the measurements since Whitlock, Bartlett and Gurganus 1982, *Geophysical Research Letters* 9, 719–722, whose visible numbers it flags as uncertain). A swash's foam line is fresh foam. Pinned: **`k_water_foam_albedo` = 0.55** (0.4 drew the line darker than the wet sand under it on the basin, a grey-blue thread, 2026-11-07), lit as a level Lambertian surface by the sun as it reaches the water (its shadow included) and the sky's light.
 
 **Where.** The foam at a lake's edge lives in the swash zone, whose width along the slope is the run-up over the foreshore slope: Stockdon's 5.5 cm on 1:10 is 0.55 m. Pinned: **`foam_m` = 0.6 m** (default). A sea's (S93's open bodies) is larger — a 1 m wave of 8 s on 1:20 runs up about 0.55 m vertical, 11 m along the slope — and the field is the body's.
 
@@ -37,11 +37,12 @@ The distance from the waterline that the shore fade and the foam are drawn by is
 
 ## What the fill costs at load
 
-Measured on MSVC debug (2026-11-07, `fill_tests.cpp`'s messages): the paraboloid of 10 m radius at 0.667 m — 698 nodes inside, 118 edge points, 816 vertices, 1,512 triangles — flooded, traced and meshed in **3.6 ms**. The v31 lake's numbers are in [water](../subsystems/water.md#a-body-that-fills).
+Measured on MSVC debug (2026-11-07, `fill_tests.cpp`'s messages): the paraboloid of 10 m radius at 0.667 m — 698 nodes inside, 118 edge points, 816 vertices, 1,512 triangles — flooded, traced and meshed in **1.8 ms** (its traced outline within 6 mm of the circle). The v31 lake's numbers are in [water](../subsystems/water.md#a-body-that-fills).
 
 ## Sources
 
 - Ångström, A. (1925). The albedo of various surfaces of ground. *Geografiska Annaler* 7, 323–342.
+- Koepke, P. (1984). Effective reflectance of oceanic whitecaps. *Applied Optics* 23(11), 1816–1824.
 - Lekner, J. and Dorf, M. C. (1988). Why some things are darker when wet. *Applied Optics* 27(7), 1278–1280.
 - Stockdon, H. F., Holman, R. A., Howd, P. A. and Sallenger, A. H. (2006). Empirical parameterization of setup, swash, and runup. *Coastal Engineering* 53, 573–588.
 - Whitlock, C. H., Bartlett, D. S. and Gurganus, E. A. (1982). Sea foam reflectance and influence on optimum wavelength for remote sensing of ocean aerosols. *Geophysical Research Letters* 9(6), 719–722.
