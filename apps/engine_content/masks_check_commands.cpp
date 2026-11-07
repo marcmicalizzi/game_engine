@@ -36,7 +36,7 @@ namespace engine::content {
 
 namespace {
 
-constexpr int k_exit_ok = 0;
+[[maybe_unused]] constexpr int k_exit_ok = 0;
 constexpr int k_exit_over = 1;
 constexpr int k_exit_usage = 2;
 
