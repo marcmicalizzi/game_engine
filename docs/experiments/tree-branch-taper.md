@@ -221,7 +221,8 @@ Not resolved: the content build's young broadleaf (6 m, LAI 4 asked, 30,000) rea
 where it realised 3.22, under its "within a fifth" bound and under the 3–7 of closed broadleaf
 forest; the leader fix's length-weighted radii leave it 312 twigs (320 before) under a hull 9%
 wider, and the spray's cards, already more than its twigs hold at the leaf's spacing, share the
-shorter twig length. That is a solver question for this row, not a bound to move.
+shorter twig length. That is a solver question for this row, not a bound to move (answered
+below, "The young broadleaf's leaf area").
 
 The authored lean's contact was 50 mm off the final support trunk (and the solver refused the
 pose). Its placement and capsule were refitted to the final mesh by the same method, the 1 cm
@@ -229,3 +230,46 @@ tolerance and the damaged tree unchanged: the standing oak is translated to z = 
 5.22519) so the nearest leaning-wood sample sits 3.0 mm from the trunk's actual section at
 y = 3.459 m, and the capsule is that section's centre (0.40466, 4.91408) with radius 0.29473 m,
 the section's reach towards the contact less the 3 mm.
+
+### The young broadleaf's leaf area (G129 follow-up, 2026-11-07)
+
+G133's diagnosis held on measurement. The default broadleaf's twig is 0.7 m (0.595–0.805 with the
+recursion's jitter) and its card is a 0.24 m leaf 0.12 m wide at 50°, laid
+`card_step` = 0.12 / sin 50° = 0.157 m apart, so a twig holds four cards a side (three on the
+shortest). The leaf area index asks for 3,794 cards on the 6 m tree's 27.33 m² footprint — 1,897 a
+side over 312 twigs, six each — where the twigs hold 1,230 a side; the spray spread its six over
+the whole twig, every card came out about two-thirds of its leaf, and the 3,794 cards made 78.0 m²
+of leaf where 109 were asked. Before the leader fix the tree had 321 twigs under a 24.89 m² hull
+and realised 3.24; the fix's wider hull asked for 10 % more cards on 3 % fewer twigs. The leader's
+share was not what starved the twigs (it moved them by nine), so the answer is not in the
+allocation but in the spray: a twig takes no more cards than its length holds at the leaf's spacing,
+and the rest of the leaf area is borne by more twigs. Their count comes from the pipe model
+(Shinozaki, Yoda, Hozumi and Kira 1964, in [tree allometry](tree-allometry.md)): a terminal twig of
+radius r is (r / r_twig)^Δ unit pipes, each serving one twig's leaves, and the recursion's terminal
+criterion stops a shoot anywhere under 2.07 r_twig (where its thinnest child, at a 0.233 share,
+would fall under r_twig), which is why the recursion grows about a third of the pipe rule's twigs
+(312 of 957 at 6 m, 2,925 of 7,656 at 12 m). The spare pipes leave the twig as leafy twigs of the
+species' size, as many as the deficit divided by the shortest twig's room, spread by spare pipes;
+never more than the pipes allow ([flora](../subsystems/flora.md#allometry) has the rule).
+
+| Default broadleaf | Budget | Twigs, before the leader fix / main / now | LAI, before / main / now | Leaf m², main → now | Cards (all three) |
+|---|---|---|---|---|---|
+| 4 m | 30,000 | 81 / 96 / 196 | 1.93 / 2.38 / 3.89 | 24.05 → 39.36 | 1,404 (1,448 before) |
+| 6 m (the content build's) | 30,000 | 321 / 312 / 535 | 3.24 / 2.85 / 3.89 | 78.02 → 106.22 | 3,794 (3,456 before) |
+| 8 m (the impostor tests' small oak) | 30,000 | 921 / 855 / 873 | 3.89 / 3.87 / 3.90 | 192.77 → 194.34 | 6,914 |
+| 12 m (the default) | 60,000 | 2,313 / 2,925 / 2,925 | 3.89 / 3.90 / 3.90 | 480.09, unchanged | 17,092 |
+| 24 m | 60,000 | 20,625 / 20,307 / 20,307 | 7.37 / 7.20 / 7.20 (merged cards, 1.04 m) | 3,719.44, unchanged | 20,816 |
+| 32 m | 60,000 | 66,369 / 53,664 / 53,664 | 7.44 / 6.41 / 6.41 (merged, 2.33 m) | 6,057.76, unchanged | 14,374 |
+| 32 m | 2,000,000 | 66,369 / 53,664 / 53,664 | 3.90 / 3.90 / 3.90 | 3,683.64, unchanged | 131,194 |
+
+msvc-debug `engine-content flora`, 2026-11-07; "before the leader fix" is efe7e9c5's parent's
+flora sources on this tree, "main" 8be9c6d4. Triangles and parts do not move on any row (the 6 m
+tree's 16,088 and 406; a spray's twig wood is folded below `wood_class` on every rung, and a leafy
+twig rides its twig's part). What the owner approved does not move: the 12 m and taller trees'
+twigs already hold their cards, so they are the same bytes; the 6 m tree keeps its limbs, its
+scaffolds and its every recursion shoot, and gains 223 leafy twigs from three to nine tenths along
+twigs, whose cards are whole leaves again — a fuller, not a different, young crown, and one order
+deeper (5 → 6). The 4 m sapling doubles its twigs. The cards' realised area is 0.97 of a leaf on
+every height (the spray's lift and droop fold the rest out of the card's plane); the solver's LAI
+of 3.89 against the 4 asked is that 3 %. The impostor tests' small oak (8 m) moves its four bake
+hashes for its 18 new twigs.

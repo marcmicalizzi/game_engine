@@ -669,7 +669,8 @@ Until G73 the ancient tree was the broadleaf scaled up, six fixed orders ending 
 | A child is `length_ratio` of its parent's length; a root's laterals `branch_length` of its length | `length_ratio` (0.63) the species' | WBE's n^(−1/3) |
 | A shoot whose thinnest child would be thinner than `twig_radius_m` is a **terminal twig**, `twig_length_m` long | the twig's radius and length are the species', never the tree's | Corner's rules; WBE's invariant terminal unit |
 | So the twigs number about (R / r_twig)^Δ and the orders about 1 + log_Rb of that | both scale with size: the oak's 3,384 twigs over 8 orders, the ancient tree's 214,834 over 12 (its wide crown before the habits, G79) | follows |
-| The card count is `leaf_area_index` × the crown's footprint ÷ one card's area (`leaf_width` × `leaf_length_m`²), spread over the twigs as evenly as integers go, each at most `leaves` a side | LAI and the leaf the species'; the tip-hull footprint scales (with a `4 * leaf_length²` allocation floor for first sapling leaves) | the leaf area index (Asner et al. 2003) |
+| The card count is `leaf_area_index` × the crown's footprint ÷ one card's area (`leaf_width` × `leaf_length_m`²), spread over the twigs as evenly as integers go, each at most `leaves` a side — and, on a spray, at most what the twig's length holds at the leaf's spacing | LAI and the leaf the species'; the tip-hull footprint scales (with a `4 * leaf_length²` allocation floor for first sapling leaves) | the leaf area index (Asner et al. 2003) |
+| Where a spray's twigs cannot hold that count at the leaf's spacing, a terminal twig's spare pipes — (r / r_twig)^Δ less the one it is — leave it as **leafy twigs** of the species' radius and length, as many as the deficit needs, never more than the pipes allow | nothing new: the twig, the leaf and Δ are the species'; how many grow follows from the LAI | the pipe model: a pipe serves a unit of leaf (Shinozaki 1964) |
 | The broadleaf's `trunk_radius_m` of 0 is 0.35 m × (H / 12 m)^(1 / `allometry_exponent`) | the exponent the species' (2/3) | McMahon's elastic similarity, H ∝ D^(2/3) |
 | The crown's radius is the limbs' reach, a share of the height for the broadleaf | scales as H ∝ D^(2/3) | crown ∝ D^0.6–0.8 |
 | The lowest limbs shed, apical control weak in an old crown | `crown_base` / `limb_low_m` and `leader_share`, the recipe's | Hallé, Oldeman and Tomlinson 1978; deriving them from age is G74 |
@@ -684,6 +685,32 @@ cross-section. Branch bases start buried and sweep outward; existing ring interv
 their junctions. Motion pivots and weights follow the swept path's arc length.
 The [branch-taper grounding](../experiments/tree-branch-taper.md) separates these approximations
 from the measurements and records dependent deadwood/litter changes.
+
+**A card is always a whole leaf** (G129 follow-up, 2026-11-07). A spray lays its cards
+`card_step` = leaf width ÷ sin(`leaf_angle_deg`) apart from the twig's tip back
+(`crown_twig_room`: floor(length ÷ `card_step`) a side, at most `leaves`). Until this rule a twig
+asked for more cards than its length held spread them over its length anyway, and every card came
+out shorter than its leaf: the young trees asked for six a side on a 0.7 m twig that holds four, so
+the 6 m tree realised LAI 2.85 of the 4 it asked for (3.24 before the leader fix widened its hull)
+and the 4 m one 2.38. Now `crown_add_leaf_twigs` (the broadleaf's `grow`, sprays only) compares the
+cards with the twigs' room and, where they do not fit, grows the deficit as leafy twigs: a terminal
+twig of radius r stands for floor((r / `twig_radius_m`)^Δ) unit pipes, the recursion's terminal
+criterion leaves it up to 2.07 r_twig thick on the default (four pipes), and each spare pipe can
+leave it as a twig of the species' radius and length from three to nine tenths along it, on the golden
+angle, folded into the part its twig rides (never a part of its own: the part list and the 400-part
+cap do not move). The deficit is divided by the room of the shortest new twig and spread over the
+twigs by spare pipes; the cards are then laid to a common level per twig and the rest one more on
+the twigs with room (`crown_distribute_spaced`). The footprint stays the recursion's tip hull. A
+crown whose twigs already hold the even distribution — the 12 m default, the 24 m and 32 m
+trees measured (their twigs grow as H³ and their footprint as H²), and every simple- and
+compound-leaf profile, which space their own leaves — is untouched to
+the byte. On the default broadleaf at 30,000 triangles: 4 m, 96 → 196 twigs, LAI 2.38 → 3.89;
+6 m, 312 → 535 twigs (the pipe rule allows 957), LAI 2.85 → 3.89 (106.2 m² of leaf where it was
+78.0); 8 m, 855 → 873 twigs, LAI 3.87 → 3.90. The card counts and the triangles are the same (the
+cards were always there, only shorter); the twigs' wood is not drawn on a spray's rungs, so the
+new twigs cost no triangle; the trees gain an order where a leafy twig grows from the deepest
+twig (the 6 m tree's 5 → 6). The [taper page](../experiments/tree-branch-taper.md#the-young-broadleafs-leaf-area-g129-follow-up-2026-11-07)
+has the allocation's numbers.
 
 **The structure never depends on the budget.** Every shoot is grown once, from a splitmix64 stream of
 its own (its index in the depth-first order), so a draw added to one shoot moves no other. Shoots of
