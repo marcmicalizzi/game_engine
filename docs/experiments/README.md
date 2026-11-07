@@ -6,6 +6,7 @@ A write-up is not a benchmark log. It is the page a future contributor reads ins
 
 | Experiment | Page | Settles |
 |---|---|---|
+| G134 | [caves.md](caves.md) | The cave passage's and the speleothems' grounding: phreatic tubes, vadose canyons and keyholes (Ford and Williams 2007, Palmer 1991), the bedding's control, the stalactite's ideal profile (Short, Baygents and Goldstein 2005), stalagmite diameters (Curl; Romanov, Kaufmann and Dreybrodt 2008), the soda straw's drip-sized bore, and the ranges the recipe pins |
 | W85 | [formation-field.md](formation-field.md) | The world formation field's grounding: bed thicknesses (McKee and Weir, Talling, Drummond and Wilkinson), a cylindrical fold as a sinusoid about its hinge, differential weathering as each bed's resistance, the soft edge and the box filter, and the ranges the schema pins |
 | R132 | [ledge-shadow-2026-11-04.md](ledge-shadow-2026-11-04.md) | What cast the detached block shadow on the forest proof of concept's v29 foothill ledge under the cascaded maps: the ground itself, its coarser clusters drawn by R103's texel cut and standing above the finer cut the picture draws (34,436 pixels, gone with the cut off); the hypotheses one variable at a time with a capture and a pixel count each, and why a terrain level now takes the picture's cut in every cascade |
 | G131 | [rock-ridges.md](rock-ridges.md) | Proposed connected two-sided ridges and pinnacles: current authoring boundary, geological grounding, shared crest and formation coordinates, source budgets and precision limits; implementation pending |
