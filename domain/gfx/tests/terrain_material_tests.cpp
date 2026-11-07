@@ -1170,3 +1170,184 @@ TEST_CASE("gfx: a glint's facet does not move with the eye") {
   MESSAGE(compared << " points compared, " << lit << " lit");
   CHECK(lit > 100);
 }
+
+TEST_CASE("gfx: the far terrain's read rules are bands, and exactly off under a cell") {
+  // R136 (renderer.md, "What a far pixel reads"). A plane tilted from flat to vertical a hundredth
+  // of a degree at a time: under a cell the projections keep the 1/128 step they had (a share
+  // jumps by about 1/128 where it crosses it); past two cells the floor is a band from 1/32 to 1/16
+  // and no share jumps. The ramps that pick one tile, the maps' means and a layer's weight are
+  // their double mirrors, exactly 0 (or the weight) on the near side.
+  gfx::Device device;
+  std::string error;
+  if (!device.create(gfx::DeviceOptions{}, &error)) {
+    MESSAGE("no device: " << error);
+    return;
+  }
+  const auto module =
+      gfx::create_shader_module(device, shaders::k_terrain_material_probe_spirv,
+                                shaders::k_terrain_material_probe_spirv_size, &error);
+  REQUIRE_MESSAGE(module.valid(), error);
+  gfx::ComputePipeline pipeline;
+  REQUIRE_MESSAGE(
+      gfx::create_compute_pipeline(device, module, "reads_main", {}, 16, pipeline, &error), error);
+  constexpr u32 k_tilts = 9001;  // 0 to 90 degrees in 0.01 degree steps
+  constexpr u32 k_total = k_tilts + 512;
+  gfx::BufferResource output;
+  REQUIRE_MESSAGE(
+      gfx::create_buffer(device, k_total * sizeof(Vec4),
+                         gfx::BufferUsage::Storage | gfx::BufferUsage::ShaderDeviceAddress, true,
+                         output, &error),
+      error);
+  struct Params {
+    u64 output;
+    u32 count;
+    u32 pad;
+  };
+  const Params params{output.address, k_tilts, 0};
+  REQUIRE_MESSAGE(gfx::submit_immediate(
+                      device,
+                      [&](gfx::CommandList cb) {
+                        cb.bind_pipeline(gfx::BindPoint::Compute, pipeline.pipeline);
+                        cb.push_constants(pipeline.layout, gfx::ShaderStage::Compute, 0,
+                                          sizeof(params), &params);
+                        cb.dispatch((k_total + 63) / 64, 1, 1);
+                      },
+                      &error),
+                  error);
+  const auto* v = static_cast<const Vec4*>(output.mapped);
+  const auto smooth = [](f64 a, f64 b, f64 x) {
+    const f64 t = std::clamp((x - a) / (b - a), 0.0, 1.0);
+    return t * t * (3 - 2 * t);
+  };
+  // The far rule's double mirror: a share under 1/32 is dropped, one over 1/16 kept, a band
+  // between, then renormalized.
+  const auto band = [](f64 a) { return a * std::clamp((a - 1.0 / 32) / (1.0 / 32), 0.0, 1.0); };
+  f64 far_jump = 0, near_jump = 0, worst_far = 0;
+  u32 dropped_far = 0, dropped_near = 0;
+  for (u32 i = 0; i < k_tilts; ++i) {
+    const f64 theta = std::numbers::pi / 2 * i / (k_tilts - 1);
+    const f64 x4 = std::pow(std::sin(theta), 4), y4 = std::pow(std::cos(theta), 4);
+    const f64 ax = x4 / (x4 + y4), ay = y4 / (x4 + y4);
+    const f64 kx = band(ax), ky = band(ay);
+    worst_far = std::max({worst_far, std::abs(static_cast<f64>(v[i].x) - kx / (kx + ky)),
+                          std::abs(static_cast<f64>(v[i].y) - ky / (kx + ky))});
+    CHECK(std::abs(static_cast<f64>(v[i].x) + v[i].y - 1.0) < 1e-6);
+    CHECK(std::abs(static_cast<f64>(v[i].z) + v[i].w - 1.0) < 1e-6);
+    dropped_far += v[i].x == 0.0f || v[i].y == 0.0f ? 1u : 0u;
+    dropped_near += v[i].z == 0.0f || v[i].w == 0.0f ? 1u : 0u;
+    if (i != 0) {
+      far_jump = std::max({far_jump, std::abs(static_cast<f64>(v[i].x) - v[i - 1].x),
+                           std::abs(static_cast<f64>(v[i].y) - v[i - 1].y)});
+      near_jump = std::max({near_jump, std::abs(static_cast<f64>(v[i].z) - v[i - 1].z),
+                            std::abs(static_cast<f64>(v[i].w) - v[i - 1].w)});
+    }
+  }
+  MESSAGE("largest share change in 0.01 degree: far " << far_jump << ", near " << near_jump
+                                                      << "; tilts reading one projection: far "
+                                                      << dropped_far << ", near " << dropped_near);
+  CHECK(worst_far < 1e-5);
+  CHECK(far_jump < 1e-3);             // a band: no step anywhere
+  CHECK(near_jump > 0.9 / 128.0);     // the near rule is the step it was
+  CHECK(dropped_far > dropped_near);  // and the far one reads one projection on more slopes
+  for (u32 j = 0; j < 512; ++j) {
+    const Vec4 r = v[k_tilts + j];
+    const f64 t = j / 128.0;
+    CHECK(std::abs(static_cast<f64>(r.x) - smooth(1.0, 2.0, t)) < 1e-6);
+    CHECK(std::abs(static_cast<f64>(r.y) - smooth(0.5, 1.0, 0.25 * t)) < 1e-6);
+    const f64 w = t / 128.0;
+    CHECK(std::abs(static_cast<f64>(r.z) -
+                   w * std::clamp((w - 1.0 / 128) / (1.0 / 128), 0.0, 1.0)) < 1e-6);
+    CHECK(r.w == static_cast<f32>(w));
+    if (t <= 1.0) CHECK(r.x == 0.0f);         // under a cell: three tiles, exactly
+    if (0.25 * t <= 0.5) CHECK(r.y == 0.0f);  // under half a repeat: the maps, exactly
+  }
+  gfx::destroy_buffer(device, output);
+  gfx::destroy_compute_pipeline(device, pipeline);
+  gfx::destroy_shader_module(device, module);
+  device.destroy();
+}
+
+TEST_CASE("gfx: a stochastic tile under 1/128 of the blend is ramped out, the rest untouched") {
+  // R136's tiles by weight over one cell of the lattice: where every weight is 1/128 or more the
+  // hex is the lattice's bit for bit; under 1/256 a tile's weight is 0 (it is not read); between,
+  // the double mirror's band, renormalized, with the operator's gain from the kept weights.
+  gfx::Device device;
+  std::string error;
+  if (!device.create(gfx::DeviceOptions{}, &error)) {
+    MESSAGE("no device: " << error);
+    return;
+  }
+  const auto module =
+      gfx::create_shader_module(device, shaders::k_terrain_material_probe_spirv,
+                                shaders::k_terrain_material_probe_spirv_size, &error);
+  REQUIRE_MESSAGE(module.valid(), error);
+  gfx::ComputePipeline pipeline;
+  REQUIRE_MESSAGE(
+      gfx::create_compute_pipeline(device, module, "kept_main", {}, 16, pipeline, &error), error);
+  constexpr u32 k_count = 64 * 64;
+  gfx::BufferResource output;
+  REQUIRE_MESSAGE(
+      gfx::create_buffer(device, k_count * 2 * sizeof(Vec4),
+                         gfx::BufferUsage::Storage | gfx::BufferUsage::ShaderDeviceAddress, true,
+                         output, &error),
+      error);
+  struct Params {
+    u64 output;
+    u32 count;
+    u32 pad;
+  };
+  const Params params{output.address, k_count, 0};
+  REQUIRE_MESSAGE(gfx::submit_immediate(
+                      device,
+                      [&](gfx::CommandList cb) {
+                        cb.bind_pipeline(gfx::BindPoint::Compute, pipeline.pipeline);
+                        cb.push_constants(pipeline.layout, gfx::ShaderStage::Compute, 0,
+                                          sizeof(params), &params);
+                        cb.dispatch(k_count / 64, 1, 1);
+                      },
+                      &error),
+                  error);
+  const auto* v = static_cast<const Vec4*>(output.mapped);
+  constexpr f64 k_lo = 1.0 / 256, k_hi = 1.0 / 128;
+  u32 untouched = 0, one_tile = 0, two_tiles = 0;
+  f64 worst = 0;
+  for (u32 i = 0; i < k_count; ++i) {
+    const Vec4 lattice = v[2 * i], kept = v[2 * i + 1];
+    const f64 w[3] = {lattice.x, lattice.y, lattice.z};
+    const f32 k[3] = {kept.x, kept.y, kept.z};
+    if (std::min({w[0], w[1], w[2]}) >= k_hi) {
+      CHECK(std::bit_cast<u32>(kept.x) == std::bit_cast<u32>(lattice.x));
+      CHECK(std::bit_cast<u32>(kept.y) == std::bit_cast<u32>(lattice.y));
+      CHECK(std::bit_cast<u32>(kept.z) == std::bit_cast<u32>(lattice.z));
+      CHECK(std::bit_cast<u32>(kept.w) == std::bit_cast<u32>(lattice.w));
+      ++untouched;
+      continue;
+    }
+    f64 band[3], sum = 0;
+    for (u32 j = 0; j < 3; ++j) {
+      band[j] = w[j] * std::clamp((w[j] - k_lo) / (k_hi - k_lo), 0.0, 1.0);
+      sum += band[j];
+    }
+    f64 squares = 0;
+    u32 read = 0;
+    for (u32 j = 0; j < 3; ++j) {
+      worst = std::max(worst, std::abs(k[j] - band[j] / sum));
+      squares += (band[j] / sum) * (band[j] / sum);
+      if (w[j] < k_lo) CHECK(k[j] == 0.0f);  // not read
+      read += k[j] > 0.0f ? 1u : 0u;
+    }
+    CHECK(std::abs(kept.w - 1.0 / std::sqrt(squares)) < 1e-5);
+    one_tile += read == 1 ? 1u : 0u;
+    two_tiles += read == 2 ? 1u : 0u;
+  }
+  MESSAGE("of " << k_count << " points: " << untouched << " untouched, " << two_tiles
+                << " read two tiles, " << one_tile << " one; worst weight against the mirror "
+                << worst);
+  CHECK(worst < 1e-6);
+  CHECK(untouched > 0);
+  CHECK(one_tile + two_tiles > k_count / 3);  // the rule reads fewer tiles on much of the cell
+  gfx::destroy_buffer(device, output);
+  gfx::destroy_compute_pipeline(device, pipeline);
+  gfx::destroy_shader_module(device, module);
+  device.destroy();
+}

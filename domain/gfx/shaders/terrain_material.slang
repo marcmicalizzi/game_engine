@@ -262,16 +262,155 @@ float3 terrain_hex_blend(TerrainHex hex, float3 mean, float3 a, float3 b, float3
   return hex_blend(hex, mean, a, b, c);
 }
 
+// ---- What the pixel can see: fewer reads where it cannot tell (R136) ---------------------------
+// Five rules cut a stochastic layer's reads (renderer.md, "What a far pixel reads"). Four go by the
+// pixel's footprint and are exactly off for a footprint under one lattice cell, so with them alone
+// the near ground draws what it did; each is a band, never a step, and each needs filtered, mipped
+// textures (the path tracer and a decoded scene read level 0, where nothing below is true). The
+// fifth, tiles by weight, acts everywhere and moves a pixel by under a code step where it does.
+//
+// TERRAIN_FOOTPRINT_LEVERS selects them at compile time (bit 1 the tiles by footprint, 2 the
+// projections, 4 the maps, 8 the layers, 16 the tiles by weight). **The engine ships with 16
+// alone**: on the v31 fell the four footprint rules act on half a percent of the frame at 1920 x
+// 1080 and cost the rest of it 0.4 ms of registers and branches, where tiles by weight returns a
+// fifth of the resolve (docs/experiments/terrain-resolve-2026-11-07.md). The four stay compiled
+// out, measured and tested (terrain_material_probe.slang and the renderer's footprint test build
+// them in), for a view whose far ground is most of the frame to turn on.
+#ifndef TERRAIN_FOOTPRINT_LEVERS
+#define TERRAIN_FOOTPRINT_LEVERS 16
+#endif
+static const uint k_terrain_lever_tiles = 1u;
+static const uint k_terrain_lever_projections = 2u;
+static const uint k_terrain_lever_maps = 4u;
+static const uint k_terrain_lever_layers = 8u;
+static const uint k_terrain_levers = TERRAIN_FOOTPRINT_LEVERS;
+
+// The lattice's cell in the plane's UV (one repeat is 1): neighbouring lattice points are
+// |s^-1 (1, 0)| = 28/97 = 0.2887 apart (1 / (2 sqrt 3) with the skew's rational 97/28), so a tile
+// dominates a hexagon about that wide.
+static const float k_terrain_hex_cell_uv = 28.0 / 97.0;
+// **Tiles by footprint.** Where the pixel's footprint (the side of its area in the plane,
+// sqrt |du x dv|) is one cell, three tiles start blending to the nearest one; at two cells — the
+// cell half the pixel's side, a quarter of its area — one tile is read with the whole weight. Both
+// reads land on the texture filtered at the footprint's mip: the variance-preserving blend of three
+// independent tiles keeps that mip's mean and variance (Heitz and Neyret 2018, Eq. 9) and one tile
+// is that mip, so past a cell a pixel the two are the same distribution and only the arrangement of
+// sub-pixel cells, which no pixel resolves, differs.
+static const float k_terrain_one_tile_from = 1.0;  // cells per pixel side: the band starts
+static const float k_terrain_one_tile_at = 2.0;    // and one tile reads alone
+// **Maps by footprint.** The texture filter's width is at least max(minor axis, major axis / 16)
+// of the footprint (the sampler's anisotropy is 16 at most, `GpuScene`'s material samplers), so
+// where that is a whole repeat the hardware reads every map's last mip, its one texel: the layer's
+// mean colour, mean roughness and mean height, which the layer record already carries, and a flat
+// normal (the mean slope of a tileable height field is zero). From half a repeat the reads blend to
+// the means; from a whole one the colour, metallic-roughness and normal maps are not read at all.
+// The normal-variance chain (R97) is still read there, once: its last mip is the whole map's
+// variation, which the footprint's roughness has to carry.
+static const float k_terrain_flat_from = 0.5;  // filter width, repeats: the band starts
+static const float k_terrain_flat_at = 1.0;    // and the maps are their means
+// **Projections by what they contribute.** The 1/128 floor (`k_terrain_hex_axis_floor`) holds while
+// the pixel resolves cells. As the footprint grows past a cell, the floor rises to 1/32 with a band
+// to 1/16 above it: a share s of a projection that is dropped and renormalized moves the colour by
+// at most s times the gap between two projections' reads, which past a cell are reads of the same
+// texture at a mip whose variation has mostly gone (the measurement bounds the result: FLIP under
+// 0.005 over the fell's frame, docs/experiments/terrain-resolve-2026-11-07.md).
+static const float k_terrain_far_axis_floor = 1.0 / 32.0;
+static const float k_terrain_far_axis_full = 1.0 / 16.0;
+// **Layers by weight.** A mask layer's weight under 1/128 is skipped and one under 1/64 ramps to
+// it, past a cell a pixel of that layer, its share given to the others as the height blend's
+// normalization does; the mask's coverage is the original weights', so the root never shows.
+static const float k_terrain_far_layer_floor = 1.0 / 128.0;
+static const float k_terrain_far_layer_full = 1.0 / 64.0;
+
+// The footprint's side in the plane's UV over the cell: sqrt |du x dv| / cell.
+float terrain_footprint_cells(float2 du, float2 dv) {
+  return sqrt(abs(du.x * dv.y - du.y * dv.x)) / k_terrain_hex_cell_uv;
+}
+// The texture filter's width in repeats, a lower bound on what the sampler takes: the larger of
+// the footprint's minor axis and its major axis over the anisotropy's 16.
+float terrain_filter_width(float2 du, float2 dv) {
+  const float major = max(length(du), length(dv));
+  const float minor = abs(du.x * dv.y - du.y * dv.x) / max(major, 1e-30);
+  return max(minor, major * (1.0 / 16.0));
+}
+// 0 where three tiles read, 1 where one does; exactly 0 under a cell.
+float terrain_one_tile(float cells) {
+  if ((k_terrain_levers & k_terrain_lever_tiles) == 0u) return 0.0;
+  return smoothstep(k_terrain_one_tile_from, k_terrain_one_tile_at, cells);
+}
+// 0 where the maps are read, 1 where they are their means; exactly 0 under half a repeat.
+float terrain_flat_maps(float width) {
+  if ((k_terrain_levers & k_terrain_lever_maps) == 0u) return 0.0;
+  return smoothstep(k_terrain_flat_from, k_terrain_flat_at, width);
+}
+// The projections kept and their renormalized shares: the old step at 1/128 under a cell (`far`
+// 0), a band from `lo` to `hi` rising with `far` to 1/32 and 1/16 past two cells.
+float3 terrain_kept_projections(float3 axes, float far) {
+  float3 kept;
+  if (far <= 0.0 || (k_terrain_levers & k_terrain_lever_projections) == 0u) {
+    kept = axes * step(k_terrain_hex_axis_floor, axes);
+  } else {
+    const float lo = lerp(k_terrain_hex_axis_floor, k_terrain_far_axis_floor, far);
+    const float hi = lerp(k_terrain_hex_axis_floor, k_terrain_far_axis_full, far);
+    kept = axes * saturate((axes - lo) / (hi - lo));
+  }
+  return kept / (kept.x + kept.y + kept.z);
+}
+// A mask layer's weight as read past a cell (`far`): under the floor nothing, a band to the full
+// weight. Exactly the weight at `far` 0.
+float terrain_far_layer_weight(float weight, float far) {
+  if (far <= 0.0 || (k_terrain_levers & k_terrain_lever_layers) == 0u) return weight;
+  const float lo = far * k_terrain_far_layer_floor;
+  const float hi = far * k_terrain_far_layer_full;
+  return weight * saturate((weight - lo) / (hi - lo));
+}
+// **Tiles by weight** (lever 16). Burley's power-7 weights leave a tile under 1/128 of the blend
+// over about half of every cell (its barycentric under half the largest's: 0.5^7 = 1/128), where
+// it moves the pixel by under 1/128 of its departure from the mean — under a code step. Such a tile
+// is not read: a weight under 1/256 is dropped, one under 1/128 ramps to its own, and the kept
+// weights are renormalized and the operator's gain taken from them, so the blend stays a
+// variance-preserving one of the tiles it reads. Where every weight is 1/128 or more the hex is
+// returned untouched, bit for bit; this is the one rule that reads fewer tiles on the near ground.
+static const float k_terrain_tile_floor = 1.0 / 256.0;
+static const float k_terrain_tile_full = 1.0 / 128.0;
+static const uint k_terrain_lever_tile_weight = 16u;
+TerrainHex terrain_hex_kept(TerrainHex hex) {
+  if ((k_terrain_levers & k_terrain_lever_tile_weight) == 0u) return hex;
+  if (min(hex.weight.x, min(hex.weight.y, hex.weight.z)) >= k_terrain_tile_full) return hex;
+  float3 w = hex.weight * saturate((hex.weight - k_terrain_tile_floor) /
+                                   (k_terrain_tile_full - k_terrain_tile_floor));
+  w /= w.x + w.y + w.z;  // the largest weight is at least 1/3 and always kept
+  hex.weight = w;
+  hex.gain = 1.0 / sqrt(dot(w, w));
+  return hex;
+}
+
+// The nearest lattice point of the three: the tile with the largest weight.
+uint terrain_hex_nearest(TerrainHex hex) {
+  if (hex.weight.x >= hex.weight.y && hex.weight.x >= hex.weight.z) return 0u;
+  return hex.weight.y >= hex.weight.z ? 1u : 2u;
+}
+
 // One projection of a stochastic layer: every map read at the hex's three places with the same
 // weights (the maps stay coordinated), each place's UV derivatives turned with its tile so the
 // mip and the anisotropy are the footprint's (Deliot and Heitz 2019: SampleGrad, never the
 // derivative of the jittered UV). The colour, roughness and height blend about the layer's own
 // means; the slopes about zero, the mean slope of any tileable height field.
-void terrain_hex_sample(ResolveMaterial layer, TerrainHex hex, float2 uv, float2 du, float2 dv,
-                        bool filtered, out float3 colour, out float roughness, out float height,
-                        out float2 slope, out float loss) {
+void terrain_hex_sample(ResolveMaterial layer, TerrainHex lattice, float2 uv, float2 du,
+                        float2 dv, bool filtered, out float3 colour, out float roughness,
+                        out float height, out float2 slope, out float loss) {
+  const TerrainHex hex = terrain_hex_kept(lattice);
   const bool normals = layer.normal_texture != k_no_texture && layer.normal_scale != 0.0;
   const bool grads = filtered && (layer.flags & k_material_mipped) != 0;
+  // R136: past a cell a pixel one tile (`alone`), past a repeat's filter width the maps' means
+  // (`maps` false); both only with mipped, filtered reads, and both exactly off on the near ground.
+  // One loop for every case, the skipped reads predicated off, so the kernel keeps one copy of the
+  // reads and the near ground's registers.
+  const float one = grads ? terrain_one_tile(terrain_footprint_cells(du, dv)) : 0.0;
+  const float flat = grads ? terrain_flat_maps(terrain_filter_width(du, dv)) : 0.0;
+  const bool alone = one >= 1.0;
+  const bool maps = flat < 1.0;
+  const uint nearest = terrain_hex_nearest(hex);
   const uint normal_slot = slot_sampler(layer, layer.samplers_mr_normal, 16);
   // R97: the tiles' roughness is read unwidened and the widening applied once to the blend. Read
   // through `sample_material_grad` each tile would arrive widened, and the variance-preserving
@@ -286,22 +425,39 @@ void terrain_hex_sample(ResolveMaterial layer, TerrainHex hex, float2 uv, float2
   float r[3];
   float h[3];
   float2 d[3];
+  // The nearest tile's reads, kept by constant index as the unrolled loop passes it.
+  float3 c_near = terrain_layer_mean_colour(layer);
+  float r_near = terrain_layer_mean_roughness(layer);
+  float h_near = terrain_layer_mean_height(layer);
+  float2 d_near = float2(0.0);
+  float l_near = 0.0;
   [unroll] for (uint k = 0; k < 3; ++k) {
+    // A tile not read (R136) stands at the layer's means and a flat slope, which the operator
+    // leaves out; the results below are then the nearest tile's own.
+    c[k] = terrain_layer_mean_colour(layer);
+    r[k] = terrain_layer_mean_roughness(layer);
+    h[k] = terrain_layer_mean_height(layer);
+    d[k] = float2(0.0);
+    if ((alone && k != nearest) || hex.weight[k] <= 0.0) continue;
     const float2 turn = hex.turn[k];
     const float2 p = uv + hex.shift[k];
     const float2 du_k = float2(turn.x * du.x - turn.y * du.y, turn.y * du.x + turn.x * du.y);
     const float2 dv_k = float2(turn.x * dv.x - turn.y * dv.y, turn.y * dv.x + turn.x * dv.y);
+    float tile_loss = 0.0;
+    if (variance) {
+      tile_loss =
+          g_textures[NonUniformResourceIndex(layer.normal_texture + 1u)]
+              .SampleGrad(g_samplers[NonUniformResourceIndex(normal_slot)], p, du_k, dv_k)
+              .r;
+      loss += hex.weight[k] * tile_loss;
+    }
+    if (k == nearest) l_near = tile_loss;
+    if (!maps) continue;
     const MaterialSample s =
         filtered ? sample_material_grad(plain, p, du_k, dv_k) : sample_material(plain, p);
-    if (variance)
-      loss += hex.weight[k] *
-              g_textures[NonUniformResourceIndex(layer.normal_texture + 1u)]
-                  .SampleGrad(g_samplers[NonUniformResourceIndex(normal_slot)], p, du_k, dv_k)
-                  .r;
     c[k] = s.albedo;
     r[k] = s.roughness;
     h[k] = s.metallic;
-    d[k] = float2(0.0);
     if (normals) {
       float4 texel;
       if (grads)
@@ -316,6 +472,12 @@ void terrain_hex_sample(ResolveMaterial layer, TerrainHex hex, float2 uv, float2
       // so the stored slope pair turns by R too (Mikkelsen 2022, section 3, in this map's frame).
       d[k] = float2(turn.x * q.x - turn.y * q.y, turn.y * q.x + turn.x * q.y);
     }
+    if (k == nearest) {
+      c_near = c[k];
+      r_near = r[k];
+      h_near = h[k];
+      d_near = d[k];
+    }
   }
   colour = saturate(terrain_hex_blend(hex, terrain_layer_mean_colour(layer), c[0], c[1], c[2]));
   roughness = saturate(terrain_hex_blend(hex, float3(terrain_layer_mean_roughness(layer)),
@@ -323,6 +485,21 @@ void terrain_hex_sample(ResolveMaterial layer, TerrainHex hex, float2 uv, float2
   height = saturate(terrain_hex_blend(hex, float3(terrain_layer_mean_height(layer)), float3(h[0]),
                                       float3(h[1]), float3(h[2])).x);
   slope = hex.gain * (hex.weight.x * d[0] + hex.weight.y * d[1] + hex.weight.z * d[2]);
+  // R136's bands: toward the nearest tile alone, then toward the maps' means. Both are reads this
+  // loop already made, so a band costs no read; under a cell neither runs.
+  if (one > 0.0) {
+    colour = lerp(colour, saturate(c_near), one);
+    roughness = lerp(roughness, saturate(r_near), one);
+    height = lerp(height, saturate(h_near), one);
+    slope = lerp(slope, d_near, one);
+    loss = lerp(loss, l_near, one);
+  }
+  if (flat > 0.0) {
+    colour = lerp(colour, terrain_layer_mean_colour(layer), flat);
+    roughness = lerp(roughness, terrain_layer_mean_roughness(layer), flat);
+    height = lerp(height, terrain_layer_mean_height(layer), flat);
+    slope *= 1.0 - flat;
+  }
 }
 // One layer at a point: its colour, roughness, normal slope and height (0.5 without a height map),
 // projected as it asks, faded to its means past the detail distances.
@@ -362,8 +539,13 @@ TerrainLayerSample terrain_layer_sample(SceneGeometry geo, ResolveMaterial layer
     const float scale = 1000.0 / pitch;
     const float3 dx = dp_dx * scale;
     const float3 dy = dp_dy * scale;
-    float3 kept = axes * step(k_terrain_hex_axis_floor, axes);
-    kept /= kept.x + kept.y + kept.z;
+    // R136: past a cell a pixel (the surface's own footprint, so every projection agrees) the
+    // floor rises in a band; under a cell it is the 1/128 step it was.
+    const bool grads = filtered && (layer.flags & k_material_mipped) != 0;
+    const float far = grads ? smoothstep(k_terrain_one_tile_from, k_terrain_one_tile_at,
+                                         sqrt(length(cross(dx, dy))) / k_terrain_hex_cell_uv)
+                            : 0.0;
+    const float3 kept = terrain_kept_projections(axes, far);
     [unroll] for (uint axis = 0; axis < 3; ++axis) {
       if (kept[axis] <= 0.0) continue;
       const float2 uv = axis == 0 ? phase.zy : (axis == 1 ? phase.xz : phase.xy);
@@ -724,6 +906,22 @@ MaterialSample sample_terrain_material(SceneGeometry geo, ResolveMaterial root, 
         response[c] = 0u;
         if (weight[c] <= 0.0) continue;
         ResolveMaterial layer = table[rec.first_layer + index];
+        // R136, layers by weight: a stochastic layer under 1/128 of the pixel is not read once
+        // the pixel is past a cell of it; its coverage still counts, so the mask covers what it
+        // did and the others take its share through the blend's normalization.
+        const uint far_reads = k_material_terrain_stochastic | k_material_mipped;
+        if (filtered && (layer.flags & far_reads) == far_reads) {
+          const float cells = sqrt(length(cross(dp_dx, dp_dy))) * 1000.0 /
+                              (terrain_layer_pitch_mm(layer) * k_terrain_hex_cell_uv);
+          const float coverage = weight[c];
+          weight[c] = terrain_far_layer_weight(
+              weight[c], smoothstep(k_terrain_one_tile_from, k_terrain_one_tile_at, cells));
+          if (weight[c] <= 0.0) {
+            total += coverage;
+            continue;
+          }
+          total += coverage - weight[c];
+        }
         if (!variance_enabled) layer.flags &= ~k_material_normal_variance;
         const bool variance = (layer.flags & k_material_normal_variance) != 0;
         layers[c] = terrain_layer_sample(geo, layer, map_uv, map_dx, map_dy, point, n, axes, dp_dx,
