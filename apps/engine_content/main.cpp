@@ -178,6 +178,11 @@ const char* k_usage =
     "                                          scree) into a cluster container through the\n"
     "                                          cache, or a GLB (rocks --help); present with the\n"
     "                                          rocks capability\n"
+    "  channels <scene.json> <out.json> [--min-area-m2 <m2>] [--stage <f>] [--entry <i>]\n"
+    "                                          the water's channel description (WaterChannel\n"
+    "                                          blocks) from the scene's channels placements\n"
+    "                                          over its terrain; present with the channels\n"
+    "                                          capability\n"
     "  vine <recipe.vine.json> <out.clusters>|--cache [--ddc <dir>] [--force]\n"
     "  cover <recipe.cover.json> <out.clusters>|--cache [--ddc <dir>] [--force]\n"
     "                                          grow a vine or organic cover over the host its\n"
@@ -1389,6 +1394,7 @@ int main(int argc, char** argv) {
   if (command == "soil-cook") return content::soil_command(argc, argv);
   if (command == "flora") return content::flora_command(argc, argv);
   if (command == "rocks") return content::rocks_command(argc, argv);
+  if (command == "channels") return content::channels_command(argc, argv);
   if (command == "vine") return content::vine_command(argc, argv);
   if (command == "cover") return content::cover_command(argc, argv);
   if (command == "morphs") return content::morphs_command(argc, argv);
