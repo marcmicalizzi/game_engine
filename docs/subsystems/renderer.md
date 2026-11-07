@@ -1848,7 +1848,7 @@ water's own ambient is the harmonics still.
 3840×2160 frame of the forest touches at the default scale, so a walk's recent past stays warm as
 the eye turns back), made once at load and never by a frame (`gi cache: the frames with the cache on
 make no buffer and allocate as the mode off`). The mode is `off` without traced shadows, whose query
-the sample pass is. `ResolveParams` grew two rows, 496 to 528 bytes.
+the sample pass is. `ResolveParams` grew two rows, 496 to 528 bytes (544 with S97's wet-band row after them).
 
 **What it buys, judged by the reference tracer** at one bounce — direct light plus the environment
 through the scene's real visibility, which is what stage 1a estimates — at 128×128 after 64 frames

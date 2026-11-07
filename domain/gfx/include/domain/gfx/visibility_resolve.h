@@ -782,7 +782,7 @@ inline constexpr u32 k_resolve_stops = 8;
 // pixel — straight into the target's codes, for a capture to count. A measurement, never a picture.
 inline constexpr u32 k_resolve_count_rays = 0x100u;
 
-// Mirrors ResolveParams in visibility_resolve.slang. 528 bytes.
+// Mirrors ResolveParams in visibility_resolve.slang. 544 bytes.
 struct ResolveParams {
   Vec4 sky{};  // rgb shown for empty pixels, and the hemisphere ambient's upper half
   Vec4 sun{};  // xyz normalized direction towards the light, w intensity

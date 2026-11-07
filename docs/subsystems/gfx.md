@@ -358,7 +358,7 @@ which include the resolve's source for its reconstruction and its shadow query, 
 does): a 32-byte `GiCell`, the levels (25 mm doubling to 6.4 m, each a divisor of the 64 m world
 cell), the face of the normal, the 64-bit hash, and the sample pass's stride. `ResolveParams` carries
 the cache's address, flags (`k_gi_read`, `k_gi_reset`), frame, cell count, stride and level scale in
-two rows of its own (528 bytes). The ray mask a sample's ray traces with is the light queries'
+two rows of its own (528 bytes; 544 with S97's wet-band row after them). The ray mask a sample's ray traces with is the light queries'
 (`k_ray_mask_caster`), since it is the shadow rays' query. What the renderer does with it, and why
 it is shaped so, is [renderer](renderer.md#indirect-light-the-world-space-cache)'s; the CPU key is
 pinned by `gi_cache_key_tests.cpp`.
