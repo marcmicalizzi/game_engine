@@ -23,11 +23,11 @@ bool read_scene_water(const scene::Scene& file, const std::string& path, const s
 // The file's `water_channels` (engine.scene.WaterChannel; docs/subsystems/water.md, "Channels";
 // roadmap S96) through the water capability's placement generator "water_channel": one mesh and
 // one instance per channel, appended after the bodies, each mesh's `SceneMeshInfo` carrying a
-// `SceneWater` whose shading has `channel` set and whose `body` holds the channel's optics under a
+// `SceneWater` whose `channel` is set and whose `body` holds the channel's optics under a
 // body's names. Nothing for a file with none. False with a sentence for a build without the water
 // capability, or a channel it refuses.
 bool read_scene_water_channels(const scene::Scene& file, const std::string& path,
-                               const std::string& dir, const TerrainSampler& ground,
-                               SceneDesc& out, std::string& error);
+                               const std::string& dir, const TerrainSampler& ground, SceneDesc& out,
+                               std::string& error);
 
 }  // namespace engine::renderer

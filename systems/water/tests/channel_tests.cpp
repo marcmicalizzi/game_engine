@@ -1,9 +1,9 @@
 // Channels of flowing water on the CPU (docs/subsystems/water.md, "Channels"; roadmap S96): the
 // description checked and refused, Manning's speed and the Froude number, the ribbon over a
 // synthetic channel of six points with a 10 m fall (its width, its heights, its phase monotone and
-// scaled by the speed, its fall steeper than 45 degrees and the rest facing up, the wrap), the depth
-// map from the description, the GLB's bytes the same twice and pinned, and the generator through
-// the registry. No device.
+// scaled by the speed, its fall steeper than 45 degrees and the rest facing up, the wrap), the
+// depth map from the description, the GLB's bytes the same twice and pinned, and the generator
+// through the registry. No device.
 #include <core/hash/hash.h>
 #include <core/math/math.h>
 #include <core/math/world.h>
@@ -123,8 +123,8 @@ TEST_CASE("water channel: the ribbon's width, heights, phase and fall") {
   REQUIRE(m.positions.size() == m.normals.size());
   REQUIRE(cm.section_s.size() >= 6);
   MESSAGE("channel ribbon: spacing ", m.spacing, " m, ", cm.columns, " columns, ",
-          cm.section_s.size(), " sections, ", m.rings, " rows, ", m.positions.size(),
-          " vertices, ", m.indices.size() / 3, " triangles, travel ", cm.section_tau.back(), " s");
+          cm.section_s.size(), " sections, ", m.rings, " rows, ", m.positions.size(), " vertices, ",
+          m.indices.size() / 3, " triangles, travel ", cm.section_tau.back(), " s");
   CHECK(water::channel_spacing(ch) == doctest::Approx(0.6666667f));  // the shore's third
   // Every row level across, as wide as its section's width with the extension, depth zero past it.
   const f32 span = 1.0f + 2.0f * water::k_channel_edge_extend;
@@ -252,9 +252,9 @@ TEST_CASE("water channel: the GLB is the same bytes twice, pinned, and the gener
   // The importer reads it as the renderer will: positions, normals and the phase and depth UVs.
   assets::MeshData data;
   std::string error;
-  REQUIRE_MESSAGE(assets::load_gltf_memory(std::span<const u8>(glb_a.data(), glb_a.size()), "",
-                                           data, &error),
-                  error);
+  REQUIRE_MESSAGE(
+      assets::load_gltf_memory(std::span<const u8>(glb_a.data(), glb_a.size()), "", data, &error),
+      error);
   CHECK(data.positions.size() == a.mesh.positions.size());
 
   const test::TempDir tmp("water_channel_generator");
@@ -267,8 +267,8 @@ TEST_CASE("water channel: the GLB is the same bytes twice, pinned, and the gener
   context.dir = dir;
   context.where = "test";
   void* state = nullptr;
-  REQUIRE_MESSAGE(
-      generator->open(water::channel_generator_params(blocks), context, &state, &error), error);
+  REQUIRE_MESSAGE(generator->open(water::channel_generator_params(blocks), context, &state, &error),
+                  error);
   scene_gen::Placements placed;
   REQUIRE_MESSAGE(generator->expand(state, context, placed, &error), error);
   generator->close(state);

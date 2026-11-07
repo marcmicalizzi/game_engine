@@ -222,12 +222,12 @@ void build_channel_mesh(const Channel& c, ChannelMesh& out) {
       sec.s = station;
       if (falls) {
         const f64 h_fall = std::max(0.0, static_cast<f64>(a.y - sec.p.y));
-        sec.speed = static_cast<f32>(std::sqrt(static_cast<f64>(lip_speed) * lip_speed +
-                                               2.0 * k_gravity * h_fall));
+        sec.speed = static_cast<f32>(
+            std::sqrt(static_cast<f64>(lip_speed) * lip_speed + 2.0 * k_gravity * h_fall));
         if (k == steps) {
           impact = sec.speed;
-          plunge_len = std::clamp(k_channel_plunge_share * (fall_top - b.y),
-                                  k_channel_plunge_min_m, k_channel_plunge_max_m);
+          plunge_len = std::clamp(k_channel_plunge_share * (fall_top - b.y), k_channel_plunge_min_m,
+                                  k_channel_plunge_max_m);
           plunge_left = plunge_len;
         }
       } else {
@@ -267,7 +267,7 @@ void build_channel_mesh(const Channel& c, ChannelMesh& out) {
       const f32 a = u * sec.width;
       m.positions.push_back(sec.p + across * a);
       m.normals.push_back(Vec3{0.0f, 1.0f, 0.0f});  // set below, once the tangents are known
-      const f32 x = 2.0f * u;  // -1 and 1 at the edges of the width
+      const f32 x = 2.0f * u;                       // -1 and 1 at the edges of the width
       const f32 depth = std::max(0.0f, sec.depth * (1.0f - x * x));
       m.uvs.push_back(Vec2{static_cast<f32>(phase), depth});
       m.max_depth = std::max(m.max_depth, depth);
@@ -363,10 +363,14 @@ void build_channel_depth_map(const Channel& c, const ChannelMesh& mesh, DepthMap
     const Vec3 b = c.points[i + 1];
     const f64 reach = 0.5 * static_cast<f64>(std::max(c.width_m[i], c.width_m[i + 1])) + tm;
     const f64 ax = a.x, az = a.z, bx = b.x, bz = b.z;
-    const i64 i0 = std::max<i64>(0, static_cast<i64>(std::floor((std::min(ax, bx) - reach - ox) / tm)));
-    const i64 i1 = std::min<i64>(size - 1, static_cast<i64>(std::ceil((std::max(ax, bx) + reach - ox) / tm)));
-    const i64 j0 = std::max<i64>(0, static_cast<i64>(std::floor((std::min(az, bz) - reach - oz) / tm)));
-    const i64 j1 = std::min<i64>(size - 1, static_cast<i64>(std::ceil((std::max(az, bz) + reach - oz) / tm)));
+    const i64 i0 =
+        std::max<i64>(0, static_cast<i64>(std::floor((std::min(ax, bx) - reach - ox) / tm)));
+    const i64 i1 =
+        std::min<i64>(size - 1, static_cast<i64>(std::ceil((std::max(ax, bx) + reach - ox) / tm)));
+    const i64 j0 =
+        std::max<i64>(0, static_cast<i64>(std::floor((std::min(az, bz) - reach - oz) / tm)));
+    const i64 j1 =
+        std::min<i64>(size - 1, static_cast<i64>(std::ceil((std::max(az, bz) + reach - oz) / tm)));
     const f64 dx = bx - ax, dz = bz - az;
     const f64 len2 = dx * dx + dz * dz;
     for (i64 j = j0; j <= j1; ++j) {

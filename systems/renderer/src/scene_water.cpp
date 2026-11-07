@@ -10,8 +10,8 @@
 #include <core/log/log.h>
 #include <core/math/math.h>
 #include <core/schema/json_reflect.h>
-#include <domain/scene_gen/scene_gen.h>
 #include <domain/gfx/water_spectrum.h>
+#include <domain/scene_gen/scene_gen.h>
 #include <foundation/io/vfs.h>
 
 #include <cmath>
@@ -164,8 +164,7 @@ bool read_scene_water(const scene::Scene& file, const std::string& path, const s
     if (wind <= 0.0f) wind = file.water[k].wind_m_s;
     if (file.water[k].open && wind > 0.0f) {
       gfx::WaterWave waves[gfx::k_water_waves];
-      gfx::water_spectrum(static_cast<f64>(wind),
-                          static_cast<f64>(file.water[k].fetch_km) * 1000.0,
+      gfx::water_spectrum(static_cast<f64>(wind), static_cast<f64>(file.water[k].fetch_km) * 1000.0,
                           water.shading.direction, file.water[k].seed, waves);
       for (const gfx::WaterWave& wave : waves)
         water.waves.push_back(wave);
@@ -209,8 +208,8 @@ scene::WaterBody channel_body(const scene::WaterChannel& channel) {
 }  // namespace
 
 bool read_scene_water_channels(const scene::Scene& file, const std::string& path,
-                               const std::string& dir, const TerrainSampler& ground,
-                               SceneDesc& out, std::string& error) {
+                               const std::string& dir, const TerrainSampler& ground, SceneDesc& out,
+                               std::string& error) {
   if (file.water_channels.empty()) return true;
   const scene_gen::GeneratorRegistry& registry = scene_gen::GeneratorRegistry::global();
   const scene_gen::PlacementGeneratorDesc* generator = registry.find_placement("water_channel");

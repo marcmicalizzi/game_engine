@@ -2,7 +2,8 @@
 // roadmap S96): a scene's `water_channels` read as one mesh and one instance a channel after the
 // bodies and before the terrain, carrying the channel bit and the optics; an empty list the scene
 // it was; and on a GPU, a channel beside a still pool — the same world time twice the same bytes,
-// and two world times apart only the channel's pixels change, the pool's and the ground's not at all.
+// and two world times apart only the channel's pixels change, the pool's and the ground's not at
+// all.
 #include <core/json/json.h>
 #include <core/math/math.h>
 #include <core/math/world.h>
@@ -108,7 +109,8 @@ void shoot_channel(const gfx::Device& device, const std::string& path, const std
 
 }  // namespace
 
-TEST_CASE("water channel: a scene's channels are one mesh and one instance each, after the bodies") {
+TEST_CASE(
+    "water channel: a scene's channels are one mesh and one instance each, after the bodies") {
   const test::TempDir tmp("water_channel_scene");
   const std::string path = tmp.file("scene.json");
   REQUIRE(write_channel_scene(path, k_brook));
@@ -127,7 +129,7 @@ TEST_CASE("water channel: a scene's channels are one mesh and one instance each,
   CHECK(brook.channel);
   CHECK_FALSE(desc.mesh_info[0].water->channel);
   CHECK(brook.body.name == "brook");
-  CHECK(brook.body.shore_m == 2.0f);       // a body's default, under a body's name
+  CHECK(brook.body.shore_m == 2.0f);  // a body's default, under a body's name
   CHECK(brook.body.transmission == 1.0f);
   CHECK_FALSE(brook.body.open);
   CHECK(brook.depth.size >= water::k_depth_map_min);  // the description's bed, beside the mesh
@@ -167,9 +169,9 @@ TEST_CASE("water channel: a scene's channels are one mesh and one instance each,
     "width_m": [1], "depth_m": [0.2], "slope": [0.01]}])"));
   SceneDesc bad;
   CHECK_FALSE(read_scene_file(bad_path, bad, error));
-  CHECK_MESSAGE(error.find("water channel \"trickle\": it has fewer than two points") !=
-                    std::string::npos,
-                error);
+  CHECK_MESSAGE(
+      error.find("water channel \"trickle\": it has fewer than two points") != std::string::npos,
+      error);
 }
 
 TEST_CASE("water channel: the channel moves with the world's clock, and nothing else does") {
