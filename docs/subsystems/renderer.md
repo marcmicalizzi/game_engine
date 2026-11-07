@@ -1840,6 +1840,15 @@ below both.) A hit's albedo is the material's base colour and texture at level 0
 layers or the ground's detail; a hit costs a nearest-hit traversal, a material fetch and a shadow
 ray where a `sky` sample costs a first-hit one. Stage 2 is ReSTIR GI over the cache (R68).
 
+**What it costs, and why it is off.** On the owner's v25 walk at 3840×2160 (`msvc-release`, median
+of 301 frames, a shared machine; [the page](../experiments/gi-cache-2026-11-07.md#the-v25-walk-at-38402160-what-it-costs-and-what-it-looks-like)):
+the sample pass is 1.62 ms under `sky` and 3.88 under `bounce`, the fold 0.01, and **the read adds
+2.8–2.9 ms to the resolve** (5.05 to 7.8–7.95) — sixteen scattered bucket scans a pixel. The frame
+goes 17.8 → 22.4 (`sky`) → 24.7 ms (`bounce`). The picture under `bounce` has the shaded crowns,
+trunks and understory the harmonics could not give, and blocks a cell wide on rounded rocks, whose
+normals the face key splits. `renderer.gi.mode` stays `off` until the read is cheaper and the blocks
+are gone; `bounce` is the mode to turn on.
+
 ## The sun's day
 
 *A scene that names a sky takes its sun, its moon and its sky from it instead, on the world's clock ([The sky](#the-sky)); everything in this section is the stand-in's, which every other scene still draws, to the bit.*
