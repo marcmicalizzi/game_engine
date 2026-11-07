@@ -534,6 +534,128 @@ bool mask_point(const TileSet& set, const MaskInputs& in, i64 x_mm, i64 z_mm, Ve
   return true;
 }
 
+namespace {
+
+// The tiles over the heightfield's data: what the priors read and the ground draws.
+struct TileRange {
+  i32 tx0, tz0, tx1, tz1;
+};
+TileRange tile_range(const TileSetManifest& sm, i64 s, u32 c) {
+  const i64 x0 = sm.origin_mm[0], z0 = sm.origin_mm[1];
+  const i64 x1 = x0 + static_cast<i64>(sm.width - 1) * sm.spacing_mm;
+  const i64 z1 = z0 + static_cast<i64>(sm.height - 1) * sm.spacing_mm;
+  return {static_cast<i32>(floor_div(floor_div(x0, s), c)),
+          static_cast<i32>(floor_div(floor_div(z0, s), c)),
+          static_cast<i32>(floor_div(floor_div(x1, s), c)),
+          static_cast<i32>(floor_div(floor_div(z1, s), c))};
+}
+
+// One over-budget tile as the report names it: the layers its points name, heaviest first by their
+// mean weight over the tile's points, and the weakest, the one a blend-out would drop.
+OverBudgetTile over_budget_tile(const MaskInputs& in, i32 tx, i32 tz, i64 s, u32 c,
+                                const Vector<f64>& dense, u32 points, const Vector<u32>& table) {
+  OverBudgetTile t;
+  t.tx = tx;
+  t.tz = tz;
+  t.x0_mm = static_cast<i64>(tx) * c * s;
+  t.x1_mm = (static_cast<i64>(tx) + 1) * c * s;
+  t.z0_mm = static_cast<i64>(tz) * c * s;
+  t.z1_mm = (static_cast<i64>(tz) + 1) * c * s;
+  const u32 palette = static_cast<u32>(in.palette.size());
+  for (const u32 k : table) {
+    MaskTileLayer l;
+    l.layer = k;
+    l.name = in.palette[k];
+    f64 sum = 0;
+    for (u32 p = 0; p < points; ++p) {
+      const f64 v = dense[p * palette + k];
+      sum += v;
+      l.peak = std::max(l.peak, v);
+    }
+    l.mean = sum / static_cast<f64>(points);
+    t.layers.push_back(l);
+  }
+  // Heaviest first; ties by palette order, so the listing is the same on every run.
+  for (u32 i = 1; i < t.layers.size(); ++i)
+    for (u32 j = i; j > 0 && t.layers[j].mean > t.layers[j - 1].mean; --j)
+      std::swap(t.layers[j], t.layers[j - 1]);
+  t.weakest = t.layers.empty() ? 0 : static_cast<u32>(t.layers.size()) - 1;
+  return t;
+}
+
+}  // namespace
+
+std::string describe_over_budget(const MaskBudgetReport& report, u32 cap) {
+  const u32 n = static_cast<u32>(report.over.size());
+  std::string text =
+      "terrain.masks: " + std::to_string(n) + (n == 1 ? " tile names" : " tiles name") +
+      " more layers than materials.layer_budget is " + std::to_string(report.budget) + ": ";
+  for (u32 i = 0; i < n && i < cap; ++i) {
+    const OverBudgetTile& t = report.over[i];
+    char place[160];
+    std::snprintf(place, sizeof(place), "x %.1f to %.1f m, z %.1f to %.1f m",
+                  static_cast<f64>(t.x0_mm) / 1000.0, static_cast<f64>(t.x1_mm) / 1000.0,
+                  static_cast<f64>(t.z0_mm) / 1000.0, static_cast<f64>(t.z1_mm) / 1000.0);
+    if (i > 0) text += "; ";
+    text += "tile (" + std::to_string(t.tx) + ", " + std::to_string(t.tz) + ") at " + place +
+            " names " + std::to_string(t.layers.size()) + " layers (";
+    for (u32 k = 0; k < t.layers.size(); ++k) {
+      char w[48];
+      std::snprintf(w, sizeof(w), " %.2f", t.layers[k].mean);
+      text += (k > 0 ? ", " : "") + t.layers[k].name + w;
+    }
+    text += "; weakest " + (t.layers.empty() ? std::string() : t.layers[t.weakest].name) + ")";
+  }
+  if (n > cap) text += "; and " + std::to_string(n - cap) + " more";
+  text += "; narrow a region's feather or margin, or a prior's blend, so fewer meet there";
+  if (report.budget < scene_gen::k_mask_channels)
+    text += "; or raise materials.layer_budget up to 4";
+  else
+    text += "; the mask format supports at most 4 layers per tile; reduce the overlap";
+  return text;
+}
+
+bool check_mask_budget(const TileSet& set, const MaskInputs& in, MaskBudgetReport& out,
+                       std::string& error) {
+  out = MaskBudgetReport{};
+  Field f;
+  if (!make_field(set, in, f, error)) return false;
+  const i64 s = in.masks.spacing_mm;
+  const u32 c = in.masks.tile_cells;
+  const TileRange r = tile_range(set.manifest(), s, c);
+  const u32 n0 = c + 1;
+  Vector<f64> dense(static_cast<u32>(n0) * n0 * f.palette);
+  Vector<f64> w;
+  Vector<f64> scratch;
+  out.budget = in.budget;
+  for (i32 tz = r.tz0; tz <= r.tz1; ++tz) {
+    for (i32 tx = r.tx0; tx <= r.tx1; ++tx) {
+      Vector<u32> used(f.palette, 0u);
+      for (u32 b = 0; b < n0; ++b) {
+        for (u32 a = 0; a < n0; ++a) {
+          const i64 xm = (static_cast<i64>(tx) * c + a) * s;
+          const i64 zm = (static_cast<i64>(tz) * c + b) * s;
+          f64 point_wet = 0;
+          evaluate(f, xm, zm, s, w, point_wet, scratch);
+          const u32 p = b * n0 + a;
+          for (u32 k = 0; k < f.palette; ++k) {
+            dense[p * f.palette + k] = w[k];
+            if (quantize(w[k]) != 0) used[k] = 1;
+          }
+        }
+      }
+      Vector<u32> table;
+      for (u32 k = 0; k < f.palette; ++k)
+        if (used[k] != 0) table.push_back(k);
+      ++out.tiles;
+      out.largest = std::max(out.largest, static_cast<u32>(table.size()));
+      if (table.size() > in.budget)
+        out.over.push_back(over_budget_tile(in, tx, tz, s, c, dense, n0 * n0, table));
+    }
+  }
+  return true;
+}
+
 bool build_mask_level(const TileSet& set, const MaskInputs& in, const std::string& dir,
                       MaskBuildResult& out, std::string& error) {
   out = MaskBuildResult{};
@@ -544,13 +666,10 @@ bool build_mask_level(const TileSet& set, const MaskInputs& in, const std::strin
   const i64 s = in.masks.spacing_mm;
   const u32 c = in.masks.tile_cells;
   // The tiles over the heightfield's data: what the priors read and the ground draws.
-  const i64 x0 = sm.origin_mm[0], z0 = sm.origin_mm[1];
-  const i64 x1 = x0 + static_cast<i64>(sm.width - 1) * sm.spacing_mm;
-  const i64 z1 = z0 + static_cast<i64>(sm.height - 1) * sm.spacing_mm;
-  const i32 tx0 = static_cast<i32>(floor_div(floor_div(x0, s), c));
-  const i32 tz0 = static_cast<i32>(floor_div(floor_div(z0, s), c));
-  const i32 tx1 = static_cast<i32>(floor_div(floor_div(x1, s), c));
-  const i32 tz1 = static_cast<i32>(floor_div(floor_div(z1, s), c));
+  const TileRange range = tile_range(sm, s, c);
+  const i32 tx0 = range.tx0, tz0 = range.tz0, tx1 = range.tx1, tz1 = range.tz1;
+  MaskBudgetReport over;
+  over.budget = in.budget;
   if (io::make_directories(dir) != io::Status::Ok && !io::exists(dir)) {
     error = "'" + dir + "' could not be made";
     return false;
@@ -608,24 +727,9 @@ bool build_mask_level(const TileSet& set, const MaskInputs& in, const std::strin
         if (used[k] != 0) table.push_back(k);
       if (table.empty() && !any_wet) continue;
       if (table.size() > in.budget) {
-        std::string names;
-        for (const u32 k : table)
-          names += (names.empty() ? "" : ", ") + in.palette[k];
-        char place[160];
-        std::snprintf(place, sizeof(place), "x %.1f to %.1f m, z %.1f to %.1f m",
-                      static_cast<f64>(static_cast<i64>(tx) * c * s) / 1000.0,
-                      static_cast<f64>((static_cast<i64>(tx) + 1) * c * s) / 1000.0,
-                      static_cast<f64>(static_cast<i64>(tz) * c * s) / 1000.0,
-                      static_cast<f64>((static_cast<i64>(tz) + 1) * c * s) / 1000.0);
-        error = "terrain.masks: tile (" + std::to_string(tx) + ", " + std::to_string(tz) + ") at " +
-                place + " names " + std::to_string(table.size()) + " layers (" + names +
-                ") where materials.layer_budget is " + std::to_string(in.budget) +
-                "; narrow a region's feather or margin, or a prior's blend, so fewer meet there";
-        if (in.budget < scene_gen::k_mask_channels)
-          error += "; or raise materials.layer_budget up to 4";
-        else
-          error += "; the mask format supports at most 4 layers per tile; reduce the overlap";
-        return false;
+        // Every tile over is named, not the first: the scan goes on and the sentence lists them.
+        over.over.push_back(over_budget_tile(in, tx, tz, s, c, dense, n0 * n0, table));
+        continue;
       }
       std::fill(tile_words.begin(), tile_words.end(), 0u);
       u32 packed = 0xFFFFFFFFu;
@@ -668,6 +772,10 @@ bool build_mask_level(const TileSet& set, const MaskInputs& in, const std::strin
       out.bytes += bytes.size();
       ++out.tiles;
     }
+  }
+  if (!over.over.empty()) {
+    error = describe_over_budget(over, k_over_budget_listed);
+    return false;
   }
   // The level as one file: the present tiles' records in the order written, and their table.
   manifest.archive = mask_archive(s);

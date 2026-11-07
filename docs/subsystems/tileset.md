@@ -145,6 +145,8 @@ Sculpting in the editor is W66's second half, not built. What it needs: (1) **th
 
 **Mips that keep the seam exact.** Mip *m* of a tile holds `cells / 2^m + 1` points; each is mip 0's points filtered over its cell (weights 1, 2, …, 2, 1 along each axis, the height chain's box), **except along an axis where the point lies on the tile's edge**, where it is mip 0's edge point alone — so a mip's edge points are computed from points both tiles hold, by the same integer arithmetic, a layer at a time (rounded half up), and the seam stays exact at every mip. Interior mip points never reach past the edge (a cell's half-width is at most its distance from it), so no filter is clamped.
 
+**The refusal names every tile, and a check names them before the cook** (roadmap T72). The build scans the whole level and refuses once, with a sentence that lists each tile over budget (its place, its layers with their mean weight over the tile, the weakest) up to 32 and then "and N more", so a composer fixes a scene in one pass rather than one tile a cook; `tileset::check_mask_budget` runs the same composition without writing the archive and `engine-content masks check <scene.json>` ([apps](apps.md)) prints a JSON line a tile over and a summary (exit 0 none, 1 some). The weakest layer is the smallest mean weight, what a blend-out would drop; no blend-out exists yet, and the budget stays 4 layers a tile.
+
 A refusal suggests increasing `materials.layer_budget` only when it is below four,
 and only up to four. At four, it names the format limit and asks for less overlap.
 An explicit region's `material` can keep steep excavated soil from becoming the

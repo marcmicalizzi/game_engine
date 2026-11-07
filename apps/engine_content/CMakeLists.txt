@@ -40,7 +40,7 @@ endif()
 # beside the ruins', and are compiled only where the command exists.
 if(TARGET engine::tileset)
   list(APPEND _content_deps tileset tileset_schemas schema schemas bench)
-  list(APPEND _content_tests tests/tileset_tests.cpp)
+  list(APPEND _content_tests tests/tileset_tests.cpp tests/masks_check_tests.cpp)
 endif()
 if(TARGET engine::city)
   list(APPEND _content_deps city schema schemas)
@@ -94,7 +94,7 @@ list(REMOVE_DUPLICATES _content_deps)
 
 engine_app(NAME engine_content OUTPUT engine-content
   SOURCES main.cpp tissue_commands.cpp ruins_commands.cpp city_commands.cpp limit_dump.cpp
-          normal_cases.cpp clip_commands.cpp terrain_commands.cpp tileset_commands.cpp npc_commands.cpp
+          normal_cases.cpp clip_commands.cpp terrain_commands.cpp tileset_commands.cpp masks_check_commands.cpp npc_commands.cpp
           flora_commands.cpp rocks_commands.cpp cover_commands.cpp soil_commands.cpp morphs.cpp
   DEPS ${_content_deps}
   E2E_TESTS ${_content_tests} tests/soil_tests.cpp tests/morphs_tests.cpp)

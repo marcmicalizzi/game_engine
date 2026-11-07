@@ -1383,6 +1383,7 @@ int main(int argc, char** argv) {
   if (command == "terrain-synth" || command == "terrain-tiles" || command == "terrain-masks" ||
       command == "terrain-read")
     return content::tileset_command(argc, argv);
+  if (command == "masks") return content::masks_check_command(argc, argv);
   if (command == "city") return content::city_command(argc, argv);
   if (command == "npcs") return content::npcs_command(argc, argv);
   if (command == "soil-cook") return content::soil_command(argc, argv);
