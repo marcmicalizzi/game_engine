@@ -1231,15 +1231,17 @@ TEST_CASE("gfx: the far terrain's read rules are bands, and exactly off under a 
     const f64 kx = band(ax), ky = band(ay);
     worst_far = std::max({worst_far, std::abs(static_cast<f64>(v[i].x) - kx / (kx + ky)),
                           std::abs(static_cast<f64>(v[i].y) - ky / (kx + ky))});
-    CHECK(std::abs(static_cast<f64>(v[i].x) + v[i].y - 1.0) < 1e-6);
-    CHECK(std::abs(static_cast<f64>(v[i].z) + v[i].w - 1.0) < 1e-6);
+    CHECK(std::abs(static_cast<f64>(v[i].x) + static_cast<f64>(v[i].y) - 1.0) < 1e-6);
+    CHECK(std::abs(static_cast<f64>(v[i].z) + static_cast<f64>(v[i].w) - 1.0) < 1e-6);
     dropped_far += v[i].x == 0.0f || v[i].y == 0.0f ? 1u : 0u;
     dropped_near += v[i].z == 0.0f || v[i].w == 0.0f ? 1u : 0u;
     if (i != 0) {
-      far_jump = std::max({far_jump, std::abs(static_cast<f64>(v[i].x) - v[i - 1].x),
-                           std::abs(static_cast<f64>(v[i].y) - v[i - 1].y)});
-      near_jump = std::max({near_jump, std::abs(static_cast<f64>(v[i].z) - v[i - 1].z),
-                            std::abs(static_cast<f64>(v[i].w) - v[i - 1].w)});
+      far_jump = std::max({far_jump,
+                           std::abs(static_cast<f64>(v[i].x) - static_cast<f64>(v[i - 1].x)),
+                           std::abs(static_cast<f64>(v[i].y) - static_cast<f64>(v[i - 1].y))});
+      near_jump = std::max({near_jump,
+                            std::abs(static_cast<f64>(v[i].z) - static_cast<f64>(v[i - 1].z)),
+                            std::abs(static_cast<f64>(v[i].w) - static_cast<f64>(v[i - 1].w))});
     }
   }
   MESSAGE("largest share change in 0.01 degree: far " << far_jump << ", near " << near_jump
@@ -1313,7 +1315,8 @@ TEST_CASE("gfx: a stochastic tile under 1/128 of the blend is ramped out, the re
   f64 worst = 0;
   for (u32 i = 0; i < k_count; ++i) {
     const Vec4 lattice = v[2 * i], kept = v[2 * i + 1];
-    const f64 w[3] = {lattice.x, lattice.y, lattice.z};
+    const f64 w[3] = {static_cast<f64>(lattice.x), static_cast<f64>(lattice.y),
+                      static_cast<f64>(lattice.z)};
     const f32 k[3] = {kept.x, kept.y, kept.z};
     if (std::min({w[0], w[1], w[2]}) >= k_hi) {
       CHECK(std::bit_cast<u32>(kept.x) == std::bit_cast<u32>(lattice.x));
@@ -1331,12 +1334,12 @@ TEST_CASE("gfx: a stochastic tile under 1/128 of the blend is ramped out, the re
     f64 squares = 0;
     u32 read = 0;
     for (u32 j = 0; j < 3; ++j) {
-      worst = std::max(worst, std::abs(k[j] - band[j] / sum));
+      worst = std::max(worst, std::abs(static_cast<f64>(k[j]) - band[j] / sum));
       squares += (band[j] / sum) * (band[j] / sum);
       if (w[j] < k_lo) CHECK(k[j] == 0.0f);  // not read
       read += k[j] > 0.0f ? 1u : 0u;
     }
-    CHECK(std::abs(kept.w - 1.0 / std::sqrt(squares)) < 1e-5);
+    CHECK(std::abs(static_cast<f64>(kept.w) - 1.0 / std::sqrt(squares)) < 1e-5);
     one_tile += read == 1 ? 1u : 0u;
     two_tiles += read == 2 ? 1u : 0u;
   }
