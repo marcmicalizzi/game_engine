@@ -223,7 +223,7 @@ TEST_CASE("water fill: refused with a sentence when it cannot fill, and the new 
   scene::WaterBody two = fill_block(100.0, 50.0, 0.0);
   two.shape.polygon.push_back(WorldPos{0.0, 0.0, 0.0});
   CHECK_FALSE(water::read_body(two, body, &error));
-  CHECK(error.find("exactly one of a circle, a polygon and a fill") != std::string::npos);
+  CHECK(error.find("exactly one of a circle and a polygon, or a fill") != std::string::npos);
   CHECK_FALSE(water::read_body(fill_block(100.0, 50.0, 0.0, 0.0f), body, &error));
   CHECK(error.find("max_extent_m must be positive") != std::string::npos);
   // The shore's fields: defaults from the literature, and refused negative.

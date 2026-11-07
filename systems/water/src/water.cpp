@@ -132,7 +132,7 @@ bool read_body(const scene::WaterBody& block, Body& out, std::string* error) {
   const bool polygon = !block.shape.polygon.empty();
   const bool fill = block.shape.fill.has_value();
   if (static_cast<int>(circle) + static_cast<int>(polygon) + static_cast<int>(fill) != 1)
-    return fail("its shape must be exactly one of a circle, a polygon and a fill");
+    return fail("its shape must be exactly one of a circle and a polygon, or a fill");
   if (fill) {
     // A body that fills (water.md, "A body that fills"): centred on its seed; the flood needs the
     // ground, so it is `fill_body`'s, when the scene's ground is known.
