@@ -458,6 +458,23 @@ void crown_grow(Crown& crown, const CrownSpec& spec, const Vector<CrownRoot>& ro
 // each twig at most `cap` a side) and sets each twig's count a side.
 void crown_distribute_leaves(Crown& crown, f64 cards, u32 cap);
 
+// The spray's leaf spacing (G129 follow-up; flora.md, "Allometry"): a twig holds at most
+// floor(length / `card_step`) cards a side, never more than `cap`, so a card keeps its
+// species' area. `crown.card_step` must be set.
+u32 crown_twig_room(const Crown& crown, const CrownNode& twig, u32 cap);
+
+// The pipe model's leafy twigs (Shinozaki et al. 1964): a terminal shoot of base radius r is
+// (r / twig_radius)^area_exponent unit pipes, each serving one twig's leaves. Where the twigs
+// cannot hold `cards` (both sides) at the leaf spacing, the shoots' spare pipes leave them as
+// short leafy twigs of the species' radius and length, spread over the crown by spare pipes, as
+// many as the deficit needs and never more than the pipes allow. A crown whose twigs already hold
+// the even distribution is not touched. Returns the twigs added; `crown.card_step` must be set.
+u32 crown_add_leaf_twigs(Crown& crown, const CrownSpec& spec, f64 cards, u32 cap);
+
+// `crown_distribute_leaves` where it fits every twig's room; otherwise the cards fill the twigs'
+// rooms as evenly as integers go (a common level, the remainder spread over the twigs with room).
+void crown_distribute_spaced(Crown& crown, f64 cards, u32 cap);
+
 // How much of the structure a mesh carries (the ladder's rungs move these and nothing else).
 struct CrownPlan {
   f64 edge_m = 0.12;  // a tube's circumference step: sides = 2 pi r / edge, 3 to `max_sides`

@@ -54,6 +54,20 @@ CrownSpec spec_of(const Broadleaf& p, const GrowthRules& rules = {}) {
   return s;
 }
 
+// One card's base along a twig: its width laid at the leaf's angle to the twig.
+f64 card_step_of(const Broadleaf& p) {
+  const f64 width = static_cast<f64>(p.leaf_width) * static_cast<f64>(p.leaf_length_m);
+  return width / det::sin(static_cast<f64>(p.leaf_angle_deg) * k_degree);
+}
+
+// The leaf count by the leaf area index: one-sided leaf area over the crown's footprint, each card
+// one leaf of the species' size (its area `leaf_width` times its length squared).
+f64 leaf_cards_of(const Broadleaf& p, const Crown& crown) {
+  const f64 length = static_cast<f64>(p.leaf_length_m);
+  const f64 width = static_cast<f64>(p.leaf_width) * length;
+  return static_cast<f64>(p.leaf_area_index) * crown.footprint / (width * length);
+}
+
 // The structure: a stem carrying its support into upper scaffolds; every named limb bears
 // recursion to the species' twig. Grown once; it never depends on the budget.
 Crown grow(const Broadleaf& p, const CrownSpec& spec, const GrowthRules& rules = {}) {
@@ -133,6 +147,13 @@ Crown grow(const Broadleaf& p, const CrownSpec& spec, const GrowthRules& rules =
   crown_add_apex(crown, 0, spec);
   crown_taper(crown, spec.area_exponent);
   crown_join_relays(crown);
+  // A spray's twigs hold their cards at the leaf's spacing; where the leaf area index asks for
+  // more than they hold, the pipes their sections still carry leave them as leafy twigs (G129
+  // follow-up; flora.md, "Allometry"). The simple and compound placements space their own leaves.
+  if (crown.leaf_placement == LeafPlacement::spray) {
+    crown.card_step = card_step_of(p);
+    crown_add_leaf_twigs(crown, spec, leaf_cards_of(p, crown), p.leaves);
+  }
   return crown;
 }
 
@@ -221,15 +242,18 @@ bool plan_broadleaf(const Broadleaf& p, const Crown& crown, Plan& plan, u32& ste
   });
 }
 
-// The leaf count by the leaf area index: one-sided leaf area over the crown's footprint, each card
-// one leaf of the species' size (its area `leaf_width` times its length squared).
+// The cards by the leaf area index (`leaf_cards_of`); a spray's twig takes no more than its
+// length holds at the leaf's spacing, so a card is never shorter than its leaf (`grow` added the
+// twigs the rest needs).
 void place_leaves(const Broadleaf& p, Crown& crown) {
-  const f64 length = static_cast<f64>(p.leaf_length_m);
-  const f64 width = static_cast<f64>(p.leaf_width) * length;
-  const f64 angle = static_cast<f64>(p.leaf_angle_deg) * k_degree;
-  crown.card_step = width / det::sin(angle);
-  const f64 cards = static_cast<f64>(p.leaf_area_index) * crown.footprint / (width * length);
-  crown_distribute_leaves(crown, cards, p.leaves);
+  const f64 width = static_cast<f64>(p.leaf_width) * static_cast<f64>(p.leaf_length_m);
+  crown.card_step = card_step_of(p);
+  const f64 cards = leaf_cards_of(p, crown);
+  if (crown.leaf_placement == LeafPlacement::spray) {
+    crown_distribute_spaced(crown, cards, p.leaves);
+  } else {
+    crown_distribute_leaves(crown, cards, p.leaves);
+  }
   if (crown.leaf_placement == LeafPlacement::opposite_simple ||
       crown.leaf_placement == LeafPlacement::alternate_simple) {
     // Preserve the blade's aspect and leave room between nodes instead of squeezing the

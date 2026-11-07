@@ -156,8 +156,11 @@ TEST_CASE("impostor chain: the bake is the same bytes every time and on every to
   // G129: branch taper moves wood and attachment seats, so both baked levels follow (an earlier
   // prototype pinned 3a96fb58.., 320a6dd7.., 62faa7f2.., 89d872cb..). G133: the final taper and the
   // leader fix's small oak; the spruce chain's four hashes below are unchanged since 86d76acd.
-  constexpr u64 k_golden[4] = {0xe6c5190a149887c9ull, 0x1481aee8d76a7cd2ull, 0xa1c3679229499d6dull,
-                               0x46c2a28edf9215bcull};
+  // G129 follow-up: the 8 m oak's twigs cannot hold its leaf area at the leaf's spacing, so its
+  // spare pipes grow 18 leafy twigs (855 to 873) and its cards keep their size (LAI 3.87 to 3.90),
+  // which moves the cards and the star.
+  constexpr u64 k_golden[4] = {0x6f314c381c5847f1ull, 0xca1c3ce8b9210d9bull, 0x9cce4ec8f3744e18ull,
+                               0x148ff7f0dc71b48full};
   for (u32 k = 0; k < 4; ++k)
     CHECK(hashes[k] == k_golden[k]);
 }

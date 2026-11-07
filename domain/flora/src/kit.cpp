@@ -666,6 +666,170 @@ void crown_distribute_leaves(Crown& crown, f64 cards, u32 cap) {
   }
 }
 
+u32 crown_twig_room(const Crown& crown, const CrownNode& twig, u32 cap) {
+  const f64 room = crown.card_step > 0.0 ? floor_of(twig.length / crown.card_step) : 0.0;
+  if (room < 1.0) return 1u;
+  return room > static_cast<f64>(cap) ? cap : static_cast<u32>(room);
+}
+
+namespace {
+
+// Whether `crown_distribute_leaves` would leave every twig within its room.
+bool even_fits(const Crown& crown, f64 cards, u32 cap) {
+  const u32 n = crown.twigs.size();
+  if (n == 0) return true;
+  const f64 rate = cards / (2.0 * static_cast<f64>(n));
+  for (u32 t = 0; t < n; ++t) {
+    const f64 c = floor_of(static_cast<f64>(t + 1) * rate) - floor_of(static_cast<f64>(t) * rate);
+    if (c > static_cast<f64>(crown_twig_room(crown, crown.nodes[crown.twigs[t]], cap))) {
+      return false;
+    }
+  }
+  return true;
+}
+
+}  // namespace
+
+u32 crown_add_leaf_twigs(Crown& crown, const CrownSpec& spec, f64 cards, u32 cap) {
+  const u32 n = crown.twigs.size();
+  if (n == 0 || crown.card_step <= 0.0 || even_fits(crown, cards, cap)) return 0;
+  const u64 target = static_cast<u64>(floor_of(0.5 * cards));
+  u64 room = 0;
+  for (const u32 t : crown.twigs)
+    room += crown_twig_room(crown, crown.nodes[t], cap);
+  if (room >= target) return 0;
+  // A new twig is at least 0.85 of the species' length (the recursion's jitter): its room then.
+  CrownNode shortest;
+  shortest.length = 0.85 * spec.twig_length;
+  const u64 each = crown_twig_room(crown, shortest, cap);
+  // Each terminal shoot's spare pipes: its unit pipes less the one it is itself.
+  Vector<u32> spare(n, 0u);
+  u64 pipes = 0;
+  for (u32 t = 0; t < n; ++t) {
+    const f64 units = floor_of(
+        power(crown.nodes[crown.twigs[t]].r0 / spec.twig_radius, spec.area_exponent) + 1e-9);
+    spare[t] = units > 1.0 ? static_cast<u32>(units) - 1u : 0u;
+    pipes += spare[t];
+  }
+  if (pipes == 0) return 0;
+  u64 extra = (target - room + each - 1) / each;
+  if (extra > pipes) extra = pipes;
+  // Spread by spare pipes over the twigs in their depth-first order (no twig past its spare).
+  Vector<u32> twigs;
+  twigs.reserve(n + static_cast<u32>(extra));
+  u32 deepest = 0;
+  for (const u32 t : crown.twigs)
+    if (crown.nodes[t].generation > deepest) deepest = crown.nodes[t].generation;
+  u32 deepest_added = 0;
+  u64 before = 0;
+  u32 added = 0;
+  for (u32 t = 0; t < n; ++t) {
+    const u32 pi = crown.twigs[t];
+    twigs.push_back(pi);
+    const u64 after = before + spare[t];
+    const u32 m = static_cast<u32>(extra * after / pipes - extra * before / pipes);
+    before = after;
+    if (m == 0u) continue;
+    const CrownNode parent = crown.nodes[pi];
+    const Axis local = parent.axis != k_crown_none ? Axis{} : segment_axis(parent);
+    const Axis& along = parent.axis != k_crown_none ? crown.axes[parent.axis] : local;
+    // Their own stream, so the recursion's draws never move.
+    Rng place = stream_of(spec.seed, spec.stream + 0x51EAF000000ull + static_cast<u64>(pi));
+    const f64 turn = place.unit() * 2.0 * k_pi;
+    for (u32 k = 0; k < m; ++k) {
+      // Laterals from three to nine tenths along the shoot, on the golden angle.
+      const f64 s = along.length * (0.3 + 0.6 * (static_cast<f64>(k) + 0.5) / static_cast<f64>(m));
+      const f64 around = turn + static_cast<f64>(k) * k_golden_angle + 0.2 * place.symmetric();
+      const f64 spread = spec.branch_angle * (1.0 + 0.1 * place.symmetric());
+      const f64 jitter_length = place.unit();
+      D3 radial;
+      D3 dir = branch_direction(along, s, around, spread, &radial);
+      // A twig's habit, as the recursion folds its own (class 0 hangs by the whole droop).
+      if (spec.droop > 0.0 && spec.droop_class >= 0) dir = hang_towards_ground(dir, spec.droop);
+      const D3 hinge = cross(dir, k_up);
+      const f64 sine = length_of(hinge);
+      if (sine > 1e-9) dir = rotate(dir, hinge * (1.0 / sine), 0.5 * spec.upturn * sine);
+      const D3 normal =
+          perpendicular(dir, (dir.y < 0.9 && dir.y > -0.9) ? k_up : D3{1.0, 0.0, 0.0});
+      dir = rotate(dir, normal, spec.wander * place.symmetric());
+      dir =
+          normalized(rotate(dir, normalized(cross(dir, normal)), spec.wander * place.symmetric()));
+      const f64 r_here = lerp(parent.r0, parent.r1, s / along.length);
+      CrownNode child;
+      child.length = spec.twig_length * (0.85 + 0.3 * jitter_length);
+      child.base = axis_point(along, s) + radial * (0.4 * r_here);
+      child.dir = dir;
+      child.tip = child.base + dir * child.length;
+      child.r0 = spec.twig_radius;
+      child.r1 = 0.6 * spec.twig_radius;
+      child.parent = pi;
+      child.parent_arc = s;
+      child.generation = parent.generation + 1;
+      child.cls = 0;
+      child.flags = k_crown_terminal;
+      // Folded into the part its shoot is or rides: never a part of its own (the part cap holds).
+      if ((parent.flags & k_crown_part) != 0u) {
+        child.carrier = pi;
+        child.weight = s / along.length;
+      } else {
+        child.carrier = parent.carrier;
+        child.weight = parent.weight;
+      }
+      if (child.generation > deepest_added) deepest_added = child.generation;
+      twigs.push_back(crown.nodes.size());
+      crown.nodes.push_back(child);
+      ++added;
+    }
+  }
+  // One order deeper where a new twig is deeper than every twig the recursion grew.
+  if (deepest_added > deepest) crown.orders += deepest_added - deepest;
+  crown.twigs = std::move(twigs);
+  return added;
+}
+
+void crown_distribute_spaced(Crown& crown, f64 cards, u32 cap) {
+  if (crown.card_step <= 0.0 || even_fits(crown, cards, cap)) {
+    crown_distribute_leaves(crown, cards, cap);
+    return;
+  }
+  const u32 n = crown.twigs.size();
+  u64 target = static_cast<u64>(floor_of(0.5 * cards));
+  u64 room = 0;
+  u32 most = 0;
+  for (const u32 t : crown.twigs) {
+    const u32 r = crown_twig_room(crown, crown.nodes[t], cap);
+    room += r;
+    if (r > most) most = r;
+  }
+  if (target > room) target = room;
+  // The highest common level every twig can take up to its room, then one more card each on the
+  // twigs with room left, spread evenly over them.
+  u32 level = 0;
+  u64 filled = 0;
+  while (level < most) {
+    u64 next = 0;
+    for (const u32 t : crown.twigs)
+      next += std::min(crown_twig_room(crown, crown.nodes[t], cap), level + 1u);
+    if (next > target) break;
+    ++level;
+    filled = next;
+  }
+  u32 open = 0;
+  for (const u32 t : crown.twigs)
+    if (crown_twig_room(crown, crown.nodes[t], cap) > level) ++open;
+  const u64 rest = target - filled;
+  u32 seen = 0;
+  for (u32 i = 0; i < n; ++i) {
+    CrownNode& node = crown.nodes[crown.twigs[i]];
+    const u32 r = crown_twig_room(crown, node, cap);
+    node.cards = std::min(r, level);
+    if (r > level && open > 0u) {
+      node.cards += static_cast<u32>(rest * (seen + 1u) / open - rest * seen / open);
+      ++seen;
+    }
+  }
+}
+
 u32 crown_tube_sides(const CrownPlan& plan, f64 radius) {
   const f64 s = ceil_of(2.0 * k_pi * radius / plan.edge_m);
   if (s < 3.0) return 3;

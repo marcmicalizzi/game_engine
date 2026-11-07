@@ -221,12 +221,12 @@ TEST_CASE("flora allometry: area allocation accounts for axial taper and bounded
     REQUIRE(flora::broadleaf_crown(b, crown));
     u32 nodes = 0;
     f64 worst = 0.0;
-    check_crown(crown, static_cast<f64>(exponent), static_cast<f64>(b.twig_radius_m),
-                smallest_step(static_cast<f64>(b.leader_share),
-                              std::min(b.branching_ratio - 1, b.twigs), static_cast<f64>(exponent)),
-                nodes, worst, true,
-                std::pow(1.0 / (1.0 - static_cast<f64>(b.leader_share)),
-                         1.0 / static_cast<f64>(exponent)));
+    check_crown(
+        crown, static_cast<f64>(exponent), static_cast<f64>(b.twig_radius_m),
+        smallest_step(static_cast<f64>(b.leader_share), std::min(b.branching_ratio - 1, b.twigs),
+                      static_cast<f64>(exponent)),
+        nodes, worst, true,
+        std::pow(1.0 / (1.0 - static_cast<f64>(b.leader_share)), 1.0 / static_cast<f64>(exponent)));
     MESSAGE("broadleaf, exponent " << exponent << ": " << crown.size() << " shoots, " << nodes
                                    << " nodes, the worst within " << worst);
     CHECK(nodes > 100);
@@ -270,6 +270,41 @@ TEST_CASE("flora allometry: the realised leaf area index is the field's") {
                           << " triangles after " << ancient.report.steps << " steps)");
   CHECK(ancient.report.merge_level == 0u);
   CHECK(std::abs(ancient_lai / static_cast<f64>(a.leaf_area_index) - 1.0) < 0.2);
+}
+
+// A young tree's twigs cannot hold its leaf area at the leaf's spacing (G129 follow-up): a card
+// keeps its leaf's size, and the pipes the twigs' sections carry leave them as leafy twigs until
+// the leaf area index is met — never more twigs than the pipe rule allows. Before the rule the
+// 4 m and 6 m trees squeezed six cards into four cards' length and realised LAI 2.38 and 2.85.
+TEST_CASE("flora allometry: a young broadleaf meets its leaf area with twigs, not smaller cards") {
+  for (const f32 height : {4.0f, 6.0f, 8.0f, 12.0f}) {
+    CAPTURE(height);
+    flora::Broadleaf p;
+    p.height_m = height;
+    p.triangle_budget = height < 10.0f ? 30000u : 60000u;  // the content build's and the default
+    const Solved s = solve(p, flora::solve_broadleaf);
+    REQUIRE(s.report.merge_level == 0u);
+    const f64 leaf = static_cast<f64>(p.leaf_length_m) * static_cast<f64>(p.leaf_width) *
+                     static_cast<f64>(p.leaf_length_m);
+    // Each card is a whole leaf: the leaves' area is the cards' count times a leaf's, less what
+    // the spray's lift and droop fold out of the card's plane.
+    const f64 per_card =
+        static_cast<f64>(s.report.leaf_area_m2) / (static_cast<f64>(s.report.leaf_cards) * leaf);
+    Vector<flora::CrownShoot> crown;
+    REQUIRE(flora::broadleaf_crown(p, crown));
+    const f64 pipes =
+        std::pow(static_cast<f64>(crown[0].base_radius) / static_cast<f64>(p.twig_radius_m),
+                 static_cast<f64>(p.area_exponent));
+    MESSAGE(height << " m: " << s.report.twigs << " twigs (the pipe rule " << pipes << "), "
+                   << s.report.leaf_cards << " cards, " << per_card << " of a leaf each, LAI "
+                   << s.report.leaf_area_index);
+    CHECK(per_card > 0.9);
+    CHECK(per_card < 1.05);
+    CHECK(static_cast<f64>(s.report.twigs) <= pipes);
+    CHECK(
+        std::abs(static_cast<f64>(s.report.leaf_area_index) / static_cast<f64>(p.leaf_area_index) -
+                 1.0) < 0.2);
+  }
 }
 
 TEST_CASE("flora allometry: the old fields still validate and build, as caps") {
