@@ -162,9 +162,9 @@ TEST_CASE("channels: one channel down a V-notch, its head at the threshold, its 
     const f64 slope = static_cast<f64>(n.ground_um[i] - n.ground_um[r]) / 1e6 / 4.0;
     return static_cast<f64>(n.area_cells[i]) * cell * slope;
   };
-  CHECK(product(head) >= p.head_threshold_m2);
-  CHECK(product(head + n.width) < p.head_threshold_m2);
-  CHECK(static_cast<f64>(n.area_cells[head]) * cell >= p.min_head_area_m2);
+  CHECK(product(head) >= static_cast<f64>(p.head_threshold_m2));
+  CHECK(product(head + n.width) < static_cast<f64>(p.head_threshold_m2));
+  CHECK(static_cast<f64>(n.area_cells[head]) * cell >= static_cast<f64>(p.min_head_area_m2));
   // The link runs from the head to the outlet on the region's edge, down the notch's line.
   const ChannelLink& link = n.links[0];
   CHECK(link.head);
@@ -179,9 +179,10 @@ TEST_CASE("channels: one channel down a V-notch, its head at the threshold, its 
   const ChannelPoint& b = link.line.back();
   CHECK(b.area_m2 > a.area_m2);
   CHECK(b.width_m > a.width_m);
-  const f64 ratio = std::pow(static_cast<f64>(b.area_m2) / a.area_m2, .4);
-  CHECK(static_cast<f64>(b.width_m) / a.width_m == doctest::Approx(ratio).epsilon(1e-4));
-  CHECK(b.width_m == doctest::Approx(3.0 * std::pow(b.area_m2 / 1e6, .4)).epsilon(1e-4));
+  const f64 ratio = std::pow(static_cast<f64>(b.area_m2) / static_cast<f64>(a.area_m2), .4);
+  CHECK(static_cast<f64>(b.width_m) / static_cast<f64>(a.width_m) == doctest::Approx(ratio).epsilon(1e-4));
+  CHECK(static_cast<f64>(b.width_m) ==
+        doctest::Approx(3.0 * std::pow(static_cast<f64>(b.area_m2) / 1e6, .4)).epsilon(1e-4));
   // A threshold beyond the valley's area: no channel at all.
   ChannelLayer dry = p;
   dry.head_threshold_m2 = 1e6;

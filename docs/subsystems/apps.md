@@ -383,6 +383,21 @@ engine-content terrain-tiles mountain.json --ddc ddc
 writes edited terrain, a fitted feature recipe, provenance and a review scene. It
 requires the soil capability; see [soil](soil.md#cook-and-scene-workflow).
 
+## engine-content channels: the water's channel description
+
+`engine-content channels <scene.json> <out.json> [--min-area-m2 <m2>] [--stage <fraction>] [--entry <i>]`
+runs the scene's `channels` placements (or the one at index `--entry`) over the ground its terrain
+names, through the same ground-provider registry the renderer uses (the terrain's masks are left out:
+the network asks the heights alone), and writes `{"water_channels": [...]}`: one
+`engine.scene.WaterChannel` block per link draining at least `--min-area-m2` (50,000 m²), its points'
+y the water's surface at `--stage` (0.5) of the bankfull depth over the bed. It is `plan_channels`,
+the function the placement generator calls, so the blocks follow the beds the scene places; it prints
+one JSON line (`entries`, `heads`, `links`, `channel_m`, `region_km2`, `km_per_km2`,
+`water_channels`). Exit 1 for a scene with no terrain, no `channels` placement or a refused layer, 2
+for usage. It requires the channels capability; see [channels](channels.md#the-waters-description).
+The hosts (engine-view, engine-host, engine-editor) link the capability with the other generators, so
+a scene's `channels` placement draws in each.
+
 ## engine-content morphs: MakeHuman targets as morph channels
 
 ```

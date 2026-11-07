@@ -93,6 +93,9 @@ int channels_command(int argc, char** argv) {
       message += "; " + d.path + ": " + d.message;
     return fail(message);
   }
+  // The network asks the heights alone: the masks (which a host resolves against its water bodies
+  // before it builds them) are left out, so the provider never builds them here.
+  terrain.masks.reset();
   // The provider the renderer would draw this terrain with (renderer::terrain_provider's rule).
   const std::string provider =
       !terrain.provider.empty()

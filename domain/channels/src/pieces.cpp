@@ -169,7 +169,7 @@ bool place_pieces(const ChannelLayer& p, const ChannelNetwork& n, const scene_ge
       const u32 r0 = static_cast<u32>(static_cast<u64>(k) * (m - 1) / pieces);
       const u32 r1 = static_cast<u32>(static_cast<u64>(k + 1) * (m - 1) / pieces);
       if (r1 <= r0) continue;
-      Builder b{p, ground};
+      Builder b{p, ground, 0.0, 0, 0};
       b.x0 = scene_gen::nearest_mm(f[r0].x);
       b.z0 = scene_gen::nearest_mm(f[r0].z);
       b.y0 = ground.surface_mm(b.x0, b.z0);
