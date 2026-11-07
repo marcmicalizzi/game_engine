@@ -80,6 +80,13 @@ endif()
 # `vine` and `cover` the same way, with the cover capability (docs/subsystems/cover.md): a recipe
 # grown over the host it names into the host's companion through the cache. Linked, it is also
 # what makes `build` and `build-all` take a `.vine.json` or a `.cover.json` through the registry.
+# `channels` the same way, with the channels capability (docs/subsystems/channels.md): the water's
+# channel description from a scene's channels placements over its terrain. Its test runs either
+# way, and without the capability checks the refusal.
+list(APPEND _content_tests tests/channels_tests.cpp)
+if(TARGET engine::channels)
+  list(APPEND _content_deps channels channels_schemas schema schemas scene_gen)
+endif()
 if(TARGET engine::litter)
   list(APPEND _content_deps litter)
   list(APPEND _content_tests tests/litter_tests.cpp)
@@ -95,7 +102,7 @@ list(REMOVE_DUPLICATES _content_deps)
 engine_app(NAME engine_content OUTPUT engine-content
   SOURCES main.cpp tissue_commands.cpp ruins_commands.cpp city_commands.cpp limit_dump.cpp
           normal_cases.cpp clip_commands.cpp terrain_commands.cpp tileset_commands.cpp npc_commands.cpp
-          flora_commands.cpp rocks_commands.cpp cover_commands.cpp soil_commands.cpp morphs.cpp
+          flora_commands.cpp rocks_commands.cpp channels_commands.cpp cover_commands.cpp soil_commands.cpp morphs.cpp
   DEPS ${_content_deps}
   E2E_TESTS ${_content_tests} tests/soil_tests.cpp tests/morphs_tests.cpp)
 
@@ -184,4 +191,12 @@ endif()
 
 if(TARGET engine::wetland)
   target_link_libraries(engine_engine_content PRIVATE engine::wetland)
+endif()
+
+if(TARGET engine::channels)
+  target_compile_definitions(engine_engine_content PRIVATE ENGINE_CONTENT_CHANNELS=1)
+  if(TARGET engine_engine_content_tests)
+    target_compile_definitions(engine_engine_content_tests PRIVATE ENGINE_CONTENT_CHANNELS=1)
+    target_link_libraries(engine_engine_content_tests PRIVATE engine::channels)
+  endif()
 endif()

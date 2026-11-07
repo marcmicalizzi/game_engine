@@ -1,0 +1,130 @@
+// The channels capability's types (ADR-0007, ADR-0027; docs/subsystems/channels.md): the scene
+// entry of the placement generator "channels" and the recipe of one placed piece, which the mesh
+// generator "channel" builds. ENGINE_WITH_CHANNELS=OFF takes them out of the build with everything
+// else the capability owns.
+namespace engine.channels
+
+/// What a piece's mesh dresses: the bed's gravel skin, the bars of finer sediment on it, or the
+/// cut-soil banks along its edges (channels.md, "What it places").
+enum ChannelPart : u8 {
+  Bed
+  Bar
+  Bank
+}
+
+/// How a part's set places its texels (R131): repeated every `tile_m`, or read at three tiles of
+/// the hex lattice so no repeat shows.
+enum ChannelSampling : u8 {
+  Tiled
+  Stochastic
+}
+
+/// One part's look: the material pack's role it samples, the size of a repeat, and the flat
+/// colour and roughness it draws with where the pack has no set for the role.
+struct ChannelSurface @version(1) {
+  /// The pack's role (`rock/granite`). Empty: the part's own list of roles, the first the pack
+  /// has (channels.md, "Materials").
+  role: string
+  /// One repeat covers this many metres: 0.05 to 20 m.
+  tile_m: f32 = 1.0 @unit(m)
+  sampling: ChannelSampling = Stochastic
+  /// Linear base colour, each channel 0 to 1; absent, the part's own.
+  color: f32[3]?
+  /// 0.02 to 1.
+  roughness: f32 = 0.9
+}
+
+/// The scene generator `channels`' entry (channels.md, "The network"): the drainage of a region's
+/// ground found on a lattice, its channels traced from their heads down, and their beds, bars and
+/// banks laid along the trough the ground already holds. Every number's source and range is in
+/// docs/experiments/channels.md.
+struct ChannelLayer @version(1) {
+  name: string
+  seed: u64 = 1
+  /// The region drained, world metres, x and z, each a whole number of spacings.
+  region_min: f64[2]
+  region_max: f64[2]
+  /// The lattice the flow is routed on: 1 to 32 m, whole millimetres.
+  spacing_m: f32 = 4.0 @unit(m)
+  /// The most lattice points the region may hold: 4 to 16,777,216.
+  max_samples: u32 = 4194304
+  /// A channel begins where contributing area times slope to `head_slope_exponent` reaches this
+  /// (Montgomery & Dietrich 1988): 10 to 1,000,000 m².
+  head_threshold_m2: f32 = 1500.0
+  /// The slope's exponent in that product: 0 (area alone) to 3.
+  head_slope_exponent: f32 = 1.0
+  /// And never with less contributing area than this, whatever the slope: 0 to 1,000,000 m².
+  min_head_area_m2: f32 = 3000.0
+  /// Bankfull width `a (A / 1 km²)^b` (Leopold & Maddock 1953; Dunne & Leopold 1978): a 0.1 to
+  /// 100 m, b 0.1 to 0.8.
+  width_at_km2_m: f32 = 3.0 @unit(m)
+  width_exponent: f32 = 0.4
+  /// Bankfull depth `c (A / 1 km²)^f`: c 0.02 to 10 m, f 0.1 to 0.8.
+  depth_at_km2_m: f32 = 0.3 @unit(m)
+  depth_exponent: f32 = 0.3
+  /// The traced line is low-passed with a Gaussian of sigma `max(smooth_min_m, smooth_widths w)`:
+  /// 0 to 100 m and 0 to 10 widths.
+  smooth_min_m: f32 = 6.0 @unit(m)
+  smooth_widths: f32 = 2.0
+  /// Meander wavelength `wavelength_widths w^1.01` and full amplitude `amplitude_coeff w^1.1`
+  /// (Leopold, Wolman & Miller 1964): 4 to 30, and 0 to 10 (0: no meanders).
+  meander_wavelength_widths: f32 = 10.9
+  meander_amplitude_coeff: f32 = 2.7
+  /// Meanders fade from full below `meander_slope_min` to none above `meander_slope_max`
+  /// (Montgomery & Buffington 1997): 0 to 0.5, min below max.
+  meander_slope_min: f32 = 0.01
+  meander_slope_max: f32 = 0.04
+  /// The bed's rhythm along the line: pool to pool in widths, 2 to 20 (Leopold et al. 1964), and
+  /// the riffle's rise over the pool as a fraction of the depth, 0 to 1.
+  pool_riffle_widths: f32 = 6.0
+  riffle_rise: f32 = 0.2
+  /// Above `meander_slope_max` the rhythm is step to step, in widths: 1 to 10 (Montgomery &
+  /// Buffington 1997).
+  step_pool_widths: f32 = 2.5
+  /// The bankfull Shields number the bed's median grain is set by, `D50 = h S / (1.65 tau)`
+  /// (Parker et al. 2007): 0.01 to 0.2.
+  shields_bankfull: f32 = 0.049
+  /// Bars: the narrowest bed that has them (0 to 100 m), how far their crown rises above the bed as
+  /// a fraction of the depth (0 to 1), and their width and length in bed widths.
+  bar_min_width_m: f32 = 1.0 @unit(m)
+  bar_rise: f32 = 0.4
+  bar_width_widths: f32 = 0.35
+  bar_length_widths: f32 = 3.0
+  /// Banks: the narrowest bed that is a stream with banks and not a rill (0 to 100 m), the
+  /// bank's height as a fraction of the depth (0 to 2), and its width beyond the bed,
+  /// `bank_width_widths w + bank_width_m`.
+  bank_min_width_m: f32 = 1.5 @unit(m)
+  bank_height: f32 = 0.6
+  bank_width_widths: f32 = 0.25
+  bank_width_m: f32 = 0.4 @unit(m)
+  /// The line's resampling step along its length: 0.1 to 4 m.
+  step_m: f32 = 0.5 @unit(m)
+  /// A link is placed in pieces of at most this length: 4 to 256 m.
+  piece_m: f32 = 32.0 @unit(m)
+  bed: ChannelSurface
+  bars: ChannelSurface
+  banks: ChannelSurface
+}
+
+/// One slab of a piece: a grid of `rows` cross-sections of `columns` points, row-major, each with
+/// its place in the piece's frame (metres from the piece's origin) and the heights of its top and
+/// bottom there. Closed by its four edges.
+struct ChannelSlab @version(1) {
+  rows: u32 = 2
+  columns: u32 = 2
+  x: f32[]
+  z: f32[]
+  top: f32[]
+  bottom: f32[]
+}
+
+/// A placed piece's recipe, written by the generator as `<hash>.channel.json` and built by the mesh
+/// generator "channel": the part it is, its slabs with every height already decided, and its look.
+struct ChannelPiece @version(1) {
+  part: ChannelPart = Bed
+  /// The piece origin's place in its UV frame, metres (the world's x and z modulo 1,024 m), so the
+  /// texels run on across the joins between pieces.
+  uv_origin: f32[2]
+  surface: ChannelSurface
+  slabs: ChannelSlab[]
+}
