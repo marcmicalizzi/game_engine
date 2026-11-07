@@ -179,7 +179,7 @@ TEST_CASE("caves: the same recipe is the same bytes; another seed is another pas
   // Pinned: the solver is products, sums, square roots and an integer hash, so every toolchain
   // and instruction set reproduces it (the containers' run checks).
   MESSAGE("the test passage's mesh hash: " << mesh_hash(a));
-  CHECK(mesh_hash(a) == 6604127554548133638ull);  // MSVC x64, v3, 2026-11-07
+  CHECK(mesh_hash(a) == 11201509199861276537ull);  // MSVC x64, v3, 2026-11-07
   Passage other = passage;
   other.seed = 8;
   assets::MeshData c;

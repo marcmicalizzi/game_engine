@@ -500,8 +500,24 @@ bool solve_passage(const Passage& passage, assets::MeshData& out, PassageReport*
         const D3 c0 = d3(out.positions[at(r, k)]);
         const D3 c1 = d3(out.positions[at(r + 1, k)]);
         const D3 top = c0 + (c1 - c0) * h1;
-        const f64 floor_y =
-            std::min(d3(out.positions[at(r, lo)]).y, d3(out.positions[at(r + 1, lo)]).y);
+        // The floor under the drip: the lower half's vertex of this ring nearest it across, so a
+        // drip over a keyhole's shoulder lands on the shoulder and one over its canyon in the
+        // canyon (the lowest vertex stood a stalagmite through the shoulder).
+        f64 floor_y = std::min(d3(out.positions[at(r, lo)]).y, d3(out.positions[at(r + 1, lo)]).y);
+        {
+          f64 best = 1e300;
+          for (u32 q = 0; q < n; ++q) {
+            f64 qc = 0.0, qs = 0.0;
+            unit_circle(q, n, qc, qs);
+            if (qs >= 0.0) continue;
+            const D3 v = d3(out.positions[at(r, q)]);
+            const f64 dx = v.x - top.x, dz = v.z - top.z;
+            if (dx * dx + dz * dz < best) {
+              best = dx * dx + dz * dz;
+              floor_y = v.y;
+            }
+          }
+        }
         const f64 gap = top.y - floor_y;
         if (gap < 0.3) continue;
         const D3 foot{top.x, floor_y, top.z};
