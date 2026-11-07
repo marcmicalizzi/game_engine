@@ -220,7 +220,7 @@
         "median": 0.187,
         "p99": 0.63
       },
-      "sources": "Every number measured 2026-10-07 (this baseline). Its medians agree with docs/experiments/world-positions-renderer-2026-10-05.md (stage 1 cost, erg rt after: cull 0.096, hw 0.286, rt 0.605, resolve 2.328, total 3.458 ms) to within 2%; that page has no p99s."
+      "sources": "Every number re-measured 2026-11-07 on main 8be9c6d4 (this baseline; the reason has the climb), hw kept from 2026-10-12. The 2026-10-07 seed: its medians agreed with docs/experiments/world-positions-renderer-2026-10-05.md (stage 1 cost, erg rt after: cull 0.096, hw 0.286, rt 0.605, resolve 2.328, total 3.458 ms) to within 2%; that page has no p99s."
     },
     {
       "id": "endless-1080p-csm",
@@ -302,59 +302,59 @@
       ],
       "gpu_ms": {
         "blas": {
-          "median": 0.293,
-          "p99": 0.297
+          "median": 0.266,
+          "p99": 0.27
         },
         "clas": {
-          "median": 0.279,
-          "p99": 0.308
+          "median": 0.319,
+          "p99": 0.351
         },
         "cull": {
-          "median": 0.085,
-          "p99": 0.091
+          "median": 0.077,
+          "p99": 0.095
         },
         "deform": {
-          "median": 0.041,
-          "p99": 0.046
+          "median": 0.027,
+          "p99": 0.06
         },
         "hw": {
           "median": 0.427,
           "p99": 0.503
         },
         "resolve": {
-          "median": 1.885,
-          "p99": 2.249
+          "median": 2.1,
+          "p99": 2.483
         },
         "rt": {
-          "median": 0.951,
-          "p99": 0.989
+          "median": 0.865,
+          "p99": 0.917
         },
         "sky": {
-          "median": 0.092,
-          "p99": 0.092
+          "median": 0.054,
+          "p99": 0.055
         },
         "total": {
-          "median": 4.436,
-          "p99": 5.418
+          "median": 4.392,
+          "p99": 5.287
         }
       },
       "baseline": {
-        "date": "2026-10-12",
-        "by": "Marc Micalizzi",
-        "reason": "Measured drift, not a change under test: on 2026-10-12 main's own installed binary (f8ed3892) and the batch 16 tree measure the same, endless-surround3-rt hw median 0.43 ms against 0.323 on 2026-10-11 19:30 and cull 0.085 against 0.068 (three flights each, no rebuilds); nothing in the engine changed between those runs",
-        "commit": "9b17dafb (with uncommitted changes)",
+        "date": "2026-11-07",
+        "by": "Claude Fable 5.1",
+        "reason": "Measured drift on main, not a change under test: on 2026-11-07 main's own 8be9c6d4 flies this run at a resolve median of 2.100 ms (quiet) against the 1.885 pinned on 2026-10-12, a climb the gate's own results date to 1.81-1.90 (10-12 to 10-16), 1.87-1.96 (to 10-27), 1.98-2.00 (to 10-31) and 2.10-2.12 (11-01 to 11-06), its largest step over batch 47's merges of 10-31 (R115 stage 1 split the resolve by stage; unconfirmed); the batch 54 tree adds about 0.08 ms on top (2.166-2.186 in three runs; R136's terrain sampling the likeliest, not bisected) and stays visible under this budget; the numbers are main's run read from its summary (-FromSummaries), except hw, kept at the 2026-10-12 0.427/0.503 by hand because main flips between 0.31 and 0.43 from run to run (0.433 on 11-01, 0.312 on 11-02) and a 0.310 budget would fail the gate on the next 0.43; roadmap R138 finds the climb",
+        "commit": "b8dae574",
         "device": "NVIDIA GeForce RTX 5090",
         "quiet": true,
-        "machine_state": "quiet (start 2.4% others, GPU 0%; end 3.3% others, GPU 0%)",
+        "machine_state": "quiet (start 4.7% others, GPU 0%; end 6.4% others, GPU 0%)",
         "identity": "a73c20e15926dafa",
         "frames": 7201,
         "repeats": 1
       },
       "cpu_ms": {
-        "median": 0.401,
-        "p99": 0.98
+        "median": 0.52,
+        "p99": 1.024
       },
-      "sources": "Every number measured 2026-10-07 (this baseline). Its medians agree with docs/experiments/world-positions-renderer-2026-10-05.md (stage 2 cost, rt after: cull 0.065, deform 0.039, hw 0.312, rt 0.944, resolve 1.861, total 4.363 ms) to within 8% pass by pass and 2% in total (4.454 today). Its cpu_ms median agrees with docs/experiments/frame-thread-spikes-2026-10-04.md (0.43 ms, traced shadows after) at 0.455; its p99 is 1.305 against that page's 0.71, on a machine this run called busy."
+      "sources": "Every number re-measured 2026-11-07 on main 8be9c6d4 (this baseline; the reason has the climb), hw kept from 2026-10-12. The 2026-10-07 seed: its medians agreed with docs/experiments/world-positions-renderer-2026-10-05.md (stage 2 cost, rt after: cull 0.065, deform 0.039, hw 0.312, rt 0.944, resolve 1.861, total 4.363 ms) to within 8% pass by pass and 2% in total (4.454 today). Its cpu_ms median agrees with docs/experiments/frame-thread-spikes-2026-10-04.md (0.43 ms, traced shadows after) at 0.455; its p99 is 1.305 against that page's 0.71, on a machine this run called busy."
     }
   ]
 }
