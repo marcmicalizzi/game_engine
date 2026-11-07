@@ -614,6 +614,41 @@ inline void set_water_depth_map(ResolveMaterial& water, ResolveMaterial& entry,
   entry.uv_transform.w = static_cast<f32>(0.5 / n);
 }
 
+// `k_material_water_shore`: the water material's body is drawn to **the shore where its level meets
+// the ground** (docs/subsystems/water.md, "The shore"; roadmap S97). The fade from the bottom alone
+// to reflecting is over `shore_m` of distance from where the depth map's depth is zero — the depth
+// over the map's slope — rather than from the mesh's edge (UV.x), so an outline that overhangs the
+// shore or falls short of it does not move the waterline; and a foam line runs `foam_m` in from it
+// with the waves. Set only on a material with `k_material_water_depth_map`, since both read the
+// map; the foam's reach is the next entry's `normal_scale`, a slot neither the optics nor the map
+// uses. Without it the branch is the one it was, which the shading test's blocks hold.
+inline constexpr u32 k_material_water_shore = 1u << 20;
+inline void set_water_shore(ResolveMaterial& water, ResolveMaterial& entry, f32 foam_m) noexcept {
+  if ((water.flags & k_material_water_depth_map) == 0) return;
+  water.flags |= k_material_water_shore;
+  entry.normal_scale = foam_m;
+}
+
+// **The wet band** (docs/subsystems/water.md, "The shore"): one water body's record in the array
+// the resolve's water modules read through `ResolveParams::water_shores`. A pixel of terrain whose
+// height above the body's level (its instance's place in the frame: the instance stands at the
+// level, unrotated) is within [0, `wet_m`) and whose body-local (x, z) is within [`lo`, `hi`] is
+// darkened as wet ground is — a pixel of a terrain's material, of a terrain tile, or of the scene's
+// terrain mesh. The bounds are the body's depth map's square grown by the distance a
+// 1:25 bank rises `wet_m` in, plus a metre, so the band is found where it is.
+struct WaterShore {
+  u32 instance = 0;
+  f32 wet_m = 0.0f;
+  Vec2 lo{};
+  Vec2 hi{};
+  // The scene's terrain mesh (its index in the mesh table), whose instance is ground whatever its
+  // material's flags: the renderer's own terrain is one mesh with a plain material. 0xffffffff:
+  // none, and only a terrain material or a terrain tile is ground.
+  u32 terrain_mesh = 0xffffffffu;
+  f32 pad = 0.0f;
+};
+static_assert(sizeof(WaterShore) == 32);
+
 inline void set_uv_transform(ResolveMaterial& material, Vec2 offset, f32 rotation,
                              Vec2 scale) noexcept {
   const bool identity = offset.x == 0.0f && offset.y == 0.0f && rotation == 0.0f &&
@@ -946,6 +981,14 @@ struct ResolveParams {
   u64 half_sun = 0;
   u32 half_x0 = 0;
   u32 half_x1 = 0;
+  // **The wet band** (docs/subsystems/water.md, "The shore"; roadmap S97): the scene's water
+  // bodies' `WaterShore` records and their count; 0 and 0 for none. Read only by the resolve's
+  // water modules, which alone declare the row (a module reads the block through an address, so the
+  // plain ones, whose declaration ends before it, are the bytes they were). A new 16-byte row: the
+  // block grew from 496 to 512 bytes.
+  u64 water_shores = 0;
+  u32 water_shore_count = 0;
+  u32 water_shore_pad = 0;
 };
 // `ResolveParams::water_open_instance` when the scene has no open water.
 inline constexpr u32 k_no_water_open = 0xffffffffu;
@@ -957,7 +1000,7 @@ inline f32 water_clock(f64 time_s) noexcept {
   const f64 t = std::fmod(time_s, k_water_period_s);
   return static_cast<f32>(t < 0.0 ? t + k_water_period_s : t);
 }
-static_assert(sizeof(ResolveParams) == 496);
+static_assert(sizeof(ResolveParams) == 512);
 static_assert(sizeof(ResolveParams) % 16 == 0, "the block is read as float4 rows on the GPU");
 
 // ---- a shading rate by region (renderer.md, "A shading rate by region"; R126) -------------------

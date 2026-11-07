@@ -130,8 +130,21 @@ bool read_body(const scene::WaterBody& block, Body& out, std::string* error) {
   if (!std::isfinite(block.level_m)) return fail("its level_m is not a number");
   const bool circle = block.shape.circle.has_value();
   const bool polygon = !block.shape.polygon.empty();
-  if (circle == polygon) return fail("its shape must be exactly one of a circle and a polygon");
-  if (circle) {
+  const bool fill = block.shape.fill.has_value();
+  if (static_cast<int>(circle) + static_cast<int>(polygon) + static_cast<int>(fill) != 1)
+    return fail("its shape must be exactly one of a circle, a polygon and a fill");
+  if (fill) {
+    // A body that fills (water.md, "A body that fills"): centred on its seed; the flood needs the
+    // ground, so it is `fill_body`'s, when the scene's ground is known.
+    const scene::WaterFill& f = *block.shape.fill;
+    if (!(f.max_extent_m > 0.0f) || !finite(f.max_extent_m))
+      return fail("its fill's max_extent_m must be positive");
+    if (!std::isfinite(f.seed.x) || !std::isfinite(f.seed.z))
+      return fail("its fill's seed is not a number");
+    out.fill = true;
+    out.fill_extent_m = f.max_extent_m;
+    out.center = WorldPos{f.seed.x, block.level_m, f.seed.z};
+  } else if (circle) {
     const scene::WaterCircle& c = *block.shape.circle;
     if (!(c.radius_m > 0.0f) || !finite(c.radius_m))
       return fail("its circle's radius_m must be positive");
@@ -202,12 +215,19 @@ bool read_body(const scene::WaterBody& block, Body& out, std::string* error) {
     return fail("its wind_m_s must not be negative");
   if (!(block.fetch_km > 0.0f) || !finite(block.fetch_km))
     return fail("its fetch_km must be positive");
+  // The shore (water.md, "The shore").
+  if (!(block.wet_m >= 0.0f) || !finite(block.wet_m)) return fail("its wet_m must not be negative");
+  if (!(block.foam_m >= 0.0f) || !finite(block.foam_m))
+    return fail("its foam_m must not be negative");
+  out.wet_m = block.wet_m;
+  out.foam_m = block.foam_m;
   out.shore_m = block.shore_m;
   out.open = block.open;
   return true;
 }
 
 f32 inside_distance(const Body& body, f32 x, f32 z) noexcept {
+  if (body.fill) return fill_value(body, x, z);
   const Vec2 q{x, z};
   const f32 r = length2(q);
   if (body.circle()) return body.radius_m - r;
@@ -235,7 +255,18 @@ f32 depth_at(std::span<const Body> bodies, const scene_gen::Ground& ground, Worl
     const f32 z = static_cast<f32>(at.z - body.center.z);
     // An open body (water.md, "To the horizon") holds every point whose ground is below its level,
     // inside its outline or past it, which is where the resolve draws it.
-    if (!body.open && inside_distance(body, x, z) < 0.0f) continue;
+    if (body.fill) {
+      // A body that fills: its region. One whose flood its holder has not run (`fill_body` needs
+      // the ground) answers the ground below the level within its bound of the seed, which is the
+      // flood's region and any other hollow in that square.
+      if (!body.filled()) {
+        if (std::fabs(x) > body.fill_extent_m || std::fabs(z) > body.fill_extent_m) continue;
+      } else if (!(fill_value(body, x, z) > 0.0f)) {
+        continue;
+      }
+    } else if (!body.open && inside_distance(body, x, z) < 0.0f) {
+      continue;
+    }
     const f64 depth = body.level_m - ground.surface(at);
     if (depth > static_cast<f64>(deepest)) deepest = static_cast<f32>(depth);
   }
@@ -245,6 +276,10 @@ f32 depth_at(std::span<const Body> bodies, const scene_gen::Ground& ground, Worl
 f32 spacing_for(const Body& body) noexcept { return std::clamp(body.shore_m / 3.0f, 0.25f, 1.0f); }
 
 void build_mesh(const Body& body, const scene_gen::Ground& ground, Mesh& out) {
+  if (body.fill) {
+    build_fill_mesh(body, ground, out);
+    return;
+  }
   out = Mesh{};
   f32 spacing = spacing_for(body);
   Vector<Vec2> edge;
@@ -397,10 +432,12 @@ std::string mesh_file_name(std::span<const u8> glb) {
 void build_depth_map(const Body& body, const Mesh& mesh, const scene_gen::Ground& ground,
                      DepthMap& out) {
   out = DepthMap{};
-  if (mesh.positions.empty() || mesh.edge == 0) return;
-  // The bounding square of the outline: the edge ring is the first `edge` vertices.
+  if (mesh.positions.empty() || (mesh.edge == 0 && !body.fill)) return;
+  // The bounding square of the outline: the edge ring is the first `edge` vertices; a body that
+  // fills has no ring, and its every vertex is within its edge.
   f32 lo_x = 1e30f, lo_z = 1e30f, hi_x = -1e30f, hi_z = -1e30f;
-  for (u32 i = 0; i < mesh.edge; ++i) {
+  const u32 bounding = body.fill ? mesh.positions.size() : mesh.edge;
+  for (u32 i = 0; i < bounding; ++i) {
     lo_x = std::min(lo_x, mesh.positions[i].x);
     hi_x = std::max(hi_x, mesh.positions[i].x);
     lo_z = std::min(lo_z, mesh.positions[i].z);

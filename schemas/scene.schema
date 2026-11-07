@@ -1198,12 +1198,25 @@ struct WaterCircle @version(1) {
   radius_m: f32 = 10 @unit(m)
 }
 
-/// A water body's outline: a circle, or a polygon of world positions (x and z; y is not read) that
+/// A water body that **fills** (docs/subsystems/water.md, "A body that fills"; roadmap S97): its
+/// outline is found when the scene is read, by flooding the ground below the body's `level_m` from
+/// `seed` (x and z; y is not read) over a lattice at the mesh's spacing, and tracing where the
+/// level meets the ground. The region need not be star-shaped. A flood that reaches `max_extent_m`
+/// from the seed in x or z is refused with a sentence (the level spills out of the hollow), and so
+/// is a seed whose ground stands at or above the level.
+struct WaterFill @version(1) {
+  seed: worldpos @unit(m)
+  max_extent_m: f32 = 500 @unit(m)
+}
+
+/// A water body's outline: a circle, a polygon of world positions (x and z; y is not read) that
 /// is **star-shaped from its centroid** — every edge seen from the centroid turning the same way —
-/// in either winding. Exactly one of the two.
-struct WaterShape @version(1) {
+/// in either winding, or a region that fills from a seed (`fill`, version 2). Exactly one of the
+/// three.
+struct WaterShape @version(2) {
   circle: WaterCircle?
   polygon: worldpos[]
+  fill: WaterFill? @since(2)
 }
 
 /// One water surface (docs/subsystems/water.md; roadmap S63): a flat surface at `level_m` over the
@@ -1212,7 +1225,7 @@ struct WaterShape @version(1) {
 /// mesh carries under each vertex (the level less the ground there, zero where the ground stands
 /// above the water). The walker wades in it and stops at the chest. Append-only: a field added
 /// later has a default that draws what the block drew before it.
-struct WaterBody @version(3) {
+struct WaterBody @version(4) {
   name: string
   /// The surface's height, a world y, metres.
   level_m: f64 = 0 @unit(m)
@@ -1272,6 +1285,15 @@ struct WaterBody @version(3) {
   /// How far the wind has blown over open water before it reaches the body, km: JONSWAP's fetch,
   /// which sets how grown the sea is (a longer fetch, longer and higher waves).
   fetch_km: f32 = 100 @since(3) @unit(km)
+  /// **The wet band** (docs/subsystems/water.md, "The shore"; docs/experiments/shore.md; roadmap
+  /// S97): ground within this height above the level, metres, inside the body's bounds, is drawn
+  /// darker, as wet sand and gravel are — the capillary fringe and the swash of a lake's shore, a
+  /// few tens of centimetres. 0: no band.
+  wet_m: f32 = 0.3 @since(4) @unit(m)
+  /// **The foam line** (same pages): how far in from where the level meets the ground, metres, a
+  /// thin line of foam runs up and back with the largest wave's phase, its strength from the
+  /// waves' amplitude (a mirror has none), fading to nothing past it. 0: no foam.
+  foam_m: f32 = 0.6 @since(4) @unit(m)
 }
 
 /// One bed of a formation's sequence (`Formation`; renderer.md, "Formation bands"; the grounding,

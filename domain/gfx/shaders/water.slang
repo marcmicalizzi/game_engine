@@ -473,4 +473,124 @@ float3 water_ground_albedo(ResolveMaterial g, float2 uv, float2 duv_dx, float2 d
   return albedo;
 }
 
+// ---- the shore (gfx::k_material_water_shore; docs/subsystems/water.md, "The shore"; roadmap S97;
+// the grounding, docs/experiments/shore.md) -------------------------------------------------------
+// Not mirrored by water_reference.h: the shading test's blocks carry no shore flag, and draw the
+// branch they always did; the shore is held by the scene tests' counts instead (shore_scene_tests).
+static const uint k_material_water_shore = 1048576u;  // gfx::k_material_water_shore
+// Fresh foam's reflectance in the visible: whitecaps average about 40% (Dierssen 2019's review of
+// the measurements since Whitlock, Bartlett and Gurganus 1982), lit as a Lambertian surface.
+static const float k_water_foam_albedo = 0.4;
+// The wave amplitude at which the foam line is whole: the pond's default 2 cm.
+static const float k_water_foam_full_amplitude = 0.02;
+// Lekner and Dorf (1988) over Angstrom (1925), as terrain_material.slang's beach takes it: a water
+// film over a dry albedo a returns (1 - r_e)(1 - r_i) a / (1 - r_i a) of the light, r_e = 0.066 and
+// r_i = 1 - (1 - r_e) / n^2 = 0.4744 at n = 1.333.
+static const float k_water_wet_through = 0.490946;
+static const float k_water_wet_internal = 0.474362;
+// The materials the wet band darkens: a terrain's (k_material_ground_detail, and terrain_material.
+// slang's k_material_terrain_layers and k_material_terrain_map).
+static const uint k_water_wet_materials = 8u | 512u | 1024u;
+
+// Mirrors gfx::WaterShore (32 bytes).
+struct WaterShore {
+  uint instance;
+  float wet_m;
+  float2 lo;
+  float2 hi;
+  uint terrain_mesh;  // the scene's terrain mesh, or 0xffffffff
+  float pad;
+};
+
+// **Where the level meets the ground, per pixel**: the distance in from the waterline, metres, as
+// the depth here over the depth map's slope — the larger of the one-sided differences either way
+// along x and along z, so at the waterline, where the map is clamped at zero on the bank, the
+// water's side gives the slope. 0 where the map's depth is zero (the ground at or above the level),
+// which is where the surface's own terms end; far from any bank the slope is nothing and the
+// distance is large. A function of the map alone, so the waterline is where the ground says, not
+// where the mesh's outline ends.
+float water_shore_distance(WaterDepthMap d, float2 p, float depth) {
+  if (!(depth > 0.0)) return 0.0;
+  const float h = 2.0 * d.half_texel / d.uv_per_m;
+  const float px = water_depth_sample(d, p + float2(h, 0.0));
+  const float mx = water_depth_sample(d, p - float2(h, 0.0));
+  const float pz = water_depth_sample(d, p + float2(0.0, h));
+  const float mz = water_depth_sample(d, p - float2(0.0, h));
+  const float gx = max(abs(px - depth), abs(depth - mx)) / h;
+  const float gz = max(abs(pz - depth), abs(depth - mz)) / h;
+  const float g = sqrt(gx * gx + gz * gz);
+  return g > 1e-4 ? depth / g : 1e6;
+}
+
+uint water_hash2(int2 c) {
+  uint h = uint(c.x) * 0x8DA6B343u ^ uint(c.y) * 0xD8163841u;
+  h ^= h >> 16;
+  h *= 0x7FEB352Du;
+  h ^= h >> 15;
+  h *= 0x846CA68Bu;
+  h ^= h >> 16;
+  return h;
+}
+
+// Value noise in [0, 1] over cells of a unit, smoothly interpolated.
+float water_value_noise(float2 p) {
+  const float2 c = floor(p);
+  float2 f = p - c;
+  f = f * f * (3.0 - 2.0 * f);
+  const int2 i = int2(c);
+  const float a = float(water_hash2(i) >> 8) * (1.0 / 16777216.0);
+  const float b = float(water_hash2(i + int2(1, 0)) >> 8) * (1.0 / 16777216.0);
+  const float e = float(water_hash2(i + int2(0, 1)) >> 8) * (1.0 / 16777216.0);
+  const float g = float(water_hash2(i + int2(1, 1)) >> 8) * (1.0 / 16777216.0);
+  return lerp(lerp(a, b, f.x), lerp(e, g, f.x), f.y);
+}
+
+// **The foam line**: the share of the pixel that is foam, `edge` metres in from the waterline. A
+// line `0.1 foam_m` wide runs up and back between 0.3 and 1 of `foam_m` with the largest wave's
+// phase at the pixel (its swash: the run-up of Stockdon et al. 2006, a lake's being some tens of
+// centimetres), a thinner trail of what the backwash leaves lies between it and the waterline, and
+// both are broken by value noise at a quarter of `foam_m` that drifts with the wave. Its strength
+// is the waves' amplitude over `k_water_foam_full_amplitude` (a mirror has none), and it fades to
+// nothing at `foam_m`. A line narrower than the pixel's footprint is widened to it and dimmed by
+// the same share, so a far shore keeps its foam's mean and does not alias into a dotted line.
+float water_foam(WaterParams w, float foam_m, float2 p, float edge, float time, float footprint) {
+  if (!(foam_m > 0.0) || !(w.amplitude > 0.0) || !(edge < foam_m)) return 0.0;
+  const float strength = clamp(w.amplitude / k_water_foam_full_amplitude, 0.0, 1.0);
+  const float lambda = w.wavelength;
+  const float k = k_water_two_pi / lambda;
+  const float cycles = floor(sqrt(k_water_g * k) * (k_water_period_s / k_water_two_pi) + 0.5);
+  const float travel = frac(cycles * (time / k_water_period_s));
+  const float cyc = frac(frac(dot(w.direction, p) / lambda) - travel + water_phase(w.seed, 0u));
+  const float swash = 0.5 + 0.5 * cos(k_water_two_pi * cyc);
+  const float reach = foam_m * (0.3 + 0.7 * swash);
+  const float thin = 0.1 * foam_m;
+  const float width = max(thin, footprint);
+  const float x = (edge - reach) / width;
+  const float line = exp(-x * x) * (thin / width);
+  const float trail = 0.35 * clamp(1.0 - edge / reach, 0.0, 1.0);
+  const float breakup = water_value_noise(p * (4.0 / foam_m) + w.direction * (2.0 * swash));
+  const float fade = clamp((foam_m - edge) / (0.25 * foam_m), 0.0, 1.0);
+  return strength * fade * clamp((line + trail) * (0.3 + 1.1 * breakup), 0.0, 1.0);
+}
+
+// The foam over the water's radiance `c`: foam's albedo lit as a level surface by the sun's
+// irradiance as it arrives (`sun`, its shadow included) and the sky's light.
+float3 water_foam_over(float3 c, float foam, float3 sun, float3 sun_dir, float3 ambient) {
+  if (!(foam > 0.0)) return c;
+  const float3 lit = sun * (max(sun_dir.y, 0.0) / k_brdf_pi) + ambient;
+  return lerp(c, k_water_foam_albedo * lit, foam);
+}
+
+// **The wet band**: the factor on a terrain pixel's shaded colour `height` metres above a body's
+// level, within its `wet_m`: Lekner and Dorf's darkening of the pixel's albedo at saturation at the
+// waterline, easing to none at `wet_m` (the capillary fringe drying upwards, smoothstep). Applied
+// after the lighting, so it darkens the specular too, which real wet ground does not (it shines):
+// the limit of a post-multiplier, said on the page.
+float3 water_wet_factor(float3 albedo, float height, float wet_m) {
+  if (!(wet_m > 0.0) || !(height >= 0.0) || !(height < wet_m)) return float3(1.0);
+  const float wet = 1.0 - smoothstep(0.0, wet_m, height);
+  const float3 dark = k_water_wet_through / (1.0 - k_water_wet_internal * clamp(albedo, 0.0, 1.0));
+  return lerp(float3(1.0), min(dark, float3(1.0)), wet);
+}
+
 #endif  // ENGINE_WATER_SLANG

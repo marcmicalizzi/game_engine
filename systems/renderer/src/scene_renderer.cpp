@@ -2948,6 +2948,8 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
     // modules read.
     resolve.water_open_instance = scene.water_open_instance();
     resolve.water_open_material = scene.water_open_material();
+    resolve.water_shores = scene.water_shores_address();
+    resolve.water_shore_count = scene.water_shore_count();
     // The resolve's split (R115; renderer.md, "Where the resolve's time goes"): 0, the picture,
     // unless `renderer.resolve.stop_after` measures a stage.
     resolve.resolve_stop = resolve_stop_tunable(frame.frame_index);

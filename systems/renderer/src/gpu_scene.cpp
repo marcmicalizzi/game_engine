@@ -4041,6 +4041,9 @@ bool GpuScene::upload_materials(const ResolvedSettings& resolved, std::string* e
           gfx::WaterDepthFrame frame;
           if (!upload_water_depth(data_->mesh_info[m].water->depth, frame)) return false;
           gfx::set_water_depth_map(material, optics, frame);
+          // The shore where the level meets the ground, and its foam (water.md, "The shore";
+          // S97): every body with a map, the foam's reach in the same entry.
+          gfx::set_water_shore(material, optics, data_->mesh_info[m].water->body.foam_m);
         }
         if (m == data_->terrain_mesh && data_->terrain.materials.has_value()) {
           // The native terrain's entries (renderer.md, "Native authored terrain materials",
@@ -4225,6 +4228,7 @@ bool GpuScene::upload_materials(const ResolvedSettings& resolved, std::string* e
     }
     break;
   }
+  if (!upload_water_shores(error)) return false;
   // The opaque shadow proxy's list (R109): every alpha-tested cluster and its material, for the
   // bake to measure its coverage. Only a scene read whole: a streamed one's clusters live in a page
   // pool whose slots change under any table made now.
@@ -5583,6 +5587,40 @@ gfx::GroundDetailParams GpuScene::ground_detail_params() const noexcept {
   return block;
 }
 
+// The wet band's records (water.md, "The shore"; roadmap S97): one a water body with a depth map
+// and a `wet_m`, its instance and its bounds — the map's square, body-local, grown by the distance
+// a 1:25 bank rises `wet_m` in, and a metre — for the resolve's water modules to find the terrain
+// pixels just above its level by. A scene with none uploads nothing and the resolve reads nothing.
+bool GpuScene::upload_water_shores(std::string* error) {
+  if (water_shores_.size != 0) gfx::destroy_buffer(*device_, water_shores_);
+  water_shores_ = gfx::BufferResource{};
+  water_shore_count_ = 0;
+  Vector<gfx::WaterShore> shores;
+  for (u32 i = 0; i < data_->instances.size(); ++i) {
+    const u32 m = data_->instances[i].mesh;
+    if (m >= data_->mesh_info.size() || !data_->mesh_info[m].water.has_value()) continue;
+    const SceneWater& water = *data_->mesh_info[m].water;
+    if (water.depth.size < 2 || !(water.body.wet_m > 0.0f)) continue;
+    const f32 margin = 25.0f * water.body.wet_m + 1.0f;
+    const f32 half = 0.5f * water.depth.texel_m;
+    const f32 span = static_cast<f32>(water.depth.size - 1) * water.depth.texel_m;
+    gfx::WaterShore shore;
+    shore.instance = i;
+    shore.wet_m = water.body.wet_m;
+    shore.terrain_mesh = data_->terrain.enabled ? data_->terrain_mesh : 0xffffffffu;
+    shore.lo = Vec2{water.depth.origin.x - half - margin, water.depth.origin.y - half - margin};
+    shore.hi = Vec2{water.depth.origin.x + span + half + margin,
+                    water.depth.origin.y + span + half + margin};
+    shores.push_back(shore);
+  }
+  if (shores.empty()) return true;
+  if (!gfx::upload_buffer(*device_, shores.data(), u64{shores.size()} * sizeof(gfx::WaterShore),
+                          k_storage, water_shores_, error))
+    return false;
+  water_shore_count_ = shores.size();
+  return true;
+}
+
 void GpuScene::destroy() noexcept {
   ground_.reset();
   ground_time_s_ = 0.0;
@@ -5592,6 +5630,9 @@ void GpuScene::destroy() noexcept {
   const gfx::Device& device = *device_;
   // A dynamic scene's `instances` and `pair_table` name one of its table sets, which own them.
   gfx::destroy_opacity_micromaps(device, micromaps_);
+  if (water_shores_.size != 0) gfx::destroy_buffer(device, water_shores_);
+  water_shores_ = gfx::BufferResource{};
+  water_shore_count_ = 0;
   micromap_list_.clear();
   micromap_triangles_.clear();
   if (!sets_.empty()) {
