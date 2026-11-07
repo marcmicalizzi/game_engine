@@ -555,6 +555,25 @@ inline void aerial(const Sky& s, const Tables& tables, Dvec3 dir, double distanc
   const Dvec4 value = lerp4(lo, hi, wgt);
   inscatter = rgb(value);
   transmittance_out = value.w;
+  const double distance_km = distance_m * 0.001;
+  const double table_km = static_cast<double>(gfx::k_sky_aerial_distance_km);
+  if (distance_km > table_km) {
+    // F3, the shader's extension past the table: `value` is the last slice, and the one before
+    // it gives the table's own slope at its end (the slice coordinate moves depth / 2D a km
+    // there), which the transmittance continues as an exponential and the in-scatter as a slope
+    // falling away at that rate.
+    const Dvec4 prev = plane(depth - 2);
+    const double span = 1.0 / (static_cast<double>(depth) / (2.0 * table_km));
+    const double extra = distance_km - table_km;
+    const double rate =
+        (value.w > 0.0 && prev.w > value.w) ? (prev.w - value.w) / span / value.w : 0.0;
+    const double fall = std::max(rate, 1.0e-3);
+    const double reach = (1.0 - std::exp(-fall * extra)) / fall;
+    inscatter = {std::max(value.x + (value.x - prev.x) * (reach / span), 0.0),
+                 std::max(value.y + (value.y - prev.y) * (reach / span), 0.0),
+                 std::max(value.z + (value.z - prev.z) * (reach / span), 0.0)};
+    transmittance_out = value.w * std::exp(-rate * extra);
+  }
 }
 
 inline double height_of(Dvec3 world) {
