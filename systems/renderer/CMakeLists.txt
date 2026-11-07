@@ -79,6 +79,8 @@ set(_renderer_tests tests/renderer_tests.cpp tests/reference_tests.cpp tests/str
                     # the set's keys, rebuilds and windows, from a tile source of the test's own.
                     tests/terrain_tiles_tests.cpp
                     tests/terrain_materials_tests.cpp
+                    # R136: the far ground's reads cut by footprint, against the full reads.
+                    tests/terrain_footprint_tests.cpp
                     # The world formation on the ground (W85): bands across the dip, none without.
                     tests/formation_scene_tests.cpp
                     # A scene's `.flora.json` mesh through the mesh-generator registry: built and
@@ -132,6 +134,14 @@ if(TARGET engine::sky)
        tests/banding_tests.cpp)
 endif()
 engine_module_tests(NAME renderer SOURCES ${_renderer_tests})
+# The terrain resolve with every read R136 cuts made again (tests/shaders/terrain_full_reads.slang)
+# and with only its four footprint rules (terrain_footprint_reads.slang), which
+# terrain_footprint_tests.cpp loads through a manifest to draw beside the engine's own module.
+engine_shaders(NAME renderer_tests SOURCES tests/shaders/terrain_full_reads.slang
+                                           tests/shaders/terrain_footprint_reads.slang)
+if(TARGET engine_renderer_tests AND TARGET engine_shaders_renderer_tests)
+  target_link_libraries(engine_renderer_tests PRIVATE engine_shaders_renderer_tests)
+endif()
 # What posing the trees costs on the frame's thread and on the poser's pool (flora_poser.h).
 engine_module_bench(NAME renderer SOURCES bench/flora_bench.cpp)
 if(TARGET engine_renderer_tests AND TARGET engine::sky AND TARGET engine::terrain)

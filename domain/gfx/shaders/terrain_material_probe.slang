@@ -1,4 +1,7 @@
 #define MATERIAL_TERRAIN 1
+// Every R136 read rule built in, the four the engine ships without included, so their arithmetic
+// is held here whichever the engine's default selects.
+#define TERRAIN_FOOTPRINT_LEVERS 31
 #include "material.slang"
 
 struct ProbeParams {
@@ -118,4 +121,47 @@ void response_main(uint3 id : SV_DispatchThreadID) {
   output[5 * i + 2] = float4(g.normal, g.lit ? 1.0 : 0.0);
   output[5 * i + 3] = float4(g.chance, g.blend, float(g.size_mm), float(g.level_lit));
   output[5 * i + 4] = float4(g.chance0, g.draw0, g.chance1, g.draw1);
+}
+
+// R136's footprint rules (renderer.md, "What a far pixel reads"): the projections kept on a plane
+// tilted from flat to vertical in 1/100 degree steps, past two cells (far 1) and under one (far 0),
+// in the first `count` points; then, in 512 more, the one-tile, flat-maps and layer-weight ramps
+// over their inputs, against their double mirror in terrain_material_tests.cpp.
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void reads_main(uint3 id : SV_DispatchThreadID) {
+  if (id.x >= g_probe.count + 512u) return;
+  float4* output = (float4*)g_probe.output;
+  if (id.x < g_probe.count) {
+    const float theta = 1.57079632679 * float(id.x) / float(g_probe.count - 1u);
+    const float3 n = float3(sin(theta), cos(theta), 0.0);
+    // sample_terrain_material's triplanar weights.
+    float3 axes = n * n;
+    axes *= axes;
+    axes /= max(axes.x + axes.y + axes.z, 1e-12);
+    const float3 far = terrain_kept_projections(axes, 1.0);
+    const float3 near = terrain_kept_projections(axes, 0.0);
+    output[id.x] = float4(far.x, far.y, near.x, near.y);
+    return;
+  }
+  const uint j = id.x - g_probe.count;
+  const float t = float(j) / 128.0;  // 0 to 4
+  output[id.x] = float4(terrain_one_tile(t), terrain_flat_maps(0.25 * t),
+                        terrain_far_layer_weight(t / 128.0, 1.0),
+                        terrain_far_layer_weight(t / 128.0, 0.0));
+}
+
+// R136's tiles by weight: the lattice's weights and gain at `count` points of a 64 by 64 grid over
+// one cell's skewed square, then the same points' weights and gain once a tile under 1/128 has
+// been ramped out (`terrain_hex_kept`), two float4 a point.
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void kept_main(uint3 id : SV_DispatchThreadID) {
+  if (id.x >= g_probe.count) return;
+  const float2 f = (float2(float(id.x % 64u), float(id.x / 64u)) + 0.5) / 64.0;
+  const HexTiles hex = hex_tiles(17u, 4u, f, 0x9e3779b9u, 0.0);
+  const HexTiles kept = terrain_hex_kept(hex);
+  float4* output = (float4*)g_probe.output;
+  output[2 * id.x] = float4(hex.weight, hex.gain);
+  output[2 * id.x + 1] = float4(kept.weight, kept.gain);
 }

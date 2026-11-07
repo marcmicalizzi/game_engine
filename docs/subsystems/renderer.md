@@ -951,7 +951,9 @@ no lookup table, no second texture and no container section, and adds no texture
   18 and a three-way corner 27. Past `detail_far_m` a tiled layer reads nothing (it is its mean),
   so on far ground a stochastic layer is 9–27 reads per layer where there were none: on the forest
   the resolve rose 0.2–0.7 ms at 2560×1440 and 1.7–2.3 ms at 11520×2160 with every layer
-  stochastic (a loaded machine; upper bounds), and texture residency did not change.
+  stochastic (a loaded machine; upper bounds), and texture residency did not change. Since R136 a
+  tile under 1/128 of the blend is not read ("What a far pixel reads", below): about a third
+  fewer tile reads over a cell, a fifth of the resolve on the v31 fell.
 - **What holds it.** `gfx: terrain material phases …` checks the GPU's lattice, weights, shifts,
   turns and blend against the double mirror in `domain/gfx/tests/terrain_hex_reference.h` at an eye
   100,000 km out (worst 9 × 10⁻⁶); the CPU cases on the mirror check the statistics (mean to 0.005,
@@ -961,6 +963,50 @@ no lookup table, no second texture and no container section, and adds no texture
   and finds every pixel within 0.26 codes on average of the reference's read at its world point;
   `renderer: a stochastic layer shades the same ground in the resolve and the path tracer` holds
   the three readers together by FLIP.
+
+#### What a far pixel reads
+
+R136 (2026-11-07; [the measurement](../experiments/terrain-resolve-2026-11-07.md)) cuts a
+stochastic layer's reads where the pixel cannot tell the difference. Five rules are written in
+`terrain_material.slang` and selected at compile time by `TERRAIN_FOOTPRINT_LEVERS` (a bit each);
+**the engine ships with one, tiles by weight**, because it is the one that paid:
+
+- **Tiles by weight** (bit 16, on). Burley's power-7 weights leave a tile under 1/128 of the blend
+  over about half of every cell (its barycentric under half the largest's, and 0.5⁷ = 1/128),
+  where it moves the pixel by under 1/128 of its departure from the layer's mean — under a code
+  step. A weight under 1/256 is dropped and the tile not read, one between 1/256 and 1/128 ramps
+  to its own, and the kept weights are renormalized with the variance-preserving gain taken from
+  them (`terrain_hex_kept`), so the blend stays the operator over the tiles it reads; a hex whose
+  every weight is 1/128 or more is returned bit for bit. Every map of the tile goes together, so
+  the maps stay coordinated. On the v31 fell it returns a fifth of the resolve (1.60 → 1.28 ms at
+  1920×1080, 14.26 → 11.66 at 11520×2160) and changes 1.8–3.2% of the pixels, FLIP 0.0012–0.0018;
+  on the v25 walk at the owner's width the resolve goes 13.73 → 12.73 ms. It acts on the near
+  ground too, so it is a shading rule, not a culling one, and a sun glint can move by more than a
+  code where a dropped tile's slope turned it (1,099 pixels of 24.9 million over eight codes at
+  11520; a tighter band is the first thing to try if one is seen to flicker).
+- **The four footprint rules** (bits 1, 2, 4, 8; built, tested, **off**): past a lattice cell a
+  pixel (sqrt |du × dv| against the cell, 28/97 of a repeat) one tile, the nearest, instead of
+  three, with a band from one cell to two; past a repeat's filter width (the larger of the
+  footprint's minor axis and its major over the anisotropy's 16) the maps' means instead of the
+  colour, metallic-roughness and normal reads, a band from half a repeat to one; the projection
+  floor rising from 1/128 to a band of 1/32–1/16 past a cell; a mask layer under 1/128 of the
+  pixel skipped past a cell of it (its coverage still counted). Each is exactly off under a cell,
+  so with them the near ground draws its bytes. **They do not pay at these footprints**: on the
+  fell at 1920×1080 they act on 0.47% of the pixels (the far mountain) and the branches and
+  registers they add cost the whole frame 0.44 ms; the owner's width only has smaller footprints.
+  A view whose far ground is most of the frame (a summit's horizon) is where to try them again.
+- **What a far pixel reads**, then: what a near one does — the kept tiles of each kept projection,
+  colour, metallic-roughness with height, the normal and its variance chain — with tiles by weight
+  reading 1.5–2 tiles of 3 over most of a cell instead of 3.
+- **What holds it.** `gfx: a stochastic tile under 1/128 of the blend is ramped out, the rest
+  untouched` (the rule against its double mirror over a cell, bit for bit where it does not act);
+  `gfx: the far terrain's read rules are bands, and exactly off under a cell` (the footprint rules'
+  ramps and the projection band across a plane tilted a hundredth of a degree at a time: no share
+  moves by more than 3.5 × 10⁻⁴ a step, where the near rule's step is 1/128);
+  `renderer: the ground reads fewer tiles where a pixel cannot tell, within the bound` (a plane to
+  the horizon drawn by the engine's module and by the footprint rules beside a module with every
+  read made, loaded through a shader manifest: the near ground's bytes under the footprint rules,
+  FLIP under 0.005 for both, and a frame drawn again the same bytes).
 
 #### Normal filtering (R97)
 
@@ -1166,6 +1212,10 @@ ground palette by the weights' sum. **Wetness** is a separate scalar — the lar
 `wetness` and the mask's (a water region's `wet_m`) — that darkens the substrate by
 `lerp(1, 0.2, porosity)` and multiplies its roughness by half that factor (Lagarde 2013), so wet
 sand turns dark and a little smoother and wet rock barely changes; nothing turns glossy dry.
+The sampler skips a layer only where its filtered weight is exactly 0; the bilinear weights leave
+small shares across every transition, and R136's layer rule (a stochastic layer under 1/128 of
+the pixel not read past a cell of it, its coverage still counted, so the root never shows) is
+built but compiled off, with the other footprint rules ("What a far pixel reads", above).
 
 **Why identity survives the levels.** The material is a function of the point and the pixel's
 footprint alone: every geometry level, tile, chunk and cut that draws a point reads the same mask
