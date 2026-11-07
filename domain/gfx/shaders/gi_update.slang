@@ -51,6 +51,122 @@ float3 gi_harmonics(ResolveParams* params, float3 n) {
   return ambient_radiance(params->sky.rgb, ground, n);
 }
 
+// **Stage 1b: the bounce** (`k_gi_bounce`). What a ray brings back: the environment where it
+// escapes; where it hits, the hit point's radiance towards it — its material's albedo (the base
+// colour at level 0, decoded through `hit_visible_entry` and the material table as the reference
+// tracer decodes a hit) lit by the sun under one shadow ray, and by the cache's own value at the
+// hit's cell, which is what carries the light of the bounces before it, so the cache converges to
+// more than one bounce. A hit whose cells are empty takes the harmonics there, as the resolve would.
+// The nearest surface is found with the shadow rays' masks decided as they decide them (a masked
+// candidate by its mask at level 0, the opaque proxy's solid clusters, a caster as solid), kept
+// nearest rather than first.
+float3 gi_bounce(ResolveParams* params, float3 origin, float3 dir) {
+  RayQuery<RAY_FLAG_NONE> query;
+  RayDesc ray;
+  ray.Origin = origin;
+  ray.Direction = dir;
+  ray.TMin = 0.0;
+  ray.TMax = 1e30;
+  const bool masked = (params->shadow_flags & k_shadow_alpha_masks) != 0;
+  const uint flags =
+      masked ? ((params->shadow_flags & k_shadow_micromap_2state) != 0 ? k_ray_flag_force_omm_2_state
+                                                                        : 0u)
+             : RAY_FLAG_FORCE_OPAQUE;
+  query.TraceRayInline(g_scenes[NonUniformResourceIndex(params->scene)], flags, k_ray_mask_caster,
+                       ray);
+  MaskTables masks = no_mask_tables();
+  masks.materials = params->materials;
+  masks.cluster_materials = params->cluster_materials;
+  masks.attributes = params->attributes;
+  masks.fade = params->fade;
+  while (query.Proceed()) {
+    if (query.CandidateType() != CANDIDATE_NON_OPAQUE_TRIANGLE) continue;
+    bool is_static = false;
+    const uint2 entry = hit_pair(
+        params->visible, params->instances, params->mesh,
+        hit_visible_entry(params->hit_entries, params->instances, query.CandidateGeometryIndex(),
+                          query.CandidateInstanceID()),
+        query.CandidateInstanceID(), is_static);
+    InstanceDesc* instances = (InstanceDesc*)params->instances;
+    const InstanceDesc instance = instances[entry.x];
+    uint pair = 0u;
+    if (params->fade != 0) {
+      MeshDesc* meshes = (MeshDesc*)params->fade_meshes;
+      pair = pair_of(instance, meshes[instance.mesh], entry.y);
+    }
+    if (params->shadow_coverage != 0 && entry.y < params->shadow_coverage_count) {
+      uint* coverage = (uint*)params->shadow_coverage;
+      const uint byte = (coverage[entry.y >> 2] >> ((entry.y & 3u) * 8u)) & 0xffu;
+      if (byte >= params->shadow_opaque_coverage) {
+        if (fade_keeps(masks, pair, g_fade_pixel)) query.CommitNonOpaqueTriangleHit();
+        continue;
+      }
+    }
+    if (candidate_keeps_counted(masks, params->clusters, params->triangles, instance, entry.y,
+                                query.CandidatePrimitiveIndex(),
+                                query.CandidateTriangleBarycentrics(), pair, g_fade_pixel)) {
+      query.CommitNonOpaqueTriangleHit();
+    }
+  }
+  if (query.CommittedStatus() != COMMITTED_TRIANGLE_HIT) return gi_environment(params, dir);
+  const SceneGeometry geo = geometry_of(params);
+  InstanceDesc* instances = (InstanceDesc*)params->instances;
+  const uint visible_index = hit_visible_entry(params->hit_entries, params->instances,
+                                               query.CommittedGeometryIndex(),
+                                               query.CommittedInstanceID());
+  bool is_static = false;
+  const uint2 entry = hit_pair(params->visible, params->instances, params->mesh, visible_index,
+                               query.CommittedInstanceID(), is_static);
+  const InstanceDesc instance = instances[entry.x];
+  const TriangleFetch tri =
+      fetch_triangle(geo, instance, visible_index, entry.y, query.CommittedPrimitiveIndex() & 0xff);
+  const float2 bary = query.CommittedTriangleBarycentrics();
+  const Surface hit =
+      surface_at(geo, instance, tri, float3(1.0 - bary.x - bary.y, bary.x, bary.y), origin);
+  const ResolveMaterial material = material_of(geo, instance, entry.y);
+  const float2 surface_uv =
+      hit.uv + terrain_uv_offset(instance, params->terrain_uv_x0_mm, params->terrain_uv_z0_mm,
+                                 params->terrain_uv_per_mm);
+  const MaterialSample sampled =
+      sample_material(material, material_uv(material, surface_uv * material.uv_scale));
+  float3 n = hit.normal;
+  if (dot(n, hit.geometric) < 0.0) n = -n;
+  BrdfSurface surface;
+  surface.albedo = sampled.albedo;
+  surface.normal = n;
+  surface.view = -dir;
+  surface.roughness = sampled.roughness;
+  surface.metallic = sampled.metallic;
+  float3 light = sampled.emissive;
+  const float3 sun_dir = params->sun.xyz;
+  if (dot(n, sun_dir) > 0.0) {
+    const float bias = ray_offset(geo, instance, params->shadow_bias, params->shadow_bias_steps);
+    if (!shadow_ray_blocked(params, k_shadow_sun, hit.position + hit.geometric * bias, sun_dir,
+                            1e30)) {
+      float3 sun = float3(params->sun.w);
+      if (params->sky_params != 0) {
+        SkyParams* sky = (SkyParams*)params->sky_params;
+        sun = sky_light_at(sky, hit.position, sun_dir, sky->sun_illuminance.rgb);
+      }
+      light += brdf_direct(surface, sun_dir, sun);
+    }
+  }
+  // The cache at the hit, and **nothing** where its cells are empty: only the picture's pixels
+  // sample, so a surface out of every view (the wall behind the eye, a trunk's far side) has no
+  // cells, and taking the open sky's harmonics there lit the inside of the box as if it had no
+  // walls (the box went from FLIP 0.20 under `sky` to 0.44). Nothing there is the reference's
+  // two-bounce answer for that hit — its own light and no more — so it errs dark, by the bounces
+  // past the second off surfaces nobody sees.
+  float3 ratio;
+  float3 ambient = float3(0.0);
+  if (gi_read(params->gi_cells, params->gi_count, params->eye, hit.position,
+              gi_level(length(hit.position - params->camera.xyz), params->gi_cell_scale),
+              gi_face(hit.normal), ratio)) {
+    ambient = ratio * gi_luminance(gi_harmonics(params, n));
+  }
+  return light + ambient * sampled.albedo * (1.0 - sampled.metallic);
+}
+
 void gi_add(ResolveParams* params, uint slot, uint3 fixed) {
   Atomic<uint>* words = (Atomic<uint>*)params->gi_cells + slot * k_gi_cell_words;
   words[1].store(params->gi_frame);
@@ -106,7 +222,9 @@ void gi_sample_pixel(ResolveParams* params, uint t) {
   g_fade_pixel = p;
   const float3 origin = s.position + s.geometric * ray_bias;
   float3 radiance = float3(0.0);
-  if (!shadow_ray_blocked(params, k_shadow_sun, origin, dir, 1e30)) {
+  if ((params->gi_flags & k_gi_bounce) != 0u) {
+    radiance = gi_bounce(params, origin, dir);
+  } else if (!shadow_ray_blocked(params, k_shadow_sun, origin, dir, 1e30)) {
     radiance = gi_environment(params, dir);
   }
   const float3 ratio = min(radiance / base, float3(k_gi_ratio_max));

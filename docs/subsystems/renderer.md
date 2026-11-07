@@ -1814,13 +1814,31 @@ pose the change from frame to frame falls from 71,000 colour steps over the firs
 by frame 20 and 11,600 by frame 40 (`... falls and does not grow back`): the noise left is the
 average's, 1/√256 of a sample's.
 
-**What stage 1b and stage 2 add.** 1b (`bounce`) gives a ray that hits the hit point's radiance: its
-albedo through `hit_visible_entry` and the material table, times the sun's irradiance there under
-one shadow ray, plus the cell at the hit — the cache's own value, which is what makes it converge to
-more than one bounce. Until then `bounce` reads as `sky`, and a surface turned towards the ground
-loses the ground's bounce the harmonics' lower half gave it wherever its rays meet real ground (the
-harmonics assumed it lit; the visibility knows it is there and, at 1a, not that it is lit). Stage 2
-is ReSTIR GI over the cache (R68).
+**Stage 1b: the bounce** (`renderer.gi.mode=bounce`, `k_gi_bounce`). `sky` alone knows where the
+scene is but not that it is lit: a ray that meets real ground brings back nothing where the
+harmonics' lower half assumed the sunlit ground, so on an open field `sky` is *further* from the
+real light than the harmonics. With the bounce, the sample's ray finds the **nearest** surface (the
+shadow rays' masks, proxy and micromaps decided as they decide them, kept nearest rather than
+first), decodes it as the reference tracer decodes a hit — `hit_visible_entry`, `hit_pair`,
+`fetch_triangle`, `material_of`, the base colour at level 0 — and brings back its light towards the
+ray: its emission, the sun through `brdf_direct` under one shadow ray from the hit, and its albedo
+times **the cache at the hit's own cell**, which carries the bounces before it, so the cache
+converges to more than one bounce. Where the hit's cells are empty the ambient there is **nothing**,
+not the harmonics: only the picture's pixels sample, so a surface out of every view has no cells,
+and taking the open sky there lit the inside of the box as if it had no walls (FLIP 0.44 against
+0.13). It errs dark instead, by the bounces past the second off surfaces nobody sees. Against the
+reference at **three** bounces — the light as it is, the sun off the floor onto the walls and back —
+after 64 frames:
+
+| fixture | FLIP, `off` | `sky` | `bounce` | PSNR, `off` | `sky` | `bounce` |
+|---|---|---|---|---|---|---|
+| the box with one opening | 0.573 | 0.200 | **0.125** | 11.9 | 22.1 | 27.1 |
+| the field of cubes | 0.065 | 0.109 | **0.048** | 33.0 | 26.9 | 35.5 |
+
+(`gi cache: the bounce moves the picture towards the reference at three bounces` holds `bounce`
+below both.) A hit's albedo is the material's base colour and texture at level 0, not a terrain's
+layers or the ground's detail; a hit costs a nearest-hit traversal, a material fetch and a shadow
+ray where a `sky` sample costs a first-hit one. Stage 2 is ReSTIR GI over the cache (R68).
 
 ## The sun's day
 

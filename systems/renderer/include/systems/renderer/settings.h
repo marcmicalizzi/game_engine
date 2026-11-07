@@ -87,8 +87,9 @@ enum class WaterQuality : u8 { Low, High };
 // **Indirect light** (`renderer.gi.mode`, read at load; R69, renderer.md "Indirect light: the
 // world-space cache"): `Off` is the resolve's ambient as it always was, the sky's harmonics; `Sky`
 // is the world-space cache fed by rays against the frame's structures, read in its place — the
-// sky's visibility through the scene (stage 1a); `Bounce` adds the sun's bounce (stage 1b, not yet
-// built: it reads as `Sky`). Only where the shadows are traced.
+// sky's visibility through the scene (stage 1a); `Bounce` gives a ray that hits the hit point's
+// light — the sun on its albedo and the cache at its cell (stage 1b). Only where the shadows are
+// traced.
 enum class GiMode : u8 { Off, Sky, Bounce };
 
 // How many views the frame has and how they are laid out over the target (04 §4.6,

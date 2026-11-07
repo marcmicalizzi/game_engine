@@ -374,8 +374,9 @@ constexpr const char* k_gi_mode_choices[] = {"off", "sky", "bounce"};
 tunables::Enum<GiMode> gi_mode{
     "renderer.gi.mode", GiMode::Off, k_gi_mode_choices,
     "Indirect light: off, the sky's harmonics as before; sky, a world-space cache fed by rays "
-    "against the frame's structures, read in their place; bounce, the sun's bounce too (not yet "
-    "built: reads as sky). Only with traced shadows (renderer.md, Indirect light: the world-space "
+    "against the frame's structures, read in their place; bounce, a ray that hits takes the hit's "
+    "light too, the sun on its albedo and the cache at its cell. Only with traced shadows "
+    "(renderer.md, Indirect light: the world-space "
     "cache; read at load)"};
 // 32 MiB is a million cells, about thirty times what a 3840x2160 frame of the forest touches at
 // the default scale, so a walk's recent past stays warm as the eye turns back.

@@ -74,7 +74,7 @@ inline constexpr u32 k_gi_dispatch_pitch = 32768;
 
 // `ResolveParams::gi_flags`.
 inline constexpr u32 k_gi_read = 1u;    // the resolve reads the cache for its ambient
-inline constexpr u32 k_gi_bounce = 2u;  // a ray that hits takes the bounce (stage 1b; unused yet)
+inline constexpr u32 k_gi_bounce = 2u;  // a ray that hits takes the hit's light (stage 1b)
 inline constexpr u32 k_gi_reset = 4u;   // the fold clears every cell (the cache's first frame)
 
 // The cells a budget of `bytes` holds: a power of two, at least one bucket.

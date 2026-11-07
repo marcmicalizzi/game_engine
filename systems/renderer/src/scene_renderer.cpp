@@ -2765,7 +2765,8 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
     for (u32 v = 0; v < views; ++v)
       gi_pixels += u64{targets_.views[v].width} * targets_.views[v].height;
     gi_stride = gfx::gi_stride(gi_pixels, resolved_.gi_rays_per_frame);
-    gi_flags = gfx::k_gi_read | (gi_reset_ ? gfx::k_gi_reset : 0u);
+    gi_flags = gfx::k_gi_read | (gi_reset_ ? gfx::k_gi_reset : 0u) |
+               (resolved_.gi_mode == GiMode::Bounce ? gfx::k_gi_bounce : 0u);
     ++gi_frame_;
   }
 

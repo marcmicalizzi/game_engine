@@ -475,6 +475,49 @@ TEST_CASE("gi cache: the cache moves the picture towards the reference path trac
   }
 }
 
+TEST_CASE("gi cache: the bounce moves the picture towards the reference at three bounces") {
+  Gpu gpu;
+  if (!gpu.ok) {
+    MESSAGE("gi cache unavailable here: " << gpu.why);
+    return;
+  }
+  const test::TempDir tmp("engine_gi_bounce");
+  const Fixture fixtures[] = {box_fixture(tmp.native()), field_fixture(tmp.native(), WorldPos{})};
+  for (const Fixture& fixture : fixtures) {
+    // The judge at three bounces: the sun's light off the floor onto the walls and back, which is
+    // what the bounce's cache, reading its own cells at every hit, converges towards.
+    ReferenceFrame reference;
+    const char* modes[3] = {"off", "sky", "bounce"};
+    image::ImageMetrics metric[3];
+    for (u32 m = 0; m < 3; ++m) {
+      const ScopedTunable mode("renderer.gi.mode", modes[m]);
+      Rig rig;
+      REQUIRE_MESSAGE(rig.build(gpu.device, fixture.desc, m == 0), rig.error);
+      CapturedFrame shot;
+      REQUIRE_MESSAGE(capture_after(rig, fixture.camera, m == 0 ? 1 : 64, shot), rig.error);
+      if (m == 0) {
+        ReferenceSettings settings;
+        settings.spp = 512;
+        settings.batch = 64;
+        settings.max_bounces = 3;
+        settings.pixel_center = true;
+        REQUIRE_MESSAGE(rig.reference.render(fixture.camera, settings, reference, &rig.error),
+                        rig.error);
+      }
+      const image::Image a = image_of(shot.width, shot.height, shot.color);
+      const image::Image b = image_of(reference.width, reference.height, reference.color);
+      std::string error;
+      REQUIRE_MESSAGE(
+          image::compare_images(b, a, image::MetricsOptions{}, metric[m], nullptr, &error), error);
+      MESSAGE(fixture.name << ", mode " << std::string(modes[m]) << ", three bounces: FLIP mean "
+                           << metric[m].flip_mean << ", p95 " << metric[m].flip_percentile
+                           << ", PSNR " << metric[m].psnr);
+    }
+    CHECK(metric[2].flip_mean < metric[0].flip_mean);
+    CHECK(metric[2].flip_mean < metric[1].flip_mean);
+  }
+}
+
 TEST_CASE("gi cache: at one pose the change from frame to frame falls and does not grow back") {
   Gpu gpu;
   if (!gpu.ok) {
