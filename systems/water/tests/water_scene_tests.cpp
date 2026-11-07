@@ -195,6 +195,17 @@ std::string oasis_copy(const test::TempDir& tmp, bool water) {
   JsonValue root;
   REQUIRE(parse_json(text, root).ok);
   if (!water) root.set("water", JsonValue::array());
+  // The wet band is on by default and darkens the sand round the pool; these cases isolate the
+  // water block's own footprint, and the band's is held by count in shore_scene_tests.cpp.
+  if (const JsonValue* bodies = root.find("water"); water && bodies != nullptr) {
+    JsonValue list = JsonValue::array();
+    for (usize i = 0; i < bodies->size(); ++i) {
+      JsonValue body = (*bodies)[i];
+      body.set("wet_m", JsonValue(0.0));
+      list.push_back(std::move(body));
+    }
+    root.set("water", std::move(list));
+  }
   const std::string out = tmp.file(water ? "oasis.json" : "dry.json");
   REQUIRE(write_text(out, write_json(root)));
   return out;
