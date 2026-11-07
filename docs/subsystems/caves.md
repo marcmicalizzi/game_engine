@@ -13,7 +13,7 @@
 - **Profiles** (`profile_point`): a phreatic tube is an ellipse `width × width / 2`; a vadose canyon a superellipse of exponent 4, `width × 3 width`; a keyhole the tube over a canyon 0.35 of its width and 1.2 tube heights deep. `height_m` overrides the ratio within the grounding's range.
 - **Bounded roughness**: a smooth integer-hash value noise over (ring, vertex), at most `roughness` (4 %) of the distance from the axis, faded in over the first metre so the collar is exact.
 - **Wound to face inward**: every triangle's front is the side a camera in the passage sees. The cluster build keeps **normal cones on** (AGENTS.md, "Normal cones"): from inside, the cone test drops only walls facing away, as it does on any mesh; from outside, looking down through the hole, the far wall faces the camera and is drawn. The far end is a rounded cap. The only open edge is the collar ring, and it is **locked** in the DAG (`AttributeSource::locked`), so every cut keeps the ring that meets the hole.
-- **The collar** lies on the hole's circle at the ground: radius `entrance_radius_m` to a millimetre, at y 0, or at `collar_heights_m` per ring vertex for a hole in sloping ground. The terrain's opening is the cells wholly inside the hole ([terrain](terrain.md#holes)), so the ground's rim overhangs the collar by up to a cell's diagonal and no gap is left between the two.
+- **The collar** lies on the hole's circle at the ground: radius `entrance_radius_m` to a millimetre, at y 0, or at `collar_heights_m` per ring vertex for a hole in sloping ground — faded out down the shaft over twice the largest of them (2 m at least), so every vertex still falls as the shaft goes down and the wall never folds; a shaft shorter than that fade ends it abruptly. The terrain's opening is the cells wholly inside the hole ([terrain](terrain.md#holes)), so the ground's rim overhangs the collar by up to a cell's diagonal and no gap is left between the two.
 
 ## Speleothems
 
@@ -54,6 +54,10 @@ LOD is the cluster DAG, as any mesh: a passage seen from its mouth draws its far
 ## Not yet
 
 The generator reading the ground itself for the collar's heights (the recipe carries them); the bedding's control (a phreatic segment following the scene's formation bed, W85) — the grounding names it and the solver does not yet read the field; the speleothems as their own instances (they are part of the passage's mesh, so they share its LOD and its material); a cave's own material roles beyond `rock/limestone`; flowstone, draperies, breakdown.
+
+## Hosts
+
+engine-view and engine-host link the capability when it is built (their generator lists, beside the rocks), so a scene's `.cave.json` mesh loads in either.
 
 ## Capability contract (ADR-0027)
 

@@ -283,3 +283,23 @@ TEST_CASE("caves: the passage builds into a container, its collar locked through
   MESSAGE("the passage's DAG: " << data.mesh.mesh.clusters.size() << " clusters, "
                                 << data.mesh.leaf_triangle_count << " leaf triangles");
 }
+
+TEST_CASE("caves: a collar on sloping ground takes the ground's heights round the rim") {
+  // A hillside rising 0.3 m a metre towards +x: the collar's heights are the ground's at its
+  // vertices, found from a level solve's collar.
+  Passage p = test_passage();
+  assets::MeshData level;
+  PassageReport report;
+  REQUIRE(solve_passage(p, level, &report, nullptr));
+  p.collar_heights_m.clear();
+  for (u32 k = 0; k < p.ring_vertices; ++k)
+    p.collar_heights_m.push_back(0.3f * level.positions[report.collar_first + k].x);
+  assets::MeshData slope;
+  REQUIRE(solve_passage(p, slope, &report, nullptr));
+  for (u32 k = 0; k <= p.ring_vertices; ++k) {
+    const Vec3 v = slope.positions[report.collar_first + k];
+    CHECK(v.y == doctest::Approx(0.3f * v.x).epsilon(1e-5));
+    CHECK(v.x == level.positions[report.collar_first + k].x);
+    CHECK(v.z == level.positions[report.collar_first + k].z);
+  }
+}

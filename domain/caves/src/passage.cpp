@@ -357,6 +357,9 @@ bool solve_passage(const Passage& passage, assets::MeshData& out, PassageReport*
   Vector<D3> ring_centre(ring_count);
   const u32 first = 0;
   out.positions.reserve(static_cast<usize>(ring_count) * (n + 1) + 2);
+  f64 collar_fade = 2.0;
+  for (const f32 h : passage.collar_heights_m)
+    collar_fade = std::max(collar_fade, 2.0 * std::fabs(static_cast<f64>(h)));
   f64 along = 0.0;
   for (u32 r = 0; r < ring_count; ++r) {
     if (r > 0) along += length(rings[r].p - rings[r - 1].p);
@@ -379,8 +382,10 @@ bool solve_passage(const Passage& passage, assets::MeshData& out, PassageReport*
         // A level circle of the entrance's radius in the ring's frame (side and up lie level in
         // the shaft), so the passage's first rings continue it vertex for vertex.
         p = centre + sides[r] * (radius * c) + ups[r] * (radius * s);
-        if (r == 0 && !passage.collar_heights_m.empty())
-          p.y += static_cast<f64>(passage.collar_heights_m[kk]);
+        // The collar's heights, faded out down the shaft over `fade` metres — at least twice the
+        // largest, so every vertex still falls as it goes down and the wall never folds.
+        if (!passage.collar_heights_m.empty() && along < collar_fade)
+          p.y += static_cast<f64>(passage.collar_heights_m[kk]) * (1.0 - along / collar_fade);
       } else {
         const Vec2 q = profile_point(seg.profile, seg.width_m, sh, kk, n);
         // The circle in the ring's own frame, for the blend out of the shaft: same angle index.
