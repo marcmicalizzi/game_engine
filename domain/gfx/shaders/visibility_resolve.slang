@@ -789,6 +789,66 @@ float3 water_pixel_low(ResolveParams* params, Surface s, float3 n, float3 view, 
   return water_foam_over(radiance, foam, sun, params->sun.xyz, ambient);
 }
 
+// **A channel's pixel** (`k_material_water_channel`; water.slang, "channels"; water.md,
+// "Channels"; roadmap S96): the flow from the triangle's three phases (UV.x), the ripples, the
+// roughness and the foam from it (`water_channel_surface`), the water under them shaded by the
+// tier's own path with the ripples' normal and the shore faded by depth, and the foam laid over it
+// as a white diffuse surface lit by the sun (through the same shadow query) and the sky's light.
+float3 water_channel_pixel(ResolveParams* params, SceneGeometry geo, InstanceDesc instance,
+                           uint index, TriangleFetch tri, Surface s, float3 from_eye,
+                           WaterParams w, uint flags, float ray_bias, float3 local,
+                           float footprint, float depth, bool has_map, WaterDepthMap map,
+                           float3 dp_dx, float3 dp_dy) {
+  VertexAttributes* attributes = (VertexAttributes*)geo.attributes;
+  const WaterChannelFlow f = water_channel_flow(
+      tri.p[0], tri.p[1], tri.p[2], decode_half2(attributes[tri.local[0]].uv_half2).x,
+      decode_half2(attributes[tri.local[1]].uv_half2).x,
+      decode_half2(attributes[tri.local[2]].uv_half2).x);
+  // The surface's own plane, facing out of the water whichever side the eye is on.
+  const float3 plane = dot(s.geometric, s.normal) < 0.0 ? -s.geometric : s.geometric;
+  const WaterChannelSurface c =
+      water_channel_surface(f, local, plane, s.uv.x, params->water_time_s, footprint, depth,
+                            w.roughness, w.seed);
+  WaterParams wc = w;
+  wc.roughness = c.roughness;
+  const float3 view = normalize(-from_eye);
+  const float edge = w.shore * clamp(depth / k_water_calm_depth, 0.0, 1.0);
+  float3 color = float3(0.0);
+  if (c.foam < 1.0) {
+    if ((flags & k_material_water_volume) != 0) {
+      color = water_pixel_volume(params, geo, instance, index, float2(0.0, 0.0), dp_dx, dp_dy, s,
+                                 local, c.normal, view, wc, ray_bias, depth, has_map, map, edge);
+    } else {
+      color = water_pixel_low(params, s, c.normal, view, wc, ray_bias, depth, edge);
+    }
+  }
+  if (c.foam <= 0.0) return color;
+  // The foam: white water (an albedo of 0.8, a choice: docs/experiments/flowing-water.md) lit as
+  // a diffuse surface of the ribbon's own plane.
+  SkyParams* sky = (SkyParams*)params->sky_params;
+  const bool has_sky = params->sky_params != 0;
+  float3 sun = float3(0.0);
+  const float n_dot_l = dot(plane, params->sun.xyz);
+  if (n_dot_l > 0.0) {
+    const float lit = shadow_visibility(params, k_shadow_sun, 0u, s.position, s.geometric,
+                                        ray_bias, params->sun.xyz, 1e30);
+    if (lit > 0.0) {
+      sun = float3(params->sun.w);
+      if (has_sky) sun = sky_light_at(sky, s.position, params->sun.xyz, sky->sun_illuminance.rgb);
+      sun *= lit * n_dot_l;
+    }
+  }
+  float3 ambient;
+  if (has_sky) {
+    ambient = sky_ambient((SkyFrame*)sky->frame, plane);
+  } else {
+    const float3 ground = ground_radiance(params->sky.rgb, params->ground.rgb, params->sun);
+    ambient = ambient_radiance(params->sky.rgb, ground, plane);
+  }
+  const float3 foam = (0.8 * c.foam_shade) * (sun / k_brdf_pi + ambient);
+  return lerp(color, foam, c.foam);
+}
+
 float3 water_pixel(ResolveParams* params, SceneGeometry geo, InstanceDesc instance,
                    uint visible_index, uint cluster, uint triangle, float2 source, Surface s,
                    float3 from_eye, ResolveMaterial material, float ray_bias) {
@@ -811,6 +871,9 @@ float3 water_pixel(ResolveParams* params, SceneGeometry geo, InstanceDesc instan
     map = water_depth_map_of(materials[index + 1]);
     depth = water_depth_sample(map, local.xz);
   }
+  if ((material.flags & k_material_water_channel) != 0 && geo.attributes != 0)
+    return water_channel_pixel(params, geo, instance, index, tri, s, from_eye, w, material.flags,
+                               ray_bias, local, footprint, depth, has_map, map, dp_dx, dp_dy);
   const float3 n = water_normal_of(w, material.flags, geo.materials, index, local.xz,
                                    params->water_time_s, footprint, depth);
   const float3 view = normalize(-from_eye);

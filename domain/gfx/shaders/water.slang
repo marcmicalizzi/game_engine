@@ -593,6 +593,168 @@ float3 water_wet_factor(float3 albedo, float height, float wet_m) {
   const float wet = 1.0 - smoothstep(0.0, wet_m, height);
   const float3 dark = k_water_wet_through / (1.0 - k_water_wet_internal * clamp(albedo, 0.0, 1.0));
   return lerp(float3(1.0), min(dark, float3(1.0)), wet);
+
+// ---- channels of flowing water (gfx::k_material_water_channel; water.md, "Channels"; S96) ------
+//
+// A channel's mesh carries the **flow phase** in UV.x: the travel time from the channel's head,
+// seconds, tau = integral ds / v, constant across a section and wrapped every
+// `k_channel_period_s` (systems/water's channel.h). A pattern that is a function of `tau - t` (and
+// of anything that does not move) is carried downstream at the local speed `v`, so nothing here
+// needs the speed to advect: only to say how rough and how white the water is. The speed and the
+// direction are the phase's gradient over the triangle — its inverse length and its direction —
+// taken from the three corners (`water_channel_flow`), so a channel needs no vertex attribute of
+// its own. Every pattern's frequency in the phase is a whole number of cycles a period, so the
+// wrap is seamless, and the frame's clock (reduced modulo 1024 s, a multiple of the period) is
+// reduced again here, term by term, as the waves' is.
+//
+// What a channel reads instead of the four sines or JONSWAP: **ripples** — six sines whose phase is
+// `cycles (tau - t) / period` plus a static phase over the body-local point, so each is a train of
+// crests carried downstream at the water's speed and bent by where it is — their slope rising with
+// the Froude number; the GGX roughness rising with it too; and **foam** where it passes the
+// critical 1 (rapids), a white share of the ripples' crests that grows to most of the surface by
+// Froude 2. A stretch steeper than 45 degrees (the triangle's geometric normal under cos 45 from
+// the vertical) is a **fall**: white water whole, in streaks across the face carried down at the
+// fall's speed. Below a fall the mesh's speed decays from the impact's back to the bed's over the
+// plunge, so the plunge's foam is the same Froude rule.
+static const uint k_material_water_channel = 2097152u;  // gfx::k_material_water_channel (1 << 21; S97 took 20 the same night)
+static const float k_channel_period_s = 8.0;  // water::k_channel_phase_period_s
+// A geometric normal whose y is under this is a face steeper than 45 degrees: a fall.
+static const float k_channel_fall_cos = 0.70710678;
+// Froude: foam starts at the critical flow and covers most of the surface at twice it.
+static const float k_channel_foam_froude = 1.0;
+static const float k_channel_foam_full = 2.0;
+// The depth the Froude number is never taken under, metres: at the bank's edge the depth goes to
+// nothing, and so would the denominator.
+static const float k_channel_depth_floor = 0.1;
+// The ripples: cycles of the phase a period (Hz times 8), a static spatial frequency (cycles a
+// metre, over body-local x and z) and a slope each.
+static const float k_channel_cycles[6] = {23.0, 37.0, 53.0, 17.0, 29.0, 71.0};
+static const float2 k_channel_space[6] = {float2(0.78, 0.30), float2(-0.55, 1.18),
+                                          float2(1.45, -0.90), float2(-0.23, -0.68),
+                                          float2(1.78, 1.60), float2(-2.08, 0.63)};
+static const float k_channel_slope[6] = {0.10, 0.07, 0.05, 0.08, 0.05, 0.04};
+// The fall's streaks: cycles a metre across the face and cycles of the phase a period along it.
+static const float k_channel_streak_across[3] = {1.3, 2.9, 5.1};
+static const float k_channel_streak_cycles[3] = {3.0, 5.0, 7.0};
+
+// The flow over one triangle of a channel: the phase's gradient (seconds a metre, in the frame's
+// space), the speed (m/s, its inverse length) and the direction downstream (unit).
+struct WaterChannelFlow {
+  float3 gradient;
+  float speed;
+  float3 direction;
+};
+
+// From the triangle's corners `p0..p2` (any common frame) and their phases `t0..t2`: the gradient
+// g in the triangle's plane with g.(p1 - p0) = t1 - t0 and g.(p2 - p0) = t2 - t0.
+WaterChannelFlow water_channel_flow(float3 p0, float3 p1, float3 p2, float t0, float t1,
+                                    float t2) {
+  const float3 e1 = p1 - p0;
+  const float3 e2 = p2 - p0;
+  const float d1 = t1 - t0;
+  const float d2 = t2 - t0;
+  const float a11 = dot(e1, e1);
+  const float a12 = dot(e1, e2);
+  const float a22 = dot(e2, e2);
+  const float det = a11 * a22 - a12 * a12;
+  WaterChannelFlow f;
+  f.gradient = float3(0.0);
+  if (abs(det) > 1e-12) {
+    const float a = (d1 * a22 - d2 * a12) / det;
+    const float b = (d2 * a11 - d1 * a12) / det;
+    f.gradient = e1 * a + e2 * b;
+  }
+  const float g = length(f.gradient);
+  f.speed = g > 1e-6 ? 1.0 / g : 0.0;
+  f.direction = g > 1e-6 ? f.gradient / g : float3(0.0);
+  return f;
+}
+
+// One phase in cycles, each term reduced before it is added: `cycles` a period of the phase,
+// carried by `tau - time` (both seconds), plus a static part.
+float water_channel_cycle(float cycles, float tau, float time, float fixed) {
+  const float carried = frac(cycles * (tau / k_channel_period_s));
+  const float clock = frac(cycles * (frac(time / k_channel_period_s)));
+  return frac(carried - clock + frac(fixed));
+}
+
+struct WaterChannelSurface {
+  float3 normal;
+  float roughness;
+  float foam;        // the white share, [0, 1]
+  float foam_shade;  // the foam's brightness, about 1
+  float froude;
+};
+
+// The channel's surface at the body-local point `p` (metres from its instance), its phase `tau`,
+// the clock `time`, the pixel's `footprint` (metres), the `depth` under it, the triangle's
+// geometric normal `geometric` (unit, facing out of the water) and its flow `f`.
+WaterChannelSurface water_channel_surface(WaterChannelFlow f, float3 p, float3 geometric,
+                                          float tau, float time, float footprint, float depth,
+                                          float roughness, uint seed) {
+  WaterChannelSurface c;
+  const float d = max(depth, k_channel_depth_floor);
+  c.froude = f.speed / sqrt(k_water_g * d);
+  const float calm = clamp(depth / k_water_calm_depth, 0.0, 1.0);
+  if (abs(geometric.y) < k_channel_fall_cos) {
+    // A fall: white water whole, streaked across the face and carried down it. Across is the
+    // face's own horizontal, from its plane alone: the phase's gradient differs a little from
+    // triangle to triangle, and times a body-local point tens of metres out that would shift the
+    // streaks at every edge.
+    float3 across = cross(float3(0.0, 1.0, 0.0), geometric);
+    const float la = length(across);
+    across = la > 1e-6 ? across / la : float3(1.0, 0.0, 0.0);
+    const float u = dot(p, across);
+    float streak = 0.0;
+    for (uint i = 0; i < 3; ++i) {
+      const float cyc = water_channel_cycle(k_channel_streak_cycles[i], tau, time,
+                                            u * k_channel_streak_across[i] +
+                                                water_phase(seed, 8u + i));
+      const float keep = clamp(1.0 / (k_channel_streak_across[i] * 2.0 * max(footprint, 1e-4)) -
+                                   1.0, 0.0, 1.0);
+      streak += keep * sin(k_water_two_pi * cyc) / 3.0;
+    }
+    c.normal = geometric;
+    c.roughness = 0.6;
+    c.foam = 1.0;
+    c.foam_shade = 0.82 + 0.18 * streak;
+    return c;
+  }
+  // The ripples, steeper as the flow passes critical.
+  const float stir = 0.4 + 0.6 * clamp(c.froude, 0.0, 2.0);
+  float3 slope = float3(0.0);
+  float height = 0.0;
+  float weight = 0.0;
+  for (uint i = 0; i < 6; ++i) {
+    const float3 space = float3(k_channel_space[i].x, 0.0, k_channel_space[i].y);
+    const float cycles = k_channel_cycles[i];
+    // The crests' wavevector, cycles a metre: the carried part along the flow plus the static one.
+    float3 k = f.gradient * (cycles / k_channel_period_s) + space;
+    k -= geometric * dot(k, geometric);
+    const float kl = length(k);
+    const float lambda = kl > 1e-6 ? 1.0 / kl : 1e6;
+    const float keep =
+        footprint > 0.0 ? clamp(lambda / (2.0 * footprint) - 1.0, 0.0, 1.0) : 1.0;
+    const float cyc = water_channel_cycle(cycles, tau, time,
+                                          dot(k_channel_space[i], p.xz) + water_phase(seed, i));
+    const float angle = k_water_two_pi * cyc;
+    const float share = k_channel_slope[i] * stir * calm * keep;
+    if (kl > 1e-6) slope += (k / kl) * (share * cos(angle));
+    height += k_channel_slope[i] * keep * sin(angle);
+    weight += k_channel_slope[i] * keep;
+  }
+  c.normal = normalize(geometric - slope);
+  c.roughness = min(roughness + 0.25 * clamp(c.froude / 2.0, 0.0, 1.0), 1.0);
+  // Foam: the crests whiten from the critical flow, most of the surface by twice it.
+  const float rough = clamp((c.froude - k_channel_foam_froude) /
+                                (k_channel_foam_full - k_channel_foam_froude),
+                            0.0, 1.0) *
+                      calm;
+  const float h = weight > 1e-6 ? height / weight : 0.0;
+  const float threshold = lerp(0.9, -0.6, rough);
+  c.foam = rough > 0.0 ? rough * smoothstep(threshold, threshold + 0.35, h) : 0.0;
+  c.foam_shade = 0.9 + 0.1 * h;
+  return c;
 }
 
 #endif  // ENGINE_WATER_SLANG
