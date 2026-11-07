@@ -326,10 +326,13 @@ bool SceneCollision::create(physics::World& physics, const renderer::SceneData& 
     entries_.push_back(std::move(entry));
   }
 
-  // A scene read whole: every instance's bounds, binned by the tiles they reach. The terrain is
-  // the ground's, and a skinned instance moves, so neither has a static body.
+  // The scene's own instances — a scene read whole, or a streamed scene's prefix, which is what
+  // the load kept out of the streamed sources (an actor, a deformed instance, or a mesh reaching
+  // past a tile, `kept_reach`; W88) — binned by the tiles they reach by their bounds. The streamed
+  // sources place their own. The terrain is the ground's, and a skinned instance moves, so neither
+  // has a static body.
   bins_.clear();
-  if (scene.streamed.empty()) {
+  {
     for (u32 i = 0; i < scene.instances.size(); ++i) {
       const gfx::InstanceDesc& instance = scene.instances[i];
       if (instance.mesh == scene.terrain_mesh || instance.mesh >= scene.parts.size()) continue;
@@ -956,7 +959,8 @@ void SceneCollision::gather_placements(world::TileCoord coord, PlacementScratch&
         (void)add_piece(mesh, linear, stands, corner, scratch);
       }
     }
-  } else if (const Vector<u32>* bin = bins_.find_value(key)) {
+  }
+  if (const Vector<u32>* bin = bins_.find_value(key)) {
     for (const u32 i : *bin) {
       const gfx::InstanceDesc& instance = scene_->instances[i];
       (void)add_piece(instance.mesh, cell_frame_matrix(instance),

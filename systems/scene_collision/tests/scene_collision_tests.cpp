@@ -1135,6 +1135,45 @@ TEST_CASE("scene_collision: a streamed scene collides as each generator's tile")
   CHECK(error.find("no_such_generator") != std::string::npos);
 }
 
+// **A streamed scene's prefix collides too** (W88): the load keeps a mesh that reaches past a tile
+// out of the streamed sources (`kept_reach`), so it stays in `scene.instances`; the owner walked
+// through a 50 m cliff because only a scene read whole binned those.
+TEST_CASE("scene_collision: a streamed scene's kept instance, a slab across tiles, has a body") {
+  const MeshSource meshes[] = {box_mesh(Vec3{0.5f, 1.5f, 0.5f}), box_mesh(Vec3{30.0f, 3.0f, 3.0f})};
+  renderer::SceneInstance slab;
+  slab.mesh = 1;
+  slab.transform.position = Vec3{16.0f, 0.0f, 48.0f};  // x -14 to 46: three tiles wide, tile z = 1
+  renderer::SceneData scene;
+  build_scene(meshes, std::span<const renderer::SceneInstance>(&slab, 1), scene);
+  renderer::StreamedPlacements entry;
+  entry.generator = "collision_test_posts";
+  entry.params = JsonValue::object();
+  entry.where = "test.json: placements 0";
+  entry.meshes.push_back(0);
+  scene.streamed.push_back(entry);
+  scene.world.enabled = true;
+  scene.dynamic = true;
+
+  physics::World physics;
+  REQUIRE(physics.init(physics_options()) == physics::Status::Ok);
+  SceneCollision collision;
+  std::string error;
+  REQUIRE_MESSAGE(collision.create(physics, scene, nullptr, Config{}, &error), error);
+  CHECK(collision.streamed());
+  world::World world(ring());
+  world.add_consumer(collision.consumer());
+  world.update(at(16.0f, 16.0f), 0, true);
+  // Tile (0, 1) is odd: no post of the generator's, so a hit there is the slab's.
+  f32 top = 0.0f;
+  REQUIRE(hit_below(physics, 16.0f, 48.0f, top));
+  CHECK(top == doctest::Approx(6.0f).epsilon(1.0e-3));
+  // The slab reaches into the tile west of it, and the generator's posts stay.
+  REQUIRE(hit_below(physics, -10.0f, 48.0f, top));
+  CHECK(top == doctest::Approx(6.0f).epsilon(1.0e-3));
+  REQUIRE(hit_below(physics, 16.0f, 16.0f, top));
+  CHECK(top == doctest::Approx(3.0f).epsilon(1.0e-3));
+}
+
 namespace {
 
 // A placement generator of the test's own that puts one box where the test says, on the tile that
