@@ -397,6 +397,14 @@ TEST_CASE(
             10.0f + 400.0f * static_cast<f32>(i));
       }
     }
+    // F3: the air past the table's 32 km, on both sides of its end, at low and high elevations.
+    const u32 beyond_first = static_cast<u32>(dirs.size());
+    for (const f32 el : {0.0f, 0.02f, 0.3f}) {
+      for (const f32 km : {31.0f, 32.0f, 33.0f, 60.0f, 120.0f}) {
+        add(Vec3{std::cos(el), std::sin(el), 0.2f}, Vec3{0.0f, 0.5f, 0.0f}, km * 1000.0f);
+      }
+    }
+    const u32 beyond_count = static_cast<u32>(dirs.size()) - beyond_first;
     const Vec3 sun{c.params.sun.x, c.params.sun.y, c.params.sun.z};
     const Vec3 moon{c.params.moon.x, c.params.moon.y, c.params.moon.z};
     add(sun, Vec3{0.0f, 2.0f, 0.0f}, 3000.0f);
@@ -462,6 +470,62 @@ TEST_CASE(
     CHECK(e_ins < 0.05);
     CHECK(e_tr < 1e-4);
     CHECK(e_light < 1e-3);
+    // F3: past 32 km the GPU's lookup and the mirror's agree like nearer (the same bound, above),
+    // and the air goes on from the table's end: the transmittance keeps falling, the in-scatter
+    // stays finite, and nothing steps where the table ends.
+    f64 e_beyond_ins = 0.0, e_beyond_tr = 0.0;
+    for (u32 i = beyond_first; i < beyond_first + beyond_count; ++i) {
+      sref::Dvec3 ins;
+      f64 tr;
+      sref::aerial(sky, tables, dirs[i], distances[i], ins, tr);
+      e_beyond_ins = std::max(e_beyond_ins, byte_error(ins, out + 20 * i + 8));
+      e_beyond_tr = std::max(e_beyond_tr, std::fabs(static_cast<f64>(out[20 * i + 11]) - tr));
+      CHECK(std::isfinite(out[20 * i + 8]));
+    }
+    CHECK(e_beyond_ins < 0.05);
+    CHECK(e_beyond_tr < 1e-4);
+    for (u32 d = 0; d < beyond_count; d += 5) {
+      const u32 i = beyond_first + d;  // 31, 32, 33, 60 and 120 km along one direction
+      CHECK(out[20 * (i + 2) + 11] <= out[20 * (i + 1) + 11] + 1e-6f);
+      CHECK(out[20 * (i + 3) + 11] <= out[20 * (i + 2) + 11] + 1e-6f);
+      CHECK(out[20 * (i + 4) + 11] <= out[20 * (i + 3) + 11] + 1e-6f);
+    }
+    f64 worst_step = 0.0, worst_slope = 0.0;
+    for (const sref::Dvec3& dir :
+         {dirs[beyond_first], dirs[beyond_first + 5], dirs[beyond_first + 10]}) {
+      auto value = [&](f64 metres, f64 channel[4]) {
+        sref::Dvec3 ins;
+        f64 tr;
+        sref::aerial(sky, tables, dir, metres, ins, tr);
+        channel[0] = ins.x;
+        channel[1] = ins.y;
+        channel[2] = ins.z;
+        channel[3] = tr;
+      };
+      f64 below[4], at[4], above[4], tiny_below[4], tiny_above[4];
+      value(31950.0, below);
+      value(32000.0, at);
+      value(32050.0, above);
+      value(31999.99, tiny_below);
+      value(32000.01, tiny_above);
+      for (u32 ch = 0; ch < 4; ++ch) {
+        const f64 scale = std::max(std::fabs(at[ch]), 1e-9);
+        // The value: no step across the end (a hundredth of a metre either side).
+        worst_step = std::max(worst_step, std::fabs(tiny_above[ch] - tiny_below[ch]) / scale);
+        // The slope: the 50 m before the end against the 50 m after it, to within what a curved
+        // sqrt-spaced slice coordinate leaves (a few percent) of the larger.
+        const f64 left = at[ch] - below[ch];
+        const f64 right = above[ch] - at[ch];
+        worst_slope =
+            std::max(worst_slope, std::fabs(right - left) /
+                                      (std::max(std::fabs(left), std::fabs(right)) + 1e-6 * scale));
+      }
+    }
+    MESSAGE(name << ": past 32 km gpu against the mirror " << e_beyond_ins << " of a byte, "
+                 << e_beyond_tr << " transmittance; across the end the worst value step "
+                 << worst_step << ", the worst slope change " << worst_slope << " (relative)");
+    CHECK(worst_step < 1e-5);
+    CHECK(worst_slope < 0.06);
     MESSAGE(name << " worst background, of a byte " << e_bg << ": direction (" << dirs[worst_bg].x
                  << ", " << dirs[worst_bg].y << ", " << dirs[worst_bg].z << ") gpu "
                  << out[20 * worst_bg] << " cpu "

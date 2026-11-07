@@ -403,13 +403,26 @@ float sky_aerial_slice(float distance_km) {
   return sqrt(max(distance_km, 0.0) / k_sky_aerial_distance_km) * float(k_sky_aerial_depth);
 }
 
+// Past the table the last two slices go on (F3). Slice k ends at D (k / depth)^2, so the slice
+// coordinate moves `k_sky_aerial_end_slope` a km where the table ends (d slice / d d = depth / 2D),
+// and the last two slices' difference times that is the table's own slope at its end. Beyond it the
+// transmittance keeps that slope as an exponential (value and slope continuous) and the in-scatter
+// keeps its slope, which falls away at the transmittance's rate towards a finite limit (the
+// single-scatter model of a medium that stops changing: the light a stretch of ray adds is its
+// source times what it lets through). Nothing nearer than the end reads any of this.
+static const float k_sky_aerial_end_slope =
+    float(k_sky_aerial_depth) / (2.0 * k_sky_aerial_distance_km);
+// The least rate the in-scatter's fall uses (per km), so a clear ray's limit stays a bounded sum.
+static const float k_sky_aerial_min_rate = 1.0e-3;
+
 // What the air between the eye and a surface `distance_m` away along `dir` adds to it and leaves of
 // it: out of the frame's table, bilinear in direction and linear in the slice, with slice 0 the eye
 // itself (nothing added, everything kept).
 void sky_aerial(SkyParams* sky, float3 dir, float distance_m, out float3 inscatter,
                 out float transmittance) {
   const float2 uv = sky_view_uv(sky, sky->camera.w, dir);
-  const float s = min(sky_aerial_slice(distance_m * 0.001), float(k_sky_aerial_depth));
+  const float distance_km = distance_m * 0.001;
+  const float s = min(sky_aerial_slice(distance_km), float(k_sky_aerial_depth));
   const float k = floor(s);
   const float w = s - k;
   const uint plane = k_sky_aerial_width * k_sky_aerial_height;
@@ -426,6 +439,18 @@ void sky_aerial(SkyParams* sky, float3 dir, float distance_m, out float3 inscatt
   const float4 v = lerp(lo, hi, w);
   inscatter = v.rgb;
   transmittance = v.a;
+  if (distance_km > k_sky_aerial_distance_km) {
+    // Beyond the table v is the last slice; the one before it gives the rate and the slope.
+    const float4 prev = sky_bilinear(sky->aerial + uint64_t((k_sky_aerial_depth - 2) * plane) * 16,
+                                     k_sky_aerial_width, k_sky_aerial_height, uv, true);
+    const float extra = distance_km - k_sky_aerial_distance_km;
+    const float rate =
+        (v.a > 0.0 && prev.a > v.a) ? (prev.a - v.a) * k_sky_aerial_end_slope / v.a : 0.0;
+    const float fall = max(rate, k_sky_aerial_min_rate);
+    const float reach = (1.0 - exp(-fall * extra)) / fall;
+    inscatter = max(v.rgb + (v.rgb - prev.rgb) * (reach * k_sky_aerial_end_slope), float3(0.0));
+    transmittance = v.a * exp(-rate * extra);
+  }
 }
 
 // ---- where a world point is in the air ----------------------------------------------------------
