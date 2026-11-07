@@ -820,6 +820,13 @@ TEST_CASE("engine-view: four rings with static forms and grass keep traced caste
   REQUIRE(provider != std::string::npos);
   text.replace(provider, 5, "Dunes");
 #endif
+  // A denser grove than scene_text's 70 of each tree: since the flora commits the trees are static
+  // forms and since R128 a frame past the budget keeps whole instances, drawn clusters before any
+  // caster, so at 70 the drawn demand fit the 1 MiB limit and only casters dropped.
+  for (usize at = text.find(R"("count":70)"); at != std::string::npos;
+       at = text.find(R"("count":70)", at)) {
+    text.replace(at, 10, R"("count":400)");
+  }
   const usize meshes = text.find(R"("scatters")");
   REQUIRE(meshes != std::string::npos);
   const usize mesh_end = text.rfind(']', meshes);
