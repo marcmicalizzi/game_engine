@@ -1724,6 +1724,104 @@ returning zero for the sun because **the interpolated shading normal faces away 
 crosses a crest whose smooth vertex normals lean away. The hard, angular edges are where n·v crosses
 zero inside a triangle.
 
+## Indirect light: the world-space cache
+
+**The hemisphere above stands for a scene it cannot see** (roadmap R69, stage 1; 2026-11-07): the
+ambient of the last two sections is the whole indirect term, and nothing in it knows the scene — a
+forest floor under a closed canopy is lit as if under open sky, a trunk's shaded side is flat, a box
+with one opening is lit inside as if it had no walls. `renderer.gi.mode` (read at load; `off`, `sky`,
+`bounce`) puts a **world-space radiance cache** in front of it, fed by rays against the frame's own
+acceleration structures — the traversal the sun's ray already pays — and read per pixel in its
+place ([the measurements](../experiments/gi-cache-2026-11-07.md)). It is the first stage of the
+plan's GI ([04 §4.4](../plan/04-renderer.md#44-ray-tracing)): a hash grid in the manner of NVIDIA's
+SHaRC (spatially hashed radiance cache) and of Binder et al., "Massively Parallel Path Space
+Filtering" (2019), whose cells are found from a point's position and normal alone, so nothing in
+it is a screen-space history and nothing swims when the camera turns.
+
+**The key** (`domain/gfx/gi_cache.h`, mirrored by `shaders/gi_cache.slang`) is never a float of the
+world (ADR-0053): each axis of the point is `eye.cell * 64,000 + round((eye.local + from_eye) * 1000)`
+in 64-bit millimetres — the eye's cell in integers, the rest a float the size of the distance from
+the eye — floor-divided by the cell's size. **Sizes** are 25 mm at level 0 doubling to 6.4 m at
+level 8, every one a divisor of the 64 m world cell, so a scene moved by whole cells moves every key
+by whole cells of its own; **the level** is the smallest whose cell is at least
+`renderer.gi.cell_scale` (0.004) times the distance from the view's eye, about ten pixels at
+3840×2160 and 90°: 25 mm to 6 m, 10 cm at 20 m, 40 cm at 100 m, 6.4 m past 1.6 km. **The face** of
+the normal's dominant axis (±x, ±y, ±z) is in the key, so a wall's two sides, a floor and the wall
+standing on it never share a cell; the dominant axis rather than the octant because a floor's
+interpolated normals straddle every octant boundary of +y and none of its faces'. The hash's low word
+names a bucket of eight slots, its high word (low bit set) the key in the slot; a lookup scans the
+bucket whole, so a slot the fold frees breaks no other key's chain.
+
+**A cell** (32 bytes) holds the frame's sample count and fixed-point sums (10 bits of fraction), the
+running mean as three halves and the samples it averages, and the stamp of the last frame that
+reached it. What it averages is **a ratio to the sky's harmonics**: each sample is the radiance one
+ray brought back over the luminance of the nine-harmonic ambient at the sample's normal, and the
+resolve reads `ratio × luminance(harmonics)` at its own normal. The ratio keeps the colour of what
+the surface actually sees — a gap towards the horizon brings the horizon's colour, not the zenith's
+— and the harmonics carry the hour, so a sky that changes reaches every cached cell in the same
+frame; in open space the ratio is the harmonics' own chromaticity and the read is the harmonics. A
+scalar visibility times the harmonics was the alternative and would colour a shaded surface with
+the part of the sky it cannot see.
+
+**The frame's two passes** (`gi_update.slang`, between the half-rate sun pass and the resolve, both
+reading each view's own `ResolveParams`):
+- **`gi sample`** (`FrameRecord.gpu_ms.gi_trace`): one pixel in every `gi_stride` of every view's
+  visibility region, at an offset that turns with the cache's own frame count, so a frame traces at
+  most `renderer.gi.rays_per_frame` (two million; 1.66 million at 3840×2160, stride 5). The pixel is
+  decoded and reconstructed as the resolve does it, its cell found at its level **and the next
+  coarser one** (inserting them), and **one cosine-weighted ray** traced from it — the shadow rays'
+  own query (`shadow_ray_blocked`, the same masks, micromaps, opaque proxy and caster bit, offset by
+  the same `ray_offset`). A ray that escapes carries `sky_environment` along its direction — the
+  sky-view table above the horizon, so the air's Rayleigh blue reaches the shade through the cache,
+  and the ground the sky's frame lights below it, which is what the reference tracer's escaped rays
+  carry — and one that hits carries nothing (stage 1a: the sky's visibility). The ratio is added in
+  integers to both cells' sums. **One pass touches and traces** because a trace pass over a list of
+  the frame's touched cells would trace from whichever pixel won each cell's slot in the list — the
+  order threads reach an atomic — and the picture would depend on it; integer sums of every sampled
+  pixel's ray are the same in any order, and `gi cache: a scene moved by whole cells draws the same
+  bytes with the cache on` holds the result to the byte.
+- **`gi fold`** (`gpu_ms.gi_fold`): a thread a cell folds the frame's sums into the mean with an
+  exponential average whose rate is the frame's samples over the history's (`n / min(N + n, 256)`),
+  so a new cell takes its first frame whole and an old one moves a frame's share; a cell nothing
+  reached for 240 frames is freed. The cache's first frame clears the buffer instead
+  (`k_gi_reset`), and its sample pass adds nothing.
+
+**The read** (`scene_ambient` in `material.slang`, one call in the resolve): trilinear over the eight
+cells of the point's level round it on the point's face, each weighted by its share of the point and
+only where it has samples; the next coarser level where none of the eight has (warm, because every
+sample went to both), and the harmonics, **to the bit**, where neither has or where the frame does
+not read the cache. The material's ambient occlusion still multiplies it, as it multiplies the
+harmonics: it stands for occlusion below a cell's size. Only the opaque path's ambient reads it; the
+water's own ambient is the harmonics still.
+
+**The buffer** is `renderer.gi.cache_mib` (32 MiB: a million cells, about thirty times what a
+3840×2160 frame of the forest touches at the default scale, so a walk's recent past stays warm as
+the eye turns back), made once at load and never by a frame (`gi cache: the frames with the cache on
+make no buffer and allocate as the mode off`). The mode is `off` without traced shadows, whose query
+the sample pass is. `ResolveParams` grew two rows, 496 to 528 bytes.
+
+**What it buys, judged by the reference tracer** at one bounce — direct light plus the environment
+through the scene's real visibility, which is what stage 1a estimates — at 128×128 after 64 frames
+(RTX 5090; [the page](../experiments/gi-cache-2026-11-07.md) has the method):
+
+| fixture | FLIP, `off` | FLIP, `sky` | PSNR, `off` | PSNR, `sky` |
+|---|---|---|---|---|
+| a closed 4 m box with a 1.6 m opening and a sphere inside | 0.626 | 0.089 | 10.6 | 26.8 |
+| a field of 28 cubes on a slab | 0.093 | 0.056 | 30.0 | 33.6 |
+
+`gi cache: the cache moves the picture towards the reference path tracer` holds the order. At one
+pose the change from frame to frame falls from 71,000 colour steps over the first frames to 21,700
+by frame 20 and 11,600 by frame 40 (`... falls and does not grow back`): the noise left is the
+average's, 1/√256 of a sample's.
+
+**What stage 1b and stage 2 add.** 1b (`bounce`) gives a ray that hits the hit point's radiance: its
+albedo through `hit_visible_entry` and the material table, times the sun's irradiance there under
+one shadow ray, plus the cell at the hit — the cache's own value, which is what makes it converge to
+more than one bounce. Until then `bounce` reads as `sky`, and a surface turned towards the ground
+loses the ground's bounce the harmonics' lower half gave it wherever its rays meet real ground (the
+harmonics assumed it lit; the visibility knows it is there and, at 1a, not that it is lit). Stage 2
+is ReSTIR GI over the cache (R68).
+
 ## The sun's day
 
 *A scene that names a sky takes its sun, its moon and its sky from it instead, on the world's clock ([The sky](#the-sky)); everything in this section is the stand-in's, which every other scene still draws, to the bit.*

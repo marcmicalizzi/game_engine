@@ -240,6 +240,10 @@ struct FrameStats {
   // The half-rate sun pass (R126; renderer.md, "A shading rate by region"), every view's: zero in
   // a frame at full rate.
   f64 gpu_half_sun = 0.0;
+  // The world-space cache's passes (R69; renderer.md, "Indirect light: the world-space cache"):
+  // the sample pass (every view's touches and rays) and the fold. Zero with `renderer.gi.mode=off`.
+  f64 gpu_gi_trace = 0.0;
+  f64 gpu_gi_fold = 0.0;
   // The frame passes' zones (frame_pass.h) and the encode that follows them; zero in a frame with
   // none. `visibility_m` is what they reported (`Stats::visibility_m`), negative for none.
   f64 gpu_frame_passes = 0.0;
@@ -465,6 +469,9 @@ struct Stats {
   SkyStats sky;
   // The half-rate sun pass (`FrameStats::gpu_half_sun`), summed; what it saves is in `gpu_resolve`.
   f64 gpu_half_sun = 0.0;
+  // The world-space cache's passes (`FrameStats::gpu_gi_trace`, `gpu_gi_fold`), summed.
+  f64 gpu_gi_trace = 0.0;
+  f64 gpu_gi_fold = 0.0;
   // The frame passes' zones (frame_pass.h, renderer.md "Frame passes") and the encode they end on,
   // summed: the frame's cost and no view's. Zero in every frame without a pass registered.
   f64 gpu_frame_passes = 0.0;
@@ -516,6 +523,8 @@ struct Stats {
   f64 sky_ms() const noexcept { return gpu_sky / timed(); }
   f64 frame_passes_ms() const noexcept { return gpu_frame_passes / timed(); }
   f64 half_sun_ms() const noexcept { return gpu_half_sun / timed(); }
+  f64 gi_trace_ms() const noexcept { return gpu_gi_trace / timed(); }
+  f64 gi_fold_ms() const noexcept { return gpu_gi_fold / timed(); }
   f64 total_ms() const noexcept { return gpu_total / timed(); }
   // What one view cost a frame, everything but the shared acceleration structure chain.
   f64 view_ms(u32 view) const noexcept {
@@ -885,6 +894,10 @@ class SceneRenderer {
     // resolve_half_sun.slang: the sun's ray once per 2x2 block of the half-rate columns (R126;
     // renderer.md, "A shading rate by region"), built only where the resolve traces shadows.
     gfx::ComputePipeline half_sun;
+    // gi_update.slang: the world-space cache's sample and fold passes (R69; renderer.md, "Indirect
+    // light: the world-space cache"), built only where `renderer.gi.mode` is on.
+    gfx::ComputePipeline gi_sample;
+    gfx::ComputePipeline gi_fold;
     // pair_expand.slang: a streamed world's changed pair-table entries, from its instance table.
     gfx::ComputePipeline pair_expand;
     // A frame with a frame pass: the resolve into the linear colour image, and the output encode
@@ -953,6 +966,16 @@ class SceneRenderer {
   gfx::ShaderLibrary shaders_;
   Pipelines pipelines_;
   Targets targets_;
+  // **Indirect light: the world-space cache** (R69; renderer.md, "Indirect light: the world-space
+  // cache"): its cells, made once at load where `renderer.gi.mode` is on (`resolved_.gi_mode`) and
+  // never by a frame; the first frame that records its passes clears it (`gi_reset_`).
+  gfx::BufferResource gi_cache_;
+  u32 gi_count_ = 0;
+  // The cache's own frame count: its stamps' clock and the sample pass's rotation, counted by the
+  // frames that record its passes rather than taken from `FrameDesc::frame_index`, which a caller
+  // that captures one pose again and again leaves at zero.
+  u32 gi_frame_ = 0;
+  bool gi_reset_ = true;
   gfx::FrameContext frames_;
   gfx::GpuTimer timer_;
   GeometryStreamer streamer_;

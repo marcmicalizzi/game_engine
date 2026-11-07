@@ -1452,7 +1452,7 @@ struct CameraPath @version(1) {
 
 /// GPU milliseconds of one frame, pass by pass, from `gfx::GpuTimer` (`renderer::Stats` names).
 /// Version 5 added `sky`. Version 6 added `frame_passes`. Version 7 added `half_sun`.
-struct PassMs @version(8) {
+struct PassMs @version(9) {
   cull: f64 = 0
   hw: f64 = 0
   sw: f64 = 0
@@ -1506,6 +1506,12 @@ struct PassMs @version(8) {
   tlas: f64 = 0 @since(8)
   terrain_upload: f64 = 0 @since(8)
   unbucketed: f64 = 0 @since(8)
+  /// Version 9 (R69; docs/subsystems/renderer.md, "Indirect light: the world-space cache"): the
+  /// world-space cache's sample pass, every view's sampled pixels touching their cells and
+  /// tracing a ray each (`gi_trace`), and the fold over its cells (`gi_fold`). What its read adds to
+  /// the resolve is in `resolve`. Zero with `renderer.gi.mode=off`.
+  gi_trace: f64 = 0 @since(9)
+  gi_fold: f64 = 0 @since(9)
 }
 
 /// One terrain level's surface in one frame of a time-lapse (`engine-view --time-rate`;
@@ -1740,7 +1746,9 @@ struct FrameWorld @version(1) {
 /// Version 13: `world`, the host's time between frames by what it did (`FrameWorld`, W82).
 ///
 /// Version 16: `rt_built_capacity`, the capacity the frame's structures were built against (R128).
-struct FrameRecord @version(16) {
+///
+/// Version 17: `gpu_ms` carries the world-space cache's passes, `gi_trace` and `gi_fold` (R69).
+struct FrameRecord @version(17) {
   /// Which pass over the path, from 0.
   repeat: u32 = 0
   /// The path frame, from 0; an interactive session's frame, from 0.

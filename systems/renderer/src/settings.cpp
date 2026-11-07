@@ -367,6 +367,35 @@ tunables::Int micromap_level{
     "renderer.rt.micromap_level", 6, 0, 12,
     "The opacity micromaps' subdivision level cap (each level is four times "
     "the micro-triangles; at most the device's)"};
+// R69 stage 1: indirect light from the world-space cache (renderer.md, "Indirect light: the
+// world-space cache"; docs/experiments/gi-cache-2026-11-07.md has the numbers the defaults rest
+// on).
+constexpr const char* k_gi_mode_choices[] = {"off", "sky", "bounce"};
+tunables::Enum<GiMode> gi_mode{
+    "renderer.gi.mode", GiMode::Off, k_gi_mode_choices,
+    "Indirect light: off, the sky's harmonics as before; sky, a world-space cache fed by rays "
+    "against the frame's structures, read in their place; bounce, the sun's bounce too (not yet "
+    "built: reads as sky). Only with traced shadows (renderer.md, Indirect light: the world-space "
+    "cache; read at load)"};
+// 32 MiB is a million cells, about thirty times what a 3840x2160 frame of the forest touches at
+// the default scale, so a walk's recent past stays warm as the eye turns back.
+tunables::Int gi_cache_mib{
+    "renderer.gi.cache_mib", 32, 1, 4096,
+    "The world-space cache's size in MiB, made once at load: 32 bytes a cell, a power of two of "
+    "cells (renderer.md, Indirect light: the world-space cache; read at load)"};
+// Two million rays: R127's primary trace on the forest is 15.4 ms for 24.9 million at full width,
+// so about 1.2 ms of traversal if these cost what those do; one pixel in every stride is sampled.
+tunables::Int gi_rays_per_frame{
+    "renderer.gi.rays_per_frame", 2000000, 1, 1 << 28,
+    "The cache's sample pass: rays a frame over every view, one a sampled pixel (renderer.md, "
+    "Indirect light: the world-space cache; read at load)"};
+// A cell about ten pixels wide at 3840x2160 and 90 degrees (a pixel is 4.1e-4 radians), rounded up
+// to the level: 25 mm to 6 m from the eye, 10 cm at 20 m, 40 cm at 100 m, 6.4 m past 1.6 km.
+tunables::Float gi_cell_scale{
+    "renderer.gi.cell_scale", 0.004, 0.0001, 1.0,
+    "The cache's cell size per metre of distance from the eye, rounded up to a level of 25 mm "
+    "times a power of two up to 6.4 m (renderer.md, Indirect light: the world-space cache; read "
+    "at load)"};
 tunables::Bool shadow_hybrid_fit{
     "renderer.shadow.hybrid_fit", false,
     "Under the hybrid, fit the cascades from the ray distance out rather than from the near plane "
@@ -602,6 +631,12 @@ void resolve_settings(const RenderSettings& requested, const gfx::DeviceFeatures
   out.micromap_level = static_cast<u32>(micromap_level.get());
   out.micromap_budget_bytes = static_cast<u64>(micromap_mib.get()) << 20;
   out.micromap_texels = static_cast<f32>(micromap_texels.get());
+  // Indirect light (R69): read once, here, so the cache is made at load and never in a frame. It
+  // traces the shadow rays' query, so it needs them.
+  out.gi_mode = out.shadows && !out.direct ? gi_mode.get() : GiMode::Off;
+  out.gi_cache_bytes = static_cast<u64>(gi_cache_mib.get()) << 20;
+  out.gi_rays_per_frame = static_cast<u32>(gi_rays_per_frame.get());
+  out.gi_cell_scale = static_cast<f32>(gi_cell_scale.get());
   // More than one view needs the cull pass: every view's draw reads its own run of the visible
   // list, and there is no run without one. The direct path draws one view and one only, because
   // it writes color rather than a visibility buffer and has nowhere to put a second rectangle.

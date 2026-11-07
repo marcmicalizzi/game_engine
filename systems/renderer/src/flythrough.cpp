@@ -94,6 +94,8 @@ scene::FrameRecord frame_record(const FrameStats& stats, u32 repeat, u32 frame, 
   out.gpu_ms.sky = stats.gpu_sky;
   out.gpu_ms.frame_passes = stats.gpu_frame_passes;
   out.gpu_ms.half_sun = stats.gpu_half_sun;
+  out.gpu_ms.gi_trace = stats.gpu_gi_trace;
+  out.gpu_ms.gi_fold = stats.gpu_gi_fold;
   out.gpu_ms.rt_records = stats.gpu_rt_records;
   out.gpu_ms.rt_ranges = stats.gpu_rt_ranges;
   out.gpu_ms.rt_drop = stats.gpu_rt_drop;

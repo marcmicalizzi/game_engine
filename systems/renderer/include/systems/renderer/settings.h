@@ -84,6 +84,13 @@ inline constexpr u32 k_max_shadow_map = 4096;
 // millisecond at 1080p (water.md has the measurement).
 enum class WaterQuality : u8 { Low, High };
 
+// **Indirect light** (`renderer.gi.mode`, read at load; R69, renderer.md "Indirect light: the
+// world-space cache"): `Off` is the resolve's ambient as it always was, the sky's harmonics; `Sky`
+// is the world-space cache fed by rays against the frame's structures, read in its place — the
+// sky's visibility through the scene (stage 1a); `Bounce` adds the sun's bounce (stage 1b, not yet
+// built: it reads as `Sky`). Only where the shadows are traced.
+enum class GiMode : u8 { Off, Sky, Bounce };
+
 // How many views the frame has and how they are laid out over the target (04 §4.6,
 // systems/renderer/view_set.h). `Single` is one rectilinear view over the whole target and is
 // what every existing caller gets. `Surround3` is three views with per-monitor off-axis frusta,
@@ -398,8 +405,17 @@ struct ResolvedSettings {
   u32 micromap_level = 0;
   u64 micromap_budget_bytes = 0;
   f32 micromap_texels = 0.0f;  // `renderer.rt.micromap_texels`: a micro-triangle's most texels
-  bool occlusion = false;      // two-pass occlusion culling runs
-  bool rt_chain = false;       // the frame builds acceleration structures from its visible list
+  // **Indirect light: the world-space cache** (R69; renderer.md, "Indirect light: the world-space
+  // cache"): the mode (`renderer.gi.mode`, `Off` without traced shadows), the cache's bytes
+  // (`renderer.gi.cache_mib`, made once at load), the sample pass's rays a frame over every view
+  // (`renderer.gi.rays_per_frame`) and the level rule's metres of cell per metre of distance
+  // (`renderer.gi.cell_scale`).
+  GiMode gi_mode = GiMode::Off;
+  u64 gi_cache_bytes = 0;
+  u32 gi_rays_per_frame = 0;
+  f32 gi_cell_scale = 0.0f;
+  bool occlusion = false;  // two-pass occlusion culling runs
+  bool rt_chain = false;   // the frame builds acceleration structures from its visible list
   // The cull pass keeps what its cone test rejects as shadow casters, in the visible list's run
   // `gfx::k_caster_run`, and the chain builds them beside the drawn clusters. True when shadows
   // are traced, the cone test is on, and the records are build records rather than template
