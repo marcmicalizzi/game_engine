@@ -223,7 +223,7 @@ void build_channel_mesh(const Channel& c, ChannelMesh& out) {
       if (falls) {
         const f64 h_fall = std::max(0.0, static_cast<f64>(a.y - sec.p.y));
         sec.speed = static_cast<f32>(
-            std::sqrt(static_cast<f64>(lip_speed) * lip_speed + 2.0 * k_gravity * h_fall));
+            std::sqrt(static_cast<f64>(lip_speed) * static_cast<f64>(lip_speed) + 2.0 * k_gravity * h_fall));
         if (k == steps) {
           impact = sec.speed;
           plunge_len = std::clamp(k_channel_plunge_share * (fall_top - b.y), k_channel_plunge_min_m,
@@ -362,7 +362,8 @@ void build_channel_depth_map(const Channel& c, const ChannelMesh& mesh, DepthMap
     const Vec3 a = c.points[i];
     const Vec3 b = c.points[i + 1];
     const f64 reach = 0.5 * static_cast<f64>(std::max(c.width_m[i], c.width_m[i + 1])) + tm;
-    const f64 ax = a.x, az = a.z, bx = b.x, bz = b.z;
+    const f64 ax = static_cast<f64>(a.x), az = static_cast<f64>(a.z), bx = static_cast<f64>(b.x),
+              bz = static_cast<f64>(b.z);
     const i64 i0 =
         std::max<i64>(0, static_cast<i64>(std::floor((std::min(ax, bx) - reach - ox) / tm)));
     const i64 i1 =

@@ -93,7 +93,7 @@ TEST_CASE("water channel: Manning's speed, the Froude number and the falls") {
   // v = (1/n) d^(2/3) S^(1/2): n 0.04, 0.6 m deep, 1 in 100 — 1.7786 m/s, Froude 0.733.
   const f32 v = water::manning_speed(0.04f, 0.6f, 0.01f);
   CHECK(v == doctest::Approx(25.0 * std::pow(0.6, 2.0 / 3.0) * 0.1).epsilon(1e-6));
-  CHECK(water::froude(v, 0.6f) == doctest::Approx(v / std::sqrt(9.81 * 0.6)).epsilon(1e-6));
+  CHECK(water::froude(v, 0.6f) == doctest::Approx(static_cast<f64>(v) / std::sqrt(9.81 * 0.6)).epsilon(1e-6));
   CHECK(water::froude(v, 0.6f) < 1.0f);
   // The steep reach is supercritical: 0.4 m at 1 in 25, 2.71 m/s, Froude 1.37.
   const f32 rapid = water::manning_speed(0.04f, 0.4f, 0.04f);
@@ -192,7 +192,7 @@ TEST_CASE("water channel: the ribbon's width, heights, phase and fall") {
     }
   }
   // The fall is one stretch of 10.05 m at the spacing: 16 sections' strips, two triangles a quad.
-  const u32 fall_strips = static_cast<u32>(std::ceil(std::sqrt(101.0) / m.spacing));
+  const u32 fall_strips = static_cast<u32>(std::ceil(std::sqrt(101.0) / static_cast<f64>(m.spacing)));
   CHECK(fall_triangles == fall_strips * cm.columns * 2);
   CHECK(bed_triangles > fall_triangles);
   u32 falls = 0;

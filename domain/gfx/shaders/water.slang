@@ -507,10 +507,10 @@ static const float k_channel_foam_full = 2.0;
 static const float k_channel_depth_floor = 0.1;
 // The ripples: cycles of the phase a period (Hz times 8), a static spatial frequency (cycles a
 // metre, over body-local x and z) and a slope each.
-static const float k_channel_cycles[6] = {13.0, 19.0, 27.0, 11.0, 23.0, 31.0};
-static const float2 k_channel_space[6] = {float2(0.31, 0.12), float2(-0.22, 0.47),
-                                          float2(0.58, -0.36), float2(-0.09, -0.27),
-                                          float2(0.71, 0.64), float2(-0.83, 0.25)};
+static const float k_channel_cycles[6] = {23.0, 37.0, 53.0, 17.0, 29.0, 71.0};
+static const float2 k_channel_space[6] = {float2(0.78, 0.30), float2(-0.55, 1.18),
+                                          float2(1.45, -0.90), float2(-0.23, -0.68),
+                                          float2(1.78, 1.60), float2(-2.08, 0.63)};
 static const float k_channel_slope[6] = {0.10, 0.07, 0.05, 0.08, 0.05, 0.04};
 // The fall's streaks: cycles a metre across the face and cycles of the phase a period along it.
 static const float k_channel_streak_across[3] = {1.3, 2.9, 5.1};
@@ -576,8 +576,11 @@ WaterChannelSurface water_channel_surface(WaterChannelFlow f, float3 p, float3 g
   c.froude = f.speed / sqrt(k_water_g * d);
   const float calm = clamp(depth / k_water_calm_depth, 0.0, 1.0);
   if (abs(geometric.y) < k_channel_fall_cos) {
-    // A fall: white water whole, streaked across the face and carried down it.
-    float3 across = cross(f.direction, geometric);
+    // A fall: white water whole, streaked across the face and carried down it. Across is the
+    // face's own horizontal, from its plane alone: the phase's gradient differs a little from
+    // triangle to triangle, and times a body-local point tens of metres out that would shift the
+    // streaks at every edge.
+    float3 across = cross(float3(0.0, 1.0, 0.0), geometric);
     const float la = length(across);
     across = la > 1e-6 ? across / la : float3(1.0, 0.0, 0.0);
     const float u = dot(p, across);
