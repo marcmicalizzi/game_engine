@@ -2112,6 +2112,12 @@ struct Wading {
       terrain = std::make_unique<renderer::TerrainSampler>(scene.terrain);
       if (terrain->ok()) ground = terrain->provider().view();
     }
+    // A body that fills is flooded over the same ground the scene's reader flooded it over
+    // (water.md, "A body that fills"), so the walker wades in its region and not in every hollow
+    // below its level within its bound. The reader has already refused one that cannot fill; one
+    // that fails here keeps the unflooded answer.
+    for (water::Body& body : bodies)
+      if (body.fill) (void)water::fill_body(body, ground, nullptr);
     walker.set_water(&Wading::depth, this);
   }
 };
