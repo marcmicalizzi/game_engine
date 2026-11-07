@@ -131,8 +131,22 @@ to the network planned in-process over the same provider.
 
 ## Against the proof of concept
 
-See the W86 row's closing note in [the roadmap](../roadmap.md) and the report it names for the counts
-on v31's fells; the capture verdict is recorded there.
+`engine-content channels` over a copy of v31's terrain-only scene (`repro-terrain-hex/scene-norot.json`)
+with two layers at the defaults — the lowland forest, x −1,536 to 512 m and z −1,792 to 1,024 m, and
+the fells above it, z 1,024 to 3,072 m — 9.96 km² in all (2026-11-07, `msvc-debug`):
+
+| | Channels (W86) | The POC's erosion model (v31) |
+|---|---|---|
+| heads | 198 (19.9 per km²) | 688 over 38.5 km² (17.9 per km²) |
+| channel | 48.7 km, **4.9 km per km²** | 5–7 km per km² |
+| links | 360 | — |
+| blocks ≥ 50,000 m² | 215 | — |
+
+The lines lie in the model's troughs: the nearest channel point is 1.1 m from the v34 hand-off's
+fell-rill camera target (a 1.3 m rill, below the banks' threshold) and 6.5 m from its channel-bars
+target (a 3.0 m bed, where the paint drew 5.2 m: the forest layer's region cuts off part of that
+channel's catchment). The density is a little under the model's because a region's edge cuts the
+catchments that flow in across it. The captures and their verdict are in the W86 row's report.
 
 ## Invariants
 
