@@ -59,9 +59,40 @@ struct MaskBuildResult {
   u64 hash = 0;
 };
 
+// **The palette budget, checked without a cook** (roadmap T72): one layer a tile names, with its
+// mean and peak weight over the tile's points.
+struct MaskTileLayer {
+  u32 layer = 0;  // index into the palette
+  std::string name;
+  f64 mean = 0, peak = 0;
+};
+// A tile whose points name more layers than the budget. `layers` is heaviest first by mean weight;
+// `weakest` indexes the last, the layer a blend-out would drop.
+struct OverBudgetTile {
+  i32 tx = 0, tz = 0;
+  i64 x0_mm = 0, x1_mm = 0, z0_mm = 0, z1_mm = 0;
+  Vector<MaskTileLayer> layers;
+  u32 weakest = 0;
+};
+struct MaskBudgetReport {
+  Vector<OverBudgetTile> over;  // in tile order, row by row
+  u32 tiles = 0;                // tiles scanned
+  u32 largest = 0;              // the most layers any tile names
+  u32 budget = 0;
+};
+// The composition a build runs, scanned for the budget alone: no archive is written. Every tile
+// over is listed, not the first. False, with a sentence, only when the inputs cannot be composed.
+bool check_mask_budget(const TileSet& set, const MaskInputs& in, MaskBudgetReport& out,
+                       std::string& error);
+// How many over-budget tiles the build's refusal names before "and N more".
+inline constexpr u32 k_over_budget_listed = 32;
+// The refusal's sentence: the count, then up to `cap` tiles with place, layers and weakest.
+std::string describe_over_budget(const MaskBudgetReport& report, u32 cap);
+
 // Builds the level of `in` over `set` into `dir`, the manifest last. **Refused, with a sentence
-// naming the tile, its place and its layers, when a tile's points name more layers than the
-// budget**: a dropped layer would show on one side of a seam and not the other.
+// naming every tile over (up to `k_over_budget_listed`), its place and its layers, when a tile's
+// points name more layers than the budget**: a dropped layer would show on one side of a seam and
+// not the other.
 bool build_mask_level(const TileSet& set, const MaskInputs& in, const std::string& dir,
                       MaskBuildResult& out, std::string& error);
 // The content step as a library call: into `dir`, or with it empty into `mask_cache_dir(ddc, key)`,

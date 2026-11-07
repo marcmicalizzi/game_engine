@@ -405,3 +405,82 @@ TEST_CASE("tileset masks determinism: the fixture's level hashes to the pinned v
   CHECK(std::string(archive) == std::string(k_archive));
   CHECK(level.manifest().archive_bytes == bytes.size());
 }
+
+TEST_CASE("tileset masks: the budget check names every tile over, and the refusal names them all") {
+  Fixture fx;
+  scene::TerrainMaskRegion crowd = circle("crowd", 100, 110, 3);
+  crowd.material = "trail";
+  fx.in.masks.regions.push_back(crowd);
+  scene::TerrainMaskRegion more = circle("more", 102, 106, 2);
+  more.material = "litter";
+  fx.in.masks.regions.push_back(more);
+  MaskBudgetReport report;
+  REQUIRE_MESSAGE(check_mask_budget(fx.set, fx.in, report, fx.error), fx.error);
+  MESSAGE("budget 4: " << report.over.size() << " over of " << report.tiles << ", largest "
+                       << report.largest);
+  REQUIRE(report.over.size() >= 1);
+  CHECK(report.budget == 4);
+  CHECK(report.largest > 4);
+  CHECK(report.tiles > report.over.size());  // tiles under the budget are scanned and not listed
+  fx.in.budget = 2;
+  REQUIRE_MESSAGE(check_mask_budget(fx.set, fx.in, report, fx.error), fx.error);
+  MESSAGE("budget 2: " << report.over.size() << " over of " << report.tiles);
+  REQUIRE(report.over.size() >= 2);
+  CHECK(report.over.size() < report.tiles);
+  for (const OverBudgetTile& t : report.over) {
+    CHECK(t.layers.size() > 2);
+    REQUIRE(t.weakest == t.layers.size() - 1);
+    for (const MaskTileLayer& l : t.layers)
+      CHECK(l.mean >= t.layers[t.weakest].mean);
+    CHECK(t.layers[t.weakest].peak > 0);
+  }
+  // Past the cap the build's refusal names the first 32 and counts the rest.
+  const auto count_tiles = [](const std::string& s) {
+    usize n = 0;
+    for (usize at = s.find("tile ("); at != std::string::npos; at = s.find("tile (", at + 1))
+      ++n;
+    return n;
+  };
+  MaskBuildResult built;
+  REQUIRE(report.over.size() > k_over_budget_listed);
+  CHECK_FALSE(build_mask_level(fx.set, fx.in, fx.tmp.file("capped"), built, fx.error));
+  CHECK(fx.error == describe_over_budget(report, k_over_budget_listed));
+  CHECK(count_tiles(fx.error) == k_over_budget_listed);
+  CHECK(fx.error.find("and " + std::to_string(report.over.size() - k_over_budget_listed) +
+                      " more") != std::string::npos);
+  // Under the cap it names every one of them, in the report's order, and the counts agree: a
+  // second crowd at the other pond puts a second tile over a budget of four.
+  fx.in.budget = 4;
+  scene::TerrainMaskRegion crowd2 = circle("crowd 2", 118, 110, 3);
+  crowd2.material = "trail";
+  fx.in.masks.regions.push_back(crowd2);
+  scene::TerrainMaskRegion more2 = circle("more 2", 119, 106, 2);
+  more2.material = "litter";
+  fx.in.masks.regions.push_back(more2);
+  REQUIRE_MESSAGE(check_mask_budget(fx.set, fx.in, report, fx.error), fx.error);
+  MESSAGE("two crowds: " << report.over.size() << " over of " << report.tiles);
+  REQUIRE(report.over.size() >= 2);
+  REQUIRE(report.over.size() <= k_over_budget_listed);
+  CHECK_FALSE(build_mask_level(fx.set, fx.in, fx.tmp.file("all-over"), built, fx.error));
+  MESSAGE(fx.error);
+  CHECK(fx.error == describe_over_budget(report, k_over_budget_listed));
+  CHECK(count_tiles(fx.error) == report.over.size());
+  for (const OverBudgetTile& t : report.over) {
+    char head[48];
+    std::snprintf(head, sizeof(head), "tile (%d, %d)", static_cast<int>(t.tx),
+                  static_cast<int>(t.tz));
+    CHECK(fx.error.find(head) != std::string::npos);
+  }
+  CHECK(fx.error.find("weakest ") != std::string::npos);
+  CHECK(fx.error.find(std::to_string(report.over.size()) + " tiles name") != std::string::npos);
+  CHECK(fx.error.find(" more; narrow") == std::string::npos);
+  // Past the cap the sentence says how many more.
+  const std::string capped = describe_over_budget(report, 1);
+  CHECK(capped.find("and " + std::to_string(report.over.size() - 1) + " more") !=
+        std::string::npos);
+  usize listed = 0;
+  for (usize at = capped.find("tile ("); at != std::string::npos;
+       at = capped.find("tile (", at + 1))
+    ++listed;
+  CHECK(listed == 1);
+}

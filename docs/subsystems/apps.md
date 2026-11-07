@@ -247,6 +247,7 @@ engine-content terrain <scene.json> --tile <x,z> [--time <s>] [--cells <n>] [--d
 engine-content terrain-synth <out.json> --kind ridge|basin|steps|flat|mountain --size <n> --spacing-mm <s> [--seed <n>] [--origin-mm <x,z>]
 engine-content terrain-tiles <heightfield.json> [<out dir>] [--ddc <root>] [--cells <n>] [--ring-spacing-mm <s>] [--far-ratio <r>] [--far-levels <n>] [--vertical-scale <v>] [--offset-mm <x,y,z>] [--force]
 engine-content terrain-masks <scene.json> [<out dir>] [--ddc <root>] [--force] [--write-priors <dir>]
+engine-content masks check <scene.json> [--ddc <root>]
 engine-content terrain-read <manifest.json | dir> [--pattern level|windows|points|pool|queue|files] [--level <n>] [--depth <n>] [--run-kib <n>] [--window <n>] [--cache-mib <n>] [--pool-workers <n>] [--unbuffered] [--masks]
 engine-content city params <params.json>
 engine-content city plan <params.json> (--out <dir> | --cache [--ddc <dir>] | --no-write) [--jobs <n>]
@@ -358,6 +359,8 @@ engine-content terrain content/test-scenes/desert-dunes/scene.json --tile 0,0 --
 ```
 
 ## engine-content terrain-synth and terrain-tiles: an authored terrain
+
+**`masks check <scene.json> [--ddc <root>]`** (2026-11-07, T72) composes the scene terrain's masks as a load does (`tileset::check_mask_budget`, opening or building the tile set as `terrain-masks` does, because the priors read its heights; no mask archive is written) and prints one JSON line a tile whose points name more layers than `materials.layer_budget` (`tile`, `x_m`, `z_m`, `count`, `layers` with name, mean and peak weight heaviest first, `weakest`), then a summary line (`tiles`, `over`, `largest`, `budget`). Exit 0 when no tile is over, 1 when any is or the scene cannot be composed, 2 for usage. The POC's composer calls it before a cook.
 
 **`terrain-masks`** (2026-10-24, W72) builds a scene terrain's mask level — ground materials by place — beside its set; see [content build](content_build.md#terrain-masks-ground-materials-by-place) for the command and [tileset](tileset.md#the-mask-level) for the level. `terrain-synth --kind mountain` writes the test shape `content/test-scenes/ground-by-place` stands on: a 180 m mountain whose slopes cross the soil, scree and bedrock bands, on a plain with two pond bowls at nearly one height.
 
