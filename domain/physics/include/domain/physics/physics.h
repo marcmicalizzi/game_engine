@@ -165,7 +165,10 @@ struct BuiltChild {
 // x], z)` for integer x and z, **in the body's frame**: the body that carries the shape puts it in
 // the world (`BodyDesc::transform`), so a tile of ground far from the origin is a body at its
 // corner and a field of small numbers, never a field offset by the corner in floats (ADR-0053).
-// `sample_count` must be at least 4 and a multiple of 2; a power of two is cheapest.
+// `sample_count` must be at least 4 and a multiple of 2; a power of two is cheapest. A height of
+// `k_heightfield_hole` is no sample: the triangles that use it have no collision (a terrain's
+// hole, W87; the backend's own "no collision" value).
+inline constexpr f32 k_heightfield_hole = 3.402823466e+38f;  // FLT_MAX, Jolt's cNoCollisionValue
 struct HeightfieldDesc {
   std::span<const f32> heights;
   u32 sample_count = 0;

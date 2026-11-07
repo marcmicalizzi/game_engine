@@ -24,10 +24,13 @@ it emits no outer-ring placements. See [flora](flora.md#grass-sward-g90).
 | `authored` | placements (`expand`, `meshes`, `tile`, `occupies`, `representation`) | `domain/authored/src/authored.cpp` — the authored capability (2026-10-24, roadmap W73): a scene's own static instances, filed by the tile their origin is on, each tile's in id order and drawn in the form its ring's distance allows; its parameters are `engine.scene.AuthoredSet`, which the scene reader writes, and its meshes are the entry's resident ones, so `meshes` is empty ([authored](authored.md)) | the world's placements consumer (a streamed world's file instances; the reader builds the entry and never expands it) |
 | `cliffs` | placements (`expand`, `meshes`, `tile`, `occupies`) | `domain/rocks/src/cliffs_generator.cpp` — the rocks capability (2026-10-19, roadmap G71): a terrain's steep ground found from the ground's heights, the feet of its bands traced on a world-anchored grid of blocks and stood with cliff faces, each a recipe written under the derived-data root; a face is a function of its block alone ([rocks](rocks.md#the-cliffs-generator)) | the scene reader (a `placements` entry naming it) and the world's placements consumer (a tile: the faces anchored in it) |
 | `deposit` / `deposits` | mesh / placements (`expand`, `meshes`, `tile`, `occupies`, `representation`) | `domain/rocks`: static finite-window source-connected talus and channel sediment ([rocks](rocks.md#terrain-aware-deposits-g128)) | generated mesh loading and whole/streamed placement readers |
+| `cave` | mesh (`<name>.cave.json`) | `domain/caves/src/caves.cpp` — the caves capability (2026-11-07, roadmap G134): a passage from a terrain's hole in and down, its shell wound inward and its speleothems ([caves](caves.md)) | generated mesh loading |
 | `litter` | meshes and placements (`expand`, `meshes`, `tile`, `occupies`, `representation`) | `domain/litter` — G103's static debris patches, with substrate, hollow and obstacle-edge accumulation ([litter](litter.md)) | generated mesh loading and the normal whole/streamed placement readers |
 | `earth` | sky (`state`, `atmosphere`, `stars`) | `domain/sky/src/sky_provider.cpp` — the sky capability (2026-09-30) | the scene reader (a `sky` entry, to check it) and the renderer's `SkyPass` (every frame's lights and heavens, [renderer](renderer.md#the-sky)) |
 
 **The fixed features.** A terrain entry's ridges and basins (`engine.scene.Terrain.ridges`, `basins`) are the scene's, added by every ground the same way — the waves multiply their dunes down over them and add them, the dunes thin their sand over them and add them — so their arithmetic is here, beside the entry's type, in one copy (`terrain_features.h`: `terrain_features`, `ridge_weight`, `basin_weight`). It was the renderer's until the dunes moved into the terrain capability, and it moved expression for expression.
+
+**Holes** (`engine.scene.Terrain.holes`, W87): circles and polygons where the ground has no surface, part of the entry like the ridges and basins and compiled once into `TerrainHoles` (`include/domain/scene_gen/terrain_holes.h`), which the renderer's meshes and the collision both ask: a cell of any lattice is a hole when its four corners lie strictly inside one ([terrain](terrain.md#holes)).
 
 ## Owned data
 
@@ -152,6 +155,7 @@ The descriptor is constant-initialized; the `Registrar` adds it to `GeneratorReg
 ## Public API
 
 `include/domain/scene_gen/terrain_features.h`: `TerrainFeatures`, `terrain_features`, `ridge_weight`, `basin_weight` — the scene's ridges and basins.
+`include/domain/scene_gen/terrain_holes.h`: `TerrainHoles` — the scene's holes, the cell rule and the window hash a tile's key takes.
 
 `include/domain/scene_gen/tile_source.h`: `TileSourceOps`, `TileSource` — the seam a drawn or walked ground asks for heights through ([The tile source](#the-tile-source)); `GroundProvider::tiles()` is the procedural one.
 `include/domain/scene_gen/ground_masks.h`: `GroundMaskInfo`, `GroundMaskOps`, `GroundMasks`, `mask_mip_side`, `mask_mips`, `mask_mip_offset`, `mask_points`, `mask_tile_words`, `MaskTileRef`, `mask_tile_of`, `MaskSample`, `mask_sample` ([material masks](#the-tile-source)); `GroundOps::masks`, `GroundProvider::masks`, `resolve_mask_water` in `scene_gen.h`.

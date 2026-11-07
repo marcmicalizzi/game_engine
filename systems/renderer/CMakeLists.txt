@@ -78,6 +78,10 @@ set(_renderer_tests tests/renderer_tests.cpp tests/reference_tests.cpp tests/str
                     # The world's tiles on the CPU: the first fill, a tile's mesh and its seams,
                     # the set's keys, rebuilds and windows, from a tile source of the test's own.
                     tests/terrain_tiles_tests.cpp
+                    # A terrain's holes (W87): a tile's and the grid's meshes without the hole's
+                    # cells, the rim locked, the far level closing it, keys and hash kept; and on a
+                    # GPU the opening every rasterizer and the ray path draw alike.
+                    tests/terrain_holes_tests.cpp
                     tests/terrain_materials_tests.cpp
                     # The world formation on the ground (W85): bands across the dip, none without.
                     tests/formation_scene_tests.cpp

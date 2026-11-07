@@ -203,6 +203,11 @@ struct TerrainTileMeshSpec {
   u64 hole_mask = 0;
   u32 hole_side = 0;
   u32 hole_cells = 0;
+  // **The terrain's holes** (`TerrainDesc::holes`; terrain.md, "Holes"; W87): a cell of this tile
+  // wholly inside one has no triangles and its corners are locked, as a far tile's hole's are. Null
+  // or empty: none. Not owned; the terrain's description outlives every tile built from it. The key
+  // adds the tile's hole cells only where it has some, so a tile no hole reaches keeps its key.
+  const scene_gen::TerrainHoles* ground_holes = nullptr;
   // The UVs' scale: a UV is millimetres from the tile's corner over this, the scene grid's side
   // (`TerrainUvFrame::size_mm`), so a metre is as many UV units as it is in the grid's frame and
   // the material's derivatives are the grid's. Until 2026-10-06 the spec carried the frame's corner

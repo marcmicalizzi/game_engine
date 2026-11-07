@@ -282,7 +282,8 @@ class SceneCollision {
   // it was built with, interpolated across the cell as the backend's heightfield triangulates it.
   // The cell and the fractions across it are found in millimetres from the tile's lattice window,
   // so on a lattice point the answer is the tile source's height to the bit, anywhere. False where
-  // no held tile covers the point.
+  // no held tile covers the point, and over a terrain's hole (W87): a cell with a corner the hole
+  // took out of the heightfield.
   bool ground_height(WorldPos at, f32& out) const noexcept;
   const Stats& stats() const noexcept { return stats_; }
   // Whether a streamed scene's generators, rather than the scene's own instances, give the tiles
@@ -368,6 +369,10 @@ class SceneCollision {
   bool evaluate_field(const Tile& tile, f64 time, Vector<f32>& out);
   void blend_heights(Tile& tile, f64 blend);
   bool make_ground_body(Tile& tile);
+  // The terrain's holes on the collision lattice (W87): sample (i, j) is none, and whether any hole
+  // reaches the tile's window.
+  bool hole_sample(i64 i, i64 j) const noexcept;
+  bool holes_reach(const Tile& tile) const noexcept;
   void drop_ground_body(Tile& tile);
   // The tile's compound body, from `build`'s placements when it built them; on the tick.
   bool build_placements(Tile& tile, Build* build);

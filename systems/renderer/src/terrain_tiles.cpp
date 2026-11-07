@@ -413,6 +413,13 @@ void terrain_tiles_round(const TerrainTilesDesc& desc, WorldPos camera, Vector<T
 
 // ---- a tile's mesh ------------------------------------------------------------------------------
 
+namespace {
+// The terrain's holes for a tile's spec: null where it has none.
+const scene_gen::TerrainHoles* holes_of(const TerrainDesc* desc) noexcept {
+  return desc != nullptr && !desc->holes.empty() ? &desc->holes : nullptr;
+}
+}  // namespace
+
 u64 terrain_tile_key(const TerrainTileMeshSpec& spec) noexcept {
   u64 h = hash_combine(packed(spec.x, spec.z), static_cast<u64>(spec.level));
   h = hash_combine(h, static_cast<u64>(spec.cells));
@@ -429,6 +436,13 @@ u64 terrain_tile_key(const TerrainTileMeshSpec& spec) noexcept {
   }
   // A far tile's hole: the world tiles the rings draw inside it.
   if (spec.hole_mask != 0) h = hash_combine(h, spec.hole_mask);
+  // The terrain's holes: the tile's hole cells, only where it has some (W87).
+  if (spec.ground_holes != nullptr) {
+    const u64 holes = spec.ground_holes->window_hash(
+        spec.spacing_mm, static_cast<i64>(spec.x) * spec.cells,
+        static_cast<i64>(spec.z) * spec.cells, spec.cells, spec.cells);
+    if (holes != 0) h = hash_combine(hash_combine(h, 0x484F4C4553ull), holes);
+  }
   return h;
 }
 
@@ -468,7 +482,19 @@ void build_terrain_tile_mesh(const TerrainTileMeshSpec& spec, std::span<const f3
     ratio[e] = r;
   }
   // A far tile's hole: the cells under the world tiles the rings draw.
+  // And the terrain's holes (W87; terrain.md, "Holes"): a cell wholly inside one, by the tile's own
+  // lattice, so a far tile whose cells are larger than a hole closes it. Asked only of a tile whose
+  // square a hole reaches, and outside the tile's cells (the lock's look past the border) never.
+  const bool ground_holes =
+      spec.ground_holes != nullptr &&
+      spec.ground_holes->touches_mm(
+          static_cast<f64>(i0) * static_cast<f64>(s), static_cast<f64>(j0) * static_cast<f64>(s),
+          static_cast<f64>(i0 + static_cast<i32>(c)) * static_cast<f64>(s),
+          static_cast<f64>(j0 + static_cast<i32>(c)) * static_cast<f64>(s));
   const auto hole = [&](u32 i, u32 j) {
+    if (ground_holes && i < c && j < c &&
+        spec.ground_holes->cell(s, static_cast<i64>(i0) + i, static_cast<i64>(j0) + j))
+      return true;
     if (spec.hole_mask == 0 || spec.hole_cells == 0) return false;
     const u32 bit = (j / spec.hole_cells) * spec.hole_side + i / spec.hole_cells;
     return ((spec.hole_mask >> bit) & 1u) != 0;
@@ -699,6 +725,7 @@ bool TerrainTileSet::far_tile(u32 level, const TerrainRingLayout& layout,
     spec.level_spacing_mm[l] = l == 0 ? 0 : lattice_[l].spacing_mm;
   }
   spec.uv_size_mm = uv_size_mm_;
+  spec.ground_holes = holes_of(desc_);
   // Its neighbours: this level inside its square, the next coarser far level past its border (none
   // past the coarsest's), and whatever is finer inside — which does not change its mesh.
   const u8 outside = static_cast<u8>(level - 1);
@@ -1191,6 +1218,7 @@ TerrainTileMeshSpec TerrainTileSet::spec_of(i32 x, i32 z, u8 level,
     spec.level_spacing_mm[l] = l == 0 ? 0 : lattice_[l].spacing_mm;
   }
   spec.uv_size_mm = uv_size_mm_;
+  spec.ground_holes = holes_of(desc_);
   // A tile no ring draws is the far level's whose square holds it (none without far levels).
   const auto at = [&](i32 i, i32 j) {
     const u8 l = level_at(level_of, i, j);

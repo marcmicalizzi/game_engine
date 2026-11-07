@@ -33,6 +33,7 @@
 #include <core/math/math.h>
 #include <domain/gfx/ground_detail.h>
 #include <domain/scene_gen/scene_gen.h>
+#include <domain/scene_gen/terrain_holes.h>
 
 #include <optional>
 #include <schemas/scene.h>
@@ -127,6 +128,10 @@ struct TerrainDesc {
   // `has_detail` false — a scene without the block — draws the terrain exactly as it was.
   bool has_detail = false;
   scene::TerrainDetail detail;
+  // Holes in the ground (`Terrain.holes`, version 11; terrain.md, "Holes"; W87): a cell of any
+  // level wholly inside one has no triangles, and the collision no surface. Empty: the terrain as
+  // it was, its hash and every tile's key unmoved.
+  scene_gen::TerrainHoles holes;
 };
 
 // The detail's numbers as the mechanism takes them (`gfx::GroundDetailDesc`, domain/gfx/
@@ -318,6 +323,11 @@ u64 terrain_hash(const TerrainDesc& desc) noexcept;
 // The grid: `size * size` positions, two counter-clockwise (seen from +y) triangles a quad, and
 // UVs over [0, 1] across the whole terrain. False with a reason when the description is out of
 // range.
+// Whether cell (xi, zi) of the scene's grid, whose vertices `build_terrain_mesh` wrote, is one of
+// the terrain's holes: its corners' float coordinates as millimetres, the cell rule of
+// `scene_gen::TerrainHoles`. The grid's mesh leaves it out, and `load_terrain` locks its corners.
+bool terrain_grid_cell_is_hole(const TerrainDesc& desc, std::span<const Vec3> positions, u32 n,
+                               u32 xi, u32 zi) noexcept;
 bool build_terrain_mesh(const TerrainDesc& desc, Vector<Vec3>& positions, Vector<u32>& indices,
                         Vector<Vec2>& uvs, std::string* error = nullptr);
 

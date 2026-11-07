@@ -676,6 +676,22 @@ bool load_terrain(const SceneDesc& desc, SourceMesh& out, geometry::ClusterLodMe
   geometry::AttributeSource attribute_source;
   attribute_source.uvs = std::span<const Vec2>(uvs.data(), uvs.size());
   attribute_source.normals = std::span<const Vec3>(normals.data(), normals.size());
+  // **A hole's rim is locked** (terrain.md, "Holes"): every corner of a hole cell, so every level
+  // of the DAG keeps the opening's edge where the finest draws it and a cave's collar meets it at
+  // every cut. Only for a terrain with holes: every other builds as it did, to the byte.
+  Vector<u8> locked;
+  if (!desc.terrain.holes.empty()) {
+    locked.assign(positions.size(), u8{0});
+    const std::span<const Vec3> grid(positions.data(), positions.size());
+    for (u32 zi = 0; zi + 1 < n; ++zi) {
+      for (u32 xi = 0; xi + 1 < n; ++xi) {
+        if (!terrain_grid_cell_is_hole(desc.terrain, grid, n, xi, zi)) continue;
+        locked[zi * n + xi] = locked[zi * n + xi + 1] = 1;
+        locked[(zi + 1) * n + xi] = locked[(zi + 1) * n + xi + 1] = 1;
+      }
+    }
+    attribute_source.locked = std::span<const u8>(locked.data(), locked.size());
+  }
   if (!geometry::build_cluster_lod(positions, indices, lod_options, lod, &error, attribute_source))
     return false;
   geometry::ClusterPages built;
@@ -2027,6 +2043,12 @@ bool read_scene_file(const std::string& path, const SceneFileOptions& options, S
         return false;
       }
       out.terrain.masks = std::move(masks);
+    }
+    // Holes in the ground (`Terrain.holes`, W87; terrain.md, "Holes"): compiled once here, read by
+    // every level's mesh and by the collision.
+    if (!out.terrain.holes.build({t.holes.data(), t.holes.size()}, &error)) {
+      error = path + ": " + error;
+      return false;
     }
     out.terrain.generator = t.generator == scene::TerrainGenerator::Dunes || t.provider == "dunes"
                                 ? TerrainGenerator::dunes
