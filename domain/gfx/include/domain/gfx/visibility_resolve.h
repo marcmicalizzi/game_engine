@@ -747,7 +747,7 @@ inline constexpr u32 k_resolve_stops = 8;
 // pixel — straight into the target's codes, for a capture to count. A measurement, never a picture.
 inline constexpr u32 k_resolve_count_rays = 0x100u;
 
-// Mirrors ResolveParams in visibility_resolve.slang. 496 bytes.
+// Mirrors ResolveParams in visibility_resolve.slang. 528 bytes.
 struct ResolveParams {
   Vec4 sky{};  // rgb shown for empty pixels, and the hemisphere ambient's upper half
   Vec4 sun{};  // xyz normalized direction towards the light, w intensity
@@ -946,6 +946,20 @@ struct ResolveParams {
   u64 half_sun = 0;
   u32 half_x0 = 0;
   u32 half_x1 = 0;
+  // **Indirect light: the world-space cache** (gi_cache.h; renderer.md, "Indirect light: the
+  // world-space cache"; R69 stage 1): the cache's cells (`GiCell[gi_count]`, `gi_count` a power of
+  // two), its flags (`k_gi_read`: the resolve's ambient reads it; `k_gi_reset`: the fold clears
+  // it), the frame's index for the stamps and the sample pass's rotation, the sample pass's pixel
+  // stride, and the level rule's metres of cell per metre of distance. `gi_cells` 0 is no cache:
+  // the ambient is the harmonics, to the bit, as before. Two new 16-byte rows: the block grew from
+  // 496 to 528 bytes.
+  u64 gi_cells = 0;
+  u32 gi_flags = 0;
+  u32 gi_frame = 0;
+  u32 gi_count = 0;
+  u32 gi_stride = 0;
+  f32 gi_cell_scale = 0.0f;
+  u32 gi_pad = 0;
 };
 // `ResolveParams::water_open_instance` when the scene has no open water.
 inline constexpr u32 k_no_water_open = 0xffffffffu;
@@ -957,7 +971,7 @@ inline f32 water_clock(f64 time_s) noexcept {
   const f64 t = std::fmod(time_s, k_water_period_s);
   return static_cast<f32>(t < 0.0 ? t + k_water_period_s : t);
 }
-static_assert(sizeof(ResolveParams) == 496);
+static_assert(sizeof(ResolveParams) == 528);
 static_assert(sizeof(ResolveParams) % 16 == 0, "the block is read as float4 rows on the GPU");
 
 // ---- a shading rate by region (renderer.md, "A shading rate by region"; R126) -------------------

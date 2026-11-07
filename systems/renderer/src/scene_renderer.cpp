@@ -6,6 +6,7 @@
 #include <core/time/time.h>
 #include <domain/gfx/capture.h>
 #include <domain/gfx/display.h>
+#include <domain/gfx/gi_cache.h>
 #include <foundation/io/vfs.h>
 #include <systems/renderer/caster_volume.h>
 #include <systems/renderer/lighting.h>
@@ -27,6 +28,7 @@
 #include <shaders/deform.spv.h>
 #include <shaders/deform_alloc.spv.h>
 #include <shaders/frame_encode.spv.h>
+#include <shaders/gi_update.spv.h>
 #include <shaders/hiz_build.spv.h>
 #include <shaders/opacity_micromap_bake.spv.h>
 #include <shaders/overlay.spv.h>
@@ -289,6 +291,8 @@ void SceneRenderer::Pipelines::destroy(const gfx::Device& device) noexcept {
   gfx::destroy_compute_pipeline(device, tlas_references);
   gfx::destroy_compute_pipeline(device, trace);
   gfx::destroy_compute_pipeline(device, half_sun);
+  gfx::destroy_compute_pipeline(device, gi_sample);
+  gfx::destroy_compute_pipeline(device, gi_fold);
   gfx::destroy_compute_pipeline(device, pair_expand);
   direct = hardware = vertex = vertex_fallback = shadow = shadow_fallback = resolve = {};
   resolve_linear = encode = {};
@@ -670,6 +674,7 @@ bool SceneRenderer::create(const gfx::Device& device, GpuScene& scene,
                         shaders::k_ray_visibility_spirv_size);
   shaders_.add_embedded("resolve_half_sun", shaders::k_resolve_half_sun_spirv,
                         shaders::k_resolve_half_sun_spirv_size);
+  shaders_.add_embedded("gi_update", shaders::k_gi_update_spirv, shaders::k_gi_update_spirv_size);
   shaders_.add_embedded("deform", shaders::k_deform_spirv, shaders::k_deform_spirv_size);
   shaders_.add_embedded("deform_alloc", shaders::k_deform_alloc_spirv,
                         shaders::k_deform_alloc_spirv_size);
@@ -716,6 +721,18 @@ bool SceneRenderer::create(const gfx::Device& device, GpuScene& scene,
                        desc_.frames_in_flight, error)) {
     destroy();
     return false;
+  }
+  // The world-space cache (R69): made here, once, at the size `renderer.gi.cache_mib` gives, so no
+  // frame allocates for it; its first frame's fold clears it.
+  if (pipelines_.gi_sample.pipeline.valid()) {
+    gi_count_ = gfx::gi_cell_count(resolved_.gi_cache_bytes);
+    if (!gfx::create_buffer(device, u64{gi_count_} * gfx::k_gi_cell_bytes,
+                            gfx::BufferUsage::Storage | gfx::BufferUsage::ShaderDeviceAddress,
+                            false, gi_cache_, error)) {
+      destroy();
+      return false;
+    }
+    gi_reset_ = true;
   }
   fill_view_layout();
   sample_gpu_memory();
@@ -1087,6 +1104,24 @@ bool SceneRenderer::create_pipelines(std::string* error) {
       return false;
     }
   }
+  // **Indirect light: the world-space cache** (R69; renderer.md, "Indirect light: the world-space
+  // cache"): its sample and fold passes, one module, wherever `renderer.gi.mode` is on (which
+  // `resolve_settings` allows only with the shadow rays, whose query the sample pass traces).
+  if (resolved_.gi_mode != GiMode::Off) {
+    const gfx::Shader* gi = shaders_.get("gi_update", error);
+    if (gi == nullptr) return false;
+    const gfx::DescriptorSetLayoutHandle set_layout = bindless.layout();
+    if (!gfx::create_compute_pipeline(
+            device, gi->module, "gi_sample_main",
+            std::span<const gfx::DescriptorSetLayoutHandle>(&set_layout, 1), sizeof(u64),
+            pipelines_.gi_sample, error) ||
+        !gfx::create_compute_pipeline(
+            device, gi->module, "gi_fold_main",
+            std::span<const gfx::DescriptorSetLayoutHandle>(&set_layout, 1), sizeof(u64),
+            pipelines_.gi_fold, error)) {
+      return false;
+    }
+  }
   gfx::GraphicsPipelineDesc vertex_desc;
   vertex_desc.vertex = vertex->module;
   vertex_desc.vertex_entry = "vs_cluster";
@@ -1300,6 +1335,9 @@ void SceneRenderer::destroy() noexcept {
   frame_sky_ = FrameSky{};
   sky_params_address_ = 0;
   destroy_shadow_maps();
+  gfx::destroy_buffer(device, gi_cache_);
+  gi_count_ = 0;
+  gi_reset_ = true;
   shaders_.destroy();
   if (color_.image.valid()) gfx::destroy_image(device, color_);
   color_ = gfx::ImageResource{};
@@ -1777,6 +1815,8 @@ void SceneRenderer::collect_slot(u32 slot) {
     last.gpu_terrain_upload = timer_.ms("terrain upload");
     last.gpu_sky = timer_.ms("sky");
     last.gpu_half_sun = timer_.ms("half sun");
+    last.gpu_gi_trace = timer_.ms("gi sample");
+    last.gpu_gi_fold = timer_.ms("gi fold");
     for (u32 p = 0; p < frame_pass_count_; ++p)
       last.gpu_frame_passes += timer_.ms(frame_passes_[p].zone);
     last.gpu_frame_passes += timer_.ms("frame encode");
@@ -1787,7 +1827,8 @@ void SceneRenderer::collect_slot(u32 slot) {
     const f64 named = last.gpu_cull + last.gpu_hw + last.gpu_sw + last.gpu_hiz + last.gpu_resolve +
                       last.gpu_deform + last.gpu_deform_alloc + last.gpu_trace + last.gpu_rt +
                       last.gpu_shadow + last.gpu_tables + last.gpu_terrain_upload + last.gpu_sky +
-                      last.gpu_frame_passes + last.gpu_half_sun;
+                      last.gpu_frame_passes + last.gpu_half_sun + last.gpu_gi_trace +
+                      last.gpu_gi_fold;
     last.gpu_unbucketed = std::max(0.0, last.gpu_total - named);
     stats_.tiles.gpu_tables += last.gpu_tables;
     stats_.tiles.gpu_pair_expand += last.gpu_pair_expand;
@@ -1834,6 +1875,9 @@ void SceneRenderer::collect_slot(u32 slot) {
     stats_.gpu_sky += timer_.ms("sky");
     // The half-rate sun pass, every view's under one name.
     stats_.gpu_half_sun += timer_.ms("half sun");
+    // The world-space cache's passes (R69), every view's sample pass under one name.
+    stats_.gpu_gi_trace += timer_.ms("gi sample");
+    stats_.gpu_gi_fold += timer_.ms("gi fold");
     // The frame passes and their encode, the frame's too.
     for (u32 p = 0; p < frame_pass_count_; ++p)
       stats_.gpu_frame_passes += timer_.ms(frame_passes_[p].zone);
@@ -2685,6 +2729,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
   const bool half_centre = half_rate_centre_tunable();
   gfx::HalfRateWindow half_windows[k_max_views];
   gfx::RgBuffer rg_half{};  // the answers, in the graph while the pass is recorded
+  gfx::RgBuffer rg_gi{};  // the world-space cache (R69), in the graph while its passes are recorded
   bool half_on = !direct && shadows && (!csm || resolved_.hybrid) &&
                  pipelines_.half_sun.pipeline.valid() && (half_sides > 0.0f || half_centre) &&
                  (shade_mode == static_cast<u32>(gfx::ResolveMode::Shaded) ||
@@ -2705,6 +2750,27 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
                             false, targets_.half, error)) {
       return false;
     }
+  }
+
+  // ---- indirect light: the world-space cache (R69; renderer.md, "Indirect light: the world-space
+  // cache") ---------------------------------------------------------------------------------------
+  // Its sample pass traces the shadow rays' query, so wherever they are traced, in the shaded
+  // picture; one pixel in every `gi_stride` of every view, so the frame's rays are at most
+  // `renderer.gi.rays_per_frame`. The frame's own count turns the sample pattern and stamps the
+  // cells.
+  const bool gi_on = !direct && shadows && (!csm || resolved_.hybrid) &&
+                     pipelines_.gi_sample.pipeline.valid() && gi_cache_.buffer.valid() &&
+                     shade_mode == static_cast<u32>(gfx::ResolveMode::Shaded);
+  u32 gi_stride = 0;
+  u32 gi_flags = 0;
+  if (gi_on) {
+    u64 gi_pixels = 0;
+    for (u32 v = 0; v < views; ++v)
+      gi_pixels += u64{targets_.views[v].width} * targets_.views[v].height;
+    gi_stride = gfx::gi_stride(gi_pixels, resolved_.gi_rays_per_frame);
+    gi_flags = gfx::k_gi_read | (gi_reset_ ? gfx::k_gi_reset : 0u) |
+               (resolved_.gi_mode == GiMode::Bounce ? gfx::k_gi_bounce : 0u);
+    ++gi_frame_;
   }
 
   for (u32 v = 0; v < views; ++v) {
@@ -3061,6 +3127,16 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
       resolve.half_sun = targets_.half.address + target.half_offset * sizeof(u32);
       resolve.half_x0 = half_windows[v].x0;
       resolve.half_x1 = half_windows[v].x1;
+    }
+    // The world-space cache (R69): what the sample and fold passes read from this same block, and
+    // what the resolve's ambient reads (`scene_ambient`, material.slang).
+    if (gi_on) {
+      resolve.gi_cells = gi_cache_.address;
+      resolve.gi_flags = gi_flags;
+      resolve.gi_frame = gi_frame_;
+      resolve.gi_count = gi_count_;
+      resolve.gi_stride = gi_stride;
+      resolve.gi_cell_scale = resolved_.gi_cell_scale;
     }
     std::memcpy(resolve_bytes + sizeof(gfx::ResolveParams) * v, &resolve, sizeof(resolve));
 
@@ -4894,6 +4970,72 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
             timer.end(cb);
           });
     }
+    // **Indirect light: the world-space cache** (R69; renderer.md, "Indirect light: the
+    // world-space cache"): every view's sample pass — its sampled pixels touch their cells and
+    // trace a ray each against this frame's structures, adding to the cells' frame sums — then one
+    // fold over the cells, before the resolve reads them. A section of its own: nothing else in
+    // the frame reads or writes the cache.
+    if (gi_on) {
+      rg_gi = graph.import_buffer("gi cache", gi_cache_);
+      graph.add_pass(
+          "gi sample", gfx::PassKind::Compute,
+          [&](gfx::PassBuilder& b) {
+            b.read(rg_vis, gfx::Access::ComputeRead);
+            if (cull_on && deform_on) b.read(rg_pair_entries, gfx::Access::ComputeRead);
+            if (occlusion) b.read(rg_hiz, gfx::Access::ComputeRead);
+            if (deform_on) {
+              b.read(rg_pool, gfx::Access::ComputeRead);
+              b.read(rg_slots, gfx::Access::ComputeRead);
+            }
+            read_tables(b, gfx::Access::ComputeRead, true);
+            if (fading) b.read(rg_fade, gfx::Access::ComputeRead);
+            read_pool(b, gfx::Access::ComputeRead);
+            if (sky_on) {
+              b.read(sb_sky.view, gfx::Access::ComputeRead);
+              b.read(sb_sky.frame, gfx::Access::ComputeRead);
+            }
+            b.read(rt.tlas, gfx::Access::RayQueryRead);
+            b.read(rt.hit_entries, gfx::Access::ComputeRead);
+            b.read(rt.blas_data, gfx::Access::RayQueryRead);
+            b.read(rt.clas_data, gfx::Access::RayQueryRead);
+            if (rt_cache) b.read(rt.cache_slots, gfx::Access::RayQueryRead);
+            b.write(rg_gi, gfx::Access::ComputeWrite);
+          },
+          [&](gfx::CommandList cb, gfx::RenderGraph&) {
+            cb.bind_pipeline(gfx::BindPoint::Compute, pipelines.gi_sample.pipeline);
+            bindless.bind(cb, gfx::BindPoint::Compute);
+            timer.begin(cb, "gi sample");
+            for (u32 v = 0; v < views; ++v) {
+              cb.push_constants(pipelines.gi_sample.layout, gfx::ShaderStage::Compute, 0,
+                                sizeof(u64), &view_frames[v].resolve_address);
+              const u64 pixels = u64{view_frames[v].width} * view_frames[v].height;
+              const u64 threads = (pixels + gi_stride - 1) / gi_stride;
+              const u64 groups = (threads + gfx::k_gi_workgroup - 1) / gfx::k_gi_workgroup;
+              cb.dispatch(static_cast<u32>(std::min<u64>(groups, gfx::k_gi_dispatch_pitch)),
+                          static_cast<u32>((groups + gfx::k_gi_dispatch_pitch - 1) /
+                                           gfx::k_gi_dispatch_pitch),
+                          1);
+            }
+            timer.end(cb);
+          });
+      graph.add_pass(
+          "gi fold", gfx::PassKind::Compute,
+          [&](gfx::PassBuilder& b) { b.write(rg_gi, gfx::Access::ComputeWrite); },
+          [&](gfx::CommandList cb, gfx::RenderGraph&) {
+            cb.bind_pipeline(gfx::BindPoint::Compute, pipelines.gi_fold.pipeline);
+            bindless.bind(cb, gfx::BindPoint::Compute);
+            timer.begin(cb, "gi fold");
+            cb.push_constants(pipelines.gi_fold.layout, gfx::ShaderStage::Compute, 0, sizeof(u64),
+                              &view_frames[0].resolve_address);
+            const u64 groups = (u64{gi_count_} + gfx::k_gi_workgroup - 1) / gfx::k_gi_workgroup;
+            cb.dispatch(static_cast<u32>(std::min<u64>(groups, gfx::k_gi_dispatch_pitch)),
+                        static_cast<u32>((groups + gfx::k_gi_dispatch_pitch - 1) /
+                                         gfx::k_gi_dispatch_pitch),
+                        1);
+            timer.end(cb);
+          });
+      gi_reset_ = false;
+    }
     // One resolve pass, one fullscreen draw per view through that view's rectangle of the target.
     // The clear covers the whole target once, so a pixel no view owns keeps the sky.
     graph.add_pass(
@@ -4934,6 +5076,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
             if (rt_cache) b.read(rt.cache_slots, gfx::Access::FragmentRayQueryRead);
           }
           if (half_on) b.read(rg_half, gfx::Access::FragmentRead);  // the half pass's answers
+          if (gi_on) b.read(rg_gi, gfx::Access::FragmentRead);      // the cache's cells (R69)
         },
         [&](gfx::CommandList cb, gfx::RenderGraph&) {
           cb.bind_pipeline(gfx::BindPoint::Graphics,

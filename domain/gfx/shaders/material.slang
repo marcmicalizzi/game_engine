@@ -26,6 +26,7 @@
 #include "hex_lattice.slang"
 #endif
 #include "scene.slang"
+#include "gi_cache.slang"
 
 [[vk::binding(0, 0)]] Texture2D<float4> g_textures[];
 [[vk::binding(2, 0)]] SamplerState g_samplers[];
@@ -895,6 +896,28 @@ float3 environment_radiance(float3 sky, float3 ground, float3 direction) {
 // (`brdf_hemisphere_ambient`).
 float3 ambient_radiance(float3 sky, float3 ground, float3 normal) {
   return brdf_hemisphere_ambient(sky_radiance(sky), ground, normal.y);
+}
+
+// **The resolve's ambient** (R69 stage 1; renderer.md, "Indirect light: the world-space cache"):
+// the hemisphere `harmonics` stands for — the sky's nine harmonics at the normal, or the stand-in's
+// two halves — or, where the frame's cache is read (`k_gi_read`) and holds the point's cells, what
+// the frame's structures let through of it: the cells' ratio to the environment's ambient, times
+// that ambient's luminance here. The ratio keeps the colour of the light the surface actually sees
+// (a gap towards the horizon is the horizon's, not the zenith's) while the harmonics' luminance
+// carries the hour, so a sky that changes reaches the cached cells in the same frame. Without the
+// bit, with no cache, or where neither of the point's levels has a sample, it is `harmonics`, to
+// the bit. `from_eye` is the point less the frame's eye, `distance` its distance from this view's
+// eye (the level), `normal` the surface's interpolated normal (the face).
+float3 scene_ambient(uint64_t gi_cells, uint gi_flags, uint gi_count, float gi_cell_scale,
+                     FrameEye eye, float3 from_eye, float distance, float3 normal,
+                     float3 harmonics) {
+  if ((gi_flags & k_gi_read) == 0u || gi_cells == 0) return harmonics;
+  float3 ratio;
+  if (!gi_read(gi_cells, gi_count, eye, from_eye, gi_level(distance, gi_cell_scale),
+               gi_face(normal), ratio)) {
+    return harmonics;
+  }
+  return ratio * gi_luminance(harmonics);
 }
 
 // Linear to what a UNORM target holds is `display_encode` in display.slang, included above: both

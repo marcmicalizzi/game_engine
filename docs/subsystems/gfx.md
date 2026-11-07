@@ -349,6 +349,20 @@ Roadmap R110 (2026-10-28). **Every top-level instance record carries an 8-bit ma
 
 **Why a mask and not a second structure.** A second top-level structure per frame for the light queries would cost a second build and a second bindless slot for one bit of information per instance. The mask costs a byte the record already had and nothing in the traversal. **What holds it**: `tlas references: a record's mask is its instance's ray mask, and a hole's stays 0` (`clas_records_tests.cpp`) dispatches the real pass over all 256 flag words and checks every record's mask against `instance_ray_mask` on the CPU, which is what pins the shader's constants to the C++ ones; the renderer's untraced tests ([renderer](renderer.md#the-caster-policy)) hold the behaviour.
 
+## The world-space cache's layout
+
+Roadmap R69 (2026-11-07). `domain/gfx/gi_cache.h` is the layout and the rules of the renderer's
+indirect-light cache, mirrored by `shaders/gi_cache.slang` (the key, the bucket's lookup and insert,
+the resolve's trilinear read) and filled by `shaders/gi_update.slang` (the sample and fold passes,
+which include the resolve's source for its reconstruction and its shadow query, as the half pass
+does): a 32-byte `GiCell`, the levels (25 mm doubling to 6.4 m, each a divisor of the 64 m world
+cell), the face of the normal, the 64-bit hash, and the sample pass's stride. `ResolveParams` carries
+the cache's address, flags (`k_gi_read`, `k_gi_reset`), frame, cell count, stride and level scale in
+two rows of its own (528 bytes). The ray mask a sample's ray traces with is the light queries'
+(`k_ray_mask_caster`), since it is the shadow rays' query. What the renderer does with it, and why
+it is shaped so, is [renderer](renderer.md#indirect-light-the-world-space-cache)'s; the CPU key is
+pinned by `gi_cache_key_tests.cpp`.
+
 ## The sky
 
 **One file of functions, three readers, one mirror** (2026-09-30; `shaders/sky.slang`, `shaders/sky_luts.slang`, `include/domain/gfx/sky.h`; the scene's side is [renderer](renderer.md#the-sky), the model's [sky](sky.md), the decision [ADR-0048](../adr/0048-the-sky-is-a-providers-model-drawn-by-the-renderer.md)). `sky.slang` has no bindings and no entry points, like `brdf.slang`: everything reads a `gfx::SkyParams` block (1,008 bytes: the air, the sun and the moon, the eye, the celestial frame, the exposure's rule, the tables' device addresses, up to eight views' clip-to-ray matrices, each the inverse of the view's projection times its rotation with no eye in it) through a device address, and every table through its buffer's address with a bilinear lookup written out by hand, so the file needs nothing from a pipeline layout and any shader can include it. The resolve (`visibility_resolve.slang`: an uncovered pixel, the sun's light at a surface, a directional light's transmittance, the ambient term, the air to the surface), the ray path (its uncovered pixels are the resolve's) and the reference path tracer (`path_trace.slang`: primary misses, next-event estimation of the sun through the air, escaped rays, the air to the first hit) all call it; `ResolveParams::sky_params` and `PathTraceParams::sky_params` took over former pad words, so neither block changed size, and **zero is the stand-in** — every line of the old sky, sun and ambient runs as it did.

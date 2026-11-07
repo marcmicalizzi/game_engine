@@ -173,6 +173,15 @@ struct ResolveParams {
   uint64_t half_sun;
   uint half_x0;
   uint half_x1;
+  // Indirect light: the world-space cache (gfx::ResolveParams::gi_cells; gi_cache.slang; R69).
+  // 0 is none, and the ambient is the harmonics.
+  uint64_t gi_cells;
+  uint gi_flags;
+  uint gi_frame;
+  uint gi_count;
+  uint gi_stride;
+  float gi_cell_scale;
+  uint gi_pad;
 };
 
 // **The resolve's split** (gfx::ResolveStop; renderer.md, "Where the resolve's time goes"; R115).
@@ -1292,6 +1301,12 @@ float4 fs_resolve(FullscreenOut in) : SV_Target {
       const float3 ground = ground_radiance(params->sky.rgb, params->ground.rgb, params->sun);
       ambient = ambient_radiance(params->sky.rgb, ground, surface.normal);
     }
+    // **What the scene lets through of it** (R69; renderer.md, "Indirect light: the world-space
+    // cache"): where the frame reads the cache, the cells round this point scale that hemisphere
+    // by what the frame's structures let through; anywhere else it is the hemisphere, to the bit.
+    ambient = scene_ambient(params->gi_cells, params->gi_flags, params->gi_count,
+                            params->gi_cell_scale, params->eye, s.position,
+                            length(s.position - params->camera.xyz), s.normal, ambient);
     const float n_dot_v = max(dot(surface.normal, surface.view), 0.0);
     float3 indirect =
         ambient * (albedo * (1.0 - surface.metallic) +

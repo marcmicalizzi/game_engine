@@ -100,7 +100,9 @@ set(_renderer_tests tests/renderer_tests.cpp tests/reference_tests.cpp tests/str
                     # The trees posed on a pool: every worker count the serial loop's bytes.
                     tests/flora_poser_tests.cpp
                     # The streamed trees' budget: records counted once, the nearest tiles first (R137).
-                    tests/tail_budget_tests.cpp)
+                    tests/tail_budget_tests.cpp
+                    # R69: indirect light from the world-space cache.
+                    tests/gi_cache_tests.cpp)
 if(TARGET engine::ruins)
   # A scene with a `ruins` entry read over a terrain: kits, meshes, instances and determinism; and,
   # where the terrain capability is too, the same buildings over the dunes a year apart.

@@ -253,7 +253,9 @@ ENGINE_EXPECT_SIZE(48, 8, gfx::HizParams);
 // not 464: the open sea's instance and water material (S93; water.md, "To the horizon"), a row of
 // its own that only the resolve's water modules declare. 496, not 480: the half pass's answers and
 // the view's full-rate columns (R126; renderer.md, "A shading rate by region"), a row of its own.
-ENGINE_EXPECT_SIZE(496, 8, gfx::ResolveParams);
+// 528, not 496: the world-space cache's cells, flags, frame, count, stride and level scale (R69;
+// renderer.md, "Indirect light: the world-space cache"), two rows of their own.
+ENGINE_EXPECT_SIZE(528, 8, gfx::ResolveParams);
 
 // The sky (sky.h; docs/subsystems/gfx.md, "The sky"): the air, the lights, the eye, the celestial
 // frame, the exposure, the tables' addresses, and a view's inverse projection and pixel angle for
