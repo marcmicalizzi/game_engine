@@ -593,6 +593,7 @@ float3 water_wet_factor(float3 albedo, float height, float wet_m) {
   const float wet = 1.0 - smoothstep(0.0, wet_m, height);
   const float3 dark = k_water_wet_through / (1.0 - k_water_wet_internal * clamp(albedo, 0.0, 1.0));
   return lerp(float3(1.0), min(dark, float3(1.0)), wet);
+}
 
 // ---- channels of flowing water (gfx::k_material_water_channel; water.md, "Channels"; S96) ------
 //

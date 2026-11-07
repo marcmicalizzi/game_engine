@@ -817,9 +817,9 @@ float3 water_channel_pixel(ResolveParams* params, SceneGeometry geo, InstanceDes
   if (c.foam < 1.0) {
     if ((flags & k_material_water_volume) != 0) {
       color = water_pixel_volume(params, geo, instance, index, float2(0.0, 0.0), dp_dx, dp_dy, s,
-                                 local, c.normal, view, wc, ray_bias, depth, has_map, map, edge);
+                                 local, c.normal, view, wc, ray_bias, depth, has_map, map, edge, 0.0);
     } else {
-      color = water_pixel_low(params, s, c.normal, view, wc, ray_bias, depth, edge);
+      color = water_pixel_low(params, s, c.normal, view, wc, ray_bias, depth, edge, 0.0);
     }
   }
   if (c.foam <= 0.0) return color;
