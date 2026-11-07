@@ -472,6 +472,28 @@ enum class RenderAvailability : u8 {
 // the hit-entry table restores the rasterizer's visible index.
 u64 rt_max_geometry_index(u64 pair_count, u32 views, bool casters) noexcept;
 
+// **The streamed trees' room follows the device** (renderer.md, "A commit past the tail's budget
+// withholds its farthest tiles"; roadmap R137, 2026-11-07). The room — the deform records and
+// their per-frame copies, the pose table's tail regions, the push state — was capped at 1,024 MiB
+// on every card from R95 until R137; the owner's v34 walk at 3840x2160 on the 32 GB RTX 5090 was
+// refused at a bound of 1.09-1.16 GB for fifty seconds, a bound that then counted every tree a
+// commit moved as a new record. The rule is a sixteenth of the device-local heaps, the share the
+// ray tracing chain's budget takes (`rt_device_budget_mib`), never under the old 1,024 MiB and
+// never over 4,096: 2,025 MiB on the 32 GB RTX 5090, 1,536 on 24 GB, 1,024 on 16 GB and below.
+// Like the chain's, it is a ceiling and not an allocation: the room grows only as far as the
+// trees' records need, half as much again at a time. `renderer.flora.tail_budget_mib` not zero
+// overrides it.
+inline constexpr u32 k_flora_tail_device_share = 16;
+inline constexpr u32 k_flora_tail_floor_mib = 1024;
+inline constexpr u32 k_flora_tail_ceiling_mib = 4096;
+u32 flora_tail_device_budget_mib(u64 device_local_bytes) noexcept;
+struct FloraTailBudget {
+  u32 mib = 0;
+  bool device = true;  // the device's rule; false: the tunable named it
+};
+// The tunable's value when it is not zero, else the device's rule. Arithmetic only.
+FloraTailBudget resolve_flora_tail_budget(u32 tunable_mib, u64 device_local_bytes) noexcept;
+
 // Applies device and scene overrides in dependency order. GpuScene supplies the final pair
 // account after terrain capacities are known; a preliminary call without it defers admission.
 // Past the device's index bound, drop casters; capacity counts any remaining frame drops.

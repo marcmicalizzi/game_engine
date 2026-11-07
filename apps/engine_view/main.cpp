@@ -1194,6 +1194,14 @@ JsonValue flora_summary(const renderer::GpuScene& scene) {
   out.set("untraced", JsonValue(static_cast<u64>(f.untraced)));
   out.set("pose_table_bytes", JsonValue(f.pose_table_bytes));
   out.set("tail_refused", JsonValue(f.tail_refused));
+  // The tail's budget's withholds (R137; renderer.md, "A commit past the tail's budget withholds
+  // its farthest tiles"): the last commit's, the commits that withheld any, and the budget.
+  out.set("tail_withheld_tiles", JsonValue(static_cast<u64>(f.tail_withheld_tiles)));
+  out.set("tail_withheld_instances", JsonValue(static_cast<u64>(f.tail_withheld_instances)));
+  out.set("tail_withholding_commits", JsonValue(f.tail_withholding_commits));
+  out.set("tail_budget_bytes", JsonValue(f.tail_budget_bytes));
+  out.set("tail_budget_source", JsonValue(std::string(f.tail_budget_source)));
+  out.set("tail_bound_bytes", JsonValue(f.tail_bound_bytes));
   const f64 frames = static_cast<f64>(f.posed_frames);
   out.set("pose_ms_mean",
           JsonValue(f.posed_frames > 0 ? static_cast<f64>(f.pose_ns_sum) / frames / 1.0e6 : 0.0));

@@ -3115,7 +3115,11 @@ has none of its own the oldest of its class is taken once `k_joint_slots + 1` fr
 since it was given back — no frame in flight can then draw the tree that held it — and its entry is
 rewritten (`FloraStats::tail_repurposed`). The same crossing then made 10,677 records with both rings
 swaying and 4,852 with the inner ring alone: the class lists cut it by a third, and what is left is
-the peaks of a dense understory, below.
+the peaks of a dense understory, below. **Every record a change moves is given back before any is taken**
+(R137): `write_slots` releases the trees of every slot it will write first, then places, so a tree
+that leaves one tile and a tree of its mesh that arrives in another share a record whatever order
+the layout wrote them in — and the tail's budget counts a commit's records once, exactly, against a
+ceiling that follows the device ([below](#a-commit-past-the-tails-budget-withholds-its-farthest-tiles)).
 
 **The phase is the instance's, never its tile's arrival.** A sway's seed is `key * 0x9e3779b9 +
 0x632be5ab`, the hash the load always used with the instance's index as the key. A streamed read
@@ -3390,20 +3394,58 @@ way at load** (`adopt_container`, grass alone, since a tree's table also feeds t
 meadow's card containers keep 14 to 16 blades of 270 to 1,040 — `d100-v0/distance.clusters`
 1,040 → 16.
 
-### A refused commit keeps the device
+### A commit past the tail's budget withholds its farthest tiles
 
-Also R95. **The tail's room never grows past `renderer.flora.tail_budget_mib`** (default 1,024 MiB).
-`set_dynamic_instances` computes, before anything changes, the most the room could reach if every
-swaying tree of every changed block took a new record — the deform records and their per-frame
-copies, the pose table's tail regions and the push state, each grown half as much again as
-`relayout` would — and a commit past the ceiling is refused with a sentence naming the buffer and
-the bytes ("the part-pose table's tail regions to 4032000 bytes, 4349952 bytes in all; the commit is
-refused and its tiles are not placed"). The bound counts a record a tree gives back and the next
-takes again twice, so it errs towards refusing. The world's consumer counts the refusal in its log
-and the frame draws what the scene has (`FloraStats::tail_refused`); nothing reaches the device as an
-out-of-memory loss. Grass takes no record and costs it nothing. `authored_view_tests.cpp` streams the
-140 trees with the ceiling at 1 MiB: the commit is refused, the tail holds no instance, and the run
-ends well with its capture written.
+Also R95, and R137 (2026-11-07). **The tail's room never grows past `renderer.flora.tail_budget_mib`**
+— the deform records and their per-frame copies, the pose table's tail regions and the push state, as
+`FloraStats::tail_bytes` costs them. The default (the tunable's 0) **follows the device**: a sixteenth
+of the device-local heaps, the share the ray tracing chain's budget takes, never under 1,024 MiB (the
+fixed default from R95 until R137) and never over 4,096 (`resolve_flora_tail_budget`, settings.h):
+2,025 MiB on the 32 GB RTX 5090, 1,536 on 24 GB, 1,024 on 16 GB and below. Why a sixteenth: the
+owner's v34 walk at 3840×2160 was refused at a bound of 1.09–1.16 GB, and with the chain's sixteenth
+and the structure cache's sixty-fourth the three take at most nine sixty-fourths of the card. It is a
+ceiling, not an allocation — the room grows only as far as the records need, half as much again at a
+time — and a tunable that is not zero overrides it (`FloraStats::tail_budget_source`).
+
+**The bound counts a record once.** `set_dynamic_instances` computes, before anything changes, the
+records the changed blocks' swaying trees make, the way `acquire_tail_tree` hands them out: a tree
+takes its own mesh's free record first — newest first, the ones this commit's own departures give
+back among them — then its run-size class's free record given back longest ago, once no frame in
+flight can read it, and only then a new one. Per class that is what the meshes' demands pass their
+own free records by, less the old free records their own meshes never reach (`tail_new_records`; a
+record another mesh takes that its own mesh needed sends that mesh to the class in turn, which changes
+nothing in the sum). It is exact because `write_slots` now gives back every record the change moves
+**before** any slot takes one (until R137 each slot gave back and took in turn, so a tree that left
+and one of its mesh that arrived later in the write order did not share a record); the room it
+reports (`FloraStats::tail_bound_bytes`) is the room `relayout` grows the tables to, to the byte, and
+a debug build asserts the commit made no record the bound did not count. **The slack was** every
+swaying tree of every changed block counted as a new record — a tile whose trees moved to another
+tile in one commit counted twice over, which is what refused the owner's v34 walk for fifty seconds:
+841 commits of 61–66 thousand instances, every tree drawn as its far stand-in. **It is** none, where
+the free lists say what the commit can reuse; conservative only in that a kept block a compaction
+moves is left out of both sides (it gives back and takes the same meshes).
+
+**Nearest first, the rest withheld.** The changed blocks are admitted in order — the block the eye
+stands in (its instances' footprint holds the eye, `GpuScene::set_tail_eye`, which `flora_frame` sets
+every frame from the frame's origin), then by ring, then by the footprint's distance from the eye,
+then the caller's order — until the next would pass the budget; it and every farther block with
+trees is **withheld**: not placed, its held block (if the key had one) freed like any tile the tail
+no longer names, and named again by the caller's next commit, which tries it again — as the pair
+budget's withholds are ([world](world.md)). A block that takes no record (rocks, grass, a tile of
+rigid forms) costs nothing and is always admitted, and a block a request keeps as it is was admitted
+before. `TileChange::withheld_tiles`/`withheld_instances` and `FloraStats::tail_withheld_tiles`,
+`tail_withheld_instances` (the last commit's) and `tail_withholding_commits` count them, the log
+says so once each time the count changes (INFO, never an error), and `GpuScene::admitted_blocks`
+is what `SceneRenderer::set_dynamic_instances` hands the fires and **the far forest's hand-off**, so
+a withheld tile keeps drawing its far stand-in. **The one refusal left** is a commit whose nearest
+changed block alone would pass the budget: refused before anything changes, with a sentence naming
+the trees, the records and the bytes (`FloraStats::tail_refused`), and the frame draws what the scene
+has; nothing reaches the device as an out-of-memory loss either way. `tail_budget_tests.cpp` holds
+the four rules on a GPU with a generated palm (the moved tile's bound equal to the room, the nearest
+two of four tiles admitted and the farther two admitted once the near ones leave, the eye's tile in
+the farthest ring admitted first, a single tile past the first room refused and the next commit
+taken), and `authored_view_tests.cpp` still streams the 140 trees with the ceiling at 1 MiB, below
+the first room, so the nearest tile alone is refused and the run ends well with its capture written.
 
 ### The pair accounting
 

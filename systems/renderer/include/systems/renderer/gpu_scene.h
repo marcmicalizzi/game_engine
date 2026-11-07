@@ -118,6 +118,14 @@ inline constexpr u32 k_vertex_index_budget = 1u << 20;
 // `SceneRenderer::create` refuses more than this rather than overrunning the buffer.
 inline constexpr u32 k_joint_slots = 3;
 
+// **The tail's trees' first room** (renderer.md, "Streamed trees sway"): records and parts a
+// dynamic scene with trees reserves past the load's before any tile arrives, grown half as much
+// again by `relayout` when a tile needs more. 1,024 records (16 KiB each copy of the table) and
+// 8,192 parts (1.9 MiB of poses over the three slots' regions), a hundred of the forest's trees.
+// Public so a test of the tail's budget can say how many trees the first room holds.
+inline constexpr u32 k_tail_deform_reserve = 1024;
+inline constexpr u32 k_tail_part_reserve = 8192;
+
 // How many frames' worth of page residency the streamed scene holds, for exactly the reason
 // `k_joint_slots` exists: the cull pass of frame N reads the residency word array while the host
 // is already writing frame N+1's, so each frame writes its own region and a region is not reused
@@ -274,6 +282,13 @@ class GpuScene {
     i64 layout_ns = 0;
     i64 write_ns = 0;
     i64 after_ns = 0;
+    // **Withheld by the streamed trees' budget** (R137; renderer.md, "A commit past the tail's
+    // budget withholds its farthest tiles"): the changed blocks the commit left out, farthest
+    // first, because their trees' records would have grown the room past
+    // `renderer.flora.tail_budget_mib`, and their instances. A withheld block is not placed —
+    // `admitted_blocks()` is what was — and the next commit that names it tries it again.
+    u32 withheld_tiles = 0;
+    u32 withheld_instances = 0;
   };
   // Replaces the tail. `blocks` cover it in order; none is the whole tail as one block (key 0).
   // `compact` lays every block out again in the tail's order with no free blocks, which a change
@@ -286,6 +301,26 @@ class GpuScene {
                              Vector<gfx::BufferResource>* retired, std::string* error = nullptr,
                              bool compact = false);
   const TileLayout& tile_layout() const noexcept { return layout_; }
+  // The blocks the last `set_dynamic_instances` placed: the ones it was handed, or, when the tail's
+  // budget withheld some (`TileChange::withheld_tiles`), the rest of them in the same order. Valid
+  // until the next change; what a caller hands on to whatever follows the tail (the fires, the far
+  // forest's hand-off).
+  std::span<const DynamicBlock> admitted_blocks(
+      std::span<const DynamicBlock> handed) const noexcept {
+    return withheld_any_ ? std::span<const DynamicBlock>(admitted_.data(), admitted_.size())
+                         : handed;
+  }
+  // Where the eye stands, for the tail's budget's nearest-first order; `flora_frame` sets it every
+  // frame from the frame's origin. Before the first, the order is the rings' and then the caller's.
+  void set_tail_eye(const WorldPos& eye) noexcept {
+    tail_eye_ = eye;
+    tail_eye_known_ = true;
+  }
+  // The streamed trees' budget in bytes, in place of the one `create` resolved: for a test.
+  void set_tail_budget_bytes(u64 bytes) noexcept {
+    tail_budget_bytes_ = bytes;
+    flora_stats_.tail_budget_bytes = bytes;
+  }
   // **Places loaded instances again** (`SceneRenderer::move_instances`; renderer.md, "Moving an
   // instance"): instance `indices[i]` takes `placements[i]`'s transform and origin through its
   // mesh's fit, as the load placed it, and keeps everything else — mesh, pairs, material base,
@@ -802,9 +837,22 @@ class GpuScene {
     u32 casters_rest = 0;      // a cascade draws them at rest
     u32 untraced = 0;          // never in the chain's records
     u64 pose_table_bytes = 0;  // the part-pose table, every slot's region with its field block
-    // Commits the tail's budget refused (`renderer.flora.tail_budget_mib`; renderer.md, "A refused
-    // commit keeps the device").
+    // Commits the tail's budget refused whole (`renderer.flora.tail_budget_mib`; renderer.md, "A
+    // commit past the tail's budget withholds its farthest tiles"): since R137 only a commit whose
+    // nearest changed block alone would pass the budget.
     u64 tail_refused = 0;
+    // **Withheld by the tail's budget** (R137): the last commit's blocks left out, farthest first,
+    // and their instances; the commits that withheld any; and the budget itself, bytes, with where
+    // it came from (`resolve_flora_tail_budget`: "tunable" or "device").
+    u32 tail_withheld_tiles = 0;
+    u32 tail_withheld_instances = 0;
+    u64 tail_withholding_commits = 0;
+    u64 tail_budget_bytes = 0;
+    const char* tail_budget_source = "device";
+    // The bound's room for the last commit it admitted, bytes: what the tables grow to with the
+    // records that commit makes, counted once. Equal to `tail_bytes` once `relayout` has grown
+    // them.
+    u64 tail_bound_bytes = 0;
     // The CPU's posing, on the frame's thread with the poser's pool: summed over the frames that
     // posed, and the longest.
     u64 pose_ns_sum = 0;
@@ -1434,6 +1482,41 @@ class GpuScene {
     u64 released = 0;  // `flora_frames_` when it was given back
   };
   void unlink_tail_tree(u32 t) noexcept;
+  // **The tail's budget, block by block** (renderer.md, "A commit past the tail's budget withholds
+  // its farthest tiles"; R137): the records a commit's admitted blocks would make, counted once —
+  // what the trees given back in the same commit hand over is taken first — and the room they
+  // would grow the tables to. `admit_tail_blocks` admits the changed blocks nearest first and
+  // withholds the rest, filling `admitted_` and compacting `requests_` to them; false refuses the
+  // whole commit (the nearest block alone passes the budget).
+  struct TailCandidate {
+    u32 block = 0;
+    u32 ring = 0;
+    bool eye = false;  // the eye stands inside the block's instances' footprint
+    f64 distance = 0.0;
+    u32 trees = 0;  // instances that take a record (swaying, not a field)
+  };
+  bool admit_tail_blocks(std::span<const SceneInstance> tail, std::span<const DynamicBlock> blocks,
+                         TileChange& change, std::string* error);
+  // The new records `tail_demand_` would make past every free record it can take, and the room in
+  // bytes the tables would grow to with them.
+  u64 tail_new_records(u64* new_parts) const noexcept;
+  u64 tail_room_bytes(u64 new_records, u64 new_parts) const noexcept;
+  Vector<u32> tail_demand_;   // per mesh: trees the admitted blocks place
+  Vector<u32> tail_free_;     // per mesh: its free records, the commit's given back included
+  Vector<u32> tail_old_;      // per mesh: of those, free long enough for another mesh to take
+  Vector<u32> tail_touched_;  // meshes with a demand or a free record, each once
+  Vector<u8> tail_touched_flag_;
+  Vector<u8> tail_kept_;  // per live block of the layout: a request keeps it as it is
+  Vector<TailCandidate> tail_candidates_;
+  Vector<u32> tail_block_meshes_;  // the record-taking meshes of every candidate, in order
+  Vector<u32> tail_block_first_;   // where each candidate's run of `tail_block_meshes_` starts
+  Vector<u32> tail_order_;         // the candidates' indices in admission order
+  Vector<u8> tail_admit_;          // per block handed over: admitted (1) or withheld (0)
+  u64 tail_bound_records_ = 0;     // the records the last admitted commit leaves, by the bound
+  Vector<DynamicBlock> admitted_;  // the blocks a commit admitted, when it withheld any
+  bool withheld_any_ = false;
+  WorldPos tail_eye_{};
+  bool tail_eye_known_ = false;
   Vector<TailTree> tail_trees_;
   Vector<u32> tail_tree_free_;     // per mesh: the first free record, ~0u for none
   u32 tail_old_head_[33] = {};     // per class: the free record given back longest ago
@@ -1463,7 +1546,8 @@ class GpuScene {
   // recount, for a debug build's check after every change.
   void policy_count(const gfx::InstanceDesc& placed, bool add) noexcept;
   bool policy_counts_match() const noexcept;
-  // The tail's room past which a commit is refused, bytes (`renderer.flora.tail_budget_mib`).
+  // The tail's room past which a commit withholds its farthest tiles, bytes
+  // (`renderer.flora.tail_budget_mib`, or the device's share: `resolve_flora_tail_budget`).
   u64 tail_budget_bytes_ = 0;
   // A region of the pose table: the field block, then the poses.
   u64 flora_region_bytes() const noexcept {

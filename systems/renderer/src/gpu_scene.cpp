@@ -68,28 +68,24 @@ tunables::Int flora_pool_mib{"renderer.flora.pool_mib", 96, 1, 16'384,
                              "The deformed-vertex pool's budget, MiB, at least, for a scene whose "
                              "trees sway"};
 
-// **The tail's trees' first room** (renderer.md, "Streamed trees sway"): records and parts a
-// dynamic scene with trees reserves past the load's before any tile arrives, grown half as much
-// again by `relayout` when a tile needs more. 1,024 records (16 KiB each copy of the table) and
-// 8,192 parts (1.9 MiB of poses over the three slots' regions), a hundred of the forest's trees.
-constexpr u32 k_tail_deform_reserve = 1024;
-constexpr u32 k_tail_part_reserve = 8192;
+// **A refused commit keeps the device** (renderer.md, "A commit past the tail's budget withholds
+// its farthest tiles"; R95, R137). The tail's room — the deform table and its per-frame copies, the
+// pose table's regions, the push state — grows between frames when a tile's trees need more, and a
+// device that cannot give it fails the allocation with VK_ERROR_OUT_OF_DEVICE_MEMORY and, in the
+// POC's 126,309-instance sward, then lost the device. So a commit whose records would grow the room
+// past this ceiling withholds its farthest tiles before anything changes (R137), and one whose
+// nearest tile alone would is refused with a sentence naming the bytes; the frame goes on without
+// them. The species' caster policies (renderer.md, "The caster policy"): false casts every species
+// as a tree does — traced, every cascade, its swaying pose — for the before-and-after measurement.
 
-// **A refused commit keeps the device** (renderer.md, "A refused commit keeps the device"; R95).
-// The tail's room — the deform table and its per-frame copies, the pose table's regions, the push
-// state — grows between frames when a tile's trees need more, and a device that cannot give it
-// fails the allocation with VK_ERROR_OUT_OF_DEVICE_MEMORY and, in the POC's 126,309-instance
-// sward, then lost the device. So a commit whose worst case would grow the room past this ceiling
-// is refused before anything changes, with a sentence naming the buffer and the bytes, and the
-// frame goes on without the tile. 1 GiB is five times the most the v8 crossing's room took (211 MB
-// before the class lists).
-// The species' caster policies (renderer.md, "The caster policy"): false casts every species as a
-// tree does — traced, every cascade, its swaying pose — for the before-and-after measurement.
-
+// Since R137 (2026-11-07) a commit past it withholds its farthest changed tiles rather than being
+// refused whole, the bound counts a record given back and taken again in the same commit once, and
+// the default 0 takes a sixteenth of the device (`resolve_flora_tail_budget`, settings.h).
 tunables::Int flora_tail_budget_mib{
-    "renderer.flora.tail_budget_mib", 1024, 1, 65'536,
-    "MiB the streamed trees' room (deform records, part poses, push state) may grow to; a tile "
-    "commit that could pass it is refused with a sentence, never an out-of-memory device loss"};
+    "renderer.flora.tail_budget_mib", 0, 0, 65'536,
+    "MiB the streamed trees' room (deform records, part poses, push state) may grow to, 0 for a "
+    "sixteenth of the device's memory (1,024 to 4,096); a tile commit past it withholds its "
+    "farthest tiles, never an out-of-memory device loss"};
 
 tunables::Int terrain_pool_mib{
     "renderer.terrain.pool_mib", 768, 1, 16'384,
@@ -1114,6 +1110,224 @@ bool GpuScene::grow_flora_tail(std::string* error) {
   return true;
 }
 
+// The records the admitted demand makes (R137): per class of run size, a mesh's trees take its own
+// free records first — the newest first, the commit's given back among them — and a tree with none
+// of its mesh's left takes the class's free record given back longest ago, once no frame in flight
+// can read it (`acquire_tail_tree`). So a class makes new records for what its meshes' demands pass
+// their own free records by, less the old free records whose own mesh never reaches them: a record
+// another mesh takes that its own mesh needed sends that mesh to the class in turn, which changes
+// nothing in the sum. Exact when every tree gives back before any takes (`write_slots`).
+u64 GpuScene::tail_new_records(u64* new_parts) const noexcept {
+  u64 unmet[33] = {};
+  u64 surplus[33] = {};
+  for (const u32 m : tail_touched_) {
+    const u32 n = flora_meshes_[m].part_count();
+    const u32 cls = n <= 1 ? 0u : static_cast<u32>(std::bit_width(n - 1u));
+    const u32 demand = tail_demand_[m];
+    const u32 free = tail_free_[m];
+    if (demand > free) {
+      unmet[cls] += demand - free;
+    } else {
+      // The mesh takes its newest records; what it leaves are its oldest, the old ones first.
+      surplus[cls] += std::min(tail_old_[m], free - demand);
+    }
+  }
+  u64 made = 0;
+  u64 parts = 0;
+  for (u32 c = 0; c < 33; ++c) {
+    if (unmet[c] <= surplus[c]) continue;
+    made += unmet[c] - surplus[c];
+    parts += (unmet[c] - surplus[c]) << c;
+  }
+  if (new_parts != nullptr) *new_parts = parts;
+  return made;
+}
+
+// What the tail's room is with `new_records` more records of `new_parts` parts in all: the tables
+// grown as `grow_flora_tail` grows them, half as much again past the capacity, and costed as
+// `flora_counts` costs them — so after `relayout` the two agree to the byte.
+u64 GpuScene::tail_room_bytes(u64 new_records, u64 new_parts) const noexcept {
+  const u64 entries = u64{deform_descs_.size()} + new_records;
+  const u64 parts = u64{flora_parts_} + new_parts;
+  const u64 entry_room = entries > deform_capacity_ ? entries + entries / 2 : deform_capacity_;
+  const u64 part_room = parts > flora_part_capacity_ ? parts + parts / 2 : flora_part_capacity_;
+  const u64 deform_bytes = (entry_room - load_deforms_) * sizeof(gfx::DeformDesc) *
+                           (deform_frames.buffer.valid() ? u64{k_joint_slots} + 1 : u64{1});
+  const u64 part_bytes = (part_room - load_flora_parts_) *
+                         (u64{k_joint_slots} * sizeof(gfx::FloraPartPose) + sizeof(FloraPartState));
+  return deform_bytes + part_bytes;
+}
+
+bool GpuScene::admit_tail_blocks(std::span<const SceneInstance> tail,
+                                 std::span<const DynamicBlock> blocks, TileChange& change,
+                                 std::string* error) {
+  const u32 mesh_count = flora_meshes_.size();
+  tail_demand_.assign(mesh_count, 0u);
+  tail_free_.assign(mesh_count, 0u);
+  tail_old_.assign(mesh_count, 0u);
+  tail_touched_flag_.assign(mesh_count, u8{0});
+  tail_touched_.clear();
+  const auto touch = [this](u32 m) {
+    if (tail_touched_flag_[m] != 0) return;
+    tail_touched_flag_[m] = 1;
+    tail_touched_.push_back(m);
+  };
+  // The free records now, by mesh, and which are old enough for another mesh of their class.
+  for (u32 c = 0; c < 33; ++c) {
+    for (u32 t = tail_old_head_[c]; t != ~0u; t = tail_trees_[t].old_next) {
+      const TailTree& tree = tail_trees_[t];
+      touch(tree.mesh);
+      ++tail_free_[tree.mesh];
+      if (flora_frames_ >= tree.released + u64{k_joint_slots} + 1) ++tail_old_[tree.mesh];
+    }
+  }
+  // The records this commit gives back: every tree of a live block no request keeps as it is —
+  // gone from the tail, rewritten, or withheld below — since its slots are written or freed. A kept
+  // block a compaction moves gives back and takes the same meshes, which changes nothing here.
+  const std::span<const TileBlock> live = layout_.blocks();
+  tail_kept_.assign(static_cast<u32>(live.size()), u8{0});
+  for (u32 b = 0; b < blocks.size(); ++b) {
+    if (!requests_[b].same) continue;
+    const TileBlock* held = layout_.find(blocks[b].key);
+    if (held != nullptr) tail_kept_[static_cast<u32>(held - live.data())] = 1;
+  }
+  for (u32 i = 0; i < live.size(); ++i) {
+    if (tail_kept_[i] != 0) continue;
+    const TileBlock& held = live[i];
+    for (u32 slot = held.inst_begin;
+         slot < held.inst_begin + held.instances && slot < tail_tree_of_slot_.size(); ++slot) {
+      const u32 t = tail_tree_of_slot_[slot];
+      if (t == ~0u) continue;
+      touch(tail_trees_[t].mesh);
+      ++tail_free_[tail_trees_[t].mesh];
+    }
+  }
+  // The changed blocks, each with its record-taking trees, in admission order: the block the eye
+  // stands in, then by ring, then by how far its instances' footprint is from the eye, then the
+  // caller's order. Before any frame has named the eye, by ring and the caller's order.
+  tail_candidates_.clear();
+  tail_block_meshes_.clear();
+  tail_block_first_.clear();
+  for (u32 b = 0; b < blocks.size(); ++b) {
+    if (requests_[b].same) continue;
+    TailCandidate candidate;
+    candidate.block = b;
+    candidate.ring = blocks[b].ring;
+    f64 lo_x = 0.0, hi_x = 0.0, lo_z = 0.0, hi_z = 0.0;
+    bool first = true;
+    const u32 begin = tail_block_meshes_.size();
+    for (const SceneInstance& source : block_instances(tail, blocks[b])) {
+      const f64 x = source.origin.x + static_cast<f64>(source.transform.position.x);
+      const f64 z = source.origin.z + static_cast<f64>(source.transform.position.z);
+      lo_x = first || x < lo_x ? x : lo_x;
+      hi_x = first || x > hi_x ? x : hi_x;
+      lo_z = first || z < lo_z ? z : lo_z;
+      hi_z = first || z > hi_z ? z : hi_z;
+      first = false;
+      if (source.mesh < mesh_count && tail_sways(source.mesh) && !flora_meshes_[source.mesh].field)
+        tail_block_meshes_.push_back(source.mesh);
+    }
+    candidate.trees = tail_block_meshes_.size() - begin;
+    if (candidate.trees == 0) continue;  // takes no record: admitted whatever the budget
+    tail_block_first_.push_back(begin);
+    if (tail_eye_known_) {
+      const f64 dx = std::max({lo_x - tail_eye_.x, 0.0, tail_eye_.x - hi_x});
+      const f64 dz = std::max({lo_z - tail_eye_.z, 0.0, tail_eye_.z - hi_z});
+      candidate.distance = std::sqrt(dx * dx + dz * dz);
+      candidate.eye = candidate.distance == 0.0;
+    }
+    tail_candidates_.push_back(candidate);
+  }
+  // `tail_block_first_` follows the candidates as made; the sort orders their indices.
+  Vector<u32>& order = tail_order_;
+  order.resize(tail_candidates_.size());
+  for (u32 i = 0; i < order.size(); ++i)
+    order[i] = i;
+  std::sort(order.begin(), order.end(), [this](u32 a, u32 b) {
+    const TailCandidate& x = tail_candidates_[a];
+    const TailCandidate& y = tail_candidates_[b];
+    if (x.eye != y.eye) return x.eye;
+    if (x.ring != y.ring) return x.ring < y.ring;
+    if (x.distance != y.distance) return x.distance < y.distance;
+    return x.block < y.block;
+  });
+  tail_admit_.assign(static_cast<u32>(blocks.size()), u8{1});
+  bool withholding = false;
+  bool admitted_trees = false;
+  u32 withheld_tiles = 0;
+  u32 withheld_instances = 0;
+  for (const u32 i : order) {
+    const TailCandidate& candidate = tail_candidates_[i];
+    const u32 begin = tail_block_first_[i];
+    if (!withholding) {
+      for (u32 k = 0; k < candidate.trees; ++k) {
+        const u32 m = tail_block_meshes_[begin + k];
+        touch(m);
+        ++tail_demand_[m];
+      }
+      u64 parts = 0;
+      const u64 made = tail_new_records(&parts);
+      const u64 room = tail_room_bytes(made, parts);
+      if (made == 0 || room <= tail_budget_bytes_) {
+        admitted_trees = true;
+        continue;
+      }
+      for (u32 k = 0; k < candidate.trees; ++k)
+        --tail_demand_[tail_block_meshes_[begin + k]];
+      if (!admitted_trees) {
+        // **The nearest changed block alone passes the budget**: the one refusal left, before
+        // anything changes, with a sentence naming the bytes. The device lives either way.
+        ++flora_stats_.tail_refused;
+        if (error != nullptr) {
+          *error =
+              std::string(
+                  "the streamed trees' room would grow past renderer.flora.tail_budget_mib (") +
+              std::to_string(tail_budget_bytes_) +
+              " bytes) with the nearest changed tile "
+              "alone: its " +
+              std::to_string(candidate.trees) + " swaying trees would take " +
+              std::to_string(made) + " new records and the room to " + std::to_string(room) +
+              " bytes; the commit is refused and its tiles are not placed";
+        }
+        return false;
+      }
+      withholding = true;
+    }
+    tail_admit_[candidate.block] = 0;
+    ++withheld_tiles;
+    withheld_instances += blocks[candidate.block].count;
+  }
+  u64 parts = 0;
+  const u64 made = tail_new_records(&parts);
+  flora_stats_.tail_bound_bytes = tail_room_bytes(made, parts);
+  tail_bound_records_ = u64{tail_trees_.size()} + made;
+  change.withheld_tiles = withheld_tiles;
+  change.withheld_instances = withheld_instances;
+  // Said once per change of what is withheld, as the pair budget's withholds are: never an error.
+  if (withheld_tiles != flora_stats_.tail_withheld_tiles ||
+      withheld_instances != flora_stats_.tail_withheld_instances) {
+    ENGINE_LOG_INFO(log_renderer, "streamed tiles withheld by the trees' budget",
+                    log::field("withheld_tiles", withheld_tiles),
+                    log::field("withheld_instances", withheld_instances),
+                    log::field("budget_bytes", tail_budget_bytes_),
+                    log::field("room_bytes", flora_stats_.tail_bound_bytes));
+  }
+  flora_stats_.tail_withheld_tiles = withheld_tiles;
+  flora_stats_.tail_withheld_instances = withheld_instances;
+  if (withheld_tiles == 0) return true;
+  ++flora_stats_.tail_withholding_commits;
+  // The admitted blocks, and their requests, in the caller's order.
+  admitted_.clear();
+  u32 w = 0;
+  for (u32 b = 0; b < blocks.size(); ++b) {
+    if (tail_admit_[b] == 0) continue;
+    requests_[w++] = requests_[b];
+    admitted_.push_back(blocks[b]);
+  }
+  requests_.resize(w);
+  withheld_any_ = true;
+  return true;
+}
 bool GpuScene::set_dynamic_instances(std::span<const SceneInstance> tail,
                                      std::span<const DynamicBlock> blocks, TileChange& change,
                                      Vector<gfx::BufferResource>* retired, std::string* error,
@@ -1219,46 +1433,16 @@ bool GpuScene::set_dynamic_instances(std::span<const SceneInstance> tail,
     }
     request.pairs = pairs > k_max_pairs ? k_max_pairs + 1u : static_cast<u32>(pairs);
   }
-  // **A refused commit keeps the device** (renderer.md; R95): the most the tail's room could grow
-  // to if every swaying tree of every changed block took a new record, against
-  // `renderer.flora.tail_budget_mib`, before anything changes. A record a tree gives back and the
-  // next takes again is counted twice here, so the bound errs towards refusing; grass takes no
-  // record and costs it nothing.
+  // **A commit past the tail's budget withholds its farthest tiles** (renderer.md; R95, R137): the
+  // records the changed blocks' swaying trees would make — counted once, a record a tree gives back
+  // in this commit taken first by the next tree of its mesh — against
+  // `renderer.flora.tail_budget_mib`, before anything changes, the nearest blocks first; a block
+  // that would pass it is withheld with every farther one, and only a commit whose nearest changed
+  // block alone passes it is refused. Grass takes no record and costs it nothing.
+  withheld_any_ = false;
   if (flora_tail_parts_) {
-    u64 entries = deform_descs_.size();
-    u64 parts = flora_parts_;
-    for (u32 b = 0; b < blocks.size(); ++b) {
-      if (requests_[b].same) continue;
-      for (const SceneInstance& source : block_instances(tail, blocks[b])) {
-        const u32 mesh = source.mesh;
-        if (!tail_sways(mesh) || flora_meshes_[mesh].field) continue;
-        const u32 n = flora_meshes_[mesh].part_count();
-        ++entries;
-        parts += u64{1} << (n <= 1 ? 0u : static_cast<u32>(std::bit_width(n - 1u)));
-      }
-    }
-    const u64 entry_room = entries > deform_capacity_ ? entries + entries / 2 : deform_capacity_;
-    const u64 part_room = parts > flora_part_capacity_ ? parts + parts / 2 : flora_part_capacity_;
-    const u64 deform_bytes = (entry_room - load_deforms_) * sizeof(gfx::DeformDesc) *
-                             (deform_frames.buffer.valid() ? u64{k_joint_slots} + 1 : u64{1});
-    const u64 pose_bytes =
-        u64{k_joint_slots} * (part_room - load_flora_parts_) * sizeof(gfx::FloraPartPose);
-    const u64 state_bytes = (part_room - load_flora_parts_) * sizeof(FloraPartState);
-    if (deform_bytes + pose_bytes + state_bytes > tail_budget_bytes_) {
-      ++flora_stats_.tail_refused;
-      if (error != nullptr) {
-        const bool poses = pose_bytes >= deform_bytes;
-        *error = std::string(
-                     "the streamed trees' room would grow past renderer.flora.tail_budget_"
-                     "mib (") +
-                 std::to_string(tail_budget_bytes_) + " bytes): the " +
-                 (poses ? "part-pose table's tail regions" : "deform table's tail records") +
-                 " to " + std::to_string(poses ? pose_bytes : deform_bytes) + " bytes, " +
-                 std::to_string(deform_bytes + pose_bytes + state_bytes) +
-                 " bytes in all; the commit is refused and its tiles are not placed";
-      }
-      return false;
-    }
+    if (!admit_tail_blocks(tail, blocks, change, error)) return false;
+    if (withheld_any_) blocks = std::span<const DynamicBlock>(admitted_.data(), admitted_.size());
   }
   lap(change.compare_ns);
   if (!layout_.apply(std::span<const TileLayout::Request>(requests_.data(), requests_.size()),
@@ -1281,7 +1465,13 @@ bool GpuScene::set_dynamic_instances(std::span<const SceneInstance> tail,
   // (`policy_count`, W81): until 2026-10-31 every change counted the whole instance table again,
   // twice when a tree swayed in.
   ENGINE_ASSERT(policy_counts_match(), "the policy counts kept slot by slot are the recount's");
-  // The poser's chunks follow the trees, cut again in place (renderer.md, "Streamed trees sway").
+  // The bound counted the records the commit makes; it may never have counted fewer (R137).
+  ENGINE_ASSERT(
+      !flora_tail_parts_ || tail_trees_.size() <= tail_bound_records_,
+      "the tail's budget counted every record the commit made");  // The poser's chunks follow the
+                                                                  // trees, cut again in place
+                                                                  // (renderer.md, "Streamed trees
+                                                                  // sway").
   if (flora_recut_) {
     flora_recut_ = false;
     flora_poser_.recut(
@@ -1307,6 +1497,16 @@ bool GpuScene::write_slots(std::span<const SceneInstance> tail,
   for (u32 slot = end; slot < instance_table_.size(); ++slot) {
     uncount_static(slot);
     policy_count(instance_table_[slot], false);
+  }
+  // **Every tree the change moves gives its record back before any takes one** (R137), so a tree
+  // that leaves one tile and a tree of its mesh that arrives in another share a record whatever
+  // order the layout wrote their slots in, and the tail's budget can count the commit's records
+  // once (`tail_new_records`). Until 2026-11-07 each slot gave back and took in turn.
+  if (flora_tail_) {
+    for (const SlotWrite& write : writes) {
+      for (u32 k = 0; k < write.inst_count; ++k)
+        release_tail_tree(write.inst_begin + k);
+    }
   }
   const u32 had = instance_table_.size();
   instance_table_.resize(end);
@@ -2021,7 +2221,16 @@ bool GpuScene::upload_geometry(const ResolvedSettings& resolved, std::string* er
     // A tail whose swaying meshes are all grass reserves nothing: its instances take no record.
     deform_capacity_ = load_deforms_ + (flora_tail_parts_ ? k_tail_deform_reserve : 0u);
     flora_part_capacity_ = flora_parts_ + (flora_tail_parts_ ? k_tail_part_reserve : 0u);
-    tail_budget_bytes_ = u64(flora_tail_budget_mib.get()) * 1024 * 1024;
+    {
+      // **The budget follows the device** (R137): the heaps' size, as the chain's budget reads it.
+      gfx::MemoryBudget memory;
+      (void)device.memory_budget(memory);
+      const FloraTailBudget budget = resolve_flora_tail_budget(
+          static_cast<u32>(flora_tail_budget_mib.get()), memory.device_local_bytes);
+      tail_budget_bytes_ = u64{budget.mib} * 1024 * 1024;
+      flora_stats_.tail_budget_bytes = tail_budget_bytes_;
+      flora_stats_.tail_budget_source = budget.device ? "device" : "tunable";
+    }
     if (flora_tail_) {
       deform_descs_.reserve(deform_capacity_);
       deform_instance_.reserve(deform_capacity_);
@@ -2604,6 +2813,8 @@ bool GpuScene::make_deform_tables(bool frames, std::string* error) {
 u64 GpuScene::flora_frame(u32 slot, const FrameFlora& frame, u64 frame_index, f64 world_time_s,
                           f64 sky_time_s, const WorldEye& eye) noexcept {
   ++flora_frames_;  // what a given-back record's age is counted in
+  // Where the eye stands, for the next commit's nearest-first admission past the tail's budget.
+  set_tail_eye(to_world(eye));
   if ((flora_instances_.empty() && !flora_field_) || flora_poses_.mapped == nullptr ||
       slot >= k_joint_slots) {
     flora_moving_ = false;  // a tail whose trees have all left: nothing sways, nothing is written

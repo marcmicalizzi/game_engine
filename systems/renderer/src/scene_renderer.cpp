@@ -1396,6 +1396,9 @@ bool SceneRenderer::set_dynamic_instances(std::span<const SceneInstance> tail,
   retired_.clear();
   // The props' fires stand where the tail now places them (fire.h): a game lights a fire by placing
   // the prop. The whole tail, block by block, since a block may name its own instances (W81).
+  // The blocks the change placed: past the streamed trees' budget the farthest are withheld, and
+  // whatever follows the tail sees them as not drawn (R137) — the far forest keeps their stand-ins.
+  blocks = scene_->admitted_blocks(blocks);
   const i64 fires_started = time::monotonic_ns();
   fires_.place(tail, blocks);
   const i64 far_started = time::monotonic_ns();
