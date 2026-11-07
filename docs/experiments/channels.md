@@ -98,7 +98,7 @@ Planning*, the eastern United States curves: about 3–4 m wide and 0.3 m deep a
   single-thread gravel bed rivers"; Dong et al. 2019 quote 0.049 and note later data show it varies),
   with R = 1.65 the submerged specific gravity of quartz. So **D50 = h S / (1.65 · 0.049)**: a 0.3 m
   deep bed on 3 % has D50 ≈ 11 cm, cobble; a 0.1 m rill on 10 % about 12 cm, coarse; a 0.5 m stream on
-  0.6 % about 4 cm, gravel. The skin's relief is one median grain, **clamped to 0.5–8 cm** (the mesh
+  0.6 % about 4 cm, gravel. The skin's relief is up to one median grain, **clamped to 0.5–3 cm** (the mesh
   is the lumps; the material's texels are the grains), as a hash of each vertex's world place so the
   joins between pieces agree. Range of τ*: 0.01–0.2.
 - **Bars.** Point bars build on the inside of bends and alternate bars along straighter reaches, one

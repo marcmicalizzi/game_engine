@@ -63,8 +63,8 @@ order the ids (1, 2, …) are given in, so a tile's placements carry the same id
 first.
 
 - **The bed.** A slab the width's wide, `columns` points across (one per 0.4 m, 3 to 17, constant
-  along a link so the pieces' joins agree), its top the ground plus 2 cm plus the gravel relief (one
-  median grain, `D50 = h S / (1.65 τ*bf)`, clamped to 0.5–8 cm, a hash of the vertex's world place)
+  along a link so the pieces' joins agree), its top the ground plus 2 cm plus the gravel relief (up to one
+  median grain, `D50 = h S / (1.65 τ*bf)`, clamped to 0.5–3 cm, a hash of the vertex's world place)
   plus the riffle's rise (`riffle_rise` of the depth at the riffles of the pool-to-pool rhythm,
   highest mid-bed); its two edge columns down at the ground plus 2 cm, where the banks begin; its
   bottom 25 cm under the ground.
@@ -90,7 +90,7 @@ Each part names a material-pack role (`surface.role`) or, empty, takes the first
 list: the bed `gravel/bed`, `rock/gravel`, `rock/granite`; the bars `sand/bar`, `soil/parent`,
 `soil/subsoil`; the banks `soil/subsoil`, `soil/topsoil`. The set is sampled at `surface.tile_m` in
 metres of world x and z (each piece's UVs carry its origin modulo 1,024 m, so the texels run on across
-the joins) and `Stochastic` by default (R131). With no pack, the part's flat colour (`surface.color`,
+the joins) and `Stochastic` by default (R131). With a pack, `surface.tint` multiplies the set (absent: the bed 0.62, 0.60, 0.56, the banks 0.8, 0.75, 0.7, the bars none). With no pack, the part's flat colour (`surface.color`,
 or the part's own: grey gravel, pale bar sand, dark soil). **The POC's v30 pack has no gravel role**:
 a bed there samples `rock/granite`; a gravel set in the pack is a request on its owner.
 

@@ -15,8 +15,8 @@
 //
 // **What it is not.** It moves no water and edits no ground. The water a channel carries is drawn
 // by the water capability from the description this writes (`water_channels_json`,
-// `engine.scene.WaterChannel`), and the subcommand `engine-content channels` writes it from the same
-// network the generator places (`plan_channels` is the one function both call).
+// `engine.scene.WaterChannel`), and the subcommand `engine-content channels` writes it from the
+// same network the generator places (`plan_channels` is the one function both call).
 //
 // **Determinism.** A function of the layer, the world seed and the ground's answers at the
 // lattice's whole millimetres: heights are taken to the micrometre as integers, the fill and the
@@ -47,7 +47,6 @@
 #include <domain/scene_gen/scene_gen.h>
 
 #include <schemas/channels.h>
-
 #include <string>
 
 namespace engine::jobs {
@@ -73,8 +72,9 @@ struct ChannelPoint {
 };
 
 // A link: the stretch of channel between a head or a junction and the next junction or the region's
-// edge. `cells` are lattice indices downstream, the first the link's start and the last the junction
-// (shared with the link below) or the outlet; `line` is the resampled, smoothed, meandered line.
+// edge. `cells` are lattice indices downstream, the first the link's start and the last the
+// junction (shared with the link below) or the outlet; `line` is the resampled, smoothed, meandered
+// line.
 struct ChannelLink {
   Vector<u32> cells;
   Vector<ChannelPoint> line;
@@ -110,9 +110,9 @@ struct ChannelNetwork {
 bool layer_in_range(const ChannelLayer& layer, std::string& error);
 
 // **The one function** the generator and `engine-content channels` both call: the network over the
-// layer's region standing on `ground`. `jobs` (nullable) samples the lattice a row a job; the result
-// does not depend on it. `seed` is mixed into every link's (the world seed for the generator).
-// Refuses an absent or non-finite ground and an exceeded budget; `out` clears on error.
+// layer's region standing on `ground`. `jobs` (nullable) samples the lattice a row a job; the
+// result does not depend on it. `seed` is mixed into every link's (the world seed for the
+// generator). Refuses an absent or non-finite ground and an exceeded budget; `out` clears on error.
 bool plan_channels(const ChannelLayer& layer, const scene_gen::Ground& ground, u64 seed,
                    jobs::JobSystem* jobs, ChannelNetwork& out, std::string& error);
 

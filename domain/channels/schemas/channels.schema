@@ -25,13 +25,18 @@ struct ChannelSurface @version(1) {
   /// The pack's role (`rock/granite`). Empty: the part's own list of roles, the first the pack
   /// has (channels.md, "Materials").
   role: string
-  /// One repeat covers this many metres: 0.05 to 20 m.
-  tile_m: f32 = 1.0 @unit(m)
+  /// One repeat covers this many metres: 0.05 to 20 m; absent, the part's own (the bed 0.35 m, so a
+  /// rock set reads at a gravel's scale; the bars 0.8 m; the banks 1.5 m).
+  tile_m: f32? @unit(m)
   sampling: ChannelSampling = Stochastic
   /// Linear base colour, each channel 0 to 1; absent, the part's own.
   color: f32[3]?
   /// 0.02 to 1.
   roughness: f32 = 0.9
+  /// Linear RGB the pack's set is multiplied by, each channel 0 to 1; absent, the part's own (the
+  /// bed 0.62, 0.60, 0.56, a rock set darkened toward wet-worn gravel; the banks 0.8, 0.75, 0.7;
+  /// the bars none).
+  tint: f32[3]?
 }
 
 /// The scene generator `channels`' entry (channels.md, "The network"): the drainage of a region's

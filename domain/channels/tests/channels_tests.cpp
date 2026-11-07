@@ -140,8 +140,9 @@ struct Opened {
 };
 }  // namespace
 
-TEST_CASE("channels: one channel down a V-notch, its head at the threshold, its width by the "
-          "exponent") {
+TEST_CASE(
+    "channels: one channel down a V-notch, its head at the threshold, its width by the "
+    "exponent") {
   const ChannelLayer p = layer();
   ChannelNetwork n;
   std::string error;
@@ -180,7 +181,8 @@ TEST_CASE("channels: one channel down a V-notch, its head at the threshold, its 
   CHECK(b.area_m2 > a.area_m2);
   CHECK(b.width_m > a.width_m);
   const f64 ratio = std::pow(static_cast<f64>(b.area_m2) / static_cast<f64>(a.area_m2), .4);
-  CHECK(static_cast<f64>(b.width_m) / static_cast<f64>(a.width_m) == doctest::Approx(ratio).epsilon(1e-4));
+  CHECK(static_cast<f64>(b.width_m) / static_cast<f64>(a.width_m) ==
+        doctest::Approx(ratio).epsilon(1e-4));
   CHECK(static_cast<f64>(b.width_m) ==
         doctest::Approx(3.0 * std::pow(static_cast<f64>(b.area_m2) / 1e6, .4)).epsilon(1e-4));
   // A threshold beyond the valley's area: no channel at all.
@@ -225,8 +227,9 @@ TEST_CASE("channels: the same network at one job and six, and meanders where the
   CHECK_FALSE(same_network(other, serial));
 }
 
-TEST_CASE("channels: the placed pieces are closed, welded and outward, and build the same "
-          "container twice") {
+TEST_CASE(
+    "channels: the placed pieces are closed, welded and outward, and build the same "
+    "container twice") {
   ChannelLayer p = layer();
   p.head_threshold_m2 = 300;
   p.bank_min_width_m = 1.0f;  // the valley's widest bed is 1.3 m
@@ -332,7 +335,7 @@ TEST_CASE("channels: the refusals") {
   CHECK_FALSE(plan_channels(p, ground(notch), 0, nullptr, n, error));
   CHECK(error.find("max_samples") != std::string::npos);
   p = layer();
-  p.bed.tile_m = 0;
+  p.bed.tile_m = 0.0f;
   CHECK_FALSE(layer_in_range(p, error));
   p = layer();
   p.head_threshold_m2 = std::numeric_limits<f32>::quiet_NaN();

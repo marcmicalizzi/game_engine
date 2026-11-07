@@ -24,9 +24,7 @@ struct Node {
   u32 i;
 };
 // A min-heap on (height, index): a total order, so the flood visits the cells in one order.
-bool after(const Node& a, const Node& b) {
-  return a.h != b.h ? a.h > b.h : a.i > b.i;
-}
+bool after(const Node& a, const Node& b) { return a.h != b.h ? a.h > b.h : a.i > b.i; }
 
 f64 ground_at(const scene_gen::Ground& ground, f64 x, f64 z) {
   return ground.surface_mm(scene_gen::nearest_mm(x), scene_gen::nearest_mm(z));
@@ -46,8 +44,9 @@ void build_line(const ChannelLayer& p, const ChannelNetwork& n, const scene_gen:
     z[j] = static_cast<f64>(n.z_mm + static_cast<i64>(c / n.width) * n.spacing_mm) / 1000.0;
     area[j] = static_cast<f64>(n.area_cells[c]) * cell_area;
     w[j] = hydraulic(wide(p.width_at_km2_m), wide(p.width_exponent), area[j]);
-    s[j] = j == 0 ? 0.0 : s[j - 1] + std::sqrt((x[j] - x[j - 1]) * (x[j] - x[j - 1]) +
-                                                (z[j] - z[j - 1]) * (z[j] - z[j - 1]));
+    s[j] = j == 0 ? 0.0
+                  : s[j - 1] + std::sqrt((x[j] - x[j - 1]) * (x[j] - x[j - 1]) +
+                                         (z[j] - z[j - 1]) * (z[j] - z[j - 1]));
   }
   const f64 cells_length = s[count - 1];
   link.slope = cells_length > 0
@@ -241,8 +240,10 @@ bool plan_channels(const ChannelLayer& p, const scene_gen::Ground& ground, u64 s
   n.spacing_mm = scene_gen::nearest_mm(wide(p.spacing_m));
   n.x_mm = scene_gen::nearest_mm(p.region_min[0]);
   n.z_mm = scene_gen::nearest_mm(p.region_min[1]);
-  const u64 w = static_cast<u64>((scene_gen::nearest_mm(p.region_max[0]) - n.x_mm) / n.spacing_mm) + 1;
-  const u64 h = static_cast<u64>((scene_gen::nearest_mm(p.region_max[1]) - n.z_mm) / n.spacing_mm) + 1;
+  const u64 w =
+      static_cast<u64>((scene_gen::nearest_mm(p.region_max[0]) - n.x_mm) / n.spacing_mm) + 1;
+  const u64 h =
+      static_cast<u64>((scene_gen::nearest_mm(p.region_max[1]) - n.z_mm) / n.spacing_mm) + 1;
   if (w * h > p.max_samples) return fail(error, "max_samples (region exceeds the lattice budget)");
   n.width = static_cast<u32>(w);
   n.depth = static_cast<u32>(h);
@@ -344,7 +345,8 @@ bool plan_channels(const ChannelLayer& p, const scene_gen::Ground& ground, u64 s
   }
   Vector<u8> donors(cells, 0);
   for (u32 i = 0; i < cells; ++i)
-    if (n.channel[i] && n.receiver[i] != ~0u && donors[n.receiver[i]] < 255) ++donors[n.receiver[i]];
+    if (n.channel[i] && n.receiver[i] != ~0u && donors[n.receiver[i]] < 255)
+      ++donors[n.receiver[i]];
   for (u32 i = 0; i < cells; ++i)
     if (n.channel[i] && donors[i] == 0) n.heads.push_back(i);
   // Links: from every head and every junction down to the next junction or the edge.
@@ -382,8 +384,8 @@ JsonValue water_channels_json(const ChannelLayer& p, const ChannelNetwork& n, f6
     if (link.line.size() < 2 || wide(link.line.back().area_m2) < min_area_m2) continue;
     JsonValue o = JsonValue::object();
     o["name"] = JsonValue(p.name + " link " + std::to_string(k));
-    JsonValue points = JsonValue::array(), widths = JsonValue::array(),
-              depths = JsonValue::array(), slopes = JsonValue::array();
+    JsonValue points = JsonValue::array(), widths = JsonValue::array(), depths = JsonValue::array(),
+              slopes = JsonValue::array();
     // The bed is the ground's running minimum down the line and the surface stands `stage` of the
     // bankfull depth over it, never rising downstream; `depth_m` is what is then between the two.
     f64 bed = link.line[0].at.y;

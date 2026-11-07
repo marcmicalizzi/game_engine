@@ -60,11 +60,14 @@ inline f64 place_noise(u64 seed, i64 x_mm, i64 z_mm) {
 }
 
 inline bool surface_in_range(const ChannelSurface& s, std::string& error) {
-  if (!in(wide(s.tile_m), .05, 20)) return fail(error, "surface tile_m");
+  if (s.tile_m.has_value() && !in(wide(*s.tile_m), .05, 20)) return fail(error, "surface tile_m");
   if (!in(wide(s.roughness), .02, 1)) return fail(error, "surface roughness");
   if (s.color.has_value())
     for (f32 c : *s.color)
       if (!in(wide(c), 0, 1)) return fail(error, "surface color");
+  if (s.tint.has_value())
+    for (f32 c : *s.tint)
+      if (!in(wide(c), 0, 1)) return fail(error, "surface tint");
   return true;
 }
 

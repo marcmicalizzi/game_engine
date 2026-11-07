@@ -1,9 +1,10 @@
-// `engine-content channels` (docs/subsystems/apps.md, "engine-content"; docs/subsystems/channels.md,
-// "The water's description"): the network a scene's `channels` placements make over its terrain,
-// written as the water's channel description — `engine.scene.WaterChannel` blocks under
-// `water_channels` — for the scene's author to paste into the scene the water draws. It calls the
-// one function the placement generator calls (`channels::plan_channels`), over the ground provider
-// the scene's terrain names, found through the same registry the renderer finds it through.
+// `engine-content channels` (docs/subsystems/apps.md, "engine-content";
+// docs/subsystems/channels.md, "The water's description"): the network a scene's `channels`
+// placements make over its terrain, written as the water's channel description —
+// `engine.scene.WaterChannel` blocks under `water_channels` — for the scene's author to paste into
+// the scene the water draws. It calls the one function the placement generator calls
+// (`channels::plan_channels`), over the ground provider the scene's terrain names, found through
+// the same registry the renderer finds it through.
 #include "content_commands.h"
 
 #include <cstdio>
@@ -14,10 +15,9 @@
 #include <domain/scene_gen/scene_gen.h>
 #include <foundation/io/vfs.h>
 
-#include <schemas/scene.h>
-
 #include <charconv>
 #include <cmath>
+#include <schemas/scene.h>
 #include <string>
 #endif
 
@@ -68,8 +68,8 @@ int channels_command(int argc, char** argv) {
       ok = false;
     }
     if (!ok) {
-      std::fprintf(stderr, "channels: invalid %.*s\n%s", static_cast<int>(flag.size()),
-                   flag.data(), usage);
+      std::fprintf(stderr, "channels: invalid %.*s\n%s", static_cast<int>(flag.size()), flag.data(),
+                   usage);
       return 2;
     }
   }
@@ -130,8 +130,8 @@ int channels_command(int argc, char** argv) {
       schema::ReadContext layer_reader;
       if (params == nullptr || !schema::from_json(layer, *params, layer_reader) ||
           !layer_reader.ok()) {
-        std::string message = scene_path + ": placements " + std::to_string(k) +
-                              ": engine.channels.ChannelLayer";
+        std::string message =
+            scene_path + ": placements " + std::to_string(k) + ": engine.channels.ChannelLayer";
         for (const auto& d : layer_reader.diagnostics)
           message += "; " + d.path + ": " + d.message;
         return fail(message);

@@ -105,12 +105,11 @@ TEST_CASE("engine-content channels writes the network's WaterChannel blocks") {
   REQUIRE_MESSAGE(provider->make(terrain, context, ground, &error), error);
   channels::ChannelLayer layer;
   schema::ReadContext layer_reader;
-  REQUIRE(schema::from_json(layer, *(*scene_json.find("placements"))[0].find("params"),
-                            layer_reader));
+  REQUIRE(
+      schema::from_json(layer, *(*scene_json.find("placements"))[0].find("params"), layer_reader));
   channels::ChannelNetwork network;
-  REQUIRE_MESSAGE(channels::plan_channels(layer, ground.view(), terrain.seed, nullptr, network,
-                                          error),
-                  error);
+  REQUIRE_MESSAGE(
+      channels::plan_channels(layer, ground.view(), terrain.seed, nullptr, network, error), error);
   CHECK(write_json(channels::water_channels_json(layer, network, 0, .5f)) == write_json(*blocks));
   // Each block has the contract's six fields, one value per point.
   for (const JsonValue& b : blocks->as_array()) {

@@ -16,6 +16,7 @@
 #include <array>
 #include <cmath>
 #include <limits>
+#include <optional>
 
 namespace engine::channels {
 namespace {
@@ -65,12 +66,15 @@ Vector<Frame> frames_of(const ChannelLink& link) {
 // the relief a gravel bed's surface has at that grain, one median grain, a few centimetres.
 f64 relief_of(const ChannelLayer& p, const ChannelPoint& pt) {
   const f64 d50 = wide(pt.depth_m) * wide(pt.slope) / (1.65 * wide(p.shields_bankfull));
-  return std::clamp(d50, .005, .08);
+  return std::clamp(d50, .005, .03);
 }
 
-ChannelSurface surface_of(const ChannelSurface& s, std::array<f32, 3> color) {
+ChannelSurface surface_of(const ChannelSurface& s, std::array<f32, 3> color, f32 tile,
+                          std::optional<std::array<f32, 3>> tint) {
   ChannelSurface out = s;
   if (!out.color.has_value()) out.color = color;
+  if (!out.tile_m.has_value()) out.tile_m = tile;
+  if (!out.tint.has_value()) out.tint = tint;
   return out;
 }
 
@@ -98,9 +102,11 @@ bool place_pieces(const ChannelLayer& p, const ChannelNetwork& n, const scene_ge
   out.clear();
   if (!(tile_size >= .25f && tile_size <= 100000.0f)) return fail(error, "tile_size");
   const i64 tile_mm = scene_gen::nearest_mm(wide(tile_size));
-  const ChannelSurface bed_look = surface_of(p.bed, {.42f, .40f, .37f});
-  const ChannelSurface bar_look = surface_of(p.bars, {.56f, .51f, .43f});
-  const ChannelSurface bank_look = surface_of(p.banks, {.30f, .23f, .17f});
+  const ChannelSurface bed_look = surface_of(p.bed, {.42f, .40f, .37f}, .35f,
+                                                std::array<f32, 3>{.62f, .60f, .56f});
+  const ChannelSurface bar_look = surface_of(p.bars, {.56f, .51f, .43f}, .8f, std::nullopt);
+  const ChannelSurface bank_look = surface_of(p.banks, {.30f, .23f, .17f}, 1.5f,
+                                                 std::array<f32, 3>{.8f, .75f, .7f});
   u32 id = 0;
   for (const ChannelLink& link : n.links) {
     const u32 m = link.line.size();
@@ -119,10 +125,9 @@ bool place_pieces(const ChannelLayer& p, const ChannelNetwork& n, const scene_ge
     Vector<f64> rhythm(m, 0.0);
     f64 theta = phase;
     for (u32 i = 0; i < m; ++i) {
-      const f64 wavelength =
-          (link.slope > wide(p.meander_slope_max) ? wide(p.step_pool_widths)
-                                                  : wide(p.pool_riffle_widths)) *
-          wide(link.line[i].width_m);
+      const f64 wavelength = (link.slope > wide(p.meander_slope_max) ? wide(p.step_pool_widths)
+                                                                     : wide(p.pool_riffle_widths)) *
+                             wide(link.line[i].width_m);
       if (i > 0) theta += (f[i].s - f[i - 1].s) * 2 * k_pi / std::max(wavelength, .5);
       rhythm[i] = .5 * (1 + det::cos(theta));
     }
@@ -163,8 +168,7 @@ bool place_pieces(const ChannelLayer& p, const ChannelNetwork& n, const scene_ge
         at += .5 * wide(p.pool_riffle_widths) * wc;
       }
     }
-    const u32 pieces =
-        std::max<u32>(1, static_cast<u32>(std::ceil(f[m - 1].s / wide(p.piece_m))));
+    const u32 pieces = std::max<u32>(1, static_cast<u32>(std::ceil(f[m - 1].s / wide(p.piece_m))));
     for (u32 k = 0; k < pieces; ++k) {
       const u32 r0 = static_cast<u32>(static_cast<u64>(k) * (m - 1) / pieces);
       const u32 r1 = static_cast<u32>(static_cast<u64>(k + 1) * (m - 1) / pieces);
@@ -174,7 +178,8 @@ bool place_pieces(const ChannelLayer& p, const ChannelNetwork& n, const scene_ge
       b.z0 = scene_gen::nearest_mm(f[r0].z);
       b.y0 = ground.surface_mm(b.x0, b.z0);
       PlacedPiece base;
-      base.origin = WorldPos{static_cast<f64>(b.x0) / 1000.0, b.y0, static_cast<f64>(b.z0) / 1000.0};
+      base.origin =
+          WorldPos{static_cast<f64>(b.x0) / 1000.0, b.y0, static_cast<f64>(b.z0) / 1000.0};
       const i64 tx = floor_div(b.x0, tile_mm), tz = floor_div(b.z0, tile_mm);
       if (tx < std::numeric_limits<i32>::min() || tx > std::numeric_limits<i32>::max() ||
           tz < std::numeric_limits<i32>::min() || tz > std::numeric_limits<i32>::max())
@@ -205,8 +210,7 @@ bool place_pieces(const ChannelLayer& p, const ChannelNetwork& n, const scene_ge
             const bool edge = c == 0 || c + 1 == columns;
             const f64 across = 1 - 4 * v * v;  // the riffle crosses the bed, highest mid-channel
             const f64 bump =
-                edge ? 0.0
-                     : relief * (1 + place_noise(link.seed, xm, zm)) + riffle * across;
+                edge ? 0.0 : relief * .5 * (1 + place_noise(link.seed, xm, zm)) + riffle * across;
             b.vertex(slab, x, z, g + k_lift_m + bump, g - k_bury_m);
           }
         }
@@ -325,7 +329,7 @@ bool solve_piece(const ChannelPiece& piece, assets::MeshData& out, std::string& 
   if (!piece_in_range(piece, error)) return false;
   assets::MeshData mesh;
   assets::Material material;
-  material.name = piece.part == ChannelPart::Bed    ? "channel bed"
+  material.name = piece.part == ChannelPart::Bed   ? "channel bed"
                   : piece.part == ChannelPart::Bar ? "channel bar"
                                                    : "channel bank";
   const auto& color = *piece.surface.color;
@@ -384,7 +388,8 @@ bool solve_piece(const ChannelPiece& piece, assets::MeshData& out, std::string& 
     }
     for (u32 v = first; v < mesh.positions.size(); ++v) {
       const Vec3 normal = mesh.normals[v];
-      mesh.normals[v] = length(normal) > 0 ? normalize(normal) : Vec3{0, v < first + count ? 1.0f : -1.0f, 0};
+      mesh.normals[v] =
+          length(normal) > 0 ? normalize(normal) : Vec3{0, v < first + count ? 1.0f : -1.0f, 0};
     }
     // The four walls, from the top's boundary edges in the direction the top runs them: each wall
     // carries the edge backwards, down to the bottom and along it, with vertices of its own so its
@@ -408,19 +413,27 @@ bool solve_piece(const ChannelPiece& piece, assets::MeshData& out, std::string& 
     auto at = [&](u32 r, u32 c) { return r * C + c; };
     for (u32 c = 0; c + 1 < C; ++c) {
       // first row: the triangle (a, d, b) runs b -> a unflipped; (a, b, d) runs a -> b flipped.
-      if (!flip) wall(at(0, c + 1), at(0, c));
-      else wall(at(0, c), at(0, c + 1));
+      if (!flip)
+        wall(at(0, c + 1), at(0, c));
+      else
+        wall(at(0, c), at(0, c + 1));
       // last row: (b, d, e) runs d -> e unflipped; (b, e, d) runs e -> d flipped.
-      if (!flip) wall(at(R - 1, c), at(R - 1, c + 1));
-      else wall(at(R - 1, c + 1), at(R - 1, c));
+      if (!flip)
+        wall(at(R - 1, c), at(R - 1, c + 1));
+      else
+        wall(at(R - 1, c + 1), at(R - 1, c));
     }
     for (u32 r = 0; r + 1 < R; ++r) {
       // first column: (a, d, b) runs a -> d unflipped; (a, b, d) runs d -> a flipped.
-      if (!flip) wall(at(r, 0), at(r + 1, 0));
-      else wall(at(r + 1, 0), at(r, 0));
+      if (!flip)
+        wall(at(r, 0), at(r + 1, 0));
+      else
+        wall(at(r + 1, 0), at(r, 0));
       // last column: (b, d, e) runs e -> b unflipped; (b, e, d) runs b -> e flipped.
-      if (!flip) wall(at(r + 1, C - 1), at(r, C - 1));
-      else wall(at(r, C - 1), at(r + 1, C - 1));
+      if (!flip)
+        wall(at(r + 1, C - 1), at(r, C - 1));
+      else
+        wall(at(r, C - 1), at(r + 1, C - 1));
     }
   }
   assets::Primitive part;
@@ -446,12 +459,9 @@ namespace {
 // The roles a part samples when its surface names none: the first the pack has.
 Vector<std::string_view> roles_of(ChannelPart part) {
   switch (part) {
-    case ChannelPart::Bed:
-      return {"gravel/bed", "rock/gravel", "rock/granite"};
-    case ChannelPart::Bar:
-      return {"sand/bar", "soil/parent", "soil/subsoil"};
-    default:
-      return {"soil/subsoil", "soil/topsoil"};
+    case ChannelPart::Bed: return {"gravel/bed", "rock/gravel", "rock/granite"};
+    case ChannelPart::Bar: return {"sand/bar", "soil/parent", "soil/subsoil"};
+    default: return {"soil/subsoil", "soil/topsoil"};
   }
 }
 }  // namespace
@@ -489,9 +499,13 @@ bool build_piece_container(const ChannelPiece& piece, const geometry::ClusterLod
     out.material_sampling.push_back(geometry::encode_material_sampling(
         mesh.materials[0].sampling, mesh.materials[0].occlusion_strength));
     materials::MaterialSet applied = *chosen;
-    applied.tile_m = piece.surface.tile_m;
+    applied.tile_m = *piece.surface.tile_m;
     applied.stochastic = piece.surface.sampling == ChannelSampling::Stochastic;
     materials::apply_set(applied, materials::UvLayout::metres, out, 0);
+    if (piece.surface.tint.has_value()) {
+      const auto& tint = *piece.surface.tint;
+      out.materials[0].base_color = {tint[0], tint[1], tint[2], 1.0f};
+    }
   }
   if (!out.image_paths.empty()) texture::fill_cluster_texture_records(out);
   out.source_hash = piece_source_hash(piece);
@@ -521,6 +535,7 @@ bool read_piece(std::span<const u8> bytes, ChannelPiece& out, std::string& error
     return false;
   }
   if (!out.surface.color.has_value()) out.surface.color = std::array<f32, 3>{.5f, .5f, .5f};
+  if (!out.surface.tile_m.has_value()) out.surface.tile_m = 1.0f;
   return piece_in_range(out, error);
 }
 bool source_hash(std::span<const u8> bytes, u64& out, std::string& error) {
