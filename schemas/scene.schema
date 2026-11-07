@@ -904,15 +904,29 @@ struct TerrainMasks @version(1) {
   resident_mib: u32 = 256
 }
 
+/// **A hole in the ground** (docs/subsystems/terrain.md, "Holes"; roadmap W87): a polygon of world
+/// positions (x and z; y is not read; simple, either winding, convex for the cell rule to be exact)
+/// or a circle (`radius_m` above zero about `center`). A lattice cell of any terrain level whose
+/// four corners all lie strictly inside one hole has no triangles — the mesh leaves them out, so
+/// every rasterizer, the ray path, the cascades and the acceleration structures agree — and the
+/// collision ground has no surface over it. A cell on the rim keeps its triangles, so a level whose
+/// cells are larger than the hole closes it.
+struct TerrainHole @version(1) {
+  name: string
+  polygon: worldpos[]
+  center: worldpos @unit(m)
+  radius_m: f32 = 0 @unit(m)
+}
+
 /// Terrain built into the native cluster LOD DAG. It is built into a cluster LOD DAG like any mesh,
 /// and its derived-data cache entry is keyed by these fields, so it is content-addressed like a
 /// file; every default added later is the record as it was, to the bit. Version 2 added the
 /// generator (a version 1 terrain reads as the waves it always drew), version 4 the provider name
 /// (ADR-0046), version 5 the wind's day and the storms' gains, version 6 sand detail, version 7
 /// authored tile sets, version 8 authored materials, version 9 `masks`, ground materials by
-/// place, and version 10 a material layer's `response` (sand and snow, R99). Absent optional
-/// blocks preserve the earlier behavior.
-struct Terrain @version(10) {
+/// place, version 10 a material layer's `response` (sand and snow, R99), and version 11 `holes`
+/// (W87). Absent optional blocks preserve the earlier behavior.
+struct Terrain @version(11) {
   /// Vertices a side. 2 to 4097.
   size: u32 = 1025
   /// Half the side, in metres: the terrain spans [-extent, extent] in x and z.
@@ -984,6 +998,9 @@ struct Terrain @version(10) {
   materials: TerrainMaterials? @since(8)
   /// Ground materials by place: the palette's per-tile masks (`TerrainMasks`).
   masks: TerrainMasks? @since(9)
+  /// Holes in the ground (`TerrainHole`; a cave's mouth, W87). Empty, the default: the terrain
+  /// exactly as it was, every cache key unmoved.
+  holes: TerrainHole[] @since(11)
 }
 
 

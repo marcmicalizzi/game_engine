@@ -25,7 +25,7 @@ engine_module(NAME scene_collision LAYER systems OPTIONAL WHOLE_ARCHIVE
        renderer physics world sim profiling
   SOURCES src/scene_collision.cpp)
 
-set(_collision_tests tests/scene_collision_tests.cpp tests/size_table.cpp)
+set(_collision_tests tests/scene_collision_tests.cpp tests/size_table.cpp tests/terrain_hole_tests.cpp)
 if(TARGET engine::terrain)
   # The ground refresh under a time-lapse, on the committed erg's dunes and the renderer's own
   # cadence rule: the terrain reaches the collision through the registry, so the test links it as

@@ -553,6 +553,8 @@ u64 terrain_hash(const TerrainDesc& desc) noexcept {
   // built on load by its source header's grid hash and lattice and the block's own transform
   // (origin, vertical scale) and build options, which are what the build key would be made of.
   if (desc.materials.has_value()) h = hash_combine(h, terrain_materials_hash(*desc.materials));
+  // Holes (W87): only a terrain with some, so every other keeps its hash and its cache entry.
+  if (!desc.holes.empty()) h = hash_combine(hash_combine(h, 0x484F4C4553ull), desc.holes.hash());
   if (desc.tiles.has_value()) {
     const scene::TerrainTileSet& t = *desc.tiles;
     h = hash_combine(h, 0x54494C4553455Full);  // "TILESET_"
@@ -758,6 +760,15 @@ f64 terrain_band_travel_m(const TerrainSampler& sampler, f64 from_s, f64 to_s) n
   return sampler.provider().travel_m(from_s, to_s);
 }
 
+bool terrain_grid_cell_is_hole(const TerrainDesc& desc, std::span<const Vec3> positions, u32 n,
+                               u32 xi, u32 zi) noexcept {
+  if (desc.holes.empty()) return false;
+  const Vec3& lo = positions[zi * n + xi];
+  const Vec3& hi = positions[(zi + 1) * n + xi + 1];
+  return desc.holes.cell_mm(static_cast<f64>(lo.x) * 1000.0, static_cast<f64>(lo.z) * 1000.0,
+                            static_cast<f64>(hi.x) * 1000.0, static_cast<f64>(hi.z) * 1000.0);
+}
+
 bool build_terrain_mesh(const TerrainDesc& desc, Vector<Vec3>& positions, Vector<u32>& indices,
                         Vector<Vec2>& uvs, std::string* error) {
   if (desc.size < 2 || desc.size > k_terrain_max_size || !(desc.extent > 0.0f)) {
@@ -800,11 +811,15 @@ bool build_terrain_mesh(const TerrainDesc& desc, Vector<Vec3>& positions, Vector
       uvs[zi * n + xi] = Vec2{u, v};
     }
   }
-  // Counter-clockwise seen from +y, the classic heightfield's winding (renderer.md).
+  // Counter-clockwise seen from +y, the classic heightfield's winding (renderer.md). **A hole's
+  // cells have no triangles** (terrain.md, "Holes"): a cell whose four corners are inside one of
+  // the terrain's holes is left out, so every path that draws or traces the mesh sees the same
+  // opening.
   indices.reserve((n - 1) * (n - 1) * 6);
   for (u32 zi = 0; zi + 1 < n; ++zi) {
     for (u32 xi = 0; xi + 1 < n; ++xi) {
       const u32 a = zi * n + xi;
+      if (terrain_grid_cell_is_hole(desc, positions, n, xi, zi)) continue;
       indices.push_back(a);
       indices.push_back(a + n);
       indices.push_back(a + 1);

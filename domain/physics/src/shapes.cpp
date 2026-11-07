@@ -174,6 +174,9 @@ Status World::create_mesh(std::span<const Vec3> positions, std::span<const u32> 
   return impl_->adopt_shape(shape, out);
 }
 
+static_assert(k_heightfield_hole == JPH::HeightFieldShapeConstants::cNoCollisionValue,
+              "a terrain hole's sample is the backend's no-collision value");
+
 Status World::create_heightfield(const HeightfieldDesc& desc, ShapeId& out) {
   if (impl_ == nullptr) return Status::InvalidArgument;
   // Jolt stores the field in blocks of 2x2 samples, so the side must be even and at least two

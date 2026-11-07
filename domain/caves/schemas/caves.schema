@@ -1,0 +1,88 @@
+// The caves capability's own types (docs/subsystems/caves.md; ADR-0007, ADR-0027): a passage's
+// recipe, a `.cave.json` mesh a scene names like a `.rock.json`. The ranges are the grounding's
+// (docs/experiments/caves.md); a number outside one is refused with its field.
+namespace engine.caves
+
+/// A passage segment's cross-section (Ford and Williams 2007 ch. 7; Palmer 1991).
+enum PassageProfile : u8 {
+  /// Formed full of water: an ellipse wider than high, its long axis in the bed.
+  Phreatic = 0
+  /// Cut down by a free-surface stream: a canyon taller than wide.
+  Vadose = 1
+  /// A phreatic tube entrenched by a later stream: the tube over a narrow canyon.
+  Keyhole = 2
+}
+
+/// One span of the passage, from a control point to the next.
+struct PassageSegment @version(1) {
+  profile: PassageProfile = Phreatic
+  /// The passage's widest, metres, 0.8 to 12.
+  width_m: f32 = 3 @unit(m)
+  /// Its height, metres; 0 takes the profile's ratio (a tube 1:2, a canyon 3:1, a keyhole's tube
+  /// 1:2 over a canyon 1.2 tube heights deep).
+  height_m: f32 = 0 @unit(m)
+}
+
+/// **Speleothems** (docs/experiments/caves.md): drip points hashed over the ceiling, each a
+/// stalactite of the ideal profile (radius as length^(3/4), Short et al. 2005) or a soda straw,
+/// a stalagmite below where the floor is near, a column where the two would meet.
+struct Speleothems @version(1) {
+  /// Drips a square metre of ceiling, 0 to 5.
+  drip_per_m2: f32 = 0.6
+  /// A stalactite's length, metres, 0.05 to 3.
+  stalactite_min_m: f32 = 0.2 @unit(m)
+  stalactite_max_m: f32 = 1.2 @unit(m)
+  /// Its base radius over its length, 0.06 to 0.25.
+  slenderness: f32 = 0.12
+  /// The soda straw's radius, the drop's bore, metres, 0.002 to 0.0035.
+  straw_radius_m: f32 = 0.0025 @unit(m)
+  /// The share of drips that are soda straws, 0 to 1.
+  straw_share: f32 = 0.3
+  /// A straw's length, metres, 0.02 to 1.
+  straw_max_m: f32 = 0.4 @unit(m)
+  /// A stalagmite's radius, metres, 0.015 to 0.15 (Curl's minimum diameter about 3 cm).
+  stalagmite_radius_m: f32 = 0.03 @unit(m)
+  /// Its height, metres, 0 to 3.
+  stalagmite_max_m: f32 = 0.8 @unit(m)
+  /// A stalactite and its stalagmite closer than this join as a column, metres, 0 to 0.5.
+  column_gap_m: f32 = 0.1 @unit(m)
+  /// Sides of each body's revolution, 4 to 16.
+  sides: u32 = 8
+  /// The most triangles the speleothems of one passage take; past it no drip is placed.
+  triangle_budget: u32 = 20000
+}
+
+/// **A cave passage** (`<name>.cave.json`; docs/subsystems/caves.md): from a hole in the ground in
+/// and down. The mesh's frame is the entrance's: the origin is the hole's centre at the ground, y up;
+/// a scene places it there. It opens at the collar, a ring of the hole's radius at the ground, and
+/// is otherwise a closed shell wound to face inward.
+struct Passage @version(1) {
+  /// "engine.caves.passage".
+  format: string
+  version: u32 = 1
+  seed: u64 = 1
+  /// The hole's radius (the terrain's `holes` entry it opens from), metres, 0.5 to 20.
+  entrance_radius_m: f32 = 3 @unit(m)
+  /// The collar's heights round the rim, metres from the entrance, one a ring vertex in order of
+  /// angle from +x towards +z: the ground's at the rim, so the collar meets a sloping ground. Empty:
+  /// all zero, a level ground.
+  collar_heights_m: f32[]
+  /// The shaft from the collar straight down before the passage turns in, metres, 0 to 50.
+  shaft_m: f32 = 4 @unit(m)
+  /// The passage's control points after the shaft, metres from the entrance (y up): in and down.
+  points: vec3[]
+  /// One a span: segment k runs from the shaft's foot (k = 0) or point k - 1 to point k. A missing
+  /// one repeats the last.
+  segments: PassageSegment[]
+  /// The walls' bounded roughness, a share of the width, 0 to 0.15.
+  roughness: f32 = 0.04
+  /// Vertices a ring, 8 to 64.
+  ring_vertices: u32 = 24
+  /// Rings along the passage, metres apart, 0.1 to 2.
+  ring_spacing_m: f32 = 0.5 @unit(m)
+  speleothems: Speleothems?
+  /// The limestone's linear colour and roughness where no pack's `rock/limestone` set is found;
+  /// zero is the default, a pale grey-buff limestone (0.55, 0.50, 0.42).
+  base_color: vec3
+  roughness_factor: f32 = 0.85
+}

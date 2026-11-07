@@ -451,6 +451,26 @@ void SceneCollision::blend_heights(Tile& tile, f64 blend) {
   tile.blend = blend;
 }
 
+// **A terrain's holes** (W87; terrain.md, "Holes"): a collision sample is no sample where every
+// cell of the collision lattice round it is a hole by the terrain's cell rule, so the triangles
+// that use it have no collision and the hole the walker falls through lies inside the one drawn
+// (which is the same rule at the drawn levels' spacing). Only a tile whose window a hole reaches
+// pays.
+bool SceneCollision::hole_sample(i64 i, i64 j) const noexcept {
+  const scene_gen::TerrainHoles& holes = scene_->terrain.holes;
+  return holes.cell(spacing_mm_, i - 1, j - 1) && holes.cell(spacing_mm_, i, j - 1) &&
+         holes.cell(spacing_mm_, i - 1, j) && holes.cell(spacing_mm_, i, j);
+}
+
+bool SceneCollision::holes_reach(const Tile& tile) const noexcept {
+  const scene_gen::TerrainHoles& holes = scene_->terrain.holes;
+  const f64 s = static_cast<f64>(spacing_mm_);
+  return !holes.empty() &&
+         holes.touches_mm(static_cast<f64>(tile.i0) * s, static_cast<f64>(tile.j0) * s,
+                          static_cast<f64>(tile.i0 + tile.n) * s,
+                          static_cast<f64>(tile.j0 + tile.n) * s);
+}
+
 bool SceneCollision::make_ground_body(Tile& tile) {
   const i64 start = time::monotonic_ns();
   struct Count {
@@ -460,6 +480,17 @@ bool SceneCollision::make_ground_body(Tile& tile) {
   } count{start, stats_.body_ns};
   physics::HeightfieldDesc desc;
   desc.heights = std::span<const f32>(tile.heights.data(), tile.heights.size());
+  Vector<f32> holed;
+  if (holes_reach(tile)) {
+    holed = tile.heights;
+    for (u32 j = 0; j < tile.n; ++j) {
+      for (u32 i = 0; i < tile.n; ++i) {
+        if (hole_sample(tile.i0 + i, tile.j0 + j))
+          holed[static_cast<usize>(j) * tile.n + i] = physics::k_heightfield_hole;
+      }
+    }
+    desc.heights = std::span<const f32>(holed.data(), holed.size());
+  }
   desc.sample_count = tile.n;
   const f32 spacing = static_cast<f32>(static_cast<f64>(spacing_mm_) / 1000.0);
   // The field in its own frame, from its first lattice point, and the body at that point in f64
@@ -714,6 +745,14 @@ bool SceneCollision::ground_height(WorldPos at, f32& out) const noexcept {
   const i64 i = static_cast<i64>(std::floor(fx));
   const i64 j = static_cast<i64>(std::floor(fz));
   if (i < 0 || j < 0 || i + 1 >= tile->n || j + 1 >= tile->n) return false;
+  // Over a hole there is no ground: a cell with a corner that is no sample (`hole_sample`).
+  if (holes_reach(*tile)) {
+    for (i64 dj = 0; dj < 2; ++dj) {
+      for (i64 di = 0; di < 2; ++di) {
+        if (hole_sample(tile->i0 + i + di, tile->j0 + j + dj)) return false;
+      }
+    }
+  }
   const u32 n = tile->n;
   const auto sample = [&](i64 a, i64 b) {
     return tile->heights[static_cast<u32>(b) * n + static_cast<u32>(a)];
