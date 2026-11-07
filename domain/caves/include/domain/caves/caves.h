@@ -39,8 +39,9 @@ struct Pack;
 namespace engine::caves {
 
 inline constexpr std::string_view k_passage_format = "engine.caves.passage";
-// Bumped whenever the solver's output for the same recipe changes.
-inline constexpr u32 k_caves_version = 1;
+// Bumped whenever the solver's output for the same recipe changes, so a cached container is never
+// an older solve's. 2 (2026-11-07): a stalagmite stands on the floor under its drip.
+inline constexpr u32 k_caves_version = 2;
 // The material role a passage's limestone takes from a pack (materials.md).
 inline constexpr std::string_view k_limestone_role = "rock/limestone";
 
