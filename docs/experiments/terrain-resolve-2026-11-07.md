@@ -98,5 +98,21 @@ thing to try if the owner sees glints flicker where they did not.
 
 ## The v25 walk
 
-To be measured: R115 stage 2's walk (`walk.json`, records 6693–6993) on the v25 replay, base
-against the shipped rule, at 3840×2160 and 11520×2160.
+R115 stage 2's walk (`walk.json`, records 6693–6993, 1,200 frames) on the v25 replay with the
+owner's flags (`--terrain-tiles --terrain-far 6 --time-rate 0 --world-rate 1 --time-of-day 15
+--no-lights --lod 1 --deform-pool-mib 64 --rt-budget-mib 0 --raster rt --shadows rt`, flora
+motion at wind 0.7), offscreen, `--warmup 120 --wait-quiet 120`, `ENGINE_PIPELINE_CACHE=0`, the
+coordinator's copy of the derived-data cache (no miss: nothing cooked into it), base against the
+shipped rule through the same manifests (all eight terrain resolve modules). One flight each,
+under one lock; the GPU idle at each start with 20.7–21.2 GB of its memory held, other processes on
+21–53% of the CPU (other agents' builds), so upper bounds. Medians of 1,200 frames, ms.
+
+| Width | Resolve base | Resolve shipped | Resolve p95 | Frame base | Frame shipped |
+|---|---|---|---|---|---|
+| 3840×2160 | 5.07 | **4.80** | 7.02 → 6.84 | 17.61 | **17.36** |
+| 11520×2160 | 13.73 | **12.73** | 18.99 → 18.06 | 35.45 | **34.83** |
+
+In the forest the ground is a smaller share of the resolve than on the fell (the canopy's sun
+rays and the flora's materials are most of it), so the rule returns 0.3 ms at 3840 and **1.0 ms of
+the resolve, 0.6 of the frame, at the owner's width**. The resolve's absolute numbers are not stage
+2's (22.5 at 11520): micromaps (R120) and the half-rate sun (R126) have landed since.

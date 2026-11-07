@@ -979,8 +979,11 @@ stochastic layer's reads where the pixel cannot tell the difference. Five rules 
   them (`terrain_hex_kept`), so the blend stays the operator over the tiles it reads; a hex whose
   every weight is 1/128 or more is returned bit for bit. Every map of the tile goes together, so
   the maps stay coordinated. On the v31 fell it returns a fifth of the resolve (1.60 → 1.28 ms at
-  1920×1080) and changes 1.8% of the pixels, 70 of them by more than two codes, FLIP 0.0012; it
-  acts on the near ground too, so it is a shading rule, not a culling one.
+  1920×1080, 14.26 → 11.66 at 11520×2160) and changes 1.8–3.2% of the pixels, FLIP 0.0012–0.0018;
+  on the v25 walk at the owner's width the resolve goes 13.73 → 12.73 ms. It acts on the near
+  ground too, so it is a shading rule, not a culling one, and a sun glint can move by more than a
+  code where a dropped tile's slope turned it (1,099 pixels of 24.9 million over eight codes at
+  11520; a tighter band is the first thing to try if one is seen to flicker).
 - **The four footprint rules** (bits 1, 2, 4, 8; built, tested, **off**): past a lattice cell a
   pixel (sqrt |du × dv| against the cell, 28/97 of a repeat) one tile, the nearest, instead of
   three, with a band from one cell to two; past a repeat's filter width (the larger of the
