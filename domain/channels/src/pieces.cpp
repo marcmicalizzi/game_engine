@@ -112,13 +112,30 @@ bool place_pieces(const ChannelLayer& p, const ChannelNetwork& n, const scene_ge
       surface_of(p.bed, {.42f, .40f, .37f}, .35f, std::array<f32, 3>{.62f, .60f, .56f});
   const ChannelSurface bar_look = surface_of(p.bars, {.56f, .51f, .43f}, .8f, std::nullopt);
   u32 id = 0;
+  const ChannelSurface boulder_look =
+      surface_of(ChannelSurface{}, {.45f, .44f, .42f}, 1.2f, std::array<f32, 3>{.7f, .68f, .65f});
   for (const ChannelLink& link : n.links) {
-    const u32 m = link.line.size();
+    // W90: a tributary's pieces stop at the trunk's banks (`keep`), and a reach decides what is
+    // laid: the gravel bed on every reach but bedrock and colluvial, bars on dune-ripple and
+    // pool-riffle reaches, boulders at the crests of step-pool and cascade steps.
+    const u32 m = std::min<u32>(link.keep, link.line.size());
     if (m < 2) continue;
+    auto reach_at = [&](u32 i) {
+      return i < link.reach.size() ? static_cast<ChannelReach>(link.reach[i])
+                                   : ChannelReach::PoolRiffle;
+    };
+    auto has_bed = [&](u32 i) {
+      const ChannelReach r = reach_at(i);
+      return r != ChannelReach::Bedrock && r != ChannelReach::Colluvial;
+    };
+    auto has_bars = [&](u32 i) {
+      const ChannelReach r = reach_at(i);
+      return r == ChannelReach::DuneRipple || r == ChannelReach::PoolRiffle;
+    };
     const Vector<Frame> f = frames_of(link);
     f32 widest = 0;
-    for (const ChannelPoint& pt : link.line)
-      widest = std::max(widest, pt.width_m);
+    for (u32 i = 0; i < m; ++i)
+      widest = std::max(widest, link.line[i].width_m);
     const u32 columns =
         std::clamp<u32>(static_cast<u32>(std::lround(wide(widest) / .4)) + 1, 3, 17);
     // The bed's rhythm: pool to pool below the step-pool slope, step to step above it, its phase
@@ -163,7 +180,10 @@ bool place_pieces(const ChannelLayer& p, const ChannelNetwork& n, const scene_ge
         bend /= static_cast<f64>(b - a + 1);
         const f64 s = std::abs(bend) * wc > .05 ? (bend > 0 ? 1.0 : -1.0) : side;
         if (!bars.empty() && a <= last) a = last + 1;
-        if (b >= a + 2 && wc >= wide(p.bar_min_width_m)) {
+        bool alluvial = true;
+        for (u32 i = a; i <= b && alluvial; ++i)
+          alluvial = has_bars(i);
+        if (b >= a + 2 && wc >= wide(p.bar_min_width_m) && alluvial) {
           bars.push_back({a, b, s});
           last = b;
         }
@@ -172,6 +192,7 @@ bool place_pieces(const ChannelLayer& p, const ChannelNetwork& n, const scene_ge
       }
     }
     const u32 pieces = std::max<u32>(1, static_cast<u32>(std::ceil(f[m - 1].s / wide(p.piece_m))));
+    // (`f` covers the whole line; the pieces cover its first `m` points.)
     for (u32 k = 0; k < pieces; ++k) {
       const u32 r0 = static_cast<u32>(static_cast<u64>(k) * (m - 1) / pieces);
       const u32 r1 = static_cast<u32>(static_cast<u64>(k + 1) * (m - 1) / pieces);
@@ -198,30 +219,47 @@ bool place_pieces(const ChannelLayer& p, const ChannelNetwork& n, const scene_ge
         piece.recipe.part = ChannelPart::Bed;
         piece.recipe.uv_origin = {uv[0], uv[1]};
         piece.recipe.surface = bed_look;
-        ChannelSlab slab;
-        slab.rows = r1 - r0 + 1;
-        slab.columns = columns;
-        for (u32 i = r0; i <= r1; ++i) {
-          const ChannelPoint& pt = link.line[i];
-          const f64 relief = relief_of(p, pt);
-          const f64 riffle = wide(p.riffle_rise) * wide(pt.depth_m) * rhythm[i];
-          for (u32 c = 0; c < columns; ++c) {
-            const f64 v = static_cast<f64>(c) / static_cast<f64>(columns - 1) - .5;
-            const f64 bed_w = bed_width(p, pt);
-            const f64 x = f[i].x + f[i].nx * v * bed_w;
-            const f64 z = f[i].z + f[i].nz * v * bed_w;
-            i64 xm = 0, zm = 0;
-            const f64 g = b.ground_local(x, z, xm, zm);
-            const bool edge = c == 0 || c + 1 == columns;
-            const f64 across = 1 - 4 * v * v;  // the riffle crosses the bed, highest mid-channel
-            const f64 bump =
-                edge ? 0.0 : relief * .5 * (1 + place_noise(link.seed, xm, zm)) + riffle * across;
-            b.vertex(slab, x, z, g + k_lift_m + bump, g - k_bury_m);
+        // One slab a run of rows whose reach has a bed (W90: none on bedrock or colluvial).
+        for (u32 a = r0; a <= r1;) {
+          if (!has_bed(a)) {
+            ++a;
+            continue;
           }
+          u32 e = a;
+          while (e + 1 <= r1 && has_bed(e + 1))
+            ++e;
+          if (e > a) {
+            ChannelSlab slab;
+            slab.rows = e - a + 1;
+            slab.columns = columns;
+            for (u32 i = a; i <= e; ++i) {
+              const ChannelPoint& pt = link.line[i];
+              const f64 relief = relief_of(p, pt);
+              const f64 riffle =
+                  has_bars(i) ? wide(p.riffle_rise) * wide(pt.depth_m) * rhythm[i] : 0.0;
+              for (u32 c = 0; c < columns; ++c) {
+                const f64 v = static_cast<f64>(c) / static_cast<f64>(columns - 1) - .5;
+                const f64 bed_w = bed_width(p, pt);
+                const f64 x = f[i].x + f[i].nx * v * bed_w;
+                const f64 z = f[i].z + f[i].nz * v * bed_w;
+                i64 xm = 0, zm = 0;
+                const f64 g = b.ground_local(x, z, xm, zm);
+                const bool edge = c == 0 || c + 1 == columns;
+                const f64 across = 1 - 4 * v * v;  // the riffle crosses the bed, highest mid-channel
+                const f64 bump = edge ? 0.0
+                                      : relief * .5 * (1 + place_noise(link.seed, xm, zm)) +
+                                            riffle * across;
+                b.vertex(slab, x, z, g + k_lift_m + bump, g - k_bury_m);
+              }
+            }
+            piece.recipe.slabs.push_back(std::move(slab));
+          }
+          a = e + 1;
         }
-        piece.recipe.slabs.push_back(std::move(slab));
-        piece.id = ++id;
-        out.push_back(std::move(piece));
+        if (!piece.recipe.slabs.empty()) {
+          piece.id = ++id;
+          out.push_back(std::move(piece));
+        }
       }
       // The bars of this piece: a low lens on one side of the bed, its outer edge at the bed's,
       // its crown `bar_rise` of the depth above the bed.
@@ -257,6 +295,53 @@ bool place_pieces(const ChannelLayer& p, const ChannelNetwork& n, const scene_ge
             }
           }
           piece.recipe.slabs.push_back(std::move(slab));
+        }
+        if (!piece.recipe.slabs.empty()) {
+          piece.id = ++id;
+          out.push_back(std::move(piece));
+        }
+      }
+      // The steps' boulders (W90): at each step-pool or cascade crest in this piece, a row of
+      // domes across the bed, each about the step's height across (the clasts that hold a step up
+      // are of its height: Chin 1999), a stated jitter of a fifth of that along and across, their
+      // tops 0.6 of their width over the ground at the lip and their bottoms buried a third.
+      {
+        PlacedPiece piece = base;
+        piece.recipe.part = ChannelPart::Boulder;
+        piece.recipe.uv_origin = {uv[0], uv[1]};
+        piece.recipe.surface = boulder_look;
+        for (u32 q = 0; q < link.step_at.size(); ++q) {
+          const u32 i = link.step_at[q];
+          if (i < r0 || i >= r1 + (k + 1 == pieces ? 1u : 0u) || i >= m) continue;
+          const ChannelReach r = reach_at(i);
+          if (r != ChannelReach::StepPool && r != ChannelReach::Cascade) continue;
+          const ChannelPoint& pt = link.line[i];
+          const f64 bed_w = bed_width(p, pt);
+          const f64 size = std::clamp(wide(link.step_height[q]), .25, 1.5);
+          const u32 count = std::max<u32>(1, static_cast<u32>(std::lround(bed_w / size)));
+          Rng draw(hash_combine(link.seed, 0xb0u + i));
+          for (u32 c = 0; c < count && piece.recipe.slabs.size() < k_max_slabs; ++c) {
+            const f64 d = size * (.8 + .4 * draw.unit());
+            const f64 across = (static_cast<f64>(c) + .5) / static_cast<f64>(count) - .5;
+            const f64 lateral = across * bed_w + .2 * size * (2 * draw.unit() - 1);
+            const f64 along = .2 * size * (2 * draw.unit() - 1);
+            const f64 cx = f[i].x + f[i].nx * lateral + f[i].nz * along;
+            const f64 cz = f[i].z + f[i].nz * lateral - f[i].nx * along;
+            ChannelSlab slab;
+            slab.rows = 7;
+            slab.columns = 7;
+            for (u32 rr = 0; rr < 7; ++rr)
+              for (u32 cc = 0; cc < 7; ++cc) {
+                const f64 u = static_cast<f64>(rr) / 3.0 - 1, v = static_cast<f64>(cc) / 3.0 - 1;
+                const f64 x = cx + .5 * d * (f[i].nz * u + f[i].nx * v);
+                const f64 z = cz + .5 * d * (-f[i].nx * u + f[i].nz * v);
+                i64 xm = 0, zm = 0;
+                const f64 g = b.ground_local(x, z, xm, zm);
+                const f64 dome = std::sqrt(std::max(0.0, 1 - .5 * (u * u + v * v)));
+                b.vertex(slab, x, z, g + k_lift_m + .6 * d * dome, g - d / 3);
+              }
+            piece.recipe.slabs.push_back(std::move(slab));
+          }
         }
         if (!piece.recipe.slabs.empty()) {
           piece.id = ++id;
@@ -299,9 +384,10 @@ bool solve_piece(const ChannelPiece& piece, assets::MeshData& out, std::string& 
   if (!piece_in_range(piece, error)) return false;
   assets::MeshData mesh;
   assets::Material material;
-  material.name = piece.part == ChannelPart::Bed   ? "channel bed"
-                  : piece.part == ChannelPart::Bar ? "channel bar"
-                                                   : "channel bank";
+  material.name = piece.part == ChannelPart::Bed       ? "channel bed"
+                  : piece.part == ChannelPart::Bar     ? "channel bar"
+                  : piece.part == ChannelPart::Boulder ? "channel boulder"
+                                                       : "channel bank";
   const auto& color = *piece.surface.color;
   material.base_color = {color[0], color[1], color[2], 1.0f};
   material.metallic = 0;
@@ -431,6 +517,7 @@ Vector<std::string_view> roles_of(ChannelPart part) {
   switch (part) {
     case ChannelPart::Bed: return {"gravel/bed", "rock/gravel", "rock/granite"};
     case ChannelPart::Bar: return {"sand/bar", "soil/parent", "soil/subsoil"};
+    case ChannelPart::Boulder: return {"rock/boulder", "rock/granite"};
     default: return {"soil/subsoil", "soil/topsoil"};
   }
 }
@@ -482,9 +569,10 @@ bool build_piece_container(const ChannelPiece& piece, const geometry::ClusterLod
   out.build_key = assets::generated_mesh_build_key(
       out.source_hash, assets::MeshGeneratorInputs{pack}, lod, page_bytes);
   out.generator = "channel";
-  out.generator_kind = piece.part == ChannelPart::Bed   ? "channel bed"
-                       : piece.part == ChannelPart::Bar ? "channel bar"
-                                                        : "channel bank";
+  out.generator_kind = piece.part == ChannelPart::Bed       ? "channel bed"
+                       : piece.part == ChannelPart::Bar     ? "channel bar"
+                       : piece.part == ChannelPart::Boulder ? "channel boulder"
+                                                            : "channel bank";
   out.generator_params = piece_json(piece);
   return true;
 }

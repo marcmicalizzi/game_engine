@@ -200,9 +200,96 @@ point samples and reads jagged, and the 1.5 m tributary fades to a line, as the 
 rings' sampling say it should. v35 itself was not re-cooked tonight (its set is 2.6 GB at 25 cm; see
 the roadmap row).
 
-**Steep reaches** (the owner's item 10: 30–40° faces, where a channel is colluvial or bedrock and has
-no bars or banks) get the same cut tonight — a gully is still cut into its slope — and the pieces'
-reach rules are as they were; telling a step-pool or bedrock reach from an alluvial one is W90's.
+**Steep reaches** (the owner's item 10: 30–40° faces) get the same cut — a gully is still cut into
+its slope — and since W90 their pieces follow their reach ([Reaches](#reaches)): nothing laid on a
+colluvial or bedrock reach, boulder steps on a step-pool or cascade one.
+
+## Reaches
+
+(2026-11-08, roadmap W90; the POC's v35 engine-needs, item 10, and the owner's walk, marks 2, 3 and
+8: on 30–40° faces the pieces stood as stepped slabs, with sand bars on mountainside reaches.) A
+mountain channel's form follows its slope (Montgomery & Buffington 1997): **dune-ripple, pool-riffle
+and plane-bed** reaches are alluvial and low-gradient, **step-pool and cascade** reaches are boulder
+beds of steep streams, and above those a channel is **bedrock** (the flow carries more than it is
+given, nothing stays) or, at the network's tips, **colluvial** (a hollow on a hillslope filled with
+what fell in). Each point of a link takes its reach from the ground's fall per metre along the line
+over a window centred on it, `reach_window_widths` (20) widths long and at least `reach_window_min_m`
+(20 m) — Montgomery & Buffington classify a reach over many channel widths, so a lattice bump or a
+single step does not reclass a point — by the layer's bounds:
+
+| reach | fall per metre | what is laid |
+|---|---|---|
+| dune-ripple | below `slope_pool_riffle` 0.001 | bed, bars |
+| pool-riffle | to `slope_plane_bed` 0.015 | bed, bars |
+| plane-bed | to `slope_step_pool` 0.03 | bed (Montgomery & Buffington's plane bed has no bars) |
+| step-pool | to `slope_cascade` 0.065 | bed, steps with boulders |
+| cascade | to `slope_steep` 0.2 | bed, steps with boulders |
+| bedrock | above, on a link below a junction | nothing: the cut's faces; steps in the cut, and falls |
+| colluvial | above, on a link that begins at a head | nothing: the cut's faces |
+
+The bounds and their sources are on [the grounding page](../experiments/channels.md#reaches); the
+confinement of the valley (Montgomery & Buffington's second axis) is not read. Each `WaterChannel`
+point carries its reach's code in `reach` (`engine.channels.ChannelReach`: 0 dune-ripple to 6
+colluvial), for the flowing water to read; S98's regimes do not read it yet.
+
+**Steps.** On step-pool, cascade and bedrock reaches a step every `L = w clamp(step_pool_widths
+sqrt(slope_step_pool / S), 1, 4)` metres — the 1 to 4 widths the step-pool literature reports, 2.5 at
+the step-pool's gentlest and one width from S = 0.2 up — of height `H = step_height_ratio S L` (1.5;
+Abrahams, Li & Atkinson 1995: steps stand between 1 and 2 times the slope over their spacing), at most
+4 m. Below a crest the pool lowers the cut's bed by H and the bed comes back up to the cut's line at
+the next crest, so the bed is never raised and its mean fall is the ground's; the drop is one stretch
+of the line where H is at least `fall_min_m` (1 m), and a rise of at most a half over the run below
+that. The steps are in the cut (`depth_m` per point), so the ground holds them; the water in the cut
+follows its bed, pooled behind each crest, and where a step drops a metre or more in one 0.5 m stretch
+the line falls steeper than 45 degrees, which the flowing water draws as a fall (water.md, "Channels").
+**Boulders** (`ChannelPart::Boulder`, a dome slab 7 by 7 points): at each step-pool and cascade crest a
+row across the bed, as many as the bed's width holds at the step's height (0.25–1.5 m, ±20 %), each
+jittered a fifth of its size along and across, standing 0.6 of its width over the ground at the lip and
+buried a third; they sample `rock/boulder` or `rock/granite`. They are the channel's own domes, not
+the scatter's rock kinds, which a capability may not reach (ADR-0046).
+
+## Mouths
+
+A link that reaches a water body (the scene's `water`, through the placements' exclusion: a point
+inside a body's outline whose ground is below its level, or anywhere in an open sea) **ends at its
+shoreline**: the line is cut at the first point under water, and its last point is put on the
+shoreline itself by bisecting the stretch that crosses it, the ground there being the body's level.
+A link begun under a body (a lake- or sea-floor head) is **dropped**; a stretch that leaves a body
+again (a lake's outlet) is a link of its own, appended after the network's links (`outlet`); a dry run
+shorter than `max(4 m, 2 w)` is dropped. Nothing of a link — cut, pieces, water — continues under
+the body.
+
+The cut ends in a **fan**: over the last `fan_widths` (3) widths its bed grades from where it was to
+half a thalweg under the body's level, and its width grows by `fan_spread` (1, so to twice) at the
+shore. The water's surface grades over the fan to the body's level at the shore, and on a link that
+ends in a body never stands below that level anywhere (the body backs it up). The source of the
+fan's length is on [the grounding page](../experiments/channels.md#mouths-and-confluences).
+
+**The bodies' outline is the exclusion's** (scene_gen.md, "Exclusion"): a fill body is its seed's
+box where the ground is below the level, not the flood `water::depth_at` traces, so a hollow below a
+lake's level within its box ends a link as the lake would. The placement generator reads them from
+`Context::exclusion`, which the host builds only with placement exclusion on: without it the pieces
+run on (the subcommand always reads the scene's bodies).
+
+## Confluences
+
+At each junction the incoming link of the largest contributing area is the **trunk**, which runs on
+as the link that begins there; every other incoming link is a **tributary** of that link
+(`ChannelLink::trunk`). Junctions are taken by the downstream link's area, largest first, ties by
+index. A tributary's water and pieces stop at its first point within half the trunk's width of the
+junction (`keep`), its bed is lowered — never raised — over its last `confluence_widths` (3) of its
+own widths to the trunk's bed, reaching it at that point and holding it to the junction, and its
+surface is lowered the same way to the trunk's surface there (keeping a centimetre of water), so the
+two ribbons meet at the trunk's bank line without overlapping. The tributary's cut runs on to the
+junction, where the tile set's union of sections opens it into the trunk's.
+
+## The planform
+
+The meander's wavelength, 10.9 widths (Leopold, Wolman & Miller 1964; 10–14 in Leopold & Wolman
+1960), and its amplitude vary along the line by `meander_wavelength_variation` (±25 %) and
+`meander_amplitude_variation` (±50 %) of themselves, a value noise of the link's seed with a knot each
+bend, so no two bends are alike; the owner's walk saw W86's single wavelength per link as a regular
+sawtooth from the air. The trough test that halves an offset climbing out of the valley is unchanged.
 
 ## Against the proof of concept
 
@@ -234,8 +321,17 @@ catchments that flow in across it. The captures and their verdict are in the W86
   placed pieces are closed, welded and outward").
 - `expand` equals the union of `tile` over any order, with ids 1, 2, … (test: "whole expansion
   equals any tile order").
-- The `WaterChannel` blocks have six fields, one value per point, and a surface that never rises
-  downstream (test: "the water's description has the WaterChannel shape"; the subcommand's test).
+- The `WaterChannel` blocks have seven fields (W86's six and W90's `reach`), one value per point, and
+  a surface that never rises downstream (test: "the water's description has the WaterChannel
+  shape"; the subcommand's test).
+- Reaches by the pinned bounds; steps 1–4 widths apart with H / L / S between 1 and 2; no bars and
+  boulders on a cascade; a 35° face colluvial with nothing laid (tests: "reaches by the pinned
+  bounds", "a step-pool's steps …", "a 35-degree face …").
+- A link ends at a lake's shoreline with nothing under its level, its fan grading the bed and the
+  water to the level; a drowned link is dropped; no bodies, the same network to the byte (test: "a
+  link ends at a lake's shoreline …"; `apps/engine_content/tests/channel_mouth_tests.cpp`).
+- A tributary ends at the trunk's banks, its bed lowered to the trunk's and its surface lowered,
+  never raised, to the trunk's (test: "a tributary meets its trunk …").
 - The cuts have the `TerrainCut` shape, one per link, the top at the ground under the line, a bed that
   never rises downstream and a thalweg of the hydraulic geometry's area; the water in the cut lies
   between that bed and the top (test: "the cuts have the TerrainCut shape and the water lies inside
@@ -257,9 +353,11 @@ catchments that flow in across it. The captures and their verdict are in the W86
 queries per placed vertex; the region's `max_samples` bounds it. The pieces are ordinary cluster-LOD
 scene instances. `ChannelPoint` (40 bytes) is pinned in the size table.
 
-**Not yet.** The cut is written by the subcommand and pasted by the author, not applied by the generator itself (the ground is built before the placements are); a procedural ground (the dunes) takes no cut; no waterfalls (a link's steep reach is
-step-pool rhythm only); D8 only (no D∞ spreading); heads by a local four-metre slope, not a slope
-averaged over the source area; no braided reaches.
+**Not yet.** The cut is written by the subcommand and pasted by the author, not applied by the generator itself (the ground is built before the placements are); a procedural ground (the dunes) takes no cut; D8 only (no D∞ spreading); heads by a local four-metre slope, not a slope
+averaged over the source area; no braided reaches; the valley's confinement is not read for the
+reach; **the network is planned again on every load** (24–32 s on v35, T73's finding): caching it as
+a derived node needs the ground's identity, which `scene_gen::Context` does not expose (W90's report
+asks for it); the mouths read the exclusion's box for a fill body, not its traced flood.
 
 ## Capability contract (ADR-0027)
 

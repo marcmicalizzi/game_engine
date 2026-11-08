@@ -10,6 +10,22 @@ enum ChannelPart : u8 {
   Bed
   Bar
   Bank
+  /// A step's boulders (W90): a row of domes across the bed at a step-pool or cascade reach's crest.
+  Boulder
+}
+
+/// **A reach's morphology** (Montgomery & Buffington 1997; channels.md, "Reaches"; W90), from the
+/// bed's smoothed slope: the code each WaterChannel point's `reach` carries (0 to 6, in this order).
+/// Bars on dune-ripple and pool-riffle reaches; boulder steps on step-pool and cascade; nothing laid
+/// on bedrock and colluvial reaches, where the cut's faces alone are the channel.
+enum ChannelReach : u8 {
+  DuneRipple
+  PoolRiffle
+  PlaneBed
+  StepPool
+  Cascade
+  Bedrock
+  Colluvial
 }
 
 /// How a part's set places its texels (R131): repeated every `tile_m`, or read at three tiles of
@@ -45,7 +61,7 @@ struct ChannelSurface @version(1) {
 /// docs/experiments/channels.md. Version 2 (W89): the ground is cut (`bank_slope`; the terrain's
 /// `cuts`, written by `engine-content channels`), the bed and bars lie in the cut, and no bank
 /// piece is placed: the banks are the cut's faces.
-struct ChannelLayer @version(2) {
+struct ChannelLayer @version(3) {
   name: string
   seed: u64 = 1
   /// The region drained, world metres, x and z, each a whole number of spacings.
@@ -111,6 +127,38 @@ struct ChannelLayer @version(2) {
   /// in and the terrain's cuts are written with (channels.md, "The cut"; the source in
   /// docs/experiments/channels.md).
   bank_slope: f32 = 1 @since(2)
+  /// **Reaches** (W90; channels.md, "Reaches"; the bounds and their sources in
+  /// docs/experiments/channels.md): a point's reach is read from the ground's fall per metre along
+  /// the line over a window centred on it, each_window_widths bankfull widths long and at least
+  /// each_window_min_m (5 to 50 widths; 0 to 200 m). The bounds between the classes, each a fall
+  /// per metre, ascending: dune-ripple below slope_pool_riffle, pool-riffle below
+  /// slope_plane_bed, plane-bed below slope_step_pool, step-pool below slope_cascade, cascade
+  /// below slope_steep, and above it bedrock — colluvial on a link that begins at a channel head.
+  reach_window_widths: f32 = 20 @since(3)
+  reach_window_min_m: f32 = 20 @since(3) @unit(m)
+  slope_pool_riffle: f32 = 0.001 @since(3)
+  slope_plane_bed: f32 = 0.015 @since(3)
+  slope_step_pool: f32 = 0.03 @since(3)
+  slope_cascade: f32 = 0.065 @since(3)
+  slope_steep: f32 = 0.2 @since(3)
+  /// A step's height over its spacing, divided by the slope (Abrahams, Li & Atkinson 1995: 1 to 2,
+  /// the steps of maximum flow resistance near 1.5): 1 to 2.
+  step_height_ratio: f32 = 1.5 @since(3)
+  /// A step at least this high drops in one stretch of the line, which the water draws as a fall
+  /// (water.md, "Channels"): 0.2 to 10 m.
+  fall_min_m: f32 = 1.0 @since(3) @unit(m)
+  /// **Mouths** (W90): a link that reaches a water body ends at its shoreline, its cut opening over
+  /// the last an_widths bankfull widths (1 to 20) into a fan whose width grows by an_spread
+  /// of itself (0 to 4) at the shore, its bed grading to the body's level.
+  fan_widths: f32 = 3 @since(3)
+  fan_spread: f32 = 1 @since(3)
+  /// **Confluences** (W90): a tributary's bed and water are lowered to the trunk's over its last
+  /// confluence_widths of its own widths (1 to 20).
+  confluence_widths: f32 = 3 @since(3)
+  /// **The planform's irregularity** (W90): each meander's wavelength and amplitude vary along the
+  /// line by up to these shares of themselves (0 to 0.5, 0 to 0.8), from a noise of the link's own.
+  meander_wavelength_variation: f32 = 0.25 @since(3)
+  meander_amplitude_variation: f32 = 0.5 @since(3)
   bed: ChannelSurface
   bars: ChannelSurface
   banks: ChannelSurface

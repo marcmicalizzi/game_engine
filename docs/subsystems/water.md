@@ -239,6 +239,7 @@ Turbidity adds `(0.9, 0.82, 0.68)` of scattering and `(0.03, 0.06, 0.14)` of abs
 | `seed` | 1 | the ripples' phases (u64; the material takes its two halves xor'd) |
 | `manning_n` | 0.04 | the bed's roughness; Chow's gravel-bed stream, 0.030–0.050 |
 | `shore_m`, `shallow`, `deep`, `depth_fade_m`, `roughness`, `absorption`, `scattering`, `transmission`, `turbidity` | as `WaterBody`'s | the optics, under a body's names with a body's defaults (not a shared sub-type: `WaterBody`'s fields are flat and append-only, and a sub-type would have moved them) |
+| `reach` | empty | version 2 (W90): the reach's code per point, 0 dune-ripple to 6 colluvial ([channels](channels.md#reaches)); not read by the regimes yet |
 
 Refused when the scene is read, with a sentence naming the channel: fewer than two points (`water channel "brook": it has fewer than two points; a channel runs from one point to another`), arrays of unequal length, a width or depth that is not positive, a slope negative where the line descends into or out of the point, a `manning_n` not positive, the optics out of a body's ranges. A build without the capability refuses a scene with any channel, as it does a body.
 

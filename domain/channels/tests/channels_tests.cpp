@@ -384,8 +384,9 @@ TEST_CASE("channels: the water's description has the WaterChannel shape") {
   CHECK(water_channels_json(p, n, 20000, .5f).as_array().size() == big);
   for (const JsonValue& o : all.as_array()) {
     REQUIRE(o.is_object());
-    CHECK(o.as_object().size() == 6);
-    for (const char* key : {"name", "points", "width_m", "depth_m", "slope", "seed"})
+    // W90 added `reach`, one code a point, to W86's six.
+    CHECK(o.as_object().size() == 7);
+    for (const char* key : {"name", "points", "width_m", "depth_m", "slope", "seed", "reach"})
       REQUIRE_MESSAGE(o.find(key) != nullptr, key);
     CHECK(o.find("name")->is_string());
     CHECK(o.find("seed")->is_uint());
@@ -435,8 +436,14 @@ TEST_CASE("channels: the cuts have the TerrainCut shape and the water lies insid
   for (const ChannelLink& link : n.links)
     links += link.line.size() >= 2;
   REQUIRE(cuts.as_array().size() == links);
-  REQUIRE(water.as_array().size() == links);  // every link drains at least 0 m2
+  // Every link drains at least 0 m2; a tributary wholly inside its trunk's banks carries none of
+  // its own (W90), and a tributary's water stops at the trunk's banks: a prefix of its cut.
+  u32 blocks = 0;
   for (u32 k = 0; k < links; ++k) {
+    const JsonValue* block = nullptr;
+    for (const JsonValue& b : water.as_array())
+      if (b.find("name")->as_string() == p.name + " link " + std::to_string(k)) block = &b;
+    if (block != nullptr) ++blocks;
     const JsonValue& o = cuts[k];
     CHECK(o.as_object().size() == 5);
     scene::TerrainCut cut;
@@ -449,8 +456,12 @@ TEST_CASE("channels: the cuts have the TerrainCut shape and the water lies insid
     REQUIRE(cut.depth_m.size() == cut.points.size());
     const ChannelLink& link = n.links[k];
     REQUIRE(link.line.size() == cut.points.size());
-    const auto& surface = water[k].find("points")->as_array();
-    REQUIRE(surface.size() == cut.points.size());
+    if (block == nullptr) {
+      CHECK(link.keep < 2);
+      continue;
+    }
+    const auto& surface = block->find("points")->as_array();
+    REQUIRE(surface.size() == std::min<u32>(link.keep, cut.points.size()));
     for (u32 i = 0; i < cut.points.size(); ++i) {
       const ChannelPoint& pt = link.line[i];
       const f64 top = cut.points[i].y;
@@ -463,18 +474,22 @@ TEST_CASE("channels: the cuts have the TerrainCut shape and the water lies insid
       const f64 d = static_cast<f64>(cut.depth_m[i]);
       const f64 thalweg =
           4 * mean / (m * w) >= 1 ? 2 * mean : .5 * m * w * (1 - std::sqrt(1 - 4 * mean / (m * w)));
-      // At least a thalweg under the top, and never more than two (the cap over a sill).
+      // At least a thalweg under the top, and never more than two (the cap over a sill) but for a
+      // step's pool (W90) and a tributary's grade to its trunk's bed (W90).
       CHECK(d >= thalweg - 2e-3);
-      CHECK(d <= 2 * thalweg + 2e-3);
+      const f64 grade = link.trunk != ~0u ? top - n.links[link.trunk].bed[0] : 0.0;
+      CHECK(d <= std::max(2 * thalweg + static_cast<f64>(link.step_depth[i]), grade) + 2e-3);
       if (i == 0 && 4 * mean / (m * w) < 1)
         CHECK(d * (w - d / m) == doctest::Approx(w * mean).epsilon(0.01));
       // The water's surface stands in the cut: over the bed, under the top of the bank.
+      if (i >= surface.size()) continue;
       f64 y = 0;
       REQUIRE(surface[i][1].get_f64(y));
       CHECK(y >= bed + .25 * thalweg - 2e-3);  // at least half the stage's depth (0.5)
       CHECK(y < top);
     }
   }
+  CHECK(blocks >= 1);
   // Written twice, the same text.
   CHECK(write_json(terrain_cuts_json(p, n)) == write_json(cuts));
 }
@@ -506,4 +521,287 @@ TEST_CASE("channels: the bed lies inside the cut's banks") {
   }
   CHECK(widest_bed > 0);
   CHECK(widest_bed < widest_channel);
+}
+
+// ---- W90: reaches, steps, mouths, confluences, the planform -------------------------------------
+
+namespace {
+// A steep notch: 12 % down its floor at x = 128 m, a cascade by Montgomery & Buffington's bounds.
+f64 steep(const void*, i64 x, i64 z) noexcept {
+  const f64 xx = static_cast<f64>(x) / 1000.0, zz = static_cast<f64>(z) / 1000.0;
+  return .12 * zz + .4 * std::abs(xx - 128);
+}
+// A 35-degree face (0.70 down the floor), the owner's mountainside.
+f64 face(const void*, i64 x, i64 z) noexcept {
+  const f64 xx = static_cast<f64>(x) / 1000.0, zz = static_cast<f64>(z) / 1000.0;
+  return .70 * zz + 1.2 * std::abs(xx - 128);
+}
+// Two valleys meeting: the trunk's floor at x = 128 m, a tributary's coming in at 45 degrees from
+// the east and joining it near z = 200 m; both fall 5 % toward z = 0.
+f64 forked(const void*, i64 x, i64 z) noexcept {
+  const f64 xx = static_cast<f64>(x) / 1000.0, zz = static_cast<f64>(z) / 1000.0;
+  const f64 trunk = std::abs(xx - 128);
+  const f64 trib = zz > 200 ? std::abs(xx - (128 + (zz - 200))) / 1.4142135623730951 : 1e9;
+  return .05 * zz + .15 * std::min(trunk, trib);
+}
+scene::WaterBody lake(f64 level, f64 z0, f64 z1) {
+  scene::WaterBody b;
+  b.name = "lake";
+  b.level_m = level;
+  for (const auto& [x, z] : {std::pair<f64, f64>{-10, z0}, {300, z0}, {300, z1}, {-10, z1}})
+    b.shape.polygon.push_back(WorldPos{x, 0, z});
+  return b;
+}
+}  // namespace
+
+TEST_CASE("channels: reaches by the pinned bounds (Montgomery & Buffington 1997)") {
+  const ChannelLayer p = layer();
+  // The defaults are the bounds the grounding page pins (f32, so each is read as the layer holds it).
+  CHECK(p.slope_pool_riffle == .001f);
+  CHECK(p.slope_plane_bed == .015f);
+  CHECK(p.slope_step_pool == .03f);
+  CHECK(p.slope_cascade == .065f);
+  CHECK(p.slope_steep == .2f);
+  auto at = [](f32 v) { return static_cast<f64>(v); };
+  CHECK(reach_of(p, .0005, false) == ChannelReach::DuneRipple);
+  CHECK(reach_of(p, at(p.slope_pool_riffle), false) == ChannelReach::PoolRiffle);
+  CHECK(reach_of(p, .0149, false) == ChannelReach::PoolRiffle);
+  CHECK(reach_of(p, at(p.slope_plane_bed), false) == ChannelReach::PlaneBed);
+  CHECK(reach_of(p, at(p.slope_step_pool), false) == ChannelReach::StepPool);
+  CHECK(reach_of(p, at(p.slope_cascade), false) == ChannelReach::Cascade);
+  CHECK(reach_of(p, at(p.slope_steep), false) == ChannelReach::Bedrock);
+  CHECK(reach_of(p, .19, true) == ChannelReach::Cascade);
+  CHECK(reach_of(p, .7, true) == ChannelReach::Colluvial);
+  // Down the gentle valley (0.6 %) every point is pool-riffle or plane-bed or flatter; down the
+  // 12 % notch the middle of the line, a window from either end, is a cascade.
+  ChannelLayer q = layer();
+  q.head_threshold_m2 = 300;
+  ChannelNetwork n;
+  std::string error;
+  REQUIRE(plan_channels(q, ground(gentle), 0, nullptr, n, error));
+  for (const ChannelLink& link : n.links) {
+    REQUIRE(link.reach.size() == link.line.size());
+    for (u8 r : link.reach)
+      CHECK(r <= static_cast<u8>(ChannelReach::PlaneBed));
+  }
+  REQUIRE(plan_channels(p, ground(steep), 0, nullptr, n, error));
+  REQUIRE(n.links.size() == 1);
+  const ChannelLink& link = n.links[0];
+  CHECK(link.reach[link.reach.size() / 2] == static_cast<u8>(ChannelReach::Cascade));
+}
+
+TEST_CASE("channels: a step-pool's steps by their spacing and height, boulders on them") {
+  const ChannelLayer p = layer();
+  ChannelNetwork n;
+  std::string error;
+  REQUIRE(plan_channels(p, ground(steep), 0, nullptr, n, error));
+  REQUIRE(n.links.size() == 1);
+  const ChannelLink& link = n.links[0];
+  REQUIRE(link.step_at.size() >= 4);
+  REQUIRE(link.step_height.size() == link.step_at.size());
+  Vector<f64> s(link.line.size(), 0.0);
+  for (u32 i = 1; i < link.line.size(); ++i)
+    s[i] = s[i - 1] + std::hypot(link.line[i].at.x - link.line[i - 1].at.x,
+                                 link.line[i].at.z - link.line[i - 1].at.z);
+  for (u32 q = 0; q + 1 < link.step_at.size(); ++q) {
+    const u32 i = link.step_at[q], j = link.step_at[q + 1];
+    const f64 w = static_cast<f64>(link.line[i].width_m);
+    const f64 spacing = s[j] - s[i];
+    // 1 to 4 widths (the step-pool literature), to the line's step either way.
+    CHECK(spacing >= w - static_cast<f64>(p.step_m) - 1e-9);
+    CHECK(spacing <= 4 * w + static_cast<f64>(p.step_m) + 1e-9);
+    // H / L / S between 1 and 2 (Abrahams et al. 1995), at the layer's 1.5, over the line's 12 %.
+    const f64 ratio = static_cast<f64>(link.step_height[q]) / spacing / .12;
+    CHECK(ratio > 1.0);
+    CHECK(ratio < 2.0);
+  }
+  // The pools lower the bed, never raise it; a step is at most its height deep.
+  for (u32 i = 0; i < link.line.size(); ++i) {
+    CHECK(link.step_depth[i] >= 0.0f);
+    CHECK(link.step_depth[i] <= 4.0f);
+  }
+  // Pieces: the bed and the steps' boulders, no bars on a cascade.
+  Vector<PlacedPiece> pieces;
+  REQUIRE(place_pieces(p, n, ground(steep), 32, pieces, error));
+  u32 bars = 0, boulders = 0;
+  for (const PlacedPiece& piece : pieces) {
+    bars += piece.recipe.part == ChannelPart::Bar;
+    if (piece.recipe.part == ChannelPart::Boulder) {
+      boulders += piece.recipe.slabs.size();
+      assets::MeshData mesh;
+      REQUIRE_MESSAGE(solve_piece(piece.recipe, mesh, error), error);
+      check_closed(mesh, piece.recipe.slabs.size());
+    }
+  }
+  CHECK(bars == 0);
+  CHECK(boulders >= link.step_at.size());
+}
+
+TEST_CASE("channels: a 35-degree face is colluvial, cut and nothing laid") {
+  ChannelLayer p = layer();
+  ChannelNetwork n;
+  std::string error;
+  REQUIRE(plan_channels(p, ground(face), 0, nullptr, n, error));
+  REQUIRE_FALSE(n.links.empty());
+  u32 colluvial = 0, points = 0;
+  for (const ChannelLink& link : n.links)
+    for (u32 i = 0; i < link.reach.size(); ++i) {
+      ++points;
+      colluvial += link.reach[i] == static_cast<u8>(ChannelReach::Colluvial);
+    }
+  CHECK(colluvial == points);
+  Vector<PlacedPiece> pieces;
+  REQUIRE(place_pieces(p, n, ground(face), 32, pieces, error));
+  CHECK(pieces.empty());
+  // The cut is still written: a gully is cut into its slope.
+  CHECK(terrain_cuts_json(p, n).as_array().size() == n.links.size());
+}
+
+TEST_CASE("channels: a link ends at a lake's shoreline, its fan grading to the level") {
+  const ChannelLayer p = layer();
+  std::string error;
+  // The notch falls 5 % toward z = 0; a lake at 5 m stands over z < 100 m.
+  const Vector<scene::WaterBody> bodies{lake(5.0, -10, 100)};
+  scene_gen::Exclusion water;
+  REQUIRE(water.build({}, {bodies.data(), bodies.size()}, {}, &error));
+  ChannelNetwork dry, wet;
+  REQUIRE(plan_channels(p, ground(notch), 0, nullptr, dry, error));
+  REQUIRE(plan_channels(p, ground(notch), 0, nullptr, wet, error, &water));
+  REQUIRE(wet.links.size() == 1);
+  const ChannelLink& link = wet.links[0];
+  CHECK(link.mouth);
+  CHECK(wet.water.mouths == 1);
+  CHECK(wet.water.points_removed > 100);
+  // The line stops at the shoreline: its last point within a millimetre of z = 100, its ground at
+  // the level, and no point below it.
+  CHECK(link.line.back().at.z == doctest::Approx(100).epsilon(1e-4));
+  CHECK(link.mouth_level == doctest::Approx(5.0).epsilon(1e-3));
+  for (const ChannelPoint& pt : link.line)
+    CHECK(pt.at.y >= 5.0 - 1e-3);
+  // The fan: the bed at the shore half a thalweg under the level, and the cut wider there.
+  const JsonValue cuts = terrain_cuts_json(p, wet);
+  const JsonValue blocks = water_channels_json(p, wet, 0, .5f, true);
+  REQUIRE(cuts.as_array().size() == 1);
+  REQUIRE(blocks.as_array().size() == 1);
+  const auto& widths = cuts[0].find("width_m")->as_array();
+  f64 w_end = 0, w_up = 0;
+  REQUIRE(widths[widths.size() - 1].get_f64(w_end));
+  REQUIRE(widths[widths.size() / 2].get_f64(w_up));
+  CHECK(w_end > 1.9 * static_cast<f64>(link.line.back().width_m));
+  CHECK(std::fabs(w_up - static_cast<f64>(link.line[widths.size() / 2].width_m)) <= 1e-3);
+  const ChannelPoint& end = link.line.back();
+  const f64 thalweg = 2 * static_cast<f64>(end.depth_m) / 2;  // a bound, below
+  CHECK(link.bed.back() < 5.0);
+  CHECK(link.bed.back() > 5.0 - 2 * thalweg - 1e-3);
+  // The water meets the level at the shore, and stands nowhere below it.
+  const auto& points = blocks[0].find("points")->as_array();
+  f64 y = 0;
+  REQUIRE(points[points.size() - 1][1].get_f64(y));
+  CHECK(y == doctest::Approx(5.0).epsilon(1e-3));
+  for (const JsonValue& at : points) {
+    f64 z = 0;
+    REQUIRE(at[2].get_f64(z));
+    CHECK(z >= 100 - 1e-3);
+  }
+  // Pieces: none under the lake.
+  Vector<PlacedPiece> pieces;
+  REQUIRE(place_pieces(p, wet, ground(notch), 32, pieces, error));
+  REQUIRE_FALSE(pieces.empty());
+  for (const PlacedPiece& piece : pieces)
+    for (const ChannelSlab& slab : piece.recipe.slabs)
+      for (f32 z : slab.z)
+        CHECK(piece.origin.z + static_cast<f64>(z) >= 100 - 2.0);
+  // A lake over the whole valley: the link begins under it and is dropped.
+  const Vector<scene::WaterBody> drowned{lake(1000.0, -10, 600)};
+  scene_gen::Exclusion all;
+  REQUIRE(all.build({}, {drowned.data(), drowned.size()}, {}, &error));
+  ChannelNetwork none;
+  REQUIRE(plan_channels(p, ground(notch), 0, nullptr, none, error, &all));
+  CHECK(none.water.dropped == 1);
+  CHECK(water_channels_json(p, none, 0, .5f, true).as_array().empty());
+  CHECK(terrain_cuts_json(p, none).as_array().empty());
+  // No bodies, an empty exclusion: the network is the one planned with none, byte for byte.
+  scene_gen::Exclusion empty;
+  REQUIRE(empty.build({}, {}, {}, &error));
+  ChannelNetwork same;
+  REQUIRE(plan_channels(p, ground(notch), 0, nullptr, same, error, &empty));
+  CHECK(same_network(same, dry));
+  CHECK(write_json(terrain_cuts_json(p, same)) == write_json(terrain_cuts_json(p, dry)));
+}
+
+TEST_CASE("channels: a tributary meets its trunk at the trunk's surface, without overlap") {
+  ChannelLayer p = layer();
+  p.head_threshold_m2 = 300;
+  ChannelNetwork n;
+  std::string error;
+  REQUIRE(plan_channels(p, ground(forked), 0, nullptr, n, error));
+  CHECK(n.water.confluences >= 1);
+  const JsonValue blocks = water_channels_json(p, n, 0, .5f, true);
+  // The blocks by link name.
+  auto block_of = [&](u32 k) -> const JsonValue* {
+    const std::string name = p.name + " link " + std::to_string(k);
+    for (const JsonValue& b : blocks.as_array())
+      if (b.find("name")->as_string() == name) return &b;
+    return nullptr;
+  };
+  u32 tributaries = 0;
+  for (u32 k = 0; k < n.links.size(); ++k) {
+    const ChannelLink& trib = n.links[k];
+    if (trib.trunk == ~0u) continue;
+    ++tributaries;
+    const ChannelLink& down = n.links[trib.trunk];
+    const WorldPos at = down.line[0].at;
+    // It ends at the junction, the trunk's bed is reached from above, never raised to.
+    CHECK(trib.line.back().at.x == at.x);
+    CHECK(trib.line.back().at.z == at.z);
+    CHECK(trib.bed.back() <= down.bed[0] + 1e-9);
+    CHECK(trib.keep < trib.line.size());
+    const JsonValue* tb = block_of(k);
+    const JsonValue* db = block_of(trib.trunk);
+    if (tb == nullptr || db == nullptr) continue;  // inside the trunk's banks whole
+    const auto& points = tb->find("points")->as_array();
+    CHECK(points.size() == trib.keep);
+    // No point of its water within the trunk's banks at the junction.
+    for (const JsonValue& q : points) {
+      f64 x = 0, z = 0;
+      REQUIRE(q[0].get_f64(x));
+      REQUIRE(q[2].get_f64(z));
+      CHECK(std::hypot(x - at.x, z - at.z) >= .5 * static_cast<f64>(down.line[0].width_m) - 1e-6);
+    }
+    // Its last surface is lowered toward the trunk's at the junction and never raised: no higher
+    // than the tributary's own water there, and no lower than the lower of the two.
+    ChannelNetwork alone = n;
+    alone.links[k].trunk = ~0u;
+    const JsonValue own_blocks = water_channels_json(p, alone, 0, .5f, true);
+    f64 own = 0;
+    for (const JsonValue& b : own_blocks.as_array())
+      if (b.find("name")->as_string() == p.name + " link " + std::to_string(k))
+        REQUIRE((*b.find("points"))[points.size() - 1][1].get_f64(own));
+    f64 last = 0, trunk_y = 0;
+    REQUIRE(points[points.size() - 1][1].get_f64(last));
+    REQUIRE((*db->find("points"))[0][1].get_f64(trunk_y));
+    CHECK(last <= own + 1e-9);
+    CHECK(last >= std::min(own, trunk_y) - 1e-3);
+    if (own > trunk_y) CHECK(std::fabs(last - trunk_y) <= 2e-3);  // meets it at the banks
+    MESSAGE("tributary " << k << ": its own surface " << own << " m, graded " << last
+                         << " m, the trunk's at the junction " << trunk_y << " m");
+  }
+  CHECK(tributaries >= 1);
+  // Written twice, one text.
+  CHECK(write_json(water_channels_json(p, n, 0, .5f, true)) == write_json(blocks));
+}
+
+TEST_CASE("channels: no two bends alike") {
+  ChannelLayer p = layer();
+  p.head_threshold_m2 = 300;
+  ChannelNetwork varied, regular, again;
+  std::string error;
+  REQUIRE(plan_channels(p, ground(gentle), 7, nullptr, varied, error));
+  REQUIRE(plan_channels(p, ground(gentle), 7, nullptr, again, error));
+  CHECK(same_network(varied, again));
+  p.meander_wavelength_variation = 0;
+  p.meander_amplitude_variation = 0;
+  REQUIRE(plan_channels(p, ground(gentle), 7, nullptr, regular, error));
+  CHECK(varied.heads == regular.heads);
+  CHECK_FALSE(same_network(varied, regular));
 }

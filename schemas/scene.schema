@@ -1375,7 +1375,7 @@ struct WaterBody @version(5) {
 /// points falls at 45 degrees or steeper the water is in free fall and that stretch is a waterfall.
 /// Refused with a sentence: fewer than two points, arrays of unequal length, a width or depth that
 /// is not positive, a slope that is negative where the line descends.
-struct WaterChannel @version(1) {
+struct WaterChannel @version(2) {
   name: string
   /// The centreline, downstream, world positions; each point's y is the **water surface's**
   /// height there.
@@ -1404,6 +1404,10 @@ struct WaterChannel @version(1) {
   scattering: vec3?
   transmission: f32 = 1
   turbidity: f32 = 0
+  /// **The reach** at each point (W90; channels.md, "Reaches"): `engine.channels.ChannelReach`'s
+  /// code, 0 dune-ripple, 1 pool-riffle, 2 plane-bed, 3 step-pool, 4 cascade, 5 bedrock, 6
+  /// colluvial (Montgomery & Buffington 1997), one per point; empty where the writer did not say.
+  reach: u8[] @since(2)
 }
 
 /// One bed of a formation's sequence (`Formation`; renderer.md, "Formation bands"; the grounding,
