@@ -46,6 +46,7 @@ scene_gen::Context PlacementTiles::context_for(const Entry& entry, u8 ring,
   context.dir = entry.source->dir;
   context.where = entry.source->where;
   if (ground_ != nullptr) context.ground = ground_->provider().view();
+  if (!scene_->terrain.exclusion.empty()) context.exclusion = &scene_->terrain.exclusion;
   if (stand_ != nullptr && !scene_ground) context.stand = stand_->provider().view();
   context.earlier = std::span<const scene_gen::Footprint>(earlier_.data(), earlier_.size());
   context.world = &world_rings_;

@@ -22,4 +22,4 @@ engine_module(NAME litter LAYER domain OPTIONAL WHOLE_ARCHIVE
   SOURCES src/litter.cpp src/container.cpp src/placement.cpp)
 
 engine_module_tests(NAME litter
-  SOURCES tests/litter_tests.cpp tests/size_table.cpp tests/determinism_tests.cpp)
+  SOURCES tests/litter_tests.cpp tests/litter_exclusion_tests.cpp tests/size_table.cpp tests/determinism_tests.cpp)

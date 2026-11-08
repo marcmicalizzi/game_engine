@@ -890,6 +890,8 @@ capability and uses the existing scree fragment kernel. Existing `.rock.json` ou
 10 keys are unchanged. [Research and bounds](../experiments/rockfall-deposits.md) distinguish
 observed talus geometry from authored controls.
 
+**Exclusion (G135).** A patch whose four corners and middle are all over a terrain hole is dropped from both the whole read and its tile ([scene_gen](scene_gen.md#exclusion)); gravel and rubble in a stream's bed or under water are what a bed is, so channels and water are not asked.
+
 `engine.rocks.DepositLayer` supplies a finite `region_min` / `region_max` in world metres,
 `spacing_m`, an explicit `max_samples`, and the source, repose, runout and channel controls.
 `plan_deposits` samples static `scene_gen::Ground` in whole millimetres, routes D8 contributing

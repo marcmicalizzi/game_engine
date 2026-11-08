@@ -179,6 +179,14 @@ bool tile(void* state, scene_gen::TileCoord at, const scene_gen::Context& contex
         }
       }
       if (excluded) continue;
+      // G135: nothing grows in a hole, a stream's bed and banks or under water, and a bank's
+      // grass thins towards it (scene_gen.md, "Exclusion"). Not asked of a scene with none, so its
+      // density is the mask's to the bit.
+      if (context.exclusion != nullptr) {
+        const i64 jx_mm = scene_gen::nearest_mm(px), jz_mm = scene_gen::nearest_mm(pz);
+        if (context.excluded_mm(jx_mm, jz_mm)) continue;
+        density *= static_cast<f32>(context.riparian_factor_mm(jx_mm, jz_mm));
+      }
       // Unbiased stochastic interpolation between adjacent authored density classes. The field
       // is identical in all rings; ring and request order never participate in the hash.
       u32 upper = 0;

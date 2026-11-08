@@ -13,12 +13,13 @@
 # generator is offered, and `geometry` for the rings: a ground's ring chunk is a cluster LOD DAG the
 # renderer uploads, so the rings' table names `geometry::ClusterLodMesh`.
 #
+# `src/exclusion.cpp` (G135) is where nothing is placed: the holes, channels and water a generator leaves empty.
 # `src/terrain_features.cpp` is the one piece of ground arithmetic here: a scene terrain's ridges and
 # basins, which every ground provider adds the same way, beside the entry's type in one copy; and
 # `src/terrain_holes.cpp` its holes (W87), which the renderer's meshes and the collision both read.
 engine_module(NAME scene_gen LAYER domain
   DEPS base containers math hash json schema schemas jobs log geometry
-  SOURCES src/registry.cpp src/terrain_features.cpp src/terrain_holes.cpp)
+  SOURCES src/registry.cpp src/terrain_features.cpp src/terrain_holes.cpp src/exclusion.cpp)
 
 engine_module_tests(NAME scene_gen
-  SOURCES tests/scene_gen_tests.cpp tests/size_table.cpp tests/terrain_holes_tests.cpp)
+  SOURCES tests/scene_gen_tests.cpp tests/size_table.cpp tests/terrain_holes_tests.cpp tests/exclusion_tests.cpp)

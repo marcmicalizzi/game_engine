@@ -173,6 +173,9 @@ bool generate(const Entry& e, const sg::Context& c, const sg::TileCoord* tile, s
           static_cast<f64>(p.density) *
           (1 - static_cast<f64>(p.irregularity) * field(hash_combine(seed, 91), lx, lz));
       const i64 xm = sg::nearest_mm(wx), zm = sg::nearest_mm(wz);
+      // G135: no ground, no plant -- a hole only. The water garden lives in water and a stream's
+      // bank, which is the point of it, so the channels and the bodies are not asked.
+      if (c.excluded_mm(xm, zm, sg::k_exclude_holes)) continue;
       if (p.mask_layer >= 0) {
         const i64 mx = sg::mask_floor_div(sg::mask_floor_div(xm, info.spacing_mm), info.cells);
         const i64 mz = sg::mask_floor_div(sg::mask_floor_div(zm, info.spacing_mm), info.cells);

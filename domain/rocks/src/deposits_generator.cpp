@@ -163,6 +163,19 @@ bool open(const JsonValue& params, const scene_gen::Context& context, void** sta
 }
 void close(void* state) noexcept { delete static_cast<Entry*>(state); }
 bool allowed(const Entry& e, const PatchPlace& p, const scene_gen::Context& c) {
+  // G135: a patch whose every corner and middle is over a hole has no ground to lie on (only holes:
+  // gravel and rubble in a stream's bed are what a stream is). A scene with none asks nothing.
+  if (c.exclusion != nullptr) {
+    const f64 x0 = p.placement.position.x, z0 = p.placement.position.z;
+    bool all = true;
+    for (u32 k = 0; k < 5 && all; ++k) {
+      const f64 fx = k == 4 ? 0.5 : static_cast<f64>(k & 1u);
+      const f64 fz = k == 4 ? 0.5 : static_cast<f64>(k >> 1);
+      all = c.excluded_mm(scene_gen::nearest_mm(x0 + fx * p.width),
+                          scene_gen::nearest_mm(z0 + fz * p.depth), scene_gen::k_exclude_holes);
+    }
+    if (all) return false;
+  }
   if (!e.layer.avoid_earlier) return true;
   for (const auto& f : c.earlier) {
     const f64 x = static_cast<f64>(f.x_mm) / 1000.0 - p.placement.position.x;

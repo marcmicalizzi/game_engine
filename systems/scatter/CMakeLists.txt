@@ -30,7 +30,7 @@ engine_module(NAME scatter LAYER systems OPTIONAL WHOLE_ARCHIVE
 # scatter_seam_tests.cpp: the exclusion by earlier placements and the moving ground, on the placer
 # and through the world's placements consumer (world: a non-capability module).
 engine_module_tests(NAME scatter
-  SOURCES tests/scatter_tests.cpp tests/scatter_scene_tests.cpp tests/scatter_seam_tests.cpp
+  SOURCES tests/scatter_tests.cpp tests/scatter_scene_tests.cpp tests/scatter_seam_tests.cpp tests/scatter_exclusion_tests.cpp
           tests/size_table.cpp
   DEPS renderer gfx world)
 
