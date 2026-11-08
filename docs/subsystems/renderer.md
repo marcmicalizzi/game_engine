@@ -883,10 +883,20 @@ sky and flora tables (about 640 MiB over `ground prepare`, `ground start`, `sess
 cooked load still makes: the container is found by the hash of the GLB's bytes, and nothing cheaper
 names those bytes yet (a scene file's `hash` field is checked against it, not trusted in its place).
 
-**What did not move**: `GpuScene::create`'s upload (`gpu_scene.cpp`) is still serial on the main
-thread after the load — reading each `.tex` and uploading it — so uploads do not yet overlap the
-next mesh's read; that is the residency work's ([04 §4.9](../plan/04-renderer.md#49-streaming-and-residency),
-W47), which also bounds what is loaded to the spawn's neighbourhood.
+**The built textures are read ahead of their upload** (`TexturePrefetch`, gpu_scene.cpp; T73):
+`upload materials` plans the `.tex` keys `find_built_textures` will read, in its order (mesh order,
+each key once), and reads them in windows of 128 files on eight reader threads of its own job
+system's efficiency pool — which a waiting main thread never helps, so it uploads while they read —
+the next window while this one is uploaded; at most two windows' bytes are held beyond what the
+upload held before. A key the plan did not hold (named by path, hashed at the upload), or one a
+later mesh asks for after its window went, is read where it always was. The bytes are the file's,
+so nothing uploaded changes.
+
+**What did not move**: the uploads themselves are still serial on the main thread after the load
+— each `gfx::upload_image_2d_levels` makes its own staging buffer and waits for its own copy —
+and nothing is uploaded while the meshes load; that is the residency work's
+([04 §4.9](../plan/04-renderer.md#49-streaming-and-residency), W47), which also bounds what is
+loaded to the spawn's neighbourhood.
 ## Materials
 
 ### Native authored terrain materials

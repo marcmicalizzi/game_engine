@@ -1,6 +1,7 @@
 #include <core/base/assert.h>
 #include <core/containers/hash_map.h>
 #include <core/hash/hash.h>
+#include <core/jobs/job_system.h>
 #include <core/profiling/startup_trace.h>  // stages only: timing, never logic
 #include <core/time/time.h>
 #include <domain/geometry/cluster_lod.h>
@@ -20,10 +21,13 @@
 #include <systems/renderer/terrain_materials.h>
 
 #include <algorithm>
+#include <atomic>
 #include <bit>
 #include <cmath>
 #include <cstring>
 #include <limits>
+#include <memory>
+#include <optional>
 #include <renderer_log.h>
 
 namespace engine::renderer {
@@ -295,6 +299,151 @@ struct BuiltImage {
   bool normal_variance = false;
 };
 
+// **The built textures read ahead of the upload, on a pool** (T73; renderer.md, "What the load
+// reads"): `upload materials` read every `.tex` whole on the main thread, one after another between
+// two uploads — 5,392 files, 3.3 GB for v35. The plan is the keys `find_built_textures` would read,
+// in the order it reads them (mesh order, each key once: a later mesh finds an uploaded key in the
+// scene's table and reads nothing); they are read in windows of `k_window` files on the prefetch's
+// own job system, the next window while this one is uploaded, so at most two windows' bytes are
+// held beside what the upload holds anyway. `take` hands a planned key's bytes over, waiting for
+// its window if it must; a key it never planned, or one already handed over, is the caller's to
+// read, as it always was. The bytes are the file's, so nothing uploaded changes.
+class TexturePrefetch {
+ public:
+  static constexpr u32 k_window = 128;
+  static constexpr u32 k_readers = 8;
+  enum class Taken : u8 { not_planned, ok, failed };
+
+  explicit TexturePrefetch(const SceneData& data) {
+    HashMap<u64, u32> planned;
+    for (const SourceMesh& mesh : data.sources) {
+      if (mesh.texture_ddc.empty() || mesh.textures.size() != mesh.data.images.size()) continue;
+      Vector<bool> sampled(mesh.data.images.size(), false);
+      for (const assets::Material& material : mesh.data.materials) {
+        for (const i32 image :
+             {material.base_color_image, material.metallic_roughness_image, material.normal_image,
+              material.occlusion_image, material.emissive_image}) {
+          if (image >= 0 && static_cast<u32>(image) < sampled.size())
+            sampled[static_cast<u32>(image)] = true;
+        }
+      }
+      for (u32 i = 0; i < sampled.size(); ++i) {
+        const u64 key = mesh.textures[i].key;  // zero: named by path, hashed at the upload
+        if (!sampled[i] || key == 0 || planned.find_value(key) != nullptr) continue;
+        planned.insert(key, items_.size());
+        Item item;
+        item.key = key;
+        item.path = texture::texture_cache_path(mesh.texture_ddc, key);
+        items_.push_back(std::move(item));
+      }
+    }
+    index_ = std::move(planned);
+    window_count_ = (items_.size() + k_window - 1) / k_window;
+    if (window_count_ == 0) return;
+    windows_ = std::make_unique<Window[]>(window_count_);
+    for (u32 w = 0; w < window_count_; ++w) {
+      windows_[w].self = this;
+      windows_[w].begin = w * k_window;
+      windows_[w].end = std::min<u32>(items_.size(), (w + 1) * k_window);
+    }
+    // The efficiency pool, which a waiting outside thread never helps (jobs.md): the main thread
+    // uploads while the readers read, and never ends up reading the next window itself.
+    jobs::JobSystemConfig config;
+    config.performance_workers = 1;
+    config.efficiency_workers = k_readers;
+    pool_.emplace(config);
+  }
+  ~TexturePrefetch() {
+    // Every window scheduled is waited for before its items go: a worker may still be reading.
+    for (u32 w = 0; w < window_count_; ++w)
+      if (windows_[w].scheduled) pool_->wait(windows_[w].counter);
+  }
+  TexturePrefetch(const TexturePrefetch&) = delete;
+  TexturePrefetch& operator=(const TexturePrefetch&) = delete;
+
+  Taken take(u64 key, texture::TextureData& out, std::string& error) {
+    const u32* at = index_.find_value(key);
+    if (at == nullptr) return Taken::not_planned;
+    Item& item = items_[*at];
+    if (item.taken) return Taken::not_planned;
+    const u32 w = *at / k_window;
+    schedule(w);
+    if (w + 1 < window_count_) schedule(w + 1);  // the next window read while this one uploads
+    if (!windows_[w].waited) {
+      pool_->wait(windows_[w].counter);
+      windows_[w].waited = true;
+      // The windows before this one are done with: what nobody took goes now, and a mesh that
+      // asks for one of them later (an earlier mesh refused before reaching it) reads it itself.
+      for (; released_ < w; ++released_) {
+        Window& done = windows_[released_];
+        if (done.scheduled && !done.waited) {
+          pool_->wait(done.counter);  // a window read ahead and never asked for
+          done.waited = true;
+        }
+        for (u32 i = windows_[released_].begin; i < windows_[released_].end; ++i) {
+          items_[i].data = texture::TextureData{};
+          items_[i].taken = true;
+        }
+      }
+    }
+    item.taken = true;
+    if (!item.ok) {
+      error = std::move(item.error);
+      return Taken::failed;
+    }
+    out = std::move(item.data);
+    return Taken::ok;
+  }
+
+ private:
+  struct Item {
+    u64 key = 0;
+    std::string path;
+    texture::TextureData data;
+    std::string error;
+    bool ok = false;
+    bool taken = false;
+  };
+  struct Window {
+    TexturePrefetch* self = nullptr;
+    u32 begin = 0;
+    u32 end = 0;
+    std::atomic<u32> next{0};
+    jobs::Counter counter;
+    bool scheduled = false;
+    bool waited = false;
+  };
+  // One runner a thread, each taking the window's next file (scene.cpp's `run_jobs`, for the same
+  // reason: never more jobs than the pool's queues hold).
+  static void run(void* data) {
+    Window& window = *static_cast<Window*>(data);
+    for (u32 i = window.begin + window.next.fetch_add(1, std::memory_order_relaxed); i < window.end;
+         i = window.begin + window.next.fetch_add(1, std::memory_order_relaxed)) {
+      Item& item = window.self->items_[i];
+      item.ok = texture::read_texture_file(item.path, item.data, &item.error);
+    }
+  }
+  void schedule(u32 w) {
+    Window& window = windows_[w];
+    if (window.scheduled) return;
+    window.scheduled = true;
+    const u32 readers = std::max(pool_->worker_count(jobs::Pool::Efficiency), 1u);
+    const u32 runners = std::min<u32>(window.end - window.begin, readers);
+    Vector<jobs::Job> list;
+    for (u32 r = 0; r < runners; ++r)
+      list.push_back(jobs::Job{&TexturePrefetch::run, &window, &window.counter});
+    pool_->schedule(jobs::Pool::Efficiency, std::span<const jobs::Job>(list.data(), list.size()),
+                    window.counter);
+  }
+
+  Vector<Item> items_;
+  HashMap<u64, u32> index_;
+  std::unique_ptr<Window[]> windows_;
+  u32 window_count_ = 0;
+  u32 released_ = 0;
+  std::optional<jobs::JobSystem> pool_;
+};
+
 // A mesh's built textures (docs/subsystems/texture.md, "In the renderer"): one per image the
 // resolve samples — base colour, metallic-roughness, normal, occlusion, emissive — found in the
 // derived-data root through the container's records, and read with their identity checked against
@@ -307,7 +456,8 @@ struct BuiltImage {
 // its identity was checked when the mesh that uploaded it read it, and the file is the same file.
 // `normal_filter` (R97's tunable) off reads a normal map's variance chain as absent.
 bool find_built_textures(const SourceMesh& mesh, const SceneTextures& known, bool normal_filter,
-                         Vector<BuiltImage>& out, u32& needed, std::string& why) {
+                         Vector<BuiltImage>& out, u32& needed, std::string& why,
+                         TexturePrefetch* prefetch = nullptr) {
   out.clear();
   needed = 0;
   const assets::MeshData& data = mesh.data;
@@ -372,7 +522,14 @@ bool find_built_textures(const SourceMesh& mesh, const SceneTextures& known, boo
       return false;
     }
     std::string error;
-    if (!texture::read_texture_file(path, out[i].data, &error)) {
+    // Read ahead when the prefetch planned this key, here otherwise: the same file either way.
+    const TexturePrefetch::Taken taken = prefetch != nullptr
+                                             ? prefetch->take(key, out[i].data, error)
+                                             : TexturePrefetch::Taken::not_planned;
+    const bool read = taken == TexturePrefetch::Taken::ok ||
+                      (taken == TexturePrefetch::Taken::not_planned &&
+                       texture::read_texture_file(path, out[i].data, &error));
+    if (!read) {
       why = image + ": " + error;
       return false;
     }
@@ -3916,6 +4073,7 @@ bool GpuScene::upload_materials(const ResolvedSettings& resolved, std::string* e
     // upload it once, not nineteen times; the picture is the same bytes, because the texel data
     // each material reads is.
     SceneTextures scene_textures(share_textures_);
+    TexturePrefetch prefetch(*data_);  // T73: the `.tex` reads ahead of the uploads, on a pool
     for (u32 m = 0; m < data_->sources.size(); ++m) {
       const SourceMesh& source_mesh = data_->sources[m];
       const assets::MeshData& mesh_data = source_mesh.data;
@@ -3930,7 +4088,7 @@ bool GpuScene::upload_materials(const ResolvedSettings& resolved, std::string* e
       u32 sampled_images = 0;
       std::string why;
       bool use_built = find_built_textures(source_mesh, scene_textures, normal_filter, built,
-                                           sampled_images, why);
+                                           sampled_images, why, &prefetch);
       if (use_built && !device.features().texture_compression_bc) {
         use_built = false;
         why = "the device has no textureCompressionBC";
