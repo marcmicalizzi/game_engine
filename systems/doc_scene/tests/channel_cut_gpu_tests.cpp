@@ -204,8 +204,10 @@ TEST_CASE("channel cut: the bed is drawn the cut's depth below the floodplain, o
   // The ray path draws the same cut: its bed at the cut's depth below the floodplain. Its ids are
   // compared and reported, not held, as the holes' test reports them: the ray path differs from the
   // hardware rasterizer on a flat grid with no cut at all, at pixel centres on a triangle's edge.
-  if (!gpu.device.features().acceleration_structure) {
-    MESSAGE("no acceleration structures: the ray path is not compared");
+  // Guarded as every ray-path capture in the suite is: a Pascal has acceleration structures and no
+  // ray queries, and the ray path needs both.
+  if (!gpu.device.features().acceleration_structure || !gpu.device.features().ray_query) {
+    MESSAGE("no acceleration structures or no ray queries: the ray path is not compared");
     return;
   }
   CapturedFrame traced, traced_plain;
