@@ -61,9 +61,11 @@ six` holds the two thread counts to the byte.
 
 `place_pieces` cuts each link's line into pieces of at most `piece_m` (32 m), each standing at its
 first point's whole millimetre with y the ground there, filed in the world tile that point is in, and
-gives each piece up to three meshes, **in link order, piece order, then bed, bars, banks** — the
-order the ids (1, 2, …) are given in, so a tile's placements carry the same ids whichever tile came
-first.
+gives each piece up to three meshes, **in link order, piece order, then bed, bars, boulders** (W90;
+W86's banks are placed no more) — the order the ids (1, 2, …) are given in, so a tile's placements
+carry the same ids whichever tile came first. A tributary's pieces stop at its trunk's banks, and a
+reach decides which parts it has ([Reaches](#reaches)): the bed is a slab a run of rows whose reach
+has a bed.
 
 - **The bed.** A slab the width's wide, `columns` points across (one per 0.4 m, 3 to 17, constant
   along a link so the pieces' joins agree), its top the ground plus 2 cm plus the gravel relief (up to one

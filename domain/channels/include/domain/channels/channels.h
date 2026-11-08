@@ -86,19 +86,19 @@ struct ChannelLink {
   f64 meander = 0;    // the share of the meander amplitude the slope allowed, 0 to 1
   bool head = false;  // the link begins at a channel head
   u64 seed = 0;
-  // **W90** (channels.md, "Reaches", "Mouths", "Confluences"), one per point of line:
-  Vector<u8> reach;        // the reach's ChannelReach code
+  // **W90** (channels.md, "Reaches", "Mouths", "Confluences"), one per point of `line`:
+  Vector<u8> reach;        // the reach's `ChannelReach` code
   Vector<f32> step_depth;  // how far a step-pool's pool lowers the cut's bed below its line, m
   Vector<f64> bed;  // the cut's bed, metres: the thalweg's, the steps', the fan's, the grade's
-  // The steps' crests (indices into line) and their heights: where the boulders stand.
+  // The steps' crests (indices into `line`) and their heights: where the boulders stand.
   Vector<u32> step_at;
   Vector<f32> step_height;
-  // The points the water and the pieces run to: line.size(), less for a tributary whose last
+  // The points the water and the pieces run to: `line.size()`, less for a tributary whose last
   // points lie within the trunk's banks.
   u32 keep = 0;
   // The link this one joins as a tributary (its index), or ~0u.
   u32 trunk = ~0u;
-  // Ends at a water body's shoreline (the last point), whose level is mouth_level; begins at
+  // Ends at a water body's shoreline (the last point), whose level is `mouth_level`; begins at
   // one (a lake's outlet).
   bool mouth = false;
   bool outlet = false;
