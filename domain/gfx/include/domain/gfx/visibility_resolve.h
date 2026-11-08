@@ -729,10 +729,11 @@ struct WaterShore {
   f32 foam_m = 0.0f;
   f32 shore_m = 0.0f;
   // **A channel stretch's bank** (roadmap S99; water.md, "Channels"): a record whose `stretch_a.w`
-  // is positive is one stretch of a channel, not a body — `stretch_a` and `stretch_b` its two points
-  // (x, z, the water surface's height, the half width), local to the channel's instance, `wet_m` its
-  // bank's capillary fringe (and a rapid's or a fall's spray band), `material` 0xffffffff so no
-  // water pixel takes it for its body's, and no swash. A body's record leaves both zero.
+  // is positive is one stretch of a channel, not a body — `stretch_a` and `stretch_b` its two
+  // points (x, z, the water surface's height, the half width), local to the channel's instance,
+  // `wet_m` its bank's capillary fringe (and a rapid's or a fall's spray band), `material`
+  // 0xffffffff so no water pixel takes it for its body's, and no swash. A body's record leaves both
+  // zero.
   Vec4 stretch_a{};
   Vec4 stretch_b{};
 };

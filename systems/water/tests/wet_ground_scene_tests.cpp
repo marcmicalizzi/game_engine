@@ -72,8 +72,8 @@ TEST_CASE("water banks: a channel's stretches carry its bank's fringe and its re
   CHECK(fringe == doctest::Approx(0.428));  // fine sand, Lane and Washburn via Lohman
   CHECK(channel->banks[0].wet_m == fringe);
   CHECK(channel->banks[1].wet_m == fringe + gfx::k_spray_rapid_m);
-  CHECK(channel->banks[2].wet_m ==
-        doctest::Approx(fringe + std::min(gfx::k_spray_fall_share * 3.0f, gfx::k_spray_fall_max_m)));
+  CHECK(channel->banks[2].wet_m == doctest::Approx(fringe + std::min(gfx::k_spray_fall_share * 3.0f,
+                                                                     gfx::k_spray_fall_max_m)));
   // Local to where the instance stands: its origin plus its offset.
   const SceneInstance& at = desc.instances[instance];
   const f64 x0 = at.origin.x + static_cast<f64>(at.transform.position.x);

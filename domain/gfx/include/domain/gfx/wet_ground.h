@@ -109,7 +109,8 @@ inline void build_bank_tree(Vector<WaterShore>& leaves, u32 reference, u32 terra
       // The longest axis of the centres, split at the median.
       Vec2 c0{1e30f, 1e30f}, c1{-1e30f, -1e30f};
       for (u32 i = lo; i < hi; ++i) {
-        const Vec2 c{0.5f * (leaves[i].lo.x + leaves[i].hi.x), 0.5f * (leaves[i].lo.y + leaves[i].hi.y)};
+        const Vec2 c{0.5f * (leaves[i].lo.x + leaves[i].hi.x),
+                     0.5f * (leaves[i].lo.y + leaves[i].hi.y)};
         c0 = Vec2{std::min(c0.x, c.x), std::min(c0.y, c.y)};
         c1 = Vec2{std::max(c1.x, c.x), std::max(c1.y, c.y)};
       }
@@ -140,8 +141,8 @@ inline f32 bank_tree_saturation(const Vector<WaterShore>& tree, Vec3 local, u32 
   for (u32 i = first; i < tree.size();) {
     ++seen;
     const WaterShore& s = tree[i];
-    const bool inside = local.x >= s.lo.x && local.z >= s.lo.y && local.x <= s.hi.x &&
-                        local.z <= s.hi.y;
+    const bool inside =
+        local.x >= s.lo.x && local.z >= s.lo.y && local.x <= s.hi.x && local.z <= s.hi.y;
     if (s.stretch_a.w < 0.0f) {
       const bool level = local.y >= s.stretch_a.x && local.y <= s.stretch_a.y;
       i = inside && level ? i + 1 : s.material;

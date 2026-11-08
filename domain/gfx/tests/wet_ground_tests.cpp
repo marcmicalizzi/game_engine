@@ -33,8 +33,8 @@ TEST_CASE("gfx: the wet ground's response agrees with its double reference") {
                                 shaders::k_terrain_material_probe_spirv_size, &error);
   REQUIRE_MESSAGE(module.valid(), error);
   gfx::ComputePipeline pipeline;
-  REQUIRE_MESSAGE(gfx::create_compute_pipeline(device, module, "wet_main", {}, 16, pipeline, &error),
-                  error);
+  REQUIRE_MESSAGE(
+      gfx::create_compute_pipeline(device, module, "wet_main", {}, 16, pipeline, &error), error);
   constexpr u32 k_count = 17 * 11 * 6 * 3;  // 3,366
   constexpr u32 k_groups = (k_count + 63) / 64;
   gfx::BufferResource output;
@@ -81,10 +81,12 @@ TEST_CASE("gfx: the wet ground's response agrees with its double reference") {
     }
     const f64 want_r = s > 0.0 ? wr::roughness(r, s, film) : r;
     worst_roughness = std::max(worst_roughness, std::abs(static_cast<f64>(v[3 * i].w) - want_r));
-    worst_film = std::max(worst_film, std::abs(static_cast<f64>(v[3 * i + 1].x) - wr::film(s, film)));
+    worst_film =
+        std::max(worst_film, std::abs(static_cast<f64>(v[3 * i + 1].x) - wr::film(s, film)));
     const f64 h = static_cast<f64>((static_cast<f32>(i % 23u) - 3.0f) * 0.05f);
     const f64 fm = static_cast<f64>(0.025f + static_cast<f32>(i % 5u) * 0.25f);
-    worst_fringe = std::max(worst_fringe, std::abs(static_cast<f64>(v[3 * i + 1].y) - wr::fringe(h, fm)));
+    worst_fringe =
+        std::max(worst_fringe, std::abs(static_cast<f64>(v[3 * i + 1].y) - wr::fringe(h, fm)));
     if (v[3 * i + 2].x != 1.0f) ++not_identical;
     (void)a;
   }
