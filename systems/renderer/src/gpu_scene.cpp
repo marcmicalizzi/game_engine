@@ -4601,6 +4601,7 @@ bool GpuScene::upload_materials(const ResolvedSettings& resolved, std::string* e
     break;
   }
   if (!upload_water_shores(error)) return false;
+  collect_water_reflect_bodies();  // R129: the reflection's planes
   // The opaque shadow proxy's list (R109): every alpha-tested cluster and its material, for the
   // bake to measure its coverage. Only a scene read whole: a streamed one's clusters live in a page
   // pool whose slots change under any table made now.
@@ -5991,6 +5992,51 @@ bool GpuScene::upload_water_shores(std::string* error) {
     return false;
   water_shore_count_ = shores.size();
   return true;
+}
+
+// ---- the water's reflection (R129; water_reflect.h)
+// ----------------------------------------------
+//
+// The level bodies a frame's mirrored caster volume may be fit to: every water body's instance but
+// a channel's, whose surface slopes along its flow and has no one plane. A body's square is its
+// depth map's (body-local), which the nearest-body rule measures the eye's distance to; a body with
+// no map is measured to its instance's origin. Read once at load, with the materials.
+void GpuScene::collect_water_reflect_bodies() {
+  water_reflect_bodies_.clear();
+  for (u32 i = 0; i < data_->instances.size(); ++i) {
+    const u32 m = data_->instances[i].mesh;
+    if (m >= data_->mesh_info.size() || !data_->mesh_info[m].water.has_value()) continue;
+    const SceneWater& water = *data_->mesh_info[m].water;
+    if (water.channel) continue;
+    WaterReflectBody body;
+    body.instance = i;
+    body.open = water.body.open;
+    if (water.depth.size >= 2) {
+      const f32 half = 0.5f * static_cast<f32>(water.depth.size - 1) * water.depth.texel_m;
+      body.center = Vec2{water.depth.origin.x + half, water.depth.origin.y + half};
+      body.radius = half * 1.41421356f;
+    }
+    water_reflect_bodies_.push_back(body);
+  }
+}
+
+bool GpuScene::water_reflect_level(const WorldEye& eye, f32& level) const noexcept {
+  bool found = false;
+  f32 nearest = 0.0f;
+  for (const WaterReflectBody& body : water_reflect_bodies_) {
+    if (body.instance >= instance_table_.size()) continue;
+    // The instance stands at the level (water.md, "The mesh"), its mesh flat at y = 0.
+    const Vec3 at = relative(gfx::instance_cell(instance_table_[body.instance]), eye);
+    const Vec3 center{at.x + body.center.x, at.y, at.z + body.center.y};
+    const f32 away = length(center) - body.radius;
+    const f32 distance = body.open ? -1.0f : (away > 0.0f ? away : 0.0f);
+    if (!found || distance < nearest) {
+      found = true;
+      nearest = distance;
+      level = at.y;
+    }
+  }
+  return found;
 }
 
 void GpuScene::destroy() noexcept {

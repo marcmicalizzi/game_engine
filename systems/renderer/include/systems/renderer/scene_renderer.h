@@ -426,6 +426,13 @@ struct Stats {
   // The casters the horizon kept out of the structures (ResolvedSettings::caster_horizon), one
   // frame late like the rest.
   u32 horizon_casters = 0;
+  // **The water reflects the scene** (R129; water_reflect.h), the frame last recorded: whether its
+  // resolve traced the water's reflection rays, how many views' culls carried the mirrored caster
+  // volume, and that volume's plane, metres above the eye (0 without one). The mirrored casters
+  // are counted in `shadow_casters` with the rest: the cull does not tell them apart.
+  bool water_reflect = false;
+  u32 water_reflect_views = 0;
+  f32 water_reflect_level_m = 0.0f;
   // The vertex path's indexed draw, last frame, both hardware passes and every view: the triangles
   // the cut's clusters hold, which is what it draws (three indices each), and how many of those
   // clusters the index budget had no room for, which the fallback drew instead at one vertex

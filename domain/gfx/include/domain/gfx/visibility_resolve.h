@@ -65,6 +65,19 @@ inline constexpr u32 k_shadow_hybrid = 16u;
 // so an unknown micro-triangle takes its centre sample's answer in the traversal and never reaches
 // the mask loop. The primary rays never carry it. Clear, the query is the one it always was.
 inline constexpr u32 k_shadow_micromap_2state = 32u;
+// **The water reflects the scene** (docs/subsystems/water.md, "Shading"; R129). Read only by the
+// resolve's ray-traced water modules (`water_reflect.slang`), which trace one ray per water pixel
+// along the view reflected off the wave normal against the frame's top-level structure and shade
+// what it meets (`hit_shade.slang`); every other module never reads the bits, and clear, the water
+// reflects the sky alone, as it did. The two bits beside it pick the hit's sun shadow: neither is
+// one shadow ray at half rate (two pixels of every 2x2 block, `k_water_reflect_half_rate`), `full`
+// one at every pixel, `unshadowed` none.
+inline constexpr u32 k_shadow_water_reflect = 64u;
+inline constexpr u32 k_shadow_water_reflect_full = 128u;
+inline constexpr u32 k_shadow_water_reflect_unshadowed = 256u;
+// How far a reflection ray looks before it takes the sky, metres: the far shore of a lake a few
+// kilometres across. The mirrored caster volume's reach (renderer's water_reflect.h) is the same.
+inline constexpr f32 k_water_reflect_m = 4000.0f;
 
 // The maps' share of a hybrid pixel's visibility at `distance` from the eye: 0 nearer than
 // `ray_distance` (the ray's answer alone), 1 past `ray_distance + band` (the maps' alone), linear

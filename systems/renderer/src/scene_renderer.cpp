@@ -11,6 +11,7 @@
 #include <systems/renderer/caster_volume.h>
 #include <systems/renderer/lighting.h>
 #include <systems/renderer/scene_renderer.h>
+#include <systems/renderer/water_reflect.h>
 
 #include <algorithm>
 #include <cmath>
@@ -2717,6 +2718,21 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
               : lighting.sun.w > 0.0f);
   const CasterBounds caster_bounds{relative(data.center, frame.camera.position), data.radius};
 
+  // ---- the water reflects the scene (R129; water_reflect.h, water.md "Shading") ----------------
+  //
+  // Where the resolve traces (its ray-traced water module) and the scene has water, the water's
+  // pixels trace their reflection; and where the frame keeps casters, every view's cull carries one
+  // more caster volume, its frustum reflected in the plane `GpuScene::water_reflect_level` picks,
+  // so what that mirrored camera sees is built into the structures the rays meet.
+  const bool water_reflect =
+      shadows && scene.has_water() && water_reflect_tunable(frame.frame_index);
+  f32 water_level = 0.0f;
+  const bool water_mirror = water_reflect && casters && water_reflect_volume_tunable() &&
+                            scene.water_reflect_level(frame_origin, water_level);
+  stats_.water_reflect = water_reflect;
+  stats_.water_reflect_views = 0;
+  stats_.water_reflect_level_m = water_mirror ? water_level : 0.0f;
+
   // The occlusion term's debug counters (gfx::k_hidden_*; `renderer.lod.occluded_histogram`),
   // behind this slot's cull blocks: what the frame that last had the slot counted — the slot is the
   // GPU's no longer — logged and zeroed for this frame, whose number goes in the last word.
@@ -2932,9 +2948,9 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
       // And what its frustum rejects but a ray towards a shadowed light could still meet:
       // this view's caster volumes (caster_volume.h), fit from its own frustum, since every view's
       // cull run has its own planes.
+      CasterVolume volumes[gfx::k_max_caster_volumes];
+      u32 count = 0;
       if (settings.off_frustum_casters) {
-        CasterVolume volumes[gfx::k_max_caster_volumes];
-        u32 count = 0;
         if (key_light_casts &&
             fit_directional_caster_volume(view.view_proj, key_light, settings.shadow_distance,
                                           caster_bounds, volumes[count])) {
@@ -2954,8 +2970,16 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
             ++count;
           }
         }
-        set_caster_volumes(cull, std::span<const CasterVolume>(volumes, count));
       }
+      // The water's mirrored frustum (R129), behind the lights' volumes: a block they fill leaves
+      // the reflection what the frame's cut holds.
+      if (water_mirror && count < gfx::k_max_caster_volumes &&
+          fit_water_reflect_volume(view.view_proj, water_level, gfx::k_water_reflect_m,
+                                   caster_bounds, volumes[count])) {
+        ++count;
+        ++stats_.water_reflect_views;
+      }
+      if (count > 0) set_caster_volumes(cull, std::span<const CasterVolume>(volumes, count));
     }
     if (occlusion) {
       // This view's own pyramid, at its own mip offsets into the shared buffer, and its own slice
@@ -3157,6 +3181,11 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
       if (frame_sky_.moon_key) resolve.shadow_flags |= gfx::k_shadow_lights;
       resolve.shadow_maps = shadow_maps_address;
     }
+    // The water's reflection rays (R129; water_reflect.slang), and the rate their hits' shadow
+    // rays are traced at. Only the ray-traced water modules read the bits.
+    if (water_reflect && resolve.scene != gfx::k_no_scene)
+      resolve.shadow_flags |=
+          gfx::k_shadow_water_reflect | water_reflect_shadow_flags(frame.frame_index);
     resolve.ground_detail = ground_detail_address;
     // The scene grid's UV frame, which a world tile's material lookup places the tile's corner in
     // (its UVs are from the corner; `terrain_uv_frame` keeps the numbers inside 32 bits).
