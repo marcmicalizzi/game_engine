@@ -4,7 +4,10 @@
 // `engine.scene.WaterChannel` blocks under `water_channels` — for the scene's author to paste into
 // the scene the water draws. It calls the one function the placement generator calls
 // (`channels::plan_channels`), over the ground provider the scene's terrain names, found through
-// the same registry the renderer finds it through.
+// the same registry the renderer finds it through. Beside them it writes the terrain's `cuts`
+// (`engine.scene.TerrainCut`, the `tiles` block's; W89): the channels cut into the ground, which
+// the water's surface then lies inside, with `--cut` (without it the surface stands on the ground
+// as W86 laid it, and no cuts are written).
 #include "content_commands.h"
 
 #include <cstdio>
@@ -32,7 +35,7 @@ int channels_command(int argc, char** argv) {
 #else
   const char* usage =
       "usage: engine-content channels <scene.json> <out.json> [--ddc <dir>] [--min-area-m2 <m2>]\n"
-      "                               [--stage <fraction>] [--entry <placement index>]\n";
+      "                               [--stage <fraction>] [--entry <placement index>] [--cut]\n";
   if (argc < 4) {
     std::fputs(usage, stderr);
     return 2;
@@ -42,8 +45,13 @@ int channels_command(int argc, char** argv) {
   f64 min_area = 50000.0;
   f64 stage = .5;
   i64 only = -1;
+  bool cut = false;
   for (int i = 4; i < argc; ++i) {
     const std::string_view flag = argv[i];
+    if (flag == "--cut") {
+      cut = true;
+      continue;
+    }
     if (i + 1 >= argc) {
       std::fputs(usage, stderr);
       return 2;
@@ -96,6 +104,10 @@ int channels_command(int argc, char** argv) {
   // The network asks the heights alone: the masks (which a host resolves against its water bodies
   // before it builds them) are left out, so the provider never builds them here.
   terrain.masks.reset();
+  // **The ground as it was before any cut** (W89): the network is planned over the heights the cuts
+  // are made from, never over a ground they already lowered, so writing the cuts of a scene that
+  // carries them gives the same cuts again.
+  if (terrain.tiles.has_value()) terrain.tiles->cuts.clear();
   // The provider the renderer would draw this terrain with (renderer::terrain_provider's rule).
   const std::string provider =
       !terrain.provider.empty()
@@ -116,6 +128,7 @@ int channels_command(int argc, char** argv) {
   (void)ddc;  // the network writes nothing; the flag is accepted for symmetry with `build`
   const JsonValue* placements = json.find("placements");
   JsonValue all = JsonValue::array();
+  JsonValue cuts = JsonValue::array();
   u32 entries = 0, heads = 0, links = 0;
   f64 metres = 0, area = 0;
   if (placements != nullptr && placements->is_array()) {
@@ -141,9 +154,14 @@ int channels_command(int argc, char** argv) {
                                    error))
         return fail(scene_path + ": placements " + std::to_string(k) + ": " + error);
       const JsonValue blocks =
-          channels::water_channels_json(layer, network, min_area, static_cast<f32>(stage));
+          channels::water_channels_json(layer, network, min_area, static_cast<f32>(stage), cut);
       for (const JsonValue& b : blocks.as_array())
         all.push_back(b);
+      if (cut) {
+        const JsonValue c = channels::terrain_cuts_json(layer, network);
+        for (const JsonValue& b : c.as_array())
+          cuts.push_back(b);
+      }
       ++entries;
       heads += network.heads.size();
       links += network.links.size();
@@ -154,7 +172,10 @@ int channels_command(int argc, char** argv) {
   if (entries == 0) return fail(scene_path + " has no \"channels\" placement to run");
   JsonValue out = JsonValue::object();
   const u32 written = all.as_array().size();
+  const u32 cut_count = cuts.as_array().size();
   out["water_channels"] = std::move(all);
+  // The terrain's cuts, for the `tiles` block (`terrain.tiles.cuts`).
+  if (cut) out["cuts"] = std::move(cuts);
   if (io::write_file_atomic(out_path, write_json(out)) != io::Status::Ok)
     return fail("cannot write " + out_path);
   JsonValue line = JsonValue::object();
@@ -168,6 +189,7 @@ int channels_command(int argc, char** argv) {
   line["region_km2"] = JsonValue(std::round(area / 1e3) / 1e3);
   line["km_per_km2"] = JsonValue(area > 0 ? std::round(metres / area * 1e3 * 100) / 100 : 0.0);
   line["water_channels"] = JsonValue(written);
+  line["cuts"] = JsonValue(cut_count);
   JsonWriteOptions compact;
   compact.pretty = false;
   std::printf("%s\n", write_json(line, compact).c_str());

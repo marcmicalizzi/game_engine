@@ -83,7 +83,7 @@ endif()
 # `channels` the same way, with the channels capability (docs/subsystems/channels.md): the water's
 # channel description from a scene's channels placements over its terrain. Its test runs either
 # way, and without the capability checks the refusal.
-list(APPEND _content_tests tests/channels_tests.cpp)
+list(APPEND _content_tests tests/channels_tests.cpp tests/channel_cut_tests.cpp)
 if(TARGET engine::channels)
   list(APPEND _content_deps channels channels_schemas schema schemas scene_gen)
 endif()

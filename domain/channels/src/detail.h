@@ -6,6 +6,7 @@
 #include <core/math/deterministic.h>
 #include <domain/channels/channels.h>
 
+#include <algorithm>
 #include <cmath>
 #include <string>
 
@@ -28,6 +29,27 @@ inline f64 smoothstep(f64 lo, f64 hi, f64 v) {
 // Downstream hydraulic geometry, `a (A / 1 km^2)^b` (Leopold & Maddock 1953).
 inline f64 hydraulic(f64 at_km2, f64 exponent, f64 area_m2) {
   return at_km2 * powd(area_m2 / 1e6, exponent);
+}
+// **The cut's cross-section** (channels.md, "The cut"; W89): a trapezoid of the bankfull width w
+// at the top whose area is w times the mean depth mean the hydraulic geometry gives (Leopold &
+// Maddock's depth is a mean, area over width), its banks at slope (rise over run). The thalweg
+// depth solves D (w - D / slope) = w mean; banks too gentle for that area (slope w < 4 mean)
+// make a V of twice the mean depth, its banks steeper than asked. `bed` is the flat bed's width.
+struct Section {
+  f64 thalweg = 0;
+  f64 bed = 0;
+};
+inline Section section_of(f64 w, f64 mean, f64 slope) {
+  Section s;
+  if (!(w > 0) || !(mean > 0)) return s;
+  const f64 q = 4 * mean / (slope * w);
+  if (q >= 1) {
+    s.thalweg = 2 * mean;
+    return s;
+  }
+  s.thalweg = .5 * slope * w * (1 - std::sqrt(1 - q));
+  s.bed = std::max(0.0, w - 2 * s.thalweg / slope);
+  return s;
 }
 inline f64 round_to(f64 v, f64 scale) { return std::round(v * scale) / scale; }
 inline i64 floor_div(i64 a, i64 b) {

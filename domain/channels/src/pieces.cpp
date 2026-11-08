@@ -95,6 +95,12 @@ struct Builder {
     slab.bottom.push_back(static_cast<f32>(bottom));
   }
 };
+// The bed the pieces lay: the cut's flat bed (detail::section_of), and a quarter of the width where
+// the section is a V, so a narrow gully still has a strip of gravel at its bottom.
+f64 bed_width(const ChannelLayer& p, const ChannelPoint& pt) {
+  const f64 w = wide(pt.width_m);
+  return std::max(.25 * w, section_of(w, wide(pt.depth_m), wide(p.bank_slope)).bed);
+}
 }  // namespace
 
 bool place_pieces(const ChannelLayer& p, const ChannelNetwork& n, const scene_gen::Ground& ground,
@@ -105,8 +111,6 @@ bool place_pieces(const ChannelLayer& p, const ChannelNetwork& n, const scene_ge
   const ChannelSurface bed_look = surface_of(p.bed, {.42f, .40f, .37f}, .35f,
                                                 std::array<f32, 3>{.62f, .60f, .56f});
   const ChannelSurface bar_look = surface_of(p.bars, {.56f, .51f, .43f}, .8f, std::nullopt);
-  const ChannelSurface bank_look = surface_of(p.banks, {.30f, .23f, .17f}, 1.5f,
-                                                 std::array<f32, 3>{.8f, .75f, .7f});
   u32 id = 0;
   for (const ChannelLink& link : n.links) {
     const u32 m = link.line.size();
@@ -117,7 +121,6 @@ bool place_pieces(const ChannelLayer& p, const ChannelNetwork& n, const scene_ge
       widest = std::max(widest, pt.width_m);
     const u32 columns =
         std::clamp<u32>(static_cast<u32>(std::lround(wide(widest) / .4)) + 1, 3, 17);
-    const bool banks = widest >= p.bank_min_width_m;
     // The bed's rhythm: pool to pool below the step-pool slope, step to step above it, its phase
     // the link's own.
     Rng rng(hash_combine(link.seed, 0x5eedull));
@@ -187,8 +190,9 @@ bool place_pieces(const ChannelLayer& p, const ChannelNetwork& n, const scene_ge
       base.tile = {static_cast<i32>(tx), static_cast<i32>(tz)};
       const f32 uv[2] = {static_cast<f32>(static_cast<f64>(b.x0 % 1024000) / 1000.0),
                          static_cast<f32>(static_cast<f64>(b.z0 % 1024000) / 1000.0)};
-      // The bed: the width's wide, on the ground, its top a gravel relief of about a median grain
-      // and the riffles' rise; its two edge columns down at the ground, where the banks begin.
+      // The bed: the cut's flat bed wide (W89; channels.md, "The cut"), on the ground, its top a
+      // gravel relief of about a median grain and the riffles' rise; its two edge columns down at the
+      // ground, at the banks' toe.
       {
         PlacedPiece piece = base;
         piece.recipe.part = ChannelPart::Bed;
@@ -203,8 +207,9 @@ bool place_pieces(const ChannelLayer& p, const ChannelNetwork& n, const scene_ge
           const f64 riffle = wide(p.riffle_rise) * wide(pt.depth_m) * rhythm[i];
           for (u32 c = 0; c < columns; ++c) {
             const f64 v = static_cast<f64>(c) / static_cast<f64>(columns - 1) - .5;
-            const f64 x = f[i].x + f[i].nx * v * wide(pt.width_m);
-            const f64 z = f[i].z + f[i].nz * v * wide(pt.width_m);
+            const f64 bed_w = bed_width(p, pt);
+            const f64 x = f[i].x + f[i].nx * v * bed_w;
+            const f64 z = f[i].z + f[i].nz * v * bed_w;
             i64 xm = 0, zm = 0;
             const f64 g = b.ground_local(x, z, xm, zm);
             const bool edge = c == 0 || c + 1 == columns;
@@ -236,7 +241,8 @@ bool place_pieces(const ChannelLayer& p, const ChannelNetwork& n, const scene_ge
             const ChannelPoint& pt = link.line[i];
             const f64 u = static_cast<f64>(i - bar.from) / static_cast<f64>(bar.to - bar.from);
             const f64 w = wide(pt.width_m);
-            const f64 outer = .5 * w - .02, inner = outer - wide(p.bar_width_widths) * w;
+            const f64 outer = .5 * bed_width(p, pt) - .02;
+            const f64 inner = std::max(0.0, outer - wide(p.bar_width_widths) * w);
             for (u32 c = 0; c < 5; ++c) {
               const f64 v = static_cast<f64>(c) / 4.0;
               const f64 lateral = bar.side * (inner + v * (outer - inner));
@@ -256,42 +262,6 @@ bool place_pieces(const ChannelLayer& p, const ChannelNetwork& n, const scene_ge
           piece.id = ++id;
           out.push_back(std::move(piece));
         }
-      }
-      // The banks, where the bed is a stream's and not a rill's: a berm of cut soil each side, its
-      // face steep at the bed's edge and its back falling to the ground; higher on the outside of a
-      // bend, where the flow cuts, and lower on the inside, where the bar builds.
-      if (banks) {
-        PlacedPiece piece = base;
-        piece.recipe.part = ChannelPart::Bank;
-        piece.recipe.uv_origin = {uv[0], uv[1]};
-        piece.recipe.surface = bank_look;
-        for (const f64 side : {-1.0, 1.0}) {
-          ChannelSlab slab;
-          slab.rows = r1 - r0 + 1;
-          slab.columns = 6;
-          for (u32 i = r0; i <= r1; ++i) {
-            const ChannelPoint& pt = link.line[i];
-            const f64 w = wide(pt.width_m);
-            const f64 reach = wide(p.bank_width_widths) * w + wide(p.bank_width_m) + .05;
-            const f64 outside = std::clamp(-side * f[i].kappa * w * 4, -1.0, 1.0);
-            const f64 height = wide(p.bank_height) * wide(pt.depth_m) * (1 + .5 * outside);
-            for (u32 c = 0; c < 6; ++c) {
-              const f64 v = static_cast<f64>(c) / 5.0;
-              const f64 lateral = side * (.5 * w - .05 + v * reach);
-              const f64 x = f[i].x + f[i].nx * lateral;
-              const f64 z = f[i].z + f[i].nz * lateral;
-              i64 xm = 0, zm = 0;
-              const f64 g = b.ground_local(x, z, xm, zm);
-              const f64 face = smoothstep(0.0, .2, v);
-              const f64 back = v <= .2 ? 1.0 : .5 * (1 + det::cos(k_pi * (v - .2) / .8));
-              const f64 h = c == 5 ? 0.0 : height * face * back;
-              b.vertex(slab, x, z, g + k_lift_m + .005 + h, g - k_bury_m);
-            }
-          }
-          piece.recipe.slabs.push_back(std::move(slab));
-        }
-        piece.id = ++id;
-        out.push_back(std::move(piece));
       }
     }
   }
