@@ -29,6 +29,7 @@
 #include <systems/renderer/terrain_materials.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <cstdio>
 #include <filesystem>
@@ -163,19 +164,48 @@ void probe_key(void* data) {
   if (!work.trusted) work.why = "built from other bytes or options";
 }
 
-// One job of `fn` per item on the performance pool, the calling thread helping; returns when all
-// are done.
+// `fn` once per item on the performance pool, the calling thread helping; returns when all are
+// done. **One runner job per thread, each taking the next item by an atomic index**, never one job
+// per item (T73, docs/experiments/load-v35-2026-11-08.md): the pool's queues hold 4,096 jobs each
+// (`JobSystemConfig::queue_capacity`, the caller's guest deque and the inbox), and `schedule` runs
+// a job that fits neither on the submitter, at once and before it wakes a sleeping worker — so the
+// v35 forest's 16,351 meshes ran 8,159 of them one after another on the load thread, 27 ms each,
+// 220 s, while every worker slept, and only then the 8,192 queued ones in parallel. Runners never
+// overflow a queue whatever the item count, and an item still lands in its own slot, so nothing
+// depends on the thread count or on which runner took which item (cooked_load_tests.cpp).
 template <typename T>
-void run_jobs(jobs::JobSystem& pool, Vector<T>& items, void (*fn)(void*)) {
+void run_jobs(jobs::JobSystem& pool, std::span<T* const> items, void (*fn)(void*)) {
   if (items.empty()) return;
+  struct Shared {
+    std::span<T* const> items;
+    void (*fn)(void*) = nullptr;
+    std::atomic<u32> next{0};
+  } shared;
+  shared.items = items;
+  shared.fn = fn;
+  const auto runner = [](void* data) {
+    Shared& s = *static_cast<Shared*>(data);
+    for (u32 i = s.next.fetch_add(1, std::memory_order_relaxed); i < s.items.size();
+         i = s.next.fetch_add(1, std::memory_order_relaxed))
+      s.fn(s.items[i]);
+  };
+  const u32 runners = std::min<u32>(static_cast<u32>(items.size()), pool.total_worker_count() + 1);
   Vector<jobs::Job> list;
-  list.reserve(items.size());
+  list.reserve(runners);
   jobs::Counter counter;
-  for (T& item : items)
-    list.push_back(jobs::Job{fn, &item, &counter});
+  for (u32 r = 0; r < runners; ++r)
+    list.push_back(jobs::Job{runner, &shared, &counter});
   pool.schedule(jobs::Pool::Performance, std::span<const jobs::Job>(list.data(), list.size()),
                 counter);
   pool.wait(counter);
+}
+template <typename T>
+void run_jobs(jobs::JobSystem& pool, Vector<T>& items, void (*fn)(void*)) {
+  Vector<T*> pointers;
+  pointers.reserve(items.size());
+  for (T& item : items)
+    pointers.push_back(&item);
+  run_jobs<T>(pool, std::span<T* const>(pointers.data(), pointers.size()), fn);
 }
 
 void prepare_scene_textures(const SceneDesc& desc, Vector<SourceMesh>& sources,
@@ -1182,6 +1212,9 @@ bool expand_placements(const scene::Scene& file, const std::string& path, const 
       return false;
     }
     context.where = entry.where;
+    // One stage an entry, its generator's name the detail, so a load's `placements` says which
+    // generator its time went to (T73).
+    ENGINE_STARTUP_STAGE_DETAIL("placement", entry.generator);
     // An entry the world does not stream (`PlacementEntry::stream` false) is a whole read, opened
     // as one outside a world is: its instances are the scene's own.
     const bool world_streams = out.world.enabled && entry.stream;
@@ -1235,6 +1268,7 @@ bool expand_placements(const scene::Scene& file, const std::string& path, const 
     }
     // What the entries after this one are handed: only when there is one to hand it to.
     if (e + 1 < entries.size()) {
+      ENGINE_STARTUP_STAGE("footprints");  // each placed mesh read once for its ground radius
       earlier.reserve(earlier.size() + placed.instances.size());
       for (const scene_gen::Placement& p : placed.instances) {
         f32 radius = 0.0f;
@@ -2361,6 +2395,10 @@ bool load_scene(const SceneDesc& desc, SceneData& out, std::string& error) {
     };
     Vector<MeshJob> mesh_jobs(resolved.meshes.size());
     Vector<u32> wave(resolved.meshes.size(), 0u);
+    // The first mesh of each path, by the path's hash (a collision compares the strings and falls
+    // back to the scan): a scan of every earlier path was 134 million string compares for v35's
+    // 16,351 meshes (T73).
+    HashMap<u64, u32> first_of_path;
     for (u32 m = 0; m < resolved.meshes.size(); ++m) {
       MeshJob& job = mesh_jobs[m];
       job.desc = &resolved;
@@ -2370,10 +2408,20 @@ bool load_scene(const SceneDesc& desc, SceneData& out, std::string& error) {
       job.lod = &dags[m];
       job.pages = &tables[m];
       job.identities = &identities;
-      for (u32 e = 0; e < m; ++e) {
-        if (resolved.meshes[e] == resolved.meshes[m] && !resolved.meshes[m].empty()) {
-          wave[m] = 1;
-          break;
+      const std::string& path = resolved.meshes[m];
+      if (path.empty()) continue;
+      const u64 path_hash = hash_bytes(path.data(), path.size());
+      const u32* first = first_of_path.find_value(path_hash);
+      if (first == nullptr) {
+        first_of_path.insert(path_hash, m);
+      } else if (resolved.meshes[*first] == path) {
+        wave[m] = 1;
+      } else {
+        for (u32 e = 0; e < m; ++e) {
+          if (resolved.meshes[e] == path) {
+            wave[m] = 1;
+            break;
+          }
         }
       }
     }
@@ -2386,14 +2434,12 @@ bool load_scene(const SceneDesc& desc, SceneData& out, std::string& error) {
     ENGINE_STARTUP_STAGE("meshes");
     profiling::trace_items(resolved.meshes.size());
     for (u32 w = 0; w < 2; ++w) {
-      Vector<jobs::Job> list;
-      jobs::Counter counter;
+      // Through the runners (`run_jobs`, above), never a job a mesh: a world has more meshes than
+      // the pool's queues hold.
+      Vector<MeshJob*> list;
       for (u32 m = 0; m < mesh_jobs.size(); ++m)
-        if (wave[m] == w) list.push_back(jobs::Job{run, &mesh_jobs[m], &counter});
-      if (list.empty()) continue;
-      pool->schedule(jobs::Pool::Performance, std::span<const jobs::Job>(list.data(), list.size()),
-                     counter);
-      pool->wait(counter);
+        if (wave[m] == w) list.push_back(&mesh_jobs[m]);
+      run_jobs<MeshJob>(*pool, std::span<MeshJob* const>(list.data(), list.size()), run);
     }
     for (u32 m = 0; m < mesh_jobs.size(); ++m) {
       if (mesh_jobs[m].ok) continue;
@@ -2414,6 +2460,7 @@ bool load_scene(const SceneDesc& desc, SceneData& out, std::string& error) {
   // A streamed world's own instances, before the merge: their forms are meshes of their own
   // (renderer.md, "Authored instances per tile").
   {
+    ENGINE_STARTUP_STAGE("authored forms");  // T73: the load's time between textures and merge
     bool paged_scene = resolved.stream;
     for (const geometry::ClusterPages& table : tables)
       paged_scene = paged_scene && !table.pages.empty();
@@ -2423,6 +2470,7 @@ bool load_scene(const SceneDesc& desc, SceneData& out, std::string& error) {
     }
     tables.resize(dags.size());
   }
+  out.load.inline_jobs = pool->stats().inline_runs;
   out.terrain = resolved.terrain;
   out.terrain_mesh = ~0u;
   if (resolved.terrain.enabled) {
@@ -2451,6 +2499,7 @@ bool load_scene(const SceneDesc& desc, SceneData& out, std::string& error) {
   bool paged = resolved.stream;
   for (const geometry::ClusterPages& table : tables)
     paged = paged && !table.pages.empty();
+  profiling::TraceStage merge_stage("merge");
   if (paged) {
     if (!geometry::merge_paged_cluster_meshes(
             std::span<const geometry::ClusterLodMesh>(dags.data(), dags.size()),
@@ -2525,9 +2574,19 @@ bool load_scene(const SceneDesc& desc, SceneData& out, std::string& error) {
       }
     }
   }
+  merge_stage.end();
+  // **The per-mesh DAGs go as soon as the merge has copied them** (T73): nothing below reads them,
+  // and held to the end of the load they were a second copy of every cluster, vertex and triangle
+  // beside the merged one through the instance table — v35's working set peaked there, 4.3 GB above
+  // what the load hands on.
+  {
+    ENGINE_STARTUP_STAGE("release meshes");
+    dags = Vector<geometry::ClusterLodMesh>();
+    tables = Vector<geometry::ClusterPages>();
+  }
 
   // Instances: the caller's, the grid's, or one identity instance of the one mesh.
-  Vector<SceneInstance> instances = resolved.instances;
+  Vector<SceneInstance> instances = std::move(resolved.instances);
   if (resolved.grid_instances > 1) {
     instances.clear();
     Vec3 mesh_center{};

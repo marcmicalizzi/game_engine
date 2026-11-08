@@ -244,3 +244,42 @@ TEST_CASE("cooked load: the meshes load on the job system into the tables one wo
 }
 
 #endif  // ENGINE_RENDERER_TESTS_FLORA
+
+// **More meshes than the pool's queues hold load on every thread** (T73): the job system queues
+// 4,096 jobs in the caller's deque and 4,096 in the inbox and runs a job that fits neither on the
+// submitter, before it wakes a worker, so a job a mesh ran v35's 16,351 meshes' last 8,159 one
+// after another on the load thread. 10,000 references to one container are 9,999 in the second
+// wave: a job each overflowed by 1,807; the load's runners never overflow, and give the tables one
+// worker does.
+TEST_CASE("cooked load: a scene of more meshes than the job queues hold runs nothing inline") {
+  const test::TempDir tmp("renderer_cooked_many");
+  REQUIRE(tmp.ok());
+  std::string error;
+  SceneDesc grid;
+  grid.meshes.push_back("");
+  grid.heightfield_grid = 9;
+  grid.cache = false;
+  SceneData made;
+  REQUIRE_MESSAGE(load_scene(grid, made, error), error);
+  geometry::ClusterFileData file;
+  file.mesh = std::move(made.lod);
+  const std::string container = tmp.file("tile.clusters");
+  REQUIRE_MESSAGE(geometry::write_cluster_file(container, file, &error), error);
+  SceneDesc desc;
+  desc.cache = false;  // named outright; nothing goes near a cache
+  for (u32 i = 0; i < 10000; ++i)
+    desc.meshes.push_back(container);
+  SceneData every;
+  REQUIRE_MESSAGE(load_scene(desc, every, error), error);
+  CHECK(every.load.meshes == 10000);
+  CHECK(every.load.inline_jobs == 0);
+  CHECK(every.parts.size() == 10000);
+  desc.load_jobs = 1;
+  SceneData one;
+  REQUIRE_MESSAGE(load_scene(desc, one, error), error);
+  CHECK(one.load.inline_jobs == 0);
+  CHECK(hash_bytes(one.lod.mesh.clusters.data(),
+                   one.lod.mesh.clusters.size() * sizeof(*one.lod.mesh.clusters.data())) ==
+        hash_bytes(every.lod.mesh.clusters.data(),
+                   every.lod.mesh.clusters.size() * sizeof(*every.lod.mesh.clusters.data())));
+}

@@ -833,7 +833,17 @@ runs it on a load thread. `load_scene` does its work in this order:
    lowest mesh index's, as the serial loop reported it. A path a later mesh repeats loads in a
    second wave, after the first wrote the entry they share, so it is a hit as it was serially and
    not a second build of the same entry. The trace's `meshes` stage holds the main thread's wait;
-   each `mesh` stage is on the thread that ran it.
+   each `mesh` stage is on the thread that ran it. **The pool gets one runner job a thread, never
+   one job a mesh** (`run_jobs`, scene.cpp; T73): each runner takes the next mesh by an atomic
+   index until none is left. The pool's queues hold 4,096 jobs each (the caller's guest deque and
+   the inbox, `JobSystemConfig::queue_capacity`), and `schedule` runs a job that fits neither on the
+   submitting thread at once — before it wakes a sleeping worker — so the v35 forest's 16,351
+   meshes ran 8,159 of them one after another on the load thread, ~27 ms each, while every worker
+   slept, and only then the queued 8,192 in parallel: 246 s of a 419 s load
+   ([the measurements](../experiments/load-v35-2026-11-08.md)). `SceneLoadReport::inline_jobs`
+   counts what the pool ran inline and is zero; `cooked_load_tests.cpp` loads 10,000 meshes and
+   holds it there. The duplicate-path scan that splits the two waves is a hash of the path, not a
+   comparison with every earlier one.
 2. **The textures, once for the whole load** (`prepare_scene_textures`, scene.cpp; the trace's
    `cache textures`), where until W75 every mesh ran the content build's texture step on its own —
    a read and a hash of every image it named, and a job pool made and joined to do it:
@@ -857,7 +867,12 @@ runs it on a load thread. `load_scene` does its work in this order:
    The trace's `textures trusted` names the counts (`trusted=… built=… hashed=… from_index=…`), and
    `SceneData::load` (`SceneLoadReport`) carries them and the source images opened and their bytes
    for a test and for engine-view's summary (`load`, [apps](apps.md#the-summarys-load-block)).
-3. The authored forms, the merge, the instances, as before.
+3. The authored forms (`authored forms`), the merge (`merge`), the instances, as before — except
+   that the per-mesh DAGs and page tables are released as soon as the merge has copied them
+   (`release meshes`), not at the end of the load, and the instance list is moved out of the
+   load's copy of the description rather than copied (T73). Each placement entry of the scene file
+   is a `placement` stage whose detail is its generator, and the footprints handed to the entries
+   after it a `footprints` stage, so `placements` says where its time went.
 
 **What it still reads before the first frame**, warm, for the forest v7 (2,074 MiB of 4,498): the
 `.clusters` containers (281 MiB) and the GLBs' own bytes for their source hash (195 MiB), every
@@ -868,10 +883,20 @@ sky and flora tables (about 640 MiB over `ground prepare`, `ground start`, `sess
 cooked load still makes: the container is found by the hash of the GLB's bytes, and nothing cheaper
 names those bytes yet (a scene file's `hash` field is checked against it, not trusted in its place).
 
-**What did not move**: `GpuScene::create`'s upload (`gpu_scene.cpp`) is still serial on the main
-thread after the load — reading each `.tex` and uploading it — so uploads do not yet overlap the
-next mesh's read; that is the residency work's ([04 §4.9](../plan/04-renderer.md#49-streaming-and-residency),
-W47), which also bounds what is loaded to the spawn's neighbourhood.
+**The built textures are read ahead of their upload** (`TexturePrefetch`, gpu_scene.cpp; T73):
+`upload materials` plans the `.tex` keys `find_built_textures` will read, in its order (mesh order,
+each key once), and reads them in windows of 128 files on eight reader threads of its own job
+system's efficiency pool — which a waiting main thread never helps, so it uploads while they read —
+the next window while this one is uploaded; at most two windows' bytes are held beyond what the
+upload held before. A key the plan did not hold (named by path, hashed at the upload), or one a
+later mesh asks for after its window went, is read where it always was. The bytes are the file's,
+so nothing uploaded changes.
+
+**What did not move**: the uploads themselves are still serial on the main thread after the load
+— each `gfx::upload_image_2d_levels` makes its own staging buffer and waits for its own copy —
+and nothing is uploaded while the meshes load; that is the residency work's
+([04 §4.9](../plan/04-renderer.md#49-streaming-and-residency), W47), which also bounds what is
+loaded to the spawn's neighbourhood.
 ## Materials
 
 ### Native authored terrain materials

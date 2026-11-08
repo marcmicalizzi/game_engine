@@ -551,6 +551,10 @@ struct SceneLoadReport {
   // The pass's wall milliseconds: the per-mesh loads, and the texture pass after them.
   f64 meshes_ms = 0.0;
   f64 textures_ms = 0.0;
+  // Jobs the load's pool ran on the submitting thread because its queues were full
+  // (`jobs::JobSystemStats::inline_runs`): zero, because the load hands the pool one runner per
+  // thread and never one job per mesh (renderer.md, "What the load reads"; T73).
+  u64 inline_jobs = 0;
 };
 
 // A loaded scene: everything the GPU upload reads, and everything a summary reports.
