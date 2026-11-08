@@ -44,8 +44,9 @@ namespace engine::renderer {
 bool fit_water_reflect_volume(const Mat4& view_proj, f32 level, f32 reach,
                               const CasterBounds& bounds, CasterVolume& out) noexcept;
 
-// `renderer.water.reflect`: 0 off, 1 on (the default), 2 on in even frames and off in odd ones — a
-// flight that measures both from one process. True when frame `frame_index` reflects.
+// `renderer.water.reflect`: 0 off, 1 on (the default), 2 on in even frames and off in odd ones, 3 a
+// cycle of four frames — off, on with no hit shadow, at half rate, at every pixel — so one flight
+// measures them all. True when frame `frame_index` reflects.
 bool water_reflect_tunable(u64 frame_index) noexcept;
 
 // `renderer.water.reflect_volume` (true): the mirrored caster volume. False reflects only what the
@@ -53,7 +54,8 @@ bool water_reflect_tunable(u64 frame_index) noexcept;
 bool water_reflect_volume_tunable() noexcept;
 
 // `renderer.water.reflect_shadow`: the hit's sun shadow — 0 none, 1 half rate (the default), 2
-// every pixel — as the `gfx::ResolveParams::shadow_flags` bits beside `k_shadow_water_reflect`.
-u32 water_reflect_shadow_flags() noexcept;
+// every pixel — as the `gfx::ResolveParams::shadow_flags` bits beside `k_shadow_water_reflect`, or
+// under `renderer.water.reflect` 3 the rate frame `frame_index` takes in the cycle.
+u32 water_reflect_shadow_flags(u64 frame_index) noexcept;
 
 }  // namespace engine::renderer

@@ -3143,7 +3143,8 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
     // The water's reflection rays (R129; water_reflect.slang), and the rate their hits' shadow
     // rays are traced at. Only the ray-traced water modules read the bits.
     if (water_reflect && resolve.scene != gfx::k_no_scene)
-      resolve.shadow_flags |= gfx::k_shadow_water_reflect | water_reflect_shadow_flags();
+      resolve.shadow_flags |=
+          gfx::k_shadow_water_reflect | water_reflect_shadow_flags(frame.frame_index);
     resolve.ground_detail = ground_detail_address;
     // The scene grid's UV frame, which a world tile's material lookup places the tile's corner in
     // (its UVs are from the corner; `terrain_uv_frame` keeps the numbers inside 32 bits).

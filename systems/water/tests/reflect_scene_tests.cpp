@@ -155,13 +155,14 @@ struct Restore {
   ~Restore() {
     (void)tunables::apply_overrides("renderer.water.reflect=1");
     (void)tunables::apply_overrides("renderer.water.reflect_volume=true");
+    (void)tunables::apply_overrides("renderer.water.reflect_shadow=1");
   }
 };
 
 // Draws the pool from `eye` towards `target` with the reflection as `reflect` and the mirrored
 // volume as `volume`, `shots` times (each after a frame that fills the one-frame-late counts).
 void shoot(const gfx::Device& device, const test::TempDir& tmp, WorldPos eye, WorldPos target,
-           bool reflect, bool volume, u32 shots, Shot* out) {
+           bool reflect, bool volume, u32 shots, Shot* out, bool light_volumes = true) {
   REQUIRE(
       tunables::apply_overrides(reflect ? "renderer.water.reflect=1" : "renderer.water.reflect=0"));
   REQUIRE(tunables::apply_overrides(volume ? "renderer.water.reflect_volume=true"
@@ -183,6 +184,10 @@ void shoot(const gfx::Device& device, const test::TempDir& tmp, WorldPos eye, Wo
   REQUIRE_MESSAGE(load_scene(desc, data, error), error);
   RenderSettings settings;
   settings.shadows = ShadowMode::RayTraced;
+  // The sun's off-frustum caster volume would build an object outside the view into the structures
+  // anyway when it stands in the sweep; the mirror case turns it off so the water's volume is
+  // alone.
+  settings.off_frustum_casters = light_volumes;
   ResolvedSettings resolved;
   resolve_settings(settings, device.features(), &data, resolved);
   REQUIRE(check_availability(resolved, device.features()) == RenderAvailability::Ok);
@@ -250,9 +255,13 @@ TEST_CASE("water reflect: the far shore's box is in the water, and nothing else 
   // From the south-west shore, 1.5 m over the water, across the pool at the box.
   const WorldPos eye{-6.0, -0.5, -6.0};
   const WorldPos target{14.0, -3.3, 14.0};
-  Shot sky[1], scene[2];
+  Shot sky[1], scene[2], full[1];
   shoot(device, tmp, eye, target, false, true, 1, sky);
   shoot(device, tmp, eye, target, true, true, 2, scene);
+  // The hit's shadow ray at every pixel rather than half of them: what the half rate changes.
+  REQUIRE(tunables::apply_overrides("renderer.water.reflect_shadow=2"));
+  shoot(device, tmp, eye, target, true, true, 1, full);
+  REQUIRE(tunables::apply_overrides("renderer.water.reflect_shadow=1"));
   device.destroy();
   const CapturedFrame& a = sky[0].frame;
   const CapturedFrame& b = scene[0].frame;
@@ -278,6 +287,14 @@ TEST_CASE("water reflect: the far shore's box is in the water, and nothing else 
   MESSAGE("pool: " << water << " water pixels, the box " << box << "; the reflection changes "
                    << changed << ", " << red << " of them towards the box's red; casters "
                    << sky[0].stats.shadow_casters << " -> " << scene[0].stats.shadow_casters);
+  u32 half_rate = 0, half_off_water = 0;
+  for (u32 p = 0; p < pixels; ++p) {
+    if (std::memcmp(&full[0].frame.color[p * 4], &b.color[p * 4], 3) == 0) continue;
+    ++half_rate;
+    if (!is_water(a, p, scene[0].water_instance)) ++half_off_water;
+  }
+  MESSAGE("the half rate: " << half_rate << " pixels differ from the shadow ray at every pixel");
+  CHECK(half_off_water == 0u);
   CHECK(water > 20000u);
   CHECK(box > 200u);
   CHECK(red > 100u);
@@ -300,9 +317,9 @@ TEST_CASE("water reflect: the mirrored caster volume puts what is above the fram
   const WorldPos target{10.0 * std::cos(down) * 0.70710678, -1.5 - 10.0 * std::sin(down),
                         10.0 * std::cos(down) * 0.70710678};
   Shot sky[1], cut[1], mirrored[1];
-  shoot(device, tmp, eye, target, false, true, 1, sky);
-  shoot(device, tmp, eye, target, true, false, 1, cut);
-  shoot(device, tmp, eye, target, true, true, 1, mirrored);
+  shoot(device, tmp, eye, target, false, true, 1, sky, false);
+  shoot(device, tmp, eye, target, true, false, 1, cut, false);
+  shoot(device, tmp, eye, target, true, true, 1, mirrored, false);
   device.destroy();
   const u32 pixels = sky[0].frame.width * sky[0].frame.height;
   u32 box = 0;
@@ -312,14 +329,22 @@ TEST_CASE("water reflect: the mirrored caster volume puts what is above the fram
   CHECK(sky[0].frame.ids == mirrored[0].frame.ids);
   CHECK(cut[0].stats.water_reflect_views == 0u);
   CHECK(mirrored[0].stats.water_reflect_views == 1u);
+  // The reflected ground is redder than the sky it replaces with or without the volume, so what the
+  // volume adds is measured against the picture without it: the box's red, on water pixels alone.
   const u32 red_cut = redder(sky[0].frame, cut[0].frame, sky[0].water_instance);
-  const u32 red_mirrored = redder(sky[0].frame, mirrored[0].frame, sky[0].water_instance);
-  MESSAGE("the box above the frame: " << red_cut << " water pixels redden without the mirrored "
-                                      << "volume, " << red_mirrored << " with it; casters "
-                                      << cut[0].stats.shadow_casters << " -> "
-                                      << mirrored[0].stats.shadow_casters);
-  CHECK(red_cut == 0u);
-  CHECK(red_mirrored > 100u);
+  const u32 red_added = redder(cut[0].frame, mirrored[0].frame, sky[0].water_instance);
+  u32 changed = 0, off_water = 0;
+  for (u32 p = 0; p < pixels; ++p) {
+    if (std::memcmp(&cut[0].frame.color[p * 4], &mirrored[0].frame.color[p * 4], 3) == 0) continue;
+    ++changed;
+    if (!is_water(sky[0].frame, p, sky[0].water_instance)) ++off_water;
+  }
+  MESSAGE("the box above the frame: the reflection without the mirrored volume reddens "
+          << red_cut << " water pixels (the ground's), the volume " << red_added << " more of "
+          << changed << " it changes; casters " << cut[0].stats.shadow_casters << " -> "
+          << mirrored[0].stats.shadow_casters);
+  CHECK(red_added > 100u);
+  CHECK(off_water == 0u);
   CHECK(mirrored[0].stats.shadow_casters > cut[0].stats.shadow_casters);
 }
 
