@@ -495,7 +495,6 @@ TEST_CASE("water refract: the sun under the water is dimmed as the reference say
   // The middle 5 x 5 pixels: the log's top, seen through the water.
   const u32 w = lit[0].frame.width, h = lit[0].frame.height;
   f64 diff[3] = {0.0, 0.0, 0.0};
-  u32 n = 0;
   for (u32 y = h / 2 - 2; y <= h / 2 + 2; ++y) {
     for (u32 x = w / 2 - 2; x <= w / 2 + 2; ++x) {
       const u32 p = y * w + x;
@@ -503,7 +502,6 @@ TEST_CASE("water refract: the sun under the water is dimmed as the reference say
       for (u32 c = 0; c < 3; ++c)
         diff[c] += static_cast<f64>(lit[0].frame.light[p * 3 + c]) -
                    static_cast<f64>(dark[0].frame.light[p * 3 + c]);
-      ++n;
     }
   }
   REQUIRE(diff[1] > 0.0);
