@@ -25,6 +25,7 @@
 #endif
 
 using namespace engine;
+#if ENGINE_CONTENT_CHANNELS && ENGINE_CONTENT_TILESET
 namespace {
 struct Output {
   i32 code = -1;
@@ -48,6 +49,7 @@ Output run(std::vector<std::string> args) {
   return result;
 }
 }  // namespace
+#endif
 
 TEST_CASE("engine-content channels --cut writes the terrain's cuts beside the water") {
 #if !ENGINE_CONTENT_CHANNELS || !ENGINE_CONTENT_TILESET
