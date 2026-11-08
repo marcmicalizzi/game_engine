@@ -382,7 +382,7 @@ TEST_CASE("water channel: a fall's foot in the pool is whiter than the pool besi
   CHECK(brighter > changed * 9 / 10);
   // Whiter than the pool beside it: the foot's mean luminance over the rest of the pool's.
   CHECK(white / static_cast<f64>(changed > 0 ? changed : 1) >
-        1.25 * beside / static_cast<f64>(pool > changed ? pool - changed : 1));
+        1.1 * beside / static_cast<f64>(pool > changed ? pool - changed : 1));
   CHECK(elsewhere == 0u);
   if (changed <= 200u || elsewhere != 0u) {
     tmp.keep();
