@@ -276,15 +276,15 @@ TEST_CASE("sun region: the distance is the pixel's footprint over the sun's penu
   const f32 proj = 2160.0f * 0.5f / std::tan(0.5f * k_fov);
   const f64 one = static_cast<f64>(gfx::sun_solid_distance(1.0f, 10.0f, proj));
   CHECK(one == doctest::Approx(193.0).epsilon(0.005));
-  CHECK(static_cast<f64>(gfx::sun_solid_distance(2.0f, 10.0f, proj)) ==
-        doctest::Approx(2.0 * one));
+  CHECK(static_cast<f64>(gfx::sun_solid_distance(2.0f, 10.0f, proj)) == doctest::Approx(2.0 * one));
   // Off: a factor, a height or a projection of 0.
   CHECK(gfx::sun_solid_distance(0.0f, 10.0f, proj) == 0.0f);
   CHECK(gfx::sun_solid_distance(1.0f, 0.0f, proj) == 0.0f);
   CHECK(gfx::sun_solid_distance(1.0f, 10.0f, 0.0f) == 0.0f);
 }
 
-TEST_CASE("sun region: the measurement switch steps none, sides, far, both eight frames at a time") {
+TEST_CASE(
+    "sun region: the measurement switch steps none, sides, far, both eight frames at a time") {
   TunableScope far("renderer.shadow.solid_far=2", "renderer.shadow.solid_far=0");
   TunableScope sides("renderer.shadow.solid_sides=40", "renderer.shadow.solid_sides=-1");
   {
@@ -311,7 +311,8 @@ TEST_CASE("sun region: the measurement switch steps none, sides, far, both eight
 // Past the distance a receiver under the card casts the solid card's shadow, nearer it the
 // mask's. The micromaps are off here, so the drawn card's triangles have none and the rule is
 // what decides them; the canopy is the card's own metre.
-TEST_CASE("sun region: a receiver past the distance casts the solid shadow, a near one the mask's") {
+TEST_CASE(
+    "sun region: a receiver past the distance casts the solid shadow, a near one the mask's") {
   Fixture fx;
   TunableScope micromaps("renderer.shadow.micromaps=false", "renderer.shadow.micromaps=true");
   TunableScope canopy("renderer.shadow.canopy_m=1", "renderer.shadow.canopy_m=10");
@@ -433,7 +434,8 @@ TEST_CASE("sun region: a card with a micromap keeps the frame as set's shadow un
 // The sides of a surround: a 3:1 frame's outer thirds (R126's region) solid outright. The centre
 // third is the frame as set to the byte, and every pixel that moved is a side pixel where the
 // solid card's shadow and the mask's disagree.
-TEST_CASE("sun region: the sides solid outright move only side pixels the solid shadow differs on") {
+TEST_CASE(
+    "sun region: the sides solid outright move only side pixels the solid shadow differs on") {
   Fixture fx;
   TunableScope micromaps("renderer.shadow.micromaps=false", "renderer.shadow.micromaps=true");
   constexpr u32 k_width = 3 * k_height;

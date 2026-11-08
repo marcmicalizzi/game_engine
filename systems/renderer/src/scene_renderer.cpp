@@ -3183,8 +3183,8 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
       }
       if (region.side_m >= 0.0f && half_sides > 0.0f) {
         const gfx::HalfRateWindow sides =
-            gfx::half_rate_window(half_sides, false, width_, views_[v].rect.x,
-                                  views_[v].rect.width, targets_.views[v].width);
+            gfx::half_rate_window(half_sides, false, width_, views_[v].rect.x, views_[v].rect.width,
+                                  targets_.views[v].width);
         if (sides.columns > 0) {
           resolve.shadow_flags |= gfx::k_shadow_sun_solid_sides;
           resolve.sun_solid_side_distance = region.side_m;
