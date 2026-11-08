@@ -35,13 +35,13 @@ Batch 54's 0.08 ms stays an open question: R136's `terrain_hex_sample` (a hex la
 
 Main at 86b543cb, the same run (`tools/frame-budget.ps1 -Preset msvc-release -Run endless-surround3-rt -WaitQuiet 600`, each binary frozen in the agent's scratch and named with `-Exe`), the three trees flown in turn under the GPU lock. The machine was never quiet (others 16–45 % of the CPU at the flights' ends, the GPU 0–31 %), so each reading is an upper bound; the pairs are what is compared.
 
-| tree | resolve median (ms) | resolve p99 | hw median | machine (others CPU start / end, GPU end) |
+| tree | resolve median, flight 1 / flight 2 (ms) | resolve p99, flight 1 | hw median, flight 1 | machine, flight 1 (others CPU start / end, GPU end) |
 |---|---|---|---|---|
-| main 86b543cb | 2.092 | 2.481 | 0.309 | busy (38 % / 25 %, GPU 31 %) |
-| main + R139 (its rule off, the block 560 bytes) | 2.083 | 2.462 | 0.308 | busy (30 % / 16 %, GPU 7 %) |
-| that + (a), `weigh`/`rest` guarded by `light_count != 0` | 2.098 | 2.479 | — | busy (25 % / 45 %, GPU 4 %) |
+| main 86b543cb | 2.092 / 2.093 | 2.481 | 0.309 | busy (38 % / 25 %, GPU 31 %) |
+| main + R139 (its rule off, the block 560 bytes) | 2.083 / 2.086 | 2.462 | 0.308 | busy (30 % / 16 %, GPU 7 %) |
+| that + (a), `weigh`/`rest` guarded by `light_count != 0` | 2.098 / 2.099 | 2.479 | — | busy (25 % / 45 %, GPU 4 %) |
 
-- **(a) does not measure**: 2.098 against 2.083 and 2.092, inside the 0.05 ms that two readings of one commit differ by. It was committed and reverted (a7e8b48f, af3c2ac6), as this row's rule asks.
+- **(a) does not measure**: 2.098 and 2.099 against 2.083–2.086 without it and main's 2.092–2.093, inside the 0.05 ms that two readings of one commit differ by. It was committed and reverted (a7e8b48f, af3c2ac6), as this row's rule asks.
 - **(b), the lights loop back before the hemisphere term, was not tried alone**: since R115 stage 1 the loop's tolerance test reads `rest`, which is the pixel's other light *including the hemisphere and occlusion term*, so moving the loop back in front of that term changes what `light_tolerance` means rather than only where the code sits. Without the tolerance the order is the sum's and the picture's bytes would hold; with it, it is a different rule.
 - **R139's 16-byte row costs nothing measurable**: 2.083 against main's 2.092.
 - **Main reads under the budget** (2.092 against 2.100) where the batch 55 gate read 2.195 on a busier machine, so the gate's step is the machine's and not the resolve's, as far as one busy flight can say; the budget file is unchanged.
