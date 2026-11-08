@@ -381,8 +381,11 @@ namespace {
 
 // A link's cut down its line (channels.md, "The cut"): at each point the top of the bank (the
 // ground under the line), the bed and the section's thalweg depth. The bed is the top less the
-// thalweg, never rising downstream, so where the line crosses a rise of the ground the cut runs
-// through it deeper than a depth.
+// thalweg, held down the line where the ground rises a little (the cut runs through a small rise
+// deeper than a depth), but **never more than two thalwegs under the ground at the line**: where the
+// line climbs out of a filled depression or over a sill (a lake's outlet; on v35 the running
+// minimum alone cut 103 m through one), the bed climbs with it.
+constexpr f64 k_cut_depth_thalwegs = 2.0;
 struct CutPoint {
   f64 top = 0;
   f64 bed = 0;
@@ -397,7 +400,7 @@ Vector<CutPoint> cut_of(const ChannelLayer& p, const ChannelLink& link) {
     c.thalweg = round_to(section_of(wide(pt.width_m), wide(pt.depth_m), wide(p.bank_slope)).thalweg,
                          1e3);
     bed = std::min(bed, round_to(c.top - c.thalweg, 1e3));
-    c.bed = bed;
+    c.bed = std::max(bed, round_to(c.top - k_cut_depth_thalwegs * c.thalweg, 1e3));
     out.push_back(c);
   }
   return out;
@@ -417,16 +420,20 @@ JsonValue water_channels_json(const ChannelLayer& p, const ChannelNetwork& n, f6
               slopes = JsonValue::array();
     // Laid on the ground (W86): the bed is the ground's running minimum down the line and the
     // surface stands `stage` of the bankfull depth over it. In the cut (W89): the bed is the cut's
-    // and the surface stands `stage` of the thalweg depth over it, inside the banks. Either way the
-    // surface never rises downstream and `depth_m` is what is then between it and the bed.
+    // and the surface stands `stage` of the thalweg depth over it, inside the banks. The surface never rises
+    // downstream, except in the cut where its bed climbs over a sill; `depth_m` is what is then
+    // between it and the bed.
     const Vector<CutPoint> cuts = cut ? cut_of(p, link) : Vector<CutPoint>();
     f64 bed = link.line[0].at.y;
     f64 surface = std::numeric_limits<f64>::infinity();
     for (u32 i = 0; i < link.line.size(); ++i) {
       const ChannelPoint& pt = link.line[i];
       if (cut) {
+        // Held down the line, except where the cut's bed climbs over a sill, where the water keeps
+        // half its depth over it rather than run under the ground.
         bed = cuts[i].bed;
-        surface = std::min(surface, round_to(bed + wide(stage) * cuts[i].thalweg, 1e3));
+        const f64 water = wide(stage) * cuts[i].thalweg;
+        surface = std::max(std::min(surface, round_to(bed + water, 1e3)), round_to(bed + .5 * water, 1e3));
       } else {
         bed = std::min(bed, pt.at.y);
         surface = std::min(surface, round_to(bed + wide(stage) * wide(pt.depth_m), 1e3));

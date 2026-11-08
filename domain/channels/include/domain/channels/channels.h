@@ -131,8 +131,8 @@ JsonValue water_channels_json(const ChannelLayer& layer, const ChannelNetwork& n
 // W89): one object per link of the network (every link, the rills' too), in link order, each
 // `{name, points, width_m, depth_m, bank_slope}` — `points` the line with y the top of the bank
 // (the ground under the line), `width_m` the bankfull width, `depth_m` the bed below the top: the
-// section's thalweg (`bank_slope`'s trapezoid of the hydraulic geometry's area), the bed never
-// rising downstream — as a JSON array.
+// section's thalweg (`bank_slope`'s trapezoid of the hydraulic geometry's area), the bed held
+// down the line, never more than two thalwegs under the ground at it — as a JSON array.
 JsonValue terrain_cuts_json(const ChannelLayer& layer, const ChannelNetwork& network);
 
 // One placed piece (a stretch of a link up to `piece_m` long, one part of it): where its frame

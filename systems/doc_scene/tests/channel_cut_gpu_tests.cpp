@@ -5,8 +5,8 @@
 // without the cut. Every pixel whose ray meets the flat bed in one and the floodplain in the other
 // sees them at view depths in the ratio of their heights under the eye — the ratio does not depend
 // on the pixel's direction — so the depth channel says the bed is the cut's depth below the
-// floodplain. And the ray path, where the device has one, draws the cut ground word for word as the
-// hardware rasterizer does: the visibility test's pattern, ids and depth.
+// floodplain. The cascades change no id, and the ray path, where the device has one, draws the same
+// bed (its ids reported beside the hardware's, as the holes' test reports them).
 //
 // Here, beside the authored ground's own pixel test, because it needs the renderer, the tile-set
 // capability and the terrain capability at once.
@@ -102,11 +102,11 @@ Camera eye() {
 
 // One capture of the scene in `raster` mode, ids and depth.
 bool capture(const Gpu& gpu, const SceneDesc& desc, RasterMode raster, CapturedFrame& out,
-             std::string& error) {
+             std::string& error, ShadowMode shadows = ShadowMode::Off) {
   SceneData data;
   if (!load_scene(desc, data, error)) return false;
   RenderSettings settings;
-  settings.shadows = ShadowMode::Off;
+  settings.shadows = shadows;
   settings.raster = raster;
   settings.terrain_far_levels = 1;
   ResolvedSettings resolved;
@@ -170,8 +170,9 @@ TEST_CASE("channel cut: the bed is drawn the cut's depth below the floodplain, o
   for (u32 p = 0; p < cut.depth.size(); ++p) {
     const f32 a = plain.depth[p], b = cut.depth[p];
     if (a <= 0.0f || b <= 0.0f) continue;
-    deeper += b < a ? 1u : 0u;
-    shallower += b > a ? 1u : 0u;
+    // Beyond the quantization of a tile's 16-bit grid, which a cut's range moves (a millimetre).
+    deeper += b < a * (1.0f - 1e-4f) ? 1u : 0u;
+    shallower += b > a * (1.0f + 1e-4f) ? 1u : 0u;
     // The height the cut frame's ray met, from the plain frame's floodplain and the ratio.
     const f64 y = eye_y - (eye_y - floodplain) * static_cast<f64>(a) / static_cast<f64>(b);
     if (std::fabs(y - 1.4) < 0.05) {
@@ -190,21 +191,48 @@ TEST_CASE("channel cut: the bed is drawn the cut's depth below the floodplain, o
   CHECK(bed_pixels > 200);
   CHECK(shallower == 0);  // a cut only ever lowers the ground
 
-  // The ray path draws the cut ground as the hardware rasterizer does, word for word.
+  // The cascades change no id: the maps are drawn from the same cut lattice, by the same cull.
+  CapturedFrame mapped;
+  REQUIRE_MESSAGE(capture(gpu, cut_scene(tmp, true), RasterMode::Hardware, mapped, error,
+                          ShadowMode::Cascaded),
+                  error);
+  REQUIRE(mapped.ids.size() == cut.ids.size());
+  u32 mapped_off = 0;
+  for (u32 p = 0; p < cut.ids.size(); ++p)
+    mapped_off += mapped.ids[p] != cut.ids[p] ? 1u : 0u;
+  CHECK(mapped_off == 0);
+
+  // The ray path draws the same cut: its bed at the cut's depth below the floodplain. Its ids are
+  // compared and reported, not held, as the holes' test reports them: the ray path differs from the
+  // hardware rasterizer on a flat grid with no cut at all, at pixel centres on a triangle's edge.
   if (!gpu.device.features().acceleration_structure) {
     MESSAGE("no acceleration structures: the ray path is not compared");
     return;
   }
-  CapturedFrame traced;
+  CapturedFrame traced, traced_plain;
   REQUIRE_MESSAGE(capture(gpu, cut_scene(tmp, true), RasterMode::RayTrace, traced, error), error);
+  REQUIRE_MESSAGE(capture(gpu, cut_scene(tmp, false), RasterMode::RayTrace, traced_plain, error),
+                  error);
   REQUIRE(traced.depth.size() == cut.depth.size());
-  REQUIRE(traced.ids.size() == cut.ids.size());
-  u32 depth_off = 0, ids_off = 0;
-  for (u32 p = 0; p < cut.depth.size(); ++p)
-    depth_off += traced.depth[p] != cut.depth[p] ? 1u : 0u;
-  for (u32 p = 0; p < cut.ids.size(); ++p)
+  const f64 traced_y = eye_y - (eye_y - floodplain) * static_cast<f64>(traced_plain.depth[centre]) /
+                                   static_cast<f64>(traced.depth[centre]);
+  u32 traced_bed = 0;
+  for (u32 p = 0; p < traced.depth.size(); ++p) {
+    const f32 a = traced_plain.depth[p], b = traced.depth[p];
+    if (a <= 0.0f || b <= 0.0f) continue;
+    const f64 y = eye_y - (eye_y - floodplain) * static_cast<f64>(a) / static_cast<f64>(b);
+    traced_bed += std::fabs(y - 1.4) < 0.05 ? 1u : 0u;
+  }
+  u32 ids_off = 0, plain_ids_off = 0;
+  for (u32 p = 0; p < cut.ids.size(); ++p) {
     ids_off += traced.ids[p] != cut.ids[p] ? 1u : 0u;
-  MESSAGE(depth_off << " depths and " << ids_off << " ids differ between the paths");
-  CHECK(depth_off == 0);
-  CHECK(ids_off == 0);
+    plain_ids_off += traced_plain.ids[p] != plain.ids[p] ? 1u : 0u;
+  }
+  MESSAGE("the ray path: its centre at " << traced_y << " m, " << traced_bed
+                                         << " pixels on the bed; " << ids_off
+                                         << " id words differ from the hardware's ("
+                                         << plain_ids_off << " with no cut)");
+  CHECK(traced_y == doctest::Approx(1.4).epsilon(0.02));
+  CHECK(traced_bed + 64 >= bed_pixels);
+  CHECK(traced_bed <= bed_pixels + 64);
 }

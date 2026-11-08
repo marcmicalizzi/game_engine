@@ -451,27 +451,28 @@ TEST_CASE("channels: the cuts have the TerrainCut shape and the water lies insid
     REQUIRE(link.line.size() == cut.points.size());
     const auto& surface = water[k].find("points")->as_array();
     REQUIRE(surface.size() == cut.points.size());
-    f64 previous_bed = std::numeric_limits<f64>::infinity();
     for (u32 i = 0; i < cut.points.size(); ++i) {
       const ChannelPoint& pt = link.line[i];
       const f64 top = cut.points[i].y;
       const f64 bed = top - static_cast<f64>(cut.depth_m[i]);
       CHECK(std::fabs(top - pt.at.y) <= 5e-4 + 1e-9);  // the ground at the line, to the mm
-      CHECK(bed <= previous_bed + 1e-6);  // the bed never rises downstream (depth_m is an f32)
-      previous_bed = bed;
       // The section's thalweg: D (W - D / m) = W d, the area the hydraulic geometry's mean depth
       // gives, at least, where the bed runs through no rise (or a V of twice the mean).
       const f64 w = static_cast<f64>(pt.width_m), mean = static_cast<f64>(pt.depth_m);
       const f64 m = static_cast<f64>(p.bank_slope);
       const f64 d = static_cast<f64>(cut.depth_m[i]);
-      const f64 thalweg = 4 * mean / (m * w) >= 1 ? 2 * mean : d;
+      const f64 thalweg = 4 * mean / (m * w) >= 1
+                              ? 2 * mean
+                              : .5 * m * w * (1 - std::sqrt(1 - 4 * mean / (m * w)));
+      // At least a thalweg under the top, and never more than two (the cap over a sill).
       CHECK(d >= thalweg - 2e-3);
+      CHECK(d <= 2 * thalweg + 2e-3);
       if (i == 0 && 4 * mean / (m * w) < 1)
         CHECK(d * (w - d / m) == doctest::Approx(w * mean).epsilon(0.01));
       // The water's surface stands in the cut: over the bed, under the top of the bank.
       f64 y = 0;
       REQUIRE(surface[i][1].get_f64(y));
-      CHECK(y >= bed - 1e-9);
+      CHECK(y >= bed + .25 * thalweg - 2e-3);  // at least half the stage's depth (0.5)
       CHECK(y < top);
     }
   }

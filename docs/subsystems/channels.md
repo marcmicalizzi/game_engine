@@ -151,8 +151,11 @@ the rills' too, each point with
 - **the bed's depth below the top**: the section's thalweg, a trapezoid with banks at the layer's
   `bank_slope` (rise over run, 1 by default) whose area is the width times the hydraulic geometry's
   mean depth (`D (W − D / m) = W d̄`; a V of twice the mean where the banks are too gentle for that
-  area), the bed never rising downstream, so where the line crosses a rise of the ground the cut runs
-  through it deeper than a depth;
+  area), the bed held down the line where the ground at it rises a little (the cut runs through a
+  small rise deeper than a thalweg) but **never more than two thalwegs under the ground at the line**:
+  where the line climbs out of a filled depression or over a lake's outlet the bed climbs with it (on
+  v35 the running minimum alone would have cut 103 m through one, and 8.6 % of the network's points
+  more than a metre);
 - and the bank slope.
 
 The author pastes them into the `tiles` block (`terrain.tiles.cuts`), and **the tile set is built
@@ -164,7 +167,9 @@ The source of the section, the bank slope and the stage is
 
 **The water within.** With `--cut` each `WaterChannel` point's y is the cut's bed plus `--stage` of
 its thalweg depth, and `depth_m` that water's depth, so the surface lies inside the banks: at the
-default 0.5, half the thalweg depth below the floodplain. S96's ribbon is wider than the water it
+default 0.5, half the thalweg depth below the floodplain. It never rises downstream except where the
+cut's bed climbs over a sill, where the water keeps half its depth over the bed rather than run
+under the ground. S96's ribbon is wider than the water it
 carries (the bankfull width and a quarter past each edge); at a stage below bankfull those edges are
 under the cut's faces and the depth test hides them. Without `--cut` the subcommand writes what it
 wrote before: no cuts and the surface on the ground as W86 laid it, for a scene whose ground is not
