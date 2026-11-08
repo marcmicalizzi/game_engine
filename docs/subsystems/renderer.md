@@ -833,7 +833,17 @@ runs it on a load thread. `load_scene` does its work in this order:
    lowest mesh index's, as the serial loop reported it. A path a later mesh repeats loads in a
    second wave, after the first wrote the entry they share, so it is a hit as it was serially and
    not a second build of the same entry. The trace's `meshes` stage holds the main thread's wait;
-   each `mesh` stage is on the thread that ran it.
+   each `mesh` stage is on the thread that ran it. **The pool gets one runner job a thread, never
+   one job a mesh** (`run_jobs`, scene.cpp; T73): each runner takes the next mesh by an atomic
+   index until none is left. The pool's queues hold 4,096 jobs each (the caller's guest deque and
+   the inbox, `JobSystemConfig::queue_capacity`), and `schedule` runs a job that fits neither on the
+   submitting thread at once — before it wakes a sleeping worker — so the v35 forest's 16,351
+   meshes ran 8,159 of them one after another on the load thread, ~27 ms each, while every worker
+   slept, and only then the queued 8,192 in parallel: 246 s of a 419 s load
+   ([the measurements](../experiments/load-v35-2026-11-08.md)). `SceneLoadReport::inline_jobs`
+   counts what the pool ran inline and is zero; `cooked_load_tests.cpp` loads 10,000 meshes and
+   holds it there. The duplicate-path scan that splits the two waves is a hash of the path, not a
+   comparison with every earlier one.
 2. **The textures, once for the whole load** (`prepare_scene_textures`, scene.cpp; the trace's
    `cache textures`), where until W75 every mesh ran the content build's texture step on its own —
    a read and a hash of every image it named, and a job pool made and joined to do it:
@@ -857,7 +867,12 @@ runs it on a load thread. `load_scene` does its work in this order:
    The trace's `textures trusted` names the counts (`trusted=… built=… hashed=… from_index=…`), and
    `SceneData::load` (`SceneLoadReport`) carries them and the source images opened and their bytes
    for a test and for engine-view's summary (`load`, [apps](apps.md#the-summarys-load-block)).
-3. The authored forms, the merge, the instances, as before.
+3. The authored forms (`authored forms`), the merge (`merge`), the instances, as before — except
+   that the per-mesh DAGs and page tables are released as soon as the merge has copied them
+   (`release meshes`), not at the end of the load, and the instance list is moved out of the
+   load's copy of the description rather than copied (T73). Each placement entry of the scene file
+   is a `placement` stage whose detail is its generator, and the footprints handed to the entries
+   after it a `footprints` stage, so `placements` says where its time went.
 
 **What it still reads before the first frame**, warm, for the forest v7 (2,074 MiB of 4,498): the
 `.clusters` containers (281 MiB) and the GLBs' own bytes for their source hash (195 MiB), every
