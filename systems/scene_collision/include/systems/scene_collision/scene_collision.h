@@ -7,8 +7,9 @@
 // (`scene_gen::GroundProvider`) at a collision spacing, and the **placements** — what the scene's
 // placement generators put on the tile, the ruins' walls and rubble — as one static compound of
 // each piece's proxy. A `physics::CharacterBody` then walks on them. It builds nothing the
-// renderer draws and draws nothing; it links no generator, finding each in the scene-generator
-// registry by the name the scene gives, as the world's placements consumer does.
+// renderer draws (collision_draw.h draws what it holds, for a look); it links no generator, finding
+// each in the scene-generator registry by the name the scene gives, as the world's placements
+// consumer does.
 //
 // **Where the placements come from.** A streamed scene (`renderer::SceneData::streamed`) keeps its
 // placement entries for the world, and this consumer opens each entry's generator again and asks it
@@ -41,7 +42,8 @@
 //
 //   [-] schema types      none: nothing here is persistent; the bodies are rebuilt from the scene
 //   [-] scheduler entry   none: the ring updates between ticks, as every world consumer's does
-//   [-] render passes     none: collision is not drawn
+//   [x] render passes     the collision debug draw, a frame pass a host registers
+//   (collision_draw.h)
 //   [-] derived data      none: a proxy is cut from the DAG the scene already loaded, in
 //   microseconds
 //   [-] protocol methods  none yet: nothing over `render.*` walks
@@ -121,6 +123,11 @@ struct Config {
   // activates them; 0 (or no job system) builds nothing ahead. A host sets it to its ring's radius
   // plus `prefetch_tunable()`. Changes no body: the heights are the same call's either way.
   f32 prefetch_radius_tiles = 0.0f;
+  // **Keep what is held for a debug draw** (collision_draw.h; docs: "Seeing the collision"): every
+  // proxy's triangles (with each triangle's flora part) and every held tile's pieces stay on the
+  // CPU beside the backend's shapes, for `held_tile` and `held_piece`. Off, nothing is kept and
+  // those report the ground alone. Changes no body.
+  bool keep_shapes = false;
 };
 Config config_from_tunables(f32 tile_size) noexcept;
 // The consumer's ring: one ring of `radius_tunable()` tiles, the world's hysteresis, the budget.
@@ -148,6 +155,10 @@ struct Stats {
   // A tree's triangles a proxy left out because a corner is of a frond, a leaf, a curtain or a twig
   // (scene_collision.md, "What gets no body").
   u32 flora_triangles_left_out = 0;
+  // The scene's far-forest instances left out of the bins (docs: "What gets no body"): one a world
+  // tile the load merged its streamed trees' coarsest forms into, which is drawn only where the
+  // ring's tail does not draw the tile's trees (renderer.md, "The far forest").
+  u32 far_forest_left_out = 0;
   u64 ground_samples = 0;  // heights held on the CPU, beside the backend's own copy
   // What the backend holds (`physics::World::shape_memory`): the live tiles' heightfields and
   // compounds (a compound's own tree and child table; its pieces are the proxies), and every proxy.
@@ -210,6 +221,35 @@ struct Stats {
   i64 refresh_ns = 0;
   i64 max_refresh_ns = 0;
   i64 proxy_ns = 0;
+};
+
+// **What a held tile holds, for a debug draw** (collision_draw.h). Spans are the consumer's and
+// stay valid until its next update.
+inline constexpr u32 k_no_index = 0xFFFFFFFFu;
+struct HeldTile {
+  world::TileCoord coord;
+  WorldPos corner{};  // where its compound stands: the tile's corner at y 0
+  // The ground's lattice: `n` x `n` heights from the point (i0, j0) at `spacing_m`, row-major (z
+  // rows of x), what its heightfield was built with; n 0 for a tile with no ground body. A sample a
+  // terrain's hole took out is `lattice_hole(i0 + i, j0 + j)`.
+  i64 i0 = 0;
+  i64 j0 = 0;
+  u32 n = 0;
+  f64 spacing_m = 1.0;
+  std::span<const f32> heights;
+  u32 pieces = 0;  // `held_piece`'s count: 0 unless `Config::keep_shapes`
+};
+struct HeldPiece {
+  u32 mesh = 0;               // the scene mesh
+  u32 instance = k_no_index;  // the loaded instance it is (a bin's), or none (a streamed placement)
+  u32 entry = k_no_index;     // the streamed entry that placed it, or none (a bin's)
+  Vec3 offset{};              // from the tile's corner, metres
+  Quat rotation{};
+  // The proxy, in the mesh's frame at the instance's scale; `parts` the flora part of each
+  // triangle's first corner (0 for a mesh with no motion contract).
+  std::span<const Vec3> vertices;
+  std::span<const u32> indices;
+  std::span<const u32> parts;
 };
 
 class SceneCollision {
@@ -286,6 +326,13 @@ class SceneCollision {
   // took out of the heightfield.
   bool ground_height(WorldPos at, f32& out) const noexcept;
   const Stats& stats() const noexcept { return stats_; }
+  // **What is held** (docs: "Seeing the collision"): the held tiles, in the consumer's order, and a
+  // tile's pieces where `Config::keep_shapes` kept them. False past the count.
+  u32 held_tiles() const noexcept { return tiles_.size(); }
+  bool held_tile(u32 index, HeldTile& out) const noexcept;
+  bool held_piece(u32 tile, u32 piece, HeldPiece& out) const noexcept;
+  // Whether a terrain's hole took lattice sample (i, j) out of the ground (W87).
+  bool lattice_hole(i64 i, i64 j) const noexcept { return hole_sample(i, j); }
   // Whether a streamed scene's generators, rather than the scene's own instances, give the tiles
   // their placements.
   bool streamed() const noexcept { return !entries_.empty(); }
@@ -299,6 +346,19 @@ class SceneCollision {
   struct Proxy {
     physics::BuiltShape shape;
     u32 triangles = 0;
+    // With `Config::keep_shapes`: the triangles the shape was built from, and each one's part.
+    Vector<Vec3> vertices;
+    Vector<u32> indices;
+    Vector<u32> parts;
+  };
+  // One piece of a held tile, with `Config::keep_shapes`.
+  struct PieceRecord {
+    u32 mesh = 0;
+    u32 instance = k_no_index;
+    u32 entry = k_no_index;
+    Vec3 offset{};
+    Quat rotation{};
+    const Proxy* proxy = nullptr;
   };
   // The proxies' counters, kept under the proxies' lock and copied into `Stats` on the tick.
   struct ProxyStats {
@@ -313,8 +373,10 @@ class SceneCollision {
     Vector<physics::BuiltChild> children;
     Vector<Vec3> vertices;
     Vector<u32> indices;
+    Vector<u32> parts;
     FlatMap<u32, u32> remap;
     scene_gen::Placements placed;
+    Vector<PieceRecord> records;  // beside `children`, with `Config::keep_shapes`
   };
   // A tile's placements as built (`gather_placements`): its compound's shape, not yet in the
   // physics world's table, and what it holds.
@@ -322,7 +384,8 @@ class SceneCollision {
     physics::BuiltShape compound;
     u32 pieces = 0;
     u64 compound_bytes = 0;
-    bool ok = true;  // false: a generator refused the tile or the backend a shape
+    bool ok = true;               // false: a generator refused the tile or the backend a shape
+    Vector<PieceRecord> records;  // with `Config::keep_shapes`
   };
   struct Tile {
     world::TileCoord coord;
@@ -347,6 +410,7 @@ class SceneCollision {
     f64 time_b = 0.0;
     f64 blend = 0.0;
     bool moving = false;
+    Vector<PieceRecord> pieces_held;  // with `Config::keep_shapes`
   };
 
   static bool activate(void* context, const world::TileEvent& event);
@@ -386,10 +450,14 @@ class SceneCollision {
   // One piece of the tile's compound: `linear`'s rotation and scale (its translation column is not
   // read) standing at `at`, placed in the compound relative to the tile's `corner`.
   bool add_piece(u32 mesh, const Mat4& linear, WorldPos at, WorldPos corner,
-                 PlacementScratch& scratch);
+                 PlacementScratch& scratch, u32 instance, u32 entry);
+  // A far-forest mesh (`renderer::SceneData::far_forest`): drawn only where the tail is not.
+  bool far_mesh(u32 mesh) const noexcept {
+    return mesh < far_meshes_.size() && far_meshes_[mesh] != 0;
+  }
   // The proxy of a mesh at a scale, built on first ask; null for a mesh with no surface to stand
   // on. Thread-safe.
-  const physics::BuiltShape* proxy_for(u32 mesh, Vec3 scale, PlacementScratch& scratch);
+  const Proxy* proxy_for(u32 mesh, Vec3 scale, PlacementScratch& scratch);
   scene_gen::Context context_for(const Entry& entry) const noexcept;
   void note_bodies() noexcept;
 
@@ -408,6 +476,7 @@ class SceneCollision {
   Vector<std::unique_ptr<Entry>> entries_;
   // A scene read whole: for every tile its instances reach, their indices.
   FlatMap<u64, Vector<u32>> bins_;
+  Vector<u8> far_meshes_;  // by scene mesh, 1 for a far-forest tile's mesh
   // By (mesh, scale), under `proxies_mutex_`: a worker building a tile ahead and the tick building
   // one itself may ask at once.
   FlatMap<u64, std::unique_ptr<Proxy>> proxies_;

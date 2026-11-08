@@ -20,12 +20,21 @@ engine_capability_requires(scene_collision physics world)
 # entries), `scene_gen` for the ground provider's interface and the placement generators' registry,
 # `geometry` for the DAG a proxy is cut from. No generator is a dependency: a host links the ones it
 # carries (ADR-0046).
+
+# The collision debug draw's line pass (collision_draw.h, P62): one compute shader beside the module,
+# registered at the renderer's frame-pass point.
+engine_shaders(NAME scene_collision SOURCES shaders/collision_lines.slang)
+
 engine_module(NAME scene_collision LAYER systems OPTIONAL WHOLE_ARCHIVE
   DEPS base containers math hash jobs log time tunables schemas geometry gfx scene_gen
        renderer physics world sim profiling
-  SOURCES src/scene_collision.cpp)
+  SOURCES src/scene_collision.cpp src/collision_draw.cpp)
+if(TARGET engine_scene_collision_impl AND TARGET engine_shaders_scene_collision)
+  target_link_libraries(engine_scene_collision_impl PRIVATE engine_shaders_scene_collision)
+endif()
 
-set(_collision_tests tests/scene_collision_tests.cpp tests/size_table.cpp tests/terrain_hole_tests.cpp)
+set(_collision_tests tests/scene_collision_tests.cpp tests/size_table.cpp tests/terrain_hole_tests.cpp
+                     tests/collision_draw_tests.cpp)
 if(TARGET engine::terrain)
   # The ground refresh under a time-lapse, on the committed erg's dunes and the renderer's own
   # cadence rule: the terrain reaches the collision through the registry, so the test links it as
