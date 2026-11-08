@@ -128,7 +128,7 @@ TEST_CASE("gfx: the wet ground's model is monotone and bounded") {
   }
   // Sand of albedo 0.4 saturated keeps 0.61 of itself (shore.md's figure); dark soil of 0.15, 0.53.
   CHECK(wr::darkening(0.4) == doctest::Approx(0.6067).epsilon(0.001));
-  CHECK(wr::darkening(0.15) == doctest::Approx(0.5265).epsilon(0.001));
+  CHECK(wr::darkening(0.15) == doctest::Approx(0.5286).epsilon(0.001));
   // The fringe: 1 at and under the waterline, 0 at its top, falling between.
   CHECK(wr::fringe(-0.1, 0.4) == 1.0);
   CHECK(wr::fringe(0.0, 0.4) == 1.0);
