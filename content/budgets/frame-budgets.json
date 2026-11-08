@@ -168,59 +168,59 @@
       ],
       "gpu_ms": {
         "blas": {
-          "median": 0.172,
+          "median": 0.184,
           "p99": 0.227
         },
         "clas": {
-          "median": 0.227,
+          "median": 0.23,
           "p99": 0.234
         },
         "cull": {
-          "median": 0.089,
-          "p99": 0.286
+          "median": 0.113,
+          "p99": 0.131
         },
         "deform": {
-          "median": 0.021,
+          "median": 0.022,
           "p99": 0.024
         },
         "hw": {
-          "median": 0.282,
-          "p99": 0.348
+          "median": 0.285,
+          "p99": 0.351
         },
         "resolve": {
-          "median": 2.318,
-          "p99": 2.62
+          "median": 2.53,
+          "p99": 2.839
         },
         "rt": {
-          "median": 0.632,
-          "p99": 1.131
+          "median": 0.621,
+          "p99": 1.126
         },
         "sky": {
-          "median": 0.056,
-          "p99": 0.068
+          "median": 0.054,
+          "p99": 0.055
         },
         "total": {
-          "median": 3.373,
+          "median": 3.771,
           "p99": 4.127
         }
       },
       "baseline": {
-        "date": "2026-10-13",
-        "by": "Marc Micalizzi",
-        "reason": "Re-seeded for a tail the day's builds carry, not a change under test: on 2026-10-13 every msvc-release build made in the gate's build directory, of the batch 17 trees and of main itself (4a05b432), measures gpu_ms.rt at 0.59-0.63 median and 1.24-1.27 p99 on this run, a contiguous window of about 60 frames at 1.25 ms where the rest of the walk is 0.55; the engine-view built from the same main commit on 2026-10-12 and installed measures 0.589 / 0.653 back to back on the same quiet machine. Not the shaders (the gate binary with embedded shaders only shows it), not the machine (paired runs), not a driver or Windows update (none since 2026-09-15); blas and clas p99s are flat at 0.23, so the extra time is in the records passes or the top-level build. Roadmap R82 holds the question; the medians are within 3 percent of the 2026-10-12 seed.",
-        "commit": "a1bc848f (with uncommitted changes)",
+        "date": "2026-11-08",
+        "by": "Claude Fable 5.1 (batch 56 gate)",
+        "reason": "Re-pinned at the level main itself reads when built in a checkout against the ddc: the batch 56 gate (2026-11-08) read the total at 3.782 against the 3.760 limit, and paired runs the same day put main 86b543cb's source at resolve 2.540 / total 3.75 and the batch's tree 19f9d15d at 2.531-2.551, the same within noise, so the climb since the 2026-10-13 pin (about +0.22 ms resolve) is main's and unattributed (R138 measured no step on the sister run); a binary installed outside a checkout reads 0.09 ms less on the resolve because it finds no ddc and samples decoded RGBA8 textures instead of the built BC ones, so it is not a baseline for pairing; the blas, clas and total p99s are kept at the previous baseline's values because this one flight's tail inflated them (0.404 / 0.493 / 4.455 against 0.227 / 0.242 / 4.25-4.37 in five other flights the same day) and the run's own are within their limits.",
+        "commit": "19f9d15d",
         "device": "NVIDIA GeForce RTX 5090",
         "quiet": true,
-        "machine_state": "quiet (start 8.8% others, GPU 0%; end 2.8% others, GPU 0%)",
+        "machine_state": "quiet (start 9.5% others, GPU 4%; end 6.5% others, GPU 4%)",
         "identity": "33d911d95096f28e",
         "frames": 1201,
         "repeats": 1
       },
       "cpu_ms": {
-        "median": 0.187,
-        "p99": 0.63
+        "median": 0.256,
+        "p99": 0.853
       },
-      "sources": "Every number re-measured 2026-11-07 on main 8be9c6d4 (this baseline; the reason has the climb), hw kept from 2026-10-12. The 2026-10-07 seed: its medians agreed with docs/experiments/world-positions-renderer-2026-10-05.md (stage 1 cost, erg rt after: cull 0.096, hw 0.286, rt 0.605, resolve 2.328, total 3.458 ms) to within 2%; that page has no p99s."
+      "sources": "The GPU medians, the other p99s and the cpu lines re-measured 2026-11-08 on 19f9d15d, the batch 56 gate's tree at main's own level (the reason); the blas, clas and total p99s kept from the 2026-11-07 baseline (the reason says why). Before that: every number re-measured 2026-11-07 on main 8be9c6d4, hw kept from 2026-10-12. The 2026-10-07 seed: its medians agreed with docs/experiments/world-positions-renderer-2026-10-05.md (stage 1 cost, erg rt after: cull 0.096, hw 0.286, rt 0.605, resolve 2.328, total 3.458 ms) to within 2%; that page has no p99s."
     },
     {
       "id": "endless-1080p-csm",

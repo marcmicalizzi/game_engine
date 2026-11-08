@@ -48,3 +48,29 @@ Main at 86b543cb, the same run (`tools/frame-budget.ps1 -Preset msvc-release -Ru
 - Batch 54's pairs (f13475a4 against 43344b54, a3c96208 against 1b17ddfa) were not flown: the GPU lock's queue held each flight 30–60 minutes tonight.
 
 What stands: R115 stage 1's +0.108 ms (§2) is not in `light_tolerance`'s weighing; the remaining suspects are the loop's move (a rule change, above) and the register pressure of the stop and count words that §2 could not separate from noise. Main's resolve is under its budget today.
+
+## 5. The erg's walk, the same climb, and a pairing that lied (batch 56 gate, 2026-11-08)
+
+The batch 56 gate (tree 19f9d15d: W90, P62, S86, R139 on main 86b543cb) read `erg-walk-surround3-rt` at a total median of 3.782 ms against the 3.760 limit on a quiet machine (resolve 2.543 against the 2.318 pinned 2026-10-13); the batch 55 gate had passed it at 3.703 the same morning. Every flight below is `tools/frame-budget.ps1 -Run erg-walk-surround3-rt -WaitQuiet 60 -Exe <binary>`, medians in ms, alternated binaries, on the RTX 5090.
+
+**The first pairing, and why it was wrong.** The gate's binary against the release binary of main 86b543cb installed under `game_engine_local\bin-interactive`:
+
+| binary | resolve | total | cpu |
+|---|---|---|---|
+| installed main 86b543cb | 2.442 / 2.446 | 3.653 / 3.645 | 0.258 / 0.256 |
+| gate 19f9d15d | 2.534 / 2.533 | 3.777 / 3.786 | 0.257 / 0.257 |
+
+That read the batch 0.09 ms dearer on the resolve. It was the texture format: the installed binary sits outside any checkout, finds no ddc root, and decodes the erg's two textures to RGBA8 at load (its summary: `textures.decoded 2, built 0, bytes 134217728`, `load.textures.references 0`), where a checkout's build samples the built BC `.tex` (`built 2, decoded 0, bytes 44743680`, `references 2`).
+
+**The control.** Main's own source (86b543cb, detached) built in a checkout and flown against the same ddc, against the installed binary:
+
+| binary | resolve | total | cpu |
+|---|---|---|---|
+| main 86b543cb built in a checkout | 2.540 / 2.540 | 3.754 / 3.751 | 0.256 / 0.256 |
+| installed main 86b543cb | 2.451 / 2.450 | 3.688 / 3.655 | 0.255 / 0.255 |
+
+So main's level, measured as the gate measures, is the gate's number: the batch added nothing measurable. With R139's `sun_casters_solid` call compiled out of the gate's tree (a temporary edit) the resolve reads 2.551 / 2.548, the same; the erg never reaches that block in any case (no masked casters, so `k_shadow_alpha_masks` stays clear). S86's refraction is compiled only into the eight water modules.
+
+**Module sizes** (SPIR-V bytes, main's sources compiled with the same slangc against the gate's build): the four no-water ray-traced modules grew 3,608 bytes each (R139's call 3,332, its `ResolveParams` fields 276); the four ray-traced water modules grew 350–410 KB (S86); the plain modules 276 and the plain water modules 220.
+
+**What stands.** The erg's resolve climbed from 2.318 (2026-10-13) to 2.53–2.54 on main, +0.22 ms, the same unattributed climb §1–§4 chase on the endless desert; the run was re-pinned at 19f9d15d's numbers with the blas, clas and total p99s kept at the previous baseline's (0.227 / 0.234 / 4.127), because the re-pin flight's tail read 0.404 / 0.493 / 4.455 where five other flights the same day read 0.227 / 0.242 / 4.25–4.37. Two lessons: **pair binaries built in checkouts against the same ddc**, and read the summary's `textures` block before trusting a pair; and uncompressed RGBA8 sampling beats the built BC textures by about 0.09 ms of resolve on this walk at three times the memory, which is a question for the texture module, not this page.
