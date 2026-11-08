@@ -22,8 +22,8 @@ engine_module(NAME water LAYER systems OPTIONAL WHOLE_ARCHIVE
 # materials, the collision mark), and on a GPU the oasis pool's captures with and without it.
 engine_module_tests(NAME water
   SOURCES tests/water_tests.cpp tests/water_scene_tests.cpp tests/fill_tests.cpp tests/shore_scene_tests.cpp tests/size_table.cpp
-          tests/channel_tests.cpp tests/channel_scene_tests.cpp
-  DEPS renderer gfx)
+          tests/channel_tests.cpp tests/channel_scene_tests.cpp tests/reflect_scene_tests.cpp
+  DEPS renderer gfx tunables)
 if(TARGET engine_water_tests)
   target_compile_definitions(engine_water_tests PRIVATE ENGINE_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
 endif()

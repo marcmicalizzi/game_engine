@@ -666,6 +666,10 @@ float shadow_visibility(ResolveParams* params, uint bit, uint owner, float3 posi
 // returns is the surface's radiance, before the air between it and the eye. Only the water modules
 // have it (RESOLVE_WATER, above).
 #ifdef RESOLVE_WATER
+// The reflection of the scene (R129; water_reflect.slang): the ray-traced water modules alone.
+#ifdef RESOLVE_RAY_SHADOWS
+#include "water_reflect.slang"
+#endif
 // **The volume tier** (`k_material_water_volume`; water.slang, "the volume tier"): what is under
 // the surface, seen through it. The refracted view is marched against the body's depth map, the
 // ground as a height field (`water_path_map`; water.md, "The depth map"), so it lands on the
@@ -749,6 +753,9 @@ float3 water_pixel_volume(ResolveParams* params, SceneGeometry geo, InstanceDesc
     ambient = ambient_radiance(params->sky.rgb, ground, s.normal);
     reflected = params->sky.rgb;
   }
+#ifdef RESOLVE_RAY_SHADOWS
+  reflected = water_reflection(params, s, r, ray_bias, reflected);  // R129: the scene, or the sky
+#endif
   const float3 under = water_volume(o, path, n_b, albedo, params->sun.xyz, sun, sun_surface,
                                     sun_bottom, ambient);
   const float3 radiance = water_radiance_volume(w, n, view, float2(edge, s.uv.y), params->sun.xyz,
@@ -784,6 +791,9 @@ float3 water_pixel_low(ResolveParams* params, Surface s, float3 n, float3 view, 
     ambient = ambient_radiance(params->sky.rgb, ground, s.normal);
     reflected = params->sky.rgb;
   }
+#ifdef RESOLVE_RAY_SHADOWS
+  reflected = water_reflection(params, s, r, ray_bias, reflected);  // R129: the scene, or the sky
+#endif
   const float3 radiance =
       water_radiance(w, n, view, float2(edge, depth), params->sun.xyz, sun, ambient, reflected);
   return water_foam_over(radiance, foam, sun, params->sun.xyz, ambient);

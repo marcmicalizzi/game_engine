@@ -430,6 +430,12 @@ class GpuScene {
     return water_shore_count_ != 0 ? water_shores_.address : 0u;
   }
   u32 water_shore_count() const noexcept { return water_shore_count_; }
+  // The water reflects the scene (R129; water_reflect.h): the plane a frame's mirrored caster
+  // volume is fit to — the open body's level when the scene has one, else the level of the body
+  // nearest `eye` (the distance from the eye to the body's depth map's square, or to its instance's
+  // origin without a map), a channel never — in the frame's space, metres above the eye. False for
+  // a scene with no level body.
+  bool water_reflect_level(const WorldEye& eye, f32& level) const noexcept;
   bool has_terrain_materials() const noexcept { return has_terrain_materials_; }
   // A material row carries gfx::k_material_stochastic (R131): the resolve draws with its
   // `_stochastic` module, which only such a scene pays for.
@@ -1646,6 +1652,16 @@ class GpuScene {
   u32 water_open_material_ = 0;
   gfx::BufferResource water_shores_;
   u32 water_shore_count_ = 0;
+  // The water reflection's candidate planes (R129; `water_reflect_level`): a level body each, its
+  // instance, its square's centre (body-local x, z) and half diagonal, and whether it is the open one.
+  struct WaterReflectBody {
+    u32 instance = 0;
+    Vec2 center{};
+    f32 radius = 0.0f;
+    bool open = false;
+  };
+  Vector<WaterReflectBody> water_reflect_bodies_;
+  void collect_water_reflect_bodies();
   bool has_masked_ = false;  // a material of the table carries gfx::k_material_alpha_mask
   // {cluster, material} of every alpha-tested cluster, kept from the material upload until the
   // proxy's bake (R109) reads it, then released; empty when the proxy is off.
