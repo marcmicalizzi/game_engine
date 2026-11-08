@@ -123,6 +123,36 @@ void response_main(uint3 id : SV_DispatchThreadID) {
   output[5 * i + 4] = float4(g.chance0, g.draw0, g.chance1, g.draw1);
 }
 
+// S99's wet response (wet_ground.slang, terrain_material.slang's `terrain_wet`) over a grid of
+// albedo (17) x saturation (11) x porosity (6) x film (3), three float4 a point, against
+// wet_reference.h in wet_ground_tests.cpp: the wet sample's albedo and roughness, the film's
+// weight, the fringe at a height, and whether s = 0 gave the dry sample's bits back.
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void wet_main(uint3 id : SV_DispatchThreadID) {
+  if (id.x >= g_probe.count) return;
+  const uint i = id.x;
+  const float a = float(i % 17u) / 16.0;
+  const float s = float((i / 17u) % 11u) / 10.0;
+  const float porosity = float((i / 187u) % 6u) / 5.0;
+  const float film = float((i / 1122u) % 3u) / 2.0;
+  MaterialSample dry = (MaterialSample)0;
+  dry.albedo = float3(a, 0.5 * a, 0.1 + 0.8 * a * a);
+  dry.roughness = 0.04 + float(i % 13u) * 0.075;
+  dry.metallic = 0.0;
+  const MaterialSample wet = terrain_wet(dry, s, film, porosity);
+  const MaterialSample same = terrain_wet(dry, 0.0, film, porosity);
+  const float h = (float(i % 23u) - 3.0) * 0.05;
+  const float fringe_m = 0.025 + float(i % 5u) * 0.25;
+  float4* output = (float4*)g_probe.output;
+  output[3 * i] = float4(wet.albedo, wet.roughness);
+  output[3 * i + 1] = float4(wet_ground_film(s, film), wet_ground_fringe(h, fringe_m),
+                             wet_ground_roughness(dry.roughness, s, 0.0), 0.0);
+  const bool identical = all(asuint(same.albedo) == asuint(dry.albedo)) &&
+                         asuint(same.roughness) == asuint(dry.roughness);
+  output[3 * i + 2] = float4(identical ? 1.0 : 0.0, 0.0, 0.0, 0.0);
+}
+
 // R136's footprint rules (renderer.md, "What a far pixel reads"): the projections kept on a plane
 // tilted from flat to vertical in 1/100 degree steps, past two cells (far 1) and under one (far 0),
 // in the first `count` points; then, in 512 more, the one-tile, flat-maps and layer-weight ramps

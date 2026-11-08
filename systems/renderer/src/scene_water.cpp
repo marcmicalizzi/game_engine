@@ -11,6 +11,7 @@
 #include <core/math/math.h>
 #include <core/schema/json_reflect.h>
 #include <domain/gfx/water_spectrum.h>
+#include <domain/gfx/wet_ground.h>
 #include <domain/scene_gen/scene_gen.h>
 #include <foundation/io/vfs.h>
 
@@ -234,6 +235,54 @@ bool stretch_falls_here(const scene::WaterChannel& c, u32 i) {
   return drop > 0.0 && drop >= std::sqrt(dx * dx + dz * dz);
 }
 
+// **A channel's banks** (water.md, "Channels"; roadmap S99): one `gfx::WaterShore` stretch record a
+// stretch, its points relative to the channel instance's place `at`, its half widths, and its
+// fringe — the capillary rise of the bank's material (`gfx::capillary_fringe_m`; a channel's
+// description names no material, so `gfx::k_bank_default`) plus the spray band of its regime: a
+// fall (`stretch_falls_here`) its share of the drop, a rapid (Froude above 1 at either end, by
+// Manning's speed for a wide channel, systems/water's `manning_speed` and `froude` mirrored here
+// for the reason `stretch_falls_here` is) a fixed band. Static: no swash, `material` none.
+Vector<gfx::WaterShore> channel_bank_records(const scene::WaterChannel& c, const WorldPos& at) {
+  Vector<gfx::WaterShore> out;
+  const f32 fringe = gfx::capillary_fringe_m(gfx::k_bank_default);
+  const auto rapid_at = [&](u32 i) {
+    if (i >= c.depth_m.size() || i >= c.slope.size()) return false;
+    const f64 d = static_cast<f64>(c.depth_m[i]);
+    const f64 s = static_cast<f64>(c.slope[i]);
+    const f64 n = static_cast<f64>(c.manning_n);
+    if (!(d > 0.0) || !(s > 0.0) || !(n > 0.0)) return false;
+    const f64 speed = std::pow(d, 2.0 / 3.0) * std::sqrt(s) / n;
+    return speed / std::sqrt(9.81 * d) > 1.0;
+  };
+  for (u32 i = 0; i + 1 < c.points.size(); ++i) {
+    if (i + 1 >= c.width_m.size()) break;
+    const WorldPos& p = c.points[i];
+    const WorldPos& q = c.points[i + 1];
+    f32 spray = 0.0f;
+    if (stretch_falls_here(c, i)) {
+      const f64 drop = p.y - q.y;
+      spray = std::min(gfx::k_spray_fall_share * static_cast<f32>(drop), gfx::k_spray_fall_max_m);
+    } else if (rapid_at(i) || rapid_at(i + 1)) {
+      spray = gfx::k_spray_rapid_m;
+    }
+    gfx::WaterShore r;
+    r.wet_m = fringe + spray;
+    r.material = 0xffffffffu;
+    r.stretch_a = Vec4{static_cast<f32>(p.x - at.x), static_cast<f32>(p.z - at.z),
+                       static_cast<f32>(p.y - at.y), 0.5f * c.width_m[i]};
+    r.stretch_b = Vec4{static_cast<f32>(q.x - at.x), static_cast<f32>(q.z - at.z),
+                       static_cast<f32>(q.y - at.y), 0.5f * c.width_m[i + 1]};
+    // The stretch's square, grown by its half width and where a 1:25 bank rises the fringe.
+    const f32 grow = std::max(r.stretch_a.w, r.stretch_b.w) + 25.0f * r.wet_m + 1.0f;
+    r.lo = Vec2{std::min(r.stretch_a.x, r.stretch_b.x) - grow,
+                std::min(r.stretch_a.y, r.stretch_b.y) - grow};
+    r.hi = Vec2{std::max(r.stretch_a.x, r.stretch_b.x) + grow,
+                std::max(r.stretch_a.y, r.stretch_b.y) + grow};
+    out.push_back(r);
+  }
+  return out;
+}
+
 // Whether body-local (x, z) is over water in the body's map (its nearest texel).
 bool over_water(const SceneWaterDepth& map, f64 x, f64 z) {
   if (map.size < 2 || !(map.texel_m > 0.0f)) return false;
@@ -378,12 +427,17 @@ bool read_scene_water_channels(const scene::Scene& file, const std::string& path
     water.shading.seed = water.body.seed;
     water.channel = true;
     water.depth = read_depth_map(placed.meshes[k].path);
-    info.water = std::move(water);
-    out.mesh_info.push_back(std::move(info));
     SceneInstance instance;
     instance.mesh = mesh;
     instance.transform = placed.instances[k].turn();
     instance.origin = placed.instances[k].position;
+    // The banks (S99), local to where the instance stands: its origin plus its offset, unrotated.
+    const WorldPos stands{instance.origin.x + static_cast<f64>(instance.transform.position.x),
+                          instance.origin.y + static_cast<f64>(instance.transform.position.y),
+                          instance.origin.z + static_cast<f64>(instance.transform.position.z)};
+    water.banks = channel_bank_records(c, stands);
+    info.water = std::move(water);
+    out.mesh_info.push_back(std::move(info));
     out.instances.push_back(instance);
   }
   return true;

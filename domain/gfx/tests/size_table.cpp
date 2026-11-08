@@ -261,8 +261,9 @@ ENGINE_EXPECT_SIZE(544, 8, gfx::ResolveParams);
 
 // The shore's record (S97; water.md, "The shore"), mirrored by water.slang's WaterShore. 64 since
 // S94: the swash's run-up, period, drain, slope, tide, wave height, foam and shore widths, and the
-// water material's index, by which the branch finds its body's record.
-ENGINE_EXPECT_SIZE(64, 4, gfx::WaterShore);
+// water material's index, by which the branch finds its body's record. 96 since S99: a channel
+// stretch's two points (x, z, surface height, half width), so a channel's banks are records too.
+ENGINE_EXPECT_SIZE(96, 4, gfx::WaterShore);
 
 // The sky (sky.h; docs/subsystems/gfx.md, "The sky"): the air, the lights, the eye, the celestial
 // frame, the exposure, the tables' addresses, and a view's inverse projection and pixel angle for

@@ -5,6 +5,7 @@
 
 #include "hex_lattice.slang"  // the lattice and the blend, shared with stochastic mesh materials
 #include "formation.slang"    // W85: the world formation's bands (gfx::FormationParams)
+#include "wet_ground.slang"   // S99: wet ground as a material (the swash, the channels' banks)
 
 static const uint k_material_terrain_layers = 512u;
 static const uint k_material_terrain_map = 1024u;
@@ -836,10 +837,29 @@ float terrain_filter_combination(float alpha2, float slope_second, float3 mean_s
   return sqrt(sqrt(saturate(alpha2 + unresolved)));
 }
 
+// **The wet response** (S99; wet_ground.slang; terrain.md, "Wet ground"): the sampled ground at
+// saturation `s` under a film of weight `film`, over a substrate of `porosity` — darker by Lekner
+// and Dorf scaled by the porosity, its roughness lowered towards the film's — before any light
+// sees it, so the sun's lobe, the sky's ambient, the shadows and the reflection all read the wet
+// surface. s = 0 is the sample untouched, to the bit.
+MaterialSample terrain_wet(MaterialSample sampled, float s, float film, float porosity) {
+  if (!(s > 0.0)) return sampled;
+  sampled.albedo = wet_ground_albedo(sampled.albedo, s, porosity);
+  sampled.roughness = wet_ground_roughness(sampled.roughness, s, film);
+  return sampled;
+}
+
+// `shore_s` and `shore_film` (S99): the saturation the water stage found at the point (0 and 0, the
+// default, everywhere else and for every other caller), applied by `terrain_wet` over the blend's
+// porosity last.
 MaterialSample sample_terrain_material(SceneGeometry geo, ResolveMaterial root, float2 map_uv,
                                       float2 map_dx, float2 map_dy, float3 point, float3 n,
                                       float3 dp_dx, float3 dp_dy, float distance_m, bool filtered,
-                                      out float3 shading_normal, bool variance_enabled = true) {
+                                      out float3 shading_normal, bool variance_enabled = true,
+                                      float shore_s = 0.0, float shore_film = 0.0) {
+  // The substrate's porosity under the pixel, by the layers' blend (0.5, the schema's default,
+  // where no layer says).
+  float shore_porosity = 0.5;
   ResolveMaterial* table = (ResolveMaterial*)geo.materials;
   const TerrainRecord rec = ((TerrainRecord*)geo.materials)[terrain_record_index(root)];
   // All layouts use the same map frame. Reconstruct it from the position rather than half UVs,
@@ -968,6 +988,7 @@ MaterialSample sample_terrain_material(SceneGeometry geo, ResolveMaterial root, 
         float roughness = 0.0;
         float3 bump = float3(0.0);
         float porosity = 0.0;
+        float pores = 0.0;
         float alpha2 = 0.0;
         float slope_second = 0.0;
         float lobe = 0.0;
@@ -988,6 +1009,7 @@ MaterialSample sample_terrain_material(SceneGeometry geo, ResolveMaterial root, 
           porosity += w * ((response[c] & k_material_terrain_beach) != 0u
                                ? 0.0
                                : terrain_layer_porosity(entry));
+          pores += w * terrain_layer_porosity(entry);
           if (any_snow)
             lobe += w * ((response[c] & k_material_terrain_snow) != 0u ? terrain_snow_lobe(entry)
                                                                          : 1.0);
@@ -1002,6 +1024,7 @@ MaterialSample sample_terrain_material(SceneGeometry geo, ResolveMaterial root, 
               lerp(root_alpha * root_alpha, alpha2, cover), slope_second * cover, slope);
         }
         porosity = lerp(0.5, porosity, cover);
+        shore_porosity = lerp(0.5, pores, cover);
         // Wetness (Lagarde 2013): porous ground darkens by up to 0.8 and loses up to 0.4 of its
         // roughness; rock barely changes. A separate quantity, so no substrate turns glossy dry.
         const float darkening = lerp(1.0, 0.2, porosity);
@@ -1064,6 +1087,7 @@ MaterialSample sample_terrain_material(SceneGeometry geo, ResolveMaterial root, 
       const float second = lerp(dot(slope, slope), dot(s.bump, s.bump), coverage);
       result.albedo = lerp(result.albedo, s.colour, coverage);
       result.roughness = lerp(result.roughness, s.roughness, coverage);
+      shore_porosity = lerp(shore_porosity, terrain_layer_porosity(layer), coverage);
       slope = lerp(slope, s.bump, coverage);
       if (result.normal_filter)
         result.roughness = terrain_filter_combination(lerp(a * a, b * b, coverage), second, slope);
@@ -1078,6 +1102,6 @@ MaterialSample sample_terrain_material(SceneGeometry geo, ResolveMaterial root, 
   result.emissive = float3(0.0);
   result.detail_mask = detail;
   shading_normal = normalize(n + slope);
-  return result;
+  return terrain_wet(result, shore_s, shore_film, shore_porosity);
 }
 #endif

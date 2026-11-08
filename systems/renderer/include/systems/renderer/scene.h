@@ -174,6 +174,11 @@ struct SceneWater {
   // the highest falls first, at most `gfx::k_water_plunges` (the reader drops the rest and says
   // so). The GPU scene packs them after the body's material (`gfx::set_water_plunges`).
   Vector<gfx::WaterPlunge> plunges;
+  // A channel's **banks** (water.md, "Channels"; S99): one `gfx::WaterShore` stretch record a
+  // stretch, local to the channel's instance, its fringe by the bank's material and its spray band
+  // by the stretch's regime (`channel_bank_records`). The GPU scene sets each record's instance and
+  // terrain mesh and uploads them beside the bodies' shores. Empty for a body.
+  Vector<gfx::WaterShore> banks;
 };
 
 // What a scene file said about one mesh besides its path: what to call it, which bytes it must
