@@ -142,6 +142,8 @@ is rsync with extra steps. Second, nothing in the build or the test suite reads 
 `tools/docs-gate.test.sh` builds its own throwaway repositories, and `tools/docs-gate.sh` takes
 `--files-from`/`--messages-from`, which is how CI runs it for a pull request anyway.
 
+**A shell test's temp root is checked before any git command** (2026-11-08). `tools/docs-gate.test.sh` runs as Git for Windows' `bash.exe` under CTest with the checkout as its working directory, and from a shell whose PATH has none of Git's coreutils `mktemp` is not found: its temp root came back empty, so did each case's directory, and `git -C ""` is the current directory — the first case ran `git add -A` and `git commit -qm 'initial commit'` in the gate worktree and committed a coordinator's half-resolved merge under the test's own identity. The script now puts its interpreter's directory on PATH (`${BASH%/*}`, where the coreutils live), stops with exit 2 when the temp root or a case's directory was not made, checks that a case's directory is its own repository (`git rev-parse --git-dir` answers `.git`) before adding to it, and refuses a commit outside one. The rule behind it is the hygiene rule in `AGENTS.md` read the other way round: a test that falls back to the checkout it was launched from when its scratch fails owns the whole checkout.
+
 ### The sync: a file gets a new time only when its bytes changed
 
 **The rule.** A file is copied into `/src` only when its bytes differ from what is there, and a

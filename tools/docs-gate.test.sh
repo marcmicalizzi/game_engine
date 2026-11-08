@@ -10,6 +10,14 @@
 
 set -uo pipefail
 
+# This runs as Git for Windows' bash.exe from shells whose PATH has none of its coreutils (mktemp,
+# mkdir, rm). Without them $tmp_root came back empty, $dir with it, and `git -C ""` is the current
+# directory: on 2026-11-08 the first case ran `git add -A` and `git commit` in the checkout the test
+# was launched from, committing a coordinator's half-resolved merge as 'initial commit'. The binary's
+# own directory holds the tools, and every step below that could fall back to the enclosing checkout
+# checks that it did not, and stops.
+export PATH="${BASH%/*}:$PATH"
+
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 gate="$here/docs-gate.sh"
 keep=0
@@ -17,7 +25,8 @@ keep=0
 
 checks=0
 failures=()
-tmp_root="$(mktemp -d "${TMPDIR:-/tmp}/engine-docs-gate-XXXXXX")"
+tmp_root="$(mktemp -d "${TMPDIR:-/tmp}/engine-docs-gate-XXXXXX" 2>/dev/null)" || tmp_root=""
+[[ -n "$tmp_root" && -d "$tmp_root" ]] || { echo 'docs-gate.test: cannot create a temporary root (is mktemp on PATH?)' >&2; exit 2; }
 
 # Hermetic git: the person running this has their own identity, line-ending policy, hooks, and
 # signing key, and none of them may decide whether a test passes.
@@ -30,7 +39,7 @@ cleanup() {
   if [[ "$keep" -eq 1 ]]; then
     echo "kept $tmp_root"
   else
-    rm -rf "$tmp_root"
+    [[ -n "$tmp_root" ]] && rm -rf "$tmp_root"
   fi
 }
 trap cleanup EXIT
@@ -41,8 +50,11 @@ fail() { checks=$((checks + 1)); failures+=("$1"); echo "  FAIL $1"; [[ -n "${2:
 # A repository with one empty commit to branch from, so every case has a parent to diff against.
 new_repo() {
   local dir
-  dir="$(mktemp -d "$tmp_root/repo-XXXXXX")"
+  dir="$(mktemp -d "$tmp_root/repo-XXXXXX" 2>/dev/null)" || dir=""
+  [[ -n "$dir" && -d "$dir" ]] || { echo 'docs-gate.test: cannot create a repository directory' >&2; exit 2; }
   git -C "$dir" init -q
+  # Its own repository, never the checkout this script was launched from.
+  [[ -d "$dir/.git" && "$(git -C "$dir" rev-parse --git-dir)" == '.git' ]] || { echo "docs-gate.test: $dir is not its own repository" >&2; exit 2; }
   mkdir -p "$dir/docs"
   echo 'start' > "$dir/README.md"
   git -C "$dir" add -A
@@ -54,6 +66,7 @@ new_repo() {
 commit() {
   local dir="$1" message="$2"
   shift 2
+  [[ -n "$dir" && -d "$dir/.git" ]] || { echo "docs-gate.test: a commit outside a case's repository ('$dir')" >&2; exit 2; }
   local path
   for path in "$@"; do
     mkdir -p "$dir/$(dirname "$path")"
