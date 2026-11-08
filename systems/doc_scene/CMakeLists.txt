@@ -24,6 +24,8 @@ if(TARGET engine::tileset)
 endif()
 if(TARGET engine::tileset AND TARGET engine::terrain)
   list(APPEND _doc_scene_tests tests/authored_ground_gpu_tests.cpp)
+  # A channel cut into an authored ground drawn below its floodplain, on both paths (W89).
+  list(APPEND _doc_scene_tests tests/channel_cut_gpu_tests.cpp)
   list(APPEND _doc_scene_test_deps tileset terrain gfx scene_gen jobs)
 endif()
 engine_module_tests(NAME doc_scene SOURCES ${_doc_scene_tests} DEPS ${_doc_scene_test_deps})

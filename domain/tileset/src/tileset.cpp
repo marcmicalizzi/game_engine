@@ -365,6 +365,8 @@ u64 tileset_key(u64 source_hash, const BuildOptions& o) noexcept {
   key = hash_combine(key, static_cast<u64>(o.offset_x_mm));
   key = hash_combine(key, static_cast<u64>(o.offset_y_mm));
   key = hash_combine(key, static_cast<u64>(o.offset_z_mm));
+  // The cuts (W89): only a set with some, so every other keeps its key and its cache entry.
+  if (!o.cuts.empty()) key = hash_combine(hash_combine(key, 0x4355545355ull), o.cuts.hash());
   return key;
 }
 
@@ -593,6 +595,12 @@ bool build_tileset(const Heightfield& field, u64 source_hash, std::string_view s
   for (const BuildLevel& L : levels) {
     fill_level(f, L, values);
     const i64 nx = L.imax - L.imin + 1;
+    // **The cuts** (cuts.h, W89): after the level's own heights, so a chain level is the box filter
+    // of the ground as it was and only a level finer than a channel holds it. A tile no cut lowered
+    // is the bytes it was without them.
+    if (!options.cuts.empty())
+      out.cut_points += options.cuts.apply(L.spacing, L.imin, L.jmin, nx, L.jmax - L.jmin + 1,
+                                           std::span<i32>(values.data(), values.size()));
     archive::Writer writer("ETIL", L.spacing, static_cast<u32>(tile_bytes(options.cells)));
     TileSetLevel record;
     record.spacing_mm = L.spacing;
