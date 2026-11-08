@@ -30,3 +30,21 @@ Not measured, for the lock's queue: 693b1f63 (W82 stage 1), f13475a4, 43344b54 (
 Nothing was taken back and the budget file is unchanged: a fix this tonight could not be separated from noise (§2), and re-pinning to a number measured on a busy machine would loosen the gate (the script refuses it; `-AllowBusy` was not used). The next step, for whoever takes it, is the cheap one: on a quiet machine, 5e2d6ee6 against its parent with (a) the `weigh`/`rest` pair guarded by `params->light_count != 0` and (b) the lights loop restored to its place before the hemisphere term, each alone, three flights each and the median of medians quoted. The picture must not change: both are the order of independent additions, and the terrain identity tests and a first-frame capture compared byte for byte hold it.
 
 Batch 54's 0.08 ms stays an open question: R136's `terrain_hex_sample` (a hex lattice's three taps and blend per covered pixel) and F3's aerial lookup past 32 km are the candidates the commits suggest, and the two pairs to measure are `f13475a4` against `43344b54`, and `a3c96208` against `1b17ddfa`.
+
+## 4. The candidates inside R115 stage 1, tried (R139's agent, batch 56, 2026-11-08)
+
+Main at 86b543cb, the same run (`tools/frame-budget.ps1 -Preset msvc-release -Run endless-surround3-rt -WaitQuiet 600`, each binary frozen in the agent's scratch and named with `-Exe`), the three trees flown in turn under the GPU lock. The machine was never quiet (others 16–45 % of the CPU at the flights' ends, the GPU 0–31 %), so each reading is an upper bound; the pairs are what is compared.
+
+| tree | resolve median (ms) | resolve p99 | hw median | machine (others CPU start / end, GPU end) |
+|---|---|---|---|---|
+| main 86b543cb | 2.092 | 2.481 | 0.309 | busy (38 % / 25 %, GPU 31 %) |
+| main + R139 (its rule off, the block 560 bytes) | 2.083 | 2.462 | 0.308 | busy (30 % / 16 %, GPU 7 %) |
+| that + (a), `weigh`/`rest` guarded by `light_count != 0` | 2.098 | 2.479 | — | busy (25 % / 45 %, GPU 4 %) |
+
+- **(a) does not measure**: 2.098 against 2.083 and 2.092, inside the 0.05 ms that two readings of one commit differ by. It was committed and reverted (a7e8b48f, af3c2ac6), as this row's rule asks.
+- **(b), the lights loop back before the hemisphere term, was not tried alone**: since R115 stage 1 the loop's tolerance test reads `rest`, which is the pixel's other light *including the hemisphere and occlusion term*, so moving the loop back in front of that term changes what `light_tolerance` means rather than only where the code sits. Without the tolerance the order is the sum's and the picture's bytes would hold; with it, it is a different rule.
+- **R139's 16-byte row costs nothing measurable**: 2.083 against main's 2.092.
+- **Main reads under the budget** (2.092 against 2.100) where the batch 55 gate read 2.195 on a busier machine, so the gate's step is the machine's and not the resolve's, as far as one busy flight can say; the budget file is unchanged.
+- Batch 54's pairs (f13475a4 against 43344b54, a3c96208 against 1b17ddfa) were not flown: the GPU lock's queue held each flight 30–60 minutes tonight.
+
+What stands: R115 stage 1's +0.108 ms (§2) is not in `light_tolerance`'s weighing; the remaining suspects are the loop's move (a rule change, above) and the register pressure of the stop and count words that §2 could not separate from noise. Main's resolve is under its budget today.
