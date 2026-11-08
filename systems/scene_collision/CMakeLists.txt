@@ -36,6 +36,8 @@ if(TARGET engine::tileset)
   # A walker on an authored ground: the `tiles` provider reaches the collision through the registry,
   # so the test links the tile-set capability as a host does.
   list(APPEND _collision_tests tests/tileset_ground_tests.cpp)
+  # And in a channel cut into it (W89): the collision reads the cut heights the set was built with.
+  list(APPEND _collision_tests tests/channel_cut_tests.cpp)
 endif()
 engine_module_tests(NAME scene_collision SOURCES ${_collision_tests})
 if(TARGET engine_scene_collision_tests)

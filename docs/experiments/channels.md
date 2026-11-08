@@ -115,6 +115,38 @@ Planning*, the eastern United States curves: about 3–4 m wide and 0.3 m deep a
   cuts and the bar builds. Authoring inside the form the sources describe: the ground's trough on a
   2 m lattice cannot hold a metre-scale bank, so the berm stands for it.
 
+## The cut
+
+(W89, 2026-11-07; [channels](../subsystems/channels.md#the-cut), [tileset](../subsystems/tileset.md#channels-cut-into-the-ground).)
+
+- **The depth is a mean.** Leopold & Maddock's (1953) depth, and the regional curves' bankfull depth
+  (Dunne & Leopold 1978) the coefficients above come from, is the **mean** depth, the section's area
+  over its width. The cut keeps that area: a trapezoid of the bankfull width at the top whose thalweg
+  `D` solves `D (W − D / m) = W d̄`. A 3 m channel of mean depth 0.30 m with banks at 45° has a thalweg
+  of 0.34 m and a flat bed 2.3 m wide; one whose banks are too gentle for its area (`m W < 4 d̄`) is
+  a V of twice the mean depth. Why a trapezoid and not a parabola: a gravel bed is close to flat across
+  between steep banks, and the flat bed is where the gravel piece lies; the parabola is S96's for the
+  water's optics, which reads the depth at the line.
+- **The bank slope, 1 (45°) by default, 0.25 to 8.** A cohesionless bank stands at no more than its
+  material's angle of repose, about 30–40° for sand and gravel (Knighton 1998, *Fluvial Forms and
+  Processes*, on bank failure by material; the bank-stability literature models a non-cohesive bank
+  by its friction angle, Simon & Collison 2002); a cohesive or root-bound bank stands much steeper,
+  and a gravel-bed stream's bank is typically a cohesionless lower bank under a cohesive, vegetated
+  upper bank near vertical (Eaton 2006, "Bank stability analysis for regime models of vegetated
+  gravel bed rivers", *ESPL* 31). 45° sits between the two; an author sets a layer's `bank_slope` per
+  material (0.7 for a sandy bank at 35°, 3 or more for a vegetated one). **Read for this**: the
+  sources' abstracts and the secondary summaries of them; the ranges are those, and no constant here
+  was fitted.
+- **The stage, 0.5 of the thalweg (W86's).** Bankfull is a flood (a recurrence of one to two years);
+  the water an explorer sees most days is a fraction of it. At a station depth grows about as
+  discharge to the 0.4 (Leopold & Maddock 1953), so a flow a tenth to a third of bankfull stands
+  `0.1^0.4` to `0.33^0.4`, 0.40 to 0.64, of the bankfull depth. W86's 0.5 lies inside that range and is
+  kept; the flow fraction itself is an assumption, not a measurement.
+- **The face past the top**, up to a depth more at the same slope, is a channel cut into a trough's
+  side: the erosion model's troughs are wider than the channels in them, and where the line runs
+  higher than the trough's floor the bank on the uphill side is cut back rather than left as a step.
+  Past it nothing, so a cliff beside a channel is not cut back.
+
 ## Against the proof of concept
 
 The proof of concept's erosion model carved v31 with **688 channel heads** and **5–7 km of channel per

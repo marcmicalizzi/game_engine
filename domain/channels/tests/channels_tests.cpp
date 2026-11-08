@@ -232,7 +232,6 @@ TEST_CASE(
     "container twice") {
   ChannelLayer p = layer();
   p.head_threshold_m2 = 300;
-  p.bank_min_width_m = 1.0f;  // the valley's widest bed is 1.3 m
   ChannelNetwork n;
   std::string error;
   REQUIRE(plan_channels(p, ground(gentle), 3, nullptr, n, error));
@@ -249,7 +248,8 @@ TEST_CASE(
   }
   CHECK(beds > 0);
   CHECK(bars > 0);
-  CHECK(banks > 0);
+  // No bank piece since W89: the banks are the faces of the cut the terrain's `cuts` make.
+  CHECK(banks == 0);
   // The mesh generator "channel" reads the recipe's own JSON and builds the same container.
   const auto* desc = assets::MeshGeneratorRegistry::global().find("channel");
   REQUIRE(desc != nullptr);
@@ -417,4 +417,93 @@ TEST_CASE("channels: the water's description has the WaterChannel shape") {
   JsonValue back;
   REQUIRE(parse_json(text, back).ok);
   CHECK(write_json(back) == text);
+}
+
+// **The cuts** (channels.md, "The cut"; W89): one per link with the TerrainCut shape, a trapezoid
+// of the hydraulic geometry's area under the ground at the line, its bed never rising downstream,
+// and the water's surface in the cut lying between that bed and the top of the bank.
+TEST_CASE("channels: the cuts have the TerrainCut shape and the water lies inside them") {
+  ChannelLayer p = layer();
+  p.head_threshold_m2 = 300;
+  ChannelNetwork n;
+  std::string error;
+  REQUIRE(plan_channels(p, ground(gentle), 0, nullptr, n, error));
+  const JsonValue cuts = terrain_cuts_json(p, n);
+  const JsonValue water = water_channels_json(p, n, 0, .5f, true);
+  REQUIRE(cuts.is_array());
+  u32 links = 0;
+  for (const ChannelLink& link : n.links)
+    links += link.line.size() >= 2;
+  REQUIRE(cuts.as_array().size() == links);
+  REQUIRE(water.as_array().size() == links);  // every link drains at least 0 m2
+  for (u32 k = 0; k < links; ++k) {
+    const JsonValue& o = cuts[k];
+    CHECK(o.as_object().size() == 5);
+    scene::TerrainCut cut;
+    schema::ReadContext reader;
+    REQUIRE(schema::from_json(cut, o, reader));
+    REQUIRE(reader.ok());
+    CHECK(cut.bank_slope == p.bank_slope);
+    REQUIRE(cut.points.size() >= 2);
+    REQUIRE(cut.width_m.size() == cut.points.size());
+    REQUIRE(cut.depth_m.size() == cut.points.size());
+    const ChannelLink& link = n.links[k];
+    REQUIRE(link.line.size() == cut.points.size());
+    const auto& surface = water[k].find("points")->as_array();
+    REQUIRE(surface.size() == cut.points.size());
+    for (u32 i = 0; i < cut.points.size(); ++i) {
+      const ChannelPoint& pt = link.line[i];
+      const f64 top = cut.points[i].y;
+      const f64 bed = top - static_cast<f64>(cut.depth_m[i]);
+      CHECK(std::fabs(top - pt.at.y) <= 5e-4 + 1e-9);  // the ground at the line, to the mm
+      // The section's thalweg: D (W - D / m) = W d, the area the hydraulic geometry's mean depth
+      // gives, at least, where the bed runs through no rise (or a V of twice the mean).
+      const f64 w = static_cast<f64>(pt.width_m), mean = static_cast<f64>(pt.depth_m);
+      const f64 m = static_cast<f64>(p.bank_slope);
+      const f64 d = static_cast<f64>(cut.depth_m[i]);
+      const f64 thalweg =
+          4 * mean / (m * w) >= 1 ? 2 * mean : .5 * m * w * (1 - std::sqrt(1 - 4 * mean / (m * w)));
+      // At least a thalweg under the top, and never more than two (the cap over a sill).
+      CHECK(d >= thalweg - 2e-3);
+      CHECK(d <= 2 * thalweg + 2e-3);
+      if (i == 0 && 4 * mean / (m * w) < 1)
+        CHECK(d * (w - d / m) == doctest::Approx(w * mean).epsilon(0.01));
+      // The water's surface stands in the cut: over the bed, under the top of the bank.
+      f64 y = 0;
+      REQUIRE(surface[i][1].get_f64(y));
+      CHECK(y >= bed + .25 * thalweg - 2e-3);  // at least half the stage's depth (0.5)
+      CHECK(y < top);
+    }
+  }
+  // Written twice, the same text.
+  CHECK(write_json(terrain_cuts_json(p, n)) == write_json(cuts));
+}
+
+// The bed the pieces lay is the cut's flat bed, narrower than the bankfull width (W89).
+TEST_CASE("channels: the bed lies inside the cut's banks") {
+  ChannelLayer p = layer();
+  p.head_threshold_m2 = 300;
+  ChannelNetwork n;
+  std::string error;
+  REQUIRE(plan_channels(p, ground(gentle), 3, nullptr, n, error));
+  Vector<PlacedPiece> pieces;
+  REQUIRE(place_pieces(p, n, ground(gentle), 32, pieces, error));
+  f64 widest_bed = 0, widest_channel = 0;
+  for (const ChannelLink& link : n.links)
+    for (const ChannelPoint& pt : link.line)
+      widest_channel = std::max(widest_channel, static_cast<f64>(pt.width_m));
+  for (const PlacedPiece& piece : pieces) {
+    if (piece.recipe.part != ChannelPart::Bed) continue;
+    for (const ChannelSlab& slab : piece.recipe.slabs) {
+      // Across a row: the first and last columns' points.
+      for (u32 r = 0; r < slab.rows; ++r) {
+        const u32 a = r * slab.columns, b = a + slab.columns - 1;
+        const f64 dx = static_cast<f64>(slab.x[b]) - static_cast<f64>(slab.x[a]);
+        const f64 dz = static_cast<f64>(slab.z[b]) - static_cast<f64>(slab.z[a]);
+        widest_bed = std::max(widest_bed, std::sqrt(dx * dx + dz * dz));
+      }
+    }
+  }
+  CHECK(widest_bed > 0);
+  CHECK(widest_bed < widest_channel);
 }

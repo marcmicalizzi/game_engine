@@ -224,6 +224,7 @@ bool layer_in_range(const ChannelLayer& p, std::string& error) {
   if (!in(wide(p.bank_min_width_m), 0, 100) || !in(wide(p.bank_height), 0, 2) ||
       !in(wide(p.bank_width_widths), 0, 2) || !in(wide(p.bank_width_m), 0, 10))
     return fail(error, "bank_min_width_m/bank_height/bank_width_widths/bank_width_m");
+  if (!in(wide(p.bank_slope), .25, 8)) return fail(error, "bank_slope");
   if (!in(wide(p.step_m), .1, 4)) return fail(error, "step_m");
   if (!in(wide(p.piece_m), 4, 256) || p.piece_m < 4 * p.step_m) return fail(error, "piece_m");
   for (const ChannelSurface* s : {&p.bed, &p.bars, &p.banks})
@@ -376,8 +377,39 @@ bool plan_channels(const ChannelLayer& p, const scene_gen::Ground& ground, u64 s
   return true;
 }
 
+namespace {
+
+// A link's cut down its line (channels.md, "The cut"): at each point the top of the bank (the
+// ground under the line), the bed and the section's thalweg depth. The bed is the top less the
+// thalweg, held down the line where the ground rises a little (the cut runs through a small rise
+// deeper than a depth), but **never more than two thalwegs under the ground at the line**: where
+// the line climbs out of a filled depression or over a sill (a lake's outlet; on v35 the running
+// minimum alone cut 103 m through one), the bed climbs with it.
+constexpr f64 k_cut_depth_thalwegs = 2.0;
+struct CutPoint {
+  f64 top = 0;
+  f64 bed = 0;
+  f64 thalweg = 0;
+};
+Vector<CutPoint> cut_of(const ChannelLayer& p, const ChannelLink& link) {
+  Vector<CutPoint> out;
+  f64 bed = std::numeric_limits<f64>::infinity();
+  for (const ChannelPoint& pt : link.line) {
+    CutPoint c;
+    c.top = round_to(pt.at.y, 1e3);
+    c.thalweg =
+        round_to(section_of(wide(pt.width_m), wide(pt.depth_m), wide(p.bank_slope)).thalweg, 1e3);
+    bed = std::min(bed, round_to(c.top - c.thalweg, 1e3));
+    c.bed = std::max(bed, round_to(c.top - k_cut_depth_thalwegs * c.thalweg, 1e3));
+    out.push_back(c);
+  }
+  return out;
+}
+
+}  // namespace
+
 JsonValue water_channels_json(const ChannelLayer& p, const ChannelNetwork& n, f64 min_area_m2,
-                              f32 stage) {
+                              f32 stage, bool cut) {
   JsonValue list = JsonValue::array();
   for (u32 k = 0; k < n.links.size(); ++k) {
     const ChannelLink& link = n.links[k];
@@ -386,13 +418,27 @@ JsonValue water_channels_json(const ChannelLayer& p, const ChannelNetwork& n, f6
     o["name"] = JsonValue(p.name + " link " + std::to_string(k));
     JsonValue points = JsonValue::array(), widths = JsonValue::array(), depths = JsonValue::array(),
               slopes = JsonValue::array();
-    // The bed is the ground's running minimum down the line and the surface stands `stage` of the
-    // bankfull depth over it, never rising downstream; `depth_m` is what is then between the two.
+    // Laid on the ground (W86): the bed is the ground's running minimum down the line and the
+    // surface stands `stage` of the bankfull depth over it. In the cut (W89): the bed is the cut's
+    // and the surface stands `stage` of the thalweg depth over it, inside the banks. The surface
+    // never rises downstream, except in the cut where its bed climbs over a sill; `depth_m` is what
+    // is then between it and the bed.
+    const Vector<CutPoint> cuts = cut ? cut_of(p, link) : Vector<CutPoint>();
     f64 bed = link.line[0].at.y;
     f64 surface = std::numeric_limits<f64>::infinity();
-    for (const ChannelPoint& pt : link.line) {
-      bed = std::min(bed, pt.at.y);
-      surface = std::min(surface, round_to(bed + wide(stage) * wide(pt.depth_m), 1e3));
+    for (u32 i = 0; i < link.line.size(); ++i) {
+      const ChannelPoint& pt = link.line[i];
+      if (cut) {
+        // Held down the line, except where the cut's bed climbs over a sill, where the water keeps
+        // half its depth over it rather than run under the ground.
+        bed = cuts[i].bed;
+        const f64 water = wide(stage) * cuts[i].thalweg;
+        surface = std::max(std::min(surface, round_to(bed + water, 1e3)),
+                           round_to(bed + .5 * water, 1e3));
+      } else {
+        bed = std::min(bed, pt.at.y);
+        surface = std::min(surface, round_to(bed + wide(stage) * wide(pt.depth_m), 1e3));
+      }
       const f64 depth = std::max(0.0, surface - bed);
       JsonValue at = JsonValue::array();
       at.push_back(JsonValue(round_to(pt.at.x, 1e3)));
@@ -413,4 +459,32 @@ JsonValue water_channels_json(const ChannelLayer& p, const ChannelNetwork& n, f6
   return list;
 }
 
+JsonValue terrain_cuts_json(const ChannelLayer& p, const ChannelNetwork& n) {
+  JsonValue list = JsonValue::array();
+  for (u32 k = 0; k < n.links.size(); ++k) {
+    const ChannelLink& link = n.links[k];
+    if (link.line.size() < 2) continue;
+    const Vector<CutPoint> cuts = cut_of(p, link);
+    JsonValue o = JsonValue::object();
+    o["name"] = JsonValue(p.name + " link " + std::to_string(k));
+    JsonValue points = JsonValue::array(), widths = JsonValue::array(), depths = JsonValue::array();
+    for (u32 i = 0; i < link.line.size(); ++i) {
+      const ChannelPoint& pt = link.line[i];
+      JsonValue at = JsonValue::array();
+      at.push_back(JsonValue(round_to(pt.at.x, 1e3)));
+      at.push_back(JsonValue(cuts[i].top));
+      at.push_back(JsonValue(round_to(pt.at.z, 1e3)));
+      points.push_back(std::move(at));
+      widths.push_back(JsonValue(round_to(wide(pt.width_m), 1e3)));
+      // The bed below the top: the thalweg, more where the cut runs through a rise.
+      depths.push_back(JsonValue(std::max(1e-3, round_to(cuts[i].top - cuts[i].bed, 1e3))));
+    }
+    o["points"] = std::move(points);
+    o["width_m"] = std::move(widths);
+    o["depth_m"] = std::move(depths);
+    o["bank_slope"] = JsonValue(wide(p.bank_slope));
+    list.push_back(std::move(o));
+  }
+  return list;
+}
 }  // namespace engine::channels

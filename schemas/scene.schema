@@ -663,13 +663,40 @@ struct TerrainDetail @version(4) {
   flatten_end: f32 = 0 @since(3)
 }
 
+/// **A channel cut into the ground** (docs/subsystems/tileset.md, "Channels cut into the ground";
+/// roadmap W89): a polyline downstream with, at each point, the top of the bank (`points`' y, the
+/// floodplain's height at the line), the bankfull width there and the bed's depth below that top.
+/// The cross-section is a trapezoid: a flat bed `depth_m` below the top, banks rising from it at
+/// `bank_slope` (rise over run) to the top at half the width either side of the line, and above
+/// the top the bank's face going on up at the same slope for at most `depth_m` more, where it meets
+/// higher ground (a channel cut into a trough's side). A bed narrower than the banks allow is a V.
+/// The ground is lowered to the section where it stands above it and nowhere else, so the
+/// floodplain past the top of the bank is untouched. A level of the set whose spacing is not finer
+/// than the width at a point keeps its heights there (the cut closes, as a hole does). `engine-
+/// content channels` writes one per link of a channel network (docs/subsystems/channels.md); a
+/// scene may also author one. Refused with a sentence: fewer than two points, arrays whose length
+/// is not the points', a width or depth that is not positive and finite, a bank slope outside
+/// [0.25, 8].
+struct TerrainCut @version(1) {
+  name: string
+  points: worldpos[]
+  /// The bankfull width at each point, metres: the cut's width at the top of its banks.
+  width_m: f32[]
+  /// The bed's depth below the top of the bank at each point, metres.
+  depth_m: f32[]
+  /// The banks' rise over run: 1 (45 degrees) by default, between a cohesionless toe at its
+  /// angle of repose (30 to 40 degrees) and a vegetated or cohesive upper bank near vertical
+  /// (docs/experiments/channels.md, "The cut").
+  bank_slope: f32 = 1
+}
+
 /// The `tiles` ground provider's parameters (`Terrain.tiles`; docs/subsystems/tileset.md): an
 /// authored terrain — a tile set built ahead by `engine-content terrain-tiles`, its finest tiles
 /// and its far mip chain — or the heightfield to build one from on a miss, through the
 /// derived-data cache, as a scene mesh's clusters are built. A ground with no time: the set does
 /// not move, so a time-lapse moves nothing of it. Paths are relative to the scene's directory (or
-/// absolute).
-struct TerrainTileSet @version(1) {
+/// absolute). Version 2 adds `cuts` (W89).
+struct TerrainTileSet @version(2) {
   /// A built set's `manifest.json` (`engine.tileset.TileSetManifest`). Empty: `heightfield`.
   manifest: string
   /// An `engine.terrain.heightfield/1` header (`engine.tileset.HeightfieldHeader`) to build a set
@@ -692,6 +719,13 @@ struct TerrainTileSet @version(1) {
   ring_spacing_mm: i64 = 2000
   far_ratio: u32 = 4
   far_levels: u32 = 6
+  /// With `heightfield`: channels cut into the ground (`TerrainCut`; tileset.md, "Channels cut
+  /// into the ground"; roadmap W89), written into the set's heights when it is built, so every
+  /// reader of the set — every level the renderer draws, the ray path, the cascades, the
+  /// collision and the placements — stands on the cut ground. Part of the build's key. Empty, the
+  /// default: the set exactly as it was, its key unmoved. Refused beside a `manifest` (a set built
+  /// ahead is not built here).
+  cuts: TerrainCut[] @since(2)
 }
 
 /// World-anchored detail or a finite painting in the scene terrain's map frame.

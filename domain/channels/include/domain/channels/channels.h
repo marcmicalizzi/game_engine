@@ -59,7 +59,8 @@ struct Pack;
 namespace engine::channels {
 
 // Bumped when a change makes an old network or recipe wrong: it is in every recipe's hash.
-inline constexpr u32 k_channels_version = 1;
+// 2 (W89): the bed is the cut's flat bed and no bank piece is placed.
+inline constexpr u32 k_channels_version = 2;
 
 // A point of a channel's line, downstream order: where it is (y the ground under it, metres), its
 // bankfull width and depth, the bed's fall per metre there, and the contributing area.
@@ -120,9 +121,19 @@ bool plan_channels(const ChannelLayer& layer, const scene_gen::Ground& ground, u
 // capability): one object per link whose last point drains at least `min_area_m2`, in link order,
 // each `{name, points, width_m, depth_m, slope, seed}` — `points` the line as `worldpos`, y the
 // water's surface at `stage` of the bankfull depth over the bed, `depth_m` that water's depth, the
-// bed below the surface by it — as a JSON array.
+// bed below the surface by it — as a JSON array. `cut` (W89): the bed is the cut's
+// (`terrain_cuts_json`) and the stage a share of its thalweg depth, so the surface lies inside the
+// banks the cut makes; without it the surface stands on the ground as W86 laid it.
 JsonValue water_channels_json(const ChannelLayer& layer, const ChannelNetwork& network,
-                              f64 min_area_m2, f32 stage);
+                              f64 min_area_m2, f32 stage, bool cut = false);
+
+// **The cuts** (`engine.scene.TerrainCut`, the `tiles` block's `cuts`; channels.md, "The cut";
+// W89): one object per link of the network (every link, the rills' too), in link order, each
+// `{name, points, width_m, depth_m, bank_slope}` — `points` the line with y the top of the bank
+// (the ground under the line), `width_m` the bankfull width, `depth_m` the bed below the top: the
+// section's thalweg (`bank_slope`'s trapezoid of the hydraulic geometry's area), the bed held
+// down the line, never more than two thalwegs under the ground at it — as a JSON array.
+JsonValue terrain_cuts_json(const ChannelLayer& layer, const ChannelNetwork& network);
 
 // One placed piece (a stretch of a link up to `piece_m` long, one part of it): where its frame
 // stands (x and z whole millimetres, y the ground there), its world tile, its recipe and a stable

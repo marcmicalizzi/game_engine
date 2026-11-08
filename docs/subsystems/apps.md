@@ -388,7 +388,7 @@ requires the soil capability; see [soil](soil.md#cook-and-scene-workflow).
 
 ## engine-content channels: the water's channel description
 
-`engine-content channels <scene.json> <out.json> [--min-area-m2 <m2>] [--stage <fraction>] [--entry <i>]`
+`engine-content channels <scene.json> <out.json> [--min-area-m2 <m2>] [--stage <fraction>] [--entry <i>] [--cut]`
 runs the scene's `channels` placements (or the one at index `--entry`) over the ground its terrain
 names, through the same ground-provider registry the renderer uses (the terrain's masks are left out:
 the network asks the heights alone), and writes `{"water_channels": [...]}`: one
@@ -396,7 +396,9 @@ the network asks the heights alone), and writes `{"water_channels": [...]}`: one
 y the water's surface at `--stage` (0.5) of the bankfull depth over the bed. It is `plan_channels`,
 the function the placement generator calls, so the blocks follow the beds the scene places; it prints
 one JSON line (`entries`, `heads`, `links`, `channel_m`, `region_km2`, `km_per_km2`,
-`water_channels`). Exit 1 for a scene with no terrain, no `channels` placement or a refused layer, 2
+`water_channels`, `cuts`). With `--cut` (W89) it also writes `"cuts"`, the terrain's
+`engine.scene.TerrainCut` blocks for the `tiles` block, one per link, and the water's surface stands in
+the cut ([channels](channels.md#the-cut)); it plans over the ground before the scene's own cuts. Exit 1 for a scene with no terrain, no `channels` placement or a refused layer, 2
 for usage. It requires the channels capability; see [channels](channels.md#the-waters-description).
 The hosts (engine-view, engine-host, engine-editor) link the capability with the other generators, so
 a scene's `channels` placement draws in each.

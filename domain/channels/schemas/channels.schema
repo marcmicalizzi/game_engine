@@ -42,8 +42,10 @@ struct ChannelSurface @version(1) {
 /// The scene generator `channels`' entry (channels.md, "The network"): the drainage of a region's
 /// ground found on a lattice, its channels traced from their heads down, and their beds, bars and
 /// banks laid along the trough the ground already holds. Every number's source and range is in
-/// docs/experiments/channels.md.
-struct ChannelLayer @version(1) {
+/// docs/experiments/channels.md. Version 2 (W89): the ground is cut (`bank_slope`; the terrain's
+/// `cuts`, written by `engine-content channels`), the bed and bars lie in the cut, and no bank
+/// piece is placed: the banks are the cut's faces.
+struct ChannelLayer @version(2) {
   name: string
   seed: u64 = 1
   /// The region drained, world metres, x and z, each a whole number of spacings.
@@ -95,9 +97,8 @@ struct ChannelLayer @version(1) {
   bar_rise: f32 = 0.4
   bar_width_widths: f32 = 0.35
   bar_length_widths: f32 = 3.0
-  /// Banks: the narrowest bed that is a stream with banks and not a rill (0 to 100 m), the
-  /// bank's height as a fraction of the depth (0 to 2), and its width beyond the bed,
-  /// `bank_width_widths w + bank_width_m`.
+  /// W86's bank pieces, read and range-checked so a scene naming them still reads, and placed no
+  /// more since W89: the banks are the cut's faces (channels.md, "The cut").
   bank_min_width_m: f32 = 1.5 @unit(m)
   bank_height: f32 = 0.6
   bank_width_widths: f32 = 0.25
@@ -106,6 +107,10 @@ struct ChannelLayer @version(1) {
   step_m: f32 = 0.5 @unit(m)
   /// A link is placed in pieces of at most this length: 4 to 256 m.
   piece_m: f32 = 32.0 @unit(m)
+  /// The cut's banks, rise over run (0.25 to 8; 1, 45 degrees): the cross-section the bed is laid
+  /// in and the terrain's cuts are written with (channels.md, "The cut"; the source in
+  /// docs/experiments/channels.md).
+  bank_slope: f32 = 1 @since(2)
   bed: ChannelSurface
   bars: ChannelSurface
   banks: ChannelSurface

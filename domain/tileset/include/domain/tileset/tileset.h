@@ -17,6 +17,7 @@
 #include <core/base/types.h>
 #include <core/containers/vector.h>
 #include <domain/scene_gen/tile_source.h>
+#include <domain/tileset/cuts.h>
 
 #include <atomic>
 #include <memory>
@@ -100,6 +101,10 @@ struct BuildOptions {
   i64 offset_x_mm = 0;
   i64 offset_y_mm = 0;
   i64 offset_z_mm = 0;
+  // **Channels cut into the ground** (cuts.h; W89): written into every level whose spacing is finer
+  // than a cut's width, after the level's own heights are made, so the far chain is filtered from
+  // the ground as it was and keeps it. Part of the key only when there are some.
+  TerrainCuts cuts;
 };
 
 // The chain's spacings, finest first. False, with a sentence, for options with no chain to build.
@@ -121,8 +126,9 @@ struct BuildResult {
   bool hit = false;  // the set was already there: nothing was written
   u32 levels = 0;
   u32 tiles = 0;
-  u64 bytes = 0;  // of the level archives written (or, on a hit, recorded)
-  u64 hash = 0;   // every level's hash combined
+  u64 bytes = 0;       // of the level archives written (or, on a hit, recorded)
+  u64 hash = 0;        // every level's hash combined
+  u64 cut_points = 0;  // points the cuts lowered, over every level (0 on a hit)
 };
 
 // Builds `field` (whose header hashed to `source_hash`) into `dir`: one archive a level

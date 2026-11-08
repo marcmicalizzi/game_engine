@@ -156,6 +156,11 @@ bool tiles_make(const scene::Terrain& entry, const scene_gen::Context& context,
   std::string manifest;
   std::string ddc = t.ddc.empty() ? std::string() : resolve(context.dir, t.ddc);
   if (!t.manifest.empty()) {
+    if (!t.cuts.empty()) {
+      return fail(
+          "the ground provider \"tiles\" cuts channels into a set it builds from a heightfield; "
+          "the terrain names a set built ahead (\"manifest\") and cuts besides");
+    }
     manifest = resolve(context.dir, t.manifest);
     if (ddc.empty()) ddc = geometry::find_ddc_root(io::parent_path(manifest));
   } else if (!t.heightfield.empty()) {
@@ -172,6 +177,11 @@ bool tiles_make(const scene::Terrain& entry, const scene_gen::Context& context,
     options.offset_x_mm = scene_gen::nearest_mm(t.origin.x);
     options.offset_y_mm = scene_gen::nearest_mm(t.origin.y);
     options.offset_z_mm = scene_gen::nearest_mm(t.origin.z);
+    // Channels cut into the ground (W89; tileset.md, "Channels cut into the ground"): written
+    // into the heights the set is built with, so every reader of it stands on the cut ground.
+    std::string cut_error;
+    if (!options.cuts.build({t.cuts.data(), t.cuts.size()}, &cut_error))
+      return fail("the ground provider \"tiles\" cannot cut its ground: " + cut_error);
     if (ddc.empty()) ddc = geometry::find_ddc_root(io::parent_path(source));
     BuildResult built;
     std::string why;

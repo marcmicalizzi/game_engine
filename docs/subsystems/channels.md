@@ -4,8 +4,11 @@
 rivers, downhill rivers, waterfalls"). The placement generator `channels` routes the flow over a
 lattice of the ground it is handed, begins channels where contributing area and slope say a channel
 begins, follows them downstream, gives each point a bankfull width and depth, and **dresses** the
-trough the ground already holds with a gravel bed skin, bars of finer sediment and cut-soil banks, so
-a riverbed without water reads as eroded. The same network is the description the flowing water
+channel with a gravel bed skin and bars of finer sediment, so a riverbed without water reads as
+eroded. Since W89 the channel is **cut into the ground** below its floodplain: `engine-content
+channels --cut` writes the terrain's `cuts` beside the water's description, the tile set is built with
+them ([tileset](tileset.md#channels-cut-into-the-ground)), and the bed and bars lie in the cut
+([The cut](#the-cut)). The same network is the description the flowing water
 draws: `engine-content channels` writes it as `engine.scene.WaterChannel` blocks. The published
 models every number comes from, and each constant's range, are on the grounding page,
 [experiments/channels.md](../experiments/channels.md).
@@ -72,11 +75,15 @@ first.
   on the inside of a bend; a lens `bar_width_widths` wide and `bar_length_widths` long with its outer
   edge at the bed's, its crown `bar_rise` of the depth above the bed's relief. None on a bed narrower
   than `bar_min_width_m`.
-- **The banks.** Where the link is a stream's (`bank_min_width_m`, 1.5 m) and not a rill's: a berm
-  each side from 5 cm inside the bed's edge out `bank_width_widths w + bank_width_m`, its face rising
-  over the first fifth to `bank_height` of the depth (half again on the outside of a bend, half less
-  inside) and its back falling to the ground. The banks' outer edge is the **riparian edge** a later
-  consumer can read: half the width plus the bank's reach from the line.
+- **No banks** since W89. W86 laid a berm each side that rose *above* the ground, so every stream
+  read as a canal between levees, its 32 m pieces showed as blocks with gaps on a bend, and its faces'
+  UVs smeared. The banks are now the cut's own faces ([The cut](#the-cut)): ground, continuous
+  round a bend, textured as the ground is. The layer's `bank_*` fields still read and are checked, and
+  place nothing.
+
+The bed's width, and the bars' outer edge, are the cut's **flat bed** (`bank_slope`'s trapezoid
+below), a quarter of the width at least where the section is a V, so the gravel lies on the bed and
+not up the banks.
 
 Each part is a **recipe** (`engine.channels.ChannelPiece`): its slabs with every height decided here,
 in the piece's frame, and its look. The mesh generator `channel` builds a recipe into one closed mesh
@@ -109,7 +116,7 @@ drainage to dress). Every field, its default and range is in `schemas/channels.s
 
 ## The water's description
 
-`engine-content channels <scene.json> <out.json> [--min-area-m2 <m2>] [--stage <f>] [--entry <i>]`
+`engine-content channels <scene.json> <out.json> [--min-area-m2 <m2>] [--stage <f>] [--entry <i>] [--cut]`
 reads the scene's terrain through the ground provider it names (the registry the renderer uses) and
 runs every `channels` placement (or the one at `--entry`) through `plan_channels`, and writes
 `{"water_channels": [...]}`: one block per link whose last point drains at least `--min-area-m2`
@@ -128,6 +135,74 @@ below that surface; `width_m` the bankfull width; `slope` the bed's fall per met
 one JSON line: entries, heads, links, metres of channel, the region's km² and km per km², blocks
 written. `water_channels_json` is the function, and the subcommand's end-to-end test holds its output
 to the network planned in-process over the same provider.
+
+## The cut
+
+(2026-11-07, roadmap W89; the POC's v35 engine-needs, item 1, and the owner's walk, item 11.) A real
+channel lies below its floodplain: the bed at bankfull depth under the banks' tops, cut banks falling
+to it. W86 laid its bed 2 cm over the trough the erosion model left and its banks above that, which
+is why it read as a raised canal; the ground was never lower than the floodplain where the water
+ran. **`engine-content channels --cut`** now writes, beside `water_channels`, the terrain's
+**`cuts`** (`engine.scene.TerrainCut`; `terrain_cuts_json`): one per link of the network, every link,
+the rills' too, each point with
+
+- **the top of the bank** (its y): the ground under the line, the height the floodplain stands at;
+- **the bankfull width** of the hydraulic geometry;
+- **the bed's depth below the top**: the section's thalweg, a trapezoid with banks at the layer's
+  `bank_slope` (rise over run, 1 by default) whose area is the width times the hydraulic geometry's
+  mean depth (`D (W − D / m) = W d̄`; a V of twice the mean where the banks are too gentle for that
+  area), the bed held down the line where the ground at it rises a little (the cut runs through a
+  small rise deeper than a thalweg) but **never more than two thalwegs under the ground at the line**:
+  where the line climbs out of a filled depression or over a lake's outlet the bed climbs with it (on
+  v35 the running minimum alone would have cut 103 m through one, and 8.6 % of the network's points
+  more than a metre);
+- and the bank slope.
+
+The author pastes them into the `tiles` block (`terrain.tiles.cuts`), and **the tile set is built
+with them**: every level finer than a channel's width holds its section, so every ring and tile the
+renderer draws, the ray path, the cascades, the collision and every placement stand on the cut
+ground ([tileset](tileset.md#channels-cut-into-the-ground) has the rule, the cell rule and the keys).
+The source of the section, the bank slope and the stage is
+[the grounding page](../experiments/channels.md#the-cut).
+
+**The water within.** With `--cut` each `WaterChannel` point's y is the cut's bed plus `--stage` of
+its thalweg depth, and `depth_m` that water's depth, so the surface lies inside the banks: at the
+default 0.5, half the thalweg depth below the floodplain. It never rises downstream except where the
+cut's bed climbs over a sill, where the water keeps half its depth over the bed rather than run
+under the ground. S96's ribbon is wider than the water it
+carries (the bankfull width and a quarter past each edge); at a stage below bankfull those edges are
+under the cut's faces and the depth test hides them. Without `--cut` the subcommand writes what it
+wrote before: no cuts and the surface on the ground as W86 laid it, for a scene whose ground is not
+cut.
+
+**The network is planned over the ground before its cuts.** The subcommand clears the scene's
+`tiles.cuts` before it opens the ground, so writing the cuts of a scene that already carries them
+gives the same file again (the end-to-end test asserts it). The placement generator, inside a scene
+whose set is cut, plans over the cut ground: its lines follow the troughs the cuts deepened, and its
+bed and bars, which stand on the ground at every vertex, lie in the cut; it does not know the cuts and
+writes nothing of them.
+
+**Bed and bars: pieces, not mask paints** (the brief's step 2). The bed and the bars stay recipes
+laid on the cut ground — the bed narrowed to the cut's flat bed, no bank piece — rather than terrain
+mask paints (`gravel/bed` and `sand/bar` laid along the cut by the masks): a piece carries the
+gravel's relief and the riffles' rise, which a paint cannot; it costs none of the masks' four layers a
+tile, two of which a gravel bed and a sand bar would take wherever a channel crosses a meadow, a trail
+or a shore (the budget T72's check holds); and it needs no mask cook when a channel moves. The cost is the slab's edges, which on
+the cut lie at the banks' toe, a few centimetres over the ground.
+
+**Seen** (2026-11-08, `msvc-debug`, 1920×1080, `--raster hw --shadows rt`, world tiles with v35's
+rings): a synthetic flat ground at 25 cm with a 200 m link bending 25 m, 3 m wide and 0.6 m to its
+bed, and a 1.5 m tributary joining it, authored by hand. The channel lies in the ground, its banks
+falling to the water at their slope and shadowed on the sun's far side, continuous round the bend
+with no gap and no levee, the water inside them; beside it the same water laid on the uncut ground
+stands on it as a raised strip. Past the 1 m ring the channel narrows to the 2 m and 4 m rings'
+point samples and reads jagged, and the 1.5 m tributary fades to a line, as the cell rule and the
+rings' sampling say it should. v35 itself was not re-cooked tonight (its set is 2.6 GB at 25 cm; see
+the roadmap row).
+
+**Steep reaches** (the owner's item 10: 30–40° faces, where a channel is colluvial or bedrock and has
+no bars or banks) get the same cut tonight — a gully is still cut into its slope — and the pieces'
+reach rules are as they were; telling a step-pool or bedrock reach from an alluvial one is W90's.
 
 ## Against the proof of concept
 
@@ -161,6 +236,13 @@ catchments that flow in across it. The captures and their verdict are in the W86
   equals any tile order").
 - The `WaterChannel` blocks have six fields, one value per point, and a surface that never rises
   downstream (test: "the water's description has the WaterChannel shape"; the subcommand's test).
+- The cuts have the `TerrainCut` shape, one per link, the top at the ground under the line, a bed that
+  never rises downstream and a thalweg of the hydraulic geometry's area; the water in the cut lies
+  between that bed and the top (test: "the cuts have the TerrainCut shape and the water lies inside
+  them"); no bank piece, and the bed narrower than the channel (tests: "the placed pieces …", "the bed
+  lies inside the cut's banks"); `engine-content channels --cut` is the in-process network's text, the
+  same twice and the same from a scene that carries the cuts (`apps/engine_content/tests/
+  channel_cut_tests.cpp`).
 
 **Public API.** `include/domain/channels/channels.h`.
 
@@ -175,7 +257,7 @@ catchments that flow in across it. The captures and their verdict are in the W86
 queries per placed vertex; the region's `max_samples` bounds it. The pieces are ordinary cluster-LOD
 scene instances. `ChannelPoint` (40 bytes) is pinned in the size table.
 
-**Not yet.** The ground is not cut (the erosion model's job); no waterfalls (a link's steep reach is
+**Not yet.** The cut is written by the subcommand and pasted by the author, not applied by the generator itself (the ground is built before the placements are); a procedural ground (the dunes) takes no cut; no waterfalls (a link's steep reach is
 step-pool rhythm only); D8 only (no D∞ spreading); heads by a local four-metre slope, not a slope
 averaged over the source area; no braided reaches.
 
