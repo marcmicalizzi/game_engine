@@ -203,6 +203,15 @@ bool open_channels(const JsonValue& params, const scene_gen::Context& context, v
     }
     entry->channels.push_back(std::move(channel));
   }
+  // The channels whose last point is a fall landing in a body (S98; channel.h, `pooled`): the
+  // renderer's reader names them, and their ribbons build no plunge stretch over the pool.
+  if (const JsonValue* pooled = params.find("pooled"); pooled != nullptr && pooled->is_array()) {
+    for (usize i = 0; i < pooled->size(); ++i) {
+      u64 k = 0;
+      if ((*pooled)[i].get_u64(k) && k < entry->channels.size())
+        entry->channels[static_cast<u32>(k)].pooled = true;
+    }
+  }
   *state = entry.release();
   return true;
 }

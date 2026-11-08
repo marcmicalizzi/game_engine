@@ -14,6 +14,7 @@
 #include <domain/scene_gen/scene_gen.h>
 #include <foundation/io/vfs.h>
 
+#include <algorithm>
 #include <cmath>
 #include <cstring>
 #include <renderer_log.h>
@@ -205,6 +206,102 @@ scene::WaterBody channel_body(const scene::WaterChannel& channel) {
   return body;
 }
 
+// **The plunges** (water.md, "The plunge"; roadmap S98). A stretch falls where it drops at least
+// as far as it runs (systems/water's `stretch_falls`, k_channel_fall_gradient 1, mirrored here
+// because the renderer may not call the capability); a run of falling stretches is one fall from
+// the first one's lip to the last one's foot. A foot that lies inside a body — a texel of the
+// body's depth map under it holds water — and within a metre of the body's level lands in it: the
+// body draws its white water (`SceneWater::plunges`), and a channel whose last point is such a foot
+// is "pooled", so the ribbon builds no plunge stretch over the pool (channel.h).
+constexpr f64 k_plunge_level_m = 1.0;
+constexpr f64 k_plunge_radius_share = 0.25;  // the disc's radius: the fall's height over four
+constexpr f64 k_plunge_radius_min_m = 1.0;
+constexpr f64 k_plunge_radius_max_m = 8.0;
+
+bool stretch_falls_here(const scene::WaterChannel& c, u32 i) {
+  if (i + 1 >= c.points.size()) return false;
+  const f64 dx = c.points[i + 1].x - c.points[i].x;
+  const f64 dz = c.points[i + 1].z - c.points[i].z;
+  const f64 drop = c.points[i].y - c.points[i + 1].y;
+  return drop > 0.0 && drop >= std::sqrt(dx * dx + dz * dz);
+}
+
+// Whether body-local (x, z) is over water in the body's map (its nearest texel).
+bool over_water(const SceneWaterDepth& map, f64 x, f64 z) {
+  if (map.size < 2 || !(map.texel_m > 0.0f)) return false;
+  const f64 i =
+      std::floor((x - static_cast<f64>(map.origin.x)) / static_cast<f64>(map.texel_m) + 0.5);
+  const f64 j =
+      std::floor((z - static_cast<f64>(map.origin.y)) / static_cast<f64>(map.texel_m) + 0.5);
+  if (i < 0.0 || j < 0.0 || i >= static_cast<f64>(map.size) || j >= static_cast<f64>(map.size))
+    return false;
+  return map.texels[static_cast<u32>(j) * map.size + static_cast<u32>(i)] > 0;
+}
+
+// Finds the bodies the channels' falls land in, fills their plunges, and returns the channels
+// whose last point lands in one.
+Vector<u32> find_plunges(const scene::Scene& file, SceneDesc& out) {
+  Vector<u32> pooled;
+  // The bodies already read: mesh index and the instance that places it.
+  struct BodyAt {
+    u32 mesh;
+    WorldPos origin;
+  };
+  Vector<BodyAt> bodies;
+  for (const SceneInstance& instance : out.instances) {
+    if (instance.mesh >= out.mesh_info.size()) continue;
+    const SceneMeshInfo& info = out.mesh_info[instance.mesh];
+    if (!info.water.has_value() || info.water->channel || info.water->depth.size < 2) continue;
+    bodies.push_back(BodyAt{instance.mesh, instance.origin});
+  }
+  if (bodies.empty()) return pooled;
+  for (u32 k = 0; k < file.water_channels.size(); ++k) {
+    const scene::WaterChannel& c = file.water_channels[k];
+    const u32 n = c.points.size();
+    for (u32 i = 0; i + 1 < n; ++i) {
+      // The foot of a fall: the stretch into point i + 1 falls and the one out of it does not.
+      if (!stretch_falls_here(c, i) || stretch_falls_here(c, i + 1)) continue;
+      u32 top = i;
+      while (top > 0 && stretch_falls_here(c, top - 1))
+        --top;
+      const WorldPos& foot = c.points[i + 1];
+      const f64 height = c.points[top].y - foot.y;
+      for (const BodyAt& body : bodies) {
+        SceneWater& water = *out.mesh_info[body.mesh].water;
+        if (std::abs(foot.y - water.body.level_m) > k_plunge_level_m) continue;
+        const f64 x = foot.x - body.origin.x;
+        const f64 z = foot.z - body.origin.z;
+        if (!over_water(water.depth, x, z)) continue;
+        gfx::WaterPlunge plunge;
+        plunge.at = Vec2{static_cast<f32>(x), static_cast<f32>(z)};
+        plunge.radius_m = static_cast<f32>(std::clamp(
+            k_plunge_radius_share * height, k_plunge_radius_min_m, k_plunge_radius_max_m));
+        plunge.speed_m_s = static_cast<f32>(std::sqrt(2.0 * 9.81 * height));
+        water.plunges.push_back(plunge);
+        if (i + 2 == n) pooled.push_back(k);
+        break;
+      }
+    }
+  }
+  // The highest falls first, and no more than a table entry holds.
+  for (const BodyAt& body : bodies) {
+    Vector<gfx::WaterPlunge>& list = out.mesh_info[body.mesh].water->plunges;
+    if (list.empty()) continue;
+    std::stable_sort(list.begin(), list.end(),
+                     [](const gfx::WaterPlunge& a, const gfx::WaterPlunge& b) {
+                       return a.radius_m > b.radius_m;
+                     });
+    if (list.size() > gfx::k_water_plunges) {
+      ENGINE_LOG_WARN(log_renderer,
+                      "a water body has more plunges than it keeps; the lowest dropped",
+                      log::field("body", out.mesh_info[body.mesh].name),
+                      log::field("plunges", list.size()), log::field("kept", gfx::k_water_plunges));
+      list.resize(gfx::k_water_plunges);
+    }
+  }
+  return pooled;
+}
+
 }  // namespace
 
 bool read_scene_water_channels(const scene::Scene& file, const std::string& path,
@@ -232,6 +329,15 @@ bool read_scene_water_channels(const scene::Scene& file, const std::string& path
     list.push_back(schema::to_json(channel));
   JsonValue params = JsonValue::object();
   params.set("channels", std::move(list));
+  // The channels whose falls land in a body (S98): the body draws the plunge, and a channel that
+  // ends in one builds no plunge stretch over the pool.
+  const Vector<u32> pooled = find_plunges(file, out);
+  if (!pooled.empty()) {
+    JsonValue pooled_list = JsonValue::array();
+    for (const u32 k : pooled)
+      pooled_list.push_back(JsonValue(u64{k}));
+    params.set("pooled", std::move(pooled_list));
+  }
   void* state = nullptr;
   if (!generator->open(params, context, &state, &error)) return false;
   struct Close {

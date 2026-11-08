@@ -314,6 +314,9 @@ ENGINE_EXPECT_SIZE(112, 4, gfx::ResolveMaterial);
 // An open sea's wave (water_spectrum.h; S93), GPU-mirrored by water.slang's `WaterWave`: sixteen of
 // them fill five material entries after a water material's next one.
 ENGINE_EXPECT_SIZE(32, 4, gfx::WaterWave);
+// A fall's foot in a body (visibility_resolve.h; S98, water.md "The plunge"), GPU-mirrored by
+// water.slang's `WaterPlunge`: seven of them fill one material entry.
+ENGINE_EXPECT_SIZE(16, 4, gfx::WaterPlunge);
 // A terrain's record (renderer.md, "Ground materials by place"; 2026-10-24): one material-table
 // entry no cluster names, so it is exactly a ResolveMaterial's size and is bit-cast into the table.
 // It gives names to what W68 bit-cast into the root's normal scale, occlusion strength and UV words

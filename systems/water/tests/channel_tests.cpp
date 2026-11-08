@@ -19,6 +19,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 #include <span>
 #include <string>
 
@@ -93,7 +94,8 @@ TEST_CASE("water channel: Manning's speed, the Froude number and the falls") {
   // v = (1/n) d^(2/3) S^(1/2): n 0.04, 0.6 m deep, 1 in 100 — 1.7786 m/s, Froude 0.733.
   const f32 v = water::manning_speed(0.04f, 0.6f, 0.01f);
   CHECK(v == doctest::Approx(25.0 * std::pow(0.6, 2.0 / 3.0) * 0.1).epsilon(1e-6));
-  CHECK(water::froude(v, 0.6f) == doctest::Approx(static_cast<f64>(v) / std::sqrt(9.81 * 0.6)).epsilon(1e-6));
+  CHECK(water::froude(v, 0.6f) ==
+        doctest::Approx(static_cast<f64>(v) / std::sqrt(9.81 * 0.6)).epsilon(1e-6));
   CHECK(water::froude(v, 0.6f) < 1.0f);
   // The steep reach is supercritical: 0.4 m at 1 in 25, 2.71 m/s, Froude 1.37.
   const f32 rapid = water::manning_speed(0.04f, 0.4f, 0.04f);
@@ -192,7 +194,8 @@ TEST_CASE("water channel: the ribbon's width, heights, phase and fall") {
     }
   }
   // The fall is one stretch of 10.05 m at the spacing: 16 sections' strips, two triangles a quad.
-  const u32 fall_strips = static_cast<u32>(std::ceil(std::sqrt(101.0) / static_cast<f64>(m.spacing)));
+  const u32 fall_strips =
+      static_cast<u32>(std::ceil(std::sqrt(101.0) / static_cast<f64>(m.spacing)));
   CHECK(fall_triangles == fall_strips * cm.columns * 2);
   CHECK(bed_triangles > fall_triangles);
   u32 falls = 0;
@@ -295,4 +298,158 @@ TEST_CASE("water channel: the channel bit is a material flag of its own") {
   CHECK((gfx::k_material_water_channel &
          (gfx::k_material_terrain_formation | gfx::k_material_stochastic |
           gfx::k_material_terrain_beach)) == 0u);
+}
+
+// ---- S98: the regimes, the brink, the plunge stretch, the profile and the plunge records ------
+
+TEST_CASE("water channel: the surface's regimes are their sources' numbers") {
+  // Brocchini and Peregrine 2001: gravity's line q^2 = 2 g L and surface tension's
+  // q^2 = 2 sigma / (rho L) cross at the capillary length, 2.7 mm, and q 0.23 m/s.
+  const f64 lc = water::capillary_length_m();
+  CHECK(lc == doctest::Approx(0.00273).epsilon(0.01));
+  const f64 q = std::sqrt(2.0 * water::k_gravity * lc);
+  CHECK(q == doctest::Approx(0.2315).epsilon(0.01));
+  CHECK(q * q ==
+        doctest::Approx(2.0 * water::k_water_surface_tension / (water::k_water_density * lc))
+            .epsilon(1e-9));
+  // The surface's deformation q^2 / 2g with q the shear velocity: the test's gentle reach (0.6 m
+  // at 1 in 100, 1.78 m/s) is u* = sqrt(g d S) = 0.243 m/s and a few millimetres of surface; its
+  // steep reach (0.4 m at 1 in 25) 0.396 m/s and about eight millimetres.
+  const f64 gentle = water::shear_velocity(water::manning_speed(0.04f, 0.6f, 0.01f), 0.6, 0.04);
+  CHECK(gentle == doctest::Approx(std::sqrt(9.81 * 0.6 * 0.01)).epsilon(1e-5));
+  const f64 steep = water::shear_velocity(water::manning_speed(0.04f, 0.4f, 0.04f), 0.4, 0.04);
+  CHECK(steep == doctest::Approx(std::sqrt(9.81 * 0.4 * 0.04)).epsilon(1e-5));
+  CHECK(water::surface_disturbance_m(gentle) == doctest::Approx(0.0030).epsilon(0.02));
+  CHECK(water::surface_disturbance_m(steep) == doctest::Approx(0.0080).epsilon(0.02));
+  // The bed's turbulence alone never breaks a stream's surface: q^2 > 2 g L with L the depth needs
+  // u*^2 = g d S > 2 g d, a slope of 2. What whitens a stream is the Froude rule's (below).
+  CHECK(steep * steep < 2.0 * water::k_gravity * 0.4);
+  // Self-aeration from about a metre a second: inside Cummings and Chanson's 0.74 to 1.58 m/s.
+  CHECK(water::k_channel_aeration_speed >= 0.74);
+  CHECK(water::k_channel_aeration_speed <= 1.58);
+}
+
+TEST_CASE("water channel: standing waves stand at Kennedy's wavelength") {
+  // lambda = 2 pi v^2 / g: the wave whose phase speed sqrt(g / k) is the flow's.
+  for (const f64 v : {1.0, 2.0, 2.71, 4.0}) {
+    const f64 lambda = water::standing_wavelength_m(v);
+    const f64 k = 2.0 * 3.14159265358979323846 / lambda;
+    CHECK(std::sqrt(water::k_gravity / k) == doctest::Approx(v).epsilon(1e-12));
+  }
+  CHECK(water::standing_wavelength_m(2.0) == doctest::Approx(2.5620).epsilon(1e-4));
+  CHECK(water::k_channel_wave_froude_lo < 1.0);
+  CHECK(water::k_channel_wave_froude_hi > 1.0);
+}
+
+TEST_CASE("water channel: the lateral profile carries the section's discharge") {
+  // C = (4/3) / integral (1 - x^2)^(7/6) = (4/3) Gamma(8/3) / (sqrt(pi) Gamma(13/6)).
+  const f64 closed = (4.0 / 3.0) * std::tgamma(8.0 / 3.0) /
+                     (std::sqrt(3.14159265358979323846) * std::tgamma(13.0 / 6.0));
+  CHECK(water::k_channel_profile_mean == doctest::Approx(closed).epsilon(1e-6));
+  // The discharge across a parabolic bed of width w and centre depth d at a mean speed v is v
+  // times its area, 2/3 w d: integrate the profile's speed times the depth across the width.
+  const f64 w = 4.0, d = 0.6, v = 1.78;
+  const u32 n = 200000;
+  f64 discharge = 0.0, area = 0.0;
+  for (u32 i = 0; i < n; ++i) {
+    const f64 a = -0.5 * w + (static_cast<f64>(i) + 0.5) * (w / static_cast<f64>(n));
+    const f64 x = 2.0 * a / w;
+    const f64 r = 1.0 - x * x;
+    discharge += v * water::lateral_speed_share(r) * d * r * (w / static_cast<f64>(n));
+    area += d * r * (w / static_cast<f64>(n));
+  }
+  CHECK(area == doctest::Approx(2.0 / 3.0 * w * d).epsilon(1e-6));
+  CHECK(discharge == doctest::Approx(v * area).epsilon(1e-5));
+  // Fastest mid-channel, at C times the mean, and still at the banks.
+  CHECK(water::lateral_speed_share(1.0) == doctest::Approx(water::k_channel_profile_mean));
+  CHECK(water::lateral_speed_share(0.0) == 0.0);
+  CHECK(water::lateral_speed_share(0.25) < 1.0);
+}
+
+TEST_CASE(
+    "water channel: a subcritical reach speeds up into the brink, and a fall's foot plunges") {
+  // A gentle reach (Froude 0.73) to a 6 m fall at its end, nothing below it.
+  scene::WaterChannel block;
+  block.name = "spout";
+  block.points = {WorldPos{0.0, 10.0, 0.0}, WorldPos{30.0, 9.7, 0.0}, WorldPos{31.0, 3.7, 0.0}};
+  block.width_m = {4.0f, 4.0f, 4.0f};
+  block.depth_m = {0.6f, 0.6f, 0.6f};
+  block.slope = {0.01f, 0.01f, 0.01f};
+  water::Channel ch;
+  REQUIRE(water::read_channel(block, ch, nullptr));
+  // The plunge stretch: one more point, 0.4 of the 6 m on along the fall's heading, level.
+  const water::Channel plunged = water::with_plunge_stretch(ch);
+  REQUIRE(plunged.points.size() == 4);
+  CHECK(plunged.points[3].x == doctest::Approx(ch.points[2].x + 2.4f));
+  CHECK(plunged.points[3].y == ch.points[2].y);
+  CHECK(plunged.slope[3] == 0.0f);
+  water::Channel pooled = ch;
+  pooled.pooled = true;
+  CHECK(water::with_plunge_stretch(pooled).points.size() == 3);
+  // A channel that continues past its fall is its own.
+  water::Channel test;
+  REQUIRE(water::read_channel(test_channel(), test, nullptr));
+  CHECK(water::with_plunge_stretch(test).points.size() == test.points.size());
+
+  water::ChannelMesh cm;
+  water::build_channel_mesh(ch, cm);
+  // Rouse's brink: q = v d, d_c = (q^2 / g)^(1/3), the lip's speed q / (0.715 d_c).
+  const f64 v = static_cast<f64>(water::manning_speed(0.04f, 0.6f, 0.01f));
+  const f64 q = v * 0.6;
+  const f64 dc = std::cbrt(q * q / 9.81);
+  const f64 brink = q / (0.715 * dc);
+  CHECK(brink > v);
+  u32 lip = 0;
+  for (u32 k = 0; k < cm.section_s.size(); ++k)
+    if (cm.section_falls[k] != 0) {
+      lip = k;
+      break;
+    }
+  REQUIRE(lip > 0);
+  CHECK(static_cast<f64>(cm.section_speed[lip]) == doctest::Approx(brink).epsilon(1e-5));
+  // The reach is Manning's until four d_c from the lip, and speeds up through them.
+  CHECK(static_cast<f64>(cm.section_speed[0]) == doctest::Approx(v).epsilon(1e-6));
+  for (u32 k = 1; k <= lip; ++k)
+    CHECK(cm.section_speed[k] >= cm.section_speed[k - 1]);
+  // The fall leaves at the brink's speed and lands at sqrt(v_b^2 + 2 g 6); the plunge stretch
+  // then slows it back to the still pool's drift.
+  const f32 top = *std::max_element(cm.section_speed.begin(), cm.section_speed.end());
+  CHECK(static_cast<f64>(top) ==
+        doctest::Approx(std::sqrt(brink * brink + 2.0 * 9.81 * 6.0)).epsilon(1e-4));
+  CHECK(cm.section_speed.back() == doctest::Approx(water::k_channel_min_speed));
+  CHECK(cm.section_s.back() == doctest::Approx(cm.section_s[lip] + 6.0833f + 2.4f).epsilon(1e-3));
+  // A pooled channel stops at the foot.
+  water::ChannelMesh pm;
+  water::build_channel_mesh(pooled, pm);
+  CHECK(pm.section_s.back() < cm.section_s.back());
+}
+
+TEST_CASE("water channel: plunge records pack into one entry, seven at most") {
+  gfx::ResolveMaterial water;
+  gfx::ResolveMaterial entry;
+  gfx::WaterPlunge list[9];
+  for (u32 i = 0; i < 9; ++i)
+    list[i] = gfx::WaterPlunge{Vec2{static_cast<f32>(i), -static_cast<f32>(i)},
+                               1.0f + static_cast<f32>(i), 9.0f};
+  list[2].radius_m = 0.0f;  // no radius: dropped
+  CHECK(gfx::set_water_plunges(water, entry, list, 9) == gfx::k_water_plunges);
+  CHECK((water.flags & gfx::k_material_water_plunge) != 0);
+  gfx::WaterPlunge rows[gfx::k_water_plunges];
+  std::memcpy(rows, &entry, sizeof(rows));
+  CHECK(rows[0].at.x == 0.0f);
+  CHECK(rows[1].radius_m == 2.0f);
+  CHECK(rows[2].radius_m == 4.0f);  // the third had none, the fourth moved up
+  CHECK(rows[6].radius_m == 8.0f);
+  // Fewer than seven: the rest zero, so the list ends.
+  gfx::ResolveMaterial water2;
+  gfx::ResolveMaterial entry2;
+  CHECK(gfx::set_water_plunges(water2, entry2, list, 2) == 2);
+  std::memcpy(rows, &entry2, sizeof(rows));
+  CHECK(rows[2].radius_m == 0.0f);
+  // None: no flag, and the bits are the channel's and the shore's neighbours.
+  gfx::ResolveMaterial water3;
+  gfx::ResolveMaterial entry3;
+  CHECK(gfx::set_water_plunges(water3, entry3, list + 2, 1) == 0);
+  CHECK((water3.flags & gfx::k_material_water_plunge) == 0);
+  CHECK(gfx::k_material_water_plunge == (gfx::k_material_water_channel << 1));
 }

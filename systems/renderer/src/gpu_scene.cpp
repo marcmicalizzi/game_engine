@@ -4318,14 +4318,23 @@ bool GpuScene::upload_materials(const ResolvedSettings& resolved, std::string* e
             material = gfx::pack_terrain_record(record);
           }
         }
+        // A body's plunges (water.md, "The plunge"; S98): the falls' feet in the entry after the
+        // spectrum's, or after the next one, which is then always there.
+        gfx::ResolveMaterial plunge_entry;
+        const bool plunges = water && !data_->mesh_info[m].water->plunges.empty() &&
+                             gfx::set_water_plunges(
+                                 material, plunge_entry, data_->mesh_info[m].water->plunges.data(),
+                                 static_cast<u32>(data_->mesh_info[m].water->plunges.size())) > 0;
         ++source_material_index;
         material_table.push_back(material);
-        if (volume || spectrum || (material.flags & gfx::k_material_water_depth_map) != 0)
+        if (volume || spectrum || plunges ||
+            (material.flags & gfx::k_material_water_depth_map) != 0)
           material_table.push_back(optics);
         if (spectrum) {
           for (const gfx::ResolveMaterial& entry : wave_entries)
             material_table.push_back(entry);
         }
+        if (plunges) material_table.push_back(plunge_entry);
       }
       const u32 local_count = material_table.size() - mesh_material_base[m];
       gfx::ResolveMaterial plain;
