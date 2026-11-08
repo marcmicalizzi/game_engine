@@ -142,9 +142,9 @@ TEST_CASE("engine-content channels ends the links at a lake's shoreline") {
   REQUIRE(
       schema::from_json(layer, *(*scene_json.find("placements"))[0].find("params"), layer_reader));
   channels::ChannelNetwork network;
-  REQUIRE_MESSAGE(channels::plan_channels(layer, ground.view(), terrain.seed, nullptr, network,
-                                          error, &water),
-                  error);
+  REQUIRE_MESSAGE(
+      channels::plan_channels(layer, ground.view(), terrain.seed, nullptr, network, error, &water),
+      error);
   CHECK(network.water.mouths == mouths);
   CHECK(write_json(channels::terrain_cuts_json(layer, network)) ==
         write_json(*written.find("cuts")));

@@ -740,16 +740,16 @@ Water water_of(const ChannelLayer& p, const ChannelLink& link, f32 stage, bool c
   f64 fan_head = std::numeric_limits<f64>::quiet_NaN();
   for (u32 i = 0; i < m; ++i) {
     const ChannelPoint& pt = link.line[i];
-    const f64 thalweg = round_to(
-        section_of(wide(pt.width_m), wide(pt.depth_m), wide(p.bank_slope)).thalweg, 1e3);
+    const f64 thalweg =
+        round_to(section_of(wide(pt.width_m), wide(pt.depth_m), wide(p.bank_slope)).thalweg, 1e3);
     f64 water = 0;
     if (cut) {
       // Laid in the cut (W89): held down the line, except where the cut's bed climbs over a sill,
       // where the water keeps half its depth over it rather than run under the ground.
       bed = link.bed[i];
       water = wide(stage) * thalweg;
-      surface = std::max(std::min(surface, round_to(bed + water, 1e3)),
-                         round_to(bed + .5 * water, 1e3));
+      surface =
+          std::max(std::min(surface, round_to(bed + water, 1e3)), round_to(bed + .5 * water, 1e3));
     } else {
       // Laid on the ground (W86): the bed the ground's running minimum, the surface `stage` of the
       // bankfull depth over it, never rising downstream.
@@ -762,8 +762,9 @@ Water water_of(const ChannelLayer& p, const ChannelLink& link, f32 stage, bool c
     const f64 t = fan_share(p, link, s, i);
     if (t > 0) {
       if (std::isnan(fan_head)) fan_head = surface;
-      surface = std::max(round_to(link.mouth_level, 1e3),
-                         std::min(surface, round_to(fan_head + t * (link.mouth_level - fan_head), 1e3)));
+      surface =
+          std::max(round_to(link.mouth_level, 1e3),
+                   std::min(surface, round_to(fan_head + t * (link.mouth_level - fan_head), 1e3)));
     }
     // Above the fan too, the body backs the water up: a link that ends in it never stands below its
     // level (the surface still never rises downstream, since it was falling to there).

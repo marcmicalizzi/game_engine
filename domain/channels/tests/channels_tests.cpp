@@ -556,7 +556,8 @@ scene::WaterBody lake(f64 level, f64 z0, f64 z1) {
 
 TEST_CASE("channels: reaches by the pinned bounds (Montgomery & Buffington 1997)") {
   const ChannelLayer p = layer();
-  // The defaults are the bounds the grounding page pins (f32, so each is read as the layer holds it).
+  // The defaults are the bounds the grounding page pins (f32, so each is read as the layer holds
+  // it).
   CHECK(p.slope_pool_riffle == .001f);
   CHECK(p.slope_plane_bed == .015f);
   CHECK(p.slope_step_pool == .03f);

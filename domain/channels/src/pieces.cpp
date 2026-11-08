@@ -245,10 +245,11 @@ bool place_pieces(const ChannelLayer& p, const ChannelNetwork& n, const scene_ge
                 i64 xm = 0, zm = 0;
                 const f64 g = b.ground_local(x, z, xm, zm);
                 const bool edge = c == 0 || c + 1 == columns;
-                const f64 across = 1 - 4 * v * v;  // the riffle crosses the bed, highest mid-channel
-                const f64 bump = edge ? 0.0
-                                      : relief * .5 * (1 + place_noise(link.seed, xm, zm)) +
-                                            riffle * across;
+                const f64 across =
+                    1 - 4 * v * v;  // the riffle crosses the bed, highest mid-channel
+                const f64 bump =
+                    edge ? 0.0
+                         : relief * .5 * (1 + place_noise(link.seed, xm, zm)) + riffle * across;
                 b.vertex(slab, x, z, g + k_lift_m + bump, g - k_bury_m);
               }
             }

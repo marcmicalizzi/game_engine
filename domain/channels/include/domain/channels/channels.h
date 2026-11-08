@@ -89,7 +89,7 @@ struct ChannelLink {
   // **W90** (channels.md, "Reaches", "Mouths", "Confluences"), one per point of line:
   Vector<u8> reach;        // the reach's ChannelReach code
   Vector<f32> step_depth;  // how far a step-pool's pool lowers the cut's bed below its line, m
-  Vector<f64> bed;         // the cut's bed, metres: the thalweg's, the steps', the fan's, the grade's
+  Vector<f64> bed;  // the cut's bed, metres: the thalweg's, the steps', the fan's, the grade's
   // The steps' crests (indices into line) and their heights: where the boulders stand.
   Vector<u32> step_at;
   Vector<f32> step_height;
