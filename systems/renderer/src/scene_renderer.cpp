@@ -3171,8 +3171,11 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
     // ---- R139: the sun's casters solid by region and by distance (renderer.md, "The sun's masks
     // by region and by distance"). Only where the masks are tested: the far rule's distance is
     // this view's, from its pixels per radian, so a pixel past it covers `far_factor` of the
-    // sun's penumbrae under the canopy; the sides are R126's (`half_sides`, this view's columns
-    // by the same window), and the sides' distance is in metres as set. Either off sets no bit.
+    // sun's penumbrae under the canopy. The sides are R126's columns where its half pass has any
+    // (`half_sides`), so the two regions coincide to the column, and otherwise the sides' own
+    // share, a surround's outer thirds on any frame (`gfx::k_sun_solid_sides_share`) — so the rule
+    // does not depend on whether another tunable is on. The sides' distance is in metres as set.
+    // Either off sets no bit.
     if ((resolve.shadow_flags & gfx::k_shadow_alpha_masks) != 0) {
       const SunRegionRule region = sun_region_rule(frame.frame_index);
       const f32 far_m =
@@ -3181,10 +3184,10 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
         resolve.shadow_flags |= gfx::k_shadow_sun_solid_far;
         resolve.sun_solid_distance = far_m;
       }
-      if (region.side_m >= 0.0f && half_sides > 0.0f) {
-        const gfx::HalfRateWindow sides =
-            gfx::half_rate_window(half_sides, false, width_, views_[v].rect.x, views_[v].rect.width,
-                                  targets_.views[v].width);
+      if (region.side_m >= 0.0f) {
+        const f32 share = half_sides > 0.0f ? half_sides : gfx::k_sun_solid_sides_share;
+        const gfx::HalfRateWindow sides = gfx::half_rate_window(
+            share, false, width_, views_[v].rect.x, views_[v].rect.width, targets_.views[v].width);
         if (sides.columns > 0) {
           resolve.shadow_flags |= gfx::k_shadow_sun_solid_sides;
           resolve.sun_solid_side_distance = region.side_m;

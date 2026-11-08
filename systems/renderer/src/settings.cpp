@@ -461,9 +461,10 @@ tunables::Float shadow_canopy_m{
     "shadow is blurred over this times the sun's 9.3 mrad"};
 tunables::Float shadow_solid_sides{
     "renderer.shadow.solid_sides", -1.0, -1.0, 100000.0,
-    "In the side columns of a surround (renderer.resolve.half_rate_sides' region) the sun's ray "
-    "takes its casters as opaque from a receiver this many metres from the eye; 0 everywhere in "
-    "the sides, negative never (renderer.md, The sun's masks by region and by distance)"};
+    "In the side columns (renderer.resolve.half_rate_sides' columns where the half pass has any, "
+    "else the frame's outer thirds) the sun's ray takes its casters as opaque from a receiver this "
+    "many metres from the eye; 0 everywhere in the sides, negative never (renderer.md, The sun's "
+    "masks by region and by distance)"};
 enum class SunRegionChoice : u32 { AsSet, None, Sides, Far, Both, Cycle };
 constexpr const char* k_sun_region_choices[] = {"as_set", "none", "sides", "far", "both", "cycle"};
 tunables::Enum<SunRegionChoice> shadow_region_rule{

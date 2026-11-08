@@ -11,9 +11,13 @@
 // - With the micromaps on, as they are by default, the rule turns nothing solid that has one: an
 //   opaque ray flag does not undo a micromap's transparent micro-triangles, and the two-state
 //   answer still decides the unknown ones, so the card's shadow is the frame as set's.
-// - The sides of a surround: with the side columns solid outright, the centre third of a 3:1 frame
-//   is the frame as set to the byte, and every pixel that moved is a side pixel the solid card's
-//   shadow and the mask's disagree on.
+// - The sides: with the side columns solid outright, the full-rate band is the frame as set to the
+//   byte, and every pixel that moved is a side pixel the solid card's shadow and the mask's
+//   disagree on — on a square frame, which has no half-rate columns, in the sides' own outer
+//   thirds, and on a 3:1 frame with R126's half pass in exactly its columns.
+//
+// The frames are lit by the sun alone (shoot): the rule is the sun's, and the stand-in's point
+// lights cast their own shadows through the mask.
 
 #include <core/math/math.h>
 #include <domain/gfx/device.h>
@@ -190,6 +194,12 @@ Shot shoot(const std::string& mesh, u32 width) {
   settings.raster = RasterMode::Hardware;
   settings.shadows = ShadowMode::RayTraced;
   settings.view_mode = static_cast<u32>(gfx::ResolveMode::Shaded);
+  // The sun alone, which is the one ray the rule is about. The stand-in's two point lights trace
+  // their own shadows through the mask, which the rule leaves alone: on the first GPU run they
+  // were the 335 ground pixels the far rule "differed" on from the solid card, sun-shadowed in
+  // both frames but a green of 181-184 under the mask's point-light flecks against 176 under the
+  // solid card, across the classes' midpoint.
+  settings.lights = false;
   SceneData data;
   GpuScene scene;
   SceneRenderer renderer;
@@ -431,40 +441,41 @@ TEST_CASE("sun region: a card with a micromap keeps the frame as set's shadow un
   CHECK(plain_moved > 200);
 }
 
-// The sides of a surround: a 3:1 frame's outer thirds (R126's region) solid outright. The centre
-// third is the frame as set to the byte, and every pixel that moved is a side pixel where the
-// solid card's shadow and the mask's disagree.
-TEST_CASE(
-    "sun region: the sides solid outright move only side pixels the solid shadow differs on") {
-  Fixture fx;
-  TunableScope micromaps("renderer.shadow.micromaps=false", "renderer.shadow.micromaps=true");
-  constexpr u32 k_width = 3 * k_height;
-  const Shot solid = shoot(fx.opaque, k_width);
+namespace {
+
+// The sides solid outright in a `width` x 128 frame whose sides are `sides_share` of its width at
+// each edge: the full-rate band is the frame as set to the byte, and every pixel that moved is a
+// side pixel where the solid card's shadow and the mask's disagree.
+void check_sides(const Fixture& fx, u32 width, f32 sides_share, const char* what) {
+  const Shot solid = shoot(fx.opaque, width);
   if (!solid.skip.empty()) {
     MESSAGE("skipped: " << solid.skip);
     return;
   }
-  const Shot as_set = shoot(fx.masked, k_width);
+  const Shot as_set = shoot(fx.masked, width);
   Shot sides;
   {
     TunableScope s("renderer.shadow.solid_sides=0", "renderer.shadow.solid_sides=-1");
-    sides = shoot(fx.masked, k_width);
+    sides = shoot(fx.masked, width);
   }
   REQUIRE(as_set.skip.empty());
   REQUIRE(sides.skip.empty());
+  // The renderer's window for a single view, cut as the half pass cuts it.
+  const gfx::HalfRateWindow window =
+      gfx::half_rate_window(sides_share, false, width, 0, width, width);
+  REQUIRE(window.x0 > 0);
+  REQUIRE(window.x1 < width);
   const Vector<u8> full = shadow_classes(solid.frame);
   const Vector<u8> mask = shadow_classes(as_set.frame);
-  const u32 x0 = k_height;
-  const u32 x1 = 2 * k_height;
   u32 centre_moved = 0;
   u32 side_moved = 0;
   u32 side_moved_unexplained = 0;
   u32 side_could = 0;
   for (u32 y = 0; y < k_height; ++y) {
-    for (u32 x = 0; x < k_width; ++x) {
-      const u32 p = y * k_width + x;
+    for (u32 x = 0; x < width; ++x) {
+      const u32 p = y * width + x;
       const bool moved = !same_pixel(as_set.frame, sides.frame, p);
-      if (x >= x0 && x < x1) {
+      if (x >= window.x0 && x < window.x1) {
         centre_moved += moved ? 1u : 0u;
         continue;
       }
@@ -477,9 +488,32 @@ TEST_CASE(
       if (!could && full[p] != 0 && mask[p] != 0) ++side_moved_unexplained;
     }
   }
-  MESSAGE("sides solid: " << side_moved << " side pixels moved of " << side_could
-                          << " the solid shadow differs on; the centre " << centre_moved);
+  MESSAGE(std::string(what) << ": columns [" << window.x0 << ", " << window.x1 << ") full rate; "
+                            << side_moved << " side pixels moved of " << side_could
+                            << " the solid shadow differs on; the centre " << centre_moved);
+  CHECK(side_could > 0);  // the fixture puts the card's shadow in the sides
   CHECK(centre_moved == 0);
   CHECK(side_moved > 0);
   CHECK(side_moved_unexplained == 0);
+}
+
+}  // namespace
+
+// The sides on their own: a square frame has no half-rate columns (R126's default leaves a frame
+// no wider than 2.5:1 at full rate), so `renderer.shadow.solid_sides` takes its own share, the
+// outer thirds (`gfx::k_sun_solid_sides_share`) — the rule does not wait for another tunable.
+TEST_CASE("sun region: the sides solid outright take their own thirds without the half pass") {
+  Fixture fx;
+  TunableScope micromaps("renderer.shadow.micromaps=false", "renderer.shadow.micromaps=true");
+  check_sides(fx, k_height, gfx::k_sun_solid_sides_share, "own thirds");
+}
+
+// The sides with the half pass: where R126's half-rate columns exist, the rule's sides are exactly
+// those columns. A 3:1 frame with the half-rate sides at 0.45 leaves a narrow full-rate band, so
+// the card's shadow, near the frame's middle, reaches both.
+TEST_CASE("sun region: the sides solid outright are the half pass's columns where it has any") {
+  Fixture fx;
+  TunableScope micromaps("renderer.shadow.micromaps=false", "renderer.shadow.micromaps=true");
+  TunableScope half("renderer.resolve.half_rate_sides=0.45", "renderer.resolve.half_rate_sides=-1");
+  check_sides(fx, 3 * k_height, 0.45f, "half-rate columns");
 }

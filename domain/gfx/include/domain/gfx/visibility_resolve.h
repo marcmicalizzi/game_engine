@@ -1169,6 +1169,10 @@ inline constexpr u32 k_half_sun_workgroup = 8;
 inline constexpr f32 k_half_rate_surround_aspect = 2.5f;
 // The sides' default share of a surround frame's width at each side: its outer monitors.
 inline constexpr f32 k_half_rate_surround_sides = 1.0f / 3.0f;
+// The sun's solid sides (R139, `renderer.shadow.solid_sides`) where the half pass has no columns:
+// their own share of the frame's width at each side, the same outer thirds, so the rule names one
+// region on every frame and the two regions are the same columns wherever both are on.
+inline constexpr f32 k_sun_solid_sides_share = k_half_rate_surround_sides;
 
 // The share of the frame's width at each side that is half rate: `requested` in [0, 1/2] as it is,
 // or, negative (`renderer.resolve.half_rate_sides`' default), a third for a frame wider than 2.5:1
