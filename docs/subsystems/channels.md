@@ -190,6 +190,16 @@ tile, two of which a gravel bed and a sand bar would take wherever a channel cro
 or a shore (the budget T72's check holds); and it needs no mask cook when a channel moves. The cost is the slab's edges, which on
 the cut lie at the banks' toe, a few centimetres over the ground.
 
+**Seen** (2026-11-08, `msvc-debug`, 1920×1080, `--raster hw --shadows rt`, world tiles with v35's
+rings): a synthetic flat ground at 25 cm with a 200 m link bending 25 m, 3 m wide and 0.6 m to its
+bed, and a 1.5 m tributary joining it, authored by hand. The channel lies in the ground, its banks
+falling to the water at their slope and shadowed on the sun's far side, continuous round the bend
+with no gap and no levee, the water inside them; beside it the same water laid on the uncut ground
+stands on it as a raised strip. Past the 1 m ring the channel narrows to the 2 m and 4 m rings'
+point samples and reads jagged, and the 1.5 m tributary fades to a line, as the cell rule and the
+rings' sampling say it should. v35 itself was not re-cooked tonight (its set is 2.6 GB at 25 cm; see
+the roadmap row).
+
 **Steep reaches** (the owner's item 10: 30–40° faces, where a channel is colluvial or bedrock and has
 no bars or banks) get the same cut tonight — a gully is still cut into its slope — and the pieces'
 reach rules are as they were; telling a step-pool or bedrock reach from an alluvial one is W90's.
