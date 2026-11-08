@@ -1518,14 +1518,11 @@ float4 fs_resolve(FullscreenOut in) : SV_Target {
     // tolerance (2^-12, a thirty-sixth of a code step of either encode). In daylight that is the
     // moon, a millionth of the sun, and a fire past a few metres; at night they are the light, and
     // are traced. The rays leave nothing else out: the sum below keeps its order.
-    // Weighed only where there is a light to weigh (R138): with `light_count` 0 — the desert's
-    // case — neither the test nor the luminance dot is computed. The picture is the same bytes.
-    const bool weigh = params->light_count != 0u && params->light_tolerance > 0.0 &&
+    const bool weigh = params->light_tolerance > 0.0 &&
                        (params->shadow_flags & (k_shadow_lights | k_shadow_cascades)) ==
                            k_shadow_lights;
     const float3 k_luma = float3(0.2126, 0.7152, 0.0722);
-    const float rest =
-        weigh ? params->light_tolerance * dot(color + indirect + sampled.emissive, k_luma) : 0.0;
+    const float rest = params->light_tolerance * dot(color + indirect + sampled.emissive, k_luma);
     // The analytic lights: inverse square windowed to zero at the radius, spots by their cone, and
     // a shadow ray that stops short of the light itself; a directional light (the moon) has neither
     // falloff nor end. The cascaded maps shadow only the light they were drawn from.
