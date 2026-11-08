@@ -224,7 +224,20 @@ Roadmap S86, its second part (2026-11-08; the owner, 2026-11-07: "visibility thr
 
 ### What the refraction costs
 
-COST_TABLE_PENDING
+Measured as R129's reflection was, on the forest proof of concept's v35 world (the copy of its scene and derived data; the summaries' `load` blocks show no cache miss: every texture trusted, none built), `msvc-release` engine-view offscreen, `--raster hw --shadows rt` with the owner's engine-only flags and the reflection on (its default), RTX 5090, 2026-11-08, under the GPU lock with `--wait-quiet 120`. One camera path holds `lake-bank`, `shore-open` and `east-shore` for a second each, flown three times with `renderer.water.refract` 2, so even frames trace what is under the water and odd ones do not; each record says which (`FrameRecord.water_refract`); medians over the last 40 frames of each pose, all repeats. `machine_state`: at 1080p others' CPU 48% at the start and 51% at the end, the GPU 4% and 45% (the run's own); at 4K others' CPU 23% and 62%, the GPU 2% and 56% — not quiet by the harness's rule (other agents' builds and three Linux containers), so upper bounds.
+
+| view | frame | resolve, without | resolve, with | + | GPU frame, without / with | casters, without / with |
+|---|---|---:|---:|---:|---:|---:|
+| lake-bank | 1920 × 1080 | 2.398 | 2.425 | 0.028 | 8.760 / 8.917 | 117,698 / 117,996 |
+| shore-open | 1920 × 1080 | 1.818 | 1.845 | 0.028 | 8.460 / 8.452 | 43,854 / 44,285 |
+| east-shore | 1920 × 1080 | 1.929 | 1.930 | 0.001 | 8.384 / 8.561 | 13,485 / 13,896 |
+| lake-bank | 3840 × 2160 | 8.206 | 8.325 | **0.118** | 14.995 / 15.223 | 116,695 / 117,055 |
+| shore-open | 3840 × 2160 | 6.265 | 6.359 | 0.094 | 13.581 / 13.739 | 44,719 / 45,226 |
+| east-shore | 3840 × 2160 | 5.659 | 5.717 | 0.058 | 12.804 / 13.135 | 20,570 / 21,081 |
+
+**+0.12 ms at `lake-bank` at 3840 × 2160, against the +1.0 ms the row allowed**, with no lever beyond the two built in: the ray's reach is the march's ground distance (metres under a bank's shallows) and no ray below 0.15 m of it. The far-foliage flag the brief offered was not built: nothing here needed it. The submerged volume adds 300 to 500 casters a view (the cull's medians with and without; the cull itself 0.011–0.013 ms, its one more plane test per frustum-rejected pair), the cluster build 0.003–0.03 ms. The GPU frame's differences beyond the resolve are within the run's noise (`shore-open` at 1080p is lower with the ray than without). The resolve's own numbers are lower than R129's of the same views because the frame has changed since (R138's attribution and the batch's other merges); only the differences are this work's.
+
+**What it looks like.** The synthetic pool (`refract_scene_tests.cpp`'s basin, 1920 × 1080, from the south-west 2.5 m over the water; a grey boulder 3 m tall standing 1.4 m deep on the far side, a brown log 3 m long on the bed 4 m down in the middle): with the ray, the log is in the water — a dark band bent into a wave by the refraction at the waves' normal, darkened and blued by its depth — and the boulder goes on a little under its waterline before the grazing view's Fresnel takes the surface; 7,142 pixels change, all inside the log's and the boulder's waterline's box, and nothing else. On the v35 copy with the world's clock and the flora's motion stopped, `lake-bank` and `shore-open` draw **the same bytes** with the ray and without: nothing stands under the water in those views, and every ray that meets the lake's bed is rejected as the ground — the identity, at the scale of a 4 km world. At `east-shore` 36,567 pixels differ between the two frames, among them foliage above the water that the ray cannot reach, 22 frames after the path's 460 m jump: the view is still settling, so that pair is not a clean before and after, and nothing submerged shows in it. `cave-inside` was not captured: no body lies in the cave (the scene's levels are −6 to 1.2 m; the passage is at 140 m).
 
 ### What it does not do
 
