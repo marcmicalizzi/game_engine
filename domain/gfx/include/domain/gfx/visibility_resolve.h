@@ -526,7 +526,7 @@ inline u32 set_water_plunges(ResolveMaterial& water, ResolveMaterial& entry,
     rows[packed++] = plunges[i];
   }
   static_assert(sizeof(rows) == sizeof(ResolveMaterial));
-  std::memcpy(&entry, rows, sizeof(rows));
+  std::memcpy(static_cast<void*>(&entry), static_cast<const void*>(rows), sizeof(rows));
   if (packed > 0) water.flags |= k_material_water_plunge;
   return packed;
 }

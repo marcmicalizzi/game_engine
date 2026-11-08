@@ -435,7 +435,7 @@ TEST_CASE("water channel: plunge records pack into one entry, seven at most") {
   CHECK(gfx::set_water_plunges(water, entry, list, 9) == gfx::k_water_plunges);
   CHECK((water.flags & gfx::k_material_water_plunge) != 0);
   gfx::WaterPlunge rows[gfx::k_water_plunges];
-  std::memcpy(rows, &entry, sizeof(rows));
+  std::memcpy(static_cast<void*>(rows), static_cast<const void*>(&entry), sizeof(rows));
   CHECK(rows[0].at.x == 0.0f);
   CHECK(rows[1].radius_m == 2.0f);
   CHECK(rows[2].radius_m == 4.0f);  // the third had none, the fourth moved up
@@ -444,7 +444,7 @@ TEST_CASE("water channel: plunge records pack into one entry, seven at most") {
   gfx::ResolveMaterial water2;
   gfx::ResolveMaterial entry2;
   CHECK(gfx::set_water_plunges(water2, entry2, list, 2) == 2);
-  std::memcpy(rows, &entry2, sizeof(rows));
+  std::memcpy(static_cast<void*>(rows), static_cast<const void*>(&entry2), sizeof(rows));
   CHECK(rows[2].radius_m == 0.0f);
   // None: no flag, and the bits are the channel's and the shore's neighbours.
   gfx::ResolveMaterial water3;
