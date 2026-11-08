@@ -598,6 +598,22 @@ struct ShadowRayRule {
 };
 inline constexpr u32 k_shadow_sweeps = 6;
 ShadowRayRule shadow_ray_rule(u64 frame_index, f32 opaque_coverage) noexcept;
+// **The sun's casters solid by region and by distance** (R139; renderer.md, "The sun's masks by
+// region and by distance"): the rule the frame of that index gives the sun's ray. `far_factor`
+// (`renderer.shadow.solid_far`) is how many sun penumbrae under a canopy `canopy_m`
+// (`renderer.shadow.canopy_m`) a pixel must cover before its ray takes the casters as opaque, 0
+// for never; `side_m` (`renderer.shadow.solid_sides`) is the receiver distance past which the side
+// columns' rays do — the same sides as `half_rate_sides_tunable`, 0 outright, negative never.
+// Under `renderer.shadow.region_rule` (a measurement switch, `as_set` by default) the frame takes
+// none, the sides alone, the distance alone or both, or under `cycle` frame f takes (f / 8) % 4 of
+// those, so a flight under `renderer.resolve.stop_after=cycle` measures every stage of each.
+struct SunRegionRule {
+  f32 far_factor = 0.0f;
+  f32 canopy_m = 0.0f;
+  f32 side_m = -1.0f;
+};
+inline constexpr u32 k_sun_region_sweeps = 4;
+SunRegionRule sun_region_rule(u64 frame_index) noexcept;
 // `renderer.material.normal_filter` (true), read once per scene at its material upload: a built
 // normal map's normal-variance chain is uploaded beside it and widens the GGX roughness by what the
 // pixel's footprint no longer resolves (R97; renderer.md, "Normal filtering"). False uploads no

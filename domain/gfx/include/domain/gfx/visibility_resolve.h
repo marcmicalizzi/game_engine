@@ -76,6 +76,19 @@ inline constexpr u32 k_shadow_micromap_2state = 32u;
 inline constexpr u32 k_shadow_water_reflect = 64u;
 inline constexpr u32 k_shadow_water_reflect_full = 128u;
 inline constexpr u32 k_shadow_water_reflect_unshadowed = 256u;
+// **The sun's casters solid by region and by distance** (renderer.md, "The sun's masks by region
+// and by distance"; R139). Set beside `k_shadow_alpha_masks`: the sun's shadow ray from a receiver
+// at least `ResolveParams::sun_solid_distance` from this view's eye (`_far`), or at least
+// `sun_solid_side_distance` from it in the side columns outside [`sun_solid_x0`, `sun_solid_x1`)
+// (`_sides`), adds `RAY_FLAG_FORCE_OPAQUE` to its query, so the traversal commits a non-opaque
+// candidate itself and no mask is sampled. The micromaps stay on for every ray: a micro-triangle
+// the bake called transparent is culled before a ray's flags apply, and an unknown one still takes
+// its two-state answer, so what turns solid is a masked triangle without a micromap (a shadow
+// caster's, a fading pair's). The half pass and the water's reflected hits ask through the same
+// function, so they follow the rule at their own receiver's distance and pixel; the array's lights
+// never read the bits. Clear, every ray is the one it was.
+inline constexpr u32 k_shadow_sun_solid_far = 512u;
+inline constexpr u32 k_shadow_sun_solid_sides = 1024u;
 // How far a reflection ray looks before it takes the sky, metres: the far shore of a lake a few
 // kilometres across. The mirrored caster volume's reach (renderer's water_reflect.h) is the same.
 inline constexpr f32 k_water_reflect_m = 4000.0f;
@@ -1107,6 +1120,18 @@ struct ResolveParams {
   // water's clock wraps every 1,024 s. An open body with a `tide_m` stands at sin(2 pi phase) of
   // it.
   f32 water_tide_phase = 0.0f;
+  // **The sun's casters solid by region and by distance** (`k_shadow_sun_solid_far`/`_sides`,
+  // above; renderer.md, "The sun's masks by region and by distance"; R139): the receiver's
+  // distance from this view's eye, metres, at or past which the sun's ray takes every caster as
+  // opaque — anywhere in the view under `_far`, and in the side columns, outside [`sun_solid_x0`,
+  // `sun_solid_x1`) of this view's visibility region, under `_sides` (0 there is solid outright).
+  // Read only while the bits are set, so a block a caller fills itself is the bytes it was. A new
+  // 16-byte row that every module declares (the plain ones pad the wet band's row in front of it):
+  // the block grew from 544 to 560 bytes.
+  f32 sun_solid_distance = 0.0f;
+  f32 sun_solid_side_distance = 0.0f;
+  u32 sun_solid_x0 = 0;
+  u32 sun_solid_x1 = 0;
 };
 // `ResolveParams::water_open_instance` when the scene has no open water.
 inline constexpr u32 k_no_water_open = 0xffffffffu;
@@ -1118,8 +1143,29 @@ inline f32 water_clock(f64 time_s) noexcept {
   const f64 t = std::fmod(time_s, k_water_period_s);
   return static_cast<f32>(t < 0.0 ? t + k_water_period_s : t);
 }
-static_assert(sizeof(ResolveParams) == 544);
+static_assert(sizeof(ResolveParams) == 560);
 static_assert(sizeof(ResolveParams) % 16 == 0, "the block is read as float4 rows on the GPU");
+
+// ---- the sun's masks by region and by distance (renderer.md; R139) -----------------------------
+//
+// A leaf's shadow is a pattern of sunflecks whose finest feature is the sun's penumbra: a caster h
+// metres above its receiver blurs an edge over h times the sun's angular diameter (the solar disc,
+// 9.3 mrad; Smith, Knapp and Reiners 1989), so under a crown ten metres up no sunfleck is sharper
+// than 9 cm. A pixel at distance d from the eye covers d / proj_scale metres across, proj_scale
+// the view's pixels per radian at its centre. Where the pixel is wider than `factor` penumbrae the
+// pattern is finer than the picture can show, and the sun's ray may take its casters as opaque.
+
+// The sun's angular diameter, radians: 0.533 degrees at the mean Earth-Sun distance (the solar
+// radius 6.957e8 m over 1 au, 1.496e11 m, twice; IAU 2015 nominal values).
+inline constexpr f32 k_sun_angular_diameter = 9.301e-3f;
+
+// The receiver distance, metres, past which a pixel is `factor` sun penumbrae under a canopy
+// `canopy_height_m` above it: factor * canopy_height_m * k_sun_angular_diameter * proj_scale.
+// 0 for a factor or a height of 0 or less, which callers read as the rule switched off.
+inline f32 sun_solid_distance(f32 factor, f32 canopy_height_m, f32 proj_scale) noexcept {
+  if (!(factor > 0.0f) || !(canopy_height_m > 0.0f) || !(proj_scale > 0.0f)) return 0.0f;
+  return factor * canopy_height_m * k_sun_angular_diameter * proj_scale;
+}
 
 // ---- a shading rate by region (renderer.md, "A shading rate by region"; R126) -------------------
 //
@@ -1139,6 +1185,10 @@ inline constexpr u32 k_half_sun_workgroup = 8;
 inline constexpr f32 k_half_rate_surround_aspect = 2.5f;
 // The sides' default share of a surround frame's width at each side: its outer monitors.
 inline constexpr f32 k_half_rate_surround_sides = 1.0f / 3.0f;
+// The sun's solid sides (R139, `renderer.shadow.solid_sides`) where the half pass has no columns:
+// their own share of the frame's width at each side, the same outer thirds, so the rule names one
+// region on every frame and the two regions are the same columns wherever both are on.
+inline constexpr f32 k_sun_solid_sides_share = k_half_rate_surround_sides;
 
 // The share of the frame's width at each side that is half rate: `requested` in [0, 1/2] as it is,
 // or, negative (`renderer.resolve.half_rate_sides`' default), a third for a frame wider than 2.5:1

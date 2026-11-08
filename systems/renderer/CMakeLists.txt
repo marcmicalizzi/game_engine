@@ -58,6 +58,8 @@ set(_renderer_tests tests/renderer_tests.cpp tests/reference_tests.cpp tests/str
                     tests/dynamic_instances_tests.cpp tests/fire_tests.cpp
                     tests/tile_layout_tests.cpp tests/alpha_mask_tests.cpp
                     tests/sun_arc_tests.cpp
+                    # The sun's masks by region and by distance (R139).
+                    tests/sun_region_tests.cpp
                     # The caster policy's untraced species under a traced picture (R110).
                     tests/untraced_tests.cpp
                     # The off-frustum shadow casters' volumes against a brute-force membership, on
