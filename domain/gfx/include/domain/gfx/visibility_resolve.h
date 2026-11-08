@@ -79,6 +79,22 @@ inline constexpr u32 k_shadow_water_reflect_unshadowed = 256u;
 // How far a reflection ray looks before it takes the sky, metres: the far shore of a lake a few
 // kilometres across. The mirrored caster volume's reach (renderer's water_reflect.h) is the same.
 inline constexpr f32 k_water_reflect_m = 4000.0f;
+// **What is under the water is seen** (docs/subsystems/water.md, "What is under the water"; S86).
+// Read only by the resolve's ray-traced water modules (`water_refract.slang`): in the volume tier
+// one ray per water pixel along the refracted view, out to the ground the depth-map march found,
+// against the frame's top-level structure; a hit nearer than the ground is shaded under the water
+// in place of the ground. Clear, the volume tier draws the ground alone, as it did. Bit 12 rather
+// than the next free one, which the sun's shadow query may take the same night (R139).
+inline constexpr u32 k_shadow_water_refract = 1u << 12;
+// The refraction ray is traced only where the march's ground distance is at least this, metres:
+// water a few centimetres deep hides nothing a ray would find.
+inline constexpr f32 k_water_refract_min_m = 0.15f;
+// A hit within this of the depth map's ground (metres, plus 0.5% of the eye's distance to the
+// surface, which a coarse cut of the ground's mesh may stand off the map by) is the ground, and the
+// ground stays the depth map's answer and the terrain material's colour.
+inline constexpr f32 k_water_refract_ground_m = 0.08f;
+// The light left of what lies past this many extinction lengths: 1 of 255 (ln 255).
+inline constexpr f32 k_water_refract_extinctions = 5.5413f;
 
 // The maps' share of a hybrid pixel's visibility at `distance` from the eye: 0 nearer than
 // `ray_distance` (the ray's answer alone), 1 past `ray_distance + band` (the maps' alone), linear

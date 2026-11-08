@@ -436,6 +436,12 @@ class GpuScene {
   // origin without a map), a channel never — in the frame's space, metres above the eye. False for
   // a scene with no level body.
   bool water_reflect_level(const WorldEye& eye, f32& level) const noexcept;
+  // What is under the water (S86; water_refract.h): the body a frame's submerged caster volume is
+  // fit to — the one `water_reflect_level` picks — its level, its floor (the deepest bed less
+  // `k_water_refract_bed_margin_m`, or the water's reach below the level where that is shallower)
+  // and its reach (`water_refract_path_m` of its optics), in the frame's space. False for a scene
+  // with no level body, or at the low tier, which traces no refraction.
+  bool water_refract_body(const WorldEye& eye, f32& level, f32& floor, f32& path_m) const noexcept;
   bool has_terrain_materials() const noexcept { return has_terrain_materials_; }
   // A material row carries gfx::k_material_stochastic (R131): the resolve draws with its
   // `_stochastic` module, which only such a scene pays for.
@@ -1663,6 +1669,15 @@ class GpuScene {
   };
   Vector<WaterReflectBody> water_reflect_bodies_;
   void collect_water_reflect_bodies();
+  // What is under the water (S86; `water_refract_body`): per level body, parallel to
+  // `water_reflect_bodies_`, its deepest bed below the level (0 without a depth map, which leaves
+  // the floor to the reach) and the water's reach, metres; empty at the low tier.
+  struct WaterRefractBody {
+    f32 deepest = 0.0f;
+    f32 path_m = 0.0f;
+  };
+  Vector<WaterRefractBody> water_refract_bodies_;
+  void collect_water_refract_bodies();
   bool has_masked_ = false;  // a material of the table carries gfx::k_material_alpha_mask
   // {cluster, material} of every alpha-tested cluster, kept from the material upload until the
   // proxy's bake (R109) reads it, then released; empty when the proxy is off.
