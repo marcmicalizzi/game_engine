@@ -169,6 +169,11 @@ struct SceneWater {
   // mesh's UV.x is the flow phase, and the GPU scene sets `gfx::k_material_water_channel` on its
   // material. `body` then holds the channel's name and optics under a body's names, and no shape.
   bool channel = false;
+  // A body's **plunges** (water.md, "The plunge"; S98): the feet of the scene's channels' falls
+  // that land in it — inside its depth map, within a metre of its level — body-local,
+  // the highest falls first, at most `gfx::k_water_plunges` (the reader drops the rest and says
+  // so). The GPU scene packs them after the body's material (`gfx::set_water_plunges`).
+  Vector<gfx::WaterPlunge> plunges;
 };
 
 // What a scene file said about one mesh besides its path: what to call it, which bytes it must

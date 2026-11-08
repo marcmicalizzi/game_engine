@@ -114,6 +114,12 @@ f32 manning_speed(f32 n, f32 depth_m, f32 slope) noexcept {
   return static_cast<f32>(std::max(v, static_cast<f64>(k_channel_min_speed)));
 }
 
+f64 shear_velocity(f64 speed, f64 depth_m, f64 n) noexcept {
+  // u* = sqrt(g d S) with S from Manning's v = (1/n) d^(2/3) S^(1/2): u* = v n sqrt(g) / d^(1/6).
+  const f64 sixth = std::sqrt(cube_root(std::max(depth_m, 1e-6)));
+  return speed * n * std::sqrt(k_gravity) / sixth;
+}
+
 f32 froude(f32 speed, f32 depth_m) noexcept {
   const f64 d = std::max(static_cast<f64>(depth_m), 1e-6);
   return static_cast<f32>(static_cast<f64>(speed) / std::sqrt(k_gravity * d));
@@ -126,6 +132,35 @@ bool stretch_falls(const Channel& channel, u32 i) noexcept {
   return drop > 0.0f && drop >= k_channel_fall_gradient * horizontal(d);
 }
 
+Channel with_plunge_stretch(const Channel& channel) {
+  Channel c = channel;
+  const u32 n = c.points.size();
+  if (c.pooled || n < 2 || !stretch_falls(c, n - 2)) return c;
+  // The fall's top: the first of the run of falling stretches into the last point.
+  u32 top = n - 2;
+  while (top > 0 && stretch_falls(c, top - 1))
+    --top;
+  const f32 height = c.points[top].y - c.points[n - 1].y;
+  const f32 length =
+      std::clamp(k_channel_plunge_share * height, k_channel_plunge_min_m, k_channel_plunge_max_m);
+  // On along the last horizontal run there is, the fall's own or the reach's above it.
+  Vec2 heading{1.0f, 0.0f};
+  for (u32 s = n - 1; s-- > 0;) {
+    const Vec3 d = c.points[s + 1] - c.points[s];
+    const f32 h = horizontal(d);
+    if (h > 1e-4f) {
+      heading = Vec2{d.x / h, d.z / h};
+      break;
+    }
+  }
+  const Vec3 foot = c.points[n - 1];
+  c.points.push_back(Vec3{foot.x + heading.x * length, foot.y, foot.z + heading.y * length});
+  c.width_m.push_back(c.width_m[n - 1]);
+  c.depth_m.push_back(c.depth_m[n - 1]);
+  c.slope.push_back(0.0f);
+  return c;
+}
+
 f32 channel_spacing(const Channel& channel) noexcept {
   // The body's rule — three vertices across the shore fade — and at least four across the width.
   f32 narrow = 1e30f;
@@ -134,8 +169,9 @@ f32 channel_spacing(const Channel& channel) noexcept {
   return std::clamp(std::min(channel.shore_m / 3.0f, narrow / 4.0f), 0.25f, 1.0f);
 }
 
-void build_channel_mesh(const Channel& c, ChannelMesh& out) {
+void build_channel_mesh(const Channel& described, ChannelMesh& out) {
   out = ChannelMesh{};
+  const Channel c = with_plunge_stretch(described);
   const u32 n = c.points.size();
   if (n < 2) return;
   f32 widest = 0.0f;
@@ -176,6 +212,21 @@ void build_channel_mesh(const Channel& c, ChannelMesh& out) {
   Vector<f32> bed_speed(n);
   for (u32 i = 0; i < n; ++i)
     bed_speed[i] = manning_speed(c.manning_n, c.depth_m[i], c.slope[i]);
+  // The brink (channel.h): the speed at a lip point i a fall leaves from, and the reach over which
+  // a subcritical approach speeds up to it (0: none).
+  Vector<f32> brink_speed(n);
+  Vector<f32> brink_reach(n, 0.0f);
+  for (u32 i = 0; i < n; ++i) {
+    brink_speed[i] = bed_speed[i];
+    if (i == 0 || i + 1 >= n || !stretch_falls(c, i) || stretch_falls(c, i - 1)) continue;
+    const f64 v = static_cast<f64>(bed_speed[i]);
+    const f64 d = static_cast<f64>(c.depth_m[i]);
+    if (!(v < std::sqrt(k_gravity * d))) continue;  // supercritical: over as it is
+    const f64 q = v * d;
+    const f64 dc = cube_root(q * q / k_gravity);
+    brink_speed[i] = static_cast<f32>(q / (k_channel_brink_depth_share * dc));
+    brink_reach[i] = static_cast<f32>(k_channel_brink_reach * dc);
+  }
 
   // The sections, stretch by stretch: the station along the line, the place, the heading, the
   // width, the depth, and the speed.
@@ -206,7 +257,7 @@ void build_channel_mesh(const Channel& c, ChannelMesh& out) {
     const bool falls = stretch_falls(c, i);
     const bool falling_on = falls && i > 0 && stretch_falls(c, i - 1);
     if (falls && !falling_on) fall_top = a.y;
-    lip_speed = falling_on ? sections.back().speed : bed_speed[i];
+    lip_speed = falling_on ? sections.back().speed : brink_speed[i];
     for (u32 k = (i == 0 ? 0u : 1u); k <= steps; ++k) {
       const f32 t = static_cast<f32>(k) / static_cast<f32>(steps);
       Section sec;
@@ -222,8 +273,8 @@ void build_channel_mesh(const Channel& c, ChannelMesh& out) {
       sec.s = station;
       if (falls) {
         const f64 h_fall = std::max(0.0, static_cast<f64>(a.y - sec.p.y));
-        sec.speed = static_cast<f32>(
-            std::sqrt(static_cast<f64>(lip_speed) * static_cast<f64>(lip_speed) + 2.0 * k_gravity * h_fall));
+        sec.speed = static_cast<f32>(std::sqrt(
+            static_cast<f64>(lip_speed) * static_cast<f64>(lip_speed) + 2.0 * k_gravity * h_fall));
         if (k == steps) {
           impact = sec.speed;
           plunge_len = std::clamp(k_channel_plunge_share * (fall_top - b.y), k_channel_plunge_min_m,
@@ -237,6 +288,13 @@ void build_channel_mesh(const Channel& c, ChannelMesh& out) {
           plunge_left = std::max(0.0f, plunge_left - ds);
           const f32 share = plunge_left / plunge_len;
           sec.speed = bed + (std::max(impact, bed) - bed) * share * share;
+        }
+        // Into a brink: the last of the reach before a subcritical lip speeds up to it.
+        const f32 reach = brink_reach[i + 1];
+        const f32 to_lip = len * (1.0f - t);
+        if (reach > 0.0f && to_lip < reach) {
+          const f32 share = 1.0f - to_lip / reach;
+          sec.speed = std::max(sec.speed, bed + (brink_speed[i + 1] - bed) * share * share);
         }
       }
       // The strip below a section inside this stretch is this stretch's; the strip below its last
@@ -330,8 +388,9 @@ void build_channel_mesh(const Channel& c, ChannelMesh& out) {
   }
 }
 
-void build_channel_depth_map(const Channel& c, const ChannelMesh& mesh, DepthMap& out) {
+void build_channel_depth_map(const Channel& described, const ChannelMesh& mesh, DepthMap& out) {
   out = DepthMap{};
+  const Channel c = with_plunge_stretch(described);
   const Mesh& m = mesh.mesh;
   if (m.positions.empty()) return;
   f32 lo_x = 1e30f, lo_z = 1e30f, hi_x = -1e30f, hi_z = -1e30f;

@@ -799,42 +799,11 @@ float3 water_pixel_low(ResolveParams* params, Surface s, float3 n, float3 view, 
   return water_foam_over(radiance, foam, sun, params->sun.xyz, ambient);
 }
 
-// **A channel's pixel** (`k_material_water_channel`; water.slang, "channels"; water.md,
-// "Channels"; roadmap S96): the flow from the triangle's three phases (UV.x), the ripples, the
-// roughness and the foam from it (`water_channel_surface`), the water under them shaded by the
-// tier's own path with the ripples' normal and the shore faded by depth, and the foam laid over it
-// as a white diffuse surface lit by the sun (through the same shadow query) and the sky's light.
-float3 water_channel_pixel(ResolveParams* params, SceneGeometry geo, InstanceDesc instance,
-                           uint index, TriangleFetch tri, Surface s, float3 from_eye,
-                           WaterParams w, uint flags, float ray_bias, float3 local,
-                           float footprint, float depth, bool has_map, WaterDepthMap map,
-                           float3 dp_dx, float3 dp_dy) {
-  VertexAttributes* attributes = (VertexAttributes*)geo.attributes;
-  const WaterChannelFlow f = water_channel_flow(
-      tri.p[0], tri.p[1], tri.p[2], decode_half2(attributes[tri.local[0]].uv_half2).x,
-      decode_half2(attributes[tri.local[1]].uv_half2).x,
-      decode_half2(attributes[tri.local[2]].uv_half2).x);
-  // The surface's own plane, facing out of the water whichever side the eye is on.
-  const float3 plane = dot(s.geometric, s.normal) < 0.0 ? -s.geometric : s.geometric;
-  const WaterChannelSurface c =
-      water_channel_surface(f, local, plane, s.uv.x, params->water_time_s, footprint, depth,
-                            w.roughness, w.seed);
-  WaterParams wc = w;
-  wc.roughness = c.roughness;
-  const float3 view = normalize(-from_eye);
-  const float edge = w.shore * clamp(depth / k_water_calm_depth, 0.0, 1.0);
-  float3 color = float3(0.0);
-  if (c.foam < 1.0) {
-    if ((flags & k_material_water_volume) != 0) {
-      color = water_pixel_volume(params, geo, instance, index, float2(0.0, 0.0), dp_dx, dp_dy, s,
-                                 local, c.normal, view, wc, ray_bias, depth, has_map, map, edge, 0.0);
-    } else {
-      color = water_pixel_low(params, s, c.normal, view, wc, ray_bias, depth, edge, 0.0);
-    }
-  }
-  if (c.foam <= 0.0) return color;
-  // The foam: white water (an albedo of 0.8, a choice: docs/experiments/flowing-water.md) lit as
-  // a diffuse surface of the ribbon's own plane.
+// **White water** (S96's foam, S98's plunge): an albedo of 0.8 (a choice: docs/experiments/
+// flowing-water.md) times `shade`, lit as a diffuse surface of the plane `plane` (unit, facing out
+// of the water) by the sun through the shadow query and by the sky's light.
+float3 water_white_water(ResolveParams* params, Surface s, float3 plane, float ray_bias,
+                         float shade) {
   SkyParams* sky = (SkyParams*)params->sky_params;
   const bool has_sky = params->sky_params != 0;
   float3 sun = float3(0.0);
@@ -855,8 +824,53 @@ float3 water_channel_pixel(ResolveParams* params, SceneGeometry geo, InstanceDes
     const float3 ground = ground_radiance(params->sky.rgb, params->ground.rgb, params->sun);
     ambient = ambient_radiance(params->sky.rgb, ground, plane);
   }
-  const float3 foam = (0.8 * c.foam_shade) * (sun / k_brdf_pi + ambient);
-  return lerp(color, foam, c.foam);
+  return (0.8 * shade) * (sun / k_brdf_pi + ambient);
+}
+
+// **A channel's pixel** (`k_material_water_channel`; water.slang, "channels"; water.md,
+// "Channels"; roadmap S96): the flow from the triangle's three phases (UV.x), the ripples, the
+// roughness and the foam from it (`water_channel_surface`), the water under them shaded by the
+// tier's own path with the ripples' normal and the shore faded by depth, and the foam laid over it
+// as a white diffuse surface lit by the sun (through the same shadow query) and the sky's light.
+float3 water_channel_pixel(ResolveParams* params, SceneGeometry geo, InstanceDesc instance,
+                           uint index, TriangleFetch tri, Surface s, float3 from_eye,
+                           WaterParams w, uint flags, float ray_bias, float3 local,
+                           float footprint, float depth, bool has_map, WaterDepthMap map,
+                           float3 dp_dx, float3 dp_dy) {
+  VertexAttributes* attributes = (VertexAttributes*)geo.attributes;
+  const WaterChannelFlow f = water_channel_flow(
+      tri.p[0], tri.p[1], tri.p[2], decode_half2(attributes[tri.local[0]].uv_half2).x,
+      decode_half2(attributes[tri.local[1]].uv_half2).x,
+      decode_half2(attributes[tri.local[2]].uv_half2).x);
+  // The surface's own plane, facing out of the water whichever side the eye is on.
+  const float3 plane = dot(s.geometric, s.normal) < 0.0 ? -s.geometric : s.geometric;
+  const WaterChannelSurface c =
+      water_channel_surface(f, local, plane, s.uv.x, params->water_time_s, footprint, depth,
+                            w.roughness, w.seed, has_map, map);
+  WaterParams wc = w;
+  wc.roughness = c.roughness;
+  const float3 view = normalize(-from_eye);
+  const float edge = w.shore * clamp(depth / k_water_calm_depth, 0.0, 1.0);
+  float3 color = float3(0.0);
+  if (c.foam < 1.0) {
+    if ((flags & k_material_water_volume) != 0) {
+      color = water_pixel_volume(params, geo, instance, index, float2(0.0, 0.0), dp_dx, dp_dy, s,
+                                 local, c.normal, view, wc, ray_bias, depth, has_map, map, edge, 0.0);
+    } else {
+      color = water_pixel_low(params, s, c.normal, view, wc, ray_bias, depth, edge, 0.0);
+    }
+  }
+  if (c.foam <= 0.0) return color;
+  return lerp(color, water_white_water(params, s, plane, ray_bias, c.foam_shade), c.foam);
+}
+
+// A fall's plunge laid over a body's water (S98; water.md, "The plunge"): white water of the
+// channels' own, by its share `plunge`.
+float3 water_plunge_over(ResolveParams* params, Surface s, float ray_bias, float plunge,
+                        float3 color) {
+  if (!(plunge > 0.0)) return color;
+  const float3 plane = dot(s.geometric, s.normal) < 0.0 ? -s.geometric : s.geometric;
+  return lerp(color, water_white_water(params, s, plane, ray_bias, 1.0), plunge);
 }
 
 float3 water_pixel(ResolveParams* params, SceneGeometry geo, InstanceDesc instance,
@@ -939,6 +953,9 @@ float3 water_pixel(ResolveParams* params, SceneGeometry geo, InstanceDesc instan
       foam = water_foam(w, foam_m, local.xz, edge, params->water_time_s, footprint);
     }
   }
+  // A fall's plunge into this body (k_material_water_plunge; water.md, "The plunge"; S98).
+  const float plunge = water_plunge_foam(geo.materials, index, material.flags, local.xz,
+                                         params->water_time_s, footprint, w.seed);
   if ((material.flags & k_material_water_volume) != 0) {
     // No map: the depth's slope over the triangle, d = d0 + g.(x - x0) through its three corners.
     float2 slope = float2(0.0, 0.0);
@@ -952,12 +969,14 @@ float3 water_pixel(ResolveParams* params, SceneGeometry geo, InstanceDesc instan
       const float det = e1.x * e2.y - e1.y * e2.x;
       if (abs(det) > 1e-8) slope = float2(d1 * e2.y - d2 * e1.y, e1.x * d2 - e2.x * d1) / det;
     }
-    const float3 c = water_pixel_volume(params, geo, instance, index, slope, dp_dx, dp_dy, s,
-                                        local, n, view, w, ray_bias, depth, has_map, map, edge,
-                                        foam);
+    const float3 c = water_plunge_over(params, s, ray_bias, plunge,
+                                       water_pixel_volume(params, geo, instance, index, slope, dp_dx,
+                                                          dp_dy, s, local, n, view, w, ray_bias, depth,
+                                                          has_map, map, edge, foam));
     return bared_wet >= 0.0 ? c * water_wet_darkening(float3(k_swash_bared_albedo), bared_wet) : c;
   }
-  const float3 c = water_pixel_low(params, s, n, view, w, ray_bias, depth, edge, foam);
+  const float3 c = water_plunge_over(params, s, ray_bias, plunge,
+                                     water_pixel_low(params, s, n, view, w, ray_bias, depth, edge, foam));
   return bared_wet >= 0.0 ? c * water_wet_darkening(float3(k_swash_bared_albedo), bared_wet) : c;
 }
 

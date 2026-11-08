@@ -31,6 +31,7 @@
 
 #include <bit>
 #include <cmath>
+#include <cstring>
 
 namespace engine::gfx {
 
@@ -508,6 +509,40 @@ struct WaterShading {
 // material flag) so no other water bit changes meaning. The GPU scene sets it on a channel's water
 // material after `set_water_material` (renderer::SceneWater::channel), as it does the open bit.
 inline constexpr u32 k_material_water_channel = 1u << 21;
+
+// `k_material_water_plunge`: the water body has **falls landing in it** (docs/subsystems/water.md,
+// "The plunge"; roadmap S98): the entry after its next one — after the spectrum's
+// `k_water_wave_entries` where it has `k_material_water_spectrum` — holds up to `k_water_plunges`
+// `WaterPlunge` records, a radius of 0 ending the list, and the resolve's water branch draws a
+// disc of white water at each (water.slang's `water_plunge_foam`). A bit of its own (1 << 22),
+// above the channel's. The GPU scene sets it from `renderer::SceneWater::plunges`.
+inline constexpr u32 k_material_water_plunge = 1u << 22;
+// One fall's foot in a body (mirrored by water.slang's `WaterPlunge`): body-local x and z, the
+// disc's radius (the fall's height over four; 0 ends the list) and the jet's speed there.
+struct WaterPlunge {
+  Vec2 at{};
+  f32 radius_m = 0.0f;
+  f32 speed_m_s = 0.0f;
+};
+static_assert(sizeof(WaterPlunge) == 16);
+// How many one body keeps: one table entry of 16-byte rows. A body with more keeps the highest.
+inline constexpr u32 k_water_plunges = sizeof(ResolveMaterial) / sizeof(WaterPlunge);
+static_assert(k_water_plunges == 7);
+// The records into `entry` (the rest zero, so the list ends), and the flag on the water material;
+// at most `k_water_plunges` of them, a record of no radius dropped. Returns how many were packed.
+inline u32 set_water_plunges(ResolveMaterial& water, ResolveMaterial& entry,
+                             const WaterPlunge* plunges, u32 count) noexcept {
+  WaterPlunge rows[k_water_plunges] = {};
+  u32 packed = 0;
+  for (u32 i = 0; i < count && packed < k_water_plunges; ++i) {
+    if (!(plunges[i].radius_m > 0.0f)) continue;
+    rows[packed++] = plunges[i];
+  }
+  static_assert(sizeof(rows) == sizeof(ResolveMaterial));
+  std::memcpy(static_cast<void*>(&entry), static_cast<const void*>(rows), sizeof(rows));
+  if (packed > 0) water.flags |= k_material_water_plunge;
+  return packed;
+}
 
 // `k_material_water_open`: the water material's body is **open** (docs/subsystems/water.md, "To
 // the horizon"): its shore fades by depth — over the depth the waves calm in — rather than by the
