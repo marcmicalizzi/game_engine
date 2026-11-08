@@ -5836,12 +5836,13 @@ bool GpuScene::upload_water_shores(std::string* error) {
   return true;
 }
 
-// ---- the water's reflection (R129; water_reflect.h) ----------------------------------------------
+// ---- the water's reflection (R129; water_reflect.h)
+// ----------------------------------------------
 //
 // The level bodies a frame's mirrored caster volume may be fit to: every water body's instance but
-// a channel's, whose surface slopes along its flow and has no one plane. A body's square is its depth
-// map's (body-local), which the nearest-body rule measures the eye's distance to; a body with no map
-// is measured to its instance's origin. Read once at load, with the materials.
+// a channel's, whose surface slopes along its flow and has no one plane. A body's square is its
+// depth map's (body-local), which the nearest-body rule measures the eye's distance to; a body with
+// no map is measured to its instance's origin. Read once at load, with the materials.
 void GpuScene::collect_water_reflect_bodies() {
   water_reflect_bodies_.clear();
   for (u32 i = 0; i < data_->instances.size(); ++i) {

@@ -9,9 +9,9 @@
 #include <domain/gfx/gi_cache.h>
 #include <foundation/io/vfs.h>
 #include <systems/renderer/caster_volume.h>
-#include <systems/renderer/water_reflect.h>
 #include <systems/renderer/lighting.h>
 #include <systems/renderer/scene_renderer.h>
+#include <systems/renderer/water_reflect.h>
 
 #include <algorithm>
 #include <cmath>
@@ -2688,8 +2688,8 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
   //
   // Where the resolve traces (its ray-traced water module) and the scene has water, the water's
   // pixels trace their reflection; and where the frame keeps casters, every view's cull carries one
-  // more caster volume, its frustum reflected in the plane `GpuScene::water_reflect_level` picks, so
-  // what that mirrored camera sees is built into the structures the rays meet.
+  // more caster volume, its frustum reflected in the plane `GpuScene::water_reflect_level` picks,
+  // so what that mirrored camera sees is built into the structures the rays meet.
   const bool water_reflect =
       shadows && scene.has_water() && water_reflect_tunable(frame.frame_index);
   f32 water_level = 0.0f;

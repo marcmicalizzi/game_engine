@@ -1,7 +1,6 @@
-#include <systems/renderer/water_reflect.h>
-
 #include <domain/gfx/visibility_resolve.h>
 #include <foundation/tunables/tunables.h>
+#include <systems/renderer/water_reflect.h>
 
 namespace engine::renderer {
 
@@ -9,9 +8,9 @@ namespace {
 
 tunables::Int water_reflect{
     "renderer.water.reflect", 1, 0, 2,
-    "The water reflects the scene through one ray a water pixel where the device traces: 0 off (the "
-    "sky alone), 1 on, 2 on in even frames and off in odd ones, to measure both from one flight "
-    "(water.md, Shading; R129)"};
+    "The water reflects the scene through one ray a water pixel where the device traces: 0 off "
+    "(the sky alone), 1 on, 2 on in even frames and off in odd ones, to measure both from one "
+    "flight (water.md, Shading; R129)"};
 tunables::Bool water_reflect_volume{
     "renderer.water.reflect_volume", true,
     "Build what the camera reflected in the water's plane sees into the frame's structures as "
@@ -34,8 +33,8 @@ bool fit_water_reflect_volume(const Mat4& view_proj, f32 level, f32 reach,
   // frustum: n.p + d = (n.x, -n.y, n.z).q + (d + 2 level n.y).
   for (u32 i = 0; i < 6; ++i) {
     const Plane& p = frustum[i];
-    out.planes[i] = Plane{Vec3{p.normal.x, -p.normal.y, p.normal.z},
-                          p.d + 2.0f * level * p.normal.y};
+    out.planes[i] =
+        Plane{Vec3{p.normal.x, -p.normal.y, p.normal.z}, p.d + 2.0f * level * p.normal.y};
   }
   // Only what stands above the water is in it.
   out.planes[6] = Plane{Vec3{0.0f, 1.0f, 0.0f}, -level};

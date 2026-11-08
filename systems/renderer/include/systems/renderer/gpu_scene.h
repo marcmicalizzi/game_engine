@@ -1653,7 +1653,8 @@ class GpuScene {
   gfx::BufferResource water_shores_;
   u32 water_shore_count_ = 0;
   // The water reflection's candidate planes (R129; `water_reflect_level`): a level body each, its
-  // instance, its square's centre (body-local x, z) and half diagonal, and whether it is the open one.
+  // instance, its square's centre (body-local x, z) and half diagonal, and whether it is the open
+  // one.
   struct WaterReflectBody {
     u32 instance = 0;
     Vec2 center{};

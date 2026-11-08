@@ -76,16 +76,19 @@ std::string box_gltf() {
   std::vector<u8> bin;
   for (const Face& f : faces)
     for (const auto& p : f.p)
-      for (const f32 v : p) put(bin, v);
+      for (const f32 v : p)
+        put(bin, v);
   for (const Face& f : faces)
     for (u32 c = 0; c < 4; ++c)
-      for (const f32 v : f.n) put(bin, v);
+      for (const f32 v : f.n)
+        put(bin, v);
   // Two triangles a face, wound counter-clockwise seen from outside.
   for (u16 f = 0; f < 6; ++f) {
     const u16 b = static_cast<u16>(f * 4);
     const u16 tri[6] = {b, static_cast<u16>(b + 2), static_cast<u16>(b + 1),
                         b, static_cast<u16>(b + 3), static_cast<u16>(b + 2)};
-    for (const u16 i : tri) put(bin, i);
+    for (const u16 i : tri)
+      put(bin, i);
   }
   char text[4096];
   std::snprintf(text, sizeof(text), R"({
@@ -159,8 +162,8 @@ struct Restore {
 // volume as `volume`, `shots` times (each after a frame that fills the one-frame-late counts).
 void shoot(const gfx::Device& device, const test::TempDir& tmp, WorldPos eye, WorldPos target,
            bool reflect, bool volume, u32 shots, Shot* out) {
-  REQUIRE(tunables::apply_overrides(reflect ? "renderer.water.reflect=1"
-                                            : "renderer.water.reflect=0"));
+  REQUIRE(
+      tunables::apply_overrides(reflect ? "renderer.water.reflect=1" : "renderer.water.reflect=0"));
   REQUIRE(tunables::apply_overrides(volume ? "renderer.water.reflect_volume=true"
                                            : "renderer.water.reflect_volume=false"));
   {
@@ -255,8 +258,8 @@ TEST_CASE("water reflect: the far shore's box is in the water, and nothing else 
   const CapturedFrame& b = scene[0].frame;
   REQUIRE(a.color.size() == b.color.size());
   REQUIRE(scene[0].water_instance != ~0u);
-  CHECK(a.ids == b.ids);                        // the reflection is shading: no surface moves
-  CHECK(b.color == scene[1].frame.color);       // and the same frame twice is the same bytes
+  CHECK(a.ids == b.ids);                   // the reflection is shading: no surface moves
+  CHECK(b.color == scene[1].frame.color);  // and the same frame twice is the same bytes
   CHECK(!sky[0].stats.water_reflect);
   CHECK(scene[0].stats.water_reflect);
   CHECK(scene[0].stats.water_reflect_views == 1u);
