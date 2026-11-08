@@ -799,6 +799,15 @@ bool water_shore_channel(WaterShore s) { return s.stretch_a.w != 0.0; }
 // the surface at its nearest place on the stretch, through the fringe; 0 off the stretch's reach
 // (the half width and the fringe's run up a 1:25 bank, as the bodies' bounds take it) and more than
 // two metres under the surface (a fall's foot, below its lip).
+//
+// A bank is damp, not flooded: the fringe is held below the film's threshold (`k_wet_film_from`),
+// so no bank carries standing water (the film is the swash's, and the channel's own surface is
+// water), and the height a point is taken at is never less than its run from the wetted edge on
+// the 1:25 the reach uses, so ground at or below the stage beside the channel (a floodplain, a
+// cut's floor) dries over the reach instead of reading as saturated to its end. Without the two,
+// v35's stream drew a standing film with a sun glint on every pebble out to 26 m (S99's captures,
+// 2026-11-08).
+static const float k_bank_run = 25.0;  // the bank's run per metre of rise: the reach's own
 float water_channel_saturation(WaterShore s, float3 local) {
   const float2 a = s.stretch_a.xy;
   const float2 d = s.stretch_b.xy - a;
@@ -806,10 +815,11 @@ float water_channel_saturation(WaterShore s, float3 local) {
   const float u = len2 > 0.0 ? saturate(dot(local.xz - a, d) / len2) : 0.0;
   const float half_width = lerp(s.stretch_a.w, s.stretch_b.w, u);
   const float across = length(local.xz - (a + d * u));
-  if (!(across < half_width + 25.0 * s.wet_m + 1.0)) return 0.0;
+  if (!(across < half_width + k_bank_run * s.wet_m + 1.0)) return 0.0;
   const float h = local.y - lerp(s.stretch_a.z, s.stretch_b.z, u);
   if (!(h > -2.0)) return 0.0;
-  return wet_ground_fringe(h, s.wet_m);
+  const float run = max(across - half_width, 0.0) / k_bank_run;
+  return min(wet_ground_fringe(max(h, run), s.wet_m), k_wet_film_from);
 }
 
 // ---- channels of flowing water (gfx::k_material_water_channel; water.md, "Channels"; S96, S98) --

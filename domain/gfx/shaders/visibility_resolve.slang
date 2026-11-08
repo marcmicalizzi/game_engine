@@ -1147,7 +1147,9 @@ WaterWetGround water_ground_wetness(ResolveParams* params, ResolveMaterial mater
   // its escape index, so a point far from every channel tests the few nodes above it.
   if (b < params->water_shore_count) {
     const float3 local = position - instance_from_eye(instances[shores[b].instance], params->eye);
-    while (b < params->water_shore_count && g.s < 1.0) {
+    // A bank's saturation is at most k_wet_film_from (water_channel_saturation), so a pixel already
+    // that wet ends the walk: no stretch can raise it.
+    while (b < params->water_shore_count && g.s < k_wet_film_from) {
       const WaterShore shore = shores[b];
       const bool inside = all(local.xz >= shore.lo) && all(local.xz <= shore.hi);
       if (shore.stretch_a.w < 0.0) {

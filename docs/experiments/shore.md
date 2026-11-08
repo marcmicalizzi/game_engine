@@ -92,6 +92,22 @@ Roadmap S99 (2026-11-08): the darkening, the lowered roughness and the water fil
 **The spray band** over a rapid (0.25 m) and a fall (half the drop, at most 3 m) is a stated choice: no measured reach of a small fall's spray onto its banks was found in the time spent.
 
 **Bared ground** (the swash's backwash, a falling tide) is now the ground's own material at the clock's saturation (its terrain material, its plain albedo over porosity 0.5, or the low tier's shallow tint), not a fixed sand of albedo 0.35.
+**A bank is damp, never flooded** (2026-11-08, after the first v35 captures). The fringe gives saturation 1 at and below the stage, and the film's rule then laid a standing film wherever a bank's ground lay at or below the channel's surface: on v35's stream that was the whole floodplain beside it out to the reach's 26 m, every pebble of the gravel normal map glinting in the sun. A capillary fringe holds water in the pores, not on them, so a bank's saturation is now held at 0.85, the film's threshold (the swash keeps its film, and the channel's surface is water), and a point's height is taken as at least its run from the wetted edge over 25, the reach's slope, so the damp falls to nothing at the reach's edge on flat ground instead of stopping there.
+
+### What it costs, and what it looks like
+
+**Captures** (msvc-release, `engine-view --offscreen`, 1920 × 1080, the v35 copy with the engine-only flags of the owner's run, `--raster hw --shadows rt`, 15:00, the path `s99-wet` holding shore-open, east-shore, stream and lake-bank 2 s each, a capture at the end of each; before is main 86b543cb's installed build, after is S99's; the basin is S94's sequence, eight frames a second apart, msvc-debug after and S94's own frames and 86b543cb's before; under the GPU lock). **The basin**: the band above the waterline is darker than the dry sand and matte, the sheet's film mirror-dark, and where the bank faces the camera with the sun behind it the film carries the sun's glint, sharp-edged at the fringe's top (the film's 0.05 roughness), with no halo past its edge; nothing under the sheet is dry. **Shore-open, east-shore, lake-bank**: unchanged where the ground is dry; the waterline's damp strip as dark as S94's or a little lighter (the darkening now weighted by porosity), the film a thin brighter line at the water's edge. **The stream**, first after: the whole floodplain beside the channel glittering with a standing film out to the reach (the defect above); the fix is a shader change with no capture after it (the GPU lock's queue that night), so its picture is the next run's to confirm.
+
+**Cost**: the resolve's median `gpu_ms.resolve` per held view (frames 30–119 of each 2 s hold, three repeats, n = 270), RTX 5090, 2026-11-08, `--wait-quiet 120`, others' CPU 12–22% and the GPU otherwise idle at each run's start and end (`machine_state`), so close to quiet but not certified so; measured before the bank fix, which only removes work (the walk now ends at 0.85).
+
+| View | 1920 × 1080 before → after | 3840 × 2160 before → after |
+|---|---|---|
+| shore-open | 1.793 → 2.145 ms (+0.352) | 6.565 → 7.454 ms (+0.889) |
+| east-shore | 1.905 → 2.252 ms (+0.347) | 5.494 → 6.134 ms (+0.640) |
+| stream | 2.765 → 4.066 ms (+1.301) | 8.638 → 12.400 ms (+3.762) |
+| lake-bank | 2.374 → 2.896 ms (+0.522) | 8.221 → 9.782 ms (+1.561) |
+
+**How the band is bounded**: a pixel that is not ground pays nothing; a ground pixel tests each body's record's square (and the swash's heights) and walks the banks' tree, whose nodes skip a subtree whose square or heights miss it. Where the ground is far from every channel that is the bodies' tests and the tree's top; at the stream every ground pixel is inside some stretch's reach (25 × 0.428 + 1 = 11.7 m either side), the reaches overlap, and the walk reaches many leaves: 1.3 ms at 1080p and 3.8 ms at 4K is the largest cost S99 adds and the first to cut (a tighter reach, or the banks' saturation baked into the ground's tiles at load, since a channel's level is static).
 
 ## What the fill costs at load
 
