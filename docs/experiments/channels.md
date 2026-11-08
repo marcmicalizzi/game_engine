@@ -147,6 +147,54 @@ Planning*, the eastern United States curves: about 3–4 m wide and 0.3 m deep a
   higher than the trough's floor the bank on the uphill side is cut back rather than left as a step.
   Past it nothing, so a cliff beside a channel is not cut back.
 
+## Reaches
+
+(W90, 2026-11-08.) **Montgomery & Buffington (1997)**, "Channel-reach morphology in mountain
+drainage basins", *GSA Bulletin* 109(5), 596–611: seven reach types, colluvial and bedrock and five
+alluvial ones (cascade, step-pool, plane-bed, pool-riffle, dune-ripple), ordered by falling slope
+and rising drainage area, with overlapping slope distributions in their field data. The bounds as the
+paper's synthesis is cited by its readers (the paper's own table could not be fetched tonight; the
+bounds below are the ones its citations agree on, and each is a layer field the author may move):
+
+| bound | value pinned | range reported | source |
+|---|---|---|---|
+| cascade above | 0.065 | > 0.065 (typically 0.08–0.30) | M&B 1997 as cited |
+| step-pool | 0.03–0.065 | 0.03–0.065; 3–7 % in later citations | M&B 1997 as cited |
+| plane-bed | 0.015–0.03 | 0.01–0.03 | M&B 1997 as cited |
+| pool-riffle below | 0.015 | < 0.015; 0.001–0.02 | M&B 1997 as cited |
+| dune-ripple below | 0.001 | < 0.001, sand beds | M&B 1997 (low-gradient sand) |
+| bedrock / colluvial above | 0.2 | colluvial and bedrock reaches occupy the steepest, the colluvial at the network's tips | **a design choice**: the cascade's upper tail, not a bound the paper gives |
+
+Which of bedrock and colluvial a steep point is: colluvial on a link that begins at a channel head
+(Montgomery & Buffington: colluvial channels are the headwater tips, filled from the hillslopes),
+bedrock otherwise. A design choice, stated; their area bound was not read. The window (20 widths, at
+least 20 m) follows their definition of a reach as a stretch of many channel widths. Bars: on
+dune-ripple and pool-riffle reaches only; Montgomery & Buffington's plane-bed reach has no bars, so
+the brief's "bars on plane-bed and pool-riffle" was narrowed to the paper's.
+
+**Step spacing**: 1 to 4 channel widths (the step-pool literature as Montgomery & Buffington
+summarize it; Chin 1999, *Geomorphology* 27, 191–204; Chartrand & Whiting 2000, *ESPL* 25, 583–600:
+steeper beds closer). The rule `L/w = clamp(2.5 sqrt(0.03 / S), 1, 4)` is a fit to that range, not a
+published regression: 2.5 widths at S = 0.03, 1.7 at 0.065, 1 from about 0.19. **Step height**:
+Abrahams, Li & Atkinson (1995), "Step-pool streams: adjustment to maximum flow resistance", *Water
+Resources Research* 31(10): steps satisfy 1 ≤ (H / L) / S ≤ 2, the maximum of flow resistance near
+the upper half; pinned at 1.5 (`step_height_ratio`, range 1–2). A step-forming clast is of the step's
+height (Chin 1999), which sizes the boulders. The 1 m fall height (`fall_min_m`) is a design choice
+for what the water draws as a fall rather than a ramp.
+
+## Mouths and confluences
+
+**The fan's length** (`fan_widths`, 3 widths, and its spread to twice the width at the shore) is a
+**design choice**, not a pinned source: the brief asked for "a few widths", and a river-mouth deposit's
+length in channel widths was not found in a source read tonight. The bed grading to half a thalweg
+under the level makes the water at the shore its upstream depth at the default stage. **Confluences**:
+the tributary meets the trunk's water surface (the junction's water levels are equal, the classic
+confluence condition; Best 1987 on confluence morphology, not read tonight), and its bed is graded to
+the trunk's over 3 of its own widths, also a design choice.
+
+**The planform**: Leopold & Wolman (1960), "River meanders", *GSA Bulletin* 71, 769–794: the
+meander wavelength 10–14 widths about a mean, the source of `meander_wavelength_variation` = ±25 %
+(10.9 ± 2.7 covers 8–14); the amplitude's ±50 % is a design choice for bends that differ visibly.
 ## Against the proof of concept
 
 The proof of concept's erosion model carved v31 with **688 channel heads** and **5–7 km of channel per

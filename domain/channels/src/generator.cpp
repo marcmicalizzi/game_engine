@@ -45,7 +45,9 @@ bool open(const JsonValue& params, const scene_gen::Context& context, void** sta
   if (context.stand.present()) return refused(error, k_moving);
   std::string why;
   ChannelNetwork network;
-  if (!plan_channels(e->layer, context.ground, context.world_seed, context.jobs(), network, why))
+  // W90: the scene's water bodies, through the exclusion the host built (null: no mouths).
+  if (!plan_channels(e->layer, context.ground, context.world_seed, context.jobs(), network, why,
+                     context.exclusion))
     return refused(error, why);
   Vector<PlacedPiece> pieces;
   if (!place_pieces(e->layer, network, context.ground, context.tile_size, pieces, why))

@@ -126,10 +126,26 @@ int channels_command(int argc, char** argv) {
     return fail(error.empty() ? "the ground provider \"" + provider + "\" refused the terrain"
                               : error);
   (void)ddc;  // the network writes nothing; the flag is accepted for symmetry with `build`
+  // **The water bodies** (W90; channels.md, "Mouths"): the scene's `water` blocks, read as the
+  // placement generators' exclusion reads them, so a link ends at the shoreline it meets. A block
+  // that does not parse is the water capability's to refuse and is left out here.
+  Vector<scene::WaterBody> bodies;
+  if (const JsonValue* water = json.find("water"); water != nullptr && water->is_array()) {
+    for (const JsonValue& b : water->as_array()) {
+      scene::WaterBody body;
+      schema::ReadContext body_reader;
+      if (schema::from_json(body, b, body_reader) && body_reader.ok())
+        bodies.push_back(std::move(body));
+    }
+  }
+  scene_gen::Exclusion shores;
+  if (!shores.build({}, {bodies.data(), bodies.size()}, {}, &error)) return fail(error);
   const JsonValue* placements = json.find("placements");
   JsonValue all = JsonValue::array();
   JsonValue cuts = JsonValue::array();
   u32 entries = 0, heads = 0, links = 0;
+  channels::ChannelWaterCounts shore_counts;
+  u32 reaches[7] = {};
   f64 metres = 0, area = 0;
   if (placements != nullptr && placements->is_array()) {
     for (u32 k = 0; k < placements->as_array().size(); ++k) {
@@ -151,7 +167,7 @@ int channels_command(int argc, char** argv) {
       }
       channels::ChannelNetwork network;
       if (!channels::plan_channels(layer, ground.view(), context.world_seed, nullptr, network,
-                                   error))
+                                   error, &shores))
         return fail(scene_path + ": placements " + std::to_string(k) + ": " + error);
       const JsonValue blocks =
           channels::water_channels_json(layer, network, min_area, static_cast<f32>(stage), cut);
@@ -163,6 +179,14 @@ int channels_command(int argc, char** argv) {
           cuts.push_back(b);
       }
       ++entries;
+      shore_counts.mouths += network.water.mouths;
+      shore_counts.dropped += network.water.dropped;
+      shore_counts.outlets += network.water.outlets;
+      shore_counts.confluences += network.water.confluences;
+      shore_counts.points_removed += network.water.points_removed;
+      for (const channels::ChannelLink& l : network.links)
+        for (u8 r : l.reach)
+          ++reaches[r < 7 ? r : 6];
       heads += network.heads.size();
       links += network.links.size();
       metres += network.length_m;
@@ -190,6 +214,19 @@ int channels_command(int argc, char** argv) {
   line["km_per_km2"] = JsonValue(area > 0 ? std::round(metres / area * 1e3 * 100) / 100 : 0.0);
   line["water_channels"] = JsonValue(written);
   line["cuts"] = JsonValue(cut_count);
+  // W90: what the water bodies and the junctions did, and the line's points by reach.
+  line["bodies"] = JsonValue(static_cast<u32>(bodies.size()));
+  line["mouths"] = JsonValue(shore_counts.mouths);
+  line["dropped"] = JsonValue(shore_counts.dropped);
+  line["outlets"] = JsonValue(shore_counts.outlets);
+  line["confluences"] = JsonValue(shore_counts.confluences);
+  line["points_under_water"] = JsonValue(shore_counts.points_removed);
+  JsonValue by_reach = JsonValue::object();
+  const char* names[7] = {"dune_ripple", "pool_riffle", "plane_bed", "step_pool",
+                          "cascade",     "bedrock",     "colluvial"};
+  for (u32 r = 0; r < 7; ++r)
+    by_reach[names[r]] = JsonValue(reaches[r]);
+  line["reach_points"] = std::move(by_reach);
   JsonWriteOptions compact;
   compact.pretty = false;
   std::printf("%s\n", write_json(line, compact).c_str());

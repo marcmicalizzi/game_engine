@@ -396,7 +396,7 @@ the network asks the heights alone), and writes `{"water_channels": [...]}`: one
 y the water's surface at `--stage` (0.5) of the bankfull depth over the bed. It is `plan_channels`,
 the function the placement generator calls, so the blocks follow the beds the scene places; it prints
 one JSON line (`entries`, `heads`, `links`, `channel_m`, `region_km2`, `km_per_km2`,
-`water_channels`, `cuts`). With `--cut` (W89) it also writes `"cuts"`, the terrain's
+`water_channels`, `cuts`, and since W90 `bodies`, `mouths`, `dropped`, `outlets`, `confluences`, `points_under_water` and `reach_points`, the lines' points by reach). The scene's `water` bodies end the links at their shorelines ([channels](channels.md#mouths)). With `--cut` (W89) it also writes `"cuts"`, the terrain's
 `engine.scene.TerrainCut` blocks for the `tiles` block, one per link, and the water's surface stands in
 the cut ([channels](channels.md#the-cut)); it plans over the ground before the scene's own cuts. Exit 1 for a scene with no terrain, no `channels` placement or a refused layer, 2
 for usage. It requires the channels capability; see [channels](channels.md#the-waters-description).
