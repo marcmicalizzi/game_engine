@@ -315,9 +315,9 @@ TEST_CASE("water channel: the surface's regimes are their sources' numbers") {
   // The surface's deformation q^2 / 2g with q the shear velocity: the test's gentle reach (0.6 m
   // at 1 in 100, 1.78 m/s) is u* = sqrt(g d S) = 0.243 m/s and a few millimetres of surface; its
   // steep reach (0.4 m at 1 in 25) 0.396 m/s and about eight millimetres.
-  const f64 gentle = water::shear_velocity(water::manning_speed(0.04f, 0.6f, 0.01f), 0.6, 0.04);
+  const f64 gentle = water::shear_velocity(static_cast<f64>(water::manning_speed(0.04f, 0.6f, 0.01f)), 0.6, 0.04);
   CHECK(gentle == doctest::Approx(std::sqrt(9.81 * 0.6 * 0.01)).epsilon(1e-5));
-  const f64 steep = water::shear_velocity(water::manning_speed(0.04f, 0.4f, 0.04f), 0.4, 0.04);
+  const f64 steep = water::shear_velocity(static_cast<f64>(water::manning_speed(0.04f, 0.4f, 0.04f)), 0.4, 0.04);
   CHECK(steep == doctest::Approx(std::sqrt(9.81 * 0.4 * 0.04)).epsilon(1e-5));
   CHECK(water::surface_disturbance_m(gentle) == doctest::Approx(0.0030).epsilon(0.02));
   CHECK(water::surface_disturbance_m(steep) == doctest::Approx(0.0080).epsilon(0.02));
