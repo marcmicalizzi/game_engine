@@ -383,13 +383,15 @@ tunables::Enum<GiMode> gi_mode{
 tunables::Int gi_cache_mib{
     "renderer.gi.cache_mib", 32, 1, 4096,
     "The world-space cache's size in MiB, made once at load: 32 bytes a cell, a power of two of "
-    "cells (renderer.md, Indirect light: the world-space cache; read at load)"};
+    "cells and a 4-byte key each, and a 64-byte header (renderer.md, Indirect light: the "
+    "world-space cache; read at load)"};
 // Two million rays: R127's primary trace on the forest is 15.4 ms for 24.9 million at full width,
 // so about 1.2 ms of traversal if these cost what those do; one pixel in every stride is sampled.
 tunables::Int gi_rays_per_frame{
     "renderer.gi.rays_per_frame", 2000000, 1, 1 << 28,
-    "The cache's sample pass: rays a frame over every view, one a sampled pixel (renderer.md, "
-    "Indirect light: the world-space cache; read at load)"};
+    "The cache's sample pass: rays a frame over every view, half of them a trickle every cell "
+    "keeps and the rest for young cells (renderer.md, Indirect light: the world-space cache; read "
+    "at load)"};
 // A cell about ten pixels wide at 3840x2160 and 90 degrees (a pixel is 4.1e-4 radians), rounded up
 // to the level: 25 mm to 6 m from the eye, 10 cm at 20 m, 40 cm at 100 m, 6.4 m past 1.6 km.
 tunables::Float gi_cell_scale{
@@ -397,6 +399,49 @@ tunables::Float gi_cell_scale{
     "The cache's cell size per metre of distance from the eye, rounded up to a level of 25 mm "
     "times a power of two up to 6.4 m (renderer.md, Indirect light: the world-space cache; read "
     "at load)"};
+// Rounded rocks and trunks drew the cells a block at a time where the dominant axis of their
+// normals changed (R69 stage 2): the read takes the next face's cells too near a face's edge.
+tunables::Bool gi_face_blend{
+    "renderer.gi.face_blend", true,
+    "The cache's read blends the next face's cells where the normal is near a face's edge, so a "
+    "rounded surface does not step between faces (renderer.md, Indirect light: the world-space "
+    "cache; read at load)"};
+// Stage 2's levers (R69; renderer.md, "Indirect light: the world-space cache", "Stage 2"), each a
+// knob so it can be judged against the stage before it: 1, 0, false and false are stage 1's read.
+tunables::Int gi_confident{
+    "renderer.gi.confident", 32, 1, 255,
+    "The samples at which a cache cell is read whole; below it the read blends the cell with the "
+    "next coarser level's by samples over this (1: any sample reads whole, as stage 1) "
+    "(renderer.md, "
+    "Indirect light: the world-space cache; read at load)"};
+tunables::Int gi_evict_age{
+    "renderer.gi.evict_age", 16, 0, 255,
+    "Frames without a sample after which a cache cell whose bucket turned an insert away is freed "
+    "(0: only by the 240-frame age, as stage 1) (renderer.md, Indirect light: the world-space "
+    "cache; read at load)"};
+tunables::Bool gi_young_rays{
+    "renderer.gi.young_rays", true,
+    "Half the cache's rays are a trickle every cell keeps and half go to pixels whose cell is "
+    "young "
+    "(false: every ray a stride pixel's, as stage 1) (renderer.md, Indirect light: the world-space "
+    "cache; read at load)"};
+tunables::Bool gi_hit_fallback{
+    "renderer.gi.hit_fallback", true,
+    "A bounce's hit reads up to three coarser cache levels, then the sky's harmonics times the "
+    "ray's "
+    "openness (false: two levels, then nothing, as stage 1) (renderer.md, Indirect light: the "
+    "world-space cache; read at load)"};
+tunables::Float gi_far_lift{
+    "renderer.gi.far_lift", 0.0, 0.0, 1.0,
+    "How far a coarse cache cell's read (1.6 m and up, past 400 m) is lifted towards the sky's "
+    "harmonics, a third a level past the fifth: a crown's lit and shaded leaves the eye cannot "
+    "resolve there (renderer.md, Indirect light: the world-space cache; read at load)"};
+// One log line a frame of the cache's counts (R69 stage 2): how a walk fills it is read from them.
+tunables::Bool gi_log{
+    "renderer.gi.log", false,
+    "Log the world-space cache's counts every frame: rays, samples and young ones, dropped "
+    "inserts, cells held and young, cells freed (renderer.md, Indirect light: the world-space "
+    "cache; read at load)"};
 tunables::Bool shadow_hybrid_fit{
     "renderer.shadow.hybrid_fit", false,
     "Under the hybrid, fit the cascades from the ray distance out rather than from the near plane "
@@ -638,6 +683,13 @@ void resolve_settings(const RenderSettings& requested, const gfx::DeviceFeatures
   out.gi_cache_bytes = static_cast<u64>(gi_cache_mib.get()) << 20;
   out.gi_rays_per_frame = static_cast<u32>(gi_rays_per_frame.get());
   out.gi_cell_scale = static_cast<f32>(gi_cell_scale.get());
+  out.gi_log = gi_log.get();
+  out.gi_face_blend = gi_face_blend.get();
+  out.gi_confident = static_cast<u32>(gi_confident.get());
+  out.gi_evict_age = static_cast<u32>(gi_evict_age.get());
+  out.gi_young_rays = gi_young_rays.get();
+  out.gi_hit_fallback = gi_hit_fallback.get();
+  out.gi_far_lift = static_cast<f32>(gi_far_lift.get());
   // More than one view needs the cull pass: every view's draw reads its own run of the visible
   // list, and there is no run without one. The direct path draws one view and one only, because
   // it writes color rather than a visibility buffer and has nowhere to put a second rectangle.

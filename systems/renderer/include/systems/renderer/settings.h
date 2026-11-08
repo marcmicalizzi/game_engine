@@ -415,8 +415,15 @@ struct ResolvedSettings {
   u64 gi_cache_bytes = 0;
   u32 gi_rays_per_frame = 0;
   f32 gi_cell_scale = 0.0f;
-  bool occlusion = false;  // two-pass occlusion culling runs
-  bool rt_chain = false;   // the frame builds acceleration structures from its visible list
+  bool gi_log = false;           // `renderer.gi.log`: one log line a frame of the cache's counts
+  bool gi_face_blend = false;    // `renderer.gi.face_blend`: the read blends faces near an edge
+  u32 gi_confident = 1;          // `renderer.gi.confident`: samples a cell is read whole at
+  u32 gi_evict_age = 0;          // `renderer.gi.evict_age`: a full bucket's stale cells, 0 never
+  bool gi_young_rays = false;    // `renderer.gi.young_rays`: half the rays to young cells
+  bool gi_hit_fallback = false;  // `renderer.gi.hit_fallback`: coarser levels, then the fallback
+  f32 gi_far_lift = 0.0f;        // `renderer.gi.far_lift`: a coarse cell lifted to the harmonics
+  bool occlusion = false;        // two-pass occlusion culling runs
+  bool rt_chain = false;         // the frame builds acceleration structures from its visible list
   // The cull pass keeps what its cone test rejects as shadow casters, in the visible list's run
   // `gfx::k_caster_run`, and the chain builds them beside the drawn clusters. True when shadows
   // are traced, the cone test is on, and the records are build records rather than template

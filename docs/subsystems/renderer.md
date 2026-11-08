@@ -1825,9 +1825,14 @@ the normal's dominant axis (±x, ±y, ±z) is in the key, so a wall's two sides,
 standing on it never share a cell; the dominant axis rather than the octant because a floor's
 interpolated normals straddle every octant boundary of +y and none of its faces'. The hash's low word
 names a bucket of eight slots, its high word (low bit set) the key in the slot; a lookup scans the
-bucket whole, so a slot the fold frees breaks no other key's chain.
+bucket whole, so a slot the fold frees breaks no other key's chain. **The keys live apart from the
+cells** (stage 2): the buffer is a 64-byte header, then one 4-byte key a slot — a bucket's eight
+keys are one 32-byte block a lookup reads in two 16-byte loads — then the cells; stage 1 kept the
+key in each cell's first word, which spread a bucket over 256 bytes and made a lookup eight
+dependent scattered loads.
 
-**A cell** (32 bytes) holds the frame's sample count and fixed-point sums (10 bits of fraction), the
+**A cell** (32 bytes) holds its bucket's pressure (the first cell of a bucket only: the last frame an
+insert found the bucket full), the frame's sample count and fixed-point sums (10 bits of fraction), the
 running mean as three halves and the samples it averages, and the stamp of the last frame that
 reached it. What it averages is **a ratio to the sky's harmonics**: each sample is the radiance one
 ray brought back over the luminance of the nine-harmonic ambient at the sample's normal, and the
@@ -1871,7 +1876,7 @@ water's own ambient is the harmonics still.
 
 **The buffer** is `renderer.gi.cache_mib` (32 MiB: a million cells, about thirty times what a
 3840×2160 frame of the forest touches at the default scale, so a walk's recent past stays warm as
-the eye turns back), made once at load and never by a frame (`gi cache: the frames with the cache on
+the eye turns back; stage 2 adds the million keys and the header, 36 MiB made), made once at load and never by a frame (`gi cache: the frames with the cache on
 make no buffer and allocate as the mode off`). The mode is `off` without traced shadows, whose query
 the sample pass is. `ResolveParams` grew two rows, 496 to 528 bytes (544 with S97's wet-band row after them).
 
@@ -1915,6 +1920,58 @@ below both.) A hit's albedo is the material's base colour and texture at level 0
 layers or the ground's detail; a hit costs a nearest-hit traversal, a material fetch and a shadow
 ray where a `sky` sample costs a first-hit one. Stage 2 is ReSTIR GI over the cache (R68).
 
+**Stage 2: the fill, the blocks, the brightness, the read** (R69 stage 2, 2026-11-08; [the
+measurements](../experiments/gi-cache-2026-11-07.md#stage-2-the-fill-the-blocks-the-brightness-the-read)).
+The owner walked v35 under `bounce` and saw the light load in "like a checkerboard" over five to ten
+seconds, a little dark, with blocks on the rocks. Each change below is a knob whose stage-1 value
+reproduces the stage-1 read, so every lever was judged on its own against the reference
+(`gi cache: stage 2's levers one at a time, ...`):
+- **The young cell reads its parent** (`renderer.gi.confident`, 32). A level's read sums its eight
+  cells as before and also their confidence, the trilinear weights times `min(samples / 32, 1)`;
+  the read takes that share from the point's own level and the rest from the next coarser one,
+  which every sample also reached and which holds four to eight times the samples
+  (`gi_read_face`; `gfx::gi_blend_levels` is the same arithmetic on the CPU, held against a
+  brute-force blend). A new cell starts from its parent's mean and sharpens as its own samples
+  come, instead of taking its first frame's few rays whole; a converged neighbourhood reads one
+  level, so the second level's eight lookups are paid only while something is young. The fold's
+  rate is unchanged and stated: `n / min(N + n, 256)` is the plain mean of every sample for a
+  cell's first 256, then an exponential average of that length.
+- **A full bucket frees its stale cells** (`renderer.gi.evict_age`, 16 frames). A walk fills the
+  cache with what it passed; a bucket of eight slots that is full turned every new key away until
+  one of its cells aged out at 240 frames. An insert that finds its bucket full now stamps the
+  bucket (its first cell's first word), and the fold frees any cell of a stamped bucket that no
+  sample has reached for 16 frames — a cell in view is sampled every few frames, so only what the
+  walk left behind goes.
+- **The rays go where the cells are young** (`renderer.gi.young_rays`). The sample pass's stride is
+  now half the budget's (`gfx::gi_trickle_stride`: one pixel in nine at 3840×2160): that pixel is
+  the trickle every cell keeps. Each thread also looks at a second pixel half a window on and takes
+  a ray for it only where its own cell is young (under `k_gi_young`, 8 samples, or no cell), out of
+  the other half of the budget, claimed one atomic a wave (`k_gi_ray_count` in the header), so
+  together they never pass `renderer.gi.rays_per_frame`. A converged view spends half stage 1's
+  rays; a newly seen region gets stage 1's density until it has filled. Which young pixels get rays
+  when their half runs out is the order waves reach the count; below it the picture does not
+  depend on order (the translation test still holds the bytes).
+- **A bounce's hit reads coarser, then a bounded fallback** (`renderer.gi.hit_fallback`). Every
+  sample now reaches three levels (`k_gi_sample_levels`), and a hit reads four from its own
+  (`k_gi_hit_levels`), so a wall behind the eye finds the light of a coarse cell some pixel in view
+  reached. Where none has samples it takes the harmonics times the ray's openness
+  (`gfx::gi_openness`: nothing for a hit within a metre of the ray's origin, which is enclosed, all
+  of it past ten metres, smooth between) — never the raw harmonics, which lit the box's inside as
+  open sky.
+- **The faces blend** (`renderer.gi.face_blend`). Where the normal's second-largest component is at
+  least 0.6 of its largest (31° from the axis, the boundary at 45°), the read takes the next face's
+  cells too, weighted from nothing to a half at the boundary (`gfx::gi_face_blend`), so a rounded
+  rock or a trunk does not step where its normal's dominant axis changes. It costs a second face's
+  lookups in that band only.
+- **The far lift** (`renderer.gi.far_lift`, 0: off). A stated lever for the distant crowns: a cell of
+  level 6 and up (1.6 m, past 400 m) read towards the harmonics by the lever times a third a level
+  past the fifth. It stays off: see the experiment page.
+- **What the passes counted** (`Stats::gi`, `gfx::k_gi_stat_*`): the header's first eight words —
+  rays, stride samples and those whose own cell was young, inserts a full bucket turned away, cells
+  held and young after the fold, cells freed for a full bucket and for their age — are copied into
+  the frame's statistics block behind the fold (the `gi stats` transfer pass) and the header is
+  cleared for the next frame; `renderer.gi.log` writes them as one log line a frame
+  (`--log warn,renderer=info`), which is how a walk's fill is read.
 **What it costs, and why it is off.** On the owner's v25 walk at 3840×2160 (`msvc-release`, median
 of 301 frames, a shared machine; [the page](../experiments/gi-cache-2026-11-07.md#the-v25-walk-at-38402160-what-it-costs-and-what-it-looks-like)):
 the sample pass is 1.62 ms under `sky` and 3.88 under `bounce`, the fold 0.01, and **the read adds

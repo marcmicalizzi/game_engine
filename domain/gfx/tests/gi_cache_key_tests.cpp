@@ -7,6 +7,9 @@
 
 #include <doctest/doctest.h>
 
+#include <cmath>
+#include <cstdint>
+
 using namespace engine;
 using namespace engine::gfx;
 
@@ -98,4 +101,129 @@ TEST_CASE("gi cache key: the stride keeps a frame inside its rays") {
   const u64 pixels = 11520ull * 2160ull;
   const u32 stride = gi_stride(pixels, 2000000);
   CHECK((pixels + stride - 1) / stride <= 2000000);
+}
+
+TEST_CASE("gi cache key: stage 2's trickle is half the budget and the buffer holds keys apart") {
+  // 3840x2160 at two million rays: the trickle takes one pixel in nine, and its young candidates
+  // the rest of the budget.
+  CHECK(gi_trickle_stride(3840ull * 2160ull, 2000000) == 9);
+  CHECK(gi_trickle_stride(3840ull * 2160ull, 0) == 0);
+  CHECK(gi_trickle_stride(1000, 1) == 1000);
+  const u64 pixels = 11520ull * 2160ull;
+  const u32 stride = gi_trickle_stride(pixels, 2000000);
+  CHECK((pixels + stride - 1) / stride <= 1000000);
+  // The header, a 4-byte key a slot, then the 32-byte cells: a bucket's keys are one 32-byte block.
+  CHECK(gi_buffer_bytes(1u << 20) == 64 + (u64{1} << 20) * 36);
+  CHECK((k_gi_header_bytes % 32) == 0);
+  CHECK(k_gi_bucket * 4 == 32);
+}
+
+namespace {
+
+// The young-cell blend as its definition reads, in double: every level's share of the whole —
+// its confidence times what the finer levels left, all of what is left at the last level, nothing
+// for a level without samples — then the shares' weighted mean of the levels' means.
+bool brute_blend(const GiLevelRead* levels, u32 count, u32, f64 out[3]) {
+  f64 left = 1.0;
+  f64 total = 0.0;
+  f64 acc[3] = {0.0, 0.0, 0.0};
+  for (u32 i = 0; i < count; ++i) {
+    const GiLevelRead& l = levels[i];
+    if (!(l.weight > 1e-4f)) continue;
+    const f64 c = i + 1 == count ? 1.0 : std::fmin(static_cast<f64>(l.confidence), 1.0);
+    const f64 share = left * c;
+    for (u32 k = 0; k < 3; ++k)
+      acc[k] += share * static_cast<f64>(l.sum[k]) / static_cast<f64>(l.weight);
+    total += share;
+    left -= share;
+  }
+  if (!(total > 0.0)) {
+    // Levels with samples whose confidence was zero and nothing after them: none took a share.
+    bool any = false;
+    for (u32 i = 0; i < count; ++i)
+      any = any || levels[i].weight > 1e-4f;
+    if (!any) return false;
+    for (u32 k = 0; k < 3; ++k)
+      out[k] = 0.0;
+    return true;
+  }
+  for (u32 k = 0; k < 3; ++k)
+    out[k] = acc[k] / total;
+  return true;
+}
+u32 next(u32& state) {
+  state = state * 1664525u + 1013904223u;
+  return state >> 8;
+}
+
+}  // namespace
+
+TEST_CASE("gi cache key: the young cell's read is the brute-force blend of its levels") {
+  u32 state = 12345u;
+  u32 compared = 0;
+  for (u32 trial = 0; trial < 4000; ++trial) {
+    GiLevelRead levels[4];
+    const u32 count = 1 + next(state) % 4;
+    for (u32 i = 0; i < count; ++i) {
+      // A level is empty a quarter of the time, otherwise some of its eight corners had samples.
+      if (next(state) % 4 == 0) continue;
+      levels[i].weight = 0.05f + 0.95f * static_cast<f32>(next(state) % 1000) / 1000.0f;
+      for (u32 c = 0; c < 3; ++c)
+        levels[i].sum[c] = levels[i].weight * static_cast<f32>(next(state) % 4000) / 1000.0f;
+      levels[i].confidence =
+          levels[i].weight * static_cast<f32>(next(state) % 1500) / 1000.0f;  // past 1 too
+    }
+    f32 got[3];
+    f64 want[3];
+    const bool has = gi_blend_levels(levels, count, got);
+    const bool brute = brute_blend(levels, count, 0, want);
+    REQUIRE(has == brute);
+    if (!has) continue;
+    ++compared;
+    for (u32 c = 0; c < 3; ++c)
+      CHECK(std::fabs(static_cast<f64>(got[c]) - want[c]) <= 1e-4 * (1.0 + std::fabs(want[c])));
+  }
+  CHECK(compared > 2000);
+  // A confident level alone decides; a young one hands the rest to its parent.
+  GiLevelRead fine;
+  fine.weight = 1.0f;
+  fine.sum[0] = fine.sum[1] = fine.sum[2] = 0.2f;
+  fine.confidence = 1.0f;
+  GiLevelRead coarse;
+  coarse.weight = 1.0f;
+  coarse.sum[0] = coarse.sum[1] = coarse.sum[2] = 1.0f;
+  coarse.confidence = 1.0f;
+  GiLevelRead pair[2] = {fine, coarse};
+  f32 out[3];
+  REQUIRE(gi_blend_levels(pair, 2, out));
+  CHECK(out[0] == doctest::Approx(0.2f));
+  pair[0].confidence = 0.25f;  // eight samples of the thirty-two
+  REQUIRE(gi_blend_levels(pair, 2, out));
+  CHECK(out[0] == doctest::Approx(0.25f * 0.2f + 0.75f * 1.0f));
+  GiLevelRead none[2];
+  CHECK_FALSE(gi_blend_levels(none, 2, out));
+}
+
+TEST_CASE("gi cache key: the faces' blend and the fallback's openness are smooth and bounded") {
+  CHECK(gi_face_blend(1.0f, 0.0f) == 0.0f);
+  CHECK(gi_face_blend(1.0f, k_gi_face_blend) == 0.0f);
+  CHECK(gi_face_blend(1.0f, 1.0f) == doctest::Approx(0.5f));
+  CHECK(gi_face_blend(0.0f, 0.0f) == 0.0f);
+  f32 previous = 0.0f;
+  for (u32 i = 0; i <= 100; ++i) {
+    const f32 w = gi_face_blend(1.0f, static_cast<f32>(i) / 100.0f);
+    CHECK(w >= previous);
+    CHECK(w <= 0.5f);
+    previous = w;
+  }
+  CHECK(gi_openness(0.0f) == 0.0f);
+  CHECK(gi_openness(k_gi_open_near_m) == 0.0f);
+  CHECK(gi_openness(k_gi_open_far_m) == 1.0f);
+  CHECK(gi_openness(100.0f) == 1.0f);
+  previous = 0.0f;
+  for (u32 i = 0; i <= 120; ++i) {
+    const f32 o = gi_openness(static_cast<f32>(i) * 0.1f);
+    CHECK(o >= previous);
+    previous = o;
+  }
 }

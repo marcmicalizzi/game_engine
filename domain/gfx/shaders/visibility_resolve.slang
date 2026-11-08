@@ -181,7 +181,7 @@ struct ResolveParams {
   uint gi_count;
   uint gi_stride;
   float gi_cell_scale;
-  uint gi_pad;
+  uint gi_rays;  // the sample pass's ray budget (R69 stage 2)
   // The wet band (gfx::ResolveParams::water_shores; docs/subsystems/water.md, "The shore"): the
   // scene's water bodies' WaterShore records and their count. Only the water modules declare the
   // row, so the plain ones are the bytes they were.

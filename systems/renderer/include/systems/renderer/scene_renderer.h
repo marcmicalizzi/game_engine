@@ -133,6 +133,17 @@ struct FrameCpu {
   f64 resize_ms = 0.0;
 };
 
+// The world-space cache's counts for a frame (`FrameStats::gi`; R69 stage 2).
+struct GiStats {
+  u32 rays = 0;
+  u32 samples = 0;
+  u32 young = 0;
+  u32 dropped = 0;
+  u32 cells = 0;
+  u32 young_cells = 0;
+  u32 evicted = 0;
+  u32 expired = 0;
+};
 // One frame's numbers, as the renderer folds them in when that frame's slot comes around again
 // (`Stats::last`). The sums beside it answer "what does this scene cost on average"; a flythrough
 // asks "what did frame 1,412 cost", which a sum cannot answer and a CPU clock must not
@@ -472,6 +483,13 @@ struct Stats {
   // The world-space cache's passes (`FrameStats::gpu_gi_trace`, `gpu_gi_fold`), summed.
   f64 gpu_gi_trace = 0.0;
   f64 gpu_gi_fold = 0.0;
+  // What the cache's passes counted in the latest frame folded (R69 stage 2; `gfx::k_gi_stat_*`),
+  // read a frame or more late like the sky's sums and not summed: rays traced, stride pixels
+  // sampled and those of them whose own cell was young (under `gfx::k_gi_young` samples:
+  // `young / samples` is the share of the picture still filling in), inserts a full bucket turned
+  // away, cells held after the fold and those of them young, and the cells the fold freed for a
+  // full bucket and for their age. Zero with the cache off.
+  GiStats gi;
   // The frame passes' zones (frame_pass.h, renderer.md "Frame passes") and the encode they end on,
   // summed: the frame's cost and no view's. Zero in every frame without a pass registered.
   f64 gpu_frame_passes = 0.0;
@@ -954,6 +972,8 @@ class SceneRenderer {
   void collect_slot(u32 slot);
   void fold_visible(u32 slot);
   void fold_sky(u32 slot);
+  // The world-space cache's counts of the frame that last used this slot (Stats::gi).
+  void fold_gi(u32 slot);
   void fill_view_layout() noexcept;
   bool read_visibility(CapturedFrame& out, const CaptureChannels& channels, std::string* error);
   u32 view_count() const noexcept { return views_.size(); }

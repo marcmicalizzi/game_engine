@@ -1004,7 +1004,9 @@ struct ResolveParams {
   u32 gi_count = 0;
   u32 gi_stride = 0;
   f32 gi_cell_scale = 0.0f;
-  u32 gi_pad = 0;
+  // Stage 2: the frame's ray budget over every view (`renderer.gi.rays_per_frame`); the sample
+  // pass's young candidates take rays only while the frame's claims are under it.
+  u32 gi_rays = 0;
   // **The wet band** (docs/subsystems/water.md, "The shore"; roadmap S97): the scene's water
   // bodies' `WaterShore` records and their count; 0 and 0 for none. Read only by the resolve's
   // water modules, which alone declare the row (a module reads the block through an address, so the
