@@ -333,7 +333,16 @@ bool SceneCollision::create(physics::World& physics, const renderer::SceneData& 
   // sources place their own. The terrain is the ground's, and a skinned instance moves, so neither
   // has a static body.
   bins_.clear();
+  // **The far forest gets no body** (P62, 2026-11-08): a far tile's mesh is the coarsest forms of
+  // every streamed tree on a world tile merged into one rigid instance of the prefix, drawn only
+  // where the ring's tail does not draw that tile's trees — so never round a walker, whose tile the
+  // tail always holds. Binned as a prefix instance (W88) it was a wall of impostor cards a crown
+  // wide round every trunk of the tile, invisible, which the owner walked into in the v35 forest.
   far_meshes_.clear();
+  for (const renderer::FarForestTile& far : scene.far_forest.tiles) {
+    if (far.mesh >= far_meshes_.size()) far_meshes_.resize(far.mesh + 1, u8{0});
+    far_meshes_[far.mesh] = 1;
+  }
   stats_.far_forest_left_out = 0;
   {
     for (u32 i = 0; i < scene.instances.size(); ++i) {
