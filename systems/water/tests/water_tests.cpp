@@ -210,16 +210,21 @@ TEST_CASE("water: the depth map is the ground under the body, a quarter of the s
   CHECK(map.origin.x == doctest::Approx(-12.0f).epsilon(1e-5));
   CHECK(map.origin.y == doctest::Approx(-12.0f).epsilon(1e-5));
   CHECK(map.depth_max == doctest::Approx(2.0f).epsilon(1e-3));
-  const f64 unit = static_cast<f64>(map.depth_max) / 65535.0;
+  // Signed since version 2 (S94): the bank is stored as a negative depth down to `bank_max`, which
+  // is the highest bank in the square up to the cap (2 m with no tide).
+  CHECK(map.bank_max > 0.0f);
+  CHECK(map.bank_max <= water::k_depth_map_bank_min);
+  const f64 unit = (static_cast<f64>(map.depth_max) + static_cast<f64>(map.bank_max)) / 65535.0;
   const auto texel = [&](u32 i, u32 j) {
-    return static_cast<f64>(map.texels[j * map.size + i]) * unit;
+    return static_cast<f64>(map.texels[j * map.size + i]) * unit - static_cast<f64>(map.bank_max);
   };
   f64 worst = 0.0;
   for (u32 j = 0; j < map.size; ++j) {
     for (u32 i = 0; i < map.size; ++i) {
       const f64 x = static_cast<f64>(map.origin.x) + i * static_cast<f64>(map.texel_m);
       const f64 z = static_cast<f64>(map.origin.y) + j * static_cast<f64>(map.texel_m);
-      const f64 want = std::max(0.0, -ground.surface(WorldPos{100.0 + x, 0.0, 50.0 + z}));
+      const f64 want = std::max(-static_cast<f64>(map.bank_max),
+                                -ground.surface(WorldPos{100.0 + x, 0.0, 50.0 + z}));
       worst = std::max(worst, std::abs(texel(i, j) - want));
     }
   }
@@ -256,6 +261,7 @@ TEST_CASE("water: the depth map is the ground under the body, a quarter of the s
   CHECK(back.origin == map.origin);
   CHECK(back.texel_m == map.texel_m);
   CHECK(back.depth_max == map.depth_max);
+  CHECK(back.bank_max == map.bank_max);
   CHECK(std::equal(back.texels.begin(), back.texels.end(), map.texels.begin()));
   water::DepthMap again;
   water::build_depth_map(body, mesh, ground, again);
@@ -263,7 +269,8 @@ TEST_CASE("water: the depth map is the ground under the body, a quarter of the s
   CHECK(std::equal(twice.begin(), twice.end(), bytes.begin()));
   const u64 hash = hash_bytes(bytes.data(), bytes.size(), 0);
   MESSAGE("depth map hash " << std::hex << hash);
-  CHECK(hash == 18323378252373688451ull);
+  // Re-pinned by S94: the map is signed (version 2), its bank stored below zero.
+  CHECK(hash == 10389239473159268430ull);
   // Refused: not a map, and a size its bytes do not hold.
   CHECK_FALSE(water::read_depth_map(std::span<const u8>(bytes.data(), 16), back, &error));
   CHECK_FALSE(
@@ -429,7 +436,7 @@ TEST_CASE("water: an open body is the closed one's mesh and map, and its sea goe
   CHECK(open_glb.size() == 29056u);
   CHECK(glb_hash == 17133894412657858236ull);
   CHECK(open_bytes.size() == 10690u);
-  CHECK(map_hash == 4429521719745958496ull);
+  CHECK(map_hash == 8971604607983950309ull);  // re-pinned by S94: the signed map, version 2
   // The depth past the outline: the bowl's ground meets the level 10 m from its centre, so 8 m out
   // (2 m past a 6 m outline) the open sea is 2 - 0.02 * 64 = 0.72 m deep and the closed pool has
   // none; 12 m out the ground stands above the level and neither has water; inside the outline the

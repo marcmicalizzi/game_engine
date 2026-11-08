@@ -21,7 +21,7 @@ engine_module(NAME water LAYER systems OPTIONAL WHOLE_ARCHIVE
 # water_scene_tests.cpp: the renderer's reader over a scene with a `water` block (meshes, instances,
 # materials, the collision mark), and on a GPU the oasis pool's captures with and without it.
 engine_module_tests(NAME water
-  SOURCES tests/water_tests.cpp tests/water_scene_tests.cpp tests/fill_tests.cpp tests/shore_scene_tests.cpp tests/size_table.cpp
+  SOURCES tests/water_tests.cpp tests/water_scene_tests.cpp tests/fill_tests.cpp tests/shore_scene_tests.cpp tests/size_table.cpp tests/swash_tests.cpp tests/swash_scene_tests.cpp
           tests/channel_tests.cpp tests/channel_scene_tests.cpp
   DEPS renderer gfx)
 if(TARGET engine_water_tests)

@@ -219,8 +219,15 @@ bool read_body(const scene::WaterBody& block, Body& out, std::string* error) {
   if (!(block.wet_m >= 0.0f) || !finite(block.wet_m)) return fail("its wet_m must not be negative");
   if (!(block.foam_m >= 0.0f) || !finite(block.foam_m))
     return fail("its foam_m must not be negative");
+  // The swash (water.md, "The shore"; roadmap S94).
+  if (!(block.tide_m >= 0.0f) || !finite(block.tide_m)) return fail("its tide_m must not be negative");
+  if (!(block.drain_s > 0.0f) || !finite(block.drain_s)) return fail("its drain_s must be positive");
   out.wet_m = block.wet_m;
   out.foam_m = block.foam_m;
+  out.wind_m_s = block.wind_m_s;
+  out.fetch_km = block.fetch_km;
+  out.tide_m = block.open ? block.tide_m : 0.0f;
+  out.drain_s = block.drain_s;
   out.shore_m = block.shore_m;
   out.open = block.open;
   return true;
@@ -454,9 +461,13 @@ void build_depth_map(const Body& body, const Mesh& mesh, const scene_gen::Ground
   out.size = size;
   out.origin = Vec2{static_cast<f32>(x0), static_cast<f32>(z0)};
   out.texel_m = static_cast<f32>(texel);
-  // The depths in f64 first, then the range they are quantized over.
+  // The depths in f64 first, signed (the bank negative, down to the bank the map stores), then the
+  // range they are quantized over.
+  const f64 bank_cap = std::max(static_cast<f64>(k_depth_map_bank_min),
+                                2.0 * static_cast<f64>(body.tide_m) + 1.0);
   Vector<f64> depth(size * size);
   f64 deepest = 0.0;
+  f64 highest = 0.0;
   for (u32 j = 0; j < size; ++j) {
     for (u32 i = 0; i < size; ++i) {
       // The texel's centre as the reader computes it, from the stored f32 frame.
@@ -465,16 +476,27 @@ void build_depth_map(const Body& body, const Mesh& mesh, const scene_gen::Ground
       const f64 z =
           static_cast<f64>(out.origin.y) + static_cast<f64>(j) * static_cast<f64>(out.texel_m);
       const WorldPos at{body.center.x + x, body.level_m, body.center.z + z};
-      const f64 d = std::max(0.0, body.level_m - ground.surface(at));
+      const f64 d = std::max(-bank_cap, body.level_m - ground.surface(at));
       depth[j * size + i] = d;
       deepest = std::max(deepest, d);
+      highest = std::max(highest, -d);
     }
   }
   out.depth_max = static_cast<f32>(deepest);
+  out.bank_max = static_cast<f32>(highest);
   out.texels.resize(size * size);
-  const f64 scale = out.depth_max > 0.0f ? 65535.0 / static_cast<f64>(out.depth_max) : 0.0;
+  const f64 bank = static_cast<f64>(out.bank_max);
+  const f64 range = static_cast<f64>(out.depth_max) + bank;
+  const f64 scale = range > 0.0 ? 65535.0 / range : 0.0;
   for (u32 t = 0; t < size * size; ++t)
-    out.texels[t] = static_cast<u16>(std::clamp(std::floor(depth[t] * scale + 0.5), 0.0, 65535.0));
+    out.texels[t] =
+        static_cast<u16>(std::clamp(std::floor((depth[t] + bank) * scale + 0.5), 0.0, 65535.0));
+}
+
+f32 depth_map_depth(const DepthMap& map, u32 i, u32 j) noexcept {
+  const f64 range = static_cast<f64>(map.depth_max) + static_cast<f64>(map.bank_max);
+  return static_cast<f32>(static_cast<f64>(map.texels[j * map.size + i]) / 65535.0 * range -
+                          static_cast<f64>(map.bank_max));
 }
 
 Vector<u8> depth_map_bytes(const DepthMap& map) {
@@ -483,7 +505,7 @@ Vector<u8> depth_map_bytes(const DepthMap& map) {
   put_u32(out, 0x4d445745u);  // "EWDM"
   put_u32(out, k_depth_map_version);
   put_u32(out, map.size);
-  put_u32(out, 0u);
+  put_f32(out, map.bank_max);
   put_f32(out, map.origin.x);
   put_f32(out, map.origin.y);
   put_f32(out, map.texel_m);
@@ -511,7 +533,8 @@ bool read_depth_map(std::span<const u8> bytes, DepthMap& out, std::string* error
     if (error != nullptr) *error = "not a water depth map";
     return false;
   }
-  if (u32_at(4) != k_depth_map_version) {
+  const u32 version = u32_at(4);
+  if (version != 1u && version != k_depth_map_version) {
     if (error != nullptr) *error = "a water depth map of version " + std::to_string(u32_at(4));
     return false;
   }
@@ -524,6 +547,12 @@ bool read_depth_map(std::span<const u8> bytes, DepthMap& out, std::string* error
   out.origin = Vec2{f32_at(16), f32_at(20)};
   out.texel_m = f32_at(24);
   out.depth_max = f32_at(28);
+  // Version 1's word 3 was 0 and its depths clamped at zero: no bank.
+  out.bank_max = version == 1u ? 0.0f : f32_at(12);
+  if (!finite(out.bank_max) || out.bank_max < 0.0f) {
+    if (error != nullptr) *error = "a water depth map whose bank is not a height";
+    return false;
+  }
   out.texels.resize(size * size);
   for (u32 t = 0; t < size * size; ++t)
     out.texels[t] =

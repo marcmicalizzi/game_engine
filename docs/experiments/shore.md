@@ -1,4 +1,4 @@
-# The shore: where a body's level meets the ground (S97)
+# The shore: where a body's level meets the ground (S97, S94)
 
 Roadmap S97 (the owner, 2026-11-06: "the better water boundary for bodies of water"). The design and the code are [water](../subsystems/water.md), "A body that fills" and "The shore"; this page is the grounding for the numbers the schema pins and the rules the resolve follows, and where the research and the budgets were traded.
 
@@ -35,6 +35,48 @@ Lekner and Dorf (1988, after Ångström 1925): a water film over a dry albedo *a
 
 The distance from the waterline that the shore fade and the foam are drawn by is **the depth over the slope of the depth map**: d / |∇d|, with the slope the larger of the one-sided differences either way, so at the waterline, where the map is clamped at zero on the bank, the water's side gives it. On a bank of constant slope it is exact; on a bowl it overstates the distance by the curvature over the fade's few metres (on the S97 basin, 1:3.5 at the waterline, a few centimetres). Four more reads of the map a water pixel.
 
+## The swash
+
+Roadmap S94 (the owner, 2026-11-07, with eight frames of a real beach: a sheet of foamy water runs up the sand to a ragged front and slides back, leaving the sand dark and glossy up to the highest line it reached, and the dark band dries from the top down until the next sheet, not always as far). The code is [water](../subsystems/water.md#the-swash); this section is the models, their constants and the trades.
+
+### The wave a wind raises
+
+A closed body has no swell: its waves are the wind's, fetch-limited. JONSWAP (Hasselmann et al. 1973) gives the peak frequency ω_p = 22 (g² / U₁₀F)^(1/3) and the Phillips constant α = 0.076 (U₁₀² / Fg)^0.22, the laws [the ocean page](ocean-surface.md#the-published-models) already cites. The swash takes **the peak period T = 2π/ω_p** and **the spectral significant height H_m0 = 4√m₀**, m₀ the spectrum integrated over [0.3, 6] ω_p (`gfx::swash_wave`); the test holds H_m0 within a fifth of the fetch-limited growth law of the Coastal Engineering Manual (II-2), g H_m0 / U² = 1.6 × 10⁻³ (gF/U²)^½, and T within 1% of the law's own. **5 m/s over 2 km: H = 0.131 m, T = 1.34 s** (the growth law 0.114 m); **10 m/s over 20 km: H = 0.87 m, T = 3.64 s** (the law 0.72 m): the spectrum's variance runs about a seventh to a fifth above the law's, inside the scatter of the fetch-limited data. A closed body's fetch is the smaller of `fetch_km` and its own longest reach (pinned: the diagonal of its depth map's square, which bounds every straight line over its water); an open body's is `fetch_km`.
+
+### The run-up
+
+Stockdon et al. (2006, eq. 19), already used above for the foam's reach: R₂ = 1.1 (0.35 β (H₀L₀)^½ + ½ [H₀L₀ (0.563 β² + 0.004)]^½), L₀ = gT²/2π. Worked by hand and pinned in `swash_tests.cpp`: a lake's 0.1 m, 1.5 s wave on 1:10 runs up **5.48 cm**; an ocean's 1 m, 10 s wave on a 0.08 foreshore **0.984 m**. β is the foreshore slope at the waterline, from the signed depth map (the mean slope across every texel pair the waterline crosses, kept to [0.01, 0.5]). R₂ is the 2% exceedance, so it is taken as the **largest** wave of a group's reach, not the mean's.
+
+### The front's motion
+
+**Ballistic swash.** After a bore collapses at the shoreline the front runs up the beach face as a projectile decelerated by gravity along the slope and returns accelerating: the shoreline's position is x_s(t) = u₀t − ½ g sin β t² (Shen and Meyer 1963; Hughes 1992 on a sandy beach; Baldock and Holmes 1999), a parabola in time. Friction and infiltration make the backwash longer than the uprush on real beaches. Pinned: **the uprush is the first 0.4 of the period** (`k_swash_uprush`; a choice inside the asymmetry the field measurements show), both halves parabolic, so in the wave's own phase u the profile is 4s(1 − s) with s = u/2q on the uprush and ½ + (u − q)/2(1 − q) after; the front runs from **0.2 R below the still level** (`k_swash_rundown`, the backwash's rundown) up to the wave's reach and back. Every wave starts and ends at the rundown, so the profile is continuous whatever two neighbouring waves reach. The swash period is the wave's: on a reflective lake beach the swash is saturated by the incident wave, one sheet a wave.
+
+**Groups.** Waves come in groups (every few waves larger): pinned **seven waves a group** (`k_swash_group`), the reach of wave j of the group R · (0.55 + 0.45 (½ − ½ cos 2π(j + ½)/7)), 0.57 R at the group's ends and R in its middle. Periodic in the wave's index, which is what makes the last crossing a closed form (below). **Along the shore** the reach is jittered by value noise of the body-local point into [0.7, 1.3] and the phase drifts by up to 1.5 waves over the larger of 4 m and three swash widths, so the front is a ragged curve and never a straight line.
+
+**On the water's clock.** The resolve's water clock wraps every 1,024 s, so T is rounded to make a whole number of groups fit (2.004 s for a 2 s wave: 73 groups), and the profile has no jump at the wrap (`swash_tests.cpp` holds it periodic to 10⁻⁹).
+
+### When the front last passed (the derivation)
+
+For ground at height h above the still level and the place's phase c = t/T + φ, wave k = ⌊c⌋ and u = c − k: wave k's front is at or above h where z_lo + (A_k − z_lo) · 4s(1 − s) ≥ h, i.e. 4s(1 − s) ≥ c_k = (h − z_lo)/(A_k − z_lo). If c_k > 1 the wave never reaches h. Otherwise with r = √(1 − c_k), s ∈ [(1 − r)/2, (1 + r)/2], and mapped back through the two halves, **u ∈ [u₁, u₂] = [(1 − r) q, q + r (1 − q)]**. The front last stood at h at the end of the most recent such interval:
+
+- if wave k has reached h (u ≥ u₁): under the sheet while u ≤ u₂ (age 0), else **age = (u − u₂) T**;
+- else the most recent earlier wave k − j (j ≥ 1) with c_{k−j} ≤ 1: **age = (u + j − u₂(k − j)) T**.
+
+The reach repeats every seven waves, so waves k − 1 … k − 7 hold every reach there is: the search is at most seven, and a height none of them reaches was never reached (age ∞). The wetness above the fringe is then exp(−age / τ). Nothing is stored and every frame is a function of the clock. **Checked** (`swash_tests.cpp`): at a thousand random (t, h) the closed form against a brute-force scan of the profile backwards in steps of a 4,000th of a period over two groups, every one within a step, with some under the sheet, most drying and some never reached.
+
+### How long the sand stays wet
+
+The film a sheet leaves on sand drains into it fast: Turner and Masselink (1998) measured vertical flows of the order of 10⁻³ m/s through a beach face under individual swashes, so a few millimetres of film go in **seconds** — the gloss (pinned `k_swash_film_s` = 3 s). The sand under it stays near saturation much longer, draining to the damp of the capillary fringe over **tens of seconds** on sand: pinned **`drain_s` = 20 s** (a choice within the brief's "tens of seconds"; gravel drains in a few, silt and clay hold water for minutes, and the field is the body's). The darkening is Lekner and Dorf's as above, at the wetness the clock gives.
+
+**The fringe under a swash is damp, not filmed.** Version 4's band darkened by the full factor at the waterline because it stood for the swash's few centimetres too. With the swash drawn, the band above the highest sheet is the capillary fringe alone, whose surface is tension-saturated grains with no free film: pinned **half the saturated factor** (`k_swash_fringe`, a choice: Lekner and Dorf's relation is for a film), smoothstepping out at `wet_m`. Without that, a 0.3 m fringe would cover a lake's few-centimetre swash at full darkness and the drying the owner described would not show. A body with no wind and no tide keeps the full band.
+
+### Tides
+
+**M2**, the principal lunar semidiurnal constituent, the largest on most coasts: period 12.4206012 h (its speed 28.984° an hour; Doodson 1921). An open body's level is level + tide_m sin(2π t / T_M2) on the world clock (the phase computed in double on the CPU). One constituent, so no spring–neap cycle (S2 would add it) and no diurnal inequality; a scene that wants a particular stage of the tide at its start sets its world time.
+
+### Where the research and the budget were traded
+
+The mesh is not extended above the still level (a flat surface there is behind the ground and never drawn); the sheet over the bank is drawn on the ground's pixels as saturated sand with the water's Fresnel reflection of the sky and the foam, not as a volume: a few centimetres of sheet are what the eye sees as a dark glossy film, and a tide of metres over the bank is the same with no depth colour — the limit is on [water](../subsystems/water.md#the-swash). The film's gloss is a reflection added after the lighting, not a lowered roughness of the terrain material (S99). The per-pixel cost is a search of up to eight waves (a square root each) on the pixels of ground in the swash band and on the water within its band of the shore.
 ## What the fill costs at load
 
 Measured on MSVC debug (2026-11-07, `fill_tests.cpp`'s messages): the paraboloid of 10 m radius at 0.667 m — 698 nodes inside, 118 edge points, 816 vertices, 1,512 triangles — flooded, traced and meshed in **1.8 ms** (its traced outline within 6 mm of the circle). The v31 lake's numbers are in [water](../subsystems/water.md#a-body-that-fills).
@@ -45,6 +87,13 @@ Measured on MSVC debug (2026-11-07, `fill_tests.cpp`'s messages): the paraboloid
 - Koepke, P. (1984). Effective reflectance of oceanic whitecaps. *Applied Optics* 23(11), 1816–1824.
 - Lekner, J. and Dorf, M. C. (1988). Why some things are darker when wet. *Applied Optics* 27(7), 1278–1280.
 - Stockdon, H. F., Holman, R. A., Howd, P. A. and Sallenger, A. H. (2006). Empirical parameterization of setup, swash, and runup. *Coastal Engineering* 53, 573–588.
+- Baldock, T. E. and Holmes, P. (1999). Simulation and prediction of swash oscillations on a steep beach. *Coastal Engineering* 36, 219–242.
+- Doodson, A. T. (1921). The harmonic development of the tide-generating potential. *Proceedings of the Royal Society A* 100, 305–329.
+- Hasselmann, K. et al. (1973). Measurements of wind-wave growth and swell decay during the Joint North Sea Wave Project (JONSWAP). *Deutsche Hydrographische Zeitschrift* A8(12).
+- Hughes, M. G. (1992). Application of a non-linear shallow water theory to swash following bore collapse on a sandy beach. *Journal of Coastal Research* 8(3), 562–578.
+- Shen, M. C. and Meyer, R. E. (1963). Climb of a bore on a beach. Part 3: Run-up. *Journal of Fluid Mechanics* 16, 113–125.
+- Turner, I. L. and Masselink, G. (1998). Swash infiltration-exfiltration and sediment transport. *Journal of Geophysical Research* 103(C13), 30813–30824.
+- US Army Corps of Engineers (2002). *Coastal Engineering Manual*, EM 1110-2-1100, Part II, chapter 2 (fetch-limited wave growth).
 - Whitlock, C. H., Bartlett, D. S. and Gurganus, E. A. (1982). Sea foam reflectance and influence on optimum wavelength for remote sensing of ocean aerosols. *Geophysical Research Letters* 9(6), 719–722.
 - Dierssen, H. M. (2019). Hyperspectral measurements, parameterizations, and atmospheric correction of whitecaps and foam from visible to shortwave infrared for ocean color remote sensing. *Frontiers in Earth Science* 7:14.
 - Capillary rise by grain size (Silin-Bekchurin 1958, tabulated): NPTEL, *Groundwater hydrology*, Module 1 lecture 1; laboratory columns: GSA North-Central Section abstracts 2012 (paper 202803) and 2013 (paper 218691).

@@ -259,8 +259,10 @@ ENGINE_EXPECT_SIZE(48, 8, gfx::HizParams);
 // water modules declare.
 ENGINE_EXPECT_SIZE(544, 8, gfx::ResolveParams);
 
-// The wet band's record (S97; water.md, "The shore"), mirrored by water.slang's WaterShore.
-ENGINE_EXPECT_SIZE(32, 4, gfx::WaterShore);
+// The shore's record (S97; water.md, "The shore"), mirrored by water.slang's WaterShore. 64 since
+// S94: the swash's run-up, period, drain, slope, tide, wave height, foam and shore widths, and the
+// water material's index, by which the branch finds its body's record.
+ENGINE_EXPECT_SIZE(64, 4, gfx::WaterShore);
 
 // The sky (sky.h; docs/subsystems/gfx.md, "The sky"): the air, the lights, the eye, the celestial
 // frame, the exposure, the tables' addresses, and a view's inverse projection and pixel angle for

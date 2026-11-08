@@ -7,6 +7,7 @@
 #include <domain/gfx/capture.h>
 #include <domain/gfx/display.h>
 #include <domain/gfx/gi_cache.h>
+#include <domain/gfx/water_swash.h>
 #include <foundation/io/vfs.h>
 #include <systems/renderer/caster_volume.h>
 #include <systems/renderer/lighting.h>
@@ -3019,6 +3020,12 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
     resolve.water_open_material = scene.water_open_material();
     resolve.water_shores = scene.water_shores_address();
     resolve.water_shore_count = scene.water_shore_count();
+    // The tide's phase (S94; water.md, "The shore"): the world clock over the M2 period, in double,
+    // since the water's clock above wraps every 1,024 s.
+    {
+      const f64 cycles = frame.world_time_s / gfx::k_water_m2_period_s;
+      resolve.water_tide_phase = static_cast<f32>(cycles - std::floor(cycles));
+    }
     // The resolve's split (R115; renderer.md, "Where the resolve's time goes"): 0, the picture,
     // unless `renderer.resolve.stop_after` measures a stage.
     resolve.resolve_stop = resolve_stop_tunable(frame.frame_index);

@@ -87,8 +87,10 @@ SceneWaterDepth read_depth_map(const std::string& mesh_path) {
     std::memcpy(&v, &bits, sizeof(v));
     return v;
   };
-  // "EWDM", version 1, the size, 0, origin x and z, the texel, the range; then u16 texels.
-  if (bytes.size() < 32 || u32_at(0) != 0x4d445745u || u32_at(4) != 1u) {
+  // "EWDM", the version, the size, the bank (version 1: 0), origin x and z, the texel, the
+  // deepest; then u16 texels over [-bank, deepest] (version 1: [0, deepest]).
+  const u32 version = bytes.size() >= 8 ? u32_at(4) : 0u;
+  if (bytes.size() < 32 || u32_at(0) != 0x4d445745u || (version != 1u && version != 2u)) {
     ENGINE_LOG_WARN(log_renderer, "water depth map unread", log::field("path", path));
     return map;
   }
@@ -101,6 +103,11 @@ SceneWaterDepth read_depth_map(const std::string& mesh_path) {
   map.origin = Vec2{f32_at(16), f32_at(20)};
   map.texel_m = f32_at(24);
   map.depth_max = f32_at(28);
+  map.bank_max = version == 1u ? 0.0f : f32_at(12);
+  if (!(map.bank_max >= 0.0f) || !std::isfinite(map.bank_max)) {
+    ENGINE_LOG_WARN(log_renderer, "water depth map unread", log::field("path", path));
+    return SceneWaterDepth{};
+  }
   map.texels.resize(size * size);
   for (u32 t = 0; t < size * size; ++t)
     map.texels[t] = static_cast<u16>(byte(32 + usize{t} * 2) | (byte(33 + usize{t} * 2) << 8));
@@ -162,6 +169,7 @@ bool read_scene_water(const scene::Scene& file, const std::string& path, const s
     // An open sea's waves from the spectrum (water.md, "The spectrum"): the ground's wind where it
     // has one and the body follows it, the body's own otherwise; none, and the four sines.
     if (wind <= 0.0f) wind = file.water[k].wind_m_s;
+    water.wind_m_s = wind;
     if (file.water[k].open && wind > 0.0f) {
       gfx::WaterWave waves[gfx::k_water_waves];
       gfx::water_spectrum(static_cast<f64>(wind), static_cast<f64>(file.water[k].fetch_km) * 1000.0,

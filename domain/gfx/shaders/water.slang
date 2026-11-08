@@ -312,7 +312,8 @@ struct WaterDepthMap {
   float2 uv_origin;  // the map's UV at the body's centre
   float uv_per_m;
   float half_texel;  // in UV
-  float depth_max;   // the depth a texel of 65535 is
+  float depth_max;   // the range a texel of 65535 spans: the deepest plus the bank (S94)
+  float bank;        // the signed map's bank: a texel of 0 is this high above the level
 };
 
 WaterDepthMap water_depth_map_of(ResolveMaterial m) {
@@ -323,16 +324,25 @@ WaterDepthMap water_depth_map_of(ResolveMaterial m) {
   d.uv_per_m = m.uv_offset.z;
   d.depth_max = m.uv_offset.w;
   d.half_texel = m.uv_transform.w;
+  d.bank = m.emissive.w;
   return d;
 }
 
-// The depth at body-local (x, z): red and green are the 16-bit depth's two bytes, and the depth is
-// linear in both, so the filtered pair is the filtered depth.
-float water_depth_sample(WaterDepthMap d, float2 p) {
+// The **signed** depth at body-local (x, z) (version 2 of the map, S94): red and green are the
+// 16-bit value's two bytes over [-bank, deepest], linear in both, so the filtered pair is the
+// filtered depth; on the bank it is the ground's height above the level, negated.
+float water_depth_signed(WaterDepthMap d, float2 p) {
   const float2 uv = clamp(d.uv_origin + p * d.uv_per_m, d.half_texel, 1.0 - d.half_texel);
   const float4 t = g_textures[NonUniformResourceIndex(d.texture)]
                        .SampleLevel(g_samplers[NonUniformResourceIndex(d.sampler)], uv, 0);
-  return (t.r * (65280.0 / 65535.0) + t.g * (255.0 / 65535.0)) * d.depth_max;
+  return (t.r * (65280.0 / 65535.0) + t.g * (255.0 / 65535.0)) * d.depth_max - d.bank;
+}
+
+// The depth at body-local (x, z), never below zero: what the bottom, the march and the calm read,
+// as they did with the map clamped at zero (a map with no bank is that map, to the bit).
+float water_depth_sample(WaterDepthMap d, float2 p) {
+  const float signed_depth = water_depth_signed(d, p);
+  return d.bank > 0.0 ? max(signed_depth, 0.0) : signed_depth;
 }
 
 // The refracted view run down to the ground as a **height field**: `k_water_march_steps` fixed
@@ -494,14 +504,22 @@ static const float k_water_wet_internal = 0.474362;
 // slang's k_material_terrain_layers and k_material_terrain_map).
 static const uint k_water_wet_materials = 8u | 512u | 1024u;
 
-// Mirrors gfx::WaterShore (32 bytes).
+// Mirrors gfx::WaterShore (64 bytes).
 struct WaterShore {
   uint instance;
   float wet_m;
   float2 lo;
   float2 hi;
   uint terrain_mesh;  // the scene's terrain mesh, or 0xffffffff
-  float pad;
+  uint material;      // the body's water material's index in the table (S94)
+  float run_up_m;     // Stockdon's R2 over the foreshore slope; 0: no swash
+  float period_s;     // the wave's period, rounded onto the water's clock
+  float drain_s;      // the sand's drying time
+  float slope;        // the foreshore slope at the waterline
+  float tide_m;       // an open body's tide (M2)
+  float height_m;     // the wind's significant wave height
+  float foam_m;
+  float shore_m;
 };
 
 // **Where the level meets the ground, per pixel**: the distance in from the waterline, metres, as
@@ -514,10 +532,11 @@ struct WaterShore {
 float water_shore_distance(WaterDepthMap d, float2 p, float depth) {
   if (!(depth > 0.0)) return 0.0;
   const float h = 2.0 * d.half_texel / d.uv_per_m;
-  const float px = water_depth_sample(d, p + float2(h, 0.0));
-  const float mx = water_depth_sample(d, p - float2(h, 0.0));
-  const float pz = water_depth_sample(d, p + float2(0.0, h));
-  const float mz = water_depth_sample(d, p - float2(0.0, h));
+  // Since the signed map (S94) the bank's side gives its own slope too.
+  const float px = water_depth_signed(d, p + float2(h, 0.0));
+  const float mx = water_depth_signed(d, p - float2(h, 0.0));
+  const float pz = water_depth_signed(d, p + float2(0.0, h));
+  const float mz = water_depth_signed(d, p - float2(0.0, h));
   const float gx = max(abs(px - depth), abs(depth - mx)) / h;
   const float gz = max(abs(pz - depth), abs(depth - mz)) / h;
   const float g = sqrt(gx * gx + gz * gz);
@@ -593,6 +612,188 @@ float3 water_wet_factor(float3 albedo, float height, float wet_m) {
   const float wet = 1.0 - smoothstep(0.0, wet_m, height);
   const float3 dark = k_water_wet_through / (1.0 - k_water_wet_internal * clamp(albedo, 0.0, 1.0));
   return lerp(float3(1.0), min(dark, float3(1.0)), wet);
+}
+
+// ---- the swash (S94; docs/subsystems/water.md, "The shore"; docs/experiments/shore.md, "The
+// swash"; mirrored in double by domain/gfx/water_swash.h, which the tests hold against a brute-force
+// scan) ------------------------------------------------------------------------------------------
+// The waterline runs up the shore and back with every wave and the sand it leaves dries with time,
+// with no history: every quantity is a function of the clock and the place.
+static const uint k_swash_group = 7u;          // gfx::k_swash_group
+static const float k_swash_uprush = 0.4;       // gfx::k_swash_uprush
+static const float k_swash_rundown = 0.2;      // gfx::k_swash_rundown
+static const float k_swash_never = 1e9;        // gfx::k_swash_never
+// The water film the sheet leaves on sand drains into it in seconds (swash infiltration of the
+// order of 1e-3 m/s, Turner and Masselink 1998, through a film of a few millimetres): the band's
+// gloss, which goes long before its darkness (`drain_s`).
+static const float k_swash_film_s = 3.0;
+// The capillary fringe under a swash: the surface of sand above the swash is damp, not filmed; the
+// fringe darkens it to half of Lekner and Dorf's saturated factor (shore.md, "The swash").
+static const float k_swash_fringe = 0.5;
+// The along-shore scale of the front's raggedness and phase drift: the larger of this and three
+// swash widths (R over the slope).
+static const float k_swash_raggedness_m = 4.0;
+// The albedo a bared pixel of the water mesh is darkened as (its ground's own is not at hand in the
+// branch): sand's (the beach's ~0.35-0.4).
+static const float k_swash_bared_albedo = 0.35;
+
+struct WaterSwashPlace {
+  float run_up;
+  float period;
+  float phase;   // cycles
+  float jitter;  // the reach's factor here
+};
+
+bool water_swash_on(WaterShore s) { return s.run_up_m > 0.0 && s.period_s > 0.0; }
+
+// The place's phase offset (1.5 cycles of drift over the raggedness scale) and reach jitter
+// ([0.7, 1.3]), value noise of the body-local point.
+WaterSwashPlace water_swash_place(WaterShore s, float2 p) {
+  WaterSwashPlace w;
+  w.run_up = s.run_up_m;
+  w.period = s.period_s;
+  const float scale = max(k_swash_raggedness_m, 3.0 * s.run_up_m / max(s.slope, 1e-3));
+  w.phase = 1.5 * water_value_noise(p / scale);
+  w.jitter = 0.7 + 0.6 * water_value_noise(p * (2.0 / scale) + float2(17.3, 5.1));
+  return w;
+}
+
+float water_swash_group(uint j) {
+  const float x = (float(j % k_swash_group) + 0.5) / float(k_swash_group);
+  return 0.55 + 0.45 * (0.5 - 0.5 * cos(k_water_two_pi * x));
+}
+
+float water_swash_shape(float u) {
+  const float q = k_swash_uprush;
+  const float s = u < q ? u / (2.0 * q) : 0.5 + (u - q) / (2.0 * (1.0 - q));
+  return 4.0 * s * (1.0 - s);
+}
+
+// The wave index k is never negative: the clock and the phase are.
+float water_swash_reach(WaterSwashPlace w, int wave) {
+  const uint j = uint(wave + int(k_swash_group) * 64) % k_swash_group;
+  return w.run_up * water_swash_group(j) * w.jitter;
+}
+
+// The front's height above the still level at time t, and whether it is running up.
+float water_swash_front(WaterSwashPlace w, float t, out bool uprush) {
+  const float c = t / w.period + w.phase;
+  const float k = floor(c);
+  const float u = c - k;
+  uprush = u < k_swash_uprush;
+  const float z_lo = -k_swash_rundown * w.run_up;
+  const float a = water_swash_reach(w, int(k));
+  return z_lo + (a - z_lo) * water_swash_shape(u);
+}
+
+// Seconds since the front last stood at or above h: 0 under the sheet, `k_swash_never` where no
+// wave of the group reaches (gfx::swash_age, step for step).
+float water_swash_age(WaterSwashPlace w, float t, float h) {
+  const float z_lo = -k_swash_rundown * w.run_up;
+  if (h <= z_lo) return 0.0;
+  const float c = t / w.period + w.phase;
+  const float kf = floor(c);
+  const int k = int(kf);
+  const float u = c - kf;
+  const float q = k_swash_uprush;
+  for (uint j = 0; j <= k_swash_group; ++j) {
+    const float a = water_swash_reach(w, k - int(j));
+    const float ck = (h - z_lo) / (a - z_lo);
+    if (!(ck <= 1.0)) continue;
+    const float r = sqrt(max(0.0, 1.0 - ck));
+    const float u1 = (1.0 - r) * q;
+    const float u2 = q + r * (1.0 - q);
+    const float now = u + float(j);
+    if (j == 0 && u < u1) continue;
+    if (now <= u2) return 0.0;
+    return (now - u2) * w.period;
+  }
+  return k_swash_never;
+}
+
+// An open body's tide at the frame's phase of M2, metres above the level.
+float water_swash_tide(WaterShore s, float tide_phase) {
+  return s.tide_m > 0.0 ? s.tide_m * sin(k_water_two_pi * tide_phase) : 0.0;
+}
+
+// The wetness of ground `h` metres above the still level (the tide's): 1 under the sheet, the
+// sheet's mark decaying by `drain_s` since the front last left, over the capillary fringe's damp
+// floor; and the film's gloss, which drains in seconds.
+float water_swash_wetness(WaterShore s, WaterSwashPlace w, float t, float h, out float film) {
+  const float age = water_swash_age(w, t, h);
+  const float mark = exp(-age / max(s.drain_s, 1e-3));
+  film = exp(-age / k_swash_film_s);
+  float fringe = 0.0;
+  if (s.wet_m > 0.0 && h >= 0.0 && h < s.wet_m) fringe = k_swash_fringe * (1.0 - smoothstep(0.0, s.wet_m, h));
+  else if (s.wet_m > 0.0 && h < 0.0) fringe = k_swash_fringe;
+  return fringe + (1.0 - fringe) * mark;
+}
+
+// Lekner and Dorf's factor on an albedo at a wetness in [0, 1].
+float3 water_wet_darkening(float3 albedo, float wet) {
+  const float3 dark = k_water_wet_through / (1.0 - k_water_wet_internal * clamp(albedo, 0.0, 1.0));
+  return lerp(float3(1.0), min(dark, float3(1.0)), clamp(wet, 0.0, 1.0));
+}
+
+// **The foam riding the front**: `x` metres behind the front along the slope (x >= 0 is under the
+// sheet, x < 0 the sand above it). The running-up sheet's leading edge is a bore of foam a quarter
+// of `foam_m` deep with a trail behind it; the backwash leaves a lace a tenth of `foam_m` wide at
+// its retreating edge. Strength from the wave's height (whole at 4 cm), broken by value noise at a
+// quarter of `foam_m`; a line narrower than the footprint is widened to it and dimmed by the share.
+float water_swash_foam(WaterShore s, float2 p, float x, bool uprush, float t, float footprint) {
+  if (!(s.foam_m > 0.0)) return 0.0;
+  const float strength = clamp(s.height_m / (2.0 * k_water_foam_full_amplitude), 0.0, 1.0);
+  if (!(strength > 0.0)) return 0.0;
+  const float thin = (uprush ? 0.25 : 0.1) * s.foam_m;
+  const float width = max(thin, footprint);
+  const float y = max(x, 0.0) / width;
+  const float line = exp(-y * y) * (thin / width) * (x >= -footprint ? 1.0 : 0.0);
+  const float trail = uprush ? 0.35 * clamp(1.0 - x / s.foam_m, 0.0, 1.0) * (x >= 0.0 ? 1.0 : 0.0)
+                             : 0.0;
+  const float breakup =
+      water_value_noise(p * (4.0 / s.foam_m) + float2(0.37, 0.71) * (t / max(s.period_s, 1e-3)));
+  return strength * clamp((line + trail) * (0.3 + 1.1 * breakup), 0.0, 1.0);
+}
+
+// **A ground pixel in the swash** (the resolve's water stage, after the lighting): `color` the
+// shaded ground, `h` its height above the body's level. Under the sheet (h below the front and the
+// tide) the ground is saturated and the sheet's water reflects the sky by Fresnel, faded in from
+// the waterline over `shore_m` as the water mesh's surface is, so the two meet at the still level;
+// above it the sand is as wet as the clock says and its film reflects while it lasts; the foam
+// rides the front. `reflected` is the sky along the mirrored view, `foam_light` what a level
+// Lambertian surface takes from the sun and the sky.
+float3 water_swash_ground(float3 color, float3 albedo, WaterShore s, float2 p, float h, float t,
+                          float tide_phase, float3 view, float3 reflected, float3 foam_light,
+                          float footprint) {
+  const float level = water_swash_tide(s, tide_phase);
+  const float hh = h - level;
+  float front = 0.0;
+  bool uprush = false;
+  float wet;
+  float film;
+  WaterSwashPlace w = {};
+  if (water_swash_on(s)) {
+    w = water_swash_place(s, p);
+    front = water_swash_front(w, t, uprush);
+    wet = water_swash_wetness(s, w, t, hh, film);
+  } else {
+    // A tide alone: the waterline is the tide's level, and the sand above it the fringe's.
+    film = hh < 0.0 ? 1.0 : 0.0;
+    wet = hh < 0.0 ? 1.0 : (s.wet_m > 0.0 && hh < s.wet_m ? 1.0 - smoothstep(0.0, s.wet_m, hh) : 0.0);
+  }
+  float3 c = color * water_wet_darkening(albedo, wet);
+  const float slope = max(s.slope, 1e-3);
+  const float x = (front - hh) / slope;  // metres behind the front, along the slope
+  const float fresnel = brdf_f_schlick(float3(k_water_f0), max(view.y, k_min_n_dot_v)).x;
+  // The sheet's surface (x > 0), and the film the backwash leaves (its gloss).
+  const float sheet = x > 0.0 ? clamp(x / max(s.shore_m, 1e-3), 0.0, 1.0) : 0.0;
+  const float gloss = max(sheet, x > 0.0 ? 0.0 : film * 0.5);
+  c = c * (1.0 - fresnel * gloss) + reflected * (fresnel * gloss);
+  if (water_swash_on(s)) {
+    const float foam = water_swash_foam(s, p, x, uprush, t, footprint);
+    if (foam > 0.0) c = lerp(c, k_water_foam_albedo * foam_light, foam);
+  }
+  return c;
 }
 
 // ---- channels of flowing water (gfx::k_material_water_channel; water.md, "Channels"; S96) ------
