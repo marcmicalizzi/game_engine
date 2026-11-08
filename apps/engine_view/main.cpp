@@ -82,6 +82,11 @@
 #include <systems/volumetrics/volumetrics.h>
 #endif
 #include <systems/renderer/terrain_time.h>
+// The collision debug draw (P62; scene_collision.md, "Seeing the collision"): linked with the
+// walker's collision.
+#if ENGINE_VIEW_WALK_PHYSICS
+#include <systems/scene_collision/collision_draw.h>
+#endif
 
 #include <engine_build_stamp.h>
 #include <schemas/scene.h>
@@ -302,6 +307,13 @@ constexpr const char* k_usage =
     "  --no-medium     do not draw the scene's participating medium (its `medium` block: the dust\n"
     "                   haze, the crest plumes, the far clouds; docs/subsystems/volumetrics.md)\n"
     "  --medium-debug <froxels|plumes|clouds>  draw one of the medium's sources alone, for a look\n"
+    "  --collision-draw  draw what the walker collides with over the picture, depth-tested: every\n"
+    "                   held tile's proxy triangles as wireframe (a colour a body, the walker's\n"
+    "                   tile brighter), the ground's collision lattice, the walker's capsule; the\n"
+    "                   tiles round the walker, or round the eye in flight\n"
+    "                   (docs/subsystems/scene_collision.md, \"Seeing the collision\")\n"
+    "  --collision-draw-radius <m>  draw the tiles within this of the walker (default: the\n"
+    "                   collision ring's, walk.collision.radius_tiles)\n"
     "  --no-shadow-casters  with rt shadows, drop what the normal-cone test culls from the\n"
     "                   shadows too. By default a cluster that faces away from the camera is\n"
     "                   kept out of the picture but still built into the frame's acceleration\n"
@@ -755,6 +767,9 @@ struct Options {
   // scene's `medium` block undrawn, `--medium-debug` draws one source alone.
   bool no_medium = false;
   std::string medium_debug;
+  // The collision debug draw (P62): --collision-draw, and its radius in metres (0: the ring's).
+  bool collision_draw = false;
+  f32 collision_draw_radius = 0.0f;
   // The interactive camera (fly_camera.h). `--replay-input` implies `interactive`; `offscreen`
   // is resolved after parsing, because `--benchmark` means "offscreen" for a flythrough and a
   // replay and "measure the window" for a live session somebody is flying.
@@ -1168,6 +1183,52 @@ bool start_medium(ViewMedium& medium, const gfx::Device& device, renderer::Scene
                     log::field("switch", "ENGINE_WITH_VOLUMETRICS"));
   }
   return true;
+#endif
+}
+
+// ---- the collision debug draw (P62; scene_collision.md, "Seeing the collision")
+// ------------------
+//
+// Its own consumer round the frame's eye (or the walker's feet), keeping its shapes, and the frame
+// pass that draws it; unregistered before the renderer goes. A build without the walker's collision
+// refuses the flag.
+struct ViewCollisionDraw {
+#if ENGINE_VIEW_WALK_PHYSICS
+  std::unique_ptr<renderer::TerrainSampler> sampler;
+  scene_collision::CollisionView view;
+  scene_collision::CollisionDraw draw;
+#endif
+};
+
+bool start_collision_draw(ViewCollisionDraw& out, const gfx::Device& device,
+                          renderer::SceneRenderer& view, const renderer::SceneData& scene,
+                          const Options& options, std::string& error) {
+  if (!options.collision_draw) return true;
+#if ENGINE_VIEW_WALK_PHYSICS
+  const scene_gen::GroundProvider* ground = nullptr;
+  if (scene.terrain.enabled) {
+    out.sampler = std::make_unique<renderer::TerrainSampler>(scene.terrain);
+    if (out.sampler->ok()) ground = &out.sampler->provider();
+  }
+  const f32 tile = scene.world.enabled ? scene.world.tile_size : 32.0f;
+  const f32 ring = scene_collision::radius_tunable();
+  const f32 radius_m =
+      options.collision_draw_radius > 0.0f ? options.collision_draw_radius : ring * tile;
+  scene_collision::Config config = scene_collision::config_from_tunables(tile);
+  if (!out.view.create(scene, ground, config, std::max(ring, radius_m / tile + 0.5f), &error))
+    return false;
+  scene_collision::DrawOptions draw;
+  draw.radius_m = radius_m;
+  if (!out.draw.create(device, view, draw, &error)) return false;
+  out.draw.follow_eye(&out.view);
+  return true;
+#else
+  (void)out;
+  (void)device;
+  (void)view;
+  (void)scene;
+  error = "--collision-draw: this build has no collision (ENGINE_WITH_SCENE_COLLISION is off)";
+  return false;
 #endif
 }
 
@@ -2854,6 +2915,7 @@ int run_offscreen(Options& options, Interactive& interactive) {
   renderer::GpuScene scene_off;
   renderer::SceneRenderer renderer_off;
   ViewMedium medium;  // brief-volumetrics: after the renderer, so it unregisters first
+  ViewCollisionDraw collision_draw;  // P62: after the renderer, so it unregisters first
   renderer::VisibleCensus census;
 #if ENGINE_VIEW_WORLD
   view::ViewWorld view_world;  // a streamed world, when the scene is one (world_view.h)
@@ -3117,6 +3179,11 @@ int run_offscreen(Options& options, Interactive& interactive) {
         exit_code = fail("medium", error);  // brief-volumetrics
         break;
       }
+      if (!start_collision_draw(collision_draw, device, view_renderer, scene_data, options,
+                                error)) {
+        exit_code = fail("collision-draw", error);  // P62
+        break;
+      }
     }
     auto camera_at = [&](u32 f) {
       return have_path
@@ -3353,6 +3420,14 @@ int run_offscreen(Options& options, Interactive& interactive) {
             player_camera(session, session.state(), session.camera(), session.third_person());
         frame.frame_index = session.frame_index();
         view::set_frame_walker(walker, session.walking(), frame.flora);  // the trees' push
+#if ENGINE_VIEW_WALK_PHYSICS
+        if (collision_draw.draw
+                .valid()) {  // P62: the walker's capsule, and its ring round the feet
+          scene_collision::DrawCapsule capsule{walker.feet(), walker.params().radius,
+                                               walker.params().height};
+          collision_draw.draw.set_capsule(session.walking() ? &capsule : nullptr);
+        }
+#endif
         set_clocks(frame);
         frame.overlay = game_hud_overlay(view_renderer);  // the game's HUD, when it has one
         animate_frame(frame, 0);                          // the ticks above stepped the world
@@ -3948,6 +4023,9 @@ int run_offscreen(Options& options, Interactive& interactive) {
 #endif
 #if ENGINE_VIEW_VOLUMETRICS
   medium.pass.destroy();  // brief-volumetrics: its frame pass and buffers, before the renderer
+#endif
+#if ENGINE_VIEW_WALK_PHYSICS
+  collision_draw.draw.destroy();  // P62: its frame pass and buffers, before the renderer
 #endif
   renderer_off.destroy();
   view_renderer.destroy();
@@ -4562,6 +4640,16 @@ int run_view(int argc, char** argv) {
     } else if (a == "--medium-debug") {  // brief-volumetrics
       if (!next_value(argc, argv, i, a, value)) return k_exit_usage;
       options.medium_debug = value;
+    } else if (a == "--collision-draw") {  // P62
+      options.collision_draw = true;
+    } else if (a == "--collision-draw-radius") {  // P62
+      if (!next_value(argc, argv, i, a, value)) return k_exit_usage;
+      options.collision_draw = true;
+      options.collision_draw_radius = std::strtof(value.c_str(), nullptr);
+      if (!(options.collision_draw_radius > 0.0f)) {
+        std::fprintf(stderr, "--collision-draw-radius expects metres above 0\n");
+        return k_exit_usage;
+      }
     } else if (a == "--no-texture-sharing") {
       options.settings.share_textures = false;
     } else if (a == "--no-lights") {
@@ -5557,6 +5645,7 @@ int run_view(int argc, char** argv) {
   renderer::FilePageSource page_source;
   renderer::SceneRenderer view_renderer;
   ViewMedium medium;  // brief-volumetrics: after the renderer, so it unregisters first
+  ViewCollisionDraw collision_draw;  // P62: after the renderer, so it unregisters first
 #if ENGINE_VIEW_WORLD
   // A streamed world, following the camera a frame behind: the loop below knows a frame's camera
   // only after it has begun the frame, and the tail changes between frames (world_view.h).
@@ -6064,6 +6153,10 @@ int run_view(int argc, char** argv) {
     }
     if (!start_medium(medium, device, view_renderer, scene_data, options, error)) {
       exit_code = fail("medium", error);  // brief-volumetrics
+      break;
+    }
+    if (!start_collision_draw(collision_draw, device, view_renderer, scene_data, options, error)) {
+      exit_code = fail("collision-draw", error);  // P62
       break;
     }
     renderer_stage.end();
@@ -6764,6 +6857,14 @@ int run_view(int argc, char** argv) {
             frame.camera, session.third_person());
         frame.frame_index = session.frame_index();
         view::set_frame_walker(walker, session.walking(), frame.flora);  // the trees' push
+#if ENGINE_VIEW_WALK_PHYSICS
+        if (collision_draw.draw
+                .valid()) {  // P62: the walker's capsule, and its ring round the feet
+          scene_collision::DrawCapsule capsule{walker.feet(), walker.params().radius,
+                                               walker.params().height};
+          collision_draw.draw.set_capsule(session.walking() ? &capsule : nullptr);
+        }
+#endif
         // What the frame draws, for the frame log: the pose and the simulated time it stands for.
         drawn = view::fly_interpolate(session.previous(), session.state(), alpha);
         const u64 last_tick = session.tick().value;
@@ -7245,6 +7346,9 @@ int run_view(int argc, char** argv) {
 #endif
 #if ENGINE_VIEW_VOLUMETRICS
   medium.pass.destroy();  // brief-volumetrics: its frame pass and buffers, before the renderer
+#endif
+#if ENGINE_VIEW_WALK_PHYSICS
+  collision_draw.draw.destroy();  // P62: its frame pass and buffers, before the renderer
 #endif
   view_renderer.destroy();
   page_source.destroy();

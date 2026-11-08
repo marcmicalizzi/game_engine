@@ -333,11 +333,26 @@ bool SceneCollision::create(physics::World& physics, const renderer::SceneData& 
   // sources place their own. The terrain is the ground's, and a skinned instance moves, so neither
   // has a static body.
   bins_.clear();
+  // **The far forest gets no body** (P62, 2026-11-08): a far tile's mesh is the coarsest forms of
+  // every streamed tree on a world tile merged into one rigid instance of the prefix, drawn only
+  // where the ring's tail does not draw that tile's trees — so never round a walker, whose tile the
+  // tail always holds. Binned as a prefix instance (W88) it was a wall of impostor cards a crown
+  // wide round every trunk of the tile, invisible, which the owner walked into in the v35 forest.
+  far_meshes_.clear();
+  for (const renderer::FarForestTile& far : scene.far_forest.tiles) {
+    if (far.mesh >= far_meshes_.size()) far_meshes_.resize(far.mesh + 1, u8{0});
+    far_meshes_[far.mesh] = 1;
+  }
+  stats_.far_forest_left_out = 0;
   {
     for (u32 i = 0; i < scene.instances.size(); ++i) {
       const gfx::InstanceDesc& instance = scene.instances[i];
       if (instance.mesh == scene.terrain_mesh || instance.mesh >= scene.parts.size()) continue;
       if (water_mesh(scene, instance.mesh)) continue;
+      if (far_mesh(instance.mesh)) {
+        ++stats_.far_forest_left_out;
+        continue;
+      }
       if (i < scene.instance_joints.size() && scene.instance_joints[i] != 0) continue;
       const geometry::ClusterMeshPart& part = scene.parts[instance.mesh];
       Aabb3 local = Aabb3::empty();
@@ -764,6 +779,43 @@ bool SceneCollision::ground_height(WorldPos at, f32& out) const noexcept {
   return true;
 }
 
+bool SceneCollision::held_tile(u32 index, HeldTile& out) const noexcept {
+  if (index >= tiles_.size()) return false;
+  const Tile& tile = tiles_.value_at(index);
+  out = HeldTile{};
+  out.coord = tile.coord;
+  out.corner = tile_corner(tile.coord);
+  if (tile.ground) {
+    out.i0 = tile.i0;
+    out.j0 = tile.j0;
+    out.n = tile.n;
+    out.heights = std::span<const f32>(tile.heights.data(), tile.heights.size());
+  }
+  out.spacing_m = static_cast<f64>(spacing_mm_) / 1000.0;
+  out.pieces = tile.pieces_held.size();
+  return true;
+}
+
+bool SceneCollision::held_piece(u32 tile_index, u32 piece, HeldPiece& out) const noexcept {
+  if (tile_index >= tiles_.size()) return false;
+  const Tile& tile = tiles_.value_at(tile_index);
+  if (piece >= tile.pieces_held.size()) return false;
+  const PieceRecord& record = tile.pieces_held[piece];
+  out = HeldPiece{};
+  out.mesh = record.mesh;
+  out.instance = record.instance;
+  out.entry = record.entry;
+  out.offset = record.offset;
+  out.rotation = record.rotation;
+  if (record.proxy != nullptr) {
+    out.vertices =
+        std::span<const Vec3>(record.proxy->vertices.data(), record.proxy->vertices.size());
+    out.indices = std::span<const u32>(record.proxy->indices.data(), record.proxy->indices.size());
+    out.parts = std::span<const u32>(record.proxy->parts.data(), record.proxy->parts.size());
+  }
+  return true;
+}
+
 bool SceneCollision::ground_body(physics::BodyId body) const noexcept {
   if (!body) return false;
   for (u32 i = 0; i < tiles_.size(); ++i) {
@@ -833,12 +885,12 @@ u32 SceneCollision::follow(physics::CharacterBody& walker) {
 // worker and the tick may both ask, so the cache is looked in and a proxy built under its lock —
 // one proxy is built at a time, whoever asks, and every asker of a key gets the one shape. The
 // scene's DAG is read only, and the cut is made in the asker's scratch.
-const physics::BuiltShape* SceneCollision::proxy_for(u32 mesh, Vec3 scale,
-                                                     PlacementScratch& scratch) {
+const SceneCollision::Proxy* SceneCollision::proxy_for(u32 mesh, Vec3 scale,
+                                                       PlacementScratch& scratch) {
   const u64 key = proxy_key(mesh, scale);
   std::lock_guard<std::mutex> lock(proxies_mutex_);
   if (const std::unique_ptr<Proxy>* proxy = proxies_.find_value(key))
-    return (*proxy)->shape ? &(*proxy)->shape : nullptr;
+    return (*proxy)->shape ? proxy->get() : nullptr;
   Vector<Vec3>& vertices = scratch.vertices;
   Vector<u32>& indices = scratch.indices;
   FlatMap<u32, u32>& remap = scratch.remap;
@@ -853,6 +905,7 @@ const physics::BuiltShape* SceneCollision::proxy_for(u32 mesh, Vec3 scale,
   vertices.clear();
   indices.clear();
   remap.clear();
+  scratch.parts.clear();
   const bool has_lod = lod.lod.size() == lod.mesh.clusters.size();
   // **A tree collides by its wood** (scene_collision.md, "What gets no body"): a mesh that carries
   // the motion contract keeps a triangle only when all three corners are of a part that stays a
@@ -912,9 +965,20 @@ const physics::BuiltShape* SceneCollision::proxy_for(u32 mesh, Vec3 scale,
       indices.push_back(corner[0]);
       indices.push_back(mirrored ? corner[2] : corner[1]);
       indices.push_back(mirrored ? corner[1] : corner[2]);
+      if (config_.keep_shapes) {
+        const u32 first = cluster.vertex_offset + local[0] - part.first_vertex;
+        scratch.parts.push_back(tree != nullptr && first < tree->motion_vertices.size()
+                                    ? u32{tree->motion_vertices[first].part}
+                                    : 0u);
+      }
     }
   }
   auto proxy = std::make_unique<Proxy>();
+  if (config_.keep_shapes) {
+    proxy->vertices = vertices;
+    proxy->indices = indices;
+    proxy->parts = scratch.parts;
+  }
   if (!indices.empty() &&
       physics_->build_mesh(std::span<const Vec3>(vertices.data(), vertices.size()),
                            std::span<const u32>(indices.data(), indices.size()),
@@ -925,7 +989,7 @@ const physics::BuiltShape* SceneCollision::proxy_for(u32 mesh, Vec3 scale,
     u32 triangles = 0;
     if (physics_->built_memory(proxy->shape, false, bytes, triangles)) proxy_stats_.bytes += bytes;
   }
-  const physics::BuiltShape* out = proxy->shape ? &proxy->shape : nullptr;
+  const Proxy* out = proxy->shape ? proxy.get() : nullptr;
   proxies_.try_emplace(key, std::move(proxy));
   proxy_stats_.ns += time::monotonic_ns() - start;
   return out;
@@ -937,20 +1001,30 @@ WorldPos SceneCollision::tile_corner(world::TileCoord coord) const noexcept {
 }
 
 bool SceneCollision::add_piece(u32 mesh, const Mat4& linear, WorldPos at, WorldPos corner,
-                               PlacementScratch& scratch) {
+                               PlacementScratch& scratch, u32 instance, u32 entry) {
   if (mesh >= scene_->parts.size() || mesh == scene_->terrain_mesh) return false;
-  if (water_mesh(*scene_, mesh)) return false;
+  if (water_mesh(*scene_, mesh) || far_mesh(mesh)) return false;
   Placement placed;
   if (!decompose(linear, placed)) return false;
-  const physics::BuiltShape* shape = proxy_for(mesh, placed.scale, scratch);
-  if (shape == nullptr) return false;
+  const Proxy* proxy = proxy_for(mesh, placed.scale, scratch);
+  if (proxy == nullptr) return false;
   physics::BuiltChild child;
-  child.shape = shape;
+  child.shape = &proxy->shape;
   // In the compound's frame, which is the tile's corner: a few tens of metres at most, the
   // difference taken in f64 and rounded once.
   child.transform.position = relative(at, corner);
   child.transform.rotation = placed.rotation;
   scratch.children.push_back(child);
+  if (config_.keep_shapes) {
+    PieceRecord record;
+    record.mesh = mesh;
+    record.instance = instance;
+    record.entry = entry;
+    record.offset = child.transform.position;
+    record.rotation = placed.rotation;
+    record.proxy = proxy;  // the cache's: its address is stable for the consumer's life
+    scratch.records.push_back(record);
+  }
   return true;
 }
 
@@ -964,13 +1038,15 @@ void SceneCollision::gather_placements(world::TileCoord coord, PlacementScratch&
   out.pieces = 0;
   out.compound_bytes = 0;
   out.ok = true;
+  out.records.clear();
   scratch.children.clear();
+  scratch.records.clear();
   const u64 key = world::tile_key(coord);
   const WorldPos corner = tile_corner(coord);
   if (!entries_.empty()) {
     const scene_gen::TileCoord at{coord.x, coord.z};
-    for (const std::unique_ptr<Entry>& entry_ptr : entries_) {
-      const Entry& entry = *entry_ptr;
+    for (u32 e = 0; e < entries_.size(); ++e) {
+      const Entry& entry = *entries_[e];
       if (entry.generator->occupies != nullptr && !entry.generator->occupies(entry.state, at))
         continue;
       scratch.placed.clear();
@@ -996,7 +1072,7 @@ void SceneCollision::gather_placements(world::TileCoord coord, PlacementScratch&
         // sum with the placement's `WorldPos` in f64 — where its generator put it, anywhere.
         const Mat4 linear = mat4_from_transform(p.turn()) * fit;
         const WorldPos stands = p.position + DVec3{linear.c[3].xyz()};
-        (void)add_piece(mesh, linear, stands, corner, scratch);
+        (void)add_piece(mesh, linear, stands, corner, scratch, k_no_index, e);
       }
     }
   }
@@ -1004,10 +1080,11 @@ void SceneCollision::gather_placements(world::TileCoord coord, PlacementScratch&
     for (const u32 i : *bin) {
       const gfx::InstanceDesc& instance = scene_->instances[i];
       (void)add_piece(instance.mesh, cell_frame_matrix(instance),
-                      to_world(gfx::instance_cell(instance)), corner, scratch);
+                      to_world(gfx::instance_cell(instance)), corner, scratch, i, k_no_index);
     }
   }
   if (scratch.children.empty()) return;
+  if (config_.keep_shapes) out.records = scratch.records;
   if (physics_->build_compound(
           std::span<const physics::BuiltChild>(scratch.children.data(), scratch.children.size()),
           out.compound) != physics::Status::Ok) {
@@ -1058,6 +1135,7 @@ bool SceneCollision::build_placements(Tile& tile, Build* build) {
     return false;
   }
   tile.pieces = placed->pieces;
+  if (config_.keep_shapes) tile.pieces_held = std::move(placed->records);
   ++stats_.bodies_created;
   return placed->ok;
 }
