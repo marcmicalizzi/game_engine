@@ -277,7 +277,10 @@ void shoot(const gfx::Device& device, const test::TempDir& tmp, const ShotDesc& 
   SceneRenderer::Desc rd;
   rd.width = d.width;
   rd.height = d.height;
-  if (d.linear) rd.display = gfx::DisplayEncoding::Linear;
+  if (d.linear) {
+    rd.display = gfx::DisplayEncoding::Linear;
+    rd.color_format = gfx::Format::R16G16B16A16Sfloat;
+  }
   REQUIRE_MESSAGE(renderer.create(device, scene, resolved, rd, &error), error);
   FrameDesc frame;
   frame.camera.position = d.eye;
@@ -288,6 +291,7 @@ void shoot(const gfx::Device& device, const test::TempDir& tmp, const ShotDesc& 
   CaptureChannels channels;
   channels.ids = true;
   channels.light = d.linear;
+  channels.color = !d.linear;  // a linear target has no 8-bit picture, only its light
   u32 water_instance = ~0u;
   for (u32 i = 0; i < data.instances.size(); ++i) {
     const u32 mesh = data.instances[i].mesh;
