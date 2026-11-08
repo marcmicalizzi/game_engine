@@ -248,7 +248,9 @@ TEST_CASE("water channel: the GLB is the same bytes twice, pinned, and the gener
   // Taken on MSVC (2026-11-07): the toolchains reproduce them, since every number is + - * / and
   // sqrt (the cube root is Newton's, not the C library's).
   CHECK(glb_hash == 17028419247352518564ull);  // 100,928 bytes
-  CHECK(map_hash == 18435777364830869391ull);  // 466,610 bytes
+  // Re-pinned by S94: the depth map's header says version 2 (a channel's map has no bank, so only
+  // the version word moved).
+  CHECK(map_hash == 653138204300349312ull);  // 466,610 bytes
   // The importer reads it as the renderer will: positions, normals and the phase and depth UVs.
   assets::MeshData data;
   std::string error;

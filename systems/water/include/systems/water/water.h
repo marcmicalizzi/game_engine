@@ -92,6 +92,13 @@ struct Body {
   // The wet band and the foam line (the block's `wet_m` and `foam_m`; water.md, "The shore").
   f32 wet_m = 0.3f;
   f32 foam_m = 0.6f;
+  // The swash's (the block's `wind_m_s`, `fetch_km`, `tide_m` and `drain_s`; water.md, "The
+  // shore"; roadmap S94): the renderer's GPU scene turns them into the shore record. `tide_m` is
+  // an open body's alone (a closed body's reads 0 here); the depth map's bank covers it.
+  f32 wind_m_s = 0.0f;
+  f32 fetch_km = 100.0f;
+  f32 tide_m = 0.0f;
+  f32 drain_s = 20.0f;
   bool circle() const noexcept { return !fill && outline.empty(); }
   bool filled() const noexcept { return fill && region.nx > 0; }
 };
@@ -175,24 +182,33 @@ std::string mesh_file_name(std::span<const u8> glb);
 // whose facets the eye sees through the water (rings and trapezoids in the bottom's colour); the
 // resolve samples this map bilinearly instead, so the bottom it shades follows the ground and not
 // the triangles. Texel (i, j)'s centre is body-local (origin.x + i texel_m, origin.y + j texel_m),
-// row j along +z; its depth is `texels[j * size + i] / 65535 * depth_max`, metres — 16 bits over
-// the body's own range, so a 2.3 m pool keeps 0.04 mm and a 40 m lake 0.6 mm. Texels outside the
-// outline are the ground there too (clamped at zero), so a refracted view that runs under the
-// bank still finds it.
-inline constexpr u32 k_depth_map_version = 1;
+// row j along +z; its depth is **signed** (version 2, roadmap S94): `texels[j * size + i] / 65535
+// * (depth_max + bank_max) - bank_max`, metres (`depth_map_depth`) — positive under the level, and
+// on the bank the ground's height above the level as a negative depth, down to `-bank_max`, so the
+// shore's slope is known on both sides of the waterline and the swash knows how high the bank
+// stands. 16 bits over the body's own range: a 2.3 m pool with a 2 m bank keeps 0.07 mm. A
+// version-1 file (the bank clamped at zero) is read with `bank_max` 0, as before.
+inline constexpr u32 k_depth_map_version = 2;
 inline constexpr u32 k_depth_map_min = 64;
 inline constexpr u32 k_depth_map_max = 1024;
+// How high a bank the map stores: the larger of 2 m and twice the tide plus a metre, so the swash
+// and the tide's range are in it and a hill beside a pool does not spend the 16 bits.
+inline constexpr f32 k_depth_map_bank_min = 2.0f;
 struct DepthMap {
   u32 size = 0;          // texels a side; 0 is no map
   Vec2 origin{};         // body-local (x, z) of texel (0, 0)'s centre, metres
   f32 texel_m = 0.0f;    // metres between texel centres
-  f32 depth_max = 0.0f;  // the depth a texel of 65535 stands for
+  f32 depth_max = 0.0f;  // the deepest texel's depth
+  f32 bank_max = 0.0f;   // the highest bank stored, metres above the level (0: version 1)
   Vector<u16> texels;    // size * size, rows along +z
 };
+// Texel (i, j)'s signed depth, metres.
+f32 depth_map_depth(const DepthMap& map, u32 i, u32 j) noexcept;
 void build_depth_map(const Body& body, const Mesh& mesh, const scene_gen::Ground& ground,
                      DepthMap& out);
-// The map as a file: a 32-byte header — "EWDM", the version, the size, 0, origin x and z,
-// texel_m and depth_max as little-endian u32 and f32 — then the texels as little-endian u16. The
+// The map as a file: a 32-byte header — "EWDM", the version, the size, bank_max (version 1: 0),
+// origin x and z, texel_m and depth_max as little-endian u32 and f32 — then the texels as
+// little-endian u16. Versions 1 and 2 are read. The
 // renderer's scene reader reads it (systems/renderer/src/scene_water.cpp; the layout is mirrored
 // there, since the renderer may not call a capability, and `water_scene_tests.cpp` holds the two
 // to each other).

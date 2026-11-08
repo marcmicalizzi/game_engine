@@ -11,6 +11,7 @@
 #include <domain/gfx/commands.h>
 #include <domain/gfx/pipeline.h>
 #include <domain/gfx/water_spectrum.h>
+#include <domain/gfx/water_swash.h>
 #include <domain/texture/texture_build.h>
 #include <domain/texture/texture_file.h>
 #include <foundation/image/decode.h>
@@ -4008,6 +4009,7 @@ bool GpuScene::upload_materials(const ResolvedSettings& resolved, std::string* e
     frame.origin_m = depth.origin;
     frame.texel_m = depth.texel_m;
     frame.depth_max = depth.depth_max;
+    frame.bank_max = depth.bank_max;
     return true;
   };
   if (data_->heightfield) {
@@ -5960,10 +5962,51 @@ gfx::GroundDetailParams GpuScene::ground_detail_params() const noexcept {
   return block;
 }
 
-// The wet band's records (water.md, "The shore"; roadmap S97): one a water body with a depth map
-// and a `wet_m`, its instance and its bounds — the map's square, body-local, grown by the distance
-// a 1:25 bank rises `wet_m` in, and a metre — for the resolve's water modules to find the terrain
-// pixels just above its level by. A scene with none uploads nothing and the resolve reads nothing.
+// The foreshore slope of a body's waterline, from its signed depth map (water.md, "The shore"):
+// the mean of the slope across every pair of neighbouring texels whose depths straddle zero, kept
+// to [k_swash_slope_min, k_swash_slope_max]; the default where the map crosses nowhere.
+namespace {
+f64 water_shore_slope(const SceneWaterDepth& map) {
+  if (map.size < 2 || !(map.texel_m > 0.0f)) return gfx::k_swash_slope_default;
+  const f64 range = static_cast<f64>(map.depth_max) + static_cast<f64>(map.bank_max);
+  const auto depth = [&](u32 i, u32 j) {
+    return static_cast<f64>(map.texels[j * map.size + i]) / 65535.0 * range -
+           static_cast<f64>(map.bank_max);
+  };
+  f64 sum = 0.0;
+  u64 count = 0;
+  for (u32 j = 0; j < map.size; ++j) {
+    for (u32 i = 0; i < map.size; ++i) {
+      const f64 d = depth(i, j);
+      if (i + 1 < map.size) {
+        const f64 e = depth(i + 1, j);
+        if ((d > 0.0) != (e > 0.0)) {
+          sum += std::fabs(e - d);
+          ++count;
+        }
+      }
+      if (j + 1 < map.size) {
+        const f64 e = depth(i, j + 1);
+        if ((d > 0.0) != (e > 0.0)) {
+          sum += std::fabs(e - d);
+          ++count;
+        }
+      }
+    }
+  }
+  if (count == 0) return gfx::k_swash_slope_default;
+  return std::clamp(sum / static_cast<f64>(count) / static_cast<f64>(map.texel_m),
+                    gfx::k_swash_slope_min, gfx::k_swash_slope_max);
+}
+}  // namespace
+
+// The shore's records (water.md, "The shore"; roadmap S97, S94): one a water body with a depth map
+// and a `wet_m` or a swash, its instance, its water material, its swash — the wind's wave run up
+// the map's foreshore slope by Stockdon et al., the period rounded onto the water's clock, the
+// tide — and its bounds: the map's square, body-local, grown by the distance a 1:25 bank rises the
+// larger of `wet_m` and the highest the swash and the tide reach, and a metre, for the resolve's
+// water modules to find the terrain pixels just above its level by. A scene with none uploads
+// nothing and the resolve reads nothing.
 bool GpuScene::upload_water_shores(std::string* error) {
   if (water_shores_.size != 0) gfx::destroy_buffer(*device_, water_shores_);
   water_shores_ = gfx::BufferResource{};
@@ -5973,14 +6016,42 @@ bool GpuScene::upload_water_shores(std::string* error) {
     const u32 m = data_->instances[i].mesh;
     if (m >= data_->mesh_info.size() || !data_->mesh_info[m].water.has_value()) continue;
     const SceneWater& water = *data_->mesh_info[m].water;
-    if (water.depth.size < 2 || !(water.body.wet_m > 0.0f)) continue;
-    const f32 margin = 25.0f * water.body.wet_m + 1.0f;
+    if (water.depth.size < 2 || water.channel) continue;
+    const scene::WaterBody& body = water.body;
+    // The swash: a closed body's own wind over the smaller of its fetch and its own longest reach
+    // (the map's square's diagonal); an open body's the wind its spectrum took.
+    f64 wind = static_cast<f64>(body.wind_m_s);
+    if (body.open && water.wind_m_s > 0.0f) wind = static_cast<f64>(water.wind_m_s);
+    f64 fetch_m = static_cast<f64>(body.fetch_km) * 1000.0;
+    const f64 side = static_cast<f64>(water.depth.size - 1) * static_cast<f64>(water.depth.texel_m);
+    if (!body.open) fetch_m = std::min(fetch_m, side * std::sqrt(2.0));
+    const f64 slope = water_shore_slope(water.depth);
+    const gfx::SwashWave wave = gfx::swash_wave(wind, fetch_m);
+    const f64 run_up = gfx::stockdon_r2(wave.height_m, wave.period_s, slope);
+    const f32 tide = body.open ? body.tide_m : 0.0f;
+    if (!(body.wet_m > 0.0f) && !(run_up > 0.0) && !(tide > 0.0f)) continue;
+    const f32 reach = std::max(body.wet_m, static_cast<f32>(run_up) * 1.25f + tide);
+    const f32 margin = 25.0f * reach + 1.0f;
     const f32 half = 0.5f * water.depth.texel_m;
     const f32 span = static_cast<f32>(water.depth.size - 1) * water.depth.texel_m;
     gfx::WaterShore shore;
     shore.instance = i;
-    shore.wet_m = water.body.wet_m;
+    shore.wet_m = body.wet_m;
     shore.terrain_mesh = data_->terrain.enabled ? data_->terrain_mesh : 0xffffffffu;
+    shore.material = m < mesh_material_base_.size() ? mesh_material_base_[m] : 0xffffffffu;
+    shore.run_up_m = static_cast<f32>(run_up);
+    shore.period_s = static_cast<f32>(gfx::swash_period(wave.period_s));
+    shore.drain_s = body.drain_s;
+    shore.slope = static_cast<f32>(slope);
+    shore.tide_m = tide;
+    shore.height_m = static_cast<f32>(wave.height_m);
+    shore.foam_m = body.foam_m;
+    shore.shore_m = body.shore_m;
+    ENGINE_LOG_INFO(log_renderer, "water swash", log::field("body", body.name),
+                    log::field("wind_m_s", wind), log::field("fetch_m", fetch_m),
+                    log::field("height_m", wave.height_m), log::field("period_s", wave.period_s),
+                    log::field("slope", slope), log::field("run_up_m", run_up),
+                    log::field("tide_m", tide));
     shore.lo = Vec2{water.depth.origin.x - half - margin, water.depth.origin.y - half - margin};
     shore.hi = Vec2{water.depth.origin.x + span + half + margin,
                     water.depth.origin.y + span + half + margin};

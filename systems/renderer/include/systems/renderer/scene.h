@@ -141,7 +141,9 @@ struct MeshFit {
 // file beside the mesh (`<stem>.depth` for `<stem>.glb`; the water capability's
 // `depth_map_bytes`, whose layout the reader mirrors): the depth on a square grid over the body,
 // texel (i, j) at body-local (origin.x + i texel_m, origin.y + j texel_m) and
-// `texels[j * size + i] / 65535 * depth_max` metres deep. The GPU scene uploads it for the water
+// `texels[j * size + i] / 65535 * (depth_max + bank_max) - bank_max` metres deep — signed since
+// version 2 (S94): the bank above the level is a negative depth, down to `-bank_max`; a version-1
+// file reads with `bank_max` 0. The GPU scene uploads it for the water
 // branch, which shades the bottom from it rather than from the mesh's vertex depths. `size` 0: no
 // map beside the mesh, and the branch reads the vertex depths as it did before the map.
 struct SceneWaterDepth {
@@ -149,12 +151,16 @@ struct SceneWaterDepth {
   Vec2 origin{};
   f32 texel_m = 0.0f;
   f32 depth_max = 0.0f;
+  f32 bank_max = 0.0f;
   Vector<u16> texels;
 };
 struct SceneWater {
   scene::WaterBody body;
   gfx::WaterShading shading;
   SceneWaterDepth depth{};
+  // The wind the body's waves were made at, m/s: the ground's where the body follows it, else its
+  // own `wind_m_s` (an open body's spectrum and swash read it; S94).
+  f32 wind_m_s = 0.0f;
   // An open body's waves from the spectrum (gfx::water_spectrum; water.md, "The spectrum"), made
   // at load from the wind and the body's fetch: `gfx::k_water_waves` of them, or none (a closed
   // body, or no wind), and then the four sines.

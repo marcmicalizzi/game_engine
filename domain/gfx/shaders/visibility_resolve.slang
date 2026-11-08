@@ -188,7 +188,7 @@ struct ResolveParams {
 #ifdef RESOLVE_WATER
   uint64_t water_shores;
   uint water_shore_count;
-  uint water_shore_pad;
+  float water_tide_phase;  // S94: the M2 tide's phase, [0, 1)
 #endif
 };
 
@@ -892,10 +892,52 @@ float3 water_pixel(ResolveParams* params, SceneGeometry geo, InstanceDesc instan
   // the fade over the distance from the map's waterline, not from the mesh's edge, and the foam
   // line along it. Only with the map, which the flag needs.
   float foam = 0.0;
+  // The swash (S94; water.md, "The shore"): with a record of a wind or a tide for this body, the
+  // waterline is where the ground meets the front and the tide at this time, not the still level:
+  // the depth near the shore follows them, a pixel whose ground the backwash or the falling tide
+  // has bared is the bottom alone, darkened as the clock says it is wet, and the foam rides the
+  // front. Without one, the shore is S97's.
+  float bared_wet = -1.0;
   if ((material.flags & k_material_water_shore) != 0 && has_map) {
-    edge = water_shore_distance(map, local.xz, depth);
-    const float foam_m = ((ResolveMaterial*)geo.materials)[index + 1].normal_scale;
-    foam = water_foam(w, foam_m, local.xz, edge, params->water_time_s, footprint);
+    WaterShore swash = {};
+    bool swashing = false;
+    if (params->water_shore_count != 0) {
+      WaterShore* shores = (WaterShore*)params->water_shores;
+      for (uint b = 0; b < params->water_shore_count; ++b) {
+        if (shores[b].material != index) continue;
+        swash = shores[b];
+        swashing = water_swash_on(swash) || swash.tide_m > 0.0;
+        break;
+      }
+    }
+    if (swashing) {
+      const float t = params->water_time_s;
+      const float signed_depth = water_depth_signed(map, local.xz);
+      const float level = water_swash_tide(swash, params->water_tide_phase);
+      float front = 0.0;
+      bool uprush = false;
+      WaterSwashPlace place = {};
+      if (water_swash_on(swash)) {
+        place = water_swash_place(swash, local.xz);
+        front = water_swash_front(place, t, uprush);
+      }
+      // The shift fades out over the swash's own depth, so deep water is the depth it was.
+      const float band = 1.5 * swash.run_up_m + swash.tide_m + k_water_calm_depth;
+      const float weight = 1.0 - smoothstep(band, 2.0 * band, max(signed_depth, 0.0));
+      depth = max(signed_depth + (level + front) * weight, 0.0);
+      edge = water_shore_distance(map, local.xz, depth);
+      const float hh = -signed_depth - level;
+      const float x = depth > 0.0 ? edge : (front - hh) / max(swash.slope, 1e-3);
+      foam = water_swash_foam(swash, local.xz, x, uprush, t, footprint);
+      if (!(depth > 0.0)) {
+        float film;
+        bared_wet = water_swash_on(swash) ? water_swash_wetness(swash, place, t, hh, film) : 1.0;
+      }
+    } else {
+      edge = water_shore_distance(map, local.xz, depth);
+      const float foam_m = ((ResolveMaterial*)geo.materials)[index + 1].normal_scale;
+      foam = water_foam(w, foam_m, local.xz, edge, params->water_time_s, footprint);
+    }
   }
   if ((material.flags & k_material_water_volume) != 0) {
     // No map: the depth's slope over the triangle, d = d0 + g.(x - x0) through its three corners.
@@ -910,10 +952,13 @@ float3 water_pixel(ResolveParams* params, SceneGeometry geo, InstanceDesc instan
       const float det = e1.x * e2.y - e1.y * e2.x;
       if (abs(det) > 1e-8) slope = float2(d1 * e2.y - d2 * e1.y, e1.x * d2 - e2.x * d1) / det;
     }
-    return water_pixel_volume(params, geo, instance, index, slope, dp_dx, dp_dy, s, local, n, view,
-                              w, ray_bias, depth, has_map, map, edge, foam);
+    const float3 c = water_pixel_volume(params, geo, instance, index, slope, dp_dx, dp_dy, s,
+                                        local, n, view, w, ray_bias, depth, has_map, map, edge,
+                                        foam);
+    return bared_wet >= 0.0 ? c * water_wet_darkening(float3(k_swash_bared_albedo), bared_wet) : c;
   }
-  return water_pixel_low(params, s, n, view, w, ray_bias, depth, edge, foam);
+  const float3 c = water_pixel_low(params, s, n, view, w, ray_bias, depth, edge, foam);
+  return bared_wet >= 0.0 ? c * water_wet_darkening(float3(k_swash_bared_albedo), bared_wet) : c;
 }
 
 // **The open sea past its body's outline** (docs/subsystems/water.md, "To the horizon"; roadmap
@@ -1467,7 +1512,29 @@ float4 fs_resolve(FullscreenOut in) : SV_Target {
         const WaterShore shore = shores[b];
         const float3 local = s.position - instance_from_eye(instances[shore.instance], params->eye);
         if (any(local.xz < shore.lo) || any(local.xz > shore.hi)) continue;
-        color *= water_wet_factor(albedo, local.y, shore.wet_m);
+        if (!water_swash_on(shore) && !(shore.tide_m > 0.0)) {
+          color *= water_wet_factor(albedo, local.y, shore.wet_m);
+          continue;
+        }
+        // The swash (S94): the sheet over the ground, the sand's wetness by the clock, the foam
+        // riding the front. Only where the front and the tide can reach, and the fringe above.
+        const float top = max(shore.wet_m, 1.5 * shore.run_up_m) + shore.tide_m;
+        if (!(local.y < top) || !(local.y > -shore.tide_m - 1.5 * shore.run_up_m)) continue;
+        const float3 r = reflect(-surface.view, float3(0.0, 1.0, 0.0));
+        float3 reflected = params->sky.rgb;
+        if (has_sky) reflected = sky_environment(sky, (SkyFrame*)sky->frame, r);
+        float3 foam_light = ambient;
+        if (params->sun.y > 0.0) {
+          float3 sun = float3(params->sun.w);
+          if (has_sky) sun = sky_light_at(sky, s.position, params->sun.xyz, sky->sun_illuminance.rgb);
+          foam_light += sun * (sun_visibility * params->sun.y / k_brdf_pi);
+        }
+        // The pixel's footprint across the view, about: its distance over half the frame's rows
+        // (a 90-degree view; the position's derivatives are the terrain modules' alone).
+        const float footprint = length(from_eye) * 2.0 / float(params->height);
+        color = water_swash_ground(color, albedo, shore, local.xz, local.y, params->water_time_s,
+                                   params->water_tide_phase, surface.view, reflected, foam_light,
+                                   footprint);
       }
     }
 #endif

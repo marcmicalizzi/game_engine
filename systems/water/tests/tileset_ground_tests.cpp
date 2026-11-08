@@ -63,6 +63,8 @@ TEST_CASE("water: authored terrain depths agree with the native streamed surface
   const u32 c = map.size / 2;
   const WorldPos at{static_cast<f64>(map.origin.x + static_cast<f32>(c) * map.texel_m), 0,
                     static_cast<f64>(map.origin.y + static_cast<f32>(c) * map.texel_m)};
-  const f32 stored = static_cast<f32>(map.texels[c * map.size + c]) / 65535.0f * map.depth_max;
-  CHECK(std::fabs(stored - water::depth_at(bodies, ground, at)) <= map.depth_max / 65535.0f);
+  // The map's own decode (signed since version 2, S94), to one of its 16-bit steps.
+  const f32 stored = water::depth_map_depth(map, c, c);
+  CHECK(std::fabs(stored - water::depth_at(bodies, ground, at)) <=
+        (map.depth_max + map.bank_max) / 65535.0f);
 }

@@ -609,6 +609,9 @@ struct WaterDepthFrame {
   Vec2 origin_m{};
   f32 texel_m = 0.0f;
   f32 depth_max = 0.0f;
+  // The signed map's bank (water.md, "The depth map", version 2): the 16 bits span
+  // [-bank_max, depth_max], so the decoded depth is that less the bank. 0: a map clamped at zero.
+  f32 bank_max = 0.0f;
 };
 
 // The map into the entry after the water material (mirrored by water.slang's
@@ -620,6 +623,8 @@ struct WaterDepthFrame {
 //   uv_offset            the map's UV at the body's centre (u, v), the UV a metre, depth_max
 //   uv_transform.w       half a texel of UV: the UV is clamped to [h, 1 - h], so the sampler's
 //                        address mode is never asked (clamp-to-edge whatever it is)
+//   emissive.w           bank_max: the decoded depth is (red, green) * (depth_max + bank_max) less
+//                        bank_max (the optics' emissive.w is 0 and unread; S94)
 //
 // and `k_material_water_depth_map` on the water material. The UV frame is computed in double
 // from the map's frame and is body-local: no world position is in it.
@@ -633,8 +638,9 @@ inline void set_water_depth_map(ResolveMaterial& water, ResolveMaterial& entry,
   entry.samplers_mr_normal = map.sampler;
   entry.uv_offset = Vec4{static_cast<f32>((0.5 - static_cast<f64>(map.origin_m.x) / texel) / n),
                          static_cast<f32>((0.5 - static_cast<f64>(map.origin_m.y) / texel) / n),
-                         static_cast<f32>(1.0 / (texel * n)), map.depth_max};
+                         static_cast<f32>(1.0 / (texel * n)), map.depth_max + map.bank_max};
   entry.uv_transform.w = static_cast<f32>(0.5 / n);
+  entry.emissive.w = map.bank_max;
 }
 
 // `k_material_water_shore`: the water material's body is drawn to **the shore where its level meets
@@ -659,6 +665,16 @@ inline void set_water_shore(ResolveMaterial& water, ResolveMaterial& entry, f32 
 // darkened as wet ground is — a pixel of a terrain's material, of a terrain tile, or of the scene's
 // terrain mesh. The bounds are the body's depth map's square grown by the distance a
 // 1:25 bank rises `wet_m` in, plus a metre, so the band is found where it is.
+//
+// **The swash** (roadmap S94; water.md, "The shore"; water_swash.h): a body with a wind (or an open
+// one with a tide) also runs its waterline up the shore and back. The record carries the run-up
+// `run_up_m` (Stockdon et al.'s R2 from the wind's wave over the foreshore `slope`), the `period_s`
+// rounded onto the water's clock, the sand's `drain_s`, the open body's `tide_m`, the wave's
+// significant `height_m` (the foam's strength), `foam_m` and `shore_m`, and the water material's
+// index in the table (`material`), by which the water branch finds its body's record. A body with
+// a map gets a record when it has a `wet_m` or a swash; `run_up_m` 0 and `tide_m` 0 is version 4's
+// shore exactly (the static band, the foam line of the waves' phase). The bounds are grown by the
+// distance a 1:25 bank rises the larger of `wet_m` and the highest the swash and the tide reach.
 struct WaterShore {
   u32 instance = 0;
   f32 wet_m = 0.0f;
@@ -668,9 +684,17 @@ struct WaterShore {
   // material's flags: the renderer's own terrain is one mesh with a plain material. 0xffffffff:
   // none, and only a terrain material or a terrain tile is ground.
   u32 terrain_mesh = 0xffffffffu;
-  f32 pad = 0.0f;
+  u32 material = 0xffffffffu;
+  f32 run_up_m = 0.0f;
+  f32 period_s = 0.0f;
+  f32 drain_s = 20.0f;
+  f32 slope = 0.1f;
+  f32 tide_m = 0.0f;
+  f32 height_m = 0.0f;
+  f32 foam_m = 0.0f;
+  f32 shore_m = 0.0f;
 };
-static_assert(sizeof(WaterShore) == 32);
+static_assert(sizeof(WaterShore) == 64);
 
 inline void set_uv_transform(ResolveMaterial& material, Vec2 offset, f32 rotation,
                              Vec2 scale) noexcept {
@@ -1027,7 +1051,11 @@ struct ResolveParams {
   // block grew from 528 to 544 bytes, after R69's two.
   u64 water_shores = 0;
   u32 water_shore_count = 0;
-  u32 water_shore_pad = 0;
+  // The tide's phase (S94; water.md, "The shore"): the frame's world time over the M2 period
+  // (`gfx::k_water_m2_period_s`), its fraction in [0, 1), computed in double on the CPU, since the
+  // water's clock wraps every 1,024 s. An open body with a `tide_m` stands at sin(2 pi phase) of
+  // it.
+  f32 water_tide_phase = 0.0f;
 };
 // `ResolveParams::water_open_instance` when the scene has no open water.
 inline constexpr u32 k_no_water_open = 0xffffffffu;
