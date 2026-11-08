@@ -22,8 +22,8 @@
 // the front decelerates up the slope and accelerates back, and both halves parabolic. Every wave
 // starts and ends at z_lo, so the profile is continuous from one wave to the next whatever their
 // reaches. G is a group of N waves whose reach rises from about 0.57 R to R and back (wave groups:
-// every few waves larger); phi and m are value noise of the body-local point, so the front is ragged
-// along the shore and its phase drifts along the beach.
+// every few waves larger); phi and m are value noise of the body-local point, so the front is
+// ragged along the shore and its phase drifts along the beach.
 
 #include <core/base/types.h>
 
@@ -120,9 +120,9 @@ inline f64 swash_front(const SwashPlace& p, f64 t) noexcept {
 
 // **The last time the front stood at or above h**, as the age t - t_last in seconds: 0 while it
 // does (the place is under the sheet), and a very large number when no wave of the group reaches h.
-// Closed form (shore.md, "When the front last passed"): within wave k the front is at or above h for
-// u in [u1, u2], where 4 s (1 - s) = c_k = (h - z_lo) / (A_k - z_lo) gives s = (1 -+ sqrt(1 - c_k))
-// / 2, mapped back through the two halves' s(u); the front left h last at the end of the most
+// Closed form (shore.md, "When the front last passed"): within wave k the front is at or above h
+// for u in [u1, u2], where 4 s (1 - s) = c_k = (h - z_lo) / (A_k - z_lo) gives s = (1 -+ sqrt(1 -
+// c_k)) / 2, mapped back through the two halves' s(u); the front left h last at the end of the most
 // recent such interval — this wave's if u is past u2, else the last earlier wave that reached h.
 // The group is periodic in k, so the last N waves hold every reach there is: the search back is at
 // most N waves, and a height none of them reaches was never reached.
@@ -141,11 +141,11 @@ inline f64 swash_age(const SwashPlace& p, f64 t, f64 h) noexcept {
     const f64 ck = (h - z_lo) / (a - z_lo);
     if (!(ck <= 1.0)) continue;
     const f64 r = std::sqrt(std::max(0.0, 1.0 - ck));
-    const f64 u1 = (1.0 - r) * q;                  // s1 = (1 - r) / 2 on the uprush: u = 2 q s
-    const f64 u2 = q + r * (1.0 - q);              // s2 = (1 + r) / 2 on the backwash
-    const f64 now = u + static_cast<f64>(j);       // this wave's phase, counted from wave k - j
-    if (j == 0 && u < u1) continue;                // this wave has not reached h yet
-    if (now <= u2) return 0.0;                     // under the sheet
+    const f64 u1 = (1.0 - r) * q;             // s1 = (1 - r) / 2 on the uprush: u = 2 q s
+    const f64 u2 = q + r * (1.0 - q);         // s2 = (1 + r) / 2 on the backwash
+    const f64 now = u + static_cast<f64>(j);  // this wave's phase, counted from wave k - j
+    if (j == 0 && u < u1) continue;           // this wave has not reached h yet
+    if (now <= u2) return 0.0;                // under the sheet
     return (now - u2) * p.period_s;
   }
   return k_swash_never;
@@ -170,8 +170,8 @@ inline SwashWave swash_wave(f64 u10, f64 fetch_m) noexcept {
     const f64 d = omega - peak;
     const f64 r = std::exp(-d * d / (2.0 * sigma * sigma * peak * peak));
     const f64 q = peak / omega;
-    m0 += alpha * g * g / (omega * omega * omega * omega * omega) * std::exp(-1.25 * q * q * q * q) *
-          std::pow(3.3, r) * dw;
+    m0 += alpha * g * g / (omega * omega * omega * omega * omega) *
+          std::exp(-1.25 * q * q * q * q) * std::pow(3.3, r) * dw;
   }
   w.height_m = 4.0 * std::sqrt(m0);
   w.period_s = 2.0 * 3.14159265358979323846 / peak;

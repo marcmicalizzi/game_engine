@@ -1,8 +1,8 @@
-// The swash on a GPU (docs/subsystems/water.md, "The swash"; roadmap S94): a body that fills a basin
-// of the renderer's ground, drawn through the renderer's reader and the resolve's water modules,
-// over a sequence of world times. With a wind the wet band's extent changes from frame to frame,
-// rising when a sheet runs up and falling between, and no surface moves; the same time twice is
-// the same bytes; and with no wind and no tide the ground is the same at every time (version 4's
+// The swash on a GPU (docs/subsystems/water.md, "The swash"; roadmap S94): a body that fills a
+// basin of the renderer's ground, drawn through the renderer's reader and the resolve's water
+// modules, over a sequence of world times. With a wind the wet band's extent changes from frame to
+// frame, rising when a sheet runs up and falling between, and no surface moves; the same time twice
+// is the same bytes; and with no wind and no tide the ground is the same at every time (version 4's
 // static band), only the water's waves moving.
 #include <core/json/json.h>
 #include <core/math/math.h>
@@ -150,10 +150,10 @@ TEST_CASE("water swash: the wet band runs up and back with the clock, and only t
     if (s > 0 && wet[s] > wet[s - 1]) ++rises;
     if (s > 0 && wet[s] < wet[s - 1]) ++falls;
   }
-  MESSAGE("swash: wet ground pixels over 2 s: " << wet[0] << " " << wet[1] << " " << wet[2] << " "
-                                                << wet[3] << " " << wet[4] << " " << wet[5] << " "
-                                                << wet[6] << " " << wet[7]
-                                                << "; still band's ground moved " << still_ground_moved);
+  MESSAGE("swash: wet ground pixels over 2 s: "
+          << wet[0] << " " << wet[1] << " " << wet[2] << " " << wet[3] << " " << wet[4] << " "
+          << wet[5] << " " << wet[6] << " " << wet[7] << "; still band's ground moved "
+          << still_ground_moved);
   CHECK(lo > 50u);
   CHECK(hi > lo + lo / 20);  // the band's extent moves
   CHECK(rises > 0u);

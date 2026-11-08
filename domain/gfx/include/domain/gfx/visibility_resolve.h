@@ -1038,7 +1038,8 @@ struct ResolveParams {
   u32 water_shore_count = 0;
   // The tide's phase (S94; water.md, "The shore"): the frame's world time over the M2 period
   // (`gfx::k_water_m2_period_s`), its fraction in [0, 1), computed in double on the CPU, since the
-  // water's clock wraps every 1,024 s. An open body with a `tide_m` stands at sin(2 pi phase) of it.
+  // water's clock wraps every 1,024 s. An open body with a `tide_m` stands at sin(2 pi phase) of
+  // it.
   f32 water_tide_phase = 0.0f;
 };
 // `ResolveParams::water_open_instance` when the scene has no open water.

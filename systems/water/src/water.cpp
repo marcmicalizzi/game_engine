@@ -220,8 +220,10 @@ bool read_body(const scene::WaterBody& block, Body& out, std::string* error) {
   if (!(block.foam_m >= 0.0f) || !finite(block.foam_m))
     return fail("its foam_m must not be negative");
   // The swash (water.md, "The shore"; roadmap S94).
-  if (!(block.tide_m >= 0.0f) || !finite(block.tide_m)) return fail("its tide_m must not be negative");
-  if (!(block.drain_s > 0.0f) || !finite(block.drain_s)) return fail("its drain_s must be positive");
+  if (!(block.tide_m >= 0.0f) || !finite(block.tide_m))
+    return fail("its tide_m must not be negative");
+  if (!(block.drain_s > 0.0f) || !finite(block.drain_s))
+    return fail("its drain_s must be positive");
   out.wet_m = block.wet_m;
   out.foam_m = block.foam_m;
   out.wind_m_s = block.wind_m_s;
@@ -463,8 +465,8 @@ void build_depth_map(const Body& body, const Mesh& mesh, const scene_gen::Ground
   out.texel_m = static_cast<f32>(texel);
   // The depths in f64 first, signed (the bank negative, down to the bank the map stores), then the
   // range they are quantized over.
-  const f64 bank_cap = std::max(static_cast<f64>(k_depth_map_bank_min),
-                                2.0 * static_cast<f64>(body.tide_m) + 1.0);
+  const f64 bank_cap =
+      std::max(static_cast<f64>(k_depth_map_bank_min), 2.0 * static_cast<f64>(body.tide_m) + 1.0);
   Vector<f64> depth(size * size);
   f64 deepest = 0.0;
   f64 highest = 0.0;

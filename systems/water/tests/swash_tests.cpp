@@ -44,7 +44,8 @@ water::Body square_body() {
 
 }  // namespace
 
-TEST_CASE("swash: the depth map is signed, its bank read back, and a version-1 file read as before") {
+TEST_CASE(
+    "swash: the depth map is signed, its bank read back, and a version-1 file read as before") {
   const scene_gen::Ground ground = ramp_ground();
   const water::Body body = square_body();
   water::Mesh mesh;
@@ -73,9 +74,8 @@ TEST_CASE("swash: the depth map is signed, its bank read back, and a version-1 f
   CHECK(bytes[4] == 2u);  // the version
   water::DepthMap back;
   std::string error;
-  REQUIRE_MESSAGE(water::read_depth_map(std::span<const u8>(bytes.data(), bytes.size()), back,
-                                        &error),
-                  error);
+  REQUIRE_MESSAGE(
+      water::read_depth_map(std::span<const u8>(bytes.data(), bytes.size()), back, &error), error);
   CHECK(back.bank_max == map.bank_max);
   CHECK(back.depth_max == map.depth_max);
   CHECK(std::equal(back.texels.begin(), back.texels.end(), map.texels.begin()));
