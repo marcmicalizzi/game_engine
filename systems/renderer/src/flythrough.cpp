@@ -121,6 +121,12 @@ scene::FrameRecord frame_record(const FrameStats& stats, u32 repeat, u32 frame, 
   out.rt_cache_built = stats.rt_cache_built;
   out.rt_micromaps = stats.rt_micromaps;
   out.rt_cache_evicted = stats.rt_cache_evicted;
+  out.water_reflect = stats.water_reflect;
+  out.water_reflect_views = stats.water_reflect_views;
+  out.water_reflect_level_m = stats.water_reflect_level_m;
+  out.water_refract = stats.water_refract;
+  out.water_refract_views = stats.water_refract_views;
+  out.water_refract_floor_m = stats.water_refract_floor_m;
   out.instances = stats.instances;
   out.pairs = stats.pairs;
   out.table_slots = stats.table_slots;

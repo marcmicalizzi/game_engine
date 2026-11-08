@@ -669,6 +669,7 @@ float shadow_visibility(ResolveParams* params, uint bit, uint owner, float3 posi
 // The reflection of the scene (R129; water_reflect.slang): the ray-traced water modules alone.
 #ifdef RESOLVE_RAY_SHADOWS
 #include "water_reflect.slang"
+#include "water_refract.slang"  // S86: what is under the water
 #endif
 // **The volume tier** (`k_material_water_volume`; water.slang, "the volume tier"): what is under
 // the surface, seen through it. The refracted view is marched against the body's depth map, the
@@ -756,8 +757,13 @@ float3 water_pixel_volume(ResolveParams* params, SceneGeometry geo, InstanceDesc
 #ifdef RESOLVE_RAY_SHADOWS
   reflected = water_reflection(params, s, r, ray_bias, reflected);  // R129: the scene, or the sky
 #endif
-  const float3 under = water_volume(o, path, n_b, albedo, params->sun.xyz, sun, sun_surface,
-                                    sun_bottom, ambient);
+  float3 under = water_volume(o, path, n_b, albedo, params->sun.xyz, sun, sun_surface,
+                              sun_bottom, ambient);
+#ifdef RESOLVE_RAY_SHADOWS
+  // S86: what stands in the water, met by the refracted view before the ground (water_refract.slang).
+  under = water_refraction(params, geo, o, path, s, local, has_map, map, sun, sun_surface, ambient,
+                           ray_bias, under);
+#endif
   const float3 radiance = water_radiance_volume(w, n, view, float2(edge, s.uv.y), params->sun.xyz,
                                                sun * sun_surface, reflected, under);
   return water_foam_over(radiance, foam, sun * sun_surface, params->sun.xyz, ambient);

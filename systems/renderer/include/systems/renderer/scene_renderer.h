@@ -228,6 +228,14 @@ struct FrameStats {
   u32 rt_cache_evicted = 0;
   // The frame's drawn alpha-tested records named the scene's opacity micromaps (R120).
   bool rt_micromaps = false;
+  // The water's traced reflection and refraction as this frame was recorded (`Stats::water_*`;
+  // R129, S86): what `FrameRecord`'s `water_reflect*` and `water_refract*` carry.
+  bool water_reflect = false;
+  u32 water_reflect_views = 0;
+  f32 water_reflect_level_m = 0.0f;
+  bool water_refract = false;
+  u32 water_refract_views = 0;
+  f32 water_refract_floor_m = 0.0f;
   // The scene this frame culled: its instances and its (instance, cluster) pairs — one cull thread
   // each. Constant for a scene read whole; a streamed world's tiles move both between frames.
   u32 instances = 0;
@@ -433,6 +441,14 @@ struct Stats {
   bool water_reflect = false;
   u32 water_reflect_views = 0;
   f32 water_reflect_level_m = 0.0f;
+  // **What is under the water** (S86; water_refract.h), the frame last recorded: whether its
+  // resolve traced the volume tier's refraction rays, how many views' culls carried the submerged
+  // caster volume, and that volume's floor, metres above the eye (0 without one). Its casters too
+  // are counted in `shadow_casters`: a frame measures them as the difference with
+  // `renderer.water.refract_volume` off.
+  bool water_refract = false;
+  u32 water_refract_views = 0;
+  f32 water_refract_floor_m = 0.0f;
   // The vertex path's indexed draw, last frame, both hardware passes and every view: the triangles
   // the cut's clusters hold, which is what it draws (three indices each), and how many of those
   // clusters the index budget had no room for, which the fallback drew instead at one vertex
@@ -1070,6 +1086,17 @@ class SceneRenderer {
   Vector<u32> slot_pairs_;  // and the scene it culled, which a world changes between frames
   Vector<u32> slot_instances_;
   Vector<u32> slot_rt_capacity_;  // the chain's capacity each slot's frame was recorded against
+  // The water's reflection and refraction each slot's frame was recorded with (R129, S86), folded
+  // into `FrameStats` with the frame's own counts rather than the last recorded frame's.
+  struct SlotWater {
+    bool reflect = false;
+    u32 reflect_views = 0;
+    f32 reflect_level_m = 0.0f;
+    bool refract = false;
+    u32 refract_views = 0;
+    f32 refract_floor_m = 0.0f;
+  };
+  Vector<SlotWater> slot_water_;
   Vector<u32> slot_holes_;
   Vector<u32> slot_table_slots_;  // and what it wrote into the table set it flipped to
   Vector<u32> slot_table_pairs_;

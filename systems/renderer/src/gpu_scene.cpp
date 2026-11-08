@@ -20,6 +20,7 @@
 #include <systems/renderer/gpu_scene.h>
 #include <systems/renderer/rt_capacity.h>
 #include <systems/renderer/terrain_materials.h>
+#include <systems/renderer/water_refract.h>
 
 #include <algorithm>
 #include <atomic>
@@ -4613,6 +4614,7 @@ bool GpuScene::upload_materials(const ResolvedSettings& resolved, std::string* e
   }
   if (!upload_water_shores(error)) return false;
   collect_water_reflect_bodies();  // R129: the reflection's planes
+  collect_water_refract_bodies();  // S86: what is under the water
   // The opaque shadow proxy's list (R109): every alpha-tested cluster and its material, for the
   // bake to measure its coverage. Only a scene read whole: a streamed one's clusters live in a page
   // pool whose slots change under any table made now.
@@ -6114,6 +6116,60 @@ bool GpuScene::water_reflect_level(const WorldEye& eye, f32& level) const noexce
       found = true;
       nearest = distance;
       level = at.y;
+    }
+  }
+  return found;
+}
+
+// ---- what is under the water (S86; water_refract.h)
+// ---------------------------------------------------
+//
+// Per level body of `water_reflect_bodies_`, at the volume tier: its deepest bed (its depth map's
+// own deepest texel; none without a map) and the reach its optics leave light through (ln 255
+// extinction lengths of the clearest channel, the extinction `gfx::set_water_optics` packs).
+void GpuScene::collect_water_refract_bodies() {
+  water_refract_bodies_.clear();
+  if (resolved_.settings.water_quality != WaterQuality::High) return;
+  for (const WaterReflectBody& reflect : water_reflect_bodies_) {
+    const SceneWater& water = *data_->mesh_info[data_->instances[reflect.instance].mesh].water;
+    gfx::WaterOptics o;
+    if (water.body.absorption.has_value()) o.absorption = *water.body.absorption;
+    if (water.body.scattering.has_value()) o.scattering = *water.body.scattering;
+    o.turbidity = water.body.turbidity;
+    const Vec3 scattering = o.scattering + gfx::k_water_silt_scatter * o.turbidity;
+    const Vec3 extinction = o.absorption + gfx::k_water_silt_absorb * o.turbidity + scattering;
+    WaterRefractBody body;
+    body.deepest = water.depth.size >= 2 ? water.depth.depth_max : 0.0f;
+    body.path_m = water_refract_path_m(extinction);
+    water_refract_bodies_.push_back(body);
+  }
+}
+
+bool GpuScene::water_refract_body(const WorldEye& eye, f32& level, f32& floor,
+                                  f32& path_m) const noexcept {
+  if (water_refract_bodies_.empty() ||
+      water_refract_bodies_.size() != water_reflect_bodies_.size()) {
+    return false;
+  }
+  // The body `water_reflect_level` picks, by the same rule.
+  bool found = false;
+  f32 nearest = 0.0f;
+  for (u32 b = 0; b < water_reflect_bodies_.size(); ++b) {
+    const WaterReflectBody& body = water_reflect_bodies_[b];
+    if (body.instance >= instance_table_.size()) continue;
+    const Vec3 at = relative(gfx::instance_cell(instance_table_[body.instance]), eye);
+    const Vec3 center{at.x + body.center.x, at.y, at.z + body.center.y};
+    const f32 away = length(center) - body.radius;
+    const f32 distance = body.open ? -1.0f : (away > 0.0f ? away : 0.0f);
+    if (!found || distance < nearest) {
+      found = true;
+      nearest = distance;
+      level = at.y;
+      const WaterRefractBody& refract = water_refract_bodies_[b];
+      path_m = refract.path_m;
+      const f32 bed =
+          refract.deepest > 0.0f ? refract.deepest + k_water_refract_bed_margin_m : path_m;
+      floor = level - (bed < path_m ? bed : path_m);
     }
   }
   return found;
