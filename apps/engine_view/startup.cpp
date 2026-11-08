@@ -24,6 +24,13 @@ bool StartupTrace::start(const std::string& path, i64 main_ns, std::string* erro
   const i64 launched = profiling::process_start_ns();
   // Where the OS cannot say when the process was made, the trace starts at `main`.
   options.origin_ns = launched > 0 && launched <= main_ns ? launched : main_ns;
+  // **A world's load outruns the library's default buffer.** The sampler takes four slots every
+  // 20 ms and every mesh three (the mesh, its cluster read, its generator inputs), so the v35
+  // forest's ten-minute load filled 32,768 slots at 251 s, 7,003 meshes in, and dropped 173,143
+  // events — every stage after the meshes, every milestone after `device` and the memory curve's
+  // whole second half (T73, docs/experiments/load-v35-2026-11-08.md). 2^18 slots hold that load
+  // whole, at about 70 MB allocated once, and only when `--startup-trace` asked for it.
+  options.capacity = 1u << 18;
   if (!profiling::trace_start(options)) {
     if (error != nullptr) *error = "the startup trace is already recording";
     return false;
