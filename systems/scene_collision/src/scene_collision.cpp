@@ -258,6 +258,7 @@ scene_gen::Context SceneCollision::context_for(const Entry& entry) const noexcep
   context.dir = entry.source->dir;
   context.where = entry.source->where;
   if (ground_ != nullptr) context.ground = ground_->view();
+  if (!scene_->terrain.exclusion.empty()) context.exclusion = &scene_->terrain.exclusion;
   // The inner ring's representation: what is drawn round the walker (the ruins' blocks near).
   context.world = &world_rings_;
   context.ring = 0;

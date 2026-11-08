@@ -37,6 +37,7 @@
 #include <core/math/math.h>
 #include <core/math/world.h>
 #include <domain/geometry/cluster_lod.h>
+#include <domain/scene_gen/exclusion.h>
 #include <domain/scene_gen/ground_masks.h>
 #include <domain/scene_gen/tile_source.h>
 
@@ -158,6 +159,19 @@ struct Context {
   jobs::JobSystem* (*jobs_fn)(void* context) = nullptr;
   void* jobs_context = nullptr;
   jobs::JobSystem* jobs() const { return jobs_fn != nullptr ? jobs_fn(jobs_context) : nullptr; }
+  // **Where nothing is placed** (G135; scene_gen.md, "Exclusion"): the scene's holes, channels and
+  // water, built once by the host from the scene entry and read by every generator that chooses
+  // candidate points on the ground. Null: nothing is excluded, and every answer below is the
+  // unfiltered one, so a host that hands none (and a scene with none) places what it always did.
+  const Exclusion* exclusion = nullptr;
+  // Whether the point (whole millimetres) is excluded by any of the `kinds`.
+  bool excluded_mm(i64 x_mm, i64 z_mm, u32 kinds = k_exclude_all) const noexcept {
+    return exclusion != nullptr && exclusion->excluded_mm(ground, x_mm, z_mm, kinds);
+  }
+  // The density a bank leaves at the point, [k_riparian_floor, 1]; exactly 1 with none.
+  f64 riparian_factor_mm(i64 x_mm, i64 z_mm) const noexcept {
+    return exclusion != nullptr ? exclusion->riparian_factor_mm(x_mm, z_mm) : 1.0;
+  }
 };
 inline constexpr u8 k_no_ring = 0xFFu;
 

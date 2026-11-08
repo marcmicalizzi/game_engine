@@ -110,6 +110,8 @@ bool tile(void* state, scene_gen::TileCoord t, const scene_gen::Context& c,
       const f64 wx = corner_x + (x + .4 + .2 * draw(seed, 1)) * p.cell_m;
       const f64 wz = corner_z + (z + .4 + .2 * draw(seed, 2)) * p.cell_m;
       const i64 mx = scene_gen::nearest_mm(wx), mz = scene_gen::nearest_mm(wz);
+      // G135: none in a hole, a stream's bed and banks or under water (scene_gen.md, "Exclusion").
+      if (c.excluded_mm(mx, mz)) continue;
       f64 density = static_cast<f64>(p.background), edge = 0;
       bool blocked = false;
       for (const auto& f : c.earlier) {

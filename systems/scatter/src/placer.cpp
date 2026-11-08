@@ -543,6 +543,8 @@ void Placer::Impl::place_kind(u32 k, const RectMm& rect, const Site& site,
       }
     }
     if (excluded_here) continue;
+    // G135: nowhere in a hole, a stream's bed and banks or under water (scene_gen.md, "Exclusion").
+    if (site.exclusion != nullptr && site.exclusion->excluded_mm(ground, c.x, c.z)) continue;
     // The ground: its height, and its slope where a rule asks for it.
     const f64 y = height(c.x, c.z);
     if (y < kind.height_min || y > kind.height_max) continue;

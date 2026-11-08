@@ -65,6 +65,8 @@ empty patches. Steep ground is omitted by the explicit `max_slope` policy. The a
 is tilted to the standing ground's tangent plane. This approximates curvature and can penetrate
 strongly curved ground; use smaller authored patches there.
 
+**Exclusion (G135).** A cell whose centre is over a terrain hole, in a stream's bed or banks, or under water is skipped ([scene_gen](scene_gen.md#exclusion)): litter on a bed or under a lake is not a fall of leaves. Nothing else of the cell's draws moves, and a scene with none of the three places every patch it did.
+
 Ground reads use whole millimetres; positions are f64. IDs are nonzero row-major cell ordinals
 in the entry window, checked against overflow before work. Seed, identity and ground determine
 each tile independently of request order. Earlier footprints are restricted to anchors in the

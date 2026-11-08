@@ -116,6 +116,9 @@ struct Site {
   scene_gen::Ground ground;
   scene_gen::Ground stand;
   std::span<const scene_gen::Footprint> earlier;
+  // Where nothing is placed (G135; `scene_gen::Context::exclusion`): a candidate in a hole, a
+  // stream's bed and banks or under water is dropped. Null: nothing is.
+  const scene_gen::Exclusion* exclusion = nullptr;
 };
 
 // The layer read, checked and turned into the integers it decides in: what every query runs

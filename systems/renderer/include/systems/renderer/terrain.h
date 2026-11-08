@@ -132,6 +132,11 @@ struct TerrainDesc {
   // level wholly inside one has no triangles, and the collision no surface. Empty: the terrain as
   // it was, its hash and every tile's key unmoved.
   scene_gen::TerrainHoles holes;
+  // **Where nothing is placed** (G135; scene_gen.md, "Exclusion"): the holes above, the scene's
+  // channels and its water, built once when the file is read and handed to every placement
+  // generator in its `Context`, here because the terrain description is what both hosts and the
+  // collision already carry from the reader to the world. Empty for a scene with none of the three.
+  scene_gen::Exclusion exclusion;
 };
 
 // The detail's numbers as the mechanism takes them (`gfx::GroundDetailDesc`, domain/gfx/

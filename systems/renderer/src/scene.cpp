@@ -23,6 +23,7 @@
 #include <domain/texture/texture_file.h>
 #include <foundation/image/png.h>
 #include <foundation/io/vfs.h>
+#include <foundation/tunables/tunables.h>
 #include <systems/renderer/flora_motion.h>
 #include <systems/renderer/scene.h>
 #include <systems/renderer/terrain.h>
@@ -42,6 +43,15 @@
 namespace engine::renderer {
 
 namespace {
+
+// G135: false leaves the placement generators' exclusion unbuilt, so a scene places as it did
+// before the holes, channels and water were read (scene_gen.md, "Exclusion"): the before of a
+// before and after, and the way out should a scene want grass in a bed. Read once, when the file is
+// read.
+tunables::Bool placement_exclusion{
+    "renderer.placement.exclusion", true,
+    "Leave a terrain hole, a stream's bed and banks and the water empty of placements "
+    "(scene_gen.md, \"Exclusion\"); false places as before G135"};
 
 void prune_form_parts(SourceMesh& form);  // below, beside the forms that take it first
 
@@ -1138,6 +1148,7 @@ bool expand_placements(const scene::Scene& file, const std::string& path, const 
   // file (`SceneDesc::ddc`); empty when none was named, and the generator finds one itself.
   context.ddc = out.ddc;
   if (out.terrain.enabled) context.ground = ground.provider().view();
+  if (!out.terrain.exclusion.empty()) context.exclusion = &out.terrain.exclusion;
   context.jobs_fn = &LazyPool::get;
   context.jobs_context = &pool;
   Vector<std::pair<MeshKey, u32>> seen;
@@ -2266,6 +2277,18 @@ bool read_scene_file(const std::string& path, const SceneFileOptions& options, S
   // terrain levels drawn through the deformed-vertex pool, and a scene whose instances come and go
   // had no pool. It has one now, and the ray tracing chain, laid out over the tail's blocks
   // (renderer.md, "Instances that come and go").
+  // G135: where the placement generators leave nothing, read from the file once (scene_gen.md,
+  // "Exclusion"); a file with no holes, channels or water builds an empty one.
+  if (placement_exclusion.get()) {
+    const Vector<scene::TerrainHole> no_holes;
+    const auto& holes = file.terrain.has_value() ? file.terrain->holes : no_holes;
+    if (!out.terrain.exclusion.build(
+            {holes.data(), holes.size()}, {file.water.data(), file.water.size()},
+            {file.water_channels.data(), file.water_channels.size()}, &error)) {
+      error = path + ": " + error;
+      return false;
+    }
+  }
   profiling::TraceStage placements_stage("placements");
   if (!expand_placements(file, path, dir, ground, out, error)) return false;
   placements_stage.end();

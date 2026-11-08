@@ -83,6 +83,8 @@ multiplies occupancy by cooked palette weight. Requested missing/invalid masks
 and non-finite ground are errors; outside mask extent is empty. A tile read failure
 inside the mask extent is an error.
 
+**Exclusion (G135).** A candidate over a terrain hole is dropped ([scene_gen](scene_gen.md#exclusion)); a lake and a stream's bed are not asked, because standing in water is what the patch is for.
+
 Positions remain f64, with integer-millimetre ground queries. Random decisions
 use local coordinates, retaining detail far from the origin. IDs enumerate
 candidate rows and are emitted in increasing order. Tiles visit overlapping

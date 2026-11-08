@@ -121,6 +121,8 @@ the field is identical in every ring and no request order participates):
   vertical on a tilted patch. A cap of 0 keeps every patch upright, as before (still turned and
   moved).
 
+**Where it does not grow (G135, 2026-11-08).** The patch's *moved* centre is asked of the scene's exclusion ([scene_gen](scene_gen.md#exclusion)) after the earlier-footprint test: no patch in a terrain hole, in a stream's bed and banks (half the water's width plus the dressed bank's reach, 0.25 w + 0.4 m) or under water. Beyond a stream's bank the mask's density is multiplied by a **riparian factor**, 0.2 at the bank's edge rising on a smoothstep to 1 over 3 m, before the density classes are interpolated, so grass on a bank is sparser and falls to the shorter, thinner classes (the patch's blades are never scaled, as above, so the height falls through the class it is drawn from). The curve is a design choice with a stated default, not a fit: riparian vegetation changes structure over a few metres across a bank with disturbance and moisture (Naiman and Decamps 1997); the numbers are `k_riparian_floor` and `k_riparian_reach_m` in `exclusion.h` to be tuned by eye. A scene with no holes, channels or water hands the placement no exclusion and places every patch it did, to the bit (`sward_exclusion_tests.cpp`).
+
 Every existing sward scene's placements therefore move: each patch is shifted by up to 25 cm a
 side and turned, and on a slope tipped by up to the cap, so their pictures change (the field's
 density and ID order do not).
