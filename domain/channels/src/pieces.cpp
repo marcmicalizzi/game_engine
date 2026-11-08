@@ -108,8 +108,8 @@ bool place_pieces(const ChannelLayer& p, const ChannelNetwork& n, const scene_ge
   out.clear();
   if (!(tile_size >= .25f && tile_size <= 100000.0f)) return fail(error, "tile_size");
   const i64 tile_mm = scene_gen::nearest_mm(wide(tile_size));
-  const ChannelSurface bed_look = surface_of(p.bed, {.42f, .40f, .37f}, .35f,
-                                                std::array<f32, 3>{.62f, .60f, .56f});
+  const ChannelSurface bed_look =
+      surface_of(p.bed, {.42f, .40f, .37f}, .35f, std::array<f32, 3>{.62f, .60f, .56f});
   const ChannelSurface bar_look = surface_of(p.bars, {.56f, .51f, .43f}, .8f, std::nullopt);
   u32 id = 0;
   for (const ChannelLink& link : n.links) {
@@ -191,8 +191,8 @@ bool place_pieces(const ChannelLayer& p, const ChannelNetwork& n, const scene_ge
       const f32 uv[2] = {static_cast<f32>(static_cast<f64>(b.x0 % 1024000) / 1000.0),
                          static_cast<f32>(static_cast<f64>(b.z0 % 1024000) / 1000.0)};
       // The bed: the cut's flat bed wide (W89; channels.md, "The cut"), on the ground, its top a
-      // gravel relief of about a median grain and the riffles' rise; its two edge columns down at the
-      // ground, at the banks' toe.
+      // gravel relief of about a median grain and the riffles' rise; its two edge columns down at
+      // the ground, at the banks' toe.
       {
         PlacedPiece piece = base;
         piece.recipe.part = ChannelPart::Bed;

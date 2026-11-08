@@ -86,8 +86,8 @@ TEST_CASE("tileset: a cut lowers the finest level to its section and leaves the 
   const BuildResult plain = s.build(s.options, "plain");
   BuildOptions o = s.options;
   // A 3 m channel along z = 20 m from x = 5 to 35 m, 0.6 m deep, its top on the flat ground.
-  const scene::TerrainCut cut = cut_of("run", WorldPos{5.0, 0.0, 20.0}, WorldPos{35.0, 0.0, 20.0},
-                                       3.0f, 0.6f);
+  const scene::TerrainCut cut =
+      cut_of("run", WorldPos{5.0, 0.0, 20.0}, WorldPos{35.0, 0.0, 20.0}, 3.0f, 0.6f);
   std::string error;
   REQUIRE_MESSAGE(o.cuts.build({&cut, 1}, &error), error);
   const BuildResult cut_set = s.build(o, "cut");
@@ -155,8 +155,8 @@ TEST_CASE("tileset: a cut no wider than a level's spacing closes on it") {
   const BuildResult plain = s.build(s.options, "plain");
   BuildOptions o = s.options;
   // 0.2 m wide: not wider than the finest's 25 cm, so no level holds it.
-  const scene::TerrainCut rill = cut_of("rill", WorldPos{5.0, 0.0, 20.0},
-                                        WorldPos{35.0, 0.0, 20.0}, 0.2f, 0.1f);
+  const scene::TerrainCut rill =
+      cut_of("rill", WorldPos{5.0, 0.0, 20.0}, WorldPos{35.0, 0.0, 20.0}, 0.2f, 0.1f);
   std::string error;
   REQUIRE_MESSAGE(o.cuts.build({&rill, 1}, &error), error);
   const BuildResult closed = s.build(o, "rill");

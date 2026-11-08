@@ -419,9 +419,9 @@ TEST_CASE("channels: the water's description has the WaterChannel shape") {
   CHECK(write_json(back) == text);
 }
 
-// **The cuts** (channels.md, "The cut"; W89): one per link with the TerrainCut shape, a trapezoid of
-// the hydraulic geometry's area under the ground at the line, its bed never rising downstream, and
-// the water's surface in the cut lying between that bed and the top of the bank.
+// **The cuts** (channels.md, "The cut"; W89): one per link with the TerrainCut shape, a trapezoid
+// of the hydraulic geometry's area under the ground at the line, its bed never rising downstream,
+// and the water's surface in the cut lying between that bed and the top of the bank.
 TEST_CASE("channels: the cuts have the TerrainCut shape and the water lies inside them") {
   ChannelLayer p = layer();
   p.head_threshold_m2 = 300;
@@ -461,9 +461,8 @@ TEST_CASE("channels: the cuts have the TerrainCut shape and the water lies insid
       const f64 w = static_cast<f64>(pt.width_m), mean = static_cast<f64>(pt.depth_m);
       const f64 m = static_cast<f64>(p.bank_slope);
       const f64 d = static_cast<f64>(cut.depth_m[i]);
-      const f64 thalweg = 4 * mean / (m * w) >= 1
-                              ? 2 * mean
-                              : .5 * m * w * (1 - std::sqrt(1 - 4 * mean / (m * w)));
+      const f64 thalweg =
+          4 * mean / (m * w) >= 1 ? 2 * mean : .5 * m * w * (1 - std::sqrt(1 - 4 * mean / (m * w)));
       // At least a thalweg under the top, and never more than two (the cap over a sill).
       CHECK(d >= thalweg - 2e-3);
       CHECK(d <= 2 * thalweg + 2e-3);

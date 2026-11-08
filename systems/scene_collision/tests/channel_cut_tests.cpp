@@ -2,8 +2,8 @@
 // into the ground"; scene_collision.md; roadmap W89): a `tiles` ground built from a heightfield
 // with a cut, made through the registry as a scene's is, its set's source handed to the collision.
 // The collision reads the set's heights, so its ground is the cut ground with no change of its
-// own: the ground query inside the cut answers the bed, the floodplain past the bank its own height,
-// and a character walked across the channel goes down to the bed and up the far bank.
+// own: the ground query inside the cut answers the bed, the floodplain past the bank its own
+// height, and a character walked across the channel goes down to the bed and up the far bank.
 #include <domain/physics/character.h>
 #include <domain/physics/physics.h>
 #include <domain/scene_gen/scene_gen.h>
@@ -54,8 +54,8 @@ TEST_CASE("scene_collision: the ground inside a channel's cut is its bed") {
     h = 2.0f;
   std::string error;
   REQUIRE_MESSAGE(tileset::write_heightfield(tmp.file("flat.json"), field, error), error);
-  // A channel 4 m wide and 0.8 m deep along z = 0, its top on the ground, its banks at a rise of 0.5
-  // (27 degrees, under the walker's 40) so a character can climb out: a flat bed 0.8 m wide.
+  // A channel 4 m wide and 0.8 m deep along z = 0, its top on the ground, its banks at a rise of
+  // 0.5 (27 degrees, under the walker's 40) so a character can climb out: a flat bed 0.8 m wide.
   scene::TerrainCut cut;
   cut.name = "run";
   cut.points = {WorldPos{-30.0, 2.0, 0.0}, WorldPos{30.0, 2.0, 0.0}};

@@ -126,8 +126,8 @@ struct BuildResult {
   bool hit = false;  // the set was already there: nothing was written
   u32 levels = 0;
   u32 tiles = 0;
-  u64 bytes = 0;  // of the level archives written (or, on a hit, recorded)
-  u64 hash = 0;   // every level's hash combined
+  u64 bytes = 0;       // of the level archives written (or, on a hit, recorded)
+  u64 hash = 0;        // every level's hash combined
   u64 cut_points = 0;  // points the cuts lowered, over every level (0 on a hit)
 };
 

@@ -578,9 +578,12 @@ u64 terrain_hash(const TerrainDesc& desc) noexcept {
         for (const scene::TerrainCut& c : t.cuts) {
           h = mix_f32(hash_combine(h, c.points.size()), c.bank_slope);
           for (const WorldPos& p : c.points)
-            for (const f64 v : {p.x, p.y, p.z}) h = hash_combine(h, std::bit_cast<u64>(v));
-          for (const f32 v : c.width_m) h = mix_f32(h, v);
-          for (const f32 v : c.depth_m) h = mix_f32(h, v);
+            for (const f64 v : {p.x, p.y, p.z})
+              h = hash_combine(h, std::bit_cast<u64>(v));
+          for (const f32 v : c.width_m)
+            h = mix_f32(h, v);
+          for (const f32 v : c.depth_m)
+            h = mix_f32(h, v);
         }
       }
     }

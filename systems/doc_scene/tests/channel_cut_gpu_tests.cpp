@@ -183,19 +183,18 @@ TEST_CASE("channel cut: the bed is drawn the cut's depth below the floodplain, o
   const u32 centre = (k_height / 2) * k_width + k_width / 2;
   const f64 centre_y = eye_y - (eye_y - floodplain) * static_cast<f64>(plain.depth[centre]) /
                                    static_cast<f64>(cut.depth[centre]);
-  MESSAGE("the image's centre meets the ground at " << centre_y << " m (the bed: 1.4 m); "
-                                                    << bed_pixels << " pixels on the bed, "
-                                                    << deeper << " deeper, " << shallower
-                                                    << " nearer");
+  MESSAGE("the image's centre meets the ground at "
+          << centre_y << " m (the bed: 1.4 m); " << bed_pixels << " pixels on the bed, " << deeper
+          << " deeper, " << shallower << " nearer");
   CHECK(centre_y == doctest::Approx(1.4).epsilon(0.02));
   CHECK(bed_pixels > 200);
   CHECK(shallower == 0);  // a cut only ever lowers the ground
 
   // The cascades change no id: the maps are drawn from the same cut lattice, by the same cull.
   CapturedFrame mapped;
-  REQUIRE_MESSAGE(capture(gpu, cut_scene(tmp, true), RasterMode::Hardware, mapped, error,
-                          ShadowMode::Cascaded),
-                  error);
+  REQUIRE_MESSAGE(
+      capture(gpu, cut_scene(tmp, true), RasterMode::Hardware, mapped, error, ShadowMode::Cascaded),
+      error);
   REQUIRE(mapped.ids.size() == cut.ids.size());
   u32 mapped_off = 0;
   for (u32 p = 0; p < cut.ids.size(); ++p)
@@ -228,10 +227,9 @@ TEST_CASE("channel cut: the bed is drawn the cut's depth below the floodplain, o
     ids_off += traced.ids[p] != cut.ids[p] ? 1u : 0u;
     plain_ids_off += traced_plain.ids[p] != plain.ids[p] ? 1u : 0u;
   }
-  MESSAGE("the ray path: its centre at " << traced_y << " m, " << traced_bed
-                                         << " pixels on the bed; " << ids_off
-                                         << " id words differ from the hardware's ("
-                                         << plain_ids_off << " with no cut)");
+  MESSAGE("the ray path: its centre at "
+          << traced_y << " m, " << traced_bed << " pixels on the bed; " << ids_off
+          << " id words differ from the hardware's (" << plain_ids_off << " with no cut)");
   CHECK(traced_y == doctest::Approx(1.4).epsilon(0.02));
   CHECK(traced_bed + 64 >= bed_pixels);
   CHECK(traced_bed <= bed_pixels + 64);

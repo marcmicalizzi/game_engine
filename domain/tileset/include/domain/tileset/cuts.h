@@ -82,9 +82,9 @@ class TerrainCuts {
   u64 hash_ = 0;
 };
 
-// The section across a cut, at distance `d` from its line, for a top `top`, width `w`, depth `depth`
-// and bank slope `slope` (one length unit throughout): the surface's height, or false past the
-// reach. Exposed for the tests, which hold the build's heights to it.
+// The section across a cut, at distance `d` from its line, for a top `top`, width `w`, depth
+// `depth` and bank slope `slope` (one length unit throughout): the surface's height, or false past
+// the reach. Exposed for the tests, which hold the build's heights to it.
 bool cut_section(f64 top, f64 w, f64 depth, f64 slope, f64 d, f64& out) noexcept;
 
 }  // namespace engine::tileset

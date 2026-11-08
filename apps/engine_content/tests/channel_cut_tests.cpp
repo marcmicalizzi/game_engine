@@ -55,7 +55,8 @@ TEST_CASE("engine-content channels --cut writes the terrain's cuts beside the wa
 #else
   test::TempDir tmp("channel_cut_cmd");
   REQUIRE(tmp.ok());
-  // The valley of the channels command's own test: falling 1 % toward z = 0, its floor at x = 128 m.
+  // The valley of the channels command's own test: falling 1 % toward z = 0, its floor at x = 128
+  // m.
   tileset::Heightfield field;
   field.width = 129;
   field.height = 257;
@@ -76,8 +77,8 @@ TEST_CASE("engine-content channels --cut writes the terrain's cuts beside the wa
       R"("region_min":[0,0],"region_max":[256,512],"head_threshold_m2":300}}]})";
   const std::string scene = head + tail;
   REQUIRE(io::write_file_atomic(tmp.file("scene.json"), scene) == io::Status::Ok);
-  const std::vector<std::string> args{"channels", tmp.file("scene.json"), tmp.file("a.json"),
-                                      "--min-area-m2", "0", "--cut"};
+  const std::vector<std::string> args{
+      "channels", tmp.file("scene.json"), tmp.file("a.json"), "--min-area-m2", "0", "--cut"};
   const auto out = run(args);
   REQUIRE_MESSAGE(out.code == 0, out.text);
   CHECK(out.text.find("\"cuts\"") != std::string::npos);
@@ -151,8 +152,8 @@ TEST_CASE("engine-content channels --cut writes the terrain's cuts beside the wa
   const i64 x = scene_gen::nearest_mm(c.points[mid].x), z = scene_gen::nearest_mm(c.points[mid].z);
   const f64 plain = ground.view().surface_mm(x, z), cut = cut_ground.view().surface_mm(x, z);
   MESSAGE("at the middle of the last cut, the ground " << plain << " m, the cut ground " << cut
-                                                       << " m, the cut's depth "
-                                                       << c.depth_m[mid] << " m");
+                                                       << " m, the cut's depth " << c.depth_m[mid]
+                                                       << " m");
   // The valley's points are 2 m apart: a channel wider than that is cut into them, one narrower
   // closes on them (the cell rule; tileset.md, "Channels cut into the ground").
   if (c.width_m[mid] > 2.0f) {
