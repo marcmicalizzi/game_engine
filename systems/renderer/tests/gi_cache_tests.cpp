@@ -22,6 +22,7 @@
 #include <core/math/world.h>
 #include <core/memory/memory.h>
 #include <domain/gfx/device.h>
+#include <domain/gfx/gi_cache.h>
 #include <domain/gfx/resources.h>
 #include <foundation/image/metrics.h>
 #include <foundation/tunables/tunables.h>
@@ -35,6 +36,7 @@
 #include <doctest/doctest.h>
 #include <test_temp_dir.h>
 
+#include <algorithm>
 #include <cmath>
 #include <cstring>
 #include <filesystem>
@@ -192,11 +194,9 @@ bool write_box(const std::string& path) {
   return write_glb(path, m, Vec3{0.7f, 0.7f, 0.7f}, 0.9f);
 }
 
-// A unit sphere, 24 x 16, outward.
-bool write_sphere(const std::string& path) {
+// A unit sphere, 24 x 16 (or as asked), outward.
+bool write_sphere(const std::string& path, u32 seg = 24, u32 rings = 16) {
   MeshBuilder m;
-  const u32 seg = 24;
-  const u32 rings = 16;
   for (u32 r = 0; r <= rings; ++r) {
     const f32 v = static_cast<f32>(r) / static_cast<f32>(rings);
     const f32 phi = v * 3.14159265f;
@@ -368,6 +368,69 @@ Fixture field_fixture(const std::filesystem::path& dir, WorldPos at) {
   return out;
 }
 
+// **A rounded rock** (stage 2's blocks): a smooth sphere 1.5 m across, finely tessellated, resting
+// on a slab, seen from 4 m. The slab hides its lower half from the sky, so what its cells hold
+// turns with the normal, and the face key splits the normals among six faces.
+Fixture rock_fixture(const std::filesystem::path& dir) {
+  const std::string rock = slashes(dir / "rock.glb");
+  const std::string cube = slashes(dir / "cube.glb");
+  REQUIRE(write_sphere(rock, 64, 40));
+  REQUIRE(write_cube(cube));
+  Fixture out;
+  out.name = "a rounded rock on a slab";
+  out.desc.meshes.push_back(cube);
+  out.desc.meshes.push_back(rock);
+  out.desc.ddc = slashes(dir / "ddc");
+  SceneInstance slab;
+  slab.transform.position = Vec3{0.0f, -0.25f, 0.0f};
+  slab.transform.scale = Vec3{16.0f, 0.5f, 16.0f};
+  out.desc.instances.push_back(slab);
+  SceneInstance ball;
+  ball.mesh = 1;
+  ball.transform.position = Vec3{0.0f, 0.6f, 0.0f};
+  ball.transform.scale = Vec3{0.75f, 0.75f, 0.75f};
+  out.desc.instances.push_back(ball);
+  out.camera.position = WorldPos{2.4, 1.9, 2.6};
+  out.camera.target = WorldPos{0.0, 0.5, 0.0};
+  out.camera.znear = 0.05f;
+  return out;
+}
+
+// The steps of the cache's own term between neighbouring pixels of one instance: the picture with
+// the cache less the picture without it, in 8-bit luma, so the direct light, the terminator and the
+// highlight cancel and what is left is the indirect term the cells hold. A neighbour pair whose
+// difference steps by more than `threshold` is a cell-sized block's edge on a smooth sphere.
+u64 cache_steps(const CapturedFrame& with, const CapturedFrame& without, u32 instance,
+                i32 threshold) {
+  auto luma = [](const CapturedFrame& shot, u32 i) {
+    const u8* c = &shot.color[i * 4];
+    return 54 * static_cast<i32>(c[0]) + 183 * static_cast<i32>(c[1]) + 19 * static_cast<i32>(c[2]);
+  };
+  auto term = [&](u32 i) { return luma(with, i) - luma(without, i); };
+  auto on = [&](u32 i) {
+    return with.ids[i * k_id_words] == instance && without.ids[i * k_id_words] == instance;
+  };
+  u64 out = 0;
+  for (u32 y = 0; y + 1 < with.height; ++y) {
+    for (u32 x = 0; x + 1 < with.width; ++x) {
+      const u32 i = y * with.width + x;
+      if (!on(i)) continue;
+      for (const u32 j : {i + 1, i + with.width}) {
+        if (on(j) && std::abs(term(i) - term(j)) > threshold * 256) ++out;
+      }
+    }
+  }
+  return out;
+}
+
+f64 mean_luma(const Vector<u8>& rgba) {
+  f64 sum = 0.0;
+  for (u32 i = 0; i + 3 < rgba.size(); i += 4)
+    sum += 0.2126 * static_cast<f64>(rgba[i]) + 0.7152 * static_cast<f64>(rgba[i + 1]) +
+           0.0722 * static_cast<f64>(rgba[i + 2]);
+  return sum / static_cast<f64>(rgba.size() / 4);
+}
+
 image::Image image_of(u32 width, u32 height, const Vector<u8>& rgba) {
   image::Image out;
   out.width = width;
@@ -511,10 +574,15 @@ TEST_CASE("gi cache: the bounce moves the picture towards the reference at three
           image::compare_images(b, a, image::MetricsOptions{}, metric[m], nullptr, &error), error);
       MESSAGE(fixture.name << ", mode " << std::string(modes[m]) << ", three bounces: FLIP mean "
                            << metric[m].flip_mean << ", p95 " << metric[m].flip_percentile
-                           << ", PSNR " << metric[m].psnr);
+                           << ", PSNR " << metric[m].psnr << ", mean luma " << mean_luma(shot.color)
+                           << " against the reference's " << mean_luma(reference.color));
     }
     CHECK(metric[2].flip_mean < metric[0].flip_mean);
     CHECK(metric[2].flip_mean < metric[1].flip_mean);
+    // Stage 2 pinned (2026-11-08, RTX 5090): the young cell's parent, the young cells' rays, the
+    // hit's coarser levels and bounded fallback and the faces' blend took the box from 0.125 to
+    // 0.105 and the field from 0.048 to 0.042; a tenth of slack over what was measured.
+    CHECK(metric[2].flip_mean < (&fixture == &fixtures[0] ? 0.116 : 0.047));
   }
 }
 
@@ -616,4 +684,195 @@ TEST_CASE("gi cache: the frames with the cache on make no buffer and allocate as
   MESSAGE("engine allocations over sixteen frames: " << allocations[0] << " off, " << allocations[1]
                                                      << " with the cache");
   CHECK(allocations[1] <= allocations[0]);
+}
+
+// ---- stage 2 (renderer.md, "Indirect light: the world-space cache", "Stage 2") ----------------
+
+TEST_CASE("gi cache: the young cells' rays never pass the frame's budget") {
+  Gpu gpu;
+  if (!gpu.ok) {
+    MESSAGE("gi cache unavailable here: " << gpu.why);
+    return;
+  }
+  const test::TempDir tmp("engine_gi_budget");
+  const Fixture fixture = box_fixture(tmp.native());
+  // 3,000 rays over the box's 16,384 pixels: a trickle window of eleven pixels, 1,490 of them, and
+  // the young candidates the rest of the budget.
+  constexpr u32 k_budget = 3000;
+  const ScopedTunable mode("renderer.gi.mode", "bounce");
+  const ScopedTunable rays("renderer.gi.rays_per_frame", "3000");
+  Rig rig;
+  REQUIRE_MESSAGE(rig.build(gpu.device, fixture.desc, false), rig.error);
+  const u32 windows =
+      (k_width * k_height + gfx::gi_trickle_stride(u64{k_width} * k_height, k_budget) - 1) /
+      gfx::gi_trickle_stride(u64{k_width} * k_height, k_budget);
+  FrameDesc frame;
+  frame.camera = fixture.camera;
+  u32 most = 0;
+  u32 least = ~0u;
+  for (u32 i = 0; i < 48; ++i) {
+    frame.frame_index = i;
+    REQUIRE_MESSAGE(rig.renderer.render_offscreen(frame, &rig.error), rig.error);
+    const GiStats& gi = rig.renderer.stats().gi;
+    CHECK(gi.rays <= k_budget);
+    if (gi.samples == 0) continue;  // the stats of a frame before the first sample
+    most = std::max(most, gi.rays);
+    least = std::min(least, gi.rays);
+  }
+  MESSAGE("rays a frame: " << most << " at most, " << least << " at least, " << windows
+                           << " trickle windows, a budget of " << k_budget);
+  // The young cells took rays past the trickle while the box filled, and none once it had.
+  CHECK(most > windows);
+  CHECK(least <= windows);
+}
+
+TEST_CASE("gi cache: a held pose fills in within a second's frames") {
+  Gpu gpu;
+  if (!gpu.ok) {
+    MESSAGE("gi cache unavailable here: " << gpu.why);
+    return;
+  }
+  const test::TempDir tmp("engine_gi_fill");
+  const Fixture fixture = box_fixture(tmp.native());
+  const ScopedTunable mode("renderer.gi.mode", "bounce");
+  Rig rig;
+  REQUIRE_MESSAGE(rig.build(gpu.device, fixture.desc, false), rig.error);
+  // The fill: the first frame from which no stride pixel's own cell is young, and the first from
+  // which the change between frames stays under the bound — a twentieth of the first estimate's
+  // change, the noise the averages keep.
+  constexpr u32 k_frames = 64;
+  std::vector<u64> change;
+  std::vector<u32> young;
+  CapturedFrame previous;
+  FrameDesc frame;
+  frame.camera = fixture.camera;
+  for (u32 i = 0; i < k_frames; ++i) {
+    frame.frame_index = i;
+    CapturedFrame shot;
+    REQUIRE_MESSAGE(rig.renderer.capture(frame, CaptureChannels{}, shot, &rig.error), rig.error);
+    if (i >= 1) change.push_back(bytes_apart(previous, shot));
+    young.push_back(rig.renderer.stats().gi.young);
+    previous = std::move(shot);
+  }
+  const u64 first = *std::max_element(change.begin(), change.end());
+  const u64 bound = first / 20;
+  u32 settled = k_frames;
+  for (u32 i = static_cast<u32>(change.size()); i > 0; --i) {
+    if (change[i - 1] > bound) break;
+    settled = i;  // change[i - 1] is frame i's
+  }
+  u32 filled = k_frames;
+  for (u32 i = static_cast<u32>(young.size()); i > 0; --i) {
+    if (young[i - 1] != 0) break;
+    filled = i - 1;
+  }
+  MESSAGE("the box under bounce: the largest change " << first << " colour steps, under " << bound
+                                                      << " from frame " << settled
+                                                      << "; no young cell from frame " << filled);
+  CHECK(filled <= 12);
+  CHECK(settled <= 60);
+}
+
+TEST_CASE("gi cache: a rounded rock draws no cell-sized blocks where its faces meet") {
+  Gpu gpu;
+  if (!gpu.ok) {
+    MESSAGE("gi cache unavailable here: " << gpu.why);
+    return;
+  }
+  const test::TempDir tmp("engine_gi_rock");
+  const Fixture fixture = rock_fixture(tmp.native());
+  // Cells 3 to 4 pixels wide at this distance and size, so a block is a few pixels and its edge a
+  // step the count sees; the forest's cells are ten pixels at 3840x2160.
+  const ScopedTunable scale("renderer.gi.cell_scale", "0.03");
+  CaptureChannels channels;
+  channels.ids = true;
+  CapturedFrame shots[3];
+  const char* names[3] = {"off", "bounce without the faces' blend", "bounce"};
+  for (u32 m = 0; m < 3; ++m) {
+    const ScopedTunable mode("renderer.gi.mode", m == 0 ? "off" : "bounce");
+    const ScopedTunable faces("renderer.gi.face_blend", m == 2 ? "true" : "false");
+    Rig rig;
+    REQUIRE_MESSAGE(rig.build(gpu.device, fixture.desc, false), rig.error);
+    FrameDesc frame;
+    frame.camera = fixture.camera;
+    for (u32 i = 0; i + 1 < 64; ++i) {
+      frame.frame_index = i;
+      REQUIRE_MESSAGE(rig.renderer.render_offscreen(frame, &rig.error), rig.error);
+    }
+    frame.frame_index = 63;
+    REQUIRE_MESSAGE(rig.renderer.capture(frame, channels, shots[m], &rig.error), rig.error);
+  }
+  const u64 hard = cache_steps(shots[1], shots[0], 1, 2);
+  const u64 blended = cache_steps(shots[2], shots[0], 1, 2);
+  MESSAGE("the rock's cache term, steps of more than 2 in 255 between neighbours: "
+          << hard << " " << std::string(names[1]) << ", " << blended << " with it");
+  CHECK(blended < hard);
+}
+
+TEST_CASE("gi cache: stage 2's levers one at a time, against the reference at three bounces") {
+  Gpu gpu;
+  if (!gpu.ok) {
+    MESSAGE("gi cache unavailable here: " << gpu.why);
+    return;
+  }
+  const test::TempDir tmp("engine_gi_levers");
+  const Fixture fixtures[] = {box_fixture(tmp.native()), field_fixture(tmp.native(), WorldPos{})};
+  // Stage 1's read, then each lever added in turn: the young cell's parent, the young cells' rays,
+  // the hit's coarser levels and fallback, the faces' blend (all of them: stage 2).
+  struct Levers {
+    const char* name;
+    const char* confident;
+    const char* evict;
+    const char* young;
+    const char* fallback;
+    const char* faces;
+  };
+  const Levers steps[] = {
+      {"stage 1", "1", "0", "false", "false", "false"},
+      {"+ the young cell reads its parent", "32", "0", "false", "false", "false"},
+      {"+ a full bucket's stale cells freed", "32", "16", "false", "false", "false"},
+      {"+ rays to the young cells", "32", "16", "true", "false", "false"},
+      {"+ the hit's coarser levels and fallback", "32", "16", "true", "true", "false"},
+      {"+ the faces' blend (stage 2)", "32", "16", "true", "true", "true"},
+  };
+  constexpr u32 k_steps = sizeof(steps) / sizeof(steps[0]);
+  const ScopedTunable mode("renderer.gi.mode", "bounce");
+  for (const Fixture& fixture : fixtures) {
+    ReferenceFrame reference;
+    f64 flip[k_steps];
+    for (u32 s = 0; s < k_steps; ++s) {
+      const ScopedTunable confident("renderer.gi.confident", steps[s].confident);
+      const ScopedTunable evict("renderer.gi.evict_age", steps[s].evict);
+      const ScopedTunable young("renderer.gi.young_rays", steps[s].young);
+      const ScopedTunable fallback("renderer.gi.hit_fallback", steps[s].fallback);
+      const ScopedTunable faces("renderer.gi.face_blend", steps[s].faces);
+      Rig rig;
+      REQUIRE_MESSAGE(rig.build(gpu.device, fixture.desc, s == 0), rig.error);
+      CapturedFrame shot;
+      REQUIRE_MESSAGE(capture_after(rig, fixture.camera, 64, shot), rig.error);
+      if (s == 0) {
+        ReferenceSettings settings;
+        settings.spp = 512;
+        settings.batch = 64;
+        settings.max_bounces = 3;
+        settings.pixel_center = true;
+        REQUIRE_MESSAGE(rig.reference.render(fixture.camera, settings, reference, &rig.error),
+                        rig.error);
+      }
+      image::ImageMetrics metric;
+      std::string error;
+      REQUIRE_MESSAGE(
+          image::compare_images(image_of(reference.width, reference.height, reference.color),
+                                image_of(shot.width, shot.height, shot.color),
+                                image::MetricsOptions{}, metric, nullptr, &error),
+          error);
+      flip[s] = static_cast<f64>(metric.flip_mean);
+      MESSAGE(fixture.name << ", " << std::string(steps[s].name) << ": FLIP mean "
+                           << metric.flip_mean << ", p95 " << metric.flip_percentile << ", PSNR "
+                           << metric.psnr << ", mean luma " << mean_luma(shot.color)
+                           << " against the reference's " << mean_luma(reference.color));
+    }
+    // Stage 2 is at least as near the reference as stage 1 on both fixtures.
+    CHECK(flip[k_steps - 1] <= flip[0]);
+  }
 }

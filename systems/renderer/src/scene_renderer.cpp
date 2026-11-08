@@ -83,6 +83,11 @@ constexpr u64 sky_stat_offset(u32 views, u32 cascades) noexcept {
   return (sizeof(u32) * (shadow_stat_base(views) + u64{k_shadow_stat_words} * cascades) + 15) &
          ~u64{15};
 }
+// Where the world-space cache's counts start (R69 stage 2; `gfx::k_gi_stat_*`), in bytes: behind
+// the sky's sums, copied from the cache's header behind its fold.
+constexpr u64 gi_stat_offset(u32 views, u32 cascades) noexcept {
+  return sky_stat_offset(views, cascades) + ((sizeof(gfx::SkyFrame) + 15) & ~u64{15});
+}
 // Where a slot's `gfx::SkyParams` is in its resolve buffer: behind the views' blocks, the lights,
 // the shadow maps' block and the ground's detail.
 constexpr u64 sky_params_offset(u32 views) noexcept {
@@ -568,7 +573,7 @@ bool SceneRenderer::create(const gfx::Device& device, GpuScene& scene,
       gfx::BufferUsage::Storage | gfx::BufferUsage::ShaderDeviceAddress;
   // The statistics block ends with the sky's sums (`gfx::SkyFrame`), copied there after the
   // frame, for a scene with a sky.
-  const u64 stat_bytes = sky_stat_offset(views, cascades) + sizeof(gfx::SkyFrame);
+  const u64 stat_bytes = gi_stat_offset(views, cascades) + sizeof(u32) * gfx::k_gi_stat_words;
   bool ok = true;
   for (u32 slot = 0; slot < desc.frames_in_flight && ok; ++slot) {
     // Two cull blocks per view and one per shadow cascade behind them, one resolve block per view
@@ -726,7 +731,7 @@ bool SceneRenderer::create(const gfx::Device& device, GpuScene& scene,
   // frame allocates for it; its first frame's fold clears it.
   if (pipelines_.gi_sample.pipeline.valid()) {
     gi_count_ = gfx::gi_cell_count(resolved_.gi_cache_bytes);
-    if (!gfx::create_buffer(device, u64{gi_count_} * gfx::k_gi_cell_bytes,
+    if (!gfx::create_buffer(device, gfx::gi_buffer_bytes(gi_count_),
                             gfx::BufferUsage::Storage | gfx::BufferUsage::ShaderDeviceAddress,
                             false, gi_cache_, error)) {
       destroy();
@@ -1904,9 +1909,38 @@ void SceneRenderer::fold_sky(u32 slot) {
   stats_.sky.sky_lux = sums.exposure.w;
 }
 
+// The world-space cache's counts of the frame that last used this slot (R69 stage 2), and with
+// `renderer.gi.log` one log line a frame of them: how a walk fills the cache is read from these.
+void SceneRenderer::fold_gi(u32 slot) {
+  if (!gi_cache_.buffer.valid()) return;
+  const u32 cascades = resolved_.csm ? scene_->shadow_cascades() : 0u;
+  u32 words[gfx::k_gi_stat_words];
+  std::memcpy(
+      words,
+      static_cast<const u8*>(stat_blocks_[slot].mapped) + gi_stat_offset(view_count(), cascades),
+      sizeof(words));
+  GiStats& gi = stats_.gi;
+  gi.rays = words[gfx::k_gi_stat_rays];
+  gi.samples = words[gfx::k_gi_stat_samples];
+  gi.young = words[gfx::k_gi_stat_young];
+  gi.dropped = words[gfx::k_gi_stat_dropped];
+  gi.cells = words[gfx::k_gi_stat_cells];
+  gi.young_cells = words[gfx::k_gi_stat_young_cells];
+  gi.evicted = words[gfx::k_gi_stat_evicted];
+  gi.expired = words[gfx::k_gi_stat_expired];
+  if (resolved_.gi_log) {
+    ENGINE_LOG_INFO(log_renderer, "gi cache", log::field("frame", gi_frame_),
+                    log::field("rays", gi.rays), log::field("samples", gi.samples),
+                    log::field("young", gi.young), log::field("dropped", gi.dropped),
+                    log::field("cells", gi.cells), log::field("young_cells", gi.young_cells),
+                    log::field("evicted", gi.evicted), log::field("expired", gi.expired));
+  }
+}
+
 void SceneRenderer::collect_visible() {
   fold_visible(frames_.slot());
   fold_sky(frames_.slot());
+  fold_gi(frames_.slot());
 }
 
 void SceneRenderer::begin_frame() {
@@ -2767,9 +2801,16 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
     u64 gi_pixels = 0;
     for (u32 v = 0; v < views; ++v)
       gi_pixels += u64{targets_.views[v].width} * targets_.views[v].height;
-    gi_stride = gfx::gi_stride(gi_pixels, resolved_.gi_rays_per_frame);
-    gi_flags = gfx::k_gi_read | (gi_reset_ ? gfx::k_gi_reset : 0u) |
-               (resolved_.gi_mode == GiMode::Bounce ? gfx::k_gi_bounce : 0u);
+    gi_stride = resolved_.gi_young_rays
+                    ? gfx::gi_trickle_stride(gi_pixels, resolved_.gi_rays_per_frame)
+                    : gfx::gi_stride(gi_pixels, resolved_.gi_rays_per_frame);
+    gi_flags =
+        gfx::k_gi_read | (gi_reset_ ? gfx::k_gi_reset : 0u) |
+        (resolved_.gi_mode == GiMode::Bounce ? gfx::k_gi_bounce : 0u) |
+        (resolved_.gi_face_blend ? gfx::k_gi_faces : 0u) |
+        (resolved_.gi_young_rays ? gfx::k_gi_young_rays : 0u) |
+        (resolved_.gi_hit_fallback ? gfx::k_gi_hit_fallback : 0u) |
+        gfx::gi_flag_numbers(resolved_.gi_confident, resolved_.gi_evict_age, resolved_.gi_far_lift);
     ++gi_frame_;
   }
 
@@ -3139,6 +3180,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
       resolve.gi_count = gi_count_;
       resolve.gi_stride = gi_stride;
       resolve.gi_cell_scale = resolved_.gi_cell_scale;
+      resolve.gi_rays = resolved_.gi_rays_per_frame;
     }
     std::memcpy(resolve_bytes + sizeof(gfx::ResolveParams) * v, &resolve, sizeof(resolve));
 
@@ -5036,6 +5078,23 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
                         1);
             timer.end(cb);
           });
+      // What the two passes counted into the cache's header, into this slot's statistics block,
+      // and the header cleared for the next frame's counts and ray budget (stage 2).
+      {
+        const gfx::BufferResource* stat_target = &stat_blocks_[slot];
+        const u64 at = gi_stat_offset(views, cascade_runs);
+        graph.add_pass(
+            "gi stats", gfx::PassKind::Transfer,
+            [&](gfx::PassBuilder& b) {
+              b.write(rg_gi, gfx::Access::TransferWrite);
+              b.write(rg_stats, gfx::Access::TransferWrite);
+            },
+            [&, stat_target, at](gfx::CommandList cb, gfx::RenderGraph&) {
+              const gfx::BufferCopy copy{0, at, sizeof(u32) * gfx::k_gi_stat_words};
+              cb.copy_buffer(gi_cache_.buffer, stat_target->buffer, copy);
+              cb.fill_buffer(gi_cache_.buffer, 0, gfx::k_gi_header_bytes, 0u);
+            });
+      }
       gi_reset_ = false;
     }
     // One resolve pass, one fullscreen draw per view through that view's rectangle of the target.
