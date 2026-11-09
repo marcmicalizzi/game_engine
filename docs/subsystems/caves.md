@@ -31,7 +31,7 @@ The recipe's type (`schemas/caves.schema`) and the solve. Nothing else: the mesh
 
 - The shell is two-manifold with exactly one open edge loop, the collar; the speleothems are closed; welded by exact position, no degenerate triangle.
 - The shell's signed volume about the entrance is negative (wound inward).
-- The collar is on the hole's circle within a millimetre, at the given heights.
+- The collar is on the hole's circle within a millimetre, at the given heights. `k_caves_version` went 2 to 3 with the angle convention (G134, 2026-11-08), so a cave built under the rotated layout is rebuilt rather than served from the cache.
 - The profiles' proportions are the grounding's; a recipe outside a range is refused with its field.
 - The same recipe is the same bytes on every toolchain: products, sums, square roots (correctly rounded), a circle from Taylor sums rather than libm's trigonometry, and an integer hash.
 
