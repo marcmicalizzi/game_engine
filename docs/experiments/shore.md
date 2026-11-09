@@ -107,6 +107,19 @@ Roadmap S99 (2026-11-08): the darkening, the lowered roughness and the water fil
 | stream | 2.765 → 4.066 ms (+1.301) | 8.638 → 12.400 ms (+3.762) |
 | lake-bank | 2.374 → 2.896 ms (+0.522) | 8.221 → 9.782 ms (+1.561) |
 
+**The banks after the cut** (2026-11-09, 904a6d48: d90f9780's damp-not-flooded banks, the reach ending at 25 `wet_m`, the walk reading a record's square first), **paired in one binary**: the worktree's msvc-release over the same path under `renderer.water.banks=cycle`, the banks walked on frames whose (f / 8) is even and skipped on the others, medians of each set (n = 126–144), RTX 5090, `--wait-quiet 120`, others' CPU 12–15 %, the GPU otherwise idle (the harness's `machine_state`). What the banks add to the resolve:
+
+| View | 1920 × 1080 banks / none (added) | 3840 × 2160 banks / none (added) |
+|---|---|---|
+| shore-open | 2.128 / 2.022 ms (+0.105) | 7.218 / 6.890 ms (+0.328) |
+| east-shore | 2.191 / 2.134 ms (+0.057) | 6.302 / 6.108 ms (+0.194) |
+| stream | 3.291 / 2.855 ms (+0.436) | 10.256 / 8.640 ms (+1.616) |
+| lake-bank | 2.823 / 2.641 ms (+0.182) | 9.829 / 9.183 ms (+0.646) |
+
+The stream's 1080p is now of the order of the open shores' whole S99 cost (+0.35 ms); its 4K, +1.6 ms, is still over the +1 ms bar, because at 4K every ground pixel of the frame's lower half lies inside several overlapping reaches and still walks to their leaves: the per-tile bake (one texel a pixel) is what removes that, and is not built yet (roadmap S99). The table above it was paired against the installed binary, which the bench page now says not to do; this one is not.
+
+**The stream after the fix** (2026-11-09, `c2\` in S99's scratch: the installed main eeb8077c and the worktree's msvc-release, `--raster hw --shadows rt`, 1920 × 1080, the v35 copy): the floodplain beside the channel is darker than main's and matte out over the reach, no standing film and no glitter on the plain; the bed and the water are as they were; the far plain beyond the reach is main's.
+
 **How the band is bounded**: a pixel that is not ground pays nothing; a ground pixel tests each body's record's square (and the swash's heights) and walks the banks' tree, whose nodes skip a subtree whose square or heights miss it. Where the ground is far from every channel that is the bodies' tests and the tree's top; at the stream every ground pixel is inside some stretch's reach (25 × 0.428 + 1 = 11.7 m either side), the reaches overlap, and the walk reaches many leaves: 1.3 ms at 1080p and 3.8 ms at 4K is the largest cost S99 adds and the first to cut (a tighter reach, or the banks' saturation baked into the ground's tiles at load, since a channel's level is static).
 
 ## What the fill costs at load
