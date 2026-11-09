@@ -286,7 +286,9 @@ struct Meadow {
   ~Meadow() {
     if (gen != nullptr && state != nullptr) gen->close(state);
   }
-  scene_gen::Placements tile(u8 ring = 0) {
+  // The whole read by default (k_no_ring): the near form alone, as before. The streamed inner ring
+  // (0) places G136's card twin after every patch, and the forbs after those.
+  scene_gen::Placements tile(u8 ring = scene_gen::k_no_ring) {
     ctx.ring = ring;
     scene_gen::Placements out;
     std::string error;
@@ -333,7 +335,8 @@ u64 pin_of(const scene_gen::Placements& out) {
 
 TEST_CASE("sward forms: an entry naming no forms and no forbs places what it did, to the bit") {
   // Four density classes over a graded mask on a 20 degree slope: the pick, the jitter and the tilt
-  // all participate. The pin was taken from eeb8077c's placement (before G137) on this fixture.
+  // all participate, read whole (the inner ring would add G136's card twin to every patch). The pin
+  // was taken from eeb8077c's placement (before G137) on this fixture.
   flora::SwardPlacements p;
   p.layer = 1;
   p.families.push_back(family_of(flora::SwardForm::any, .25f, "a"));
@@ -383,9 +386,9 @@ TEST_CASE("sward forms: a wet cell grows a tall tussock and a steep dry one a sh
 
 TEST_CASE("sward forms: the mosaic is patches of the noise's scale, the same in any order") {
   Meadow first(&flat, four_forms()), second(&flat, four_forms());
-  const auto a = first.tile(0);
+  const auto a = first.tile();
   const auto b1 = second.tile(1);
-  const auto b0 = second.tile(0);
+  const auto b0 = second.tile();
   REQUIRE(a.instances.size() == 4096);
   REQUIRE(b0.instances.size() == 4096);
   u32 count[5] = {}, alike = 0, pairs = 0;
@@ -431,12 +434,21 @@ TEST_CASE("sward forms: the forbs take their share of the patches, and the cap a
   CHECK(forbs < 1352 + 120);
   // The nearest ring alone: the card ring carries none.
   CHECK(meadow.tile(1).instances.size() == 4096);
+  // The streamed inner ring (G136's hand-off by distance): every patch's pair first, then the
+  // forbs with no role, so the hand-off never sees a forb and a herb draws at every distance.
+  const auto ring0 = meadow.tile(0);
+  REQUIRE(ring0.instances.size() == 2 * 4096 + forbs);
+  for (u32 i = 0; i < ring0.instances.size(); ++i) {
+    const bool forb = (ring0.instances[i].id & 0x80000000u) != 0;
+    CHECK(forb == (i >= 2 * 4096));
+    if (forb) CHECK(ring0.instances[i].handoff == 0);
+  }
 
   auto capped = p;
   capped.forb_tile_cap = 100;
   Meadow a(&flat, capped), b(&flat, capped);
   b.tile(1);
-  const auto ka = a.tile(0), kb = b.tile(0);
+  const auto ka = a.tile(), kb = b.tile();
   REQUIRE(ka.instances.size() == 4096 + 100);
   REQUIRE(kb.instances.size() == ka.instances.size());
   for (u32 i = 0; i < ka.instances.size(); ++i)
