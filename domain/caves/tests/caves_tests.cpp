@@ -284,22 +284,45 @@ TEST_CASE("caves: the passage builds into a container, its collar locked through
                                 << data.mesh.leaf_triangle_count << " leaf triangles");
 }
 
-TEST_CASE("caves: a collar on sloping ground takes the ground's heights round the rim") {
-  // A hillside rising 0.3 m a metre towards +x: the collar's heights are the ground's at its
-  // vertices, found from a level solve's collar.
-  Passage p = test_passage();
-  assets::MeshData level;
-  PassageReport report;
-  REQUIRE(solve_passage(p, level, &report, nullptr));
-  p.collar_heights_m.clear();
-  for (u32 k = 0; k < p.ring_vertices; ++k)
-    p.collar_heights_m.push_back(0.3f * level.positions[report.collar_first + k].x);
-  assets::MeshData slope;
-  REQUIRE(solve_passage(p, slope, &report, nullptr));
-  for (u32 k = 0; k <= p.ring_vertices; ++k) {
-    const Vec3 v = slope.positions[report.collar_first + k];
-    CHECK(v.y == doctest::Approx(0.3f * v.x).epsilon(1e-5));
-    CHECK(v.x == level.positions[report.collar_first + k].x);
-    CHECK(v.z == level.positions[report.collar_first + k].z);
+TEST_CASE("caves: a collar on sloping ground takes the ground's heights, laid by angle") {
+  // The schema's convention (G134, engine-needs item 22): sample i of `collar_heights_m` is the
+  // ground's height at the angle 2 pi i / count from +x towards +z. The earlier solver laid them
+  // on the shaft's own ring, whose vertex 0 lies on the heading's side, so a passage not heading
+  // +z had every height rotated; this test builds its heights from the angle alone, never from the
+  // solver's vertices (the test it replaces did, and so could not see the convention). Before the
+  // fix the worst collar vertex stood 0.31 m (heading -0.923, 0.385; 64 samples), 0.57 m (the same,
+  // 100), 0.40 m and 0.39 m (heading +x) off the ground.
+  const double slope_x = 0.08, slope_z = 0.05;  // a hillside; resampling error stays under 1 mm
+  struct Heading {
+    float x, z;
+  };
+  for (const Heading head : {Heading{-0.923f, 0.385f}, Heading{1.0f, 0.0f}}) {
+    for (const u32 count : {64u, 100u}) {
+      Passage p = test_passage();
+      p.ring_vertices = 64;
+      p.points = {Vec3{8.0f * head.x, -8.0f, 8.0f * head.z},
+                  Vec3{16.0f * head.x, -16.0f, 16.0f * head.z}};
+      p.segments.resize(2);
+      p.collar_heights_m.clear();
+      const double r = static_cast<double>(p.entrance_radius_m);
+      for (u32 i = 0; i < count; ++i) {
+        const double a = 6.283185307179586 * static_cast<double>(i) / static_cast<double>(count);
+        p.collar_heights_m.push_back(
+            static_cast<float>(slope_x * r * std::cos(a) + slope_z * r * std::sin(a)));
+      }
+      assets::MeshData mesh;
+      PassageReport report;
+      REQUIRE(solve_passage(p, mesh, &report, nullptr));
+      double worst = 0.0;
+      for (u32 k = 0; k <= p.ring_vertices; ++k) {
+        const Vec3 v = mesh.positions[report.collar_first + k];
+        const double ground =
+            slope_x * static_cast<double>(v.x) + slope_z * static_cast<double>(v.z);
+        worst = std::max(worst, std::fabs(static_cast<double>(v.y) - ground));
+      }
+      MESSAGE("heading (" << head.x << ", " << head.z << "), " << count << " samples: worst "
+                          << worst << " m");
+      CHECK(worst < 1e-3);
+    }
   }
 }

@@ -63,9 +63,11 @@ struct Passage @version(1) {
   seed: u64 = 1
   /// The hole's radius (the terrain's `holes` entry it opens from), metres, 0.5 to 20.
   entrance_radius_m: f32 = 3 @unit(m)
-  /// The collar's heights round the rim, metres from the entrance, one a ring vertex in order of
-  /// angle from +x towards +z: the ground's at the rim, so the collar meets a sloping ground. Empty:
-  /// all zero, a level ground.
+  /// The collar's heights round the rim, metres from the entrance, samples in order of angle from
+  /// +x towards +z (sample i at 2 pi i / count): the ground's at the rim, so the collar meets a
+  /// sloping ground. The ring is resampled by angle, linearly between the two samples either side,
+  /// so a ring of any count from 8 to 256 is accepted, whatever the passage's heading. Empty: all
+  /// zero, a level ground.
   collar_heights_m: f32[]
   /// The shaft from the collar straight down before the passage turns in, metres, 0 to 50.
   shaft_m: f32 = 4 @unit(m)

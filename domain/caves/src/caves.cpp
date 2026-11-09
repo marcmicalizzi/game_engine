@@ -56,8 +56,9 @@ bool passage_in_range(const Passage& p, std::string& error) {
         !c.f(q.z, -10000.0f, 10000.0f, "points", "within 10 km of the entrance"))
       return false;
   }
-  if (!p.collar_heights_m.empty() && p.collar_heights_m.size() != p.ring_vertices)
-    return c.bad("collar_heights_m", "empty, or one a ring vertex");
+  if (!p.collar_heights_m.empty() &&
+      (p.collar_heights_m.size() < 8 || p.collar_heights_m.size() > 256))
+    return c.bad("collar_heights_m", "empty, or 8 to 256 samples round the rim");
   for (const f32 h : p.collar_heights_m) {
     if (!c.f(h, -100.0f, 100.0f, "collar_heights_m", "-100 to 100 m")) return false;
   }
