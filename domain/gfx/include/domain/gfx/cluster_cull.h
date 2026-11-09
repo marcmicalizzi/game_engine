@@ -163,7 +163,7 @@ struct MaskTables {
 };
 static_assert(sizeof(MaskTables) == 32);
 
-// Mirrors CullParams in cluster_cull.slang. 1744 bytes.
+// Mirrors CullParams in cluster_cull.slang. 1760 bytes.
 //
 // **Everything here is in the frame's space** (`eye`, above): the planes come from a
 // view-projection built with the frame's eye at the origin, `camera.xyz` is where this view's eye
@@ -318,8 +318,14 @@ struct CullParams {
   // is read at. The term and its counters took the
   // last four pad words; the block is still 1,744 bytes.
   u32 hiz_flags = 0;
+  // **The hand-off's clock** (G136; `k_instance_handoff_mask`): the frame count an instance's
+  // load-in stamp is compared with, modulo 2^22. A far-form instance within
+  // `k_handoff_ramp_frames` of its stamp is not dropped short of its band, so the cards it replaced
+  // stay drawn while the near form fades in. It took the block to 1,760 bytes.
+  u32 handoff_tick = 0;
+  u32 handoff_pad[3] = {};
 };
-static_assert(sizeof(CullParams) == 1744);
+static_assert(sizeof(CullParams) == 1760);
 static_assert(offsetof(CullParams, hidden_counts) % 8 == 0);
 
 // CullParams::hiz_flags.
@@ -796,9 +802,85 @@ struct InstanceDesc {
   // 1 + the terrain level this instance draws, in the frame's `TerrainLevelDesc` table; 0 for
   // everything that is not a terrain level. It took the record's last pad word.
   u32 terrain = 0;
-  u32 pad = 0;  // what the 4x4 world matrix's fourth row left over, after the cell took 12 bytes
+  // **The hand-off band** (G136; renderer.md, "The hand-off by distance"): the distances from the
+  // camera over which an instance with a hand-off role (`k_instance_handoff_mask`) gives way to its
+  // other form, centimetres, `from` in the low half and `to` in the high (`pack_handoff_band`); 0
+  // for everything with no role. It took the record's last spare word (what the 4x4 world
+  // matrix's fourth row left over once the cell took 12 bytes); the record is still 96 bytes.
+  u32 band = 0;
 };
 static_assert(sizeof(InstanceDesc) == 96);
+
+// ---- the hand-off by distance (G136; renderer.md, "The hand-off by distance") ------------------
+//
+// A patch of grass is placed twice near the camera, as its near form and as its far form (the
+// sward placement's ring 0), and the two hand over across a band of distance rather than at a
+// tile's edge. `InstanceDesc::flags` bits 8-9 name the instance's role and `band` the band, [from,
+// to) metres from the view's eye:
+//
+// - **near** draws only short of `to`: the cull pass drops a pair whose sphere is wholly past it,
+//   and inside the band the pool pass collapses a part (a blade) to its root when its hash is past
+//   the share `(to - d) / (to - from)` at its root's distance `d`, so the blades thin out;
+// - **far** draws only past `from`, and inside the band keeps the complementary share
+//   `(d - from) / (to - from)` of its parts (a bake group's three cards), so the cards thicken.
+//
+// A collapsed part is zero area: no rasterizer and no ray sees it. Both use the part's existing
+// phase hash (deform.slang, `field_vertex`), so a whole read and a streamed one keep the same
+// blades. Bits 10-31 are the **load-in stamp**: the scene's frame count (`GpuScene`'s flora frames)
+// when the instance's tile was written with new instances, modulo 2^22, 0 for an instance present
+// from the first fill. For `k_handoff_ramp_frames` frames after it a near instance's kept share is
+// scaled up from zero and a far instance keeps every part at any distance (its cull ignores
+// `from`), so a tile that moves into the inner ring fades its blades in over the cards it already
+// drew. A stamp is compared modulo 2^22 (19 hours at 60 frames a second): a tile held for exactly
+// a multiple of that fades once more.
+inline constexpr u32 k_instance_handoff_shift = 8u;
+inline constexpr u32 k_instance_handoff_mask = 3u << k_instance_handoff_shift;
+inline constexpr u32 k_instance_handoff_near = 1u << k_instance_handoff_shift;
+inline constexpr u32 k_instance_handoff_far = 2u << k_instance_handoff_shift;
+inline constexpr u32 k_instance_stamp_shift = 10u;
+inline constexpr u32 k_instance_stamp_mask = 0x3fffffu;  // 22 bits, after the shift
+inline constexpr u32 k_handoff_ramp_frames = 30u;
+
+// The band in the record's word: centimetres, each half clamped to [0, 655.35 m].
+inline u32 pack_handoff_band(f32 from_m, f32 to_m) noexcept {
+  const auto cm = [](f32 m) {
+    const f32 c = m * 100.0f + 0.5f;
+    return c <= 0.0f ? 0u : (c >= 65535.0f ? 65535u : static_cast<u32>(c));
+  };
+  return cm(from_m) | (cm(to_m) << 16);
+}
+// The role and the stamp into `flags`, keeping its other bits, and the band into `band`.
+inline void set_instance_handoff(InstanceDesc& instance, u32 role, u32 band, u32 stamp) noexcept {
+  instance.flags = (instance.flags & ~(k_instance_handoff_mask |
+                                       (k_instance_stamp_mask << k_instance_stamp_shift))) |
+                   (role & k_instance_handoff_mask) |
+                   ((stamp & k_instance_stamp_mask) << k_instance_stamp_shift);
+  instance.band = (role & k_instance_handoff_mask) == 0 ? 0u : band;
+}
+// Frames since `stamp` at the clock `tick`, both modulo 2^22; a stamp of 0 is settled.
+inline u32 handoff_age(u32 stamp, u32 tick) noexcept {
+  return stamp == 0 ? k_handoff_ramp_frames : ((tick - stamp) & k_instance_stamp_mask);
+}
+// The CPU mirror of the pool pass's share of parts kept at `d` metres (scene.slang,
+// `handoff_keep`), `age` frames after the stamp (`k_handoff_ramp_frames` or more: settled).
+inline f32 handoff_keep(u32 role, u32 band, f32 d, u32 age) noexcept {
+  const f32 from = static_cast<f32>(band & 0xffffu) * 0.01f;
+  const f32 to = static_cast<f32>(band >> 16) * 0.01f;
+  const f32 width = to - from;
+  const auto clamp01 = [](f32 x) { return x < 0.0f ? 0.0f : (x > 1.0f ? 1.0f : x); };
+  const f32 grown = age >= k_handoff_ramp_frames
+                        ? 1.0f
+                        : static_cast<f32>(age) / static_cast<f32>(k_handoff_ramp_frames);
+  if (role == k_instance_handoff_near) {
+    const f32 share = width > 0.0f ? clamp01((to - d) / width) : (d < to ? 1.0f : 0.0f);
+    return share * grown;
+  }
+  if (role == k_instance_handoff_far) {
+    const f32 share = width > 0.0f ? clamp01((d - from) / width) : (d >= from ? 1.0f : 0.0f);
+    return share > 1.0f - grown ? share : 1.0f - grown;
+  }
+  return 1.0f;
+}
 
 // Places `instance` at `translation` with `linear`'s upper-left 3x3 (rotation and scale; its
 // translation column is not read), and fills `scale_max` and the uniform-scale flag. The scales

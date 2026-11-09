@@ -35,4 +35,8 @@ struct SwardCoverage {
   f32 fraction[3][4]{};
 };
 SwardCoverage measure_sward_coverage(const assets::MeshData& mesh, const TreeLevels& levels);
+// The same at another elevation of the view, degrees (G136: the card against the near form as the
+// view grazes; grass-sward.md, "Coverage against elevation").
+SwardCoverage measure_sward_coverage_at(const assets::MeshData& mesh, const TreeLevels& levels,
+                                        f64 elevation_deg);
 }  // namespace engine::flora

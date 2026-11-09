@@ -88,7 +88,9 @@ struct FloraFieldFrame {
   Vec4 weights{};      // each wave's share of the gust; they sum to 1
   // The walker: its feet from the eye (xyz) and its radius (w; 0 or less: no walker).
   Vec4 walker{};
-  Vec4 push{};  // the walker's height, the push's most radians, its margin metres, 0
+  // The walker's height, the push's most radians, its margin metres, and in w the bits of the
+  // hand-off's clock (a u32, `GpuScene::handoff_tick`; G136), which a load-in age is counted from.
+  Vec4 push{};
 };
 static_assert(sizeof(FloraFieldFrame) == 160);
 inline constexpr u64 k_flora_field_frame_bytes = sizeof(FloraFieldFrame);

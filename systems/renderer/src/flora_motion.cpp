@@ -1,5 +1,6 @@
 // The flora stage's CPU half (flora_motion.h; renderer.md, "The flora stage").
 #include <domain/geometry/flora_species.h>
+#include <domain/gfx/cluster_cull.h>
 #include <foundation/tunables/tunables.h>
 #include <systems/renderer/flora_motion.h>
 
@@ -33,6 +34,18 @@ tunables::Bool flora_tail{"renderer.flora.tail", true,
 tunables::Float flora_sway_m{"renderer.flora.sway_m", 0.0, 0.0, 100'000.0,
                              "Metres: a ring's distance form of a tree sways when the ring's tiles "
                              "come nearer the camera than this, and is drawn rigid past it"};
+
+// **The sward's hand-off by distance** (renderer.md, "The hand-off by distance"; G136): where a
+// patch placed as its near form and its card hands over, the band's centre and width. Read when an
+// instance is placed (a tile written, a scene loaded), so a change reaches the tiles written after
+// it. Defaults judged on the owner's v36 view: the near form's blades read as blades to about 25 m
+// at 4K and 70 degrees, and an 8 m band is wide enough that its thinning is not seen as a line.
+tunables::Float sward_near_m{"renderer.flora.sward_near_m", 25.0, 0.0, 600.0,
+                             "Metres: the centre of the band over which a sward patch's near form "
+                             "thins out and its card thickens in (G136)"};
+tunables::Float sward_fade_m{"renderer.flora.sward_fade_m", 8.0, 0.0, 100.0,
+                             "Metres: the width of the sward's hand-off band; 0 switches at the "
+                             "centre"};
 
 // **The trees' shadows stop swaying past a distance** (renderer.md, "The caster policy"; R95):
 // a cascade's texel past a few tens of metres is larger than a twig's travel, so a tree there can
@@ -127,6 +140,11 @@ void closest_on_segments(Vec3 p0, Vec3 p1, Vec3 q0, Vec3 q1, f32& s, f32& t) noe
 bool flora_motion_tunable() noexcept { return flora_motion.get(); }
 bool flora_tail_tunable() noexcept { return flora_tail.get(); }
 f32 flora_sway_m_tunable() noexcept { return static_cast<f32>(flora_sway_m.get()); }
+u32 sward_handoff_band_tunable() noexcept {
+  const f32 near = static_cast<f32>(sward_near_m.get());
+  const f32 half = 0.5f * static_cast<f32>(sward_fade_m.get());
+  return gfx::pack_handoff_band(near - half > 0.0f ? near - half : 0.0f, near + half);
+}
 f32 flora_rest_pose_cascades_m_tunable() noexcept {
   return static_cast<f32>(flora_rest_pose_cascades_m.get());
 }

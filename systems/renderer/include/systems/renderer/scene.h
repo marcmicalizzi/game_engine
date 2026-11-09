@@ -88,6 +88,10 @@ struct SceneInstance {
   // `authored` id through `StreamedPlacements::motion_key_base`). A tail instance with neither
   // hashes where it stands, in millimetres: a function of the instance, never of when it came.
   u32 motion_key = ~0u;
+  // **The hand-off role** (G136; renderer.md, "The hand-off by distance"):
+  // `scene_gen::k_handoff_near` or `k_handoff_far` for a patch placed as both its forms, which the
+  // renderer gives the band `renderer.flora.sward_near_m`/`sward_fade_m` say; 0, everything else.
+  u8 handoff = 0;
 };
 
 inline constexpr u32 k_motion_key_load = ~0u;
@@ -697,6 +701,9 @@ u32 read_instance_count(const SceneData& scene) noexcept;
 // out once).
 bool make_instance(const SceneData& scene, const SceneInstance& source, u32 first_pair,
                    gfx::InstanceDesc& out, std::string* error = nullptr);
+// The record's hand-off role for `SceneInstance::handoff` and the band it carries (G136;
+// `gfx::set_instance_handoff`, stamp 0): no role, and a zero band, for an instance with none.
+void apply_handoff(gfx::InstanceDesc& out, u8 handoff, u32 band) noexcept;
 
 // Where the prefix sum ends after `instances`, starting at `first_pair`: `first_pair` plus each
 // instance's mesh's clusters. False, with `error`, for a mesh the scene has not or a sum past

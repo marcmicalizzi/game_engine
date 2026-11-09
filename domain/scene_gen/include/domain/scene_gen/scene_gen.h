@@ -204,6 +204,11 @@ struct Placement {
   Vec3 scale = Vec3::one();
   u32 mesh = 0;
   u8 tag = 0;
+  // **The hand-off role** (G136; renderer.md, "The hand-off by distance"): a generator that places
+  // one thing as two forms near the camera — the sward's patch, as its near form and its card —
+  // names each `k_handoff_near` or `k_handoff_far`, and the renderer hands one to the other across
+  // a band of distance instead of at the tile's edge. 0 for everything else. It sits in padding.
+  u8 handoff = 0;
   // A stable name the generator gives the placement within its entry, 0 for none: the same
   // whenever and in whatever order its tile comes in (the `authored` generator's, its place in the
   // scene file's own list plus one). It sits in what was padding, so the struct is 64 bytes still.
@@ -212,6 +217,9 @@ struct Placement {
   // by, in float32 at the size of the mesh, before it adds `position` in f64.
   Transform3 turn() const noexcept { return Transform3{Vec3{}, rotation, scale}; }
 };
+
+inline constexpr u8 k_handoff_near = 1;
+inline constexpr u8 k_handoff_far = 2;
 
 // What a generator made. `expand` fills `meshes` with what its instances index; `tile` leaves it
 // empty and indexes the list its `meshes` entry gave, which a streamed scene holds resident.

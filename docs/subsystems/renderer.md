@@ -3556,6 +3556,15 @@ the field's wave vectors turn with it about the world's origin, so far from it a
 direction re-phases the gust (the mean lean does not jump); an advected offset integrated per frame
 would fix that and is left.
 
+**The hand-off and the load-in are a term of the same pass** (G136, 2026-11-08; [the hand-off by
+distance](#the-hand-off-by-distance)): for an instance with a hand-off role, before the wind, a
+part (a blade, or a card's bake group) is kept while an independent stream of the hash its phase
+comes from is below the share its role, its root's distance from the eye and its load-in age say,
+and every vertex of a part not kept goes to the part's root. It reads the record's band and stamp
+and the clock in the field block's `push.w`, about 20 operations and no memory a vertex beyond the
+blade the wind already reads, and nothing at all for an instance with no role. A calm, untouched
+blade it keeps still writes its rest pose to the bit.
+
 **The walker's push** is a term of the same pass with no history: a blade whose root is within the
 capsule's radius, a margin and its own length of the capsule's axis, and within its height, is
 turned away from the axis by up to `k_flora_push_max`, most at the capsule's skin. It springs back
@@ -3600,6 +3609,64 @@ whole read's pixels against the rigid picture; a second run of the same frames 0
 streamed summary's 160 field instances, 0 tail records, 0 tail bytes and a 480-byte pose table. The
 tree tests (`flora_scene_tests`, `flora_motion_tests`, the authored sway, return and handover
 cases) draw what they drew.
+
+### The hand-off by distance
+
+Roadmap G136 (2026-11-08; the owner's v36 walk: "grass's LOD shifts are incredibly drastic", "the
+grass load in is abrupt too"). Until this date a sward patch was its near form in the world's inner
+ring and its card in the next, so the change from blades to cards was a straight line along a 64 m
+tile's edge, a few metres to a few tens of metres out, that jumped as the walker crossed a tile,
+with no blend, and a tile that came into the inner ring put its blades in the picture in one
+frame. **Now the two forms hand over across a band of distance from the eye, and a tile's blades
+fade in.**
+
+- **Both forms near the camera.** The sward placement puts a patch's near form *and* its card in
+  the inner ring, the near form named `scene_gen::k_handoff_near` and the card `k_handoff_far`
+  (`Placement::handoff`, carried by `SceneInstance::handoff`); the next ring places the card alone,
+  with no role, and the rings past it nothing, as before ([flora](flora.md#grass-sward-g90)).
+- **A band per instance.** An instance with a role carries it in `InstanceDesc::flags` bits 8-9
+  and the band `[from, to)` in the record's last spare word (`InstanceDesc::band`, centimetres in
+  two halves; `gfx::pack_handoff_band`), set when the instance is placed from
+  `renderer.flora.sward_near_m` (25 m) and `renderer.flora.sward_fade_m` (8 m): `[21, 29)` m by
+  default. The record is still 96 bytes.
+- **The cull pass draws each form only on its side** (`cluster_cull.slang`, `handoff_outside` in
+  `scene.slang`): a near form's pair whose sphere lies wholly at or past `to`, and a far form's
+  wholly short of `from`, are dropped — one compare a pair, against the sphere every other test
+  uses, measured from the view's eye (the camera's in a cascade's run, where the LOD is measured
+  from). A pair it drops is one whose every part the pool pass would collapse, so it is a cut and
+  not a picture change; every rasterizer and the ray path read the same cull output, so they draw
+  the same hand-off.
+- **Inside the band the near form thins by blade and the card thickens by bake group**
+  (`deform.slang`, `field_vertex`; `handoff_keep`): a part is kept while an independent stream of
+  its existing phase hash (its root's bits and its instance's placement) is below the share —
+  `(to − d) / (to − from)` for the near form, `(d − from) / (to − from)` for the card, `d` the
+  part's root's distance from the eye — and a part not kept has every vertex moved to its root:
+  zero area, met by no rasterizer and no ray. Between them the two forms keep the whole patch at
+  every distance; the coverage is continuous because the card is fit to the near form's coverage
+  (flora.md; the elevations are measured in [grass-sward.md](../experiments/grass-sward.md#coverage-against-elevation-g136)).
+  A card is thinned by its part, a bake group's three cards (16 a square metre), so the card's
+  mask and its cutoff are untouched: the alpha test every path shares (`alpha_mask.slang`) and the
+  opacity micromaps baked from it read the material alone.
+- **The load-in** (`flags` bits 10-31, the stamp): a tail block's instances carry the frame count
+  (`GpuScene::handoff_tick`, the flora frames, modulo 2^22) of the change that wrote them, kept by
+  the block's key while the caller's version stands, so a compaction or a move keeps a block's age;
+  the first fill stamps 0 and is never faded. For `k_handoff_ramp_frames` (30) frames after its
+  stamp a near form's share is scaled up from zero and a far form keeps every part at any distance
+  (the cull pass ignores its `from` while it is young; `CullParams::handoff_tick`), so a tile that
+  moves into the inner ring fades its blades in over the cards it already drew. A card alone (the
+  next ring) has no role and no stamp: it arrives at the ring's outer edge, 150 m or more out, as before. The pool pass reads the clock from the field block's
+  `push.w`.
+
+**What it does not do.** The pool pass is what thins: an entry the deformed-vertex pool's budget
+had no block for, or a frame with the flora motion off, draws both forms whole across the band (8 m
+of doubled cover), and the nearest cascade casts both forms' rest poses there. A tile that leaves
+the inner ring loses its near form in one frame; where the inner ring reaches past `to` that is
+nothing the picture showed. **The inner ring must reach past the band's end**: a tile is in a ring
+by its centre's distance, so a ring of radius `r` tiles reaches `64 r − 45.3` m at the least, and
+where it does not the near form ends at the ring's edge as it did before (the v36 scene's inner
+ring is 0.75 tiles: 2.7 m at a tile's corner). G136's report asks the scene for 1.2 tiles.
+
+**What it costs.** NUMBERS
 
 ### The caster policy
 

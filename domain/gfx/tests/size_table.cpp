@@ -175,8 +175,9 @@ ENGINE_EXPECT_SIZE(88, 8, gfx::TlasReferenceParams);
 // volumes moved 32 bytes back, and nothing reads them by offset.
 // 1744, not 1712: the caster horizon and its pad (renderer.md, "Shadows", R94) and `cascade`, the
 // cascade a block culls for, with three words of padding (R95); both landed on 2026-10-25 and the
-// merge keeps both, in that order, as cluster_cull.slang mirrors them.
-ENGINE_EXPECT_SIZE(1744, 8, gfx::CullParams);
+// merge keeps both, in that order, as cluster_cull.slang mirrors them. 1760, not 1744: the
+// hand-off's clock and its three words of padding (G136, renderer.md, "The hand-off by distance").
+ENGINE_EXPECT_SIZE(1760, 8, gfx::CullParams);
 ENGINE_EXPECT_SIZE(32, 8, gfx::MaskTables);
 // The mask test reads one word of a material by offset (scene.slang,
 // `k_resolve_material_flags_offset`).

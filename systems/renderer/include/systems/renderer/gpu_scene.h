@@ -24,6 +24,7 @@
 
 #include <core/base/macros.h>
 #include <core/base/types.h>
+#include <core/containers/hash_map.h>
 #include <core/containers/vector.h>
 #include <domain/anim/skeleton.h>
 #include <domain/gfx/acceleration.h>
@@ -828,6 +829,13 @@ class GpuScene {
   // field kind"), and the region's field block is written every frame a field mesh exists.
   u64 flora_frame(u32 slot, const FrameFlora& frame, u64 frame_index, f64 world_time_s,
                   f64 sky_time_s, const WorldEye& eye = WorldEye{}) noexcept;
+  // **The hand-off's clock** (G136; renderer.md, "The hand-off by distance"): the frames
+  // `flora_frame` was called for, modulo 2^22 — what an instance's load-in stamp is counted from,
+  // by the cull pass (`gfx::CullParams::handoff_tick`) and the pool pass (the field block's
+  // `push.w`).
+  u32 handoff_tick() const noexcept {
+    return static_cast<u32>(flora_frames_) & gfx::k_instance_stamp_mask;
+  }
   struct FloraStats {
     u32 instances = 0;         // swaying instances
     u32 parts = 0;             // their parts, the table's length a slot
@@ -1310,11 +1318,22 @@ class GpuScene {
     u32 mesh = 0;
     f32 bounds_padding = 0.0f;
     Transform3 transform;
+    u8 handoff = 0;
     bool operator==(const InstanceKey&) const = default;
   };
   static InstanceKey key_of(const SceneInstance& instance) noexcept {
-    return InstanceKey{instance.mesh, instance.bounds_padding, instance.transform};
+    return InstanceKey{instance.mesh, instance.bounds_padding, instance.transform,
+                       instance.handoff};
   }
+  // A tail block's load-in stamp (G136): the tick its instances came at, kept while the caller's
+  // version of them stands; 0 on the first fill.
+  struct BlockStamp {
+    u64 version = 0;
+    u32 stamp = 0;
+  };
+  u32 block_stamp(const DynamicBlock& block);
+  HashMap<u64, BlockStamp> block_stamps_;
+  bool first_fill_ = false;
   // Makes a set's two buffers at the current capacities; the set starts wholly pending.
   bool create_table_set(TableSet& set, std::string* error);
   // Gives a buffer back: to `retired` when a frame may still read it, at once otherwise.

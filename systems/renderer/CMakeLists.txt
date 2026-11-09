@@ -62,6 +62,7 @@ set(_renderer_tests tests/renderer_tests.cpp tests/reference_tests.cpp tests/str
                     tests/sun_region_tests.cpp
                     # The caster policy's untraced species under a traced picture (R110).
                     tests/untraced_tests.cpp
+                    tests/handoff_tests.cpp
                     # The off-frustum shadow casters' volumes against a brute-force membership, on
                     # the CPU (caster_volume.h).
                     tests/caster_volume_tests.cpp
