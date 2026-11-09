@@ -4,7 +4,9 @@
 placement generators see the same cooked W72 level as tile sources. An invalid mask view means
 none, while false propagates a cook failure. The callback shares the height view's lifetime.
 The flora capability registers `sward`, a bounded patch lattice keyed by mask palette weight;
-it emits no outer-ring placements. See [flora](flora.md#grass-sward-g90).
+its inner ring places each patch as its near form and its card, named for the renderer's hand-off
+by distance (`Placement::handoff`, `k_handoff_near`/`k_handoff_far`; G136), its next ring the card
+alone, and it emits no placements past that. See [flora](flora.md#grass-sward-g90).
 
 **Purpose.** The registration point a scene generator attaches through ([ADR-0046](../adr/0046-scene-generators-register-themselves.md), [02 §2.8](../plan/02-architecture.md#28-adding-a-capability)): the two kinds a generator is — a **ground provider** and a **placement generator** — and the one table, `GeneratorRegistry::global()`, the renderer's scene reader and the world ring look a generator up in by the name a scene gives it. A capability registers a constant-initialized descriptor from its own source with a static `Registrar`; a host links the capabilities its configuration has; nothing below the host names one. A scene naming a generator the executable does not carry is refused with a sentence that names it and says what the executable has (`unknown_ground`, `unknown_placement`). A plain module, not a capability: every executable that reads a scene has at least the renderer's own ground in it.
 

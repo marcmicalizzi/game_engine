@@ -43,6 +43,32 @@ Quat patch_rotation(const scene_gen::Ground& ground, i64 x_mm, i64 z_mm, f64 cel
   const Vec3 axis{static_cast<f32>(-gz / slope), 0.0f, static_cast<f32>(gx / slope)};
   return quat_from_axis_angle(axis, static_cast<f32>(angle)) * turn;
 }
+// **The hand-off by distance** (G136; flora.md, "Grass sward (G90)"; renderer.md, "The hand-off by
+// distance"). The inner ring places each patch twice, as its near form and as its card, the near
+// form named `k_handoff_near` and the card `k_handoff_far`, and the renderer hands one to the other
+// across a band of distance from the eye — the near form's blades thinning out as the card's
+// thicken in — instead of at the edge of the ring's tiles, where the switch was a straight line
+// that jumped as the walker crossed a tile. The card is appended after every near form, so the
+// near forms keep the places, ids and order they had; it is the same patch, so it keeps its id.
+// Ring 1 places the card alone, with no role: it draws at every distance. A read outside a
+// streamed world (`k_no_ring`: `expand`, the whole read) places the near form alone, as before.
+u32 card_of(const Entry& entry, u32 near_mesh) {
+  u32 family = 0;
+  while (family + 1 < entry.family_base.size() && entry.family_base[family + 1] <= near_mesh)
+    ++family;
+  return near_mesh + static_cast<u32>(entry.params.families[family].near.size());
+}
+void hand_off(const Entry& entry, scene_gen::Placements& out) {
+  const u32 nears = out.instances.size();
+  out.instances.reserve(2 * nears);
+  for (u32 i = 0; i < nears; ++i) {
+    scene_gen::Placement card = out.instances[i];
+    out.instances[i].handoff = scene_gen::k_handoff_near;
+    card.handoff = scene_gen::k_handoff_far;
+    card.mesh = card_of(entry, card.mesh);
+    out.instances.push_back(card);
+  }
+}
 bool fail(std::string* error, std::string text) {
   if (error) *error = "sward: " + text;
   return false;
@@ -214,6 +240,7 @@ bool tile(void* state, scene_gen::TileCoord at, const scene_gen::Context& contex
       out.instances.push_back(placed);
     }
   }
+  if (context.ring == 0) hand_off(entry, out);
   return true;
 }
 bool expand(void* state, const scene_gen::Context& context, scene_gen::Placements& out,

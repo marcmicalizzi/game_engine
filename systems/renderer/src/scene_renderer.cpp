@@ -2903,6 +2903,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
     cull.view_proj = view.view_proj;
     cull.camera = Vec4{eye, znear};
     cull.eye = gpu_eye;
+    cull.handoff_tick = scene.handoff_tick();  // the hand-off's clock (G136)
     // The mask tables right after the eye, which the rasterizers read through it.
     if (scene.has_masked()) {
       cull.eye.masks = 1;
@@ -3383,6 +3384,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
     cull.view_proj = cascade.view_proj;
     cull.camera = Vec4{eye, znear};
     cull.eye = gpu_eye;
+    cull.handoff_tick = scene.handoff_tick();  // the hand-off's clock (G136)
     // The mask tables right after the eye, which the rasterizers read through it.
     if (scene.has_masked()) {
       cull.eye.masks = 1;

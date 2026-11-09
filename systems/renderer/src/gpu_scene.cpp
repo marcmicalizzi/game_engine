@@ -1599,6 +1599,18 @@ bool GpuScene::set_dynamic_instances(std::span<const SceneInstance> tail,
   // `renderer.flora.tail_budget_mib`, before anything changes, the nearest blocks first; a block
   // that would pass it is withheld with every farther one, and only a commit whose nearest changed
   // block alone passes it is refused. Grass takes no record and costs it nothing.
+  // The first fill — nothing held before this change — stamps its blocks 0 (G136): a scene that
+  // opens on a meadow draws it whole from its first frame. Stamps of blocks the caller no longer
+  // names are dropped once they outnumber the held ones.
+  first_fill_ = layout_.block_count() == 0;
+  if (block_stamps_.size() > 2 * blocks.size() + 256) {
+    HashMap<u64, BlockStamp> kept;
+    for (const DynamicBlock& block : blocks) {
+      const auto found = block_stamps_.find(block.key);
+      if (found != block_stamps_.end()) kept[block.key] = (*found).second;
+    }
+    block_stamps_.swap(kept);
+  }
   withheld_any_ = false;
   if (flora_tail_parts_) {
     if (!admit_tail_blocks(tail, blocks, change, error)) return false;
@@ -1690,6 +1702,12 @@ bool GpuScene::write_slots(std::span<const SceneInstance> tail,
         const SceneInstance& source = block_instances(tail, *block)[k];
         gfx::InstanceDesc& desc = instance_table_[slot];
         if (!make_instance(*data_, source, first_pair, desc, error)) return false;
+        // A patch's hand-off role carries the tick its tile's instances came at (G136; renderer.md,
+        // "The hand-off by distance"), so a tile that arrives or moves inward fades its blades in.
+        if (source.handoff != 0) {
+          gfx::set_instance_handoff(desc, desc.flags & gfx::k_instance_handoff_mask, desc.band,
+                                    block_stamp(*block));
+        }
         if (source.mesh < mesh_policy_.size()) desc.flags |= mesh_policy_[source.mesh];
         desc.material_base =
             source.mesh < mesh_material_base_.size() ? mesh_material_base_[source.mesh] : 0u;
@@ -2970,6 +2988,24 @@ bool GpuScene::make_deform_tables(bool frames, std::string* error) {
   return true;
 }
 
+u32 GpuScene::block_stamp(const DynamicBlock& block) {
+  // The tick a block's instances came at, kept by its key while the caller's version of them
+  // stands, so a block the layout only moves (a compaction, a split) keeps its age. The first fill
+  // is 0: present from the start, never faded.
+  if (block.version != 0) {
+    const auto found = block_stamps_.find(block.key);
+    if (found != block_stamps_.end() && (*found).second.version == block.version)
+      return (*found).second.stamp;
+  }
+  u32 stamp = 0;
+  if (!first_fill_) {
+    stamp = static_cast<u32>(flora_frames_ + 1) & gfx::k_instance_stamp_mask;
+    if (stamp == 0) stamp = 1;
+  }
+  block_stamps_[block.key] = BlockStamp{block.version, stamp};
+  return stamp;
+}
+
 u64 GpuScene::flora_frame(u32 slot, const FrameFlora& frame, u64 frame_index, f64 world_time_s,
                           f64 sky_time_s, const WorldEye& eye) noexcept {
   ++flora_frames_;  // what a given-back record's age is counted in
@@ -3026,6 +3062,9 @@ u64 GpuScene::flora_frame(u32 slot, const FrameFlora& frame, u64 frame_index, f6
   if (flora_field_) {
     gfx::FloraFieldFrame block;
     flora_field_frame(to, strength, world_time_s, eye, frame, block);
+    // The hand-off's clock (G136): what the pool pass counts a patch's load-in age from.
+    const u32 tick = handoff_tick();
+    std::memcpy(&block.push.w, &tick, sizeof(tick));
     std::memcpy(region, &block, sizeof(block));
     field_moving = block.wind.z > 0.0f || block.walker.w > 0.0f;
   }

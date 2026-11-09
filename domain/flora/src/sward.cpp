@@ -28,7 +28,8 @@ struct Blade {
   u8 hue, age;
 };
 SwardCoverage measure_sward_impl(const assets::MeshData& mesh, const TreeLevels& levels,
-                                 const image::Image& card_image, u32 pixels, u32 first, u32 end);
+                                 const image::Image& card_image, u32 pixels, u32 first, u32 end,
+                                 f64 across = .8660254037844386, f64 up = .5);
 void fit_lods(assets::MeshData& mesh, TreeLevels& levels, u32 coarse_first,
               const Vector<Blade>& blades);
 
@@ -451,15 +452,18 @@ image::Image card_image_for(const assets::MeshData& mesh, const TreeLevels& leve
   image.pixels = std::move(cards.colour);
   return image;
 }
+// `across` and `up` are the view direction's horizontal and vertical parts: 30 degrees of
+// elevation, the cook's fit, unless a caller names another (G136's coverage against elevation).
 SwardCoverage measure_sward_impl(const assets::MeshData& mesh, const TreeLevels& levels,
-                                 const image::Image& card_image, u32 pixels, u32 first, u32 end) {
+                                 const image::Image& card_image, u32 pixels, u32 first, u32 end,
+                                 f64 across, f64 up) {
   SwardCoverage result;
   if (levels.levels.size() != 2 || mesh.materials.empty()) return result;
   BakeLook look;
   look.leaf = mesh.materials[0].base_color;
   for (u32 view = 0; view < 4; ++view) {
     const f64 angle = view * .5 * k_pi;
-    const D3 n{det::cos(angle) * .8660254037844386, .5, det::sin(angle) * .8660254037844386};
+    const D3 n{det::cos(angle) * across, up, det::sin(angle) * across};
     const D3 u = normalized(cross(k_up, n));
     const D3 v = normalized(cross(n, u));
     BakeView frame;
@@ -574,5 +578,12 @@ void fit_lods(assets::MeshData& mesh, TreeLevels& levels, u32 coarse_first,
 SwardCoverage measure_sward_coverage(const assets::MeshData& mesh, const TreeLevels& levels) {
   if (levels.levels.size() != 2 || mesh.materials.empty()) return {};
   return measure_sward_impl(mesh, levels, card_image_for(mesh, levels), 256, 0, 3);
+}
+SwardCoverage measure_sward_coverage_at(const assets::MeshData& mesh, const TreeLevels& levels,
+                                        f64 elevation_deg) {
+  if (levels.levels.size() != 2 || mesh.materials.empty()) return {};
+  const f64 e = elevation_deg * (k_pi / 180.0);
+  return measure_sward_impl(mesh, levels, card_image_for(mesh, levels), 256, 0, 3, det::cos(e),
+                            det::sin(e));
 }
 }  // namespace engine::flora

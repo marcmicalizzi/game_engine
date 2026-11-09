@@ -42,7 +42,7 @@ struct StreamParams {
 static const uint k_caster_volume_planes = 13;
 static const uint k_max_caster_volumes = 5;
 
-// Read through a device address; mirrors gfx::CullParams (1744 bytes).
+// Read through a device address; mirrors gfx::CullParams (1760 bytes).
 struct CullParams {
   float4 planes[6];  // inward-facing, normalized: dot(n, p) + w >= 0 inside
   float4 camera;     // xyz this view's eye in the frame's space, w = znear
@@ -123,6 +123,8 @@ struct CullParams {
   float cascade_error_m;
   float cascade_cover_m;
   uint hiz_flags;    // gfx::k_cull_hiz_*: the Hi-Z feeds the term only; the term's mip bias
+  uint handoff_tick; // gfx::CullParams::handoff_tick: the hand-off's clock (scene.slang)
+  uint handoff_pad[3];
 };
 
 // gfx::CullParams::hiz_flags and the debug counters' layout (gfx::k_hidden_*).
@@ -589,6 +591,16 @@ void cull_pair(uint pair, bool vertex_draw) {
     }
   }
   const float radius = cluster.radius * instance.scale_max + padding;
+  // **The hand-off by distance** (G136; renderer.md, "The hand-off by distance"): a patch placed as
+  // its near and its far form draws each only on its side of the band, measured from this view's
+  // eye — the camera's in a cascade's run too, which is where the LOD is measured from, so a
+  // shadow is cast by the forms the picture draws. One compare a pair, against the sphere every
+  // other test uses, and only for an instance with a role: a pair dropped here is one whose every
+  // part the pool pass would collapse, so it changes no picture the pool pass draws.
+  if ((instance.flags & k_instance_handoff_mask) != 0 &&
+      handoff_outside(instance, length(center - params->camera.xyz), radius, params->handoff_tick)) {
+    return;
+  }
 
   // **A caster outside the frustum** (renderer.md, "Shadows"). The shadow rays meet only what the
   // frame builds, so a pair the frustum drops would stop casting into the view the moment its

@@ -66,7 +66,7 @@ struct InstanceDesc {
   // one, and a float plus zero is exact, so the rigid arithmetic is unchanged.
   float bounds_padding;
   uint terrain;  // 1 + this instance's terrain level in the frame's TerrainLevelDesc table, or 0
-  uint pad;
+  uint band;     // the hand-off band (below): from cm in the low half, to cm in the high; 0 none
 };
 // InstanceDesc::flags bit 1 (gfx::k_instance_uv_from_corner; bit 0, k_instance_uniform_scale, is
 // below with the cull's constants): a terrain tile whose UVs are measured from its corner, which
@@ -421,6 +421,55 @@ static const uint k_ray_mask_all = 0xffu;
 static const uint k_ray_mask_drawn_only = 0xfeu;
 uint instance_ray_mask(uint flags) {
   return (flags & k_instance_untraced) != 0 ? k_ray_mask_drawn_only : k_ray_mask_all;
+}
+// ---- the hand-off by distance (gfx::k_instance_handoff_*, cluster_cull.h; G136) -----------------
+// Flags bits 8-9: 1 the near form of a patch placed twice, 2 its far form; `band` [from, to) the
+// distances, centimetres, over which they hand over; bits 10-31 the load-in stamp, the frame count
+// modulo 2^22 when the instance's tile came, 0 for one present from the first fill.
+static const uint k_instance_handoff_shift = 8u;
+static const uint k_instance_handoff_mask = 3u << 8;
+static const uint k_instance_handoff_near = 1u << 8;
+static const uint k_instance_handoff_far = 2u << 8;
+static const uint k_instance_stamp_shift = 10u;
+static const uint k_instance_stamp_mask = 0x3fffffu;
+static const uint k_handoff_ramp_frames = 30u;
+float handoff_from(InstanceDesc instance) { return float(instance.band & 0xffffu) * 0.01; }
+float handoff_to(InstanceDesc instance) { return float(instance.band >> 16) * 0.01; }
+// Frames since the instance's stamp at the clock `tick`; a stamp of 0 is settled.
+uint handoff_age(InstanceDesc instance, uint tick) {
+  const uint stamp = (instance.flags >> k_instance_stamp_shift) & k_instance_stamp_mask;
+  return stamp == 0u ? k_handoff_ramp_frames : ((tick - stamp) & k_instance_stamp_mask);
+}
+// The share of its parts an instance keeps at `d` metres from the view's eye, `age` frames after
+// its stamp: gfx::handoff_keep, operation for operation. 1 for an instance with no role.
+float handoff_keep(InstanceDesc instance, float d, uint age) {
+  const uint role = instance.flags & k_instance_handoff_mask;
+  const float from = handoff_from(instance);
+  const float to = handoff_to(instance);
+  const float width = to - from;
+  const float grown =
+      age >= k_handoff_ramp_frames ? 1.0 : float(age) / float(k_handoff_ramp_frames);
+  if (role == k_instance_handoff_near) {
+    const float share = width > 0.0 ? saturate((to - d) / width) : (d < to ? 1.0 : 0.0);
+    return share * grown;
+  }
+  if (role == k_instance_handoff_far) {
+    const float share = width > 0.0 ? saturate((d - from) / width) : (d >= from ? 1.0 : 0.0);
+    return max(share, 1.0 - grown);
+  }
+  return 1.0;
+}
+// The cull pass's test: true when a sphere `distance` metres from the view's eye (its centre) with
+// `radius` holds nothing the instance draws — a near form's sphere wholly at or past `to`, a
+// settled far form's wholly short of `from` — so the pool pass would collapse every part of it.
+bool handoff_outside(InstanceDesc instance, float distance, float radius, uint tick) {
+  const uint role = instance.flags & k_instance_handoff_mask;
+  if (role == k_instance_handoff_near) return distance - radius >= handoff_to(instance);
+  if (role == k_instance_handoff_far) {
+    return distance + radius < handoff_from(instance) &&
+           handoff_age(instance, tick) >= k_handoff_ramp_frames;
+  }
+  return false;
 }
 static const uint k_invalid_deform = 0xffffffffu;
 // gfx::k_no_pool_slot: this visible entry has no block in the frame's pool, so every reader takes

@@ -1280,6 +1280,7 @@ bool expand_placements(const scene::Scene& file, const std::string& path, const 
       instance.mesh = meshes[p.mesh];
       instance.transform = p.turn();
       instance.origin = p.position;
+      instance.handoff = p.handoff;  // the near and far forms' hand-off (G136)
       out.instances.push_back(instance);
     }
     // What the entries after this one are handed: only when there is one to hand it to.
@@ -2684,6 +2685,7 @@ bool load_scene(const SceneDesc& desc, SceneData& out, std::string& error) {
   }
   u32 pair_count = 0;
   const u32 palette = out.lod.mesh.skin_joint_count;
+  const u32 handoff_band = sward_handoff_band_tunable();  // read once for the load (G136)
   ENGINE_STARTUP_STAGE("instances");
   profiling::trace_items(instances.size());
   for (const SceneInstance& source : instances) {
@@ -2701,6 +2703,7 @@ bool load_scene(const SceneDesc& desc, SceneData& out, std::string& error) {
     // space (gfx::InstanceDesc::bounds_padding). It is the caller's number: only the caller knows
     // which clips this instance will play.
     instance.bounds_padding = source.bounds_padding;
+    apply_handoff(instance, source.handoff, handoff_band);
     pair_count += out.parts[source.mesh].cluster_count;
     // An instance may only be skinned by a mesh that carries a binding stream, and never by more
     // joints than that stream's palette: a binding names a palette slot with one byte, so a
@@ -2773,7 +2776,15 @@ bool make_instance(const SceneData& scene, const SceneInstance& source, u32 firs
   out.mesh = source.mesh;
   out.first_pair = first_pair;
   out.bounds_padding = source.bounds_padding;
+  if (source.handoff != 0) apply_handoff(out, source.handoff, sward_handoff_band_tunable());
   return true;
+}
+
+void apply_handoff(gfx::InstanceDesc& out, u8 handoff, u32 band) noexcept {
+  const u32 role = handoff == scene_gen::k_handoff_near  ? gfx::k_instance_handoff_near
+                   : handoff == scene_gen::k_handoff_far ? gfx::k_instance_handoff_far
+                                                         : 0u;
+  gfx::set_instance_handoff(out, role, band, 0);
 }
 
 bool pairs_after(const SceneData& scene, u32 first_pair, std::span<const SceneInstance> instances,

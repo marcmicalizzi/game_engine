@@ -180,7 +180,21 @@ the mask's **palette** layer index, and ascending density families of near/card 
 The same cooked `TerrainMaskPaint` is the runtime density field. Family choice interpolates
 stochastically with stable cell hashes; this matches density in expectation, not exactly in each
 texel. The finite lattice gives collision-free nonzero u32 IDs; windows exceeding that ID space
-are refused. Ring 0 uses the near list, ring 1 the card list, and later rings return empty.
+are refused. **Ring 0 places each patch twice** (G136, 2026-11-08): its near form, named
+`k_handoff_near`, and after every near form its card, `k_handoff_far`, at the same place and turn
+and with the same id; ring 1 the card alone, with no role; later rings return empty; a read
+outside a streamed world (`expand`, the whole read) places the near form alone, as it did. The renderer hands the two over across a band of distance
+from the eye instead of at the inner ring's tile edge — the near form's blades thinning out as the
+card's bake groups thicken in over `renderer.flora.sward_near_m` ± `sward_fade_m` / 2 (25 ± 4 m),
+and a tile's blades fading in over 30 frames when it comes into the inner ring
+([renderer](renderer.md#the-hand-off-by-distance)). Until this date the switch was a straight line
+along a 64 m tile's edge, as close as a few metres at a tile's corner, that jumped as the walker
+crossed a tile. **The inner ring has to reach past the band's end** (a ring of `r` tiles reaches
+`64 r − 45.3` m at the least), or the near form still ends at its edge there: **a world author
+sets the inner ring to at least `(sward_near_m + sward_fade_m / 2 + 45.3) / 64` tiles, 1.2 for the
+defaults** (v36's 0.75 is sure of 16 m along an axis and 2.7 m at a tile's corner, short of the band); the card in ring 2
+that the brief proposed is not placed, because ring 2 holds about ten times ring 1's tiles and the
+pair budget already withholds tiles in the owner's 4K run (renderer.md, "The pair accounting").
 Shade and excluded regions can be cooked into paint before runtime, so the generator does not
 apply those factors twice. The meadow cook uses an authored canopy-light proxy and mask regions;
 wetness-dependent height/colour and slope-dependent stature are not implemented. Earlier

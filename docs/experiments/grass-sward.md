@@ -103,6 +103,31 @@ AO (base 0.35 to tip 1), thickness (0.5), hue (0.4–0.6), green RGB (0.09,0.22,
 (0.7), and dry share (0.1) are uncalibrated appearance inputs. A gradient is not measured patch
 sky occlusion. Main's resolve does not yet read the hue bytes. The ground uses the same colour.
 
+## Coverage against elevation (G136)
+
+2026-11-08, `measure_sward_coverage_at` (the four-azimuth probe of `measure_sward_coverage` at
+another elevation; 256-pixel orthographic frames fit to the patch, the card at its fitted cutoff),
+the full-density reference patch (`solve_sward` defaults, seed 8801), the mean of the four azimuths,
+`sward_tests.cpp`, "the card covers what the near form does at 10, 30 and 60 degrees":
+
+| Elevation | Near form | Card | Card / near |
+|---|---|---|---|
+| 10° | 0.0797 | 0.0723 | 0.907 |
+| 30° (the cook's fit) | 0.0493 | 0.0489 | 0.992 |
+| 60° | 0.0389 | 0.0372 | 0.957 |
+
+**What it decides.** The card the cook fits at 30° under-covers the near form by 9% at a grazing
+10° and by 4% at 60°: its two vertical cards a bake group are sparse across a grazing view and its
+top card edge-on. That is a tenth of the patch's own coverage, not bare ground, so the proposed
+view-angle term in the shared mask function (a cutoff lowered as the view grazes) is **not built**:
+it would buy at most those 9%, change the alpha test every path and the opacity micromaps share, and
+the hand-off by distance (renderer.md, "The hand-off by distance") already puts the card past 21 m
+alone, where a patch is a few pixels. The test holds the ratio within 10% at the three elevations.
+What the measurement does not cover: the v36 scene's sparse families (`d25`, `d50`), whose cards
+the "sparse-family card coverage" gap above names, and the card's look — flat, with no parallax —
+which a coverage fraction does not see. If the owner's "flat paint" past the edge persists with the
+hand-off in place, those are the next things to measure.
+
 ## Confirmed wire contract (owner, 2026-10-25)
 
 One parentless part per blade in section 35. Section 36 stores **linear arc fraction**, 0..65535;

@@ -11,6 +11,11 @@
 #include <cstring>
 #include <limits>
 
+namespace {
+// The card's coverage against the near form's, at any elevation in the coverage test (G136).
+constexpr double k_card_share = 0.10;
+}  // namespace
+
 using namespace engine;
 
 TEST_CASE("sward: source dimensions, finite cell bounds, budget and parentless motion") {
@@ -156,6 +161,30 @@ TEST_CASE("sward: full-density reference patch holds four-view projected coverag
   }
 }
 
+// G136 (grass-sward.md, "Coverage against elevation"): the card form stands in for the near form
+// past the hand-off band at every elevation the camera sees a meadow at, not only the 30 degrees
+// the cook fits it at. The table is the measurement; the bound is what the hand-off relies on.
+TEST_CASE("sward: the card covers what the near form does at 10, 30 and 60 degrees") {
+  flora::Sward p;
+  p.seed = 8801;
+  assets::MeshData mesh;
+  flora::TreeLevels levels;
+  std::string error;
+  REQUIRE(flora::solve_sward(p, mesh, nullptr, &error, nullptr, &levels));
+  for (const f64 elevation : {10.0, 30.0, 60.0}) {
+    const auto coverage = flora::measure_sward_coverage_at(mesh, levels, elevation);
+    f64 near = 0, card = 0;
+    for (u32 view = 0; view < 4; ++view) {
+      near += static_cast<f64>(coverage.fraction[0][view]);
+      card += static_cast<f64>(coverage.fraction[2][view]);
+    }
+    REQUIRE(near > 0);
+    MESSAGE(elevation << " degrees: near " << near / 4 << ", card " << card / 4 << ", ratio "
+                      << card / near);
+    CHECK(std::abs(card / near - 1) < k_card_share);
+  }
+}
+
 TEST_CASE("sward: section 41 survives container roundtrip in cluster vertex order") {
   flora::FloraFile file;
   file.species = "sward";
@@ -271,12 +300,32 @@ TEST_CASE("sward: palette density, stable IDs across tile order and empty outer 
     CHECK(first.instances[i].id == again.instances[i].id);
     CHECK(first.instances[i].position.x == again.instances[i].position.x);
     CHECK(first.instances[i].id != other.instances[i].id);
+    CHECK(first.instances[i].handoff == 0);  // a read outside a world: the near form alone
+  }
+  // G136: the inner ring places each patch as its near form and, after every near form, as its
+  // card, the two named for the renderer's hand-off by distance.
+  ctx.ring = 0;
+  REQUIRE(gen->tile(state, {-1, 0}, ctx, again, &error));
+  REQUIRE(again.instances.size() == 32);
+  for (u32 i = 0; i < 16; ++i) {
+    CHECK(std::memcmp(&again.instances[i].position, &first.instances[i].position,
+                      sizeof(first.instances[i].position)) == 0);
+    CHECK(again.instances[i].id == first.instances[i].id);
+    CHECK(again.instances[i].mesh == 0);
+    CHECK(again.instances[i].handoff == scene_gen::k_handoff_near);
+    const scene_gen::Placement& card = again.instances[16 + i];
+    CHECK(card.mesh == 1);
+    CHECK(card.handoff == scene_gen::k_handoff_far);
+    CHECK(card.id == first.instances[i].id);
+    CHECK(std::memcmp(&card.position, &first.instances[i].position, sizeof(card.position)) == 0);
+    CHECK(card.rotation == first.instances[i].rotation);
   }
   ctx.ring = 1;
   REQUIRE(gen->tile(state, {-1, 0}, ctx, again, &error));
   REQUIRE(again.instances.size() == 16);
   CHECK(again.instances[0].mesh == 1);
   CHECK(again.instances[0].id == first.instances[0].id);
+  CHECK(again.instances[0].handoff == 0);  // the card alone draws at every distance
   ctx.ring = 2;
   REQUIRE(gen->tile(state, {-1, 0}, ctx, again, &error));
   CHECK(again.instances.empty());
@@ -337,7 +386,7 @@ struct Meadow {
   ~Meadow() {
     if (gen != nullptr && state != nullptr) gen->close(state);
   }
-  scene_gen::Placements tile(u8 ring = 0) {
+  scene_gen::Placements tile(u8 ring = scene_gen::k_no_ring) {
     ctx.ring = ring;
     scene_gen::Placements out;
     std::string error;
@@ -359,9 +408,10 @@ TEST_CASE("sward: a patch's place and turn are its hash's, in every ring and req
   const auto b1 = second.tile(1);  // the other order, on a fresh state
   const auto b0 = second.tile(0);
   const auto a0_again = first.tile(0);
-  REQUIRE(a0.instances.size() == 64 * 64);
-  REQUIRE(a1.instances.size() == a0.instances.size());
-  for (u32 i = 0; i < a0.instances.size(); ++i) {
+  // Ring 0 is the near forms and then their cards (G136); ring 1 the cards alone.
+  REQUIRE(a0.instances.size() == 2 * 64 * 64);
+  REQUIRE(a1.instances.size() == 64 * 64);
+  for (u32 i = 0; i < a1.instances.size(); ++i) {
     const auto same = [&](const scene_gen::Placement& l, const scene_gen::Placement& r) {
       return l.id == r.id && std::memcmp(&l.position, &r.position, sizeof(l.position)) == 0 &&
              l.rotation == r.rotation && l.scale == r.scale;

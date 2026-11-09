@@ -17,10 +17,15 @@
 // every position exactly at 1e8 m and a move by whole cells is exact too. Moved by 6,548 cells
 // (419 km, the owner's distance), 156,250 (10,000 km) and 1,562,500 (1e8 m), and a second scene
 // whose eye stands a millimetre from a cell's edge with cubes on both sides of it. Then the eye
-// stepped a millimetre at a time 10,000 km out against the same steps by the origin.
+// stepped a millimetre at a time 10,000 km out against the same steps by the origin. Two thirds of
+// the cubes carry a hand-off role (G136), and the first test sets a band across the scene (the
+// second keeps the default, 21 to 29 m, which drops every far form), so the cull pass's distance
+// band, measured from the eye like every other test, is held to the same bytes.
 #include <core/math/math.h>
 #include <core/math/world.h>
 #include <domain/gfx/device.h>
+#include <domain/scene_gen/scene_gen.h>
+#include <foundation/tunables/tunables.h>
 #include <systems/renderer/capture.h>
 #include <systems/renderer/gpu_scene.h>
 #include <systems/renderer/scene.h>
@@ -172,6 +177,21 @@ struct Rig {
   }
 };
 
+// A tunable set for the length of a scope and put back after it (rt_capacity_tests.cpp's).
+struct ScopedTunable {
+  tunables::Tunable* tunable = nullptr;
+  std::string previous;
+  ScopedTunable(const char* name, const char* value) {
+    tunable = tunables::find(name);
+    REQUIRE_MESSAGE(tunable != nullptr, name);
+    tunable->append_value(previous);
+    REQUIRE(tunable->set_from_text(value));
+  }
+  ~ScopedTunable() {
+    if (tunable != nullptr) (void)tunable->set_from_text(previous);
+  }
+};
+
 // Whole cells along x and z: the scene is moved along both, so the cells' difference is exercised
 // on two axes and y stays where the ground is.
 DVec3 cells(f64 count) { return DVec3{count * k_world_cell_m, 0.0, -count * k_world_cell_m}; }
@@ -197,6 +217,13 @@ SceneDesc scene_at(const std::string& mesh, const std::string& ddc, WorldPos at)
           quat_from_axis_angle(Vec3{0.0f, 1.0f, 0.0f}, 0.3f * static_cast<f32>(x + 3 * z));
       const f32 s = 1.0f + 0.25f * static_cast<f32>((x + z) & 3);
       cube.transform.scale = Vec3{s, s, s};
+      // **With the hand-off's roles** (G136; renderer.md, "The hand-off by distance"): a third of
+      // the cubes are a near form and a third a far one, under the band the test's tunables set
+      // across the scene, so the cull pass's band test is held to the same bytes too.
+      const i32 third = (x + 3 + 7 * (z + 2)) % 3;
+      cube.handoff = third == 1   ? scene_gen::k_handoff_near
+                     : third == 2 ? scene_gen::k_handoff_far
+                                  : u8{0};
       desc.instances.push_back(cube);
     }
   }
@@ -379,6 +406,10 @@ TEST_CASE("world translation: a scene and its camera moved by whole cells draw t
     probe.destroy();
   }
   const test::TempDir tmp("engine_world_translation");
+  // The hand-off's band, 8 to 12 m from the eye, across the cubes of both layouts (the cubes stand
+  // 3 to 19 m from the eyes): the near forms past it and the far forms short of it are dropped.
+  const ScopedTunable near_m("renderer.flora.sward_near_m", "10");
+  const ScopedTunable fade_m("renderer.flora.sward_fade_m", "12");
   const std::filesystem::path dir = tmp.native();
   const std::string mesh = slashes(dir / "cube.glb");
   const std::string ddc = slashes(dir / "ddc");

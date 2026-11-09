@@ -603,7 +603,7 @@ struct FloraFieldFrame {
   float4 phases;   // their phases at the eye
   float4 weights;  // their shares of the gust
   float4 walker;   // the walker's feet from the eye, radius (<= 0: none)
-  float4 push;     // height, the push's most radians, margin, 0
+  float4 push;     // height, the push's most radians, margin; w the hand-off's clock's bits (G136)
 };
 
 static const float k_field_lean = 0.6;     // renderer::flora_part_poses' constants, the trees'
@@ -641,9 +641,29 @@ void field_vertex(MeshDesc mesh, InstanceDesc instance, DeformDesc deform, uint 
   const uint record = ((uint*)g_params.motion)[vertex];
   const uint part = record & 0xffffu;
   const uint fraction = record >> 16;
-  if (part >= deform.joint_count || fraction == 0) return;  // the root stays where it is
+  if (part >= deform.joint_count) return;
   const FloraFieldFrame field = ((FloraFieldFrame*)(g_params.flora - 160))[0];
   const float4 blade = ((float4*)deform.joints)[part];  // root xyz, length
+  // The blade's own hash, from its root's bits and its instance's placement: its phase below, and
+  // its place in the hand-off's order.
+  const uint h = field_hash(field_hash(asuint(blade.x) * 0x9e3779b9u ^ asuint(blade.z)) ^
+                            asuint(blade.y) ^ field_seed(instance));
+  // ---- the hand-off by distance (G136; renderer.md, "The hand-off by distance"): a patch placed
+  // as its near form and its card keeps the share of its parts its role and its root's distance
+  // from the eye say (scene.slang, `handoff_keep`; for its first frames, its load-in age too), in
+  // the order of an independent stream of the blade's hash, and every vertex of a part it does not
+  // keep goes to the part's root: zero area, so no rasterizer and no ray meets it. Every vertex of
+  // a part reads the same root, so the part goes whole.
+  if ((instance.flags & k_instance_handoff_mask) != 0) {
+    const float3 root_at = instance_point(instance, instance_from_eye(instance, field.eye), blade.xyz);
+    const float keep = handoff_keep(instance, length(root_at), handoff_age(instance, asuint(field.push.w)));
+    const float order = float(field_hash(h ^ 0x68e31da4u) >> 8) * (1.0 / 16777216.0);
+    if (!(order < keep)) {
+      position = blade.xyz;
+      return;
+    }
+  }
+  if (fraction == 0) return;  // the root stays where it is
   const float strength = field.wind.z;
   const bool walker = field.walker.w > 0.0;
   if (strength <= 0.0 && !walker) return;  // calm and untouched: the rest pose, to the bit
@@ -660,8 +680,6 @@ void field_vertex(MeshDesc mesh, InstanceDesc instance, DeformDesc deform, uint 
     // The blade's phase from its root's bits rather than its part index: a distance form prunes
     // and renumbers its parts (renderer.md, "A form carries only the parts it uses") but copies
     // the roots, so a card sways in its patch's phases.
-    const uint h = field_hash(field_hash(asuint(blade.x) * 0x9e3779b9u ^ asuint(blade.z)) ^
-                              asuint(blade.y) ^ field_seed(instance));
     const float phase = float(h >> 8) * (k_tau / 16777216.0);
     const float compliance = asfloat(deform.first_channel);
     const float angle =

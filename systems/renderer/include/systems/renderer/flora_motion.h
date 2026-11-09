@@ -77,6 +77,10 @@ bool flora_motion_tunable() noexcept;
 // form still does.
 bool flora_tail_tunable() noexcept;
 f32 flora_sway_m_tunable() noexcept;
+// `renderer.flora.sward_near_m` and `sward_fade_m` (renderer.md, "The hand-off by distance";
+// G136) as the band an instance with a hand-off role carries (`gfx::pack_handoff_band`):
+// [near - fade / 2, near + fade / 2) metres, the low end clamped at zero.
+u32 sward_handoff_band_tunable() noexcept;
 // `renderer.flora.rest_pose_cascades_m` (renderer.md, "The caster policy"; R95): metres from the
 // eye past which a swaying instance casts its rest pose into the cascades; 0, the default, is off.
 f32 flora_rest_pose_cascades_m_tunable() noexcept;
