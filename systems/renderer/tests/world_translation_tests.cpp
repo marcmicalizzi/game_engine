@@ -221,7 +221,7 @@ SceneDesc scene_at(const std::string& mesh, const std::string& ddc, WorldPos at)
       // the cubes are a near form and a third a far one, under the band the test's tunables set
       // across the scene, so the cull pass's band test is held to the same bytes too.
       const i32 third = (x + 3 + 7 * (z + 2)) % 3;
-      cube.handoff = third == 1 ? scene_gen::k_handoff_near
+      cube.handoff = third == 1   ? scene_gen::k_handoff_near
                      : third == 2 ? scene_gen::k_handoff_far
                                   : u8{0};
       desc.instances.push_back(cube);
@@ -409,7 +409,7 @@ TEST_CASE("world translation: a scene and its camera moved by whole cells draw t
   // The hand-off's band, 8 to 12 m from the eye, across the cubes of both layouts (the cubes stand
   // 3 to 19 m from the eyes): the near forms past it and the far forms short of it are dropped.
   const ScopedTunable near_m("renderer.flora.sward_near_m", "10");
-  const ScopedTunable fade_m("renderer.flora.sward_fade_m", "4");
+  const ScopedTunable fade_m("renderer.flora.sward_fade_m", "12");
   const std::filesystem::path dir = tmp.native();
   const std::string mesh = slashes(dir / "cube.glb");
   const std::string ddc = slashes(dir / "ddc");
