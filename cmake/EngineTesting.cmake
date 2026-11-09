@@ -86,6 +86,13 @@ if(ENGINE_PWSH)
     WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
   set_tests_properties(tools.lint PROPERTIES LABELS "tools")
 
+  # The slot pool script (T75) over a throwaway repository and two worktrees in a temporary directory.
+  add_test(NAME tools.slot
+    COMMAND "${ENGINE_PWSH}" -NoProfile -ExecutionPolicy Bypass
+            -File "${CMAKE_SOURCE_DIR}/tools/slot.Tests.ps1"
+    WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
+  set_tests_properties(tools.slot PROPERTIES LABELS "tools")
+
   # The capability scaffold (ADR-0027) generates into a temporary tree and checks the result.
   add_test(NAME tools.new_capability
     COMMAND "${ENGINE_PWSH}" -NoProfile -ExecutionPolicy Bypass

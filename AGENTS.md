@@ -30,6 +30,7 @@ tools/dev.ps1 format                           # clang-format over the tree
 tools/dev.ps1 modules   [-Preset msvc-debug]   # prints build/<preset>/modules.json
 
 tools/new-capability.ps1 -Name cloth -Layer systems -Deps "base containers math" [-WithSchema] [-WithBench] [-WithProtocol]
+tools/slot.ps1           list|claim|release|reset|warm -Slot N [-Owner <row>] [-To <sha|main>] [-Preset <names>] [-Base <sha>]   # the warm worktree pool: slot-1..4 under .claude/worktrees, claimed by an agent per brief, reset to main after each merge (docs/ci/what-to-run.md, "The slot pool")
 tools/package-tests.ps1  -Preset msvc-release [-Out <zip>] [-WithSamples] [-WithSymbols]
 tools/package-game.ps1   -Preset msvc-release -Module <name> -Scene <scene.json> [-Out <zip>] [-Width <w>] [-Height <h>] [-TimeRate <r>] [-SunRate <r>] [-DayLength <s>]   # engine-view + a game module + a scene, a zip a tester double-clicks and sends report.json back from (docs/subsystems/apps.md)
 tools/export-game-sdk.ps1 -Preset msvc-release -Out <dir> [-Zip <file>] [-Scenes <paths...>]   # the game author's SDK: headers, schemac, the relocatable build command, engine-view, the scenes, the package tool (docs/game-authoring.md)
