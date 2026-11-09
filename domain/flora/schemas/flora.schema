@@ -827,8 +827,8 @@ struct Sward @version(3) {
   /// Fit coarse width and card threshold to four-view near coverage at cook time.
   fit_lods: bool = true @since(2)
   /// G137, a tussock (caespitose) form: crowns on a lattice of this spacing, metres, 0 or 0.2..1, each
-  /// crown jittered by at most a quarter of what the spacing leaves beyond its radius, so the gap
-  /// between neighbours' roots is at least half of (spacing - 2 clump_radius_m). 0: the sod layout.
+  /// crown jittered by at most 0.4 of what the spacing leaves beyond its radius, so the gap
+  /// between neighbours' roots is at least a fifth of (spacing - 2 clump_radius_m). 0: the sod layout.
   tussock_spacing_m: f32 = 0.0 @unit(m) @since(3)
   /// A tussock's raised base, metres, 0..0.3: a crown's roots rise on a dome, the centre this high
   /// and the rim at the ground. Needs tussock_spacing_m.

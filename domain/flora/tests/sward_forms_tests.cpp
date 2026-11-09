@@ -95,7 +95,7 @@ TEST_CASE("sward forms: a tussock's crowns stand at their spacing with ground be
     const f64 cell = static_cast<f64>(p.cell_m), spacing = static_cast<f64>(p.tussock_spacing_m);
     const u32 side = static_cast<u32>(cell / spacing + .5);
     const f64 square = cell / side, radius = static_cast<f64>(p.clump_radius_m);
-    // Every crown root lies in its own lattice square; neighbours' roots keep half of what the
+    // Every crown root lies in its own lattice square; neighbours' roots keep a fifth of what the
     // spacing leaves beyond two radii between them.
     Vector<u32> square_of(count - between);
     Vector<u32> in_square(side * side);
@@ -115,7 +115,7 @@ TEST_CASE("sward forms: a tussock's crowns stand at their spacing with ground be
     for (u32 n : in_square)
       CHECK(n > 0);
     if (p.crown_base_m > 0) CHECK(base_top > .8 * static_cast<f64>(p.crown_base_m));
-    const f64 gap = .5 * (square - 2 * radius);
+    const f64 gap = .2 * (square - 2 * radius);
     f64 closest = 1e30;
     for (u32 i = 0; i + between < count; ++i)
       for (u32 j = i + 1; j + between < count; ++j) {

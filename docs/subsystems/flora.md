@@ -199,9 +199,9 @@ adds what a tussock needs and the old knobs could not say, and `k_sward_version`
 
 - `tussock_spacing_m` (0, or 0.2–1 m and at least two `clump_radius_m`): the blades gather on a
   lattice of crowns at this spacing, `round(cell / spacing)` a side, each crown holding its share of
-  the blades within `clump_radius_m` of its centre. A crown moves at most a quarter of what the
-  spacing leaves beyond its radius, so neighbours' roots stay at least half of (spacing − 2 radius)
-  apart: the ground between them shows. Its tillers keep their shared roots as the sod's do.
+  the blades within `clump_radius_m` of its centre. A crown moves at most 0.4 of what the spacing
+  leaves beyond its radius, so neighbours' roots stay at least a fifth of (spacing − 2 radius) apart
+  (a quarter, the first try, left the crowns in visible rows on v36): the ground between them shows. Its tillers keep their shared roots as the sod's do.
 - `crown_base_m` (0–0.3 m, a tussock's only): a crown's roots rise on a dome, its centre this high and
   its rim at the ground — the raised base of an old tussock, hidden by the outer leaves.
 - `between_share` (0–0.9, a tussock's only) and `between_growth` (0–1, default 0.25): that share of the

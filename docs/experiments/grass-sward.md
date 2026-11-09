@@ -95,9 +95,9 @@ discrete crowns with ground between. Crossed with stature that is four forms, ea
 | Form | Recipe | Profile (blade, source) | Leaves used | Habit as built |
 |---|---|---|---|---|
 | tall sod | `tall-sod` | red fescue, 3–40 cm × 0.5–1 mm (Kew) | 22–40 cm (`growth_min` 0.55) | 768 blades/m², shoots of 3 in crowns of 4, dispersed (`clumpiness` 0.1) |
-| tall tussock | `tall-tussock` | tufted hair-grass, 10–60 cm × 2–5 mm (Kew) | 30–60 cm (`growth_min` 0.4) | crowns 0.5 m apart, 0.12 m radius, a 5 cm raised base; 15 % short turf between (10–17.5 cm) |
+| tall tussock | `tall-tussock` | tufted hair-grass, 10–60 cm × 2–5 mm (Kew) | 30–60 cm (`growth_min` 0.4) | crowns 0.5 m apart, 0.12 m radius, a 5 cm raised base; 30 % short turf between (10–17.5 cm) |
 | short sod | `short-sod` | bent, 2–15 cm × 1–4 mm (Flora of China) | 4–8.5 cm (`growth` 0.15–0.5) | 1,024 blades/m², two-segment ribbons |
-| short tussock | `short-tussock` | mat-grass, 4–30 cm × 0.5–1 mm (Kew) | 12–27 cm (`growth` 0.3–0.9) | crowns 0.25 m apart, 0.05 m radius; 10 % turf between (4–9 cm) |
+| short tussock | `short-tussock` | mat-grass, 4–30 cm × 0.5–1 mm (Kew) | 12–27 cm (`growth` 0.3–0.9) | crowns 0.25 m apart, 0.05 m radius; 35 % turf between (4–9 cm) |
 
 Every blade is inside its profile's source range (the forms tests hold it); nothing is scaled.
 **What is authored and not measured:** the crown spacings (0.5 m and 0.25 m), radii and the 5 cm

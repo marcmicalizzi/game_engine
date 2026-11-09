@@ -54,9 +54,9 @@ Four recipes are the sward's growth forms, each from a source-bounded profile
 | Recipe | Form | Species | Leaves | Layout |
 |---|---|---|---|---|
 | `tall-sod` | tall sod | red fescue | 22–40 cm × 0.5–1 mm | 768 blades/m², dispersed shoots, 6,400-triangle cap |
-| `tall-tussock` | tall tussock | tufted hair-grass | 30–60 cm × 2–5 mm | crowns 0.5 m apart, 0.12 m radius, 5 cm raised base, 15 % short turf between; 5,300 cap |
+| `tall-tussock` | tall tussock | tufted hair-grass | 30–60 cm × 2–5 mm | crowns 0.5 m apart, 0.12 m radius, 5 cm raised base, 30 % short turf between; 5,300 cap |
 | `short-sod` | short sod | bent | 4–8.5 cm × 1–4 mm | 1,024 blades/m², two-segment ribbons; 6,400 cap |
-| `short-tussock` | short tussock | mat-grass | 12–27 cm × 0.5–1 mm | crowns 0.25 m apart, 0.05 m radius, 10 % turf between; 4,200 cap |
+| `short-tussock` | short tussock | mat-grass | 12–27 cm × 0.5–1 mm | crowns 0.25 m apart, 0.05 m radius, 35 % turf between; 4,200 cap |
 
 `oxeye-daisy.flora.json` is the meadow's forb: the understory's herb at 0.5 m (*Leucanthemum
 vulgare*'s stems are 20–90 cm across the floras). A sward placement entry names a form per family

@@ -244,8 +244,8 @@ bool solve_sward(const Sward& p, assets::MeshData& out, TreeReport* report, std:
   const u64 seed = p.seed ^ (static_cast<u64>(p.variant) * 0x9e3779b97f4a7c15ull);
   // G137, the tussock layout: `t_side` crowns a side on a lattice of the spacing, each holding
   // `per_crown` of the first `crown_blades` blades, and the rest spread between them as short turf.
-  // A crown moves at most a quarter of what the spacing leaves beyond its radius, so neighbours'
-  // roots stay at least half of (spacing - 2 radius) apart. The sod layout below is untouched.
+  // A crown moves at most 0.4 of what the spacing leaves beyond its radius, so neighbours' roots
+  // stay at least a fifth of (spacing - 2 radius) apart. The sod layout below is untouched.
   const bool tussock = p.tussock_spacing_m > 0;
   const u32 between =
       tussock ? static_cast<u32>(static_cast<f64>(count) * static_cast<f64>(p.between_share)) : 0;
@@ -285,7 +285,7 @@ bool solve_sward(const Sward& p, assets::MeshData& out, TreeReport* report, std:
       Rng crng = stream_of(seed ^ 0x7475737365ull, crown + 1);
       Rng trng = stream_of(seed ^ 0x74696c6c6572ull, (static_cast<u64>(crown) << 20) + tiller + 1);
       const f64 s = cell / t_side;
-      const f64 slack = std::max(0.0, s - 2 * crown_r) * .25;
+      const f64 slack = std::max(0.0, s - 2 * crown_r) * .4;
       const D3 centre{(crown % t_side + .5) * s - half + crng.symmetric() * slack, 0,
                       (crown / t_side + .5) * s - half + crng.symmetric() * slack};
       shoot_angle = trng.unit() * 2 * k_pi;

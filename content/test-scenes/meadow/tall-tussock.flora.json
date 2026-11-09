@@ -12,7 +12,7 @@
     "clump_radius_m": 0.12,
     "tussock_spacing_m": 0.5,
     "crown_base_m": 0.05,
-    "between_share": 0.15,
+    "between_share": 0.3,
     "between_growth": 0.15,
     "triangle_budget": 5300,
     "card_px": 128
