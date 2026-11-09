@@ -74,9 +74,9 @@ WaterStats measure_water(const JsonValue& blocks, const scene_gen::Ground& groun
       const f64 hl = std::hypot(hx, hz);
       if (!(hl > 0)) continue;
       const f64 ax = -hz / hl, az = hx / hl, e = k_ribbon_half_widths * w[i];
-      const bool border = region != nullptr &&
-                          (x[i] - region[0] < border_m || z[i] - region[1] < border_m ||
-                           region[2] - x[i] < border_m || region[3] - z[i] < border_m);
+      const bool border =
+          region != nullptr && (x[i] - region[0] < border_m || z[i] - region[1] < border_m ||
+                                region[2] - x[i] < border_m || region[3] - z[i] < border_m);
       const std::string block_name =
           name != nullptr && name->is_string() ? std::string(name->as_string()) : std::string();
       for (const f64 side : {-1.0, 1.0}) {

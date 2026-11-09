@@ -178,14 +178,14 @@ void build_line(const ChannelLayer& p, const ChannelNetwork& n, const scene_gen:
     fx[i] = px[i] - tz / tl * offset[i];
     fz[i] = pz[i] + tx / tl * offset[i];
   }
-  // **The line held in the trough** (W91; channels.md, "The planform"): the meander's own test above
-  // sees the meander's offset alone, and the low-pass can carry a line out of the trough by itself
-  // (it cuts a bend's corner across the valley's side). So every point of the final line is tested
-  // against the trough the lattice's cells run down: the ground at the point against the ground at
-  // the nearest point of the cells' own polyline, within the low-pass's reach of the point's
-  // segment. A point standing more than `k_trough_rise` of the depth over it is drawn back toward
-  // it, halving its offset from it up to three times and then onto it. The shares are eroded over
-  // three points each way and then smoothed by three binomial passes, which leaves every point
+  // **The line held in the trough** (W91; channels.md, "The planform"): the meander's own test
+  // above sees the meander's offset alone, and the low-pass can carry a line out of the trough by
+  // itself (it cuts a bend's corner across the valley's side). So every point of the final line is
+  // tested against the trough the lattice's cells run down: the ground at the point against the
+  // ground at the nearest point of the cells' own polyline, within the low-pass's reach of the
+  // point's segment. A point standing more than `k_trough_rise` of the depth over it is drawn back
+  // toward it, halving its offset from it up to three times and then onto it. The shares are eroded
+  // over three points each way and then smoothed by three binomial passes, which leaves every point
   // drawn back at least as far as its own test asked (each smoothed share is a mean of eroded
   // shares whose windows all hold the point's own).
   {
@@ -198,8 +198,8 @@ void build_line(const ChannelLayer& p, const ChannelNetwork& n, const scene_gen:
       f64 best = std::numeric_limits<f64>::infinity();
       for (u32 k = a; k <= b; ++k) {
         const f64 ex = x[k + 1] - x[k], ez = z[k + 1] - z[k], l2 = ex * ex + ez * ez;
-        const f64 t = l2 > 0 ? std::clamp(((fx[i] - x[k]) * ex + (fz[i] - z[k]) * ez) / l2, 0.0, 1.0)
-                             : 0.0;
+        const f64 t =
+            l2 > 0 ? std::clamp(((fx[i] - x[k]) * ex + (fz[i] - z[k]) * ez) / l2, 0.0, 1.0) : 0.0;
         const f64 qx0 = x[k] + t * ex, qz0 = z[k] + t * ez;
         const f64 d2 = (fx[i] - qx0) * (fx[i] - qx0) + (fz[i] - qz0) * (fz[i] - qz0);
         if (d2 < best) {
@@ -212,8 +212,7 @@ void build_line(const ChannelLayer& p, const ChannelNetwork& n, const scene_gen:
       const f64 floor = ground_at(ground, rx[i], rz[i]);
       f64 k = 1;
       for (u32 tries = 0; tries < 4 && k > 0; ++tries) {
-        const f64 g =
-            ground_at(ground, rx[i] + k * (fx[i] - rx[i]), rz[i] + k * (fz[i] - rz[i]));
+        const f64 g = ground_at(ground, rx[i] + k * (fx[i] - rx[i]), rz[i] + k * (fz[i] - rz[i]));
         if (g - floor <= k_trough_rise * di) break;
         k = tries == 3 ? 0.0 : k * .5;
       }
@@ -390,9 +389,9 @@ void apply_water(ChannelNetwork& n, const scene_gen::Ground& ground,
 // every `L` metres — `L = w clamp(step_pool_widths sqrt(slope_step_pool / S), 1, 4)`, the 1-4
 // widths of the step-pool literature, closer on steeper beds — of height `H = step_height_ratio S
 // L` (Abrahams et al. 1995), at most 4 m. Below a crest the pool lowers the bed by H over a riser
-// that stands at `riser_angle_deg` (a boulder step at its clasts' angle of repose, never a wall) and
-// comes back up to the line at the next crest, so the bed is never raised and its mean fall is the
-// ground's. **Cascades** carry boulder clusters instead, at irregular places down the reach.
+// that stands at `riser_angle_deg` (a boulder step at its clasts' angle of repose, never a wall)
+// and comes back up to the line at the next crest, so the bed is never raised and its mean fall is
+// the ground's. **Cascades** carry boulder clusters instead, at irregular places down the reach.
 // **Knickpoints** (W91): where the ground's long profile steepens to a fall, on any reach (the
 // cut's bed follows the ground there, and the water falls).
 constexpr f64 k_step_max_m = 4.0;
@@ -428,8 +427,8 @@ void knickpoints(const ChannelLayer& p, ChannelLink& link, const Vector<f64>& s)
   link.knick.assign(m, 0);
   Vector<f64> down(m, 0.0), up(m, 0.0), window(m, 0.0);
   for (u32 i = 0; i < m; ++i) {
-    const f64 W =
-        std::max(wide(p.knick_window_min_m), wide(p.knick_window_widths) * wide(link.line[i].width_m));
+    const f64 W = std::max(wide(p.knick_window_min_m),
+                           wide(p.knick_window_widths) * wide(link.line[i].width_m));
     window[i] = W;
     const f64 g = link.line[i].at.y;
     const f64 ahead = std::min(W, s[m - 1] - s[i]), behind = std::min(W, s[i]);
@@ -511,8 +510,8 @@ void classify(const ChannelLayer& p, ChannelLink& link) {
   // **Cascades** (W91): Montgomery & Buffington's cascade is disorganised, tumbling flow over and
   // round individual boulders with no regular sequence, its clasts protruding through the flow. So
   // no steps: boulder clusters at irregular places, their spacing drawn from an exponential of mean
-  // `cascade_boulder_widths` widths (a memoryless spacing has no rhythm), at least half a width, each
-  // cluster's clasts one to two bankfull depths across (at least 0.25 m, at most 1.5 m).
+  // `cascade_boulder_widths` widths (a memoryless spacing has no rhythm), at least half a width,
+  // each cluster's clasts one to two bankfull depths across (at least 0.25 m, at most 1.5 m).
   {
     Rng rng(hash_combine(link.seed, 0xca5cull));
     f64 at = -1;
@@ -522,12 +521,11 @@ void classify(const ChannelLayer& p, ChannelLink& link) {
         continue;
       }
       const f64 w = wide(link.line[i].width_m);
-      const f64 gap = std::max(.5 * w, -wide(p.cascade_boulder_widths) * w *
-                                           det::log(std::max(1e-9, 1.0 - rng.unit())));
+      const f64 gap = std::max(
+          .5 * w, -wide(p.cascade_boulder_widths) * w * det::log(std::max(1e-9, 1.0 - rng.unit())));
       if (at < 0) at = s[i] + .5 * gap;
       if (s[i] < at) continue;
-      const f64 depth =
-          section_of(w, wide(link.line[i].depth_m), wide(p.bank_slope)).thalweg;
+      const f64 depth = section_of(w, wide(link.line[i].depth_m), wide(p.bank_slope)).thalweg;
       link.cluster_at.push_back(i);
       link.cluster_size.push_back(
           static_cast<f32>(round_to(std::clamp(depth * (1 + rng.unit()), .25, 1.5), 1e3)));
@@ -557,9 +555,9 @@ void cut_bed(const ChannelLayer& p, ChannelLink& link) {
     bed = std::min(bed, round_to(top - thalweg, 1e3));
     const f64 b = std::max(bed, round_to(top - k_cut_depth_thalwegs * thalweg, 1e3));
     link.bed[i] = round_to(b - wide(link.step_depth[i]), 1e3);
-    floor[i] = round_to(top - k_cut_depth_thalwegs * thalweg - .5 * wide(p.fall_min_m) -
-                            wide(link.step_depth[i]),
-                        1e3);
+    floor[i] = round_to(
+        top - k_cut_depth_thalwegs * thalweg - .5 * wide(p.fall_min_m) - wide(link.step_depth[i]),
+        1e3);
   }
   // **The chute** (W91; channels.md, "Reaches"): away from a knickpoint no stretch of the bed falls
   // at 45 degrees or more, so the water draws no fall where the ground has none to give it. Taken
@@ -1044,8 +1042,8 @@ void fit_ribbon(u32 m, const scene_gen::Ground& ground, const scene_gen::Exclusi
       f.width[i] = std::floor(half / k_ribbon_half_widths * 1e3) / 1e3;
       f.fit[i] = std::max<u8>(f.fit[i], 1);
     } else {
-      const f64 lower = std::min(g_at(x + ax * least, z + az * least),
-                                 g_at(x - ax * least, z - az * least));
+      const f64 lower =
+          std::min(g_at(x + ax * least, z + az * least), g_at(x - ax * least, z - az * least));
       f.width[i] = round_to(least / k_ribbon_half_widths, 1e3);
       f.surface[i] = round_to(std::min(surface, lower - k_edge_margin_m), 1e3);
       f.fit[i] = 2;

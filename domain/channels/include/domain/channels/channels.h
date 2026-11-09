@@ -225,8 +225,8 @@ struct WaterStats {
 };
 // `region` (nullable): min x, min z, max x, max z of the layer's region.
 WaterStats measure_water(const JsonValue& blocks, const scene_gen::Ground& ground,
-                         const scene_gen::Exclusion* water = nullptr,
-                         const f64* region = nullptr, f64 border_m = 0);
+                         const scene_gen::Exclusion* water = nullptr, const f64* region = nullptr,
+                         f64 border_m = 0);
 
 // One placed piece (a stretch of a link up to `piece_m` long, one part of it): where its frame
 // stands (x and z whole millimetres, y the ground there), its world tile, its recipe and a stable

@@ -173,8 +173,8 @@ int channels_command(int argc, char** argv) {
         return fail(message);
       }
       channels::ChannelNetwork network;
-      if (!channels::plan_channels(layer, ground_view, context.world_seed, nullptr, network,
-                                   error, &shores))
+      if (!channels::plan_channels(layer, ground_view, context.world_seed, nullptr, network, error,
+                                   &shores))
         return fail(scene_path + ": placements " + std::to_string(k) + ": " + error);
       // W91: the ribbon fitted to the ground the network was planned over, and the bodies.
       const JsonValue blocks = channels::water_channels_json(
@@ -293,7 +293,8 @@ int channels_command(int argc, char** argv) {
   line["cascade_clusters"] = JsonValue(clusters);
   line["knickpoints"] = JsonValue(knickpoints);
   line["lip_convexity_mean"] = JsonValue(
-      knickpoints > 0 ? std::round(lip_convexity / static_cast<f64>(knickpoints) * 1000) / 1000 : 0.0);
+      knickpoints > 0 ? std::round(lip_convexity / static_cast<f64>(knickpoints) * 1000) / 1000
+                      : 0.0);
   line["steep_left"] = JsonValue(steep_left);
   line["trough_pulled_points"] = JsonValue(pulled);
   line["ribbon_edges"] = JsonValue(stats.edges);

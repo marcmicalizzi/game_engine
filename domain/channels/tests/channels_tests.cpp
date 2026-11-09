@@ -681,7 +681,7 @@ TEST_CASE("channels: a cascade gets boulder clusters and no regular steps") {
     if (q == 0) continue;
     const f64 gap = s[link.cluster_at[q]] - s[link.cluster_at[q - 1]];
     CHECK(gap >= .5 * static_cast<f64>(link.line[link.cluster_at[q]].width_m) -
-                    static_cast<f64>(p.step_m));
+                     static_cast<f64>(p.step_m));
     sum += gap;
     sum2 += gap * gap;
   }
@@ -903,7 +903,8 @@ TEST_CASE("channels: a bedrock chute falls only at its knickpoint") {
   // The water the flowing-water capability draws: falls only there too, and a single run of them.
   const JsonValue water = water_channels_json(p, n, 0, .5f, true);
   for (const JsonValue& block : water.as_array()) {
-    if (block.find("name")->as_string() != p.name + " link " + std::to_string(&link - n.links.data()))
+    if (block.find("name")->as_string() !=
+        p.name + " link " + std::to_string(&link - n.links.data()))
       continue;
     JsonValue one = JsonValue::array();
     one.push_back(block);

@@ -52,7 +52,8 @@ u64 count_of(const JsonValue& o, const char* key) {
 }  // namespace
 #endif
 
-TEST_CASE("engine-content channels lays a mountainside's water: no staircase, none over the ground") {
+TEST_CASE(
+    "engine-content channels lays a mountainside's water: no staircase, none over the ground") {
 #if !ENGINE_CONTENT_CHANNELS || !ENGINE_CONTENT_TILESET
   MESSAGE("no channels capability or tiles ground provider in this configuration");
 #else
