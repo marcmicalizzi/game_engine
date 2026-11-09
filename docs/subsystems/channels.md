@@ -300,8 +300,30 @@ the body.
 The cut ends in a **fan**: over the last `fan_widths` (3) widths its bed grades from where it was to
 half a thalweg under the body's level, and its width grows by `fan_spread` (1, so to twice) at the
 shore. The water's surface grades over the fan to the body's level at the shore, and on a link that
-ends in a body never stands below that level anywhere (the body backs it up). The source of the
-fan's length is on [the grounding page](../experiments/channels.md#mouths-and-confluences).
+ends in a body never stands below that level anywhere (the body backs it up). The grade starts at
+the first fan point itself and never runs under the bed: at least a centimetre of water stands over
+it (W91 continuation). W90 anchored the grade at the first fan point but already applied that
+point's own share of the fan, so the surface dropped by the share at once; on a chute that follows a
+steep face that was more than the water's depth — v36's link 690, falling at 0.72 m/m into the
+eastern sea with 0.19 m of water, dropped 0.43 m and ran under the cut's bed for five points, which
+wrote a depth of 0 that the water capability refuses (`systems/water/src/channel.cpp`, "depth_m …
+must be positive"). W90's stepped beds never showed it; W91's chutes, which follow the ground, did.
+The subcommand counts any depth that is not positive (`depths_not_positive`; 0 on v36 since). The
+source of the fan's length is on [the grounding page](../experiments/channels.md#mouths-and-confluences).
+
+**A ribbon's end a body covers is trimmed** (W91 continuation; the POC's item 25, flat mint shapes
+at mark 7). A point inside a body's outline whose surface lies under the body's level is under the
+body's own water — a link that begins on a beach inside a lake's outline, its ground above the level
+so the mouth rule keeps it, whose cut then digs its water under the level. Drawn, its ribbon is a
+second water surface a few centimetres under the body's, and with ray tracing on, the body's
+refraction trace meets it as a solid floor and shows its albedo with no water shading (see item 25
+under [Against the proof of concept](#against-the-proof-of-concept)). `water_channels_json`, given
+the bodies, trims such points off both ends of each ribbon (the exclusion's water kind asked against a
+ground standing at the point's surface, so an open sea covers whatever lies under its level), writes
+no ribbon left with fewer than two points, and counts what it trimmed (`RibbonTrim`; the
+subcommand's `covered_trimmed`, by body). The cut is not trimmed: the body's surface shows in the
+trench, which is right. Only the ends are trimmed, since a run covered in the middle of a line would
+be a body the line crosses, which the mouth rule has already ended it at.
 
 **The bodies' outline is the exclusion's** (scene_gen.md, "Exclusion"): a fill body is its seed's
 box where the ground is below the level, not the flood `water::depth_at` traces, so a hollow below a
@@ -417,6 +439,12 @@ catchments that flow in across it. The captures and their verdict are in the W86
 - A link ends at a lake's shoreline with nothing under its level, its fan grading the bed and the
   water to the level; a drowned link is dropped; no bodies, the same network to the byte (test: "a
   link ends at a lake's shoreline …"; `apps/engine_content/tests/channel_mouth_tests.cpp`).
+- **Every depth the description writes is positive**, a fan down a 35° face included: the fan's
+  grade starts at its first point and keeps a centimetre over the bed (test: "a fan down a 35-degree
+  face keeps water over its bed to the shore"; the subcommand's `depths_not_positive`).
+- **No ribbon point lies under a body inside its outline** at either end of a ribbon: such a run is
+  trimmed, exactly that run, and everything upstream is written as it was (test: "a ribbon's end
+  under a lake inside its outline is trimmed, and only that").
 - A tributary ends at the trunk's banks, its bed lowered to the trunk's and its surface lowered,
   never raised, to the trunk's (test: "a tributary meets its trunk …").
 - The cuts have the `TerrainCut` shape, one per link, the top at the ground under the line, a bed that

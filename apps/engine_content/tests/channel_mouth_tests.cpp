@@ -93,6 +93,19 @@ TEST_CASE("engine-content channels ends the links at a lake's shoreline") {
   REQUIRE(line.find("bodies")->get_u64(bodies));
   CHECK(bodies == 1);
   CHECK(mouths >= 1);
+  // W91 continuation: no depth the water would refuse, and the covered ribbon ends counted (a
+  // ribbon ends at the shoreline here, so a body covers none of its points).
+  u64 not_positive = 1, covered = 1;
+  REQUIRE(line.find("depths_not_positive") != nullptr);
+  REQUIRE(line.find("depths_not_positive")->get_u64(not_positive));
+  CHECK(not_positive == 0);
+  const JsonValue* trimmed = line.find("covered_trimmed");
+  REQUIRE(trimmed != nullptr);
+  REQUIRE(trimmed->find("points") != nullptr);
+  REQUIRE(trimmed->find("points")->get_u64(covered));
+  CHECK(covered == 0);
+  REQUIRE(trimmed->find("by_body") != nullptr);
+  CHECK(trimmed->find("by_body")->is_object());
   std::string first, second;
   REQUIRE(io::read_file(tmp.file("a.json"), first) == io::Status::Ok);
   std::vector<std::string> again = args;

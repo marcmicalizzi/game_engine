@@ -986,6 +986,97 @@ TEST_CASE("channels: a line across a tilted plane stays in its trough, the ribbo
   }
 }
 
+// **A fan down a steep face** (W91 continuation): v36's link 690 fell at 0.72 m/m into the sea, and
+// the fan's grade, anchored at its first point with that point's own share already applied, dropped
+// its surface under the cut's bed for five points (depth 0, which the water capability refuses).
+// The grade starts at the first fan point itself and never runs under the bed: the 35-degree face
+// running into a lake writes a positive depth at every point, by either path the subcommand takes.
+TEST_CASE("channels: a fan down a 35-degree face keeps water over its bed to the shore") {
+  const ChannelLayer p = layer();
+  std::string error;
+  const Vector<scene::WaterBody> bodies{lake(70.0, -10, 100)};
+  scene_gen::Exclusion water;
+  REQUIRE(water.build({}, {bodies.data(), bodies.size()}, {}, &error));
+  ChannelNetwork n;
+  REQUIRE(plan_channels(p, ground(face), 0, nullptr, n, error, &water));
+  u32 mouths = 0;
+  for (const ChannelLink& link : n.links)
+    mouths += link.mouth ? 1u : 0u;
+  REQUIRE(mouths >= 1);
+  const scene_gen::Ground g = ground(face);
+  for (const JsonValue& blocks :
+       {water_channels_json(p, n, 0, .5f, true), water_channels_json(p, n, 0, .5f, true, &g, &water)}) {
+    REQUIRE_FALSE(blocks.as_array().empty());
+    u32 depths = 0, dry = 0;
+    for (const JsonValue& b : blocks.as_array())
+      for (const JsonValue& d : b.find("depth_m")->as_array()) {
+        f64 v = 0;
+        REQUIRE(d.get_f64(v));
+        ++depths;
+        dry += v > 0 ? 0u : 1u;
+      }
+    CHECK(depths > 0);
+    CHECK_MESSAGE(dry == 0, dry << " of " << depths << " depths not positive");
+    CHECK(measure_water(blocks, g).depths_not_positive == 0);
+  }
+}
+
+// **The ribbon's end a lake covers** (W91 continuation; item 25 of the POC's list): a ribbon whose
+// last points lie inside a lake's outline with their surface under its level is under the lake's
+// own water, and loses exactly those points; the points inside the outline that stand over the
+// level stay, and everything upstream is written as it was.
+TEST_CASE("channels: a ribbon's end under a lake inside its outline is trimmed, and only that") {
+  const ChannelLayer p = layer();
+  std::string error;
+  ChannelNetwork n;
+  // Planned with no water, so the line runs on through the outline to the region's edge.
+  REQUIRE(plan_channels(p, ground(notch), 0, nullptr, n, error));
+  REQUIRE(n.links.size() == 1);
+  // The ground meets 4 m at z = 80; the cut's water lies under 4 m a little further up.
+  const f64 level = 4.0;
+  const Vector<scene::WaterBody> bodies{lake(level, -10, 100)};
+  scene_gen::Exclusion water;
+  REQUIRE(water.build({}, {bodies.data(), bodies.size()}, {}, &error));
+  const JsonValue plain = water_channels_json(p, n, 0, .5f, true);
+  RibbonTrim trim;
+  const JsonValue trimmed = water_channels_json(p, n, 0, .5f, true, nullptr, &water, &trim);
+  REQUIRE(plain.as_array().size() == 1);
+  REQUIRE(trimmed.as_array().size() == 1);
+  const auto& all = plain[0].find("points")->as_array();
+  const auto& kept = trimmed[0].find("points")->as_array();
+  auto yz = [](const JsonValue& at, f64& y, f64& z) {
+    REQUIRE(at[1].get_f64(y));
+    REQUIRE(at[2].get_f64(z));
+  };
+  // The covered run at the end, as the plain description has it.
+  u32 covered = 0;
+  for (u32 i = all.size(); i-- > 0;) {
+    f64 y = 0, z = 0;
+    yz(all[i], y, z);
+    if (!(z < 100 && y < level - 1e-3)) break;
+    ++covered;
+  }
+  REQUIRE(covered > 0);
+  CHECK(kept.size() == all.size() - covered);
+  CHECK(trim.points == covered);
+  CHECK(trim.blocks == 1);
+  CHECK(trim.dropped == 0);
+  CHECK(trim.mouth_fans == 0);
+  CHECK(trim.at.size() == covered);
+  for (u32 i = 0; i < kept.size() && i < all.size(); ++i)
+    CHECK(write_json(kept[i]) == write_json(all[i]));
+  u32 inside = 0;
+  for (const JsonValue& at : kept) {
+    f64 y = 0, z = 0;
+    yz(at, y, z);
+    if (z >= 100) continue;
+    ++inside;
+    CHECK(y >= level - 1e-3);
+  }
+  // Points inside the outline whose water stands over the level are the stream's, and stay.
+  CHECK(inside > 0);
+}
+
 TEST_CASE("channels: no two bends alike") {
   ChannelLayer p = layer();
   p.head_threshold_m2 = 300;

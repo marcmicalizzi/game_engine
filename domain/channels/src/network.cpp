@@ -927,8 +927,9 @@ Water water_of(const ChannelLayer& p, const ChannelLink& link, f32 stage, bool c
   const Vector<f64> s = lengths_of(link.line);
   f64 bed = link.line[0].at.y;
   f64 surface = std::numeric_limits<f64>::infinity();
-  // The surface at the fan's head, which the fan grades to the body's level.
-  f64 fan_head = std::numeric_limits<f64>::quiet_NaN();
+  // The surface at the fan's head, which the fan grades to the body's level, and the head's own
+  // share of the fan (the first fan point already lies partway along it).
+  f64 fan_head = std::numeric_limits<f64>::quiet_NaN(), fan_t0 = 0;
   for (u32 i = 0; i < m; ++i) {
     const ChannelPoint& pt = link.line[i];
     const f64 thalweg =
@@ -949,13 +950,21 @@ Water water_of(const ChannelLayer& p, const ChannelLink& link, f32 stage, bool c
       surface = std::min(surface, round_to(bed + water, 1e3));
     }
     // The fan (W90): from the fan's head the surface grades to the body's level at the shore, and
-    // never stands below it there (the body backs the water up).
+    // never stands below it there (the body backs the water up). The grade starts at the first fan
+    // point itself (W91 continuation: anchored there with that point's own share, the head
+    // dropped by the share at once — 0.43 m on v36's link 690, a 36-degree chute into the sea with
+    // 0.19 m of water — and ran under the cut's bed for five points), and it never runs under the
+    // bed: a centimetre of water at least, so every depth the description writes is positive.
     const f64 t = fan_share(p, link, s, i);
     if (t > 0) {
-      if (std::isnan(fan_head)) fan_head = surface;
-      surface =
-          std::max(round_to(link.mouth_level, 1e3),
-                   std::min(surface, round_to(fan_head + t * (link.mouth_level - fan_head), 1e3)));
+      if (std::isnan(fan_head)) {
+        fan_head = surface;
+        fan_t0 = t;
+      }
+      const f64 u = fan_t0 < 1 ? (t - fan_t0) / (1 - fan_t0) : 1.0;
+      const f64 graded = std::max(round_to(fan_head + u * (link.mouth_level - fan_head), 1e3),
+                                  round_to(bed + k_min_water_m, 1e3));
+      surface = std::max(round_to(link.mouth_level, 1e3), std::min(surface, graded));
     }
     // Above the fan too, the body backs the water up: a link that ends in it never stands below its
     // level (the surface still never rises downstream, since it was falling to there).
@@ -1050,11 +1059,16 @@ void fit_ribbon(u32 m, const scene_gen::Ground& ground, const scene_gen::Exclusi
     }
   }
 }
+// A ground standing flat at the height its context holds: the covered-ribbon test asks the
+// exclusion's water kind whether a body's level stands over a point's surface.
+f64 flat_height(const void* context, i64, i64) noexcept {
+  return *static_cast<const f64*>(context);
+}
 }  // namespace
 
 JsonValue water_channels_json(const ChannelLayer& p, const ChannelNetwork& n, f64 min_area_m2,
                               f32 stage, bool cut, const scene_gen::Ground* ground,
-                              const scene_gen::Exclusion* water) {
+                              const scene_gen::Exclusion* water, RibbonTrim* trim) {
   Vector<Water> waters;
   for (const ChannelLink& link : n.links)
     waters.push_back(water_of(p, link, stage, cut));
@@ -1097,11 +1111,46 @@ JsonValue water_channels_json(const ChannelLayer& p, const ChannelNetwork& n, f6
   JsonValue list = JsonValue::array();
   for (u32 k = 0; k < n.links.size(); ++k) {
     const ChannelLink& link = n.links[k];
-    const u32 m = std::min<u32>(link.keep, link.line.size());
-    if (m < 2 || wide(link.line[m - 1].area_m2) < min_area_m2) continue;
+    const u32 kept = std::min<u32>(link.keep, link.line.size());
+    if (kept < 2 || wide(link.line[kept - 1].area_m2) < min_area_m2) continue;
     const Water& w = waters[k];
+    // **Covered by a body** (W91 continuation; channels.md, "Mouths"): a point inside a body's
+    // outline whose surface lies under the body's level is under the body's own water, which
+    // covers it — drawn, the ribbon is a second surface a few centimetres under the body's, and
+    // the body's refraction meets it as a solid floor (v36's link 779, 0.149 m under the east lake
+    // inside its outline: item 25's flat shapes). Such points are trimmed off the ribbon's two
+    // ends (the body test is the exclusion's water kind against a ground standing at the point's
+    // surface, so an open body's sea covers whatever lies under its level).
+    u32 a = 0, b = kept;
+    if (water != nullptr && water->body_count() > 0) {
+      auto covered = [&](u32 i) {
+        const f64 height = w.surface[i] + 1e-3;
+        scene_gen::Ground flat;
+        flat.context = &height;
+        flat.surface_fn = &flat_height;
+        return water->excluded_mm(flat, scene_gen::nearest_mm(link.line[i].at.x),
+                                  scene_gen::nearest_mm(link.line[i].at.z),
+                                  scene_gen::k_exclude_water);
+      };
+      while (a < b && covered(a))
+        ++a;
+      while (b > a && covered(b - 1))
+        --b;
+      if (trim != nullptr && (a > 0 || b < kept)) {
+        ++trim->blocks;
+        trim->points += a + (kept - b);
+        if (link.mouth && b < kept) ++trim->mouth_fans;
+        for (u32 i = 0; i < kept; ++i)
+          if (i < a || i >= b)
+            trim->at.push_back(WorldPos{link.line[i].at.x, w.surface[i], link.line[i].at.z});
+        if (b - a < 2) ++trim->dropped;
+      }
+    }
+    if (b - a < 2) continue;
+    const u32 m = b - a;
     Fitted f;
-    for (u32 i = 0; i < m; ++i) {
+    for (u32 j = 0; j < m; ++j) {
+      const u32 i = a + j;
       f.x.push_back(round_to(link.line[i].at.x, 1e3));
       f.z.push_back(round_to(link.line[i].at.z, 1e3));
       f.width.push_back(round_to(wide(link.line[i].width_m), 1e3));
@@ -1116,20 +1165,21 @@ JsonValue water_channels_json(const ChannelLayer& p, const ChannelNetwork& n, f6
     o["name"] = JsonValue(p.name + " link " + std::to_string(k));
     JsonValue points = JsonValue::array(), widths = JsonValue::array(), depths = JsonValue::array(),
               slopes = JsonValue::array(), reach = JsonValue::array(), fits = JsonValue::array();
-    for (u32 i = 0; i < m; ++i) {
+    for (u32 j = 0; j < m; ++j) {
+      const u32 i = a + j;
       const ChannelPoint& pt = link.line[i];
       // A point whose surface the fit lowered under its bed keeps a centimetre of water: the
       // description's depth is positive, and the water lies under the ground there.
-      const f64 depth = f.fit[i] == 2 ? std::max(k_min_water_m, f.surface[i] - w.bed[i])
-                                      : std::max(0.0, f.surface[i] - w.bed[i]);
+      const f64 depth = f.fit[j] == 2 ? std::max(k_min_water_m, f.surface[j] - w.bed[i])
+                                      : std::max(0.0, f.surface[j] - w.bed[i]);
       JsonValue at = JsonValue::array();
-      at.push_back(JsonValue(f.x[i]));
-      at.push_back(JsonValue(f.surface[i]));
-      at.push_back(JsonValue(f.z[i]));
+      at.push_back(JsonValue(f.x[j]));
+      at.push_back(JsonValue(f.surface[j]));
+      at.push_back(JsonValue(f.z[j]));
       points.push_back(std::move(at));
-      widths.push_back(JsonValue(f.width[i]));
+      widths.push_back(JsonValue(f.width[j]));
       depths.push_back(JsonValue(round_to(depth, 1e3)));
-      fits.push_back(JsonValue(static_cast<u32>(f.fit[i])));
+      fits.push_back(JsonValue(static_cast<u32>(f.fit[j])));
       slopes.push_back(JsonValue(round_to(wide(pt.slope), 1e5)));
       reach.push_back(JsonValue(static_cast<u32>(i < link.reach.size() ? link.reach[i] : 0)));
     }

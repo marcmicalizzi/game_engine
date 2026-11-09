@@ -39,6 +39,16 @@ WaterStats measure_water(const JsonValue& blocks, const scene_gen::Ground& groun
         r[i] = static_cast<u8>(std::min(6.0, number_of((*reach)[i])));
     }
     out.points += m;
+    if (const JsonValue* depths = block.find("depth_m"); depths != nullptr && depths->is_array()) {
+      for (const JsonValue& d : depths->as_array()) {
+        if (number_of(d) > 0) continue;
+        if (out.depths_not_positive++ == 0) {
+          const JsonValue* first = block.find("name");
+          if (first != nullptr && first->is_string())
+            out.depth_block = std::string(first->as_string());
+        }
+      }
+    }
     bool in_fall = false;
     for (u32 i = 0; i + 1 < m; ++i) {
       const f64 run = std::hypot(x[i + 1] - x[i], z[i + 1] - z[i]);

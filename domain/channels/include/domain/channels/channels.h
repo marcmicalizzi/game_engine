@@ -180,11 +180,24 @@ ChannelReach reach_of(const ChannelLayer& layer, f64 slope, bool colluvial);
 // ground is drawn in to where the ground meets the surface, the point moved and its width
 // narrowed to the two edges, or where the bed itself stands over the downhill ground the surface
 // lowered under it — and each block carries `fit`, one code a point (0 as planned, 1 narrowed, 2
-// lowered); `water` (nullable) the bodies whose points are left as they are.
+// lowered); `water` (nullable) the bodies whose points are left as they are, and which **cover** a
+// ribbon's ends: a run of points at either end of a ribbon lying inside a body's outline with its
+// surface under the body's level (or under an open body's level anywhere) is trimmed off, since the
+// body's own water stands over it (W91 continuation, channels.md "Mouths"); a ribbon left with
+// fewer than two points is not written. `trim` (nullable) counts what that took.
+struct RibbonTrim {
+  u64 points = 0;      // points trimmed off the ribbons' ends
+  u64 blocks = 0;      // ribbons that lost any
+  u64 dropped = 0;     // ribbons left with fewer than two points, so not written
+  u64 mouth_fans = 0;  // mouths whose trailing (fan) points were trimmed
+  // Each trimmed point (x, the water's surface there, z), for the caller to name the body.
+  Vector<WorldPos> at;
+};
 JsonValue water_channels_json(const ChannelLayer& layer, const ChannelNetwork& network,
                               f64 min_area_m2, f32 stage, bool cut = false,
                               const scene_gen::Ground* ground = nullptr,
-                              const scene_gen::Exclusion* water = nullptr);
+                              const scene_gen::Exclusion* water = nullptr,
+                              RibbonTrim* trim = nullptr);
 
 // **The cuts** (`engine.scene.TerrainCut`, the `tiles` block's `cuts`; channels.md, "The cut";
 // W89): one object per link of the network (every link, the rills' too), in link order, each
@@ -222,6 +235,10 @@ struct WaterStats {
   u64 border_edges_above_005 = 0;
   f64 border_edge_max_m = 0;
   Vector<std::string> border_blocks;
+  // `depth_m` entries that are not positive, which the water capability refuses (W91
+  // continuation: v36's link 690 wrote five at its fan), and the first block holding one.
+  u64 depths_not_positive = 0;
+  std::string depth_block;
 };
 // `region` (nullable): min x, min z, max x, max z of the layer's region.
 WaterStats measure_water(const JsonValue& blocks, const scene_gen::Ground& ground,
