@@ -334,7 +334,9 @@ int channels_command(int argc, char** argv) {
       const f64 height = at.y + 1e-3;
       scene_gen::Ground flat;
       flat.context = &height;
-      flat.surface_fn = [](const void* c, i64, i64) noexcept { return *static_cast<const f64*>(c); };
+      flat.surface_fn = [](const void* c, i64, i64) noexcept {
+        return *static_cast<const f64*>(c);
+      };
       bool named = false;
       for (u32 b = 0; b < bodies.size() && !named; ++b) {
         if (built[b] == 0) continue;

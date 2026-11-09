@@ -1004,8 +1004,8 @@ TEST_CASE("channels: a fan down a 35-degree face keeps water over its bed to the
     mouths += link.mouth ? 1u : 0u;
   REQUIRE(mouths >= 1);
   const scene_gen::Ground g = ground(face);
-  for (const JsonValue& blocks :
-       {water_channels_json(p, n, 0, .5f, true), water_channels_json(p, n, 0, .5f, true, &g, &water)}) {
+  for (const JsonValue& blocks : {water_channels_json(p, n, 0, .5f, true),
+                                  water_channels_json(p, n, 0, .5f, true, &g, &water)}) {
     REQUIRE_FALSE(blocks.as_array().empty());
     u32 depths = 0, dry = 0;
     for (const JsonValue& b : blocks.as_array())

@@ -202,6 +202,16 @@ point samples and reads jagged, and the 1.5 m tributary fades to a line, as the 
 rings' sampling say it should. v35 itself was not re-cooked tonight (its set is 2.6 GB at 25 cm; see
 the roadmap row).
 
+**The cook of a cut set, measured** (W91 continuation, 2026-11-09; W89 and W90 recorded no cook of
+v35's or v36's cut set): v36 with W91's 739 cuts, cooked by `engine-view`'s first load (`msvc-release`,
+`ENGINE_PIPELINE_CACHE=0`, under the GPU lock, other agents building beside it) into an empty
+directory. Twice, the same key and the same bytes: the tile set's manifest appeared 44 s and 36 s
+after the process started, the masks' 242 s and 233 s, so the cook is about **four minutes** of
+the load, and the set is **3.14 GB** (2.73 GB of tiles, 396 MB of masks; v35's uncut set was 2.6 GB).
+The process's peak working set over the whole run — load, cook and two frames, so not the cook alone
+— was **18.7 GB** (17.4 GiB), read from the second run's last sample. The first run, which also drew
+the 16 poses, took 719 s; the second, two frames, 500 s.
+
 **Steep reaches** (the owner's item 10: 30–40° faces) get the same cut — a gully is still cut into
 its slope — and since W90 their pieces follow their reach ([Reaches](#reaches)): nothing laid on a
 colluvial or bedrock reach, boulder steps on a step-pool reach and boulder clusters on a cascade
@@ -398,6 +408,52 @@ border, two lattice spacings, apart):
 
 The falls left are the knickpoints' (bedrock), the mouths' fans grading to a lake (dune-ripple) and a
 few stretches the chute's limit could not spread (`steep_left`: 20 over every link's bed).
+
+**The continuation's re-cut** (2026-11-09, the same command after the fan's grade and the covered
+trim, [Mouths](#mouths)): the cuts are byte for byte the ones above (so the tile set's key and its
+cook are unchanged); `depths_not_positive` 0 where the first W91 run wrote 5 (link 690's fan, points
+273–277, which the water capability refused at load); 86 ribbon points trimmed off 6 ribbons'
+ends, 83 under `mountain-lake-east-extension` and 3 under `freshwater-swamp`, none under the open sea,
+no ribbon dropped and **no mouth lost any of its fan** (a fan grades to the level and never stands
+under it); link 779's ribbon now begins about 6 m down its line, at the lake's outline. Every other count
+in the table stands (ribbon edges measured 99,848, the trimmed points' 172 fewer).
+
+**Item 25, the flat mint shapes at mark 7** (the POC's list; `before\captures\00008-m7-eye.png` of
+the W91 scratch). The ids at five of the shapes' pixels name instance 5, cluster 1252970 — the
+`water/mountain-lake-east-extension` body, not a channel piece and not a ribbon — and the shallow
+water around them is the same instance, cluster and even triangle, so it is not a material row or a
+normal. Their colour, about rgb(150, 199, 184), is the body's default shallow albedo (0.30, 0.55,
+0.50) in sRGB, unlit. Met with the lake's plane, every such pixel lies 0.15–0.32 m from link 779's
+centreline, where the shipped ribbon stood 0.149 m under the lake's level inside its outline (the
+others 0.78–1.46 m off it): with ray tracing on, the body's refraction trace (S86 part 2, water.md
+"visibility through the water") hits that ribbon as a solid surface and shows its albedo with no
+water shading. The channels' half is fixed here (the covered ends trimmed). **The water stage's half
+is a request to S100**: a refraction ray that hits another water surface — a ribbon or a body — under
+the water should pass through it or shade it as water, never as an opaque albedo
+(`domain/gfx/shaders/water.slang` and the water stage of `visibility_resolve.slang`, the
+refract-volume hit's shading); a ribbon under a body anywhere else (a confluence's, an author's) would
+show the same.
+
+**Seen on v36** (2026-11-09, `msvc-release` at the continuation's commit, 1920×1080, `--raster hw
+--shadows rt`, the common engine flags, `--offscreen`; "before" is eeb8077c over v36 as shipped,
+"after" W91 with the re-cut, the same 16 poses; the machine shared with other agents' GPU work, so
+no timing is read from these runs). **Bedrock** (`00010`): before, a wide flat ribbon plate over the
+beach ending in a square edge with a drop toward the sea; after, the water lies narrowed inside its
+trench as a continuous chute to the beach, no plate and no fall — the trench still ends in a square
+cut at the shore, as before. **Cascade** (`00011`): before, white fall slabs down a staircase of
+blocks beside a tree; after, one continuous sheet of rough white water down the slope, no step, no
+riser. **Step-pool** (`00012`): a straight cut with boulder rows across it and pools between, the
+water continuous — the reach W91 kept its steps on, unchanged to the eye. **Colluvial** (`00013`): a
+shallow cut under the trees with a thin rough ribbon in it, no step. **Mark 4** (`00002`, item 21):
+before, the ribbon stood as a bent plate over the ground in front of the cut's wall; after, the water
+lies inside the banks, lower and narrower along the channel, the pool on the left inside its rim —
+the plate is gone; the cut's tall bank wall behind it is the same in both (W91 did not move the
+cut's banks: "Not yet", below). **Mark 7** (`00008`/`00009`, item 25): the mint shapes, 34,405
+pixels of rgb(150 ± 14, 199 ± 14, 184 ± 14) in `00008` and 15 in `00009` before, are 0 and 0 after:
+the lake's water shows its own bed in the trench. **The mouth** (`00014`, after only): the fan a shallow sheet
+over the sand into the sea, no mint before or after. The gentle **stream** (`00015`) looks as before
+(the pale bed-piece edge along its left bank is in both). Nothing
+was seen that is worse. Captures: the W91 scratch's `before\captures` and `c2\after\captures`.
 
 The lines lie in the model's troughs: the nearest channel point is 1.1 m from the v34 hand-off's
 fell-rill camera target (a 1.3 m rill, below the banks' threshold) and 6.5 m from its channel-bars
