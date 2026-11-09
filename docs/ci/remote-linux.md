@@ -375,7 +375,7 @@ it over 9,000 (1,432 s on the RTX 5090 in `msvc-debug` against 996 s on b56, the
 of growth) — and the suite is now registered as four CTest tests, `renderer.1` to `renderer.4`,
 the test files dealt round them in name order (`engine_module_tests(... PARTS 4)`, doctest's
 `--source-file=` filter; [renderer](../subsystems/renderer.md#testing)), each under the same
-ceiling; the budget stays at 7,200. The suite grows with every batch and the card does not;
+ceiling; the budget stays at 7,200. Since the same day the server leg **runs beside the merge and does not hold it** (the owner, 2026-11-09; [what to run](what-to-run.md)): the merge goes ahead on the Windows half and the containers, the server's verdict follows, and a red one opens a fix row at the top of the next batch. The suite grows with every batch and the card does not;
 splitting it into parts CTest runs side by side is the next answer, not a third raise.
 
 **Disk: 2.1 GB for one preset, 3.6 GB for both** — checkout and build trees 1.5 GB, downloaded
