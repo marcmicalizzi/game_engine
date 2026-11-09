@@ -369,7 +369,13 @@ heavier flora scenes (G73, R65) ran it past 2,400 s and into a timeout on 2026-1
 ceiling there was then 5,400 s. By 2026-11-04 the suite took 4,361 s there (gate b51), and on
 2026-11-05 batch 52's new renderer tests (the cascade cut at three sun elevations, the chain's
 capacity cases, the stochastic material case) ran it past 5,400 and into a timeout (gate b52), so the
-presets now set 7,200: a ceiling of 9,000 s. The suite grows with every batch and the card does not;
+presets now set 7,200: a ceiling of 9,000 s. **On 2026-11-09 (gate b57) it ran past that too** —
+6,389 s on gate b56, then batch 57's hand-off and sward cases (G136, G137) and the rest of it took
+it over 9,000 (1,432 s on the RTX 5090 in `msvc-debug` against 996 s on b56, the same four-tenths
+of growth) — and the suite is now registered as four CTest tests, `renderer.1` to `renderer.4`,
+the test files dealt round them in name order (`engine_module_tests(... PARTS 4)`, doctest's
+`--source-file=` filter; [renderer](../subsystems/renderer.md#testing)), each under the same
+ceiling; the budget stays at 7,200. The suite grows with every batch and the card does not;
 splitting it into parts CTest runs side by side is the next answer, not a third raise.
 
 **Disk: 2.1 GB for one preset, 3.6 GB for both** — checkout and build trees 1.5 GB, downloaded

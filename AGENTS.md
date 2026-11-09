@@ -113,7 +113,7 @@ A module is declared once, in its `CMakeLists.txt`:
 
 ```cmake
 engine_module(NAME containers LAYER core DEPS base)
-engine_module_tests(NAME containers SOURCES tests/flat_map_tests.cpp)
+engine_module_tests(NAME containers SOURCES tests/flat_map_tests.cpp)   # [PARTS <n>]: <n> CTest tests, name.1 to name.<n>, the files dealt round, for a suite past one GPU test's budget on the slowest card
 engine_module_bench(NAME containers SOURCES bench/containers_bench.cpp)   # optional; smoke-run under CTest
 engine_app(NAME engine_cli OUTPUT engine-cli SOURCES main.cpp DEPS json platform E2E_TESTS tests/cli_tests.cpp)  # executables
 engine_shaders(NAME gfx_tests SOURCES shaders/fill.slang)   # .slang -> SPIR-V at build time, embedded as <shaders/fill.spv.h>
