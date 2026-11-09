@@ -133,6 +133,31 @@ forb of meadow cover exists. The herb's motion kind is `parts`: every forb is a 
 part-pose table and a CPU pose per part each frame, so a tile keeps at most `forb_tile_cap` (256 by
 default, the ones of lowest hash) and the forbs stand in the nearest ring only. A `field` herb, posed
 on the GPU like the sward, is the request that lifts both limits (flora.md, "Not yet").
+**On the forest proof of concept's v36 (2026-11-09, `msvc-release`, `--raster hw --shadows rt`, the
+batch's engine-only flags, four held views of 12 frames each, the GPU median of the last six).** The
+before scene is v36's own sward entry (one form, tall fescue at 1,024 blades/m² in four density
+classes); the after scene gives the entry the four forms at the same four classes (two variants each,
+cooked by `engine-content flora`), the oxeye daisy at a 0.33 share and `forb_tile_cap` 1,024. Both on
+one binary (the no-forms placement is eeb8077c's to the bit, so the binary is the pairing); every row
+is an upper bound: the harness recorded other processes at 14–19 % of the CPU at 1080p, and at 4K
+56 % of the CPU and **82 % of the GPU busy before** (another client outside the lock), 24 % and 0 %
+after, so the 4K pair is not a cost.
+
+| View | 1080p GPU ms before → after | 4K GPU ms before → after | Instances before → after (1080p) | Visible pairs before → after (1080p) |
+|---|---|---|---|---|
+| grass-clearing | 10.36 → 10.38 | 16.50 → 17.24 | 181,813 → 184,181 | 943,737 → 934,326 |
+| forest-ground | 10.77 → 11.20 | 24.71 → 23.75 | 142,783 → 144,573 | 292,736 → 292,709 |
+| open-ground | 12.38 → 13.37 | 22.01 → 22.57 | 122,618 → 127,777 | 757,905 → 713,734 |
+| shore-fringe | 13.41 → 13.69 | 23.03 → 24.20 | 160,559 → 166,841 | 793,222 → 861,405 |
+
+The scene's pairs stay at the placements' pair budget (16.7 million, 33 tile withholdings in both
+runs), so the forms' fewer triangles per patch (3,840, 3,200, 3,072 and 2,560 near triangles at full
+density against tall fescue's 5,120) do not show as fewer pairs here; the instances grow by the forbs
+(1,800 to 6,300 in the near ring). Where the meadow is in view (open-ground, 1080p) the rasterizer
+falls 0.26 ms (2.29 → 1.94 and 1.88 → 1.62: the short forms), and the resolve (+0.3 ms), the
+deformed-vertex pool (+0.08 to +0.18 ms: the forbs' parts) and the ray tracing chain (+0.05 to
++0.4 ms) rise. A forb is visible at 1080p as a white speck: the daisy's 2 cm rays on a 0.5 m stem read
+as a meadow only close up, which is the forb's shape, not the share.
 ## Rendering model and explicit approximations
 
 [Jahrmann & Wimmer 2017 §§3–5](https://www.cg.tuwien.ac.at/research/publications/2017/JAHRMANN-2017-RRTG/JAHRMANN-2017-RRTG-draft.pdf)

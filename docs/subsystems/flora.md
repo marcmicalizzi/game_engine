@@ -236,7 +236,9 @@ point, upright, turned by their own stream, their ID the cell's with the top bit
 forbs is refused past a 31-bit cell space). The herb's motion kind is `parts` — every forb is a run of
 the part-pose table and is posed on the CPU each frame — so a tile keeps at most `forb_tile_cap`
 (256) of lowest hash, and forbs stand only in representation 0 (the near ring). Ring 1 draws cards and
-no forbs.
+no forbs. On a 64 m tile of 1 m cells the default cap binds at about 6 % of the cells where the share asks
+33 %; the v36 measurement (grass-sward.md) sets 1,024 and shows the cost: the deformed-vertex pool
+0.08–0.18 ms more at 1080p with no relayout of the deform table.
 **Capability contract.** Flora remains optional. It adds only a dependency on the nonoptional
 `scene_gen` registry and `Ground::masks`; no renderer pass depends on flora. Ground forwarding
 exposes existing W72 data. Baking uses the flora baker and geometry's authored-level DAG/form
