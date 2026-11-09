@@ -3659,14 +3659,59 @@ fade in.**
 
 **What it does not do.** The pool pass is what thins: an entry the deformed-vertex pool's budget
 had no block for, or a frame with the flora motion off, draws both forms whole across the band (8 m
-of doubled cover), and the nearest cascade casts both forms' rest poses there. A tile that leaves
+of doubled cover). **The shadow is one of those**: the nearest cascade casts the sward at its rest
+pose, with no pool block for its entries (the caster policy), so inside the band it casts both
+forms whole — the cull pass's band still bounds each form's casters to its side, so the doubled
+shadow is the band's 8 m and no wider. A tile that leaves
 the inner ring loses its near form in one frame; where the inner ring reaches past `to` that is
 nothing the picture showed. **The inner ring must reach past the band's end**: a tile is in a ring
 by its centre's distance, so a ring of radius `r` tiles reaches `64 r − 45.3` m at the least, and
 where it does not the near form ends at the ring's edge as it did before (the v36 scene's inner
 ring is 0.75 tiles: 2.7 m at a tile's corner). G136's report asks the scene for 1.2 tiles.
 
-**What it costs.** NUMBERS
+**What it costs** (2026-11-09, RTX 5090, msvc-release, the v36 scene with the common flags,
+`--raster hw --shadows rt`, 1920×1080; a 60 m walk through the meadow by the lake, 10 s at 1.65 m
+over 600 frames, `--benchmark` after 30 frames of warm-up, the same checkout at eeb8077c and at
+e1979250 against one derived-data cache). The "before" run was quiet (other processes 9% of the
+CPU, the GPU lock held); the "after" run was not (`quiet: false`, 17 to 21% of the CPU others'),
+so its times are an upper bound:
+
+| | before (by tile) | after (by distance) |
+|---|---|---|
+| frame GPU ms, median / p95 | 11.03 / 12.37 | 10.22 / 11.59 |
+| cull pass ms, median / p95 | 0.548 / 0.551 | 0.540 / 0.546 |
+| pool pass (`deform`) ms | 1.344 / 1.546 | 1.175 / 1.296 |
+| hardware rasterizer ms | 2.346 / 2.595 | 2.091 / 2.307 |
+| inner ring's instances / pairs | 7,547 / 1,921,631 | 15,063 / 1,944,179 |
+| field instances (`flora.field_instances`) | 15,924 | 23,440 |
+| tiles withheld (`tail_withheld_tiles`; the world's `ring_withheld`) | 0 (0, 0, 0, 884) | 0 (0, 0, 0, 884) |
+
+The band test costs the cull pass nothing measurable, and the frame is cheaper: inside the band the
+pool pass writes fewer moving vertices (a collapsed blade returns before its sway) and the
+rasterizer meets zero-area triangles where it drew blades. The cards in the inner ring add 7,516
+instances and 22,548 pairs (three a card) to a tail of 15.4 million, and withheld no tile at
+1080p. Along the walk the sward's pixels are the same within 0.4% in every frame, and its share of
+every twelfth of the picture's rows the same except the one at the horizon, which is 0.1 to 1.7
+points lower (the card's 91% of the near form's coverage at a grazing view, where the card now
+draws what the near form drew): no new density edge. The sward's frame-to-frame steps are the
+same before and after (median 1.0%, the largest 9.7%, all at the walk's end where it leaves the
+meadow: the camera's own motion). What changed is the hand-over: before it, the cards' pixels fell
+by 8.5% and 5.6% of the sward's in one quarter-second step each (frames 29 and 494, the near
+form's tile edge passing under the camera, the near form taking the same pixels at once); after it,
+no step of the cards' pixels is larger than 2.0% of the sward's.
+
+**The band seen.** v36's inner ring (0.75 tiles) stops short of the band, so the walk above shows
+the near form ending at the ring's edge where it did before, only without the jump. The same walk
+with the scene's `world.rings[0].radius` set to 1.25 tiles (one copy of the scene, nothing else
+changed; the capture run, not the benchmark) shows the hand-off itself: the meadow reads as one
+sward to the treeline with no line of density at 21 to 29 m, the cards' largest frame-to-frame step
+is 0.37% of the sward's pixels (none over 2%), and the sward's own steps are the camera's (the
+same 1.0% median and 9.8% largest, at the walk's end). The wider ring costs pairs, not frame
+time: 7 inner tiles instead of 2, 28,363 instances and 3,897,508 pairs in the inner ring instead
+of 15,063 and 1,944,179, with the next ring shrinking to match (24 tiles instead of 29), so the
+tail as a whole is 15,373,825 pairs against 15,382,329; no tile was withheld at 1080p (926
+placements of the outermost ring against 884). The defaults (25 m, 8 m) were kept: the walk's
+frames read as blades well past the band and show no line where the band lies.
 
 ### The caster policy
 
@@ -3822,6 +3867,17 @@ when any differ, logs casters, ray path, chain, static forms and caster-index fa
 requested/resolved boolean fields on one INFO line, with the pair account named for its fallback. The admission fallback count survives a warmup statistics reset, like the chain's capacity and other resolved state.
 The 1 MiB GPU reporting case lowers only its own device object's advertised index limit and captures the actual admission fallback; the stdio load case crosses the real limit with a surround prefix while keeping upload lazy. The cold `GpuScene::pair_summary` reads the account, terrain slot tables, tile layout and instance
 forms only when a host asks for a report; it adds no accounting or work to the frame loop.
+
+**The sward's cards in the inner ring are tail pairs like any other** (G136, 2026-11-09; [the
+hand-off by distance](#the-hand-off-by-distance)). The inner ring places a patch's card beside its
+near form, about three pairs a card: on the v36 scene's 60 m walk that is 7,516 more instances and
+22,548 more pairs in the inner ring (1,921,631 to 1,944,179) against a tail of 15.4 million, and
+no tile was withheld at 1080p (the outermost ring's 884 withheld placements are the same before and
+after). The card is not placed in the next-but-one ring, which holds about ten times the next
+ring's tiles, because the owner's 4K run already withholds there (engine-needs item 26, R107).
+An inner ring wide enough to show the band (1.25 tiles; [the hand-off](#the-hand-off-by-distance))
+doubles the inner ring's pairs (3.9 million) but takes about as many from the rings past it, so the
+tail's total is unchanged to 0.1%.
 
 **One reservation rule, before allocation and before admission** (2026-10-26, R100).
 `account_pairs` constructs the `PairAccount` consumed by final `resolve_settings` and

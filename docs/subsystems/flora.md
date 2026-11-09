@@ -190,7 +190,9 @@ and a tile's blades fading in over 30 frames when it comes into the inner ring
 ([renderer](renderer.md#the-hand-off-by-distance)). Until this date the switch was a straight line
 along a 64 m tile's edge, as close as a few metres at a tile's corner, that jumped as the walker
 crossed a tile. **The inner ring has to reach past the band's end** (a ring of `r` tiles reaches
-`64 r − 45.3` m at the least), or the near form still ends at its edge there; the card in ring 2
+`64 r − 45.3` m at the least), or the near form still ends at its edge there: **a world author
+sets the inner ring to at least `(sward_near_m + sward_fade_m / 2 + 45.3) / 64` tiles, 1.2 for the
+defaults** (v36's 0.75 is sure of 16 m along an axis and 2.7 m at a tile's corner, short of the band); the card in ring 2
 that the brief proposed is not placed, because ring 2 holds about ten times ring 1's tiles and the
 pair budget already withholds tiles in the owner's 4K run (renderer.md, "The pair accounting").
 Shade and excluded regions can be cooked into paint before runtime, so the generator does not
