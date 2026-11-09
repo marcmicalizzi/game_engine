@@ -1375,7 +1375,7 @@ struct WaterBody @version(5) {
 /// points falls at 45 degrees or steeper the water is in free fall and that stretch is a waterfall.
 /// Refused with a sentence: fewer than two points, arrays of unequal length, a width or depth that
 /// is not positive, a slope that is negative where the line descends.
-struct WaterChannel @version(2) {
+struct WaterChannel @version(3) {
   name: string
   /// The centreline, downstream, world positions; each point's y is the **water surface's**
   /// height there.
@@ -1408,6 +1408,12 @@ struct WaterChannel @version(2) {
   /// code, 0 dune-ripple, 1 pool-riffle, 2 plane-bed, 3 step-pool, 4 cascade, 5 bedrock, 6
   /// colluvial (Montgomery & Buffington 1997), one per point; empty where the writer did not say.
   reach: u8[] @since(2)
+  /// **How the writer fitted each point to the ground** (W91; channels.md, "Invariants"): 0 as
+  /// planned, 1 the point moved and its width narrowed so neither edge of the ribbon stands over the
+  /// ground beside it, 2 also its surface lowered under the downhill ground (the bed stands over
+  /// it, and the water lies under the ground there). One per point; empty where the writer did not
+  /// fit it. The water reads nothing of it: a record of what the writer did.
+  fit: u8[] @since(3)
 }
 
 /// One bed of a formation's sequence (`Formation`; renderer.md, "Formation bands"; the grounding,

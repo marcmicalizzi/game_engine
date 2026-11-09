@@ -148,7 +148,9 @@ TEST_CASE("engine-content channels ends the links at a lake's shoreline") {
   CHECK(network.water.mouths == mouths);
   CHECK(write_json(channels::terrain_cuts_json(layer, network)) ==
         write_json(*written.find("cuts")));
-  CHECK(write_json(channels::water_channels_json(layer, network, 0, .5f, true)) ==
+  // W91: the subcommand fits the ribbon to the ground it planned over, the body's points left.
+  const scene_gen::Ground view = ground.view();
+  CHECK(write_json(channels::water_channels_json(layer, network, 0, .5f, true, &view, &water)) ==
         write_json(*written.find("water_channels")));
 #endif
 }

@@ -591,19 +591,36 @@ TEST_CASE("channels: reaches by the pinned bounds (Montgomery & Buffington 1997)
   CHECK(link.reach[link.reach.size() / 2] == static_cast<u8>(ChannelReach::Cascade));
 }
 
-TEST_CASE("channels: a step-pool's steps by their spacing and height, boulders on them") {
-  const ChannelLayer p = layer();
-  ChannelNetwork n;
-  std::string error;
-  REQUIRE(plan_channels(p, ground(steep), 0, nullptr, n, error));
-  REQUIRE(n.links.size() == 1);
-  const ChannelLink& link = n.links[0];
-  REQUIRE(link.step_at.size() >= 4);
-  REQUIRE(link.step_height.size() == link.step_at.size());
+namespace {
+// A step-pool notch: 4.5 % down its floor at x = 128 m (Montgomery & Buffington's 0.03-0.065).
+f64 step_pool(const void*, i64 x, i64 z) noexcept {
+  const f64 xx = static_cast<f64>(x) / 1000.0, zz = static_cast<f64>(z) / 1000.0;
+  return .045 * zz + .3 * std::abs(xx - 128);
+}
+Vector<f64> lengths(const ChannelLink& link) {
   Vector<f64> s(link.line.size(), 0.0);
   for (u32 i = 1; i < link.line.size(); ++i)
     s[i] = s[i - 1] + std::hypot(link.line[i].at.x - link.line[i - 1].at.x,
                                  link.line[i].at.z - link.line[i - 1].at.z);
+  return s;
+}
+}  // namespace
+
+// W90's steps, kept on step-pool reaches alone since W91 (they were taken on the 12 % cascade,
+// which since W91 carries clusters instead: the next test).
+TEST_CASE("channels: a step-pool's steps by their spacing and height, boulders on them") {
+  const ChannelLayer p = layer();
+  ChannelNetwork n;
+  std::string error;
+  REQUIRE(plan_channels(p, ground(step_pool), 0, nullptr, n, error));
+  REQUIRE(n.links.size() == 1);
+  const ChannelLink& link = n.links[0];
+  CHECK(link.reach[link.reach.size() / 2] == static_cast<u8>(ChannelReach::StepPool));
+  REQUIRE(link.step_at.size() >= 4);
+  REQUIRE(link.step_height.size() == link.step_at.size());
+  const Vector<f64> s = lengths(link);
+  for (u32 q = 0; q < link.step_at.size(); ++q)
+    CHECK(link.reach[link.step_at[q]] == static_cast<u8>(ChannelReach::StepPool));
   for (u32 q = 0; q + 1 < link.step_at.size(); ++q) {
     const u32 i = link.step_at[q], j = link.step_at[q + 1];
     const f64 w = static_cast<f64>(link.line[i].width_m);
@@ -611,17 +628,68 @@ TEST_CASE("channels: a step-pool's steps by their spacing and height, boulders o
     // 1 to 4 widths (the step-pool literature), to the line's step either way.
     CHECK(spacing >= w - static_cast<f64>(p.step_m) - 1e-9);
     CHECK(spacing <= 4 * w + static_cast<f64>(p.step_m) + 1e-9);
-    // H / L / S between 1 and 2 (Abrahams et al. 1995), at the layer's 1.5, over the line's 12 %.
-    const f64 ratio = static_cast<f64>(link.step_height[q]) / spacing / .12;
+    // H / L / S between 1 and 2 (Abrahams et al. 1995), at the layer's 1.5, over the line's 4.5 %.
+    const f64 ratio = static_cast<f64>(link.step_height[q]) / spacing / .045;
     CHECK(ratio > 1.0);
     CHECK(ratio < 2.0);
   }
-  // The pools lower the bed, never raise it; a step is at most its height deep.
+  // The pools lower the bed, never raise it; a step is at most its height deep. The riser is a
+  // slope at the boulders' angle of repose, never a wall the water falls over (W91): no stretch
+  // of the bed falls at 45 degrees or more.
+  u32 falls = 0;
   for (u32 i = 0; i < link.line.size(); ++i) {
     CHECK(link.step_depth[i] >= 0.0f);
     CHECK(link.step_depth[i] <= 4.0f);
+    if (i + 1 < link.line.size()) falls += link.bed[i] - link.bed[i + 1] >= s[i + 1] - s[i];
   }
-  // Pieces: the bed and the steps' boulders, no bars on a cascade.
+  CHECK(falls == 0);
+  // Pieces: the bed and the steps' boulders.
+  Vector<PlacedPiece> pieces;
+  REQUIRE(place_pieces(p, n, ground(step_pool), 32, pieces, error));
+  u32 boulders = 0;
+  for (const PlacedPiece& piece : pieces) {
+    if (piece.recipe.part == ChannelPart::Boulder) {
+      boulders += piece.recipe.slabs.size();
+      assets::MeshData mesh;
+      REQUIRE_MESSAGE(solve_piece(piece.recipe, mesh, error), error);
+      check_closed(mesh, piece.recipe.slabs.size());
+    }
+  }
+  CHECK(boulders >= link.step_at.size());
+}
+
+// **A cascade** (W91; Montgomery & Buffington 1997: disorganised, no regular steps): the 12 %
+// notch gets no steps, boulder clusters at irregular spacings, no bars and no pool lowering.
+TEST_CASE("channels: a cascade gets boulder clusters and no regular steps") {
+  const ChannelLayer p = layer();
+  ChannelNetwork n;
+  std::string error;
+  REQUIRE(plan_channels(p, ground(steep), 0, nullptr, n, error));
+  REQUIRE(n.links.size() == 1);
+  const ChannelLink& link = n.links[0];
+  CHECK(link.step_at.empty());
+  for (u32 i = 0; i < link.line.size(); ++i)
+    CHECK(link.step_depth[i] == 0.0f);
+  REQUIRE(link.cluster_at.size() >= 6);
+  REQUIRE(link.cluster_size.size() == link.cluster_at.size());
+  const Vector<f64> s = lengths(link);
+  f64 sum = 0, sum2 = 0;
+  for (u32 q = 0; q < link.cluster_at.size(); ++q) {
+    CHECK(link.reach[link.cluster_at[q]] == static_cast<u8>(ChannelReach::Cascade));
+    CHECK(link.cluster_size[q] >= .25f);
+    CHECK(link.cluster_size[q] <= 1.5f);
+    if (q == 0) continue;
+    const f64 gap = s[link.cluster_at[q]] - s[link.cluster_at[q - 1]];
+    CHECK(gap >= .5 * static_cast<f64>(link.line[link.cluster_at[q]].width_m) -
+                    static_cast<f64>(p.step_m));
+    sum += gap;
+    sum2 += gap * gap;
+  }
+  // No rhythm: the spacings spread (an exponential's coefficient of variation is 1; a regular
+  // sequence's is near 0).
+  const f64 k = static_cast<f64>(link.cluster_at.size() - 1);
+  const f64 mean = sum / k, spread = std::sqrt(std::max(0.0, sum2 / k - mean * mean));
+  CHECK(spread / mean > .3);
   Vector<PlacedPiece> pieces;
   REQUIRE(place_pieces(p, n, ground(steep), 32, pieces, error));
   u32 bars = 0, boulders = 0;
@@ -635,7 +703,7 @@ TEST_CASE("channels: a step-pool's steps by their spacing and height, boulders o
     }
   }
   CHECK(bars == 0);
-  CHECK(boulders >= link.step_at.size());
+  CHECK(boulders >= link.cluster_at.size());
 }
 
 TEST_CASE("channels: a 35-degree face is colluvial, cut and nothing laid") {
@@ -790,6 +858,131 @@ TEST_CASE("channels: a tributary meets its trunk at the trunk's surface, without
   CHECK(tributaries >= 1);
   // Written twice, one text.
   CHECK(write_json(water_channels_json(p, n, 0, .5f, true)) == write_json(blocks));
+}
+
+// **Bedrock and its knickpoint** (W91; channels.md, "Reaches"): two valleys at 40 % meeting (the
+// link below the junction bedrock, the heads' links colluvial), a 3 m scarp across the region at
+// z = 100 m. No step anywhere; the bed falls at 45 degrees or more only at the scarp, which is the
+// network's one knickpoint below the junction; elsewhere the cut follows the ground as a chute.
+namespace {
+f64 scarp(const void*, i64 x, i64 z) noexcept {
+  const f64 xx = static_cast<f64>(x) / 1000.0, zz = static_cast<f64>(z) / 1000.0;
+  const f64 trunk = std::abs(xx - 128);
+  const f64 trib = zz > 200 ? std::abs(xx - (128 + (zz - 200))) / 1.4142135623730951 : 1e9;
+  const f64 cliff = zz >= 101 ? 3.0 : (zz <= 100 ? 0.0 : 3.0 * (zz - 100));
+  return .4 * zz + 1.0 * std::min(trunk, trib) + cliff;
+}
+}  // namespace
+TEST_CASE("channels: a bedrock chute falls only at its knickpoint") {
+  const ChannelLayer p = layer();
+  ChannelNetwork n;
+  std::string error;
+  REQUIRE(plan_channels(p, ground(scarp), 0, nullptr, n, error));
+  const ChannelLink* trunk = nullptr;
+  for (const ChannelLink& link : n.links) {
+    CHECK(link.step_at.empty());
+    if (!link.head && link.line.size() >= 2 && link.line[0].at.z > 150 &&
+        link.line.back().at.z < 50 && std::abs(link.line.back().at.x - 128) < 8)
+      trunk = &link;
+  }
+  REQUIRE(trunk != nullptr);
+  const ChannelLink& link = *trunk;
+  CHECK(link.reach[link.reach.size() / 4] == static_cast<u8>(ChannelReach::Bedrock));
+  CHECK(link.knickpoints == 1);
+  CHECK(link.steep_left == 0);
+  const Vector<f64> s = lengths(link);
+  u32 falls = 0;
+  for (u32 i = 0; i + 1 < link.line.size(); ++i) {
+    if (link.bed[i] - link.bed[i + 1] < s[i + 1] - s[i]) continue;
+    ++falls;
+    // At the scarp and the knickpoint's window below it, nowhere else.
+    CHECK_MESSAGE(std::abs(link.line[i].at.z - 100.5) < 16, "a fall at z " << link.line[i].at.z);
+    CHECK(link.knick[i] == 1);
+  }
+  CHECK(falls >= 1);
+  // The water the flowing-water capability draws: falls only there too, and a single run of them.
+  const JsonValue water = water_channels_json(p, n, 0, .5f, true);
+  for (const JsonValue& block : water.as_array()) {
+    if (block.find("name")->as_string() != p.name + " link " + std::to_string(&link - n.links.data()))
+      continue;
+    JsonValue one = JsonValue::array();
+    one.push_back(block);
+    const WaterStats stats = measure_water(one, ground(scarp));
+    CHECK(stats.falls == 1);
+    CHECK(stats.fall_stretches_by_reach[static_cast<u32>(ChannelReach::Bedrock)] ==
+          stats.fall_stretches);
+  }
+}
+
+// **The line held in the trough, the ribbon on the ground** (W91; channels.md, "Invariants"): a
+// trough running 20 degrees off the lattice's axes down a plane that tilts across it, so the
+// lattice's 45-degree steps and the low-pass both carry a line off its floor. Every point of the
+// longest line stays within two lattice spacings of the trough's axis, and with the ground the
+// ribbon is fitted to, no edge stands more than three centimetres over the ground beside it.
+namespace {
+constexpr f64 k_sin20 = .3420201433256687, k_cos20 = .9396926207859084;
+f64 askew(const void*, i64 x, i64 z) noexcept {
+  const f64 xx = static_cast<f64>(x) / 1000.0, zz = static_cast<f64>(z) / 1000.0;
+  const f64 across = (xx - 128) * k_cos20 - (zz - 256) * k_sin20;
+  return .05 * zz + .08 * xx + .15 * std::abs(across);
+}
+}  // namespace
+TEST_CASE("channels: a line across a tilted plane stays in its trough, the ribbon on the ground") {
+  ChannelLayer p = layer();
+  p.head_threshold_m2 = 300;
+  ChannelNetwork n;
+  std::string error;
+  REQUIRE(plan_channels(p, ground(askew), 0, nullptr, n, error));
+  const ChannelLink* longest = nullptr;
+  for (const ChannelLink& link : n.links)
+    if (longest == nullptr || link.length_m > longest->length_m) longest = &link;
+  REQUIRE(longest != nullptr);
+  CHECK(longest->length_m > 200);
+  for (const ChannelPoint& pt : longest->line) {
+    const f64 across = (pt.at.x - 128) * k_cos20 - (pt.at.z - 256) * k_sin20;
+    CHECK_MESSAGE(std::abs(across) <= 2 * static_cast<f64>(p.spacing_m),
+                  "a point " << across << " m off the trough at z " << pt.at.z);
+  }
+  const scene_gen::Ground g = ground(askew);
+  const JsonValue fitted = water_channels_json(p, n, 0, .5f, true, &g);
+  const WaterStats stats = measure_water(fitted, g);
+  REQUIRE(stats.edges > 0);
+  CHECK(stats.edges_above_005 == 0);
+  CHECK(stats.edge_max_m <= .03 + 1e-6);
+  // Each block carries its fit, one code a point, and the fit only narrows.
+  const JsonValue plain = water_channels_json(p, n, 0, .5f, true);
+  REQUIRE(fitted.as_array().size() == plain.as_array().size());
+  for (u32 k = 0; k < fitted.as_array().size(); ++k) {
+    const JsonValue& b = fitted[k];
+    const auto& fit = b.find("fit")->as_array();
+    REQUIRE(fit.size() == b.find("points")->as_array().size());
+    for (u32 i = 0; i < fit.size(); ++i) {
+      f64 w = 0, w0 = 0;
+      REQUIRE(b.find("width_m")->as_array()[i].get_f64(w));
+      REQUIRE(plain[k].find("width_m")->as_array()[i].get_f64(w0));
+      CHECK(w <= w0 + 1e-9);
+    }
+  }
+  // The same bytes twice, and from a network planned on six jobs.
+  jobs::JobSystemConfig config;
+  config.performance_workers = 6;
+  config.efficiency_workers = 0;
+  config.pin_threads = false;
+  jobs::JobSystem js(config);
+  ChannelNetwork parallel;
+  REQUIRE(plan_channels(p, ground(askew), 0, &js, parallel, error));
+  CHECK(same_network(n, parallel));
+  CHECK(write_json(water_channels_json(p, parallel, 0, .5f, true, &g)) == write_json(fitted));
+  CHECK(write_json(terrain_cuts_json(p, parallel)) == write_json(terrain_cuts_json(p, n)));
+  ChannelNetwork cascade_a, cascade_b;
+  REQUIRE(plan_channels(p, ground(steep), 0, nullptr, cascade_a, error));
+  REQUIRE(plan_channels(p, ground(steep), 0, &js, cascade_b, error));
+  REQUIRE(cascade_a.links.size() == cascade_b.links.size());
+  for (u32 k = 0; k < cascade_a.links.size(); ++k) {
+    CHECK(cascade_a.links[k].cluster_at == cascade_b.links[k].cluster_at);
+    CHECK(cascade_a.links[k].cluster_size == cascade_b.links[k].cluster_size);
+    CHECK(cascade_a.links[k].knick == cascade_b.links[k].knick);
+  }
 }
 
 TEST_CASE("channels: no two bends alike") {

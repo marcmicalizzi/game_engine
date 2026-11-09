@@ -62,7 +62,8 @@ namespace engine::channels {
 // Bumped when a change makes an old network or recipe wrong: it is in every recipe's hash.
 // 2 (W89): the bed is the cut's flat bed and no bank piece is placed.
 // 3 (W90): pieces by reach (boulder steps, nothing on bedrock and colluvial), mouths, confluences.
-inline constexpr u32 k_channels_version = 3;
+// 4 (W91): steps on step-pool reaches alone, cascade clusters, knickpoints, the line in its trough.
+inline constexpr u32 k_channels_version = 4;
 
 // A point of a channel's line, downstream order: where it is (y the ground under it, metres), its
 // bankfull width and depth, the bed's fall per metre there, and the contributing area.
@@ -93,6 +94,17 @@ struct ChannelLink {
   // The steps' crests (indices into `line`) and their heights: where the boulders stand.
   Vector<u32> step_at;
   Vector<f32> step_height;
+  // **W91** (channels.md, "Reaches"): a cascade's boulder clusters (indices into `line`) and their
+  // clasts' size, metres; 1 at each point of a knickpoint, where the cut's bed follows the ground
+  // and the water falls; the knickpoints; the stretches still at 45 degrees or steeper away from a
+  // knickpoint after the chute's limit; the points of `line` the trough test drew back.
+  Vector<u32> cluster_at;
+  Vector<f32> cluster_size;
+  Vector<u8> knick;
+  u32 knickpoints = 0;
+  f64 lip_convexity = 0;  // the knickpoints' second differences at their lips, summed
+  u32 steep_left = 0;
+  u32 trough_pulled = 0;
   // The points the water and the pieces run to: `line.size()`, less for a tributary whose last
   // points lie within the trunk's banks.
   u32 keep = 0;
@@ -163,9 +175,16 @@ ChannelReach reach_of(const ChannelLayer& layer, f64 slope, bool colluvial);
 // water's surface at `stage` of the bankfull depth over the bed, `depth_m` that water's depth, the
 // bed below the surface by it — as a JSON array. `cut` (W89): the bed is the cut's
 // (`terrain_cuts_json`) and the stage a share of its thalweg depth, so the surface lies inside the
-// banks the cut makes; without it the surface stands on the ground as W86 laid it.
+// banks the cut makes; without it the surface stands on the ground as W86 laid it. `ground`
+// (nullable; W91, channels.md "Invariants"): the ribbon is fitted to it — an edge over lower
+// ground is drawn in to where the ground meets the surface, the point moved and its width
+// narrowed to the two edges, or where the bed itself stands over the downhill ground the surface
+// lowered under it — and each block carries `fit`, one code a point (0 as planned, 1 narrowed, 2
+// lowered); `water` (nullable) the bodies whose points are left as they are.
 JsonValue water_channels_json(const ChannelLayer& layer, const ChannelNetwork& network,
-                              f64 min_area_m2, f32 stage, bool cut = false);
+                              f64 min_area_m2, f32 stage, bool cut = false,
+                              const scene_gen::Ground* ground = nullptr,
+                              const scene_gen::Exclusion* water = nullptr);
 
 // **The cuts** (`engine.scene.TerrainCut`, the `tiles` block's `cuts`; channels.md, "The cut";
 // W89): one object per link of the network (every link, the rills' too), in link order, each
@@ -174,6 +193,40 @@ JsonValue water_channels_json(const ChannelLayer& layer, const ChannelNetwork& n
 // section's thalweg (`bank_slope`'s trapezoid of the hydraulic geometry's area), the bed held
 // down the line, never more than two thalwegs under the ground at it — as a JSON array.
 JsonValue terrain_cuts_json(const ChannelLayer& layer, const ChannelNetwork& network);
+
+// **What the water's description draws, measured** (W91; channels.md, "Against the proof of
+// concept"): over `WaterChannel` blocks as `water_channels_json` writes them, against the ground
+// (the ground before any cut: a cut only lowers it, so a ribbon edge over it is over the cut ground
+// too). A stretch is a fall as the water draws one (water.md, "Channels": its surface drops at
+// least its horizontal run, 45 degrees); a fall is a run of such stretches. A ribbon edge is a
+// point's surface carried `k_ribbon_half_widths` of its width across the line each way, across the
+// mean of its two stretches' headings as the water's mesher lays a section; a point under a water
+// body (`water`, nullable) is left out, since the body stands over it.
+inline constexpr f64 k_ribbon_half_widths = .75;  // half the width and the water's 0.25 past it
+struct WaterStats {
+  u64 points = 0;
+  u64 stretches = 0;
+  u64 stretches_by_reach[7] = {};
+  u64 fall_stretches = 0;
+  u64 fall_stretches_by_reach[7] = {};  // by the reach of the stretch's upstream point
+  u64 falls = 0;                        // runs of fall stretches
+  f64 highest_fall_m = 0;               // the largest single stretch's drop
+  u64 edges = 0;                        // ribbon edges measured (two a dry point)
+  u64 edges_above_005 = 0;              // standing more than 5 cm over the ground beside them
+  u64 edges_above_03 = 0;               // more than 0.3 m
+  f64 edge_max_m = 0;                   // the most, and where
+  WorldPos edge_max_at{};
+  std::string edge_max_block;
+  // Within `border_m` of the region's edge, where the routing's outlet is the region's border and
+  // a line may run along it: counted apart, with the blocks they belong to.
+  u64 border_edges_above_005 = 0;
+  f64 border_edge_max_m = 0;
+  Vector<std::string> border_blocks;
+};
+// `region` (nullable): min x, min z, max x, max z of the layer's region.
+WaterStats measure_water(const JsonValue& blocks, const scene_gen::Ground& ground,
+                         const scene_gen::Exclusion* water = nullptr,
+                         const f64* region = nullptr, f64 border_m = 0);
 
 // One placed piece (a stretch of a link up to `piece_m` long, one part of it): where its frame
 // stands (x and z whole millimetres, y the ground there), its world tile, its recipe and a stable
