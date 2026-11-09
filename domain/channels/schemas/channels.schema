@@ -61,7 +61,10 @@ struct ChannelSurface @version(1) {
 /// docs/experiments/channels.md. Version 2 (W89): the ground is cut (`bank_slope`; the terrain's
 /// `cuts`, written by `engine-content channels`), the bed and bars lie in the cut, and no bank
 /// piece is placed: the banks are the cut's faces.
-struct ChannelLayer @version(3) {
+/// Version 4 (W91): steps on step-pool reaches alone with risers at `riser_angle_deg`, boulder
+/// clusters on cascades, knickpoints on the ground's profile, the chute's steepest fall, and every
+/// point of the line held in its trough.
+struct ChannelLayer @version(4) {
   name: string
   seed: u64 = 1
   /// The region drained, world metres, x and z, each a whole number of spacings.
@@ -144,9 +147,28 @@ struct ChannelLayer @version(3) {
   /// A step's height over its spacing, divided by the slope (Abrahams, Li & Atkinson 1995: 1 to 2,
   /// the steps of maximum flow resistance near 1.5): 1 to 2.
   step_height_ratio: f32 = 1.5 @since(3)
-  /// A step at least this high drops in one stretch of the line, which the water draws as a fall
-  /// (water.md, "Channels"): 0.2 to 10 m.
+  /// A knickpoint (W91; channels.md, "Reaches") is a fall only where the ground drops at least this
+  /// over it, and the chute between knickpoints spreads a smaller drop by cutting up to half this
+  /// deeper above it: 0.2 to 10 m. (W90 used it for a step dropped in one stretch; since W91 no
+  /// step does.)
   fall_min_m: f32 = 1.0 @since(3) @unit(m)
+  /// **A step's riser** (W91) stands at this angle from the horizontal, degrees: a boulder step's
+  /// face at the angle of repose of its clasts, 35 to 40 degrees for coarse angular debris (the
+  /// grounding page). 20 to 44, below the 45 degrees at which the water leaves its bed and falls.
+  riser_angle_deg: f32 = 38 @since(4)
+  /// **A cascade's boulders** (W91): clusters at an exponential spacing of this mean, in bankfull
+  /// widths, at least half a width (Montgomery & Buffington's cascade has no regular sequence):
+  /// 0.5 to 10.
+  cascade_boulder_widths: f32 = 1.5 @since(4)
+  /// **Knickpoints** (W91; channels.md, "Reaches"): the window the ground's fall is read over, in
+  /// bankfull widths (1 to 20) and at least `knick_window_min_m` (0.5 to 50 m): a knickpoint is a
+  /// run of points where the ground below each falls at least 1 per metre (45 degrees) over the
+  /// window, dropping at least `fall_min_m`.
+  knick_window_widths: f32 = 3 @since(4)
+  knick_window_min_m: f32 = 2 @since(4) @unit(m)
+  /// **The chute** (W91): away from a knickpoint the cut's bed falls no steeper than this per metre
+  /// (0.2 to 1; 0.9 is 42 degrees), so the water draws no fall where the ground has none.
+  chute_gradient_max: f32 = 0.9 @since(4)
   /// **Mouths** (W90): a link that reaches a water body ends at its shoreline, its cut opening over
   /// the last `fan_widths` bankfull widths (1 to 20) into a fan whose width grows by `fan_spread`
   /// of itself (0 to 4) at the shore, its bed grading to the body's level.

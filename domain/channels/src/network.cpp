@@ -18,6 +18,9 @@ using namespace detail;
 constexpr i32 k_dx[8] = {1, 1, 0, -1, -1, -1, 0, 1};
 constexpr i32 k_dz[8] = {0, 1, 1, 1, 0, -1, -1, -1};
 constexpr f64 k_sqrt2 = 1.4142135623730951;
+// How far, in depths, a point of the line may stand over the trough it runs in (the meander's test,
+// W86, and every point's, W91): half the depth, the water's own stage.
+constexpr f64 k_trough_rise = .5;
 
 struct Node {
   i64 h;
@@ -87,6 +90,7 @@ void build_line(const ChannelLayer& p, const ChannelNetwork& n, const scene_gen:
   const u32 steps = std::max<u32>(1, static_cast<u32>(std::ceil(length / wide(p.step_m))));
   const u32 m = steps + 1;
   Vector<f64> px(m), pz(m), pa(m), ps(m);
+  Vector<u32> segs(m, 0);
   u32 seg = 0;
   for (u32 i = 0; i < m; ++i) {
     const f64 at = length * static_cast<f64>(i) / static_cast<f64>(steps);
@@ -98,6 +102,7 @@ void build_line(const ChannelLayer& p, const ChannelNetwork& n, const scene_gen:
     pz[i] = qz[seg] + t * (qz[seg + 1] - qz[seg]);
     pa[i] = area[seg] + t * (area[seg + 1] - area[seg]);
     ps[i] = at;
+    segs[i] = seg;
   }
   px[0] = qx[0];
   pz[0] = qz[0];
@@ -149,7 +154,7 @@ void build_line(const ChannelLayer& p, const ChannelNetwork& n, const scene_gen:
       const f64 g0 = ground_at(ground, px[i], pz[i]);
       for (u32 tries = 0; tries < 4 && o != 0; ++tries) {
         const f64 g = ground_at(ground, px[i] - tz * o, pz[i] + tx * o);
-        if (g - g0 <= .5 * di) break;
+        if (g - g0 <= k_trough_rise * di) break;
         o = tries == 3 ? 0.0 : o * .5;
       }
       offset[i] = o;
@@ -172,6 +177,66 @@ void build_line(const ChannelLayer& p, const ChannelNetwork& n, const scene_gen:
     if (tl <= 0) continue;
     fx[i] = px[i] - tz / tl * offset[i];
     fz[i] = pz[i] + tx / tl * offset[i];
+  }
+  // **The line held in the trough** (W91; channels.md, "The planform"): the meander's own test
+  // above sees the meander's offset alone, and the low-pass can carry a line out of the trough by
+  // itself (it cuts a bend's corner across the valley's side). So every point of the final line is
+  // tested against the trough the lattice's cells run down: the ground at the point against the
+  // ground at the nearest point of the cells' own polyline, within the low-pass's reach of the
+  // point's segment. A point standing more than `k_trough_rise` of the depth over it is drawn back
+  // toward it, halving its offset from it up to three times and then onto it. The shares are eroded
+  // over three points each way and then smoothed by three binomial passes, which leaves every point
+  // drawn back at least as far as its own test asked (each smoothed share is a mean of eroded
+  // shares whose windows all hold the point's own).
+  {
+    Vector<f64> keep(m, 1.0), rx(fx), rz(fz);
+    for (u32 i = 1; i + 1 < m; ++i) {
+      const u32 c = segs[i];
+      const f64 sigma = std::max(wide(p.smooth_min_m), wide(p.smooth_widths) * w[c]);
+      const u32 reach = static_cast<u32>(std::ceil(3 * sigma / spacing)) + 2;
+      const u32 a = c > reach ? c - reach : 0, b = std::min(count - 2, c + reach);
+      f64 best = std::numeric_limits<f64>::infinity();
+      for (u32 k = a; k <= b; ++k) {
+        const f64 ex = x[k + 1] - x[k], ez = z[k + 1] - z[k], l2 = ex * ex + ez * ez;
+        const f64 t =
+            l2 > 0 ? std::clamp(((fx[i] - x[k]) * ex + (fz[i] - z[k]) * ez) / l2, 0.0, 1.0) : 0.0;
+        const f64 qx0 = x[k] + t * ex, qz0 = z[k] + t * ez;
+        const f64 d2 = (fx[i] - qx0) * (fx[i] - qx0) + (fz[i] - qz0) * (fz[i] - qz0);
+        if (d2 < best) {
+          best = d2;
+          rx[i] = qx0;
+          rz[i] = qz0;
+        }
+      }
+      const f64 di = hydraulic(wide(p.depth_at_km2_m), wide(p.depth_exponent), pa[i]);
+      const f64 floor = ground_at(ground, rx[i], rz[i]);
+      f64 k = 1;
+      for (u32 tries = 0; tries < 4 && k > 0; ++tries) {
+        const f64 g = ground_at(ground, rx[i] + k * (fx[i] - rx[i]), rz[i] + k * (fz[i] - rz[i]));
+        if (g - floor <= k_trough_rise * di) break;
+        k = tries == 3 ? 0.0 : k * .5;
+      }
+      keep[i] = k;
+    }
+    Vector<f64> share(m, 1.0);
+    for (u32 i = 0; i < m; ++i) {
+      const u32 a = i > 3 ? i - 3 : 0, b = std::min(m - 1, i + 3);
+      for (u32 j = a; j <= b; ++j)
+        share[i] = std::min(share[i], keep[j]);
+    }
+    for (u32 pass = 0; pass < 3; ++pass) {
+      Vector<f64> next = share;
+      for (u32 i = 1; i + 1 < m; ++i)
+        next[i] = .25 * share[i - 1] + .5 * share[i] + .25 * share[i + 1];
+      share = std::move(next);
+    }
+    link.trough_pulled = 0;
+    for (u32 i = 1; i + 1 < m; ++i) {
+      if (share[i] >= 1) continue;
+      ++link.trough_pulled;
+      fx[i] = rx[i] + share[i] * (fx[i] - rx[i]);
+      fz[i] = rz[i] + share[i] * (fz[i] - rz[i]);
+    }
   }
   link.line.clear();
   link.length_m = 0;
@@ -317,18 +382,77 @@ void apply_water(ChannelNetwork& n, const scene_gen::Ground& ground,
     n.links.push_back(std::move(l));
 }
 
-// **Reaches and steps** (W90; channels.md, "Reaches"): each point's reach from the ground's fall
-// per metre along the line over a window centred on it (Montgomery & Buffington 1997 class a reach
-// over many widths), and on step-pool, cascade and bedrock reaches a step every `L` metres —
-// `L = w clamp(step_pool_widths sqrt(slope_step_pool / S), 1, 4)`, the 1-4 widths of the step-pool
-// literature, closer on steeper beds — of height `H = step_height_ratio S L` (Abrahams et al.
-// 1995), at most 4 m. Below a crest the pool lowers the bed by H at once (in one stretch where H
-// reaches `fall_min_m`, else at a rise of at most a half over the run) and comes back up to the
-// line at the next crest, so the bed is never raised and its mean fall is the ground's.
+// **Reaches and steps** (W90, W91; channels.md, "Reaches"): each point's reach from the ground's
+// fall per metre along the line over a window centred on it (Montgomery & Buffington 1997 class a
+// reach over many widths), and **on step-pool reaches alone** (W91: Montgomery & Buffington's
+// cascades are disorganised and their bedrock and colluvial channels have no alluvial steps) a step
+// every `L` metres — `L = w clamp(step_pool_widths sqrt(slope_step_pool / S), 1, 4)`, the 1-4
+// widths of the step-pool literature, closer on steeper beds — of height `H = step_height_ratio S
+// L` (Abrahams et al. 1995), at most 4 m. Below a crest the pool lowers the bed by H over a riser
+// that stands at `riser_angle_deg` (a boulder step at its clasts' angle of repose, never a wall)
+// and comes back up to the line at the next crest, so the bed is never raised and its mean fall is
+// the ground's. **Cascades** carry boulder clusters instead, at irregular places down the reach.
+// **Knickpoints** (W91): where the ground's long profile steepens to a fall, on any reach (the
+// cut's bed follows the ground there, and the water falls).
 constexpr f64 k_step_max_m = 4.0;
 constexpr f64 k_step_min_m = .05;
-bool stepped(ChannelReach r) {
-  return r == ChannelReach::StepPool || r == ChannelReach::Cascade || r == ChannelReach::Bedrock;
+// The fall per metre at which the water leaves its bed (water::k_channel_fall_gradient, 45 deg).
+constexpr f64 k_fall_gradient = 1.0;
+bool stepped(ChannelReach r) { return r == ChannelReach::StepPool; }
+// The ground under the line at a distance along it, linearly between its points.
+f64 profile_at(const ChannelLink& link, const Vector<f64>& s, f64 at) {
+  const u32 m = link.line.size();
+  if (at <= s[0]) return link.line[0].at.y;
+  if (at >= s[m - 1]) return link.line[m - 1].at.y;
+  const u32 b = static_cast<u32>(std::upper_bound(s.begin(), s.end(), at) - s.begin());
+  const u32 a = b - 1;
+  const f64 span = s[b] - s[a];
+  const f64 t = span > 0 ? (at - s[a]) / span : 0.0;
+  return link.line[a].at.y + t * (link.line[b].at.y - link.line[a].at.y);
+}
+// **Knickpoints** (W91; channels.md, "Reaches"; the grounding page's "Knickpoints"): a knickpoint
+// is a convexity of the long profile, a stretch where the channel steepens abruptly (Whipple 2004;
+// knickzones found on a DEM as gradients over a fixed window that exceed the reach's, Hayakawa &
+// Oguchi 2006). Over a window of `knick_window_widths` widths (at least `knick_window_min_m`) the
+// ground's fall per metre downstream of each point, Sd, and upstream of it, Su: a knickpoint is a
+// run of points whose Sd is at least 1 (the ground falls at 45 degrees or more over the window, so
+// the water falls) and that drops at least `fall_min_m` from its first point to a window past its
+// last. Its first point is its lip, where the profile turns convex: there Su < 1 <= Sd, so the
+// window's second difference Sd - Su is positive, and the summary reports it (`lip_convexity`);
+// a run that begins at a channel head is a face the head lies on. Marked are its points and those
+// within that window below it. (A gate on the second difference was tried and refused: a face
+// steepening by degrees then had no lip, and the chute's limit cut the whole face deeper.)
+void knickpoints(const ChannelLayer& p, ChannelLink& link, const Vector<f64>& s) {
+  const u32 m = link.line.size();
+  link.knick.assign(m, 0);
+  Vector<f64> down(m, 0.0), up(m, 0.0), window(m, 0.0);
+  for (u32 i = 0; i < m; ++i) {
+    const f64 W = std::max(wide(p.knick_window_min_m),
+                           wide(p.knick_window_widths) * wide(link.line[i].width_m));
+    window[i] = W;
+    const f64 g = link.line[i].at.y;
+    const f64 ahead = std::min(W, s[m - 1] - s[i]), behind = std::min(W, s[i]);
+    down[i] = ahead > 0 ? (g - profile_at(link, s, s[i] + ahead)) / ahead : 0.0;
+    up[i] = behind > 0 ? (profile_at(link, s, s[i] - behind) - g) / behind : down[i];
+  }
+  for (u32 i = 0; i < m;) {
+    if (down[i] < k_fall_gradient) {
+      ++i;
+      continue;
+    }
+    u32 j = i;
+    while (j + 1 < m && down[j + 1] >= k_fall_gradient)
+      ++j;
+    const f64 end = std::min(s[m - 1], s[j] + window[j]);
+    const f64 drop = link.line[i].at.y - profile_at(link, s, end);
+    if (drop >= wide(p.fall_min_m)) {
+      ++link.knickpoints;
+      link.lip_convexity += down[i] - up[i];
+      for (u32 q = i; q < m && s[q] <= end; ++q)
+        link.knick[q] = 1;
+    }
+    i = j + 1;
+  }
 }
 void classify(const ChannelLayer& p, ChannelLink& link) {
   const u32 m = link.line.size();
@@ -336,6 +460,11 @@ void classify(const ChannelLayer& p, ChannelLink& link) {
   link.step_depth.assign(m, 0.0f);
   link.step_at.clear();
   link.step_height.clear();
+  link.cluster_at.clear();
+  link.cluster_size.clear();
+  link.knick.assign(m, 0);
+  link.knickpoints = 0;
+  link.lip_convexity = 0;
   link.keep = m;
   if (m < 2) return;
   const Vector<f64> s = lengths_of(link.line);
@@ -365,7 +494,11 @@ void classify(const ChannelLayer& p, ChannelLink& link) {
     if (run < .5 * L) continue;
     const f64 H = std::min(k_step_max_m, wide(p.step_height_ratio) * S * run);
     if (H < k_step_min_m) continue;
-    const f64 ramp = H >= wide(p.fall_min_m) ? step : std::max(step, std::min(.5 * run, 2 * H));
+    // The riser: H over the run its angle gives (W91; a boulder step's face at the angle of repose
+    // of its clasts), at least a stretch of the line, at most half the run to the next crest.
+    const f64 angle = wide(p.riser_angle_deg) * k_pi / 180.0;
+    const f64 riser = H * det::cos(angle) / det::sin(angle);
+    const f64 ramp = std::max(step, std::min(.5 * run, riser));
     for (u32 q = i + 1; q <= j; ++q) {
       const f64 u = (s[q] - s[i]) / run;
       const f64 e = H * std::min(1.0, (s[q] - s[i]) / ramp) * (1 - u);
@@ -374,6 +507,32 @@ void classify(const ChannelLayer& p, ChannelLink& link) {
     link.step_at.push_back(i);
     link.step_height.push_back(static_cast<f32>(round_to(H, 1e3)));
   }
+  // **Cascades** (W91): Montgomery & Buffington's cascade is disorganised, tumbling flow over and
+  // round individual boulders with no regular sequence, its clasts protruding through the flow. So
+  // no steps: boulder clusters at irregular places, their spacing drawn from an exponential of mean
+  // `cascade_boulder_widths` widths (a memoryless spacing has no rhythm), at least half a width,
+  // each cluster's clasts one to two bankfull depths across (at least 0.25 m, at most 1.5 m).
+  {
+    Rng rng(hash_combine(link.seed, 0xca5cull));
+    f64 at = -1;
+    for (u32 i = 0; i < m; ++i) {
+      if (link.reach[i] != static_cast<u8>(ChannelReach::Cascade)) {
+        at = -1;
+        continue;
+      }
+      const f64 w = wide(link.line[i].width_m);
+      const f64 gap = std::max(
+          .5 * w, -wide(p.cascade_boulder_widths) * w * det::log(std::max(1e-9, 1.0 - rng.unit())));
+      if (at < 0) at = s[i] + .5 * gap;
+      if (s[i] < at) continue;
+      const f64 depth = section_of(w, wide(link.line[i].depth_m), wide(p.bank_slope)).thalweg;
+      link.cluster_at.push_back(i);
+      link.cluster_size.push_back(
+          static_cast<f32>(round_to(std::clamp(depth * (1 + rng.unit()), .25, 1.5), 1e3)));
+      at = s[i] + gap;
+    }
+  }
+  knickpoints(p, link, s);
 }
 
 // The cut's bed down a link (channels.md, "The cut", and W90's steps, fan and grade): the top of
@@ -385,7 +544,9 @@ constexpr f64 k_cut_depth_thalwegs = 2.0;
 void cut_bed(const ChannelLayer& p, ChannelLink& link) {
   const u32 m = link.line.size();
   link.bed.assign(m, 0.0);
+  link.steep_left = 0;
   f64 bed = std::numeric_limits<f64>::infinity();
+  Vector<f64> floor(m, 0.0);
   for (u32 i = 0; i < m; ++i) {
     const ChannelPoint& pt = link.line[i];
     const f64 top = round_to(pt.at.y, 1e3);
@@ -394,6 +555,31 @@ void cut_bed(const ChannelLayer& p, ChannelLink& link) {
     bed = std::min(bed, round_to(top - thalweg, 1e3));
     const f64 b = std::max(bed, round_to(top - k_cut_depth_thalwegs * thalweg, 1e3));
     link.bed[i] = round_to(b - wide(link.step_depth[i]), 1e3);
+    floor[i] = round_to(
+        top - k_cut_depth_thalwegs * thalweg - .5 * wide(p.fall_min_m) - wide(link.step_depth[i]),
+        1e3);
+  }
+  // **The chute** (W91; channels.md, "Reaches"): away from a knickpoint no stretch of the bed falls
+  // at 45 degrees or more, so the water draws no fall where the ground has none to give it. Taken
+  // upstream from the mouth: a stretch that would fall that steeply lowers the bed above it to
+  // `chute_gradient_max` per metre, never raising the one below, by no more than half `fall_min_m`
+  // past the cut's two thalwegs, and the lowering carries on up while it leaves the next stretch
+  // that steep (a drop under `fall_min_m` that is no knickpoint is spread over the chute above
+  // it). A stretch still that steep after that is counted (`steep_left`).
+  if (m >= 2) {
+    const Vector<f64> s = lengths_of(link.line);
+    const f64 g = wide(p.chute_gradient_max);
+    for (u32 i = m - 1; i-- > 0;) {
+      if (link.knick[i] && link.knick[i + 1]) continue;
+      const f64 run = s[i + 1] - s[i];
+      if (link.bed[i] - link.bed[i + 1] < k_fall_gradient * run) continue;
+      const f64 most = round_to(link.bed[i + 1] + g * run, 1e3);
+      link.bed[i] = std::max(most, std::min(link.bed[i], floor[i]));
+    }
+    for (u32 i = 0; i + 1 < m; ++i)
+      if (!(link.knick[i] && link.knick[i + 1]) &&
+          link.bed[i] - link.bed[i + 1] >= k_fall_gradient * (s[i + 1] - s[i]))
+        ++link.steep_left;
   }
   if (!link.mouth || m < 2) return;
   const Vector<f64> s = lengths_of(link.line);
@@ -563,6 +749,11 @@ bool layer_in_range(const ChannelLayer& p, std::string& error) {
   if (!in(wide(p.meander_wavelength_variation), 0, .5) ||
       !in(wide(p.meander_amplitude_variation), 0, .8))
     return fail(error, "meander_wavelength_variation/meander_amplitude_variation");
+  if (!in(wide(p.riser_angle_deg), 20, 44)) return fail(error, "riser_angle_deg");
+  if (!in(wide(p.cascade_boulder_widths), .5, 10)) return fail(error, "cascade_boulder_widths");
+  if (!in(wide(p.knick_window_widths), 1, 20) || !in(wide(p.knick_window_min_m), .5, 50))
+    return fail(error, "knick_window_widths/knick_window_min_m");
+  if (!in(wide(p.chute_gradient_max), .2, 1)) return fail(error, "chute_gradient_max");
   if (!in(wide(p.step_m), .1, 4)) return fail(error, "step_m");
   if (!in(wide(p.piece_m), 4, 256) || p.piece_m < 4 * p.step_m) return fail(error, "piece_m");
   for (const ChannelSurface* s : {&p.bed, &p.bars, &p.banks})
@@ -736,8 +927,9 @@ Water water_of(const ChannelLayer& p, const ChannelLink& link, f32 stage, bool c
   const Vector<f64> s = lengths_of(link.line);
   f64 bed = link.line[0].at.y;
   f64 surface = std::numeric_limits<f64>::infinity();
-  // The surface at the fan's head, which the fan grades to the body's level.
-  f64 fan_head = std::numeric_limits<f64>::quiet_NaN();
+  // The surface at the fan's head, which the fan grades to the body's level, and the head's own
+  // share of the fan (the first fan point already lies partway along it).
+  f64 fan_head = std::numeric_limits<f64>::quiet_NaN(), fan_t0 = 0;
   for (u32 i = 0; i < m; ++i) {
     const ChannelPoint& pt = link.line[i];
     const f64 thalweg =
@@ -758,13 +950,21 @@ Water water_of(const ChannelLayer& p, const ChannelLink& link, f32 stage, bool c
       surface = std::min(surface, round_to(bed + water, 1e3));
     }
     // The fan (W90): from the fan's head the surface grades to the body's level at the shore, and
-    // never stands below it there (the body backs the water up).
+    // never stands below it there (the body backs the water up). The grade starts at the first fan
+    // point itself (W91 continuation: anchored there with that point's own share, the head
+    // dropped by the share at once — 0.43 m on v36's link 690, a 36-degree chute into the sea with
+    // 0.19 m of water — and ran under the cut's bed for five points), and it never runs under the
+    // bed: a centimetre of water at least, so every depth the description writes is positive.
     const f64 t = fan_share(p, link, s, i);
     if (t > 0) {
-      if (std::isnan(fan_head)) fan_head = surface;
-      surface =
-          std::max(round_to(link.mouth_level, 1e3),
-                   std::min(surface, round_to(fan_head + t * (link.mouth_level - fan_head), 1e3)));
+      if (std::isnan(fan_head)) {
+        fan_head = surface;
+        fan_t0 = t;
+      }
+      const f64 u = fan_t0 < 1 ? (t - fan_t0) / (1 - fan_t0) : 1.0;
+      const f64 graded = std::max(round_to(fan_head + u * (link.mouth_level - fan_head), 1e3),
+                                  round_to(bed + k_min_water_m, 1e3));
+      surface = std::max(round_to(link.mouth_level, 1e3), std::min(surface, graded));
     }
     // Above the fan too, the body backs the water up: a link that ends in it never stands below its
     // level (the surface still never rises downstream, since it was falling to there).
@@ -775,10 +975,100 @@ Water water_of(const ChannelLayer& p, const ChannelLink& link, f32 stage, bool c
   }
   return w;
 }
+
+// **The ribbon on the ground** (W91; channels.md, "Invariants"): water never stands over the ground
+// at its own edge. At each point the ribbon's two edges — `k_ribbon_half_widths` of the width
+// across the line each way, across the mean of its two stretches' headings, as the water's mesher
+// lays a section — are tested against the ground (the ground before any cut: a cut only lowers
+// it, and the cut's own section rises past the bank's top, so it is the open ground beside the
+// channel that is tested). An edge whose ground is below the surface is drawn in to where the
+// ground meets the surface (12 halvings), and the point and its width are moved and narrowed to
+// the two edges found: the ribbon narrows to the water that can stand there. Where the two leave
+// less than `k_min_ribbon_widths` of the width (at least `k_min_ribbon_m`) the bed itself stands
+// over the downhill ground: the ribbon keeps that width about the line, and its surface is lowered
+// to the lower edge's ground less `k_edge_margin_m` (`fit` 2). A point under a water body is left
+// as it is (the body stands over it). Moving points turns the headings a little, so a second pass
+// over the fitted line's own headings narrows (about the point, never moving it) or lowers
+// whatever still stands over the ground: the line the water's mesher lays is the one tested.
+constexpr f64 k_min_ribbon_widths = .25;
+constexpr f64 k_min_ribbon_m = .2;
+constexpr f64 k_edge_margin_m = .02;
+// How far an edge may stand over the ground before it is drawn in: three centimetres, under the
+// lattice's height step on a slope and under what the shore's fade shows.
+constexpr f64 k_edge_tolerance_m = .03;
+struct Fitted {
+  Vector<f64> x, z, width, surface;
+  Vector<u8> fit;
+};
+void fit_ribbon(u32 m, const scene_gen::Ground& ground, const scene_gen::Exclusion* water,
+                bool move, Fitted& f) {
+  auto g_at = [&](f64 x, f64 z) { return ground_at(ground, x, z); };
+  const Vector<f64> px = f.x, pz = f.z;  // the headings are the line's as the pass found it
+  for (u32 i = 0; i < m; ++i) {
+    const f64 x = f.x[i], z = f.z[i], surface = f.surface[i];
+    const f64 wet = surface - k_edge_tolerance_m;  // the ground an edge may stand on
+    if (water != nullptr && water->body_count() > 0 &&
+        water->excluded_mm(ground, scene_gen::nearest_mm(x), scene_gen::nearest_mm(z),
+                           scene_gen::k_exclude_water))
+      continue;
+    f64 hx = 0, hz = 0;
+    for (const u32 a : {i > 0 ? i - 1 : 0u, i}) {
+      const u32 b = std::min(a + 1, m - 1);
+      const f64 dx = px[b] - px[a], dz = pz[b] - pz[a];
+      const f64 l = std::sqrt(dx * dx + dz * dz);
+      if (a != b && l > 0) {
+        hx += dx / l;
+        hz += dz / l;
+      }
+    }
+    const f64 hl = std::sqrt(hx * hx + hz * hz);
+    if (!(hl > 0)) continue;
+    const f64 ax = -hz / hl, az = hx / hl, e = k_ribbon_half_widths * f.width[i];
+    f64 reach[2] = {e, e};
+    for (u32 side = 0; side < 2; ++side) {
+      const f64 sgn = side == 0 ? 1.0 : -1.0;
+      if (g_at(x + sgn * ax * e, z + sgn * az * e) >= wet) continue;
+      f64 lo = 0, hi = e;
+      if (g_at(x, z) < wet) hi = 0;
+      for (u32 k = 0; k < 12 && hi > 0; ++k) {
+        const f64 mid = .5 * (lo + hi);
+        if (g_at(x + sgn * ax * mid, z + sgn * az * mid) >= wet)
+          lo = mid;
+        else
+          hi = mid;
+      }
+      reach[side] = lo;
+    }
+    if (reach[0] >= e && reach[1] >= e) continue;
+    const f64 half = move ? .5 * (reach[0] + reach[1]) : std::min(reach[0], reach[1]);
+    const f64 least =
+        k_ribbon_half_widths * std::max(k_min_ribbon_m, k_min_ribbon_widths * f.width[i]);
+    if (half >= least) {
+      const f64 shift = move ? .5 * (reach[0] - reach[1]) : 0.0;
+      f.x[i] = round_to(x + ax * shift, 1e3);
+      f.z[i] = round_to(z + az * shift, 1e3);
+      // Rounded down to the millimetre, so the rounding never carries an edge back out.
+      f.width[i] = std::floor(half / k_ribbon_half_widths * 1e3) / 1e3;
+      f.fit[i] = std::max<u8>(f.fit[i], 1);
+    } else {
+      const f64 lower =
+          std::min(g_at(x + ax * least, z + az * least), g_at(x - ax * least, z - az * least));
+      f.width[i] = round_to(least / k_ribbon_half_widths, 1e3);
+      f.surface[i] = round_to(std::min(surface, lower - k_edge_margin_m), 1e3);
+      f.fit[i] = 2;
+    }
+  }
+}
+// A ground standing flat at the height its context holds: the covered-ribbon test asks the
+// exclusion's water kind whether a body's level stands over a point's surface.
+f64 flat_height(const void* context, i64, i64) noexcept {
+  return *static_cast<const f64*>(context);
+}
 }  // namespace
 
 JsonValue water_channels_json(const ChannelLayer& p, const ChannelNetwork& n, f64 min_area_m2,
-                              f32 stage, bool cut) {
+                              f32 stage, bool cut, const scene_gen::Ground* ground,
+                              const scene_gen::Exclusion* water, RibbonTrim* trim) {
   Vector<Water> waters;
   for (const ChannelLink& link : n.links)
     waters.push_back(water_of(p, link, stage, cut));
@@ -821,23 +1111,75 @@ JsonValue water_channels_json(const ChannelLayer& p, const ChannelNetwork& n, f6
   JsonValue list = JsonValue::array();
   for (u32 k = 0; k < n.links.size(); ++k) {
     const ChannelLink& link = n.links[k];
-    const u32 m = std::min<u32>(link.keep, link.line.size());
-    if (m < 2 || wide(link.line[m - 1].area_m2) < min_area_m2) continue;
+    const u32 kept = std::min<u32>(link.keep, link.line.size());
+    if (kept < 2 || wide(link.line[kept - 1].area_m2) < min_area_m2) continue;
     const Water& w = waters[k];
+    // **Covered by a body** (W91 continuation; channels.md, "Mouths"): a point inside a body's
+    // outline whose surface lies under the body's level is under the body's own water, which
+    // covers it — drawn, the ribbon is a second surface a few centimetres under the body's, and
+    // the body's refraction meets it as a solid floor (v36's link 779, 0.149 m under the east lake
+    // inside its outline: item 25's flat shapes). Such points are trimmed off the ribbon's two
+    // ends (the body test is the exclusion's water kind against a ground standing at the point's
+    // surface, so an open body's sea covers whatever lies under its level).
+    u32 a = 0, b = kept;
+    if (water != nullptr && water->body_count() > 0) {
+      auto covered = [&](u32 i) {
+        const f64 height = w.surface[i] + 1e-3;
+        scene_gen::Ground flat;
+        flat.context = &height;
+        flat.surface_fn = &flat_height;
+        return water->excluded_mm(flat, scene_gen::nearest_mm(link.line[i].at.x),
+                                  scene_gen::nearest_mm(link.line[i].at.z),
+                                  scene_gen::k_exclude_water);
+      };
+      while (a < b && covered(a))
+        ++a;
+      while (b > a && covered(b - 1))
+        --b;
+      if (trim != nullptr && (a > 0 || b < kept)) {
+        ++trim->blocks;
+        trim->points += a + (kept - b);
+        if (link.mouth && b < kept) ++trim->mouth_fans;
+        for (u32 i = 0; i < kept; ++i)
+          if (i < a || i >= b)
+            trim->at.push_back(WorldPos{link.line[i].at.x, w.surface[i], link.line[i].at.z});
+        if (b - a < 2) ++trim->dropped;
+      }
+    }
+    if (b - a < 2) continue;
+    const u32 m = b - a;
+    Fitted f;
+    for (u32 j = 0; j < m; ++j) {
+      const u32 i = a + j;
+      f.x.push_back(round_to(link.line[i].at.x, 1e3));
+      f.z.push_back(round_to(link.line[i].at.z, 1e3));
+      f.width.push_back(round_to(wide(link.line[i].width_m), 1e3));
+      f.surface.push_back(w.surface[i]);
+      f.fit.push_back(0);
+    }
+    if (ground != nullptr) {
+      fit_ribbon(m, *ground, water, true, f);
+      fit_ribbon(m, *ground, water, false, f);
+    }
     JsonValue o = JsonValue::object();
     o["name"] = JsonValue(p.name + " link " + std::to_string(k));
     JsonValue points = JsonValue::array(), widths = JsonValue::array(), depths = JsonValue::array(),
-              slopes = JsonValue::array(), reach = JsonValue::array();
-    for (u32 i = 0; i < m; ++i) {
+              slopes = JsonValue::array(), reach = JsonValue::array(), fits = JsonValue::array();
+    for (u32 j = 0; j < m; ++j) {
+      const u32 i = a + j;
       const ChannelPoint& pt = link.line[i];
-      const f64 depth = std::max(0.0, w.surface[i] - w.bed[i]);
+      // A point whose surface the fit lowered under its bed keeps a centimetre of water: the
+      // description's depth is positive, and the water lies under the ground there.
+      const f64 depth = f.fit[j] == 2 ? std::max(k_min_water_m, f.surface[j] - w.bed[i])
+                                      : std::max(0.0, f.surface[j] - w.bed[i]);
       JsonValue at = JsonValue::array();
-      at.push_back(JsonValue(round_to(pt.at.x, 1e3)));
-      at.push_back(JsonValue(w.surface[i]));
-      at.push_back(JsonValue(round_to(pt.at.z, 1e3)));
+      at.push_back(JsonValue(f.x[j]));
+      at.push_back(JsonValue(f.surface[j]));
+      at.push_back(JsonValue(f.z[j]));
       points.push_back(std::move(at));
-      widths.push_back(JsonValue(round_to(wide(pt.width_m), 1e3)));
+      widths.push_back(JsonValue(f.width[j]));
       depths.push_back(JsonValue(round_to(depth, 1e3)));
+      fits.push_back(JsonValue(static_cast<u32>(f.fit[j])));
       slopes.push_back(JsonValue(round_to(wide(pt.slope), 1e5)));
       reach.push_back(JsonValue(static_cast<u32>(i < link.reach.size() ? link.reach[i] : 0)));
     }
@@ -847,6 +1189,7 @@ JsonValue water_channels_json(const ChannelLayer& p, const ChannelNetwork& n, f6
     o["slope"] = std::move(slopes);
     o["seed"] = JsonValue(link.seed);
     o["reach"] = std::move(reach);
+    if (ground != nullptr) o["fit"] = std::move(fits);
     list.push_back(std::move(o));
   }
   return list;

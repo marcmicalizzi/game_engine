@@ -302,20 +302,40 @@ bool place_pieces(const ChannelLayer& p, const ChannelNetwork& n, const scene_ge
           out.push_back(std::move(piece));
         }
       }
-      // The steps' boulders (W90): at each step-pool or cascade crest in this piece, a row of
-      // domes across the bed, each about the step's height across (the clasts that hold a step up
-      // are of its height: Chin 1999), a stated jitter of a fifth of that along and across, their
-      // tops 0.6 of their width over the ground at the lip and their bottoms buried a third.
+      // The steps' boulders (W90): at each step-pool crest in this piece, a row of domes across
+      // the bed, each about the step's height across (the clasts that hold a step up are of its
+      // height: Chin 1999), a stated jitter of a fifth of that along and across, their tops 0.6 of
+      // their width over the ground at the lip and their bottoms buried a third. A cascade's
+      // clusters (W91): one to three clasts of the cluster's size, anywhere across the bed and a
+      // size along it, so no two clusters line up.
       {
         PlacedPiece piece = base;
         piece.recipe.part = ChannelPart::Boulder;
         piece.recipe.uv_origin = {uv[0], uv[1]};
         piece.recipe.surface = boulder_look;
+        auto dome = [&](u32 i, f64 d, f64 lateral, f64 along) {
+          const f64 cx = f[i].x + f[i].nx * lateral + f[i].nz * along;
+          const f64 cz = f[i].z + f[i].nz * lateral - f[i].nx * along;
+          ChannelSlab slab;
+          slab.rows = 7;
+          slab.columns = 7;
+          for (u32 rr = 0; rr < 7; ++rr)
+            for (u32 cc = 0; cc < 7; ++cc) {
+              const f64 u = static_cast<f64>(rr) / 3.0 - 1, v = static_cast<f64>(cc) / 3.0 - 1;
+              const f64 x = cx + .5 * d * (f[i].nz * u + f[i].nx * v);
+              const f64 z = cz + .5 * d * (-f[i].nx * u + f[i].nz * v);
+              i64 xm = 0, zm = 0;
+              const f64 g = b.ground_local(x, z, xm, zm);
+              const f64 top = std::sqrt(std::max(0.0, 1 - .5 * (u * u + v * v)));
+              b.vertex(slab, x, z, g + k_lift_m + .6 * d * top, g - d / 3);
+            }
+          piece.recipe.slabs.push_back(std::move(slab));
+        };
+        const u32 last = r1 + (k + 1 == pieces ? 1u : 0u);
         for (u32 q = 0; q < link.step_at.size(); ++q) {
           const u32 i = link.step_at[q];
-          if (i < r0 || i >= r1 + (k + 1 == pieces ? 1u : 0u) || i >= m) continue;
-          const ChannelReach r = reach_at(i);
-          if (r != ChannelReach::StepPool && r != ChannelReach::Cascade) continue;
+          if (i < r0 || i >= last || i >= m) continue;
+          if (reach_at(i) != ChannelReach::StepPool) continue;
           const ChannelPoint& pt = link.line[i];
           const f64 bed_w = bed_width(p, pt);
           const f64 size = std::clamp(wide(link.step_height[q]), .25, 1.5);
@@ -326,22 +346,21 @@ bool place_pieces(const ChannelLayer& p, const ChannelNetwork& n, const scene_ge
             const f64 across = (static_cast<f64>(c) + .5) / static_cast<f64>(count) - .5;
             const f64 lateral = across * bed_w + .2 * size * (2 * draw.unit() - 1);
             const f64 along = .2 * size * (2 * draw.unit() - 1);
-            const f64 cx = f[i].x + f[i].nx * lateral + f[i].nz * along;
-            const f64 cz = f[i].z + f[i].nz * lateral - f[i].nx * along;
-            ChannelSlab slab;
-            slab.rows = 7;
-            slab.columns = 7;
-            for (u32 rr = 0; rr < 7; ++rr)
-              for (u32 cc = 0; cc < 7; ++cc) {
-                const f64 u = static_cast<f64>(rr) / 3.0 - 1, v = static_cast<f64>(cc) / 3.0 - 1;
-                const f64 x = cx + .5 * d * (f[i].nz * u + f[i].nx * v);
-                const f64 z = cz + .5 * d * (-f[i].nx * u + f[i].nz * v);
-                i64 xm = 0, zm = 0;
-                const f64 g = b.ground_local(x, z, xm, zm);
-                const f64 dome = std::sqrt(std::max(0.0, 1 - .5 * (u * u + v * v)));
-                b.vertex(slab, x, z, g + k_lift_m + .6 * d * dome, g - d / 3);
-              }
-            piece.recipe.slabs.push_back(std::move(slab));
+            dome(i, d, lateral, along);
+          }
+        }
+        for (u32 q = 0; q < link.cluster_at.size(); ++q) {
+          const u32 i = link.cluster_at[q];
+          if (i < r0 || i >= last || i >= m) continue;
+          const f64 bed_w = bed_width(p, link.line[i]);
+          const f64 size = wide(link.cluster_size[q]);
+          Rng draw(hash_combine(link.seed, 0xc1u + i));
+          const u32 count = 1 + static_cast<u32>(draw.unit() * 3.0);
+          for (u32 c = 0; c < count && piece.recipe.slabs.size() < k_max_slabs; ++c) {
+            const f64 d = size * (.7 + .6 * draw.unit());
+            const f64 lateral = (draw.unit() - .5) * std::max(0.0, bed_w - .5 * d);
+            const f64 along = size * (2 * draw.unit() - 1);
+            dome(i, d, lateral, along);
           }
         }
         if (!piece.recipe.slabs.empty()) {

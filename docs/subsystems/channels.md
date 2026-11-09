@@ -202,9 +202,20 @@ point samples and reads jagged, and the 1.5 m tributary fades to a line, as the 
 rings' sampling say it should. v35 itself was not re-cooked tonight (its set is 2.6 GB at 25 cm; see
 the roadmap row).
 
+**The cook of a cut set, measured** (W91 continuation, 2026-11-09; W89 and W90 recorded no cook of
+v35's or v36's cut set): v36 with W91's 739 cuts, cooked by `engine-view`'s first load (`msvc-release`,
+`ENGINE_PIPELINE_CACHE=0`, under the GPU lock, other agents building beside it) into an empty
+directory. Twice, the same key and the same bytes: the tile set's manifest appeared 44 s and 36 s
+after the process started, the masks' 242 s and 233 s, so the cook is about **four minutes** of
+the load, and the set is **3.14 GB** (2.73 GB of tiles, 396 MB of masks; v35's uncut set was 2.6 GB).
+The process's peak working set over the whole run — load, cook and two frames, so not the cook alone
+— was **18.7 GB** (17.4 GiB), read from the second run's last sample. The first run, which also drew
+the 16 poses, took 719 s; the second, two frames, 500 s.
+
 **Steep reaches** (the owner's item 10: 30–40° faces) get the same cut — a gully is still cut into
 its slope — and since W90 their pieces follow their reach ([Reaches](#reaches)): nothing laid on a
-colluvial or bedrock reach, boulder steps on a step-pool or cascade one.
+colluvial or bedrock reach, boulder steps on a step-pool reach and boulder clusters on a cascade
+(W91).
 
 ## Reaches
 
@@ -225,30 +236,65 @@ single step does not reclass a point — by the layer's bounds:
 | pool-riffle | to `slope_plane_bed` 0.015 | bed, bars |
 | plane-bed | to `slope_step_pool` 0.03 | bed (Montgomery & Buffington's plane bed has no bars) |
 | step-pool | to `slope_cascade` 0.065 | bed, steps with boulders |
-| cascade | to `slope_steep` 0.2 | bed, steps with boulders |
-| bedrock | above, on a link below a junction | nothing: the cut's faces; steps in the cut, and falls |
-| colluvial | above, on a link that begins at a head | nothing: the cut's faces |
+| cascade | to `slope_steep` 0.2 | bed, boulder clusters at irregular places (W91) |
+| bedrock | above, on a link below a junction | nothing: the cut's faces, a chute; falls at knickpoints alone (W91) |
+| colluvial | above, on a link that begins at a head | nothing: the cut's faces, a chute; falls at knickpoints alone (W91) |
 
 The bounds and their sources are on [the grounding page](../experiments/channels.md#reaches); the
 confinement of the valley (Montgomery & Buffington's second axis) is not read. Each `WaterChannel`
 point carries its reach's code in `reach` (`engine.channels.ChannelReach`: 0 dune-ripple to 6
 colluvial), for the flowing water to read; S98's regimes do not read it yet.
 
-**Steps.** On step-pool, cascade and bedrock reaches a step every `L = w clamp(step_pool_widths
-sqrt(slope_step_pool / S), 1, 4)` metres — the 1 to 4 widths the step-pool literature reports, 2.5 at
-the step-pool's gentlest and one width from S = 0.2 up — of height `H = step_height_ratio S L` (1.5;
-Abrahams, Li & Atkinson 1995: steps stand between 1 and 2 times the slope over their spacing), at most
-4 m. Below a crest the pool lowers the cut's bed by H and the bed comes back up to the cut's line at
-the next crest, so the bed is never raised and its mean fall is the ground's; the drop is one stretch
-of the line where H is at least `fall_min_m` (1 m), and a rise of at most a half over the run below
-that. The steps are in the cut (`depth_m` per point), so the ground holds them; the water in the cut
-follows its bed, pooled behind each crest, and where a step drops a metre or more in one 0.5 m stretch
-the line falls steeper than 45 degrees, which the flowing water draws as a fall (water.md, "Channels").
-**Boulders** (`ChannelPart::Boulder`, a dome slab 7 by 7 points): at each step-pool and cascade crest a
-row across the bed, as many as the bed's width holds at the step's height (0.25–1.5 m, ±20 %), each
-jittered a fifth of its size along and across, standing 0.6 of its width over the ground at the lip and
-buried a third; they sample `rock/boulder` or `rock/granite`. They are the channel's own domes, not
-the scatter's rock kinds, which a capability may not reach (ADR-0046).
+**Steps, on step-pool reaches alone** (W91; the owner's v36 walk, item 20: W90 laid them on cascade
+and bedrock reaches too, and on v36's mountainside, bedrock at a median slope of 0.40, they made a
+flight of square pools and 4 m block risers a width apart, 1,874 stretches the water drew as falls
+where v35 drew 81 points). Montgomery & Buffington's cascade is disorganised and their bedrock and
+colluvial channels have no alluvial steps, and the step relations below were measured at slopes of
+about 0.03 to 0.2 ([the grounding](../experiments/channels.md#w91-re-grounded)). On a step-pool reach
+a step every `L = w clamp(step_pool_widths sqrt(slope_step_pool / S), 1, 4)` metres — the 1 to 4
+widths the step-pool literature reports, 2.5 at the step-pool's gentlest, 1.7 at its steepest — of
+height `H = step_height_ratio S L` (1.5; Abrahams, Li & Atkinson 1995: steps stand between 1 and 2
+times the slope over their spacing), so at most 0.1 L on the reach's 0.065. Below a crest the pool
+lowers the cut's bed by H and the bed comes back up to the cut's line at the next crest, so the bed
+is never raised and its mean fall is the ground's. **The riser is a slope, not a wall**: H drops over
+`H / tan(riser_angle_deg)` (38°, a boulder step's face at its clasts' angle of repose), at least a
+stretch of the line and at most half the run, so no riser is steep enough for the water to leave its
+bed (45°): a step-pool's step is drawn as a steep rapid. The cut's section follows the bed point by
+point and the tile set's 0.25 m lattice samples it, so a 1 m drop over its 1.28 m riser is five
+lattice cells falling about 0.2 m each, a ramp of 38° in steps of the lattice, not a vertical face (a
+step-pool's H rarely reaches 1 m: it needs a channel about 6 m wide). **Boulders**
+(`ChannelPart::Boulder`, a dome slab 7 by 7 points): at each step-pool crest a row across the bed, as
+many as the bed's width holds at the step's height (0.25–1.5 m, ±20 %), each jittered a fifth of its
+size along and across, standing 0.6 of its width over the ground at the lip and buried a third; they
+sample `rock/boulder` or `rock/granite`. They are the channel's own domes, not the scatter's rock
+kinds, which a capability may not reach (ADR-0046).
+
+**Cascades** (W91): no steps and no pools. Boulder clusters (`ChannelLink::cluster_at`) stand at
+irregular places down the reach, their spacing drawn from an exponential of mean
+`cascade_boulder_widths` (1.5) widths, at least half a width — a memoryless spacing has no rhythm —
+each cluster one to three domes of one to two bankfull thalweg depths (0.25–1.5 m, ±30 %) anywhere
+across the bed and a size along it: clasts that protrude through the water at most stages. The water
+runs on over the cut's continuous bed; at a cascade's slope Manning's speed puts it past a Froude
+number of one, which S98's surface draws as rough, aerated water among the domes, so the flowing water
+needs nothing more than the reach code it already carries.
+
+**Bedrock and colluvial reaches, a chute and its knickpoints** (W91). Nothing is laid and no step is
+cut: the cut's bed follows the ground under the line (W89's rule), a chute. A fall is drawn only where
+the ground itself has a **knickpoint**: over a window of `knick_window_widths` (3) widths, at least
+`knick_window_min_m` (2 m), the ground's fall per metre below each point, Sd, and above it, Su; a
+knickpoint is a run of points whose Sd is at least 1 (45° over the window) and that drops at least
+`fall_min_m` (1 m) from its first point to a window past its last. Its first point is its lip, where
+the profile turns convex (there Su < 1 ≤ Sd: the window's second difference is positive, and the
+summary reports its mean as `lip_convexity_mean`); its points and the window below are marked
+(`ChannelLink::knick`) and the bed follows the ground through them, so the water falls there. A gate on
+the second difference itself (a lip only where Sd − Su exceeds 0.3) was tried and dropped: a face
+that steepens by degrees then had no lip, and the chute's limit cut the whole face deeper. Knickpoints
+are read on every reach, since a scarp inside a cascade is a fall too. **The chute's limit**: away
+from a knickpoint, a stretch of the bed that would fall at 45° or more (a bump of the ground, the
+lattice's 0.5 m noise) lowers the bed above it to `chute_gradient_max` (0.9, 42°) per metre, never
+raising the one below and never more than half `fall_min_m` past the cut's two thalwegs, and the
+lowering runs on upstream while it leaves the next stretch that steep; a stretch still that steep is
+counted (`steep_left`).
 
 ## Mouths
 
@@ -264,8 +310,30 @@ the body.
 The cut ends in a **fan**: over the last `fan_widths` (3) widths its bed grades from where it was to
 half a thalweg under the body's level, and its width grows by `fan_spread` (1, so to twice) at the
 shore. The water's surface grades over the fan to the body's level at the shore, and on a link that
-ends in a body never stands below that level anywhere (the body backs it up). The source of the
-fan's length is on [the grounding page](../experiments/channels.md#mouths-and-confluences).
+ends in a body never stands below that level anywhere (the body backs it up). The grade starts at
+the first fan point itself and never runs under the bed: at least a centimetre of water stands over
+it (W91 continuation). W90 anchored the grade at the first fan point but already applied that
+point's own share of the fan, so the surface dropped by the share at once; on a chute that follows a
+steep face that was more than the water's depth — v36's link 690, falling at 0.72 m/m into the
+eastern sea with 0.19 m of water, dropped 0.43 m and ran under the cut's bed for five points, which
+wrote a depth of 0 that the water capability refuses (`systems/water/src/channel.cpp`, "depth_m …
+must be positive"). W90's stepped beds never showed it; W91's chutes, which follow the ground, did.
+The subcommand counts any depth that is not positive (`depths_not_positive`; 0 on v36 since). The
+source of the fan's length is on [the grounding page](../experiments/channels.md#mouths-and-confluences).
+
+**A ribbon's end a body covers is trimmed** (W91 continuation; the POC's item 25, flat mint shapes
+at mark 7). A point inside a body's outline whose surface lies under the body's level is under the
+body's own water — a link that begins on a beach inside a lake's outline, its ground above the level
+so the mouth rule keeps it, whose cut then digs its water under the level. Drawn, its ribbon is a
+second water surface a few centimetres under the body's, and with ray tracing on, the body's
+refraction trace meets it as a solid floor and shows its albedo with no water shading (see item 25
+under [Against the proof of concept](#against-the-proof-of-concept)). `water_channels_json`, given
+the bodies, trims such points off both ends of each ribbon (the exclusion's water kind asked against a
+ground standing at the point's surface, so an open sea covers whatever lies under its level), writes
+no ribbon left with fewer than two points, and counts what it trimmed (`RibbonTrim`; the
+subcommand's `covered_trimmed`, by body). The cut is not trimmed: the body's surface shows in the
+trench, which is right. Only the ends are trimmed, since a run covered in the middle of a line would
+be a body the line crosses, which the mouth rule has already ended it at.
 
 **The bodies' outline is the exclusion's** (scene_gen.md, "Exclusion"): a fill body is its seed's
 box where the ground is below the level, not the flood `water::depth_at` traces, so a hollow below a
@@ -291,7 +359,18 @@ The meander's wavelength, 10.9 widths (Leopold, Wolman & Miller 1964; 10–14 in
 1960), and its amplitude vary along the line by `meander_wavelength_variation` (±25 %) and
 `meander_amplitude_variation` (±50 %) of themselves, a value noise of the link's seed with a knot each
 bend, so no two bends are alike; the owner's walk saw W86's single wavelength per link as a regular
-sawtooth from the air. The trough test that halves an offset climbing out of the valley is unchanged.
+sawtooth from the air.
+
+**The line held in its trough** (W91; the owner's v36 walk, item 21: lines across a mountainside stood
+out of it). The meander's trough test (an offset that would climb more than half the depth out of the
+valley is halved) saw the meander's offset alone, and the low-pass carries a line off the floor by
+itself where it cuts a bend's corner across the valley's side. Every point of the final line, after
+the low-pass and the meander, is now tested the same way against the trough the lattice's cells run
+down: the ground at the point against the ground at the nearest point of the cells' own polyline
+(within the low-pass's reach of its segment); a point standing more than half the depth over it is
+drawn back toward it, halving its offset up to three times and then onto it. The shares are eroded over
+three points each way and smoothed by three binomial passes, which leaves every point drawn back at
+least as far as its own test asked. On v36 it drew back 78,693 of the network's 287,000 points.
 
 ## Against the proof of concept
 
@@ -305,6 +384,76 @@ the fells above it, z 1,024 to 3,072 m — 9.96 km² in all (2026-11-07, `msvc-d
 | channel | 48.7 km, **4.9 km per km²** | 5–7 km per km² |
 | links | 360 | — |
 | blocks ≥ 50,000 m² | 215 | — |
+
+**v36, W90 against W91** (2026-11-08, `msvc-debug`, `engine-content channels --min-area-m2 1000000
+--cut` over a copy of the POC's v36 scene, one layer of 38.5 km², 784 links, 126 water blocks of
+50,054 points; "W90" is the v36 water as shipped, measured with `--measure`, and the W90 code's own
+run for the steps and boulders; edges are measured against the ground before the cuts, the region's
+border, two lattice spacings, apart):
+
+| | W90 (v36 as shipped) | W91 |
+|---|---|---|
+| stretches the water draws as falls (≥ 45°) | 1,874 (bedrock 1,654 of 8,981, cascade 204 of 7,381, step-pool 6, dune-ripple 10) | 25 (bedrock 16, dune-ripple 7, cascade 1, pool-riffle 1) |
+| falls (runs of them) | 1,865 | 15 |
+| highest single drop | 3.91 m | 1.25 m |
+| steps laid | 23,395 (bedrock 13,790, cascade 8,334, step-pool 1,271) | 1,287, step-pool alone |
+| boulders | 23,220 (rows at crests) | 17,822 (step-pool rows, 6,649 cascade clusters) |
+| knickpoints (every link) | — | 172 |
+| ribbon edges over the ground by > 0.3 m | 2,979 of 100,022 (3.0 %) | 0 of 100,020 |
+| by > 0.05 m | 7,138 (7.1 %) | 0 (none over 0.03 m) |
+| the most | 2.63 m, link 377 at (195.6, 5,040.4) | 0.03 m |
+| at the region's border (links 346 and 355) | 40 edges over 0.05 m, 5.65 m at x −1,532 | 0 |
+| points fitted | — | 14,005 narrowed or moved (median to 0.72 of the width), 47 lowered under the downhill ground |
+| line points drawn back into the trough | — | 78,693 of 286,904 |
+
+The falls left are the knickpoints' (bedrock), the mouths' fans grading to a lake (dune-ripple) and a
+few stretches the chute's limit could not spread (`steep_left`: 20 over every link's bed).
+
+**The continuation's re-cut** (2026-11-09, the same command after the fan's grade and the covered
+trim, [Mouths](#mouths)): the cuts are byte for byte the ones above (so the tile set's key and its
+cook are unchanged); `depths_not_positive` 0 where the first W91 run wrote 5 (link 690's fan, points
+273–277, which the water capability refused at load); 86 ribbon points trimmed off 6 ribbons'
+ends, 83 under `mountain-lake-east-extension` and 3 under `freshwater-swamp`, none under the open sea,
+no ribbon dropped and **no mouth lost any of its fan** (a fan grades to the level and never stands
+under it); link 779's ribbon now begins about 6 m down its line, at the lake's outline. Every other count
+in the table stands (ribbon edges measured 99,848, the trimmed points' 172 fewer).
+
+**Item 25, the flat mint shapes at mark 7** (the POC's list; `before\captures\00008-m7-eye.png` of
+the W91 scratch). The ids at five of the shapes' pixels name instance 5, cluster 1252970 — the
+`water/mountain-lake-east-extension` body, not a channel piece and not a ribbon — and the shallow
+water around them is the same instance, cluster and even triangle, so it is not a material row or a
+normal. Their colour, about rgb(150, 199, 184), is the body's default shallow albedo (0.30, 0.55,
+0.50) in sRGB, unlit. Met with the lake's plane, every such pixel lies 0.15–0.32 m from link 779's
+centreline, where the shipped ribbon stood 0.149 m under the lake's level inside its outline (the
+others 0.78–1.46 m off it): with ray tracing on, the body's refraction trace (S86 part 2, water.md
+"visibility through the water") hits that ribbon as a solid surface and shows its albedo with no
+water shading. The channels' half is fixed here (the covered ends trimmed). **The water stage's half
+is a request to S100**: a refraction ray that hits another water surface — a ribbon or a body — under
+the water should pass through it or shade it as water, never as an opaque albedo
+(`domain/gfx/shaders/water.slang` and the water stage of `visibility_resolve.slang`, the
+refract-volume hit's shading); a ribbon under a body anywhere else (a confluence's, an author's) would
+show the same.
+
+**Seen on v36** (2026-11-09, `msvc-release` at the continuation's commit, 1920×1080, `--raster hw
+--shadows rt`, the common engine flags, `--offscreen`; "before" is eeb8077c over v36 as shipped,
+"after" W91 with the re-cut, the same 16 poses; the machine shared with other agents' GPU work, so
+no timing is read from these runs). **Bedrock** (`00010`): before, a wide flat ribbon plate over the
+beach ending in a square edge with a drop toward the sea; after, the water lies narrowed inside its
+trench as a continuous chute to the beach, no plate and no fall — the trench still ends in a square
+cut at the shore, as before. **Cascade** (`00011`): before, white fall slabs down a staircase of
+blocks beside a tree; after, one continuous sheet of rough white water down the slope, no step, no
+riser. **Step-pool** (`00012`): a straight cut with boulder rows across it and pools between, the
+water continuous — the reach W91 kept its steps on, unchanged to the eye. **Colluvial** (`00013`): a
+shallow cut under the trees with a thin rough ribbon in it, no step. **Mark 4** (`00002`, item 21):
+before, the ribbon stood as a bent plate over the ground in front of the cut's wall; after, the water
+lies inside the banks, lower and narrower along the channel, the pool on the left inside its rim —
+the plate is gone; the cut's tall bank wall behind it is the same in both (W91 did not move the
+cut's banks: "Not yet", below). **Mark 7** (`00008`/`00009`, item 25): the mint shapes, 34,405
+pixels of rgb(150 ± 14, 199 ± 14, 184 ± 14) in `00008` and 15 in `00009` before, are 0 and 0 after:
+the lake's water shows its own bed in the trench. **The mouth** (`00014`, after only): the fan a shallow sheet
+over the sand into the sea, no mint before or after. The gentle **stream** (`00015`) looks as before
+(the pale bed-piece edge along its left bank is in both). Nothing
+was seen that is worse. Captures: the W91 scratch's `before\captures` and `c2\after\captures`.
 
 The lines lie in the model's troughs: the nearest channel point is 1.1 m from the v34 hand-off's
 fell-rill camera target (a 1.3 m rill, below the banks' threshold) and 6.5 m from its channel-bars
@@ -323,15 +472,35 @@ catchments that flow in across it. The captures and their verdict are in the W86
   placed pieces are closed, welded and outward").
 - `expand` equals the union of `tile` over any order, with ids 1, 2, … (test: "whole expansion
   equals any tile order").
-- The `WaterChannel` blocks have seven fields (W86's six and W90's `reach`), one value per point, and
-  a surface that never rises downstream (test: "the water's description has the WaterChannel
-  shape"; the subcommand's test).
-- Reaches by the pinned bounds; steps 1–4 widths apart with H / L / S between 1 and 2; no bars and
-  boulders on a cascade; a 35° face colluvial with nothing laid (tests: "reaches by the pinned
-  bounds", "a step-pool's steps …", "a 35-degree face …").
+- The `WaterChannel` blocks have seven fields (W86's six and W90's `reach`; an eighth, W91's `fit`,
+  when the ground is handed in), one value per point, and a surface that never rises downstream
+  (test: "the water's description has the WaterChannel shape"; the subcommand's test).
+- Reaches by the pinned bounds; steps on step-pool reaches alone, 1–4 widths apart with H / L / S
+  between 1 and 2 and no riser steep enough to fall; a cascade with irregular boulder clusters, no
+  steps and no bars; a 35° face colluvial with nothing laid (tests: "reaches by the pinned bounds", "a
+  step-pool's steps …", "a cascade gets boulder clusters …", "a 35-degree face …").
+- **No staircase on a bedrock or colluvial reach** (W91): no step; the bed falls at 45° or more only at
+  a knickpoint of the ground, and the water draws one fall there (tests: "a bedrock chute falls only at
+  its knickpoint"; `apps/engine_content/tests/channel_reach_tests.cpp`).
+- **Every point of the line stands within half the depth of the trough its cells run down** (W91;
+  [The planform](#the-planform)), and **no ribbon edge stands more than 3 cm over the ground beside
+  it** where `water_channels_json` is handed the ground, as the subcommand always does: an edge over
+  lower ground is drawn in to where the ground meets the surface, the point moved and its width
+  narrowed to the two edges (`fit` 1); where they leave less than a quarter of the width (at least
+  0.2 m) the bed stands over the downhill ground, and the surface is lowered to the lower edge's
+  ground less 2 cm (`fit` 2; the description's depth kept at a centimetre, the water under the ground
+  there). A point under a water body is left as it is. The surface never rises downstream except
+  over a sill and at a lowered point (test: "a line across a tilted plane stays in its trough, the
+  ribbon on the ground").
 - A link ends at a lake's shoreline with nothing under its level, its fan grading the bed and the
   water to the level; a drowned link is dropped; no bodies, the same network to the byte (test: "a
   link ends at a lake's shoreline …"; `apps/engine_content/tests/channel_mouth_tests.cpp`).
+- **Every depth the description writes is positive**, a fan down a 35° face included: the fan's
+  grade starts at its first point and keeps a centimetre over the bed (test: "a fan down a 35-degree
+  face keeps water over its bed to the shore"; the subcommand's `depths_not_positive`).
+- **No ribbon point lies under a body inside its outline** at either end of a ribbon: such a run is
+  trimmed, exactly that run, and everything upstream is written as it was (test: "a ribbon's end
+  under a lake inside its outline is trimmed, and only that").
 - A tributary ends at the trunk's banks, its bed lowered to the trunk's and its surface lowered,
   never raised, to the trunk's (test: "a tributary meets its trunk …").
 - The cuts have the `TerrainCut` shape, one per link, the top at the ground under the line, a bed that
@@ -357,7 +526,10 @@ scene instances. `ChannelPoint` (40 bytes) is pinned in the size table.
 
 **Not yet.** The cut is written by the subcommand and pasted by the author, not applied by the generator itself (the ground is built before the placements are); a procedural ground (the dunes) takes no cut; D8 only (no D∞ spreading); heads by a local four-metre slope, not a slope
 averaged over the source area; no braided reaches; the valley's confinement is not read for the
-reach; **the network is planned again on every load** (24–32 s on v35, T73's finding): caching it as
+reach; the ribbon's fit narrows the water where the ground across the line is lower than its surface
+but does not move the cut, so on a cross-slope the cut's bench still has no downhill bank (the water
+narrows to what the bench holds); knickpoints are read from the ground's profile along the line, not
+from rock strength; **the network is planned again on every load** (24–32 s on v35, T73's finding): caching it as
 a derived node needs the ground's identity, which `scene_gen::Context` does not expose (W90's report
 asks for it); the mouths read the exclusion's box for a fill body, not its traced flood.
 

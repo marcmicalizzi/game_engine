@@ -182,6 +182,48 @@ the upper half; pinned at 1.5 (`step_height_ratio`, range 1–2). A step-forming
 height (Chin 1999), which sizes the boulders. The 1 m fall height (`fall_min_m`) is a design choice
 for what the water draws as a fall rather than a ramp.
 
+### W91, re-grounded
+
+(2026-11-08, roadmap W91; the owner's v36 walk, items 20 and 21.) W90 took the step relations onto
+every steep reach. Re-read for this row:
+
+- **Montgomery & Buffington (1997)** (above): **cascade** beds are disorganised longitudinally and
+  laterally — tumbling flow over and around individual large clasts that protrude through it at most
+  stages, with no regular sequence of steps; **step-pool** beds alone have the regular alternation of
+  channel-spanning steps and pools; **bedrock** channels lack a continuous alluvial bed (transport
+  capacity exceeds supply) and **colluvial** channels are the headwater hollows filled from the
+  hillslopes, with no fluvial bedforms. So: steps on step-pool reaches alone; clusters on cascades;
+  neither on bedrock nor colluvial reaches. Read from the paper's synthesis as its readers cite it (the
+  full text was not fetched, as for W90).
+- **The step relations' range.** Abrahams, Li & Atkinson (1995) and Chin (1989, 1999) measured
+  step-pool channels of slope about 0.03–0.2; the relations are not extended past it. The pinned rule
+  on step-pool reaches (0.03–0.065) gives H/(L S) = 1.5 by construction, inside Abrahams et al.'s 1–2
+  (the test holds every step to it), L/w 2.5 to 1.7.
+- **Knickpoints.** A knickpoint is a convexity of the long profile, an abrupt steepening that the
+  rest of a bedrock river's profile adjusts to (Whipple 2004, "Bedrock rivers and the geomorphology of
+  active orogens", *Annu. Rev. Earth Planet. Sci.* 32, 151–185, as summarized; not read in full).
+  Hayakawa & Oguchi (2006), "DEM-based identification of fluvial knickzones and its application to
+  Japanese mountain rivers", *Geomorphology* 78, find knickzones on a DEM by comparing a river's
+  gradient over a short window with its trend over longer ones (read from their conference abstracts:
+  50 m DEMs, windows of hundreds of metres, a threshold on the rate the gradient falls with the
+  window's length). W91 takes the idea, a short window's gradient against the reach's, at the scale a
+  channel a few metres wide is drawn at: a window of 3 widths (at least 2 m) and the threshold the
+  water's own, a fall of at least 1 per metre (45°) over it, dropping at least `fall_min_m` (1 m).
+  **The window, the 1 m and the chute's 0.9 are design choices**, not the papers' numbers: their DEMs
+  are fifty times coarser than the 0.5 m line.
+- **The riser's angle, 38°.** A boulder step's face stands at about its clasts' angle of repose: about
+  35° on natural talus (Carson 1977, "Angles of repose, angles of shearing resistance and angles of
+  talus slopes", *Earth Surface Processes* 2, 363–380, as cited), steeper for coarse angular clasts
+  (the mass angle of repose of riprap rises with angularity, size and non-uniformity: "Mass angle of
+  repose of open-graded rock riprap", *J. Irrig. Drain. Eng.* 2011, abstract). 38° sits in the 35–40°
+  the brief named and below the 45° at which the water leaves its bed; range 20–44.
+- **Cascade clusters.** The spacing's exponential (mean 1.5 widths) and the clasts' one to two
+  bankfull depths are **design choices** for "no regular sequence" and "clasts protruding through the
+  flow"; no published spacing distribution was read.
+- **The ribbon on the ground.** Water stands level across its section and never over the ground
+  beside it; a surface over lower ground would spill toward the fall line. The 3 cm tolerance and the
+  2 cm margin are design choices under the lattice's height step on a slope.
+
 ## Mouths and confluences
 
 **The fan's length** (`fan_widths`, 3 widths, and its spread to twice the width at the shore) is a

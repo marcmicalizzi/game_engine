@@ -123,7 +123,9 @@ TEST_CASE("engine-content channels --cut writes the terrain's cuts beside the wa
   REQUIRE_MESSAGE(
       channels::plan_channels(layer, ground.view(), terrain.seed, nullptr, network, error), error);
   CHECK(write_json(channels::terrain_cuts_json(layer, network)) == write_json(*cuts));
-  CHECK(write_json(channels::water_channels_json(layer, network, 0, .5f, true)) ==
+  // W91: the subcommand fits the ribbon to the ground it planned over.
+  const scene_gen::Ground view = ground.view();
+  CHECK(write_json(channels::water_channels_json(layer, network, 0, .5f, true, &view)) ==
         write_json(*blocks));
 
   // A scene that carries the cuts: its ground is cut, and the command writes the same file, since

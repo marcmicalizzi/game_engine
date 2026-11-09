@@ -35,13 +35,14 @@ int channels_command(int argc, char** argv) {
 #else
   const char* usage =
       "usage: engine-content channels <scene.json> <out.json> [--ddc <dir>] [--min-area-m2 <m2>]\n"
-      "                               [--stage <fraction>] [--entry <placement index>] [--cut]\n";
+      "                               [--stage <fraction>] [--entry <placement index>] [--cut]\n"
+      "                               [--measure <water.json>]\n";
   if (argc < 4) {
     std::fputs(usage, stderr);
     return 2;
   }
   const std::string scene_path = argv[2], out_path = argv[3];
-  std::string ddc;
+  std::string ddc, measure_path;
   f64 min_area = 50000.0;
   f64 stage = .5;
   i64 only = -1;
@@ -64,6 +65,8 @@ int channels_command(int argc, char** argv) {
     bool ok = true;
     if (flag == "--ddc") {
       ddc = std::string(value);
+    } else if (flag == "--measure") {
+      measure_path = std::string(value);
     } else if (flag == "--min-area-m2") {
       ok = number(min_area) && min_area >= 0;
     } else if (flag == "--stage") {
@@ -138,6 +141,7 @@ int channels_command(int argc, char** argv) {
         bodies.push_back(std::move(body));
     }
   }
+  const scene_gen::Ground ground_view = ground.view();
   scene_gen::Exclusion shores;
   if (!shores.build({}, {bodies.data(), bodies.size()}, {}, &error)) return fail(error);
   const JsonValue* placements = json.find("placements");
@@ -145,7 +149,11 @@ int channels_command(int argc, char** argv) {
   JsonValue cuts = JsonValue::array();
   u32 entries = 0, heads = 0, links = 0;
   channels::ChannelWaterCounts shore_counts;
+  channels::RibbonTrim trim;  // the ribbons' ends a body covers (W91 continuation)
   u32 reaches[7] = {};
+  u64 steps[7] = {}, boulders = 0, clusters = 0, knickpoints = 0, steep_left = 0, pulled = 0;
+  f64 lip_convexity = 0;
+  f64 region[4] = {1e300, 1e300, -1e300, -1e300}, border = 0;
   f64 metres = 0, area = 0;
   if (placements != nullptr && placements->is_array()) {
     for (u32 k = 0; k < placements->as_array().size(); ++k) {
@@ -166,11 +174,17 @@ int channels_command(int argc, char** argv) {
         return fail(message);
       }
       channels::ChannelNetwork network;
-      if (!channels::plan_channels(layer, ground.view(), context.world_seed, nullptr, network,
-                                   error, &shores))
+      if (!channels::plan_channels(layer, ground_view, context.world_seed, nullptr, network, error,
+                                   &shores))
         return fail(scene_path + ": placements " + std::to_string(k) + ": " + error);
-      const JsonValue blocks =
-          channels::water_channels_json(layer, network, min_area, static_cast<f32>(stage), cut);
+      // W91: the ribbon fitted to the ground the network was planned over, and the bodies.
+      const JsonValue blocks = channels::water_channels_json(
+          layer, network, min_area, static_cast<f32>(stage), cut, &ground_view, &shores, &trim);
+      region[0] = std::min(region[0], layer.region_min[0]);
+      region[1] = std::min(region[1], layer.region_min[1]);
+      region[2] = std::max(region[2], layer.region_max[0]);
+      region[3] = std::max(region[3], layer.region_max[1]);
+      border = std::max(border, 2.0 * static_cast<f64>(layer.spacing_m));
       for (const JsonValue& b : blocks.as_array())
         all.push_back(b);
       if (cut) {
@@ -184,9 +198,24 @@ int channels_command(int argc, char** argv) {
       shore_counts.outlets += network.water.outlets;
       shore_counts.confluences += network.water.confluences;
       shore_counts.points_removed += network.water.points_removed;
-      for (const channels::ChannelLink& l : network.links)
+      for (const channels::ChannelLink& l : network.links) {
         for (u8 r : l.reach)
           ++reaches[r < 7 ? r : 6];
+        for (const u32 i : l.step_at)
+          ++steps[i < l.reach.size() && l.reach[i] < 7 ? l.reach[i] : 6];
+        clusters += l.cluster_at.size();
+        knickpoints += l.knickpoints;
+        lip_convexity += l.lip_convexity;
+        steep_left += l.steep_left;
+        pulled += l.trough_pulled;
+      }
+      // W91: the boulders the placement generator lays over this network.
+      Vector<channels::PlacedPiece> pieces;
+      if (!channels::place_pieces(layer, network, ground_view, 64.0f, pieces, error))
+        return fail(scene_path + ": placements " + std::to_string(k) + ": " + error);
+      for (const channels::PlacedPiece& piece : pieces)
+        if (piece.recipe.part == channels::ChannelPart::Boulder)
+          boulders += piece.recipe.slabs.size();
       heads += network.heads.size();
       links += network.links.size();
       metres += network.length_m;
@@ -194,6 +223,24 @@ int channels_command(int argc, char** argv) {
     }
   }
   if (entries == 0) return fail(scene_path + " has no \"channels\" placement to run");
+  // W91: what the water will draw, measured against the ground (channels.md, "Against the proof of
+  // concept").
+  // `--measure` (W91): the water another file holds (its `water_channels`, as a scene or this
+  // command's output holds them) is measured in place of what this run wrote, so a shipped scene's
+  // water is measured by the same rule over the same ground.
+  JsonValue measured = all;
+  if (!measure_path.empty()) {
+    std::string other;
+    JsonValue other_json;
+    if (io::read_file(measure_path, other) != io::Status::Ok || !parse_json(other, other_json).ok)
+      return fail("cannot read " + measure_path);
+    const JsonValue* list = other_json.find("water_channels");
+    if (list == nullptr || !list->is_array()) return fail(measure_path + " has no water_channels");
+    measured = *list;
+  }
+  // The region's border (two lattice spacings) counted apart: its links run along the outlet.
+  const channels::WaterStats stats =
+      channels::measure_water(measured, ground_view, &shores, region, border);
   JsonValue out = JsonValue::object();
   const u32 written = all.as_array().size();
   const u32 cut_count = cuts.as_array().size();
@@ -227,6 +274,86 @@ int channels_command(int argc, char** argv) {
   for (u32 r = 0; r < 7; ++r)
     by_reach[names[r]] = JsonValue(reaches[r]);
   line["reach_points"] = std::move(by_reach);
+  // W91: the falls the water draws (stretches at 45 degrees or steeper, and their runs), by reach;
+  // the steps laid, by reach; the boulders; the ribbon edges standing over the ground beside them.
+  JsonValue fall_by_reach = JsonValue::object(), stretch_by_reach = JsonValue::object(),
+            step_by_reach = JsonValue::object();
+  for (u32 r = 0; r < 7; ++r) {
+    fall_by_reach[names[r]] = JsonValue(stats.fall_stretches_by_reach[r]);
+    stretch_by_reach[names[r]] = JsonValue(stats.stretches_by_reach[r]);
+    step_by_reach[names[r]] = JsonValue(steps[r]);
+  }
+  line["water_stretches"] = JsonValue(stats.stretches);
+  line["stretches_by_reach"] = std::move(stretch_by_reach);
+  line["fall_stretches"] = JsonValue(stats.fall_stretches);
+  line["fall_stretches_by_reach"] = std::move(fall_by_reach);
+  line["falls"] = JsonValue(stats.falls);
+  line["highest_fall_m"] = JsonValue(std::round(stats.highest_fall_m * 1000) / 1000);
+  line["steps_by_reach"] = std::move(step_by_reach);
+  line["boulders"] = JsonValue(boulders);
+  line["cascade_clusters"] = JsonValue(clusters);
+  line["knickpoints"] = JsonValue(knickpoints);
+  line["lip_convexity_mean"] = JsonValue(
+      knickpoints > 0 ? std::round(lip_convexity / static_cast<f64>(knickpoints) * 1000) / 1000
+                      : 0.0);
+  line["steep_left"] = JsonValue(steep_left);
+  line["trough_pulled_points"] = JsonValue(pulled);
+  line["ribbon_edges"] = JsonValue(stats.edges);
+  line["edges_above_005"] = JsonValue(stats.edges_above_005);
+  line["edges_above_03"] = JsonValue(stats.edges_above_03);
+  line["edge_max_m"] = JsonValue(std::round(stats.edge_max_m * 1000) / 1000);
+  JsonValue where = JsonValue::array();
+  where.push_back(JsonValue(std::round(stats.edge_max_at.x * 1000) / 1000));
+  where.push_back(JsonValue(std::round(stats.edge_max_at.z * 1000) / 1000));
+  line["edge_max_at"] = std::move(where);
+  line["edge_max_block"] = JsonValue(stats.edge_max_block);
+  line["border_edges_above_005"] = JsonValue(stats.border_edges_above_005);
+  line["border_edge_max_m"] = JsonValue(std::round(stats.border_edge_max_m * 1000) / 1000);
+  JsonValue border_blocks = JsonValue::array();
+  for (const std::string& b : stats.border_blocks)
+    border_blocks.push_back(JsonValue(b));
+  line["border_blocks"] = std::move(border_blocks);
+  line["depths_not_positive"] = JsonValue(stats.depths_not_positive);
+  if (stats.depths_not_positive > 0) line["depth_block"] = JsonValue(stats.depth_block);
+  // W91 continuation: the ribbons' ends a body's water covers, trimmed, named by the first body
+  // (in the scene's order) that covers each point.
+  JsonValue covered = JsonValue::object();
+  covered["points"] = JsonValue(trim.points);
+  covered["ribbons"] = JsonValue(trim.blocks);
+  covered["dropped"] = JsonValue(trim.dropped);
+  covered["mouth_fans"] = JsonValue(trim.mouth_fans);
+  JsonValue by_body = JsonValue::object();
+  if (!trim.at.empty()) {
+    Vector<u64> counts(bodies.size(), 0);
+    Vector<scene_gen::Exclusion> each(bodies.size());
+    Vector<u8> built(bodies.size(), 0);
+    for (u32 b = 0; b < bodies.size(); ++b)
+      built[b] = each[b].build({}, {&bodies[b], 1}, {}, nullptr) ? 1 : 0;
+    u64 unnamed = 0;
+    for (const WorldPos& at : trim.at) {
+      const f64 height = at.y + 1e-3;
+      scene_gen::Ground flat;
+      flat.context = &height;
+      flat.surface_fn = [](const void* c, i64, i64) noexcept {
+        return *static_cast<const f64*>(c);
+      };
+      bool named = false;
+      for (u32 b = 0; b < bodies.size() && !named; ++b) {
+        if (built[b] == 0) continue;
+        if (each[b].excluded_mm(flat, scene_gen::nearest_mm(at.x), scene_gen::nearest_mm(at.z),
+                                scene_gen::k_exclude_water)) {
+          ++counts[b];
+          named = true;
+        }
+      }
+      unnamed += named ? 0 : 1;
+    }
+    for (u32 b = 0; b < bodies.size(); ++b)
+      if (counts[b] > 0) by_body[bodies[b].name] = JsonValue(counts[b]);
+    if (unnamed > 0) by_body["(none)"] = JsonValue(unnamed);
+  }
+  covered["by_body"] = std::move(by_body);
+  line["covered_trimmed"] = std::move(covered);
   JsonWriteOptions compact;
   compact.pretty = false;
   std::printf("%s\n", write_json(line, compact).c_str());
