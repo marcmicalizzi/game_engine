@@ -79,6 +79,33 @@ void unit_circle(u32 k, u32 n, f64& c, f64& s) noexcept {
   }
 }
 
+// The collar's height at the horizontal offset (dx, dz) from the hole's centre: the schema's ring
+// (`collar_heights_m`, sample i at the angle 2 pi i / m from +x towards +z) resampled at that
+// offset's angle, linearly between the two samples either side. The sector is found with cross
+// products and the share inside it is the chord's (a share of the cross products), so no libm call
+// decides a vertex's height and the bytes stay the same on every toolchain; it differs from a share
+// of the angle by well under a percent of a sector for the 8 or more samples in use.
+f64 collar_height_at(const f32* ring, u32 m, f64 dx, f64 dz) noexcept {
+  if (m == 1) return static_cast<f64>(ring[0]);
+  u32 pick = 0;
+  f64 share = 0.0;
+  for (u32 i = 0; i < m; ++i) {
+    f64 c0 = 0.0, s0 = 0.0, c1 = 0.0, s1 = 0.0;
+    unit_circle(i, m, c0, s0);
+    unit_circle(i + 1, m, c1, s1);
+    const f64 a = c0 * dz - s0 * dx;  // cross(a_i, d): >= 0 when d is counter-clockwise of a_i
+    const f64 b = dx * s1 - dz * c1;  // cross(d, a_i+1): > 0 when d is clockwise of a_i+1
+    if (a >= 0.0 && b > 0.0) {
+      pick = i;
+      share = a / (a + b);
+      break;
+    }
+  }
+  const f64 h0 = static_cast<f64>(ring[pick]);
+  const f64 h1 = static_cast<f64>(ring[(pick + 1) % m]);
+  return h0 + (h1 - h0) * share;
+}
+
 f64 sgn(f64 v) noexcept { return v < 0.0 ? -1.0 : 1.0; }
 
 // A hash in [0, 1).
@@ -385,7 +412,10 @@ bool solve_passage(const Passage& passage, assets::MeshData& out, PassageReport*
         // The collar's heights, faded out down the shaft over `fade` metres — at least twice the
         // largest, so every vertex still falls as it goes down and the wall never folds.
         if (!passage.collar_heights_m.empty() && along < collar_fade)
-          p.y += static_cast<f64>(passage.collar_heights_m[kk]) * (1.0 - along / collar_fade);
+          p.y += collar_height_at(passage.collar_heights_m.data(),
+                                  static_cast<u32>(passage.collar_heights_m.size()), p.x - centre.x,
+                                  p.z - centre.z) *
+                 (1.0 - along / collar_fade);
       } else {
         const Vec2 q = profile_point(seg.profile, seg.width_m, sh, kk, n);
         // The circle in the ring's own frame, for the blend out of the shaft: same angle index.
