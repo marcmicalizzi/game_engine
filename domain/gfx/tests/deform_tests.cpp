@@ -1223,8 +1223,9 @@ TEST_CASE(
       const f32 ry = origin.y + static_cast<f32>(scene.lod.mesh.quantized[vertex * 3 + 1]) * step;
       const f32 rz = origin.z + static_cast<f32>(scene.lod.mesh.quantized[vertex * 3 + 2]) * step;
       bool decided = true;
-      const f64 want = water_ref::vertex_lift(surface, field.data(), rx, rz, 0.0,
-                                              static_cast<f64>(clock), 0.0, &decided);
+      const f64 want =
+          water_ref::vertex_lift(surface, field.data(), static_cast<f64>(rx), static_cast<f64>(rz),
+                                 0.0, static_cast<f64>(clock), 0.0, &decided);
       const f64 got = static_cast<f64>(lifted[slot * 3 + 1]) - static_cast<f64>(ry);
       ++checked;
       if (rx > 3.5f) ++bank;
