@@ -594,10 +594,9 @@ inline constexpr u32 k_deform_flora_field = 1u << 15;
 // tide's phase, both as float bits a frame writes into its own copy of the table; `channel_count`
 // stays 0, so nothing reads them as morphs.
 inline constexpr u32 k_deform_stage_water = 1u << 16;
-inline constexpr u32 k_deform_stage_mask = k_deform_stage_static | k_deform_stage_pose |
-                                           k_deform_stage_skin | k_deform_stage_procedural |
-                                           k_deform_stage_terrain | k_deform_stage_flora |
-                                           k_deform_stage_water;
+inline constexpr u32 k_deform_stage_mask =
+    k_deform_stage_static | k_deform_stage_pose | k_deform_stage_skin | k_deform_stage_procedural |
+    k_deform_stage_terrain | k_deform_stage_flora | k_deform_stage_water;
 
 // ---- terrain levels (docs/subsystems/renderer.md, "The dunes in time-lapse")
 // ----------------------

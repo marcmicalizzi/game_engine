@@ -361,8 +361,9 @@ inline Dvec3 radiance_volume(const Params& w, Dvec3 n, Dvec3 v, double from_edge
   return under * (1.0 - fresnel * shore) + (sky * fresnel + glitter) * shore;
 }
 
-// ---- the wave as height (S100; water_waves.slang, step for step in double) -----------------------
-// `field` is the WaterSurface's field as the CPU holds it: (depth, arrival) per texel.
+// ---- the wave as height (S100; water_waves.slang, step for step in double)
+// ----------------------- `field` is the WaterSurface's field as the CPU holds it: (depth, arrival)
+// per texel.
 
 inline u32 hash2(i32 x, i32 y) {
   u32 h = static_cast<u32>(x) * 0x8DA6B343u ^ static_cast<u32>(y) * 0xD8163841u;
@@ -416,7 +417,9 @@ inline Field field_at(const gfx::WaterSurface& s, const float* field, double x, 
   const double fz = cz - iz;
   const u32 i = static_cast<u32>(ix);
   const u32 j = static_cast<u32>(iz);
-  const auto at = [&](u32 a, u32 b, u32 c) { return static_cast<double>(field[2 * (b * n + a) + c]); };
+  const auto at = [&](u32 a, u32 b, u32 c) {
+    return static_cast<double>(field[2 * (b * n + a) + c]);
+  };
   for (u32 c = 0; c < 2; ++c) {
     const double a = at(i, j, c), b = at(i + 1, j, c), e = at(i, j + 1, c), h = at(i + 1, j + 1, c);
     const double v = (a + (b - a) * fx) + ((e + (h - e) * fx) - (a + (b - a) * fx)) * fz;
@@ -457,7 +460,8 @@ inline double facing(const gfx::WaterSurface& s, const Field& f) {
   const double len = std::hypot(f.depth_grad[0], f.depth_grad[1]);
   if (!(len > 1e-3)) return 1.0;
   const double d = -(static_cast<double>(s.wind.x) * f.depth_grad[0] +
-                     static_cast<double>(s.wind.y) * f.depth_grad[1]) / len;
+                     static_cast<double>(s.wind.y) * f.depth_grad[1]) /
+                   len;
   return 0.25 + 0.75 * std::clamp(d, 0.0, 1.0);
 }
 
@@ -478,8 +482,9 @@ inline double height(const gfx::WaterSurface& s, const Field& f, double x, doubl
     for (u32 i = 0; i < gfx::k_water_waves; ++i) {
       const gfx::WaterWave& wave = s.waves[i];
       const double lambda = k_two_pi / static_cast<double>(wave.k);
-      const double along = (static_cast<double>(wave.direction.x) * x +
-                            static_cast<double>(wave.direction.y) * z) / lambda;
+      const double along =
+          (static_cast<double>(wave.direction.x) * x + static_cast<double>(wave.direction.y) * z) /
+          lambda;
       const double travel = frac(static_cast<double>(wave.cycles) * (t / k_period_s));
       const double cyc = frac(frac(along) - travel + static_cast<double>(wave.phase));
       off += static_cast<double>(wave.amplitude) * std::sin(k_two_pi * cyc);
@@ -490,8 +495,10 @@ inline double height(const gfx::WaterSurface& s, const Field& f, double x, doubl
       const double a = static_cast<double>(s.amplitude) * k_amplitude[i];
       const double turn = static_cast<double>(s.chop) * k_turn[i] * (0.5 * 3.14159265358979);
       const double c = std::cos(turn), sn = std::sin(turn);
-      const double dx = static_cast<double>(s.direction.x) * c - static_cast<double>(s.direction.y) * sn;
-      const double dz = static_cast<double>(s.direction.x) * sn + static_cast<double>(s.direction.y) * c;
+      const double dx =
+          static_cast<double>(s.direction.x) * c - static_cast<double>(s.direction.y) * sn;
+      const double dz =
+          static_cast<double>(s.direction.x) * sn + static_cast<double>(s.direction.y) * c;
       const double k = k_two_pi / lambda;
       const double cycles = std::floor(std::sqrt(k_g * k) * (k_period_s / k_two_pi) + 0.5);
       const double along = (dx * x + dz * z) / lambda;
@@ -522,7 +529,8 @@ inline double front(const gfx::WaterSurface& s, const Field& f, double x, double
   const double c = train_cycles(s, t, f.arrival);
   const double k = std::floor(c);
   const u32 j = static_cast<u32>(static_cast<i32>(k) + 7 * 64) % 7u;
-  const double group = 0.55 + 0.45 * (0.5 - 0.5 * std::cos(k_two_pi * (static_cast<double>(j) + 0.5) / 7.0));
+  const double group =
+      0.55 + 0.45 * (0.5 - 0.5 * std::cos(k_two_pi * (static_cast<double>(j) + 0.5) / 7.0));
   const double along = std::max(static_cast<double>(s.along_m), 1e-3);
   const double variation = 0.85 + 0.3 * value_noise(x / along + 17.3, z / along + 5.1);
   const double r = static_cast<double>(s.run_up_m);

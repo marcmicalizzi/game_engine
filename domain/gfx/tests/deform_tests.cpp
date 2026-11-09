@@ -39,7 +39,6 @@
 #include <doctest/doctest.h>
 
 #include <bit>
-
 #include <cmath>
 #include <cstring>
 #include <shaders/cluster_mesh.spv.h>
@@ -1078,11 +1077,12 @@ TEST_CASE("deform: instantiated cluster templates trace what the rebuilt cluster
 // **The water stage** (S100; water_waves.slang, `water_vertex_lift`; docs/subsystems/water.md,
 // "The mesh"). Over the grid's cut: (1) a body whose surface has no waves, no swash and no field
 // writes exactly the pool the identity deformer writes, word for word — the rest pose to the bit,
-// which is what keeps every still body's picture; (2) a windy body over a planar beach — the offshore
-// four sines, the shoaling and breaking train, the bank's sheet and parked vertices — lifts every
-// vertex by what water_reference.h's double-precision `vertex_lift` says, at a clock where the
-// train is mid-swash.
-TEST_CASE("deform: the water stage is the rest pose without waves and the height function with them") {
+// which is what keeps every still body's picture; (2) a windy body over a planar beach — the
+// offshore four sines, the shoaling and breaking train, the bank's sheet and parked vertices —
+// lifts every vertex by what water_reference.h's double-precision `vertex_lift` says, at a clock
+// where the train is mid-swash.
+TEST_CASE(
+    "deform: the water stage is the rest pose without waves and the height function with them") {
   gfx::Device device;
   std::string error;
   if (!gfx_test::open_device(device)) return;
@@ -1095,7 +1095,8 @@ TEST_CASE("deform: the water stage is the rest pose without waves and the height
   constexpr gfx::BufferUsage k_address = k_storage | gfx::BufferUsage::ShaderDeviceAddress;
   const u64 pool_bytes = u64{scene.pool_vertices} * 3 * sizeof(f32);
   gfx::BufferResource host;
-  REQUIRE(gfx::create_buffer(device, pool_bytes, gfx::BufferUsage::TransferDst, true, host, &error));
+  REQUIRE(
+      gfx::create_buffer(device, pool_bytes, gfx::BufferUsage::TransferDst, true, host, &error));
   gfx::FrameContext frames;
   REQUIRE(frames.create(device, 1, &error));
   gfx::ShaderModuleHandle deform_module = gfx::create_shader_module(
@@ -1163,10 +1164,12 @@ TEST_CASE("deform: the water stage is the rest pose without waves and the height
   Vector<f32> lifted;
   run(water, lifted);
   REQUIRE(lifted.size() == identity.size());
-  CHECK(std::memcmp(lifted.data(), identity.data(), u64{scene.cut_vertices} * 3 * sizeof(f32)) == 0);
+  CHECK(std::memcmp(lifted.data(), identity.data(), u64{scene.cut_vertices} * 3 * sizeof(f32)) ==
+        0);
 
   // (2) A windy body over a planar beach across the grid: the shore at x = 4 m, 1:12 below it and
-  // the bank above, the train's period 2.5 s, H_m0 0.4 m, R 0.3 m: the four sines offshore of\n  // 1.55 m deep, the train inshore of 0.54 m, both between.
+  // the bank above, the train's period 2.5 s, H_m0 0.4 m, R 0.3 m: the four sines offshore of\n
+  // // 1.55 m deep, the train inshore of 0.54 m, both between.
   gfx::WaterSurface surface{};
   const u32 size = 97;
   surface.size = size;
@@ -1242,8 +1245,9 @@ TEST_CASE("deform: the water stage is the rest pose without waves and the height
   CHECK(moved > checked / 2);
   CHECK(wrong == 0u);
   MESSAGE("water stage: " << checked << " vertices, " << bank << " over the bank, " << moved
-                          << " lifted, " << undecided << " within 1 cm of the front left out, worst "
-                          << worst << " m from the double reference");
+                          << " lifted, " << undecided
+                          << " within 1 cm of the front left out, worst " << worst
+                          << " m from the double reference");
 
   gfx::destroy_buffer(device, still_buffer);
   gfx::destroy_buffer(device, field_buffer);

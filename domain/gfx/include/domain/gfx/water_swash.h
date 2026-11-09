@@ -155,16 +155,18 @@ inline f64 swash_age(const SwashPlace& p, f64 t, f64 h) noexcept {
 }
 
 // ---- the wave as height (roadmap S100; docs/subsystems/water.md, "The mesh"; the grounding,
-// docs/experiments/shore.md, "The wave as height") -------------------------------------------------
+// docs/experiments/shore.md, "The wave as height")
+// -------------------------------------------------
 //
 // A water body with a wind (or an open one with a tide) is a deformed instance: the pool pass lifts
 // every vertex by the body's height function (water_waves.slang, `water_vertex_lift`; mirrored in
 // double by domain/gfx/tests/water_reference.h), and the resolve's normal is the same function's
 // gradient. Offshore the body's own waves (an open body's sixteen, a closed one's four sines); near
-// the shore **the depth governs**: the wind's peak wave shoals by linear theory's coefficient (Green's
-// law, H ~ d^(-1/4), in shallow water) until it breaks at H = gamma d (McCowan 1894; Battjes and
-// Janssen 1978 for a random sea), its height then held at gamma d to the shore, its wavenumber the
-// dispersion relation's at the local depth — so its crests slow and bunch — and its phase the
+// the shore **the depth governs**: the wind's peak wave shoals by linear theory's coefficient
+// (Green's law, H ~ d^(-1/4), in shallow water) until it breaks at H = gamma d (McCowan 1894;
+// Battjes and Janssen 1978 for a random sea), its height then held at gamma d to the shore, its
+// wavenumber the dispersion relation's at the local depth — so its crests slow and bunch — and its
+// phase the
 // **arrival time** of the wave at the place (`water_arrival_field`), so neighbouring places are one
 // train, not independent oscillators. Over the bank the vertex is the swash's sheet where the front
 // covers it and parked under the ground where it does not.
@@ -189,8 +191,8 @@ inline constexpr f64 k_water_celerity_floor_m = 0.02;
 // GPU scene writes one per deformed body at load; the pool pass reaches it through the body's
 // `DeformDesc::joints` and the resolve through its `WaterShore::surface`.
 struct WaterSurface {
-  u64 field = 0;    // f32 [2 * size * size]: (signed depth m, arrival s) per texel, rows along +z
-  Vec2 origin{};    // body-local (x, z) of texel (0, 0)'s centre: the depth map's grid
+  u64 field = 0;  // f32 [2 * size * size]: (signed depth m, arrival s) per texel, rows along +z
+  Vec2 origin{};  // body-local (x, z) of texel (0, 0)'s centre: the depth map's grid
   f32 texel_m = 0.0f;
   u32 size = 0;
   Vec2 wind{1.0f, 0.0f};  // a closed body's wind (unit, x z): which shores its waves face
@@ -215,7 +217,9 @@ static_assert(sizeof(WaterSurface) == 608);
 
 // **The dispersion relation at depth**: the wavenumber k with omega^2 = g k tanh(k d), from the
 // deep-water k0 = omega^2 / g — Fenton and McKee's (1990) explicit approximation
-// k d = k0 d coth((k0 d)^(3/4))^(2/3), exact in both limits, then two Newton steps on\n// k d tanh(k d) = k0 d (one leaves 1.5e-4 of omega^2; two, 1e-8). Water at or above the level\n// (d <= 0) is answered at 1 mm.
+// k d = k0 d coth((k0 d)^(3/4))^(2/3), exact in both limits, then two Newton steps on\n// k d
+// tanh(k d) = k0 d (one leaves 1.5e-4 of omega^2; two, 1e-8). Water at or above the level\n// (d <=
+// 0) is answered at 1 mm.
 inline f64 water_wavenumber(f64 k0, f64 d) noexcept {
   const f64 depth = std::max(d, 1e-3);
   const f64 x0 = k0 * depth;
@@ -229,7 +233,8 @@ inline f64 water_wavenumber(f64 k0, f64 d) noexcept {
 
 // Linear theory's shoaling coefficient H / H0 = sqrt(cg0 / cg) at wavenumber k and depth d: 1 in
 // deep water, sqrt(1 / (2 n tanh(k d))) with n = (1 + 2kd / sinh 2kd) / 2, and in shallow water
-// Green's law: n -> 1 and tanh(k d) -> k d = sqrt(k0 d), so H / H0 -> (4 k0 d)^(-1/4), H ~ d^(-1/4).
+// Green's law: n -> 1 and tanh(k d) -> k d = sqrt(k0 d), so H / H0 -> (4 k0 d)^(-1/4), H ~
+// d^(-1/4).
 inline f64 water_shoaling(f64 k, f64 d) noexcept {
   const f64 kd = k * std::max(d, 1e-3);
   const f64 n = 2.0 * kd > 30.0 ? 0.5 : 0.5 * (1.0 + 2.0 * kd / std::sinh(2.0 * kd));
@@ -256,13 +261,15 @@ inline void water_arrival_field(const f32* depth, u32 size, f64 texel_m, f64 per
                                 u32 rounds = 3) noexcept {
   const u32 count = size * size;  // a depth map is at most 1,024 a side
   if (size < 2 || !(period_s > 0.0) || !(texel_m > 0.0)) {
-    for (u32 i = 0; i < count; ++i) out[i] = 0.0f;
+    for (u32 i = 0; i < count; ++i)
+      out[i] = 0.0f;
     return;
   }
   const f64 omega = 2.0 * 3.14159265358979323846 / period_s;
   const f64 k0 = omega * omega / k_swash_g;
   f64 deepest = 0.0;
-  for (u32 i = 0; i < count; ++i) deepest = std::max(deepest, static_cast<f64>(depth[i]));
+  for (u32 i = 0; i < count; ++i)
+    deepest = std::max(deepest, static_cast<f64>(depth[i]));
   const f64 source = std::min(k_water_train_deep_kd / k0, 0.8 * deepest);
   constexpr f64 k_far = 1e30;
   // tau in double, then the slowness per texel (texel_m / c).
@@ -289,20 +296,22 @@ inline void water_arrival_field(const f32* depth, u32 size, f64 texel_m, f64 per
             const u32 at = static_cast<u32>(j * n + i);
             if (tau[at] == 0.0) continue;
             const f64 a = std::min(i > 0 ? tau[at - 1] : k_far, i + 1 < n ? tau[at + 1] : k_far);
-            const f64 b = std::min(j > 0 ? tau[at - size] : k_far,
-                                   j + 1 < n ? tau[at + size] : k_far);
+            const f64 b =
+                std::min(j > 0 ? tau[at - size] : k_far, j + 1 < n ? tau[at + size] : k_far);
             const f64 f = step[at];
             const f64 lo = std::min(a, b);
             if (!(lo < k_far)) continue;
             f64 t = lo + f;
-            if (std::fabs(a - b) < f) t = 0.5 * (a + b + std::sqrt(2.0 * f * f - (a - b) * (a - b)));
+            if (std::fabs(a - b) < f)
+              t = 0.5 * (a + b + std::sqrt(2.0 * f * f - (a - b) * (a - b)));
             if (t < tau[at]) tau[at] = t;
           }
         }
       }
     }
   }
-  for (u32 i = 0; i < count; ++i) out[i] = tau[i] < k_far ? static_cast<f32>(tau[i]) : 0.0f;
+  for (u32 i = 0; i < count; ++i)
+    out[i] = tau[i] < k_far ? static_cast<f32>(tau[i]) : 0.0f;
 }
 
 inline SwashWave swash_wave(f64 u10, f64 fetch_m) noexcept {

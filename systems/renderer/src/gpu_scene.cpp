@@ -548,10 +548,10 @@ bool find_built_textures(const SourceMesh& mesh, const SceneTextures& known, boo
 
 f64 water_shore_slope(const SceneWaterDepth& map);  // below, with the shore's records
 
-// **A body's swash numbers** (water.md, "The shore"; S94): a closed body's own wind over the smaller
-// of its fetch and its own longest reach (the map's square's diagonal), an open body's the wind its
-// spectrum took; the wind's wave over the fetch, the map's foreshore slope, Stockdon's run-up, the
-// tide. The shore's record and the body's surface (S100) both take them from here.
+// **A body's swash numbers** (water.md, "The shore"; S94): a closed body's own wind over the
+// smaller of its fetch and its own longest reach (the map's square's diagonal), an open body's the
+// wind its spectrum took; the wind's wave over the fetch, the map's foreshore slope, Stockdon's
+// run-up, the tide. The shore's record and the body's surface (S100) both take them from here.
 struct WaterSwashNumbers {
   f64 wind = 0.0;
   f64 fetch_m = 0.0;
@@ -579,8 +579,8 @@ WaterSwashNumbers water_swash_numbers(const SceneWater& water) {
 // body's waves (an open body's spectrum, else the material's four sines), the wind's peak wave and
 // its run-up, the tide, and the arrival field over the depth map's grid — the depth decoded from
 // the map's 16 bits as the GPU's image is, the eikonal's arrival time beside it.
-void water_surface_of(const SceneWater& water, const WaterSwashNumbers& n,
-                      gfx::WaterSurface& out, Vector<f32>& field) {
+void water_surface_of(const SceneWater& water, const WaterSwashNumbers& n, gfx::WaterSurface& out,
+                      Vector<f32>& field) {
   const SceneWaterDepth& map = water.depth;
   out = gfx::WaterSurface{};
   out.origin = map.origin;
@@ -2417,19 +2417,18 @@ bool GpuScene::upload_geometry(const ResolvedSettings& resolved, std::string* er
           waves += wave.amplitude;
         waves += surface.amplitude * 2.1f;
         const f32 padding = water.depth.bank_max + waves + 0.5f;
-        if (padding > instance_table_[i].bounds_padding) instance_table_[i].bounds_padding = padding;
+        if (padding > instance_table_[i].bounds_padding)
+          instance_table_[i].bounds_padding = padding;
         surfaces.push_back(surface);
-        ENGINE_LOG_INFO(log_renderer, "water lifted", log::field("body", water.body.name),
-                        log::field("height_m", surface.height_m),
-                        log::field("period_s", surface.period_s),
-                        log::field("run_up_m", surface.run_up_m),
-                        log::field("field_texels", water.depth.size),
-                        log::field("padding_m", padding));
+        ENGINE_LOG_INFO(
+            log_renderer, "water lifted", log::field("body", water.body.name),
+            log::field("height_m", surface.height_m), log::field("period_s", surface.period_s),
+            log::field("run_up_m", surface.run_up_m), log::field("field_texels", water.depth.size),
+            log::field("padding_m", padding));
       }
-      if (!surfaces.empty() &&
-          !gfx::upload_buffer(device, surfaces.data(),
-                              u64{surfaces.size()} * sizeof(gfx::WaterSurface), k_address,
-                              water_surfaces_, error)) {
+      if (!surfaces.empty() && !gfx::upload_buffer(device, surfaces.data(),
+                                                   u64{surfaces.size()} * sizeof(gfx::WaterSurface),
+                                                   k_address, water_surfaces_, error)) {
         return false;
       }
     }
@@ -3100,7 +3099,8 @@ bool GpuScene::make_flora_poses(std::string* error) {
 // trees sway").
 void GpuScene::put_deform_record(u32 index, const gfx::DeformDesc& desc) noexcept {
   if (index >= deform_capacity_) return;
-  if (deform_table.mapped != nullptr) static_cast<gfx::DeformDesc*>(deform_table.mapped)[index] = desc;
+  if (deform_table.mapped != nullptr)
+    static_cast<gfx::DeformDesc*>(deform_table.mapped)[index] = desc;
   // A scene whose table has per-frame copies for its water (S100) and no skin to rewrite them every
   // frame keeps them in step here, so a tree the tail brings in sways in every slot.
   if (!skinned_ && deform_frames.mapped != nullptr) {

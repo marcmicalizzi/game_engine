@@ -2543,10 +2543,11 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
     }
     deform_table_address = scene.deform_frame_address(slot);
   }
-  // **The water's clock in the pool's records** (S100; water.md, "The mesh"): a lifted body's record
-  // carries the frame's water clock and the tide's phase as float bits in this slot's copy of the
-  // table — the clock reduced in double as the resolve's is (`water_clock`), the tide's phase the
-  // world clock over M2's period — so the pool lifts the mesh to the waves the resolve shades.
+  // **The water's clock in the pool's records** (S100; water.md, "The mesh"): a lifted body's
+  // record carries the frame's water clock and the tide's phase as float bits in this slot's copy
+  // of the table — the clock reduced in double as the resolve's is (`water_clock`), the tide's
+  // phase the world clock over M2's period — so the pool lifts the mesh to the waves the resolve
+  // shades.
   if (scene.water_lifted() && scene.has_frame_table()) {
     gfx::DeformDesc* table = scene.deform_frame(slot);
     const f32 clock = gfx::water_clock(frame.world_time_s);

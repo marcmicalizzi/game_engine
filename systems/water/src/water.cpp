@@ -319,8 +319,8 @@ inline constexpr u32 k_rim_rings_max = 12;
 u32 rim_rings(const Body& body, const scene_gen::Ground& ground, const Vector<Vec2>& edge,
               f32 spacing, f64 height) {
   if (!(height > 0.0)) return 0;
-  const u32 most = std::min(k_rim_rings_max,
-                            std::max(1u, static_cast<u32>(60.0f / std::max(spacing, 1e-3f))));
+  const u32 most =
+      std::min(k_rim_rings_max, std::max(1u, static_cast<u32>(60.0f / std::max(spacing, 1e-3f))));
   u32 rings = 0;
   for (const Vec2& b : edge) {
     const f32 len = length2(b);

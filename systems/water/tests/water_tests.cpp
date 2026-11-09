@@ -60,7 +60,8 @@ water::Body read(const scene::WaterBody& block) {
 
 }  // namespace
 
-// ---- the wave as height (S100; water_swash.h; docs/experiments/shore.md, "The wave as height") ---
+// ---- the wave as height (S100; water_swash.h; docs/experiments/shore.md, "The wave as height")
+// ---
 
 TEST_CASE("water: the dispersion relation at depth, and the deep and shallow limits") {
   f64 worst = 0.0;
@@ -69,7 +70,8 @@ TEST_CASE("water: the dispersion relation at depth, and the deep and shallow lim
     const f64 k0 = omega * omega / gfx::k_swash_g;
     for (const f64 d : {0.02, 0.1, 0.5, 1.0, 3.0, 10.0, 50.0, 500.0}) {
       const f64 k = gfx::water_wavenumber(k0, d);
-      const f64 rel = std::fabs(gfx::k_swash_g * k * std::tanh(k * d) - omega * omega) / (omega * omega);
+      const f64 rel =
+          std::fabs(gfx::k_swash_g * k * std::tanh(k * d) - omega * omega) / (omega * omega);
       worst = std::max(worst, rel);
       CHECK(rel < 1e-6);
       CHECK(k >= k0 * (1.0 - 1e-9));  // a wave only shortens as it shoals
@@ -152,7 +154,8 @@ TEST_CASE("water: the train arrives in sequence along a straight shore") {
           cross_worst = std::max(cross_worst, rel);
         }
       }
-      if (d < 0.0) bank_worst = std::max(bank_worst, std::fabs(static_cast<f64>(tau[at + 1] - tau[at])));
+      if (d < 0.0)
+        bank_worst = std::max(bank_worst, std::fabs(static_cast<f64>(tau[at + 1] - tau[at])));
     }
   }
   CHECK(along_worst < 1e-4);
@@ -163,7 +166,8 @@ TEST_CASE("water: the train arrives in sequence along a straight shore") {
   gfx::water_arrival_field(depth.data(), n, texel, period, again.data());
   CHECK(std::memcmp(tau.data(), again.data(), u64{n} * n * sizeof(f32)) == 0);
   MESSAGE("arrival: along the shore " << along_worst << " s, across it " << cross_worst
-                                      << " of the travel time, over the bank " << bank_worst << " s");
+                                      << " of the travel time, over the bank " << bank_worst
+                                      << " s");
 }
 
 TEST_CASE("water: a body with a wind has its mesh grown over the bank, one without keeps its own") {
@@ -631,8 +635,8 @@ TEST_CASE("water: an open sea's waves are JONSWAP's at the wind, spread about it
   CHECK(peak == doctest::Approx(22.0 * std::cbrt(9.81 * 9.81 / (u10 * fetch))));
   CHECK(alpha == doctest::Approx(0.076 * std::pow(u10 * u10 / (fetch * 9.81), 0.22)));
   // gamma = 1 is Pierson-Moskowitz's shape: the enhancement at the peak is gamma itself.
-  CHECK(gfx::jonswap(peak, alpha, peak) / (alpha * 9.81 * 9.81 / std::pow(peak, 5.0) *
-                                           std::exp(-1.25)) ==
+  CHECK(gfx::jonswap(peak, alpha, peak) /
+            (alpha * 9.81 * 9.81 / std::pow(peak, 5.0) * std::exp(-1.25)) ==
         doctest::Approx(3.3));
   // The variance: the sixteen sines' a^2 / 2 against JONSWAP integrated over the band.
   f64 variance = 0.0;
@@ -663,11 +667,11 @@ TEST_CASE("water: an open sea's waves are JONSWAP's at the wind, spread about it
     const f64 omega = lo + (hi - lo) * (static_cast<f64>(i) + 0.5) / k_steps;
     integral += gfx::jonswap(omega, alpha, peak) * (hi - lo) / k_steps;
   }
-  MESSAGE("10 m/s over 100 km: peak " << peak << " rad/s (" << 2.0 * 3.14159265 * 9.81 / (peak * peak)
-                                      << " m), alpha " << alpha << ", Hs " << 4.0 * std::sqrt(variance)
-                                      << " m from the waves and " << 4.0 * std::sqrt(integral)
-                                      << " m from the band; energy-weighted cos to the wind "
-                                      << mean_cos << ", steepness " << steepness);
+  MESSAGE("10 m/s over 100 km: peak "
+          << peak << " rad/s (" << 2.0 * 3.14159265 * 9.81 / (peak * peak) << " m), alpha " << alpha
+          << ", Hs " << 4.0 * std::sqrt(variance) << " m from the waves and "
+          << 4.0 * std::sqrt(integral) << " m from the band; energy-weighted cos to the wind "
+          << mean_cos << ", steepness " << steepness);
   CHECK(variance == doctest::Approx(integral).epsilon(0.03));
   CHECK(mean_cos > 0.8);
   CHECK(steepness <= gfx::k_water_max_steepness + 1e-6);
