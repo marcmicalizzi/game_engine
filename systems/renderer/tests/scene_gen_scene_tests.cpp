@@ -176,6 +176,42 @@ TEST_CASE("renderer: a scene's placements expand through the registry, standing 
   CHECK(terrain_hash(waves) != terrain_hash(desc.terrain));
 }
 
+TEST_CASE("renderer: instances off the ground are counted at the read, grounded ones never") {
+  // The test ground is a plane at 3 m (T74; renderer.md, "Instances off the ground"). A
+  // `ground: false` instance at y 11 floats (8 m over the plane), one at -2.5 m is buried by 5.5 m,
+  // two within half a metre of the plane count nothing; the same positions with `ground: true`
+  // are relative and count nothing.
+  const test::TempDir tmp("renderer_off_ground");
+  const auto scene = [](const char* instances) {
+    return std::string(R"({"format":"engine.scene.v1","name":"off",)"
+                       R"("meshes":[{"name":"marker","path":"marker.glb"}],"instances":[)") +
+           instances +
+           R"(],"terrain":{"size":17,"extent":20,"dune_height":3,"provider":"scene-gen-test-plane"}})";
+  };
+  const std::string path = tmp.file("scene.json");
+  SceneDesc desc;
+  std::string error;
+  REQUIRE(write_text(
+      path,
+      scene(R"({"mesh":0,"translation":[0,3.5,0]},{"mesh":0,"translation":[1,11,0],"name":"high"},)"
+            R"({"mesh":0,"translation":[2,-2.5,0],"name":"low"},)"
+            R"({"mesh":0,"translation":[3,12,0]},{"mesh":0,"translation":[4,3.4,0]})")));
+  REQUIRE_MESSAGE(read_scene_file(path, desc, error), error);
+  CHECK(desc.instances_floating == 2);
+  CHECK(desc.instances_buried == 1);
+  CHECK(desc.floating_first == 1);
+  CHECK(desc.floating_max_m == doctest::Approx(9.0));  // 12 over the plane at 3
+  CHECK(desc.buried_first == 2);
+  CHECK(desc.buried_max_m == doctest::Approx(5.5));
+  // The same positions with `ground: true` are heights above the surface: none is counted.
+  SceneDesc grounded;
+  REQUIRE(write_text(path, scene(R"({"mesh":0,"translation":[0,5,0],"ground":true},)"
+                                 R"({"mesh":0,"translation":[1,-5,0],"ground":true})")));
+  REQUIRE_MESSAGE(read_scene_file(path, grounded, error), error);
+  CHECK(grounded.instances_floating == 0);
+  CHECK(grounded.instances_buried == 0);
+}
+
 TEST_CASE("renderer: the ground is made first, and the placements follow in the scene's order") {
   const test::TempDir tmp("renderer_scene_gen_order");
   std::string error;

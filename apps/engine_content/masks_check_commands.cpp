@@ -55,10 +55,6 @@ int failed(const std::string& message) {
 
 #if ENGINE_CONTENT_TILESET
 
-std::string resolved(const std::string& dir, const std::string& path) {
-  return path.empty() || io::is_absolute_path(path) ? path : io::join_path(dir, path);
-}
-
 std::string quoted(const std::string& s) {
   std::string out = "\"";
   for (const char ch : s) {
@@ -115,29 +111,10 @@ int check_scene(const std::string& scene_path, std::string ddc) {
   if (!scene_gen::resolve_mask_water({scene.water.data(), scene.water.size()}, *entry.masks,
                                      &error))
     return failed(error);
-  scene::TerrainTileSet& t = *entry.tiles;
-  if (ddc.empty() && !t.ddc.empty()) ddc = resolved(dir, t.ddc);
-  std::string manifest;
-  if (!t.manifest.empty()) {
-    manifest = resolved(dir, t.manifest);
-    if (ddc.empty()) ddc = geometry::find_ddc_root(io::parent_path(manifest));
-  } else {
-    const std::string source = resolved(dir, t.heightfield);
-    if (ddc.empty()) ddc = geometry::find_ddc_root(io::parent_path(source));
-    tileset::BuildOptions o;
-    o.cells = t.cells;
-    o.ring_spacing_mm = t.ring_spacing_mm;
-    o.far_ratio = t.far_ratio;
-    o.far_levels = t.far_levels;
-    o.vertical_scale = static_cast<f64>(t.vertical_scale);
-    o.offset_x_mm = scene_gen::nearest_mm(t.origin.x);
-    o.offset_y_mm = scene_gen::nearest_mm(t.origin.y);
-    o.offset_z_mm = scene_gen::nearest_mm(t.origin.z);
-    tileset::BuildResult set_built;
-    if (!tileset::ensure_tileset(source, o, std::string(), ddc, false, set_built, error))
-      return failed(error);
-    manifest = set_built.manifest;
-  }
+  // The set a load composes, from the same function (T74): the heightfield's cuts included, so the
+  // check and the load cannot disagree about the ground the masks read.
+  std::string manifest, ddc_used;
+  if (!tileset::resolve_tile_set(entry, dir, ddc, ddc_used, manifest, error)) return failed(error);
   tileset::TileSet set;
   if (!set.open(manifest, error)) return failed(error);
   tileset::MaskInputs inputs;
@@ -148,8 +125,15 @@ int check_scene(const std::string& scene_path, std::string ddc) {
   std::string out;
   for (const tileset::OverBudgetTile& tile : report.over)
     out += tile_line(tile) + "\n";
+  // A layer under one quantization step is dropped from its tile, not counted (masks.h,
+  // `k_mask_step`): one line each, the tile, the layer and its peak weight, as a load warns.
+  for (const tileset::DroppedLayer& d : report.dropped) {
+    out += "{\"dropped\":true,\"tile\":[" + std::to_string(d.tx) + "," + std::to_string(d.tz) +
+           "],\"layer\":" + quoted(d.name) + ",\"peak\":" + number(d.peak) + "}\n";
+  }
   out += "{\"summary\":true,\"tiles\":" + std::to_string(report.tiles) +
          ",\"over\":" + std::to_string(report.over.size()) +
+         ",\"dropped\":" + std::to_string(report.dropped.size()) +
          ",\"largest\":" + std::to_string(report.largest) +
          ",\"budget\":" + std::to_string(report.budget) + "}\n";
   std::fwrite(out.data(), 1, out.size(), stdout);
