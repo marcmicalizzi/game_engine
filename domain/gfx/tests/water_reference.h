@@ -307,6 +307,17 @@ inline Dvec3 sun_under(Dvec3 sun_dir, double& cos_l) {
   return {sun_dir.x * eta, cos_l, sun_dir.z * eta};
 }
 
+// water_refract.slang's `water_submerged_sun` (S86): the sun's beam at `depth` under a level
+// surface — Schlick's share of `sun` let in at the sun's angle, dimmed by Beer–Lambert over the
+// refracted path up to the surface, depth / cos l — and `cos_l`, that path's cosine with the
+// vertical.
+inline Dvec3 submerged_sun(Dvec3 extinction, Dvec3 sun_dir, Dvec3 sun, double depth,
+                           double& cos_l) {
+  (void)sun_under(sun_dir, cos_l);
+  const Dvec3 sun_in = sun * (1.0 - schlick(std::max(sun_dir.y, 0.0)));
+  return sun_in * exp3(extinction * -(std::max(depth, 0.0) / cos_l));
+}
+
 // water.slang's `water_volume`.
 inline Dvec3 volume(const Optics& o, const Path& p, Dvec3 n_b, Dvec3 albedo, Dvec3 sun_dir,
                     Dvec3 sun, double sun_surface, double sun_bottom, Dvec3 ambient) {

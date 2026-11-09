@@ -817,8 +817,8 @@ TEST_CASE("gi cache: stage 2's levers one at a time, against the reference at th
   }
   const test::TempDir tmp("engine_gi_levers");
   const Fixture fixtures[] = {box_fixture(tmp.native()), field_fixture(tmp.native(), WorldPos{})};
-  // Stage 1's read, then each lever added in turn: the young cell's parent, the young cells' rays,
-  // the hit's coarser levels and fallback, the faces' blend (all of them: stage 2).
+  // Stage 1's read, each lever alone on it, then each added in turn (the last of those is stage
+  // 2), then stage 2 with the far lift. Stage 2b: the table the experiment page holds.
   struct Levers {
     const char* name;
     const char* confident;
@@ -826,17 +826,25 @@ TEST_CASE("gi cache: stage 2's levers one at a time, against the reference at th
     const char* young;
     const char* fallback;
     const char* faces;
+    const char* far_lift;
   };
   const Levers steps[] = {
-      {"stage 1", "1", "0", "false", "false", "false"},
-      {"+ the young cell reads its parent", "32", "0", "false", "false", "false"},
-      {"+ a full bucket's stale cells freed", "32", "16", "false", "false", "false"},
-      {"+ rays to the young cells", "32", "16", "true", "false", "false"},
-      {"+ the hit's coarser levels and fallback", "32", "16", "true", "true", "false"},
-      {"+ the faces' blend (stage 2)", "32", "16", "true", "true", "true"},
+      {"stage 1", "1", "0", "false", "false", "false", "0"},
+      {"alone: the young cell reads its parent", "32", "0", "false", "false", "false", "0"},
+      {"alone: a full bucket's stale cells freed", "1", "16", "false", "false", "false", "0"},
+      {"alone: rays to the young cells", "1", "0", "true", "false", "false", "0"},
+      {"alone: the hit's coarser levels and fallback", "1", "0", "false", "true", "false", "0"},
+      {"alone: the faces' blend", "1", "0", "false", "false", "true", "0"},
+      {"+ the young cell reads its parent", "32", "0", "false", "false", "false", "0"},
+      {"+ a full bucket's stale cells freed", "32", "16", "false", "false", "false", "0"},
+      {"+ rays to the young cells", "32", "16", "true", "false", "false", "0"},
+      {"+ the hit's coarser levels and fallback", "32", "16", "true", "true", "false", "0"},
+      {"+ the faces' blend (stage 2)", "32", "16", "true", "true", "true", "0"},
+      {"stage 2 + the far lift at 0.5", "32", "16", "true", "true", "true", "0.5"},
+      {"stage 2 + the far lift at 1", "32", "16", "true", "true", "true", "1"},
   };
   constexpr u32 k_steps = sizeof(steps) / sizeof(steps[0]);
-  const ScopedTunable mode("renderer.gi.mode", "bounce");
+  constexpr u32 k_stage2 = 10;  const ScopedTunable mode("renderer.gi.mode", "bounce");
   for (const Fixture& fixture : fixtures) {
     ReferenceFrame reference;
     f64 flip[k_steps];
@@ -846,6 +854,7 @@ TEST_CASE("gi cache: stage 2's levers one at a time, against the reference at th
       const ScopedTunable young("renderer.gi.young_rays", steps[s].young);
       const ScopedTunable fallback("renderer.gi.hit_fallback", steps[s].fallback);
       const ScopedTunable faces("renderer.gi.face_blend", steps[s].faces);
+      const ScopedTunable far_lift("renderer.gi.far_lift", steps[s].far_lift);
       Rig rig;
       REQUIRE_MESSAGE(rig.build(gpu.device, fixture.desc, s == 0), rig.error);
       CapturedFrame shot;
@@ -873,6 +882,6 @@ TEST_CASE("gi cache: stage 2's levers one at a time, against the reference at th
                            << " against the reference's " << mean_luma(reference.color));
     }
     // Stage 2 is at least as near the reference as stage 1 on both fixtures.
-    CHECK(flip[k_steps - 1] <= flip[0]);
+    CHECK(flip[k_stage2] <= flip[0]);
   }
 }

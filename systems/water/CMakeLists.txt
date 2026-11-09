@@ -24,9 +24,13 @@ engine_module_tests(NAME water
   SOURCES tests/water_tests.cpp tests/water_scene_tests.cpp tests/fill_tests.cpp tests/shore_scene_tests.cpp tests/size_table.cpp tests/swash_tests.cpp tests/swash_scene_tests.cpp
           tests/channel_tests.cpp tests/channel_scene_tests.cpp tests/reflect_scene_tests.cpp
           tests/wet_ground_scene_tests.cpp
+          tests/refract_scene_tests.cpp
   DEPS renderer gfx tunables)
 if(TARGET engine_water_tests)
   target_compile_definitions(engine_water_tests PRIVATE ENGINE_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
+  # refract_scene_tests.cpp holds the hit's sun under the water to gfx's double-precision water
+  # reference (S86), which lives with gfx's tests.
+  target_include_directories(engine_water_tests PRIVATE ${CMAKE_SOURCE_DIR}/domain/gfx/tests)
 endif()
 # W67: the native authored source and water's ground view must describe the same bottom.
 if(TARGET engine_water_tests AND TARGET engine::tileset)

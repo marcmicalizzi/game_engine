@@ -447,7 +447,50 @@ tunables::Bool shadow_hybrid_fit{
     "Under the hybrid, fit the cascades from the ray distance out rather than from the near plane "
     "(R103; renderer.md, Rays near, maps far)"};
 
+// ---- R139: the sun's masks by region and by distance (renderer.md, "The sun's masks by region
+// and by distance"). Off by default: the sides return the milliseconds and move crown-sized
+// blocks of shade, the grounded distance moves almost nothing and returns nothing (the page).
+tunables::Float shadow_solid_far{
+    "renderer.shadow.solid_far", 0.0, 0.0, 1000.0,
+    "The sun's ray takes its casters as opaque from a receiver whose pixel covers this many of the "
+    "sun's penumbrae under a canopy renderer.shadow.canopy_m up; 0 never (renderer.md, The sun's "
+    "masks by region and by distance)"};
+tunables::Float shadow_canopy_m{
+    "renderer.shadow.canopy_m", 10.0, 0.0, 1000.0,
+    "The canopy's height over its receivers, metres, for renderer.shadow.solid_far: a leaf's "
+    "shadow is blurred over this times the sun's 9.3 mrad"};
+tunables::Float shadow_solid_sides{
+    "renderer.shadow.solid_sides", -1.0, -1.0, 100000.0,
+    "In the side columns (renderer.resolve.half_rate_sides' columns where the half pass has any, "
+    "else the frame's outer thirds) the sun's ray takes its casters as opaque from a receiver this "
+    "many metres from the eye; 0 everywhere in the sides, negative never (renderer.md, The sun's "
+    "masks by region and by distance)"};
+enum class SunRegionChoice : u32 { AsSet, None, Sides, Far, Both, Cycle };
+constexpr const char* k_sun_region_choices[] = {"as_set", "none", "sides", "far", "both", "cycle"};
+tunables::Enum<SunRegionChoice> shadow_region_rule{
+    "renderer.shadow.region_rule", SunRegionChoice::AsSet, k_sun_region_choices,
+    "Measurement only: the sun's solid-caster regions this frame takes - as set, none, the sides "
+    "alone, the distance alone, both; cycle: frame f takes (f / 8) % 4 of none, sides, far, both "
+    "(renderer.md, The sun's masks by region and by distance)"};
+
 }  // namespace
+
+SunRegionRule sun_region_rule(u64 frame_index) noexcept {
+  SunRegionRule set;
+  set.far_factor = static_cast<f32>(shadow_solid_far.get());
+  set.canopy_m = static_cast<f32>(shadow_canopy_m.get());
+  set.side_m = static_cast<f32>(shadow_solid_sides.get());
+  SunRegionChoice choice = shadow_region_rule.get();
+  if (choice == SunRegionChoice::AsSet) return set;
+  if (choice == SunRegionChoice::Cycle) {
+    choice = static_cast<SunRegionChoice>(
+        1u + static_cast<u32>((frame_index / gfx::k_resolve_stops) % k_sun_region_sweeps));
+  }
+  SunRegionRule out = set;
+  if (choice == SunRegionChoice::None || choice == SunRegionChoice::Far) out.side_m = -1.0f;
+  if (choice == SunRegionChoice::None || choice == SunRegionChoice::Sides) out.far_factor = 0.0f;
+  return out;
+}
 
 bool shadow_opaque_rays_tunable() noexcept { return shadow_opaque_rays.get(); }
 f32 shadow_light_tolerance_tunable() noexcept {

@@ -44,6 +44,7 @@
 #include <domain/assets/gltf.h>
 #include <domain/geometry/cluster_file.h>
 #include <domain/geometry/cluster_lod.h>
+#include <domain/scene_gen/exclusion.h>
 #include <domain/scene_gen/scene_gen.h>
 
 #include <schemas/channels.h>
@@ -60,7 +61,8 @@ namespace engine::channels {
 
 // Bumped when a change makes an old network or recipe wrong: it is in every recipe's hash.
 // 2 (W89): the bed is the cut's flat bed and no bank piece is placed.
-inline constexpr u32 k_channels_version = 2;
+// 3 (W90): pieces by reach (boulder steps, nothing on bedrock and colluvial), mouths, confluences.
+inline constexpr u32 k_channels_version = 3;
 
 // A point of a channel's line, downstream order: where it is (y the ground under it, metres), its
 // bankfull width and depth, the bed's fall per metre there, and the contributing area.
@@ -84,6 +86,34 @@ struct ChannelLink {
   f64 meander = 0;    // the share of the meander amplitude the slope allowed, 0 to 1
   bool head = false;  // the link begins at a channel head
   u64 seed = 0;
+  // **W90** (channels.md, "Reaches", "Mouths", "Confluences"), one per point of `line`:
+  Vector<u8> reach;        // the reach's `ChannelReach` code
+  Vector<f32> step_depth;  // how far a step-pool's pool lowers the cut's bed below its line, m
+  Vector<f64> bed;  // the cut's bed, metres: the thalweg's, the steps', the fan's, the grade's
+  // The steps' crests (indices into `line`) and their heights: where the boulders stand.
+  Vector<u32> step_at;
+  Vector<f32> step_height;
+  // The points the water and the pieces run to: `line.size()`, less for a tributary whose last
+  // points lie within the trunk's banks.
+  u32 keep = 0;
+  // The link this one joins as a tributary (its index), or ~0u.
+  u32 trunk = ~0u;
+  // Ends at a water body's shoreline (the last point), whose level is `mouth_level`; begins at
+  // one (a lake's outlet).
+  bool mouth = false;
+  bool outlet = false;
+  f64 mouth_level = 0;
+};
+
+// What the water bodies did to a network (W90): the links that end at a shoreline, the links
+// dropped whole (begun under a body and never out of it), the outlets split off, and the points
+// taken out from under the water.
+struct ChannelWaterCounts {
+  u32 mouths = 0;
+  u32 dropped = 0;
+  u32 outlets = 0;
+  u32 confluences = 0;
+  u64 points_removed = 0;
 };
 
 // The network over a layer's region: the lattice, its routing, and the links.
@@ -101,6 +131,7 @@ struct ChannelNetwork {
   Vector<u32> heads;          // channel heads, ascending index
   Vector<ChannelLink> links;  // by their first cell, ascending
   f64 length_m = 0;           // every link's line, summed
+  ChannelWaterCounts water;   // W90
   f64 area_m2() const noexcept {
     const f64 s = static_cast<f64>(spacing_mm) / 1000.0;
     return static_cast<f64>(width - 1) * s * static_cast<f64>(depth - 1) * s;
@@ -114,8 +145,17 @@ bool layer_in_range(const ChannelLayer& layer, std::string& error);
 // layer's region standing on `ground`. `jobs` (nullable) samples the lattice a row a job; the
 // result does not depend on it. `seed` is mixed into every link's (the world seed for the
 // generator). Refuses an absent or non-finite ground and an exceeded budget; `out` clears on error.
+// `water` (nullable; W90): the scene's water bodies, read through `Exclusion::excluded_mm`'s water
+// kind — a link ends at the first shoreline it meets (a mouth), a link begun under a body is
+// dropped, and what leaves a body again is an outlet of its own; null, or with no bodies, nothing
+// is cut.
 bool plan_channels(const ChannelLayer& layer, const scene_gen::Ground& ground, u64 seed,
-                   jobs::JobSystem* jobs, ChannelNetwork& out, std::string& error);
+                   jobs::JobSystem* jobs, ChannelNetwork& out, std::string& error,
+                   const scene_gen::Exclusion* water = nullptr);
+
+// The reach of a fall per metre by the layer's bounds (Montgomery & Buffington 1997); `colluvial`
+// picks colluvial over bedrock above `slope_steep`.
+ChannelReach reach_of(const ChannelLayer& layer, f64 slope, bool colluvial);
 
 // **The description the water draws** (`engine.scene.WaterChannel` version 1, declared by the water
 // capability): one object per link whose last point drains at least `min_area_m2`, in link order,

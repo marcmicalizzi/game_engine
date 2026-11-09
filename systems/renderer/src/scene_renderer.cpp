@@ -13,6 +13,7 @@
 #include <systems/renderer/lighting.h>
 #include <systems/renderer/scene_renderer.h>
 #include <systems/renderer/water_reflect.h>
+#include <systems/renderer/water_refract.h>
 
 #include <algorithm>
 #include <cmath>
@@ -568,6 +569,7 @@ bool SceneRenderer::create(const gfx::Device& device, GpuScene& scene,
   slot_counted_.assign(desc.frames_in_flight, u8{1});
   rt_drop_folded_.assign(desc.frames_in_flight, ~u64{0});
   slot_rt_capacity_.assign(desc.frames_in_flight, 0);
+  slot_water_.assign(desc.frames_in_flight, SlotWater{});
   slot_terrain_bytes_.assign(desc.frames_in_flight, 0);
   slot_cpu_.assign(desc.frames_in_flight, FrameCpu{});
   slot_visibility_.assign(desc.frames_in_flight, -1.0f);
@@ -1789,6 +1791,15 @@ void SceneRenderer::collect_slot(u32 slot) {
   last.rt_references = stats_.rt.references;
   last.rt_cache_built = stats_.rt.cache_built;
   last.rt_micromaps = rt_micromaps_;
+  if (slot < slot_water_.size()) {
+    const SlotWater& water = slot_water_[slot];
+    last.water_reflect = water.reflect;
+    last.water_reflect_views = water.reflect_views;
+    last.water_reflect_level_m = water.reflect_level_m;
+    last.water_refract = water.refract;
+    last.water_refract_views = water.refract_views;
+    last.water_refract_floor_m = water.refract_floor_m;
+  }
   last.rt_cache_evicted = static_cast<u32>(stats_.rt.cache_evictions - rt_evictions_folded_);
   rt_evictions_folded_ = stats_.rt.cache_evictions;
   ++stats_.folded;
@@ -2733,6 +2744,23 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
   stats_.water_reflect = water_reflect;
   stats_.water_reflect_views = 0;
   stats_.water_reflect_level_m = water_mirror ? water_level : 0.0f;
+  // ---- what is under the water (S86; water_refract.h, water.md "What is under the water") ------
+  //
+  // The same frames, at the volume tier: the water's pixels trace their refracted view to the
+  // ground, and where the frame keeps casters every view's cull carries one more caster volume —
+  // what that view's refraction reaches under the water outside its frustum.
+  const bool water_refract = shadows && scene.has_water() &&
+                             settings.water_quality == WaterQuality::High &&
+                             water_refract_tunable(frame.frame_index);
+  f32 refract_level = 0.0f;
+  f32 refract_floor = 0.0f;
+  f32 refract_path = 0.0f;
+  const bool water_submerged =
+      water_refract && casters && water_refract_volume_tunable() &&
+      scene.water_refract_body(frame_origin, refract_level, refract_floor, refract_path);
+  stats_.water_refract = water_refract;
+  stats_.water_refract_views = 0;
+  stats_.water_refract_floor_m = water_submerged ? refract_floor : 0.0f;
 
   // The occlusion term's debug counters (gfx::k_hidden_*; `renderer.lod.occluded_histogram`),
   // behind this slot's cull blocks: what the frame that last had the slot counted — the slot is the
@@ -2980,6 +3008,18 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
         ++count;
         ++stats_.water_reflect_views;
       }
+      // What its refraction reaches under the water outside the frustum (S86), behind them all.
+      if (water_submerged && count < gfx::k_max_caster_volumes) {
+        const f32 spread_by_depth = k_water_refract_spread * (refract_level - refract_floor);
+        const f32 spread_by_path = k_water_refract_path_spread * refract_path;
+        if (fit_water_refract_volume(
+                view.view_proj, refract_level, refract_floor,
+                spread_by_depth < spread_by_path ? spread_by_depth : spread_by_path,
+                gfx::k_water_reflect_m, caster_bounds, volumes[count])) {
+          ++count;
+          ++stats_.water_refract_views;
+        }
+      }
       if (count > 0) set_caster_volumes(cull, std::span<const CasterVolume>(volumes, count));
     }
     if (occlusion) {
@@ -3168,6 +3208,34 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
     }
     // The stop word's counting bit (R115 stage 2): the sun ray's candidates and masks, as codes.
     if (rule.count) resolve.resolve_stop |= gfx::k_resolve_count_rays;
+    // ---- R139: the sun's casters solid by region and by distance (renderer.md, "The sun's masks
+    // by region and by distance"). Only where the masks are tested: the far rule's distance is
+    // this view's, from its pixels per radian, so a pixel past it covers `far_factor` of the
+    // sun's penumbrae under the canopy. The sides are R126's columns where its half pass has any
+    // (`half_sides`), so the two regions coincide to the column, and otherwise the sides' own
+    // share, a surround's outer thirds on any frame (`gfx::k_sun_solid_sides_share`) — so the rule
+    // does not depend on whether another tunable is on. The sides' distance is in metres as set.
+    // Either off sets no bit.
+    if ((resolve.shadow_flags & gfx::k_shadow_alpha_masks) != 0) {
+      const SunRegionRule region = sun_region_rule(frame.frame_index);
+      const f32 far_m =
+          gfx::sun_solid_distance(region.far_factor, region.canopy_m, views_[v].proj_scale);
+      if (far_m > 0.0f) {
+        resolve.shadow_flags |= gfx::k_shadow_sun_solid_far;
+        resolve.sun_solid_distance = far_m;
+      }
+      if (region.side_m >= 0.0f) {
+        const f32 share = half_sides > 0.0f ? half_sides : gfx::k_sun_solid_sides_share;
+        const gfx::HalfRateWindow sides = gfx::half_rate_window(
+            share, false, width_, views_[v].rect.x, views_[v].rect.width, targets_.views[v].width);
+        if (sides.columns > 0) {
+          resolve.shadow_flags |= gfx::k_shadow_sun_solid_sides;
+          resolve.sun_solid_side_distance = region.side_m;
+          resolve.sun_solid_x0 = sides.x0;
+          resolve.sun_solid_x1 = sides.x1;
+        }
+      }
+    }
     resolve.shadow_bias = lighting.shadow_bias;
     resolve.shadow_bias_steps = lighting.shadow_bias_steps;
     // A light too faint to test (R115; renderer.md): read by the resolve only while the lights'
@@ -3193,6 +3261,14 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
     if (water_reflect && resolve.scene != gfx::k_no_scene)
       resolve.shadow_flags |=
           gfx::k_shadow_water_reflect | water_reflect_shadow_flags(frame.frame_index);
+    // And the volume tier's refraction rays (S86; water_refract.slang).
+    if (water_refract && resolve.scene != gfx::k_no_scene)
+      resolve.shadow_flags |= gfx::k_shadow_water_refract;
+    if (slot < slot_water_.size()) {
+      slot_water_[slot] =
+          SlotWater{stats_.water_reflect, stats_.water_reflect_views, stats_.water_reflect_level_m,
+                    stats_.water_refract, stats_.water_refract_views, stats_.water_refract_floor_m};
+    }
     resolve.ground_detail = ground_detail_address;
     // The scene grid's UV frame, which a world tile's material lookup places the tile's corner in
     // (its UVs are from the corner; `terrain_uv_frame` keeps the numbers inside 32 bits).

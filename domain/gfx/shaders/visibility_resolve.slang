@@ -183,13 +183,21 @@ struct ResolveParams {
   float gi_cell_scale;
   uint gi_rays;  // the sample pass's ray budget (R69 stage 2)
   // The wet band (gfx::ResolveParams::water_shores; docs/subsystems/water.md, "The shore"): the
-  // scene's water bodies' WaterShore records and their count. Only the water modules declare the
-  // row, so the plain ones are the bytes they were.
+  // scene's water bodies' WaterShore records and their count. Only the water modules name the
+  // row; the plain ones pad it, for R139's row behind it.
 #ifdef RESOLVE_WATER
   uint64_t water_shores;
   uint water_shore_count;
   float water_tide_phase;  // S94: the M2 tide's phase, [0, 1)
+#else
+  uint4 water_shores_unread;
 #endif
+  // The sun's casters solid by region and by distance (gfx::ResolveParams::sun_solid_distance;
+  // renderer.md, "The sun's masks by region and by distance"; R139): read only under the two bits.
+  float sun_solid_distance;
+  float sun_solid_side_distance;
+  uint sun_solid_x0;
+  uint sun_solid_x1;
 };
 
 // **The resolve's split** (gfx::ResolveStop; renderer.md, "Where the resolve's time goes"; R115).
@@ -297,6 +305,10 @@ static const uint k_shadow_alpha_masks = 8u;
 static const uint k_shadow_hybrid = 16u;
 // The masked shadow query reads the micromaps two-state (gfx::k_shadow_micromap_2state, R120).
 static const uint k_shadow_micromap_2state = 32u;
+// The sun's casters solid past a distance, and in the side columns (gfx::k_shadow_sun_solid_far,
+// _sides; R139).
+static const uint k_shadow_sun_solid_far = 512u;
+static const uint k_shadow_sun_solid_sides = 1024u;
 // RAY_FLAG_FORCE_OMM_2_STATE, SPIR-V's ForceOpacityMicromap2StateEXT.
 static const uint k_ray_flag_force_omm_2_state = 0x400u;
 
@@ -415,6 +427,26 @@ bool candidate_keeps_counted(MaskTables tables, uint64_t clusters, uint64_t tria
   return mask_keeps_level0(mask_material(tables, material), uv);
 }
 
+// **The sun's casters solid by region and by distance** (gfx::k_shadow_sun_solid_far/_sides;
+// renderer.md, "The sun's masks by region and by distance"; R139): whether the sun's ray from
+// `origin` takes every caster as opaque. The receiver's distance is its length from this view's
+// eye, the frame's origin; the side columns are those of the pixel being shaded (`g_fade_pixel`,
+// set by the entry point and the half pass alike). The thresholds are numbers the renderer worked
+// out from the tunables and the view, so the test is two compares and no table. The caster's
+// height is not known before the traversal, so the distance stands for a canopy of one height per
+// scene (the renderer's `renderer.shadow.canopy_m`).
+bool sun_casters_solid(ResolveParams* params, float3 origin) {
+  const uint rule = params->shadow_flags & (k_shadow_sun_solid_far | k_shadow_sun_solid_sides);
+  if (rule == 0u) return false;
+  float threshold = (rule & k_shadow_sun_solid_far) != 0 ? params->sun_solid_distance : 1e30;
+  if ((rule & k_shadow_sun_solid_sides) != 0 &&
+      (g_fade_pixel.x < params->sun_solid_x0 || g_fade_pixel.x >= params->sun_solid_x1)) {
+    threshold = min(threshold, params->sun_solid_side_distance);
+  }
+  const float3 d = origin - params->camera.xyz;
+  return dot(d, d) >= threshold * threshold;
+}
+
 // Is anything between `origin` and a light `t_max` away in direction `direction`? One ray query
 // with the terminate-on-first-hit flag, which is what a shadow ray wants: any hit ends the
 // traversal and no hit shader runs. False without the shadow bit, without a scene, when the light
@@ -453,10 +485,16 @@ bool shadow_ray_blocked(ResolveParams* params, uint bit, float3 origin, float3 d
     // set only where the scene baked micromaps on a device with the extension; the module does not
     // declare RayTracingOpacityMicromapEXT, which a device without it would refuse, and the
     // two-state test in alpha_mask_tests.cpp is what shows the driver honours the bit.
+    // **Solid by region and by distance** (R139, above): the sun's ray past the receiver's
+    // threshold forces its candidates opaque, so the loop below sees none and samples no mask. The
+    // two-state bit stays beside it: the micromaps' transparent micro-triangles are culled before
+    // the ray's flags apply and an unknown one keeps its centre's answer, so only a masked
+    // triangle without a micromap turns solid.
     const uint masked_flags =
         RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH |
         ((params->shadow_flags & k_shadow_micromap_2state) != 0 ? k_ray_flag_force_omm_2_state
-                                                                : 0u);
+                                                                : 0u) |
+        (bit == k_shadow_sun && sun_casters_solid(params, origin) ? RAY_FLAG_FORCE_OPAQUE : 0u);
     RayQuery<RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH> masked;
     masked.TraceRayInline(g_scenes[NonUniformResourceIndex(params->scene)], masked_flags,
                           k_ray_mask_caster, ray);
@@ -669,6 +707,7 @@ float shadow_visibility(ResolveParams* params, uint bit, uint owner, float3 posi
 // The reflection of the scene (R129; water_reflect.slang): the ray-traced water modules alone.
 #ifdef RESOLVE_RAY_SHADOWS
 #include "water_reflect.slang"
+#include "water_refract.slang"  // S86: what is under the water
 #endif
 // **The volume tier** (`k_material_water_volume`; water.slang, "the volume tier"): what is under
 // the surface, seen through it. The refracted view is marched against the body's depth map, the
@@ -764,8 +803,13 @@ float3 water_pixel_volume(ResolveParams* params, SceneGeometry geo, InstanceDesc
 #ifdef RESOLVE_RAY_SHADOWS
   reflected = water_reflection(params, s, r, ray_bias, reflected);  // R129: the scene, or the sky
 #endif
-  const float3 under = water_volume(o, path, n_b, albedo, params->sun.xyz, sun, sun_surface,
-                                    sun_bottom, ambient);
+  float3 under = water_volume(o, path, n_b, albedo, params->sun.xyz, sun, sun_surface,
+                              sun_bottom, ambient);
+#ifdef RESOLVE_RAY_SHADOWS
+  // S86: what stands in the water, met by the refracted view before the ground (water_refract.slang).
+  under = water_refraction(params, geo, o, path, s, local, has_map, map, sun, sun_surface, ambient,
+                           ray_bias, under);
+#endif
   const float3 radiance = water_radiance_volume(w, n, view, float2(edge, s.uv.y), params->sun.xyz,
                                                sun * sun_surface, reflected, under);
   return water_foam_over(radiance, foam, sun * sun_surface, params->sun.xyz, ambient);

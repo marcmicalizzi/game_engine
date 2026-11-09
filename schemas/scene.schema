@@ -1375,7 +1375,7 @@ struct WaterBody @version(5) {
 /// points falls at 45 degrees or steeper the water is in free fall and that stretch is a waterfall.
 /// Refused with a sentence: fewer than two points, arrays of unequal length, a width or depth that
 /// is not positive, a slope that is negative where the line descends.
-struct WaterChannel @version(1) {
+struct WaterChannel @version(2) {
   name: string
   /// The centreline, downstream, world positions; each point's y is the **water surface's**
   /// height there.
@@ -1404,6 +1404,10 @@ struct WaterChannel @version(1) {
   scattering: vec3?
   transmission: f32 = 1
   turbidity: f32 = 0
+  /// **The reach** at each point (W90; channels.md, "Reaches"): `engine.channels.ChannelReach`'s
+  /// code, 0 dune-ripple, 1 pool-riffle, 2 plane-bed, 3 step-pool, 4 cascade, 5 bedrock, 6
+  /// colluvial (Montgomery & Buffington 1997), one per point; empty where the writer did not say.
+  reach: u8[] @since(2)
 }
 
 /// One bed of a formation's sequence (`Formation`; renderer.md, "Formation bands"; the grounding,
@@ -1886,7 +1890,9 @@ struct FrameWorld @version(1) {
 /// Version 16: `rt_built_capacity`, the capacity the frame's structures were built against (R128).
 ///
 /// Version 17: `gpu_ms` carries the world-space cache's passes, `gi_trace` and `gi_fold` (R69).
-struct FrameRecord @version(17) {
+///
+/// Version 18: the water's reflection and refraction, `water_reflect*` and `water_refract*` (S86).
+struct FrameRecord @version(18) {
   /// Which pass over the path, from 0.
   repeat: u32 = 0
   /// The path frame, from 0; an interactive session's frame, from 0.
@@ -2029,6 +2035,19 @@ struct FrameRecord @version(17) {
   /// Version 15 (R130): every millisecond of the frame's own interval, by what the frame's thread
   /// did (see `FrameSections`); null from a host that does not measure it (`render.benchmark`).
   sections: FrameSections? = null @since(15)
+  /// Version 18 (S86): the water's traced reflection and refraction (`renderer::Stats::water_*`;
+  /// docs/subsystems/water.md, "Reflections of the scene" and "What is under the water"). Whether
+  /// the frame's resolve traced the water's reflection rays, how many views' culls carried the
+  /// mirrored caster volume, and its plane, metres above the eye (0 without one) (R129).
+  water_reflect: bool = false @since(18)
+  water_reflect_views: u32 = 0 @since(18)
+  water_reflect_level_m: f32 = 0 @since(18) @unit(m)
+  /// Whether the frame's resolve traced the volume tier's refraction rays, how many views' culls
+  /// carried the submerged caster volume, and its floor, metres above the eye (0 without one).
+  /// The two volumes' casters are in `shadow_casters`: the cull does not tell them apart.
+  water_refract: bool = false @since(18)
+  water_refract_views: u32 = 0 @since(18)
+  water_refract_floor_m: f32 = 0 @since(18) @unit(m)
 }
 
 /// What a flight's frame loop allocated on the frame's thread, over its recorded frames (every
