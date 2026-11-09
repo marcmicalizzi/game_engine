@@ -784,8 +784,9 @@ struct Tree @version(3) {
 
 /// Grass ground cover (G90, docs/experiments/grass-sward.md). Dimensions come from the named
 /// species profile; budget controls sampled blades, never silently enlarges their near width.
-struct Sward @version(2) {
-  /// tall_fescue, perennial_ryegrass, timothy, cocksfoot, wood_melick, wavy_hairgrass, bent, red_fescue.
+struct Sward @version(3) {
+  /// tall_fescue, perennial_ryegrass, timothy, cocksfoot, wood_melick, wavy_hairgrass, bent, red_fescue,
+  /// tufted_hairgrass, mat_grass (G137).
   species: string = "perennial_ryegrass"
   /// Independent family seed. Variant uses a separate stream, 0..15.
   seed: u64 = 1
@@ -825,6 +826,17 @@ struct Sward @version(2) {
   cut_variation: f32 = 0.0 @since(2)
   /// Fit coarse width and card threshold to four-view near coverage at cook time.
   fit_lods: bool = true @since(2)
+  /// G137, a tussock (caespitose) form: crowns on a lattice of this spacing, metres, 0 or 0.2..1, each
+  /// crown jittered by at most 0.4 of what the spacing leaves beyond its radius, so the gap
+  /// between neighbours' roots is at least a fifth of (spacing - 2 clump_radius_m). 0: the sod layout.
+  tussock_spacing_m: f32 = 0.0 @unit(m) @since(3)
+  /// A tussock's raised base, metres, 0..0.3: a crown's roots rise on a dome, the centre this high
+  /// and the rim at the ground. Needs tussock_spacing_m.
+  crown_base_m: f32 = 0.0 @unit(m) @since(3)
+  /// Share of the blades spread between a tussock's crowns as short turf, 0..0.9. Needs
+  /// tussock_spacing_m; their length fraction is drawn from 0..between_growth.
+  between_share: f32 = 0.0 @since(3)
+  between_growth: f32 = 0.25 @since(3)
 }
 
 
@@ -1030,17 +1042,55 @@ struct FloraFile @version(10) {
   regeneration: Regeneration? @since(10)
 }
 
+/// G137: a sward's growth form (Briske and Derner 1998: caespitose bunch grasses against
+/// rhizomatous and stoloniferous sod formers), crossed with its stature. `any` is a family the
+/// stature rule never chooses between: an entry whose families are all `any` places what it did.
+enum SwardForm : u8 {
+  any
+  tall_sod
+  tall_tussock
+  short_sod
+  short_tussock
+}
 /// One density class, shared patches in two resident forms. Paths resolve relative to the scene.
-struct SwardFamily {
+struct SwardFamily @version(2) {
   /// Rendered density fraction: (0,1], ascending across the placement entry's families.
   density: f32 = 1.0
   /// Equal nonempty lists, 1..16 variants. Cards are cooked distance forms of the same meshes.
   near: string[]
   cards: string[]
+  /// The growth form this family is a density class of (G137). Either every family of an entry
+  /// names a form or none does; each named form's families ascend to a density of 1 on their own.
+  form: SwardForm = any @since(2)
+}
+/// G137's stature rule (flora.md, "Growth forms by site"): two scores per cell, tall against
+/// short and tussock against sod, each a weighted sum of the site's fields and a value noise of the
+/// cell's place, positive choosing tall (tussock). Defaults: grass-sward.md, "Growth forms".
+struct SwardStature {
+  /// A value noise's lattice, metres, 4..200: the scale of a meadow's mosaic (a stated 20 m).
+  mosaic_m: f32 = 20.0 @unit(m)
+  /// The noise's weight in both scores; it spans -1..1.
+  noise: f32 = 1.0
+  /// Constant terms: 0 and 0 split a level, dry, open meadow evenly between tall and short and
+  /// lean it to sod (-0.35).
+  tall_bias: f32 = 0.0
+  tussock_bias: f32 = -0.35
+  /// Wetness (the mask's wet band, or a stream's nearness over its riparian reach, 0..1).
+  wet_tall: f32 = 1.5
+  wet_tussock: f32 = 1.5
+  /// Steepness: 0 below slope_lo_deg rising on a smoothstep to 1 at slope_hi_deg.
+  slope_lo_deg: f32 = 15.0 @unit(deg)
+  slope_hi_deg: f32 = 30.0 @unit(deg)
+  steep_tall: f32 = -2.0
+  steep_tussock: f32 = 0.3
+  /// Shade: the weight of palette layer shade_layer at the cell (255: none in the paint).
+  shade_layer: u32 = 255
+  shade_tall: f32 = 0.5
+  shade_tussock: f32 = -1.0
 }
 /// The sward placement registry's parameters. The paint already contains shade, wet margins,
 /// slopes and excluded trails; do not apply those factors twice at runtime.
-struct SwardPlacements {
+struct SwardPlacements @version(2) {
   seed: u64 = 1
   /// Patch edge, metres: 1 or 2. Must divide the context tile size.
   cell_m: f32 = 1.0 @unit(m)
@@ -1059,4 +1109,15 @@ struct SwardPlacements {
   /// patch upright, as before.
   max_tilt_deg: f32 = 15.0 @unit(deg)
   families: SwardFamily[]
+  /// G137: the stature rule, read only when the families name forms.
+  stature: SwardStature @since(2)
+  /// G137, the meadow's forbs: herb meshes (a path each, 1..16; empty: none) placed in a share of
+  /// the cells that hold a patch, in the nearest ring only, upright and turned by the cell's hash.
+  forbs: string[] @since(2)
+  /// Forb cells per grass cell, 0..1: 0.33 a species-rich hay meadow's, 0.1 an improved pasture's
+  /// (grass-sward.md, "The meadow's forbs").
+  forb_share: f32 = 0.33 @since(2)
+  /// Forbs a tile keeps at most, 0..4096: every forb is a run of the frame's pose table (the herb's
+  /// motion kind is `parts`), so a tile keeps the ones of lowest hash.
+  forb_tile_cap: u32 = 256 @since(2)
 }

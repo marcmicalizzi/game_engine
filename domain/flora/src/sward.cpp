@@ -1,9 +1,11 @@
 #include "kit.h"
 
+#include <core/hash/hash.h>
 #include <domain/flora/sward.h>
 #include <foundation/image/decode.h>
 
 #include <algorithm>
+#include <cmath>
 #include <utility>
 
 namespace engine::flora {
@@ -19,6 +21,10 @@ constexpr SwardProfile k_profiles[] = {
     {"wavy_hairgrass", .05f, .20f, .0003f, .0008f, 0, 0, "open panicle"},
     {"bent", .02f, .15f, .001f, .004f, 0, 0, "open panicle"},
     {"red_fescue", .03f, .40f, .0005f, .001f, 0, 0, "panicle"},
+    // G137: Kew GrassBase (Clayton et al.): Deschampsia cespitosa blades 10-60 cm x 2-5 mm, densely
+    // caespitose; Nardus stricta blades 4-30 cm x 0.5-1 mm, caespitose (grass-sward.md).
+    {"tufted_hairgrass", .10f, .60f, .002f, .005f, 0, 0, "open panicle"},
+    {"mat_grass", .04f, .30f, .0005f, .001f, 0, 0, "one-sided spike"},
 };
 struct Blade {
   D3 root, heading;
@@ -166,6 +172,17 @@ bool sward_in_range(const Sward& p, std::string& error) {
     field = "cut_height_m (0..1)";
   else if (!(p.cut_variation >= 0 && p.cut_variation <= .9f))
     field = "cut_variation (0..0.9)";
+  else if (!(p.tussock_spacing_m == 0 || (p.tussock_spacing_m >= .2f && p.tussock_spacing_m <= 1 &&
+                                          p.tussock_spacing_m >= 2 * p.clump_radius_m)))
+    field = "tussock_spacing_m (0, or 0.2..1 and at least 2 clump_radius_m)";
+  else if (!(p.crown_base_m >= 0 && p.crown_base_m <= .3f) ||
+           (p.crown_base_m > 0 && p.tussock_spacing_m == 0))
+    field = "crown_base_m (0..0.3, a tussock's only)";
+  else if (!(p.between_share >= 0 && p.between_share <= .9f) ||
+           (p.between_share > 0 && p.tussock_spacing_m == 0))
+    field = "between_share (0..0.9, a tussock's only)";
+  else if (!(p.between_growth >= 0 && p.between_growth <= 1))
+    field = "between_growth (0..1)";
   else if (!(p.straw_share >= 0 && p.straw_share <= 1))
     field = "straw_share (0..1)";
   else if (!(p.card_cutoff >= .05f && p.card_cutoff <= .95f))
@@ -226,33 +243,79 @@ bool solve_sward(const Sward& p, assets::MeshData& out, TreeReport* report, std:
   const f64 cell = static_cast<f64>(p.cell_m);
   const f64 half = cell * .5;
   const u64 seed = p.seed ^ (static_cast<u64>(p.variant) * 0x9e3779b97f4a7c15ull);
+  // G137, the tussock layout: `t_side` crowns a side on a lattice of the spacing, each holding
+  // `per_crown` of the first `crown_blades` blades, and the rest spread between them as short turf.
+  // A crown moves at most 0.4 of what the spacing leaves beyond its radius, so neighbours' roots
+  // stay at least a fifth of (spacing - 2 radius) apart. The sod layout below is untouched.
+  const bool tussock = p.tussock_spacing_m > 0;
+  const u32 between =
+      tussock ? static_cast<u32>(static_cast<f64>(count) * static_cast<f64>(p.between_share)) : 0;
+  const u32 crown_blades = count - between;
+  const u32 t_side =
+      tussock ? std::max(1u, static_cast<u32>(cell / static_cast<f64>(p.tussock_spacing_m) + .5))
+              : 1u;
+  const u32 per_crown = (crown_blades + t_side * t_side - 1) / (t_side * t_side);
+  const u32 t_crowns = tussock ? (crown_blades + per_crown - 1) / per_crown : 0;
+  const f64 crown_r = static_cast<f64>(p.clump_radius_m);
   for (u32 i = 0; i < count; ++i) {
     Rng rng = stream_of(seed, i + 1);
-    const u32 crown = i / leaves_per_crown;
-    const u32 tiller = i / p.leaves_per_tiller;
-    Rng crng = stream_of(seed ^ 0x63726f776eull, crown + 1);
-    Rng trng = stream_of(seed ^ 0x74696c6c6572ull, tiller + 1);
-    const u32 row_count = std::min(side, crowns - (crown / side) * side);
-    const u32 rows = (crowns + side - 1) / side;
-    const D3 centre{((crown % side + crng.unit()) / row_count - .5) * cell, 0,
-                    ((crown / side + crng.unit()) / rows - .5) * cell};
-    const f64 shoot_angle = trng.unit() * 2 * k_pi;
-    const f64 radius = std::sqrt(trng.unit()) * static_cast<f64>(p.clump_radius_m);
-    const f64 spread = cell / side * .45;
-    const f64 gather = static_cast<f64>(p.clumpiness);
     Blade b{};
-    b.root = centre + D3{lerp(trng.symmetric() * spread, det::cos(shoot_angle) * radius, gather), 0,
-                         lerp(trng.symmetric() * spread, det::sin(shoot_angle) * radius, gather)};
+    u32 leaf = i % p.leaves_per_tiller;
+    f64 shoot_angle = 0;
+    if (!tussock) {
+      const u32 crown = i / leaves_per_crown;
+      const u32 tiller = i / p.leaves_per_tiller;
+      Rng crng = stream_of(seed ^ 0x63726f776eull, crown + 1);
+      Rng trng = stream_of(seed ^ 0x74696c6c6572ull, tiller + 1);
+      const u32 row_count = std::min(side, crowns - (crown / side) * side);
+      const u32 rows = (crowns + side - 1) / side;
+      const D3 centre{((crown % side + crng.unit()) / row_count - .5) * cell, 0,
+                      ((crown / side + crng.unit()) / rows - .5) * cell};
+      shoot_angle = trng.unit() * 2 * k_pi;
+      const f64 radius = std::sqrt(trng.unit()) * static_cast<f64>(p.clump_radius_m);
+      const f64 spread = cell / side * .45;
+      const f64 gather = static_cast<f64>(p.clumpiness);
+      b.root =
+          centre + D3{lerp(trng.symmetric() * spread, det::cos(shoot_angle) * radius, gather), 0,
+                      lerp(trng.symmetric() * spread, det::sin(shoot_angle) * radius, gather)};
+    } else if (i < crown_blades) {
+      const u32 crown = i / per_crown;
+      const u32 local = i - crown * per_crown;
+      leaf = local % p.leaves_per_tiller;
+      const u32 tiller = local / p.leaves_per_tiller;
+      Rng crng = stream_of(seed ^ 0x7475737365ull, crown + 1);
+      Rng trng = stream_of(seed ^ 0x74696c6c6572ull, (static_cast<u64>(crown) << 20) + tiller + 1);
+      const f64 s = cell / t_side;
+      const f64 slack = std::max(0.0, s - 2 * crown_r) * .4;
+      const D3 centre{(crown % t_side + .5) * s - half + crng.symmetric() * slack, 0,
+                      (crown / t_side + .5) * s - half + crng.symmetric() * slack};
+      shoot_angle = trng.unit() * 2 * k_pi;
+      const f64 radius = std::sqrt(trng.unit()) * crown_r;
+      // The raised base: a dome over the crown, its rim at the ground.
+      const f64 rim = crown_r > 0 ? radius / crown_r : 0;
+      b.root = centre + D3{det::cos(shoot_angle) * radius,
+                           static_cast<f64>(p.crown_base_m) * (1 - rim * rim),
+                           det::sin(shoot_angle) * radius};
+    } else {
+      // Short turf between the crowns, single leaves anywhere in the cell.
+      Rng trng = stream_of(seed ^ 0x6265747765656eull, i + 1);
+      shoot_angle = trng.unit() * 2 * k_pi;
+      b.root = D3{(trng.unit() - .5) * cell, 0, (trng.unit() - .5) * cell};
+      leaf = 0;
+    }
+    const bool turf = tussock && i >= crown_blades;
     // Leaves alternate around a shared basal shoot; a little twist avoids identical fans.
-    const f64 angle = shoot_angle + (i % p.leaves_per_tiller % 2) * k_pi + .15 * rng.symmetric();
+    const f64 angle = shoot_angle + (leaf % 2) * k_pi + .15 * rng.symmetric();
     b.heading = {det::cos(angle), 0, det::sin(angle)};
-    b.length = lerp(static_cast<f64>(profile.length_min_m), static_cast<f64>(profile.length_max_m),
-                    lerp(static_cast<f64>(p.growth_min), static_cast<f64>(p.growth), rng.unit()));
+    const f64 grow =
+        turf ? static_cast<f64>(p.between_growth) * rng.unit()
+             : lerp(static_cast<f64>(p.growth_min), static_cast<f64>(p.growth), rng.unit());
+    b.length =
+        lerp(static_cast<f64>(profile.length_min_m), static_cast<f64>(profile.length_max_m), grow);
     b.width = lerp(static_cast<f64>(profile.width_min_m), static_cast<f64>(profile.width_max_m),
                    rng.unit());
-    const f64 outer = p.leaves_per_tiller > 1
-                          ? static_cast<f64>(i % p.leaves_per_tiller) / (p.leaves_per_tiller - 1)
-                          : 0;
+    const f64 outer =
+        !turf && p.leaves_per_tiller > 1 ? static_cast<f64>(leaf) / (p.leaves_per_tiller - 1) : 0;
     b.lean = .2 + .7 * outer + .35 * rng.unit();
     b.droop = .65 * outer;
     b.twist = .2 * rng.symmetric();
@@ -268,8 +331,13 @@ bool solve_sward(const Sward& p, assets::MeshData& out, TreeReport* report, std:
   // Roots belong to the cell; foliage may overhang it. Confining the entire leaf created bald
   // seams between tiled stands. Actual mesh bounds include the overhang for culling/streaming.
   // Translate a whole crown at a boundary so individual shoots keep their shared roots.
-  for (u32 crown = 0; crown < crowns; ++crown) {
-    const u32 first = crown * leaves_per_crown, end = std::min(count, first + leaves_per_crown);
+  const u32 groups_of_roots = tussock ? t_crowns + between : crowns;
+  for (u32 crown = 0; crown < groups_of_roots; ++crown) {
+    u32 first = crown * leaves_per_crown, end = std::min(count, first + leaves_per_crown);
+    if (tussock) {
+      first = crown < t_crowns ? crown * per_crown : crown_blades + (crown - t_crowns);
+      end = crown < t_crowns ? std::min(crown_blades, first + per_crown) : first + 1;
+    }
     D3 lo{1e30, 0, 1e30}, hi{-1e30, 0, -1e30};
     for (u32 i = first; i < end; ++i) {
       const D3 v = blades[i].root;
@@ -575,6 +643,35 @@ void fit_lods(assets::MeshData& mesh, TreeLevels& levels, u32 coarse_first,
   levels.levels[1].alpha_cutoff = best;
 }
 }  // namespace
+SwardForm sward_site_form(const SwardStature& r, const SwardSite& s) noexcept {
+  const f64 lo = static_cast<f64>(r.slope_lo_deg), hi = static_cast<f64>(r.slope_hi_deg);
+  const f64 steep =
+      hi > lo ? smoothstep01((s.slope_deg - lo) / (hi - lo)) : (s.slope_deg >= lo ? 1 : 0);
+  const f64 wet = clamp01(s.wet), shade = clamp01(s.shade);
+  const f64 tall = static_cast<f64>(r.tall_bias) +
+                   static_cast<f64>(r.noise) * (2 * s.noise_tall - 1) +
+                   static_cast<f64>(r.wet_tall) * wet + static_cast<f64>(r.steep_tall) * steep +
+                   static_cast<f64>(r.shade_tall) * shade;
+  const f64 tussock =
+      static_cast<f64>(r.tussock_bias) + static_cast<f64>(r.noise) * (2 * s.noise_tussock - 1) +
+      static_cast<f64>(r.wet_tussock) * wet + static_cast<f64>(r.steep_tussock) * steep +
+      static_cast<f64>(r.shade_tussock) * shade;
+  if (tall > 0) return tussock > 0 ? SwardForm::tall_tussock : SwardForm::tall_sod;
+  return tussock > 0 ? SwardForm::short_tussock : SwardForm::short_sod;
+}
+f64 sward_mosaic_noise(u64 seed, f64 x_m, f64 z_m, f64 scale_m) noexcept {
+  const f64 fx = x_m / scale_m, fz = z_m / scale_m;
+  const f64 x0 = std::floor(fx), z0 = std::floor(fz);
+  const i64 ix = static_cast<i64>(x0), iz = static_cast<i64>(z0);
+  const auto ease = [](f64 t) { return t * t * (3 - 2 * t); };
+  const f64 tx = ease(fx - x0), tz = ease(fz - z0);
+  const auto node = [seed](i64 a, i64 b) {
+    const u64 h = hash_combine(hash_combine(seed, static_cast<u64>(a)), static_cast<u64>(b));
+    return static_cast<f64>(h >> 11) / 9007199254740992.0;
+  };
+  return lerp(lerp(node(ix, iz), node(ix + 1, iz), tx),
+              lerp(node(ix, iz + 1), node(ix + 1, iz + 1), tx), tz);
+}
 SwardCoverage measure_sward_coverage(const assets::MeshData& mesh, const TreeLevels& levels) {
   if (levels.levels.size() != 2 || mesh.materials.empty()) return {};
   return measure_sward_impl(mesh, levels, card_image_for(mesh, levels), 256, 0, 3);

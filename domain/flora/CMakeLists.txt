@@ -27,6 +27,11 @@ engine_module(NAME flora LAYER domain OPTIONAL WHOLE_ARCHIVE
 
 engine_module_tests(NAME flora
   SOURCES tests/flora_tests.cpp tests/species_tests.cpp tests/allometry_tests.cpp
-          tests/impostor_tests.cpp tests/understory_tests.cpp tests/sward_tests.cpp tests/sward_exclusion_tests.cpp
+          tests/impostor_tests.cpp tests/understory_tests.cpp tests/sward_tests.cpp tests/sward_exclusion_tests.cpp tests/sward_forms_tests.cpp
           tests/determinism_tests.cpp tests/size_table.cpp tests/growth_rules_tests.cpp tests/maturity_tests.cpp tests/roots_tests.cpp tests/shrub_growth_tests.cpp tests/shrub_far_form_tests.cpp tests/alpine_tests.cpp
           tests/regeneration_tests.cpp tests/axis_taper_tests.cpp)
+# The growth-form tests read the meadow's recipes from content/test-scenes/meadow (G137). The target
+# is absent where the capability is switched off (ENGINE_MINIMAL, ENGINE_WITH_FLORA=OFF).
+if(TARGET engine_flora_tests)
+  target_compile_definitions(engine_flora_tests PRIVATE ENGINE_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
+endif()

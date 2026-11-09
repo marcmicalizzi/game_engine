@@ -1,0 +1,19 @@
+{
+  "species": "sward",
+  "sward": {
+    "species": "mat_grass",
+    "seed": 13704,
+    "blades_m2": 512,
+    "segments": 3,
+    "growth_min": 0.3,
+    "growth": 0.9,
+    "leaves_per_tiller": 4,
+    "tillers_per_clump": 4,
+    "clump_radius_m": 0.05,
+    "tussock_spacing_m": 0.25,
+    "between_share": 0.35,
+    "between_growth": 0.2,
+    "triangle_budget": 4200,
+    "card_px": 128
+  }
+}

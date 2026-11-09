@@ -197,11 +197,62 @@ that the brief proposed is not placed, because ring 2 holds about ten times ring
 pair budget already withholds tiles in the owner's 4K run (renderer.md, "The pair accounting").
 Shade and excluded regions can be cooked into paint before runtime, so the generator does not
 apply those factors twice. The meadow cook uses an authored canopy-light proxy and mask regions;
-wetness-dependent height/colour and slope-dependent stature are not implemented. Earlier
+stature by wetness, slope and shade is the growth-form rule below (G137); wetness-dependent colour is
+not implemented. Earlier
 footprints exclude the entire patch, but do not repaint the ground beneath the exclusion.
 Place this entry last: the host still derives footprints from mesh bounds, so a zero-footprint
 override needs an engine seam. It is not hidden behind the collider flag.
 
+### Growth forms by site (G137)
+
+**Four forms, as recipes** ([grounding](../experiments/grass-sward.md#growth-forms-the-stature-rule-and-the-meadows-forbs-g137-2026-11-08)):
+tall sod, tall tussock, short sod and short tussock (`content/test-scenes/meadow/tall-sod`,
+`tall-tussock`, `short-sod`, `short-tussock.flora.json`), each from a source-bounded profile — red
+fescue, tufted hair-grass (`tufted_hairgrass`, new), bent and mat-grass (`mat_grass`, new). Sward v3
+adds what a tussock needs and the old knobs could not say, and `k_sward_version` is 6:
+
+- `tussock_spacing_m` (0, or 0.2–1 m and at least two `clump_radius_m`): the blades gather on a
+  lattice of crowns at this spacing, `round(cell / spacing)` a side, each crown holding its share of
+  the blades within `clump_radius_m` of its centre. A crown moves at most 0.4 of what the spacing
+  leaves beyond its radius, so neighbours' roots stay at least a fifth of (spacing − 2 radius) apart
+  (a quarter, the first try, left the crowns in visible rows on v36): the ground between them shows. Its tillers keep their shared roots as the sod's do.
+- `crown_base_m` (0–0.3 m, a tussock's only): a crown's roots rise on a dome, its centre this high and
+  its rim at the ground — the raised base of an old tussock, hidden by the outer leaves.
+- `between_share` (0–0.9, a tussock's only) and `between_growth` (0–1, default 0.25): that share of the
+  blades is short turf spread anywhere in the cell, single leaves from the bottom `between_growth` of
+  the profile's range.
+
+With `tussock_spacing_m` 0 the sod layout is the bytes it was (the variant family's pins in
+`sward_tests.cpp` hold it, and the forms tests compare a recipe spelling every new field at its
+default).
+
+**The form by site, per cell.** A `SwardFamily` names its `form` (`any`, the default, or one of the
+four); an entry names forms for every family or none (refused otherwise), and each form's density
+classes ascend to weight 1 on their own. Where it names them, the placement asks the **stature rule**
+(`SwardStature` in the entry, `sward_site_form` in `sward.h`) at the patch's moved centre and then
+interpolates the density between that form's classes as before. Its inputs are what the scene already
+hands the generator: the mask's wetness at the cell (a water body's `wet_m` band) or a stream's
+nearness, `(1 − riparian_factor) / (1 − k_riparian_floor)`, whichever is larger; the slope from central
+differences at half a cell; the weight of the palette layer `shade_layer` where the paint has one
+(255, the default, none — v36's paint has no such layer); and two value noises of the place on a
+`mosaic_m` lattice (20 m) seeded from the world's and the entry's seeds. Scores and defaults are in the
+grounding page. A form the entry has no family for falls to the nearest it has: the other habit, then
+the other stature, then both. Everything is a function of the cell and the fields, so the ring and the
+request order never participate. **An entry that names no forms and no forbs places exactly what it
+did**: the family pick is the same arithmetic over a list that is every family (the forms tests pin
+eeb8077c's placements of a graded, sloped tile to the bit).
+
+**The meadow's forbs.** `forbs` (1–16 herb mesh paths; empty, the default, none) stand in a
+`forb_share` of the cells that drew a patch (0.33 a hay meadow's, 0.1 a pasture's, grounded on the
+same page), from stream 4 of the patch's hash: within 0.35 of a cell a side of the patch's moved
+centre (inside the circle the patch cleared earlier footprints by), asked of the exclusion at their own
+point, upright, turned by their own stream, their ID the cell's with the top bit set (so an entry with
+forbs is refused past a 31-bit cell space). The herb's motion kind is `parts` — every forb is a run of
+the part-pose table and is posed on the CPU each frame — so a tile keeps at most `forb_tile_cap`
+(256) of lowest hash, and forbs stand only in representation 0 (the near ring). Ring 1 draws cards and
+no forbs. On a 64 m tile of 1 m cells the default cap binds at about 6 % of the cells where the share asks
+33 %; the v36 measurement (grass-sward.md) sets 1,024 and shows the cost: the deformed-vertex pool
+0.08–0.18 ms more at 1080p with no relayout of the deform table.
 **Capability contract.** Flora remains optional. It adds only a dependency on the nonoptional
 `scene_gen` registry and `Ground::masks`; no renderer pass depends on flora. Ground forwarding
 exposes existing W72 data. Baking uses the flora baker and geometry's authored-level DAG/form
@@ -218,7 +269,9 @@ tests and the matching Linux container. G90 stays in progress until visual, stre
 and release pair/shadow budgets are accepted.
 **Not yet.** Seasonal phenology and seed-head geometry; measured patch sky AO and calibrated
 thickness/colour; sparse-family card coverage; exact per-texel density conservation;
-wetness/slope morphology and slope-conforming patches; zero-footprint
+slope-conforming patches; tussock spacing and base height from a field measurement (authored today);
+a `field`-kind meadow forb, so forbs need no pose-table run and can stand past the near ring and past
+`forb_tile_cap` (a request: the herb's solver and the field pass are not this module's sward); zero-footprint
 host support; field sway, persistent contact/recovery fields and caster policy on the engine side; far-ground wind sheen. The
 current-main shadow stand-in is CSM with a short shadow distance, never claimed as final policy.
 

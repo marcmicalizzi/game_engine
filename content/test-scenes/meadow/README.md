@@ -44,3 +44,23 @@ runtime contact/recovery field; low graphics quality must pay none of its alloca
 The solver's roots and arc weights are ready for that consumer, but this branch does not add it.
 ComfyUI PBR comparisons remain possible after silhouette/coverage is sound; every accepted leaf
 appearance must also feed the card and ground bake consistently, with provenance.
+
+## Growth forms and the meadow's forbs (G137)
+
+Four recipes are the sward's growth forms, each from a source-bounded profile
+([grounding](../../../docs/experiments/grass-sward.md#growth-forms-the-stature-rule-and-the-meadows-forbs-g137-2026-11-08),
+[contract](../../../docs/subsystems/flora.md#growth-forms-by-site-g137)):
+
+| Recipe | Form | Species | Leaves | Layout |
+|---|---|---|---|---|
+| `tall-sod` | tall sod | red fescue | 22–40 cm × 0.5–1 mm | 768 blades/m², dispersed shoots, 6,400-triangle cap |
+| `tall-tussock` | tall tussock | tufted hair-grass | 30–60 cm × 2–5 mm | crowns 0.5 m apart, 0.12 m radius, 5 cm raised base, 30 % short turf between; 5,300 cap |
+| `short-sod` | short sod | bent | 4–8.5 cm × 1–4 mm | 1,024 blades/m², two-segment ribbons; 6,400 cap |
+| `short-tussock` | short tussock | mat-grass | 12–27 cm × 0.5–1 mm | crowns 0.25 m apart, 0.05 m radius, 35 % turf between; 4,200 cap |
+
+`oxeye-daisy.flora.json` is the meadow's forb: the understory's herb at 0.5 m (*Leucanthemum
+vulgare*'s stems are 20–90 cm across the floras). A sward placement entry names a form per family
+(`"form": "tall_tussock"`) and the forbs (`"forbs": ["oxeye-daisy.clusters"], "forb_share": 0.33`);
+the stature rule then picks each cell's form from its wetness, slope, shade and a 20 m mosaic.
+The crown spacings, radii and raised base are authored, not measured; the caps are explicit
+candidate budgets, not a claim about frame cost.

@@ -1,0 +1,8 @@
+{
+  "species": "herb",
+  "herb": {
+    "seed": 13705,
+    "height_m": 0.5,
+    "detail_tier": "rich"
+  }
+}
