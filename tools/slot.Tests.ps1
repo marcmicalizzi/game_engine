@@ -104,8 +104,18 @@ try {
   $proc = $null
   try {
     $shell = Split-Path -Parent $pwshExe
-    New-Item -ItemType Directory -Force -Path (Join-Path $s2 'build/pwsh') | Out-Null
-    Copy-Item -Path (Join-Path $shell '*') -Destination (Join-Path $s2 'build/pwsh') -Recurse -Force
+    $dest = Join-Path $s2 'build/pwsh'
+    New-Item -ItemType Directory -Force -Path $dest | Out-Null
+    # The files, not the links: the Linux install carries symbolic links for its remoting client
+    # (libcrypto.so.1.0.0 and its kind) that point outside the directory and dangle in a container,
+    # and a wildcard Copy-Item stops at the first of them (gate b57, 2026-11-09, all three
+    # containers); the copy of pwsh that sleeps here needs none of them.
+    Get-ChildItem -LiteralPath $shell -Recurse -Force -File | Where-Object { -not $_.LinkType } | ForEach-Object {
+      $rel = $_.FullName.Substring($shell.Length).TrimStart('\', '/')
+      $to = Join-Path $dest $rel
+      New-Item -ItemType Directory -Force -Path (Split-Path -Parent $to) | Out-Null
+      Copy-Item -LiteralPath $_.FullName -Destination $to -Force
+    }
     $held = Join-Path $s2 ('build/pwsh/' + (Split-Path -Leaf $pwshExe))
     $proc = Start-Process -FilePath $held -ArgumentList '-NoProfile', '-Command', 'Start-Sleep 60' -PassThru
     Start-Sleep -Milliseconds 800
