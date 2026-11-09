@@ -583,6 +583,23 @@ OverBudgetTile over_budget_tile(const MaskInputs& in, i32 tx, i32 tz, i64 s, u32
   return t;
 }
 
+// The layers a tile drops for weighing under one step (`k_mask_step`) whose peak is over half a
+// step: the ones the old rounding stored as one 255th. Anything lighter was never stored and is not
+// worth a line.
+void note_dropped(const MaskInputs& in, i32 tx, i32 tz, const Vector<u32>& used,
+                  const Vector<f64>& peak, Vector<DroppedLayer>& dropped) {
+  for (u32 k = 0; k < used.size(); ++k) {
+    if (used[k] != 0 || peak[k] < 0.5 * k_mask_step) continue;
+    DroppedLayer d;
+    d.tx = tx;
+    d.tz = tz;
+    d.layer = k;
+    d.name = in.palette[k];
+    d.peak = peak[k];
+    dropped.push_back(d);
+  }
+}
+
 }  // namespace
 
 std::string describe_over_budget(const MaskBudgetReport& report, u32 cap) {
@@ -631,6 +648,7 @@ bool check_mask_budget(const TileSet& set, const MaskInputs& in, MaskBudgetRepor
   for (i32 tz = r.tz0; tz <= r.tz1; ++tz) {
     for (i32 tx = r.tx0; tx <= r.tx1; ++tx) {
       Vector<u32> used(f.palette, 0u);
+      Vector<f64> peak(f.palette, 0.0);
       for (u32 b = 0; b < n0; ++b) {
         for (u32 a = 0; a < n0; ++a) {
           const i64 xm = (static_cast<i64>(tx) * c + a) * s;
@@ -640,13 +658,15 @@ bool check_mask_budget(const TileSet& set, const MaskInputs& in, MaskBudgetRepor
           const u32 p = b * n0 + a;
           for (u32 k = 0; k < f.palette; ++k) {
             dense[p * f.palette + k] = w[k];
-            if (quantize(w[k]) != 0) used[k] = 1;
+            peak[k] = std::max(peak[k], w[k]);
+            if (w[k] >= k_mask_step) used[k] = 1;
           }
         }
       }
       Vector<u32> table;
       for (u32 k = 0; k < f.palette; ++k)
         if (used[k] != 0) table.push_back(k);
+      note_dropped(in, tx, tz, used, peak, out.dropped);
       ++out.tiles;
       out.largest = std::max(out.largest, static_cast<u32>(table.size()));
       if (table.size() > in.budget)
@@ -707,6 +727,7 @@ bool build_mask_level(const TileSet& set, const MaskInputs& in, const std::strin
     for (i32 tx = tx0; tx <= tx1; ++tx) {
       bool any_wet = false;
       Vector<u32> used(f.palette, 0u);
+      Vector<f64> peak(f.palette, 0.0);
       for (u32 b = 0; b < n0; ++b) {
         for (u32 a = 0; a < n0; ++a) {
           const i64 xm = (static_cast<i64>(tx) * c + a) * s;
@@ -716,7 +737,8 @@ bool build_mask_level(const TileSet& set, const MaskInputs& in, const std::strin
           const u32 p = b * n0 + a;
           for (u32 k = 0; k < f.palette; ++k) {
             dense[static_cast<u32>(p) * f.palette + k] = w[k];
-            if (quantize(w[k]) != 0) used[k] = 1;
+            peak[k] = std::max(peak[k], w[k]);
+            if (w[k] >= k_mask_step) used[k] = 1;
           }
           wet[p] = point_wet;
           if (quantize(point_wet) != 0) any_wet = true;
@@ -725,6 +747,7 @@ bool build_mask_level(const TileSet& set, const MaskInputs& in, const std::strin
       Vector<u32> table;
       for (u32 k = 0; k < f.palette; ++k)
         if (used[k] != 0) table.push_back(k);
+      note_dropped(in, tx, tz, used, peak, out.dropped);
       if (table.empty() && !any_wet) continue;
       if (table.size() > in.budget) {
         // Every tile over is named, not the first: the scan goes on and the sentence lists them.

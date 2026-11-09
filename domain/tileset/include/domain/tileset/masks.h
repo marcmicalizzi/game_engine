@@ -23,7 +23,17 @@ inline constexpr std::string_view k_mask_format = "engine.tileset.masks";
 // Bumped whenever a build's output for the same set and inputs changes. 2 (2026-10-24, roadmap
 // W76): the level is one archive (`<spacing_mm>.masks`) instead of a file a tile; every tile's
 // bytes are what its file held.
-inline constexpr u32 k_mask_version = 2;
+// 3 (2026-11-08, roadmap T74): a layer whose peak weight over a tile is under one quantization step
+// no longer takes a channel (see `k_mask_step`), so a tile that stored a layer at a weight of one
+// 255th by rounding up now drops it.
+inline constexpr u32 k_mask_version = 3;
+// **One quantization step of a layer's weight as stored** (a mask texel's channel is a u8 of
+// `round(weight * 255)`). A layer counts toward a tile's palette budget, and takes a channel, only
+// when its peak weight over the tile's points is at least one step; under it the layer is dropped
+// from that tile and named in a warning (`DroppedLayer`) when its peak is over half a step, which
+// the old rounding stored as 1. A tile still over the budget with every layer at or over a step is
+// refused exactly as before: the budget never widens.
+inline constexpr f64 k_mask_step = 1.0 / 255.0;
 
 // **The authored inputs**, as a build takes them: the block with its image paths resolved and its
 // water bodies' outlines copied in (`scene_gen::resolve_mask_water`), the palette's names in order,
@@ -40,6 +50,13 @@ struct MaskInputs {
 // a sentence, for a terrain with masks and no materials.
 bool mask_inputs(const scene::Terrain& entry, std::string_view dir, MaskInputs& out,
                  std::string& error);
+// **The tile set a load composes, for a load and a check alike** (T74): the set the terrain's
+// `tiles` block names, or its heightfield built with the block's options and `cuts` into the
+// derived-data cache on a miss. `ddc_in` (may be empty) overrides the block's `ddc`; `ddc` is the
+// root used and `manifest` the set's manifest. The `tiles` ground provider and `engine-content
+// masks check` both call this, so the check cannot compose the uncut ground a load does not.
+bool resolve_tile_set(const scene::Terrain& entry, std::string_view dir, const std::string& ddc_in,
+                      std::string& ddc, std::string& manifest, std::string& error);
 // False, with a sentence naming the field, for inputs a build cannot take: a spacing outside 250 to
 // 4000 mm, tile cells not a power of two in 4..256, a budget outside 1..4, a palette over 254 or
 // with a name empty or twice, a name the palette does not have, a region with no outline or two, a
@@ -50,6 +67,14 @@ bool mask_key(const TileSetManifest& set, const MaskInputs& in, u64& out, std::s
 // "<ddc>/tilemasks/<key>".
 std::string mask_cache_dir(std::string_view ddc, u64 key);
 
+// A layer dropped from a tile for weighing under one step: the tile, the layer and its peak weight.
+struct DroppedLayer {
+  i32 tx = 0, tz = 0;
+  u32 layer = 0;
+  std::string name;
+  f64 peak = 0;
+};
+
 struct MaskBuildResult {
   std::string manifest;
   u64 key = 0;
@@ -57,6 +82,8 @@ struct MaskBuildResult {
   u32 tiles = 0;
   u64 bytes = 0;
   u64 hash = 0;
+  // Filled by a build that ran (empty on a hit: the warning was given when the level was built).
+  Vector<DroppedLayer> dropped;
 };
 
 // **The palette budget, checked without a cook** (roadmap T72): one layer a tile names, with its
@@ -76,6 +103,7 @@ struct OverBudgetTile {
 };
 struct MaskBudgetReport {
   Vector<OverBudgetTile> over;  // in tile order, row by row
+  Vector<DroppedLayer> dropped;  // layers under one step, in tile order, with a peak over half one
   u32 tiles = 0;                // tiles scanned
   u32 largest = 0;              // the most layers any tile names
   u32 budget = 0;

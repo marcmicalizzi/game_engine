@@ -45,6 +45,11 @@ namespace engine::renderer {
 
 namespace {
 
+// How far off the ground an authored instance with `ground: false` may stand before the load
+// counts it (T74): a tree's roots and a rock's burial are within a metre; past it the author
+// either means it or the ground moved under an absolute `y`.
+constexpr f64 k_off_ground_m = 1.0;
+
 // G135: false leaves the placement generators' exclusion unbuilt, so a scene places as it did
 // before the holes, channels and water were read (scene_gen.md, "Exclusion"): the before of a
 // before and after, and the way out should a scene want grass in a bed. Read once, when the file is
@@ -2222,7 +2227,20 @@ bool read_scene_file(const std::string& path, const SceneFileOptions& options, S
     // instance's f64 `origin`, and `transform.position` stays zero, so nothing rounds it to a float
     // on the way to the instance's cell. A version 2 file's numbers read as they are written.
     instance.origin = entry.translation;
-    if (entry.ground) instance.origin.y += ground_at_world(entry.translation);
+    if (entry.ground) {
+      instance.origin.y += ground_at_world(entry.translation);
+    } else if (out.terrain.enabled) {
+      // T74: an instance placed at an absolute `y` over a ground that has moved since (the forest
+      // proof of concept floated trees 26 m when its landform changed). Counted, not refused.
+      const f64 off = entry.translation.y - ground_at_world(entry.translation);
+      if (off > k_off_ground_m) {
+        if (out.instances_floating++ == 0) out.floating_first = i;
+        if (off > out.floating_max_m) out.floating_max_m = off;
+      } else if (-off > k_off_ground_m) {
+        if (out.instances_buried++ == 0) out.buried_first = i;
+        if (-off > out.buried_max_m) out.buried_max_m = -off;
+      }
+    }
     instance.transform.rotation =
         normalize(quat_from_axis_angle(Vec3{0.0f, 1.0f, 0.0f}, radians(entry.yaw_deg)) *
                   normalize(entry.rotation));
@@ -2236,6 +2254,21 @@ bool read_scene_file(const std::string& path, const SceneFileOptions& options, S
       instance.animation.phase = entry.animation->phase;
     }
     out.instances.push_back(instance);
+  }
+  if (out.instances_floating + out.instances_buried > 0) {
+    // One line a scene (T74): how many authored instances stand well off the ground they are
+    // over, the worst of each and where the first is, so a landform that moved under a scene
+    // whose instances are not relative is seen at the load and not in a picture.
+    const auto named = [&](u32 index) {
+      return file.instances[index].name.empty() ? std::to_string(index) : file.instances[index].name;
+    };
+    ENGINE_LOG_WARN(
+        log_renderer, "instances off the ground",
+        log::field("floating", out.instances_floating), log::field("floating_max_m", out.floating_max_m),
+        log::field("floating_first", out.instances_floating > 0 ? named(out.floating_first) : std::string()),
+        log::field("buried", out.instances_buried), log::field("buried_max_m", out.buried_max_m),
+        log::field("buried_first", out.instances_buried > 0 ? named(out.buried_first) : std::string()),
+        log::field("threshold_m", k_off_ground_m));
   }
   // Scatters, expanded here from their seeds, so the renderer sees plain instances and two
   // machines place the same ones. **The centre is a `worldpos`** (Scatter version 2, ADR-0053):
@@ -2402,6 +2435,8 @@ bool load_scene(const SceneDesc& desc, SceneData& out, std::string& error) {
   pool.emplace(content_build::job_config(resolved.load_jobs));
   out.load.meshes = resolved.meshes.size();
   out.load.threads = pool->total_worker_count() + 1;
+  out.load.instances_floating = resolved.instances_floating;
+  out.load.instances_buried = resolved.instances_buried;
   content_build::ImageIdentities identities(resolved.cache ? resolved.ddc : std::string(),
                                             materials::pack_at(resolved.materials));
   {

@@ -2542,6 +2542,8 @@ JsonValue load_summary(const renderer::SceneLoadReport& load,
   out.set("meshes", JsonValue(load.meshes));
   out.set("threads", JsonValue(load.threads));
   out.set("meshes_ms", JsonValue(load.meshes_ms));
+  out.set("instances_floating", JsonValue(load.instances_floating));
+  out.set("instances_buried", JsonValue(load.instances_buried));
   JsonValue textures = JsonValue::object();
   textures.set("references", JsonValue(load.references));
   textures.set("distinct", JsonValue(load.textures));

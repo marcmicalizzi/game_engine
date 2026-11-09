@@ -837,6 +837,10 @@ the heat maps, at 32 samples), before and after, whose meshes have no image twic
 it already had from the derived-data root and uploading them; a release build spends less on each,
 and the same ninety-three fewer.
 
+## Instances off the ground
+
+A scene file's instance with `ground: true` stands `y` above the terrain's surface; one with `ground: false` stands at `y`, absolute. The second is how an author's landform can move under a scene unseen: the forest proof of concept moved its landform and left trees at the old heights, 26 m up (roadmap T74, engine-needs item 19). `read_scene_file` therefore compares, for every `ground: false` instance of a scene with a terrain, its `y` with the ground's surface at its x and z (`ground_at_world`, the query a grounded instance already makes, at the whole millimetre) and counts those more than `k_off_ground_m` = 1 m above (**floating**) and below (**buried**): a tree's roots and a rock's burial are within a metre, past it the author means it or the ground moved. The read keeps the count, the largest offset and the first instance's index of each (`SceneDesc::instances_floating`, `instances_buried`, `floating_max_m`, `floating_first`, ...), writes **one `instances off the ground` warning a scene** (counts, the largest, and the first one's name or index), and hands the two counts to the load summary as `load.instances_floating` and `load.instances_buried` ([apps](apps.md)). Nothing is refused and nothing moves. `ground: true` instances are never counted (their `y` is relative), and neither are scatters (their `y` is an offset by construction) or a streamed world's placements (their generators stand them on the ground). The cost is one more height query per `ground: false` instance, the same query a grounded one costs. Test: `tests/scene_gen_scene_tests.cpp`.
+
 ## What the load reads
 
 The mask upload (W76, 2026-10-26) counts `GroundMasks::ops->present` from the provider's

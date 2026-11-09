@@ -3,6 +3,7 @@
 // `tiles` block's `manifest` names, or the one its `heightfield` builds into the derived-data
 // cache on a miss — and answers every height from it. It has no time: the set does not move, so
 // it has no `evaluate`, `travel_m`, `wind` or `transport`, and a time-lapse moves nothing of it.
+#include <core/log/log.h>
 #include <domain/geometry/cluster_file.h>
 #include <domain/scene_gen/scene_gen.h>
 #include <domain/tileset/masks.h>
@@ -15,6 +16,8 @@
 #include <schemas/scene.h>
 
 namespace engine::tileset {
+
+ENGINE_LOG_CATEGORY_DEFINE(log_tileset, "tileset");
 
 namespace {
 
@@ -85,6 +88,13 @@ bool tiles_masks(const void* state, scene_gen::GroundMasks& out, std::string* er
     if (!ensure_mask_level(g.set, g.mask_inputs, std::string(), g.ddc, false, built, why) ||
         !g.masks.open(built.manifest, why))
       g.mask_error = "the ground provider \"tiles\" could not build its masks: " + why;
+    // A layer under one quantization step is dropped from its tile rather than counted against
+    // the budget (masks.h, `k_mask_step`); each one is named, since its weight is lost.
+    for (const DroppedLayer& d : built.dropped) {
+      ENGINE_LOG_WARN(log_tileset, "mask layer dropped: under one quantization step",
+                      log::field("tile_x", d.tx), log::field("tile_z", d.tz),
+                      log::field("layer", d.name), log::field("peak", d.peak));
+    }
   }
   if (!g.mask_error.empty()) {
     if (error != nullptr) *error = g.mask_error;
@@ -136,6 +146,63 @@ std::string resolve(std::string_view dir, const std::string& path) {
   return io::is_absolute_path(path) || dir.empty() ? path : io::join_path(dir, path);
 }
 
+}  // namespace
+
+bool resolve_tile_set(const scene::Terrain& entry, std::string_view dir, const std::string& ddc_in,
+                      std::string& ddc, std::string& manifest, std::string& error) {
+  const auto fail = [&](std::string sentence) {
+    error = std::move(sentence);
+    return false;
+  };
+  if (!entry.tiles.has_value()) {
+    return fail(
+        "the ground provider \"tiles\" is given no tile set: the terrain has no \"tiles\" block "
+        "naming a manifest or a heightfield");
+  }
+  const scene::TerrainTileSet& t = *entry.tiles;
+  ddc = !ddc_in.empty() ? ddc_in : (t.ddc.empty() ? std::string() : resolve(dir, t.ddc));
+  if (!t.manifest.empty()) {
+    if (!t.cuts.empty()) {
+      return fail(
+          "the ground provider \"tiles\" cuts channels into a set it builds from a heightfield; "
+          "the terrain names a set built ahead (\"manifest\") and cuts besides");
+    }
+    manifest = resolve(dir, t.manifest);
+    if (ddc.empty()) ddc = geometry::find_ddc_root(io::parent_path(manifest));
+    return true;
+  }
+  if (t.heightfield.empty())
+    return fail("the ground provider \"tiles\" names neither a manifest nor a heightfield");
+  // **The content step as a library call**, as a scene mesh's clusters are built on a miss: the
+  // set of this heightfield and these options, from the derived-data cache, built there first
+  // when it is not.
+  const std::string source = resolve(dir, t.heightfield);
+  BuildOptions options;
+  options.cells = t.cells;
+  options.ring_spacing_mm = t.ring_spacing_mm;
+  options.far_ratio = t.far_ratio;
+  options.far_levels = t.far_levels;
+  options.vertical_scale = static_cast<f64>(t.vertical_scale);
+  options.offset_x_mm = scene_gen::nearest_mm(t.origin.x);
+  options.offset_y_mm = scene_gen::nearest_mm(t.origin.y);
+  options.offset_z_mm = scene_gen::nearest_mm(t.origin.z);
+  // Channels cut into the ground (W89; tileset.md, "Channels cut into the ground"): written into
+  // the heights the set is built with, so every reader of it stands on the cut ground. (The
+  // terrain's `holes` are not in the set: they are the renderer's, and the masks never read them.)
+  std::string cut_error;
+  if (!options.cuts.build({t.cuts.data(), t.cuts.size()}, &cut_error))
+    return fail("the ground provider \"tiles\" cannot cut its ground: " + cut_error);
+  if (ddc.empty()) ddc = geometry::find_ddc_root(io::parent_path(source));
+  BuildResult built;
+  std::string why;
+  if (!ensure_tileset(source, options, std::string(), ddc, false, built, why))
+    return fail("the ground provider \"tiles\" could not build its set: " + why);
+  manifest = built.manifest;
+  return true;
+}
+
+namespace {
+
 bool tiles_make(const scene::Terrain& entry, const scene_gen::Context& context,
                 scene_gen::GroundProvider& out, std::string* error) {
   const auto fail = [&](std::string sentence) {
@@ -152,47 +219,13 @@ bool tiles_make(const scene::Terrain& entry, const scene_gen::Context& context,
         "the ground provider \"tiles\" draws an authored terrain, which carries its own ridges and "
         "basins; the terrain names some besides");
   }
-  const scene::TerrainTileSet& t = *entry.tiles;
   std::string manifest;
-  std::string ddc = t.ddc.empty() ? std::string() : resolve(context.dir, t.ddc);
-  if (!t.manifest.empty()) {
-    if (!t.cuts.empty()) {
-      return fail(
-          "the ground provider \"tiles\" cuts channels into a set it builds from a heightfield; "
-          "the terrain names a set built ahead (\"manifest\") and cuts besides");
-    }
-    manifest = resolve(context.dir, t.manifest);
-    if (ddc.empty()) ddc = geometry::find_ddc_root(io::parent_path(manifest));
-  } else if (!t.heightfield.empty()) {
-    // **The content step as a library call**, as a scene mesh's clusters are built on a miss: the
-    // set of this heightfield and these options, from the derived-data cache, built there first
-    // when it is not.
-    const std::string source = resolve(context.dir, t.heightfield);
-    BuildOptions options;
-    options.cells = t.cells;
-    options.ring_spacing_mm = t.ring_spacing_mm;
-    options.far_ratio = t.far_ratio;
-    options.far_levels = t.far_levels;
-    options.vertical_scale = static_cast<f64>(t.vertical_scale);
-    options.offset_x_mm = scene_gen::nearest_mm(t.origin.x);
-    options.offset_y_mm = scene_gen::nearest_mm(t.origin.y);
-    options.offset_z_mm = scene_gen::nearest_mm(t.origin.z);
-    // Channels cut into the ground (W89; tileset.md, "Channels cut into the ground"): written
-    // into the heights the set is built with, so every reader of it stands on the cut ground.
-    std::string cut_error;
-    if (!options.cuts.build({t.cuts.data(), t.cuts.size()}, &cut_error))
-      return fail("the ground provider \"tiles\" cannot cut its ground: " + cut_error);
-    if (ddc.empty()) ddc = geometry::find_ddc_root(io::parent_path(source));
-    BuildResult built;
-    std::string why;
-    if (!ensure_tileset(source, options, std::string(), ddc, false, built, why))
-      return fail("the ground provider \"tiles\" could not build its set: " + why);
-    manifest = built.manifest;
-  } else {
-    return fail("the ground provider \"tiles\" names neither a manifest nor a heightfield");
-  }
-  auto ground = std::make_unique<TilesGround>();
+  std::string ddc;
   std::string why;
+  // The same function `engine-content masks check` calls (T74), so the check composes the ground a
+  // load composes.
+  if (!resolve_tile_set(entry, context.dir, std::string(), ddc, manifest, why)) return fail(why);
+  auto ground = std::make_unique<TilesGround>();
   if (!ground->set.open(manifest, why))
     return fail("the ground provider \"tiles\" could not open its set: " + why);
   if (entry.masks.has_value()) {

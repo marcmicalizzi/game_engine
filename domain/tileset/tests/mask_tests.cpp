@@ -3,6 +3,7 @@
 // than its budget is refused, and the level reads back as the field it was built from.
 #include <core/hash/hash.h>
 #include <domain/scene_gen/ground_masks.h>
+#include <domain/scene_gen/scene_gen.h>
 #include <domain/tileset/masks.h>
 #include <domain/tileset/tileset.h>
 #include <foundation/image/png.h>
@@ -385,7 +386,10 @@ TEST_CASE("tileset masks determinism: the fixture's level hashes to the pinned v
   // "8127dd57bf0cee9c": the records are the bytes they were, and the hash, seeded with the key,
   // moved with the two versions the key names (W76's archive). The archive's own hash is every
   // byte of the file.
-  constexpr const char* k_level = "558a6a74fd7c454a";
+  // Re-pinned 2026-11-08 (T74): the level hash is seeded with the key, and `k_mask_version` 3
+  // moved the key; the archive's own hash, every byte of the file, is unchanged
+  // ("75eef7ec443e0e7e"), so no tile's bytes moved. Before: "558a6a74fd7c454a" (version 2).
+  constexpr const char* k_level = "9707cc0db08471c9";
   constexpr const char* k_archive = "75eef7ec443e0e7e";
   Fixture fx;
   MaskBuildResult built;
@@ -483,4 +487,201 @@ TEST_CASE("tileset masks: the budget check names every tile over, and the refusa
        at = capped.find("tile (", at + 1))
     ++listed;
   CHECK(listed == 1);
+}
+
+// ---- T74: a layer under one quantization step, and the ground the check composes ----
+
+namespace {
+
+// Three strong regions and the soil make four layers in the flat tile (3, -7) (x 48 to 64 m, z
+// -112 to -96 m, 16 cells of 1 m), and a fifth, "litter", enters it through the tile's edge at
+// z = -96 m only: a circle of radius 5 m whose centre is `depth` metres short of that row, so its
+// deepest point in the tile is `depth` inside the outline, and its feather of 10 m (a smoothstep)
+// gives it the weight 3t^2 - 2t^3 at t = depth / 10. At 0.3 m that is 0.00265, over half a step
+// (0.00196) and under one (0.00392); at 0.4 m it is 0.00467, over a step.
+void add_faint_litter(Fixture& fx, f64 depth) {
+  const auto strong = [&](const char* name, f64 x, f32 r, const char* material) {
+    scene::TerrainMaskRegion region = circle(name, x, -104, r);
+    region.material = material;
+    region.feather_m = 0;
+    fx.in.masks.regions.push_back(region);
+  };
+  strong("gravel patch", 50, 3, "gravel");
+  strong("sand patch", 56, 3, "sand");
+  strong("mud patch", 62, 2, "mud");
+  scene::TerrainMaskRegion faint = circle("faint", 56, -96.0 + 5.0 - depth, 5);
+  faint.material = "litter";
+  faint.feather_m = 10;
+  fx.in.masks.regions.push_back(faint);
+}
+
+bool has_layer(const MaskLevel& level, i32 tx, i32 tz, u32 layer) {
+  Vector<u32> words(scene_gen::mask_tile_words(level.info().cells));
+  if (!level.tile(tx, tz, {words.data(), words.size()})) return false;
+  for (u32 ch = 0; ch < 4; ++ch)
+    if (((words[0] >> (8 * ch)) & 0xFFu) == layer) return true;
+  return false;
+}
+
+}  // namespace
+
+TEST_CASE("tileset masks: a fifth layer under one step is dropped with a warning, at a step refused") {
+  // Under a step: loads. The check and the build agree on the answer and on the warning.
+  {
+    Fixture fx;
+    add_faint_litter(fx, 0.3);
+    MaskBudgetReport report;
+    REQUIRE_MESSAGE(check_mask_budget(fx.set, fx.in, report, fx.error), fx.error);
+    CHECK(report.over.empty());
+    REQUIRE(report.dropped.size() == 1);
+    CHECK(report.dropped[0].name == "litter");
+    CHECK(report.dropped[0].tx == 3);
+    CHECK(report.dropped[0].tz == -7);
+    CHECK(report.dropped[0].peak > 0.5 * k_mask_step);
+    CHECK(report.dropped[0].peak < k_mask_step);
+    MaskBuildResult built;
+    REQUIRE_MESSAGE(build_mask_level(fx.set, fx.in, fx.tmp.file("faint"), built, fx.error),
+                    fx.error);
+    REQUIRE(built.dropped.size() == 1);
+    CHECK(built.dropped[0].name == "litter");
+    CHECK(built.dropped[0].peak == report.dropped[0].peak);
+    MaskLevel level;
+    REQUIRE(level.open(built.manifest, fx.error));
+    const u32 litter = 7;  // the palette's order in the Fixture
+    CHECK_FALSE(has_layer(level, 3, -7, litter));
+    CHECK(has_layer(level, 3, -7, 5));  // gravel
+    CHECK(has_layer(level, 3, -7, 4));  // sand
+    CHECK(has_layer(level, 3, -7, 8));  // mud
+  }
+  // At a step or more: the tile names five layers and is refused exactly as before.
+  {
+    Fixture fx;
+    add_faint_litter(fx, 0.4);
+    MaskBudgetReport report;
+    REQUIRE_MESSAGE(check_mask_budget(fx.set, fx.in, report, fx.error), fx.error);
+    CHECK(report.dropped.empty());
+    REQUIRE(report.over.size() == 1);
+    CHECK(report.over[0].tx == 3);
+    CHECK(report.over[0].tz == -7);
+    CHECK(report.over[0].layers.size() == 5);
+    CHECK(report.over[0].layers[report.over[0].weakest].name == "litter");
+    CHECK(report.over[0].layers[report.over[0].weakest].peak >= k_mask_step);
+    MaskBuildResult built;
+    CHECK_FALSE(build_mask_level(fx.set, fx.in, fx.tmp.file("refused"), built, fx.error));
+    CHECK(fx.error == describe_over_budget(report, k_over_budget_listed));
+  }
+}
+
+namespace {
+
+// A flat 40 m square with a deep cut across it and, in the tile (0, 1) the cut crosses, three
+// strong regions: the soil and those make four layers; the cut's steep banks put bedrock in the
+// tile as a fifth.
+scene::Terrain cut_masks_terrain(bool with_cut) {
+  scene::Terrain entry;
+  entry.provider = "tiles";
+  entry.extent = 64;
+  entry.tiles = scene::TerrainTileSet{};
+  entry.tiles->heightfield = "flat.json";
+  entry.tiles->ddc = "ddc";
+  entry.tiles->cells = 16;
+  entry.tiles->ring_spacing_mm = 1000;
+  entry.tiles->far_ratio = 1;
+  entry.tiles->far_levels = 2;
+  if (with_cut) {
+    scene::TerrainCut c;
+    c.name = "run";
+    c.points = {WorldPos{5.0, 0.0, 20.0}, WorldPos{35.0, 0.0, 20.0}};
+    c.width_m = {8.0f, 8.0f};
+    c.depth_m = {4.0f, 4.0f};
+    c.bank_slope = 3.0f;
+    entry.tiles->cuts.push_back(c);
+  }
+  scene::TerrainMaterials materials;
+  materials.layer_budget = 4;
+  for (const char* name : {"soil", "scree", "bedrock", "snow", "gravel", "sand", "trail"}) {
+    scene::TerrainMaterialLayer layer;
+    layer.name = name;
+    materials.layers.push_back(layer);
+  }
+  entry.materials = materials;
+  scene::TerrainMasks masks;
+  masks.spacing_mm = 1000;
+  masks.tile_cells = 16;
+  scene::TerrainMaskPriors p;
+  p.soil = "soil";
+  p.scree = "scree";
+  p.bedrock = "bedrock";
+  p.snow = "snow";
+  p.snowline_m = 60;
+  p.snow_blend_m = 8;
+  p.snow_aspect_m = 6;
+  masks.priors = p;
+  const char* names[] = {"gravel", "sand", "trail"};
+  const f64 xs[] = {4, 8, 12};
+  for (u32 i = 0; i < 3; ++i) {
+    scene::TerrainMaskRegion region = circle(names[i], xs[i], 28, 1.5f);
+    region.material = names[i];
+    region.feather_m = 0;
+    masks.regions.push_back(region);
+  }
+  entry.masks = masks;
+  return entry;
+}
+
+// What `engine-content masks check` does with a scene's terrain: the set `resolve_tile_set`
+// composes, then the budget scan.
+bool check_terrain(const scene::Terrain& entry, const std::string& dir, MaskBudgetReport& report,
+                   std::string& error) {
+  std::string ddc, manifest;
+  if (!resolve_tile_set(entry, dir, std::string(), ddc, manifest, error)) return false;
+  TileSet set;
+  MaskInputs inputs;
+  return set.open(manifest, error) && mask_inputs(entry, dir, inputs, error) &&
+         validate_mask_inputs(inputs, error) && check_mask_budget(set, inputs, report, error);
+}
+
+// What a load does: the provider, then its masks.
+bool load_terrain(const scene::Terrain& entry, const std::string& dir, std::string& error) {
+  scene_gen::Context context;
+  context.dir = dir;
+  const scene_gen::GroundProviderDesc* desc =
+      scene_gen::GeneratorRegistry::global().find_ground("tiles");
+  REQUIRE(desc != nullptr);
+  scene_gen::GroundProvider ground;
+  if (!desc->make(entry, context, ground, &error)) return false;
+  scene_gen::GroundMasks masks;
+  return ground.masks(masks, &error);
+}
+
+}  // namespace
+
+TEST_CASE("tileset masks: the check composes the cut ground a load composes") {
+  test::TempDir tmp{"engine_tileset_masks_cut"};
+  std::string error;
+  REQUIRE_MESSAGE(
+      write_heightfield(tmp.file("flat.json"), synth_heightfield(SynthKind::flat, 161, 250), error),
+      error);
+  const std::string dir = tmp.path();
+  // Without the cut: four layers, the check accepts and the load accepts.
+  {
+    const scene::Terrain entry = cut_masks_terrain(false);
+    MaskBudgetReport report;
+    REQUIRE_MESSAGE(check_terrain(entry, dir, report, error), error);
+    CHECK(report.over.empty());
+    CHECK(report.largest <= 4);
+    CHECK_MESSAGE(load_terrain(entry, dir, error), error);
+  }
+  // With it: the banks add bedrock to the tile, the check reports the tile and the load refuses
+  // it, on the same sentence.
+  {
+    const scene::Terrain entry = cut_masks_terrain(true);
+    MaskBudgetReport report;
+    REQUIRE_MESSAGE(check_terrain(entry, dir, report, error), error);
+    REQUIRE_MESSAGE(report.over.size() >= 1, "the cut's banks added no fifth layer");
+    CHECK(report.largest >= 5);
+    CHECK_FALSE(load_terrain(entry, dir, error));
+    CHECK(error.find("could not build its masks") != std::string::npos);
+    CHECK(error.find(describe_over_budget(report, k_over_budget_listed)) != std::string::npos);
+  }
 }

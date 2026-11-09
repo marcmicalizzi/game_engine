@@ -398,6 +398,17 @@ struct SceneDesc {
   // the instances, for a host's summary. Zero for a scene with none.
   u32 placed_buildings = 0;
   u32 placed_instances = 0;
+  // **The file's instances that do not stand on the ground** (T74; renderer.md, "Instances off the
+  // ground"): those with `ground: false` whose base `y` is more than `k_off_ground_m` above
+  // (`floating`) or below (`buried`) the terrain's surface at their x and z, counted at the read
+  // with the largest offset of each (metres, 0 when none) and the first one's index. A count, not a
+  // refusal: the author may mean it. Zero for a scene with no terrain.
+  u32 instances_floating = 0;
+  u32 instances_buried = 0;
+  f64 floating_max_m = 0.0;
+  f64 buried_max_m = 0.0;
+  u32 floating_first = 0;
+  u32 buried_first = 0;
   // A streamed world (`engine.scene.WorldRings`): enabled by the file's `world` block or by
   // `SceneFileOptions::world`, and then every placement entry is in `streamed` and none of its
   // instances in `instances`.
@@ -543,6 +554,10 @@ struct SourceMesh {
 struct SceneLoadReport {
   u32 meshes = 0;   // loaded by the per-mesh pass
   u32 threads = 0;  // the job system's workers it ran over, plus the calling thread
+  // The file's `ground: false` instances more than a metre above (`floating`) or below (`buried`)
+  // the ground they stand over (`SceneDesc::instances_floating`); only counted, never refused.
+  u32 instances_floating = 0;
+  u32 instances_buried = 0;
   // The texture pass: images the meshes' materials sample (`references`), the distinct built
   // textures they name (`textures`), of those the ones whose `.tex` was trusted from its header
   // and the ones built now, and the ones neither (the image could not be read or built; drawn
