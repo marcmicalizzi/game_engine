@@ -316,13 +316,15 @@ flora::SwardPlacements four_forms() {
 }
 u32 form_of(const scene_gen::Placement& placed) { return placed.mesh / 2 + 1; }
 
+// The ID, mesh and position of every placement: the arithmetic the pick and the jitter do is the same
+// bits on every toolchain, where the turn's sines and arctangents are the C library's (the tilt tests
+// in sward_tests.cpp hold the turns).
 u64 pin_of(const scene_gen::Placements& out) {
   u64 pin = k_hash_seed;
   for (const auto& placed : out.instances) {
     pin = hash_combine(pin, placed.id);
     pin = hash_combine(pin, placed.mesh);
     pin = hash_combine(pin, hash_bytes(&placed.position, sizeof(placed.position)));
-    pin = hash_combine(pin, hash_bytes(&placed.rotation, sizeof(placed.rotation)));
   }
   return hash_combine(pin, out.instances.size());
 }
@@ -345,7 +347,7 @@ TEST_CASE("sward forms: an entry naming no forms and no forbs places what it did
   for (const auto& placed : out.instances)
     used |= 1u << placed.mesh;
   CHECK((used & 0x15u) == 0x15u);  // three classes' near meshes at least
-  CHECK(pin_of(out) == 6506173966649752433ull);
+  CHECK(pin_of(out) == 10093430337790593354ull);
 }
 
 TEST_CASE("sward forms: a wet cell grows a tall tussock and a steep dry one a short form") {
