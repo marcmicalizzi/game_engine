@@ -3267,7 +3267,8 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
     // The wet ground's film, unless a measurement turned it off (S99; water.md, "The shore").
     if (!water_wet_film_tunable()) resolve.shadow_flags |= gfx::k_shadow_wet_film_off;
     // And its banks, unless a measurement skips them this frame.
-    if (!water_banks_tunable(frame.frame_index)) resolve.shadow_flags |= gfx::k_shadow_wet_banks_off;
+    if (!water_banks_tunable(frame.frame_index))
+      resolve.shadow_flags |= gfx::k_shadow_wet_banks_off;
     if (slot < slot_water_.size()) {
       slot_water_[slot] =
           SlotWater{stats_.water_reflect, stats_.water_reflect_views, stats_.water_reflect_level_m,

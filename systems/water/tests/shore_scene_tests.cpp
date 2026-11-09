@@ -17,11 +17,11 @@
 #include <systems/renderer/scene_renderer.h>
 #include <systems/renderer/settings.h>
 
-#include <brdf_reference.h>
 #include <doctest/doctest.h>
 #include <test_temp_dir.h>
 
 #include <algorithm>
+#include <brdf_reference.h>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -159,7 +159,8 @@ u32 film_code_bound(const Shot& shot, u32 p, u32 channel, u32 code_off) {
   const f64 y = static_cast<f64>(p / f.width) + 0.5;
   f64 fwd[3] = {k_target[0] - k_eye[0], k_target[1] - k_eye[1], k_target[2] - k_eye[2]};
   const f64 fl = std::sqrt(fwd[0] * fwd[0] + fwd[1] * fwd[1] + fwd[2] * fwd[2]);
-  for (f64& v : fwd) v /= fl;
+  for (f64& v : fwd)
+    v /= fl;
   // look_at's frame: right = forward x up, up' = right x forward.
   f64 right[3] = {-fwd[2], 0.0, fwd[0]};
   const f64 rl = std::sqrt(right[0] * right[0] + right[2] * right[2]);
@@ -171,10 +172,12 @@ u32 film_code_bound(const Shot& shot, u32 p, u32 channel, u32 code_off) {
   const f64 sx = (x / f.width * 2.0 - 1.0) * t * static_cast<f64>(f.width) / f.height;
   const f64 sy = (1.0 - y / f.height * 2.0) * t;
   f64 dir[3];
-  for (u32 i = 0; i < 3; ++i) dir[i] = fwd[i] + right[i] * sx + up[i] * sy;
+  for (u32 i = 0; i < 3; ++i)
+    dir[i] = fwd[i] + right[i] * sx + up[i] * sy;
   const f64 dl = std::sqrt(dir[0] * dir[0] + dir[1] * dir[1] + dir[2] * dir[2]);
   f64 n[3];
-  for (u32 i = 0; i < 3; ++i) n[i] = f.normals[p * 3 + i] / 255.0 * 2.0 - 1.0;
+  for (u32 i = 0; i < 3; ++i)
+    n[i] = f.normals[p * 3 + i] / 255.0 * 2.0 - 1.0;
   const f64 nl = std::sqrt(n[0] * n[0] + n[1] * n[1] + n[2] * n[2]);
   const f64 n_dot_v = -(n[0] * dir[0] + n[1] * dir[1] + n[2] * dir[2]) / (nl * dl);
   const f64 slack = 2.0 * std::sqrt(3.0) / 255.0 + static_cast<f64>(shot.fov_y) / f.height;
@@ -254,8 +257,9 @@ TEST_CASE("water shore: the wet band darkens the ground at the waterline, and on
       const u32 bound = film_code_bound(narrow[0], p, ch, off);
       if (on <= off || on - off <= bound) continue;
       if (++over_bound <= 8u)
-        MESSAGE("the film gains " << on - off << " codes in channel " << ch << " at (" << p % a.width
-                                  << ", " << p / a.width << "), over its bound " << bound);
+        MESSAGE("the film gains " << on - off << " codes in channel " << ch << " at ("
+                                  << p % a.width << ", " << p / a.width << "), over its bound "
+                                  << bound);
     }
   }
   MESSAGE("basin: " << water << " water pixels of " << pixels << "; the band at 0.3 m changes "

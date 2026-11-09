@@ -103,7 +103,8 @@ inline constexpr u32 k_shadow_water_refract = 1u << 12;
 // measurement switch: read only by the resolve's water modules, which then draw every wet ground
 // pixel with its darkening and its damp roughness and no film — neither the film's roughness nor
 // its reflection — so a check can tell what the film adds from what the saturation does. Clear,
-// the film is drawn. Bit 16 rather than the next free one, which other rows may take the same night.
+// the film is drawn. Bit 16 rather than the next free one, which other rows may take the same
+// night.
 inline constexpr u32 k_shadow_wet_film_off = 1u << 16;
 // **The channels' banks skipped** (S99; water.md, "The banks"; `renderer.water.banks`), a
 // measurement switch: the resolve's water modules walk no bank record, so no channel wets the
