@@ -22,12 +22,51 @@ presets that build them, not by the whole gate again.
 
 **An agent's worktree is removed at the merge.** A session's agents work in throwaway worktrees under
 `.claude/worktrees/`, and nothing removes them: on 2026-11-01 about a hundred of them, merged weeks
-before, still held their builds. A persistent worktree per agent was tried and the harness refuses
-it (an isolated agent may write only in its own worktree; one launched from the repository root may
-not switch into another), so the rule is the cheap one: whoever merges a branch removes its worktree
-once the branch is on `main` (`git worktree remove --force <path>`, then `git worktree prune`; the
-branch stays), and a worktree whose branch was never merged is listed for the owner, not removed.
+before, still held their builds. So whoever merges a branch removes its worktree once the branch is on
+`main` (`git worktree remove --force <path>`, then `git worktree prune`; the branch stays), and a
+worktree whose branch was never merged is listed for the owner, not removed. A harness worktree is
+fresh every time, and a fresh worktree's first build is the slowest step of an agent's day, which is
+what the slot pool is for.
 
+### The slot pool (T75)
+
+An early attempt at a persistent worktree per agent was refused by the harness (an isolated agent may
+write only in its own worktree; one launched from the repository root may not switch into another).
+That is a fact about the harness's own isolation, not about this arrangement: the coordinator keeps
+four **slot worktrees**, `.claude/worktrees/slot-1` to `slot-4`, each with warm `build/msvc-debug` and
+`build/msvc-release`, and **assigns one to each heavy agent by its brief**. The agent leaves its
+harness worktree untouched, works in the slot on a branch of its own (`b57-<row>`), and the
+coordinator resets the slot to `main` after the merge. A slot has no branch of its own: between agents
+it is detached at a commit of `main`, so no two worktrees ever hold one branch.
+
+`tools/slot.ps1` keeps that honest (exit 0 done, 1 refused with the reason, 2 usage):
+
+| Command | What it does |
+|---|---|
+| `slot.ps1 list` | each slot's path, HEAD, branch or detached, dirty count, its build directories with the time of the newest file under each, and its owner |
+| `slot.ps1 claim -Slot 2 -Owner S100` / `release -Slot 2` | writes or removes `build/slot-owner.json` (owner, time, branch; git-ignored with `build/`); a second owner is refused |
+| `slot.ps1 reset -Slot 2 [-To <sha\|main>] [-Force]` | `git checkout --detach`, `build/` left in place; refuses a dirty tree, a process whose executable is under the slot (best effort: a compiler, a test run, an engine binary), and a claimed slot unless `-Force` |
+| `slot.ps1 warm -Slot 2 [-Preset msvc-debug,msvc-release] [-Base <sha>]` | `tools/dev.ps1 build` for each preset inside the slot, `-Affected -Base` when a base is given; honours `CMAKE_BUILD_PARALLEL_LEVEL` |
+
+`tools/slot.Tests.ps1` (CTest `tools.slot`) drives every command over a throwaway repository with two
+worktrees, including the refusals. A slot is not an agent's own checkout to leave dirty: whoever
+finishes commits or abandons the branch, and the coordinator releases and resets the slot.
+
+What it saves, measured on 2026-11-08 (host i9-10980XE, 36 threads, `CMAKE_BUILD_PARALLEL_LEVEL=4`,
+other agents building beside the run at 67 to 70% CPU, so upper bounds), in a fresh harness worktree
+with ccache on and warm from earlier worktrees:
+
+| Step | Time |
+|---|---|
+| `tools/dev.ps1 configure -Preset msvc-debug`, fresh worktree | 211 s |
+| `build -Preset msvc-debug -Affected -Base <sha>` after a one-line change to `systems/volumetrics/tests/cloud_tests.cpp` (1,403 ninja steps for the 19 targets its dependents reach, most of them upstream modules a fresh tree has to build first), fresh worktree | 304 s (ninja's log: 1,140 objects, 673 s of compiler time, nearly all of it ccache hits) |
+| of that, the shader step (`engine_shaders()`'s slangc compiles, not cached: about 40 SPIR-V outputs, about 350 s of slangc time, the four `visibility_resolve_*water*` variants alone 33 to 77 s each) | about 110 s of wall time with four jobs, over a third of the build |
+| the same build again after another one-line change to the same file, same worktree | 12 s: one object, one link, no shader |
+| an incremental release build of a one-commit change in a warm slot (coordinator, 2026-11-08) | 15 s |
+
+So a fresh worktree costs about eight minutes of build before the first useful edit, a third of it
+shaders that nothing caches, and a warm slot costs seconds. The shader step is the part ccache cannot
+help with: roadmap T76.
 ## What "affected" means
 
 `tools/dev.ps1 test -Affected [-Base main]` (the rule is `tools/lib/Affected.psm1`, tested by
