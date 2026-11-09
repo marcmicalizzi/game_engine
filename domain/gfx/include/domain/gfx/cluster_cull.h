@@ -585,9 +585,19 @@ inline constexpr u32 k_deform_stage_flora = 1u << 14;
 // part table (`gfx::FloraFieldPart`), and `first_channel` the bits of its compliance —
 // `channel_count` stays 0, so nothing reads the morph words as morphs.
 inline constexpr u32 k_deform_flora_field = 1u << 15;
+// **A water body's surface** (docs/subsystems/water.md, "The mesh"; water_waves.slang; roadmap
+// S100): each vertex lifted by the body's height function at its body-local point and the frame's
+// water clock — the waves, shoaling and breaking by the depth under it, and over the bank the
+// swash's sheet or a parking place under the ground. Like the terrain and flora stages it never
+// runs beside the others, so its record's words carry what it needs instead: `joints` the body's
+// `gfx::WaterSurface` (water_swash.h), `first_part` the frame's water clock and `first_channel` the
+// tide's phase, both as float bits a frame writes into its own copy of the table; `channel_count`
+// stays 0, so nothing reads them as morphs.
+inline constexpr u32 k_deform_stage_water = 1u << 16;
 inline constexpr u32 k_deform_stage_mask = k_deform_stage_static | k_deform_stage_pose |
                                            k_deform_stage_skin | k_deform_stage_procedural |
-                                           k_deform_stage_terrain | k_deform_stage_flora;
+                                           k_deform_stage_terrain | k_deform_stage_flora |
+                                           k_deform_stage_water;
 
 // ---- terrain levels (docs/subsystems/renderer.md, "The dunes in time-lapse")
 // ----------------------

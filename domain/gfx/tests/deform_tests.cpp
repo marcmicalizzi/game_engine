@@ -21,6 +21,7 @@
 // VK_EXT_mesh_shader and is skipped by name without it); 2 needs VK_KHR_ray_query; 3 needs
 // VK_NV_cluster_acceleration_structure (NVIDIA RTX).
 #include "raster_path.h"
+#include "water_reference.h"
 
 #include <domain/geometry/cluster_lod.h>
 #include <domain/gfx/acceleration.h>
@@ -33,8 +34,11 @@
 #include <domain/gfx/gpu_timer.h>
 #include <domain/gfx/ray_visibility.h>
 #include <domain/gfx/render_graph.h>
+#include <domain/gfx/water_swash.h>
 
 #include <doctest/doctest.h>
+
+#include <bit>
 
 #include <cmath>
 #include <cstring>
@@ -1068,5 +1072,186 @@ TEST_CASE("deform: instantiated cluster templates trace what the rebuilt cluster
   for (gfx::BufferResource* b :
        {&host, &indices8, &build_records, &template_records, &instantiate_records, &scratch})
     gfx::destroy_buffer(device, *b);
+  device.destroy();
+}
+
+// **The water stage** (S100; water_waves.slang, `water_vertex_lift`; docs/subsystems/water.md,
+// "The mesh"). Over the grid's cut: (1) a body whose surface has no waves, no swash and no field
+// writes exactly the pool the identity deformer writes, word for word — the rest pose to the bit,
+// which is what keeps every still body's picture; (2) a windy body over a planar beach — the offshore
+// four sines, the shoaling and breaking train, the bank's sheet and parked vertices — lifts every
+// vertex by what water_reference.h's double-precision `vertex_lift` says, at a clock where the
+// train is mid-swash.
+TEST_CASE("deform: the water stage is the rest pose without waves and the height function with them") {
+  gfx::Device device;
+  std::string error;
+  if (!gfx_test::open_device(device)) return;
+  if (!gfx_test::require(device, {gfx_test::Need::VisibilityBuffer})) return;
+
+  DeformScene scene;
+  REQUIRE_MESSAGE(scene.create(device, 97, gfx::k_deform_identity, &error), error);
+  const u32 cut_count = scene.cut_count();
+  constexpr gfx::BufferUsage k_storage = gfx::BufferUsage::Storage;
+  constexpr gfx::BufferUsage k_address = k_storage | gfx::BufferUsage::ShaderDeviceAddress;
+  const u64 pool_bytes = u64{scene.pool_vertices} * 3 * sizeof(f32);
+  gfx::BufferResource host;
+  REQUIRE(gfx::create_buffer(device, pool_bytes, gfx::BufferUsage::TransferDst, true, host, &error));
+  gfx::FrameContext frames;
+  REQUIRE(frames.create(device, 1, &error));
+  gfx::ShaderModuleHandle deform_module = gfx::create_shader_module(
+      device, shaders::k_deform_spirv, shaders::k_deform_spirv_size, &error);
+  REQUIRE(deform_module.valid());
+  gfx::ComputePipeline deform_pipeline;
+  REQUIRE_MESSAGE(gfx::create_compute_pipeline(device, deform_module, "deform_main", {},
+                                               sizeof(gfx::DeformParams), deform_pipeline, &error),
+                  error);
+  // One pool pass with `desc` as the deformed instance's record, read back.
+  const auto run = [&](const gfx::DeformDesc& desc, Vector<f32>& out) {
+    gfx::BufferResource table;
+    REQUIRE(gfx::upload_buffer(device, &desc, sizeof(desc), k_storage, table, &error));
+    gfx::DeformParams params = scene.params(0.0f);
+    params.deform = table.address;
+    gfx::RenderGraph graph(device);
+    const gfx::RgBuffer rg_pool = graph.import_buffer("pool", scene.pool);
+    const gfx::RgBuffer rg_host = graph.import_buffer("host", host);
+    graph.add_pass(
+        "reset", gfx::PassKind::Transfer,
+        [&](gfx::PassBuilder& b) { b.write(rg_pool, gfx::Access::TransferWrite); },
+        [&](gfx::CommandList cb, gfx::RenderGraph&) {
+          cb.fill_buffer(scene.pool.buffer, 0, gfx::k_whole_size, k_sentinel);
+        });
+    graph.add_pass(
+        "deform", gfx::PassKind::Compute,
+        [&](gfx::PassBuilder& b) { b.write(rg_pool, gfx::Access::ComputeWrite); },
+        [&](gfx::CommandList cb, gfx::RenderGraph&) {
+          cb.bind_pipeline(gfx::BindPoint::Compute, deform_pipeline.pipeline);
+          cb.push_constants(deform_pipeline.layout, gfx::ShaderStage::Compute, 0, sizeof(params),
+                            &params);
+          cb.dispatch(cut_count, 1, 1);
+        });
+    graph.add_pass(
+        "readback", gfx::PassKind::Transfer,
+        [&](gfx::PassBuilder& b) {
+          b.read(rg_pool, gfx::Access::TransferRead);
+          b.write(rg_host, gfx::Access::TransferWrite);
+        },
+        [&](gfx::CommandList cb, gfx::RenderGraph&) {
+          cb.copy_buffer(scene.pool.buffer, host.buffer, gfx::BufferCopy{0, 0, pool_bytes});
+        });
+    REQUIRE_MESSAGE(graph.compile(&error), error);
+    gfx::CommandList commands = frames.begin_frame();
+    graph.execute(commands);
+    REQUIRE(frames.wait(frames.end_frame()));
+    out.resize(static_cast<u32>(scene.pool_vertices * 3));
+    std::memcpy(out.data(), host.mapped, pool_bytes);
+    graph.reset();
+    gfx::destroy_buffer(device, table);
+  };
+
+  // (1) No waves: the identity deformer's pool, word for word.
+  Vector<f32> identity;
+  gfx::DeformDesc rigid{};
+  rigid.stages = gfx::k_deform_stage_procedural | gfx::k_deform_identity;
+  run(rigid, identity);
+  gfx::WaterSurface still{};
+  gfx::BufferResource still_buffer;
+  REQUIRE(gfx::upload_buffer(device, &still, sizeof(still), k_address, still_buffer, &error));
+  gfx::DeformDesc water{};
+  water.stages = gfx::k_deform_stage_water;
+  water.joints = still_buffer.address;
+  water.first_part = std::bit_cast<u32>(37.25f);
+  Vector<f32> lifted;
+  run(water, lifted);
+  REQUIRE(lifted.size() == identity.size());
+  CHECK(std::memcmp(lifted.data(), identity.data(), u64{scene.cut_vertices} * 3 * sizeof(f32)) == 0);
+
+  // (2) A windy body over a planar beach across the grid: the shore at x = 4 m, 1:12 below it and
+  // the bank above, the train's period 2.5 s, H_m0 0.4 m, R 0.3 m: the four sines offshore of\n  // 1.55 m deep, the train inshore of 0.54 m, both between.
+  gfx::WaterSurface surface{};
+  const u32 size = 97;
+  surface.size = size;
+  surface.texel_m = 0.25f;
+  surface.origin = Vec2{-12.0f, -12.0f};
+  surface.period_s = static_cast<f32>(gfx::swash_period(2.5));
+  const f64 omega = 6.283185307179586 / static_cast<f64>(surface.period_s);
+  surface.k0 = static_cast<f32>(omega * omega / gfx::k_swash_g);
+  surface.height_m = 0.4f;
+  surface.run_up_m = 0.3f;
+  surface.slope = 1.0f / 12.0f;
+  surface.along_m = 8.0f;
+  surface.wind = Vec2{1.0f, 0.0f};
+  surface.amplitude = 0.04f;
+  surface.wavelength = 3.0f;
+  surface.chop = 0.5f;
+  surface.seed = 3;
+  surface.direction = Vec2{1.0f, 0.0f};
+  Vector<f32> depth(size * size);
+  for (u32 j = 0; j < size; ++j)
+    for (u32 i = 0; i < size; ++i)
+      depth[j * size + i] = (4.0f - (-12.0f + 0.25f * static_cast<f32>(i))) / 12.0f;
+  Vector<f32> arrival(size * size);
+  gfx::water_arrival_field(depth.data(), size, 0.25, static_cast<f64>(surface.period_s),
+                           arrival.data());
+  Vector<f32> field(2 * size * size);
+  for (u32 i = 0; i < size * size; ++i) {
+    field[2 * i] = depth[i];
+    field[2 * i + 1] = arrival[i];
+  }
+  gfx::BufferResource field_buffer;
+  gfx::BufferResource surface_buffer;
+  REQUIRE(gfx::upload_buffer(device, field.data(), u64{field.size()} * sizeof(f32), k_address,
+                             field_buffer, &error));
+  surface.field = field_buffer.address;
+  REQUIRE(gfx::upload_buffer(device, &surface, sizeof(surface), k_address, surface_buffer, &error));
+  water.joints = surface_buffer.address;
+  const f32 clock = 37.25f;
+  water.first_part = std::bit_cast<u32>(clock);
+  run(water, lifted);
+  const Vec3 origin = scene.lod.mesh.quant_origin;
+  const f32 step = scene.lod.mesh.quant_scale;
+  u32 checked = 0, undecided = 0, wrong = 0, bank = 0, moved = 0;
+  f64 worst = 0.0;
+  for (u32 e = 0; e < cut_count; ++e) {
+    const geometry::ClusterDesc& c = scene.lod.mesh.clusters[scene.cut[e]];
+    for (u32 v = 0; v < c.vertex_count; ++v) {
+      const u32 vertex = c.vertex_offset + v;
+      const u32 slot = scene.slot_table[e] + v;
+      const f32 rx = origin.x + static_cast<f32>(scene.lod.mesh.quantized[vertex * 3]) * step;
+      const f32 ry = origin.y + static_cast<f32>(scene.lod.mesh.quantized[vertex * 3 + 1]) * step;
+      const f32 rz = origin.z + static_cast<f32>(scene.lod.mesh.quantized[vertex * 3 + 2]) * step;
+      bool decided = true;
+      const f64 want = water_ref::vertex_lift(surface, field.data(), rx, rz, 0.0,
+                                              static_cast<f64>(clock), 0.0, &decided);
+      const f64 got = static_cast<f64>(lifted[slot * 3 + 1]) - static_cast<f64>(ry);
+      ++checked;
+      if (rx > 3.5f) ++bank;
+      if (std::fabs(got) > 1e-3) ++moved;
+      if (!decided) {
+        ++undecided;
+        continue;
+      }
+      const f64 err = std::fabs(got - want);
+      worst = std::max(worst, err);
+      if (err > 2e-3 + 0.02 * std::fabs(want)) ++wrong;
+      CHECK(std::fabs(lifted[slot * 3] - rx) <= 1e-5f * (1.0f + std::fabs(rx)));
+      CHECK(std::fabs(lifted[slot * 3 + 2] - rz) <= 1e-5f * (1.0f + std::fabs(rz)));
+    }
+  }
+  CHECK(checked > 1000u);
+  CHECK(bank > 100u);
+  CHECK(moved > checked / 2);
+  CHECK(wrong == 0u);
+  MESSAGE("water stage: " << checked << " vertices, " << bank << " over the bank, " << moved
+                          << " lifted, " << undecided << " within 1 cm of the front left out, worst "
+                          << worst << " m from the double reference");
+
+  gfx::destroy_buffer(device, still_buffer);
+  gfx::destroy_buffer(device, field_buffer);
+  gfx::destroy_buffer(device, surface_buffer);
+  gfx::destroy_compute_pipeline(device, deform_pipeline);
+  gfx::destroy_shader_module(device, deform_module);
+  frames.destroy();
+  scene.destroy(device);
+  gfx::destroy_buffer(device, host);
   device.destroy();
 }

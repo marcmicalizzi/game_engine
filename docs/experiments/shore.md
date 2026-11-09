@@ -122,6 +122,32 @@ The stream's 1080p is now of the order of the open shores' whole S99 cost (+0.35
 
 **How the band is bounded**: a pixel that is not ground pays nothing; a ground pixel tests each body's record's square (and the swash's heights) and walks the banks' tree, whose nodes skip a subtree whose square or heights miss it. Where the ground is far from every channel that is the bodies' tests and the tree's top; at the stream every ground pixel is inside some stretch's reach (25 × 0.428 + 1 = 11.7 m either side), the reaches overlap, and the walk reaches many leaves: 1.3 ms at 1080p and 3.8 ms at 4K is the largest cost S99 adds and the first to cut (a tighter reach, or the banks' saturation baked into the ground's tiles at load, since a channel's level is static).
 
+## The wave as height
+
+Roadmap S100 (the owner, 2026-11-08: the sea's swash "far too rapid and chaotic (and even forms loops sometimes instead of a steady wave), and there's no height change as the waves come in"; on the lake "a hard cutoff"). The code is [water](../subsystems/water.md#the-mesh); this section is the diagnosis, the models and the trades.
+
+### The diagnosis
+
+On the forest proof of concept's v36 the open `eastern-sea` has `wind_m_s` 7 and no `fetch_km`, so it takes the default 100 km: JONSWAP's peak is ω_p = 22 (g²/U₁₀F)^⅓ = 1.135 rad/s, **a 5.5 s period** (5.53 s, 5.63 s on the clock's whole groups) and H_m0 about 1.3 m. Of the four suspects:
+
+- **(b) is the loops.** S94 gave each place a phase drifting by up to 1.5 waves over 4 m along the shore (`water_swash_place`, value noise) and a reach jittered in [0.7, 1.3] per place, so neighbouring places 4 m apart were up to one and a half waves out of step: independent oscillators, not a propagating wave. The front is the level set z_front(p, t) = ground(p); with the phase a function of place, that set folds back on itself wherever the phase gradient along the shore outruns the slope — the **loops**. A front that is a function of place with an independent phase cannot be a wave.
+- **(a) and (b) together are the chaos and the rapidity.** 5.5 s is a fetch-limited wind sea's period, where a real ocean coast's swash follows the swell's 8–12 s; and with the phase drifting along the beach every few metres reach their top at a different instant, so the eye sees a flicker of independent sheets several times a period rather than one sheet a period. The period itself is the conditions' (a 7 m/s wind over 100 km); the chaos was the model's.
+- **(c)** deep-water celerity at the shore made the four sines and the spectrum's crests run in at √(gλ/2π) to the waterline, where a real wave slows to √(gd) and its crests bunch.
+- **(d) is "no height change".** The mesh was flat and the sheet a colour on the ground's pixels: nothing rose as the wave came in, and on the lake the flat surface met the ground at the still level's contour — the hard cutoff.
+
+### The models
+
+- **Dispersion at depth**: ω² = g k tanh(k d). Solved by Fenton and McKee's (1990) explicit k d = k₀d · coth((k₀d)^¾)^⅔ (exact in the deep and shallow limits; one Newton step after it still left 1.5 × 10⁻⁴ of ω² here, measured), then two Newton steps on k d tanh(k d) = k₀d: the residual of ω² is under 4 × 10⁻⁹ over T 1.5–10 s and d 2 cm–500 m (`water_tests.cpp`).
+- **Shoaling**: energy flux conserved, H/H₀ = √(c_g0/c_g) = (2 n tanh k d)^−½ with n = ½(1 + 2kd/sinh 2kd) (linear theory; Dean and Dalrymple 1991), which in shallow water is **Green's law** (1838), H ~ d^−¼: H/H₀ → (4 k₀ d)^−¼, held to a percent at k₀d = 10⁻³ and 10⁻⁴.
+- **Breaking**: the shoaled height is capped at **H = γ d, γ = 0.78** — McCowan's (1894) limit for a solitary wave on a level bed (Yamada et al. 1968 revised it to 0.83; 0.78 stays the engineering first estimate), the constant Battjes and Janssen (1978) take as the breaker index for a random sea's highest waves — and in the surf zone the broken bore's height is held at γ d to the shore (the saturated surf zone). A 1 m, 8 s wave breaks in 1.64 m of water, 1.17 m high half as deep again offshore (`water_tests.cpp`).
+- **The crest's shape**: H (((1 + cos θ)/2)^m − its mean), m = 1 + 2b with b the share of the breaking height reached, so the crest sharpens and the trough flattens towards breaking (a stand-in for the cnoidal and solitary shapes of shallow water; the mean is Γ(m + ½)/(√π Γ(m + 1)), within a percent of 1/√(π(m + ¼))).
+- **The arrival field**: the train's phase at a place is the time its crest takes to get there from deep water — the eikonal |∇τ| = 1/c(d), c = ω/k(d) the local phase speed, solved on the depth map's grid at load by fast sweeping (Zhao 2005; Godunov's upwind update, four sweep orders, three rounds), from every texel at least 1/k₀ deep (or the deepest fifth). Rays bend towards the shallows, so the crests come in along the depth's contours as real refracted swell does; across the bank the speed is 10⁴ m/s, so a place on the beach takes its shoreline's arrival — the swash's phase. On a straight 1:20 beach two places a metre apart across the shore differ by the integral of 1/c between them to 0.95%, and along it by nothing (`water_tests.cpp`).
+- **The swash on the train**: S94's ballistic profile, group of seven and Stockdon's R₂ unchanged; the place's phase is now −τ/T, and the reach's along-shore variation is a smooth [0.85, 1.15] over two deep-water peak wavelengths (the crest's length under a spread sea) times the shore's facing (a closed body's waves face the shore its wind blows on: a quarter on a shore it blows away from, whole where it blows straight in). The closed-form age holds as it was.
+
+### Where the research and the budget were traded
+
+One train, the peak's, carries the near-shore height: a random sea's spectrum shoals and breaks wave by wave, and the visible breakers are its highest third, so the peak at H_m0 is what is drawn (the offshore spectrum crosses over to it between k₀d 1 and 0.35). The arrival field is first-order (the destination texel's slowness), about 1% of the travel time on the test beach at a quarter-metre grid. The crest's shape is a sharpened cosine, not a solved cnoidal or solitary profile, and the displacement is vertical only (no forward lean before the break, no plunging lip). The facing factor's gradient and an open body's outline fade's are left out of the normal. The bank's regime is the rim's ring spacing (eight metres on the eastern sea's 65,536-vertex mesh), so the sheet's edge is a triangle's, not a pixel's, and the ground pixels' swash shading (S94's, on the train) fills between.
+
 ## What the fill costs at load
 
 Measured on MSVC debug (2026-11-07, `fill_tests.cpp`'s messages): the paraboloid of 10 m radius at 0.667 m — 698 nodes inside, 118 edge points, 816 vertices, 1,512 triangles — flooded, traced and meshed in **1.8 ms** (its traced outline within 6 mm of the circle). The v31 lake's numbers are in [water](../subsystems/water.md#a-body-that-fills).
@@ -141,6 +167,12 @@ Measured on MSVC debug (2026-11-07, `fill_tests.cpp`'s messages): the paraboloid
 - Koepke, P. (1984). Effective reflectance of oceanic whitecaps. *Applied Optics* 23(11), 1816–1824.
 - Lekner, J. and Dorf, M. C. (1988). Why some things are darker when wet. *Applied Optics* 27(7), 1278–1280.
 - Stockdon, H. F., Holman, R. A., Howd, P. A. and Sallenger, A. H. (2006). Empirical parameterization of setup, swash, and runup. *Coastal Engineering* 53, 573–588.
+- McCowan, J. (1894). On the highest wave of permanent type. *Philosophical Magazine* 38(233), 351–358.
+- Battjes, J. A. and Janssen, J. P. F. M. (1978). Energy loss and set-up due to breaking of random waves. *Proceedings of the 16th International Conference on Coastal Engineering*, 569–587.
+- Green, G. (1838). On the motion of waves in a variable canal of small depth and width. *Transactions of the Cambridge Philosophical Society* 6, 457–462.
+- Fenton, J. D. and McKee, W. D. (1990). On calculating the lengths of water waves. *Coastal Engineering* 14, 499–513.
+- Dean, R. G. and Dalrymple, R. A. (1991). *Water Wave Mechanics for Engineers and Scientists*. World Scientific (linear shoaling, chapter 4).
+- Zhao, H. (2005). A fast sweeping method for Eikonal equations. *Mathematics of Computation* 74(250), 603–627.
 - Baldock, T. E. and Holmes, P. (1999). Simulation and prediction of swash oscillations on a steep beach. *Coastal Engineering* 36, 219–242.
 - Doodson, A. T. (1921). The harmonic development of the tide-generating potential. *Proceedings of the Royal Society A* 100, 305–329.
 - Hasselmann, K. et al. (1973). Measurements of wind-wave growth and swell decay during the Joint North Sea Wave Project (JONSWAP). *Deutsche Hydrographische Zeitschrift* A8(12).

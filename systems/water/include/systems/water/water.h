@@ -136,6 +136,9 @@ struct Mesh {
   f32 spacing = 0.0f;  // metres between edge samples, and between rings along a ray
   u32 edge = 0;        // vertices a ring
   u32 rings = 0;       // rings, the edge included; the centre is one vertex more
+  // Of them, the swash's rim (S100; water.md, "The mesh"): rings past the outline over the bank,
+  // first in the vertex order; 0 for a body with no wind and no tide.
+  u32 rim = 0;
   f32 max_depth = 0.0f;
 };
 // The vertex budget a body's mesh keeps under: the spacing grows until it fits.

@@ -950,8 +950,27 @@ float3 water_pixel(ResolveParams* params, SceneGeometry geo, InstanceDesc instan
   if ((material.flags & k_material_water_channel) != 0 && geo.attributes != 0)
     return water_channel_pixel(params, geo, instance, index, tri, s, from_eye, w, material.flags,
                                ray_bias, local, footprint, depth, has_map, map, dp_dx, dp_dy);
-  const float3 n = water_normal_of(w, material.flags, geo.materials, index, local.xz,
-                                   params->water_time_s, footprint, depth);
+  // The body's record of a wind or a tide (S94; water.md, "The shore"), found by its material, and
+  // with it the body's surface (S100): a body whose mesh the pool lifted is shaded with the height
+  // function's own gradient, so the normal is the surface's.
+  WaterShore swash = {};
+  bool swashing = false;
+  if ((material.flags & k_material_water_shore) != 0 && has_map && params->water_shore_count != 0) {
+    WaterShore* shores = (WaterShore*)params->water_shores;
+    for (uint b = 0; b < params->water_shore_count; ++b) {
+      if (water_shore_channel(shores[b])) break;  // the banks' tree (S99) holds no body
+      if (shores[b].material != index) continue;
+      swash = shores[b];
+      swashing = water_swash_on(swash) || swash.tide_m > 0.0;
+      break;
+    }
+  }
+  const float3 n =
+      swash.surface != 0
+          ? water_surface_normal((WaterSurface*)swash.surface, local.xz, s.uv.x,
+                                 params->water_time_s, params->water_tide_phase, footprint)
+          : water_normal_of(w, material.flags, geo.materials, index, local.xz,
+                            params->water_time_s, footprint, depth);
   const float3 view = normalize(-from_eye);
   float edge = water_edge(w, material.flags, s.uv.x, depth);
   // The shore where the level meets the ground (k_material_water_shore; water.md, "The shore"):
@@ -965,18 +984,6 @@ float3 water_pixel(ResolveParams* params, SceneGeometry geo, InstanceDesc instan
   // front. Without one, the shore is S97's.
   float bared_wet = -1.0;
   if ((material.flags & k_material_water_shore) != 0 && has_map) {
-    WaterShore swash = {};
-    bool swashing = false;
-    if (params->water_shore_count != 0) {
-      WaterShore* shores = (WaterShore*)params->water_shores;
-      for (uint b = 0; b < params->water_shore_count; ++b) {
-        if (water_shore_channel(shores[b])) break;  // the banks' tree (S99) holds no body
-        if (shores[b].material != index) continue;
-        swash = shores[b];
-        swashing = water_swash_on(swash) || swash.tide_m > 0.0;
-        break;
-      }
-    }
     if (swashing) {
       const float t = params->water_time_s;
       const float signed_depth = water_depth_signed(map, local.xz);
@@ -988,10 +995,16 @@ float3 water_pixel(ResolveParams* params, SceneGeometry geo, InstanceDesc instan
         place = water_swash_place(swash, local.xz);
         front = water_swash_front(place, t, uprush);
       }
-      // The shift fades out over the swash's own depth, so deep water is the depth it was.
-      const float band = 1.5 * swash.run_up_m + swash.tide_m + k_water_calm_depth;
-      const float weight = 1.0 - smoothstep(band, 2.0 * band, max(signed_depth, 0.0));
-      depth = max(signed_depth + (level + front) * weight, 0.0);
+      if (swash.surface != 0) {
+        // The mesh stands where the pool lifted it (S100): the water here is the surface's height
+        // over the ground, the waves', the bore's or the sheet's.
+        depth = max(local.y + signed_depth, 0.0);
+      } else {
+        // The shift fades out over the swash's own depth, so deep water is the depth it was.
+        const float band = 1.5 * swash.run_up_m + swash.tide_m + k_water_calm_depth;
+        const float weight = 1.0 - smoothstep(band, 2.0 * band, max(signed_depth, 0.0));
+        depth = max(signed_depth + (level + front) * weight, 0.0);
+      }
       edge = water_shore_distance(map, local.xz, depth);
       const float hh = -signed_depth - level;
       const float x = depth > 0.0 ? edge : (front - hh) / max(swash.slope, 1e-3);

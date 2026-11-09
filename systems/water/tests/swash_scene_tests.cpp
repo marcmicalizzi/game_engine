@@ -65,6 +65,7 @@ constexpr u32 k_times = 8;
 struct Sequence {
   CapturedFrame frame[k_times + 1];  // the last: the first time again
   u32 water_instance = ~0u;
+  bool lifted = false;  // the GPU scene gave the body a water-stage deform record (S100)
 };
 
 void shoot(const gfx::Device& device, const test::TempDir& tmp, const std::string& name, f32 wind,
@@ -86,6 +87,7 @@ void shoot(const gfx::Device& device, const test::TempDir& tmp, const std::strin
   REQUIRE(check_availability(resolved, device.features()) == RenderAvailability::Ok);
   GpuScene scene;
   REQUIRE_MESSAGE(scene.create(device, data, resolved, &error), error);
+  out.lifted = scene.water_lifted();
   SceneRenderer renderer;
   SceneRenderer::Desc rd;
   rd.width = 480;
@@ -115,7 +117,12 @@ u32 luma(const CapturedFrame& f, u32 p) {
 
 }  // namespace
 
-TEST_CASE("water swash: the wet band runs up and back with the clock, and only the shading moves") {
+// Since S100 the windy body's mesh moves (the pool lifts it by its height function, water_waves.
+// slang), so its waterline is in the ids channel: S94's "no surface moves" (the ids the dry frame's
+// at every time) went with the flat mesh it described, and in its place the ids change only where
+// the water is in one of the two frames, the waterline moves between the times, and the still
+// body's ids stand.
+TEST_CASE("water swash: the wet band runs up and back with the clock, and the waterline with it") {
   if (!gpu_here()) return;
   const test::TempDir tmp("water_swash");
   gfx::Device device;
@@ -128,17 +135,38 @@ TEST_CASE("water swash: the wet band runs up and back with the clock, and only t
   device.destroy();
   const u32 pixels = dry.frame[0].width * dry.frame[0].height;
   REQUIRE(wind.water_instance != ~0u);
-  // The same time twice is the same bytes; no surface moves.
+  // A body with no wind and no tide takes no deform record: it is the rigid instance it was, S97's
+  // bytes by construction. The windy one is lifted by the pool.
+  CHECK(wind.lifted);
+  CHECK_FALSE(still.lifted);
+  CHECK_FALSE(dry.lifted);
+  // The same time twice is the same bytes.
   CHECK(wind.frame[0].color == wind.frame[k_times].color);
+  CHECK(wind.frame[0].ids == wind.frame[k_times].ids);
+  // Only the water moves: a pixel whose id is not the dry frame's is the water's in one of them;
+  // and the waterline moves from one time to the next. The still body's ids stand.
+  u32 not_water = 0, waterline_moved = 0;
   for (u32 s = 0; s < k_times; ++s) {
-    CHECK(wind.frame[s].ids == dry.frame[s].ids);
+    CHECK(still.frame[s].ids == still.frame[0].ids);
+    for (u32 p = 0; p < pixels; ++p) {
+      const u32 a = wind.frame[s].ids[p * k_id_words];
+      const u32 b = dry.frame[s].ids[p * k_id_words];
+      if (a != b && a != wind.water_instance && b != wind.water_instance) ++not_water;
+      if (s > 0 && (a == wind.water_instance) !=
+                       (wind.frame[s - 1].ids[p * k_id_words] == wind.water_instance))
+        ++waterline_moved;
+    }
   }
+  CHECK(not_water == 0u);
+  CHECK(waterline_moved > 0u);
+  MESSAGE("swash: " << waterline_moved << " water/ground id changes over 2 s at a quarter second");
   // The wet ground (darker than the dry ground at the same time, off the water) at each time.
   u32 wet[k_times] = {};
   u32 still_ground_moved = 0;
   for (u32 s = 0; s < k_times; ++s) {
     for (u32 p = 0; p < pixels; ++p) {
       if (dry.frame[s].ids[p * k_id_words] == wind.water_instance) continue;
+      if (wind.frame[s].ids[p * k_id_words] == wind.water_instance) continue;
       if (luma(wind.frame[s], p) + 3 < luma(dry.frame[s], p)) ++wet[s];
       if (s > 0 && luma(still.frame[s], p) != luma(still.frame[0], p)) ++still_ground_moved;
     }

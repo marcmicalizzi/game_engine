@@ -491,6 +491,8 @@ static const uint k_deform_stage_terrain = 0x2000u;
 static const uint k_deform_stage_flora = 0x4000u;
 // gfx::k_deform_flora_field: with the flora stage, a mesh's shared record posed as a field (R95).
 static const uint k_deform_flora_field = 0x8000u;
+// gfx::k_deform_stage_water: a water body's surface at the frame's clock (S100; water_waves.slang).
+static const uint k_deform_stage_water = 0x10000u;
 
 // The rest pose: three u16 at 3 * vertex of the mesh's grid, read as the 32-bit words that
 // contain them. The stream is padded to an even u16 count on the CPU, so the last word read is

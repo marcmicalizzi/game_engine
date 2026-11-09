@@ -546,6 +546,89 @@ bool find_built_textures(const SourceMesh& mesh, const SceneTextures& known, boo
   return true;
 }
 
+f64 water_shore_slope(const SceneWaterDepth& map);  // below, with the shore's records
+
+// **A body's swash numbers** (water.md, "The shore"; S94): a closed body's own wind over the smaller
+// of its fetch and its own longest reach (the map's square's diagonal), an open body's the wind its
+// spectrum took; the wind's wave over the fetch, the map's foreshore slope, Stockdon's run-up, the
+// tide. The shore's record and the body's surface (S100) both take them from here.
+struct WaterSwashNumbers {
+  f64 wind = 0.0;
+  f64 fetch_m = 0.0;
+  f64 slope = 0.0;
+  gfx::SwashWave wave{};
+  f64 run_up = 0.0;
+  f32 tide = 0.0f;
+};
+WaterSwashNumbers water_swash_numbers(const SceneWater& water) {
+  WaterSwashNumbers n;
+  const scene::WaterBody& body = water.body;
+  n.wind = static_cast<f64>(body.wind_m_s);
+  if (body.open && water.wind_m_s > 0.0f) n.wind = static_cast<f64>(water.wind_m_s);
+  n.fetch_m = static_cast<f64>(body.fetch_km) * 1000.0;
+  const f64 side = static_cast<f64>(water.depth.size - 1) * static_cast<f64>(water.depth.texel_m);
+  if (!body.open) n.fetch_m = std::min(n.fetch_m, side * std::sqrt(2.0));
+  n.slope = water_shore_slope(water.depth);
+  n.wave = gfx::swash_wave(n.wind, n.fetch_m);
+  n.run_up = gfx::stockdon_r2(n.wave.height_m, n.wave.period_s, n.slope);
+  n.tide = body.open ? body.tide_m : 0.0f;
+  return n;
+}
+
+// **A body's height function** (S100; water_swash.h, `WaterSurface`; water.md, "The mesh"): the
+// body's waves (an open body's spectrum, else the material's four sines), the wind's peak wave and
+// its run-up, the tide, and the arrival field over the depth map's grid — the depth decoded from
+// the map's 16 bits as the GPU's image is, the eikonal's arrival time beside it.
+void water_surface_of(const SceneWater& water, const WaterSwashNumbers& n,
+                      gfx::WaterSurface& out, Vector<f32>& field) {
+  const SceneWaterDepth& map = water.depth;
+  out = gfx::WaterSurface{};
+  out.origin = map.origin;
+  out.texel_m = map.texel_m;
+  out.size = map.size;
+  const f64 period = gfx::swash_period(n.wave.period_s);
+  const f64 two_pi = 6.283185307179586;
+  out.height_m = static_cast<f32>(n.wave.height_m);
+  out.period_s = static_cast<f32>(period);
+  out.k0 = period > 0.0 ? static_cast<f32>((two_pi / period) * (two_pi / period) / gfx::k_swash_g)
+                        : 0.0f;
+  out.run_up_m = static_cast<f32>(n.run_up);
+  out.slope = static_cast<f32>(n.slope);
+  out.tide_m = n.tide;
+  const f64 l0 = gfx::k_swash_g * period * period / two_pi;
+  out.along_m = static_cast<f32>(std::max(2.0 * l0, 4.0));
+  const scene::WaterBody& body = water.body;
+  if (body.open) {
+    out.flags |= gfx::k_water_surface_open;
+    out.fade_m = static_cast<f32>(std::clamp(0.5 * l0, 2.0, 30.0));
+  }
+  out.amplitude = water.shading.wave_amplitude_m;
+  out.wavelength = water.shading.wave_length_m;
+  out.chop = water.shading.chop;
+  out.seed = water.shading.seed;
+  out.direction = water.shading.direction;
+  out.wind = water.shading.direction;
+  if (water.waves.size() == gfx::k_water_waves) {
+    out.flags |= gfx::k_water_surface_spectrum;
+    for (u32 i = 0; i < gfx::k_water_waves; ++i)
+      out.waves[i] = water.waves[i];
+  }
+  const u32 count = map.size * map.size;
+  Vector<f32> depth(count);
+  const f64 range = static_cast<f64>(map.depth_max) + static_cast<f64>(map.bank_max);
+  for (u32 i = 0; i < count; ++i)
+    depth[i] = static_cast<f32>(static_cast<f64>(map.texels[i]) / 65535.0 * range -
+                                static_cast<f64>(map.bank_max));
+  Vector<f32> arrival(count);
+  gfx::water_arrival_field(depth.data(), map.size, static_cast<f64>(map.texel_m), period,
+                           arrival.data());
+  field.resize(2 * count);
+  for (u32 i = 0; i < count; ++i) {
+    field[2 * i] = depth[i];
+    field[2 * i + 1] = arrival[i];
+  }
+}
+
 }  // namespace
 
 GpuScene::~GpuScene() { destroy(); }
@@ -1197,8 +1280,7 @@ void GpuScene::acquire_tail_tree(u32 slot, const SceneInstance& source) {
     desc.first_vertex = part.first_vertex;
     desc.joint_count = parts;
     deform_mesh_clusters_[tree.deform] = part.cluster_count;
-    if (tree.deform < deform_capacity_ && deform_table.mapped != nullptr)
-      static_cast<gfx::DeformDesc*>(deform_table.mapped)[tree.deform] = desc;
+    put_deform_record(tree.deform, desc);
     ++flora_stats_.tail_repurposed;
   } else {
     // A new record past every other: an entry of the deform table and a run of the pose table
@@ -1226,7 +1308,7 @@ void GpuScene::acquire_tail_tree(u32 slot, const SceneInstance& source) {
       flora_grow_ = true;
       relayout_pending_ = true;
     } else {
-      static_cast<gfx::DeformDesc*>(deform_table.mapped)[tree.deform] = desc;
+      put_deform_record(tree.deform, desc);
     }
   }
   TailTree& tree = tail_trees_[t];
@@ -2302,6 +2384,55 @@ bool GpuScene::upload_geometry(const ResolvedSettings& resolved, std::string* er
         }
       }
     }
+    // **The water bodies the pool lifts** (S100; water.md, "The mesh"): every body with a depth map
+    // and a wind (or an open one with a tide) gets its height function — a `WaterSurface` and its
+    // arrival field — and a deform record of the water stage; a body with neither stays rigid, the
+    // instruction-for-instruction path it always drew on.
+    water_surface_of_.assign(instance_count_, ~0u);
+    water_deforms_.clear();
+    {
+      Vector<gfx::WaterSurface> surfaces;
+      for (u32 i = 0; i < instance_count_ && i < data_->instances.size(); ++i) {
+        const u32 m = data_->instances[i].mesh;
+        if (m >= data_->mesh_info.size() || !data_->mesh_info[m].water.has_value()) continue;
+        const SceneWater& water = *data_->mesh_info[m].water;
+        if (water.depth.size < 2 || water.channel) continue;
+        const WaterSwashNumbers n = water_swash_numbers(water);
+        if (!(n.run_up > 0.0) && !(n.tide > 0.0f)) continue;
+        gfx::WaterSurface surface;
+        Vector<f32> field;
+        water_surface_of(water, n, surface, field);
+        gfx::BufferResource buffer;
+        if (!gfx::upload_buffer(device, field.data(), u64{field.size()} * sizeof(f32), k_address,
+                                buffer, error)) {
+          return false;
+        }
+        surface.field = buffer.address;
+        water_fields_.push_back(buffer);
+        water_surface_of_[i] = surfaces.size();
+        // The spheres take the lift's reach: the bank's highest ground (a parked vertex), the
+        // waves, the bore and the tide.
+        f32 waves = surface.height_m * 2.0f + surface.run_up_m + surface.tide_m;
+        for (const gfx::WaterWave& wave : water.waves)
+          waves += wave.amplitude;
+        waves += surface.amplitude * 2.1f;
+        const f32 padding = water.depth.bank_max + waves + 0.5f;
+        if (padding > instance_table_[i].bounds_padding) instance_table_[i].bounds_padding = padding;
+        surfaces.push_back(surface);
+        ENGINE_LOG_INFO(log_renderer, "water lifted", log::field("body", water.body.name),
+                        log::field("height_m", surface.height_m),
+                        log::field("period_s", surface.period_s),
+                        log::field("run_up_m", surface.run_up_m),
+                        log::field("field_texels", water.depth.size),
+                        log::field("padding_m", padding));
+      }
+      if (!surfaces.empty() &&
+          !gfx::upload_buffer(device, surfaces.data(),
+                              u64{surfaces.size()} * sizeof(gfx::WaterSurface), k_address,
+                              water_surfaces_, error)) {
+        return false;
+      }
+    }
     for (u32 i = 0; i < instance_count_; ++i) {
       // A skinned instance is deformed whatever the settings say; a rigid one only under
       // `--deform`, so a scene of one character and a hundred props allocates pool blocks for the
@@ -2319,8 +2450,11 @@ bool GpuScene::upload_geometry(const ResolvedSettings& resolved, std::string* er
       const bool flora_level = !ring_slot && !terrain_level && instance_joints == 0 &&
                                mesh_index < flora_meshes_.size() &&
                                flora_meshes_[mesh_index].part_count() > 0;
+      const bool water_level = !ring_slot && !terrain_level && !flora_level &&
+                               instance_joints == 0 && i < water_surface_of_.size() &&
+                               water_surface_of_[i] != ~0u;
       if (instance_joints == 0 && part.morph_channel_count == 0 && !resolved.settings.deform &&
-          !terrain_level && !flora_level)
+          !terrain_level && !flora_level && !water_level)
         continue;
       const u32 next = ring_slot ? part.first_vertex + part.cluster_count * 64u
                        : instance_table_[i].mesh + 1 < data_->parts.size()
@@ -2366,6 +2500,13 @@ bool GpuScene::upload_geometry(const ResolvedSettings& resolved, std::string* er
         flora_parts_ += tree.part_count();
         flora_stats_.max_padding =
             std::max(flora_stats_.max_padding, placed.bounds_padding * placed.scale_max);
+      } else if (water_level) {
+        // A water body runs the water stage and nothing else: its record names its surface, and a
+        // frame writes its clock and its tide's phase into its own copy (scene_renderer.cpp).
+        desc.stages = gfx::k_deform_stage_water;
+        desc.joints =
+            water_surfaces_.address + u64{water_surface_of_[i]} * sizeof(gfx::WaterSurface);
+        water_deforms_.push_back(deform_descs_.size());
       }
       desc.first_vertex = part.first_vertex;
       desc.first_channel = part.first_morph_channel;
@@ -2443,7 +2584,9 @@ bool GpuScene::upload_geometry(const ResolvedSettings& resolved, std::string* er
     // is one memcpy of the span plus one rewrite of a table of 24-byte records. Every region starts
     // as the static table, so a frame only ever rewrites the two words that change and a slot that
     // has never been written is still a valid rest pose.
-    ok = ok && make_deform_tables(skinned_, error);
+    // A lifted water body's clock is per frame too (S100), so its scene keeps the copies as a
+    // skinned one does.
+    ok = ok && make_deform_tables(skinned_ || !water_deforms_.empty(), error);
     if (ok && skinned_) {
       const u64 joint_region = joint_bytes();
       ok = gfx::create_buffer(device, joint_region * k_joint_slots, k_address, true, joints, error);
@@ -2955,6 +3098,17 @@ bool GpuScene::make_flora_poses(std::string* error) {
 // host-visible and persistently mapped for one whose tail takes records of its own, so a tree's
 // record is written between frames into an entry no frame in flight reads (renderer.md, "Streamed
 // trees sway").
+void GpuScene::put_deform_record(u32 index, const gfx::DeformDesc& desc) noexcept {
+  if (index >= deform_capacity_) return;
+  if (deform_table.mapped != nullptr) static_cast<gfx::DeformDesc*>(deform_table.mapped)[index] = desc;
+  // A scene whose table has per-frame copies for its water (S100) and no skin to rewrite them every
+  // frame keeps them in step here, so a tree the tail brings in sways in every slot.
+  if (!skinned_ && deform_frames.mapped != nullptr) {
+    for (u32 slot = 0; slot < k_joint_slots; ++slot)
+      deform_frame(slot)[index] = desc;
+  }
+}
+
 bool GpuScene::make_deform_tables(bool frames, std::string* error) {
   const gfx::Device& device = *device_;
   const u64 used = u64{deform_descs_.size()} * sizeof(gfx::DeformDesc);
@@ -6118,17 +6272,13 @@ bool GpuScene::upload_water_shores(std::string* error) {
     }
     if (water.depth.size < 2) continue;
     const scene::WaterBody& body = water.body;
-    // The swash: a closed body's own wind over the smaller of its fetch and its own longest reach
-    // (the map's square's diagonal); an open body's the wind its spectrum took.
-    f64 wind = static_cast<f64>(body.wind_m_s);
-    if (body.open && water.wind_m_s > 0.0f) wind = static_cast<f64>(water.wind_m_s);
-    f64 fetch_m = static_cast<f64>(body.fetch_km) * 1000.0;
-    const f64 side = static_cast<f64>(water.depth.size - 1) * static_cast<f64>(water.depth.texel_m);
-    if (!body.open) fetch_m = std::min(fetch_m, side * std::sqrt(2.0));
-    const f64 slope = water_shore_slope(water.depth);
-    const gfx::SwashWave wave = gfx::swash_wave(wind, fetch_m);
-    const f64 run_up = gfx::stockdon_r2(wave.height_m, wave.period_s, slope);
-    const f32 tide = body.open ? body.tide_m : 0.0f;
+    const WaterSwashNumbers numbers = water_swash_numbers(water);
+    const f64 wind = numbers.wind;
+    const f64 fetch_m = numbers.fetch_m;
+    const f64 slope = numbers.slope;
+    const gfx::SwashWave wave = numbers.wave;
+    const f64 run_up = numbers.run_up;
+    const f32 tide = numbers.tide;
     if (!(body.wet_m > 0.0f) && !(run_up > 0.0) && !(tide > 0.0f)) continue;
     const f32 reach = std::max(body.wet_m, static_cast<f32>(run_up) * 1.25f + tide);
     const f32 margin = 25.0f * reach + 1.0f;
@@ -6147,6 +6297,9 @@ bool GpuScene::upload_water_shores(std::string* error) {
     shore.height_m = static_cast<f32>(wave.height_m);
     shore.foam_m = body.foam_m;
     shore.shore_m = body.shore_m;
+    if (i < water_surface_of_.size() && water_surface_of_[i] != ~0u)
+      shore.surface =
+          water_surfaces_.address + u64{water_surface_of_[i]} * sizeof(gfx::WaterSurface);
     ENGINE_LOG_INFO(log_renderer, "water swash", log::field("body", body.name),
                     log::field("wind_m_s", wind), log::field("fetch_m", fetch_m),
                     log::field("height_m", wave.height_m), log::field("period_s", wave.period_s),
@@ -6284,6 +6437,13 @@ void GpuScene::destroy() noexcept {
   if (water_shores_.size != 0) gfx::destroy_buffer(device, water_shores_);
   water_shores_ = gfx::BufferResource{};
   water_shore_count_ = 0;
+  if (water_surfaces_.size != 0) gfx::destroy_buffer(device, water_surfaces_);
+  water_surfaces_ = gfx::BufferResource{};
+  for (gfx::BufferResource& field : water_fields_)
+    gfx::destroy_buffer(device, field);
+  water_fields_.clear();
+  water_surface_of_.clear();
+  water_deforms_.clear();
   micromap_list_.clear();
   micromap_triangles_.clear();
   if (!sets_.empty()) {

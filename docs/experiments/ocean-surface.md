@@ -361,6 +361,8 @@ What each piece needs and from whom:
   water's surface is not their caster; they sway by the flora stage's wind with the body's current
   as the wind.
 
+**2026-11-08 (roadmap S100): the height is drawn near the shore.** A body with a wind is a deformed instance now: its mesh is lifted by the waves' vertical displacement offshore and, near the shore, by the wind's peak wave shoaled by the depth (Green's law), broken at 0.78 d and slowed by the dispersion relation at the local depth along an arrival field solved at load — the "depth-aware dispersion near a shore" of the design below, for one train and in the vertical only. The open plane past the outline stays flat with slope-only waves, the mesh's lift fading to zero over its outline. [water](../subsystems/water.md#the-mesh), grounding [shore](shore.md#the-wave-as-height).
+
 ## What is measured
 
 Stage 1's own cost and the pond's bytes are on [water](../subsystems/water.md#to-the-horizon).

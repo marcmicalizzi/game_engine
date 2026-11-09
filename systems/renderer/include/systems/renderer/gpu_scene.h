@@ -750,6 +750,12 @@ class GpuScene {
   // the per-frame one is a separate host-visible buffer with a region per slot. A skinned scene
   // therefore has no host write racing a device read, and a rigid one has no second table at all.
   bool skinned() const noexcept { return skinned_; }
+  // **The water bodies the pool lifts** (S100; water.md, "The mesh"): their deform records, whose
+  // clock and tide words a frame writes into its own copy of the table (`deform_frame`).
+  bool water_lifted() const noexcept { return !water_deforms_.empty(); }
+  std::span<const u32> water_deforms() const noexcept {
+    return {water_deforms_.data(), water_deforms_.size()};
+  }
   u32 max_joints() const noexcept { return max_joints_; }
   u32 skinned_instances() const noexcept { return skinned_instances_; }
   // Entries of the deform table: one per instance that reads the pool, which is every instance
@@ -1352,6 +1358,9 @@ class GpuScene {
   bool create_flora(std::string* error);
   bool make_flora_poses(std::string* error);
   bool make_deform_tables(bool frames, std::string* error);
+  // One record of the deform table, written into the static table and, when a frame keeps copies
+  // and nothing rewrites them every frame, into every copy (S100).
+  void put_deform_record(u32 index, const gfx::DeformDesc& desc) noexcept;
   // `policy`: count the instance table's policies again too (`policy_counts`); a change of the tail
   // keeps them slot by slot instead (`policy_count`, W81).
   void flora_counts(bool policy = true) noexcept;
@@ -1677,6 +1686,12 @@ class GpuScene {
   u32 water_open_material_ = 0;
   gfx::BufferResource water_shores_;
   u32 water_shore_count_ = 0;
+  // The lifted water bodies (S100): their `gfx::WaterSurface`s, each one's arrival field, which
+  // instance has which (~0u: none), and their deform records.
+  gfx::BufferResource water_surfaces_;
+  Vector<gfx::BufferResource> water_fields_;
+  Vector<u32> water_surface_of_;
+  Vector<u32> water_deforms_;
   // The water reflection's candidate planes (R129; `water_reflect_level`): a level body each, its
   // instance, its square's centre (body-local x, z) and half diagonal, and whether it is the open
   // one.

@@ -284,6 +284,64 @@ f32 depth_at(std::span<const Body> bodies, const scene_gen::Ground& ground, Worl
 
 f32 spacing_for(const Body& body) noexcept { return std::clamp(body.shore_m / 3.0f, 0.25f, 1.0f); }
 
+namespace {
+
+// **How high the swash's rim must reach** (S100; water.md, "The mesh"): a body with a wind (or an
+// open one with a tide) has its mesh grown over the bank to where the ground stands this far above
+// its level — twice the wind's fetch-limited significant height (the Coastal Engineering Manual's
+// growth law, g H / U^2 = 1.6e-3 (g F / U^2)^(1/2); Stockdon's R2 is under twice H on any foreshore
+// the map can give) plus the tide and a quarter metre. 0: no rim, the mesh it always was.
+f64 rim_height(const Body& body, const Vector<Vec2>& edge) {
+  const f64 tide = body.open ? static_cast<f64>(body.tide_m) : 0.0;
+  const f64 u = static_cast<f64>(body.wind_m_s);
+  if (!(u > 0.0) && !(tide > 0.0)) return 0.0;
+  f64 fetch = static_cast<f64>(body.fetch_km) * 1000.0;
+  if (!body.open) {
+    f64 lo_x = 1e30, lo_z = 1e30, hi_x = -1e30, hi_z = -1e30;
+    for (const Vec2& b : edge) {
+      lo_x = std::min(lo_x, static_cast<f64>(b.x));
+      hi_x = std::max(hi_x, static_cast<f64>(b.x));
+      lo_z = std::min(lo_z, static_cast<f64>(b.y));
+      hi_z = std::max(hi_z, static_cast<f64>(b.y));
+    }
+    const f64 side = std::max(hi_x - lo_x, hi_z - lo_z);
+    fetch = std::min(fetch, side * std::sqrt(2.0));
+  }
+  const f64 g = 9.81;
+  const f64 height = u > 0.0 ? 1.6e-3 * u * u / g * std::sqrt(g * fetch / (u * u)) : 0.0;
+  return 2.0 * height + tide + 0.25;
+}
+
+// How many rings past the outline the rim takes, `spacing` apart along each sample's ray: until
+// every sample whose ground at the outline is not deep water (within `height` of the level) has met
+// ground `height` over the level, at most `k_rim_rings_max` and 60 m.
+inline constexpr u32 k_rim_rings_max = 12;
+u32 rim_rings(const Body& body, const scene_gen::Ground& ground, const Vector<Vec2>& edge,
+              f32 spacing, f64 height) {
+  if (!(height > 0.0)) return 0;
+  const u32 most = std::min(k_rim_rings_max,
+                            std::max(1u, static_cast<u32>(60.0f / std::max(spacing, 1e-3f))));
+  u32 rings = 0;
+  for (const Vec2& b : edge) {
+    const f32 len = length2(b);
+    if (!(len > 0.0f)) continue;
+    const auto above = [&](f32 out) {
+      const f32 s = (len + out) / len;
+      const WorldPos at{body.center.x + static_cast<f64>(b.x * s), body.level_m,
+                        body.center.z + static_cast<f64>(b.y * s)};
+      return ground.surface(at) - body.level_m;
+    };
+    if (above(0.0f) < -height) continue;  // deep water at the outline: an open sea's far side
+    u32 need = 0;
+    while (need < most && above(static_cast<f32>(need) * spacing) < height)
+      ++need;
+    rings = std::max(rings, need);
+  }
+  return rings;
+}
+
+}  // namespace
+
 void build_mesh(const Body& body, const scene_gen::Ground& ground, Mesh& out) {
   if (body.fill) {
     build_fill_mesh(body, ground, out);
@@ -293,16 +351,23 @@ void build_mesh(const Body& body, const scene_gen::Ground& ground, Mesh& out) {
   f32 spacing = spacing_for(body);
   Vector<Vec2> edge;
   u32 rings = 0;
+  u32 rim = 0;
   for (;;) {
     edge_samples(body, spacing, edge);
     rings = ring_count(edge, spacing);
-    if (u64{edge.size()} * rings + 1 <= k_max_vertices) break;
+    // The swash's rim (S100): rings past the outline, over the bank the swash can run up, which
+    // the pool's water stage lifts to the sheet or parks under the ground. None without a wind or
+    // a tide, so such a body's mesh is the bytes it was.
+    rim = rim_rings(body, ground, edge, spacing, rim_height(body, edge));
+    if (u64{edge.size()} * (rings + rim) + 1 <= k_max_vertices) break;
     spacing *= 1.25f;
   }
   const u32 m = edge.size();
   out.spacing = spacing;
   out.edge = m;
-  out.rings = rings;
+  out.rings = rings + rim;
+  out.rim = rim;
+  rings += rim;
   const u32 vertices = m * rings + 1;
   out.positions.reserve(vertices);
   out.normals.reserve(vertices);
@@ -316,8 +381,20 @@ void build_mesh(const Body& body, const scene_gen::Ground& ground, Mesh& out) {
     out.max_depth = std::max(out.max_depth, static_cast<f32>(depth));
     out.uvs.push_back(Vec2{from_edge, static_cast<f32>(depth)});
   };
-  for (u32 k = 0; k < rings; ++k) {
-    const f32 t = 1.0f - static_cast<f32>(k) / static_cast<f32>(rings);
+  // The rim first, outermost ring first, each `spacing` further out along its sample's ray than the
+  // next (so the first `edge` vertices bound the mesh, as the depth map's square takes them), at
+  // an edge distance of 0; then the rings to the fan as they always were.
+  for (u32 r = rim; r > 0; --r) {
+    for (u32 j = 0; j < m; ++j) {
+      const Vec2 b = edge[j];
+      const f32 len = length2(b);
+      const f32 s = len > 0.0f ? (len + static_cast<f32>(r) * spacing) / len : 1.0f;
+      add(Vec2{b.x * s, b.y * s}, 0.0f);
+    }
+  }
+  const u32 inner = rings - rim;
+  for (u32 k = 0; k < inner; ++k) {
+    const f32 t = 1.0f - static_cast<f32>(k) / static_cast<f32>(inner);
     for (u32 j = 0; j < m; ++j) {
       const Vec2 b = edge[j];
       add(Vec2{b.x * t, b.y * t}, (1.0f - t) * length2(b));

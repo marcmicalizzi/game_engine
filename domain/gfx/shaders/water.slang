@@ -33,20 +33,15 @@
 #include "brdf.slang"
 #include "material.slang"
 #include "wet_ground.slang"  // S99: the ground's wet response, which the shore hands its saturation
+// The height function (S100), and the waves' constants, the hash, the value noise and the swash's
+// shape it shares with this branch.
+#include "water_waves.slang"
 
 static const float k_water_ior = 1.33;
 // ((1.33 - 1) / (1.33 + 1))^2: what water reflects face on.
 static const float k_water_f0 = 0.020059312;
-static const float k_water_g = 9.81;
-static const float k_water_period_s = 1024.0;  // gfx::k_water_period_s
-static const float k_water_two_pi = 6.283185307179586;
 // The depth over which the waves die at the shore, metres.
 static const float k_water_calm_depth = 0.25;
-// The four waves: wavelength and amplitude as shares of the body's, and the turn from the main
-// direction as a share of the chop's ninety degrees.
-static const float k_water_length[4] = {1.0, 0.62, 0.38, 0.24};
-static const float k_water_amplitude[4] = {1.0, 0.55, 0.32, 0.18};
-static const float k_water_turn[4] = {0.0, 0.55, -0.8, 0.35};
 
 // A water material's numbers (gfx::set_water_material's packing).
 struct WaterParams {
@@ -101,16 +96,6 @@ WaterParams water_of(ResolveMaterial m) {
   return w;
 }
 
-// A wave's phase at the clock's zero, in [0, 1): an integer hash of the seed and the wave.
-float water_phase(uint seed, uint wave) {
-  uint h = seed * 0x9E3779B9u + (wave + 1u) * 0x85EBCA6Bu;
-  h ^= h >> 16;
-  h *= 0x7FEB352Du;
-  h ^= h >> 15;
-  h *= 0x846CA68Bu;
-  h ^= h >> 16;
-  return float(h >> 8) * (1.0 / 16777216.0);
-}
 
 // The surface's normal at body-local (x, z) at the clock `time`, seconds in [0, period): the four
 // waves' slopes, each faded by the pixel's `footprint` (metres) and all by the `depth`.
@@ -201,16 +186,6 @@ float water_edge(WaterParams w, uint flags, float edge, float depth) {
 static const uint k_material_water_spectrum = 256u;  // gfx::k_material_water_spectrum
 static const uint k_water_waves = 16;  // gfx::k_water_waves; the entries are scene.slang's 112 bytes
 
-// Mirrors gfx::WaterWave (32 bytes).
-struct WaterWave {
-  float2 direction;
-  float k;
-  float amplitude;
-  float cycles;
-  float phase;
-  float steepness;
-  float pad;
-};
 
 // The table of the water material at `index` of the table at `materials` (an address).
 WaterWave* water_waves(uint64_t materials, uint index) {
@@ -235,6 +210,26 @@ float3 water_normal_spectrum(WaterWave* waves, float2 p, float time, float footp
     lift += wave.steepness * share * sin(angle);
   }
   return normalize(float3(-slope.x, 1.0 - lift, -slope.y));
+}
+
+// **The normal of a body with a surface** (S100): the gradient of the height the pool lifted the
+// mesh by (`water_height`, water_waves.slang), the Gerstner crests' sharpening with it, faded flat
+// over the swash's band (the sheet over the bank is a few centimetres on the ground's slope) and in
+// from an open body's outline as the lift is. The open fade's own gradient is left out.
+float3 water_surface_normal(WaterSurface* s, float2 p, float edge, float time, float tide_phase,
+                            float footprint) {
+  const WaterField f = water_field_at(s, p);
+  const WaterHeight w = water_height(s, p, f, time, footprint);
+  const float fade = (s->flags & k_water_surface_open) != 0 && s->fade_m > 0.0
+                         ? smoothstep(0.0, s->fade_m, edge)
+                         : 1.0;
+  float share = 0.0;
+  if (s->field != 0) {
+    const float band = 0.2 * s->run_up_m + 0.05;
+    share = 1.0 - smoothstep(0.0, band, f.depth + water_surface_tide(s, tide_phase));
+  }
+  const float k = fade * (1.0 - share);
+  return normalize(float3(-w.grad.x * k, 1.0 - w.lift * k, -w.grad.y * k));
 }
 
 // The waves' normal for a water material: the spectrum's where it has one, the four sines'
@@ -525,7 +520,7 @@ static const float k_water_foam_full_amplitude = 0.02;
 // slang's k_material_terrain_layers and k_material_terrain_map).
 static const uint k_water_wet_materials = 8u | 512u | 1024u;
 
-// Mirrors gfx::WaterShore (96 bytes since S99's channel stretches).
+// Mirrors gfx::WaterShore (96 bytes since S99's channel stretches, 112 since S100's surface).
 struct WaterShore {
   uint instance;
   float wet_m;
@@ -543,6 +538,9 @@ struct WaterShore {
   float shore_m;
   float4 stretch_a;   // S99: a channel stretch's upstream point (x, z, surface y, half width); w 0: a body's
   float4 stretch_b;   // and its downstream one
+  uint64_t surface;  // the body's WaterSurface (S100: the wave as height), or 0
+  uint pad0;
+  uint pad1;
 };
 
 // **Where the level meets the ground, per pixel**: the distance in from the waterline, metres, as
@@ -566,28 +564,6 @@ float water_shore_distance(WaterDepthMap d, float2 p, float depth) {
   return g > 1e-4 ? depth / g : 1e6;
 }
 
-uint water_hash2(int2 c) {
-  uint h = uint(c.x) * 0x8DA6B343u ^ uint(c.y) * 0xD8163841u;
-  h ^= h >> 16;
-  h *= 0x7FEB352Du;
-  h ^= h >> 15;
-  h *= 0x846CA68Bu;
-  h ^= h >> 16;
-  return h;
-}
-
-// Value noise in [0, 1] over cells of a unit, smoothly interpolated.
-float water_value_noise(float2 p) {
-  const float2 c = floor(p);
-  float2 f = p - c;
-  f = f * f * (3.0 - 2.0 * f);
-  const int2 i = int2(c);
-  const float a = float(water_hash2(i) >> 8) * (1.0 / 16777216.0);
-  const float b = float(water_hash2(i + int2(1, 0)) >> 8) * (1.0 / 16777216.0);
-  const float e = float(water_hash2(i + int2(0, 1)) >> 8) * (1.0 / 16777216.0);
-  const float g = float(water_hash2(i + int2(1, 1)) >> 8) * (1.0 / 16777216.0);
-  return lerp(lerp(a, b, f.x), lerp(e, g, f.x), f.y);
-}
 
 // **The foam line**: the share of the pixel that is foam, `edge` metres in from the waterline. A
 // line `0.1 foam_m` wide runs up and back between 0.3 and 1 of `foam_m` with the largest wave's
@@ -647,9 +623,8 @@ struct WaterWetGround {
 // scan) ------------------------------------------------------------------------------------------
 // The waterline runs up the shore and back with every wave and the sand it leaves dries with time,
 // with no history: every quantity is a function of the clock and the place.
-static const uint k_swash_group = 7u;          // gfx::k_swash_group
-static const float k_swash_uprush = 0.4;       // gfx::k_swash_uprush
-static const float k_swash_rundown = 0.2;      // gfx::k_swash_rundown
+// k_swash_group, k_swash_uprush and k_swash_rundown, and the group's and the profile's shapes, are
+// water_waves.slang's (the pool's water stage parks and lifts the bank's vertices by them).
 static const float k_swash_never = 1e9;        // gfx::k_swash_never
 // The water film the sheet leaves on sand drains into it in seconds (swash infiltration of the
 // order of 1e-3 m/s, Turner and Masselink 1998, through a film of a few millimetres): the band's
@@ -671,27 +646,31 @@ struct WaterSwashPlace {
 
 bool water_swash_on(WaterShore s) { return s.run_up_m > 0.0 && s.period_s > 0.0; }
 
-// The place's phase offset (1.5 cycles of drift over the raggedness scale) and reach jitter
-// ([0.7, 1.3]), value noise of the body-local point.
+// The place's phase and reach. **With the body's surface (S100) the phase is the train's**: the
+// wave whose crest reached the shoreline nearest the place last, by the arrival field (flat across
+// the bank, so a place on the beach takes its shoreline's), and the reach varies smoothly along the
+// shore (`water_reach_variation`) and with the shore's facing — one front, in sequence along the
+// beach. Without one (a tide alone; S94's records before S100) the phase offset is 1.5 cycles of
+// drift over the raggedness scale and the reach jitter [0.7, 1.3], value noise of the body-local
+// point.
 WaterSwashPlace water_swash_place(WaterShore s, float2 p) {
   WaterSwashPlace w;
   w.run_up = s.run_up_m;
   w.period = s.period_s;
+  if (s.surface != 0) {
+    WaterSurface* surface = (WaterSurface*)s.surface;
+    const WaterField f = water_field_at(surface, p);
+    // t / T + phase is the train's cycles, (t - tau) / T, reduced as the front's are.
+    const float ca = f.arrival / s.period_s;
+    const float group = float(k_swash_group);
+    w.phase = -(ca - group * floor(ca / group));
+    w.jitter = water_reach_variation(surface, p) * water_facing(surface, f.depth_grad);
+    return w;
+  }
   const float scale = max(k_swash_raggedness_m, 3.0 * s.run_up_m / max(s.slope, 1e-3));
   w.phase = 1.5 * water_value_noise(p / scale);
   w.jitter = 0.7 + 0.6 * water_value_noise(p * (2.0 / scale) + float2(17.3, 5.1));
   return w;
-}
-
-float water_swash_group(uint j) {
-  const float x = (float(j % k_swash_group) + 0.5) / float(k_swash_group);
-  return 0.55 + 0.45 * (0.5 - 0.5 * cos(k_water_two_pi * x));
-}
-
-float water_swash_shape(float u) {
-  const float q = k_swash_uprush;
-  const float s = u < q ? u / (2.0 * q) : 0.5 + (u - q) / (2.0 * (1.0 - q));
-  return 4.0 * s * (1.0 - s);
 }
 
 // The wave index k is never negative: the clock and the phase are.

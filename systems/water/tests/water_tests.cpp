@@ -8,6 +8,7 @@
 #include <domain/assets/gltf.h>
 #include <domain/gfx/visibility_resolve.h>
 #include <domain/gfx/water_spectrum.h>
+#include <domain/gfx/water_swash.h>
 #include <domain/scene_gen/scene_gen.h>
 #include <foundation/io/vfs.h>
 #include <systems/water/water.h>
@@ -58,6 +59,144 @@ water::Body read(const scene::WaterBody& block) {
 }
 
 }  // namespace
+
+// ---- the wave as height (S100; water_swash.h; docs/experiments/shore.md, "The wave as height") ---
+
+TEST_CASE("water: the dispersion relation at depth, and the deep and shallow limits") {
+  f64 worst = 0.0;
+  for (const f64 period : {1.5, 2.5, 5.5, 10.0}) {
+    const f64 omega = 2.0 * 3.14159265358979323846 / period;
+    const f64 k0 = omega * omega / gfx::k_swash_g;
+    for (const f64 d : {0.02, 0.1, 0.5, 1.0, 3.0, 10.0, 50.0, 500.0}) {
+      const f64 k = gfx::water_wavenumber(k0, d);
+      const f64 rel = std::fabs(gfx::k_swash_g * k * std::tanh(k * d) - omega * omega) / (omega * omega);
+      worst = std::max(worst, rel);
+      CHECK(rel < 1e-6);
+      CHECK(k >= k0 * (1.0 - 1e-9));  // a wave only shortens as it shoals
+    }
+    // Deep water is k0; shallow water is omega / sqrt(g d), the speed sqrt(g d).
+    CHECK(gfx::water_wavenumber(k0, 2000.0) == doctest::Approx(k0).epsilon(1e-9));
+    const f64 shallow = std::max(1e-3 / k0, 2e-3);
+    CHECK(gfx::water_wavenumber(k0, shallow) ==
+          doctest::Approx(omega / std::sqrt(gfx::k_swash_g * shallow)).epsilon(2e-3));
+  }
+  MESSAGE("dispersion: worst relative residual of omega^2 = g k tanh(k d) " << worst);
+}
+
+TEST_CASE("water: a wave shoals by Green's law and breaks at 0.78 of the depth") {
+  const f64 period = 8.0;
+  const f64 omega = 2.0 * 3.14159265358979323846 / period;
+  const f64 k0 = omega * omega / gfx::k_swash_g;
+  // Deep water: no shoaling. Shallow water: H / H0 = (4 k0 d)^(-1/4), H ~ d^(-1/4).
+  CHECK(gfx::water_shoaling(gfx::water_wavenumber(k0, 400.0), 400.0) ==
+        doctest::Approx(1.0).epsilon(1e-6));
+  for (const f64 d : {1e-4 / k0, 1e-3 / k0}) {
+    const f64 ks = gfx::water_shoaling(gfx::water_wavenumber(k0, d), d);
+    CHECK(ks * std::pow(4.0 * k0 * d, 0.25) == doctest::Approx(1.0).epsilon(0.01));
+  }
+  // A 1 m wave of 8 s breaks where the shoaled height reaches 0.78 d: found by bisection on the
+  // two formulas, and `water_wave_height` is the bore 0.78 d inshore of it and the shoaled wave
+  // offshore.
+  const f64 h0 = 1.0;
+  f64 lo = 0.1, hi = 10.0;
+  for (u32 i = 0; i < 60; ++i) {
+    const f64 mid = 0.5 * (lo + hi);
+    const f64 shoaled = h0 * gfx::water_shoaling(gfx::water_wavenumber(k0, mid), mid);
+    (shoaled > gfx::k_water_breaking_gamma * mid ? lo : hi) = mid;
+  }
+  const f64 breaking = 0.5 * (lo + hi);
+  CHECK(gfx::water_wave_height(h0, k0, breaking) ==
+        doctest::Approx(gfx::k_water_breaking_gamma * breaking).epsilon(1e-9));
+  CHECK(gfx::water_wave_height(h0, k0, 0.8 * breaking) ==
+        doctest::Approx(gfx::k_water_breaking_gamma * 0.8 * breaking).epsilon(1e-12));
+  const f64 offshore = gfx::water_wave_height(h0, k0, 1.5 * breaking);
+  CHECK(offshore < gfx::k_water_breaking_gamma * 1.5 * breaking);
+  CHECK(offshore > h0);  // shoaled up before it breaks
+  CHECK(gfx::water_wave_height(h0, k0, 0.0) == 0.0);
+  CHECK(gfx::water_wave_height(h0, k0, -0.5) == 0.0);
+  MESSAGE("a 1 m, 8 s wave breaks in " << breaking << " m of water, " << offshore
+                                       << " m high half as deep again offshore");
+}
+
+TEST_CASE("water: the train arrives in sequence along a straight shore") {
+  // A planar beach 1:20, the shore at x = 40 m, the bank beyond: 241 texels of 0.25 m.
+  const u32 n = 241;
+  const f64 texel = 0.25;
+  Vector<f32> depth(n * n);
+  for (u32 j = 0; j < n; ++j)
+    for (u32 i = 0; i < n; ++i)
+      depth[j * n + i] = static_cast<f32>((40.0 - texel * static_cast<f64>(i)) / 20.0);
+  const f64 period = gfx::swash_period(4.0);
+  Vector<f32> tau(n * n);
+  gfx::water_arrival_field(depth.data(), n, texel, period, tau.data());
+  const f64 omega = 2.0 * 3.14159265358979323846 / period;
+  const f64 k0 = omega * omega / gfx::k_swash_g;
+  f64 along_worst = 0.0, cross_worst = 0.0, bank_worst = 0.0;
+  for (u32 j = 10; j + 10 < n; ++j) {
+    for (u32 i = 1; i + 1 < n; ++i) {
+      const u32 at = j * n + i;
+      // Along the shore, a crest: the same arrival.
+      along_worst = std::max(along_worst, std::fabs(static_cast<f64>(tau[at + n] - tau[at])));
+      const f64 d = static_cast<f64>(depth[at]);
+      if (i + 4 < n && d > 0.0) {
+        const f64 dn = static_cast<f64>(depth[at + 4]);
+        if (dn > 0.3 && d < 1.5) {
+          // Across it, two places a metre apart differ by the travel time between them at the
+          // local celerity and nothing else: the integral of 1 / c(d) along the metre.
+          f64 travel = 0.0;
+          for (u32 s = 0; s < 1000; ++s) {
+            const f64 x = (static_cast<f64>(s) + 0.5) / 1000.0;
+            travel += 1e-3 / (omega / gfx::water_wavenumber(k0, d + (dn - d) * x));
+          }
+          const f64 rel = std::fabs(static_cast<f64>(tau[at + 4] - tau[at]) - travel) / travel;
+          cross_worst = std::max(cross_worst, rel);
+        }
+      }
+      if (d < 0.0) bank_worst = std::max(bank_worst, std::fabs(static_cast<f64>(tau[at + 1] - tau[at])));
+    }
+  }
+  CHECK(along_worst < 1e-4);
+  CHECK(cross_worst < 0.02);
+  CHECK(bank_worst < 1e-3);  // the bank takes its shoreline's arrival: the swash's phase
+  // The same field twice, to the bit.
+  Vector<f32> again(n * n);
+  gfx::water_arrival_field(depth.data(), n, texel, period, again.data());
+  CHECK(std::memcmp(tau.data(), again.data(), u64{n} * n * sizeof(f32)) == 0);
+  MESSAGE("arrival: along the shore " << along_worst << " s, across it " << cross_worst
+                                      << " of the travel time, over the bank " << bank_worst << " s");
+}
+
+TEST_CASE("water: a body with a wind has its mesh grown over the bank, one without keeps its own") {
+  const scene_gen::Ground ground = bowl_ground();
+  scene::WaterBody block = circle_block(100.0, 50.0, 10.0f, 0.0);
+  const water::Body still = read(block);
+  water::Mesh plain;
+  water::build_mesh(still, ground, plain);
+  CHECK(plain.rim == 0u);
+  block.wind_m_s = 8.0f;
+  const water::Body windy = read(block);
+  water::Mesh grown;
+  water::build_mesh(windy, ground, grown);
+  CHECK(grown.rim > 0u);
+  CHECK(grown.edge == plain.edge);
+  CHECK(grown.rings == plain.rings + grown.rim);
+  REQUIRE(grown.positions.size() == grown.edge * grown.rings + 1);
+  // The rim's vertices stand outside the outline over the bank, the outermost first; the rings
+  // inside are the windless mesh's, vertex for vertex.
+  for (u32 j = 0; j < grown.edge; ++j) {
+    const Vec3 p = grown.positions[j];
+    CHECK(std::sqrt(p.x * p.x + p.z * p.z) > 10.0f);
+    CHECK(grown.uvs[j].x == 0.0f);
+  }
+  const u32 skip = grown.rim * grown.edge;
+  for (u32 i = 0; i < plain.positions.size(); ++i) {
+    CHECK(grown.positions[skip + i] == plain.positions[i]);
+    CHECK(grown.uvs[skip + i] == plain.uvs[i]);
+  }
+  MESSAGE("an 8 m/s wind over a 20 m pool: " << grown.rim << " rim rings, "
+                                             << grown.positions.size() - plain.positions.size()
+                                             << " vertices more");
+}
 
 TEST_CASE("water: the polynomial sine is the sine to 1e-14 everywhere a circle asks") {
   for (u32 i = 0; i <= 4096; ++i) {

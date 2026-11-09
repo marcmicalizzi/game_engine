@@ -817,8 +817,15 @@ struct WaterShore {
   // zero.
   Vec4 stretch_a{};
   Vec4 stretch_b{};
+  // **The body's surface** (S100; water_swash.h, `WaterSurface`): the height function the pool
+  // lifted its mesh by, whose gradient the branch shades it with and whose arrival field gives the
+  // swash its phase. 0 for a body the pool does not lift (no wind and no tide), and for a channel
+  // stretch: S94's and S99's record.
+  u64 surface = 0;
+  u32 pad0 = 0;
+  u32 pad1 = 0;
 };
-static_assert(sizeof(WaterShore) == 96);
+static_assert(sizeof(WaterShore) == 112);
 
 inline void set_uv_transform(ResolveMaterial& material, Vec2 offset, f32 rotation,
                              Vec2 scale) noexcept {
