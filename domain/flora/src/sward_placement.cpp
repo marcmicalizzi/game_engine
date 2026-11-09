@@ -1,5 +1,6 @@
 #include <core/hash/hash.h>
 #include <core/schema/json_reflect.h>
+#include <domain/flora/sward.h>
 #include <domain/scene_gen/scene_gen.h>
 
 #include <algorithm>
@@ -15,7 +16,15 @@ struct Entry {
   Vector<scene_gen::PlacementMesh> meshes;
   Vector<u32> family_base;
   u32 cells = 0;
+  // G137: each form's families in ascending density (indices into `params.families`). With no form
+  // named, form 0 (`any`) holds every family and the pick is the one it always was.
+  Vector<u32> form_families[5];
+  bool forms = false;
+  // The first forb mesh in `meshes`; the forbs follow every family's.
+  u32 forb_base = 0;
 };
+constexpr u32 k_forms = 5;
+constexpr u32 k_forb_id_bit = 0x80000000u;
 // How far a patch's centre moves from its cell's, a side, as a fraction of the cell.
 constexpr f64 k_jitter = 0.25;
 // Uniform in [0, 1) from stream `stream` of a patch's hash.
@@ -47,6 +56,98 @@ bool fail(std::string* error, std::string text) {
   if (error) *error = "sward: " + text;
   return false;
 }
+// G137: the forms' and the forbs' half of `open`, after the families are read: either every family
+// names a form or none does, each form's classes reach weight 1, and the forbs' meshes follow.
+bool open_forms(Entry& entry, const scene_gen::Context& context, std::string* error) {
+  const auto& p = entry.params;
+  entry.forms = entry.form_families[0].empty();
+  for (u32 form = 0; form < k_forms; ++form) {
+    const auto& list = entry.form_families[form];
+    if (!list.empty() && p.families[list.back()].density != 1)
+      return fail(error, form == 0 ? "last density family must cover weight 1"
+                                   : "last density family of each form must cover weight 1");
+  }
+  if (!entry.forms && entry.form_families[0].size() != p.families.size())
+    return fail(error, "either every family names a form or none does");
+  if (entry.forms) {
+    const auto& s = p.stature;
+    if (!(s.mosaic_m >= 4 && s.mosaic_m <= 200) || !(s.slope_hi_deg >= s.slope_lo_deg) ||
+        (s.shade_layer != scene_gen::k_mask_no_layer &&
+         s.shade_layer >= scene_gen::k_mask_max_palette))
+      return fail(error,
+                  "stature needs mosaic_m 4..200, slope_hi_deg >= slope_lo_deg and a palette "
+                  "shade_layer or 255");
+  }
+  entry.forb_base = entry.meshes.size();
+  if (p.forbs.empty()) return true;
+  if (p.forbs.size() > 16 || !(p.forb_share >= 0 && p.forb_share <= 1) || p.forb_tile_cap > 4096)
+    return fail(error, "forbs need 1..16 meshes, forb_share 0..1 and forb_tile_cap 0..4096");
+  // A forb's ID is its cell's with the top bit set, so the cells must fit in 31 bits.
+  const u64 width = static_cast<u64>(static_cast<i64>(p.max_x) - p.min_x + 1);
+  const u64 depth = static_cast<u64>(static_cast<i64>(p.max_z) - p.min_z + 1);
+  if (width * depth * entry.cells * entry.cells >= k_forb_id_bit)
+    return fail(error, "tile window with forbs exceeds the 31-bit stable cell ID space");
+  for (const auto& path : p.forbs) {
+    if (path.empty()) return fail(error, "empty forb mesh path");
+    const auto resolved = (std::filesystem::path(context.dir) / path).lexically_normal();
+    entry.meshes.push_back({resolved.generic_string(), "forb", 0});
+  }
+  return true;
+}
+// G137, the stature rule's inputs at a patch (flora.md, "Growth forms by site"): the wetness (the
+// mask's wet band, or a stream's nearness over its riparian reach), the slope at the patch's scale,
+// the shade layer's weight and the mosaic noise of the place; then the form, or the nearest form
+// the entry has families for (the other habit, then the other stature, then both).
+u32 site_form(const Entry& entry, const scene_gen::Context& context, u32 table,
+              const scene_gen::MaskSample& sample, i64 x_mm, i64 z_mm) {
+  const auto& p = entry.params;
+  const auto& rule = p.stature;
+  SwardSite site;
+  const f64 stream =
+      (1 - context.riparian_factor_mm(x_mm, z_mm)) / (1 - scene_gen::k_riparian_floor);
+  site.wet = std::max(static_cast<f64>(sample.wetness), stream);
+  const f64 cell = static_cast<f64>(p.cell_m);
+  const i64 d = std::max<i64>(1, scene_gen::nearest_mm(.5 * cell));
+  const auto& g = context.ground;
+  const f64 gx = (g.surface_mm(x_mm + d, z_mm) - g.surface_mm(x_mm - d, z_mm)) /
+                 static_cast<f64>(2 * d) * 1000.0;
+  const f64 gz = (g.surface_mm(x_mm, z_mm + d) - g.surface_mm(x_mm, z_mm - d)) /
+                 static_cast<f64>(2 * d) * 1000.0;
+  site.slope_deg = std::atan(std::sqrt(gx * gx + gz * gz)) * 57.29577951308232;
+  if (rule.shade_layer != scene_gen::k_mask_no_layer)
+    for (u32 ch = 0; ch < scene_gen::k_mask_channels; ++ch)
+      if (((table >> (ch * 8)) & 255u) == rule.shade_layer)
+        site.shade += static_cast<f64>(sample.weight[ch]);
+  const u64 base = hash_combine(context.world_seed, p.seed);
+  const f64 x = static_cast<f64>(x_mm) * .001, z = static_cast<f64>(z_mm) * .001;
+  const f64 scale = static_cast<f64>(rule.mosaic_m);
+  site.noise_tall = sward_mosaic_noise(hash_combine(base, 0x74616c6cull), x, z, scale);
+  site.noise_tussock = sward_mosaic_noise(hash_combine(base, 0x7475737365ull), x, z, scale);
+  const u32 form = static_cast<u32>(sward_site_form(rule, site));
+  // 1 tall sod, 2 tall tussock, 3 short sod, 4 short tussock.
+  const u32 order[4] = {form, form % 2 ? form + 1 : form - 1, form <= 2 ? form + 2 : form - 2,
+                        5 - form};
+  for (const u32 f : order)
+    if (!entry.form_families[f].empty()) return f;
+  return form;
+}
+// The density classes' unbiased stochastic interpolation over one form's families (the pick the
+// placement always made, over a list): false where the cell draws no patch.
+bool pick_family(const SwardPlacements& p, const Vector<u32>& list, f32 density, u64 random,
+                 u32& family) {
+  u32 upper = 0;
+  while (upper + 1 < list.size() && p.families[list[upper]].density < density)
+    ++upper;
+  const f32 low = upper == 0 ? 0 : p.families[list[upper - 1]].density;
+  const f32 t = (density - low) / (p.families[list[upper]].density - low);
+  const f64 unit = static_cast<f64>(random >> 11) / 9007199254740992.0;
+  if (unit >= static_cast<f64>(t)) {
+    if (upper == 0) return false;
+    --upper;
+  }
+  family = list[upper];
+  return true;
+}
 bool open(const JsonValue& params, const scene_gen::Context& context, void** state,
           std::string* error) {
   *state = nullptr;
@@ -70,12 +171,16 @@ bool open(const JsonValue& params, const scene_gen::Context& context, void** sta
     return fail(error, "tile window exceeds the nonzero 32-bit stable cell ID space");
   if (p.families.empty() || p.families.size() > 16)
     return fail(error, "need 1..16 ascending density families");
-  f32 previous = 0;
-  for (const auto& family : p.families) {
-    if (!(family.density > previous && family.density <= 1) || family.near.empty() ||
+  f32 previous[k_forms] = {};
+  for (u32 index = 0; index < p.families.size(); ++index) {
+    const auto& family = p.families[index];
+    const u32 form = static_cast<u32>(family.form);
+    if (form >= k_forms) return fail(error, "unknown family form");
+    if (!(family.density > previous[form] && family.density <= 1) || family.near.empty() ||
         family.near.size() > 16 || family.cards.size() != family.near.size())
       return fail(error, "families need ascending density and equal near/cards lists (1..16)");
-    previous = family.density;
+    previous[form] = family.density;
+    entry->form_families[form].push_back(index);
     entry->family_base.push_back(entry->meshes.size());
     for (const auto* paths : {&family.near, &family.cards}) {
       for (const auto& path : *paths) {
@@ -85,7 +190,7 @@ bool open(const JsonValue& params, const scene_gen::Context& context, void** sta
       }
     }
   }
-  if (previous != 1) return fail(error, "last density family must cover weight 1");
+  if (!open_forms(*entry, context, error)) return false;
   scene_gen::GroundMasks masks;
   if (!context.ground.masks(masks, error)) return false;
   if (!masks.valid()) return fail(error, "requires the cooked terrain mask level");
@@ -105,6 +210,49 @@ bool meshes(void* state, const scene_gen::Context&, Vector<scene_gen::PlacementM
   out = static_cast<const Entry*>(state)->meshes;
   return true;
 }
+// G137, the meadow's forbs: a candidate in a share of the cells that drew a patch (stream 4 of the
+// patch's hash), within 0.35 of a cell a side of the patch's moved centre, so inside the circle the
+// patch cleared earlier structures by, and asked of the exclusion at its own point. Upright (a herb
+// grows vertical) and turned by stream 7; its mesh from stream 8, its rank among a tile's from 9.
+struct Forb {
+  u64 rank = 0;
+  scene_gen::Placement placed;
+};
+void add_forb(const Entry& entry, const scene_gen::Context& context, u64 random, u32 id, f64 px,
+              f64 pz, Vector<Forb>& forbs) {
+  const auto& p = entry.params;
+  if (!(unit_of(random, 4) < static_cast<f64>(p.forb_share))) return;
+  const f64 cell = static_cast<f64>(p.cell_m);
+  const f64 fx = px + (unit_of(random, 5) * 2 - 1) * .35 * cell;
+  const f64 fz = pz + (unit_of(random, 6) * 2 - 1) * .35 * cell;
+  const i64 fx_mm = scene_gen::nearest_mm(fx), fz_mm = scene_gen::nearest_mm(fz);
+  if (context.excluded_mm(fx_mm, fz_mm)) return;
+  Forb forb;
+  forb.rank = hash_combine(random, 9);
+  forb.placed.id = id | k_forb_id_bit;
+  forb.placed.mesh = entry.forb_base + static_cast<u32>(hash_combine(random, 8) % p.forbs.size());
+  forb.placed.position = {fx, context.ground.surface_mm(fx_mm, fz_mm), fz};
+  forb.placed.rotation = quat_from_axis_angle(
+      Vec3::unit_y(), static_cast<f32>(unit_of(random, 7) * 6.283185307179586));
+  forbs.push_back(forb);
+}
+// A tile keeps at most `forb_tile_cap` forbs, those of lowest rank (every forb is a run of the
+// frame's pose table: the herb's motion kind is `parts`), and appends them after the patches in
+// their cells' order, so the answer is the tile's whatever the request order.
+void keep_forbs(const Entry& entry, Vector<Forb>& forbs, scene_gen::Placements& out) {
+  if (forbs.empty()) return;
+  const u32 cap = entry.params.forb_tile_cap;
+  if (forbs.size() > cap) {
+    std::sort(forbs.begin(), forbs.end(), [](const Forb& a, const Forb& b) {
+      return a.rank != b.rank ? a.rank < b.rank : a.placed.id < b.placed.id;
+    });
+    forbs.resize(cap);
+    std::sort(forbs.begin(), forbs.end(),
+              [](const Forb& a, const Forb& b) { return a.placed.id < b.placed.id; });
+  }
+  for (const auto& forb : forbs)
+    out.instances.push_back(forb.placed);
+}
 bool tile(void* state, scene_gen::TileCoord at, const scene_gen::Context& context,
           scene_gen::Placements& out, std::string* error) {
   out.clear();
@@ -120,6 +268,7 @@ bool tile(void* state, scene_gen::TileCoord at, const scene_gen::Context& contex
       (info.cells & (info.cells - 1)) != 0 || info.cells > 1024 || p.layer >= info.palette)
     return fail(error, "invalid or missing mask level/layer");
   Vector<u32> words(scene_gen::mask_tile_words(info.cells));
+  Vector<Forb> forbs;
   i32 last_x = 0, last_z = 0;
   bool loaded = false, found = false;
   const u64 width = static_cast<u64>(static_cast<i64>(p.max_x) - p.min_x + 1);
@@ -188,17 +337,13 @@ bool tile(void* state, scene_gen::TileCoord at, const scene_gen::Context& contex
         density *= static_cast<f32>(context.riparian_factor_mm(jx_mm, jz_mm));
       }
       // Unbiased stochastic interpolation between adjacent authored density classes. The field
-      // is identical in all rings; ring and request order never participate in the hash.
+      // is identical in all rings; ring and request order never participate in the hash. G137: of
+      // the families of the form the site picks, when the entry names forms.
+      const u32 form = entry.forms ? site_form(entry, context, words[0], sample,
+                                               scene_gen::nearest_mm(px), scene_gen::nearest_mm(pz))
+                                   : 0;
       u32 upper = 0;
-      while (upper + 1 < p.families.size() && p.families[upper].density < density)
-        ++upper;
-      const f32 low = upper == 0 ? 0 : p.families[upper - 1].density;
-      const f32 t = (density - low) / (p.families[upper].density - low);
-      const f64 unit = static_cast<f64>(random >> 11) / 9007199254740992.0;
-      if (unit >= static_cast<f64>(t)) {
-        if (upper == 0) continue;
-        --upper;
-      }
+      if (!pick_family(p, entry.form_families[form], density, random, upper)) continue;
       const auto& family = p.families[upper];
       scene_gen::Placement placed;
       placed.id = id;
@@ -212,8 +357,10 @@ bool tile(void* state, scene_gen::TileCoord at, const scene_gen::Context& contex
       // tipped onto the ground. Wetness-specific morphology requires separately cooked families,
       // and the scale stays 1: silently scaling real leaf dimensions is forbidden.
       out.instances.push_back(placed);
+      if (!p.forbs.empty() && out.kind == 0) add_forb(entry, context, random, id, px, pz, forbs);
     }
   }
+  keep_forbs(entry, forbs, out);
   return true;
 }
 bool expand(void* state, const scene_gen::Context& context, scene_gen::Placements& out,

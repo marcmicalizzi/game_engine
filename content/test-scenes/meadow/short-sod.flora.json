@@ -1,0 +1,17 @@
+{
+  "species": "sward",
+  "sward": {
+    "species": "bent",
+    "seed": 13703,
+    "blades_m2": 1024,
+    "segments": 2,
+    "growth_min": 0.15,
+    "growth": 0.5,
+    "leaves_per_tiller": 3,
+    "tillers_per_clump": 4,
+    "clumpiness": 0.1,
+    "clump_radius_m": 0.03,
+    "triangle_budget": 6400,
+    "card_px": 128
+  }
+}

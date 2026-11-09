@@ -4,7 +4,12 @@
 placement generators see the same cooked W72 level as tile sources. An invalid mask view means
 none, while false propagates a cook failure. The callback shares the height view's lifetime.
 The flora capability registers `sward`, a bounded patch lattice keyed by mask palette weight;
-it emits no outer-ring placements. See [flora](flora.md#grass-sward-g90).
+it emits no outer-ring placements. See [flora](flora.md#grass-sward-g90). Its entry (`engine.flora.SwardPlacements`, v2 since G137)
+grew a `form` per family, a `stature` block (the rule that picks a cell's form from the mask's wetness, a
+stream's nearness through `riparian_factor_mm`, the slope, a shade layer of the paint and a value noise),
+and the meadow's forbs (`forbs`, `forb_share`, `forb_tile_cap`): herb meshes the lattice interleaves in
+the nearest ring, excluded as the patches are; an entry naming none of them places what it did, to the
+bit ([flora](flora.md#growth-forms-by-site-g137)).
 
 **Purpose.** The registration point a scene generator attaches through ([ADR-0046](../adr/0046-scene-generators-register-themselves.md), [02 §2.8](../plan/02-architecture.md#28-adding-a-capability)): the two kinds a generator is — a **ground provider** and a **placement generator** — and the one table, `GeneratorRegistry::global()`, the renderer's scene reader and the world ring look a generator up in by the name a scene gives it. A capability registers a constant-initialized descriptor from its own source with a static `Registrar`; a host links the capabilities its configuration has; nothing below the host names one. A scene naming a generator the executable does not carry is refused with a sentence that names it and says what the executable has (`unknown_ground`, `unknown_placement`). A plain module, not a capability: every executable that reads a scene has at least the renderer's own ground in it.
 
@@ -138,7 +143,7 @@ The proofs: `tests/scene_gen_tests.cpp` asks a sawtooth ground of millimetres at
 
 | Generator | Filter | Excludes |
 |---|---|---|
-| `sward` | `tile` in `domain/flora/src/sward_placement.cpp`, after the earlier-footprint test | holes, channels, water; density times the riparian factor |
+| `sward` | `tile` in `domain/flora/src/sward_placement.cpp`, after the earlier-footprint test; a forb at its own point (G137) | holes, channels, water; density times the riparian factor; with forms, the stream's nearness is also the stature rule's wetness |
 | `litter` | `tile` in `domain/litter/src/placement.cpp`, before the density | holes, channels, water |
 | `scatter` (the trees, plants, rocks and logs of a layer) | `Placer::Impl::place_kind` in `systems/scatter/src/placer.cpp`, before the ground's height; `Site::exclusion` | holes, channels, water |
 | `wetland` | `generate` in `domain/wetland/src/placement.cpp` | holes only: the water garden lives in water and on a bank |

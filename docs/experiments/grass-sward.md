@@ -68,6 +68,10 @@ straw fraction and seed production were not established by these sources.
 | Wavy hairgrass blade | [Kew GrassBase, Avenella flexuosa](https://powo.science.kew.org/taxon/urn:lsid:ipni.org:names:391947-1/general-information) | 5–20 cm, 0.3–0.8 mm; filiform involute | Rolled leaf approximated as ribbon; the old tuft's 4 mm is not this species' width |
 | Bent blade | [Flora of China, Agrostis capillaris](https://www.efloras.org/florataxon.aspx?flora_id=2&taxon_id=242301747) | 2–15 cm, 1–4 mm; open panicle | Short growth state, not simulated mowing |
 | Red fescue blade | [Kew GrassBase](https://powo.science.kew.org/taxon/urn:lsid:ipni.org:names:30010036-2/general-information) | 3–40 cm, 0.5–1 mm (exceptionally 2 mm) | Common width range |
+| Tufted hair-grass blade (G137) | [Kew GrassBase, *Deschampsia cespitosa*](https://static1.kew.org/data/grasses-db/www/imp02819.htm) | 10–60 cm, 2–5 mm; "caespitose; clumped densely", culms 20–200 cm | The tall tussock's profile, `tufted_hairgrass` |
+| Mat-grass blade (G137) | [Kew GrassBase, *Nardus stricta*](https://static1.kew.org/data/grasses-db/www/imp06577.htm) | 4–30 cm, 0.5–1 mm, filiform; caespitose, culms 25–60 cm | The short tussock's profile, `mat_grass`; a filiform leaf approximated as a ribbon |
+| Growth forms (G137) | Briske and Derner 1998, "Clonal biology of caespitose grasses", in Cheplick (ed.), *Population Biology of Grasses*, Cambridge UP | Caespitose (bunch, tussock) grasses hold their tillers in discrete crowns; rhizomatous and stoloniferous ones spread them as a sod | The two habits as layouts; not read in full here, cited for the classification |
+| Forb share (G137) | [Natural England lowland grassland SSSI condition sheet, 2024 draft](https://www.contractsfinder.service.gov.uk/Notice/Attachment/04c2b009-14eb-4859-9e4f-2eee2bf491e7); UKHab's "other neutral grassland" criterion as summarised by a [habitat guide](https://intercom.help/joes-blooms/en/articles/9138437-habitat-type-other-neutral-grassland); [Natural England, MG5](https://publications.naturalengland.org.uk/file/5017566310039552) | Herbs 40–90 % of the sward for a species-rich calcareous grassland (CG2); more than 20 % cover of broadleaved herbs and sedges for "other neutral grassland"; MG5's grasses usually a substantial share, exceptionally 95 % | 0.33 of a hay meadow's cells, 0.1 an improved pasture's: a count of cells standing for cover |
 | Field tiller density | [Praat 1995 thesis pp.150–151, PDF 167–168](https://mro.massey.ac.nz/server/api/core/bitstreams/0fbaf226-da07-47c6-9511-ecc60c49fc9e/content) | Ryegrass 5815–7414/m²; tall fescue 3080–3093/m² at 217 days after sowing | Treatment estimates, not universal defaults; other profiles use zero for unknown |
 | Grassland LAI | [Scurlock, Asner & Gower 2001, Table 6 p.19](https://info.ornl.gov/sites/publications/Files/Pub57077.pdf), precursor to [Asner et al. 2003](https://doi.org/10.1046/j.1466-822X.2003.00026.x) | Filtered mean 1.71, range 0.29–5.0 | Report mesh one-sided area separately; full 2003 table not retrieved |
 | Wind loading | [de Langre 2008 pp.145,159](https://yakari.polytechnique.fr/Django-pub/documents/delangre2008rp-1pp.pdf) | Small-deflection drag scales with speed squared; reconfiguration reduces it | No species EI found; CPU compliance is compatibility, not measured stiffness |
@@ -78,6 +82,57 @@ Watson & Dallwitz's site could not be retrieved. Species-level Kew and Flora of 
 replace it. Praat's field estimates are distinct from controlled-box ryegrass experiments with
 much higher tiller counts. Seed-head habits are recorded; reproductive geometry is not yet built.
 
+## Growth forms, the stature rule and the meadow's forbs (G137, 2026-11-08)
+
+The owner (2026-11-08): not all grass is thick and tall — some is clumpy and tall, some short and
+thick, some clumpy and thick — and a natural field carries other meadow plants besides grass. The
+sources above give the two habits (Briske and Derner 1998): **sod** formers (red fescue, bent,
+smooth meadow-grass) spread their tillers by rhizomes and stolons into a continuous turf, and
+**caespitose** grasses (tufted hair-grass, mat-grass, cocksfoot, purple moor-grass) hold them in
+discrete crowns with ground between. Crossed with stature that is four forms, each a recipe in
+[`content/test-scenes/meadow/`](../../content/test-scenes/meadow/README.md):
+
+| Form | Recipe | Profile (blade, source) | Leaves used | Habit as built |
+|---|---|---|---|---|
+| tall sod | `tall-sod` | red fescue, 3–40 cm × 0.5–1 mm (Kew) | 22–40 cm (`growth_min` 0.55) | 768 blades/m², shoots of 3 in crowns of 4, dispersed (`clumpiness` 0.1) |
+| tall tussock | `tall-tussock` | tufted hair-grass, 10–60 cm × 2–5 mm (Kew) | 30–60 cm (`growth_min` 0.4) | crowns 0.5 m apart, 0.12 m radius, a 5 cm raised base; 15 % short turf between (10–17.5 cm) |
+| short sod | `short-sod` | bent, 2–15 cm × 1–4 mm (Flora of China) | 4–8.5 cm (`growth` 0.15–0.5) | 1,024 blades/m², two-segment ribbons |
+| short tussock | `short-tussock` | mat-grass, 4–30 cm × 0.5–1 mm (Kew) | 12–27 cm (`growth` 0.3–0.9) | crowns 0.25 m apart, 0.05 m radius; 10 % turf between (4–9 cm) |
+
+Every blade is inside its profile's source range (the forms tests hold it); nothing is scaled.
+**What is authored and not measured:** the crown spacings (0.5 m and 0.25 m), radii and the 5 cm
+raised base. No field measurement of tussock spacing or base height was found for either species
+(Davy 1980's *Biological Flora* account of *D. cespitosa*, J. Ecol. 68:1075–1096, likely has one
+and was not retrievable); the values are chosen so a tussock reads as a crown with ground around it
+at 1 m cells, and are the first numbers to replace when a source turns up.
+
+**The stature rule** (`sward_site_form`, `SwardStature`): per cell, two scores — tall against
+short, tussock against sod — each a bias plus weighted site terms plus a value noise; positive
+chooses tall (tussock). The site terms and why:
+
+| Term | Field | Default weight (tall, tussock) | Why |
+|---|---|---|---|
+| wetness | the mask's wet band (`wet_m` around a water body), or a stream's nearness over the riparian reach | +1.5, +1.5 | wet margins carry tall tussocks (tufted hair-grass, purple moor-grass, rushes) |
+| steepness | smoothstep of the slope from 15° to 30° | −2.0, +0.3 | steep ground has thin, dry soil and carries short turf, mat-grass tussocks among it |
+| shade | a palette layer's weight (`shade_layer`, none by default) | +0.5, −1.0 | woodland grasses are lax and loose, not tussocks; the woodland profile stays its own |
+| mosaic | value noise on a 20 m lattice, −1..1 | 1, 1 | meadows are mosaics at 10–30 m (a stated choice, not a fit) |
+| bias | — | 0, −0.35 | a level, dry, open meadow is half tall and half short, and mostly sod |
+
+The weights and thresholds are design choices with stated defaults, not fits: the direction of each
+term is the ecology's, the size is chosen so that a fully wet cell (1.5) outvotes the mosaic (at
+most 1) and a fully steep one (−2) outvotes both.
+
+**The meadow's forbs.** A share of the cells that hold a patch also stand a herb from the
+understory's forms — the oxeye daisy (*Leucanthemum vulgare*, an MG5 hay-meadow forb; stems 20–90 cm
+across the floras, 0.5 m here, `meadow/oxeye-daisy.flora.json`). The share defaults to **0.33**, a
+species-rich hay meadow's; **0.1** is an improved pasture's. The sources give cover, not counts: the
+condition sheets put herbs at 40–90 % of a species-rich sward and "other neutral grassland" above
+20 %, and improved grassland below it; one forb a cell is a count standing for cover, and a 0.6 m
+daisy covers far less than its cell, so the share understates the forbs' cover on purpose until a
+forb of meadow cover exists. The herb's motion kind is `parts`: every forb is a run of the frame's
+part-pose table and a CPU pose per part each frame, so a tile keeps at most `forb_tile_cap` (256 by
+default, the ones of lowest hash) and the forbs stand in the nearest ring only. A `field` herb, posed
+on the GPU like the sward, is the request that lifts both limits (flora.md, "Not yet").
 ## Rendering model and explicit approximations
 
 [Jahrmann & Wimmer 2017 §§3–5](https://www.cg.tuwien.ac.at/research/publications/2017/JAHRMANN-2017-RRTG/JAHRMANN-2017-RRTG-draft.pdf)

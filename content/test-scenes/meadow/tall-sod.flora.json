@@ -1,0 +1,17 @@
+{
+  "species": "sward",
+  "sward": {
+    "species": "red_fescue",
+    "seed": 13701,
+    "blades_m2": 768,
+    "segments": 3,
+    "growth_min": 0.55,
+    "growth": 1.0,
+    "leaves_per_tiller": 3,
+    "tillers_per_clump": 4,
+    "clumpiness": 0.1,
+    "clump_radius_m": 0.04,
+    "triangle_budget": 6400,
+    "card_px": 128
+  }
+}

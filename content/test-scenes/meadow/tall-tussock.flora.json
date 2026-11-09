@@ -1,0 +1,20 @@
+{
+  "species": "sward",
+  "sward": {
+    "species": "tufted_hairgrass",
+    "seed": 13702,
+    "blades_m2": 640,
+    "segments": 3,
+    "growth_min": 0.4,
+    "growth": 1.0,
+    "leaves_per_tiller": 4,
+    "tillers_per_clump": 4,
+    "clump_radius_m": 0.12,
+    "tussock_spacing_m": 0.5,
+    "crown_base_m": 0.05,
+    "between_share": 0.15,
+    "between_growth": 0.15,
+    "triangle_budget": 5300,
+    "card_px": 128
+  }
+}
