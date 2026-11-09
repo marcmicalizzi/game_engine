@@ -185,8 +185,8 @@ u32 film_code_bound(const Shot& shot, u32 p, u32 channel, u32 code_off) {
   const f64 f0 = 0.020059312;  // ((1.333 - 1) / (1.333 + 1))^2, wet_ground.slang's
   const f64 fresnel =
       brdf_ref::env_specular(brdf_ref::Dvec3{f0, f0, f0}, brdf_ref::k_min_roughness, least).x;
-  const f64 sky = channel == 0 ? k_sky.x : (channel == 1 ? k_sky.y : k_sky.z);
-  f64 step = 255.0 * std::pow(std::clamp(static_cast<f64>(sky) * fresnel, 0.0, 1.0), 1.0 / 2.2);
+  const f64 sky = static_cast<f64>(channel == 0 ? k_sky.x : (channel == 1 ? k_sky.y : k_sky.z));
+  f64 step = 255.0 * std::pow(std::clamp(sky * fresnel, 0.0, 1.0), 1.0 / 2.2);
   if (code_off <= 1u) step *= 2.0;
   return static_cast<u32>(std::ceil(step)) + 1u;
 }
