@@ -2260,14 +2260,17 @@ bool read_scene_file(const std::string& path, const SceneFileOptions& options, S
     // over, the worst of each and where the first is, so a landform that moved under a scene
     // whose instances are not relative is seen at the load and not in a picture.
     const auto named = [&](u32 index) {
-      return file.instances[index].name.empty() ? std::to_string(index) : file.instances[index].name;
+      return file.instances[index].name.empty() ? std::to_string(index)
+                                                : file.instances[index].name;
     };
     ENGINE_LOG_WARN(
-        log_renderer, "instances off the ground",
-        log::field("floating", out.instances_floating), log::field("floating_max_m", out.floating_max_m),
-        log::field("floating_first", out.instances_floating > 0 ? named(out.floating_first) : std::string()),
+        log_renderer, "instances off the ground", log::field("floating", out.instances_floating),
+        log::field("floating_max_m", out.floating_max_m),
+        log::field("floating_first",
+                   out.instances_floating > 0 ? named(out.floating_first) : std::string()),
         log::field("buried", out.instances_buried), log::field("buried_max_m", out.buried_max_m),
-        log::field("buried_first", out.instances_buried > 0 ? named(out.buried_first) : std::string()),
+        log::field("buried_first",
+                   out.instances_buried > 0 ? named(out.buried_first) : std::string()),
         log::field("threshold_m", k_off_ground_m));
   }
   // Scatters, expanded here from their seeds, so the renderer sees plain instances and two

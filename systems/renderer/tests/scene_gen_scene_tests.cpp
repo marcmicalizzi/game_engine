@@ -192,9 +192,10 @@ TEST_CASE("renderer: instances off the ground are counted at the read, grounded 
   SceneDesc desc;
   std::string error;
   REQUIRE(write_text(
-      path, scene(R"({"mesh":0,"translation":[0,3.5,0]},{"mesh":0,"translation":[1,11,0],"name":"high"},)"
-                  R"({"mesh":0,"translation":[2,-2.5,0],"name":"low"},)"
-                  R"({"mesh":0,"translation":[3,12,0]},{"mesh":0,"translation":[4,3.4,0]})")));
+      path,
+      scene(R"({"mesh":0,"translation":[0,3.5,0]},{"mesh":0,"translation":[1,11,0],"name":"high"},)"
+            R"({"mesh":0,"translation":[2,-2.5,0],"name":"low"},)"
+            R"({"mesh":0,"translation":[3,12,0]},{"mesh":0,"translation":[4,3.4,0]})")));
   REQUIRE_MESSAGE(read_scene_file(path, desc, error), error);
   CHECK(desc.instances_floating == 2);
   CHECK(desc.instances_buried == 1);

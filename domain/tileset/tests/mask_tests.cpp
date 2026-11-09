@@ -525,7 +525,8 @@ bool has_layer(const MaskLevel& level, i32 tx, i32 tz, u32 layer) {
 
 }  // namespace
 
-TEST_CASE("tileset masks: a fifth layer under one step is dropped with a warning, at a step refused") {
+TEST_CASE(
+    "tileset masks: a fifth layer under one step is dropped with a warning, at a step refused") {
   // Under a step: loads. The check and the build agree on the answer and on the warning.
   {
     Fixture fx;

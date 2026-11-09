@@ -102,10 +102,10 @@ struct OverBudgetTile {
   u32 weakest = 0;
 };
 struct MaskBudgetReport {
-  Vector<OverBudgetTile> over;  // in tile order, row by row
+  Vector<OverBudgetTile> over;   // in tile order, row by row
   Vector<DroppedLayer> dropped;  // layers under one step, in tile order, with a peak over half one
-  u32 tiles = 0;                // tiles scanned
-  u32 largest = 0;              // the most layers any tile names
+  u32 tiles = 0;                 // tiles scanned
+  u32 largest = 0;               // the most layers any tile names
   u32 budget = 0;
 };
 // The composition a build runs, scanned for the budget alone: no archive is written. Every tile
