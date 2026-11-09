@@ -473,7 +473,28 @@ tunables::Enum<SunRegionChoice> shadow_region_rule{
     "alone, the distance alone, both; cycle: frame f takes (f / 8) % 4 of none, sides, far, both "
     "(renderer.md, The sun's masks by region and by distance)"};
 
+tunables::Bool water_wet_film{
+    "renderer.water.wet_film", true,
+    "Measurement only: false draws the wet ground's darkening and damp roughness without the film "
+    "that stands on saturated ground (its roughness and its reflection), so a check can tell what "
+    "the film adds (water.md, The shore)"};
+
+enum class WaterBanksChoice : u32 { On, Off, Cycle };
+constexpr const char* k_water_banks_choices[] = {"on", "off", "cycle"};
+tunables::Enum<WaterBanksChoice> water_banks{
+    "renderer.water.banks", WaterBanksChoice::On, k_water_banks_choices,
+    "Measurement only: off skips the channels' banks in the resolve (no bank wets the ground); "
+    "cycle: frame f walks them when (f / 8) % 2 is 0, so one flight pairs the two (water.md, "
+    "The banks)"};
+
 }  // namespace
+
+bool water_wet_film_tunable() noexcept { return water_wet_film.get(); }
+bool water_banks_tunable(u64 frame_index) noexcept {
+  const WaterBanksChoice choice = water_banks.get();
+  if (choice == WaterBanksChoice::Cycle) return (frame_index / 8u) % 2u == 0u;
+  return choice == WaterBanksChoice::On;
+}
 
 SunRegionRule sun_region_rule(u64 frame_index) noexcept {
   SunRegionRule set;

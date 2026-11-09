@@ -272,8 +272,10 @@ Vector<gfx::WaterShore> channel_bank_records(const scene::WaterChannel& c, const
                        static_cast<f32>(p.y - at.y), 0.5f * c.width_m[i]};
     r.stretch_b = Vec4{static_cast<f32>(q.x - at.x), static_cast<f32>(q.z - at.z),
                        static_cast<f32>(q.y - at.y), 0.5f * c.width_m[i + 1]};
-    // The stretch's square, grown by its half width and where a 1:25 bank rises the fringe.
-    const f32 grow = std::max(r.stretch_a.w, r.stretch_b.w) + 25.0f * r.wet_m + 1.0f;
+    // The stretch's square, grown by its half width and where a 1:25 bank rises the fringe: the
+    // run alone dries the ground there (water.slang's `water_channel_saturation`), so nothing past
+    // it can be wet and the square ends at it.
+    const f32 grow = std::max(r.stretch_a.w, r.stretch_b.w) + 25.0f * r.wet_m;
     r.lo = Vec2{std::min(r.stretch_a.x, r.stretch_b.x) - grow,
                 std::min(r.stretch_a.y, r.stretch_b.y) - grow};
     r.hi = Vec2{std::max(r.stretch_a.x, r.stretch_b.x) + grow,

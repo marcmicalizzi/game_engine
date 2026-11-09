@@ -36,6 +36,7 @@ inline double albedo(double a, double s, double porosity) {
   return a * lerp(1.0, darkening(a), weight);
 }
 inline double film(double s, double f) {
+  if (f < 0.0) return 0.0;  // no film at all: the resolve's k_shadow_wet_film_off
   const double standing = saturate((s - k_film_from) / (1.0 - k_film_from));
   return saturate(std::max(f, standing * standing));
 }

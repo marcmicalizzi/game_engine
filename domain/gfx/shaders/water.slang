@@ -797,8 +797,9 @@ bool water_shore_channel(WaterShore s) { return s.stretch_a.w != 0.0; }
 
 // The saturation of a ground point `local` (instance-local) by a channel stretch: its height over
 // the surface at its nearest place on the stretch, through the fringe; 0 off the stretch's reach
-// (the half width and the fringe's run up a 1:25 bank, as the bodies' bounds take it) and more than
-// two metres under the surface (a fall's foot, below its lip).
+// (the half width and the fringe's run up a 1:25 bank — exactly where the run alone dries the
+// ground, so the reach and the record's square end there and no further) and more than two metres
+// under the surface (a fall's foot, below its lip).
 //
 // A bank is damp, not flooded: the fringe is held below the film's threshold (`k_wet_film_from`),
 // so no bank carries standing water (the film is the swash's, and the channel's own surface is
@@ -815,7 +816,7 @@ float water_channel_saturation(WaterShore s, float3 local) {
   const float u = len2 > 0.0 ? saturate(dot(local.xz - a, d) / len2) : 0.0;
   const float half_width = lerp(s.stretch_a.w, s.stretch_b.w, u);
   const float across = length(local.xz - (a + d * u));
-  if (!(across < half_width + k_bank_run * s.wet_m + 1.0)) return 0.0;
+  if (!(across < half_width + k_bank_run * s.wet_m)) return 0.0;
   const float h = local.y - lerp(s.stretch_a.z, s.stretch_b.z, u);
   if (!(h > -2.0)) return 0.0;
   const float run = max(across - half_width, 0.0) / k_bank_run;

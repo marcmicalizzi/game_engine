@@ -58,6 +58,11 @@ inline constexpr f32 k_spray_fall_max_m = 3.0f;
 // The vertical slack a stretch's tree node keeps below its lowest surface: the shader's reach
 // under a channel's surface (water.slang's `water_channel_saturation`, two metres).
 inline constexpr f32 k_bank_below_m = 2.0f;
+// The bank's run per metre of rise (water.slang's `k_bank_run`): a stretch's reach and its square
+// end where the run alone has dried the ground, `k_bank_run` times its fringe past its half width.
+inline constexpr f32 k_bank_run = 25.0f;
+// A bank's saturation stays below the film's threshold (wet_ground.slang's `k_wet_film_from`).
+inline constexpr f32 k_bank_saturation_max = 0.85f;
 
 // **The banks' tree** (water.md, "Channels"): a scene's channel stretches are tens of thousands
 // (the v35 forest: 60,477 in 156 channels), too many for a ground pixel to test one by one, so the
@@ -158,16 +163,19 @@ inline f32 bank_tree_saturation(const Vector<WaterShore>& tree, Vec3 local, u32 
       const f32 ex = local.x - (ax + dx * u), ez = local.z - (az + dz * u);
       const f32 across = std::sqrt(ex * ex + ez * ez);
       const f32 h = local.y - (s.stretch_a.z + (s.stretch_b.z - s.stretch_a.z) * u);
-      if (across < half + 25.0f * s.wet_m + 1.0f && h > -k_bank_below_m) {
+      if (across < half + k_bank_run * s.wet_m && h > -k_bank_below_m) {
+        // Held at least the run from the wetted edge, and below the film (d90f9780).
+        const f32 height = std::max(h, std::max(across - half, 0.0f) / k_bank_run);
         f32 sat = 1.0f;
-        if (h > 0.0f) {
-          const f32 t = std::clamp(h / s.wet_m, 0.0f, 1.0f);
+        if (height > 0.0f) {
+          const f32 t = std::clamp(height / s.wet_m, 0.0f, 1.0f);
           sat = 1.0f - t * t * (3.0f - 2.0f * t);
         }
-        best = std::max(best, sat);
+        best = std::max(best, std::min(sat, k_bank_saturation_max));
       }
     }
     ++i;
+    if (best >= k_bank_saturation_max) break;  // as the shader's walk ends
   }
   if (visits != nullptr) *visits = seen;
   return best;

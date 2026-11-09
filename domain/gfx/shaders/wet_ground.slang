@@ -37,14 +37,21 @@ static const float k_wet_damp_roughness = 0.7;
 static const float k_wet_film_roughness = 0.05;
 static const float k_wet_film_from = 0.85;
 static const float k_wet_film_f0 = 0.020059312;  // ((1.333 - 1) / (1.333 + 1))^2, water.slang's
+// ResolveParams::shadow_flags' measurement switch `renderer.water.wet_film` false sets: the resolve
+// then hands the material a negative film, which `wet_ground_film` reads as none.
+static const uint k_shadow_wet_film_off = 65536u;  // gfx::k_shadow_wet_film_off, 1 << 16
+// And `renderer.water.banks` off: the resolve walks no channel bank.
+static const uint k_shadow_wet_banks_off = 131072u;  // gfx::k_shadow_wet_banks_off, 1 << 17
 
 // Lekner and Dorf's factor on a dry albedo, per channel, at most 1.
 float3 wet_ground_darkening(float3 albedo) {
   return min(k_wet_through / (1.0 - k_wet_internal * clamp(albedo, 0.0, 1.0)), float3(1.0));
 }
 
-// The film's weight: the handed-in film, or the free water standing once the pores are full.
+// The film's weight: the handed-in film, or the free water standing once the pores are full. A
+// negative `film` is no film at all (the resolve's `k_shadow_wet_film_off`, a measurement switch).
 float wet_ground_film(float s, float film) {
+  if (film < 0.0) return 0.0;
   const float standing = saturate((s - k_wet_film_from) / (1.0 - k_wet_film_from));
   return saturate(max(film, standing * standing));
 }

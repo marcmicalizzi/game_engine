@@ -1188,20 +1188,24 @@ WaterWetGround water_ground_wetness(ResolveParams* params, ResolveMaterial mater
     g.foam = max(g.foam, here.foam);
   }
   // The channels' banks (gfx::build_bank_tree): depth first, a node missed skips its subtree by
-  // its escape index, so a point far from every channel tests the few nodes above it.
-  if (b < params->water_shore_count) {
+  // its escape index, so a point far from every channel tests the few nodes above it. A record's
+  // square and its kind are read first and the rest of it only for a stretch the point is inside:
+  // most of a walk is squares missed. `renderer.water.banks` (a measurement switch) skips it.
+  if (b < params->water_shore_count && (params->shadow_flags & k_shadow_wet_banks_off) == 0) {
     const float3 local = position - instance_from_eye(instances[shores[b].instance], params->eye);
     // A bank's saturation is at most k_wet_film_from (water_channel_saturation), so a pixel already
     // that wet ends the walk: no stretch can raise it.
     while (b < params->water_shore_count && g.s < k_wet_film_from) {
-      const WaterShore shore = shores[b];
-      const bool inside = all(local.xz >= shore.lo) && all(local.xz <= shore.hi);
-      if (shore.stretch_a.w < 0.0) {
-        const bool level = local.y >= shore.stretch_a.x && local.y <= shore.stretch_a.y;
-        b = inside && level ? b + 1 : max(shore.material, b + 1);
+      const float2 lo = shores[b].lo;
+      const float2 hi = shores[b].hi;
+      const float4 head = shores[b].stretch_a;
+      const bool inside = all(local.xz >= lo) && all(local.xz <= hi);
+      if (head.w < 0.0) {
+        const bool level = local.y >= head.x && local.y <= head.y;
+        b = inside && level ? b + 1 : max(shores[b].material, b + 1);
         continue;
       }
-      if (inside) g.s = max(g.s, water_channel_saturation(shore, local));
+      if (inside) g.s = max(g.s, water_channel_saturation(shores[b], local));
       ++b;
     }
   }
@@ -1373,7 +1377,9 @@ float4 fs_resolve(FullscreenOut in) : SV_Target {
         water_ground_wetness(params, material, instance, s.position,
                              length(from_eye) * 2.0 / float(params->height));
     wet_s = wet.s;
-    wet_film = wet.film;
+    // `renderer.water.wet_film` false (a measurement switch): the darkening and the damp roughness
+    // alone, no film (wet_ground.slang's negative film).
+    wet_film = (params->shadow_flags & k_shadow_wet_film_off) != 0 ? -1.0 : wet.film;
     wet_foam = wet.foam;
   }
 #endif

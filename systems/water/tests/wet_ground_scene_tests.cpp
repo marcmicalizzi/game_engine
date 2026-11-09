@@ -114,7 +114,7 @@ TEST_CASE("water banks: the tree finds what testing every stretch finds, and lit
     r.material = 0xffffffffu;
     r.stretch_a = Vec4{a.x, a.z, a.y, half};
     r.stretch_b = Vec4{b.x, b.z, b.y, half};
-    const f32 grow = half + 25.0f * fringe + 1.0f;
+    const f32 grow = half + gfx::k_bank_run * fringe;  // as channel_bank_records grows it
     r.lo = Vec2{std::min(a.x, b.x) - grow, std::min(a.z, b.z) - grow};
     r.hi = Vec2{std::max(a.x, b.x) + grow, std::max(a.z, b.z) + grow};
     leaves.push_back(r);
