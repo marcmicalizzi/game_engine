@@ -32,6 +32,7 @@
 
 #include "brdf.slang"
 #include "material.slang"
+#include "wet_ground.slang"  // S99: the ground's wet response, which the shore hands its saturation
 
 static const float k_water_ior = 1.33;
 // ((1.33 - 1) / (1.33 + 1))^2: what water reflects face on.
@@ -495,16 +496,12 @@ static const uint k_material_water_shore = 1048576u;  // gfx::k_material_water_s
 static const float k_water_foam_albedo = 0.55;
 // The wave amplitude at which the foam line is whole: the pond's default 2 cm.
 static const float k_water_foam_full_amplitude = 0.02;
-// Lekner and Dorf (1988) over Angstrom (1925), as terrain_material.slang's beach takes it: a water
-// film over a dry albedo a returns (1 - r_e)(1 - r_i) a / (1 - r_i a) of the light, r_e = 0.066 and
-// r_i = 1 - (1 - r_e) / n^2 = 0.4744 at n = 1.333.
-static const float k_water_wet_through = 0.490946;
-static const float k_water_wet_internal = 0.474362;
+// Lekner and Dorf's darkening is wet_ground.slang's (S99), which the ground's material applies.
 // The materials the wet band darkens: a terrain's (k_material_ground_detail, and terrain_material.
 // slang's k_material_terrain_layers and k_material_terrain_map).
 static const uint k_water_wet_materials = 8u | 512u | 1024u;
 
-// Mirrors gfx::WaterShore (64 bytes).
+// Mirrors gfx::WaterShore (96 bytes since S99's channel stretches).
 struct WaterShore {
   uint instance;
   float wet_m;
@@ -520,6 +517,8 @@ struct WaterShore {
   float height_m;     // the wind's significant wave height
   float foam_m;
   float shore_m;
+  float4 stretch_a;   // S99: a channel stretch's upstream point (x, z, surface y, half width); w 0: a body's
+  float4 stretch_b;   // and its downstream one
 };
 
 // **Where the level meets the ground, per pixel**: the distance in from the waterline, metres, as
@@ -602,17 +601,22 @@ float3 water_foam_over(float3 c, float foam, float3 sun, float3 sun_dir, float3 
   return lerp(c, k_water_foam_albedo * lit, foam);
 }
 
-// **The wet band**: the factor on a terrain pixel's shaded colour `height` metres above a body's
-// level, within its `wet_m`: Lekner and Dorf's darkening of the pixel's albedo at saturation at the
-// waterline, easing to none at `wet_m` (the capillary fringe drying upwards, smoothstep). Applied
-// after the lighting, so it darkens the specular too, which real wet ground does not (it shines):
-// the limit of a post-multiplier, said on the page.
-float3 water_wet_factor(float3 albedo, float height, float wet_m) {
-  if (!(wet_m > 0.0) || !(height >= 0.0) || !(height < wet_m)) return float3(1.0);
-  const float wet = 1.0 - smoothstep(0.0, wet_m, height);
-  const float3 dark = k_water_wet_through / (1.0 - k_water_wet_internal * clamp(albedo, 0.0, 1.0));
-  return lerp(float3(1.0), min(dark, float3(1.0)), wet);
+// **The wet band** (S97, a material since S99): the saturation of a terrain pixel `height` metres
+// above a body's level, within its `wet_m`: 1 at the waterline easing to none at `wet_m` (the
+// capillary fringe drying upwards, wet_ground.slang's smoothstep), handed to the ground's material
+// before the lighting (wet_ground.slang), never a factor on the shaded colour.
+float water_wet_saturation(float height, float wet_m) {
+  if (!(wet_m > 0.0) || !(height >= 0.0) || !(height < wet_m)) return 0.0;
+  return wet_ground_fringe(height, wet_m);
 }
+
+// What the water stage hands the ground's material (S99): the saturation, the film's weight, and
+// the foam riding the swash's front (laid over the lit pixel, as S94's was).
+struct WaterWetGround {
+  float s;
+  float film;
+  float foam;
+};
 
 // ---- the swash (S94; docs/subsystems/water.md, "The shore"; docs/experiments/shore.md, "The
 // swash"; mirrored in double by domain/gfx/water_swash.h, which the tests hold against a brute-force
@@ -633,9 +637,6 @@ static const float k_swash_fringe = 0.5;
 // The along-shore scale of the front's raggedness and phase drift: the larger of this and three
 // swash widths (R over the slope).
 static const float k_swash_raggedness_m = 4.0;
-// The albedo a bared pixel of the water mesh is darkened as (its ground's own is not at hand in the
-// branch): sand's (the beach's ~0.35-0.4).
-static const float k_swash_bared_albedo = 0.35;
 
 struct WaterSwashPlace {
   float run_up;
@@ -729,10 +730,10 @@ float water_swash_wetness(WaterShore s, WaterSwashPlace w, float t, float h, out
   return fringe + (1.0 - fringe) * mark;
 }
 
-// Lekner and Dorf's factor on an albedo at a wetness in [0, 1].
+// Lekner and Dorf's factor on an albedo at a wetness in [0, 1] (the low tier's bared bottom, whose
+// colour is the body's shallow tint and not a material's).
 float3 water_wet_darkening(float3 albedo, float wet) {
-  const float3 dark = k_water_wet_through / (1.0 - k_water_wet_internal * clamp(albedo, 0.0, 1.0));
-  return lerp(float3(1.0), min(dark, float3(1.0)), clamp(wet, 0.0, 1.0));
+  return lerp(float3(1.0), wet_ground_darkening(albedo), clamp(wet, 0.0, 1.0));
 }
 
 // **The foam riding the front**: `x` metres behind the front along the slope (x >= 0 is under the
@@ -755,45 +756,71 @@ float water_swash_foam(WaterShore s, float2 p, float x, bool uprush, float t, fl
   return strength * clamp((line + trail) * (0.3 + 1.1 * breakup), 0.0, 1.0);
 }
 
-// **A ground pixel in the swash** (the resolve's water stage, after the lighting): `color` the
-// shaded ground, `h` its height above the body's level. Under the sheet (h below the front and the
-// tide) the ground is saturated and the sheet's water reflects the sky by Fresnel, faded in from
-// the waterline over `shore_m` as the water mesh's surface is, so the two meet at the still level;
-// above it the sand is as wet as the clock says and its film reflects while it lasts; the foam
-// rides the front. `reflected` is the sky along the mirrored view, `foam_light` what a level
-// Lambertian surface takes from the sun and the sky.
-float3 water_swash_ground(float3 color, float3 albedo, WaterShore s, float2 p, float h, float t,
-                          float tide_phase, float3 view, float3 reflected, float3 foam_light,
-                          float footprint) {
+// **A ground pixel in the swash** (the resolve's water stage, before the material; S99 moved the
+// darkening, the sheet's and the film's gloss into the ground's material, wet_ground.slang): `h`
+// its height above the body's level. Under the sheet (h below the front and the tide) the ground
+// is saturated under a whole film — the sheet's water; above it the sand is as wet as the clock
+// says (`water_swash_wetness`) and its film lasts `k_swash_film_s`; the foam rides the front and
+// is laid over the lit pixel by the caller.
+WaterWetGround water_swash_saturation(WaterShore s, float2 p, float h, float t, float tide_phase,
+                                      float footprint) {
+  WaterWetGround g;
+  g.foam = 0.0;
   const float level = water_swash_tide(s, tide_phase);
   const float hh = h - level;
   float front = 0.0;
   bool uprush = false;
-  float wet;
-  float film;
   WaterSwashPlace w = {};
   if (water_swash_on(s)) {
     w = water_swash_place(s, p);
     front = water_swash_front(w, t, uprush);
-    wet = water_swash_wetness(s, w, t, hh, film);
+    g.s = water_swash_wetness(s, w, t, hh, g.film);
   } else {
     // A tide alone: the waterline is the tide's level, and the sand above it the fringe's.
-    film = hh < 0.0 ? 1.0 : 0.0;
-    wet = hh < 0.0 ? 1.0 : (s.wet_m > 0.0 && hh < s.wet_m ? 1.0 - smoothstep(0.0, s.wet_m, hh) : 0.0);
+    g.film = hh < 0.0 ? 1.0 : 0.0;
+    g.s = hh < 0.0 ? 1.0 : (s.wet_m > 0.0 && hh < s.wet_m ? wet_ground_fringe(hh, s.wet_m) : 0.0);
   }
-  float3 c = color * water_wet_darkening(albedo, wet);
-  const float slope = max(s.slope, 1e-3);
-  const float x = (front - hh) / slope;  // metres behind the front, along the slope
-  const float fresnel = brdf_f_schlick(float3(k_water_f0), max(view.y, k_min_n_dot_v)).x;
-  // The sheet's surface (x > 0), and the film the backwash leaves (its gloss).
-  const float sheet = x > 0.0 ? clamp(x / max(s.shore_m, 1e-3), 0.0, 1.0) : 0.0;
-  const float gloss = max(sheet, x > 0.0 ? 0.0 : film * 0.5);
-  c = c * (1.0 - fresnel * gloss) + reflected * (fresnel * gloss);
-  if (water_swash_on(s)) {
-    const float foam = water_swash_foam(s, p, x, uprush, t, footprint);
-    if (foam > 0.0) c = lerp(c, k_water_foam_albedo * foam_light, foam);
+  const float x = (front - hh) / max(s.slope, 1e-3);  // metres behind the front, along the slope
+  if (x > 0.0 && water_swash_on(s)) {
+    g.s = 1.0;
+    g.film = 1.0;
   }
-  return c;
+  if (water_swash_on(s)) g.foam = water_swash_foam(s, p, x, uprush, t, footprint);
+  return g;
+}
+
+// ---- the channels' banks (S99; water.md, "Channels"; gfx::WaterShore's stretch fields) ---------
+// A channel stretch's record: `stretch_a` and `stretch_b` its two points (x, z, the surface's
+// height, the half width), instance-local; `wet_m` its bank's fringe (the spray band's included).
+// A record of the banks' tree (a stretch, w > 0, or a node, w = -1; gfx::build_bank_tree).
+bool water_shore_channel(WaterShore s) { return s.stretch_a.w != 0.0; }
+
+// The saturation of a ground point `local` (instance-local) by a channel stretch: its height over
+// the surface at its nearest place on the stretch, through the fringe; 0 off the stretch's reach
+// (the half width and the fringe's run up a 1:25 bank — exactly where the run alone dries the
+// ground, so the reach and the record's square end there and no further) and more than two metres
+// under the surface (a fall's foot, below its lip).
+//
+// A bank is damp, not flooded: the fringe is held below the film's threshold (`k_wet_film_from`),
+// so no bank carries standing water (the film is the swash's, and the channel's own surface is
+// water), and the height a point is taken at is never less than its run from the wetted edge on
+// the 1:25 the reach uses, so ground at or below the stage beside the channel (a floodplain, a
+// cut's floor) dries over the reach instead of reading as saturated to its end. Without the two,
+// v35's stream drew a standing film with a sun glint on every pebble out to 26 m (S99's captures,
+// 2026-11-08).
+static const float k_bank_run = 25.0;  // the bank's run per metre of rise: the reach's own
+float water_channel_saturation(WaterShore s, float3 local) {
+  const float2 a = s.stretch_a.xy;
+  const float2 d = s.stretch_b.xy - a;
+  const float len2 = dot(d, d);
+  const float u = len2 > 0.0 ? saturate(dot(local.xz - a, d) / len2) : 0.0;
+  const float half_width = lerp(s.stretch_a.w, s.stretch_b.w, u);
+  const float across = length(local.xz - (a + d * u));
+  if (!(across < half_width + k_bank_run * s.wet_m)) return 0.0;
+  const float h = local.y - lerp(s.stretch_a.z, s.stretch_b.z, u);
+  if (!(h > -2.0)) return 0.0;
+  const float run = max(across - half_width, 0.0) / k_bank_run;
+  return min(wet_ground_fringe(max(h, run), s.wet_m), k_wet_film_from);
 }
 
 // ---- channels of flowing water (gfx::k_material_water_channel; water.md, "Channels"; S96, S98) --

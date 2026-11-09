@@ -728,7 +728,10 @@ float shadow_visibility(ResolveParams* params, uint bit, uint owner, float3 posi
 float3 water_pixel_volume(ResolveParams* params, SceneGeometry geo, InstanceDesc instance,
                           uint index, float2 slope, float3 dp_dx, float3 dp_dy, Surface s,
                           float3 local, float3 n, float3 view, WaterParams w, float ray_bias,
-                          float depth, bool has_map, WaterDepthMap map, float edge, float foam) {
+                          float depth, bool has_map, WaterDepthMap map, float edge, float foam,
+                          float bared_s = 0.0) {
+  // `bared_s` (S99): a pixel the swash's backwash or the falling tide has bared is the ground's own
+  // material at its saturation (wet_ground.slang), not a fixed sand's; 0 for every other pixel.
   ResolveMaterial* materials = (ResolveMaterial*)geo.materials;
   const WaterOptics o = water_optics_of(materials[index + 1]);
   WaterPath path;
@@ -746,6 +749,7 @@ float3 water_pixel_volume(ResolveParams* params, SceneGeometry geo, InstanceDesc
     const float2 uv = o.ground_uv + bottom.xz * o.ground_uv_per_m;
     albedo = water_ground_albedo(materials[o.ground], uv, dp_dx.xz * o.ground_uv_per_m,
                                  dp_dy.xz * o.ground_uv_per_m);
+    bool layered = false;
 #ifdef MATERIAL_TERRAIN
     if ((materials[o.ground].flags & k_material_terrain_layers) != 0) {
       float3 bottom_normal;
@@ -753,11 +757,15 @@ float3 water_pixel_volume(ResolveParams* params, SceneGeometry geo, InstanceDesc
       const MaterialSample sampled = sample_terrain_material(
           geo, materials[o.ground], uv, dp_dx.xz * o.ground_uv_per_m,
           dp_dy.xz * o.ground_uv_per_m, point, n_b, dp_dx, dp_dy,
-          length(point - params->camera.xyz), true, bottom_normal);
+          length(point - params->camera.xyz), true, bottom_normal, true, bared_s, 0.0);
       albedo = sampled.albedo;
       n_b = bottom_normal;
+      layered = true;
     }
 #endif
+    if (!layered && bared_s > 0.0) albedo = wet_ground_albedo(albedo, bared_s, 0.5);
+  } else if (bared_s > 0.0) {
+    albedo = wet_ground_albedo(albedo, bared_s, 0.5);
   }
   SkyParams* sky = (SkyParams*)params->sky_params;
   const bool has_sky = params->sky_params != 0;
@@ -962,6 +970,7 @@ float3 water_pixel(ResolveParams* params, SceneGeometry geo, InstanceDesc instan
     if (params->water_shore_count != 0) {
       WaterShore* shores = (WaterShore*)params->water_shores;
       for (uint b = 0; b < params->water_shore_count; ++b) {
+        if (water_shore_channel(shores[b])) break;  // the banks' tree (S99) holds no body
         if (shores[b].material != index) continue;
         swash = shores[b];
         swashing = water_swash_on(swash) || swash.tide_m > 0.0;
@@ -1016,12 +1025,15 @@ float3 water_pixel(ResolveParams* params, SceneGeometry geo, InstanceDesc instan
     const float3 c = water_plunge_over(params, s, ray_bias, plunge,
                                        water_pixel_volume(params, geo, instance, index, slope, dp_dx,
                                                           dp_dy, s, local, n, view, w, ray_bias, depth,
-                                                          has_map, map, edge, foam));
-    return bared_wet >= 0.0 ? c * water_wet_darkening(float3(k_swash_bared_albedo), bared_wet) : c;
+                                                          has_map, map, edge, foam,
+                                                          max(bared_wet, 0.0)));
+    return c;
   }
+  // The low tier draws the bottom as the body's shallow tint, so a bared pixel is that tint's
+  // Lekner and Dorf darkening (S99: no longer a fixed sand's 0.35).
   const float3 c = water_plunge_over(params, s, ray_bias, plunge,
                                      water_pixel_low(params, s, n, view, w, ray_bias, depth, edge, foam));
-  return bared_wet >= 0.0 ? c * water_wet_darkening(float3(k_swash_bared_albedo), bared_wet) : c;
+  return bared_wet >= 0.0 ? c * water_wet_darkening(w.shallow, bared_wet) : c;
 }
 
 // **The open sea past its body's outline** (docs/subsystems/water.md, "To the horizon"; roadmap
@@ -1135,6 +1147,69 @@ bool open_water_pixel(ResolveParams* params, float2 source, uint2 noise_pixel, b
   }
   color = float4(display_output(radiance, knee, noise_pixel, display_target(params)), 1.0);
   return true;
+}
+
+// **The wet ground's saturation at a pixel** (S99; water.md, "The swash" and "Channels"): what the
+// scene's shore records say of a ground pixel — a terrain's material, a terrain tile, or the scene's
+// terrain mesh — before its material is sampled: the static band's fringe (S97), the swash's clock
+// (S94), or a channel stretch's bank (S99), the wettest of them; the film's weight; the swash's
+// foam. A pixel outside every record's bounds pays the bounds test alone, and one that is not
+// ground pays nothing.
+WaterWetGround water_ground_wetness(ResolveParams* params, ResolveMaterial material,
+                                    InstanceDesc instance, float3 position, float footprint) {
+  WaterWetGround g;
+  g.s = 0.0;
+  g.film = 0.0;
+  g.foam = 0.0;
+  if (params->water_shore_count == 0 || stop_skips(k_stop_water)) return g;
+  WaterShore* shores = (WaterShore*)params->water_shores;
+  InstanceDesc* instances = (InstanceDesc*)params->instances;
+  const bool ground = (material.flags & k_water_wet_materials) != 0 ||
+                      (instance.flags & k_instance_uv_from_corner) != 0 || instance.terrain != 0 ||
+                      instance.mesh == shores[0].terrain_mesh;
+  if (!ground) return g;
+  uint b = 0;
+  for (; b < params->water_shore_count; ++b) {
+    const WaterShore shore = shores[b];
+    if (water_shore_channel(shore)) break;  // the bodies' records end where the banks' tree starts
+    const float3 local = position - instance_from_eye(instances[shore.instance], params->eye);
+    if (any(local.xz < shore.lo) || any(local.xz > shore.hi)) continue;
+    if (!water_swash_on(shore) && !(shore.tide_m > 0.0)) {
+      g.s = max(g.s, water_wet_saturation(local.y, shore.wet_m));
+      continue;
+    }
+    // Only where the front and the tide can reach, and the fringe above.
+    const float top = max(shore.wet_m, 1.5 * shore.run_up_m) + shore.tide_m;
+    if (!(local.y < top) || !(local.y > -shore.tide_m - 1.5 * shore.run_up_m)) continue;
+    const WaterWetGround here = water_swash_saturation(
+        shore, local.xz, local.y, params->water_time_s, params->water_tide_phase, footprint);
+    g.s = max(g.s, here.s);
+    g.film = max(g.film, here.film);
+    g.foam = max(g.foam, here.foam);
+  }
+  // The channels' banks (gfx::build_bank_tree): depth first, a node missed skips its subtree by
+  // its escape index, so a point far from every channel tests the few nodes above it. A record's
+  // square and its kind are read first and the rest of it only for a stretch the point is inside:
+  // most of a walk is squares missed. `renderer.water.banks` (a measurement switch) skips it.
+  if (b < params->water_shore_count && (params->shadow_flags & k_shadow_wet_banks_off) == 0) {
+    const float3 local = position - instance_from_eye(instances[shores[b].instance], params->eye);
+    // A bank's saturation is at most k_wet_film_from (water_channel_saturation), so a pixel already
+    // that wet ends the walk: no stretch can raise it.
+    while (b < params->water_shore_count && g.s < k_wet_film_from) {
+      const float2 lo = shores[b].lo;
+      const float2 hi = shores[b].hi;
+      const float4 head = shores[b].stretch_a;
+      const bool inside = all(local.xz >= lo) && all(local.xz <= hi);
+      if (head.w < 0.0) {
+        const bool level = local.y >= head.x && local.y <= head.y;
+        b = inside && level ? b + 1 : max(shores[b].material, b + 1);
+        continue;
+      }
+      if (inside) g.s = max(g.s, water_channel_saturation(shores[b], local));
+      ++b;
+    }
+  }
+  return g;
 }
 
 // An empty pixel: the open sea where its ray looks down at it, the sky otherwise.
@@ -1290,10 +1365,29 @@ float4 fs_resolve(FullscreenOut in) : SV_Target {
     const float o = sample_occlusion(material, uv, duv_dx, duv_dy);
     return float4(o, o, o, 1.0);
   }
+  // The wet ground (S99): the saturation the shore's records give this pixel, handed to the
+  // ground's material before any light sees it (wet_ground.slang); 0 off every shore.
+  bool wet_applied = false;
+  float wet_s = 0.0;
+  float wet_film = 0.0;
+  float wet_foam = 0.0;
+#ifdef RESOLVE_WATER
+  if ((material.flags & k_material_water) == 0 && !g_count) {
+    const WaterWetGround wet =
+        water_ground_wetness(params, material, instance, s.position,
+                             length(from_eye) * 2.0 / float(params->height));
+    wet_s = wet.s;
+    // `renderer.water.wet_film` false (a measurement switch): the darkening and the damp roughness
+    // alone, no film (wet_ground.slang's negative film).
+    wet_film = (params->shadow_flags & k_shadow_wet_film_off) != 0 ? -1.0 : wet.film;
+    wet_foam = wet.foam;
+  }
+#endif
 #ifdef MATERIAL_TERRAIN
   MaterialSample sampled = sample_material_grad(material, uv, duv_dx, duv_dy);
   float3 terrain_normal = s.normal;
   if ((material.flags & k_material_terrain_layers) != 0) {
+    wet_applied = true;
     float3 dp_dx;
     float3 dp_dy;
     const TriangleFetch tri = fetch_triangle(geo, instance, visible_index, entry.y, id & 0xff);
@@ -1301,7 +1395,7 @@ float4 fs_resolve(FullscreenOut in) : SV_Target {
                               params->height, dp_dx, dp_dy);
     sampled = sample_terrain_material(geo, material, surface_uv, duv_dx, duv_dy, s.position,
                                       s.normal, dp_dx, dp_dy, length(from_eye), true, terrain_normal,
-                                      params->mode != 12);
+                                      params->mode != 12, wet_s, wet_film);
   }
 #else
   const MaterialSample sampled = sample_material_grad(material, uv, duv_dx, duv_dy);
@@ -1368,6 +1462,14 @@ float4 fs_resolve(FullscreenOut in) : SV_Target {
     roughness = ground.roughness;
   }
   if (params->mode == 9) return float4(0.0, 0.0, 0.0, 1.0);
+#ifdef RESOLVE_WATER
+  // A ground with no layers (the renderer's own terrain, a ground-detail material) takes the same
+  // response here, over the schema's default porosity, after its detail.
+  if (!wet_applied && wet_s > 0.0) {
+    albedo = wet_ground_albedo(albedo, wet_s, 0.5);
+    roughness = wet_ground_roughness(roughness, wet_s, wet_film);
+  }
+#endif
   // Everything the material gave, so none of it is left out of the stage's time.
   if (g_stop == k_stop_material) {
     return float4(lerp(albedo, shading_normal * 0.5 + 0.5, 0.25) + sampled.emissive,
@@ -1561,44 +1663,34 @@ float4 fs_resolve(FullscreenOut in) : SV_Target {
     // after the lighting and touched by no shadow and no occlusion.
     color += sampled.emissive;
 #ifdef RESOLVE_WATER
-    // The wet band (water.md, "The shore"; water.slang's water_wet_factor): a terrain pixel
-    // just above a body's level, within the body's bounds, darkened as wet ground is - after the
-    // lighting, a multiplier on the shaded colour. The water stage's: a measurement that skips it
-    // skips this too.
-    if (params->water_shore_count != 0 && !stop_skips(k_stop_water)) {
-      WaterShore* shores = (WaterShore*)params->water_shores;
-      // Ground: a terrain's material, a terrain tile, or the scene's terrain mesh.
-      const bool ground = (material.flags & k_water_wet_materials) != 0 ||
-                          (instance.flags & k_instance_uv_from_corner) != 0 || instance.terrain != 0 ||
-                          instance.mesh == shores[0].terrain_mesh;
-      for (uint b = 0; ground && b < params->water_shore_count; ++b) {
-        const WaterShore shore = shores[b];
-        const float3 local = s.position - instance_from_eye(instances[shore.instance], params->eye);
-        if (any(local.xz < shore.lo) || any(local.xz > shore.hi)) continue;
-        if (!water_swash_on(shore) && !(shore.tide_m > 0.0)) {
-          color *= water_wet_factor(albedo, local.y, shore.wet_m);
-          continue;
-        }
-        // The swash (S94): the sheet over the ground, the sand's wetness by the clock, the foam
-        // riding the front. Only where the front and the tide can reach, and the fringe above.
-        const float top = max(shore.wet_m, 1.5 * shore.run_up_m) + shore.tide_m;
-        if (!(local.y < top) || !(local.y > -shore.tide_m - 1.5 * shore.run_up_m)) continue;
-        const float3 r = reflect(-surface.view, float3(0.0, 1.0, 0.0));
-        float3 reflected = params->sky.rgb;
-        if (has_sky) reflected = sky_environment(sky, (SkyFrame*)sky->frame, r);
-        float3 foam_light = ambient;
-        if (params->sun.y > 0.0) {
-          float3 sun = float3(params->sun.w);
-          if (has_sky) sun = sky_light_at(sky, s.position, params->sun.xyz, sky->sun_illuminance.rgb);
-          foam_light += sun * (sun_visibility * params->sun.y / k_brdf_pi);
-        }
-        // The pixel's footprint across the view, about: its distance over half the frame's rows
-        // (a 90-degree view; the position's derivatives are the terrain modules' alone).
-        const float footprint = length(from_eye) * 2.0 / float(params->height);
-        color = water_swash_ground(color, albedo, shore, local.xz, local.y, params->water_time_s,
-                                   params->water_tide_phase, surface.view, reflected, foam_light,
-                                   footprint);
+    // The wet ground's film (S99; wet_ground.slang; water.md, "The swash"): the material took the
+    // saturation before the lighting (darker, smoother); what a single-lobe hemisphere cannot give a
+    // film is the sky along the mirrored view, so the film's share of the indirect specular is the
+    // radiance there (R129's traced reflection where the module traces) by water's Fresnel, in
+    // place of the cosine-weighted hemisphere's by the BSDF's. Then the swash's foam over the lit
+    // pixel, as S94 laid it. The water stage's: a measurement that skips it skips this too.
+    const float film_w = wet_s > 0.0 ? wet_ground_film(wet_s, wet_film) : 0.0;
+    if (film_w > 0.0) {
+      const float3 r = reflect(-surface.view, surface.normal);
+      float3 reflected = params->sky.rgb;
+      if (has_sky) reflected = sky_environment(sky, (SkyFrame*)sky->frame, r);
+#ifdef RESOLVE_RAY_SHADOWS
+      reflected = water_reflection(params, s, r, ray_bias, reflected);
+#endif
+      const float film_spec =
+          brdf_env_specular(float3(k_wet_film_f0), surface.roughness, n_dot_v).x;
+      const float3 lobe_spec =
+          brdf_env_specular(brdf_f0(albedo, surface.metallic), surface.roughness, n_dot_v);
+      color = max(color + film_w * (reflected * film_spec - ambient * lobe_spec), float3(0.0));
+    }
+    if (wet_foam > 0.0) {
+      float3 foam_light = ambient;
+      if (params->sun.y > 0.0) {
+        float3 sun = float3(params->sun.w);
+        if (has_sky) sun = sky_light_at(sky, s.position, params->sun.xyz, sky->sun_illuminance.rgb);
+        foam_light += sun * (sun_visibility * params->sun.y / k_brdf_pi);
       }
+      color = lerp(color, k_water_foam_albedo * foam_light, wet_foam);
     }
 #endif
   }

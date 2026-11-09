@@ -12,6 +12,7 @@
 #include <domain/gfx/pipeline.h>
 #include <domain/gfx/water_spectrum.h>
 #include <domain/gfx/water_swash.h>
+#include <domain/gfx/wet_ground.h>
 #include <domain/texture/texture_build.h>
 #include <domain/texture/texture_file.h>
 #include <foundation/image/decode.h>
@@ -6023,11 +6024,39 @@ bool GpuScene::upload_water_shores(std::string* error) {
   water_shores_ = gfx::BufferResource{};
   water_shore_count_ = 0;
   Vector<gfx::WaterShore> shores;
+  Vector<gfx::WaterShore> banks;
+  u32 bank_reference = ~0u;
   for (u32 i = 0; i < data_->instances.size(); ++i) {
     const u32 m = data_->instances[i].mesh;
     if (m >= data_->mesh_info.size() || !data_->mesh_info[m].water.has_value()) continue;
     const SceneWater& water = *data_->mesh_info[m].water;
-    if (water.depth.size < 2 || water.channel) continue;
+    // A channel's banks (S99): its stretch records, moved into the first channel's instance's
+    // frame (the tree has one), written after every body's as one tree.
+    if (water.channel) {
+      if (bank_reference == ~0u) bank_reference = i;
+      const gfx::InstanceDesc& here = data_->instances[i];
+      const gfx::InstanceDesc& ref = data_->instances[bank_reference];
+      // Where each stands: its cell on the 64 m grid plus its translation column, in f64.
+      const auto offset = [&](u32 r, i32 a, i32 b) {
+        return static_cast<f64>(a - b) * k_world_cell_m +
+               (static_cast<f64>(here.rows[r].w) - static_cast<f64>(ref.rows[r].w));
+      };
+      const f64 ox = offset(0, here.cell.x, ref.cell.x);
+      const f64 oy = offset(1, here.cell.y, ref.cell.y);
+      const f64 oz = offset(2, here.cell.z, ref.cell.z);
+      const f32 dx = static_cast<f32>(ox), dy = static_cast<f32>(oy), dz = static_cast<f32>(oz);
+      for (gfx::WaterShore bank : water.banks) {
+        bank.stretch_a = Vec4{bank.stretch_a.x + dx, bank.stretch_a.y + dz, bank.stretch_a.z + dy,
+                              bank.stretch_a.w};
+        bank.stretch_b = Vec4{bank.stretch_b.x + dx, bank.stretch_b.y + dz, bank.stretch_b.z + dy,
+                              bank.stretch_b.w};
+        bank.lo = Vec2{bank.lo.x + dx, bank.lo.y + dz};
+        bank.hi = Vec2{bank.hi.x + dx, bank.hi.y + dz};
+        banks.push_back(bank);
+      }
+      continue;
+    }
+    if (water.depth.size < 2) continue;
     const scene::WaterBody& body = water.body;
     // The swash: a closed body's own wind over the smaller of its fetch and its own longest reach
     // (the map's square's diagonal); an open body's the wind its spectrum took.
@@ -6067,6 +6096,14 @@ bool GpuScene::upload_water_shores(std::string* error) {
     shore.hi = Vec2{water.depth.origin.x + span + half + margin,
                     water.depth.origin.y + span + half + margin};
     shores.push_back(shore);
+  }
+  // The channels' banks as one tree after the bodies (gfx::build_bank_tree), so a ground pixel
+  // tests about log2 of the stretches rather than every one.
+  if (!banks.empty()) {
+    gfx::build_bank_tree(banks, bank_reference,
+                         data_->terrain.enabled ? data_->terrain_mesh : 0xffffffffu, shores);
+    ENGINE_LOG_INFO(log_renderer, "water banks", log::field("stretches", banks.size()),
+                    log::field("records", shores.size()));
   }
   if (shores.empty()) return true;
   if (!gfx::upload_buffer(*device_, shores.data(), u64{shores.size()} * sizeof(gfx::WaterShore),

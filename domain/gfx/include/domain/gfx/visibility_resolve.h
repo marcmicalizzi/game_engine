@@ -99,6 +99,17 @@ inline constexpr f32 k_water_reflect_m = 4000.0f;
 // in place of the ground. Clear, the volume tier draws the ground alone, as it did. Bit 12 rather
 // than the next free one, which the sun's shadow query may take the same night (R139).
 inline constexpr u32 k_shadow_water_refract = 1u << 12;
+// **The wet ground's film off** (S99; water.md, "The shore"; `renderer.water.wet_film` false), a
+// measurement switch: read only by the resolve's water modules, which then draw every wet ground
+// pixel with its darkening and its damp roughness and no film — neither the film's roughness nor
+// its reflection — so a check can tell what the film adds from what the saturation does. Clear,
+// the film is drawn. Bit 16 rather than the next free one, which other rows may take the same
+// night.
+inline constexpr u32 k_shadow_wet_film_off = 1u << 16;
+// **The channels' banks skipped** (S99; water.md, "The banks"; `renderer.water.banks`), a
+// measurement switch: the resolve's water modules walk no bank record, so no channel wets the
+// ground this frame. Clear, the banks are walked.
+inline constexpr u32 k_shadow_wet_banks_off = 1u << 17;
 // The refraction ray is traced only where the march's ground distance is at least this, metres:
 // water a few centimetres deep hides nothing a ray would find.
 inline constexpr f32 k_water_refract_min_m = 0.15f;
@@ -757,8 +768,16 @@ struct WaterShore {
   f32 height_m = 0.0f;
   f32 foam_m = 0.0f;
   f32 shore_m = 0.0f;
+  // **A channel stretch's bank** (roadmap S99; water.md, "Channels"): a record whose `stretch_a.w`
+  // is positive is one stretch of a channel, not a body — `stretch_a` and `stretch_b` its two
+  // points (x, z, the water surface's height, the half width), local to the channel's instance,
+  // `wet_m` its bank's capillary fringe (and a rapid's or a fall's spray band), `material`
+  // 0xffffffff so no water pixel takes it for its body's, and no swash. A body's record leaves both
+  // zero.
+  Vec4 stretch_a{};
+  Vec4 stretch_b{};
 };
-static_assert(sizeof(WaterShore) == 64);
+static_assert(sizeof(WaterShore) == 96);
 
 inline void set_uv_transform(ResolveMaterial& material, Vec2 offset, f32 rotation,
                              Vec2 scale) noexcept {

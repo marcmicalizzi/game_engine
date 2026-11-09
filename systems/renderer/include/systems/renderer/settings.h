@@ -614,6 +614,16 @@ struct SunRegionRule {
 };
 inline constexpr u32 k_sun_region_sweeps = 4;
 SunRegionRule sun_region_rule(u64 frame_index) noexcept;
+// `renderer.water.wet_film` (true; S99; water.md, "The shore"), a **measurement switch** read once
+// a frame: false sets `gfx::k_shadow_wet_film_off`, and the wet ground draws its darkening and its
+// damp roughness without the film, so the shore's checks can tell the film's light from the
+// saturation's. Nothing a player would set.
+bool water_wet_film_tunable() noexcept;
+// `renderer.water.banks` (`on`; S99; water.md, "The banks"), a measurement switch read once a
+// frame: whether the frame of that index walks the channels' banks — `off` never (sets
+// `gfx::k_shadow_wet_banks_off`), `cycle` when (f / 8) % 2 is 0, so one flight measures the
+// banks' cost against the same frames without them.
+bool water_banks_tunable(u64 frame_index) noexcept;
 // `renderer.material.normal_filter` (true), read once per scene at its material upload: a built
 // normal map's normal-variance chain is uploaded beside it and widens the GGX roughness by what the
 // pixel's footprint no longer resolves (R97; renderer.md, "Normal filtering"). False uploads no

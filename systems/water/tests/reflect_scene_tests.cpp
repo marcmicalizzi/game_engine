@@ -114,9 +114,11 @@ std::string box_gltf() {
 
 // A wide basin of the renderer's ground (no dunes: a bowl 6 m deep, 30 m in radius, in a plain), a
 // body that fills it from its middle at 2 m below the plain, and the box standing on the ground at
-// (14, 14), past the waterline on the far side.
-std::string pool_scene() {
-  return R"({
+// (14, 14), past the waterline on the far side. The shore's wet band `wet_m` wide (the schema's
+// 0.3 unless a case says otherwise; 0 none).
+std::string pool_scene(f32 wet_m) {
+  char text[1024];
+  std::snprintf(text, sizeof(text), R"({
   "format": "engine.scene.v1",
   "name": "reflect-test",
   "meshes": [{"name": "box", "path": "box.gltf"}],
@@ -125,8 +127,11 @@ std::string pool_scene() {
               "basins": [{"center": [0, 0], "radius": 30, "depth": 6}]},
   "water": [{"name": "pool", "level_m": -2,
              "shape": {"fill": {"seed": [0, 0, 0], "max_extent_m": 60}},
-             "wind_follow": false, "wave_amplitude_m": 0.01, "wave_length_m": 2.0}]
-})";
+             "wind_follow": false, "wave_amplitude_m": 0.01, "wave_length_m": 2.0,
+             "wet_m": %g}]
+})",
+                static_cast<f64>(wet_m));
+  return text;
 }
 
 bool gpu_here() {
@@ -162,7 +167,8 @@ struct Restore {
 // Draws the pool from `eye` towards `target` with the reflection as `reflect` and the mirrored
 // volume as `volume`, `shots` times (each after a frame that fills the one-frame-late counts).
 void shoot(const gfx::Device& device, const test::TempDir& tmp, WorldPos eye, WorldPos target,
-           bool reflect, bool volume, u32 shots, Shot* out, bool light_volumes = true) {
+           bool reflect, bool volume, u32 shots, Shot* out, bool light_volumes = true,
+           f32 wet_m = 0.3f) {
   REQUIRE(
       tunables::apply_overrides(reflect ? "renderer.water.reflect=1" : "renderer.water.reflect=0"));
   REQUIRE(tunables::apply_overrides(volume ? "renderer.water.reflect_volume=true"
@@ -174,7 +180,7 @@ void shoot(const gfx::Device& device, const test::TempDir& tmp, WorldPos eye, Wo
   const std::string path = tmp.file("pool.json");
   {
     std::ofstream file(path, std::ios::binary);
-    file << pool_scene();
+    file << pool_scene(wet_m);
   }
   SceneDesc desc;
   std::string error;
@@ -255,13 +261,16 @@ TEST_CASE("water reflect: the far shore's box is in the water, and nothing else 
   // From the south-west shore, 1.5 m over the water, across the pool at the box.
   const WorldPos eye{-6.0, -0.5, -6.0};
   const WorldPos target{14.0, -3.3, 14.0};
-  Shot sky[1], scene[2], full[1];
+  Shot sky[1], scene[2], full[1], dry_sky[1], dry_scene[1];
   shoot(device, tmp, eye, target, false, true, 1, sky);
   shoot(device, tmp, eye, target, true, true, 2, scene);
   // The hit's shadow ray at every pixel rather than half of them: what the half rate changes.
   REQUIRE(tunables::apply_overrides("renderer.water.reflect_shadow=2"));
   shoot(device, tmp, eye, target, true, true, 1, full);
   REQUIRE(tunables::apply_overrides("renderer.water.reflect_shadow=1"));
+  // And the shore with no wet band: nothing but the water may change.
+  shoot(device, tmp, eye, target, false, true, 1, dry_sky, true, 0.0f);
+  shoot(device, tmp, eye, target, true, true, 1, dry_scene, true, 0.0f);
   device.destroy();
   const CapturedFrame& a = sky[0].frame;
   const CapturedFrame& b = scene[0].frame;
@@ -274,18 +283,34 @@ TEST_CASE("water reflect: the far shore's box is in the water, and nothing else 
   CHECK(scene[0].stats.water_reflect_views == 1u);
   CHECK(scene[0].stats.water_reflect_level_m < 0.0f);
   const u32 pixels = a.width * a.height;
-  u32 water = 0, changed = 0, off_water = 0, box = 0;
+  // Until S99 nothing but the water reflected, and the reflection could change no other pixel. The
+  // wet band's film reflects too, through the same traced reflection (water.md, "The shore"), so
+  // with the band at width 0 the check is the exact one it was, and with the band on every pixel
+  // off the water that the reflection changes must be one the band itself changes (with the
+  // reflection off), and on the ground: a subset, never a count.
+  const CapturedFrame& d0 = dry_sky[0].frame;
+  const CapturedFrame& d1 = dry_scene[0].frame;
+  REQUIRE(d0.color.size() == a.color.size());
+  CHECK(d0.ids == a.ids);
+  CHECK(d1.ids == a.ids);
+  u32 water = 0, changed = 0, off_water = 0, off_band = 0, off_ground = 0, box = 0, dry_off = 0;
   for (u32 p = 0; p < pixels; ++p) {
     const bool w = is_water(a, p, scene[0].water_instance);
     water += w ? 1u : 0u;
-    box += a.ids[p * k_id_words] == scene[0].box_instance ? 1u : 0u;
+    const u32 id = a.ids[p * k_id_words];
+    box += id == scene[0].box_instance ? 1u : 0u;
+    if (!w && std::memcmp(&d0.color[p * 4], &d1.color[p * 4], 3) != 0) ++dry_off;
     if (std::memcmp(&a.color[p * 4], &b.color[p * 4], 3) == 0) continue;
     ++changed;
-    if (!w) ++off_water;
+    if (w) continue;
+    ++off_water;
+    if (std::memcmp(&a.color[p * 4], &d0.color[p * 4], 3) == 0) ++off_band;
+    if (id == k_no_id || id == scene[0].box_instance) ++off_ground;
   }
   const u32 red = redder(a, b, scene[0].water_instance);
   MESSAGE("pool: " << water << " water pixels, the box " << box << "; the reflection changes "
-                   << changed << ", " << red << " of them towards the box's red; casters "
+                   << changed << ", " << red << " of them towards the box's red, " << off_water
+                   << " off the water (the wet band's film); casters "
                    << sky[0].stats.shadow_casters << " -> " << scene[0].stats.shadow_casters);
   u32 half_rate = 0, half_off_water = 0;
   for (u32 p = 0; p < pixels; ++p) {
@@ -298,7 +323,9 @@ TEST_CASE("water reflect: the far shore's box is in the water, and nothing else 
   CHECK(water > 20000u);
   CHECK(box > 200u);
   CHECK(red > 100u);
-  CHECK(off_water == 0u);
+  CHECK(dry_off == 0u);     // no band: the reflection changes the water alone
+  CHECK(off_band == 0u);    // with one: off the water, only pixels the band changes
+  CHECK(off_ground == 0u);  // and those on the ground
 }
 
 TEST_CASE("water reflect: the mirrored caster volume puts what is above the frame in the water") {

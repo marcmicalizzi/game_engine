@@ -107,6 +107,7 @@ if(TARGET engine_gfx_tests)
                                           tests/sky_tests.cpp tests/reconstruct_tests.cpp
                                           tests/world_eye_tests.cpp
                                           tests/water_shading_tests.cpp tests/terrain_material_tests.cpp
+                                          tests/wet_ground_tests.cpp
                                           tests/stochastic_material_tests.cpp
                                           tests/formation_tests.cpp)
   # ENGINE_SOURCE_DIR is where the morph test looks for the Khronos samples tools/fetch-samples.ps1
