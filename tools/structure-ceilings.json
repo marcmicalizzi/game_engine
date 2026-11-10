@@ -16,7 +16,7 @@
       "file": "systems/renderer/src/scene_renderer.cpp",
       "function": "SceneRenderer::record_frame",
       "why": "every pass and every feature flag of a frame",
-      "ceiling": 3255
+      "ceiling": 3302
     },
     {
       "id": "renderer.record_frame.add_pass",
@@ -32,21 +32,21 @@
       "measure": "file-lines",
       "file": "systems/renderer/src/gpu_scene.cpp",
       "why": "every feature's GPU state",
-      "ceiling": 6595
+      "ceiling": 6791
     },
     {
       "id": "renderer.gpu_scene_h.lines",
       "measure": "file-lines",
       "file": "systems/renderer/include/systems/renderer/gpu_scene.h",
       "why": "every feature's GPU state",
-      "ceiling": 1819
+      "ceiling": 1834
     },
     {
       "id": "engine_view.main_cpp.lines",
       "measure": "file-lines",
       "file": "apps/engine_view/main.cpp",
       "why": "every play feature and every flag",
-      "ceiling": 7466
+      "ceiling": 7469
     },
     {
       "id": "engine_view.run_view.lines",
@@ -54,7 +54,7 @@
       "file": "apps/engine_view/main.cpp",
       "function": "run_view",
       "why": "the windowed loop",
-      "ceiling": 3166
+      "ceiling": 3168
     },
     {
       "id": "engine_view.run_offscreen.lines",
@@ -107,19 +107,19 @@
       "id": "page:docs/subsystems/renderer.md",
       "measure": "page-bytes",
       "file": "docs/subsystems/renderer.md",
-      "ceiling": 956261
+      "ceiling": 967119
     },
     {
       "id": "page:docs/subsystems/apps.md",
       "measure": "page-bytes",
       "file": "docs/subsystems/apps.md",
-      "ceiling": 651618
+      "ceiling": 654032
     },
     {
       "id": "page:docs/subsystems/gfx.md",
       "measure": "page-bytes",
       "file": "docs/subsystems/gfx.md",
-      "ceiling": 306295
+      "ceiling": 309129
     },
     {
       "id": "page:docs/subsystems/geometry.md",
@@ -131,7 +131,7 @@
       "id": "page:docs/subsystems/flora.md",
       "measure": "page-bytes",
       "file": "docs/subsystems/flora.md",
-      "ceiling": 217400
+      "ceiling": 222617
     },
     {
       "id": "page:docs/plan/05-simulation.md",
@@ -149,13 +149,13 @@
       "id": "page:docs/subsystems/water.md",
       "measure": "page-bytes",
       "file": "docs/subsystems/water.md",
-      "ceiling": 143723
+      "ceiling": 164554
     },
     {
       "id": "page:docs/subsystems/protocol.md",
       "measure": "page-bytes",
       "file": "docs/subsystems/protocol.md",
-      "ceiling": 114058
+      "ceiling": 114676
     },
     {
       "id": "page:docs/experiments/e10-generated-props.md",
@@ -179,7 +179,7 @@
       "id": "page:AGENTS.md",
       "measure": "page-bytes",
       "file": "AGENTS.md",
-      "ceiling": 70114
+      "ceiling": 72094
     }
   ],
   "rebaselines": [
@@ -204,6 +204,75 @@
           "id": "page:AGENTS.md",
           "old": 69883,
           "new": 70114
+        }
+      ]
+    },
+    {
+      "date": "2026-11-10",
+      "by": "fable",
+      "reason": "batch 58: R69, S100/R141, R129 and T78 grow the renderer's and the viewer's hubs; G138 flora.md; every row's AGENTS.md lines",
+      "commit": "b1b0a7a6",
+      "folded": [],
+      "changes": [
+        {
+          "id": "renderer.record_frame.lines",
+          "old": 3255,
+          "new": 3302
+        },
+        {
+          "id": "renderer.gpu_scene_cpp.lines",
+          "old": 6595,
+          "new": 6791
+        },
+        {
+          "id": "renderer.gpu_scene_h.lines",
+          "old": 1819,
+          "new": 1834
+        },
+        {
+          "id": "engine_view.main_cpp.lines",
+          "old": 7466,
+          "new": 7469
+        },
+        {
+          "id": "engine_view.run_view.lines",
+          "old": 3166,
+          "new": 3168
+        },
+        {
+          "id": "page:docs/subsystems/renderer.md",
+          "old": 956261,
+          "new": 967119
+        },
+        {
+          "id": "page:docs/subsystems/apps.md",
+          "old": 651618,
+          "new": 654032
+        },
+        {
+          "id": "page:docs/subsystems/gfx.md",
+          "old": 306295,
+          "new": 309129
+        },
+        {
+          "id": "page:docs/subsystems/flora.md",
+          "old": 217400,
+          "new": 222617
+        },
+        {
+          "id": "page:docs/subsystems/water.md",
+          "old": 143723,
+          "new": 164554
+        },
+        {
+          "id": "page:docs/subsystems/protocol.md",
+          "old": 114058,
+          "new": 114676
+        },
+        {
+          "id": "page:AGENTS.md",
+          "old": 70114,
+          "new": 72094
         }
       ]
     }
