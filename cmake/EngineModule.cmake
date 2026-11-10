@@ -376,19 +376,196 @@ function(engine_test_waits_for_gpu test)
   set_property(TEST ${test} APPEND PROPERTY LABELS gpu)
 endfunction()
 
-#   engine_module_tests(NAME <name> SOURCES <file>... [DEPS <module>...] [PARTS <n>])
+#   _engine_test_parts(<name> <target> <parts> <labels> <opens_devices> <timeout>)
+# Registers one test executable as <parts> CTest tests, <name>.1 to <name>.<parts>, each running
+# only its own source files' cases (doctest's `--source-file=` filter). Called deferred, at the end
+# of the directory that declared the tests (cmake_language(DEFER), scheduled by
+# _engine_defer_test_parts), so that the deal reads the target's whole SOURCES — gfx adds most of
+# its test files with target_sources after engine_module_tests, and a file the deal never saw
+# would be a file whose cases no part runs.
+#
+# **The deal is by cost** (roadmap T77; docs/ci/what-to-run.md, "Parts dealt by cost"): the files
+# cmake/test-costs.txt gives seconds for go first, longest first, each to the part with the least
+# so far (longest-processing-time first, which is within a third of the best possible deal); the
+# files it does not name follow in name order, round the parts, which with an empty table is the
+# name-order deal every part had before the table. The filter is a wildcard over the whole path
+# the compiler saw, anchored at the separator before the basename — `*/<basename>` and
+# `*\<basename>`, since MSVC's __FILE__ says `..\..\domain\gfx\tests\x.cpp` — so gfx's
+# `deform_tests.cpp` does not also run `flora_deform_tests.cpp` (the unanchored `*<basename>` of
+# the first renderer parts refused such pairs instead, and gfx has three). Two files of one
+# basename in different directories are one entry, run by one part. Compiled sources only (.cpp,
+# .cc, .c): no test case lives in a header, and the count check in what-to-run.md is how a part
+# that lost one would be found.
+function(_engine_test_parts name target parts labels opens_devices timeout)
+  get_target_property(_sources ${target} SOURCES)
+  set(_names "")
+  foreach(_src IN LISTS _sources)
+    if(_src MATCHES "\\.(cpp|cc|c)$")
+      get_filename_component(_base "${_src}" NAME)
+      list(APPEND _names "${_base}")
+    endif()
+  endforeach()
+  list(REMOVE_DUPLICATES _names)
+  list(SORT _names)
+
+  # The costed files as "<seconds, zero-padded>|<name>", so a descending string sort is a
+  # descending numeric one and equal costs fall back to the name.
+  set(_costed "")
+  set(_uncosted "")
+  foreach(_base IN LISTS _names)
+    get_property(_cost GLOBAL PROPERTY "ENGINE_TEST_COST:${name}:${_base}")
+    if("${_cost}" STREQUAL "")
+      list(APPEND _uncosted "${_base}")
+    else()
+      string(LENGTH "${_cost}" _digits)
+      set(_padded "${_cost}")
+      while(_digits LESS 9)
+        string(PREPEND _padded "0")
+        math(EXPR _digits "${_digits} + 1")
+      endwhile()
+      list(APPEND _costed "${_padded}|${_base}")
+    endif()
+  endforeach()
+  list(SORT _costed ORDER DESCENDING)
+
+  math(EXPR _last "${parts} - 1")
+  foreach(_k RANGE 0 ${_last})
+    set(_part_${_k} "")
+    set(_load_${_k} 0)
+  endforeach()
+  foreach(_entry IN LISTS _costed)
+    string(REPLACE "|" ";" _pair "${_entry}")
+    list(GET _pair 0 _cost)
+    list(GET _pair 1 _base)
+    math(EXPR _cost "${_cost} + 0")   # drops the padding
+    set(_best 0)
+    foreach(_k RANGE 1 ${_last})
+      if(_load_${_k} LESS _load_${_best})
+        set(_best ${_k})
+      endif()
+    endforeach()
+    list(APPEND _part_${_best} "*/${_base}" "*\\${_base}")
+    math(EXPR _load_${_best} "${_load_${_best}} + ${_cost}")
+  endforeach()
+  set(_i 0)
+  foreach(_base IN LISTS _uncosted)
+    math(EXPR _k "${_i} % ${parts}")
+    list(APPEND _part_${_k} "*/${_base}" "*\\${_base}")
+    math(EXPR _i "${_i} + 1")
+  endforeach()
+
+  foreach(_k RANGE 0 ${_last})
+    if(NOT _part_${_k})
+      continue()
+    endif()
+    math(EXPR _part "${_k} + 1")
+    set(_test ${name}.${_part})
+    string(JOIN "," _filter_arg ${_part_${_k}})
+    add_test(NAME ${_test} COMMAND ${target} --duration=true "--source-file=${_filter_arg}")
+    set_tests_properties(${_test} PROPERTIES LABELS "${labels}")
+    if(NOT "${timeout}" STREQUAL "")
+      set_tests_properties(${_test} PROPERTIES TIMEOUT ${timeout})
+    endif()
+    if(opens_devices)
+      engine_test_waits_for_gpu(${_test})
+    endif()
+  endforeach()
+endfunction()
+
+#   _engine_defer_test_parts(<name> <target> <parts> <labels> <opens_devices> <timeout>)
+# Schedules _engine_test_parts for the end of the calling directory. The values are written into
+# the deferred call now: a deferred call evaluates its arguments when it runs, in the directory's
+# scope, where the caller's locals no longer exist. A bracket argument keeps the labels' semicolons
+# as they are, so the list arrives as one argument and is a list again.
+function(_engine_defer_test_parts name target parts labels opens_devices timeout)
+  cmake_language(EVAL CODE
+    "cmake_language(DEFER CALL _engine_test_parts [[${name}]] [[${target}]] [[${parts}]] [[${labels}]] [[${opens_devices}]] [[${timeout}]])")
+endfunction()
+
+#   _engine_check_config_invariant(<name>)
+# The proof behind CONFIG_INVARIANT (engine_module_tests, below): the module's library is the same
+# code in every configuration, so its GPU cases need to run in one configuration only, and the
+# off-configurations may skip them (`tools/dev.ps1 test -SkipInvariantGpu`, docs/ci/what-to-run.md,
+# "The off-configurations' GPU cases"). The module is not a capability and links none
+# (engine_module refuses that), so the one way its library could still differ is a capability
+# conditional in its own CMakeLists.txt: `if(TARGET engine::<x>)`, ENGINE_WITH_<X> or
+# ENGINE_MINIMAL around something that is not its tests. Every line inside such a block must name
+# the tests — `_tests` (the test target, a list of test files) or a `tests/` path — or be a
+# comment, a blank line, flow control or a closing parenthesis; anything else stops the configure.
+# The C++ half (a preprocessor conditional on those names in the module's sources) is the
+# `config-invariant-conditional` rule of tools/lint.ps1.
+function(_engine_check_config_invariant name)
+  set(_file "${CMAKE_CURRENT_SOURCE_DIR}/CMakeLists.txt")
+  # Read whole and split here rather than with file(STRINGS), which drops empty lines (the line
+  # numbers in a message would drift) and splits a line at a non-ASCII byte (an em dash in a
+  # comment became a line of its own). A semicolon or a square bracket would mean something to
+  # CMake's lists, so each becomes a space first; nothing below looks for one.
+  file(READ "${_file}" _content)
+  string(REGEX REPLACE "[][;]" " " _content "${_content}")
+  string(REPLACE "\r" "" _content "${_content}")
+  string(REPLACE "\n" ";" _lines "${_content}")
+  set(_stack "")
+  set(_n 0)
+  foreach(_raw IN LISTS _lines)
+    math(EXPR _n "${_n} + 1")
+    string(REGEX REPLACE "#.*$" "" _line "${_raw}")
+    string(STRIP "${_line}" _line)
+    if(_line STREQUAL "")
+      continue()
+    endif()
+    set(_capability FALSE)
+    if(_line MATCHES "TARGET[ \t]+engine::|ENGINE_WITH_|ENGINE_MINIMAL")
+      set(_capability TRUE)
+    endif()
+    if(_line MATCHES "^if[ \t]*\\(")
+      list(APPEND _stack ${_capability})
+      continue()
+    elseif(_line MATCHES "^(elseif|else)[ \t]*\\(")
+      if(_capability AND _stack)
+        list(POP_BACK _stack)
+        list(APPEND _stack TRUE)
+      endif()
+      continue()
+    elseif(_line MATCHES "^endif[ \t]*\\(")
+      if(_stack)
+        list(POP_BACK _stack)
+      endif()
+      continue()
+    elseif(_line MATCHES "^(foreach|endforeach|while|endwhile|\\))[ \t]*(\\(|$)")
+      continue()
+    endif()
+    if(NOT "TRUE" IN_LIST _stack)
+      if(_line MATCHES "ENGINE_WITH_|ENGINE_MINIMAL")
+        message(FATAL_ERROR "engine_module_tests(${name} CONFIG_INVARIANT): ${_file}:${_n} names a capability switch outside its tests; a module whose GPU cases run in one configuration only is the same code in all of them (docs/ci/what-to-run.md, \"The off-configurations' GPU cases\")\n    ${_raw}")
+      endif()
+      continue()
+    endif()
+    if(NOT _line MATCHES "_tests|tests/")
+      message(FATAL_ERROR "engine_module_tests(${name} CONFIG_INVARIANT): ${_file}:${_n} is inside a capability conditional and is not about the module's tests; a module whose GPU cases run in one configuration only is the same code in all of them, so drop CONFIG_INVARIANT or move the conditional to the tests (docs/ci/what-to-run.md, \"The off-configurations' GPU cases\")\n    ${_raw}")
+    endif()
+  endforeach()
+endfunction()
+
+#   engine_module_tests(NAME <name> SOURCES <file>... [DEPS <module>...] [PARTS <n>]
+#                       [CONFIG_INVARIANT])
 # DEPS are test-only dependencies (other engine modules the tests use but the module does not).
-# PARTS registers the one executable as <n> CTest tests, <name>.1 to <name>.<n>, the source files
-# dealt round them in name order and each part running only its own files' cases (doctest's
-# `--source-file=` filter), for a suite that has outgrown one test's GPU work budget on the slowest
-# card — the renderer on the Titan Xp, 2026-11-09: 6,389 s on gate b56, past the 9,000 s ceiling on
-# b57 — so that it runs as parts that each fit instead of a third raise of the budget
-# (docs/ci/remote-linux.md). `-Filter <name>` and `-Affected` still select every part: the affected
-# filter admits a dotted suffix (tools/lib/Affected.psm1), and the gate's reruns name a part.
+# PARTS registers the one executable as <n> CTest tests, <name>.1 to <name>.<n>, each running only
+# its own files' cases (_engine_test_parts above: dealt by cost, the rest by name), for a suite
+# that has outgrown one test's GPU work budget on the slowest card — the renderer on the Titan Xp,
+# 2026-11-09: 6,389 s on gate b56, past the 9,000 s ceiling on b57 — so that it runs as parts that
+# each fit instead of a third raise of the budget (docs/ci/remote-linux.md). `-Filter <name>` and
+# `-Affected` still select every part: the affected filter admits a dotted suffix
+# (tools/lib/Affected.psm1), and the gate's reruns name a part.
+# CONFIG_INVARIANT labels the tests `config_invariant`: the module's library is the same code in
+# every configuration (checked here, _engine_check_config_invariant, and by the lint), so an
+# off-configuration may run its tests with no GPU and leave the GPU cases to the all-on suite
+# (`tools/dev.ps1 test -SkipInvariantGpu`).
+# Every test runs with doctest's `--duration=true`, one line of seconds a case in the log, which is
+# what cmake/test-costs.txt is made from (tools/test-costs.ps1).
 function(engine_module_tests)
   set(_one NAME PARTS)
   set(_multi SOURCES DEPS)
-  cmake_parse_arguments(ET "" "${_one}" "${_multi}" ${ARGN})
+  cmake_parse_arguments(ET "CONFIG_INVARIANT" "${_one}" "${_multi}" ${ARGN})
   if(NOT ENGINE_BUILD_TESTS)
     return()
   endif()
@@ -416,56 +593,16 @@ function(engine_module_tests)
   target_link_libraries(${_test_target} PRIVATE engine::${ET_NAME} ${_extra} engine_test_main)
   engine_apply_warnings(${_test_target})
   _engine_can_wait_for_gpu(_opens_devices ${ET_NAME} ${ET_DEPS})
+  set(_labels "unit;${ET_NAME}")
+  if(ET_CONFIG_INVARIANT)
+    _engine_check_config_invariant(${ET_NAME})
+    list(APPEND _labels config_invariant)
+  endif()
   if(ET_PARTS AND ET_PARTS GREATER 1)
-    # The files by name, so a part's membership depends on the list and not on its order in the
-    # CMakeLists. The filter is a wildcard over the whole path the compiler saw, `*<basename>`, so a
-    # basename that ends another's would run that file in two parts: refused.
-    set(_names "")
-    foreach(_src IN LISTS ET_SOURCES)
-      get_filename_component(_base "${_src}" NAME)
-      list(APPEND _names "${_base}")
-    endforeach()
-    list(SORT _names)
-    foreach(_a IN LISTS _names)
-      foreach(_b IN LISTS _names)
-        if(NOT _a STREQUAL _b)
-          string(LENGTH "${_a}" _la)
-          string(LENGTH "${_b}" _lb)
-          if(_lb GREATER _la)
-            math(EXPR _from "${_lb} - ${_la}")
-            string(SUBSTRING "${_b}" ${_from} -1 _tail)
-            if(_tail STREQUAL _a)
-              message(FATAL_ERROR "engine_module_tests(${ET_NAME}): PARTS filters by file name, and '${_b}' ends in '${_a}'")
-            endif()
-          endif()
-        endif()
-      endforeach()
-    endforeach()
-    list(LENGTH _names _count)
-    math(EXPR _last "${ET_PARTS} - 1")
-    foreach(_k RANGE 0 ${_last})
-      set(_filters "")
-      set(_i ${_k})
-      while(_i LESS _count)
-        list(GET _names ${_i} _base)
-        list(APPEND _filters "*${_base}")
-        math(EXPR _i "${_i} + ${ET_PARTS}")
-      endwhile()
-      if(NOT _filters)
-        continue()
-      endif()
-      math(EXPR _part "${_k} + 1")
-      set(_test ${ET_NAME}.${_part})
-      string(JOIN "," _filter_arg ${_filters})
-      add_test(NAME ${_test} COMMAND ${_test_target} "--source-file=${_filter_arg}")
-      set_tests_properties(${_test} PROPERTIES LABELS "unit;${ET_NAME}")
-      if(_opens_devices)
-        engine_test_waits_for_gpu(${_test})
-      endif()
-    endforeach()
+    _engine_defer_test_parts(${ET_NAME} ${_test_target} ${ET_PARTS} "${_labels}" "${_opens_devices}" "")
   else()
-    add_test(NAME ${ET_NAME} COMMAND ${_test_target})
-    set_tests_properties(${ET_NAME} PROPERTIES LABELS "unit;${ET_NAME}")
+    add_test(NAME ${ET_NAME} COMMAND ${_test_target} --duration=true)
+    set_tests_properties(${ET_NAME} PROPERTIES LABELS "${_labels}")
     if(_opens_devices)
       engine_test_waits_for_gpu(${ET_NAME})
     endif()
@@ -544,14 +681,18 @@ function(engine_finalize_modules)
   message(STATUS "engine modules: wrote ${CMAKE_BINARY_DIR}/modules.json")
 endfunction()
 
-#   engine_app(NAME <name> OUTPUT <exe> SOURCES <file>... [DEPS <module>...] [E2E_TESTS <file>...])
+#   engine_app(NAME <name> OUTPUT <exe> SOURCES <file>... [DEPS <module>...] [E2E_TESTS <file>...]
+#              [E2E_PARTS <n>])
 #
 # An executable in the apps layer: engine_<name> built as <exe> into ${CMAKE_BINARY_DIR}/bin,
 # recorded in modules.json, linked against the named modules. E2E_TESTS builds
 # engine_<name>_tests (linked against the same modules, core/platform, and the test main, not
 # against the app) with ENGINE_APP_PATH defined to the built executable, and registers it.
+# E2E_PARTS registers it as <n> tests, <name>.1 to <name>.<n>, dealt as engine_module_tests' PARTS
+# are (_engine_test_parts): engine_view's run was the longest single test on the machine, 1,536 s
+# in msvc-debug and 1,941 s in msvc-release on gate b57 (docs/ci/what-to-run.md).
 function(engine_app)
-  set(_one NAME OUTPUT)
+  set(_one NAME OUTPUT E2E_PARTS)
   set(_multi SOURCES DEPS E2E_TESTS)
   cmake_parse_arguments(EA "" "${_one}" "${_multi}" ${ARGN})
   if(NOT EA_NAME OR NOT EA_SOURCES)
@@ -612,7 +753,16 @@ function(engine_app)
     target_compile_definitions(${_test_target} PRIVATE ENGINE_APP_PATH="$<TARGET_FILE:${_target}>")
     add_dependencies(${_test_target} ${_target})
     engine_apply_warnings(${_test_target})
-    add_test(NAME ${EA_NAME} COMMAND ${_test_target})
+    _engine_can_wait_for_gpu(_opens_devices ${EA_DEPS})
+    if(EA_E2E_PARTS AND EA_E2E_PARTS GREATER 1)
+      # Every part carries what the one test did below: the labels, the lock, the timeout. The
+      # lock is a property set after the deal (_engine_test_parts sets labels and timeout), so it
+      # rides on the e2e label in EngineTesting.cmake's finalize, as the GPU one rides on `gpu`.
+      _engine_defer_test_parts(${EA_NAME} ${_test_target} ${EA_E2E_PARTS} "unit;e2e;${EA_NAME}"
+                               "${_opens_devices}" ${ENGINE_TEST_WORK_TIMEOUT_S})
+      return()
+    endif()
+    add_test(NAME ${EA_NAME} COMMAND ${_test_target} --duration=true)
     # End-to-end apps open windows, GPU devices, and input devices, and a machine has one of
     # each: RESOURCE_LOCK keeps two of these tests from running at the same time. What it does
     # *not* do is order this ctest invocation against another one — a second build tree, a
@@ -632,7 +782,6 @@ function(engine_app)
     # top of the ten minutes (engine_test_waits_for_gpu above).
     set_tests_properties(${EA_NAME} PROPERTIES LABELS "unit;e2e;${EA_NAME}"
       RESOURCE_LOCK "e2e_apps" TIMEOUT ${ENGINE_TEST_WORK_TIMEOUT_S})
-    _engine_can_wait_for_gpu(_opens_devices ${EA_DEPS})
     if(_opens_devices)
       engine_test_waits_for_gpu(${EA_NAME})
     endif()

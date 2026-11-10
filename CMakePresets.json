@@ -152,15 +152,15 @@
     { "name": "msvc-minimal", "configurePreset": "msvc-minimal", "output": { "outputOnFailure": true } },
     { "name": "msvc-no-ecs", "configurePreset": "msvc-no-ecs", "output": { "outputOnFailure": true } },
     { "name": "clangcl-debug", "configurePreset": "clangcl-debug", "output": { "outputOnFailure": true } },
-    { "name": "linux-clang-debug", "configurePreset": "linux-clang-debug", "output": { "outputOnFailure": true } },
+    { "name": "linux-clang-debug", "configurePreset": "linux-clang-debug", "output": { "outputOnFailure": true }, "execution": { "jobs": 8 } },
     { "name": "linux-clang-debug-v2", "configurePreset": "linux-clang-debug-v2", "output": { "outputOnFailure": true } },
     { "name": "linux-clang-asan", "configurePreset": "linux-clang-asan", "output": { "outputOnFailure": true },
       "environment": { "ASAN_OPTIONS": "detect_leaks=1:check_initialization_order=1", "UBSAN_OPTIONS": "print_stacktrace=1" } },
-    { "name": "linux-clang-minimal", "configurePreset": "linux-clang-minimal", "output": { "outputOnFailure": true } },
-    { "name": "linux-clang-no-ecs", "configurePreset": "linux-clang-no-ecs", "output": { "outputOnFailure": true } },
-    { "name": "linux-gcc-release", "configurePreset": "linux-gcc-release", "output": { "outputOnFailure": true } },
+    { "name": "linux-clang-minimal", "configurePreset": "linux-clang-minimal", "output": { "outputOnFailure": true }, "execution": { "jobs": 8 } },
+    { "name": "linux-clang-no-ecs", "configurePreset": "linux-clang-no-ecs", "output": { "outputOnFailure": true }, "execution": { "jobs": 8 } },
+    { "name": "linux-gcc-release", "configurePreset": "linux-gcc-release", "output": { "outputOnFailure": true }, "execution": { "jobs": 8 } },
     { "name": "linux-gcc-release-v2", "configurePreset": "linux-gcc-release-v2", "output": { "outputOnFailure": true } },
-    { "name": "linux-server", "configurePreset": "linux-server", "output": { "outputOnFailure": true } },
-    { "name": "linux-server-debug", "configurePreset": "linux-server-debug", "output": { "outputOnFailure": true } }
+    { "name": "linux-server", "configurePreset": "linux-server", "output": { "outputOnFailure": true }, "execution": { "jobs": 4 } },
+    { "name": "linux-server-debug", "configurePreset": "linux-server-debug", "output": { "outputOnFailure": true }, "execution": { "jobs": 4 } }
   ]
 }

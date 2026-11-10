@@ -380,7 +380,11 @@ ceiling; the budget stays at 7,200. The second run, as parts and without stage 3
 3,306 and 1,107 s (6,689 s together, a twentieth over b56; 1,164 s on the RTX 5090 in `msvc-debug`
 against 996), so the batch's own new cases (G136's hand-off, G137's sward) were not what ran it out:
 a slow day on a suite at seven-tenths of its ceiling was. The deal is by name and blind to cost,
-which is why the third part holds half of the suite there. Since the same day the server leg **runs beside the merge and does not hold it** (the owner, 2026-11-09; [what to run](what-to-run.md)): the merge goes ahead on the Windows half and the containers, the server's verdict follows, and a red one opens a fix row at the top of the next batch. The suite grows with every batch and the card does not;
+which is why the third part holds half of the suite there; since T77 it is by `cmake/test-costs.txt`'s
+seconds where the table has them, and the table's rows are to come from this server's log, the
+slowest card being the binding one ([parts dealt by cost](what-to-run.md#parts-dealt-by-cost)). The
+server's preset runs four tests at once since T77 (`execution.jobs`), its GPU tests still one at a
+time ([jobs](what-to-run.md#jobs)). Since the same day the server leg **runs beside the merge and does not hold it** (the owner, 2026-11-09; [what to run](what-to-run.md)): the merge goes ahead on the Windows half and the containers, the server's verdict follows, and a red one opens a fix row at the top of the next batch. The suite grows with every batch and the card does not;
 splitting it into parts CTest runs side by side is the next answer, not a third raise.
 
 **Disk: 2.1 GB for one preset, 3.6 GB for both** — checkout and build trees 1.5 GB, downloaded

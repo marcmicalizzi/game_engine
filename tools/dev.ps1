@@ -34,6 +34,19 @@
                 everything and says why (tools/lib/Affected.psm1). It is what a change is
                 tested with before it is handed over; the whole suites run at the merge.
                 It builds what those tests need and nothing else, as `build -Affected` does.
+                -Jobs <n> runs <n> tests at once (`ctest -j`); without it a Windows preset runs
+                one at a time, as it always has, and a Linux preset as its test preset says.
+                Two tests that can open a GPU device never run at once in one invocation (the
+                `gpu_device` resource lock on every test labelled `gpu`), so the second waits in
+                CTest and never in the GPU lock's half-hour budget; the wall-clock tests run
+                alone (cmake/EngineTesting.cmake, docs/ci/what-to-run.md "Jobs").
+                -SkipInvariantGpu, in an off-configuration (modules.json says minimal or names a
+                disabled capability), runs the tests labelled `config_invariant` (renderer, gfx:
+                libraries that are the same code in every configuration) with the Vulkan
+                drivers hidden, so their CPU cases run and their GPU cases skip as on a machine
+                with no GPU, and then everything else as usual. In an all-on configuration it
+                changes nothing. It is the merge gate's (docs/ci/what-to-run.md, "The
+                off-configurations' GPU cases").
     affected    Print what `test -Affected` would run, without building or running it.
     bench       Build, then run every engine_*_bench executable. -Filter is a glob on
                 benchmark names; JSON lines land in build/<preset>/bench/<module>.jsonl.
@@ -62,7 +75,9 @@ param(
   [switch]$Affected,
   [string]$Base = 'main',
   [switch]$Fresh,
-  [switch]$GpuLock
+  [switch]$GpuLock,
+  [ValidateRange(0, 64)][int]$Jobs = 0,
+  [switch]$SkipInvariantGpu
 )
 
 $ErrorActionPreference = 'Stop'
@@ -225,6 +240,29 @@ function Show-Affected {
   }
 }
 
+# Whether this preset's tree leaves a capability out (modules.json: `minimal`, or a disabled
+# capability), which is when -SkipInvariantGpu has anything to skip.
+function Test-OffConfiguration {
+  $graph = Join-Path $BuildDir 'modules.json'
+  if (-not (Test-Path -LiteralPath $graph)) { return $false }
+  $json = Get-Content -LiteralPath $graph -Raw | ConvertFrom-Json
+  return [bool]$json.minimal -or @($json.disabled_capabilities).Count -gt 0
+}
+
+# One `ctest` over the preset, streamed and kept: CTest lists the tests that did not run at the
+# end, and a test whose processes gave up waiting for the GPU lock (exit 75, SKIP_RETURN_CODE) is
+# one of them.
+function Invoke-CTest([string[]]$ctestArgs) {
+  Push-Location $Root
+  $lines = @()
+  try {
+    & ctest @ctestArgs | Tee-Object -Variable lines | Out-Host
+    $code = $LASTEXITCODE
+  }
+  finally { Pop-Location }
+  return [pscustomobject]@{ Code = $code; Lines = @($lines) }
+}
+
 function Invoke-Test {
   if ($Affected -and $Filter) { throw '-Affected chooses the tests; it cannot be combined with -Filter.' }
   Invoke-Build
@@ -236,17 +274,34 @@ function Invoke-Test {
     if (-not $result.All) { $args += @('-R', $result.Filter) }
   }
   if ($Filter) { $args += @('-R', $Filter) }
-  Push-Location $Root
-  # Streamed and kept: CTest lists the tests that did not run at the end, and a test whose
-  # processes gave up waiting for the GPU lock (exit 75, SKIP_RETURN_CODE) is one of them. It
-  # did not fail — it did not run — and a run that skipped one must not read as a pass either,
-  # so it ends with the same 75 and says which (docs/subsystems/gpu_lock.md, "Giving up").
-  $lines = @()
-  try {
-    & ctest @args | Tee-Object -Variable lines | Out-Host
-    $code = $LASTEXITCODE
+  # On the command line it wins over a test preset's `execution.jobs`; absent, the preset decides
+  # (the Windows presets name none, so an author's run is serial as before).
+  if ($Jobs -gt 0) { $args += @('-j', "$Jobs") }
+  # A run that skipped a test must not read as a pass, so it ends with 75 and says which
+  # (docs/subsystems/gpu_lock.md, "Giving up"); a failure in either run below fails the whole.
+  $runs = @()
+  if ($SkipInvariantGpu -and (Test-OffConfiguration)) {
+    # The libraries labelled `config_invariant` are the same code in every configuration (the
+    # configure-time check in engine_module_tests and the lint's config-invariant-conditional
+    # rule hold them to it), so their GPU cases ran in the all-on suite and need not run here.
+    # Their CPU cases still do: with no Vulkan driver to find, every GPU case skips the way it
+    # does on a hosted runner with no GPU, and no device means no GPU lock. First, so that the
+    # main run's LastTest.log is the one the build tree keeps.
+    Write-Host "-SkipInvariantGpu: $Preset leaves capabilities out; the config_invariant tests run with no Vulkan driver, then the rest" -ForegroundColor Cyan
+    $hide = @{ VK_DRIVER_FILES = (Join-Path $BuildDir 'no-vulkan-driver.json'); VK_ICD_FILENAMES = (Join-Path $BuildDir 'no-vulkan-driver.json');
+               VK_ADD_DRIVER_FILES = ''; ENGINE_GPU_LOCK_ON_DEVICE = '0' }
+    $saved = @{}
+    foreach ($k in $hide.Keys) { $saved[$k] = [Environment]::GetEnvironmentVariable($k); [Environment]::SetEnvironmentVariable($k, $(if ($hide[$k]) { $hide[$k] } else { $null })) }
+    try { $runs += Invoke-CTest ($args + @('-L', '^config_invariant$')) }
+    finally { foreach ($k in $saved.Keys) { [Environment]::SetEnvironmentVariable($k, $saved[$k]) } }
+    $runs += Invoke-CTest ($args + @('-LE', '^config_invariant$'))
+  } else {
+    if ($SkipInvariantGpu) { Write-Host "-SkipInvariantGpu: $Preset is an all-on configuration; nothing skipped" -ForegroundColor Cyan }
+    $runs += Invoke-CTest $args
   }
-  finally { Pop-Location }
+  $lines = @($runs | ForEach-Object { $_.Lines })
+  $code = @($runs | Where-Object { $_.Code -ne 0 } | Select-Object -First 1 | ForEach-Object { $_.Code })
+  $code = if ($code.Count -gt 0) { $code[0] } else { 0 }
   $skipped = @($lines | ForEach-Object { if ("$_" -match '^\s*\d+ - (\S+) \(Skipped\)') { $Matches[1] } })
   if ($code -ne 0) { throw "tests failed ($code)" }
   if ($skipped.Count -gt 0) {

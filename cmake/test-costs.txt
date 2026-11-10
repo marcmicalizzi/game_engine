@@ -1,0 +1,18 @@
+# Seconds per test source file, which a parted test's files are dealt by (roadmap T77;
+# docs/ci/what-to-run.md, "Parts dealt by cost"; _engine_test_parts in cmake/EngineModule.cmake).
+#
+#   <test> <basename> <whole seconds>
+#
+# <test> is the CTest name before its part number (renderer, gfx, engine_view), <basename> a source
+# file of its executable, the seconds its cases took in one measured run. A file this table does not
+# name is dealt by name order after the ones it does, so an empty table is the name-order deal.
+#
+# The slowest card is the binding one: the numbers come from the GPU server's run (the Titan Xp,
+# `tools/remote-build.ps1 -Preset linux-server -Test -Fetch <dir>`) where it has one, because a part
+# that fits there fits on the RTX 5090. Written by
+#
+#   tools/test-costs.ps1 -Log <LastTest.log> -BuildDir build/msvc-debug -Tests renderer,gfx,engine_view
+#
+# from a log whose tests ran with doctest's `--duration=true` (every module and end-to-end test does
+# since T77). Gate b57's logs predate that and hold no seconds per case or per file, so the table is
+# empty until a gate's run fills it: the first rows come from gate b58's server log.
