@@ -731,11 +731,8 @@ TEST_CASE("gi cache: the young cells' rays never pass the frame's budget") {
     const GiStats& gi = rig.renderer.stats().gi;
     CHECK(gi.rays <= k_budget);
     if (gi.samples == 0) continue;  // the stats of a frame before the first sample
-    // Stage 4: the shell's rays (its directions traced, and one more for each that met a surface)
-    // are in the budget's count too; what is left is the trickle's and the young cells'.
-    const u32 pixel_rays = gi.rays - gi.shell - gi.shell_hits;
-    most = std::max(most, pixel_rays);
-    least = std::min(least, pixel_rays);
+    most = std::max(most, gi.rays);
+    least = std::min(least, gi.rays);
   }
   MESSAGE("rays a frame: " << most << " at most, " << least << " at least, " << windows
                            << " trickle windows, a budget of " << k_budget);
