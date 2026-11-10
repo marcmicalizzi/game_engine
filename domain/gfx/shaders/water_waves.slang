@@ -271,6 +271,9 @@ WaterHeight water_height(WaterSurface* s, float2 p, WaterField f, float t, float
       for (uint i = 0; i < 4; ++i) {
         const float lambda = s->wavelength * k_water_length[i];
         const float a = s->amplitude * k_water_amplitude[i];
+        // A sine with no height or no length adds nothing — and must not add 0 * NaN: a surface
+        // with no waves (wavelength 0) is the rest pose to the bit (deform_tests.cpp, 2026-11-09).
+        if (!(a > 0.0) || !(lambda > 0.0)) continue;
         const float turn = s->chop * k_water_turn[i] * (0.5 * 3.14159265358979);
         const float c = cos(turn);
         const float sn = sin(turn);

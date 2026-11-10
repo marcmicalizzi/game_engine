@@ -493,6 +493,7 @@ inline double height(const gfx::WaterSurface& s, const Field& f, double x, doubl
     for (u32 i = 0; i < 4; ++i) {
       const double lambda = static_cast<double>(s.wavelength) * k_length[i];
       const double a = static_cast<double>(s.amplitude) * k_amplitude[i];
+      if (!(a > 0.0) || !(lambda > 0.0)) continue;  // water_waves.slang's guard: no 0 * NaN
       const double turn = static_cast<double>(s.chop) * k_turn[i] * (0.5 * 3.14159265358979);
       const double c = std::cos(turn), sn = std::sin(turn);
       const double dx =
