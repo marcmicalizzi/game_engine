@@ -1,85 +1,163 @@
 #pragma once
 
-// landform capability (ADR-0027; docs/plan/02-architecture.md §2.8,
-// docs/plan/05-simulation.md §5.15, docs/plan/11-performance-principles.md §11.10).
+// landform capability (ADR-0027; docs/subsystems/landform.md, docs/experiments/landform.md;
+// roadmap W95, stage A of G36's erosion and hydrology).
 //
-// TODO(landform): one paragraph — what this capability is, what it owns, what it does not do.
+// An offline solver: a region sketch (the lattice, what each edge is, outlets, uplift, how hard the
+// rock is, a seed, the time and the step) becomes an eroded ground — an authored heightfield the
+// tile set builds as it is (`engine.terrain.heightfield/1`, whole millimetres) and, on the same
+// lattice, the fields the later solvers read: drainage area, receiver, slope, erosion rate and
+// fill. The model is the published one: Priority-Flood routing (Barnes, Lehman and Mulla 2014),
+// the stream-power law solved implicitly along the flow tree (Braun and Willett 2013) at n = 1
+// and m = 1/2, and hillslope diffusion with a critical slope (Roering, Kirchner and Dietrich
+// 1999). It owns no runtime state: nothing ticks, nothing is drawn, nothing is kept resident.
 //
-// Scaffolded by tools/new-capability.ps1. The module is additive by construction: nothing under
-// core/ or foundation/, the render graph, the scheduler, or another capability is edited to add
-// it, and ENGINE_WITH_LANDFORM=OFF (or ENGINE_MINIMAL=ON) removes it from the build
-// entirely. Each registration point below is either wired up or deliberately not needed, and
-// docs/subsystems/landform.md says which. The list is ADR-0027 decision 2.
+// The same bytes from every toolchain and at any thread count: every decision is IEEE `+ - * /`,
+// one correctly rounded square root and integers, the flood's order is a total order on
+// (height, cell index), and the job system runs only the loops whose points do not read each
+// other's results (landform.md, "The same bytes everywhere").
 //
-//   [x] schema types      schemas/landform.schema, engine_schema_library
-//   [ ] scheduler entry   the SystemDesc fields below, registered from src/landform.cpp
-//   [ ] render passes     gfx::RenderGraph::add_pass() from this system, never a graph edit
-//   [ ] derived data      a content-build step keyed by the asset property block it consumes
-//   [ ] protocol methods  only if agents or the editor drive it; rerun with -WithProtocol
-//   [ ] tunables          tunables::Int/Float/Bool/Enum at namespace scope, read outside hot loops
-//   [x] LOD policy        LandformSystem::lod_tier() (the observer function, plan 05 §5.4)
+// Additive by construction (ADR-0027 decision 2): ENGINE_WITH_LANDFORM=OFF or ENGINE_MINIMAL=ON
+// removes the module, its schema types, its tests and its bench, and `engine-content landform`
+// then says the capability is absent.
+//
+//   [x] schema types      schemas/landform.schema (the sketch, the field file's header)
+//   [-] scheduler entry   none: an offline solver has no tick
+//   [-] render passes     none
+//   [-] derived data      not yet a content-build step; `engine-content landform` is its host
+//   [-] protocol methods  none
+//   [-] tunables          none: the sketch carries every parameter, so a sketch is its result
+//   [-] LOD policy        none of its own: the tile set's far chain filters what it writes
 //   [x] determinism       k_determinism below
-//   [ ] zero cost unused  name the mechanism (plan 11 §11.10) on the docs page
-//   [x] docs, tests, size table
-//   [x] bench             bench/landform_bench.cpp
-//
-// The hot-path rules are unchanged (plan 11 §11.4): the scheduler reaches this system through a
-// constant-initialized table of function pointers, never a virtual interface, and no loop in the
-// engine asks at run time whether this capability is present — the linker already answered.
+//   [x] zero cost unused  nothing is registered and nothing runs unless a host calls solve()
+//   [x] docs, tests, size table, bench
 
 #include <core/base/types.h>
+#include <core/containers/vector.h>
 
 #include <schemas/landform.h>
+#include <string>
+#include <string_view>
+
+namespace engine::jobs {
+class JobSystem;
+}
 
 namespace engine::landform {
 
-// ---- the scheduler's registration table entry -------------------------------------------------
-//
-// These are SystemDesc's fields (ADR-0027). The tick scheduler does not exist yet — Phase 1 is
-// the renderer core — so they are documented constants here, and the commit that lands the
-// scheduler turns them into table fields without changing their meaning.
+/// "derived": the solver's output is content, built ahead and read by the tile set; it is never
+/// simulation state. Its bytes are nonetheless pinned across toolchains and thread counts.
+inline constexpr const char* k_determinism = "derived";
 
-/// Tick phase this system runs in (plan 05 §5.2): "input", "events_in", "lod", "systems",
-/// "physics", "post_physics", "events_out", "persist".
-inline constexpr const char* k_phase = "systems";
+/// Bumped whenever the same sketch would solve to different bytes; the field file records it.
+inline constexpr u32 k_solver_version = 1;
 
-/// Determinism stance (ADR-0010). "hashed": the state lives in the fixed-step tick, enters the
-/// sim hash, and replays exactly. "derived": output of the sim that is never read back into
-/// gameplay (GPU work, visuals). TODO(landform): decide, and say why on the docs page.
-inline constexpr const char* k_determinism = "hashed";
+inline constexpr std::string_view k_fields_format = "engine.landform.fields";
+inline constexpr u32 k_fields_version = 1;
 
-/// LOD tiers this system runs at, one bit per tier, bit 0 is LOD0 (ADR-0010). A system that runs
-/// at every tier is usually a system that has not thought about it.
-inline constexpr u32 k_lod_tiers = 0b0011u;
+/// A receiver code: the neighbour a point drains to, east first and then clockwise seen from above
+/// with +z down the page (east, south-east, south, south-west, west, north-west, north,
+/// north-east). `k_no_receiver` marks a held point, which drains out of the region.
+inline constexpr u8 k_no_receiver = 255;
+inline constexpr i32 k_receiver_dx[8] = {1, 1, 0, -1, -1, -1, 0, 1};
+inline constexpr i32 k_receiver_dz[8] = {0, 1, 1, 1, 0, -1, -1, -1};
 
-/// The capability's system. begin_tick() runs once before the parallel systems phase, tick()
-/// inside it, end_tick() once after. They are plain member functions reached through the
-/// registration table, so a tick costs no virtual dispatch, and a tick with no instances of this
-/// capability does not call them at all: the scheduler drops a system whose instance set is
-/// empty (plan 11 §11.10), which is what makes an unused capability free.
-struct LandformSystem {
-  /// Once per tick, before the parallel phase: take the tick index, size this tick's pools.
-  void begin_tick(u64 tick) noexcept;
+/// The filled surface's unit: 1/1024 mm, and the flood's epsilon is one of them.
+inline constexpr i64 k_fill_units_per_mm = 1024;
 
-  /// The per-tick work, over this capability's own instances only.
-  /// TODO(landform): this is the capability.
-  void tick(f32 dt) noexcept;
-
-  /// Once per tick, after the parallel phase: publish results, emit events.
-  void end_tick() noexcept;
-
-  /// The LOD tier for one instance given its observer score: the minimum over observers of
-  /// f(distance, importance, observer weight) (plan 05 §5.4, ADR-0010). Lower is nearer. The
-  /// hysteresis band belongs here, in the capability, not in the caller.
-  /// TODO(landform): the capability's real tiers and their bands.
-  static u32 lod_tier(f32 observer_score) noexcept;
-
-  u64 tick_index() const noexcept { return tick_; }
-  f32 elapsed() const noexcept { return elapsed_; }
-
- private:
-  u64 tick_ = 0;
-  f32 elapsed_ = 0.0f;
+/// A ground to start from: an `engine.terrain.heightfield/1` grid, as read.
+struct StartField {
+  u32 width = 0;
+  u32 height = 0;
+  i64 spacing_mm = 0;
+  i64 origin_x_mm = 0;
+  i64 origin_z_mm = 0;
+  f64 vertical_mm_per_unit = 1000.0;
+  Vector<f32> data;
 };
+
+/// A solved region. Every array is `width * height`, rows of x in order of z, on one lattice:
+/// point (i, j) stands at `origin + (i, j) * spacing`.
+struct Landform {
+  u32 width = 0;
+  u32 height = 0;
+  i64 spacing_mm = 0;
+  i64 origin_x_mm = 0;
+  i64 origin_z_mm = 0;
+  bool has_sea = false;
+  i64 sea_level_mm = 0;
+  u32 steps = 0;
+  i64 step_yr = 0;
+  /// What `route` takes to find these receivers again: the sketch's seed, salted.
+  u64 route_seed = 0;
+  /// The ground, whole millimetres.
+  Vector<i32> height_mm;
+  /// The cells that drain through the point, itself included (times spacing squared: the area).
+  Vector<u32> drainage_area;
+  /// The receiver code, or `k_no_receiver` at a held point.
+  Vector<u8> receiver;
+  /// The fall to the receiver over the distance to it, parts per million; zero or less where the
+  /// way out crosses a depression (the receiver is the filled surface's).
+  Vector<i32> slope;
+  /// What the last step removed, micrometres a year (zero for a run of no steps).
+  Vector<i32> erosion_rate;
+  /// How deep the point lies under its depression's spill, whole millimetres; zero on draining
+  /// ground.
+  Vector<u32> fill;
+};
+
+struct SolveOptions {
+  /// Null runs every loop on the calling thread. The result is the same bytes either way.
+  jobs::JobSystem* jobs = nullptr;
+};
+
+/// Every range the schema states, with a sentence naming the field that is outside one.
+bool validate_sketch(const Sketch& sketch, std::string& error);
+
+/// Solves `sketch`. `start` is the ground to refine when the sketch names one (the caller reads
+/// it), or null to start from the base level with the seed's roughness.
+bool solve(const Sketch& sketch, const StartField* start, const SolveOptions& options,
+           Landform& out, std::string& error);
+
+/// One step's parts, for tests and for a tool that routes a ground it did not solve: the flood,
+/// the receivers and the drainage area of `height_mm` with `held` points (one byte each, non-zero
+/// held) as its outlets. Fills `filled` (units of 1/1024 mm), `order` (the flood's pop order: a
+/// receiver before its donors), `receiver` and `area`. False when no point is held.
+bool route(u32 width, u32 height, const Vector<i32>& height_mm, const Vector<u8>& held, u64 seed,
+           jobs::JobSystem* jobs, Vector<i64>& filled, Vector<u32>& order, Vector<u8>& receiver,
+           Vector<u32>& area);
+
+// ---- files (src/files.cpp) ----------------------------------------------------------------------
+
+/// Reads a sketch and checks it; `start_path` is the starting heightfield's header resolved beside
+/// the sketch, empty when it names none.
+bool read_sketch(const std::string& json_path, Sketch& out, std::string& start_path,
+                 std::string& error);
+/// Reads an `engine.terrain.heightfield/1` header and its grid (the hash checked).
+bool read_start_field(const std::string& json_path, StartField& out, std::string& error);
+
+/// What `write_landform` wrote, paths as given.
+struct WrittenFiles {
+  std::string heightfield;  // <dir>/<name>.json, its grid <name>.f32 beside it
+  std::string fields;       // <dir>/<name>.fields.json, each field's grid beside it
+};
+
+/// Writes the heightfield (`vertical_mm_per_unit` 1: each float a whole millimetre, exact below
+/// 16,777 m) and the field file into `dir`.
+bool write_landform(const Landform& land, const Sketch& sketch, const std::string& dir,
+                    std::string_view name, WrittenFiles& out, std::string& error);
+
+/// The field file's header, checked against this build's format and version.
+bool read_fields(const std::string& json_path, Fields& out, std::string& error);
+/// A window of one field: points [x0, x0 + w) by [z0, z0 + h) of the lattice, rows of x in order
+/// of z, into `out` (w * h values of the field's type; `out_bytes` must be exactly that). A window
+/// that leaves the lattice is refused: the fields hold nothing past the region's edge.
+bool read_field_window(const std::string& json_path, const Fields& header, std::string_view field,
+                       u32 x0, u32 z0, u32 w, u32 h, void* out, usize out_bytes,
+                       std::string& error);
+
+/// A shaded relief for a person to look at: RGBA8, `width * height * 4`, lit from the north-west
+/// at 45 degrees, the sea tinted, and with `drainage` the channels drawn by their area.
+void shaded_relief(const Landform& land, bool drainage, Vector<u8>& rgba);
 
 }  // namespace engine::landform

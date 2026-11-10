@@ -1,18 +1,205 @@
-// landform components and events (ADR-0007, ADR-0027). The capability's own types live with the
-// capability, so adding them touches no shared file, and ENGINE_WITH_LANDFORM=OFF takes them out of
-// the build with everything else it owns.
+// The landform capability's types (ADR-0007, ADR-0027; docs/subsystems/landform.md): the region
+// sketch the solver reads and the header of the fields it writes beside the heightfield.
+// ENGINE_WITH_LANDFORM=OFF takes them out of the build with everything else the capability owns.
 namespace engine.landform
 
-/// TODO(landform): the component that makes an entity participate in this capability. An entity
-/// without it costs nothing: no component, no instance, no work (plan 11 §11.10).
-struct Landform @version(1) @kind(component) {
-  /// TODO(landform): replace with the capability's real fields.
-  enabled: bool = true
+/// What a side of the region is (landform.md, "The borders").
+enum EdgeKind : u8 {
+  /// Its points are held at the base level and are outlets: rivers leave across it.
+  Open
+  /// Nothing crosses it: a divide another region shares.
+  Closed
+  /// The sea lies along it: its points are held at the sea bed's depth and are outlets.
+  Sea
 }
 
-/// TODO(landform): what this capability tells the rest of the world about. Gameplay-relevant events
-/// are hashed and replay (ADR-0010).
-struct LandformEvent @version(1) @kind(event) {
-  entity: id128
-  tick: u64 = 0
+/// The four sides. West is -x, east +x, north -z, south +z (the engine's north is -z).
+struct Edges @version(1) {
+  west: EdgeKind = Open
+  east: EdgeKind = Open
+  north: EdgeKind = Open
+  south: EdgeKind = Open
+}
+
+/// The sea: a level rivers cut to and no lower, and a bed that is ground like any other (it
+/// diffuses and holds the critical slope). With no starting heightfield the bed falls from the
+/// level, `shelf_m` in from a sea edge, to `depth_m` below it at the edge.
+struct Sea @version(1) {
+  level_m: f64 = 0
+  /// 0 to 1,000,000 m.
+  shelf_m: f64 = 2000
+  /// 0 to 11,000 m.
+  depth_m: f64 = 200
+}
+
+/// A point in the world's frame, metres.
+struct Point @version(1) {
+  x: f64 @unit(m)
+  z: f64 @unit(m)
+}
+
+/// A point held at a level, anywhere in the lattice: a lake's sill, a river leaving through a
+/// closed edge. The nearest lattice point is the one held.
+struct Outlet @version(1) {
+  at: Point
+  level_m: f64 @unit(m)
+}
+
+/// Uplift along a line: `rate_mm_per_yr` on the line, falling to nothing `reach_m` from it as
+/// (1 - (r / reach)^2)^2. Where ridges overlap the largest counts.
+struct Ridge @version(1) {
+  /// Two points or more.
+  points: Point[]
+  /// 0 to 100 mm/yr.
+  rate_mm_per_yr: f64 = 1
+  /// 1 m to 1,000 km.
+  reach_m: f64 = 4000
+}
+
+/// Uplift as a coarse grid over the region, corner to corner, read bilinearly: `width` by `height`
+/// rates, rows of x in order of z.
+struct UpliftRaster @version(1) {
+  /// 2 to 4,096 each.
+  width: u32
+  height: u32
+  /// `width * height` rates, each 0 to 100 mm/yr.
+  rates_mm_per_yr: f64[]
+}
+
+/// What raises the ground: the regional rate, plus the ridges' largest kernel, plus the raster.
+struct Uplift @version(1) {
+  /// 0 to 100 mm/yr.
+  regional_mm_per_yr: f64 = 0
+  ridges: Ridge[]
+  raster: UpliftRaster?
+}
+
+/// The rock at and below `top_m`, down to the band under it.
+struct Band @version(1) {
+  top_m: f64 @unit(m)
+  /// 0 (the sketch's erodibility) to 1 (the erodibility over the contrast, the resistant
+  /// critical slope): the world formation's ordering (experiments/formation-field.md).
+  resistance: f64 = 0
+}
+
+/// How hard the ground is. Uniform, or by elevation band (ascending `top_m`; above the last band
+/// the uniform value).
+struct Rock @version(1) {
+  /// 0 to 1.
+  resistance: f64 = 0
+  bands: Band[]
+  /// The erodibility at resistance 0 over the erodibility at resistance 1: 1 to 1,000.
+  contrast: f64 = 10
+  /// Seeded variation of the erodibility, as a fraction either way: 0 to 0.9.
+  variation: f64 = 0.25
+  /// The variation's wavelength, cells: 2 to 1,024.
+  variation_cells: u32 = 16
+}
+
+/// The region sketch `engine-content landform` reads (landform.md, "The sketch"). Every range is
+/// checked, and a sketch outside one is refused with a sentence naming the field.
+struct Sketch @version(1) {
+  /// Points a row (x) and rows (z), each 8 to 16,384.
+  width: u32
+  height: u32
+  /// Between points, whole millimetres, 100 to 1,000,000.
+  spacing_mm: i64 = 16000
+  /// Point (0, 0), millimetres from the world's origin, x and z: a whole number of spacings, so
+  /// the lattice is a window of the world's at its spacing, as the heightfield's is.
+  origin_mm: i64[2]
+  edges: Edges
+  /// What an open edge's points are held at; with a starting heightfield and no level, its own
+  /// heights there.
+  base_level_m: f64? @unit(m)
+  sea: Sea?
+  outlets: Outlet[]
+  /// Uplift is tapered to nothing over this distance from every open or sea edge, so the ground
+  /// meets the edge at its level and with no slope. Absent: 16 cells. 0 to 1,000 km.
+  border_reach_m: f64? @unit(m)
+  uplift: Uplift
+  rock: Rock
+  /// K of the stream-power law at m = 1/2 and n = 1, per year: 1e-8 to 1e-2
+  /// (experiments/landform.md has the published ranges).
+  erodibility_per_yr: f64 = 0.000005
+  /// The drainage area a channel begins at, m2: 0 to 1e9. A point draining less is hillslope,
+  /// lowered by diffusion and the critical slope alone. 0, the default, lets the rivers cut at
+  /// every point, which is what cuts gullies into a slope at the critical angle; a threshold
+  /// leaves such slopes smooth planes (landform.md, "The sketch").
+  channel_area_m2: f64 = 0
+  /// Hillslope diffusivity, m2/yr: 0 to 1.
+  diffusivity_m2_per_yr: f64 = 0.005
+  /// The gradient no slope stands above (rise over run): 0.2 to 4.
+  critical_slope: f64 = 0.9
+  /// The same for rock of resistance 1: `critical_slope` to 4.
+  critical_slope_resistant: f64 = 1.6
+  seed: u64 = 1
+  /// The starting plane's roughness, metres either way: 0 to 100.
+  roughness_m: f64 = 1
+  /// Whole years: the run is `duration_yr / step_yr` steps (rounded down), 0 to 100,000 of them.
+  /// No steps writes the starting ground's own fields.
+  duration_yr: i64 = 1000000
+  /// 1 to 10,000,000 years.
+  step_yr: i64 = 5000
+  /// An `engine.terrain.heightfield/1` header, relative to the sketch: the ground the run starts
+  /// from and refines. It must cover the lattice; it is read bilinearly, so it may be coarser.
+  start: string?
+}
+
+/// One field of the field file.
+struct FieldEntry @version(1) {
+  /// `drainage_area`, `receiver`, `slope`, `erosion_rate`, `fill`.
+  name: string
+  /// The raw grid, relative to the header: little-endian, rows of x in order of z, the
+  /// heightfield's own lattice.
+  file: string
+  /// `u8`, `u32` or `i32`.
+  type: string
+  /// What one unit is, in words (landform.md, "The field file").
+  unit: string
+  /// `hash_bytes` over the grid's bytes, 16 lower-case hex digits.
+  hash: string
+}
+
+/// The header of an `engine.terrain.heightfield/1` grid, field for field what
+/// `engine.tileset.HeightfieldHeader` is (docs/subsystems/tileset.md, "The source"): the solver
+/// writes one and reads a starting ground from one, and a capability may not depend on another
+/// (ADR-0027), so it carries the header's shape rather than the tile set's type. The tile set's
+/// own reader is what checks the two agree (`engine-content landform` reads its output back
+/// through it).
+struct TerrainHeightfield @version(1) {
+  format: string
+  version: u32 = 1
+  width: u32
+  height: u32
+  spacing_mm: i64 = 1000
+  origin_mm: i64[2]
+  vertical_mm_per_unit: f64 = 1000
+  data: string
+  data_hash: string
+}
+
+/// The header of the fields written beside a solved heightfield (landform.md, "The field file"):
+/// `engine.landform.fields/1`. Every field is on the heightfield's lattice, point for point.
+struct Fields @version(1) {
+  /// "engine.landform.fields".
+  format: string
+  version: u32 = 1
+  width: u32
+  height: u32
+  spacing_mm: i64
+  origin_mm: i64[2]
+  /// The sea's level, whole millimetres; absent, the region has no sea.
+  sea_level_mm: i64?
+  /// The heightfield's header, relative to this one.
+  heightfield: string
+  /// `hash_bytes` over the sketch's canonical JSON, 16 hex digits, and the solver's version: what
+  /// the fields were solved from.
+  sketch_hash: string
+  solver_version: u32
+  /// What `landform::route` takes to find the receivers again from the heights (the sketch's
+  /// seed, salted): the diagonal weights of the routing are hashed from it and the cell.
+  route_seed: u64
+  steps: u32
+  step_yr: i64
+  fields: FieldEntry[]
 }
