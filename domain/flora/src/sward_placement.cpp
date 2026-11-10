@@ -47,7 +47,7 @@ Quat patch_rotation(const scene_gen::Ground& ground, i64 x_mm, i64 z_mm, f64 cel
   const f64 slope = std::sqrt(gx * gx + gz * gz);
   if (!(slope > 1e-9)) return turn;
   const f64 cap = static_cast<f64>(max_tilt_deg) * 0.017453292519943295;
-  const f64 angle = std::min(std::atan(slope), cap);
+  const f64 angle = std::min(sward_atan(slope), cap);
   // The normal's horizontal part points downhill, -grad/|grad|; up x n = (n.z, 0, -n.x).
   const Vec3 axis{static_cast<f32>(-gz / slope), 0.0f, static_cast<f32>(gx / slope)};
   return quat_from_axis_angle(axis, static_cast<f32>(angle)) * turn;
@@ -139,7 +139,9 @@ u32 site_form(const Entry& entry, const scene_gen::Context& context, u32 table,
                  static_cast<f64>(2 * d) * 1000.0;
   const f64 gz = (g.surface_mm(x_mm, z_mm + d) - g.surface_mm(x_mm, z_mm - d)) /
                  static_cast<f64>(2 * d) * 1000.0;
-  site.slope_deg = std::atan(std::sqrt(gx * gx + gz * gz)) * 57.29577951308232;
+  // The C library's arctangent rounds differently on MSVC and glibc, and this slope decides the
+  // form: the sward's own, in plain arithmetic (sward.h).
+  site.slope_deg = sward_atan(std::sqrt(gx * gx + gz * gz)) * 57.29577951308232;
   if (rule.shade_layer != scene_gen::k_mask_no_layer)
     for (u32 ch = 0; ch < scene_gen::k_mask_channels; ++ch)
       if (((table >> (ch * 8)) & 255u) == rule.shade_layer)

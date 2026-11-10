@@ -5,6 +5,7 @@
 #include <foundation/image/decode.h>
 
 #include <algorithm>
+#include <bit>
 #include <cmath>
 #include <utility>
 
@@ -643,6 +644,60 @@ void fit_lods(assets::MeshData& mesh, TreeLevels& levels, u32 coarse_first,
   levels.levels[1].alpha_cutoff = best;
 }
 }  // namespace
+// fdlibm's s_atan.c (Sun Microsystems, 1993), the reference the FreeBSD and glibc arctangents
+// descend from: reduce |x| to |t| <= 7/16 against atan(0.5), atan(1), atan(1.5) or atan(inf), each
+// in a high and a low part, then an odd polynomial of degree 23. Its coefficients are written as
+// their bit patterns, as core/math/deterministic.h writes its own, so no decimal conversion stands
+// between the source and the constant. IEEE + - * / only and contraction off: the same bits on
+// every toolchain. fdlibm states an error under 1 ulp; the forms tests hold it to 2 against
+// `std::atan`.
+f64 sward_atan(f64 x) noexcept {
+  constexpr auto b = [](u64 v) { return std::bit_cast<f64>(v); };
+  static constexpr f64 hi[4] = {b(0x3FDDAC670561BB4Full), b(0x3FE921FB54442D18ull),
+                                b(0x3FEF730BD281F69Bull), b(0x3FF921FB54442D18ull)};
+  static constexpr f64 lo[4] = {b(0x3C7A2B7F222F65E2ull), b(0x3C81A62633145C07ull),
+                                b(0x3C7007887AF0CBBDull), b(0x3C91A62633145C07ull)};
+  static constexpr f64 at[11] = {
+      b(0x3FD555555555550Dull), b(0xBFC999999998EBC4ull), b(0x3FC24924920083FFull),
+      b(0xBFBC71C6FE231671ull), b(0x3FB745CDC54C206Eull), b(0xBFB3B0F2AF749A6Dull),
+      b(0x3FB10D66A0D03D51ull), b(0xBFADDE2D52DEFD9Aull), b(0x3FA97B4B24760DEBull),
+      b(0xBFA2B4442C6A6C2Full), b(0x3F90AD3AE322DA11ull)};
+  const u64 bits = std::bit_cast<u64>(x);
+  const bool negative = (bits >> 63) != 0;
+  const u32 ix = static_cast<u32>(bits >> 32) & 0x7fffffffu;
+  if (ix >= 0x44100000u) {  // |x| >= 2^66, or not a number
+    if (x != x) return x;
+    return negative ? -(hi[3] + lo[3]) : hi[3] + lo[3];
+  }
+  int id = -1;
+  f64 t = x;
+  if (ix < 0x3fdc0000u) {            // |x| < 7/16
+    if (ix < 0x3e400000u) return x;  // |x| < 2^-27: atan(x) rounds to x
+  } else {
+    t = negative ? -x : x;
+    if (ix < 0x3ff30000u) {    // |x| < 19/16
+      if (ix < 0x3fe60000u) {  // 7/16 <= |x| < 11/16
+        id = 0;
+        t = (2.0 * t - 1.0) / (2.0 + t);
+      } else {  // 11/16 <= |x| < 19/16
+        id = 1;
+        t = (t - 1.0) / (t + 1.0);
+      }
+    } else if (ix < 0x40038000u) {  // 19/16 <= |x| < 39/16
+      id = 2;
+      t = (t - 1.5) / (1.0 + 1.5 * t);
+    } else {  // 39/16 <= |x| < 2^66
+      id = 3;
+      t = -1.0 / t;
+    }
+  }
+  const f64 z = t * t, w = z * z;
+  const f64 s1 = z * (at[0] + w * (at[2] + w * (at[4] + w * (at[6] + w * (at[8] + w * at[10])))));
+  const f64 s2 = w * (at[1] + w * (at[3] + w * (at[5] + w * (at[7] + w * at[9]))));
+  if (id < 0) return t - t * (s1 + s2);
+  const f64 r = hi[id] - ((t * (s1 + s2) - lo[id]) - t);
+  return negative ? -r : r;
+}
 SwardForm sward_site_form(const SwardStature& r, const SwardSite& s) noexcept {
   const f64 lo = static_cast<f64>(r.slope_lo_deg), hi = static_cast<f64>(r.slope_hi_deg);
   const f64 steep =

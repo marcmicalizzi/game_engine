@@ -47,6 +47,11 @@ struct SwardSite {
   f64 wet = 0, slope_deg = 0, shade = 0;
   f64 noise_tall = .5, noise_tussock = .5;
 };
+// The arctangent the stature rule's slope and the patch's lean are measured with: fdlibm's, in
+// plain IEEE arithmetic, so a form decided on a slope is the same bits on every toolchain (a
+// builder asks the C library for no decision). Within 2 ulp of `std::atan` (the forms tests hold
+// it).
+f64 sward_atan(f64 x) noexcept;
 // The form the rule picks for a site: never `any`. A pure function of its arguments.
 SwardForm sward_site_form(const SwardStature& rule, const SwardSite& site) noexcept;
 // Value noise in [0, 1] at (x_m, z_m) over a lattice of scale_m, its nodes' values hashes of

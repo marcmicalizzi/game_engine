@@ -11,6 +11,7 @@
 #include <doctest/doctest.h>
 #include <test_paths.h>
 
+#include <bit>
 #include <cmath>
 #include <cstring>
 #include <fstream>
@@ -318,9 +319,9 @@ flora::SwardPlacements four_forms() {
 }
 u32 form_of(const scene_gen::Placement& placed) { return placed.mesh / 2 + 1; }
 
-// The ID, mesh and position of every placement: the arithmetic the pick and the jitter do is the same
-// bits on every toolchain, where the turn's sines and arctangents are the C library's (the tilt tests
-// in sward_tests.cpp hold the turns).
+// The ID, mesh and position of every placement: the arithmetic the pick and the jitter do is the
+// same bits on every toolchain, where the turn's sines are the C library's (the tilt tests in
+// sward_tests.cpp hold the turns; the tilt's arctangent is the sward's own since G138).
 u64 pin_of(const scene_gen::Placements& out) {
   u64 pin = k_hash_seed;
   for (const auto& placed : out.instances) {
@@ -458,6 +459,42 @@ TEST_CASE("sward forms: the forbs take their share of the patches, and the cap a
   none.forb_share = 0;
   Meadow bare(&flat, none);
   CHECK(bare.tile().instances.size() == 4096);
+}
+
+TEST_CASE("sward forms: the slope's arctangent is plain arithmetic within 2 ulp of std::atan") {
+  // G138: the slope that decides a form is the sward's own arctangent (fdlibm's, sward.cpp), not
+  // the C library's. Over the slopes a ground has (gradient 0..16, every 1/4096), the reduction's
+  // breakpoints and far out, both signs; the cross-compiler pin is in determinism_tests.cpp.
+  const auto ulps = [](f64 a, f64 b) {
+    const i64 ia = std::bit_cast<i64>(a), ib = std::bit_cast<i64>(b);
+    return static_cast<u64>(ia > ib ? ia - ib : ib - ia);
+  };
+  u64 worst = 0;
+  f64 worst_at = 0;
+  const auto check = [&](f64 x) {
+    for (const f64 v : {x, -x}) {
+      const u64 d = ulps(flora::sward_atan(v), std::atan(v));
+      if (d > worst) {
+        worst = d;
+        worst_at = v;
+      }
+    }
+  };
+  for (u32 i = 0; i <= 65536; ++i)
+    check(static_cast<f64>(i) * (1.0 / 4096.0));
+  for (const f64 edge : {7.0 / 16, 11.0 / 16, 19.0 / 16, 39.0 / 16})
+    for (i32 k = -64; k <= 64; ++k)
+      check(edge + static_cast<f64>(k) * 1e-15);
+  for (f64 x = 1e-30; x < 1e30; x *= 1.37)
+    check(x);
+  MESSAGE("largest difference from std::atan: ", worst, " ulp at ", worst_at);
+  CHECK(worst <= 2u);
+  CHECK(flora::sward_atan(0.0) == 0.0);
+  CHECK(flora::sward_atan(1.0) == std::atan(1.0));
+  CHECK(flora::sward_atan(1e300) == std::atan(1e300));
+  CHECK(flora::sward_atan(-1e300) == std::atan(-1e300));
+  const f64 nan = std::bit_cast<f64>(0x7ff8000000000000ull);
+  CHECK(flora::sward_atan(nan) != flora::sward_atan(nan));
 }
 
 TEST_CASE("sward forms: an entry mixing named and unnamed forms is refused") {

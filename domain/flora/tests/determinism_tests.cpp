@@ -1,13 +1,17 @@
 #include <core/hash/hash.h>
+#include <core/schema/json_reflect.h>
 #include <domain/flora/flora.h>
 #include <domain/flora/regeneration.h>
+#include <domain/flora/sward.h>
 #include <domain/flora/trees.h>
+#include <domain/scene_gen/scene_gen.h>
 #include <foundation/io/vfs.h>
 
 #include <doctest/doctest.h>
 #include <test_temp_dir.h>
 
 #include <algorithm>
+#include <bit>
 #include <cstring>
 
 using namespace engine;
@@ -146,6 +150,114 @@ TEST_CASE("ground plants: cooked sections and distance forms are deterministic")
         CHECK(c < data.cluster_material.size());
     }
   }
+}
+
+// ---- the sward's form decision (G138)
+// -------------------------------------------------------------
+//
+// The stature rule decides a cell's form from its slope, and the slope is an arctangent: these pin
+// the decision, taken on MSVC, so the Linux containers prove GCC and Clang at v3 and v2 decide the
+// same forms (flora.md, "Growth forms by site"; AGENTS.md: a builder asks the C library for no
+// decision).
+namespace {
+struct SwardMask {
+  scene_gen::GroundMaskInfo info;
+  Vector<u32> words;
+};
+const scene_gen::GroundMaskOps k_sward_masks{
+    .present = [](const void*, i32, i32) noexcept { return true; },
+    .info =
+        [](const void* state, scene_gen::GroundMaskInfo& out) noexcept {
+          out = static_cast<const SwardMask*>(state)->info;
+          return true;
+        },
+    .tile =
+        [](const void* state, i32, i32, std::span<u32> out) noexcept {
+          const auto& g = *static_cast<const SwardMask*>(state);
+          for (u32 i = 0; i < g.words.size(); ++i)
+            out[i] = g.words[i];
+          return true;
+        }};
+// A ground whose slope rises from 5 degrees at x = 0 to 40 at x = 64 m (a gradient linear in x), so
+// one tile's cells cross both of the rule's thresholds, 15 and 30 degrees, and every slope between.
+f64 sward_rising(const void*, i64 x_mm, i64) noexcept {
+  const f64 x = static_cast<f64>(x_mm) * .001;
+  return 0.08748866352592401 * x + 0.0058719606847762 * x * x;
+}
+flora::SwardFamily sward_family(flora::SwardForm form, const char* name) {
+  flora::SwardFamily f;
+  f.form = form;
+  f.near.push_back(std::string(name) + ".near.clusters");
+  f.cards.push_back(std::string(name) + ".cards.clusters");
+  return f;
+}
+// The ID, mesh (so the form) and position of every patch of one 64 m tile of 1 m cells, read whole.
+// The turn is left out: quat_from_axis_angle is the C library's sine (core/math), not a decision.
+u64 sward_pin(const flora::SwardPlacements& p) {
+  SwardMask ground;
+  ground.info.cells = 64;
+  ground.info.spacing_mm = 1000;
+  ground.info.palette = 2;
+  ground.info.tile_max_x = 0;
+  ground.info.tile_max_z = 0;
+  ground.words.resize(scene_gen::mask_tile_words(64), 0);
+  ground.words[0] = 0xffffff01u;  // the grass, palette 1, in channel 0
+  const u32 points = scene_gen::mask_points(64);
+  for (u32 i = 0; i < points; ++i)
+    ground.words[i + 1] = 255u;
+  scene_gen::Context ctx;
+  ctx.tile_size = 64;
+  ctx.world_seed = 1138;
+  ctx.ground.context = &ground;
+  ctx.ground.surface_fn = &sward_rising;
+  ctx.ground.masks_fn = [](const void* s, scene_gen::GroundMasks& out, std::string*) {
+    out = {&k_sward_masks, s};
+    return true;
+  };
+  const auto* gen = scene_gen::GeneratorRegistry::global().find_placement("sward");
+  REQUIRE(gen != nullptr);
+  void* state = nullptr;
+  std::string error;
+  REQUIRE_MESSAGE(gen->open(schema::to_json(p), ctx, &state, &error), error);
+  scene_gen::Placements out;
+  const bool ok = gen->tile(state, {0, 0}, ctx, out, &error);
+  gen->close(state);
+  REQUIRE_MESSAGE(ok, error);
+  REQUIRE(out.instances.size() == 4096u);
+  u64 pin = k_hash_seed;
+  u32 used = 0;
+  for (const auto& placed : out.instances) {
+    used |= 1u << placed.mesh;
+    pin = hash_combine(pin, placed.id);
+    pin = hash_combine(pin, placed.mesh);
+    pin = hash_combine(pin, hash_bytes(&placed.position, sizeof(placed.position)));
+  }
+  // A patch's mesh is 2 * (form - 1): the tile holds tall forms and short ones both.
+  CHECK((used & 0x5u) != 0u);
+  CHECK((used & 0x50u) != 0u);
+  return hash_combine(pin, out.instances.size());
+}
+flora::SwardPlacements sward_four_forms() {
+  flora::SwardPlacements p;
+  p.layer = 1;
+  p.families.push_back(sward_family(flora::SwardForm::tall_sod, "ts"));
+  p.families.push_back(sward_family(flora::SwardForm::tall_tussock, "tt"));
+  p.families.push_back(sward_family(flora::SwardForm::short_sod, "ss"));
+  p.families.push_back(sward_family(flora::SwardForm::short_tussock, "st"));
+  return p;
+}
+}  // namespace
+
+TEST_CASE("sward: the slope's arctangent and the forms it decides have a cross-compiler pin") {
+  // The arctangent's bits over the slopes a ground has and the reduction's four ranges.
+  u64 bits = k_hash_seed;
+  for (u32 i = 0; i <= 8192; ++i) {
+    const f64 x = static_cast<f64>(i) * (1.0 / 1024.0) + static_cast<f64>(i % 7) * 1e-9;
+    bits = hash_combine(bits, std::bit_cast<u64>(flora::sward_atan(x)));
+  }
+  CHECK(bits == 17562082363965585281ull);
+  // The forms of a tile whose slope crosses both thresholds, taken at G138's first commit.
+  CHECK(sward_pin(sward_four_forms()) == 8287572821809745209ull);
 }
 
 TEST_CASE("ground plants: the far fern retains every pinna and motion part") {

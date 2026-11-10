@@ -233,7 +233,7 @@ classes ascend to weight 1 on their own. Where it names them, the placement asks
 interpolates the density between that form's classes as before. Its inputs are what the scene already
 hands the generator: the mask's wetness at the cell (a water body's `wet_m` band) or a stream's
 nearness, `(1 − riparian_factor) / (1 − k_riparian_floor)`, whichever is larger; the slope from central
-differences at half a cell; the weight of the palette layer `shade_layer` where the paint has one
+differences at half a cell, its angle the sward's own arctangent (`sward_atan`, below); the weight of the palette layer `shade_layer` where the paint has one
 (255, the default, none — v36's paint has no such layer); and two value noises of the place on a
 `mosaic_m` lattice (20 m) seeded from the world's and the entry's seeds. Scores and defaults are in the
 grounding page. A form the entry has no family for falls to the nearest it has: the other habit, then
@@ -241,6 +241,22 @@ the other stature, then both. Everything is a function of the cell and the field
 request order never participate. **An entry that names no forms and no forbs places exactly what it
 did**: the family pick is the same arithmetic over a list that is every family (the forms tests pin
 eeb8077c's placements of a graded, sloped tile to the bit).
+
+**The slope is measured with no call to the C library** (G138; the 2026-11-09 review's defect 5). A
+form decided on a slope is placement output that has to be the same bits on every toolchain, and
+`std::atan` is the C library's, rounded differently by MSVC's UCRT and glibc in the last place, so a
+cell whose slope sits on a threshold could take one form on Windows and another on Linux. The
+stature rule's slope and the patch's lean (`patch_rotation`'s tilt) both take the angle from
+`sward_atan` (`sward.h`): fdlibm's arctangent (Sun, 1993; the reference glibc's and FreeBSD's descend
+from) written in `sward.cpp` from IEEE `+ − × ÷` with its coefficients as bit patterns, fdlibm's
+stated error under 1 ulp, measured at most 1 ulp from MSVC's `std::atan` over gradients 0–16, the
+reduction's breakpoints and 10⁻³⁰–10³⁰ (the forms tests hold it to 2). It replaced the C library's
+call without moving a pin: the forms tests' pins and the placement's tilt tests are unchanged, and
+`determinism_tests.cpp` pins the arctangent's bits and the forms of a tile whose slope rises from 5° to
+40° across both thresholds, taken on MSVC, so the Linux containers prove GCC and Clang at v3 and v2
+decide the same forms. The angle stays the sward's and not `core/math`'s, because a capability does
+not edit `core/`; a second caller would be the reason to move it there as `det::atan`. The patch's turn
+itself is still `quat_from_axis_angle`'s `std::sin`, which places no form and is outside the pins.
 
 **The meadow's forbs.** `forbs` (1–16 herb mesh paths; empty, the default, none) stand in a
 `forb_share` of the cells that drew a patch (0.33 a hay meadow's, 0.1 a pasture's, grounded on the
