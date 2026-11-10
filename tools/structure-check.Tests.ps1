@@ -120,8 +120,10 @@ struct Scene @version(2) {
   Set-FixtureFile $root 'docs/big.md' ("# Big`n" + ('x' * 293) + "`n") $eol
   Set-FixtureFile $root 'docs/small.md' ("# Small`n" + ('y' * 41) + "`n") $eol
   Set-FixtureFile $root 'build/huge.md' ('z' * 1000) $eol
+  Set-FixtureFile $root 'docs/ledger.md' ('l' * 5000) $eol
   $spec = [pscustomobject][ordered]@{
     format = 'engine.structure-ceilings.v1'; lower_after_percent = 10; page_default_bytes = 200
+    unpinned_pages = @([pscustomobject][ordered]@{ file = 'docs/ledger.md'; why = 'a ledger' })
     hubs = @(
       [pscustomobject][ordered]@{ id = 'frame.lines'; measure = 'function-lines'; file = 'systems/renderer/src/r.cpp'; function = 'Renderer::frame'; ceiling = 7 }
       [pscustomobject][ordered]@{ id = 'frame.add_pass'; measure = 'function-matches'; file = 'systems/renderer/src/r.cpp'; function = 'Renderer::frame'; pattern = '\badd_pass\s*[(<]'; ceiling = 2 }
@@ -225,6 +227,92 @@ try {
   $root = New-Fixture
   Remove-Item -LiteralPath (Join-Path $root 'schemas/scene.schema')
   [void](Test-Reports 'a rebaseline refuses while a hub is not there' $root 'not rebaselined, because a hub is not there' @{ Rebaseline = $true; Reason = 'x' })
+
+  Write-Host 'case: an unpinned page'
+  $root = New-Fixture
+  $r = Invoke-Check $root
+  Test-That 'is not measured: 5,000 bytes past a default of 200 and not reported' { $r.Code -eq 0 -and -not $r.Out.Contains('ledger') -and $r.Out.Contains('1 unpinned') }
+
+  Write-Host 'case: raise files, and two branches that merge'
+  # Branch A adds 2 lines to r.cpp and 10 bytes to big.md; branch B 3 lines and 20 bytes. The
+  # merged tree has both edits and both files, which is what git gives it with no conflict.
+  function Add-Growth([string]$root, [int]$lines, [int]$bytes, [string]$tag) {
+    $cpp = Join-Path $root 'systems/renderer/src/r.cpp'
+    $text = [IO.File]::ReadAllText($cpp); if (-not $text.EndsWith("`n")) { $text += "`n" }
+    for ($k = 0; $k -lt $lines; $k++) { $text += "// $tag $k`n" }
+    [IO.File]::WriteAllText($cpp, $text)
+    $md = Join-Path $root 'docs/big.md'
+    [IO.File]::WriteAllText($md, [IO.File]::ReadAllText($md) + ($tag.Substring(0, 1) * ($bytes - 1)) + "`n")
+  }
+  function Get-RaiseFile([string]$root, [string]$name) { return (Get-Content -LiteralPath (Join-Path $root "structure-raises/$name.json") -Raw | ConvertFrom-Json) }
+  $base = New-Fixture
+  Test-That 'the base passes' { (Invoke-Check $base).Code -eq 0 }
+  $a = New-Fixture; Add-Growth $a 2 10 'alpha'
+  [void](Test-Reports 'a branch that grows a hub fails, naming the command that records it' $a 'pwsh tools/structure-check.ps1 -Raise <row> -Reason "<why>"')
+  [void](Test-Reports 'a raise that grows refuses without a reason' $a 'r.lines: +2' @{ Raise = 'A' })
+  Test-That 'and writes nothing' { -not (Test-Path -LiteralPath (Join-Path $a 'structure-raises')) }
+  $r = Invoke-Check $a @{ Raise = 'A'; Reason = 'alpha grows'; By = 'tester'; Date = '2026-11-10' }
+  $fa = Get-RaiseFile $a 'A'
+  Test-That 'with a reason it writes the branch''s own file: reason, date, who, a signed delta per hub' {
+    $r.Code -eq 0 -and $fa.reason -eq 'alpha grows' -and $fa.date -eq '2026-11-10' -and $fa.by -eq 'tester' -and
+    $fa.deltas.'r.lines' -eq 2 -and $fa.deltas.'page:docs/big.md' -eq 10 -and @($fa.deltas.PSObject.Properties).Count -eq 2
+  }
+  Test-That 'and the branch passes, the ceilings file untouched' { (Invoke-Check $a).Code -eq 0 -and (Get-Ceiling $a 'r.lines') -eq 13 }
+  $b = New-Fixture; Add-Growth $b 3 20 'beta'
+  [void](Invoke-Check $b @{ Raise = 'B'; Reason = 'beta grows' })
+  Test-That 'the other branch alone passes with its own file' { (Invoke-Check $b).Code -eq 0 }
+  $m = New-Fixture; Add-Growth $m 2 10 'alpha'; Add-Growth $m 3 20 'beta'
+  New-Item -ItemType Directory -Force -Path (Join-Path $m 'structure-raises') | Out-Null
+  Copy-Item -LiteralPath (Join-Path $a 'structure-raises/A.json') -Destination (Join-Path $m 'structure-raises/A.json')
+  $r = Invoke-Check $m
+  [void](Test-Reports 'the merge with one branch''s file missing fails, naming the hub' $m 'r.lines: 18 lines, over its ceiling of 15')
+  Copy-Item -LiteralPath (Join-Path $b 'structure-raises/B.json') -Destination (Join-Path $m 'structure-raises/B.json')
+  $r = Invoke-Check $m
+  Test-That 'the two together pass with no edit: sizes add and so do deltas' { $r.Code -eq 0 -and $r.Out -match 'r\.lines\s+18 /\s+18 lines \(raises \+5\)' }
+
+  Write-Host 'case: one branch''s file, run again'
+  Add-Growth $a 1 1 'again'
+  [void](Invoke-Check $a @{ Raise = 'A' })
+  $fa = Get-RaiseFile $a 'A'
+  Test-That 'accumulates into the same file, keeping its reason' { $fa.deltas.'r.lines' -eq 3 -and $fa.deltas.'page:docs/big.md' -eq 11 -and $fa.reason -eq 'alpha grows' -and @(Get-ChildItem (Join-Path $a 'structure-raises')).Count -eq 1 }
+  Copy-Item -LiteralPath (Join-Path $base 'systems/renderer/src/r.cpp') -Destination (Join-Path $a 'systems/renderer/src/r.cpp') -Force
+  [void](Invoke-Check $a @{ Raise = 'A' })
+  $fa = Get-RaiseFile $a 'A'
+  Test-That 'and drops an entry that is back at zero' { -not $fa.deltas.PSObject.Properties['r.lines'] -and $fa.deltas.'page:docs/big.md' -eq 11 }
+  Copy-Item -LiteralPath (Join-Path $base 'docs/big.md') -Destination (Join-Path $a 'docs/big.md') -Force
+  [void](Invoke-Check $a @{ Raise = 'A' })
+  Test-That 'and the file with its last entry' { -not (Test-Path -LiteralPath (Join-Path $a 'structure-raises/A.json')) -and (Invoke-Check $a).Code -eq 0 }
+  [void](Test-Reports 'a name that differs from a file''s only in case is refused, on every host' $b "the directory spells 'b.json' as 'B.json'" @{ Raise = 'b'; Reason = 'x' })
+
+  Write-Host 'case: a hub that shrank'
+  $s = New-Fixture
+  Set-FixtureFile $s 'systems/renderer/src/r.cpp' (([IO.File]::ReadAllLines((Join-Path $s 'systems/renderer/src/r.cpp')) | Select-Object -First 10) -join "`n")
+  [void](Test-Reports 'fails against its effective ceiling' $s 'r.lines: 10 lines, 3 under its ceiling of 13')
+  $r = Invoke-Check $s @{ Raise = 'S' }
+  Test-That 'a file of negative deltas only needs no reason, and the branch passes' { $r.Code -eq 0 -and (Get-RaiseFile $s 'S').deltas.'r.lines' -eq -3 -and (Invoke-Check $s).Code -eq 0 }
+
+  Write-Host 'case: a raise file that is wrong'
+  $w = New-Fixture
+  New-Item -ItemType Directory -Force -Path (Join-Path $w 'structure-raises') | Out-Null
+  Set-FixtureFile $w 'structure-raises/W.json' '{ "format": "engine.structure-raise.v1", "name": "W", "reason": "", "deltas": { "r.lines": 4 } }'
+  [void](Test-Reports 'a positive delta with no reason fails' $w 'structure-raises/W.json: raises r.lines and gives no reason')
+  Set-FixtureFile $w 'structure-raises/W.json' '{ "format": "engine.structure-raise.v1", "name": "W", "reason": "typo", "deltas": { "r.line": 4 } }'
+  [void](Test-Reports 'a delta for no hub fails' $w "structure-raises/W.json: 'r.line' names no hub")
+  Set-FixtureFile $w 'structure-raises/W.json' '{ "format": "engine.structure-raise.v1", "name": "W", "reason": "", "deltas": { "page:docs/ledger.md": -1 } }'
+  [void](Test-Reports 'a delta for an unpinned page fails' $w "'page:docs/ledger.md' names no hub")
+
+  Write-Host 'case: the fold'
+  $r = Invoke-Check $m @{ Rebaseline = $true; Date = '2026-11-10'; By = 'coordinator' }
+  $spec = Get-Ceilings $m
+  Test-That 'needs no reason when the files cover every raise' { $r.Code -eq 0 -and (Get-Ceiling $m 'r.lines') -eq 18 -and (Get-Ceiling $m 'page:docs/big.md') -eq 330 }
+  Test-That 'moves each file''s name, reason and deltas into rebaselines' {
+    $rec = @($spec.rebaselines)[-1]
+    @($rec.folded).Count -eq 2 -and $rec.folded[0].name -eq 'A' -and $rec.folded[0].reason -eq 'alpha grows' -and $rec.folded[1].deltas.'r.lines' -eq 3 -and
+    @($rec.changes | Where-Object { $_.id -eq 'r.lines' -and $_.old -eq 13 -and $_.new -eq 18 }).Count -eq 1
+  }
+  Test-That 'deletes the files, and the tree passes' { @(Get-ChildItem (Join-Path $m 'structure-raises')).Count -eq 0 -and (Invoke-Check $m).Code -eq 0 }
+  $o = New-Fixture; Add-Growth $o 2 10 'alpha'
+  [void](Test-Reports 'refuses without a reason while a value is over its effective ceiling' $o 'r.lines: 13 -> 15' @{ Rebaseline = $true })
 } finally {
   foreach ($root in $roots) {
     if ($KeepTemp) { Write-Host "kept $root" } else { Remove-Item -Recurse -Force -LiteralPath $root -ErrorAction SilentlyContinue }

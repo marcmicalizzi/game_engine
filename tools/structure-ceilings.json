@@ -1,8 +1,14 @@
 {
   "format": "engine.structure-ceilings.v1",
-  "about": "Ceilings for the hub files every feature edits (docs/ci/structure-and-citations.md, \"Ceilings for structure\"). Checked by tools/structure-check.ps1 under CTest as structure_check. A ceiling only goes down: -Rebaseline lowers it, and raises it only with -Reason, which is kept below.",
+  "about": "Ceilings for the hub files every feature edits (docs/ci/structure-and-citations.md, \"Ceilings for structure\"). Checked by tools/structure-check.ps1 under CTest as structure_check. An author never edits this file: a branch that moves a hub records it in a file of its own, tools/structure-raises/<name>.json (structure-check.ps1 -Raise), and the coordinator folds those files in after a merge (-Rebaseline), keeping their reasons below.",
   "lower_after_percent": 2,
   "page_default_bytes": 100000,
+  "unpinned_pages": [
+    {
+      "file": "docs/roadmap.md",
+      "why": "a ledger that grows a row per piece of work; its diet is archiving done rows, another row's work, not a ceiling every branch would raise"
+    }
+  ],
   "hubs": [
     {
       "id": "renderer.record_frame.lines",
@@ -116,12 +122,6 @@
       "ceiling": 306295
     },
     {
-      "id": "page:docs/roadmap.md",
-      "measure": "page-bytes",
-      "file": "docs/roadmap.md",
-      "ceiling": 296258
-    },
-    {
       "id": "page:docs/subsystems/geometry.md",
       "measure": "page-bytes",
       "file": "docs/subsystems/geometry.md",
@@ -179,8 +179,33 @@
       "id": "page:AGENTS.md",
       "measure": "page-bytes",
       "file": "AGENTS.md",
-      "ceiling": 69883
+      "ceiling": 70114
     }
   ],
-  "rebaselines": []
+  "rebaselines": [
+    {
+      "date": "2026-11-10",
+      "by": "Marc Micalizzi",
+      "reason": "",
+      "commit": "ba12f83f",
+      "folded": [
+        {
+          "name": "T81",
+          "reason": "T81: the AGENTS.md bullet now states the raise-file rule",
+          "date": "2026-11-10",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "page:AGENTS.md": 231
+          }
+        }
+      ],
+      "changes": [
+        {
+          "id": "page:AGENTS.md",
+          "old": 69883,
+          "new": 70114
+        }
+      ]
+    }
+  ]
 }

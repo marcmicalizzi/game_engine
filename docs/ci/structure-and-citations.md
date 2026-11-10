@@ -20,35 +20,69 @@ measures each hub it names, and fails naming every value over its ceiling. CTest
 documentation check, through `tools/lib/Affected.psm1`'s list of the checks that always run: a
 page that grows is documentation and reaches no module, and it can still pass its ceiling.
 
-**A ceiling only goes down.** Three rules, each a failure with a sentence that says what to do:
+**A ceiling only goes down, and a branch never edits it.** A hub's **effective ceiling** is its
+ceiling in `tools/structure-ceilings.json` plus the sum of the signed deltas that every file in
+`tools/structure-raises/` gives its id. Three rules, each a failure with a sentence that says what to do:
 
-- A value **over** its ceiling fails. Shrink the hub — split the function, move the section, give
-  the feature a registration point of its own — or, if the growth is the change's point, raise the
-  ceiling with a rebaseline that says why (below) and say so in the commit message.
-- A value **under** its ceiling by more than `lower_after_percent` (2%, rounded down, of the
-  ceiling) fails too: the hub shrank, and the ceiling is lowered in the same change, so the slack
-  a refactor leaves cannot let the growth back in. 2% is about 65 lines of `record_frame` and
-  19 KB of `renderer.md`, so an edit that moves a few lines either way never has to touch the file;
-  for a count under 50 (the resolve's modules, the root's fields, `add_pass`) it is zero, so taking
-  one away lowers the ceiling at once.
-- A page the file does not name is held to `page_default_bytes` (below).
+- A value **over** its effective ceiling fails. Shrink the hub — split the function, move the
+  section, give the feature a registration point of its own — or, if the growth is the change's
+  point, record it in the branch's own raise file (below) and say why in the commit message.
+- A value **under** its effective ceiling by more than `lower_after_percent` (2%, rounded down)
+  fails too: the hub shrank, and the drop is recorded in the same change, so the slack a refactor
+  leaves cannot let the growth back in. 2% is about 65 lines of `record_frame` and 19 KB of
+  `renderer.md`, so an edit that moves a few lines either way records nothing; for a count under
+  50 (the resolve's modules, the root's fields, `add_pass`) it is zero, so taking one away is
+  recorded at once.
+- A page the file neither names nor lists as unpinned is held to `page_default_bytes` (below).
 
-**Raising and lowering are one command.** `pwsh tools/structure-check.ps1 -Rebaseline` sets every
-ceiling to its hub's measured value. When that only lowers ceilings it needs no reason and writes
-no record; git's history of the file has the old values. When it raises any ceiling, or names a
-page that has grown past the default, it refuses without `-Reason "<why>"`, and with one appends
-to the file's `rebaselines` the date, who (`-By`, default the git user), the commit, the reason and
-every old and new value it moved. It refuses while a hub is not there, and writes nothing when it
-refuses. That is the manner of `tools/frame-budget.ps1 -Rebaseline -Reason` (ADR-0018): the file
-moves with the change that moved the numbers, and a raise is a sentence a reviewer reads. Never
-edit a ceiling up by hand.
-
-**The batch's one line.** A merge that stacks several branches that grow the hubs runs, once, on
-the stacked tree:
+**A branch records its moves in a file of its own.** The ceilings were first written as absolute
+values that a branch raised by rebaselining them, and that does not compose: every branch of a
+batch would rewrite the same lines of the same file and append to the same array, and every pair
+of them would conflict at the stack. So an author runs
 
 ```powershell
-pwsh -NoProfile -File tools/structure-check.ps1 -Rebaseline -Reason "batch <n>: <the rows that grew the hubs, and what for>"
+pwsh tools/structure-check.ps1 -Raise <row> -Reason "<why>"
 ```
+
+which writes or updates `tools/structure-raises/<row>.json` — `format`, `name`, `reason`, `date`,
+`by` (`-By`, default the git user) and `deltas`, a signed integer per hub id, a page past the
+default as `page:<path>` — from what the tree measures now: each delta is what the tree needs
+beyond the ceiling and every other raise file. Run again, it accumulates into the same file (the
+reason is kept unless a new one is given) and drops an entry that is back at zero, and the file
+with its last entry. A file with a positive delta refuses without a reason, and a hand-written one
+fails the check; a file of negative deltas only needs none. A delta that names no hub, or a page
+that is named or unpinned, fails the check. The name is the row or a short name given on the
+command line (letters, digits, `.`, `_`, `-`), compared ordinally like a hub path: `-Raise t81`
+beside `T81.json` is refused on every host. Two branches that each grow `renderer.md`, each with
+its own file, merge with no edit and no conflict — their bytes add and so do their deltas — and a
+merge that lost one branch's file fails naming the hub. `tools/structure-check.Tests.ps1` holds
+that property over a fixture: the base passes, each branch alone passes with its file, the two
+together pass, and the merge with one file missing fails.
+
+**The fold is the coordinator's.** `pwsh tools/structure-check.ps1 -Rebaseline`, after a merge
+(or at a stack whose rows carry no raise files), sets every ceiling to its measured value, moves
+each raise file's name, reason, date, who and deltas into the ceilings file's `rebaselines` with
+the date, who, the commit and every old and new value, and deletes the files. It needs no reason
+of its own when the files cover every raise, refuses without `-Reason "<why>"` while any value is
+over its effective ceiling (a growth no branch recorded), refuses while a hub is not there, and
+writes nothing when it refuses. A fold of no files and lowered ceilings only keeps no record. That
+is the manner of `tools/frame-budget.ps1 -Rebaseline -Reason` (ADR-0018) at the merge, where a
+raise is a sentence a reviewer reads.
+
+**The batch's one line.** The coordinator runs, once, on the stacked tree:
+
+```powershell
+pwsh -NoProfile -File tools/structure-check.ps1 -Rebaseline -Reason "batch <n>: <the rows that grew the hubs without a raise file, and what for>"
+```
+
+`-Reason` is only needed while some row's growth carries no raise file (a batch whose rows predate
+them); with every growth recorded, the fold is `pwsh tools/structure-check.ps1 -Rebaseline`.
+
+**Unpinned pages.** `docs/roadmap.md` is neither pinned nor held to the default: it is the ledger,
+it grows a row with every piece of work, and its diet is archiving done rows, which is a row of its
+own. The ceilings file's `unpinned_pages` lists such pages, each with its reason, and the check does
+not measure them; nothing else is off the table, and `AGENTS.md` and the large pages stay pinned to
+the byte.
 
 ### How each thing is counted
 
@@ -77,13 +111,15 @@ and the other caches skipped by name; `content/samples/` skipped because it is d
 
 ### Pages
 
-A page has its own ceiling when it is named in the file; every other page is held to
-`page_default_bytes`, 100,000 bytes. Every page of 100 KB or more on 2026-11-09 is named (thirteen,
-from `renderer.md` at 956 KB down to `world.md` at 101 KB) and so is `AGENTS.md`, which every
-session reads first; the largest unnamed page was `audio.md` at 94 KB, so every unnamed page passes
-today. 100 KB is a threshold and not a measurement: a page that grows past it becomes a named page
-by a rebaseline with a reason, which is the moment someone should ask whether it should split
-(the review's A10-R1 proposes about 120 KB for a reference page). The default is not rebaselined.
+A page has its own ceiling when it is named in the file, and none when it is listed in
+`unpinned_pages` (the roadmap, above); every other page is held to `page_default_bytes`, 100,000
+bytes. Every page of 100 KB or more on 2026-11-09 but the roadmap is named (twelve, from
+`renderer.md` at 956 KB down to `world.md` at 101 KB) and so is `AGENTS.md`, which every session
+reads first; the largest unnamed page was `audio.md` at 94 KB, so every unnamed page passes today.
+100 KB is a threshold and not a measurement: a page that grows past it carries a `page:<path>`
+delta in its branch's raise file on top of the default, and becomes a named page at the next fold,
+which is the moment someone should ask whether it should split (the review's A10-R1 proposes about
+120 KB for a reference page). The default itself is never folded.
 
 ### What a contributor sees
 
@@ -92,20 +128,22 @@ structure-check: 1 problem(s)
   renderer.record_frame.lines: 3301 lines, over its ceiling of 3255 (SceneRenderer::record_frame, systems/renderer/src/scene_renderer.cpp)
 
 A hub over its ceiling grew: shrink it — split the function, move the section, give the
-feature a registration point of its own — or, if the growth is the change's point, raise
-the ceiling with  pwsh tools/structure-check.ps1 -Rebaseline -Reason "<why>"  and say so in
-the commit message. A hub that shrank lowers its ceiling with  pwsh tools/structure-check.ps1
--Rebaseline  (no reason needed). Never edit a ceiling up by hand.
+feature a registration point of its own — or, if the growth is the change's point, record it
+in a file of the branch's own with
+    pwsh tools/structure-check.ps1 -Raise <row> -Reason "<why>"
+and commit tools/structure-raises/<row>.json, saying why in the commit message. A hub that
+shrank is recorded the same way, with no reason needed. Never edit tools/structure-ceilings.json:
+the coordinator folds the raise files into it after a merge (-Rebaseline).
 ```
 
-A passing run prints each hub's value beside its ceiling, so `pwsh tools/structure-check.ps1` is
-also how to read the table below on any tree.
+A passing run prints each hub's value beside its effective ceiling, and the raises it carries, so
+`pwsh tools/structure-check.ps1` is also how to read the table below on any tree.
 
 ### The hubs on 2026-11-09
 
 Measured at T81's tip, on main 2d867dd2's code; the review's figures were taken at 6353fac0, whose
-code is the same. `AGENTS.md` and `docs/roadmap.md` are this row's own bullet and row larger than
-main.
+code is the same. `AGENTS.md` is this row's own bullet larger than main, and `docs/roadmap.md`
+(296 KB) left the table when it was unpinned.
 
 | Hub | Measure | Ceiling | The review's figure |
 |---|---|---|---|
@@ -116,12 +154,13 @@ main.
 | `Scene` in `schemas/scene.schema` (version 11) | `schema-fields` | 20 | not counted |
 | `#if ENGINE_VIEW_*`: `apps/engine_view/main.cpp`; the whole app with its tests | `conditionals` | 84; 146 | 84 (main.cpp) |
 | `#if ENGINE_HOST_*` in `apps/engine_host/ops_methods.cpp` | `conditionals` | 65 | 65 |
-| `renderer.md`, `apps.md`, `gfx.md`, `docs/roadmap.md`, `AGENTS.md` | `page-bytes` | see the file | 956 KB, 652 KB, 306 KB, 296 KB, 68 KB |
+| `renderer.md`, `apps.md`, `gfx.md`, `AGENTS.md` | `page-bytes` | see the file | 956 KB, 652 KB, 306 KB, 68 KB |
+| `docs/roadmap.md` | unpinned | none | 296 KB |
 
 The app-wide `#if ENGINE_VIEW_*` count is a second hub beside the review's: `main.cpp` holds 84 of
 the 146, and a guard that moves into `walk.cpp` (16 today) is the same growth.
 
-**What it costs.** About 2.5 s for the check over this tree and 4 s for its 26 tests (msvc-debug's
+**What it costs.** About 2.5 s for the check over this tree and 10 s for its 49 tests (msvc-debug's
 CTest, a shared machine with other agents building; 2026-11-09).
 
 ## Code-to-doc citations
