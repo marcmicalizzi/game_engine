@@ -1,4 +1,6 @@
+#include <core/base/assert.h>
 #include <core/memory/memory.h>
+#include <core/schema/type_info.h>
 #include <core/time/time.h>
 #include <domain/gfx/resources.h>
 #include <systems/renderer/flythrough.h>
@@ -447,28 +449,30 @@ void summarize_frames(std::span<const scene::FrameRecord> records, u32 frames, u
     if (r.frame < frames && r.repeat < repeats) slot[r.frame * repeats + r.repeat] = &r;
   }
   // A frame's figure is the median of its repeats; the path's are percentiles over frames.
-  enum Pass : u32 {
-    cull,
-    hw,
-    sw,
-    hiz,
-    resolve,
-    rt,
-    deform,
-    trace,
-    shadow,
-    total,
+  //
+  // **The GPU's pass buckets are the frame record's own** (T78): every field of `scene::PassMs`,
+  // walked by its schema descriptor and written into the `scene::PassPercentiles` field of the same
+  // name, so the summary cannot leave out a bucket the record has. Until T78 they were a list here
+  // that had drifted to 14 of the record's 29. The figures beside them stay the list below.
+  const schema::TypeInfo& bucket_type = schema::type_of<scene::PassMs>();
+  const schema::TypeInfo& summary_type = schema::type_of<scene::PassPercentiles>();
+  const u32 buckets = static_cast<u32>(bucket_type.fields.size());
+  u32 total = buckets;  // the bucket a marker's `total_ms` reads
+  for (u32 b = 0; b < buckets; ++b) {
+    ENGINE_ASSERT(bucket_type.fields[b].type.kind == schema::Kind::F64,
+                  "a PassMs bucket is f64 milliseconds");
+    if (std::strcmp(bucket_type.fields[b].name, "total") == 0) total = b;
+  }
+  ENGINE_ASSERT(total < buckets, "PassMs has a total");
+  Vector<Vector<f64>> per_bucket(buckets);
+  enum Figure : u32 {
     pairs,
     casters,
-    clas,
-    blas,
     rt_built,
     rt_wanted,
     shadow_pairs,
     cpu,
     wall,
-    tables,
-    sky,
     cpu_wait,
     cpu_begin,
     cpu_tables,
@@ -479,9 +483,9 @@ void summarize_frames(std::span<const scene::FrameRecord> records, u32 frames, u
     cpu_submit,
     rt_references,
     rt_cache_built,
-    passes
+    figures
   };
-  Vector<f64> per_frame[passes];
+  Vector<f64> per_frame[figures];
   Vector<f64> repeats_of;
   out.deterministic = true;
   out.mismatched_frames = 0;
@@ -521,43 +525,40 @@ void summarize_frames(std::span<const scene::FrameRecord> records, u32 frames, u
       out.deterministic = false;
       ++out.mismatched_frames;
     }
-    for (u32 p = 0; p < passes; ++p) {
+    for (u32 b = 0; b < buckets; ++b) {
+      const u32 offset = bucket_type.fields[b].offset;
       repeats_of.clear();
       for (u32 k = 0; k < repeats; ++k) {
         const scene::FrameRecord* r = slot[f * repeats + k];
         if (r == nullptr) continue;
-        const scene::PassMs& ms = r->gpu_ms;
-        const f64 values[passes] = {ms.cull,
-                                    ms.hw,
-                                    ms.sw,
-                                    ms.hiz,
-                                    ms.resolve,
-                                    ms.rt,
-                                    ms.deform,
-                                    ms.trace,
-                                    ms.shadow,
-                                    ms.total,
-                                    static_cast<f64>(r->visible_pairs),
-                                    static_cast<f64>(r->shadow_casters),
-                                    ms.clas,
-                                    ms.blas,
-                                    static_cast<f64>(r->rt_built),
-                                    static_cast<f64>(r->rt_wanted),
-                                    static_cast<f64>(r->shadow_pairs),
-                                    r->cpu_ms,
-                                    r->frame_ms,
-                                    ms.tables,
-                                    ms.sky,
-                                    r->cpu.wait,
-                                    r->cpu.begin,
-                                    r->cpu.tables,
-                                    r->cpu.terrain,
-                                    r->cpu.passes,
-                                    r->cpu.compile,
-                                    r->cpu.record,
-                                    r->cpu.submit,
-                                    static_cast<f64>(r->rt_references),
-                                    static_cast<f64>(r->rt_cache_built)};
+        f64 ms = 0.0;
+        std::memcpy(&ms, reinterpret_cast<const u8*>(&r->gpu_ms) + offset, sizeof(ms));
+        repeats_of.push_back(ms);
+      }
+      per_bucket[b].push_back(median_of(repeats_of));
+    }
+    for (u32 p = 0; p < figures; ++p) {
+      repeats_of.clear();
+      for (u32 k = 0; k < repeats; ++k) {
+        const scene::FrameRecord* r = slot[f * repeats + k];
+        if (r == nullptr) continue;
+        const f64 values[figures] = {static_cast<f64>(r->visible_pairs),
+                                     static_cast<f64>(r->shadow_casters),
+                                     static_cast<f64>(r->rt_built),
+                                     static_cast<f64>(r->rt_wanted),
+                                     static_cast<f64>(r->shadow_pairs),
+                                     r->cpu_ms,
+                                     r->frame_ms,
+                                     r->cpu.wait,
+                                     r->cpu.begin,
+                                     r->cpu.tables,
+                                     r->cpu.terrain,
+                                     r->cpu.passes,
+                                     r->cpu.compile,
+                                     r->cpu.record,
+                                     r->cpu.submit,
+                                     static_cast<f64>(r->rt_references),
+                                     static_cast<f64>(r->rt_cache_built)};
         repeats_of.push_back(values[p]);
       }
       per_frame[p].push_back(median_of(repeats_of));
@@ -566,20 +567,17 @@ void summarize_frames(std::span<const scene::FrameRecord> records, u32 frames, u
   auto over = [&](u32 p) {
     return percentiles(std::span<const f64>(per_frame[p].data(), per_frame[p].size()));
   };
-  out.gpu_ms.cull = over(cull);
-  out.gpu_ms.hw = over(hw);
-  out.gpu_ms.sw = over(sw);
-  out.gpu_ms.hiz = over(hiz);
-  out.gpu_ms.resolve = over(resolve);
-  out.gpu_ms.rt = over(rt);
-  out.gpu_ms.deform = over(deform);
-  out.gpu_ms.trace = over(trace);
-  out.gpu_ms.shadow = over(shadow);
-  out.gpu_ms.total = over(total);
+  out.gpu_ms = scene::PassPercentiles{};
+  for (u32 b = 0; b < buckets; ++b) {
+    const schema::FieldInfo* to = summary_type.find_field(bucket_type.fields[b].name);
+    ENGINE_ASSERT(to != nullptr && to->type.type == &schema::type_of<scene::Percentiles>(),
+                  "every PassMs bucket has a PassPercentiles field of its name");
+    if (to == nullptr || to->type.type != &schema::type_of<scene::Percentiles>()) continue;
+    *reinterpret_cast<scene::Percentiles*>(reinterpret_cast<u8*>(&out.gpu_ms) + to->offset) =
+        percentiles(std::span<const f64>(per_bucket[b].data(), per_bucket[b].size()));
+  }
   out.visible_pairs = over(pairs);
   out.shadow_casters = over(casters);
-  out.gpu_ms.clas = over(clas);
-  out.gpu_ms.blas = over(blas);
   out.rt.built = over(rt_built);
   out.rt.wanted = over(rt_wanted);
   out.rt.references = over(rt_references);
@@ -587,8 +585,6 @@ void summarize_frames(std::span<const scene::FrameRecord> records, u32 frames, u
   out.shadow_pairs = over(shadow_pairs);
   out.cpu_ms = over(cpu);
   out.frame_ms = over(wall);
-  out.gpu_ms.tables = over(tables);
-  out.gpu_ms.sky = over(sky);
   out.cpu.wait = over(cpu_wait);
   out.cpu.begin = over(cpu_begin);
   out.cpu.tables = over(cpu_tables);
@@ -609,8 +605,8 @@ void summarize_frames(std::span<const scene::FrameRecord> records, u32 frames, u
     scene::MarkerRecord m;
     m.frame = marker_frame(path, marker.frame, frames);
     m.name = marker.name;
-    if (m.frame < per_frame[total].size()) {
-      m.total_ms = per_frame[total][m.frame];
+    if (total < buckets && m.frame < per_bucket[total].size()) {
+      m.total_ms = per_bucket[total][m.frame];
       m.visible_pairs = static_cast<u32>(per_frame[pairs][m.frame]);
     }
     for (u32 k = 0; k < repeats; ++k) {

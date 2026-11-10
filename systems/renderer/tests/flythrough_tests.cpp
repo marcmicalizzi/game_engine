@@ -6,8 +6,11 @@
 // here (a terrain with a ridge, cubes hidden behind it, a path that rises over it) and holds the
 // two properties the corpus leans on: the same path gives the same visible pairs frame by frame,
 // and occlusion culling changes no pixel anywhere on it while it does cull the hidden cubes.
+#include <core/json/json_value.h>
 #include <core/math/math.h>
 #include <core/memory/memory.h>
+#include <core/schema/json_reflect.h>
+#include <core/schema/type_info.h>
 #include <domain/assets/gltf.h>
 #include <domain/gfx/device.h>
 #include <domain/gfx/path_trace.h>
@@ -805,6 +808,55 @@ TEST_CASE("flythrough: percentiles and the per-frame summary") {
   // A resampled run puts the marker on the frame that shares its time.
   CHECK(marker_frame(path, 2, 5) == 4);
   CHECK(marker_frame(path, 1, 5) == 2);
+}
+
+// **Every pass bucket a frame records has its percentiles in the summary** (T78; apps.md,
+// "Flythroughs"). The walk is over `scene::PassMs`'s own descriptor, so a bucket added to the frame
+// record and not to the summary fails here by name. Until T78 the summary was a hand-written list
+// of 14 of the record's 29 buckets, and the GI, the frame passes, the half-rate sun and R130's
+// chain zones had no median, p95 or p99 in any summary.
+TEST_CASE("flythrough: the summary carries a median, p95 and p99 for every pass bucket") {
+  const schema::TypeInfo& buckets = schema::type_of<scene::PassMs>();
+  REQUIRE(buckets.fields.size() >= 29);
+  // Three frames, one repeat; bucket k reads (k + 1) (f + 1) ms on frame f, so every bucket has a
+  // median of its own and none is zero.
+  Vector<scene::FrameRecord> records;
+  for (u32 f = 0; f < 3; ++f) {
+    scene::FrameRecord record;
+    record.frame = f;
+    for (u32 k = 0; k < buckets.fields.size(); ++k) {
+      const schema::FieldInfo& field = buckets.fields[k];
+      REQUIRE(field.type.kind == schema::Kind::F64);
+      f64 value = static_cast<f64>(k + 1) * static_cast<f64>(f + 1);
+      std::memcpy(reinterpret_cast<u8*>(&record.gpu_ms) + field.offset, &value, sizeof(value));
+    }
+    records.push_back(record);
+  }
+  CameraPath path;
+  scene::FlythroughSummary summary;
+  summarize_frames(std::span<const scene::FrameRecord>(records.data(), records.size()), 3, 1, path,
+                   summary);
+  // What a reader of the summary file sees: `gpu_ms.<bucket>.median` and the rest.
+  const JsonValue json = schema::to_json(summary);
+  const JsonValue* gpu = json.find("gpu_ms");
+  REQUIRE(gpu != nullptr);
+  for (u32 k = 0; k < buckets.fields.size(); ++k) {
+    const std::string name = buckets.fields[k].name;  // a string, so a message prints the name
+    const JsonValue* bucket = gpu->find(name);
+    CHECK_MESSAGE(bucket != nullptr, "the summary's gpu_ms has no " << name);
+    if (bucket == nullptr) continue;
+    for (const char* stat_name : {"median", "p95", "p99"}) {
+      const std::string stat = stat_name;
+      const JsonValue* v = bucket->find(stat);
+      f64 got = 0.0;
+      CHECK_MESSAGE((v != nullptr && v->get_f64(got)), "gpu_ms." << name << " has no " << stat);
+      const f64 median = 2.0 * static_cast<f64>(k + 1);
+      if (stat == "median")
+        CHECK_MESSAGE(got == doctest::Approx(median), "gpu_ms." << name << ".median");
+      else
+        CHECK_MESSAGE(got >= median, "gpu_ms." << name << "." << stat << " below its median");
+    }
+  }
 }
 
 // What a host records for the benchmark inside its hook is left out of the frame-loop count, once
