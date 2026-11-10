@@ -151,9 +151,31 @@ hash, so it is the same on every tile and toolchain.
 
 ## What it costs
 
-Measured in `msvc-release` by `engine_scene_gen_bench` (`scene_gen.site.*`) and
-`engine_scatter_bench` (`scatter.tile.*`); the table and the machine's state are filled in by the
-stage that measures them.
+Measured in `msvc-release` on 2026-11-10 by `engine_scene_gen_bench` (`scene_gen.site.*`, 1,024
+samples an iteration over a 2 km square) and `engine_scatter_bench` (`scatter.tile.*`), five
+repeats each. **The machine was not quiet**: the harness waited 60 s and proceeded with other
+processes using 32–39% of the CPU (this row's own `msvc-no-ecs` build and a Linux container among
+them), GPU idle; the numbers are upper bounds.
+
+| What | Median | Per item |
+|---|---|---|
+| `scene_gen.site.form`: elevation, slope, direction, heat load, sunward, curvature on a polynomial ground | 56.9 µs / 1,024 | **56 ns a sample**, five ground queries of about 6 ns each and the arithmetic |
+| `scene_gen.site.water`: the distances, over 40 channels of 40 segments 5 m long packed 25–50 m apart and 8 lakes | 518 µs / 1,024 | **506 ns a sample**: a dense network files a few hundred segments in each 64 m cell |
+| `scene_gen.site.all` | 588 µs / 1,024 | 574 ns a sample |
+| `scatter.tile.unruled`: a 32 m tile of one kind at 3 m spacing, 0.06 a m², on a 31° side | 79.5 µs | the lattice, about 60 placements |
+| `scatter.tile.ruled`: the same with elevation, aspect shift, krummholz, heat load and distance rules | 80.3 µs | **+0.8 µs a tile** (one channel in reach) |
+
+**What scales.** A ruled kind samples only the candidates that survive its density, region,
+exclusions and hard limits — about the placements it makes — so the rules add (placements a tile) ×
+(five ground queries + the water's walk). On the synthetic grounds above a ground query is a few
+nanoseconds; on a scene's own provider it is that provider's point cost (the dunes' few
+microseconds, scatter.md, "A moving ground"), so on the dunes the same tile would add about 60 × 5 ×
+3 µs ≈ 1 ms, and a kind with only an elevation response one query a placement. **Resident**: the
+site object itself (about 200 bytes), 48 bytes a channel segment and 24 a channel cell — a 5 m
+segment files in about 25 of the 64 m cells — so the forest proof of concept's 10.6 km of stream at
+5 m would keep about 1.4 MB; nothing per tile, and nothing for a scene with no water. A water
+sample's cost grows with how many segments share a cell; a network filed at a finer cell, or each
+segment's box tested first, is the lever if a scene's water is denser than the bench's.
 
 ## What is not built
 

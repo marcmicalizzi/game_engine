@@ -26,3 +26,4 @@ engine_module(NAME scene_gen LAYER domain
 engine_module_tests(NAME scene_gen
   SOURCES tests/scene_gen_tests.cpp tests/size_table.cpp tests/terrain_holes_tests.cpp tests/exclusion_tests.cpp
           tests/site_tests.cpp)
+engine_module_bench(NAME scene_gen SOURCES bench/site_bench.cpp)
