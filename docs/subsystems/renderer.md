@@ -2099,9 +2099,11 @@ samples took four fifths of the turn's bias away (the first frame's mean error i
 control held at that pose with no turn): what is left is the variance of cells holding a few
 samples, which 65,536 directions a frame do not out-sample the young cells' rays on a 30-frame
 turn; the walk and the flight were a
-little worse, the samples' rays coming out of the young half the cells newly in view need. The
-volume added 4,200 casters at 48 m to the 388,000 the frame keeps, because at that hour the sun's
-sweep already holds the forest behind the eye. In the box seen from inside, turned in four frames,
+little worse, the samples' rays coming out of the young half the cells newly in view need. Of the
+directions outside the frustum, 2,968 met a surface within 50 m in main's structures and 25,366
+with the 48 m volume, which added only 4,200 casters to the 388,000 the frame keeps. On a flick (the
+same turn in 6 frames) main's first frame stood 3.31 from converged, the larger cache alone (below)
+1.77 and the samples with it 1.74: the size did it. In the box seen from inside, turned in four frames,
 the first frame after the turn stood 0.018 of the term from its converged picture with both, 0.071
 under main; the box's converged picture moved towards the reference (FLIP 0.105 → 0.092). At
 3840×2160 the two cost 0.8 ms a frame at 48 m. The brief's rule was on under `bounce` where they
