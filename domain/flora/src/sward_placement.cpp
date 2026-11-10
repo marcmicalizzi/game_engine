@@ -47,7 +47,7 @@ Quat patch_rotation(const scene_gen::Ground& ground, i64 x_mm, i64 z_mm, f64 cel
   const f64 slope = std::sqrt(gx * gx + gz * gz);
   if (!(slope > 1e-9)) return turn;
   const f64 cap = static_cast<f64>(max_tilt_deg) * 0.017453292519943295;
-  const f64 angle = std::min(std::atan(slope), cap);
+  const f64 angle = std::min(sward_atan(slope), cap);
   // The normal's horizontal part points downhill, -grad/|grad|; up x n = (n.z, 0, -n.x).
   const Vec3 axis{static_cast<f32>(-gz / slope), 0.0f, static_cast<f32>(gx / slope)};
   return quat_from_axis_angle(axis, static_cast<f32>(angle)) * turn;
@@ -99,10 +99,11 @@ bool open_forms(Entry& entry, const scene_gen::Context& context, std::string* er
     const auto& s = p.stature;
     if (!(s.mosaic_m >= 4 && s.mosaic_m <= 200) || !(s.slope_hi_deg >= s.slope_lo_deg) ||
         (s.shade_layer != scene_gen::k_mask_no_layer &&
-         s.shade_layer >= scene_gen::k_mask_max_palette))
+         s.shade_layer >= scene_gen::k_mask_max_palette) ||
+        !(s.band_m >= 0 && s.band_m <= s.mosaic_m))
       return fail(error,
-                  "stature needs mosaic_m 4..200, slope_hi_deg >= slope_lo_deg and a palette "
-                  "shade_layer or 255");
+                  "stature needs mosaic_m 4..200, slope_hi_deg >= slope_lo_deg, a palette "
+                  "shade_layer or 255 and band_m 0..mosaic_m");
   }
   entry.forb_base = entry.meshes.size();
   if (p.forbs.empty()) return true;
@@ -125,7 +126,7 @@ bool open_forms(Entry& entry, const scene_gen::Context& context, std::string* er
 // the shade layer's weight and the mosaic noise of the place; then the form, or the nearest form
 // the entry has families for (the other habit, then the other stature, then both).
 u32 site_form(const Entry& entry, const scene_gen::Context& context, u32 table,
-              const scene_gen::MaskSample& sample, i64 x_mm, i64 z_mm) {
+              const scene_gen::MaskSample& sample, i64 x_mm, i64 z_mm, u64 random) {
   const auto& p = entry.params;
   const auto& rule = p.stature;
   SwardSite site;
@@ -139,7 +140,9 @@ u32 site_form(const Entry& entry, const scene_gen::Context& context, u32 table,
                  static_cast<f64>(2 * d) * 1000.0;
   const f64 gz = (g.surface_mm(x_mm, z_mm + d) - g.surface_mm(x_mm, z_mm - d)) /
                  static_cast<f64>(2 * d) * 1000.0;
-  site.slope_deg = std::atan(std::sqrt(gx * gx + gz * gz)) * 57.29577951308232;
+  // The C library's arctangent rounds differently on MSVC and glibc, and this slope decides the
+  // form: the sward's own, in plain arithmetic (sward.h).
+  site.slope_deg = sward_atan(std::sqrt(gx * gx + gz * gz)) * 57.29577951308232;
   if (rule.shade_layer != scene_gen::k_mask_no_layer)
     for (u32 ch = 0; ch < scene_gen::k_mask_channels; ++ch)
       if (((table >> (ch * 8)) & 255u) == rule.shade_layer)
@@ -147,8 +150,17 @@ u32 site_form(const Entry& entry, const scene_gen::Context& context, u32 table,
   const u64 base = hash_combine(context.world_seed, p.seed);
   const f64 x = static_cast<f64>(x_mm) * .001, z = static_cast<f64>(z_mm) * .001;
   const f64 scale = static_cast<f64>(rule.mosaic_m);
-  site.noise_tall = sward_mosaic_noise(hash_combine(base, 0x74616c6cull), x, z, scale);
-  site.noise_tussock = sward_mosaic_noise(hash_combine(base, 0x7475737365ull), x, z, scale);
+  // G138: each noise's gradient from the same four nodes, and the cell's two draws (streams 10 and
+  // 11 of the patch's hash) for where the band mixes the forms; at band_m 0 neither is read.
+  f64 dx = 0, dz = 0;
+  site.noise_tall =
+      sward_mosaic_noise_gradient(hash_combine(base, 0x74616c6cull), x, z, scale, dx, dz);
+  site.gradient_tall = std::sqrt(dx * dx + dz * dz);
+  site.noise_tussock =
+      sward_mosaic_noise_gradient(hash_combine(base, 0x7475737365ull), x, z, scale, dx, dz);
+  site.gradient_tussock = std::sqrt(dx * dx + dz * dz);
+  site.draw_tall = unit_of(random, 10);
+  site.draw_tussock = unit_of(random, 11);
   const u32 form = static_cast<u32>(sward_site_form(rule, site));
   // 1 tall sod, 2 tall tussock, 3 short sod, 4 short tussock.
   const u32 order[4] = {form, form % 2 ? form + 1 : form - 1, form <= 2 ? form + 2 : form - 2,
@@ -365,9 +377,10 @@ bool tile(void* state, scene_gen::TileCoord at, const scene_gen::Context& contex
       // Unbiased stochastic interpolation between adjacent authored density classes. The field
       // is identical in all rings; ring and request order never participate in the hash. G137: of
       // the families of the form the site picks, when the entry names forms.
-      const u32 form = entry.forms ? site_form(entry, context, words[0], sample,
-                                               scene_gen::nearest_mm(px), scene_gen::nearest_mm(pz))
-                                   : 0;
+      const u32 form = entry.forms
+                           ? site_form(entry, context, words[0], sample, scene_gen::nearest_mm(px),
+                                       scene_gen::nearest_mm(pz), random)
+                           : 0;
       u32 upper = 0;
       if (!pick_family(p, entry.form_families[form], density, random, upper)) continue;
       const auto& family = p.families[upper];

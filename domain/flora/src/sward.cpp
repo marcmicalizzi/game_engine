@@ -5,6 +5,7 @@
 #include <foundation/image/decode.h>
 
 #include <algorithm>
+#include <bit>
 #include <cmath>
 #include <utility>
 
@@ -643,6 +644,71 @@ void fit_lods(assets::MeshData& mesh, TreeLevels& levels, u32 coarse_first,
   levels.levels[1].alpha_cutoff = best;
 }
 }  // namespace
+// fdlibm's s_atan.c (Sun Microsystems, 1993), the reference the FreeBSD and glibc arctangents
+// descend from: reduce |x| to |t| <= 7/16 against atan(0.5), atan(1), atan(1.5) or atan(inf), each
+// in a high and a low part, then an odd polynomial of degree 23. Its coefficients are written as
+// their bit patterns, as core/math/deterministic.h writes its own, so no decimal conversion stands
+// between the source and the constant. IEEE + - * / only and contraction off: the same bits on
+// every toolchain. fdlibm states an error under 1 ulp; the forms tests hold it to 2 against
+// `std::atan`.
+f64 sward_atan(f64 x) noexcept {
+  constexpr auto b = [](u64 v) { return std::bit_cast<f64>(v); };
+  static constexpr f64 hi[4] = {b(0x3FDDAC670561BB4Full), b(0x3FE921FB54442D18ull),
+                                b(0x3FEF730BD281F69Bull), b(0x3FF921FB54442D18ull)};
+  static constexpr f64 lo[4] = {b(0x3C7A2B7F222F65E2ull), b(0x3C81A62633145C07ull),
+                                b(0x3C7007887AF0CBBDull), b(0x3C91A62633145C07ull)};
+  static constexpr f64 at[11] = {
+      b(0x3FD555555555550Dull), b(0xBFC999999998EBC4ull), b(0x3FC24924920083FFull),
+      b(0xBFBC71C6FE231671ull), b(0x3FB745CDC54C206Eull), b(0xBFB3B0F2AF749A6Dull),
+      b(0x3FB10D66A0D03D51ull), b(0xBFADDE2D52DEFD9Aull), b(0x3FA97B4B24760DEBull),
+      b(0xBFA2B4442C6A6C2Full), b(0x3F90AD3AE322DA11ull)};
+  const u64 bits = std::bit_cast<u64>(x);
+  const bool negative = (bits >> 63) != 0;
+  const u32 ix = static_cast<u32>(bits >> 32) & 0x7fffffffu;
+  if (ix >= 0x44100000u) {  // |x| >= 2^66, or not a number
+    if (x != x) return x;
+    return negative ? -(hi[3] + lo[3]) : hi[3] + lo[3];
+  }
+  int id = -1;
+  f64 t = x;
+  if (ix < 0x3fdc0000u) {            // |x| < 7/16
+    if (ix < 0x3e400000u) return x;  // |x| < 2^-27: atan(x) rounds to x
+  } else {
+    t = negative ? -x : x;
+    if (ix < 0x3ff30000u) {    // |x| < 19/16
+      if (ix < 0x3fe60000u) {  // 7/16 <= |x| < 11/16
+        id = 0;
+        t = (2.0 * t - 1.0) / (2.0 + t);
+      } else {  // 11/16 <= |x| < 19/16
+        id = 1;
+        t = (t - 1.0) / (t + 1.0);
+      }
+    } else if (ix < 0x40038000u) {  // 19/16 <= |x| < 39/16
+      id = 2;
+      t = (t - 1.5) / (1.0 + 1.5 * t);
+    } else {  // 39/16 <= |x| < 2^66
+      id = 3;
+      t = -1.0 / t;
+    }
+  }
+  const f64 z = t * t, w = z * z;
+  const f64 s1 = z * (at[0] + w * (at[2] + w * (at[4] + w * (at[6] + w * (at[8] + w * at[10])))));
+  const f64 s2 = w * (at[1] + w * (at[3] + w * (at[5] + w * (at[7] + w * at[9]))));
+  if (id < 0) return t - t * (s1 + s2);
+  const f64 r = hi[id] - ((t * (s1 + s2) - lo[id]) - t);
+  return negative ? -r : r;
+}
+namespace {
+// G138: whether a cell takes a score's positive form. `across` is the score's change over the
+// band's width; inside the band the positive form's share is a smoothstep of the cell's distance
+// from the boundary, read as score / gradient, reaching 5 % and 95 % at half the band to each side,
+// and the cell's own uniform `draw` decides. A band or a gradient of zero is the score's sign,
+// G137's line.
+bool positive(f64 score, f64 across, f64 draw) noexcept {
+  if (!(across > 0)) return score > 0;
+  return draw < smoothstep01(.5 + k_sward_band_span * score / across);
+}
+}  // namespace
 SwardForm sward_site_form(const SwardStature& r, const SwardSite& s) noexcept {
   const f64 lo = static_cast<f64>(r.slope_lo_deg), hi = static_cast<f64>(r.slope_hi_deg);
   const f64 steep =
@@ -656,21 +722,56 @@ SwardForm sward_site_form(const SwardStature& r, const SwardSite& s) noexcept {
       static_cast<f64>(r.tussock_bias) + static_cast<f64>(r.noise) * (2 * s.noise_tussock - 1) +
       static_cast<f64>(r.wet_tussock) * wet + static_cast<f64>(r.steep_tussock) * steep +
       static_cast<f64>(r.shade_tussock) * shade;
-  if (tall > 0) return tussock > 0 ? SwardForm::tall_tussock : SwardForm::tall_sod;
-  return tussock > 0 ? SwardForm::short_tussock : SwardForm::short_sod;
+  // G138, the band (flora.md, "Where two forms meet"): a score's change across the band's width is
+  // its gradient times the width, and the gradient is the mosaic noise's (the term that draws a
+  // meadow's patches), 2 |noise| per unit of the noise's own.
+  const f64 band = static_cast<f64>(r.band_m), weight = 2 * std::fabs(static_cast<f64>(r.noise));
+  const bool is_tall = positive(tall, band * weight * s.gradient_tall, s.draw_tall);
+  const bool is_tussock = positive(tussock, band * weight * s.gradient_tussock, s.draw_tussock);
+  if (is_tall) return is_tussock ? SwardForm::tall_tussock : SwardForm::tall_sod;
+  return is_tussock ? SwardForm::short_tussock : SwardForm::short_sod;
 }
-f64 sward_mosaic_noise(u64 seed, f64 x_m, f64 z_m, f64 scale_m) noexcept {
+namespace {
+// The mosaic noise's four nodes and the eased fractions between them, shared by the value and its
+// gradient so the two are the same arithmetic.
+struct MosaicCell {
+  f64 n00, n10, n01, n11, ux, uz, tx, tz;
+};
+MosaicCell mosaic_cell(u64 seed, f64 x_m, f64 z_m, f64 scale_m) noexcept {
   const f64 fx = x_m / scale_m, fz = z_m / scale_m;
   const f64 x0 = std::floor(fx), z0 = std::floor(fz);
   const i64 ix = static_cast<i64>(x0), iz = static_cast<i64>(z0);
   const auto ease = [](f64 t) { return t * t * (3 - 2 * t); };
-  const f64 tx = ease(fx - x0), tz = ease(fz - z0);
   const auto node = [seed](i64 a, i64 b) {
     const u64 h = hash_combine(hash_combine(seed, static_cast<u64>(a)), static_cast<u64>(b));
     return static_cast<f64>(h >> 11) / 9007199254740992.0;
   };
-  return lerp(lerp(node(ix, iz), node(ix + 1, iz), tx),
-              lerp(node(ix, iz + 1), node(ix + 1, iz + 1), tx), tz);
+  MosaicCell c;
+  c.ux = fx - x0;
+  c.uz = fz - z0;
+  c.tx = ease(c.ux);
+  c.tz = ease(c.uz);
+  c.n00 = node(ix, iz);
+  c.n10 = node(ix + 1, iz);
+  c.n01 = node(ix, iz + 1);
+  c.n11 = node(ix + 1, iz + 1);
+  return c;
+}
+f64 mosaic_value(const MosaicCell& c) noexcept {
+  return lerp(lerp(c.n00, c.n10, c.tx), lerp(c.n01, c.n11, c.tx), c.tz);
+}
+}  // namespace
+f64 sward_mosaic_noise(u64 seed, f64 x_m, f64 z_m, f64 scale_m) noexcept {
+  return mosaic_value(mosaic_cell(seed, x_m, z_m, scale_m));
+}
+f64 sward_mosaic_noise_gradient(u64 seed, f64 x_m, f64 z_m, f64 scale_m, f64& d_x,
+                                f64& d_z) noexcept {
+  const MosaicCell c = mosaic_cell(seed, x_m, z_m, scale_m);
+  // d/du of the ease u^2 (3 - 2u) is 6u(1 - u); the lattice is scale_m metres a side.
+  const f64 ex = 6 * c.ux * (1 - c.ux) / scale_m, ez = 6 * c.uz * (1 - c.uz) / scale_m;
+  d_x = ex * lerp(c.n10 - c.n00, c.n11 - c.n01, c.tz);
+  d_z = ez * (lerp(c.n01, c.n11, c.tx) - lerp(c.n00, c.n10, c.tx));
+  return mosaic_value(c);
 }
 SwardCoverage measure_sward_coverage(const assets::MeshData& mesh, const TreeLevels& levels) {
   if (levels.levels.size() != 2 || mesh.materials.empty()) return {};

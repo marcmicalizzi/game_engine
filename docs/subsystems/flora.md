@@ -209,7 +209,8 @@ override needs an engine seam. It is not hidden behind the collider flag.
 tall sod, tall tussock, short sod and short tussock (`content/test-scenes/meadow/tall-sod`,
 `tall-tussock`, `short-sod`, `short-tussock.flora.json`), each from a source-bounded profile — red
 fescue, tufted hair-grass (`tufted_hairgrass`, new), bent and mat-grass (`mat_grass`, new). Sward v3
-adds what a tussock needs and the old knobs could not say, and `k_sward_version` is 6:
+adds what a tussock needs and the old knobs could not say, and `k_sward_version` was 6 (7 since
+G138's band, below):
 
 - `tussock_spacing_m` (0, or 0.2–1 m and at least two `clump_radius_m`): the blades gather on a
   lattice of crowns at this spacing, `round(cell / spacing)` a side, each crown holding its share of
@@ -233,7 +234,7 @@ classes ascend to weight 1 on their own. Where it names them, the placement asks
 interpolates the density between that form's classes as before. Its inputs are what the scene already
 hands the generator: the mask's wetness at the cell (a water body's `wet_m` band) or a stream's
 nearness, `(1 − riparian_factor) / (1 − k_riparian_floor)`, whichever is larger; the slope from central
-differences at half a cell; the weight of the palette layer `shade_layer` where the paint has one
+differences at half a cell, its angle the sward's own arctangent (`sward_atan`, below); the weight of the palette layer `shade_layer` where the paint has one
 (255, the default, none — v36's paint has no such layer); and two value noises of the place on a
 `mosaic_m` lattice (20 m) seeded from the world's and the entry's seeds. Scores and defaults are in the
 grounding page. A form the entry has no family for falls to the nearest it has: the other habit, then
@@ -241,6 +242,59 @@ the other stature, then both. Everything is a function of the cell and the field
 request order never participate. **An entry that names no forms and no forbs places exactly what it
 did**: the family pick is the same arithmetic over a list that is every family (the forms tests pin
 eeb8077c's placements of a graded, sloped tile to the bit).
+
+**The slope is measured with no call to the C library** (G138; the 2026-11-09 review's defect 5). A
+form decided on a slope is placement output that has to be the same bits on every toolchain, and
+`std::atan` is the C library's, rounded differently by MSVC's UCRT and glibc in the last place, so a
+cell whose slope sits on a threshold could take one form on Windows and another on Linux. The
+stature rule's slope and the patch's lean (`patch_rotation`'s tilt) both take the angle from
+`sward_atan` (`sward.h`): fdlibm's arctangent (Sun, 1993; the reference glibc's and FreeBSD's descend
+from) written in `sward.cpp` from IEEE `+ − × ÷` with its coefficients as bit patterns, fdlibm's
+stated error under 1 ulp, measured at most 1 ulp from MSVC's `std::atan` over gradients 0–16, the
+reduction's breakpoints and 10⁻³⁰–10³⁰ (the forms tests hold it to 2). It replaced the C library's
+call without moving a pin: the forms tests' pins and the placement's tilt tests are unchanged, and
+`determinism_tests.cpp` pins the arctangent's bits and the forms of a tile whose slope rises from 5° to
+40° across both thresholds, taken on MSVC, so the Linux containers prove GCC and Clang at v3 and v2
+decide the same forms. The angle stays the sward's and not `core/math`'s, because a capability does
+not edit `core/`; a second caller would be the reason to move it there as `det::atan`. The patch's turn
+itself is still `quat_from_axis_angle`'s `std::sin`, which places no form and is outside the pins.
+
+**Where two forms meet** (G138; [grounding](../experiments/grass-sward.md#where-two-forms-meet-the-transition-band-g138-2026-11-09)).
+G137 took a score's sign, so a tall patch met a short one along the mosaic's zero contour, a sharp
+curve; a meadow's tall and short patches grade over a few metres. `SwardStature::band_m` (metres,
+0..`mosaic_m`, default **3**) is the width over which they do: along a transect across a boundary, the
+share of one form falls from 95 % to 5 % over `band_m`, the same rule for both of the rule's axes.
+
+- *How metres become score.* A score is not in metres, so the band reads a cell's distance from the
+  boundary as its score over the score's local gradient, and the gradient is the mosaic noise's — the
+  term that draws a meadow's patches — times `2 |noise|`. `sward_mosaic_noise_gradient` returns the
+  noise's value (the same bits `sward_mosaic_noise` gives) and its gradient from the same four lattice
+  nodes, the derivative of the smoothstep-bilinear interpolation, so the band costs **no further hash
+  of the noise and no further sample of the ground or the mask**.
+- *The draw.* A cell takes the score's positive form when its own uniform (stream 10 of the patch's hash
+  for tall, 11 for tussock) is below `smoothstep(1/2 + k_sward_band_span · score / (band_m · gradient))`,
+  `k_sward_band_span` = 0.7293 being the share of a smoothstep's unit over which it rises from 5 % to
+  95 %: a dither of whole cells, each keeping one form's cooked families, with the probability of the
+  other form rising as the score's magnitude falls to zero and reaching one half on the boundary. A
+  band, a noise weight or a gradient of zero is the score's sign: **`band_m` 0 places G137's forms to
+  the bit** (`determinism_tests.cpp` pins it against this row's first commit, 61d3ced2).
+- *Measured.* Over twelve worlds' boundaries on a level, dry, open meadow, each patch at its distance
+  along the line through it down the score's gradient (found by bisection on the score, not the band's
+  own estimate), the default band comes out at 3.04 m for tall against short and 3.02 m for tussock
+  against sod; a band of zero at 0.225 m, within the 0.25 m bin (the forms tests hold the band to a
+  fifth either side and the line under half a metre).
+- *Where it is not the asked width.* Where a site field moves the score as well — a wet margin, a slope
+  through the thresholds, a shade layer's edge — the score's true gradient is the noise's plus the
+  field's, and the band is narrower (or wider, where the field opposes the noise) by the ratio of the
+  noise's gradient to the whole; a boundary the noise does not move at all (`noise` 0) stays a line.
+  Taking the fields' gradients too would mean sampling the mask and the ground again around every
+  cell; it is listed under "Not yet".
+- *Cost.* Per cell: the two noises' derivatives (two eases' slopes, four lerps, two square roots), two
+  hashes for the draws, and per axis one multiply-divide and a smoothstep; nothing allocated. One 64 m
+  tile of 4,096 cells, `msvc-release`, 41 placements a run, three runs alternating with the commit
+  before: 1.54–2.21 ms (median 2.17–2.86) before, 1.70–1.85 ms (median 2.51–2.63) after, on a machine
+  at 62–91 % CPU from other agents' builds, so the pair is an upper bound: about 0.2 ms a tile, 40 ns
+  a cell, at activation and never per frame.
 
 **The meadow's forbs.** `forbs` (1–16 herb mesh paths; empty, the default, none) stand in a
 `forb_share` of the cells that drew a patch (0.33 a hay meadow's, 0.1 a pasture's, grounded on the
@@ -270,6 +324,9 @@ and release pair/shadow budgets are accepted.
 **Not yet.** Seasonal phenology and seed-head geometry; measured patch sky AO and calibrated
 thickness/colour; sparse-family card coverage; exact per-texel density conservation;
 slope-conforming patches; tussock spacing and base height from a field measurement (authored today);
+the transition band in metres where a site field and not the mosaic draws the boundary (the band reads
+the noise's gradient alone, G138) and a band width from a measured tall-to-short boundary rather than
+the height mosaic's scale;
 a `field`-kind meadow forb, so forbs need no pose-table run and can stand past the near ring and past
 `forb_tile_cap` (a request: the herb's solver and the field pass are not this module's sward); zero-footprint
 host support; field sway, persistent contact/recovery fields and caster policy on the engine side; far-ground wind sheen. The
