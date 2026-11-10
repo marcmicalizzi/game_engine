@@ -1375,7 +1375,7 @@ struct WaterBody @version(5) {
 /// points falls at 45 degrees or steeper the water is in free fall and that stretch is a waterfall.
 /// Refused with a sentence: fewer than two points, arrays of unequal length, a width or depth that
 /// is not positive, a slope that is negative where the line descends.
-struct WaterChannel @version(3) {
+struct WaterChannel @version(4) {
   name: string
   /// The centreline, downstream, world positions; each point's y is the **water surface's**
   /// height there.
@@ -1414,6 +1414,15 @@ struct WaterChannel @version(3) {
   /// it, and the water lies under the ground there). One per point; empty where the writer did not
   /// fit it. The water reads nothing of it: a record of what the writer did.
   fit: u8[] @since(3)
+  /// **The bank's reach beyond the water's edge** (T78; scene_gen.md, "Exclusion"): the placements
+  /// leave a point bare within `w / 2 + bank_width_widths * w + bank_width_m` of the line, `w` the
+  /// width there. The channels recipe's numbers of the same names, handed over here so the
+  /// exclusion reads the recipe's reach and not a copy of its defaults; the defaults are the
+  /// recipe's, and a writer that leaves them out (every scene before T78) is excluded as before.
+  /// The water reads neither. A negative or non-finite one is read as its default. f64, so the
+  /// defaults are the exclusion's old constants to the bit (0.4 has no exact f32).
+  bank_width_widths: f64 = 0.25 @since(4)
+  bank_width_m: f64 = 0.4 @since(4) @unit(m)
 }
 
 /// One bed of a formation's sequence (`Formation`; renderer.md, "Formation bands"; the grounding,
@@ -2078,7 +2087,12 @@ struct Percentiles @version(1) {
   mean: f64 = 0
 }
 
-struct PassPercentiles @version(5) {
+/// A path's distribution of every pass bucket the frame record has (`PassMs`), under the same
+/// names. **One entry per `PassMs` field, by name**: `summarize_frames` fills it by walking
+/// `PassMs`'s descriptor, so a bucket added there and not here fails the flythrough test that walks
+/// it ("the summary carries a median, p95 and p99 for every pass bucket"). Version 6 (T78) added
+/// the fifteen the hand-written list had missed since `PassMs` versions 3 to 9.
+struct PassPercentiles @version(6) {
   cull: Percentiles
   hw: Percentiles
   sw: Percentiles
@@ -2097,6 +2111,24 @@ struct PassPercentiles @version(5) {
   tables: Percentiles @since(4)
   /// A sky's tables and sums (PassMs.sky); zero for a scene with no sky.
   sky: Percentiles @since(5)
+  /// Version 6 (T78): the rest of `PassMs`, each as that struct says — the pool's allocation, the
+  /// shadow culls, the frame passes, the half-rate sun, R130's chain zones, the terrain's copies,
+  /// what no bucket names, and the GI cache's two passes.
+  deform_alloc: Percentiles @since(6)
+  shadow_cull: Percentiles @since(6)
+  frame_passes: Percentiles @since(6)
+  half_sun: Percentiles @since(6)
+  rt_records: Percentiles @since(6)
+  rt_ranges: Percentiles @since(6)
+  rt_drop: Percentiles @since(6)
+  rt_emit: Percentiles @since(6)
+  rt_cache: Percentiles @since(6)
+  clas_cache: Percentiles @since(6)
+  tlas: Percentiles @since(6)
+  terrain_upload: Percentiles @since(6)
+  unbucketed: Percentiles @since(6)
+  gi_trace: Percentiles @since(6)
+  gi_fold: Percentiles @since(6)
 }
 
 /// The frames' CPU stages over a path (`FrameRecord.cpu`, each frame's median across the repeats,

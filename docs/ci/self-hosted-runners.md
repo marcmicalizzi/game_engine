@@ -626,12 +626,27 @@ cd ~/actions-runner && sudo ./svc.sh uninstall && ./config.sh remove --token <re
 
 `.github/workflows/gpu.yml` runs on **`workflow_dispatch`** (Actions > GPU > Run workflow, with an
 optional `clean` input that deletes `build/<preset>` first) and on a weekly **`schedule`**, Mondays at
-06:17 UTC. Nothing else triggers it. Each job takes `timeout-minutes: 90`, checks the repository out
+06:17 UTC. Nothing else triggers it. Each machine's job takes `timeout-minutes: 540` (below), checks the repository out
 with `clean: false` so the build directory survives between runs and a weekly build stays
 incremental, runs its platform's smoke script, and uploads
 `build/<preset>/Testing/Temporary/LastTest.log` as an artifact with `if: always()`, so a failing run
 is the one whose log you can actually read. The two jobs are independent: if one machine is offline
 its job queues until that runner comes back or the run is cancelled, and the other still reports.
+
+**The timeouts come from a measured run** (T78, 2026-11-09). Until then both jobs had 90 minutes,
+a figure from the days the suite took minutes, while the merge gate's server leg on gate b57 took
+about **3 h 50** serial, 3 h 34 of it CTest ([what to run](what-to-run.md#how-long-things-take),
+[remote Linux](remote-linux.md)), so a scheduled run would have been cancelled half way. That leg
+builds `linux-server` (GCC, RelWithDebInfo); the `linux-pascal` job builds `linux-server-debug`
+(Clang, Debug, asserts on), which took **1.79 times** the release suite's time on the same server
+with the GPU tests running (10 m 23 s against 5 m 48 s, 2026-09-23). So: 3 h 34 × 1.79 is about
+6 h 23 of CTest, plus the leg's 16 minutes of sync, configure and incremental build, 6 h 40; times
+1.3 for a slow day (b57's first run ran its long tests three-tenths slower than its second), 8 h 40;
+**540 minutes**. The `windows-maxwell` job has never been timed on its machine, so it takes the same
+ceiling until its first run is, and that run's time goes here with the number it implies. The
+`reference` job's 120 minutes is not a measurement either: no runner has carried the `rtx` label.
+Each number has its reasoning beside it in `gpu.yml`; when a figure here moves by more than a third,
+move the timeout with it.
 
 `ci.yml` is untouched by all of this and remains the gate on every push and pull request.
 

@@ -85,6 +85,19 @@ struct MeshOptions {
   const materials::Pack* materials = nullptr;
 };
 
+// **The pack a host hands a generated mesh** (docs/subsystems/materials.md; T78): the repository's,
+// `<repo>/content/materials` above `executable_dir` (`materials::default_pack_dir`), or null when
+// there is none. Every host that builds a mesh or a manifest calls `attach_repository_pack`, so
+// `engine-content build` and `build-all` and engine-host's `content.build` build a generated mesh
+// with the same pack and the same key; until T78 this lived in engine-content alone and the
+// protocol's build gave a palm none.
+const materials::Pack* repository_pack(std::string_view executable_dir);
+// `options.materials = repository_pack(executable_dir)` for a source that names a mesh generator
+// (`assets::mesh_generator_of`), and nothing for any other — the pack is not even looked for — so a
+// glTF's key and bytes never depend on a pack.
+void attach_repository_pack(std::string_view source, std::string_view executable_dir,
+                            MeshOptions& options);
+
 // Every key a build records: `geometry::cluster_cache_key` over the source hash and the options,
 // then moved by the two steps outside the geometry — `--no-morph` and `--atlas repack` — each only
 // when it is asked for, so that a container built before either existed is still the answer to
@@ -342,8 +355,8 @@ struct MeshTask {
 // One task, as a job function (`data` is the `MeshTask`). It hashes the source, computes the build
 // key, and **skips the entry when the container already at the output records that same source
 // hash and that same key** — which is what the container's `source_hash` section is for, and why a
-// container that records none (an older build, or one engine-view wrote) is rebuilt rather than
-// trusted. An incremental build never decides from a timestamp.
+// container that records none (an older build, or one engine-view wrote before T78) is rebuilt
+// rather than trusted. An incremental build never decides from a timestamp.
 void run_mesh_task(void* data);
 
 // Every task as one job on the performance pool, waited for. Leave each task's own `pool` null, so

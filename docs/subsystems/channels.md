@@ -138,6 +138,12 @@ one JSON line: entries, heads, links, metres of channel, the region's km² and k
 written. `water_channels_json` is the function, and the subcommand's end-to-end test holds its output
 to the network planned in-process over the same provider.
 
+**A recipe whose banks are not the defaults** writes `bank_width_widths` and `bank_width_m` on every
+block (`WaterChannel` version 4; T78, 2026-11-09): they are the reach the placements leave bare beyond
+the water's edge ([scene_gen](scene_gen.md#exclusion)), which `scene_gen` reads from the description
+because it may not name this capability. At the defaults neither is written, so every description
+written before is still the bytes it was, and a scene that holds one reads at the defaults.
+
 ## The cut
 
 (2026-11-07, roadmap W89; the POC's v35 engine-needs, item 1, and the owner's walk, item 11.) A real

@@ -1174,6 +1174,12 @@ bool content_build_method(protocol::Context&, const protocol::ContentBuildParams
     entry.options = options;
     entries.push_back(std::move(entry));
   }
+  // A generated mesh's parts fall back to the repository's material pack, as `engine-content build`
+  // and `build-all` have them do and through the same function, so the two hosts build the same
+  // bytes under the same key (T78; until then this host gave a palm no pack).
+  for (content_build::ManifestEntry& entry : entries)
+    content_build::attach_repository_pack(entry.source, platform::executable_directory(),
+                                          entry.options);
 
   // The derived-data root: the cache's, and the texture step's. A named `ddc` is one even with no
   // output in the cache, as engine-content's `--ddc` is; `cache` with none named finds the

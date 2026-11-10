@@ -54,14 +54,18 @@ jobs:
     runs-on: [self-hosted, windows, gpu]
     # Weekly and on demand, not on the nightly reference schedule.
     if: ${{ github.event_name != 'schedule' || github.event.schedule == '17 6 * * 1' }}
-    timeout-minutes: 90
+    # 9 h (T78, 2026-11-09). Never measured on this machine; it was 90 minutes, a figure from
+    # before the suite reached hours. The only measured whole suite on a baseline-tier card is the
+    # Titan Xp server's below, so this job takes the same ceiling until its first run is timed and
+    # written in docs/ci/self-hosted-runners.md ("The GPU workflow").
+    timeout-minutes: 540
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
           # Self-hosted runners keep their workspace between runs; leaving
-          # build/ in place makes this an incremental build, which is what fits
-          # in the timeout on an i7-980. Use the clean input for a full rebuild.
+          # build/ in place makes this an incremental build. Use the clean
+          # input for a full rebuild.
           clean: false
 
       - name: Clean build directory
@@ -101,7 +105,15 @@ jobs:
     name: Linux linux-server-debug (GTX Titan Xp, Pascal, headless)
     runs-on: [self-hosted, linux, gpu]
     if: ${{ github.event_name != 'schedule' || github.event.schedule == '17 6 * * 1' }}
-    timeout-minutes: 90
+    # 9 h (T78, 2026-11-09; docs/ci/self-hosted-runners.md, "The GPU workflow"). Measured: the
+    # merge gate's server leg on gate b57, 2026-11-09, ran about 3 h 50 serial, 3 h 34 of it CTest
+    # (docs/ci/what-to-run.md, "How long things take"; docs/ci/remote-linux.md) -- but in
+    # `linux-server`, GCC RelWithDebInfo. This job runs `linux-server-debug`, Clang Debug with
+    # asserts, which took 1.79 times the release suite's time on this server with the GPU tests
+    # running (10 m 23 s against 5 m 48 s, 2026-09-23, remote-linux.md): about 6 h 23 of CTest and
+    # 16 minutes of build, 6 h 40. Headroom 1.3, the slow day b57's first run had (its long tests
+    # three-tenths slower), gives 8 h 40; 540 rounds it up. It was 90 minutes until T78.
+    timeout-minutes: 540
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -157,6 +169,7 @@ jobs:
     name: Reference comparison (RTX, msvc-release)
     runs-on: [self-hosted, windows, gpu, rtx]
     if: ${{ github.event_name != 'schedule' || github.event.schedule == '41 7 * * *' }}
+    # Not measured: no runner has carried the label, so the job has never run (T78 left it).
     timeout-minutes: 120
     steps:
       - name: Checkout

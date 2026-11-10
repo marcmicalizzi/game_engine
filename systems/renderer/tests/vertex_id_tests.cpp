@@ -3,7 +3,9 @@
 // glTF or read back out of the derived-data cache, and empty for a mesh with none. Nothing here
 // needs a GPU — the ids are host-side only and nothing uploads them.
 
+#include <domain/content_build/content_build.h>
 #include <domain/geometry/cluster.h>
+#include <domain/geometry/cluster_file.h>
 #include <systems/renderer/scene.h>
 
 #include <doctest/doctest.h>
@@ -185,4 +187,52 @@ TEST_CASE("renderer: a loaded mesh exposes its canonical vertex ids, from the gl
   REQUIRE_MESSAGE(load_scene(terrain, ground, error), error);
   CHECK(ground.parts[0].vertex_id_source == geometry::VertexIdSource::none);
   CHECK(mesh_vertex_ids(ground, 0).empty());
+}
+
+// **The entry a load writes records what it was built from** (T78; geometry.md, "The derived-data
+// cache"; content_build.md): the source's hash and the build key engine-content computes for the
+// same file and the default options, so `engine-content build-all` finds it already the answer and
+// does not build it again. Until T78 the renderer's `write_cluster_cache` recorded neither, and
+// every entry engine-view wrote was rebuilt by the next manifest build. It lives beside the ids
+// because it needs what they need: a glTF of the test's own, a cache in its own directory, no GPU.
+TEST_CASE("renderer: a cache entry a load writes records its source, and build-all skips it") {
+  const test::TempDir tmp("engine_renderer_cache_identity");
+  const std::filesystem::path dir = tmp.native();
+  const std::string mesh = slashes(dir / "quads.gltf");
+  const std::string ddc = slashes(dir / "ddc");
+  REQUIRE(write_quads(mesh, false));
+  SceneDesc desc;
+  desc.meshes.push_back(mesh);
+  desc.ddc = ddc;
+  std::string error;
+  SceneData data;
+  REQUIRE_MESSAGE(load_scene(desc, data, error), error);
+  CHECK(std::string(data.mesh_cache) == "miss");
+  REQUIRE(data.sources.size() == 1);
+  const std::string entry = data.sources[0].container;
+  REQUIRE_MESSAGE(!entry.empty(), "the load wrote no cache entry");
+
+  // What engine-content would record for this file at its defaults.
+  u64 source_hash = 0;
+  std::string message;
+  REQUIRE_MESSAGE(content_build::source_hash_of(mesh, source_hash, &message), message);
+  const content_build::MeshOptions defaults;
+  const u64 key = content_build::mesh_build_key(mesh, source_hash, defaults);
+  CHECK(entry == geometry::cluster_cache_path(ddc, key));
+  geometry::ClusterFileData written;
+  REQUIRE_MESSAGE(geometry::read_cluster_file(entry, written, &error), error);
+  CHECK(written.source_hash == source_hash);
+  CHECK(written.build_key == key);
+
+  // And the manifest build's own rule takes it as current: skipped, not rebuilt.
+  content_build::ManifestEntry manifest_entry;
+  manifest_entry.source = mesh;
+  manifest_entry.options = defaults;
+  content_build::MeshTask task;
+  task.entry = &manifest_entry;
+  task.ddc = &ddc;
+  content_build::run_mesh_task(&task);
+  CHECK_MESSAGE(task.state == content_build::TaskState::Skipped,
+                "build-all would rebuild the entry the renderer wrote: " << task.error.message);
+  CHECK(task.result.path == entry);
 }
