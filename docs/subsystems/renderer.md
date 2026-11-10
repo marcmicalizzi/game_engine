@@ -2095,8 +2095,10 @@ which stages 2 and 3 both met.
 **What it measured, and why both knobs are off** ([the page](../experiments/gi-cache-2026-11-07.md#stage-4-the-light-round-the-eye)
 has the curves and the costs). On v37's `south-lake` turn (180° over 30 frames at 1920×1080) the
 samples took four fifths of the turn's bias away (the first frame's mean error in the term −0.094 →
-−0.018 of a luma step) but not its distance from the held frame (1.68 → 1.76), which is the cache's
-own noise between two estimates 176 frames apart rather than a fill; the walk and the flight were a
+−0.018 of a luma step) but not its distance from the held frame (1.68 → 1.76, against 0.43 for a
+control held at that pose with no turn): what is left is the variance of cells holding a few
+samples, which 65,536 directions a frame do not out-sample the young cells' rays on a 30-frame
+turn; the walk and the flight were a
 little worse, the samples' rays coming out of the young half the cells newly in view need. The
 volume added 4,200 casters at 48 m to the 388,000 the frame keeps, because at that hour the sun's
 sweep already holds the forest behind the eye. In the box seen from inside, turned in four frames,
