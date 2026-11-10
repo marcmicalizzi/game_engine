@@ -21,11 +21,16 @@
 // every candidate opaque, as the shadow rays do.
 //
 // **A terrain hit** (a root material with `k_material_terrain_layers`, only in the terrain modules)
-// is shaded by the record's first layer's mean colour and roughness — what a far pixel of it reads
-// when the layers' maps are their means (renderer.md, "What a far pixel reads") — rather than the
-// stochastic sampling, which a reflection rippled by the waves would not show and would pay for.
-// Every other hit reads its base colour at the mip its footprint selects (`k_material_mipped`), no
-// normal map and no ground detail.
+// takes the ground's own material at the hit through `terrain_hit_material` (terrain_material.slang):
+// the masks' weights there, at the mip the ray's footprint selects, blending the layers' mean colours
+// and roughness — what a far pixel of it reads when the layers' maps are their means (renderer.md,
+// "What a far pixel reads") — with the root under a thin cover, the snow's and the beach's responses,
+// the porous ground's wetness and, in the water modules, the shore's wet band (S99). Not the
+// stochastic sampling or the detail maps, which a reflection rippled by the waves would not show and
+// would pay for. Until 2026-11-09 (R129's second step) it took the record's **first** layer's mean
+// alone: the means were the cheap half of the rule and the weights the half it skipped, so the
+// forest's tan bank reflected as its meadow (the POC's item 24). Every other hit reads its base
+// colour at the mip its footprint selects (`k_material_mipped`), no normal map and no ground detail.
 //
 // Included by water_reflect.slang, inside visibility_resolve.slang with RESOLVE_RAY_SHADOWS and
 // RESOLVE_WATER: the ray-traced water modules alone. Every other module is the bytes it was.
@@ -123,13 +128,23 @@ float3 shade_hit(ResolveParams* params, RayDesc ray, SceneHit hit, float footpri
   bool sampled_here = true;
 #ifdef MATERIAL_TERRAIN
   if ((material.flags & k_material_terrain_layers) != 0) {
-    ResolveMaterial* table = (ResolveMaterial*)geo.materials;
-    const TerrainRecord rec = ((TerrainRecord*)geo.materials)[terrain_record_index(material)];
-    if (rec.layer_count != 0u) {
-      const ResolveMaterial layer = table[rec.first_layer];
-      albedo = terrain_layer_mean_colour(layer);
-      roughness = terrain_layer_mean_roughness(layer);
-      metallic = 0.0;
+    // The shore's wet band (S99) where the bank meets the water, as the resolve finds it for a
+    // ground pixel: the first thing a reflection of a shore shows. Only in the water modules, which
+    // are the ones that hold the scene's shore records.
+    float shore_s = 0.0;
+    float shore_film = 0.0;
+#ifdef RESOLVE_WATER
+    const WaterWetGround wet =
+        water_ground_wetness(params, material, instance, surf.position, footprint_m);
+    shore_s = wet.s;
+    shore_film = (params->shadow_flags & k_shadow_wet_film_off) != 0 ? -1.0 : wet.film;
+#endif
+    MaterialSample ground;
+    if (terrain_hit_material(geo, material, surf.position, footprint_m, ground, shore_s,
+                             shore_film)) {
+      albedo = ground.albedo;
+      roughness = ground.roughness;
+      metallic = ground.metallic;
       emissive = float3(0.0);
       sampled_here = false;
     }

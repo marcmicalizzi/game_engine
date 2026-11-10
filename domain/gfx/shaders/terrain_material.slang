@@ -1104,4 +1104,225 @@ MaterialSample sample_terrain_material(SceneGeometry geo, ResolveMaterial root, 
   shading_normal = normalize(n + slope);
   return terrain_wet(result, shore_s, shore_film, shore_porosity);
 }
+
+// ---- What a ray's hit reads of the ground (R129; water.md, "Reflections of the scene") ---------
+// A ray that meets a terrain and decodes its own hit — the water's reflection (hit_shade.slang),
+// and the second caller this is shaped for, the GI bounce (renderer.md, "Indirect light", stage 1b)
+// — takes the ground's material at the hit reduced to what a reflection rippled by waves, or a
+// bounce over a cache cell, can show: **the masks' weights at the hit**, at the mip the ray's
+// footprint selects, blending **the layers' means** (the colour and roughness the layer record
+// carries, which is what a far pixel's maps filter down to: renderer.md, "What a far pixel reads").
+// Until R129's second step the hit took the record's first layer's mean alone — the means were the
+// cheap half of the rule and the weights the half it skipped — so a forest's sand bank reflected as
+// its meadow. Kept, each a few instructions on the record and the mask words already read: the root
+// under a cover short of one, the height blend at the layers' mean heights, snow's albedo by its
+// grain, the beach's own wetness and porous ground's (Lagarde), and the shore's wet band (S99) where
+// the caller found one; a painted (`Map`) layer is read from its map at the footprint, since its
+// mean is the whole map's. Left out: the stochastic lattice, the detail and normal maps, the
+// normal-variance roughness (R97), the formation's bands (W85) and the glints (R99) — what the
+// ripples hide, or a fetch a layer for a share of the ground the reflection does not resolve.
+//
+// `point` is frame-local (the eye at the origin, as every reader's), `footprint_m` the ray's width
+// at the hit (0: mip 0, as the path tracer reads), `shore_s` and `shore_film` as
+// `sample_terrain_material` takes them. False, and `result` untouched, for a root whose record has
+// no layers: the caller samples it as the ordinary material it is.
+//
+// The map's UV is `sample_terrain_material`'s arithmetic copied rather than shared, so that function
+// and every module that draws the ground directly compile to the bytes they did.
+float2 terrain_hit_map_uv(SceneGeometry geo, TerrainRecord rec, float3 point) {
+  const int64_t x_mm = int64_t(geo.eye.cell.x) * int64_t(64000) - int64_t(rec.map_x0_mm);
+  const int64_t z_mm = int64_t(geo.eye.cell.z) * int64_t(64000) - int64_t(rec.map_z0_mm);
+  const float per_mm = rec.map_per_mm;
+  const float2 local_mm = (geo.eye.local.xz + geo.eye.residual.xz + point.xz) * 1000.0;
+  const int64_t k_exact = 16777216;
+  if (x_mm > -k_exact && x_mm < k_exact && z_mm > -k_exact && z_mm < k_exact)
+    return (float2(float(x_mm), float(z_mm)) + local_mm) * per_mm;
+  const int64_t x_hi = terrain_magnitude_floor_div(x_mm, 1024) * 1024;
+  const int64_t z_hi = terrain_magnitude_floor_div(z_mm, 1024) * 1024;
+  return float2(float(x_hi), float(z_hi)) * per_mm +
+         (float2(float(x_mm - x_hi), float(z_mm - z_hi)) + local_mm) * per_mm;
+}
+
+// One layer at a hit (above): its mean colour, roughness and height, or a painted layer's map at
+// the footprint (`map_w`, the footprint in the map's UV), then its response on its record word.
+float3 terrain_hit_layer(ResolveMaterial layer, float2 map_uv, float map_w, float wet,
+                         out float roughness, out float height) {
+  float3 colour;
+  if ((layer.flags & k_material_terrain_map) != 0) {
+    const MaterialSample s =
+        sample_material_grad(layer, map_uv, float2(map_w, 0.0), float2(0.0, map_w));
+    colour = s.albedo;
+    roughness = s.roughness;
+    height = s.metallic;
+  } else {
+    colour = terrain_layer_mean_colour(layer);
+    roughness = terrain_layer_mean_roughness(layer);
+    height = (layer.flags & k_material_terrain_stochastic) != 0 ? terrain_layer_mean_height(layer)
+                                                                : 0.5;
+  }
+  if ((layer.flags & k_material_terrain_height) == 0) height = 0.5;
+  if ((layer.flags & k_material_terrain_snow) != 0u) {
+    const float3 mean = max(terrain_layer_mean_colour(layer), float3(1e-4));
+    colour = terrain_snow_albedo(terrain_snow_grain_mm(layer)) * layer.albedo.rgb *
+             saturate(colour / mean);
+    height = terrain_snow_thickness(layer);
+  } else if ((layer.flags & k_material_terrain_beach) != 0u && wet > 0.0) {
+    const float3 dark = terrain_wet_darkening(colour);
+    const float amount = wet * terrain_beach_wet(layer);
+    colour *= lerp(float3(1.0), dark, amount);
+    roughness *= lerp(1.0, (dark.x + dark.y + dark.z) * (1.0 / 3.0), 0.5 * amount);
+  }
+  return colour;
+}
+
+bool terrain_hit_material(SceneGeometry geo, ResolveMaterial root, float3 point, float footprint_m,
+                          out MaterialSample result, float shore_s = 0.0, float shore_film = 0.0) {
+  result.albedo = float3(0.0);
+  result.roughness = 1.0;
+  result.metallic = 0.0;
+  result.emissive = float3(0.0);
+  result.detail_mask = 0.0;
+  result.normal_filter = false;
+  ResolveMaterial* table = (ResolveMaterial*)geo.materials;
+  const TerrainRecord rec = ((TerrainRecord*)geo.materials)[terrain_record_index(root)];
+  if (rec.layer_count == 0u) return false;
+  const float footprint_mm = 1000.0 * max(footprint_m, 0.0);
+  const float2 map_uv = terrain_hit_map_uv(geo, rec, point);
+  const float map_w = footprint_mm * rec.map_per_mm;
+  float metallic = 0.0;
+  float shore_porosity = 0.5;
+  if ((rec.flags & k_terrain_masked) != 0) {
+    const float level =
+        footprint_mm > 0.0 ? log2(max(footprint_mm / float(rec.mask_spacing_mm), 1.0)) : 0.0;
+    const TerrainMaskSample mask = terrain_mask_sample(rec, geo.eye, point, level);
+    float wet = rec.wetness;
+    float cover = 0.0;
+    float3 colour = float3(0.0);
+    float roughness = 0.0;
+    float porosity = 0.0;
+    float pores = 0.0;
+    float lobe = 0.0;
+    bool any_snow = false;
+    if (mask.valid) {
+      wet = max(rec.wetness, mask.wetness);
+      float3 c[4];
+      float r[4];
+      float h[4];
+      float weight[4];
+      uint entry[4];
+      float total = 0.0;
+      bool any_height = false;
+      [unroll] for (uint k = 0; k < 4; ++k) {
+        const uint index = (mask.table >> (8 * k)) & 0xFFu;
+        weight[k] = index == 0xFFu || index >= rec.layer_count ? 0.0 : mask.weights[k];
+        entry[k] = rec.first_layer + min(index, rec.layer_count - 1u);
+        c[k] = float3(0.0);
+        r[k] = 0.0;
+        h[k] = 0.5;
+        if (weight[k] <= 0.0) continue;
+        const ResolveMaterial layer = table[entry[k]];
+        c[k] = terrain_hit_layer(layer, map_uv, map_w, wet, r[k], h[k]);
+        any_height = any_height || (layer.flags & k_material_terrain_height) != 0 ||
+                     (layer.flags & k_material_terrain_snow) != 0u;
+        any_snow = any_snow || (layer.flags & k_material_terrain_snow) != 0u;
+        total += weight[k];
+      }
+      if (total > 0.0) {
+        cover = min(total, 1.0);
+        // The height blend (Mishkinis 2013) at the layers' mean heights, as the resolve's.
+        float blended[4];
+        float sum = 0.0;
+        float top = -1e9;
+        if (any_height && rec.height_blend > 0.0) {
+          [unroll] for (uint k = 0; k < 4; ++k)
+            if (weight[k] > 0.0) top = max(top, h[k] + weight[k]);
+        }
+        [unroll] for (uint k = 0; k < 4; ++k) {
+          blended[k] = weight[k];
+          if (any_height && rec.height_blend > 0.0)
+            blended[k] = weight[k] > 0.0 ? max(h[k] + weight[k] - (top - rec.height_blend), 0.0)
+                                         : 0.0;
+          sum += blended[k];
+        }
+        [unroll] for (uint k = 0; k < 4; ++k) {
+          if (blended[k] <= 0.0) continue;
+          const float w = blended[k] / sum;
+          const ResolveMaterial layer = table[entry[k]];
+          colour += w * c[k];
+          roughness += w * r[k];
+          porosity += w * ((layer.flags & k_material_terrain_beach) != 0u
+                               ? 0.0
+                               : terrain_layer_porosity(layer));
+          pores += w * terrain_layer_porosity(layer);
+          if (any_snow)
+            lobe += w * ((layer.flags & k_material_terrain_snow) != 0u ? terrain_snow_lobe(layer)
+                                                                         : 1.0);
+        }
+      }
+    }
+    // The root shows only where the masks' cover falls short of one (no tile, or a thin one).
+    float3 albedo = colour;
+    if (cover < 1.0) {
+      const MaterialSample base =
+          sample_material_grad(root, map_uv, float2(map_w, 0.0), float2(0.0, map_w));
+      albedo = lerp(base.albedo, colour, cover);
+      roughness = lerp(base.roughness, roughness, cover);
+    }
+    if (cover > 0.0) {
+      porosity = lerp(0.5, porosity, cover);
+      shore_porosity = lerp(0.5, pores, cover);
+      const float darkening = lerp(1.0, 0.2, porosity);
+      albedo *= lerp(1.0, darkening, wet);
+      roughness *= lerp(1.0, darkening, 0.5 * wet);
+      if (any_snow) {
+        metallic = terrain_lobe_metallic(dot(albedo, float3(1.0 / 3.0)), lerp(1.0, lobe, cover));
+        albedo /= 1.0 - metallic;
+      }
+    } else if (mask.valid) {
+      albedo *= lerp(1.0, 0.6, wet);
+      roughness *= lerp(1.0, 0.6, 0.5 * wet);
+    }
+    result.albedo = albedo;
+    result.roughness = roughness;
+  } else {
+    // W68's layers over the root, each its coverage: its weight times its coverage map at the
+    // footprint, as the resolve reads it.
+    const MaterialSample base =
+        sample_material_grad(root, map_uv, float2(map_w, 0.0), float2(0.0, map_w));
+    result.albedo = base.albedo;
+    result.roughness = base.roughness;
+    bool any_snow = false;
+    float lobe = 1.0;
+    for (uint i = 0; i < rec.layer_count; ++i) {
+      const ResolveMaterial layer = table[rec.first_layer + i];
+      float coverage = terrain_layer_weight(layer);
+      if (layer.occlusion_texture != k_no_texture) {
+        const uint slot = slot_sampler(layer, layer.samplers_occlusion_emissive, 0);
+        if ((layer.flags & k_material_mipped) != 0)
+          coverage *= g_textures[NonUniformResourceIndex(layer.occlusion_texture)].SampleGrad(
+              g_samplers[NonUniformResourceIndex(slot)], map_uv, float2(map_w, 0.0),
+              float2(0.0, map_w)).r;
+        else
+          coverage *= g_textures[NonUniformResourceIndex(layer.occlusion_texture)].SampleLevel(
+              g_samplers[NonUniformResourceIndex(slot)], map_uv, 0).r;
+      }
+      if (coverage <= 0.0) continue;
+      float roughness, height;
+      const float3 colour = terrain_hit_layer(layer, map_uv, map_w, 0.0, roughness, height);
+      const bool snow = (layer.flags & k_material_terrain_snow) != 0u;
+      any_snow = any_snow || snow;
+      lobe = lerp(lobe, snow ? terrain_snow_lobe(layer) : 1.0, coverage);
+      result.albedo = lerp(result.albedo, colour, coverage);
+      result.roughness = lerp(result.roughness, roughness, coverage);
+      shore_porosity = lerp(shore_porosity, terrain_layer_porosity(layer), coverage);
+    }
+    if (any_snow) {
+      metallic = terrain_lobe_metallic(dot(result.albedo, float3(1.0 / 3.0)), lobe);
+      result.albedo /= 1.0 - metallic;
+    }
+  }
+  result.metallic = metallic;
+  result = terrain_wet(result, shore_s, shore_film, shore_porosity);
+  return true;
+}
 #endif

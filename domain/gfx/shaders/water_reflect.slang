@@ -27,6 +27,19 @@ static const uint k_shadow_water_reflect_full = 128u;      // gfx::k_shadow_wate
 static const uint k_shadow_water_reflect_unshadowed = 256u;  // gfx::..._unshadowed
 static const float k_water_reflect_m = 4000.0;             // gfx::k_water_reflect_m
 
+// **The diagnostic** (`renderer.water.reflect_shadow` 3; water.md, "Reflections of the scene"): both
+// rate bits at once, which no rate sets. Each water pixel's reflection is a colour saying what its
+// rays met — red where the rippled ray met nothing, green where it met a surface, and blue added
+// where the ray the same pixel would send off a flat mirror met one — scaled past any exposure, so
+// a capture's channels read as bits. What tells the stripes' causes apart: a caster the chain or the
+// budget dropped is a miss of both rays (red), the waves sending the ray off what the mirror holds
+// is magenta, a hit is green or cyan.
+static const float k_water_reflect_diagnostic_scale = 1.0e9;
+bool water_reflect_diagnostic(uint flags) {
+  const uint both = k_shadow_water_reflect_full | k_shadow_water_reflect_unshadowed;
+  return (flags & both) == both;
+}
+
 // Whether this pixel's reflected hit asks its shadow ray (above).
 bool water_reflect_shadowed(uint flags, uint2 pixel) {
   if ((flags & k_shadow_water_reflect_unshadowed) != 0) return false;
@@ -47,6 +60,16 @@ float3 water_reflection(ResolveParams* params, Surface s, float3 r, float ray_bi
   ray.TMin = 0.0;
   ray.TMax = k_water_reflect_m;
   SceneHit hit;
+  if (water_reflect_diagnostic(params->shadow_flags)) {
+    const bool rippled = trace_scene_hit(params, ray, hit);
+    // The flat mirror's ray: the view reflected off the level surface, from the same point.
+    const float3 d = normalize(s.position - params->camera.xyz);
+    RayDesc flat = ray;
+    flat.Direction = float3(d.x, -d.y, d.z);
+    const bool mirror = flat.Direction.y > 1.0e-4 && trace_scene_hit(params, flat, hit);
+    return float3(rippled ? 0.0 : 1.0, rippled ? 1.0 : 0.0, mirror ? 1.0 : 0.0) *
+           k_water_reflect_diagnostic_scale;
+  }
   if (!trace_scene_hit(params, ray, hit)) return sky;
   // The ray's width at the hit: this view's pixel angle (two over the projection's y scale and the
   // height; the eye is the frame's origin, so the view-projection's second row is the scale times a

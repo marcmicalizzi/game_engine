@@ -10,6 +10,8 @@
 #include <core/math/math.h>
 #include <core/math/world.h>
 #include <domain/gfx/device.h>
+#include <domain/scene_gen/ground_masks.h>
+#include <domain/scene_gen/scene_gen.h>
 #include <foundation/tunables/tunables.h>
 #include <systems/renderer/capture.h>
 #include <systems/renderer/gpu_scene.h>
@@ -20,10 +22,12 @@
 #include <doctest/doctest.h>
 #include <test_temp_dir.h>
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <fstream>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -376,3 +380,270 @@ TEST_CASE("water reflect: the mirrored caster volume puts what is above the fram
 }
 
 #endif
+
+// ---- A ray's hit on the ground takes the ground's material (R129's second step) ---------------
+// Outside the dunes' guard: a ground of its own (scene_gen's registrar pattern) rather than the
+// renderer's. A level pool fills a bowl whose banks are a two-layer palette under ground masks: the
+// first layer, grass, south of z = 0 and the second, sand, north of it, so the far bank the camera
+// looks across the water at is sand under the masks' whole weight and grass carries none of it
+// there. Until R129's second step a terrain hit took the record's first layer's mean, and the far
+// bank reflected green; it reflects the sand's colour now, against the directly viewed bank within
+// a bound derived below.
+namespace {
+
+// The bowl: level at -3 m within 15 m of the origin, rising 0.4 m a metre beyond, so a pool at
+// -1 m meets its banks 20 m out and the far bank stands 16.6 m high at the terrain's edge (64 m).
+f32 bowl(f64 x, f64 z) noexcept {
+  const f64 r = std::sqrt(x * x + z * z);
+  return static_cast<f32>(-3.0 + 0.4 * std::max(r - 15.0, 0.0));
+}
+f32 bank_height(const void*, f32 x, f32 z) noexcept {
+  return bowl(static_cast<f64>(x), static_cast<f64>(z));
+}
+f32 bank_height_mm(const void*, f64, i64 x, i64 z) noexcept {
+  return bowl(static_cast<f64>(x) * 0.001, static_cast<f64>(z) * 0.001);
+}
+f32 bank_surface_mm(const void*, i64 x, i64 z) noexcept {
+  return bowl(static_cast<f64>(x) * 0.001, static_cast<f64>(z) * 0.001);
+}
+
+// The mask level: 16 m tiles of 8 cells at 2 m over [-64, 64] m, palette layer 0 (grass) south of
+// z = 0 and layer 1 (sand) north of it, half each on the seam's points.
+constexpr u32 k_cells = 8;
+constexpr i64 k_spacing_mm = 2000;
+constexpr i32 k_tile_lo = -4;
+constexpr i32 k_tile_hi = 3;
+bool bank_mask_info(const void*, scene_gen::GroundMaskInfo& out) noexcept {
+  out = scene_gen::GroundMaskInfo{};
+  out.spacing_mm = k_spacing_mm;
+  out.cells = k_cells;
+  out.tile_min_x = out.tile_min_z = k_tile_lo;
+  out.tile_max_x = out.tile_max_z = k_tile_hi;
+  out.palette = 2;
+  out.budget = 2;
+  return true;
+}
+bool bank_mask_present(const void*, i32 tx, i32 tz) noexcept {
+  return tx >= k_tile_lo && tx <= k_tile_hi && tz >= k_tile_lo && tz <= k_tile_hi;
+}
+bool bank_mask_tile(const void*, i32 tx, i32 tz, std::span<u32> words) noexcept {
+  if (!bank_mask_present(nullptr, tx, tz)) return false;
+  for (u32& w : words)
+    w = 0;
+  words[0] = 0u | (1u << 8) | 0xFFFF0000u;
+  for (u32 m = 0; m < scene_gen::mask_mips(k_cells); ++m) {
+    const u32 side = scene_gen::mask_mip_side(k_cells, m);
+    for (u32 b = 0; b < side; ++b)
+      for (u32 a = 0; a < side; ++a) {
+        const i64 z = static_cast<i64>(tz) * k_cells + (static_cast<i64>(b) << m);
+        const u32 grass = z < 0 ? 255u : (z == 0 ? 128u : 0u);
+        const u32 p = scene_gen::mask_mip_offset(k_cells, m) + b * side + a;
+        words[1 + p] = grass | ((255u - grass) << 8);
+      }
+  }
+  return true;
+}
+constexpr scene_gen::GroundMaskOps k_bank_mask_ops{
+    .present = &bank_mask_present, .info = &bank_mask_info, .tile = &bank_mask_tile};
+bool bank_masks(const void*, scene_gen::GroundMasks& out, std::string*) {
+  out = scene_gen::GroundMasks{&k_bank_mask_ops, nullptr};
+  return true;
+}
+constexpr scene_gen::GroundOps k_bank_ops{.destroy = nullptr,
+                                          .height = &bank_height,
+                                          .floor = nullptr,
+                                          .grid = nullptr,
+                                          .evaluate = nullptr,
+                                          .travel_m = nullptr,
+                                          .wind = nullptr,
+                                          .transport = nullptr,
+                                          .make_rings = nullptr,
+                                          .open_tiles = nullptr,
+                                          .record = nullptr,
+                                          .height_mm = &bank_height_mm,
+                                          .surface_mm = &bank_surface_mm,
+                                          .floor_mm = &bank_surface_mm,
+                                          .tile_source = nullptr,
+                                          .masks = &bank_masks};
+bool bank_make(const scene::Terrain&, const scene_gen::Context&, scene_gen::GroundProvider& out,
+               std::string*) {
+  out = scene_gen::GroundProvider(&k_bank_ops, nullptr);
+  return true;
+}
+constexpr scene_gen::GroundProviderDesc k_bank_provider{
+    .name = "reflect_bank_probe", .make = &bank_make, .flags = 0};
+const scene_gen::Registrar k_bank_registrar{k_bank_provider};
+
+// The palette's two layers: their tints are their mean colours (no images).
+constexpr f32 k_grass[3] = {0.10f, 0.35f, 0.06f};
+constexpr f32 k_sand[3] = {0.65f, 0.52f, 0.32f};
+
+// A pool at -1 m filling the bowl from its middle: black water (no bottom to see), a mirror (no
+// waves), no wet band, so a water pixel is its Fresnel times what its reflection met.
+const char* k_scene = R"({
+  "format": "engine.scene.v1",
+  "name": "reflect-ground-test",
+  "terrain": {"provider": "reflect_bank_probe", "size": 129, "extent": 128},
+  "water": [{"name": "pool", "level_m": -1,
+             "shape": {"fill": {"seed": [0, 0, 0], "max_extent_m": 60}},
+             "shallow": [0, 0, 0], "deep": [0, 0, 0], "wind_follow": false,
+             "wave_amplitude_m": 0, "wet_m": 0, "foam_m": 0}]
+})";
+
+bool ray_queries_here() {
+  gfx::Device probe;
+  std::string why;
+  if (!probe.create(gfx::DeviceOptions{}, &why)) {
+    MESSAGE("renderer unavailable here: " << why);
+    return false;
+  }
+  const bool ok = probe.features().buffer_int64_atomics && probe.features().ray_query &&
+                  probe.features().acceleration_structure;
+  probe.destroy();
+  if (!ok) MESSAGE("no 64-bit atomics or ray queries here: the water reflects the sky alone");
+  return ok;
+}
+
+struct RestoreReflect {
+  ~RestoreReflect() { (void)tunables::apply_overrides("renderer.water.reflect=1"); }
+};
+
+f64 linear(u8 code) {
+  const f64 c = static_cast<f64>(code) / 255.0;
+  return c <= 0.04045 ? c / 12.92 : std::pow((c + 0.055) / 1.055, 2.4);
+}
+
+}  // namespace
+
+TEST_CASE(
+    "water reflect: a far bank of sand under the masks reflects as sand, not the first layer") {
+  if (!ray_queries_here()) return;
+  const test::TempDir tmp("water_reflect_ground");
+  RestoreReflect restore;
+  gfx::Device device;
+  std::string error;
+  REQUIRE_MESSAGE(device.create(gfx::DeviceOptions{}, &error), error);
+  const std::string path = tmp.file("bank.json");
+  {
+    std::ofstream file(path, std::ios::binary);
+    file << k_scene;
+  }
+  SceneDesc desc;
+  REQUIRE_MESSAGE(read_scene_file(path, desc, error), error);
+  desc.ddc = tmp.file("ddc");
+  desc.cache = false;
+  desc.terrain.materials.emplace();
+  desc.terrain.materials->layer_budget = 2;
+  for (const auto& [name, tint] : {std::pair{"grass", k_grass}, std::pair{"sand", k_sand}}) {
+    scene::TerrainMaterialLayer l;
+    l.name = name;
+    l.tint = Vec3{tint[0], tint[1], tint[2]};
+    desc.terrain.materials->layers.push_back(l);
+  }
+  desc.terrain.masks.emplace();
+  SceneData data;
+  REQUIRE_MESSAGE(load_scene(desc, data, error), error);
+  RenderSettings settings;
+  settings.shadows = ShadowMode::RayTraced;
+  ResolvedSettings resolved;
+  resolve_settings(settings, device.features(), &data, resolved);
+  REQUIRE(check_availability(resolved, device.features()) == RenderAvailability::Ok);
+  GpuScene scene;
+  REQUIRE_MESSAGE(scene.create(device, data, resolved, &error), error);
+  REQUIRE(scene.has_water());
+  REQUIRE(scene.terrain_mask_tiles() > 0);
+  SceneRenderer renderer;
+  SceneRenderer::Desc rd;
+  rd.width = 480;
+  rd.height = 320;
+  REQUIRE_MESSAGE(renderer.create(device, scene, resolved, rd, &error), error);
+  u32 water_instance = ~0u;
+  for (u32 i = 0; i < data.instances.size(); ++i) {
+    const u32 mesh = data.instances[i].mesh;
+    if (mesh < data.mesh_info.size() && data.mesh_info[mesh].water.has_value()) water_instance = i;
+  }
+  REQUIRE(water_instance != ~0u);
+  // On the south bank, 1.7 m over the ground, across the pool at the far bank; the sun (the
+  // stand-in's, north-east and 53 degrees up) lights the bank and its glint off the mirror is under
+  // the frame.
+  FrameDesc frame;
+  frame.camera.position = WorldPos{0.0, static_cast<f64>(bowl(0.0, -24.0)) + 1.7, -24.0};
+  frame.camera.target = WorldPos{0.0, 1.0, 20.0};
+  frame.camera.fov_y = 60.0f * 3.14159265f / 180.0f;
+  frame.world_time_s = 0.0;
+  CaptureChannels channels;
+  channels.ids = true;
+  CapturedFrame shots[2];
+  for (u32 s = 0; s < 2; ++s) {
+    REQUIRE(tunables::apply_overrides(s == 0 ? "renderer.water.reflect=0"
+                                             : "renderer.water.reflect=1"));
+    CapturedFrame warm;
+    REQUIRE_MESSAGE(renderer.capture(frame, channels, warm, &error), error);
+    REQUIRE_MESSAGE(renderer.capture(frame, channels, shots[s], &error), error);
+  }
+  renderer.destroy();
+  scene.destroy();
+  device.destroy();
+  const CapturedFrame& sky = shots[0];
+  const CapturedFrame& refl = shots[1];
+  REQUIRE(sky.ids == refl.ids);
+  // The middle half of the columns, clear of the bowl's sides; the far bank is the ground above the
+  // water's top row there, the reflected bank the water pixels the reflection changes.
+  const u32 w = refl.width;
+  const u32 h = refl.height;
+  u32 water_top = h;
+  for (u32 y = 0; y < h && water_top == h; ++y)
+    for (u32 x = w / 4; x < 3 * w / 4; ++x)
+      if (refl.ids[(y * w + x) * k_id_words] == water_instance) {
+        water_top = y;
+        break;
+      }
+  REQUIRE(water_top < h);
+  f64 bank[3] = {}, mirrored[3] = {};
+  u32 banks = 0, mirrors = 0;
+  for (u32 y = 0; y < h; ++y)
+    for (u32 x = w / 4; x < 3 * w / 4; ++x) {
+      const u32 p = y * w + x;
+      const u32 id = refl.ids[p * k_id_words];
+      const u8* c = &refl.color[p * 4];
+      if (id == water_instance) {
+        const u8* o = &sky.color[p * 4];
+        // A pixel whose reflection met the bank: changed by the ray, and in the bank's codes rather
+        // than the stand-in sky's (at least 24 codes in its strongest channel).
+        bool moved = false;
+        for (u32 k = 0; k < 3; ++k)
+          moved = moved || std::abs(i32{c[k]} - i32{o[k]}) >= 3;
+        if (!moved || std::max({c[0], c[1], c[2]}) < 24) continue;
+        for (u32 k = 0; k < 3; ++k)
+          mirrored[k] += linear(c[k]);
+        ++mirrors;
+      } else if (id != k_no_id && y + 4 < water_top && y > 2) {
+        for (u32 k = 0; k < 3; ++k)
+          bank[k] += linear(c[k]);
+        ++banks;
+      }
+    }
+  MESSAGE("the far bank: " << banks << " pixels seen, " << mirrors << " in the water");
+  REQUIRE(banks > 2000u);
+  REQUIRE(mirrors > 2000u);
+  // Chromaticity: a water pixel is the Fresnel (a scalar) times the bank's radiance, so its
+  // colour's ratios are the bank's. The bank seen and the bank reflected are the same albedo under
+  // the same sun and sky, so their red-to-green and blue-to-green ratios agree up to (the bound):
+  // the 8-bit store's half code over the mean green code of either (under 1% each at the codes
+  // here), the dither's code, and the hit's shading against the resolve's — its specular lobe seen
+  // from below rather than from the eye, a white share of at most F0 = 0.04 over albedos of 0.3 to
+  // 0.65, which pulls a ratio towards 1 by at most 0.04 / 0.32 = 12.5%. So |ln(ratio reflected /
+  // ratio seen)| is held under ln(1.15). Grass in the water would put the red-to-green ratio at
+  // grass's 0.29 over sand's 1.25 of the bank's: ln 4.4, thirty times the bound.
+  const f64 seen_rg = bank[0] / bank[1], seen_bg = bank[2] / bank[1];
+  const f64 refl_rg = mirrored[0] / mirrored[1], refl_bg = mirrored[2] / mirrored[1];
+  const f64 bound = std::log(1.15);
+  const f64 grass_rg = seen_rg * (static_cast<f64>(k_grass[0]) / static_cast<f64>(k_grass[1])) /
+                       (static_cast<f64>(k_sand[0]) / static_cast<f64>(k_sand[1]));
+  MESSAGE("red/green: seen " << seen_rg << ", reflected " << refl_rg << " (grass would be "
+                             << grass_rg << "); blue/green: seen " << seen_bg << ", reflected "
+                             << refl_bg << "; bound ln(1.15)");
+  CHECK(std::abs(std::log(refl_rg / seen_rg)) < bound);
+  CHECK(std::abs(std::log(refl_bg / seen_bg)) < bound);
+  CHECK(refl_rg > 1.0);  // red over green: sand, where the first layer's grass is green over red
+}

@@ -54,8 +54,10 @@ bool water_reflect_tunable(u64 frame_index) noexcept;
 bool water_reflect_volume_tunable() noexcept;
 
 // `renderer.water.reflect_shadow`: the hit's sun shadow — 0 none, 1 half rate (the default), 2
-// every pixel — as the `gfx::ResolveParams::shadow_flags` bits beside `k_shadow_water_reflect`, or
-// under `renderer.water.reflect` 3 the rate frame `frame_index` takes in the cycle.
+// every pixel; 3 the diagnostic, both rate bits, each water pixel a colour saying what its rays met
+// (water_reflect.slang) — as the `gfx::ResolveParams::shadow_flags` bits beside
+// `k_shadow_water_reflect`, or under `renderer.water.reflect` 3 the rate frame `frame_index` takes
+// in the cycle.
 u32 water_reflect_shadow_flags(u64 frame_index) noexcept;
 
 }  // namespace engine::renderer
