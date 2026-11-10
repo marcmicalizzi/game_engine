@@ -420,6 +420,42 @@ points (1.6 %) with less than half a bank and 12 (0.6 %) with none, the worst 1.
 the test holds 2 % and 1 %. They are where a width's move does not reach the floor, and a ribbon
 there is still narrowed or lowered by W91's fit.
 
+## Seen: the section, the flood bed and the proof of concept's items 6, 7 and 8
+
+(2026-11-10, W93; `msvc-release`, 1920×1080, `--raster hw --shadows rt --terrain-tiles
+--terrain-far 2`, offscreen, one process a run; a scratch scene outside the repository: a 384 by
+256 m heightfield at 25 cm, a V with sides at 0.35 whose floor swings 18 m every 80 m, then a
+plane-bed reach on a 6 m floor, then a meander reach on a 44 m floor, one channels layer at 14 m
+and 1.2 m a square kilometre; "before" is 76d96ced built in the same worktree, both over one
+derived-data cache; the ground has no texture set and no plants, so what is judged is form. The
+references looked at: the reels r03 and r49 and the motion sheet `clear-riffle-cobbles`.)
+
+- **`pool-riffle`** (the meander reach, eye height). Before: a ribbon of one width in a trench of
+  one section, two grey bar lenses standing on the bed as mounds, a pale strip of bed slab along
+  the left lip. After: the water is a thread of changing width inside a grey bed three times as
+  wide (the scene paints the cut's reach with a mask region), shallow and pale over the bar's
+  side and deeper against the other, the banks low with rounded shoulders, no lens. **Still wrong**:
+  the waterline on the bar is a sawtooth of the lattice (the rings past the nearest sample the cut
+  at 0.5 m and coarser); the bed's edge on a wide floor is a change of colour and not a scarp (a
+  quarter of a thalweg, 15 cm); a bed slab lies on the flood bed as a pale plate where the
+  generator's own line is more than three quarters of a width off the cut's.
+- **`plane-bed`** (the 6 m floor between 17-degree sides). Before: the trench's right bank is a
+  wall of grey slabs — the bed pieces laid about the generator's line, riding up the bank (**item
+  8**, and what made item 6's slabs) — over straight faces. After: the slabs are gone but one
+  sliver, and the bank is the cut's own face run out into the hillside in rounded scallops. With
+  the first cut of this row the same view had **item 7**, a row of teeth along the lip and a
+  gouge metres up the valley's side: the face's end as a wall, and a flood bed measured across a
+  kinked line. Both are closed (the run-out, the narrowest reading). **Still wrong**: the line
+  kinks, so the banks zigzag.
+- **`stream`** (the V, a 2 m channel). Before: a trench with a notch and teeth where its face
+  ended against the valley's side. After: a soft fold, no wall. **Still a canal**: on a reach
+  steeper than plane-bed the section is W89's, one width and one depth, and two tributaries come
+  straight down a planar side as chutes.
+
+**Against the reels** every view lacks what the cut cannot give: a cobble bed seen through the
+water, turf to the edge and an undercut, a riffle's broken water. Those are the masks', the
+sward's and the water's.
+
 ## Reaches
 
 (2026-11-08, roadmap W90; the POC's v35 engine-needs, item 10, and the owner's walk, marks 2, 3 and
@@ -723,6 +759,15 @@ catchments that flow in across it. The captures and their verdict are in the W86
   the deeper side, and pools stand 5 to 7 widths apart", "the section keeps the hydraulic
   geometry's area from riffle to pool").
 
+- **The flood bed follows the confinement** (W93): on valleys with floors of 32, 9 and 2 m the
+  entrenchment ratio read from the ground is the geometry's to 3 %, and the bed is three widths,
+  the floor less its scarps, and none; every point 0.9 of the bed's reach from the ribbon's line
+  is excluded by the exclusion built from the written description; **and the cuts' text on each
+  of the three hashes to a pinned value**, taken on MSVC and reproduced by Clang and GCC in the
+  containers (test: "the flood bed's width follows the valley's confinement").
+- **Neither bank stands more than half a depth under the line** but at 2 % of points at the most,
+  and under the bed at 1 % (W93; test: "a line across a slope is moved between its banks").
+
 **Public API.** `include/domain/channels/channels.h`.
 
 **Depends on.** `base`, `containers`, `math`, `hash`, `json`, `schema`, `log`, `io`, `jobs`, `assets`,
@@ -734,7 +779,15 @@ catchments that flow in across it. The captures and their verdict are in the W86
 **Performance notes.** Nothing runs per frame. Opening an entry costs the lattice's height queries
 (one per point, rows on the job pool), a heap fill and a sort over the points, and a few height
 queries per placed vertex; the region's `max_samples` bounds it. The pieces are ordinary cluster-LOD
-scene instances. `ChannelPoint` (40 bytes) is pinned in the size table.
+scene instances. `ChannelPoint` (40 bytes) is pinned in the size table. **W93's share of the
+plan** (2026-11-10, `msvc-release`, `engine-content channels --cut`, the process whole, best of
+three, the machine at 34 % CPU beside other agents' builds): on the row's scratch scene (0.098
+km², 475 m of channel, 7 links) 0.73 s on the base and 0.78 s with the section, the flood bed's
+walks (a station a width, a sixth of a width a step) and the banks' test (three ground queries a
+point and try, four tries, twice). It was **not measured on the proof of concept's world**, where
+the plan is 24 to 32 s: the row may not run that world's files. What scales with the world: the
+banks' test with the line's points a metre wide or more, the flood bed's walks with the metres of
+alluvial line 2 m wide or more, and the bed slab's nine probes a row with the pieces laid.
 
 **Not yet.** The cut is written by the subcommand and pasted by the author, not applied by the generator itself (the ground is built before the placements are); a procedural ground (the dunes) takes no cut; D8 only (no D∞ spreading); heads by a local four-metre slope, not a slope
 averaged over the source area; no braided reaches; the valley's confinement is not read for the

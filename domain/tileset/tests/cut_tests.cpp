@@ -2,6 +2,7 @@
 // ground"; roadmap W89): the section against its formula, the finest level cut and a level whose
 // spacing is not finer than the width keeping its heights, the tiles no cut reaches unmoved, a set
 // without cuts keyed as it was, and the provider standing on the cut ground.
+#include <core/hash/hash.h>
 #include <domain/scene_gen/scene_gen.h>
 #include <domain/tileset/cuts.h>
 #include <domain/tileset/tileset.h>
@@ -561,6 +562,18 @@ TEST_CASE("tileset: the same cut from two windows is the same millimetres, in ei
   const std::vector<i32> whole = window(first, 0, 0, 161, 161);
   const std::vector<i32> other_order = window(second, 0, 0, 161, 161);
   CHECK(whole == other_order);
+  // **The same bytes from every toolchain**: the lattice's heights after the two cuts hash to a
+  // value taken on MSVC (2026-11-10) that GCC and Clang reproduce in the containers. The ground
+  // is `swell_mm`'s, whose sine and cosine are the C library's, so it is pinned too: were a
+  // library to round one of them otherwise, the first pin says so before the second is blamed.
+  std::vector<i32> ground(static_cast<usize>(161 * 161));
+  for (i64 j = 0; j < 161; ++j)
+    for (i64 i = 0; i < 161; ++i)
+      ground[static_cast<usize>(j * 161 + i)] = swell_mm(i, j);
+  const u64 ground_hash = hash_bytes(ground.data(), ground.size() * sizeof(i32));
+  const u64 cut_hash = hash_bytes(whole.data(), whole.size() * sizeof(i32));
+  CHECK(ground_hash == 3593206589486382013ull);
+  CHECK(cut_hash == 13997414741782788461ull);
   // Windows whose corners are not on a block of the whole's, one of them a single tile with its
   // apron.
   const i64 windows[2][4] = {{37, 50, 97, 111}, {63, 47, 18, 18}};

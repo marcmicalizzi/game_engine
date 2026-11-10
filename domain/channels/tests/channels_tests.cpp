@@ -1517,6 +1517,17 @@ TEST_CASE("channels: the flood bed's width follows the valley's confinement") {
         bare += total > 1.5 * w;
       }
     }
+    // **The same bytes from every toolchain** (W93): the cuts' text over this ground, which calls
+    // no C library function, hashes to a value taken on MSVC (2026-11-10) that GCC and Clang
+    // reproduce in the containers: the section, the flood bed and the line's move decide in
+    // products, sums, divisions, square roots and `core/math/deterministic.h`.
+    {
+      const std::string text = write_json(cuts);
+      const u64 hash = hash_bytes(text.data(), text.size());
+      CHECK(hash == (c.half >= 16 ? 5219719343903946848ull
+                     : c.half > 1 ? 2162541706977799150ull
+                                  : 9933379347176358009ull));
+    }
     MESSAGE(std::string(c.what) << ": " << checked << " points checked, " << bare
                                 << " with a bed over 1.5 widths");
     CHECK(checked > 100);
