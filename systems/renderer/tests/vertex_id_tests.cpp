@@ -189,7 +189,7 @@ TEST_CASE("renderer: a loaded mesh exposes its canonical vertex ids, from the gl
   CHECK(mesh_vertex_ids(ground, 0).empty());
 }
 
-// **The entry a load writes records what it was built from** (T78; geometry.md, "The derived-data
+// **The entry a load writes records what it was built from** (T78; geometry.md, "Derived-data
 // cache"; content_build.md): the source's hash and the build key engine-content computes for the
 // same file and the default options, so `engine-content build-all` finds it already the answer and
 // does not build it again. Until T78 the renderer's `write_cluster_cache` recorded neither, and
