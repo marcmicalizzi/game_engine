@@ -5,7 +5,8 @@
 #                 [EXTERNAL_DEPS <target>...]  # third-party targets
 #                 [SOURCES <file>...]          # omit for header-only modules
 #                 [WHOLE_ARCHIVE]              # link every object even if unreferenced
-#                 [OPTIONAL] [CAPABILITY <c>]) # an optional capability (ADR-0027)
+#                 [OPTIONAL] [CAPABILITY <c>]  # an optional capability (ADR-0027)
+#                 [GENERATOR <kind>:<name>...]) # a scene or mesh generator (EngineGenerators.cmake)
 #
 # WHOLE_ARCHIVE is for modules whose objects register themselves during static
 # initialization (generated schema types, a capability's system registration): a static library
@@ -30,6 +31,9 @@
 # The alias engine::<name> is the target other modules link against.
 
 set(ENGINE_LAYERS core foundation domain systems apps game)
+
+# The GENERATOR tag's list, engine_host_generators() and the hosts' check (roadmap T79).
+include("${CMAKE_CURRENT_LIST_DIR}/EngineGenerators.cmake")
 
 define_property(GLOBAL PROPERTY ENGINE_MODULES
   BRIEF_DOCS "Declared engine modules" FULL_DOCS "Declared engine modules, in declaration order")
@@ -178,7 +182,7 @@ endfunction()
 function(engine_module)
   set(_options WHOLE_ARCHIVE OPTIONAL)
   set(_one NAME LAYER CAPABILITY)
-  set(_multi DEPS EXTERNAL_DEPS SOURCES)
+  set(_multi DEPS EXTERNAL_DEPS SOURCES GENERATOR)
   cmake_parse_arguments(EM "${_options}" "${_one}" "${_multi}" ${ARGN})
 
   if(NOT EM_NAME)
@@ -189,6 +193,20 @@ function(engine_module)
   endif()
   if(EM_UNPARSED_ARGUMENTS)
     message(FATAL_ERROR "engine_module(${EM_NAME}): unexpected arguments: ${EM_UNPARSED_ARGUMENTS}")
+  endif()
+  # GENERATOR (cmake/EngineGenerators.cmake): a capability the hosts link for its registrars, with
+  # the registrations it makes. Checked before the switch, so the minimal build refuses a bad tag.
+  set(_generator_missing FALSE)
+  if("GENERATOR" IN_LIST EM_KEYWORDS_MISSING_VALUES)
+    set(_generator_missing TRUE)
+  endif()
+  if(EM_GENERATOR OR _generator_missing)
+    set(_generator_optional FALSE)
+    if(EM_OPTIONAL OR EM_CAPABILITY)
+      set(_generator_optional TRUE)
+    endif()
+    _engine_generator_validate("${EM_NAME}" "${EM_GENERATOR}" ${_generator_missing}
+                               ${_generator_optional} "${EM_WHOLE_ARCHIVE}")
   endif()
 
   _engine_layer_index("${EM_LAYER}" _layer_idx)
@@ -313,6 +331,9 @@ function(engine_module)
     ENGINE_MODULE_DIR "${CMAKE_CURRENT_SOURCE_DIR}"
     ENGINE_MODULE_OPTIONAL "${_optional}"
     ENGINE_MODULE_CAPABILITY "${_capability}")
+  if(EM_GENERATOR)
+    _engine_generator_join("${EM_NAME}" "${EM_GENERATOR}")
+  endif()
 
   set_property(GLOBAL APPEND PROPERTY ENGINE_MODULES "${EM_NAME}")
   if(_optional)
@@ -473,6 +494,8 @@ function(engine_module_tests)
 endfunction()
 
 function(engine_finalize_modules)
+  # The hosts that read a scene carry the build's one generator list (EngineGenerators.cmake).
+  _engine_check_generator_hosts()
   get_property(_modules GLOBAL PROPERTY ENGINE_MODULES)
   set(_json "{\n  \"layers\": [")
   set(_first TRUE)
@@ -507,15 +530,59 @@ function(engine_finalize_modules)
     else()
       set(_opt_json "false")
     endif()
+    # A generator's tag (EngineGenerators.cmake): the registrations it makes, `<kind>:<name>`.
+    get_property(_gen TARGET engine_${_m} PROPERTY ENGINE_MODULE_GENERATOR)
+    set(_gen_json "")
+    if(_gen)
+      list(TRANSFORM _gen PREPEND "\"")
+      list(TRANSFORM _gen APPEND "\"")
+      list(JOIN _gen ", " _gen_list)
+      set(_gen_json ", \"generator\": [${_gen_list}]")
+    endif()
     if(NOT _first)
       string(APPEND _json ",\n")
     endif()
     string(APPEND _json
       "    {\"name\": \"${_m}\", \"layer\": \"${_layer}\", \"path\": \"${_rel}\", "
-      "\"optional\": ${_opt_json}, \"deps\": [${_deps_json}]}")
+      "\"optional\": ${_opt_json}${_gen_json}, \"deps\": [${_deps_json}]}")
     set(_first FALSE)
   endforeach()
   string(APPEND _json "\n  ],\n")
+
+  # The build's one generator list, by name, and what each host that links it leaves out.
+  get_property(_generators GLOBAL PROPERTY ENGINE_GENERATOR_MODULES)
+  set(_gens_json "")
+  if(_generators)
+    set(_quoted ${_generators})
+    list(SORT _quoted)
+    list(TRANSFORM _quoted PREPEND "\"")
+    list(TRANSFORM _quoted APPEND "\"")
+    list(JOIN _quoted ", " _gens_json)
+  endif()
+  set(_hosts_json "")
+  set(_first TRUE)
+  foreach(_h IN LISTS ENGINE_GENERATOR_HOSTS)
+    get_property(_ex GLOBAL PROPERTY ENGINE_GENERATOR_EXCLUDED_${_h})
+    set(_ex_json "")
+    set(_efirst TRUE)
+    foreach(_e IN LISTS _ex)
+      get_property(_why GLOBAL PROPERTY ENGINE_GENERATOR_EXCLUDE_REASON_${_h}_${_e})
+      string(REPLACE "\\" "\\\\" _why "${_why}")
+      string(REPLACE "\"" "\\\"" _why "${_why}")
+      if(NOT _efirst)
+        string(APPEND _ex_json ", ")
+      endif()
+      string(APPEND _ex_json "\"${_e}\": \"${_why}\"")
+      set(_efirst FALSE)
+    endforeach()
+    if(NOT _first)
+      string(APPEND _hosts_json ", ")
+    endif()
+    string(APPEND _hosts_json "\"${_h}\": {\"excludes\": {${_ex_json}}}")
+    set(_first FALSE)
+  endforeach()
+  string(APPEND _json "  \"generators\": [${_gens_json}],\n")
+  string(APPEND _json "  \"generator_hosts\": {${_hosts_json}},\n")
 
   # What this configuration left out (ADR-0027): an agent reading modules.json can otherwise not
   # tell "this capability does not exist" from "this capability is switched off".

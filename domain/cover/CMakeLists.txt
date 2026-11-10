@@ -19,7 +19,7 @@ engine_capability_requires(cover flora)
 
 engine_schema_library(NAME cover_schemas SCHEMAS schemas/cover.schema CAPABILITY cover)
 
-engine_module(NAME cover LAYER domain OPTIONAL WHOLE_ARCHIVE
+engine_module(NAME cover LAYER domain OPTIONAL WHOLE_ARCHIVE GENERATOR mesh:cover mesh:vine
   DEPS base containers math hash json schema assets geometry materials texture flora cover_schemas
   SOURCES src/host.cpp src/habitat.cpp src/vine.cpp src/growth.cpp src/cover.cpp)
 

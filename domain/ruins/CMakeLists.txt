@@ -16,7 +16,7 @@
 # placement generator "ruins" from `src/scene_generator.cpp`, and the renderer's scene reader and the
 # world ring find them by that name and link nothing of this module. WHOLE_ARCHIVE keeps the
 # registrar, which nothing references.
-engine_module(NAME ruins LAYER domain OPTIONAL WHOLE_ARCHIVE
+engine_module(NAME ruins LAYER domain OPTIONAL WHOLE_ARCHIVE GENERATOR placement:ruins
   DEPS base containers math hash json schema schemas io log jobs time scene_gen
   SOURCES src/kit.cpp src/assembler.cpp src/block_kit.cpp src/blocks.cpp src/fragment.cpp
           src/synthetic_kit.cpp src/synthetic_blocks.cpp src/scene_generator.cpp)

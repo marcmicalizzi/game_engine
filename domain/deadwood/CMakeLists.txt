@@ -21,7 +21,7 @@ if(_enabled)
   target_include_directories(engine_deadwood_schemas_impl PUBLIC "${_gen}/include")
 endif()
 
-engine_module(NAME deadwood LAYER domain OPTIONAL WHOLE_ARCHIVE
+engine_module(NAME deadwood LAYER domain OPTIONAL WHOLE_ARCHIVE GENERATOR mesh:deadwood
   DEPS base containers math hash json schema image assets geometry materials texture flora deadwood_schemas
   SOURCES src/deadwood.cpp src/container.cpp src/surface.cpp)
 

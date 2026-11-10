@@ -177,8 +177,33 @@ The descriptor is constant-initialized; the `Registrar` adds it to `GeneratorReg
 
 1. Write the functions and the descriptor in the capability's own module (`src/scene_generator.cpp` by convention), and a `Registrar` beside it; make the module `WHOLE_ARCHIVE` and give it `scene_gen` as a dependency.
 2. Pick a name no other generator of the kind has — the capability's own name is the convention (`ruins`, `dunes`, `city`) — and read the entry's parameters with the schema's reader where they have a schema type, so an unknown field is refused with its path.
-3. Link the capability into the hosts that should carry it (engine-view, engine-host), guarded by `if(TARGET engine::<name>)`. Nothing in `renderer` or `world` changes: a scene names it in `placements` (`{"generator": "<name>", "params": {...}}`) or as its terrain's `provider`.
+3. Tag the module: `GENERATOR placement:<name>` on its `engine_module()` line, one `<kind>:<name>` for every registration its sources make. That is the whole of the hosts' side: engine-view, engine-host and engine-editor link every tagged module ([Which generators a host carries](#which-generators-a-host-carries)). Nothing in `renderer` or `world` changes: a scene names it in `placements` (`{"generator": "<name>", "params": {...}}`) or as its terrain's `provider`.
 4. Test the generator through the registry from the capability's own tests (a scene is not needed: make a `Context`, `open`, `expand`, `tile`), and that `tile` over every tile is `expand`.
+
+## Which generators a host carries
+
+**One list, kept by the build** (2026-11-09, roadmap T79; [ADR-0060](../adr/0060-generators-stay-in-domain-tagged.md), proposed). A generator — a capability that registers into this module's registry or into the mesh generators' (`assets::MeshGeneratorRegistrar`), and that nothing calls by name — says so on its `engine_module()` line, with every registration its sources make:
+
+```cmake
+engine_module(NAME rocks LAYER domain OPTIONAL WHOLE_ARCHIVE
+  GENERATOR mesh:rock mesh:deposit placement:cliffs placement:deposits
+  DEPS ...)
+```
+
+The kinds are `ground`, `placement`, `sky` and `mesh`. The tag is refused, in every configuration and before the capability's switch is read, on a module that is not `OPTIONAL` (a registration every executable needs belongs to the module that reads it, as the renderer's `waves` does) or not `WHOLE_ARCHIVE` (nothing references a registrar, so a static library loses it and the registration with it, silently), and for a kind it does not know. Every tagged module this configuration builds joins one list (`cmake/EngineGenerators.cmake`), and the hosts that read a scene — `ENGINE_GENERATOR_HOSTS`: engine-view, engine-host, engine-editor — link it with one call before their `engine_app()`:
+
+```cmake
+engine_host_generators(engine_view _view_deps)   # [EXCLUDE <module> "<reason>"]...
+```
+
+**Why.** Until T79 the three hosts each wrote the list out by hand, edited 17, 17 and 8 times, and the editor's had lost `caves` and `soil` under a comment saying it linked them "exactly as engine-view and engine-host link them": a document placing a `.cave.json` was refused by the editor alone, with "... which this build does not carry", and nothing failed until a reviewer read the three side by side. A dropped registrar fails as silently, so the list is checked twice:
+
+- **At configure**, from `engine_finalize_modules()`: each host on the list links the build's generators less what it excludes in writing (`EXCLUDE <module> "<reason>"`, printed on the status line and recorded in `modules.json`), and a host that links no list, misses one or excludes one it still links stops the configure with every difference named. The configure prints the list it produced (`engine generators: 17 in this configuration: ...`).
+- **At run time**, `<host>.generators` (`engine_view.generators`, `engine_host.generators`, `engine_editor.generators`; no device, under a second): `apps/tests/host_generators_tests.cpp`, compiled into each host's end-to-end test executable, which `engine_app()` links from the host's own `DEPS`, so its registries are the host's. Every tagged registration must be found, and every registered name must be tagged — except the renderer's own `waves` and a test's own generator, which by convention has `test` in its name. The second half keeps the tags true: a registrar added without its name on the tag fails here. The three linkers (MSVC's, GNU ld, lld) do not drop the same things, so it runs on MSVC and in the Linux containers. The editor's own `tests/editor_generators_tests.cpp` reads a document placing a cave and a soil feature through the viewport's path; on main at 2d867dd2 it failed with the registry's sentence.
+
+`modules.json` carries the tag (`"generator": [...]` on the module's row), the build's list (`"generators"`) and each host's exclusions (`"generator_hosts"`), so a tool asks which modules are generators without parsing CMake ([08 §8.5](../plan/08-toolchain.md#85-build-system-and-ci)). `msvc-minimal` and `linux-clang-minimal` produce an empty list and three hosts that agree on it.
+
+**What the tag does not do yet.** ADR-0060 proposes that a tagged module may not depend on `gfx` or on a module in `systems/`; it is reported there, not checked, because `rocks -> gfx` stands today.
 
 ## Invariants
 

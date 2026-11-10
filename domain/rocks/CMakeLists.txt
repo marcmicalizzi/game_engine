@@ -20,6 +20,7 @@
 engine_schema_library(NAME rocks_schemas SCHEMAS schemas/rocks.schema DEPS schemas CAPABILITY rocks)
 
 engine_module(NAME rocks LAYER domain OPTIONAL WHOLE_ARCHIVE
+  GENERATOR mesh:rock mesh:deposit placement:cliffs placement:deposits
   DEPS base containers math hash json schema log io image assets geometry materials texture scene_gen
        gfx rocks_schemas
   SOURCES src/solver.cpp src/cliff.cpp src/rocks.cpp src/cliffs_generator.cpp src/geology.cpp
