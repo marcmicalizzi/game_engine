@@ -267,7 +267,71 @@ grounding page.
 
 ## Performance notes
 
-Measured by `tools/dev.ps1 bench -Filter 'landform.*'`; the table is filled by the stage that
-measures (below). The solve holds about 54 bytes a point while it runs (the ground, the lift and
-hardness fields, the filled surface, the order, the receivers, the areas and a scratch surface)
-and nothing afterwards.
+`engine_landform_bench` (`tools/dev.ps1 bench -Filter 'landform.*'`), `msvc-release`, 2026-11-10,
+an i9-10980XE, the solve on four workers. **The machine was busy** (`--wait-quiet=120` gave up:
+other processes used 63% of the CPU at the start and 75% at the end, `machine_state` in the
+bench's JSON), so every figure is an upper bound.
+
+| Row | What | Median | A point |
+|---|---|---|---|
+| `landform.solve/2048` | **a 2,048 by 2,048 sketch at 16 m solved to 100,000 years in twenty steps** | **27.1 s** | 323 ns a step |
+| `landform.solve/1024` | the same at 1,024 | 4.91 s | 234 ns a step |
+| `landform.solve/256` | the same at 256 | 0.218 s | 166 ns a step |
+| `landform.route/2048` | the flood, the receivers and the area of one ground | 1.27 s | 302 ns |
+| `landform.route/1024` | | 0.153 s | 146 ns |
+| `landform.route/256` | | 6.8 ms | 104 ns |
+| `landform.area_power/0` | √A over a million areas, as the solver does it | 1.66 ms | 1.7 ns |
+| `landform.area_power/1` | `det::exp(0.45 * det::log(A))`, a general exponent | 69.3 ms | 69 ns |
+
+So a million years of a 2,048-point region at 5,000-year steps is about four and a half minutes,
+and a 1,024-point region solved for 1.5 million years (the picture's) took 75 s. **The flood is
+nearly the whole step** (1.27 s of 1.35 s at 2,048), and its cost a point triples from 256 to
+2,048 points a side: it visits the lattice in order of height, which is no order of memory, so at
+four million points every visit misses the cache. What follows from that is on the "Not stage A"
+list: routing ground with no depressions from its own slopes in memory order and flooding only
+the pits, and the flow tree's levels in parallel (Barnes 2019). A general exponent m would add
+69 ns a point a step, a fifth of today's step; m = 1/2 costs 1.7 ns.
+
+The solve holds about 54 bytes a point while it runs (the ground, the lift and hardness fields,
+the filled surface, the order, the receivers, the areas and a scratch surface): 226 MB at 2,048
+points a side, 900 MB at 4,093. Nothing is resident afterwards, nothing scales with the world's
+size at run time, and there are no triangles and no per-tile cost: the tile set's are the
+heightfield's.
+
+## Pictures, and what still reads wrong
+
+2026-11-10, a 16 km region of two ranges about a valley, 1,024 points at 16 m, 1.5 million years
+(outside the repository, as every generated image is). The shaded relief is the first picture:
+it reads as two eroded ranges, with branching valleys, spurs between them and crests that wander,
+which a range of ridge lines with a profile does not. Drawn by `engine-view` from a tile set, from
+2.6 km up it still reads as an eroded range; from a crest and from the valley floor it does not
+hold. Beside the reference reels (r03 and r04, the alpine valleys), what a person would object to:
+
+- **The faces are planes.** Nearly every slope stands at the critical angle with nothing on it
+  finer than the 16 m lattice, and under one flat material that reads as dunes or folded paper,
+  where the reels' walls are ribs, gullies, ledges and scree at every scale. The solver's part of
+  that is the lattice (a finer one, or a refine of this ground at 4 m, which is minutes to tens of
+  minutes) and the missing processes; the rest is the rock solvers' and the terrain material's.
+- **No flat valley floor, no fans, no scree aprons.** Both reels stand on an alluvial floor under
+  walls with pale debris cones at the foot of every gully. Nothing is deposited here, so every
+  valley is a V to its mouth.
+- **A channel is one point wide and follows the lattice**, and the bilinear surface between the
+  points of a diagonal channel is a chain of pits (117,731 flooded points appeared when the 16 m
+  ground was read at 4 m). A channel needs the channels solver's cut, not the heightfield's
+  resolution.
+- **The valleys of a straight range are evenly spaced and parallel**, because the uplift along a
+  ridge line is uniform. A sketch with uneven rates, a raster or resistant bands breaks it; the
+  model does not do so by itself.
+- **Far peaks still read as cones**: seen from the valley floor the crest's summits are small
+  symmetric pyramids, since a threshold slope is the same angle on every side. Asymmetry in the
+  reels comes from structure (dipping beds) and ice, neither of which is here.
+- **A depression's floor keeps straight lines**: where a rising ridge dams a valley the lake that
+  forms is routed along the flood's order, and its floor shows it.
+
+**The tile set cannot build a heightfield whose spacing is one of its own far levels'.** The 16 m
+ground was refused at open (`16000.tiles` "is not this level's archive"): the finest level and
+the far chain's 16 m level are both named by their spacing. The pictures were taken from the same
+ground read at 4 m by a landform run of no steps, which builds (as the 1 m grounds of the test
+scenes do). A spacing of 8, 32, 64, 128 or 256 m, the default chain's other levels, would
+presumably collide the same way; 16 m is the one that was tried. That is the tile set's to fix,
+and a row.

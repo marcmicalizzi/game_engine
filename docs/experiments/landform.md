@@ -58,8 +58,9 @@ thread count. That decided four things.
    A = N cells of spacing² and d is the spacing or its diagonal, F = K Δt √N (or that over √2): the
    spacing cancels and nothing but IEEE `* / +` and `sqrt` is in the incision. **A general m** costs
    `det::exp(m * det::log(A))` a point a step: `core/math/deterministic.h` has both, so it is
-   covered and bit-identical across toolchains, at about ten times the time of a square root
-   (the bench's `landform.area_power` rows, below). **A general n** needs Newton's iteration, each
+   covered and bit-identical across toolchains, at forty times the time of a square root:
+   69 ns against 1.7 ns a point (the bench's `landform.area_power` rows, below), which would add
+   a fifth to a step. **A general n** needs Newton's iteration, each
    round another such power of the height difference, and a convergence test whose count of rounds
    is itself a decision; `deterministic.h` covers the arithmetic, and it is what follows, not stage
    A, because field data often want n near 2 (Lague 2014, secondary) and that deserves its own tests.
@@ -181,5 +182,20 @@ and course are the ones the ground was cut by. The contract it would read is on 
 
 ## Measurements
 
-Filled in by the stages that measure: see "Performance notes" on the subsystem page for the bench
-(2,048 by 2,048) and the tests' regressions (concavity, Hack's exponent, the edge and coast bounds).
+2026-11-10. The bench's table and the machine's state are on the subsystem page
+([Performance notes](../subsystems/landform.md#performance-notes)); the regressions are the tests'
+(`domain/landform/tests/landform_tests.cpp`, which prints them).
+
+| Measure | Result | Against |
+|---|---|---|
+| Concavity at steady state (96 points at 200 m, 1 mm/yr, K 2 × 10⁻⁵, two million years, stream power alone) | slope against area regresses to −0.4999 | the 0.5 chosen; published 0.4 to 0.6 |
+| The same run's mean erosion rate | 1,001.1 µm/yr; 97% of points within 10% of the uplift, 80% within 1% | 1,000 µm/yr. The rest sit on divides whose receivers change from step to step: the explicit drainage area |
+| Hack's exponent, the longest path above a point against its area, over the 1,535 points draining eight cells or more | 0.616 | Hack 1957, 0.6; published 0.5 to 0.7 |
+| An open edge with the default taper (16 cells), a ridge of 3 mm/yr 3 km away, 100 m cells | the first row 1.45 m above the edge; the slope changes by at most 0.11 a row over the first four | without the taper 89 m and 1.14 |
+| A coast (the golden sketch with one critical slope, 0.9) | no neighbours steeper than 0.9 by more than 0.8 mm, land, waterline or bed | the rounding to whole millimetres |
+| A starting ground with a 370 m underwater wall, fifty thousand years | the largest step between neighbours 89,978 mm over a 100 m cell | 370,000 mm before; the critical slope allows 90,000 |
+| A 407 m massif at 50 m refined for forty thousand years at the default erodibility, nothing raised | its 800 m low-pass moves at most 9.5 m (2.3% of the relief); single points move 29.7 m | the bound held is a twentieth of the relief |
+| A 2,048-point sketch at 16 m to 100,000 years in twenty steps, four workers, busy machine | 27.1 s | — |
+
+What the first pictures showed, and what still reads wrong beside the reels, is on the subsystem
+page ([Pictures](../subsystems/landform.md#pictures-and-what-still-reads-wrong)).
