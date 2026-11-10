@@ -430,15 +430,23 @@ void prepare_scene_textures(const SceneDesc& desc, Vector<SourceMesh>& sources,
 // The textures its records name are built by the load's texture pass once every mesh is in
 // (`prepare_scene_textures`), landed or not, because that pass reads the records this function
 // hands back, not the file.
+//
+// **It records what it was built from** (T78): `source_hash` and `build_key` are the ones the entry
+// is addressed by, which for a glTF at the default options are what `content_build::source_hash_of`
+// and `mesh_build_key` give, so `engine-content build-all` finds the entry already the answer
+// instead of rebuilding it (content_build.h, `run_mesh_task`). Until T78 it recorded neither.
 bool write_cluster_cache(const std::string& path, const std::string& source,
                          const assets::MeshData& mesh_data, const Vector<i32>& part_material,
                          const Vector<u32>& part_of_cluster, geometry::ClusterLodMesh& lod,
                          geometry::ClusterPages& pages,
-                         Vector<geometry::ClusterFileTexture>& textures) {
+                         Vector<geometry::ClusterFileTexture>& textures, u64 source_hash,
+                         u64 build_key) {
   geometry::ClusterFileData data;
   data.mesh = std::move(lod);
   data.pages = std::move(pages);
   data.source_path = source;
+  data.source_hash = source_hash;
+  data.build_key = build_key;
   data.materials.reserve(mesh_data.materials.size() + 1);
   for (const assets::Material& source_material : mesh_data.materials) {
     geometry::ClusterFileMaterial material;
@@ -679,9 +687,10 @@ bool load_terrain(const SceneDesc& desc, SourceMesh& out, geometry::ClusterLodMe
   geometry::ClusterLodOptions lod_options = desc.lod;
   lod_options.up = Vec3{0.0f, 1.0f, 0.0f};
   std::string cache_path;
+  u64 key = 0;
   if (desc.cache) {
-    const u64 key = geometry::cluster_cache_key(hash, lod_options, false,
-                                                geometry::ClusterPagesOptions{}.page_bytes);
+    key = geometry::cluster_cache_key(hash, lod_options, false,
+                                      geometry::ClusterPagesOptions{}.page_bytes);
     cache_path = geometry::cluster_cache_path(desc.ddc, key);
     out.cache = "miss";
     if (io::exists(cache_path)) {
@@ -802,8 +811,9 @@ bool load_terrain(const SceneDesc& desc, SourceMesh& out, geometry::ClusterLodMe
                   log::field("fold_unsimplified", lod.fold_guard.unsimplified),
                   log::field("sloppy", lod.fold_guard.sloppy),
                   log::field("sloppy_folded", lod.fold_guard.sloppy_folded));
-  if (!cache_path.empty() && write_cluster_cache(cache_path, "", out.data, out.part_material,
-                                                 out.part_of_cluster, lod, built, out.textures)) {
+  if (!cache_path.empty() &&
+      write_cluster_cache(cache_path, "", out.data, out.part_material, out.part_of_cluster, lod,
+                          built, out.textures, hash, key)) {
     out.container = cache_path;
   }
   if (desc.stream) pages = std::move(built);
@@ -917,11 +927,12 @@ bool load_source_mesh(const std::string& path, const SceneDesc& desc, u64 expect
   // source and these options address.
   std::string container;
   std::string cache_path;
+  u64 source_hash = 0;  // what a cache entry written below records it was built from (T78)
+  u64 cache_key = 0;
   if (io::extension(path) == ".clusters") {
     container = path;
     out.cache = "file";
   } else if (desc.cache || expected_hash != 0) {
-    u64 source_hash = 0;
     profiling::TraceStage hash_stage("source hash");
     if (!assets::source_mesh_hash(path, source_hash, &error)) return false;
     hash_stage.end();
@@ -936,9 +947,9 @@ bool load_source_mesh(const std::string& path, const SceneDesc& desc, u64 expect
     if (desc.cache) {
       // The page target is part of the key, so this has to be the one the build below uses —
       // and the one engine-content uses by default, or the two apps would stop sharing entries.
-      const u64 key = geometry::cluster_cache_key(source_hash, desc.lod, true,
-                                                  geometry::ClusterPagesOptions{}.page_bytes);
-      cache_path = geometry::cluster_cache_path(desc.ddc, key);
+      cache_key = geometry::cluster_cache_key(source_hash, desc.lod, true,
+                                              geometry::ClusterPagesOptions{}.page_bytes);
+      cache_path = geometry::cluster_cache_path(desc.ddc, cache_key);
       out.cache = "miss";
       if (io::exists(cache_path)) container = cache_path;
     }
@@ -1052,11 +1063,12 @@ bool load_source_mesh(const std::string& path, const SceneDesc& desc, u64 expect
     ENGINE_LOG_WARN(log_renderer, "cluster pages not built", log::field("path", path),
                     log::field("error", page_error));
   }
-  // Into the cache for the next run, as the same container engine-content build writes: either
-  // app fills the cache, either app finds it.
+  // Into the cache for the next run, as the same container engine-content build writes, the
+  // source's identity included (T78): either app fills the cache, either app finds it, and
+  // `build-all` takes the entry as current.
   if (!cache_path.empty()) {
     if (write_cluster_cache(cache_path, path, out.data, out.part_material, out.part_of_cluster, lod,
-                            built, out.textures)) {
+                            built, out.textures, source_hash, cache_key)) {
       // The entry this load just wrote holds the same bytes in the same order this mesh is now in,
       // so a streamed run may read its pages back out of it rather than out of host memory.
       out.container = cache_path;

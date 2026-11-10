@@ -959,8 +959,8 @@ void run_mesh_task(void* data) {
   task.result.build_key = key;
 
   // Up to date when the container that is already there was built from these bytes with these
-  // options. A container that records no identity — an older build, or one engine-view wrote —
-  // has a zero key and is rebuilt rather than trusted.
+  // options. A container that records no identity — an older build, or one engine-view wrote
+  // before T78 — has a zero key and is rebuilt rather than trusted.
   u64 had_hash = 0;
   u64 had_key = 0;
   if (!task.force && io::exists(output) &&

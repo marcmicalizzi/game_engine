@@ -342,8 +342,8 @@ struct MeshTask {
 // One task, as a job function (`data` is the `MeshTask`). It hashes the source, computes the build
 // key, and **skips the entry when the container already at the output records that same source
 // hash and that same key** — which is what the container's `source_hash` section is for, and why a
-// container that records none (an older build, or one engine-view wrote) is rebuilt rather than
-// trusted. An incremental build never decides from a timestamp.
+// container that records none (an older build, or one engine-view wrote before T78) is rebuilt
+// rather than trusted. An incremental build never decides from a timestamp.
 void run_mesh_task(void* data);
 
 // Every task as one job on the performance pool, waited for. Leave each task's own `pool` null, so
