@@ -37,6 +37,18 @@ bool prepare_exposure(const ExposureRule& rule, ExposureThresholds& out, std::st
     return bad(error, "patch_m", "0 or in [2, 200]");
   out.arm_mm = scene_gen::nearest_mm(wide(rule.scale_m));
   out.patch_mm = scene_gen::nearest_mm(wide(rule.patch_m));
+  if (!(rule.stretch_m == 0.0f || (rule.stretch_m >= 8.0f && rule.stretch_m <= 2000.0f)))
+    return bad(error, "stretch_m", "0 or in [8, 2000]");
+  if (!(rule.stretch_share >= 0.05f && rule.stretch_share <= 1.0f))
+    return bad(error, "stretch_share", "in [0.05, 1]");
+  if (!(rule.member_m == 0.0f || (rule.member_m >= 2.0f && rule.member_m <= 500.0f)))
+    return bad(error, "member_m", "0 or in [2, 500]");
+  if (!(rule.member_share >= 0.05f && rule.member_share <= 1.0f))
+    return bad(error, "member_share", "in [0.05, 1]");
+  out.stretch_mm = scene_gen::nearest_mm(wide(rule.stretch_m));
+  out.stretch_share = wide(rule.stretch_share);
+  out.member_m = wide(rule.member_m);
+  out.member_share = wide(rule.member_share);
   return true;
 }
 
@@ -63,6 +75,32 @@ f64 soil_cover(const ExposureThresholds& rule, i64 x_mm, i64 z_mm) noexcept {
   // Stretched about its middle: bilinear value noise crowds a half, and the share of ground
   // that is rock should rise about evenly with the fraction.
   return clamp01(0.5 + ((broad + fine / 3.0) * 0.75 - 0.5) * 2.0) * 0.999999;
+}
+
+f64 member_factor(const ExposureThresholds& rule, const gfx::FormationParams& formation,
+                  f64 coordinate) noexcept {
+  if (formation.macro.count > 0)
+    return resistance_factor(rule,
+                             wide(gfx::formation_bed(formation.macro, coordinate).resistance));
+  if (!(rule.member_m > 0.0) || rule.member_share >= 1.0) return 1.0;
+  // One octave of value noise along the bed coordinate, stretched about its middle as the
+  // cover's is, so the share that stands is about `member_share`.
+  const f64 u = coordinate / rule.member_m;
+  const f64 whole = std::floor(u);
+  const i64 i = static_cast<i64>(whole);
+  const f64 t = fade(u - whole);
+  const f64 v =
+      lerp(lattice_value(rule.seed, i, 0x4D, 7), lattice_value(rule.seed, i + 1, 0x4D, 7), t);
+  return clamp01(0.5 + (v - 0.5) * 2.0) < rule.member_share ? 1.0 : 0.0;
+}
+
+f64 stretch_factor(const ExposureThresholds& rule, u64 bed_top, i64 x_mm, i64 z_mm) noexcept {
+  if (rule.stretch_mm <= 0 || rule.stretch_share >= 1.0) return 1.0;
+  const f64 v =
+      cover_octave(rule.seed ^ mix64(bed_top + 0x5354ull), x_mm, z_mm, rule.stretch_mm, 3);
+  const f64 cover = clamp01(0.5 + (v - 0.5) * 2.0);
+  // Open under the share, and shut over a sixth of the field past it: an outcrop's end tapers.
+  return clamp01((rule.stretch_share - cover) * 6.0);
 }
 
 f64 standing_share(const ExposureThresholds& rule, f64 fraction, f64 cover) noexcept {

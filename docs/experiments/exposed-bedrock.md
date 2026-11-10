@@ -122,6 +122,79 @@ to 1.3** (thickness over spacing), so a 2 m unit's blocks are about 1.5 m long; 
 (secondary, Ji 2023), which is why it is a parameter and why the spacing is clamped to 0.5 to
 8 m.
 
+## Outcrops, not stripes
+
+Read for the second pass of roadmap G142 (2026-11-10), after the first solver's ledges read from
+across a valley as every bed's stripe. Marked as the first pass's numbers are: read in the
+source's text, in its abstract only, or secondary.
+
+**Resistant beds are continuous in the rock and discontinuous at the surface.** Marshall and
+Roering (2014, *JGR Earth Surface* 119, 1395–1417, doi:10.1002/2013JF003004; read in the
+dissertation chapter that reproduces the paper) map the Tyee Formation's resistant sandstone beds
+in two Oregon Coast Range watersheds: they "form cliff-like, vertical faces" (mapped as a
+gradient of 1 or more), are "a meter to tens of meters" thick (measured 1 to 15 m), and are
+"horizontally continuous but not contiguous". They make 12 % of one watershed's topography and
+under 4 % of the other's; in the second "very few continuous outcrops" exceed 100 m, and within a
+350 m radius resistant beds average about 5 % and never pass 12 % (0 to 30 % in the first).
+**`stretch_m` defaults to 60 m** so an outcrop is a stretch well under that 100 m, and
+**`stretch_share` 0.4 with `member_share` 0.5** leaves a fifth of a resistant bed's trace able to
+crop out before the slope's own exposure and the soil's patches are applied, inside the 0 to 30 %
+the paper measured over ground. The two shares themselves are ours, not the paper's.
+
+**Cliff formers stand between slope formers.** The same paper: gentle soil-mantled valleys perch
+above the cliff-forming beds, which make knickpoints; fracture spacing is 12.9 ± 1.7 m in the
+resistant beds against 0.6 m in the typical ones, and tensile strength 2.5 times as high. The
+Grand Canyon's cliff-and-slope profile is the textbook case (US National Park Service, "Geologic
+Formations": the Coconino Sandstone and the Redwall Limestone form cliffs, the Bright Angel and
+Hermit shales form slopes; secondary, and its thicknesses were seen only in snippets that
+disagree). The formation's `macro_beds` are that grouping where a scene gives them. Where it
+gives none, **the rule's own members, `member_m` 12 m across, are authored**: a seeded field
+along the bed coordinate, with no source for its size but the 1 to 15 m the resistant beds
+measured. Duszyński, Migoń and Strzelecki (2019, *Earth-Science Reviews* 196, 102890) review
+escarpment retreat; only its abstract was read and no number is taken from it.
+
+**Rock on a steep soil-mantled slope is a patchwork.** Milodowski, Mudd and Mitchard (2015,
+*Earth Surface Dynamics* 3, 483–499, doi:10.5194/esurf-3-483-2015; read): on granitoid slopes
+mapped from 1 m lidar, 1.5 and 3 % of hillslope pixels are rough enough to be rock above the
+knickpoints (modal gradients about 0.5 and 0.4) against 15 and 29 % below them (about 0.9 and
+0.8); the transition is "gradual and patchy", the steep slopes a "patchwork of bedrock outcrops
+and discontinuous soil cover". It reports no patch-size statistics. Heimsath, DiBiase and Whipple
+(2012, *Nature Geoscience* 5, 210–214; abstract): soils thin and become patchier with erosion
+rate, with no abrupt switch to bedrock.
+
+**Not found:** the exposed share of a single bed's trace, the spacing between outcrops along
+strike, a correlation length of soil depth on steep slopes, or a source that puts outcrops on
+noses and gully heads by a number (the curvature term of the rule above is what stands for it).
+
+## How a jointed block weathers
+
+Read for the same pass, for the ledges' blocks.
+
+**Corners go before edges, edges before faces.** Domokos, Jerolmack, Sipos and Török (2014,
+"How river rocks round", *PLoS ONE* 9(2), e88657; read in the preprint) model abrasion as retreat
+at a speed proportional to curvature, in three kinds of event: at a vertex (Gaussian curvature),
+along an edge (mean curvature), and on a face (uniform). In their first phase edges and corners
+round while the axes keep their length; a cube rounded to its inscribed sphere keeps π/6 of its
+volume. That is collision, not chemical weathering. For weathering the order is the usual
+statement of spheroidal weathering (alteration "greatest along the corners of each block, followed
+by the edges, and finally the faces": secondary, an encyclopaedia paragraph citing Ollier 1971,
+*Earth-Science Reviews* 7, 127–141, which was not reached). **No ratio was confirmed.** The
+solver's 3 : 2 : 1 for a corner, an edge and a face is the count of faces the attack comes
+through, which is geometry and ours.
+
+**No edge radius by lithology was found**, nor a sourced ranking; the solver reuses the rock
+types' own `rounding` (rocks.md, "The model by type"), which is authored. Limestone's solution
+flutes are 1.2 to 2.5 cm wide and 2 to 6 mm deep (secondary, a teaching resource; Mottershead and
+Lucas 2000, *Zeitschrift für Geomorphologie* 44, 491–512, abstract: lithology changes flute form
+significantly): under a 1 m lattice's resolution, so they are the material's and not the mesh's.
+
+**Weak beds weather back under hard ones.** No measured recess depth on a natural cliff was
+found. On fresh roadcuts shale under sandstone or limestone is undercut 2.5 to 51 mm a year,
+median 20 (Niemann 2007, GSA Annual Meeting abstract; fresh cuts, so upper bounds). Rock varnish
+is typically about 100 µm thick and takes about 10,000 years to coat a surface in the US
+Southwest (secondary, attributed to Liu and Broecker 2000 and to Dorn): a fresh break is the
+rock's own colour and an old surface is darker, which is the material's to carry.
+
 ## What is authored, not measured
 
 - **A bed's `resistance`** is an index from 0 to 1 the formation's author gives it, not a rock

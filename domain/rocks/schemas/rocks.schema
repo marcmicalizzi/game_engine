@@ -433,6 +433,21 @@ struct ExposureRule @version(1) {
   /// whole trace) or 2 to 200. Rock shows where the exposure fraction is above a seeded field of
   /// this size, so the fraction is the share of the ground that is rock (DiBiase's index).
   patch_m: f32 = 12.0 @unit(m)
+  /// Outcrops, not stripes (rocks.md, "Outcrops, not stripes"): a second, longer scale of cover
+  /// drawn for each bed top on its own, so a resistant bed crops out in stretches about this long
+  /// and stays under the soil between them, metres: 0 (none) or 8 to 2,000 (60: under the 100 m
+  /// few continuous outcrops pass, Marshall and Roering 2014).
+  stretch_m: f32 = 60.0 @unit(m)
+  /// The share of a bed top's trace where it may crop out: 0.05 to 1.
+  stretch_share: f32 = 0.4
+  /// Members: resistant beds stand only inside a cliff-forming member. Where the formation has
+  /// `macro_beds` the member is the macro bed at the bed's coordinate, by its resistance; where
+  /// it has none the rule groups the sequence itself, a seeded field along the bed coordinate this
+  /// many metres across: 0 (none: every resistant bed may crop out) or 2 to 500.
+  member_m: f32 = 12.0 @unit(m)
+  /// The share of the sequence that is cliff-forming, when the grouping is the rule's own: 0.05
+  /// to 1.
+  member_share: f32 = 0.5
 }
 
 /// One tile's ledges at one form, written by the `ledges` generator as

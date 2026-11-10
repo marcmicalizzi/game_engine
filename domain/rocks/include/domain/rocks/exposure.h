@@ -38,7 +38,11 @@ struct ExposureThresholds {
   f64 critical_curvature = 0.0;  // 1/m
   f64 min_resistance = 0.0;
   i64 arm_mm = 0;
-  i64 patch_mm = 0;  // the soil's patches, whole millimetres; 0: none
+  i64 patch_mm = 0;    // the soil's patches, whole millimetres; 0: none
+  i64 stretch_mm = 0;  // a bed top's stretches, whole millimetres; 0: none
+  f64 stretch_share = 1.0;
+  f64 member_m = 0.0;  // the rule's own members along the bed coordinate, metres; 0: none
+  f64 member_share = 1.0;
   // What the soil's patches are drawn from: 0 from `prepare_exposure`, and the caller's (a
   // layer's seed, never a tile's) after it.
   u64 seed = 0;
@@ -83,6 +87,22 @@ f64 soil_cover(const ExposureThresholds& rule, i64 x_mm, i64 z_mm) noexcept;
 // quarter of the fraction's range. With no patches (a cover of exactly 0 everywhere, the rule's
 // `patch_m` 0) it is the fraction itself.
 f64 standing_share(const ExposureThresholds& rule, f64 fraction, f64 cover) noexcept;
+
+// **Outcrops, not stripes** (rocks.md, "Outcrops, not stripes"). A slope's resistant beds do not
+// all crop out, and one that does is not exposed along its whole trace: cliff-forming members
+// stand between slope-forming intervals, and a bed's outcrops are stretches tens of metres long
+// (docs/experiments/exposed-bedrock.md). Two more factors on what stands, both of the world:
+//
+// `member_factor`: what the member at a bed coordinate lets stand, 0 to 1. With the formation's
+// macro sequence it is the macro bed's resistance factor; without one it is the rule's own
+// grouping, a seeded field along the coordinate `member_m` across, 1 over `member_share` of it
+// and 0 over the rest; 1 everywhere when the rule has neither.
+f64 member_factor(const ExposureThresholds& rule, const gfx::FormationParams& formation,
+                  f64 coordinate) noexcept;
+// `stretch_factor`: what the longer cover lets stand of bed top `bed_top` (any identity that is
+// the same from every tile) at a point, 0 to 1: a field `stretch_m` across drawn for that bed
+// top alone, open over `stretch_share` of it, so two beds' outcrops are not one above the other.
+f64 stretch_factor(const ExposureThresholds& rule, u64 bed_top, i64 x_mm, i64 z_mm) noexcept;
 
 // A point's exposure: its shape, the bed at the surface, and `stand`, the share of that bed's
 // thickness that stands there (`standing_share * resistance_factor`); `exposed` is `stand > 0`.

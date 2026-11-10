@@ -154,7 +154,7 @@ TEST_CASE("ledges: they stand on a resistant bed past the soil slope, and nowher
   REQUIRE(s.report.triangles > 500);
   CHECK(s.mesh.indices.size() == 3 * s.report.triangles);
   CHECK(s.report.tallest_m > 0.8);
-  CHECK(s.report.units >= 10);
+  CHECK(s.report.units >= 4);  // of 31 bed tops: outcrops, not every bed's stripe
   MESSAGE("near form: " << s.report.triangles << " triangles, " << s.report.front_length_m
                         << " m of front, "
                         << static_cast<f64>(s.report.triangles) / s.report.front_length_m
@@ -333,7 +333,7 @@ TEST_CASE("ledges: a ledge that crosses a tile's border meets itself to the mill
   MESSAGE("border vertices: " << ax.size() << " and " << bx.size() << " across x = 64, "
                               << az.size() << " and " << bz.size() << " across z = 0");
   CHECK(ax.size() > 10);
-  CHECK(az.size() > 10);
+  CHECK(az.size() > 4);
   CHECK(matched(ax, bx) == 0);
   CHECK(matched(bx, ax) == 0);
   CHECK(matched(az, bz) == 0);
@@ -391,11 +391,11 @@ TEST_CASE("ledges: a patch is pinned to the bit") {
                              << mesh_hash(far_form.mesh) << " source "
                              << ledge_source_hash(far_form.patch));
   CHECK(near_form.report.triangles > 0u);
-  CHECK(mesh_hash(near_form.mesh) == 14786275900854483312ull);
-  CHECK(ledge_source_hash(near_form.patch) == 9247016372962660688ull);
+  CHECK(mesh_hash(near_form.mesh) == 3717382252342307044ull);
+  CHECK(ledge_source_hash(near_form.patch) == 1023279402199257043ull);
   CHECK(far_form.report.triangles > 0u);
-  CHECK(mesh_hash(far_form.mesh) == 7230372813651488151ull);
-  CHECK(ledge_source_hash(far_form.patch) == 12840883218751646205ull);
+  CHECK(mesh_hash(far_form.mesh) == 9185605051799371196ull);
+  CHECK(ledge_source_hash(far_form.patch) == 17846031924479908873ull);
 }
 
 TEST_CASE("ledges generator: tiles in any order are the whole read, a form a ring") {
@@ -523,4 +523,124 @@ TEST_CASE("ledges: what a tile costs") {
             << static_cast<f64>(report.triangles) / report.front_length_m << " triangles a metre");
     CHECK(report.triangles > 0);
   }
+}
+
+// ---- outcrops, not stripes (rocks.md, "Outcrops, not stripes") ---------------------------------
+
+namespace {
+
+// The beds that crop out along a transect up the slope at z: the fronts (steep triangles) the
+// plane z = `z` cuts, counted as one bed where their crossings are within 0.8 m of each other
+// along x (one bed's rows stand over each other; two beds are over a metre apart up this slope).
+u32 beds_on_transect(const Solved& s, f64 z) {
+  std::vector<f64> xs;
+  for (u32 t = 0; t + 2 < s.mesh.indices.size(); t += 3) {
+    if (std::fabs(normal_of(s, t).y) > 0.5) continue;
+    const P3 a = world(s, s.mesh.indices[t]), b = world(s, s.mesh.indices[t + 1]),
+             c = world(s, s.mesh.indices[t + 2]);
+    if (std::min({a.z, b.z, c.z}) > z || std::max({a.z, b.z, c.z}) < z) continue;
+    xs.push_back((a.x + b.x + c.x) / 3.0);
+  }
+  std::sort(xs.begin(), xs.end());
+  u32 beds = 0;
+  for (u32 i = 0; i < xs.size(); ++i)
+    beds += i == 0 || xs[i] - xs[i - 1] > 0.8 ? 1u : 0u;
+  return beds;
+}
+
+}  // namespace
+
+TEST_CASE("ledges: rock crops out in patches across the beds, not as every bed's stripe") {
+  const Hill h;
+  // Every resistant bed along its whole trace: no patches, no stretches, no members.
+  LedgeLayer stripes = layer_of(beds());
+  stripes.rule.patch_m = 0.0f;
+  stripes.rule.stretch_m = 0.0f;
+  stripes.rule.member_m = 0.0f;
+  // The soil's patches alone, as the solver stood before: broken along a bed, not across the beds.
+  LedgeLayer patches = layer_of(beds());
+  patches.rule.stretch_m = 0.0f;
+  patches.rule.member_m = 0.0f;
+  const LedgeLayer layer = layer_of(beds());  // the rule's own
+  CHECK(layer.rule.stretch_m == 60.0f);
+  CHECK(layer.rule.member_m == 12.0f);
+  f64 sum[2] = {}, squares[2] = {};
+  u32 transects = 0, none_at_all = 0;
+  f64 front[3] = {};
+  for (const i64 x_mm : {i64{0}, i64{64000}}) {
+    const Solved all = solve(stripes, h, x_mm, 0);
+    const Solved before = solve(patches, h, x_mm, 0);
+    const Solved now = solve(layer, h, x_mm, 0);
+    front[0] += all.report.front_length_m;
+    front[1] += before.report.front_length_m;
+    front[2] += now.report.front_length_m;
+    for (f64 z = 2.0; z < 64.0; z += 4.0) {
+      const u32 every = beds_on_transect(all, z);
+      if (every == 0) continue;  // a hollow that keeps its soil
+      const f64 share[2] = {static_cast<f64>(beds_on_transect(before, z)) / every,
+                            static_cast<f64>(beds_on_transect(now, z)) / every};
+      for (u32 k = 0; k < 2; ++k) {
+        sum[k] += share[k];
+        squares[k] += share[k] * share[k];
+      }
+      none_at_all += share[1] == 0.0 ? 1u : 0u;
+      ++transects;
+    }
+  }
+  f64 mean[2], deviation[2];
+  for (u32 k = 0; k < 2; ++k) {
+    mean[k] = sum[k] / transects;
+    deviation[k] = std::sqrt(std::max(0.0, squares[k] / transects - mean[k] * mean[k]));
+  }
+  MESSAGE("the share of the resistant beds that crop out along a transect up the slope, over "
+          << transects << " transects: " << mean[0] * 100.0 << " % (deviation "
+          << deviation[0] * 100.0 << ") with the soil's patches alone, " << mean[1] * 100.0
+          << " % (deviation " << deviation[1] * 100.0 << ") with members and stretches; "
+          << none_at_all << " transects with no rock at all; front " << front[0]
+          << " m with every bed, " << front[1] << " m with the patches, " << front[2] << " m now");
+  // Fewer than half the beds on a transect, and not the same share on every transect.
+  CHECK(mean[1] < 0.5);
+  CHECK(mean[1] > 0.05);
+  CHECK(mean[1] < 0.75 * mean[0]);
+  CHECK(deviation[1] > 0.08);
+  CHECK(front[2] < 0.5 * front[1]);
+  // The factors are the world's: 0 to 1, the same from anywhere, and off when the rule says so.
+  ExposureThresholds rule;
+  std::string error;
+  REQUIRE(prepare_exposure(layer.rule, rule, error));
+  rule.seed = layer.seed;
+  gfx::FormationParams field;
+  REQUIRE(gfx::pack_formation(beds(), field, &error));
+  u32 members = 0, open = 0;
+  for (i64 k = 0; k < 400; ++k) {
+    const f64 m = member_factor(rule, field, static_cast<f64>(k) * 0.37);
+    CHECK((m == 0.0 || m == 1.0));
+    members += m > 0.0 ? 1u : 0u;
+    const f64 s = stretch_factor(rule, 7, k * 3170, k * 1930);
+    CHECK(s >= 0.0);
+    CHECK(s <= 1.0);
+    CHECK(s == stretch_factor(rule, 7, k * 3170, k * 1930));
+    open += s > 0.0 ? 1u : 0u;
+  }
+  MESSAGE(members << " of 400 bed coordinates in a cliff-forming member, " << open
+                  << " of 400 points of a bed top's trace open");
+  CHECK(members > 100);
+  CHECK(members < 300);
+  CHECK(open > 60);
+  CHECK(open < 260);
+  ExposureThresholds off;
+  REQUIRE(prepare_exposure(stripes.rule, off, error));
+  CHECK(member_factor(off, field, 3.3) == 1.0);
+  CHECK(stretch_factor(off, 7, 1000, 2000) == 1.0);
+  // With the formation's own macro sequence a member is the macro bed, by its resistance.
+  scene::Formation with_members = beds();
+  with_members.macro_beds.push_back(bed("cliff former", 10.0f, 0.9f));
+  with_members.macro_beds.push_back(bed("slope former", 20.0f, 0.1f));
+  REQUIRE(gfx::pack_formation(with_members, field, &error));
+  CHECK(member_factor(rule, field, 5.0) > 0.5);
+  CHECK(member_factor(rule, field, 20.0) == 0.0);
+  LedgeLayer bad_rule = layer_of(beds());
+  bad_rule.rule.stretch_m = 3.0f;
+  CHECK_FALSE(prepare_exposure(bad_rule.rule, off, error));
+  CHECK(error.find("stretch_m") != std::string::npos);
 }

@@ -514,17 +514,31 @@ bool solve_ledges(const LedgePatch& p, assets::MeshData& out, LedgeReport* repor
             const f64 c_top = static_cast<f64>(inst) * period + unit.top;
             const u64 uid = mix64(p.seed ^ mix64(static_cast<u64>(ui) + 1) ^
                                   mix64(static_cast<u64>(inst) * 0x9E3779B97F4A7C15ull));
+            // Outcrops, not stripes (exposure.h): the bed stands only inside a cliff-forming
+            // member, and along its own stretches.
+            const f64 member = member_factor(rule, field, c_top - 0.5 * unit.thickness);
+            if (!(member > 0.0)) continue;
             // The top plane's height over the ground, and the step with every block whole.
             f64 d[3], whole[3];
             bool any_h = false, any_g = false, any_f = false;
             for (u32 k = 0; k < 3; ++k) {
               d[k] = (c_top - c[k]) / ny;
-              whole[k] = cap * fr[k] * unit.factor;
+              whole[k] = cap * fr[k] * unit.factor * member;
               any_h = any_h || whole[k] >= min_step;
               any_g = any_g || d[k] + k_back_m > 0.0;
               any_f = any_f || d[k] - whole[k] < 0.0;
             }
             if (!any_h || !any_g || !any_f) continue;
+            any_h = false;
+            any_f = false;
+            for (u32 k = 0; k < 3; ++k) {
+              whole[k] *=
+                  stretch_factor(rule, uid, p.x_mm + static_cast<i64>(node[k] % m) * cell_mm,
+                                 p.z_mm + static_cast<i64>(node[k] / m) * cell_mm);
+              any_h = any_h || whole[k] >= min_step;
+              any_f = any_f || d[k] - whole[k] < 0.0;
+            }
+            if (!any_h || !any_f) continue;
             // The joints of this bed top run up to 20 degrees off the dip direction, so blocks
             // are not all square to the ledge: the place along the strike, sheared.
             const f64 skew = p.far ? 0.0 : 0.72 * (draw(uid, 0, 0x99ull) - 0.5);

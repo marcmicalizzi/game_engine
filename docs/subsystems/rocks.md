@@ -1108,6 +1108,32 @@ dipping folded formation that MSVC, Clang and GCC reproduce.
 **Determinism:** integers in, then IEEE `+ - * /` and one square root in f64; the fold's sine is
 `det::sin`; no allocation and no state.
 
+### Outcrops, not stripes
+
+With the soil's patches alone the ledges were still a layer cake: along a transect up the test
+hillside 91 % of the resistant beds cropped out, so from across a valley they were stripes of even
+spacing, broken along their length and not across it. Rock on a soil-mantled slope is not like
+that ([grounding](../experiments/exposed-bedrock.md#outcrops-not-stripes)): resistant beds are
+"horizontally continuous but not contiguous", few continuous outcrops pass 100 m, and they are a
+few percent to a third of the ground; cliff-forming members stand between slope-forming intervals.
+Two more factors on what stands, both functions of the world and neither of a tile
+(`member_factor`, `stretch_factor`, `exposure.h`):
+
+- **Members.** A resistant bed stands only inside a cliff-forming member. Where the formation has
+  `macro_beds` the member is the macro bed at the bed's coordinate, by its resistance factor.
+  Where it has none the rule groups the sequence itself: a seeded field along the bed coordinate
+  `member_m` (12 m) across, standing over `member_share` (0.5) of it. That grouping is authored
+  and is a stand-in: a formation with a longer sequence would say which beds are members.
+- **Stretches.** Each bed top has a cover field of its own, `stretch_m` (60 m) across, open over
+  `stretch_share` (0.4) of its trace and shut over a sixth of the field past that, so an outcrop's
+  end tapers as the rule's other ends do and two beds' outcrops are not one above the other.
+
+The ledge solver multiplies a unit's step by both; `exposure_at` is still the mantle's rule at a
+point, without them (it names a bed, not a bed top). On the test hillside (two 64 m tiles, 26
+transects): **25 % of the resistant beds crop out along a transect, with a deviation of 19 points
+between transects** (91 % and 19 before), one transect has no rock at all, and the front falls
+from 2,083 m to 568 m. `stretch_m` 0 and `member_m` 0 are the stripes again.
+
 ### Ledges
 
 `include/domain/rocks/ledges.h`, `src/ledges.cpp`, and the scene generator `ledges`
@@ -1149,8 +1175,8 @@ both, the cluster DAG is the runtime LOD.
 
 | Form | A 64 m tile of the test hillside (31 bed tops) | Triangles a metre of front |
 |---|---|---|
-| near | 37,492 triangles, 48,673 vertices, 1,793 clusters, 1,041 m of front | 36 |
-| far | 1,533 triangles, 1,810 vertices, 69 clusters, 728 m of front | 2.1 |
+| near | 4,005 triangles, 5,213 vertices, 196 clusters, 117 m of front (37,492 triangles and 1,041 m as every bed's stripe) | 34 |
+| far | 191 triangles, 230 vertices, 10 clusters, 89 m of front | 2.1 |
 
 66 % of the near form's triangles are above the ground (the solver's count on its own lattice;
 71 % against the hillside's function), against 13.9 % on the front of the box G132 measured.
