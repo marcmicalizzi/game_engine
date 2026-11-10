@@ -1,6 +1,6 @@
 // The sward leaves a scene's holes, channels and water empty and thins towards a bank (roadmap
-// G135; docs/subsystems/scene_gen.md, "Exclusion"; flora.md, "Where the sward grows"). A scene with
-// none of the three places what it always did, patch for patch.
+// G135; docs/subsystems/scene_gen.md, "Exclusion"; flora.md, "Where it does not grow"). A scene
+// with none of the three places what it always did, patch for patch.
 #include <core/schema/json_reflect.h>
 #include <domain/flora/sward.h>
 #include <domain/scene_gen/scene_gen.h>

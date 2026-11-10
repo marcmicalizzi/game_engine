@@ -41,7 +41,7 @@ inline constexpr u32 k_channel_mesh_version = 1;
 // [0, period + one strip's travel time).
 inline constexpr f32 k_channel_phase_period_s = 8.0f;
 // A stretch whose drop over its horizontal run is this or more (45 degrees) is a waterfall: the
-// water leaves the bed and falls freely (docs/experiments/flowing-water.md, "Falls").
+// water leaves the bed and falls freely (docs/experiments/flowing-water.md, "Where it falls").
 inline constexpr f32 k_channel_fall_gradient = 1.0f;
 // How far past each edge of the width the ribbon goes, as a share of the width: the ground clips
 // the surface where it rises over the bank, so the shore is where the ground says, not where the

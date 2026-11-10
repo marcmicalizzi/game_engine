@@ -1,4 +1,4 @@
-// A scene's water bodies (scene_water.h; docs/subsystems/water.md, "Where it enters the renderer").
+// A scene's water bodies (scene_water.h; docs/subsystems/water.md, "Why a capability").
 //
 // The renderer is not a capability and the water is (ADR-0027), so the meshes come from the water
 // capability's placement generator, found by name in the registry as every placement generator is
@@ -51,7 +51,7 @@ gfx::WaterShading shading_of(const scene::WaterBody& body, const TerrainDesc& te
   s.seed = body.seed;
   // The waves' direction: the ground's wind at the scene's time when the block follows it and the
   // ground says one, the block's own direction otherwise. The load's: a wind that veers through the
-  // day does not turn the waves until the scene is read again (water.md, "Waves").
+  // day does not turn the waves until the scene is read again (water.md, "The block").
   f32 wx = 0.0f;
   f32 wz = 0.0f;
   if (body.wind_follow && terrain.enabled && ground.ok() &&

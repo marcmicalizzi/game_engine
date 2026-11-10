@@ -1,5 +1,5 @@
-// The water bodies as a placement generator (scene_gen.h; docs/subsystems/water.md, "Where it
-// enters the renderer"): the renderer's scene reader hands a scene's `water` block to the generator
+// The water bodies as a placement generator (scene_gen.h; docs/subsystems/water.md, "Why a
+// capability"): the renderer's scene reader hands a scene's `water` block to the generator
 // named "water" (systems/renderer/src/scene_water.cpp), and `expand` makes one mesh and one
 // placement per body, in the block's order. The meshes are GLB files written once, each under the
 // hash of its bytes, into the repository's derived-data root (`<repo>/ddc/water`, found from the

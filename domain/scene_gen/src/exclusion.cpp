@@ -13,7 +13,7 @@ constexpr f64 k_cell_m = 16.0;
 constexpr f64 k_far = 1.0e30;
 
 // The recipe's defaults (channels.schema `bank_width_widths`, `bank_width_m`): the reach of a
-// dressed bank beyond the water's edge. channels.md, "The banks".
+// dressed bank beyond the water's edge. channels.md, "The cut".
 constexpr f64 k_bank_widths = 0.25;
 constexpr f64 k_bank_m = 0.4;
 

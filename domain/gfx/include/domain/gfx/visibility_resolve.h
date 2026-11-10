@@ -1052,7 +1052,7 @@ struct ResolveParams {
   u32 display_encoding = 0;
   f32 display_paper_white_nits = 0.0f;
   f32 display_peak_nits = 0.0f;
-  // **The water's clock** (docs/subsystems/water.md, "Waves"): the frame's world time, game
+  // **The water's clock** (docs/subsystems/water.md, "The clock"): the frame's world time, game
   // seconds, reduced in double modulo `k_water_period_s`, which every wave's frequency is a whole
   // number of cycles of — so the waves are a function of the frame's time with no jump at the
   // wrap, and a replay draws the same water. Zero stands the waves still at their phase at time 0.

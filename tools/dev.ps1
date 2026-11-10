@@ -240,7 +240,7 @@ function Invoke-Test {
   # Streamed and kept: CTest lists the tests that did not run at the end, and a test whose
   # processes gave up waiting for the GPU lock (exit 75, SKIP_RETURN_CODE) is one of them. It
   # did not fail — it did not run — and a run that skipped one must not read as a pass either,
-  # so it ends with the same 75 and says which (docs/subsystems/gpu_lock.md, "Giving up").
+  # so it ends with the same 75 and says which (docs/subsystems/gpu_lock.md, "A wait is bounded").
   $lines = @()
   try {
     & ctest @args | Tee-Object -Variable lines | Out-Host

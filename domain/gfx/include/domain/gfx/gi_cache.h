@@ -38,7 +38,7 @@ namespace engine::gfx {
 // upper word with its low bit set; 0 is an empty slot), so a bucket's eight keys are one 32-byte
 // block a lookup reads in one load, then the cells, 32 bytes a slot. Stage 1 kept the key in the
 // cell's first word, which spread a bucket's keys over 256 bytes and made a lookup eight scattered
-// loads (renderer.md, "Indirect light: the world-space cache", "What the read costs").
+// loads (renderer.md, "Indirect light: the world-space cache").
 //
 // The header's words (`k_gi_stat_*`): what the frame's sample pass and fold counted, copied into
 // the frame's statistics and cleared behind the fold.
