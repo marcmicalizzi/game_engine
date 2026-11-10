@@ -59,18 +59,26 @@ float3 water_reflection(ResolveParams* params, Surface s, float3 r, float ray_bi
   ray.Direction = r;
   ray.TMin = 0.0;
   ray.TMax = k_water_reflect_m;
+  // The diagnostic's second ray, the flat mirror's (the view reflected off the level surface from
+  // the same point), goes through the same trace in a loop of two rather than a second call: a
+  // second inlined ray query is a second set of the query's registers in every water pixel's
+  // shader, which the default path would pay for.
+  const bool diagnostic = water_reflect_diagnostic(params->shadow_flags);
+  const float3 d = normalize(s.position - params->camera.xyz);
+  const float3 flat = float3(d.x, -d.y, d.z);
+  bool met[2] = {false, false};
   SceneHit hit;
-  if (water_reflect_diagnostic(params->shadow_flags)) {
-    const bool rippled = trace_scene_hit(params, ray, hit);
-    // The flat mirror's ray: the view reflected off the level surface, from the same point.
-    const float3 d = normalize(s.position - params->camera.xyz);
-    RayDesc flat = ray;
-    flat.Direction = float3(d.x, -d.y, d.z);
-    const bool mirror = flat.Direction.y > 1.0e-4 && trace_scene_hit(params, flat, hit);
-    return float3(rippled ? 0.0 : 1.0, rippled ? 1.0 : 0.0, mirror ? 1.0 : 0.0) *
+  const uint rays = diagnostic ? 2u : 1u;
+  [loop] for (uint i = 0; i < rays; ++i) {
+    RayDesc probe = ray;
+    if (i == 1u) probe.Direction = flat;
+    if (i == 0u || flat.y > 1.0e-4) met[i] = trace_scene_hit(params, probe, hit);
+  }
+  if (diagnostic) {
+    return float3(met[0] ? 0.0 : 1.0, met[0] ? 1.0 : 0.0, met[1] ? 1.0 : 0.0) *
            k_water_reflect_diagnostic_scale;
   }
-  if (!trace_scene_hit(params, ray, hit)) return sky;
+  if (!met[0]) return sky;
   // The ray's width at the hit: this view's pixel angle (two over the projection's y scale and the
   // height; the eye is the frame's origin, so the view-projection's second row is the scale times a
   // unit vector) times the mirrored path's length, the eye to the surface and on to the hit.

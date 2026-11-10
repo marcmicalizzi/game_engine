@@ -479,11 +479,13 @@ constexpr f32 k_grass[3] = {0.10f, 0.35f, 0.06f};
 constexpr f32 k_sand[3] = {0.65f, 0.52f, 0.32f};
 
 // A pool at -1 m filling the bowl from its middle: black water (no bottom to see), a mirror (no
-// waves), no wet band, so a water pixel is its Fresnel times what its reflection met.
+// waves), no wet band, drawn at the low tier (whose body is the shallow and deep colours, where the
+// volume tier would add its own scattered blue-green), so a water pixel is its Fresnel times what
+// its reflection met.
 const char* k_scene = R"({
   "format": "engine.scene.v1",
   "name": "reflect-ground-test",
-  "terrain": {"provider": "reflect_bank_probe", "size": 129, "extent": 128},
+  "terrain": {"provider": "reflect_bank_probe", "size": 65, "extent": 128},
   "water": [{"name": "pool", "level_m": -1,
              "shape": {"fill": {"seed": [0, 0, 0], "max_extent_m": 60}},
              "shallow": [0, 0, 0], "deep": [0, 0, 0], "wind_follow": false,
@@ -520,9 +522,7 @@ TEST_CASE(
   if (!ray_queries_here()) return;
   const test::TempDir tmp("water_reflect_ground");
   RestoreReflect restore;
-  gfx::Device device;
   std::string error;
-  REQUIRE_MESSAGE(device.create(gfx::DeviceOptions{}, &error), error);
   const std::string path = tmp.file("bank.json");
   {
     std::ofstream file(path, std::ios::binary);
@@ -541,10 +541,15 @@ TEST_CASE(
     desc.terrain.materials->layers.push_back(l);
   }
   desc.terrain.masks.emplace();
+  // The scene is loaded before the device is opened: the device holds the machine's GPU lock, and
+  // the load (the ground, the fill, the clusters) is the CPU's.
   SceneData data;
   REQUIRE_MESSAGE(load_scene(desc, data, error), error);
+  gfx::Device device;
+  REQUIRE_MESSAGE(device.create(gfx::DeviceOptions{}, &error), error);
   RenderSettings settings;
   settings.shadows = ShadowMode::RayTraced;
+  settings.water_quality = WaterQuality::Low;
   ResolvedSettings resolved;
   resolve_settings(settings, device.features(), &data, resolved);
   REQUIRE(check_availability(resolved, device.features()) == RenderAvailability::Ok);
