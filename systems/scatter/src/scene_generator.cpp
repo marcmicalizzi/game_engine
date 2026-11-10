@@ -113,6 +113,7 @@ class Nearby {
     out.ground = context_.ground;
     out.stand = context_.stand;
     out.exclusion = context_.exclusion;
+    out.site = context_.site;
     if (sorted_.empty()) return out;
     scratch.clear();
     for (i32 dz = -span_; dz <= span_; ++dz) {
@@ -225,9 +226,9 @@ bool tile(void* state, scene_gen::TileCoord at, const scene_gen::Context& contex
           scene_gen::Placements& out, std::string*) {
   const Entry& entry = *static_cast<const Entry*>(state);
   Vector<Point> points;
-  entry.placer.place_tile(at,
-                          Site{context.ground, context.stand, context.earlier, context.exclusion},
-                          entry.placer.ring_kind_mask(context), points);
+  entry.placer.place_tile(
+      at, Site{context.ground, context.stand, context.earlier, context.exclusion, context.site},
+      entry.placer.ring_kind_mask(context), points);
   to_placements(std::span<const Point>(points.data(), points.size()), out);
   out.kind = representation(state, context);
   return true;

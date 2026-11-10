@@ -119,6 +119,9 @@ struct Site {
   // Where nothing is placed (G135; `scene_gen::Context::exclusion`): a candidate in a hole, a
   // stream's bed and banks or under water is dropped. Null: nothing is.
   const scene_gen::Exclusion* exclusion = nullptr;
+  // What the ground is like at a candidate (G144; `scene_gen::Context::site`), read by a kind that
+  // names a response (scatter.md, "Kinds by site"). Null: `scene_gen::Site::fallback()`.
+  const scene_gen::Site* site = nullptr;
 };
 
 // The layer read, checked and turned into the integers it decides in: what every query runs

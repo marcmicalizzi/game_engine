@@ -33,6 +33,7 @@
 #include <array>
 #include <cmath>
 #include <cstring>
+#include <optional>
 #include <string>
 
 namespace engine::scatter {
@@ -52,6 +53,7 @@ constexpr u64 k_salt_scale = 0x5343414C45524E44ull;
 constexpr u64 k_salt_yaw = 0x59415752414E444Dull;
 constexpr u64 k_salt_rank = 0x425544474554524Bull;
 constexpr u64 k_salt_noise = 0x4E4F495345464C44ull;
+constexpr u64 k_salt_site = 0x5349544552554C45ull;
 
 // The lattice candidates of one cell decide among those within this many cells: two cells reach a
 // spacing (the cell is r / √2), and two rounds look three spacings out.
@@ -210,7 +212,29 @@ struct KindRt {
   f64 tan2_max = 0.0;  // < 0: no upper limit
   bool needs_gradient = false;
   u64 seed = 0;
+  // The site's rules (G144; scatter.md, "Kinds by site"): which responses the kind names, the
+  // fields its sample needs, and the band. `ruled` false is a kind placed as before the rules.
+  bool ruled = false;
+  u32 site_fields = 0;
+  struct Range {
+    bool on = false;
+    f64 min = 0.0, max = 0.0, soft = 0.0;
+  };
+  Range elevation, slope, heat_load, curvature, water;
+  f64 aspect_shift = 0.0;  // metres at a sunward tilt of 0.5
+  f64 band = 0.0;
+  f64 band_scale = 1.0;
 };
+
+// The response of one range at `v` (scatter.schema, `Response`): 1 inside, a smoothstep to 0 over
+// `soft` beyond each edge, 0 past it.
+f64 respond(const KindRt::Range& r, f64 v) noexcept {
+  if (v >= r.min && v <= r.max) return 1.0;
+  const f64 d = v < r.min ? r.min - v : v - r.max;
+  if (!(d < r.soft)) return 0.0;
+  const f64 t = 1.0 - d / r.soft;
+  return t * t * (3.0 - 2.0 * t);
+}
 
 struct Circle {
   i64 x = 0;
@@ -462,9 +486,13 @@ void Placer::Impl::place_kind(u32 k, const RectMm& rect, const Site& site,
   lattice(k, rect, kept);
   if (kept.empty()) return;
   // The excluded layers' placements near the rectangle, each from its own file and rules.
+  // They read the same site (G144) and none of this call's exclusions, as before the site.
   Vector<Vector<Point>> others(excluded.size());
+  Site other_site;
+  other_site.ground = ground;
+  other_site.site = site.site;
   for (u32 e = 0; e < excluded.size(); ++e)
-    excluded[e].placer->place_rect(rect.grown(excluded[e].clear_mm), ground, others[e]);
+    excluded[e].placer->place_rect(rect.grown(excluded[e].clear_mm), other_site, others[e]);
   // **The earlier entries' footprints that reach the rectangle** (ADR-0046 decision 4, as built):
   // each one's radius plus this kind's `clear`, as integer millimetres; a candidate within it is
   // not placed. Gathered once per call, so a whole read handing every earlier placement of the
@@ -558,10 +586,35 @@ void Placer::Impl::place_kind(u32 k, const RectMm& rect, const Site& site,
       if (g2 < rt.tan2_min) continue;
       if (rt.tan2_max >= 0.0 && g2 > rt.tan2_max) continue;
     }
+    // **The site's rules** (G144; scatter.md, "Kinds by site"): the kind's responses at the
+    // candidate, multiplied, kept by a hash of the candidate's own so the same point is kept by
+    // every tile that asks; and the krummholz band's stunting below the upper elevation limit.
+    f64 stunt = 1.0;
+    if (rt.ruled) {
+      const scene_gen::SiteSample s =
+          (site.site != nullptr ? *site.site : scene_gen::Site::fallback())
+              .sample_mm(ground, c.x, c.z, rt.site_fields);
+      f64 keep = 1.0;
+      if (rt.elevation.on) {
+        KindRt::Range e = rt.elevation;
+        e.max += rt.aspect_shift * 2.0 * s.sunward;
+        keep *= respond(e, s.elevation);
+        if (rt.band > 0.0) {
+          const f64 t = std::clamp((s.elevation - (e.max - rt.band)) / rt.band, 0.0, 1.0);
+          stunt = 1.0 - (1.0 - rt.band_scale) * (t * t * (3.0 - 2.0 * t));
+        }
+      }
+      if (rt.slope.on) keep *= respond(rt.slope, s.slope);
+      if (rt.heat_load.on) keep *= respond(rt.heat_load, s.heat_load);
+      if (rt.curvature.on) keep *= respond(rt.curvature, s.curvature);
+      if (rt.water.on) keep *= respond(rt.water, s.water_m());
+      if (!(unit(mix(c.priority ^ k_salt_site)) < keep)) continue;
+    }
     // The scale, the yaw and the alignment.
     const f64 su = unit(mix(c.priority ^ k_salt_scale));
-    const f64 scale =
-        static_cast<f64>(kind.scale_min) + static_cast<f64>(kind.scale_max - kind.scale_min) * su;
+    const f64 scale = (static_cast<f64>(kind.scale_min) +
+                       static_cast<f64>(kind.scale_max - kind.scale_min) * su) *
+                      stunt;
     const f64 random_yaw = 2.0 * k_pi * unit(mix(c.priority ^ k_salt_yaw));
     const f64 offset = static_cast<f64>(kind.yaw_deg) * k_degrees;
     f64 yaw = 0.0;
@@ -701,6 +754,48 @@ bool Placer::open(const Layer& desc, std::string_view dir, u64 world_seed, std::
     rt.needs_gradient = kind.slope_min_deg > 0.0f || kind.slope_max_deg < 90.0f ||
                         kind.yaw == YawRule::Uphill || kind.align;
     rt.seed = mix2(im.seed ^ k_salt_kind, k);
+    // The site's rules (G144), each range checked once here.
+    std::string bad;
+    const auto range = [&](const std::optional<Response>& r, const char* what, KindRt::Range& to) {
+      if (!r.has_value()) return true;
+      if (!std::isfinite(r->min) || !std::isfinite(r->max) || !(r->min <= r->max) ||
+          !std::isfinite(r->soft) || !(r->soft >= 0.0)) {
+        bad = name + ": its " + what + " response needs min <= max and a soft edge >= 0";
+        return false;
+      }
+      to.on = true;
+      to.min = r->min;
+      to.max = r->max;
+      to.soft = r->soft;
+      rt.ruled = true;
+      return true;
+    };
+    if (!range(kind.elevation, "elevation", rt.elevation) ||
+        !range(kind.slope, "slope", rt.slope) ||
+        !range(kind.heat_load, "heat_load", rt.heat_load) ||
+        !range(kind.curvature, "curvature", rt.curvature) ||
+        !range(kind.water_m, "water_m", rt.water))
+      return fail(bad);
+    // A distance is measured to `k_site_water_reach_m`: a limit past it would read every far point
+    // as standing at the reach.
+    const f64 reach = scene_gen::k_site_water_reach_m;
+    if (rt.water.on &&
+        (rt.water.min > reach || (rt.water.max < reach && rt.water.max + rt.water.soft > reach)))
+      return fail(name + ": its water_m response reaches past the 128 m the site measures to");
+    if (!std::isfinite(kind.aspect_shift_m) || !(kind.krummholz_m >= 0.0f) ||
+        !std::isfinite(kind.krummholz_m) || !(kind.krummholz_scale > 0.0f) ||
+        !(kind.krummholz_scale <= 1.0f))
+      return fail(name + ": its aspect_shift_m must be a number, krummholz_m >= 0 and " +
+                  "krummholz_scale in (0, 1]");
+    if ((kind.aspect_shift_m != 0.0f || kind.krummholz_m > 0.0f) && !rt.elevation.on)
+      return fail(name + ": an aspect shift or a krummholz band needs an elevation response");
+    rt.aspect_shift = static_cast<f64>(kind.aspect_shift_m);
+    rt.band = static_cast<f64>(kind.krummholz_m);
+    rt.band_scale = static_cast<f64>(kind.krummholz_scale);
+    if (rt.elevation.on) rt.site_fields |= scene_gen::k_site_elevation;
+    if (rt.aspect_shift != 0.0 || rt.slope.on || rt.heat_load.on || rt.curvature.on)
+      rt.site_fields |= scene_gen::k_site_form;
+    if (rt.water.on) rt.site_fields |= scene_gen::k_site_water;
     im.kinds.push_back(rt);
   }
   // The region.

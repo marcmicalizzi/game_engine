@@ -149,6 +149,12 @@ hash, so it is the same on every tile and toolchain.
 | `krummholz_m` default, `krummholz_scale` default | 0, 1 (no band) | ecotone tens to hundreds of metres; a ratio of about 0.1 (3 m over 20–30 m) |
 | The example's treeline | upper limit 520 m in the scene's metres, `soft` 60 m, `aspect_shift_m` 80, `krummholz_m` 140, `krummholz_scale` 0.15 | a valley whose 0 is its floor; the band and ratio from the rows above |
 
+## What it costs
+
+Measured in `msvc-release` by `engine_scene_gen_bench` (`scene_gen.site.*`) and
+`engine_scatter_bench` (`scatter.tile.*`); the table and the machine's state are filled in by the
+stage that measures them.
+
 ## What is not built
 
 - **Wetness.** No wetness figure: the honest local inputs are the distance to water and the
