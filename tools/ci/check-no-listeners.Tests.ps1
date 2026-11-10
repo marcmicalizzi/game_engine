@@ -106,10 +106,45 @@ try {
   $view = @(Get-ProbeArgs -Name 'engine-view' -Scratch $scratch)
   $editor = @(Get-ProbeArgs -Name 'engine-editor' -Scratch $scratch)
   Test-That 'engine-view runs offscreen' { $view -contains '--offscreen' }
-  Test-That 'engine-editor runs offscreen, with no shell, and its listener on loopback' {
-    ($editor -contains '--offscreen') -and ($editor -contains '--no-shell') -and ($editor -contains '127.0.0.1:0')
+  # engine-editor refuses --offscreen with --listen (apps/engine_editor/main.cpp), and a refused
+  # probe opens no listener; so its probe has a small window, no shell, and the listener open.
+  Test-That 'engine-editor runs with its listener on loopback, no shell, and never --offscreen with --listen' {
+    ($editor -notcontains '--offscreen') -and ($editor -contains '--no-shell') -and
+      ((($editor -join ' ')).Contains('--listen 127.0.0.1:0'))
   }
-  Test-That 'engine-host listens on loopback only' { (@(Get-ProbeArgs -Name 'engine-host' -Scratch $scratch) -join ' ').Contains('--listen 127.0.0.1:0') }
+  $hostArgs = @(Get-ProbeArgs -Name 'engine-host' -Scratch $scratch)
+  Test-That 'engine-host listens on loopback only, and is held open rather than answering one request' {
+    (($hostArgs -join ' ') -eq '--listen 127.0.0.1:0') -and (Test-HoldsUntilListening 'engine-host')
+  }
+  Test-That 'only engine-host is held by its input' {
+    -not (Test-HoldsUntilListening 'engine-editor') -and -not (Test-HoldsUntilListening 'engine-view')
+  }
+  Test-That 'the known listeners are engine-host and engine-editor' {
+    ((@(Get-KnownListeners) | Sort-Object) -join ',') -eq 'engine-editor,engine-host'
+  }
+
+  # The positive control: a run whose sampler saw no known listener must not print OK.
+  $hostSeen = [pscustomobject]@{ Name = 'engine-host'; Endpoint = 'TCP 127.0.0.1:50123' }
+  $editorSeen = [pscustomobject]@{ Name = 'engine-editor'; Endpoint = 'TCP 127.0.0.1:50124' }
+  $blind = Resolve-ListenerVerdict -Observed @() -Started @('engine-host', 'engine-editor', 'engine_math_tests') -Executables 3
+  Test-That 'a run that started the known listeners and saw neither fails' { $blind.Code -eq 1 }
+  Test-That 'and says the sampler saw nothing where a listener is known, naming each binary' {
+    $text = $blind.Lines -join "`n"
+    $text.Contains('the sampler saw nothing where a listener is known: engine-host') -and
+      $text.Contains('the sampler saw nothing where a listener is known: engine-editor')
+  }
+  $half = Resolve-ListenerVerdict -Observed @($hostSeen) -Started @('engine-host', 'engine-editor') -Executables 2
+  Test-That 'one known listener seen and the other not still fails, naming the one missed' {
+    $half.Code -eq 1 -and ($half.Lines -join "`n").Contains('known: engine-editor') -and -not ($half.Lines -join "`n").Contains('known: engine-host')
+  }
+  $offLoop = Resolve-ListenerVerdict -Observed @([pscustomobject]@{ Name = 'engine-host'; Endpoint = 'TCP 0.0.0.0:50123' }), $editorSeen -Started @('engine-host', 'engine-editor') -Executables 2
+  Test-That 'a known listener seen only off loopback counts as not seen on loopback, and fails twice over' {
+    $offLoop.Code -eq 1 -and ($offLoop.Lines -join "`n").Contains('known: engine-host') -and ($offLoop.Lines -join "`n").Contains('engine-host TCP 0.0.0.0:50123')
+  }
+  $both = Resolve-ListenerVerdict -Observed @($hostSeen, $editorSeen) -Started @('engine-host', 'engine-editor') -Executables 2
+  Test-That 'both known listeners seen on loopback passes' { $both.Code -eq 0 }
+  $absent = Resolve-ListenerVerdict -Observed @() -Started @('engine_math_tests') -Executables 1
+  Test-That 'a build without the known listeners is not held to them' { $absent.Code -eq 0 }
   Test-That 'a bench lists its cases and runs none' { (@(Get-ProbeArgs -Name 'engine_math_bench' -Scratch $scratch) -join ' ') -eq '--list' }
   Test-That 'the GPU lock probe runs a command that holds no lock' { (@(Get-ProbeArgs -Name 'engine_gpu_lock_probe' -Scratch $scratch) -join ' ') -eq 'cycles 0' }
   Test-That 'a test executable is asked for its help' { (@(Get-ProbeArgs -Name 'engine_math_tests' -Scratch $scratch) -join ' ') -eq '--help' }

@@ -25,7 +25,12 @@
       cannot start exits with its status instead of waiting for a click (Set-QuietErrorMode);
     - the copies find their DLLs through PATH, from the build directory they were copied from, so
       they start rather than fail in the loader;
-    - nothing opens a window: engine-view and engine-editor run `--offscreen`, a bench `--list`s;
+    - engine-view runs `--offscreen` and a bench `--list`s; engine-editor is the one probe with a
+      window (64 pixels, 30 frames: its `--offscreen` refuses `--listen`), which appears only once
+      it holds the GPU lock;
+    - the binaries that listen on purpose (engine-host, engine-editor) are the positive control:
+      each is sampled until its loopback endpoint appears, and a run that started one and never
+      saw it listening fails, so a blind sampler cannot report OK;
     - a device a copy opens takes the machine-wide GPU lock as a test's does
       (ENGINE_GPU_LOCK_ON_DEVICE=1, unless the caller set it);
     - after each binary, and again at the end, every process whose image lies under the run's own
@@ -52,6 +57,9 @@ param(
   [switch]$Build,
   [int]$TimeoutSeconds = 30,
   [int]$SettleSeconds = 6,
+  # How long a known listener (engine-host, engine-editor) is sampled for its endpoint before the
+  # run gives up on seeing it, which fails the run (Resolve-ListenerVerdict).
+  [int]$ListenSeconds = 20,
   [switch]$KeepPrompts,
   [switch]$KeepTemp
 )
@@ -109,6 +117,8 @@ foreach ($p in $before) { [void]$knownPids.Add([int]$p.ProcessId) }
 $newPrompts = New-Object System.Collections.Generic.List[object]
 $observed = New-Object System.Collections.Generic.List[object]
 $notes = New-Object System.Collections.Generic.List[string]
+$started = New-Object System.Collections.Generic.List[string]
+$knownListeners = @(Get-KnownListeners)
 $sampled = 0
 
 # A prompt that was not up before the run is recorded against whoever was running, and taken down
@@ -154,26 +164,54 @@ try {
 
     $name = [IO.Path]::GetFileNameWithoutExtension($exe.Name)
     $probeArgs = @(Get-ProbeArgs -Name $name -Scratch $slot)
-    $sp = @{ FilePath = $copy; PassThru = $true; NoNewWindow = $true
-             RedirectStandardOutput = (Join-Path $slot 'out.txt')
-             RedirectStandardError = (Join-Path $slot 'err.txt') }
-    if ($probeArgs.Count -gt 0) { $sp.ArgumentList = $probeArgs }
+    $known = $knownListeners -contains $name
+    $holds = Test-HoldsUntilListening $name
+    $started.Add($name)
 
-    # The loader looks beside the image first and on PATH last; the copy is alone in its directory,
-    # so the build directory it came from goes on PATH for the DLLs it needs.
-    $env:PATH = "$($exe.DirectoryName);$basePath"
-    try { $proc = Start-Process @sp } finally { $env:PATH = $basePath }
+    # Started directly rather than through Start-Process: the arguments are passed as a list (no
+    # command-line quoting), the copy gets its own PATH, and its standard input is a pipe this run
+    # holds, which is how engine-host is kept serving until its listener has been seen. The loader
+    # looks beside the image first and on PATH last; the copy is alone in its directory, so the build
+    # directory it came from goes on PATH for the DLLs it needs. Output is drained by two reads that
+    # end when the process's pipes close, and written beside the copy (kept with -KeepTemp).
+    $psi = [System.Diagnostics.ProcessStartInfo]::new($copy)
+    foreach ($a in $probeArgs) { $psi.ArgumentList.Add($a) }
+    $psi.UseShellExecute = $false
+    $psi.CreateNoWindow = $true
+    $psi.WorkingDirectory = $slot
+    $psi.RedirectStandardInput = $true
+    $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError = $true
+    $psi.Environment['PATH'] = "$($exe.DirectoryName);$basePath"
+    $proc = [System.Diagnostics.Process]::Start($psi)
+    $outRead = $proc.StandardOutput.ReadToEndAsync()
+    $errRead = $proc.StandardError.ReadToEndAsync()
+    if (-not $holds) { $proc.StandardInput.Close() }
 
-    # Sample the live process before waiting on it. One sample is enough for the listener this
-    # guards against, which is opened during start-up and held for the process's whole life.
+    # A sample counts as live only when the process had not exited before it was taken. A known
+    # listener is sampled until its loopback endpoint appears (or it exits, or -ListenSeconds pass);
+    # anything else a few times at start, which is enough for a listener opened during start-up and
+    # held for the process's life — and a process that exits before its first sample is answered by
+    # the prompt count alone.
     $seen = @()
-    $sawProcess = $false
-    for ($attempt = 0; $attempt -lt 3; $attempt++) {
-      if ($proc.HasExited -and $attempt -gt 0) { break }
-      $sawProcess = $true
-      $seen += Get-ProcessListeners $proc.Id
-      if ($proc.HasExited) { break }
+    $live = $false
+    if ($known) {
+      $deadline = (Get-Date).AddSeconds($ListenSeconds)
+      while (-not $proc.HasExited -and (Get-Date) -lt $deadline) {
+        $now = @(Get-ProcessListeners $proc.Id)
+        $live = $true
+        $seen += $now
+        if (@($now | Where-Object { Test-LoopbackAddress $_ }).Count -gt 0) { break }
+        Start-Sleep -Milliseconds 250
+      }
+    } else {
+      for ($attempt = 0; $attempt -lt 3 -and -not $proc.HasExited; $attempt++) {
+        $seen += Get-ProcessListeners $proc.Id
+        $live = $true
+      }
     }
+    # Seen, or given up on: engine-host is told to exit by its input closing.
+    if ($holds) { try { $proc.StandardInput.Close() } catch { } }
 
     if (-not $proc.WaitForExit($TimeoutSeconds * 1000)) {
       # Once more before it is ended: a listener opened late (after a device, say) is still seen.
@@ -185,7 +223,11 @@ try {
       # 0xC0000135 and friends: the process never reached main, so it never answered the question.
       $notes.Add(("$name exited 0x{0:X8} - it may not have started at all" -f $proc.ExitCode))
     }
-    if ($sawProcess) { $sampled++ }
+    try {
+      if ($outRead.Wait(5000)) { [IO.File]::WriteAllText((Join-Path $slot 'out.txt'), $outRead.Result) }
+      if ($errRead.Wait(5000)) { [IO.File]::WriteAllText((Join-Path $slot 'err.txt'), $errRead.Result) }
+    } catch { }
+    if ($live) { $sampled++ }
     foreach ($endpoint in ($seen | Sort-Object -Unique)) {
       $observed.Add([pscustomobject]@{ Name = $name; Endpoint = $endpoint })
     }
@@ -201,12 +243,12 @@ try {
   Receive-NewPrompts '(after the run)'
   $after = @(Get-FirewallPrompts)
   $gpuAfter = Get-GpuClientCount
-  $verdict = Resolve-ListenerVerdict -Observed $observed.ToArray() -NewPrompts $newPrompts.ToArray() -Executables $exes.Count
+  $verdict = Resolve-ListenerVerdict -Observed $observed.ToArray() -NewPrompts $newPrompts.ToArray() -Executables $exes.Count -Started $started.ToArray()
 
   Write-Host ''
   foreach ($n in @($notes) + @($verdict.Notes)) { Write-Host "  note: $n" -ForegroundColor Yellow }
   Write-Host "check-no-listeners: firewall prompts after: $($after.Count) (before: $($before.Count); $($newPrompts.Count) raised during the run$(if (-not $KeepPrompts) { ', each dismissed' }))"
-  Write-Host "check-no-listeners: sampled the live endpoints of $sampled of $($exes.Count) processes"
+  Write-Host "check-no-listeners: sampled the live endpoints of $sampled of $($exes.Count) processes (those still running when a sample was taken; the rest exited first and are answered by the prompt count alone)"
   if ($null -ne $gpuAfter) { Write-Host "check-no-listeners: GPU client processes after: $gpuAfter" }
   foreach ($l in $verdict.Lines) {
     Write-Host $l -ForegroundColor $(if ($verdict.Code -eq 0) { 'Green' } else { 'Red' })
