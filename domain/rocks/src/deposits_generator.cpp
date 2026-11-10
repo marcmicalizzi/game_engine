@@ -159,6 +159,8 @@ bool open(const JsonValue& params, const scene_gen::Context& context, void** sta
       p.ground.clear();
       p.thickness.clear();
       p.coarse.clear();
+      p.sink.clear();
+      p.slope.clear();
       p.blocks.clear();
       const f64 y0 = plan.ground[iz * plan.width + ix];
       bool any = false;
@@ -168,6 +170,11 @@ bool open(const JsonValue& params, const scene_gen::Context& context, void** sta
           p.ground.push_back(static_cast<f32>(plan.ground[i] - y0));
           p.thickness.push_back(plan.thickness[i]);
           p.coarse.push_back(plan.coarse[i]);
+          // G143: the edge field and the top's gradient, from the plan (rocks.md, "The edge and
+          // the seams").
+          p.sink.push_back(plan.sink[i]);
+          p.slope.push_back(plan.slope[2 * i]);
+          p.slope.push_back(plan.slope[2 * i + 1]);
           any = any || plan.thickness[i] > .001f;
         }
       // G143: the patch's blocks, local to its corner, and its rock: the bed most of its deposit

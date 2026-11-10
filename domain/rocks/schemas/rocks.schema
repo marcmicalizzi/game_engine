@@ -436,6 +436,12 @@ struct DepositPatch @version(2) {
   blocks: DepositBlock[] @since(2)
   /// Triangles each block is built at, 192..12288: the finest cube-grid rung that fits.
   block_triangles: u32 = 432 @since(2)
+  /// G143: per sample, 0..2 m, how far a bare sample's bed top stands below the ground: the plan's
+  /// signed edge field past the outline, and a bare rim on steep ground. Empty: none.
+  sink: f32[] @since(2)
+  /// G143: per sample, the bed top's gradient (rise over run in x, then z) from the plan, so a
+  /// patch's normals are its neighbours' at a shared border. Empty: from the patch's own samples.
+  slope: f32[] @since(2)
 }
 
 /// A formation bed's rock (G143): a bed of the deposit layer's `formation` named `bed` sheds `type`.

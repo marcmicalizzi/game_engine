@@ -7,7 +7,16 @@
 
 namespace engine::rocks {
 // 2 since G143 (2026-11-10): a bed's bare rim on steep ground sinks below the face it meets.
-inline constexpr u32 k_deposit_version = 2;
+// 3 (G143, second agent): the bed's outline, its sink and its normals come from the plan.
+inline constexpr u32 k_deposit_version = 3;
+// The bed's edge (rocks.md, "The edge and the seams"): inside its outline toward bare gentle ground
+// a deposit is no thicker than `k_edge_slope` (tan 31 degrees, the toe's own slope) times its
+// distance in, less half a spacing; past it the piles' surfaces continue under the ground; and the
+// first ring of samples either side is moved by world-anchored noise of amplitude `k_edge_amp` on a
+// `k_edge_lattice_mm` lattice, so the outline falls between the samples.
+inline constexpr f64 k_edge_slope = 0.6;
+inline constexpr f64 k_edge_amp = 0.1;
+inline constexpr i64 k_edge_lattice_mm = 2000;
 
 // What a face shed onto one foot sample (G143; rocks.md, "What a face sheds"): the face area
 // routed to the foot times the layer's supply, stood as a pile at the repose angle against the face
@@ -57,6 +66,10 @@ struct DepositPlan {
   Vector<DepositPile> piles;
   Vector<DepositPlanBlock> blocks;
   Vector<RockType> rock;  // per sample, the bed at the face above it (layer has a formation)
+  // G143's edge and seams: per sample, a bare top's depth below the ground, and the top's
+  // gradient (x then z, two a sample) by central differences over the plan.
+  Vector<f32> sink;
+  Vector<f32> slope;
 };
 
 // Pure finite-window solve; no I/O, persistent state or dependence on tile arrival order.

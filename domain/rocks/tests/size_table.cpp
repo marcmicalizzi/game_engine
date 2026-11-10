@@ -17,7 +17,9 @@ ENGINE_EXPECT_SIZE(60, 4, rocks::RockGeology);
 
 // 144 since G143 (2026-11-10): the plan's piles, blocks and per-sample rock, three vectors; a plan
 // is built once an entry, on open, and kept for the entry's life.
-ENGINE_EXPECT_SIZE(144, 8, rocks::DepositPlan);
+// 176 since G143's second agent (2026-11-10): the edge field's sink and the top's gradient, two
+// more vectors, for the bed's outline and its normals across patches.
+ENGINE_EXPECT_SIZE(176, 8, rocks::DepositPlan);
 // G143's records, one a foot's pile and one a block of a plan: offline, never per frame or per
 // instance. 72 since G143's second agent (2026-11-10): a pile records its face, its volume and what
 // it held, where the first agent's cone (56) had only its catchment.

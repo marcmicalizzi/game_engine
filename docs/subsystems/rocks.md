@@ -1069,6 +1069,39 @@ the decay, one correctly rounded square root for distances and areas, a fixed co
 updated together in pile order, splitmix64 per world candidate; the plan and a patch with a block
 are pinned (`deposits: G143's plan and a patch with blocks are their pinned bytes`).
 
+### The edge and the seams
+
+G143's second stage (`k_deposit_version` 3). **The outline.** G128 and G143's first agent put a
+bare sample's top 1 mm under the ground, so between a deposit sample and a bare one the drawn top
+met the ground within a hair of the bare sample: the outline was the sample lattice's staircase,
+and a thick toe stood as a step. The plan now carries a signed **edge field** per sample: inside,
+the deposit; outside, the piles' own surfaces continued under the ground where one reached
+(`DepositPlan::sink`, the depth of the drawn top below the ground, 0-2 m), else the toe's slope
+(`k_edge_slope`, tan 31 degrees) down from the outline by a two-pass chamfer distance in whole
+millimetres. The first ring of bare samples past the outline is moved by world-anchored value noise
+of amplitude `k_edge_amp` (0.1 m) on a `k_edge_lattice_mm` (2 m) lattice, out or in. The drawn top
+meets the ground where the field crosses zero, between the samples (`deposits: the bed meets the
+meadow between its samples`: on the test's face 2 of 119 meadow edges cross within 3% of the bare
+sample, the crossing on average 0.38 of the way along; the deposit at its outline is at most
+0.32 m, under the stated 0.35 m: the toe's slope over a diagonal step plus the noise). A bare rim on
+steep ground still sinks by half the relief round it, now computed on the plan, so a sample on a
+patch's border sinks as its neighbour patch's does. The noise is anchored to the world, so a
+window translated to another place has another outline (the translation test holds the rest).
+
+**The toe's clasts.** Every fourth representative fragment of a patch stands in a bare cell within
+0.5 m of sink (about two metres past the outline), on the ground, from the largest band and smaller
+the farther out: a toe's largest clasts scattered and thinning past the bed (Kirkby and Statham's
+fall sorting). Shed blocks run past it to the shadow line as before.
+
+**The seams.** A patch's bed normals were area-weighted over its own triangles, so at a patch's
+border (and a tile's) each side saw half the surface and the shading showed a seam. The plan now
+carries the top's gradient (`DepositPlan::slope`, central differences over the plan, one-sided at
+the region's edge), each patch carries its samples' (`DepositPatch::slope`), and the bed's top
+normals are `normalize(-sx, 1, -sz)` from it: the same on both sides of a border to 0.028 degrees
+(`deposits: a cone across patch and tile borders`, bound 0.1). A patch written without one takes
+central differences over its own samples. Buried undersides and walls keep their triangles'
+normals. The G128 mesh pin moved to 625669387871748774 and the container pin to
+13439161428700819251 with it.
 ### Foothill exposure and repeated-material limits
 
 [G132's v29 controls](../experiments/v29-cliff-diagnosis.md) distinguish the continuous authored

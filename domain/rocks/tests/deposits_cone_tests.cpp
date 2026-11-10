@@ -195,10 +195,13 @@ TEST_CASE("deposits: the union holds the angle of repose and eases concave to it
   // between any two neighbouring samples: the piles merge without a step.
   const u32 w = plan.width;
   u32 pairs = 0;
+  // Past the outline the edge's noise lifts the first ring of bare samples by up to k_edge_amp
+  // (rocks.md, "The edge and the seams"); the rule is held where both samples are deeper.
+  const f32 deep = static_cast<f32>(2 * k_edge_amp);
   for (u32 i = 0; i < plan.ground.size(); ++i) {
-    if (plan.thickness[i] <= .001f) continue;
+    if (plan.thickness[i] <= deep) continue;
     for (u32 j : {i + 1, i + w, i + w + 1}) {
-      if (j >= plan.ground.size() || (j % w) == 0 || plan.thickness[j] <= .001f) continue;
+      if (j >= plan.ground.size() || (j % w) == 0 || plan.thickness[j] <= deep) continue;
       const f64 run = j == i + w + 1 ? .5 * std::sqrt(2.0) : .5;
       CHECK(std::abs(top(plan, i) - top(plan, j)) <= k_repose * run + 1e-4);
       ++pairs;
@@ -348,6 +351,48 @@ TEST_CASE(
   CHECK(error.find("formation") != std::string::npos);
 }
 
+TEST_CASE("deposits: the bed meets the meadow between its samples, thin, off the lattice") {
+  DepositPlan plan;
+  std::string error;
+  REQUIRE_MESSAGE(plan_deposits(layer(), ground(), plan, error), error);
+  REQUIRE(plan.sink.size() == plan.ground.size());
+  // Every edge of the lattice from a deposit sample to a bare one on gentle ground (the meadow,
+  // not the face it leans on): where the drawn top meets the ground along it, as a share of the
+  // edge from the deposit sample. G128 and the first agent's beds put a bare sample's top 1 mm
+  // under the ground, so the crossing was within 1% of the bare sample on nearly every edge: the
+  // outline was the lattice's staircase.
+  const u32 w = plan.width;
+  u32 edges = 0, at_sample = 0;
+  f64 thickest = 0, sum = 0;
+  for (u32 i = 0; i < plan.ground.size(); ++i) {
+    if (plan.thickness[i] <= .001f) continue;
+    const u32 x = i % w, z = i / w;
+    const u32 around[] = {x > 0 ? i - 1 : ~0u, x + 1 < w ? i + 1 : ~0u, z > 0 ? i - w : ~0u,
+                          z + 1 < plan.depth ? i + w : ~0u};
+    for (u32 j : around) {
+      if (j == ~0u || plan.thickness[j] > .001f) continue;
+      if (std::abs(plan.ground[j] - plan.ground[i]) > .5 * .5) continue;  // a face, not the meadow
+      const f64 in = static_cast<f64>(plan.thickness[i]) - .001;
+      const f64 out = -.001 - static_cast<f64>(plan.sink[j]);
+      const f64 u = in / (in - out);
+      at_sample += u > .97 ? 1 : 0;
+      thickest = std::max(thickest, static_cast<f64>(plan.thickness[i]));
+      sum += u;
+      ++edges;
+    }
+  }
+  MESSAGE("outline edges ", edges, ": ", at_sample,
+          " cross within 3% of the bare sample, mean "
+          "crossing at ",
+          sum / edges, " of the edge; thickest sample at the outline ", thickest, " m");
+  REQUIRE(edges > 100);
+  // The stated measure: fewer than one crossing in ten at the bare sample, and the deposit at its
+  // outline no thicker than the toe's slope over a diagonal step plus the noise (0.6 x 0.71 x
+  // 0.5 + 0.1, rounded up: 0.35 m at 0.5 m samples).
+  CHECK(at_sample * 10 < edges);
+  CHECK(thickest < .35);
+}
+
 TEST_CASE("deposits: a version-1 layer is migrated: no cap, and a zero cap asks for no talus") {
   test::TempDir scratch;
   scene_gen::Context c;
@@ -437,10 +482,49 @@ TEST_CASE("deposits: a cone across patch and tile borders meets itself to the mi
         const f64 yb =
             b.at.y + static_cast<f64>(b.patch.ground[ib] + b.patch.thickness[ib] - .001f);
         CHECK(std::abs(ya - yb) < 1e-3);
+        // The top's gradient at the shared column is the plan's: the same on both sides.
+        CHECK(a.patch.slope[2 * ia] == b.patch.slope[2 * ib]);
+        CHECK(a.patch.slope[2 * ia + 1] == b.patch.slope[2 * ib + 1]);
         ++compared;
       }
     }
   CHECK(compared > 20);
+  // And as drawn: the bed's top normal at each shared sample, solved by each patch, differs by
+  // under a tenth of a degree (0.028 measured: f32 rounding of the one gradient both carry).
+  f64 worst = 0;
+  u32 normals = 0;
+  auto top_normal = [&](const assets::MeshData& mesh, f32 x, f32 z, Vec3& out) {
+    bool found = false;
+    for (u32 v = 0; v < mesh.positions.size(); ++v)
+      if (std::abs(mesh.positions[v].x - x) < 1e-4f && std::abs(mesh.positions[v].z - z) < 1e-4f &&
+          (!found || mesh.normals[v].y > out.y)) {
+        out = mesh.normals[v];
+        found = true;
+      }
+    return found;
+  };
+  for (const auto& a : patches)
+    for (const auto& b : patches) {
+      const f64 span = .5 * static_cast<f64>(a.patch.width - 1);
+      if (std::abs(b.at.x - (a.at.x + span)) > 1e-9 || b.at.z != a.at.z || normals > 40) continue;
+      assets::MeshData ma, mb;
+      REQUIRE(solve_deposit(a.patch, ma, error));
+      REQUIRE(solve_deposit(b.patch, mb, error));
+      for (u32 z = 0; z < a.patch.depth; ++z) {
+        const u32 ia = z * a.patch.width + a.patch.width - 1;
+        if (a.patch.thickness[ia] <= .001f) continue;
+        Vec3 na{}, nb{};
+        if (!top_normal(ma, static_cast<f32>(span), static_cast<f32>(z) * .5f, na) ||
+            !top_normal(mb, 0.0f, static_cast<f32>(z) * .5f, nb))
+          continue;
+        const f64 cosine = std::clamp(static_cast<f64>(dot(na, nb)), -1.0, 1.0);
+        worst = std::max(worst, std::acos(cosine) * 180.0 / 3.14159265358979323846);
+        ++normals;
+      }
+    }
+  MESSAGE("normals compared across patch borders: ", normals, ", worst ", worst, " degrees");
+  CHECK(normals > 10);
+  CHECK(worst < .1);
   // And a patch with blocks solves to a closed mesh: its bed and every fragment and block.
   for (const auto& r : patches)
     if (!r.patch.blocks.empty()) {
@@ -482,7 +566,9 @@ TEST_CASE("deposits: G143's plan and a patch with blocks are their pinned bytes"
   MESSAGE("G143 plan pin: ", h);
   // Re-taken by G143's second agent (2026-11-10): one supply rule replaced the capped apron and
   // the opt-in cones (was 11798949088187083648).
-  CHECK(h == 8162223296658278579ull);
+  // Re-taken for the edge field (2026-11-10, stage 2): the outline's ring moved by world noise and
+  // the bare samples' sink (was 8162223296658278579).
+  CHECK(h == 4874663829597876097ull);
   DepositPatch patch;
   patch.width = 5;
   patch.depth = 5;
@@ -507,7 +593,9 @@ TEST_CASE("deposits: G143's plan and a patch with blocks are their pinned bytes"
   REQUIRE_MESSAGE(solve_deposit(patch, mesh, error), error);
   checks::check_closed(mesh, 1 + patch.fragments + 1);
   MESSAGE("G143 patch mesh pin: ", checks::mesh_hash(mesh));
-  CHECK(checks::mesh_hash(mesh) == 6681331591728775090ull);
+  // Re-taken for the bed's normals from the top's gradient, not its triangles (stage 2; was
+  // 6681331591728775090).
+  CHECK(checks::mesh_hash(mesh) == 2756680837895180932ull);
   // A patch with no blocks keeps its version-1 key: the canonical bytes say nothing of them.
   DepositPatch plain = patch;
   plain.blocks.clear();

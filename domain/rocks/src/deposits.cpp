@@ -53,6 +53,10 @@ std::string canonical(const DepositPatch& p) {
     json.as_object().erase(std::string("blocks"));
     json.as_object().erase(std::string("block_triangles"));
   }
+  if (json.is_object()) {
+    if (p.sink.empty()) json.as_object().erase(std::string("sink"));
+    if (p.slope.empty()) json.as_object().erase(std::string("slope"));
+  }
   return write_json(json, o);
 }
 struct Front {
@@ -346,7 +350,9 @@ bool plan_deposits(const DepositLayer& p, const scene_gen::Ground& ground, Depos
     for (u32 k = 0; k < m; ++k)
       piles[k].height = std::min(tall[k], std::min(wall[k], 20.0));
   }
-  Vector<f64> best(n), apart(n, 0.0);  // the winning pile and how far from its apex
+  Vector<f64> best(n), apart(n, 0.0),
+      under(n,
+            -std::numeric_limits<f64>::infinity());  // the winning pile and how far from its apex
   Vector<u32> won(n, ~0u);
   struct Wave {
     f64 head;
@@ -369,6 +375,7 @@ bool plan_deposits(const DepositLayer& p, const scene_gen::Ground& ground, Depos
     std::fill(best.begin(), best.end(), -std::numeric_limits<f64>::infinity());
     std::fill(won.begin(), won.end(), ~0u);
     std::fill(apart.begin(), apart.end(), 0.0);
+    std::fill(under.begin(), under.end(), -std::numeric_limits<f64>::infinity());
     waves.clear();
     for (u32 k = 0; k < piles.size(); ++k) {
       Pile& pile = piles[k];
@@ -403,6 +410,10 @@ bool plan_deposits(const DepositLayer& p, const scene_gen::Ground& ground, Depos
         const f64 head = cone_surface(pile.top, pile.height, repose, toe, r);
         // A pile is nowhere deeper than its own height over its foot: a pile on a bench at a
         // face's brink does not drape the face below it, nor one at a foot the drop past a ledge.
+        // Where a surface reaches a sample but stands under its ground, what it would be there is
+        // the edge field's continuation past the outline (rocks.md, "The edge and the seams").
+        if (head - plan.ground[j] <= static_cast<f64>(k_min_depth))
+          under[j] = std::max(under[j], head - plan.ground[j]);
         if (head - plan.ground[j] <= static_cast<f64>(k_min_depth) ||
             head - plan.ground[j] > pile.height || head < best[j] ||
             (head == best[j] && (r > apart[j] || (r == apart[j] && f.pile >= won[j]))))
@@ -455,6 +466,103 @@ bool plan_deposits(const DepositLayer& p, const scene_gen::Ground& ground, Depos
     }
   }
 
+  // ---- The edge (G143; rocks.md, "The edge and the seams") ----
+  // A signed field: inside the outline the deposit, no thicker than k_edge_slope times its
+  // distance in (less half a spacing); outside, minus the same slope times the distance out. Near
+  // the outline world-anchored value noise moves it, so its zero, where the bed's top meets the
+  // ground, falls between the samples and wanders at the lattice's scale instead of following
+  // them. Distances are a two-pass chamfer in whole millimetres, so they are exact everywhere.
+  {
+    const i64 straight = spacing, diagonal = scene_gen::nearest_mm(sp * k_diag);
+    constexpr i64 far = std::numeric_limits<i64>::max() / 4;
+    Vector<i64> d_out(n);
+    for (u32 i = 0; i < n; ++i) {
+      d_out[i] = plan.thickness[i] > k_min_depth ? 0 : far;
+    }
+    auto relax = [&](Vector<i64>& d, u32 i, u32 j, i64 step_mm) {
+      if (j != ~0u && d[j] + step_mm < d[i]) d[i] = d[j] + step_mm;
+    };
+    for (u32 pass = 0; pass < 2; ++pass)
+      for (u32 s = 0; s < n; ++s) {
+        const u32 i = pass == 0 ? s : n - 1 - s;
+        for (u32 d = 0; d < 8; ++d) {
+          // Forward pass reads the neighbours before it (d 0..3), backward those after (4..7).
+          if ((pass == 0) != (d < 4)) continue;
+          const u32 j = neighbour(i, pw, pd, d);
+          const i64 step_mm = (k_dx[d] != 0 && k_dz[d] != 0) ? diagonal : straight;
+          relax(d_out, i, j, step_mm);
+        }
+      }
+    const u64 edge_seed = mix64(p.seed ^ 0x6743ull);
+    auto noise = [&](i64 x_mm, i64 z_mm) {
+      const i64 gx = floor_div_mm(x_mm, k_edge_lattice_mm),
+                gz = floor_div_mm(z_mm, k_edge_lattice_mm);
+      const f64 tx = fade(static_cast<f64>(x_mm - gx * k_edge_lattice_mm) /
+                          static_cast<f64>(k_edge_lattice_mm));
+      const f64 tz = fade(static_cast<f64>(z_mm - gz * k_edge_lattice_mm) /
+                          static_cast<f64>(k_edge_lattice_mm));
+      const f64 a =
+          lerp(lattice_value(edge_seed, gx, gz, 0), lattice_value(edge_seed, gx + 1, gz, 0), tx);
+      const f64 b = lerp(lattice_value(edge_seed, gx, gz + 1, 0),
+                         lattice_value(edge_seed, gx + 1, gz + 1, 0), tx);
+      return 2.0 * lerp(a, b, tz) - 1.0;
+    };
+    plan.sink.assign(n, 0.0f);
+    const f64 half = .5 * sp;
+    const i64 near_mm = 3 * spacing / 2;
+    for (u32 i = 0; i < n; ++i) {
+      const f64 t = wide(plan.thickness[i]);
+      const bool inside = t > static_cast<f64>(k_min_depth);
+      // Outside, the piles' own surfaces continued under the ground where one reached, else the
+      // toe's slope down from the outline.
+      const f64 base = inside
+                           ? t
+                           : (under[i] > -std::numeric_limits<f64>::infinity()
+                                  ? under[i]
+                                  : -k_edge_slope * (static_cast<f64>(d_out[i]) / 1000.0 - half));
+      // The noise moves only the first ring of bare samples outside the outline, out or in, so the
+      // deposit inside keeps its surface and the meadow farther out is untouched.
+      const bool ring = !inside && d_out[i] <= near_mm;
+      const f64 f = base + (ring ? k_edge_amp * noise(world_x(i), world_z(i)) : 0.0);
+      plan.thickness[i] = f > static_cast<f64>(k_min_depth) ? static_cast<f32>(f) : 0.0f;
+      if (plan.thickness[i] <= 0.0f) plan.coarse[i] = 0.0f;
+      if (f < 0.0) plan.sink[i] = static_cast<f32>(std::min(-f, 2.0));
+    }
+    // A bare rim on steep ground sinks by half the relief round it (k_deposit_version 2), from the
+    // plan, so a sample on a patch's border sinks as its neighbour patch's does.
+    for (u32 i = 0; i < n; ++i) {
+      if (plan.thickness[i] > 0.0f) continue;
+      bool by_bed = false;
+      f64 relief = 0;
+      for (u32 d = 0; d < 8; ++d) {
+        const u32 j = neighbour(i, pw, pd, d);
+        if (j == ~0u) continue;
+        by_bed = by_bed || plan.thickness[j] > 0.0f;
+        relief = std::max(relief, std::abs(plan.ground[j] - plan.ground[i]));
+      }
+      if (by_bed && relief > .1)
+        plan.sink[i] = std::max(plan.sink[i], static_cast<f32>(std::min(.5 * relief, 2.0)));
+    }
+  }
+  // The bed's top as a patch draws it, and its gradient by central differences over the plan
+  // (one-sided at the region's edge): the normals of every patch of the region, from one field.
+  {
+    Vector<f64> surface(n);
+    for (u32 i = 0; i < n; ++i)
+      surface[i] = plan.ground[i] + wide(plan.thickness[i]) - static_cast<f64>(k_min_depth) -
+                   wide(plan.sink[i]);
+    plan.slope.assign(2 * static_cast<usize>(n), 0.0f);
+    for (u32 i = 0; i < n; ++i) {
+      const u32 x = i % pw, z = i / pw;
+      const u32 x0 = x > 0 ? i - 1 : i, x1 = x + 1 < pw ? i + 1 : i;
+      const u32 z0 = z > 0 ? i - pw : i, z1 = z + 1 < pd ? i + pw : i;
+      const f64 run_x = sp * static_cast<f64>((x1 - x0)),
+                run_z = sp * static_cast<f64>((z1 - z0) / pw);
+      plan.slope[2 * i] = run_x > 0 ? static_cast<f32>((surface[x1] - surface[x0]) / run_x) : 0.0f;
+      plan.slope[2 * i + 1] =
+          run_z > 0 ? static_cast<f32>((surface[z1] - surface[z0]) / run_z) : 0.0f;
+    }
+  }
   // The bed the formation puts at a face sample, and the rock it sheds.
   gfx::FormationFrame frame;
   if (p.formation.has_value()) frame = gfx::formation_frame(formation);
@@ -472,8 +580,16 @@ bool plan_deposits(const DepositLayer& p, const scene_gen::Ground& ground, Depos
   };
   if (p.formation.has_value()) {
     plan.rock.assign(n, p.patch.type);
-    for (u32 i = 0; i < n; ++i)
-      if (plan.thickness[i] > k_min_depth && from[i] != ~0u) plan.rock[i] = bed_at(from[i]).type;
+    for (u32 i = 0; i < n; ++i) {
+      if (plan.thickness[i] <= k_min_depth) continue;
+      u32 face = from[i];
+      // A sample the edge's noise moved inside takes the face of a neighbour that has one.
+      for (u32 d = 0; d < 8 && face == ~0u; ++d) {
+        const u32 j = neighbour(i, pw, pd, d);
+        if (j != ~0u) face = from[j];
+      }
+      if (face != ~0u) plan.rock[i] = bed_at(face).type;
+    }
   }
   if (p.blocks_per_100m2 > 0) {
     // The top of the talus: the first gentle sample below each face. A shed block runs from it
@@ -621,8 +737,13 @@ bool deposit_patch_in_range(const DepositPatch& p, std::string& error) {
       wide(p.spacing_m) * (p.depth - 1) > 32)
     return fail(error, "patch spacing/span");
   const u32 n = p.width * p.depth;
-  if (p.ground.size() != n || p.thickness.size() != n || p.coarse.size() != n)
+  if (p.ground.size() != n || p.thickness.size() != n || p.coarse.size() != n ||
+      (!p.sink.empty() && p.sink.size() != n) || (!p.slope.empty() && p.slope.size() != 2 * n))
     return fail(error, "patch array sizes");
+  for (f32 v : p.sink)
+    if (!in(wide(v), 0, 2)) return fail(error, "patch sink (0..2 m)");
+  for (f32 v : p.slope)
+    if (!in(wide(v), -100, 100)) return fail(error, "patch slope (-100..100)");
   for (u32 i = 0; i < n; ++i)
     if (!in(wide(p.ground[i]), -10000, 10000) || !in(wide(p.thickness[i]), 0, 20) ||
         !in(wide(p.coarse[i]), 0, 1))
@@ -716,21 +837,10 @@ bool solve_deposit(const DepositPatch& p, assets::MeshData& out, std::string& er
   mesh.materials.push_back(mat);
   Vector<f32> surface(n), sink(n, 0.0f);
   for (u32 i = 0; i < n; ++i) {
-    surface[i] = p.ground[i] + p.thickness[i] - k_min_depth;
-    // G143: a bed's bare rim on steep ground sinks by half the relief round it, so a triangle of
-    // the bed between it and a deep sample never stands out of a face the terrain triangulates
-    // the other way (the saw-tooth where a cone met its gully's walls). Depths over 1 mm and
-    // gentle ground (under 10 cm of relief a sample) are untouched.
-    if (p.thickness[i] > k_min_depth) continue;
-    const u32 x = i % w, z = i / w;
-    f32 relief = 0;
-    for (u32 dz = z > 0 ? z - 1 : 0; dz <= std::min(z + 1, h - 1); ++dz)
-      for (u32 dx = x > 0 ? x - 1 : 0; dx <= std::min(x + 1, w - 1); ++dx)
-        relief = std::max(relief, std::abs(p.ground[dz * w + dx] - p.ground[i]));
-    if (relief > .1f) {
-      sink[i] = .5f * relief;
-      surface[i] -= sink[i];
-    }
+    // G143: a bare sample's top stands `sink` below the ground (the plan's signed edge field, and
+    // a bare rim on steep ground), so the bed meets the ground between the samples.
+    if (!p.sink.empty() && p.thickness[i] <= k_min_depth) sink[i] = p.sink[i];
+    surface[i] = p.ground[i] + p.thickness[i] - k_min_depth - sink[i];
   }
   for (u32 bottom = 0; bottom < 2; ++bottom)
     for (u32 i = 0; i < n; ++i) {
@@ -782,19 +892,63 @@ bool solve_deposit(const DepositPatch& p, assets::MeshData& out, std::string& er
   }
   for (Vec3& normal : mesh.normals)
     normal = length(normal) > 0 ? normalize(normal) : Vec3{0, 1, 0};
-  for (u32 f = 0; f < p.fragments && !cells.empty(); ++f) {
+  // G143: the bed's top takes its normals from the top's gradient, the plan's when the patch
+  // carries it, so two patches' normals at their shared border are the same (rocks.md, "The edge
+  // and the seams"); else central differences over its own samples, one-sided at its edge.
+  for (u32 i = 0; i < n; ++i) {
+    f64 sx = 0, sz = 0;
+    if (!p.slope.empty()) {
+      sx = wide(p.slope[2 * i]);
+      sz = wide(p.slope[2 * i + 1]);
+    } else {
+      const u32 x = i % w, z = i / w;
+      const u32 x0 = x > 0 ? i - 1 : i, x1 = x + 1 < w ? i + 1 : i;
+      const u32 z0 = z > 0 ? i - w : i, z1 = z + 1 < h ? i + w : i;
+      sx =
+          (wide(surface[x1]) - wide(surface[x0])) / (wide(p.spacing_m) * static_cast<f64>(x1 - x0));
+      sz = (wide(surface[z1]) - wide(surface[z0])) /
+           (wide(p.spacing_m) * static_cast<f64>((z1 - z0) / w));
+    }
+    const D3 nn = normalized({-sx, 1.0, -sz});
+    mesh.normals[i] = {static_cast<f32>(nn.x), static_cast<f32>(nn.y), static_cast<f32>(nn.z)};
+  }
+  // G143: past the bed's edge its largest clasts lie scattered and thinning, as a real toe's do
+  // (rocks.md, "The edge and the seams"): every fourth fragment stands in a bare cell within the
+  // edge field's 0.5 m of sink (about two metres out), on the ground, smaller the farther out.
+  Vector<u32> ring;
+  Vector<f32> ring_sink;
+  if (!p.sink.empty())
+    for (u32 z = 0; z + 1 < h; ++z)
+      for (u32 x = 0; x + 1 < w; ++x) {
+        const u32 a = z * w + x;
+        if (active[z * (w - 1) + x]) continue;
+        const f32 s = std::min({p.sink[a], p.sink[a + 1], p.sink[a + w], p.sink[a + w + 1]});
+        if (s > 0.0f && s < .5f) {
+          ring.push_back(a);
+          ring_sink.push_back(s);
+        }
+      }
+  const u32 quarter = (p.fragments + 3) / 4;
+  for (u32 f = 0; f < p.fragments && (!cells.empty() || !ring.empty()); ++f) {
     Rng rng(mix64(p.seed ^ mix64(static_cast<u64>(f) + 1)));
-    const u32 a = cells[static_cast<u32>(static_cast<u64>(f) * cells.size() / p.fragments)];
+    const bool toe = !ring.empty() && (cells.empty() || f % 4 == 3);
+    const u32 slot =
+        toe ? static_cast<u32>(static_cast<u64>(f / 4) * ring.size() / quarter) % ring.size()
+            : static_cast<u32>(static_cast<u64>(f) * cells.size() / p.fragments);
+    const u32 a = toe ? ring[slot] : cells[slot];
     const f64 x = (static_cast<f64>(a % w) + rng.range(.25, .75)) * wide(p.spacing_m);
     const f64 z = (static_cast<f64>(a / w) + rng.range(.25, .75)) * wide(p.spacing_m);
-    const f64 coarse = sample(p, p.coarse, x, z), pick = rng.unit();
-    const f64 size = pick < .65 ? rng.range(.004, .032)
-                                : (pick < .92 ? wide(p.fragment_m) * rng.range(.08, .3)
-                                              : wide(p.fragment_m) * rng.range(.4, 1.0));
+    const f64 coarse = toe ? 1.0 : sample(p, p.coarse, x, z), pick = rng.unit();
+    const f64 size =
+        toe ? wide(p.fragment_m) * rng.range(.4, 1.0) * (1.0 - 2.0 * wide(ring_sink[slot]))
+            : (pick < .65 ? rng.range(.004, .032)
+                          : (pick < .92 ? wide(p.fragment_m) * rng.range(.08, .3)
+                                        : wide(p.fragment_m) * rng.range(.4, 1.0)));
     const f64 radius =
         std::min(size * (coarse > 0 ? .35 + .65 * coarse : .08), wide(p.spacing_m) * .2);
     const f64 r = coarse > 0 ? std::max(.004, radius) : rng.range(.004, .032);
-    const f64 y = sample(p, surface, x, z);
+    const Vector<f32>& support = toe ? p.ground : surface;
+    const f64 y = sample(p, support, x, z);
     const u32 first = mesh.positions.size();
     const D3 half{r, r * rng.range(.35, .7), r * rng.range(.6, 1)};
     const f64 yaw = rng.range(0, 2 * k_pi);
@@ -802,11 +956,11 @@ bool solve_deposit(const DepositPatch& p, assets::MeshData& out, std::string& er
     emit_fragment(p.type, half, {x, y, z}, yaw, .3, seed, rung, wide(p.material.tile_m), mesh);
     // Support shear is local to each fragment; its existing angular fabric is retained.
     const f64 eps = wide(p.spacing_m) * .01;
-    const f64 sx = (sample(p, surface, x + eps, z) - sample(p, surface, x - eps, z)) / (2 * eps);
-    const f64 sz = (sample(p, surface, x, z + eps) - sample(p, surface, x, z - eps)) / (2 * eps);
+    const f64 sx = (sample(p, support, x + eps, z) - sample(p, support, x - eps, z)) / (2 * eps);
+    const f64 sz = (sample(p, support, x, z + eps) - sample(p, support, x, z - eps)) / (2 * eps);
     for (u32 v = first; v < mesh.positions.size(); ++v) {
       Vec3& pos = mesh.positions[v];
-      pos.y = static_cast<f32>(wide(pos.y) + sample(p, surface, wide(pos.x), wide(pos.z)) - y);
+      pos.y = static_cast<f32>(wide(pos.y) + sample(p, support, wide(pos.x), wide(pos.z)) - y);
       const Vec3 q = mesh.normals[v];
       const D3 nn = normalized({wide(q.x) - sx * wide(q.y), wide(q.y), wide(q.z) - sz * wide(q.y)});
       mesh.normals[v] = {static_cast<f32>(nn.x), static_cast<f32>(nn.y), static_cast<f32>(nn.z)};
