@@ -18,6 +18,10 @@
   comment naming an extension is not, the two backend directories may say what they like, the
   `allow-vulkan` marker opts a line or a file out, and the backend set included from the renderer,
   its tests or engine-host is reported while gfx, the window system and engine-view may include it.
+  `std::function` in engine code is reported, in a comment or a test it is not, and the marker opts
+  a line out. The size-table rule is held over the fixture's modules: a module without a table or an
+  exemption, a table with no entry, a table nothing compiles, and an exemption list line with no
+  reason, naming no module, or naming a module that has a table now are each reported.
 
   Every case gets its own copy of the fixture, so a case cannot pass because of what another one
   left behind, and every fixture root is a fresh GUID under the system temp directory, so two
@@ -81,6 +85,17 @@ function New-Fixture {
   Set-FixtureFile $root 'domain/gfx/tests/device_tests.cpp' "#include <domain/gfx/backend/vulkan/vulkan.h>`nint main() { return VK_SUCCESS; }`n"
   Set-FixtureFile $root 'domain/gfx/include/domain/gfx/budget.h' "#pragma once`n// Reports VK_EXT_memory_budget when the device has it; VkPhysicalDevice is behind Handles.`nnamespace engine::gfx { struct MemoryBudget { bool valid = false; }; }  // VK_EXT_memory_budget`n"
   Set-FixtureFile $root 'apps/engine_view/main.cpp' "#include <domain/gfx/backend/vulkan/swapchain.h>`n#include <foundation/window/backend/vulkan/surface.h>`nint main() { VkSurfaceKHR s = VK_NULL_HANDLE; return 0; }`n"
+  # std::function (AGENTS.md "Rules that are checked"): a header that says in a comment why it takes
+  # a function pointer instead is not a use, and a test may use one.
+  Set-FixtureFile $root 'core/jobs/include/core/jobs/job.h' "#pragma once`n// A function pointer and a context: no std::function, no allocation.`nnamespace engine::jobs { struct Job { void (*fn)(void*); void* ctx; }; }`n"
+  Set-FixtureFile $root 'domain/physics/tests/callback_tests.cpp' "#include <functional>`nstd::function<bool()> condition;`n"
+  # The size-table rule: a module with a compiled table, a module on the exemption list, and two
+  # CMakeLists.txt that declare no module (an app, and one whose engine_module is a comment).
+  Set-FixtureFile $root 'domain/physics/CMakeLists.txt' "engine_module(NAME physics LAYER domain DEPS base`n  SOURCES src/solver.cpp)`nengine_module_tests(NAME physics SOURCES tests/physics_tests.cpp tests/size_table.cpp)`n"
+  Set-FixtureFile $root 'domain/physics/tests/size_table.cpp' "#include <core/base/size_table.h>`nENGINE_EXPECT_SIZE(4, 4, int);`n"
+  Set-FixtureFile $root 'domain/nav/CMakeLists.txt' "engine_module(NAME nav LAYER domain DEPS base)`nengine_module_tests(NAME nav SOURCES tests/nav_tests.cpp)`n"
+  Set-FixtureFile $root 'tools/size-table-exemptions.txt' "# a comment`n`ndomain/nav: nothing per element, mirrored or on disk; closed by its first such type`n"
+  Set-FixtureFile $root 'apps/engine_view/CMakeLists.txt' "# Not a module: an app, which this comment's engine_module(...) does not change.`nengine_app(NAME engine_view OUTPUT engine-view SOURCES main.cpp)`n"
   return $root
 }
 
@@ -164,6 +179,55 @@ try {
   $root = New-Fixture
   Set-FixtureFile $root 'domain/physics/src/solver.cpp' "#include <map>`nnamespace engine::physics { std::map<int, int> m; }`n"
   Test-Reports 'a banned container is reported with its file and line' $root 'domain/physics/src/solver.cpp:2: [std-container]'
+
+  # std::function, which AGENTS.md lists among the banned types and nothing checked until T80.
+  Test-That 'a comment naming std::function is not a use, and a test may use one' {
+    ($result.Code -eq 0) -and -not $result.Out.Contains('std-function')
+  }
+
+  $root = New-Fixture
+  Set-FixtureFile $root 'domain/physics/src/solver.cpp' "#include <functional>`nnamespace engine::physics { void step(std::function<void(int)> f) { f(1); } }`n"
+  Test-Reports 'std::function in engine code is reported with its file and line' $root 'domain/physics/src/solver.cpp:2: [std-function]'
+  Test-Reports 'and the message names the marker' $root 'engine-lint: allow-std-function <reason>'
+
+  $root = New-Fixture
+  Set-FixtureFile $root 'domain/physics/src/solver.cpp' "#include <functional>`nnamespace engine::physics { std::move_only_function<void()> pending; }`n"
+  Test-Reports 'std::move_only_function is reported too' $root 'domain/physics/src/solver.cpp:2: [std-function]'
+
+  $root = New-Fixture
+  Set-FixtureFile $root 'domain/physics/src/solver.cpp' "#include <functional>`nstd::function<void()> g_on_load;  // engine-lint: allow-std-function cold initialisation, once at start-up`n"
+  Test-That 'a line-level allow-std-function marker opts out' { (Invoke-Lint $root).Code -eq 0 }
+
+  # The size-table rule (AGENTS.md "Size table"), over the fixture's two modules and its list.
+  Test-That 'a module with a compiled table and a module on the exemption list pass, and an app is not a module' {
+    ($result.Code -eq 0) -and -not $result.Out.Contains('size-table')
+  }
+
+  $root = New-Fixture
+  Remove-Item -LiteralPath (Join-Path $root 'domain/physics/tests/size_table.cpp')
+  Test-Reports 'a module with no table and no exemption is reported' $root 'domain/physics/CMakeLists.txt:1: [size-table] a module has tests/size_table.cpp'
+  Test-Reports 'and the message names the exemption list' $root 'tools/size-table-exemptions.txt'
+
+  $root = New-Fixture
+  Set-FixtureFile $root 'domain/physics/tests/size_table.cpp' "#include <core/base/size_table.h>`n// ENGINE_EXPECT_SIZE(4, 4, int);`n"
+  Test-Reports 'a table with no entry is reported' $root 'domain/physics/tests/size_table.cpp:1: [size-table] a size table holds at least one'
+
+  $root = New-Fixture
+  Set-FixtureFile $root 'domain/physics/CMakeLists.txt' "engine_module(NAME physics LAYER domain DEPS base)`nengine_module_tests(NAME physics SOURCES tests/physics_tests.cpp)`n"
+  Test-Reports 'a table the tests do not compile is reported' $root 'domain/physics/CMakeLists.txt:1: [size-table] tests/size_table.cpp is compiled'
+
+  $root = New-Fixture
+  Set-FixtureFile $root 'tools/size-table-exemptions.txt' "# a comment`n`ndomain/nav:`n"
+  Test-Reports 'an exemption with no reason is reported' $root 'tools/size-table-exemptions.txt:3: [size-table] an exemption is'
+
+  $root = New-Fixture
+  Set-FixtureFile $root 'tools/size-table-exemptions.txt' "domain/nav: a reason`ndomain/gone: it was removed`n"
+  Test-Reports 'an exemption naming no module is reported' $root 'tools/size-table-exemptions.txt:2: [size-table] domain/gone declares no module'
+
+  $root = New-Fixture
+  Set-FixtureFile $root 'domain/nav/CMakeLists.txt' "engine_module(NAME nav LAYER domain DEPS base)`nengine_module_tests(NAME nav SOURCES tests/nav_tests.cpp tests/size_table.cpp)`n"
+  Set-FixtureFile $root 'domain/nav/tests/size_table.cpp' "#include <core/base/size_table.h>`nENGINE_EXPECT_SIZE(8, 8, double);`n"
+  Test-Reports 'an exemption for a module that has a table now is reported' $root 'tools/size-table-exemptions.txt:3: [size-table] domain/nav has a size table now'
 
   $root = New-Fixture
   Set-FixtureFile $root 'domain/physics/src/solver.cpp' "namespace engine::physics {`nvoid f() {`n  throw 1;`n}`n}`n"

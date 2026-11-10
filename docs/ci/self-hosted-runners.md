@@ -712,14 +712,58 @@ compiled out ([ecs](../subsystems/ecs.md)). This script is what says a third one
 pwsh tools/ci/check-no-listeners.ps1 -Preset msvc-release [-Build]
 ```
 
-It copies every executable the build produced — not the prebuilt third-party tools under `_deps`;
-see below — into a directory with a random name, so **every path is new to the firewall and Windows
-has to decide about it again**, runs each once with harmless arguments (`--help`, a bench's
-`--smoke --quiet --no-pin`, `engine-view --frames 1 --width 64 --height 64`), and counts the prompt
-processes before and after. The count must not grow. It also samples each live process's own
-endpoints (`Get-NetTCPConnection -State Listen`, `Get-NetUDPEndpoint`) and fails on any that is not
-loopback — that half needs no fresh path at all and is what keeps the check meaningful on a machine
-the firewall has already made up its mind about.
+It copies every executable the build produced — not the prebuilt third-party tools under `_deps`,
+see below, nor CMake's compiler-identification programs under `CMakeFiles` — into a directory with
+a random name, so **every path is new to the firewall and Windows has to decide about it again**,
+runs each once with harmless arguments (`--help`; a bench's `--list`; `engine-view --offscreen
+--frames 1 --width 64 --height 64`; `engine-host` and `engine-editor --offscreen --no-shell` with
+their listeners open on `127.0.0.1:0`), and counts the prompt processes before and after. The count
+must not grow. It also samples each live process's own endpoints (`Get-NetTCPConnection -State
+Listen`, `Get-NetUDPEndpoint`) and fails on any that is not loopback (127.0.0.0/8 or `::1`) — that
+half needs no fresh path at all and is what keeps the check meaningful on a machine the firewall has
+already made up its mind about.
+
+**It leaves nothing behind, on a machine other people are using** (T80, 2026-11-09; until then the
+probes opened a window, ran every bench's smoke cases, and could leave a loader's dialog up):
+
+- every copy inherits an error mode that shows no box (`SetErrorMode`: no "a DLL was not found"
+  from the loader, no "has stopped working" from Windows Error Reporting), so a binary that cannot
+  start exits with its status — the loader's box comes before `main`, where
+  `platform::quiet_error_dialogs()` cannot reach it;
+- a copy is alone in its directory, so the build directory it came from goes on its `PATH` and it
+  finds its DLLs and starts, rather than failing in the loader and answering nothing;
+- nothing opens a window, and a bench lists its cases and runs none;
+- a device a copy opens takes the machine-wide GPU lock as a test's does
+  (`ENGINE_GPU_LOCK_ON_DEVICE=1` unless the caller set it; [gpu_lock](../subsystems/gpu_lock.md));
+- a copy that outlives `-TimeoutSeconds` (30) is ended with its process tree, and after every binary
+  and again at the end every process whose image lies under the run's directory is ended — the
+  directory's name is a fresh GUID, so that is this run's copies and their children whatever their
+  pids, and never a process someone else started;
+- a prompt is dismissed as soon as it is seen after the binary that raised it, not at the end.
+
+What it cannot promise is a prompt Windows raises later than `-SettleSeconds` (6) after the last
+binary ended, or a clean-up when the script itself is killed; so it runs where someone reads its log
+and nothing kills it on a timer.
+
+**Where it runs: once, at the merge, after the suites** — a command line in the gate's script,
+not a CTest test. It starts every executable of a build, so it wants the machine's tree to itself,
+and the suites' end is the first moment the gate has that; a CTest test could not be kept out of an
+author's run without a configure switch the gate would also have to set (a test that skips turns
+`tools/dev.ps1 test` into exit 75), its `e2e_apps` resource lock orders nothing across the four
+suites the gate runs side by side, and a CTest timeout would end the script without its own clean-up.
+The gate runs, after `SUITES OK` and before the frame budgets:
+
+```powershell
+pwsh -NoProfile -File tools/ci/check-no-listeners.ps1 -Preset msvc-release *> "<gate log dir>/gate-<batch>-listeners.log"
+# exit 0: no prompt, no endpoint off loopback; 1: the log names the binary and the endpoint or prompt
+```
+
+`msvc-release` because it is the build that carries Tracy, the listener that caused the outage. Its
+rules — loopback or not, the verdict, which processes are the run's own, the probes, the error mode,
+and what it refuses before it starts anything — are `tools/lib/NoListeners.psm1`'s, tested in every
+Windows suite as `tools.check_no_listeners` (`tools/ci/check-no-listeners.Tests.ps1`, about 6 s, no
+engine binary): its live half is the test's own process listening on 127.0.0.1, which raises no
+prompt, and nothing in it binds any other address.
 
 A run on the development machine (RTX 5090, `msvc-release`, 2026-09-18): 54 executables from 54
 brand-new paths, **0 prompts before and 0 after**, 49 GPU clients before and after, and the only
