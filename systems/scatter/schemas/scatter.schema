@@ -43,7 +43,7 @@ enum DensityKind : u8 {
 
 /// Placements per square metre as a function of world position, shared by the kinds by weight.
 /// The kinds' spacings cap it: a kind of spacing r places at most about 0.48 / r² a square metre
-/// (`k_packing`, docs/subsystems/scatter.md, "Density").
+/// (`k_packing`, docs/subsystems/scatter.md, "The density").
 struct Density @version(1) {
   kind: DensityKind = Constant
   per_m2: f64 = 0.01
@@ -80,7 +80,7 @@ enum Stand : u8 {
 
 /// A rock the capability makes itself, when a kind names no mesh: an icosphere subdivided `detail`
 /// times, stretched to `size` and displaced by a seeded value noise of `roughness`, written once as
-/// a GLB whose name is the hash of these fields (docs/subsystems/scatter.md, "The procedural rock").
+/// a GLB whose name is the hash of these fields (docs/subsystems/scatter.md, "What a layer is").
 struct Rock @version(1) {
   seed: u32 = 1
   /// Half-extents along x, y and z, metres, before the noise.

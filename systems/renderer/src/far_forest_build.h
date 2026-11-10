@@ -19,8 +19,8 @@ namespace engine::renderer {
 // The entry's format and builder version: part of every far tile's cache key, bumped when a
 // change makes an old entry wrong.
 inline constexpr u32 k_far_forest_version = 1;
-// The defaults of `renderer.far_forest.min_height_m` and `.max_triangles` (renderer.md, "What it
-// takes"): an instance shorter than this draws no far form (the understory), and a mesh whose
+// The defaults of `renderer.far_forest.min_height_m` and `.max_triangles` (renderer.md, "The far
+// forest"): an instance shorter than this draws no far form (the understory), and a mesh whose
 // coarsest form is heavier than this many triangles an instance draws none either.
 inline constexpr f32 k_far_min_height_m = 4.0f;
 inline constexpr u32 k_far_max_triangles = 512;

@@ -1,6 +1,6 @@
 #pragma once
 
-// A scene mesh a generator makes (scene_flora.cpp; docs/subsystems/renderer.md, "The scene file"):
+// A scene mesh a generator makes (scene_flora.cpp; renderer.md, "A generated mesh"):
 // a path like `content/flora/date-palm.flora.json`, built through the derived-data cache by the
 // mesh generator its name gives (`assets::MeshGeneratorRegistry`), the flora capability's first.
 

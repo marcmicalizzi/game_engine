@@ -276,7 +276,7 @@ TEST_CASE("engine-content: a build writes the committed bytes on every toolchain
 }
 
 #if ENGINE_CONTENT_RUINS
-// The ruin assembler's row (docs/subsystems/ruins.md, "The same ruin from every toolchain"): the
+// The ruin assembler's row (docs/subsystems/ruins.md, "Invariants"): the
 // synthetic kit of boxes, written by `ruins-kit`, and the 64 buildings world seed 2026 puts on the
 // 16 x 16 tiles around the origin, assembled on two thread counts, must hash to the number pinned
 // here. Every decision the assembler makes is integer arithmetic on centimetres and Q10 fractions

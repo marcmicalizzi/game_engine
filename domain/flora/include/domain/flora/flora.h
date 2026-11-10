@@ -16,7 +16,7 @@
 //   [x] derived data      the solver's container, keyed by the parameters (flora.md, "The build")
 //   [-] protocol methods  none yet
 //   [-] tunables          none: everything the solver reads is a parameter of the file
-//   [x] LOD policy        the cluster DAG's (flora.md, "LOD")
+//   [x] LOD policy        the cluster DAG's (flora.md, "Shared growth rules and named species")
 //   [x] determinism       the same parameters give the same bytes on every toolchain (palm.h)
 //   [x] zero cost unused  nothing runs unless a mesh names a `.flora.json`
 //   [x] docs, tests, size table

@@ -676,7 +676,8 @@ bool build_flora_container(const FloraFile& file, const geometry::ClusterLodOpti
     leaf_levels.push_back(geometry::ClusterLodLevel{level.indices, level.error});
   const geometry::ClusterLodLevel handover[] = {{{}, tree_error}};
   // One DAG per primitive, each with its material's cone setting: the trunk is one-sided and keeps
-  // its cones, a frond is seen from both faces and has none (flora.md, "Two-sided crowns").
+  // its cones, a frond is seen from both faces and has none (flora.md, "Why leaflets are geometry
+  // and the crown is two-sided").
   const geometry::AttributeSource attributes = assets::attribute_source(mesh);
   Vector<geometry::ClusterLodMesh> parts;
   Vector<u32> part_material;

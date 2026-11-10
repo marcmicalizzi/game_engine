@@ -136,7 +136,7 @@ bool create_sampler(const Device& device, Filter filter, SamplerHandle& out,
 bool create_mip_sampler(const Device& device, f32 max_anisotropy, SamplerHandle& out,
                         std::string* error = nullptr);
 
-// A material sampler as a glTF sampler describes one (docs/subsystems/gfx.md, "Samplers"): the
+// A material sampler as a glTF sampler describes one (gfx.md, "The material table"): the
 // wrap in u and v, the magnification and minification filters and the blend between levels.
 // `mipmapped` samples the whole chain and turns anisotropy on — `max_anisotropy`, clamped to 16,
 // where DeviceFeatures::sampler_anisotropy is on and the minification filter is linear, since

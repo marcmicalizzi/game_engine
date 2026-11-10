@@ -25,7 +25,7 @@ namespace engine::volumetrics {
 
 namespace {
 
-// The froxel grid (volumetrics.md, "The froxels"): read once, when a pass is made.
+// The froxel grid (volumetrics.md, "The shape"): read once, when a pass is made.
 tunables::Int froxels_x{"volumetrics.froxels.x", 160, 8, 512, "Froxels across a view."};
 tunables::Int froxels_y{"volumetrics.froxels.y", 90, 8, 512, "Froxels down a view."};
 tunables::Int froxels_z{"volumetrics.froxels.z", 64, 8, 256,

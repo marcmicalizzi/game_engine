@@ -50,7 +50,8 @@ class Process {
   // the GPU ran out before it did anything, so whatever this process asked of it did not
   // happen, and the code has to reach the test at the root of the tree for CTest to report a
   // skip rather than whatever failure the missing answer would otherwise turn into
-  // (docs/subsystems/gpu_lock.md, "Giving up"). Everywhere else it is returned like any code.
+  // (docs/subsystems/gpu_lock.md, "A wait is bounded"). Everywhere else it is returned like any
+  // code.
   i32 wait() noexcept;
   void kill() noexcept;
 

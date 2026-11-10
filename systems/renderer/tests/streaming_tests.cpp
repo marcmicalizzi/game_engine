@@ -503,7 +503,7 @@ TEST_CASE("streaming: residency stays ancestor-closed and never drops a pinned p
   // on a *page* rather than on a group: a page holds many groups and each group has its own parent
   // group, so "the page holding its parents" is several pages, and what eviction enforces is the
   // conservative direction of it (a page with any resident child page may not go). See
-  // docs/subsystems/renderer.md, "What a page's ancestors are".
+  // docs/subsystems/renderer.md, "Two invariants, and the one that cost an afternoon".
   Vector<u32> parents;
   for (u32 slot = 0; slot < k_stream_slots; ++slot) {
     const u32* words = h.scene.residency_slot(slot);

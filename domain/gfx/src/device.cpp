@@ -367,8 +367,8 @@ bool Device::create(const DeviceOptions& options, std::string* error) {
       options.instance_extension_count > 0 &&
       instance_extensions.enable_if_available("VK_KHR_get_surface_capabilities2");
   // The colour spaces past sRGB non-linear — HDR10's PQ, scRGB's extended linear — are not even
-  // listed by a surface unless the instance enables this (E39; docs/subsystems/gfx.md, "The
-  // surface's offers"). Same rule: a presenting caller, only where the loader has it, and an
+  // listed by a surface unless the instance enables this (E39; docs/subsystems/gfx.md, "The HDR
+  // branches"). Same rule: a presenting caller, only where the loader has it, and an
   // instance without it presents exactly as before, sRGB non-linear only.
   h.swapchain_colorspace = options.instance_extension_count > 0 &&
                            instance_extensions.enable_if_available("VK_EXT_swapchain_colorspace");

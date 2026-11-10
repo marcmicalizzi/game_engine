@@ -16,7 +16,7 @@ constexpr RoutineRow at(S state, P place, u16 start_lo, u16 start_hi, u16 durati
   return RoutineRow{state, place, start_lo, start_hi, duration_lo, duration_hi};
 }
 
-// ---- the tables (docs/subsystems/npc.md, "The routine tables") --------------------------------
+// ---- the tables (docs/subsystems/npc.md, "The routine model") ---------------------------------
 //
 // Minutes after midnight for a start, minutes for a duration. A `Travelling` row's place is where
 // the trip goes; the trip starts wherever the row before it was. Lunch is eaten at work, so a

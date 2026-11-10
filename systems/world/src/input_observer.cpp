@@ -49,8 +49,8 @@ void InputObserver::catch_up(u64 tick) {
   const u64 from = fed_any_ ? fed_through_ + 1 : 0;
   if (fed_any_ && fed_through_ >= tick) return;
   // `feed_ticks` is `InputLog::replay`'s own loop, so a world that feeds a tick at a time and one
-  // that catches up in one call run the same code over the same events (input.md, "The replay
-  // guarantee").
+  // that catches up in one call run the same code over the same events (input.md,
+  // "feed_ticks(state, events, cursor, from, to, options)").
   cursor_ = input::feed_ticks(*state_, log_.events(), cursor_, SimTick{from}, SimTick{tick});
   fed_through_ = tick;
   fed_any_ = true;
