@@ -27,6 +27,7 @@
 #include <domain/materials/materials.h>
 #include <domain/texture/material_textures.h>
 #include <domain/texture/texture_build.h>
+#include <foundation/image/decode.h>
 #include <foundation/image/png.h>
 #include <foundation/io/vfs.h>
 
@@ -56,6 +57,8 @@ const char* k_flora_usage =
     "      --root-tree <tree.flora.json>  fit a roots recipe to the solved trunk before cooking\n"
     "      --sward-assets <dir>  bake ground PBR and a 20 m distance form beside a sward recipe;\n"
     "                     directory must be outside a checkout (contains no ancestor AGENTS.md)\n"
+    "      --sward-form <form>  the floor the ground is composed over: tall_sod, tall_tussock,\n"
+    "                     short_sod or short_tussock (default: the recipe's own form)\n"
     "      --materials <dir>  the material pack a part with no set of its own takes its role's\n"
     "                     default from (default: <repo>/content/materials, found beside "
     "AGENTS.md)\n"
@@ -81,8 +84,20 @@ void print_json(const JsonValue& value) {
   std::fwrite(text.data(), 1, text.size(), stdout);
 }
 
+// The four forms a bake can be told (`--sward-form`), in the schema's order after `any`.
+constexpr const char* form_names[] = {"any", "tall_sod", "tall_tussock", "short_sod",
+                                      "short_tussock"};
+
 bool sward_assets(const flora::FloraFile& file, const geometry::ClusterFileData& data,
-                  const std::string& directory, std::string& error) {
+                  const std::string& directory, const materials::Pack* pack,
+                  const std::string& form_name, std::string& error) {
+  flora::SwardForm named_form = flora::SwardForm::any;
+  for (u32 f = 1; f < 5; ++f)
+    if (form_name == form_names[f]) named_form = static_cast<flora::SwardForm>(f);
+  if (!form_name.empty() && named_form == flora::SwardForm::any) {
+    error = "--sward-form names tall_sod, tall_tussock, short_sod or short_tussock";
+    return false;
+  }
   if (file.species != "sward") {
     error = "--sward-assets needs species sward";
     return false;
@@ -105,28 +120,39 @@ bool sward_assets(const flora::FloraFile& file, const geometry::ClusterFileData&
   flora::TreeLevels chain;
   flora::TreeReport report;
   if (!flora::solve_sward(file.sward, mesh, &report, &error, &motion, &chain)) return false;
-  flora::BakedAtlas ground;
-  Vector<f32> depth;
-  constexpr u32 pixels = 256;
-  flora::bake_sward_ground(mesh, chain, file.sward.cell_m, pixels, ground, &depth);
-  Vector<u8> heights(pixels * pixels, 0), roughness(pixels * pixels, 179);
-  const auto* profile = flora::sward_profile(file.sward.species);
-  for (u32 i = 0; i < pixels * pixels; ++i) {
-    const f32 cover = static_cast<f32>(ground.colour[i * 4 + 3]) / 255;
-    // A dark substrate of the same blade colour fills uncovered samples. This authored base is
-    // explicit in provenance; it is not reported as measured biological coverage.
-    const Vec4 green = mesh.materials[0].base_color;
-    const f32 rgb[3] = {green.x, green.y, green.z};
-    for (u32 c = 0; c < 3; ++c)
-      ground.colour[i * 4 + c] = texture::linear_to_srgb8(rgb[c] * (.35f + .65f * cover));
-    ground.colour[i * 4 + 3] = 255;
-    if (cover == 0) {
-      ground.normal[i * 4] = ground.normal[i * 4 + 1] = 128;
-      ground.normal[i * 4 + 2] = 255;
+  // G141 (flora.md, "The ground under the sward"): the top view composed over the form's floor —
+  // a pack's `ground/thatch`, `ground/moss` and `ground/soil` roles where the pack has them, the
+  // stated procedural floor where it does not — at the floor's roughness between blades.
+  const flora::SwardForm floor_form =
+      form_name.empty() ? flora::sward_recipe_form(file.sward) : named_form;
+  flora::SwardFloor floor_parts = flora::sward_default_floor(floor_form);
+  floor_parts.seed = file.sward.seed ^ (static_cast<u64>(file.sward.variant) << 48);
+  image::Image role_images[6];
+  const char* role_names[3] = {"ground/thatch", "ground/moss", "ground/soil"};
+  flora::SwardFloorPart* parts[3] = {&floor_parts.thatch, &floor_parts.moss, &floor_parts.soil};
+  JsonValue roles = JsonValue::object();
+  for (u32 r = 0; r < 3; ++r) {
+    const materials::MaterialSet* set = materials::find_role(pack, role_names[r]);
+    if (set == nullptr) {
+      roles.set(role_names[r], JsonValue("procedural"));
+      continue;
     }
-    ground.normal[i * 4 + 3] = 255;
-    heights[i] = static_cast<u8>(std::clamp(depth[i] / profile->length_max_m, 0.0f, 1.0f) * 255);
+    if (!set->base_color.empty() &&
+        image::read_image(set->base_color, role_images[2 * r], 4, &error) == io::Status::Ok)
+      parts[r]->colour_image = &role_images[2 * r];
+    if (!set->roughness.empty() &&
+        image::read_image(set->roughness, role_images[2 * r + 1], 4, &error) == io::Status::Ok)
+      parts[r]->roughness_image = &role_images[2 * r + 1];
+    parts[r]->tile_m = set->tile_m;
+    roles.set(role_names[r], JsonValue(set->base_color));
   }
+  flora::SwardGround ground;
+  constexpr u32 pixels = 256;
+  if (!flora::bake_sward_ground_over(file.sward, mesh, chain,
+                                     static_cast<f64>(report.leaf_area_index), floor_parts, pixels,
+                                     ground, &error))
+    return false;
+  const auto* profile = flora::sward_profile(file.sward.species);
   for (const auto& item : {std::pair{"ground-colour.png", &ground.colour},
                            std::pair{"ground-normal.png", &ground.normal}}) {
     if (image::write_png(path(item.first), pixels, pixels, 4, *item.second) != io::Status::Ok) {
@@ -134,8 +160,9 @@ bool sward_assets(const flora::FloraFile& file, const geometry::ClusterFileData&
       return false;
     }
   }
-  if (image::write_png(path("ground-height.png"), pixels, pixels, 1, heights) != io::Status::Ok ||
-      image::write_png(path("ground-roughness.png"), pixels, pixels, 1, roughness) !=
+  if (image::write_png(path("ground-height.png"), pixels, pixels, 1, ground.height) !=
+          io::Status::Ok ||
+      image::write_png(path("ground-roughness.png"), pixels, pixels, 1, ground.roughness) !=
           io::Status::Ok) {
     error = "cannot write sward scalar images";
     return false;
@@ -190,8 +217,29 @@ bool sward_assets(const flora::FloraFile& file, const geometry::ClusterFileData&
   provenance.set("form_policy",
                  JsonValue("authored clump cards only; transition acceptance pending"));
   provenance.set("ground_height_scale_m", JsonValue(static_cast<f64>(profile->length_max_m)));
-  provenance.set("substrate", JsonValue("0.35 times blade linear colour; authored, not scanned"));
-  provenance.set("roughness", JsonValue(0.7));
+  // G141: what the ground was composed over, and its two colours (flora.md, "Near and far").
+  JsonValue under = JsonValue::object();
+  under.set("form", JsonValue(std::string(form_names[static_cast<u32>(floor_form)])));
+  under.set("thatch", JsonValue(floor_parts.mix.thatch));
+  under.set("moss", JsonValue(floor_parts.mix.moss));
+  under.set("soil", JsonValue(floor_parts.mix.soil));
+  under.set("roles", std::move(roles));
+  under.set("source", JsonValue("procedural parts at stated albedos and roughness "
+                                "(grass-sward.md, \"The floor under a sward\"); not scanned"));
+  provenance.set("floor", std::move(under));
+  const auto vec = [](Vec3 v) {
+    JsonValue a = JsonValue::array();
+    a.push_back(JsonValue(static_cast<f64>(v.x)));
+    a.push_back(JsonValue(static_cast<f64>(v.y)));
+    a.push_back(JsonValue(static_cast<f64>(v.z)));
+    return a;
+  };
+  provenance.set("near_mean_linear", vec(ground.near_mean));
+  provenance.set("far_mean_linear", vec(ground.far_mean));
+  provenance.set("blade_cover_from_above", JsonValue(ground.blade_cover));
+  provenance.set("canopy_transmission", JsonValue(ground.transmission));
+  provenance.set("colour_alpha", JsonValue("near share of the far colour: far texel = RGB / A"));
+  provenance.set("blade_roughness", JsonValue(static_cast<f64>(mesh.materials[0].roughness)));
   provenance.set("rendered_blades", JsonValue(report.sprays));
   provenance.set("triangles_all_rungs", JsonValue(report.triangles));
   provenance.set("modeled_leaf_area_m2", JsonValue(static_cast<f64>(report.leaf_area_m2)));
@@ -213,6 +261,7 @@ bool sward_assets(const flora::FloraFile& file, const geometry::ClusterFileData&
 int flora(int argc, char** argv) {
   std::string input;
   std::string sward_directory;
+  std::string sward_form;
   std::string root_tree;
   std::string output;
   std::string ddc;
@@ -233,6 +282,9 @@ int flora(int argc, char** argv) {
     } else if (a == "--sward-assets") {
       if (i + 1 >= argc) return usage("--sward-assets needs a directory");
       sward_directory = argv[++i];
+    } else if (a == "--sward-form") {
+      if (i + 1 >= argc) return usage("--sward-form needs a form");
+      sward_form = argv[++i];
     } else if (a == "--no-materials") {
       no_materials = true;
     } else if (a == "--materials") {
@@ -325,7 +377,8 @@ int flora(int argc, char** argv) {
     if (!geometry::write_cluster_file(path, data, &error)) return failed(error);
   }
 
-  if (!sward_directory.empty() && !sward_assets(file, data, sward_directory, error))
+  if (!sward_directory.empty() &&
+      !sward_assets(file, data, sward_directory, pack, sward_form, error))
     return failed(error);
   JsonValue summary = JsonValue::object();
   summary.set("path", JsonValue(path));

@@ -512,3 +512,186 @@ TEST_CASE("sward: a tilt cap out of range is refused") {
     CHECK(error.find("max_tilt_deg") != std::string::npos);
   }
 }
+
+// ---- G141: the ground under the sward (flora.md, "The ground under the sward") ----------------
+namespace {
+// The meadow's short-tussock recipe (content/test-scenes/meadow/short-tussock.flora.json).
+flora::Sward ground_recipe(bool tussock) {
+  flora::Sward p;
+  if (tussock) {
+    p.species = "mat_grass";
+    p.seed = 13704;
+    p.blades_m2 = 512;
+    p.growth_min = .3f;
+    p.growth = .9f;
+    p.clump_radius_m = .05f;
+    p.tussock_spacing_m = .25f;
+    p.between_share = .35f;
+    p.between_growth = .2f;
+    p.triangle_budget = 4200;
+  } else {
+    p.species = "bent";
+    p.seed = 13703;
+    p.blades_m2 = 1024;
+    p.segments = 2;
+    p.growth_min = .15f;
+    p.growth = .5f;
+    p.leaves_per_tiller = 3;
+    p.clumpiness = .1f;
+    p.clump_radius_m = .03f;
+    p.triangle_budget = 6400;
+  }
+  p.card_px = 128;
+  p.fit_lods = false;  // the ground bakes the near form, which the fit does not move
+  return p;
+}
+struct GroundCase {
+  assets::MeshData mesh;
+  flora::TreeLevels levels;
+  flora::TreeReport report;
+  flora::SwardGround ground;
+  flora::BakedAtlas top;
+};
+void bake_case(const flora::Sward& p, flora::SwardForm form, GroundCase& out) {
+  std::string error;
+  REQUIRE_MESSAGE(flora::solve_sward(p, out.mesh, &out.report, &error, nullptr, &out.levels),
+                  error);
+  flora::SwardFloor floor_parts = flora::sward_default_floor(form);
+  REQUIRE_MESSAGE(flora::bake_sward_ground_over(p, out.mesh, out.levels,
+                                                static_cast<f64>(out.report.leaf_area_index),
+                                                floor_parts, 256, out.ground, &error),
+                  error);
+  flora::bake_sward_ground(out.mesh, out.levels, p.cell_m, 256, out.top);
+}
+f64 luma(Vec3 v) {
+  return .2126 * static_cast<f64>(v.x) + .7152 * static_cast<f64>(v.y) +
+         .0722 * static_cast<f64>(v.z);
+}
+}  // namespace
+
+TEST_CASE("sward ground: roughness is the floor's between blades and the blade's on a blade") {
+  GroundCase g;
+  bake_case(ground_recipe(true), flora::SwardForm::short_tussock, g);
+  const auto& gr = g.ground;
+  REQUIRE(gr.pixels == 256);
+  REQUIRE(gr.roughness.size() == 256u * 256u);
+  REQUIRE(gr.colour.size() == 256u * 256u * 4u);
+  u32 bare = 0, covered = 0;
+  for (u32 i = 0; i < 256u * 256u; ++i) {
+    const u8 cover = g.top.colour[i * 4 + 3];
+    if (cover == 0) {
+      // A texel no blade covers is the floor: thatch 0.80 (+-0.03 grain), moss 0.95, soil 0.92.
+      ++bare;
+      CHECK(gr.part[i] < 3);
+      CHECK(gr.roughness[i] >= 196);
+      CHECK(gr.roughness[i] <= 243);
+    } else if (cover >= 128) {
+      // Mostly a blade: the blade's 0.7 weighed by its cover against a floor of 0.77 to 0.98.
+      ++covered;
+      const f64 c = cover / 255.0;
+      CHECK(gr.part[i] == 3);
+      CHECK(gr.roughness[i] >= (c * .7 + (1 - c) * .77) * 255 - 1);
+      CHECK(gr.roughness[i] <= (c * .7 + (1 - c) * .98) * 255 + 1);
+    }
+  }
+  CHECK(bare > 1000);
+  CHECK(covered > 100);
+}
+
+TEST_CASE("sward ground: the floor follows the form, and wet or shaded ground grows moss") {
+  using flora::SwardForm;
+  for (const SwardForm form : {SwardForm::tall_sod, SwardForm::tall_tussock, SwardForm::short_sod,
+                               SwardForm::short_tussock}) {
+    const auto m = flora::sward_floor_mix(form);
+    CHECK(m.thatch + m.moss + m.soil == doctest::Approx(1).epsilon(1e-12));
+    const auto wet = flora::sward_floor_mix(form, 1, 0);
+    CHECK(wet.moss > m.moss);
+    CHECK(wet.soil < m.soil);
+    CHECK(wet.thatch + wet.moss + wet.soil == doctest::Approx(1).epsilon(1e-12));
+    CHECK(flora::sward_floor_mix(form, 0, 1).moss > m.moss);
+  }
+  // A tussock stands in thatch and soil; a sod is a closed mat of thatch and moss.
+  for (const SwardForm tussock : {SwardForm::tall_tussock, SwardForm::short_tussock}) {
+    for (const SwardForm sod : {SwardForm::tall_sod, SwardForm::short_sod}) {
+      CHECK(flora::sward_floor_mix(tussock).soil > flora::sward_floor_mix(sod).soil);
+      CHECK(flora::sward_floor_mix(tussock).moss < flora::sward_floor_mix(sod).moss);
+    }
+  }
+  CHECK(flora::sward_recipe_form(ground_recipe(true)) == SwardForm::short_tussock);
+  CHECK(flora::sward_recipe_form(ground_recipe(false)) == SwardForm::short_sod);
+  // The site's floor is the stature rule's form's, with the site's wetness.
+  flora::SwardStature rule;
+  flora::SwardSite site;
+  site.wet = .8;
+  const auto at = flora::sward_site_floor(rule, site);
+  const auto want = flora::sward_floor_mix(flora::sward_site_form(rule, site), .8, 0);
+  CHECK(at.moss == want.moss);
+  CHECK(at.soil == want.soil);
+  // The baked floor takes the shares it was given, texel by texel, within the mosaic's sampling.
+  GroundCase g;
+  bake_case(ground_recipe(true), SwardForm::short_tussock, g);
+  const auto mix = flora::sward_floor_mix(SwardForm::short_tussock);
+  CHECK(g.ground.floor_share[0] == doctest::Approx(mix.thatch).epsilon(.25));
+  CHECK(g.ground.floor_share[2] == doctest::Approx(mix.soil).epsilon(.35));
+  GroundCase s;
+  bake_case(ground_recipe(true), SwardForm::short_sod, s);
+  CHECK(s.ground.floor_share[1] > g.ground.floor_share[1]);
+  CHECK(s.ground.floor_share[2] < g.ground.floor_share[2]);
+}
+
+TEST_CASE("sward ground: near is the floor in the canopy's shade, far the canopy from above") {
+  GroundCase g;
+  bake_case(ground_recipe(true), flora::SwardForm::short_tussock, g);
+  const auto& gr = g.ground;
+  CHECK(gr.transmission < 1);
+  CHECK(gr.transmission >= flora::k_sward_transmission_floor);
+  // The far colour is the image's RGB / A, as the terrain layer's mean takes it.
+  f64 far[3]{};
+  f64 floor_luma = 0;
+  u32 floor_texels = 0;
+  for (u32 i = 0; i < 256u * 256u; ++i) {
+    const f64 a = gr.colour[i * 4 + 3] / 255.0;
+    f64 near[3];
+    for (u32 c = 0; c < 3; ++c) {
+      const f64 v = gr.colour[i * 4 + c] / 255.0;
+      near[c] = v <= .04045 ? v / 12.92 : std::pow((v + .055) / 1.055, 2.4);
+      far[c] += near[c] / a;
+    }
+    if (gr.part[i] < 3) {
+      floor_luma += .2126 * near[0] + .7152 * near[1] + .0722 * near[2];
+      ++floor_texels;
+    }
+  }
+  for (f64& v : far)
+    v /= 256.0 * 256.0;
+  CHECK(far[0] == doctest::Approx(static_cast<f64>(gr.far_mean.x)).epsilon(2e-3));
+  CHECK(far[1] == doctest::Approx(static_cast<f64>(gr.far_mean.y)).epsilon(2e-3));
+  CHECK(far[2] == doctest::Approx(static_cast<f64>(gr.far_mean.z)).epsilon(2e-3));
+  // Far is brighter than near, and the floor between near crowns is darker than the blades.
+  CHECK(luma(gr.far_mean) > luma(gr.near_mean));
+  const Vec4 blade = g.mesh.materials[0].base_color;
+  CHECK(floor_luma / floor_texels < luma(Vec3{blade.x, blade.y, blade.z}));
+  // Far is greener than near: the drawn canopy along a low view lies over the floor.
+  CHECK(gr.far_mean.y - gr.far_mean.x > gr.near_mean.y - gr.near_mean.x);
+  CHECK(gr.view_cover > gr.blade_cover);
+  GroundCase sod;
+  bake_case(ground_recipe(false), flora::SwardForm::short_sod, sod);
+  CHECK(sod.ground.far_mean.y > sod.ground.far_mean.x);
+  CHECK(sod.ground.view_cover > gr.view_cover);
+}
+
+TEST_CASE("sward ground: the bake is the same bytes, pinned") {
+  GroundCase g;
+  bake_case(ground_recipe(true), flora::SwardForm::short_tussock, g);
+  const auto& gr = g.ground;
+  u64 pin = hash_bytes(gr.colour.data(), gr.colour.size());
+  pin = hash_combine(pin, hash_bytes(gr.normal.data(), gr.normal.size()));
+  pin = hash_combine(pin, hash_bytes(gr.roughness.data(), gr.roughness.size()));
+  pin = hash_combine(pin, hash_bytes(gr.height.data(), gr.height.size()));
+  // Taken on MSVC; the Linux containers reproduce it (GCC and Clang at v3, GCC at v2).
+  CHECK(pin == 13328138937995538568ull);
+  GroundCase again;
+  bake_case(ground_recipe(true), flora::SwardForm::short_tussock, again);
+  CHECK(hash_bytes(again.ground.colour.data(), again.ground.colour.size()) ==
+        hash_bytes(gr.colour.data(), gr.colour.size()));
+}

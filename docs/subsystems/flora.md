@@ -90,7 +90,7 @@ tests before handoff.
 distinct from the unchanged Tuft solver. [Grounding and limitations](../experiments/grass-sward.md)
 record the eight botanical profiles, field tiller counts, source dimensions and rendering papers.
 The public pure API is `sward_profiles`, `sward_profile`, `sward_in_range`, `solve_sward` and
-`bake_sward_ground` and `measure_sward_coverage` in `domain/flora/sward.h`. `k_sward_version` keys only sward output; adding it
+`bake_sward_ground`, `bake_sward_ground_over` (G141) and `measure_sward_coverage` in `domain/flora/sward.h`. `k_sward_version` keys only sward output; adding it
 does not invalidate or change accepted tree/understory meshes. The shared catalogue has one
 `sward` kind whose motion kind is `field` and whose caster policy is "never traced, the nearest
 cascade only, its rest pose" (R95, 2026-10-25): the renderer poses its blades on the GPU from a
@@ -167,10 +167,11 @@ visually effective. UVs cover each blade, and cards address their own atlas rect
 also writes a 256² top-view colour/normal/height/roughness set, a `distance.clusters` cut at
 20 m (projection scale 2160, 1000 px geometric/coverage thresholds, fade 0.1), and `provenance.json`.
 It remaps motion and section 41 with `LodFormMap`; the form records a distinct build key. The
-ground uses actual top-view geometry depth and normals, roughness 0.7, and dark blade colour
-under uncovered samples. The dark base is authored and declared in provenance. The deliberately
+ground is the top view composed over a floor of thatch, moss and soil (G141, "The ground under the
+sward", below), its blades at the blade's roughness 0.7 and the floor between them at the floor's.
+The deliberately
 permissive cut selects the authored card rung; the cook rejects any retained non-card cluster.
-This is a ring policy, **not** a one-pixel error guarantee. Ground, blades and cards share
+This is a ring policy, **not** a one-pixel error guarantee. Blades and cards keep
 roughness 0.7. External material overrides are refused for sward to preserve the bake's source.
 Generated files stay outside
 the checkout. The optional `bake_level` depth output leaves existing atlas bytes unchanged.
@@ -331,6 +332,58 @@ a `field`-kind meadow forb, so forbs need no pose-table run and can stand past t
 `forb_tile_cap` (a request: the herb's solver and the field pass are not this module's sward); zero-footprint
 host support; field sway, persistent contact/recovery fields and caster policy on the engine side; far-ground wind sheen. The
 current-main shadow stand-in is CSM with a short shadow distance, never claimed as final policy.
+
+### The ground under the sward (G141)
+
+**The bake over a floor** ([grounding](../experiments/grass-sward.md#the-floor-under-a-sward-g141-2026-11-10)).
+`bake_sward_ground_over` (`sward.h`) composes the sward's top view (`bake_sward_ground`, 16 samples
+a texel) over a floor at 256 px a cell, and `engine-content flora … --sward-assets` writes it in
+place of the old blade lines on one flat green at roughness 0.70. Per texel, with `c` the bake's
+cover of the texel: colour, roughness, normal and height are the floor's where `c` is 0, the blade's
+where it is 1, and weighed by `c` between. The drawn swards cover 2 to 6 % of the ground from
+straight above, so what a person sees between crowns is this floor.
+
+- *The floor* is three parts, a share each (`SwardFloorMix`): an underlay of moss and soil from two
+  octaves of wrapped value noise (8 and 2.5 cm), split at the moss share's quantile (so the shares
+  are exact) with a soft edge, moss rising in cushions up to 8 mm; over it the thatch as dead leaf
+  fragments 3 to 9 cm long and 1 to 4 mm wide at random turns, each its own tone, as many as a
+  Poisson cover of the thatch's share asks (`N = −ln(1 − s) A / (L w)`, 3,300 a square metre at a
+  share of a half), stacked. The floor's normal comes from its height's central differences; the
+  image tiles at the cell. Where a material pack has a `ground/thatch`, `ground/moss` or
+  `ground/soil` role, that part samples the role's base colour and roughness images instead (none
+  exist yet; the cook says `procedural` in `provenance.json` for each). A first layout, a 3 cm
+  Worley mosaic, read as camouflage polygons and was dropped.- *By form* (`sward_floor_mix`, `sward_default_floor`): a tussock stands in thatch and soil, a sod
+  on a closed mat of thatch and moss; wet and shaded ground move share to moss. The bake takes the
+  form from `--sward-form`, else from the recipe (`sward_recipe_form`: a tussock where it has a
+  crown spacing, tall where its leaves' grown length is 0.2 m or more). `sward_site_floor` gives a
+  site's floor from the stature rule's own inputs, calling `sward_site_form` unchanged — the hook a
+  per-cell ground would read; the scene's ground layer today is one bake per scene, so a field of
+  mixed forms takes the floor of the family the cook was told (see "Not yet").
+- *Same bytes everywhere*: hashes, products, sums, divisions, square roots, a sort of the noise for its
+  quantile, and the engine's own `det::exp`, `det::log`, `det::sin` and `det::cos`; no C library call
+  decides a texel. `sward_tests.cpp` pins the four
+  images' hash for the short-tussock recipe, taken on MSVC. The old bake was not pinned.
+
+**Near and far.** The ground has two colours. Near the eye, under the drawn canopy, it is the floor
+and the low leaves in the canopy's shade, `exp(−0.5 · canopy LAI)` floored at 0.25, the canopy LAI a
+grassland's by form (1.5 to 4) because the drawn blades carry a hundredth of it and cast almost no
+shadow; this is what makes the ground between near crowns darker than the blades, as in the
+reference reels. Past the sward's reach it is the canopy seen at 10° of elevation
+(`k_sward_far_elevation_deg`): the drawn leaf area's cover along that view,
+`1 − exp(−0.5 LAI_drawn / sin 10°)`, over the top view of blades and shaded floor. The colour image
+carries both: its RGB is the near colour and its alpha the near colour's share of the far, so the far
+texel is RGB / A. The terrain layer fades its tiled detail to its mean over the scene's
+`detail_near_m`..`detail_far_m`, and that mean is taken over RGB / A
+([renderer](renderer.md#the-swards-ground-near-and-far)), so the blend by distance is the fade the
+terrain already draws, at no cost in the resolve. `tools/sward-cook.ps1` sets the two distances to
+the sward's reach (`-DetailNearM 27`, where the near blades' hand-off band ends, `-DetailFarM 64`,
+where the meadow's cards end). `provenance.json` records the form, the shares, the transmission, the
+cover from above and both means.
+
+**Not yet.** A per-cell ground that follows the stature rule's form across a mixed field (a mask
+layer per form, or the sward placement writing the ground it stands on); photographed floor parts
+(the pack roles above); wetness-dependent floor colour; a far colour that follows the view's elevation
+rather than one stated 10°.
 
 ## Shared growth rules and named species (G85)
 

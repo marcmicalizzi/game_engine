@@ -155,10 +155,16 @@ bool append_terrain_materials(const TerrainDesc& terrain, assets::MeshData& mesh
     if (mean != nullptr) {
       f64 sums[3]{};
       for (u32 p = 0; p < decoded.pixels.size(); p += 4) {
+        // A base colour's alpha is its texel's near share of the far colour, so the mean a tiled
+        // layer fades to past `detail_far_m` is taken over RGB / A (G141; renderer.md, "The
+        // sward's ground, near and far"). An opaque image divides by one: the mean it always had.
+        const f64 share =
+            roughness || decoded.pixels[p + 3] == 0 ? 1.0 : decoded.pixels[p + 3] / 255.0;
         for (u32 c = 0; c < 3; ++c) {
           const f64 v = decoded.pixels[p + (roughness ? 0 : c)] / 255.0;
           sums[c] +=
-              roughness ? v : (v <= 0.04045 ? v / 12.92 : std::pow((v + 0.055) / 1.055, 2.4));
+              (roughness ? v : (v <= 0.04045 ? v / 12.92 : std::pow((v + 0.055) / 1.055, 2.4))) /
+              share;
         }
       }
       const f64 count = static_cast<f64>(decoded.width) * decoded.height;

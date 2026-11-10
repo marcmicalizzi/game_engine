@@ -10,7 +10,14 @@ param(
   [ValidateRange(1,16)][int]$Variants = 8,
   [string]$Recipe = (Join-Path $PSScriptRoot '../content/test-scenes/meadow/dense.flora.json'),
   [ValidateSet('tall_fescue','perennial_ryegrass','timothy','cocksfoot','wood_melick',
-               'wavy_hairgrass','bent','red_fescue')][string]$Species
+               'wavy_hairgrass','bent','red_fescue','tufted_hairgrass','mat_grass')][string]$Species,
+  # G141: the floor the ground bake is composed over (default: the recipe's own form).
+  [ValidateSet('','tall_sod','tall_tussock','short_sod','short_tussock')][string]$Form = '',
+  # G141: the ground's near colour holds to DetailNearM and is the far colour past DetailFarM,
+  # the sward's reach: the near blades' hand-off band ends at 27 m (25 + 4 / 2) and the meadow's
+  # cards end with its 64 m field (flora.md, "Near and far").
+  [double]$DetailNearM = 27,
+  [double]$DetailFarM = 64
 )
 $ErrorActionPreference = 'Stop'
 $swardRoot = Split-Path $PSScriptRoot
@@ -39,7 +46,8 @@ foreach ($density in @(0.25,0.5,0.75,1.0)) {
     $swardPatch.sward.variant = $variant
     $swardPatch.sward.density = $density * $swardDensity
     $swardPatch | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath (Join-Path $folder 'patch.flora.json')
-    & $swardExe flora (Join-Path $folder 'patch.flora.json') (Join-Path $folder 'patch.clusters') `
+    $formArgs = if ($Form) { @('--sward-form', $Form) } else { @() }
+    & $swardExe flora (Join-Path $folder 'patch.flora.json') (Join-Path $folder 'patch.clusters') @formArgs `
       --no-materials --sward-assets $folder > (Join-Path $folder 'build.json')
     if ($LASTEXITCODE -ne 0) { throw "Sward build failed: $name" }
     $near += "$name/patch.clusters"; $cards += "$name/distance.clusters"
@@ -77,6 +85,8 @@ try {
 } finally { $paint.Dispose() }
 $scene = Get-Content -LiteralPath (Join-Path $swardRoot 'content/test-scenes/meadow/scene.json') -Raw | ConvertFrom-Json -AsHashtable
 $scene.placements[0].params.families=$swardFamilies
+$scene.terrain.materials.detail_near_m = $DetailNearM
+$scene.terrain.materials.detail_far_m = $DetailFarM
 Copy-Item -LiteralPath (Join-Path $swardRoot 'content/flora/birch-single.flora.json') -Destination (Join-Path $swardOut 'edge-tree.flora.json')
 & $swardExe flora (Join-Path $swardOut 'edge-tree.flora.json') (Join-Path $swardOut 'edge-tree.clusters') `
   --no-materials > (Join-Path $swardOut 'edge-tree-build.json')

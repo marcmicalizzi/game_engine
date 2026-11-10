@@ -1,0 +1,11 @@
+{
+  "format": "engine.structure-raise.v1",
+  "name": "G141",
+  "reason": "G141: the sward's ground under the blades and its near and far colours are documented on flora.md, and the terrain layer's far mean over RGB / A on renderer.md",
+  "date": "2026-11-10",
+  "by": "Marc Micalizzi",
+  "deltas": {
+    "page:docs/subsystems/renderer.md": 784,
+    "page:docs/subsystems/flora.md": 4393
+  }
+}
