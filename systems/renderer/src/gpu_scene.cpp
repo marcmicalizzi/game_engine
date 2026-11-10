@@ -3130,7 +3130,22 @@ bool GpuScene::make_deform_tables(bool frames, std::string* error) {
                                  error)) {
     return false;
   }
-  if (!frames) return true;
+  if (!frames) {
+    // **Copies that stay are written too** (S100, 2026-11-09): a scene that keeps per-frame copies
+    // with no skin to rewrite them whole every frame — one with a lifted water body, whose frames
+    // write only the water's words — reads every record from them. The tail's growth makes the
+    // table again without making the copies when only the part-pose table outgrew its room (a
+    // record made then was in neither until now), and on the forest that left a swaying tree's
+    // record uninitialised in every copy: the device lost in the first frames. The table and
+    // its copies hold the same records whenever the table is written, so no path can write one.
+    if (deform_frames.mapped != nullptr && used > 0) {
+      const u64 room = u64{deform_capacity_} * sizeof(gfx::DeformDesc);
+      ENGINE_ASSERT(deform_frames.size >= room * k_joint_slots, "the copies hold the capacity");
+      for (u32 slot = 0; slot < k_joint_slots; ++slot)
+        std::memcpy(deform_frame(slot), deform_descs_.data(), used < room ? used : room);
+    }
+    return true;
+  }
   gfx::destroy_buffer(device, deform_frames);
   if (!gfx::create_buffer(device, u64{deform_capacity_} * sizeof(gfx::DeformDesc) * k_joint_slots,
                           k_address, true, deform_frames, error)) {
