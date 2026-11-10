@@ -307,7 +307,7 @@ struct ParameterSample @version(1) {
 }
 
 /// The coefficients of the active rest law `fusiform-arch-v1` (docs/subsystems/tissue.md, "The
-/// active rest shape"): lambda(a) = 1 - activation_contraction a, and an arch of height arch_m sin
+/// layered model"): lambda(a) = 1 - activation_contraction a, and an arch of height arch_m sin
 /// theta at the middle.
 struct FusiformArchCoefficients @version(1) {
   activation_contraction: f64 = 0.2

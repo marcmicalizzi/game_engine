@@ -1,7 +1,7 @@
 #pragma once
 
 // **What the displays are and what a window on each is offered** (E39's first measurement,
-// docs/experiments/hdr-output-proposal.md; docs/subsystems/gfx.md, "The surface's offers"): every
+// docs/experiments/hdr-output-proposal.md; docs/subsystems/gfx.md, "The HDR branches"): every
 // display output Windows reports — its name, its rectangle, the bits it is driven at, its colour
 // space (which says whether Windows' "Use HDR" is on), the luminances DXGI reports for the panel
 // (`IDXGIOutput6::GetDesc1`) and Windows' SDR white level for it — and, for every Vulkan device,

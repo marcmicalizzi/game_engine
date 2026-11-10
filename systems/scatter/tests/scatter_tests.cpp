@@ -507,7 +507,7 @@ TEST_CASE("scatter: the budget caps a tile, and a far ring keeps a subset of a n
 
 TEST_CASE("scatter: the determinism hash is pinned") {
   // Taken on MSVC; GCC and Clang at v3 and GCC at v2 must give the same
-  // (docs/subsystems/scatter.md, "The same bytes from every toolchain"). A change that moves it
+  // (docs/subsystems/scatter.md, "Integers and a hash where it decides"). A change that moves it
   // moves every scattered scene, and says so in its commit.
   const Placer placer = open_layer(pinned_layer());
   const scene_gen::Ground g = ground();

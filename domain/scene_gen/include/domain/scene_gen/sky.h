@@ -18,7 +18,8 @@
 // **One clock.** A provider's `state` is a function of game time alone — seconds since the world's
 // epoch, which is midnight — the same time the ground's wind reads (`GroundOps::wind`), so the
 // sun's hour, the wind's day and the moon's month cannot drift apart. The renderer evaluates it at
-// the time the ground's surface stands at plus the frame's own offset (renderer.md, "One clock").
+// the time the ground's surface stands at plus the frame's own offset (renderer.md, "One world
+// clock").
 
 #include <core/base/types.h>
 #include <core/math/math.h>

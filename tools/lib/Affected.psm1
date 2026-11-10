@@ -19,12 +19,13 @@
 #     engine-view; the e10 harness reads this tree's binaries), and CTest records no target a
 #     test needs, so when they run every app the graph declares is built with them (`Apps`): the
 #     app set comes from engine_app() through modules.json, not from a list written here.
-# The lint and the documentation check always run: they are seconds, and they are the two checks a
-# change of any kind can fail.
+# The lint, the documentation check and the structure check (the hubs' ceilings, T81) always run:
+# they are seconds, and they are the checks a change of any kind can fail — a page that grows is
+# documentation and selects no module, and it can still pass its ceiling.
 
 Set-StrictMode -Version Latest
 
-$script:AlwaysTests = @('lint.banned_patterns', 'lint.licenses', 'docs_check')
+$script:AlwaysTests = @('lint.banned_patterns', 'lint.licenses', 'docs_check', 'structure_check')
 $script:LayerDirs = @('core', 'foundation', 'domain', 'systems', 'apps', 'game')
 
 function Get-AffectedTests {

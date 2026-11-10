@@ -1,9 +1,9 @@
 #pragma once
 
-// Walls, openings and furniture zones from a building's spaces (docs/subsystems/city.md, "Walls,
-// doors and windows"). Private to the module: the grammar calls it once the rooms of every floor
-// are laid, and nothing else may, because it relies on the grammar's promise that a floor's spaces
-// tile its footprint exactly.
+// Walls, openings and furniture zones from a building's spaces (docs/subsystems/city.md,
+// "The building grammar"). Private to the module: the grammar calls it once the rooms of every
+// floor are laid, and nothing else may, because it relies on the grammar's promise that a floor's
+// spaces tile its footprint exactly.
 
 #include <domain/city/building.h>
 #include <domain/city/params.h>

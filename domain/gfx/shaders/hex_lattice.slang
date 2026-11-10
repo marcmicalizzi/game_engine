@@ -1,7 +1,7 @@
 // Stochastic (hex-tiled) texturing's lattice and blend, shared by the terrain's triplanar layers
 // (terrain_material.slang, R96) and the mesh materials' UV plane (material.slang, R131). No
 // bindings and no entry points: it computes where three tiles read and how they are weighed, and
-// each caller reads its own maps there (docs/subsystems/native-terrain-materials.md, "Stochastic
+// each caller reads its own maps there (docs/subsystems/renderer.md, "Stochastic
 // sampling"; docs/subsystems/renderer.md, "Stochastic mesh materials").
 //
 // The lattice is Heitz and Neyret's (2018) triangle grid in Deliot and Heitz's (2019) skew,

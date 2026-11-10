@@ -1,7 +1,7 @@
 #pragma once
 
 // The declared energy of a tetrahedral region and its exact gradient: what the equilibrium-gap row
-// evaluates (docs/subsystems/tissue.md, "The equilibrium gap"). Private to the module;
+// evaluates (docs/subsystems/tissue.md, "The declared energy"). Private to the module;
 // content-build code, in double, deterministic (every sum runs in tetrahedron or sorted-edge
 // order).
 //

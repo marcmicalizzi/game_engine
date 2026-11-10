@@ -138,7 +138,7 @@ struct Context {
   // committed scene read with no root still writes into the checkout's `ddc/`.
   std::string_view ddc;
   Ground ground;
-  // **The moving ground** (scene_gen.md, "A moving ground"): the surface as it stands now, when a
+  // **The moving ground** (scene_gen.md, "Context::stand"): the surface as it stands now, when a
   // host's ground has moved on from the scene's time (the dunes under a time-lapse). A generator
   // decides on `ground` — so a placement's place, turn and scale do not move with the sand — and
   // stands what stands on the surface on this: its height and its normal. Absent: `ground`.

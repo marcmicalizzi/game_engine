@@ -21,7 +21,7 @@ namespace {
 // rest with squish and NVTT; 10 is the library's own "if in doubt" (rgbcx.h).
 constexpr u32 k_rgbcx_level = 10;
 // BC7's uber level, 0 to 4: how many endpoint refinements each candidate mode gets. 1 is the
-// measured knee on the samples (docs/subsystems/texture.md, "What the settings cost").
+// measured knee on the samples (docs/subsystems/texture.md, "Encoders").
 constexpr u32 k_bc7_uber_level = 1;
 
 // Both encoders build lookup tables into globals on first use and say so: not thread safe. Once

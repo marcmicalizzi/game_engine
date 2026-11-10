@@ -61,7 +61,7 @@ struct GeneratorHostMesh {
   Vector<Vec3> positions;  // the host's vertices: a container's cluster-ordered `Vertices`
   Vector<u32> indices;     // three per triangle
   // Per triangle: its material's roughness, 0 (polished) to 1, which is what says whether a root
-  // climber's rootlets hold (cover.md, "Attachment").
+  // climber's rootlets hold (cover.md, "The vine").
   Vector<f32> roughness;
   // Per triangle: 1 where a climber may hold — all of a rigid mesh; of a generated tree, only the
   // triangles of the parts that stay colliders (its trunk, its load-bearing limbs; flora.md, "The

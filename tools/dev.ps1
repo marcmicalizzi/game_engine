@@ -278,7 +278,7 @@ function Invoke-Test {
   # (the Windows presets name none, so an author's run is serial as before).
   if ($Jobs -gt 0) { $args += @('-j', "$Jobs") }
   # A run that skipped a test must not read as a pass, so it ends with 75 and says which
-  # (docs/subsystems/gpu_lock.md, "Giving up"); a failure in either run below fails the whole.
+  # (docs/subsystems/gpu_lock.md, "A wait is bounded"); a failure in either run below fails the whole.
   $runs = @()
   if ($SkipInvariantGpu -and (Test-OffConfiguration)) {
     # The libraries labelled `config_invariant` are the same code in every configuration (the

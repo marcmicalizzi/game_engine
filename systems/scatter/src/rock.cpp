@@ -1,4 +1,4 @@
-// The procedural rock (docs/subsystems/scatter.md, "The procedural rock"): what a kind that names
+// The procedural rock (docs/subsystems/scatter.md, "What a layer is"): what a kind that names
 // no mesh places, so a layer can be looked at with nothing outside the repository. An icosahedron
 // subdivided by midpoints, every vertex pushed out along its direction by a seeded value noise,
 // stretched to its half-extents and lowered so `buried` of its height is under the origin; welded

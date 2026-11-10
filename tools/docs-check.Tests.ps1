@@ -481,6 +481,80 @@ Layers: `core/` and `apps/`; `engine-cli` is the client. See [docs/plan/README.m
   Set-FixtureFile $root 'README.md' ((Get-Content -LiteralPath (Join-Path $root 'README.md') -Raw).Replace("- [docs/roadmap.md](docs/roadmap.md)`n", ''))
   Test-Passes 'a tree with no roadmap owes no link to one' $root
 
+  Write-Host 'case: code-to-doc citations'
+  # The fixture's source files spell a page `<name>@MD@`, turned into `.md` as the file is written,
+  # so this test file is not itself read as citing pages the real tree does not have.
+  function Set-SourceFixture([string]$root, [string]$rel, [string]$text) { Set-FixtureFile $root $rel ($text.Replace('@MD@', '.md')) }
+  $citingPage = @'
+# base (core)
+
+**Purpose.** The bottom of the tree.
+
+## C. The evaluation
+
+## `--animate [clip]` and `--speed <x>`: a character that moves
+
+```text
+## Not a heading, in a fence
+```
+'@
+  $root = New-Fixture
+  Set-FixtureFile $root 'docs/subsystems/base.md' $citingPage
+  Set-SourceFixture $root 'core/base/src/base.cpp' @'
+// A heading in full (docs/subsystems/base@MD@, "base (core)"), a bold lead-in (base@MD@, "Purpose"),
+// the first words of a heading (base@MD@, "C. The"), a heading's name without its enumerator and
+// with its code spans as plain text (base@MD@, "The evaluation", "--animate [clip] and --speed"),
+// and one wrapped over two lines (docs/subsystems/base@MD@,
+// "The
+// evaluation").
+const char* k_text = "two literals (base@MD@, " "Not a citation)";
+'@
+  Set-SourceFixture $root 'core/base/base.schema' "/// A schema comment (docs/subsystems/base@MD@, `"Purpose`").`n"
+  Set-SourceFixture $root 'tools/thing.ps1' "# A script comment (base@MD@,`n#   `"Purpose`").`n"
+  Test-Passes 'citations of headings, bold lead-ins, first words, lists and wrapped lines pass' $root
+  Test-That 'the report counts the citations' { (Invoke-Check $root).Out -match ', 8 citations\)' }
+
+  $root = New-Fixture
+  Set-FixtureFile $root 'docs/subsystems/base.md' $citingPage
+  Set-SourceFixture $root 'core/base/src/base.cpp' "// line one`n// The evaluation's rule (docs/subsystems/base@MD@, `"The evaluations`").`n"
+  Test-Reports 'a text that is no heading names the file, the line and the nearest heading' $root `
+    'core/base/src/base.cpp:2: [citation] "The evaluations" is not a heading or bold lead-in of docs/subsystems/base.md; the nearest is "C. The evaluation" (line 5)'
+  $root = New-Fixture
+  Set-FixtureFile $root 'docs/subsystems/base.md' $citingPage
+  Set-SourceFixture $root 'core/base/src/base.cpp' "// (base@MD@, `"Purpose of`")`n"
+  Test-Reports 'the first words of a heading are whole words' $root '[citation] "Purpose of" is not a heading or bold lead-in'
+  $root = New-Fixture
+  Set-FixtureFile $root 'docs/subsystems/base.md' $citingPage
+  Set-SourceFixture $root 'core/base/src/base.cpp' "// (base@MD@, `"Not a heading, in a fence`")`n"
+  Test-Reports 'a heading inside a code fence is not a heading' $root '[citation] "Not a heading, in a fence" is not a heading'
+  $root = New-Fixture
+  Set-SourceFixture $root 'core/base/src/base.cpp' "// (base@MD@, `"Purpose`", `"Gone`")`n"
+  Test-Reports 'each text of a list is checked' $root '[citation] "Gone" is not a heading or bold lead-in of docs/subsystems/base.md'
+  $root = New-Fixture
+  Set-SourceFixture $root 'core/base/src/base.cpp' "// (docs/subsystems/gone@MD@, `"Purpose`")`n"
+  Test-Reports 'a page that does not exist' $root "core/base/src/base.cpp:1: [citation] the cited page 'docs/subsystems/gone.md' does not exist"
+  $root = New-Fixture
+  Set-SourceFixture $root 'core/base/src/base.cpp' "// (nowhere@MD@, `"Purpose`")`n"
+  Test-Reports 'a bare name that is no page' $root "[citation] the cited page 'nowhere.md' is no page in the tree"
+  $root = New-Fixture
+  Set-FixtureFile $root 'docs/plan/e1-thing.md' "# E1 again`n"
+  Set-SourceFixture $root 'core/base/src/base.cpp' "// (e1-thing@MD@, `"E1 again`")`n"
+  Test-Reports 'a bare name two pages share' $root "[citation] the cited page 'e1-thing.md' names 2 pages; give its directory"
+  $root = New-Fixture
+  Set-SourceFixture $root 'core/base/src/base.cpp' "// (../../../docs/experiments/e1-thing@MD@, `"E1`")`n"
+  Test-Passes 'a path relative to the citing file' $root
+  $root = New-Fixture
+  Set-SourceFixture $root 'docs/subsystems/notes.txt' "(base@MD@, `"Gone`")`n"
+  Set-SourceFixture $root 'docs/plan/02-more.md' "# More`n`nSee (base@MD@, `"Gone`").`n"
+  Add-FixtureLine $root 'docs/plan/README.md' "| [02-more](02-more.md) | more |`n"
+  Test-Passes 'a page and a file of no source kind are not read for citations' $root
+  $root = New-Fixture
+  # Written directly: Set-FixtureFile makes every file LF.
+  New-Item -ItemType Directory -Force -Path (Join-Path $root 'core/base/src') | Out-Null
+  [IO.File]::WriteAllText((Join-Path $root 'core/base/src/base.cpp'),
+    "// (base@MD@, `"Gone`")`r`n// (base@MD@, `"Purpose`")`r`n// (base@MD@, `"Gone too`")`r`n".Replace('@MD@', '.md'))
+  Test-Reports 'a file with CRLF line endings reports the same lines' $root 'core/base/src/base.cpp:3: [citation] "Gone too"'
+
   Write-Host 'case: one run, every problem'
   $root = New-Fixture
   Set-FixtureFile $root 'core/math/CMakeLists.txt' "engine_module(NAME math LAYER core DEPS base)`n"

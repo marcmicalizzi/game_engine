@@ -211,7 +211,7 @@ float3 terrain_slope(ResolveMaterial layer, float2 uv, float2 dx, float2 dy, flo
 // ---- Stochastic (hex-tiled) sampling of a triplanar layer (R96) ---------------------------------
 // A layer naming `"sampling": "stochastic"` reads each projection at three tiles of a triangle
 // lattice, each tile its own random offset (and, when the layer allows it, a bounded turn), and
-// blends them by the variance-preserving operator (native-terrain-materials.md, "Stochastic
+// blends them by the variance-preserving operator (renderer.md, "Stochastic
 // sampling"). Every map of the layer — colour, roughness, height, normal — reads the same three
 // places with the same weights, so the maps stay coordinated.
 //

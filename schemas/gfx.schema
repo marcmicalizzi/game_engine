@@ -134,7 +134,7 @@ struct SurfaceOffers @version(1) {
 
 /// One display output as Windows reports it — DXGI's `IDXGIOutput6::GetDesc1` and the display
 /// configuration's SDR white level — with what a window on it is offered. Read with no window
-/// shown and no device opened (docs/subsystems/gfx.md, "The surface's offers").
+/// shown and no device opened (docs/subsystems/gfx.md, "The HDR branches").
 struct DisplayOutput @version(1) {
   /// The GDI device name ("DISPLAY1" after its prefix): one per output, and one for a whole NVIDIA
   /// Surround group, which Windows sees as a single display.

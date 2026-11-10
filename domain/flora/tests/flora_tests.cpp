@@ -726,7 +726,7 @@ TEST_CASE("flora: the motion table round-trips through the container, appended t
   CHECK_MESSAGE(rigid_hash == k_rigid_golden, "the rigid palm's container hashes to " << hex);
 }
 
-// The default palm's mesh, pinned (flora.md, "The same palm from every toolchain"): the solver's
+// The default palm's mesh, pinned (flora.md, "Determinism"): the solver's
 // arithmetic is IEEE f64 with contraction off and the deterministic sines, so this number is the
 // same on MSVC, GCC and Clang at either baseline. A change to the solver that moves it bumps
 // `k_flora_version` and the number in the same commit.

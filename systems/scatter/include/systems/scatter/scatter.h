@@ -50,7 +50,7 @@ inline constexpr const char* k_placement_generator = "scatter";
 // seed, the tile and the ground, rebuilt wherever it is asked for, never part of the sim's state.
 inline constexpr const char* k_determinism = "derived";
 
-// **The packing of the Poisson-disc** (docs/subsystems/scatter.md, "Density"): the points a square
+// **The packing of the Poisson-disc** (scatter.md, "The density"): the points a square
 // metre the two-round process leaves at spacing 1 m, measured over 4 km² (`scatter_tests.cpp`,
 // "the packing is what the density divides by"). A kind of spacing r keeps a point with
 // probability `density / (k_packing / r²)`, so the density is honoured in expectation up to that
@@ -177,8 +177,8 @@ class Placer {
 // layer's mesh directory under its hash when it is not there yet. One per kind, in kind order.
 // That directory is the layer's `meshes` when it names one; else `<ddc>/scatter` under the host's
 // derived-data root (`scene_gen::Context::ddc`, `--ddc`) when `ddc` is not empty; else the
-// checkout's root found by walking up from `dir`; else `scatter` beside the scene (scatter.md, "The
-// procedural rock").
+// checkout's root found by walking up from `dir`; else `scatter` beside the scene (scatter.md,
+// "What a layer is").
 bool kind_meshes(const Layer& desc, std::string_view dir, Vector<scene_gen::PlacementMesh>& out,
                  std::string* error, std::string_view ddc = {});
 

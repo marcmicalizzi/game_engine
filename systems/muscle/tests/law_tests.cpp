@@ -1,5 +1,5 @@
 // The law against the reference's archived initial states, the law's identity, and the rule that
-// the kernel calls no C library transcendental (docs/subsystems/muscle.md, "Tests").
+// the kernel calls no C library transcendental (docs/subsystems/muscle.md, "Testing").
 #include "rows.h"
 
 #include <systems/muscle/law.h>

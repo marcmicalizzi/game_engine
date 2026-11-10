@@ -1,7 +1,7 @@
 #pragma once
 
 // The six-node faces of a ten-node region's material boundary (docs/subsystems/tissue.md, "The
-// material boundary"): which of a cell's nodes a face is, where a point of it is, its chords and
+// layered model"): which of a cell's nodes a face is, where a point of it is, its chords and
 // how far the curved face can be from them. Private to the module; in double, deterministic.
 //
 // **Faces are Gmsh's.** A ten-node cell's local face k is Gmsh's `faces_tetra[k]` — (0, 2, 1),

@@ -1481,7 +1481,7 @@ bool merge_cluster_lod(std::span<const ClusterLodMesh> parts, ClusterLodMesh& ou
   // merge skinned, not the first: a glTF mesh whose first primitive is unskinned and whose second
   // is skinned kept no stream at all before. Such a primitive follows joint 0 — the stream has one
   // record a vertex, and the default record binds rigidly to the palette's first joint, which in a
-  // parent-first palette is the skin's root (docs/subsystems/geometry.md, "merge_cluster_meshes").
+  // parent-first palette is the skin's root (docs/subsystems/geometry.md, "A scene's meshes").
   const bool skinned = any_skin(parts);
   // **The parts of one mesh share one set of morph channels**, by index: glTF requires every
   // primitive of a mesh to have the same number of targets, and the mesh's weights array drives

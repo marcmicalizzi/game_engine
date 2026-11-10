@@ -1,4 +1,4 @@
-// Walls, doors, windows and furniture zones (docs/subsystems/city.md, "Walls, doors and windows").
+// Walls, doors, windows and furniture zones (docs/subsystems/city.md, "The building grammar").
 //
 // **Walls from the tiling.** A floor's spaces tile its footprint, so every edge of every space is
 // either shared with another space or on the facade. Each line is swept once: its elementary

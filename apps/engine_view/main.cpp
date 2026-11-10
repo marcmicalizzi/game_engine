@@ -665,7 +665,7 @@ struct Options {
   bool fullscreen = false;  // --fullscreen: desktop fullscreen from the start (Alt+Enter toggles)
   // --present-bits: the bits a channel the window's swapchain asks for. 0 is `auto`, 10 where the
   // surface offers A2B10G10R10 in the sRGB non-linear colour space and 8 otherwise; the renderer's
-  // colour target follows the swapchain (docs/subsystems/apps.md, "--present-bits").
+  // colour target follows the swapchain (apps.md, "--dither on|off and --present-bits").
   u32 present_bits = 0;
   // --present-format (E39; docs/subsystems/apps.md, "--present-format"): `auto`, `sdr8` and
   // `sdr10` are `--present-bits auto`, 8 and 10; `hdr10` and `scrgb` ask the window's swapchain for
@@ -1561,10 +1561,10 @@ bool game_over() { return g_game != nullptr && g_game->ended(); }
 // **The graphics a module reads** (ABI 4, game_runner.h `set_graphics`): the resolved settings by
 // name, and the reasons the device made them what they are — derived here from the device's
 // features and the resolved flags, since `resolve_settings` logs its overrides rather than keeping
-// them (renderer.md, "Settings"): a vertex path on a device with no mesh shaders, cascaded maps on
-// one with no ray queries, casters off under traced shadows. The present mode is the one asked for
-// (`g_game_present`; the swapchain's own is the summary's `presentation`), and the display is
-// filled in by the first frame's overlay hook, which has the renderer.
+// them (renderer.md, "A picture does not depend"): a vertex path on a device with no mesh shaders,
+// cascaded maps on one with no ray queries, casters off under traced shadows. The present mode is
+// the one asked for (`g_game_present`; the swapchain's own is the summary's `presentation`), and
+// the display is filled in by the first frame's overlay hook, which has the renderer.
 std::string g_game_present = "offscreen";
 void note_game_graphics(const gfx::Device& device, const renderer::ResolvedSettings& resolved,
                         u32 width, u32 height) {
@@ -2534,9 +2534,9 @@ bool save_recording(const Options& options, const Interactive& it, const view::F
   return true;
 }
 
-// The summary's `load` block (FlythroughSummary version 17; apps.md, "The summary line"): what the
-// load read for its meshes and textures (`renderer::SceneLoadReport`) and what the device's
-// pipeline cache did (`gfx::PipelineCacheReport`).
+// The summary's `load` block (FlythroughSummary version 17; apps.md, "The summary's load block"):
+// what the load read for its meshes and textures (`renderer::SceneLoadReport`) and what the
+// device's pipeline cache did (`gfx::PipelineCacheReport`).
 JsonValue load_summary(const renderer::SceneLoadReport& load,
                        const gfx::PipelineCacheReport& cache) {
   JsonValue out = JsonValue::object();
@@ -5718,8 +5718,8 @@ int run_view(int argc, char** argv) {
   view::WorldDay world;
   std::string sun_text = "null";
   std::string medium_text = "null";  // brief-volumetrics
-  // A sky's clock and exposure (renderer.md, "One clock", "Exposure"): `--time-of-day`'s offset,
-  // and what `-`, `=` and `0` asked of the exposure on top of the run's.
+  // A sky's clock and exposure (renderer.md, "One world clock", "Exposure"): `--time-of-day`'s
+  // offset, and what `-`, `=` and `0` asked of the exposure on top of the run's.
   f64 sky_offset = 0.0;
   renderer::ExposureRequest exposure_keys;
   u32 skinned_instances = 0;

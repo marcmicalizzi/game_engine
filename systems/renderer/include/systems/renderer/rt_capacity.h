@@ -207,14 +207,14 @@ u32 rt_device_cache_mib(u64 device_local_bytes) noexcept;
 // The `renderer.rt.cache_mib` tunable when it is not zero, else the device's rule, and which.
 RtBudget resolve_rt_cache_mib(u32 tunable_mib, u64 device_local_bytes) noexcept;
 
-// **The first capacity, from what the scene knows** (renderer.md, "The first capacity"). Before any
-// frame has said what it builds, the chain is sized for `estimate` — every pair a frame could
-// build, which is the scene's pairs less the static forms' (they are built once, not per frame),
-// in every view — clamped to the budget (`limit`) and to the union, and never under `floor` where
-// the union is larger: so a scene whose every pair fits in the budget is allocated for all of
-// them and can never drop anything, and one past it starts at the budget, where its first frame
-// is drawn as complete as the budget allows instead of growing over its first frames. Until
-// 2026-10-25 it was the union or 65,536 clusters, whichever was less, and a streamed forest's
+// **The first capacity, from what the scene knows** (renderer.md, "The ray tracing chain's
+// memory"). Before any frame has said what it builds, the chain is sized for `estimate` — every
+// pair a frame could build, which is the scene's pairs less the static forms' (they are built once,
+// not per frame), in every view — clamped to the budget (`limit`) and to the union, and never under
+// `floor` where the union is larger: so a scene whose every pair fits in the budget is allocated
+// for all of them and can never drop anything, and one past it starts at the budget, where its
+// first frame is drawn as complete as the budget allows instead of growing over its first frames.
+// Until 2026-10-25 it was the union or 65,536 clusters, whichever was less, and a streamed forest's
 // first frames dropped instances while the capacity grew towards what they wanted. Arithmetic
 // only, so the rule is tested on the CPU.
 u32 first_rt_capacity(u32 limit, u32 union_clusters, u64 estimate, u32 floor) noexcept;

@@ -579,7 +579,7 @@ struct RenderSettings @version(14) {
 }
 
 /// What a frame is drawn at beyond its camera and its number: the world's one clock
-/// (docs/subsystems/renderer.md, "One clock"). Absent fields are the clock every call drew before
+/// (renderer.md, "One world clock"). Absent fields are the clock every call drew before
 /// this block: the ground's own hour, standing still. Both hosts turn it into the frame's
 /// `FrameDesc::sun_time_s` through one function (`renderer::frame_clock`).
 struct RenderClock @version(2) {
