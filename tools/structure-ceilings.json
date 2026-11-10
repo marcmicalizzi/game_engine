@@ -1,0 +1,186 @@
+{
+  "format": "engine.structure-ceilings.v1",
+  "about": "Ceilings for the hub files every feature edits (docs/ci/structure-and-citations.md, \"Ceilings for structure\"). Checked by tools/structure-check.ps1 under CTest as structure_check. A ceiling only goes down: -Rebaseline lowers it, and raises it only with -Reason, which is kept below.",
+  "lower_after_percent": 2,
+  "page_default_bytes": 100000,
+  "hubs": [
+    {
+      "id": "renderer.record_frame.lines",
+      "measure": "function-lines",
+      "file": "systems/renderer/src/scene_renderer.cpp",
+      "function": "SceneRenderer::record_frame",
+      "why": "every pass and every feature flag of a frame",
+      "ceiling": 3255
+    },
+    {
+      "id": "renderer.record_frame.add_pass",
+      "measure": "function-matches",
+      "file": "systems/renderer/src/scene_renderer.cpp",
+      "function": "SceneRenderer::record_frame",
+      "pattern": "\\badd_pass\\s*[(<]",
+      "why": "the passes a frame adds inline rather than through a frame-pass seam",
+      "ceiling": 43
+    },
+    {
+      "id": "renderer.gpu_scene_cpp.lines",
+      "measure": "file-lines",
+      "file": "systems/renderer/src/gpu_scene.cpp",
+      "why": "every feature's GPU state",
+      "ceiling": 6595
+    },
+    {
+      "id": "renderer.gpu_scene_h.lines",
+      "measure": "file-lines",
+      "file": "systems/renderer/include/systems/renderer/gpu_scene.h",
+      "why": "every feature's GPU state",
+      "ceiling": 1819
+    },
+    {
+      "id": "engine_view.main_cpp.lines",
+      "measure": "file-lines",
+      "file": "apps/engine_view/main.cpp",
+      "why": "every play feature and every flag",
+      "ceiling": 7466
+    },
+    {
+      "id": "engine_view.run_view.lines",
+      "measure": "function-lines",
+      "file": "apps/engine_view/main.cpp",
+      "function": "run_view",
+      "why": "the windowed loop",
+      "ceiling": 3166
+    },
+    {
+      "id": "engine_view.run_offscreen.lines",
+      "measure": "function-lines",
+      "file": "apps/engine_view/main.cpp",
+      "function": "run_offscreen",
+      "why": "the offscreen loop",
+      "ceiling": 1162
+    },
+    {
+      "id": "gfx.resolve_modules",
+      "measure": "shader-modules",
+      "match": "visibility_resolve*.slang",
+      "why": "every surface feature doubles the material resolve's module count",
+      "ceiling": 16
+    },
+    {
+      "id": "schemas.scene_root.fields",
+      "measure": "schema-fields",
+      "file": "schemas/scene.schema",
+      "struct": "Scene",
+      "why": "every world feature's data",
+      "ceiling": 20
+    },
+    {
+      "id": "engine_view.main_cpp.if_engine_view",
+      "measure": "conditionals",
+      "path": "apps/engine_view/main.cpp",
+      "macro_prefix": "ENGINE_VIEW_",
+      "why": "a capability wired into the viewer by hand",
+      "ceiling": 84
+    },
+    {
+      "id": "engine_view.if_engine_view",
+      "measure": "conditionals",
+      "path": "apps/engine_view",
+      "macro_prefix": "ENGINE_VIEW_",
+      "why": "the same, in every source file of the app and its tests",
+      "ceiling": 146
+    },
+    {
+      "id": "engine_host.ops_methods.if_engine_host",
+      "measure": "conditionals",
+      "path": "apps/engine_host/ops_methods.cpp",
+      "macro_prefix": "ENGINE_HOST_",
+      "why": "every ticking capability's wiring",
+      "ceiling": 65
+    },
+    {
+      "id": "page:docs/subsystems/renderer.md",
+      "measure": "page-bytes",
+      "file": "docs/subsystems/renderer.md",
+      "ceiling": 956261
+    },
+    {
+      "id": "page:docs/subsystems/apps.md",
+      "measure": "page-bytes",
+      "file": "docs/subsystems/apps.md",
+      "ceiling": 651618
+    },
+    {
+      "id": "page:docs/subsystems/gfx.md",
+      "measure": "page-bytes",
+      "file": "docs/subsystems/gfx.md",
+      "ceiling": 306295
+    },
+    {
+      "id": "page:docs/roadmap.md",
+      "measure": "page-bytes",
+      "file": "docs/roadmap.md",
+      "ceiling": 296258
+    },
+    {
+      "id": "page:docs/subsystems/geometry.md",
+      "measure": "page-bytes",
+      "file": "docs/subsystems/geometry.md",
+      "ceiling": 268873
+    },
+    {
+      "id": "page:docs/subsystems/flora.md",
+      "measure": "page-bytes",
+      "file": "docs/subsystems/flora.md",
+      "ceiling": 217400
+    },
+    {
+      "id": "page:docs/plan/05-simulation.md",
+      "measure": "page-bytes",
+      "file": "docs/plan/05-simulation.md",
+      "ceiling": 215260
+    },
+    {
+      "id": "page:docs/subsystems/tissue.md",
+      "measure": "page-bytes",
+      "file": "docs/subsystems/tissue.md",
+      "ceiling": 150065
+    },
+    {
+      "id": "page:docs/subsystems/water.md",
+      "measure": "page-bytes",
+      "file": "docs/subsystems/water.md",
+      "ceiling": 143723
+    },
+    {
+      "id": "page:docs/subsystems/protocol.md",
+      "measure": "page-bytes",
+      "file": "docs/subsystems/protocol.md",
+      "ceiling": 114058
+    },
+    {
+      "id": "page:docs/experiments/e10-generated-props.md",
+      "measure": "page-bytes",
+      "file": "docs/experiments/e10-generated-props.md",
+      "ceiling": 113204
+    },
+    {
+      "id": "page:docs/subsystems/terrain.md",
+      "measure": "page-bytes",
+      "file": "docs/subsystems/terrain.md",
+      "ceiling": 107019
+    },
+    {
+      "id": "page:docs/subsystems/world.md",
+      "measure": "page-bytes",
+      "file": "docs/subsystems/world.md",
+      "ceiling": 101267
+    },
+    {
+      "id": "page:AGENTS.md",
+      "measure": "page-bytes",
+      "file": "AGENTS.md",
+      "ceiling": 69883
+    }
+  ],
+  "rebaselines": []
+}

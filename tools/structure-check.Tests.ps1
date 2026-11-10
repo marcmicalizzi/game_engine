@@ -1,0 +1,241 @@
+#!/usr/bin/env pwsh
+<#
+.SYNOPSIS
+  Tests for tools/structure-check.ps1. Runs under CTest as `tools.structure_check`.
+
+.DESCRIPTION
+  Builds a small tree in a temporary directory — a function, a file, a CMakeLists.txt with
+  engine_shaders(), a schema struct, `#if` lines and pages — with a ceilings file of its exact
+  values, checks that it passes, and then moves one value at a time: over its ceiling, under it by
+  less and by more than the slack, a rebaseline that raises with and without a reason, one that
+  only lowers, the same files with CRLF line endings, and a hub that is not there. Each failing
+  case asserts the message *and* the exit code, because a check that reports a problem and exits
+  0 is worse than no check at all.
+
+      pwsh tools/structure-check.Tests.ps1 [-KeepTemp]
+#>
+[CmdletBinding()]
+param([switch]$KeepTemp)
+
+$ErrorActionPreference = 'Stop'
+
+$check = Join-Path $PSScriptRoot 'structure-check.ps1'
+$failures = New-Object System.Collections.Generic.List[string]
+$checks = 0
+$roots = New-Object System.Collections.Generic.List[string]
+
+function Test-That([string]$what, [scriptblock]$condition) {
+  $script:checks++
+  $ok = $false
+  try { $ok = [bool](& $condition) } catch { $ok = $false }
+  if ($ok) { Write-Host "  ok   $what" } else { Write-Host "  FAIL $what" -ForegroundColor Red; $failures.Add($what) }
+}
+
+function Invoke-Check([string]$root, [hashtable]$extra = @{}) {
+  $out = (& $check -Root $root -Ceilings (Join-Path $root 'ceilings.json') @extra *>&1 | Out-String)
+  return [pscustomobject]@{ Code = $LASTEXITCODE; Out = $out }
+}
+
+function Test-Reports([string]$what, [string]$root, [string]$expected, [hashtable]$extra = @{}, [int]$code = 1) {
+  $script:checks++
+  $result = Invoke-Check $root $extra
+  if ($result.Code -eq $code -and $result.Out.Contains($expected)) {
+    Write-Host "  ok   $what"
+  } else {
+    Write-Host "  FAIL $what (exit $($result.Code), expected $code and to see: $expected)" -ForegroundColor Red
+    Write-Host ($result.Out -split "`n" | ForEach-Object { "       $_" }) -Separator "`n"
+    $failures.Add($what)
+  }
+  return $result
+}
+
+function Set-FixtureFile([string]$root, [string]$rel, [string]$text, [string]$eol = "`n") {
+  $path = Join-Path $root $rel
+  New-Item -ItemType Directory -Force -Path (Split-Path -Parent $path) | Out-Null
+  $text = ($text -replace "`r`n", "`n") -replace "`n", $eol
+  [IO.File]::WriteAllText($path, $text, (New-Object System.Text.UTF8Encoding $false))
+}
+
+function Get-Ceilings([string]$root) { return (Get-Content -LiteralPath (Join-Path $root 'ceilings.json') -Raw | ConvertFrom-Json) }
+function Set-Ceilings([string]$root, $spec) {
+  [IO.File]::WriteAllText((Join-Path $root 'ceilings.json'), ($spec | ConvertTo-Json -Depth 8), (New-Object System.Text.UTF8Encoding $false))
+}
+function Set-Ceiling([string]$root, [string]$id, [long]$value) {
+  $spec = Get-Ceilings $root
+  ($spec.hubs | Where-Object { $_.id -eq $id }).ceiling = $value
+  Set-Ceilings $root $spec
+}
+function Get-Ceiling([string]$root, [string]$id) { return [long]((Get-Ceilings $root).hubs | Where-Object { $_.id -eq $id }).ceiling }
+
+# The fixture's measured values: frame 7 lines with 2 add_pass, r.cpp 13 lines, 2 resolve modules,
+# 3 fields, 2 `#if` lines, big.md 300 bytes. small.md is 50 bytes, under the default of 200.
+function New-Fixture([string]$eol = "`n") {
+  $root = Join-Path ([IO.Path]::GetTempPath()) "engine-structure-check-$([guid]::NewGuid().ToString('N'))"
+  $roots.Add($root)
+  Set-FixtureFile $root 'systems/renderer/src/r.cpp' @'
+int helper();
+bool Renderer::frame(int a);
+
+bool Renderer::frame(int a,
+                     int b) {
+  graph.add_pass("a");
+  if (a) {
+    graph.add_pass<X>("b");
+  }
+}
+
+void other() {}
+// end
+'@ $eol
+  Set-FixtureFile $root 'apps/view/main.cpp' @'
+#if ENGINE_VIEW_A
+#endif
+#ifdef ENGINE_VIEW_B
+#endif
+  #  if defined(ENGINE_VIEW_C) && ENGINE_VIEW_D
+#endif
+#if ENGINE_HOST_A
+#endif
+'@ $eol
+  Set-FixtureFile $root 'domain/gfx/CMakeLists.txt' @'
+engine_shaders(NAME gfx SOURCES shaders/a.slang shaders/visibility_resolve.slang
+               # shaders/visibility_resolve_old.slang
+               shaders/visibility_resolve_rt.slang)
+engine_module(NAME gfx LAYER domain)
+'@ $eol
+  Set-FixtureFile $root 'schemas/scene.schema' @'
+struct Other @version(1) {
+  x: f32
+}
+
+/// The root.
+struct Scene @version(2) {
+  /// The format.
+  format: string
+  meshes: Mesh[]
+
+  sky: Sky? @since(2)
+}
+'@ $eol
+  Set-FixtureFile $root 'docs/big.md' ("# Big`n" + ('x' * 293) + "`n") $eol
+  Set-FixtureFile $root 'docs/small.md' ("# Small`n" + ('y' * 41) + "`n") $eol
+  Set-FixtureFile $root 'build/huge.md' ('z' * 1000) $eol
+  $spec = [pscustomobject][ordered]@{
+    format = 'engine.structure-ceilings.v1'; lower_after_percent = 10; page_default_bytes = 200
+    hubs = @(
+      [pscustomobject][ordered]@{ id = 'frame.lines'; measure = 'function-lines'; file = 'systems/renderer/src/r.cpp'; function = 'Renderer::frame'; ceiling = 7 }
+      [pscustomobject][ordered]@{ id = 'frame.add_pass'; measure = 'function-matches'; file = 'systems/renderer/src/r.cpp'; function = 'Renderer::frame'; pattern = '\badd_pass\s*[(<]'; ceiling = 2 }
+      [pscustomobject][ordered]@{ id = 'r.lines'; measure = 'file-lines'; file = 'systems/renderer/src/r.cpp'; ceiling = 13 }
+      [pscustomobject][ordered]@{ id = 'resolve'; measure = 'shader-modules'; match = 'visibility_resolve*.slang'; ceiling = 2 }
+      [pscustomobject][ordered]@{ id = 'scene.fields'; measure = 'schema-fields'; file = 'schemas/scene.schema'; struct = 'Scene'; ceiling = 3 }
+      [pscustomobject][ordered]@{ id = 'view.if'; measure = 'conditionals'; path = 'apps/view'; macro_prefix = 'ENGINE_VIEW_'; ceiling = 2 }
+      [pscustomobject][ordered]@{ id = 'page:docs/big.md'; measure = 'page-bytes'; file = 'docs/big.md'; ceiling = 300 }
+    )
+    rebaselines = @()
+  }
+  Set-Ceilings $root $spec
+  return $root
+}
+
+try {
+  Write-Host 'case: a tree at its ceilings'
+  $root = New-Fixture
+  $r = Invoke-Check $root
+  Test-That 'passes as built' { $r.Code -eq 0 -and $r.Out.Contains('structure-check: OK (7 hubs') }
+  Test-That 'counts what the page says it counts' {
+    $r.Out -match 'frame\.lines\s+7 /' -and $r.Out -match 'frame\.add_pass\s+2 /' -and $r.Out -match 'r\.lines\s+13 /' -and
+    $r.Out -match 'resolve\s+2 /' -and $r.Out -match 'scene\.fields\s+3 /' -and $r.Out -match 'view\.if\s+2 /' -and
+    $r.Out -match 'page:docs/big\.md\s+300 /'
+  }
+  Test-That 'a page under build/ is not the tree''s' { -not $r.Out.Contains('huge.md') }
+
+  Write-Host 'case: the same files with CRLF line endings'
+  $root = New-Fixture "`r`n"
+  $r = Invoke-Check $root
+  Test-That 'count what the LF files count' { $r.Code -eq 0 -and $r.Out -match 'frame\.lines\s+7 /' -and $r.Out -match 'r\.lines\s+13 /' -and $r.Out -match 'page:docs/big\.md\s+300 /' }
+
+  Write-Host 'case: over and under'
+  $root = New-Fixture
+  Set-Ceiling $root 'frame.lines' 6
+  [void](Test-Reports 'a value over its ceiling fails and names it' $root 'frame.lines: 7 lines, over its ceiling of 6 (Renderer::frame, systems/renderer/src/r.cpp)')
+  $root = New-Fixture
+  Set-Ceiling $root 'r.lines' 14
+  Test-That 'a value under its ceiling by no more than the slack passes' { (Invoke-Check $root).Code -eq 0 }
+  $root = New-Fixture
+  Set-Ceiling $root 'r.lines' 16
+  [void](Test-Reports 'a value under its ceiling by more than the slack fails: lower it' $root 'r.lines: 13 lines, 3 under its ceiling of 16, more than the 10% a ceiling may stand above its hub')
+  $root = New-Fixture
+  Set-Ceiling $root 'resolve' 3
+  [void](Test-Reports 'a count with no slack in it fails when it drops by one' $root 'resolve: 2 modules, 1 under its ceiling of 3')
+  $root = New-Fixture
+  Set-FixtureFile $root 'docs/small.md' ('y' * 201)
+  [void](Test-Reports 'a page the file does not name, past the default' $root 'docs/small.md: 201 bytes, over the default page ceiling of 200')
+
+  Write-Host 'case: a hub that is not there is an error'
+  $root = New-Fixture
+  Remove-Item -LiteralPath (Join-Path $root 'systems/renderer/src/r.cpp')
+  $r = Test-Reports 'a missing file' $root 'frame.lines: systems/renderer/src/r.cpp does not exist'
+  Test-That 'and the run says no OK' { -not $r.Out.Contains('structure-check: OK') }
+  $root = New-Fixture
+  Set-FixtureFile $root 'systems/renderer/src/r.cpp' "int main() {`n}`n"
+  [void](Test-Reports 'a function that is not defined' $root 'frame.lines: systems/renderer/src/r.cpp has no definition of Renderer::frame')
+  $root = New-Fixture
+  $spec = Get-Ceilings $root
+  ($spec.hubs | Where-Object { $_.id -eq 'r.lines' }).file = 'systems/renderer/src/R.cpp'
+  Set-Ceilings $root $spec
+  [void](Test-Reports 'a path in another case, on every host' $root "r.lines: systems/renderer/src/R.cpp does not exist: the tree spells 'R.cpp' as 'r.cpp'")
+  $root = New-Fixture
+  Set-FixtureFile $root 'schemas/scene.schema' "struct Other @version(1) {`n}`n"
+  [void](Test-Reports 'a struct that is not in the schema' $root 'scene.fields: schemas/scene.schema has no struct Scene')
+  $root = New-Fixture
+  Set-FixtureFile $root 'ceilings.json' '{ "format": "something else" }'
+  [void](Test-Reports 'a file that is not a ceilings file' $root 'is not an engine.structure-ceilings.v1 file' @{} 2)
+
+  Write-Host 'case: rebaselines'
+  $root = New-Fixture
+  Set-Ceiling $root 'frame.lines' 5
+  $before = Get-Content -LiteralPath (Join-Path $root 'ceilings.json') -Raw
+  [void](Test-Reports 'a rebaseline that raises refuses without a reason' $root 'frame.lines: 5 -> 7' @{ Rebaseline = $true })
+  Test-That 'and writes nothing' { (Get-Content -LiteralPath (Join-Path $root 'ceilings.json') -Raw) -eq $before }
+  $r = Invoke-Check $root @{ Rebaseline = $true; Reason = 'the fixture grew'; By = 'tester'; Date = '2026-11-09' }
+  $spec = Get-Ceilings $root
+  Test-That 'with a reason it raises the ceiling' { $r.Code -eq 0 -and (Get-Ceiling $root 'frame.lines') -eq 7 }
+  Test-That 'and keeps the reason, the date, who, and the old and new values' {
+    $rec = @($spec.rebaselines)[0]
+    @($spec.rebaselines).Count -eq 1 -and $rec.reason -eq 'the fixture grew' -and $rec.date -eq '2026-11-09' -and $rec.by -eq 'tester' -and
+    @($rec.changes).Count -eq 1 -and $rec.changes[0].id -eq 'frame.lines' -and $rec.changes[0].old -eq 5 -and $rec.changes[0].new -eq 7
+  }
+  Test-That 'and the tree then passes' { (Invoke-Check $root).Code -eq 0 }
+
+  $root = New-Fixture
+  Set-Ceiling $root 'r.lines' 20
+  $r = Invoke-Check $root @{ Rebaseline = $true }
+  $spec = Get-Ceilings $root
+  Test-That 'a rebaseline that only lowers needs no reason' { $r.Code -eq 0 -and (Get-Ceiling $root 'r.lines') -eq 13 }
+  Test-That 'and keeps no record' { @($spec.rebaselines).Count -eq 0 }
+
+  $root = New-Fixture
+  Set-FixtureFile $root 'docs/small.md' ('y' * 250)
+  [void](Test-Reports 'a page past the default is a raise' $root 'page:docs/small.md: 200 -> 250' @{ Rebaseline = $true })
+  $r = Invoke-Check $root @{ Rebaseline = $true; Reason = 'small grew' }
+  Test-That 'which, with a reason, names the page with its own ceiling' { $r.Code -eq 0 -and (Get-Ceiling $root 'page:docs/small.md') -eq 250 -and (Invoke-Check $root).Code -eq 0 }
+
+  $root = New-Fixture
+  [void](Test-Reports 'a rebaseline with nothing to move' $root 'nothing to rebaseline' @{ Rebaseline = $true } 0)
+  $root = New-Fixture
+  Remove-Item -LiteralPath (Join-Path $root 'schemas/scene.schema')
+  [void](Test-Reports 'a rebaseline refuses while a hub is not there' $root 'not rebaselined, because a hub is not there' @{ Rebaseline = $true; Reason = 'x' })
+} finally {
+  foreach ($root in $roots) {
+    if ($KeepTemp) { Write-Host "kept $root" } else { Remove-Item -Recurse -Force -LiteralPath $root -ErrorAction SilentlyContinue }
+  }
+}
+
+Write-Host ''
+if ($failures.Count -gt 0) {
+  Write-Host "$($failures.Count) of $checks checks failed:" -ForegroundColor Red
+  foreach ($f in $failures) { Write-Host "  - $f" }
+  exit 1
+}
+Write-Host "structure-check: $checks checks passed" -ForegroundColor Green
+exit 0

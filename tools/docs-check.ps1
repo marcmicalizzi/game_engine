@@ -28,6 +28,10 @@
     readme      the root README.md exists, names every layer directory and every engine_app(),
                 and links AGENTS.md, the plan, ADR, subsystems and experiments indexes, and the
                 roadmap when there is one.
+    citation    a source file that cites a page section by its heading names a page that exists
+                and a heading or bold lead-in on it. The forms, the matching rule and how to list
+                the failures are on its page (docs/ci/structure-and-citations.md,
+                "Code-to-doc citations"), which this sentence cites in that form.
 
   Every failure is reported as file:line, and one run reports all of them: a check that stops
   at the first problem costs a round trip per problem.
@@ -602,6 +606,191 @@ foreach ($file in $markdownFiles) {
   }
 }
 
+# ---- code-to-doc citations ---------------------------------------------------------------------
+#
+# Source comments cite a page section by its heading, `(docs/subsystems/<page>.md, "<Heading>")`, and
+# nothing read them: a page restructured left them pointing at headings that had gone (A10 S3-1 of
+# the 2026-11-09 review counted 19). The forms, the matching rule and why each is shaped as it is
+# are on the rule's page (docs/ci/structure-and-citations.md, "Code-to-doc citations"); in short:
+#
+#   - the files are the tree's source and build files (the extensions below), never a .md;
+#   - a citation is a page path ending in `.md`, a comma, and one or more quoted texts separated by
+#     commas, read after each line's comment leader is dropped, so one wrapped over two comment
+#     lines is read whole;
+#   - a page with a directory is the tree's (or, failing that, the citing file's directory's); a
+#     bare name is docs/subsystems/<name> first, else the one page of that name in the tree;
+#   - a text resolves when its slug (GitHub's, as the link rule uses) is a heading's or a bold
+#     lead-in's on that page, or the first words of one.
+
+$citationExtensions = @('.c', '.cc', '.cpp', '.h', '.hpp', '.inc', '.slang', '.schema', '.ps1', '.psm1',
+                        '.cmake', '.sh', '.js', '.html', '.css', '.yml', '.yaml')
+$citationNames = @('CMakeLists.txt', 'Dockerfile', '.gitignore')
+# A path and a comma, then the quoted texts. A text starts with something other than a space, so
+# two string literals joined across a line in C++ ("... (water.md, " "The banks)") are not one.
+# The scan looks for `.md,` first, which the regex engine finds with a string search, and reads the
+# path backwards and the texts forwards from there: one regex for the whole citation tries every
+# position of every word of every file, and cost the check three times as long.
+$compiled = [Text.RegularExpressions.RegexOptions]::Compiled
+$citationAnchorRegex = New-Object regex ('\.md\s*,', $compiled)
+$citationPathRegex = New-Object regex ('(?<![\w./-])(?:[\w.-]+/)*[\w.-]+$', $compiled)
+$citationTextsRegex = New-Object regex ('^\.md\s*,\s*"(?<text>[^"\s][^"]{0,239})"(?:\s*,\s*"(?<text>[^"\s][^"]{0,239})")*', $compiled)
+$commentLeaderRegex = New-Object regex ('(?m)^[ \t]*(?://+!?|#+|--+|\*+(?!\*)|;+)?[ \t]*', $compiled)
+$citationCount = 0
+$citationTargets = @{}
+$pagesByName = @{}
+
+# GitHub's slug (ConvertTo-Anchor) of each text, after its runs of white space are made one space:
+# the same steps over the texts joined by newlines, which every step keeps, so a page's thousands
+# of headings cost a handful of regex passes rather than a function call each.
+function ConvertTo-CitationSlugs([string[]]$texts) {
+  if ($texts.Count -eq 0) { return @() }
+  $s = [string]::Join("`n", [string[]]@($texts -replace '\n', ' '))
+  $s = [regex]::Replace($s, '[ \t\r\f\v]+', ' ')
+  $s = [regex]::Replace($s, '(?m)^ | $', '')
+  $s = [regex]::Replace($s, '<[^>\n]+>', '')
+  $s = [regex]::Replace($s, '!?\[([^\]\n]*)\]\([^)\n]*\)', '$1')
+  $s = $s -replace '[`*~]', ''
+  $s = $s.ToLowerInvariant()
+  $s = [regex]::Replace($s, '[^\p{L}\p{Nd}\p{M} _\n-]', '')
+  return ($s -replace ' ', '-').Split("`n")
+}
+
+# @() because PowerShell hands back a one-element array as its element.
+function ConvertTo-CitationSlug([string]$text) { return @(ConvertTo-CitationSlugs @($text))[0] }
+
+$citationEntryRegex = New-Object regex ('(?m)^(?:#{1,6}[ \t]+(?<t>[^\n]*?)[ \t]*#*[ \t]*$|[ \t]*(?:(?:[-*+]|\d+[.)])[ \t]+|>[ \t]*)*\*\*(?<t>[^\n]+?)\*\*)', $compiled)
+$enumeratorRegex = [regex]'^\s*(?:§?\d+(?:\.\d+)*\.?|[A-Z]\.)\s+(.+)$'
+
+# The headings and bold lead-ins of one page, by slug, and every word-prefix of each slug, so a
+# lookup is one hash probe however many headings the page has (renderer.md has thousands).
+function Get-CitationTargets([string]$page) {
+  $key = ([IO.Path]::GetFullPath($page)).ToLowerInvariant()
+  if ($citationTargets.ContainsKey($key)) { return $citationTargets[$key] }
+  $info = Get-MarkdownInfo $page
+  $texts = New-Object System.Collections.Generic.List[string]
+  $lines = New-Object System.Collections.Generic.List[int]
+  $whole = [string]::Join("`n", $info.Lines)
+  $line = 1
+  $counted = 0
+  foreach ($m in $citationEntryRegex.Matches($whole)) {
+    $line += $whole.Substring($counted, $m.Index - $counted).Split("`n").Count - 1
+    $counted = $m.Index
+    if ($info.Fenced[$line - 1]) { continue }
+    $texts.Add($m.Groups['t'].Value)
+    $lines.Add($line)
+  }
+  $slugs = ConvertTo-CitationSlugs $texts.ToArray()
+  # A heading's enumerator ("C. Evaluation", "4.3 Streaming") is its place, not its name.
+  $bare = New-Object System.Collections.Generic.List[string]
+  foreach ($t in $texts) { if ($t -match $enumeratorRegex) { $bare.Add($Matches[1]) } }
+  $forms = @($slugs) + @(ConvertTo-CitationSlugs $bare.ToArray())
+
+  $prefixes = New-Object System.Collections.Generic.HashSet[string]
+  foreach ($form in $forms) {
+    if (-not $form) { continue }
+    [void]$prefixes.Add($form)
+    # Every prefix that ends where a word does; a slug may start with hyphens (`--animate`).
+    for ($c = $form.IndexOf('-', 1); $c -ge 1; $c = $form.IndexOf('-', $c + 1)) {
+      if ($form[$c - 1] -ne '-') { [void]$prefixes.Add($form.Substring(0, $c)) }
+    }
+  }
+  $targets = [pscustomobject]@{ Prefixes = $prefixes; Texts = $texts; Slugs = $slugs; Lines = $lines }
+  $citationTargets[$key] = $targets
+  return $targets
+}
+
+# The heading a stale citation most likely meant: the most words in common, the earlier on a tie.
+function Get-NearestHeading($targets, [string]$slug) {
+  $words = New-Object System.Collections.Generic.HashSet[string]
+  foreach ($w in $slug.Split('-', [StringSplitOptions]::RemoveEmptyEntries)) { [void]$words.Add($w) }
+  $best = $null
+  $bestScore = 0.0
+  for ($i = 0; $i -lt $targets.Slugs.Count; $i++) {
+    $theirs = $targets.Slugs[$i].Split('-', [StringSplitOptions]::RemoveEmptyEntries)
+    $common = 0
+    foreach ($w in $theirs) { if ($words.Contains($w)) { $common++ } }
+    if ($common -eq 0) { continue }
+    $score = $common / [math]::Max($words.Count, $theirs.Count)
+    if ($score -gt $bestScore) { $best = [pscustomobject]@{ Text = $targets.Texts[$i]; Line = $targets.Lines[$i] }; $bestScore = $score }
+  }
+  return $best
+}
+
+function Resolve-CitedPage([string]$page, [string]$citingFile) {
+  if ($page.Contains('/')) {
+    foreach ($base in @($Root, [IO.Path]::GetDirectoryName($citingFile))) {
+      $candidate = [IO.Path]::GetFullPath([IO.Path]::Combine($base, $page))
+      if ([IO.File]::Exists($candidate)) { return $candidate }
+    }
+    return $null
+  }
+  $subsystemPage = [IO.Path]::Combine($Root, 'docs', 'subsystems', $page)
+  if ([IO.File]::Exists($subsystemPage)) { return $subsystemPage }
+  if ($pagesByName.ContainsKey($page) -and $pagesByName[$page].Count -eq 1) { return $pagesByName[$page][0] }
+  return $null
+}
+# The same citation is written in many files (2,700 citations, 850 distinct, on 2026-11-09), so a
+# page and a text are each resolved once.
+$resolvedPages = @{}
+$resolvedTexts = @{}
+
+foreach ($file in $markdownFiles) {
+  $name = [IO.Path]::GetFileName($file)
+  if (-not $pagesByName.ContainsKey($name)) { $pagesByName[$name] = New-Object System.Collections.Generic.List[string] }
+  $pagesByName[$name].Add($file)
+}
+
+foreach ($file in (Get-TreeFiles $Root '*')) {
+  $name = [IO.Path]::GetFileName($file)
+  if (-not (($citationExtensions -contains [IO.Path]::GetExtension($name)) -or ($citationNames -contains $name))) { continue }
+  $text = [IO.File]::ReadAllText($file)
+  if (-not $text.Contains('.md')) { continue }
+  if ($text.Contains("`r")) { $text = $text -replace "`r`n", "`n" }
+  # Lines counted forward from the previous citation, so a file with many is read once.
+  $line = 1
+  $counted = 0
+  foreach ($anchor in $citationAnchorRegex.Matches($text)) {
+    $before = $text.Substring([math]::Max(0, $anchor.Index - 240), [math]::Min(240, $anchor.Index))
+    $path = $citationPathRegex.Match($before)
+    if (-not $path.Success) { continue }
+    # The texts after it, with each continuation line's comment leader dropped, so a citation
+    # wrapped over two comment lines is read whole.
+    $after = $commentLeaderRegex.Replace($text.Substring($anchor.Index, [math]::Min(800, $text.Length - $anchor.Index)), '')
+    $m = $citationTextsRegex.Match($after)
+    if (-not $m.Success) { continue }
+    $page = $path.Value + '.md'
+    $start = $anchor.Index - $path.Length
+    $line += $text.Substring($counted, $start - $counted).Split("`n").Count - 1
+    $counted = $start
+    $pageKey = if ($page.Contains('/')) { $page + '|' + [IO.Path]::GetDirectoryName($file) } else { $page }
+    if (-not $resolvedPages.ContainsKey($pageKey)) { $resolvedPages[$pageKey] = Resolve-CitedPage $page $file }
+    $resolved = $resolvedPages[$pageKey]
+    if (-not $resolved) {
+      $citationCount += $m.Groups['text'].Captures.Count
+      $why = if ($page.Contains('/')) { 'does not exist' } elseif ($pagesByName.ContainsKey($page)) { "names $($pagesByName[$page].Count) pages; give its directory" } else { 'is no page in the tree' }
+      Add-Problem $file $line 'citation' "the cited page '$page' $why"
+      continue
+    }
+    foreach ($capture in $m.Groups['text'].Captures) {
+      $citationCount++
+      $textKey = $resolved + '|' + $capture.Value
+      if (-not $resolvedTexts.ContainsKey($textKey)) {
+        $targets = Get-CitationTargets $resolved
+        $slug = ConvertTo-CitationSlug $capture.Value
+        $problem = $null
+        if (-not $targets.Prefixes.Contains($slug)) {
+          $quoted = [regex]::Replace($capture.Value.Trim(), '\s+', ' ')
+          $nearest = Get-NearestHeading $targets $slug
+          $hint = if ($nearest) { "; the nearest is `"$($nearest.Text)`" (line $($nearest.Line))" } else { '' }
+          $problem = "`"$quoted`" is not a heading or bold lead-in of $(Get-Rel $resolved)$hint"
+        }
+        $resolvedTexts[$textKey] = $problem
+      }
+      if ($resolvedTexts[$textKey]) { Add-Problem $file $line 'citation' $resolvedTexts[$textKey] }
+    }
+  }
+}
+
 # ---- the roadmap ----------------------------------------------------------------------------------
 
 # docs/roadmap.md is the live board of every development item. Other rows name an item by its id,
@@ -739,11 +928,13 @@ if ($problems.Count -gt 0) {
   Write-Host ''
   Write-Host 'The rule is "Documentation moves with the code" in AGENTS.md: a module has a page, an'
   Write-Host 'ADR is numbered and indexed, every link resolves, the root README names what exists, and'
-  Write-Host 'the roadmap''s rows name ids that exist and say what closed them.'
+  Write-Host 'the roadmap''s rows name ids that exist and say what closed them, and a source comment that'
+  Write-Host 'cites a page section cites a heading the page has. A stale citation is fixed in the comment,'
+  Write-Host 'to the heading that now holds the text; the page is not edited to suit it.'
   Write-Host 'Fix the documents, not this check.'
   exit 1
 }
 
-Write-Host ("docs-check: OK ({0} markdown files, {1} links, {2} modules, {3} apps, {4} ADRs, {5} roadmap items)" -f `
-  $markdownFiles.Count, $linkCount, $modules.Count, $apps.Count, $adrs.Count, $roadmapItemCount)
+Write-Host ("docs-check: OK ({0} markdown files, {1} links, {2} modules, {3} apps, {4} ADRs, {5} roadmap items, {6} citations)" -f `
+  $markdownFiles.Count, $linkCount, $modules.Count, $apps.Count, $adrs.Count, $roadmapItemCount, $citationCount)
 exit 0

@@ -58,6 +58,7 @@ Test-That 'and a part of its tests registered on its own as <module>.<part>' { (
 Test-That 'an unrelated module does not' { -not (Runs $r 'gfx') -and -not (Runs $r 'renderer') -and -not (Runs $r 'engine_view') }
 Test-That 'a name that only contains the module name does not match' { -not (Runs $r 'physics_extra') -and -not (Runs $r 'my.physics') }
 Test-That 'the lint, the licence check and the documentation check always run' { (Runs $r 'lint.banned_patterns') -and (Runs $r 'lint.licenses') -and (Runs $r 'docs_check') }
+Test-That 'and the structure check, but not its own tests' { (Runs $r 'structure_check') -and -not (Runs $r 'tools.structure_check') }
 Test-That 'the tools own tests do not' { -not (Runs $r 'tools.lint') -and -not $r.Tools }
 
 Write-Host 'a module in the middle'
@@ -102,7 +103,7 @@ Write-Host 'what tests nothing'
 foreach ($path in 'docs/plan/04-renderer.md', 'AGENTS.md', 'domain/gfx/README.md', 'content/test-scenes/desert-erg/README.md',
                   '.github/workflows/ci.yml', '.clang-format') {
   $r = Affected @($path)
-  Test-That "$path selects only the checks that always run" { -not $r.All -and $r.Modules.Count -eq 0 -and (Runs $r 'docs_check') -and -not (Runs $r 'gfx') }
+  Test-That "$path selects only the checks that always run" { -not $r.All -and $r.Modules.Count -eq 0 -and (Runs $r 'docs_check') -and (Runs $r 'structure_check') -and -not (Runs $r 'gfx') }
 }
 $r = Affected @()
 Test-That 'no change at all is the same' { -not $r.All -and $r.Modules.Count -eq 0 -and (Runs $r 'lint.banned_patterns') }
