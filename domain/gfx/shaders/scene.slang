@@ -317,7 +317,9 @@ struct MaskedEye {
 // declaring the bindless arrays material.slang brings.
 static const uint k_resolve_material_bytes = 112;
 static const uint k_resolve_material_flags_offset = 44;
-static const uint k_material_masked = 32u;  // gfx::k_material_alpha_mask
+// gfx::k_material_alpha_mask, a common flag: this test asks no class, so no class's bit may be 32
+// (water.slang's `material_flag_classes_are_apart` refuses one; R141).
+static const uint k_material_masked = 32u;
 
 MaskTables no_mask_tables() {
   MaskTables t;
