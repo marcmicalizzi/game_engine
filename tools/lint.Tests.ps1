@@ -304,31 +304,39 @@ try {
   # module registered CONFIG_INVARIANT has its GPU cases run in the all-on suite only, so a
   # preprocessor conditional on a capability switch in any of its files is reported; the same
   # conditional in a module that is not, a mention in a string, and a CONFIG_INVARIANT that is only
-  # a comment are not.
-  $invariantCmake = "engine_module(NAME renderer LAYER systems)`nengine_module_tests(NAME renderer SOURCES tests/r.cpp PARTS 4 CONFIG_INVARIANT)`n"
+  # a comment are not. Each fixture module carries a compiled size table: the size-table rule holds
+  # every module of a fixture, and a "passes" case here is about this rule alone (the two rules met
+  # for the first time on batch 58's stack, where three of these cases failed on the other one).
+  $invariantCmake = "engine_module(NAME renderer LAYER systems)`nengine_module_tests(NAME renderer SOURCES tests/r.cpp tests/size_table.cpp PARTS 4 CONFIG_INVARIANT)`n"
+  $invariantTable = "#include <core/base/size_table.h>`nENGINE_EXPECT_SIZE(4, 4, int);`n"
   $root = New-Fixture
   Set-FixtureFile $root 'systems/renderer/CMakeLists.txt' $invariantCmake
+  Set-FixtureFile $root 'systems/renderer/tests/size_table.cpp' $invariantTable
   Set-FixtureFile $root 'systems/renderer/src/scene_water.cpp' "namespace engine::renderer {`nconst char* why() { return `"(ENGINE_WITH_WATER is off)`"; }`n}`n"
   Test-That 'a CONFIG_INVARIANT module that names a switch only in a string passes' { (Invoke-Lint $root).Code -eq 0 }
 
   $root = New-Fixture
   Set-FixtureFile $root 'systems/renderer/CMakeLists.txt' $invariantCmake
+  Set-FixtureFile $root 'systems/renderer/tests/size_table.cpp' $invariantTable
   Set-FixtureFile $root 'systems/renderer/src/scene_sky.cpp' "namespace engine::renderer {`n#if ENGINE_WITH_SKY`nvoid sky() {}`n#endif`n}`n"
   Test-Reports 'a capability conditional in a CONFIG_INVARIANT module is reported' $root 'systems/renderer/src/scene_sky.cpp:2: [config-invariant-conditional]'
   Test-Reports 'and the message names the way out' $root 'Drop CONFIG_INVARIANT from its engine_module_tests()'
 
   $root = New-Fixture
   Set-FixtureFile $root 'systems/renderer/CMakeLists.txt' $invariantCmake
+  Set-FixtureFile $root 'systems/renderer/tests/size_table.cpp' $invariantTable
   Set-FixtureFile $root 'systems/renderer/tests/minimal_tests.cpp' "#ifdef ENGINE_MINIMAL`nint minimal_only = 1;`n#endif`n"
   Test-Reports "its tests are held to it too" $root 'systems/renderer/tests/minimal_tests.cpp:1: [config-invariant-conditional]'
 
   $root = New-Fixture
   Set-FixtureFile $root 'systems/renderer/CMakeLists.txt' $invariantCmake
+  Set-FixtureFile $root 'systems/renderer/tests/size_table.cpp' $invariantTable
   Set-FixtureFile $root 'systems/renderer/src/scene_sky.cpp' "#if defined(ENGINE_WITH_SKY)  // engine-lint: allow-config-conditional the reason, stated`nvoid sky() {}`n#endif`n"
   Test-That 'a line-level allow-config-conditional marker opts a line out' { (Invoke-Lint $root).Code -eq 0 }
 
   $root = New-Fixture
-  Set-FixtureFile $root 'systems/water/CMakeLists.txt' "engine_module(NAME water LAYER systems OPTIONAL)`nengine_module_tests(NAME water SOURCES tests/w.cpp)  # not CONFIG_INVARIANT`n"
+  Set-FixtureFile $root 'systems/water/CMakeLists.txt' "engine_module(NAME water LAYER systems OPTIONAL)`nengine_module_tests(NAME water SOURCES tests/w.cpp tests/size_table.cpp)  # not CONFIG_INVARIANT`n"
+  Set-FixtureFile $root 'systems/water/tests/size_table.cpp' $invariantTable
   Set-FixtureFile $root 'systems/water/src/water.cpp' "#if ENGINE_WITH_TERRAIN`nvoid shore() {}`n#endif`n"
   Test-That 'the same conditional in a module that is not CONFIG_INVARIANT passes, a commented mention included' { (Invoke-Lint $root).Code -eq 0 }
 } finally {
