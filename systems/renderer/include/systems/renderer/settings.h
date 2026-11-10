@@ -422,6 +422,8 @@ struct ResolvedSettings {
   bool gi_young_rays = false;    // `renderer.gi.young_rays`: half the rays to young cells
   bool gi_hit_fallback = false;  // `renderer.gi.hit_fallback`: coarser levels, then the fallback
   f32 gi_far_lift = 0.0f;        // `renderer.gi.far_lift`: a coarse cell lifted to the harmonics
+  f32 gi_shell_m = 0.0f;         // `renderer.gi.shell_m`: the casters round the eye (stage 4)
+  u32 gi_shell_rays = 0;         // `renderer.gi.shell_rays`: the samples round the eye (stage 4)
   bool occlusion = false;        // two-pass occlusion culling runs
   bool rt_chain = false;         // the frame builds acceleration structures from its visible list
   // The cull pass keeps what its cone test rejects as shadow casters, in the visible list's run

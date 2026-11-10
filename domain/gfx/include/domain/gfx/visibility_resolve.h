@@ -1192,6 +1192,17 @@ struct ResolveParams {
   f32 sun_solid_side_distance = 0.0f;
   u32 sun_solid_x0 = 0;
   u32 sun_solid_x1 = 0;
+  // **The cache's samples round the eye** (gi_cache.h, `gi_shell_base`; renderer.md, "Indirect
+  // light", "Stage 4"; R69 stage 4): the sample pass's directions over the sphere from this view's
+  // eye, a frame (`renderer.gi.shell_rays`), the columns of their stratified grid
+  // (`gfx::gi_shell_columns`), and the rays every view's shell takes out of the young half of
+  // `gi_rays` (`gfx::gi_shell_ray_cost` summed over the views), which the young candidates' claims
+  // then stop short of. 0 directions is no shell sample, and the pass is the one it was. Read only
+  // by the sample pass. A new 16-byte row: the block grew from 560 to 576 bytes.
+  u32 gi_shell_rays = 0;
+  u32 gi_shell_columns = 0;
+  u32 gi_shell_cost = 0;
+  u32 gi_shell_pad = 0;
 };
 // `ResolveParams::water_open_instance` when the scene has no open water.
 inline constexpr u32 k_no_water_open = 0xffffffffu;
@@ -1203,7 +1214,7 @@ inline f32 water_clock(f64 time_s) noexcept {
   const f64 t = std::fmod(time_s, k_water_period_s);
   return static_cast<f32>(t < 0.0 ? t + k_water_period_s : t);
 }
-static_assert(sizeof(ResolveParams) == 560);
+static_assert(sizeof(ResolveParams) == 576);
 static_assert(sizeof(ResolveParams) % 16 == 0, "the block is read as float4 rows on the GPU");
 
 // ---- the sun's masks by region and by distance (renderer.md; R139) -----------------------------

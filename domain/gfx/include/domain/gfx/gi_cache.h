@@ -120,6 +120,16 @@ inline constexpr u32 k_gi_stat_expired = 7;      // cells the fold freed for the
 // The ninth word: the frame's young claims on the half of the ray budget (`ResolveParams::gi_rays`)
 // the trickle leaves, cleared with the counts. The whole 64 bytes are cleared behind the fold.
 inline constexpr u32 k_gi_ray_count = 8;
+// **Stage 4's counts** (the shell's samples, `ResolveParams::gi_shell_rays`), behind the ray count
+// and copied with the eight above (the copy takes `k_gi_stat_copy_words`, the ray count riding
+// along unread): the shell's directions outside the view's frustum that were traced from the eye,
+// those that met a surface, and those that met one within `k_gi_shell_near_m` — the count that says
+// how much of the sphere round the eye the frame's structures hold.
+inline constexpr u32 k_gi_stat_shell = 9;
+inline constexpr u32 k_gi_stat_shell_hits = 10;
+inline constexpr u32 k_gi_stat_shell_near = 11;
+inline constexpr u32 k_gi_stat_copy_words = 12;
+inline constexpr f32 k_gi_shell_near_m = 50.0f;
 
 // The buffer's bytes for `count` slots: the header, the keys and the cells.
 constexpr u64 gi_buffer_bytes(u32 count) noexcept {
@@ -280,5 +290,30 @@ constexpr u32 gi_stride(u64 pixels, u64 rays) noexcept {
 constexpr u32 gi_trickle_stride(u64 pixels, u64 rays) noexcept {
   return rays == 0 ? 0 : gi_stride(pixels, rays > 1 ? rays / 2 : 1);
 }
+
+// **Stage 4: the shell's samples** (renderer.md, "Indirect light", "Stage 4"; `ResolveParams::
+// gi_shell_rays`). The sample pass's threads past a view's trickle windows, rounded up to whole
+// workgroups so a wave is all windows or all shell, are that view's shell directions: thread
+// `gi_shell_base(windows) + i` takes direction `i` of `gi_shell_rays`. A direction is a cell of a
+// stratified equal-area grid on the sphere — `gi_shell_columns` columns of longitude by enough
+// rows of the height to hold them — jittered inside its cell by a hash of the cache's frame count
+// (never by a position, so a scene moved by whole cells traces the same directions), so a still
+// eye's directions cover the sphere evenly and densely over frames. Each costs two rays from the
+// young half of the budget (the primary from the eye and the sample's own), so the young half is
+// `gi_shell_rays * 2` smaller when they run.
+constexpr u32 gi_shell_base(u32 windows) noexcept {
+  return (windows + k_gi_workgroup - 1) / k_gi_workgroup * k_gi_workgroup;
+}
+// Columns of the grid for `count` directions: about sqrt(pi * count), so a cell's width in
+// longitude at the equator (2 pi / columns) is about its height (2 / rows radians).
+inline u32 gi_shell_columns(u32 count) noexcept {
+  if (count == 0) return 1;
+  const f32 c = std::floor(std::sqrt(3.14159265f * static_cast<f32>(count)) + 0.5f);
+  const u32 columns = c < 1.0f ? 1u : static_cast<u32>(c);
+  return columns > count ? count : columns;
+}
+// The rays the shell's samples take out of the young half: two a direction (an upper bound: a
+// direction inside the view's frustum, or one that meets nothing, takes fewer).
+constexpr u64 gi_shell_ray_cost(u32 shell_rays) noexcept { return u64{shell_rays} * 2; }
 
 }  // namespace engine::gfx

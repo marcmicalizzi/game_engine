@@ -259,8 +259,10 @@ ENGINE_EXPECT_SIZE(48, 8, gfx::HizParams);
 // records and their count (S97; water.md, "The shore"), a row of its own that only the resolve's
 // water modules declare. 560, not 544: the sun's casters solid by region and by distance — the
 // two receiver distances and the side columns (R139; renderer.md, "The sun's masks by region and
-// by distance"), a row of its own that every module declares.
-ENGINE_EXPECT_SIZE(560, 8, gfx::ResolveParams);
+// by distance"), a row of its own that every module declares. 576, not 560: the cache's samples
+// round the eye — the directions a frame and their grid's columns (R69 stage 4; renderer.md,
+// "Indirect light", "Stage 4"), a row of its own that only the sample pass reads.
+ENGINE_EXPECT_SIZE(576, 8, gfx::ResolveParams);
 
 // The shore's record (S97; water.md, "The shore"), mirrored by water.slang's WaterShore. 64 since
 // S94: the swash's run-up, period, drain, slope, tide, wave height, foam and shore widths, and the

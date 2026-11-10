@@ -10,6 +10,7 @@
 #include <domain/gfx/water_swash.h>
 #include <foundation/io/vfs.h>
 #include <systems/renderer/caster_volume.h>
+#include <systems/renderer/eye_shell.h>
 #include <systems/renderer/lighting.h>
 #include <systems/renderer/scene_renderer.h>
 #include <systems/renderer/water_reflect.h>
@@ -577,7 +578,7 @@ bool SceneRenderer::create(const gfx::Device& device, GpuScene& scene,
       gfx::BufferUsage::Storage | gfx::BufferUsage::ShaderDeviceAddress;
   // The statistics block ends with the sky's sums (`gfx::SkyFrame`), copied there after the
   // frame, for a scene with a sky.
-  const u64 stat_bytes = gi_stat_offset(views, cascades) + sizeof(u32) * gfx::k_gi_stat_words;
+  const u64 stat_bytes = gi_stat_offset(views, cascades) + sizeof(u32) * gfx::k_gi_stat_copy_words;
   bool ok = true;
   for (u32 slot = 0; slot < desc.frames_in_flight && ok; ++slot) {
     // Two cull blocks per view and one per shadow cascade behind them, one resolve block per view
@@ -1904,6 +1905,10 @@ void SceneRenderer::collect_slot(u32 slot) {
     ++stats_.timed_frames;
   }
   fold_sky(slot);
+  // The cache's counts too (R69 stage 4): until then only `render_offscreen`'s collect folded
+  // them, so a pipelined flight (engine-view's camera paths) never filled `Stats::gi` and
+  // `renderer.gi.log` printed nothing there (stages 2 and 3 both met it).
+  fold_gi(slot);
 }
 
 // The sky's sums of the frame that last used this slot (gfx::SkyFrame): the exposure it was drawn
@@ -1927,7 +1932,7 @@ void SceneRenderer::fold_sky(u32 slot) {
 void SceneRenderer::fold_gi(u32 slot) {
   if (!gi_cache_.buffer.valid()) return;
   const u32 cascades = resolved_.csm ? scene_->shadow_cascades() : 0u;
-  u32 words[gfx::k_gi_stat_words];
+  u32 words[gfx::k_gi_stat_copy_words];
   std::memcpy(
       words,
       static_cast<const u8*>(stat_blocks_[slot].mapped) + gi_stat_offset(view_count(), cascades),
@@ -1941,12 +1946,17 @@ void SceneRenderer::fold_gi(u32 slot) {
   gi.young_cells = words[gfx::k_gi_stat_young_cells];
   gi.evicted = words[gfx::k_gi_stat_evicted];
   gi.expired = words[gfx::k_gi_stat_expired];
+  gi.shell = words[gfx::k_gi_stat_shell];
+  gi.shell_hits = words[gfx::k_gi_stat_shell_hits];
+  gi.shell_near = words[gfx::k_gi_stat_shell_near];
   if (resolved_.gi_log) {
     ENGINE_LOG_INFO(log_renderer, "gi cache", log::field("frame", gi_frame_),
                     log::field("rays", gi.rays), log::field("samples", gi.samples),
                     log::field("young", gi.young), log::field("dropped", gi.dropped),
                     log::field("cells", gi.cells), log::field("young_cells", gi.young_cells),
-                    log::field("evicted", gi.evicted), log::field("expired", gi.expired));
+                    log::field("evicted", gi.evicted), log::field("expired", gi.expired),
+                    log::field("shell", gi.shell), log::field("shell_hits", gi.shell_hits),
+                    log::field("shell_near", gi.shell_near));
   }
 }
 
@@ -2761,6 +2771,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
   stats_.water_refract = water_refract;
   stats_.water_refract_views = 0;
   stats_.water_refract_floor_m = water_submerged ? refract_floor : 0.0f;
+  stats_.gi_shell_views = 0;  // the views given the volume round the eye (R69 stage 4)
 
   // The occlusion term's debug counters (gfx::k_hidden_*; `renderer.lod.occluded_histogram`),
   // behind this slot's cull blocks: what the frame that last had the slot counted — the slot is the
@@ -2842,6 +2853,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
                      shade_mode == static_cast<u32>(gfx::ResolveMode::Shaded);
   u32 gi_stride = 0;
   u32 gi_flags = 0;
+  u32 gi_shell_rays = 0;
   if (gi_on) {
     u64 gi_pixels = 0;
     for (u32 v = 0; v < views; ++v)
@@ -2857,7 +2869,17 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
         (resolved_.gi_hit_fallback ? gfx::k_gi_hit_fallback : 0u) |
         gfx::gi_flag_numbers(resolved_.gi_confident, resolved_.gi_evict_age, resolved_.gi_far_lift);
     ++gi_frame_;
+    // Stage 4: each view's samples round its eye, two rays a direction out of the young half of
+    // the budget, of which every view's together take at most half, so the young cells in view
+    // keep the rest (renderer.md, "Stage 4"). Only with the young half
+    // (`renderer.gi.young_rays`): without it the trickle takes the whole budget.
+    if (resolved_.gi_young_rays && resolved_.gi_shell_rays > 0) {
+      const u64 half = resolved_.gi_rays_per_frame - resolved_.gi_rays_per_frame / 2;
+      const u64 room = half / 2 / (gfx::gi_shell_ray_cost(1) * views);
+      gi_shell_rays = static_cast<u32>(std::min<u64>(resolved_.gi_shell_rays, room));
+    }
   }
+  const u32 gi_shell_columns = gfx::gi_shell_columns(gi_shell_rays);
 
   for (u32 v = 0; v < views; ++v) {
     const View& view = views_[v];
@@ -3020,6 +3042,17 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
           ++count;
           ++stats_.water_refract_views;
         }
+      }
+      // The geometry round the eye for the world-space cache's rays (R69 stage 4, eye_shell.h),
+      // behind every other volume: a block the lights and the water fill leaves the cache what
+      // the frame's cut holds, since a missing shadow is worse than a slower fill. Wherever the
+      // cache is made, so in the resolve's debug modes too (which is how its test holds the direct
+      // picture the same).
+      if (gi_cache_.buffer.valid() && resolved_.gi_shell_m > 0.0f &&
+          count < gfx::k_max_caster_volumes &&
+          fit_eye_shell_volume(eye, resolved_.gi_shell_m, volumes[count])) {
+        ++count;
+        ++stats_.gi_shell_views;
       }
       if (count > 0) set_caster_volumes(cull, std::span<const CasterVolume>(volumes, count));
     }
@@ -3299,6 +3332,10 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
       resolve.gi_stride = gi_stride;
       resolve.gi_cell_scale = resolved_.gi_cell_scale;
       resolve.gi_rays = resolved_.gi_rays_per_frame;
+      // Stage 4's samples round the eye, and what every view's take out of the young half.
+      resolve.gi_shell_rays = gi_shell_rays;
+      resolve.gi_shell_columns = gi_shell_columns;
+      resolve.gi_shell_cost = static_cast<u32>(gfx::gi_shell_ray_cost(gi_shell_rays) * views);
     }
     std::memcpy(resolve_bytes + sizeof(gfx::ResolveParams) * v, &resolve, sizeof(resolve));
 
@@ -5172,7 +5209,11 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
               cb.push_constants(pipelines.gi_sample.layout, gfx::ShaderStage::Compute, 0,
                                 sizeof(u64), &view_frames[v].resolve_address);
               const u64 pixels = u64{view_frames[v].width} * view_frames[v].height;
-              const u64 threads = (pixels + gi_stride - 1) / gi_stride;
+              u64 threads = (pixels + gi_stride - 1) / gi_stride;
+              // Stage 4: the shell's directions, from the next whole workgroup on.
+              if (gi_shell_rays > 0) {
+                threads = gfx::gi_shell_base(static_cast<u32>(threads)) + u64{gi_shell_rays};
+              }
               const u64 groups = (threads + gfx::k_gi_workgroup - 1) / gfx::k_gi_workgroup;
               cb.dispatch(static_cast<u32>(std::min<u64>(groups, gfx::k_gi_dispatch_pitch)),
                           static_cast<u32>((groups + gfx::k_gi_dispatch_pitch - 1) /
@@ -5209,7 +5250,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
               b.write(rg_stats, gfx::Access::TransferWrite);
             },
             [&, stat_target, at](gfx::CommandList cb, gfx::RenderGraph&) {
-              const gfx::BufferCopy copy{0, at, sizeof(u32) * gfx::k_gi_stat_words};
+              const gfx::BufferCopy copy{0, at, sizeof(u32) * gfx::k_gi_stat_copy_words};
               cb.copy_buffer(gi_cache_.buffer, stat_target->buffer, copy);
               cb.fill_buffer(gi_cache_.buffer, 0, gfx::k_gi_header_bytes, 0u);
             });

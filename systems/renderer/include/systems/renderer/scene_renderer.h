@@ -143,6 +143,11 @@ struct GiStats {
   u32 young_cells = 0;
   u32 evicted = 0;
   u32 expired = 0;
+  // Stage 4's samples round the eye: the directions outside the views' frusta traced from the
+  // eye, those that met a surface, and those that met one within `gfx::k_gi_shell_near_m`.
+  u32 shell = 0;
+  u32 shell_hits = 0;
+  u32 shell_near = 0;
 };
 // One frame's numbers, as the renderer folds them in when that frame's slot comes around again
 // (`Stats::last`). The sums beside it answer "what does this scene cost on average"; a flythrough
@@ -449,6 +454,11 @@ struct Stats {
   bool water_refract = false;
   u32 water_refract_views = 0;
   f32 water_refract_floor_m = 0.0f;
+  // **The geometry round the eye** (R69 stage 4; eye_shell.h), the frame last recorded: how many
+  // views' culls carried the volume round the eye for the world-space cache's rays. Its casters
+  // are counted in `shadow_casters` with the rest; a frame measures them as the difference with
+  // `renderer.gi.shell_m=0`.
+  u32 gi_shell_views = 0;
   // The vertex path's indexed draw, last frame, both hardware passes and every view: the triangles
   // the cut's clusters hold, which is what it draws (three indices each), and how many of those
   // clusters the index budget had no room for, which the fallback drew instead at one vertex
