@@ -256,8 +256,14 @@ TEST_CASE("sward: the slope's arctangent and the forms it decides have a cross-c
     bits = hash_combine(bits, std::bit_cast<u64>(flora::sward_atan(x)));
   }
   CHECK(bits == 17562082363965585281ull);
-  // The forms of a tile whose slope crosses both thresholds, taken at G138's first commit.
-  CHECK(sward_pin(sward_four_forms()) == 8287572821809745209ull);
+  // The forms of a tile whose slope crosses both thresholds. With a band of zero, G137's hard line:
+  // the pin taken at G138's first commit (61d3ced2), before the band existed, to the bit.
+  auto line = sward_four_forms();
+  line.stature.band_m = 0;
+  CHECK(sward_pin(line) == 8287572821809745209ull);
+  // With the default band (3 m) the forms near each boundary are drawn by the cells' hashes; the
+  // slope's thresholds and the band's draws both decide here.
+  CHECK(sward_pin(sward_four_forms()) == 1843532570838069930ull);
 }
 
 TEST_CASE("ground plants: the far fern retains every pinna and motion part") {

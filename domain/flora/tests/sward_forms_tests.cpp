@@ -497,6 +497,161 @@ TEST_CASE("sward forms: the slope's arctangent is plain arithmetic within 2 ulp 
   CHECK(flora::sward_atan(nan) != flora::sward_atan(nan));
 }
 
+// ---- the transition band (G138)
+// ------------------------------------------------------------------
+
+namespace {
+
+// The 95 % to 5 % width of each score's boundary on a level, dry, open meadow, where the mosaic
+// noise is the only term that varies: `seeds` worlds of one 64 m tile, every patch put at its
+// signed distance from the boundary along its transect (the line through it along the score's
+// gradient, numerical here and not the placement's own, the zero found by bisection), the share of
+// the positive form binned at 0.25 m, and the distances where it crosses 5 % and 95 % read off.
+struct Width {
+  f64 tall = 0, tussock = 0;
+};
+Width band_width(f32 band_m, u32 seeds) {
+  auto p = four_forms();
+  p.stature.band_m = band_m;
+  Meadow meadow(&flat, p);
+  constexpr f64 k_reach = 6, k_bin = .25;
+  constexpr u32 k_bins = 48;  // -6 m .. 6 m
+  u32 count[2][k_bins] = {}, positive[2][k_bins] = {};
+  const f64 scale = static_cast<f64>(p.stature.mosaic_m);
+  for (u32 world = 0; world < seeds; ++world) {
+    meadow.ctx.world_seed = 1000 + world;
+    const auto out = meadow.tile();
+    REQUIRE(out.instances.size() == 4096);
+    const u64 base = hash_combine(meadow.ctx.world_seed, p.seed);
+    const u64 noise_seed[2] = {hash_combine(base, 0x74616c6cull),
+                               hash_combine(base, 0x7475737365ull)};
+    const f64 bias[2] = {static_cast<f64>(p.stature.tall_bias),
+                         static_cast<f64>(p.stature.tussock_bias)};
+    for (const auto& placed : out.instances) {
+      const u32 form = form_of(placed);
+      const bool is[2] = {form <= 2, form == 2 || form == 4};
+      for (u32 axis = 0; axis < 2; ++axis) {
+        const auto score = [&](f64 x, f64 z) {
+          return bias[axis] +
+                 static_cast<f64>(p.stature.noise) *
+                     (2 * flora::sward_mosaic_noise(noise_seed[axis], x, z, scale) - 1);
+        };
+        const f64 x = placed.position.x, z = placed.position.z, s0 = score(x, z);
+        const f64 h = 1e-3;
+        const f64 gx = (score(x + h, z) - score(x - h, z)) / (2 * h);
+        const f64 gz = (score(x, z + h) - score(x, z - h)) / (2 * h);
+        const f64 g = std::sqrt(gx * gx + gz * gz);
+        if (!(g > 1e-6) || std::fabs(s0) / g > 2 * k_reach) continue;
+        const f64 toward = s0 > 0 ? -1 : 1;  // down the gradient where the score is positive
+        const f64 ux = toward * gx / g, uz = toward * gz / g;
+        const auto same_side = [&](f64 t) {
+          return (score(x + t * ux, z + t * uz) > 0) == (s0 > 0);
+        };
+        f64 inside = 0, outside = -1;
+        for (u32 step = 1; step <= static_cast<u32>(k_reach / k_bin); ++step) {
+          const f64 t = step * k_bin;
+          if (!same_side(t)) {
+            outside = t;
+            break;
+          }
+          inside = t;
+        }
+        if (outside < 0) continue;
+        for (u32 i = 0; i < 30; ++i) {
+          const f64 mid = .5 * (inside + outside);
+          if (same_side(mid))
+            inside = mid;
+          else
+            outside = mid;
+        }
+        const f64 d = (s0 > 0 ? 1 : -1) * .5 * (inside + outside);
+        const i64 bin = static_cast<i64>(std::floor((d + k_reach) / k_bin));
+        if (bin < 0 || bin >= static_cast<i64>(k_bins)) continue;
+        ++count[axis][bin];
+        positive[axis][bin] += is[axis] ? 1u : 0u;
+      }
+    }
+  }
+  // The first crossing of a share, interpolated between bin centres, scanning up the distance.
+  const auto crossing = [&](u32 axis, f64 share) {
+    f64 last_d = -k_reach, last_s = 0;
+    for (u32 b = 0; b < k_bins; ++b) {
+      if (count[axis][b] < 50) continue;
+      const f64 d = -k_reach + (b + .5) * k_bin;
+      const f64 s = static_cast<f64>(positive[axis][b]) / count[axis][b];
+      if (s >= share)
+        return s > last_s ? last_d + (d - last_d) * (share - last_s) / (s - last_s) : d;
+      last_d = d;
+      last_s = s;
+    }
+    return k_reach;
+  };
+  Width w;
+  w.tall = crossing(0, .95) - crossing(0, .05);
+  w.tussock = crossing(1, .95) - crossing(1, .05);
+  return w;
+}
+
+}  // namespace
+
+TEST_CASE("sward forms: two forms grade into each other over the band's width, 95 % to 5 %") {
+  // smoothstep(1/2 +- u) is 95 % and 5 % at the constant's u: the band's metres map onto the ramp.
+  const f64 u = .5 * flora::k_sward_band_span;
+  CHECK(std::fabs((.5 + u) * (.5 + u) * (3 - 2 * (.5 + u)) - .95) < 1e-9);
+  // The default band, 3 m, measured along transects over twelve worlds' boundaries of both scores,
+  // and held to a fifth either side (the band reads distance as score over gradient, which a curved
+  // boundary bends; a 0.25 m bin and the interpolation between bins add the rest).
+  const auto three = band_width(3, 12);
+  MESSAGE("band 3 m: tall against short ", three.tall, " m, tussock against sod ", three.tussock,
+          " m");
+  CHECK(three.tall > .8 * 3);
+  CHECK(three.tall < 1.2 * 3);
+  CHECK(three.tussock > .8 * 3);
+  CHECK(three.tussock < 1.2 * 3);
+  // A band of zero is G137's line: the share jumps within a bin of the boundary.
+  const auto zero = band_width(0, 4);
+  MESSAGE("band 0 m: ", zero.tall, " m, ", zero.tussock, " m");
+  CHECK(zero.tall < .5);
+  CHECK(zero.tussock < .5);
+}
+
+TEST_CASE("sward forms: a band of zero places G137's forms and a band out of range is refused") {
+  // The same tile with and without the band: the band moves only cells near a boundary, and a band
+  // of zero moves none (determinism_tests.cpp pins it against G138's first commit, to the bit).
+  auto hard = four_forms();
+  hard.stature.band_m = 0;
+  Meadow a(&flat, hard), b(&flat, four_forms());
+  const auto line = a.tile(), band = b.tile();
+  REQUIRE(line.instances.size() == band.instances.size());
+  u32 moved = 0;
+  for (u32 i = 0; i < line.instances.size(); ++i) {
+    CHECK(line.instances[i].id == band.instances[i].id);
+    moved += line.instances[i].mesh != band.instances[i].mesh ? 1u : 0u;
+  }
+  CHECK(moved > 0);
+  CHECK(moved < line.instances.size() / 4);
+  for (const f32 bad : {-1.0f, 21.0f}) {
+    auto p = four_forms();
+    p.stature.band_m = bad;  // mosaic_m is 20
+    MaskGround ground;
+    ground.info.cells = 4;
+    ground.info.spacing_mm = 1000;
+    ground.info.palette = 2;
+    scene_gen::Context ctx;
+    ctx.tile_size = 4;
+    ctx.ground.context = &ground;
+    ctx.ground.masks_fn = [](const void* s, scene_gen::GroundMasks& out, std::string*) {
+      out = {&k_masks, s};
+      return true;
+    };
+    const auto* gen = scene_gen::GeneratorRegistry::global().find_placement("sward");
+    void* state = nullptr;
+    std::string error;
+    CHECK_FALSE(gen->open(schema::to_json(p), ctx, &state, &error));
+    CHECK(error.find("band_m") != std::string::npos);
+  }
+}
+
 TEST_CASE("sward forms: an entry mixing named and unnamed forms is refused") {
   auto p = four_forms();
   p.families.push_back(family_of(flora::SwardForm::any, 1, "x"));

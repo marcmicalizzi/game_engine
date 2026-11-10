@@ -1066,7 +1066,7 @@ struct SwardFamily @version(2) {
 /// G137's stature rule (flora.md, "Growth forms by site"): two scores per cell, tall against
 /// short and tussock against sod, each a weighted sum of the site's fields and a value noise of the
 /// cell's place, positive choosing tall (tussock). Defaults: grass-sward.md, "Growth forms".
-struct SwardStature {
+struct SwardStature @version(2) {
   /// A value noise's lattice, metres, 4..200: the scale of a meadow's mosaic (a stated 20 m).
   mosaic_m: f32 = 20.0 @unit(m)
   /// The noise's weight in both scores; it spans -1..1.
@@ -1087,6 +1087,11 @@ struct SwardStature {
   shade_layer: u32 = 255
   shade_tall: f32 = 0.5
   shade_tussock: f32 = -1.0
+  /// G138: where a score crosses zero the two forms grade into each other over this width, metres,
+  /// 0..mosaic_m: the distance along a transect across the boundary from 95 % of one form to 5 % of
+  /// it, each cell drawing its form by its hash (flora.md, "Where two forms meet"; the default from
+  /// grass-sward.md, "Where two forms meet"). 0 is G137's hard line, to the bit.
+  band_m: f32 = 3.0 @unit(m) @since(2)
 }
 /// The sward placement registry's parameters. The paint already contains shade, wet margins,
 /// slopes and excluded trails; do not apply those factors twice at runtime.

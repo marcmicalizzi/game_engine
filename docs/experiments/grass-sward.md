@@ -117,6 +117,7 @@ chooses tall (tussock). The site terms and why:
 | shade | a palette layer's weight (`shade_layer`, none by default) | +0.5, −1.0 | woodland grasses are lax and loose, not tussocks; the woodland profile stays its own |
 | mosaic | value noise on a 20 m lattice, −1..1 | 1, 1 | meadows are mosaics at 10–30 m (a stated choice, not a fit) |
 | bias | — | 0, −0.35 | a level, dry, open meadow is half tall and half short, and mostly sod |
+| band (G138) | `band_m`, metres | 3 m, both | the forms grade over a few metres rather than meeting on a line ("Where two forms meet", below) |
 
 The weights and thresholds are design choices with stated defaults, not fits: the direction of each
 term is the ecology's, the size is chosen so that a fully wet cell (1.5) outvotes the mosaic (at
@@ -158,6 +159,55 @@ falls 0.26 ms (2.29 → 1.94 and 1.88 → 1.62: the short forms), and the resolv
 deformed-vertex pool (+0.08 to +0.18 ms: the forbs' parts) and the ray tracing chain (+0.05 to
 +0.4 ms) rise. A forb is visible at 1080p as a white speck: the daisy's 2 cm rays on a 0.5 m stem read
 as a meadow only close up, which is the forb's shape, not the share.
+## Where two forms meet: the transition band (G138, 2026-11-09)
+
+The forest proof of concept's v37 (engine-needs item 27): the stature rule picked one form per cell
+by the sign of a score, so where the 20 m mosaic crossed zero a tall-tussock patch met short sod along
+a sharp curve, and "real meadows do grade at that scale over a few metres"; the request was a band in
+which the score's magnitude near zero mixes the two forms by the cell's hash, "so the boundary dithers
+over 2–4 m instead of being a contour".
+
+**What the literature gives, read on 2026-11-09.** No source reached gives the width of the boundary
+between a tall patch and a short one directly; what they give is the scale of the height mosaic itself,
+which bounds it, and the shape a boundary is described by.
+
+| Quantity | Source and location | Value taken | How it is used |
+|---|---|---|---|
+| Short and tall patches as one mosaic | Bakker, de Leeuw and van Wieren 1984, "Micro-patterns in grassland vegetation created and sustained by sheep-grazing", *Vegetatio* 55:153–161 ([doi](https://doi.org/10.1007/BF00045017)); the abstract as a web search quoted it (the indexing page, [Conservation Evidence](https://www.conservationevidence.com/individual-study/708), refused a direct read, 403) | "short, heavily grazed areas alternated with taller, lightly grazed patches, both having the same species composition", the micro-pattern "more or less stable"; recorded in permanent 2 × 2 m quadrats. No patch size or boundary width | The two statures are one sward's states side by side, not two communities with a gap: the boundary mixes them rather than separating them |
+| The height mosaic's scale | Olofsson, de Mazancourt and Crawley 2008, "Spatial heterogeneity and plant species richness at different spatial scales under rabbit grazing", *Oecologia* 156:825–834 ([doi](https://doi.org/10.1007/s00442-008-1038-6)); abstract, as indexed by [AGRIS](https://agris.fao.org/search/fr/records/65dec49b0f3e94b9e5d11598) | mean patch size (range) of vegetation height in grazed grassland 2.1 ± 0.3 m; of grazing 2.4 ± 0.5 m, of droppings 3.7 ± 0.6 m | Height decorrelates within about 2 m, so a tall patch cannot fade into a short one over much more than one or two such ranges: 2–4 m |
+| Boundaries as sigmoids | Hufkens, Scheunders and Ceulemans 2009, "Ecotones in vegetation ecology: methodologies and definitions revisited", *Ecological Research* 24:977–986, and the same group's sigmoid-wave method (*Ecological Informatics* 3:97–104, 2008); known only from a web search's summary of their abstracts, not read | a transect across a boundary is described by a fitted sigmoid, its width by the fit | The band's shape: the share of one form falls along a transect as a sigmoid (here a smoothstep, a sigmoid with compact support) |
+
+The default is **3 m** from 95 % of one form to 5 % of it along a transect: the middle of the request's
+2–4 m, and one and a half of Olofsson's 2.1 m height ranges. It is a stated choice consistent with
+those sources, **not a measured boundary width**. Still to be read, with what each might give: Cid and
+Brizuela 1998, *J. Range Manage.* 51:644–649 (tall-fescue patches under cattle; the full text was
+refused, 403); the 2020 *Agronomy* 10:716 study of vegetation-height semivariograms under cattle and
+sheep (ranges of 1–2.5 m by a search's summary; the page was refused, 403); the 1991 *Grass and Forage
+Science* sward-stick study (variance at scales under 1–2 m by a search's summary; refused, 403);
+McNaughton 1984, *Am. Nat.* 124 (grazing lawns), Adler, Raff and Lauenroth 2001, *Oecologia* 128,
+van der Maarel 1990, *J. Veg. Sci.* 1, Fortin and others 2000, *Landscape Ecology* 15, Cadenasso and
+others 2003, *BioScience* 53, and Herben and others 1993, *J. Veg. Sci.* 4, none reached in full.
+
+**The shape is a dither of individuals.** Bakker's patches share their species, so the transition is
+which state a patch of turf is in, not a mixture of densities or an intermediate height: each cell
+keeps one whole form (its own cooked families), and near the boundary the form is drawn with the
+probability the sigmoid gives at the cell's distance from the boundary. A gradient of height would
+need forms between the four, which are not built.
+
+**What the band does, measured (2026-11-09, `msvc-debug`, the forms tests).** `SwardStature::band_m`
+3 m by default; the rule reads a cell's distance from the boundary as score over the mosaic noise's
+gradient and draws the form by the cell's hash on a smoothstep that reaches 5 % and 95 % at half the
+band to each side (flora.md, "Where two forms meet"). Along transects through 12 worlds of one 64 m
+tile each, every patch put at its distance found by bisection on the score itself:
+
+| Band asked | Tall against short, 95 % to 5 % | Tussock against sod, 95 % to 5 % |
+|---|---|---|
+| 3 m (default) | 3.04 m | 3.02 m |
+| 0 (G137's line) | 0.225 m (one 0.25 m bin) | 0.225 m |
+
+The band is the asked width where the mosaic draws the boundary; where a site field moves the score
+too, it is narrower by the ratio of the noise's gradient to the whole (flora.md has the reason).
+
 ## Rendering model and explicit approximations
 
 [Jahrmann & Wimmer 2017 §§3–5](https://www.cg.tuwien.ac.at/research/publications/2017/JAHRMANN-2017-RRTG/JAHRMANN-2017-RRTG-draft.pdf)
