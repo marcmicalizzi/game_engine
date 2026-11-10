@@ -144,7 +144,8 @@ function(engine_host_generators app deps_var)
   set_property(GLOBAL PROPERTY ENGINE_GENERATOR_EXCLUDED_${app} "${_excluded}")
   set_property(GLOBAL APPEND PROPERTY ENGINE_GENERATOR_HOSTS_LINKED "${app}")
   list(LENGTH _linked _count)
-  message(STATUS "engine generators: ${app} links ${_count}: ${_linked}")
+  list(JOIN _linked " " _shown)
+  message(STATUS "engine generators: ${app} links ${_count}: ${_shown}")
   foreach(_m IN LISTS _excluded)
     get_property(_why GLOBAL PROPERTY ENGINE_GENERATOR_EXCLUDE_REASON_${app}_${_m})
     message(STATUS "engine generators: ${app} leaves out ${_m}: ${_why}")
@@ -197,6 +198,8 @@ function(_engine_check_generator_hosts)
         list(APPEND _missing "${_g}")
       endif()
     endforeach()
+    list(JOIN _missing ", " _missing)
+    list(JOIN _unwritten ", " _unwritten)
     if(_missing)
       string(APPEND _problems
         "\n  ${_host}: does not link ${_missing}, which this configuration builds and the other "
@@ -214,8 +217,10 @@ function(_engine_check_generator_hosts)
       "(docs/subsystems/scene_gen.md, \"Which generators a host carries\"):${_problems}")
   endif()
   list(LENGTH _generators _count)
-  message(STATUS "engine generators: ${_count} in this configuration: ${_generators}")
-  message(STATUS "engine generators: ${ENGINE_GENERATOR_HOSTS} link them all")
+  list(JOIN _generators " " _shown)
+  list(JOIN ENGINE_GENERATOR_HOSTS ", " _hosts)
+  message(STATUS "engine generators: ${_count} in this configuration: ${_shown}")
+  message(STATUS "engine generators: ${_hosts} link them all")
 
   # The run-time half: each host's end-to-end test executable is linked by engine_app() from the
   # host's own DEPS, so its registries are the host's. `<host>.generators` runs the generator cases
@@ -236,6 +241,10 @@ function(_engine_check_generator_hosts)
       ENGINE_HOST_NAME="${_host}" ENGINE_HOST_GENERATORS="${_names}")
     add_test(NAME ${_host}.generators
       COMMAND engine_${_host}_tests "--test-case=generators:*")
-    set_tests_properties(${_host}.generators PROPERTIES LABELS "unit;e2e;${_host};generators")
+    # doctest exits 0 when a filter matches no case, so the pass is doctest's own summary with the
+    # two cases of host_generators_tests.cpp (or more) passed and none failed: a renamed case fails
+    # here instead of passing with nothing run.
+    set_tests_properties(${_host}.generators PROPERTIES LABELS "unit;e2e;${_host};generators"
+      PASS_REGULAR_EXPRESSION "test cases: +[0-9]+ \\| +([2-9]|[1-9][0-9]+) passed \\| +0 failed")
   endforeach()
 endfunction()
