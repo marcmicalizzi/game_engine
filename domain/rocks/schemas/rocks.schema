@@ -392,9 +392,26 @@ struct CliffLayer @version(1) {
   recipes: string
 }
 
+/// One fallen block of a deposit patch (G143; rocks.md, "Cones and shed blocks"): a block shed
+/// from the face above, or one of a cone's largest, as geometry of the patch's own mesh, never an
+/// instance. Local metres from the patch's corner; `y_m` is the ground under its centre.
+struct DepositBlock @version(1) {
+  x_m: f32 = 0.0 @unit(m)
+  y_m: f32 = 0.0 @unit(m)
+  z_m: f32 = 0.0 @unit(m)
+  /// Half-extents, 0.02..4 m: x and z across, y the thickness (across the bedding it broke along).
+  half: f32[3]
+  yaw: f32 = 0.0
+  /// The share of its height under the ground, 0..0.9 (its age: fresh blocks sit high).
+  buried: f32 = 0.3
+  /// The ground's gradient under it (rise over run in x and z), what it is sheared to rest on.
+  slope: f32[2]
+  seed: u64 = 1
+}
+
 /// A terrain-fitted sediment patch, written by deposits as <hash>.deposit.json.
 /// Heights and depths are sampled at vertices; all lengths are local metres.
-struct DepositPatch @version(1) {
+struct DepositPatch @version(2) {
   seed: u64 = 1
   type: RockType = Granite
   /// Grid points per axis, 2..65, with exactly width*depth values in each array.
@@ -414,10 +431,24 @@ struct DepositPatch @version(1) {
   /// Whole patch surface plus all fragments, 500..1,000,000 triangles.
   triangle_budget: u32 = 32000
   material: RockMaterial
+  /// G143: the fallen blocks whose centres stand in this patch, 0..1024; empty is none and is left
+  /// out of the canonical bytes, so a patch without them keeps the key it had.
+  blocks: DepositBlock[] @since(2)
+  /// Triangles each block is built at, 192..12288: the finest cube-grid rung that fits.
+  block_triangles: u32 = 432 @since(2)
+}
+
+/// A formation bed's rock (G143): a bed of the deposit layer's `formation` named `bed` sheds `type`.
+/// A bed no row names sheds the rock its name spells (`Limestone`, any case), else `patch.type`.
+struct DepositLithology @version(1) {
+  bed: string
+  type: RockType = Granite
 }
 
 /// Static deposition authoring over a finite terrain window; not a hazard or fluid simulation.
-struct DepositLayer @version(1) {
+/// Version 2 (G143) adds the cones under gullies, the blocks shed below the faces and the
+/// formation's lithology; each is off at its default, so a version-1 layer solves as it did.
+struct DepositLayer @version(2) {
   seed: u64 = 1
   /// World metres, finite within +/-1e8; max exceeds min, aligned to spacing_m.
   region_min: f64[2]
@@ -448,4 +479,36 @@ struct DepositLayer @version(1) {
   clear_m: f32 = 0.0 @unit(m)
   /// Patch geometry and material defaults; sampled arrays and dimensions are replaced.
   patch: DepositPatch
+  /// G143 gullies: ground steeper than `gully_deg` (30..80) whose plan curvature, measured over
+  /// `gully_scale_m` (whole spacings, 1..32 m), converges by at least `gully_convergence` (per
+  /// metre, 0.001..10) and drains at least `gully_area_m2` (1..1e6) is a gully; where it leaves
+  /// the steep ground is its mouth.
+  gully_deg: f32 = 40.0 @since(2)
+  gully_scale_m: f32 = 2.0 @unit(m) @since(2)
+  gully_convergence: f32 = 0.05 @since(2)
+  gully_area_m2: f32 = 20.0 @since(2)
+  /// A cone's volume is its gully's catchment times this rock-wall retreat, 0..50 m; zero, no
+  /// cones. Its height above the mouth is that volume's half cone at the repose angle, at most
+  /// `cone_max_m` (0.5..20).
+  cone_supply_m: f32 = 0.0 @unit(m) @since(2)
+  cone_max_m: f32 = 12.0 @unit(m) @since(2)
+  /// The cone's lower profile eases from `repose_deg` to this, 20..repose_deg (Francou and
+  /// Mante's toe, 31-34 degrees).
+  toe_deg: f32 = 31.0 @since(2)
+  /// The run-out of shed blocks: none past the line `shadow_deg` (15..45; Evans and Hungr's
+  /// minimum shadow angle, 27.5) below the top of the talus beneath its face.
+  shadow_deg: f32 = 27.5 @since(2)
+  /// Shed blocks per 100 square metres at the talus' top, 0..400; zero, none. The count falls
+  /// as exp(-d / `block_decay_m`) (1..500 m) with the distance past the talus' top.
+  blocks_per_100m2: f32 = 0.0 @since(2)
+  block_decay_m: f32 = 12.0 @unit(m) @since(2)
+  /// The source's joint spacing, the mean edge of a block, 0.1..6 m; the largest travel farthest.
+  block_m: f32 = 1.0 @unit(m) @since(2)
+  /// The buried share of a block's height by its age, 0..0.9, min at most max.
+  buried_min: f32 = 0.15 @since(2)
+  buried_max: f32 = 0.5 @since(2)
+  /// The world's formation, when the deposits read it: a deposit sheds the rock of the bed at the
+  /// face above it (`lithology`), and a block is no thicker than that bed.
+  formation: engine.scene.Formation? @since(2)
+  lithology: DepositLithology[] @since(2)
 }

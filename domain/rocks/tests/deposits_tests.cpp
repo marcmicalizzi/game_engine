@@ -212,8 +212,9 @@ TEST_CASE("deposits: mesh identity and cluster container are deterministic") {
   REQUIRE_MESSAGE(build_deposit_container(p, {}, 0, a, error), error);
   REQUIRE(build_deposit_container(p, {}, 0, b, error));
   MESSAGE("deposit container pin: ", geometry::cluster_file_hash(a));
-  // Rock solver v11 changes the source/build identity, not the deposit mesh above.
-  CHECK(geometry::cluster_file_hash(a) == 17513793063602312493ull);
+  // Rock solver v11 changes the source/build identity, not the deposit mesh above; so does
+  // k_deposit_version 2 (G143, the bare rim's sink: was 17513793063602312493).
+  CHECK(geometry::cluster_file_hash(a) == 14163044981722319397ull);
   CHECK(geometry::cluster_file_hash(a) == geometry::cluster_file_hash(b));
   CHECK(a.source_hash == deposit_source_hash(p));
   CHECK(a.source_hash == b.source_hash);

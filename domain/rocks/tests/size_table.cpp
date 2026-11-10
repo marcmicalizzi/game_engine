@@ -15,4 +15,9 @@ ENGINE_EXPECT_SIZE(24, 4, rocks::RockSurface);
 // carries the scene's formation takes its beds from it.
 ENGINE_EXPECT_SIZE(60, 4, rocks::RockGeology);
 
-ENGINE_EXPECT_SIZE(96, 8, rocks::DepositPlan);
+// 144 since G143 (2026-11-10): the plan's cones, blocks and per-sample rock, three vectors; a plan
+// is built once an entry, on open, and kept for the entry's life.
+ENGINE_EXPECT_SIZE(144, 8, rocks::DepositPlan);
+// G143's records, one a cone and one a block of a plan: offline, never per frame or per instance.
+ENGINE_EXPECT_SIZE(56, 8, rocks::DepositCone);
+ENGINE_EXPECT_SIZE(128, 8, rocks::DepositPlanBlock);

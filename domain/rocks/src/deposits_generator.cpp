@@ -1,5 +1,6 @@
 #include <core/hash/hash.h>
 #include <core/json/json.h>
+#include <core/log/log.h>
 #include <core/schema/json_reflect.h>
 #include <domain/rocks/deposits.h>
 #include <foundation/io/vfs.h>
@@ -13,6 +14,7 @@
 
 namespace engine::rocks {
 namespace {
+ENGINE_LOG_CATEGORY_DEFINE(log_deposits, "deposits");
 struct PatchPlace {
   scene_gen::Placement placement;
   scene_gen::TileCoord tile;
@@ -99,6 +101,27 @@ bool open(const JsonValue& params, const scene_gen::Context& context, void** sta
   if (ec) return refused(error, "deposits: cannot resolve derived-data directory");
   const i64 end_x = plan.x_mm + static_cast<i64>(plan.width - 1) * plan.spacing_mm;
   const i64 end_z = plan.z_mm + static_cast<i64>(plan.depth - 1) * plan.spacing_mm;
+  // G143: each block goes to the patch its centre stands in (the last row and column of samples
+  // belong to the patch before them, as the bed's do), bucketed once in plan order.
+  const i64 bx0 = floor_div(plan.x_mm, patch_mm), bz0 = floor_div(plan.z_mm, patch_mm);
+  const i64 columns = floor_div(end_x - 1, patch_mm) - bx0 + 1;
+  const i64 rows = floor_div(end_z - 1, patch_mm) - bz0 + 1;
+  auto patch_of = [&](i64 x_mm, i64 z_mm) {
+    const i64 cx = std::min(floor_div(x_mm, patch_mm), bx0 + columns - 1) - bx0;
+    const i64 cz = std::min(floor_div(z_mm, patch_mm), bz0 + rows - 1) - bz0;
+    return static_cast<u32>(cz * columns + cx);
+  };
+  Vector<u32> first_block(static_cast<u32>(columns * rows) + 1, 0), block_order;
+  for (const auto& b : plan.blocks)
+    ++first_block[patch_of(b.x_mm, b.z_mm) + 1];
+  for (u32 k = 1; k < first_block.size(); ++k)
+    first_block[k] += first_block[k - 1];
+  block_order.resize(plan.blocks.size());
+  {
+    Vector<u32> fill(first_block);
+    for (u32 b = 0; b < plan.blocks.size(); ++b)
+      block_order[fill[patch_of(plan.blocks[b].x_mm, plan.blocks[b].z_mm)]++] = b;
+  }
   u32 id = 0;
   for (i64 bz = floor_div(plan.z_mm, patch_mm); bz <= floor_div(end_z - 1, patch_mm); ++bz)
     for (i64 bx = floor_div(plan.x_mm, patch_mm); bx <= floor_div(end_x - 1, patch_mm); ++bx) {
@@ -117,6 +140,7 @@ bool open(const JsonValue& params, const scene_gen::Context& context, void** sta
       p.ground.clear();
       p.thickness.clear();
       p.coarse.clear();
+      p.blocks.clear();
       const f64 y0 = plan.ground[iz * plan.width + ix];
       bool any = false;
       for (u32 z = 0; z < p.depth; ++z)
@@ -127,7 +151,39 @@ bool open(const JsonValue& params, const scene_gen::Context& context, void** sta
           p.coarse.push_back(plan.coarse[i]);
           any = any || plan.thickness[i] > .001f;
         }
+      // G143: the patch's blocks, local to its corner, and its rock: the bed most of its deposit
+      // and its blocks were shed from (a patch is one material; the lowest type wins a tie).
+      const u32 slot = static_cast<u32>((bz - bz0) * columns + (bx - bx0));
+      u32 votes[static_cast<u32>(RockType::Dolostone) + 1] = {};
+      for (u32 k = first_block[slot]; k < first_block[slot + 1]; ++k) {
+        const DepositPlanBlock& b = plan.blocks[block_order[k]];
+        DepositBlock local;
+        local.x_m = static_cast<f32>(static_cast<f64>(b.x_mm - x0) / 1000.0);
+        local.z_m = static_cast<f32>(static_cast<f64>(b.z_mm - z0) / 1000.0);
+        local.y_m = static_cast<f32>(b.y_m - y0);
+        for (u32 a = 0; a < 3; ++a)
+          local.half[a] = static_cast<f32>(b.half[a]);
+        local.slope[0] = static_cast<f32>(b.slope[0]);
+        local.slope[1] = static_cast<f32>(b.slope[1]);
+        local.yaw = static_cast<f32>(b.yaw);
+        local.buried = static_cast<f32>(b.buried);
+        local.seed = b.seed;
+        p.blocks.push_back(local);
+        ++votes[static_cast<u32>(b.type)];
+      }
+      any = any || !p.blocks.empty();
       if (!any) continue;
+      if (!plan.rock.empty()) {
+        for (u32 z = 0; z < p.depth; ++z)
+          for (u32 x = 0; x < p.width; ++x) {
+            const u32 i = (iz + z) * plan.width + ix + x;
+            if (plan.thickness[i] > .001f) ++votes[static_cast<u32>(plan.rock[i])];
+          }
+        u32 best = 0;
+        for (u32 t = 1; t <= static_cast<u32>(RockType::Dolostone); ++t)
+          if (votes[t] > votes[best]) best = t;
+        if (votes[best] > 0) p.type = static_cast<RockType>(best);
+      }
       if (!deposit_patch_in_range(p, why)) return refused(error, why);
       // Validate capacity before returning a scene that would fail later in its mesh build.
       assets::MeshData checked;
@@ -158,6 +214,11 @@ bool open(const JsonValue& params, const scene_gen::Context& context, void** sta
       e->patches.push_back(at);
       e->meshes.push_back(std::move(mesh));
     }
+  // G143: what the plan found, once an entry: a scene's cones and blocks, by count.
+  ENGINE_LOG_INFO(log_deposits, "deposits planned",
+                  log::field("cones", static_cast<u64>(plan.cones.size())),
+                  log::field("blocks", static_cast<u64>(plan.blocks.size())),
+                  log::field("patches", static_cast<u64>(e->patches.size())));
   *state = e.release();
   return true;
 }
