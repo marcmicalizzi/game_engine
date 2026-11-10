@@ -235,10 +235,15 @@ bool sward_assets(const flora::FloraFile& file, const geometry::ClusterFileData&
     return a;
   };
   provenance.set("near_mean_linear", vec(ground.near_mean));
-  provenance.set("far_mean_linear", vec(ground.far_mean));
+  // The scene layer's `far_color` (renderer.md, "A layer's far colour"); sward-cook.ps1 copies it.
+  provenance.set("far_color_linear", vec(ground.far_colour));
   provenance.set("blade_cover_from_above", JsonValue(ground.blade_cover));
   provenance.set("canopy_transmission", JsonValue(ground.transmission));
-  provenance.set("colour_alpha", JsonValue("near share of the far colour: far texel = RGB / A"));
+  provenance.set("live_leaf_cover_target", JsonValue(ground.live_target));
+  provenance.set("live_leaf_cover", JsonValue(ground.live_cover));
+  provenance.set("canopy_view_cover", JsonValue(ground.view_cover));
+  provenance.set("canopy_lai", JsonValue(floor_parts.canopy_lai));
+  provenance.set("standing_dead", JsonValue(floor_parts.standing_dead));
   provenance.set("blade_roughness", JsonValue(static_cast<f64>(mesh.materials[0].roughness)));
   provenance.set("rendered_blades", JsonValue(report.sprays));
   provenance.set("triangles_all_rungs", JsonValue(report.triangles));

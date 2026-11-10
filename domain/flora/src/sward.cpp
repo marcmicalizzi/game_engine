@@ -231,7 +231,10 @@ bool solve_sward(const Sward& p, assets::MeshData& out, TreeReport* report, std:
     return false;
   }
   // Leaf material stays index 0: no bark, no collider, and no dependency on a material pack.
-  out.materials.push_back(material("blade", {.09f, .22f, .06f, 1}, .7f, true));
+  // G141: a live grass leaf's visible albedo (grass-sward.md, "The canopy's colour").
+  out.materials.push_back(
+      material("blade", {k_sward_leaf_albedo[0], k_sward_leaf_albedo[1], k_sward_leaf_albedo[2], 1},
+               .7f, true));
   Motion parts;
   Emitter emit{out, parts};
   Vector<Blade> blades;
@@ -562,6 +565,10 @@ SwardFloor sward_default_floor(SwardForm form) {
                  : form == SwardForm::tall_tussock ? 3.0
                  : form == SwardForm::short_sod    ? 2.0
                                                    : 1.5;
+  f.standing_dead = form == SwardForm::tall_tussock    ? .25
+                    : form == SwardForm::short_tussock ? .15
+                    : form == SwardForm::tall_sod      ? .08
+                                                       : .03;
   return f;
 }
 f64 sward_canopy_transmission(f64 leaf_area_index) noexcept {
@@ -730,7 +737,7 @@ bool bake_sward_ground_over(const Sward& params, const assets::MeshData& mesh,
   }
   const f64 shares = bed.mix.thatch + bed.mix.moss + bed.mix.soil;
   if (!(bed.mix.thatch >= 0 && bed.mix.moss >= 0 && bed.mix.soil >= 0) ||
-      !(std::abs(shares - 1) < 1e-9)) {
+      !(std::abs(shares - 1) < 1e-9) || !(bed.standing_dead >= 0 && bed.standing_dead <= 1)) {
     if (error) *error = "sward ground: the floor's shares must be non-negative and sum to one";
     return false;
   }
@@ -739,75 +746,129 @@ bool bake_sward_ground_over(const Sward& params, const assets::MeshData& mesh,
   bake_sward_ground(mesh, levels, params.cell_m, pixels, bake, &depth);
   const u32 n = pixels * pixels;
   const f64 cell_m = static_cast<f64>(params.cell_m);
-  const Vector<FloorTexel> ground = build_floor(bed, pixels, cell_m);
+  Vector<FloorTexel> ground = build_floor(bed, pixels, cell_m);
   out.pixels = pixels;
-  out.transmission = sward_canopy_transmission(std::max(leaf_area_index, bed.canopy_lai));
+  const f64 drawn_lai = std::max(0.0, leaf_area_index);
+  const f64 canopy_lai = std::max(drawn_lai, bed.canopy_lai);
+  out.transmission = sward_canopy_transmission(canopy_lai);
   const f64 t = out.transmission;
-  // The far colour sees the drawn canopy at a low elevation, where its leaves cover more than they
-  // do from straight above: Beer and Lambert's gap fraction of the drawn leaf area along the view,
-  // 1 - exp(-G LAI / sin(elevation)), G = 0.5, lies over the top view (flora.md, "Near and far").
-  const f64 elevation = k_sward_far_elevation_deg * (k_pi / 180);
-  out.view_cover =
-      1 - det::exp(-k_sward_extinction * std::max(0.0, leaf_area_index) / det::sin(elevation));
-  const f64 cv = out.view_cover;
-  const Vec4 blade_colour = mesh.materials[0].base_color;
-  const f64 blade_mean[3] = {static_cast<f64>(blade_colour.x), static_cast<f64>(blade_colour.y),
-                             static_cast<f64>(blade_colour.z)};
+  // The floor lies in the whole canopy's shade.
+  for (FloorTexel& f : ground)
+    for (f64& c : f.colour)
+      c *= t;
+  // The undrawn leaves (flora.md, "Near and far"): live leaves lying over the floor whose cover
+  // from straight above is the gap law for the leaf area the engine does not draw, each at a depth
+  // in that leaf area and darker by exp(-0.5 L above it), the deepest painted first. Their widths
+  // are the profile's, their lengths as seen from above half its grown range.
+  const f64 undrawn = std::max(0.0, canopy_lai - drawn_lai);
+  out.live_target = 1 - det::exp(-k_sward_extinction * undrawn);
+  const f64 w0 = static_cast<f64>(profile->width_min_m),
+            w1 = static_cast<f64>(profile->width_max_m);
+  const f64 l0 = .5 * static_cast<f64>(profile->length_min_m);
+  const f64 l1 = .5 * static_cast<f64>(profile->length_max_m);
+  const f64 leaf_area = .25 * (w0 + w1) * (l0 + l1);
+  const u32 leaves =
+      out.live_target > 0
+          ? static_cast<u32>(
+                -det::log(1 - std::min(out.live_target, .999)) * cell_m * cell_m / leaf_area + .5)
+          : 0u;
+  struct Leaf {
+    f64 above, cx, cy, angle, half, width, tone;
+  };
+  Vector<Leaf> live;
+  live.reserve(leaves);
+  Rng lr = stream_of(bed.seed ^ 0x6c697665ull, 1);
+  for (u32 k = 0; k < leaves; ++k) {
+    Leaf leaf;
+    leaf.above = lr.unit() * undrawn;
+    leaf.cx = lr.unit() * cell_m;
+    leaf.cy = lr.unit() * cell_m;
+    leaf.angle = lr.unit() * k_pi;
+    leaf.half = .5 * lerp(l0, l1, lr.unit());
+    leaf.width = lerp(w0, w1, lr.unit());
+    leaf.tone = det::exp(-k_sward_extinction * leaf.above) * (.85 + .3 * lr.unit());
+    live.push_back(leaf);
+  }
+  std::sort(live.begin(), live.end(), [](const Leaf& a, const Leaf& b) {
+    return a.above > b.above || (a.above == b.above && a.cx < b.cx);
+  });
+  Vector<f64> live_cover;
+  live_cover.assign(n, 0.0);
+  const f64 texel_m = cell_m / pixels;
+  const f64 blade_roughness = static_cast<f64>(mesh.materials[0].roughness);
+  const f64 length = static_cast<f64>(profile->length_max_m);
+  const f64 leaf_top = .5 * (l0 + l1);
+  for (const Leaf& leaf : live) {
+    const f64 dx = det::cos(leaf.angle), dy = det::sin(leaf.angle);
+    const f64 reach = leaf.half + leaf.width + texel_m;
+    const i64 x0 = static_cast<i64>(std::floor((leaf.cx - reach) / texel_m));
+    const i64 x1 = static_cast<i64>(std::floor((leaf.cx + reach) / texel_m));
+    const i64 y0 = static_cast<i64>(std::floor((leaf.cy - reach) / texel_m));
+    const i64 y1 = static_cast<i64>(std::floor((leaf.cy + reach) / texel_m));
+    const f64 h = leaf_top * (undrawn > 0 ? 1 - leaf.above / undrawn : 1);
+    for (i64 py = y0; py <= y1; ++py) {
+      for (i64 px = x0; px <= x1; ++px) {
+        const f64 ox = (static_cast<f64>(px) + .5) * texel_m - leaf.cx;
+        const f64 oy = (static_cast<f64>(py) + .5) * texel_m - leaf.cy;
+        const f64 along = std::clamp(ox * dx + oy * dy, -leaf.half, leaf.half);
+        const f64 ex = ox - along * dx, ey = oy - along * dy;
+        const f64 d = std::sqrt(ex * ex + ey * ey);
+        // A box filter a texel wide across the leaf: the overlap of the leaf's width with the
+        // texel's, so a leaf thinner than a texel keeps its area and the cover follows the gap law.
+        const f64 a = std::max(0.0, std::min(d + .5 * leaf.width, .5 * texel_m) -
+                                        std::max(d - .5 * leaf.width, -.5 * texel_m)) /
+                      texel_m;
+        if (a <= 0) continue;
+        const u32 wx = static_cast<u32>(((px % pixels) + pixels) % pixels);
+        const u32 wy = static_cast<u32>(((py % pixels) + pixels) % pixels);
+        const u32 i = wy * pixels + wx;
+        const f64 ak = std::min(a, 1.0);
+        FloorTexel& g = ground[i];
+        for (u32 c = 0; c < 3; ++c)
+          g.colour[c] = lerp(g.colour[c], static_cast<f64>(k_sward_leaf_albedo[c]) * leaf.tone, ak);
+        g.roughness = lerp(g.roughness, blade_roughness, ak);
+        g.height_m = lerp(g.height_m, std::max(g.height_m, h), ak);
+        live_cover[i] = 1 - (1 - live_cover[i]) * (1 - ak);
+      }
+    }
+  }
   out.colour.assign(n * 4, u8{0});
   out.normal.assign(n * 4, u8{0});
   out.roughness.assign(n, u8{0});
   out.height.assign(n, u8{0});
   out.part.assign(n, u8{0});
-  const f64 blade_roughness = static_cast<f64>(mesh.materials[0].roughness);
-  const f64 length = static_cast<f64>(profile->length_max_m);
-  const f64 texel_m = cell_m / pixels;
-  f64 near_sum[3]{}, far_sum[3]{}, cover_sum = 0;
+  f64 near_sum[3]{}, cover_sum = 0, live_sum = 0;
   u64 floor_count[3]{};
   for (u32 y = 0; y < pixels; ++y) {
     for (u32 x = 0; x < pixels; ++x) {
       const u32 i = y * pixels + x;
       const FloorTexel& f = ground[i];
       const f64 c = bake.colour[i * 4 + 3] / 255.0;
-      f64 blade[3]{};
-      for (u32 k = 0; k < 3; ++k)
-        blade[k] = c > 0 ? static_cast<f64>(texture::srgb8_to_linear(bake.colour[i * 4 + k])) : 0.0;
-      // Far: the canopy from above, lit, over the floor in its shade. Near: what lies under the
-      // drawn canopy, all of it in the shade (flora.md, "Near and far").
-      f64 far_rgb[3], near_rgb[3];
-      f64 far_luma = 0, near_luma = 0;
+      // The drawn blades' top view over the baked leaves and the floor: colour, roughness, normal
+      // and height the drawn blade's by its cover, the ground's between.
       for (u32 k = 0; k < 3; ++k) {
-        const f64 under = f.colour[k];
-        far_rgb[k] = cv * blade_mean[k] + (1 - cv) * (c * blade[k] + (1 - c) * t * under);
-        near_rgb[k] = t * (c * blade[k] + (1 - c) * under);
-        far_luma += k_luma[k] * far_rgb[k];
-        near_luma += k_luma[k] * near_rgb[k];
-      }
-      const f64 share = far_luma > 0 ? std::clamp(near_luma / far_luma, 1.0 / 255, 1.0) : 1.0;
-      const u8 a = static_cast<u8>(std::clamp(std::floor(share * 255 + .5), 1.0, 255.0));
-      const f64 kept = a / 255.0;
-      for (u32 k = 0; k < 3; ++k) {
-        const u8 code = texture::linear_to_srgb8(static_cast<f32>(far_rgb[k] * kept));
+        const f64 blade =
+            c > 0 ? static_cast<f64>(texture::srgb8_to_linear(bake.colour[i * 4 + k])) : 0.0;
+        const u8 code =
+            texture::linear_to_srgb8(static_cast<f32>(c * blade + (1 - c) * f.colour[k]));
         out.colour[i * 4 + k] = code;
-        const f64 stored = static_cast<f64>(texture::srgb8_to_linear(code));
-        near_sum[k] += stored;
-        far_sum[k] += stored / kept;
+        near_sum[k] += static_cast<f64>(texture::srgb8_to_linear(code));
       }
-      out.colour[i * 4 + 3] = a;
-      // Roughness and height: the floor's between blades, the blade's on a blade, by the cover.
+      out.colour[i * 4 + 3] = 255;
       const f64 r = c * blade_roughness + (1 - c) * f.roughness;
       out.roughness[i] = static_cast<u8>(std::clamp(std::floor(r * 255 + .5), 0.0, 255.0));
       const f64 blade_h = c > 0 ? std::clamp(static_cast<f64>(depth[i]) / length, 0.0, 1.0) : 0.0;
       const f64 h = c * blade_h + (1 - c) * std::clamp(f.height_m / length, 0.0, 1.0);
       out.height[i] = static_cast<u8>(std::clamp(std::floor(h * 255 + .5), 0.0, 255.0));
-      // The floor's normal from its height's central differences, wrapped; the blade's from the
-      // bake where it covers. OpenGL +Y: the image's up is the tangent's y, opposite the rows.
+      // The ground's normal from its height's central differences, wrapped; the drawn blade's from
+      // the bake where it covers. OpenGL +Y: the image's up is the tangent's y, opposite the rows.
       const u32 xl = (x + pixels - 1) % pixels, xr = (x + 1) % pixels;
       const u32 yu = (y + pixels - 1) % pixels, yd = (y + 1) % pixels;
       const f64 dhdx =
           (ground[y * pixels + xr].height_m - ground[y * pixels + xl].height_m) / (2 * texel_m);
       const f64 dhdrow =
           (ground[yd * pixels + x].height_m - ground[yu * pixels + x].height_m) / (2 * texel_m);
-      D3 under = normalized(D3{-.5 * dhdx, .5 * dhdrow, 1});
+      const D3 under = normalized(D3{-.5 * dhdx, .5 * dhdrow, 1});
       D3 top = under;
       if (c > 0)
         top = normalized(D3{bake.normal[i * 4] / 127.5 - 1, bake.normal[i * 4 + 1] / 127.5 - 1,
@@ -818,19 +879,32 @@ bool bake_sward_ground_over(const Sward& params, const assets::MeshData& mesh,
         out.normal[i * 4 + k] =
             static_cast<u8>(std::clamp(std::floor((nv[k] * .5 + .5) * 255 + .5), 0.0, 255.0));
       out.normal[i * 4 + 3] = 255;
-      out.part[i] = c >= .5 ? 3 : f.part;
+      out.part[i] = c >= .5 ? 3 : (live_cover[i] >= .5 ? 4 : f.part);
       cover_sum += c;
+      live_sum += live_cover[i];
       ++floor_count[f.part];
     }
   }
   const f64 inv = 1.0 / static_cast<f64>(n);
   out.near_mean = Vec3{static_cast<f32>(near_sum[0] * inv), static_cast<f32>(near_sum[1] * inv),
                        static_cast<f32>(near_sum[2] * inv)};
-  out.far_mean = Vec3{static_cast<f32>(far_sum[0] * inv), static_cast<f32>(far_sum[1] * inv),
-                      static_cast<f32>(far_sum[2] * inv)};
   out.blade_cover = cover_sum * inv;
+  out.live_cover = live_sum * inv;
   for (u32 k = 0; k < 3; ++k)
     out.floor_share[k] = static_cast<f64>(floor_count[k]) * inv;
+  // Far: the real canopy along a low view, 1 - exp(-0.5 LAI / sin(elevation)) of it (about one for
+  // every form), its colour the green canopy's with the form's standing dead, over the near ground.
+  const f64 elevation = k_sward_far_elevation_deg * (k_pi / 180);
+  out.view_cover = 1 - det::exp(-k_sward_extinction * canopy_lai / det::sin(elevation));
+  const f64 dead = bed.standing_dead;
+  const f64 near_mean[3] = {near_sum[0] * inv, near_sum[1] * inv, near_sum[2] * inv};
+  f64 far[3];
+  for (u32 k = 0; k < 3; ++k) {
+    const f64 canopy = (1 - dead) * k_sward_canopy_albedo[k] + dead * k_sward_dead_canopy_albedo[k];
+    far[k] = out.view_cover * canopy + (1 - out.view_cover) * near_mean[k];
+  }
+  out.far_colour =
+      Vec3{static_cast<f32>(far[0]), static_cast<f32>(far[1]), static_cast<f32>(far[2])};
   return true;
 }
 namespace {

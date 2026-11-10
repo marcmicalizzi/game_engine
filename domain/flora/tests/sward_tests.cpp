@@ -576,26 +576,31 @@ TEST_CASE("sward ground: roughness is the floor's between blades and the blade's
   REQUIRE(gr.pixels == 256);
   REQUIRE(gr.roughness.size() == 256u * 256u);
   REQUIRE(gr.colour.size() == 256u * 256u * 4u);
-  u32 bare = 0, covered = 0;
+  u32 bare = 0, covered = 0, leafy = 0;
   for (u32 i = 0; i < 256u * 256u; ++i) {
+    CHECK(gr.colour[i * 4 + 3] == 255);  // opaque: the far colour is a field of the layer now
     const u8 cover = g.top.colour[i * 4 + 3];
-    if (cover == 0) {
-      // A texel no blade covers is the floor: thatch 0.80 (+-0.03 grain), moss 0.95, soil 0.92.
+    if (cover == 0 && gr.part[i] < 3) {
+      // The floor (thatch 0.80 +- 0.03, moss 0.95, soil 0.92), under less than half a baked live
+      // leaf at the blade's 0.70.
       ++bare;
-      CHECK(gr.part[i] < 3);
-      CHECK(gr.roughness[i] >= 196);
+      CHECK(gr.roughness[i] >= 186);
       CHECK(gr.roughness[i] <= 243);
+    } else if (cover == 0 && gr.part[i] == 4) {
+      ++leafy;  // mostly a baked live leaf: nearer the blade's 0.70 than the floor's
+      CHECK(gr.roughness[i] <= 212);
     } else if (cover >= 128) {
-      // Mostly a blade: the blade's 0.7 weighed by its cover against a floor of 0.77 to 0.98.
+      // Mostly a drawn blade: the blade's 0.7 weighed by its cover against what lies under it.
       ++covered;
       const f64 c = cover / 255.0;
       CHECK(gr.part[i] == 3);
-      CHECK(gr.roughness[i] >= (c * .7 + (1 - c) * .77) * 255 - 1);
+      CHECK(gr.roughness[i] >= (c * .7 + (1 - c) * .7) * 255 - 1);
       CHECK(gr.roughness[i] <= (c * .7 + (1 - c) * .98) * 255 + 1);
     }
   }
   CHECK(bare > 1000);
   CHECK(covered > 100);
+  CHECK(leafy > 100);
 }
 
 TEST_CASE("sward ground: the floor follows the form, and wet or shaded ground grows moss") {
@@ -639,45 +644,60 @@ TEST_CASE("sward ground: the floor follows the form, and wet or shaded ground gr
   CHECK(s.ground.floor_share[2] < g.ground.floor_share[2]);
 }
 
-TEST_CASE("sward ground: near is the floor in the canopy's shade, far the canopy from above") {
-  GroundCase g;
-  bake_case(ground_recipe(true), flora::SwardForm::short_tussock, g);
-  const auto& gr = g.ground;
-  CHECK(gr.transmission < 1);
-  CHECK(gr.transmission >= flora::k_sward_transmission_floor);
-  // The far colour is the image's RGB / A, as the terrain layer's mean takes it.
-  f64 far[3]{};
-  f64 floor_luma = 0;
-  u32 floor_texels = 0;
-  for (u32 i = 0; i < 256u * 256u; ++i) {
-    const f64 a = gr.colour[i * 4 + 3] / 255.0;
-    f64 near[3];
-    for (u32 c = 0; c < 3; ++c) {
-      const f64 v = gr.colour[i * 4 + c] / 255.0;
-      near[c] = v <= .04045 ? v / 12.92 : std::pow((v + .055) / 1.055, 2.4);
-      far[c] += near[c] / a;
-    }
-    if (gr.part[i] < 3) {
-      floor_luma += .2126 * near[0] + .7152 * near[1] + .0722 * near[2];
-      ++floor_texels;
+TEST_CASE("sward ground: the undrawn leaves cover by the gap law, and far is the canopy's colour") {
+  using flora::SwardForm;
+  for (const bool tussock : {true, false}) {
+    for (const SwardForm form : {SwardForm::tall_sod, SwardForm::tall_tussock, SwardForm::short_sod,
+                                 SwardForm::short_tussock}) {
+      if ((form == SwardForm::tall_tussock || form == SwardForm::short_tussock) != tussock)
+        continue;
+      GroundCase g;
+      bake_case(ground_recipe(tussock), form, g);
+      const auto& gr = g.ground;
+      const auto bed = flora::sward_default_floor(form);
+      // The baked live leaves' cover from straight above is the gap law for the undrawn leaf area.
+      const f64 undrawn = bed.canopy_lai - static_cast<f64>(g.report.leaf_area_index);
+      CHECK(gr.live_target == doctest::Approx(1 - std::exp(-.5 * undrawn)).epsilon(1e-9));
+      CHECK(std::abs(gr.live_cover - gr.live_target) < .05);
+      // Far: the real canopy covers the low view, so the far colour is the canopy's with the form's
+      // standing dead, within what the near ground's sliver of view adds (above 0.98 at LAI 1.5).
+      CHECK(gr.view_cover > .98);
+      const f64 d = bed.standing_dead;
+      const f64 want[3] = {
+          (1 - d) * flora::k_sward_canopy_albedo[0] + d * flora::k_sward_dead_canopy_albedo[0],
+          (1 - d) * flora::k_sward_canopy_albedo[1] + d * flora::k_sward_dead_canopy_albedo[1],
+          (1 - d) * flora::k_sward_canopy_albedo[2] + d * flora::k_sward_dead_canopy_albedo[2]};
+      CHECK(static_cast<f64>(gr.far_colour.x) == doctest::Approx(want[0]).epsilon(.01));
+      CHECK(static_cast<f64>(gr.far_colour.y) == doctest::Approx(want[1]).epsilon(.01));
+      CHECK(static_cast<f64>(gr.far_colour.z) == doctest::Approx(want[2]).epsilon(.01));
+      MESSAGE("form " << static_cast<int>(form) << " live " << gr.live_cover << " of "
+                      << gr.live_target << " view " << gr.view_cover << " far " << gr.far_colour.x
+                      << " " << gr.far_colour.y << " " << gr.far_colour.z << " near "
+                      << gr.near_mean.x << " " << gr.near_mean.y << " " << gr.near_mean.z);
+      CHECK(gr.far_colour.y > gr.far_colour.x);  // green, for every form
+      // The floor between near crowns is darker than the blade's leaf.
+      f64 floor_luma = 0;
+      u32 floor_texels = 0;
+      for (u32 i = 0; i < 256u * 256u; ++i) {
+        if (gr.part[i] >= 3) continue;
+        f64 v[3];
+        for (u32 c = 0; c < 3; ++c) {
+          const f64 s = gr.colour[i * 4 + c] / 255.0;
+          v[c] = s <= .04045 ? s / 12.92 : std::pow((s + .055) / 1.055, 2.4);
+        }
+        floor_luma += .2126 * v[0] + .7152 * v[1] + .0722 * v[2];
+        ++floor_texels;
+      }
+      const Vec4 blade = g.mesh.materials[0].base_color;
+      CHECK(floor_luma / floor_texels < luma(Vec3{blade.x, blade.y, blade.z}));
     }
   }
-  for (f64& v : far)
-    v /= 256.0 * 256.0;
-  CHECK(far[0] == doctest::Approx(static_cast<f64>(gr.far_mean.x)).epsilon(2e-3));
-  CHECK(far[1] == doctest::Approx(static_cast<f64>(gr.far_mean.y)).epsilon(2e-3));
-  CHECK(far[2] == doctest::Approx(static_cast<f64>(gr.far_mean.z)).epsilon(2e-3));
-  // Far is brighter than near, and the floor between near crowns is darker than the blades.
-  CHECK(luma(gr.far_mean) > luma(gr.near_mean));
-  const Vec4 blade = g.mesh.materials[0].base_color;
-  CHECK(floor_luma / floor_texels < luma(Vec3{blade.x, blade.y, blade.z}));
-  // Far is greener than near: the drawn canopy along a low view lies over the floor.
-  CHECK(gr.far_mean.y - gr.far_mean.x > gr.near_mean.y - gr.near_mean.x);
-  CHECK(gr.view_cover > gr.blade_cover);
-  GroundCase sod;
-  bake_case(ground_recipe(false), flora::SwardForm::short_sod, sod);
-  CHECK(sod.ground.far_mean.y > sod.ground.far_mean.x);
-  CHECK(sod.ground.view_cover > gr.view_cover);
+  // A sod's ground is mostly live leaf, a tussock's keeps more of its litter gaps.
+  GroundCase sod, tussock;
+  bake_case(ground_recipe(false), SwardForm::short_sod, sod);
+  bake_case(ground_recipe(true), SwardForm::short_tussock, tussock);
+  CHECK(sod.ground.live_cover > tussock.ground.live_cover);
+  CHECK(tussock.ground.far_colour.x > sod.ground.far_colour.x);  // the tussock's standing straw
 }
 
 TEST_CASE("sward ground: the bake is the same bytes, pinned") {
@@ -688,10 +708,7 @@ TEST_CASE("sward ground: the bake is the same bytes, pinned") {
   pin = hash_combine(pin, hash_bytes(gr.normal.data(), gr.normal.size()));
   pin = hash_combine(pin, hash_bytes(gr.roughness.data(), gr.roughness.size()));
   pin = hash_combine(pin, hash_bytes(gr.height.data(), gr.height.size()));
+  pin = hash_combine(pin, hash_bytes(&gr.far_colour, sizeof(gr.far_colour)));
   // Taken on MSVC; the Linux containers reproduce it (GCC and Clang at v3, GCC at v2).
-  CHECK(pin == 13328138937995538568ull);
-  GroundCase again;
-  bake_case(ground_recipe(true), flora::SwardForm::short_tussock, again);
-  CHECK(hash_bytes(again.ground.colour.data(), again.ground.colour.size()) ==
-        hash_bytes(gr.colour.data(), gr.colour.size()));
+  CHECK(pin == 11171625829164360392ull);
 }

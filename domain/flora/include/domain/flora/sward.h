@@ -13,7 +13,8 @@
 namespace engine::flora {
 // 6 (G137): the tussock layout, the raised crown base, the between-crown turf and two profiles.
 // 7 (G138): the stature rule's transition band, and the slope's arctangent the sward's own.
-inline constexpr u32 k_sward_version = 7;
+// 8 (G141): the blade's albedo a live grass leaf's measured visible one.
+inline constexpr u32 k_sward_version = 8;
 struct SwardProfile {
   std::string_view name;
   f32 length_min_m, length_max_m, width_min_m, width_max_m;
@@ -101,29 +102,44 @@ struct SwardFloor {
   SwardFloorMix mix;
   SwardFloorPart thatch, moss, soil;
   u64 seed = 1;
-  // The leaf area index of the real canopy the drawn blades stand for, which shades the floor: the
-  // drawn swards carry a tenth to a hundredth of a measured grassland's leaf area (grass-sward.md).
+  // The leaf area index of the real canopy the drawn blades stand for: it shades the floor, its
+  // undrawn leaves lie baked over the floor, and it hides the floor from afar (grass-sward.md). The
+  // drawn swards carry a tenth to a hundredth of it.
   f64 canopy_lai = 2;
+  // The share of the canopy that is standing dead leaf (a tussock's straw), which tints its far
+  // colour.
+  f64 standing_dead = 0;
 };
 // The procedural floor's parts at their stated albedos and roughness (grass-sward.md), in `form`'s
-// shares.
+// shares, with the form's canopy leaf area and standing dead.
 SwardFloor sward_default_floor(SwardForm form);
-// The ground's two colours (flora.md, "Near and far"): near the eye the floor and the low leaves in
-// the canopy's shade, past the sward's reach the canopy seen from above. The colour image's RGB is
-// the near colour and its alpha the near colour's share of the far, so the far texel is RGB / A —
-// the terrain layer's mean, its colour past `detail_far_m`, is taken over RGB / A.
+// Visible albedos, linear, as band means (grass-sward.md, "The canopy's colour"): a single live
+// grass leaf (the drawn blade's material), a closed green grass canopy, and a canopy of standing
+// dead leaf.
+inline constexpr f32 k_sward_leaf_albedo[3] = {.055f, .12f, .035f};
+inline constexpr f64 k_sward_canopy_albedo[3] = {.04, .085, .025};
+inline constexpr f64 k_sward_dead_canopy_albedo[3] = {.16, .135, .085};
+// The ground's two colours (flora.md, "Near and far"). Near the eye the image: the undrawn live
+// leaves, darker with depth, over the floor in the canopy's shade, under the drawn blades' top
+// view. Past the sward's reach `far_colour`, the real canopy seen at a low elevation, which the
+// cook writes into the scene's layer as its `far_color`.
 struct SwardGround {
   u32 pixels = 0;
-  Vector<u8> colour;     // RGBA8, RGB sRGB
+  Vector<u8> colour;     // RGBA8, RGB sRGB, opaque
   Vector<u8> normal;     // RGBA8, OpenGL tangent space
   Vector<u8> roughness;  // R8, linear
   Vector<u8> height;     // R8, linear, of the profile's longest leaf
-  Vector<u8> part;       // R8, what the texel is: 0 thatch, 1 moss, 2 soil, 3 blade (cover >= 1/2)
-  Vec3 near_mean{}, far_mean{};  // linear, of the image as stored and of RGB / A
-  f64 blade_cover = 0;           // the bake's mean cover from above
-  f64 transmission = 1;          // the canopy's diffuse transmission to the floor
-  f64 view_cover = 0;            // the near form's cover at k_sward_far_elevation_deg
-  f64 floor_share[3]{};          // the parts' achieved shares of the floor texels
+  // R8, what the texel is: 0 thatch, 1 moss, 2 soil, 3 drawn blade (bake cover >= 1/2), 4 a baked
+  // live leaf (its cover >= 1/2).
+  Vector<u8> part;
+  Vec3 near_mean{};      // linear, of the image
+  Vec3 far_colour{};     // linear, the canopy's colour seen at k_sward_far_elevation_deg
+  f64 blade_cover = 0;   // the drawn blades' mean cover from above
+  f64 live_target = 0;   // the gap law's cover for the undrawn leaf area, 1 - exp(-0.5 L)
+  f64 live_cover = 0;    // the baked live leaves' achieved mean cover from above
+  f64 transmission = 1;  // the canopy's diffuse transmission to the floor
+  f64 view_cover = 0;    // the real canopy's cover at k_sward_far_elevation_deg
+  f64 floor_share[3]{};  // the parts' achieved shares of the floor texels
 };
 // The canopy's transmission to the floor: exp(-k LAI), k = 0.5, floored at 0.25. The bake takes the
 // larger of the drawn sward's leaf area index and the floor's `canopy_lai`.

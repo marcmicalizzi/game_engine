@@ -271,29 +271,61 @@ drawn blades cast almost none of it (they are never traced, and the cascades sha
 metres), so the bake carries it: the near colour is the floor and the low leaves times
 `exp(−0.5 · canopy LAI)`, floored at 0.25 — 0.47 for a short tussock, 0.37 for a short sod.
 
-**The far colour is the drawn sward seen at a low elevation.** Past the sward's reach the layer stands
-in for the canopy, so it is what the near sward looks like there: the drawn leaf area's cover along a
-10° view, `1 − exp(−0.5 LAI_drawn / sin 10°)` (12.7 % for the short tussock, 30 % for the short sod),
-over the top view of blades and shaded floor. Measured on the bake (the ground tests):
+**The correction: the ground stands in for the undrawn canopy** (the coordinator, 2026-11-10). The
+first version took the far colour from the *drawn* leaf area, so a field drawn at a hundredth of a
+measured leaf area read as its floor from afar, olive-brown where reel r01's far meadow is green. A
+real meadow's floor is hidden by leaves from above and is solid green at a grazing angle, so both
+colours now come from the form's canopy leaf area (the table above), not the drawn one:
 
-| Recipe | Cover from above | Cover at 10° | Transmission | Near mean (linear) | Far mean (linear) |
-|---|---|---|---|---|---|
-| short tussock (`d100-v0`) | 0.023 | 0.127 | 0.47 | (0.047, 0.055, 0.025) | (0.063, 0.075, 0.034) |
-| short sod | 0.062 | 0.302 | 0.37 | darker than its far (test) | greener than red (test) |
+- **Near, the undrawn leaves.** Live leaf fragments over the floor, at the profile's widths and
+  half its grown length, cover the ground from straight above by the gap law for the leaf area not
+  drawn, `1 − exp(−0.5 (LAI_canopy − LAI_drawn))`, each darker by `exp(−0.5 L)` for the leaf area
+  above it (Monsi and Saeki 1953). The floor's thatch, moss and soil fill the gaps in the shade.
+- **Far, the canopy.** The cover along a 10° view, `1 − exp(−0.5 LAI_canopy / sin 10°)`, is 0.987 for
+  the short tussock and above 0.996 for the others, so the far colour is the canopy's.
 
-**The match, pinned in one capture pair** (2026-11-10, `msvc-debug` engine-view, RTX 5090, 1280 × 720,
-`--shadows csm --shadow-distance 8 --time-of-day 11`, the short-tussock cook with two variants; the
-machine shared with other agents' builds, which does not move a picture). One camera at 3.5 m looking
-at the ground 20 m ahead (about 10° of elevation): the meadow as drawn, its ground at its near colour
-(within `detail_near_m`), against the same scene with no sward placed and the layer at its far colour
-everywhere (`detail_near_m` 0, `detail_far_m` 0.01). Mean linear colour of the ground below the
-centre, left of the trail (columns 160–560, rows 420–720): drawn **(0.0733, 0.0830, 0.0475)**, luma
-**0.0784**; far layer **(0.0864, 0.0937, 0.0539)**, luma **0.0893**. The far colour is **14 % brighter**
-than the sward it stands for and the same hue within 5 % (green over red 1.08 against 1.13); the
-bound pinned is **15 %** in luma. The far is brighter because it takes the blade at its albedo where
-the drawn blade is shaded by its own lean and the cascade, and because it assumes 10° where most of
-the measured rows are seen steeper, under less blade.
+**The canopy's colour.** Green vegetation absorbs in the blue (chlorophyll and carotenoids, about
+450 nm) and the red (chlorophyll, about 670 nm) and reflects most near 550 nm; a single fresh leaf
+reflects roughly 0.04–0.06 of the blue and red and 0.10–0.15 of the green, and a closed canopy less,
+its leaves shading each other (Asner 1998; the standard curve in Jensen, *Remote Sensing of the
+Environment*, 2007, ch. 11). No measured band table for these species was found this session (the
+turfgrass radiometry of Bremer et al. 2011, *Crop Science* 51: 2219–2227, could not be read), so the
+values are **stated band means inside those ranges**, linear:
 
+| Albedo | Blue | Green | Red | Used for |
+|---|---|---|---|---|
+| live leaf (`k_sward_leaf_albedo`) | 0.035 | 0.12 | 0.055 | the drawn blade's material and the baked live leaves |
+| green canopy (`k_sward_canopy_albedo`) | 0.025 | 0.085 | 0.04 | the far colour |
+| standing dead canopy (`k_sward_dead_canopy_albedo`) | 0.085 | 0.135 | 0.16 | the far colour's straw, by the form's `standing_dead` |
+
+This settles the blade: its old (0.09, 0.22, 0.06) was twice a field leaf's green. Standing dead is a
+design share by form (tall tussock 0.25, short tussock 0.15, tall sod 0.08, short sod 0.03), after
+Asner's finding that a small share of standing litter moves a grassland's reflectance far.
+
+**Measured on the bake** (the ground tests, 256 px a cell; the recipes the tests bake):
+
+| Form (recipe) | Live cover, achieved of target | Cover at 10° | Near mean (linear) | Far colour (linear) |
+|---|---|---|---|---|
+| short tussock (mat-grass) | 0.530 of 0.516 | 0.987 | (0.049, 0.072, 0.028) | (0.058, 0.092, 0.034) |
+| tall tussock (mat-grass) | 0.784 of 0.772 | 0.9998 | (0.035, 0.066, 0.021) | (0.070, 0.097, 0.040) |
+| short sod (bent) | 0.642 of 0.608 | 0.997 | (0.039, 0.071, 0.024) | (0.044, 0.086, 0.027) |
+| tall sod (bent) | 0.880 of 0.856 | 0.99999 | (0.034, 0.069, 0.021) | (0.050, 0.089, 0.030) |
+
+The achieved cover runs 0.013–0.034 over the gap law (the tests hold it within 0.05): a texel's
+cover is `1 − Π(1 − a)` over the leaves crossing it, which runs a little above the Poisson mean of
+partial covers.
+
+**The hand-off's mismatch, reported, not a target** (2026-11-10, `msvc-debug` engine-view, RTX 5090,
+1280 × 720, `--shadows csm --shadow-distance 8 --time-of-day 11`, the short-tussock cook with two
+variants, the machine shared with other agents' builds, which does not move a picture). One camera at
+3.5 m looking at the ground 20 m ahead, the meadow as drawn with its ground at the near image, against
+the same scene with no sward and the layer at its far colour (`detail_near_m` 0, `detail_far_m`
+0.01); ground below the centre, left of the trail (columns 160–560, rows 420–720): drawn
+**(0.0714, 0.0898, 0.0451)**, luma **0.0826**, green over red 1.26; far **(0.0787, 0.1061, 0.0497)**,
+luma **0.0962**, green over red 1.35. The far ground is 16 % brighter and a little greener than the
+drawn near sward: the far colour is the real canopy lit from above, where the near is the drawn
+sparse blades over leaves and floor in their own shade. The first version's far colour, from the
+drawn sward, was 14 % brighter than its near but olive-brown.
 **Blades a tuft: measured, not yet rebuilt (G141 stage 4).** Today's short-tussock recipe draws 512
 blades a square metre, 333 of them in 16 crowns (21 a tussock) and 179 as turf between; a near blade
 is 3 segments, 5 triangles, a coarse one 2 segments, 3 triangles; the cell's 4,192 triangles are 2,560
@@ -313,10 +345,10 @@ loses its shoulder sample. It changes every sward's bytes (a `k_sward_version` b
 as camouflage polygons from a walker's eye; it was replaced before this commit by dead-leaf fragments
 over a soft moss-and-soil underlay (flora.md has the layout), which reads as a litter mat.
 
-**What this does not settle.** The far colour is the *drawn* sward's, so a field drawn at a hundredth of
-a measured leaf area reads as its floor from afar too — browner and darker than the reels' far meadows,
-which are green because the real canopy covers the floor. That is the blade count's to fix (solver
-needs 2.3 item 5), not the floor's. The floor shares and albedos are stated design values, not fits to
+**What this does not settle.** The baked live leaves stand in for the undrawn canopy as a flat image:
+near the eye they have no parallax and no sway, which only more drawn blades give (solver needs 2.3
+item 5, stage 4 above). The canopy and leaf albedos are band means inside the published ranges, not
+a measured spectrum of these species. The floor shares and albedos are stated design values, not fits to
 a plot survey of these forms; a photographed or scanned floor (a pack's `ground/thatch`, `ground/moss`
 and `ground/soil` roles, which the bake already reads where a pack has them) would replace the
 procedural parts.

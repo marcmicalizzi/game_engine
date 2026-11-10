@@ -790,7 +790,7 @@ struct TerrainSnow @version(1) {
 
 /// One native-ground layer. Colour is sRGB; normals are OpenGL (+Y); roughness and mask are
 /// linear, read from R. Paths are relative to the scene. Layers composite in array order.
-struct TerrainMaterialLayer @version(5) {
+struct TerrainMaterialLayer @version(6) {
   name: string
   base_color: string
   normal: string
@@ -830,6 +830,10 @@ struct TerrainMaterialLayer @version(5) {
   /// the tint of the bed and the macro bed its point cuts, and their roughness offsets added. Needs
   /// a formation; refused without one. False draws what the layer drew.
   formation: bool = false @since(5)
+  /// A tiled layer's colour past `detail_far_m`, linear RGB in [0, 1] (G141; see
+  /// renderer.md, "A layer's far colour"): what its detail fades to in place of the image's mean,
+  /// for a layer that stands in for what it does not draw (a sward's canopy). Absent: the mean.
+  far_color: vec3? @since(6)
 }
 
 struct TerrainMaterials @version(1) {

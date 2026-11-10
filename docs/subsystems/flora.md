@@ -362,24 +362,37 @@ straight above, so what a person sees between crowns is this floor.
 - *Same bytes everywhere*: hashes, products, sums, divisions, square roots, a sort of the noise for its
   quantile, and the engine's own `det::exp`, `det::log`, `det::sin` and `det::cos`; no C library call
   decides a texel. `sward_tests.cpp` pins the four
-  images' hash for the short-tussock recipe, taken on MSVC. The old bake was not pinned.
+  images' hash and the far colour for the short-tussock recipe, taken on MSVC. The old bake was not pinned.
 
-**Near and far.** The ground has two colours. Near the eye, under the drawn canopy, it is the floor
-and the low leaves in the canopy's shade, `exp(−0.5 · canopy LAI)` floored at 0.25, the canopy LAI a
-grassland's by form (1.5 to 4) because the drawn blades carry a hundredth of it and cast almost no
-shadow; this is what makes the ground between near crowns darker than the blades, as in the
-reference reels. Past the sward's reach it is the canopy seen at 10° of elevation
-(`k_sward_far_elevation_deg`): the drawn leaf area's cover along that view,
-`1 − exp(−0.5 LAI_drawn / sin 10°)`, over the top view of blades and shaded floor. The colour image
-carries both: its RGB is the near colour and its alpha the near colour's share of the far, so the far
-texel is RGB / A. The terrain layer fades its tiled detail to its mean over the scene's
-`detail_near_m`..`detail_far_m`, and that mean is taken over RGB / A
-([renderer](renderer.md#the-swards-ground-near-and-far)), so the blend by distance is the fade the
-terrain already draws, at no cost in the resolve. `tools/sward-cook.ps1` sets the two distances to
-the sward's reach (`-DetailNearM 27`, where the near blades' hand-off band ends, `-DetailFarM 64`,
-where the meadow's cards end). `provenance.json` records the form, the shares, the transmission, the
-cover from above and both means.
+**Near and far.** The drawn swards carry 1 to 2 % of a measured sward's leaf area, so the ground
+stands in for the leaves the engine does not draw, near and far (the coordinator's correction,
+2026-11-10: the first version matched the far colour to the sparse drawn sward and turned the far
+meadow olive-brown beside reel r01). Each form has a canopy leaf area index (`canopy_lai`, 1.5 to 4)
+and a share of standing dead leaf (`standing_dead`, 0.03 to 0.25).
 
+- *Near*, the image: the floor in the whole canopy's shade, `exp(−0.5 · canopy LAI)` floored at
+  0.25; over it **the undrawn live leaves**, fragments at the profile's leaf width and half its
+  grown length, whose cover from straight above is the gap law for the leaf area not drawn,
+  `1 − exp(−0.5 (canopy LAI − drawn LAI))` (0.52 for the short tussock, 0.63 for the short sod), each
+  at a depth in that leaf area and darker by `exp(−0.5 L)` above it, the deepest painted first, at
+  the blade's roughness and raised in the height map by its depth; over those the drawn blades' top
+  view. A sod's ground comes out mostly green, a tussock's keeps its litter gaps. A leaf is filtered
+  by the overlap of its width with a texel's, so a leaf thinner than a texel keeps its area and the
+  cover follows the law (the tests hold it within 0.03). The image is opaque.
+- *Far*, the layer's `far_color` ([renderer](renderer.md#a-layers-far-colour)): the real canopy at
+  10° of elevation (`k_sward_far_elevation_deg`), whose cover `1 − exp(−0.5 · canopy LAI / sin 10°)`
+  is above 0.999 for every form, so the far colour is the canopy's: a green grass canopy's visible
+  albedo with the form's standing dead (`k_sward_canopy_albedo`, `k_sward_dead_canopy_albedo`).
+  The blade's own material is a live leaf's albedo (`k_sward_leaf_albedo`, `k_sward_version` 8).
+
+The terrain fades the image's detail to `far_color` over the scene's `detail_near_m`..`detail_far_m`,
+which `tools/sward-cook.ps1` sets to the sward's reach (`-DetailNearM 27`, where the near blades'
+hand-off band ends, `-DetailFarM 64`, where the meadow's cards end), and it writes the bake's far
+colour into the scene's sward layer. `provenance.json` records the form, the shares, the canopy leaf
+area and standing dead, the transmission, the covers (drawn from above, live target and achieved,
+canopy along the view) and the near mean and far colour. The far colour is the real canopy's and not
+the drawn one's, so where the near sward is drawn sparse the hand-off from the drawn near to the far
+colour shows: that mismatch is measured and reported (grass-sward.md), not bent away.
 **Not yet.** A per-cell ground that follows the stature rule's form across a mixed field (a mask
 layer per form, or the sward placement writing the ground it stands on); photographed floor parts
 (the pack roles above); wetness-dependent floor colour; a far colour that follows the view's elevation

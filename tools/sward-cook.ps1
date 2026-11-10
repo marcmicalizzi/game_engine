@@ -87,6 +87,11 @@ $scene = Get-Content -LiteralPath (Join-Path $swardRoot 'content/test-scenes/mea
 $scene.placements[0].params.families=$swardFamilies
 $scene.terrain.materials.detail_near_m = $DetailNearM
 $scene.terrain.materials.detail_far_m = $DetailFarM
+# G141: the sward layer's far colour, the real canopy's, from the bake the layer names.
+$farColor = (Get-Content -LiteralPath (Join-Path $swardOut 'd100-v0/provenance.json') -Raw | ConvertFrom-Json).far_color_linear
+foreach ($layer in $scene.terrain.materials.layers) {
+  if ($layer.name -eq 'sward') { $layer.far_color = @($farColor | ForEach-Object { [double]$_ }) }
+}
 Copy-Item -LiteralPath (Join-Path $swardRoot 'content/flora/birch-single.flora.json') -Destination (Join-Path $swardOut 'edge-tree.flora.json')
 & $swardExe flora (Join-Path $swardOut 'edge-tree.flora.json') (Join-Path $swardOut 'edge-tree.clusters') `
   --no-materials > (Join-Path $swardOut 'edge-tree-build.json')
