@@ -25,6 +25,7 @@
 #include <cmath>
 #include <cstdio>
 #include <filesystem>
+#include <limits>
 #include <memory>
 #include <string>
 
@@ -46,6 +47,10 @@ constexpr f64 k_min_gap = 0.0505;
 // How far under the ground behind it a face's top is held, and under the ground at its foot a
 // tapered end's (rocks.md, "Faces in the slope").
 constexpr f64 k_under_m = 0.3;
+// Seating a top (rocks.md, "A face in tiers"): the ground behind it is looked at this many times
+// across the back, and must hold from this far behind where the top goes in.
+constexpr u32 k_stations = 32;
+constexpr f64 k_settle_m = 1.5;
 
 // ---- the block's lattice -----------------------------------------------------------------------
 
@@ -199,7 +204,77 @@ f64 relief_of(const CliffLayer& layer, RockType type) {
   }
 }
 
-// One traced line into faces: measured up the slope, stood off, cut, and written as recipes.
+// ---- a face in tiers (rocks.md, "A face in tiers") ---------------------------------------------
+
+// The tier coordinate and the layer's breaks. A tier is a band between two breaks; a break is a
+// bedding plane of the formation where a resistant bed's top is near, else a level. The breaks are
+// the world's (a function of the layer alone), so every block and every line cuts at the same ones.
+struct Tiering {
+  f64 tier = 12.0;
+  bool bedded = false;  // the coordinate is the formation's, plumb metres; else the height
+  gfx::FormationFrame frame{};
+  gfx::FormationSequence beds{};
+  f64 ny = 1.0;
+
+  f64 at(f64 x, f64 y, f64 z) const {
+    return bedded ? gfx::formation_coordinate(frame, x, y, z).coordinate / ny : y;
+  }
+  // Break k: `k tier`, moved onto the top of a resistant bed that a weaker one lies on when one is
+  // within a third of a tier (the cliff-forming bed's top is where a face steps back).
+  f64 break_at(i64 k) const {
+    const f64 nominal = static_cast<f64>(k) * tier;
+    if (!bedded || beds.count == 0) return nominal;
+    const f64 period = static_cast<f64>(beds.period_mm) / 1000.0 / ny;
+    f64 best = nominal;
+    f64 best_d = tier / 3.0;
+    for (u32 b = 0; b < beds.count; ++b) {
+      const u32 above = (b + 1) % beds.count;
+      if (!(beds.beds[b].resistance >= 0.5f) ||
+          (beds.count > 1 && beds.beds[above].resistance >= 0.5f))
+        continue;
+      const f64 top = (wide(beds.beds[b].start_m) + wide(beds.beds[b].thickness_m)) / ny;
+      const f64 at_top = top + std::floor((nominal - top) / period + 0.5) * period;
+      const f64 d = std::fabs(at_top - nominal);
+      if (d < best_d) {
+        best_d = d;
+        best = at_top;
+      }
+    }
+    return best;
+  }
+};
+
+Tiering tiering_of(const CliffLayer& layer) {
+  Tiering t;
+  t.tier = wide(layer.tier_m);
+  // Beds that dip more steeply than 20 degrees do not run along a face: the tiers are levels.
+  if (layer.formation.has_value() && std::fabs(layer.formation->dip_deg) <= 20.0f) {
+    gfx::FormationParams field;
+    if (gfx::pack_formation(*layer.formation, field, nullptr)) {
+      t.bedded = true;
+      t.frame = gfx::formation_frame(field);
+      t.beds = field.beds;
+      t.ny = t.frame.normal[1];
+    }
+  }
+  return t;
+}
+
+// A tier's part of one vertex's profile: from (r_lo, y_lo) to (r_hi, y_hi), metres uphill of the
+// traced foot and heights.
+struct Part {
+  i32 label = 0;
+  f64 r_lo = 0.0;
+  f64 y_lo = 0.0;
+  f64 r_hi = 0.0;
+  f64 y_hi = 0.0;
+  bool lowest = false;
+  bool topmost = false;
+};
+constexpr u32 k_max_parts = 24;
+
+// One traced line into faces: measured up the slope, cut into tiers, stood off, seated, and written
+// as recipes.
 void faces_of_line(const CliffLayer& layer, const scene_gen::Ground& ground, const Lattice& l,
                    i32 bx, i32 bz, const Vector<Point2>& traced, Vector<CliffFace>& out,
                    u32* skipped) {
@@ -209,7 +284,7 @@ void faces_of_line(const CliffLayer& layer, const scene_gen::Ground& ground, con
   if (line.size() < 3) return;
   // **A line cut by the block's edge runs on past it** by `k_overlap`, so the face traced in the
   // next block overlaps this one's end instead of leaving the ground showing between two ends
-  // and two tapering skirts. Both are closed; the renderer draws the union.
+  // and two tapering skirts. The renderer draws the union.
   constexpr f64 k_overlap = 12.0;
   const f64 bx0 = l.x(0.0);
   const f64 bz0 = l.z(0.0);
@@ -231,9 +306,22 @@ void faces_of_line(const CliffLayer& layer, const scene_gen::Ground& ground, con
                     det::cos(wide(layer.min_slope_deg) * k_pi / 180.0);
   const f64 keep2 = (0.8 * tan_t) * (0.8 * tan_t);
   const u32 n = line.size();
-  // Per vertex: the normal (the line's right, downhill), the steep ground's height above the foot
-  // and its run, and then the face's own foot, stood off downhill.
-  Vector<f64> foot_x(n), foot_z(n), foot_y(n), height(n), batter(n), out_x(n), out_z(n);
+  const Tiering tiers = tiering_of(layer);
+  // A part thinner than this joins its neighbour: a break this close to the foot or the brow is
+  // not cut.
+  const f64 thin = tiers.tier / 3.0;
+
+  // ---- per vertex: the normal, the slope's profile, and its parts ------------------------------
+  // `prof_y` holds every vertex's profile, the traced foot first and then each step up the slope
+  // while it stays steep (four fifths of the threshold, so a ledge part way up does not end the
+  // face), at most 200 m up.
+  Vector<f64> out_x(n), out_z(n), stand(n), whole_foot_y(n), whole_height(n);
+  Vector<u32> prof_at(n + 1);
+  Vector<f64> prof_y;
+  Vector<Part> parts;
+  Vector<u32> part_at(n + 1);
+  i32 label_lo = std::numeric_limits<i32>::max();
+  i32 label_hi = std::numeric_limits<i32>::min();
   for (u32 i = 0; i < n; ++i) {
     const Point2 a = line[i > 0 ? i - 1 : 0];
     const Point2 b = line[i + 1 < n ? i + 1 : n - 1];
@@ -242,212 +330,396 @@ void faces_of_line(const CliffLayer& layer, const scene_gen::Ground& ground, con
     out_x[i] = nrm.x;
     out_z[i] = nrm.z;
     const f64 y0 = ground_at(ground, line[i].x, line[i].z);
-    // Up the slope while it stays steep (four fifths of the threshold, so a ledge part way up
-    // does not end the face), at most 200 m up.
+    prof_at[i] = prof_y.size();
+    prof_y.push_back(y0);
     u32 k = 0;
     f64 top = y0;
-    Vector<f64> profile;  // the ground's height at each step up the slope
     while (k < 400) {
       const f64 qx = line[i].x - nrm.x * step * static_cast<f64>(k + 1);
       const f64 qz = line[i].z - nrm.z * step * static_cast<f64>(k + 1);
       if (slope2_at(ground, qx, qz, step) < keep2) break;
       ++k;
       top = ground_at(ground, qx, qz);
-      profile.push_back(top);
+      prof_y.push_back(top);
       if (top - y0 > 200.0) break;
     }
     const f64 relief = relief_of(layer, type_for(layer, y0));
     const f64 rise = max2(1.0, top - y0);
-    const f64 stand =
-        layer.standoff_m.has_value() ? wide(*layer.standoff_m) : 0.75 * relief + 0.03 * rise;
-    foot_x[i] = line[i].x + nrm.x * stand;
-    foot_z[i] = line[i].z + nrm.z * stand;
-    foot_y[i] = ground_at(ground, foot_x[i], foot_z[i]);
-    // The top half a metre under the brow, so the ground's own edge stands over the crest.
-    height[i] = min2(200.0, max2(1.0, top - 0.5 - foot_y[i]));
-    // **The batter that keeps the face in front of the ground**: the lean from the stood-off foot
-    // that passes at least the standoff downhill of every point of the slope's profile — not the
-    // chord from the foot to the brow, which a slope that steepens and then rounds over (most do)
-    // rises above in its upper half and buries the face in. A profile point `r` up the slope from
-    // the traced foot is `stand + r` from the stood-off one, so a lean of `r / up` keeps it `stand`
-    // behind the face's mean plane, which is what the carving retreats into.
-    f64 lean = 1.5;
-    for (u32 q = 0; q < profile.size(); ++q) {
-      const f64 up = profile[q] - foot_y[i];
-      if (up > 1.0) lean = min2(lean, step * static_cast<f64>(q + 1) / up);
+    stand[i] = layer.standoff_m.has_value() ? wide(*layer.standoff_m) : 0.75 * relief + 0.03 * rise;
+    whole_foot_y[i] = ground_at(ground, line[i].x + nrm.x * stand[i], line[i].z + nrm.z * stand[i]);
+    whole_height[i] = min2(200.0, max2(1.0, top - 0.5 - whole_foot_y[i]));
+
+    // The breaks this profile crosses, lowest first: where the tier coordinate first reaches each.
+    const f64* py = &prof_y[prof_at[i]];
+    Vector<f64> tau(k + 1);
+    f64 tau_max = -1.0e30;
+    for (u32 q = 0; q <= k; ++q) {
+      const f64 r = step * static_cast<f64>(q);
+      tau[q] = tiers.at(line[i].x - nrm.x * r, py[q], line[i].z - nrm.z * r);
+      tau_max = max2(tau_max, tau[q]);
     }
-    batter[i] = max2(0.0, lean);
-  }
-  smooth_values(height, 2);
-  smooth_values(batter, 2);
-  // **Faces that sit in the slope** (G142; rocks.md, "Faces in the slope"). `sink` is how far a
-  // vertex's whole section is lowered under the ground at its foot: a face's height cannot go
-  // under a metre, so where it must end its section goes into the ground instead.
-  Vector<f64> sink(n);
-  if (layer.back_m.has_value()) {
-    // No top proud of the ground behind it. A face's top is flat from its crest to its back.
-    // Its first stretch is the rock's own top, in front of the slope; then it goes into the
-    // ground, and from there to the back it must stay in: where the ground behind the brow falls
-    // away again (a fin, a rounded crest narrower than the back) the top would stand out of the
-    // far side as a wall's does. So the top is lowered until the ground it enters stays
-    // `k_under_m` over it all the way to the back; a top that never enters the ground at all is
-    // first lowered to the highest ground behind it. On a slope that keeps rising behind the
-    // brow nothing changes.
-    const f64 back = wide(*layer.back_m);
-    constexpr u32 k_stations = 16;
-    for (u32 i = 0; i < n; ++i) {
-      for (u32 pass = 0; pass < 4; ++pass) {
-        const f64 lean = batter[i] * height[i];
-        const f64 top = foot_y[i] - sink[i] + height[i];
-        f64 highest = -1.0e30;
-        f64 lowest_in = 1.0e30;  // the lowest ground from where the top enters it to the back
-        bool entered = false;
-        for (u32 q = 0; q <= k_stations; ++q) {
-          const f64 behind = lean + back * static_cast<f64>(q) / static_cast<f64>(k_stations);
-          const f64 g =
-              ground_at(ground, foot_x[i] - out_x[i] * behind, foot_z[i] - out_z[i] * behind);
-          highest = max2(highest, g);
-          entered = entered || g >= top;
-          if (entered) lowest_in = min2(lowest_in, g);
-        }
-        const f64 allowed_top = (entered ? lowest_in : highest) - k_under_m;
-        if (entered && top <= allowed_top) break;
-        const f64 allowed = allowed_top - foot_y[i];
-        if (allowed >= 1.0) {
-          height[i] = allowed;
-          sink[i] = 0.0;
-        } else {
-          sink[i] = min2(200.0, 1.0 - allowed);
-          height[i] = 1.0;
-        }
-      }
+    part_at[i] = parts.size();
+    Part part;
+    part.lowest = true;
+    part.r_lo = 0.0;
+    part.y_lo = y0;
+    bool labelled = false;
+    u32 made = 1;
+    const i64 k_first = static_cast<i64>(std::floor(tau[0] / tiers.tier)) - 1;
+    const i64 k_last = static_cast<i64>(std::floor(tau_max / tiers.tier)) + 2;
+    for (i64 kb = k_first; kb <= k_last && made < k_max_parts; ++kb) {
+      const f64 at_break = tiers.break_at(kb);
+      if (!(at_break > tau[0])) continue;
+      u32 q = 1;
+      while (q <= k && tau[q] < at_break)
+        ++q;
+      if (q > k) break;
+      const f64 f = (at_break - tau[q - 1]) / (tau[q] - tau[q - 1]);
+      const f64 r = step * (static_cast<f64>(q - 1) + f);
+      const f64 y = py[q - 1] + (py[q] - py[q - 1]) * f;
+      if (y - part.y_lo < thin || top - y < thin || !(r > part.r_lo)) continue;
+      if (!labelled) part.label = static_cast<i32>(kb - 1);
+      labelled = true;
+      part.r_hi = r;
+      part.y_hi = y;
+      parts.push_back(part);
+      ++made;
+      part = Part{};
+      part.label = static_cast<i32>(kb);
+      part.r_lo = r;
+      part.y_lo = y;
+    }
+    if (!labelled) part.label = static_cast<i32>(std::floor(0.5 * (tau[0] + tau[k]) / tiers.tier));
+    part.topmost = true;
+    part.r_hi = step * static_cast<f64>(k);
+    part.y_hi = top;
+    parts.push_back(part);
+    for (u32 q = part_at[i]; q < parts.size(); ++q) {
+      label_lo = parts[q].label < label_lo ? parts[q].label : label_lo;
+      label_hi = parts[q].label > label_hi ? parts[q].label : label_hi;
     }
   }
-  // Cut into faces no longer than `max_length_m`, of equal length.
-  Vector<f64> s(n);
-  for (u32 i = 1; i < n; ++i) {
-    const f64 dx = foot_x[i] - foot_x[i - 1];
-    const f64 dz = foot_z[i] - foot_z[i - 1];
-    s[i] = s[i - 1] + std::sqrt(dx * dx + dz * dz);
+  prof_at[n] = prof_y.size();
+  part_at[n] = parts.size();
+
+  // The whole steep band decides whether the line is dressed at all: its length along the
+  // stood-off foot and its mean height, as before the tiers.
+  f64 whole_length = 0.0;
+  f64 whole_mean = 0.0;
+  for (u32 i = 0; i < n; ++i) {
+    whole_mean += whole_height[i] / static_cast<f64>(n);
+    if (i == 0) continue;
+    const f64 dx =
+        (line[i].x + out_x[i] * stand[i]) - (line[i - 1].x + out_x[i - 1] * stand[i - 1]);
+    const f64 dz =
+        (line[i].z + out_z[i] * stand[i]) - (line[i - 1].z + out_z[i - 1] * stand[i - 1]);
+    whole_length += std::sqrt(dx * dx + dz * dz);
   }
-  const f64 total = s[n - 1];
-  // The ends taper: where the steep ground itself ends (not where a block's edge cut the line,
-  // which the next block's face runs on from), the face comes down to its least height and goes
-  // under the ground over `taper_m` of its line, so it ends with the exposure and not in a cap.
+  if (whole_length < wide(layer.min_length_m) || whole_mean < wide(layer.min_height_m)) return;
+  const bool line_starts = !on_edge(traced[0]);  // the steep ground itself ends there
+  const bool line_ends = !on_edge(traced[traced.size() - 1]);
   const f64 taper = wide(layer.taper_m);
-  if (taper > 0.0) {
-    const bool starts = !on_edge(traced[0]);
-    const bool ends = !on_edge(traced[traced.size() - 1]);
-    for (u32 i = 0; i < n; ++i) {
-      f64 w = 1.0;
-      if (starts) w = min2(w, s[i] / taper);
-      if (ends) w = min2(w, (total - s[i]) / taper);
-      if (w >= 1.0) continue;
-      w = max2(0.0, w);
-      w = w * w * (3.0 - 2.0 * w);
-      height[i] = 1.0 + (height[i] - 1.0) * w;
-      sink[i] = min2(200.0, sink[i] + (1.0 - w) * (1.0 + k_under_m));
-    }
-  }
-  if (total < wide(layer.min_length_m)) return;
-  const u32 pieces = static_cast<u32>(std::ceil(total / wide(layer.max_length_m) - 1e-9));
-  u32 first = 0;
-  for (u32 piece = 0; piece < pieces; ++piece) {
-    const f64 end = piece + 1 == pieces ? total : total * static_cast<f64>(piece + 1) / pieces;
-    u32 last = first;
-    while (last + 1 < n && s[last + 1] <= end + 1e-9)
-      ++last;
-    if (last <= first) break;
-    const u32 begin = first;
-    first = last;
-    const f64 length = s[last] - s[begin];
-    if (length < wide(layer.min_length_m)) continue;
-    f64 mean = 0.0;
-    for (u32 i = begin; i <= last; ++i)
-      mean += height[i];
-    mean /= static_cast<f64>(last - begin + 1);
-    if (mean < wide(layer.min_height_m)) continue;
-    // **The line the recipe is written with is merged to the validator's bound.** The stood-off
-    // foot line can fold where the ground bends sharper than the standoff (the inside of a
-    // hairpin): consecutive vertices then come within `k_min_gap` of each other, which `Cliff`'s
-    // validation refuses, and one such face refuses the whole scene. Keep the first, drop each next
-    // one while it is within the gap of the last kept; a piece left under two vertices or a metre
-    // of line is skipped and counted.
-    Vector<u32> kept;
-    for (u32 i = begin; i <= last; ++i) {
-      if (!kept.empty()) {
-        const f64 dx = foot_x[i] - foot_x[kept[kept.size() - 1]];
-        const f64 dz = foot_z[i] - foot_z[kept[kept.size() - 1]];
-        if (dx * dx + dz * dz < k_min_gap * k_min_gap) continue;
+  const f64 buried = wide(layer.face.buried);
+
+  // What the tier below left at each vertex for the next one to stand on: the lowest its top can
+  // be (the solver breaks a skyline back by up to 15 % of the height) and the next tier's own
+  // `buried` under its foot, less half a metre, so the next tier's bottom edge is under that top.
+  Vector<f64> lower_top(n, 1.0e30);
+  Vector<f64> next_top(n);
+
+  const auto part_of = [&](u32 i, i32 label) -> const Part* {
+    for (u32 q = part_at[i]; q < part_at[i + 1]; ++q)
+      if (parts[q].label == label) return &parts[q];
+    return nullptr;
+  };
+
+  // One run of a tier, vertices [first, last] of the line: seated, tapered and written.
+  const auto tier_run = [&](i32 label, u32 first, u32 last) {
+    const u32 m = last - first + 1;
+    Vector<f64> foot_x(m), foot_z(m), foot_y(m), height(m), batter(m), sink(m), base_r(m),
+        base_y(m);
+    u32 lowest_count = 0;
+    f64 tallest = 1.0;
+    for (u32 v = 0; v < m; ++v) {
+      const u32 i = first + v;
+      const Part& p = *part_of(i, label);
+      const f64* py = &prof_y[prof_at[i]];
+      const u32 steps = prof_at[i + 1] - prof_at[i] - 1;
+      const f64 top_y = p.topmost ? p.y_hi - 0.5 : p.y_hi;
+      // **The batter that keeps the tier in front of the ground**: the lean that passes at least
+      // the standoff downhill of every point of the tier's own part of the profile — not the chord
+      // of the part, which a slope that rounds over rises above.
+      // It is measured from the part's own start on the profile (the traced foot, or the break),
+      // never from the ground under the stood-off foot: a plane leaned from there is steeper than
+      // the slope and stands metres off it at the top, where its top then cannot reach the ground.
+      f64 lean = 1.5;
+      if (p.lowest) ++lowest_count;
+      base_r[v] = p.r_lo;
+      base_y[v] = p.y_lo;
+      for (u32 q = 1; q <= steps && step * static_cast<f64>(q) <= p.r_hi + 1e-9; ++q) {
+        const f64 r = step * static_cast<f64>(q);
+        const f64 up = py[q] - p.y_lo;
+        if (r > p.r_lo && up > 1.0) lean = min2(lean, (r - p.r_lo) / up);
       }
-      kept.push_back(i);
+      if (p.y_hi - base_y[v] > 1.0) lean = min2(lean, (p.r_hi - base_r[v]) / (p.y_hi - base_y[v]));
+      height[v] = min2(200.0, max2(1.0, top_y - base_y[v]));
+      batter[v] = max2(0.0, lean);
     }
-    f64 kept_length = 0.0;
-    for (u32 q = 1; q < kept.size(); ++q) {
-      const f64 dx = foot_x[kept[q]] - foot_x[kept[q - 1]];
-      const f64 dz = foot_z[kept[q]] - foot_z[kept[q - 1]];
-      kept_length += std::sqrt(dx * dx + dz * dz);
+    // The tier with the talus and the foot boulders: the lowest at most of its vertices.
+    const bool lowest = 2 * lowest_count > m;
+    smooth_values(height, 2);
+    smooth_values(batter, 2);
+    for (u32 v = 0; v < m; ++v) {
+      const u32 i = first + v;
+      // A tier above another stands on the lower one's top: its foot at the break, or lower where
+      // the tier below ends lower, and its line moved out by what its lean then gains. The lowest
+      // stands on the ground its own lean reaches, found in two looks.
+      f64 under = lower_top[i];
+      f64 out_m = stand[i] - base_r[v];
+      if (part_of(i, label)->lowest) {
+        under = whole_foot_y[i];
+        for (u32 look = 0; look < 3; ++look) {
+          // No further out than twice the standoff: under a line's end the ground can go on
+          // falling, and a foot that chased it would swing out of the line.
+          out_m = stand[i] + min2(stand[i], batter[v] * max2(0.0, base_y[v] - under));
+          under = ground_at(ground, line[i].x + out_x[i] * out_m, line[i].z + out_z[i] * out_m);
+        }
+      }
+      foot_y[v] = min2(base_y[v], under);
+      const f64 extra = base_y[v] - foot_y[v];
+      height[v] = min2(200.0, height[v] + extra);
+      foot_x[v] = line[i].x + out_x[i] * out_m;
+      foot_z[v] = line[i].z + out_z[i] * out_m;
+      tallest = max2(tallest, height[v]);
     }
-    if (kept.size() < 2 || kept_length < 1.0) {
-      if (skipped != nullptr) ++*skipped;
-      ENGINE_LOG_INFO(log_cliffs, "cliff face skipped: its line collapsed under the vertex gap",
-                      log::field("block_x", static_cast<i64>(bx)),
-                      log::field("block_z", static_cast<i64>(bz)),
-                      log::field("vertices", static_cast<u64>(last - begin + 1)));
-      continue;
+    // Where the tier below ends, this one's foot drops to the ground within a few vertices and its
+    // line steps out with it: the line is smoothed once so the step is a bend, and the way the
+    // face looks is the written line's own right, as the solver will take it.
+    Vector<f64> look_x(m), look_z(m);
+    {
+      const Vector<f64> raw_x = foot_x, raw_z = foot_z;
+      for (u32 v = 1; v + 1 < m; ++v) {
+        foot_x[v] = 0.25 * raw_x[v - 1] + 0.5 * raw_x[v] + 0.25 * raw_x[v + 1];
+        foot_z[v] = 0.25 * raw_z[v - 1] + 0.5 * raw_z[v] + 0.25 * raw_z[v + 1];
+      }
+      for (u32 v = 0; v < m; ++v) {
+        const u32 a = v > 0 ? v - 1 : 0;
+        const u32 b = v + 1 < m ? v + 1 : m - 1;
+        const D3 t = normalized(D3{foot_x[b] - foot_x[a], 0.0, foot_z[b] - foot_z[a]});
+        look_x[v] = -t.z;
+        look_z[v] = t.x;
+      }
     }
-    CliffFace face;
-    face.x_mm = scene_gen::nearest_mm(foot_x[begin]);
-    face.z_mm = scene_gen::nearest_mm(foot_z[begin]);
-    face.y = std::floor(foot_y[begin] * 1000.0 + 0.5) / 1000.0;
-    face.anchor_x_mm = scene_gen::nearest_mm(foot_x[(begin + last) / 2]);
-    face.anchor_z_mm = scene_gen::nearest_mm(foot_z[(begin + last) / 2]);
-    face.block_x = bx;
-    face.block_z = bz;
-    face.length = length;
-    face.mean_height = mean;
-    // The identity: the line in whole millimetres and its heights in centimetres.
-    u64 id = mix64(0x434C4946ull ^ static_cast<u64>(kept.size()));
-    for (const u32 i : kept) {
-      id = hash_combine(id, static_cast<u64>(scene_gen::nearest_mm(foot_x[i])));
-      id = hash_combine(id, static_cast<u64>(scene_gen::nearest_mm(foot_z[i])));
-      id =
-          hash_combine(id, static_cast<u64>(static_cast<i64>(std::floor(height[i] * 100.0 + 0.5))));
-      // A sunk section is part of the face; one that is not sunk keeps the identity it had.
-      if (sink[i] > 0.0)
-        id =
-            hash_combine(id, static_cast<u64>(static_cast<i64>(std::floor(sink[i] * 100.0 + 0.5))));
+    Cliff recipe = layer.face;
+    recipe.points.clear();
+    recipe.type = type_for(layer, foot_y[0]);
+    if (layer.formation.has_value()) recipe.formation = *layer.formation;
+    const f64 back = cliff_back_m(recipe, tallest);
+    // **Seated** (rocks.md, "A face in tiers"): no top proud of the ground behind it. A face's top
+    // is flat from its crest to its back. Its first stretch is the rock's own top, in front of the
+    // slope; then it goes into the ground, and from there to the back it must stay in: where the
+    // ground behind the brow falls away again (a fin, a rounded crest narrower than the back) the
+    // top would stand out of the far side as a wall's does. So a top that does not hold is lowered,
+    // a quarter of a metre at a time, to the first height at which it enters the ground within
+    // the back and the ground stays `k_under_m` over it from there on (lowering it moves its crest
+    // out along the lean, so the answer is looked for, not stepped to). `sink` is how far a
+    // vertex's whole section is then lowered under its foot: a face's height cannot go under a
+    // metre.
+    const auto seat = [&](u32 v) {
+      // Whether a top at `top`, on a face `tall` high here, goes into the ground within the back
+      // and stays `margin` under it from `k_settle_m` behind its entry (at the entry itself the
+      // ground is the top's height by definition).
+      const auto holds = [&](f64 top, f64 tall, f64 margin) {
+        const f64 lean = batter[v] * tall;
+        f64 entry = -1.0;
+        for (u32 q = 0; q <= k_stations; ++q) {
+          const f64 d = back * static_cast<f64>(q) / static_cast<f64>(k_stations);
+          const f64 g = ground_at(ground, foot_x[v] - look_x[v] * (lean + d),
+                                  foot_z[v] - look_z[v] * (lean + d));
+          if (entry < 0.0 && g >= top) entry = d;
+          if (entry >= 0.0 && d >= entry + k_settle_m && g < top + margin) return false;
+        }
+        return entry >= 0.0;
+      };
+      const f64 foot = foot_y[v] - sink[v];
+      if (holds(foot + height[v], height[v], 0.0)) return;
+      for (f64 tall = height[v] - 0.25; tall >= 1.0; tall -= 0.25) {
+        if (!holds(foot + tall, tall, k_under_m)) continue;
+        height[v] = tall;
+        return;
+      }
+      height[v] = 1.0;
+      for (f64 down = 0.5; sink[v] + down < 200.0; down += 0.5) {
+        if (!holds(foot - down + 1.0, 1.0, k_under_m)) continue;
+        sink[v] += down;
+        return;
+      }
+      sink[v] = 200.0;
+    };
+    for (u32 v = 0; v < m; ++v)
+      seat(v);
+    Vector<f64> s(m);
+    for (u32 v = 1; v < m; ++v) {
+      const f64 dx = foot_x[v] - foot_x[v - 1];
+      const f64 dz = foot_z[v] - foot_z[v - 1];
+      s[v] = s[v - 1] + std::sqrt(dx * dx + dz * dz);
     }
-    face.identity = id;
-    Cliff c = layer.face;
-    c.points.clear();
-    // A generated face stands in a slope: no back and no bottom (rocks.md, "Faces in the slope").
-    c.open = true;
-    c.type = type_for(layer, face.y);
-    c.seed = mix64(layer.seed ^ id);
-    c.height = static_cast<f32>(min2(200.0, max2(1.0, mean)));
-    c.datum_y = static_cast<f32>(-face.y);
-    const f64 ox = static_cast<f64>(face.x_mm) / 1000.0;
-    const f64 oz = static_cast<f64>(face.z_mm) / 1000.0;
-    // The scene's formation, and where this recipe's origin stands in it: the face's beds are
-    // then the terrain's bands (rocks.md, "Geology on the world formation (W85)").
-    if (layer.formation.has_value()) {
-      c.formation = *layer.formation;
-      c.world_origin = WorldPos{ox, face.y, oz};
+    const f64 total = s[m - 1];
+    // The ends taper. Where the steep ground itself ends (not where a block's edge cut the line,
+    // which the next block's face runs on from) the tier comes down to its least height and goes
+    // under its foot over `taper_m` of its line; where the tier itself ends inside the line (its
+    // band has left the steep ground, and the tier beside takes over) over four spacings.
+    const f64 taper_a = first == 0 ? (line_starts ? taper : 0.0) : 4.0 * step;
+    const f64 taper_b = last + 1 == n ? (line_ends ? taper : 0.0) : 4.0 * step;
+    for (u32 v = 0; v < m; ++v) {
+      f64 w = 1.0;
+      if (taper_a > 0.0) w = min2(w, s[v] / taper_a);
+      if (taper_b > 0.0) w = min2(w, (total - s[v]) / taper_b);
+      if (w < 1.0) {
+        w = max2(0.0, w);
+        w = w * w * (3.0 - 2.0 * w);
+        height[v] = 1.0 + (height[v] - 1.0) * w;
+        sink[v] = min2(200.0, sink[v] + (1.0 - w) * (1.0 + k_under_m));
+        // A tapered section is a lower one, with its crest further out: seated again.
+        seat(v);
+      }
+      next_top[first + v] = foot_y[v] - sink[v] + 0.85 * height[v] + max2(0.0, buried - 0.5);
     }
-    // A shallow back: the box's cells go to the front instead of to a slab inside the hill.
-    if (layer.back_m.has_value()) c.depth = *layer.back_m;
-    for (const u32 i : kept) {
-      CliffPoint p;
-      p.x = static_cast<f32>(foot_x[i] - ox);
-      p.y = static_cast<f32>(foot_y[i] - sink[i] - face.y);
-      p.z = static_cast<f32>(foot_z[i] - oz);
-      p.height = static_cast<f32>(height[i]);
-      p.batter = static_cast<f32>(batter[i]);
-      c.points.push_back(p);
+    if (total < 1.0) return;
+    f64 run_mean = 0.0;
+    for (u32 v = 0; v < m; ++v)
+      run_mean += height[v] / static_cast<f64>(m);
+    // The tier's share of the layer's budget: its height's share of the whole steep band's.
+    const f64 share = min2(1.0, max2(0.1, run_mean / whole_mean));
+    // Cut into faces no longer than `max_length_m`, of equal length.
+    const u32 pieces = static_cast<u32>(std::ceil(total / wide(layer.max_length_m) - 1e-9));
+    u32 from = 0;
+    for (u32 piece = 0; piece < pieces; ++piece) {
+      const f64 end = piece + 1 == pieces ? total : total * static_cast<f64>(piece + 1) / pieces;
+      u32 to = from;
+      while (to + 1 < m && s[to + 1] <= end + 1e-9)
+        ++to;
+      if (to <= from) break;
+      const u32 begin = from;
+      from = to;
+      const f64 length = s[to] - s[begin];
+      f64 mean = 0.0;
+      for (u32 v = begin; v <= to; ++v)
+        mean += height[v];
+      mean /= static_cast<f64>(to - begin + 1);
+      // **The line the recipe is written with is merged to the validator's bound.** The stood-off
+      // foot line can fold where the ground bends sharper than the standoff (the inside of a
+      // hairpin): consecutive vertices then come within `k_min_gap` of each other, which `Cliff`'s
+      // validation refuses, and one such face refuses the whole scene. Keep the first, drop each
+      // next one while it is within the gap of the last kept; a piece left under two vertices or a
+      // metre of line is skipped and counted.
+      Vector<u32> kept;
+      for (u32 v = begin; v <= to; ++v) {
+        if (!kept.empty()) {
+          const f64 dx = foot_x[v] - foot_x[kept[kept.size() - 1]];
+          const f64 dz = foot_z[v] - foot_z[kept[kept.size() - 1]];
+          if (dx * dx + dz * dz < k_min_gap * k_min_gap) continue;
+        }
+        kept.push_back(v);
+      }
+      f64 kept_length = 0.0;
+      for (u32 q = 1; q < kept.size(); ++q) {
+        const f64 dx = foot_x[kept[q]] - foot_x[kept[q - 1]];
+        const f64 dz = foot_z[kept[q]] - foot_z[kept[q - 1]];
+        kept_length += std::sqrt(dx * dx + dz * dz);
+      }
+      if (kept.size() < 2 || kept_length < 1.0) {
+        if (skipped != nullptr) ++*skipped;
+        ENGINE_LOG_INFO(log_cliffs, "cliff face skipped: its line collapsed under the vertex gap",
+                        log::field("block_x", static_cast<i64>(bx)),
+                        log::field("block_z", static_cast<i64>(bz)),
+                        log::field("vertices", static_cast<u64>(to - begin + 1)));
+        continue;
+      }
+      CliffFace face;
+      face.x_mm = scene_gen::nearest_mm(foot_x[begin]);
+      face.z_mm = scene_gen::nearest_mm(foot_z[begin]);
+      face.y = std::floor(foot_y[begin] * 1000.0 + 0.5) / 1000.0;
+      face.anchor_x_mm = scene_gen::nearest_mm(foot_x[(begin + to) / 2]);
+      face.anchor_z_mm = scene_gen::nearest_mm(foot_z[(begin + to) / 2]);
+      face.block_x = bx;
+      face.block_z = bz;
+      face.length = length;
+      face.mean_height = mean;
+      face.tier = label;
+      face.lowest = lowest;
+      // The identity: the line in whole millimetres and its heights in centimetres.
+      u64 id = mix64(0x434C4946ull ^ static_cast<u64>(kept.size()));
+      for (const u32 v : kept) {
+        id = hash_combine(id, static_cast<u64>(scene_gen::nearest_mm(foot_x[v])));
+        id = hash_combine(id, static_cast<u64>(scene_gen::nearest_mm(foot_z[v])));
+        id = hash_combine(id,
+                          static_cast<u64>(static_cast<i64>(std::floor(height[v] * 100.0 + 0.5))));
+        id = hash_combine(
+            id,
+            static_cast<u64>(static_cast<i64>(std::floor((foot_y[v] - sink[v]) * 100.0 + 0.5))));
+      }
+      face.identity = id;
+      Cliff c = layer.face;
+      c.points.clear();
+      // A generated face stands in a slope: no back and no bottom (rocks.md, "Faces in the slope").
+      c.open = true;
+      c.type = type_for(layer, face.y);
+      c.seed = mix64(layer.seed ^ id);
+      c.height = static_cast<f32>(min2(200.0, max2(1.0, mean)));
+      c.datum_y = static_cast<f32>(-face.y);
+      c.triangle_budget = static_cast<u32>(
+          max2(2000.0, std::floor(static_cast<f64>(layer.face.triangle_budget) * share + 0.5)));
+      if (lowest) {
+        // The skirt is the whole steep band's, standing against its lowest tier.
+        c.talus =
+            static_cast<f32>(min2(0.59, wide(layer.face.talus) * whole_mean / max2(1.0, mean)));
+      } else {
+        c.talus = 0.0f;
+        c.talus_blocks = 0;
+      }
+      const f64 ox = static_cast<f64>(face.x_mm) / 1000.0;
+      const f64 oz = static_cast<f64>(face.z_mm) / 1000.0;
+      // The scene's formation, and where this recipe's origin stands in it: the face's beds are
+      // then the terrain's bands (rocks.md, "Geology on the world formation (W85)").
+      if (layer.formation.has_value()) {
+        c.formation = *layer.formation;
+        c.world_origin = WorldPos{ox, face.y, oz};
+      }
+      // The back the top was seated to, so the solver's is the same one.
+      c.depth = static_cast<f32>(back);
+      for (const u32 v : kept) {
+        CliffPoint p;
+        p.x = static_cast<f32>(foot_x[v] - ox);
+        p.y = static_cast<f32>(foot_y[v] - sink[v] - face.y);
+        p.z = static_cast<f32>(foot_z[v] - oz);
+        p.height = static_cast<f32>(height[v]);
+        p.batter = static_cast<f32>(batter[v]);
+        c.points.push_back(p);
+      }
+      face.cliff = c;
+      out.push_back(face);
     }
-    face.cliff = c;
-    out.push_back(face);
+  };
+
+  // The tiers, lowest first, each in runs of consecutive vertices that have it.
+  for (i32 label = label_lo; label <= label_hi; ++label) {
+    for (u32 i = 0; i < n; ++i)
+      next_top[i] = 1.0e30;
+    u32 i = 0;
+    while (i < n) {
+      if (part_of(i, label) == nullptr) {
+        ++i;
+        continue;
+      }
+      u32 last = i;
+      while (last + 1 < n && part_of(last + 1, label) != nullptr)
+        ++last;
+      if (last > i) tier_run(label, i, last);
+      i = last + 1;
+    }
+    for (u32 q = 0; q < n; ++q)
+      if (next_top[q] < 1.0e29) lower_top[q] = next_top[q];
   }
 }
 
@@ -478,8 +750,7 @@ bool cliff_layer_in_range(const CliffLayer& layer, std::string& error) {
         wide(layer.foot_scale_max) <= 10.0))
     return bad("foot_scale_min", "above 0, and no more than foot_scale_max, at most 10");
   if (!in(wide(layer.taper_m), 0.0, 100.0)) return bad("taper_m", "0 to 100 m");
-  if (layer.back_m.has_value() && !in(wide(*layer.back_m), 2.0, 200.0))
-    return bad("back_m", "2 to 200 m");
+  if (!in(wide(layer.tier_m), 3.0, 200.0)) return bad("tier_m", "3 to 200 m");
   if (layer.formation.has_value()) {
     std::string why;
     if (!gfx::validate_formation(*layer.formation, &why)) {
@@ -732,6 +1003,8 @@ bool trace_cliff_block(const CliffLayer& layer, const scene_gen::Ground& ground,
     auto& face = out[i];
     const WorldPos origin{static_cast<f64>(face.x_mm) / 1000.0, face.y,
                           static_cast<f64>(face.z_mm) / 1000.0};
+    // Only a skirt and its blocks lie on the ground: a tier with neither needs no patch.
+    if (!(face.cliff.talus > 0.0f) && face.cliff.talus_blocks == 0) continue;
     if (!fit_cliff_ground(face.cliff, ground, origin,
                           static_cast<f32>(min2(1.0, wide(layer.spacing_m) * 0.5)), error)) {
       out.resize(first_face);
@@ -888,7 +1161,7 @@ void place_face(const Entry& entry, u32 index, u32 mesh, u32 foot_mesh, bool wit
   placement.mesh = mesh;
   out.instances.push_back(placement);
   ++out.things;
-  if (!with_foot) return;
+  if (!with_foot || !face.lowest) return;
   const CliffLayer& layer = entry.layer;
   const u32 count =
       static_cast<u32>(std::floor(face.length / 100.0 * wide(layer.foot_per_100m) + 0.5));

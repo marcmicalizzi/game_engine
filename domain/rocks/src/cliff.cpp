@@ -715,6 +715,26 @@ bool cliff_in_range(const Cliff& p, std::string& error) {
   return true;
 }
 
+// The back's distance behind the face's mean plane (cliffs.h): the recipe's `depth`, else the
+// carving's deepest reach on a face `height_m` tall plus two metres, and never under 4 m. The
+// solver's own rule, so the generator that seats a face's top can ask how far back it goes.
+f64 cliff_back_m(const Cliff& p, f64 height_m) {
+  if (p.depth.has_value()) return wide(*p.depth);
+  const CliffModel m = cliff_model(p.type);
+  const Fabric fabric = make_fabric(
+      p.type, p.geology, p.seed, p.formation.has_value() ? &*p.formation : nullptr, p.world_origin);
+  const f64 relief = p.relief.has_value() ? wide(*p.relief) : m.relief;
+  const f64 rounding =
+      (p.rounding.has_value() ? wide(*p.rounding) : m.rounding) * (0.2 + 1.6 * fabric.exposure);
+  const f64 bed = p.bed_m.has_value()
+                      ? wide(*p.bed_m)
+                      : (p.geology.bed_m.has_value() ? wide(*p.geology.bed_m) : m.bed_m);
+  const f64 reach = relief + wide(p.undercut) * bed + 0.12 * bed + m.warp * height_m +
+                    min2(6.0, 0.06 * height_m) + 2.0 * m.grain + m.column_relief +
+                    rounding * (1.0 + 3.0 * rounding);
+  return max2(4.0, reach + 2.0);
+}
+
 bool solve_cliff(const Cliff& p, assets::MeshData& out, CliffReport* report_out,
                  std::string* error_out) {
   out = assets::MeshData{};
@@ -779,10 +799,7 @@ bool solve_cliff(const Cliff& p, assets::MeshData& out, CliffReport* report_out,
   }
   // **The back**: `depth` behind the face's mean plane, which is the carving's deepest reach plus
   // two metres when the file gives none, and never under 4 m.
-  const f64 reach = carve.relief + carve.undercut * carve.bed + 0.12 * carve.bed + carve.warp_amp +
-                    carve.gully_amp + 2.0 * m.grain + m.column_relief +
-                    carve.rounding * (1.0 + 3.0 * carve.rounding);
-  z.depth = p.depth.has_value() ? wide(*p.depth) : max2(4.0, reach + 2.0);
+  z.depth = cliff_back_m(p, z.line.height_max);
   z.window = max2(1.0, 0.5 * z.depth);
   z.buried = wide(p.buried);
   z.talus = wide(p.talus);

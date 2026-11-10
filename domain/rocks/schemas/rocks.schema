@@ -404,9 +404,12 @@ struct CliffLayer @version(2) {
   /// into the ground over this many metres of its line, so it ends with the steep ground instead
   /// of in a capped wall: 0 (the ends stand) to 100 m.
   taper_m: f32 = 16.0 @since(2) @unit(m)
-  /// The most a face's buried back stands behind it, metres: 2 to 200; absent, the face's own
-  /// `depth` rule. A shallow back spends the budget on the front (rocks.md, "Faces in the slope").
-  back_m: f32? @since(2) @unit(m)
+  /// A face in tiers (rocks.md, "A face in tiers"): a steep band taller than this is cut into
+  /// tiers about this high, each following its own part of the slope's profile with its top in
+  /// the ground behind it, so a convex slope is covered and no top stands proud: 3 to 200 m. A
+  /// break is a bedding plane of `formation` where a resistant bed's top is within a third of
+  /// this, else a level.
+  tier_m: f32 = 12.0 @since(2) @unit(m)
 }
 
 /// Where bedrock shows through a soil mantle (G142; rocks.md, "Exposed bedrock (G142)"; the grounding,
