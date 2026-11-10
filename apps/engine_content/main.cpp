@@ -183,6 +183,11 @@ const char* k_usage =
     "                                          blocks) from the scene's channels placements\n"
     "                                          over its terrain; present with the channels\n"
     "                                          capability\n"
+    "  landform <sketch.json> <out dir> [--name <stem>] [--jobs <n>] [--no-relief]\n"
+    "                                          solve a region sketch into an authored\n"
+    "                                          heightfield, its fields (drainage area,\n"
+    "                                          receiver, slope, erosion rate, fill) and a shaded\n"
+    "                                          relief; present with the landform capability\n"
     "  vine <recipe.vine.json> <out.clusters>|--cache [--ddc <dir>] [--force]\n"
     "  cover <recipe.cover.json> <out.clusters>|--cache [--ddc <dir>] [--force]\n"
     "                                          grow a vine or organic cover over the host its\n"
@@ -1392,6 +1397,7 @@ int main(int argc, char** argv) {
   if (command == "flora") return content::flora_command(argc, argv);
   if (command == "rocks") return content::rocks_command(argc, argv);
   if (command == "channels") return content::channels_command(argc, argv);
+  if (command == "landform") return content::landform_command(argc, argv);
   if (command == "vine") return content::vine_command(argc, argv);
   if (command == "cover") return content::cover_command(argc, argv);
   if (command == "morphs") return content::morphs_command(argc, argv);

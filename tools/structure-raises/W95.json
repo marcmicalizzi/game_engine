@@ -1,0 +1,10 @@
+{
+  "format": "engine.structure-raise.v1",
+  "name": "W95",
+  "reason": "apps.md gains the section for the new command, engine-content landform (a region sketch solved into an eroded ground): the page documents every engine-content command",
+  "date": "2026-11-10",
+  "by": "Marc Micalizzi",
+  "deltas": {
+    "page:docs/subsystems/apps.md": 1078
+  }
+}

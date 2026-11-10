@@ -66,6 +66,9 @@ int rocks_command(int argc, char** argv);
 // The water's channel description from a scene's "channels" placements (channels_commands.cpp,
 // docs/subsystems/channels.md); present when this build has the channels capability.
 int channels_command(int argc, char** argv);
+// A region sketch solved into an authored heightfield and its fields (landform_commands.cpp,
+// docs/subsystems/landform.md); present when this build has the landform capability.
+int landform_command(int argc, char** argv);
 int soil_command(int argc, char** argv);
 int vine_command(int argc, char** argv);   // cover_commands.cpp
 int cover_command(int argc, char** argv);  // cover_commands.cpp
