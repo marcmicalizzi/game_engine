@@ -250,6 +250,7 @@ not quiet figures; CTest's own "Total Test time" in each case, builds not includ
 | The whole merge gate on the persistent gate worktree (below; 2026-10-10, batch 13): the Windows half after its four incremental builds (the three suites side by side, then the budgets) / the three Linux containers, warm / the server | 62 min (52 of suites, bounded by `msvc-debug`, and 9.5 of budgets) / 28 min / 74 min, all three in parallel |
 | The three Windows suites in series, the way a per-batch gate ran them before 2026-10-10 | about 2 h, plus a fresh worktree's four builds |
 | The whole merge gate on gate b57 (2026-11-09; 112 tests on the server, 133 in a container): the Windows half (nine minutes of incremental builds, the three suites side by side with the release app checks, then the budgets) / the three containers / the server | 2 h 09 (1 h 53 of suites, which is `msvc-debug`'s serial run, 6,765 s of CTest: `engine_view` 1,536 s, the four `renderer` parts 1,164 together, `flora` 624, `engine_cli` 459, `gfx` 285; 8 min of budgets) / 58 min / about 3 h 50 (3 h 34 of CTest; the `renderer` parts 862, 1,414, 3,306 and 1,107 s, `engine_view` 1,436, `water` 1,268). Every leg ran CTest serially: no test preset set `jobs`. Measured from its logs ([the gate's wall clock](#the-gates-wall-clock-t77)): `msvc-debug`'s own work one test at a time was 5,755 of its 6,765 s and waits for the lock at least 904 s, so serial CTest and not the lock was the limit |
+| The whole merge gate on gate b58 (2026-11-10; the first with three CTest jobs a Windows suite, eight in a container, the parts, and the off-configurations skipping the renderer's and `gfx`'s GPU cases; 145 tests in `msvc-debug`, 143 in a container): the Windows half (14 minutes of incremental builds, the suites side by side, the listener check, the budgets) / the three containers | 1 h 30 (64 min of suites, which is `msvc-debug`'s chain of GPU-labelled tests, 3,834 s of CTest; `msvc-release`'s app tests 31 min, `msvc-no-ecs` 27, `msvc-minimal` 9; 7 min of listener check and 6 of budgets) / 37 min ([measured](#gate-b58-measured)) |
 | The frame budgets (`tools/frame-budget.ps1`, five runs, `msvc-release`, warm cache; 2026-10-07) | 13 min, plus lock and quiet waits |
 | `engine_view.frame_loop` alone (2026-10-07) | 220 s in `msvc-debug`, 60 s in `msvc-release` |
 | A fresh worktree's first three containers (`linux-clang-debug`, `linux-gcc-release`, `linux-clang-minimal`, build only), compiler cache warm (2026-10-20) | 3 min (1 m 33 s, 0 m 48 s, 0 m 38 s; 100% hits); half an hour or more cold, which is now the first run on the machine after a toolchain or flag change ([local Linux](local-linux.md#with-the-compiler-cache-2026-10-20)) |
@@ -450,3 +451,43 @@ it saves on gate b57's numbers: `msvc-no-ecs`'s renderer parts and `gfx`, 1,041 
 `msvc-minimal`'s, 1,013 s — and with them the two pairs that waited longest on the lock against
 `msvc-debug`. The decision is reversible by dropping the switch from the gate's command line
 (review 2026-11-09, decision 5).
+
+### Gate b58, measured
+
+The first gate run with everything above (2026-11-10, ten rows on `75fa25da`, beside the three
+containers and the GPU server; the per-suite logs and the lock's own record of holds,
+`ENGINE_GPU_LOCK_LOG`, one file a suite).
+
+| Leg | Tests | Wall (CTest real) | On gate b57 | The card: holds, held, waited |
+|---|---|---|---|---|
+| `msvc-debug` | 145 | 3,834 s (02:35–03:39) | 6,765 s | 750, 1,824 s, 241 s |
+| `msvc-no-ecs` | 6 with no driver, then 128 | 319 + 1,295 s | 5,848 s | 28, 2 s, 240 s |
+| `msvc-minimal` | 6 with no driver, then 86 | 119 + 416 s | 2,015 s | 20, 6 s, 135 s |
+| `msvc-release`, the app tests | 8 | 1,846 s | 2,738 s | 293, 520 s, 195 s |
+| three containers | 143, 143, 91 | 37 min (15 m 09 s, 16 m 00 s, 5 m 34 s) | 58 min | none |
+
+From the gate's start to the Windows verdict: 13 min 42 s of four incremental builds and 64 minutes
+of suites, 78 minutes against b57's two hours; the listener check (121 executables, 6 min 42 s, its
+first run on `msvc-release`, clean) and the five budget flights (5 min 42 s, five of five) after
+them. No test waited more than 120 s for the card, and none was skipped.
+
+**What bounds it now: one chain of GPU-labelled tests.** `msvc-debug`'s 32 `gpu`-labelled tests
+summed 3,815 s of its 3,834 s wall — the suite is its `gpu_device` resource lock end to end, as the
+section on jobs said it would be — while the card was held for 1,824 s of it. The other half is
+those tests' work with no device open: a debug build's scene loads, the content builds inside
+`engine_cli` (605 s) and `engine_content` (269 s), an app test starting its processes. Everything
+without the label finished inside the chain's time, `flora`'s 652 s included. So the next lever is
+not more jobs but **two chains**: the GPU-labelled tests dealt by cost over two resource locks, the
+machine-wide lock ordering their holds as it does between suites, where this gate's longest wait
+was two minutes against a budget of thirty (roadmap T89). The release app tests are the same shape:
+1,846 s of wall, 520 s on the card.
+
+**The one failure, and what it changes for the stack.** `tools.lint` failed on every suite and every
+container, and nothing else did: three "passes" cases of T77's `config-invariant-conditional` rule
+exited non-zero because their fixture modules have no size table, which T80's `size-table` rule,
+landed in the same batch, holds over every module of a fixture. Each row's test passed on its own
+branch. The fixtures carry a table now, the test was rerun alone on both platforms, and the
+listener check and the budgets, which the failure had cut off, ran after it. **A stack's pre-gate
+check runs `tools/dev.ps1 test -Filter '^tools\.'`** beside the lint, the documentation check and
+the debug build (about six minutes, no GPU): rows that change the tools meet in the tools' own
+tests, and a gate is a slow place to learn it.
