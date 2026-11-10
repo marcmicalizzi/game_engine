@@ -27,6 +27,7 @@ include(EngineModule)
 # The commit every app was built from (`--version`), refreshed on every build: engine_app links it.
 include(EngineBuildStamp)
 include(EngineTesting)
+include(EngineListenerCheck)
 include(EngineSchema)
 # Hot-reloadable game modules (foundation/hotload): engine_game_module(), used by game/ and by
 # hotload's tests. Does nothing when ENGINE_WITH_HOTLOAD is off.

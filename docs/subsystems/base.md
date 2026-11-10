@@ -14,7 +14,7 @@
 - `core/base/macros.h`: `ENGINE_COMPILER_*`, `ENGINE_PLATFORM_*`, `ENGINE_DEBUG`, `ENGINE_FORCE_INLINE`, `ENGINE_NO_INLINE`, `ENGINE_RESTRICT`, `ENGINE_NO_UNIQUE_ADDRESS`, `ENGINE_DEBUG_BREAK`, `ENGINE_NON_COPYABLE`, stringize and concat helpers.
 - `core/base/types.h`: `u8..u64`, `i8..i64`, `usize`, `isize`, `f32`, `f64` in `namespace engine`.
 - `core/base/assert.h`: `ENGINE_ASSERT(expr, msg)`, `ENGINE_VERIFY(expr, msg)`, `ENGINE_UNREACHABLE(msg)`, `engine::assert_fail`.
-- `core/base/size_table.h`: `ENGINE_EXPECT_SIZE(size, align, Type...)`.
+- `core/base/size_table.h`: `ENGINE_EXPECT_SIZE(size, align, Type...)` — size and alignment first and the type last, so a template argument's commas need no parentheses. A module's entries live in its `tests/size_table.cpp`, and `tools/lint.ps1` (`size-table`) holds every module to having one, compiled and with at least one entry, or a reasoned line in `tools/size-table-exemptions.txt` (AGENTS.md, "Size table").
 
 **Depends on.** Nothing.
 

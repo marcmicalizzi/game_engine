@@ -712,14 +712,97 @@ compiled out ([ecs](../subsystems/ecs.md)). This script is what says a third one
 pwsh tools/ci/check-no-listeners.ps1 -Preset msvc-release [-Build]
 ```
 
-It copies every executable the build produced — not the prebuilt third-party tools under `_deps`;
-see below — into a directory with a random name, so **every path is new to the firewall and Windows
-has to decide about it again**, runs each once with harmless arguments (`--help`, a bench's
-`--smoke --quiet --no-pin`, `engine-view --frames 1 --width 64 --height 64`), and counts the prompt
-processes before and after. The count must not grow. It also samples each live process's own
-endpoints (`Get-NetTCPConnection -State Listen`, `Get-NetUDPEndpoint`) and fails on any that is not
-loopback — that half needs no fresh path at all and is what keeps the check meaningful on a machine
-the firewall has already made up its mind about.
+It copies every executable the build produced — not the prebuilt third-party tools under `_deps`,
+see below, nor CMake's compiler-identification programs under `CMakeFiles` — into a directory with
+a random name, so **every path is new to the firewall and Windows has to decide about it again**,
+runs each once with harmless arguments (`--help`; a bench's `--list`; `engine-view --offscreen
+--frames 1 --width 64 --height 64`; `engine-host --listen 127.0.0.1:0`, served until the check
+closes its input; `engine-editor --no-shell --listen 127.0.0.1:0 --frames 30` in a 64-pixel window;
+the GPU lock's test probe `cycles 0`, since it takes the machine-wide lock for any command it does
+not know), and counts the prompt processes before and after. The count must not grow. It also
+samples each live process's own endpoints (`Get-NetTCPConnection -State Listen`,
+`Get-NetUDPEndpoint`) and fails on any that is not loopback (127.0.0.0/8 or `::1`) — that half needs
+no fresh path at all and is what keeps the check meaningful on a machine the firewall has already
+made up its mind about. A process that exits before its first sample is answered by the prompt
+count alone, and the run's "sampled the live endpoints of N" counts only the processes still running
+when a sample was taken: **a bench lists its cases and exits in milliseconds, so for benches the
+check rests on the prompt half alone** — the price of not running their smoke cases on a shared
+machine.
+
+**The positive control.** `engine-host` and `engine-editor` listen on purpose, on loopback
+(`Get-KnownListeners` in `tools/lib/NoListeners.psm1`), so a run that started either and never saw
+it listening on loopback had a sampler that saw nothing — and its "no endpoint off loopback" would
+mean nothing. Such a run fails with "the sampler saw nothing where a listener is known", naming the
+binary. Each of the two is sampled every quarter second until its endpoint appears, up to
+`-ListenSeconds` (20), instead of racing it: `engine-host` is no longer run with `--request`, which
+answered one request and exited before any sample, but served until the check, having seen its
+socket, closes its standard input — the host's own way to exit, so it is never killed; the editor
+runs its 30 frames and exits by itself. **The editor is the one probe that opens a window**: its
+`--offscreen` refuses `--listen` (`apps/engine_editor/main.cpp`, "--offscreen draws the viewport
+alone"), and a refused probe opens no listener. Its order is what makes the control hold on a busy
+machine: the editor starts its listener before it creates the window, and the window takes the GPU
+lock before it appears ([gpu_lock](../subsystems/gpu_lock.md#windows)), so the endpoint is there to
+be seen while it waits for the lock, and an editor ended at `-TimeoutSeconds` while still waiting
+has shown nothing and held nothing. The gate, on a quiet machine, needs no longer timeout than the
+default.
+
+**It leaves nothing behind, on a machine other people are using** (T80, 2026-11-09; until then the
+probes opened a window, ran every bench's smoke cases, and could leave a loader's dialog up):
+
+- every copy inherits an error mode that shows no box (`SetErrorMode`: no "a DLL was not found"
+  from the loader, no "has stopped working" from Windows Error Reporting), so a binary that cannot
+  start exits with its status — the loader's box comes before `main`, where
+  `platform::quiet_error_dialogs()` cannot reach it;
+- a copy is alone in its directory, so the build directory it came from goes on its `PATH` and it
+  finds its DLLs and starts, rather than failing in the loader and answering nothing;
+- no window but the editor's 64 pixels, which appear only once it holds the GPU lock, and a bench
+  lists its cases and runs none;
+- a device a copy opens takes the machine-wide GPU lock as a test's does
+  (`ENGINE_GPU_LOCK_ON_DEVICE=1` unless the caller set it; [gpu_lock](../subsystems/gpu_lock.md));
+- a copy that outlives `-TimeoutSeconds` (30) is ended with its process tree, and after every binary
+  and again at the end every process whose image lies under the run's directory is ended — the
+  directory's name is a fresh GUID, so that is this run's copies and their children whatever their
+  pids, and never a process someone else started;
+- a prompt is dismissed as soon as it is seen after the binary that raised it, not at the end.
+
+What it cannot promise is a prompt Windows raises later than `-SettleSeconds` (6) after the last
+binary ended, or a clean-up when the script itself is killed; so it runs where someone reads its log
+and nothing kills it on a timer.
+
+The run in this form (T80, 2026-11-09, `msvc-debug` of an agent worktree, on the shared machine
+with other agents building and running GPU tests, default timeouts): 121 executables from 121 new
+paths, **0 prompts before and 0 after**, 48 GPU clients before and after, 121 of 121 processes
+still running at their first sample, about five and a half minutes, and both controls seen —
+`engine-host listens on loopback: TCP 127.0.0.1:32776` and `engine-editor listens on loopback: TCP
+127.0.0.1:17846` — with no endpoint off loopback. Two binaries ran into the 30 s timeout and were
+ended with their trees: `engine-editor`, after its listener had been seen, and `engine-view`, both
+most likely waiting for the GPU lock under the other agents' tests (the copies' output goes with
+the run's directory unless `-KeepTemp`). An earlier run that night, with the editor's probe still
+`--offscreen --listen`, which the editor refuses, and `engine-host --request`, which exits before a
+sample, saw no endpoint at all and printed OK: that is the run the control now fails. A debug build
+has no Tracy, so these runs say the probes, the control and the clean-up work; the release run at
+the gate is the one that says Tracy still binds loopback.
+
+**Where it runs: once, at the merge, after the suites** — a command line in the gate's script,
+not a CTest test. It starts every executable of a build, so it wants the machine's tree to itself,
+and the suites' end is the first moment the gate has that; a CTest test could not be kept out of an
+author's run without a configure switch the gate would also have to set (a test that skips turns
+`tools/dev.ps1 test` into exit 75), its `e2e_apps` resource lock orders nothing across the four
+suites the gate runs side by side, and a CTest timeout would end the script without its own clean-up.
+The gate runs, after `SUITES OK` and before the frame budgets:
+
+```powershell
+pwsh -NoProfile -File tools/ci/check-no-listeners.ps1 -Preset msvc-release *> "<gate log dir>/gate-<batch>-listeners.log"
+# exit 0: no prompt, no endpoint off loopback; 1: the log names the binary and the endpoint or prompt
+```
+
+`msvc-release` because it is the build that carries Tracy, the listener that caused the outage. Its
+rules — loopback or not, the verdict, which processes are the run's own, the probes, the error mode,
+and what it refuses before it starts anything — are `tools/lib/NoListeners.psm1`'s, tested in every
+Windows suite as `tools.check_no_listeners` (`tools/ci/check-no-listeners.Tests.ps1`, about 6 s, no
+engine binary), the positive control among them — a run that started a known listener and saw it
+nowhere on loopback fails, naming it: its live half is the test's own process listening on 127.0.0.1, which raises no
+prompt, and nothing in it binds any other address.
 
 A run on the development machine (RTX 5090, `msvc-release`, 2026-09-18): 54 executables from 54
 brand-new paths, **0 prompts before and 0 after**, 49 GPU clients before and after, and the only

@@ -10,7 +10,9 @@
   between those two numbers the NVIDIA driver stopped surviving `vkCreateDevice`. The listener was
   Tracy's, which binds every interface by default; `ENGINE_TRACY` now sets `TRACY_ONLY_LOCALHOST`
   and `TRACY_NO_BROADCAST` (docs/subsystems/profiling.md). This script is the check that no second
-  one appears.
+  one appears. It runs at the merge, once, after the suites (docs/ci/self-hosted-runners.md,
+  "tools/ci/check-no-listeners.ps1", has the gate's command line and why it is not a CTest test);
+  its rules are tools/lib/NoListeners.psm1's and are tested there with no listener at all.
 
   Windows raises the prompt **once per executable path**, and a path it has already decided about
   is silent forever after — which is exactly what makes the problem invisible on a developer's
@@ -18,11 +20,28 @@
   directory with a random name, making every path new to the firewall, runs each one once with
   harmless arguments, and counts the prompt processes before and after. The count must not grow.
 
+  What it leaves behind is nothing, and it is built so that holds on a shared machine:
+    - every copy runs under an error mode that shows no box (a missing DLL, a crash): a binary that
+      cannot start exits with its status instead of waiting for a click (Set-QuietErrorMode);
+    - the copies find their DLLs through PATH, from the build directory they were copied from, so
+      they start rather than fail in the loader;
+    - engine-view runs `--offscreen` and a bench `--list`s; engine-editor is the one probe with a
+      window (64 pixels, 30 frames: its `--offscreen` refuses `--listen`), which appears only once
+      it holds the GPU lock;
+    - the binaries that listen on purpose (engine-host, engine-editor) are the positive control:
+      each is sampled until its loopback endpoint appears, and a run that started one and never
+      saw it listening fails, so a blind sampler cannot report OK;
+    - a device a copy opens takes the machine-wide GPU lock as a test's does
+      (ENGINE_GPU_LOCK_ON_DEVICE=1, unless the caller set it);
+    - after each binary, and again at the end, every process whose image lies under the run's own
+      directory is ended — those are this run's copies and their children, whatever their pids;
+    - a prompt is dismissed as soon as it is seen, not at the end of the run.
+
   What this script never does, and no fix for a failure may do either: click or script "Allow",
-  add, change or remove a firewall rule, or touch any other system setting. A prompt that our own
-  run raised is dismissed by stopping that `PickerHost.exe` process, which is the same as pressing
-  Cancel; `-KeepPrompts` leaves them up instead, and leaves the machine in the state that caused
-  the outage, so use it only while diagnosing one.
+  add, change or remove a firewall rule, or touch any other system setting. A prompt that appears
+  during the run is dismissed by stopping that `PickerHost.exe` process, which is the same as
+  pressing Cancel; `-KeepPrompts` leaves them up instead, and leaves the machine in the state that
+  caused the outage, so use it only while diagnosing one with someone at the desktop.
 
   A grown count names the binary that was running when the prompt appeared. The fix belongs in
   that binary or its dependency — bind 127.0.0.1, or do not listen — never in the firewall.
@@ -38,6 +57,9 @@ param(
   [switch]$Build,
   [int]$TimeoutSeconds = 30,
   [int]$SettleSeconds = 6,
+  # How long a known listener (engine-host, engine-editor) is sampled for its endpoint before the
+  # run gives up on seeing it, which fails the run (Resolve-ListenerVerdict).
+  [int]$ListenSeconds = 20,
   [switch]$KeepPrompts,
   [switch]$KeepTemp
 )
@@ -49,6 +71,8 @@ if (-not ($IsWindows -or ($env:OS -eq 'Windows_NT'))) {
   exit 0
 }
 
+Import-Module (Join-Path $PSScriptRoot '../lib/NoListeners.psm1') -Force
+
 $buildDir = Join-Path $Root "build/$Preset"
 
 if ($Build) {
@@ -56,35 +80,6 @@ if ($Build) {
   if ($LASTEXITCODE -ne 0) { throw "build failed ($LASTEXITCODE)" }
 }
 if (-not (Test-Path $buildDir)) { throw "no build at $buildDir; pass -Build or build it first" }
-
-# Every pending prompt is one of these, and its command line is what tells it apart from the other
-# things Windows runs under the same image name.
-function Get-FirewallPrompts {
-  @(Get-CimInstance Win32_Process -Filter "Name='PickerHost.exe'" -ErrorAction SilentlyContinue |
-    Where-Object { $_.CommandLine -and $_.CommandLine -match 'FirewallNotificationDialogServer' })
-}
-
-# The prompt count answers "would a fresh machine be asked?", which is the question that matters,
-# but only while the path really is new. This is the direct observation beside it: while the
-# process is alive, what is it listening on? It needs no prompt and no fresh path, so it still
-# means something on a machine that has already decided about every path in the tree — and it is
-# the check that stays honest if Windows ever changes when it asks. A process that exits in
-# milliseconds may not be sampled at all, which is why the run says how many it managed.
-function Get-ProcessListeners([int]$processId) {
-  $found = @()
-  foreach ($c in @(Get-NetTCPConnection -OwningProcess $processId -State Listen -ErrorAction SilentlyContinue)) {
-    $found += "TCP $($c.LocalAddress):$($c.LocalPort)"
-  }
-  foreach ($u in @(Get-NetUDPEndpoint -OwningProcess $processId -ErrorAction SilentlyContinue)) {
-    $found += "UDP $($u.LocalAddress):$($u.LocalPort)"
-  }
-  return $found
-}
-
-function Test-LoopbackAddress([string]$endpoint) {
-  return $endpoint -match ':127\.0\.0\.1:' -or $endpoint -match '\s127\.0\.0\.1:' -or
-         $endpoint -match '\s::1:' -or $endpoint -match '\[::1\]'
-}
 
 function Get-GpuClientCount {
   $smi = Get-Command nvidia-smi -ErrorAction SilentlyContinue
@@ -94,36 +89,15 @@ function Get-GpuClientCount {
   return @($out | Where-Object { $_.Trim() }).Count
 }
 
-# Harmless arguments: enough to get the process through static initialization and into main, which
-# is where a listener would already have been opened, and not enough to do any work. A Tracy client
-# opens its socket before main runs, so even a binary that rejects these arguments has answered the
-# question by the time it prints its usage.
-function Get-ProbeArgs([string]$name) {
-  switch -Regex ($name) {
-    '_bench$'      { return @('--smoke', '--quiet', '--no-pin') }
-    '^engine-view$' { return @('--frames', '1', '--width', '64', '--height', '64') }
-    # engine-host is the one binary that listens on purpose (--listen, docs/subsystems/net.md): it is
-    # run with its listener open on a fresh path, answering one request and exiting, so the check
-    # sees the socket it opens and the firewall sees a new path bind it. Loopback raises no prompt.
-    # The backslashes are for Start-Process, which hands the command line on as written.
-    '^engine-host$' { return @('--listen', '127.0.0.1:0', '--request', '{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"engine.ping\"}') }
-    # engine-editor runs the same listener in process for its web shell (docs/subsystems/apps.md,
-    # "engine-editor"): one frame of the viewport alone in a 64-pixel window with the listener open,
-    # like engine-view's probe, so the check sees the socket it opens from a fresh path.
-    '^engine-editor$' { return @('--doc', (Join-Path $fresh 'editor-doc'), '--create', '--no-shell', '--listen', '127.0.0.1:0', '--frames', '1', '--width', '64', '--height', '64') }
-    '_tests$'      { return @('--help') }
-    default        { return @('--help') }
-  }
-}
-
-$exes = Get-ChildItem -Path $buildDir -Recurse -Include *.exe -File |
+$exes = @(Get-ChildItem -Path $buildDir -Recurse -Include *.exe -File |
   # `_deps` holds downloaded third-party binaries (the Slang release's slangc, slangd and friends),
   # which this build did not produce. slangc is run by the shader hot reload and is a compiler with
   # no socket; slangd is a language server this tree never starts, and starting it here would be
   # inventing a listener rather than finding one. They are audited by inspection instead
-  # (docs/ci/self-hosted-runners.md).
-  Where-Object { $_.FullName -notmatch '[\\/]_deps[\\/]' } |
-  Sort-Object FullName
+  # (docs/ci/self-hosted-runners.md). `CMakeFiles` holds the compiler-identification programs
+  # configure built, which are CMake's and not ours.
+  Where-Object { $_.FullName -notmatch '[\\/](_deps|CMakeFiles)[\\/]' } |
+  Sort-Object FullName)
 
 if ($exes.Count -eq 0) { throw "no executables under $buildDir" }
 
@@ -132,7 +106,7 @@ New-Item -ItemType Directory -Force -Path $fresh | Out-Null
 Write-Host "check-no-listeners: $($exes.Count) executable(s) from $Preset"
 Write-Host "check-no-listeners: fresh paths under $fresh"
 
-$before = Get-FirewallPrompts
+$before = @(Get-FirewallPrompts)
 $gpuBefore = Get-GpuClientCount
 Write-Host "check-no-listeners: firewall prompts before: $($before.Count)"
 if ($null -ne $gpuBefore) { Write-Host "check-no-listeners: GPU client processes before: $gpuBefore" }
@@ -140,10 +114,45 @@ if ($null -ne $gpuBefore) { Write-Host "check-no-listeners: GPU client processes
 $knownPids = [System.Collections.Generic.HashSet[int]]::new()
 foreach ($p in $before) { [void]$knownPids.Add([int]$p.ProcessId) }
 
-$blamed = @()
+$newPrompts = New-Object System.Collections.Generic.List[object]
+$observed = New-Object System.Collections.Generic.List[object]
 $notes = New-Object System.Collections.Generic.List[string]
-$openListeners = New-Object System.Collections.Generic.List[string]
+$started = New-Object System.Collections.Generic.List[string]
+$knownListeners = @(Get-KnownListeners)
 $sampled = 0
+
+# A prompt that was not up before the run is recorded against whoever was running, and taken down
+# at once (unless -KeepPrompts): one left up for the rest of the run is a GPU context held for it.
+function Receive-NewPrompts([string]$blame) {
+  foreach ($prompt in @(Get-FirewallPrompts)) {
+    if (-not $knownPids.Add([int]$prompt.ProcessId)) { continue }
+    $newPrompts.Add([pscustomobject]@{ ProcessId = [int]$prompt.ProcessId; Blame = $blame })
+    if ($KeepPrompts) {
+      Write-Host "  prompt PickerHost pid $($prompt.ProcessId) left up (-KeepPrompts); it holds a GPU context" -ForegroundColor Red
+    } else {
+      # The same as pressing Cancel. Never "Allow", and never a firewall rule.
+      Write-Host "  dismissing PickerHost pid $($prompt.ProcessId) (equivalent to Cancel), raised while running $blame" -ForegroundColor Red
+      Stop-Process -Id $prompt.ProcessId -Force -ErrorAction SilentlyContinue
+    }
+  }
+}
+
+# Every process whose image is under the run's directory is this run's: end it. Called after each
+# binary, so a child a copy left behind does not outlive it, and from `finally`, so an error in
+# the loop does not leave one running either.
+function Stop-OwnProcesses([string]$why) {
+  $own = @(Get-OwnProcesses -Under $fresh)
+  foreach ($p in $own) {
+    $notes.Add("ended $([IO.Path]::GetFileName($p.ExecutablePath)) (pid $($p.ProcessId)), $why")
+    Stop-Process -Id $p.ProcessId -Force -ErrorAction SilentlyContinue
+  }
+  foreach ($p in $own) { Wait-Process -Id $p.ProcessId -Timeout 5 -ErrorAction SilentlyContinue }
+}
+
+$basePath = $env:PATH
+$lockSwitch = $env:ENGINE_GPU_LOCK_ON_DEVICE
+if (-not $lockSwitch) { $env:ENGINE_GPU_LOCK_ON_DEVICE = '1' }
+$oldErrorMode = Set-QuietErrorMode
 
 try {
   foreach ($exe in $exes) {
@@ -154,93 +163,102 @@ try {
     Copy-Item -LiteralPath $exe.FullName -Destination $copy
 
     $name = [IO.Path]::GetFileNameWithoutExtension($exe.Name)
-    $probeArgs = Get-ProbeArgs $name
-    $sp = @{ FilePath = $copy; PassThru = $true; NoNewWindow = $true
-             RedirectStandardOutput = (Join-Path $slot 'out.txt')
-             RedirectStandardError = (Join-Path $slot 'err.txt') }
-    if ($probeArgs.Count -gt 0) { $sp.ArgumentList = $probeArgs }
+    $probeArgs = @(Get-ProbeArgs -Name $name -Scratch $slot)
+    $known = $knownListeners -contains $name
+    $holds = Test-HoldsUntilListening $name
+    $started.Add($name)
 
-    $proc = Start-Process @sp
+    # Started directly rather than through Start-Process: the arguments are passed as a list (no
+    # command-line quoting), the copy gets its own PATH, and its standard input is a pipe this run
+    # holds, which is how engine-host is kept serving until its listener has been seen. The loader
+    # looks beside the image first and on PATH last; the copy is alone in its directory, so the build
+    # directory it came from goes on PATH for the DLLs it needs. Output is drained by two reads that
+    # end when the process's pipes close, and written beside the copy (kept with -KeepTemp).
+    $psi = [System.Diagnostics.ProcessStartInfo]::new($copy)
+    foreach ($a in $probeArgs) { $psi.ArgumentList.Add($a) }
+    $psi.UseShellExecute = $false
+    $psi.CreateNoWindow = $true
+    $psi.WorkingDirectory = $slot
+    $psi.RedirectStandardInput = $true
+    $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError = $true
+    $psi.Environment['PATH'] = "$($exe.DirectoryName);$basePath"
+    $proc = [System.Diagnostics.Process]::Start($psi)
+    $outRead = $proc.StandardOutput.ReadToEndAsync()
+    $errRead = $proc.StandardError.ReadToEndAsync()
+    if (-not $holds) { $proc.StandardInput.Close() }
 
-    # Sample the live process before waiting on it. One sample is enough for the listener this
-    # guards against, which is opened during start-up and held for the process's whole life.
+    # A sample counts as live only when the process had not exited before it was taken. A known
+    # listener is sampled until its loopback endpoint appears (or it exits, or -ListenSeconds pass);
+    # anything else a few times at start, which is enough for a listener opened during start-up and
+    # held for the process's life — and a process that exits before its first sample is answered by
+    # the prompt count alone.
     $seen = @()
-    $sawProcess = $false
-    for ($attempt = 0; $attempt -lt 3; $attempt++) {
-      if ($proc.HasExited -and $attempt -gt 0) { break }
-      $sawProcess = $true
-      $seen += Get-ProcessListeners $proc.Id
-      if ($proc.HasExited) { break }
-    }
-    if ($sawProcess) { $sampled++ }
-    foreach ($endpoint in ($seen | Sort-Object -Unique)) {
-      if (Test-LoopbackAddress $endpoint) {
-        $notes.Add("$name listens on loopback: $endpoint (allowed; no prompt, no reachability)")
-      } else {
-        $openListeners.Add("$name $endpoint")
+    $live = $false
+    if ($known) {
+      $deadline = (Get-Date).AddSeconds($ListenSeconds)
+      while (-not $proc.HasExited -and (Get-Date) -lt $deadline) {
+        $now = @(Get-ProcessListeners $proc.Id)
+        $live = $true
+        $seen += $now
+        if (@($now | Where-Object { Test-LoopbackAddress $_ }).Count -gt 0) { break }
+        Start-Sleep -Milliseconds 250
+      }
+    } else {
+      for ($attempt = 0; $attempt -lt 3 -and -not $proc.HasExited; $attempt++) {
+        $seen += Get-ProcessListeners $proc.Id
+        $live = $true
       }
     }
+    # Seen, or given up on: engine-host is told to exit by its input closing.
+    if ($holds) { try { $proc.StandardInput.Close() } catch { } }
 
     if (-not $proc.WaitForExit($TimeoutSeconds * 1000)) {
+      # Once more before it is ended: a listener opened late (after a device, say) is still seen.
+      $seen += Get-ProcessListeners $proc.Id
       $notes.Add("$name did not exit within ${TimeoutSeconds}s; stopped")
       try { $proc.Kill($true) } catch { }
       $proc.WaitForExit(5000) | Out-Null
     } elseif ($proc.ExitCode -lt 0) {
       # 0xC0000135 and friends: the process never reached main, so it never answered the question.
-      $notes.Add(("$name exited 0x{0:X8} — it may not have started at all" -f $proc.ExitCode))
+      $notes.Add(("$name exited 0x{0:X8} - it may not have started at all" -f $proc.ExitCode))
     }
+    try {
+      if ($outRead.Wait(5000)) { [IO.File]::WriteAllText((Join-Path $slot 'out.txt'), $outRead.Result) }
+      if ($errRead.Wait(5000)) { [IO.File]::WriteAllText((Join-Path $slot 'err.txt'), $errRead.Result) }
+    } catch { }
+    if ($live) { $sampled++ }
+    foreach ($endpoint in ($seen | Sort-Object -Unique)) {
+      $observed.Add([pscustomobject]@{ Name = $name; Endpoint = $endpoint })
+    }
+    Stop-OwnProcesses "left running after $name"
 
     # Blame is assigned while the run is still fresh: a prompt appears within a second or two of the
     # bind, so the binary that was running is the binary that listened.
-    foreach ($prompt in Get-FirewallPrompts) {
-      if ($knownPids.Add([int]$prompt.ProcessId)) { $blamed += "$name (PickerHost pid $($prompt.ProcessId))" }
-    }
+    Receive-NewPrompts $name
   }
 
   # Prompts are raised asynchronously; give the last binary's a chance to show up.
   Start-Sleep -Seconds $SettleSeconds
-  $after = Get-FirewallPrompts
-  foreach ($prompt in $after) {
-    if ($knownPids.Add([int]$prompt.ProcessId)) { $blamed += "(after the run) PickerHost pid $($prompt.ProcessId)" }
-  }
+  Receive-NewPrompts '(after the run)'
+  $after = @(Get-FirewallPrompts)
   $gpuAfter = Get-GpuClientCount
+  $verdict = Resolve-ListenerVerdict -Observed $observed.ToArray() -NewPrompts $newPrompts.ToArray() -Executables $exes.Count -Started $started.ToArray()
 
   Write-Host ''
-  foreach ($n in $notes) { Write-Host "  note: $n" -ForegroundColor Yellow }
-  Write-Host "check-no-listeners: firewall prompts after: $($after.Count) (before: $($before.Count))"
-  Write-Host "check-no-listeners: sampled the live endpoints of $sampled of $($exes.Count) processes"
+  foreach ($n in @($notes) + @($verdict.Notes)) { Write-Host "  note: $n" -ForegroundColor Yellow }
+  Write-Host "check-no-listeners: firewall prompts after: $($after.Count) (before: $($before.Count); $($newPrompts.Count) raised during the run$(if (-not $KeepPrompts) { ', each dismissed' }))"
+  Write-Host "check-no-listeners: sampled the live endpoints of $sampled of $($exes.Count) processes (those still running when a sample was taken; the rest exited first and are answered by the prompt count alone)"
   if ($null -ne $gpuAfter) { Write-Host "check-no-listeners: GPU client processes after: $gpuAfter" }
-
-  $new = @($after | Where-Object { $_.ProcessId -notin ($before | ForEach-Object { $_.ProcessId }) })
-
-  if ($openListeners.Count -gt 0) {
-    Write-Host "check-no-listeners: $($openListeners.Count) non-loopback endpoint(s) observed" -ForegroundColor Red
-    foreach ($l in $openListeners) { Write-Host "  $l" -ForegroundColor Red }
+  foreach ($l in $verdict.Lines) {
+    Write-Host $l -ForegroundColor $(if ($verdict.Code -eq 0) { 'Green' } else { 'Red' })
   }
-
-  if ($new.Count -eq 0 -and $openListeners.Count -eq 0) {
-    Write-Host "check-no-listeners: OK — no new firewall prompt from $($exes.Count) new executable paths, and no non-loopback endpoint" -ForegroundColor Green
-    exit 0
-  }
-  if ($new.Count -eq 0) {
-    Write-Host '  The fix belongs in the binary or its dependency: bind 127.0.0.1, or do not listen.' -ForegroundColor Red
-    exit 1
-  }
-
-  Write-Host "check-no-listeners: $($new.Count) new firewall prompt(s)" -ForegroundColor Red
-  foreach ($b in $blamed) { Write-Host "  raised while running: $b" -ForegroundColor Red }
-  if ($KeepPrompts) {
-    Write-Host '  left up (-KeepPrompts). Dismiss them: every one holds a GPU context.' -ForegroundColor Red
-  } else {
-    # The same as pressing Cancel. Never "Allow", and never a firewall rule.
-    foreach ($p in $new) {
-      Write-Host "  dismissing PickerHost pid $($p.ProcessId) (equivalent to Cancel)"
-      Stop-Process -Id $p.ProcessId -Force -ErrorAction SilentlyContinue
-    }
-  }
-  Write-Host '  The fix belongs in the binary or its dependency: bind 127.0.0.1, or do not listen.' -ForegroundColor Red
-  exit 1
+  exit $verdict.Code
 } finally {
+  Stop-OwnProcesses 'at the end of the run'
+  Restore-ErrorMode $oldErrorMode
+  if (-not $lockSwitch) { Remove-Item Env:ENGINE_GPU_LOCK_ON_DEVICE -ErrorAction SilentlyContinue }
+  $env:PATH = $basePath
   if ($KeepTemp) {
     Write-Host "kept $fresh"
   } else {

@@ -1,0 +1,25 @@
+# The modules that have no tests/size_table.cpp, and why (tools/lint.ps1, rule `size-table`;
+# AGENTS.md, "Size table"). Every module that `engine_module(...)` declares has a size table with at
+# least one ENGINE_EXPECT_SIZE entry, compiled by its tests, or a line here. One line a module:
+#
+#     <module directory>: <why it has no table, and what would close the exemption>
+#
+# The lint refuses a line with no reason, a line naming a directory that declares no module, and a
+# line for a module that has a table now: an exemption is removed in the change that adds the table.
+# A module whose types are hot (kept per element of something the frame walks), mirrored on the GPU
+# or laid over bytes on disk has a table; the reasons below say which of the three a module lacks.
+
+core/hash: functions, the empty `Hash<T>` functors and `Sha1`'s digest state, used per hash computed and never stored per element, mirrored or written as bytes; a table is due with the first hashed-key type the module declares
+core/profiling: the zone macros and the startup trace's records (`TraceEvent`, `TraceSample`), kept for one process start and written out as JSON, never as bytes; a table is due when a record is kept per frame
+foundation/bench: the bench harness, whose types live for one bench run and whose output is JSON lines; a table is due only if a bench result becomes a binary format
+foundation/gpu_lock: the lock's lease is a JSON file and its hold a handful of fields per process; nothing is per element, mirrored or binary
+foundation/io: the VFS's mounts, handles and read requests, one per file or read in flight; the formats it reads are other modules', pinned by their tables; a table is due when io keeps a record per file that a frame walks (a streaming cache's index, say)
+foundation/net: the loopback server's sockets, connections, HTTP requests and WebSocket frames, one per connection or message, parsed from bytes rather than laid over them
+foundation/webview: a capability with one WebView2 host per window and nothing per element, mirrored or on disk; ADR-0027 asks a capability for a table, and this line is the stated answer while the module has no type to put in one
+domain/atlas: the repack's options and reports, one per material repacked; the images it writes go through image and texture, whose tables cover their bytes
+domain/content_build: build tasks, results and manifest entries, one per entry built; the containers it writes are geometry's and texture's formats, pinned by their tables
+domain/materials: the material packs' records, read from pack.json once per pack; nothing is per element, mirrored or binary
+domain/protocol: the method table, roles, leases and proposals, one per method or client; its messages are schema types (schemas/protocol.schema) carried as JSON
+domain/tileset: has on-disk types, `archive::Header` (64 bytes) and `archive::Entry` (24) in src/archive.h and the 32-byte tile and mask headers in src/tileset.cpp and src/masks.cpp, size-asserted where they are defined but not for alignment, and no table; closed by a change that moves the two record headers into a src/ header, adds tests/size_table.cpp with all four and removes this line
+systems/doc_scene: the document-to-scene bridge's change sets, one per transaction; nothing is per element, mirrored or binary
+systems/renderer: has GPU-mirrored types (`PairExpandParams`, 40 bytes, and `AlphaCoverageParams`, 64, in gpu_scene.h; `OverlayVertex`, 20, in overlay.h), size-asserted where they are defined but not for alignment, and no table; closed by a change that adds tests/size_table.cpp with those types to the renderer's CPU tests and removes this line

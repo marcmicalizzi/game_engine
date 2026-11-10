@@ -10,6 +10,7 @@
   A line may opt out with a trailing comment:
 
       // engine-lint: allow-std-container <reason>
+      // engine-lint: allow-std-function <reason>
       // engine-lint: allow-exceptions <reason>
       // engine-lint: allow-flecs <reason>
       // engine-lint: allow-temp-path <reason>
@@ -23,6 +24,10 @@
   which apply *only* inside tests/ and bench/ directories and nowhere else. A rule with a
   `PathPattern` applies only to files whose repository-relative path matches it, and a rule
   with `CodeOnly` reads a line with its comments removed.
+
+  One rule is about modules rather than lines (`size-table`): every module `engine_module(...)`
+  declares has a compiled tests/size_table.cpp with at least one entry, or a line with its reason in
+  tools/size-table-exemptions.txt.
 #>
 [CmdletBinding()]
 param(
@@ -49,6 +54,16 @@ $rules = @(
   @{ Name = 'std-container'; Marker = 'allow-std-container'; Scope = 'engine'
      Pattern = 'std::(map|multimap|set|multiset|unordered_map|unordered_multimap|unordered_set|unordered_multiset|list|forward_list|deque|shared_ptr|weak_ptr|make_shared)\b'
      Message = 'banned node-based container or shared ownership; use core/containers or unique ownership' },
+  # AGENTS.md bans std::function "in hot paths", and a lint cannot tell a hot path, so the rule is
+  # the container rule's shape: every use in engine code outside tests and benches is reported, and
+  # a use in cold initialisation says so with the marker and its reason. A type-erased callable
+  # allocates for a capture past its small buffer and calls through a pointer the optimiser cannot
+  # see through; the engine's callbacks are a function pointer and a context (core/jobs' Job,
+  # sim::TimingWheel, store::EventLog's visitors) or a template parameter. Comments are not read
+  # (`CodeOnly`): the five places that say why they do not use one are not uses.
+  @{ Name = 'std-function'; Marker = 'allow-std-function'; Scope = 'engine'; CodeOnly = $true
+     Pattern = 'std::(move_only_function|copyable_function|function)\b'
+     Message = 'std::function in engine code; take a function pointer and a context, or a template parameter, or mark cold initialisation with // engine-lint: allow-std-function <reason>' },
   @{ Name = 'exceptions'; Marker = 'allow-exceptions'; Scope = 'engine'
      Pattern = '^\s*(throw\b|try\s*\{|catch\s*\()|\bstd::(exception|runtime_error|logic_error)\b'
      Message = 'exceptions are not used across engine code; return a result' },
@@ -193,6 +208,65 @@ foreach ($dir in $scanRoots) {
         }
       }
     }
+  }
+}
+
+# `size-table` (AGENTS.md, "Size table"; ADR-0019, ADR-0027). "Every hot type has an entry in its
+# module's tests/size_table.cpp" cannot be checked as written — a lint cannot tell a hot type — but
+# what it rests on can: every module that `engine_module(...)` declares has a tests/size_table.cpp
+# with at least one ENGINE_EXPECT_SIZE entry, that its CMakeLists.txt compiles (a table nothing
+# builds pins nothing), or a line in tools/size-table-exemptions.txt saying why it has none and what
+# would close it. The exemptions are one list the lint reads rather than a marker beside each
+# module's tests because the list is where a reviewer sees every module without a table at once,
+# because writing one needs no edit to a module that another change owns, and because the lint can
+# hold it honest: a line with no reason, a line naming no module and a line for a module that has a
+# table now are each refused, so the list only shrinks as tables arrive. Read from the root the lint
+# is given, so a fixture tree brings its own.
+$exemptRel = 'tools/size-table-exemptions.txt'
+$exemptPath = Join-Path $Root $exemptRel
+$exempt = @{}
+if (Test-Path -LiteralPath $exemptPath) {
+  $exemptLines = @(Get-Content -LiteralPath $exemptPath)
+  for ($i = 0; $i -lt $exemptLines.Count; $i++) {
+    $line = $exemptLines[$i]
+    if ($line -match '^\s*(#|$)') { continue }
+    if ($line -match '^\s*([^:\s]+)\s*:\s*(\S.*)$') {
+      $exempt[$Matches[1].TrimEnd('/')] = $i + 1
+    } else {
+      $violations.Add(("{0}:{1}: [size-table] an exemption is ""<module directory>: <reason>"", and the reason says why the module has no table and what would close it`n    {2}" -f $exemptRel, ($i + 1), $line.Trim()))
+    }
+  }
+}
+$moduleDirs = @{}
+foreach ($layer in $engineRoots) {
+  $layerDir = Join-Path $Root $layer
+  if (-not (Test-Path -LiteralPath $layerDir)) { continue }
+  $lists = Get-ChildItem -Path $layerDir -Recurse -Filter CMakeLists.txt -File |
+    Where-Object { $_.FullName -notmatch '[\\/](third_party|build|_deps)[\\/]' }
+  foreach ($list in $lists) {
+    $text = Get-Content -LiteralPath $list.FullName -Raw
+    if ($text -notmatch '(?m)^\s*engine_module\s*\(') { continue }
+    $dir = ([IO.Path]::GetRelativePath($Root, $list.DirectoryName)) -replace '\\', '/'
+    $moduleDirs[$dir] = $true
+    $table = Join-Path $list.DirectoryName 'tests/size_table.cpp'
+    if (Test-Path -LiteralPath $table) {
+      if (-not (Select-String -LiteralPath $table -Pattern '^\s*ENGINE_EXPECT_SIZE\s*\(' -Quiet)) {
+        $violations.Add("$dir/tests/size_table.cpp:1: [size-table] a size table holds at least one ENGINE_EXPECT_SIZE(size, align, Type) entry; an empty one pins nothing, see AGENTS.md ""Size table""")
+      }
+      if ($text -notmatch 'size_table\.cpp') {
+        $violations.Add("$dir/CMakeLists.txt:1: [size-table] tests/size_table.cpp is compiled by the module's tests (engine_module_tests SOURCES); a table nothing builds pins nothing")
+      }
+      if ($exempt.ContainsKey($dir)) {
+        $violations.Add("${exemptRel}:$($exempt[$dir]): [size-table] $dir has a size table now; remove its exemption in the same change")
+      }
+    } elseif (-not $exempt.ContainsKey($dir)) {
+      $violations.Add("$dir/CMakeLists.txt:1: [size-table] a module has tests/size_table.cpp with its hot, GPU-mirrored and on-disk types (ENGINE_EXPECT_SIZE(size, align, Type)), or a line in $exemptRel saying why it has none and what would close it; see AGENTS.md ""Size table""")
+    }
+  }
+}
+foreach ($dir in $exempt.Keys) {
+  if (-not $moduleDirs.ContainsKey($dir)) {
+    $violations.Add("${exemptRel}:$($exempt[$dir]): [size-table] $dir declares no module (no engine_module(...) in its CMakeLists.txt); remove the line")
   }
 }
 
