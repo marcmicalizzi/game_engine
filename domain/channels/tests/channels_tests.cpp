@@ -1559,3 +1559,57 @@ TEST_CASE("channels: the flood bed's width follows the valley's confinement") {
     if (c.half >= 16) CHECK(on_bed > 20);
   }
 }
+
+// ---- W93: a line across a slope
+// ---------------------------------------------------------------------
+
+namespace {
+// A V whose floor swings 18 m either way every 80 m down a 1.2 % fall, between sides at 0.35: the
+// low-pass cuts its bends' corners, so the line runs across the valley's side there.
+f64 zigzag(const void*, i64 x, i64 z) noexcept {
+  const f64 xx = static_cast<f64>(x) / 1000.0, zz = static_cast<f64>(z) / 1000.0;
+  return .012 * zz + .35 * std::abs(xx - (128 + 18 * std::sin(zz * 6.283185307179586 / 80)));
+}
+}  // namespace
+
+// Stage 3's invariant: neither bank's ground (half the width across the line's heading) stands more
+// than half a depth under the ground at the line, so the cut has a bank on both sides.
+TEST_CASE("channels: a line across a slope is moved between its banks") {
+  const ChannelLayer p = stream_layer(1);
+  ChannelNetwork n;
+  std::string error;
+  REQUIRE(plan_channels(p, ground(zigzag), 1, nullptr, n, error));
+  u32 points = 0, half_bank = 0, no_bank = 0, moved = 0;
+  f64 worst = 0;
+  for (const ChannelLink& link : n.links) {
+    moved += link.bank_moved;
+    for (u32 i = 1; i + 1 < link.line.size(); ++i) {
+      const ChannelPoint& pt = link.line[i];
+      const f64 w = static_cast<f64>(pt.width_m), d = static_cast<f64>(pt.depth_m);
+      if (w < 1.0) continue;
+      const f64 tx = link.line[i + 1].at.x - link.line[i - 1].at.x;
+      const f64 tz = link.line[i + 1].at.z - link.line[i - 1].at.z;
+      const f64 tl = std::sqrt(tx * tx + tz * tz);
+      if (!(tl > 0)) continue;
+      const auto at = [&](f64 side) {
+        return zigzag(nullptr, std::llround((pt.at.x - tz / tl * side * .5 * w) * 1000.0),
+                      std::llround((pt.at.z + tx / tl * side * .5 * w) * 1000.0));
+      };
+      const f64 under = pt.at.y - std::min(at(1), at(-1));
+      ++points;
+      half_bank += under > .5 * d;
+      no_bank += under > 1.13 * d;  // the trapezoid's thalweg: the bank's ground under the bed
+      worst = std::max(worst, under / d);
+    }
+  }
+  MESSAGE("points " << points << ", a bank more than half a depth under the line at " << half_bank
+                    << ", under the bed at " << no_bank << ", the worst " << worst
+                    << " depths; moved " << moved);
+  // Measured (2026-11-10): 1,969 points, 486 moved; a bank more than half a depth under the line
+  // at 32 of them (100 after one round of the move) and under the bed at 12, the worst 1.23
+  // depths. Held: under 2 % and under 1 %.
+  REQUIRE(points > 500);
+  CHECK(moved > 0);
+  CHECK(half_bank * 100 <= points * 2);
+  CHECK(no_bank * 100 <= points);
+}

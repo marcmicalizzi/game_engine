@@ -378,6 +378,48 @@ and the bed's area) and `pools`.
 are the low-flow channel's; the bed between them is flat); braided threads; a bed whose level
 steps down terrace by terrace; the bed's own gravel (above).
 
+## A line across a slope
+
+(2026-11-10, roadmap W93; the POC's solver needs, 2.1 item 2: where a line runs across a slope the
+cut leaves a bench with no downhill bank.) **Measured before choosing.** `engine-content channels`
+now reports how the line stands on its ground: for every stretch at least a metre wide, the ground
+at the two bank tops (half the width across the line each way) against the cut's bed, and the
+line's heading against the ground's fall line over a width — `line_measured_m`,
+`line_by_fall_angle_m` (0-15, 15-30, 30-45, 45-60 and 60-90 degrees), `half_bank_m` and
+`no_bank_m` (a bank's ground more than half the cut's depth under the line's, and under the bed)
+with the same bins, and `no_bank_mean_slope`.
+
+On this row's scratch scene (a V with sides at 0.35 whose floor swings 18 m either way every 80 m,
+a plane-bed reach and a wide floor; 470 m of line a metre wide or more), before the move below:
+**16 m with less than half a bank, 12 of them at 60 to 90 degrees to the fall line, and none with
+no bank**. On the test valley of the same shape (`channels_tests.cpp`, "a line across a slope is
+moved between its banks"; 1,969 points) after one round of the move 100 points had less than half
+a bank and 12 none. A caution on the angle: on a valley's floor the fall line over a width is the
+valley side's wherever the line is off the floor's middle, so half of any line reads 60 to 90
+degrees (240 of the 470 m) without being wrong; the bank is the test, and the angle says which way
+the line runs where the bank is missing.
+
+**The line is what is wrong, not the edit.** A stream does not traverse a slope: D8 sends every
+cell to its steepest neighbour, so a stretch that runs across the fall with one bank missing was
+put there by what comes after the routing — the low-pass that takes the line off a 4 m lattice
+(sigma 6 m or two widths) cuts a bend's corner across the valley's side, and the meander rule
+offsets it again. W91's trough test holds the line's *centre* within half a depth of the trough's
+floor; a channel is a width wide, and what was left is where the centre passes and a bank does
+not. An edit that could raise would build a levee on a hillside, which is what W86's berms were
+and what read as "a raised canal between levees"; it was not built.
+
+**The line is moved between its banks** (`build_line`, after the trough test). Each point at
+least a metre wide is tested across its own heading: where a bank's ground stands more than half
+a depth under the ground at the point, the point moves toward that bank a quarter of the width at
+a time, a width at the most, until neither does. The moves are eased by three binomial passes,
+which takes some of each back, so the whole is done twice (a third round was measured to undo part
+of the second: 32 points with less than half a bank after two, 48 after three). The two ends stay
+where the junctions are; rills under a metre are left. `ChannelLink::bank_moved` and the summary's
+`bank_moved_points` count the points moved. **What is left** on the test valley: 32 of 1,969
+points (1.6 %) with less than half a bank and 12 (0.6 %) with none, the worst 1.23 depths under;
+the test holds 2 % and 1 %. They are where a width's move does not reach the floor, and a ribbon
+there is still narrowed or lowered by W91's fit.
+
 ## Reaches
 
 (2026-11-08, roadmap W90; the POC's v35 engine-needs, item 10, and the owner's walk, marks 2, 3 and
@@ -699,9 +741,9 @@ averaged over the source area; no braided reaches; the valley's confinement is n
 reach; **the line itself still kinks** where the trough test drew it back (turns left and right
 again inside two or three widths: the section averages them out, the cut's banks still follow
 them); a pool lies at its bend's apex and not downstream of it, as a real one does; undercut and
-turf banks are not the heightfield's to draw; the ribbon's fit narrows the water where the ground across the line is lower than its surface
-but does not move the cut, so on a cross-slope the cut's bench still has no downhill bank (the water
-narrows to what the bench holds); knickpoints are read from the ground's profile along the line, not
+turf banks are not the heightfield's to draw; the line is moved between its banks by a width at the most, so where the trough's floor is
+further off than that a bench with half a bank or none is left (1.6 % and 0.6 % of the test
+valley's points; the ribbon's fit still narrows the water there); knickpoints are read from the ground's profile along the line, not
 from rock strength; **the network is planned again on every load** (24–32 s on v35, T73's finding): caching it as
 a derived node needs the ground's identity, which `scene_gen::Context` does not expose (W90's report
 asks for it); the mouths read the exclusion's box for a fill body, not its traced flood.

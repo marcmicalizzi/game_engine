@@ -107,6 +107,9 @@ struct ChannelLink {
   f64 lip_convexity = 0;  // the knickpoints' second differences at their lips, summed
   u32 steep_left = 0;
   u32 trough_pulled = 0;
+  // W93 (channels.md, "A line across a slope"): the points moved across the line so that neither
+  // bank's ground stands more than half a depth under the line's.
+  u32 bank_moved = 0;
   // **W93** (channels.md, "The section", "The flood bed"), one per point of `line`: the section's
   // asymmetry, -1 to 1 — positive where the line bends left (toward (-dz, dx)), so the point bar
   // is on the left and the cut bank and the thalweg on the right; 0 at a riffle; where the point

@@ -152,6 +152,7 @@ int channels_command(int argc, char** argv) {
   channels::RibbonTrim trim;  // the ribbons' ends a body covers (W91 continuation)
   u32 reaches[7] = {};
   u64 steps[7] = {}, boulders = 0, clusters = 0, knickpoints = 0, steep_left = 0, pulled = 0;
+  u64 bank_moved = 0;
   f64 lip_convexity = 0;
   f64 region[4] = {1e300, 1e300, -1e300, -1e300}, border = 0;
   f64 metres = 0, area = 0;
@@ -215,6 +216,7 @@ int channels_command(int argc, char** argv) {
         lip_convexity += l.lip_convexity;
         steep_left += l.steep_left;
         pulled += l.trough_pulled;
+        bank_moved += l.bank_moved;
         // **W93** (channels.md, "The flood bed", "A line across a slope"): the metres of line
         // with a flood bed and the bed's area; the pools (a stretch on one side whose asymmetry
         // reaches half a bend's); and, stretch by stretch, how the line stands on its ground —
@@ -368,6 +370,7 @@ int channels_command(int argc, char** argv) {
       return list;
     };
     line["pools"] = JsonValue(section.pools);
+    line["bank_moved_points"] = JsonValue(bank_moved);
     line["flood_bed_m"] = JsonValue(std::round(section.flood_m));
     line["flood_bed_m2"] = JsonValue(std::round(section.flood_m2));
     line["line_measured_m"] = JsonValue(std::round(section.line_m));

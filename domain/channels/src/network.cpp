@@ -21,6 +21,9 @@ constexpr f64 k_sqrt2 = 1.4142135623730951;
 // How far, in depths, a point of the line may stand over the trough it runs in (the meander's test,
 // W86, and every point's, W91): half the depth, the water's own stage.
 constexpr f64 k_trough_rise = .5;
+// How many times the line is moved between its banks (below): the easing takes some of each move
+// back, and a third round was measured to undo part of the second.
+constexpr u32 k_bank_rounds = 2;
 
 struct Node {
   i64 h;
@@ -236,6 +239,52 @@ void build_line(const ChannelLayer& p, const ChannelNetwork& n, const scene_gen:
       ++link.trough_pulled;
       fx[i] = rx[i] + share[i] * (fx[i] - rx[i]);
       fz[i] = rz[i] + share[i] * (fz[i] - rz[i]);
+    }
+  }
+  // **The line between its banks** (W93; channels.md, "A line across a slope"). The trough test
+  // above holds the line's centre within half a depth of the trough's floor; a channel is a
+  // width wide, and where the ground falls across it one bank's top can stand more than half a
+  // depth under the centre's ground while the centre passes: the cut then has a bench there and
+  // no bank on the downhill side. A stream does not traverse a slope, so the line is what is
+  // wrong, and it is moved: across its own heading toward the lower bank, a quarter of the width
+  // at a time and a width at the most, until neither bank's ground (half the width either way)
+  // stands more than `k_bank_fall` of the depth under the ground at the point. The moves are
+  // eased along the line by three binomial passes, which takes a little of each move back, so
+  // the whole is done `k_bank_rounds` times; the two ends stay where the junctions are.
+  // Rills under a metre wide are left: the lattice the cut is drawn on is a quarter of that.
+  link.bank_moved = 0;
+  for (u32 round = 0; round < k_bank_rounds; ++round) {
+    constexpr f64 k_bank_fall = .5;
+    Vector<f64> move(m, 0.0), nx(m, 0.0), nz(m, 0.0);
+    for (u32 i = 1; i + 1 < m; ++i) {
+      const f64 tx = fx[i + 1] - fx[i - 1], tz = fz[i + 1] - fz[i - 1];
+      const f64 tl = std::sqrt(tx * tx + tz * tz);
+      const f64 wi = hydraulic(wide(p.width_at_km2_m), wide(p.width_exponent), pa[i]);
+      if (tl <= 0 || wi < 1.0) continue;
+      nx[i] = -tz / tl;
+      nz[i] = tx / tl;
+      const f64 di = hydraulic(wide(p.depth_at_km2_m), wide(p.depth_exponent), pa[i]);
+      f64 across = 0;
+      for (u32 tries = 0; tries < 4; ++tries) {
+        const f64 cx = fx[i] + nx[i] * across, cz = fz[i] + nz[i] * across;
+        const f64 left = ground_at(ground, cx + nx[i] * .5 * wi, cz + nz[i] * .5 * wi);
+        const f64 right = ground_at(ground, cx - nx[i] * .5 * wi, cz - nz[i] * .5 * wi);
+        if (ground_at(ground, cx, cz) - std::min(left, right) <= k_bank_fall * di) break;
+        across += (left < right ? .25 : -.25) * wi;
+      }
+      move[i] = across;
+    }
+    for (u32 pass = 0; pass < 3; ++pass) {
+      Vector<f64> next = move;
+      for (u32 i = 1; i + 1 < m; ++i)
+        next[i] = .25 * move[i - 1] + .5 * move[i] + .25 * move[i + 1];
+      move = std::move(next);
+    }
+    for (u32 i = 1; i + 1 < m; ++i) {
+      if (move[i] == 0) continue;
+      if (round == 0) ++link.bank_moved;
+      fx[i] += nx[i] * move[i];
+      fz[i] += nz[i] * move[i];
     }
   }
   link.line.clear();
