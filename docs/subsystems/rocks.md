@@ -99,8 +99,9 @@ face agrees and a face that silently kept its own dip would draw beds crossing t
 `from_formation` out while it is true and `formation` and `world_origin` out while the field is
 absent, so no recipe written before keeps anything but the key it had (`canonical_rock_json`). A
 field out of the scene's ranges is refused with the scene's sentence, prefixed
-`engine.rocks.Cliff.`. Boulders, outcrops and scree do not read the field yet (their recipes have
-no world origin), and the `cliffs` generator does not yet copy the scene's field into the faces it
+`engine.rocks.Cliff.`. Boulders, outcrops and scree recipes do not read the field yet (their recipes
+have no world origin); the `deposits` generator's talus and shed blocks do, through
+`DepositLayer.formation` ([What a face sheds](#what-a-face-sheds), G143); and the `cliffs` generator does not yet copy the scene's field into the faces it
 writes (its owner's change): a hand-written recipe, or a generator that fills both fields, is how a
 face joins it today.
 
@@ -825,7 +826,7 @@ the scheduler, or another capability, and it can be removed from the build the s
 | Registration point | This capability | Status |
 |---|---|---|
 | Capabilities it requires | none | this capability stands alone |
-| Component and event types | `domain/rocks/schemas/rocks.schema`: `RockType`, `RockShape`, `RockMaterial`, `Boulder`, `Outcrop`, `Scree`, `CliffPoint`, `Cliff`, `RockFile`, `DepositPatch`, `DepositLayer` | parameters, not components: a rock has no runtime state |
+| Component and event types | `domain/rocks/schemas/rocks.schema`: `RockType`, `RockShape`, `RockMaterial`, `Boulder`, `Outcrop`, `Scree`, `CliffPoint`, `Cliff`, `RockFile`, `DepositBlock`, `DepositPatch`, `DepositLithology`, `DepositLayer` | parameters, not components: a rock has no runtime state |
 | Tick scheduler entry | none | the solver runs at content-build time and has no tick |
 | Render-graph passes | none | a rock is a cluster mesh like any other |
 | Content-build derived step | `engine-content rocks`, mesh generators `rock` and `deposit` (and through them `build`, `build-all`) | [the build](#the-build): keyed by the canonical parameters and `k_rocks_version` |
@@ -835,7 +836,7 @@ the scheduler, or another capability, and it can be removed from the build the s
 | LOD policy | the budget ladder, then the cluster DAG's | [the budget ladder](#the-budget-ladder) |
 | Determinism | `rocks::k_determinism` = `derived`; the same bytes on every toolchain | [above](#determinism) |
 | Zero cost when unused | nothing runs unless a scene names `cliffs` / `deposits` or a `.rock.json` / `.deposit.json` mesh | plan 11 §11.10: absent work |
-| Tests and size table | `tests/rocks_tests.cpp`, `tests/cliff_tests.cpp`, `tests/deposits_tests.cpp`, `tests/size_table.cpp` (`RockReport`, 36 bytes; `CliffReport`, 76; `DepositPlan`, 96) | written |
+| Tests and size table | `tests/rocks_tests.cpp`, `tests/cliff_tests.cpp`, `tests/deposits_tests.cpp`, `tests/deposits_cone_tests.cpp`, `tests/size_table.cpp` (`RockReport`, 36 bytes; `CliffReport`, 76; `DepositPlan`, 176; `DepositPile`, 72; `DepositPlanBlock`, 128) | written |
 | Bench | none | no hot path |
 | Removal proof | `ENGINE_WITH_ROCKS`, off in the minimal build | works |
 
@@ -903,7 +904,8 @@ erosion rate or rockfall hazard prediction is implied; the talus conserves the s
 given, not a mass balance through time.
 
 The region is the complete catchment for this bake. Its boundary admits no unknown inflow.
-Changing it can change drainage and deposits. The entire region is solved once on `open`, then
+Changing it can change drainage and deposits. The entire region is planned once on `open` (no patch's
+mesh is solved there: [A tile solves](#a-tile-solves)), then
 split into patches aligned to world tiles (`patch_m`, default 8 m), each at most 32 m and
 64 cells across. The patch edge divides the tile and is a whole number of sample spacings.
 `expand` and
@@ -1102,6 +1104,36 @@ normals are `normalize(-sx, 1, -sz)` from it: the same on both sides of a border
 central differences over its own samples. Buried undersides and walls keep their triangles'
 normals. The G128 mesh pin moved to 625669387871748774 and the container pin to
 13439161428700819251 with it.
+### A tile solves
+
+Until G143's fourth stage the generator's `open` solved every patch's mesh of the region to check
+its triangle budget before writing its recipe, so opening a region cost every patch's mesh, near
+or not ("nothing exists before its tile"). `open` now plans the region, writes each patch's recipe
+(`deposit-<hash>.deposit.json`, as the cliffs generator writes its faces' `.rock.json`) and checks
+it with `deposit_patch_fits`, every refusal `solve_deposit` makes without building the mesh (the
+bed's cells and surface triangles against the budget). A patch's mesh is solved when the host
+builds the mesh its tile names, through the mesh generator registry (`deposit`) and the
+derived-data cache, keyed by the recipe; a second world that names the same patch reads it from
+the cache. `deposit_solve_count()` counts the meshes built in a process, and the cost case holds
+`open` to none.
+
+| Measured (`deposits: what a tile of cones and shed blocks costs`, the gullied test face, 48 m region at 0.5 m, 36 patches) | msvc-release | msvc-debug |
+|---|---:|---:|
+| The plan alone (the supply rule, the edge, the blocks) | 7.5 ms | 29 ms |
+| `open` before stage 4 (plan, recipes, every patch solved) | 1,164 ms | 7,141 ms |
+| `open` after (plan, recipes, every patch checked, none solved) | 153 ms | 278 ms |
+| A 16 m tile's activation: its four patches' containers built (solve, cluster DAG) | 804 ms | 3,217 ms |
+| The cost case's own time | | 3.6 s (12.8 s before) |
+
+Shared machine, 2026-11-10: two compiler processes of other agents running, CPU load 25-48% by
+`Win32_Processor.LoadPercentage` before and after the release runs, 16.7 GB free; upper bounds, one
+run each. The tile's activation is the mesh build a host does once a recipe, then reads from the
+derived-data cache. Triangles on that tile: 127,608 at the finest form over 248.5 m² of bed (514 a
+m², nearly all in the 64 representative fragments a patch at the finest rung their share allows),
+220 at the coarsest (0.9 a m²); 4 instances, each a merged mesh, carrying 29 blocks. Resident for an
+entry's life: the plan's 176-byte record, its per-sample arrays (ground 8 bytes, thickness, coarse,
+sink 4 each, slope 8, drainage 8; with a formation one `RockType`), 72 bytes a pile and 128 a
+block; it scales with the region's samples, not the world's size.
 ### Foothill exposure and repeated-material limits
 
 [G132's v29 controls](../experiments/v29-cliff-diagnosis.md) distinguish the continuous authored

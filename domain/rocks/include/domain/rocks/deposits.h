@@ -81,6 +81,11 @@ bool plan_deposits(const DepositLayer& layer, const scene_gen::Ground& ground, D
 f64 deposit_convergence(const DepositPlan& plan, u32 i, u32 scale_samples);
 bool deposit_patch_in_range(const DepositPatch& patch, std::string& error);
 bool solve_deposit(const DepositPatch& patch, assets::MeshData& out, std::string& error);
+// Every refusal `solve_deposit` would make, without building the mesh (G143; rocks.md, "A tile
+// solves"): what the generator's `open` checks each patch with, so it solves none.
+bool deposit_patch_fits(const DepositPatch& patch, std::string& error);
+// How many times `solve_deposit` has built a mesh in this process: a statistic for tests.
+u64 deposit_solve_count();
 u64 deposit_source_hash(const DepositPatch& patch);
 bool build_deposit_container(const DepositPatch& patch, const geometry::ClusterLodOptions& lod,
                              u32 page_bytes, geometry::ClusterFileData& out, std::string& error,

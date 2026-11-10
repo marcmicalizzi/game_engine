@@ -211,9 +211,10 @@ bool open(const JsonValue& params, const scene_gen::Context& context, void** sta
         if (votes[best] > 0) p.type = static_cast<RockType>(best);
       }
       if (!deposit_patch_in_range(p, why)) return refused(error, why);
-      // Validate capacity before returning a scene that would fail later in its mesh build.
-      assets::MeshData checked;
-      if (!solve_deposit(p, checked, why)) return refused(error, why);
+      // Validate capacity before returning a scene that would fail later in its mesh build, without
+      // building it (G143): the patch is solved when its tile's mesh is built through the mesh
+      // generator registry and the derived-data cache, as the cliffs' recipes are.
+      if (!deposit_patch_fits(p, why)) return refused(error, why);
       JsonWriteOptions compact;
       compact.pretty = false;
       const std::string text = write_json(schema::to_json(p), compact);

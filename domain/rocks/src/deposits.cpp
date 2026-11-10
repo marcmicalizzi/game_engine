@@ -12,6 +12,7 @@
 #include <domain/texture/material_textures.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <limits>
 
@@ -772,12 +773,15 @@ bool deposit_patch_in_range(const DepositPatch& p, std::string& error) {
   return true;
 }
 
-bool solve_deposit(const DepositPatch& p, assets::MeshData& out, std::string& error) {
-  out = {};
+namespace {
+// The bed's cells (with the bridges at diagonal-only contacts) and its surface triangles, and the
+// refusals that need no mesh: what `open` checks for every patch and `solve_deposit` builds from.
+bool bed_cells(const DepositPatch& p, Vector<u8>& active, Vector<u32>& cells,
+               u32& surface_triangles, std::string& error) {
   if (!deposit_patch_in_range(p, error)) return false;
-  const u32 w = p.width, h = p.depth, n = w * h;
-  Vector<u8> active((w - 1) * (h - 1), 0);
-  Vector<u32> cells;
+  const u32 w = p.width, h = p.depth;
+  active.assign((w - 1) * (h - 1), 0);
+  cells.clear();
   for (u32 z = 0; z + 1 < h; ++z)
     for (u32 x = 0; x + 1 < w; ++x) {
       const u32 a = z * w + x;
@@ -819,7 +823,7 @@ bool solve_deposit(const DepositPatch& p, assets::MeshData& out, std::string& er
     return x >= 0 && z >= 0 && x < static_cast<i32>(w - 1) && z < static_cast<i32>(h - 1) &&
            active[static_cast<u32>(z) * (w - 1) + static_cast<u32>(x)] != 0;
   };
-  u32 surface_triangles = 4 * cells.size();
+  surface_triangles = 4 * cells.size();
   for (u32 a : cells) {
     const i32 x = static_cast<i32>(a % w), z = static_cast<i32>(a / w);
     surface_triangles += 2u * static_cast<u32>(!present(x - 1, z) + !present(x + 1, z) +
@@ -827,6 +831,32 @@ bool solve_deposit(const DepositPatch& p, assets::MeshData& out, std::string& er
   }
   if (static_cast<u64>(surface_triangles) + 192ull * p.fragments > p.triangle_budget)
     return fail(error, "patch triangle_budget (surface plus every fragment at minimum rung)");
+  return true;
+}
+std::atomic<u64> g_solves{0};
+}  // namespace
+
+bool deposit_patch_fits(const DepositPatch& p, std::string& error) {
+  Vector<u8> active;
+  Vector<u32> cells;
+  u32 surface_triangles = 0;
+  return bed_cells(p, active, cells, surface_triangles, error);
+}
+
+u64 deposit_solve_count() { return g_solves.load(std::memory_order_relaxed); }
+
+bool solve_deposit(const DepositPatch& p, assets::MeshData& out, std::string& error) {
+  out = {};
+  Vector<u8> active;
+  Vector<u32> cells;
+  u32 surface_triangles = 0;
+  if (!bed_cells(p, active, cells, surface_triangles, error)) return false;
+  g_solves.fetch_add(1, std::memory_order_relaxed);
+  const u32 w = p.width, h = p.depth, n = w * h;
+  auto present = [&](i32 x, i32 z) {
+    return x >= 0 && z >= 0 && x < static_cast<i32>(w - 1) && z < static_cast<i32>(h - 1) &&
+           active[static_cast<u32>(z) * (w - 1) + static_cast<u32>(x)] != 0;
+  };
   u32 rung = 4;
   const u32 each = p.fragments > 0 ? (p.triangle_budget - surface_triangles) / p.fragments : 0;
   for (u32 r : k_grid_rungs)

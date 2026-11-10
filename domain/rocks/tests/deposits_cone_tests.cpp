@@ -623,10 +623,19 @@ TEST_CASE("deposits: what a tile of cones and shed blocks costs (measured, print
   const auto* desc = scene_gen::GeneratorRegistry::global().find_placement("deposits");
   void* state = nullptr;
   std::string error;
+  DepositPlan alone;
+  const auto planned = std::chrono::steady_clock::now();
+  REQUIRE(plan_deposits(p, c.ground, alone, error));
+  const f64 plan_ms =
+      std::chrono::duration<f64, std::milli>(std::chrono::steady_clock::now() - planned).count();
+  // `open` plans and checks every patch, and solves none (G143, stage 4): a patch is solved
+  // when its tile's mesh is built.
+  const u64 solves = deposit_solve_count();
   const auto opened = std::chrono::steady_clock::now();
   REQUIRE_MESSAGE(desc->open(schema::to_json(p), c, &state, &error), error);
   const f64 open_ms =
       std::chrono::duration<f64, std::milli>(std::chrono::steady_clock::now() - opened).count();
+  CHECK(deposit_solve_count() == solves);
   scene_gen::Placements tile;
   REQUIRE(desc->tile(state, {1, 1}, c, tile, &error));  // the tile holding the middle cone's foot
   Vector<scene_gen::PlacementMesh> meshes;
@@ -664,7 +673,7 @@ TEST_CASE("deposits: what a tile of cones and shed blocks costs (measured, print
   MESSAGE("tile (1,1): ", tile.instances.size(), " instances (merged meshes), ", blocks,
           " blocks as geometry, ", area, " m2 of bed; finest ", leaf, " triangles (",
           static_cast<f64>(leaf) / area, " a m2), coarsest ", root, " (",
-          static_cast<f64>(root) / area, " a m2); region open ", open_ms,
+          static_cast<f64>(root) / area, " a m2); plan ", plan_ms, " ms, region open ", open_ms,
           " ms, the tile's patches ", build_ms, " ms");
   CHECK(tile.instances.size() <= 4);  // a 16 m tile of 8 m patches: four merged meshes at most
   CHECK(root < leaf);
