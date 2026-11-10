@@ -3,7 +3,9 @@
 **Far-ground error controls (F20, 2026-10-26).** Beside `--terrain-far <0..8>`, engine-view takes
 `--terrain-far-error-px <0..1024>` (zero: existing constants),
 `--terrain-far-error-per-m <0..1024>` (the scene's measured height-error envelope in metres per
-metre of spacing), and `--terrain-far-ratio <1..128>` (explicit override, winning over the rule).
+metre of spacing), and `--terrain-far-ratio <0..128>` (explicit override, winning over the rule;
+0, the default, is no override — the range the wire's `terrain_far_ratio` takes, which the flag
+refused until T78, 2026-11-09).
 The ratio must still divide the world tile and satisfy its hole-mask limit. The corresponding
 `renderer.terrain.far_error_px`, `.far_error_per_m`, `.far_ratio` tunables default to zero;
 zero settings take those tunables. A positive pixel request without a measured envelope is

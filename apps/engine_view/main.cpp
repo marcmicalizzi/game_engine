@@ -400,6 +400,7 @@ constexpr const char* k_usage =
     "  --terrain-far-error-px <px>  derive far spacing from a measured scene error (0: ratio 4)\n"
     "  --terrain-far-error-per-m <m/m>  measured height-error envelope per metre of spacing\n"
     "  --terrain-far-ratio <n>  explicit spacing / outer ring spacing; overrides the error rule\n"
+    "                   (1 to 128; 0, the default, is no override)\n"
     "  --animate [clip] play a skinned glTF's animation: the skin becomes a skeleton, a clip is\n"
     "                   ticked at the fixed step, and every instance is skinned through the same\n"
     "                   deformed-vertex pool --deform uses. The optional value names the clip by\n"
@@ -4360,8 +4361,10 @@ int run_view(int argc, char** argv) {
     } else if (a == "--terrain-far-ratio") {
       if (!next_value(argc, argv, i, a, value)) return k_exit_usage;
       u32 n = 0;
-      if (!parse_u32(value, n) || n < 1 || n > 128) {
-        std::fprintf(stderr, "engine-view: --terrain-far-ratio expects 1 to 128\n");
+      // 0 is the setting's own "no override" (the error rule, the tunable, or ratio four), which
+      // the wire's terrain_far_ratio takes too (request.cpp); until T78 the flag refused it.
+      if (!parse_u32(value, n) || n > 128) {
+        std::fprintf(stderr, "engine-view: --terrain-far-ratio expects 0 (no override) to 128\n");
         return k_exit_usage;
       }
       options.settings.terrain_far_ratio = n;

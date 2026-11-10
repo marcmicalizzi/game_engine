@@ -2793,7 +2793,9 @@ stores a range/error mip. The tunables are `renderer.terrain.far_error_px`, `.fa
 `.far_ratio`; zero settings take their defaults (all zero). `terrain_far_ratio` explicitly overrides
 the rule, keeping the requested count. With neither rule nor override the ratio remains four.
 engine-view exposes `--terrain-far-error-px`, `--terrain-far-error-per-m` and `--terrain-far-ratio`
-beside `--terrain-far <count>`; protocol `RenderSettings` version 14 carries the same fields.
+beside `--terrain-far <count>`; protocol `RenderSettings` version 14 carries the same fields, and
+the flag and the field take the same range, the ratio 0 to 128 with 0 the setting's "no override"
+(until T78 the flag refused 0; `request_tests.cpp` and engine-view's usage case hold the two).
 Hosts pass the actual pixel height and first camera's vertical FOV to `MovingGround::prepare`.
 Selection happens at load: rebuilding after a resolution/FOV change retains the estimate.
 

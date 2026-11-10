@@ -54,6 +54,12 @@ TEST_CASE("engine-view: usage errors exit 2") {
   CHECK(view({"--dither", "maybe"}).exit_code == 2);
   CHECK(view({"--present-bits", "12"}).exit_code == 2);
   CHECK(view({"--offscreen", "--present-bits", "10"}).exit_code == 2);
+  // `--terrain-far-ratio` takes what the wire's `terrain_far_ratio` takes (T78): 0, the setting's
+  // own "no override", to 128. `--help` after it ends the parse, so a run reaches no device.
+  CHECK(view({"--terrain-far-ratio", "0", "--help"}).exit_code == 0);
+  CHECK(view({"--terrain-far-ratio", "128", "--help"}).exit_code == 0);
+  CHECK(view({"--terrain-far-ratio", "129"}).exit_code == 2);
+  CHECK(view({"--terrain-far-ratio", "-1"}).exit_code == 2);
   const Run help = view({"--help"});
   CHECK(help.exit_code == 0);
   CHECK(help.output.find("usage: engine-view") != std::string::npos);

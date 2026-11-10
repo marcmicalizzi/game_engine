@@ -358,6 +358,10 @@ TEST_CASE("request: the wire's refusals") {
   CHECK(refused(R"({"sun_azimuth_deg":10})"));
   CHECK(refused(R"({"terrain_far_levels":9})"));
   CHECK(!refused(R"({"terrain_far_levels":0})"));
+  // The same range as engine-view's `--terrain-far-ratio` (T78): 0, no override, to 128.
+  CHECK(!refused(R"({"terrain_far_ratio":0})"));
+  CHECK(!refused(R"({"terrain_far_ratio":128})"));
+  CHECK(refused(R"({"terrain_far_ratio":129})"));
   CHECK(!refused(R"({"exposure_ev":-2.5,"exposure_ev100":-3})"));
 
   const auto clock_refused = [](std::optional<f64> hour, std::optional<f64> rate) {
