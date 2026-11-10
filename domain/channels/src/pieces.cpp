@@ -101,6 +101,44 @@ f64 bed_width(const ChannelLayer& p, const ChannelPoint& pt) {
   const f64 w = wide(pt.width_m);
   return std::max(.25 * w, section_of(w, wide(pt.depth_m), wide(p.bank_slope)).bed);
 }
+// **Where the gravel lies across the section** (W93; channels.md, "The section"): the flat bed
+// between the two banks' toes, which at a bend lies against the outer bank, and up the point bar
+// from its toe by `k_gravel_bar` of the bar's run times the asymmetry — to about where the water's
+// edge stands on it at the default stage. Never narrower than a quarter of the width. `bar_from`
+// and `bar_to` are the dry bar above that, signed distances from the line: where the bars' skin
+// lies.
+constexpr f64 k_gravel_bar = .55;
+struct Gravel {
+  f64 centre = 0;  // off the line, toward the left
+  f64 width = 0;
+  f64 bar_from = 0, bar_to = 0;
+};
+Gravel gravel_of(const ChannelLayer& p, const ChannelPoint& pt, f64 asym, f64 swell) {
+  Gravel g;
+  if (!(p.section_asymmetry > 0)) {
+    g.width = bed_width(p, pt);
+    return g;
+  }
+  const BendSection s = bend_section(p, wide(pt.width_m), wide(pt.depth_m), asym, swell);
+  const f64 depth = s.thalweg + s.pool;
+  const f64 run_left = depth / s.slope_left, run_right = depth / s.slope_right;
+  const f64 a = std::min(1.0, std::fabs(asym));
+  // The toes, and the inner one moved up its bar.
+  f64 left = .5 * s.width - run_left, right = -.5 * s.width + run_right;
+  if (left < right) left = right = .5 * (left + right);
+  const f64 inner = asym > 0 ? 1.0 : -1.0;  // the side the bar is on
+  const f64 run = asym > 0 ? run_left : run_right;
+  if (asym > 0)
+    left += a * k_gravel_bar * run;
+  else
+    right -= a * k_gravel_bar * run;
+  g.width = std::max(.25 * s.width, left - right);
+  g.centre = .5 * (left + right);
+  const f64 edge = asym > 0 ? left : right;
+  g.bar_from = edge;
+  g.bar_to = edge + inner * (.95 - k_gravel_bar) * a * run;
+  return g;
+}
 }  // namespace
 
 bool place_pieces(const ChannelLayer& p, const ChannelNetwork& n, const scene_gen::Ground& ground,
@@ -151,6 +189,16 @@ bool place_pieces(const ChannelLayer& p, const ChannelNetwork& n, const scene_ge
       if (i > 0) theta += (f[i].s - f[i - 1].s) * 2 * k_pi / std::max(wavelength, .5);
       rhythm[i] = .5 * (1 + det::cos(theta));
     }
+    // W93: the section's own rhythm where it has one — a riffle where the section is symmetric,
+    // none at a pool's apex — so the bed's rise and the ground's pools agree.
+    const bool shaped = p.section_asymmetry > 0 && link.asym.size() == link.line.size();
+    auto asym_at = [&](u32 i) { return shaped ? wide(link.asym[i]) : 0.0; };
+    auto swell_at = [&](u32 i) {
+      return shaped && i < link.swell.size() ? wide(link.swell[i]) : 0.0;
+    };
+    if (shaped)
+      for (u32 i = 0; i < m; ++i)
+        rhythm[i] = 1 - std::min(1.0, std::fabs(asym_at(i)));
     // Bars (Leopold, Wolman & Miller 1964): one every half pool-to-pool length, alternating sides
     // along a straight reach and on the inside of a bend where the line bends.
     struct Bar {
@@ -158,7 +206,26 @@ bool place_pieces(const ChannelLayer& p, const ChannelNetwork& n, const scene_ge
       f64 side;
     };
     Vector<Bar> bars;
-    if (widest >= p.bar_min_width_m && p.bar_rise > 0) {
+    if (shaped) {
+      // W93: a bar is the ground's own point bar, so its skin lies where the section's asymmetry
+      // is at least `k_bar_asymmetry`, on the bar's side, a run of points each.
+      constexpr f64 k_bar_asymmetry = .5;
+      for (u32 i = 0; i < m;) {
+        const f64 a = asym_at(i);
+        if (std::fabs(a) < k_bar_asymmetry || !has_bars(i) ||
+            wide(link.line[i].width_m) < wide(p.bar_min_width_m)) {
+          ++i;
+          continue;
+        }
+        u32 e = i;
+        while (e + 1 < m && asym_at(e + 1) * a > 0 &&
+               std::fabs(asym_at(e + 1)) >= k_bar_asymmetry && has_bars(e + 1) &&
+               e + 1 - i < k_max_rows - 1)
+          ++e;
+        if (e >= i + 2) bars.push_back({i, e, a > 0 ? 1.0 : -1.0});
+        i = e + 1;
+      }
+    } else if (widest >= p.bar_min_width_m && p.bar_rise > 0) {
       f64 side = rng.unit() < .5 ? -1.0 : 1.0;
       u32 last = 0;  // bars never share a cross-section: each is its own closed lens
       f64 at = .5 * wide(p.pool_riffle_widths) * wide(link.line[0].width_m);
@@ -239,9 +306,10 @@ bool place_pieces(const ChannelLayer& p, const ChannelNetwork& n, const scene_ge
                   has_bars(i) ? wide(p.riffle_rise) * wide(pt.depth_m) * rhythm[i] : 0.0;
               for (u32 c = 0; c < columns; ++c) {
                 const f64 v = static_cast<f64>(c) / static_cast<f64>(columns - 1) - .5;
-                const f64 bed_w = bed_width(p, pt);
-                const f64 x = f[i].x + f[i].nx * v * bed_w;
-                const f64 z = f[i].z + f[i].nz * v * bed_w;
+                const Gravel gravel = gravel_of(p, pt, asym_at(i), swell_at(i));
+                const f64 lateral = gravel.centre + v * gravel.width;
+                const f64 x = f[i].x + f[i].nx * lateral;
+                const f64 z = f[i].z + f[i].nz * lateral;
                 i64 xm = 0, zm = 0;
                 const f64 g = b.ground_local(x, z, xm, zm);
                 const bool edge = c == 0 || c + 1 == columns;
@@ -282,16 +350,21 @@ bool place_pieces(const ChannelLayer& p, const ChannelNetwork& n, const scene_ge
             const f64 w = wide(pt.width_m);
             const f64 outer = .5 * bed_width(p, pt) - .02;
             const f64 inner = std::max(0.0, outer - wide(p.bar_width_widths) * w);
+            const Gravel gravel = gravel_of(p, pt, asym_at(i), swell_at(i));
+            // W93: the skin lies on the dry bar, and the lens is the ground's: no crown of its own
+            // at full asymmetry.
+            const f64 crown = shaped ? 1 - wide(p.section_asymmetry) : 1.0;
             for (u32 c = 0; c < 5; ++c) {
               const f64 v = static_cast<f64>(c) / 4.0;
-              const f64 lateral = bar.side * (inner + v * (outer - inner));
+              const f64 lateral = shaped ? gravel.bar_from + v * (gravel.bar_to - gravel.bar_from)
+                                         : bar.side * (inner + v * (outer - inner));
               const f64 x = f[i].x + f[i].nx * lateral;
               const f64 z = f[i].z + f[i].nz * lateral;
               i64 xm = 0, zm = 0;
               const f64 g = b.ground_local(x, z, xm, zm);
               const f64 lens = det::sin(k_pi * u) * det::sin(k_pi * v);
               const f64 top = g + k_lift_m + 2 * relief_of(p, pt) + .01 +
-                              wide(p.bar_rise) * wide(pt.depth_m) * std::max(0.0, lens);
+                              crown * wide(p.bar_rise) * wide(pt.depth_m) * std::max(0.0, lens);
               b.vertex(slab, x, z, top, g - .1);
             }
           }
@@ -337,7 +410,7 @@ bool place_pieces(const ChannelLayer& p, const ChannelNetwork& n, const scene_ge
           if (i < r0 || i >= last || i >= m) continue;
           if (reach_at(i) != ChannelReach::StepPool) continue;
           const ChannelPoint& pt = link.line[i];
-          const f64 bed_w = bed_width(p, pt);
+          const f64 bed_w = gravel_of(p, pt, asym_at(i), swell_at(i)).width;
           const f64 size = std::clamp(wide(link.step_height[q]), .25, 1.5);
           const u32 count = std::max<u32>(1, static_cast<u32>(std::lround(bed_w / size)));
           Rng draw(hash_combine(link.seed, 0xb0u + i));
@@ -352,7 +425,7 @@ bool place_pieces(const ChannelLayer& p, const ChannelNetwork& n, const scene_ge
         for (u32 q = 0; q < link.cluster_at.size(); ++q) {
           const u32 i = link.cluster_at[q];
           if (i < r0 || i >= last || i >= m) continue;
-          const f64 bed_w = bed_width(p, link.line[i]);
+          const f64 bed_w = gravel_of(p, link.line[i], asym_at(i), swell_at(i)).width;
           const f64 size = wide(link.cluster_size[q]);
           Rng draw(hash_combine(link.seed, 0xc1u + i));
           const u32 count = 1 + static_cast<u32>(draw.unit() * 3.0);

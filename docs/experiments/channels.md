@@ -147,6 +147,71 @@ Planning*, the eastern United States curves: about 3–4 m wide and 0.3 m deep a
   higher than the trough's floor the bank on the uphill side is cut back rather than left as a step.
   Past it nothing, so a cliff beside a channel is not cut back.
 
+## The section
+
+(W93, 2026-11-10; [channels](../subsystems/channels.md#the-section). The owner's complaint through
+three updates of the proof of concept: a lowland stream reads as a canal, one trapezoid along a
+reach. Looked at before the design: the reference reels r03 and r49 and the motion sheet
+`clear-riffle-cobbles`, a clear cobble river whose outer bank is a low turf edge with a rounded,
+slumping top and whose inner side is a pale gravel bar rising out of the water.)
+
+- **A bend's section is asymmetric.** Leopold, Wolman & Miller (1964, ch. 7) and Leopold & Wolman
+  (1960): at a bend the deep water lies against the concave (outer) bank, which is cut and steep,
+  and a point bar builds from the convex (inner) bank toward it; at the crossing between two bends
+  the section is symmetric and shallow, a riffle. A bend's radius of curvature is **2 to 3 widths**
+  (the same paper's `bend_radius_widths`, pinned at 2.5): the section is fully asymmetric at that
+  radius and tighter.
+- **Straight reaches have the rhythm too.** Leopold & Wolman (1957, USGS Professional Paper 282-B,
+  "River channel patterns: braided, meandering and straight"): a straight channel's thalweg wanders
+  from bank to bank and its bed has pools and riffles at about the spacing a meander's would have,
+  with bars alternating sides. So where the line does not bend the asymmetry alternates sides, to
+  `alternate_asymmetry` (0.6) of a bend's. **The 0.6 is a design choice**: a straight reach's
+  pools are shallower than a bend's, and no ratio was read.
+- **Pool to pool, 5 to 7 widths.** Keller & Melhorn (1978, *GSA Bulletin* 89: 723-730, "Rhythmic
+  spacing and origin of pools and riffles"), as its readers cite it (re-checked 2026-11-10 against
+  two reviews that quote the range; the paper's own mean was not found): `pool_riffle_widths`, 6,
+  is W86's and unchanged. A meander's bend is half of 10.9 widths long, so pools at its apexes
+  stand 5.45 apart, inside the range. **Measured**: over 12 seeds on the test valley, 172 spacings,
+  mean **6.0 widths** (the test holds the mean to 5 to 7; single spacings run from 1.7 to 22,
+  since the line's own bends are not regular).
+- **The pool's depth is the triangle's.** The hydraulic geometry gives a mean depth, an area over a
+  width; a triangle of that width and area is twice the mean deep. So the thalweg at a bend's apex
+  is `2 d̄` at the outer bank's toe, and between riffle and apex the inner bank's run is whatever
+  keeps the area, `2 W (1 - d̄ / D) - D / m_outer`. **Not read**: the published bend-scour relations
+  (the ratio of a bend's greatest depth to its mean as a function of radius over width); the factor
+  2 here is geometry, and it is the upper end of what those relations are cited for.
+- **A riffle is wider than a pool.** Richards (1976, *GSA Bulletin* 87, "Channel width and the
+  riffle-pool sequence"), as cited (re-checked 2026-11-10: riffles are on average wider than the
+  pools beside them, the flow over a riffle being turned toward the banks). **The share, 0.12
+  (`riffle_widening`), is a design choice**: the figure was not found in a source read, and the
+  field's range is 0 to 0.5. Half of it is taken each way about the hydraulic geometry's width,
+  and the depth changes with it, so the area is the hydraulic geometry's at every point (the test
+  integrates the section and holds it to 4 %).
+- **The outer bank, 3 (72 degrees).** A cohesive or root-bound upper bank stands near vertical
+  (Eaton 2006, above); the tile set's lattice draws a face no steeper than its depth over one
+  spacing, so on 25 cm a 0.5 m bank at 3 is two points. `cut_bank_slope`, 0.25 to 8.
+- **A rounded top, 0.75 of the depth.** A bank's top is convex: turf rolls over it and its lip
+  slumps (the reels; no profile was read). `bank_round` is the height of the band over which the
+  cut's face and the ground are joined by a smooth minimum; 0.75 rounds the upper three quarters
+  of a 45-degree bank on flat ground. **A design choice.**
+- **Which bends count: a window of four widths.** The asymmetry reads the line's mean curvature
+  over four widths about a point. A bar and its pool are built by the flow along a bend, over a
+  length of several widths (the linear theories of flow in bends give the bed an adaptation
+  length of that order; **not read for this row**), and the line W91's trough test draws back
+  turns left and right again inside two or three widths. Measured on the test valley over 12
+  seeds: read over 1.5 widths those kinks put pools 2.7 widths apart; over a window of 3 widths,
+  4.7; of 4, **6.0**; of 6, 7.9, with the bends' asymmetry fading. Four is the window that keeps
+  the published spacing. The same test's bends are defined at that scale (a turn of 30 degrees
+  between the line's heading two widths above a point and two below), and 551 of 553 have the
+  deeper side on the outside; a bend as a chord of two widths each way sees it (323 on the same
+  seeds) has it there on 90 %, the rest being kinks the window averages out.
+
+## The flood bed
+
+(W93, stage 2: [channels](../subsystems/channels.md#the-flood-bed).) The cut carries a flood bed
+(`TerrainCut` version 2); what the generator writes into it, and its sources, are added with the
+commit that writes it.
+
 ## Reaches
 
 (W90, 2026-11-08.) **Montgomery & Buffington (1997)**, "Channel-reach morphology in mountain

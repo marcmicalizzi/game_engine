@@ -608,6 +608,126 @@ f64 fan_share(const ChannelLayer& p, const ChannelLink& link, const Vector<f64>&
   return fan > 0 && from_end < fan ? 1.0 - from_end / fan : 0.0;
 }
 
+// **The section along the line** (W93; channels.md, "The section"): each point's asymmetry, -1 to
+// 1, positive where the line bends left. A bend's share is the line's mean curvature over a bar's
+// length about the point (`bar_length_widths`, three widths) — the turn between its heading half
+// that length above the point and half below, over the length, each heading a chord of a width —
+// times the width times `bend_radius_widths`: 1 where the radius of curvature is that many widths
+// or fewer. Over a bar's length because a bar and its pool are built by the flow along a bend,
+// not by a kink: the line the trough test draws back turns left and right again within two or
+// three widths (W91), and read point by point (a chord of 0.75 widths each way) those kinks put
+// a pool every 2.7 widths on the test valley, alternating sides; over a bar's length they
+// cancel, and a meander's bend, half of 10.9 widths long, does not. Where a stretch does not bend
+// (the mean bend over a pool-to-pool length either way is small) the asymmetry alternates sides
+// every `pool_riffle_widths`, a sine of the link's own phase, to `alternate_asymmetry`. Pool-riffle
+// and dune-ripple reaches take both; a plane-bed reach half a bend's and no alternation (Montgomery
+// & Buffington's plane bed has no free bars, and a bend still forces a pool); the steeper reaches,
+// a knickpoint, a fan, a tributary's last points inside its trunk's banks, a bed narrower than
+// `bar_min_width_m` and the first and last two widths of a link take none.
+constexpr f64 k_bend_window_widths = 4.0;
+// The unit heading of the line at arc length `at`: the chord between the points half a `span`
+// either way (clamped to the line), found from index `hint` on.
+struct Heading {
+  f64 x = 0, z = 0;
+  bool ok = false;
+};
+Heading heading_at(const ChannelLink& link, const Vector<f64>& s, f64 at, f64 span) {
+  const u32 m = link.line.size();
+  if (at - .5 * span < s[0] || at + .5 * span > s[m - 1]) return {};
+  // The first point at or past each end of the chord.
+  const auto first_at = [&](f64 v) {
+    u32 lo = 0, hi = m - 1;
+    while (lo < hi) {
+      const u32 mid = (lo + hi) / 2;
+      if (s[mid] < v)
+        lo = mid + 1;
+      else
+        hi = mid;
+    }
+    return lo;
+  };
+  const u32 a = first_at(at - .5 * span), b = first_at(at + .5 * span);
+  if (b <= a) return {};
+  const f64 dx = link.line[b].at.x - link.line[a].at.x, dz = link.line[b].at.z - link.line[a].at.z;
+  const f64 length = std::sqrt(dx * dx + dz * dz);
+  if (!(length > 0)) return {};
+  return {dx / length, dz / length, true};
+}
+void plan_section(const ChannelLayer& p, ChannelLink& link) {
+  const u32 m = link.line.size();
+  link.asym.assign(m, 0.0f);
+  link.swell.assign(m, 0.0f);
+  link.flood_left.assign(m, 0.0f);
+  link.flood_right.assign(m, 0.0f);
+  link.entrenchment.assign(m, 0.0f);
+  if (m < 3 || !(p.section_asymmetry > 0)) return;
+  const Vector<f64> s = lengths_of(link.line);
+  Vector<f64> bend(m, 0.0);
+  for (u32 i = 0; i < m; ++i) {
+    const f64 w = wide(link.line[i].width_m);
+    const f64 bar = std::max(k_bend_window_widths * w, 1e-3);
+    const Heading above = heading_at(link, s, s[i] - .5 * bar, w);
+    const Heading below = heading_at(link, s, s[i] + .5 * bar, w);
+    if (!above.ok || !below.ok) continue;
+    // The turn between the two headings as twice the tangent of its half, which grows with the
+    // turn to a half circle and needs no arc function; over the bar's length, a curvature.
+    const f64 dot = above.x * below.x + above.z * below.z;
+    if (!(1 + dot > 1e-6)) continue;
+    const f64 kappa = 2 * (above.x * below.z - above.z * below.x) / (1 + dot) / bar;
+    bend[i] = std::clamp(kappa * w * wide(p.bend_radius_widths), -1.0, 1.0);
+  }
+  Rng rng(hash_combine(link.seed, 0x5ec7ull));
+  f64 theta = rng.unit() * 2 * k_pi;
+  Vector<f64> asym(m, 0.0), swell(m, 0.0);
+  const u32 keep = std::min<u32>(link.keep, m);
+  u32 from = 0, to = 0;
+  f64 sum = 0;  // of |bend| over [from, to)
+  for (u32 i = 0; i < m; ++i) {
+    const f64 w = wide(link.line[i].width_m);
+    const f64 pool = std::max(wide(p.pool_riffle_widths) * w, .5);
+    if (i > 0) theta += (s[i] - s[i - 1]) * k_pi / pool;
+    // The mean bend over a pool-to-pool length either way: a stretch that meanders has its pools
+    // at its bends and its riffles at its crossings, and no bar of its own between them.
+    while (to < m && s[to] - s[i] <= pool)
+      sum += std::fabs(bend[to++]);
+    while (from < i && s[i] - s[from] > pool)
+      sum -= std::fabs(bend[from++]);
+    const f64 straight =
+        1 - smoothstep(.1, .3, to > from ? sum / static_cast<f64>(to - from) : 0.0);
+    const ChannelReach reach =
+        i < link.reach.size() ? static_cast<ChannelReach>(link.reach[i]) : ChannelReach::PoolRiffle;
+    f64 share = 0, alternate = 0;
+    if (reach == ChannelReach::DuneRipple || reach == ChannelReach::PoolRiffle) {
+      share = 1;
+      alternate = wide(p.alternate_asymmetry) * straight;
+    } else if (reach == ChannelReach::PlaneBed) {
+      share = .5;
+    }
+    if (i >= keep || (i < link.knick.size() && link.knick[i]) || w < wide(p.bar_min_width_m))
+      share = 0;
+    share *= smoothstep(0, 2 * w, s[i]) * smoothstep(0, 2 * w, s[m - 1] - s[i]) *
+             (1 - fan_share(p, link, s, i));
+    const f64 v = bend[i] + alternate * (1 - std::fabs(bend[i])) * det::sin(theta);
+    asym[i] = std::clamp(v, -1.0, 1.0) * share * wide(p.section_asymmetry);
+    swell[i] = (1 - 2 * std::min(1.0, std::fabs(v))) * share * wide(p.section_asymmetry);
+  }
+  // A reach's edge and a knickpoint's are steps in the share: two binomial passes ease them.
+  for (Vector<f64>* values : {&asym, &swell}) {
+    for (u32 pass = 0; pass < 2; ++pass) {
+      f64 before = (*values)[0];
+      for (u32 i = 1; i + 1 < m; ++i) {
+        const f64 here = (*values)[i];
+        (*values)[i] = .25 * before + .5 * here + .25 * (*values)[i + 1];
+        before = here;
+      }
+    }
+  }
+  for (u32 i = 0; i < m; ++i) {
+    link.asym[i] = static_cast<f32>(round_to(asym[i], 1e3));
+    link.swell[i] = static_cast<f32>(round_to(swell[i], 1e3));
+  }
+}
+
 // **Confluences** (W90; channels.md, "Confluences"): at every junction the incoming link of the
 // largest contributing area is the trunk, which runs on as the link that begins there; every other
 // incoming link is a tributary of that link. Junctions are taken by the downstream link's area,
@@ -754,6 +874,12 @@ bool layer_in_range(const ChannelLayer& p, std::string& error) {
   if (!in(wide(p.knick_window_widths), 1, 20) || !in(wide(p.knick_window_min_m), .5, 50))
     return fail(error, "knick_window_widths/knick_window_min_m");
   if (!in(wide(p.chute_gradient_max), .2, 1)) return fail(error, "chute_gradient_max");
+  if (!in(wide(p.section_asymmetry), 0, 1) || !in(wide(p.bend_radius_widths), 1, 20) ||
+      !in(wide(p.cut_bank_slope), .25, 8) || !in(wide(p.alternate_asymmetry), 0, 1) ||
+      !in(wide(p.riffle_widening), 0, .5) || !in(wide(p.bank_round), 0, 1))
+    return fail(error,
+                "section_asymmetry/bend_radius_widths/cut_bank_slope/alternate_asymmetry/"
+                "riffle_widening/bank_round");
   if (!in(wide(p.step_m), .1, 4)) return fail(error, "step_m");
   if (!in(wide(p.piece_m), 4, 256) || p.piece_m < 4 * p.step_m) return fail(error, "piece_m");
   for (const ChannelSurface* s : {&p.bed, &p.bars, &p.banks})
@@ -909,6 +1035,8 @@ bool plan_channels(const ChannelLayer& p, const scene_gen::Ground& ground, u64 s
     n.length_m += link.length_m;
   }
   confluences(p, n);
+  for (ChannelLink& link : n.links)
+    plan_section(p, link);
   out = std::move(n);
   return true;
 }
@@ -1213,6 +1341,7 @@ JsonValue terrain_cuts_json(const ChannelLayer& p, const ChannelNetwork& n) {
     JsonValue o = JsonValue::object();
     o["name"] = JsonValue(p.name + " link " + std::to_string(k));
     JsonValue points = JsonValue::array(), widths = JsonValue::array(), depths = JsonValue::array();
+    JsonValue left = JsonValue::array(), right = JsonValue::array();
     for (u32 i = 0; i < link.line.size(); ++i) {
       const ChannelPoint& pt = link.line[i];
       const f64 top = round_to(pt.at.y, 1e3);
@@ -1223,15 +1352,36 @@ JsonValue terrain_cuts_json(const ChannelLayer& p, const ChannelNetwork& n) {
       points.push_back(std::move(at));
       // The fan opens the cut toward the shore (W90).
       const f64 spread = 1 + wide(p.fan_spread) * fan_share(p, link, s, i);
-      widths.push_back(JsonValue(round_to(wide(pt.width_m) * spread, 1e3)));
+      // The section here (W93; channels.md, "The section"): the trapezoid at a riffle, the
+      // triangle at a bend's apex, the pool that much under the bed's line.
+      const BendSection section = bend_section(p, wide(pt.width_m), wide(pt.depth_m),
+                                               i < link.asym.size() ? wide(link.asym[i]) : 0.0,
+                                               i < link.swell.size() ? wide(link.swell[i]) : 0.0);
+      widths.push_back(JsonValue(round_to(section.width * spread, 1e3)));
       // The bed below the top: the thalweg, more where the cut runs through a rise, a step's pool
-      // or a confluence's grade.
-      depths.push_back(JsonValue(std::max(1e-3, round_to(top - link.bed[i], 1e3))));
+      // or a confluence's grade, and a bend's pool.
+      // A riffle's bed stands that much over the bed's line and a pool's that much under it: the
+      // section's own thalweg at its own width against the trapezoid's at the hydraulic
+      // geometry's, so the area is kept as the width swells and narrows.
+      const f64 line_thalweg =
+          section_of(wide(pt.width_m), wide(pt.depth_m), wide(p.bank_slope)).thalweg;
+      depths.push_back(JsonValue(round_to(
+          std::max(1e-3, round_to(top - link.bed[i], 1e3) + (section.thalweg - line_thalweg)) +
+              section.pool,
+          1e3)));
+      left.push_back(JsonValue(round_to(section.slope_left, 1e4)));
+      right.push_back(JsonValue(round_to(section.slope_right, 1e4)));
     }
     o["points"] = std::move(points);
     o["width_m"] = std::move(widths);
     o["depth_m"] = std::move(depths);
     o["bank_slope"] = JsonValue(wide(p.bank_slope));
+    // W93's fields only where the layer asks for them, so a layer with none writes W91's bytes.
+    if (p.section_asymmetry > 0) {
+      o["bank_slope_left"] = std::move(left);
+      o["bank_slope_right"] = std::move(right);
+    }
+    if (p.bank_round > 0) o["bank_round"] = JsonValue(wide(p.bank_round));
     list.push_back(std::move(o));
   }
   return list;

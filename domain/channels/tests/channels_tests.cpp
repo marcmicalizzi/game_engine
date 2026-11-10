@@ -488,6 +488,10 @@ TEST_CASE("channels: the exclusion reaches the recipe's bank width, not the defa
 TEST_CASE("channels: the cuts have the TerrainCut shape and the water lies inside them") {
   ChannelLayer p = layer();
   p.head_threshold_m2 = 300;
+  // W89's section, which W93 keeps for a layer that asks for it: the trapezoid at every point, no
+  // rounding, and the five fields the cut had (W93's section has its own case below).
+  p.section_asymmetry = 0;
+  p.bank_round = 0;
   ChannelNetwork n;
   std::string error;
   REQUIRE(plan_channels(p, ground(gentle), 0, nullptr, n, error));
@@ -1152,4 +1156,260 @@ TEST_CASE("channels: no two bends alike") {
   REQUIRE(plan_channels(p, ground(gentle), 7, nullptr, regular, error));
   CHECK(varied.heads == regular.heads);
   CHECK_FALSE(same_network(varied, regular));
+}
+
+// ---- W93: the section follows the line ----------------------------------------------------------
+
+namespace {
+// A stream wide enough to have bars on the gentle valley: 12 m and 1 m at a square kilometre.
+ChannelLayer stream_layer(u64 seed) {
+  ChannelLayer p = layer();
+  p.head_threshold_m2 = 300;
+  p.width_at_km2_m = 12;
+  p.depth_at_km2_m = 1.0f;
+  p.seed = seed;
+  return p;
+}
+// The cut's depth below its top at the signed distance `s` from the line (left positive), from the
+// cut's own numbers: the test's reading of `engine.scene.TerrainCut` version 2.
+f64 cut_depth_at(const scene::TerrainCut& cut, u32 i, f64 s) {
+  const f64 w = static_cast<f64>(cut.width_m[i]), d = static_cast<f64>(cut.depth_m[i]);
+  f64 l = static_cast<f64>(cut.bank_slope_left[i]), r = static_cast<f64>(cut.bank_slope_right[i]);
+  const f64 f = (d / l + d / r) / w;
+  if (f > 1) {
+    l *= f;
+    r *= f;
+  }
+  return std::max(0.0, std::min(d, std::min(l * (.5 * w - s), r * (.5 * w + s))));
+}
+// The sine of the line's turn about point i at the scale a bar is built at: between its heading
+// two widths above the point and its heading two widths below, each heading the chord of a width
+// of line. Positive where it turns toward its left ((-dz, dx)); 0 near an end.
+f64 turn_at(const ChannelLink& link, const std::vector<f64>& s, u32 i) {
+  const f64 w = static_cast<f64>(link.line[i].width_m);
+  const u32 m = link.line.size();
+  // The first point at least `d` above (negative) or below the point along the line, or m.
+  const auto at = [&](f64 d) {
+    u32 q = i;
+    if (d < 0) {
+      while (q > 0 && s[i] - s[q] < -d)
+        --q;
+      return s[i] - s[q] < -d ? m : q;
+    }
+    while (q + 1 < m && s[q] - s[i] < d)
+      ++q;
+    return s[q] - s[i] < d ? m : q;
+  };
+  const u32 a0 = at(-2.5 * w), a1 = at(-1.5 * w), b0 = at(1.5 * w), b1 = at(2.5 * w);
+  if (a0 == m || a1 == m || b0 == m || b1 == m) return 0;
+  const f64 ux = link.line[a1].at.x - link.line[a0].at.x;
+  const f64 uz = link.line[a1].at.z - link.line[a0].at.z;
+  const f64 vx = link.line[b1].at.x - link.line[b0].at.x;
+  const f64 vz = link.line[b1].at.z - link.line[b0].at.z;
+  return (ux * vz - uz * vx) / (std::sqrt(ux * ux + uz * uz) * std::sqrt(vx * vx + vz * vz));
+}
+std::vector<f64> along(const ChannelLink& link) {
+  std::vector<f64> s(link.line.size(), 0.0);
+  for (u32 i = 1; i < link.line.size(); ++i) {
+    const f64 dx = link.line[i].at.x - link.line[i - 1].at.x;
+    const f64 dz = link.line[i].at.z - link.line[i - 1].at.z;
+    s[i] = s[i - 1] + std::sqrt(dx * dx + dz * dz);
+  }
+  return s;
+}
+}  // namespace
+
+// The brief's first two tests: over twelve seeds, at every bend's apex the outer bank is the deeper
+// side (95 % at least), and the pools stand 5 to 7 widths apart on average (Keller & Melhorn 1978).
+TEST_CASE(
+    "channels: at a bend the outer bank is the deeper side, and pools stand 5 to 7 widths apart") {
+  u32 bends = 0, outer_deeper = 0, pools = 0;
+  f64 spacing_sum = 0, spacing_min = 1e9, spacing_max = 0;
+  u32 spacings = 0;
+  for (u64 seed = 1; seed <= 12; ++seed) {
+    const ChannelLayer p = stream_layer(seed);
+    ChannelNetwork n;
+    std::string error;
+    REQUIRE(plan_channels(p, ground(gentle), seed, nullptr, n, error));
+    const JsonValue cuts = terrain_cuts_json(p, n);
+    u32 written = 0;
+    for (u32 k = 0; k < n.links.size(); ++k) {
+      const ChannelLink& link = n.links[k];
+      if (link.line.size() < 2) continue;
+      scene::TerrainCut cut;
+      schema::ReadContext reader;
+      REQUIRE(schema::from_json(cut, cuts[written++], reader));
+      REQUIRE(reader.ok());
+      REQUIRE(cut.bank_slope_left.size() == link.line.size());
+      REQUIRE(link.asym.size() == link.line.size());
+      const std::vector<f64> s = along(link);
+      // A bend: the line turns at least 30 degrees between two widths above the point and two
+      // below (`turn_at`: the scale a bar is built at, so a kink a width long is not one), taken
+      // at its apex, the point where it turns most.
+      for (u32 i = 1; i + 1 < link.line.size(); ++i) {
+        const f64 turn = turn_at(link, s, i);
+        if (std::fabs(turn) < .5 || link.reach[i] != static_cast<u8>(ChannelReach::PoolRiffle))
+          continue;
+        if (std::fabs(turn_at(link, s, i - 1)) > std::fabs(turn) ||
+            std::fabs(turn_at(link, s, i + 1)) >= std::fabs(turn))
+          continue;
+        if (static_cast<f64>(link.line[i].width_m) < static_cast<f64>(p.bar_min_width_m)) continue;
+        ++bends;
+        const f64 q = .3 * static_cast<f64>(cut.width_m[i]);
+        // Turning left, the outer bank is the right.
+        const f64 outer = cut_depth_at(cut, i, turn > 0 ? -q : q);
+        const f64 inner = cut_depth_at(cut, i, turn > 0 ? q : -q);
+        outer_deeper += outer > inner + .02;
+      }
+      // Pools: the apexes of the asymmetry, at least half a bend's; the spacing of each from the
+      // last in the mean width between them.
+      // A pool is a stretch of the line on one side of which the thalweg lies, whose asymmetry
+      // reaches half a bend's, at the point where it is most.
+      f64 last = -1;
+      f64 width_sum = 0;
+      u32 width_count = 0;
+      for (u32 i = 0; i < link.line.size();) {
+        const f64 a = static_cast<f64>(link.asym[i]);
+        if (a == 0) {
+          width_sum += static_cast<f64>(link.line[i].width_m);
+          ++width_count;
+          ++i;
+          continue;
+        }
+        // One side's stretch, from where the thalweg crosses the line to where it crosses back.
+        u32 e = i, apex = i;
+        while (e + 1 < link.line.size() && static_cast<f64>(link.asym[e + 1]) * a > 0) {
+          ++e;
+          if (std::fabs(link.asym[e]) > std::fabs(link.asym[apex])) apex = e;
+        }
+        if (std::fabs(static_cast<f64>(link.asym[apex])) < .5) {
+          // A glide: the thalweg swings to this side and no pool forms.
+          for (u32 q = i; q <= e; ++q) {
+            width_sum += static_cast<f64>(link.line[q].width_m);
+            ++width_count;
+          }
+          i = e + 1;
+          continue;
+        }
+        // A run of the top value: its middle.
+        u32 flat = apex;
+        while (flat < e && link.asym[flat + 1] == link.asym[apex])
+          ++flat;
+        apex = (apex + flat) / 2;
+        for (u32 q = i; q <= e; ++q) {
+          width_sum += static_cast<f64>(link.line[q].width_m);
+          ++width_count;
+        }
+        ++pools;
+        if (last >= 0) {
+          const f64 widths = (s[apex] - last) / (width_sum / width_count);
+          spacing_sum += widths;
+          spacing_min = std::min(spacing_min, widths);
+          spacing_max = std::max(spacing_max, widths);
+          ++spacings;
+        }
+        last = s[apex];
+        width_sum = 0;
+        width_count = 0;
+        i = e + 1;
+      }
+    }
+  }
+  MESSAGE("bends " << bends << ", outer deeper at " << outer_deeper << "; pools " << pools
+                   << ", spacing mean " << (spacings ? spacing_sum / spacings : 0.0) << " widths ("
+                   << spacing_min << " to " << spacing_max << ", " << spacings << " spacings)");
+  REQUIRE(bends >= 40);
+  CHECK(outer_deeper * 100 >= bends * 95);
+  REQUIRE(spacings >= 40);
+  CHECK(spacing_sum / spacings >= 5.0);
+  CHECK(spacing_sum / spacings <= 7.0);
+}
+
+TEST_CASE("channels: the section keeps the hydraulic geometry's area from riffle to pool") {
+  const ChannelLayer p = stream_layer(3);
+  ChannelNetwork n;
+  std::string error;
+  REQUIRE(plan_channels(p, ground(gentle), 3, nullptr, n, error));
+  const JsonValue cuts = terrain_cuts_json(p, n);
+  const JsonValue water = water_channels_json(p, n, 0, .5f, true);
+  u32 written = 0, riffles = 0, apexes = 0, measured = 0;
+  f64 widest = 0, narrowest = 9;
+  for (u32 k = 0; k < n.links.size(); ++k) {
+    const ChannelLink& link = n.links[k];
+    if (link.line.size() < 2) continue;
+    const JsonValue& o = cuts[written++];
+    // W89's five fields, the two slope arrays and the rounding.
+    CHECK(o.as_object().size() == 8);
+    scene::TerrainCut cut;
+    schema::ReadContext reader;
+    REQUIRE(schema::from_json(cut, o, reader));
+    REQUIRE(reader.ok());
+    CHECK(cut.bank_round == p.bank_round);
+    const JsonValue* block = nullptr;
+    for (const JsonValue& b : water.as_array())
+      if (b.find("name")->as_string() == p.name + " link " + std::to_string(k)) block = &b;
+    for (u32 i = 0; i < link.line.size(); ++i) {
+      const ChannelPoint& pt = link.line[i];
+      const f64 w = static_cast<f64>(pt.width_m), mean = static_cast<f64>(pt.depth_m);
+      const f64 a = std::fabs(static_cast<f64>(link.asym[i]));
+      const f64 l = static_cast<f64>(cut.bank_slope_left[i]);
+      const f64 r = static_cast<f64>(cut.bank_slope_right[i]);
+      CHECK(l >= .02);
+      CHECK(r >= .02);
+      CHECK(l <= 16);
+      CHECK(r <= 16);
+      // The riffle is wider than the pool by `riffle_widening`, half each way about the hydraulic
+      // geometry's width (no fan on this ground), where the reach has the rhythm (`swell`).
+      const f64 widening =
+          .5 * static_cast<f64>(p.riffle_widening) * static_cast<f64>(link.swell[i]);
+      CHECK(static_cast<f64>(cut.width_m[i]) == doctest::Approx(w * (1 + widening)).epsilon(1e-3));
+      widest = std::max(widest, static_cast<f64>(cut.width_m[i]) / w);
+      narrowest = std::min(narrowest, static_cast<f64>(cut.width_m[i]) / w);
+      riffles += a < .1;
+      if (a == 0) {
+        CHECK(l == static_cast<f64>(p.bank_slope));
+        CHECK(r == static_cast<f64>(p.bank_slope));
+      } else {
+        // The gentler bank is the bar's, on the inside: the left where the asymmetry is positive.
+        CHECK((link.asym[i] > 0 ? l <= r : r <= l));
+      }
+      // Where the bed runs through no rise, no step and no grade, the section's area is the
+      // hydraulic geometry's, whatever its shape: integrated across the cut's own numbers.
+      const f64 top = cut.points[i].y, bed = link.bed[i];
+      const f64 cw = static_cast<f64>(cut.width_m[i]);
+      f64 area = 0;
+      const u32 strips = 400;
+      for (u32 q = 0; q < strips; ++q)
+        area +=
+            cut_depth_at(cut, i, (-.5 + (static_cast<f64>(q) + .5) / strips) * cw) * cw / strips;
+      const f64 m = static_cast<f64>(p.bank_slope);
+      const f64 thalweg =
+          4 * mean / (m * w) >= 1 ? 2 * mean : .5 * m * w * (1 - std::sqrt(1 - 4 * mean / (m * w)));
+      if (std::fabs((top - bed) - thalweg) <= 2e-3 && link.trunk == ~0u) {
+        CHECK(area == doctest::Approx(w * mean).epsilon(0.04));
+        ++measured;
+        if (a >= .95) {
+          // A bend's apex: a triangle, twice the mean depth at the outer bank's toe.
+          CHECK(static_cast<f64>(cut.depth_m[i]) ==
+                doctest::Approx(2 * mean * w / cw).epsilon(0.03));
+          ++apexes;
+        }
+      }
+      // The water stands over the riffle's bed and under the top, as it did; the pool is under it.
+      if (block == nullptr || i >= block->find("points")->as_array().size()) continue;
+      f64 y = 0;
+      REQUIRE(block->find("points")->as_array()[i][1].get_f64(y));
+      CHECK(y < top);
+      CHECK(y > top - static_cast<f64>(cut.depth_m[i]));
+    }
+  }
+  CHECK(riffles > 20);
+  CHECK(measured > 150);
+  CHECK(apexes >= 1);
+  // A riffle at its widest over a pool at its narrowest: half `riffle_widening` (0.12) each way.
+  const f64 half = .5 * static_cast<f64>(p.riffle_widening);
+  CHECK(widest / narrowest > 1.08);
+  CHECK(widest / narrowest <= (1 + half) / (1 - half) + 1e-3);
+  // The same text twice.
+  CHECK(write_json(terrain_cuts_json(p, n)) == write_json(cuts));
 }

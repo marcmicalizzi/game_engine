@@ -63,7 +63,9 @@ namespace engine::channels {
 // 2 (W89): the bed is the cut's flat bed and no bank piece is placed.
 // 3 (W90): pieces by reach (boulder steps, nothing on bedrock and colluvial), mouths, confluences.
 // 4 (W91): steps on step-pool reaches alone, cascade clusters, knickpoints, the line in its trough.
-inline constexpr u32 k_channels_version = 4;
+// 5 (W93): the section follows the bends (the bed toward the outer bank, the bars the ground's own
+//    point bars with a skin on them), the flood bed.
+inline constexpr u32 k_channels_version = 5;
 
 // A point of a channel's line, downstream order: where it is (y the ground under it, metres), its
 // bankfull width and depth, the bed's fall per metre there, and the contributing area.
@@ -105,6 +107,18 @@ struct ChannelLink {
   f64 lip_convexity = 0;  // the knickpoints' second differences at their lips, summed
   u32 steep_left = 0;
   u32 trough_pulled = 0;
+  // **W93** (channels.md, "The section", "The flood bed"), one per point of `line`: the section's
+  // asymmetry, -1 to 1 — positive where the line bends left (toward (-dz, dx)), so the point bar
+  // is on the left and the cut bank and the thalweg on the right; 0 at a riffle; where the point
+  // is in the pool-and-riffle rhythm, 1 at a riffle (the cut at its widest) to -1 at a pool's
+  // apex (its narrowest), 0 on a reach that has no rhythm; the flood bed's reach from the line
+  // each side, metres (0: none); and the entrenchment ratio measured there (the flood-prone
+  // width over the bankfull width; 0 where it was not measured).
+  Vector<f32> asym;
+  Vector<f32> swell;
+  Vector<f32> flood_left;
+  Vector<f32> flood_right;
+  Vector<f32> entrenchment;
   // The points the water and the pieces run to: `line.size()`, less for a tributary whose last
   // points lie within the trunk's banks.
   u32 keep = 0;

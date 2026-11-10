@@ -64,7 +64,9 @@ struct ChannelSurface @version(1) {
 /// Version 4 (W91): steps on step-pool reaches alone with risers at `riser_angle_deg`, boulder
 /// clusters on cascades, knickpoints on the ground's profile, the chute's steepest fall, and every
 /// point of the line held in its trough.
-struct ChannelLayer @version(4) {
+/// Version 5 (W93): the cut's section follows the line's bends (`section_asymmetry`), a pool at each
+/// bend's apex and a riffle at each crossing, the banks' tops rounded.
+struct ChannelLayer @version(5) {
   name: string
   seed: u64 = 1
   /// The region drained, world metres, x and z, each a whole number of spacings.
@@ -183,6 +185,27 @@ struct ChannelLayer @version(4) {
   /// line by up to these shares of themselves (0 to 0.5, 0 to 0.8), from a noise of the link's own.
   meander_wavelength_variation: f32 = 0.25 @since(3)
   meander_amplitude_variation: f32 = 0.5 @since(3)
+  /// **The section** (W93; channels.md, "The section"; the sources in docs/experiments/channels.md,
+  /// "The section"): how much of a bend's asymmetry the cut's section takes, 0 to 1. At 1 a bend
+  /// whose radius of curvature is `bend_radius_widths` bankfull widths or tighter (1 to 20; Leopold
+  /// & Wolman 1960: 2 to 3) has a triangular section of the hydraulic geometry's area: the outer
+  /// bank at `cut_bank_slope` (rise over run, 0.25 to 8), the thalweg at its toe twice the mean
+  /// depth down, and the point bar rising from there to the inner bank's top. Between bends the
+  /// section is W89's trapezoid, a riffle. 0: W89's trapezoid everywhere.
+  section_asymmetry: f32 = 1 @since(5)
+  bend_radius_widths: f32 = 2.5 @since(5)
+  cut_bank_slope: f32 = 3 @since(5)
+  /// Along a reach that does not bend, the thalweg still swings from bank to bank and a pool lies
+  /// against each (Leopold & Wolman 1957; Keller & Melhorn 1978): the asymmetry alternates sides
+  /// every `pool_riffle_widths`, to this share of a bend's (0 to 1).
+  alternate_asymmetry: f32 = 0.6 @since(5)
+  /// A riffle is wider than the pools beside it (Richards 1976): the cut is half this share wider
+  /// than the hydraulic geometry's width at a riffle and half narrower at a pool's apex (0 to
+  /// 0.5), its depth changed with it so the section's area stays.
+  riffle_widening: f32 = 0.12 @since(5)
+  /// The banks' tops are rounded over this share of the cut's depth (0 to 1; `TerrainCut`'s
+  /// `bank_round`). 0: the crease W89 left.
+  bank_round: f32 = 0.75 @since(5)
   bed: ChannelSurface
   bars: ChannelSurface
   banks: ChannelSurface

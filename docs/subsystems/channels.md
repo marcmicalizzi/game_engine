@@ -85,7 +85,10 @@ has a bed.
 
 The bed's width, and the bars' outer edge, are the cut's **flat bed** (`bank_slope`'s trapezoid
 below), a quarter of the width at least where the section is a V, so the gravel lies on the bed and
-not up the banks.
+not up the banks. **Since W93** the flat bed lies where the section puts it, against the outer bank
+at a bend, the gravel runs up the point bar to about the water's edge, and a bar is a skin on the
+ground's own point bar with no crown of its own ([The section](#the-section)); the three bullets
+above describe a layer whose `section_asymmetry` is 0.
 
 Each part is a **recipe** (`engine.channels.ChannelPiece`): its slabs with every height decided here,
 in the piece's frame, and its look. The mesh generator `channel` builds a recipe into one closed mesh
@@ -222,6 +225,86 @@ the 16 poses, took 719 s; the second, two frames, 500 s.
 its slope — and since W90 their pieces follow their reach ([Reaches](#reaches)): nothing laid on a
 colluvial or bedrock reach, boulder steps on a step-pool reach and boulder clusters on a cascade
 (W91).
+
+## The section
+
+(2026-11-10, roadmap W93; the POC's solver needs, 2.1 items 1, 6 and 8: "a lowland stream reads as
+a canal" through three updates, because W89's cut was one trapezoid along a reach.) **The cut's
+section follows the line.** `plan_channels` gives every point of a link an **asymmetry**, -1 to 1
+(`ChannelLink::asym`; positive where the line bends left, toward (-dz, dx)), and `terrain_cuts_json`
+writes the section it stands for (`engine.scene.TerrainCut` version 2: `bank_slope_left`,
+`bank_slope_right`, `bank_round`):
+
+- **At a riffle** (asymmetry 0, the crossing between two bends) the section is W89's trapezoid, half
+  `riffle_widening` (0.12) wider than the hydraulic geometry's width and that much shallower, so its
+  area is the hydraulic geometry's.
+- **At a bend's apex** (asymmetry 1 or -1) it is a **triangle of the same area**: the outer bank a
+  cut bank at `cut_bank_slope` (3), the thalweg at its toe twice the mean depth under the top, and
+  the **point bar** rising from there at a few degrees to the inner bank's top; half
+  `riffle_widening` narrower. Between the two the thalweg and the outer bank go linearly with the
+  asymmetry and the inner bank's run is what keeps the area, so the section's area is the hydraulic
+  geometry's at every point ([the grounding](../experiments/channels.md#the-section) has the
+  formula and where each number is from).
+- **The pool is under the bed's line.** `ChannelLink::bed` (the cut's bed W89 to W91 planned, which
+  the water stands on) is the riffles' bed; a pool lowers the thalweg below it and a riffle's
+  shallower section stands a few centimetres over it. The water's surface is where it was, so a
+  pool is deep water against the outer bank, the bar's upper part stands dry above it, and a riffle
+  is shallow from bank to bank. The water's description is unchanged: its `depth_m` is the depth
+  over the bed's line, which is what Manning's speed is read from (a pool's greater depth would
+  speed its water up, and a pool is slow).
+- **The banks' tops are rounded** over `bank_round` (0.75) of the depth: the cut's face and the
+  ground meet by a smooth minimum, not a crease ([tileset](tileset.md#channels-cut-into-the-ground)).
+
+**Where the asymmetry comes from.** A bend's share is the line's mean curvature over **four
+widths** about the point — the turn between its heading two widths above and two below, over that
+length — times the width times `bend_radius_widths` (2.5: Leopold & Wolman's radius of 2 to 3
+widths is the fully asymmetric bend). Four widths, not the line's own 0.5 m step, because a bar
+and its pool are built by the flow along a bend and not by a kink: the line the trough test draws
+back ([The planform](#the-planform)) turns left and right again inside two or three widths, and
+read point by point those kinks put a pool every 2.7 widths, alternating sides. Where a stretch
+does not bend (the mean bend over a pool-to-pool length either way under 0.1 to 0.3) the asymmetry
+**alternates sides** every `pool_riffle_widths` (6), a sine of the link's own phase, to
+`alternate_asymmetry` (0.6): a straight channel's thalweg swings from bank to bank and has its
+pools too. By reach: pool-riffle and dune-ripple reaches take both; a **plane-bed** reach half a
+bend's and no alternation (Montgomery & Buffington's plane bed has no free bars; a bend still
+forces a pool); step-pool, cascade, bedrock and colluvial reaches, a knickpoint, a fan, a
+tributary's last points inside its trunk's banks, a bed narrower than `bar_min_width_m` and the
+first and last two widths of a link take none, and are cut as W89 cut them. The share is eased by
+two binomial passes, so a reach's edge is not a step in the section.
+
+**The pieces follow it** (`k_channels_version` 5). The gravel bed lies on the flat bed between the
+two banks' toes, which at a bend is against the outer bank, and up the point bar from its toe to
+about the water's edge (0.55 of the bar's run at full asymmetry). **A bar is the ground's own
+point bar**: its skin (`ChannelPart::Bar`) lies on the dry part of the bar above the gravel,
+wherever the asymmetry is at least 0.5 on a reach that has bars, and has **no crown of its own**
+at full `section_asymmetry` — W86's lens stood `bar_rise` of the depth over a flat bed, which is
+what read as a smooth slab (the POC's item 6); the form is now the ground's and the piece is two
+grains of relief on it. The bed's riffle rise follows the same rhythm (highest where the section
+is symmetric). The placement generator plans its network over the cut ground, as before, and reads
+the asymmetry from its own line.
+
+**`section_asymmetry` 0 is W89's section**: the trapezoid at every point, no widening, W86's
+alternating bar lenses; with `bank_round` 0 as well the cuts are W91's bytes, five fields a cut
+(the test "the cuts have the TerrainCut shape" holds that configuration to every check it had).
+
+**Measured** (12 seeds on the test valley, `domain/channels/tests/channels_tests.cpp`): at 551 of
+553 bends the outer bank is the deeper side; pools stand **6.0 widths** apart on average (172
+spacings; Keller & Melhorn's 5 to 7); the section's area is the hydraulic geometry's within 4 % at
+every point whose bed runs through no rise; a riffle at its widest is 1.128 of a pool at its
+narrowest.
+
+**What a second client of the cut would add** is on the cut's own header
+(`domain/tileset/include/domain/tileset/cuts.h`): the profile across a line, its left and right
+and its change along the line are a trail's tread or a terrace as they stand; a fill rule (the
+edit only lowers), a top per side and a scene block of its own are what they lack.
+
+## The flood bed
+
+(W93.) A `TerrainCut` may carry a **flood bed**: a second profile on the same line, a flat bed
+`flood_depth_m` under the top reaching `flood_left_m` and `flood_right_m` from the line, bounded
+by a scarp each side ([tileset](tileset.md#channels-cut-into-the-ground) has the section and the
+cell rule, which reads the bed by its own width). What the generator writes into it — the valley's
+confinement read from the ground, the bed's width from it — is the next commit of this row.
 
 ## Reaches
 
@@ -517,6 +600,15 @@ catchments that flow in across it. The captures and their verdict are in the W86
   same twice and the same from a scene that carries the cuts (`apps/engine_content/tests/
   channel_cut_tests.cpp`).
 
+- **The section follows the line** (W93): at a bend (a turn of 30 degrees between the line's
+  heading two widths above a point and two below) the outer bank is the deeper side, on 95 % of
+  bends at least over 12 seeds; pools stand 5 to 7 widths apart on average; the section's area is
+  the hydraulic geometry's within 4 % from riffle to pool, a bend's apex twice the mean depth deep;
+  the gentler bank is the inside one; a riffle is at most `riffle_widening` wider than a pool; the
+  water stands under the top and over the cut's deepest point (tests: "at a bend the outer bank is
+  the deeper side, and pools stand 5 to 7 widths apart", "the section keeps the hydraulic
+  geometry's area from riffle to pool").
+
 **Public API.** `include/domain/channels/channels.h`.
 
 **Depends on.** `base`, `containers`, `math`, `hash`, `json`, `schema`, `log`, `io`, `jobs`, `assets`,
@@ -532,7 +624,10 @@ scene instances. `ChannelPoint` (40 bytes) is pinned in the size table.
 
 **Not yet.** The cut is written by the subcommand and pasted by the author, not applied by the generator itself (the ground is built before the placements are); a procedural ground (the dunes) takes no cut; D8 only (no D∞ spreading); heads by a local four-metre slope, not a slope
 averaged over the source area; no braided reaches; the valley's confinement is not read for the
-reach; the ribbon's fit narrows the water where the ground across the line is lower than its surface
+reach; **the line itself still kinks** where the trough test drew it back (turns left and right
+again inside two or three widths: the section averages them out, the cut's banks still follow
+them); a pool lies at its bend's apex and not downstream of it, as a real one does; undercut and
+turf banks are not the heightfield's to draw; the ribbon's fit narrows the water where the ground across the line is lower than its surface
 but does not move the cut, so on a cross-slope the cut's bench still has no downhill bank (the water
 narrows to what the bench holds); knickpoints are read from the ground's profile along the line, not
 from rock strength; **the network is planned again on every load** (24–32 s on v35, T73's finding): caching it as
