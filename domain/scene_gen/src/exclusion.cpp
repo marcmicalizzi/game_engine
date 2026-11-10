@@ -12,14 +12,16 @@ namespace {
 constexpr f64 k_cell_m = 16.0;
 constexpr f64 k_far = 1.0e30;
 
-// The recipe's defaults (channels.schema `bank_width_widths`, `bank_width_m`): the reach of a
-// dressed bank beyond the water's edge. channels.md, "The banks".
-constexpr f64 k_bank_widths = 0.25;
-constexpr f64 k_bank_m = 0.4;
-
 i64 cell_of(f64 metres) noexcept { return static_cast<i64>(std::floor(metres / k_cell_m)); }
 
 bool finite(f64 v) noexcept { return std::isfinite(v); }
+
+// A channel's bank reach as its description gives it (`WaterChannel.bank_width_widths`,
+// `bank_width_m`, which the channels recipe writes; T78), or the field's default where the number
+// is negative or not finite: the water does not read them, so nothing else refuses a bad one.
+f64 bank_number(f64 value, f64 fallback) noexcept {
+  return finite(value) && value >= 0.0 ? value : fallback;
+}
 
 }  // namespace
 
@@ -88,6 +90,7 @@ bool Exclusion::build(std::span<const scene::TerrainHole> holes,
     bodies_.push_back(std::move(body));
   }
 
+  const scene::WaterChannel defaults;  // the schema's defaults, which are the recipe's
   for (const scene::WaterChannel& channel : channels) {
     const u32 n = channel.points.size();
     if (n < 2 || channel.width_m.size() < n) continue;
@@ -96,9 +99,11 @@ bool Exclusion::build(std::span<const scene::TerrainHole> holes,
       ok = ok && finite(channel.points[i].x) && finite(channel.points[i].z) &&
            finite(static_cast<f64>(channel.width_m[i])) && channel.width_m[i] > 0.0f;
     if (!ok) continue;
+    const f64 bank_widths = bank_number(channel.bank_width_widths, defaults.bank_width_widths);
+    const f64 bank_m = bank_number(channel.bank_width_m, defaults.bank_width_m);
     const auto edge = [&](u32 i) {
       const f64 w = static_cast<f64>(channel.width_m[i]);
-      return 0.5 * w + k_bank_widths * w + k_bank_m;
+      return 0.5 * w + bank_widths * w + bank_m;
     };
     for (u32 i = 0; i + 1 < n; ++i) {
       Segment s;

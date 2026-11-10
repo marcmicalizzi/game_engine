@@ -184,7 +184,9 @@ ChannelReach reach_of(const ChannelLayer& layer, f64 slope, bool colluvial);
 // ribbon's ends: a run of points at either end of a ribbon lying inside a body's outline with its
 // surface under the body's level (or under an open body's level anywhere) is trimmed off, since the
 // body's own water stands over it (W91 continuation, channels.md "Mouths"); a ribbon left with
-// fewer than two points is not written. `trim` (nullable) counts what that took.
+// fewer than two points is not written. `trim` (nullable) counts what that took. A layer whose
+// `bank_width_widths` or `bank_width_m` is not the default writes both on every block (T78), which
+// is how the placements' exclusion reads the bank's reach; at the defaults neither is written.
 struct RibbonTrim {
   u64 points = 0;      // points trimmed off the ribbons' ends
   u64 blocks = 0;      // ribbons that lost any

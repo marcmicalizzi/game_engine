@@ -420,6 +420,68 @@ TEST_CASE("channels: the water's description has the WaterChannel shape") {
   CHECK(write_json(back) == text);
 }
 
+// **The bank's reach travels with the water** (T78; scene_gen.md, "Exclusion"): a recipe whose
+// banks are wider than the defaults hands that width to the placements' exclusion through the
+// water's description, so a point between the default reach and the recipe's is left bare. Until
+// T78 the exclusion copied the defaults as constants and grew grass there.
+TEST_CASE("channels: the exclusion reaches the recipe's bank width, not the default") {
+  ChannelLayer p = layer();
+  ChannelNetwork n;
+  std::string error;
+  REQUIRE(plan_channels(p, ground(notch), 0, nullptr, n, error));
+  // The same network written twice: at the recipe's defaults, and with banks a width and 2 m wide.
+  const JsonValue plain = water_channels_json(p, n, 0, .5f, true);
+  ChannelLayer wide_banks = p;
+  wide_banks.bank_width_widths = 1.0f;
+  wide_banks.bank_width_m = 2.0f;
+  const JsonValue wide = water_channels_json(wide_banks, n, 0, .5f, true);
+  const auto exclusion_of = [&](const JsonValue& blocks, scene_gen::Exclusion& out,
+                                Vector<scene::WaterChannel>& channels) {
+    for (const JsonValue& block : blocks.as_array()) {
+      scene::WaterChannel channel;
+      schema::ReadContext reader;
+      REQUIRE(schema::from_json(channel, block, reader));
+      REQUIRE(reader.ok());
+      channels.push_back(std::move(channel));
+    }
+    REQUIRE(out.build({}, {}, {channels.data(), channels.size()}, &error));
+  };
+  Vector<scene::WaterChannel> plain_channels, wide_channels;
+  scene_gen::Exclusion at_default, at_recipe;
+  exclusion_of(plain, at_default, plain_channels);
+  exclusion_of(wide, at_recipe, wide_channels);
+  REQUIRE(!plain_channels.empty());
+  // Across the middle of every segment of the first ribbon, halfway between the default bank edge
+  // (0.75 w + 0.4 m from the line) and the recipe's (1.5 w + 2 m): outside the one, inside the
+  // other.
+  const scene::WaterChannel& c = plain_channels[0];
+  const scene_gen::Ground flat;
+  u32 between = 0;
+  for (u32 i = 0; i + 1 < c.points.size(); ++i) {
+    const f64 dx = c.points[i + 1].x - c.points[i].x;
+    const f64 dz = c.points[i + 1].z - c.points[i].z;
+    const f64 len = std::sqrt(dx * dx + dz * dz);
+    if (!(len > 0.0)) continue;
+    const f64 w = 0.5 * (static_cast<f64>(c.width_m[i]) + static_cast<f64>(c.width_m[i + 1]));
+    const f64 d = 0.5 * ((0.75 * w + 0.4) + (1.5 * w + 2.0));
+    const f64 x = 0.5 * (c.points[i].x + c.points[i + 1].x) - dz / len * d;
+    const f64 z = 0.5 * (c.points[i].z + c.points[i + 1].z) + dx / len * d;
+    const i64 x_mm = std::llround(x * 1000.0);
+    const i64 z_mm = std::llround(z * 1000.0);
+    // A bend can bring another segment's default bank over the point; only the clean ones count.
+    if (at_default.excluded_mm(flat, x_mm, z_mm, scene_gen::k_exclude_channels)) continue;
+    ++between;
+    CHECK_MESSAGE(at_recipe.excluded_mm(flat, x_mm, z_mm, scene_gen::k_exclude_channels),
+                  "segment " << i << ": " << d << " m from the line, inside the recipe's bank");
+  }
+  CHECK(between > 10);
+  // At the defaults the description is the one W91 wrote, field for field: nothing new is written.
+  for (const JsonValue& block : plain.as_array()) {
+    CHECK(block.find("bank_width_widths") == nullptr);
+    CHECK(block.find("bank_width_m") == nullptr);
+  }
+}
+
 // **The cuts** (channels.md, "The cut"; W89): one per link with the TerrainCut shape, a trapezoid
 // of the hydraulic geometry's area under the ground at the line, its bed never rising downstream,
 // and the water's surface in the cut lying between that bed and the top of the bank.

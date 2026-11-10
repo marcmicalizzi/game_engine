@@ -1375,7 +1375,7 @@ struct WaterBody @version(5) {
 /// points falls at 45 degrees or steeper the water is in free fall and that stretch is a waterfall.
 /// Refused with a sentence: fewer than two points, arrays of unequal length, a width or depth that
 /// is not positive, a slope that is negative where the line descends.
-struct WaterChannel @version(3) {
+struct WaterChannel @version(4) {
   name: string
   /// The centreline, downstream, world positions; each point's y is the **water surface's**
   /// height there.
@@ -1414,6 +1414,15 @@ struct WaterChannel @version(3) {
   /// it, and the water lies under the ground there). One per point; empty where the writer did not
   /// fit it. The water reads nothing of it: a record of what the writer did.
   fit: u8[] @since(3)
+  /// **The bank's reach beyond the water's edge** (T78; scene_gen.md, "Exclusion"): the placements
+  /// leave a point bare within `w / 2 + bank_width_widths * w + bank_width_m` of the line, `w` the
+  /// width there. The channels recipe's numbers of the same names, handed over here so the
+  /// exclusion reads the recipe's reach and not a copy of its defaults; the defaults are the
+  /// recipe's, and a writer that leaves them out (every scene before T78) is excluded as before.
+  /// The water reads neither. A negative or non-finite one is read as its default. f64, so the
+  /// defaults are the exclusion's old constants to the bit (0.4 has no exact f32).
+  bank_width_widths: f64 = 0.25 @since(4)
+  bank_width_m: f64 = 0.4 @since(4) @unit(m)
 }
 
 /// One bed of a formation's sequence (`Formation`; renderer.md, "Formation bands"; the grounding,

@@ -1069,6 +1069,7 @@ f64 flat_height(const void* context, i64, i64) noexcept {
 JsonValue water_channels_json(const ChannelLayer& p, const ChannelNetwork& n, f64 min_area_m2,
                               f32 stage, bool cut, const scene_gen::Ground* ground,
                               const scene_gen::Exclusion* water, RibbonTrim* trim) {
+  const ChannelLayer bank_defaults;  // the recipe's own defaults, which the description's are
   Vector<Water> waters;
   for (const ChannelLink& link : n.links)
     waters.push_back(water_of(p, link, stage, cut));
@@ -1190,6 +1191,14 @@ JsonValue water_channels_json(const ChannelLayer& p, const ChannelNetwork& n, f6
     o["seed"] = JsonValue(link.seed);
     o["reach"] = std::move(reach);
     if (ground != nullptr) o["fit"] = std::move(fits);
+    // The bank's reach, which the placements' exclusion reads from the description (T78; it copied
+    // the defaults until then). Written only where the recipe moved it, so a description at the
+    // defaults is the bytes it was.
+    if (p.bank_width_widths != bank_defaults.bank_width_widths ||
+        p.bank_width_m != bank_defaults.bank_width_m) {
+      o["bank_width_widths"] = JsonValue(wide(p.bank_width_widths));
+      o["bank_width_m"] = JsonValue(wide(p.bank_width_m));
+    }
     list.push_back(std::move(o));
   }
   return list;

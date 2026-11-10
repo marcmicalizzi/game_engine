@@ -117,7 +117,9 @@ struct ChannelLayer @version(4) {
   bar_width_widths: f32 = 0.35
   bar_length_widths: f32 = 3.0
   /// W86's bank pieces, read and range-checked so a scene naming them still reads, and placed no
-  /// more since W89: the banks are the cut's faces (channels.md, "The cut").
+  /// more since W89: the banks are the cut's faces (channels.md, "The cut"). The two widths are
+  /// still the reach the placements leave bare beyond the water (scene_gen.md, "Exclusion"), handed
+  /// over on the water's description (`WaterChannel`) where they are not the defaults (T78).
   bank_min_width_m: f32 = 1.5 @unit(m)
   bank_height: f32 = 0.6
   bank_width_widths: f32 = 0.25

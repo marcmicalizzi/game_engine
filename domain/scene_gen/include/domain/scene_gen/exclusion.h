@@ -7,10 +7,10 @@
 //  * **holes** (`Terrain.holes`, W87) -- the ground has no surface there (a cave's mouth, a shaft),
 //    so there is nothing to stand on;
 //  * **channels** (`water_channels`, S96) -- the bed, the water and the dressed banks of a stream:
-//  a
-//    point within `half the surface width + the bank's reach` of the centreline, the reach being
-//    channels.md's `bank_width_widths * w + bank_width_m` (0.25 w + 0.4 m, the recipe's defaults),
-//    whose outer edge is the riparian edge the channels page names;
+//    a point within `half the surface width + the bank's reach` of the centreline, the reach being
+//    the channel's own `bank_width_widths * w + bank_width_m` (`WaterChannel`, which the channels
+//    recipe writes; its defaults 0.25 w + 0.4 m are the recipe's; T78), whose outer edge is the
+//    riparian edge the channels page names;
 //  * **water** (`water`) -- a point of a body's outline whose ground is below its level (what
 //    `water::depth_at` calls wading), and the whole of an open body's sea.
 //
