@@ -164,10 +164,12 @@ their mean half-widths rising 0.56, 0.68, 0.79 m.
 
 **Pictures** (not committed; `D:/workspace/game_engine_local/fable_sub/scratch/b59/G143/`):
 `scene/make-heightfield.ps1` writes the same face with three gullies as a heightfield, and
-`scene/scene-before.json` / `scene-after.json` dress it with deposits (after: `cone_supply_m` 2,
-30 blocks a 100 m², `block_m` 0.9, decay 10 m). `captures/gullies-before/` is the base build,
-`captures/gullies-after/` this one, each from the meadow, at a walker's height and from across the
+`scene/scene-before.json` / `scene-after.json` dress it with deposits (no channel sediment, whose
+blanket over this meadow hid the rest; after: `cone_supply_m` 2, 30 blocks a 100 m², `block_m` 0.9,
+decay 10 m). `captures/final-before/` is the base build, `captures/final-after/` this one, each from the meadow, at a walker's height and from across the
 valley, 1600 x 900, CSM shadows, sun -30, 40, msvc-debug. Before: a flat-topped grey apron of even
-depth along the whole foot. After: a cone in each gully's mouth, blocks on their toes and out on the
-meadow. Against reels r04, r19 and r22 they still lack the cones' pale coarse surface, lichen and
+depth along the whole foot. After: a cone in each gully's mouth on the same apron, blocks on the
+cones' toes and the apron and a few out on the meadow. Still wrong beside the reels: the bed's
+outline steps with its 0.5 m samples, a patch's normals still show at its edge as G128's did, and
+the blocks are clean. Against reels r04, r19 and r22 they still lack the cones' pale coarse surface, lichen and
 turf on the blocks, and any change to the ground beneath (rocks.md, "What still reads as placed").
