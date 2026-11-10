@@ -79,6 +79,15 @@ class Exclusion {
   f64 channel_distance_mm(i64 x_mm, i64 z_mm) const noexcept;
   // 1 beyond the riparian reach; `k_riparian_floor` at the bank's edge.
   f64 riparian_factor_mm(i64 x_mm, i64 z_mm) const noexcept;
+  // **The one definition of a channel's bank edge, asked out to any reach** (W93, for the site
+  // query, G144): metres from the world point (whole millimetres) to the nearest channel's bank
+  // edge — the edge `excluded_mm` leaves bare: the dressed bank's, or a flood bed's where it
+  // reaches further on the point's side — 0 inside it, or a very large number (over 1e20) when no
+  // edge is within `reach_m` metres. `channel_distance_mm` is this at `k_riparian_reach_m`, to
+  // the bit. Const and without state of its own, so any number of threads may ask at once. It
+  // reads the cells within the reach of the point (a 16 m grid), so a long reach costs the
+  // segments of that square: at 128 m, 17 cells a side and a little more.
+  f64 channel_edge_distance_mm(i64 x_mm, i64 z_mm, f64 reach_m) const noexcept;
 
  private:
   struct Body {
@@ -111,7 +120,8 @@ class Exclusion {
   TerrainHoles holes_;
   Vector<Body> bodies_;
   Vector<Segment> segments_;
-  Vector<Cell> cells_;  // sorted by (z, x, segment)
+  Vector<Cell> cells_;     // sorted by (z, x, segment)
+  f64 widest_edge_ = 0.0;  // the furthest any segment's edge stands from its line, metres
 };
 
 }  // namespace engine::scene_gen

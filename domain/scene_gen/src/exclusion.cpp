@@ -32,6 +32,7 @@ bool Exclusion::build(std::span<const scene::TerrainHole> holes,
   bodies_.clear();
   segments_.clear();
   cells_.clear();
+  widest_edge_ = 0.0;
   if (!holes_.build(holes, error)) return false;
 
   for (const scene::WaterBody& block : water) {
@@ -127,9 +128,10 @@ bool Exclusion::build(std::span<const scene::TerrainHole> holes,
         s.gb = flood_number(channel.flood_right_m[i + 1]);
       }
       const u32 id = segments_.size();
-      const f64 reach =
-          std::max(std::max(std::max(s.ra, s.rb), std::max(s.la, s.lb)), std::max(s.ga, s.gb)) +
-          k_riparian_reach_m;
+      const f64 edge_reach =
+          std::max(std::max(std::max(s.ra, s.rb), std::max(s.la, s.lb)), std::max(s.ga, s.gb));
+      widest_edge_ = std::max(widest_edge_, edge_reach);
+      const f64 reach = edge_reach + k_riparian_reach_m;
       const i64 cx0 = cell_of(std::min(s.ax, s.bx) - reach);
       const i64 cx1 = cell_of(std::max(s.ax, s.bx) + reach);
       const i64 cz0 = cell_of(std::min(s.az, s.bz) - reach);
@@ -223,6 +225,29 @@ f64 Exclusion::channel_distance_mm(i64 x_mm, i64 z_mm) const noexcept {
   const f64 gap = nearest_gap(static_cast<f64>(x_mm) * 0.001, static_cast<f64>(z_mm) * 0.001);
   if (gap >= k_riparian_reach_m) return k_far;
   return std::max(gap, 0.0);
+}
+
+f64 Exclusion::channel_edge_distance_mm(i64 x_mm, i64 z_mm, f64 reach_m) const noexcept {
+  if (cells_.empty() || !(reach_m > 0.0)) return k_far;
+  const f64 x = static_cast<f64>(x_mm) * 0.001;
+  const f64 z = static_cast<f64>(z_mm) * 0.001;
+  // A segment whose edge is within the reach has its line within the reach and its widest edge
+  // of the point, and it is filed in every cell its line's box touches.
+  const f64 box = reach_m + widest_edge_;
+  const i64 cx0 = cell_of(x - box), cx1 = cell_of(x + box);
+  const i64 cz0 = cell_of(z - box), cz1 = cell_of(z + box);
+  f64 best = k_far;
+  for (i64 cz = cz0; cz <= cz1; ++cz) {
+    auto it = std::lower_bound(cells_.begin(), cells_.end(), Cell{cz, cx0, 0},
+                               [](const Cell& a, const Cell& b) {
+                                 if (a.key_z != b.key_z) return a.key_z < b.key_z;
+                                 return a.key_x < b.key_x;
+                               });
+    for (; it != cells_.end() && it->key_z == cz && it->key_x <= cx1; ++it)
+      best = std::min(best, bank_gap(segments_[it->segment], x, z));
+  }
+  if (best >= reach_m) return k_far;
+  return best > 0.0 ? best : 0.0;
 }
 
 f64 Exclusion::riparian_factor_mm(i64 x_mm, i64 z_mm) const noexcept {
