@@ -137,6 +137,9 @@ struct TerrainDesc {
   // generator in its `Context`, here because the terrain description is what both hosts and the
   // collision already carry from the reader to the world. Empty for a scene with none of the three.
   scene_gen::Exclusion exclusion;
+  // **The site a placement reads** (G144; scene_gen.md, "The site"): built beside the exclusion
+  // from the scene's sky and water, and handed to every generator in its `Context` the same way.
+  scene_gen::Site site;
 };
 
 // The detail's numbers as the mechanism takes them (`gfx::GroundDetailDesc`, domain/gfx/

@@ -1196,6 +1196,7 @@ bool expand_placements(const scene::Scene& file, const std::string& path, const 
   context.ddc = out.ddc;
   if (out.terrain.enabled) context.ground = ground.provider().view();
   if (!out.terrain.exclusion.empty()) context.exclusion = &out.terrain.exclusion;
+  context.site = &out.terrain.site;
   context.jobs_fn = &LazyPool::get;
   context.jobs_context = &pool;
   Vector<std::pair<MeshKey, u32>> seen;
@@ -2371,6 +2372,15 @@ bool read_scene_file(const std::string& path, const SceneFileOptions& options, S
       error = path + ": " + error;
       return false;
     }
+  }
+  // G144: what the ground is like at a point, from the sky's latitude and the water (scene_gen.md,
+  // "The site"); read by a placement only where a rule of its asks.
+  if (!out.terrain.site.build(file.sky.has_value() ? static_cast<f64>(file.sky->latitude_deg)
+                                                   : scene_gen::k_site_default_latitude_deg,
+                              {file.water.data(), file.water.size()},
+                              {file.water_channels.data(), file.water_channels.size()}, &error)) {
+    error = path + ": " + error;
+    return false;
   }
   profiling::TraceStage placements_stage("placements");
   if (!expand_placements(file, path, dir, ground, out, error)) return false;

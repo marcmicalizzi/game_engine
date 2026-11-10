@@ -39,6 +39,7 @@
 #include <domain/geometry/cluster_lod.h>
 #include <domain/scene_gen/exclusion.h>
 #include <domain/scene_gen/ground_masks.h>
+#include <domain/scene_gen/site.h>
 #include <domain/scene_gen/tile_source.h>
 
 #include <schemas/scene.h>
@@ -171,6 +172,14 @@ struct Context {
   // The density a bank leaves at the point, [k_riparian_floor, 1]; exactly 1 with none.
   f64 riparian_factor_mm(i64 x_mm, i64 z_mm) const noexcept {
     return exclusion != nullptr ? exclusion->riparian_factor_mm(x_mm, z_mm) : 1.0;
+  }
+  // **The site a placement reads** (G144; scene_gen.md, "The site"): elevation, slope, the
+  // downslope direction, heat load, curvature and the distances to water at the point, built once
+  // by the host from the scene's sky and water. Null: `Site::fallback()`, the default latitude and
+  // no water, so a rule still reads the ground. A generator with no rule never asks.
+  const Site* site = nullptr;
+  SiteSample site_mm(i64 x_mm, i64 z_mm, u32 fields = k_site_all) const noexcept {
+    return (site != nullptr ? *site : Site::fallback()).sample_mm(ground, x_mm, z_mm, fields);
   }
 };
 inline constexpr u8 k_no_ring = 0xFFu;
