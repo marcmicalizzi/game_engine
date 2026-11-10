@@ -125,7 +125,7 @@ and passing viewer log are preserved beside the captures. Shared-machine elapsed
 are validation durations, not performance measurements. The merge-wide release, ASan,
 GPU-server and frame-budget gates were not run on this branch; those remain the merge's.
 
-## G143: cones under gullies and blocks shed below faces (2026-11-10)
+## G143: what a face sheds (2026-11-10)
 
 Research read 2026-11-10 for roadmap G143. As for G128 this is static authoring, not a hazard
 model: the sources say what shape a talus cone has and how far a block runs, and the numbers below
@@ -134,7 +134,8 @@ choice and not a measured constant, the table says so.
 
 | Quantity / rule | Source read | Value used / trade |
 |---|---|---|
-| Where a cone stands | Scree, [Wikipedia](https://en.wikipedia.org/wiki/Scree) (secondary, read for its synthesis of Statham and Kirkby); the reference reels r04, r19, r22 (the owner's): pale cones whose apexes sit in the gullies of the wall above | A cone's apex is the **mouth of a gully**: the first sample below steep, convergent ground. Rockfall is funnelled through the gully, so supply, and the cone, is there and not on the planar face between. |
+| The supply | Mohadjer et al. (2020), *Temporal variations in rockfall and rock-wall retreat rates in a deglaciated valley over the past 11 k.y.*, Geology 48(6): 594-598, doi:10.1130/G47092.1, abstract (Lauterbrunnen, 5.2 km² of calcareous cliffs): 0.03-0.08 mm a year from 5.2 years of laser scans, 0.27-0.38 mm a year from the volume of the postglacial talus over about 11,000 years; Holocene rates read from talus volumes elsewhere span 0.015 mm a year (Scotland, relict talus) to 0.33-1.96 mm a year (Svalbard) and 0.3-0.8 mm a year (Yosemite), all through secondary summaries | `supply_m` is the wall's retreat since the ice left: the default 3.5 m is Mohadjer et al.'s 0.27-0.38 mm a year over 11,000 years (3.0-4.2 m), mid-range; the field's 0-50 m covers the summaries' 0.015-2 mm a year over the Holocene (0.2-23 m). Talus volume is face area times retreat, the method those papers invert. |
+| Where a cone stands | Scree, [Wikipedia](https://en.wikipedia.org/wiki/Scree) (secondary, read for its synthesis of Statham and Kirkby); the reference reels r04, r19, r22 (the owner's): pale cones whose apexes sit in the gullies of the wall above | Rockfall is funnelled through a gully, so its supply arrives at the gully's foot, and a cone stands there where the gully drains more face than the faces between it shed. Face area is routed down steepest descent to its foot and each foot's supply spread along the feet by a kernel that conserves it: a cone is that rule's limit at one foot, a sheet its limit along a planar face, and nothing switches between them. |
 | The upper slope | Francou and Mante (1990), [Alpine talus segmentation](https://horizon.documentation.ird.fr/exl-doc/pleins_textes/divers19-08/010048761.pdf), pp. 54-56: modal 34-36 degrees under massive walls; the geoguide below: 35-37 degrees upper | The cone's upper half falls at `repose_deg`, default 35, never steeper. Angular blocks "seldom more than 45" ([LibreTexts, Southard, The Controls on Downslope Movement](https://geo.libretexts.org/Bookshelves/Geography_(Physical)/The_Environment_of_the_Earth's_Surface_(Southard)/10%3A_Mass_Wasting/10.02%3A_The_Controls_on_Downslope_Movement)): the range stays G128's 25-40. |
 | The concave lower profile | [Scottish Geology Trust geoguide](https://geoguide.scottishgeologytrust.org/page/2138.pdf): straight 35-37 degrees above, 31-34 degrees in the lower part, concave; Kirkby and Statham (1975), J. Geol. 83, read through the [Scree](https://en.wikipedia.org/wiki/Scree) synthesis and [Bithell et al. (2014)](https://www.repository.cam.ac.uk/bitstream/1810/247016/1/Bithell_et_al-2014-Earth_Surface_Processes_and_Landforms.pdf): an exponential (Poisson) distribution of travel distance gives the straight-then-concave form, the fast particles running out as a tail | Below half the cone's nominal length the slope eases linearly over one more cone length to `toe_deg`, default 31 (the bottom of the 31-34 band), and holds it to the toe. |
 | Fall sorting | [Scree](https://en.wikipedia.org/wiki/Scree) after Kirkby and Statham: large blocks "fail to find a depositional niche" and roll to the foot; the review in [Dai et al. (2022)](https://www.junyang.hku.hk/_files/ugd/31db54_3e032bbb5615470094da69f199d93480.pdf): larger clasts downslope | Block size grows with the distance travelled past the talus' top, `0.5 + d / (d + block_decay_m)` times the source's block size, and a cone's fragments coarsen from apex to toe as G128's tongues do. |
@@ -154,7 +155,7 @@ between them, reaching 4.5 m from the foot in both (MSVC, the test's MESSAGE). S
 are not cones**: they are an apron of even depth, a slab with a flat top at the depth cap, with
 tongues only where the ground below already channels them. The before pictures below show it.
 
-**What G143 does with it** is on [rocks](../subsystems/rocks.md#cones-and-shed-blocks-g143): a cone
+**What G143's first agent did with it** (superseded the same day; [rocks](../subsystems/rocks.md#what-a-face-sheds) has the rule that replaced it): a cone
 at each gully's mouth from its catchment's supply, straight at 35 degrees over a concave toe at 31;
 blocks shed out to the 27.5 degree shadow line, thinning exponentially, the largest farthest; and
 the formation's bed at the face for their rock. Measured on the unit test's face (MSVC): three

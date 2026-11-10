@@ -34,12 +34,31 @@ bool refused(std::string* error, std::string message) {
   if (error) *error = std::move(message);
   return false;
 }
+// DepositLayer 1 -> 2 (G143): version 1's capped apron, `talus_depth_m`, is gone; the supply rule
+// replaces it. A layer that set it to zero asked for no rockfall deposit, which is `supply_m` 0.
+bool migrate_layer_1(JsonValue& object, schema::ReadContext&) {
+  if (!object.is_object()) return true;
+  const JsonValue* depth = object.find("talus_depth_m");
+  f64 value = 1.0;
+  const bool none = depth != nullptr && depth->get_f64(value) && value <= 0.0;
+  object.as_object().erase(std::string("talus_depth_m"));
+  if (none) object["supply_m"] = JsonValue(0.0);
+  return true;
+}
+const bool k_migration_registered = [] {
+  schema::MigrationRegistry::global().add({"engine.rocks.DepositLayer", 1, &migrate_layer_1});
+  return true;
+}();
 bool open(const JsonValue& params, const scene_gen::Context& context, void** state,
           std::string* error) {
   *state = nullptr;
   auto e = std::make_unique<Entry>();
   schema::ReadContext reader;
-  if (!schema::from_json(e->layer, params, reader) || !reader.ok()) {
+  // A placement entry carries no version; only a version-1 layer names `talus_depth_m`.
+  const bool version_1 = params.is_object() && params.find("talus_depth_m") != nullptr;
+  if (!(version_1 ? schema::from_json_versioned(e->layer, params, 1, reader)
+                  : schema::from_json(e->layer, params, reader)) ||
+      !reader.ok()) {
     std::string message = "engine.rocks.DepositLayer";
     for (const auto& d : reader.diagnostics)
       message += "; " + d.path + ": " + d.message;
@@ -214,9 +233,9 @@ bool open(const JsonValue& params, const scene_gen::Context& context, void** sta
       e->patches.push_back(at);
       e->meshes.push_back(std::move(mesh));
     }
-  // G143: what the plan found, once an entry: a scene's cones and blocks, by count.
+  // G143: what the plan found, once an entry: a scene's piles and blocks, by count.
   ENGINE_LOG_INFO(log_deposits, "deposits planned",
-                  log::field("cones", static_cast<u64>(plan.cones.size())),
+                  log::field("piles", static_cast<u64>(plan.piles.size())),
                   log::field("blocks", static_cast<u64>(plan.blocks.size())),
                   log::field("patches", static_cast<u64>(e->patches.size())));
   *state = e.release();

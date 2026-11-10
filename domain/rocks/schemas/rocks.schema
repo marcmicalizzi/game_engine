@@ -392,7 +392,7 @@ struct CliffLayer @version(1) {
   recipes: string
 }
 
-/// One fallen block of a deposit patch (G143; rocks.md, "Cones and shed blocks"): a block shed
+/// One fallen block of a deposit patch (G143; rocks.md, "What a face sheds"): a block shed
 /// from the face above, or one of a cone's largest, as geometry of the patch's own mesh, never an
 /// instance. Local metres from the patch's corner; `y_m` is the ground under its centre.
 struct DepositBlock @version(1) {
@@ -446,8 +446,10 @@ struct DepositLithology @version(1) {
 }
 
 /// Static deposition authoring over a finite terrain window; not a hazard or fluid simulation.
-/// Version 2 (G143) adds the cones under gullies, the blocks shed below the faces and the
-/// formation's lithology; each is off at its default, so a version-1 layer solves as it did.
+/// Version 2 (G143) replaces version 1's capped apron (`talus_depth_m`, removed; a migration drops
+/// it, and a layer that set it to zero asked for no talus, `supply_m` 0) with one supply rule: what
+/// lies at a face's foot is what the face shed, a cone under a gully and a sheet under a planar
+/// face; and adds the blocks shed below the faces and the formation's lithology.
 struct DepositLayer @version(2) {
   seed: u64 = 1
   /// World metres, finite within +/-1e8; max exceeds min, aligned to spacing_m.
@@ -461,11 +463,9 @@ struct DepositLayer @version(2) {
   max_samples: u32 = 262144
   /// Rockfall-source slope, 40..85 degrees, above repose_deg.
   source_deg: f32 = 50.0
-  /// Runout envelope descent angle, 25..40 degrees (natural talus commonly ~35).
+  /// A deposit's upper slope, 25..40 degrees (Francou and Mante's talus, 34-36).
   repose_deg: f32 = 35.0
-  /// Maximum rockfall thickness, 0..20 m; zero disables talus.
-  talus_depth_m: f32 = 3.0 @unit(m)
-  /// Maximum downstream travel from a steep source, 1..1000 m.
+  /// Maximum travel of a deposit's surface from its apex, 1..1000 m.
   runout_m: f32 = 40.0 @unit(m)
   /// Catchment area required for channel deposits, 1..1e6 square metres.
   channel_area_m2: f32 = 24.0
@@ -479,28 +479,20 @@ struct DepositLayer @version(2) {
   clear_m: f32 = 0.0 @unit(m)
   /// Patch geometry and material defaults; sampled arrays and dimensions are replaced.
   patch: DepositPatch
-  /// G143 gullies: ground steeper than `gully_deg` (30..80) whose plan curvature, measured over
-  /// `gully_scale_m` (whole spacings, 1..32 m), converges by at least `gully_convergence` (per
-  /// metre, 0.001..10) and drains at least `gully_area_m2` (1..1e6) is a gully; where it leaves
-  /// the steep ground is its mouth.
-  gully_deg: f32 = 40.0 @since(2)
-  gully_scale_m: f32 = 2.0 @unit(m) @since(2)
-  gully_convergence: f32 = 0.05 @since(2)
-  gully_area_m2: f32 = 20.0 @since(2)
-  /// A cone's volume is its gully's catchment times this rock-wall retreat, 0..50 m; zero, no
-  /// cones. Its height above the mouth is that volume's half cone at the repose angle, at most
-  /// `cone_max_m` (0.5..20).
-  cone_supply_m: f32 = 0.0 @unit(m) @since(2)
-  cone_max_m: f32 = 12.0 @unit(m) @since(2)
-  /// The cone's lower profile eases from `repose_deg` to this, 20..repose_deg (Francou and
-  /// Mante's toe, 31-34 degrees).
+  /// G143: the rock wall's retreat since the ice left, 0..50 m: a foot's deposit holds the face
+  /// area routed to it times this (rocks.md, "What a face sheds"). 3.5 m is Mohadjer et al.'s
+  /// (2020) 0.27-0.38 mm a year from talus volumes over 11,000 years; zero, no rockfall deposit.
+  supply_m: f32 = 3.5 @unit(m) @since(2)
+  /// A deposit's lower profile eases from `repose_deg` to this, 20..repose_deg (the 31-34 degree
+  /// concave toe).
   toe_deg: f32 = 31.0 @since(2)
   /// The run-out of shed blocks: none past the line `shadow_deg` (15..45; Evans and Hungr's
   /// minimum shadow angle, 27.5) below the top of the talus beneath its face.
   shadow_deg: f32 = 27.5 @since(2)
-  /// Shed blocks per 100 square metres at the talus' top, 0..400; zero, none. The count falls
-  /// as exp(-d / `block_decay_m`) (1..500 m) with the distance past the talus' top.
-  blocks_per_100m2: f32 = 0.0 @since(2)
+  /// Shed blocks per 100 square metres at the talus' top, 0..400 (authored against the reels: no
+  /// published density was found). The count falls as exp(-d / `block_decay_m`) (1..500 m) with
+  /// the distance past the talus' top.
+  blocks_per_100m2: f32 = 20.0 @since(2)
   block_decay_m: f32 = 12.0 @unit(m) @since(2)
   /// The source's joint spacing, the mean edge of a block, 0.1..6 m; the largest travel farthest.
   block_m: f32 = 1.0 @unit(m) @since(2)

@@ -99,7 +99,7 @@ TEST_CASE("deposits: connected foot talus with a finite runout and no uphill bla
 }
 TEST_CASE("deposits: channel sediment follows contributing area without needing a cliff") {
   auto p = layer();
-  p.talus_depth_m = 0;
+  p.supply_m = 0;
   DepositPlan plan;
   std::string error;
   REQUIRE_MESSAGE(plan_deposits(p, ground(channel), plan, error), error);

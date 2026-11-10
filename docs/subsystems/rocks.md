@@ -895,11 +895,12 @@ observed talus geometry from authored controls.
 `engine.rocks.DepositLayer` supplies a finite `region_min` / `region_max` in world metres,
 `spacing_m`, an explicit `max_samples`, and the source, repose, runout and channel controls.
 `plan_deposits` samples static `scene_gen::Ground` in whole millimetres, routes D8 contributing
-area in height/index order, and propagates a descending source envelope along nonascending
-terrain. Only source-connected locations receive talus. A declining envelope produces the toe;
-the depth cap bounds authoring volume. Channel sediment occupies low-gradient cells above the
+area in height/index order, and stands what each face sheds at its foot by the supply rule of
+[What a face sheds](#what-a-face-sheds) (G143), which replaced G128's descending source envelope
+and its depth cap. Channel sediment occupies low-gradient cells above the
 contributing-area threshold. Pits retain sediment and terminate drainage. No water simulation,
-erosion rate, volume conservation or rockfall hazard prediction is implied.
+erosion rate or rockfall hazard prediction is implied; the talus conserves the supply it is
+given, not a mass balance through time.
 
 The region is the complete catchment for this bake. Its boundary admits no unknown inflow.
 Changing it can change drainage and deposits. The entire region is solved once on `open`, then
@@ -949,7 +950,7 @@ geometry, vertex attributes or cover masks. The regression covers explicit and p
 base-colour, normal and roughness maps: the missing sampling record previously caused an
 out-of-bounds write in materials::apply_set during scene startup.
 The v11 rock solver identity also changed the deposit container pin to 17513793063602312493 (G143's
-`k_deposit_version` 2 has since moved it to 14163044981722319397, [below](#cones-and-shed-blocks-g143));
+`k_deposit_version` 2 has since moved it to 14163044981722319397, [below](#what-a-face-sheds));
 the deposit mesh pin remains 6863964757150498499. This identity change is present before the
 sampling fix; it follows the deposit source hash's existing dependency on the rock solver version.
 
@@ -959,52 +960,67 @@ Public API: [deposits.h](../../domain/rocks/include/domain/rocks/deposits.h), `D
 flat terrain, channel convergence, translated world coordinates, budgets, topology, deterministic
 meshes and keys, reverse tile arrival, earlier footprints and input refusals.
 
-### Cones and shed blocks (G143)
+### What a face sheds
 
-The deposits layer's version 2 (`DepositLayer` @version(2), `DepositPatch` @version(2)) adds three
-things to G128's talus and sediment, each off at its default so a version-1 layer plans the bytes it
-did. The grounding is [rockfall-deposits](../experiments/rockfall-deposits.md#g143-cones-under-gullies-and-blocks-shed-below-faces-2026-11-10):
-Francou and Mante's 34-36 degree talus, the 31-34 degree concave toe, Kirkby and Statham's
-exponential travel and fall sorting, Evans and Hungr's 27.5 degree minimum shadow angle, and block
-size from the source's joints.
+G143 (`DepositLayer` @version(2), `DepositPatch` @version(2)) replaced G128's capped apron with one
+supply rule, and added the blocks shed below the faces and the formation's lithology. The grounding
+is [rockfall-deposits](../experiments/rockfall-deposits.md#g143-what-a-face-sheds-2026-11-10):
+Mohadjer et al.'s rock-wall retreat from talus volumes for the supply, Francou and Mante's 34-36
+degree talus, the 31-34 degree concave toe, Kirkby and Statham's exponential travel and fall sorting,
+Evans and Hungr's 27.5 degree minimum shadow angle, and block size from the source's joints.
 
-**Why G128 made no cones.** Its envelope descends at the repose angle from every steep sample and
-is capped at `talus_depth_m`: it knows where rock can fall from, not how much does. Below a face
-with three gullies its depth at the foot is 2.69 m under each gully and between them, and its
-reach 4.5 m in both (`deposits: G128's envelope makes an apron, not a cone`): an even slab, not a
-cone. Supply is what makes a cone, and a gully is where supply is concentrated.
+**Why the apron went.** G128's envelope descended at the repose angle from every steep sample and
+was capped at `talus_depth_m` (3 m): it knew where rock can fall from, not how much does. Below a
+face with three gullies its depth at the foot was 2.69 m under each gully and between them, and its
+reach 4.5 m in both: a flat-topped slab of even depth, the same under a 5 m face as under a 50 m one.
+G143's first agent stood cones in the gully mouths beside it, switched on by a field; the owner's
+rule is to replace a wrong shape, not build beside it, so both are gone (`talus_depth_m`,
+`cone_supply_m`, `cone_max_m` and the four `gully_*` controls; a migration drops `talus_depth_m`
+from a version-1 layer, and one that set it to zero gets `supply_m` 0).
 
-**Gullies and their mouths.** A gully is ground steeper than `gully_deg` (40) whose **contour
-curvature**, measured over `gully_scale_m` (2 m, whole spacings) by central differences
-(`deposit_convergence`), converges by at least `gully_convergence` (0.05 per metre) and whose D8
-catchment is at least `gully_area_m2` (20 m²). Contour curvature is zero to the bit wherever the
-contours are straight, so a planar face, however steep and wherever its brink and foot bend, has no
-gully and no cone. Each gully sample follows steepest descent off the steep ground; where it leaves
-is its **mouth**. Mouths are taken largest catchment first, and one within `2 gully_scale_m` (at
-least four spacings) of a kept one is the same gully's.
+**The rule.** What lies at a face's foot is what the face shed. Face area is routed down steepest
+descent (D8) through the steep samples (`source_deg`, 50), each adding its own surface area (its
+plan area times `sqrt(1 + slope²)`), until it reaches a gentle sample: its **foot**. A foot's
+**supply** is that area times `supply_m`, the wall's retreat since the ice left (default 3.5 m:
+Mohadjer et al.'s 0.27-0.38 mm a year from talus volumes over 11,000 years; range 0-50 m, the
+published rates' 0.015-2 mm a year over the Holocene). Each foot spreads its own supply along the
+feet round it over its own pile's reach `r = h / tan(repose)` through a triangle kernel
+`(1 - d / r) / r`, which integrates to one along a line, so volume is conserved; a foot's pile is the
+wedge that holds what it receives, `h² a = q`, with `a = (1 / tan(repose) - 1 / tan(face)) / 2` the
+wedge's section against the face (the face's slope at the foot; at least `0.1 / tan(repose)`).
+Under a planar face `q` is the face's own supply per metre and the piles of neighbouring feet are
+one **sheet whose height goes as the root of the face's height above it**. A foot fed by a gully
+receives its volume `V` over `r`, so `h³ = V tan(repose) / a`: the half cone's `π h³ / (6 tan²)`
+within a few per cent, a **cone**, its neighbours on the kernel's flanks. Eight steps, each halfway
+to the law's height, settle every height together; no pile competes with another, so no step can
+run away (a first version that scaled each pile by what it won of the union let a few piles bury
+the rest). A pile never stands above the wall it fell from, nor more than 20 m (the patch's limit).
 
-**The cone.** Its volume is the catchment times `cone_supply_m` (metres of wall retreat, an
-authored control: no retreat rate was read), stood as a half cone at the repose angle against the
-wall: `H = cbrt(6 V tan²(repose) / pi)`, at most `cone_max_m` (12). Its **apex** is `H` over the
-mouth's ground, standing over the gully's floor where the floor reaches that height, so the cone
-starts inside the gully and fills its mouth rather than standing as a point in front of it. Its
-surface falls at `repose_deg` for three quarters of its nominal length `H / tan(repose)`, then its
-slope eases linearly to `toe_deg` (31) over one more nominal length, then holds it: straight over
-concave, never steeper than the repose. It covers the samples connected to the mouth where it
-stands over the ground, within `runout_m`; the deposit is the larger of it and the talus or
-sediment, capped at the patch's 20 m. Its coarse share rises from 0.2 at the apex to 1 at its
-farthest sample, so its fragments coarsen toward the toe as G128's tongues do.
+**The surface.** Each pile's **apex** stands against the face above its foot, over the last sample
+of the face (walked up its largest inflow) below the pile's top, so a pile leans on its wall and is
+never a point in front of it. From the apex its surface falls at `repose_deg` for three quarters of
+its nominal length `h / tan(repose)`, then eases linearly to `toe_deg` (31) over one more nominal
+length, then holds it: straight over concave, never steeper than the repose. The deposit is the
+**union** of the piles' surfaces, found by one head-priority flood from every apex (a sample takes
+the highest surface that reaches it; ties by distance, then pile), within `runout_m`, where the
+surface stands over the ground, and nowhere deeper than the pile's own height over its foot (so a
+pile on a bench at a face's brink does not drape the face below it). A union of surfaces each no
+steeper than the repose is no steeper than the repose, so **where a cone meets a sheet there is no
+step** (`deposits: the union holds the angle of repose`). The coarse share rises from 0.2 at a
+pile's apex to 1 at its farthest sample (Kirkby and Statham's fall sorting). Channel sediment is
+G128's, and a sample's deposit is the larger of the two.
 
-**A bed of scree is a surface whose largest blocks alone are geometry.** The cone is G128's bed:
-one merged mesh a patch (8 m by default, at most four a 16 m tile and sixteen a 32 m one), with the
-representative fragments and the blocks below in the same mesh, never an instance a stone. The
-cluster DAG is its LOD policy and its coarsest level its far form (measured below). A bed's bare
-rim on steep ground (a sample under 1 mm deep with more than 10 cm of relief round it) now sinks by
-half that relief, top and underside together, because a bed triangle between a deep sample and a
-face's sample stood out of a face the terrain triangulates the other way: the saw-tooth where a cone
-met its gully's walls. That changes the mesh of a G128 bed on steep ground, so
-`k_deposit_version` is 2 and the deposit container pin moved to 14163044981722319397 (the mesh pin,
-whose fixture has no bare rim, is unchanged).
+**What it does on the tests' faces** (msvc-debug, the cases' MESSAGEs). A planar face whose height
+rises from 10 m to 16 m along its foot stands a sheet whose pile rises from 10.0 to 11.3 m over the
+foot and whose depth half a metre out rises from 6.5 to 7.2 m, the height over the root of the
+face's constant to 1%; the deposit holds 2,767 m³ for the 2,632 m³ the face shed (5% over: the
+wedge on a meadow that falls away from it). A planar 24 m face stands 14.0 m piles along its whole
+foot, the same to 0.2%. Its three funnel gullies, 12 m apart, each route 43.6 m³ (at 1 m of retreat)
+to their largest foot against 13.4 m³ a planar foot, and their piles stand 8.7 m over the foot
+against 7.6 m between them: **on a face this short with gullies this close, the cones merge into an
+apron that bulges at each gully** (each cone reaches farther than the gullies are apart). A cone
+stands alone where its gully drains more face than the faces between it shed, as in reels r04 and
+r19, where a gully drains a basin; the review scene's face is built so.
 
 **Shed blocks.** The top of a talus is a deposit's gentle sample under a sample whose top is steep
 and higher, with no steep drop below it (a notch's floor at a face's brink is a gully's head, not a
@@ -1012,54 +1028,46 @@ talus' top). From those tops a shadow envelope runs down the deposit's top, neve
 `tan(shadow_deg)` (27.5) a metre: Evans and Hungr's line. Candidates stand on the world's lattice
 near a metre (a whole number of spacings), so a block is where it is whatever window or tile asks;
 each carries `blocks_per_100m2 / 100 * exp(-d / block_decay_m)` blocks, d its run-out along the
-envelope. A block is kept only where the straight line from its talus' top falls at no less than
-`shadow_deg`, where the top under it is no steeper than the repose (3% of slack for the sampled
-facets, under talus' 39-40 degree friction), off a face and out of a sediment channel. Its edge is
-`block_m` times `0.5 + d / (d + block_decay_m)` (the largest farthest) times 0.6-1.4; its thickness
-the type's plate of its width, never more than half the bed's thickness where the layer has a
-formation; its burial `buried_min`-`buried_max` (0.15-0.5) of its height by a drawn age. The patch
-its centre stands in builds it with the scree's fragment kernel at the finest rung under
-`block_triangles` (432: rung 6) and shears it onto the plane of the top under it, so it rests on
-every side. A patch of meadow with blocks and no bed is a patch.
+envelope. The default is 20 a 100 m² at the talus' top, authored against the reels (r04: "granite
+boulders 1-3 m scattered on the meadow"): no published count of blocks a unit area below a face was
+found (the USGS counts boulders over 1 m on a 20 m grid for rock avalanches, not talus feet). A block
+is kept only where the straight line from its talus' top falls at no less than `shadow_deg`, where
+the top under it is no steeper than the repose (3% of slack for the sampled facets, under talus'
+39-40 degree friction), off a face and out of a sediment channel. Its edge is `block_m` times
+`0.5 + d / (d + block_decay_m)` (the largest farthest) times 0.6-1.4; its thickness the type's plate
+of its width, never more than half the bed's thickness where the layer has a formation; its burial
+`buried_min`-`buried_max` (0.15-0.5) of its height by a drawn age. The patch its centre stands in
+builds it with the scree's fragment kernel at the finest rung under `block_triangles` (432: rung 6)
+and shears it onto the plane of the top under it, so it rests on every side. A patch of meadow with
+blocks and no bed is a patch.
 
 **The formation.** With `formation` (the scene's `engine.scene.Formation`, carried like a cliff's,
-W85), every deposit sample reads the bed at the face it came from: a talus sample its envelope's
-source, a cone sample the gully's floor above its apex, a block its talus' face. The bed is
-`gfx::formation_bed` at `gfx::formation_coordinate` of that face sample, through `geology.h`'s
-includes as they are. Its rock is the `lithology` row naming the bed, else the type its name
-spells in any case (`Limestone`), else `patch.type`. A patch is one material, so it takes the type
-most of its deposit samples and blocks voted for (the lowest type on a tie).
+W85), every deposit sample reads the bed at the face it came from: its pile's apex, or a block's
+talus' face. The bed is `gfx::formation_bed` at `gfx::formation_coordinate` of that face sample,
+through `geology.h`'s includes as they are. Its rock is the `lithology` row naming the bed, else the
+type its name spells in any case (`Limestone`), else `patch.type`. A patch is one material, so it
+takes the type most of its deposit samples and blocks voted for (the lowest type on a tie).
+
+**A bed of scree is a surface whose largest blocks alone are geometry.** The deposit is one merged
+mesh a patch (8 m by default, at most four a 16 m tile and sixteen a 32 m one), with the
+representative fragments and the blocks in the same mesh, never an instance a stone. The cluster
+DAG is its LOD policy and its coarsest level its far form. A bed's bare rim on steep ground (a
+sample under 1 mm deep with more than 10 cm of relief round it) sinks by half that relief, top and
+underside together, because a bed triangle between a deep sample and a face's sample stood out of a
+face the terrain triangulates the other way (`k_deposit_version` 2).
 
 **What the ground is under it.** Nothing can raise the terrain yet (W93 is reshaping the ground's
-edit), so the cone is a bed lying on the ground it was asked for: the terrain under it stays the
+edit), so the deposit is a bed lying on the ground it was asked for: the terrain under it stays the
 gully's floor and the foot, and a walker's collision meets the bed's own mesh where the scene's
-collision takes deposits (G128's 5 cm cut) and the ground otherwise. Shed blocks are geometry of
-the same meshes. A raising edit would put the cone's surface into the tile heights at every level,
-so the far terrain, the cover and the placements that read the ground (G135's exclusion, the sward)
-would see the cone, and the bed could thin to its fragments and blocks; until then the cone does
-not clear the sward or the litter it covers.
-
-**Measured** (`deposits: what a tile of cones and shed blocks costs`, msvc-debug, a shared machine
-with other agents building, so upper bounds): on the test's face with three gullies, the 16 m tile
-under the middle cone's foot holds 4 instances (merged meshes) carrying 23 blocks over 110 m² of
-bed, 122,692 triangles at the finest form (1,115 a square metre, almost all of it the 64
-representative fragments a patch at rung 20) and 316 at the coarsest (2.9 a square metre); the
-region's plan and patch checks took 4.7 s and the tile's four patch containers 3.2 s in debug.
-`msvc-release` was not measured (see the report of G143). A cone's own bed is 8 triangles a square
-metre at 0.5 m samples (two on top, two under, a cell of 0.25 m²); a block at rung 6 is 432.
-Resident: the plan's cones (56 bytes each), blocks (128 bytes each) and, with a formation, one
-`RockType` a sample, for the entry's life.
+collision takes deposits (G128's 5 cm cut) and the ground otherwise. A raising edit would put the
+deposit's surface into the tile heights at every level, so the far terrain, the cover and the
+placements that read the ground (G135's exclusion, the sward) would see it, and the bed could thin
+to its fragments and blocks; until then it does not clear the sward or the litter it covers.
 
 **Determinism.** Integer millimetres for every place, `det::exp`/`det::log` for the cube root and
-the decay, one correctly rounded square root for distances, splitmix64 per world candidate; the
-plan and a patch with a block are pinned (`deposits: G143's plan and a patch with blocks are their
-pinned bytes`).
-
-**What still reads as placed** (the review's captures beside reels r04, r19 and r22): the cones are
-the bed's flat colour, grey and smooth, where the reels' are paler than their walls and coarse
-everywhere; the blocks are few and fresh, with no lichen or moss and no turf tight round them; the
-cone's edge against the gully's walls still follows the 0.5 m samples; and the meadow under the
-cone and the blocks is not changed by them.
+the decay, one correctly rounded square root for distances and areas, a fixed count of kernel steps
+updated together in pile order, splitmix64 per world candidate; the plan and a patch with a block
+are pinned (`deposits: G143's plan and a patch with blocks are their pinned bytes`).
 
 ### Foothill exposure and repeated-material limits
 

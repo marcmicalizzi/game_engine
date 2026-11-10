@@ -23,7 +23,7 @@ constexpr i32 k_dz[] = {-1, -1, -1, 0, 0, 1, 1, 1};
 constexpr f64 k_diag = 1.4142135623730951;
 constexpr f32 k_min_depth = 0.001f;
 // G143: squared, a block's sampled top may be 3% steeper than the repose (a cone's facets are its
-// secants), still under the 39-40 degree friction of talus (rocks.md, "Cones and shed blocks").
+// secants), still under the 39-40 degree friction of talus (rocks.md, "What a face sheds").
 constexpr f64 k_rest_slack = 1.0609;
 bool fail(std::string& error, const char* field) {
   error = std::string("engine.rocks deposits: invalid ") + field;
@@ -79,8 +79,12 @@ f64 sample(const DepositPatch& p, const Vector<f32>& values, f64 x, f64 z) {
   return wide(values[a + 1]) * (1.0 - v) + wide(values[a + p.width]) * (1.0 - u) +
          wide(values[a + p.width + 1]) * (u + v - 1.0);
 }
-// ---- G143: cones, shed blocks and the formation's beds (rocks.md, "Cones and shed blocks") ----
+// ---- G143: cones, shed blocks and the formation's beds (rocks.md, "What a face sheds") ----
 f64 cube_root(f64 v) { return v > 0.0 ? det::exp(det::log(v) / 3.0) : 0.0; }
+i64 floor_div_mm(i64 a, i64 b) {
+  const i64 q = a / b;
+  return q - (a % b < 0 ? 1 : 0);
+}
 i64 floor_mod(i64 a, i64 b) {
   const i64 r = a % b;
   return r < 0 ? r + b : r;
@@ -184,21 +188,12 @@ bool plan_deposits(const DepositLayer& p, const scene_gen::Ground& ground, Depos
   if (!in(wide(p.source_deg), 40, 85) || !in(wide(p.repose_deg), 25, 40) ||
       p.source_deg <= p.repose_deg)
     return fail(error, "source_deg/repose_deg");
-  if (!in(wide(p.talus_depth_m), 0, 20) || !in(wide(p.runout_m), 1, 1000) ||
-      !in(wide(p.channel_area_m2), 1, 1e6) || !in(wide(p.channel_deg), 1, 30) ||
-      !in(wide(p.sediment_depth_m), 0, 2) || !in(wide(p.clear_m), 0, 100))
+  if (!in(wide(p.runout_m), 1, 1000) || !in(wide(p.channel_area_m2), 1, 1e6) ||
+      !in(wide(p.channel_deg), 1, 30) || !in(wide(p.sediment_depth_m), 0, 2) ||
+      !in(wide(p.clear_m), 0, 100))
     return fail(error, "deposition controls");
-  // G143's controls. The gullies' are read only by the cones, so only a layer that asks for cones
-  // is held to them (a 0.3 m spacing has no whole 2 m scale, and asks for none).
-  const i64 gully_mm = scene_gen::nearest_mm(wide(p.gully_scale_m));
-  if (p.cone_supply_m > 0 &&
-      (!in(wide(p.gully_deg), 30, 80) || !in(wide(p.gully_scale_m), wide(p.spacing_m), 32) ||
-       gully_mm % spacing != 0 || !in(wide(p.gully_convergence), .001, 10) ||
-       !in(wide(p.gully_area_m2), 1, 1e6)))
-    return fail(error, "gully controls (gully_deg, gully_scale_m in whole spacings, ...)");
-  if (!in(wide(p.cone_supply_m), 0, 50) || !in(wide(p.cone_max_m), .5, 20) ||
-      !in(wide(p.toe_deg), 20, 40) || (p.cone_supply_m > 0 && p.toe_deg > p.repose_deg))
-    return fail(error, "cone controls (cone_supply_m, cone_max_m, toe_deg at most repose_deg)");
+  if (!in(wide(p.supply_m), 0, 50) || !in(wide(p.toe_deg), 20, 40) || p.toe_deg > p.repose_deg)
+    return fail(error, "supply controls (supply_m 0..50, toe_deg 20..repose_deg)");
   if (!in(wide(p.shadow_deg), 15, 45) || !in(wide(p.blocks_per_100m2), 0, 400) ||
       !in(wide(p.block_decay_m), 1, 500) || !in(wide(p.block_m), .1, 6) ||
       !in(wide(p.buried_min), 0, .9) || !in(wide(p.buried_max), 0, .9) ||
@@ -234,7 +229,7 @@ bool plan_deposits(const DepositLayer& p, const scene_gen::Ground& ground, Depos
   plan.coarse.resize(n, 0.0f);
   plan.drainage_m2.resize(n, wide(p.spacing_m) * wide(p.spacing_m));
   Vector<u32> order(n), next(n, ~0u);
-  Vector<f64> slopes(n, 0.0), heads(n, -std::numeric_limits<f64>::infinity()), distances(n, 0.0);
+  Vector<f64> slopes(n, 0.0);
   for (u32 i = 0; i < n; ++i) {
     plan.ground[i] = ground.surface_mm(plan.x_mm + static_cast<i64>(i % plan.width) * spacing,
                                        plan.z_mm + static_cast<i64>(i / plan.width) * spacing);
@@ -256,167 +251,210 @@ bool plan_deposits(const DepositLayer& p, const scene_gen::Ground& ground, Depos
   });
   for (u32 i : order)
     if (next[i] != ~0u) plan.drainage_m2[next[i]] += plan.drainage_m2[i];
+  // ---- What a face sheds (G143; rocks.md, "What a face sheds") ----
+  // One rule for every foot: the face area routed to it, times the layer's supply (the wall's
+  // retreat since the ice left), stands as a pile at the repose angle against the face. A gully
+  // routes much face to one foot, so its pile is a cone; a planar face routes a column of face to
+  // each foot, so neighbouring piles are one sheet whose depth follows the face's height. The
+  // deposit is the union of the piles' surfaces, so where they meet there is no step.
   Vector<Front> queue;
-  // G143: the steep sample whose envelope reached each sample, the face a talus is of.
-  Vector<u32> origin(n, ~0u);
+  const u32 pw = plan.width, pd = plan.depth;
+  auto world_x = [&](u32 cell) { return plan.x_mm + static_cast<i64>(cell % pw) * spacing; };
+  auto world_z = [&](u32 cell) { return plan.z_mm + static_cast<i64>(cell / pw) * spacing; };
   const f64 source = tangent(p.source_deg), repose = tangent(p.repose_deg);
-  if (p.talus_depth_m > 0)
+  const f64 toe = tangent(p.toe_deg), sp = wide(p.spacing_m);
+  // Face area: a steep sample's own surface area plus what flows into it, carried down steepest
+  // descent until it reaches a gentle sample, its foot.
+  Vector<f64> face_m2(n, 0.0), fed(n, 0.0);
+  Vector<u32> up(n, ~0u);  // the steep inflow carrying the most face, to walk up the face by
+  for (u32 i : order) {
+    if (slopes[i] < source || next[i] == ~0u) continue;
+    face_m2[i] += sp * sp * std::sqrt(1.0 + slopes[i] * slopes[i]);
+    const u32 j = next[i];
+    if (slopes[j] >= source)
+      face_m2[j] += face_m2[i];
+    else
+      fed[j] += face_m2[i];
+    if (up[j] == ~0u || face_m2[i] > face_m2[up[j]] || (face_m2[i] == face_m2[up[j]] && i < up[j]))
+      up[j] = i;
+  }
+  struct Pile {
+    u32 foot;
+    u32 apex;
+    f64 top;     // the apex's world height
+    f64 height;  // over the foot
+    f64 volume;
+    f64 held;
+  };
+  Vector<Pile> piles;
+  if (p.supply_m > 0)
     for (u32 i = 0; i < n; ++i)
-      if (slopes[i] >= source) {
-        heads[i] = plan.ground[i];
-        origin[i] = i;
-        queue.push_back({heads[i], 0.0, i});
+      if (fed[i] > 0 && slopes[i] < source)
+        piles.push_back({i, i, 0.0, 0.0, fed[i] * wide(p.supply_m), 0.0});
+  // Each foot's height from the supply delivered to it, per metre of foot. Every foot spreads its
+  // own volume along the foot over its own pile's reach r = h / tan(repose) through a triangle
+  // kernel (1 - d / r) / r, which integrates to one along a line, and a foot's pile is the wedge
+  // that holds what it receives, h^2 a = q, a = (1/tan(repose) - 1/tan(face)) / 2 its section
+  // against the face. Under a planar face q is the face's own supply per metre: a sheet whose
+  // height goes as the root of the face's. A foot fed by a gully receives its volume V over r:
+  // h^3 = V tan(repose) / a, within a few per cent of the half cone's pi h^3 / (6 tan^2), and its
+  // neighbours the kernel's flanks: a cone. Volume is conserved (the kernel integrates to one) and
+  // every height is a function of its neighbourhood, updated together, so no pile competes with
+  // another. A pile never stands above the wall it fell from.
+  if (!piles.empty()) {
+    const i64 bucket = 8000;  // mm: feet bucketed on the world's 8 m lattice to find neighbours
+    const u32 m = piles.size();
+    Vector<i64> keys(m);
+    Vector<u32> by_key(m);
+    Vector<f64> a(m), wall(m, 0.0), q(m), tall(m);
+    for (u32 k = 0; k < m; ++k) {
+      const u32 f = piles[k].foot;
+      keys[k] = floor_div_mm(world_x(f), bucket) * 4194304 + floor_div_mm(world_z(f), bucket);
+      by_key[k] = k;
+      for (u32 c = f, guard = 0; up[c] != ~0u && guard < 4096; ++guard) {
+        c = up[c];
+        wall[k] = std::max(wall[k], plan.ground[c] - plan.ground[f]);
       }
-  std::make_heap(queue.begin(), queue.end(), less_front);
-  while (!queue.empty()) {
-    std::pop_heap(queue.begin(), queue.end(), less_front);
-    const Front f = queue.back();
-    queue.pop_back();
-    if (f.head != heads[f.cell] || f.distance != distances[f.cell]) continue;
-    for (u32 d = 0; d < 8; ++d) {
-      const u32 j = neighbour(f.cell, plan.width, plan.depth, d);
-      if (j == ~0u || plan.ground[j] > plan.ground[f.cell]) continue;
-      const f64 travel = f.distance + step(d, wide(p.spacing_m));
-      const f64 carried = slopes[f.cell] < source
-                              ? std::min(f.head, plan.ground[f.cell] + wide(p.talus_depth_m))
-                              : f.head;
-      const f64 head = carried - repose * step(d, wide(p.spacing_m));
-      if (travel > wide(p.runout_m) || head <= plan.ground[j] || head < heads[j] ||
-          (head == heads[j] && travel >= distances[j]))
-        continue;
-      heads[j] = head;
-      distances[j] = travel;
-      origin[j] = origin[f.cell];
-      queue.push_back({head, travel, j});
-      std::push_heap(queue.begin(), queue.end(), less_front);
+      const f64 face_slope = up[f] != ~0u ? slopes[up[f]] : source;
+      a[k] = std::max(.5 * (1.0 / repose - 1.0 / face_slope), .1 / repose);
+      tall[k] = cube_root(piles[k].volume * repose / a[k]);
     }
+    std::sort(by_key.begin(), by_key.end(),
+              [&](u32 x, u32 y) { return keys[x] != keys[y] ? keys[x] < keys[y] : x < y; });
+    for (u32 iteration = 0; iteration < 8; ++iteration) {
+      std::fill(q.begin(), q.end(), 0.0);
+      for (u32 g = 0; g < m; ++g) {
+        const f64 r = std::max(tall[g] / repose, sp);
+        const i64 r_mm = static_cast<i64>(r * 1000.0) + 1;
+        const i64 gx = world_x(piles[g].foot), gz = world_z(piles[g].foot);
+        for (i64 bx = floor_div_mm(gx - r_mm, bucket); bx <= floor_div_mm(gx + r_mm, bucket); ++bx)
+          for (i64 bz = floor_div_mm(gz - r_mm, bucket); bz <= floor_div_mm(gz + r_mm, bucket);
+               ++bz) {
+            const i64 key = bx * 4194304 + bz;
+            auto it = std::lower_bound(by_key.begin(), by_key.end(), key,
+                                       [&](u32 x, i64 v) { return keys[x] < v; });
+            for (; it != by_key.end() && keys[*it] == key; ++it) {
+              const f64 d = sample_distance(plan, piles[g].foot, piles[*it].foot);
+              if (d < r) q[*it] += piles[g].volume * (1.0 - d / r) / r;
+            }
+          }
+      }
+      // Halfway to the law's height each step: the fixed point is the same, and it settles.
+      for (u32 k = 0; k < m; ++k)
+        tall[k] = .5 * (tall[k] + std::sqrt(q[k] / a[k]));
+    }
+    for (u32 k = 0; k < m; ++k)
+      piles[k].height = std::min(tall[k], std::min(wall[k], 20.0));
+  }
+  Vector<f64> best(n), apart(n, 0.0);  // the winning pile and how far from its apex
+  Vector<u32> won(n, ~0u);
+  struct Wave {
+    f64 head;
+    f64 r;
+    u32 cell;
+    u32 pile;
+  };
+  auto less_wave = [](const Wave& a, const Wave& b) {
+    if (a.head != b.head) return a.head < b.head;
+    if (a.r != b.r) return a.r > b.r;
+    if (a.cell != b.cell) return a.cell > b.cell;
+    return a.pile > b.pile;
+  };
+  Vector<Wave> waves;
+  // Horizontal metres from a pile's apex: integer millimetres, one correctly rounded root.
+  auto from_apex = [&](const Pile& pile, u32 cell) {
+    return sample_distance(plan, cell, pile.apex);
+  };
+  auto flood = [&]() {
+    std::fill(best.begin(), best.end(), -std::numeric_limits<f64>::infinity());
+    std::fill(won.begin(), won.end(), ~0u);
+    std::fill(apart.begin(), apart.end(), 0.0);
+    waves.clear();
+    for (u32 k = 0; k < piles.size(); ++k) {
+      Pile& pile = piles[k];
+      // The apex stands against the face above the foot, over the last sample of the face below the
+      // pile's top: walk up the face along its largest inflow. A pile is never a point standing in
+      // front of a face.
+      pile.top = plan.ground[pile.foot] + pile.height;
+      u32 c = pile.foot;
+      for (u32 guard = 0; guard < 4096 && up[c] != ~0u && plan.ground[up[c]] < pile.top; ++guard)
+        c = up[c];
+      pile.apex = c;
+      if (pile.top - plan.ground[c] > static_cast<f64>(k_min_depth) &&
+          (pile.top > best[c] || (pile.top == best[c] && k < won[c]))) {
+        best[c] = pile.top;
+        apart[c] = 0.0;
+        won[c] = k;
+        waves.push_back({pile.top, 0.0, c, k});
+      }
+    }
+    std::make_heap(waves.begin(), waves.end(), less_wave);
+    while (!waves.empty()) {
+      std::pop_heap(waves.begin(), waves.end(), less_wave);
+      const Wave f = waves.back();
+      waves.pop_back();
+      if (won[f.cell] != f.pile || best[f.cell] != f.head) continue;
+      const Pile& pile = piles[f.pile];
+      for (u32 d = 0; d < 8; ++d) {
+        const u32 j = neighbour(f.cell, pw, pd, d);
+        if (j == ~0u) continue;
+        const f64 r = from_apex(pile, j);
+        if (r > wide(p.runout_m)) continue;
+        const f64 head = cone_surface(pile.top, pile.height, repose, toe, r);
+        // A pile is nowhere deeper than its own height over its foot: a pile on a bench at a
+        // face's brink does not drape the face below it, nor one at a foot the drop past a ledge.
+        if (head - plan.ground[j] <= static_cast<f64>(k_min_depth) ||
+            head - plan.ground[j] > pile.height || head < best[j] ||
+            (head == best[j] && (r > apart[j] || (r == apart[j] && f.pile >= won[j]))))
+          continue;
+        best[j] = head;
+        apart[j] = r;
+        won[j] = f.pile;
+        waves.push_back({head, r, j, f.pile});
+        std::push_heap(waves.begin(), waves.end(), less_wave);
+      }
+    }
+    for (Pile& pile : piles)
+      pile.held = 0.0;
+    for (u32 i = 0; i < n; ++i)
+      if (won[i] != ~0u) piles[won[i]].held += std::min(best[i] - plan.ground[i], 20.0) * sp * sp;
+  };
+  if (!piles.empty()) flood();
+  // The piles that won a sample, and how far each reaches, for the sorting and the plan's record.
+  Vector<f64> pile_reach(piles.size(), 0.0);
+  for (u32 i = 0; i < n; ++i)
+    if (won[i] != ~0u) pile_reach[won[i]] = std::max(pile_reach[won[i]], apart[i]);
+  for (u32 k = 0; k < piles.size(); ++k) {
+    if (piles[k].held <= 0.0) continue;
+    DepositPile record;
+    record.x_mm = world_x(piles[k].apex);
+    record.z_mm = world_z(piles[k].apex);
+    record.apex_m = piles[k].top;
+    record.height_m = piles[k].height;
+    record.face_m2 = fed[piles[k].foot];
+    record.volume_m3 = piles[k].volume;
+    record.held_m3 = piles[k].held;
+    record.reach_m = pile_reach[k];
+    record.foot = piles[k].foot;
+    record.source = piles[k].apex;
+    plan.piles.push_back(record);
   }
   const f64 channel = tangent(p.channel_deg);
+  Vector<u32> from(n, ~0u);  // the face sample a deposit sample's rock is read at
   for (u32 i = 0; i < n; ++i) {
-    // Talus occupies reachable ground below the source threshold, including the foot transition.
-    const f64 talus = slopes[i] < source
-                          ? std::clamp(heads[i] - plan.ground[i], 0.0, wide(p.talus_depth_m))
-                          : 0.0;
+    const f64 talus = won[i] != ~0u ? std::min(best[i] - plan.ground[i], 20.0) : 0.0;
     const f64 sediment = plan.drainage_m2[i] >= wide(p.channel_area_m2)
                              ? wide(p.sediment_depth_m) * clamp01(1.0 - slopes[i] / channel)
                              : 0.0;
     plan.thickness[i] = static_cast<f32>(std::max(talus, sediment));
-    plan.coarse[i] = talus > sediment
-                         ? static_cast<f32>(.2 + .8 * clamp01(distances[i] / wide(p.runout_m)))
-                         : 0.0f;
-  }
-  // ---- G143 (rocks.md, "Cones and shed blocks"). Each part is skipped whole at its default, so
-  // a version-1 layer's plan is the bytes it was.
-  const u32 pw = plan.width, pd = plan.depth;
-  auto world_x = [&](u32 cell) { return plan.x_mm + static_cast<i64>(cell % pw) * spacing; };
-  auto world_z = [&](u32 cell) { return plan.z_mm + static_cast<i64>(cell / pw) * spacing; };
-  Vector<u32> from(n, ~0u);  // the face sample a deposit sample's rock is read at
-  for (u32 i = 0; i < n; ++i)
-    if (plan.coarse[i] > 0) from[i] = origin[i];
-  if (p.cone_supply_m > 0) {
-    // Gullies: steep, convergent, draining ground; each leads by steepest descent to its mouth.
-    const f64 gully = tangent(p.gully_deg);
-    const u32 scale = static_cast<u32>(gully_mm / spacing);
-    Vector<u8> is_mouth(n, 0);
-    Vector<u32> mouths;
-    for (u32 i = 0; i < n; ++i) {
-      if (plan.drainage_m2[i] < wide(p.gully_area_m2) || slopes[i] < gully ||
-          deposit_convergence(plan, i, scale) < wide(p.gully_convergence))
-        continue;
-      u32 c = i;
-      for (u32 guard = 0; guard < n && slopes[c] >= gully && next[c] != ~0u; ++guard)
-        c = next[c];
-      if (slopes[c] >= gully || is_mouth[c]) continue;
-      is_mouth[c] = 1;
-      mouths.push_back(c);
+    if (talus > sediment) {
+      // Fall sorting: fine at the apex, coarse at the toe (Kirkby and Statham).
+      const u32 k = won[i];
+      plan.coarse[i] = static_cast<f32>(.2 + .8 * clamp01(apart[i] / std::max(pile_reach[k], sp)));
+      from[i] = piles[k].apex;
     }
-    // One cone a gully: the largest catchment first, and no second mouth within the merge radius.
-    std::sort(mouths.begin(), mouths.end(), [&](u32 a, u32 b) {
-      return plan.drainage_m2[a] != plan.drainage_m2[b] ? plan.drainage_m2[a] > plan.drainage_m2[b]
-                                                        : a < b;
-    });
-    const i64 merge_mm = std::max<i64>(2 * gully_mm, 4 * spacing);
-    const f64 toe = tangent(p.toe_deg);
-    Vector<f64> cone_depth(n, 0.0), cone_coarse(n, 0.0);
-    Vector<u32> cone_of(n, ~0u), seen(n, ~0u), fifo;
-    for (u32 m : mouths) {
-      bool merged = false;
-      for (const DepositCone& other : plan.cones) {
-        const i64 dx = world_x(m) - world_x(other.mouth), dz = world_z(m) - world_z(other.mouth);
-        merged = merged || dx * dx + dz * dz < merge_mm * merge_mm;
-      }
-      if (merged) continue;
-      // The supply as a half cone at the repose angle against the face: V = pi H^3 / (6 tan^2).
-      const f64 volume = plan.drainage_m2[m] * wide(p.cone_supply_m);
-      const f64 height =
-          std::min(cube_root(6.0 * volume * repose * repose / k_pi), wide(p.cone_max_m));
-      if (height < .05) continue;
-      DepositCone cone;
-      cone.x_mm = world_x(m);
-      cone.z_mm = world_z(m);
-      cone.height_m = height;
-      cone.apex_m = plan.ground[m] + height;
-      cone.catchment_m2 = plan.drainage_m2[m];
-      cone.mouth = m;
-      // The face the cone is of: up the gully along its largest inflow, to above the apex.
-      u32 c = m;
-      for (u32 guard = 0; guard < 4096 && plan.ground[c] < cone.apex_m; ++guard) {
-        u32 up = ~0u;
-        for (u32 d = 0; d < 8; ++d) {
-          const u32 j = neighbour(c, pw, pd, d);
-          if (j != ~0u && next[j] == c &&
-              (up == ~0u || plan.drainage_m2[j] > plan.drainage_m2[up] ||
-               (plan.drainage_m2[j] == plan.drainage_m2[up] && j < up)))
-            up = j;
-        }
-        if (up == ~0u) break;
-        c = up;
-      }
-      // The apex stands where the gully's floor reaches its height: the cone starts in the gully
-      // and fills its mouth, rather than standing as a point in front of it.
-      cone.source = c;
-      cone.x_mm = world_x(c);
-      cone.z_mm = world_z(c);
-      const u32 id = plan.cones.size();
-      // The samples the surface stands over, connected to the mouth: never over a ridge behind it.
-      fifo.clear();
-      fifo.push_back(m);
-      seen[m] = id;
-      for (u32 at = 0; at < fifo.size(); ++at) {
-        const u32 cell = fifo[at];
-        cone.reach_m = std::max(cone.reach_m, sample_distance(plan, cell, c));
-        for (u32 d = 0; d < 8; ++d) {
-          const u32 j = neighbour(cell, pw, pd, d);
-          if (j == ~0u || seen[j] == id) continue;
-          const f64 r = sample_distance(plan, j, c);
-          if (r > wide(p.runout_m) ||
-              cone_surface(cone.apex_m, height, repose, toe, r) - plan.ground[j] <=
-                  static_cast<f64>(k_min_depth))
-            continue;
-          seen[j] = id;
-          fifo.push_back(j);
-        }
-      }
-      for (u32 cell : fifo) {
-        const f64 r = sample_distance(plan, cell, c);
-        // The thickness cap is the patch's (deposit_patch_in_range), not a solver choice.
-        const f64 depth =
-            std::min(cone_surface(cone.apex_m, height, repose, toe, r) - plan.ground[cell], 20.0);
-        if (depth <= cone_depth[cell]) continue;
-        cone_depth[cell] = depth;
-        // Fall sorting: fine at the apex, coarse at the toe.
-        cone_coarse[cell] = .2 + .8 * clamp01(r / std::max(cone.reach_m, wide(p.spacing_m)));
-        cone_of[cell] = id;
-      }
-      plan.cones.push_back(cone);
-    }
-    for (u32 i = 0; i < n; ++i)
-      if (cone_depth[i] > wide(plan.thickness[i])) {
-        plan.thickness[i] = static_cast<f32>(cone_depth[i]);
-        plan.coarse[i] = static_cast<f32>(cone_coarse[i]);
-        from[i] = plan.cones[cone_of[i]].source;
-      }
   }
+
   // The bed the formation puts at a face sample, and the rock it sheds.
   gfx::FormationFrame frame;
   if (p.formation.has_value()) frame = gfx::formation_frame(formation);
