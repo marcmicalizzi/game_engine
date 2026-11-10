@@ -390,7 +390,8 @@ bool plan_deposits(const DepositLayer& p, const scene_gen::Ground& ground, Depos
           if (j == ~0u || seen[j] == id) continue;
           const f64 r = sample_distance(plan, j, c);
           if (r > wide(p.runout_m) ||
-              cone_surface(cone.apex_m, height, repose, toe, r) - plan.ground[j] <= k_min_depth)
+              cone_surface(cone.apex_m, height, repose, toe, r) - plan.ground[j] <=
+                  static_cast<f64>(k_min_depth))
             continue;
           seen[j] = id;
           fifo.push_back(j);
