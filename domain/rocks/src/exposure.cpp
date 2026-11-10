@@ -33,8 +33,42 @@ bool prepare_exposure(const ExposureRule& rule, ExposureThresholds& out, std::st
   out.rock_slope = tangent(rule.rock_slope_deg);
   out.critical_curvature = wide(rule.critical_curvature);
   out.min_resistance = wide(rule.min_resistance);
+  if (!(rule.patch_m == 0.0f || (rule.patch_m >= 2.0f && rule.patch_m <= 200.0f)))
+    return bad(error, "patch_m", "0 or in [2, 200]");
   out.arm_mm = scene_gen::nearest_mm(wide(rule.scale_m));
+  out.patch_mm = scene_gen::nearest_mm(wide(rule.patch_m));
   return true;
+}
+
+namespace {
+// One octave of value noise on a lattice `period_mm` apart, the place in whole millimetres.
+f64 cover_octave(u64 seed, i64 x_mm, i64 z_mm, i64 period_mm, i64 salt) {
+  const i64 i = x_mm / period_mm - (x_mm % period_mm < 0 ? 1 : 0);
+  const i64 j = z_mm / period_mm - (z_mm % period_mm < 0 ? 1 : 0);
+  const f64 tx = fade(static_cast<f64>(x_mm - i * period_mm) / static_cast<f64>(period_mm));
+  const f64 tz = fade(static_cast<f64>(z_mm - j * period_mm) / static_cast<f64>(period_mm));
+  const f64 near_z = lerp(lattice_value(seed, i, j, salt), lattice_value(seed, i + 1, j, salt), tx);
+  const f64 far_z =
+      lerp(lattice_value(seed, i, j + 1, salt), lattice_value(seed, i + 1, j + 1, salt), tx);
+  return lerp(near_z, far_z, tz);
+}
+}  // namespace
+
+f64 soil_cover(const ExposureThresholds& rule, i64 x_mm, i64 z_mm) noexcept {
+  if (rule.patch_mm <= 0) return 0.0;
+  // The patches, and a third of their size at a third of their weight for a ragged edge.
+  const i64 fine_mm = rule.patch_mm / 3 > 0 ? rule.patch_mm / 3 : 1;
+  const f64 broad = cover_octave(rule.seed, x_mm, z_mm, rule.patch_mm, 1);
+  const f64 fine = cover_octave(rule.seed, x_mm, z_mm, fine_mm, 2);
+  // Stretched about its middle: bilinear value noise crowds a half, and the share of ground
+  // that is rock should rise about evenly with the fraction.
+  return clamp01(0.5 + ((broad + fine / 3.0) * 0.75 - 0.5) * 2.0) * 0.999999;
+}
+
+f64 standing_share(const ExposureThresholds& rule, f64 fraction, f64 cover) noexcept {
+  if (!(fraction > 0.0)) return 0.0;
+  if (rule.patch_mm <= 0) return fraction;
+  return clamp01((fraction - 0.75 * cover) * 4.0);
 }
 
 GroundShape ground_shape(i64 centre_mm, i64 west_mm, i64 east_mm, i64 north_mm, i64 south_mm,
@@ -86,7 +120,9 @@ Exposure exposure_at(const ExposureThresholds& rule, const gfx::FormationParams&
   e.bed = bed.index;
   e.resistance = bed.resistance;
   e.fraction = exposure_fraction(rule, e.shape);
-  e.stand = e.fraction * resistance_factor(rule, wide(bed.resistance));
+  e.cover = soil_cover(rule, x_mm, z_mm);
+  e.stand =
+      standing_share(rule, e.fraction, e.cover) * resistance_factor(rule, wide(bed.resistance));
   e.exposed = e.stand > 0.0;
   return e;
 }

@@ -1,0 +1,77 @@
+#pragma once
+
+// Ledges: the resistant beds of the world's formation standing out of a soil-mantled slope
+// (roadmap G142; docs/subsystems/rocks.md, "Exposed bedrock (G142)"; the grounding,
+// docs/experiments/exposed-bedrock.md), and the scene generator "ledges" that stands them, a
+// merged mesh a tile and form.
+//
+// **The geometry.** A resistant unit (a run of beds at or past the rule's resistance) has a top
+// bedding plane. Where the ground has cut below that plane the plane is in the air; the ledge is
+// the unit put back under it: a **tread** in the plane, from the line where the plane meets the
+// ground (its buried back) out to where it stands `h` above the ground, and a **front** from the
+// tread's edge down to the ground and a little under it. `h` is the unit's plumb thickness times
+// the point's exposure (exposure.h), so the front is tallest where the slope is steep or the
+// ground is a nose and falls to nothing where the exposure ends: the ends taper because the rule
+// does, not because a mesh was clipped. Nothing is built behind the tread's back or under the
+// front's foot but a skirt.
+//
+// **Why a lattice of the world.** The tread is the part of each lattice triangle between two
+// level lines of functions that are linear on it (the plane's height over the ground, and that
+// less `h`), and the front runs along the second line. Every corner value is a function of the
+// world's millimetres, and a crossing on a lattice edge is computed from that edge's two ends in
+// one order, so two triangles, or two tiles, that share an edge compute the same vertex: a ledge
+// that crosses a tile's border meets itself there, and a joint block is the same block whichever
+// tile draws it (its index is its place along the formation's strike).
+//
+// **What it costs and keeps.** A patch is a function of its recipe (the heights, the formation,
+// the rule), so it is built by the mesh-generator registry like any recipe and cached by its
+// hash. Nothing is kept per frame.
+
+#include <core/base/types.h>
+#include <core/containers/vector.h>
+#include <domain/rocks/exposure.h>
+#include <domain/rocks/rocks.h>
+#include <domain/scene_gen/scene_gen.h>
+
+#include <schemas/rocks.h>
+#include <string>
+
+namespace engine::rocks {
+
+// The registry's names: a scene's `{"generator": "ledges", "params": {...}}`, and the mesh
+// generator a `<name>.ledge.json` is built by.
+inline constexpr const char* k_ledges_generator = "ledges";
+inline constexpr u32 k_ledge_version = 1;
+
+// What a solve made, for a test and a host's summary.
+struct LedgeReport {
+  u32 triangles = 0;
+  u32 tread_triangles = 0;  // in a bedding plane, facing up: treads and the bed rows' shelves
+  u32 front_triangles = 0;
+  u32 above_ground = 0;      // triangles whose centroid is above the ground under it
+  f64 front_length_m = 0.0;  // metres of front along the tread's edge
+  f64 tallest_m = 0.0;       // the tallest front above the ground
+  u32 units = 0;             // bed-top planes that crop out in the patch
+};
+
+// The ranges `engine.rocks.LedgePatch` documents: false, with a sentence naming the first field
+// out of them, otherwise.
+bool ledge_patch_in_range(const LedgePatch& patch, std::string& error);
+
+// The patch of `layer` whose corner is (x_mm, z_mm), `tile_mm` a side, at the near or the far
+// form: the ground's heights over it and the rule's apron, in whole millimetres. A function of
+// the layer, the corner and the ground's heights there.
+bool sample_ledge_patch(const LedgeLayer& layer, const scene_gen::Ground& ground, i64 x_mm,
+                        i64 z_mm, i64 tile_mm, bool far, LedgePatch& out, std::string& error);
+
+// The patch's mesh, metres from its corner; an empty mesh (and true) where nothing crops out.
+bool solve_ledges(const LedgePatch& patch, assets::MeshData& out, LedgeReport* report,
+                  std::string& error);
+
+u64 ledge_source_hash(const LedgePatch& patch);
+// Refuses a patch nothing crops out in ("no ledges"): the generator never writes one.
+bool build_ledge_container(const LedgePatch& patch, const geometry::ClusterLodOptions& lod,
+                           u32 page_bytes, geometry::ClusterFileData& out, std::string& error,
+                           const materials::Pack* pack = nullptr);
+
+}  // namespace engine::rocks

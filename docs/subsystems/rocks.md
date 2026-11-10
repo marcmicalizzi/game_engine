@@ -989,15 +989,106 @@ thickness that stands out of the soil:
 - raised by `convexity / critical_curvature` (0.03 1/m) on a nose, where soil thins, and lowered by
   the same in a hollow, where it gathers; the rock slope still ends every mantle.
 
+**The soil's patches.** On a 38° slope the fraction is a half, and a rule that stood every
+resistant bed to half its height along its whole trace would draw a contour map. The measured
+slopes are a sixth rock at that angle, in patches. So rock shows where the fraction is above
+`soil_cover`, a seeded field of the world's millimetres `patch_m` (12 m) across, and
+`standing_share` rises from nothing to the whole bed over a quarter of the fraction's range past
+it: the fraction is then also the share of such ground where a resistant bed shows (18 % of points
+at 32°, 47 % at 36°, 77 % at 40°, all of them from 44°; the test prints them). `patch_m` 0 is no
+patches, and the share that stands is the fraction itself.
+
 A bed stands only at or above `min_resistance` (0.5), by a factor from 0.35 at the threshold to 1
-at resistance 1. `Exposure::stand` is the product, and the one number the ledges and the cliffs'
-faces in the slope are sized by, so they agree on where rock is.
+at resistance 1. `Exposure::stand` is the product, and the one number the ledges are sized by.
 
 **Why a rule on its own.** A mesh is the wrong place to learn that rock shows on a 20° lawn. The
 rule is a pure function of five heights and the formation, tested before any mesh exists
 (`tests/exposure_tests.cpp`): its ranges, the shape's exactness in millimetres, nothing under the
 soil slope and everything past the rock slope, the resistance threshold, the resistant bed exposed
 and the weak one mantled on one slope, a nose barer than the plane and a hollow keeping its soil,
-and a pin over 225 points of a dipping folded formation that MSVC, Clang and GCC reproduce.
+the share of a slope that is rock rising with it under the patches, and a pin over 225 points of a
+dipping folded formation that MSVC, Clang and GCC reproduce.
 **Determinism:** integers in, then IEEE `+ - * /` and one square root in f64; the fold's sine is
 `det::sin`; no allocation and no state.
+
+### Ledges
+
+`include/domain/rocks/ledges.h`, `src/ledges.cpp`, and the scene generator `ledges`
+(`src/ledges_generator.cpp`): `{"generator": "ledges", "params": {...}}`, an
+`engine.rocks.LedgeLayer`.
+
+**The geometry.** A **unit** is a run of the formation's beds at or past the rule's resistance;
+it has a top bedding plane. Where the ground has cut below that plane, the ledge is the unit put
+back under it: a **tread** in the plane, from the line where the plane meets the ground (its
+buried back, carried 8 cm under so the line is the depth buffer's) out to where the plane stands
+`h` over the ground, and a **front** from the tread's edge down to the ground and a little under.
+`h` is the unit's plumb thickness (never over `max_step_m`, 4 m) times `Exposure::stand`, so a
+front is tallest where the slope is steep or the ground is a nose and falls to nothing where the
+exposure ends: **the ends taper because the rule does**. Scarp slope and dip slope are not cases:
+beds dipping into the hill leave the ground quickly and make short treads and crisp risers, beds
+dipping with it make slabs, and both are the same intersection.
+
+**Blocks.** Joints cut a unit into blocks along the strike, its thickness over `joint_ratio`
+(1.3) apart on average, their stations moved by up to three tenths, and their planes up to 20° off
+the dip direction per bed top. A block keeps 55 to 100 % of its step, more at one end than the
+other, so its front is not parallel to the contour; one in five has fallen out; some have lost
+one or two rows off their tops, so neighbours' treads step. A joint face is drawn only where the
+block beside does not cover it. Each bed parts into **rows** about 0.45 m thick, each standing
+back under the one above by up to `relief_m` (0.25 m), weaker beds further: the front's faces and
+the undersides between them. Every tread and every underside is in a bedding plane.
+
+**Why a lattice of the world.** Each piece is the part of a lattice triangle (`cell_m`, 1 m,
+at the ground's own millimetres) between level lines of functions that are linear on it, and a
+crossing on a lattice edge is computed from the edge's two ends in the world's order. So a ledge
+that crosses a tile's border meets itself there, a block is the same block from either tile (its
+index is its place along the strike), and nothing is decided by a tile.
+
+**Merged, with a far form.** One mesh a tile and form, never an instance a block. The **near
+form** (rings under `near_rings`, 1) is the above. The **far form** (rings under `far_rings`, 3)
+is the same rule on a `far_cell_m` (4 m) lattice with one face a front, no blocks and no rows, and
+only steps of `far_min_step_m` (0.8 m) or more; it cannot see a hollow narrower than its cell and
+bridges it. Further rings draw nothing: the terrain's band layer carries the beds there. Under
+both, the cluster DAG is the runtime LOD.
+
+| Form | A 64 m tile of the test hillside (31 bed tops) | Triangles a metre of front |
+|---|---|---|
+| near | 37,492 triangles, 48,673 vertices, 1,793 clusters, 1,041 m of front | 36 |
+| far | 1,533 triangles, 1,810 vertices, 69 clusters, 728 m of front | 2.1 |
+
+66 % of the near form's triangles are above the ground (the solver's count on its own lattice;
+71 % against the hillside's function), against 13.9 % on the front of the box G132 measured.
+
+**The generator.** `open` reads the layer and, for every tile whose corner is in the region,
+samples the ground over the tile and the rule's apron, solves both forms, and writes a recipe
+`ledge-<hash>.ledge.json` for each that has ledges, under the derived-data root's `ledges/`; the
+mesh generator `ledge` builds it like any recipe. `tile` places the tile's mesh of the ring's form
+at the tile's corner; `expand` places the near form; `representation` is 0 near, 1 far, 2 nothing.
+The patches' seed is the layer's with the world's, never a tile's.
+
+**What it does not do yet, and what each would take.**
+
+- **Nothing exists before its tile, but its recipe does.** A streamed tile may name only a mesh
+  `meshes` listed when the scene was read, so `open` solves every tile of the region (at most
+  16,384) and the scene reader builds every listed mesh. A tile-time mesh in the placement
+  contract would make the entry the whole plan; the solver is already a function of the tile.
+- **The formation is repeated in the layer**, because a generator is handed its entry and the
+  ground, not the scene. A `Context` that carried the scene's formation would end the copy.
+- **It does not write to the ground or tell the cover where it is.** The host's footprint for a
+  placement is a circle round its mesh's bounds: a tile-wide circle for a merged mesh, which
+  would clear a tile of whatever avoids earlier placements, and nothing clears the sward off a
+  tread or thins it at a front's foot. A band-shaped footprint (a polyline with a half-width, or
+  the generator's own "is this point rock" query) is what the treads need; the blades that
+  stand through a tread's back today do so because nothing says otherwise.
+- **Blocks are prisms.** Their faces are planes: no weathered rounding, no fracture surface, no
+  fallen block lying under the gap it left (G143's deposits own the debris).
+- **One material a mesh**, the type's pack role; a bed's tint from the formation does not reach it.
+- **No holes or water**: a tile's mesh is not split round the exclusion's holes or channels.
+
+Tests (`tests/ledges_tests.cpp`, 4 s in msvc-debug): ledges only on resistant beds past the soil
+slope, none on weak beds, on 20° or in a hollow; tops within 1.5 mm of the formation's planes
+(0.002 mm measured); at least 60 % of triangles above the ground; no vertex whose height the
+ground behind does not reach within 8 m (the retaining-wall test); a front's height under the
+unit's thickness times what stands there, with ends under 0.3 m and full steps over 0.8 m both
+present; a border's standing vertices matched across tiles within a millimetre; the far form
+beside the near form's steps; the meshes' and recipes' pins; and the generator's tiles in reverse
+against its whole read, a form a ring.

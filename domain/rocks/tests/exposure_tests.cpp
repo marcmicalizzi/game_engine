@@ -59,7 +59,9 @@ scene_gen::Ground ground_of(scene_gen::HeightFn fn, const Incline& plane) {
 ExposureThresholds default_rule() {
   ExposureThresholds t;
   std::string error;
-  REQUIRE_MESSAGE(prepare_exposure(ExposureRule{}, t, error), error);
+  ExposureRule plain;
+  plain.patch_m = 0.0f;  // no patches: the rule itself, every resistant bed past the soil slope
+  REQUIRE_MESSAGE(prepare_exposure(plain, t, error), error);
   return t;
 }
 
@@ -199,6 +201,45 @@ TEST_CASE("exposure: a nose is barer than the plane, a hollow keeps its soil") {
                                << hollow.fraction);
 }
 
+TEST_CASE("exposure: under the soil's patches the share of a slope that is rock rises with it") {
+  // The default rule: patches 12 m across. On planar ground of one resistant bed, the share of
+  // points where rock shows is 0 under the soil slope, rises with the slope, and is all of it
+  // past the rock slope; a point's cover is the world's, whichever way it is reached.
+  ExposureThresholds rule;
+  std::string error;
+  REQUIRE(prepare_exposure(ExposureRule{}, rule, error));
+  rule.seed = 5;
+  CHECK(rule.patch_mm == 12000);
+  f64 last = -1.0;
+  for (const f64 degrees : {25.0, 32.0, 36.0, 40.0, 44.0, 50.0}) {
+    GroundShape s;
+    s.slope = std::tan(degrees * 3.14159265358979323846 / 180.0);
+    const f64 fraction = exposure_fraction(rule, s);
+    u32 rock = 0, points = 0;
+    for (i64 z_mm = -100000; z_mm < 100000; z_mm += 2500)
+      for (i64 x_mm = -100000; x_mm < 100000; x_mm += 2500) {
+        const f64 cover = soil_cover(rule, x_mm, z_mm);
+        CHECK(cover >= 0.0);
+        CHECK(cover < 1.0);
+        const f64 stand = standing_share(rule, fraction, cover);
+        CHECK(stand >= 0.0);
+        CHECK(stand <= 1.0);
+        rock += stand > 0.0 ? 1u : 0u;
+        ++points;
+      }
+    const f64 share = static_cast<f64>(rock) / static_cast<f64>(points);
+    MESSAGE(degrees << " degrees: fraction " << fraction << ", " << share * 100.0 << " % rock");
+    CHECK(share >= last);
+    last = share;
+    if (degrees < 30.0) CHECK(rock == 0);
+    if (degrees > 45.0) CHECK(rock == points);
+  }
+  // With no patches the cover is nothing and the share that stands is the fraction.
+  ExposureThresholds plain = default_rule();
+  CHECK(soil_cover(plain, 12345, -6789) == 0.0);
+  CHECK(standing_share(plain, 0.4, 0.0) == 0.4);
+}
+
 // The same bits from every toolchain: taken on MSVC (msvc-debug, x86-64-v3) and reproduced by
 // Clang 18 and GCC 13 in the containers, v3 and v2.
 TEST_CASE("exposure: a point's exposure is pinned to the bit") {
@@ -208,6 +249,7 @@ TEST_CASE("exposure: a point's exposure is pinned to the bit") {
   ExposureThresholds rule;
   std::string error;
   REQUIRE(prepare_exposure(authored, rule, error));
+  rule.seed = 77;
   scene::Formation f = level_beds();
   f.dip_deg = 17.0f;
   f.azimuth_deg = 35.0f;
@@ -230,11 +272,12 @@ TEST_CASE("exposure: a point's exposure is pinned to the bit") {
       fold(e.shape.convexity);
       fold(e.coordinate);
       fold(e.fraction);
+      fold(e.cover);
       fold(e.stand);
       h ^= e.bed;
     }
   fold(rule.soil_slope);
   fold(rule.rock_slope);
   MESSAGE("exposure pin " << h);
-  CHECK(h == 6825380316961540682ull);
+  CHECK(h == 16263762372318913364ull);
 }

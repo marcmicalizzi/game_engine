@@ -38,6 +38,10 @@ struct ExposureThresholds {
   f64 critical_curvature = 0.0;  // 1/m
   f64 min_resistance = 0.0;
   i64 arm_mm = 0;
+  i64 patch_mm = 0;  // the soil's patches, whole millimetres; 0: none
+  // What the soil's patches are drawn from: 0 from `prepare_exposure`, and the caller's (a
+  // layer's seed, never a tile's) after it.
+  u64 seed = 0;
 };
 
 // The ranges `engine.rocks.ExposureRule` documents: false, with a sentence naming the first field
@@ -67,8 +71,21 @@ f64 exposure_fraction(const ExposureThresholds& rule, const GroundShape& shape) 
 // back under the soil), and from 0.35 at the threshold to 1 for a bed of resistance 1.
 f64 resistance_factor(const ExposureThresholds& rule, f64 resistance) noexcept;
 
+// **The soil's cover** at a point of the world, [0, 1): a seeded field of the rule's patch size
+// (two octaves of value noise on a lattice of the world's millimetres, so it is the same field
+// from every tile), 0 where the rule has no patches. Rock shows where the exposure fraction is
+// above it, so the fraction is also the share of such ground that is rock: DiBiase's catchments
+// at 38 degrees are a sixth rock, not all of it (docs/experiments/exposed-bedrock.md).
+f64 soil_cover(const ExposureThresholds& rule, i64 x_mm, i64 z_mm) noexcept;
+
+// The share of a resistant bed's thickness that stands where the exposure fraction is `fraction`
+// under a cover `cover`: nothing where the cover is past the fraction, rising to all of it over a
+// quarter of the fraction's range. With no patches (a cover of exactly 0 everywhere, the rule's
+// `patch_m` 0) it is the fraction itself.
+f64 standing_share(const ExposureThresholds& rule, f64 fraction, f64 cover) noexcept;
+
 // A point's exposure: its shape, the bed at the surface, and `stand`, the share of that bed's
-// thickness that stands there (`exposure_fraction * resistance_factor`); `exposed` is `stand > 0`.
+// thickness that stands there (`standing_share * resistance_factor`); `exposed` is `stand > 0`.
 struct Exposure {
   GroundShape shape;
   f64 height_m = 0.0;    // the ground at the point
@@ -76,6 +93,7 @@ struct Exposure {
   u32 bed = 0;           // the bed's index in the sequence, bottom first
   f32 resistance = 0.0f;
   f64 fraction = 0.0;
+  f64 cover = 0.0;
   f64 stand = 0.0;
   bool exposed = false;
 };

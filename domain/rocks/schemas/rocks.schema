@@ -409,6 +409,81 @@ struct ExposureRule @version(1) {
   scale_m: f32 = 4.0 @unit(m)
   /// A bed stands as a ledge only at or above this resistance: 0 to 1.
   min_resistance: f32 = 0.5
+  /// The soil's patches, metres: 0 (none: a resistant bed past the soil slope shows along its
+  /// whole trace) or 2 to 200. Rock shows where the exposure fraction is above a seeded field of
+  /// this size, so the fraction is the share of the ground that is rock (DiBiase's index).
+  patch_m: f32 = 12.0 @unit(m)
+}
+
+/// One tile's ledges at one form, written by the `ledges` generator as
+/// `ledge-<hash>.ledge.json` (rocks.md, "Exposed bedrock"): the ground's heights over the tile and
+/// an apron, the formation and the rule, from which the mesh is a pure function.
+struct LedgePatch @version(1) {
+  seed: u64 = 1
+  type: RockType = Sandstone
+  formation: engine.scene.Formation
+  rule: ExposureRule
+  /// The patch's corner, whole millimetres of the world: the mesh's origin, and what the heights
+  /// are counted from.
+  x_mm: i64 = 0
+  y_mm: i64 = 0
+  z_mm: i64 = 0
+  /// The lattice's spacing, whole millimetres: 250 to 16,000.
+  cell_mm: u32 = 1000
+  /// Cells a side: 1 to 256.
+  cells: u32 = 64
+  /// Lattice points of apron round the cells, `rule.scale_m` over the spacing: 1 to 64.
+  apron: u32 = 4
+  /// `(cells + 1 + 2 apron)^2` heights in whole millimetres above `y_mm`, rows of x in order of z.
+  heights_mm: i32[]
+  /// The far form: one face a step, no joint blocks, no bed rows.
+  far: bool = false
+  /// A unit's thickness over its joint spacing: 0.5 to 4 (1.3: Narr and Suppe 1991).
+  joint_ratio: f32 = 1.3
+  /// The tallest step, metres: 0.2 to 30; a thicker unit's front stands this high.
+  max_step_m: f32 = 4.0 @unit(m)
+  /// A step lower than this is left under the soil, metres: 0.02 to 5.
+  min_step_m: f32 = 0.15 @unit(m)
+  /// How far a front goes on under the ground at its foot, metres: 0.05 to 5.
+  bury_m: f32 = 0.5 @unit(m)
+  /// How far a bed's edge may stand out of, or back from, the bed above it, metres: 0 to 2.
+  relief_m: f32 = 0.25 @unit(m)
+  material: RockMaterial
+}
+
+/// The scene generator `ledges`' entry (G142; rocks.md, "Exposed bedrock"): the resistant beds of
+/// a formation standing out of a soil-mantled slope as ledges, a merged mesh a tile and form.
+struct LedgeLayer @version(1) {
+  name: string
+  seed: u64 = 1
+  /// The region dressed, world metres, x and z; a tile is dressed when its corner lies inside.
+  region_min: f64[2]
+  region_max: f64[2]
+  type: RockType = Sandstone
+  /// The scene's formation, repeated (as `CliffLayer.formation`): required.
+  formation: engine.scene.Formation?
+  rule: ExposureRule
+  /// The near form's lattice, metres: 0.25 to 8, dividing the world's tile and `rule.scale_m`.
+  cell_m: f32 = 1.0 @unit(m)
+  /// The far form's: `cell_m` to 16, dividing the tile; `rule.scale_m` is a whole number of it or
+  /// it is the scale itself.
+  far_cell_m: f32 = 4.0 @unit(m)
+  /// How many of the world's rings, innermost first, draw the near form: 0 to 8.
+  near_rings: u32 = 1
+  /// How many draw either form; further rings draw nothing (the terrain's bands carry the beds):
+  /// `near_rings` to 8.
+  far_rings: u32 = 3
+  /// The far form leaves out a step lower than this, metres: 0.02 to 30.
+  far_min_step_m: f32 = 0.8 @unit(m)
+  joint_ratio: f32 = 1.3
+  max_step_m: f32 = 4.0 @unit(m)
+  min_step_m: f32 = 0.15 @unit(m)
+  bury_m: f32 = 0.5 @unit(m)
+  relief_m: f32 = 0.25 @unit(m)
+  material: RockMaterial
+  /// Where the patches' recipes are written: relative to the scene; empty, the host's
+  /// derived-data root's `ledges/`, else the repository's, else `ledges` beside the scene.
+  recipes: string
 }
 
 /// A terrain-fitted sediment patch, written by deposits as <hash>.deposit.json.

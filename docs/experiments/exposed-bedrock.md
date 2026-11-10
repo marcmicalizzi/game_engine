@@ -61,6 +61,21 @@ them in principle, but its erosion rate at a point depends on the distance to th
 function of a point and its neighbours cannot know. The linear rise between the two slopes is
 the simplest function with DiBiase's two ends.
 
+**Rock is patchy at every slope short of the last.** DiBiase's table of catchments gives the
+share of ground that is rock against the mean slope: 0.1 % at 16.2°, 1.7 % at 28.1°, 2.5 % at
+31.8°, 8.2 % at 35.7°, 16.7 % at 38.0°, 21.3 % at 39.8°, 26.1 % at 42.0° and 28.6 % at 42.7°
+(source, table 3.2 of the dissertation chapter), rising "approximately linearly" past 30°. A rule
+that exposed every resistant bed along its whole trace wherever the slope passed 30° would draw
+far more rock than that, as stripes. So the fraction is read as a share of ground: rock shows
+where it is above a seeded cover field (`soil_cover`, patches `patch_m` across, 12 m by default),
+and a bed stands from nothing to its whole exposed height over a quarter of the fraction's range
+past the cover. **The patch size is ours** (DiBiase's outcrops are "0.1-100 m"), and so is the
+field: two octaves of value noise, stretched so the share of points that show rock rises about
+evenly with the fraction (measured on planar ground: 18 % of points at 32°, 47 % at 36°, 77 % at
+40°, all from 44°). That share is of points where a resistant bed *would* show, not of area that
+*is* rock (a bed's trace is a fraction of the slope), so it is not DiBiase's index and is not
+fitted to it; the two agree only in rising from the same slope to the same slope.
+
 ## How layered rock makes steps
 
 **Resistant beds stand as risers, weak ones weather back into benches.** The form is old enough
@@ -112,7 +127,57 @@ to 1.3** (thickness over spacing), so a 2 m unit's blocks are about 1.5 m long; 
 - **A bed's `resistance`** is an index from 0 to 1 the formation's author gives it, not a rock
   mass strength. `min_resistance` (0.5) and the factor from 0.35 at the threshold to 1 at
   resistance 1 are authoring choices.
-- **The share of its step a joint block keeps** (55 to 100 %, one block in eight fallen back to
-  15 %) and **how far a bed's edge stands out of or back from the one above** (`relief_m`) are
-  seeded variation with no source.
-- **The sum of the slope and curvature terms** (above).
+- **A joint block's state**: the share of its step it keeps (55 to 100 %, changing by up to a
+  third along it), one block in five fallen out, four in ten having lost one or two rows off the
+  top, joint planes up to 20° off the dip direction, stations moved by up to three tenths of the
+  spacing. Seeded variation with no source; the picture they aim at is a ledge that is broken
+  rather than extruded.
+- **Rows.** A bed parts into rows about 0.45 m thick (`k_parting_m`), unequal by a seeded weight,
+  each standing back under the row above by up to `relief_m`. Parting along a bed's own laminae is
+  real (McKee and Weir 1953, the formation page's source for bed thickness, is the terminology; it
+  was not re-read for this row) but the number is ours.
+- **The sum of the slope and curvature terms**, and **the soil's patches** (above).
+
+## What was traded for triangles
+
+- **The lattice is the ground's, 1 m.** A front's line is piecewise straight at that spacing; a
+  finer lattice would follow the plane's trace more closely at four times the triangles.
+- **A front is planar between rows** and a block is a prism. Weathered rounding and a fracture
+  surface are the radial solver's ([rock structure](rock-structure.md)) and have no counterpart
+  on a sheet yet.
+- **Nothing is built behind a tread's back or under a front's foot** but 8 cm of tread and a foot
+  that goes on a quarter of the step under the ground (5 cm at least, `bury_m` at most). The
+  share of triangles above the ground is what that buys: 66 % against the 13.9 % G132 counted on
+  the front of a closed box.
+- **The far form** drops the blocks, the rows and every step under 0.8 m, on a 4 m lattice: 2.1
+  triangles a metre of front against 36.
+
+## Measured
+
+A 64 m tile of the test hillside (`tests/ledges_tests.cpp`: 36.9°, noses and hollows 40 m apart,
+five beds dipping 12°, 31 bed tops cropping out), one thread.
+
+| | near form | far form |
+|---|---|---|
+| Triangles (vertices, clusters) | 37,492 (48,673; 1,793) | 1,533 (1,810; 69) |
+| Front, m | 1,041 | 728 |
+| Triangles a metre of front | 36 | 2.1 |
+| Source mesh, bytes | 2,007,440 | 76,316 |
+| Sampling the ground, ms | 0.35 to 0.46 (5,329 heights) | 0.03 to 0.04 (361) |
+| Solving, ms | 51 to 57 | 1.6 to 1.9 |
+| Building the container (the cluster DAG), ms | 208 to 286 | 7.2 to 8.0 |
+
+The times are `msvc-release`, three runs of `ledges: what a tile costs`, on an i9-10980XE
+**beside other agents' builds, 50 to 58 % of the processor busy when they were taken**: upper
+bounds, not costs. The ground there is a function, so the sampling is the solver's share of it
+and not a tile source's.
+
+**When each is paid.** `tile`, the call a tile's activation makes, is a search of the entry's
+tiles and one placement: microseconds, with the solver or without it. The solver's work is paid
+earlier, because a streamed tile may name only a mesh the scene listed when it was read: the
+sampling and the solve once a tile and form when the scene **opens** (about 55 ms and 2 ms a tile
+that has ledges; less for one that has none, which stops at its first triangle without a
+standing bed), and the container once a mesh when the scene reader **builds** it, a cache hit
+after the first read. Both scale with the region's tiles, not the world's, and neither with the
+frame. What is kept resident is the entry's list (a path and two indices a tile) and the built
+meshes.
