@@ -436,6 +436,24 @@ tunables::Float gi_far_lift{
     "How far a coarse cache cell's read (1.6 m and up, past 400 m) is lifted towards the sky's "
     "harmonics, a third a level past the fifth: a crown's lit and shaded leaves the eye cannot "
     "resolve there (renderer.md, Indirect light: the world-space cache; read at load)"};
+// **Stage 4: the light round the eye** (R69; renderer.md, "Indirect light", "Stage 4";
+// docs/experiments/gi-cache-2026-11-07.md has the costs and the curves the defaults rest on). A
+// caster volume round the eye puts the geometry within this many metres into the frame's ray
+// tracing structures whatever the frustum, so the cache's rays meet the forest behind the eye; 0
+// is no volume, the structures the frame's frustum and lights alone ask for.
+tunables::Float gi_shell_m{
+    "renderer.gi.shell_m", 0.0, 0.0, 1024.0,
+    "Metres round the eye whose geometry the frame's ray tracing structures hold as casters "
+    "whatever the frustum, for the cache's rays, where the cache is on (0: none) (renderer.md, "
+    "Indirect light, Stage 4; read at load)"};
+// Directions a view samples from its eye over the whole sphere a frame, each a stride pixel's
+// sample of the surface it meets (the arithmetic is renderer.md's, "Stage 4"). Both off by default:
+// on v37's turn they did not meet stage 4's bound (48 m and 65,536 are the measured setting).
+tunables::Int gi_shell_rays{
+    "renderer.gi.shell_rays", 0, 0, 1 << 22,
+    "Directions over the sphere round each view's eye the cache samples a frame, two rays each out "
+    "of the young half of renderer.gi.rays_per_frame (0: none) (renderer.md, Indirect light, "
+    "Stage 4; read at load)"};
 // One log line a frame of the cache's counts (R69 stage 2): how a walk fills it is read from them.
 tunables::Bool gi_log{
     "renderer.gi.log", false,
@@ -754,6 +772,8 @@ void resolve_settings(const RenderSettings& requested, const gfx::DeviceFeatures
   out.gi_young_rays = gi_young_rays.get();
   out.gi_hit_fallback = gi_hit_fallback.get();
   out.gi_far_lift = static_cast<f32>(gi_far_lift.get());
+  out.gi_shell_m = static_cast<f32>(gi_shell_m.get());
+  out.gi_shell_rays = static_cast<u32>(gi_shell_rays.get());
   // More than one view needs the cull pass: every view's draw reads its own run of the visible
   // list, and there is no run without one. The direct path draws one view and one only, because
   // it writes color rather than a visibility buffer and has nowhere to put a second rectangle.

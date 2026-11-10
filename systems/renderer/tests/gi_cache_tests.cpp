@@ -15,6 +15,9 @@
 //      from the eye, never from a float of the world.
 //   5. **Made at load.** The frames with the cache on make no device buffer and no more engine
 //      allocations than the same frames with it off.
+//   6. **Stage 4: the light round the eye.** A turn inside the box finds its cells already filled,
+//      where main's read them empty; the volume round the eye changes no shadow, id or depth; and
+//      on the CPU the volume is the sphere the cull tests.
 //
 // Every case skips where the machine cannot trace (the cache traces the shadow rays' query).
 
@@ -27,6 +30,7 @@
 #include <foundation/image/metrics.h>
 #include <foundation/tunables/tunables.h>
 #include <systems/renderer/capture.h>
+#include <systems/renderer/eye_shell.h>
 #include <systems/renderer/gpu_scene.h>
 #include <systems/renderer/reference.h>
 #include <systems/renderer/scene.h>
@@ -287,10 +291,12 @@ struct Rig {
   ReferenceRenderer reference;
   std::string error;
 
-  bool build(const gfx::Device& device, const SceneDesc& desc, bool with_reference) {
+  bool build(const gfx::Device& device, const SceneDesc& desc, bool with_reference,
+             gfx::ResolveMode view_mode = gfx::ResolveMode::Shaded) {
     RenderSettings settings;
     settings.shadows = ShadowMode::RayTraced;
     settings.lights = false;
+    settings.view_mode = static_cast<u32>(view_mode);
     if (!load_scene(desc, data, error)) return false;
     resolve_settings(settings, device.features(), &data, resolved);
     const RenderAvailability availability = check_availability(resolved, device.features());
@@ -635,6 +641,11 @@ TEST_CASE("gi cache: a scene moved by whole cells draws the same bytes with the 
   }
   const test::TempDir tmp("engine_gi_translation");
   const ScopedTunable mode("renderer.gi.mode", "sky");
+  // Stage 4: the volume round the eye and its samples on (their defaults, stated): the samples'
+  // directions turn with the cache's frame count, never with a position, and their surfaces' cells
+  // are keyed as every pixel's, so they move with the scene by whole cells too.
+  const ScopedTunable shell("renderer.gi.shell_m", "48");
+  const ScopedTunable shell_rays("renderer.gi.shell_rays", "65536");
   CapturedFrame home;
   const f64 shifts[] = {0.0, 6548.0, 156250.0};
   for (const f64 shift : shifts) {
@@ -662,6 +673,10 @@ TEST_CASE("gi cache: the frames with the cache on make no buffer and allocate as
   const test::TempDir tmp("engine_gi_frame_loop");
   const Fixture fixture = box_fixture(tmp.native());
   u64 allocations[2] = {0, 0};
+  // Stage 4's volume round the eye and its samples on (their defaults, stated): the volume is a
+  // row of the cull block and the samples ride in the sample pass's dispatch, no buffer of either.
+  const ScopedTunable shell("renderer.gi.shell_m", "48");
+  const ScopedTunable shell_rays("renderer.gi.shell_rays", "65536");
   for (u32 m = 0; m < 2; ++m) {
     const ScopedTunable mode("renderer.gi.mode", m == 0 ? "off" : "sky");
     Rig rig;
@@ -716,8 +731,11 @@ TEST_CASE("gi cache: the young cells' rays never pass the frame's budget") {
     const GiStats& gi = rig.renderer.stats().gi;
     CHECK(gi.rays <= k_budget);
     if (gi.samples == 0) continue;  // the stats of a frame before the first sample
-    most = std::max(most, gi.rays);
-    least = std::min(least, gi.rays);
+    // Stage 4: the shell's rays (its directions traced, and one more for each that met a surface)
+    // are in the budget's count too; what is left is the trickle's and the young cells'.
+    const u32 pixel_rays = gi.rays - gi.shell - gi.shell_hits;
+    most = std::max(most, pixel_rays);
+    least = std::min(least, pixel_rays);
   }
   MESSAGE("rays a frame: " << most << " at most, " << least << " at least, " << windows
                            << " trickle windows, a budget of " << k_budget);
@@ -827,24 +845,39 @@ TEST_CASE("gi cache: stage 2's levers one at a time, against the reference at th
     const char* fallback;
     const char* faces;
     const char* far_lift;
+    const char* shell;       // stage 4: the volume round the eye, metres (0: none)
+    const char* shell_rays;  // stage 4: the samples round the eye a frame (0: none)
   };
+  // Stage 4 widened it: every row before stage 4's carries the volume and the samples off, which
+  // is the pass and the cull block exactly as they were (no volume fitted, no thread past the
+  // trickle windows, the young half whole); then each alone on stage 2, and both.
   const Levers steps[] = {
-      {"stage 1", "1", "0", "false", "false", "false", "0"},
-      {"alone: the young cell reads its parent", "32", "0", "false", "false", "false", "0"},
-      {"alone: a full bucket's stale cells freed", "1", "16", "false", "false", "false", "0"},
-      {"alone: rays to the young cells", "1", "0", "true", "false", "false", "0"},
-      {"alone: the hit's coarser levels and fallback", "1", "0", "false", "true", "false", "0"},
-      {"alone: the faces' blend", "1", "0", "false", "false", "true", "0"},
-      {"+ the young cell reads its parent", "32", "0", "false", "false", "false", "0"},
-      {"+ a full bucket's stale cells freed", "32", "16", "false", "false", "false", "0"},
-      {"+ rays to the young cells", "32", "16", "true", "false", "false", "0"},
-      {"+ the hit's coarser levels and fallback", "32", "16", "true", "true", "false", "0"},
-      {"+ the faces' blend (stage 2)", "32", "16", "true", "true", "true", "0"},
-      {"stage 2 + the far lift at 0.5", "32", "16", "true", "true", "true", "0.5"},
-      {"stage 2 + the far lift at 1", "32", "16", "true", "true", "true", "1"},
+      {"stage 1", "1", "0", "false", "false", "false", "0", "0", "0"},
+      {"alone: the young cell reads its parent", "32", "0", "false", "false", "false", "0", "0",
+       "0"},
+      {"alone: a full bucket's stale cells freed", "1", "16", "false", "false", "false", "0", "0",
+       "0"},
+      {"alone: rays to the young cells", "1", "0", "true", "false", "false", "0", "0", "0"},
+      {"alone: the hit's coarser levels and fallback", "1", "0", "false", "true", "false", "0", "0",
+       "0"},
+      {"alone: the faces' blend", "1", "0", "false", "false", "true", "0", "0", "0"},
+      {"+ the young cell reads its parent", "32", "0", "false", "false", "false", "0", "0", "0"},
+      {"+ a full bucket's stale cells freed", "32", "16", "false", "false", "false", "0", "0", "0"},
+      {"+ rays to the young cells", "32", "16", "true", "false", "false", "0", "0", "0"},
+      {"+ the hit's coarser levels and fallback", "32", "16", "true", "true", "false", "0", "0",
+       "0"},
+      {"+ the faces' blend (stage 2)", "32", "16", "true", "true", "true", "0", "0", "0"},
+      {"stage 2 + the far lift at 0.5", "32", "16", "true", "true", "true", "0.5", "0", "0"},
+      {"stage 2 + the far lift at 1", "32", "16", "true", "true", "true", "1", "0", "0"},
+      {"stage 2 + the volume round the eye", "32", "16", "true", "true", "true", "0", "48", "0"},
+      {"stage 2 + the samples round the eye", "32", "16", "true", "true", "true", "0", "0",
+       "65536"},
+      {"+ both (stage 4)", "32", "16", "true", "true", "true", "0", "48", "65536"},
   };
   constexpr u32 k_steps = sizeof(steps) / sizeof(steps[0]);
-  constexpr u32 k_stage2 = 10;  const ScopedTunable mode("renderer.gi.mode", "bounce");
+  constexpr u32 k_stage2 = 10;
+  constexpr u32 k_stage4 = 15;
+  const ScopedTunable mode("renderer.gi.mode", "bounce");
   for (const Fixture& fixture : fixtures) {
     ReferenceFrame reference;
     f64 flip[k_steps];
@@ -855,10 +888,16 @@ TEST_CASE("gi cache: stage 2's levers one at a time, against the reference at th
       const ScopedTunable fallback("renderer.gi.hit_fallback", steps[s].fallback);
       const ScopedTunable faces("renderer.gi.face_blend", steps[s].faces);
       const ScopedTunable far_lift("renderer.gi.far_lift", steps[s].far_lift);
+      const ScopedTunable shell("renderer.gi.shell_m", steps[s].shell);
+      const ScopedTunable shell_rays("renderer.gi.shell_rays", steps[s].shell_rays);
       Rig rig;
       REQUIRE_MESSAGE(rig.build(gpu.device, fixture.desc, s == 0), rig.error);
       CapturedFrame shot;
       REQUIRE_MESSAGE(capture_after(rig, fixture.camera, 64, shot), rig.error);
+      // With both knobs at 0 no view carries the volume and no direction is traced: the frame is
+      // the one stage 2 recorded.
+      if (std::string(steps[s].shell) == "0") CHECK(rig.renderer.stats().gi_shell_views == 0);
+      if (std::string(steps[s].shell_rays) == "0") CHECK(rig.renderer.stats().gi.shell == 0);
       if (s == 0) {
         ReferenceSettings settings;
         settings.spp = 512;
@@ -881,7 +920,243 @@ TEST_CASE("gi cache: stage 2's levers one at a time, against the reference at th
                            << metric.psnr << ", mean luma " << mean_luma(shot.color)
                            << " against the reference's " << mean_luma(reference.color));
     }
-    // Stage 2 is at least as near the reference as stage 1 on both fixtures.
+    // Stage 2 is at least as near the reference as stage 1 on both fixtures, and stage 4 — whose
+    // parts are for the cells behind the eye — no further from it than stage 2 (2026-11-09: a
+    // hundredth of FLIP's mean of slack, a sixth of what stage 2 gained).
     CHECK(flip[k_stage2] <= flip[0]);
+    CHECK(flip[k_stage4] <= flip[k_stage2] + 0.01);
   }
+}
+
+// ---- stage 4 (renderer.md, "Indirect light: the world-space cache", "Stage 4") ----------------
+
+// The share of the cache's own term (the picture under `bounce` less the picture under `off`, in
+// 8-bit luma) by which `frame` stands from `converged`, over the pixels on the same surface in all
+// four: the mean |term - converged term| over the mean |converged term|.
+static f64 term_error(const CapturedFrame& frame, const CapturedFrame& frame_off,
+                      const std::vector<f64>& converged, f64& magnitude) {
+  auto luma = [](const CapturedFrame& shot, u32 i) {
+    const u8* c = &shot.color[i * 4];
+    return 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
+  };
+  f64 error = 0.0;
+  magnitude = 0.0;
+  const u32 pixels = frame.width * frame.height;
+  for (u32 i = 0; i < pixels; ++i) {
+    error += std::abs(luma(frame, i) - luma(frame_off, i) - converged[i]);
+    magnitude += std::abs(converged[i]);
+  }
+  error /= static_cast<f64>(pixels);
+  magnitude /= static_cast<f64>(pixels);
+  return magnitude > 0.0 ? error / magnitude : 0.0;
+}
+
+// **A turn finds the light already there** (the owner's v37 walk under `bounce`, 2026-11-09: "the
+// problem is the filling being visible at all"). The camera inside the closed box — geometry all
+// round it — held until the cache has converged, turned 180 degrees about the vertical in four
+// frames, then held. Main's cache had no cell behind the eye (only the picture's pixels sample) and
+// no geometry there in the frame's structures, so the first frame after the turn read its cells
+// empty or young. With the volume round the eye and its samples, the cells the turned view reads
+// were filled while they were behind it.
+//
+// The bound comes from the cache's own noise, not from the first frame's value: a converged cell
+// is the mean of up to 256 samples, and what is left of its noise is what the converged frames
+// show — each of the last eight frames' distance from their mean, as a share of the term's
+// magnitude (0.006 to 0.007 here, 2026-11-09, RTX 5090; far under the 1/16 a 256-sample mean of a
+// sample that spread as widely as the term itself would show, so that was not the bound). The
+// first frame after the turn must stand within three times the largest of the runs' converged
+// noise from its converged picture; the same run without the shell (main's bytes) must not. The fixture is the forest's in pixels and rays, as stage 3's turn: a
+// cell about ten pixels wide (`cell_scale` 0.12 at 128 wide) and the budget of one pixel in nine of
+// the trickle, a quarter of which (the shell's share, half the young half) is 455 directions a
+// frame.
+TEST_CASE("gi cache: a turn finds the light round the eye already there") {
+  Gpu gpu;
+  if (!gpu.ok) {
+    MESSAGE("gi cache unavailable here: " << gpu.why);
+    return;
+  }
+  const test::TempDir tmp("engine_gi_turn");
+  const Fixture fixture = box_fixture(tmp.native());
+  constexpr u32 k_hold = 48;
+  constexpr u32 k_turn = 4;
+  constexpr u32 k_after = 40;
+  constexpr u32 k_frames = k_hold + k_turn + k_after;
+  constexpr usize k_tail = 8;
+  const DVec3 ahead = fixture.camera.target - fixture.camera.position;
+  auto camera_at = [&](u32 i) {
+    const f64 share = i < k_hold ? 0.0 : std::min(1.0, static_cast<f64>(i - k_hold + 1) / k_turn);
+    const f64 a = 3.14159265358979 * share;
+    Camera c = fixture.camera;
+    c.target = c.position + DVec3{ahead.x * std::cos(a) + ahead.z * std::sin(a), ahead.y,
+                                  -ahead.x * std::sin(a) + ahead.z * std::cos(a)};
+    return c;
+  };
+  const ScopedTunable scale("renderer.gi.cell_scale", "0.12");
+  const ScopedTunable rays("renderer.gi.rays_per_frame", "3641");
+  struct Run {
+    const char* name;
+    const char* mode;
+    const char* shell;
+    const char* shell_rays;
+  };
+  const Run runs[] = {{"off", "off", "0", "0"},
+                      {"without the shell (main)", "bounce", "0", "0"},
+                      {"the volume round the eye alone", "bounce", "48", "0"},
+                      {"the samples round the eye alone", "bounce", "0", "65536"},
+                      {"stage 4", "bounce", "48", "65536"}};
+  constexpr u32 k_runs = sizeof(runs) / sizeof(runs[0]);
+  std::vector<CapturedFrame> shots[k_runs];
+  u32 shell_hits[k_runs] = {};
+  for (u32 r = 0; r < k_runs; ++r) {
+    const ScopedTunable mode("renderer.gi.mode", runs[r].mode);
+    const ScopedTunable shell("renderer.gi.shell_m", runs[r].shell);
+    const ScopedTunable shell_rays("renderer.gi.shell_rays", runs[r].shell_rays);
+    Rig rig;
+    REQUIRE_MESSAGE(rig.build(gpu.device, fixture.desc, false), rig.error);
+    FrameDesc frame;
+    for (u32 i = 0; i < k_frames; ++i) {
+      frame.frame_index = i;
+      frame.camera = camera_at(i);
+      if (i + 1 < k_hold + k_turn) {
+        REQUIRE_MESSAGE(rig.renderer.render_offscreen(frame, &rig.error), rig.error);
+        shell_hits[r] = std::max(shell_hits[r], rig.renderer.stats().gi.shell_hits);
+        continue;
+      }
+      CapturedFrame shot;
+      REQUIRE_MESSAGE(rig.renderer.capture(frame, CaptureChannels{}, shot, &rig.error), rig.error);
+      shots[r].push_back(std::move(shot));
+    }
+  }
+  const usize n = shots[0].size();
+  const u32 pixels = shots[0][0].width * shots[0][0].height;
+  f64 first[k_runs] = {};
+  f64 settled[k_runs] = {};
+  for (u32 r = 1; r < k_runs; ++r) {
+    // The converged term: the last eight frames', pixel by pixel.
+    std::vector<f64> converged(pixels, 0.0);
+    for (usize k = n - k_tail; k < n; ++k) {
+      for (u32 i = 0; i < pixels; ++i) {
+        const u8* c = &shots[r][k].color[i * 4];
+        const u8* o = &shots[0][k].color[i * 4];
+        converged[i] += (0.2126 * (c[0] - o[0]) + 0.7152 * (c[1] - o[1]) + 0.0722 * (c[2] - o[2])) /
+                        static_cast<f64>(k_tail);
+      }
+    }
+    f64 magnitude = 0.0;
+    first[r] = term_error(shots[r][0], shots[0][0], converged, magnitude);
+    for (usize k = n - k_tail; k < n; ++k)
+      settled[r] +=
+          term_error(shots[r][k], shots[0][k], converged, magnitude) / static_cast<f64>(k_tail);
+    std::string curve;
+    for (usize k = 0; k < n; k += (k < 8 ? 1 : 8)) {
+      f64 m = 0.0;
+      curve += " " + std::to_string(k) + ":" +
+               std::to_string(term_error(shots[r][k], shots[0][k], converged, m)).substr(0, 5);
+    }
+    MESSAGE(std::string(runs[r].name)
+            << ": the term's error after the turn, as a share of its magnitude " << magnitude
+            << " (frame:share)" << curve << "; the converged frames' own " << settled[r]
+            << "; shell directions that met a surface, most in a frame: " << shell_hits[r]);
+  }
+  const f64 noise = *std::max_element(settled + 1, settled + k_runs);
+  const f64 k_bound = 3.0 * noise;
+  MESSAGE("the bound: three times the converged frames' own noise, " << k_bound);
+  CHECK(first[4] <= k_bound);
+  CHECK(first[1] > k_bound);  // main's bytes miss it: the test sees what it is for
+  CHECK(shell_hits[1] == 0);
+  CHECK(shell_hits[4] > 0);
+}
+
+// **The direct picture does not change** (stage 4): a caster round the eye outside the sun's swept
+// volume can shadow no receiver in view (the sweep is every point a sun ray from the view reaches),
+// so the sun's shadow, the ids and the depth are the same bytes with the volume as without it.
+// `ResolveMode::Shadow` draws the sun's term alone; the volume is fitted wherever the cache is
+// made, so the resolve's debug mode keeps it (`Stats::gi_shell_views`), and it does add casters.
+TEST_CASE("gi cache: the volume round the eye changes no shadow, id or depth") {
+  Gpu gpu;
+  if (!gpu.ok) {
+    MESSAGE("gi cache unavailable here: " << gpu.why);
+    return;
+  }
+  const test::TempDir tmp("engine_gi_shell_direct");
+  const Fixture fixtures[] = {box_fixture(tmp.native()), field_fixture(tmp.native(), WorldPos{})};
+  CaptureChannels channels;
+  channels.ids = true;
+  channels.depth = true;
+  const ScopedTunable mode("renderer.gi.mode", "bounce");
+  for (const Fixture& fixture : fixtures) {
+    // Each fixture seen the other way, so its geometry stands behind the eye, where only the
+    // volume round the eye (or the sun's sweep) keeps it in the structures.
+    Camera camera = fixture.camera;
+    camera.target = camera.position + (camera.position - fixture.camera.target);
+    CapturedFrame shots[2];
+    u32 casters[2] = {0, 0};
+    u32 views[2] = {0, 0};
+    for (u32 m = 0; m < 2; ++m) {
+      const ScopedTunable shell("renderer.gi.shell_m", m == 0 ? "0" : "48");
+      Rig rig;
+      REQUIRE_MESSAGE(rig.build(gpu.device, fixture.desc, false, gfx::ResolveMode::Shadow),
+                      rig.error);
+      REQUIRE_MESSAGE(capture_after(rig, camera, 4, shots[m]), rig.error);
+      FrameDesc frame;
+      frame.camera = camera;
+      frame.frame_index = 4;
+      CapturedFrame again;
+      REQUIRE_MESSAGE(rig.renderer.capture(frame, channels, again, &rig.error), rig.error);
+      shots[m] = std::move(again);
+      casters[m] = rig.renderer.stats().shadow_casters;
+      views[m] = rig.renderer.stats().gi_shell_views;
+    }
+    MESSAGE(fixture.name << ": casters " << casters[0] << " without the volume, " << casters[1]
+                         << " with it; colour steps apart " << bytes_apart(shots[0], shots[1]));
+    CHECK(views[0] == 0);
+    CHECK(views[1] == 1);
+    // The field's cubes behind the eye are outside the sun's sweep, so the volume adds casters
+    // there and the comparison sees something; the box's walls are inside the sweep already.
+    if (&fixture == &fixtures[1]) CHECK(casters[1] > casters[0]);
+    REQUIRE(shots[0].color.size() == shots[1].color.size());
+    CHECK(std::memcmp(shots[0].color.data(), shots[1].color.data(), shots[0].color.size()) == 0);
+    REQUIRE(shots[0].ids.size() == shots[1].ids.size());
+    CHECK(std::memcmp(shots[0].ids.data(), shots[1].ids.data(),
+                      shots[0].ids.size() * sizeof(u32)) == 0);
+    REQUIRE(shots[0].depth.size() == shots[1].depth.size());
+    CHECK(std::memcmp(shots[0].depth.data(), shots[1].depth.data(),
+                      shots[0].depth.size() * sizeof(f32)) == 0);
+  }
+}
+
+// The volume round the eye on the CPU (eye_shell.h): the cull pass's test, which is
+// `caster_volume_contains_sphere`, keeps a cluster sphere exactly when it comes within the radius
+// of the eye, over a lattice of spheres in and round the cube that bounds it.
+TEST_CASE("gi cache: the volume round the eye keeps the spheres that come within its radius") {
+  const Vec3 eye{3.5f, -2.0f, 7.25f};
+  constexpr f32 k_radius = 24.0f;
+  CasterVolume volume;
+  REQUIRE(fit_eye_shell_volume(eye, k_radius, volume));
+  CHECK(volume.plane_count == 6);
+  CasterVolume none;
+  CHECK_FALSE(fit_eye_shell_volume(eye, 0.0f, none));
+  CHECK(none.plane_count == 0);
+  u32 kept = 0;
+  u32 wrong = 0;
+  for (i32 z = -8; z <= 8; ++z) {
+    for (i32 y = -8; y <= 8; ++y) {
+      for (i32 x = -8; x <= 8; ++x) {
+        const Vec3 c = eye + Vec3{static_cast<f32>(x) * 4.1f, static_cast<f32>(y) * 3.7f,
+                                  static_cast<f32>(z) * 4.3f};
+        const f32 r = 0.5f + 0.75f * static_cast<f32>((x + 2 * y + 3 * z + 60) % 5);
+        const Vec3 d = c - eye;
+        const f32 distance = std::sqrt(dot(d, d));
+        // A margin of a millimetre either side of the boundary, where float rounding decides.
+        if (std::fabs(distance - (k_radius + r)) < 1e-3f) continue;
+        const bool expected = distance <= k_radius + r;
+        const bool got = caster_volume_contains_sphere(volume, c, r);
+        kept += got ? 1u : 0u;
+        wrong += got != expected ? 1u : 0u;
+      }
+    }
+  }
+  MESSAGE("spheres kept: " << kept << " of " << 17 * 17 * 17);
+  CHECK(kept > 0);
+  CHECK(wrong == 0);
 }

@@ -2012,7 +2012,9 @@ reproduces the stage-1 read, so every lever was judged on its own against the re
   held and young after the fold, cells freed for a full bucket and for their age — are copied into
   the frame's statistics block behind the fold (the `gi stats` transfer pass) and the header is
   cleared for the next frame; `renderer.gi.log` writes them as one log line a frame
-  (`--log warn,renderer=info`), which is how a walk's fill is read.
+  (`--log info`: a record must pass the global level and its category's both, so
+  `--log warn,renderer=info` prints nothing at info, which stage 4 found), which is how a walk's
+  fill is read.
 **What it costs, and why it is off.** On the owner's v25 walk at 3840×2160 (`msvc-release`, median
 of 301 frames, a shared machine; [the page](../experiments/gi-cache-2026-11-07.md#the-v25-walk-at-38402160-what-it-costs-and-what-it-looks-like)):
 the sample pass is 1.62 ms under `sky` and 3.88 under `bounce`, the fold 0.01, and **the read adds
@@ -2021,6 +2023,88 @@ goes 17.8 → 22.4 (`sky`) → 24.7 ms (`bounce`). The picture under `bounce` ha
 trunks and understory the harmonics could not give, and blocks a cell wide on rounded rocks, whose
 normals the face key splits. `renderer.gi.mode` stays `off` until the read is cheaper and the blocks
 are gone; `bounce` is the mode to turn on.
+
+### Stage 4: the light round the eye
+
+The owner's v37 walk under `bounce` (2026-11-09): a turn still showed the indirect light filling
+in, about a second of it, "instead of having the indirect lighting already applied when turning".
+Every shipped real-time GI keeps its bounced light in a store that exists in **every direction
+round the player**, so that where the view looks is not an input to what is lit — DDGI's probe
+volume traces every probe every frame against structures holding the whole neighbourhood, Lumen's
+surface cache and world-space radiance cache cover the region round the camera and are traced
+against a scene representation that does not depend on the frustum (the sources and what each keeps
+warm are on [the experiment page](../experiments/gi-cache-2026-11-07.md#stage-4-the-light-round-the-eye)).
+This cache's key was already independent of the view; its **coverage** was not, for two reasons:
+
+- **A cell existed only where some view's pixel had sampled it.** Nothing behind the eye was ever
+  sampled, so the cells a turn reads were the ones its own frames and the young-cell rays filled
+  on the way round.
+- **There was nothing behind the eye for a ray to find.** The frame's structures hold the
+  frustum's cut and the casters its light and its water ask for. A trunk three metres behind the
+  eye and outside the sun's sweep is in none of them, so a cache ray that leaves the frustum
+  sideways or backwards meets nothing where the forest stands and brings back sky.
+
+Stage 4 keeps the cache as it was (the key, the levels, the fold, the read, stage 2's levers) and
+adds two knobs whose 0 is the frame as it was:
+
+- **The volume round the eye** (`renderer.gi.shell_m`, `eye_shell.h`): one more caster volume in
+  the view's cull block, the cube of six planes round the sphere of that radius with the sphere as
+  the volume's `reach`, so the cull pass's existing test is the sphere test and no shader learns a
+  new kind of volume (`cluster_cull.slang` and `cluster_cull.h` are unchanged; the block's five
+  volumes hold the sun's, the water's two and this one). Its pairs are casters like the others —
+  the camera's cut, built non-opaque, so primary rays pass through them and the cache's and the
+  shadow rays stop on them — fitted **behind every other volume**, so a block the lights and the
+  water fill leaves the cache what the frame's cut holds, since a missing shadow is worse than a
+  slower fill. In the chain's capacity its casters are casters of their rank, dropped by the
+  existing rule (a rank's casters before its drawn clusters, the farthest rank first); they are not
+  a separate class below the lights' and the water's casters, which would need a third kind in the
+  records' scan. It is fitted wherever the cache is made, in every resolve mode, which is how
+  `gi cache: the volume round the eye changes no shadow, id or depth` holds the direct picture: a
+  caster outside the sun's sweep can shadow no receiver in view.
+- **The samples round the eye** (`renderer.gi.shell_rays`, `ResolveParams::gi_shell_rays`): the
+  sample pass's threads past a view's trickle windows, from the next whole workgroup, trace that
+  many directions a frame from the view's eye over the whole sphere — a stratified equal-area grid
+  (`gfx::gi_shell_columns`) jittered by a hash of the cache's frame count, never of a position, so
+  the translation test holds — skipping the directions the view's frustum covers. Each finds the
+  nearest surface with the shadow rays' masks (`trace_scene_hit`, `hit_shade.slang`), decodes it
+  as a pixel is decoded (`surface_at` towards the eye, so its cells' faces are the ones the view
+  reads after it turns that way), and is then sampled **exactly as a stride pixel is**
+  (`gi_trace_and_add`): the cells at the level its distance gives and the two coarser inserted, one
+  cosine ray, the bounce. Two rays a direction come out of the young half of the budget, of which
+  every view's shell takes at most half (`gfx::gi_shell_ray_cost`), so the young cells in view keep
+  the rest; without `renderer.gi.young_rays` there is no young half and no shell sample.
+  `Stats::gi` counts the directions traced, those that met a surface and those that met one within
+  50 m (`k_gi_stat_shell*`), which is how much of the sphere the frame's structures hold.
+
+**The rate's arithmetic.** At the default `cell_scale` a cell at distance d is between 0.004 d and
+0.008 d wide, 1.6 × 10⁻⁵ to 6.4 × 10⁻⁵ steradians seen face-on, so a sphere whose every direction met
+a surface would hold 200,000 to 785,000 cells at their own level, a quarter of that at the next and
+a sixteenth at the one past it; the view's frustum (55° by 86° at 16:9) is a tenth of the sphere,
+and the sky is not sampled at all. A cell is read whole at 32 samples (`renderer.gi.confident`) and
+younger cells lean on their parent, so warming the sphere means about 32 samples for every parent
+cell: 50,000 to 200,000 of them, 1.6 to 6.3 million samples. The measured setting, 65,536 a frame,
+is 3.5 million samples a second outside the frustum at 60 frames a second — the parents' level warm
+in about one to two seconds of a still eye, the grandparents' in a fraction of a second, the own
+level at 5 to 20 samples a second.
+
+**The stats fold.** `SceneRenderer::collect_slot` — the pipelined frames' collect, which every
+engine-view flight uses — now folds the cache's counts as `render_offscreen`'s did; until stage 4
+only the blocking path filled `Stats::gi`, so `renderer.gi.log` printed nothing on a camera path,
+which stages 2 and 3 both met.
+
+**What it measured, and why both knobs are off** ([the page](../experiments/gi-cache-2026-11-07.md#stage-4-the-light-round-the-eye)
+has the curves and the costs). On v37's `south-lake` turn (180° over 30 frames at 1920×1080) the
+samples took four fifths of the turn's bias away (the first frame's mean error in the term −0.094 →
+−0.018 of a luma step) but not its distance from the held frame (1.68 → 1.76), which is the cache's
+own noise between two estimates 176 frames apart rather than a fill; the walk and the flight were a
+little worse, the samples' rays coming out of the young half the cells newly in view need. The
+volume added 4,200 casters at 48 m to the 388,000 the frame keeps, because at that hour the sun's
+sweep already holds the forest behind the eye. In the box seen from inside, turned in four frames,
+the first frame after the turn stood 0.018 of the term from its converged picture with both, 0.071
+under main; the box's converged picture moved towards the reference (FLIP 0.105 → 0.092). At
+3840×2160 the two cost 0.8 ms a frame at 48 m. The brief's rule was on under `bounce` where they
+met its target on the forest; they did not, so `renderer.gi.shell_m` and `renderer.gi.shell_rays`
+default to 0, and `48` and `65536` are the measured setting.
 
 ## The sun's day
 

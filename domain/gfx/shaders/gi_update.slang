@@ -29,6 +29,9 @@
 #define RESOLVE_HALF_PASS 1
 #include "visibility_resolve.slang"
 #include "sampling.slang"
+// Stage 4's samples round the eye find their surface with the reflection's traversal
+// (`trace_scene_hit`, R129's file: called, never edited here).
+#include "hit_shade.slang"
 
 // The environment along `dir`: what an escaped ray carries.
 float3 gi_environment(ResolveParams* params, float3 dir) {
@@ -321,7 +324,11 @@ void gi_sample_pixel(ResolveParams* params, uint t) {
   uint first = 0u;
   if (WaveIsFirstLane() && wanted != 0u) first = header[k_gi_ray_count].add(wanted);
   first = WaveReadLaneFirst(first);
-  const uint young_budget = params->gi_rays - params->gi_rays / 2u;
+  // Stage 4: the shell's samples (two rays a direction at most) come out of the young half; the
+  // renderer keeps them inside it (`gfx::gi_shell_ray_cost`).
+  const uint half_left = params->gi_rays - params->gi_rays / 2u;
+  const uint young_budget =
+      half_left > params->gi_shell_cost ? half_left - params->gi_shell_cost : 0u;
   const bool traced = want && first + WavePrefixCountBits(want) < young_budget;
   if (traced) gi_trace_and_add(params, q, sq, iq);
   const uint rays = WaveActiveCountBits(trickle) + WaveActiveCountBits(traced);
@@ -333,7 +340,55 @@ void gi_sample_pixel(ResolveParams* params, uint t) {
     if (young != 0u) header[k_gi_stat_young].add(young);
   }
 }
-// One thread per trickle window of the view: `ceil(width * height / gi_stride)` of them.
+// **Stage 4: a sample round the eye** (`ResolveParams::gi_shell_rays`; renderer.md, "Indirect
+// light", "Stage 4"). Direction `i` of the frame's stratified sphere (`gi_shell_direction`, turned
+// by the cache's frame count) is traced from the view's eye, unless the view's frustum covers it —
+// its pixels sample that part — to the nearest surface, with the shadow rays' masks
+// (`trace_scene_hit`); the surface is decoded as a pixel's is (`surface_at` towards the eye, so
+// its normals and so its cells' faces are the ones the view reads once it turns that way) and
+// then sampled **exactly as a stride pixel is** (`gi_trace_and_add`): its cells at the level its
+// distance from the eye gives and the coarser ones inserted, one cosine-weighted ray, the bounce.
+// Nothing in a cell's key depends on where the eye looks, so the cells these samples fill are the
+// cells the view reads after a turn. The frame's caster volume round the eye (the renderer's
+// eye_shell.h) puts the geometry there into the structures these rays meet.
+// Returns the rays it traced: 0 (inside the frustum), 1 (met nothing), 2.
+uint gi_shell_sample(ResolveParams* params, uint i, out bool hit, out bool near) {
+  hit = false;
+  near = false;
+  const float3 dir = gi_shell_direction(i, params->gi_shell_rays, params->gi_shell_columns,
+                                        params->gi_frame);
+  const float3 eye = params->camera.xyz;
+  const float4 clip = mul(params->view_proj, float4(eye + dir, 1.0));
+  if (clip.w > 0.0 && abs(clip.x) <= clip.w && abs(clip.y) <= clip.w) return 0u;
+  // A seed and a fade hash no pixel has (a pixel's y is under 65,535).
+  const uint2 p = uint2(i, 0xffffu);
+  g_fade_pixel = p;
+  RayDesc ray;
+  ray.Origin = eye;
+  ray.Direction = dir;
+  ray.TMin = 0.0;
+  ray.TMax = 1e30;
+  SceneHit h;
+  if (!trace_scene_hit(params, ray, h)) return 1u;
+  hit = true;
+  near = h.t <= k_gi_shell_near_m;
+  const SceneGeometry geo = geometry_of(params);
+  InstanceDesc* instances = (InstanceDesc*)params->instances;
+  const uint visible_index =
+      hit_visible_entry(params->hit_entries, params->instances, h.geometry, h.instance_id);
+  bool is_static = false;
+  const uint2 entry = hit_pair(params->visible, params->instances, params->mesh, visible_index,
+                               h.instance_id, is_static);
+  const InstanceDesc instance = instances[entry.x];
+  const TriangleFetch tri = fetch_triangle(geo, instance, visible_index, entry.y, h.primitive & 0xff);
+  const Surface s =
+      surface_at(geo, instance, tri, float3(1.0 - h.bary.x - h.bary.y, h.bary.x, h.bary.y), eye);
+  gi_trace_and_add(params, p, s, instance);
+  return 2u;
+}
+
+// One thread per trickle window of the view: `ceil(width * height / gi_stride)` of them; then,
+// from the next whole workgroup (`gfx::gi_shell_base`), one per shell direction (stage 4).
 [shader("compute")]
 [numthreads(64, 1, 1)]
 void gi_sample_main(uint3 id : SV_DispatchThreadID) {
@@ -343,7 +398,32 @@ void gi_sample_main(uint3 id : SV_DispatchThreadID) {
     return;
   }
   if ((params->shadow_flags & k_shadow_sun) == 0 || params->scene == k_no_scene) return;
-  gi_sample_pixel(params, id.y * k_gi_dispatch_pitch * 64u + id.x);
+  const uint t = id.y * k_gi_dispatch_pitch * 64u + id.x;
+  if (params->gi_shell_rays != 0u) {
+    const uint windows = (params->width * params->height + params->gi_stride - 1u) / params->gi_stride;
+    const uint shell_base = (windows + 63u) / 64u * 64u;
+    if (t >= shell_base) {
+      // A wave is all shell threads here (the base is whole workgroups), so the counts are one
+      // atomic a wave.
+      bool hit = false;
+      bool near = false;
+      uint rays = 0u;
+      if (t - shell_base < params->gi_shell_rays) rays = gi_shell_sample(params, t - shell_base, hit, near);
+      const uint traced = WaveActiveSum(rays);
+      const uint shell = WaveActiveCountBits(rays != 0u);
+      const uint hits = WaveActiveCountBits(hit);
+      const uint nears = WaveActiveCountBits(near);
+      if (WaveIsFirstLane()) {
+        Atomic<uint>* header = (Atomic<uint>*)params->gi_cells;
+        if (traced != 0u) header[k_gi_stat_rays].add(traced);
+        if (shell != 0u) header[k_gi_stat_shell].add(shell);
+        if (hits != 0u) header[k_gi_stat_shell_hits].add(hits);
+        if (nears != 0u) header[k_gi_stat_shell_near].add(nears);
+      }
+      return;
+    }
+  }
+  gi_sample_pixel(params, t);
 }
 
 // One thread per cell: the frame's samples into the mean; a cell nothing reached for

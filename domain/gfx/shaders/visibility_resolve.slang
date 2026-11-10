@@ -198,6 +198,12 @@ struct ResolveParams {
   float sun_solid_side_distance;
   uint sun_solid_x0;
   uint sun_solid_x1;
+  // The cache's samples round the eye (gfx::ResolveParams::gi_shell_rays; R69 stage 4): read only
+  // by the sample pass (gi_update.slang).
+  uint gi_shell_rays;
+  uint gi_shell_columns;
+  uint gi_shell_cost;  // every view's shell rays, out of the young half of gi_rays
+  uint gi_shell_pad;
 };
 
 // **The resolve's split** (gfx::ResolveStop; renderer.md, "Where the resolve's time goes"; R115).

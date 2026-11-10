@@ -303,4 +303,32 @@ float gi_openness(float t) {
   const float x = saturate((t - k_gi_open_near_m) / (k_gi_open_far_m - k_gi_open_near_m));
   return x * x * (3.0 - 2.0 * x);
 }
+
+// **Stage 4: the shell's directions** (gfx::gi_shell_base, gfx::gi_shell_columns; renderer.md,
+// "Indirect light", "Stage 4"). Direction `index` of `count` is a cell of an equal-area grid on
+// the sphere, `columns` of longitude by enough rows of the height to hold `count`, jittered inside
+// its cell by a hash of the cache's frame count and the index — never of a position, so a scene
+// moved by whole cells traces the same directions.
+static const uint k_gi_stat_shell = 9u;
+static const uint k_gi_stat_shell_hits = 10u;
+static const uint k_gi_stat_shell_near = 11u;
+static const float k_gi_shell_near_m = 50.0;
+uint gi_shell_hash(uint v) {
+  v = v * 747796405u + 2891336453u;
+  const uint w = ((v >> ((v >> 28u) + 4u)) ^ v) * 277803737u;
+  return (w >> 22u) ^ w;
+}
+float3 gi_shell_direction(uint index, uint count, uint columns, uint frame) {
+  const uint c = max(columns, 1u);
+  const uint rows = (count + c - 1u) / c;
+  const uint h = gi_shell_hash(index ^ gi_shell_hash(frame));
+  const float ju = float(h & 0xffffu) / 65536.0;
+  const float jv = float(h >> 16) / 65536.0;
+  const float u = (float(index % c) + ju) / float(c);
+  const float v = (float(index / c) + jv) / float(rows);
+  const float y = 1.0 - 2.0 * v;
+  const float r = sqrt(max(1.0 - y * y, 0.0));
+  const float phi = 6.28318530718 * u;
+  return float3(r * cos(phi), y, r * sin(phi));
+}
 #endif  // ENGINE_GI_CACHE_SLANG
