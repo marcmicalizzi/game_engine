@@ -11,7 +11,7 @@
 #
 # Pure f64 arithmetic on the CPU: no GPU, no ECS. `schemas` for the scene's sky entry
 # (`engine.scene.Sky`), `scene_gen` for the registry and the provider's types.
-engine_module(NAME sky LAYER domain OPTIONAL WHOLE_ARCHIVE
+engine_module(NAME sky LAYER domain OPTIONAL WHOLE_ARCHIVE GENERATOR sky:earth
   DEPS base containers math schema schemas scene_gen
   SOURCES src/ephemeris.cpp src/earth.cpp src/sky_provider.cpp)
 

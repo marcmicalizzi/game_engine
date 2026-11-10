@@ -17,7 +17,7 @@
 # them to the same switch, so they leave the build with it.
 engine_schema_library(NAME flora_schemas SCHEMAS schemas/flora.schema CAPABILITY flora)
 
-engine_module(NAME flora LAYER domain OPTIONAL WHOLE_ARCHIVE
+engine_module(NAME flora LAYER domain OPTIONAL WHOLE_ARCHIVE GENERATOR mesh:flora placement:sward
   DEPS base containers math hash json schema image assets geometry materials texture scene_gen flora_schemas
   SOURCES src/palm.cpp src/motion.cpp src/kit.cpp src/broadleaf.cpp src/conifer.cpp src/flora.cpp
           src/birch.cpp src/willow.cpp src/orchard.cpp src/ancient.cpp src/impostor.cpp src/shrub.cpp

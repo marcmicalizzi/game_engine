@@ -14,7 +14,7 @@
 # build, `materials` and `texture` for a pack's limestone. No GPU, no ECS.
 engine_schema_library(NAME caves_schemas SCHEMAS schemas/caves.schema CAPABILITY caves)
 
-engine_module(NAME caves LAYER domain OPTIONAL WHOLE_ARCHIVE
+engine_module(NAME caves LAYER domain OPTIONAL WHOLE_ARCHIVE GENERATOR mesh:cave
   DEPS base containers math hash json schema log io assets geometry materials texture caves_schemas
   SOURCES src/caves.cpp src/passage.cpp)
 

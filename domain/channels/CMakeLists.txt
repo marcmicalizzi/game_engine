@@ -15,6 +15,7 @@
 engine_schema_library(NAME channels_schemas SCHEMAS schemas/channels.schema CAPABILITY channels)
 
 engine_module(NAME channels LAYER domain OPTIONAL WHOLE_ARCHIVE
+  GENERATOR placement:channels mesh:channel
   DEPS base containers math hash json schema log io jobs assets geometry materials texture scene_gen
        channels_schemas
   SOURCES src/network.cpp src/pieces.cpp src/generator.cpp src/measure.cpp)

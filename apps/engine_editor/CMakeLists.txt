@@ -25,16 +25,15 @@ if(TARGET engine::webview)
   list(APPEND _editor_deps webview)
   list(APPEND _editor_defs ENGINE_EDITOR_WEBVIEW=1)
 endif()
-# The scene generators this configuration has (ADR-0046; docs/subsystems/scene_gen.md), linked for
-# their registrars exactly as engine-view and engine-host link them: the viewport draws the document
-# scene through the renderer's scene reader, which finds a terrain's ground provider (the dunes, or
-# the tile set's `tiles` for a Heightfield record) and a placement's generator by the name the scene
-# gives, and refuses a name this executable does not carry. Nothing here calls one.
-foreach(_gen authored channels city cover deadwood litter flora rocks ruins scatter sky terrain tileset water wetland)
-  if(TARGET engine::${_gen})
-    list(APPEND _editor_deps ${_gen})
-  endif()
-endforeach()
+# The scene generators this configuration has (ADR-0046; docs/subsystems/scene_gen.md, "Which
+# generators a host carries"): the build's one list, every module tagged GENERATOR, linked for their
+# registrars as engine-view and engine-host link them — the configure stops if the three differ.
+# The viewport draws the document scene through the renderer's scene reader, which finds a terrain's
+# ground provider (the dunes, or the tile set's `tiles` for a Heightfield record), a placement's
+# generator and a mesh's (`.cave.json`, `.soil.json`) by the name the scene gives, and refuses a name
+# this executable does not carry. Nothing here calls one. Until T79 this list was written out here
+# and had lost `caves` and `soil` (tests/editor_generators_tests.cpp).
+engine_host_generators(engine_editor _editor_deps)
 set(_editor_camera ${CMAKE_SOURCE_DIR}/apps/engine_view/fly_camera.cpp
                    ${CMAKE_SOURCE_DIR}/apps/engine_view/window_input.cpp
                    ${CMAKE_SOURCE_DIR}/apps/engine_view/walk.cpp)
@@ -44,7 +43,7 @@ set(_editor_sources editor_document.cpp editor_viewport.cpp editor_ui.cpp editor
 engine_app(NAME engine_editor OUTPUT engine-editor
   SOURCES main.cpp ${_editor_sources} ${_editor_camera}
   DEPS ${_editor_deps}
-  E2E_TESTS tests/editor_tests.cpp ${_editor_sources})
+  E2E_TESTS tests/editor_tests.cpp tests/editor_generators_tests.cpp ${_editor_sources})
 if(_editor_defs)
   target_compile_definitions(engine_engine_editor PRIVATE ${_editor_defs})
 endif()

@@ -18,7 +18,7 @@ engine_schema_library(NAME scatter_schemas SCHEMAS schemas/scatter.schema CAPABI
 # GLB; `jobs` for a whole read's tiles on the performance pool. No renderer, no document: what it
 # makes is `scene_gen::Placements`, which the scene reader and the world's placements consumer turn
 # into instances.
-engine_module(NAME scatter LAYER systems OPTIONAL WHOLE_ARCHIVE
+engine_module(NAME scatter LAYER systems OPTIONAL WHOLE_ARCHIVE GENERATOR placement:scatter
   DEPS base containers math hash json schema schemas io log jobs time geometry scene_gen texture
        scatter_schemas
   SOURCES src/placer.cpp src/rock.cpp src/scene_generator.cpp)

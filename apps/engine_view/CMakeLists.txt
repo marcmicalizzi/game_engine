@@ -76,22 +76,20 @@ if(TARGET engine::flora)
   # "Megaflora"): the elder-grove scene's ancient trees solved by the test to find the limb.
   list(APPEND _view_tests tests/walk_limb_view_tests.cpp)
 endif()
-# The scene generators this configuration has (ADR-0046; docs/subsystems/scene_gen.md): linked for
-# their registrars, which is what makes `--scene` read a terrain that names the dunes and a scene's
-# ruins and city, and `--world` stream them, and the flora capability for its mesh generator, which
-# makes a scene's `.flora.json` mesh (and `--mesh x.flora.json`) a palm, and the tile set for its
-# `tiles` ground provider, which makes a terrain naming an authored heightfield or a built set draw
-# (docs/subsystems/tileset.md; tests/tiles_view_tests.cpp). Nothing here calls one: the renderer's scene reader and the world's placements consumer find each by the name a scene gives.
 # The participating medium (brief-volumetrics, systems/volumetrics): a scene's `medium` block drawn by its
 # frame pass where the capability is configured; ENGINE_VIEW_VOLUMETRICS below says so to main.cpp.
 if(TARGET engine::volumetrics)
   list(APPEND _view_deps volumetrics)
 endif()
-foreach(_gen authored caves channels city cover deadwood litter flora rocks ruins scatter sky soil terrain tileset water wetland)
-  if(TARGET engine::${_gen})
-    list(APPEND _view_deps ${_gen})
-  endif()
-endforeach()
+# The scene generators this configuration has (ADR-0046; docs/subsystems/scene_gen.md, "Which
+# generators a host carries"): the build's one list, every module tagged GENERATOR, linked for their
+# registrars, which is what makes `--scene` read a terrain that names the dunes or the tile set's
+# `tiles` (docs/subsystems/tileset.md; tests/tiles_view_tests.cpp) and a scene's ruins and city,
+# `--world` stream them, and a generator's mesh (`.flora.json`, and `--mesh x.flora.json`) draw.
+# Nothing here calls one: the renderer's scene reader and the world's placements consumer find each
+# by the name a scene gives. engine-host and engine-editor link the same list, and the configure
+# stops if the three differ.
+engine_host_generators(engine_view _view_deps)
 if(TARGET engine::world)
   # `--world`: a streamed scene's tile ring with the camera as its observer (world_view.cpp,
   # docs/subsystems/world.md). The world capability is optional (ADR-0027), so this is the same

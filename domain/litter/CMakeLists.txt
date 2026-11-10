@@ -17,7 +17,7 @@ engine_capability_requires(litter deadwood)
 # CAPABILITY ties them to the same switch, so they leave the build with it.
 engine_schema_library(NAME litter_schemas SCHEMAS schemas/litter.schema CAPABILITY litter)
 
-engine_module(NAME litter LAYER domain OPTIONAL WHOLE_ARCHIVE
+engine_module(NAME litter LAYER domain OPTIONAL WHOLE_ARCHIVE GENERATOR placement:litter mesh:litter
   DEPS base containers math hash json schema assets geometry materials texture scene_gen deadwood litter_schemas
   SOURCES src/litter.cpp src/container.cpp src/placement.cpp)
 

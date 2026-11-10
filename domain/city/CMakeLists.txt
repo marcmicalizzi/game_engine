@@ -22,7 +22,7 @@ engine_schema_library(NAME city_schemas SCHEMAS schemas/city.schema CAPABILITY c
 # `schemas` is the proxy fragment's (an `engine.scene.Scene`, schemas/scene.schema); `jobs` the
 # performance pool that generates many buildings at once; `io` the plan and fragment files;
 # `scene_gen` the registry the generator "city" registers into.
-engine_module(NAME city LAYER domain OPTIONAL WHOLE_ARCHIVE
+engine_module(NAME city LAYER domain OPTIONAL WHOLE_ARCHIVE GENERATOR placement:city
   DEPS base containers math hash json schema schemas io log jobs city_schemas scene_gen
   SOURCES src/params.cpp src/plan.cpp src/plan_io.cpp src/building.cpp src/walls.cpp
           src/validate.cpp src/fragment.cpp src/scene_generator.cpp)

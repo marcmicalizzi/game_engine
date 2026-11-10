@@ -31,18 +31,14 @@ foreach(_cap audio ecs animation audio_system kinematics npc scripting store tis
     list(APPEND _host_defs ENGINE_HOST_${_cap_upper}=1)
   endif()
 endforeach()
-# The scene generators this configuration has (ADR-0046; docs/subsystems/scene_gen.md): linked for
-# their registrars alone, which is what makes `render.load` read a scene whose terrain names the
-# dunes or whose entries name the ruins or the city, and the flora capability for its mesh generator,
-# which makes a scene's `.flora.json` mesh a palm, and the tile set for its `tiles` ground provider,
-# which makes an authored terrain draw (docs/subsystems/tileset.md). Nothing here calls one: the
-# scene reader finds
-# each by the name a scene gives.
-foreach(_gen authored caves channels city cover deadwood litter flora rocks ruins scatter sky soil terrain tileset water wetland)
-  if(TARGET engine::${_gen})
-    list(APPEND _host_deps ${_gen})
-  endif()
-endforeach()
+# The scene generators this configuration has (ADR-0046; docs/subsystems/scene_gen.md, "Which
+# generators a host carries"): the build's one list, every module tagged GENERATOR, linked for their
+# registrars alone, which is what makes `render.load` read a scene whose terrain names the dunes or
+# the tile set's `tiles`, whose entries name the ruins or the city, and whose meshes are a
+# generator's (`.flora.json`, `.rock.json`, `.cave.json`). Nothing here calls one: the scene reader
+# finds each by the name a scene gives. engine-view and engine-editor link the same list, and the
+# configure stops if the three differ.
+engine_host_generators(engine_host _host_deps)
 engine_app(NAME engine_host OUTPUT engine-host
   SOURCES main.cpp render_methods.cpp ops_methods.cpp console.cpp listen.cpp
   DEPS ${_host_deps}

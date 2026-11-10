@@ -15,7 +15,7 @@
 # files. No GPU, no ECS, no renderer.
 engine_schema_library(NAME tileset_schemas SCHEMAS schemas/tileset.schema CAPABILITY tileset)
 
-engine_module(NAME tileset LAYER domain OPTIONAL WHOLE_ARCHIVE
+engine_module(NAME tileset LAYER domain OPTIONAL WHOLE_ARCHIVE GENERATOR ground:tiles
   DEPS base containers math hash json schema schemas tileset_schemas io image geometry scene_gen log
        tunables time profiling
   SOURCES src/archive.cpp src/cuts.cpp src/tileset.cpp src/masks.cpp src/ground.cpp)

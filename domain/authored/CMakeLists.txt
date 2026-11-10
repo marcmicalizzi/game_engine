@@ -12,7 +12,7 @@
 # Pure CPU: the set is the scene's (`engine.scene.AuthoredSet`, a core schema type the reader
 # writes), read with the schema runtime and filed by tile. No GPU, no ECS, no io.
 
-engine_module(NAME authored LAYER domain OPTIONAL WHOLE_ARCHIVE
+engine_module(NAME authored LAYER domain OPTIONAL WHOLE_ARCHIVE GENERATOR placement:authored
   DEPS base containers math json schema schemas scene_gen
   SOURCES src/authored.cpp)
 

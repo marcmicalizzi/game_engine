@@ -13,6 +13,7 @@
 # format's; `geometry` for the derived-data root the meshes are written under; `io` to write them.
 # No renderer: the water material and the resolve's branch are the renderer's and gfx's.
 engine_module(NAME water LAYER systems OPTIONAL WHOLE_ARCHIVE
+  GENERATOR placement:water placement:water_channel
   DEPS base containers math hash json schema schemas io log geometry scene_gen
   SOURCES src/water.cpp src/fill.cpp src/channel.cpp src/scene_generator.cpp)
 
