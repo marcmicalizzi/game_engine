@@ -875,7 +875,22 @@ void resolve_settings(const RenderSettings& requested, const gfx::DeviceFeatures
     ENGINE_LOG_WARN(log_renderer, "trees drawn rigid",
                     log::field("reason", "a streamed scene indexes its vertices by page"));
   }
-  out.deform_pass = s.deform || out.terrain_levels || out.flora_motion ||
+  // **Water moves too** (S100; water.md, "The mesh"): a body with a depth map and a wind — a closed
+  // body's own, an open body's or its tide — is lifted by the pool's water stage, so its scene has
+  // the pass whatever else it holds. (Until 2026-11-09 only a scene that already deformed something
+  // else lifted its water: the swash scene's windy basin stood flat, its GPU case failing.) The
+  // GPU scene decides body by body from the run-up the wind makes; a body this counts that comes
+  // out with none costs the pass's buffers and no record.
+  bool lifts_water = false;
+  if (scene != nullptr && !s.stream) {
+    for (const SceneMeshInfo& info : scene->mesh_info) {
+      if (!info.water.has_value() || info.water->channel || info.water->depth.size < 2) continue;
+      const auto& body = info.water->body;
+      lifts_water = lifts_water || body.wind_m_s > 0.0f ||
+                    (body.open && (info.water->wind_m_s > 0.0f || body.tide_m > 0.0f));
+    }
+  }
+  out.deform_pass = s.deform || out.terrain_levels || out.flora_motion || lifts_water ||
                     (scene != nullptr && (scene->skinned() || scene->morphed()));
   if (out.deform_pass && !s.cull) {
     s.cull = true;  // the pool pass walks the cull's visible list, which is the point

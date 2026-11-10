@@ -64,6 +64,7 @@
 //            every copy moves the same way. A real cage transfer has to keep that property.
 
 #include "scene.slang"
+#include "water_waves.slang"
 
 // Mirrors gfx::MorphParams (48 bytes): the scene's morph stream, one block behind one address
 // because `DeformParams` is a 128-byte push block and six more addresses do not fit in it.
@@ -777,6 +778,46 @@ void deform_main(uint3 group : SV_GroupID, uint3 group_thread : SV_GroupThreadID
       pool[slot + 1] = moved.y;
       pool[slot + 2] = moved.z;
       if (g_params.normal_pool != 0) normals[base + i] = encode_oct_normal(normal);
+    }
+    return;
+  }
+  if ((deform.stages & k_deform_stage_water) != 0) {
+    // ---- the water stage (water_waves.slang; docs/subsystems/water.md, "The mesh"; S100) --------
+    // A water body with a wind: every vertex lifted by the body's height function at its
+    // body-local point — its mesh-space position, the instance standing unrotated at the body's
+    // centre and level, so no world position is read (ADR-0053) — at the frame's water clock. The
+    // record's words carry the body's surface (`joints`), the clock and the tide's phase (`first_part`
+    // and `first_channel`, float bits a frame writes into its own copy of the table). A vertex whose
+    // lift is zero writes its rest pose and its packed normal word as they are, so a body with no
+    // waves is the rigid picture to the bit, as the flora stage's tree at rest is.
+    WaterSurface* surface = (WaterSurface*)deform.joints;
+    const float clock = asfloat(deform.first_part);
+    const float tide_phase = asfloat(deform.first_channel);
+    for (uint i = group_thread.x; i < cluster.vertex_count; i += 128) {
+      const uint vertex = cluster.vertex_offset + i;
+      float3 moved = load_quantized_position(mesh, vertex);
+      uint normal_word = 0u;
+      float edge = 0.0;
+      if (g_params.attributes != 0) {
+        VertexAttributes* attributes = (VertexAttributes*)g_params.attributes;
+        normal_word = attributes[vertex].normal_oct;
+        edge = f16tof32(attributes[vertex].uv_half2 & 0xffffu);
+      } else {
+        normal_word = encode_oct_normal(rest_normal(mesh, vertex, moved));
+      }
+      if (deform.joints != 0) {
+        float2 grad;
+        const float lift = water_vertex_lift(surface, moved.xz, edge, clock, tide_phase, grad);
+        if (lift != 0.0) {
+          moved.y += lift;
+          normal_word = encode_oct_normal(normalize(float3(-grad.x, 1.0, -grad.y)));
+        }
+      }
+      const uint slot = (base + i) * 3;
+      pool[slot] = moved.x;
+      pool[slot + 1] = moved.y;
+      pool[slot + 2] = moved.z;
+      if (g_params.normal_pool != 0) normals[base + i] = normal_word;
     }
     return;
   }

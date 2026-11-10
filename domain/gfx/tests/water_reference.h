@@ -14,6 +14,7 @@
 #include <core/base/types.h>
 #include <domain/gfx/visibility_resolve.h>
 #include <domain/gfx/water_spectrum.h>
+#include <domain/gfx/water_swash.h>
 
 #include <algorithm>
 #include <cmath>
@@ -358,6 +359,218 @@ inline Dvec3 radiance_volume(const Params& w, Dvec3 n, Dvec3 v, double from_edge
                      brdf_ref::v_smith(n_dot_v, n_dot_l, alpha) * n_dot_l);
   }
   return under * (1.0 - fresnel * shore) + (sky * fresnel + glitter) * shore;
+}
+
+// ---- the wave as height (S100; water_waves.slang, step for step in double)
+// ----------------------- `field` is the WaterSurface's field as the CPU holds it: (depth, arrival)
+// per texel.
+
+inline u32 hash2(i32 x, i32 y) {
+  u32 h = static_cast<u32>(x) * 0x8DA6B343u ^ static_cast<u32>(y) * 0xD8163841u;
+  h ^= h >> 16;
+  h *= 0x7FEB352Du;
+  h ^= h >> 15;
+  h *= 0x846CA68Bu;
+  h ^= h >> 16;
+  return h;
+}
+
+inline double value_noise(double x, double y) {
+  const double cx = std::floor(x);
+  const double cy = std::floor(y);
+  double fx = x - cx;
+  double fy = y - cy;
+  fx = fx * fx * (3.0 - 2.0 * fx);
+  fy = fy * fy * (3.0 - 2.0 * fy);
+  const i32 ix = static_cast<i32>(cx);
+  const i32 iy = static_cast<i32>(cy);
+  const auto v = [](u32 h) { return static_cast<double>(h >> 8) * (1.0 / 16777216.0); };
+  const double a = v(hash2(ix, iy));
+  const double b = v(hash2(ix + 1, iy));
+  const double e = v(hash2(ix, iy + 1));
+  const double g = v(hash2(ix + 1, iy + 1));
+  const double ab = a + (b - a) * fx;
+  const double eg = e + (g - e) * fx;
+  return ab + (eg - ab) * fy;
+}
+
+struct Field {
+  double depth = 0.0;
+  double arrival = 0.0;
+  double depth_grad[2] = {0.0, 0.0};
+  double arrival_grad[2] = {0.0, 0.0};
+};
+
+inline Field field_at(const gfx::WaterSurface& s, const float* field, double x, double z) {
+  Field f;
+  const u32 n = s.size;
+  if (field == nullptr || n < 2) return f;
+  const double last = static_cast<double>(n - 1);
+  const double t = static_cast<double>(s.texel_m);
+  const double gx = (x - static_cast<double>(s.origin.x)) / t;
+  const double gz = (z - static_cast<double>(s.origin.y)) / t;
+  const double cx = std::clamp(gx, 0.0, last);
+  const double cz = std::clamp(gz, 0.0, last);
+  const double ix = std::min(std::floor(cx), last - 1.0);
+  const double iz = std::min(std::floor(cz), last - 1.0);
+  const double fx = cx - ix;
+  const double fz = cz - iz;
+  const u32 i = static_cast<u32>(ix);
+  const u32 j = static_cast<u32>(iz);
+  const auto at = [&](u32 a, u32 b, u32 c) {
+    return static_cast<double>(field[2 * (b * n + a) + c]);
+  };
+  for (u32 c = 0; c < 2; ++c) {
+    const double a = at(i, j, c), b = at(i + 1, j, c), e = at(i, j + 1, c), h = at(i + 1, j + 1, c);
+    const double v = (a + (b - a) * fx) + ((e + (h - e) * fx) - (a + (b - a) * fx)) * fz;
+    const double dx = gx >= 0.0 && gx <= last ? ((b - a) + ((h - e) - (b - a)) * fz) / t : 0.0;
+    const double dz = gz >= 0.0 && gz <= last ? ((e - a) + ((h - b) - (e - a)) * fx) / t : 0.0;
+    if (c == 0) {
+      f.depth = v;
+      f.depth_grad[0] = dx;
+      f.depth_grad[1] = dz;
+    } else {
+      f.arrival = v;
+      f.arrival_grad[0] = dx;
+      f.arrival_grad[1] = dz;
+    }
+  }
+  return f;
+}
+
+inline double train_shape(double h0, double k0, double d, double theta) {
+  if (!(d > 0.0) || !(h0 > 0.0)) return 0.0;
+  const double shoaled = h0 * gfx::water_shoaling(gfx::water_wavenumber(k0, d), d);
+  const double limit = gfx::k_water_breaking_gamma * d;
+  const double height = std::min(shoaled, limit);
+  const double b = std::clamp(shoaled / limit, 0.0, 1.0);
+  const double m = 1.0 + 2.0 * b;
+  const double base = std::max(0.5 + 0.5 * std::cos(theta), 0.0);
+  return height * (std::pow(base, m) - 1.0 / std::sqrt(3.14159265358979323846 * (m + 0.25)));
+}
+
+inline double train_cycles(const gfx::WaterSurface& s, double t, double arrival) {
+  const double ct = t / static_cast<double>(s.period_s);
+  const double ca = arrival / static_cast<double>(s.period_s);
+  return (ct - 7.0 * std::floor(ct / 7.0)) - (ca - 7.0 * std::floor(ca / 7.0));
+}
+
+inline double facing(const gfx::WaterSurface& s, const Field& f) {
+  if ((s.flags & gfx::k_water_surface_open) != 0) return 1.0;
+  const double len = std::hypot(f.depth_grad[0], f.depth_grad[1]);
+  if (!(len > 1e-3)) return 1.0;
+  const double d = -(static_cast<double>(s.wind.x) * f.depth_grad[0] +
+                     static_cast<double>(s.wind.y) * f.depth_grad[1]) /
+                   len;
+  return 0.25 + 0.75 * std::clamp(d, 0.0, 1.0);
+}
+
+inline double offshore_weight(const gfx::WaterSurface& s, double d) {
+  const double k0 = std::max(static_cast<double>(s.k0), 1e-6);
+  const double lo = gfx::k_water_train_shallow_kd / k0;
+  const double hi = gfx::k_water_train_deep_kd / k0;
+  const double x = std::clamp((d - lo) / (hi - lo), 0.0, 1.0);
+  return x * x * (3.0 - 2.0 * x);
+}
+
+// The height over the still level (no tide), water_waves.slang's `water_height` at no footprint.
+inline double height(const gfx::WaterSurface& s, const Field& f, double x, double z, double t) {
+  const double d = f.depth;
+  const double w_off = s.k0 > 0.0f && s.height_m > 0.0f ? offshore_weight(s, d) : 1.0;
+  double off = 0.0;
+  if ((s.flags & gfx::k_water_surface_spectrum) != 0) {
+    for (u32 i = 0; i < gfx::k_water_waves; ++i) {
+      const gfx::WaterWave& wave = s.waves[i];
+      const double lambda = k_two_pi / static_cast<double>(wave.k);
+      const double along =
+          (static_cast<double>(wave.direction.x) * x + static_cast<double>(wave.direction.y) * z) /
+          lambda;
+      const double travel = frac(static_cast<double>(wave.cycles) * (t / k_period_s));
+      const double cyc = frac(frac(along) - travel + static_cast<double>(wave.phase));
+      off += static_cast<double>(wave.amplitude) * std::sin(k_two_pi * cyc);
+    }
+  } else {
+    for (u32 i = 0; i < 4; ++i) {
+      const double lambda = static_cast<double>(s.wavelength) * k_length[i];
+      const double a = static_cast<double>(s.amplitude) * k_amplitude[i];
+      if (!(a > 0.0) || !(lambda > 0.0)) continue;  // water_waves.slang's guard: no 0 * NaN
+      const double turn = static_cast<double>(s.chop) * k_turn[i] * (0.5 * 3.14159265358979);
+      const double c = std::cos(turn), sn = std::sin(turn);
+      const double dx =
+          static_cast<double>(s.direction.x) * c - static_cast<double>(s.direction.y) * sn;
+      const double dz =
+          static_cast<double>(s.direction.x) * sn + static_cast<double>(s.direction.y) * c;
+      const double k = k_two_pi / lambda;
+      const double cycles = std::floor(std::sqrt(k_g * k) * (k_period_s / k_two_pi) + 0.5);
+      const double along = (dx * x + dz * z) / lambda;
+      const double travel = frac(cycles * (t / k_period_s));
+      const double cyc = frac(frac(along) - travel + phase(s.seed, i));
+      off += a * std::sin(k_two_pi * cyc);
+    }
+  }
+  double train = 0.0;
+  if (w_off < 1.0 && d > 0.0 && s.height_m > 0.0f && s.period_s > 0.0f) {
+    const double c = train_cycles(s, t, f.arrival);
+    const double env = 0.55 + 0.45 * (0.5 - 0.5 * std::cos(k_two_pi * (c + 0.5) / 7.0));
+    train = env * facing(s, f) *
+            train_shape(static_cast<double>(s.height_m), static_cast<double>(s.k0), d,
+                        k_two_pi * frac(c));
+  }
+  return w_off * off + (1.0 - w_off) * train;
+}
+
+inline double swash_shape(double u) {
+  const double q = 0.4;
+  const double sv = u < q ? u / (2.0 * q) : 0.5 + (u - q) / (2.0 * (1.0 - q));
+  return 4.0 * sv * (1.0 - sv);
+}
+
+inline double front(const gfx::WaterSurface& s, const Field& f, double x, double z, double t) {
+  if (!(s.run_up_m > 0.0f) || !(s.period_s > 0.0f)) return 0.0;
+  const double c = train_cycles(s, t, f.arrival);
+  const double k = std::floor(c);
+  const u32 j = static_cast<u32>(static_cast<i32>(k) + 7 * 64) % 7u;
+  const double group =
+      0.55 + 0.45 * (0.5 - 0.5 * std::cos(k_two_pi * (static_cast<double>(j) + 0.5) / 7.0));
+  const double along = std::max(static_cast<double>(s.along_m), 1e-3);
+  const double variation = 0.85 + 0.3 * value_noise(x / along + 17.3, z / along + 5.1);
+  const double r = static_cast<double>(s.run_up_m);
+  const double reach = r * group * variation * facing(s, f);
+  const double z_lo = -0.2 * r;
+  return z_lo + (reach - z_lo) * swash_shape(c - k);
+}
+
+inline double smoothstep(double a, double b, double v) {
+  const double x = std::clamp((v - a) / (b - a), 0.0, 1.0);
+  return x * x * (3.0 - 2.0 * x);
+}
+
+// `water_vertex_lift`: how far above the still level the pool puts a vertex at (x, z), `edge`
+// metres in from the outline, at the clock t and the tide's phase. `decided`, when given, says
+// whether the vertex is far enough from the front's edge (1 cm) that float and double agree on
+// which side of it the vertex is.
+inline double vertex_lift(const gfx::WaterSurface& s, const float* field, double x, double z,
+                          double edge, double t, double tide_phase, bool* decided = nullptr) {
+  if (decided != nullptr) *decided = true;
+  const Field f = field_at(s, field, x, z);
+  const double tide =
+      s.tide_m > 0.0f ? static_cast<double>(s.tide_m) * std::sin(k_two_pi * tide_phase) : 0.0;
+  const double fade = (s.flags & gfx::k_water_surface_open) != 0 && s.fade_m > 0.0f
+                          ? smoothstep(0.0, static_cast<double>(s.fade_m), edge)
+                          : 1.0;
+  const double water = (tide + height(s, f, x, z, t)) * fade;
+  if (field == nullptr) return water;
+  const double d = f.depth + tide;
+  const double r = static_cast<double>(s.run_up_m);
+  const double band = 0.2 * r + 0.05;
+  if (d >= band) return water;
+  const double g = -d;
+  const double fr = front(s, f, x, z, t);
+  if (decided != nullptr) *decided = std::fabs(fr - g) > 0.01;
+  const double bank = fr > g ? tide + g + std::min(0.5 * (fr - g), 0.25 * r + 0.02)
+                             : tide + std::min(g, 1.15 * r + 0.1) - gfx::k_water_bank_park_m;
+  const double share = 1.0 - smoothstep(0.0, band, d);
+  return water + (bank - water) * share;
 }
 
 }  // namespace engine::water_ref

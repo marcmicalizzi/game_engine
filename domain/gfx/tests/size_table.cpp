@@ -16,6 +16,7 @@
 #include <domain/gfx/sky.h>
 #include <domain/gfx/visibility_resolve.h>
 #include <domain/gfx/water_spectrum.h>
+#include <domain/gfx/water_swash.h>
 
 #include <cstddef>
 #include <type_traits>
@@ -268,7 +269,13 @@ ENGINE_EXPECT_SIZE(576, 8, gfx::ResolveParams);
 // S94: the swash's run-up, period, drain, slope, tide, wave height, foam and shore widths, and the
 // water material's index, by which the branch finds its body's record. 96 since S99: a channel
 // stretch's two points (x, z, surface height, half width), so a channel's banks are records too.
-ENGINE_EXPECT_SIZE(96, 4, gfx::WaterShore);
+// 112 since S100 (rebased on S99, 2026-11-09): the body's surface (`WaterSurface`'s address), which
+// the branch shades a lifted body by and the swash takes its phase from, and a pad to keep the
+// stride a multiple of 16; its alignment 8 from the address.
+ENGINE_EXPECT_SIZE(112, 8, gfx::WaterShore);
+// A body's height function (water_swash.h; S100), GPU-mirrored by water_waves.slang's
+// `WaterSurface`: the header, then the spectrum's sixteen waves.
+ENGINE_EXPECT_SIZE(608, 8, gfx::WaterSurface);
 
 // The sky (sky.h; docs/subsystems/gfx.md, "The sky"): the air, the lights, the eye, the celestial
 // frame, the exposure, the tables' addresses, and a view's inverse projection and pixel angle for

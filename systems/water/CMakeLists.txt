@@ -38,6 +38,13 @@ if(TARGET engine_water_tests AND TARGET engine::tileset)
   target_sources(engine_water_tests PRIVATE tests/tileset_ground_tests.cpp)
   target_link_libraries(engine_water_tests PRIVATE engine::tileset)
 endif()
+# S100: a lifted body beside a streamed tail of swaying palms, whose growth must reach the deform
+# table's per-frame copies the water keeps (the forest's device loss); the palm is the flora
+# capability's, linked as a host links it (its registrar names the mesh generator).
+if(TARGET engine_water_tests AND TARGET engine::flora)
+  target_sources(engine_water_tests PRIVATE tests/lifted_tail_tests.cpp)
+  target_link_libraries(engine_water_tests PRIVATE engine::flora)
+endif()
 # The oasis pool stands in the dunes under the earth's sky with scattered rocks at its shore, which
 # are three capabilities': linked as a host links them (their registrars name the generators), and
 # the cases over that scene compiled only where all three are.
