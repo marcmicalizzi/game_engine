@@ -68,6 +68,82 @@ set(ENGINE_TEST_WORK_TIMEOUT_S 600 CACHE STRING
 target_compile_definitions(engine_test_main PRIVATE
   ENGINE_TEST_GPU_LOCK_WAIT_S=${ENGINE_TEST_GPU_LOCK_WAIT_S})
 
+# Seconds per test source file, which a parted test's files are dealt by (_engine_test_parts in
+# cmake/EngineModule.cmake; docs/ci/what-to-run.md, "Parts dealt by cost"). One line a file,
+# `<test> <basename> <seconds>`; `#` starts a comment. tools/test-costs.ps1 writes it from a CTest
+# log of a run with doctest's `--duration=true`, which every module and end-to-end test has.
+set(_engine_cost_file "${CMAKE_SOURCE_DIR}/cmake/test-costs.txt")
+if(EXISTS "${_engine_cost_file}")
+  set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${_engine_cost_file}")
+  file(STRINGS "${_engine_cost_file}" _engine_cost_lines)
+  foreach(_line IN LISTS _engine_cost_lines)
+    string(REGEX REPLACE "#.*$" "" _line "${_line}")
+    string(STRIP "${_line}" _line)
+    if(_line STREQUAL "")
+      continue()
+    endif()
+    if(NOT _line MATCHES "^([A-Za-z0-9_.]+)[ \t]+([A-Za-z0-9_.+-]+)[ \t]+([0-9]+)$")
+      message(FATAL_ERROR "cmake/test-costs.txt: '${_line}' is not `<test> <basename> <whole seconds>`")
+    endif()
+    set_property(GLOBAL PROPERTY "ENGINE_TEST_COST:${CMAKE_MATCH_1}:${CMAKE_MATCH_2}" "${CMAKE_MATCH_3}")
+  endforeach()
+endif()
+
+#   _engine_test_directories(<dir> <out>)
+# <dir> and every directory under it that CMake processed, depth first.
+function(_engine_test_directories dir out)
+  set(_all "${dir}")
+  get_property(_subs DIRECTORY "${dir}" PROPERTY SUBDIRECTORIES)
+  foreach(_s IN LISTS _subs)
+    _engine_test_directories("${_s}" _more)
+    list(APPEND _all ${_more})
+  endforeach()
+  set(${out} "${_all}" PARENT_SCOPE)
+endfunction()
+
+# Tests that assert an upper bound on wall-clock time, and so run with nothing beside them in
+# their CTest invocation (RUN_SERIAL) when the run has jobs (`tools/dev.ps1 test -Jobs`, the Linux
+# test presets' `execution.jobs`): `tileset` holds one height lookup beside a building window to
+# 50 ms, and `scene_collision` one tile's activation and one prefetch wait to 120 ms. Every other
+# timing check in the tree is a lower bound, a synthetic clock, or a ratio, which load cannot
+# break (docs/ci/what-to-run.md, "Jobs"). Named here because their registrations are not this
+# file's; each also gets the label `wall_clock`.
+set(ENGINE_WALL_CLOCK_TESTS tileset scene_collision)
+
+#   _engine_finalize_tests()
+# Deferred to the end of the top-level CMakeLists.txt, when every test of every directory exists.
+# What a parallel CTest run needs, set by label and property so that a test registered anywhere —
+# a module's, an app's, a tool's, one this file has never seen — is held to it:
+#   - `gpu` (engine_test_waits_for_gpu: the test or a process it starts can open a device and so
+#     wait for the machine-wide GPU lock) adds RESOURCE_LOCK `gpu_device`, so two such tests of one
+#     invocation never run at once and never queue against each other in the lock's half-hour wait,
+#     where a skip (exit 75) is a failure at the gate;
+#   - `e2e` adds RESOURCE_LOCK `e2e_apps` (windows and input devices, one of each; engine_app);
+#   - the wall-clock tests above get RUN_SERIAL.
+# A RESOURCE_LOCK orders the tests of one `ctest` and nothing else: two invocations at once (the
+# gate's suites side by side) still share the card through the lock itself (ADR-0049).
+function(_engine_finalize_tests)
+  _engine_test_directories("${CMAKE_SOURCE_DIR}" _dirs)
+  foreach(_dir IN LISTS _dirs)
+    get_property(_tests DIRECTORY "${_dir}" PROPERTY TESTS)
+    foreach(_test IN LISTS _tests)
+      get_property(_labels TEST "${_test}" DIRECTORY "${_dir}" PROPERTY LABELS)
+      get_property(_locks TEST "${_test}" DIRECTORY "${_dir}" PROPERTY RESOURCE_LOCK)
+      if("gpu" IN_LIST _labels AND NOT "gpu_device" IN_LIST _locks)
+        set_property(TEST "${_test}" DIRECTORY "${_dir}" APPEND PROPERTY RESOURCE_LOCK gpu_device)
+      endif()
+      if("e2e" IN_LIST _labels AND NOT "e2e_apps" IN_LIST _locks)
+        set_property(TEST "${_test}" DIRECTORY "${_dir}" APPEND PROPERTY RESOURCE_LOCK e2e_apps)
+      endif()
+      if("${_test}" IN_LIST ENGINE_WALL_CLOCK_TESTS)
+        set_property(TEST "${_test}" DIRECTORY "${_dir}" PROPERTY RUN_SERIAL TRUE)
+        set_property(TEST "${_test}" DIRECTORY "${_dir}" APPEND PROPERTY LABELS wall_clock)
+      endif()
+    endforeach()
+  endforeach()
+endfunction()
+cmake_language(DEFER CALL _engine_finalize_tests)
+
 # Banned-pattern lint as a test so CI cannot forget it.
 find_program(ENGINE_PWSH NAMES pwsh powershell)
 if(ENGINE_PWSH)
@@ -226,8 +302,18 @@ if(ENGINE_PWSH)
     COMMAND "${ENGINE_PWSH}" -NoProfile -ExecutionPolicy Bypass
             -File "${CMAKE_SOURCE_DIR}/tools/export-game-sdk.Tests.ps1" -BuildDir "${CMAKE_BINARY_DIR}"
     WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
-  set_tests_properties(tools.game_sdk PROPERTIES LABELS "tools;e2e" RESOURCE_LOCK "e2e_apps"
+  # `gpu` too, since its engine-view takes the lock: the finalize below gives it the GPU's
+  # resource lock with that, and `ctest -L gpu` lists it with the other tests that can wait.
+  set_tests_properties(tools.game_sdk PROPERTIES LABELS "tools;e2e;gpu" RESOURCE_LOCK "e2e_apps"
     TIMEOUT ${_game_sdk_timeout} SKIP_RETURN_CODE 75)
+
+  # The cost table's writer (tools/test-costs.ps1, cmake/test-costs.txt) over a CTest log and a
+  # case-to-file map written in the test: no build and no GPU.
+  add_test(NAME tools.test_costs
+    COMMAND "${ENGINE_PWSH}" -NoProfile -ExecutionPolicy Bypass
+            -File "${CMAKE_SOURCE_DIR}/tools/test-costs.Tests.ps1"
+    WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
+  set_tests_properties(tools.test_costs PROPERTIES LABELS "tools")
 else()
   message(WARNING "pwsh not found; lint.banned_patterns, tools.lint, tools.new_capability, tools.generate, tools.e10_harness, tools.blender_run, docs_check, tools.docs_check, tools.machine_lock, tools.affected, tools.frame_budget, and tools.linux_build tests not registered")
   message(WARNING "pwsh not found; lint.banned_patterns, lint.licenses, tools.lint, tools.new_capability, tools.generate, tools.e10_harness, tools.blender_run, docs_check, tools.docs_check, tools.machine_lock, tools.affected, tools.license_check and tools.frame_budget tests not registered")

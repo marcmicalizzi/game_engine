@@ -143,7 +143,10 @@ engine_app(NAME engine_view OUTPUT engine-view
           ${_view_game}
           ${_view_animation}
   DEPS ${_view_deps} profiling
-  E2E_TESTS ${_view_tests})
+  # Four parts, engine_view.1 to engine_view.4 (docs/ci/what-to-run.md, "Parts dealt by cost"): the
+  # one test was the longest on the machine, 1,536 s in msvc-debug and 1,941 s in msvc-release on
+  # gate b57, a single half-hour lock budget for all of it.
+  E2E_TESTS ${_view_tests} E2E_PARTS 4)
 # engine-view presents, so it is one of the few targets that see the Vulkan backend set
 # (domain/gfx/backend/vulkan/: the swapchain, the device's instance for the surface); the renderer
 # it drives does not (docs/subsystems/gfx.md, "The RHI surface and the backend surface").
@@ -165,7 +168,7 @@ if(TARGET engine_engine_view_tests)
   # rule, a test of its own because its three flights would double `engine_view`'s run. Its cases
   # are marked skip, which the `engine_view` run honours; this one runs them alone.
   add_test(NAME engine_view.frame_loop
-    COMMAND engine_engine_view_tests --no-skip "--test-case=frame loop*")
+    COMMAND engine_engine_view_tests --duration=true --no-skip "--test-case=frame loop*")
   set_tests_properties(engine_view.frame_loop PROPERTIES LABELS "unit;e2e;engine_view;frame_loop"
     RESOURCE_LOCK "e2e_apps" TIMEOUT ${ENGINE_TEST_WORK_TIMEOUT_S})
   engine_test_waits_for_gpu(engine_view.frame_loop)

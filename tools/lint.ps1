@@ -107,7 +107,31 @@ $rules = @(
   @{ Name = 'vulkan-backend-include'; Marker = 'allow-vulkan'; Scope = 'all'
      Pattern = '^\s*#\s*include\s*[<"](domain/gfx/backend/|foundation/window/backend/|vulkan/|volk\.h|vk_mem_alloc\.h)'
      AllowedPaths = @('domain/gfx', 'foundation/window', 'apps/engine_view', 'apps/engine_editor')
-     Message = 'the Vulkan backend set (domain/gfx/backend/vulkan/, foundation/window/backend/vulkan/, volk, VMA, vulkan/*) is included only by domain/gfx, foundation/window and the two apps that present, apps/engine_view and apps/engine_editor; everything else uses the engine''s RHI vocabulary, see docs/subsystems/gfx.md "The RHI surface and the backend surface"' }
+     Message = 'the Vulkan backend set (domain/gfx/backend/vulkan/, foundation/window/backend/vulkan/, volk, VMA, vulkan/*) is included only by domain/gfx, foundation/window and the two apps that present, apps/engine_view and apps/engine_editor; everything else uses the engine''s RHI vocabulary, see docs/subsystems/gfx.md "The RHI surface and the backend surface"' },
+  # docs/ci/what-to-run.md, "The off-configurations' GPU cases" (roadmap T77, 2026-11-09). A module
+  # whose tests are registered CONFIG_INVARIANT (engine_module_tests: the renderer and gfx) has its
+  # GPU cases run in the all-on suite only; the off-configurations run them with no GPU
+  # (`tools/dev.ps1 test -SkipInvariantGpu`). That is only sound while the module is the same code
+  # in every configuration, so a preprocessor conditional on a capability switch in any of its
+  # files is reported. Which modules: every directory whose CMakeLists.txt says CONFIG_INVARIANT
+  # outside a comment, read here so the rule and the registration cannot disagree. The CMake half,
+  # a capability conditional in that CMakeLists.txt around anything but its tests, stops the
+  # configure (_engine_check_config_invariant in cmake/EngineModule.cmake).
+  @{ Name = 'config-invariant-conditional'; Marker = 'allow-config-conditional'; Scope = 'all'
+     PathPattern = & {
+       $dirs = @(foreach ($r in @('core', 'foundation', 'domain', 'systems', 'apps', 'game')) {
+         $d = Join-Path $Root $r
+         if (Test-Path -LiteralPath $d) {
+           Get-ChildItem -LiteralPath $d -Recurse -Filter CMakeLists.txt -File |
+             Where-Object { $_.FullName -notmatch '[\\/](third_party|build|_deps)[\\/]' -and
+                            (@(Get-Content -LiteralPath $_.FullName) -replace '#.*$', '' -match '\bCONFIG_INVARIANT\b') } |
+             ForEach-Object { ([IO.Path]::GetRelativePath($Root, $_.DirectoryName)) -replace '\\', '/' }
+         }
+       })
+       if ($dirs.Count -eq 0) { '(?!)' } else { '^(' + (($dirs | ForEach-Object { [regex]::Escape($_) }) -join '|') + ')/' }
+     }
+     Pattern = '^\s*#\s*(if|ifdef|ifndef|elif|elifdef|elifndef)\b.*\b(ENGINE_WITH_\w+|ENGINE_MINIMAL)\b'
+     Message = 'a CONFIG_INVARIANT module is the same code in every configuration, so its GPU cases run in the all-on suite only; a conditional on a capability switch here makes the off-configurations skip code they build differently. Drop CONFIG_INVARIANT from its engine_module_tests() or remove the conditional, see docs/ci/what-to-run.md "The off-configurations'' GPU cases"' }
 )
 
 $violations = New-Object System.Collections.Generic.List[string]

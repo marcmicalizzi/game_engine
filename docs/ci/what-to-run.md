@@ -249,7 +249,7 @@ not quiet figures; CTest's own "Total Test time" in each case, builds not includ
 | Titan Xp (`remote-build.ps1 -Test`), `engine_cli` alone / `renderer` and `engine_cli` | 6 min / 24 min |
 | The whole merge gate on the persistent gate worktree (below; 2026-10-10, batch 13): the Windows half after its four incremental builds (the three suites side by side, then the budgets) / the three Linux containers, warm / the server | 62 min (52 of suites, bounded by `msvc-debug`, and 9.5 of budgets) / 28 min / 74 min, all three in parallel |
 | The three Windows suites in series, the way a per-batch gate ran them before 2026-10-10 | about 2 h, plus a fresh worktree's four builds |
-| The whole merge gate on gate b57 (2026-11-09; 112 tests on the server, 133 in a container): the Windows half (nine minutes of incremental builds, the three suites side by side with the release app checks, then the budgets) / the three containers / the server | 2 h 09 (1 h 53 of suites, which is `msvc-debug`'s serial run, 6,765 s of CTest: `engine_view` 1,536 s, the four `renderer` parts 1,164 together, `flora` 624, `engine_cli` 459, `gfx` 285; 8 min of budgets) / 58 min / about 3 h 50 (3 h 34 of CTest; the `renderer` parts 862, 1,414, 3,306 and 1,107 s, `engine_view` 1,436, `water` 1,268). Every leg runs CTest serially: no test preset sets `jobs`, and the three suites overlap on the GPU lock without slowing each other, so the order and not the GPU is the limit |
+| The whole merge gate on gate b57 (2026-11-09; 112 tests on the server, 133 in a container): the Windows half (nine minutes of incremental builds, the three suites side by side with the release app checks, then the budgets) / the three containers / the server | 2 h 09 (1 h 53 of suites, which is `msvc-debug`'s serial run, 6,765 s of CTest: `engine_view` 1,536 s, the four `renderer` parts 1,164 together, `flora` 624, `engine_cli` 459, `gfx` 285; 8 min of budgets) / 58 min / about 3 h 50 (3 h 34 of CTest; the `renderer` parts 862, 1,414, 3,306 and 1,107 s, `engine_view` 1,436, `water` 1,268). Every leg ran CTest serially: no test preset set `jobs`. Measured from its logs ([the gate's wall clock](#the-gates-wall-clock-t77)): `msvc-debug`'s own work one test at a time was 5,755 of its 6,765 s and waits for the lock at least 904 s, so serial CTest and not the lock was the limit |
 | The frame budgets (`tools/frame-budget.ps1`, five runs, `msvc-release`, warm cache; 2026-10-07) | 13 min, plus lock and quiet waits |
 | `engine_view.frame_loop` alone (2026-10-07) | 220 s in `msvc-debug`, 60 s in `msvc-release` |
 | A fresh worktree's first three containers (`linux-clang-debug`, `linux-gcc-release`, `linux-clang-minimal`, build only), compiler cache warm (2026-10-20) | 3 min (1 m 33 s, 0 m 48 s, 0 m 38 s; 100% hits); half an hour or more cold, which is now the first run on the machine after a toolchain or flag change ([local Linux](local-linux.md#with-the-compiler-cache-2026-10-20)) |
@@ -281,3 +281,172 @@ When a figure here is found wrong by more than a third, correct it in the change
 The 2026-10-23 terrain batch has 121 tests in Windows debug: **70 minutes** for that suite, **23 minutes** for minimal (76 tests) and **59 minutes** for no-ECS (110), side by side with the release app checks (**25 minutes**, seven entries) and the containers. All four Windows builds preceded those runs. The three Linux presets took **39 minutes** together (120, 120 and 76 tests), the GPU server **107 minutes** end to end (**87 minutes** of CTest, 100 tests), and the five warm frame-budget flights **six minutes** after the desktop suites. These are shared-machine elapsed times, not quiet costs; the budget reports retain their machine states. Size a new wait from these latest counts rather than the smaller October 4 tree.
 
 **Checking the release stamp.** The build-time stamp is regenerated from Git on every build (`cmake/EngineBuildStamp.cmake`), and the build relinks the applications when it changes. `engine-view`, `engine-editor`, `engine-content`, `engine-image` and `engine-mcp` expose it through `--version`. The host, CLI and input probe currently have no `--version` switch; verify their completed relink against the clean generated stamp and retain their file hashes with an install, rather than treating an unsupported flag as a stale binary.
+
+## The gate's wall clock (T77)
+
+The owner, 2026-11-09: five to ten hours a day waiting for gates is too high. Until T77 every leg of
+the gate ran CTest one test at a time — no test preset set `jobs` and `tools/dev.ps1 test` passed
+none — and nobody knew whether the Windows half, four suites side by side, was waiting on that or
+on the one machine-wide GPU lock they share.
+
+### Gate b57, measured
+
+From gate b57's second run (2026-11-09, `D:\workspace\ge-gate\build\<preset>\Testing\Temporary\LastTest.log`
+and the gate's console logs; the first run's logs for the same tests beside it). The lock's own
+record of holds (`ENGINE_GPU_LOCK_LOG`, [gpu_lock](../subsystems/gpu_lock.md)) was not on, so what a
+log gives is a test's wall seconds and the waits its own process printed (`gpu-lock: taken after N
+s`); an end-to-end test's children wait out of sight, since the test keeps their output. **Own** is
+the smaller of the run-1 time and the run-2 time less its printed waits: the test's work with the
+lock free, holding or not. The four suites started at 11:54 and ran beside the three containers
+and the GPU server.
+
+| Suite | Tests | Wall (CTest real) | Sum of test times | GPU-labelled tests | Printed lock waits | Own work | of it, CPU-only tests |
+|---|---|---|---|---|---|---|---|
+| `msvc-debug` | 134 | 6,765 s (11:54–13:46) | 6,753 s | 4,849 s | 904 s | 5,755 s | 1,851 s |
+| `msvc-no-ecs` | 123 | 5,848 s (11:54–13:31) | 5,840 s | 3,986 s | 724 s | 4,847 s | 1,812 s |
+| `msvc-minimal` | 81 | 2,015 s (11:54–12:27) | 2,011 s | 1,534 s | 379 s | 1,472 s | 450 s |
+| `msvc-release`, five app tests | 5 | 2,738 s (11:54–12:39) | 2,737 s | 2,737 s | none printed | 2,710 s | 0 |
+
+| Test | `msvc-debug` (waited) | `msvc-no-ecs` (waited) | `msvc-minimal` (waited) | run 1, debug / no-ecs | Titan Xp |
+|---|---|---|---|---|---|
+| `engine_view` | 1,536 (children) | 913 | 293 | 1,597 / 1,270 | 1,436 |
+| renderer, four parts | 1,164 (465) | 787 (90) | 581 (60) | 1,432 / 1,447 (one test) | 6,689 |
+| `flora` (CPU) | 624 | 626 | — | 627 / 629 | 601 |
+| `engine_cli` | 459 (children) | 176 (45) | 74 (30) | 466 / 87 | 446 |
+| `gfx` | 285 (135) | 254 (105) | 432 (285) | 929 / 989 | 543 |
+| `engine_content` | 266 | 262 | 9 | 266 / 280 | 220 |
+| `rocks` | 244 | 245 | — | 240 / 240 | 175 |
+| `scatter` | 234 (225, behind no-ecs's `water`) | 16 | — | 18 / 25 | — |
+| `scene_collision` | 69 | 395 (315, behind debug's renderer) | — | 73 / 68 | 50 |
+| `water` | 71 (15) | 280 | — | 365 / 134 | 1,268 |
+| `engine_view` in `msvc-release` | 1,941 in release (children) | | | 2,147 in release | |
+
+**The answer: serial CTest.** `msvc-debug` was the Windows half's last suite, and 5,755 s of its
+6,765 s was its own tests one after another; the lock added the rest. The lock was not saturated:
+two or more suites were inside a GPU-labelled test in 93 of the 113 minutes, and the waits the
+suites' own processes printed came to 2,007 s across all four — a test's holds are one device's
+life, a case or an app run, and the other suites got the card between them. What the lock did cost
+was concentrated where the same heavy test of two suites met: `gfx` against `gfx` (285 to 989 s for
+the same cases), the renderer against the renderer (465 s of debug's renderer parts were waiting),
+`scatter` behind `water`, `scene_collision` behind the renderer. So the order is the limit, and the
+lock decides how far jobs can take it: inside one invocation the GPU-labelled tests still run one at
+a time (below), so a suite can shrink to its GPU chain and no further.
+
+### Jobs
+
+**Windows: a `-Jobs <n>` on `tools/dev.ps1 test`, which the gate passes (3), and no `jobs` in the
+Windows test presets**, so an author's `test -Filter` and `test -Affected` run one test at a time as
+they always have. **Linux: `execution.jobs` in the test presets** — 8 for `linux-clang-debug`,
+`linux-gcc-release`, `linux-clang-minimal` and `linux-clang-no-ecs`, 4 for `linux-server` and
+`linux-server-debug` — because the container and the server run `ctest --preset <p>` inside
+`tools/linux-build.ps1` and `tools/remote-build.ps1`, which pass no `-j`. A `-j` on the command line
+wins over the preset.
+
+What makes a parallel run safe, set in `cmake/EngineTesting.cmake`'s finalize by label and property,
+so a test registered anywhere — by a module, an app, a tool, or a file added since — is held to it:
+
+- **Two tests that can open a GPU device never run at once in one invocation.** Every test labelled
+  `gpu` (`engine_test_waits_for_gpu`: the test or a process it starts can open a device and so wait
+  for the machine-wide lock) gets `RESOURCE_LOCK gpu_device`. Without it the second would wait in
+  the GPU lock, inside the half-hour budget of its own deadline, and a wait that ran out is a skip,
+  which at the gate is a failure. With it the second waits in CTest, where nothing runs out.
+  `tools.game_sdk`, which starts `engine-view`, carries the label since T77.
+- **End-to-end tests keep `RESOURCE_LOCK e2e_apps`** (windows and input devices; `engine_app`),
+  parts included.
+- **Tests that assert an upper bound on wall-clock time run alone** (`RUN_SERIAL`, and the label
+  `wall_clock`): `tileset` (one height lookup beside a building window under 50 ms) and
+  `scene_collision` (an activation and a prefetch wait under 120 ms). Every other timing check in the
+  tree was read and is a lower bound (`elapsed >= x`), a synthetic clock (the flythrough's injected
+  30 ms host turn), or a ratio; the `bench.*` smoke runs make one iteration and assert nothing about
+  time, so they share cores.
+- Scratch space was already per test (`TempDir`, the lint's `test-temp-path`), which is why a test
+  can share a run with another at all.
+
+**What a resource lock does not do: order two invocations.** The gate's four Windows suites are four
+`ctest` processes, and their GPU tests still meet in the GPU lock as they did in b57 — now more
+often, since each suite's GPU tests run back to back. Each wait is bounded by the other holder's
+current hold (one case's device, one app run: the lock is handed over at case granularity, `gfx`
+against `gfx` traded it every few seconds), and a test's budget is half an hour of waiting from its
+own start. The tests that ran longest were the most exposed — `engine_view` in release, 1,941 s
+in one test — which is one reason it is four parts now; the renderer's part 3 on the server (3,306 s)
+has no second suite to wait for there. The off-configurations' GPU cases leaving (below) take the
+heaviest pairs, `gfx` against `gfx` and the renderer against the renderer, out of the Windows half.
+
+**What was rejected.** CTest's `RESOURCE_GROUPS` with a `gpus` pool would let a machine say how many
+GPU tests it takes at once (one here, eight in a container that has no GPU), but CTest ignores the
+property when no resource specification file is given, so a hand-run `ctest -j` would lose the
+protection; `RESOURCE_LOCK` holds in every invocation. Jobs in the Windows test presets would have
+made every author's filtered run parallel, which nothing asked for. A lock only on the tests that
+open a device for certain (`protocol`, `audio` and `engine_content` carry `gpu` and open none) would
+shorten the GPU chain by their minutes and is left for when the label can say so, since a test
+wrongly left out queues in the lock.
+
+### Parts dealt by cost
+
+`engine_module_tests(... PARTS <n>)` and now `engine_app(... E2E_PARTS <n>)` register one executable
+as `<name>.1` to `<name>.<n>`, each running its own source files' cases through doctest's
+`--source-file=` filter. `engine_view` has four parts and `gfx` two (with `renderer`'s four). The
+deal (`_engine_test_parts`, `cmake/EngineModule.cmake`):
+
+- runs at the end of the declaring `CMakeLists.txt` (`cmake_language(DEFER)`) and reads the test
+  target's whole `SOURCES`, because `gfx` adds most of its test files with `target_sources` after
+  `engine_module_tests`;
+- deals the files `cmake/test-costs.txt` gives seconds for first, longest first, each to the part
+  with the least so far, and the rest in name order round the parts — so an empty table is the
+  name-order deal the renderer's parts had (its four parts are file for file the ones gate b57 ran);
+- anchors each file's filter at the separator before its name (`*/x.cpp` and `*\x.cpp`), so `gfx`'s
+  `deform_tests.cpp` does not also run `flora_deform_tests.cpp`.
+
+**The table is empty, and why.** Gate b57's logs hold seconds per CTest test only — no case or file
+durations — so the renderer is not re-dealt yet (its part 3 still holds half the server's renderer
+time, and part 2 over half of Windows'). Every module and end-to-end test now runs with
+`--duration=true`, one line of seconds a case in the log, and `tools/test-costs.ps1 -Log <LastTest.log>
+-Tests renderer,gfx,engine_view -BuildDir build/msvc-debug` sums them per file into the table (the
+case-to-file map from the executable's own `--list-test-cases --reporters=xml`; tested by
+`tools.test_costs`). The slowest card is the binding one, so the rows come from the GPU server's
+log (`remote-build.ps1 -Fetch`) where it has one: a part that fits there fits on the RTX 5090.
+**A case's seconds include its wait for the GPU lock**, and on this shared desktop that can be most
+of them: `gfx.1`, run by filter on 2026-11-10 behind three other agents' measurements, took 1,765 s
+of which 1,725 were one case waiting (its own work: 50 holds, 35 s held, on the RTX 5090 in
+`msvc-debug`). The process prints the wait on stderr, which reaches the log ahead of the buffered
+case lines, so the tool takes each printed wait off the shortest case at least that long — the
+only cases it can have been in; an end-to-end test's children wait out of sight, which is one more
+reason to read the server's log, where nothing else holds the card.
+
+The check that a deal lost nothing: each part's `--list-test-cases --no-skip` with its own filter,
+summed, against the executable's whole list (2026-11-09, `msvc-debug`): renderer 111 + 69 + 98 + 71
+= 349, gfx 54 + 92 = 146, engine_view 53 + 48 + 50 + 19 = 170, every name once.
+
+### The off-configurations' GPU cases
+
+`msvc-minimal`, `msvc-no-ecs`, `linux-clang-minimal` and `linux-clang-no-ecs` exist to prove the tree
+builds and runs without a capability. They still build everything and run every CPU test and every
+app test; what they no longer need to run is the GPU cases of a library that is the same code in
+every configuration, which the all-on suite runs. **`tools/dev.ps1 test -SkipInvariantGpu`**, which
+the gate passes to the two Windows off-configurations: in a tree whose `modules.json` says `minimal`
+or names a disabled capability, the tests labelled `config_invariant` run first with no Vulkan driver
+to find (`VK_DRIVER_FILES` and `VK_ICD_FILENAMES` pointed at a file that does not exist, and the GPU
+lock off for them), so their CPU cases run and their GPU cases skip exactly as on a hosted runner
+with no GPU, and then everything else runs as usual. In an all-on tree the switch changes nothing,
+and an author's run without it is what it was. The containers have no GPU at all, so there the two
+Linux off-configurations already skip every GPU case.
+
+`config_invariant` is `engine_module_tests(... CONFIG_INVARIANT)`, on the renderer and `gfx`: neither
+is a capability, `engine_module` refuses a non-capability linking one, and so the one way either
+library could still differ between configurations is a capability conditional of its own. Two
+checks hold that, and land with the exemption:
+
+- **at configure time**, `_engine_check_config_invariant` reads the module's `CMakeLists.txt`: inside
+  an `if()` on `TARGET engine::<x>`, `ENGINE_WITH_<X>` or `ENGINE_MINIMAL`, every line must be about
+  the tests (`_tests`, `tests/`), and a capability switch named anywhere else stops the configure —
+  the renderer's conditionals all add test files or test definitions, which only ever drop cases
+  from an off-configuration;
+- **in the lint**, `config-invariant-conditional`: a preprocessor conditional on `ENGINE_WITH_*` or
+  `ENGINE_MINIMAL` in any file of a directory whose `CMakeLists.txt` says `CONFIG_INVARIANT` (marker
+  `allow-config-conditional`; `tools.lint` tests it).
+
+Another module joins with the same line once its `CMakeLists.txt` passes the configure check. What
+it saves on gate b57's numbers: `msvc-no-ecs`'s renderer parts and `gfx`, 1,041 s of GPU tests, and
+`msvc-minimal`'s, 1,013 s — and with them the two pairs that waited longest on the lock against
+`msvc-debug`. The decision is reversible by dropping the switch from the gate's command line
+(review 2026-11-09, decision 5).

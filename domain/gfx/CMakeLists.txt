@@ -68,7 +68,13 @@ target_include_directories(engine_gfx_vulkan SYSTEM INTERFACE
   $<TARGET_PROPERTY:VulkanMemoryAllocator,INTERFACE_INCLUDE_DIRECTORIES>)
 target_link_libraries(engine_gfx PRIVATE engine_gfx_vulkan)
 
-engine_module_tests(NAME gfx
+# Two CTest tests over the one executable, gfx.1 and gfx.2, dealt as the renderer's parts are (285 s
+# in msvc-debug and 543 s on the Titan Xp on gate b57, 929 s in its first run behind other suites'
+# holds; docs/ci/what-to-run.md, "Parts dealt by cost"); the files added by target_sources below are
+# dealt too, since the deal reads the target's sources at the end of this file. CONFIG_INVARIANT:
+# nothing here depends on a capability, so the off-configurations may leave the GPU cases to the
+# all-on suite (docs/ci/what-to-run.md, "The off-configurations' GPU cases").
+engine_module_tests(NAME gfx PARTS 2 CONFIG_INVARIANT
   SOURCES tests/adapter_tests.cpp tests/device_tests.cpp tests/requirements_tests.cpp
           tests/opacity_micromap_tests.cpp
           tests/size_table.cpp

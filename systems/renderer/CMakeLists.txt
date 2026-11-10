@@ -145,10 +145,13 @@ if(TARGET engine::sky)
        # erg's sky at its slowest hours in float, 8- and 10-bit targets, measured along its lines.
        tests/banding_tests.cpp)
 endif()
-# Four CTest tests over the one executable (renderer.1 to renderer.4, the files dealt round them in
-# name order): the whole suite outgrew one test's GPU work budget on the Titan Xp on 2026-11-09
-# (docs/ci/remote-linux.md; docs/subsystems/renderer.md, "Testing").
-engine_module_tests(NAME renderer SOURCES ${_renderer_tests} PARTS 4)
+# Four CTest tests over the one executable (renderer.1 to renderer.4, the files dealt by
+# cmake/test-costs.txt's seconds and the rest by name): the whole suite outgrew one test's GPU work
+# budget on the Titan Xp on 2026-11-09 (docs/ci/remote-linux.md; docs/subsystems/renderer.md,
+# "Testing"). CONFIG_INVARIANT: the library is the same code in every configuration (every
+# capability conditional below is about the tests), so the off-configurations may leave its GPU
+# cases to the all-on suite (docs/ci/what-to-run.md, "The off-configurations' GPU cases").
+engine_module_tests(NAME renderer SOURCES ${_renderer_tests} PARTS 4 CONFIG_INVARIANT)
 # The terrain resolve with every read R136 cuts made again (tests/shaders/terrain_full_reads.slang)
 # and with only its four footprint rules (terrain_footprint_reads.slang), which
 # terrain_footprint_tests.cpp loads through a manifest to draw beside the engine's own module.
