@@ -405,6 +405,13 @@ time, and part 2 over half of Windows'). Every module and end-to-end test now ru
 case-to-file map from the executable's own `--list-test-cases --reporters=xml`; tested by
 `tools.test_costs`). The slowest card is the binding one, so the rows come from the GPU server's
 log (`remote-build.ps1 -Fetch`) where it has one: a part that fits there fits on the RTX 5090.
+**A case's seconds include its wait for the GPU lock**, and on this shared desktop that can be most
+of them: `gfx.1`, run by filter on 2026-11-10 behind three other agents' measurements, took 1,765 s
+of which 1,725 were one case waiting (its own work: 50 holds, 35 s held, on the RTX 5090 in
+`msvc-debug`). The process prints the wait on stderr, which reaches the log ahead of the buffered
+case lines, so the tool takes each printed wait off the shortest case at least that long — the
+only cases it can have been in; an end-to-end test's children wait out of sight, which is one more
+reason to read the server's log, where nothing else holds the card.
 
 The check that a deal lost nothing: each part's `--list-test-cases --no-skip` with its own filter,
 summed, against the executable's whole list (2026-11-09, `msvc-debug`): renderer 111 + 69 + 98 + 71

@@ -19,7 +19,9 @@
   build of the same commit. -CaseFiles gives the map instead, as JSON
   `{ "<test>": { "<case name>": "<basename>" } }`, which is how the tool's own test runs with no
   build. A case the map does not place is reported and left out, and a case two runs of the log
-  both hold (a part rerun after a skip) counts each time.
+  both hold (a part rerun after a skip) counts each time. A wait for the GPU lock the test's own
+  process printed (`gpu-lock: taken after N s`) is taken off the case it can have been in (below);
+  an end-to-end test's children wait out of sight, so its seconds can carry a wait.
 
   The binding numbers are the slowest card's (docs/ci/what-to-run.md, "Parts dealt by cost"), so
   the server's log is the one to read where there is one. Exit 0 written, 1 refused, 2 usage.
@@ -55,9 +57,30 @@ foreach ($line in [IO.File]::ReadLines($Log)) {
   }
   if (-not $cur) { continue }
   if (-not $cur.Exe -and $line -match '^Command: "([^"]+)"') { $cur.Exe = $Matches[1]; continue }
+  if ($line -match 'gpu-lock: taken after (\d+(\.\d+)?) s') {
+    if (-not $cur.PSObject.Properties['Waits']) { $cur | Add-Member -NotePropertyName Waits -NotePropertyValue (New-Object System.Collections.Generic.List[double]) }
+    $cur.Waits.Add([double]$Matches[1])
+    continue
+  }
   if ($line -match '^\s*(\d+\.\d+) s: (.+?)\s*$') {
     $case = $Matches[2]
     $cur.Cases[$case] = [double]$Matches[1] + $(if ($cur.Cases.Contains($case)) { $cur.Cases[$case] } else { 0.0 })
+  }
+}
+# A case's duration includes any wait for the GPU lock inside it, which is the machine's and not the
+# case's (2026-11-10: gfx.1's bindless case read 1,726 s, 1,725 of them waiting). The process says
+# how long it waited, but on stderr, which reaches the log ahead of the buffered case lines, so the
+# line order does not say which case waited. Each wait, longest first, comes off the case of the
+# smallest duration that is at least as long as the wait: the only cases it can have been in, and
+# the least time it can misplace. An end-to-end test's children wait out of sight; that stays in.
+foreach ($r in $runs) {
+  if (-not $r.PSObject.Properties['Waits']) { continue }
+  foreach ($w in ($r.Waits | Sort-Object -Descending)) {
+    $best = $null
+    foreach ($case in @($r.Cases.Keys)) {
+      if ($r.Cases[$case] -ge $w -and ($null -eq $best -or $r.Cases[$case] -lt $r.Cases[$best])) { $best = $case }
+    }
+    if ($null -ne $best) { $r.Cases[$best] = $r.Cases[$best] - $w }
   }
 }
 if ($runs.Count -eq 0) { Write-Host "test-costs: $Log has none of the tests $($Tests -join ', ')"; exit 1 }

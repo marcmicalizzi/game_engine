@@ -74,7 +74,9 @@ Test Passed.
 Command: "D:/w/build/msvc-debug/systems/renderer/engine_renderer_tests.exe" "--duration=true" "--source-file=*b_tests.cpp"
 Output:
 ----------------------------------------------------------
-40.000000 s: b: the long one
+gpu-lock: waiting for the GPU lock, held by 'someone' (pid 1): a render (until 2026-11-10T01:30:00Z); gives up at 2026-11-10T01:30:00Z
+gpu-lock: taken after 600 s
+640.000000 s: b: the long one
 1.600000 s: b: and another
 <end of output>
 Test time =  41.70 sec
@@ -108,6 +110,7 @@ try {
     ($mine -join '|') -eq 'renderer b_tests.cpp 42|renderer a_tests.cpp 13|renderer c_tests.cpp 1'
   }
   Test-That 'a file that took a fraction of a second still counts, as 1' { $rows -contains 'renderer c_tests.cpp 1' }
+  Test-That "a wait for the GPU lock comes off the case it was in (640 s less 600 waited)" { $rows -contains 'renderer b_tests.cpp 42' }
   Test-That 'a test the run did not ask about is not read' { -not ($rows | Where-Object { $_ -like 'flora *' }) }
   Test-That 'a case no file holds is left out and counted' { $r.Out.Contains("'a case in no file' is in no file") -and $r.Out.Contains('1 case(s) left out') }
 
