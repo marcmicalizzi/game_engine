@@ -57,6 +57,10 @@ function Get-ProbeArgs([string]$Name, [string]$Scratch) {
     # "engine-editor"): one offscreen frame of the viewport with the listener open, so the check sees
     # the socket it opens from a fresh path, and no window and no WebView2 appear.
     '^engine-editor$' { return @('--doc', (Join-Path $Scratch 'editor-doc'), '--create', '--no-shell', '--offscreen', '--listen', '127.0.0.1:0', '--frames', '1', '--width', '64', '--height', '64') }
+    # The GPU lock's test probe (foundation/gpu_lock/tests/probe_main.cpp) takes the machine-wide
+    # lock for any command it does not know, `--help` included, and so waited out the timeout behind
+    # whoever held it (the first run, 2026-11-09). `cycles 0` takes and releases nothing.
+    '^engine_gpu_lock_probe$' { return @('cycles', '0') }
     default         { return @('--help') }
   }
 }

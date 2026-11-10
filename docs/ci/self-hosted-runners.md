@@ -717,7 +717,8 @@ see below, nor CMake's compiler-identification programs under `CMakeFiles` — i
 a random name, so **every path is new to the firewall and Windows has to decide about it again**,
 runs each once with harmless arguments (`--help`; a bench's `--list`; `engine-view --offscreen
 --frames 1 --width 64 --height 64`; `engine-host` and `engine-editor --offscreen --no-shell` with
-their listeners open on `127.0.0.1:0`), and counts the prompt processes before and after. The count
+their listeners open on `127.0.0.1:0`; the GPU lock's test probe `cycles 0`, since it takes the
+machine-wide lock for any command it does not know), and counts the prompt processes before and after. The count
 must not grow. It also samples each live process's own endpoints (`Get-NetTCPConnection -State
 Listen`, `Get-NetUDPEndpoint`) and fails on any that is not loopback (127.0.0.0/8 or `::1`) — that
 half needs no fresh path at all and is what keeps the check meaningful on a machine the firewall has
@@ -744,6 +745,16 @@ probes opened a window, ran every bench's smoke cases, and could leave a loader'
 What it cannot promise is a prompt Windows raises later than `-SettleSeconds` (6) after the last
 binary ended, or a clean-up when the script itself is killed; so it runs where someone reads its log
 and nothing kills it on a timer.
+
+The first run in this form (T80, 2026-11-09, `msvc-debug` of an agent worktree, on the shared
+machine with other agents building and testing): 121 executables from 121 new paths, **0 prompts
+before and 0 after**, 48 GPU clients before and after, every process sampled live, no endpoint off
+loopback, about nine minutes. Two binaries ran into the 30 s timeout and were ended: `engine-view`,
+most likely waiting for the GPU lock under the other agents' GPU tests (the copies' output goes with
+the run's directory unless `-KeepTemp`), and the lock's test probe, which took
+`--help` for a command and waited for the lock too — it is now run `cycles 0`. A debug build has no
+Tracy, so this run says the probes and the clean-up work; the release run at the gate is the one
+that says Tracy still binds loopback.
 
 **Where it runs: once, at the merge, after the suites** — a command line in the gate's script,
 not a CTest test. It starts every executable of a build, so it wants the machine's tree to itself,

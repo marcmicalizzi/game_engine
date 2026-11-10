@@ -111,6 +111,7 @@ try {
   }
   Test-That 'engine-host listens on loopback only' { (@(Get-ProbeArgs -Name 'engine-host' -Scratch $scratch) -join ' ').Contains('--listen 127.0.0.1:0') }
   Test-That 'a bench lists its cases and runs none' { (@(Get-ProbeArgs -Name 'engine_math_bench' -Scratch $scratch) -join ' ') -eq '--list' }
+  Test-That 'the GPU lock probe runs a command that holds no lock' { (@(Get-ProbeArgs -Name 'engine_gpu_lock_probe' -Scratch $scratch) -join ' ') -eq 'cycles 0' }
   Test-That 'a test executable is asked for its help' { (@(Get-ProbeArgs -Name 'engine_math_tests' -Scratch $scratch) -join ' ') -eq '--help' }
 
   # The live half, against a stub: this process, listening on loopback. Get-NetTCPConnection and
