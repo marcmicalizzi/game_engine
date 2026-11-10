@@ -52,6 +52,10 @@ struct CliffFace {
 // carving's deepest reach on a face `height_m` tall plus two metres, never under 4 m.
 f64 cliff_back_m(const Cliff& cliff, f64 height_m);
 
+// The rounding a rock type's faces weather to when a recipe gives none, 0 to 1 (rocks.md, "Cliffs",
+// the model by type): the ledges' blocks wear by the same amount.
+f64 cliff_type_rounding(RockType type);
+
 // The ranges `engine.rocks.CliffLayer` documents (its `face` but for the line, which the ground
 // gives): false, with a sentence naming the first field out of range, otherwise.
 bool cliff_layer_in_range(const CliffLayer& layer, std::string& error);

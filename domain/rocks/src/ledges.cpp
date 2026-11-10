@@ -8,6 +8,7 @@
 #include <domain/geometry/cluster_pages.h>
 #include <domain/geometry/material_sampling.h>
 #include <domain/materials/materials.h>
+#include <domain/rocks/cliffs.h>
 #include <domain/rocks/ledges.h>
 #include <domain/texture/material_textures.h>
 
@@ -30,6 +31,8 @@ constexpr u32 k_max_rows = 8;
 // A bed thicker than this parts into rows about this thick (flaggy weathering along its own
 // laminae): an authoring choice, exposed-bedrock.md.
 constexpr f64 k_parting_m = 0.45;
+// How far an edge of a rock of rounding 1 is worn back, metres: sandstone's 0.4 is 12 cm.
+constexpr f64 k_wear_m = 0.3;
 // The far form has no joint blocks: every front keeps the blocks' mean share of its step.
 constexpr f64 k_far_share = 0.8;
 // UVs are cut into charts this many repeats square (the content build warns past 16).
@@ -414,6 +417,12 @@ bool solve_ledges(const LedgePatch& p, assets::MeshData& out, LedgeReport* repor
   const f64 min_step = wide(p.min_step_m);
   const f64 bury = wide(p.bury_m);
   const f64 relief = p.far ? 0.0 : wide(p.relief_m);
+  // **Worn round** (rocks.md, "Blocks"): an edge is worn back by the rock type's rounding, the
+  // one the cliff faces use, and a face is fluted by as much again. The far form has neither.
+  const f64 round_m = p.far ? 0.0 : k_wear_m * cliff_type_rounding(p.type);
+  const u64 flute_seed = mix64(p.seed ^ 0x464C555445ull);  // "FLUTE"
+  const D3 world0{static_cast<f64>(p.x_mm) / 1000.0, static_cast<f64>(p.y_mm) / 1000.0,
+                  static_cast<f64>(p.z_mm) / 1000.0};
   // Ground this steep is the cliffs generator's: no ledge under or behind one of its faces.
   const f64 cliff_angle = wide(p.cliff_slope_deg) * (k_pi / 180.0);
   const f64 cliff_slope =
@@ -610,10 +619,32 @@ bool solve_ledges(const LedgePatch& p, assets::MeshData& out, LedgeReport* repor
                 mid_x += top[k].x / static_cast<f64>(n);
                 mid_z += top[k].z / static_cast<f64>(n);
               }
+              // The lip: where the tread meets the front its edge is worn back along the bedding
+              // plane, by the rounding and never more than 0.45 of the first row under it.
+              const u32 block_rows = unit_rows - shape.lost;
+              D3 lip_top[8];
+              f64 lip[8];
+              for (u32 k = 0; k < n; ++k) {
+                lip[k] = 0.0;
+                lip_top[k] = top[k];
+                if ((poly[k].lines & k_on_front) == 0 || !(round_m > 0.0)) continue;
+                const f64 step = at(poly[k], db);
+                f64 first_row = step + under_of(step);
+                if (block_rows > 1)
+                  first_row = std::min(first_row, unit.depth[shape.lost + 1] / ny - lost_m);
+                lip[k] = std::max(0.0, std::min(round_m, 0.45 * first_row));
+                const f64 ddx = at(poly[k], dx), ddz = at(poly[k], dz);
+                const f64 len = std::sqrt(ddx * ddx + ddz * ddz);
+                const D3 back = len > 1e-9 ? D3{ddx / len, 0.0, ddz / len} : D3{1.0, 0.0, 0.0};
+                const f64 rise =
+                    lip[k] * (frame.normal[0] * back.x + frame.normal[2] * back.z) / ny;
+                lip_top[k] = {top[k].x - lip[k] * back.x, top[k].y + rise,
+                              top[k].z - lip[k] * back.z};
+              }
               bool drew = false;
               // The tread: the polygon, in the bedding plane.
               for (u32 k = 1; k + 1 < n; ++k) {
-                D3 q[3] = {top[0], top[k], top[k + 1]};
+                D3 q[3] = {lip_top[0], lip_top[k], lip_top[k + 1]};
                 f64 uv[3][2] = {{q[0].x, q[0].z}, {q[1].x, q[1].z}, {q[2].x, q[2].z}};
                 if (mesher.emit(mix64(uid), q, uv, Facing::Up, {})) {
                   count(true, q);
@@ -630,8 +661,8 @@ bool solve_ledges(const LedgePatch& p, assets::MeshData& out, LedgeReport* repor
                   D3 outward{run.z, 0.0, -run.x};
                   if (outward.x * (mid_x - top[e[0]].x) + outward.z * (mid_z - top[e[0]].z) > 0.0)
                     outward = outward * -1.0;
-                  const u32 rows = unit_rows - shape.lost;  // the rows the block still has
-                  f64 depth[2][k_max_rows + 1], back_m[2][k_max_rows], place_u[2];
+                  const u32 rows = block_rows;  // the rows the block still has
+                  f64 depth[2][k_max_rows + 1], back_m[2][k_max_rows], place_u[2], grown_at[2];
                   D3 lean[2];
                   for (u32 v = 0; v < 2; ++v) {
                     const PolyVertex& pv = poly[e[v]];
@@ -643,6 +674,7 @@ bool solve_ledges(const LedgePatch& p, assets::MeshData& out, LedgeReport* repor
                     place_u[v] = at(pv, st) - strike0;
                     // A low step's rows stand flush: the recesses grow in with the step.
                     const f64 grown = relief > 0.0 ? clamp01(step / (2.0 * relief)) : 0.0;
+                    grown_at[v] = grown;
                     depth[v][0] = 0.0;
                     back_m[v][0] = 0.0;
                     for (u32 r = 1; r < rows; ++r) {
@@ -666,12 +698,53 @@ bool solve_ledges(const LedgePatch& p, assets::MeshData& out, LedgeReport* repor
                     return D3{t.x - standing_back * lean[v].x, t.y - down + rise,
                               t.z - standing_back * lean[v].z};
                   };
+                  // The fluting: how far a face stands back at a depth under the tread, two scales
+                  // of the world's noise, so the two segments that share a vertex agree.
+                  const auto flute = [&](u32 v, f64 down) {
+                    if (!(round_m > 0.0)) return 0.0;
+                    const D3 q = world0 + top[e[v]] + D3{0.0, -down, 0.0};
+                    return grown_at[v] * round_m *
+                           (0.7 * noise3(flute_seed, q * (1.0 / 1.1)) +
+                            0.3 * noise3(flute_seed + 1, q * (1.0 / 0.37)));
+                  };
                   for (u32 r = 0; r < rows; ++r) {
-                    const D3 a = place(0, depth[0][r], back_m[0][r]);
-                    const D3 b = place(1, depth[1][r], back_m[1][r]);
-                    const D3 cc = place(1, depth[1][r + 1], back_m[1][r]);
-                    const D3 dd = place(0, depth[0][r + 1], back_m[0][r]);
+                    // A row's top edge is worn where it is an edge: the tread's lip, and a row
+                    // that stands out past the row above it.
+                    const bool edge =
+                        r == 0 || back_m[0][r] + back_m[1][r] < back_m[0][r - 1] + back_m[1][r - 1];
+                    f64 worn[2] = {0.0, 0.0};
+                    for (u32 v = 0; v < 2 && edge; ++v) {
+                      worn[v] = r == 0
+                                    ? lip[e[v]]
+                                    : std::min(round_m,
+                                               std::min(0.45 * (depth[v][r + 1] - depth[v][r]),
+                                                        0.8 * (back_m[v][r - 1] - back_m[v][r])));
+                      worn[v] = worn[v] > 0.0 ? worn[v] : 0.0;
+                    }
+                    const D3 ea =
+                        place(0, depth[0][r],
+                              back_m[0][r] + worn[0] + (r == 0 ? 0.0 : flute(0, depth[0][r])));
+                    const D3 eb =
+                        place(1, depth[1][r],
+                              back_m[1][r] + worn[1] + (r == 0 ? 0.0 : flute(1, depth[1][r])));
+                    const D3 a = place(0, depth[0][r] + worn[0],
+                                       back_m[0][r] + flute(0, depth[0][r] + worn[0]));
+                    const D3 b = place(1, depth[1][r] + worn[1],
+                                       back_m[1][r] + flute(1, depth[1][r] + worn[1]));
+                    const D3 cc =
+                        place(1, depth[1][r + 1], back_m[1][r] + flute(1, depth[1][r + 1]));
+                    const D3 dd =
+                        place(0, depth[0][r + 1], back_m[0][r] + flute(0, depth[0][r + 1]));
                     const u64 cls = mix64(uid + 0x1000ull + r) ^ mix64(static_cast<u64>(block));
+                    if (worn[0] > 0.0 || worn[1] > 0.0) {
+                      // The worn edge, in the face's own class so the two shade as one round.
+                      D3 w0[3] = {ea, eb, b};
+                      f64 wuv0[3][2] = {{place_u[0], ea.y}, {place_u[1], eb.y}, {place_u[1], b.y}};
+                      if (mesher.emit(cls, w0, wuv0, Facing::Toward, outward)) count(false, w0);
+                      D3 w1[3] = {ea, b, a};
+                      f64 wuv1[3][2] = {{place_u[0], ea.y}, {place_u[1], b.y}, {place_u[0], a.y}};
+                      if (mesher.emit(cls, w1, wuv1, Facing::Toward, outward)) count(false, w1);
+                    }
                     D3 q0[3] = {a, b, cc};
                     f64 uv0[3][2] = {{place_u[0], a.y}, {place_u[1], b.y}, {place_u[1], cc.y}};
                     if (mesher.emit(cls, q0, uv0, Facing::Toward, outward)) count(false, q0);
@@ -683,18 +756,18 @@ bool solve_ledges(const LedgePatch& p, assets::MeshData& out, LedgeReport* repor
                     // parting is under the front's foot it is under the ground: left out, so
                     // every one drawn is whole and in its plane.
                     if (depth[0][r] >= depth[0][rows] || depth[1][r] >= depth[1][rows]) continue;
-                    const D3 a0 = place(0, depth[0][r], back_m[0][r - 1]);
-                    const D3 b0 = place(1, depth[1][r], back_m[1][r - 1]);
+                    const D3 a0 = place(0, depth[0][r], back_m[0][r - 1] + flute(0, depth[0][r]));
+                    const D3 b0 = place(1, depth[1][r], back_m[1][r - 1] + flute(1, depth[1][r]));
                     const bool up =
                         back_m[0][r] + back_m[1][r] < back_m[0][r - 1] + back_m[1][r - 1];
                     const u64 shelf = mix64(uid + (up ? 0x2000ull : 0x3000ull) + r) ^
                                       mix64(static_cast<u64>(block));
-                    D3 s0[3] = {a0, b0, b};
-                    f64 suv0[3][2] = {{a0.x, a0.z}, {b0.x, b0.z}, {b.x, b.z}};
+                    D3 s0[3] = {a0, b0, eb};
+                    f64 suv0[3][2] = {{a0.x, a0.z}, {b0.x, b0.z}, {eb.x, eb.z}};
                     if (mesher.emit(shelf, s0, suv0, up ? Facing::Up : Facing::Down, {}))
                       count(up, s0);
-                    D3 s1[3] = {a0, b, a};
-                    f64 suv1[3][2] = {{a0.x, a0.z}, {b.x, b.z}, {a.x, a.z}};
+                    D3 s1[3] = {a0, eb, ea};
+                    f64 suv1[3][2] = {{a0.x, a0.z}, {eb.x, eb.z}, {ea.x, ea.z}};
                     if (mesher.emit(shelf, s1, suv1, up ? Facing::Up : Facing::Down, {}))
                       count(up, s1);
                   }
@@ -719,8 +792,9 @@ bool solve_ledges(const LedgePatch& p, assets::MeshData& out, LedgeReport* repor
                   f64 t0 = 0.0, t1 = 1.0;
                   if (open[0] < 0.0) t0 = open[0] / (open[0] - open[1]);
                   if (open[1] < 0.0) t1 = open[0] / (open[0] - open[1]);
-                  const D3 a = top[e[0]] + run * t0;
-                  const D3 b = top[e[0]] + run * t1;
+                  const D3 flank = lip_top[e[1]] - lip_top[e[0]];
+                  const D3 a = lip_top[e[0]] + flank * t0;
+                  const D3 b = lip_top[e[0]] + flank * t1;
                   const f64 step_a = step[0] + (step[1] - step[0]) * t0;
                   const f64 step_b = step[0] + (step[1] - step[0]) * t1;
                   const D3 a1{a.x, a.y - (step_a > 0.0 ? step_a : 0.0) - under_of(step_a), a.z};

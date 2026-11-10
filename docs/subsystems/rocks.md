@@ -1160,6 +1160,22 @@ block beside does not cover it. Each bed parts into **rows** about 0.45 m thick,
 back under the one above by up to `relief_m` (0.25 m), weaker beds further: the front's faces and
 the undersides between them. Every tread and every underside is in a bedding plane.
 
+**Worn round.** A jointed block weathers at its corners before its edges and its edges before
+its faces ([grounding](../experiments/exposed-bedrock.md#how-a-jointed-block-weathers): the order
+is published, no ratio or radius by lithology was found). So an edge is worn back by
+`0.3 m × rounding`, the rock type's own rounding that the cliff faces use (`cliff_type_rounding`:
+sandstone 0.4 is 12 cm, limestone 0.45, granite 0.35, slate 0.08 is 2.4 cm), and never more than
+0.45 of the row under it: the tread's **lip** is drawn back along the bedding plane and joined to
+the front by a worn face in the front's own normal class, so the two shade as one round, and so
+is the top edge of every row that stands out past the row above. A front is **fluted** by as
+much again: two scales of the world's noise (1.1 m and 0.37 m) set each row's edges back, the
+same from both segments that share a vertex and from either tile. Measured on the test hillside:
+0.096 m of worn width a metre of front on sandstone, 0.105 on limestone, 0.022 on slate, at 41
+triangles a metre of front on all three (**the budget is 48**; it was 36 unworn). What it is not:
+corners are not yet worn in plan (a block's ends are still square to its joints), a joint is a
+plane and not a widened cleft, and a fresh break and an old surface are one material. The far
+form has neither the wear nor the flutes.
+
 **Why a lattice of the world.** Each piece is the part of a lattice triangle (`cell_m`, 1 m,
 at the ground's own millimetres) between level lines of functions that are linear on it, and a
 crossing on a lattice edge is computed from the edge's two ends in the world's order. So a ledge
@@ -1175,7 +1191,7 @@ both, the cluster DAG is the runtime LOD.
 
 | Form | A 64 m tile of the test hillside (31 bed tops) | Triangles a metre of front |
 |---|---|---|
-| near | 4,005 triangles, 5,213 vertices, 196 clusters, 117 m of front (37,492 triangles and 1,041 m as every bed's stripe) | 34 |
+| near | 4,827 triangles, 5,858 vertices, 199 clusters, 117 m of front (37,492 triangles and 1,041 m as every bed's stripe, unworn) | 41 (the budget is 48) |
 | far | 191 triangles, 230 vertices, 10 clusters, 89 m of front | 2.1 |
 
 66 % of the near form's triangles are above the ground (the solver's count on its own lattice;
@@ -1204,8 +1220,10 @@ layer's `min_slope_deg` and no ledge is solved under or behind a face.
   tread or thins it at a front's foot. A band-shaped footprint (a polyline with a half-width, or
   the generator's own "is this point rock" query) is what the treads need; the blades that
   stand through a tread's back today do so because nothing says otherwise.
-- **Blocks are prisms.** Their faces are planes: no weathered rounding, no fracture surface, no
-  fallen block lying under the gap it left (G143's deposits own the debris).
+- **Blocks are worn prisms.** Edges are worn and fronts fluted (above), but there is no fracture
+  surface, no corner worn in plan, and no fallen block lying under the gap it left (G143's
+  deposits own the debris; the solver knows each fallen block's index, size and place and does
+  not hand them over yet).
 - **One material a mesh**, the type's pack role; a bed's tint from the formation does not reach it.
 - **No holes or water**: a tile's mesh is not split round the exclusion's holes or channels.
 

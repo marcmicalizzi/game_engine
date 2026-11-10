@@ -715,6 +715,8 @@ bool cliff_in_range(const Cliff& p, std::string& error) {
   return true;
 }
 
+f64 cliff_type_rounding(RockType type) { return cliff_model(type).rounding; }
+
 // The back's distance behind the face's mean plane (cliffs.h): the recipe's `depth`, else the
 // carving's deepest reach on a face `height_m` tall plus two metres, and never under 4 m. The
 // solver's own rule, so the generator that seats a face's top can ask how far back it goes.

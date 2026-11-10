@@ -7,6 +7,7 @@
 #include <core/math/deterministic.h>
 #include <core/schema/json_reflect.h>
 #include <domain/gfx/formation.h>
+#include <domain/rocks/cliffs.h>
 #include <domain/rocks/exposure.h>
 #include <domain/rocks/ledges.h>
 #include <domain/scene_gen/scene_gen.h>
@@ -301,43 +302,94 @@ TEST_CASE("ledges: a front's height follows the exposure and falls to nothing wh
 
 TEST_CASE("ledges: a ledge that crosses a tile's border meets itself to the millimetre") {
   const Hill slope;
-  const LedgeLayer layer = layer_of(beds());
-  const Solved a = solve(layer, slope, 0, 0);
-  const Solved along_x = solve(layer, slope, k_tile_mm, 0);
-  const Solved along_z = solve(layer, slope, 0, -k_tile_mm);
-  // The vertices on a border that stand over a centimetre above the ground. A ledge may also end
-  // on a border, pinched to a point at the ground's own height, which the next tile has no
-  // triangle for and no need of.
-  const auto border = [&](const Solved& s, bool x_axis, f64 at) {
-    std::vector<P3> out;
-    for (u32 v = 0; v < s.mesh.positions.size(); ++v) {
-      const P3 p = world(s, v);
-      if (std::fabs((x_axis ? p.x : p.z) - at) < 1e-4 && p.y > ground_m(slope, p.x, p.z) + 0.01)
-        out.push_back(p);
+  // Twice: the rule's own outcrops, and every bed's stripe (no stretches, no members), which
+  // puts many more ledges across a border. A front's lip is worn back off the border's plane
+  // (the same from either tile), so the vertices left on it are the treads' backs and the joints.
+  for (const bool stripes : {false, true}) {
+    CAPTURE(stripes);
+    LedgeLayer layer = layer_of(beds());
+    if (stripes) {
+      layer.rule.stretch_m = 0.0f;
+      layer.rule.member_m = 0.0f;
     }
-    return out;
-  };
-  const auto matched = [](const std::vector<P3>& from, const std::vector<P3>& to) {
-    u32 missing = 0;
-    for (const P3& p : from) {
-      bool found = false;
-      for (const P3& q : to)
-        found = found || (std::fabs(p.x - q.x) < 1e-3 && std::fabs(p.y - q.y) < 1e-3 &&
-                          std::fabs(p.z - q.z) < 1e-3);
-      if (!found) ++missing;
+    const Solved a = solve(layer, slope, 0, 0);
+    const Solved along_x = solve(layer, slope, k_tile_mm, 0);
+    const Solved along_z = solve(layer, slope, 0, -k_tile_mm);
+    // The vertices on a border that stand over a centimetre above the ground. A ledge may also end
+    // on a border, pinched to a point at the ground's own height, which the next tile has no
+    // triangle for and no need of.
+    const auto border = [&](const Solved& s, bool x_axis, f64 at) {
+      std::vector<P3> out;
+      for (u32 v = 0; v < s.mesh.positions.size(); ++v) {
+        const P3 p = world(s, v);
+        if (std::fabs((x_axis ? p.x : p.z) - at) < 1e-4 && p.y > ground_m(slope, p.x, p.z) + 0.01)
+          out.push_back(p);
+      }
+      return out;
+    };
+    const auto matched = [](const std::vector<P3>& from, const std::vector<P3>& to) {
+      u32 missing = 0;
+      for (const P3& p : from) {
+        bool found = false;
+        for (const P3& q : to)
+          found = found || (std::fabs(p.x - q.x) < 1e-3 && std::fabs(p.y - q.y) < 1e-3 &&
+                            std::fabs(p.z - q.z) < 1e-3);
+        if (!found) ++missing;
+      }
+      return missing;
+    };
+    const std::vector<P3> ax = border(a, true, 64.0), bx = border(along_x, true, 64.0);
+    const std::vector<P3> az = border(a, false, 0.0), bz = border(along_z, false, 0.0);
+    MESSAGE("border vertices: " << ax.size() << " and " << bx.size() << " across x = 64, "
+                                << az.size() << " and " << bz.size() << " across z = 0");
+    CHECK(ax.size() > (stripes ? 10u : 0u));
+    CHECK(az.size() > (stripes ? 10u : 0u));
+    CHECK(matched(ax, bx) == 0);
+    CHECK(matched(bx, ax) == 0);
+    CHECK(matched(az, bz) == 0);
+    CHECK(matched(bz, az) == 0);
+  }
+}
+
+TEST_CASE("ledges: a block's edges are worn round by its rock's rounding, inside the budget") {
+  const Hill h;
+  // The worn edges: triangles between a tread's plane and a front's, leaning 25 to 65 degrees.
+  // Their area over the front's length is the mean width of the wear.
+  const auto worn_width = [&](RockType type, f64& per_metre) {
+    LedgeLayer layer = layer_of(beds());
+    layer.type = type;
+    const Solved s = solve(layer, h, 0, 0);
+    f64 area = 0.0;
+    for (u32 t = 0; t + 2 < s.mesh.indices.size(); t += 3) {
+      const P3 a = world(s, s.mesh.indices[t]), b = world(s, s.mesh.indices[t + 1]),
+               c = world(s, s.mesh.indices[t + 2]);
+      const P3 u{b.x - a.x, b.y - a.y, b.z - a.z}, v{c.x - a.x, c.y - a.y, c.z - a.z};
+      const P3 n{u.y * v.z - u.z * v.y, u.z * v.x - u.x * v.z, u.x * v.y - u.y * v.x};
+      const f64 twice = std::sqrt(n.x * n.x + n.y * n.y + n.z * n.z);
+      if (!(twice > 0.0)) continue;
+      const f64 up = n.y / twice;
+      if (up > 0.42 && up < 0.9) area += 0.5 * twice;
     }
-    return missing;
+    per_metre = static_cast<f64>(s.report.triangles) / s.report.front_length_m;
+    return area / s.report.front_length_m;
   };
-  const std::vector<P3> ax = border(a, true, 64.0), bx = border(along_x, true, 64.0);
-  const std::vector<P3> az = border(a, false, 0.0), bz = border(along_z, false, 0.0);
-  MESSAGE("border vertices: " << ax.size() << " and " << bx.size() << " across x = 64, "
-                              << az.size() << " and " << bz.size() << " across z = 0");
-  CHECK(ax.size() > 10);
-  CHECK(az.size() > 4);
-  CHECK(matched(ax, bx) == 0);
-  CHECK(matched(bx, ax) == 0);
-  CHECK(matched(az, bz) == 0);
-  CHECK(matched(bz, az) == 0);
+  f64 sandstone_tris = 0.0, slate_tris = 0.0, limestone_tris = 0.0;
+  const f64 sandstone = worn_width(RockType::Sandstone, sandstone_tris);
+  const f64 slate = worn_width(RockType::Slate, slate_tris);
+  const f64 limestone = worn_width(RockType::Limestone, limestone_tris);
+  MESSAGE("worn edge, metres of width a metre of front: sandstone "
+          << sandstone << " (rounding " << cliff_type_rounding(RockType::Sandstone) << "), slate "
+          << slate << " (" << cliff_type_rounding(RockType::Slate) << "), limestone " << limestone
+          << " (" << cliff_type_rounding(RockType::Limestone) << "); triangles a metre of front "
+          << sandstone_tris << ", " << slate_tris << ", " << limestone_tris);
+  // In the rocks' own order, and by about their amounts: slate's 0.08 against sandstone's 0.4.
+  CHECK(limestone > sandstone);
+  CHECK(sandstone > 3.0 * slate);
+  CHECK(sandstone > 0.08);
+  // The budget: 48 triangles a metre of front (36 before the wear).
+  CHECK(sandstone_tris <= 48.0);
+  CHECK(slate_tris <= 48.0);
+  CHECK(limestone_tris <= 48.0);
 }
 
 TEST_CASE("ledges: the far form is the same steps on a coarser lattice") {
@@ -391,7 +443,7 @@ TEST_CASE("ledges: a patch is pinned to the bit") {
                              << mesh_hash(far_form.mesh) << " source "
                              << ledge_source_hash(far_form.patch));
   CHECK(near_form.report.triangles > 0u);
-  CHECK(mesh_hash(near_form.mesh) == 3717382252342307044ull);
+  CHECK(mesh_hash(near_form.mesh) == 17259686158855157545ull);
   CHECK(ledge_source_hash(near_form.patch) == 1023279402199257043ull);
   CHECK(far_form.report.triangles > 0u);
   CHECK(mesh_hash(far_form.mesh) == 9185605051799371196ull);
