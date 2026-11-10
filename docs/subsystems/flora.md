@@ -383,7 +383,9 @@ cover from above and both means.
 **Not yet.** A per-cell ground that follows the stature rule's form across a mixed field (a mask
 layer per form, or the sward placement writing the ground it stands on); photographed floor parts
 (the pack roles above); wetness-dependent floor colour; a far colour that follows the view's elevation
-rather than one stated 10°.
+rather than one stated 10°; more blades a tuft at every rung's triangles (G141's stage 4, measured and
+designed in the grounding page, not built: the blades are already the species' width, and their
+number is 2 to 5 % of a measured sward's leaves).
 
 ## Shared growth rules and named species (G85)
 

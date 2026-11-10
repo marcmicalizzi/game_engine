@@ -294,6 +294,21 @@ bound pinned is **15 %** in luma. The far is brighter because it takes the blade
 the drawn blade is shaded by its own lean and the cascade, and because it assumes 10° where most of
 the measured rows are seen steeper, under less blade.
 
+**Blades a tuft: measured, not yet rebuilt (G141 stage 4).** Today's short-tussock recipe draws 512
+blades a square metre, 333 of them in 16 crowns (21 a tussock) and 179 as turf between; a near blade
+is 3 segments, 5 triangles, a coarse one 2 segments, 3 triangles; the cell's 4,192 triangles are 2,560
+near, 1,536 coarse and 96 card. Its widths are mat-grass's 0.5–1 mm (Kew GrassBase), so the blades
+are already as thin as the species' leaves: **the lever is their number, not their width.** The
+profiles' tiller densities are 5,815–7,414 a square metre for perennial ryegrass and about 3,080 for
+tall fescue, and a grass tiller carries about three live leaves, so a measured sward holds some 9,000
+to 22,000 leaves a square metre against the recipes' 512 to 1,024 — the 1–2 % of a measured leaf area
+the ground's numbers above show. The step that keeps every rung's triangles: a near blade of 2
+segments (3 triangles) carries 5/3 the blades on the near rung's 2,560 (853 a cell), and a coarse
+blade of one triangle (a sliver from the base to the tip) puts those 853 on 853 coarse triangles,
+under today's 1,536; the coverage must then be re-measured at the four views, since the near ribbon
+loses its shoulder sample. It changes every sward's bytes (a `k_sward_version` bump and every pin in
+`sward_tests.cpp` re-taken), which is why it was left for a row of its own rather than squeezed in.
+
 **Floor, as drawn.** The first floor (a 3 cm Worley mosaic of the three parts with dark crevices) read
 as camouflage polygons from a walker's eye; it was replaced before this commit by dead-leaf fragments
 over a soft moss-and-soil underlay (flora.md has the layout), which reads as a litter mat.
