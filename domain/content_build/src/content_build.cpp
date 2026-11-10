@@ -11,6 +11,7 @@
 #include <domain/content_build/content_build.h>
 #include <domain/content_build/generator_hosts.h>
 #include <domain/geometry/cluster_file.h>
+#include <domain/materials/materials.h>
 #include <domain/texture/material_textures.h>
 #include <domain/texture/texture_build.h>
 #include <domain/texture/texture_file.h>
@@ -85,6 +86,16 @@ geometry::ClusterLodOptions lod_options_of(const MeshOptions& options) {
   lod_options.uv_seams = options.uv_seams;
   lod_options.normal_seams = options.normal_seams;
   return lod_options;
+}
+
+const materials::Pack* repository_pack(std::string_view executable_dir) {
+  return materials::pack_at(materials::default_pack_dir(executable_dir));
+}
+
+void attach_repository_pack(std::string_view source, std::string_view executable_dir,
+                            MeshOptions& options) {
+  if (!assets::mesh_generator_of(source).empty())
+    options.materials = repository_pack(executable_dir);
 }
 
 // Every key a build records: the geometry's, then the two steps outside it.

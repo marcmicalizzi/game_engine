@@ -7,7 +7,8 @@ engine_app(NAME engine_cli OUTPUT engine-cli
   SOURCES main.cpp
   DEPS base containers json platform
   E2E_TESTS tests/cli_tests.cpp tests/render_tests.cpp tests/ops_tests.cpp tests/policy_tests.cpp
-            tests/save_tests.cpp tests/npc_replay_tests.cpp tests/console_tests.cpp)
+            tests/save_tests.cpp tests/npc_replay_tests.cpp tests/console_tests.cpp
+            tests/content_build_parity_tests.cpp)
 if(TARGET engine_engine_cli_tests)
   target_compile_definitions(engine_engine_cli_tests PRIVATE ENGINE_HOST_PATH="$<TARGET_FILE:engine_engine_host>")
   add_dependencies(engine_engine_cli_tests engine_engine_host)
@@ -62,13 +63,21 @@ if(TARGET engine_engine_cli_tests)
   if(TARGET engine::scripting)
     target_compile_definitions(engine_engine_cli_tests PRIVATE ENGINE_CLI_TESTS_SCRIPTING=1)
   endif()
+  # engine-content, which the tissue case below makes its fixture with and the parity case
+  # (content_build_parity_tests.cpp, T78) builds one manifest with beside engine-host's
+  # content.build. The target is declared after this file, which a generator expression and a
+  # dependency may name.
+  target_compile_definitions(engine_engine_cli_tests PRIVATE
+    ENGINE_CONTENT_PATH="$<TARGET_FILE:engine_engine_content>")
+  add_dependencies(engine_engine_cli_tests engine_engine_content)
+  # The parity case builds a palm, which needs the flora capability's mesh generator in both hosts.
+  if(TARGET engine::flora)
+    target_compile_definitions(engine_engine_cli_tests PRIVATE ENGINE_CLI_TESTS_FLORA=1)
+  endif()
   # engine.run_tests runs the tissue validators when the host has the tissue capability; the case
   # makes its fixture with `engine-content tissue example`, which is built in the same
-  # configurations. The target is declared after this file, which a generator expression and a
-  # dependency may name.
+  # configurations.
   if(TARGET engine::tissue)
-    target_compile_definitions(engine_engine_cli_tests PRIVATE ENGINE_CLI_TESTS_TISSUE=1
-      ENGINE_CONTENT_PATH="$<TARGET_FILE:engine_engine_content>")
-    add_dependencies(engine_engine_cli_tests engine_engine_content)
+    target_compile_definitions(engine_engine_cli_tests PRIVATE ENGINE_CLI_TESTS_TISSUE=1)
   endif()
 endif()

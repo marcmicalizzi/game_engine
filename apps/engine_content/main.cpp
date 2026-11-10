@@ -376,14 +376,12 @@ struct BuildCommandOptions {
 
 // The repository's material pack (`<repo>/content/materials`), which a generated mesh's parts fall
 // back to as `engine-content flora` and the renderer's scene reader have them do, so the three
-// share entries; null when there is none (docs/subsystems/materials.md).
-const materials::Pack* repository_pack() {
-  return materials::pack_at(materials::default_pack_dir(platform::executable_directory()));
-}
-
+// share entries; null when there is none (docs/subsystems/materials.md). The build's own
+// (`content_build::attach_repository_pack`), which engine-host's `content.build` calls too (T78).
 int build(const BuildCommandOptions& options_in) {
   BuildCommandOptions options = options_in;
-  if (!assets::mesh_generator_of(options.input).empty()) options.mesh.materials = repository_pack();
+  content_build::attach_repository_pack(options.input, platform::executable_directory(),
+                                        options.mesh);
   // The source's identity comes first whatever the destination is: it addresses the cache entry,
   // and it is written into the container so that a later build can tell it is still the answer.
   u64 source_hash = 0;
@@ -610,10 +608,9 @@ int build_all(const BuildAllCommandOptions& options) {
                      std::span<const char* const>(step_arrays.data(), step_arrays.size()))) {
     return failed(message);
   }
-  for (ManifestEntry& entry : entries) {
-    if (!assets::mesh_generator_of(entry.source).empty())
-      entry.options.materials = repository_pack();
-  }
+  for (ManifestEntry& entry : entries)
+    content_build::attach_repository_pack(entry.source, platform::executable_directory(),
+                                          entry.options);
   Vector<Vector<DerivedEntry>> derived_entries(static_cast<u32>(steps.size()));
   for (u32 s = 0; s < steps.size(); ++s) {
     if (!read_derived_entries(options.manifest, *steps[s], derived_entries[s], message))
