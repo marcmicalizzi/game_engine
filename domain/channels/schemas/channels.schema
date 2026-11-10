@@ -66,7 +66,8 @@ struct ChannelSurface @version(1) {
 /// point of the line held in its trough.
 /// Version 5 (W93): the cut's section follows the line's bends (`section_asymmetry`), a pool at each
 /// bend's apex and a riffle at each crossing, the banks' tops rounded.
-struct ChannelLayer @version(5) {
+/// Version 6 (W93): `plan`, the one plan the cut, the water and the placements read.
+struct ChannelLayer @version(6) {
   name: string
   seed: u64 = 1
   /// The region drained, world metres, x and z, each a whole number of spacings.
@@ -223,6 +224,14 @@ struct ChannelLayer @version(5) {
   flood_min_width_m: f32 = 2 @since(5) @unit(m)
   flood_bed_depth: f32 = 0.25 @since(5)
   scarp_slope: f32 = 1.5 @since(5)
+  /// **The plan this entry reads** (W93; channels.md, "One plan"): the key `engine-content
+  /// channels` prints for the entry, 16 hexadecimal digits, naming the plan file in the derived-data
+  /// root's `channels/` that the scene's `cuts` and `water_channels` were written from. An entry
+  /// that stands on cut ground names it, and the generator then plans nothing: the cut ground is
+  /// not the ground the plan was made from. Empty: the ground is the ground before any cut, and the
+  /// plan is keyed from it, read when it is cached and made once when it is not. Not part of what a
+  /// plan is keyed by.
+  plan: string @since(6)
   bed: ChannelSurface
   bars: ChannelSurface
   banks: ChannelSurface

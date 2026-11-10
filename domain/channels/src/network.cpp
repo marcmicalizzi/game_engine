@@ -8,6 +8,7 @@
 #include <core/jobs/job_system.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <limits>
 
@@ -1065,13 +1066,29 @@ bool layer_in_range(const ChannelLayer& p, std::string& error) {
   return true;
 }
 
+namespace {
+std::atomic<u64> g_plans_made{0};
+}
+u64 plans_made() noexcept { return g_plans_made.load(std::memory_order_relaxed); }
+
 bool plan_channels(const ChannelLayer& p, const scene_gen::Ground& ground, u64 seed,
                    jobs::JobSystem* jobs, ChannelNetwork& out, std::string& error,
                    const scene_gen::Exclusion* water) {
   out = {};
+  ChannelNetwork n;
+  if (!detail::sample_lattice(p, ground, jobs, n, error)) return false;
+  if (!detail::plan_from_lattice(p, ground, seed, n, error, water)) return false;
+  out = std::move(n);
+  return true;
+}
+
+// The lattice (channels.md, "The network", step 1): the region's dimensions and the ground at
+// every point of it, which is also what a plan's key reads (channels.md, "One plan").
+bool detail::sample_lattice(const ChannelLayer& p, const scene_gen::Ground& ground,
+                            jobs::JobSystem* jobs, ChannelNetwork& n, std::string& error) {
+  n = {};
   if (!ground.present()) return fail(error, "ground (required)");
   if (!layer_in_range(p, error)) return false;
-  ChannelNetwork n;
   n.spacing_mm = scene_gen::nearest_mm(wide(p.spacing_m));
   n.x_mm = scene_gen::nearest_mm(p.region_min[0]);
   n.z_mm = scene_gen::nearest_mm(p.region_min[1]);
@@ -1107,6 +1124,17 @@ bool plan_channels(const ChannelLayer& p, const scene_gen::Ground& ground, u64 s
     rows(0, n.depth);
   for (u8 b : bad)
     if (b) return fail(error, "ground height (finite, +/-1e6 m)");
+  return true;
+}
+
+// Steps 2 to 6 over a sampled lattice: the fill, the routing, the heads, the links and their
+// lines. The one place the planner runs, counted for `plans_made`.
+bool detail::plan_from_lattice(const ChannelLayer& p, const scene_gen::Ground& ground, u64 seed,
+                               ChannelNetwork& n, std::string& error,
+                               const scene_gen::Exclusion* water) {
+  (void)error;
+  g_plans_made.fetch_add(1, std::memory_order_relaxed);
+  const u32 cells = n.width * n.depth;
   // Pits filled by priority flood from the region's edge with a one-micrometre epsilon (Barnes,
   // Lehman & Mulla 2014), so every interior cell has a strictly lower neighbour and drains to the
   // edge; a flat drains along the way the flood came.
@@ -1214,10 +1242,10 @@ bool plan_channels(const ChannelLayer& p, const scene_gen::Ground& ground, u64 s
   }
   confluences(p, n);
   for (ChannelLink& link : n.links) {
+    link.area_end = link.cells.empty() ? 0u : n.area_cells[link.cells.back()];
     plan_section(p, link);
     plan_flood(p, ground, link);
   }
-  out = std::move(n);
   return true;
 }
 
@@ -1391,7 +1419,8 @@ JsonValue water_channels_json(const ChannelLayer& p, const ChannelNetwork& n, f6
   std::sort(order.begin(), order.end(), [&](u32 a, u32 b) {
     const ChannelLink& x = n.links[n.links[a].trunk];
     const ChannelLink& y = n.links[n.links[b].trunk];
-    const u32 ax = n.area_cells[x.cells.back()], ay = n.area_cells[y.cells.back()];
+    const u32 ax = x.area_end,
+              ay = y.area_end;  // not the lattice: a plan read from its file has none
     if (ax != ay) return ax > ay;
     return n.links[a].trunk != n.links[b].trunk ? n.links[a].trunk < n.links[b].trunk : a < b;
   });

@@ -1,0 +1,10 @@
+{
+  "format": "engine.structure-raise.v1",
+  "name": "W93",
+  "reason": "engine-content channels takes --ddc, keeps each entry's network as one plan under it and writes the plans' keys; apps.md says so where the command is described",
+  "date": "2026-11-10",
+  "by": "Marc Micalizzi",
+  "deltas": {
+    "page:docs/subsystems/apps.md": 432
+  }
+}

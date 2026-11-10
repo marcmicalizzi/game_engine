@@ -1624,3 +1624,191 @@ TEST_CASE("channels: a line across a slope is moved between its banks") {
   CHECK(half_bank * 100 <= points * 2);
   CHECK(no_bank * 100 <= points);
 }
+
+// ---- W93, continued: one plan -------------------------------------------------------------------
+
+namespace {
+// The gentle valley with every channel's corridor lowered by 0.4 m: a ground the plan's own cuts
+// have changed, which is what the generator stands on in a cut scene.
+f64 gentle_cut(const void*, i64 x, i64 z) noexcept {
+  const f64 xx = static_cast<f64>(x) / 1000.0, zz = static_cast<f64>(z) / 1000.0;
+  const f64 floor = 128 + 6 * std::sin(zz / 40.0);
+  return gentle(nullptr, x, z) - (std::abs(xx - floor) < 6 ? .4 : 0.0);
+}
+// What the three readers of a plan make of it: the cuts' text, the water's, and the exclusion built
+// from the water.
+struct Readers {
+  std::string cuts, water;
+  Vector<scene::WaterChannel> channels;
+  scene_gen::Exclusion exclusion;
+  void read(const ChannelLayer& p, const ChannelPlan& plan) {
+    cuts = write_json(terrain_cuts_json(p, plan.network));
+    const JsonValue blocks = water_channels_json(p, plan.network, 0, .5f, true);
+    water = write_json(blocks);
+    for (const JsonValue& block : blocks.as_array()) {
+      scene::WaterChannel channel;
+      schema::ReadContext reader;
+      REQUIRE(schema::from_json(channel, block, reader));
+      REQUIRE(reader.ok());
+      channels.push_back(std::move(channel));
+    }
+    std::string error;
+    REQUIRE(exclusion.build({}, {}, {channels.data(), channels.size()}, &error));
+  }
+  // How many points of a 2 m lattice over the region the channels' corridor excludes.
+  u32 excluded() const {
+    const scene_gen::Ground flat;
+    u32 count = 0;
+    for (i64 z = 0; z <= 512000; z += 2000)
+      for (i64 x = 0; x <= 256000; x += 2000)
+        count += exclusion.excluded_mm(flat, x, z, scene_gen::k_exclude_channels) ? 1u : 0u;
+    return count;
+  }
+};
+}  // namespace
+
+// **One plan** (channels.md, "One plan"): the cut, the water's description, the exclusion's
+// corridor and the generator's placements are read from one object, kept as a file keyed by what it
+// was made from. Planned once; a second ask and a load that names it plan nothing; a parameter
+// moves all three readers together; and the generator, on ground the cuts lowered, places what the
+// plan says and never plans again.
+TEST_CASE("channels: one plan is read by the cut, the water, the exclusion and the generator") {
+  test::TempDir scratch;
+  const std::string dir = scratch.path();
+  std::string plans_dir, error;
+  REQUIRE_MESSAGE(derived_dir(dir, dir, plans_dir, error), error);
+  scene_gen::Context c;
+  c.dir = dir;
+  c.ddc = dir;
+  c.ground = ground(gentle);
+  c.tile_size = 64;
+  c.world_seed = 7;
+  ChannelLayer p = layer();
+  p.head_threshold_m2 = 300;
+
+  // Made once, and written.
+  const u64 before = plans_made();
+  ChannelPlan first;
+  REQUIRE_MESSAGE(ensure_plan(p, c, plans_dir, first, error), error);
+  CHECK(first.planned);
+  CHECK(plans_made() == before + 1);
+  CHECK(io::exists(plan_path(plans_dir, first.key)));
+  CHECK(first.layer_hash == plan_layer_hash(p));
+  // Asked again: read, not made, and the same links to the byte (the file is the plan).
+  ChannelPlan again;
+  REQUIRE_MESSAGE(ensure_plan(p, c, plans_dir, again, error), error);
+  CHECK_FALSE(again.planned);
+  CHECK(plans_made() == before + 1);
+  CHECK(again.key == first.key);
+  CHECK(again.network.ground_um.empty());  // the lattice is not what a reader of a plan asks
+  ChannelPlan bare = first;                // the same without the lattice: what the file holds
+  bare.network.ground_um = {};
+  bare.network.filled_um = {};
+  bare.network.receiver = {};
+  bare.network.area_cells = {};
+  bare.network.channel = {};
+  CHECK(plan_bytes(again) == plan_bytes(bare));
+  Readers a, a_again;
+  a.read(p, first);
+  a_again.read(p, again);
+  CHECK(a.cuts == a_again.cuts);
+  CHECK(a.water == a_again.water);
+  REQUIRE(a.excluded() > 100);
+  CHECK(a.excluded() == a_again.excluded());
+
+  // A network with a confluence, whose water orders its junctions by contributing area: the plan
+  // read from its file writes the same water as the plan just made (the file holds no lattice).
+  {
+    scene_gen::Context f = c;
+    f.ground = ground(forked);
+    ChannelLayer q = layer();
+    q.head_threshold_m2 = 200;
+    ChannelPlan made, cached;
+    REQUIRE_MESSAGE(ensure_plan(q, f, plans_dir, made, error), error);
+    REQUIRE_MESSAGE(ensure_plan(q, f, plans_dir, cached, error), error);
+    CHECK(made.planned);
+    CHECK_FALSE(cached.planned);
+    u32 tributaries = 0;
+    for (const ChannelLink& link : made.network.links)
+      tributaries += link.trunk != ~0u ? 1u : 0u;
+    CHECK(tributaries > 0);
+    Readers fresh, from_file;
+    fresh.read(q, made);
+    from_file.read(q, cached);
+    CHECK(fresh.water == from_file.water);
+    CHECK(fresh.cuts == from_file.cuts);
+  }
+  const u64 made_so_far = plans_made();
+
+  // A parameter of the layer moves the key and all three readers.
+  ChannelLayer wider = p;
+  wider.width_at_km2_m = 6.0f;
+  ChannelPlan second;
+  REQUIRE_MESSAGE(ensure_plan(wider, c, plans_dir, second, error), error);
+  CHECK(second.planned);
+  CHECK(plans_made() == made_so_far + 1);
+  CHECK(second.key != first.key);
+  Readers b;
+  b.read(wider, second);
+  CHECK(b.cuts != a.cuts);
+  CHECK(b.water != a.water);
+  CHECK(b.excluded() > a.excluded());
+  // And so does the world's seed, and the ground.
+  scene_gen::Context other = c;
+  other.world_seed = 8;
+  ChannelPlan third;
+  REQUIRE_MESSAGE(ensure_plan(p, other, plans_dir, third, error), error);
+  CHECK(third.key != first.key);
+  other = c;
+  other.ground = ground(gentle_cut);
+  REQUIRE_MESSAGE(ensure_plan(p, other, plans_dir, third, error), error);
+  CHECK(third.key != first.key);
+
+  // **A load on the cut ground plans nothing**: the entry names its plan, the ground is the one the
+  // cuts lowered, and what is placed stands at the plan's own stations.
+  const u64 loads = plans_made();
+  ChannelLayer named = p;
+  named.plan = plan_key_text(first.key);
+  scene_gen::Context cut = c;
+  cut.ground = ground(gentle_cut);
+  ChannelPlan read;
+  REQUIRE_MESSAGE(ensure_plan(named, cut, plans_dir, read, error), error);
+  CHECK_FALSE(read.planned);
+  CHECK(plan_bytes(read) == plan_bytes(again));
+  Opened opened;
+  REQUIRE(opened.desc != nullptr);
+  REQUIRE_MESSAGE(opened.desc->open(schema::to_json(named), cut, &opened.state, &error), error);
+  CHECK(plans_made() == loads);
+  scene_gen::Placements whole;
+  REQUIRE(opened.desc->expand(opened.state, cut, whole, &error));
+  Vector<PlacedPiece> pieces;
+  REQUIRE(place_pieces(p, first.network, ground(gentle_cut), 64, pieces, error));
+  REQUIRE(whole.instances.size() == pieces.size());
+  for (u32 i = 0; i < pieces.size(); ++i)
+    CHECK(whole.instances[i].position == pieces[i].origin);
+
+  // The refusals: a key that is not one, a plan that is not there, and a plan made from another
+  // layer or seed than the entry's.
+  ChannelPlan refused;
+  ChannelLayer bad = named;
+  bad.plan = "not-a-key";
+  CHECK_FALSE(ensure_plan(bad, cut, plans_dir, refused, error));
+  CHECK(error.find("plan") != std::string::npos);
+  bad.plan = "0123456789abcdef";
+  CHECK_FALSE(ensure_plan(bad, cut, plans_dir, refused, error));
+  CHECK(error.find("is not in") != std::string::npos);
+  bad = wider;
+  bad.plan = named.plan;
+  CHECK_FALSE(ensure_plan(bad, cut, plans_dir, refused, error));
+  CHECK(error.find("another layer") != std::string::npos);
+  other = cut;
+  other.world_seed = 9;
+  CHECK_FALSE(ensure_plan(named, other, plans_dir, refused, error));
+  CHECK(plans_made() == loads);
+  // A file cut short, or changed, is refused and never read as a plan.
+  std::string bytes = plan_bytes(first);
+  CHECK(read_plan(bytes, refused, error));
+  CHECK_FALSE(read_plan(std::string_view(bytes).substr(0, bytes.size() / 2), refused, error));
+  bytes[bytes.size() / 2] = static_cast<char>(bytes[bytes.size() / 2] ^ 1);
+  CHECK_FALSE(read_plan(bytes, refused, error));
+}

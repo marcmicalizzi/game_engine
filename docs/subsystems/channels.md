@@ -24,9 +24,10 @@ meshes are recipes the mesh-generator registry builds through the derived-data c
 readers place them as they place any generator's instances.
 
 **Owned data.** The network (`ChannelNetwork`: the lattice's heights, the filled heights, D8
-receivers, contributing area, channel cells, heads and links with their lines) is computed when an
-entry is opened and is the source of truth for every piece and every `WaterChannel` block made from
-it; the recipes (`<ddc>/channels/channel-<hash>.channel.json`) are derived data.
+receivers, contributing area, channel cells, heads and links with their lines) is planned once,
+kept as a derived file (`<ddc>/channels/plan-<key>.channel-plan`; [One plan](#one-plan)) and is the
+source of truth for every cut, every piece and every `WaterChannel` block made from it; the recipes
+(`<ddc>/channels/channel-<hash>.channel.json`) are derived data too.
 
 ## The network
 
@@ -56,6 +57,88 @@ the subcommand call:
 heights, and every transcendental is `core/math/deterministic.h`'s, so the network is the same bytes at
 any thread count, any tile order and on every toolchain. `channels: the same network at one job and
 six` holds the two thread counts to the byte.
+
+## One plan
+
+(2026-11-10, roadmap W93, continued; the POC's solver needs, 2.1 item 9: "the network planned
+once, not every load".) **The network is one object, made once from the ground before its cuts
+and kept as a derived file**, and everything that needs a channel's line reads it: the cut
+(`terrain_cuts_json`), the water's description (`water_channels_json`), through that description
+the placements' corridor ([scene_gen](scene_gen.md#exclusion)), and what the generator still
+places (`place_pieces`). Until this the subcommand planned the network over the uncut ground and
+wrote the cut and the water from it, the tile set was built with the cut, and then the placement
+generator **planned again at every load over the cut ground** and got another line: near the
+cut's, not on it, since the fill, the low-pass, the meander rule and the trough test all ran again
+over ground the first plan had lowered. Everything laid from the second line lay beside the
+first's: the bed slabs up the banks and across the flood bed as plates (item 8), and it cost the
+load the whole plan (24 to 32 s on v35).
+
+- **The file.** `<derived-data root>/channels/plan-<key>.channel-plan`, beside the recipes the
+  generator already writes there (`derived_dir`: the host's `--ddc`, else the repository's
+  `ddc/` found from the scene's directory, else `ddc/` beside the scene). It holds the links
+  with every per-point array, the heads and the counts, as integers and IEEE bits, little-endian,
+  closed by a hash of the whole (`plan_bytes`, `read_plan`); the lattice's own arrays (heights,
+  fill, receivers, areas) are not in it, since no reader of a plan asks them (the one that did,
+  the confluences' order in the water's description, now reads each link's `area_end`). A file
+  that is short, of another `k_channels_version`, changed, or whose arrays disagree is refused
+  and never read as a plan.
+- **The key is what the plan was made from**: the layer's canonical JSON with `plan` cleared,
+  `k_channels_version`, the world's seed, the ground's height at every point of the layer's
+  lattice to the micrometre, and whether a water body covers each (`ensure_plan`). The lattice is
+  what the routing reads; the line's own tests (the trough, the banks, the flood bed's walk) ask
+  the ground between its points, so two grounds that agree at every lattice point and differ
+  between them would share a key, which for a ground sampled every 4 m or finer is a ground that
+  is the same one.
+- **An entry on uncut ground names no plan.** `ensure_plan` samples the lattice, keys it, reads
+  the file on a hit and plans and writes it on a miss: the first load of a world plans, every
+  load after it reads.
+- **An entry on cut ground names its plan** (`ChannelLayer.plan`, the 16 hexadecimal digits
+  `engine-content channels` prints and writes under `plans`, pasted into the entry's `params`
+  beside the `cuts` and the `water_channels`). The cut ground's heights are not what the plan
+  was made from, so the key cannot be made again from them, and **the generator never plans over
+  a ground its own cuts lowered**: it reads the named file, whatever the ground, and checks that
+  the plan records the entry's own layer and the world's seed. A named plan that is not in the
+  directory, or that was made from another layer or seed, is refused with the command that makes
+  it. That is a load that stops on a machine whose derived data was thrown away, where the tile
+  set and the masks would be built again: they are rebuilt from the scene's heightfield, and the
+  plan needs the ground before the cuts, which a placement generator is not handed
+  (`scene_gen::Context` carries the ground it stands on and nothing of the terrain entry). An
+  entry that carries pasted cuts and names no plan plans over the cut ground as every entry did
+  before, since the generator cannot tell a cut ground from another; the subcommand's output is
+  what says to paste the key.
+- **The subcommand** clears the entry's `plan` and the terrain's `cuts`, opens the ground before
+  its cuts and asks `ensure_plan`, so a second run over the same ground and layer plans nothing;
+  its summary carries `plans` (the keys), `planned` (how many this run made) and `plan_s`.
+- **`plans_made()`** counts the planner's runs in a process; the tests hold a second ask, a load
+  that names its plan and the generator's `open` on cut ground to none.
+
+**Measured** (2026-11-10, `msvc-release`, the machine at 24 to 25 % CPU with other agents
+building, so upper bounds; `plan_s` is the subcommand's own clock round `ensure_plan`, one thread):
+
+| Ground | Lattice | Line | Plan made | Plan read, keyed from the ground | The file |
+|---|---|---|---|---|---|
+| W93's scratch valley (0.098 km², 7 links) | 6,305 points | 482 m | 0.023 s | 0.013 s | 68 KB |
+| a 4.1 km ridged heightfield at 2 m (16.8 km², 305 links, 167 heads) | 1,050,625 points | 63.6 km | 1.64 s | 0.49 to 0.54 s | 9.2 MB |
+
+A load before this made the plan every time (the first column of times, and on v35 24 to 32 s,
+where every ground query goes through a 2.6 GB tile set). A load now reads the file: keyed from
+the ground it costs the lattice's heights and a hash (the second column, most of it the 1.05
+million heights), and **an entry that names its plan asks the ground nothing** and reads the
+file's bytes, about 145 bytes a metre of line at the default 0.5 m step. By the plan's own
+scaling on the second ground (18 ms a kilometre of line beyond the lattice) a world of 10 km of
+stream plans in about 0.3 s and its plan is a 1.5 MB file; v35's figure is 20 to 100 times that
+a kilometre, which is the tile set's cost a query and not the planner's, and it is the cost a
+named plan no longer pays at all. Whole-process, the subcommand on the scratch valley is 0.78 s
+before and after with the plan cached (the tile set's open, the pieces and the summary's
+measurements, not the plan), and on the larger ground 6.2 s before, 5.9 s making the plan and
+4.7 s reading it.
+
+**Still pasted.** The second half of item 9, "the cut applied by the generator, not pasted from a
+subcommand", is not built: the terrain's `cuts`, the scene's `water_channels` and now the entry's
+`plan` are three things the author pastes from one output. Closing it means the ground is made in
+two steps (the ground before the cuts, the plan, the cut ground) and the scene reader takes the
+water from the plan, which are the tile provider's and the scene reader's to change, with a
+registration point a placement generator contributes a ground edit through.
 
 ## What it places
 
@@ -114,9 +197,11 @@ a bed there samples `rock/granite`; a gravel set in the pack is a request on its
             "head_threshold_m2": 1500}}
 ```
 
-The entry is opened once: the network is planned, every piece's recipe written under the host's
+The entry is opened once: its plan is read (or, for an entry on uncut ground whose plan is not
+cached yet, made; [One plan](#one-plan)), every piece's recipe written under the host's
 derived-data root's `channels/` (else the repository's `ddc/`, else `ddc/` beside the scene), and
-`expand`/`tile`/`occupies` hand out what was decided. A moving ground is refused (the dunes have no
+`expand`/`tile`/`occupies` hand out what was decided. An entry of a scene whose ground carries the
+plan's cuts names the plan: `"plan": "<the key engine-content channels printed>"`. A moving ground is refused (the dunes have no
 drainage to dress). Every field, its default and range is in `schemas/channels.schema`.
 
 ## The water's description
@@ -189,9 +274,9 @@ cut.
 **The network is planned over the ground before its cuts.** The subcommand clears the scene's
 `tiles.cuts` before it opens the ground, so writing the cuts of a scene that already carries them
 gives the same file again (the end-to-end test asserts it). The placement generator, inside a scene
-whose set is cut, plans over the cut ground: its lines follow the troughs the cuts deepened, and its
-bed and bars, which stand on the ground at every vertex, lie in the cut; it does not know the cuts and
-writes nothing of them.
+whose set is cut, **reads that same plan and never makes another** ([One plan](#one-plan)): until
+W93's continuation it planned again over the cut ground, and its lines followed the troughs the
+cuts deepened without being the cuts' lines.
 
 **Bed and bars: pieces, not mask paints** (the brief's step 2). The bed and the bars stay recipes
 laid on the cut ground — the bed narrowed to the cut's flat bed, no bank piece — rather than terrain
@@ -797,9 +882,9 @@ them); a pool lies at its bend's apex and not downstream of it, as a real one do
 turf banks are not the heightfield's to draw; the line is moved between its banks by a width at the most, so where the trough's floor is
 further off than that a bench with half a bank or none is left (1.6 % and 0.6 % of the test
 valley's points; the ribbon's fit still narrows the water there); knickpoints are read from the ground's profile along the line, not
-from rock strength; **the network is planned again on every load** (24–32 s on v35, T73's finding): caching it as
-a derived node needs the ground's identity, which `scene_gen::Context` does not expose (W90's report
-asks for it); the mouths read the exclusion's box for a fill body, not its traced flood.
+from rock strength; a plan named by an entry on cut ground cannot be made again at a load
+([One plan](#one-plan): `scene_gen::Context` hands a generator the ground it stands on and not
+the ground before its cuts); the mouths read the exclusion's box for a fill body, not its traced flood.
 
 ## Capability contract (ADR-0027)
 

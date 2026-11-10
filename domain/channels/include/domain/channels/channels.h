@@ -89,6 +89,9 @@ struct ChannelLink {
   f64 meander = 0;    // the share of the meander amplitude the slope allowed, 0 to 1
   bool head = false;  // the link begins at a channel head
   u64 seed = 0;
+  // The contributing area at the link's last cell, in lattice cells: what orders the junctions,
+  // kept on the link so a plan read from its file (which holds no lattice) orders them the same.
+  u32 area_end = 0;
   // **W90** (channels.md, "Reaches", "Mouths", "Confluences"), one per point of `line`:
   Vector<u8> reach;        // the reach's `ChannelReach` code
   Vector<f32> step_depth;  // how far a step-pool's pool lowers the cut's bed below its line, m
@@ -181,6 +184,57 @@ bool layer_in_range(const ChannelLayer& layer, std::string& error);
 bool plan_channels(const ChannelLayer& layer, const scene_gen::Ground& ground, u64 seed,
                    jobs::JobSystem* jobs, ChannelNetwork& out, std::string& error,
                    const scene_gen::Exclusion* water = nullptr);
+
+// **The plan** (channels.md, "One plan"; W93, the proof of concept's solver needs 2.1 item 9): the
+// network of a layer over the ground **before its cuts**, made once and kept as a derived file,
+// `<derived-data root>/channels/plan-<key>.channel-plan`. Everything that needs a channel's line
+// reads this one object: `terrain_cuts_json` (the cut), `water_channels_json` (the water's
+// description, and through it the exclusion's corridor) and `place_pieces` (what the generator
+// still places). `network` holds the links, the heads and the counts; the lattice's own arrays
+// (heights, fill, receivers, areas) are in it when the plan was made by this call and empty when
+// it was read, since no reader of a plan asks them.
+//
+// **The key** is what the plan was made from: the layer (every field but `plan`), the world's
+// seed, `k_channels_version`, the ground's heights at every point of the layer's lattice to the
+// micrometre and whether a water body covers each. A layer that names no plan is keyed that way
+// from the ground it is handed, which must then be the ground before any cut; a hit reads the
+// file and plans nothing. **A layer on a cut ground names its plan** (`ChannelLayer.plan`, the
+// key `engine-content channels` printed, 16 hexadecimal digits): the cut ground's heights are not
+// what the plan was made from, so the key cannot be made again from them, and the generator
+// never plans over a ground its own cuts lowered. A named plan that is not in the directory, or
+// that records another layer or seed than the entry's, is refused with the command that makes it.
+struct ChannelPlan {
+  u64 key = 0;
+  u64 layer_hash = 0;  // `plan_layer_hash` of the layer it was made from
+  u64 seed = 0;        // the world's seed it was made with
+  ChannelNetwork network;
+  bool planned = false;  // made by this call (a miss); false: read from its file
+};
+// Over the layer's canonical JSON with `plan` cleared, and `k_channels_version`.
+u64 plan_layer_hash(const ChannelLayer& layer);
+// "<dir>/plan-<key as 16 lower-case hex digits>.channel-plan".
+std::string plan_path(std::string_view dir, u64 key);
+std::string plan_key_text(u64 key);
+// Where the capability's derived files live: `<ddc>/channels`, `ddc` the host's root when it named
+// one, else the repository's found from `scene_dir`, else `<scene_dir>/ddc` — the rule the
+// generator's recipes always had. Made when it is not there. False with a sentence.
+bool derived_dir(std::string_view ddc, std::string_view scene_dir, std::string& out,
+                 std::string& error);
+// **The one way to a plan.** `context` is what a generator is handed: its ground, the world's
+// seed, the job system (asked only on a miss) and the exclusion whose water bodies end a link at a
+// shoreline. With `layer.plan` empty: keys the plan from the ground, reads it on a hit, plans and
+// writes it on a miss. With `layer.plan` a key: reads that file and plans nothing, whatever the
+// ground. `dir` is `derived_dir`'s.
+bool ensure_plan(const ChannelLayer& layer, const scene_gen::Context& context, std::string_view dir,
+                 ChannelPlan& out, std::string& error);
+// The file's bytes for a plan, and a plan from them: the same bytes from every toolchain (integers
+// and IEEE bits, little-endian), closed by a hash of the whole. `read_plan` refuses a file that is
+// short, of another version, or whose arrays disagree with one another.
+std::string plan_bytes(const ChannelPlan& plan);
+bool read_plan(std::string_view bytes, ChannelPlan& out, std::string& error);
+// How many times this process has run the planner (`plan_channels`): what a test holds a cached
+// load to.
+u64 plans_made() noexcept;
 
 // The reach of a fall per metre by the layer's bounds (Montgomery & Buffington 1997); `colluvial`
 // picks colluvial over bedrock above `slope_steep`.

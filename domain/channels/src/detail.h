@@ -136,6 +136,13 @@ inline f64 place_noise(u64 seed, i64 x_mm, i64 z_mm) {
   return static_cast<f64>(mix64(h) >> 11) * (2.0 / 9007199254740992.0) - 1.0;
 }
 
+// `plan_channels` in its two halves (network.cpp): the lattice, which a plan's key reads, and the
+// planner over it.
+bool sample_lattice(const ChannelLayer& p, const scene_gen::Ground& ground, jobs::JobSystem* jobs,
+                    ChannelNetwork& n, std::string& error);
+bool plan_from_lattice(const ChannelLayer& p, const scene_gen::Ground& ground, u64 seed,
+                       ChannelNetwork& n, std::string& error, const scene_gen::Exclusion* water);
+
 inline bool surface_in_range(const ChannelSurface& s, std::string& error) {
   if (s.tile_m.has_value() && !in(wide(*s.tile_m), .05, 20)) return fail(error, "surface tile_m");
   if (!in(wide(s.roughness), .02, 1)) return fail(error, "surface roughness");

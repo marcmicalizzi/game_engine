@@ -19,6 +19,7 @@
 #include <foundation/io/vfs.h>
 
 #include <charconv>
+#include <chrono>
 #include <cmath>
 #include <schemas/scene.h>
 #include <string>
@@ -128,7 +129,11 @@ int channels_command(int argc, char** argv) {
   if (!found->make(terrain, context, ground, &error) || !ground.valid())
     return fail(error.empty() ? "the ground provider \"" + provider + "\" refused the terrain"
                               : error);
-  (void)ddc;  // the network writes nothing; the flag is accepted for symmetry with `build`
+  // **One plan** (W93; channels.md, "One plan"): the network is a derived file under the
+  // derived-data root's `channels/`, keyed by what it is made from, so a second run over the same
+  // ground and layer plans nothing, and the placement generator reads the same file at a load.
+  std::string plan_dir;
+  if (!channels::derived_dir(ddc, dir, plan_dir, error)) return fail(error);
   // **The water bodies** (W90; channels.md, "Mouths"): the scene's `water` blocks, read as the
   // placement generators' exclusion reads them, so a link ends at the shoreline it meets. A block
   // that does not parse is the water capability's to refuse and is left out here.
@@ -144,6 +149,11 @@ int channels_command(int argc, char** argv) {
   const scene_gen::Ground ground_view = ground.view();
   scene_gen::Exclusion shores;
   if (!shores.build({}, {bodies.data(), bodies.size()}, {}, &error)) return fail(error);
+  context.ground = ground_view;
+  context.exclusion = &shores;
+  JsonValue plans = JsonValue::array();
+  u32 planned = 0;
+  f64 plan_seconds = 0;
   const JsonValue* placements = json.find("placements");
   JsonValue all = JsonValue::array();
   JsonValue cuts = JsonValue::array();
@@ -181,10 +191,23 @@ int channels_command(int argc, char** argv) {
           message += "; " + d.path + ": " + d.message;
         return fail(message);
       }
-      channels::ChannelNetwork network;
-      if (!channels::plan_channels(layer, ground_view, context.world_seed, nullptr, network, error,
-                                   &shores))
+      // The key a pasted entry carries names the plan made last time; this run keys it again from
+      // the ground before its cuts, as it clears the cuts above.
+      layer.plan.clear();
+      channels::ChannelPlan plan;
+      const auto began = std::chrono::steady_clock::now();
+      if (!channels::ensure_plan(layer, context, plan_dir, plan, error))
         return fail(scene_path + ": placements " + std::to_string(k) + ": " + error);
+      plan_seconds += std::chrono::duration<f64>(std::chrono::steady_clock::now() - began).count();
+      planned += plan.planned ? 1u : 0u;
+      const channels::ChannelNetwork& network = plan.network;
+      {
+        JsonValue named = JsonValue::object();
+        named["entry"] = JsonValue(k);
+        named["name"] = JsonValue(layer.name);
+        named["plan"] = JsonValue(channels::plan_key_text(plan.key));
+        plans.push_back(std::move(named));
+      }
       // W91: the ribbon fitted to the ground the network was planned over, and the bodies.
       const JsonValue blocks = channels::water_channels_json(
           layer, network, min_area, static_cast<f32>(stage), cut, &ground_view, &shores, &trim);
@@ -309,6 +332,11 @@ int channels_command(int argc, char** argv) {
   out["water_channels"] = std::move(all);
   // The terrain's cuts, for the `tiles` block (`terrain.tiles.cuts`).
   if (cut) out["cuts"] = std::move(cuts);
+  // Each entry's plan, for its `params.plan`: what the generator reads on the cut ground.
+  JsonValue plan_keys = JsonValue::array();
+  for (const JsonValue& p : plans.as_array())
+    plan_keys.push_back(*p.find("plan"));
+  out["plans"] = std::move(plans);
   if (io::write_file_atomic(out_path, write_json(out)) != io::Status::Ok)
     return fail("cannot write " + out_path);
   JsonValue line = JsonValue::object();
@@ -323,6 +351,11 @@ int channels_command(int argc, char** argv) {
   line["km_per_km2"] = JsonValue(area > 0 ? std::round(metres / area * 1e3 * 100) / 100 : 0.0);
   line["water_channels"] = JsonValue(written);
   line["cuts"] = JsonValue(cut_count);
+  // W93: the plans' keys, how many of them this run made (the rest were read from the cache), and
+  // the seconds the plans took, made or read.
+  line["plans"] = std::move(plan_keys);
+  line["planned"] = JsonValue(planned);
+  line["plan_s"] = JsonValue(std::round(plan_seconds * 1000) / 1000);
   // W90: what the water bodies and the junctions did, and the line's points by reach.
   line["bodies"] = JsonValue(static_cast<u32>(bodies.size()));
   line["mouths"] = JsonValue(shore_counts.mouths);
