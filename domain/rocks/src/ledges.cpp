@@ -327,6 +327,8 @@ bool ledge_patch_in_range(const LedgePatch& p, std::string& error) {
   if (!in(wide(p.min_step_m), 0.02, 30.0)) return bad(error, "min_step_m", "in [0.02, 30]");
   if (!in(wide(p.bury_m), 0.05, 5.0)) return bad(error, "bury_m", "in [0.05, 5]");
   if (!in(wide(p.relief_m), 0.0, 2.0)) return bad(error, "relief_m", "in [0, 2]");
+  if (!(p.cliff_slope_deg == 0.0f || in(wide(p.cliff_slope_deg), 30.0, 85.0)))
+    return bad(error, "cliff_slope_deg", "0 or in [30, 85]");
   if (p.material.surface_maps.has_value())
     return bad(error, "material.surface_maps", "absent (a patch takes a tiled set)");
   return material_factors_in_range(p.material, error);
@@ -361,6 +363,7 @@ bool sample_ledge_patch(const LedgeLayer& layer, const scene_gen::Ground& ground
   out.min_step_m = far ? layer.far_min_step_m : layer.min_step_m;
   out.bury_m = layer.bury_m;
   out.relief_m = layer.relief_m;
+  out.cliff_slope_deg = layer.cliff_slope_deg;
   out.material = layer.material;
   const f64 corner = ground.surface_mm(x_mm, z_mm);
   if (!std::isfinite(corner)) return refuse("the ground's height is not finite");
@@ -411,6 +414,10 @@ bool solve_ledges(const LedgePatch& p, assets::MeshData& out, LedgeReport* repor
   const f64 min_step = wide(p.min_step_m);
   const f64 bury = wide(p.bury_m);
   const f64 relief = p.far ? 0.0 : wide(p.relief_m);
+  // Ground this steep is the cliffs generator's: no ledge under or behind one of its faces.
+  const f64 cliff_angle = wide(p.cliff_slope_deg) * (k_pi / 180.0);
+  const f64 cliff_slope =
+      p.cliff_slope_deg > 0.0f ? det::sin(cliff_angle) / det::cos(cliff_angle) : 1.0e30;
 
   // The fields at the cells' corners: the ground (metres above the patch's corner), the
   // formation's coordinate there, the share of a bed that stands, the downhill direction, and
@@ -435,6 +442,7 @@ bool solve_ledges(const LedgePatch& p, assets::MeshData& out, LedgeReport* repor
       coordinate[k] = gfx::formation_coordinate(frame, wx, wy, wz).coordinate;
       fraction[k] =
           standing_share(rule, exposure_fraction(rule, shape), soil_cover(rule, wx_mm, wz_mm));
+      if (shape.slope >= cliff_slope) fraction[k] = 0.0;
       const bool sloped = shape.slope > 1e-9;
       down_x[k] = sloped ? -shape.slope_x / shape.slope : 1.0;
       down_z[k] = sloped ? -shape.slope_z / shape.slope : 0.0;

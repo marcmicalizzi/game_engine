@@ -100,9 +100,9 @@ face agrees and a face that silently kept its own dip would draw beds crossing t
 absent, so no recipe written before keeps anything but the key it had (`canonical_rock_json`). A
 field out of the scene's ranges is refused with the scene's sentence, prefixed
 `engine.rocks.Cliff.`. Boulders, outcrops and scree do not read the field yet (their recipes have
-no world origin), and the `cliffs` generator does not yet copy the scene's field into the faces it
-writes (its owner's change): a hand-written recipe, or a generator that fills both fields, is how a
-face joins it today.
+no world origin). The `cliffs` generator copies its layer's `formation` into every face it writes,
+with the face's own world origin ([Faces in the slope](#faces-in-the-slope), G142); a hand-written
+recipe fills both fields itself.
 
 `quality` (`Low`, `Medium`, `High`, default `High`) spends respectively 10%, 35%, or 100% of the
 authored triangle budget, with a floor of 192 triangles per body or 2,000 per cliff and never above
@@ -426,6 +426,52 @@ escarpment scene's own layer over its ridge dresses both flanks; and on a stadiu
 radius of the ends writes faces that all validate with no gap under 5 cm, with fewer vertices at
 the standoffs that fold the line (93 to 96) — without the merge the same sweep fails the trace
 itself on the validator's refusal.
+
+### Faces in the slope
+
+G132 found the generated faces reading as retaining walls ([diagnosis](../experiments/v29-cliff-diagnosis.md)).
+Three options of `engine.rocks.CliffLayer` (version 2), all off by default so a layer written
+before draws the faces it drew, with the identities and recipes it had:
+
+- **`formation`**: the scene's formation, repeated in the layer because a placement generator is
+  handed its entry and the ground and not the scene. Every face's recipe then carries the field
+  and `world_origin`, the face's first vertex and the ground there, so its beds are the terrain's
+  bands and the ledges' ([Geology](#geology-on-the-world-formation-w85)). The field changes the
+  rock, not the line: a face's identity is what it was, and its recipe's key is not.
+- **`taper_m`**: where the steep ground itself ends (not where a block's edge cut the line, which
+  the next block's face runs on from), the face comes down to its least height, a metre, and its
+  section is lowered until its top is 0.3 m under the ground at its foot, over this length of its
+  line. A face's height cannot go under a metre, so an end is sunk rather than shortened to
+  nothing: the cap is under the ground.
+- **`back_m`**: the face's back stands this far behind it instead of the carving's reach plus
+  2 m, and **no top stands proud of the ground behind it**. A face's top is flat from its crest
+  to its back: its first stretch is the rock's own top, in front of the slope; then it goes into
+  the ground, and from there to the back it must stay in. Where it would come out again (a fin, a
+  crest narrower than the back) the top is lowered until the ground it enters stays 0.3 m over
+  it to the back; a top that never reaches the ground within the back is first lowered to the
+  highest ground behind it. On a slope that keeps rising behind the brow nothing changes.
+
+**The triangles.** A box's back mirrors its front, so the front's share of a face's triangles is
+under a half whatever the back's distance: 26.5 % with the back 24 m behind (v29's own depth),
+36.5 % at the default rule's 9 m and 40.6 % at 3 m, on the test's 30 m escarpment at a budget of
+20,000, where the shallower box also takes the finer cell (1.5 m against 2 m). G132 counted
+13.9 % on v29. Past a half needs a face with no back and no bottom, which is a field of the
+recipe and so of every cliff's key: not taken here (below).
+
+**What the capture showed** (a scratch copy of the escarpment scene with `formation`, `taper_m`
+24 and `back_m` 6, and a `ledges` layer with `cliff_slope_deg` 50; engine-view offscreen,
+1280 × 720, `--shadows csm`, `--sun 120,35`, msvc-debug, RTX 5090, 2026-11-10, the flat colours
+of a worktree with no material pack): the faces' beds dip across the face instead of lying level;
+the faces' ends go into the ground. **And the faces stand only on the lower two fifths of the
+flank.** The ridge's upper flank is convex, so the mean plane that keeps a face in front of the
+whole profile stands far in front of the ground at the top, and a top that must reach the ground
+within 6 m cannot be up there: the option did what it says and the steep ground above the faces
+is left bare, with the ledges on the 30 to 50° ground at the crest. That is the limit of one box a
+line on a convex slope, and what a person objects to first.
+
+**Not yet.** A face in tiers that follows a convex profile (each tier's top in the ground behind
+it); a face with no back and no bottom (a recipe field, and `canonical_rock_json` leaving it out
+while it is off, so no cliff's key moves); the unbroken cap; a face's talus by what fell from it.
 
 ### The escarpment
 
@@ -963,10 +1009,13 @@ meshes and keys, reverse tile arrival, earlier footprints and input refusals.
 [G132's v29 controls](../experiments/v29-cliff-diagnosis.md) distinguish the continuous authored
 wall from runtime LOD, identify the legacy skirt's rectangular apron lobes, and show a separate
 shadow defect persisting after all cliff meshes are removed. A narrower/lower authoring probe
-became mostly buried, so it is not an accepted replacement recipe. Terrain-aware placement of
-the finished carved face, exposed interval termination and separate visible-front versus hidden
-closure tessellation remain solver gaps. Coherent stochastic cliff PBR and coarse geological
-material layers also remain unimplemented; terrain's stochastic flag is not a RockMaterial switch.
+became mostly buried, so it is not an accepted replacement recipe. G142 built the exposed-band
+contract as the `ledges` generator ([Exposed bedrock](#exposed-bedrock-g142): fronts that end
+with the exposure, nothing built behind them) and gave the `cliffs` generator's faces the
+formation, tapered ends and a top held under the ground behind it
+([Faces in the slope](#faces-in-the-slope)). Still gaps: a face that follows a convex profile, a
+face's front taking more than half its triangles, and coherent stochastic cliff PBR and coarse
+geological material layers; terrain's stochastic flag is not a RockMaterial switch.
 
 ## Exposed bedrock (G142)
 
@@ -1063,7 +1112,9 @@ samples the ground over the tile and the rule's apron, solves both forms, and wr
 `ledge-<hash>.ledge.json` for each that has ledges, under the derived-data root's `ledges/`; the
 mesh generator `ledge` builds it like any recipe. `tile` places the tile's mesh of the ring's form
 at the tile's corner; `expand` places the near form; `representation` is 0 near, 1 far, 2 nothing.
-The patches' seed is the layer's with the world's, never a tile's.
+The patches' seed is the layer's with the world's, never a tile's. `cliff_slope_deg` (0, none)
+leaves ground at or past that slope to the `cliffs` generator's faces: set it to the cliffs
+layer's `min_slope_deg` and no ledge is solved under or behind a face.
 
 **What it does not do yet, and what each would take.**
 

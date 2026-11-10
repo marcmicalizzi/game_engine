@@ -213,6 +213,10 @@ TEST_CASE("ledges: they stand on a resistant bed past the soil slope, and nowher
   gentle.rise = 0.364;
   gentle.wave = 0.0;
   CHECK(solve(layer, gentle, 0, 0).mesh.indices.empty());
+  // And ground left to the cliffs generator (the whole hillside is past 36 degrees): nothing.
+  LedgeLayer under_cliffs = layer;
+  under_cliffs.cliff_slope_deg = 36.0f;
+  CHECK(solve(under_cliffs, slope, 0, 0).mesh.indices.empty());
   // A build of nothing is refused, so no recipe of nothing is ever written.
   geometry::ClusterFileData file;
   CHECK_FALSE(build_ledge_container(solve(layer, gentle, 0, 0).patch, {}, 0, file, error, nullptr));
@@ -388,10 +392,10 @@ TEST_CASE("ledges: a patch is pinned to the bit") {
                              << ledge_source_hash(far_form.patch));
   CHECK(near_form.report.triangles > 0u);
   CHECK(mesh_hash(near_form.mesh) == 14786275900854483312ull);
-  CHECK(ledge_source_hash(near_form.patch) == 12219237310248460628ull);
+  CHECK(ledge_source_hash(near_form.patch) == 9247016372962660688ull);
   CHECK(far_form.report.triangles > 0u);
   CHECK(mesh_hash(far_form.mesh) == 7230372813651488151ull);
-  CHECK(ledge_source_hash(far_form.patch) == 4514394477859043736ull);
+  CHECK(ledge_source_hash(far_form.patch) == 12840883218751646205ull);
 }
 
 TEST_CASE("ledges generator: tiles in any order are the whole read, a form a ring") {

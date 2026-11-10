@@ -181,3 +181,30 @@ standing bed), and the container once a mesh when the scene reader **builds** it
 after the first read. Both scale with the region's tiles, not the world's, and neither with the
 frame. What is kept resident is the entry's list (a path and two indices a tile) and the built
 meshes.
+
+**Bytes a tile, on a scene.** The escarpment's east flank (224 m by 288 m of 32 m tiles, beds 1.5
+to 6 m thick, `cliff_slope_deg` 50): 19 of 63 tiles have ledges; their near forms are 17,592
+triangles together (2,038 the largest), 1,789,906 bytes of built containers on disk (200,290 the
+largest, about 94 KB a tile that has any) and 233,038 bytes of recipes (12 KB each: the heights).
+
+## The pictures, and what they lack
+
+Captures are under the row's scratch directory, outside the repository (the hand-back names
+them); nothing here is a golden. Two scenes: a scratch hillside 36 to 41° steep with noses and
+hollows under a scatter of fescue, hair-grass and bracken, and a scratch copy of the escarpment.
+A worktree has no material pack, so every rock is its type's flat colour.
+
+Set beside the owner's reference reels (contact sheets r12, r23, r44 and r47: stepped basalt and
+moss, bedded ledges at a fall, a grass slope under a cliff), a person would object to:
+
+- **No rock surface.** Flat colour, planar faces, crisp prisms. The reels' rock is rounded at
+  every edge, fluted, stained, lichened and wet, and its beds are told apart by colour.
+- **The treads are bare.** In the reels a tread is turf or moss to its lip and the rock is the
+  riser. Here nothing grows on a tread and the scatter's plants stand through its back.
+- **Regular in height.** The formation repeats every few metres and every resistant bed crops
+  out, so from across the valley the ledges are stripes at even spacing, broken along their
+  length by the soil's patches and the fallen blocks but not across the slope.
+- **Nothing lies below them.** No fallen block under the gap it left, no scree, no soil worn at
+  a foot.
+- **One scale.** The reels' steps run from a hand's breadth to tens of metres in one view; a
+  ledge here is 0.15 to 4 m, and the faces above that are another generator's boxes.

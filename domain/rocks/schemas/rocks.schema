@@ -351,7 +351,7 @@ struct CliffBand @version(1) {
 
 /// The scene generator `cliffs`' entry (rocks.md, "The cliffs generator"): the steep ground of a
 /// region found from the ground's heights, its feet traced into lines and dressed with faces.
-struct CliffLayer @version(1) {
+struct CliffLayer @version(2) {
   name: string
   seed: u64 = 1
   /// The region dressed, world metres, x and z: a face whose first vertex lies inside is placed.
@@ -390,9 +390,21 @@ struct CliffLayer @version(1) {
   /// Where the faces' recipes are written: relative to the scene; empty, the host's derived-data
   /// root's `cliffs/`, else the repository's, else `cliffs` beside the scene.
   recipes: string
+  /// The scene's formation (`engine.scene.Formation`, W85), repeated here because a placement
+  /// generator is handed its own entry and the ground, not the scene (rocks.md, "The cliffs
+  /// generator"): with it every face's recipe carries the field and its own world origin, so the
+  /// faces' beds are the terrain's bands. Absent: the faces keep their own bedding, as before.
+  formation: engine.scene.Formation? @since(2)
+  /// Faces that sit in the slope (G142; rocks.md, "Faces in the slope"): a face's ends are sunk
+  /// into the ground over this many metres of its line, so it ends with the steep ground instead
+  /// of in a capped wall: 0 (the ends stand, as before) to 100 m.
+  taper_m: f32 = 0.0 @since(2) @unit(m)
+  /// The most a face's buried back stands behind it, metres: 2 to 200; absent, the face's own
+  /// `depth` rule. A shallow back spends the budget on the front (rocks.md, "Faces in the slope").
+  back_m: f32? @since(2) @unit(m)
 }
 
-/// Where bedrock shows through a soil mantle (G142; rocks.md, "Exposed bedrock"; the grounding,
+/// Where bedrock shows through a soil mantle (G142; rocks.md, "Exposed bedrock (G142)"; the grounding,
 /// docs/experiments/exposed-bedrock.md). The ground's slope and convexity are measured by central
 /// differences `scale_m` either side of a point, from heights in whole millimetres.
 struct ExposureRule @version(1) {
@@ -416,7 +428,7 @@ struct ExposureRule @version(1) {
 }
 
 /// One tile's ledges at one form, written by the `ledges` generator as
-/// `ledge-<hash>.ledge.json` (rocks.md, "Exposed bedrock"): the ground's heights over the tile and
+/// `ledge-<hash>.ledge.json` (rocks.md, "Exposed bedrock (G142)"): the ground's heights over the tile and
 /// an apron, the formation and the rule, from which the mesh is a pure function.
 struct LedgePatch @version(1) {
   seed: u64 = 1
@@ -446,12 +458,15 @@ struct LedgePatch @version(1) {
   min_step_m: f32 = 0.15 @unit(m)
   /// How far a front goes on under the ground at its foot, metres: 0.05 to 5.
   bury_m: f32 = 0.5 @unit(m)
-  /// How far a bed's edge may stand out of, or back from, the bed above it, metres: 0 to 2.
+  /// How far a row's edge may stand back under the row above it, metres: 0 to 2.
   relief_m: f32 = 0.25 @unit(m)
+  /// Ground at or past this slope is left to the `cliffs` generator's faces, degrees: 0 (none)
+  /// or 30 to 85.
+  cliff_slope_deg: f32 = 0.0 @unit(deg)
   material: RockMaterial
 }
 
-/// The scene generator `ledges`' entry (G142; rocks.md, "Exposed bedrock"): the resistant beds of
+/// The scene generator `ledges`' entry (G142; rocks.md, "Exposed bedrock (G142)"): the resistant beds of
 /// a formation standing out of a soil-mantled slope as ledges, a merged mesh a tile and form.
 struct LedgeLayer @version(1) {
   name: string
@@ -480,6 +495,9 @@ struct LedgeLayer @version(1) {
   min_step_m: f32 = 0.15 @unit(m)
   bury_m: f32 = 0.5 @unit(m)
   relief_m: f32 = 0.25 @unit(m)
+  /// Ground at or past this slope is left to the `cliffs` generator's faces (its
+  /// `min_slope_deg`), degrees: 0 (none) or 30 to 85.
+  cliff_slope_deg: f32 = 0.0 @unit(deg)
   material: RockMaterial
   /// Where the patches' recipes are written: relative to the scene; empty, the host's
   /// derived-data root's `ledges/`, else the repository's, else `ledges` beside the scene.

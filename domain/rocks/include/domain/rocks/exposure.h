@@ -10,8 +10,8 @@
 // degrees) and the bed is resistant past a threshold; how much of the bed's thickness stands is
 // the **exposure fraction**, which rises with the slope to one at the slope no soil is held on (45
 // degrees), is raised on a convex nose, where soil thins, and lowered in a hollow, where it
-// gathers. Every ledge the solver stands, and every face the cliffs generator sinks into a slope,
-// is sized by this one number, so the two agree on where rock is.
+// gathers. Every ledge the solver stands is sized by this one number, under the soil's patches
+// (`soil_cover`, below).
 //
 // **Why this shape.** The thresholds are measured ones and the sum is not: the published models
 // give soil depth against curvature on gentle convex ground (Heimsath et al. 1997) and rock

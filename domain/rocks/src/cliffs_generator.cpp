@@ -17,6 +17,7 @@
 #include <core/math/deterministic.h>
 #include <core/schema/json_reflect.h>
 #include <domain/geometry/cluster_file.h>
+#include <domain/gfx/formation.h>
 #include <domain/rocks/cliffs.h>
 #include <domain/rocks/rocks.h>
 #include <foundation/io/vfs.h>
@@ -42,6 +43,9 @@ f64 max2(f64 a, f64 b) { return a > b ? a : b; }
 // (cliff.cpp, "consecutive vertices at least 5 cm apart") with a hair of slack for the float32
 // rounding of the face-local coordinates.
 constexpr f64 k_min_gap = 0.0505;
+// How far under the ground behind it a face's top is held, and under the ground at its foot a
+// tapered end's (rocks.md, "Faces in the slope").
+constexpr f64 k_under_m = 0.3;
 
 // ---- the block's lattice -----------------------------------------------------------------------
 
@@ -229,12 +233,14 @@ void faces_of_line(const CliffLayer& layer, const scene_gen::Ground& ground, con
   const u32 n = line.size();
   // Per vertex: the normal (the line's right, downhill), the steep ground's height above the foot
   // and its run, and then the face's own foot, stood off downhill.
-  Vector<f64> foot_x(n), foot_z(n), foot_y(n), height(n), batter(n);
+  Vector<f64> foot_x(n), foot_z(n), foot_y(n), height(n), batter(n), out_x(n), out_z(n);
   for (u32 i = 0; i < n; ++i) {
     const Point2 a = line[i > 0 ? i - 1 : 0];
     const Point2 b = line[i + 1 < n ? i + 1 : n - 1];
     const D3 t = normalized(D3{b.x - a.x, 0.0, b.z - a.z});
     const D3 nrm{-t.z, 0.0, t.x};
+    out_x[i] = nrm.x;
+    out_z[i] = nrm.z;
     const f64 y0 = ground_at(ground, line[i].x, line[i].z);
     // Up the slope while it stays steep (four fifths of the threshold, so a ledge part way up
     // does not end the face), at most 200 m up.
@@ -274,6 +280,49 @@ void faces_of_line(const CliffLayer& layer, const scene_gen::Ground& ground, con
   }
   smooth_values(height, 2);
   smooth_values(batter, 2);
+  // **Faces that sit in the slope** (G142; rocks.md, "Faces in the slope"). `sink` is how far a
+  // vertex's whole section is lowered under the ground at its foot: a face's height cannot go
+  // under a metre, so where it must end its section goes into the ground instead.
+  Vector<f64> sink(n);
+  if (layer.back_m.has_value()) {
+    // No top proud of the ground behind it. A face's top is flat from its crest to its back.
+    // Its first stretch is the rock's own top, in front of the slope; then it goes into the
+    // ground, and from there to the back it must stay in: where the ground behind the brow falls
+    // away again (a fin, a rounded crest narrower than the back) the top would stand out of the
+    // far side as a wall's does. So the top is lowered until the ground it enters stays
+    // `k_under_m` over it all the way to the back; a top that never enters the ground at all is
+    // first lowered to the highest ground behind it. On a slope that keeps rising behind the
+    // brow nothing changes.
+    const f64 back = wide(*layer.back_m);
+    constexpr u32 k_stations = 16;
+    for (u32 i = 0; i < n; ++i) {
+      for (u32 pass = 0; pass < 4; ++pass) {
+        const f64 lean = batter[i] * height[i];
+        const f64 top = foot_y[i] - sink[i] + height[i];
+        f64 highest = -1.0e30;
+        f64 lowest_in = 1.0e30;  // the lowest ground from where the top enters it to the back
+        bool entered = false;
+        for (u32 q = 0; q <= k_stations; ++q) {
+          const f64 behind = lean + back * static_cast<f64>(q) / static_cast<f64>(k_stations);
+          const f64 g =
+              ground_at(ground, foot_x[i] - out_x[i] * behind, foot_z[i] - out_z[i] * behind);
+          highest = max2(highest, g);
+          entered = entered || g >= top;
+          if (entered) lowest_in = min2(lowest_in, g);
+        }
+        const f64 allowed_top = (entered ? lowest_in : highest) - k_under_m;
+        if (entered && top <= allowed_top) break;
+        const f64 allowed = allowed_top - foot_y[i];
+        if (allowed >= 1.0) {
+          height[i] = allowed;
+          sink[i] = 0.0;
+        } else {
+          sink[i] = min2(200.0, 1.0 - allowed);
+          height[i] = 1.0;
+        }
+      }
+    }
+  }
   // Cut into faces no longer than `max_length_m`, of equal length.
   Vector<f64> s(n);
   for (u32 i = 1; i < n; ++i) {
@@ -282,6 +331,24 @@ void faces_of_line(const CliffLayer& layer, const scene_gen::Ground& ground, con
     s[i] = s[i - 1] + std::sqrt(dx * dx + dz * dz);
   }
   const f64 total = s[n - 1];
+  // The ends taper: where the steep ground itself ends (not where a block's edge cut the line,
+  // which the next block's face runs on from), the face comes down to its least height and goes
+  // under the ground over `taper_m` of its line, so it ends with the exposure and not in a cap.
+  const f64 taper = wide(layer.taper_m);
+  if (taper > 0.0) {
+    const bool starts = !on_edge(traced[0]);
+    const bool ends = !on_edge(traced[traced.size() - 1]);
+    for (u32 i = 0; i < n; ++i) {
+      f64 w = 1.0;
+      if (starts) w = min2(w, s[i] / taper);
+      if (ends) w = min2(w, (total - s[i]) / taper);
+      if (w >= 1.0) continue;
+      w = max2(0.0, w);
+      w = w * w * (3.0 - 2.0 * w);
+      height[i] = 1.0 + (height[i] - 1.0) * w;
+      sink[i] = min2(200.0, sink[i] + (1.0 - w) * (1.0 + k_under_m));
+    }
+  }
   if (total < wide(layer.min_length_m)) return;
   const u32 pieces = static_cast<u32>(std::ceil(total / wide(layer.max_length_m) - 1e-9));
   u32 first = 0;
@@ -346,6 +413,10 @@ void faces_of_line(const CliffLayer& layer, const scene_gen::Ground& ground, con
       id = hash_combine(id, static_cast<u64>(scene_gen::nearest_mm(foot_z[i])));
       id =
           hash_combine(id, static_cast<u64>(static_cast<i64>(std::floor(height[i] * 100.0 + 0.5))));
+      // A sunk section is part of the face; one that is not sunk keeps the identity it had.
+      if (sink[i] > 0.0)
+        id =
+            hash_combine(id, static_cast<u64>(static_cast<i64>(std::floor(sink[i] * 100.0 + 0.5))));
     }
     face.identity = id;
     Cliff c = layer.face;
@@ -356,10 +427,18 @@ void faces_of_line(const CliffLayer& layer, const scene_gen::Ground& ground, con
     c.datum_y = static_cast<f32>(-face.y);
     const f64 ox = static_cast<f64>(face.x_mm) / 1000.0;
     const f64 oz = static_cast<f64>(face.z_mm) / 1000.0;
+    // The scene's formation, and where this recipe's origin stands in it: the face's beds are
+    // then the terrain's bands (rocks.md, "Geology on the world formation (W85)").
+    if (layer.formation.has_value()) {
+      c.formation = *layer.formation;
+      c.world_origin = WorldPos{ox, face.y, oz};
+    }
+    // A shallow back: the box's cells go to the front instead of to a slab inside the hill.
+    if (layer.back_m.has_value()) c.depth = *layer.back_m;
     for (const u32 i : kept) {
       CliffPoint p;
       p.x = static_cast<f32>(foot_x[i] - ox);
-      p.y = static_cast<f32>(foot_y[i] - face.y);
+      p.y = static_cast<f32>(foot_y[i] - sink[i] - face.y);
       p.z = static_cast<f32>(foot_z[i] - oz);
       p.height = static_cast<f32>(height[i]);
       p.batter = static_cast<f32>(batter[i]);
@@ -396,6 +475,16 @@ bool cliff_layer_in_range(const CliffLayer& layer, std::string& error) {
   if (!(wide(layer.foot_scale_min) > 0.0 && layer.foot_scale_min <= layer.foot_scale_max &&
         wide(layer.foot_scale_max) <= 10.0))
     return bad("foot_scale_min", "above 0, and no more than foot_scale_max, at most 10");
+  if (!in(wide(layer.taper_m), 0.0, 100.0)) return bad("taper_m", "0 to 100 m");
+  if (layer.back_m.has_value() && !in(wide(*layer.back_m), 2.0, 200.0))
+    return bad("back_m", "2 to 200 m");
+  if (layer.formation.has_value()) {
+    std::string why;
+    if (!gfx::validate_formation(*layer.formation, &why)) {
+      error = "engine.rocks.CliffLayer." + why;
+      return false;
+    }
+  }
   // The face's own fields, on a stand-in line: the ground gives the line and the heights.
   Cliff face = layer.face;
   face.points.clear();

@@ -371,3 +371,213 @@ TEST_CASE("cliffs generator: a line the stand-off folds is merged to the recipe'
   // A line that merely folds is merged, never left out.
   CHECK(skipped_total == 0);
 }
+
+// ---- faces in the slope (G142; rocks.md, "Faces in the slope") ----------------------------------
+
+namespace {
+
+// A steep band that ends inside the block: 30 m up over a run of 20 m (56 degrees) for z within
+// 65 m of 125, the run widening by 3 m a metre past that, so the ground is under 50 degrees from
+// about z = 58 down and z = 192 up.
+f64 ending_band(const void*, i64 x_mm, i64 z_mm) noexcept {
+  const f64 x = static_cast<f64>(x_mm) / 1000.0, z = static_cast<f64>(z_mm) / 1000.0;
+  const f64 past = std::fabs(z - 125.0) - 65.0;
+  const f64 run = 20.0 + (past > 0.0 ? 3.0 * past : 0.0);
+  const f64 t = x < 100.0 ? 0.0 : (x > 100.0 + run ? 1.0 : (x - 100.0) / run);
+  return 30.0 * t;
+}
+// A fin: the same 30 m rise over 20 m, a top 2 m wide, and the ground falling away behind it at
+// 37 degrees, which is not steep enough for a face of its own.
+f64 fin(const void*, i64 x_mm, i64) noexcept {
+  const f64 x = static_cast<f64>(x_mm) / 1000.0;
+  if (x < 100.0) return 0.0;
+  if (x < 120.0) return 30.0 * (x - 100.0) / 20.0;
+  if (x < 122.0) return 30.0;
+  return x < 162.0 ? 30.0 - 30.0 * (x - 122.0) / 40.0 : 0.0;
+}
+
+scene::Formation level_formation() {
+  scene::Formation f;
+  f.dip_deg = 8.0f;
+  f.azimuth_deg = 40.0f;
+  scene::FormationBed sandstone;
+  sandstone.name = "sandstone";
+  sandstone.thickness_m = 2.0f;
+  sandstone.resistance = 0.9f;
+  scene::FormationBed shale;
+  shale.name = "shale";
+  shale.thickness_m = 1.0f;
+  shale.resistance = 0.1f;
+  f.beds.push_back(sandstone);
+  f.beds.push_back(shale);
+  return f;
+}
+
+// How far a face's top stands over the ground behind it: a top is flat from its crest to its
+// back, in front of the slope at first and then in the ground; the worst, over every vertex, of
+// the top less the ground from where it goes in to `back` metres behind the crest. 1e9 for a top
+// that never goes into the ground at all.
+f64 proud_of_ground(const CliffFace& face, scene_gen::HeightFn ground, f64 back) {
+  const Vector<CliffPoint>& p = face.cliff.points;
+  f64 worst = -1.0e9;
+  for (u32 i = 0; i < p.size(); ++i) {
+    const CliffPoint& a = p[i > 0 ? i - 1 : 0];
+    const CliffPoint& b = p[i + 1 < p.size() ? i + 1 : p.size() - 1];
+    const f64 tx = static_cast<f64>(b.x - a.x), tz = static_cast<f64>(b.z - a.z);
+    const f64 l = std::sqrt(tx * tx + tz * tz);
+    const f64 nx = -tz / l, nz = tx / l;  // the line's right: downhill
+    const f64 top = face.y + static_cast<f64>(p[i].y) + static_cast<f64>(*p[i].height);
+    const f64 lean = static_cast<f64>(*p[i].batter) * static_cast<f64>(*p[i].height);
+    bool entered = false;
+    for (f64 d = 0.0; d <= back; d += 0.5) {
+      const f64 x =
+          static_cast<f64>(face.x_mm) / 1000.0 + static_cast<f64>(p[i].x) - nx * (lean + d);
+      const f64 z =
+          static_cast<f64>(face.z_mm) / 1000.0 + static_cast<f64>(p[i].z) - nz * (lean + d);
+      const f64 g = ground(nullptr, scene_gen::nearest_mm(x), scene_gen::nearest_mm(z));
+      entered = entered || g >= top;
+      if (entered) worst = std::max(worst, top - g);
+    }
+    if (!entered) return 1.0e9;
+  }
+  return worst;
+}
+
+}  // namespace
+
+TEST_CASE("cliffs generator: a face carries the layer's formation at its own origin") {
+  CliffLayer layer = layer_over(0, 0, 256, 256);
+  Vector<CliffFace> plain;
+  std::string error;
+  REQUIRE(trace_cliff_block(layer, ground_of(&escarpment), 0, 0, plain, &error));
+  REQUIRE(plain.size() == 1);
+  CHECK_FALSE(plain[0].cliff.formation.has_value());
+
+  layer.formation = level_formation();
+  Vector<CliffFace> faces;
+  REQUIRE_MESSAGE(trace_cliff_block(layer, ground_of(&escarpment), 0, 0, faces, &error), error);
+  REQUIRE(faces.size() == 1);
+  const CliffFace& face = faces[0];
+  // The same line and the same identity: the field changes the rock, not where the face stands.
+  CHECK(face.identity == plain[0].identity);
+  REQUIRE(face.cliff.formation.has_value());
+  CHECK(face.cliff.formation->dip_deg == 8.0f);
+  CHECK(face.cliff.formation->beds.size() == 2);
+  CHECK(face.cliff.world_origin.x == static_cast<f64>(face.x_mm) / 1000.0);
+  CHECK(face.cliff.world_origin.y == face.y);
+  CHECK(face.cliff.world_origin.z == static_cast<f64>(face.z_mm) / 1000.0);
+  // The recipe is keyed by the field, and solves.
+  RockFile with_field, without;
+  with_field.shape = RockShape::Cliff;
+  with_field.cliff = face.cliff;
+  without.shape = RockShape::Cliff;
+  without.cliff = plain[0].cliff;
+  CHECK(canonical_rock_json(with_field).find("formation") != std::string::npos);
+  CHECK(canonical_rock_json(without).find("formation") == std::string::npos);
+  CHECK(rock_source_hash(with_field) != rock_source_hash(without));
+  assets::MeshData mesh;
+  REQUIRE_MESSAGE(solve_cliff(face.cliff, mesh, nullptr, &error), error);
+  // A field out of range is refused by the layer, with the scene's sentence.
+  layer.formation->dip_deg = 89.0f;
+  CHECK_FALSE(cliff_layer_in_range(layer, error));
+  CHECK(error.find("dip_deg") != std::string::npos);
+}
+
+TEST_CASE("cliffs generator: a face's ends go into the ground where the steep ground ends") {
+  CliffLayer layer = layer_over(0, 0, 256, 256);
+  Vector<CliffFace> capped, tapered;
+  std::string error;
+  REQUIRE(trace_cliff_block(layer, ground_of(&ending_band), 0, 0, capped, &error));
+  REQUIRE(capped.size() == 1);
+  layer.taper_m = 16.0f;
+  REQUIRE_MESSAGE(trace_cliff_block(layer, ground_of(&ending_band), 0, 0, tapered, &error), error);
+  REQUIRE(tapered.size() == 1);
+  const Vector<CliffPoint>& before = capped[0].cliff.points;
+  const Vector<CliffPoint>& after = tapered[0].cliff.points;
+  REQUIRE(before.size() == after.size());
+  // Without the taper both ends stand: metres of face over the ground at their feet.
+  CHECK(*before[0].height > 5.0f);
+  CHECK(*before[before.size() - 1].height > 5.0f);
+  CHECK(std::fabs(before[0].y) < 0.01f);
+  // With it each end is the least face, a metre, sunk so its top is under the ground at its foot.
+  for (const u32 i : {0u, after.size() - 1}) {
+    CHECK(*after[i].height == doctest::Approx(1.0f));
+    const f64 foot =
+        ending_band(nullptr, tapered[0].x_mm + scene_gen::nearest_mm(static_cast<f64>(after[i].x)),
+                    tapered[0].z_mm + scene_gen::nearest_mm(static_cast<f64>(after[i].z)));
+    const f64 top =
+        tapered[0].y + static_cast<f64>(after[i].y) + static_cast<f64>(*after[i].height);
+    CHECK(top < foot - 0.25);
+  }
+  // The middle is the face it was, and the height rises along the taper without a step.
+  const u32 mid = after.size() / 2;
+  CHECK(*after[mid].height == *before[mid].height);
+  CHECK(after[mid].y == before[mid].y);
+  for (u32 i = 1; i <= mid; ++i)
+    CHECK(*after[i].height >= *after[i - 1].height - 0.75f);
+  // A tapered face is another face: its identity moves with its ends, and it still solves.
+  CHECK(tapered[0].identity != capped[0].identity);
+  assets::MeshData mesh;
+  REQUIRE_MESSAGE(solve_cliff(tapered[0].cliff, mesh, nullptr, &error), error);
+  // The taper's range is the layer's.
+  layer.taper_m = 500.0f;
+  CHECK_FALSE(cliff_layer_in_range(layer, error));
+  CHECK(error.find("taper_m") != std::string::npos);
+}
+
+TEST_CASE("cliffs generator: no face stands proud of the ground behind it") {
+  CliffLayer layer = layer_over(0, 0, 256, 256);
+  layer.face.depth = 24.0f;  // an authored back: the v29 faces' own (G132's diagnosis)
+  Vector<CliffFace> wall, seated;
+  std::string error;
+  REQUIRE(trace_cliff_block(layer, ground_of(&fin), 0, 0, wall, &error));
+  REQUIRE(wall.size() == 1);
+  // On a fin the default face is a retaining wall: its flat top, from the crest to a back metres
+  // behind, stands over the ground that falls away behind the brow.
+  assets::MeshData wall_mesh;
+  CliffReport wall_report;
+  REQUIRE_MESSAGE(solve_cliff(wall[0].cliff, wall_mesh, &wall_report, &error), error);
+  const f64 before = proud_of_ground(wall[0], &fin, static_cast<f64>(wall_report.depth_m));
+  layer.back_m = 24.0f;
+  REQUIRE_MESSAGE(trace_cliff_block(layer, ground_of(&fin), 0, 0, seated, &error), error);
+  REQUIRE(seated.size() == 1);
+  const f64 after = proud_of_ground(seated[0], &fin, 24.0);
+  MESSAGE("a face's top over the ground behind it, on a fin: "
+          << before << " m with its own back " << wall_report.depth_m << " m behind, " << after
+          << " m with back_m 24");
+  CHECK(before > 1.0);
+  CHECK(after <= -0.2);
+  CHECK(*seated[0].cliff.depth == 24.0f);
+  // On a slope that keeps rising behind the brow the same option changes no height.
+  Vector<CliffFace> rising, rising_seated;
+  layer.back_m.reset();
+  REQUIRE(trace_cliff_block(layer, ground_of(&escarpment), 0, 0, rising, &error));
+  layer.back_m = 24.0f;
+  REQUIRE(trace_cliff_block(layer, ground_of(&escarpment), 0, 0, rising_seated, &error));
+  REQUIRE(rising.size() == 1);
+  REQUIRE(rising_seated.size() == 1);
+  CHECK(rising_seated[0].identity == rising[0].identity);
+
+  // The triangles: a shallow back puts the box's cells on the front. A closed box cannot pass
+  // a half (its back mirrors its front); what is reached is printed.
+  layer.back_m = 3.0f;
+  Vector<CliffFace> shallow;
+  REQUIRE(trace_cliff_block(layer, ground_of(&escarpment), 0, 0, shallow, &error));
+  REQUIRE(shallow.size() == 1);
+  assets::MeshData mesh;
+  CliffReport deep_report, shallow_report;
+  REQUIRE_MESSAGE(solve_cliff(rising[0].cliff, mesh, &deep_report, &error), error);
+  REQUIRE_MESSAGE(solve_cliff(shallow[0].cliff, mesh, &shallow_report, &error), error);
+  const auto front_share = [](const CliffReport& r) {
+    return 2.0 * static_cast<f64>(r.stations) * static_cast<f64>(r.rows) /
+           static_cast<f64>(r.face_triangles);
+  };
+  MESSAGE("the front's share of the face's triangles: "
+          << front_share(deep_report) * 100.0 << " % with the back " << deep_report.depth_m
+          << " m behind (cell " << deep_report.cell_m << " m), "
+          << front_share(shallow_report) * 100.0 << " % with it 3 m behind (cell "
+          << shallow_report.cell_m << " m)");
+  CHECK(front_share(shallow_report) > front_share(deep_report));
+  CHECK(front_share(shallow_report) > 0.38);
+  CHECK(shallow_report.cell_m <= deep_report.cell_m);
+}
