@@ -24,12 +24,14 @@ engine_module(NAME rocks LAYER domain OPTIONAL WHOLE_ARCHIVE
   DEPS base containers math hash json schema log io image assets geometry materials texture scene_gen
        gfx rocks_schemas
   SOURCES src/solver.cpp src/cliff.cpp src/rocks.cpp src/cliffs_generator.cpp src/geology.cpp
-          src/surface_bake.cpp src/deposits.cpp src/deposits_generator.cpp)
+          src/surface_bake.cpp src/deposits.cpp src/deposits_generator.cpp
+          src/exposure.cpp)
 
 engine_module_tests(NAME rocks
   SOURCES tests/rocks_tests.cpp tests/cliff_tests.cpp tests/cliffs_generator_tests.cpp
           tests/size_table.cpp tests/geology_tests.cpp tests/surface_bake_tests.cpp tests/deposits_tests.cpp
-          tests/formation_tests.cpp tests/deposits_exclusion_tests.cpp)
+          tests/formation_tests.cpp tests/deposits_exclusion_tests.cpp
+          tests/exposure_tests.cpp)
 
 # The committed recipes in content/rocks/ are pinned by hash; the test finds them through
 # test_paths.h, by this path or in a test bundle.

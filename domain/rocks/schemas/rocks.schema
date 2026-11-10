@@ -392,6 +392,25 @@ struct CliffLayer @version(1) {
   recipes: string
 }
 
+/// Where bedrock shows through a soil mantle (G142; rocks.md, "Exposed bedrock"; the grounding,
+/// docs/experiments/exposed-bedrock.md). The ground's slope and convexity are measured by central
+/// differences `scale_m` either side of a point, from heights in whole millimetres.
+struct ExposureRule @version(1) {
+  /// Under this slope the soil mantle is whole and nothing crops out, degrees: 5 to 60 (30:
+  /// DiBiase, Heimsath and Whipple 2012, little rock below a 30 degree mean slope).
+  soil_slope_deg: f32 = 30.0 @unit(deg)
+  /// Past this slope no soil is held and a resistant bed stands to its full thickness, degrees:
+  /// above `soil_slope_deg`, to 80 (45: the same source, no soil-covered slope steeper).
+  rock_slope_deg: f32 = 45.0 @unit(deg)
+  /// The convexity (minus the Laplacian of the height, 1/m) at which a nose's soil thins to
+  /// nothing: 0.002 to 1 (0.03: Heimsath et al. 1997's production function and diffusivity).
+  critical_curvature: f32 = 0.03
+  /// The differences' arm, metres: 1 to 32, a whole number of the patch's cells.
+  scale_m: f32 = 4.0 @unit(m)
+  /// A bed stands as a ledge only at or above this resistance: 0 to 1.
+  min_resistance: f32 = 0.5
+}
+
 /// A terrain-fitted sediment patch, written by deposits as <hash>.deposit.json.
 /// Heights and depths are sampled at vertices; all lengths are local metres.
 struct DepositPatch @version(1) {

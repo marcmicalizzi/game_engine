@@ -967,3 +967,37 @@ became mostly buried, so it is not an accepted replacement recipe. Terrain-aware
 the finished carved face, exposed interval termination and separate visible-front versus hidden
 closure tessellation remain solver gaps. Coherent stochastic cliff PBR and coarse geological
 material layers also remain unimplemented; terrain's stochastic flag is not a RockMaterial switch.
+
+## Exposed bedrock (G142)
+
+"Rock emerging from vegetation": the resistant beds of the world's formation
+([Geology on the world formation](#geology-on-the-world-formation-w85)) standing out of a
+soil-mantled slope. [Grounding](../experiments/exposed-bedrock.md): the sources, each number
+against its source, and what is authored.
+
+### The exposure rule
+
+`include/domain/rocks/exposure.h`: `prepare_exposure`, `ground_shape`, `exposure_fraction`,
+`resistance_factor`, `exposure_at`. A point of the ground is described by its **slope** and its
+**convexity** (minus the Laplacian of the height), both central differences an arm
+`ExposureRule.scale_m` (4 m) either side of it from heights in whole millimetres, and by **the bed
+the formation puts at the surface there**. The exposure fraction is the share of a resistant bed's
+thickness that stands out of the soil:
+
+- exactly 0 under `soil_slope_deg` (30°), whatever the curvature: a soil mantle is whole;
+- on planar ground, rising linearly to 1 at `rock_slope_deg` (45°), past which no soil is held;
+- raised by `convexity / critical_curvature` (0.03 1/m) on a nose, where soil thins, and lowered by
+  the same in a hollow, where it gathers; the rock slope still ends every mantle.
+
+A bed stands only at or above `min_resistance` (0.5), by a factor from 0.35 at the threshold to 1
+at resistance 1. `Exposure::stand` is the product, and the one number the ledges and the cliffs'
+faces in the slope are sized by, so they agree on where rock is.
+
+**Why a rule on its own.** A mesh is the wrong place to learn that rock shows on a 20° lawn. The
+rule is a pure function of five heights and the formation, tested before any mesh exists
+(`tests/exposure_tests.cpp`): its ranges, the shape's exactness in millimetres, nothing under the
+soil slope and everything past the rock slope, the resistance threshold, the resistant bed exposed
+and the weak one mantled on one slope, a nose barer than the plane and a hollow keeping its soil,
+and a pin over 225 points of a dipping folded formation that MSVC, Clang and GCC reproduce.
+**Determinism:** integers in, then IEEE `+ - * /` and one square root in f64; the fold's sine is
+`det::sin`; no allocation and no state.
