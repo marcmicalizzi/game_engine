@@ -34,6 +34,9 @@ inline constexpr u32 k_water_wave_entries = 5;
 // `k_material_water_spectrum`: the water material's waves are the table in the five entries after
 // its next one (`set_water_spectrum`) instead of the four sines. Only an open body with a wind.
 inline constexpr u32 k_material_water_spectrum = 256u;
+// A water class bit (visibility_resolve.h, "The flags word's classes"; R141).
+static_assert(k_material_water_spectrum == k_material_water_spectrum_bit &&
+              (k_material_water_flags & k_material_water_spectrum) != 0);
 
 // One wave of the table, mirrored by water.slang's `WaterWave` (32 bytes).
 struct WaterWave {

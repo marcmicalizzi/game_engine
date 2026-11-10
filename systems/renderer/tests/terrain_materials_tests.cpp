@@ -446,6 +446,11 @@ TEST_CASE("renderer: ground masks shade their layers, wet them, and agree with t
   GpuScene scene;
   REQUIRE_MESSAGE(scene.create(device, data, resolved, &error), error);
   CHECK(scene.terrain_mask_tiles() == 16);
+  // The terrain's record is a table entry no cluster names, and its words are not flags (R141): its
+  // mask's first tile row, negative here, once read as every flag from bit 3 up — water, the alpha
+  // mask — so a masked ground with neither drew with the water module and the masked pipelines.
+  CHECK_FALSE(scene.has_water());
+  CHECK_FALSE(scene.has_masked());
   CHECK(scene.terrain_mask_bytes() ==
         (16u + 16u * scene_gen::mask_tile_words(k_probe_cells)) * sizeof(u32));
   SceneRenderer renderer;

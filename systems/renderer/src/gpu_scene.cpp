@@ -4005,6 +4005,12 @@ bool GpuScene::upload_materials(const ResolvedSettings& resolved, std::string* e
   share_textures_ = resolved.settings.share_textures;
   transform_conflicts_ = 0;
   Vector<gfx::ResolveMaterial> material_table;
+  // Per entry of the table, 1 where it is a material a cluster can name and 0 where it is a record
+  // that only its material reads — a water body's optics, spectrum and plunges, the terrain's
+  // record — whose word at `flags`' offset is a float or a tile index, not flags (R141: a terrain
+  // record's negative first tile row read as every flag from bit 3 up, water and the alpha mask
+  // among them). The scan below that asks what the table holds reads only the materials.
+  Vector<u8> table_material;
   Vector<u32> cluster_material(cluster_count_);
   // The coverage errors (geometry.md, "Two errors"), only where a mesh carries them: empty, or a
   // word per cluster with `k_lod_no_coverage` for every cluster of a mesh with none.
@@ -4080,6 +4086,7 @@ bool GpuScene::upload_materials(const ResolvedSettings& resolved, std::string* e
         bindless_.add_sampled_image(procedural_view_, gfx::ImageLayout::ShaderReadOnly);
     // Materials: a flat table indexed per cluster by the height band of the cluster's center.
     material_table.resize(3);
+    table_material.assign(3, u8{1});
     material_table[0].albedo = Vec4{0.86f, 0.72f, 0.46f, 0.9f};  // sand
     material_table[1].albedo = Vec4{0.42f, 0.40f, 0.38f, 0.7f};  // rock
     material_table[2].albedo = Vec4{0.92f, 0.94f, 0.97f, 0.4f};  // snow
@@ -4460,6 +4467,7 @@ bool GpuScene::upload_materials(const ResolvedSettings& resolved, std::string* e
           // S97): every body with a map, the foam's reach in the same entry.
           gfx::set_water_shore(material, optics, data_->mesh_info[m].water->body.foam_m);
         }
+        bool record_entry = false;  // the terrain's record: an entry no cluster names
         if (m == data_->terrain_mesh && data_->terrain.materials.has_value()) {
           // The native terrain's entries (renderer.md, "Native authored terrain materials",
           // "Ground materials by place"): the root, an ordinary material that names its record by
@@ -4517,6 +4525,7 @@ bool GpuScene::upload_materials(const ResolvedSettings& resolved, std::string* e
             record.map_z0_mm = static_cast<i32>(frame.z0_mm);
             record.map_per_mm = static_cast<f32>(1.0 / static_cast<f64>(frame.size_mm));
             material = gfx::pack_terrain_record(record);
+            record_entry = true;
           }
         }
         // A body's plunges (water.md, "The plunge"; S98): the falls' feet in the entry after the
@@ -4528,19 +4537,28 @@ bool GpuScene::upload_materials(const ResolvedSettings& resolved, std::string* e
                                  static_cast<u32>(data_->mesh_info[m].water->plunges.size())) > 0;
         ++source_material_index;
         material_table.push_back(material);
+        table_material.push_back(record_entry ? u8{0} : u8{1});
         if (volume || spectrum || plunges ||
-            (material.flags & gfx::k_material_water_depth_map) != 0)
+            (material.flags & gfx::k_material_water_depth_map) != 0) {
           material_table.push_back(optics);
-        if (spectrum) {
-          for (const gfx::ResolveMaterial& entry : wave_entries)
-            material_table.push_back(entry);
+          table_material.push_back(u8{0});
         }
-        if (plunges) material_table.push_back(plunge_entry);
+        if (spectrum) {
+          for (const gfx::ResolveMaterial& entry : wave_entries) {
+            material_table.push_back(entry);
+            table_material.push_back(u8{0});
+          }
+        }
+        if (plunges) {
+          material_table.push_back(plunge_entry);
+          table_material.push_back(u8{0});
+        }
       }
       const u32 local_count = material_table.size() - mesh_material_base[m];
       gfx::ResolveMaterial plain;
       plain.albedo = Vec4{0.8f, 0.8f, 0.8f, 0.6f};
       material_table.push_back(plain);  // the default for a primitive that names no material
+      table_material.push_back(u8{1});
       const geometry::ClusterMeshPart& part = data_->parts[m];
       for (u32 i = 0; i < part.cluster_count; ++i) {
         const i32 material = source_mesh.part_material[source_mesh.part_of_cluster[i]];
@@ -4622,8 +4640,11 @@ bool GpuScene::upload_materials(const ResolvedSettings& resolved, std::string* e
   has_terrain_materials_ = false;
   has_masked_ = false;
   u32 stochastic = 0;
-  for (const gfx::ResolveMaterial& material : material_table) {
-    // (A terrain record's words are not flags, so the count is of materials that read as such.)
+  ENGINE_ASSERT(table_material.size() == material_table.size(), "one mark per table entry");
+  for (u32 e = 0; e < material_table.size(); ++e) {
+    // Only the materials: a record's word at `flags`' offset is not flags (R141, above).
+    if (e < table_material.size() && table_material[e] == 0) continue;
+    const gfx::ResolveMaterial& material = material_table[e];
     if ((material.flags & (gfx::k_material_stochastic | gfx::k_material_water |
                            gfx::k_material_terrain_layers | gfx::k_material_alpha_mask)) ==
         gfx::k_material_stochastic)

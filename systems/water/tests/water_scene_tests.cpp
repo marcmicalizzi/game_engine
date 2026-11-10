@@ -181,6 +181,85 @@ TEST_CASE("water: a scene's polygon body, and a body the capability refuses") {
   CHECK(error.find("nothing") != std::string::npos);
 }
 
+// **A water body is not an alpha-tested material** (R141; renderer.md, "Alpha-tested geometry";
+// gfx's flag word, `k_material_common_flags`). The volume tier's bit was the alpha mask's bit (32)
+// until 2026-11-09, so every scene with water at the default tier read as masked: the masked
+// pipelines on, the ray-tracing templates off, the water's clusters in the shadow proxy's and the
+// micromaps' lists, and the alpha test run on the water with its `shore_m` for the alpha and its
+// `chop` for the cutoff. A pool whose chop is above its shore distance was therefore discarded
+// whole at the high tier and drawn at the low one. Here: the scene is not masked at either tier,
+// and the pool covers the same pixels at both.
+TEST_CASE("water: a water body is not an alpha-tested material, at either tier") {
+  gfx::Device device;
+  std::string error;
+  if (!device.create(gfx::DeviceOptions{}, &error)) {
+    MESSAGE("renderer unavailable here: " << error);
+    return;
+  }
+  if (!device.features().buffer_int64_atomics) {
+    MESSAGE("no 64-bit buffer atomics here");
+    device.destroy();
+    return;
+  }
+  const test::TempDir tmp("water_not_masked");
+  const std::string path = tmp.file("scene.json");
+  REQUIRE(write_text(path, scene_text(R"([{"name": "pool", "level_m": 0.2,
+    "shape": {"circle": {"center": [3, 0, -2], "radius_m": 6}}, "wind_follow": false,
+    "direction_deg": 90, "chop": 0.9, "shore_m": 0.5}])")));
+  u32 pool_pixels[2] = {};
+  bool masked[2] = {true, true};
+  bool water[2] = {};
+  const WaterQuality tiers[2] = {WaterQuality::High, WaterQuality::Low};
+  for (u32 t = 0; t < 2; ++t) {
+    SceneDesc desc;
+    REQUIRE_MESSAGE(read_scene_file(path, desc, error), error);
+    desc.ddc = tmp.file("ddc");
+    SceneData data;
+    REQUIRE_MESSAGE(load_scene(desc, data, error), error);
+    RenderSettings settings;
+    settings.water_quality = tiers[t];
+    ResolvedSettings resolved;
+    resolve_settings(settings, device.features(), &data, resolved);
+    REQUIRE(check_availability(resolved, device.features()) == RenderAvailability::Ok);
+    GpuScene scene;
+    REQUIRE_MESSAGE(scene.create(device, data, resolved, &error), error);
+    masked[t] = scene.has_masked();
+    water[t] = scene.has_water();
+    u32 water_instance = ~0u;
+    for (u32 i = 0; i < data.instances.size(); ++i) {
+      const u32 mesh = data.instances[i].mesh;
+      if (mesh < data.mesh_info.size() && data.mesh_info[mesh].water.has_value())
+        water_instance = i;
+    }
+    REQUIRE(water_instance != ~0u);
+    SceneRenderer renderer;
+    SceneRenderer::Desc rd;
+    rd.width = 160;
+    rd.height = 120;
+    REQUIRE_MESSAGE(renderer.create(device, scene, resolved, rd, &error), error);
+    FrameDesc frame;
+    frame.camera.position = WorldPos{3.0, 14.0, -12.0};
+    frame.camera.target = WorldPos{3.0, 0.0, -2.0};
+    CaptureChannels channels;
+    channels.ids = true;
+    CapturedFrame shot;
+    REQUIRE_MESSAGE(renderer.capture(frame, channels, shot, &error), error);
+    for (u32 p = 0; p < shot.width * shot.height; ++p)
+      pool_pixels[t] += shot.ids[p * k_id_words] == water_instance ? 1u : 0u;
+    renderer.destroy();
+    scene.destroy();
+  }
+  device.destroy();
+  MESSAGE("pool pixels: high " << pool_pixels[0] << ", low " << pool_pixels[1] << "; masked: high "
+                               << masked[0] << ", low " << masked[1]);
+  CHECK(water[0]);
+  CHECK(water[1]);
+  CHECK_FALSE(masked[0]);
+  CHECK_FALSE(masked[1]);
+  CHECK(pool_pixels[1] > 1000u);
+  CHECK(pool_pixels[0] == pool_pixels[1]);
+}
+
 #if ENGINE_WATER_TESTS_DUNES
 namespace {
 

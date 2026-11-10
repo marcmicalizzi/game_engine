@@ -619,8 +619,9 @@ inline void set_water_material(ResolveMaterial& material, const WaterShading& wa
 // `water_quality` high; docs/subsystems/water.md, "Translucent by volume"): the entry right after
 // it in the table is its optics (`set_water_optics`), and the resolve's water branch sees the
 // bottom through the surface by them instead of fading a painted colour. Without it the branch is
-// the one it was, which is the low tier.
-inline constexpr u32 k_material_water_volume = 32u;
+// the one it was, which is the low tier. Bit 23 since 2026-11-09 (R141): it was 32, the alpha
+// mask's bit, so every water body at the high tier was taken for an alpha-tested material.
+inline constexpr u32 k_material_water_volume = 1u << 23;
 // The optics' "no ground under the water": the bottom is the body's shallow colour.
 inline constexpr u32 k_water_no_ground = 0xffffffffu;
 
@@ -732,6 +733,46 @@ inline void set_water_shore(ResolveMaterial& water, ResolveMaterial& entry, f32 
   water.flags |= k_material_water_shore;
   entry.normal_scale = foam_m;
 }
+
+// **The flags word's classes** (R141; docs/subsystems/gfx.md, "The material flags word"). A bit
+// means one thing to every reader only if it is a **common** bit: the readers that never look at a
+// material's class — the cull pass and the rasterizers asking `material_is_masked`, the GPU
+// scene's scan of the table, the stochastic and terrain gates — test common bits alone. A **class**
+// bit means something only under its class's own bit (`k_material_water`, or a terrain entry read
+// through `sample_terrain_material`), and two classes may reuse each other's class bits, but no
+// class bit may be a common one: that is how the water's volume tier was an alpha-tested material
+// (both 32) until 2026-11-09, unseen, since no reader of the mask asks the class.
+//
+//   common   0-5 (mipped, normal_rg, uv_transform, ground_detail, water, alpha_mask), 9 (terrain
+//            root), 13 (normal_variance), 17 (stochastic)
+//   terrain  10-12, 14-16, 18 (a layer's projection, height, stochastic tiles, response, formation)
+//   water    6-8 (depth map, open, spectrum), 20-23 (shore, channel, plunge, volume)
+//   free     19, 24-31
+//
+// A new bit takes a free one and joins exactly one of the three masks below; the static_asserts
+// refuse a class bit that is also common and two names for one bit within a class (the popcounts),
+// and water.slang carries the same masks and refuses the same overlap at shader build time. The
+// spectrum's bit is defined in water_spectrum.h, which asserts its place in the water mask.
+inline constexpr u32 k_material_common_flags =
+    k_material_mipped | k_material_normal_rg | k_material_uv_transform | k_material_ground_detail |
+    k_material_water | k_material_alpha_mask | k_material_terrain_layers |
+    k_material_normal_variance | k_material_stochastic;
+inline constexpr u32 k_material_terrain_flags =
+    k_material_terrain_map | k_material_terrain_height | k_material_terrain_stochastic |
+    k_material_terrain_snow | k_material_terrain_sand | k_material_terrain_beach |
+    k_material_terrain_formation;
+inline constexpr u32 k_material_water_spectrum_bit = 256u;  // water_spectrum.h's, asserted there
+inline constexpr u32 k_material_water_flags = k_material_water_depth_map | k_material_water_open |
+                                              k_material_water_spectrum_bit |
+                                              k_material_water_shore | k_material_water_channel |
+                                              k_material_water_plunge | k_material_water_volume;
+static_assert(std::popcount(k_material_common_flags) == 9, "two common flags share a bit");
+static_assert(std::popcount(k_material_terrain_flags) == 7, "two terrain flags share a bit");
+static_assert(std::popcount(k_material_water_flags) == 7, "two water flags share a bit");
+static_assert((k_material_terrain_flags & k_material_common_flags) == 0,
+              "a terrain flag is a common flag's bit: readers that ask no class would misread it");
+static_assert((k_material_water_flags & k_material_common_flags) == 0,
+              "a water flag is a common flag's bit: readers that ask no class would misread it");
 
 // **The wet band** (docs/subsystems/water.md, "The shore"): one water body's record in the array
 // the resolve's water modules read through `ResolveParams::water_shores`. A pixel of terrain whose

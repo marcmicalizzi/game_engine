@@ -62,7 +62,31 @@ struct WaterParams {
   uint seed;
 };
 
+// The flags word's classes (gfx::k_material_common_flags and its neighbours, visibility_resolve.h;
+// R141): no water bit may be a bit a reader that never asks the class tests (the alpha mask's, 32,
+// was the volume tier's until 2026-11-09). The water bits are defined below this point (Slang's
+// constants are order-free); the terrain root's (512), the stochastic one (131072) and the terrain
+// class's are written by value, since their names exist only in the modules built with
+// MATERIAL_TERRAIN or MATERIAL_STOCHASTIC. The check runs wherever a water material is unpacked.
+static const uint k_material_common_flags_mirror =
+    k_material_mipped | k_material_normal_rg | k_material_uv_transform | k_material_ground_detail |
+    k_material_water | k_material_masked | 512u | k_material_normal_variance | 131072u;
+// map 1024, height 2048, stochastic 4096, snow 16384, sand 32768, beach 65536, formation 262144
+static const uint k_material_terrain_flags_mirror =
+    1024u | 2048u | 4096u | 16384u | 32768u | 65536u | 262144u;
+static const uint k_material_water_flags_mirror =
+    k_material_water_depth_map | k_material_water_open | k_material_water_spectrum |
+    k_material_water_shore | k_material_water_channel | k_material_water_plunge |
+    k_material_water_volume;
+void material_flag_classes_are_apart() {
+  static_assert(0u == (k_material_water_flags_mirror & k_material_common_flags_mirror),
+                "a water flag is a common flag's bit (gfx::k_material_water_flags)");
+  static_assert(0u == (k_material_terrain_flags_mirror & k_material_common_flags_mirror),
+                "a terrain flag is a common flag's bit (gfx::k_material_terrain_flags)");
+}
+
 WaterParams water_of(ResolveMaterial m) {
+  material_flag_classes_are_apart();
   WaterParams w;
   w.shallow = m.albedo.rgb;
   w.roughness = m.albedo.w;
@@ -243,7 +267,7 @@ float3 water_reflected(float3 n, float3 v) {
 // (shadowed where its ray leaves the surface) and the sky's light, and dimmed by Beer–Lambert
 // along both paths; the water itself adds the light it scatters towards the eye on the way, which
 // is what the deep tends to. Without the flag the branch is `water_radiance` above, unchanged.
-static const uint k_material_water_volume = 32u;  // gfx::k_material_water_volume
+static const uint k_material_water_volume = 8388608u;  // gfx::k_material_water_volume (1 << 23)
 static const uint k_water_no_ground = 0xffffffffu;
 // The sky's light comes down through the water along paths 1.25 times the depth on average (a
 // diffuse light's mean cosine of 0.8 under a level surface).
