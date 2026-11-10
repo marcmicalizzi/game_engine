@@ -29,9 +29,11 @@ u64 mesh_hash(const assets::MeshData& m, const ModuleReport& r) {
 }  // namespace
 
 TEST_CASE("walls: modules and placements are the same bytes on every toolchain") {
-  // G145's first pins (k_wall_version 1). A replacement records its reason and commit here.
-  constexpr u64 expected[] = {0x02733fedeca5d294ull, 0x3dace15ac83bf2f9ull, 0xd743d10662a1158aull,
-                              0x14b980d3ec22d37full, 0xf75f3d8efeaeb99aull};
+  // G145's first pins (k_wall_version 1), taken after every draw was given its own statement: a
+  // call's arguments are evaluated in the compiler's order, and with two draws among them MSVC and
+  // GCC agreed with each other and not with Clang. A replacement records its reason and commit here.
+  constexpr u64 expected[] = {0x595c4b096c1b1fecull, 0xfd72a21e576b48d4ull, 0x11b7492f3617ddb3ull,
+                              0xd8e1d7c68e42464aull, 0xf75f3d8efeaeb99aull};
   u64 got[5] = {};
   const ModuleKind kinds[4] = {ModuleKind::run, ModuleKind::head, ModuleKind::broken,
                                ModuleKind::fallen};

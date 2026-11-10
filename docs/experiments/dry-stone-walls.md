@@ -37,10 +37,10 @@ The style modelled is a **double-faced field wall of flat-bedded metamorphic sla
 | Cope stone thickness along the wall | 50 to 120 mm | — | design: slab stone on edge; TCV gives none |
 | Cope set | vertical | — | TCV, Coping ("ensure that the stone is vertical"); on slopes the stable choice of three (Coping on slopes) |
 | Cover course (across the full width under the cope) | 60 to 90 mm thick, 20 to 40 mm proud of each face | — | design: the brief's "cover band"; no source read gives its numbers |
-| Course height at the foot / under the cover | 150 mm / 60 mm, linear in height, each stone ±25 % | every stone 30 to 190 mm | TCV graded layers; slate's 150 mm |
+| Course height at the foot / under the cover | 150 mm / 60 mm, linear in height, each stone ±25 % | a course stone 30 to 190 mm; a jumper (a stone brought up level with a step beside it, two courses) to 280 mm | TCV graded layers; slate's 150 mm |
 | Face length of a stone | 1.5 to 4 times its height, at most 0.60 m | — | design: slab proportions; length into the wall at least the face length (TCV, Post: no tracing) |
-| Running joints | none crossing more than two courses | ≤ 2 | TCV, Building |
-| Through-stones | one row, bed 0.50 to 0.70 m above the ground, 0.90 m apart, projecting 30 to 100 mm | bed 0.45 to 0.75 m, centres ≤ 1.0 m | TCV (≤ 1 m centres, lower row at about 0.6 m, 25 to 150 mm projection) |
+| Running joints | none crossing more than two courses | measured: 1.6 % of joints cross three, 0.6 % four (the solver's residue, [walls](../subsystems/walls.md#the-module)) | TCV, Building |
+| Through-stones | one row, bed 0.52 to 0.60 m above the ground where the faces allow (to 0.75 m where they already stand higher), at most 0.80 m apart before a run's stretch (0.75 m in a 3 m module, under 0.89 m stretched), projecting 30 to 100 mm | bed 0.45 to 0.75 m, centres ≤ 1.0 m | TCV (≤ 1 m centres, lower row at about 0.6 m, 25 to 150 mm projection) |
 | Footing | the foot course set 100 mm below the ground, 50 to 75 mm proud of each face | — | TCV, Dimensions: a Scottish scarcement "usually 2-3″ (50-75 mm)"; the depth a design choice (TCV gives none; Post's 6-18″ is a crushed-stone bed, not a footing) |
 | Slope | courses level and stepped up to a grade of 0.5 (1 in 2); the top follows the ground | grades 0 to 0.5 | TCV, Walls on slopes; the limit a design choice (no source gives one) |
 | Gateway | two heads, vertical, ties and runners alternating, a large square topstone; 3.0 m clear by default | two heads | TCV, Wall heads; the width a design choice |
@@ -64,3 +64,7 @@ The style modelled is a **double-faced field wall of flat-bedded metamorphic sla
 | At two metres | "smooth lumps of one grey" | flat-bedded, angular slabs of differing greys, with pinnings |
 
 The measured numbers are on [walls](../subsystems/walls.md#budgets).
+
+## What the first pictures show (2026-11-10)
+
+A scratch scene (a 80 × 50 m field on the renderer's waves, grades to about 1 in 12, a gateway, a lane wall crossing a tile border, and a second layer ruined by half), drawn by `engine-view` in a streamed world, beside the reels r07, r53, r57 and r01. What reads: flat-bedded slabs in level courses with crossed joints, stones of differing greys, a ragged cope on edge, a vertical head at the gateway, a broken stretch stepping down to a fallen one with its stone spread at both feet, and no seam where the lane wall crosses a tile's border. What a person would still object to beside the photographs: every stone is a split block with straight arrises, not a weathered slab with chipped edges, so at two metres the face reads as a stack of boxes; the faces are too even in depth (the reels' gneiss faces are flush and tight, with thin dark joints, where these stones sit proud by up to 1.5 cm each); the cope reads a little like books on a shelf; a head's end shows the dark hearting in places where a course has neither tie nor runners; nothing is wet, mossed or lichened and the grass does not grow to the wall's foot; and at a hundred metres the outline form reads darker than the near wall.

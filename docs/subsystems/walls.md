@@ -31,7 +31,7 @@ So the wall is continuous across every border and the same whichever tile comes 
 
 - **The footing** first: the largest stones (15 to 19 cm, 32 to 60 cm long), set 10 cm below the ground and 6 cm proud of each face.
 - **Sweeps** along each face: each stone bedded level on the highest point under it, the hollows under it filled by **pinnings** (the small stones knocked into a face), its height graded from 15 cm at the foot to 6 cm under the cover (±25 %), its face length 1.5 to 4 times its height, its tail into the wall at least its face's length; its face split into four planes about a proud point, so the stone is angular and flat-bedded, not a rounded lump. A stone ends short of a rise in what is under it, and a stone that ends against a step is brought level with it (a jumper, to 28 cm).
-- **Joints crossed**: an end is kept 4 cm or more off every joint below (moved past it, or short of it, or over the step), and a stone that starts after a gap starts off one too. Measured over 18 modules (three grades, three seeds, a stretch and a head), 1.2 % of joints still run through three courses and 0.6 % through four: where a course ends against a step too tall for one stone, beside a through-stone's packing or a footing stepping up a slope. `module_tests.cpp` holds those as bounds; a running joint is a fault TCV names, so this is listed under [Not yet](#not-yet).
+- **Joints crossed**: an end is kept 4 cm or more off every joint below (moved past it, or short of it, or over the step), and a stone that starts after a gap starts off one too. Measured over 18 modules (three grades, three seeds, a stretch and a head), 1.6 % of joints still run through three courses and 0.6 % through four: where a course ends against a step too tall for one stone, beside a through-stone's packing or a footing stepping up a slope. `module_tests.cpp` holds those as bounds; a running joint is a fault TCV names, so this is listed under [Not yet](#not-yet).
 - **Through-stones**: one row, as many as keep them under 0.80 m apart, half a spacing in from each end (0.75 m in a 3 m module, so a run stretched to 118 % keeps TCV's 1 m centres), each laid at its own height in 0.52 to 0.60 m once the faces there are within 14 cm of it, its ends moved off the joints below, proud of both faces by 3 to 10 cm.
 - **The cover** across the full width on the line of the body's top (60 to 90 mm, 2 to 4 cm proud), and **the cope** on edge, vertical, 5 to 12 cm thick along the wall, 0.27 m ±8 % high, its top corners jittered so the line is ragged; at a head the first is a large square topstone.
 - **A head** is flush and vertical at its end, its courses alternating a **tie** across the whole wall with **runners** along it (TCV, Wall heads). **A broken stretch** stands for its first 30 % and falls in a ragged slope to its footing, its stone at its foot; **a fallen stretch** is its footing and a ragged course with its stone lying within 1.4 m of either face, most of it close.
@@ -47,7 +47,7 @@ So the wall is continuous across every border and the same whichever tile comes 
 
 | Form | What | Triangles (3 m stretch) | Reaches the renderer as |
 |---|---|---|---|
-| near | every stone | about 4,650 (1,550 a metre) | the module's finest clusters |
+| near | every stone | about 4,400 (1,460 a metre) | the module's finest clusters |
 | mid | the courses as bands (proud at a band's middle, sunk at its joint, the bands' heights the grading's), the cover as a slab, the cope as blocks of three stones at their highest, a fallen stretch's stone as a low heap | about 700 | an authored level of the module's DAG at 2 cm |
 | outline | the battered faces and the top as one box | 16 | an authored level at 8 cm |
 | strip | the outline, a metre long, stretched over a piece of up to four modules | 16 | its own mesh, in the far rings |
@@ -60,7 +60,7 @@ A module is a placement like any other, so a later entry reads it as an earlier 
 
 ## Determinism
 
-Every decision is integers (millimetres, centimetres) or draws of `hash_combine`; the solver's arithmetic is f64 sums, products, divisions and correctly rounded square roots, a sine and a cosine from `core/math/deterministic.h` for a fallen stone's turn, and no C library call in a decision. `determinism_tests.cpp` pins four modules' bytes (a stretch, a head, a broken and a fallen one: positions, normals, UVs, the three forms' indices and the palette's PNG) and a layer's placements 419 km out on curved ground. Output does not depend on the order tiles come in or the thread count (`placement_tests.cpp`).
+Every decision is integers (millimetres, centimetres) or draws of `hash_combine`; the solver's arithmetic is f64 sums, products, divisions and correctly rounded square roots, a sine and a cosine from `core/math/deterministic.h` for a fallen stone's turn, and no C library call in a decision. `determinism_tests.cpp` pins four modules' bytes (a stretch, a head, a broken and a fallen one: positions, normals, UVs, the three forms' indices and the palette's PNG) and a layer's placements 419 km out on curved ground. Output does not depend on the order tiles come in or the thread count (`placement_tests.cpp`). **Every draw is its own statement**: the first pins agreed on MSVC and GCC and not on Clang, because a call that took two draws among its arguments (a stone's swatch and its face's bulge, a through's thickness and its projection) drew them in the compiler's order of evaluation, right to left on the first two and left to right on Clang; the draws are now named locals in a fixed order.
 
 ## Budgets
 
@@ -70,11 +70,17 @@ The measured numbers, with the machine's state, are in the table under [the grou
 |---|---|
 | Instances near (modules) | 33 |
 | Instances far (strips) | 9 |
-| Triangles near, all modules at full detail | 153,606 |
-| Triangles at the mid form | 23,220 |
+| Triangles near, all modules at full detail | 145,788 |
+| Triangles at the mid form | 23,208 |
 | Triangles at the outline | 528 |
 | Traced structures | one an instance: 33 near, 9 far (the proof of concept: about 1,900) |
-| Kit resident | 39 meshes at two variants, whatever the world's size |
+| Pairs | a module's DAG is 105 to 232 clusters (about 165 for a stretch), so about 5,400 near and 9 far; the proof of concept's 1,900 stones of 600 to 700 triangles were about ten clusters each, some 19,000 |
+| Kit resident | 39 meshes at two variants, about 14 MiB of containers an entry (two entries' kits and the terrain: 32.9 MiB in the derived-data root), whatever the world's size; an entry's kit is its own (its seed is in every recipe) |
+| Plan resident | 80 bytes a module (its slot and tile reference) and 56 a piece: about 3.1 KB for 100 m; the only thing that grows with the walls' length, and it is the entry's |
+| A tile's activation | standing 100 m of modules on the ground: 12.2 µs median (`walls.stand_tile/100`); 32 m: 3.7 µs |
+| A kit entry's solve | 3.6 to 4.0 ms (`walls.solve_module`), once per recipe, then a derived-data hit; the cluster build after it is the content build's |
+
+Timings: `msvc-release`, `engine_walls_bench --wait-quiet=120 --repeats=5`, 2026-11-10, on a busy machine (the harness's state: CPU 82.6 % others, the GPU lock held by another agent's captures), so they are upper bounds. In the debug `engine-view` run of the pictures the world's placements consumer spent 4.1 ms over 2,014 calls in all, the walls' among them, and the ray tracing chain dropped no instance (`dropped_instances` 0).
 
 ## A photographed kit
 
@@ -82,7 +88,7 @@ What a kit of real stones would need, when one is made (the solver-needs report'
 
 ## Not yet
 
-- **Running joints**: 1.2 % of joints run through three courses (see [the module](#the-module)); a solver that takes a step by two stones, or plans a course's joints over a whole run, would close it.
+- **Running joints**: 1.6 % of joints run through three courses (see [the module](#the-module)); a solver that takes a step by two stones, or plans a course's joints over a whole run, would close it.
 - **A mesh a tile**: the kit repeats two variants a grade class; a tile that builds its own merged wall would not repeat and would continue its courses across module joints (a host would have to take a mesh at activation).
 - **Band footprints**: as above.
 - **Collision**: walls are drawn, not walked against; the scene collision reads placements' meshes and would take them as any mesh.

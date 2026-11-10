@@ -346,7 +346,10 @@ struct Solver {
         c[k].z += static_cast<f64>(face) * r.range(-jitter_face, jitter_face);
     }
     const i32 split = face > 0 ? 4 : face < 0 ? 2 : -1;
-    body(b, c, static_cast<u32>(r.bits() % k_stone_swatches), split, r.range(0.004, 0.014));
+    // Every draw on its own statement: the order of a call's arguments is the compiler's.
+    const u32 swatch = static_cast<u32>(r.bits() % k_stone_swatches);
+    const f64 bulge = r.range(0.004, 0.014);
+    body(b, c, swatch, split, bulge);
   }
 
   void face_stone(i32 side, f64 x0, f64 x1, f64 bed, f64 top, StoneRole role, u16 sweep) {
@@ -499,8 +502,9 @@ struct Solver {
         placed[t] = 1;
         pin_under(1, t0, t1, bed, sweep);
         pin_under(-1, t0, t1, bed, sweep);
-        across(t0, t1, bed, bed + rng.range(0.10, 0.14), rng.range(0.03, 0.10), StoneRole::through,
-               sweep);
+        const f64 thick = rng.range(0.10, 0.14);
+        const f64 proud = rng.range(0.03, 0.10);
+        across(t0, t1, bed, bed + thick, proud, StoneRole::through, sweep);
         any = true;
       }
       for (i32 side : {1, -1}) {
@@ -677,7 +681,9 @@ struct Solver {
                  {xb + lean, t1, zc + hw}, {xa + lean, t0, zc + hw}};
       for (u32 k = 4; k < 8; ++k)
         c[k].z += rng.range(-0.025, 0.025);
-      body(b, c, static_cast<u32>(rng.bits() % k_stone_swatches), 1, rng.range(0.004, 0.012));
+      const u32 swatch = static_cast<u32>(rng.bits() % k_stone_swatches);
+      const f64 bulge = rng.range(0.004, 0.012);
+      body(b, c, swatch, 1, bulge);
       x = e + rng.range(0.003, 0.015);
       first = false;
     }
@@ -692,7 +698,8 @@ struct Solver {
     const u32 count = static_cast<u32>((xb - xa) * (m.kind == ModuleKind::fallen ? 48.0 : 30.0));
     for (u32 i = 0; i < count; ++i) {
       const f64 sg = rng.next() < 0.5 ? 1.0 : -1.0;
-      const f64 d = 0.02 + 1.4 * rng.next() * rng.next();
+      const f64 d0 = rng.next();
+      const f64 d = 0.02 + 1.4 * d0 * rng.next();
       const f64 x = rng.range(xa, xb);
       const f64 h = rng.range(0.05, 0.14), len = rng.range(0.14, 0.42), dep = rng.range(0.14, 0.32);
       const f64 z = sg * (0.5 * s.base_w + d + 0.5 * dep);
@@ -721,7 +728,9 @@ struct Solver {
       st.side = static_cast<i8>(sg > 0 ? 1 : -1);
       st.role = StoneRole::rubble;
       add_stone(st);
-      body(b, c, static_cast<u32>(rng.bits() % k_stone_swatches), 1, rng.range(0.004, 0.012));
+      const u32 swatch = static_cast<u32>(rng.bits() % k_stone_swatches);
+      const f64 bulge = rng.range(0.004, 0.012);
+      body(b, c, swatch, 1, bulge);
     }
   }
 
