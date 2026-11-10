@@ -65,7 +65,8 @@ namespace engine::channels {
 // 4 (W91): steps on step-pool reaches alone, cascade clusters, knickpoints, the line in its trough.
 // 5 (W93): the section follows the bends (the bed toward the outer bank, the bars the ground's own
 //    point bars with a skin on them), the flood bed.
-inline constexpr u32 k_channels_version = 5;
+// 6 (W93, continued): no bed slab and no bar skin; the boulders alone are placed.
+inline constexpr u32 k_channels_version = 6;
 
 // A point of a channel's line, downstream order: where it is (y the ground under it, metres), its
 // bankfull width and depth, the bed's fall per metre there, and the contributing area.

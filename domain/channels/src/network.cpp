@@ -710,7 +710,7 @@ void plan_section(const ChannelLayer& p, ChannelLink& link) {
   link.flood_left.assign(m, 0.0f);
   link.flood_right.assign(m, 0.0f);
   link.entrenchment.assign(m, 0.0f);
-  if (m < 3 || !(p.section_asymmetry > 0)) return;
+  if (m < 3) return;
   const Vector<f64> s = lengths_of(link.line);
   Vector<f64> bend(m, 0.0);
   for (u32 i = 0; i < m; ++i) {
@@ -758,8 +758,8 @@ void plan_section(const ChannelLayer& p, ChannelLink& link) {
     share *= smoothstep(0, 2 * w, s[i]) * smoothstep(0, 2 * w, s[m - 1] - s[i]) *
              (1 - fan_share(p, link, s, i));
     const f64 v = bend[i] + alternate * (1 - std::fabs(bend[i])) * det::sin(theta);
-    asym[i] = std::clamp(v, -1.0, 1.0) * share * wide(p.section_asymmetry);
-    swell[i] = (1 - 2 * std::min(1.0, std::fabs(v))) * share * wide(p.section_asymmetry);
+    asym[i] = std::clamp(v, -1.0, 1.0) * share;
+    swell[i] = (1 - 2 * std::min(1.0, std::fabs(v))) * share;
   }
   // A reach's edge and a knickpoint's are steps in the share: two binomial passes ease them.
   for (Vector<f64>* values : {&asym, &swell}) {
@@ -796,7 +796,7 @@ void plan_section(const ChannelLayer& p, ChannelLink& link) {
 constexpr f64 k_flood_bend = .6;
 void plan_flood(const ChannelLayer& p, const scene_gen::Ground& ground, ChannelLink& link) {
   const u32 m = link.line.size();
-  if (m < 3 || !(p.flood_bed_widths > 1) || link.flood_left.size() != m) return;
+  if (m < 3 || link.flood_left.size() != m) return;
   const Vector<f64> s = lengths_of(link.line);
   const u32 keep = std::min<u32>(link.keep, m);
   struct Station {
@@ -1014,16 +1014,11 @@ bool layer_in_range(const ChannelLayer& p, std::string& error) {
   if (!in(wide(p.meander_slope_min), 0, .5) || !in(wide(p.meander_slope_max), 0, .5) ||
       p.meander_slope_min >= p.meander_slope_max)
     return fail(error, "meander_slope_min/max");
-  if (!in(wide(p.pool_riffle_widths), 2, 20) || !in(wide(p.riffle_rise), 0, 1) ||
-      !in(wide(p.step_pool_widths), 1, 10))
-    return fail(error, "pool_riffle_widths/riffle_rise/step_pool_widths");
-  if (!in(wide(p.shields_bankfull), .01, .2)) return fail(error, "shields_bankfull");
-  if (!in(wide(p.bar_min_width_m), 0, 100) || !in(wide(p.bar_rise), 0, 1) ||
-      !in(wide(p.bar_width_widths), .05, .5) || !in(wide(p.bar_length_widths), .5, 20))
-    return fail(error, "bar_min_width_m/bar_rise/bar_width_widths/bar_length_widths");
-  if (!in(wide(p.bank_min_width_m), 0, 100) || !in(wide(p.bank_height), 0, 2) ||
-      !in(wide(p.bank_width_widths), 0, 2) || !in(wide(p.bank_width_m), 0, 10))
-    return fail(error, "bank_min_width_m/bank_height/bank_width_widths/bank_width_m");
+  if (!in(wide(p.pool_riffle_widths), 2, 20) || !in(wide(p.step_pool_widths), 1, 10))
+    return fail(error, "pool_riffle_widths/step_pool_widths");
+  if (!in(wide(p.bar_min_width_m), 0, 100)) return fail(error, "bar_min_width_m");
+  if (!in(wide(p.bank_width_widths), 0, 2) || !in(wide(p.bank_width_m), 0, 10))
+    return fail(error, "bank_width_widths/bank_width_m");
   if (!in(wide(p.bank_slope), .25, 8)) return fail(error, "bank_slope");
   if (!in(wide(p.reach_window_widths), 5, 50) || !in(wide(p.reach_window_min_m), 0, 200))
     return fail(error, "reach_window_widths/reach_window_min_m");
@@ -1047,13 +1042,12 @@ bool layer_in_range(const ChannelLayer& p, std::string& error) {
   if (!in(wide(p.knick_window_widths), 1, 20) || !in(wide(p.knick_window_min_m), .5, 50))
     return fail(error, "knick_window_widths/knick_window_min_m");
   if (!in(wide(p.chute_gradient_max), .2, 1)) return fail(error, "chute_gradient_max");
-  if (!in(wide(p.section_asymmetry), 0, 1) || !in(wide(p.bend_radius_widths), 1, 20) ||
-      !in(wide(p.cut_bank_slope), .25, 8) || !in(wide(p.alternate_asymmetry), 0, 1) ||
-      !in(wide(p.riffle_widening), 0, .5) || !in(wide(p.bank_round), 0, 1))
+  if (!in(wide(p.bend_radius_widths), 1, 20) || !in(wide(p.cut_bank_slope), .25, 8) ||
+      !in(wide(p.alternate_asymmetry), 0, 1) || !in(wide(p.riffle_widening), 0, .5) ||
+      !in(wide(p.bank_round), .1, 1))
     return fail(error,
-                "section_asymmetry/bend_radius_widths/cut_bank_slope/alternate_asymmetry/"
-                "riffle_widening/bank_round");
-  if (!in(wide(p.flood_bed_widths), 1, 12) || !in(wide(p.flood_height_depths), 1.25, 4) ||
+                "bend_radius_widths/cut_bank_slope/alternate_asymmetry/riffle_widening/bank_round");
+  if (!in(wide(p.flood_bed_widths), 1.25, 12) || !in(wide(p.flood_height_depths), 1.25, 4) ||
       !in(wide(p.flood_entrenchment_min), 1, 5) || !in(wide(p.flood_min_width_m), 0, 100) ||
       !in(wide(p.flood_bed_depth), 0, .45) || !in(wide(p.scarp_slope), .25, 8))
     return fail(error,
@@ -1061,9 +1055,7 @@ bool layer_in_range(const ChannelLayer& p, std::string& error) {
                 "flood_min_width_m/flood_bed_depth/scarp_slope");
   if (!in(wide(p.step_m), .1, 4)) return fail(error, "step_m");
   if (!in(wide(p.piece_m), 4, 256) || p.piece_m < 4 * p.step_m) return fail(error, "piece_m");
-  for (const ChannelSurface* s : {&p.bed, &p.bars, &p.banks})
-    if (!surface_in_range(*s, error)) return false;
-  return true;
+  return surface_in_range(p.boulders, error);
 }
 
 namespace {
@@ -1599,12 +1591,11 @@ JsonValue terrain_cuts_json(const ChannelLayer& p, const ChannelNetwork& n) {
     o["width_m"] = std::move(widths);
     o["depth_m"] = std::move(depths);
     o["bank_slope"] = JsonValue(wide(p.bank_slope));
-    // W93's fields only where the layer asks for them, so a layer with none writes W91's bytes.
-    if (p.section_asymmetry > 0) {
-      o["bank_slope_left"] = std::move(left);
-      o["bank_slope_right"] = std::move(right);
-    }
-    if (p.bank_round > 0) o["bank_round"] = JsonValue(wide(p.bank_round));
+    // Every cut the generator writes is shaped: a slope a bank a point, tops rounded, faces that
+    // run out (W93; the trapezoid with a crease and a wall at its end is written no more).
+    o["bank_slope_left"] = std::move(left);
+    o["bank_slope_right"] = std::move(right);
+    o["bank_round"] = JsonValue(wide(p.bank_round));
     // The flood bed (W93; channels.md, "The flood bed"), on a link that has any: its reach each
     // side, its surface `flood_bed_depth` of the thalweg under the top, and its scarp's top at
     // the flood-prone elevation.

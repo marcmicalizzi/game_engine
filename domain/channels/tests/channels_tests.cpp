@@ -36,6 +36,10 @@ f64 gentle(const void*, i64 x, i64 z) noexcept {
   return .006 * zz + .04 * std::abs(xx - floor) + .2 * std::sin(xx / 13.0) * std::cos(zz / 17.0);
 }
 f64 nan_ground(const void*, i64, i64) noexcept { return std::numeric_limits<f64>::quiet_NaN(); }
+// The steeper valleys, defined with the reaches' cases below: a step-pool reach (4.5 %) and a
+// cascade (12 %), the two reaches whose boulders are what the generator places.
+f64 step_pool(const void*, i64 x, i64 z) noexcept;
+f64 steep(const void*, i64 x, i64 z) noexcept;
 
 scene_gen::Ground ground(scene_gen::HeightFn fn) {
   scene_gen::Ground g;
@@ -230,44 +234,25 @@ TEST_CASE("channels: the same network at one job and six, and meanders where the
 TEST_CASE(
     "channels: the placed pieces are closed, welded and outward, and build the same "
     "container twice") {
-  ChannelLayer p = layer();
-  p.head_threshold_m2 = 300;
-  // A bar's skin is laid below full asymmetry alone (W93: at full asymmetry the bar is the
-  // ground's own and nothing is laid on it, which the last lines of this case hold): half here, so
-  // the skins are among the pieces checked.
-  p.section_asymmetry = 0.5f;
+  // What is placed is the boulders of a step-pool reach's steps and of a cascade's clusters
+  // (W93, continued): every piece of both valleys is checked.
+  const ChannelLayer p = layer();
   ChannelNetwork n;
   std::string error;
-  REQUIRE(plan_channels(p, ground(gentle), 3, nullptr, n, error));
   Vector<PlacedPiece> pieces;
-  REQUIRE(place_pieces(p, n, ground(gentle), 32, pieces, error));
-  {
-    ChannelLayer full = p;
-    full.section_asymmetry = 1;
-    ChannelNetwork shaped;
-    REQUIRE(plan_channels(full, ground(gentle), 3, nullptr, shaped, error));
+  for (const scene_gen::HeightFn valley : {&step_pool, &steep}) {
+    REQUIRE(plan_channels(p, ground(valley), 3, nullptr, n, error));
     Vector<PlacedPiece> laid;
-    REQUIRE(place_pieces(full, shaped, ground(gentle), 32, laid, error));
-    u32 bed_pieces = 0;
+    REQUIRE(place_pieces(p, n, ground(valley), 32, laid, error));
+    REQUIRE_FALSE(laid.empty());
     for (const PlacedPiece& piece : laid) {
-      CHECK(piece.recipe.part != ChannelPart::Bar);
-      bed_pieces += piece.recipe.part == ChannelPart::Bed;
+      assets::MeshData mesh;
+      REQUIRE_MESSAGE(solve_piece(piece.recipe, mesh, error), error);
+      check_closed(mesh, piece.recipe.slabs.size());
+      CHECK(piece.recipe.part == ChannelPart::Boulder);
+      pieces.push_back(piece);
     }
-    CHECK(bed_pieces > 0);
   }
-  u32 beds = 0, bars = 0, banks = 0;
-  for (const PlacedPiece& piece : pieces) {
-    assets::MeshData mesh;
-    REQUIRE_MESSAGE(solve_piece(piece.recipe, mesh, error), error);
-    check_closed(mesh, piece.recipe.slabs.size());
-    beds += piece.recipe.part == ChannelPart::Bed;
-    bars += piece.recipe.part == ChannelPart::Bar;
-    banks += piece.recipe.part == ChannelPart::Bank;
-  }
-  CHECK(beds > 0);
-  CHECK(bars > 0);
-  // No bank piece since W89: the banks are the faces of the cut the terrain's `cuts` make.
-  CHECK(banks == 0);
   // The mesh generator "channel" reads the recipe's own JSON and builds the same container.
   const auto* desc = assets::MeshGeneratorRegistry::global().find("channel");
   REQUIRE(desc != nullptr);
@@ -295,12 +280,12 @@ TEST_CASE("channels: whole expansion equals any tile order, with stable ids") {
   const std::string dir = scratch.path();
   c.dir = dir;
   c.ddc = dir;
-  c.ground = ground(gentle);
+  c.ground = ground(step_pool);  // a reach with steps: the boulders are what is placed
   c.tile_size = 64;
   Opened opened;
   REQUIRE(opened.desc != nullptr);
   ChannelLayer p = layer();
-  p.head_threshold_m2 = 300;
+  p.piece_m = 16;
   std::string error;
   REQUIRE_MESSAGE(opened.desc->open(schema::to_json(p), c, &opened.state, &error), error);
   scene_gen::Placements whole, forward, backward;
@@ -353,7 +338,7 @@ TEST_CASE("channels: the refusals") {
   CHECK_FALSE(plan_channels(p, ground(notch), 0, nullptr, n, error));
   CHECK(error.find("max_samples") != std::string::npos);
   p = layer();
-  p.bed.tile_m = 0.0f;
+  p.boulders.tile_m = 0.0f;
   CHECK_FALSE(layer_in_range(p, error));
   p = layer();
   p.head_threshold_m2 = std::numeric_limits<f32>::quiet_NaN();
@@ -500,17 +485,13 @@ TEST_CASE("channels: the exclusion reaches the recipe's bank width, not the defa
   }
 }
 
-// **The cuts** (channels.md, "The cut"; W89): one per link with the TerrainCut shape, a trapezoid
-// of the hydraulic geometry's area under the ground at the line, its bed never rising downstream,
-// and the water's surface in the cut lying between that bed and the top of the bank.
+// **The cuts** (channels.md, "The cut", "The section"; W89, W93): one per link with the TerrainCut
+// shape — a slope a bank a point, a rounded top, and a flood bed where the link has one — its
+// section the trapezoid where the line is straight and deeper against the outer bank at a bend,
+// and the water's surface in the cut lying between its bed and the top of the bank.
 TEST_CASE("channels: the cuts have the TerrainCut shape and the water lies inside them") {
   ChannelLayer p = layer();
   p.head_threshold_m2 = 300;
-  // W89's section, which W93 keeps for a layer that asks for it: the trapezoid at every point, no
-  // rounding, and the five fields the cut had (W93's section has its own case below).
-  p.section_asymmetry = 0;
-  p.bank_round = 0;
-  p.flood_bed_widths = 1;
   ChannelNetwork n;
   std::string error;
   REQUIRE(plan_channels(p, ground(gentle), 0, nullptr, n, error));
@@ -530,12 +511,17 @@ TEST_CASE("channels: the cuts have the TerrainCut shape and the water lies insid
       if (b.find("name")->as_string() == p.name + " link " + std::to_string(k)) block = &b;
     if (block != nullptr) ++blocks;
     const JsonValue& o = cuts[k];
-    CHECK(o.as_object().size() == 5);
+    // Every cut is shaped: the eight fields, and five more where the link has a flood bed.
+    CHECK((o.as_object().size() == 8 || o.as_object().size() == 13));
     scene::TerrainCut cut;
     schema::ReadContext reader;
     REQUIRE(schema::from_json(cut, o, reader));
     REQUIRE(reader.ok());
     CHECK(cut.bank_slope == p.bank_slope);
+    CHECK(cut.bank_round == p.bank_round);
+    REQUIRE(cut.bank_slope_left.size() == cut.points.size());
+    REQUIRE(cut.bank_slope_right.size() == cut.points.size());
+    CHECK((cut.flood_left_m.empty() || cut.flood_left_m.size() == cut.points.size()));
     REQUIRE(cut.points.size() >= 2);
     REQUIRE(cut.width_m.size() == cut.points.size());
     REQUIRE(cut.depth_m.size() == cut.points.size());
@@ -559,11 +545,23 @@ TEST_CASE("channels: the cuts have the TerrainCut shape and the water lies insid
       const f64 d = static_cast<f64>(cut.depth_m[i]);
       const f64 thalweg =
           4 * mean / (m * w) >= 1 ? 2 * mean : .5 * m * w * (1 - std::sqrt(1 - 4 * mean / (m * w)));
-      // At least a thalweg under the top, and never more than two (the cap over a sill) but for a
-      // step's pool (W90) and a tributary's grade to its trunk's bed (W90).
-      CHECK(d >= thalweg - 2e-3);
+      // The banks: the layer's slope both sides where the section is symmetric, the outer bank
+      // the steeper at a bend (positive asymmetry bends left, so the outer bank is the right).
+      const f64 asym = static_cast<f64>(link.asym[i]);
+      const f64 left = static_cast<f64>(cut.bank_slope_left[i]);
+      const f64 right = static_cast<f64>(cut.bank_slope_right[i]);
+      CHECK((left >= .02 && left <= 16 && right >= .02 && right <= 16));
+      if (asym == 0) CHECK((std::fabs(left - m) <= 1e-4 && std::fabs(right - m) <= 1e-4));
+      if (asym > .05) CHECK(right >= left);
+      if (asym < -.05) CHECK(left >= right);
+      // At least nine tenths of a thalweg under the top (a riffle's section is up to 6 % wider and
+      // that much shallower), and never more than two (the cap over a sill) and a bend's pool
+      // (twice the mean depth at the most) but for a step's pool (W90) and a tributary's grade to
+      // its trunk's bed (W90).
+      CHECK(d >= .9 * thalweg - 2e-3);
       const f64 grade = link.trunk != ~0u ? top - n.links[link.trunk].bed[0] : 0.0;
-      CHECK(d <= std::max(2 * thalweg + static_cast<f64>(link.step_depth[i]), grade) + 2e-3);
+      CHECK(d <= std::max(2 * thalweg + static_cast<f64>(link.step_depth[i]), grade) + 2.2 * mean +
+                     2e-3);
       if (i == 0 && 4 * mean / (m * w) < 1)
         CHECK(d * (w - d / m) == doctest::Approx(w * mean).epsilon(0.01));
       // The water's surface stands in the cut: over the bed, under the top of the bank.
@@ -571,6 +569,7 @@ TEST_CASE("channels: the cuts have the TerrainCut shape and the water lies insid
       f64 y = 0;
       REQUIRE(surface[i][1].get_f64(y));
       CHECK(y >= bed + .25 * thalweg - 2e-3);  // at least half the stage's depth (0.5)
+      (void)asym;
       CHECK(y < top);
     }
   }
@@ -579,33 +578,47 @@ TEST_CASE("channels: the cuts have the TerrainCut shape and the water lies insid
   CHECK(write_json(terrain_cuts_json(p, n)) == write_json(cuts));
 }
 
-// The bed the pieces lay is the cut's flat bed, narrower than the bankfull width (W89).
-TEST_CASE("channels: the bed lies inside the cut's banks") {
-  ChannelLayer p = layer();
-  p.head_threshold_m2 = 300;
-  ChannelNetwork n;
+// **The bed is the ground** (W93, continued; channels.md, "What it places"): no bed slab and no bar
+// skin on any reach. Over valleys of every alluvial reach and the steep ones, every placed piece
+// is boulders (the notch falls 5 %, a step-pool reach); a pool-riffle and a plane-bed valley, whose
+// bed and bars W86 to W93 laid as slabs,
+// place nothing at all; and no slab of any piece is wider than a clast (a bed slab was the bed's
+// width across and tens of metres long).
+namespace {
+f64 plane_bed(const void*, i64 x, i64 z) noexcept {
+  const f64 xx = static_cast<f64>(x) / 1000.0, zz = static_cast<f64>(z) / 1000.0;
+  return .022 * zz + .2 * std::abs(xx - 128);
+}
+}  // namespace
+TEST_CASE("channels: nothing is laid on the bed: no slab or skin on any reach") {
+  const ChannelLayer p = layer();
   std::string error;
-  REQUIRE(plan_channels(p, ground(gentle), 3, nullptr, n, error));
-  Vector<PlacedPiece> pieces;
-  REQUIRE(place_pieces(p, n, ground(gentle), 32, pieces, error));
-  f64 widest_bed = 0, widest_channel = 0;
-  for (const ChannelLink& link : n.links)
-    for (const ChannelPoint& pt : link.line)
-      widest_channel = std::max(widest_channel, static_cast<f64>(pt.width_m));
-  for (const PlacedPiece& piece : pieces) {
-    if (piece.recipe.part != ChannelPart::Bed) continue;
-    for (const ChannelSlab& slab : piece.recipe.slabs) {
-      // Across a row: the first and last columns' points.
-      for (u32 r = 0; r < slab.rows; ++r) {
-        const u32 a = r * slab.columns, b = a + slab.columns - 1;
-        const f64 dx = static_cast<f64>(slab.x[b]) - static_cast<f64>(slab.x[a]);
-        const f64 dz = static_cast<f64>(slab.z[b]) - static_cast<f64>(slab.z[a]);
-        widest_bed = std::max(widest_bed, std::sqrt(dx * dx + dz * dz));
+  struct Valley {
+    scene_gen::HeightFn fn;
+    bool boulders;
+  };
+  for (const Valley& v : {Valley{&gentle, false}, Valley{&notch, true}, Valley{&plane_bed, false},
+                          Valley{&step_pool, true}, Valley{&steep, true}}) {
+    ChannelLayer q = p;
+    q.head_threshold_m2 = 300;
+    ChannelNetwork n;
+    REQUIRE(plan_channels(q, ground(v.fn), 3, nullptr, n, error));
+    REQUIRE_FALSE(n.links.empty());
+    Vector<PlacedPiece> pieces;
+    REQUIRE(place_pieces(q, n, ground(v.fn), 32, pieces, error));
+    CHECK(pieces.empty() != v.boulders);
+    for (const PlacedPiece& piece : pieces) {
+      CHECK(piece.recipe.part == ChannelPart::Boulder);
+      for (const ChannelSlab& slab : piece.recipe.slabs) {
+        CHECK(slab.rows == 7);
+        CHECK(slab.columns == 7);
+        const u32 last = slab.rows * slab.columns - 1;
+        const f64 dx = static_cast<f64>(slab.x[last]) - static_cast<f64>(slab.x[0]);
+        const f64 dz = static_cast<f64>(slab.z[last]) - static_cast<f64>(slab.z[0]);
+        CHECK(std::sqrt(dx * dx + dz * dz) <= 1.5 * 1.3 * 1.4143 + 1e-3);  // the largest clast
       }
     }
   }
-  CHECK(widest_bed > 0);
-  CHECK(widest_bed < widest_channel);
 }
 
 // ---- W90: reaches, steps, mouths, confluences, the planform -------------------------------------
@@ -777,9 +790,9 @@ TEST_CASE("channels: a cascade gets boulder clusters and no regular steps") {
   CHECK(spread / mean > .3);
   Vector<PlacedPiece> pieces;
   REQUIRE(place_pieces(p, n, ground(steep), 32, pieces, error));
-  u32 bars = 0, boulders = 0;
+  u32 others = 0, boulders = 0;
   for (const PlacedPiece& piece : pieces) {
-    bars += piece.recipe.part == ChannelPart::Bar;
+    others += piece.recipe.part != ChannelPart::Boulder;
     if (piece.recipe.part == ChannelPart::Boulder) {
       boulders += piece.recipe.slabs.size();
       assets::MeshData mesh;
@@ -787,7 +800,7 @@ TEST_CASE("channels: a cascade gets boulder clusters and no regular steps") {
       check_closed(mesh, piece.recipe.slabs.size());
     }
   }
-  CHECK(bars == 0);
+  CHECK(others == 0);
   CHECK(boulders >= link.cluster_at.size());
 }
 
@@ -1628,12 +1641,12 @@ TEST_CASE("channels: a line across a slope is moved between its banks") {
 // ---- W93, continued: one plan -------------------------------------------------------------------
 
 namespace {
-// The gentle valley with every channel's corridor lowered by 0.4 m: a ground the plan's own cuts
+// The step-pool valley with every channel's corridor lowered by 0.4 m: a ground the plan's own cuts
 // have changed, which is what the generator stands on in a cut scene.
-f64 gentle_cut(const void*, i64 x, i64 z) noexcept {
+f64 step_pool_cut(const void*, i64 x, i64 z) noexcept {
   const f64 xx = static_cast<f64>(x) / 1000.0, zz = static_cast<f64>(z) / 1000.0;
-  const f64 floor = 128 + 6 * std::sin(zz / 40.0);
-  return gentle(nullptr, x, z) - (std::abs(xx - floor) < 6 ? .4 : 0.0);
+  (void)zz;
+  return step_pool(nullptr, x, z) - (std::abs(xx - 128) < 6 ? .4 : 0.0);
 }
 // What the three readers of a plan make of it: the cuts' text, the water's, and the exclusion built
 // from the water.
@@ -1680,11 +1693,10 @@ TEST_CASE("channels: one plan is read by the cut, the water, the exclusion and t
   scene_gen::Context c;
   c.dir = dir;
   c.ddc = dir;
-  c.ground = ground(gentle);
+  c.ground = ground(step_pool);
   c.tile_size = 64;
   c.world_seed = 7;
   ChannelLayer p = layer();
-  p.head_threshold_m2 = 300;
 
   // Made once, and written.
   const u64 before = plans_made();
@@ -1760,7 +1772,7 @@ TEST_CASE("channels: one plan is read by the cut, the water, the exclusion and t
   REQUIRE_MESSAGE(ensure_plan(p, other, plans_dir, third, error), error);
   CHECK(third.key != first.key);
   other = c;
-  other.ground = ground(gentle_cut);
+  other.ground = ground(step_pool_cut);
   REQUIRE_MESSAGE(ensure_plan(p, other, plans_dir, third, error), error);
   CHECK(third.key != first.key);
 
@@ -1770,7 +1782,7 @@ TEST_CASE("channels: one plan is read by the cut, the water, the exclusion and t
   ChannelLayer named = p;
   named.plan = plan_key_text(first.key);
   scene_gen::Context cut = c;
-  cut.ground = ground(gentle_cut);
+  cut.ground = ground(step_pool_cut);
   ChannelPlan read;
   REQUIRE_MESSAGE(ensure_plan(named, cut, plans_dir, read, error), error);
   CHECK_FALSE(read.planned);
@@ -1782,7 +1794,8 @@ TEST_CASE("channels: one plan is read by the cut, the water, the exclusion and t
   scene_gen::Placements whole;
   REQUIRE(opened.desc->expand(opened.state, cut, whole, &error));
   Vector<PlacedPiece> pieces;
-  REQUIRE(place_pieces(p, first.network, ground(gentle_cut), 64, pieces, error));
+  REQUIRE(place_pieces(p, first.network, ground(step_pool_cut), 64, pieces, error));
+  REQUIRE_FALSE(pieces.empty());
   REQUIRE(whole.instances.size() == pieces.size());
   for (u32 i = 0; i < pieces.size(); ++i)
     CHECK(whole.instances[i].position == pieces[i].origin);

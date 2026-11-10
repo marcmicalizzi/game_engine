@@ -318,6 +318,8 @@ Caustics. The refraction of the reflection (the reflected scene is seen on the s
 
 **Water that flows** (roadmap S96, 2026-11-07; the grounding and the numbers are [the flowing-water page](../experiments/flowing-water.md)). A scene's `water_channels` (`engine.scene.WaterChannel`, scene version 11) names channels — a stream, a river, a waterfall — each a centreline downstream with a width, a depth and a slope at every point. Each becomes a **ribbon of water**: a mesh with the water material and the channel bit, drawn like a body's and shaded by the same branch, whose ripples run downstream at the water's speed, turn rough and white where the flow is rapid, and fall as white water where the line drops at 45 degrees or more. The drainage generator that finds channels in the ground (roadmap W86) writes this description; until it lands a scene authors channels by hand.
 
+**What the description carries besides the ribbon** (`WaterChannel` versions 4 and 5). `bank_width_widths` and `bank_width_m` (version 4, T78) and `flood_left_m` and `flood_right_m` (version 5, W93: how far the channel's flood bed reaches from the line each side, a number a point) are not drawn by the water: they are how far the placements leave the ground bare beside a channel, read by the exclusion ([scene_gen](scene_gen.md#exclusion)), and they travel here because the channels capability writes this description from the same plan it writes the terrain's cut from ([channels](channels.md#one-plan)).
+
 **The type** (`schemas/scene.schema`; the W86 contract is the first six fields, word for word):
 
 | Field | Default | Meaning |

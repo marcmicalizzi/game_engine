@@ -75,8 +75,7 @@ inline BendSection bend_section(const ChannelLayer& p, f64 w, f64 mean, f64 asym
   if (!(w > 0) || !(mean > 0)) return out;
   const f64 a = std::min(1.0, std::fabs(asym));
   const f64 m = wide(p.bank_slope);
-  // No widening where the layer asks for W89's section: its cuts are then W91's to the byte.
-  const f64 widening = p.section_asymmetry > 0 ? wide(p.riffle_widening) : 0.0;
+  const f64 widening = wide(p.riffle_widening);
   out.width = w * (1 + .5 * widening * std::clamp(swell, -1.0, 1.0));
   const f64 mean_here = mean * w / out.width;
   const Section riffle = section_of(out.width, mean_here, m);
