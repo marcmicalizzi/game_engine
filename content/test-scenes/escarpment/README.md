@@ -17,7 +17,10 @@ landscape-scale rock — faces found from the ground's heights rather than drawn
   **granite boulders** (`content/rocks/granite-boulder.rock.json`) at 4 per 100 m of face, 0.8–2.2
   scale, at their feet. Four faces, two a flank, about 215 m long and to 113 m high, overlapping where
   the blocks' grid at x = 0 and z = 0 divides them. The faces' recipes are written under the
-  derived-data root's `cliffs/`.
+  derived-data root's `cliffs/`. Since roadmap G142 a generated face has no back and no bottom and
+  its ends go into the ground where the steep ground ends
+  ([rocks](../../../docs/subsystems/rocks.md#faces-in-the-slope)); the lengths and heights above
+  were taken before that and have not been re-taken.
 - **The camera path** (`camera-path.json`) spends 34 seconds at the east flank: the whole face from
   the valley floor, along it at mid height, up over the crest looking down it, and a walk at eye
   height along its foot outside the skirt; three markers: `valley`, `along`, `foot`.

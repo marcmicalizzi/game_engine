@@ -268,7 +268,7 @@ struct CliffGround @version(1) {
 /// under a hard one, warped and grained — closed at the ends, the top and a back buried `depth`
 /// behind it, with a talus skirt of the rock's own debris at its foot. Walking along `points`, the
 /// face looks to the right (+z for a line along +x).
-struct Cliff @version(5) {
+struct Cliff @version(6) {
   seed: u64 = 1
   type: RockType = Sandstone
   /// The foot of the face, in order: 2 to 4,096 vertices, a line 1 to 1,000 m long.
@@ -326,6 +326,11 @@ struct Cliff @version(5) {
   formation: engine.scene.Formation? @since(5)
   /// Where the recipe's origin stands in the world, metres: read only with `formation`.
   world_origin: worldpos @since(5)
+  /// No back and no bottom (rocks.md, "Faces in the slope"): a face that stands in a slope shows
+  /// neither, and a closed box spends over half its triangles on them. The front, the top and the
+  /// ends remain and share their borders. The cliffs generator sets it; false is the closed box a
+  /// face on open ground needs.
+  open: bool = false @since(6)
 }
 
 /// A rock file, `<name>.rock.json`: the shape and its parameters. Only the shape's own block may
@@ -397,8 +402,8 @@ struct CliffLayer @version(2) {
   formation: engine.scene.Formation? @since(2)
   /// Faces that sit in the slope (G142; rocks.md, "Faces in the slope"): a face's ends are sunk
   /// into the ground over this many metres of its line, so it ends with the steep ground instead
-  /// of in a capped wall: 0 (the ends stand, as before) to 100 m.
-  taper_m: f32 = 0.0 @since(2) @unit(m)
+  /// of in a capped wall: 0 (the ends stand) to 100 m.
+  taper_m: f32 = 16.0 @since(2) @unit(m)
   /// The most a face's buried back stands behind it, metres: 2 to 200; absent, the face's own
   /// `depth` rule. A shallow back spends the budget on the front (rocks.md, "Faces in the slope").
   back_m: f32? @since(2) @unit(m)

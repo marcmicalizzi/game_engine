@@ -421,6 +421,8 @@ void faces_of_line(const CliffLayer& layer, const scene_gen::Ground& ground, con
     face.identity = id;
     Cliff c = layer.face;
     c.points.clear();
+    // A generated face stands in a slope: no back and no bottom (rocks.md, "Faces in the slope").
+    c.open = true;
     c.type = type_for(layer, face.y);
     c.seed = mix64(layer.seed ^ id);
     c.height = static_cast<f32>(min2(200.0, max2(1.0, mean)));

@@ -361,7 +361,8 @@ ChartUv weathered_uv(ChartUv uv, u64 seed, f64 amount) {
 // Emits one closed box: `n` cells along (i, j, k), `pos(i, j, k)` the lattice point's place and
 // `uv(axis, i, j, k, place)` its two chart coordinates in metres on the faces across `axis`.
 template <class Pos, class Uv>
-void emit_box(const u32 n[3], const Pos& pos, const Uv& uv, f64 tile_m, assets::MeshData& out) {
+void emit_box(const u32 n[3], const Pos& pos, const Uv& uv, f64 tile_m, assets::MeshData& out,
+              u32 skip = 0) {
   struct Face {
     u32 axis;
     bool plus;
@@ -376,7 +377,10 @@ void emit_box(const u32 n[3], const Pos& pos, const Uv& uv, f64 tile_m, assets::
   Vector<D3> place;     // by lattice point
   Vector<u32> slot_of;  // per emitted vertex, its lattice point
   HashMap<u64, u32> border;
-  for (const Face& face : k_faces) {
+  for (u32 face_index = 0; face_index < 6; ++face_index) {
+    // A face left out (`skip`, a bit a face of k_faces): the others still share their borders.
+    if (((skip >> face_index) & 1u) != 0) continue;
+    const Face& face = k_faces[face_index];
     const u32 nb = n[face.b];
     const u32 nc = n[face.c];
     const u32 side = nb + 1;
@@ -537,6 +541,11 @@ void emit_box(const u32 n[3], const Pos& pos, const Uv& uv, f64 tile_m, assets::
 }
 
 u64 box_triangles(u64 a, u64 b, u64 c) { return 4u * (a * b + a * c + b * c); }
+// An open face's (rocks.md, "Faces in the slope"): the front, the top and the two ends of the box,
+// without its back and its bottom.
+u64 open_triangles(u64 a, u64 b, u64 c) { return 2u * a * b + 2u * a * c + 4u * b * c; }
+// emit_box's `skip`: the bottom (axis 1, minus) and the back (axis 2, minus) of k_faces.
+constexpr u32 k_open_skip = (1u << 3) | (1u << 5);
 
 u32 cells_over(f64 metres, f64 cell, u32 at_least) {
   const f64 n = std::ceil(metres / cell - 1e-9);
@@ -821,7 +830,7 @@ bool solve_cliff(const Cliff& p, assets::MeshData& out, CliffReport* report_out,
     const u32 a = cells_over(z.line.length, cell, 2);
     const u32 b = cells_over(face_h, cell, 2);
     const u32 c = cells_over(z.depth, cell, 1);
-    const u64 ft = box_triangles(a, b, c);
+    const u64 ft = p.open ? open_triangles(a, b, c) : box_triangles(a, b, c);
     u64 st = 0;
     u32 sa = 0;
     u32 sb = 0;
@@ -936,7 +945,7 @@ bool solve_cliff(const Cliff& p, assets::MeshData& out, CliffReport* report_out,
     return weathered_uv(uv, carve.seed_grain, 2.0 * carve.fabric.irregularity);
   };
   const u32 face_n[3] = {ns, nh, nd};
-  emit_box(face_n, face_point, face_uv, tile_m, out);
+  emit_box(face_n, face_point, face_uv, tile_m, out, p.open ? k_open_skip : 0u);
   u32 parts = 1;
 
   // ---- the talus skirt -------------------------------------------------------------------------

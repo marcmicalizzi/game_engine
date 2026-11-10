@@ -430,49 +430,69 @@ itself on the validator's refusal.
 ### Faces in the slope
 
 G132 found the generated faces reading as retaining walls ([diagnosis](../experiments/v29-cliff-diagnosis.md)).
-Three options of `engine.rocks.CliffLayer` (version 2), all off by default so a layer written
-before draws the faces it drew, with the identities and recipes it had:
+What the generator does about it (`engine.rocks.CliffLayer` version 2, `engine.rocks.Cliff`
+version 6). Nothing is kept as it was for an older scene's sake: a generated face is open and its
+ends go into the ground, whatever layer wrote it.
 
-- **`formation`**: the scene's formation, repeated in the layer because a placement generator is
+- **No back and no bottom.** Every face the generator writes is `Cliff.open`: the box's front,
+  top and two ends, sharing their borders as the six faces did, priced `2ab + 2ac + 4bc` for a
+  grid of a × b × c cells instead of `4(ab + ac + bc)`. A face in a slope shows neither its back
+  nor its bottom, and what they cost now goes to a finer cell. A hand-written recipe is a closed
+  box unless it says `open`: a face on open ground is seen from behind.- **`formation`**: the scene's formation, repeated in the layer because a placement generator is
   handed its entry and the ground and not the scene. Every face's recipe then carries the field
   and `world_origin`, the face's first vertex and the ground there, so its beds are the terrain's
   bands and the ledges' ([Geology](#geology-on-the-world-formation-w85)). The field changes the
   rock, not the line: a face's identity is what it was, and its recipe's key is not.
-- **`taper_m`**: where the steep ground itself ends (not where a block's edge cut the line, which
+- **`taper_m`** (16 m; 0 leaves the ends standing): where the steep ground itself ends (not where a block's edge cut the line, which
   the next block's face runs on from), the face comes down to its least height, a metre, and its
   section is lowered until its top is 0.3 m under the ground at its foot, over this length of its
   line. A face's height cannot go under a metre, so an end is sunk rather than shortened to
   nothing: the cap is under the ground.
-- **`back_m`**: the face's back stands this far behind it instead of the carving's reach plus
-  2 m, and **no top stands proud of the ground behind it**. A face's top is flat from its crest
+- **`back_m`** (absent; see below for why it is not the rule yet): the face's back stands this
+  far behind it instead of the carving's reach plus 2 m, and **no top stands proud of the ground
+  behind it**. A face's top is flat from its crest
   to its back: its first stretch is the rock's own top, in front of the slope; then it goes into
   the ground, and from there to the back it must stay in. Where it would come out again (a fin, a
   crest narrower than the back) the top is lowered until the ground it enters stays 0.3 m over
   it to the back; a top that never reaches the ground within the back is first lowered to the
   highest ground behind it. On a slope that keeps rising behind the brow nothing changes.
 
-**The triangles.** A box's back mirrors its front, so the front's share of a face's triangles is
-under a half whatever the back's distance: 26.5 % with the back 24 m behind (v29's own depth),
-36.5 % at the default rule's 9 m and 40.6 % at 3 m, on the test's 30 m escarpment at a budget of
-20,000, where the shallower box also takes the finer cell (1.5 m against 2 m). G132 counted
-13.9 % on v29. Past a half needs a face with no back and no bottom, which is a field of the
-recipe and so of every cliff's key: not taken here (below).
+**The triangles.** On the test's 30 m escarpment at a budget of 20,000, the front's share of a
+face's triangles:
+
+| Face | Back | Cell | Front |
+|---|---|---|---|
+| a closed box, as the generator wrote before | 9.1 m (the carving's reach and 2 m) | 2 m | 36.5 % |
+| the generator's face | 9.1 m | 1.5 m | 70.2 % |
+| the same with `back_m` 3 | 3 m | 1 m | 79.9 % |
+| the same with an authored back of 24 m (v29's) | 24 m | 2 m | 50.7 % |
+
+G132 counted 13.9 % on v29's closed box with its 24 m back; the same box here is 26.5 %. A closed
+box cannot pass a half, since its back mirrors its front. What is left of an open face is its
+top, which grows with the back's distance.
 
 **What the capture showed** (a scratch copy of the escarpment scene with `formation`, `taper_m`
 24 and `back_m` 6, and a `ledges` layer with `cliff_slope_deg` 50; engine-view offscreen,
 1280 × 720, `--shadows csm`, `--sun 120,35`, msvc-debug, RTX 5090, 2026-11-10, the flat colours
-of a worktree with no material pack): the faces' beds dip across the face instead of lying level;
-the faces' ends go into the ground. **And the faces stand only on the lower two fifths of the
-flank.** The ridge's upper flank is convex, so the mean plane that keeps a face in front of the
-whole profile stands far in front of the ground at the top, and a top that must reach the ground
-within 6 m cannot be up there: the option did what it says and the steep ground above the faces
-is left bare, with the ledges on the 30 to 50° ground at the crest. That is the limit of one box a
-line on a convex slope, and what a person objects to first.
+of a worktree with no material pack; taken while the faces were still closed boxes, which changes
+the triangles and not the picture): the faces' beds dip across the face instead of lying level;
+the faces' ends go into the ground. **And with `back_m` the faces stand only on the lower two
+fifths of the flank.** The ridge's upper flank is convex, so the mean plane that keeps a face in
+front of the whole profile stands far in front of the ground at the top, and a top that must
+reach the ground within 6 m cannot be up there: the option did what it says and the steep ground
+above the faces is left bare, with the ledges on the 30 to 50° ground at the crest.
 
-**Not yet.** A face in tiers that follows a convex profile (each tier's top in the ground behind
-it); a face with no back and no bottom (a recipe field, and `canonical_rock_json` leaving it out
-while it is off, so no cliff's key moves); the unbroken cap; a face's talus by what fell from it.
+**Why a seated top is not the rule yet.** It is the right contact: a top that stands over the
+ground behind it is a wall's. But one box a line cannot both sit in a convex slope and cover it,
+and a layer that seated every face today would leave half of a mountain's steep ground as bare
+soil. The shape that replaces the box is a face in tiers, each following the profile and each
+top in the ground behind it; when it exists `back_m` stops being an option. Until then the
+default keeps the faces' cover and their flat tops, and the page says so rather than the code
+choosing quietly.
 
+**Not yet.** The tiered face; the unbroken cap along a face's top; a face's talus by what fell
+from it; the escarpment scene's own capture with the open faces and the taper (the row's eight
+captures were spent before they were the default).
 ### The escarpment
 
 [`content/test-scenes/escarpment/`](../../content/test-scenes/escarpment/README.md): an authored
@@ -480,7 +500,9 @@ ridge (`engine-content terrain-synth --kind ridge --size 401 --spacing-mm 1000`,
 the `tiles` provider at a vertical scale of 3: 120 m high, its flanks to 66°) and a `cliffs` layer of
 sandstone faces with an undercut of 0.5, a talus skirt of 0.15 of the height, 24 fallen blocks each
 and granite boulders at 4 per 100 m; four faces, two a flank, 215 m long and to 113 m high, 153,340
-triangles at a 1 m cell under 250,000. A camera path along the east flank with three markers:
+triangles at a 1 m cell under 250,000 (**as closed boxes**: since G142 the generator's faces have
+no back and no bottom and their ends taper, [above](#faces-in-the-slope); the scene's counts and
+its capture below have not been re-taken). A camera path along the east flank with three markers:
 `valley`, `along` and `foot`, the last a walk at eye height. Its heightfield is written first and is
 never committed (the README has the lines).
 
@@ -1012,9 +1034,9 @@ shadow defect persisting after all cliff meshes are removed. A narrower/lower au
 became mostly buried, so it is not an accepted replacement recipe. G142 built the exposed-band
 contract as the `ledges` generator ([Exposed bedrock](#exposed-bedrock-g142): fronts that end
 with the exposure, nothing built behind them) and gave the `cliffs` generator's faces the
-formation, tapered ends and a top held under the ground behind it
-([Faces in the slope](#faces-in-the-slope)). Still gaps: a face that follows a convex profile, a
-face's front taking more than half its triangles, and coherent stochastic cliff PBR and coarse
+formation, tapered ends, no back and no bottom (70 % of a face's triangles on its front) and,
+as an option, a top held under the ground behind it ([Faces in the slope](#faces-in-the-slope)).
+Still gaps: a face that follows a convex profile, and coherent stochastic cliff PBR and coarse
 geological material layers; terrain's stochastic flag is not a RockMaterial switch.
 
 ## Exposed bedrock (G142)

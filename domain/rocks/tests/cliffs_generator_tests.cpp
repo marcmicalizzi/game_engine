@@ -487,6 +487,8 @@ TEST_CASE("cliffs generator: a face's ends go into the ground where the steep gr
   CliffLayer layer = layer_over(0, 0, 256, 256);
   Vector<CliffFace> capped, tapered;
   std::string error;
+  CHECK(layer.taper_m == 16.0f);  // the layer's own: ends go into the ground unless it says 0
+  layer.taper_m = 0.0f;
   REQUIRE(trace_cliff_block(layer, ground_of(&ending_band), 0, 0, capped, &error));
   REQUIRE(capped.size() == 1);
   layer.taper_m = 16.0f;
@@ -558,8 +560,9 @@ TEST_CASE("cliffs generator: no face stands proud of the ground behind it") {
   REQUIRE(rising_seated.size() == 1);
   CHECK(rising_seated[0].identity == rising[0].identity);
 
-  // The triangles: a shallow back puts the box's cells on the front. A closed box cannot pass
-  // a half (its back mirrors its front); what is reached is printed.
+  // The triangles: a generated face has no back and no bottom, so its front is most of it, and
+  // a shallow back puts more of what is left there. The same face as a closed box, for the
+  // measure: under a half, since a box's back mirrors its front.
   layer.back_m = 3.0f;
   Vector<CliffFace> shallow;
   REQUIRE(trace_cliff_block(layer, ground_of(&escarpment), 0, 0, shallow, &error));
@@ -577,7 +580,30 @@ TEST_CASE("cliffs generator: no face stands proud of the ground behind it") {
           << " m behind (cell " << deep_report.cell_m << " m), "
           << front_share(shallow_report) * 100.0 << " % with it 3 m behind (cell "
           << shallow_report.cell_m << " m)");
+  CHECK(rising[0].cliff.open);
   CHECK(front_share(shallow_report) > front_share(deep_report));
-  CHECK(front_share(shallow_report) > 0.38);
+  // A layer that says nothing of its back (the face's own rule: the carving's reach and 2 m).
+  CliffLayer plain_layer = layer_over(0, 0, 256, 256);
+  Vector<CliffFace> standard;
+  REQUIRE(trace_cliff_block(plain_layer, ground_of(&escarpment), 0, 0, standard, &error));
+  REQUIRE(standard.size() == 1);
+  CliffReport standard_report;
+  REQUIRE_MESSAGE(solve_cliff(standard[0].cliff, mesh, &standard_report, &error), error);
+  MESSAGE("a layer's own face: " << front_share(standard_report) * 100.0 << " % with the back "
+                                 << standard_report.depth_m << " m behind (cell "
+                                 << standard_report.cell_m << " m), " << standard_report.triangles
+                                 << " triangles");
+  CHECK(front_share(standard_report) >= 0.6);
+  Cliff boxed = standard[0].cliff;
+  boxed.open = false;
+  CliffReport boxed_report;
+  REQUIRE_MESSAGE(solve_cliff(boxed, mesh, &boxed_report, &error), error);
+  MESSAGE("the same face as a closed box: " << front_share(boxed_report) * 100.0 << " % (cell "
+                                            << boxed_report.cell_m << " m)");
+  CHECK(front_share(boxed_report) < 0.5);
+  // An open face is the box's front, top and ends: 2ab + 2ac + 4bc of its cells.
+  CHECK(deep_report.face_triangles == 2u * deep_report.stations * deep_report.rows +
+                                          2u * deep_report.stations * deep_report.depth_rows +
+                                          4u * deep_report.rows * deep_report.depth_rows);
   CHECK(shallow_report.cell_m <= deep_report.cell_m);
 }
