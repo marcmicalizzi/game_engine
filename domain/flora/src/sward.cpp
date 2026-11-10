@@ -576,7 +576,6 @@ f64 sward_canopy_transmission(f64 leaf_area_index) noexcept {
                   det::exp(-k_sward_extinction * std::max(0.0, leaf_area_index)));
 }
 namespace {
-constexpr f64 k_luma[3] = {.2126, .7152, .0722};
 u64 floor_hash(u64 seed, u64 a, u64 b) {
   Rng r(seed ^ (a * 0x9E3779B97F4A7C15ull) ^ (b * 0xC2B2AE3D27D4EB4Full));
   return r.next();
