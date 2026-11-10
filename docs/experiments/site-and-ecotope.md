@@ -177,6 +177,29 @@ segment files in about 25 of the 64 m cells — so the forest proof of concept's
 sample's cost grows with how many segments share a cell; a network filed at a finer cell, or each
 segment's box tested first, is the lever if a scene's water is denser than the bench's.
 
+## What the pictures show
+
+A valley written for the row (not committed: `content/test-scenes/alpine` holds G125's
+specimens at metre scale and has no terrain): two ridges 600 m high along x, 1.4 km apart, on the
+waves ground at 46.5° N, 14:30, with one scatter kind of `spruce-tall.flora.json` (4–6 m spacing,
+0.7–1.1 scale) over 800 × 1,600 m; the ruled variant adds `elevation` `max` 480 m, `soft` 40 m,
+`aspect_shift_m` 80, `krummholz_m` 100, `krummholz_scale` 0.15. Captured with `engine-view
+--offscreen --time-of-day 14.5`, release build, 1600 × 900, under the GPU lock.
+
+- **With the rule**, the forest stops on a line that follows the contour, higher on the
+  south-facing (sunny) side than on the north-facing one, and the trees shrink through the band to
+  scattered krummholz before the bare slope: the shape of r06's and r27's slopes and of Körner's
+  ecotone. The unruled forest stands to the crests.
+- **What still reads as painted** beside the reels: the bare ground above the treeline is the waves
+  provider's sand, where r06 has alpine grass and r02/r49 rock; the treeline is one smooth contour,
+  where r21's breaks into tongues up the gullies (a `curvature` response would give them, and the
+  ridges here have no gullies to follow); every tree is one recipe at one form, where a real
+  treeline changes species and the krummholz is a mat, not a shrunk spruce; the forest's edge at
+  its region's end is a straight line; and the rough-ridge variant's 70 m spikes are not a
+  mountainside at all. The unruled smooth valley could not be drawn: its 35,201 trees need 19.2
+  million pairs, past the 16.8 million the visibility id names, which the ruled one's fewer trees
+  fit under.
+
 ## What is not built
 
 - **Wetness.** No wetness figure: the honest local inputs are the distance to water and the
