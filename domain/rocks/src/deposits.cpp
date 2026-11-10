@@ -23,6 +23,9 @@ constexpr i32 k_dx[] = {-1, 0, 1, -1, 1, -1, 0, 1};
 constexpr i32 k_dz[] = {-1, -1, -1, 0, 0, 1, 1, 1};
 constexpr f64 k_diag = 1.4142135623730951;
 constexpr f32 k_min_depth = 0.001f;
+// G143: the longest facet a representative fragment is built with, metres (rocks.md, "Where the
+// triangles go"): 2 cm, below what a clast shows at a walker's distance.
+constexpr f64 k_clast_edge = 0.02;
 // G143: squared, a block's sampled top may be 3% steeper than the repose (a cone's facets are its
 // secants), still under the 39-40 degree friction of talus (rocks.md, "What a face sheds").
 constexpr f64 k_rest_slack = 1.0609;
@@ -983,7 +986,16 @@ bool solve_deposit(const DepositPatch& p, assets::MeshData& out, std::string& er
     const D3 half{r, r * rng.range(.35, .7), r * rng.range(.6, 1)};
     const f64 yaw = rng.range(0, 2 * k_pi);
     const u64 seed = rng.next();
-    emit_fragment(p.type, half, {x, y, z}, yaw, .3, seed, rung, wide(p.material.tile_m), mesh);
+    // G143 (rocks.md, "Where the triangles go"): a fragment is built at the coarsest rung whose
+    // facets are no longer than k_clast_edge, never finer than its share of the budget allows, so
+    // a centimetre's pebble spends 192 triangles and not the 4,800 of rung 20.
+    u32 own = 4;
+    for (u32 candidate : k_grid_rungs) {
+      own = candidate;
+      if (candidate >= rung || .5 * k_pi * r / static_cast<f64>(candidate) <= k_clast_edge) break;
+    }
+    own = std::min(own, rung);
+    emit_fragment(p.type, half, {x, y, z}, yaw, .3, seed, own, wide(p.material.tile_m), mesh);
     // Support shear is local to each fragment; its existing angular fabric is retained.
     const f64 eps = wide(p.spacing_m) * .01;
     const f64 sx = (sample(p, support, x + eps, z) - sample(p, support, x - eps, z)) / (2 * eps);

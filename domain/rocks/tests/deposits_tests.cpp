@@ -210,16 +210,18 @@ TEST_CASE("deposits: mesh identity and cluster container are deterministic") {
   const u64 hash = checks::mesh_hash(mesh);
   MESSAGE("deposit mesh pin: ", hash);
   // G128 initial MSVC pin; the existing rock solver pins remain unchanged.
-  // Re-taken for G143's normals from the top's gradient (2026-11-10; was 6863964757150498499).
-  CHECK(hash == 625669387871748774ull);
+  // Re-taken for G143's normals from the top's gradient (2026-11-10; was 6863964757150498499), then
+  // for fragments built at the rung their size needs (was 625669387871748774).
+  CHECK(hash == 2024239262398034445ull);
   geometry::ClusterFileData a, b;
   REQUIRE_MESSAGE(build_deposit_container(p, {}, 0, a, error), error);
   REQUIRE(build_deposit_container(p, {}, 0, b, error));
   MESSAGE("deposit container pin: ", geometry::cluster_file_hash(a));
   // Rock solver v11 changes the source/build identity, not the deposit mesh above; so does
   // k_deposit_version 2 (G143, the bare rim's sink: was 17513793063602312493).
-  // k_deposit_version 3 and the normals (G143, stage 2; was 14163044981722319397).
-  CHECK(geometry::cluster_file_hash(a) == 13439161428700819251ull);
+  // k_deposit_version 3 and the normals (G143, stage 2; was 14163044981722319397), then the
+  // fragments' rungs (stage 3; was 13439161428700819251).
+  CHECK(geometry::cluster_file_hash(a) == 7929702402516820737ull);
   CHECK(geometry::cluster_file_hash(a) == geometry::cluster_file_hash(b));
   CHECK(a.source_hash == deposit_source_hash(p));
   CHECK(a.source_hash == b.source_hash);

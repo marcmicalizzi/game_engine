@@ -1104,6 +1104,26 @@ normals are `normalize(-sx, 1, -sz)` from it: the same on both sides of a border
 central differences over its own samples. Buried undersides and walls keep their triangles'
 normals. The G128 mesh pin moved to 625669387871748774 and the container pin to
 13439161428700819251 with it.
+### Where the triangles go
+
+The finest form spent 1,115 triangles a square metre on the first agent's tile, and 514 on this
+row's after its first two stages, nearly all of it in the representative fragments: every
+fragment of a patch was built at the finest cube-grid rung its equal share of the budget allowed
+(rung 20, 4,800 triangles), though 65% of them are 4-32 mm pebbles. A fragment is now built at the
+coarsest rung whose facets are no longer than `k_clast_edge` (2 cm: `pi r / 2 / n`), never finer
+than its share allows, so a centimetre's pebble spends 192 triangles and a 20 cm clast rung 16. On
+the cost case's tile that takes the finest form from 514 to 281 triangles a square metre (127,608 to
+69,768) and the tile's activation from 804 to 445 ms in msvc-release. What is left is the blocks
+(432 each), the coarse fragments and the bed (8 a square metre at 0.5 m samples).
+
+**Not done (G143's third stage, left for a later row):** the triangles freed are not yet spent on
+clast relief in the bed's surface, sized by the sorting, as geometry near and in the normal beyond;
+and the bed is not yet paler than its wall. The rock solver's fresh break against a weathered
+exterior (["Weathered exteriors and fresh breaks (G97)"](#weathered-exteriors-and-fresh-breaks-g97))
+is a baked rind on radial surfaces, which a deposit patch refuses (`surface_maps`), and the cliffs
+draw no rind either, so neither side of the contrast exists in the deposits' flat or pack material
+yet: a scree material (a role the pack does not have) or a fresh-break tint by lithology is the
+change.
 ### A tile solves
 
 Until G143's fourth stage the generator's `open` solved every patch's mesh of the region to check
@@ -1122,15 +1142,14 @@ the cache. `deposit_solve_count()` counts the meshes built in a process, and the
 | The plan alone (the supply rule, the edge, the blocks) | 7.5 ms | 29 ms |
 | `open` before stage 4 (plan, recipes, every patch solved) | 1,164 ms | 7,141 ms |
 | `open` after (plan, recipes, every patch checked, none solved) | 153 ms | 278 ms |
-| A 16 m tile's activation: its four patches' containers built (solve, cluster DAG) | 804 ms | 3,217 ms |
+| A 16 m tile's activation: its four patches' containers built (solve, cluster DAG) | 804 ms; 445 ms after [the fragments' rungs](#where-the-triangles-go) | 3,217 ms; 1,618 ms after |
 | The cost case's own time | | 3.6 s (12.8 s before) |
 
 Shared machine, 2026-11-10: two compiler processes of other agents running, CPU load 25-48% by
 `Win32_Processor.LoadPercentage` before and after the release runs, 16.7 GB free; upper bounds, one
 run each. The tile's activation is the mesh build a host does once a recipe, then reads from the
-derived-data cache. Triangles on that tile: 127,608 at the finest form over 248.5 m² of bed (514 a
-m², nearly all in the 64 representative fragments a patch at the finest rung their share allows),
-220 at the coarsest (0.9 a m²); 4 instances, each a merged mesh, carrying 29 blocks. Resident for an
+derived-data cache. Triangles on that tile: 69,768 at the finest form over 248.5 m² of bed (281 a
+m²; 127,608 before [the fragments' rungs](#where-the-triangles-go)), 301 at the coarsest (1.2 a m²); 4 instances, each a merged mesh, carrying 29 blocks. Resident for an
 entry's life: the plan's 176-byte record, its per-sample arrays (ground 8 bytes, thickness, coarse,
 sink 4 each, slope 8, drainage 8; with a formation one `RockType`), 72 bytes a pile and 128 a
 block; it scales with the region's samples, not the world's size.

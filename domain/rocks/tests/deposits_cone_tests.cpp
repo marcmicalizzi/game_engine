@@ -594,8 +594,9 @@ TEST_CASE("deposits: G143's plan and a patch with blocks are their pinned bytes"
   checks::check_closed(mesh, 1 + patch.fragments + 1);
   MESSAGE("G143 patch mesh pin: ", checks::mesh_hash(mesh));
   // Re-taken for the bed's normals from the top's gradient, not its triangles (stage 2; was
-  // 6681331591728775090).
-  CHECK(checks::mesh_hash(mesh) == 2756680837895180932ull);
+  // 6681331591728775090), then for fragments built at the rung their size needs (stage 3; was
+  // 2756680837895180932).
+  CHECK(checks::mesh_hash(mesh) == 11144000825443644342ull);
   // A patch with no blocks keeps its version-1 key: the canonical bytes say nothing of them.
   DepositPatch plain = patch;
   plain.blocks.clear();
