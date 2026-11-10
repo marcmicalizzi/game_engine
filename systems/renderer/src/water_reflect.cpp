@@ -18,9 +18,11 @@ tunables::Bool water_reflect_volume{
     "Build what the camera reflected in the water's plane sees into the frame's structures as "
     "casters, so the water reflects what no view holds (water.md, Shading; R129)"};
 tunables::Int water_reflect_shadow{
-    "renderer.water.reflect_shadow", 1, 0, 2,
+    "renderer.water.reflect_shadow", 1, 0, 3,
     "The reflected surface's sun shadow: 0 none, 1 one ray at half rate (a checkerboard of each "
-    "2x2 block), 2 one ray every pixel (water.md, Shading; R129)"};
+    "2x2 block), 2 one ray every pixel; 3 the diagnostic, each water pixel a colour saying what "
+    "its rays met: red the rippled ray met nothing, green it met a surface, blue added where the "
+    "flat mirror's ray met one (water.md, Reflections of the scene; R129)"};
 
 }  // namespace
 
@@ -62,6 +64,8 @@ u32 water_reflect_shadow_flags(u64 frame_index) noexcept {
   switch (rate) {
     case 0: return gfx::k_shadow_water_reflect_unshadowed;
     case 2: return gfx::k_shadow_water_reflect_full;
+    // Both rate bits, which no rate sets: the shader's diagnostic (water_reflect.slang).
+    case 3: return gfx::k_shadow_water_reflect_full | gfx::k_shadow_water_reflect_unshadowed;
     default: return 0u;
   }
 }
