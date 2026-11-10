@@ -378,10 +378,12 @@ tunables::Enum<GiMode> gi_mode{
     "light too, the sun on its albedo and the cache at its cell. Only with traced shadows "
     "(renderer.md, Indirect light: the world-space "
     "cache; read at load)"};
-// 32 MiB is a million cells, about thirty times what a 3840x2160 frame of the forest touches at
-// the default scale, so a walk's recent past stays warm as the eye turns back.
+// 128 MiB is four million cells (R69 stage 4). 32 MiB, a million, was stage 1's: v37's held
+// south-lake view holds 384,000 to 414,000 cells, but its buckets fill unevenly, so a million
+// turned 2,600 inserts a frame away when held and many more on a turn, and the turn's first frame
+// stood 1.68 luma steps from converged against 1.30 with four million (renderer.md, "Stage 4").
 tunables::Int gi_cache_mib{
-    "renderer.gi.cache_mib", 32, 1, 4096,
+    "renderer.gi.cache_mib", 128, 1, 4096,
     "The world-space cache's size in MiB, made once at load: 32 bytes a cell, a power of two of "
     "cells and a 4-byte key each, and a 64-byte header (renderer.md, Indirect light: the "
     "world-space cache; read at load)"};

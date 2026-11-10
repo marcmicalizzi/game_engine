@@ -1915,9 +1915,9 @@ not read the cache. The material's ambient occlusion still multiplies it, as it 
 harmonics: it stands for occlusion below a cell's size. Only the opaque path's ambient reads it; the
 water's own ambient is the harmonics still.
 
-**The buffer** is `renderer.gi.cache_mib` (32 MiB: a million cells, about thirty times what a
-3840×2160 frame of the forest touches at the default scale, so a walk's recent past stays warm as
-the eye turns back; stage 2 adds the million keys and the header, 36 MiB made), made once at load and never by a frame (`gi cache: the frames with the cache on
+**The buffer** is `renderer.gi.cache_mib` (128 MiB since stage 4: four million cells and their keys,
+144 MiB made; it was 32 MiB, a million cells, which v37's held view — 384,000 to 414,000 cells —
+filled unevenly enough to turn 2,600 inserts a frame away, and many more on a turn, below), made once at load and never by a frame (`gi cache: the frames with the cache on
 make no buffer and allocate as the mode off`). The mode is `off` without traced shadows, whose query
 the sample pass is. `ResolveParams` grew two rows, 496 to 528 bytes (544 with S97's wet-band row after them).
 
@@ -2106,7 +2106,18 @@ the first frame after the turn stood 0.018 of the term from its converged pictur
 under main; the box's converged picture moved towards the reference (FLIP 0.105 → 0.092). At
 3840×2160 the two cost 0.8 ms a frame at 48 m. The brief's rule was on under `bounce` where they
 met its target on the forest; they did not, so `renderer.gi.shell_m` and `renderer.gi.shell_rays`
-default to 0, and `48` and `65536` are the measured setting.
+default to 0, and `48` and `65536` are the measured setting. Their counts said why: with them the
+cache held 943,000 to 970,000 of its million cells, turned 13,000 inserts a frame away held and
+246,000 on the turn — the sphere round the eye is a million cells more than the view's — and at
+four million cells it held 1.55 million, 849,000 of them young: 65,536 directions a frame are about
+a tenth of what would warm the sphere's own level, as the arithmetic above says.
+
+**What did move the turn: the cache's size.** The same counts on main's frame show a million cells
+too few for v37 at all (2,600 inserts a frame turned away on a held view). At 128 MiB the turn's
+first frame stands **1.30** from its converged picture against **1.68** at 32 MiB (the no-turn floor
+0.43), with no insert turned away, so `renderer.gi.cache_mib` defaults to 128: 108 MiB more device
+memory where the cache is on, and a fold over four times the cells (stage 2 measured 0.01 ms for a
+million; four million was not timed).
 
 ## The sun's day
 
