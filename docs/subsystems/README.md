@@ -80,6 +80,7 @@ One page per module, created in the same change that creates the module. Templat
 | wetland | domain | [wetland.md](wetland.md) |
 | caves | domain | [caves.md](caves.md) |
 | channels | domain | [channels.md](channels.md) |
+| walls | domain | [walls.md](walls.md) |
 | renderer | systems | [renderer.md](renderer.md) |
 | animation | systems | [animation.md](animation.md) |
 | audio_system (capability) | systems | [audio_system.md](audio_system.md) |
