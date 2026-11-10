@@ -10,7 +10,9 @@
 //    a point within `half the surface width + the bank's reach` of the centreline, the reach being
 //    the channel's own `bank_width_widths * w + bank_width_m` (`WaterChannel`, which the channels
 //    recipe writes; its defaults 0.25 w + 0.4 m are the recipe's; T78), whose outer edge is the
-//    riparian edge the channels page names;
+//    riparian edge the channels page names; and, where the channel's cut has a **flood bed**
+//    (W93), out to the bed's edge on each side (`WaterChannel.flood_left_m`, `flood_right_m`, the
+//    cut's own numbers), whichever of the two reaches further on that side;
 //  * **water** (`water`) -- a point of a body's outline whose ground is below its level (what
 //    `water::depth_at` calls wading), and the whole of an open body's sea.
 //
@@ -92,6 +94,8 @@ class Exclusion {
   struct Segment {
     f64 ax = 0.0, az = 0.0, bx = 0.0, bz = 0.0;  // metres
     f64 ra = 0.0, rb = 0.0;                      // bank edge at each end, from the line
+    // The flood bed's edge at each end, from the line, left ((-dz, dx)) and right; 0: none (W93).
+    f64 la = 0.0, lb = 0.0, ga = 0.0, gb = 0.0;
   };
   struct Cell {
     i64 key_z = 0;

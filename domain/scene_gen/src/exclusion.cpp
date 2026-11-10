@@ -105,6 +105,13 @@ bool Exclusion::build(std::span<const scene::TerrainHole> holes,
       const f64 w = static_cast<f64>(channel.width_m[i]);
       return 0.5 * w + bank_widths * w + bank_m;
     };
+    // The flood bed's reach each side (W93), the cut's own numbers: read where both arrays are
+    // the points' long; a negative or non-finite one is none, as a bank's number is its default.
+    const bool flood = channel.flood_left_m.size() == n && channel.flood_right_m.size() == n;
+    const auto flood_number = [](f32 v) {
+      const f64 d = static_cast<f64>(v);
+      return finite(d) && d > 0.0 ? d : 0.0;
+    };
     for (u32 i = 0; i + 1 < n; ++i) {
       Segment s;
       s.ax = channel.points[i].x;
@@ -113,8 +120,16 @@ bool Exclusion::build(std::span<const scene::TerrainHole> holes,
       s.bz = channel.points[i + 1].z;
       s.ra = edge(i);
       s.rb = edge(i + 1);
+      if (flood) {
+        s.la = flood_number(channel.flood_left_m[i]);
+        s.lb = flood_number(channel.flood_left_m[i + 1]);
+        s.ga = flood_number(channel.flood_right_m[i]);
+        s.gb = flood_number(channel.flood_right_m[i + 1]);
+      }
       const u32 id = segments_.size();
-      const f64 reach = std::max(s.ra, s.rb) + k_riparian_reach_m;
+      const f64 reach =
+          std::max(std::max(std::max(s.ra, s.rb), std::max(s.la, s.lb)), std::max(s.ga, s.gb)) +
+          k_riparian_reach_m;
       const i64 cx0 = cell_of(std::min(s.ax, s.bx) - reach);
       const i64 cx1 = cell_of(std::max(s.ax, s.bx) + reach);
       const i64 cz0 = cell_of(std::min(s.az, s.bz) - reach);
@@ -163,7 +178,13 @@ f64 Exclusion::bank_gap(const Segment& s, f64 x, f64 z) noexcept {
   if (len2 > 0.0) t = std::clamp(((x - s.ax) * dx + (z - s.az) * dz) / len2, 0.0, 1.0);
   const f64 px = s.ax + t * dx - x;
   const f64 pz = s.az + t * dz - z;
-  return std::sqrt(px * px + pz * pz) - (s.ra + t * (s.rb - s.ra));
+  f64 reach = s.ra + t * (s.rb - s.ra);
+  // The flood bed's edge on the point's side of the line, where it reaches further (W93). The
+  // left is the side of (-dz, dx).
+  const bool left = dx * (z - s.az) - dz * (x - s.ax) >= 0.0;
+  const f64 bed = left ? s.la + t * (s.lb - s.la) : s.ga + t * (s.gb - s.ga);
+  if (bed > reach) reach = bed;
+  return std::sqrt(px * px + pz * pz) - reach;
 }
 
 f64 Exclusion::nearest_gap(f64 x, f64 z) const noexcept {

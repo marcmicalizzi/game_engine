@@ -208,9 +208,46 @@ slumping top and whose inner side is a pale gravel bar rising out of the water.)
 
 ## The flood bed
 
-(W93, stage 2: [channels](../subsystems/channels.md#the-flood-bed).) The cut carries a flood bed
-(`TerrainCut` version 2); what the generator writes into it, and its sources, are added with the
-commit that writes it.
+(W93, 2026-11-10; [channels](../subsystems/channels.md#the-flood-bed). The proof of concept's
+solver needs, 2.1 item 3; the reels r03 and r49: a clear river whose inner side is a pale gravel
+bar and whose outer bank is a turf edge half a metre high, and a turquoise one threading a cobble
+bed several times its width under a raw scarp of eroded earth.)
+
+- **Entrenchment and the flood-prone width.** Rosgen (1994, "A classification of natural rivers",
+  *Catena* 22: 169-199): the **flood-prone width** is the valley's width at an elevation of **twice
+  the greatest bankfull depth** above the thalweg, and the **entrenchment ratio** is that width over
+  the bankfull width; a ratio under **1.4** (give or take 0.2) is an entrenched channel, one that
+  fills its valley's floor (types A, F and G), 1.4 to 2.2 moderately entrenched (B), and over 2.2
+  slightly entrenched, with a floodplain (C, D, E). **Read for this row** (2026-11-10): the
+  definition and the 1.4 bound from an extension summary of the classification (North Carolina
+  State, "Application of the Rosgen stream classification to North Carolina"); the paper's own
+  PDF was fetched and has no text layer, so **the 2.2 bound and the type letters are from the
+  paper's key as its readers cite it** and nothing here is pinned to them. Pinned:
+  `flood_height_depths` 2 (the elevation, in thalwegs over the bed) and
+  `flood_entrenchment_min` 1.4 (no flood bed below it).
+- **The bed's width, three widths at the most** (`flood_bed_widths`). **A design choice** inside
+  Rosgen's slightly entrenched class (over 2.2): a single-thread gravel-bed river's active bed with
+  its bars is a few channel widths wide, and the proof of concept's own paint was 3.2 (1.1 widths
+  either side). A wandering or braided river's bed is many more, and braided reaches are not this
+  row's.
+- **Wider on the inside of a bend** (0.6 of the half bed, `k_flood_bend`). The point bar accretes
+  on the inside and the outer bank is cut into the terrace (Leopold, Wolman & Miller 1964), so the
+  bed is the bar's side's. **The share is a design choice.**
+- **The bed's level, a quarter of a thalweg under the top** (`flood_bed_depth`). A bar's top builds
+  to near the bankfull stage (the same text), which is the top of the bank here, and the bed must
+  stand over the water's stage (half the thalweg, "The cut" above) or it floods. **A design choice
+  between the two.**
+- **The scarp, 1.5 (56 degrees)** (`scarp_slope`). A freshly cut face of alluvium stands steeper
+  than its angle of repose (30 to 40 degrees, above) while its fines and roots hold it, and
+  ravels back to it; r49's scarp is near vertical at its top over a ravelled foot. **A design
+  choice** between the two; the lattice at 25 cm draws a 0.5 m scarp as two points.
+- **What was not grounded**: bar forms on the bed (unit bars, chutes, the riffle where the flow
+  crosses a bar), which are not built.
+
+**Measured**: three valleys with floors of 32, 9 and 2 m between 45-degree walls and a 4.6 to
+5.3 m stream: the entrenchment ratio read from the ground is the geometry's to 3 %, and the bed is
+three widths, the floor less the scarps' runs, and none
+(`domain/channels/tests/channels_tests.cpp`).
 
 ## Reaches
 

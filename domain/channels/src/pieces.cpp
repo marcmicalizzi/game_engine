@@ -206,26 +206,29 @@ bool place_pieces(const ChannelLayer& p, const ChannelNetwork& n, const scene_ge
       f64 side;
     };
     Vector<Bar> bars;
-    if (shaped) {
-      // W93: a bar is the ground's own point bar, so its skin lies where the section's asymmetry
-      // is at least `k_bar_asymmetry`, on the bar's side, a run of points each.
-      constexpr f64 k_bar_asymmetry = .5;
+    if (shaped && p.section_asymmetry < 1) {
+      // W93: a bar is the ground's own point bar. At full `section_asymmetry` nothing is laid
+      // on it: the generator plans its line over the cut ground, which is not the line the cut
+      // was written from, and a skin placed from it lay beside the bar as often as on it (seen
+      // on W93's scratch scene as pale plates on the flood bed). Below full asymmetry the skin
+      // lies where the section's asymmetry is at least half the layer's, on the bar's side, a
+      // run of points each, with what is left of W86's crown.
+      const f64 bar_asymmetry = .5 * wide(p.section_asymmetry);
       for (u32 i = 0; i < m;) {
         const f64 a = asym_at(i);
-        if (std::fabs(a) < k_bar_asymmetry || !has_bars(i) ||
+        if (std::fabs(a) < bar_asymmetry || !has_bars(i) ||
             wide(link.line[i].width_m) < wide(p.bar_min_width_m)) {
           ++i;
           continue;
         }
         u32 e = i;
-        while (e + 1 < m && asym_at(e + 1) * a > 0 &&
-               std::fabs(asym_at(e + 1)) >= k_bar_asymmetry && has_bars(e + 1) &&
-               e + 1 - i < k_max_rows - 1)
+        while (e + 1 < m && asym_at(e + 1) * a > 0 && std::fabs(asym_at(e + 1)) >= bar_asymmetry &&
+               has_bars(e + 1) && e + 1 - i < k_max_rows - 1)
           ++e;
         if (e >= i + 2) bars.push_back({i, e, a > 0 ? 1.0 : -1.0});
         i = e + 1;
       }
-    } else if (widest >= p.bar_min_width_m && p.bar_rise > 0) {
+    } else if (!shaped && widest >= p.bar_min_width_m && p.bar_rise > 0) {
       f64 side = rng.unit() < .5 ? -1.0 : 1.0;
       u32 last = 0;  // bars never share a cross-section: each is its own closed lens
       f64 at = .5 * wide(p.pool_riffle_widths) * wide(link.line[0].width_m);
@@ -299,6 +302,70 @@ bool place_pieces(const ChannelLayer& p, const ChannelNetwork& n, const scene_ge
             ChannelSlab slab;
             slab.rows = e - a + 1;
             slab.columns = columns;
+            // **The gravel lies where the ground is low** (W93; channels.md, "The section"). The
+            // generator lays its pieces from a network planned over the ground it is handed, which
+            // in a cut scene is the cut ground: its line is near the cut's and not on it, and a
+            // slab laid about the line rode up a bank wherever the two parted (the proof of
+            // concept's item 8, a pale strip on the bank's lip; grey plates along the trench on
+            // W93's scratch scene, before and after). So each row finds its bed on the ground:
+            // nine probes across one and a half widths, the lowest of them, and the run of probes
+            // about it standing within `k_bed_tolerance` of a thalweg of it; the row spans that
+            // run, as wide as the planned bed at the most and a quarter of the width at the least,
+            // and the spans are eased along the rows so the slab's edge is not the probes' steps.
+            constexpr u32 k_probes = 9;
+            constexpr f64 k_bed_tolerance = .35;
+            Vector<f64> span_lo(slab.rows, 0.0), span_hi(slab.rows, 0.0);
+            for (u32 i = a; i <= e; ++i) {
+              const ChannelPoint& pt = link.line[i];
+              const f64 w = wide(pt.width_m);
+              const Gravel gravel = gravel_of(p, pt, asym_at(i), swell_at(i));
+              const f64 tolerance =
+                  k_bed_tolerance * section_of(w, wide(pt.depth_m), wide(p.bank_slope)).thalweg;
+              f64 heights[k_probes];
+              u32 low = 0;
+              const auto lateral_of = [&](u32 q) {
+                return .75 * w * (2 * static_cast<f64>(q) / static_cast<f64>(k_probes - 1) - 1);
+              };
+              for (u32 q = 0; q < k_probes; ++q) {
+                i64 xm = 0, zm = 0;
+                const f64 at = lateral_of(q);
+                heights[q] = b.ground_local(f[i].x + f[i].nx * at, f[i].z + f[i].nz * at, xm, zm);
+                // The lowest, and of equals the one nearest the line.
+                if (heights[q] < heights[low] ||
+                    (heights[q] == heights[low] && std::fabs(at) < std::fabs(lateral_of(low))))
+                  low = q;
+              }
+              u32 first = low, last = low;
+              while (first > 0 && heights[first - 1] <= heights[low] + tolerance)
+                --first;
+              while (last + 1 < k_probes && heights[last + 1] <= heights[low] + tolerance)
+                ++last;
+              f64 lo = lateral_of(first), hi = lateral_of(last);
+              const f64 widest_here = std::max(gravel.width, .25 * w);
+              if (hi - lo > widest_here) {
+                const f64 centre =
+                    std::clamp(lateral_of(low), lo + .5 * widest_here, hi - .5 * widest_here);
+                lo = centre - .5 * widest_here;
+                hi = centre + .5 * widest_here;
+              }
+              if (hi - lo < .25 * w) {
+                const f64 centre = .5 * (lo + hi);
+                lo = centre - .125 * w;
+                hi = centre + .125 * w;
+              }
+              span_lo[i - a] = lo;
+              span_hi[i - a] = hi;
+            }
+            for (Vector<f64>* span : {&span_lo, &span_hi}) {
+              for (u32 pass = 0; pass < 2; ++pass) {
+                f64 before = (*span)[0];
+                for (u32 r = 1; r + 1 < slab.rows; ++r) {
+                  const f64 here = (*span)[r];
+                  (*span)[r] = .25 * before + .5 * here + .25 * (*span)[r + 1];
+                  before = here;
+                }
+              }
+            }
             for (u32 i = a; i <= e; ++i) {
               const ChannelPoint& pt = link.line[i];
               const f64 relief = relief_of(p, pt);
@@ -306,8 +373,8 @@ bool place_pieces(const ChannelLayer& p, const ChannelNetwork& n, const scene_ge
                   has_bars(i) ? wide(p.riffle_rise) * wide(pt.depth_m) * rhythm[i] : 0.0;
               for (u32 c = 0; c < columns; ++c) {
                 const f64 v = static_cast<f64>(c) / static_cast<f64>(columns - 1) - .5;
-                const Gravel gravel = gravel_of(p, pt, asym_at(i), swell_at(i));
-                const f64 lateral = gravel.centre + v * gravel.width;
+                const f64 lateral =
+                    .5 * (span_lo[i - a] + span_hi[i - a]) + v * (span_hi[i - a] - span_lo[i - a]);
                 const f64 x = f[i].x + f[i].nx * lateral;
                 const f64 z = f[i].z + f[i].nz * lateral;
                 i64 xm = 0, zm = 0;

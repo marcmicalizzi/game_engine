@@ -283,13 +283,16 @@ bool straight_surface(f64 x, f64 z, f64 ax, f64 az, f64 bx, f64 bz, const Statio
   p.slope_left = a.left + t * (b.left - a.left);
   p.slope_right = a.right + t * (b.right - a.right);
   p.rise = p.depth;
+  p.run_out = round > 0.0;
   k = round * p.depth;
   if (raw >= 0.0 && raw <= 1.0) return cut_profile(p, lateral >= 0.0 ? d : -d, surface);
   f64 l = 0, r = 0;
   const bool has_l = cut_profile(p, d, l), has_r = cut_profile(p, -d, r);
   if (!has_l && !has_r) return false;
-  if (!has_l) l = p.top + p.rise;
-  if (!has_r) r = p.top + p.rise;
+  // A face that runs out ends twenty rises over the top (0.95 of its second run).
+  const f64 end = p.run_out ? 20.0 * p.rise : p.rise;
+  if (!has_l) l = p.top + end;
+  if (!has_r) r = p.top + end;
   const f64 share = d > 0.0 ? std::clamp(0.5 + 0.5 * lateral / d, 0.0, 1.0) : 0.5;
   surface = r + share * (l - r);
   return true;
@@ -300,7 +303,7 @@ bool straight_surface(f64 x, f64 z, f64 ax, f64 az, f64 bx, f64 bz, const Statio
 TEST_CASE("tileset: a profile differs left from right, and W89's section is the symmetric one") {
   // 4 m wide, 1 m deep, the left bank a point bar at 0.5, the right a cut bank at 4: the flat bed
   // runs from the bar's toe on the line (2 / 0.5 = 2 m of run) to 0.25 m short of the right top.
-  const CutProfile p{10.0, 4.0, 0.0, 1.0, 0.5, 4.0, 1.0};
+  const CutProfile p{10.0, 4.0, 0.0, 1.0, 0.5, 4.0, 1.0, false};
   f64 y = 0;
   REQUIRE(cut_profile(p, 0.0, y));
   CHECK(y == doctest::Approx(9.0).epsilon(1e-12));
@@ -323,13 +326,13 @@ TEST_CASE("tileset: a profile differs left from right, and W89's section is the 
   // Banks too gentle to reach the bed inside the width are steepened together to a V: 0.5 and 1
   // would need 3 m of run for 1 m of depth in a 2 m width, so both are 1.5 times as steep and
   // meet 1 m down, two thirds of the width from the gentler bank's top.
-  const CutProfile v{10.0, 2.0, 0.0, 1.0, 0.5, 1.0, 1.0};
+  const CutProfile v{10.0, 2.0, 0.0, 1.0, 0.5, 1.0, 1.0, false};
   REQUIRE(cut_profile(v, 1.0 - 4.0 / 3.0, y));
   CHECK(y == doctest::Approx(9.0).epsilon(1e-9));
   REQUIRE(cut_profile(v, 0.5, y));
   CHECK(y == doctest::Approx(10.0 - 0.75 * 0.5).epsilon(1e-9));
   // An offset moves the whole section off the line.
-  const CutProfile o{10.0, 4.0, 1.0, 1.0, 1.0, 1.0, 1.0};
+  const CutProfile o{10.0, 4.0, 1.0, 1.0, 1.0, 1.0, 1.0, false};
   REQUIRE(cut_profile(o, 3.0, y));
   CHECK(y == doctest::Approx(10.0).epsilon(1e-12));
   REQUIRE(cut_profile(o, -1.0, y));
@@ -340,10 +343,22 @@ TEST_CASE("tileset: a profile differs left from right, and W89's section is the 
   for (f64 d = -2.4; d <= 2.4; d += 0.07) {
     f64 a = 0, b = 0;
     const bool has_a = cut_section(10.0, 3.0, 0.6, 1.0, d, a);
-    const bool has_b = cut_profile(CutProfile{10.0, 3.0, 0.0, 0.6, 1.0, 1.0, 0.6}, d, b);
+    const bool has_b = cut_profile(CutProfile{10.0, 3.0, 0.0, 0.6, 1.0, 1.0, 0.6, false}, d, b);
     REQUIRE(has_a == has_b);
     if (has_a) CHECK(a == b);
   }
+  // A face that runs out: where W89's ends (10.6 at 2.1 m) it goes on with the same slope, twice
+  // the rise over the top half a run on, twenty rises at 0.95 of the run, and nothing past that.
+  const CutProfile r{10.0, 3.0, 0.0, 0.6, 1.0, 1.0, 0.6, true};
+  REQUIRE(cut_profile(r, 2.1, y));
+  CHECK(y == doctest::Approx(10.6).epsilon(1e-12));
+  REQUIRE(cut_profile(r, 2.1 + 1e-6, y));
+  CHECK(y == doctest::Approx(10.6 + 1e-6).epsilon(1e-9));
+  REQUIRE(cut_profile(r, 2.4, y));
+  CHECK(y == doctest::Approx(10.0 + 2 * 0.6).epsilon(1e-9));
+  REQUIRE(cut_profile(r, -2.1 - 0.56, y));
+  CHECK(y > 10.0 + 8 * 0.6);
+  CHECK_FALSE(cut_profile(r, 2.1 + 0.58, y));
   // The rounded minimum: the minimum outside the band, a quarter of the band under the crease,
   // and tangent to both at the band's edges.
   CHECK(cut_round(5.0, 9.0, 1.0) == 5.0);
@@ -454,12 +469,15 @@ TEST_CASE("tileset: a cut is continuous across a joint, a junction and its two s
   REQUIRE_MESSAGE(cuts.build(both, &error), error);
   // What the cuts leave of a flat ground 1.15 m up — over every top, and under every face's own
   // top, as the ground a channel is cut into is — walked on a 20 mm lattice: no two neighbours,
-  // along x or along z, differ by more than the steepest face allows over the step (the steepest
-  // here is 3, steepened at most to 4) plus a millimetre: 81 mm. A step at a joint, a junction or
-  // the line would be a share of the cut's depth, hundreds of millimetres.
+  // along x or along z, differ by more than the steepest slope the surface has over the step,
+  // plus a millimetre: 121 mm. The steepest face here is 3, steepened at most to 4; round a
+  // line's end and on the outside of a joint the two sides' surfaces are blended by direction,
+  // which is as steep as their difference over the distance to the end, and with faces that run
+  // out that is 5 here. A step at a joint, a junction or the line would be a share of the cut's
+  // depth, 300 mm and more.
   const f64 flat = 1150.0;
   const i64 step = 20;
-  const f64 bound = 4.0 * static_cast<f64>(step) + 1.0;
+  const f64 bound = 6.0 * static_cast<f64>(step) + 1.0;
   f64 worst = 0;
   i64 worst_x = 0, worst_z = 0;
   u64 pairs = 0, lowered = 0;

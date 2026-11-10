@@ -41,6 +41,16 @@
 // (`bank_round` at most 1), so a face's reach, which ends a depth over the top, ends where the
 // rounding has: no step at the reach's edge over ground at the top or below it.
 //
+// **A face that runs out.** W89's face ends a depth over its top, and where the ground beside the
+// channel stands higher than that (a channel in a steep-sided valley, a line off its trough's
+// floor) the cut ends in a wall, which a lattice draws as a row of teeth along the lip (the forest
+// proof of concept's item 7, reproduced on W93's scratch scene). A rounded cut's faces
+// (`bank_round` over 0), and its scarps, run out instead: past the end the face goes on over one
+// more run of its own, its height over the top `rise / (1 - v)` at the share `v` of that run — the
+// same height and slope where it begins, steepening without bound — so it meets the ground wherever
+// the ground is, the reach is two runs past the top and no more, and nothing has a wall at its end.
+// A cut with `bank_round` 0 keeps W89's face, to the millimetre.
+//
 // **Along the line** each segment's numbers are its two points' interpolated by the projection's
 // parameter, and the surface is the lowest over every segment of every cut, so a joint, a
 // junction and an overlap are each the union of the sections and the result does not depend on the
@@ -85,6 +95,10 @@ struct CutProfile {
   f64 slope_left = 1;  // rise over run
   f64 slope_right = 1;
   f64 rise = 0;  // how far above the top a face goes on
+  // Past that the face is nothing (W89), or **runs out**: it goes on over one more run of its own
+  // (`rise / slope`), steepening, `rise / (1 - v)` over the top at the share `v` of that run, so
+  // it meets ground however high with no wall at its end.
+  bool run_out = false;
 };
 
 // The profile's surface at the signed distance `s` from the line (left positive), or false past
@@ -136,6 +150,7 @@ class TerrainCuts {
     f64 top = 0, width = 0, offset = 0, depth = 0, slope_left = 1, slope_right = 1, rise = 0;
     f64 round = 0;
     f64 cell_width = 0;
+    bool run_out = false;
   };
   struct Segment {
     f64 ax = 0, az = 0, bx = 0, bz = 0;  // millimetres

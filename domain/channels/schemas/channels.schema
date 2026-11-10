@@ -206,6 +206,23 @@ struct ChannelLayer @version(5) {
   /// The banks' tops are rounded over this share of the cut's depth (0 to 1; `TerrainCut`'s
   /// `bank_round`). 0: the crease W89 left.
   bank_round: f32 = 0.75 @since(5)
+  /// **The flood bed** (W93; channels.md, "The flood bed"; the sources in
+  /// docs/experiments/channels.md, "The flood bed"): the valley's confinement is read from the
+  /// ground at `flood_height_depths` thalweg depths over the bed (Rosgen 1994: the flood-prone
+  /// width is taken at twice the greatest bankfull depth; 1.25 to 4), across the line each way.
+  /// Where the flood-prone width is at least `flood_entrenchment_min` bankfull widths (Rosgen's
+  /// entrenchment ratio; below 1.4 a channel is entrenched; 1 to 5) and the bed at least
+  /// `flood_min_width_m` wide (0 to 100 m), on a pool-riffle, dune-ripple or plane-bed reach, the
+  /// cut carries a flood bed: as wide as the flood-prone width allows, `flood_bed_widths`
+  /// bankfull widths at the most (1 to 12; 1: no flood bed anywhere), wider on the inside of a
+  /// bend, its surface `flood_bed_depth` of the thalweg under the top of the bank (0 to 0.45: under
+  /// the water's stage it would flood), bounded by scarps at `scarp_slope` (0.25 to 8).
+  flood_bed_widths: f32 = 3 @since(5)
+  flood_height_depths: f32 = 2 @since(5)
+  flood_entrenchment_min: f32 = 1.4 @since(5)
+  flood_min_width_m: f32 = 2 @since(5) @unit(m)
+  flood_bed_depth: f32 = 0.25 @since(5)
+  scarp_slope: f32 = 1.5 @since(5)
   bed: ChannelSurface
   bars: ChannelSurface
   banks: ChannelSurface

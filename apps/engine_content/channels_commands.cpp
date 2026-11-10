@@ -155,6 +155,13 @@ int channels_command(int argc, char** argv) {
   f64 lip_convexity = 0;
   f64 region[4] = {1e300, 1e300, -1e300, -1e300}, border = 0;
   f64 metres = 0, area = 0;
+  // W93: the section's summary (below).
+  struct {
+    u64 pools = 0;
+    f64 flood_m = 0, flood_m2 = 0;
+    f64 line_m = 0, half_bank_m = 0, no_bank_m = 0, no_bank_fall = 0;
+    f64 by_angle_m[5] = {}, half_bank_by_angle_m[5] = {}, no_bank_by_angle_m[5] = {};
+  } section;
   if (placements != nullptr && placements->is_array()) {
     for (u32 k = 0; k < placements->as_array().size(); ++k) {
       const JsonValue& entry = (*placements)[k];
@@ -208,6 +215,59 @@ int channels_command(int argc, char** argv) {
         lip_convexity += l.lip_convexity;
         steep_left += l.steep_left;
         pulled += l.trough_pulled;
+        // **W93** (channels.md, "The flood bed", "A line across a slope"): the metres of line
+        // with a flood bed and the bed's area; the pools (a stretch on one side whose asymmetry
+        // reaches half a bend's); and, stretch by stretch, how the line stands on its ground —
+        // the ground at the two bank tops (half the width across the line each way) against the
+        // cut's bed, and the line's heading against the ground's fall line over a width.
+        const u32 kept = std::min<u32>(l.keep, l.line.size());
+        bool in_pool = false;
+        for (u32 i = 0; i + 1 < kept; ++i) {
+          const channels::ChannelPoint& a = l.line[i];
+          const channels::ChannelPoint& b = l.line[i + 1];
+          const f64 dx = b.at.x - a.at.x, dz = b.at.z - a.at.z;
+          const f64 run = std::sqrt(dx * dx + dz * dz);
+          if (!(run > 0)) continue;
+          const f64 asym = i < l.asym.size() ? static_cast<f64>(l.asym[i]) : 0.0;
+          if (std::fabs(asym) >= .5 && !in_pool) ++section.pools;
+          in_pool = std::fabs(asym) >= .5 || (in_pool && asym != 0);
+          if (i < l.flood_left.size() && l.flood_left[i] > 0) {
+            section.flood_m += run;
+            section.flood_m2 +=
+                run * (static_cast<f64>(l.flood_left[i]) + static_cast<f64>(l.flood_right[i]));
+          }
+          const f64 w = static_cast<f64>(a.width_m);
+          if (w < 1.0 || i >= l.bed.size()) continue;
+          const f64 tx = dx / run, tz = dz / run;
+          const auto at = [&](f64 x, f64 z) {
+            return ground_view.surface_mm(scene_gen::nearest_mm(x), scene_gen::nearest_mm(z));
+          };
+          const f64 depth = a.at.y - l.bed[i];
+          const f64 lower = std::min(at(a.at.x - tz * .5 * w, a.at.z + tx * .5 * w),
+                                     at(a.at.x + tz * .5 * w, a.at.z - tx * .5 * w));
+          // The ground's gradient over a width, and the cosine of the line's angle to its fall.
+          const f64 gx = (at(a.at.x + w, a.at.z) - at(a.at.x - w, a.at.z)) / (2 * w);
+          const f64 gz = (at(a.at.x, a.at.z + w) - at(a.at.x, a.at.z - w)) / (2 * w);
+          const f64 g = std::sqrt(gx * gx + gz * gz);
+          const f64 cosine = g > 0 ? std::fabs(tx * gx + tz * gz) / g : 1.0;
+          // 0-15, 15-30, 30-45, 45-60 and 60-90 degrees from the fall line.
+          const u32 bin = cosine > .9659   ? 0
+                          : cosine > .866  ? 1
+                          : cosine > .7071 ? 2
+                          : cosine > .5    ? 3
+                                           : 4;
+          section.line_m += run;
+          section.by_angle_m[bin] += run;
+          if (lower < a.at.y - .5 * depth) {
+            section.half_bank_m += run;
+            section.half_bank_by_angle_m[bin] += run;
+          }
+          if (lower < a.at.y - depth) {
+            section.no_bank_m += run;
+            section.no_bank_by_angle_m[bin] += run;
+            section.no_bank_fall += run * g;
+          }
+        }
       }
       // W91: the boulders the placement generator lays over this network.
       Vector<channels::PlacedPiece> pieces;
@@ -298,6 +358,28 @@ int channels_command(int argc, char** argv) {
                       : 0.0);
   line["steep_left"] = JsonValue(steep_left);
   line["trough_pulled_points"] = JsonValue(pulled);
+  // W93: pools, the flood bed, and the line against its ground's fall (metres of line, by the
+  // line's angle to the fall line: 0-15, 15-30, 30-45, 45-60, 60-90 degrees).
+  {
+    const auto metres_of = [](const f64* bins) {
+      JsonValue list = JsonValue::array();
+      for (u32 b = 0; b < 5; ++b)
+        list.push_back(JsonValue(std::round(bins[b])));
+      return list;
+    };
+    line["pools"] = JsonValue(section.pools);
+    line["flood_bed_m"] = JsonValue(std::round(section.flood_m));
+    line["flood_bed_m2"] = JsonValue(std::round(section.flood_m2));
+    line["line_measured_m"] = JsonValue(std::round(section.line_m));
+    line["line_by_fall_angle_m"] = metres_of(section.by_angle_m);
+    line["half_bank_m"] = JsonValue(std::round(section.half_bank_m));
+    line["half_bank_by_fall_angle_m"] = metres_of(section.half_bank_by_angle_m);
+    line["no_bank_m"] = JsonValue(std::round(section.no_bank_m));
+    line["no_bank_by_fall_angle_m"] = metres_of(section.no_bank_by_angle_m);
+    line["no_bank_mean_slope"] = JsonValue(
+        section.no_bank_m > 0 ? std::round(section.no_bank_fall / section.no_bank_m * 1000) / 1000
+                              : 0.0);
+  }
   line["ribbon_edges"] = JsonValue(stats.edges);
   line["edges_above_005"] = JsonValue(stats.edges_above_005);
   line["edges_above_03"] = JsonValue(stats.edges_above_03);

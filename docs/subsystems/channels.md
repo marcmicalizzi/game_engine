@@ -254,6 +254,13 @@ writes the section it stands for (`engine.scene.TerrainCut` version 2: `bank_slo
   speed its water up, and a pool is slow).
 - **The banks' tops are rounded** over `bank_round` (0.75) of the depth: the cut's face and the
   ground meet by a smooth minimum, not a crease ([tileset](tileset.md#channels-cut-into-the-ground)).
+- **The faces run out to the ground.** W89's face ended a depth over its top; where the ground
+  beside the channel stood higher (a channel in a steep-sided valley, a line off its trough's
+  floor) the cut ended in a wall, and the lattice drew the wall as **a row of teeth along the
+  lip**: the POC's item 7, reproduced on this row's scratch scene in a valley with 17- to
+  19-degree sides. A rounded cut's faces go on past that end over one more run of their own,
+  steepening, and meet the ground wherever it is ([tileset](tileset.md#channels-cut-into-the-ground),
+  "A face that runs out").
 
 **Where the asymmetry comes from.** A bend's share is the line's mean curvature over **four
 widths** about the point — the turn between its heading two widths above and two below, over that
@@ -272,16 +279,23 @@ tributary's last points inside its trunk's banks, a bed narrower than `bar_min_w
 first and last two widths of a link take none, and are cut as W89 cut them. The share is eased by
 two binomial passes, so a reach's edge is not a step in the section.
 
-**The pieces follow it** (`k_channels_version` 5). The gravel bed lies on the flat bed between the
-two banks' toes, which at a bend is against the outer bank, and up the point bar from its toe to
-about the water's edge (0.55 of the bar's run at full asymmetry). **A bar is the ground's own
-point bar**: its skin (`ChannelPart::Bar`) lies on the dry part of the bar above the gravel,
-wherever the asymmetry is at least 0.5 on a reach that has bars, and has **no crown of its own**
-at full `section_asymmetry` — W86's lens stood `bar_rise` of the depth over a flat bed, which is
-what read as a smooth slab (the POC's item 6); the form is now the ground's and the piece is two
-grains of relief on it. The bed's riffle rise follows the same rhythm (highest where the section
-is symmetric). The placement generator plans its network over the cut ground, as before, and reads
-the asymmetry from its own line.
+**The pieces follow the ground, not the line** (`k_channels_version` 5). The placement generator
+plans its network over the ground it is handed, which in a cut scene is the cut ground: its line
+is near the cut's line and not on it (the meander rule and the trough test run again), and it does
+not know the cut. W89 to W91 laid the bed slab about that line, so wherever the two lines parted
+the slab rode up a bank and stood there as a plate with walls — the POC's item 8, "a pale strip of
+bed pieces on the bank's lip", and grey plates along the trench on this row's scratch scene.
+**Each row of the bed slab now finds its bed on the ground**: nine probes across one and a half
+widths, the lowest of them (of equals, the nearest the line), and the run of probes about it
+standing within 0.35 of a thalweg of it; the row spans that run, as wide as the planned bed at the
+most — the flat bed between the two banks' toes and up the point bar to about the water's edge —
+and a quarter of the width at the least, the spans eased along the rows by two binomial passes.
+It costs nine ground queries a row beside the slab's own columns. **A bar is the ground's own
+point bar** and at full `section_asymmetry` **no bar piece is laid**: W86's lens stood `bar_rise`
+of the depth over a flat bed, which is what read as a smooth slab (the POC's item 6), and a skin
+placed from the generator's own line lay beside the bar as often as on it. Below full asymmetry a
+skin is laid where the asymmetry is at least half the layer's, with what is left of the crown.
+The bed's riffle rise follows the section's rhythm (highest where it is symmetric).
 
 **`section_asymmetry` 0 is W89's section**: the trapezoid at every point, no widening, W86's
 alternating bar lenses; with `bank_round` 0 as well the cuts are W91's bytes, five fields a cut
@@ -300,11 +314,69 @@ edit only lowers), a top per side and a scene block of its own are what they lac
 
 ## The flood bed
 
-(W93.) A `TerrainCut` may carry a **flood bed**: a second profile on the same line, a flat bed
-`flood_depth_m` under the top reaching `flood_left_m` and `flood_right_m` from the line, bounded
-by a scarp each side ([tileset](tileset.md#channels-cut-into-the-ground) has the section and the
-cell rule, which reads the bed by its own width). What the generator writes into it — the valley's
-confinement read from the ground, the bed's width from it — is the next commit of this row.
+(2026-11-10, roadmap W93; the POC's solver needs, 2.1 item 3: "a river's bed is much wider than its
+water", and the page's own "the valley's confinement is not read for the reach".) **The reach reads
+the valley's confinement from the ground, and the cut becomes a compound section**: the channel
+inside a flood bed, bounded by a scarp each side where the valley leaves room for one
+(`plan_flood`, `ChannelLink::flood_left`, `flood_right`, `entrenchment`).
+
+- **The confinement.** At a station every bankfull width along the line, the ground is walked
+  across the line each way, from the line out in steps of a sixth of the width (0.5 m at least), to
+  where it first stands `flood_height_depths - 1` thalwegs over the ground at the line: Rosgen's
+  **flood-prone elevation**, twice the greatest bankfull depth over the thalweg (the stated height
+  above the bed: two thalwegs, so one over the top of the bank). The crossing is found between the
+  two steps that bracket it. The two distances over the bankfull width are the **entrenchment
+  ratio** (`entrenchment`; Rosgen 1994). A side whose ground falls a thalweg *under* the line's
+  first is not a valley's floor — the line is perched on a slope — and its walk ends there. The
+  walk stops at the furthest a bed could reach, so a ratio past that is recorded as that (5 at the
+  defaults). **A bed is as narrow as the narrowest reading near it**: each station's reach is the
+  least over itself and its two neighbours either way, because the line kinks and a walk across a
+  kinked line can run along the valley and read a floor several times as wide as it is (on this
+  row's scratch scene that put a scarp metres up a valley's side); the walk's direction is across
+  the line's heading over four widths for the same reason.
+- **The bed.** Where the ratio is at least `flood_entrenchment_min` (1.4: below it Rosgen calls a
+  channel entrenched, and it fills its valley's floor) the bed reaches, each side, the flood-prone
+  distance less the scarp's run, and half `flood_bed_widths` (3) widths at the most; 0.6 of that
+  more on the inside of a bend and less on its outside, since the bar builds on the inside and the
+  outer bank is cut into the terrace; never less than the channel's own bank; and a bed under 1.1
+  widths is none. So **its width follows the confinement**: on a floor wider than three widths it
+  is three widths; on a narrower one it is the floor less the scarps; in a V it is nothing.
+- **Its level and its scarps.** The bed's surface stands `flood_bed_depth` (0.25) of the thalweg
+  under the top of the bank, which is over the water's default stage (half the thalweg), so the
+  water is one thread in it; its scarps stand at `scarp_slope` (1.5) and top out at the flood-prone
+  elevation, a thalweg over the top: where the valley's floor is wider than the bed that is a turf
+  edge a quarter of a thalweg high, and where the bed runs to the valley's side it is a raw scarp
+  up to a thalweg and a quarter high.
+- **Where.** Pool-riffle, dune-ripple and plane-bed reaches at least `flood_min_width_m` (2 m)
+  wide, away from a knickpoint, a fan and a tributary's last points; the reaches close to the
+  channel's own width over two widths at a stretch's ends. `flood_bed_widths` 1 is no flood bed
+  anywhere.
+- **Written** into the cut (`flood_left_m`, `flood_right_m`, `flood_depth_m`, `scarp_m`,
+  `scarp_slope`; [tileset](tileset.md#channels-cut-into-the-ground) has the section and the cell
+  rule, which reads the bed by its own width, so a level too coarse for a stream may still hold
+  its bed) and onto the water's description (`WaterChannel` version 5: `flood_left_m`,
+  `flood_right_m`), which is how **the placements leave the bed bare**
+  ([scene_gen](scene_gen.md#exclusion)): `scene_gen` may not name this capability, so the reach
+  travels as data on the description the two share, as the bank's does (T78).
+
+**The bed is ground, and its material is the ground's.** The cut gives the bed its form; nothing
+here gives it gravel. The bed pieces still lie on the channel's own bed and bar, not across the
+flood bed: a slab a flood bed wide would stand on the ground at its vertices and cut the corners
+of the channel's banks between them. The right carrier is the terrain's mask level (a `gravel/bed`
+layer laid along the cut by the masks, which is a request on the masks' owner, with the pack's
+missing gravel role); until then an author paints it with a mask region over the cut's reach, as
+this row's scratch scene does.
+
+**Measured** (`channels_tests.cpp`, "the flood bed's width follows the valley's confinement"):
+on three valleys whose floors are 32, 9 and 2 m wide between 45-degree walls, with a 4.6 to 5.3 m
+stream down the middle, the measured ratio is the floor's and the walls' to 3 % (5 where the walk
+stops, about 2, and 0.6), and the bed is three widths, the floor less its scarps, and none.
+The subcommand's summary line carries `flood_bed_m` and `flood_bed_m2` (metres of line with a bed
+and the bed's area) and `pools`.
+
+**Not built**: bars as relief on the bed beyond the channel's own point bar (a flood bed's bars
+are the low-flow channel's; the bed between them is flat); braided threads; a bed whose level
+steps down terrace by terrace; the bed's own gravel (above).
 
 ## Reaches
 

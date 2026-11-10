@@ -232,11 +232,29 @@ TEST_CASE(
     "container twice") {
   ChannelLayer p = layer();
   p.head_threshold_m2 = 300;
+  // A bar's skin is laid below full asymmetry alone (W93: at full asymmetry the bar is the
+  // ground's own and nothing is laid on it, which the last lines of this case hold): half here, so
+  // the skins are among the pieces checked.
+  p.section_asymmetry = 0.5f;
   ChannelNetwork n;
   std::string error;
   REQUIRE(plan_channels(p, ground(gentle), 3, nullptr, n, error));
   Vector<PlacedPiece> pieces;
   REQUIRE(place_pieces(p, n, ground(gentle), 32, pieces, error));
+  {
+    ChannelLayer full = p;
+    full.section_asymmetry = 1;
+    ChannelNetwork shaped;
+    REQUIRE(plan_channels(full, ground(gentle), 3, nullptr, shaped, error));
+    Vector<PlacedPiece> laid;
+    REQUIRE(place_pieces(full, shaped, ground(gentle), 32, laid, error));
+    u32 bed_pieces = 0;
+    for (const PlacedPiece& piece : laid) {
+      CHECK(piece.recipe.part != ChannelPart::Bar);
+      bed_pieces += piece.recipe.part == ChannelPart::Bed;
+    }
+    CHECK(bed_pieces > 0);
+  }
   u32 beds = 0, bars = 0, banks = 0;
   for (const PlacedPiece& piece : pieces) {
     assets::MeshData mesh;
@@ -492,6 +510,7 @@ TEST_CASE("channels: the cuts have the TerrainCut shape and the water lies insid
   // rounding, and the five fields the cut had (W93's section has its own case below).
   p.section_asymmetry = 0;
   p.bank_round = 0;
+  p.flood_bed_widths = 1;
   ChannelNetwork n;
   std::string error;
   REQUIRE(plan_channels(p, ground(gentle), 0, nullptr, n, error));
@@ -1338,8 +1357,9 @@ TEST_CASE("channels: the section keeps the hydraulic geometry's area from riffle
     const ChannelLink& link = n.links[k];
     if (link.line.size() < 2) continue;
     const JsonValue& o = cuts[written++];
-    // W89's five fields, the two slope arrays and the rounding.
-    CHECK(o.as_object().size() == 8);
+    // W89's five fields, the two slope arrays and the rounding; and a flood bed's five on a link
+    // that has one.
+    CHECK(o.as_object().size() == (o.find("flood_left_m") == nullptr ? 8u : 13u));
     scene::TerrainCut cut;
     schema::ReadContext reader;
     REQUIRE(schema::from_json(cut, o, reader));
@@ -1412,4 +1432,130 @@ TEST_CASE("channels: the section keeps the hydraulic geometry's area from riffle
   CHECK(widest / narrowest <= (1 + half) / (1 - half) + 1e-3);
   // The same text twice.
   CHECK(write_json(terrain_cuts_json(p, n)) == write_json(cuts));
+}
+
+// ---- W93: the flood bed
+// ---------------------------------------------------------------------------
+
+namespace {
+// A valley whose floor is `*half` metres wide each side of x = 128 m, falling 0.6 % down z and 1 %
+// across to its middle, between walls at 45 degrees.
+f64 floored(const void* context, i64 x, i64 z) noexcept {
+  const f64 half = *static_cast<const f64*>(context);
+  const f64 d = std::abs(static_cast<f64>(x) / 1000.0 - 128);
+  return .006 * static_cast<f64>(z) / 1000.0 + .01 * d + std::max(0.0, d - half);
+}
+}  // namespace
+
+// The brief's fourth test: the flood bed's width follows the confinement measured.
+TEST_CASE("channels: the flood bed's width follows the valley's confinement") {
+  struct Case {
+    f64 half;
+    const char* what;
+  };
+  for (const Case& c : {Case{16, "wide"}, Case{4.5, "narrow"}, Case{1, "entrenched"}}) {
+    ChannelLayer p = stream_layer(1);
+    p.meander_amplitude_coeff = 0;  // the line down the valley's middle, so each side is the same
+    p.alternate_asymmetry = 0;
+    scene_gen::Ground g;
+    g.surface_fn = &floored;
+    g.context = &c.half;
+    ChannelNetwork n;
+    std::string error;
+    REQUIRE(plan_channels(p, g, 1, nullptr, n, error));
+    const JsonValue cuts = terrain_cuts_json(p, n);
+    const JsonValue water = water_channels_json(p, n, 0, .5f, true);
+    u32 written = 0, checked = 0, bare = 0;
+    for (u32 k = 0; k < n.links.size(); ++k) {
+      const ChannelLink& link = n.links[k];
+      if (link.line.size() < 2) continue;
+      const JsonValue& o = cuts[written++];
+      if (link.line.size() < 200 || !link.head) continue;  // the trunk
+      scene::TerrainCut cut;
+      schema::ReadContext reader;
+      REQUIRE(schema::from_json(cut, o, reader));
+      REQUIRE(reader.ok());
+      const std::vector<f64> s = along(link);
+      for (u32 i = 0; i < link.line.size(); ++i) {
+        const ChannelPoint& pt = link.line[i];
+        const f64 w = static_cast<f64>(pt.width_m), mean = static_cast<f64>(pt.depth_m);
+        // The middle of the link, where the bed is wide enough to have a flood bed and the line
+        // is on the valley's middle.
+        if (s[i] < .3 * s.back() || s[i] > .7 * s.back() || w < 2.5) continue;
+        if (std::abs(pt.at.x - 128) > .25) continue;
+        const f64 thalweg = .5 * w * (1 - std::sqrt(1 - 4 * mean / w));
+        // Each side: the floor's half width and the wall's run to a thalweg over the line, the
+        // floor's own 1 % taken off.
+        const f64 prone = c.half + (thalweg - .01 * c.half) / 1.01;
+        const f64 ratio = 2 * prone / w;
+        const f64 run = 1.25 * thalweg / 1.5;
+        ++checked;
+        if (ratio < 1.4) {
+          CHECK(link.flood_left[i] == 0);
+          CHECK(link.flood_right[i] == 0);
+          CHECK(cut.flood_left_m.empty());
+          continue;
+        }
+        // (The walk stops at the furthest a bed can reach on a side and its scarp's run, 1.6 times
+        // half the three widths: a ratio past that is recorded as that.)
+        const f64 walked = 2 * (1.6 * 1.5 * w + run) / w;
+        CHECK(static_cast<f64>(link.entrenchment[i]) ==
+              doctest::Approx(std::min(ratio, walked)).epsilon(0.03));
+        // As wide as the flood-prone width allows, three widths at the most.
+        const f64 expected = std::min(3 * w, 2 * (prone - run));
+        const f64 total =
+            static_cast<f64>(link.flood_left[i]) + static_cast<f64>(link.flood_right[i]);
+        CHECK(total == doctest::Approx(expected).epsilon(0.03));
+        REQUIRE(cut.flood_left_m.size() == link.line.size());
+        CHECK(cut.flood_left_m[i] == link.flood_left[i]);
+        CHECK(cut.flood_right_m[i] == link.flood_right[i]);
+        // The bed a quarter of a thalweg under the top, its scarp's top a thalweg over it.
+        CHECK(static_cast<f64>(cut.flood_depth_m[i]) ==
+              doctest::Approx(.25 * thalweg).epsilon(0.01));
+        CHECK(static_cast<f64>(cut.scarp_m[i]) == doctest::Approx(1.25 * thalweg).epsilon(0.01));
+        CHECK(cut.scarp_slope == p.scarp_slope);
+        bare += total > 1.5 * w;
+      }
+    }
+    MESSAGE(std::string(c.what) << ": " << checked << " points checked, " << bare
+                                << " with a bed over 1.5 widths");
+    CHECK(checked > 100);
+    if (c.half >= 16) CHECK(bare == checked);
+    if (c.half <= 1) CHECK(bare == 0);
+    // The placements leave the bed bare: a point 0.9 of the bed's reach from the ribbon's line is
+    // excluded, on either side, and the water's description is what says so.
+    Vector<scene::WaterChannel> channels;
+    for (const JsonValue& block : water.as_array()) {
+      scene::WaterChannel channel;
+      schema::ReadContext reader;
+      REQUIRE(schema::from_json(channel, block, reader));
+      REQUIRE(reader.ok());
+      channels.push_back(std::move(channel));
+    }
+    scene_gen::Exclusion exclusion;
+    REQUIRE(exclusion.build({}, {}, {channels.data(), channels.size()}, &error));
+    const scene_gen::Ground flat;
+    u32 on_bed = 0;
+    for (const scene::WaterChannel& channel : channels) {
+      if (channel.flood_left_m.empty()) continue;
+      REQUIRE(channel.flood_left_m.size() == channel.points.size());
+      for (u32 i = 0; i + 1 < channel.points.size(); i += 7) {
+        const f64 dx = channel.points[i + 1].x - channel.points[i].x;
+        const f64 dz = channel.points[i + 1].z - channel.points[i].z;
+        const f64 len = std::sqrt(dx * dx + dz * dz);
+        if (!(len > 0.0)) continue;
+        for (const f64 side : {1.0, -1.0}) {
+          const f64 reach =
+              static_cast<f64>(side > 0 ? channel.flood_left_m[i] : channel.flood_right_m[i]);
+          if (!(reach > 0)) continue;
+          const f64 x = channel.points[i].x - side * dz / len * .9 * reach;
+          const f64 z = channel.points[i].z + side * dx / len * .9 * reach;
+          CHECK(exclusion.excluded_mm(flat, std::llround(x * 1000.0), std::llround(z * 1000.0),
+                                      scene_gen::k_exclude_channels));
+          ++on_bed;
+        }
+      }
+    }
+    if (c.half >= 16) CHECK(on_bed > 20);
+  }
 }

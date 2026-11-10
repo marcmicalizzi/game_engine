@@ -210,3 +210,63 @@ TEST_CASE("exclusion: the same scene answers the same, whichever way it was buil
     }
   CHECK(excluded > 100u);
 }
+
+// W93 (which folds W92 in): the corridor is the cut's. A cut's bank tops stand at half the width,
+// inside the dressed bank's edge, so a channel without a flood bed is excluded as it was; a flood
+// bed reaches further, on the side it reaches, and the description hands its edge over.
+TEST_CASE("exclusion: a channel's flood bed is left bare on the side it reaches") {
+  scene::WaterChannel channel = straight_channel(0.0, 40.0, 3.0f);
+  // The line runs along +x, so its left ((-dz, dx)) is +z: 6 m of bed on the left, 1 m on the
+  // right, which is inside the bank's 2.65 m and changes nothing there.
+  for (u32 i = 0; i < 2; ++i) {
+    channel.flood_left_m.push_back(6.0f);
+    channel.flood_right_m.push_back(1.0f);
+  }
+  Exclusion ex;
+  REQUIRE(ex.build({}, {}, {&channel, 1}));
+  const f64 h = 0.0;
+  const Ground ground = ground_at(h);
+  CHECK(ex.excluded_mm(ground, mm(20.0), mm(5.9)));         // on the bed
+  CHECK_FALSE(ex.excluded_mm(ground, mm(20.0), mm(6.1)));   // past its edge
+  CHECK(ex.excluded_mm(ground, mm(20.0), mm(-2.6)));        // the right bank, as before
+  CHECK_FALSE(ex.excluded_mm(ground, mm(20.0), mm(-2.7)));  // and not 5.9 m out on that side
+  CHECK_FALSE(ex.excluded_mm(ground, mm(20.0), mm(-5.9)));
+  // The riparian distance is measured from the bed's edge.
+  CHECK(ex.channel_distance_mm(mm(20.0), mm(7.0)) == doctest::Approx(1.0).epsilon(1e-9));
+  CHECK(ex.riparian_factor_mm(mm(20.0), mm(6.0)) == doctest::Approx(k_riparian_floor));
+  CHECK(ex.riparian_factor_mm(mm(20.0), mm(6.0 + k_riparian_reach_m)) == 1.0);
+  // The reach follows the line: 6 m at one end and none at the other is 3 m half way, which the
+  // bank's 2.65 m is inside of.
+  scene::WaterChannel closing = straight_channel(0.0, 40.0, 3.0f);
+  closing.flood_left_m.push_back(6.0f);
+  closing.flood_left_m.push_back(0.0f);
+  closing.flood_right_m.push_back(0.0f);
+  closing.flood_right_m.push_back(0.0f);
+  Exclusion taper;
+  REQUIRE(taper.build({}, {}, {&closing, 1}));
+  CHECK(taper.excluded_mm(ground, mm(20.0), mm(2.9)));
+  CHECK_FALSE(taper.excluded_mm(ground, mm(20.0), mm(3.1)));
+  CHECK_FALSE(taper.excluded_mm(ground, mm(36.0), mm(2.7)));
+  // Arrays that are not the points' long, and a number that is not one, are no flood bed: the
+  // channel is excluded exactly as one that names none.
+  const scene::WaterChannel plain = straight_channel(0.0, 40.0, 3.0f);
+  scene::WaterChannel odd = plain;
+  odd.flood_left_m.push_back(6.0f);
+  odd.flood_right_m.push_back(6.0f);
+  scene::WaterChannel bad = plain;
+  for (u32 i = 0; i < 2; ++i) {
+    bad.flood_left_m.push_back(-4.0f);
+    bad.flood_right_m.push_back(std::numeric_limits<f32>::quiet_NaN());
+  }
+  Exclusion a, b, c;
+  REQUIRE(a.build({}, {}, {&plain, 1}));
+  REQUIRE(b.build({}, {}, {&odd, 1}));
+  REQUIRE(c.build({}, {}, {&bad, 1}));
+  for (i64 z = -9000; z <= 9000; z += 50) {
+    const bool e = a.excluded_mm(ground, mm(20.0), z);
+    CHECK(b.excluded_mm(ground, mm(20.0), z) == e);
+    CHECK(c.excluded_mm(ground, mm(20.0), z) == e);
+    CHECK(b.riparian_factor_mm(mm(20.0), z) == a.riparian_factor_mm(mm(20.0), z));
+    CHECK(c.riparian_factor_mm(mm(20.0), z) == a.riparian_factor_mm(mm(20.0), z));
+  }
+}

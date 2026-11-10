@@ -1402,7 +1402,7 @@ struct WaterBody @version(5) {
 /// points falls at 45 degrees or steeper the water is in free fall and that stretch is a waterfall.
 /// Refused with a sentence: fewer than two points, arrays of unequal length, a width or depth that
 /// is not positive, a slope that is negative where the line descends.
-struct WaterChannel @version(4) {
+struct WaterChannel @version(5) {
   name: string
   /// The centreline, downstream, world positions; each point's y is the **water surface's**
   /// height there.
@@ -1450,6 +1450,13 @@ struct WaterChannel @version(4) {
   /// defaults are the exclusion's old constants to the bit (0.4 has no exact f32).
   bank_width_widths: f64 = 0.25 @since(4)
   bank_width_m: f64 = 0.4 @since(4) @unit(m)
+  /// **The flood bed's reach from the line** at each point, metres, left and right (W93;
+  /// scene_gen.md, "Exclusion"; "left" the side of (-dz, dx) for a segment running (dx, dz)): the
+  /// cut's own numbers (`TerrainCut.flood_left_m`, `flood_right_m`), handed over here so the
+  /// placements leave the whole bed bare and not only the water and its banks. Both or neither,
+  /// one per point; empty where the channel has no flood bed. The water reads neither.
+  flood_left_m: f32[] @since(5)
+  flood_right_m: f32[] @since(5)
 }
 
 /// One bed of a formation's sequence (`Formation`; renderer.md, "Formation bands"; the grounding,
