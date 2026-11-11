@@ -157,6 +157,7 @@ int channels_command(int argc, char** argv) {
   const JsonValue* placements = json.find("placements");
   JsonValue all = JsonValue::array();
   JsonValue cuts = JsonValue::array();
+  JsonValue regions = JsonValue::array();
   u32 entries = 0, heads = 0, links = 0;
   channels::ChannelWaterCounts shore_counts;
   channels::RibbonTrim trim;  // the ribbons' ends a body covers (W91 continuation)
@@ -222,6 +223,10 @@ int channels_command(int argc, char** argv) {
         const JsonValue c = channels::terrain_cuts_json(layer, network);
         for (const JsonValue& b : c.as_array())
           cuts.push_back(b);
+        // The beds' outlines for the terrain's masks, where the layer names their material.
+        const JsonValue r = channels::bed_regions_json(layer, network);
+        for (const JsonValue& b : r.as_array())
+          regions.push_back(b);
       }
       ++entries;
       shore_counts.mouths += network.water.mouths;
@@ -337,6 +342,10 @@ int channels_command(int argc, char** argv) {
   for (const JsonValue& p : plans.as_array())
     plan_keys.push_back(*p.find("plan"));
   out["plans"] = std::move(plans);
+  // The beds' outlines, for the terrain's `masks.regions` (W93): only where a layer names its
+  // bed's material, so an output without one is the text it was.
+  const u32 region_count = regions.as_array().size();
+  if (region_count > 0) out["mask_regions"] = std::move(regions);
   if (io::write_file_atomic(out_path, write_json(out)) != io::Status::Ok)
     return fail("cannot write " + out_path);
   JsonValue line = JsonValue::object();
@@ -355,6 +364,7 @@ int channels_command(int argc, char** argv) {
   // the seconds the plans took, made or read.
   line["plans"] = std::move(plan_keys);
   line["planned"] = JsonValue(planned);
+  line["mask_regions"] = JsonValue(region_count);
   line["plan_s"] = JsonValue(std::round(plan_seconds * 1000) / 1000);
   // W90: what the water bodies and the junctions did, and the line's points by reach.
   line["bodies"] = JsonValue(static_cast<u32>(bodies.size()));

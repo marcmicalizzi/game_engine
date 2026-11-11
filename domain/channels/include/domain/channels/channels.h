@@ -285,6 +285,12 @@ JsonValue water_channels_json(const ChannelLayer& layer, const ChannelNetwork& n
 // down the line, never more than two thalwegs under the ground at it — as a JSON array.
 JsonValue terrain_cuts_json(const ChannelLayer& layer, const ChannelNetwork& network);
 
+// **The bed's material** (channels.md, "The flood bed"; W93): each stretch of bed — the cut between
+// its bank tops and its flood bed — as an `engine.scene.TerrainMaskRegion` naming the layer's
+// `bed_material`, in link order: what the terrain's `masks.regions` take so the bed is drawn with
+// the ground's own material and not a mesh laid on it. Empty for a layer that names no material.
+JsonValue bed_regions_json(const ChannelLayer& layer, const ChannelNetwork& network);
+
 // **What the water's description draws, measured** (W91; channels.md, "Against the proof of
 // concept"): over `WaterChannel` blocks as `water_channels_json` writes them, against the ground
 // (the ground before any cut: a cut only lowers it, so a ribbon edge over it is over the cut ground

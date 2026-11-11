@@ -135,8 +135,9 @@ measurements, not the plan), and on the larger ground 6.2 s before, 5.9 s making
 4.7 s reading it.
 
 **Still pasted.** The second half of item 9, "the cut applied by the generator, not pasted from a
-subcommand", is not built: the terrain's `cuts`, the scene's `water_channels` and now the entry's
-`plan` are three things the author pastes from one output. Closing it means the ground is made in
+subcommand", is not built: the terrain's `cuts`, the scene's `water_channels`, the entry's `plan`
+and, where the layer names its bed's material, the masks' `mask_regions` are four things the
+author pastes from one output. Closing it means the ground is made in
 two steps (the ground before the cuts, the plan, the cut ground) and the scene reader takes the
 water from the plan, which are the tile provider's and the scene reader's to change, with a
 registration point a placement generator contributes a ground edit through.
@@ -447,12 +448,37 @@ inside a flood bed, bounded by a scarp each side where the valley leaves room fo
   ([scene_gen](scene_gen.md#exclusion)): `scene_gen` may not name this capability, so the reach
   travels as data on the description the two share, as the bank's does (T78).
 
-**The bed is ground, and its material is the ground's.** The cut gives the bed its form; nothing
-here gives it gravel, and since W93's continuation nothing is laid on it or on the channel's own
-bed either ([What it places](#what-it-places)). The right carrier is the terrain's mask level (a `gravel/bed`
-layer laid along the cut by the masks, which is a request on the masks' owner, with the pack's
-missing gravel role); until then an author paints it with a mask region over the cut's reach, as
-this row's scratch scene does.
+**The bed is ground, and its material is the ground's.** The cut gives the bed its form, and since
+W93's continuation nothing is laid on it or on the channel's own bed
+([What it places](#what-it-places)). Its material goes through the terrain's masks: a layer that
+names `bed_material` — a layer of the terrain's own palette (`terrain.materials.layers[].name`),
+standing for the role `gravel/bed`, which no pack here has a set for — has every stretch of its
+beds written by `engine-content channels --cut` as an `engine.scene.TerrainMaskRegion` under
+`mask_regions` (`bed_regions_json`), for the terrain's `masks.regions`. A stretch is a run of a
+link's points a metre wide or more, off a knickpoint; its outline reaches, each side, the further
+of the cut's own bank top and the flood bed's edge, a corner about every width, its edge
+feathered over `bed_feather_m` (0.4 m). So the bed's gravel is the plan's too: the outline is the
+cut's, with no polygon drawn by hand over it (W93's scratch scene built one in its script). It
+is one more thing pasted ([One plan](#one-plan), "Still pasted"); the masks themselves were not
+changed, and a region costs the mask level one of its four layers a tile where it lies, which
+W89 counted against paints and which the plates cost more than. Held by "the beds' outlines are
+mask regions that hold the cut and its flood bed". The bars' finer sediment (`sand/bar`) is not
+separated from the bed's: one material for the whole bed.
+
+**The waterline on a bar is still a sawtooth, and what is left of it is the water's.** The
+water's ribbon is a strip at the water's level, three quarters of the hydraulic geometry's width
+either side of the line, and what a picture shows as the waterline is where the depth test lets
+that strip through the ground as it is drawn. A point bar rises at a few degrees, so a 5 cm step
+between two points of the ring a view draws the ground from (0.5 m past the nearest, 1 m and 2 m
+beyond) moves the waterline by a metre: the teeth are the ground's lattice, not the ribbon's
+edge. The channel's mesher could end the strip at the waterline the cut's profile gives exactly
+(the section's two slopes and the stage say how far from the line the water reaches on each
+side; it would need those two distances a point on `WaterChannel`), and **that is not built**.
+It would smooth the edge only where the drawn ground stands under the strip's edge; where the
+drawn ground stands over it the ground still cuts the strip in teeth. Closing it for good is the
+water's shading — the surface fading out over its last centimetres of depth, read from the
+depth behind it, so that the edge is where the water is thin and not where two meshes cross —
+or a ground drawn finer along a channel, and neither is this capability's.
 
 **Measured** (`channels_tests.cpp`, "the flood bed's width follows the valley's confinement"):
 on three valleys whose floors are 32, 9 and 2 m wide between 45-degree walls, with a 4.6 to 5.3 m
@@ -463,7 +489,10 @@ and the bed's area) and `pools`.
 
 **Not built**: bars as relief on the bed beyond the channel's own point bar (a flood bed's bars
 are the low-flow channel's; the bed between them is flat); braided threads; a bed whose level
-steps down terrace by terrace; the bed's own gravel (above).
+steps down terrace by terrace; a scarp a walker reads on a wide floor (the bed stands a quarter
+of a thalweg under the bank's top, 15 cm on a 0.6 m channel: a change of colour, not a step);
+the bars' own material apart from the bed's. W93's continuation reached the bed's material and
+stopped there.
 
 ## The steep reaches
 

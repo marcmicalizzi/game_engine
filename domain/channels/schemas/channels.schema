@@ -76,7 +76,8 @@ struct ChannelSurface @version(1) {
 /// field is refused by the reader (the owner, 2026-11-10: nothing is kept for compatibility).
 /// Version 8 (W93): the steep reaches' section and planform (`step_widening`, `steep_asymmetry`,
 /// `steep_wander_widths`).
-struct ChannelLayer @version(8) {
+/// Version 9 (W93): `bed_material` and `bed_feather_m`, the bed's outline for the terrain's masks.
+struct ChannelLayer @version(9) {
   name: string
   seed: u64 = 1
   /// The region drained, world metres, x and z, each a whole number of spacings.
@@ -239,6 +240,15 @@ struct ChannelLayer @version(8) {
   step_widening: f32 = 0.3 @since(8)
   steep_asymmetry: f32 = 0.35 @since(8)
   steep_wander_widths: f32 = 0.75 @since(8)
+  /// **The bed's material** (W93; channels.md, "The flood bed"): the terrain palette layer
+  /// (`terrain.materials.layers[].name`) the beds are painted with, standing for the role
+  /// `gravel/bed`. Named: `engine-content channels` writes each stretch of bed — the cut and its
+  /// flood bed — as a `TerrainMaskRegion` under `mask_regions`, for the terrain's
+  /// `masks.regions`, its edge feathered over `bed_feather_m` (0 to 10 m). Empty: none are
+  /// written, and the bed draws as the ground beside it. Neither is part of what a plan is made
+  /// from in any way that moves a line, though both are in its key.
+  bed_material: string @since(9)
+  bed_feather_m: f32 = 0.4 @since(9) @unit(m)
   /// The boulders' look (channels.md, "Materials"): the steps' and the clusters' clasts, the one
   /// thing the generator places.
   boulders: ChannelSurface @since(7)

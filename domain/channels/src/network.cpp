@@ -1145,6 +1145,7 @@ bool layer_in_range(const ChannelLayer& p, std::string& error) {
   if (!in(wide(p.step_widening), 0, .6) || !in(wide(p.steep_asymmetry), 0, 1) ||
       !in(wide(p.steep_wander_widths), 0, 3))
     return fail(error, "step_widening/steep_asymmetry/steep_wander_widths");
+  if (!in(wide(p.bed_feather_m), 0, 10)) return fail(error, "bed_feather_m");
   if (!in(wide(p.flood_bed_widths), 1.25, 12) || !in(wide(p.flood_height_depths), 1.25, 4) ||
       !in(wide(p.flood_entrenchment_min), 1, 5) || !in(wide(p.flood_min_width_m), 0, 100) ||
       !in(wide(p.flood_bed_depth), 0, .45) || !in(wide(p.scarp_slope), .25, 8))
@@ -1721,6 +1722,82 @@ JsonValue terrain_cuts_json(const ChannelLayer& p, const ChannelNetwork& n) {
       o["scarp_slope"] = JsonValue(wide(p.scarp_slope));
     }
     list.push_back(std::move(o));
+  }
+  return list;
+}
+// **The bed's material** (channels.md, "The flood bed"): the outline of each stretch of bed, for
+// the terrain's masks. A stretch is a run of a link's kept points at least `bar_min_width_m` wide
+// and off a knickpoint; its outline reaches, each side, the further of the cut's own bank top and
+// the flood bed's edge, a corner about every width along the line, the left side downstream and
+// the right side back. Centimetres, so the text is the same from every toolchain.
+JsonValue bed_regions_json(const ChannelLayer& p, const ChannelNetwork& n) {
+  JsonValue list = JsonValue::array();
+  if (p.bed_material.empty()) return list;
+  for (u32 k = 0; k < n.links.size(); ++k) {
+    const ChannelLink& link = n.links[k];
+    const u32 m = std::min<u32>(link.keep, link.line.size());
+    if (m < 3) continue;
+    const Vector<f64> s = lengths_of(link.line);
+    const auto in_bed = [&](u32 i) {
+      return wide(link.line[i].width_m) >= wide(p.bar_min_width_m) &&
+             !(i < link.knick.size() && link.knick[i]);
+    };
+    u32 stretch = 0;
+    for (u32 i = 0; i < m;) {
+      if (!in_bed(i)) {
+        ++i;
+        continue;
+      }
+      u32 e = i;
+      while (e + 1 < m && in_bed(e + 1))
+        ++e;
+      Vector<f64> lx, lz, rx, rz;
+      f64 next = s[i];
+      for (u32 q = i; q <= e; ++q) {
+        if (q != e && s[q] < next) continue;
+        const ChannelPoint& pt = link.line[q];
+        const f64 w = wide(pt.width_m);
+        next = s[q] + std::max(w, 1.0);
+        const u32 a = q > 0 ? q - 1 : 0, b = std::min<u32>(link.line.size() - 1, q + 1);
+        f64 tx = link.line[b].at.x - link.line[a].at.x, tz = link.line[b].at.z - link.line[a].at.z;
+        const f64 tl = std::sqrt(tx * tx + tz * tz);
+        if (!(tl > 0)) continue;
+        tx /= tl;
+        tz /= tl;
+        const f64 half = .5 * w * (1 + (q < link.swell.size() ? wide(link.swell[q]) : 0.0));
+        const f64 left =
+            std::max(half, q < link.flood_left.size() ? wide(link.flood_left[q]) : 0.0);
+        const f64 right =
+            std::max(half, q < link.flood_right.size() ? wide(link.flood_right[q]) : 0.0);
+        // The left is the side of (-dz, dx).
+        lx.push_back(round_to(pt.at.x - tz * left, 1e2));
+        lz.push_back(round_to(pt.at.z + tx * left, 1e2));
+        rx.push_back(round_to(pt.at.x + tz * right, 1e2));
+        rz.push_back(round_to(pt.at.z - tx * right, 1e2));
+      }
+      if (lx.size() >= 2) {
+        JsonValue polygon = JsonValue::array();
+        const auto corner = [&](f64 x, f64 z) {
+          JsonValue at = JsonValue::array();
+          at.push_back(JsonValue(x));
+          at.push_back(JsonValue(0.0));
+          at.push_back(JsonValue(z));
+          polygon.push_back(std::move(at));
+        };
+        for (u32 q = 0; q < lx.size(); ++q)
+          corner(lx[q], lz[q]);
+        for (u32 q = rx.size(); q-- > 0;)
+          corner(rx[q], rz[q]);
+        JsonValue o = JsonValue::object();
+        o["name"] =
+            JsonValue(p.name + " link " + std::to_string(k) + " bed " + std::to_string(stretch++));
+        o["polygon"] = std::move(polygon);
+        o["material"] = JsonValue(p.bed_material);
+        o["feather_m"] = JsonValue(wide(p.bed_feather_m));
+        list.push_back(std::move(o));
+      }
+      i = e + 1;
+    }
   }
   return list;
 }

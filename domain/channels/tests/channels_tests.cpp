@@ -1840,6 +1840,81 @@ TEST_CASE("channels: the line's turn between consecutive points is bounded on ev
   }
   CHECK(worst <= 1 / .5);  // no radius under half a width (of a metre at least)
 }
+// **The bed's material** (channels.md, "The flood bed"): the beds' outlines as the terrain's mask
+// regions. None for a layer that names no material; with one, every region is a
+// `TerrainMaskRegion` naming it, every point of a line a metre wide or more lies inside one, with
+// the points two fifths of the bed's reach to either side, and the ground a bed's reach and 3 m
+// beyond its edge lies outside them all (but where another bend's bed comes round to it).
+TEST_CASE("channels: the beds' outlines are mask regions that hold the cut and its flood bed") {
+  ChannelLayer p = layer();
+  p.head_threshold_m2 = 300;
+  p.width_at_km2_m = 12;
+  p.depth_at_km2_m = 1.2f;
+  ChannelNetwork n;
+  std::string error;
+  REQUIRE(plan_channels(p, ground(gentle), 0, nullptr, n, error));
+  CHECK(bed_regions_json(p, n).as_array().empty());
+  p.bed_material = "gravel";
+  const JsonValue list = bed_regions_json(p, n);
+  REQUIRE_FALSE(list.as_array().empty());
+  CHECK(write_json(bed_regions_json(p, n)) == write_json(list));
+  std::vector<scene::TerrainMaskRegion> regions;
+  for (const JsonValue& o : list.as_array()) {
+    scene::TerrainMaskRegion region;
+    schema::ReadContext reader;
+    REQUIRE(schema::from_json(region, o, reader));
+    REQUIRE(reader.ok());
+    CHECK(region.material == "gravel");
+    CHECK(region.feather_m == doctest::Approx(.4f));
+    CHECK(region.polygon.size() >= 4);
+    CHECK(region.name.find(p.name + " link ") == 0);
+    regions.push_back(std::move(region));
+  }
+  // Even-odd, over every region.
+  const auto inside = [&](f64 x, f64 z) {
+    for (const scene::TerrainMaskRegion& r : regions) {
+      bool in = false;
+      for (u32 a = 0, b = r.polygon.size() - 1; a < r.polygon.size(); b = a++) {
+        const WorldPos& u = r.polygon[a];
+        const WorldPos& v = r.polygon[b];
+        if ((u.z > z) != (v.z > z) && x < (v.x - u.x) * (z - u.z) / (v.z - u.z) + u.x) in = !in;
+      }
+      if (in) return true;
+    }
+    return false;
+  };
+  u32 on_bed = 0, beyond = 0, beyond_out = 0, flooded = 0;
+  for (const ChannelLink& link : n.links) {
+    const Vector<f64> s = lengths(link);
+    const u32 m = std::min<u32>(link.keep, link.line.size());
+    for (u32 i = 2; i + 2 < m; i += 3) {
+      const ChannelPoint& pt = link.line[i];
+      const f64 w = static_cast<f64>(pt.width_m);
+      if (w < static_cast<f64>(p.bar_min_width_m) || link.knick[i]) continue;
+      if (s[i] < 3 * w || s[m - 1] - s[i] < 3 * w) continue;
+      const f64 tx = link.line[i + 1].at.x - link.line[i - 1].at.x;
+      const f64 tz = link.line[i + 1].at.z - link.line[i - 1].at.z;
+      const f64 tl = std::sqrt(tx * tx + tz * tz);
+      const f64 half = .5 * w * (1 + static_cast<f64>(link.swell[i]));
+      const f64 left = std::max(half, static_cast<f64>(link.flood_left[i]));
+      const f64 right = std::max(half, static_cast<f64>(link.flood_right[i]));
+      flooded += link.flood_left[i] > 0;
+      ++on_bed;
+      CHECK(inside(pt.at.x, pt.at.z));
+      CHECK(inside(pt.at.x - tz / tl * .4 * left, pt.at.z + tx / tl * .4 * left));
+      CHECK(inside(pt.at.x + tz / tl * .4 * right, pt.at.z - tx / tl * .4 * right));
+      beyond += 2;
+      beyond_out += !inside(pt.at.x - tz / tl * (left + 3), pt.at.z + tx / tl * (left + 3));
+      beyond_out += !inside(pt.at.x + tz / tl * (right + 3), pt.at.z - tx / tl * (right + 3));
+    }
+  }
+  MESSAGE(regions.size() << " regions; " << on_bed << " points on a bed, " << flooded
+                         << " of them with a flood bed; " << beyond_out << " of " << beyond
+                         << " probes 3 m past the edge outside every region");
+  CHECK(on_bed > 100);
+  CHECK(flooded > 20);
+  CHECK(beyond_out * 100 >= beyond * 90);
+}
 // ---- W93, continued: one plan -------------------------------------------------------------------
 
 namespace {
