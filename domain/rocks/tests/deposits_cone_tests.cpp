@@ -715,9 +715,9 @@ TEST_CASE("deposits: neighbouring patches' coarse forms meet along their border"
     Vector<i64> out;
     for (u32 k = 0; k < lod.mesh.clusters.size(); ++k) {
       if (!in_cut(lod, k, t)) continue;
-      const auto& c = lod.mesh.clusters[k];
-      for (u32 q = 0; q < c.vertex_count; ++q) {
-        const Vec3 v = lod.mesh.vertices[c.vertex_offset + q];
+      const auto& cluster = lod.mesh.clusters[k];
+      for (u32 q = 0; q < cluster.vertex_count; ++q) {
+        const Vec3 v = lod.mesh.vertices[cluster.vertex_offset + q];
         if (std::abs(static_cast<f64>(v.x) - x) > 1e-5) continue;
         out.push_back(std::llround((at.z + static_cast<f64>(v.z)) * 1000.0) * 100000000ll +
                       std::llround((at.y + static_cast<f64>(v.y)) * 100000.0));
