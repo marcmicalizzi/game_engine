@@ -186,6 +186,17 @@ bool place_pieces(const ChannelLayer& p, const ChannelNetwork& n, const scene_ge
           const f64 along = .2 * size * (2 * draw.unit() - 1);
           dome(i, d, lateral, along);
         }
+        // **The step's ends** (W93, continued; channels.md, "The steep reaches"): a step is a
+        // channel-spanning accumulation jammed between the banks, and the clasts at its two ends
+        // are the largest and stand half in the bank. One each side, 1 to 1.5 of the step's clast
+        // across, its centre a third of itself past the bed's edge: the rocks that break the
+        // bank's line.
+        for (const f64 side : {-1.0, 1.0}) {
+          if (piece.recipe.slabs.size() >= k_max_slabs) break;
+          const f64 d = size * (1 + .5 * draw.unit());
+          const f64 along = .3 * size * (2 * draw.unit() - 1);
+          dome(i, d, side * (.5 * bed_w + .35 * d), along);
+        }
       }
       for (u32 q = 0; q < link.cluster_at.size(); ++q) {
         const u32 i = link.cluster_at[q];
@@ -199,6 +210,12 @@ bool place_pieces(const ChannelLayer& p, const ChannelNetwork& n, const scene_ge
           const f64 lateral = (draw.unit() - .5) * std::max(0.0, bed_w - .5 * d);
           const f64 along = size * (2 * draw.unit() - 1);
           dome(i, d, lateral, along);
+        }
+        // And at about half the clusters a clast against one bank, as the steps' ends are.
+        if (draw.unit() < .5 && piece.recipe.slabs.size() < k_max_slabs) {
+          const f64 side = draw.unit() < .5 ? -1.0 : 1.0;
+          const f64 d = size * (.9 + .5 * draw.unit());
+          dome(i, d, side * (.5 * bed_w + .35 * d), size * (2 * draw.unit() - 1));
         }
       }
       if (!piece.recipe.slabs.empty()) {

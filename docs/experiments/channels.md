@@ -159,8 +159,8 @@ slumping top and whose inner side is a pale gravel bar rising out of the water.)
   (1960): at a bend the deep water lies against the concave (outer) bank, which is cut and steep,
   and a point bar builds from the convex (inner) bank toward it; at the crossing between two bends
   the section is symmetric and shallow, a riffle. A bend's radius of curvature is **2 to 3 widths**
-  (the same paper's `bend_radius_widths`, pinned at 2.5): the section is fully asymmetric at that
-  radius and tighter.
+  (the same paper's `bend_radius_widths`, pinned at 2.5 by W93 and at 3 by its continuation, below):
+  the section is fully asymmetric at that radius and tighter.
 - **Straight reaches have the rhythm too.** Leopold & Wolman (1957, USGS Professional Paper 282-B,
   "River channel patterns: braided, meandering and straight"): a straight channel's thalweg wanders
   from bank to bank and its bed has pools and riffles at about the spacing a meander's would have,
@@ -173,13 +173,14 @@ slumping top and whose inner side is a pale gravel bar rising out of the water.)
   is W86's and unchanged. A meander's bend is half of 10.9 widths long, so pools at its apexes
   stand 5.45 apart, inside the range. **Measured**: over 12 seeds on the test valley, 172 spacings,
   mean **6.0 widths** (the test holds the mean to 5 to 7; single spacings run from 1.7 to 22,
-  since the line's own bends are not regular).
+  since the line's own bends are not regular); **6.6** over 149 spacings since the kinks were
+  taken out of the line (below).
 - **The pool's depth is the triangle's.** The hydraulic geometry gives a mean depth, an area over a
   width; a triangle of that width and area is twice the mean deep. So the thalweg at a bend's apex
   is `2 d̄` at the outer bank's toe, and between riffle and apex the inner bank's run is whatever
-  keeps the area, `2 W (1 - d̄ / D) - D / m_outer`. **Not read**: the published bend-scour relations
-  (the ratio of a bend's greatest depth to its mean as a function of radius over width); the factor
-  2 here is geometry, and it is the upper end of what those relations are cited for.
+  keeps the area, `2 W (1 - d̄ / D) - D / m_outer`. **Read since** (below, "The bend's scour depth"): the published
+  relations give 1.9 to 2.0 times the mean at a radius of two to three widths, which is this
+  factor.
 - **A riffle is wider than a pool.** Richards (1976, *GSA Bulletin* 87, "Channel width and the
   riffle-pool sequence"), as cited (re-checked 2026-11-10: riffles are on average wider than the
   pools beside them, the flow over a riffle being turned toward the banks). **The share, 0.12
@@ -248,6 +249,93 @@ bed several times its width under a raw scarp of eroded earth.)
 5.3 m stream: the entrenchment ratio read from the ground is the geometry's to 3 %, and the bed is
 three widths, the floor less the scarps' runs, and none
 (`domain/channels/tests/channels_tests.cpp`).
+
+## The steep reaches, the pool's place, and three numbers read again
+
+(W93, continued, 2026-11-10; [channels](../subsystems/channels.md#the-steep-reaches). What was
+read, and how: each item says whether the paper itself was read or a secondary source that quotes
+it. The reels looked at before the design: r03 and r49, and the motion sheets
+`clear-riffle-cobbles` and `riffles-and-pools`.)
+
+- **What a step-pool and a cascade reach are.** Montgomery & Buffington (1997, *GSA Bulletin*
+  109(5): 596-611), **read in the paper** (a forest-service copy). Cascade: "narrowly confined by
+  valley walls", a bed "longitudinally and laterally disorganized", cobbles and boulders, with
+  small pools that span part of the channel "less than a channel width apart". Step-pool: large
+  clasts in discrete channel-spanning accumulations (the steps) between pools of finer material,
+  pools "roughly one to four channel widths" apart, steep gradients, small width-to-depth ratios
+  and pronounced confinement by the valley's walls. Its table 1: pool spacing in widths 1 to 4
+  (step-pool), under 1 (cascade), 5 to 7 (pool-riffle), none (plane-bed, which "lack rhythmic
+  bedforms"); both steep types confined. Its field slopes are the layer's bounds (under 0.015,
+  0.015 to 0.03, 0.03 to 0.065, over 0.065). **On banks the paper says nothing of their material**:
+  only that confinement and immobile clasts make bank cutting unlikely. So "a confined channel's
+  banks are boulders and bedrock, not a cut bank" is this page's reading of *confined by valley
+  walls* with *channel-spanning accumulations*, not a sentence of the paper.
+- **A step's height against its length and the slope**: Abrahams, Li & Atkinson (1995, *Water
+  Resources Research* 31: 2593-2602), **abstract only**: `1 <= (H/L)/S <= 2`. The layer's
+  `step_height_ratio` 1.5 is the middle of that range; **the paper's own mean was not found**.
+- **Steps form where the channel narrows.** Saletti & Hassan (2020, *Earth Surface Dynamics* 8:
+  855), a flume study, **read**: narrowing segments are "the predominant place where steps form
+  and remain stable". Zimmermann, Church & Hassan (2010, *JGR Earth Surface*), **abstract only**:
+  steps are stable where the channel's width over the step clasts' D84 (the jamming ratio) is
+  under about six. So the cut is narrower at a step's crest and wider over its pool. **The
+  amount, `step_widening` 0.3 (15 % either way), is a design choice**: no field ratio of a step's
+  width to its pool's, and no coefficient of variation of width along a step-pool reach, was
+  found. The two clasts laid at a step's ends, half in each bank (1 to 1.5 of the step's clast),
+  are the jammed accumulation's ends, a reading and not a measured size.
+- **A steep line is not a ruled one.** Rosgen (1994, below), **read**: type A streams (4 to 10 %,
+  "cascading, step/pool bed features") and Aa+ (over 10 %); their sinuosity, 1.0 to 1.2, is from a
+  secondary table (NRCS NEH 654, TS3E). No measured sinuosity of hillslope gullies was found. The
+  wander (`steep_wander_widths` 0.75) gives 1.006 on the test's planar hillside, inside that
+  range and at its low end; **its amplitude and its knots (5 widths) are design choices**, bounded
+  by what the cut can hold: at 1.5 widths the test valley lost its downhill bank at 2.7 % of its
+  points (2 % is the bound), at 0.75 at 1.8 %.
+- **The pool lies downstream of the bend's apex.** NRCS, *National Engineering Handbook* part 654
+  (2007), chapter 12, on the 1981 Red River survey, **read as a secondary source**: "the deepest
+  pool is usually located downstream from the bend apex", the pool's offset from the apex over
+  the apex-to-inflection channel distance averaging **0.36** (range -0.4 to 1.08), independent of
+  sinuosity. A meander 10.9 widths long has 2.7 widths from apex to inflection, so the section is
+  read **one width downstream** of the bend (`k_pool_lag_widths`). Dietrich & Smith (1983) and
+  Johannesson & Parker (1989) on the bed's lag behind the curvature were **not read**.
+- **The bend's scour depth** (the first of the three numbers W93 could not read). The same
+  handbook's chapter 12 quotes Thorne & Soar's (2001) fits for the greatest depth in a bend over
+  the mean depth at the crossing, for a radius under ten widths: `2.14 - 0.19 ln(Rc/W)` for a
+  width-to-depth ratio under 60, which is **2.01 at two widths and 1.93 at three**; and Maynord
+  (1996, *J. Hydraulic Engineering* 122: 460-464) as the handbook's technical supplement 14B
+  quotes it, `1.8 - 0.051 Rc/W + 0.0084 W/y`, 2.03 and 1.98 at a width-to-depth of 40. **Secondary,
+  and one caution**: the extraction of the handbook's page was garbled across its columns, so
+  which of the two fits goes with which width-to-depth class is a reading. Either way the factor
+  this page took from geometry, **twice the mean at the apex, is what the published relations
+  give at a radius of two to three widths**; nothing changed, and it is no longer only geometry.
+- **The riffle's width** (the second). Richards' (1976) own percentage was **not found**; a 2017
+  review (Brown & Pasternack, *Earth Surface Dynamics* 5) says only that his riffles were wider
+  than his pools on average. The handbook's chapter 12 gives Hey & Thorne's (1986) riffle width
+  as 1.034 of the reach's, ranging 0.75 to 1.5. **`riffle_widening` 0.12 stays a design choice**,
+  inside that range and above its mean. **And a finding that was not applied**: the same chapter's
+  Red River widths, relative to the width at the inflection, are 1.35 at the apex and 1.15 at
+  the pool for bends with point bars (1.05 and 0.95 for bends of even width). A bend with a point
+  bar is *wider* than its crossings there, where this section narrows it by 6 %. It was found
+  after the section was built and tested, it is one survey read at second hand, and applying it
+  changes every bend's cut; it is left as a row.
+- **Rosgen's bounds** (the third). Rosgen (1994, *Catena* 22: 169-199), **read in a text copy of
+  the paper**: the entrenchment ratio is "the ratio of the width of the flood-prone area to the
+  bankfull surface width", the flood-prone width taken at "twice the maximum bankfull depth";
+  1 to 1.4 is entrenched, 1.41 to 2.2 moderately entrenched, over 2.2 slightly entrenched; "the
+  continuum allows for a change of ±0.2 units". So the 2.2 the section above gave "as its readers
+  cite it" is the paper's own, and `flood_entrenchment_min` 1.4 is its lower bound.
+- **`bend_radius_widths` is 3**, the upper end of Leopold & Wolman's 2 to 3 (it was 2.5). With
+  the kinks low-passed out of the line (below) fewer points reached full asymmetry: at 2.5 the
+  12-seed test valley's pools stood 7.4 widths apart, outside Keller & Melhorn's 5 to 7, and no
+  point of the area test's valley reached a full apex. At 3, with the stretch that counts as
+  straight widened (the mean bend over a pool-to-pool length under 0.2 to 0.5, from 0.1 to 0.3),
+  the mean is **6.6 widths** (149 spacings, 2.7 to 24) and the outer bank is the deeper side at
+  327 of 341 bends (95.9 %; 99.6 % before, when the pool sat at the apex and the test's bend is
+  still defined there).
+- **The kinks.** The line is low-passed at half a width (a Gaussian's sigma; two steps at
+  least) after the trough test. A meander 10.9 widths long keeps 96 % of its amplitude
+  (`exp(-(2 pi sigma / lambda)^2 / 2)`). Measured over seven test valleys and four seeds: the
+  tightest radius between consecutive points is 1.02 widths (of a metre at least), the bound held
+  is half a width; the test valley's points with less than half a downhill bank went from 32 of
+  1,969 to 36 with the wander and 20 without it, and those with none from 12 to 0.
 
 ## Reaches
 

@@ -177,8 +177,16 @@ TEST_CASE(
   CHECK(link.cells.back() / n.width == 0);
   CHECK(link.meander == doctest::Approx(0.0));  // 5 % is above the meander limit
   REQUIRE(link.line.size() > 10);
-  for (const ChannelPoint& pt : link.line)
-    CHECK(std::abs(pt.at.x - 128) < .01);
+  // Down the notch's line, within a steep line's wander of it (W93: `steep_wander_widths` of the
+  // width, of a metre at least; the trough test holds it to less where the notch's sides rise).
+  f64 off_line = 0;
+  for (const ChannelPoint& pt : link.line) {
+    CHECK(std::abs(pt.at.x - 128) <
+          static_cast<f64>(p.steep_wander_widths) * std::max(1.0, static_cast<f64>(pt.width_m)) +
+              .01);
+    off_line = std::max(off_line, std::abs(pt.at.x - 128));
+  }
+  MESSAGE("the notch's line: " << off_line << " m off it at the most");
   // Width grows downstream as area to the 0.4.
   const ChannelPoint& a = link.line[link.line.size() / 4];
   const ChannelPoint& b = link.line.back();
@@ -215,7 +223,9 @@ TEST_CASE("channels: the same network at one job and six, and meanders where the
   for (const ChannelLink& link : serial.links)
     bent = bent || link.meander > .5;
   CHECK(bent);
-  CHECK(serial.length_m > 400);
+  // (Over 400 m until W93 low-passed the kinks out of the line: 397.9 m without them.)
+  MESSAGE("the gentle valley's channels: " << serial.length_m << " m");
+  CHECK(serial.length_m > 390);
   Vector<PlacedPiece> a, b;
   REQUIRE(place_pieces(p, serial, ground(gentle), 32, a, error));
   REQUIRE(place_pieces(p, parallel, ground(gentle), 32, b, error));
@@ -615,7 +625,8 @@ TEST_CASE("channels: nothing is laid on the bed: no slab or skin on any reach") 
         const u32 last = slab.rows * slab.columns - 1;
         const f64 dx = static_cast<f64>(slab.x[last]) - static_cast<f64>(slab.x[0]);
         const f64 dz = static_cast<f64>(slab.z[last]) - static_cast<f64>(slab.z[0]);
-        CHECK(std::sqrt(dx * dx + dz * dz) <= 1.5 * 1.3 * 1.4143 + 1e-3);  // the largest clast
+        // The largest clast: a step's end, 1.5 of a 1.5 m step's, corner to corner.
+        CHECK(std::sqrt(dx * dx + dz * dz) <= 1.5 * 1.5 * 1.4143 + 1e-3);
       }
     }
   }
@@ -839,9 +850,14 @@ TEST_CASE("channels: a link ends at a lake's shoreline, its fan grading to the l
   CHECK(link.mouth);
   CHECK(wet.water.mouths == 1);
   CHECK(wet.water.points_removed > 100);
-  // The line stops at the shoreline: its last point within a millimetre of z = 100, its ground at
-  // the level, and no point below it.
-  CHECK(link.line.back().at.z == doctest::Approx(100).epsilon(1e-4));
+  // The line stops at the shoreline: its last point's ground at the level, and no point below it.
+  // The shoreline is the level's contour, which crosses the notch's line at z = 100 m and lies 3 m
+  // of z nearer for every metre off it (0.15 across over 0.05 along), so a line within its wander
+  // of the notch's (W93: 0.75 m at the most here) ends within 2.25 m of z = 100.
+  const f64 shore_z = 100 - 3 * static_cast<f64>(p.steep_wander_widths);
+  CHECK(link.line.back().at.y == doctest::Approx(5.0).epsilon(2e-4));
+  CHECK(link.line.back().at.z <= 100 + 1e-3);
+  CHECK(link.line.back().at.z >= shore_z - 1e-3);
   CHECK(link.mouth_level == doctest::Approx(5.0).epsilon(1e-3));
   for (const ChannelPoint& pt : link.line)
     CHECK(pt.at.y >= 5.0 - 1e-3);
@@ -855,7 +871,10 @@ TEST_CASE("channels: a link ends at a lake's shoreline, its fan grading to the l
   REQUIRE(widths[widths.size() - 1].get_f64(w_end));
   REQUIRE(widths[widths.size() / 2].get_f64(w_up));
   CHECK(w_end > 1.9 * static_cast<f64>(link.line.back().width_m));
-  CHECK(std::fabs(w_up - static_cast<f64>(link.line[widths.size() / 2].width_m)) <= 1e-3);
+  // Above the fan the cut is the hydraulic geometry's width but for the reach's own swell (W93:
+  // the notch is a step-pool reach, narrower at a step's crest and wider over its pool).
+  CHECK(std::fabs(w_up - static_cast<f64>(link.line[widths.size() / 2].width_m) *
+                             (1 + static_cast<f64>(link.swell[widths.size() / 2]))) <= 1e-3);
   const ChannelPoint& end = link.line.back();
   const f64 thalweg = 2 * static_cast<f64>(end.depth_m) / 2;  // a bound, below
   CHECK(link.bed.back() < 5.0);
@@ -868,7 +887,7 @@ TEST_CASE("channels: a link ends at a lake's shoreline, its fan grading to the l
   for (const JsonValue& at : points) {
     f64 z = 0;
     REQUIRE(at[2].get_f64(z));
-    CHECK(z >= 100 - 1e-3);
+    CHECK(z >= shore_z - 1e-3);
   }
   // Pieces: none under the lake.
   Vector<PlacedPiece> pieces;
@@ -1393,8 +1412,7 @@ TEST_CASE("channels: the section keeps the hydraulic geometry's area from riffle
       CHECK(r <= 16);
       // The riffle is wider than the pool by `riffle_widening`, half each way about the hydraulic
       // geometry's width (no fan on this ground), where the reach has the rhythm (`swell`).
-      const f64 widening =
-          .5 * static_cast<f64>(p.riffle_widening) * static_cast<f64>(link.swell[i]);
+      const f64 widening = static_cast<f64>(link.swell[i]);
       CHECK(static_cast<f64>(cut.width_m[i]) == doctest::Approx(w * (1 + widening)).epsilon(1e-3));
       widest = std::max(widest, static_cast<f64>(cut.width_m[i]) / w);
       narrowest = std::min(narrowest, static_cast<f64>(cut.width_m[i]) / w);
@@ -1533,13 +1551,15 @@ TEST_CASE("channels: the flood bed's width follows the valley's confinement") {
     // **The same bytes from every toolchain** (W93): the cuts' text over this ground, which calls
     // no C library function, hashes to a value taken on MSVC (2026-11-10) that GCC and Clang
     // reproduce in the containers: the section, the flood bed and the line's move decide in
-    // products, sums, divisions, square roots and `core/math/deterministic.h`.
+    // products, sums, divisions, square roots and `core/math/deterministic.h`. (Re-pinned by
+    // W93's continuation, which moved every line: the kinks low-passed out, the pool a width
+    // downstream of its bend's apex, `bend_radius_widths` 3.)
     {
       const std::string text = write_json(cuts);
       const u64 hash = hash_bytes(text.data(), text.size());
-      CHECK(hash == (c.half >= 16 ? 5219719343903946848ull
-                     : c.half > 1 ? 2162541706977799150ull
-                                  : 9933379347176358009ull));
+      CHECK(hash == (c.half >= 16 ? 2670861390155137291ull
+                     : c.half > 1 ? 6798986846940614891ull
+                                  : 12194280523489796769ull));
     }
     MESSAGE(std::string(c.what) << ": " << checked << " points checked, " << bare
                                 << " with a bed over 1.5 widths");
@@ -1638,6 +1658,188 @@ TEST_CASE("channels: a line across a slope is moved between its banks") {
   CHECK(no_bank * 100 <= points);
 }
 
+// ---- W93, continued: the steep reaches and the line's kinks -------------------------------------
+
+namespace {
+// A plane falling 35 % toward z = 0 with the faintest fold down x = 128 m, under a bowl that
+// gathers the flow above z = 300 m: the routing's line down the plane is a ruled line, which is
+// what a side gully on a valley's planar side was.
+f64 hillside(const void*, i64 x, i64 z) noexcept {
+  const f64 xx = static_cast<f64>(x) / 1000.0, zz = static_cast<f64>(z) / 1000.0;
+  const f64 bowl = zz > 300 ? .3 * std::min(1.0, (zz - 300) / 50) : 0.0;
+  return .35 * zz + (.01 + bowl) * std::abs(xx - 128);
+}
+// The longest stretch of a polyline, metres, whose points all lie within `tolerance` of the chord
+// between its two ends: how long a ruled segment the line holds.
+f64 longest_straight(const std::vector<f64>& x, const std::vector<f64>& z, f64 tolerance) {
+  f64 longest = 0;
+  const usize n = x.size();
+  for (usize a = 0; a + 1 < n; ++a) {
+    usize b = a + 1;
+    for (; b < n; ++b) {
+      const f64 ex = x[b] - x[a], ez = z[b] - z[a], len = std::sqrt(ex * ex + ez * ez);
+      bool straight = true;
+      for (usize q = a + 1; q < b && straight && len > 0; ++q)
+        straight = std::fabs(ex * (z[q] - z[a]) - ez * (x[q] - x[a])) / len <= tolerance;
+      if (!straight) break;
+    }
+    const f64 ex = x[b - 1] - x[a], ez = z[b - 1] - z[a];
+    longest = std::max(longest, std::sqrt(ex * ex + ez * ez));
+  }
+  return longest;
+}
+}  // namespace
+
+// **The steep reaches** (channels.md, "The steep reaches"): on a step-pool reach the cut's width
+// follows the steps, narrower at each crest and wider over each pool by 15 % of the hydraulic
+// geometry's either way, and its thalweg wanders between the banks; a gully down a planar slope
+// is no ruled line: neither bank's top holds a stretch longer than 20 m within 5 cm of a chord.
+TEST_CASE("channels: a steep reach's width follows its steps and its banks are no ruled line") {
+  // Channels a few metres wide (the default's are under the metre a section is shaped from).
+  ChannelLayer p = layer();
+  p.width_at_km2_m = 12;
+  p.depth_at_km2_m = 1.2f;
+  std::string error;
+  {
+    ChannelNetwork n;
+    REQUIRE(plan_channels(p, ground(step_pool), 0, nullptr, n, error));
+    REQUIRE(n.links.size() == 1);
+    const ChannelLink& link = n.links[0];
+    const Vector<f64> s = lengths(link);
+    const JsonValue cuts = terrain_cuts_json(p, n);
+    scene::TerrainCut cut;
+    schema::ReadContext reader;
+    REQUIRE(schema::from_json(cut, cuts[0], reader));
+    REQUIRE(cut.width_m.size() == link.line.size());
+    f64 widest = 0, narrowest = 9, most_left = 0, most_right = 0;
+    for (u32 i = 0; i < link.line.size(); ++i) {
+      const f64 w = static_cast<f64>(link.line[i].width_m);
+      if (s[i] < 3 * w || s.back() - s[i] < 3 * w) continue;
+      if (link.reach[i] != static_cast<u8>(ChannelReach::StepPool) || link.knick[i]) continue;
+      const f64 ratio = static_cast<f64>(cut.width_m[i]) / w;
+      widest = std::max(widest, ratio);
+      narrowest = std::min(narrowest, ratio);
+      most_left = std::max(most_left, static_cast<f64>(link.asym[i]));
+      most_right = std::min(most_right, static_cast<f64>(link.asym[i]));
+    }
+    MESSAGE("step-pool: the cut " << narrowest << " to " << widest
+                                  << " of the hydraulic geometry's width, the asymmetry "
+                                  << most_right << " to " << most_left);
+    CHECK(widest >= 1.12);
+    CHECK(widest <= 1.15 + 1e-3);
+    CHECK(narrowest <= .88);
+    CHECK(narrowest >= .85 - 1e-3);
+    CHECK(widest / narrowest >= 1.27);  // stated: the width varies by a quarter and more
+    CHECK(most_left >= .15);
+    CHECK(most_right <= -.15);
+    CHECK(most_left <= static_cast<f64>(p.steep_asymmetry) + 1e-3);
+    // Narrower than the hydraulic geometry's at every crest away from the ends, wider between.
+    u32 crests = 0, pools = 0;
+    for (u32 q = 0; q + 1 < link.step_at.size(); ++q) {
+      const u32 a = link.step_at[q], b = link.step_at[q + 1], mid = (a + b) / 2;
+      const f64 w = static_cast<f64>(link.line[a].width_m);
+      if (s[a] < 3 * w || s.back() - s[b] < 3 * w) continue;
+      ++crests;
+      CHECK(static_cast<f64>(cut.width_m[a]) < w);
+      if (link.reach[mid] != static_cast<u8>(ChannelReach::StepPool)) continue;
+      ++pools;
+      CHECK(static_cast<f64>(cut.width_m[mid]) > static_cast<f64>(link.line[mid].width_m));
+    }
+    CHECK(crests >= 4);
+    CHECK(pools >= 4);
+  }
+  {
+    ChannelLayer q = p;
+    q.head_threshold_m2 = 300;
+    ChannelNetwork n;
+    REQUIRE(plan_channels(q, ground(hillside), 0, nullptr, n, error));
+    REQUIRE_FALSE(n.links.empty());
+    const JsonValue cuts = terrain_cuts_json(q, n);
+    f64 longest = 0, length = 0, most_sinuous = 1;
+    for (u32 k = 0; k < n.links.size(); ++k) {
+      const ChannelLink& link = n.links[k];
+      if (link.line.size() < 40) continue;
+      scene::TerrainCut cut;
+      schema::ReadContext reader;
+      REQUIRE(schema::from_json(cut, cuts[k], reader));
+      const Vector<f64> s = lengths(link);
+      std::vector<f64> lx, lz, rx, rz;
+      // The bank tops: half the cut's width across the line each way, away from the two ends.
+      u32 first = ~0u, last = 0;
+      for (u32 i = 1; i + 1 < link.line.size(); ++i) {
+        if (s[i] < 8 || s.back() - s[i] < 8) continue;
+        const f64 tx = link.line[i + 1].at.x - link.line[i - 1].at.x;
+        const f64 tz = link.line[i + 1].at.z - link.line[i - 1].at.z;
+        const f64 tl = std::sqrt(tx * tx + tz * tz);
+        const f64 half = .5 * static_cast<f64>(cut.width_m[i]);
+        lx.push_back(link.line[i].at.x - tz / tl * half);
+        lz.push_back(link.line[i].at.z + tx / tl * half);
+        rx.push_back(link.line[i].at.x + tz / tl * half);
+        rz.push_back(link.line[i].at.z - tx / tl * half);
+        first = std::min(first, i);
+        last = i;
+      }
+      if (lx.size() < 20) continue;
+      longest = std::max({longest, longest_straight(lx, lz, .05), longest_straight(rx, rz, .05)});
+      const f64 dx = link.line[last].at.x - link.line[first].at.x;
+      const f64 dz = link.line[last].at.z - link.line[first].at.z;
+      most_sinuous = std::max(most_sinuous, (s[last] - s[first]) / std::sqrt(dx * dx + dz * dz));
+      length += s[last] - s[first];
+    }
+    MESSAGE("hillside: " << length << " m of gully, the longest ruled stretch of a bank " << longest
+                         << " m, the greatest sinuosity " << most_sinuous);
+    REQUIRE(length > 100);
+    CHECK(longest <= 20.0);  // 17.0 m measured; the whole 440 m before the wander
+    CHECK(most_sinuous > 1.002);
+    CHECK(most_sinuous <= 1.2);  // Rosgen's type A: 1.0 to 1.2
+  }
+}
+
+// **No kinks** (channels.md, "The planform"): after the low-pass at the channel's own scale the
+// line turns, between consecutive points, no more than its step over a radius of `k_radius` of
+// the width (a metre's at least) — on every reach of every valley these tests plan.
+TEST_CASE("channels: the line's turn between consecutive points is bounded on every reach") {
+  struct Valley {
+    const char* name;
+    scene_gen::HeightFn fn;
+    f32 threshold;
+  };
+  std::string error;
+  f64 worst = 0;
+  for (const Valley& v : {Valley{"gentle", &gentle, 300}, Valley{"notch", &notch, 1500},
+                          Valley{"steep", &steep, 1500}, Valley{"step-pool", &step_pool, 1500},
+                          Valley{"forked", &forked, 200}, Valley{"face", &face, 1500},
+                          Valley{"hillside", &hillside, 300}}) {
+    ChannelLayer p = layer();
+    p.head_threshold_m2 = v.threshold;
+    f64 here = 0, sharpest_turn = 0;
+    u64 points = 0;
+    for (u64 seed = 0; seed < 4; ++seed) {
+      ChannelNetwork n;
+      REQUIRE(plan_channels(p, ground(v.fn), seed, nullptr, n, error));
+      for (const ChannelLink& link : n.links) {
+        for (u32 i = 1; i + 1 < link.line.size(); ++i) {
+          const f64 ax = link.line[i].at.x - link.line[i - 1].at.x;
+          const f64 az = link.line[i].at.z - link.line[i - 1].at.z;
+          const f64 bx = link.line[i + 1].at.x - link.line[i].at.x;
+          const f64 bz = link.line[i + 1].at.z - link.line[i].at.z;
+          const f64 la = std::sqrt(ax * ax + az * az), lb = std::sqrt(bx * bx + bz * bz);
+          if (!(la > 0) || !(lb > 0)) continue;
+          // The turn's sine over the mean step is the curvature; times the width, widths a radius.
+          const f64 sine = std::fabs(ax * bz - az * bx) / (la * lb);
+          const f64 w = std::max(1.0, static_cast<f64>(link.line[i].width_m));
+          here = std::max(here, sine / (.5 * (la + lb)) * w);
+          sharpest_turn = std::max(sharpest_turn, sine);
+          ++points;
+        }
+      }
+    }
+    MESSAGE(std::string(v.name) << ": " << points << " points, the tightest radius " << 1 / here
+                                << " widths, the sharpest turn's sine " << sharpest_turn);
+    worst = std::max(worst, here);
+  }
+  CHECK(worst <= 1 / .5);  // no radius under half a width (of a metre at least)
+}
 // ---- W93, continued: one plan -------------------------------------------------------------------
 
 namespace {

@@ -66,7 +66,9 @@ namespace engine::channels {
 // 5 (W93): the section follows the bends (the bed toward the outer bank, the bars the ground's own
 //    point bars with a skin on them), the flood bed.
 // 6 (W93, continued): no bed slab and no bar skin; the boulders alone are placed.
-inline constexpr u32 k_channels_version = 6;
+// 7 (W93, continued): the kinks low-passed out of every line, a steep line's wander, the pool
+//    downstream of its bend's apex, the steep reaches' section, boulders at a step's banks.
+inline constexpr u32 k_channels_version = 7;
 
 // A point of a channel's line, downstream order: where it is (y the ground under it, metres), its
 // bankfull width and depth, the bed's fall per metre there, and the contributing area.
@@ -116,11 +118,13 @@ struct ChannelLink {
   u32 bank_moved = 0;
   // **W93** (channels.md, "The section", "The flood bed"), one per point of `line`: the section's
   // asymmetry, -1 to 1 — positive where the line bends left (toward (-dz, dx)), so the point bar
-  // is on the left and the cut bank and the thalweg on the right; 0 at a riffle; where the point
-  // is in the pool-and-riffle rhythm, 1 at a riffle (the cut at its widest) to -1 at a pool's
-  // apex (its narrowest), 0 on a reach that has no rhythm; the flood bed's reach from the line
-  // each side, metres (0: none); and the entrenchment ratio measured there (the flood-prone
-  // width over the bankfull width; 0 where it was not measured).
+  // is on the left and the cut bank and the thalweg on the right; 0 at a riffle, and on a steep
+  // reach an irregular wander of the thalweg between the banks; how much wider the cut is than
+  // the hydraulic geometry's width, as a share of it (`swell`: up to half `riffle_widening` wider
+  // at a riffle and narrower at a pool's apex, half `step_widening` narrower at a step's crest and
+  // wider over its pool, 0 where a reach has neither); the flood bed's reach from the line each
+  // side, metres (0: none); and the entrenchment ratio measured there (the flood-prone width over
+  // the bankfull width; 0 where it was not measured).
   Vector<f32> asym;
   Vector<f32> swell;
   Vector<f32> flood_left;

@@ -25,6 +25,12 @@ constexpr f64 k_trough_rise = .5;
 // How many times the line is moved between its banks (below): the easing takes some of each move
 // back, and a third round was measured to undo part of the second.
 constexpr u32 k_bank_rounds = 2;
+// The steep line's wander (build_line): a knot of its noise every this many widths, and the
+// narrowest width it is scaled by; and the sigma, in widths, the kinks are low-passed over.
+constexpr f64 k_wander_knot_widths = 5.0;
+constexpr f64 k_wander_knot_min_m = 5.0;
+constexpr f64 k_wander_min_width_m = 1.0;
+constexpr f64 k_kink_sigma_widths = 0.5;
 
 struct Node {
   i64 h;
@@ -119,7 +125,15 @@ void build_line(const ChannelLayer& p, const ChannelNetwork& n, const scene_gen:
   const f64 lo = wide(p.meander_slope_min), hi = wide(p.meander_slope_max);
   link.meander = 1.0 - smoothstep(lo, hi, link.slope);
   Vector<f64> offset(m, 0.0);
-  if (link.meander > 0 && p.meander_amplitude_coeff > 0) {
+  // **A steep line wanders** (W93, continued; channels.md, "The steep reaches"): above the
+  // meanders' slope the routing's line down a planar slope is a ruled line, and a gully is not
+  // one. Where the meander fades the line takes an irregular offset instead — a value noise of
+  // the link's own, a knot every `k_wander_knot_widths` widths (5 m at least), up to
+  // `steep_wander_widths` widths (of at least `k_wander_min_width_m`) either way — which the
+  // trough test below holds to the trough as it holds a meander: in a gully with sides the wander
+  // is drawn back, and on a plane it stays.
+  const bool wanders = link.meander < 1 && p.steep_wander_widths > 0;
+  if ((link.meander > 0 && p.meander_amplitude_coeff > 0) || wanders) {
     Rng rng(link.seed);
     const f64 jitter = .7 + .6 * rng.unit();
     const f64 phase0 = rng.unit() * 2 * k_pi;
@@ -149,6 +163,12 @@ void build_line(const ChannelLayer& p, const ChannelNetwork& n, const scene_gen:
       const f64 ease = smoothstep(0.0, 1.0, edge);
       f64 o = link.meander * .5 * wide(p.meander_amplitude_coeff) * powd(wi, 1.1) * amplitude *
               det::sin(phase) * ease;
+      if (wanders) {
+        const f64 knot = std::max(k_wander_knot_widths * wi, k_wander_knot_min_m);
+        const f64 in = smoothstep(0.0, 1.0, std::min(ps[i], length - ps[i]) / knot);
+        o += (1 - link.meander) * wide(p.steep_wander_widths) * std::max(wi, k_wander_min_width_m) *
+             noise(3, ps[i] / knot) * in;
+      }
       if (i == 0 || i + 1 == m || o == 0) continue;
       f64 tx = px[i + 1] - px[i - 1], tz = pz[i + 1] - pz[i - 1];
       const f64 tl = std::sqrt(tx * tx + tz * tz);
@@ -241,6 +261,39 @@ void build_line(const ChannelLayer& p, const ChannelNetwork& n, const scene_gen:
       fx[i] = rx[i] + share[i] * (fx[i] - rx[i]);
       fz[i] = rz[i] + share[i] * (fz[i] - rz[i]);
     }
+  }
+  // **The kinks taken out** (W93, continued; channels.md, "The planform"). The trough test draws
+  // single points back, and what it leaves turns left and right again inside two or three widths;
+  // the cut's banks follow the line, so they zigzagged. The line is low-passed once more, at the
+  // channel's own scale: a Gaussian along the length of sigma `k_kink_sigma_widths` widths (two
+  // steps at least), eased to nothing at the two ends, which stay where the junctions are. Half a
+  // width is far under a meander's wavelength (10.9 widths: a bend keeps 96 % of its amplitude) and
+  // moves a point by a fraction of the width, inside the banks the next test holds.
+  {
+    Vector<f64> sx(fx), sz(fz);
+    for (u32 i = 1; i + 1 < m; ++i) {
+      const f64 wi = hydraulic(wide(p.width_at_km2_m), wide(p.width_exponent), pa[i]);
+      const f64 sigma = std::max(k_kink_sigma_widths * wi, 2 * wide(p.step_m));
+      f64 ax = 0, az = 0, aw = 0;
+      const auto add = [&](u32 k) {
+        const f64 d = ps[k] - ps[i];
+        const f64 weight = det::exp(-d * d / (2 * sigma * sigma));
+        ax += weight * fx[k];
+        az += weight * fz[k];
+        aw += weight;
+      };
+      for (u32 k = i; ps[i] - ps[k] <= 3 * sigma; --k) {
+        add(k);
+        if (k == 0) break;
+      }
+      for (u32 k = i + 1; k < m && ps[k] - ps[i] <= 3 * sigma; ++k)
+        add(k);
+      const f64 t = std::min(1.0, std::min(ps[i], length - ps[i]) / sigma);
+      sx[i] = fx[i] + t * (ax / aw - fx[i]);
+      sz[i] = fz[i] + t * (az / aw - fz[i]);
+    }
+    fx = std::move(sx);
+    fz = std::move(sz);
   }
   // **The line between its banks** (W93; channels.md, "A line across a slope"). The trough test
   // above holds the line's centre within half a depth of the trough's floor; a channel is a
@@ -675,6 +728,18 @@ f64 fan_share(const ChannelLayer& p, const ChannelLink& link, const Vector<f64>&
 // a knickpoint, a fan, a tributary's last points inside its trunk's banks, a bed narrower than
 // `bar_min_width_m` and the first and last two widths of a link take none.
 constexpr f64 k_bend_window_widths = 4.0;
+// How far downstream of a bend's apex its pool lies, in widths: 0.36 of the channel distance from
+// the apex to the next inflection (NRCS NEH 654 ch. 12, the 1981 Red River survey's mean; range
+// -0.4 to 1.08), which for a meander 10.9 widths long is a quarter of it, 2.7 widths.
+constexpr f64 k_pool_lag_widths = 1.0;
+// A value noise along a line: knots at the whole numbers of `at`, eased between, -1 to 1.
+f64 value_noise(u64 seed, f64 at) {
+  const f64 k = std::floor(at);
+  const i64 knot = static_cast<i64>(k);
+  const f64 t = at - k, e = t * t * (3 - 2 * t);
+  const f64 a = place_noise(seed, knot, 0), b = place_noise(seed, knot + 1, 0);
+  return a + (b - a) * e;
+}
 // The unit heading of the line at arc length `at`: the chord between the points half a `span`
 // either way (clamped to the line), found from index `hint` on.
 struct Heading {
@@ -730,7 +795,7 @@ void plan_section(const ChannelLayer& p, ChannelLink& link) {
   f64 theta = rng.unit() * 2 * k_pi;
   Vector<f64> asym(m, 0.0), swell(m, 0.0);
   const u32 keep = std::min<u32>(link.keep, m);
-  u32 from = 0, to = 0;
+  u32 from = 0, to = 0, crest = 0;
   f64 sum = 0;  // of |bend| over [from, to)
   for (u32 i = 0; i < m; ++i) {
     const f64 w = wide(link.line[i].width_m);
@@ -743,7 +808,7 @@ void plan_section(const ChannelLayer& p, ChannelLink& link) {
     while (from < i && s[i] - s[from] > pool)
       sum -= std::fabs(bend[from++]);
     const f64 straight =
-        1 - smoothstep(.1, .3, to > from ? sum / static_cast<f64>(to - from) : 0.0);
+        1 - smoothstep(.2, .5, to > from ? sum / static_cast<f64>(to - from) : 0.0);
     const ChannelReach reach =
         i < link.reach.size() ? static_cast<ChannelReach>(link.reach[i]) : ChannelReach::PoolRiffle;
     f64 share = 0, alternate = 0;
@@ -753,13 +818,43 @@ void plan_section(const ChannelLayer& p, ChannelLink& link) {
     } else if (reach == ChannelReach::PlaneBed) {
       share = .5;
     }
-    if (i >= keep || (i < link.knick.size() && link.knick[i]) || w < wide(p.bar_min_width_m))
-      share = 0;
-    share *= smoothstep(0, 2 * w, s[i]) * smoothstep(0, 2 * w, s[m - 1] - s[i]) *
-             (1 - fan_share(p, link, s, i));
-    const f64 v = bend[i] + alternate * (1 - std::fabs(bend[i])) * det::sin(theta);
+    const bool steep = reach == ChannelReach::StepPool || reach == ChannelReach::Cascade ||
+                       reach == ChannelReach::Bedrock || reach == ChannelReach::Colluvial;
+    const bool held = i >= keep || (i < link.knick.size() && link.knick[i]);
+    if (held || w < wide(p.bar_min_width_m)) share = 0;
+    const f64 ends = smoothstep(0, 2 * w, s[i]) * smoothstep(0, 2 * w, s[m - 1] - s[i]) *
+                     (1 - fan_share(p, link, s, i));
+    share *= ends;
+    // **The pool lies downstream of the bend's apex** (channels.md, "The section"): the section
+    // at a point is the bend's `k_pool_lag_widths` widths upstream of it.
+    const u32 lagged = static_cast<u32>(
+        std::lower_bound(s.begin(), s.begin() + i, s[i] - k_pool_lag_widths * w) - s.begin());
+    const f64 b = bend[lagged];
+    const f64 v = b + alternate * (1 - std::fabs(b)) * det::sin(theta);
     asym[i] = std::clamp(v, -1.0, 1.0) * share;
-    swell[i] = (1 - 2 * std::min(1.0, std::fabs(v))) * share;
+    swell[i] = .5 * wide(p.riffle_widening) * (1 - 2 * std::min(1.0, std::fabs(v))) * share;
+    // **The steep reaches** (channels.md, "The steep reaches"): no bars and no bends' pools, and
+    // not one section either. The thalweg wanders between the banks — an irregular asymmetry, a
+    // knot of its noise every two widths — and the width follows the steps: narrowest at a step's
+    // crest and widest over its pool on a step-pool reach, irregular (a knot every width and a
+    // half) where the reach has no steps. A knickpoint, a tributary's last points and a link's two
+    // ends take none, as with the bars.
+    if (steep && !held && w >= wide(p.bar_min_width_m)) {
+      const f64 scale = std::max(w, 1.0);
+      asym[i] = wide(p.steep_asymmetry) *
+                value_noise(hash_combine(link.seed, 0xa5e1ull), s[i] / (2 * scale)) * ends;
+      f64 phase = value_noise(hash_combine(link.seed, 0x57e9ull), s[i] / (1.5 * scale));
+      if (reach == ChannelReach::StepPool && !link.step_at.empty()) {
+        while (crest + 1 < link.step_at.size() && link.step_at[crest + 1] <= i)
+          ++crest;
+        const u32 a = link.step_at[crest];
+        if (a <= i && crest + 1 < link.step_at.size()) {
+          const f64 run = s[link.step_at[crest + 1]] - s[a];
+          if (run > 0) phase = -det::cos(2 * k_pi * (s[i] - s[a]) / run);
+        }
+      }
+      swell[i] = .5 * wide(p.step_widening) * phase * ends;
+    }
   }
   // A reach's edge and a knickpoint's are steps in the share: two binomial passes ease them.
   for (Vector<f64>* values : {&asym, &swell}) {
@@ -774,7 +869,7 @@ void plan_section(const ChannelLayer& p, ChannelLink& link) {
   }
   for (u32 i = 0; i < m; ++i) {
     link.asym[i] = static_cast<f32>(round_to(asym[i], 1e3));
-    link.swell[i] = static_cast<f32>(round_to(swell[i], 1e3));
+    link.swell[i] = static_cast<f32>(round_to(swell[i], 1e4));
   }
 }
 
@@ -1047,6 +1142,9 @@ bool layer_in_range(const ChannelLayer& p, std::string& error) {
       !in(wide(p.bank_round), .1, 1))
     return fail(error,
                 "bend_radius_widths/cut_bank_slope/alternate_asymmetry/riffle_widening/bank_round");
+  if (!in(wide(p.step_widening), 0, .6) || !in(wide(p.steep_asymmetry), 0, 1) ||
+      !in(wide(p.steep_wander_widths), 0, 3))
+    return fail(error, "step_widening/steep_asymmetry/steep_wander_widths");
   if (!in(wide(p.flood_bed_widths), 1.25, 12) || !in(wide(p.flood_height_depths), 1.25, 4) ||
       !in(wide(p.flood_entrenchment_min), 1, 5) || !in(wide(p.flood_min_width_m), 0, 100) ||
       !in(wide(p.flood_bed_depth), 0, .45) || !in(wide(p.scarp_slope), .25, 8))

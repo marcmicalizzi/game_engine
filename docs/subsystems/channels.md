@@ -357,20 +357,27 @@ writes the section it stands for (`engine.scene.TerrainCut` version 2: `bank_slo
 
 **Where the asymmetry comes from.** A bend's share is the line's mean curvature over **four
 widths** about the point — the turn between its heading two widths above and two below, over that
-length — times the width times `bend_radius_widths` (2.5: Leopold & Wolman's radius of 2 to 3
+length — times the width times `bend_radius_widths` (3: Leopold & Wolman's radius of 2 to 3
 widths is the fully asymmetric bend). Four widths, not the line's own 0.5 m step, because a bar
-and its pool are built by the flow along a bend and not by a kink: the line the trough test draws
-back ([The planform](#the-planform)) turns left and right again inside two or three widths, and
-read point by point those kinks put a pool every 2.7 widths, alternating sides. Where a stretch
-does not bend (the mean bend over a pool-to-pool length either way under 0.1 to 0.3) the asymmetry
+and its pool are built by the flow along a bend and not by a kink: read point by point, the kinks
+the trough test left put a pool every 2.7 widths, alternating sides (they are low-passed out of
+the line now, [The planform](#the-planform), and the window stays). Where a stretch
+does not bend (the mean bend over a pool-to-pool length either way under 0.2 to 0.5) the asymmetry
 **alternates sides** every `pool_riffle_widths` (6), a sine of the link's own phase, to
 `alternate_asymmetry` (0.6): a straight channel's thalweg swings from bank to bank and has its
 pools too. By reach: pool-riffle and dune-ripple reaches take both; a **plane-bed** reach half a
 bend's and no alternation (Montgomery & Buffington's plane bed has no free bars; a bend still
-forces a pool); step-pool, cascade, bedrock and colluvial reaches, a knickpoint, a fan, a
-tributary's last points inside its trunk's banks, a bed narrower than `bar_min_width_m` and the
-first and last two widths of a link take none, and are cut as W89 cut them. The share is eased by
-two binomial passes, so a reach's edge is not a step in the section.
+forces a pool); a knickpoint, a fan, a tributary's last points inside its trunk's banks, a bed
+narrower than `bar_min_width_m` and the first and last two widths of a link take none; and
+step-pool, cascade, bedrock and colluvial reaches have a section of their own
+([The steep reaches](#the-steep-reaches)). The share is eased by two binomial passes, so a
+reach's edge is not a step in the section.
+
+**The pool lies downstream of its bend's apex**: the section at a point is the bend's one width
+upstream of it — 0.36 of the channel distance from an apex to the next inflection, the mean over
+a surveyed river's bends, which for a meander 10.9 widths long is a width
+([the grounding](../experiments/channels.md#the-steep-reaches-the-pools-place-and-three-numbers-read-again)).
+W93's first cut put the pool at the apex.
 
 **Nothing is laid on the section.** W93's first cut of this kept a bed slab, each row finding its
 bed with nine ground probes, and a bar skin below full asymmetry, because the generator planned
@@ -381,9 +388,10 @@ for them ([What it places](#what-it-places)). The switch back to W89's trapezoid
 writes is shaped, with a slope a bank a point, a rounded top (`bank_round`, 0.1 to 1) and faces
 that run out.
 
-**Measured** (12 seeds on the test valley, `domain/channels/tests/channels_tests.cpp`): at 551 of
-553 bends the outer bank is the deeper side; pools stand **6.0 widths** apart on average (172
-spacings; Keller & Melhorn's 5 to 7); the section's area is the hydraulic geometry's within 4 % at
+**Measured** (12 seeds on the test valley, `domain/channels/tests/channels_tests.cpp`): at 327 of
+341 bends the outer bank is the deeper side (551 of 553 before the kinks were taken out of the
+line and the pool moved a width downstream of the apex, where the test's bend is still defined);
+pools stand **6.6 widths** apart on average (149 spacings, 2.7 to 24; Keller & Melhorn's 5 to 7); the section's area is the hydraulic geometry's within 4 % at
 every point whose bed runs through no rise; a riffle at its widest is 1.128 of a pool at its
 narrowest.
 
@@ -456,6 +464,56 @@ and the bed's area) and `pools`.
 **Not built**: bars as relief on the bed beyond the channel's own point bar (a flood bed's bars
 are the low-flow channel's; the bed between them is flat); braided threads; a bed whose level
 steps down terrace by terrace; the bed's own gravel (above).
+
+## The steep reaches
+
+(2026-11-10, roadmap W93, continued; the owner's pictures: the steep `stream` view "still reads
+as a canal: one width, one depth, a ribbon in a V, and tributaries down the hillside as straight
+chutes". Grounded first:
+[the grounding page](../experiments/channels.md#the-steep-reaches-the-pools-place-and-three-numbers-read-again)
+says what was read in the papers, what at second hand and what is a design choice.) On step-pool,
+cascade, bedrock and colluvial reaches W93's first cut kept W89's section, one trapezoid of one
+width. Montgomery & Buffington's steep reaches are confined by their valley's walls, their bed is
+boulders in channel-spanning steps (step-pool, a pool every one to four widths) or disorganised
+(cascade, pools under a width apart), and steps form where a channel narrows. So:
+
+- **The width follows the steps** (`ChannelLink::swell`, `step_widening` 0.3). On a step-pool
+  reach the cut is 15 % narrower than the hydraulic geometry's width at each step's crest and 15 %
+  wider over the pool below it, a cosine between crests; on a cascade, a bedrock or a colluvial
+  reach, which have no steps, it varies as much irregularly (a value noise of the link's own, a
+  knot every width and a half). The section's area is kept, so the narrow places are the deep
+  ones.
+- **The thalweg wanders between the banks** (`steep_asymmetry` 0.35): an irregular asymmetry, a
+  knot every two widths, read by the same section as a bend's ([The section](#the-section)): the
+  bank the thalweg lies against is the steeper and the other the gentler, so the two bank lines
+  are not parallel offsets of the centre line and neither is one slope along a reach.
+- **Rocks at the banks.** A step is an accumulation jammed between the banks: beside the row of
+  clasts across the bed, each step has a clast at each end, 1 to 1.5 of the step's clast across,
+  its centre a third of itself past the bed's edge, half in the bank; about half of a cascade's
+  clusters have one against a bank too ([What it places](#what-it-places)). They are what breaks
+  the bank's line where the cut's own form is too smooth to.
+- **A steep line wanders** (`steep_wander_widths` 0.75; `build_line`). Above the meanders' slope
+  the routing's line down a planar slope is a ruled line. Where the meander fades the line takes
+  an irregular offset instead: a value noise with a knot every five widths (5 m at least), up to
+  three quarters of a width (of a metre at least) either way, tested against the trough exactly
+  as a meander's offset is, so in a gully with sides it is drawn back and on a plane it stays.
+- **Where.** Reaches at least `bar_min_width_m` (1 m) wide for the section (a lattice of 25 cm
+  holds no asymmetry in a narrower one); every steep link for the wander; not at a knickpoint, in
+  a fan, over a tributary's last points or within two widths of a link's ends.
+
+**Held** (`channels_tests.cpp`, "a steep reach's width follows its steps and its banks are no
+ruled line"): on a 4.5 % valley with a 3 m channel the cut is 0.857 to 1.143 of the hydraulic
+geometry's width (a ratio of 1.33 between its widest and narrowest; the test asks 1.27), narrower
+at every crest and wider between; the asymmetry runs -0.31 to 0.33. On a planar hillside at 35 %,
+whose gully was a ruled line for all its 440 m, neither bank's top holds a stretch longer than
+17 m within 5 cm of a chord (the test holds 20 m), and the gully's sinuosity is 1.006.
+
+**What it is not.** The banks are still earth: a heightfield's face with clasts standing in it,
+not bedrock ledges or a boulder revetment, and the cut's bed between the steps is smooth ground
+with no cobbles. The width's variation is a design choice in amount. A wander of three quarters
+of a width over five widths is visible from above and slight from the bank; a stronger one (1.5
+widths) was measured to cost the downhill bank at 2.7 % of the test valley's points and was not
+kept.
 
 ## A line across a slope
 
@@ -531,7 +589,30 @@ references looked at: the reels r03 and r49 and the motion sheet `clear-riffle-c
   steeper than plane-bed the section is W89's, one width and one depth, and two tributaries come
   straight down a planar side as chutes.
 
-**Against the reels** every view lacks what the cut cannot give: a cobble bed seen through the
+**The same eight views after W93's continuation** (2026-11-10, the same scene, camera and flags,
+its entry naming its plan; `msvc-release`; references looked at again: r03 and the motion sheet
+`riffles-and-pools`).
+
+- **`pool-riffle`**: the pale plates on the flood bed are gone; the bed is one clean floor. The
+  waterline on the bar is still a sawtooth, and the bed is still flat: no bar on it, no scarp to
+  speak of.
+- **`plane-bed`** and **`plane-bed-high`**: the sliver of slab is gone, and the banks run in
+  smooth curves with no zigzag; from above the line reads as a stream's. The shaded bank's face
+  still shows the lattice as faint scallops.
+- **`stream`**: the left tributary now bends on its way down and two pale boulders stand at a
+  step where it meets the trunk; the trunk's banks no longer kink. **It still reads as a ribbon
+  in a smooth fold.** The trunk here is a pool-riffle reach by its 1.2 % slope and 2 m wide, so
+  its section's swing is centimetres on a 25 cm lattice; the water's ribbon is drawn at the
+  hydraulic geometry's width whatever the cut's is; the right tributary, in a fold with sides, is
+  still nearly straight; and the boulders, with no rock set in the pack for them, draw as smooth
+  pale eggs.
+
+**Against the reels** (r03's cobble river between turf banks; `riffles-and-pools`' bank of
+boulders and cobbles under a raw scarp, boulders standing in the water, a white riffle) what a
+person would object to first is not the form: the ground beside and under the water is bare and
+smooth where the photographs are cobbles and boulders from the scarp to the thalweg, hundreds in
+a frame, and the engine places a few dozen domes on a whole reach. After that: every view lacks
+what the cut cannot give: a cobble bed seen through the
 water, turf to the edge and an undercut, a riffle's broken water. Those are the masks', the
 sward's and the water's.
 
@@ -689,6 +770,21 @@ down: the ground at the point against the ground at the nearest point of the cel
 drawn back toward it, halving its offset up to three times and then onto it. The shares are eroded over
 three points each way and smoothed by three binomial passes, which leaves every point drawn back at
 least as far as its own test asked. On v36 it drew back 78,693 of the network's 287,000 points.
+
+**The kinks taken out** (W93, continued; the owner's pictures: "the banks zigzag"). What the trough
+test leaves turns left and right again inside two or three widths, and the cut's banks follow the
+line. After the test the line is low-passed once more at the channel's own scale: a Gaussian
+along its length of sigma half a width (two steps at least), eased to nothing at the two ends,
+which stay where the junctions are. Half a width is far under a meander's wavelength (a bend 10.9
+widths long keeps 96 % of its amplitude) and moves a point by a fraction of the width, before
+the banks' test ([A line across a slope](#a-line-across-a-slope)) which then holds it. **Held**
+("the line's turn between consecutive points is bounded on every reach", seven valleys, four
+seeds each): no radius of curvature between consecutive points under half a width (of a metre at
+least); the tightest measured is 1.02 widths. On the test valley the points with less than half a
+downhill bank are 36 of 1,969 (32 before) and those with none 0 (12 before).
+
+**A steep line wanders** ([The steep reaches](#the-steep-reaches)): where the slope allows no
+meander the line takes an irregular offset instead, held in its trough by the same test.
 
 ## Against the proof of concept
 
@@ -870,9 +966,8 @@ alluvial line 2 m wide or more.
 
 **Not yet.** The cut is written by the subcommand and pasted by the author, not applied by the generator itself (the ground is built before the placements are); a procedural ground (the dunes) takes no cut; D8 only (no D∞ spreading); heads by a local four-metre slope, not a slope
 averaged over the source area; no braided reaches; the valley's confinement is not read for the
-reach; **the line itself still kinks** where the trough test drew it back (turns left and right
-again inside two or three widths: the section averages them out, the cut's banks still follow
-them); a pool lies at its bend's apex and not downstream of it, as a real one does; undercut and
+reach; a bend with a point bar is cut 6 % narrower than its crossings where a surveyed river's
+is wider ([the grounding](../experiments/channels.md#the-steep-reaches-the-pools-place-and-three-numbers-read-again)); undercut and
 turf banks are not the heightfield's to draw; the line is moved between its banks by a width at the most, so where the trough's floor is
 further off than that a bench with half a bank or none is left (1.6 % and 0.6 % of the test
 valley's points; the ribbon's fit still narrows the water there); knickpoints are read from the ground's profile along the line, not

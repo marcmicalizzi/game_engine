@@ -58,9 +58,9 @@ inline Section section_of(f64 w, f64 mean, f64 slope) {
 // thalweg at its toe twice the mean depth down, the point bar rising from there to the inner
 // bank's top. Between the two the thalweg and the outer bank go linearly with |asym| and the
 // inner bank's run is what keeps the area: `2 W (1 - mean / D) - D / m_outer`. The width is the
-// hydraulic geometry's widened at a riffle and narrowed at a pool by half `riffle_widening` each
-// way — times `swell`, 1 at a riffle and -1 at a pool's apex of a reach that has the rhythm, 0
-// on one that has none — the mean depth changed with it so the area stays.
+// hydraulic geometry's times `1 + swell` (`ChannelLink::swell`: wider at a riffle and over a
+// step's pool, narrower at a bend's pool and at a step's crest), the mean depth changed with it so
+// the area stays.
 struct BendSection {
   f64 width = 0;       // the cut's width, top of bank to top of bank
   f64 thalweg = 0;     // the riffle's thalweg at this width, below the top
@@ -75,8 +75,7 @@ inline BendSection bend_section(const ChannelLayer& p, f64 w, f64 mean, f64 asym
   if (!(w > 0) || !(mean > 0)) return out;
   const f64 a = std::min(1.0, std::fabs(asym));
   const f64 m = wide(p.bank_slope);
-  const f64 widening = wide(p.riffle_widening);
-  out.width = w * (1 + .5 * widening * std::clamp(swell, -1.0, 1.0));
+  out.width = w * (1 + std::clamp(swell, -.45, .45));
   const f64 mean_here = mean * w / out.width;
   const Section riffle = section_of(out.width, mean_here, m);
   out.thalweg = riffle.thalweg;
