@@ -38,13 +38,17 @@ when the build has the tile set, and refuses its own output if the tile set does
 | `sea` | `level_m`, and for a run with no starting ground `shelf_m` and `depth_m`: the bed falls from the level a shelf's width in from a sea edge to the depth at the edge | required by a sea edge |
 | `outlets` | Points held at a level anywhere in the lattice | — |
 | `border_reach_m` | Uplift is tapered to nothing over this distance from every open or sea edge | 16 cells |
-| `uplift` | `regional_mm_per_yr`, plus `ridges` (a polyline, `rate_mm_per_yr` on it, varied along the line by `variation` over `variation_length_m` ([uplift along a ridge](#uplift-along-a-ridge)), falling to nothing `reach_m` away as (1 − (r/reach)²)²; the largest of overlapping ridges counts), plus a coarse `raster` read bilinearly over the region | 0 to 100 mm/yr; variation 0.35 over 6 km |
-| `rock` | `resistance` 0 to 1 (the world formation's ordering), uniform, or the beds of `formation`, the scene's own `engine.scene.Formation`, read in the rock's frame ([structure](#structure)); `contrast`, the erodibility at 0 over the erodibility at 1; `variation` and `variation_cells`, a seeded variation of the erodibility | 0; no formation; 10; ±25% over 16 cells |
+| `uplift` | `regional_mm_per_yr`, plus `ridges` (a polyline, `rate_mm_per_yr` on it, varied along the line by `variation` over `variation_length_m` ([uplift along a ridge](#uplift-along-a-ridge)), falling to nothing `reach_m` away as (1 − (r/reach)²)²; the largest of overlapping ridges counts), plus a coarse `raster` read bilinearly over the region; and the whole made uneven over the plan by `variation` over `variation_length_m` ([valleys that are not a comb](#valleys-that-are-not-a-comb)) | 0 to 100 mm/yr; a ridge's variation 0.35 over 6 km; the plan's 0.7 over 3 km |
+| `rock` | `resistance` 0 to 1 (the world formation's ordering), uniform, or the beds of `formation`, the scene's own `engine.scene.Formation`, read in the rock's frame ([structure](#structure)); `contrast`, the erodibility at 0 over the erodibility at 1; `variation` and `variation_cells`, a seeded variation of the erodibility | 0; no formation; 2 (stage C: inside the published 1.2 to 2.8 for a range's own rocks; it was 10, which solved a banded sketch to a land of cliffs); ±25% over 16 cells |
 | `erodibility_per_yr` | K of the stream-power law at m = 1/2, n = 1 | 10⁻⁸ to 10⁻², default 5 × 10⁻⁶ |
 | `channel_area_m2` | The drainage area a channel begins at: a point draining less is hillslope, lowered by diffusion and the critical slope alone | 0 to 10⁹; default 0, the rivers cut at every point |
 | `deposition` | G, the deposition coefficient ([deposition](#deposition)): a river lays down G / N of the sediment that reaches a point draining N cells. 0 is the detachment-limited law: nothing settles anywhere, standing water included | 0 to 10, default 1 |
 | `sediment_erodibility` | The erodibility of sediment over `erodibility_per_yr` | 1 to 100, default 2 |
 | `delta_share` | The share of what reaches a lake's water that settles at the river's mouth, up to the water's level; the rest levels the lake's floor | 0 to 1, default 0.5 |
+| `divide_below_slope` | Where the steepest fall from a point is under this its flow divides among all its lower neighbours ([flow that divides](#flow-that-divides)); at this and above it all goes to the steepest. 0 never divides | 0 to 1, default 0.1 |
+| `lateral_erosion` | The erodibility of a river's bank over its bed's ([lateral erosion](#lateral-erosion)). 0 is none | 0 to 10, default 1 |
+| `channel_width_m` | A channel's width where it drains one square kilometre; the `channel_width` field is this times the square root of the discharge in square kilometres | 0.1 to 1,000 m, default 5 |
+| `ice` | An ice age, or none ([ice](#ice)): `ela_m`, the equilibrium line; `full_m` and `melt_m`, the height above it at which all snowfall becomes ice and the depth below it at which a glacier loses as much; `erodibility`, the ice's over the rivers'; `width_m` and `thickness_ratio`, a glacier's width at a square kilometre's flux and its thickness over its width; `from_yr` and `until_yr`, the years of the run it stands in | none; 500 m and 250 m; 2; 500 m and 0.25; from 0 to the run's end |
 | `diffusivity_m2_per_yr` | Hillslope diffusivity | 0 to 1, default 0.005 |
 | `critical_slope`, `critical_slope_resistant` | The gradient no slope stands above, for rock of resistance 0 and 1 | 0.2 to 4; 0.8 and 1.6 |
 | `seed`, `roughness_m` | The seed of the starting roughness, the erodibility's variation and the routing's diagonal weights | 1; 1 m |
@@ -87,10 +91,12 @@ Each step of `step_yr` years, in this order ([the grounding page](../experiments
    1991's Rho8, the number fixed to the cell): on a plane the flow's mean direction is then the
    plane's own, where the plain steepest-of-eight sends every cell down the same lattice
    direction and cuts parallel rills.
-4. **Drainage area**: in reverse flood order, a point adds its cells to its receiver's.
-5. **The rivers**: erosion and deposition together, implicit along the flow tree
-   ([deposition](#deposition)): a reach above its receiver and above the sea moves to
-   (z + d + F z_r) / (1 + F), F = K Δt √N over the distance in cells, d what the river lays down
+4. **Discharge**: in reverse flood order, a point adds its cells to its receivers' by its shares
+   of its flow among them.
+5. **The rivers**: erosion and deposition together, implicit over the flow network
+   ([deposition](#deposition), [the sweeps](#the-rivers-sweeps)): a reach above its base level
+   and above the sea moves to (z + d + F b) / (1 + F), F = K Δt times its stream power in cells
+   (√N over the distance to its receiver), b its receiver's height, d what the river lays down
    there. A receiver below the sea counts as the sea's level. Standing water (a lake's members,
    the sea) is not cut; it takes the sediment that reaches it.
 6. **Hillslopes**: explicit linear diffusion in as many substeps as stability needs, then the
@@ -164,14 +170,274 @@ aggraded, fills to a floor that is level across and widens downstream (the test:
 where the fill begins and 335 m at the mouth, within 7.6 m across). A range's rivers lay a plain
 of coalesced fans at its foot, each river crossing it on its own grade, as Yuan et al. report
 for this model; a single massif beside a plain leaves a fan whose contours bow away from it
-(the test). **A fan is not a cone at the scale of one mouth**: flow has one receiver a point,
-so a river's deposit is laid along one path and the cone is what many steps of avulsion
-average to. **Small rivers lay their load down within a few points** (G / N is large where N
+(the test). **A fan was not a cone at the scale of one mouth** while flow had one receiver a
+point; since stage C it divides on the fan and the cone is there
+([flow that divides](#flow-that-divides)). **Small rivers lay their load down within a few points** (G / N is large where N
 is small), so the foot of every slope takes a little; that is colluvium, not scree: nothing
 here stands at an angle of repose. And **a valley inside a range that is rising everywhere has
-no floor at steady state**, because every point of it is losing ground; a floor needs a base
-level that rose or an uplift that stopped, which a sketch gives by where it puts its uplift and
-its outlets.
+no floor of sediment at steady state**, because every point of it is losing ground; a floor of
+sediment needs a base level that rose or an uplift that stopped, which a sketch gives by where it
+puts its uplift and its outlets. A floor cut in rock it now has, where its river is large enough
+to wear its banks ([lateral erosion](#lateral-erosion)).
+
+### Flow that divides
+
+Stage B's flow had one receiver a point, so a river's water and its load crossed a plain as one
+thread a point wide: a fan was whatever many steps of that thread's wandering averaged to (a
+dome), and a river on its own plain was a line. Stage C divides the flow where the ground is
+gentle ([the grounding](../experiments/landform.md#flow-that-divides-the-sources)):
+
+- **The rule** is the multiple-flow-direction rule of Quinn, Beven, Chevallier and Planchon
+  1991: a point's flow goes to every lower neighbour in proportion to the slope toward it times
+  the contour length it crosses (half a spacing toward a cardinal neighbour, √2/4 toward a
+  diagonal). Over the two distances that is the fall times two and the fall times one, whole
+  numbers of the filled surface's units.
+- **Only where the ground is gentle.** Qin, Zhu, Pei, Li, Zhou and Yang 2007 make the rule's
+  exponent rise with the slope, 1.1 on a plain to 10 on a slope of 1, because flow on steep
+  ground does converge. Here the choice is two-valued so that the powers are none: where the
+  steepest fall is under `divide_below_slope` (0.1, where Qin's exponent passes 2) the flow
+  divides at Quinn's exponent of 1; at 0.1 and above it all goes to the steepest neighbour, as
+  before (Rho8). A river in a valley a point wide has one lower neighbour and is unchanged; on
+  a fan, a floor or a plain it spreads. A gully on a slope at the critical angle is still cut
+  by one thread, which is what cuts it.
+- **Shares are whole.** A point's shares are sixteen-bit parts of 32,768 (`k_share_one`), the
+  receiver taking what the divisions left, and the discharge is counted in 1/32,768 of a cell
+  in 64 bits, each receiver getting the whole-number part of its share and the receiver the
+  rest. So **a divided flow is conserved exactly**: the held points' discharges sum to the
+  lattice, an integer identity the test holds.
+- **The rivers' law with several receivers** is FastScape's (Yuan et al. 2019's implementation):
+  each receiver's term is K Δt √(the discharge that goes to it) over the distance to it, the
+  reach moves to (z + d + Σ F_k z_k) / (1 + Σ F_k), and the sediment a point passes on goes to
+  its receivers by the same shares. One receiver is the single-flow law, bit for bit.
+- **What reads it.** `discharge` in the field file is this divided discharge, in whole cells,
+  and `channel_width` a width from it; `drainage_area` and `receiver` stay the one thread down
+  each point's steepest neighbour, which is what a solver that wants a channel's course reads.
+  `route_divided` is the public form for a ground the solver did not make.
+
+**What it makes.** One mouth's fan is a cone: on an arc 500 m from a single mouth the ground
+varies by a small part of its height above the plain, where one thread left lobes (the test has
+the two numbers). A river on a floor it has widened is as many points wide as the floor. **What
+it costs**: a divided network has more levels and its sweeps converge more slowly, 13 a step
+where the single thread took 8 on the same ground (4,013 against 2,402 over 300 steps of the
+512 by 512 sketch), because a plain's points now read several receivers each.
+
+### Lateral erosion
+
+A river that only cuts down has no floor: stage B's valleys were a V to the thread, and a floor
+needed a base level that rose. Rivers widen their valleys by wearing the bank on the outside of
+each bend, and stage C does it by Langston and Tucker 2018's model, as their own implementation
+(Landlab's `LateralEroder`) states it
+([the grounding](../experiments/landform.md#lateral-erosion-the-sources) says what was read of
+the paper and what of the code):
+
+- **The rate** at which a reach wears its bank is K_l A S / R: A its drainage area (here its
+  discharge), S its slope, K_l the bank's erodibility (the sketch's K times `lateral_erosion`,
+  times the sediment's factor where the bank is sediment and the rock's resistance where it is
+  rock), and 1 / R the bend's curvature from the direction the most water arrives by and the
+  direction it leaves by: 0.23, 0.67 and 1.37 over the spacing for a straight reach, a bend of
+  45 or 135 degrees, and a right angle.
+- **The bank** is the neighbour beside the reach, square to the way it leaves, on the outside of
+  the bend; on a straight reach one side or the other by a number hashed from the seed, the step
+  and the cell (the implementation draws a random one). From a diagonal reach it is the cardinal
+  neighbour on that side, which touches the receiver too.
+- **The volume** worn in a step, the rate over the water's depth (0.4 Q^0.35, Q the area times
+  4 × 10⁻⁶ m/s: the implementation's constants) and one spacing, is kept at the bank's point
+  from step to step. When it reaches what stands there above the reach's receiver, the point is
+  lowered to the receiver's height. **What has to be worn** is the two published bank models
+  joined by what the bank is made of: all of its rock (their "total block erosion"), and of its
+  sediment only what the water reaches (their "undercutting-slump": loose ground falls in when
+  it is undercut).
+- **What it lost** is the next step's rivers' to carry from that point, like what a slope sheds,
+  so the budget closes. The slope limiter then brings the wall above the new floor down behind
+  it, which is where most of the volume comes from.
+- One pass a step in cell order, on one thread, over the reaches that drain 64 cells or more
+  (below that the rate, which goes with the area, would not take a bank in a run).
+
+**What it makes.** A floor more than a point wide wherever a river is large enough and its
+valley old enough; once the floor is wider than a point the flow divides over it, each thread
+carries less, and the widening slows by itself. **Terraces**: when a river with a floor cuts
+down again (a base level that fell, an uplift that rose), one thread takes the steepest way and
+incises, the rest of the floor is left above it, and the scarp between them stands at the edge
+of what the river has worn sideways since, at the critical slope (the test: a base level
+dropped 20 m). They are strath terraces: a run that starts from a ground starts with no
+sediment layer, so what is left is cut rock.
+
+### Valleys that are not a comb
+
+**The count** (2026-11-10, the two-range sketch at 512 by 512 and 32 m, 300 steps; of the
+points draining a quarter of a square kilometre or more down a slope of 0.03 or more, so a
+plain's channels are not counted: the junctions a kilometre of channel, the share of points
+running due north or south, which is straight down these ranges, and the entropy of the eight
+directions, 3 bits at most):
+
+| Run | Junctions / km | Straight down the range | Direction entropy |
+|---|---|---|---|
+| stage B (and stage C with everything below off) | 0.20 | 44% | 2.77 bits |
+| a ridge's rate varied along its line by 0.9 over 3 km (stage B's own lever, turned up) | 0.26 | 41% | 2.85 |
+| a start rough by ±100 m, white | 0.20 | 62% | 2.48 |
+| flow that divides, alone | 0.14 | 63% | 2.47 |
+| lateral erosion, alone | 0.17 | 62% | 2.53 |
+| an uplift raster of seeded rates 0 to 0.8 mm/yr, 1 km cells, over the whole region | 0.39 | 36% | 2.93 |
+| the uplift uneven over the plan, 0.5 of the local rate over 5 km (the first form tried) | 0.23 | 43% | 2.82 |
+| the same as a fraction of the kernel's square root, 0.5 over 5 km | 0.26 | 42% | 2.83 |
+| the same, 0.7 over 3 km (the default) | 0.29 | 39% | 2.88 |
+| everything on, 0.5 over 5 km | 0.24 | 59% | 2.60 |
+
+What it says:
+
+- **It is the uplift's symmetry.** A ridge's kernel depends only on the distance to its line,
+  so each flank is a ramp, a ramp's fall lines are parallel, and the rivers that form on it
+  stay where they formed (a model of this kind keeps an "extreme memory" of its first surface:
+  Kwang and Parker 2019, known here from its summary only). The one run that halved the comb was the one
+  whose uplift was uneven in two dimensions at about the valleys' own spacing.
+- **It is not the routing's symmetry**: dividing the flow leaves the mountain network as it
+  was and makes the count worse, because the fans it builds are steeper and their radial
+  channels, which do run straight down the range, come into the count.
+- **And not, at these rates and in this time, the missing piracy**: lateral erosion alone took
+  banks all along the trunk valleys and captured nothing in 1.5 million years. Kwang, Langston
+  and Parker 2021 report it reorganising a network over ten million.
+- So the lever is `uplift.variation`: seeded noise over the plan (four octaves from
+  `variation_length_m` down, each half the wavelength and 1/√2 the amplitude, on a lattice of
+  the world's own metres so a place has its number whatever lattice reads it) times a fraction
+  of the rate about the point. **The fraction is of the kernel's square root** and not of the
+  kernel: tried first as a multiple of the local rate it did little, because a kernel's flank
+  rises slowly and a fraction of little is less; the raster that worked was uneven on the
+  flanks as much as on the crest.
+
+**It is reduced, not gone**, and the page should not claim more: 0.29 junctions a kilometre
+against 0.20, 39% against 44%, where the raster reached 0.39 and 36% by raising the plains as
+well, which a range does not. In the relief the valleys now differ in size, branch, and leave
+the crest at angles; a person still sees that most of them cross the range the short way, which
+is also what the rivers of a real linear range do (Hovius 1996, "Regular spacing of drainage
+outlets from linear mountain belts": the title is its finding, and it was not read here). What
+would take it further is in
+[what still reads wrong](#pictures-and-what-still-reads-wrong).
+
+### Ice
+
+A sketch may have an ice age (`ice`: the equilibrium line's altitude, how fast snow becomes ice
+above it and ice melts below it, the ice's erodibility, a glacier's width and thickness for its
+flux, and the years it stands). The model is **Hergarten 2021's stream-power form for valley
+glaciers** ([the grounding](../experiments/landform.md#ice-the-sources) says what was read and
+what each number is), chosen because it is the published scheme that fits a solver whose every
+decision is a sum, a product, a division and a square root: the ice's thickness is not solved
+from its flow, so there is no ice-flow time step (a shallow-ice solve at 16 m wants steps of
+hours), and its erosion is the rivers' law with other numbers, solved in the same sweeps.
+
+Each step the ice stands:
+
+1. **The flux.** A point makes ice at the share min((s − ELA) / `full_m`, 1) of its snowfall,
+   s the height of the ice's surface there last step; below the line the share is negative,
+   (s − ELA) / `melt_m`, a loss. The flux is the sum down the bed's own receivers (the one
+   thread: ice does not divide here), in cells making ice in full. Bare ground below the line
+   makes and loses nothing; a point the glacier covered last step passes its loss on toward
+   the glacier's line, so **a glacier pays for the melt over the whole of its swath** and ends
+   where its catchment's ice is spent. That last is this solver's reading: Hergarten's sum takes
+   the loss of every point of the catchment, ice on it or not. Tried first as a loss over a
+   width from the flux at each point of the line, it melted every slope's ice within four
+   points of the line, because a slope's parallel threads each claimed a glacier's width.
+2. **Width and thickness.** A glacier is `width_m` wide where its flux is a square kilometre's
+   and its width goes with the flux to the power 0.3 (Hergarten's equation 13); its ice is
+   `thickness_ratio` of its width thick. **The swath** is every point within half that width of
+   the glacier's line whose bed is not above the ice there; a point takes the largest flux and
+   the thickest ice of the swaths that hold it. (The power is the one in the solver that is
+   not a square root: `det::exp(0.3 * det::log(x))`, once a point of ice a step.) Ice that
+   leaves through a held point keeps its thickness there: the lattice's edge is not a snout.
+3. **Erosion** is in the rivers' own update. Under a glacier a point's stream power is
+   the ice's erodibility times the square root of its effective flux (the point's own
+   catchment to the 1/4 times the swath's flux to the 3/4: Hergarten's equation 22, square
+   roots of square roots) plus the meltwater's (the rivers' law on the cells that are not
+   ice), and **its base level is the receiver's bed raised by the ice's share of the step in
+   thickness to the receiver**: the ice's term works on the slope of the ice's surface. So a
+   tributary's bed is worn to the trunk's ice and not to its bed, and hangs above it; and a
+   bed may be worn below its receiver's where the ice thins toward a snout. Under ice the
+   flow does not divide, no bank is taken, a hollow in the bed is not a lake, and nothing is
+   laid down in the sweeps.
+4. **Till.** What the ice carries melts out with the ice: at a point that loses a share of the
+   ice reaching it, that share of the sediment reaching it is laid as till, spread over the
+   glacier's width there, kept aside until the step's books are done and then added to the
+   ground and to the sediment. A point takes till up to the glacier's thickness and no more (a
+   moraine stands no higher than the ice that built it); the rest goes on with the meltwater
+   and the rivers lay it down as outwash by their own law. This melt-out rule is this solver's.
+
+**What it makes, measured** (the tests): a trunk under ice for 100,000 years is worn 196 m
+below the same valley under a river and is 1.7 times as wide a hundred metres above its floor;
+a tributary's bed meets it at a step of 40 m in one 50 m point where the river's is graded
+(2.7 m); a glacier whose line is above its valley's floor ends inside the region, 7.3 km down
+an 8 km valley, with till under where it stood. In the two-range sketch
+([pictures](#pictures-and-what-still-reads-wrong)) with the line at 800 m the ice covers the
+upper valleys, an eighth of the lattice, and those are wider and softer with open heads; below
+its reach the valleys are the rivers'.
+
+**What it does not make, said plainly**:
+
+- **The trough is a parabola, not a level floor between walls.** By the stated measure (a
+  section's width half way up its lowest hundred metres over its width at the hundred: a V is
+  0.5, a parabola 0.71, a box 1) the glacier's trunk is 0.73 and the river's 0.56. The swath
+  wears the sides toward the line, but a side point's effective flux is its own small
+  catchment's to the 1/4, so it keeps a cross fall of about twice the valley's fall along, as
+  Hergarten says of his ("a slight V-shape remains"); the cross-sections of the photographs
+  need the ice's flow across the section (Harbor 1992's), which no stream-power form has.
+- **An overdeepened basin is not held by a test.** The update allows one wherever the ice thins
+  downstream faster than the bed falls; but the test's single valley, falling at 0.03, grew a
+  hollow a metre deep in one build and none in the next, and the two-range sketch's troughs
+  hold no more standing water after their ice than without it (442 flooded points against
+  482), so nothing is asserted and none should be expected yet. A cirque with a tarn behind a lip
+  needs a head glacier's own rotation, which is not here either.
+- **Glaciers are long.** All the snow above the line in a catchment feeds the ice and only the
+  glacier's own surface melts it, so a catchment with tall walls sends its ice far below the
+  line. `melt_m` (half of `full_m` by default) is the knob.
+- **The ice is fast.** At the default erodibility of twice the rivers' a trunk is worn 2 mm a
+  year. An ice age in a sketch is tens of thousands of years, not hundreds.
+- No crevasses, no ice surface as geometry, no snow: the field file's `ice` is what the snow
+  and glacier solver starts from.
+
+### The rivers' sweeps
+
+Stage B's sweeps walked the flood's order, which visits the lattice by height and so in no order
+of memory, and each visit recomputed a square root and three divisions from a dozen arrays
+indexed by cell. They were most of a step. Stage C lays the step's network out once **in the
+sequence the sweeps walk it** and walks that:
+
+- **Levels.** A held point is level 0; any other point is one more than its highest receiver.
+  A point reads its receivers (lower levels) for its height and its donors (higher levels) for
+  its flux, never its own level.
+- **The sequence** is the points by level, and within a level by the place of the receiver that
+  set the level, so the donors of points that follow each other follow each other too: a
+  breadth-first order of the network (Braun and Willett 2013's stack, by generation), in which
+  a sweep's reads of the level above and of the level below both run forward through memory.
+- **Beside each point**, by its place: its kind this step (held, a lake's member, a slope or sea
+  bed that only passes its flux on, a reach), the constants of its update (K Δt of its sediment
+  and of its rock times its stream power, the share of the flux it lays down, its sediment),
+  and its edges, each a run: its receivers with the weight of each one's height in its base
+  level, its donors with the share of each one's flow that comes to it.
+- **A sweep** is the flux, levels from the top down, each point gathering what its donors pass
+  in the fixed order of the eight directions; then the heights, levels from the bottom up.
+- **The sweeps start from the last step's answer**: a reach near its grade moves by nearly the
+  same amount every step, so the first guess is the ground less what the rivers took last time.
+  The fixed point is the same; the sweeps that would find it again from nothing are saved where
+  the ground is young (118 sweeps to 107 over twenty steps from a plain) and not where it is
+  old: a mature range still takes eight a step, which says the count there is set by a few
+  points that keep moving a millimetre (a lake's rim, a bed changing from sediment to rock)
+  and not by the guess. Finding those is what would halve the sweeps.
+- **In parallel, by level.** A level's points write only their own entries, so a level runs on
+  the job system in chunks (`SolveOptions::level_grain` points each, where the level holds two
+  chunks or more) and the bytes are the same at any thread count; the largest move of a sweep
+  is a maximum, which does not care what order the chunks report in. **What it buys at the
+  sizes solved here is nothing, and the page should say so**: a network has as many levels as
+  its longest river has points (`Landform::network_levels`, in the command's summary), so the
+  bench's 1,024 by 1,024 sketch, twenty steps old, stands in 735 levels of 1,400 points, and an
+  older ground in more and narrower ones; a level that small costs less to walk than to hand
+  out. It pays where a level is tens of thousands of points wide (a lattice 8,192 a side and up). What
+  would pay at every size is the published other way (Braun and Willett's: catchments are
+  independent), which here needs the catchments that flow divides between joined first; it is
+  not built.
+
+What the layout cost and bought, measured as a pair ([performance notes](#performance-notes)):
+a solve of a mature ground takes half the time, and the sweeps are under two fifths of it. The
+layout itself (the shares, the levels, the sequence, the constants and the edges) is a fifth of
+the new step and the flood another fifth: every part now costs about the same, which is where to
+look next.
 
 ### The flood's cost
 
@@ -325,9 +591,13 @@ count (`determinism_tests.cpp` pins the hash of the heightfield and of each fiel
   square root ([what determinism decided](../experiments/landform.md#what-determinism-decided)).
 - The flood's order is a total order on (height, cell index).
 - The job system runs only the loops whose points do not read each other's results: the uplift
-  and hardness fields, the receivers, the diffusion (a Jacobi step) and the output fields. The
-  flood, the accumulation, the rivers' sweeps, the lakes and the limiter walk an order and are
-  serial.
+  and hardness fields, the receivers, the diffusion (a Jacobi step), the output fields, the
+  constants and edges of the step's network, and a level of the rivers' sweeps
+  ([the rivers' sweeps](#the-rivers-sweeps): a level's points read other levels only, and a
+  point's flux is a gather over its donors in a fixed order, never a scatter). The flood, the
+  discharge, the levels, the step's books, the lakes and the limiter walk an order and are
+  serial. The worker test runs the sweeps at a grain of eight points, so a small lattice's
+  levels do go to the workers.
 - The rivers' sweeps end on a comparison of heights, which is the same comparison everywhere
   because the heights are; a lake's members and a deposit's neighbours are sorted by height and
   then by cell, a total order; and the budget's sums are taken in one order whatever the workers.
@@ -347,7 +617,9 @@ count (`determinism_tests.cpp` pins the hash of the heightfield and of each fiel
 
 ### The field file
 
-`engine.landform.fields/2` (`engine.landform.Fields`; version 2 added `sediment` and `resistance`). What a later solver (channels, scree, soil,
+`engine.landform.fields/3` (`engine.landform.Fields`; version 2 added `sediment` and `resistance`,
+version 3 `discharge`, `channel_width`, `ice` and `till`; a reader of an older version is refused by the
+version, since the solver that wrote it is not this one). What a later solver (channels, scree, soil,
 ecology, snow) reads:
 
 - **The lattice is the heightfield's**, point for point: `width`, `height`, `spacing_mm`,
@@ -366,6 +638,22 @@ ecology, snow) reads:
 
   | `resistance` | u8 | the resistance of the rock at the surface, 0 to 255 | the bed of the sketch's formation the solved surface cuts ([structure](#structure)), or the sketch's uniform value. Where it is high a hard bed crops out: a ledge, a cliff band, the cap of a scarp |
 
+  | `discharge` | u32 | the cells whose water passes through the point when flow divides on gentle ground ([flow that divides](#flow-that-divides)), rounded to whole cells | equal to `drainage_area` wherever nothing above the point divided. Where it is large over a width of points the river is that wide a braid or the fan that broad; where `drainage_area` is large and this is not, the one thread is a choice among many |
+  | `channel_width` | u32 | millimetres: the sketch's `channel_width_m` times the square root of `discharge` in square kilometres | the downstream hydraulic geometry's exponent of one half (Leopold and Maddock 1953, not read: the classical value) with an authoring coefficient, 5 m at one square kilometre by default. A channels solver that has its own relation reads `discharge` and ignores this |
+
+  | `ice` | u32 | millimetres of ice over the point at the last step the ice stood ([ice](#ice)) | the glacier's extent and thickness: with a sketch whose ice lasts to the run's end, the ice of today; with one whose ice ended, the last glaciation's reach (its trimline is where this meets zero). Zeros with no ice age |
+  | `till` | u32 | millimetres of the sediment that melted out of the ice and nothing has removed since | never more than `sediment`. Thick in a band across a valley is a moraine; thin and wide is ground moraine |
+
+- **What the snow and glacier solver should take from `ice`**: where to put a glacier's
+  surface (the bed plus this), where it steepens over a step in the bed (an icefall: `slope`
+  under ice), and that snow lies deepest where this is not zero and the ground is gentle.
+  **Lakes**: `fill` above zero inside a former glacier's reach is a tarn or a trough lake.
+  **Waterfalls**: a hanging valley's mouth is where a tributary's `slope` jumps at the edge of
+  the trunk's `ice`. **Soil and scatter**: `till` is boulder-rich, unsorted ground.
+- **What a channels solver should take from the two**: its course from `receiver` and
+  `drainage_area` as before; its width from `channel_width`; and where `discharge` spreads over
+  several points beside the course, the bed it may braid or move in (with `sediment` under it,
+  an alluvial floor; with none, a strath).
 - **What each later solver should take from `sediment`:**
   - **Scree and rock** (the cliffs, the deposits): rock is at the surface where it is zero, so
     an outcrop or a cliff belongs only there; a slope near the critical angle with a metre or
@@ -434,11 +722,11 @@ authored heightfield. Exit 0, 1 (a file or a range), 2 (usage).
 
 ## Not stage A
 
-Each follows, and none is here: the glacial mode (troughs, cirques, overdeepened basins);
-**the rivers' sweeps in the order's own sequence** (the sweeps are most of a step now); flow that divides, so one mouth's fan is a
-cone and a channel on its plain is more than a point wide; scree at an angle of repose and
-terraces; soil depth; snow; a general m and n; neighbouring regions solved so a shared edge
-agrees; the flow tree's levels in parallel; baking far-terrain maps from near output; anything
+Each follows, and none is here: a glacier's flow across its section, so a trough has a level
+floor, and a head glacier's rotation, so a cirque has a tarn ([ice](#ice) says what stage C's
+ice does and does not make); scree at an angle of repose; soil depth; snow; a general m and n; neighbouring regions solved so a shared edge
+agrees; the rivers' sweeps in parallel by catchment (by level they are, and it buys nothing at
+these sizes: [the rivers' sweeps](#the-rivers-sweeps)); baking far-terrain maps from near output; anything
 in the editor. The limits of the model as it stands are on the grounding page.
 
 ## Invariants
@@ -459,7 +747,7 @@ in the editor. The limits of the model as it stands are on the grounding page.
 
 ## Public API
 
-`include/domain/landform/landform.h`: `validate_sketch`, `solve`, `route`, `read_sketch`,
+`include/domain/landform/landform.h`: `validate_sketch`, `solve`, `route`, `route_divided`, `read_sketch`,
 `read_start_field`, `write_landform`, `read_fields`, `read_field_window`, `shaded_relief`.
 
 ## Depends on
@@ -468,7 +756,7 @@ in the editor. The limits of the model as it stands are on the grounding page.
 
 ## Testing
 
-`tools/dev.ps1 test -Filter "^landform$"`. All CPU; the whole suite is about 13 s in `msvc-debug` (stage B's seven cases are 5 s of it, and the sweeps added 3 s to stage A's).
+`tools/dev.ps1 test -Filter "^landform$"`. All CPU; the whole suite is about 50 s in `msvc-debug` on a loaded machine (2026-11-10, 36 threads busy: stage C's cases are the last rows' seconds, and its divided flow and banks added about half again to the seconds of the cases that were there, the worker test's four solves most of all at 8 s).
 
 | Test | Holds | Fails when |
 |---|---|---|
@@ -484,10 +772,17 @@ in the editor. The limits of the model as it stands are on the grounding page.
 | a sketch outside a range is refused | six refusals, each naming its field | validation is lost |
 | what is eroded is deposited or leaves | the two identities of the budget to nine digits on the golden sketch; the settled and unrouted share under 2%; the same with G = 0, where everything cut leaves | a pass lays down what did not arrive, or loses what did |
 | with deposition a steady river stands 1 + G times as steep | the steepness factor S √A K / U over the channels in 1.85 to 2.05 at G = 1 (measured 1.955: the discrete form's (N − 1) / N), the mean rate within 2% of the uplift, the concavity within 0.03 of 0.5 | the deposit is not Yuan's, or is laid after the cut and not with it (which measured 2.14, rising with area) |
-| a dammed valley fills to a floor | a V-shaped valley whose mouth is held 90 m above its bed: the run of fill of 5 m or more about the axis is 5 points or more wide in the lower third, more than 1.5 times the upper third's (measured 6.7 against 3.6), level across within 8 m where the V fell 87 m (measured 7.6 m), over 50 m of fill | nothing is laid down, or a lake is filled along the flood's order |
-| a massif's rivers leave a fan on the plain | 400 m out from a massif's foot the ground stands over 3 m up opposite it (measured 4.6 m), a metre or more lower 700 m to either side (2.9 and 2.8 m), and under a metre 1,700 m away (0.93 and 0.90 m) | the load is not laid where a river leaves the range |
+| a dammed valley fills to a floor | a V-shaped valley whose mouth is held 90 m above its bed: the run of fill of 5 m or more about the axis is 5 points or more wide in the lower third, more than 1.5 times the upper third's (measured 6.7 against 2.2), its cross fall under a quarter of the 87 m the V fell over the same width (measured 12.9 m: the river's bed, which since stage C moves across the fill; the bound was 8 m while it measured 7.6 m), over 50 m of fill | nothing is laid down, or a lake is filled along the flood's order |
+| a massif's rivers leave a fan on the plain | 400 m out from a massif's foot the ground stands over 3 m up opposite it (measured 9.9 m), a metre or more lower 700 m to either side (6.9 and 8.3 m), and under half the crown's height 1,700 m away (2.4 and 3.0 m; this was "under a metre" while it measured 0.93 m, which said the plain there is untouched, and a plain between two open edges is not) | the load is not laid where a river leaves the range |
 | under dipping beds a ridge's two sides differ and a hard bed stands as a step | beds dipping 15° toward one edge of a rising block: the mean gradient on hard rock over 1.5 times that on soft (measured 2.2); across the beds over 1.05 times that down the dip (measured 1.09), and within 1% of 1 in uniform rock (measured 1.0002); a hard bed's outcrop over 1.5 times as wide down the dip as across (measured 1.93) | the beds are not read, or are read in a frame that does not rise with the rock |
 | a ridge's uplift varies along its line | one step with no erosion reads the uplift off the line: at variation 0.5 the mean within 15% of the rate, every station inside the half either way, a range over 0.6 mm/yr, and the mean squared difference at 1,600 m over four times that at 200 m (measured 10.7); at 0 even to the millimetre | the variation is lost, is white, or leaves its bounds |
+| flow that divides conserves its discharge (`rivers_tests.cpp`, 0.01 s) | on a cone falling at 0.03, 3,970 of 4,032 points divide, every point's shares sum to 32,768 and the held points' discharges to the lattice, exactly; with `divide_below_slope` 0, and on the same cone at 0.5, no point divides | a share is lost or made in the division, or steep ground divides |
+| a single mouth's fan is a cone (2.2 s: two solves of a hundred steps) | a funnel-shaped catchment drains through one mouth onto a level plain for 200,000 years: on an arc 500 m from the mouth the ground stands over 2 m above the plain (measured 28.2 m) and varies along the arc by under a third of that (5.4 m, 19%); with one receiver a point the same arc measures 13.9 m and 3.7 m (27%) | the flow does not divide on the fan, or the load is not carried by the shares |
+| a river's plain is wider than a point, and cutting down leaves a terrace (2.7 s: three solves) | a straight valley draining 20 km², banks three times as erodible as the bed, 400,000 years: the lower floor (points within 2 m of the lowest of their column) is 3 points wide or more (measured 8.8) and a point wider than with no lateral erosion (6.6), with over a hundred banks taken (11,310). Then the base level falls 20 m for 8,000 years: the river cuts down over a quarter of the fall in the last kilometre (7.5 m) into a floor narrower than the one it left (4.1 points against 10.2), and of the columns that owe a terrace (cut 5 m, old floor 3 points wider than the new) three quarters keep old floor within 1.5 m of where it stood (10 of 10, 6.5 points each) with its edge beside the new floor (10 of 10) | no bank is taken, or a river that cuts down takes its whole floor with it |
+| a range raised unevenly is not a comb (3.9 s: two solves of a hundred steps on a lattice that holds a dozen valleys a side) | a 9.6 km range along x raised evenly and with the default unevenness: of the mountain channels, the junctions a kilometre rise by over 15% (measured 0.149 to 0.359) and the share running straight down the range falls (60% to 43%) | the unevenness is lost, or is of the local rate and vanishes on the flanks |
+| ice leaves a trough where a river leaves a V, and a tributary hangs (`ice_tests.cpp`, 1.2 s: two solves of twenty steps) | a trunk valley falling at 0.02 with a tributary at 0.12, 100,000 years under ice and under a river: by the stated measure (width half way up the lowest 100 m over width at the 100 m: V 0.5, parabola 0.71, box 1) the river's trunk is in 0.35 to 0.65 (measured 0.56) and the glacier's a tenth more (0.73); the glacier's is half again as wide at the 100 m (59 points against 34 over three sections); the tributary's steepest step is over five times the river's (39.8 m against 2.7 m); the trunk's bed at the junction is 50 m or more below the river's (196 m), under 100 m or more of ice (220 m) | the ice wears only its line, or a tributary is graded to the trunk's bed |
+| a glacier ends where its ice is spent, and leaves till (0.4 s) | a valley falling at 0.03 whose line is 100 m above its head: over 300 points under ice (974), its snout past column 40 and 8 columns or more inside the lattice (column 146 of 160), a hundred points or more with half a metre of till (1,996), and till never more than the sediment there. Whether its bed holds a hollow is printed and not held (none) | the melt is not charged to the glacier, or till is laid that is not sediment |
+| an ice age solves to the same bytes on one, four and sixteen workers (0.7 s) | the heightfield, the ice, the till, the sediment and the discharge of a 30,000-year ice age from each, and the first three pinned on MSVC for Clang and GCC to reproduce | a loop of the ice reads what another chunk writes, or `det::exp` and `det::log` differ by toolchain |
 | a lake's floor fills level, and its mouth builds a delta | a basin fed for ten thousand years: its floor away from the mouths level within 50 mm (measured 0 and 3 mm) under water still metres deep; with `delta_share` 0.5 the shelf under the mouths holds a quarter more sediment (measured twice) and the floor stands lower | the fill follows the flood's order, or the mouths get nothing |
 
 ## Performance notes
@@ -522,7 +817,34 @@ ground drains, 62 ns a point less. Where it does not (the young ground of `landf
 flood of every point is run as it was, after a classification that found it had to be: 7% slower
 at 2,048 a side in these two runs, inside what the load moved.
 
-**The sweeps are the cost now.** A step with deposition solves its rivers in about eight sweeps,
+**Stage C, the sweeps laid out in their own sequence** ([the rivers' sweeps](#the-rivers-sweeps)),
+2026-11-10, `engine-content landform --jobs 5` in `msvc-release`, **each row a pair**: the base's
+executable (44c80a0a, built in the same tree and copied out) and this one's run one after the
+other, twice, on a machine other agents were building on (36 threads at 56% to 100% while these
+ran), so a row's two columns saw the same load and its seconds are upper bounds.
+
+| Sketch | Base | Stage C's first commit (the sweeps alone) | |
+|---|---|---|---|
+| the bench's sketch, 1,024 by 1,024 at 16 m, twenty steps from a plain | 25.7 s, 30.2 s, 30.4 s, 29.2 s, 23.1 s | 16.2 s, 16.5 s, 18.1 s, 15.0 s | 118 sweeps before, 107 after; 735 levels |
+| the same at 2,048 by 2,048 | 159.6 s, 166.2 s | 79.2 s, 130.5 s (the second beside this row's own other solves) | 123 sweeps before, 104 after; 1,787 levels |
+| two ranges about a valley, 512 by 512 at 32 m, 300 steps (a mature ground) | 113.3 s | 57.7 s | 2,396 sweeps and 2,402: eight a step either way; 629 levels |
+
+**And what the rest of stage C costs.** The same 512 by 512 sketch with the defaults stage C
+ends with (flow that divides, banks, the uneven uplift) takes 105 s, about the base's time
+again: the divided network has 855 levels and its sweeps take 13 a step (4,093 over the run,
+51 s of the 105). With an ice age of 76 steps as well, 105 s. The picture's region (1,024 by
+1,024, 300 steps) took 458 s, where stage B's took 385 to 513 s: stage C bought back with
+the layout what its new processes spend.
+
+Where the 57.7 s went (`Landform::timing`, the command's summary): the sweeps 21.5 s, the
+network's layout 12.7 s, the flood and the receivers 12.2 s, the step's books 4.9 s, creep and the
+limiter 4.8 s. Every part is now within a factor of two of every other, and four of the five walk
+the lattice in the flood's order on one thread. The solve holds about 250 bytes a point while it
+runs (stage B's 110, and the network's 140: sixteen for a point's shares, eight for its discharge,
+its level, its two places and its anchor, ten doubles of constants and iterates, and about
+twelve bytes an edge each way).
+
+**Before stage C the sweeps were the cost.** A step with deposition solves its rivers in about eight sweeps,
 each two walks of the order over a dozen arrays, where stage A's step had one. `landform.solve`
 at 2,048 a side went from 27.1 s to 117.6 s (1.4 µs a point a step, of which the flood is about a seventh), and the picture's region (1,024 points a
 side, 300 steps) from 75 s to 385 to 513 s. What follows is to keep a step's river data in the
@@ -536,6 +858,40 @@ size at run time, and there are no triangles and no per-tile cost: the tile set'
 heightfield's.
 
 ## Pictures, and what still reads wrong
+
+**Stage C** (2026-11-11; the same sketch as stage B's, two ranges about a valley, 1,024 points at
+16 m, 1.5 million years, solved by the command, its shaded relief and drainage map outside the
+repository; no `engine-view` run was made, so nothing here is of the ground as the renderer
+draws it). Beside stage B's map of the same sketch:
+
+- **The valleys branch and bend.** They differ in size, leave the crest at angles, and join
+  each other inside the range before they reach its foot; the divide wanders. Stage B's ran
+  from crest to foot side by side.
+- **The main valley has a river with a width**: a band several points wide where the flow
+  divides over its floor, a lake where a fan has dammed it, and a floor of sediment the length
+  of it. The piedmont's fans are cones with a few large rivers where there were many parallel
+  threads.
+- **With an ice age** (the same sketch at 512 points and 32 m, the line at 800 m for 380,000
+  years, ended 20,000 years before the end) the upper valleys are wider and softer and their
+  heads open; the lower valleys are unchanged.
+
+Beside the reels (r03's valley floor under a ribbed wall with a side valley hanging above it),
+what a person still objects to:
+
+- **Most valleys still cross the range the short way.** The comb is reduced by a third by the
+  count and is not gone. An uplift that is a line and a kernel will always have a short way;
+  what would take it further is a sketch drawn as blocks and faults, or structure that steers
+  the rivers (the strike valleys of dipping beds, which a contrast of 2 no longer cuts).
+- **A trough has no level floor and no walls.** The ice's valleys are wide parabolas. r03's
+  floor is flat for hundreds of metres and its wall stands up from it; that is the ice's flow
+  across the section, and it is not here.
+- **No cirque, no tarn, no moraine ridge.** Heads are open bowls with no lip; the till is a
+  sheet where the ice melted, not a ridge across the valley.
+- **The river on its floor is a band of lattice points, not a channel with banks**: at 16 m a
+  river is one to five points, and what the picture needs is the channels solver cutting a bed
+  of `channel_width` along it.
+- **Everything is still smooth below 16 m**, and the hanging valleys have no waterfall: both
+  are other solvers'.
 
 **Stage B** (2026-11-10, the same 16 km region of two ranges about a valley, 1,024 points at
 16 m, 1.5 million years, outside the repository). The sketch had to change with the model: its

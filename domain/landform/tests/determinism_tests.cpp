@@ -26,14 +26,21 @@ namespace {
 // Version 4 (uplift along a ridge, the critical slope's default): every hash moved once more,
 // because the golden sketch's ridge now varies along its line by the default 0.35 and its
 // critical slope is the default, which went from 0.9 to 0.8.
-constexpr u64 k_height_hash = 0x249019bde6a14cc7ull;
-constexpr u64 k_area_hash = 0x48ca4e5470cd0656ull;
-constexpr u64 k_receiver_hash = 0xd4609ac9bc63d161ull;
-constexpr u64 k_slope_hash = 0x0aa531b7e49fe92aull;
-constexpr u64 k_erosion_hash = 0x7c6c819d7ea2347bull;
-constexpr u64 k_fill_hash = 0xc19680628fff6828ull;
-constexpr u64 k_sediment_hash = 0x70d43c0753d22169ull;
-constexpr u64 k_resistance_hash = 0xd3fc84052a7f7e51ull;
+// Version 5 (W104 stage C, time to look): every hash moved, because `rock.contrast` now defaults
+// to 2 where it was 10 (the golden sketch takes the default) and the rivers' sweeps start from
+// the last step's answer. The sweeps' new sequence and their gather of the flux moved nothing
+// by themselves: the same build with the old default and a cold start solved to version 4's pins.
+// Version 6 (W104 stage C, rivers with width): every hash moved, because the golden sketch takes
+// the new defaults: its flow divides where the ground is gentle, its rivers wear their banks, and
+// its uplift is uneven over the plan by 0.7.
+constexpr u64 k_height_hash = 0x87a3180cd93046ffull;
+constexpr u64 k_area_hash = 0x37a14640e15ff18bull;
+constexpr u64 k_receiver_hash = 0xe27b979581e5b230ull;
+constexpr u64 k_slope_hash = 0x8b5d9a6c90a7ca7dull;
+constexpr u64 k_erosion_hash = 0x5a95096691d65b81ull;
+constexpr u64 k_fill_hash = 0x3496a0d9a616b98eull;
+constexpr u64 k_sediment_hash = 0x70108d41bd5df534ull;
+constexpr u64 k_resistance_hash = 0x2f7f8146fcaad4e8ull;
 
 }  // namespace
 
@@ -77,6 +84,9 @@ TEST_CASE("landform: one, four and sixteen workers solve the serial solve's byte
     jobs::JobSystem jobs(config);
     landform::SolveOptions options;
     options.jobs = &jobs;
+    // A level of this small lattice's network holds tens of points: a grain of eight puts the
+    // rivers' sweeps on the workers, which the default grain would not.
+    options.level_grain = 8;
     landform::Landform land;
     REQUIRE_MESSAGE(landform::solve(sketch, nullptr, options, land, error), error);
     CHECK(hash_of(land.height_mm) == hash_of(serial.height_mm));

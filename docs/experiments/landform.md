@@ -1,4 +1,4 @@
-# Landform: the grounding of the solver (W95, stages A and B)
+# Landform: the grounding of the solver (W95, stages A and B; W104, stage C)
 
 2026-11-10. This page backs `domain/landform` ([landform](../subsystems/landform.md)): what the
 solver models, where each process and constant comes from, what was read and what was not, the
@@ -127,6 +127,69 @@ height is its own, and the order the queue would have given is the sort of the f
 (a push is never below the pop that made it). The bytes are the flood's, which the basin graph's
 are not. Neither Zhou's nor Wei's algorithm was read, so this is not theirs; it is the same
 observation, checked by the pins.
+
+## Stage C (W104): the sources
+
+2026-11-10 and 11. Stage C read these for what it added; the same four words say how far.
+
+### The sweeps' layout, and the contrast's default
+
+| What | Form used | Source |
+|---|---|---|
+| The order of a sweep | The network's points by generation from the outlets (a breadth-first stack), each point's receivers before it; the points of one generation independent of each other | Braun and Willett 2013 (**not read**, paywalled: their stack is by depth first, and its independence is by catchment) as described by Barnes 2019 (arXiv:1803.02977, **read** in stage A: "levels" of the order whose cells may run concurrently). The layout here is that level order with the levels' points sorted by their receiver's place; no number comes from either |
+| `rock.contrast` 2 | Erodibility of the weakest rock over the strongest in one range | The contrasts stage B's page lists under [structure](#structure-the-sources) (1.2 to 2.8 across the lithologies of single ranges); stage B kept an authoring 10 and said so. 2 is the middle of the published range; a sketch that wants cliffs asks for more |
+
+### Flow that divides: the sources
+
+| What | Form used | Source |
+|---|---|---|
+| The rule | A point's flow to each lower neighbour in proportion to the slope toward it times the contour length it crosses, 0.5 of a spacing toward a cardinal neighbour and 0.354 toward a diagonal | Quinn, Beven, Chevallier and Planchon 1991, *Hydrol. Processes* 5:59–79. **Not read**; the rule and its two contour lengths are as the multiple-flow-direction literature states them (**secondary**: Esri's "How Flow Direction works", which gives the partition with a distance adjustment for cardinal and diagonal neighbours, and Qin et al. below) |
+| Where it applies | The exponent on the slope rises with the steepest downslope gradient e: f(e) = 8.9 min(e, 1) + 1.1, from 1.1 on a plain to 10 on a slope of 1 | Qin, Zhu, Pei, Li, Zhou and Yang 2007, *Int. J. Geogr. Inf. Sci.* 21(4):443–458. **Secondary**: the formula as Esri's page quotes it and attributes it; the author's own copy of the paper was fetched and would not decode. The solver does not use the exponent: it divides at exponent 1 where f(e) < 2 (e < 0.1) and not at all above, a two-valued stand-in chosen so that no power is taken, and says so. `divide_below_slope` 0.1 is that crossing |
+| The rivers' law over several receivers | Each receiver's implicit term is K Δt (A w_k)^m / l_k, the height (z + Σ F_k z_k) / (1 + Σ F_k), the sediment passed by the weights | FastScape's `StreamPowerLaw.f90` (the implementation of Yuan et al. 2019), **read** as source: `fact = kfint*dt*(a*mwrec)**m/mlrec`, `h = f/df`, `dh(ijr) = dh(ijr) + dh(ijk)*mwrec(k,ijk)`. Its own weights are slope to a power that may vary with slope (`p_mfd_exp = 0.5 + 0.6*slope`, `FlowRouting.f90`, **read**), on a surface filled by 10⁻⁸ a step; here the weights are Quinn's and the surface the flood's |
+
+Authoring, marked so: the two-valued rule itself, and the shares kept as parts of 32,768.
+
+### Lateral erosion: the sources
+
+| What | Form used | Source |
+|---|---|---|
+| The model | A reach wears the neighbour on the outside of its bend at K_l A S / R; the volume, that rate over the water's depth and one spacing, accumulates at the neighbour until it equals what stands there above the reach's receiver, and the neighbour is then lowered to the receiver's height | Langston and Tucker 2018, *Earth Surf. Dynam.* 6:1–27. **Abstract only** of the article (its page gives no body and its PDF is past what the fetch takes): two bank models, one "the slow process of widening a bedrock canyon", one undercutting and slumping in softer rock; valleys "many times wider than the grid discretization scale". **The algorithm was read from the authors' implementation**, Landlab's `LateralEroder` (`lateral_erosion.py`, `node_finder.py`): `petlat = -Kl*da*max_slopes*inv_rad_curv`; `wd = 0.4*(da*runoffms)**0.35` with `runoffms = (Klr*F/kw)**2`, F = 0.02, kw = 10, so 4 × 10⁻⁶ m/s at a ratio of 1; `vol_lat_dt += abs(petlat)*dx*wd`; the two thresholds `(z[i] + wd - z[flowdirs[i]])*dx**2` (undercutting-slump) and `(z[lat_node] - z[flowdirs[i]])*dx**2` (total block); the lowering to `z[flowdirs[i]]`; the donor of the largest area as the inflow |
+| The curvature | 0.23, 0.67 and 1.37 over the spacing for a straight reach, a bend of 45 or 135 degrees, a right angle; on a straight reach a random side | The same implementation (`node_finder.py`), **read** as source. Here the side on a straight reach is hashed from the seed, the step and the cell, and the bank is the neighbour square to the outflow on the bend's outside (the implementation uses lookup tables by donor and receiver, described in its comments and not transcribed: the rule here agrees with the one case its comments spell out, a right-angle bend eroding the cell straight ahead of the inflow) |
+| K_l / K_v | `lateral_erosion` 1 | The implementation's default `Kl_ratio = 1.0`; the terrace test uses 3 for a weak rock, inside nothing published that was read |
+| Whether it breaks a comb | Lateral erosion makes a network reorganise toward a dendritic one | Kwang, Langston and Parker 2021, *PNAS* 118(16). **Not read** (the publisher refused the fetch): known from its press summaries, which give 5 to 15 million years for the change. Measured here, 1.5 million years of it moved no divide ([valleys that are not a comb](../subsystems/landform.md#valleys-that-are-not-a-comb)) |
+
+Authoring, marked so: joining the two bank models by what the bank is made of; the 64-cell floor
+under which a reach is not asked; `channel_width_m` 5 m at one square kilometre with the exponent
+of one half (Leopold and Maddock 1953, **not read**: the classical downstream exponent; Bieger et
+al. 2015's regional curves were looked for and their coefficients not reached); the uplift's
+unevenness, 0.7 over 3 km, which is the count's own result and has no source.
+
+### Ice: the sources
+
+| What | Form used | Source |
+|---|---|---|
+| The model | Valley glaciers in the stream-power form: the ice flux a point passes on is what its catchment made less what melted, routed down the steepest descent; erosion E = K_g A_i^m S^n with the rivers' m = 1/2 and n = 1, solved by the same implicit scheme; the slope is the ice surface's | Hergarten 2021, *Earth Surf. Dynam.* 9:937–952. **Read** (the publisher's full text, through a fetch that answers questions of it: the first 100,000 of its 121,691 characters, so not its conclusions): equations 13, 14, 19 to 28 and section 6 as that reading gave them. Its extraction garbled fractions, and the reading says where it inferred |
+| Ice made and melted | p_i = p min((H − H_e) / (H_f − H_e), 1), H_e the equilibrium line and H_f the height at which all precipitation is ice; negative below the line | The same, equation 23. `full_m` 500 m is H_f − H_e of its example (8 and 10 units of 250 m). Its sum (equation 21) is over every donor; whether a negative flux is clipped the reading could not say. **This solver's**: bare ground below the line loses nothing, and a point the glacier covered last step passes its loss to the glacier; and a second slope below the line, `melt_m` 250 m. That ice melts about twice as fast with depth as it gathers with height is the published balance ratio of glaciers (Rea 2009's area-altitude balance ratios, about 1.75 worldwide), **not read**: quoted from memory of the figure, an authoring default until someone reads it |
+| A glacier's width | w ∝ A_i^0.3: width to length 0.6 (Bahr 1997) times a catchment's length to area 0.52 (Prasicek et al. 2020) | Hergarten's equations 10 to 13, **read**; Bahr and Prasicek **secondary**, through him. He says the relation "is not directly derived from data but is consistent with them". The prefactor is his unity in grid spacings and has no physical value there: `width_m` 500 m at one square kilometre of flux is **authoring**, set so a 10 km² glacier is a kilometre wide |
+| Thickness | A fixed part of the width | The same, section 6: he derives h from the flux and the slope (his equation 40) and adopts h ∝ w as simpler, 0.05 in his units, "about 0.25" in metres. `thickness_ratio` 0.25 |
+| The swath | The erosion acts over a band about the line, each point of it with an effective flux A^ε A_i^(1−ε), ε = 0.25 "a safe choice"; "the U shape is introduced by the swath construction rather than predicted" | The same, section 3 and equation 22, **read**. His band is the donors within half a width of an upstream point of the line; here it is the points within half a width whose bed is not above the ice, which is this solver's, to keep a band from climbing a wall the ice does not reach |
+| Hanging valleys and overdeepening | The slope is that of bed plus thickness, so a tributary meets a trunk at the trunk's ice and a bed may be cut below its receiver's where the ice thins; "overdeepenings, hanging valleys, and steps at confluences at least qualitatively" | The same, section 6 and the abstract, **read**. Here the thickness enters as a rise in the point's base level, weighted by the ice's share of its stream power beside the meltwater's (his equations 24 to 28, K_eff) |
+| The ice's erodibility | K_g of 1 and 2 times the rivers' | The same, its figures 4 and 7. `erodibility` 2 |
+| What the form cannot do | "The model will even fail completely, e.g., for piedmont glaciers"; width and thickness "rely on empirical scaling"; it "cannot predict under which conditions U-shaped valleys occur or how flat they become" | The same, section 8, **read**. Measured here: 0.73 by the stated measure, a parabola |
+| A trough's section | A power law y = a x^b, b near 2; and the flow across a section that makes it | Svensson 1959 and Harbor 1992 (*GSA Bull.* 104:1364). **Not read**: named as what the measure is compared with and as what is missing |
+| Till | What the ice carries is laid where the ice melts, in proportion to the melt, to no more than the ice's thickness | **This solver's**; no source. Hergarten's section 5 has a sediment law for ice (K_d,g, K_t,g) which he calls "rather based on intuition than on real-world data", not taken |
+
+Leads that were not used, so nobody looks again: a shallow-ice solve (Kessler, Anderson and Briner
+2008; Egholm et al. 2011; Braun, Zwartz and Tomkin 1999, none read) needs steps of hours at this
+spacing or a coarser lattice of its own; a perfectly plastic profile (Nye 1951; Benn and Hulton
+2010, none read) gives a thickness and no velocity, so its erosion would need the balance flux
+anyway. Hergarten's form was taken because it is that balance flux with a published erosion law
+on it.
+
+What was measured rather than read: a level is narrow. The network has as many levels as its
+longest river has points, 735 in the bench's 1,024 by 1,024 sketch twenty steps old, so the
+published way to run a sweep in parallel (Barnes's, by level) hands a thread 1,400 points at a
+time at that size, which is less work than the hand-off. The subsystem page says what would pay.
 
 ## Constants, their ranges, and the defaults the schema pins
 

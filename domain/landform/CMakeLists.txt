@@ -28,7 +28,8 @@ engine_module(NAME landform LAYER domain OPTIONAL
   SOURCES src/landform.cpp src/files.cpp)
 
 engine_module_tests(NAME landform
-  SOURCES tests/landform_tests.cpp tests/determinism_tests.cpp tests/size_table.cpp)
+  SOURCES tests/landform_tests.cpp tests/rivers_tests.cpp tests/ice_tests.cpp
+          tests/determinism_tests.cpp tests/size_table.cpp)
 
 engine_module_bench(NAME landform
   SOURCES bench/landform_bench.cpp)

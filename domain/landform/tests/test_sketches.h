@@ -90,7 +90,9 @@ inline landform::Sketch golden_sketch() {
   return s;
 }
 
-// A plain square region: four open edges at zero, the defaults elsewhere.
+// A plain square region: four open edges at zero, an uplift that is even over the plan (the
+// tests that use this measure a ground against the rate they gave it; the default unevenness
+// is the golden sketch's and the comb test's to exercise), the defaults elsewhere.
 inline landform::Sketch plain_sketch(u32 side, i64 spacing_mm) {
   landform::Sketch s;
   s.width = side;
@@ -98,6 +100,7 @@ inline landform::Sketch plain_sketch(u32 side, i64 spacing_mm) {
   s.spacing_mm = spacing_mm;
   s.origin_mm = {0, 0};
   s.base_level_m = 0.0;
+  s.uplift.variation = 0.0;
   return s;
 }
 

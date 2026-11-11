@@ -52,10 +52,14 @@ namespace engine::landform {
 inline constexpr const char* k_determinism = "derived";
 
 /// Bumped whenever the same sketch would solve to different bytes; the field file records it.
-inline constexpr u32 k_solver_version = 4;
+inline constexpr u32 k_solver_version = 6;
 
 inline constexpr std::string_view k_fields_format = "engine.landform.fields";
-inline constexpr u32 k_fields_version = 2;
+inline constexpr u32 k_fields_version = 3;
+
+/// A point's whole flow, in the units its shares among its receivers and `route_divided`'s
+/// discharge are kept in: whole numbers, so a divided flow is conserved exactly.
+inline constexpr u32 k_share_one = 32768;
 
 /// A receiver code: the neighbour a point drains to, east first and then clockwise seen from above
 /// with +z down the page (east, south-east, south, south-west, west, north-west, north,
@@ -100,6 +104,19 @@ struct Budget {
   f64 change_m3 = 0.0;
 };
 
+/// Where a solve's wall-clock seconds went, by part (landform.md, "Performance notes"). For a
+/// person and the command's summary; nothing reads it back and no decision depends on it.
+struct Timing {
+  f64 uplift_s = 0.0;   // the uplift and the rock's resistance, every step
+  f64 flood_s = 0.0;    // the flood, the lakes and the receivers
+  f64 network_s = 0.0;  // the step's network laid out in the sweeps' sequence
+  f64 sweeps_s = 0.0;   // the rivers' sweeps
+  f64 books_s = 0.0;    // the step's books: lakes, the sea, what each point lost or gained
+  f64 slopes_s = 0.0;   // lateral erosion, the ice's deposit, diffusion, the slope limiter
+  f64 settle_s = 0.0;   // the settling to the critical slope after the last step
+  f64 fields_s = 0.0;   // the outputs and their routing
+};
+
 /// A solved region. Every array is `width * height`, rows of x in order of z, on one lattice:
 /// point (i, j) stands at `origin + (i, j) * spacing`.
 struct Landform {
@@ -114,6 +131,9 @@ struct Landform {
   /// The sweeps the rivers' solve took over the whole run (landform.md, "Deposition"): one a step
   /// with nothing laid down, a handful with; steps times the limit says a step did not settle.
   u32 river_sweeps = 0;
+  /// The levels of the last step's flow network: its longest river, in points (landform.md,
+  /// "The rivers' sweeps"). The lattice over this is how wide a level is.
+  u32 network_levels = 0;
   i64 step_yr = 0;
   /// What `route` takes to find these receivers again: the sketch's seed, salted.
   u64 route_seed = 0;
@@ -137,7 +157,27 @@ struct Landform {
   /// most resistant: the erodibility over the contrast, the resistant critical slope): the bed
   /// of the sketch's formation the solved surface cuts, or the sketch's uniform value.
   Vector<u8> resistance;
+  /// The cells whose water passes through the point when flow divides where the ground is
+  /// gentle (landform.md, "Flow that divides"), rounded to whole cells: `drainage_area` is the
+  /// one thread down each point's receiver, this is where the water spreads over a fan or a
+  /// plain. The two are equal wherever nothing above the point divided.
+  Vector<u32> discharge;
+  /// A channel's width at the point, whole millimetres: the sketch's `channel_width_m` times the
+  /// square root of the discharge in square kilometres.
+  Vector<u32> channel_width;
+  /// The ice over the point at the last step it stood, whole millimetres (landform.md, "Ice"):
+  /// the glacier's extent, and with a sketch whose ice lasts to the run's end the ice of today.
+  /// Empty of ice is zero; a sketch with no ice age writes zeros.
+  Vector<u32> ice;
+  /// The till under the point, whole millimetres: the part of `sediment` that melted out of the
+  /// ice and nothing has removed since.
+  Vector<u32> till;
+  /// How many times lateral erosion took a bank's point over the run.
+  u32 banks_taken = 0;
+  /// The steps the ice stood for.
+  u32 ice_steps = 0;
   Budget budget;
+  Timing timing;
   /// How deep the point lies under its depression's spill, whole millimetres; zero on draining
   /// ground.
   Vector<u32> fill;
@@ -146,6 +186,11 @@ struct Landform {
 struct SolveOptions {
   /// Null runs every loop on the calling thread. The result is the same bytes either way.
   jobs::JobSystem* jobs = nullptr;
+  /// The rivers' sweeps run a level of the flow network on the job system where the level holds
+  /// twice this many points or more, in chunks of this many (landform.md, "The rivers' sweeps").
+  /// A knob for the tests, which set it small so a small lattice takes the parallel path: the
+  /// bytes are the same at any value.
+  u32 level_grain = 4096;
 };
 
 /// Every range the schema states, with a sentence naming the field that is outside one.
@@ -163,6 +208,15 @@ bool solve(const Sketch& sketch, const StartField* start, const SolveOptions& op
 bool route(u32 width, u32 height, const Vector<i32>& height_mm, const Vector<u8>& held, u64 seed,
            jobs::JobSystem* jobs, Vector<i64>& filled, Vector<u32>& order, Vector<u8>& receiver,
            Vector<u32>& area);
+
+/// The divided routing of a ground (landform.md, "Flow that divides"): the flood and the
+/// receivers as `route` finds them, then each point's shares of its flow among its lower
+/// neighbours (eight a point, of `k_share_one`; all of it to the receiver where the steepest fall
+/// is `divide_below_slope` or more) and its discharge in 1 / `k_share_one` of a cell. The held
+/// points' discharges sum to the lattice exactly. False when no point is held.
+bool route_divided(u32 width, u32 height, i64 spacing_mm, const Vector<i32>& height_mm,
+                   const Vector<u8>& held, u64 seed, f64 divide_below_slope, jobs::JobSystem* jobs,
+                   Vector<u8>& receiver, Vector<u16>& share, Vector<u64>& discharge);
 
 // ---- files (src/files.cpp) ----------------------------------------------------------------------
 
