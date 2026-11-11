@@ -105,14 +105,37 @@ int routes_command(int argc, char** argv) {
     return fail(error.empty() ? "the ground provider \"" + provider + "\" refused the terrain"
                               : error);
   context.ground = ground.view();
+  // **Water** (routes.md, "Water"): the scene's water bodies and channels, read as the placements'
+  // exclusion reads them, so a route never enters a body and fords a stream short. A block that
+  // does not parse is the water capability's to refuse and is left out here.
+  Vector<scene::WaterBody> bodies;
+  Vector<scene::WaterChannel> channels;
+  if (const JsonValue* water = json.find("water"); water != nullptr && water->is_array())
+    for (const JsonValue& b : water->as_array()) {
+      scene::WaterBody body;
+      schema::ReadContext body_reader;
+      if (schema::from_json(body, b, body_reader) && body_reader.ok())
+        bodies.push_back(std::move(body));
+    }
+  if (const JsonValue* list = json.find("water_channels"); list != nullptr && list->is_array())
+    for (const JsonValue& c : list->as_array()) {
+      scene::WaterChannel channel;
+      schema::ReadContext channel_reader;
+      if (schema::from_json(channel, c, channel_reader) && channel_reader.ok())
+        channels.push_back(std::move(channel));
+    }
+  scene_gen::Exclusion water;
+  if (!water.build({}, {bodies.data(), bodies.size()}, {channels.data(), channels.size()}, &error))
+    return fail(error);
+  context.exclusion = &water;
   std::string plan_dir;
   if (!routes::derived_dir(ddc, dir, plan_dir, error)) return fail(error);
 
   JsonValue edits = JsonValue::array(), regions = JsonValue::array(), plans = JsonValue::array();
-  JsonValue keys = JsonValue::array();
+  JsonValue keys = JsonValue::array(), crossings = JsonValue::array();
   u32 entries = 0, planned = 0, lines = 0, legs = 0, steep_legs = 0, unreached = 0;
   u32 switchbacks = 0, bands = 0;
-  f64 metres = 0, over_cap = 0, held = 0, plan_s = 0;
+  f64 metres = 0, over_cap = 0, held = 0, plan_s = 0, ford_m = 0;
   const JsonValue* placements = json.find("placements");
   if (placements != nullptr && placements->is_array()) {
     for (u32 k = 0; k < placements->as_array().size(); ++k) {
@@ -149,6 +172,13 @@ int routes_command(int argc, char** argv) {
       const JsonValue outlines = routes::tread_regions_json(layer, n);
       for (const JsonValue& r : outlines.as_array())
         regions.push_back(r);
+      const JsonValue fords = routes::crossings_json(n);
+      for (const JsonValue& f : fords.as_array()) {
+        JsonValue c = f;
+        c["entry"] = JsonValue(k);
+        crossings.push_back(std::move(c));
+      }
+      ford_m += n.ford_m;
       Vector<scene_gen::Footprint> footprints;
       routes::tread_footprints(layer, n, footprints);
       bands += footprints.size();
@@ -176,6 +206,9 @@ int routes_command(int argc, char** argv) {
   out["edits"] = std::move(edits);
   out["plans"] = std::move(plans);
   if (region_count > 0) out["mask_regions"] = std::move(regions);
+  // Where a route fords a stream: a bridge's or stepping stones' site (row G147's to read).
+  const u32 crossing_count = crossings.as_array().size();
+  out["crossings"] = std::move(crossings);
   const std::string written = write_json(out);
   if (io::write_file_atomic(out_path, written) != io::Status::Ok)
     return fail("cannot write " + out_path);
@@ -198,6 +231,10 @@ int routes_command(int argc, char** argv) {
   line["edits"] = JsonValue(edit_count);
   line["mask_regions"] = JsonValue(region_count);
   line["bands"] = JsonValue(bands);
+  line["bodies"] = JsonValue(static_cast<u32>(bodies.size()));
+  line["channels"] = JsonValue(static_cast<u32>(channels.size()));
+  line["crossings"] = JsonValue(crossing_count);
+  line["ford_m"] = JsonValue(std::round(ford_m * 10) / 10);
   line["out_bytes"] = JsonValue(static_cast<u64>(written.size()));
   JsonWriteOptions compact;
   compact.pretty = false;

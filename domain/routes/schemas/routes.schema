@@ -45,6 +45,10 @@ struct RouteLayer @version(1) {
   /// equal cost.
   turn_s: f32 = 2
   switchback_s: f32 = 30
+  /// **Water** (routes.md, "Water"): a step with an end in a channel's corridor (the placements'
+  /// exclusion's, from the scene's `water_channels`) costs this many times its time, 1 to 100, so a
+  /// route fords a stream short and square to it; a step into a water body is never taken.
+  ford_penalty: f32 = 4
   /// Corner-cutting passes over the lattice line (Chaikin's), 0 to 4; a cut that would take a
   /// stretch over the cap is not made.
   smooth_passes: u32 = 2

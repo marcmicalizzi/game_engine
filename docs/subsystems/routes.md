@@ -112,6 +112,27 @@ patch's density class and its height by `cover_mm` at the patch's centre, as it 
 riparian factor today; scatter and litter drop a candidate where `cover_mm` is under a draw. No host
 hands a `RouteWear` to a generator yet: that is R142's contract (below).
 
+## Water
+
+A planner handed the placements' exclusion (the generator's `Context::exclusion`; the command builds
+one from the scene's `water` and `water_channels`) asks it at every lattice point: a point inside a
+water body is never stepped onto, and a step with an end in a channel's corridor (the dressed bank's
+edge, or the flood bed's, as `excluded_mm` leaves it bare) costs `ford_penalty` (4) times its time.
+So a route goes round a lake, and crosses a stream where it is narrow and square to it rather than
+wading along it: in the test a route across a 3 m stream at a slant fords 6.5 m of its 5.3 m corridor
+at 4 and 8.0 m at 1 (no penalty). The penalty is a stated choice; no source prices a ford.
+
+A station whose stretch to the next has an end in a channel's corridor (asked at the station itself,
+so a crossing's length is to the half metre, not the lattice's 2 m) is a **ford**. `crossings_json`
+lists each run of them — the line, its first and last station, the middle station and its length —
+which is where a footbridge or stepping stones would stand (row G147 reads it); the command writes it
+as `crossings`. The tread's own edit runs through the channel, and the channel's cut wins where the
+two meet (W98: "a stream across a tread is a ford"), so the water stays in its bed.
+
+The water enters the plan's key as the lattice's mask (0 dry, 1 corridor, 2 body); a change to a
+channel that moves no lattice point's mask but moves a station's ford flag is not seen by the key.
+A waypoint cut off by a body counts as `unreached`.
+
 ## In a scene
 
 The placement generator **`routes`** opens the plan (named, on a ground that carries its treads; or
@@ -121,11 +142,12 @@ a later row's meshes (steps, roots, stones) and R142's edits and footprints at a
 
 **`engine-content routes <scene.json> <out.json> [--ddc <dir>] [--entry <i>]`** reads the scene's
 terrain through the registry with its `edits` cleared (the ground before any tread), runs
-`ensure_plan` for each `routes` entry, and writes `{edits, plans, mask_regions}`: paste `edits` into
+`ensure_plan` for each `routes` entry (with the scene's water bodies and channels as its exclusion),
+and writes `{edits, plans, mask_regions, crossings}`: paste `edits` into
 `terrain.tiles.edits` (beside a channels' cuts), `mask_regions` into `terrain.masks.regions`, and each
 plan key into its entry's `params.plan`. Its JSON line counts the legs, the steep legs, the lines, the
-metres, the metres over the cap, the switchbacks, the deepest hold, the edits, the regions, the bands
-and the output's bytes.
+metres, the metres over the cap, the switchbacks, the deepest hold, the edits, the regions, the bands,
+the bodies and channels read, the crossings and their metres, and the output's bytes.
 
 ## Budgets
 
@@ -152,6 +174,10 @@ scene carries, whose cost is the tile set's (W98: about 1 ms a tile for 16 bench
 - The band footprints cover the tread and nothing else (`… exclude the tread and nothing else`).
 - The wear is monotone, the tread's own on it and 1 past its reach (`… monotone and reaches the
   tread`).
+- A stream across the way is forded square to it and listed (`… fords a stream short and lists the
+  crossing`); a water body's inside is never stepped on by the line (the same test: the nearest
+  station 6.004 m from a 6 m pond's centre). The tread may lap a shore by its half-width, and a
+  smoothed corner by its sag: the lattice keeps the line's points dry, not its edges.
 
 **Public API.** `include/domain/routes/routes.h`.
 
@@ -169,8 +195,10 @@ the tile set does), `routes_schemas`.
 - **The half rule and the target grade** (the notebook; IMBA): the cost has no term for the side slope
   under a step, so a line may run steeper than half its side slope; and only the short-pitch maximum
   is held.
-- **Switchback landings and steps** (stage 4): a turn past 90 degrees is counted but not built as a
-  landing at 5 % or less; a steep stretch is not built as steps.
+- **Switchback landings and steps**: a turn past 90 degrees is counted but not built as a landing at
+  5 % or less; a steep stretch is not built as steps. Steps are not a ground edit's to make: a riser
+  of 150-200 mm on a tread of 254-305 mm (the notebook) is finer than the tile set's finest lattice
+  (25 cm in the test scenes), so they are meshes, a later row's, placed from the steep stretches.
 - **A host that hands the treads across at activation**: until R142, the edits and regions reach a
   scene by pasting, and the bands and the wear reach a generator only through a test.
 

@@ -131,6 +131,8 @@ std::string plan_bytes(const RoutePlan& plan) {
   w.put(n.switchbacks);
   w.put(n.length_m);
   w.put(n.over_cap_m);
+  w.put(n.fords);
+  w.put(n.ford_m);
   for (const RouteLine& l : n.lines) {
     w.list(l.cells);
     w.list(l.stations);
@@ -175,6 +177,8 @@ bool read_plan(std::string_view bytes, RoutePlan& out, std::string& error) {
   n.switchbacks = r.get<u32>();
   n.length_m = r.get<f64>();
   n.over_cap_m = r.get<f64>();
+  n.fords = r.get<u32>();
+  n.ford_m = r.get<f64>();
   // A line is at least its scalars: a count the bytes cannot hold is refused before it is sized.
   if (!r.ok || static_cast<usize>(r.end - r.at) / 40 < lines)
     return refuse("names more lines than it holds");
@@ -235,8 +239,12 @@ bool ensure_plan(const RouteLayer& layer, const scene_gen::Context& context, std
   // No plan named: the ground is the ground before any tread, and the key is what the plan reads.
   // A hit samples the lattice and plans nothing.
   RouteNetwork n;
-  if (!detail::sample_lattice(layer, context.ground, context.jobs(), n, error)) return false;
-  const u64 ground_hash = hash_bytes(n.ground_mm.data(), n.ground_mm.size() * sizeof(i64));
+  if (!detail::sample_lattice(layer, context.ground, context.jobs(), n, error, context.exclusion))
+    return false;
+  u64 ground_hash = hash_bytes(n.ground_mm.data(), n.ground_mm.size() * sizeof(i64));
+  // The water each lattice point stands in (routes.md, "Water"), when the host handed any.
+  if (!n.wet.empty())
+    ground_hash = hash_combine(ground_hash, hash_bytes(n.wet.data(), n.wet.size()));
   const u64 key =
       hash_combine(hash_combine(layer_hash, ground_hash), 0x52545054504C414Eull);  // "RTPTPLAN"
   bool found = false;
@@ -251,7 +259,7 @@ bool ensure_plan(const RouteLayer& layer, const scene_gen::Context& context, std
       return true;
     }
   }
-  if (!detail::plan_from_lattice(layer, context.ground, n, error)) return false;
+  if (!detail::plan_from_lattice(layer, context.ground, n, error, context.exclusion)) return false;
   out.key = key;
   out.layer_hash = layer_hash;
   out.network = std::move(n);

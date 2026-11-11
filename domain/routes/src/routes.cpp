@@ -129,8 +129,9 @@ struct Search {
   // the same steps the other way: heading d + 8 from i is heading d from the neighbour).
   Vector<u32> ms;
   Vector<u8> steep;
-  Vector<u8> trodden;  // 1 where an earlier route runs
-  u64 trodden_pm = 500, steep_pm = 20000, turn_ms = 2000, switchback_ms = 30000;
+  Vector<u8> trodden;               // 1 where an earlier route runs
+  const Vector<u8>* wet = nullptr;  // the lattice's water (`RouteNetwork::wet`), or none
+  u64 trodden_pm = 500, steep_pm = 20000, ford_pm = 4000, turn_ms = 2000, switchback_ms = 30000;
   Vector<u64> dist;
   Vector<u32> prev;
   struct Item {
@@ -148,6 +149,11 @@ struct Search {
     is_steep = steep[from * 8 + k] != 0;
     if (is_steep && !allow_steep) return false;
     u64 c = base;
+    if (wet != nullptr && !wet->empty()) {
+      const u8 a = (*wet)[i], b = (*wet)[j];
+      if (a == 2 || b == 2) return false;  // never into a water body
+      if (a == 1 || b == 1) c = scaled(c, ford_pm);
+    }
     if (trodden[i] && trodden[j]) c = scaled(c, trodden_pm);
     if (is_steep) c = scaled(c, steep_pm);
     out = c;
@@ -225,7 +231,7 @@ u32 cell_of(const Lattice& n, const WorldPos& at) {
 
 struct PolyPoint {
   f64 x = 0, z = 0;
-  u8 steep = 0;  // the stretch to the next point
+  u32 flags = 0;  // the stretch to the next point: k_station_steep, k_station_ford
 };
 
 f64 ground_at(const scene_gen::Ground& g, f64 x, f64 z) {
@@ -243,9 +249,9 @@ void smooth(Vector<PolyPoint>& line, u32 passes, f64 cap, const scene_gen::Groun
       const PolyPoint& a = line[k - 1];
       const PolyPoint& b = line[k];
       const PolyPoint& c = line[k + 1];
-      PolyPoint r{.75 * b.x + .25 * a.x, .75 * b.z + .25 * a.z, a.steep};
-      PolyPoint q{.75 * b.x + .25 * c.x, .75 * b.z + .25 * c.z, b.steep};
-      const bool steep = a.steep != 0 || b.steep != 0;
+      PolyPoint r{.75 * b.x + .25 * a.x, .75 * b.z + .25 * a.z, a.flags};
+      PolyPoint q{.75 * b.x + .25 * c.x, .75 * b.z + .25 * c.z, b.flags};
+      const bool steep = ((a.flags | b.flags) & k_station_steep) != 0;
       const f64 dx = q.x - r.x, dz = q.z - r.z;
       const f64 run = std::sqrt(dx * dx + dz * dz);
       const f64 rise = std::fabs(ground_at(ground, q.x, q.z) - ground_at(ground, r.x, r.z));
@@ -253,13 +259,13 @@ void smooth(Vector<PolyPoint>& line, u32 passes, f64 cap, const scene_gen::Groun
         out.push_back(b);
         continue;
       }
-      // The stretch r to q is the corner's: steep if either side was.
-      r.steep = steep ? 1 : 0;
+      // The stretch r to q is the corner's: steep or a ford if either side was.
+      r.flags = a.flags | b.flags;
       out.push_back(r);
       out.push_back(q);
     }
     out.push_back(line.back());
-    // A point's `steep` is its stretch to the next: the corner's own (set on r) and b's onward.
+    // A point's flags are its stretch to the next: the corner's own (set on r) and b's onward.
     line = std::move(out);
   }
 }
@@ -268,7 +274,7 @@ void smooth(Vector<PolyPoint>& line, u32 passes, f64 cap, const scene_gen::Groun
 // along the line, x and z whole centimetres; each one's lowest ground across the tread; the tread's
 // top that, held under the cap along the line on the stretches that are not steep, then sunk.
 void station(const RouteLayer& p, const Vector<PolyPoint>& line, const scene_gen::Ground& ground,
-             RouteLine& out) {
+             const scene_gen::Exclusion* water, RouteLine& out) {
   Vector<f64> along(line.size(), 0.0);
   for (u32 k = 1; k < line.size(); ++k) {
     const f64 dx = line[k].x - line[k - 1].x, dz = line[k].z - line[k - 1].z;
@@ -288,10 +294,22 @@ void station(const RouteLayer& p, const Vector<PolyPoint>& line, const scene_gen
     Station st;
     st.at.x = to_cm(line[seg].x + t * (line[seg + 1].x - line[seg].x));
     st.at.z = to_cm(line[seg].z + t * (line[seg + 1].z - line[seg].z));
-    st.steep = k < count ? line[seg].steep : 0;
+    st.flags = k < count ? (line[seg].flags & k_station_steep) : 0u;
     out.stations.push_back(st);
   }
   const u32 m = out.stations.size();
+  // A ford: a stretch with an end in a channel's corridor, asked at the stations themselves.
+  if (water != nullptr && !water->empty()) {
+    Vector<u8> inside(m, 0);
+    for (u32 k = 0; k < m; ++k)
+      inside[k] = water->excluded_mm(ground, scene_gen::nearest_mm(out.stations[k].at.x),
+                                     scene_gen::nearest_mm(out.stations[k].at.z),
+                                     scene_gen::k_exclude_channels)
+                      ? 1
+                      : 0;
+    for (u32 k = 0; k + 1 < m; ++k)
+      if (inside[k] || inside[k + 1]) out.stations[k].flags |= k_station_ford;
+  }
   const f64 half = .5 * wide(p.tread_width_m);
   Vector<i64> low(m, 0);
   for (u32 k = 0; k < m; ++k) {
@@ -321,9 +339,11 @@ void station(const RouteLayer& p, const Vector<PolyPoint>& line, const scene_gen
   }
   Vector<i64> top = low;
   for (u32 k = 1; k < m; ++k)
-    if (out.stations[k - 1].steep == 0) top[k] = std::min(top[k], top[k - 1] + rise[k - 1]);
+    if ((out.stations[k - 1].flags & k_station_steep) == 0)
+      top[k] = std::min(top[k], top[k - 1] + rise[k - 1]);
   for (u32 k = m - 1; k-- > 0;)
-    if (out.stations[k].steep == 0) top[k] = std::min(top[k], top[k + 1] + rise[k]);
+    if ((out.stations[k].flags & k_station_steep) == 0)
+      top[k] = std::min(top[k], top[k + 1] + rise[k]);
   const i64 sink = std::llround(wide(p.sink_m) * 1000.0);
   for (u32 k = 0; k < m; ++k) {
     out.max_hold_m = std::max(out.max_hold_m, static_cast<f64>(low[k] - top[k]) / 1000.0);
@@ -335,6 +355,22 @@ void station(const RouteLayer& p, const Vector<PolyPoint>& line, const scene_gen
       const f64 dx = out.stations[k + 1].at.x - out.stations[k].at.x;
       const f64 dz = out.stations[k + 1].at.z - out.stations[k].at.z;
       out.over_cap_m += std::sqrt(dx * dx + dz * dz);
+    }
+  }
+}
+
+// The runs of ford stretches of a line: run r is stations `from[r]` to `to[r]` (its last stretch's
+// far end).
+void ford_runs(const RouteLine& l, Vector<u32>& from, Vector<u32>& to) {
+  from.clear();
+  to.clear();
+  for (u32 k = 0; k + 1 < l.stations.size(); ++k) {
+    if ((l.stations[k].flags & k_station_ford) == 0) continue;
+    if (to.empty() || to.back() != k) {
+      from.push_back(k);
+      to.push_back(k + 1);
+    } else {
+      to.back() = k + 1;
     }
   }
 }
@@ -360,6 +396,7 @@ bool layer_in_range(const RouteLayer& p, std::string& error) {
   if (!in(wide(p.trodden), .05, 1)) return fail(error, "trodden (0.05 to 1)");
   if (!in(wide(p.turn_s), 0, 600) || !in(wide(p.switchback_s), 0, 600))
     return fail(error, "turn_s and switchback_s (0 to 600)");
+  if (!in(wide(p.ford_penalty), 1, 100)) return fail(error, "ford_penalty (1 to 100)");
   if (p.smooth_passes > 4) return fail(error, "smooth_passes (0 to 4)");
   if (!in(wide(p.station_m), .1, 4)) return fail(error, "station_m (0.1 to 4)");
   if (!in(wide(p.tread_width_m), .3, 1.5)) return fail(error, "tread_width_m (0.3 to 1.5)");
@@ -379,7 +416,8 @@ bool layer_in_range(const RouteLayer& p, std::string& error) {
 }
 
 bool detail::sample_lattice(const RouteLayer& p, const scene_gen::Ground& ground,
-                            jobs::JobSystem* jobs, RouteNetwork& out, std::string& error) {
+                            jobs::JobSystem* jobs, RouteNetwork& out, std::string& error,
+                            const scene_gen::Exclusion* water) {
   out = {};
   Lattice n;
   if (!sample(p, ground, jobs, n, error)) return false;
@@ -388,18 +426,31 @@ bool detail::sample_lattice(const RouteLayer& p, const scene_gen::Ground& ground
   out.x_mm = n.x_mm;
   out.z_mm = n.z_mm;
   out.spacing_mm = n.s_mm;
+  // **Water** (routes.md, "Water"): a body's inside is 2, a channel's corridor 1, asked of the
+  // exclusion at each lattice point, whose answers are integer millimetres in.
+  if (water != nullptr && !water->empty()) {
+    out.wet.assign(n.count(), 0);
+    for (u32 i = 0; i < n.count(); ++i) {
+      const i64 x = n.xi(i), z = n.zi(i);
+      if (water->excluded_mm(ground, x, z, scene_gen::k_exclude_water))
+        out.wet[i] = 2;
+      else if (water->excluded_mm(ground, x, z, scene_gen::k_exclude_channels))
+        out.wet[i] = 1;
+    }
+  }
   out.ground_mm = std::move(n.h);
   return true;
 }
 
 bool plan_routes(const RouteLayer& p, const scene_gen::Ground& ground, jobs::JobSystem* jobs,
-                 RouteNetwork& out, std::string& error) {
-  return detail::sample_lattice(p, ground, jobs, out, error) &&
-         detail::plan_from_lattice(p, ground, out, error);
+                 RouteNetwork& out, std::string& error, const scene_gen::Exclusion* water) {
+  return detail::sample_lattice(p, ground, jobs, out, error, water) &&
+         detail::plan_from_lattice(p, ground, out, error, water);
 }
 
 bool detail::plan_from_lattice(const RouteLayer& p, const scene_gen::Ground& ground,
-                               RouteNetwork& out, std::string& error) {
+                               RouteNetwork& out, std::string& error,
+                               const scene_gen::Exclusion* water) {
   if (out.ground_mm.size() != out.width * out.depth || out.width < 2 || out.depth < 2)
     return fail(error, "lattice (sample it first)");
   Lattice n;
@@ -409,6 +460,8 @@ bool detail::plan_from_lattice(const RouteLayer& p, const scene_gen::Ground& gro
   n.z_mm = out.z_mm;
   n.s_mm = out.spacing_mm;
   n.h = std::move(out.ground_mm);
+  Vector<u8> wet = std::move(out.wet);
+  if (!wet.empty() && wet.size() != n.count()) return fail(error, "wet (one a lattice point)");
   out = {};
   ++g_plans_made;
   const u32 cells = n.count();
@@ -430,6 +483,8 @@ bool detail::plan_from_lattice(const RouteLayer& p, const scene_gen::Ground& gro
   search.steep_pm = static_cast<u64>(std::llround(wide(p.steep_penalty) * 1000.0));
   search.turn_ms = static_cast<u64>(std::llround(wide(p.turn_s) * 1000.0));
   search.switchback_ms = static_cast<u64>(std::llround(wide(p.switchback_s) * 1000.0));
+  search.ford_pm = static_cast<u64>(std::llround(wide(p.ford_penalty) * 1000.0));
+  search.wet = &wet;
 
   // **The legs**, route by route in the layer's order and waypoint pair by pair: each searched
   // under the cap, and again with steep steps at their penalty where that finds nothing. Every
@@ -447,6 +502,8 @@ bool detail::plan_from_lattice(const RouteLayer& p, const scene_gen::Ground& gro
       if (!search.run(a, b, false, path)) {
         ++out.steep_legs;
         if (!search.run(a, b, true, path)) {
+          // Not steep: cut off (a water body between the two, or a waypoint inside one).
+          --out.steep_legs;
           ++out.unreached;
           continue;
         }
@@ -529,7 +586,7 @@ bool detail::plan_from_lattice(const RouteLayer& p, const scene_gen::Ground& gro
         while (d < 16 && (k_dx[d] != dx || k_dz[d] != dz))
           ++d;
         const bool steep = d < 16 && step_cost(n, i, j, d, cap).steep;
-        pt.steep = steep ? 1 : 0;
+        pt.flags = steep ? k_station_steep : 0u;
         line.steep_steps += steep ? 1u : 0u;
         if (k > 0) {
           const u32 h = chain[k - 1];
@@ -544,10 +601,19 @@ bool detail::plan_from_lattice(const RouteLayer& p, const scene_gen::Ground& gro
       poly.push_back(pt);
     }
     smooth(poly, p.smooth_passes, cap, ground);
-    station(p, poly, ground, line);
+    station(p, poly, ground, water, line);
     out.length_m += line.length_m;
     out.over_cap_m += line.over_cap_m;
     out.switchbacks += line.switchbacks;
+    Vector<u32> from, to;
+    ford_runs(line, from, to);
+    out.fords += from.size();
+    for (u32 r = 0; r < from.size(); ++r)
+      for (u32 k = from[r]; k < to[r]; ++k) {
+        const f64 dx = line.stations[k + 1].at.x - line.stations[k].at.x;
+        const f64 dz = line.stations[k + 1].at.z - line.stations[k].at.z;
+        out.ford_m += std::sqrt(dx * dx + dz * dz);
+      }
     out.lines.push_back(std::move(line));
   }
   out.width = n.width;
@@ -556,7 +622,38 @@ bool detail::plan_from_lattice(const RouteLayer& p, const scene_gen::Ground& gro
   out.z_mm = n.z_mm;
   out.spacing_mm = n.s_mm;
   out.ground_mm = std::move(n.h);
+  out.wet = std::move(wet);
   return true;
+}
+
+JsonValue crossings_json(const RouteNetwork& net) {
+  JsonValue list = JsonValue::array();
+  Vector<u32> from, to;
+  for (u32 k = 0; k < net.lines.size(); ++k) {
+    const RouteLine& l = net.lines[k];
+    ford_runs(l, from, to);
+    for (u32 r = 0; r < from.size(); ++r) {
+      f64 length = 0;
+      for (u32 q = from[r]; q < to[r]; ++q) {
+        const f64 dx = l.stations[q + 1].at.x - l.stations[q].at.x;
+        const f64 dz = l.stations[q + 1].at.z - l.stations[q].at.z;
+        length += std::sqrt(dx * dx + dz * dz);
+      }
+      const Station& mid = l.stations[(from[r] + to[r]) / 2];
+      JsonValue at = JsonValue::array();
+      at.push_back(JsonValue(mid.at.x));
+      at.push_back(JsonValue(mid.at.y));
+      at.push_back(JsonValue(mid.at.z));
+      JsonValue o = JsonValue::object();
+      o["line"] = JsonValue(k);
+      o["from"] = JsonValue(from[r]);
+      o["to"] = JsonValue(to[r]);
+      o["at"] = std::move(at);
+      o["length_m"] = JsonValue(to_cm(length));
+      list.push_back(std::move(o));
+    }
+  }
+  return list;
 }
 
 u64 plans_made() noexcept { return g_plans_made; }

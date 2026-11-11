@@ -73,13 +73,18 @@ namespace engine::routes {
 // Bumped when a change makes an old plan wrong: it is in every plan's key.
 inline constexpr u32 k_routes_version = 1;
 
+// What the stretch from a station to the next is: **steep**, a lattice step over the cap taken
+// where no path under it existed; a **ford**, a lattice step with an end in a channel's corridor
+// (`Exclusion`'s channel kind), where the route wades (routes.md, "Water").
+inline constexpr u32 k_station_steep = 1u;
+inline constexpr u32 k_station_ford = 2u;
+
 // A station of a line: where it is (x and z whole centimetres, y the tread's top, whole
-// millimetres, metres), the ground under it there, and whether the stretch to the next station is
-// a steep one (a lattice step over the cap, taken where no path under it existed).
+// millimetres, metres), the ground under it there, and what its stretch to the next is.
 struct Station {
   WorldPos at{};
   f32 ground = 0;  // the ground at the station's centre, metres (to the millimetre)
-  u32 steep = 0;   // 1: the stretch to the next station is over the cap
+  u32 flags = 0;   // k_station_steep, k_station_ford
 };
 
 // A line of the network: the stretch between two of its ends or junctions.
@@ -101,13 +106,18 @@ struct RouteNetwork {
   i64 z_mm = 0;
   i64 spacing_mm = 0;
   Vector<i64> ground_mm;  // the lattice's heights, whole millimetres (empty when read from a file)
+  // What water covers each lattice point: 0 dry, 1 a channel's corridor, 2 a water body (empty
+  // when read from a file, or when the planner was handed no exclusion).
+  Vector<u8> wet;
   Vector<RouteLine> lines;
   u32 legs = 0;         // waypoint pairs searched
   u32 steep_legs = 0;   // legs with no path under the cap
-  u32 unreached = 0;    // legs with no path at all (none on a valid ground)
+  u32 unreached = 0;    // legs with no path at all: a waypoint cut off by a water body
   f64 length_m = 0;     // every line, summed
   f64 over_cap_m = 0;   // every line's
   u32 switchbacks = 0;  // every line's
+  u32 fords = 0;        // runs of ford stretches, every line's
+  f64 ford_m = 0;       // their metres
 };
 
 // The layer's numbers in range and its region aligned to its spacing. False with a sentence.
@@ -116,8 +126,13 @@ bool layer_in_range(const RouteLayer& layer, std::string& error);
 // **The planner**: the network over the layer's region standing on `ground`. `jobs` (nullable)
 // samples the lattice a row a job; the result does not depend on it. False with a sentence for a
 // layer out of range, an absent or non-finite ground, or a region past `max_samples`.
+// `water` (nullable; routes.md, "Water"): the scene's channels and water bodies as the placements'
+// exclusion holds them — a step into a body is never taken, and a step with an end in a channel's
+// corridor costs `ford_penalty` times its time, so a route crosses a stream where it is narrow and
+// square to it; null, no water.
 bool plan_routes(const RouteLayer& layer, const scene_gen::Ground& ground, jobs::JobSystem* jobs,
-                 RouteNetwork& out, std::string& error);
+                 RouteNetwork& out, std::string& error,
+                 const scene_gen::Exclusion* water = nullptr);
 
 // **One plan** (routes.md, "One plan"), as the channels' is: made once and kept as
 // `<derived-data root>/routes/plan-<key>.route-plan`. The key is the layer (every field but
@@ -158,6 +173,11 @@ JsonValue tread_regions_json(const RouteLayer& layer, const RouteNetwork& networ
 // stations (within 5 mm), its half-width the tread's. Appended to `out`.
 void tread_footprints(const RouteLayer& layer, const RouteNetwork& network,
                       Vector<scene_gen::Footprint>& out);
+// **The crossings** (routes.md, "Water"): each run of ford stretches as `{line, from, to, at,
+// length_m}` — the line's index, its first and last station, the run's middle station (x, y the
+// tread's top, z) and its length — where a bridge or stepping stones would stand (row G147's). A
+// JSON array in the network's order.
+JsonValue crossings_json(const RouteNetwork& network);
 
 // **Wear** (routes.md, "Wear"): the share of the cover left `d` metres past the tread's edge
 // (negative inside it): `tread_cover` on the tread, 1 at `wear_m` and beyond, a smoothstep between.

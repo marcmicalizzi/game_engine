@@ -69,7 +69,7 @@ f64 worst_excess(const RouteNetwork& n, f64 cap, u32* steep_stretches = nullptr)
       const f64 run =
           std::sqrt((b.at.x - a.at.x) * (b.at.x - a.at.x) + (b.at.z - a.at.z) * (b.at.z - a.at.z));
       const f64 e = std::fabs(b.at.y - a.at.y) - cap * run;
-      if (a.steep) {
+      if (a.flags & k_station_steep) {
         if (steep_stretches) ++*steep_stretches;
         continue;
       }
@@ -189,7 +189,7 @@ TEST_CASE("routes: the plan is the same bytes from any thread count and any host
   const u64 edit_hash = hash_bytes(edits.data(), edits.size());
   MESSAGE("plan " << plan_hash << " edits " << edit_hash << " key " << plan_key_text(one.key) << " "
                   << serial.network.length_m << " m");
-  CHECK(plan_hash == 13370361553653610931ull);
+  CHECK(plan_hash == 9261413012588863944ull);
   CHECK(edit_hash == 5364647451644046780ull);
 }
 
@@ -385,6 +385,72 @@ TEST_CASE("routes: the trampling gradient is monotone and reaches the tread") {
   CHECK(wear.edge_distance_mm(scene_gen::nearest_mm(x0 + 1.3), 30000, 5.0) ==
         doctest::Approx(1.0).epsilon(.01));
   CHECK(wear.edge_distance_mm(scene_gen::nearest_mm(x0 + 40), 30000, 5.0) > 1e20);
+}
+
+// **Water** (routes.md, "Water"): a stream across the way is forded where the route crosses its
+// corridor, square to it when fording costs more than walking, and the crossing is listed where a
+// bridge would stand; a planned exclusion enters the key.
+TEST_CASE("routes: a route fords a stream short and lists the crossing") {
+  scene::WaterChannel stream;
+  stream.name = "stream";
+  stream.points.push_back(WorldPos{-60, 0, 20});
+  stream.points.push_back(WorldPos{60, 0, 20});
+  stream.width_m = {3.0f, 3.0f};
+  stream.depth_m = {.5f, .5f};
+  stream.slope = {.01f, .01f};
+  scene_gen::Exclusion water;
+  std::string error;
+  REQUIRE_MESSAGE(water.build({}, {}, {&stream, 1}, &error), error);
+  const auto plan = [&](f32 ford, RouteNetwork& n) {
+    RouteLayer p = region(-50, -4, 50, 44);
+    p.ford_penalty = ford;
+    p.routes.push_back(route("across", -36, 0, 36, 40));
+    REQUIRE_MESSAGE(plan_routes(p, ground(hill), nullptr, n, error, &water), error);
+  };
+  RouteNetwork wading, square;
+  plan(1.0f, wading);
+  plan(4.0f, square);
+  CHECK(square.fords == 1);
+  CHECK(wading.fords == 1);
+  // The corridor is 5.3 m across (the stream's 3 m and a bank of 0.25 widths and 0.4 m each side);
+  // a ford counts the stretch on each side that touches it (a station, 0.5 m). Within 30 degrees of
+  // square: at most 5.3 / cos 30 + 1 m.
+  CHECK(square.ford_m < wading.ford_m);
+  CHECK(square.ford_m <= 5.3 / .8660 + 1.0);
+  const JsonValue crossings = crossings_json(square);
+  REQUIRE(crossings.as_array().size() == 1);
+  const JsonValue& at = *crossings[0].find("at");
+  CHECK(std::fabs(at[2].as_float() - 20.0) <= 3.0);
+  MESSAGE("fording: " << square.ford_m << " m at 4x, " << wading.ford_m << " m at 1x");
+  // A pond on the way: gone round, never entered (a 6 m circle whose level stands over the ground).
+  scene::WaterBody pond;
+  pond.name = "pond";
+  pond.level_m = 100;
+  pond.shape.circle = scene::WaterCircle{};
+  pond.shape.circle->center = WorldPos{0, 0, 10};
+  pond.shape.circle->radius_m = 6.0f;
+  scene_gen::Exclusion lake;
+  REQUIRE_MESSAGE(lake.build({}, {&pond, 1}, {}, &error), error);
+  RouteNetwork round;
+  {
+    RouteLayer p = region(-50, -4, 50, 44);
+    p.routes.push_back(route("past", -36, 10, 36, 10));
+    REQUIRE_MESSAGE(plan_routes(p, ground(hill), nullptr, round, error, &lake), error);
+  }
+  CHECK(round.unreached == 0);
+  f64 nearest = 1e30;
+  for (const RouteLine& l : round.lines)
+    for (const Station& s : l.stations)
+      nearest = std::min(nearest, std::sqrt(s.at.x * s.at.x + (s.at.z - 10) * (s.at.z - 10)));
+  CHECK(nearest >= 6.0);
+  MESSAGE("nearest station to the pond's centre: " << nearest << " m");
+  // No water handed: no ford, and the stream is crossed as dry ground.
+  RouteNetwork dry;
+  RouteLayer p = region(-50, -4, 50, 44);
+  p.routes.push_back(route("across", -36, 0, 36, 40));
+  REQUIRE_MESSAGE(plan_routes(p, ground(hill), nullptr, dry, error), error);
+  CHECK(dry.fords == 0);
+  CHECK(dry.wet.empty());
 }
 
 TEST_CASE("routes: a layer out of range is refused with the field") {
