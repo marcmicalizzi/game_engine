@@ -76,6 +76,10 @@ int matgen_command(int argc, char** argv);
 // (routes_commands.cpp, docs/subsystems/routes.md); present when this build has the routes
 // capability.
 int routes_command(int argc, char** argv);
+// The footbridges where a scene's routes ford its streams: a `bridges` placement entry, the
+// approaches as ground edits and the footprints (bridges_commands.cpp, docs/subsystems/bridges.md);
+// present when this build has the bridges and routes capabilities.
+int bridges_command(int argc, char** argv);
 // A cave network's plan against a hillside, as a plan view, a long section and the holes its
 // mouths ask of the terrain (caves_commands.cpp, docs/subsystems/caves.md); present when this
 // build has the caves capability.

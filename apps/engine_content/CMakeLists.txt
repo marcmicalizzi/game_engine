@@ -103,6 +103,11 @@ endif()
 if(TARGET engine::routes)
   list(APPEND _content_deps routes routes_schemas schema schemas scene_gen)
 endif()
+# `bridges` the same way, with the bridges capability (docs/subsystems/bridges.md): the footbridges
+# where a scene's routes ford its streams. It reads the routes' plans, so it wants both.
+if(TARGET engine::bridges AND TARGET engine::routes)
+  list(APPEND _content_deps bridges bridges_schemas routes routes_schemas schema schemas scene_gen)
+endif()
 # `cave-plan` the same way, with the caves capability (docs/subsystems/caves.md): a network's
 # plan as a survey. Linked, it is also what makes `build` take a `.cavecell.json`.
 if(TARGET engine::caves)
@@ -125,6 +130,7 @@ engine_app(NAME engine_content OUTPUT engine-content
           normal_cases.cpp clip_commands.cpp terrain_commands.cpp tileset_commands.cpp masks_check_commands.cpp npc_commands.cpp
           flora_commands.cpp rocks_commands.cpp channels_commands.cpp cover_commands.cpp soil_commands.cpp morphs.cpp
           landform_commands.cpp matgen_commands.cpp routes_commands.cpp caves_commands.cpp
+          bridges_commands.cpp
   DEPS ${_content_deps}
   E2E_TESTS ${_content_tests} tests/soil_tests.cpp tests/morphs_tests.cpp tests/matgen_tests.cpp)
 
@@ -228,6 +234,9 @@ if(TARGET engine::matgen)
 endif()
 if(TARGET engine::routes)
   target_compile_definitions(engine_engine_content PRIVATE ENGINE_CONTENT_ROUTES=1)
+endif()
+if(TARGET engine::bridges AND TARGET engine::routes)
+  target_compile_definitions(engine_engine_content PRIVATE ENGINE_CONTENT_BRIDGES=1)
 endif()
 if(TARGET engine::caves)
   target_compile_definitions(engine_engine_content PRIVATE ENGINE_CONTENT_CAVES=1)

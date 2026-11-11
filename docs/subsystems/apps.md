@@ -418,6 +418,13 @@ a scene's `channels` placement draws in each.
 over the terrain before its edits and writes the treads as `Bench` edits, their mask regions and the
 plan keys to paste ([routes](routes.md#in-a-scene); roadmap W96).
 
+## engine-content bridges: footbridges where routes ford streams
+
+`engine-content bridges <scene.json> <out.json> [--ddc <dir>] [--grade <permille>]` reads each
+`routes` entry's named plan, the scene's `water_channels` and its ground, and writes a `bridges`
+placement entry of the crossings, their approaches as `Fill` edits and their footprints to paste
+([bridges](bridges.md#in-a-scene); roadmap G147). Present with the bridges and routes capabilities.
+
 ## engine-content cave-plan: a cave network as a survey
 
 `engine-content cave-plan <network.json> <out dir> [--ground <valley>,<slope_x>[,<flank_m>]]
