@@ -101,9 +101,9 @@ absent, so no recipe written before keeps anything but the key it had (`canonica
 field out of the scene's ranges is refused with the scene's sentence, prefixed
 `engine.rocks.Cliff.`. Boulders, outcrops and scree recipes do not read the field yet (their recipes
 have no world origin); the `deposits` generator's talus and shed blocks do, through
-`DepositLayer.formation` ([What a face sheds](#what-a-face-sheds), G143); and the `cliffs` generator does not yet copy the scene's field into the faces it
-writes (its owner's change): a hand-written recipe, or a generator that fills both fields, is how a
-face joins it today.
+`DepositLayer.formation` ([What a face sheds](#what-a-face-sheds), G143). The `cliffs` generator
+copies its layer's `formation` into every face it writes, with the face's own world origin
+([Faces in the slope](#faces-in-the-slope), G142); a hand-written recipe fills both fields itself.
 
 `quality` (`Low`, `Medium`, `High`, default `High`) spends respectively 10%, 35%, or 100% of the
 authored triangle budget, with a floor of 192 triangles per body or 2,000 per cliff and never above
@@ -407,7 +407,7 @@ here. A scene names it as `{"generator": "cliffs", "params": {...}}`, an `engine
 
 **Tile-stable.** A block's faces are a function of the layer, the block and the ground's heights
 over it and a two-point apron — nothing of another block — and **a face's identity is a hash of its
-line in whole millimetres and its heights in centimetres**, so a streamed world and a whole read make
+line in whole millimetres and its heights and feet in centimetres**, so a streamed world and a whole read make
 the same faces, the same recipes and the same bytes whichever tile asks first. A face belongs to the
 region and the tile its **anchor** is in — the middle vertex of its line, which the run-on past a
 block's edge never moves out of the block. `open` traces every block of the region once and writes
@@ -428,14 +428,112 @@ radius of the ends writes faces that all validate with no gap under 5 cm, with f
 the standoffs that fold the line (93 to 96) — without the merge the same sweep fails the trace
 itself on the validator's refusal.
 
+### Faces in the slope
+
+G132 found the generated faces reading as retaining walls ([diagnosis](../experiments/v29-cliff-diagnosis.md)).
+What the generator does about it (`engine.rocks.CliffLayer` version 2, `engine.rocks.Cliff`
+version 6). Nothing is kept as it was for an older scene's sake: a generated face is open and its
+ends go into the ground, whatever layer wrote it.
+
+- **No back and no bottom.** Every face the generator writes is `Cliff.open`: the box's front,
+  top and two ends, sharing their borders as the six faces did, priced `2ab + 2ac + 4bc` for a
+  grid of a × b × c cells instead of `4(ab + ac + bc)`. A face in a slope shows neither its back
+  nor its bottom, and what they cost now goes to a finer cell. A hand-written recipe is a closed
+  box unless it says `open`: a face on open ground is seen from behind.
+- **`formation`**: the scene's formation, repeated in the layer because a placement generator is
+  handed its entry and the ground and not the scene. Every face's recipe then carries the field
+  and `world_origin`, the face's first vertex and the ground there, so its beds are the terrain's
+  bands and the ledges' ([Geology](#geology-on-the-world-formation-w85)). The field changes the
+  rock and, through the tiers' breaks ([below](#a-face-in-tiers)), where a band is cut.
+- **`taper_m`** (16 m; 0 leaves the ends standing): where the steep ground itself ends (not where a block's edge cut the line, which
+  the next block's face runs on from), the face comes down to its least height, a metre, and its
+  section is lowered until its top is 0.3 m under the ground at its foot, over this length of its
+  line. A face's height cannot go under a metre, so an end is sunk rather than shortened to
+  nothing: the cap is under the ground.
+
+**The triangles.** On the test's 30 m escarpment at a budget of 20,000, the front's share of a
+face's triangles:
+
+| Face | Back | Cell | Front |
+|---|---|---|---|
+| a closed box, as the generator wrote before | 9.1 m (the carving's reach and 2 m) | 2 m | 36.5 % |
+| the generator's face, one tier | 9.1 m | 1.5 m | 70.2 % |
+
+G132 counted 13.9 % on v29's closed box with its 24 m back. A closed box cannot pass a half,
+since its back mirrors its front. What is left of an open face is its top, which grows with the
+back's distance.
+
+
+### A face in tiers
+
+**One box a line cannot both sit in a convex slope and cover it.** A face's top is flat from its
+crest to its back, and a top that stands over the ground behind it is a wall's: from behind, an
+open face is then a hollow shell. Holding one box's top in the ground left the escarpment's faces
+on the lower two fifths of its flanks (the first agent's capture; 19 % of the steep ground of the
+test's rounded crest). So a steep band is cut into **tiers** (`CliffLayer.tier_m`, 12 m), each a
+face of its own that follows its own part of the slope's profile, and **the seated top is the only
+behaviour**: there is no option to stand a top proud.
+
+- **The breaks are the world's.** Break k is the level `k tier_m`, or, with `formation` (beds
+  dipping 20° or less), the top of a resistant bed (resistance 0.5 or more, a weaker bed over it)
+  within a third of a tier of that, in the formation's plumb coordinate: a face steps back where a
+  cliff-forming bed ends. They are a function of the layer alone, so every block and every line
+  cuts at the same ones. A break within a third of a tier of the foot, the brow or the break below
+  is not cut, so no tier is a sliver.
+- **A tier's plane** starts where its break meets the profile, stood off downhill by the standoff,
+  and leans by the batter that keeps it the standoff in front of every point of its own part of
+  the profile. The lowest tier is leaned from the traced foot the same way and its line moved out
+  to the ground that lean reaches (at most a standoff more): leaned from the ground under the
+  stood-off foot, as the single box was, a plane is steeper than the slope and stands metres off
+  it at the top, where no top can reach the ground.
+- **A tier stands on the one below.** Its foot is the break, lowered to what the tier below left
+  (its top less the 15 % a skyline may be broken back, and this tier's `buried` less half a metre),
+  so its bottom edge is under that top and where the tier below ends this one goes down to the
+  ground. The written line is smoothed once so that step is a bend.
+- **Seated.** A top that does not go into the ground within the back, or whose ground comes back
+  under it further behind (a fin, a rounded crest), is lowered a quarter of a metre at a time to
+  the first height that does and keeps the ground 0.3 m over it from 1.5 m behind its entry; under
+  a metre of face the section is sunk instead. The search runs again after the taper, along the
+  written line's own normal, and the recipe carries the back it was seated to (`depth`, the
+  solver's own rule on the tier's tallest height: `cliff_back_m`).
+- **Ends.** Where the steep ground ends a tier tapers over `taper_m`; where a tier's own band
+  leaves the steep ground inside the line it tapers over four spacings and the tier beside takes
+  over.
+- **What a tier carries.** The layer's budget times its height's share of the band's (never under
+  2,000). Only the lowest tier has the skirt (the band's, as a share of the tier's height), the
+  fallen blocks, the ground patch under them and the foot boulders. `min_length_m` and
+  `min_height_m` are asked of the whole band, once a line.
+
+| Ground (the test's, a 256 m block, budget 20,000 a line) | Faces | Triangles | Steep ground covered | By one seated box |
+|---|---|---|---|---|
+| a fin, 30 m, a top 2 m wide | 2 | 12,204 | 100 % | 71 % |
+| the escarpment scene's ridge, one quadrant | 10 | 17,124 | 99 % | 19 % |
+| a planar 56° slope under a flat top | 2 | 12,204 | 100 % | 71 % |
+
+On all three no top is over the ground behind it (0.43 m under at the least), and no vertex of
+any face's upward triangles stands over the ground behind where its top went in
+(`tests/cliffs_generator_tests.cpp`, "no generated face shows from behind its own top").
+
+**What it does not do.** A tier's top is paid at its front's cell though it is in the ground
+(56 % of the escarpment's triangles are on a front, against 70 % for one box). A tier's bottom is
+open: it is under the top of the tier below, which a viewer directly under an overhanging tier
+could look past. The tiers of two blocks meet at the
+same breaks but are seated separately. The unbroken cap along each tier's top, and a face's talus
+by what fell from it, are as they were.
+
 ### The escarpment
 
 [`content/test-scenes/escarpment/`](../../content/test-scenes/escarpment/README.md): an authored
 ridge (`engine-content terrain-synth --kind ridge --size 401 --spacing-mm 1000`, 400 m square, under
 the `tiles` provider at a vertical scale of 3: 120 m high, its flanks to 66°) and a `cliffs` layer of
 sandstone faces with an undercut of 0.5, a talus skirt of 0.15 of the height, 24 fallen blocks each
-and granite boulders at 4 per 100 m; four faces, two a flank, 215 m long and to 113 m high, 153,340
-triangles at a 1 m cell under 250,000. A camera path along the east flank with three markers:
+and granite boulders at 4 per 100 m; since G142 **38 faces in tiers, 19 a flank**, open and
+tapered, each about 12 m of the flank's 113 m (the lowest of a line 217 m long and 22 m high,
+29,108 triangles at a 0.75 m cell; 809,030 triangles together, 56 % of them on a front, the rest
+on tops that are in the ground), where there were four closed boxes of 153,340 triangles each at
+1 m ([A face in tiers](#a-face-in-tiers)). The capture below is the boxes'; what the tiers'
+showed is on [the grounding page](../experiments/exposed-bedrock.md#the-pictures-and-what-they-lack).
+A camera path along the east flank with three markers:
 `valley`, `along` and `foot`, the last a walk at eye height. Its heightfield is written first and is
 never committed (the README has the lines).
 
@@ -1158,7 +1256,207 @@ block; it scales with the region's samples, not the world's size.
 [G132's v29 controls](../experiments/v29-cliff-diagnosis.md) distinguish the continuous authored
 wall from runtime LOD, identify the legacy skirt's rectangular apron lobes, and show a separate
 shadow defect persisting after all cliff meshes are removed. A narrower/lower authoring probe
-became mostly buried, so it is not an accepted replacement recipe. Terrain-aware placement of
-the finished carved face, exposed interval termination and separate visible-front versus hidden
-closure tessellation remain solver gaps. Coherent stochastic cliff PBR and coarse geological
-material layers also remain unimplemented; terrain's stochastic flag is not a RockMaterial switch.
+became mostly buried, so it is not an accepted replacement recipe. G142 built the exposed-band
+contract as the `ledges` generator ([Exposed bedrock](#exposed-bedrock-g142): fronts that end
+with the exposure, nothing built behind them) and gave the `cliffs` generator's faces the
+formation, tapered ends, no back and no bottom (70 % of a face's triangles on its front) and,
+in tiers that follow a convex profile, every top held under the ground behind it
+([A face in tiers](#a-face-in-tiers)). Still gaps: coherent stochastic cliff PBR and coarse
+geological material layers; terrain's stochastic flag is not a RockMaterial switch.
+
+## Exposed bedrock (G142)
+
+"Rock emerging from vegetation": the resistant beds of the world's formation
+([Geology on the world formation](#geology-on-the-world-formation-w85)) standing out of a
+soil-mantled slope. [Grounding](../experiments/exposed-bedrock.md): the sources, each number
+against its source, and what is authored.
+
+### The exposure rule
+
+`include/domain/rocks/exposure.h`: `prepare_exposure`, `ground_shape`, `exposure_fraction`,
+`resistance_factor`, `exposure_at`. A point of the ground is described by its **slope** and its
+**convexity** (minus the Laplacian of the height), both central differences an arm
+`ExposureRule.scale_m` (4 m) either side of it from heights in whole millimetres, and by **the bed
+the formation puts at the surface there**. The exposure fraction is the share of a resistant bed's
+thickness that stands out of the soil:
+
+- exactly 0 under `soil_slope_deg` (30°), whatever the curvature: a soil mantle is whole;
+- on planar ground, rising linearly to 1 at `rock_slope_deg` (45°), past which no soil is held;
+- raised by `convexity / critical_curvature` (0.03 1/m) on a nose, where soil thins, and lowered by
+  the same in a hollow, where it gathers; the rock slope still ends every mantle.
+
+**The soil's patches.** On a 38° slope the fraction is a half, and a rule that stood every
+resistant bed to half its height along its whole trace would draw a contour map. The measured
+slopes are a sixth rock at that angle, in patches. So rock shows where the fraction is above
+`soil_cover`, a seeded field of the world's millimetres `patch_m` (12 m) across, and
+`standing_share` rises from nothing to the whole bed over a quarter of the fraction's range past
+it: the fraction is then also the share of such ground where a resistant bed shows (18 % of points
+at 32°, 47 % at 36°, 77 % at 40°, all of them from 44°; the test prints them). `patch_m` 0 is no
+patches, and the share that stands is the fraction itself.
+
+A bed stands only at or above `min_resistance` (0.5), by a factor from 0.35 at the threshold to 1
+at resistance 1. `Exposure::stand` is the product, and the one number the ledges are sized by.
+
+**Why a rule on its own.** A mesh is the wrong place to learn that rock shows on a 20° lawn. The
+rule is a pure function of five heights and the formation, tested before any mesh exists
+(`tests/exposure_tests.cpp`): its ranges, the shape's exactness in millimetres, nothing under the
+soil slope and everything past the rock slope, the resistance threshold, the resistant bed exposed
+and the weak one mantled on one slope, a nose barer than the plane and a hollow keeping its soil,
+the share of a slope that is rock rising with it under the patches, and a pin over 225 points of a
+dipping folded formation that MSVC, Clang and GCC reproduce.
+**Determinism:** integers in, then IEEE `+ - * /` and one square root in f64; the fold's sine is
+`det::sin`; no allocation and no state.
+
+### Outcrops, not stripes
+
+With the soil's patches alone the ledges were still a layer cake: along a transect up the test
+hillside 91 % of the resistant beds cropped out, so from across a valley they were stripes of even
+spacing, broken along their length and not across it. Rock on a soil-mantled slope is not like
+that ([grounding](../experiments/exposed-bedrock.md#outcrops-not-stripes)): resistant beds are
+"horizontally continuous but not contiguous", few continuous outcrops pass 100 m, and they are a
+few percent to a third of the ground; cliff-forming members stand between slope-forming intervals.
+Two more factors on what stands, both functions of the world and neither of a tile
+(`member_factor`, `stretch_factor`, `exposure.h`):
+
+- **Members.** A resistant bed stands only inside a cliff-forming member. Where the formation has
+  `macro_beds` the member is the macro bed at the bed's coordinate, by its resistance factor.
+  Where it has none the rule groups the sequence itself: a seeded field along the bed coordinate
+  `member_m` (12 m) across, standing over `member_share` (0.5) of it. That grouping is authored
+  and is a stand-in: a formation with a longer sequence would say which beds are members.
+- **Stretches.** Each member (`member_id`) has a cover field of its own, `stretch_m` (32 m)
+  across, open over `stretch_share` (0.4) of its trace and shut over a sixth of the field past
+  that. The beds of one member crop out together, as a **crag** of stacked ledges, and stay under
+  the soil together between crags; a crag's end tapers as the rule's other ends do, and two
+  members' crags are not one above the other. (A field per bed top, tried first, scattered single
+  beds' lines over the hill, which read as contour lines from across the valley.)
+
+The ledge solver multiplies a unit's step by both; `exposure_at` is still the mantle's rule at a
+point, without them (it names a bed, not a member). On the test hillside (two 64 m tiles, 26
+transects): **24 % of the resistant beds crop out along a transect, with a deviation of 19 points
+between transects** (92 % and 19 before), four transects have no rock at all, and the front falls
+from 2,214 m to 583 m. `stretch_m` 0 and `member_m` 0 are the stripes again.
+
+### Ledges
+
+`include/domain/rocks/ledges.h`, `src/ledges.cpp`, and the scene generator `ledges`
+(`src/ledges_generator.cpp`): `{"generator": "ledges", "params": {...}}`, an
+`engine.rocks.LedgeLayer`.
+
+**The geometry.** A **unit** is a run of the formation's beds at or past the rule's resistance;
+it has a top bedding plane. Where the ground has cut below that plane, the ledge is the unit put
+back under it: a **tread** in the plane, from the line where the plane meets the ground (its
+buried back, carried 8 cm under so the line is the depth buffer's) out to where the plane stands
+`h` over the ground, and a **front** from the tread's edge down to the ground and a little under.
+`h` is the unit's plumb thickness (never over `max_step_m`, 4 m) times `Exposure::stand`, so a
+front is tallest where the slope is steep or the ground is a nose and falls to nothing where the
+exposure ends: **the ends taper because the rule does**. Scarp slope and dip slope are not cases:
+beds dipping into the hill leave the ground quickly and make short treads and crisp risers, beds
+dipping with it make slabs, and both are the same intersection.
+
+**Blocks.** Joints cut a unit into blocks along the strike, its thickness over `joint_ratio`
+(1.3) apart on average, their stations moved by up to three tenths, and their planes up to 20° off
+the dip direction per bed top. A block keeps 55 to 100 % of its step, more at one end than the
+other, so its front is not parallel to the contour; one in five has fallen out; some have lost
+one or two rows off their tops, so neighbours' treads step. A joint face is drawn only where the
+block beside does not cover it. Each bed parts into **rows** about 0.45 m thick, each standing
+back under the one above by up to `relief_m` (0.25 m), weaker beds further: the front's faces and
+the undersides between them. Every tread and every underside is in a bedding plane.
+
+**Worn round.** A jointed block weathers at its corners before its edges and its edges before
+its faces ([grounding](../experiments/exposed-bedrock.md#how-a-jointed-block-weathers): the order
+is published, no ratio or radius by lithology was found). So an edge is worn back by
+`0.3 m × rounding`, the rock type's own rounding that the cliff faces use (`cliff_type_rounding`:
+sandstone 0.4 is 12 cm, limestone 0.45, granite 0.35, slate 0.08 is 2.4 cm), and never more than
+0.45 of the row under it: the tread's **lip** is drawn back along the bedding plane and joined to
+the front by a worn face in the front's own normal class, so the two shade as one round, and so
+is the top edge of every row that stands out past the row above. A front is **fluted** by as
+much again: two scales of the world's noise (1.1 m and 0.37 m) set each row's edges back, the
+same from both segments that share a vertex and from either tile. A triangle of a front, a worn
+edge or a joint face that the ground covers whole (a row set back into the slope by its recess
+and its flute) is not drawn. **Corners are worn in plan**, half as far again as an edge (a
+corner is attacked through three faces, an edge through two): where the front meets a joint the
+block is cut back at 45 degrees, never more than a quarter of its length, so two blocks meet in
+a notch and a block reads as a lump and not as a length of plank. Measured on the test hillside:
+0.082 m of worn width a metre of front on sandstone, 0.089 on limestone, 0.020 on slate; worn
+corners are 44 % of a sandstone front's length and 10 % of a slate's; 43, 42 and 47 triangles a
+metre of front (**the budget is 48**; it was 36 unworn with every covered face drawn). What it is
+not: a joint is a plane and not a widened cleft, a corner is a chamfer and not a curve, and a
+fresh break and an old surface are one material. The far form has none of the wear.
+
+**Treads, and the beds' own rock.** A tread carries soil to its lip: the tread polygons are one
+material, `tread_tint` (absent: a dark turf, linear 0.07 0.09 0.04, roughness 0.95), and the
+fronts, the worn edges, the shelves and the joints are the rock. The rock is one material **a
+unit**, the type's colour times its top bed's `tint` and its roughness plus the bed's
+`roughness` (the formation's, the numbers the terrain's bands are drawn with), so beds are told
+apart on a slope as they are on the ground. A mesh is therefore a primitive a material, clustered
+a part and merged (`merge_cluster_lod`), and a cluster names one material; the pack's set
+(`rock/<type>`) goes on every rock material with the bed's tint over it, and the soil takes
+none, because the pack has no turf. What a tread cannot do yet: take the ground's own material
+and the sward's blades (it is a flat colour chosen to sit beside them), cut the ground under it,
+or clear the cover off its back.
+
+**Why a lattice of the world.** Each piece is the part of a lattice triangle (`cell_m`, 1 m,
+at the ground's own millimetres) between level lines of functions that are linear on it, and a
+crossing on a lattice edge is computed from the edge's two ends in the world's order. So a ledge
+that crosses a tile's border meets itself there, a block is the same block from either tile (its
+index is its place along the strike), and nothing is decided by a tile.
+
+**Merged, with a far form.** One mesh a tile and form, never an instance a block. The **near
+form** (rings under `near_rings`, 1) is the above. The **far form** (rings under `far_rings`, 3)
+is the same rule on a `far_cell_m` (4 m) lattice with one face a front, no blocks and no rows, and
+only steps of `far_min_step_m` (0.8 m) or more; it cannot see a hollow narrower than its cell and
+bridges it. Further rings draw nothing: the terrain's band layer carries the beds there. Under
+both, the cluster DAG is the runtime LOD.
+
+| Form | A 64 m tile of the test hillside (31 bed tops) | Triangles a metre of front |
+|---|---|---|
+| near | 5,255 triangles, 5,810 vertices, 245 clusters, 123 m of front (37,492 triangles and 1,041 m as every bed's stripe, unworn) | 43 (the budget is 48) |
+| far | 121 triangles, 148 vertices, 6 clusters, 59 m of front | 2.0 |
+
+68 % of the near form's triangles are above the ground (the solver's count on its own lattice;
+74 % against the hillside's function), against 13.9 % on the front of the box G132 measured.
+
+**The generator.** `open` reads the layer and, for every tile whose corner is in the region,
+samples the ground over the tile and the rule's apron, solves both forms, and writes a recipe
+`ledge-<hash>.ledge.json` for each that has ledges, under the derived-data root's `ledges/`; the
+mesh generator `ledge` builds it like any recipe. `tile` places the tile's mesh of the ring's form
+at the tile's corner; `expand` places the near form; `representation` is 0 near, 1 far, 2 nothing.
+The patches' seed is the layer's with the world's, never a tile's. `cliff_slope_deg` (0, none)
+leaves ground at or past that slope to the `cliffs` generator's faces: set it to the cliffs
+layer's `min_slope_deg` and no ledge is solved under or behind a face.
+
+**What it does not do yet, and what each would take.**
+
+- **Nothing exists before its tile, but its recipe does.** A streamed tile may name only a mesh
+  `meshes` listed when the scene was read, so `open` solves every tile of the region (at most
+  16,384) and the scene reader builds every listed mesh. A tile-time mesh in the placement
+  contract would make the entry the whole plan; the solver is already a function of the tile.
+- **The formation is repeated in the layer**, because a generator is handed its entry and the
+  ground, not the scene. A `Context` that carried the scene's formation would end the copy.
+- **It does not write to the ground or tell the cover where it is.** The host's footprint for a
+  placement is a circle round its mesh's bounds: a tile-wide circle for a merged mesh, which
+  would clear a tile of whatever avoids earlier placements, and nothing clears the sward off a
+  tread or thins it at a front's foot. A band-shaped footprint (a polyline with a half-width, or
+  the generator's own "is this point rock" query) is what the treads need; the blades that
+  stand through a tread's back today do so because nothing says otherwise.
+- **Blocks are worn prisms.** Edges are worn and fronts fluted (above), but there is no fracture
+  surface and no corner worn in plan.
+- **A fallen block is handed over, and nothing lays it down yet.** `ledge_gaps` (`ledges.h`)
+  lists a patch's fallen blocks in order of identity: the block (its bed top and its place along
+  the strike, the same number from every tile), the centre of its gap on the ground, the area of
+  tread it would have carried inside the patch, its length between its joints and the step it
+  would have stood to. A gap across a tile's border is an entry in each tile with one identity;
+  their area-weighted mean is its place. 306 in a 64 m tile of the test hillside with every bed
+  cropping out, 5 of them across the border to the next. The deposits that would lay each block
+  under its gap are G143's; the generator does not write the list anywhere.
+- **No holes or water**: a tile's mesh is not split round the exclusion's holes or channels.
+
+Tests (`tests/ledges_tests.cpp`, 9 s in msvc-debug; the outcrops, the wear, the soil and the tints,
+and the gaps each have a case of their own, named by what they hold): ledges only on resistant beds past the soil
+slope, none on weak beds, on 20° or in a hollow; tops within 1.5 mm of the formation's planes
+(0.002 mm measured); at least 60 % of triangles above the ground; no vertex whose height the
+ground behind does not reach within 8 m (the retaining-wall test); a front's height under the
+unit's thickness times what stands there, with ends under 0.3 m and full steps over 0.8 m both
+present; a border's standing vertices matched across tiles within a millimetre; the far form
+beside the near form's steps; the meshes' and recipes' pins; and the generator's tiles in reverse
+against its whole read, a form a ring.
