@@ -1041,74 +1041,76 @@ TEST_CASE("rt chain: thousands of small rigid instances build what the frame dra
   settings.raster = RasterMode::RayTrace;
   settings.shadows = ShadowMode::Off;  // primary rays alone: what is built is what is drawn
   settings.lights = false;
-  Rig per_frame;
-  {
-    ScopedTunable off("renderer.rt.cache", "false");
-    REQUIRE_MESSAGE(per_frame.build(device, settings, error, stones), error);
-  }
-  Rig cached;
-  REQUIRE_MESSAGE(cached.build(device, settings, error, stones), error);
-  REQUIRE(cached.scene.rt_cache());
-  const u32 instances = cached.scene.instance_count();
-  REQUIRE(instances == 10000u);
-  const u32 clusters = cached.data.parts[0].cluster_count;
-  u64 frame_index = 0;
-  // Far: the whole field in view. Near: a corner of it.
-  for (const f32 distance : {2.5f, 0.12f}) {
-    for (u32 k = 0; k < 3; ++k, ++frame_index) {
-      REQUIRE_MESSAGE(per_frame.renderer.render_offscreen(
-                          frame_at(per_frame.data, distance, frame_index), &error),
+  {  // the rigs are gone before the device they were made on
+    Rig per_frame;
+    {
+      ScopedTunable off("renderer.rt.cache", "false");
+      REQUIRE_MESSAGE(per_frame.build(device, settings, error, stones), error);
+    }
+    Rig cached;
+    REQUIRE_MESSAGE(cached.build(device, settings, error, stones), error);
+    REQUIRE(cached.scene.rt_cache());
+    const u32 instances = cached.scene.instance_count();
+    REQUIRE(instances == 10000u);
+    u64 frame_index = 0;
+    // Far: the whole field in view. Near: a corner of it.
+    for (const f32 distance : {2.5f, 0.12f}) {
+      for (u32 k = 0; k < 3; ++k, ++frame_index) {
+        REQUIRE_MESSAGE(per_frame.renderer.render_offscreen(
+                            frame_at(per_frame.data, distance, frame_index), &error),
+                        error);
+        REQUIRE_MESSAGE(
+            cached.renderer.render_offscreen(frame_at(cached.data, distance, frame_index), &error),
+            error);
+      }
+      CapturedFrame a;
+      CapturedFrame b;
+      REQUIRE_MESSAGE(per_frame.renderer.capture(frame_at(per_frame.data, distance, frame_index),
+                                                 {.color = true, .ids = true}, a, &error),
                       error);
       REQUIRE_MESSAGE(
-          cached.renderer.render_offscreen(frame_at(cached.data, distance, frame_index), &error),
+          cached.renderer.capture(frame_at(cached.data, distance, frame_index),
+                                  {.color = true, .ids = true, .depth = true}, b, &error),
           error);
-    }
-    CapturedFrame a;
-    CapturedFrame b;
-    REQUIRE_MESSAGE(per_frame.renderer.capture(frame_at(per_frame.data, distance, frame_index),
-                                               {.color = true, .ids = true}, a, &error),
-                    error);
-    REQUIRE_MESSAGE(cached.renderer.capture(frame_at(cached.data, distance, frame_index),
-                                            {.color = true, .ids = true}, b, &error),
-                    error);
-    ++frame_index;
-    const Pictures differ = compare(a, b);
-    // The instances the picture shows: an id's pair over the mesh's clusters (one mesh, laid out in
-    // instance order).
-    Vector<u8> shown(instances, u8{0});
-    u32 shown_count = 0;
-    for (const u32 id : b.ids) {
-      if (id == 0) continue;
-      const u32 instance = (id >> 8) / clusters;
-      if (instance < instances && shown[instance] == 0) {
-        shown[instance] = 1;
-        ++shown_count;
+      ++frame_index;
+      const Pictures differ = compare(a, b);
+      // The instances the picture shows: the first id word of every covered pixel.
+      Vector<u8> shown(instances, u8{0});
+      u32 shown_count = 0;
+      REQUIRE(b.ids.size() == u64{b.depth.size()} * k_id_words);
+      for (u32 p = 0; p < b.depth.size(); ++p) {
+        if (b.depth[p] == 0.0f) continue;
+        const u32 instance = b.ids[u64{p} * k_id_words];
+        if (instance < instances && shown[instance] == 0) {
+          shown[instance] = 1;
+          ++shown_count;
+        }
       }
+      for (const Rig* rig : {&per_frame, &cached}) {
+        const RtStats& rt = rig->renderer.stats().rt;
+        MESSAGE(std::string(rig == &cached ? "cached" : "per frame")
+                << " at " << distance << " radii: " << shown_count << " of " << instances
+                << " instances in the picture, " << rt.blas_built
+                << " bottom-level structures built over " << rt.instance_slots << " slots, "
+                << rt.built << " cluster structures built, " << rt.references << " referenced, "
+                << rt.bytes / 1024 << " KiB of chain; " << differ.colour << " colour bytes and "
+                << differ.ids << " id words differ between the two");
+        CHECK(rt.overflow_frames == 0);
+        CHECK(rt.dropped_instances == 0);
+        CHECK(rt.instance_slots == instances);
+        // Every instance the picture shows has a structure, and nothing is built past the scene's.
+        CHECK(rt.blas_built >= shown_count);
+        CHECK(rt.blas_built <= instances);
+        if (distance < 1.0f) CHECK(rt.blas_built * 2 < instances);  // a corner, not the field
+      }
+      CHECK(shown_count > 0);
+      CHECK(differ.colour == 0);
+      CHECK(differ.ids == 0);
     }
-    for (const Rig* rig : {&per_frame, &cached}) {
-      const RtStats& rt = rig->renderer.stats().rt;
-      MESSAGE((rig == &cached ? "cached" : "per frame")
-              << " at " << distance << " radii: " << shown_count << " of " << instances
-              << " instances in the picture, " << rt.blas_built
-              << " bottom-level structures built over " << rt.instance_slots << " slots, "
-              << rt.built << " cluster structures built, " << rt.references << " referenced, "
-              << rt.bytes / 1024 << " KiB of chain; " << differ.colour << " colour bytes and "
-              << differ.ids << " id words differ between the two");
-      CHECK(rt.overflow_frames == 0);
-      CHECK(rt.dropped_instances == 0);
-      CHECK(rt.instance_slots == instances);
-      // Every instance the picture shows has a structure, and nothing is built past the scene's.
-      CHECK(rt.blas_built >= shown_count);
-      CHECK(rt.blas_built <= instances);
-      if (distance < 1.0f) CHECK(rt.blas_built * 2 < instances);  // a corner, not the field
-    }
-    CHECK(shown_count > 0);
-    CHECK(differ.colour == 0);
-    CHECK(differ.ids == 0);
+    // The cached chain builds no cluster structure of its own for them, and holds a stated memory.
+    CHECK(cached.renderer.stats().rt.built == 0);
+    CHECK(cached.renderer.stats().rt.bytes < u64{512} * 1024 * 1024);
   }
-  // The cached chain builds no cluster structure of its own for them, and holds a stated memory.
-  CHECK(cached.renderer.stats().rt.built == 0);
-  CHECK(cached.renderer.stats().rt.bytes < u64{512} * 1024 * 1024);
   device.destroy();
 }
 
