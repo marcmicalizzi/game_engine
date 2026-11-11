@@ -11,6 +11,7 @@
 #include <test_temp_dir.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdlib>
 #include <limits>
@@ -1105,4 +1106,59 @@ TEST_CASE("tileset: the provider stands on the cut ground, and refuses cuts besi
   entry.tiles->edits[0].bank_slope = 0.f;
   CHECK_FALSE(desc->make(entry, context, ground, &error));
   CHECK(error.find("cannot edit its ground") != std::string::npos);
+}
+
+// **What edits cost a tile** (W98; tileset.md, "Performance notes"): 32 edits — 16 benched treads
+// and 16 gridded deposits — over a 1,025-point lattice at 25 cm (256 m, 256 tiles of 64 cells),
+// against the same lattice with 16 cuts alone and with none. Prints the milliseconds; asserts only
+// that the edits did their work. A number from this case is the build's own, in the preset it was
+// built in, and states the machine's state beside it in the report that quotes it.
+TEST_CASE("tileset: what edits cost a tile") {
+  Vector<scene::TerrainEdit> edits, cuts_only;
+  for (i32 k = 0; k < 16; ++k) {
+    const f64 z = 8.0 + 15.0 * static_cast<f64>(k);
+    scene::TerrainEdit tread = line_of(scene::TerrainEditMode::Bench, "tread",
+                                       WorldPos{4.0, 0.0, z}, WorldPos{250.0, 0.0, z + 6.0}, 2.0f);
+    edits.push_back(tread);
+    scene::TerrainEdit cut = tread;
+    cut.mode = scene::TerrainEditMode::Cut;
+    cut.depth_m = {0.5f, 0.5f};
+    cuts_only.push_back(cut);
+    scene::TerrainEdit deposit = square_of(scene::TerrainEditMode::Fill, "deposit",
+                                           20.0 + 14.0 * static_cast<f64>(k), z + 4.0, 6.0, 0.0);
+    deposit.grid_origin = WorldPos{17.0 + 14.0 * static_cast<f64>(k), 0.3, z + 1.0};
+    deposit.grid_spacing_mm = 1000;
+    deposit.grid_nx = 7;
+    deposit.grid_nz = 7;
+    for (i32 q = 0; q < 49; ++q)
+      deposit.grid_mm.push_back(100 * (q % 5));
+    edits.push_back(deposit);
+  }
+  TerrainEdits all, cut;
+  std::string error;
+  REQUIRE_MESSAGE(all.build({edits.data(), edits.size()}, &error), error);
+  REQUIRE_MESSAGE(cut.build({cuts_only.data(), cuts_only.size()}, &error), error);
+  const i64 n = 1025;
+  const auto ground = [](i64 i, i64 j) {
+    return static_cast<i32>((i * 37 + j * 91) % 400) - 200;  // a rough plane of integers
+  };
+  const auto time = [&](const TerrainEdits& e, u64& changed) {
+    std::vector<i32> v(static_cast<usize>(n * n));
+    for (i64 j = 0; j < n; ++j)
+      for (i64 i = 0; i < n; ++i)
+        v[static_cast<usize>(j * n + i)] = ground(i, j);
+    const auto t0 = std::chrono::steady_clock::now();
+    changed = e.apply(250, 0, 0, n, n, v);
+    return std::chrono::duration<f64, std::milli>(std::chrono::steady_clock::now() - t0).count();
+  };
+  u64 changed_all = 0, changed_cut = 0, changed_none = 0;
+  const f64 ms_all = time(all, changed_all);
+  const f64 ms_cut = time(cut, changed_cut);
+  const f64 ms_none = time(TerrainEdits{}, changed_none);
+  MESSAGE("32 edits over 256 tiles: " << ms_all << " ms (" << ms_all / 256.0 << " a tile, "
+                                      << changed_all << " points); 16 cuts alone: " << ms_cut
+                                      << " ms; none: " << ms_none << " ms");
+  CHECK(changed_all > 100000);
+  CHECK(changed_cut > 50000);
+  CHECK(changed_none == 0);
 }

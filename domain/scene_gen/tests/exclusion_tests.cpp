@@ -5,6 +5,7 @@
 
 #include <doctest/doctest.h>
 
+#include <chrono>
 #include <cmath>
 #include <string>
 
@@ -434,4 +435,49 @@ TEST_CASE("exclusion: a polygon footprint excludes its inside, a notch included,
   CHECK(error.find("no area") != std::string::npos);
   const Footprint nan_disc{0, 0, std::nan("")};
   CHECK_FALSE(ex.add_footprints({&nan_disc, 1}, &error));
+}
+
+// **What a footprint query costs** (W98; scene_gen.md, "Footprints as shapes"): 10,000 bands and
+// 1,000 polygons over a square kilometre, asked at a million points. Prints the nanoseconds a
+// query; asserts only that some points were covered and most were not.
+TEST_CASE("exclusion: what a footprint query costs") {
+  Vector<Footprint> shapes;
+  Vector<FootprintPoint> corners;
+  corners.reserve(4000);
+  u64 h = 0x9E3779B97F4A7C15ull;
+  const auto next = [&h]() {
+    h ^= h << 13;
+    h ^= h >> 7;
+    h ^= h << 17;
+    return h;
+  };
+  for (u32 k = 0; k < 10000; ++k) {
+    const i64 x = static_cast<i64>(next() % 1000000), z = static_cast<i64>(next() % 1000000);
+    shapes.push_back(Footprint::band(x, z, x + static_cast<i64>(next() % 12000), z + 3000, 400));
+  }
+  for (u32 k = 0; k < 1000; ++k) {
+    const i64 x = static_cast<i64>(next() % 1000000), z = static_cast<i64>(next() % 1000000);
+    const u32 first = corners.size();
+    corners.push_back({x, z});
+    corners.push_back({x + 8000, z});
+    corners.push_back({x + 8000, z + 6000});
+    corners.push_back({x, z + 6000});
+    shapes.push_back(Footprint::polygon({corners.data() + first, 4}));
+  }
+  Exclusion ex;
+  REQUIRE(ex.build({}, {}, {}));
+  std::string error;
+  REQUIRE_MESSAGE(ex.add_footprints({shapes.data(), shapes.size()}, &error), error);
+  const f64 flat = 0.0;
+  const Ground ground = ground_at(flat);
+  u64 covered = 0;
+  const auto t0 = std::chrono::steady_clock::now();
+  for (u32 k = 0; k < 1000000; ++k)
+    covered += ex.excluded_mm(ground, static_cast<i64>(next() % 1000000),
+                              static_cast<i64>(next() % 1000000));
+  const f64 ns =
+      std::chrono::duration<f64, std::nano>(std::chrono::steady_clock::now() - t0).count() / 1e6;
+  MESSAGE("a footprint query over 11,000 shapes: " << ns << " ns, " << covered << " covered");
+  CHECK(covered > 1000);
+  CHECK(covered < 200000);
 }
