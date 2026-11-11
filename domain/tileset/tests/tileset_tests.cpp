@@ -229,11 +229,12 @@ TEST_CASE("tileset: every tile of every level reads back as the build computed i
 }
 
 TEST_CASE(
-    "tileset: a heightfield at one of its far levels' spacings builds, and both levels read") {
+    "tileset: a coarse heightfield builds no far level at or below its own spacing, and reads") {
   // T90 (found by the landform row, W95): a 16 m heightfield under the default chain (8, 16, 32,
-  // ... 256 m) has two levels at 16 m, the finest and a far level. Both were written to
+  // ... 256 m) had two levels at 16 m, the finest and a far level. Both were written to
   // `16000.tiles`, the far one over the finest, so the set refused to open; and the reader's cache
-  // keyed a tile by its spacing alone, so one level's tile could answer for the other's.
+  // keyed a tile by its spacing alone, so one level's tile could answer for the other's. T105
+  // builds no far level at or below the finest's spacing at all.
   test::TempDir tmp{"engine_tileset_coarse"};
   const Heightfield field = synth_heightfield(SynthKind::ridge, 33, 16000, 11, -256000, -128000);
   std::string error;
@@ -247,18 +248,25 @@ TEST_CASE(
   TileSet set;
   REQUIRE_MESSAGE(set.open(built.manifest, error), error);
   const TileSetManifest& m = set.manifest();
-  REQUIRE(m.levels.size() == 7);
+  // T105: the chain is taken from the heightfield's spacing, so the 8 and 16 m far levels, which
+  // would hold nothing the finest does not, are not built: the finest and 32 to 256 m. On the
+  // base this set had seven levels, a far one at 16 m beside the finest.
+  REQUIRE(m.levels.size() == 5);
   CHECK(m.levels[0].spacing_mm == 16000);
   CHECK(m.levels[0].filter_mm == 0);
-  CHECK(m.levels[2].spacing_mm == 16000);
-  CHECK(m.levels[2].filter_mm == 16000);
+  for (u32 l = 1; l < m.levels.size(); ++l) {
+    CHECK(m.levels[l].filter_mm == m.levels[l].spacing_mm);
+    CHECK(m.levels[l].spacing_mm == 32000 << (l - 1));
+  }
+  REQUIRE(m.chain.size() == 4);
+  CHECK(m.chain[0] == 32000);
   for (u32 a = 0; a < m.levels.size(); ++a)
     for (u32 b = a + 1; b < m.levels.size(); ++b)
       CHECK(m.levels[a].archive != m.levels[b].archive);
 
-  // Every level whole, each against what the build computes: the finest and the far level at its
-  // spacing are the quantized source (the edge held past it), a coarser one the box filter. Each
-  // level's tiles are read from its own archive, so every tile of the set is one read.
+  // Every level whole, each against what the build computes: the finest the quantized source (the
+  // edge held past it), a coarser one the box filter. Each level's tiles are read from its own
+  // archive, so every tile of the set is one read.
   const Grid g = grid_of(field, options);
   u32 differ = 0;
   for (const TileSetLevel& level : m.levels) {
@@ -271,7 +279,6 @@ TEST_CASE(
                                   static_cast<i32>(j0), nx, nz,
                                   std::span<f32>(h.data(), h.size())));
     const i64 r = level.spacing_mm / m.spacing_mm;
-    if (r < 1) continue;  // the 8 m level, the finest's bilinear surface: read, not compared here
     for (u32 z = 0; z < nz; ++z)
       for (u32 x = 0; x < nx; ++x) {
         const i32 want = r == 1 ? g.at_world(i0 + x, j0 + z) : direct_filter(g, r, i0 + x, j0 + z);
@@ -281,6 +288,26 @@ TEST_CASE(
   CHECK(differ == 0);
   CHECK(set.failures() == 0);
   CHECK(set.reads() == built.tiles);
+
+  // The renderer still asks its default chain's 8 and 16 m filters: the set answers both from the
+  // finest, as it answers those spacings unfiltered, point for point.
+  CHECK(set.has_filter(8000));
+  CHECK(set.has_filter(16000));
+  CHECK_FALSE(set.has_filter(48000));
+  for (const i64 spacing : {i64{8000}, i64{16000}}) {
+    CAPTURE(spacing);
+    constexpr u32 n = 40;
+    Vector<f32> filtered(n * n), plain(n * n);
+    REQUIRE(set.source().filtered(0.0, spacing, spacing, -20, -12, n, n,
+                                  std::span<f32>(filtered.data(), filtered.size())));
+    REQUIRE(set.source().heights(0.0, spacing, -20, -12, n, n,
+                                 std::span<f32>(plain.data(), plain.size())));
+    u32 same = 0;
+    for (u32 k = 0; k < n * n; ++k)
+      same += filtered[k] == plain[k] ? 1u : 0u;
+    CHECK(same == n * n);
+  }
+  CHECK(set.failures() == 0);
 }
 
 TEST_CASE("tileset: the box filter is the surface's mean over each point's own cell") {
@@ -351,7 +378,11 @@ TEST_CASE(
   CHECK_FALSE(source.filtered(0.0, 2000, 1000, 0, 0, 2, 2, std::span<f32>(h, 4)));
   CHECK(source.filtered(0.0, 2000, 2000, 0, 0, 2, 2, std::span<f32>(h, 4)));
   CHECK(set.has_filter(4000));
-  CHECK_FALSE(set.has_filter(500));
+  // At or below the finest's 50 cm a filter is the finest's surface (T105); between the chain's
+  // levels it is not one the set holds.
+  CHECK(set.has_filter(500));
+  CHECK(set.has_filter(250));
+  CHECK_FALSE(set.has_filter(3000));
 
   // At 25 cm, finer than the set: its bilinear surface, which is the finest's own points at every
   // other one and their mean between two.
