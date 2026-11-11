@@ -5,7 +5,9 @@
 #include <core/hash/hash.h>
 #include <core/schema/json_reflect.h>
 #include <domain/flora/flora.h>
+#include <domain/flora/meadow.h>
 #include <domain/flora/sward.h>
+#include <domain/flora/understory.h>
 #include <domain/scene_gen/scene_gen.h>
 
 #include <doctest/doctest.h>
@@ -173,8 +175,11 @@ TEST_CASE("sward forms: the new fields roundtrip and out-of-range ones are refus
   family.cards.push_back("c");
   placements.families.push_back(family);
   placements.stature.mosaic_m = 12;
-  placements.forbs.push_back("daisy.clusters");
-  placements.forb_share = .1f;
+  flora::MeadowSpecies daisy;
+  daisy.species = "leucanthemum_vulgare";
+  daisy.mesh = "daisy.clusters";
+  placements.community.push_back(daisy);
+  placements.meadow.wet_reach_m = 6;
   flora::SwardPlacements placements_back;
   REQUIRE(schema::from_json(placements_back, schema::to_json(placements), read));
   CHECK(placements_back == placements);
@@ -411,10 +416,18 @@ TEST_CASE("sward forms: the mosaic is patches of the noise's scale, the same in 
   CHECK(alike > pairs * 8 / 10);
 }
 
-TEST_CASE("sward forms: the forbs take their share of the patches, and the cap a tile's") {
+flora::MeadowSpecies member(const char* species) {
+  flora::MeadowSpecies m;
+  m.species = species;
+  m.mesh = std::string(species) + ".clusters";
+  return m;
+}
+
+TEST_CASE("sward forms: the community's plants take their covers' share, and the cap a tile's") {
+  // G140: one species on a level, dry, open meadow, its niche F 5 and L 7.5: red clover's cover
+  // is 0.18 exp(-(0.5 / 1.5)^2 / 2), 0.170 of the cells.
   auto p = four_forms();
-  p.forbs.push_back("oxeye.clusters");
-  p.forb_share = .33f;
+  p.community.push_back(member("trifolium_pratense"));
   p.forb_tile_cap = 4096;
   Meadow meadow(&flat, p);
   const auto out = meadow.tile();
@@ -430,9 +443,17 @@ TEST_CASE("sward forms: the forbs take their share of the patches, and the cap a
     }
   }
   REQUIRE(patches == 4096);
-  // Expectation, as the density classes are: 0.33 of 4096 is 1352, sigma 30.
-  CHECK(forbs > 1352 - 120);
-  CHECK(forbs < 1352 + 120);
+  flora::MeadowNiche niche;
+  niche.moisture = 5;
+  niche.light = 7.5;
+  const auto* clover = flora::meadow_species("trifolium_pratense");
+  REQUIRE(clover != nullptr);
+  u32 cover = 0;
+  flora::meadow_cover({&clover, 1}, niche, {&cover, 1});
+  const f64 expected = 4096.0 * cover / flora::k_meadow_cover_one;
+  CHECK(std::fabs(expected - 697) < 3);
+  // Expectation, as the density classes are: sigma 24 at this share.
+  CHECK(std::fabs(static_cast<f64>(forbs) - expected) < 100);
   // The nearest ring alone: the card ring carries none.
   CHECK(meadow.tile(1).instances.size() == 4096);
   // The streamed inner ring (G136's hand-off by distance): every patch's pair first, then the
@@ -456,9 +477,26 @@ TEST_CASE("sward forms: the forbs take their share of the patches, and the cap a
     CHECK(ka.instances[i].id == kb.instances[i].id);
 
   auto none = p;
-  none.forb_share = 0;
+  none.community.clear();
   Meadow bare(&flat, none);
   CHECK(bare.tile().instances.size() == 4096);
+
+  // G137's one-mesh forbs are refused by name, and so is a species the table does not hold.
+  const auto* gen = scene_gen::GeneratorRegistry::global().find_placement("sward");
+  REQUIRE(gen != nullptr);
+  for (const bool old : {true, false}) {
+    auto bad = p;
+    if (old)
+      bad.forbs.push_back("oxeye.clusters");
+    else
+      bad.community.push_back(member("bellis_perennis"));
+    Meadow probe(&flat, four_forms());
+    void* state = nullptr;
+    std::string error;
+    CHECK_FALSE(gen->open(schema::to_json(bad), probe.ctx, &state, &error));
+    CHECK(error.find(old ? "replaced by community" : "unknown community species") !=
+          std::string::npos);
+  }
 }
 
 TEST_CASE("sward forms: the slope's arctangent is plain arithmetic within 2 ulp of std::atan") {
@@ -671,4 +709,226 @@ TEST_CASE("sward forms: an entry mixing named and unnamed forms is refused") {
   std::string error;
   CHECK_FALSE(gen->open(schema::to_json(p), ctx, &state, &error));
   CHECK(error.find("every family names a form") != std::string::npos);
+}
+
+// ---- G140, the meadow community, and G139, the band where a site field draws the boundary -------
+
+namespace {
+Vector<const flora::MeadowSpeciesTraits*> whole_table() {
+  Vector<const flora::MeadowSpeciesTraits*> all;
+  for (const auto& species : flora::meadow_species())
+    all.push_back(&species);
+  return all;
+}
+// A transect from a stream's bank (d = 0) up a slope facing the sun: the slope rises to 0.6 and the
+// heat load to 1.4 at 80 m.
+scene_gen::SiteSample transect(f64 d) {
+  scene_gen::SiteSample s;
+  s.channel_m = d;
+  s.slope = .6 * d / 80;
+  s.heat_load = 1 + .4 * d / 80;
+  return s;
+}
+// A valley floor rising along x, z = a x^2, its slope tan(22.5 degrees) at x = 32 m: the stature
+// rule's steepness is one half there, so with `tall_bias` 1 the tall forms meet the short ones in
+// the middle of the tile, on a boundary the slope draws.
+constexpr f64 k_valley_a = .41421356237309503 / 64;
+f64 valley(const void*, i64 x_mm, i64) noexcept {
+  const f64 x = static_cast<f64>(x_mm) * .001;
+  return k_valley_a * x * x;
+}
+}  // namespace
+
+TEST_CASE("meadow: the community's covers never sum past one, in integers") {
+  const auto all = whole_table();
+  REQUIRE(all.size() >= 12);
+  u32 counts[4] = {};
+  for (const auto* species : all)
+    ++counts[static_cast<u32>(species->role)];
+  CHECK(counts[0] >= 6);  // six to ten forbs, a sedge, a rush and a dwarf shrub
+  CHECK(counts[0] <= 10);
+  CHECK(counts[1] >= 1);
+  CHECK(counts[2] >= 1);
+  CHECK(counts[3] >= 1);
+  Vector<u32> covers(all.size());
+  u32 passed = 0;
+  for (u32 f = 4; f <= 48; ++f)
+    for (u32 l = 4; l <= 36; ++l) {
+      flora::MeadowNiche niche;
+      niche.moisture = f * .25;
+      niche.light = l * .25;
+      const u32 sum =
+          flora::meadow_cover({all.data(), all.size()}, niche, {covers.data(), all.size()});
+      u64 check = 0;
+      for (u32 i = 0; i < all.size(); ++i) {
+        check += covers[i];
+        CHECK(covers[i] <= static_cast<u32>(all[i]->cover * flora::k_meadow_cover_one) + 1);
+      }
+      CHECK(check == sum);
+      CHECK(sum <= flora::k_meadow_cover_one);
+      passed += sum > 0 ? 1u : 0u;
+    }
+  CHECK(passed > 1000);
+}
+
+TEST_CASE("meadow: from a stream's edge up a dry slope the species keep their niches' order") {
+  const flora::MeadowRule rule;
+  const auto all = whole_table();
+  Vector<u32> covers(all.size());
+  Vector<f64> moment(all.size(), 0.0), mass(all.size(), 0.0);
+  for (u32 step = 0; step <= 160; ++step) {
+    const f64 d = step * .5;
+    const auto niche = flora::meadow_niche(rule, transect(d));
+    CHECK(niche.moisture <= flora::k_meadow_wet_margin);
+    flora::meadow_cover({all.data(), all.size()}, niche, {covers.data(), all.size()});
+    for (u32 i = 0; i < all.size(); ++i) {
+      moment[i] += d * covers[i];
+      mass[i] += covers[i];
+      // The wet margin's species are absent from the slope; the dry slope's from the bank.
+      if (all[i]->moisture >= 8 && d >= 50) CHECK(covers[i] == 0);
+      if (all[i]->moisture <= 4 && d == 0) CHECK(covers[i] == 0);
+    }
+  }
+  // Each species' cover-weighted place along the transect: a wetter optimum stands nearer the
+  // stream.
+  for (u32 a = 0; a < all.size(); ++a) {
+    REQUIRE(mass[a] > 0);
+    for (u32 b = 0; b < all.size(); ++b)
+      if (all[a]->moisture > all[b]->moisture) {
+        INFO(all[a]->name, " before ", all[b]->name);
+        CHECK(moment[a] / mass[a] < moment[b] / mass[b]);
+      }
+  }
+  // The ends of the gradient as read: the bank is Ellenberg's wet site, the sunny slope's top dry.
+  CHECK(flora::meadow_niche(rule, transect(0)).moisture == flora::k_meadow_wet_margin);
+  CHECK(flora::meadow_niche(rule, transect(80)).moisture < 3.5);
+  // Shade lowers the light, and the shade edge's species gain on the open meadow's.
+  const auto* bilberry = flora::meadow_species("vaccinium_myrtillus");
+  const auto* daisy = flora::meadow_species("leucanthemum_vulgare");
+  REQUIRE(bilberry != nullptr);
+  REQUIRE(daisy != nullptr);
+  const auto open = flora::meadow_niche(rule, transect(30), 0, 0);
+  const auto shaded = flora::meadow_niche(rule, transect(30), 0, 1);
+  CHECK(shaded.light < open.light);
+  CHECK(flora::meadow_response(*bilberry, shaded) > flora::meadow_response(*bilberry, open));
+  CHECK(flora::meadow_response(*daisy, shaded) < flora::meadow_response(*daisy, open));
+}
+
+TEST_CASE("meadow: a cell's plant is its cell's from any tile order, and a tile keeps its budget") {
+  auto p = four_forms();
+  for (const auto& species : flora::meadow_species())
+    p.community.push_back(member(std::string(species.name).c_str()));
+  REQUIRE(p.community.size() <= 16);
+  p.forb_tile_cap = 4096;
+  Meadow first(&rising, p, 120), second(&rising, p, 120);
+  second.tile(1);
+  const auto a = first.tile(0), b = second.tile(0);
+  REQUIRE(a.instances.size() == b.instances.size());
+  u32 plants = 0, used = 0;
+  for (u32 i = 0; i < a.instances.size(); ++i) {
+    CHECK(a.instances[i].id == b.instances[i].id);
+    CHECK(a.instances[i].mesh == b.instances[i].mesh);
+    if ((a.instances[i].id & 0x80000000u) != 0) {
+      ++plants;
+      used |= 1u << (a.instances[i].mesh - 8);
+    }
+  }
+  CHECK(plants > 400);
+  CHECK(std::popcount(used) >= 4);
+  // The default budget: 256 plants a tile in the nearest ring, none in the next, none past it.
+  p.forb_tile_cap = 256;
+  Meadow capped(&rising, p, 120);
+  u32 near = 0, card = 0;
+  for (const auto& placed : capped.tile(0).instances)
+    near += (placed.id & 0x80000000u) != 0 ? 1u : 0u;
+  for (const auto& placed : capped.tile(1).instances)
+    card += (placed.id & 0x80000000u) != 0 ? 1u : 0u;
+  CHECK(near == 256);
+  CHECK(card == 0);
+  CHECK(capped.tile(2).instances.empty());
+}
+
+TEST_CASE("meadow: the covers and a tile's community are the same bits on every toolchain") {
+  // Pins taken on MSVC (x64, v3); the Linux containers reproduce them on GCC and Clang at v3 and
+  // GCC at v2. The response's exponential is det::exp, so no C library decides a cover.
+  const auto all = whole_table();
+  Vector<u32> covers(all.size());
+  u64 pin = k_hash_seed;
+  for (u32 f = 0; f <= 40; ++f)
+    for (u32 l = 0; l <= 20; ++l) {
+      flora::MeadowNiche niche;
+      niche.moisture = 2 + f * .1875;
+      niche.light = 4.5 + l * .2;
+      pin = hash_combine(
+          pin, flora::meadow_cover({all.data(), all.size()}, niche, {covers.data(), all.size()}));
+      pin = hash_combine(pin, hash_bytes(covers.data(), covers.size() * sizeof(u32)));
+    }
+  CHECK(pin == 2798555847098717520ull);
+  auto p = four_forms();
+  for (const auto& species : flora::meadow_species())
+    p.community.push_back(member(std::string(species.name).c_str()));
+  p.forb_tile_cap = 4096;
+  Meadow sloped(&rising, p, 120, true);
+  CHECK(pin_of(sloped.tile(0)) == 5908356335877227896ull);
+  Meadow valley_floor(&valley, p);
+  CHECK(pin_of(valley_floor.tile(0)) == 8268456944544360779ull);
+}
+
+TEST_CASE("meadow: each species' stand-in herb is in range and inside its budget") {
+  u32 total = 0;
+  for (const auto& species : flora::meadow_species()) {
+    const auto herb = flora::meadow_herb(species, 3);
+    std::string error;
+    CHECK_MESSAGE(flora::herb_in_range(herb, error), species.name, ": ", error);
+    assets::MeshData mesh;
+    flora::TreeReport report;
+    REQUIRE_MESSAGE(flora::solve_herb(herb, mesh, &report, &error), species.name, ": ", error);
+    CHECK(report.triangles <= herb.triangle_budget);
+    CHECK(report.triangles > 0);
+    total += report.triangles;
+    MESSAGE(species.name, ": ", report.triangles, " triangles");
+  }
+  MESSAGE("the table's stand-ins: ", total, " triangles");
+}
+
+TEST_CASE("sward forms: where the slope draws the boundary the band keeps its width (G139)") {
+  // G138's band turned metres into score by the mosaic noise's gradient alone; here the noise is
+  // nearly still (0.02) and the slope draws the boundary, so G138 placed a line (its band 3 m times
+  // the noise's gradient over the score's, about 0.1 m). The band now reads the whole score's
+  // gradient. Measured as the width a smoothstep ramp of the share of tall patches across the
+  // columns would have: the sum over 1 m columns of s (1 - s) is 9/70 of the ramp's whole length,
+  // and its 5 % to 95 % width `k_sward_band_span` of that.
+  auto p = four_forms();
+  p.stature.noise = .02f;
+  p.stature.tall_bias = 1;
+  p.stature.band_m = 3;
+  const auto width_of = [&](const flora::SwardPlacements& entry, u32 worlds) {
+    f64 sum = 0;
+    for (u32 w = 0; w < worlds; ++w) {
+      Meadow meadow(&valley, entry);
+      meadow.ctx.world_seed = 1000 + w;
+      u32 tall[64] = {}, all[64] = {};
+      for (const auto& placed : meadow.tile().instances) {
+        const i64 column = static_cast<i64>(std::floor(placed.position.x));
+        if (column < 0 || column > 63) continue;
+        ++all[column];
+        tall[column] += form_of(placed) <= 2 ? 1u : 0u;
+      }
+      for (u32 c = 0; c < 64; ++c)
+        if (all[c] > 0) {
+          const f64 s = static_cast<f64>(tall[c]) / all[c];
+          sum += s * (1 - s);
+        }
+    }
+    return sum / worlds / (9.0 / 70.0) * flora::k_sward_band_span;
+  };
+  const f64 band = width_of(p, 6);
+  MESSAGE("a band of 3 m on a slope's boundary: ", band, " m");
+  CHECK(band > .8 * 3);
+  CHECK(band < 1.2 * 3);
+  auto line = p;
+  line.stature.band_m = 0;
+  const f64 none = width_of(line, 2);
+  MESSAGE("a band of 0 m there: ", none, " m");
+  CHECK(none < .5);
 }

@@ -1093,9 +1093,37 @@ struct SwardStature @version(2) {
   /// grass-sward.md, "Where two forms meet"). 0 is G137's hard line, to the bit.
   band_m: f32 = 3.0 @unit(m) @since(2)
 }
+/// G140: how a cell's site becomes the two niche axes the meadow's species answer to, on Ellenberg's
+/// scales as recalibrated for Britain (Hill et al. 1999): moisture F (1..12) and light L (1..9).
+/// The stature rule's wetness is read from the same F, so the sward's form and the community agree
+/// (flora.md, "The meadow community"; the defaults in docs/experiments/meadow-community.md).
+struct MeadowRule @version(1) {
+  /// F on level, open ground far from water: 5, "fresh soils of average dampness". 1..9.
+  moisture_base: f32 = 5.0
+  /// Metres from a channel's bank or a water body's outline over which F falls from the wet
+  /// margin's 9 to the ground's own: 0.5..128 (the site measures distances to 128 m).
+  wet_reach_m: f32 = 10.0 @unit(m)
+  /// F lost per unit of heat load above level ground's, and gained below it: a sunny slope dries.
+  heat_dry: f32 = 2.0
+  /// F lost per unit of slope (rise over run): steep ground drains.
+  slope_dry: f32 = 2.0
+  /// F gained per 1/m of concavity (minus the site's curvature): a hollow collects water.
+  hollow_wet: f32 = 20.0
+  /// L in the open and under the shade layer's full weight, 1..9.
+  light_open: f32 = 7.5
+  light_shade: f32 = 5.0
+}
+/// G140: one species of the meadow's community, named from the community table (flora.md, "The
+/// meadow community"), and the mesh it stands as near the eye.
+struct MeadowSpecies @version(1) {
+  /// The table's name, `caltha_palustris` and so on.
+  species: string
+  /// A mesh path relative to the scene; the table's herb recipe (`meadow_herb`) is its stand-in.
+  mesh: string
+}
 /// The sward placement registry's parameters. The paint already contains shade, wet margins,
 /// slopes and excluded trails; do not apply those factors twice at runtime.
-struct SwardPlacements @version(2) {
+struct SwardPlacements @version(3) {
   seed: u64 = 1
   /// Patch edge, metres: 1 or 2. Must divide the context tile size.
   cell_m: f32 = 1.0 @unit(m)
@@ -1116,13 +1144,16 @@ struct SwardPlacements @version(2) {
   families: SwardFamily[]
   /// G137: the stature rule, read only when the families name forms.
   stature: SwardStature @since(2)
-  /// G137, the meadow's forbs: herb meshes (a path each, 1..16; empty: none) placed in a share of
-  /// the cells that hold a patch, in the nearest ring only, upright and turned by the cell's hash.
-  forbs: string[] @since(2)
-  /// Forb cells per grass cell, 0..1: 0.33 a species-rich hay meadow's, 0.1 an improved pasture's
-  /// (grass-sward.md, "The meadow's forbs").
-  forb_share: f32 = 0.33 @since(2)
-  /// Forbs a tile keeps at most, 0..4096: every forb is a run of the frame's pose table (the herb's
-  /// motion kind is `parts`), so a tile keeps the ones of lowest hash.
+  /// G137's one-mesh forbs, replaced by `community` (G140): an entry naming any is refused.
+  forbs: string[] @since(2) @deprecated
+  /// G137's share of forb cells, replaced by the community's covers (G140): not read.
+  forb_share: f32 = 0.33 @since(2) @deprecated
+  /// Plants of the community a tile keeps at most, 0..4096: every herb is a run of the frame's pose
+  /// table (its motion kind is `parts`), so a tile keeps the ones of lowest hash.
   forb_tile_cap: u32 = 256 @since(2)
+  /// G140, the meadow's community (1..16 species; empty: none): each cell that drew a patch draws
+  /// one plant of a species by the covers the site gives them, in the nearest ring only.
+  community: MeadowSpecies[] @since(3)
+  /// G140: the site's moisture and light, read by the community and by the stature rule's wetness.
+  meadow: MeadowRule @since(3)
 }
