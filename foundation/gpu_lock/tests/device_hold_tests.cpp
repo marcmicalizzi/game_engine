@@ -565,3 +565,341 @@ TEST_CASE("device hold: a command wrapped in gpu-lock.ps1 run finds the lock its
     CHECK_MESSAGE(!exists(path), c.what);  // and the wrapper's to release
   }
 }
+
+// ---- the line (gpu_lock.h, "the line"; roadmap T96) -------------------------------------------
+//
+// Several probes at one lock in the case's own scratch directory. Each case first writes a plain
+// lock file — a holder that knows nothing of tickets, which is every tool built before the line —
+// so that the probes it starts all wait, checks that each one's ticket is in the line before it
+// starts the next (which is what makes the arrival order the case's and not the scheduler's), and
+// then deletes the file as that holder's release.
+
+namespace {
+
+// Starts a probe and leaves it running.
+void start_probe(platform::Process& p, const std::vector<std::string>& args) {
+  std::vector<std::string_view> argv;
+  argv.push_back(probe_exe());
+  for (const std::string& a : args)
+    argv.push_back(a);
+  std::string error;
+  REQUIRE_MESSAGE(p.spawn(std::span<const std::string_view>(argv.data(), argv.size()), &error),
+                  error);
+  p.close_stdin();
+}
+
+usize line_size(const std::string& lock) { return gpu_lock::read_line(lock, now_s()).size(); }
+
+void replace_file(const std::string& path, const std::string& text) {
+  write_file(path + ".next", text);
+  std::error_code ec;
+  std::filesystem::rename(std::filesystem::path(path + ".next"), std::filesystem::path(path), ec);
+  REQUIRE_MESSAGE(!ec, ec.message());
+}
+
+i64 elapsed_ms(i64 since_ns) { return (time::monotonic_ns() - since_ns) / 1'000'000; }
+
+}  // namespace
+
+TEST_CASE("the line: waiters are served in arrival order, and one that asks again goes last") {
+  if (!have_probe()) return;
+  const Isolated isolated;
+  test::TempDir dir("gpu_line_order");
+  const std::string path = dir.file("gpu.lock");
+  const std::string report = dir.file("report.txt");
+  write_file(path,
+             lock_json("astra-blender", 4321, now_s() + 600, gpu_lock::current_identity().host));
+
+  // The one that will ask twice arrives first; three more arrive behind it, one at a time.
+  platform::Process again, first, second, third;
+  start_probe(again,
+              {"--on", "--lock", path, "--look", "50", "--report", report, "holds", "2", "300"});
+  REQUIRE(eventually([&] { return line_size(path) == 1; }, 20000));
+  platform::Process* later[] = {&first, &second, &third};
+  for (usize i = 0; i < 3; ++i) {
+    start_probe(*later[i],
+                {"--on", "--lock", path, "--look", "50", "--report", report, "hold", "300"});
+    REQUIRE(eventually([&] { return line_size(path) == i + 2; }, 20000));
+  }
+  const Vector<gpu_lock::Waiter> line = gpu_lock::read_line(path, now_s());
+  REQUIRE(line.size() == 4);
+  CHECK(reports(report).empty());  // nobody passed the holder
+
+  const i64 released = time::monotonic_ns();
+  (void)std::filesystem::remove(std::filesystem::path(path));
+  CHECK(again.wait() == 0);
+  CHECK(first.wait() == 0);
+  CHECK(second.wait() == 0);
+  CHECK(third.wait() == 0);
+  MESSAGE("five holds of 300 ms served in " << elapsed_ms(released) << " ms");
+
+  // Served as they stood, and the first one's second ask after the three that were waiting when
+  // it let go: without the line it would have had the lock back before any of them looked.
+  const auto seen = reports(report);
+  REQUIRE(seen.size() == 5);
+  for (u32 i = 0; i < 4; ++i) {
+    CHECK(seen[i].first == line[i].pid);
+    CHECK(seen[i].second == "taken");
+  }
+  CHECK(seen[4].first == line[0].pid);
+  CHECK(seen[4].second == "taken");
+  CHECK_FALSE(exists(path));
+  CHECK(line_size(path) == 0);
+}
+
+TEST_CASE("the line: a waiter killed in the line stops counting within its ticket's lease") {
+  if (!have_probe()) return;
+  const Isolated isolated;
+  test::TempDir dir("gpu_line_dead_waiter");
+  const std::string path = dir.file("gpu.lock");
+  const std::string report = dir.file("report.txt");
+  write_file(path,
+             lock_json("astra-blender", 4321, now_s() + 600, gpu_lock::current_identity().host));
+
+  platform::Process doomed, behind;
+  start_probe(doomed, {"--on", "--lock", path, "--look", "50", "--ticket", "3", "--report", report,
+                       "hold", "60000"});
+  REQUIRE(eventually([&] { return line_size(path) == 1; }, 20000));
+  start_probe(behind, {"--on", "--lock", path, "--look", "50", "--report", report, "hold", "0"});
+  REQUIRE(eventually([&] { return line_size(path) == 2; }, 20000));
+
+  doomed.kill();  // TerminateProcess / SIGKILL: its ticket stays, refreshed by nobody
+  (void)doomed.wait();
+  const i64 killed = time::monotonic_ns();
+  (void)std::filesystem::remove(std::filesystem::path(path));  // and the lock is free
+  CHECK(behind.wait() == 0);
+  const i64 waited_ms = elapsed_ms(killed);
+  MESSAGE("the waiter behind a killed one had the free lock after " << waited_ms << " ms");
+  // The dead ticket's lease (3 s, counted in whole seconds, so under 4) and one look; the rest
+  // is the machine.
+  CHECK(waited_ms < 4000 + 50 + 4000);
+  const auto seen = reports(report);
+  REQUIRE(seen.size() == 1);
+  CHECK(seen[0].second == "taken");
+  CHECK_FALSE(exists(path));
+  CHECK(line_size(path) == 0);  // the one behind removed the dead ticket as it passed
+}
+
+TEST_CASE(
+    "the line: a holder that is killed is broken after its lease, and the line keeps its order") {
+  if (!have_probe()) return;
+  const Isolated isolated;
+  test::TempDir dir("gpu_line_dead_holder");
+  const std::string path = dir.file("gpu.lock");
+  const std::string report = dir.file("report.txt");
+
+  platform::Process holder, first, second;
+  start_probe(holder, {"--on", "--lock", path, "--lease", "3", "--refresh", "1", "--report", report,
+                       "hold", "60000"});
+  REQUIRE(eventually([&] { return reports(report).size() == 1; }, 20000));
+  start_probe(first, {"--on", "--lock", path, "--look", "50", "--report", report, "hold", "200"});
+  REQUIRE(eventually([&] { return line_size(path) == 1; }, 20000));
+  start_probe(second, {"--on", "--lock", path, "--look", "50", "--report", report, "hold", "200"});
+  REQUIRE(eventually([&] { return line_size(path) == 2; }, 20000));
+  const Vector<gpu_lock::Waiter> line = gpu_lock::read_line(path, now_s());
+  REQUIRE(line.size() == 2);
+
+  holder.kill();
+  (void)holder.wait();
+  const i64 killed = time::monotonic_ns();
+  CHECK(first.wait() == 0);
+  CHECK(second.wait() == 0);
+  const i64 waited_ms = elapsed_ms(killed);
+  MESSAGE("two waiters behind a killed holder were both done after " << waited_ms << " ms");
+  CHECK(waited_ms < 4000 + 2 * 250 + 4000);  // its lease, as before the line; then two short holds
+  const auto seen = reports(report);
+  REQUIRE(seen.size() == 3);
+  CHECK(seen[1].first == line[0].pid);  // the head broke the expired lock and took it
+  CHECK(seen[2].first == line[1].pid);
+  CHECK_FALSE(exists(path));
+}
+
+TEST_CASE("the line: a late short job is not starved by holders that keep asking again") {
+  if (!have_probe()) return;
+  const Isolated isolated;
+  test::TempDir dir("gpu_line_late");
+  const std::string path = dir.file("gpu.lock");
+  const std::string report = dir.file("report.txt");
+  const std::string late_report = dir.file("late.txt");
+
+  // Two holders that each take the lock thirty times, 100 ms a hold, asking again the moment they
+  // let go: six seconds of holds between them and a look of the line between each two, which is
+  // the least this case can take (the loop has to outlast a third process's start on a busy
+  // machine, or the case shows nothing). Before the line, whichever held it took it back before
+  // anyone looked.
+  platform::Process one, two, late;
+  const std::vector<std::string> loop = {"--on",     "--lock", path,    "--look", "50",
+                                         "--report", report,   "holds", "30",     "100"};
+  start_probe(one, loop);
+  start_probe(two, loop);
+  REQUIRE(eventually([&] { return reports(report).size() >= 4; }, 20000));
+  start_probe(late, {"--on", "--lock", path, "--look", "50", "--report", late_report, "hold", "0"});
+  // The moment the late one is seen in the line (its purpose says "hold", theirs "holds"), or has
+  // already been served.
+  usize holds_before = 0;
+  REQUIRE(eventually(
+      [&] {
+        holds_before = reports(report).size();
+        if (!reports(late_report).empty()) return true;
+        for (const gpu_lock::Waiter& w : gpu_lock::read_line(path, now_s())) {
+          if (w.purpose == "gpu lock probe: hold") return true;
+        }
+        return false;
+      },
+      20000));
+  CHECK(late.wait() == 0);
+  const usize holds_after = reports(report).size();
+  CHECK(one.wait() == 0);
+  CHECK(two.wait() == 0);
+  REQUIRE(reports(late_report).size() == 1);
+  CHECK(reports(report).size() == 60);
+  // Ahead of it when it arrived: the hold in progress and the other holder, already waiting.
+  // Three more allow for the holds that ended between this case's two looks.
+  MESSAGE("the late job was served after " << (holds_after - holds_before)
+                                           << " more holds, of 60 in all; it arrived after "
+                                           << holds_before);
+  CHECK(holds_after - holds_before <= 2 + 3);
+  CHECK(holds_before < 45);  // or the case showed nothing: it must arrive while they still loop
+}
+
+TEST_CASE("the line: a holder without a ticket is waited for, and takes nothing from the order") {
+  if (!have_probe()) return;
+  const Isolated isolated;
+  test::TempDir dir("gpu_line_old");
+  const std::string path = dir.file("gpu.lock");
+  const std::string report = dir.file("report.txt");
+  const std::string host = gpu_lock::current_identity().host;
+  // A tool built before the line holds the lock: a lock file, and no ticket anywhere.
+  write_file(path, lock_json("astra-blender", 4321, now_s() + 600, host, "bake: desert"));
+
+  platform::Process first, second;
+  start_probe(first, {"--on", "--lock", path, "--look", "50", "--report", report, "hold", "200"});
+  REQUIRE(eventually([&] { return line_size(path) == 1; }, 20000));
+  start_probe(second, {"--on", "--lock", path, "--look", "50", "--report", report, "hold", "200"});
+  REQUIRE(eventually([&] { return line_size(path) == 2; }, 20000));
+  const Vector<gpu_lock::Waiter> line = gpu_lock::read_line(path, now_s());
+  REQUIRE(line.size() == 2);
+
+  // It lets go, and a second such tool — another worktree's older binary, whose own look landed
+  // in that instant — has the lock before the head of the line does. That is the worst an old
+  // binary does to a line of new ones: it is not in the line, so it can be served out of turn;
+  // the line sees one more holder, waits for it, and loses neither its order nor a file.
+  const std::string barged =
+      lock_json("claude-engine", k_other_pid, now_s() + 600, host, "an older test");
+  replace_file(path, barged);
+  std::this_thread::sleep_for(std::chrono::milliseconds(1500));
+  CHECK(reports(report).empty());
+  CHECK(read_file(path) == barged);
+  CHECK(line_size(path) == 2);
+
+  (void)std::filesystem::remove(std::filesystem::path(path));
+  CHECK(first.wait() == 0);
+  CHECK(second.wait() == 0);
+  const auto seen = reports(report);
+  REQUIRE(seen.size() == 2);
+  CHECK(seen[0].first == line[0].pid);
+  CHECK(seen[1].first == line[1].pid);
+  CHECK_FALSE(exists(path));
+}
+
+TEST_CASE("the line: a wait that runs out says where the process stood") {
+  const Isolated isolated;
+  test::TempDir dir("gpu_line_give_up");
+  const std::string path = dir.file("gpu.lock");
+  const gpu_lock::Identity self = gpu_lock::current_identity();
+  write_file(path, lock_json("astra-blender", 4321, now_s() + 600, self.host, "bake: desert"));
+
+  // Another process has been in the line for twelve seconds; this one stands behind it, and its
+  // give-up line names the lock's holder, its own place and who is first.
+  const std::string out_path = dir.file("out.txt");
+  std::FILE* out = nullptr;
+#if defined(_MSC_VER)
+  (void)fopen_s(&out, out_path.c_str(), "wb");
+#else
+  out = std::fopen(out_path.c_str(), "wb");
+#endif
+  REQUIRE(out != nullptr);
+  {
+    // Another process's ticket, as that process would have written it: ahead of this one.
+    const std::string directory = gpu_lock::line_directory(path);
+    std::error_code ec;
+    std::filesystem::create_directories(std::filesystem::path(directory), ec);
+    const i64 arrived_ms = time::wall_unix_ms() - 12'000;
+    char name[96];
+    std::snprintf(name, sizeof(name), "t-%016lld-%016lld-%010llu-0000.json",
+                  static_cast<long long>(arrived_ms + 120'000), static_cast<long long>(arrived_ms),
+                  static_cast<unsigned long long>(k_other_pid));
+    write_file(directory + "/" + name,
+               lock_json("claude-engine", k_other_pid, now_s() + 600, self.host, "gfx tests"));
+  }
+  gpu_lock::HoldConfig config = config_at(path);
+  config.out = out;
+  config.look_ms = 50;
+  config.wait_until_unix_s = now_s() + 1;
+  {
+    gpu_lock::DeviceHold hold;
+    CHECK(hold.acquire(config) == gpu_lock::HoldMode::GaveUp);
+  }
+  std::fclose(out);
+  const std::string said = read_file(out_path);
+  CHECK_MESSAGE(said.find("waiting for the GPU lock, held by 'astra-blender'") != std::string::npos,
+                said);
+  CHECK_MESSAGE(said.find("gave up waiting for the GPU lock") != std::string::npos, said);
+  CHECK_MESSAGE(said.find("bake: desert") != std::string::npos, said);
+  CHECK_MESSAGE(said.find("behind 1 of the 2 in the line, first 'claude-engine' (pid 999999937): "
+                          "gfx tests, waiting 1") != std::string::npos,
+                said);
+  CHECK(line_size(path) == 1);  // this process's ticket went with its give-up
+}
+
+TEST_CASE("the line: gpu-lock.ps1 status prints the holder and the line a C++ waiter stands in") {
+  if (!have_probe()) return;
+  const std::string script =
+      test::data_path(ENGINE_SOURCE_DIR "/tools/gpu-lock.ps1", "tools/gpu-lock.ps1");
+  if (!test::path_exists(script)) {
+    MESSAGE("not in this bundle: " << script);
+    return;
+  }
+  const Isolated isolated;
+  test::TempDir dir("gpu_line_status");
+  const std::string path = dir.file("gpu.lock");
+  const std::string report = dir.file("report.txt");
+  write_file(path, lock_json("astra-blender", 4321, now_s() + 600,
+                             gpu_lock::current_identity().host, "bake: desert"));
+  platform::Process first, second;
+  start_probe(first, {"--on", "--lock", path, "--look", "50", "--report", report, "hold", "0"});
+  REQUIRE(eventually([&] { return line_size(path) == 1; }, 20000));
+  start_probe(second,
+              {"--on", "--lock", path, "--look", "50", "--report", report, "holds", "1", "0"});
+  REQUIRE(eventually([&] { return line_size(path) == 2; }, 20000));
+
+  const std::vector<std::string> args = {"pwsh",   "-NoProfile", "-File", script,
+                                         "status", "-LockFile",  path};
+  const std::vector<std::string_view> argv(args.begin(), args.end());
+  platform::Process status;
+  std::string error;
+  std::string output;
+  const bool ran =
+      status.spawn(std::span<const std::string_view>(argv.data(), argv.size()), &error, true);
+  if (ran) {
+    status.close_stdin();
+    status.read_all(output);
+    CHECK_MESSAGE(status.wait() == 2, output);  // held
+    // The two tickets this module wrote, read by the PowerShell half, in the line's order.
+    const usize holder = output.find("bake: desert");
+    const usize one = output.find("1. 'claude-engine'");
+    const usize hold = output.find("gpu lock probe: hold,");
+    const usize two = output.find("2. 'claude-engine'");
+    const usize holds = output.find("gpu lock probe: holds,");
+    CHECK_MESSAGE(holder != std::string::npos, output);
+    CHECK_MESSAGE((one != std::string::npos && hold != std::string::npos && one < hold), output);
+    CHECK_MESSAGE(
+        (two != std::string::npos && holds != std::string::npos && hold < two && two < holds),
+        output);
+  } else {
+    MESSAGE("skipped: no pwsh to run tools/gpu-lock.ps1: " << error);
+  }
+  (void)std::filesystem::remove(std::filesystem::path(path));
+  CHECK(first.wait() == 0);
+  CHECK(second.wait() == 0);
+}

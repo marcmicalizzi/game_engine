@@ -232,6 +232,21 @@ The GPU lock stopped being a reason to wait on 2026-10-01: a test holds it for t
 a device open ([gpu_lock](../subsystems/gpu_lock.md), ADR-0049), so a suite queues behind another
 agent's test and not behind its hour.
 
+**Both machine locks are lines since 2026-11-11** (T96, [the line](../subsystems/gpu_lock.md#the-line),
+[ADR-0062](../adr/0062-the-machine-locks-have-a-line.md)): the GPU lock and the container build
+lock serve whoever has waited longest, a holder that releases and asks again goes to the back,
+and a short ask (a test's device, a `-Minutes 2` capture) passes a long one only while the long
+one has waited less than the difference between them. So a wait is the holds that were before
+you, each once, and no longer a lottery a re-asker wins: there is nothing to gain by asking early
+and often. (The pause GPU-LOCK.md's rule 9 asks between back-to-back holds is still what lets in
+a tool that takes no ticket, the Blender agent's: with nobody in the line, a re-asker has the
+lock back at once.)
+`tools/gpu-lock.ps1 status` (with `-LockFile D:\workspace\linux-build.lock` for builds) prints the
+holder and the line, and a waiter's own log says where it stands. What it changes for a plan:
+GPU tests beside other agents' now take turns hold by hold, so a long GPU suite run beside five
+others runs at a sixth of its pace instead of all at once after a wait; and a waiter that is
+killed frees its place within 32 s.
+
 ### How long things take
 
 So that a wait can be sized before it is written. Measured on the desktop on 2026-10-04 and, where a row says so, 2026-10-10, with one to four
