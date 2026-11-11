@@ -1,7 +1,40 @@
 // The scene's generator consumers in their declared order (scene_consumers.h).
+#include <systems/renderer/scene_renderer.h>
 #include <systems/world/scene_consumers.h>
 
 namespace engine::world {
+
+namespace {
+
+bool mesh_fits(void* context, u32 clusters, u32 materials) {
+  return static_cast<renderer::SceneRenderer*>(context)->scene().mesh_fits(clusters, materials);
+}
+bool mesh_admit(void* context, u32 mesh, const renderer::PlacementMeshData& data,
+                std::string* error) {
+  return static_cast<renderer::SceneRenderer*>(context)->admit_mesh(mesh, data, error);
+}
+void mesh_retire(void* context, u32 mesh) {
+  (void)static_cast<renderer::SceneRenderer*>(context)->retire_mesh(mesh);
+}
+
+}  // namespace
+
+void connect_scene_meshes(PlacementTiles& placements, renderer::SceneRenderer& renderer,
+                          jobs::JobSystem* jobs) {
+  // The room is the renderer's, as its scene made it; the pace is the world's tunables.
+  const renderer::GpuScene::MeshRoom& room = renderer.scene().mesh_room();
+  TileMeshConfig config;
+  config.first_mesh = room.first_mesh;
+  config.slots = room.slots;
+  config.clusters = room.clusters;
+  config.max_clusters = room.max_clusters;
+  config.cluster_bytes = room.cluster_bytes;
+  config.linger = mesh_linger_tunable();
+  config.admissions = mesh_admissions_tunable();
+  config.admission_bytes = mesh_admission_bytes_tunable();
+  placements.set_meshes(config, TileMeshSink{&renderer, &mesh_fits, &mesh_admit, &mesh_retire},
+                        jobs);
+}
 
 void add_scene_consumers(World& world, GroundTiles* ground, PlacementTiles* placements) {
   // Ground first: activation calls consumers in registration order, so a tile's ground is built

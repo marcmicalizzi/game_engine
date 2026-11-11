@@ -36,11 +36,30 @@ bool load_generated_mesh(const std::string& path, const SceneDesc& desc, u64 exp
     error = registry.unknown(path, name);
     return false;
   }
+  // **A recipe handed, not written** (R142; scene_gen.md, "A tile's meshes"): the bytes a placement
+  // generator gave for this path are the file, and nothing is read. The path may have been resolved
+  // against the scene's directory since the generator named it, so it matches by its end.
   std::string text;
-  const io::Status status = io::read_file(path, text);
-  if (status != io::Status::Ok) {
-    error = "cannot read " + path + ": " + io::status_name(status);
-    return false;
+  const MeshRecipe* handed = nullptr;
+  for (const MeshRecipe& recipe : desc.recipes) {
+    const bool tail =
+        path.size() > recipe.path.size() &&
+        path.compare(path.size() - recipe.path.size(), recipe.path.size(), recipe.path) == 0 &&
+        (path[path.size() - recipe.path.size() - 1] == '/' ||
+         path[path.size() - recipe.path.size() - 1] == '\\');
+    if (path == recipe.path || tail) {
+      handed = &recipe;
+      break;
+    }
+  }
+  if (handed != nullptr) {
+    text = handed->bytes;
+  } else {
+    const io::Status status = io::read_file(path, text);
+    if (status != io::Status::Ok) {
+      error = "cannot read " + path + ": " + io::status_name(status);
+      return false;
+    }
   }
   const std::span<const u8> bytes(reinterpret_cast<const u8*>(text.data()), text.size());
   // A vine's or a cover's host (docs/subsystems/cover.md) is read through content_build's seam, the

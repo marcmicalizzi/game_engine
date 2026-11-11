@@ -1064,7 +1064,7 @@ bool posts_expand(void*, const scene_gen::Context&, scene_gen::Placements&, std:
 }
 bool posts_meshes(void*, const scene_gen::Context&, Vector<scene_gen::PlacementMesh>& out,
                   std::string*) {
-  out.push_back(scene_gen::PlacementMesh{"post.glb", "post", 0});
+  out.push_back(scene_gen::PlacementMesh{"post.glb", "post", 0, {}, 0.0f});
   return true;
 }
 bool posts_tile(void* state, scene_gen::TileCoord tile, const scene_gen::Context& context,

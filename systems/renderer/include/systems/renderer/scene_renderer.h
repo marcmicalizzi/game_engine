@@ -793,6 +793,13 @@ class SceneRenderer {
   bool set_dynamic_instances(std::span<const SceneInstance> tail, std::string* error) {
     return set_dynamic_instances(tail, {}, error);
   }
+  // **A tile's mesh, admitted and retired between frames** (renderer.md, "Meshes that come and
+  // go"; `GpuScene::admit_mesh`, `retire_mesh`): `mesh` is a slot of `scene().mesh_room()`. An
+  // admission is staged for the next frame to copy and nothing waits for the device; a tail handed
+  // over afterwards may name the mesh. A retirement is the caller's word that no tail instance
+  // names it any more. Refused inside a frame.
+  bool admit_mesh(u32 mesh, const PlacementMeshData& data, std::string* error = nullptr);
+  bool retire_mesh(u32 mesh, std::string* error = nullptr);
 
   // ---- one frame ------------------------------------------------------------------------------
   // Waits for the slot to come free, folds the statistics and timings of the frame that last

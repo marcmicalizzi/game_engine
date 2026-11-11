@@ -57,7 +57,7 @@ bool one_open(const JsonValue&, const Context&, void** state, std::string*) {
 }
 void one_close(void*) noexcept {}
 bool one_expand(void*, const Context& context, Placements& out, std::string*) {
-  out.meshes.push_back(PlacementMesh{"one.glb", "one", 0});
+  out.meshes.push_back(PlacementMesh{"one.glb", "one", 0, {}, 0.0f});
   Placement p;
   p.position.y = context.ground.floor(p.position);
   out.instances.push_back(p);

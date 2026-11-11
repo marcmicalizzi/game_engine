@@ -12,6 +12,7 @@
 // why engine-host keeps a `SceneData` across calls and rebuilds only the GPU side when the
 // settings change.
 
+#include <core/base/macros.h>
 #include <core/base/types.h>
 #include <core/containers/vector.h>
 #include <core/json/json_value.h>
@@ -27,6 +28,7 @@
 #include <systems/renderer/fire.h>
 #include <systems/renderer/terrain.h>
 
+#include <memory>
 #include <optional>
 #include <span>
 #include <string>
@@ -242,8 +244,13 @@ struct StreamedPlacements {
   std::string dir;        // the scene file's directory
   std::string where;      // "scene.json: ruins 0", for a sentence
   // The generator's resident meshes (`scene_gen::PlacementGeneratorDesc::meshes`), in its order, as
-  // scene meshes: a tile's placement of mesh `m` is an instance of scene mesh `meshes[m]`.
+  // scene meshes: a tile's placement of mesh `m` is an instance of scene mesh `meshes[m]`. A
+  // placement of mesh `meshes.size() + k` names the k-th mesh its tile handed
+  // (`scene_gen::Placements::meshes`), which is resident while a tile held names it and not before
+  // (world.md, "A tile's meshes: residency by reference").
   Vector<u32> meshes;
+  // The generator's `tile_meshes`: its tiles hand meshes, so the scene makes room for them.
+  bool tile_meshes = false;
   // For an entry whose placement ids name the whole read's instances (the `authored` entry's: its
   // place in the file's own list plus one), the loaded index of id 1: a placement of id `n` is
   // given `motion_key = motion_key_base + n - 1`, the key the whole read gives it. `~0u`: none.
@@ -348,8 +355,19 @@ struct AuthoredStats {
 };
 
 // What to load: mesh files and instances of them, or one of the procedural scenes above.
+// A mesh handed as its recipe (`scene_gen::PlacementMesh::recipe`; scene_gen.md, "A tile's
+// meshes"): the bytes the mesh generator's file at `path` would hold. The load reads these instead
+// of the file, so a solver's output is never written to be read back.
+struct MeshRecipe {
+  std::string path;
+  std::string bytes;
+};
+
 struct SceneDesc {
-  Vector<std::string> meshes;       // glTF, GLB, or .clusters; one empty path = procedural
+  Vector<std::string> meshes;  // glTF, GLB, or .clusters; one empty path = procedural
+  // The recipes of the meshes above that were handed and not written (`MeshRecipe`), by path. A
+  // whole read's placement entries fill it; empty for every scene whose meshes are all files.
+  Vector<MeshRecipe> recipes;
   Vector<SceneInstance> instances;  // empty: one identity instance of every mesh
   u32 grid_instances = 0;           // n: n x n copies of mesh 0, varied in rotation and scale
   Procedural procedural = Procedural::heightfield;  // which mesh an empty path builds
@@ -602,10 +620,22 @@ struct SceneLoadReport {
   u64 inline_jobs = 0;
 };
 
+// **What a mesh built after the load is built with** (R142; renderer.md, "Meshes that come and
+// go"): the load's own LOD options, derived-data root and material pack, carried on the loaded
+// scene so every host that holds one — the world's placements consumer, the collision — builds a
+// tile's mesh into the cache entry the whole read would have, and finds what the other built.
+struct PlacementMeshOptions {
+  geometry::ClusterLodOptions lod;
+  std::string ddc;
+  bool cache = true;
+  std::string materials;
+};
+
 // A loaded scene: everything the GPU upload reads, and everything a summary reports.
 struct SceneData {
   SceneLoadReport load;
-  geometry::ClusterLodMesh lod;             // every mesh of the scene, merged
+  PlacementMeshOptions mesh_options;  // what a tile's mesh is built with, as the load built its own
+  geometry::ClusterLodMesh lod;       // every mesh of the scene, merged
   Vector<geometry::ClusterMeshPart> parts;  // one per mesh: its clusters and its 16-bit grid
   // The scene's one page table, filled only under `SceneDesc::stream`: every mesh's pages, one
   // after another, with `parts[m].first_page`/`page_count` naming each mesh's run
@@ -655,6 +685,9 @@ struct SceneData {
   bool dynamic = false;
   WorldDesc world;
   Vector<StreamedPlacements> streamed;
+  // Some streamed entry's tiles hand meshes (`StreamedPlacements::tile_meshes`): the GPU scene
+  // makes the room they arrive into (renderer.md, "Meshes that come and go").
+  bool tile_meshes = false;
   // A streamed world's own instances (`AuthoredStreaming`): what was streamed and what kept, and
   // the most pairs one tile of them holds in its innermost form — the least room a tail must have,
   // which `GpuScene::create` accounts with the prefix and the terrain rings' slots before anything
@@ -731,6 +764,11 @@ u32 read_instance_count(const SceneData& scene) noexcept;
 // out once).
 bool make_instance(const SceneData& scene, const SceneInstance& source, u32 first_pair,
                    gfx::InstanceDesc& out, std::string* error = nullptr);
+// The placement alone, through a fit the caller names: what `make_instance` does once it has
+// checked the mesh, and what the GPU scene does for a mesh that arrived after the load (a tile's
+// mesh, whose fit is the identity; renderer.md, "Meshes that come and go").
+void place_instance(const SceneInstance& source, const Mat4& fit, u32 first_pair,
+                    gfx::InstanceDesc& out);
 // The record's hand-off role for `SceneInstance::handoff` and the band it carries (G136;
 // `gfx::set_instance_handoff`, stamp 0): no role, and a zero band, for an instance with none.
 void apply_handoff(gfx::InstanceDesc& out, u8 handoff, u32 band) noexcept;
@@ -742,6 +780,56 @@ void apply_handoff(gfx::InstanceDesc& out, u8 handoff, u32 band) noexcept;
 // can check before it asks.
 bool pairs_after(const SceneData& scene, u32 first_pair, std::span<const SceneInstance> instances,
                  u32 max_pairs, u32& end_pair, std::string* error = nullptr);
+
+// ---- a tile's mesh (R142; renderer.md, "Meshes that come and go") -------------------------------
+//
+// **A mesh that arrives with its tile, built** — everything the GPU scene admits and the collision
+// builds a proxy from, and nothing of the device: its own DAG with offsets from zero and its
+// clusters in the order a whole read's merge leaves them (leaves first), its materials and the map
+// from cluster to material, and its reach on the ground. The same bytes a scene read whole holds
+// for the same recipe, since both come from one cache entry.
+struct PlacementMeshData {
+  geometry::ClusterLodMesh lod;
+  geometry::ClusterMeshPart part;  // of `lod`: every cluster, from zero
+  SourceMesh source;
+  f32 reach = 0.0f;  // `ground_radius` of the mesh as built
+  // Host bytes of the streams a device upload copies, for a caller's accounting.
+  u64 payload_bytes() const noexcept;
+};
+
+// What a host keeps one resident mesh per: over the generator `path` names and the recipe's bytes
+// for a mesh handed as its recipe (so two tiles, or two paths, handing one recipe share one mesh),
+// over the path and its expected hash for a file.
+u64 placement_mesh_identity(const scene_gen::PlacementMesh& mesh) noexcept;
+
+// Builds or finds `mesh` exactly as the load does one of its own (`load_scene`'s per-mesh pass:
+// the mesh generator registry for a recipe or a generator's file, the importer for a glTF, a
+// container as it is; the derived-data cache under `options`). **No device and no scene**: it may
+// run on any thread, and two threads asking for one recipe write the same bytes to the same cache
+// entry. False, with a sentence naming the mesh, for a generator this executable does not carry, a
+// recipe its generator refuses, or a mesh that deforms (skinned or morphed: a mesh that comes and
+// goes is drawn rigid).
+bool load_placement_mesh(const scene_gen::PlacementMesh& mesh, const PlacementMeshOptions& options,
+                         PlacementMeshData& out, std::string& error);
+
+// **The ground before its cuts, for `scene_gen::Context::uncut_ground`** (scene_gen.md, "The
+// formation and the ground before its cuts"): the terrain entry with its tile set's cuts removed,
+// as a second provider made on the first ask and kept. `present()` only for a terrain that has
+// cuts; every host that builds a `Context` hands `hook()` when it is. Thread-safe.
+class UncutGround {
+ public:
+  explicit UncutGround(const TerrainDesc& terrain);
+  ~UncutGround();
+  ENGINE_NON_COPYABLE(UncutGround);
+  bool present() const noexcept { return present_; }
+  scene_gen::Context::UncutGround hook() noexcept;
+
+ private:
+  struct State;
+  static bool get(void* context, scene_gen::Ground& out);
+  bool present_ = false;
+  std::unique_ptr<State> state_;
+};
 
 // Re-derives the scene's bounding sphere — what the camera frames and what every distance, bias
 // and light reach scales with — from the instances as they stand. `load_scene` ends with it.

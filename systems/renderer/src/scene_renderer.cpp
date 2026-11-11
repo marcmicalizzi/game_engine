@@ -1415,6 +1415,27 @@ bool SceneRenderer::resize(u32 width, u32 height, std::string* error) {
   return !linear_wanted() || create_linear_target(error);
 }
 
+// A tile's mesh, in and out (renderer.md, "Meshes that come and go"): the scene stages the copies
+// and the records, and the next frame's "terrain upload" and "record upload" passes write them.
+bool SceneRenderer::admit_mesh(u32 mesh, const PlacementMeshData& data, std::string* error) {
+  if (scene_ == nullptr) return false;
+  if (recording_) {
+    if (error != nullptr) *error = "a mesh is admitted between frames, not inside one";
+    return false;
+  }
+  return scene_->admit_mesh(mesh, data, error);
+}
+
+bool SceneRenderer::retire_mesh(u32 mesh, std::string* error) {
+  if (scene_ == nullptr) return false;
+  if (recording_) {
+    if (error != nullptr) *error = "a mesh is retired between frames, not inside one";
+    return false;
+  }
+  scene_->retire_mesh(mesh);
+  return true;
+}
+
 bool SceneRenderer::set_dynamic_instances(std::span<const SceneInstance> tail,
                                           std::span<const DynamicBlock> blocks, std::string* error,
                                           bool compact) {
@@ -3846,6 +3867,8 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
     gfx::RgBuffer clusters, lods, quantized, attributes, triangles, meshes, vertices, indices8;
     gfx::RgBuffer instances;  // an instance moved, or a slot turned on at its chunk's corner
     gfx::RgBuffer staging;    // this frame slot's record staging
+    // An admitted mesh's material indices and materials (R142; "Meshes that come and go").
+    gfx::RgBuffer cluster_materials, materials;
   } tg{};
   const auto import_read = [&](const char* name, const gfx::BufferResource& buffer) {
     return buffer.buffer.valid()
@@ -3863,6 +3886,11 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
       tg.vertices = import_read("ring vertices", scene.vertices);
       tg.indices8 = import_read("ring indices8", scene.indices8);
     }
+    // A scene with a mesh room copies an admitted mesh's material indices and materials too.
+    if (scene.mesh_room().slots != 0) {
+      tg.cluster_materials = import_read("mesh cluster materials", scene.cluster_materials);
+      tg.materials = import_read("mesh materials", scene.materials);
+    }
   }
   if (mesh_records) tg.meshes = import_read("mesh records", scene.meshes);
   if (instance_records) tg.instances = import_read("instance records", scene.instances);
@@ -3873,7 +3901,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
   auto read_ring_geometry = [&](gfx::PassBuilder& b, gfx::Access access) {
     for (const gfx::RgBuffer handle :
          {tg.clusters, tg.lods, tg.quantized, tg.attributes, tg.triangles, tg.meshes, tg.vertices,
-          tg.indices8, tg.instances}) {
+          tg.indices8, tg.instances, tg.cluster_materials, tg.materials}) {
       if (handle.valid()) b.read(handle, access);
     }
   };
@@ -4114,8 +4142,9 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
             b.write(rg_terrain_copies[c].field, gfx::Access::TransferWrite);
           }
           if (terrain_geometry) {
-            for (const gfx::RgBuffer handle : {tg.clusters, tg.lods, tg.quantized, tg.attributes,
-                                               tg.triangles, tg.vertices, tg.indices8}) {
+            for (const gfx::RgBuffer handle :
+                 {tg.clusters, tg.lods, tg.quantized, tg.attributes, tg.triangles, tg.vertices,
+                  tg.indices8, tg.cluster_materials, tg.materials}) {
               if (handle.valid()) b.write(handle, gfx::Access::TransferWrite);
             }
           }
@@ -4207,6 +4236,9 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
           [&](gfx::PassBuilder& b) {
             b.read(rg_table_staging, gfx::Access::ComputeRead);  // the list of instances
             b.read(rg_instances, gfx::Access::ComputeRead);
+            // The mesh records it reads each instance's cluster count from, when this frame wrote
+            // any (a mesh admitted with the tile whose instances are being expanded).
+            if (tg.meshes.valid()) b.read(tg.meshes, gfx::Access::ComputeRead);
             b.write(rg_pair_table, gfx::Access::ComputeWrite);
           },
           [&](gfx::CommandList cb, gfx::RenderGraph&) {
