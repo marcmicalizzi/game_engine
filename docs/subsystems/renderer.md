@@ -2191,16 +2191,23 @@ things follow:
   continuous across cells. A corner the surface never passes through (the layer above a floor) has
   no cell and counts for nothing, where stage 2's confidence counted it as unknown and sent up to
   half of every floor's read to the parent for good — so stage 2 read two levels at most pixels,
-  and this read **one where the neighbourhood has converged**: eight lookups, which is where the
-  read got cheaper (below). One guard: where the cells that are there hold under an eighth of the
+  and this read one where the neighbourhood has converged: eight lookups. (That did not make the
+  read cheaper on the forest, as it was expected to: the crowns' leaf-sized cells never hold 255
+  samples, so their walk reads two to four levels for good, and the resolve is 0.6 to 1.6 ms
+  dearer at 3840×2160; the page has the pair.) One guard: where the cells that are there hold under an eighth of the
   weight between them (a point's own cell holds that alone) the level is taken by that much less,
   or a mean extrapolated from one far corner would be taken whole until the point's own cell
   appeared.
-- **What is shown first is coarser, not noisier.** A surface first seen is lit from the 40 and
-  80 cm cells and sharpens to its own over twenty-three frames, a 255th of the read a sample. The
-  change is the light's detail between one level and the next, not its noise; on the forest's
-  turn it is under the cache's steady floor from the first frame (the page's table).
-
+- **What is shown first is coarser, not noisier — and on the forest that is seen.** A surface
+  first seen is lit from the 40 and 80 cm cells and sharpens to its own over twenty-three frames,
+  a 255th of the read a sample. In the box the change is under the cache's steady floor. On the
+  v40 forest's turn it is not: a far crown's coarse cells (3 to 6 m) average the canopy's lit
+  outside with its darker inside, the light's detail in a forest being mostly occlusion, so the
+  far forest stands in the turn's first frame as **one band a little brighter than it will be**
+  (+0.58 of a luma step over the picture) and darkens over twenty frames, where main showed
+  speckle of the same mean size. The speckle is gone and the band is new; the count a level is
+  read whole at is what sets how long it lasts, it was set on the box, and the page has the
+  forest's numbers at the other counts.
 **A cell remembers 256 samples or sixteen frames of them, the longer** (`gfx::gi_history`,
 `k_gi_history_frames`). The fold's average was capped at 256 samples, and a cell that took more
 than that in one frame kept none of its past: its mean was a fresh draw every frame. That is every
@@ -2279,9 +2286,16 @@ hold every level a tile can be seen at (the level follows the eye's distance) fo
 position, or only the coarse levels — which are the ones a frame warms in one step. What it would
 still add is nothing a viewer has been shown to see; it is not built.
 
-**What it costs** is on [the page](../experiments/gi-cache-2026-11-07.md#stage-5-the-light-is-already-there),
-as pairs from two executables in one lease.
-
+**What it costs, and where it stands** ([the page](../experiments/gi-cache-2026-11-07.md#stage-5-the-light-is-already-there)
+has the pair and the curves). At 3840×2160 with traced primaries and shadows the stage costs
+**1.4 ms a frame on the lake view and 2.4 on the forest view**: 0.6 to 1.6 of read, 0.5 to 0.6 of
+the samples round the eye, 0.2 of their volume. In the box a turn, a cut and (from the
+twenty-fourth frame) a load stand inside twice the cache's steady floor, where the plain read
+stands eighteen floors off; on the forest the turn's variance is gone from the ground and the
+near trees and its change between frames is a third less, the flight's dark start is gone, and
+the far forest's bright first frames are new. **The owner's target is not met on the forest**,
+and the stage is `in progress` on the roadmap: the count a level is read whole at, the read's
+cost on crowns, and a measurement that holds the clouds still are what is next.
 ## The sun's day
 
 *A scene that names a sky takes its sun, its moon and its sky from it instead, on the world's clock ([The sky](#the-sky)); everything in this section is the stand-in's, which every other scene still draws, to the bit.*
