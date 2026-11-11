@@ -3,12 +3,13 @@
 **Purpose.** Channels from the ground's drainage (roadmap W86; the owner, 2026-11-06: "running water —
 rivers, downhill rivers, waterfalls"). The placement generator `channels` routes the flow over a
 lattice of the ground it is handed, begins channels where contributing area and slope say a channel
-begins, follows them downstream, gives each point a bankfull width and depth, and **dresses** the
-channel with a gravel bed skin and bars of finer sediment, so a riverbed without water reads as
-eroded. Since W89 the channel is **cut into the ground** below its floodplain: `engine-content
-channels --cut` writes the terrain's `cuts` beside the water's description, the tile set is built with
-them ([tileset](tileset.md#channels-cut-into-the-ground)), and the bed and bars lie in the cut
-([The cut](#the-cut)). The same network is the description the flowing water
+begins, follows them downstream, and gives each point a bankfull width and depth. Since W89 the
+channel is **cut into the ground** below its floodplain: `engine-content channels --cut` writes the
+terrain's `cuts` beside the water's description and the tile set is built with them
+([tileset](tileset.md#channels-cut-into-the-ground); [The cut](#the-cut)). Since W93 the bed, the
+bars and the flood bed are that cut's own form, and what the generator places is the boulders of
+the steep reaches ([What it places](#what-it-places)); W86 dressed the trough with a gravel slab,
+bar lenses and bank berms, none of which is laid any more. The same network is the description the flowing water
 draws: `engine-content channels` writes it as `engine.scene.WaterChannel` blocks. The published
 models every number comes from, and each constant's range, are on the grounding page,
 [experiments/channels.md](../experiments/channels.md).
@@ -24,9 +25,10 @@ meshes are recipes the mesh-generator registry builds through the derived-data c
 readers place them as they place any generator's instances.
 
 **Owned data.** The network (`ChannelNetwork`: the lattice's heights, the filled heights, D8
-receivers, contributing area, channel cells, heads and links with their lines) is computed when an
-entry is opened and is the source of truth for every piece and every `WaterChannel` block made from
-it; the recipes (`<ddc>/channels/channel-<hash>.channel.json`) are derived data.
+receivers, contributing area, channel cells, heads and links with their lines) is planned once,
+kept as a derived file (`<ddc>/channels/plan-<key>.channel-plan`; [One plan](#one-plan)) and is the
+source of truth for every cut, every piece and every `WaterChannel` block made from it; the recipes
+(`<ddc>/channels/channel-<hash>.channel.json`) are derived data too.
 
 ## The network
 
@@ -57,51 +59,144 @@ heights, and every transcendental is `core/math/deterministic.h`'s, so the netwo
 any thread count, any tile order and on every toolchain. `channels: the same network at one job and
 six` holds the two thread counts to the byte.
 
+## One plan
+
+(2026-11-10, roadmap W93, continued; the POC's solver needs, 2.1 item 9: "the network planned
+once, not every load".) **The network is one object, made once from the ground before its cuts
+and kept as a derived file**, and everything that needs a channel's line reads it: the cut
+(`terrain_cuts_json`), the water's description (`water_channels_json`), through that description
+the placements' corridor ([scene_gen](scene_gen.md#exclusion)), and what the generator still
+places (`place_pieces`). Until this the subcommand planned the network over the uncut ground and
+wrote the cut and the water from it, the tile set was built with the cut, and then the placement
+generator **planned again at every load over the cut ground** and got another line: near the
+cut's, not on it, since the fill, the low-pass, the meander rule and the trough test all ran again
+over ground the first plan had lowered. Everything laid from the second line lay beside the
+first's: the bed slabs up the banks and across the flood bed as plates (item 8), and it cost the
+load the whole plan (24 to 32 s on v35).
+
+- **The file.** `<derived-data root>/channels/plan-<key>.channel-plan`, beside the recipes the
+  generator already writes there (`derived_dir`: the host's `--ddc`, else the repository's
+  `ddc/` found from the scene's directory, else `ddc/` beside the scene). It holds the links
+  with every per-point array, the heads and the counts, as integers and IEEE bits, little-endian,
+  closed by a hash of the whole (`plan_bytes`, `read_plan`); the lattice's own arrays (heights,
+  fill, receivers, areas) are not in it, since no reader of a plan asks them (the one that did,
+  the confluences' order in the water's description, now reads each link's `area_end`). A file
+  that is short, of another `k_channels_version`, changed, or whose arrays disagree is refused
+  and never read as a plan.
+- **The key is what the plan was made from**: the layer's canonical JSON with `plan` cleared,
+  `k_channels_version`, the world's seed, the ground's height at every point of the layer's
+  lattice to the micrometre, and whether a water body covers each (`ensure_plan`). The lattice is
+  what the routing reads; the line's own tests (the trough, the banks, the flood bed's walk) ask
+  the ground between its points, so two grounds that agree at every lattice point and differ
+  between them would share a key, which for a ground sampled every 4 m or finer is a ground that
+  is the same one.
+- **An entry on uncut ground names no plan.** `ensure_plan` samples the lattice, keys it, reads
+  the file on a hit and plans and writes it on a miss: the first load of a world plans, every
+  load after it reads.
+- **An entry on cut ground names its plan** (`ChannelLayer.plan`, the 16 hexadecimal digits
+  `engine-content channels` prints and writes under `plans`, pasted into the entry's `params`
+  beside the `cuts` and the `water_channels`). The cut ground's heights are not what the plan
+  was made from, so the key cannot be made again from them, and **the generator never plans over
+  a ground its own cuts lowered**: it reads the named file, whatever the ground, and checks that
+  the plan records the entry's own layer and the world's seed. A named plan that is not in the
+  directory, or that was made from another layer or seed, is refused with the command that makes
+  it. That is a load that stops on a machine whose derived data was thrown away, where the tile
+  set and the masks would be built again: they are rebuilt from the scene's heightfield, and the
+  plan needs the ground before the cuts, which a placement generator is not handed
+  (`scene_gen::Context` carries the ground it stands on and nothing of the terrain entry). An
+  entry that carries pasted cuts and names no plan plans over the cut ground as every entry did
+  before, since the generator cannot tell a cut ground from another; the subcommand's output is
+  what says to paste the key.
+- **The subcommand** clears the entry's `plan` and the terrain's `cuts`, opens the ground before
+  its cuts and asks `ensure_plan`, so a second run over the same ground and layer plans nothing;
+  its summary carries `plans` (the keys), `planned` (how many this run made) and `plan_s`.
+- **`plans_made()`** counts the planner's runs in a process; the tests hold a second ask, a load
+  that names its plan and the generator's `open` on cut ground to none.
+
+**Measured** (2026-11-10, `msvc-release`, the machine at 24 to 25 % CPU with other agents
+building, so upper bounds; `plan_s` is the subcommand's own clock round `ensure_plan`, one thread):
+
+| Ground | Lattice | Line | Plan made | Plan read, keyed from the ground | The file |
+|---|---|---|---|---|---|
+| W93's scratch valley (0.098 km², 7 links) | 6,305 points | 482 m | 0.023 s | 0.013 s | 68 KB |
+| a 4.1 km ridged heightfield at 2 m (16.8 km², 305 links, 167 heads) | 1,050,625 points | 63.6 km | 1.64 s | 0.49 to 0.54 s | 9.2 MB |
+
+A load before this made the plan every time (the first column of times, and on v35 24 to 32 s,
+where every ground query goes through a 2.6 GB tile set). A load now reads the file: keyed from
+the ground it costs the lattice's heights and a hash (the second column, most of it the 1.05
+million heights), and **an entry that names its plan asks the ground nothing** and reads the
+file's bytes, about 145 bytes a metre of line at the default 0.5 m step. By the plan's own
+scaling on the second ground (18 ms a kilometre of line beyond the lattice) a world of 10 km of
+stream plans in about 0.3 s and its plan is a 1.5 MB file; v35's figure is 20 to 100 times that
+a kilometre, which is the tile set's cost a query and not the planner's, and it is the cost a
+named plan no longer pays at all. Whole-process, the subcommand on the scratch valley is 0.78 s
+before and after with the plan cached (the tile set's open, the pieces and the summary's
+measurements, not the plan), and on the larger ground 6.2 s before, 5.9 s making the plan and
+4.7 s reading it.
+
+**Still pasted.** The second half of item 9, "the cut applied by the generator, not pasted from a
+subcommand", is not built: the terrain's `cuts`, the scene's `water_channels`, the entry's `plan`
+and, where the layer names its bed's material, the masks' `mask_regions` are four things the
+author pastes from one output. Closing it means the ground is made in
+two steps (the ground before the cuts, the plan, the cut ground) and the scene reader takes the
+water from the plan, which are the tile provider's and the scene reader's to change, with a
+registration point a placement generator contributes a ground edit through.
+
 ## What it places
 
+**What is an object of its own, and nothing else** (W93, continued, 2026-11-10): the boulders of a
+step-pool reach's steps and of a cascade's clusters. **The bed and the bars are the ground's.**
+W86 laid a gravel slab on the bed and a lens of finer sediment on it as bars; W89 cut the channel
+into the ground and narrowed the slab to the cut's flat bed; W93 gave the cut a point bar and a
+flood bed of its own and laid skins on them. Each of those was a mesh standing on a ground that
+already had the shape, and each showed as what it was: plates with walls wherever its line parted
+from the cut's (the POC's item 8, and the pale plates on the flood bed and the sliver in a bank on
+W93's scratch scene), a smooth slab where a bar should be sediment (item 6). With
+[one plan](#one-plan) there is no second line to lay them from, and with the cut's own section
+there is no form left for them to add, so they are gone: the generator places no bed and no bar on
+any reach, and the test "nothing is laid on the bed" holds a pool-riffle and a plane-bed valley to
+no piece at all. What a slab carried that the ground does not yet is the bed's **material** (a
+gravel's texture and its centimetre relief), which is the terrain's to draw through its masks
+([The flood bed](#the-flood-bed)), and the riffle's rise, which is the cut's section now.
+
 `place_pieces` cuts each link's line into pieces of at most `piece_m` (32 m), each standing at its
-first point's whole millimetre with y the ground there, filed in the world tile that point is in, and
-gives each piece up to three meshes, **in link order, piece order, then bed, bars, boulders** (W90;
-W86's banks are placed no more) — the order the ids (1, 2, …) are given in, so a tile's placements
-carry the same ids whichever tile came first. A tributary's pieces stop at its trunk's banks, and a
-reach decides which parts it has ([Reaches](#reaches)): the bed is a slab a run of rows whose reach
-has a bed.
+first point's whole millimetre with y the ground there, filed in the world tile that point is in,
+**in link order, then piece order** — the order the ids (1, 2, …) are given in, so a tile's
+placements carry the same ids whichever tile came first. A piece with no boulder is not placed. A
+tributary's pieces stop at its trunk's banks, and a reach decides what it has
+([Reaches](#reaches)): a row of domes across the bed at each step-pool crest, each about the
+step's height across; one to three clasts at each of a cascade's clusters; nothing on any other
+reach. The bed they stand across is the cut's flat bed between its banks' toes, a quarter of the
+width where the section is a V.
 
-- **The bed.** A slab the width's wide, `columns` points across (one per 0.4 m, 3 to 17, constant
-  along a link so the pieces' joins agree), its top the ground plus 2 cm plus the gravel relief (up to one
-  median grain, `D50 = h S / (1.65 τ*bf)`, clamped to 0.5–3 cm, a hash of the vertex's world place)
-  plus the riffle's rise (`riffle_rise` of the depth at the riffles of the pool-to-pool rhythm,
-  highest mid-bed); its two edge columns down at the ground plus 2 cm, where the banks begin; its
-  bottom 25 cm under the ground.
-- **The bars.** One every half a pool-to-pool length, alternating sides along a straight reach and
-  on the inside of a bend; a lens `bar_width_widths` wide and `bar_length_widths` long with its outer
-  edge at the bed's, its crown `bar_rise` of the depth above the bed's relief. None on a bed narrower
-  than `bar_min_width_m`.
 - **No banks** since W89. W86 laid a berm each side that rose *above* the ground, so every stream
-  read as a canal between levees, its 32 m pieces showed as blocks with gaps on a bend, and its faces'
-  UVs smeared. The banks are now the cut's own faces ([The cut](#the-cut)): ground, continuous
-  round a bend, textured as the ground is. The layer's `bank_*` fields still read and are checked, and
-  place nothing.
+  read as a canal between levees. The banks are the cut's own faces ([The cut](#the-cut)).
+- **No bed and no bars** since W93's continuation, as above. `ChannelLayer` version 7 has none of
+  the fields that shaped them (`riffle_rise`, `shields_bankfull`, `bar_rise`, `bar_width_widths`,
+  `bar_length_widths`, `bank_min_width_m`, `bank_height`, `bed`, `bars`, `banks`), and a scene that
+  names one is refused by the reader.
 
-The bed's width, and the bars' outer edge, are the cut's **flat bed** (`bank_slope`'s trapezoid
-below), a quarter of the width at least where the section is a V, so the gravel lies on the bed and
-not up the banks.
-
-Each part is a **recipe** (`engine.channels.ChannelPiece`): its slabs with every height decided here,
-in the piece's frame, and its look. The mesh generator `channel` builds a recipe into one closed mesh
-per piece — each slab its top, its bottom and four walls, welded by position, outward — and a
-container through the derived-data cache, exactly as the deposits' patches are built. A recipe's file
-is named by its canonical JSON's hash, so two pieces that say the same thing share one entry.
+Each piece is a **recipe** (`engine.channels.ChannelPiece`): its slabs (a boulder is a 7 by 7 dome
+with a buried bottom) with every height decided here, in the piece's frame, and its look. The mesh
+generator `channel` builds a recipe into one closed mesh per piece — each slab its top, its bottom
+and four walls, welded by position, outward — and a container through the derived-data cache,
+exactly as the deposits' patches are built. A recipe's file is named by its canonical JSON's hash,
+so two pieces that say the same thing share one entry. **Merged**: a piece's boulders are one
+mesh, so a 32 m stretch of steps is one instance however many clasts it has; a dome is 72
+triangles on top, 72 below and 48 in its walls, and the cluster LOD DAG of the piece is its far
+form (there is no card or impostor beyond it: at the distance a 0.5 m clast is a pixel the DAG's
+coarsest cut is a few triangles).
 
 ### Materials
 
-Each part names a material-pack role (`surface.role`) or, empty, takes the first its pack has of a
-list: the bed `gravel/bed`, `rock/gravel`, `rock/granite`; the bars `sand/bar`, `soil/parent`,
-`soil/subsoil`; the banks `soil/subsoil`, `soil/topsoil`. The set is sampled at `surface.tile_m` in
-metres of world x and z (each piece's UVs carry its origin modulo 1,024 m, so the texels run on across
-the joins) and `Stochastic` by default (R131). With a pack, `surface.tint` multiplies the set (absent: the bed 0.62, 0.60, 0.56, the banks 0.8, 0.75, 0.7, the bars none). With no pack, the part's flat colour (`surface.color`,
-or the part's own: grey gravel, pale bar sand, dark soil). **The POC's v30 pack has no gravel role**:
-a bed there samples `rock/granite`; a gravel set in the pack is a request on its owner.
+The boulders name a material-pack role (`boulders.role`) or, empty, take the first their pack has
+of `rock/boulder`, `rock/granite`. The set is sampled at `boulders.tile_m` (1.2 m) in metres of
+world x and z (each piece's UVs carry its origin modulo 1,024 m, so the texels run on across the
+joins) and `Stochastic` by default (R131). With a pack, `boulders.tint` multiplies the set (absent:
+0.7, 0.68, 0.65). With no pack, the flat colour (`boulders.color`, or a grey). **The bed's and the
+bars' materials are the terrain's**: the roles a pack would need for them are `gravel/bed` and
+`sand/bar`, which no pack here has (the engine's one pack holds `rock/sandstone` and the palm's
+sets; the POC's v30 pack has no gravel role either).
 
 ## In a scene
 
@@ -111,9 +206,11 @@ a bed there samples `rock/granite`; a gravel set in the pack is a request on its
             "head_threshold_m2": 1500}}
 ```
 
-The entry is opened once: the network is planned, every piece's recipe written under the host's
+The entry is opened once: its plan is read (or, for an entry on uncut ground whose plan is not
+cached yet, made; [One plan](#one-plan)), every piece's recipe written under the host's
 derived-data root's `channels/` (else the repository's `ddc/`, else `ddc/` beside the scene), and
-`expand`/`tile`/`occupies` hand out what was decided. A moving ground is refused (the dunes have no
+`expand`/`tile`/`occupies` hand out what was decided. An entry of a scene whose ground carries the
+plan's cuts names the plan: `"plan": "<the key engine-content channels printed>"`. A moving ground is refused (the dunes have no
 drainage to dress). Every field, its default and range is in `schemas/channels.schema`.
 
 ## The water's description
@@ -186,17 +283,17 @@ cut.
 **The network is planned over the ground before its cuts.** The subcommand clears the scene's
 `tiles.cuts` before it opens the ground, so writing the cuts of a scene that already carries them
 gives the same file again (the end-to-end test asserts it). The placement generator, inside a scene
-whose set is cut, plans over the cut ground: its lines follow the troughs the cuts deepened, and its
-bed and bars, which stand on the ground at every vertex, lie in the cut; it does not know the cuts and
-writes nothing of them.
+whose set is cut, **reads that same plan and never makes another** ([One plan](#one-plan)): until
+W93's continuation it planned again over the cut ground, and its lines followed the troughs the
+cuts deepened without being the cuts' lines.
 
-**Bed and bars: pieces, not mask paints** (the brief's step 2). The bed and the bars stay recipes
-laid on the cut ground — the bed narrowed to the cut's flat bed, no bank piece — rather than terrain
-mask paints (`gravel/bed` and `sand/bar` laid along the cut by the masks): a piece carries the
-gravel's relief and the riffles' rise, which a paint cannot; it costs none of the masks' four layers a
-tile, two of which a gravel bed and a sand bar would take wherever a channel crosses a meadow, a trail
-or a shore (the budget T72's check holds); and it needs no mask cook when a channel moves. The cost is the slab's edges, which on
-the cut lie at the banks' toe, a few centimetres over the ground.
+**Bed and bars: the ground, not pieces** (W93, continued; W89's brief chose the other way and this
+reverses it). W89 kept the bed and the bars as recipes laid on the cut ground, because a piece
+carried the gravel's relief and the riffle's rise and cost none of the masks' four layers a tile.
+What it cost was seen on every scene since: a slab is laid from a line and stands on the ground at
+its vertices, so it showed as plates wherever its line was not the cut's or the ground between two
+of its vertices was not a plane. The riffle's rise is the cut's section now, and the bed's material
+belongs with the ground it is ([What it places](#what-it-places)).
 
 **Seen** (2026-11-08, `msvc-debug`, 1920×1080, `--raster hw --shadows rt`, world tiles with v35's
 rings): a synthetic flat ground at 25 cm with a 200 m link bending 25 m, 3 m wide and 0.6 m to its
@@ -222,6 +319,335 @@ the 16 poses, took 719 s; the second, two frames, 500 s.
 its slope — and since W90 their pieces follow their reach ([Reaches](#reaches)): nothing laid on a
 colluvial or bedrock reach, boulder steps on a step-pool reach and boulder clusters on a cascade
 (W91).
+
+## The section
+
+(2026-11-10, roadmap W93; the POC's solver needs, 2.1 items 1, 6 and 8: "a lowland stream reads as
+a canal" through three updates, because W89's cut was one trapezoid along a reach.) **The cut's
+section follows the line.** `plan_channels` gives every point of a link an **asymmetry**, -1 to 1
+(`ChannelLink::asym`; positive where the line bends left, toward (-dz, dx)), and `terrain_cuts_json`
+writes the section it stands for (`engine.scene.TerrainCut` version 2: `bank_slope_left`,
+`bank_slope_right`, `bank_round`):
+
+- **At a riffle** (asymmetry 0, the crossing between two bends) the section is W89's trapezoid, half
+  `riffle_widening` (0.12) wider than the hydraulic geometry's width and that much shallower, so its
+  area is the hydraulic geometry's.
+- **At a bend's apex** (asymmetry 1 or -1) it is a **triangle of the same area**: the outer bank a
+  cut bank at `cut_bank_slope` (3), the thalweg at its toe twice the mean depth under the top, and
+  the **point bar** rising from there at a few degrees to the inner bank's top; half
+  `riffle_widening` narrower. Between the two the thalweg and the outer bank go linearly with the
+  asymmetry and the inner bank's run is what keeps the area, so the section's area is the hydraulic
+  geometry's at every point ([the grounding](../experiments/channels.md#the-section) has the
+  formula and where each number is from).
+- **The pool is under the bed's line.** `ChannelLink::bed` (the cut's bed W89 to W91 planned, which
+  the water stands on) is the riffles' bed; a pool lowers the thalweg below it and a riffle's
+  shallower section stands a few centimetres over it. The water's surface is where it was, so a
+  pool is deep water against the outer bank, the bar's upper part stands dry above it, and a riffle
+  is shallow from bank to bank. The water's description is unchanged: its `depth_m` is the depth
+  over the bed's line, which is what Manning's speed is read from (a pool's greater depth would
+  speed its water up, and a pool is slow).
+- **The banks' tops are rounded** over `bank_round` (0.75) of the depth: the cut's face and the
+  ground meet by a smooth minimum, not a crease ([tileset](tileset.md#channels-cut-into-the-ground)).
+- **The faces run out to the ground.** W89's face ended a depth over its top; where the ground
+  beside the channel stood higher (a channel in a steep-sided valley, a line off its trough's
+  floor) the cut ended in a wall, and the lattice drew the wall as **a row of teeth along the
+  lip**: the POC's item 7, reproduced on this row's scratch scene in a valley with 17- to
+  19-degree sides. A rounded cut's faces go on past that end over one more run of their own,
+  steepening, and meet the ground wherever it is ([tileset](tileset.md#channels-cut-into-the-ground),
+  "A face that runs out").
+
+**Where the asymmetry comes from.** A bend's share is the line's mean curvature over **four
+widths** about the point — the turn between its heading two widths above and two below, over that
+length — times the width times `bend_radius_widths` (3: Leopold & Wolman's radius of 2 to 3
+widths is the fully asymmetric bend). Four widths, not the line's own 0.5 m step, because a bar
+and its pool are built by the flow along a bend and not by a kink: read point by point, the kinks
+the trough test left put a pool every 2.7 widths, alternating sides (they are low-passed out of
+the line now, [The planform](#the-planform), and the window stays). Where a stretch
+does not bend (the mean bend over a pool-to-pool length either way under 0.2 to 0.5) the asymmetry
+**alternates sides** every `pool_riffle_widths` (6), a sine of the link's own phase, to
+`alternate_asymmetry` (0.6): a straight channel's thalweg swings from bank to bank and has its
+pools too. By reach: pool-riffle and dune-ripple reaches take both; a **plane-bed** reach half a
+bend's and no alternation (Montgomery & Buffington's plane bed has no free bars; a bend still
+forces a pool); a knickpoint, a fan, a tributary's last points inside its trunk's banks, a bed
+narrower than `bar_min_width_m` and the first and last two widths of a link take none; and
+step-pool, cascade, bedrock and colluvial reaches have a section of their own
+([The steep reaches](#the-steep-reaches)). The share is eased by two binomial passes, so a
+reach's edge is not a step in the section.
+
+**The pool lies downstream of its bend's apex**: the section at a point is the bend's one width
+upstream of it — 0.36 of the channel distance from an apex to the next inflection, the mean over
+a surveyed river's bends, which for a meander 10.9 widths long is a width
+([the grounding](../experiments/channels.md#the-steep-reaches-the-pools-place-and-three-numbers-read-again)).
+W93's first cut put the pool at the apex.
+
+**Nothing is laid on the section.** W93's first cut of this kept a bed slab, each row finding its
+bed with nine ground probes, and a bar skin below full asymmetry, because the generator planned
+its own line over the cut ground and the slab had to be fitted to a cut it did not know. With
+[one plan](#one-plan) the line is the cut's, and the slab and the skin are gone with the reason
+for them ([What it places](#what-it-places)). The switch back to W89's trapezoid
+(`section_asymmetry` 0), which kept W86's lens code alive, is gone too: every cut the generator
+writes is shaped, with a slope a bank a point, a rounded top (`bank_round`, 0.1 to 1) and faces
+that run out; and `TerrainCut` itself (version 3) refuses a rounding of 0, so a cut written by
+hand cannot ask for the crease and the wall either
+([tileset](tileset.md#channels-cut-into-the-ground)).
+
+**Measured** (12 seeds on the test valley, `domain/channels/tests/channels_tests.cpp`): at 327 of
+341 bends the outer bank is the deeper side (551 of 553 before the kinks were taken out of the
+line and the pool moved a width downstream of the apex, where the test's bend is still defined);
+pools stand **6.6 widths** apart on average (149 spacings, 2.7 to 24; Keller & Melhorn's 5 to 7); the section's area is the hydraulic geometry's within 4 % at
+every point whose bed runs through no rise; a riffle at its widest is 1.128 of a pool at its
+narrowest.
+
+**What a second client of the cut would add** is on the cut's own header
+(`domain/tileset/include/domain/tileset/cuts.h`): the profile across a line, its left and right
+and its change along the line are a trail's tread or a terrace as they stand; a fill rule (the
+edit only lowers), a top per side and a scene block of its own are what they lack.
+
+## The flood bed
+
+(2026-11-10, roadmap W93; the POC's solver needs, 2.1 item 3: "a river's bed is much wider than its
+water", and the page's own "the valley's confinement is not read for the reach".) **The reach reads
+the valley's confinement from the ground, and the cut becomes a compound section**: the channel
+inside a flood bed, bounded by a scarp each side where the valley leaves room for one
+(`plan_flood`, `ChannelLink::flood_left`, `flood_right`, `entrenchment`).
+
+- **The confinement.** At a station every bankfull width along the line, the ground is walked
+  across the line each way, from the line out in steps of a sixth of the width (0.5 m at least), to
+  where it first stands `flood_height_depths - 1` thalwegs over the ground at the line: Rosgen's
+  **flood-prone elevation**, twice the greatest bankfull depth over the thalweg (the stated height
+  above the bed: two thalwegs, so one over the top of the bank). The crossing is found between the
+  two steps that bracket it. The two distances over the bankfull width are the **entrenchment
+  ratio** (`entrenchment`; Rosgen 1994). A side whose ground falls a thalweg *under* the line's
+  first is not a valley's floor — the line is perched on a slope — and its walk ends there. The
+  walk stops at the furthest a bed could reach, so a ratio past that is recorded as that (5 at the
+  defaults). **A bed is as narrow as the narrowest reading near it**: each station's reach is the
+  least over itself and its two neighbours either way, because the line kinks and a walk across a
+  kinked line can run along the valley and read a floor several times as wide as it is (on this
+  row's scratch scene that put a scarp metres up a valley's side); the walk's direction is across
+  the line's heading over four widths for the same reason.
+- **The bed.** Where the ratio is at least `flood_entrenchment_min` (1.4: below it Rosgen calls a
+  channel entrenched, and it fills its valley's floor) the bed reaches, each side, the flood-prone
+  distance less the scarp's run, and half `flood_bed_widths` (3) widths at the most; 0.6 of that
+  more on the inside of a bend and less on its outside, since the bar builds on the inside and the
+  outer bank is cut into the terrace; never less than the channel's own bank; and a bed under 1.1
+  widths is none. So **its width follows the confinement**: on a floor wider than three widths it
+  is three widths; on a narrower one it is the floor less the scarps; in a V it is nothing.
+- **Its level and its scarps.** The bed's surface stands `flood_bed_depth` (0.25) of the thalweg
+  under the top of the bank, which is over the water's default stage (half the thalweg), so the
+  water is one thread in it; its scarps stand at `scarp_slope` (1.5) and top out at the flood-prone
+  elevation, a thalweg over the top: where the valley's floor is wider than the bed that is a turf
+  edge a quarter of a thalweg high, and where the bed runs to the valley's side it is a raw scarp
+  up to a thalweg and a quarter high.
+- **Where.** Pool-riffle, dune-ripple and plane-bed reaches at least `flood_min_width_m` (2 m)
+  wide, away from a knickpoint, a fan and a tributary's last points; the reaches close to the
+  channel's own width over two widths at a stretch's ends. `flood_bed_widths` is 1.25 to 12:
+  no value switches the bed off, since a channel on a floor wide enough for one has one.
+- **Written** into the cut (`flood_left_m`, `flood_right_m`, `flood_depth_m`, `scarp_m`,
+  `scarp_slope`; [tileset](tileset.md#channels-cut-into-the-ground) has the section and the cell
+  rule, which reads the bed by its own width, so a level too coarse for a stream may still hold
+  its bed) and onto the water's description (`WaterChannel` version 5: `flood_left_m`,
+  `flood_right_m`), which is how **the placements leave the bed bare**
+  ([scene_gen](scene_gen.md#exclusion)): `scene_gen` may not name this capability, so the reach
+  travels as data on the description the two share, as the bank's does (T78).
+
+**The bed is ground, and its material is the ground's.** The cut gives the bed its form, and since
+W93's continuation nothing is laid on it or on the channel's own bed
+([What it places](#what-it-places)). Its material goes through the terrain's masks: a layer that
+names `bed_material` — a layer of the terrain's own palette (`terrain.materials.layers[].name`),
+standing for the role `gravel/bed`, which no pack here has a set for — has every stretch of its
+beds written by `engine-content channels --cut` as an `engine.scene.TerrainMaskRegion` under
+`mask_regions` (`bed_regions_json`), for the terrain's `masks.regions`. A stretch is a run of a
+link's points a metre wide or more, off a knickpoint; its outline reaches, each side, the further
+of the cut's own bank top and the flood bed's edge, a corner about every width, its edge
+feathered over `bed_feather_m` (0.4 m). So the bed's gravel is the plan's too: the outline is the
+cut's, with no polygon drawn by hand over it (W93's scratch scene built one in its script). It
+is one more thing pasted ([One plan](#one-plan), "Still pasted"); the masks themselves were not
+changed, and a region costs the mask level one of its four layers a tile where it lies, which
+W89 counted against paints and which the plates cost more than. Held by "the beds' outlines are
+mask regions that hold the cut and its flood bed". The bars' finer sediment (`sand/bar`) is not
+separated from the bed's: one material for the whole bed.
+
+**The waterline on a bar is still a sawtooth, and what is left of it is the water's.** The
+water's ribbon is a strip at the water's level, three quarters of the hydraulic geometry's width
+either side of the line, and what a picture shows as the waterline is where the depth test lets
+that strip through the ground as it is drawn. A point bar rises at a few degrees, so a 5 cm step
+between two points of the ring a view draws the ground from (0.5 m past the nearest, 1 m and 2 m
+beyond) moves the waterline by a metre: the teeth are the ground's lattice, not the ribbon's
+edge. The channel's mesher could end the strip at the waterline the cut's profile gives exactly
+(the section's two slopes and the stage say how far from the line the water reaches on each
+side; it would need those two distances a point on `WaterChannel`), and **that is not built**.
+It would smooth the edge only where the drawn ground stands under the strip's edge; where the
+drawn ground stands over it the ground still cuts the strip in teeth. Closing it for good is the
+water's shading — the surface fading out over its last centimetres of depth, read from the
+depth behind it, so that the edge is where the water is thin and not where two meshes cross —
+or a ground drawn finer along a channel, and neither is this capability's.
+
+**Measured** (`channels_tests.cpp`, "the flood bed's width follows the valley's confinement"):
+on three valleys whose floors are 32, 9 and 2 m wide between 45-degree walls, with a 4.6 to 5.3 m
+stream down the middle, the measured ratio is the floor's and the walls' to 3 % (5 where the walk
+stops, about 2, and 0.6), and the bed is three widths, the floor less its scarps, and none.
+The subcommand's summary line carries `flood_bed_m` and `flood_bed_m2` (metres of line with a bed
+and the bed's area) and `pools`.
+
+**Not built**: bars as relief on the bed beyond the channel's own point bar (a flood bed's bars
+are the low-flow channel's; the bed between them is flat); braided threads; a bed whose level
+steps down terrace by terrace; a scarp a walker reads on a wide floor (the bed stands a quarter
+of a thalweg under the bank's top, 15 cm on a 0.6 m channel: a change of colour, not a step);
+the bars' own material apart from the bed's. W93's continuation reached the bed's material and
+stopped there.
+
+## The steep reaches
+
+(2026-11-10, roadmap W93, continued; the owner's pictures: the steep `stream` view "still reads
+as a canal: one width, one depth, a ribbon in a V, and tributaries down the hillside as straight
+chutes". Grounded first:
+[the grounding page](../experiments/channels.md#the-steep-reaches-the-pools-place-and-three-numbers-read-again)
+says what was read in the papers, what at second hand and what is a design choice.) On step-pool,
+cascade, bedrock and colluvial reaches W93's first cut kept W89's section, one trapezoid of one
+width. Montgomery & Buffington's steep reaches are confined by their valley's walls, their bed is
+boulders in channel-spanning steps (step-pool, a pool every one to four widths) or disorganised
+(cascade, pools under a width apart), and steps form where a channel narrows. So:
+
+- **The width follows the steps** (`ChannelLink::swell`, `step_widening` 0.3). On a step-pool
+  reach the cut is 15 % narrower than the hydraulic geometry's width at each step's crest and 15 %
+  wider over the pool below it, a cosine between crests; on a cascade, a bedrock or a colluvial
+  reach, which have no steps, it varies as much irregularly (a value noise of the link's own, a
+  knot every width and a half). The section's area is kept, so the narrow places are the deep
+  ones.
+- **The thalweg wanders between the banks** (`steep_asymmetry` 0.35): an irregular asymmetry, a
+  knot every two widths, read by the same section as a bend's ([The section](#the-section)): the
+  bank the thalweg lies against is the steeper and the other the gentler, so the two bank lines
+  are not parallel offsets of the centre line and neither is one slope along a reach.
+- **Rocks at the banks.** A step is an accumulation jammed between the banks: beside the row of
+  clasts across the bed, each step has a clast at each end, 1 to 1.5 of the step's clast across,
+  its centre a third of itself past the bed's edge, half in the bank; about half of a cascade's
+  clusters have one against a bank too ([What it places](#what-it-places)). They are what breaks
+  the bank's line where the cut's own form is too smooth to.
+- **A steep line wanders** (`steep_wander_widths` 0.75; `build_line`). Above the meanders' slope
+  the routing's line down a planar slope is a ruled line. Where the meander fades the line takes
+  an irregular offset instead: a value noise with a knot every five widths (5 m at least), up to
+  three quarters of a width (of a metre at least) either way, tested against the trough exactly
+  as a meander's offset is, so in a gully with sides it is drawn back and on a plane it stays.
+- **Where.** Reaches at least `bar_min_width_m` (1 m) wide for the section (a lattice of 25 cm
+  holds no asymmetry in a narrower one); every steep link for the wander; not at a knickpoint, in
+  a fan, over a tributary's last points or within two widths of a link's ends.
+
+**Held** (`channels_tests.cpp`, "a steep reach's width follows its steps and its banks are no
+ruled line"): on a 4.5 % valley with a 3 m channel the cut is 0.857 to 1.143 of the hydraulic
+geometry's width (a ratio of 1.33 between its widest and narrowest; the test asks 1.27), narrower
+at every crest and wider between; the asymmetry runs -0.31 to 0.33. On a planar hillside at 35 %,
+whose gully was a ruled line for all its 440 m, neither bank's top holds a stretch longer than
+17 m within 5 cm of a chord (the test holds 20 m), and the gully's sinuosity is 1.006.
+
+**What it is not.** The banks are still earth: a heightfield's face with clasts standing in it,
+not bedrock ledges or a boulder revetment, and the cut's bed between the steps is smooth ground
+with no cobbles. The width's variation is a design choice in amount. A wander of three quarters
+of a width over five widths is visible from above and slight from the bank; a stronger one (1.5
+widths) was measured to cost the downhill bank at 2.7 % of the test valley's points and was not
+kept.
+
+## A line across a slope
+
+(2026-11-10, roadmap W93; the POC's solver needs, 2.1 item 2: where a line runs across a slope the
+cut leaves a bench with no downhill bank.) **Measured before choosing.** `engine-content channels`
+now reports how the line stands on its ground: for every stretch at least a metre wide, the ground
+at the two bank tops (half the width across the line each way) against the cut's bed, and the
+line's heading against the ground's fall line over a width — `line_measured_m`,
+`line_by_fall_angle_m` (0-15, 15-30, 30-45, 45-60 and 60-90 degrees), `half_bank_m` and
+`no_bank_m` (a bank's ground more than half the cut's depth under the line's, and under the bed)
+with the same bins, and `no_bank_mean_slope`.
+
+On this row's scratch scene (a V with sides at 0.35 whose floor swings 18 m either way every 80 m,
+a plane-bed reach and a wide floor; 470 m of line a metre wide or more), before the move below:
+**16 m with less than half a bank, 12 of them at 60 to 90 degrees to the fall line, and none with
+no bank**. On the test valley of the same shape (`channels_tests.cpp`, "a line across a slope is
+moved between its banks"; 1,969 points) after one round of the move 100 points had less than half
+a bank and 12 none. A caution on the angle: on a valley's floor the fall line over a width is the
+valley side's wherever the line is off the floor's middle, so half of any line reads 60 to 90
+degrees (240 of the 470 m) without being wrong; the bank is the test, and the angle says which way
+the line runs where the bank is missing.
+
+**The line is what is wrong, not the edit.** A stream does not traverse a slope: D8 sends every
+cell to its steepest neighbour, so a stretch that runs across the fall with one bank missing was
+put there by what comes after the routing — the low-pass that takes the line off a 4 m lattice
+(sigma 6 m or two widths) cuts a bend's corner across the valley's side, and the meander rule
+offsets it again. W91's trough test holds the line's *centre* within half a depth of the trough's
+floor; a channel is a width wide, and what was left is where the centre passes and a bank does
+not. An edit that could raise would build a levee on a hillside, which is what W86's berms were
+and what read as "a raised canal between levees"; it was not built.
+
+**The line is moved between its banks** (`build_line`, after the trough test). Each point at
+least a metre wide is tested across its own heading: where a bank's ground stands more than half
+a depth under the ground at the point, the point moves toward that bank a quarter of the width at
+a time, a width at the most, until neither does. The moves are eased by three binomial passes,
+which takes some of each back, so the whole is done twice (a third round was measured to undo part
+of the second: 32 points with less than half a bank after two, 48 after three). The two ends stay
+where the junctions are; rills under a metre are left. `ChannelLink::bank_moved` and the summary's
+`bank_moved_points` count the points moved. **What is left** on the test valley: 32 of 1,969
+points (1.6 %) with less than half a bank and 12 (0.6 %) with none, the worst 1.23 depths under;
+the test holds 2 % and 1 %. They are where a width's move does not reach the floor, and a ribbon
+there is still narrowed or lowered by W91's fit. Since the kinks were low-passed out of the line
+and the steep line wanders ([The planform](#the-planform)): 36 points (1.8 %) with less than half
+a bank and **none** with no bank, the worst 1.08 depths under.
+
+## Seen: the section, the flood bed and the proof of concept's items 6, 7 and 8
+
+(2026-11-10, W93; `msvc-release`, 1920×1080, `--raster hw --shadows rt --terrain-tiles
+--terrain-far 2`, offscreen, one process a run; a scratch scene outside the repository: a 384 by
+256 m heightfield at 25 cm, a V with sides at 0.35 whose floor swings 18 m every 80 m, then a
+plane-bed reach on a 6 m floor, then a meander reach on a 44 m floor, one channels layer at 14 m
+and 1.2 m a square kilometre; "before" is 76d96ced built in the same worktree, both over one
+derived-data cache; the ground has no texture set and no plants, so what is judged is form. The
+references looked at: the reels r03 and r49 and the motion sheet `clear-riffle-cobbles`.)
+
+- **`pool-riffle`** (the meander reach, eye height). Before: a ribbon of one width in a trench of
+  one section, two grey bar lenses standing on the bed as mounds, a pale strip of bed slab along
+  the left lip. After: the water is a thread of changing width inside a grey bed three times as
+  wide (the scene paints the cut's reach with a mask region), shallow and pale over the bar's
+  side and deeper against the other, the banks low with rounded shoulders, no lens. **Still wrong**:
+  the waterline on the bar is a sawtooth of the lattice (the rings past the nearest sample the cut
+  at 0.5 m and coarser); the bed's edge on a wide floor is a change of colour and not a scarp (a
+  quarter of a thalweg, 15 cm); a bed slab lies on the flood bed as a pale plate where the
+  generator's own line is more than three quarters of a width off the cut's.
+- **`plane-bed`** (the 6 m floor between 17-degree sides). Before: the trench's right bank is a
+  wall of grey slabs — the bed pieces laid about the generator's line, riding up the bank (**item
+  8**, and what made item 6's slabs) — over straight faces. After: the slabs are gone but one
+  sliver, and the bank is the cut's own face run out into the hillside in rounded scallops. With
+  the first cut of this row the same view had **item 7**, a row of teeth along the lip and a
+  gouge metres up the valley's side: the face's end as a wall, and a flood bed measured across a
+  kinked line. Both are closed (the run-out, the narrowest reading). **Still wrong**: the line
+  kinks, so the banks zigzag.
+- **`stream`** (the V, a 2 m channel). Before: a trench with a notch and teeth where its face
+  ended against the valley's side. After: a soft fold, no wall. **Still a canal**: on a reach
+  steeper than plane-bed the section is W89's, one width and one depth, and two tributaries come
+  straight down a planar side as chutes.
+
+**The same eight views after W93's continuation** (2026-11-10, the same scene, camera and flags,
+its entry naming its plan; `msvc-release`; references looked at again: r03 and the motion sheet
+`riffles-and-pools`).
+
+- **`pool-riffle`**: the pale plates on the flood bed are gone; the bed is one clean floor. The
+  waterline on the bar is still a sawtooth, and the bed is still flat: no bar on it, no scarp to
+  speak of.
+- **`plane-bed`** and **`plane-bed-high`**: the sliver of slab is gone, and the banks run in
+  smooth curves with no zigzag; from above the line reads as a stream's. The shaded bank's face
+  still shows the lattice as faint scallops.
+- **`stream`**: the left tributary now bends on its way down and two pale boulders stand at a
+  step where it meets the trunk; the trunk's banks no longer kink. **It still reads as a ribbon
+  in a smooth fold.** The trunk here is a pool-riffle reach by its 1.2 % slope and 2 m wide, so
+  its section's swing is centimetres on a 25 cm lattice; the water's ribbon is drawn at the
+  hydraulic geometry's width whatever the cut's is; the right tributary, in a fold with sides, is
+  still nearly straight; and the boulders, with no rock set in the pack for them, draw as smooth
+  pale eggs.
+
+**Against the reels** (r03's cobble river between turf banks; `riffles-and-pools`' bank of
+boulders and cobbles under a raw scarp, boulders standing in the water, a white riffle) what a
+person would object to first is not the form: the ground beside and under the water is bare and
+smooth where the photographs are cobbles and boulders from the scarp to the thalweg, hundreds in
+a frame, and the engine places a few dozen domes on a whole reach. After that: every view lacks
+what the cut cannot give: a cobble bed seen through the
+water, turf to the edge and an undercut, a riffle's broken water. Those are the masks', the
+sward's and the water's.
 
 ## Reaches
 
@@ -378,6 +804,21 @@ drawn back toward it, halving its offset up to three times and then onto it. The
 three points each way and smoothed by three binomial passes, which leaves every point drawn back at
 least as far as its own test asked. On v36 it drew back 78,693 of the network's 287,000 points.
 
+**The kinks taken out** (W93, continued; the owner's pictures: "the banks zigzag"). What the trough
+test leaves turns left and right again inside two or three widths, and the cut's banks follow the
+line. After the test the line is low-passed once more at the channel's own scale: a Gaussian
+along its length of sigma half a width (two steps at least), eased to nothing at the two ends,
+which stay where the junctions are. Half a width is far under a meander's wavelength (a bend 10.9
+widths long keeps 96 % of its amplitude) and moves a point by a fraction of the width, before
+the banks' test ([A line across a slope](#a-line-across-a-slope)) which then holds it. **Held**
+("the line's turn between consecutive points is bounded on every reach", seven valleys, four
+seeds each): no radius of curvature between consecutive points under half a width (of a metre at
+least); the tightest measured is 1.02 widths. On the test valley the points with less than half a
+downhill bank are 36 of 1,969 (32 before) and those with none 0 (12 before).
+
+**A steep line wanders** ([The steep reaches](#the-steep-reaches)): where the slope allows no
+meander the line takes an irregular offset instead, held in its trough by the same test.
+
 ## Against the proof of concept
 
 `engine-content channels` over a copy of v31's terrain-only scene (`repro-terrain-hex/scene-norot.json`)
@@ -517,6 +958,24 @@ catchments that flow in across it. The captures and their verdict are in the W86
   same twice and the same from a scene that carries the cuts (`apps/engine_content/tests/
   channel_cut_tests.cpp`).
 
+- **The section follows the line** (W93): at a bend (a turn of 30 degrees between the line's
+  heading two widths above a point and two below) the outer bank is the deeper side, on 95 % of
+  bends at least over 12 seeds; pools stand 5 to 7 widths apart on average; the section's area is
+  the hydraulic geometry's within 4 % from riffle to pool, a bend's apex twice the mean depth deep;
+  the gentler bank is the inside one; a riffle is at most `riffle_widening` wider than a pool; the
+  water stands under the top and over the cut's deepest point (tests: "at a bend the outer bank is
+  the deeper side, and pools stand 5 to 7 widths apart", "the section keeps the hydraulic
+  geometry's area from riffle to pool").
+
+- **The flood bed follows the confinement** (W93): on valleys with floors of 32, 9 and 2 m the
+  entrenchment ratio read from the ground is the geometry's to 3 %, and the bed is three widths,
+  the floor less its scarps, and none; every point 0.9 of the bed's reach from the ribbon's line
+  is excluded by the exclusion built from the written description; **and the cuts' text on each
+  of the three hashes to a pinned value**, taken on MSVC and reproduced by Clang and GCC in the
+  containers (test: "the flood bed's width follows the valley's confinement").
+- **Neither bank stands more than half a depth under the line** but at 2 % of points at the most,
+  and under the bed at 1 % (W93; test: "a line across a slope is moved between its banks").
+
 **Public API.** `include/domain/channels/channels.h`.
 
 **Depends on.** `base`, `containers`, `math`, `hash`, `json`, `schema`, `log`, `io`, `jobs`, `assets`,
@@ -528,16 +987,26 @@ catchments that flow in across it. The captures and their verdict are in the W86
 **Performance notes.** Nothing runs per frame. Opening an entry costs the lattice's height queries
 (one per point, rows on the job pool), a heap fill and a sort over the points, and a few height
 queries per placed vertex; the region's `max_samples` bounds it. The pieces are ordinary cluster-LOD
-scene instances. `ChannelPoint` (40 bytes) is pinned in the size table.
+scene instances. `ChannelPoint` (40 bytes) is pinned in the size table. **W93's share of the
+plan** (2026-11-10, `msvc-release`, `engine-content channels --cut`, the process whole, best of
+three, the machine at 34 % CPU beside other agents' builds): on the row's scratch scene (0.098
+km², 475 m of channel, 7 links) 0.73 s on the base and 0.78 s with the section, the flood bed's
+walks (a station a width, a sixth of a width a step) and the banks' test (three ground queries a
+point and try, four tries, twice). It was **not measured on the proof of concept's world**, where
+the plan is 24 to 32 s: the row may not run that world's files. What scales with the world: the
+banks' test with the line's points a metre wide or more, the flood bed's walks with the metres of
+alluvial line 2 m wide or more.
 
 **Not yet.** The cut is written by the subcommand and pasted by the author, not applied by the generator itself (the ground is built before the placements are); a procedural ground (the dunes) takes no cut; D8 only (no D∞ spreading); heads by a local four-metre slope, not a slope
 averaged over the source area; no braided reaches; the valley's confinement is not read for the
-reach; the ribbon's fit narrows the water where the ground across the line is lower than its surface
-but does not move the cut, so on a cross-slope the cut's bench still has no downhill bank (the water
-narrows to what the bench holds); knickpoints are read from the ground's profile along the line, not
-from rock strength; **the network is planned again on every load** (24–32 s on v35, T73's finding): caching it as
-a derived node needs the ground's identity, which `scene_gen::Context` does not expose (W90's report
-asks for it); the mouths read the exclusion's box for a fill body, not its traced flood.
+reach; a bend with a point bar is cut 6 % narrower than its crossings where a surveyed river's
+is wider ([the grounding](../experiments/channels.md#the-steep-reaches-the-pools-place-and-three-numbers-read-again)); undercut and
+turf banks are not the heightfield's to draw; the line is moved between its banks by a width at the most, so where the trough's floor is
+further off than that a bench with half a bank is left (1.8 % of the test valley's points, and
+none with no bank; the ribbon's fit still narrows the water there); knickpoints are read from the ground's profile along the line, not
+from rock strength; a plan named by an entry on cut ground cannot be made again at a load
+([One plan](#one-plan): `scene_gen::Context` hands a generator the ground it stands on and not
+the ground before its cuts); the mouths read the exclusion's box for a fill body, not its traced flood.
 
 ## Capability contract (ADR-0027)
 

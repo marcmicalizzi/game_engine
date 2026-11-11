@@ -19,6 +19,7 @@
 #include <foundation/io/vfs.h>
 
 #include <charconv>
+#include <chrono>
 #include <cmath>
 #include <schemas/scene.h>
 #include <string>
@@ -128,7 +129,11 @@ int channels_command(int argc, char** argv) {
   if (!found->make(terrain, context, ground, &error) || !ground.valid())
     return fail(error.empty() ? "the ground provider \"" + provider + "\" refused the terrain"
                               : error);
-  (void)ddc;  // the network writes nothing; the flag is accepted for symmetry with `build`
+  // **One plan** (W93; channels.md, "One plan"): the network is a derived file under the
+  // derived-data root's `channels/`, keyed by what it is made from, so a second run over the same
+  // ground and layer plans nothing, and the placement generator reads the same file at a load.
+  std::string plan_dir;
+  if (!channels::derived_dir(ddc, dir, plan_dir, error)) return fail(error);
   // **The water bodies** (W90; channels.md, "Mouths"): the scene's `water` blocks, read as the
   // placement generators' exclusion reads them, so a link ends at the shoreline it meets. A block
   // that does not parse is the water capability's to refuse and is left out here.
@@ -144,17 +149,31 @@ int channels_command(int argc, char** argv) {
   const scene_gen::Ground ground_view = ground.view();
   scene_gen::Exclusion shores;
   if (!shores.build({}, {bodies.data(), bodies.size()}, {}, &error)) return fail(error);
+  context.ground = ground_view;
+  context.exclusion = &shores;
+  JsonValue plans = JsonValue::array();
+  u32 planned = 0;
+  f64 plan_seconds = 0;
   const JsonValue* placements = json.find("placements");
   JsonValue all = JsonValue::array();
   JsonValue cuts = JsonValue::array();
+  JsonValue regions = JsonValue::array();
   u32 entries = 0, heads = 0, links = 0;
   channels::ChannelWaterCounts shore_counts;
   channels::RibbonTrim trim;  // the ribbons' ends a body covers (W91 continuation)
   u32 reaches[7] = {};
   u64 steps[7] = {}, boulders = 0, clusters = 0, knickpoints = 0, steep_left = 0, pulled = 0;
+  u64 bank_moved = 0;
   f64 lip_convexity = 0;
   f64 region[4] = {1e300, 1e300, -1e300, -1e300}, border = 0;
   f64 metres = 0, area = 0;
+  // W93: the section's summary (below).
+  struct {
+    u64 pools = 0;
+    f64 flood_m = 0, flood_m2 = 0;
+    f64 line_m = 0, half_bank_m = 0, no_bank_m = 0, no_bank_fall = 0;
+    f64 by_angle_m[5] = {}, half_bank_by_angle_m[5] = {}, no_bank_by_angle_m[5] = {};
+  } section;
   if (placements != nullptr && placements->is_array()) {
     for (u32 k = 0; k < placements->as_array().size(); ++k) {
       const JsonValue& entry = (*placements)[k];
@@ -173,10 +192,23 @@ int channels_command(int argc, char** argv) {
           message += "; " + d.path + ": " + d.message;
         return fail(message);
       }
-      channels::ChannelNetwork network;
-      if (!channels::plan_channels(layer, ground_view, context.world_seed, nullptr, network, error,
-                                   &shores))
+      // The key a pasted entry carries names the plan made last time; this run keys it again from
+      // the ground before its cuts, as it clears the cuts above.
+      layer.plan.clear();
+      channels::ChannelPlan plan;
+      const auto began = std::chrono::steady_clock::now();
+      if (!channels::ensure_plan(layer, context, plan_dir, plan, error))
         return fail(scene_path + ": placements " + std::to_string(k) + ": " + error);
+      plan_seconds += std::chrono::duration<f64>(std::chrono::steady_clock::now() - began).count();
+      planned += plan.planned ? 1u : 0u;
+      const channels::ChannelNetwork& network = plan.network;
+      {
+        JsonValue named = JsonValue::object();
+        named["entry"] = JsonValue(k);
+        named["name"] = JsonValue(layer.name);
+        named["plan"] = JsonValue(channels::plan_key_text(plan.key));
+        plans.push_back(std::move(named));
+      }
       // W91: the ribbon fitted to the ground the network was planned over, and the bodies.
       const JsonValue blocks = channels::water_channels_json(
           layer, network, min_area, static_cast<f32>(stage), cut, &ground_view, &shores, &trim);
@@ -191,6 +223,10 @@ int channels_command(int argc, char** argv) {
         const JsonValue c = channels::terrain_cuts_json(layer, network);
         for (const JsonValue& b : c.as_array())
           cuts.push_back(b);
+        // The beds' outlines for the terrain's masks, where the layer names their material.
+        const JsonValue r = channels::bed_regions_json(layer, network);
+        for (const JsonValue& b : r.as_array())
+          regions.push_back(b);
       }
       ++entries;
       shore_counts.mouths += network.water.mouths;
@@ -208,6 +244,60 @@ int channels_command(int argc, char** argv) {
         lip_convexity += l.lip_convexity;
         steep_left += l.steep_left;
         pulled += l.trough_pulled;
+        bank_moved += l.bank_moved;
+        // **W93** (channels.md, "The flood bed", "A line across a slope"): the metres of line
+        // with a flood bed and the bed's area; the pools (a stretch on one side whose asymmetry
+        // reaches half a bend's); and, stretch by stretch, how the line stands on its ground —
+        // the ground at the two bank tops (half the width across the line each way) against the
+        // cut's bed, and the line's heading against the ground's fall line over a width.
+        const u32 kept = std::min<u32>(l.keep, l.line.size());
+        bool in_pool = false;
+        for (u32 i = 0; i + 1 < kept; ++i) {
+          const channels::ChannelPoint& a = l.line[i];
+          const channels::ChannelPoint& b = l.line[i + 1];
+          const f64 dx = b.at.x - a.at.x, dz = b.at.z - a.at.z;
+          const f64 run = std::sqrt(dx * dx + dz * dz);
+          if (!(run > 0)) continue;
+          const f64 asym = i < l.asym.size() ? static_cast<f64>(l.asym[i]) : 0.0;
+          if (std::fabs(asym) >= .5 && !in_pool) ++section.pools;
+          in_pool = std::fabs(asym) >= .5 || (in_pool && asym != 0);
+          if (i < l.flood_left.size() && l.flood_left[i] > 0) {
+            section.flood_m += run;
+            section.flood_m2 +=
+                run * (static_cast<f64>(l.flood_left[i]) + static_cast<f64>(l.flood_right[i]));
+          }
+          const f64 w = static_cast<f64>(a.width_m);
+          if (w < 1.0 || i >= l.bed.size()) continue;
+          const f64 tx = dx / run, tz = dz / run;
+          const auto at = [&](f64 x, f64 z) {
+            return ground_view.surface_mm(scene_gen::nearest_mm(x), scene_gen::nearest_mm(z));
+          };
+          const f64 depth = a.at.y - l.bed[i];
+          const f64 lower = std::min(at(a.at.x - tz * .5 * w, a.at.z + tx * .5 * w),
+                                     at(a.at.x + tz * .5 * w, a.at.z - tx * .5 * w));
+          // The ground's gradient over a width, and the cosine of the line's angle to its fall.
+          const f64 gx = (at(a.at.x + w, a.at.z) - at(a.at.x - w, a.at.z)) / (2 * w);
+          const f64 gz = (at(a.at.x, a.at.z + w) - at(a.at.x, a.at.z - w)) / (2 * w);
+          const f64 g = std::sqrt(gx * gx + gz * gz);
+          const f64 cosine = g > 0 ? std::fabs(tx * gx + tz * gz) / g : 1.0;
+          // 0-15, 15-30, 30-45, 45-60 and 60-90 degrees from the fall line.
+          const u32 bin = cosine > .9659   ? 0
+                          : cosine > .866  ? 1
+                          : cosine > .7071 ? 2
+                          : cosine > .5    ? 3
+                                           : 4;
+          section.line_m += run;
+          section.by_angle_m[bin] += run;
+          if (lower < a.at.y - .5 * depth) {
+            section.half_bank_m += run;
+            section.half_bank_by_angle_m[bin] += run;
+          }
+          if (lower < a.at.y - depth) {
+            section.no_bank_m += run;
+            section.no_bank_by_angle_m[bin] += run;
+            section.no_bank_fall += run * g;
+          }
+        }
       }
       // W91: the boulders the placement generator lays over this network.
       Vector<channels::PlacedPiece> pieces;
@@ -247,6 +337,15 @@ int channels_command(int argc, char** argv) {
   out["water_channels"] = std::move(all);
   // The terrain's cuts, for the `tiles` block (`terrain.tiles.cuts`).
   if (cut) out["cuts"] = std::move(cuts);
+  // Each entry's plan, for its `params.plan`: what the generator reads on the cut ground.
+  JsonValue plan_keys = JsonValue::array();
+  for (const JsonValue& p : plans.as_array())
+    plan_keys.push_back(*p.find("plan"));
+  out["plans"] = std::move(plans);
+  // The beds' outlines, for the terrain's `masks.regions` (W93): only where a layer names its
+  // bed's material, so an output without one is the text it was.
+  const u32 region_count = regions.as_array().size();
+  if (region_count > 0) out["mask_regions"] = std::move(regions);
   if (io::write_file_atomic(out_path, write_json(out)) != io::Status::Ok)
     return fail("cannot write " + out_path);
   JsonValue line = JsonValue::object();
@@ -261,6 +360,12 @@ int channels_command(int argc, char** argv) {
   line["km_per_km2"] = JsonValue(area > 0 ? std::round(metres / area * 1e3 * 100) / 100 : 0.0);
   line["water_channels"] = JsonValue(written);
   line["cuts"] = JsonValue(cut_count);
+  // W93: the plans' keys, how many of them this run made (the rest were read from the cache), and
+  // the seconds the plans took, made or read.
+  line["plans"] = std::move(plan_keys);
+  line["planned"] = JsonValue(planned);
+  line["mask_regions"] = JsonValue(region_count);
+  line["plan_s"] = JsonValue(std::round(plan_seconds * 1000) / 1000);
   // W90: what the water bodies and the junctions did, and the line's points by reach.
   line["bodies"] = JsonValue(static_cast<u32>(bodies.size()));
   line["mouths"] = JsonValue(shore_counts.mouths);
@@ -298,6 +403,29 @@ int channels_command(int argc, char** argv) {
                       : 0.0);
   line["steep_left"] = JsonValue(steep_left);
   line["trough_pulled_points"] = JsonValue(pulled);
+  // W93: pools, the flood bed, and the line against its ground's fall (metres of line, by the
+  // line's angle to the fall line: 0-15, 15-30, 30-45, 45-60, 60-90 degrees).
+  {
+    const auto metres_of = [](const f64* bins) {
+      JsonValue list = JsonValue::array();
+      for (u32 b = 0; b < 5; ++b)
+        list.push_back(JsonValue(std::round(bins[b])));
+      return list;
+    };
+    line["pools"] = JsonValue(section.pools);
+    line["bank_moved_points"] = JsonValue(bank_moved);
+    line["flood_bed_m"] = JsonValue(std::round(section.flood_m));
+    line["flood_bed_m2"] = JsonValue(std::round(section.flood_m2));
+    line["line_measured_m"] = JsonValue(std::round(section.line_m));
+    line["line_by_fall_angle_m"] = metres_of(section.by_angle_m);
+    line["half_bank_m"] = JsonValue(std::round(section.half_bank_m));
+    line["half_bank_by_fall_angle_m"] = metres_of(section.half_bank_by_angle_m);
+    line["no_bank_m"] = JsonValue(std::round(section.no_bank_m));
+    line["no_bank_by_fall_angle_m"] = metres_of(section.no_bank_by_angle_m);
+    line["no_bank_mean_slope"] = JsonValue(
+        section.no_bank_m > 0 ? std::round(section.no_bank_fall / section.no_bank_m * 1000) / 1000
+                              : 0.0);
+  }
   line["ribbon_edges"] = JsonValue(stats.edges);
   line["edges_above_005"] = JsonValue(stats.edges_above_005);
   line["edges_above_03"] = JsonValue(stats.edges_above_03);

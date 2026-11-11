@@ -140,6 +140,16 @@ TEST_CASE("engine-content channels --cut writes the terrain's cuts beside the wa
   std::string third;
   REQUIRE(io::read_file(tmp.file("c.json"), third) == io::Status::Ok);
   CHECK(third == first);
+  // **One plan** (W93; channels.md, "One plan"): the first run made the plan and filed it under
+  // the scene's derived-data root; the runs after it, the cut scene's too, read that file and
+  // planned nothing; and each wrote the entry's key.
+  CHECK(out.text.find("\"planned\":1") != std::string::npos);
+  CHECK(again_out.text.find("\"planned\":0") != std::string::npos);
+  const JsonValue* plans = written.find("plans");
+  REQUIRE(plans != nullptr);
+  REQUIRE(plans->as_array().size() == 1);
+  const std::string plan_key((*plans)[0].find("plan")->as_string());
+  CHECK(io::exists(tmp.file("ddc/channels/plan-" + plan_key + ".channel-plan")));
   // And the cut scene's ground is lower than the plain one's at a cut's line, by its depth there.
   JsonValue cut_json;
   REQUIRE(parse_json(cut_scene, cut_json).ok);
@@ -172,5 +182,22 @@ TEST_CASE("engine-content channels --cut writes the terrain's cuts beside the wa
     for (const f32 w : k.width_m)
       any_wide = any_wide || w > 2.0f;
   MESSAGE("a channel wider than the valley's 2 m points: " << std::string(any_wide ? "yes" : "no"));
+  // **A load of the cut scene plans nothing**: its entry names the plan the command printed, the
+  // generator opens over the cut ground and reads the file.
+  JsonValue params = *(*scene_json.find("placements"))[0].find("params");
+  params["plan"] = JsonValue(plan_key);
+  const auto* generator = scene_gen::GeneratorRegistry::global().find_placement("channels");
+  REQUIRE(generator != nullptr);
+  scene_gen::Context load = context;
+  load.ground = cut_ground.view();
+  const u64 made = channels::plans_made();
+  void* state = nullptr;
+  REQUIRE_MESSAGE(generator->open(params, load, &state, &error), error);
+  CHECK(channels::plans_made() == made);
+  generator->close(state);
+  // An entry naming a plan nobody made is refused with the command that makes it.
+  params["plan"] = JsonValue("0123456789abcdef");
+  CHECK_FALSE(generator->open(params, load, &state, &error));
+  CHECK(error.find("engine-content channels") != std::string::npos);
 #endif
 }

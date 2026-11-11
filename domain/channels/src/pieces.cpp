@@ -1,7 +1,7 @@
 // What the network places (docs/subsystems/channels.md, "What it places"): each link cut into
-// pieces, each piece a bed skin, its bars and its banks, every height decided here from the ground
-// and written into the piece's recipe; and the mesh generator "channel" that builds a recipe into a
-// closed, welded mesh and a container through the derived-data cache.
+// pieces, each piece the boulders of its steps and clusters, every height decided here from the
+// ground and written into the piece's recipe; and the mesh generator "channel" that builds a recipe
+// into a closed, welded mesh and a container through the derived-data cache.
 #include "detail.h"
 
 #include <core/json/json.h>
@@ -23,9 +23,8 @@ namespace {
 using namespace detail;
 
 // How far a part's top stands off the ground where it meets it, so the two never fight for a
-// pixel, and how deep its buried bottom goes.
+// pixel.
 constexpr f64 k_lift_m = .02;
-constexpr f64 k_bury_m = .25;
 constexpr u32 k_max_rows = 1025;
 constexpr u32 k_max_columns = 33;
 constexpr u32 k_max_slabs = 256;
@@ -61,14 +60,6 @@ Vector<Frame> frames_of(const ChannelLink& link) {
   return f;
 }
 
-// The bed's median grain from the bankfull Shields number, D50 = h S / (R tau*) with the submerged
-// specific gravity of quartz R = 1.65 (Parker et al. 2007), between sand and a small boulder; and
-// the relief a gravel bed's surface has at that grain, one median grain, a few centimetres.
-f64 relief_of(const ChannelLayer& p, const ChannelPoint& pt) {
-  const f64 d50 = wide(pt.depth_m) * wide(pt.slope) / (1.65 * wide(p.shields_bankfull));
-  return std::clamp(d50, .005, .03);
-}
-
 ChannelSurface surface_of(const ChannelSurface& s, std::array<f32, 3> color, f32 tile,
                           std::optional<std::array<f32, 3>> tint) {
   ChannelSurface out = s;
@@ -95,102 +86,43 @@ struct Builder {
     slab.bottom.push_back(static_cast<f32>(bottom));
   }
 };
-// The bed the pieces lay: the cut's flat bed (detail::section_of), and a quarter of the width where
-// the section is a V, so a narrow gully still has a strip of gravel at its bottom.
-f64 bed_width(const ChannelLayer& p, const ChannelPoint& pt) {
-  const f64 w = wide(pt.width_m);
-  return std::max(.25 * w, section_of(w, wide(pt.depth_m), wide(p.bank_slope)).bed);
+// The bed a reach's boulders stand across: the cut's flat bed between its banks' toes
+// (detail::bend_section), a quarter of the width where the section is a V, so a narrow gully still
+// has room for a clast at its bottom.
+f64 bed_width(const ChannelLayer& p, const ChannelPoint& pt, f64 asym, f64 swell) {
+  const BendSection s = bend_section(p, wide(pt.width_m), wide(pt.depth_m), asym, swell);
+  return std::max(.25 * s.width, s.bed);
 }
 }  // namespace
 
+// **What is placed is what is an object of its own** (W93, continued; channels.md, "What it
+// places"): the boulders of a step-pool reach's steps and of a cascade's clusters. The bed and
+// the bars are the ground's — the cut's flat bed, its point bars and its flood bed — and nothing
+// is laid on them: W86's bed slab and bar lens, and W93's skins after them, stood on the ground as
+// plates wherever their line was not the cut's, and with one plan there is no second line to lay
+// them from and no reason to lay them.
 bool place_pieces(const ChannelLayer& p, const ChannelNetwork& n, const scene_gen::Ground& ground,
                   f32 tile_size, Vector<PlacedPiece>& out, std::string& error) {
   out.clear();
   if (!(tile_size >= .25f && tile_size <= 100000.0f)) return fail(error, "tile_size");
   const i64 tile_mm = scene_gen::nearest_mm(wide(tile_size));
-  const ChannelSurface bed_look =
-      surface_of(p.bed, {.42f, .40f, .37f}, .35f, std::array<f32, 3>{.62f, .60f, .56f});
-  const ChannelSurface bar_look = surface_of(p.bars, {.56f, .51f, .43f}, .8f, std::nullopt);
   u32 id = 0;
   const ChannelSurface boulder_look =
-      surface_of(ChannelSurface{}, {.45f, .44f, .42f}, 1.2f, std::array<f32, 3>{.7f, .68f, .65f});
+      surface_of(p.boulders, {.45f, .44f, .42f}, 1.2f, std::array<f32, 3>{.7f, .68f, .65f});
   for (const ChannelLink& link : n.links) {
-    // W90: a tributary's pieces stop at the trunk's banks (`keep`), and a reach decides what is
-    // laid: the gravel bed on every reach but bedrock and colluvial, bars on dune-ripple and
-    // pool-riffle reaches, boulders at the crests of step-pool and cascade steps.
+    // W90: a tributary's pieces stop at the trunk's banks (`keep`).
     const u32 m = std::min<u32>(link.keep, link.line.size());
-    if (m < 2) continue;
+    if (m < 2 || (link.step_at.empty() && link.cluster_at.empty())) continue;
     auto reach_at = [&](u32 i) {
       return i < link.reach.size() ? static_cast<ChannelReach>(link.reach[i])
                                    : ChannelReach::PoolRiffle;
     };
-    auto has_bed = [&](u32 i) {
-      const ChannelReach r = reach_at(i);
-      return r != ChannelReach::Bedrock && r != ChannelReach::Colluvial;
-    };
-    auto has_bars = [&](u32 i) {
-      const ChannelReach r = reach_at(i);
-      return r == ChannelReach::DuneRipple || r == ChannelReach::PoolRiffle;
-    };
     const Vector<Frame> f = frames_of(link);
-    f32 widest = 0;
-    for (u32 i = 0; i < m; ++i)
-      widest = std::max(widest, link.line[i].width_m);
-    const u32 columns =
-        std::clamp<u32>(static_cast<u32>(std::lround(wide(widest) / .4)) + 1, 3, 17);
-    // The bed's rhythm: pool to pool below the step-pool slope, step to step above it, its phase
-    // the link's own.
-    Rng rng(hash_combine(link.seed, 0x5eedull));
-    const f64 phase = rng.unit() * 2 * k_pi;
-    Vector<f64> rhythm(m, 0.0);
-    f64 theta = phase;
-    for (u32 i = 0; i < m; ++i) {
-      const f64 wavelength = (link.slope > wide(p.meander_slope_max) ? wide(p.step_pool_widths)
-                                                                     : wide(p.pool_riffle_widths)) *
-                             wide(link.line[i].width_m);
-      if (i > 0) theta += (f[i].s - f[i - 1].s) * 2 * k_pi / std::max(wavelength, .5);
-      rhythm[i] = .5 * (1 + det::cos(theta));
-    }
-    // Bars (Leopold, Wolman & Miller 1964): one every half pool-to-pool length, alternating sides
-    // along a straight reach and on the inside of a bend where the line bends.
-    struct Bar {
-      u32 from, to;
-      f64 side;
+    const bool shaped = link.asym.size() == link.line.size();
+    auto asym_at = [&](u32 i) { return shaped ? wide(link.asym[i]) : 0.0; };
+    auto swell_at = [&](u32 i) {
+      return shaped && i < link.swell.size() ? wide(link.swell[i]) : 0.0;
     };
-    Vector<Bar> bars;
-    if (widest >= p.bar_min_width_m && p.bar_rise > 0) {
-      f64 side = rng.unit() < .5 ? -1.0 : 1.0;
-      u32 last = 0;  // bars never share a cross-section: each is its own closed lens
-      f64 at = .5 * wide(p.pool_riffle_widths) * wide(link.line[0].width_m);
-      while (true) {
-        u32 c = 0;
-        while (c + 1 < m && f[c].s < at)
-          ++c;
-        const f64 wc = wide(link.line[c].width_m);
-        const f64 half = .5 * wide(p.bar_length_widths) * wc;
-        if (at + half >= f[m - 1].s) break;
-        u32 a = c, b = c;
-        while (a > 0 && f[a].s > at - half)
-          --a;
-        while (b + 1 < m && f[b].s < at + half)
-          ++b;
-        f64 bend = 0;
-        for (u32 i = a; i <= b; ++i)
-          bend += f[i].kappa;
-        bend /= static_cast<f64>(b - a + 1);
-        const f64 s = std::abs(bend) * wc > .05 ? (bend > 0 ? 1.0 : -1.0) : side;
-        if (!bars.empty() && a <= last) a = last + 1;
-        bool alluvial = true;
-        for (u32 i = a; i <= b && alluvial; ++i)
-          alluvial = has_bars(i);
-        if (b >= a + 2 && wc >= wide(p.bar_min_width_m) && alluvial) {
-          bars.push_back({a, b, s});
-          last = b;
-        }
-        side = -side;
-        at += .5 * wide(p.pool_riffle_widths) * wc;
-      }
-    }
     const u32 pieces = std::max<u32>(1, static_cast<u32>(std::ceil(f[m - 1].s / wide(p.piece_m))));
     // (`f` covers the whole line; the pieces cover its first `m` points.)
     for (u32 k = 0; k < pieces; ++k) {
@@ -201,172 +133,94 @@ bool place_pieces(const ChannelLayer& p, const ChannelNetwork& n, const scene_ge
       b.x0 = scene_gen::nearest_mm(f[r0].x);
       b.z0 = scene_gen::nearest_mm(f[r0].z);
       b.y0 = ground.surface_mm(b.x0, b.z0);
-      PlacedPiece base;
-      base.origin =
+      PlacedPiece piece;
+      piece.origin =
           WorldPos{static_cast<f64>(b.x0) / 1000.0, b.y0, static_cast<f64>(b.z0) / 1000.0};
       const i64 tx = floor_div(b.x0, tile_mm), tz = floor_div(b.z0, tile_mm);
       if (tx < std::numeric_limits<i32>::min() || tx > std::numeric_limits<i32>::max() ||
           tz < std::numeric_limits<i32>::min() || tz > std::numeric_limits<i32>::max())
         return fail(error, "tile coordinate (out of range)");
-      base.tile = {static_cast<i32>(tx), static_cast<i32>(tz)};
-      const f32 uv[2] = {static_cast<f32>(static_cast<f64>(b.x0 % 1024000) / 1000.0),
-                         static_cast<f32>(static_cast<f64>(b.z0 % 1024000) / 1000.0)};
-      // The bed: the cut's flat bed wide (W89; channels.md, "The cut"), on the ground, its top a
-      // gravel relief of about a median grain and the riffles' rise; its two edge columns down at
-      // the ground, at the banks' toe.
-      {
-        PlacedPiece piece = base;
-        piece.recipe.part = ChannelPart::Bed;
-        piece.recipe.uv_origin = {uv[0], uv[1]};
-        piece.recipe.surface = bed_look;
-        // One slab a run of rows whose reach has a bed (W90: none on bedrock or colluvial).
-        for (u32 a = r0; a <= r1;) {
-          if (!has_bed(a)) {
-            ++a;
-            continue;
-          }
-          u32 e = a;
-          while (e + 1 <= r1 && has_bed(e + 1))
-            ++e;
-          if (e > a) {
-            ChannelSlab slab;
-            slab.rows = e - a + 1;
-            slab.columns = columns;
-            for (u32 i = a; i <= e; ++i) {
-              const ChannelPoint& pt = link.line[i];
-              const f64 relief = relief_of(p, pt);
-              const f64 riffle =
-                  has_bars(i) ? wide(p.riffle_rise) * wide(pt.depth_m) * rhythm[i] : 0.0;
-              for (u32 c = 0; c < columns; ++c) {
-                const f64 v = static_cast<f64>(c) / static_cast<f64>(columns - 1) - .5;
-                const f64 bed_w = bed_width(p, pt);
-                const f64 x = f[i].x + f[i].nx * v * bed_w;
-                const f64 z = f[i].z + f[i].nz * v * bed_w;
-                i64 xm = 0, zm = 0;
-                const f64 g = b.ground_local(x, z, xm, zm);
-                const bool edge = c == 0 || c + 1 == columns;
-                const f64 across =
-                    1 - 4 * v * v;  // the riffle crosses the bed, highest mid-channel
-                const f64 bump =
-                    edge ? 0.0
-                         : relief * .5 * (1 + place_noise(link.seed, xm, zm)) + riffle * across;
-                b.vertex(slab, x, z, g + k_lift_m + bump, g - k_bury_m);
-              }
-            }
-            piece.recipe.slabs.push_back(std::move(slab));
-          }
-          a = e + 1;
-        }
-        if (!piece.recipe.slabs.empty()) {
-          piece.id = ++id;
-          out.push_back(std::move(piece));
-        }
-      }
-      // The bars of this piece: a low lens on one side of the bed, its outer edge at the bed's,
-      // its crown `bar_rise` of the depth above the bed.
-      {
-        PlacedPiece piece = base;
-        piece.recipe.part = ChannelPart::Bar;
-        piece.recipe.uv_origin = {uv[0], uv[1]};
-        piece.recipe.surface = bar_look;
-        for (const Bar& bar : bars) {
-          const u32 centre = (bar.from + bar.to) / 2;
-          if (centre < r0 || centre >= r1 + (k + 1 == pieces ? 1u : 0u)) continue;
-          if (piece.recipe.slabs.size() >= k_max_slabs) break;
-          ChannelSlab slab;
-          slab.rows = bar.to - bar.from + 1;
-          slab.columns = 5;
-          for (u32 i = bar.from; i <= bar.to; ++i) {
-            const ChannelPoint& pt = link.line[i];
-            const f64 u = static_cast<f64>(i - bar.from) / static_cast<f64>(bar.to - bar.from);
-            const f64 w = wide(pt.width_m);
-            const f64 outer = .5 * bed_width(p, pt) - .02;
-            const f64 inner = std::max(0.0, outer - wide(p.bar_width_widths) * w);
-            for (u32 c = 0; c < 5; ++c) {
-              const f64 v = static_cast<f64>(c) / 4.0;
-              const f64 lateral = bar.side * (inner + v * (outer - inner));
-              const f64 x = f[i].x + f[i].nx * lateral;
-              const f64 z = f[i].z + f[i].nz * lateral;
-              i64 xm = 0, zm = 0;
-              const f64 g = b.ground_local(x, z, xm, zm);
-              const f64 lens = det::sin(k_pi * u) * det::sin(k_pi * v);
-              const f64 top = g + k_lift_m + 2 * relief_of(p, pt) + .01 +
-                              wide(p.bar_rise) * wide(pt.depth_m) * std::max(0.0, lens);
-              b.vertex(slab, x, z, top, g - .1);
-            }
-          }
-          piece.recipe.slabs.push_back(std::move(slab));
-        }
-        if (!piece.recipe.slabs.empty()) {
-          piece.id = ++id;
-          out.push_back(std::move(piece));
-        }
-      }
+      piece.tile = {static_cast<i32>(tx), static_cast<i32>(tz)};
       // The steps' boulders (W90): at each step-pool crest in this piece, a row of domes across
       // the bed, each about the step's height across (the clasts that hold a step up are of its
       // height: Chin 1999), a stated jitter of a fifth of that along and across, their tops 0.6 of
       // their width over the ground at the lip and their bottoms buried a third. A cascade's
       // clusters (W91): one to three clasts of the cluster's size, anywhere across the bed and a
       // size along it, so no two clusters line up.
-      {
-        PlacedPiece piece = base;
-        piece.recipe.part = ChannelPart::Boulder;
-        piece.recipe.uv_origin = {uv[0], uv[1]};
-        piece.recipe.surface = boulder_look;
-        auto dome = [&](u32 i, f64 d, f64 lateral, f64 along) {
-          const f64 cx = f[i].x + f[i].nx * lateral + f[i].nz * along;
-          const f64 cz = f[i].z + f[i].nz * lateral - f[i].nx * along;
-          ChannelSlab slab;
-          slab.rows = 7;
-          slab.columns = 7;
-          for (u32 rr = 0; rr < 7; ++rr)
-            for (u32 cc = 0; cc < 7; ++cc) {
-              const f64 u = static_cast<f64>(rr) / 3.0 - 1, v = static_cast<f64>(cc) / 3.0 - 1;
-              const f64 x = cx + .5 * d * (f[i].nz * u + f[i].nx * v);
-              const f64 z = cz + .5 * d * (-f[i].nx * u + f[i].nz * v);
-              i64 xm = 0, zm = 0;
-              const f64 g = b.ground_local(x, z, xm, zm);
-              const f64 top = std::sqrt(std::max(0.0, 1 - .5 * (u * u + v * v)));
-              b.vertex(slab, x, z, g + k_lift_m + .6 * d * top, g - d / 3);
-            }
-          piece.recipe.slabs.push_back(std::move(slab));
-        };
-        const u32 last = r1 + (k + 1 == pieces ? 1u : 0u);
-        for (u32 q = 0; q < link.step_at.size(); ++q) {
-          const u32 i = link.step_at[q];
-          if (i < r0 || i >= last || i >= m) continue;
-          if (reach_at(i) != ChannelReach::StepPool) continue;
-          const ChannelPoint& pt = link.line[i];
-          const f64 bed_w = bed_width(p, pt);
-          const f64 size = std::clamp(wide(link.step_height[q]), .25, 1.5);
-          const u32 count = std::max<u32>(1, static_cast<u32>(std::lround(bed_w / size)));
-          Rng draw(hash_combine(link.seed, 0xb0u + i));
-          for (u32 c = 0; c < count && piece.recipe.slabs.size() < k_max_slabs; ++c) {
-            const f64 d = size * (.8 + .4 * draw.unit());
-            const f64 across = (static_cast<f64>(c) + .5) / static_cast<f64>(count) - .5;
-            const f64 lateral = across * bed_w + .2 * size * (2 * draw.unit() - 1);
-            const f64 along = .2 * size * (2 * draw.unit() - 1);
-            dome(i, d, lateral, along);
+      piece.recipe.part = ChannelPart::Boulder;
+      piece.recipe.uv_origin = {static_cast<f32>(static_cast<f64>(b.x0 % 1024000) / 1000.0),
+                                static_cast<f32>(static_cast<f64>(b.z0 % 1024000) / 1000.0)};
+      piece.recipe.surface = boulder_look;
+      auto dome = [&](u32 i, f64 d, f64 lateral, f64 along) {
+        const f64 cx = f[i].x + f[i].nx * lateral + f[i].nz * along;
+        const f64 cz = f[i].z + f[i].nz * lateral - f[i].nx * along;
+        ChannelSlab slab;
+        slab.rows = 7;
+        slab.columns = 7;
+        for (u32 rr = 0; rr < 7; ++rr)
+          for (u32 cc = 0; cc < 7; ++cc) {
+            const f64 u = static_cast<f64>(rr) / 3.0 - 1, v = static_cast<f64>(cc) / 3.0 - 1;
+            const f64 x = cx + .5 * d * (f[i].nz * u + f[i].nx * v);
+            const f64 z = cz + .5 * d * (-f[i].nx * u + f[i].nz * v);
+            i64 xm = 0, zm = 0;
+            const f64 g = b.ground_local(x, z, xm, zm);
+            const f64 top = std::sqrt(std::max(0.0, 1 - .5 * (u * u + v * v)));
+            b.vertex(slab, x, z, g + k_lift_m + .6 * d * top, g - d / 3);
           }
+        piece.recipe.slabs.push_back(std::move(slab));
+      };
+      const u32 last = r1 + (k + 1 == pieces ? 1u : 0u);
+      for (u32 q = 0; q < link.step_at.size(); ++q) {
+        const u32 i = link.step_at[q];
+        if (i < r0 || i >= last || i >= m) continue;
+        if (reach_at(i) != ChannelReach::StepPool) continue;
+        const ChannelPoint& pt = link.line[i];
+        const f64 bed_w = bed_width(p, pt, asym_at(i), swell_at(i));
+        const f64 size = std::clamp(wide(link.step_height[q]), .25, 1.5);
+        const u32 count = std::max<u32>(1, static_cast<u32>(std::lround(bed_w / size)));
+        Rng draw(hash_combine(link.seed, 0xb0u + i));
+        for (u32 c = 0; c < count && piece.recipe.slabs.size() < k_max_slabs; ++c) {
+          const f64 d = size * (.8 + .4 * draw.unit());
+          const f64 across = (static_cast<f64>(c) + .5) / static_cast<f64>(count) - .5;
+          const f64 lateral = across * bed_w + .2 * size * (2 * draw.unit() - 1);
+          const f64 along = .2 * size * (2 * draw.unit() - 1);
+          dome(i, d, lateral, along);
         }
-        for (u32 q = 0; q < link.cluster_at.size(); ++q) {
-          const u32 i = link.cluster_at[q];
-          if (i < r0 || i >= last || i >= m) continue;
-          const f64 bed_w = bed_width(p, link.line[i]);
-          const f64 size = wide(link.cluster_size[q]);
-          Rng draw(hash_combine(link.seed, 0xc1u + i));
-          const u32 count = 1 + static_cast<u32>(draw.unit() * 3.0);
-          for (u32 c = 0; c < count && piece.recipe.slabs.size() < k_max_slabs; ++c) {
-            const f64 d = size * (.7 + .6 * draw.unit());
-            const f64 lateral = (draw.unit() - .5) * std::max(0.0, bed_w - .5 * d);
-            const f64 along = size * (2 * draw.unit() - 1);
-            dome(i, d, lateral, along);
-          }
+        // **The step's ends** (W93, continued; channels.md, "The steep reaches"): a step is a
+        // channel-spanning accumulation jammed between the banks, and the clasts at its two ends
+        // are the largest and stand half in the bank. One each side, 1 to 1.5 of the step's clast
+        // across, its centre a third of itself past the bed's edge: the rocks that break the
+        // bank's line.
+        for (const f64 side : {-1.0, 1.0}) {
+          if (piece.recipe.slabs.size() >= k_max_slabs) break;
+          const f64 d = size * (1 + .5 * draw.unit());
+          const f64 along = .3 * size * (2 * draw.unit() - 1);
+          dome(i, d, side * (.5 * bed_w + .35 * d), along);
         }
-        if (!piece.recipe.slabs.empty()) {
-          piece.id = ++id;
-          out.push_back(std::move(piece));
+      }
+      for (u32 q = 0; q < link.cluster_at.size(); ++q) {
+        const u32 i = link.cluster_at[q];
+        if (i < r0 || i >= last || i >= m) continue;
+        const f64 bed_w = bed_width(p, link.line[i], asym_at(i), swell_at(i));
+        const f64 size = wide(link.cluster_size[q]);
+        Rng draw(hash_combine(link.seed, 0xc1u + i));
+        const u32 count = 1 + static_cast<u32>(draw.unit() * 3.0);
+        for (u32 c = 0; c < count && piece.recipe.slabs.size() < k_max_slabs; ++c) {
+          const f64 d = size * (.7 + .6 * draw.unit());
+          const f64 lateral = (draw.unit() - .5) * std::max(0.0, bed_w - .5 * d);
+          const f64 along = size * (2 * draw.unit() - 1);
+          dome(i, d, lateral, along);
         }
+        // And at about half the clusters a clast against one bank, as the steps' ends are.
+        if (draw.unit() < .5 && piece.recipe.slabs.size() < k_max_slabs) {
+          const f64 side = draw.unit() < .5 ? -1.0 : 1.0;
+          const f64 d = size * (.9 + .5 * draw.unit());
+          dome(i, d, side * (.5 * bed_w + .35 * d), size * (2 * draw.unit() - 1));
+        }
+      }
+      if (!piece.recipe.slabs.empty()) {
+        piece.id = ++id;
+        out.push_back(std::move(piece));
       }
     }
   }

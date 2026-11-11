@@ -677,7 +677,12 @@ struct TerrainDetail @version(4) {
 /// scene may also author one. Refused with a sentence: fewer than two points, arrays whose length
 /// is not the points', a width or depth that is not positive and finite, a bank slope outside
 /// [0.25, 8].
-struct TerrainCut @version(1) {
+///
+/// **Version 2** (roadmap W93; docs/subsystems/channels.md, "The section" and "The flood bed"): the
+/// cut is a ground edit along a line whose profile may differ left from right and vary along it.
+/// "Left" is the side of (-dz, dx) for a segment running (dx, dz). Every field below is absent by
+/// default, and a cut that names none of them is the millimetres it was.
+struct TerrainCut @version(3) {
   name: string
   points: worldpos[]
   /// The bankfull width at each point, metres: the cut's width at the top of its banks.
@@ -688,6 +693,30 @@ struct TerrainCut @version(1) {
   /// angle of repose (30 to 40 degrees) and a vegetated or cohesive upper bank near vertical
   /// (docs/experiments/channels.md, "The cut").
   bank_slope: f32 = 1
+  /// **A slope per bank and per point** (rise over run, [0.02, 16]): the cut bank on a bend's
+  /// outside steep, the point bar's surface on its inside gentle, so the thalweg lies toward the
+  /// outer bank. Both or neither; one per point. Empty: `bank_slope` on both sides.
+  bank_slope_left: f32[] @since(2)
+  bank_slope_right: f32[] @since(2)
+  /// **A rounded top**: where the cut's surface meets the ground the two are joined by a smooth
+  /// minimum over the band where they are within this share of the depth at the point of each
+  /// other (the crease lowered by a quarter of it), [0.1, 1]; and the cut's faces run out to the
+  /// ground past their tops. Every cut rounds and runs out (version 3: 0, the crease and the wall
+  /// at a face's end that W89 left, is refused, and a cut that names none is rounded over 0.75).
+  bank_round: f32 = 0.75 @since(2)
+  /// **The flood bed** (all four or none; one per point): a flat bed `flood_depth_m` under the top
+  /// of the bank reaching `flood_left_m` and `flood_right_m` from the line, metres, bounded each
+  /// side by a scarp at `scarp_slope` whose top stands `scarp_m` above the bed, the face going on
+  /// as much again where it meets the valley's side. A point whose two reaches are zero has none.
+  /// The channel lies in it: the section is the lower of the two, their meeting rounded as the
+  /// top is.
+  flood_left_m: f32[] @since(2)
+  flood_right_m: f32[] @since(2)
+  flood_depth_m: f32[] @since(2)
+  scarp_m: f32[] @since(2)
+  /// The scarp's rise over run, [0.25, 8]: a raw face of alluvium stands steeper than its angle
+  /// of repose while it is fresh.
+  scarp_slope: f32 = 1.5 @since(2)
 }
 
 /// The `tiles` ground provider's parameters (`Terrain.tiles`; docs/subsystems/tileset.md): an
@@ -1375,7 +1404,7 @@ struct WaterBody @version(5) {
 /// points falls at 45 degrees or steeper the water is in free fall and that stretch is a waterfall.
 /// Refused with a sentence: fewer than two points, arrays of unequal length, a width or depth that
 /// is not positive, a slope that is negative where the line descends.
-struct WaterChannel @version(4) {
+struct WaterChannel @version(5) {
   name: string
   /// The centreline, downstream, world positions; each point's y is the **water surface's**
   /// height there.
@@ -1423,6 +1452,13 @@ struct WaterChannel @version(4) {
   /// defaults are the exclusion's old constants to the bit (0.4 has no exact f32).
   bank_width_widths: f64 = 0.25 @since(4)
   bank_width_m: f64 = 0.4 @since(4) @unit(m)
+  /// **The flood bed's reach from the line** at each point, metres, left and right (W93;
+  /// scene_gen.md, "Exclusion"; "left" the side of (-dz, dx) for a segment running (dx, dz)): the
+  /// cut's own numbers (`TerrainCut.flood_left_m`, `flood_right_m`), handed over here so the
+  /// placements leave the whole bed bare and not only the water and its banks. Both or neither,
+  /// one per point; empty where the channel has no flood bed. The water reads neither.
+  flood_left_m: f32[] @since(5)
+  flood_right_m: f32[] @since(5)
 }
 
 /// One bed of a formation's sequence (`Formation`; renderer.md, "Formation bands"; the grounding,

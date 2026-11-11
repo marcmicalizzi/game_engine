@@ -392,7 +392,12 @@ requires the soil capability; see [soil](soil.md#cook-and-scene-workflow).
 
 ## engine-content channels: the water's channel description
 
-`engine-content channels <scene.json> <out.json> [--min-area-m2 <m2>] [--stage <fraction>] [--entry <i>] [--cut] [--measure <water.json>]`
+`engine-content channels <scene.json> <out.json> [--ddc <dir>] [--min-area-m2 <m2>] [--stage <fraction>] [--entry <i>] [--cut] [--measure <water.json>]`
+(since W93 each entry's network is **one plan**, a file under the derived-data root's `channels/` —
+`--ddc`, else the repository's `ddc/`, else `ddc/` beside the scene — keyed by what it was made
+from, so a second run plans nothing; the output's `plans` holds each entry's key, which an entry
+on cut ground names as `params.plan`, and the summary `plans`, `planned` and `plan_s`:
+[channels](channels.md#one-plan))
 runs the scene's `channels` placements (or the one at index `--entry`) over the ground its terrain
 names, through the same ground-provider registry the renderer uses (the terrain's masks are left out:
 the network asks the heights alone), and writes `{"water_channels": [...]}`: one

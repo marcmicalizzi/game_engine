@@ -10,7 +10,9 @@
 //    a point within `half the surface width + the bank's reach` of the centreline, the reach being
 //    the channel's own `bank_width_widths * w + bank_width_m` (`WaterChannel`, which the channels
 //    recipe writes; its defaults 0.25 w + 0.4 m are the recipe's; T78), whose outer edge is the
-//    riparian edge the channels page names;
+//    riparian edge the channels page names; and, where the channel's cut has a **flood bed**
+//    (W93), out to the bed's edge on each side (`WaterChannel.flood_left_m`, `flood_right_m`, the
+//    cut's own numbers), whichever of the two reaches further on that side;
 //  * **water** (`water`) -- a point of a body's outline whose ground is below its level (what
 //    `water::depth_at` calls wading), and the whole of an open body's sea.
 //
@@ -77,6 +79,15 @@ class Exclusion {
   f64 channel_distance_mm(i64 x_mm, i64 z_mm) const noexcept;
   // 1 beyond the riparian reach; `k_riparian_floor` at the bank's edge.
   f64 riparian_factor_mm(i64 x_mm, i64 z_mm) const noexcept;
+  // **The one definition of a channel's bank edge, asked out to any reach** (W93, for the site
+  // query, G144): metres from the world point (whole millimetres) to the nearest channel's bank
+  // edge — the edge `excluded_mm` leaves bare: the dressed bank's, or a flood bed's where it
+  // reaches further on the point's side — 0 inside it, or a very large number (over 1e20) when no
+  // edge is within `reach_m` metres. `channel_distance_mm` is this at `k_riparian_reach_m`, to
+  // the bit. Const and without state of its own, so any number of threads may ask at once. It
+  // reads the cells within the reach of the point (a 16 m grid), so a long reach costs the
+  // segments of that square: at 128 m, 17 cells a side and a little more.
+  f64 channel_edge_distance_mm(i64 x_mm, i64 z_mm, f64 reach_m) const noexcept;
 
  private:
   struct Body {
@@ -92,6 +103,8 @@ class Exclusion {
   struct Segment {
     f64 ax = 0.0, az = 0.0, bx = 0.0, bz = 0.0;  // metres
     f64 ra = 0.0, rb = 0.0;                      // bank edge at each end, from the line
+    // The flood bed's edge at each end, from the line, left ((-dz, dx)) and right; 0: none (W93).
+    f64 la = 0.0, lb = 0.0, ga = 0.0, gb = 0.0;
   };
   struct Cell {
     i64 key_z = 0;
@@ -107,7 +120,8 @@ class Exclusion {
   TerrainHoles holes_;
   Vector<Body> bodies_;
   Vector<Segment> segments_;
-  Vector<Cell> cells_;  // sorted by (z, x, segment)
+  Vector<Cell> cells_;     // sorted by (z, x, segment)
+  f64 widest_edge_ = 0.0;  // the furthest any segment's edge stands from its line, metres
 };
 
 }  // namespace engine::scene_gen

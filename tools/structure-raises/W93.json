@@ -1,0 +1,11 @@
+{
+  "format": "engine.structure-raise.v1",
+  "name": "W93",
+  "reason": "engine-content channels takes --ddc, keeps each entry's network as one plan under it and writes the plans' keys (apps.md); water.md says what WaterChannel versions 4 and 5 carry for the exclusion, which the page lacked",
+  "date": "2026-11-10",
+  "by": "Marc Micalizzi",
+  "deltas": {
+    "page:docs/subsystems/apps.md": 432,
+    "page:docs/subsystems/water.md": 609
+  }
+}

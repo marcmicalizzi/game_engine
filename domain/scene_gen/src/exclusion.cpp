@@ -32,6 +32,7 @@ bool Exclusion::build(std::span<const scene::TerrainHole> holes,
   bodies_.clear();
   segments_.clear();
   cells_.clear();
+  widest_edge_ = 0.0;
   if (!holes_.build(holes, error)) return false;
 
   for (const scene::WaterBody& block : water) {
@@ -105,6 +106,13 @@ bool Exclusion::build(std::span<const scene::TerrainHole> holes,
       const f64 w = static_cast<f64>(channel.width_m[i]);
       return 0.5 * w + bank_widths * w + bank_m;
     };
+    // The flood bed's reach each side (W93), the cut's own numbers: read where both arrays are
+    // the points' long; a negative or non-finite one is none, as a bank's number is its default.
+    const bool flood = channel.flood_left_m.size() == n && channel.flood_right_m.size() == n;
+    const auto flood_number = [](f32 v) {
+      const f64 d = static_cast<f64>(v);
+      return finite(d) && d > 0.0 ? d : 0.0;
+    };
     for (u32 i = 0; i + 1 < n; ++i) {
       Segment s;
       s.ax = channel.points[i].x;
@@ -113,8 +121,17 @@ bool Exclusion::build(std::span<const scene::TerrainHole> holes,
       s.bz = channel.points[i + 1].z;
       s.ra = edge(i);
       s.rb = edge(i + 1);
+      if (flood) {
+        s.la = flood_number(channel.flood_left_m[i]);
+        s.lb = flood_number(channel.flood_left_m[i + 1]);
+        s.ga = flood_number(channel.flood_right_m[i]);
+        s.gb = flood_number(channel.flood_right_m[i + 1]);
+      }
       const u32 id = segments_.size();
-      const f64 reach = std::max(s.ra, s.rb) + k_riparian_reach_m;
+      const f64 edge_reach =
+          std::max(std::max(std::max(s.ra, s.rb), std::max(s.la, s.lb)), std::max(s.ga, s.gb));
+      widest_edge_ = std::max(widest_edge_, edge_reach);
+      const f64 reach = edge_reach + k_riparian_reach_m;
       const i64 cx0 = cell_of(std::min(s.ax, s.bx) - reach);
       const i64 cx1 = cell_of(std::max(s.ax, s.bx) + reach);
       const i64 cz0 = cell_of(std::min(s.az, s.bz) - reach);
@@ -163,7 +180,13 @@ f64 Exclusion::bank_gap(const Segment& s, f64 x, f64 z) noexcept {
   if (len2 > 0.0) t = std::clamp(((x - s.ax) * dx + (z - s.az) * dz) / len2, 0.0, 1.0);
   const f64 px = s.ax + t * dx - x;
   const f64 pz = s.az + t * dz - z;
-  return std::sqrt(px * px + pz * pz) - (s.ra + t * (s.rb - s.ra));
+  f64 reach = s.ra + t * (s.rb - s.ra);
+  // The flood bed's edge on the point's side of the line, where it reaches further (W93). The
+  // left is the side of (-dz, dx).
+  const bool left = dx * (z - s.az) - dz * (x - s.ax) >= 0.0;
+  const f64 bed = left ? s.la + t * (s.lb - s.la) : s.ga + t * (s.gb - s.ga);
+  if (bed > reach) reach = bed;
+  return std::sqrt(px * px + pz * pz) - reach;
 }
 
 f64 Exclusion::nearest_gap(f64 x, f64 z) const noexcept {
@@ -202,6 +225,29 @@ f64 Exclusion::channel_distance_mm(i64 x_mm, i64 z_mm) const noexcept {
   const f64 gap = nearest_gap(static_cast<f64>(x_mm) * 0.001, static_cast<f64>(z_mm) * 0.001);
   if (gap >= k_riparian_reach_m) return k_far;
   return std::max(gap, 0.0);
+}
+
+f64 Exclusion::channel_edge_distance_mm(i64 x_mm, i64 z_mm, f64 reach_m) const noexcept {
+  if (cells_.empty() || !(reach_m > 0.0)) return k_far;
+  const f64 x = static_cast<f64>(x_mm) * 0.001;
+  const f64 z = static_cast<f64>(z_mm) * 0.001;
+  // A segment whose edge is within the reach has its line within the reach and its widest edge
+  // of the point, and it is filed in every cell its line's box touches.
+  const f64 box = reach_m + widest_edge_;
+  const i64 cx0 = cell_of(x - box), cx1 = cell_of(x + box);
+  const i64 cz0 = cell_of(z - box), cz1 = cell_of(z + box);
+  f64 best = k_far;
+  for (i64 cz = cz0; cz <= cz1; ++cz) {
+    auto it = std::lower_bound(cells_.begin(), cells_.end(), Cell{cz, cx0, 0},
+                               [](const Cell& a, const Cell& b) {
+                                 if (a.key_z != b.key_z) return a.key_z < b.key_z;
+                                 return a.key_x < b.key_x;
+                               });
+    for (; it != cells_.end() && it->key_z == cz && it->key_x <= cx1; ++it)
+      best = std::min(best, bank_gap(segments_[it->segment], x, z));
+  }
+  if (best >= reach_m) return k_far;
+  return best > 0.0 ? best : 0.0;
 }
 
 f64 Exclusion::riparian_factor_mm(i64 x_mm, i64 z_mm) const noexcept {
