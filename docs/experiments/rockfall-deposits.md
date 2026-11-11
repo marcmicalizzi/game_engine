@@ -174,3 +174,17 @@ cones' toes and the apron and a few out on the meadow. Still wrong beside the re
 outline steps with its 0.5 m samples, a patch's normals still show at its edge as G128's did, and
 the blocks are clean. Against reels r04, r19 and r22 they still lack the cones' pale coarse surface, lichen and
 turf on the blocks, and any change to the ground beneath (rocks.md, "What still reads as placed").
+
+**The second agent's pictures** (not committed; `D:/workspace/game_engine_local/fable_sub/scratch/b59/G143b/`,
+`captures/before/`, `after/`, `funnels/`; the base `606c072a`'s engine-view copied out of the tree
+against this row's, one derived-data cache, the engine's material pack unpacked, msvc-debug, 1600 x
+900, CSM shadows, sun -30, 40). The first agent's face at the default supply (3.5 m) stands a
+continuous talus apron about 14 m up its 24 m wall, the gullies' piles bulging it a little; the
+funnel face at 1.5 m stands the same apron lower, with the gullies' cones only slightly proud,
+because its spurs still shed most of the face. The outline against the meadow no longer steps with
+the samples, and a scatter of the toe's clasts lies past it. Still wrong beside reels r04, r19 and
+r22: the deposit is the bed's flat grey (the pack's one rock set is sandstone, so a granite deposit
+draws untextured) and smooth between its fragments, not coarse and paler than its wall; the toe's
+clasts lie in a line along the outline rather than thinning out over metres; shadows and shading
+streak across the apron near blocks and along some patch borders; and the walker's camera stands
+inside the taller apron, so that view shows nothing.

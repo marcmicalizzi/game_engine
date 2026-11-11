@@ -1022,7 +1022,7 @@ to their largest foot against 13.4 m³ a planar foot, and their piles stand 8.7 
 against 7.6 m between them: **on a face this short with gullies this close, the cones merge into an
 apron that bulges at each gully** (each cone reaches farther than the gullies are apart). A cone
 stands alone where its gully drains more face than the faces between it shed, as in reels r04 and
-r19, where a gully drains a basin; the review scene's face is built so.
+r19, where a gully drains a basin; the review pictures' funnel face (G143's report) is built so.
 
 **Shed blocks.** The top of a talus is a deposit's gentle sample under a sample whose top is steep
 and higher, with no steep drop below it (a notch's floor at a face's brink is a gully's head, not a
