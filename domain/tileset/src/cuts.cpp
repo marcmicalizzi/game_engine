@@ -18,6 +18,7 @@ constexpr f64 k_max_slope = 8.0;
 // A point bar's surface is far gentler than a bank, and a cut bank far steeper (W93).
 constexpr f64 k_min_side_slope = 0.02;
 constexpr f64 k_max_side_slope = 16.0;
+constexpr f64 k_min_round = 0.1;
 constexpr f64 k_max_round = 1.0;
 // The share of a face's second run at which a run-out ends: the face stands 20 rises over the top
 // there, which no ground a channel is cut into does.
@@ -34,7 +35,6 @@ i64 floor_div(i64 a, i64 b) noexcept {
 i64 ceil_div(i64 a, i64 b) noexcept { return -floor_div(-a, b); }
 
 // The profile's depth below its top at the signed distance `s`, or false past that side's reach.
-// The symmetric case is W89's arithmetic, operation for operation.
 bool delta_at(const CutProfile& p, f64 s, f64& delta) noexcept {
   f64 ml = p.slope_left, mr = p.slope_right;
   if (ml == mr) {
@@ -54,9 +54,9 @@ bool delta_at(const CutProfile& p, f64 s, f64& delta) noexcept {
   const f64 m = s >= 0.0 ? ml : mr;
   const f64 past = s >= 0.0 ? s - (rl + p.rise / ml) : -s - (rr + p.rise / mr);
   if (past > 0.0) {
-    // W89's face ends there. A face that runs out (cuts.h) goes on, steepening, over one more
-    // run of its own: `rise / (1 - v)` over the top at the share `v` of that run.
-    if (!p.run_out || !(p.rise > 0.0)) return false;
+    // The face runs out (cuts.h): it goes on, steepening, over one more run of its own,
+    // `rise / (1 - v)` over the top at the share `v` of that run.
+    if (!(p.rise > 0.0)) return false;
     const f64 v = past * m / p.rise;
     if (!(v < k_run_out_end)) return false;
     delta = -p.rise / (1.0 - v);
@@ -67,9 +67,7 @@ bool delta_at(const CutProfile& p, f64 s, f64& delta) noexcept {
 }
 
 // The depth (negative: a height over the top) a face stands at where it ends.
-f64 end_delta(const CutProfile& p) noexcept {
-  return p.run_out ? -p.rise / (1.0 - k_run_out_end) : -p.rise;
-}
+f64 end_delta(const CutProfile& p) noexcept { return -p.rise / (1.0 - k_run_out_end); }
 
 }  // namespace
 
@@ -86,10 +84,6 @@ f64 cut_round(f64 ground, f64 surface, f64 k) noexcept {
   if (!(d < k)) return low;
   const f64 h = (k - d) / k;
   return low - h * h * k * 0.25;
-}
-
-bool cut_section(f64 top, f64 w, f64 depth, f64 slope, f64 d, f64& out) noexcept {
-  return cut_profile(CutProfile{top, w, 0.0, depth, slope, slope, depth, false}, std::fabs(d), out);
 }
 
 bool TerrainCuts::build(std::span<const scene::TerrainCut> cuts, std::string* error) {
@@ -117,8 +111,8 @@ bool TerrainCuts::build(std::span<const scene::TerrainCut> cuts, std::string* er
     if (sides && (c.bank_slope_left.size() != n || c.bank_slope_right.size() != n))
       return fail(c, "has a left and a right bank slope array whose length is not its points'");
     const f64 round = static_cast<f64>(c.bank_round);
-    if (!(round >= 0.0) || !(round <= k_max_round))
-      return fail(c, "has a bank rounding outside [0, 1]");
+    if (!(round >= k_min_round) || !(round <= k_max_round))
+      return fail(c, "has a bank rounding outside [0.1, 1]");
     const bool flood = !c.flood_left_m.empty() || !c.flood_right_m.empty() ||
                        !c.flood_depth_m.empty() || !c.scarp_m.empty();
     if (flood && (c.flood_left_m.size() != n || c.flood_right_m.size() != n ||
@@ -140,7 +134,7 @@ bool TerrainCuts::build(std::span<const scene::TerrainCut> cuts, std::string* er
       h = hash_combine(hash_combine(hash_combine(h, bits(p.x)), bits(p.y)), bits(p.z));
       h = hash_combine(hash_combine(h, bits(w)), bits(d));
     }
-    // Hashed only where a cut names them, so a W89 cut hashes as it did.
+    // The two side arrays and the flood bed are hashed only where a cut names them.
     if (sides) {
       h = hash_combine(h, 0x5349444553ull);
       for (u32 k = 0; k < n; ++k) {
@@ -152,7 +146,7 @@ bool TerrainCuts::build(std::span<const scene::TerrainCut> cuts, std::string* er
         h = hash_combine(hash_combine(h, bits(l)), bits(r));
       }
     }
-    if (round != 0.0) h = hash_combine(hash_combine(h, 0x524f554e44ull), bits(round));
+    h = hash_combine(hash_combine(h, 0x524f554e44ull), bits(round));
     if (flood) {
       h = hash_combine(hash_combine(h, 0x464c4f4f44ull), bits(scarp_slope));
       for (u32 k = 0; k < n; ++k) {
@@ -179,7 +173,6 @@ bool TerrainCuts::build(std::span<const scene::TerrainCut> cuts, std::string* er
       e.rise = e.depth;
       e.round = round * e.depth;
       e.cell_width = e.width;
-      e.run_out = round > 0.0;
       return e;
     };
     // The flood bed as a profile of its own: its top the scarp's, its bed the flood bed's
@@ -198,14 +191,13 @@ bool TerrainCuts::build(std::span<const scene::TerrainCut> cuts, std::string* er
       e.rise = scarp;
       e.round = round * scarp;
       e.cell_width = l + r;
-      e.run_out = round > 0.0;
       return e;
     };
     // An end's reach from the line: the further bank's top and the face's run past it, with the
     // banks as given (steepened banks reach less).
     const auto reach_of = [](const End& e) {
       return 0.5 * e.width + std::fabs(e.offset) +
-             (e.run_out ? 2.0 : 1.0) * e.rise / std::min(e.slope_left, e.slope_right);
+             2.0 * e.rise / std::min(e.slope_left, e.slope_right);
     };
     for (u32 k = 0; k + 1 < n; ++k) {
       Segment s;
@@ -271,7 +263,6 @@ bool TerrainCuts::segment_at(const Segment& s, f64 x, f64 z, f64 cell, Reading& 
     p.slope_left = a.slope_left + t * (b.slope_left - a.slope_left);
     p.slope_right = a.slope_right + t * (b.slope_right - a.slope_right);
     p.rise = a.rise + t * (b.rise - a.rise);
-    p.run_out = a.run_out;
     f64 delta = 0.0;
     if (!cap) {
       if (!delta_at(p, cross >= 0.0 ? d : -d, delta)) return false;

@@ -387,7 +387,9 @@ its own line over the cut ground and the slab had to be fitted to a cut it did n
 for them ([What it places](#what-it-places)). The switch back to W89's trapezoid
 (`section_asymmetry` 0), which kept W86's lens code alive, is gone too: every cut the generator
 writes is shaped, with a slope a bank a point, a rounded top (`bank_round`, 0.1 to 1) and faces
-that run out.
+that run out; and `TerrainCut` itself (version 3) refuses a rounding of 0, so a cut written by
+hand cannot ask for the crease and the wall either
+([tileset](tileset.md#channels-cut-into-the-ground)).
 
 **Measured** (12 seeds on the test valley, `domain/channels/tests/channels_tests.cpp`): at 327 of
 341 bends the outer bank is the deeper side (551 of 553 before the kinks were taken out of the

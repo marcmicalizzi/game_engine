@@ -682,7 +682,7 @@ struct TerrainDetail @version(4) {
 /// cut is a ground edit along a line whose profile may differ left from right and vary along it.
 /// "Left" is the side of (-dz, dx) for a segment running (dx, dz). Every field below is absent by
 /// default, and a cut that names none of them is the millimetres it was.
-struct TerrainCut @version(2) {
+struct TerrainCut @version(3) {
   name: string
   points: worldpos[]
   /// The bankfull width at each point, metres: the cut's width at the top of its banks.
@@ -700,8 +700,10 @@ struct TerrainCut @version(2) {
   bank_slope_right: f32[] @since(2)
   /// **A rounded top**: where the cut's surface meets the ground the two are joined by a smooth
   /// minimum over the band where they are within this share of the depth at the point of each
-  /// other (the crease lowered by a quarter of it), [0, 1]. 0: the crease W89 left.
-  bank_round: f32 = 0 @since(2)
+  /// other (the crease lowered by a quarter of it), [0.1, 1]; and the cut's faces run out to the
+  /// ground past their tops. Every cut rounds and runs out (version 3: 0, the crease and the wall
+  /// at a face's end that W89 left, is refused, and a cut that names none is rounded over 0.75).
+  bank_round: f32 = 0.75 @since(2)
   /// **The flood bed** (all four or none; one per point): a flat bed `flood_depth_m` under the top
   /// of the bank reaching `flood_left_m` and `flood_right_m` from the line, metres, bounded each
   /// side by a scarp at `scarp_slope` whose top stands `scarp_m` above the bed, the face going on

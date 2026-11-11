@@ -98,12 +98,15 @@ TEST_CASE("scene_collision: the ground inside a channel's cut is its bed") {
     f32 h = 0.0f;
     REQUIRE(collision.ground_height(WorldPos{x, 0.0, 0.0}, h));
     CHECK(h == doctest::Approx(1.2f).epsilon(1e-6));
+    // (W93: every cut's top is rounded over 0.75 of its depth, 0.6 m here. The face a metre from
+    // the line stands 0.5 m under the top, inside that band: 1500 - (0.1 / 0.6)^2 * 150 = 1495.83,
+    // 1.496 m to the millimetre. The top itself is lowered by a quarter of the band, 0.15 m.)
     REQUIRE(collision.ground_height(WorldPos{x, 0.0, 1.0}, h));
-    CHECK(h == doctest::Approx(1.5f).epsilon(1e-6));
+    CHECK(h == doctest::Approx(1.496f).epsilon(1e-6));
     REQUIRE(collision.ground_height(WorldPos{x, 0.0, -1.0}, h));
-    CHECK(h == doctest::Approx(1.5f).epsilon(1e-6));
+    CHECK(h == doctest::Approx(1.496f).epsilon(1e-6));
     REQUIRE(collision.ground_height(WorldPos{x, 0.0, 2.0}, h));
-    CHECK(h == doctest::Approx(2.0f).epsilon(1e-6));
+    CHECK(h == doctest::Approx(1.85f).epsilon(1e-6));
     REQUIRE(collision.ground_height(WorldPos{x, 0.0, 6.0}, h));
     CHECK(h == doctest::Approx(2.0f).epsilon(1e-6));
     // The collision's ground is the set's, to the bit, on its lattice.

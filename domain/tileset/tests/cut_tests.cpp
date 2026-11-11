@@ -63,25 +63,30 @@ struct Flat {
 
 }  // namespace
 
-TEST_CASE("tileset: a cut's section is the trapezoid its formula gives") {
+TEST_CASE("tileset: a cut's section is the trapezoid its formula gives, and its faces run out") {
   f64 y = 0;
   // 3 m wide, 0.6 m deep, banks at 45 degrees: a flat bed 1.8 m wide, the top at 1.5 m.
-  REQUIRE(cut_section(10.0, 3.0, 0.6, 1.0, 0.0, y));
+  const CutProfile p{10.0, 3.0, 0.0, 0.6, 1.0, 1.0, 0.6};
+  REQUIRE(cut_profile(p, 0.0, y));
   CHECK(y == doctest::Approx(9.4).epsilon(1e-12));
-  REQUIRE(cut_section(10.0, 3.0, 0.6, 1.0, 0.9, y));
+  REQUIRE(cut_profile(p, 0.9, y));
   CHECK(y == doctest::Approx(9.4).epsilon(1e-12));
-  REQUIRE(cut_section(10.0, 3.0, 0.6, 1.0, -1.2, y));
+  REQUIRE(cut_profile(p, -1.2, y));
   CHECK(y == doctest::Approx(9.7).epsilon(1e-12));
-  REQUIRE(cut_section(10.0, 3.0, 0.6, 1.0, 1.5, y));
+  REQUIRE(cut_profile(p, 1.5, y));
   CHECK(y == doctest::Approx(10.0).epsilon(1e-12));
-  // Past the top the face goes on up for at most a depth: to 2.1 m, then nothing.
-  REQUIRE(cut_section(10.0, 3.0, 0.6, 1.0, 2.0, y));
+  // Past the top the face goes on up for a depth, to 2.1 m, and then runs out over 0.6 m more,
+  // steepening: 0.6 / (1 - 1/6) over the top a sixth of that run on, and nothing past 0.95 of it.
+  REQUIRE(cut_profile(p, 2.0, y));
   CHECK(y == doctest::Approx(10.5).epsilon(1e-12));
-  CHECK_FALSE(cut_section(10.0, 3.0, 0.6, 1.0, 2.2, y));
+  REQUIRE(cut_profile(p, 2.2, y));
+  CHECK(y == doctest::Approx(10.72).epsilon(1e-9));
+  CHECK_FALSE(cut_profile(p, 2.7, y));
   // A bed narrower than the banks allow is a V: 1 m wide and 1 m deep steepens the banks to 2.
-  REQUIRE(cut_section(10.0, 1.0, 1.0, 1.0, 0.0, y));
+  const CutProfile v{10.0, 1.0, 0.0, 1.0, 1.0, 1.0, 1.0};
+  REQUIRE(cut_profile(v, 0.0, y));
   CHECK(y == doctest::Approx(9.0).epsilon(1e-12));
-  REQUIRE(cut_section(10.0, 1.0, 1.0, 1.0, 0.25, y));
+  REQUIRE(cut_profile(v, 0.25, y));
   CHECK(y == doctest::Approx(9.5).epsilon(1e-12));
 }
 
@@ -101,10 +106,14 @@ TEST_CASE("tileset: a cut lowers the finest level to its section and leaves the 
   TileSet a, b;
   REQUIRE_MESSAGE(a.open(plain.manifest, error), error);
   REQUIRE_MESSAGE(b.open(cut_set.manifest, error), error);
-  // Every finest point: the section where the cut reaches, rounded once, else the ground; and a
-  // finest tile no cut reaches holds the same millimetres it held without the cut.
+  // Every finest point: the section where the cut reaches, joined to the ground by the rounded
+  // minimum over 0.75 of the depth (a cut that names no rounding), rounded once to the millimetre,
+  // else the ground; and a finest tile no cut reaches holds the same millimetres it held without
+  // the cut.
   const i64 sp = 250;
-  const f64 reach = 1.5 + 0.6;  // half the width, and the face's run past it
+  const f64 depth_mm =
+      static_cast<f64>(0.6f) * 1000.0;  // the depth the build reads: the f32 widened
+  const f64 reach = 1.5 + 2 * 0.6;      // half the width, and the face's two runs past it
   u32 cut_points = 0, untouched_tiles = 0, touched_tiles = 0;
   for (i64 tz = 0; tz < 10; ++tz) {
     for (i64 tx = 0; tx < 10; ++tx) {
@@ -118,8 +127,10 @@ TEST_CASE("tileset: a cut lowers the finest level to its section and leaves the 
           const f64 d = d_mm / 1000.0;
           f64 expected = ground;
           f64 section = 0;
-          if (cut_section(0.0, 3000.0, 600.0, 1.0, d_mm, section))
-            expected = std::min(ground, std::floor(section + 0.5));
+          if (cut_profile(CutProfile{0.0, 3000.0, 0.0, depth_mm, 1.0, 1.0, depth_mm}, d_mm,
+                          section))
+            expected =
+                std::min(ground, std::floor(cut_round(ground, section, 0.75 * depth_mm) + 0.5));
           CHECK(b.point_mm(i * sp, j * sp) == expected);
           if (expected != ground) {
             ++cut_points;
@@ -134,9 +145,10 @@ TEST_CASE("tileset: a cut lowers the finest level to its section and leaves the 
   CHECK(cut_points > 1000);
   CHECK(touched_tiles >= 8);
   CHECK(untouched_tiles >= 60);
-  // The bed under the line and the top at the bank's edge.
+  // The bed under the line, and the top at the bank's edge rounded down by a quarter of the band:
+  // 450 / 4 = 112.5 mm and the f32's excess over 0.6, so 113 to the millimetre.
   CHECK(b.point_mm(20000, 20000) == -600.0);
-  CHECK(b.point_mm(20000, 21500) == 0.0);
+  CHECK(b.point_mm(20000, 21500) == -113.0);
 
   // The chain: a level finer than the width (1 and 2 m) holds the cut; one not finer (4, 8 m)
   // keeps its heights to the byte, its hash the plain set's.
@@ -284,14 +296,13 @@ bool straight_surface(f64 x, f64 z, f64 ax, f64 az, f64 bx, f64 bz, const Statio
   p.slope_left = a.left + t * (b.left - a.left);
   p.slope_right = a.right + t * (b.right - a.right);
   p.rise = p.depth;
-  p.run_out = round > 0.0;
   k = round * p.depth;
   if (raw >= 0.0 && raw <= 1.0) return cut_profile(p, lateral >= 0.0 ? d : -d, surface);
   f64 l = 0, r = 0;
   const bool has_l = cut_profile(p, d, l), has_r = cut_profile(p, -d, r);
   if (!has_l && !has_r) return false;
   // A face that runs out ends twenty rises over the top (0.95 of its second run).
-  const f64 end = p.run_out ? 20.0 * p.rise : p.rise;
+  const f64 end = 20.0 * p.rise;
   if (!has_l) l = p.top + end;
   if (!has_r) r = p.top + end;
   const f64 share = d > 0.0 ? std::clamp(0.5 + 0.5 * lateral / d, 0.0, 1.0) : 0.5;
@@ -301,10 +312,10 @@ bool straight_surface(f64 x, f64 z, f64 ax, f64 az, f64 bx, f64 bz, const Statio
 
 }  // namespace
 
-TEST_CASE("tileset: a profile differs left from right, and W89's section is the symmetric one") {
+TEST_CASE("tileset: a profile differs left from right, steepens to a V and takes an offset") {
   // 4 m wide, 1 m deep, the left bank a point bar at 0.5, the right a cut bank at 4: the flat bed
   // runs from the bar's toe on the line (2 / 0.5 = 2 m of run) to 0.25 m short of the right top.
-  const CutProfile p{10.0, 4.0, 0.0, 1.0, 0.5, 4.0, 1.0, false};
+  const CutProfile p{10.0, 4.0, 0.0, 1.0, 0.5, 4.0, 1.0};
   f64 y = 0;
   REQUIRE(cut_profile(p, 0.0, y));
   CHECK(y == doctest::Approx(9.0).epsilon(1e-12));
@@ -316,41 +327,37 @@ TEST_CASE("tileset: a profile differs left from right, and W89's section is the 
   CHECK(y == doctest::Approx(9.6).epsilon(1e-12));
   REQUIRE(cut_profile(p, 2.0, y));
   CHECK(y == doctest::Approx(10.0).epsilon(1e-12));
-  // Each face goes on a rise past its top at its own slope: 2 m more on the left, 0.25 m on the
-  // right, then nothing.
+  // Each face goes on a rise past its top at its own slope, 2 m more on the left and 0.25 m on
+  // the right, and then runs out over as much again (0.95 of it), steepening.
   REQUIRE(cut_profile(p, 3.9, y));
   CHECK(y == doctest::Approx(10.95).epsilon(1e-12));
-  CHECK_FALSE(cut_profile(p, 4.1, y));
+  REQUIRE(cut_profile(p, 4.1, y));
+  CHECK(y == doctest::Approx(10.0 + 1.0 / 0.95).epsilon(1e-9));
+  CHECK_FALSE(cut_profile(p, 6.0, y));
   REQUIRE(cut_profile(p, -2.2, y));
   CHECK(y == doctest::Approx(10.8).epsilon(1e-12));
-  CHECK_FALSE(cut_profile(p, -2.3, y));
+  REQUIRE(cut_profile(p, -2.3, y));
+  CHECK(y == doctest::Approx(11.25).epsilon(1e-9));
+  CHECK_FALSE(cut_profile(p, -2.5, y));
   // Banks too gentle to reach the bed inside the width are steepened together to a V: 0.5 and 1
   // would need 3 m of run for 1 m of depth in a 2 m width, so both are 1.5 times as steep and
   // meet 1 m down, two thirds of the width from the gentler bank's top.
-  const CutProfile v{10.0, 2.0, 0.0, 1.0, 0.5, 1.0, 1.0, false};
+  const CutProfile v{10.0, 2.0, 0.0, 1.0, 0.5, 1.0, 1.0};
   REQUIRE(cut_profile(v, 1.0 - 4.0 / 3.0, y));
   CHECK(y == doctest::Approx(9.0).epsilon(1e-9));
   REQUIRE(cut_profile(v, 0.5, y));
   CHECK(y == doctest::Approx(10.0 - 0.75 * 0.5).epsilon(1e-9));
   // An offset moves the whole section off the line.
-  const CutProfile o{10.0, 4.0, 1.0, 1.0, 1.0, 1.0, 1.0, false};
+  const CutProfile o{10.0, 4.0, 1.0, 1.0, 1.0, 1.0, 1.0};
   REQUIRE(cut_profile(o, 3.0, y));
   CHECK(y == doctest::Approx(10.0).epsilon(1e-12));
   REQUIRE(cut_profile(o, -1.0, y));
   CHECK(y == doctest::Approx(10.0).epsilon(1e-12));
   REQUIRE(cut_profile(o, 1.0, y));
   CHECK(y == doctest::Approx(9.0).epsilon(1e-12));
-  // W89's section is this profile, bit for bit.
-  for (f64 d = -2.4; d <= 2.4; d += 0.07) {
-    f64 a = 0, b = 0;
-    const bool has_a = cut_section(10.0, 3.0, 0.6, 1.0, d, a);
-    const bool has_b = cut_profile(CutProfile{10.0, 3.0, 0.0, 0.6, 1.0, 1.0, 0.6, false}, d, b);
-    REQUIRE(has_a == has_b);
-    if (has_a) CHECK(a == b);
-  }
   // A face that runs out: where W89's ends (10.6 at 2.1 m) it goes on with the same slope, twice
   // the rise over the top half a run on, twenty rises at 0.95 of the run, and nothing past that.
-  const CutProfile r{10.0, 3.0, 0.0, 0.6, 1.0, 1.0, 0.6, true};
+  const CutProfile r{10.0, 3.0, 0.0, 0.6, 1.0, 1.0, 0.6};
   REQUIRE(cut_profile(r, 2.1, y));
   CHECK(y == doctest::Approx(10.6).epsilon(1e-12));
   REQUIRE(cut_profile(r, 2.1 + 1e-6, y));
@@ -428,19 +435,6 @@ TEST_CASE(
   CHECK(std::llabs(static_cast<i64>(lowered) - static_cast<i64>(expected_lowered)) <= 8);
   CHECK(rounded > 100);  // the rounded top lowered points the plain minimum would not have
   CHECK(capped > 10);    // and the ends are round caps
-  // The same cut without the rounding has a crease: every point is the plain minimum.
-  s.cut.bank_round = 0.f;
-  TerrainCuts plain;
-  REQUIRE(plain.build({&s.cut, 1}, &error));
-  std::vector<i32> creased = ground;
-  plain.apply(250, 0, 0, n, n, creased);
-  u64 lower = 0;
-  for (usize q = 0; q < creased.size(); ++q) {
-    CHECK(cut[q] <= creased[q]);
-    lower += cut[q] < creased[q];
-  }
-  CHECK(lower > 100);
-  CHECK(cuts.hash() != plain.hash());
 }
 
 TEST_CASE("tileset: a cut is continuous across a joint, a junction and its two sides") {
@@ -620,11 +614,14 @@ TEST_CASE("tileset: a flood bed is a second profile, bounded by its scarps") {
   CHECK(v == doctest::Approx(bed + 200.0).epsilon(1e-6));  // 0.1 m up the left scarp at 2
   REQUIRE(at(-2.2, 250, v));
   CHECK(v == doctest::Approx(bed + 400.0).epsilon(1e-6));  // the right scarp
-  // The scarp's face goes on a scarp's height past its top, then nothing: 0.5 m of run in all.
+  // The scarp's face goes on a scarp's height past its top (0.5 m of run in all, to 5.5 m on the
+  // left and 2.5 m on the right), runs out over 0.95 of a quarter metre more, and then nothing.
   REQUIRE(at(5.45, 250, v));
   CHECK(v == doctest::Approx(bed + 900.0).epsilon(1e-6));
-  CHECK_FALSE(at(5.6, 250, v));
-  CHECK_FALSE(at(-2.6, 250, v));
+  CHECK(at(5.6, 250, v));
+  CHECK(at(-2.6, 250, v));
+  CHECK_FALSE(at(5.8, 250, v));
+  CHECK_FALSE(at(-2.8, 250, v));
   // The cell rule reads each by its own width: a 4 m level holds the 7 m flood bed and not the
   // 2 m channel in it; an 8 m level neither.
   REQUIRE(at(0.0, 4000, v));
@@ -662,7 +659,11 @@ TEST_CASE("tileset: a shaped cut that is not one is refused with a sentence") {
   c.bank_round = 5.f;
   CHECK_FALSE(cuts.build({&c, 1}, &error));
   CHECK(error.find("rounding") != std::string::npos);
+  // No rounding is not a shape a cut can ask for: the crease, and the face that ends in a wall.
   c.bank_round = 0.f;
+  CHECK_FALSE(cuts.build({&c, 1}, &error));
+  CHECK(error.find("rounding outside [0.1, 1]") != std::string::npos);
+  c.bank_round = 0.75f;
   c.flood_left_m = {2.f, 2.f};
   CHECK_FALSE(cuts.build({&c, 1}, &error));
   CHECK(error.find("flood bed arrays") != std::string::npos);
@@ -682,8 +683,8 @@ TEST_CASE("tileset: a shaped cut that is not one is refused with a sentence") {
   c.scarp_slope = 1.5f;
   CHECK(cuts.build({&c, 1}, &error));
   CHECK(cuts.cut_count() == 1);
-  // A cut that names none of W93's fields hashes as one that never had them: the fields add to
-  // the hash only where they are named.
+  // The side slopes and the flood bed add to the hash only where they are named: a scarp's slope
+  // with no flood bed is not read.
   const scene::TerrainCut plain = cut_of("side", WorldPos{0, 0, 0}, WorldPos{1, 0, 0}, 1.0f, 0.2f);
   scene::TerrainCut defaults = plain;
   defaults.scarp_slope = 3.f;  // read only with a flood bed

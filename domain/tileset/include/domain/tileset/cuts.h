@@ -14,12 +14,11 @@
 //   delta(s) = min(depth, m_l (width / 2 + offset - s), m_r (width / 2 - offset + s))
 //   surface  = top - delta(s)                  while delta(s) >= -rise
 //
-// — past the top each face goes on up at its slope for at most `rise` more, where it meets higher
-// ground (a channel cut into a trough's side), and past that reach the cut is nothing. Banks too
-// gentle to reach the bed inside the width (`depth / m_l + depth / m_r > width`) are steepened
-// together until they meet at it, a V. W89's section is this profile with both slopes the cut's
-// `bank_slope`, no offset and `rise = depth`, and is computed by the same operations it was, so a
-// cut that names none of W93's fields is the millimetres it was.
+// — past the top each face goes on up at its slope for `rise` more, where it meets higher ground
+// (a channel cut into a trough's side), and then runs out (below). Banks too gentle to reach the
+// bed inside the width (`depth / m_l + depth / m_r > width`) are steepened together until they
+// meet at it, a V. A cut that names no side slopes is this profile with both the cut's
+// `bank_slope` and no offset; every cut's `rise` is its depth.
 //
 // **What W93 adds to a cut** (`TerrainCut` version 2; docs/subsystems/channels.md, "The section"):
 // a slope per point for each bank (a cut bank on a bend's outside, a point bar's slope on its
@@ -41,15 +40,16 @@
 // (`bank_round` at most 1), so a face's reach, which ends a depth over the top, ends where the
 // rounding has: no step at the reach's edge over ground at the top or below it.
 //
-// **A face that runs out.** W89's face ends a depth over its top, and where the ground beside the
-// channel stands higher than that (a channel in a steep-sided valley, a line off its trough's
-// floor) the cut ends in a wall, which a lattice draws as a row of teeth along the lip (the forest
-// proof of concept's item 7, reproduced on W93's scratch scene). A rounded cut's faces
-// (`bank_round` over 0), and its scarps, run out instead: past the end the face goes on over one
-// more run of its own, its height over the top `rise / (1 - v)` at the share `v` of that run — the
-// same height and slope where it begins, steepening without bound — so it meets the ground wherever
-// the ground is, the reach is two runs past the top and no more, and nothing has a wall at its end.
-// A cut with `bank_round` 0 keeps W89's face, to the millimetre.
+// **A face that runs out.** W89's face ended a depth over its top, and where the ground beside
+// the channel stood higher than that (a channel in a steep-sided valley, a line off its trough's
+// floor) the cut ended in a wall, which a lattice draws as a row of teeth along the lip (the forest
+// proof of concept's item 7, reproduced on W93's scratch scene). Every cut's faces, and its
+// scarps, run out instead: past the end the face goes on over one more run of its own, its height
+// over the top `rise / (1 - v)` at the share `v` of that run — the same height and slope where it
+// begins, steepening without bound — so it meets the ground wherever the ground is, the reach is
+// two runs past the top and no more, and nothing has a wall at its end. **Every cut rounds and
+// runs out**: `bank_round` is 0.1 to 1 (0.75 where a cut names none), and the crease and the wall
+// a `bank_round` of 0 kept until W93's continuation are not a shape a cut can ask for.
 //
 // **Along the line** each segment's numbers are its two points' interpolated by the projection's
 // parameter, and the surface is the lowest over every segment of every cut, so a joint, a
@@ -94,11 +94,10 @@ struct CutProfile {
   f64 depth = 0;       // the bed below the top
   f64 slope_left = 1;  // rise over run
   f64 slope_right = 1;
-  f64 rise = 0;  // how far above the top a face goes on
-  // Past that the face is nothing (W89), or **runs out**: it goes on over one more run of its own
-  // (`rise / slope`), steepening, `rise / (1 - v)` over the top at the share `v` of that run, so
-  // it meets ground however high with no wall at its end.
-  bool run_out = false;
+  // How far above the top a face goes on at its slope. Past that it **runs out**: it goes on
+  // over one more run of its own (`rise / slope`), steepening, `rise / (1 - v)` over the top at
+  // the share `v` of that run, so it meets ground however high with no wall at its end.
+  f64 rise = 0;
 };
 
 // The profile's surface at the signed distance `s` from the line (left positive), or false past
@@ -114,14 +113,14 @@ class TerrainCuts {
   // Compiles `cuts`. False, with a sentence naming the cut, for fewer than two points, arrays whose
   // length is not the points', a width or depth not positive and finite, a coordinate not finite,
   // a bank slope outside [0.25, 8]; and (W93) a per-point slope outside [0.02, 16], a rounding
-  // outside [0, 1], a flood bed with a negative reach or depth, a scarp that is not positive where
-  // the bed has a reach, or a scarp slope outside [0.25, 8].
+  // outside [0.1, 1], a flood bed with a negative reach or depth, a scarp that is not positive
+  // where the bed has a reach, or a scarp slope outside [0.25, 8].
   bool build(std::span<const scene::TerrainCut> cuts, std::string* error = nullptr);
   bool empty() const noexcept { return segments_.empty(); }
   u32 cut_count() const noexcept { return cuts_; }
   u32 segment_count() const noexcept { return segments_.size(); }
   // `hash_combine` over every cut's numbers in order; 0 for none, so a set without cuts keys as it
-  // always did, and a cut that names none of W93's fields hashes as it did.
+  // always did.
   u64 hash() const noexcept { return hash_; }
 
   // The cut surface at the world point (millimetres) for a level of spacing `cell_mm`: the lowest
@@ -150,7 +149,6 @@ class TerrainCuts {
     f64 top = 0, width = 0, offset = 0, depth = 0, slope_left = 1, slope_right = 1, rise = 0;
     f64 round = 0;
     f64 cell_width = 0;
-    bool run_out = false;
   };
   struct Segment {
     f64 ax = 0, az = 0, bx = 0, bz = 0;  // millimetres
@@ -186,10 +184,5 @@ class TerrainCuts {
   u32 cuts_ = 0;
   u64 hash_ = 0;
 };
-
-// W89's section across a cut, at distance `d` from its line, for a top `top`, width `w`, depth
-// `depth` and bank slope `slope` (one length unit throughout): `cut_profile` with both slopes
-// `slope`, no offset and a rise of `depth`.
-bool cut_section(f64 top, f64 w, f64 depth, f64 slope, f64 d, f64& out) noexcept;
 
 }  // namespace engine::tileset
