@@ -404,19 +404,19 @@ TEST_CASE("matgen: a recipe reads, refuses and keys") {
 
 TEST_CASE("matgen: the same bytes from every toolchain") {
   // Taken on MSVC (x86-64-v3, debug); re-taken for k_matgen_version 2 (G149 to G153: every set
-  // but the turf moved; the ground kind did not change). The generator calls nothing a toolchain
-  // rounds its own way,
-  // so Clang and GCC, at v3 and at v2, are held to the same bytes; which of them has been run is
-  // on the page (matgen.md, "Same bytes everywhere"). A change to the generator moves these and
-  // bumps k_matgen_version.
+  // but the turf moved; the ground kind did not change), and for 3 (the rock face's broken step
+  // removed: the granite and the sandstone moved, no other kind). The generator calls nothing a
+  // toolchain rounds its own way, so Clang and GCC, at v3 and at v2, are held to the same bytes;
+  // which of them has been run is on the page (matgen.md, "Same bytes everywhere"). A change to the
+  // generator moves these and bumps k_matgen_version.
   struct Pin {
     const char* role;
     u64 hash;
   };
   const Pin pins[] = {
-      {"gravel/bed", 6280004583196325757ull},      {"rock/scree", 15685960211907165185ull},
-      {"sand/bar", 6512822385822317515ull},        {"rock/granite", 6418967884203567027ull},
-      {"rock/sandstone", 15144819073237794497ull}, {"ground/turf", 4583399645411956302ull},
+      {"gravel/bed", 6280004583196325757ull},     {"rock/scree", 15685960211907165185ull},
+      {"sand/bar", 6512822385822317515ull},       {"rock/granite", 1158326275606281670ull},
+      {"rock/sandstone", 2145369994992403863ull}, {"ground/turf", 4583399645411956302ull},
   };
   for (const Pin& pin : pins) {
     CAPTURE(pin.role);

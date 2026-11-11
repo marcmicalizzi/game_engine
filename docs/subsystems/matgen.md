@@ -143,16 +143,23 @@ What G152 added, each from the judgement of the first sets in the engine ("What 
 like"):
 
 - *Form above the decimetre* (`form_um`): scallops a third of a metre across (dishes between
-  sharp rims, a face that spalls in flakes), ribs half a metre apart running down the face, and
-  a broken step where a field of the tile's own period crosses its middle (the step's face 10 %
-  darker). The form is 1.4 `form_um` for the step and about 1 more for the rest.
+  sharp rims, a face that spalls in flakes, at 0.15 `form_um` at a cell's rim) and ribs half a
+  metre apart running down the face (`form_um` peak to peak). **A broken step was drawn too and
+  is gone** (`k_matgen_version` 3): 1.4 `form_um` on the 0.5 level of a two-period noise, whose
+  contour is a set of curved closed loops. A rock set is sampled stochastically, which cuts that
+  contour into offset pieces, and under a low sun each piece read as a lit and a shaded crescent:
+  crescent stamps over the granite, the wet granite and the limestone, on a plane and on a block
+  (`captures\sheet-near-after2.png` in the row's scratch). Softening the scallops (0.6 to 0.15)
+  had not removed them; removing the step was the test of the diagnosis ("In the engine"). A
+  step that would survive the sampling is a near-straight trace that winds the torus, as a joint
+  does; not drawn.
 - *Joints as worn gaps*: a floor of fines its own width (the width wandering along the trace from
   0.25 to 0.85 of `joint_width_um`), shoulders rounded as a quarter circle over two and a half
   widths, four widths deep; the hollows' shade does the rest.
 - *Fresh breaks* keep 70 % of the crystals' contrast over the rind's and are stained a little
   too (newer, not new), behind a sharp edge (0.8 `relief_um` deep over a share step of 0.006).
-- *Run-off streaks* (`streak_permille`): dark stripes down the face from every joint floor and
-  every step's lip, near black, as the cyanobacterial and lichen films of the Alps' ink stripes
+- *Run-off streaks* (`streak_permille`): dark stripes down the face from every joint floor, near
+  black, as the cyanobacterial and lichen films of the Alps' ink stripes
   ("Tintenstriche"). **Down the image is down the face** (+V up, the normal map's convention); a
   set laid with a rotation turns its streaks with it. For each texel, how far below the nearest
   source it lies, capped at 0.45 m, is an integer found by two sweeps down each column round the
@@ -383,13 +390,17 @@ pale gravel bar), r19 (slabby boulders and scree), r03 and r23. Worst first, aft
 1. **The four ground sets (`ground/turf`, `moss`, `soil`, `thatch`) read as flat colour** at
    1.7 m: felt green, felt brown. They hold their detail at the scale of a blade, which the
    sward's cook reads; as a terrain layer they are no floor. Not changed by this row.
-2. **The rock sets on a plane read as patterned linoleum at 15 m**: every set's tile carries the
-   same density of joints, colonies and dishes, and a flat plane shows it as a pattern. In the
-   last picture the scallops read as a lit and a shaded crescent each (softened after it; not
-   pictured again). On a block (granite, limestone, sandstone) they read as weathered rock with
-   lichen colonies, a step and joints; beside r04 the orange colonies are too few and too small,
-   the rock too pale and too evenly speckled, and the joints still read as cut lines more than
-   gaps.
+2. **The rock sets on a plane read as a pattern at 15 m**: every set's tile carries the same
+   density of joints, colonies and pale fresh breaks, and a flat plane shows it. Two pictures
+   of the granite, the wet granite and the limestone were covered in crescent stamps
+   (`sheet-near-after.png`, and `sheet-near-after2.png` after the scallops were softened); with
+   the broken step removed (`k_matgen_version` 3, `sheet-near-after3.png` and
+   `sheet-block-after3.png`) they are gone on the plane and on the block, and what reads in their
+   place is speckled rock crossed by joint lines, pale fresh-break blotches and lichen spots.
+   The blocks did not go flat: their form above the decimetre is the mesh's. Beside r04 the
+   orange colonies are too few and too small, the rock too pale and too evenly speckled, the
+   fresh breaks read as pale paint on the wet granite and the limestone, and the joints still
+   read as cut lines more than gaps.
 3. **`rock/basalt`** reads as dark slabs with polygonal joints, but its lichen reads as confetti:
    white and orange discs bright on near-black rock.
 4. **`sand/bar`** reads as dry sand with a scatter of granules, flat: no ripples, no wet margin

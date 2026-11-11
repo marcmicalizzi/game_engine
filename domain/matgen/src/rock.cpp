@@ -1,7 +1,7 @@
 // The rock kind (matgen.md, "Rock sets"; generated-material-sets.md, "A rock face"): crystals at
 // the grain's scale by modal share, micro-relief at the decimetre scale and form above it
-// (scallops, ribs, one broken step), joints as worn gaps, a weathering rind against fresh breaks
-// by a share, run-off streaks below the joints and the step, crustose lichen colonies grown from
+// (scallops and ribs), joints as worn gaps, a weathering rind against fresh breaks
+// by a share, run-off streaks below the joints, crustose lichen colonies grown from
 // a centre on the rind by a cover parameter, moss in a wet face's joints, pits and bedding
 // laminae for the rocks that have them.
 #include "field.h"
@@ -75,11 +75,9 @@ void build_rock(const Set& set, Field& field, SetStats& stats, Shade& shade) {
   const u32 lobe_coarse_k = std::clamp(static_cast<u32>(tile / 0.025 + 0.5), 4u, half);
   const u32 pit_k = std::clamp(static_cast<u32>(tile / 0.012 + 0.5), 4u, half);
   const u32 areole_k = std::clamp(static_cast<u32>(tile / 0.003 + 0.5), 4u, half);
-  // Form above the decimetre: scallops a third of a metre across, ribs half a metre apart, a
-  // step's line from a field one tile in period.
+  // Form above the decimetre: scallops a third of a metre across, ribs half a metre apart.
   const u32 scallop_k = std::clamp(static_cast<u32>(tile / 0.33 + 0.5), 2u, eighth);
   const u32 rib_k = std::clamp(static_cast<u32>(tile / 0.5 + 0.5), 1u, eighth);
-  const u32 wide_k = 2;
   // A streak's noise: fine across (3 cm), long down the face (60 cm).
   const u32 streak_x_k = std::clamp(static_cast<u32>(tile / 0.03 + 0.5), 4u, half);
   const u32 streak_y_k = std::clamp(static_cast<u32>(tile / 0.6 + 0.5), 1u, eighth);
@@ -192,7 +190,7 @@ void build_rock(const Set& set, Field& field, SetStats& stats, Shade& shade) {
   const f64 joint_w = std::max(static_cast<f64>(p.joint_width_um) * 1.0e-6, 0.75 * texel);
   const u32 winding = std::clamp(p.joint_winding, 1u, 6u);
   const f64 spacing = tile / std::sqrt(static_cast<f64>(winding) * static_cast<f64>(winding) + 1.0);
-  // Where water leaves the face's relief and runs down it: a joint's floor or the step's lip.
+  // Where water leaves the face's relief and runs down it: a joint's floor.
   Vector<u8> source;
   source.assign(n * n, static_cast<u8>(0));
   u32 fresh_texels = 0, lichen_texels = 0, moss_texels = 0;
@@ -215,28 +213,19 @@ void build_rock(const Set& set, Field& field, SetStats& stats, Shade& shade) {
       f64 height = relief * (2.0 * broad + 0.3 * fine);
 
       // Form above the decimetre: scallops (dishes between sharp rims, as a face that spalls in
-      // flakes), ribs along the face, and one broken step where a low field crosses its middle.
-      // The scallops are slight (0.15 form at a cell's rim): at 0.6, the first engine pictures
-      // read every dish under a low sun as a lit and a shaded crescent, a pattern of arcs.
+      // flakes) and ribs running down the face. The scallops are slight (0.15 form at a cell's
+      // rim): at 0.6, the first engine pictures read every dish under a low sun as a lit and a
+      // shaded crescent. A broken step (1.4 form on a closed contour of a two-period noise) was
+      // drawn too and is gone (G152, k_matgen_version 3): the stochastic sampling cut its curved
+      // contour into pieces, and each read as a crescent stamp (matgen.md, "Rock sets").
       bool lip = false;
       if (form > 0.0) {
         const Cell dish = cell_noise(set.seed ^ 0x7363616c6c6f70ull, lattice_of(vx, n, scallop_k),
                                      lattice_of(vy, n, scallop_k), scallop_k);
         const f64 rim = dish.f1;
         const f64 ribs = lattice_noise2(set.seed ^ 0x726962ull, vx, vy, n, rib_k * 2 + 1, 1);
-        const f64 wide = lattice_noise(set.seed ^ 0x77696465ull, lattice_of(vx, n, wide_k),
-                                       lattice_of(vy, n, wide_k), wide_k);
-        const f64 step = smooth01((wide - 0.5) / 0.03);
-        height += form * (0.15 * rim * rim + 0.5 * (ribs - 0.5) + 1.4 * step);
-        // Just under the step's edge water drips off.
-        lip = step > 0.05 && step < 0.5;
-        // The step's face is a fracture, rougher and darker for its shade.
-        if (step > 0.02 && step < 0.98) {
-          for (f64& c : colour)
-            c *= 0.9;
-        }
+        height += form * (0.15 * rim * rim + 0.5 * (ribs - 0.5));
       }
-
       // The rind: the crystals' contrast muted toward the rock's mean, tinted, and stained in
       // broad patches; a fresh break keeps more of the crystals' contrast, is paler but stained
       // too (it is not new, only newer), and sits a flake's depth lower behind a sharp edge.

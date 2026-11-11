@@ -54,7 +54,9 @@ namespace engine::matgen {
 ///    decimetre, worn joints, run-off streaks, lichen colonies grown from a centre, moss in the
 ///    joints; a bed's buried clasts, biofilm and broken faces; scree several layers deep with
 ///    roofed blocks and fines; the largest clasts' tone held toward their lithology's.
-inline constexpr u32 k_matgen_version = 2;
+/// 3: a rock face's broken step removed (its curved contour, cut by the stochastic sampling, read
+///    as crescent stamps in the engine).
+inline constexpr u32 k_matgen_version = 3;
 
 /// Variants of a tiled role (G153): `default_sets` writes `<role>.1` .. `<role>.<n>` beside each
 /// tiled granular role, the same recipe from other seeds, so a consumer that picks one by place

@@ -93,9 +93,9 @@ struct Rock @version(2) {
   pits_permille: u32 = 0
   /// Bedding laminae across the tile (a sandstone's): 0 for none.
   laminae: u32 = 0
-  /// Form above the decimetre: the half range of scallops, ribs and one broken step, micrometres.
+  /// Form above the decimetre: the half range of scallops and ribs, micrometres.
   form_um: u32 = 0 @since(2)
-  /// Run-off staining below the joints and the step, down the image (+V is up the face): its
+  /// Run-off staining below the joints, down the image (+V is up the face): its
   /// strength, thousandths.
   streak_permille: u32 = 0 @since(2)
   /// The share of the joints' length that holds moss (a wet face's), thousandths.
