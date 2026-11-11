@@ -119,7 +119,7 @@ TEST_CASE("engine-content channels ends the links at a lake's shoreline") {
   // Nothing of any link under the lake: every cut's top and every water point at or above the
   // level wherever the lake's outline holds it.
   u32 checked = 0;
-  for (const char* key : {"cuts", "water_channels"})
+  for (const char* key : {"edits", "water_channels"})
     for (const JsonValue& b : written.find(key)->as_array())
       for (const JsonValue& at : b.find("points")->as_array()) {
         f64 y = 0, z = 0;
@@ -160,7 +160,7 @@ TEST_CASE("engine-content channels ends the links at a lake's shoreline") {
       error);
   CHECK(network.water.mouths == mouths);
   CHECK(write_json(channels::terrain_cuts_json(layer, network)) ==
-        write_json(*written.find("cuts")));
+        write_json(*written.find("edits")));
   // W91: the subcommand fits the ribbon to the ground it planned over, the body's points left.
   const scene_gen::Ground view = ground.view();
   CHECK(write_json(channels::water_channels_json(layer, network, 0, .5f, true, &view, &water)) ==

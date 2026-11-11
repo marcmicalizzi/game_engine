@@ -96,7 +96,7 @@ TEST_CASE("engine-content channels --cut writes the terrain's cuts beside the wa
 
   JsonValue written;
   REQUIRE(parse_json(first, written).ok);
-  const JsonValue* cuts = written.find("cuts");
+  const JsonValue* cuts = written.find("edits");
   const JsonValue* blocks = written.find("water_channels");
   REQUIRE(cuts != nullptr);
   REQUIRE(blocks != nullptr);
@@ -130,7 +130,7 @@ TEST_CASE("engine-content channels --cut writes the terrain's cuts beside the wa
 
   // A scene that carries the cuts: its ground is cut, and the command writes the same file, since
   // it plans over the ground before them.
-  const std::string cut_scene = head + R"(,"cuts":)" + write_json(*cuts) + tail;
+  const std::string cut_scene = head + R"(,"edits":)" + write_json(*cuts) + tail;
   REQUIRE(io::write_file_atomic(tmp.file("cut.json"), cut_scene) == io::Status::Ok);
   std::vector<std::string> from_cut = args;
   from_cut[1] = tmp.file("cut.json");
@@ -158,10 +158,10 @@ TEST_CASE("engine-content channels --cut writes the terrain's cuts beside the wa
   REQUIRE(schema::from_json(cut_terrain, *cut_json.find("terrain"), cut_reader));
   REQUIRE(cut_reader.ok());
   REQUIRE(cut_terrain.tiles.has_value());
-  REQUIRE(cut_terrain.tiles->cuts.size() == cuts->as_array().size());
+  REQUIRE(cut_terrain.tiles->edits.size() == cuts->as_array().size());
   scene_gen::GroundProvider cut_ground;
   REQUIRE_MESSAGE(provider->make(cut_terrain, context, cut_ground, &error), error);
-  const scene::TerrainCut& c = cut_terrain.tiles->cuts.back();
+  const scene::TerrainEdit& c = cut_terrain.tiles->edits.back();
   const u32 mid = c.points.size() / 2;
   const i64 x = scene_gen::nearest_mm(c.points[mid].x), z = scene_gen::nearest_mm(c.points[mid].z);
   const f64 plain = ground.view().surface_mm(x, z), cut = cut_ground.view().surface_mm(x, z);
@@ -178,7 +178,7 @@ TEST_CASE("engine-content channels --cut writes the terrain's cuts beside the wa
   }
   // Somewhere the scene's ground is cut or every channel is narrower than the points' spacing.
   bool any_wide = false;
-  for (const scene::TerrainCut& k : cut_terrain.tiles->cuts)
+  for (const scene::TerrainEdit& k : cut_terrain.tiles->edits)
     for (const f32 w : k.width_m)
       any_wide = any_wide || w > 2.0f;
   MESSAGE("a channel wider than the valley's 2 m points: " << std::string(any_wide ? "yes" : "no"));

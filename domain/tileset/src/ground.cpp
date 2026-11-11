@@ -162,10 +162,10 @@ bool resolve_tile_set(const scene::Terrain& entry, std::string_view dir, const s
   const scene::TerrainTileSet& t = *entry.tiles;
   ddc = !ddc_in.empty() ? ddc_in : (t.ddc.empty() ? std::string() : resolve(dir, t.ddc));
   if (!t.manifest.empty()) {
-    if (!t.cuts.empty()) {
+    if (!t.edits.empty()) {
       return fail(
-          "the ground provider \"tiles\" cuts channels into a set it builds from a heightfield; "
-          "the terrain names a set built ahead (\"manifest\") and cuts besides");
+          "the ground provider \"tiles\" edits the ground of a set it builds from a heightfield; "
+          "the terrain names a set built ahead (\"manifest\") and edits besides");
     }
     manifest = resolve(dir, t.manifest);
     if (ddc.empty()) ddc = geometry::find_ddc_root(io::parent_path(manifest));
@@ -186,12 +186,13 @@ bool resolve_tile_set(const scene::Terrain& entry, std::string_view dir, const s
   options.offset_x_mm = scene_gen::nearest_mm(t.origin.x);
   options.offset_y_mm = scene_gen::nearest_mm(t.origin.y);
   options.offset_z_mm = scene_gen::nearest_mm(t.origin.z);
-  // Channels cut into the ground (W89; tileset.md, "Channels cut into the ground"): written into
-  // the heights the set is built with, so every reader of it stands on the cut ground. (The
-  // terrain's `holes` are not in the set: they are the renderer's, and the masks never read them.)
-  std::string cut_error;
-  if (!options.cuts.build({t.cuts.data(), t.cuts.size()}, &cut_error))
-    return fail("the ground provider \"tiles\" cannot cut its ground: " + cut_error);
+  // Ground edits (W89, W98; tileset.md, "Channels cut into the ground" and "Ground edits that raise
+  // as well as lower"): written into the heights the set is built with, so every reader of it
+  // stands on the edited ground. (The terrain's `holes` are not in the set: they are the
+  // renderer's, and the masks never read them.)
+  std::string edit_error;
+  if (!options.edits.build({t.edits.data(), t.edits.size()}, &edit_error))
+    return fail("the ground provider \"tiles\" cannot edit its ground: " + edit_error);
   if (ddc.empty()) ddc = geometry::find_ddc_root(io::parent_path(source));
   BuildResult built;
   std::string why;

@@ -523,7 +523,7 @@ TEST_CASE("channels: the cuts have the TerrainCut shape and the water lies insid
     const JsonValue& o = cuts[k];
     // Every cut is shaped: the eight fields, and five more where the link has a flood bed.
     CHECK((o.as_object().size() == 8 || o.as_object().size() == 13));
-    scene::TerrainCut cut;
+    scene::TerrainEdit cut;
     schema::ReadContext reader;
     REQUIRE(schema::from_json(cut, o, reader));
     REQUIRE(reader.ok());
@@ -1223,7 +1223,7 @@ ChannelLayer stream_layer(u64 seed) {
 }
 // The cut's depth below its top at the signed distance `s` from the line (left positive), from the
 // cut's own numbers: the test's reading of `engine.scene.TerrainCut` version 2.
-f64 cut_depth_at(const scene::TerrainCut& cut, u32 i, f64 s) {
+f64 cut_depth_at(const scene::TerrainEdit& cut, u32 i, f64 s) {
   const f64 w = static_cast<f64>(cut.width_m[i]), d = static_cast<f64>(cut.depth_m[i]);
   f64 l = static_cast<f64>(cut.bank_slope_left[i]), r = static_cast<f64>(cut.bank_slope_right[i]);
   const f64 f = (d / l + d / r) / w;
@@ -1287,7 +1287,7 @@ TEST_CASE(
     for (u32 k = 0; k < n.links.size(); ++k) {
       const ChannelLink& link = n.links[k];
       if (link.line.size() < 2) continue;
-      scene::TerrainCut cut;
+      scene::TerrainEdit cut;
       schema::ReadContext reader;
       REQUIRE(schema::from_json(cut, cuts[written++], reader));
       REQUIRE(reader.ok());
@@ -1392,7 +1392,7 @@ TEST_CASE("channels: the section keeps the hydraulic geometry's area from riffle
     // W89's five fields, the two slope arrays and the rounding; and a flood bed's five on a link
     // that has one.
     CHECK(o.as_object().size() == (o.find("flood_left_m") == nullptr ? 8u : 13u));
-    scene::TerrainCut cut;
+    scene::TerrainEdit cut;
     schema::ReadContext reader;
     REQUIRE(schema::from_json(cut, o, reader));
     REQUIRE(reader.ok());
@@ -1502,7 +1502,7 @@ TEST_CASE("channels: the flood bed's width follows the valley's confinement") {
       if (link.line.size() < 2) continue;
       const JsonValue& o = cuts[written++];
       if (link.line.size() < 200 || !link.head) continue;  // the trunk
-      scene::TerrainCut cut;
+      scene::TerrainEdit cut;
       schema::ReadContext reader;
       REQUIRE(schema::from_json(cut, o, reader));
       REQUIRE(reader.ok());
@@ -1707,7 +1707,7 @@ TEST_CASE("channels: a steep reach's width follows its steps and its banks are n
     const ChannelLink& link = n.links[0];
     const Vector<f64> s = lengths(link);
     const JsonValue cuts = terrain_cuts_json(p, n);
-    scene::TerrainCut cut;
+    scene::TerrainEdit cut;
     schema::ReadContext reader;
     REQUIRE(schema::from_json(cut, cuts[0], reader));
     REQUIRE(cut.width_m.size() == link.line.size());
@@ -1759,7 +1759,7 @@ TEST_CASE("channels: a steep reach's width follows its steps and its banks are n
     for (u32 k = 0; k < n.links.size(); ++k) {
       const ChannelLink& link = n.links[k];
       if (link.line.size() < 40) continue;
-      scene::TerrainCut cut;
+      scene::TerrainEdit cut;
       schema::ReadContext reader;
       REQUIRE(schema::from_json(cut, cuts[k], reader));
       const Vector<f64> s = lengths(link);
