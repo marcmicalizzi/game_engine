@@ -206,7 +206,7 @@ TEST_CASE("materials: a generated pack stands behind the fetched one, role by ro
   REQUIRE(materials::parse_pack(pack_text("rock/granite"), "D:/p", fetched, error));
   REQUIRE(materials::parse_pack(pack_text("gravel/bed"), "D:/p/generated", generated, error));
   const materials::Pack merged = materials::merge_packs(fetched, generated);
-  REQUIRE(merged.roles.size() == 2);
+  REQUIRE(merged.roles.size() == 2u);
   CHECK(merged.roles[0].role == "gravel/bed");
   CHECK(merged.roles[1].role == "rock/granite");
   CHECK(merged.dir == fetched.dir);
@@ -214,7 +214,7 @@ TEST_CASE("materials: a generated pack stands behind the fetched one, role by ro
   materials::Pack same_role;
   REQUIRE(materials::parse_pack(pack_text("rock/granite"), "D:/p/generated", same_role, error));
   const materials::Pack kept = materials::merge_packs(fetched, same_role);
-  REQUIRE(kept.roles.size() == 1);
+  REQUIRE(kept.roles.size() == 1u);
   CHECK(kept.roles[0].set.base_color == fetched.roles[0].set.base_color);
 
   // pack_at: `<dir>/generated/pack.json` alone is the pack; beside `<dir>/pack.json` it fills the

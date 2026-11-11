@@ -164,7 +164,7 @@ TEST_CASE("matgen: scree is angular, openwork and coarser than the bed") {
   // Openwork: the gaps go down a clast's thickness and more, where a bed's are filled.
   CHECK(scree.stats.height_max_m - scree.stats.height_min_m >
         2.0 * (bed.stats.height_max_m - bed.stats.height_min_m));
-  CHECK(scree.stats.clasts_under > 0);
+  CHECK(scree.stats.clasts_under > 0u);
 }
 
 TEST_CASE("matgen: a rock's fresh breaks and lichen are the asked shares, over seeds") {
@@ -247,7 +247,7 @@ TEST_CASE("matgen: a mip chain keeps the set's mean colour") {
     Vector<texture::MipLevel> chain;
     texture::build_mip_chain(rgba, n, n, texture::MipMode::srgb, true, chain, nullptr,
                              texture::EdgeMode::repeat, texture::EdgeMode::repeat);
-    REQUIRE(chain.size() == 9);
+    REQUIRE(chain.size() == 9u);
     f64 base[3] = {0, 0, 0};
     for (u32 level = 0; level < chain.size(); ++level) {
       const texture::MipLevel& m = chain[level];
@@ -315,8 +315,8 @@ TEST_CASE("matgen: the same bytes from every toolchain") {
     u64 hash;
   };
   const Pin pins[] = {
-      {"gravel/bed", 13289521710736930817ull},    {"rock/scree", 1990142896200779824ull},
-      {"sand/bar", 6269199880936299696ull},       {"rock/granite", 10653580526231192418ull},
+      {"gravel/bed", 14327999565024624954ull},    {"rock/scree", 8687072859064289307ull},
+      {"sand/bar", 17923485152781687478ull},       {"rock/granite", 10653580526231192418ull},
       {"rock/sandstone", 1534237874609981072ull}, {"ground/turf", 4583399645411956302ull},
   };
   for (const Pin& pin : pins) {

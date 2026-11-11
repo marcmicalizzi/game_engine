@@ -82,7 +82,7 @@ TEST_CASE("engine-content matgen builds a pack every host reads, and builds a se
   // Read as a host reads its default pack: by the pack's directory, the generated sets behind.
   const materials::Pack* read = materials::pack_at(pack);
   REQUIRE(read != nullptr);
-  CHECK(read->roles.size() == 3);
+  CHECK(read->roles.size() == 3u);
   const materials::MaterialSet* bed = materials::find_role(read, "gravel/bed");
   REQUIRE(bed != nullptr);
   CHECK(bed->tile_m == doctest::Approx(1.0f));

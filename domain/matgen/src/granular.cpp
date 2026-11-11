@@ -36,6 +36,7 @@ struct Clast {
   f64 z0_m = 0;
   f64 tilt_x = 0, tilt_y = 0;
   f64 rounded = 0.5;
+  f64 smooth = 0.5;  // how far its outline and top are a pebble's and not a block's
   f64 tone = 1;
   f64 edge_cos[k_max_edges] = {};
   f64 edge_sin[k_max_edges] = {};
@@ -69,7 +70,7 @@ bool clast_top(const Clast& c, f64 lx, f64 ly, f64& z) noexcept {
   f64 facet = std::min(1.0, (1.0 - g) / k_bevel);
   const f64 cut = 1.0 - c.ridge * std::max(0.0, u * c.ridge_x + v * c.ridge_y + c.ridge_o);
   facet = std::min(facet, std::max(cut, 0.25));
-  z = c.z0_m + 0.5 * c.c_m * mix(facet, dome, c.rounded) + c.tilt_x * lx + c.tilt_y * ly;
+  z = c.z0_m + 0.5 * c.c_m * mix(facet, dome, c.smooth) + c.tilt_x * lx + c.tilt_y * ly;
   return true;
 }
 
@@ -121,6 +122,9 @@ void build_granular(const Set& set, Field& field, SetStats& stats, Shade& shade)
       c.cos_t = det::cos(angle);
       c.sin_t = det::sin(angle);
       c.rounded = clamp01(roundness + 0.15 * (rng.unit() - 0.5));
+      // Powers' classes are logarithmic: by "subrounded" (0.35 to 0.49) the corners are gone and
+      // by "rounded" the faces are, so the form goes from block to pebble between 0.15 and 0.65.
+      c.smooth = clamp01((c.rounded - 0.15) / 0.5);
       // An angular block has few sides (four to six); a rounded pebble's flats are many and slight.
       c.edges = (c.rounded < 0.4 ? 4u : 6u) + static_cast<u32>(rng.unit() * 2.999);
       const f64 inscribed = det::cos(k_pi / static_cast<f64>(c.edges));
@@ -129,10 +133,10 @@ void build_granular(const Set& set, Field& field, SetStats& stats, Shade& shade)
                        static_cast<f64>(c.edges);
         c.edge_cos[e] = det::cos(at);
         c.edge_sin[e] = det::sin(at);
-        c.edge_d[e] = mix(inscribed, 1.0, c.rounded) * (1.0 - 0.3 * (1.0 - c.rounded) * rng.unit());
+        c.edge_d[e] = mix(inscribed, 1.0, c.smooth) * (1.0 - 0.3 * (1.0 - c.smooth) * rng.unit());
       }
       const f64 ridge_at = rng.unit() * 2.0 * k_pi;
-      c.ridge = (1.0 - c.rounded) * rng.range(0.4, 1.2);
+      c.ridge = (1.0 - c.smooth) * rng.range(0.4, 1.2);
       c.ridge_x = det::cos(ridge_at);
       c.ridge_y = det::sin(ridge_at);
       c.ridge_o = rng.range(-0.3, 0.3);

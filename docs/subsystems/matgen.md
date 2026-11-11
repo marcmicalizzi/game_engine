@@ -74,7 +74,10 @@ A bed of clasts ([grounding](../experiments/generated-material-sets.md#a-bed-of-
   b times a draw from the `cb` range; a clast lies on its a-b plane. The outline is the unit
   circle of the clast's frame cut by a polygon of five to eight edges standing at the circle for
   a well rounded clast and at the inscribed polygon for a very angular one; the top is an
-  ellipsoid's cap, or a bevelled plateau broken by one ridge, mixed by roundness.
+  ellipsoid's cap, or a bevelled plateau broken by one ridge. Both go from block to pebble
+  between roundness 0.15 and 0.65, not evenly over the scale: the roundness classes are
+  logarithmic, and a "rounded" pebble has no faces left (an even mix left the default bed's
+  pebbles faceted like cut stones, seen in its normal map).
 - *Fabric.* The a-axis lies across the flow (the set's +u) for `alignment_permille` of the
   clasts; each top leans by the imbrication dip (half to one and a half times `imbrication_deg`)
   down the flow and by up to `scatter_deg` about any axis, capped at what the clast's thickness

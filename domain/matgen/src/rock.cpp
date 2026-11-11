@@ -106,7 +106,7 @@ void build_rock(const Set& set, Field& field, SetStats& stats, Shade& shade) {
           const f64 g = std::sqrt(lx * lx + ly * ly) / (radius * (0.45 + 1.1 * lobe));
           if (g >= 1.0) continue;
           thallus[field.index(field.stored(tx, field.window.x), sy)] =
-              static_cast<u8>(species + (g > 0.85 ? 4 : 0));
+              static_cast<u8>(species + (g > 0.85 ? 4u : 0u));
         }
       }
     }
