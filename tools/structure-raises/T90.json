@@ -1,0 +1,10 @@
+{
+  "format": "engine.structure-raise.v1",
+  "name": "T90",
+  "reason": "T90: apps.md names a far level's archive (far-<spacing_mm>.tiles) and says what --ddc reaches",
+  "date": "2026-11-11",
+  "by": "Marc Micalizzi",
+  "deltas": {
+    "page:docs/subsystems/apps.md": 37
+  }
+}

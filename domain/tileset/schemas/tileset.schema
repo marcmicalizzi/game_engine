@@ -47,13 +47,14 @@ struct TileSetLevel @version(1) {
   /// `hash_bytes` over each of the level's tile records, in order of z then x, combined: what the
   /// determinism test pins. A record is the bytes a tile's own file held before the archive.
   hash: string
-  /// The level's archive beside the manifest (`<spacing_mm>.tiles`: every tile's record and a
-  /// table of contents, tileset.md "The archive"), and its size in bytes.
+  /// The level's archive beside the manifest (`<spacing_mm>.tiles` the finest's,
+  /// `far-<spacing_mm>.tiles` a far level's: every tile's record and a table of contents,
+  /// tileset.md "The archive"), and its size in bytes.
   archive: string
   archive_bytes: u64
 }
 
-/// **A built tile set** (`manifest.json`, beside one archive a level, `<spacing_mm>.tiles`): what
+/// **A built tile set** (`manifest.json`, beside one archive a level, `level_archive`): what
 /// the `tiles` ground provider opens.
 struct TileSetManifest @version(1) {
   /// "engine.tileset".

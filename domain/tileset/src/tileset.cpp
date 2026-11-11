@@ -113,7 +113,10 @@ u64 tile_bytes(u32 cells) noexcept {
 
 }  // namespace
 
-std::string level_archive(i64 spacing_mm) { return std::to_string(spacing_mm) + ".tiles"; }
+std::string level_archive(i64 spacing_mm, i64 filter_mm) {
+  return (filter_mm == 0 ? std::string() : std::string("far-")) + std::to_string(spacing_mm) +
+         ".tiles";
+}
 
 // ---- the source ---------------------------------------------------------------------------------
 
@@ -641,8 +644,10 @@ bool build_tileset(const Heightfield& field, u64 source_hash, std::string_view s
         ++record.tiles;
       }
     }
-    // The level as one file: its records in the order written, and the table that finds them.
-    record.archive = level_archive(L.spacing);
+    // The level as one file: its records in the order written, and the table that finds them. Named
+    // by what the level is, not by its spacing alone: a heightfield at one of the chain's spacings
+    // has a far level at its own spacing too (tileset.md, "Two levels at one spacing").
+    record.archive = level_archive(L.spacing, L.filter);
     if (!writer.write(io::join_path(dir, record.archive), record.archive_bytes, error))
       return false;
     out.bytes += record.archive_bytes;
@@ -712,6 +717,9 @@ bool ensure_tileset(const std::string& heightfield_json, const BuildOptions& opt
 // ---- the reader ---------------------------------------------------------------------------------
 
 struct TileSet::Level {
+  // The level's place in the manifest: what the cache keys its tiles by, since two levels can
+  // share a spacing (the finest and a far level at it; tileset.md, "Two levels at one spacing").
+  i64 index = 0;
   i64 spacing = 0;
   i64 filter = 0;
   i64 imin = 0, imax = 0, jmin = 0, jmax = 0;
@@ -746,7 +754,7 @@ archive::FetchOptions fetch_options(const TileSet::ReadOptions& read) noexcept {
 // reads it twice. Neither the index nor the payloads are sized by the source extent.
 struct TileSet::Cache {
   struct Key {
-    i64 spacing;
+    i64 level;  // the level's index, not its spacing: two levels can share one
     i32 x, z;
     bool operator==(const Key&) const = default;
   };
@@ -963,6 +971,7 @@ bool TileSet::open(const std::string& manifest_path, std::string& error) {
   cache_->index.reserve(reserve);
   for (const TileSetLevel& record : manifest_.levels) {
     auto level = std::make_unique<Level>();
+    level->index = levels_.size();
     level->spacing = record.spacing_mm;
     level->filter = record.filter_mm;
     level->imin = record.index_min[0];
@@ -1024,7 +1033,7 @@ const i32* TileSet::tile(const Level& level, i32 tx, i32 tz, Pins& pins) const n
   const i64 kx = i64{tx} - level.tx0;
   const i64 kz = i64{tz} - level.tz0;
   if (kx < 0 || kz < 0 || kx >= level.ntx || kz >= level.ntz) return nullptr;
-  const Cache::Key key{level.spacing, tx, tz};
+  const Cache::Key key{level.index, tx, tz};
   // The request's own pins first, with no lock: a row of points reads one tile many times.
   if (pins.count > 0 && pins.pins[pins.last].key == key) return pins.pins[pins.last].grid;
   for (u32 k = 0; k < pins.count; ++k) {
@@ -1061,7 +1070,7 @@ const i32* TileSet::tile(const Level& level, i32 tx, i32 tz, Pins& pins) const n
       failures_.fetch_add(1, std::memory_order_relaxed);
       return nullptr;
     }
-    slot = claim_locked(tx, tz, level.spacing, &pins);
+    slot = claim_locked(tx, tz, level.index, &pins);
   }
 
   // The read, with no lock held: another caller's lookups, hits and other tiles' reads go on. One
@@ -1115,9 +1124,9 @@ const i32* TileSet::tile(const Level& level, i32 tx, i32 tz, Pins& pins) const n
 // budget has tiles — a request's own tile (`pins` given) grows the cache past its budget by the
 // pins, and the next evictions bring it back; a batch reading ahead (`pins` null) stops instead,
 // `k_no_slot`. The slot is marked loading, in the index, and pinned once by its claimant.
-u32 TileSet::claim_locked(i32 tx, i32 tz, i64 spacing_mm, Pins* pins) const noexcept {
+u32 TileSet::claim_locked(i32 tx, i32 tz, i64 level, Pins* pins) const noexcept {
   Cache& cache = *cache_;
-  const Cache::Key key{spacing_mm, tx, tz};
+  const Cache::Key key{level, tx, tz};
   u32 slot = 0;
   const u32 size = cache.entries.size();
   if (size < cache.capacity) {
@@ -1232,10 +1241,10 @@ u32 TileSet::fetch(const Level& level, std::span<const u64> keys, u32 limit) con
       if (batch.slots.size() >= limit) break;
       const i32 tz = static_cast<i32>(static_cast<u32>(key >> 32) ^ 0x8000'0000u);
       const i32 tx = static_cast<i32>(static_cast<u32>(key) ^ 0x8000'0000u);
-      if (cache.index.find_value(Cache::Key{level.spacing, tx, tz}) != nullptr) continue;
+      if (cache.index.find_value(Cache::Key{level.index, tx, tz}) != nullptr) continue;
       const u32 entry = level.archive.find(tx, tz);
       if (entry == archive::Reader::k_absent) continue;  // its asker refuses it
-      const u32 slot = claim_locked(tx, tz, level.spacing, nullptr);
+      const u32 slot = claim_locked(tx, tz, level.index, nullptr);
       if (slot == k_no_slot) break;  // every entry pinned or being read: the rest read alone
       batch.slots.push_back(slot);
       batch.fetches.push_back(archive::Fetch{entry, nullptr, false});
