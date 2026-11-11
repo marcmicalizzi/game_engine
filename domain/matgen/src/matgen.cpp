@@ -71,6 +71,11 @@ bool validate_set(const Set& set, std::string& error) {
         return fail(error, "granular.imbrication_deg or scatter_deg is over 45");
       if (g.matrix_um < 50 || g.matrix_um > 20000)
         return fail(error, "granular.matrix_um is out of range (50 to 20000)");
+      if (g.buried_permille > 1000 || g.film_permille > 1000 || g.broken_permille > 1000 ||
+          g.fines_permille > 1000)
+        return fail(error, "granular buried, film, broken or fines share is over 1000");
+      if (g.depth_layers < 1 || g.depth_layers > 3)
+        return fail(error, "granular.depth_layers is out of range (1 to 3)");
       break;
     }
     case Kind::rock: {
@@ -87,6 +92,10 @@ bool validate_set(const Set& set, std::string& error) {
           r.rind_r_permille > 1500 || r.rind_g_permille > 1500 || r.rind_b_permille > 1500)
         return fail(error, "a rock share or tint is out of range");
       if (r.laminae > 64) return fail(error, "rock.laminae is over 64");
+      if (r.form_um > 200000 || r.streak_permille > 1000 || r.moss_permille > 1000)
+        return fail(error, "rock form, streak or moss is out of range");
+      if (r.lichen_max_mm < 4 || r.lichen_max_mm > 300)
+        return fail(error, "rock.lichen_max_mm is out of range (4 to 300)");
       break;
     }
     case Kind::ground: {
@@ -217,6 +226,35 @@ bool build_set(const Set& set, SetImages& out, SetStats* stats_out, std::string&
   for (f64& c : stats.mean_color)
     c /= static_cast<f64>(count);
   stats.mean_roughness /= static_cast<f64>(count);
+
+  // ---- the tile's self-similarity at its own period (matgen.md, "Repetition"): how far the
+  // brightest or darkest sixteenth of the tile stands from the mean. What a repeat shows is its
+  // landmarks; a block that stands out is one, seen again every tile.
+  {
+    constexpr u32 k_blocks = 16;
+    const u32 side = n / k_blocks;
+    f64 blocks[k_blocks * k_blocks] = {};
+    f64 total = 0.0;
+    for (u32 y = 0; y < n; ++y) {
+      for (u32 x = 0; x < n; ++x) {
+        const detail::Texel& t = field.texels[y * n + x];
+        const f64 lum = 0.2126 * static_cast<f64>(t.r) + 0.7152 * static_cast<f64>(t.g) +
+                        0.0722 * static_cast<f64>(t.b);
+        blocks[(y / side) * k_blocks + x / side] += lum;
+        total += lum;
+      }
+    }
+    const f64 mean = total / static_cast<f64>(count);
+    const f64 per_block = static_cast<f64>(side) * static_cast<f64>(side);
+    f64 most = 0.0, squares = 0.0;
+    for (const f64 b : blocks) {
+      const f64 d = std::fabs(b / per_block - mean) / std::max(mean, 1.0e-9);
+      most = std::max(most, d);
+      squares += d * d;
+    }
+    stats.landmark_contrast = most;
+    stats.block_contrast = std::sqrt(squares / static_cast<f64>(k_blocks * k_blocks));
+  }
   stats.height_min_m = lowest;
   stats.height_max_m = highest;
 
@@ -283,13 +321,20 @@ Set base(const char* role, Kind kind, u64 seed, u32 tile_mm) {
 
 // A mountain stream's bed (matgen.md, "The defaults"): a mix of the catchment's
 // rocks, rounded, imbricated, and wet through: a channel's bed lies under its water.
+// The tile is two metres (G153): a one-metre tile held a dozen clasts past D84, each a landmark
+// seen again every metre; at two it holds four times as many and none stands alone. A stable bed
+// carries a film on its tops, its lower clasts lie part buried in silt and sand (embeddedness, the
+// 25 to 50 % class of Platts et al. 1983), and a few clasts are broken.
 Set gravel_bed() {
-  Set s = base("gravel/bed", Kind::granular, 0x6772617665ull, 1000);
+  Set s = base("gravel/bed", Kind::granular, 0x6772617665ull, 2000);
   s.wet_permille = 1000;
   s.cavity_permille = 550;
   Granular& g = s.granular;
   g.cover_permille = 1000;
   g.matrix_um = 800;
+  g.buried_permille = 300;
+  g.film_permille = 550;
+  g.broken_permille = 120;
   g.lithologies.push_back(part(450, 360, 350, 330, 150, 800, 250, 60));  // granite and gneiss
   g.lithologies.push_back(part(250, 520, 500, 460, 120, 850, 40, 150));  // limestone
   g.lithologies.push_back(part(150, 120, 120, 130, 200, 780, 60, 100));  // schist, basalt
@@ -318,9 +363,11 @@ Set sand_bar() {
   return s;
 }
 
-// A talus: angular blocks fallen from one wall, openwork, lying any way round.
+// A talus: angular blocks fallen from one wall, openwork, lying any way round, three layers deep
+// where a gap shows down, a few pockets of fines (a talus fills from the surface as it ages), on a
+// three-metre tile (G153: a two-metre one held a dozen blocks past D84).
 Set rock_scree() {
-  Set s = base("rock/scree", Kind::granular, 0x7363726565ull, 2000);
+  Set s = base("rock/scree", Kind::granular, 0x7363726565ull, 3000);
   s.cavity_permille = 500;
   Granular& g = s.granular;
   g.d50_um = 110000;
@@ -329,12 +376,15 @@ Set rock_scree() {
   g.ba_min_permille = 500;
   g.cb_min_permille = 300;
   g.cb_max_permille = 800;
-  g.cover_permille = 900;
+  g.cover_permille = 1000;
   g.imbrication_deg = 0;
-  g.scatter_deg = 18;
+  g.scatter_deg = 26;
   g.alignment_permille = 0;
   g.openwork_permille = 1000;
   g.matrix_um = 2000;
+  g.fines_permille = 150;
+  g.depth_layers = 3;
+  g.broken_permille = 0;
   g.lithologies.push_back(part(700, 400, 390, 370, 180, 880, 80, 40));  // the wall's rock
   g.lithologies.push_back(part(300, 300, 290, 270, 150, 900, 60, 0));   // the same, weathered
   return s;
@@ -345,8 +395,15 @@ void granite_minerals(Rock& r) {
   r.minerals.push_back(part(300, 580, 500, 440, 100, 700));  // alkali feldspar
   r.minerals.push_back(part(320, 620, 610, 580, 80, 720));   // plagioclase
   r.minerals.push_back(part(100, 35, 33, 30, 100, 500));     // biotite
-  // An old face: a fresh break is the exception.
+  // An old face: a fresh break is the exception. Its form above the decimetre (scallops, ribs, a
+  // broken step) is chosen at 22 mm half range; its joints are worn gaps; the run-off below them
+  // stains it; its lichens are colonies up to 120 mm across (Rhizocarpon's largest living thalli
+  // run past 150 mm; Armstrong 1983's sample, 2 to 65 mm).
   r.rind_permille = 920;
+  r.form_um = 22000;
+  r.streak_permille = 500;
+  r.lichen_max_mm = 120;
+  r.lichen_permille = 160;
 }
 
 Set rock_granite() {
@@ -356,6 +413,7 @@ Set rock_granite() {
   return s;
 }
 
+// The same face wet through: darker rind, little lichen, moss in its joints, strong streaks.
 Set rock_granite_wet() {
   Set s = base("rock/granite_wet", Kind::rock, 0x77657467ull, 1500);
   s.stochastic = true;
@@ -365,6 +423,8 @@ Set rock_granite_wet() {
   s.rock.rind_g_permille = 510;
   s.rock.rind_b_permille = 500;
   s.rock.lichen_permille = 40;
+  s.rock.streak_permille = 800;
+  s.rock.moss_permille = 550;
   return s;
 }
 
@@ -384,6 +444,9 @@ Set rock_basalt() {
   r.rind_b_permille = 680;
   r.lichen_permille = 100;
   r.pits_permille = 60;
+  r.form_um = 15000;
+  r.streak_permille = 350;
+  r.lichen_max_mm = 80;
   return s;
 }
 
@@ -401,6 +464,11 @@ Set rock_limestone() {
   r.rind_b_permille = 690;
   r.lichen_permille = 150;
   r.pits_permille = 40;
+  // Limestone's ink stripes (the Alps' "Tintenstriche": dark run-off streaks of cyanobacteria and
+  // lichen where water runs down a face) are its best-known staining.
+  r.form_um = 25000;
+  r.streak_permille = 700;
+  r.lichen_max_mm = 80;
   return s;
 }
 
@@ -420,6 +488,9 @@ Set rock_sandstone() {
   r.rind_b_permille = 620;
   r.lichen_permille = 80;
   r.laminae = 12;
+  r.form_um = 12000;
+  r.streak_permille = 300;
+  r.lichen_max_mm = 60;
   return s;
 }
 
@@ -435,9 +506,22 @@ Set ground_of(const char* role, u64 seed, u32 moss, u32 soil, u32 thatch, u32 li
 
 }  // namespace
 
+Set variant_of(const Set& set, u32 index) {
+  Set v = set;
+  v.role = set.role + "." + std::to_string(index);
+  v.seed = detail::mix64(set.seed ^ (0x76617269616e74ull + index));
+  return v;
+}
+
 Vector<Set> default_sets() {
   Vector<Set> sets;
-  sets.push_back(gravel_bed());
+  // A tiled granular role and its variants (G153); a stochastic rock set breaks its own repeat.
+  const auto with_variants = [&sets](const Set& s) {
+    sets.push_back(s);
+    for (u32 k = 1; k <= k_tiled_variants; ++k)
+      sets.push_back(variant_of(s, k));
+  };
+  with_variants(gravel_bed());
   sets.push_back(ground_of("ground/moss", 0x6d6f7373ull, 1000, 0, 40, 0));
   sets.push_back(ground_of("ground/soil", 0x736f696cull, 0, 1000, 30, 0));
   sets.push_back(ground_of("ground/thatch", 0x746861746368ull, 0, 1000, 970, 0));
@@ -447,8 +531,8 @@ Vector<Set> default_sets() {
   sets.push_back(rock_granite_wet());
   sets.push_back(rock_limestone());
   sets.push_back(rock_sandstone());
-  sets.push_back(rock_scree());
-  sets.push_back(sand_bar());
+  with_variants(rock_scree());
+  with_variants(sand_bar());
   return sets;
 }
 

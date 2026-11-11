@@ -126,6 +126,20 @@ inline f64 lattice_noise(u64 seed, f64 x, f64 y, u32 k) noexcept {
   return mix(a, b, sy);
 }
 
+// The same with its own period along each axis: a streak's noise, fine across and long down.
+inline f64 lattice_noise2(u64 seed, u32 vx, u32 vy, u32 n, u32 kx, u32 ky) noexcept {
+  const f64 x = lattice_of(vx, n, kx), y = lattice_of(vy, n, ky);
+  const f64 fx = std::floor(x), fy = std::floor(y);
+  const i64 ix = static_cast<i64>(fx), iy = static_cast<i64>(fy);
+  const u32 xa = wrap_node(ix, kx), xb = wrap_node(ix + 1, kx);
+  const u32 ya = wrap_node(iy, ky), yb = wrap_node(iy + 1, ky);
+  const f64 tx = x - fx, ty = y - fy;
+  const f64 sx = tx * tx * (3.0 - 2.0 * tx), sy = ty * ty * (3.0 - 2.0 * ty);
+  const f64 a = mix(unit_of(hash3(seed, xa, ya)), unit_of(hash3(seed, xb, ya)), sx);
+  const f64 b = mix(unit_of(hash3(seed, xa, yb)), unit_of(hash3(seed, xb, yb)), sx);
+  return mix(a, b, sy);
+}
+
 // `octaves` of it from period `k` up, each half the last one's weight, in [0, 1].
 inline f64 fractal_noise(u64 seed, u32 vx, u32 vy, u32 n, u32 k, u32 octaves) noexcept {
   f64 sum = 0.0, weight = 1.0, total = 0.0;

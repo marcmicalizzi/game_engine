@@ -50,7 +50,18 @@ namespace engine::matgen {
 
 /// Bumped whenever the generator changes so that an old set is no longer what a recipe builds.
 /// 1: the first generator (G148, 2026-11-10).
-inline constexpr u32 k_matgen_version = 1;
+/// 2: judged in the engine (G149, G151, G152, G153, 2026-11-11): a rock's form above the
+///    decimetre, worn joints, run-off streaks, lichen colonies grown from a centre, moss in the
+///    joints; a bed's buried clasts, biofilm and broken faces; scree several layers deep with
+///    roofed blocks and fines; the largest clasts' tone held toward their lithology's.
+/// 3: a rock face's broken step removed (its curved contour, cut by the stochastic sampling, read
+///    as crescent stamps in the engine).
+inline constexpr u32 k_matgen_version = 3;
+
+/// Variants of a tiled role (G153): `default_sets` writes `<role>.1` .. `<role>.<n>` beside each
+/// tiled granular role, the same recipe from other seeds, so a consumer that picks one by place
+/// (a hash of the lattice cell a surface's tile falls in) breaks the repeat at the tile's period.
+inline constexpr u32 k_tiled_variants = 2;
 
 /// Determinism stance (ADR-0010): derived data, never read back into the simulation.
 inline constexpr const char* k_determinism = "derived";
@@ -83,6 +94,13 @@ struct SetStats {
   f64 mean_roughness = 0;
   f64 height_min_m = 0;
   f64 height_max_m = 0;
+  // The tile's self-similarity at its own period (G153; matgen.md, "Repetition"): the albedo's
+  // luminance averaged over a 16 by 16 grid of blocks (each a sixteenth of the tile a side, from
+  // the window's start), and the largest and the root-mean-square departure of a block from the
+  // tile's mean, as a share of it (Weber contrast). A tile repeats in plain sight where one of
+  // its blocks stands out from the rest: that block is a landmark seen again every period.
+  f64 landmark_contrast = 0;
+  f64 block_contrast = 0;
   // granular: the clasts drawn from the distribution, those in the top layer and the lower one,
   // the share of the surface a top-layer clast shows on, the grid count over every texel that
   // shows a clast (Wolman's count in its limit: each texel a grid point), the share of the
@@ -96,9 +114,13 @@ struct SetStats {
   f64 d84_mm = 0;
   f64 matrix_share = 0;
   f64 mean_sphericity = 0;
-  // rock: the shares of the surface that are fresh break and lichen.
+  // granular: the share of the surface where the matrix stands over a clast (embeddedness).
+  f64 buried_share = 0;
+  // rock: the shares of the surface that are fresh break, lichen, run-off streak and moss.
   f64 fresh_share = 0;
   f64 lichen_cover = 0;
+  f64 streak_share = 0;
+  f64 moss_cover = 0;
   // ground: the shares of the surface under moss (of the underlay), thatch and live leaves.
   f64 moss_share = 0;
   f64 thatch_cover = 0;
@@ -121,8 +143,12 @@ bool build_set(const Set& set, SetImages& out, SetStats* stats, std::string& err
 /// The sets the engine's solvers ask a pack for by role and no pack has (matgen.md, "The
 /// defaults"): `gravel/bed`, `sand/bar`, `rock/scree`, `rock/granite`, `rock/granite_wet`,
 /// `rock/basalt`, `rock/limestone`, `rock/sandstone`, `ground/soil`, `ground/moss`,
-/// `ground/thatch`, `ground/turf`. Sorted by role.
+/// `ground/thatch`, `ground/turf`, and `k_tiled_variants` variants of each tiled granular role
+/// (`gravel/bed.1`, ...). Sorted by role.
 Vector<Set> default_sets();
+/// Variant `index` (1..) of a recipe: the same numbers from another seed, its role
+/// `<role>.<index>`.
+Set variant_of(const Set& set, u32 index);
 /// One of them by role; false when the role has no default.
 bool default_set(std::string_view role, Set& out);
 
