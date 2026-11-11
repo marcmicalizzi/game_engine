@@ -1906,14 +1906,16 @@ reading each view's own `ResolveParams`):
 - **`gi fold`** (`gpu_ms.gi_fold`): a thread a cell folds the frame's sums into the mean with an
   exponential average whose rate is the frame's samples over the history's (`n / min(N + n, 256)`),
   so a new cell takes its first frame whole and an old one moves a frame's share; a cell nothing
-  reached for 240 frames is freed. The cache's first frame clears the buffer instead
-  (`k_gi_reset`), and its sample pass adds nothing.
+  reached for 240 frames is freed. The cache's first frame clears the buffer with one more fold
+  first (`gfx::k_gi_step_reset`) and then pre-rolls ([stage 5](#stage-5-the-light-is-already-there));
+  until stage 5 that frame's sample pass added nothing and it drew the harmonics.
 
 **The read** (`scene_ambient` in `material.slang`, one call in the resolve): trilinear over the eight
 cells of the point's level round it on the point's face, each weighted by its share of the point and
-only where it has samples; the next coarser level where none of the eight has (warm, because every
-sample went to both), and the harmonics, **to the bit**, where neither has or where the frame does
-not read the cache. The material's ambient occlusion still multiplies it, as it multiplies the
+by its samples, and the coarser levels for whatever share the samples behind that do not earn (the
+walk up the ladder, [stage 5](#stage-5-the-light-is-already-there); stages 1 and 2 read the next
+level only where the first had nothing, then by a confidence), and the harmonics, **to the bit**,
+where no level has a sample or where the frame does not read the cache. The material's ambient occlusion still multiplies it, as it multiplies the
 harmonics: it stands for occlusion below a cell's size. Only the opaque path's ambient reads it; the
 water's own ambient is the harmonics still.
 
@@ -1969,7 +1971,9 @@ The owner walked v35 under `bounce` and saw the light load in "like a checkerboa
 seconds, a little dark, with blocks on the rocks. Each change below is a knob whose stage-1 value
 reproduces the stage-1 read, so every lever was judged on its own against the reference
 (`gi cache: stage 2's levers one at a time, ...`):
-- **The young cell reads its parent** (`renderer.gi.confident`, 32). A level's read sums its eight
+- **The young cell reads its parent** (`renderer.gi.confident`, 32; **replaced by stage 5's walk**,
+  which takes a level by the samples behind its mean, reads four levels and is read whole at 128;
+  what follows is stage 2's rule as it stood). A level's read sums its eight
   cells as before and also their confidence, the trilinear weights times `min(samples / 32, 1)`;
   the read takes that share from the point's own level and the rest from the next coarser one,
   which every sample also reached and which holds four to eight times the samples
@@ -1995,8 +1999,8 @@ reproduces the stage-1 read, so every lever was judged on its own against the re
   when their half runs out is the order waves reach the count; below it the picture does not
   depend on order (the translation test still holds the bytes).
 - **A bounce's hit reads coarser, then a bounded fallback** (`renderer.gi.hit_fallback`). Every
-  sample now reaches three levels (`k_gi_sample_levels`), and a hit reads four from its own
-  (`k_gi_hit_levels`), so a wall behind the eye finds the light of a coarse cell some pixel in view
+  sample reached three levels and a hit read four from its own (four and four since stage 5,
+  `k_gi_ladder`), so a wall behind the eye finds the light of a coarse cell some pixel in view
   reached. Where none has samples it takes the harmonics times the ray's openness
   (`gfx::gi_openness`: nothing for a hit within a metre of the ray's origin, which is enclosed, all
   of it past ten metres, smooth between) — never the raw harmonics, which lit the box's inside as
@@ -2122,6 +2126,161 @@ first frame stands **1.30** from its converged picture against **1.68** at 32 Mi
 0.43), with no insert turned away, so `renderer.gi.cache_mib` defaults to 128: 108 MiB more device
 memory where the cache is on, and a fold over four times the cells (stage 2 measured 0.01 ms for a
 million; four million was not timed).
+
+### Stage 5: the light is already there
+
+The owner, a third time (v40, 2026-11-10): "it's down to about 1 second to fill, but **the problem
+is the filling being visible at all** ... maybe it needs to be baked into the scene somehow?" The
+target is therefore not a rate: **a viewer sees no change in the indirect light that the world did
+not cause**, on a turn of any speed, on a walk, in flight, and in the first frame after a load or a
+cut. ([The measurements](../experiments/gi-cache-2026-11-07.md#stage-5-the-light-is-already-there),
+with the curves against a long-held reference and the answer about baking.)
+
+**What the eye was catching.** Stage 4 found the turn's error to be variance, not bias, and that is
+the whole of it: a cell's estimate *arriving*. A sample is one cosine-weighted ray, and under
+`bounce` its value spreads about as widely as its mean (a sunlit patch of ground or the dark
+underside of a crown), so the mean of n samples carries a sample's spread over √n. Stage 2 read a
+cell whole at 32 samples (a sixth of a sample's spread of noise, four times what a converged cell
+keeps) and handed whatever weight was left to the next level **whole, whatever it held** — on the
+first frame a surface is seen that level holds 44 samples. The picture then settles to an
+exponential average of 256, a spread over √511: the eye watches the noise fall by four over a
+second, a cell at a time, and reads it as light loading. Stage 4's samples round the eye could not
+help: they filled cells behind the eye to five or twenty samples, which the same read then showed.
+
+**The ladder** (`gfx::k_gi_ladder`, `gi_cache.h` and `gi_cache.slang`). Every sample is added to
+its surface's own level and the **three coarser**, and every read walks the same four, finest
+first. A surface's cells are a quarter as many a level up, so a cell l levels up takes about 4^l
+times the own cell's samples. At 3840×2160 the trickle samples one pixel in nine and a cell is
+about ten pixels wide, so in the **one frame** a surface is first seen:
+
+| level | cell at 20 m | samples in the first frame | frames to 255 |
+|---|---|---|---|
+| own | 10 cm, ~10 px | 11 | 23 |
+| +1 | 20 cm | 44 | 6 |
+| +2 | 40 cm | 178 | 2 |
+| +3 | 80 cm | 711 | 1 |
+
+There is always a level that is quiet on the first frame; stage 2 added to three levels and read
+two, so the level with 178 samples existed and was not read. The four are consecutive on purpose:
+a surface that crosses to a finer level as the eye comes nearer finds the cells that were its own
+and its parents' a frame before, converged, under its new empty ones.
+
+**The walk** (`gi_read_level`, `gi_read_face`; `gfx::gi_blend_levels` is the same arithmetic on the
+CPU, held against a brute force from the cells). One level's read sums, over the eight cells round
+the point, each cell's share s = trilinear weight × min(n / 255, 1): Σ s·mean, Σ s, Σ s² and
+Σ s²/n. The level's mean is the first over the second, and Σ s² / Σ s²/n is **the samples a cell
+of that mean holds** — the cells' counts averaged as the mean's variance weighs them: a cell's own
+count at its centre, eleven between eight cells of eleven. The level takes that count over 255
+(`renderer.gi.confident`, 32 before; the history's own length) of what the finer levels left, at
+most all, and passes the rest up; the walk stops when a thirty-second or less is left. Three
+things follow:
+
+- **No level adds more noise than a mean of 255 samples carries.** With m samples a cell a level
+  takes m/255 and adds at most a sample's spread times √m/255 (less where several cells share the
+  point: the variance of its mean is Σ s²/n over (Σ s)², Kish's effective sample size inverted),
+  at most 1/√255 — **√(511/255) = 1.42 times a converged cell's noise** for the whole read,
+  whatever its cells hold (`gi cache key: no cell's next sample steps the read` computes it over
+  random neighbourhoods). And one more sample moves a filling cell's share of the read by 1/255,
+  which is what it moves a converged cell's mean by (1/256): **frame to frame, a cell that is
+  filling changes as one that has filled.** That is why the count is the history's length and not
+  less, and why it is a cell's count and not the pooled count of the eight: the first build read
+  a level whole at 128 samples behind its mean, pooled, so a point between eight cells took a
+  third of its own level in one frame, and the box's turn stood at exactly the twice its
+  arithmetic gives and changed between frames at up to four times the steady rate.- **Nothing steps.** Every sum is continuous in every cell's count, so neither a cell's first
+  sample nor a level's hand-over is an event, and each level is trilinear, so the read is
+  continuous across cells. A corner the surface never passes through (the layer above a floor) has
+  no cell and counts for nothing, where stage 2's confidence counted it as unknown and sent up to
+  half of every floor's read to the parent for good — so stage 2 read two levels at most pixels,
+  and this read **one where the neighbourhood has converged**: eight lookups, which is where the
+  read got cheaper (below). One guard: where the cells that are there hold under an eighth of the
+  weight between them (a point's own cell holds that alone) the level is taken by that much less,
+  or a mean extrapolated from one far corner would be taken whole until the point's own cell
+  appeared.
+- **What is shown first is coarser, not noisier.** A surface first seen is lit from the 40 and
+  80 cm cells and sharpens to its own over twenty-three frames, a 255th of the read a sample. The
+  change is the light's detail between one level and the next, not its noise; on the forest's
+  turn it is under the cache's steady floor from the first frame (the page's table).
+
+**A cell remembers 256 samples or sixteen frames of them, the longer** (`gfx::gi_history`,
+`k_gi_history_frames`). The fold's average was capped at 256 samples, and a cell that took more
+than that in one frame kept none of its past: its mean was a fresh draw every frame. That is every
+coarse level of the ladder (178 and 711 a frame above), which is what a filling surface, a crown
+whose leaf-sized own cells never fill, and a bounce's hit read — quiet each frame, and flickering
+at sixty a second. Sixteen frames is a little under what an own cell's 256 samples are at eleven a
+frame, so no level remembers less time than the finest.
+
+Where all four levels together hold under a sixteenth of confidence (a twig's worth of pixels on
+its first frames) the read leans on the harmonics in proportion (`k_gi_read_floor`,
+`gi_confidence_weight`); with no cell at all it is the harmonics to the bit, as before. A bounce's
+hit walks the same ladder and leans on its bounded fallback the same way, so a hit's light does
+not step when its first cell appears either. Between **levels** the read still steps where a
+surface's distance crosses a power of two (one pixel reads level l, its neighbour l+1): the two
+are each converged and differ by the light's detail between 10 and 20 cm cells, which nobody has
+reported and the page's captures do not show; blending the two levels by the distance's fraction
+would make it continuous and double the read, so it is not built.
+
+**Warm round the eye** (stage 4's volume and samples, on by default now: `renderer.gi.shell_m`
+48, `renderer.gi.shell_rays` 65,536). The ladder alone removes the *noise* of a fill and not the
+fill: in the box, turned with nothing round the eye, the first frame stood twenty floors from the
+turned pose's long-held picture with the ladder as without it — the turned view's bounce meets
+hits behind the eye and in the half never seen that have no cells, so its first samples carry
+the fallback and the answer iterates in view (the bias stage 4 measured). And 240 frames after the
+turn the cells the first view had filled aged out and **the light moved again, four seconds after
+anything happened** — on main too, which no stage had seen because no stage held a turn that
+long. The volume and the samples keep the sphere's cells sampled, so both go: the turn's first
+frame starts from the light that was there, and nothing behind the eye ages out while the eye
+stands. Stage 4 built them and they did nothing measurable, because the read showed their five to
+twenty samples a cell whole; with the ladder, their samples are added to the three levels
+**above** the surface's own (the own level took a million cells of the cache for nothing a read
+would take).The arithmetic, at the default `cell_scale`: a cell at
+distance d is 0.004 d to 0.008 d wide, so a sphere whose every direction met a surface holds
+196,000 to 785,000 cells at their own level whatever its radius, and a quarter as many a level up.
+Of 65,536 directions a frame the frustum's tenth is skipped and, on the forest, about half of the
+rest meet a surface (the sky and the far lake are not cells): 30,000 to 59,000 samples a frame.
+
+| level | cells on the sphere | samples a cell a frame | frames to 255 |
+|---|---|---|---|
+| +3 | 3,100 – 12,300 | 2.4 – 19 | 13 – 106 |
+| +2 | 12,300 – 49,000 | 0.6 – 4.8 | 53 – 420 |
+| +1 | 49,000 – 196,000 | 0.15 – 1.2 | 210 – 1,700 |
+
+So after a second or two of a still eye the coarsest level is quiet over the whole sphere, the
+next within seven, and they stay so (a cell is kept while a sample reaches it every 240 frames). A
+turn's first frame then adds its own 44, 178 and 711 to them. Their cost is stated on the page so
+they can be judged alone.
+
+**The start, and a cut** (`gi_preroll.h`, `renderer.gi.preroll` 32, `renderer.gi.cut_m` 8). A load
+is the one place the cache has nothing, and the first picture was the sky's harmonics with the
+light arriving over the next second; fast travel is the same start somewhere else. A frame that
+starts cold — the cache's first, or one whose eye is more than eight metres from the frame
+before's — records the sample pass and the fold **thirty-two times more** before its resolve
+reads, against the frame's own visibility buffer and structures. Each step is a frame of the
+cache's clock (`gfx::GiStepPush`: the pixel offsets, the directions and the seeds turn), so
+thirty-two are thirty-two frames' samples at one pose: the trickle has reached every pixel three
+times, an own cell holds about 350 samples, the sphere has had two million directions, and a
+bounce's hits have read cells that already held thirty-one rounds of the bounce before them
+(sixteen left the box's first frame 2.3 floors from its long-held picture, the bounce's later
+rounds still arriving). The first frame is then inside the same bound as any other (`gi cache:
+the pre-roll runs on the first frame and on a cut, and neither shows a fill`). The fold counts
+only on the frame's last step and the young claims are a step's, so a frame's counts are the
+frame's; `Stats::gi_preroll_steps` says which frames pre-rolled. A turn is not a cut and never
+pre-rolls.
+**The bounce off the ground** takes the ground's own material: the cache's passes have a terrain
+module (`gi_update_terrain.slang`, picked as the resolve picks its own) in which a hit on a
+terrain root reads the masks' layers there through R129's `terrain_hit_material`, at a footprint
+of a twentieth of the ray's length. Until then it read the root's base colour, the record's first
+layer, and a tan bank bounced its meadow's green (`gi cache: a bounce off a bank of sand under the
+masks is sand's, not the first layer's`, in `systems/water`'s tests beside R129's bank).
+
+**On baking** (the owner's question; the page has the numbers). What a bake buys is light on the
+first frame, and the pre-roll buys that at the load for the milliseconds in the table below, for
+exactly the cells the view reads, at the sun the frame has. A bake kept per tile would have to
+hold every level a tile can be seen at (the level follows the eye's distance) for every sun
+position, or only the coarse levels — which are the ones a frame warms in one step. What it would
+still add is nothing a viewer has been shown to see; it is not built.
+
+**What it costs** is on [the page](../experiments/gi-cache-2026-11-07.md#stage-5-the-light-is-already-there),
+as pairs from two executables in one lease.
 
 ## The sun's day
 

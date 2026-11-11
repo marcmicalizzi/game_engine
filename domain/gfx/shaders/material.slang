@@ -905,26 +905,29 @@ float3 ambient_radiance(float3 sky, float3 ground, float3 normal) {
 // that ambient's luminance here. The ratio keeps the colour of the light the surface actually sees
 // (a gap towards the horizon is the horizon's, not the zenith's) while the harmonics' luminance
 // carries the hour, so a sky that changes reaches the cached cells in the same frame. Without the
-// bit, with no cache, or where neither of the point's levels has a sample, it is `harmonics`, to
+// bit, with no cache, or where none of the point's levels has a sample, it is `harmonics`, to
 // the bit. `from_eye` is the point less the frame's eye, `distance` its distance from this view's
 // eye (the level), `normal` the surface's interpolated normal (the face, and near a face's edge
-// the next one: stage 2). Two levels, the point's own and its parent, blended by the young cells'
-// confidence (`gi_read_face`).
+// the next one: stage 2). The walk up the ladder (stage 5, `gi_read_face`): the point's own level
+// and the three coarser, each taking the share its cells' sample counts give it, so what is shown
+// is the finest light the cache already holds quietly, and the harmonics only in proportion where
+// even the coarsest level holds a handful of samples.
 float3 scene_ambient(uint64_t gi_cells, uint gi_flags, uint gi_count, float gi_cell_scale,
                      FrameEye eye, float3 from_eye, float distance, float3 normal,
                      float3 harmonics) {
   if ((gi_flags & k_gi_read) == 0u || gi_cells == 0) return harmonics;
   float3 ratio;
   const uint level = gi_level(distance, gi_cell_scale);
-  if (!gi_read(gi_cells, gi_count, gi_flags, eye, from_eye, level, 2u, normal, ratio)) {
-    return harmonics;
-  }
+  const float taken =
+      gi_read(gi_cells, gi_count, gi_flags, eye, from_eye, level, k_gi_ladder, normal, ratio);
+  if (!(taken > 0.0)) return harmonics;
   // **The far lift** (stage 2, `renderer.gi.far_lift`, a stated lever): a coarse cell (1.6 m at
   // level 6 to 6.4 m at 8, past 400 m) averages a crown's lit and shaded leaves into one value the
   // eye cannot resolve at that distance; its read is lifted towards the harmonics by the lever
   // times a third a level past the fifth. 0 (the default) leaves it as the cache holds it.
   const float lift = gi_far_lift(gi_flags) * saturate((float(level) - 5.0) / 3.0);
-  return lerp(ratio * gi_luminance(harmonics), harmonics, lift);
+  const float keep = gi_confidence_weight(taken) * (1.0 - lift);
+  return lerp(harmonics, ratio * gi_luminance(harmonics), keep);
 }
 
 // Linear to what a UNORM target holds is `display_encode` in display.slang, included above: both

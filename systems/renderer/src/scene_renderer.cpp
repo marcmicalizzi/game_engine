@@ -11,6 +11,7 @@
 #include <foundation/io/vfs.h>
 #include <systems/renderer/caster_volume.h>
 #include <systems/renderer/eye_shell.h>
+#include <systems/renderer/gi_preroll.h>
 #include <systems/renderer/lighting.h>
 #include <systems/renderer/scene_renderer.h>
 #include <systems/renderer/water_reflect.h>
@@ -33,6 +34,7 @@
 #include <shaders/deform_alloc.spv.h>
 #include <shaders/frame_encode.spv.h>
 #include <shaders/gi_update.spv.h>
+#include <shaders/gi_update_terrain.spv.h>
 #include <shaders/hiz_build.spv.h>
 #include <shaders/opacity_micromap_bake.spv.h>
 #include <shaders/overlay.spv.h>
@@ -685,6 +687,8 @@ bool SceneRenderer::create(const gfx::Device& device, GpuScene& scene,
   shaders_.add_embedded("resolve_half_sun", shaders::k_resolve_half_sun_spirv,
                         shaders::k_resolve_half_sun_spirv_size);
   shaders_.add_embedded("gi_update", shaders::k_gi_update_spirv, shaders::k_gi_update_spirv_size);
+  shaders_.add_embedded("gi_update_terrain", shaders::k_gi_update_terrain_spirv,
+                        shaders::k_gi_update_terrain_spirv_size);
   shaders_.add_embedded("deform", shaders::k_deform_spirv, shaders::k_deform_spirv_size);
   shaders_.add_embedded("deform_alloc", shaders::k_deform_alloc_spirv,
                         shaders::k_deform_alloc_spirv_size);
@@ -1118,17 +1122,20 @@ bool SceneRenderer::create_pipelines(std::string* error) {
   // cache"): its sample and fold passes, one module, wherever `renderer.gi.mode` is on (which
   // `resolve_settings` allows only with the shadow rays, whose query the sample pass traces).
   if (resolved_.gi_mode != GiMode::Off) {
-    const gfx::Shader* gi = shaders_.get("gi_update", error);
+    // The terrain module where the scene has terrain layers, as the resolve picks its own: a
+    // bounce's hit on the ground then takes the ground's own material (stage 5).
+    const gfx::Shader* gi =
+        shaders_.get(scene_->has_terrain_materials() ? "gi_update_terrain" : "gi_update", error);
     if (gi == nullptr) return false;
     const gfx::DescriptorSetLayoutHandle set_layout = bindless.layout();
     if (!gfx::create_compute_pipeline(
             device, gi->module, "gi_sample_main",
-            std::span<const gfx::DescriptorSetLayoutHandle>(&set_layout, 1), sizeof(u64),
-            pipelines_.gi_sample, error) ||
+            std::span<const gfx::DescriptorSetLayoutHandle>(&set_layout, 1),
+            sizeof(gfx::GiStepPush), pipelines_.gi_sample, error) ||
         !gfx::create_compute_pipeline(
             device, gi->module, "gi_fold_main",
-            std::span<const gfx::DescriptorSetLayoutHandle>(&set_layout, 1), sizeof(u64),
-            pipelines_.gi_fold, error)) {
+            std::span<const gfx::DescriptorSetLayoutHandle>(&set_layout, 1),
+            sizeof(gfx::GiStepPush), pipelines_.gi_fold, error)) {
       return false;
     }
   }
@@ -2870,30 +2877,44 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
   u32 gi_stride = 0;
   u32 gi_flags = 0;
   u32 gi_shell_rays = 0;
+  // Stage 5: the frame's steps. One sample pass and one fold, and `renderer.gi.preroll` pairs
+  // before them on the cache's first frame and on a frame whose eye jumped (`gi_cut`), so the
+  // picture after a load or a cut is lit by a cache that has had its samples (gi_preroll.h).
+  u32 gi_steps = 0;
+  u32 gi_first_frame = 0;
+  const bool gi_clear = gi_on && gi_reset_;
   if (gi_on) {
     u64 gi_pixels = 0;
     for (u32 v = 0; v < views; ++v)
       gi_pixels += u64{targets_.views[v].width} * targets_.views[v].height;
+    // Stage 4: each view's samples round its eye, two rays a direction. With the young half
+    // (`renderer.gi.young_rays`) they come out of it, every view's together at most half of it, so
+    // the young cells in view keep the rest; without it they come off the trickle's budget, at
+    // most a quarter of it (renderer.md, "Stage 4").
+    u64 trickle_rays = resolved_.gi_rays_per_frame;
+    if (resolved_.gi_shell_rays > 0) {
+      const u64 half = resolved_.gi_rays_per_frame - resolved_.gi_rays_per_frame / 2;
+      const u64 room = half / 2 / (gfx::gi_shell_ray_cost(1) * views);
+      gi_shell_rays = static_cast<u32>(std::min<u64>(resolved_.gi_shell_rays, room));
+      if (!resolved_.gi_young_rays) trickle_rays -= gfx::gi_shell_ray_cost(gi_shell_rays) * views;
+    }
     gi_stride = resolved_.gi_young_rays
                     ? gfx::gi_trickle_stride(gi_pixels, resolved_.gi_rays_per_frame)
-                    : gfx::gi_stride(gi_pixels, resolved_.gi_rays_per_frame);
+                    : gfx::gi_stride(gi_pixels, trickle_rays);
     gi_flags =
-        gfx::k_gi_read | (gi_reset_ ? gfx::k_gi_reset : 0u) |
-        (resolved_.gi_mode == GiMode::Bounce ? gfx::k_gi_bounce : 0u) |
+        gfx::k_gi_read | (resolved_.gi_mode == GiMode::Bounce ? gfx::k_gi_bounce : 0u) |
         (resolved_.gi_face_blend ? gfx::k_gi_faces : 0u) |
         (resolved_.gi_young_rays ? gfx::k_gi_young_rays : 0u) |
         (resolved_.gi_hit_fallback ? gfx::k_gi_hit_fallback : 0u) |
         gfx::gi_flag_numbers(resolved_.gi_confident, resolved_.gi_evict_age, resolved_.gi_far_lift);
-    ++gi_frame_;
-    // Stage 4: each view's samples round its eye, two rays a direction out of the young half of
-    // the budget, of which every view's together take at most half, so the young cells in view
-    // keep the rest (renderer.md, "Stage 4"). Only with the young half
-    // (`renderer.gi.young_rays`): without it the trickle takes the whole budget.
-    if (resolved_.gi_young_rays && resolved_.gi_shell_rays > 0) {
-      const u64 half = resolved_.gi_rays_per_frame - resolved_.gi_rays_per_frame / 2;
-      const u64 room = half / 2 / (gfx::gi_shell_ray_cost(1) * views);
-      gi_shell_rays = static_cast<u32>(std::min<u64>(resolved_.gi_shell_rays, room));
-    }
+    const bool gi_cut = gi_reset_ || gi_eye_jumped(gi_eye_known_, gi_last_eye_,
+                                                   frame.camera.position, resolved_.gi_cut_m);
+    gi_last_eye_ = frame.camera.position;
+    gi_eye_known_ = true;
+    gi_steps = gi_preroll_steps(gi_cut, resolved_.gi_preroll);
+    stats_.gi_preroll_steps = gi_steps - 1;
+    gi_first_frame = gi_frame_ + 1;
+    gi_frame_ += gi_steps;
   }
   const u32 gi_shell_columns = gfx::gi_shell_columns(gi_shell_rays);
 
@@ -3343,7 +3364,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
     if (gi_on) {
       resolve.gi_cells = gi_cache_.address;
       resolve.gi_flags = gi_flags;
-      resolve.gi_frame = gi_frame_;
+      resolve.gi_frame = gi_first_frame;  // the frame's first step's; step s is this plus s
       resolve.gi_count = gi_count_;
       resolve.gi_stride = gi_stride;
       resolve.gi_cell_scale = resolved_.gi_cell_scale;
@@ -5193,67 +5214,81 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
     // the frame reads or writes the cache.
     if (gi_on) {
       rg_gi = graph.import_buffer("gi cache", gi_cache_);
-      graph.add_pass(
-          "gi sample", gfx::PassKind::Compute,
-          [&](gfx::PassBuilder& b) {
-            b.read(rg_vis, gfx::Access::ComputeRead);
-            if (cull_on && deform_on) b.read(rg_pair_entries, gfx::Access::ComputeRead);
-            if (occlusion) b.read(rg_hiz, gfx::Access::ComputeRead);
-            if (deform_on) {
-              b.read(rg_pool, gfx::Access::ComputeRead);
-              b.read(rg_slots, gfx::Access::ComputeRead);
-            }
-            read_tables(b, gfx::Access::ComputeRead, true);
-            if (fading) b.read(rg_fade, gfx::Access::ComputeRead);
-            read_pool(b, gfx::Access::ComputeRead);
-            if (sky_on) {
-              b.read(sb_sky.view, gfx::Access::ComputeRead);
-              b.read(sb_sky.frame, gfx::Access::ComputeRead);
-            }
-            b.read(rt.tlas, gfx::Access::RayQueryRead);
-            b.read(rt.hit_entries, gfx::Access::ComputeRead);
-            b.read(rt.blas_data, gfx::Access::RayQueryRead);
-            b.read(rt.clas_data, gfx::Access::RayQueryRead);
-            if (rt_cache) b.read(rt.cache_slots, gfx::Access::RayQueryRead);
-            b.write(rg_gi, gfx::Access::ComputeWrite);
-          },
-          [&](gfx::CommandList cb, gfx::RenderGraph&) {
-            cb.bind_pipeline(gfx::BindPoint::Compute, pipelines.gi_sample.pipeline);
-            bindless.bind(cb, gfx::BindPoint::Compute);
-            timer.begin(cb, "gi sample");
-            for (u32 v = 0; v < views; ++v) {
-              cb.push_constants(pipelines.gi_sample.layout, gfx::ShaderStage::Compute, 0,
-                                sizeof(u64), &view_frames[v].resolve_address);
-              const u64 pixels = u64{view_frames[v].width} * view_frames[v].height;
-              u64 threads = (pixels + gi_stride - 1) / gi_stride;
-              // Stage 4: the shell's directions, from the next whole workgroup on.
-              if (gi_shell_rays > 0) {
-                threads = gfx::gi_shell_base(static_cast<u32>(threads)) + u64{gi_shell_rays};
-              }
-              const u64 groups = (threads + gfx::k_gi_workgroup - 1) / gfx::k_gi_workgroup;
+      // The fold over the cells, as one step's push block gives it: the cache's first frame clears
+      // with it, every step folds with it, and the frame's last counts what it keeps.
+      auto fold_pass = [&](const char* name, u32 step, u32 step_flags, bool timed) {
+        graph.add_pass(
+            name, gfx::PassKind::Compute,
+            [&](gfx::PassBuilder& b) { b.write(rg_gi, gfx::Access::ComputeWrite); },
+            [&, step, step_flags, timed](gfx::CommandList cb, gfx::RenderGraph&) {
+              cb.bind_pipeline(gfx::BindPoint::Compute, pipelines.gi_fold.pipeline);
+              bindless.bind(cb, gfx::BindPoint::Compute);
+              if (timed) timer.begin(cb, "gi fold");
+              const gfx::GiStepPush push{view_frames[0].resolve_address, step, step_flags};
+              cb.push_constants(pipelines.gi_fold.layout, gfx::ShaderStage::Compute, 0,
+                                sizeof(push), &push);
+              const u64 groups = (u64{gi_count_} + gfx::k_gi_workgroup - 1) / gfx::k_gi_workgroup;
               cb.dispatch(static_cast<u32>(std::min<u64>(groups, gfx::k_gi_dispatch_pitch)),
                           static_cast<u32>((groups + gfx::k_gi_dispatch_pitch - 1) /
                                            gfx::k_gi_dispatch_pitch),
                           1);
-            }
-            timer.end(cb);
-          });
-      graph.add_pass(
-          "gi fold", gfx::PassKind::Compute,
-          [&](gfx::PassBuilder& b) { b.write(rg_gi, gfx::Access::ComputeWrite); },
-          [&](gfx::CommandList cb, gfx::RenderGraph&) {
-            cb.bind_pipeline(gfx::BindPoint::Compute, pipelines.gi_fold.pipeline);
-            bindless.bind(cb, gfx::BindPoint::Compute);
-            timer.begin(cb, "gi fold");
-            cb.push_constants(pipelines.gi_fold.layout, gfx::ShaderStage::Compute, 0, sizeof(u64),
-                              &view_frames[0].resolve_address);
-            const u64 groups = (u64{gi_count_} + gfx::k_gi_workgroup - 1) / gfx::k_gi_workgroup;
-            cb.dispatch(static_cast<u32>(std::min<u64>(groups, gfx::k_gi_dispatch_pitch)),
-                        static_cast<u32>((groups + gfx::k_gi_dispatch_pitch - 1) /
-                                         gfx::k_gi_dispatch_pitch),
-                        1);
-            timer.end(cb);
-          });
+              if (timed) timer.end(cb);
+            });
+      };
+      if (gi_clear) fold_pass("gi clear", 0, gfx::k_gi_step_reset, false);
+      // The frame's steps (stage 5): the pre-roll's pairs, untimed, then the frame's own, which
+      // `gi sample` and `gi fold` time as they always did.
+      for (u32 step = 0; step < gi_steps; ++step) {
+        const bool last_step = step + 1 == gi_steps;
+        graph.add_pass(
+            last_step ? "gi sample" : "gi preroll sample", gfx::PassKind::Compute,
+            [&](gfx::PassBuilder& b) {
+              b.read(rg_vis, gfx::Access::ComputeRead);
+              if (cull_on && deform_on) b.read(rg_pair_entries, gfx::Access::ComputeRead);
+              if (occlusion) b.read(rg_hiz, gfx::Access::ComputeRead);
+              if (deform_on) {
+                b.read(rg_pool, gfx::Access::ComputeRead);
+                b.read(rg_slots, gfx::Access::ComputeRead);
+              }
+              read_tables(b, gfx::Access::ComputeRead, true);
+              if (fading) b.read(rg_fade, gfx::Access::ComputeRead);
+              read_pool(b, gfx::Access::ComputeRead);
+              if (sky_on) {
+                b.read(sb_sky.view, gfx::Access::ComputeRead);
+                b.read(sb_sky.frame, gfx::Access::ComputeRead);
+              }
+              b.read(rt.tlas, gfx::Access::RayQueryRead);
+              b.read(rt.hit_entries, gfx::Access::ComputeRead);
+              b.read(rt.blas_data, gfx::Access::RayQueryRead);
+              b.read(rt.clas_data, gfx::Access::RayQueryRead);
+              if (rt_cache) b.read(rt.cache_slots, gfx::Access::RayQueryRead);
+              b.write(rg_gi, gfx::Access::ComputeWrite);
+            },
+            [&, step, last_step](gfx::CommandList cb, gfx::RenderGraph&) {
+              cb.bind_pipeline(gfx::BindPoint::Compute, pipelines.gi_sample.pipeline);
+              bindless.bind(cb, gfx::BindPoint::Compute);
+              if (last_step) timer.begin(cb, "gi sample");
+              for (u32 v = 0; v < views; ++v) {
+                const gfx::GiStepPush push{view_frames[v].resolve_address, step, 0u};
+                cb.push_constants(pipelines.gi_sample.layout, gfx::ShaderStage::Compute, 0,
+                                  sizeof(push), &push);
+                const u64 pixels = u64{view_frames[v].width} * view_frames[v].height;
+                u64 threads = (pixels + gi_stride - 1) / gi_stride;
+                // Stage 4: the shell's directions, from the next whole workgroup on.
+                if (gi_shell_rays > 0) {
+                  threads = gfx::gi_shell_base(static_cast<u32>(threads)) + u64{gi_shell_rays};
+                }
+                const u64 groups = (threads + gfx::k_gi_workgroup - 1) / gfx::k_gi_workgroup;
+                cb.dispatch(static_cast<u32>(std::min<u64>(groups, gfx::k_gi_dispatch_pitch)),
+                            static_cast<u32>((groups + gfx::k_gi_dispatch_pitch - 1) /
+                                             gfx::k_gi_dispatch_pitch),
+                            1);
+              }
+              if (last_step) timer.end(cb);
+            });
+        fold_pass(last_step ? "gi fold" : "gi preroll fold", step,
+                  last_step ? gfx::k_gi_step_count : 0u, last_step);
+      }
       // What the two passes counted into the cache's header, into this slot's statistics block,
       // and the header cleared for the next frame's counts and ray budget (stage 2).
       {

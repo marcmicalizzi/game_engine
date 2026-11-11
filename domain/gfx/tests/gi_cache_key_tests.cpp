@@ -120,90 +120,247 @@ TEST_CASE("gi cache key: stage 2's trickle is half the budget and the buffer hol
 
 namespace {
 
-// The young-cell blend as its definition reads, in double: every level's share of the whole —
-// its confidence times what the finer levels left, all of what is left at the last level, nothing
-// for a level without samples — then the shares' weighted mean of the levels' means.
-bool brute_blend(const GiLevelRead* levels, u32 count, u32, f64 out[3]) {
-  f64 left = 1.0;
-  f64 total = 0.0;
-  f64 acc[3] = {0.0, 0.0, 0.0};
-  for (u32 i = 0; i < count; ++i) {
-    const GiLevelRead& l = levels[i];
-    if (!(l.weight > 1e-4f)) continue;
-    const f64 c = i + 1 == count ? 1.0 : std::fmin(static_cast<f64>(l.confidence), 1.0);
-    const f64 share = left * c;
+// A level as its cells: each of the eight corners' trilinear weight, sample count and mean.
+struct LevelCells {
+  f64 weight[8];
+  u32 samples[8];
+  f64 mean[8];
+};
+
+// What the shader's `gi_read_level` sums for a level, in float as it does.
+GiLevelRead level_read(const LevelCells& cells, u32 confident) {
+  GiLevelRead out;
+  for (u32 i = 0; i < 8; ++i) {
+    if (cells.samples[i] == 0) continue;
+    const f32 w = static_cast<f32>(cells.weight[i]);
+    const f32 c =
+        w * std::fmin(static_cast<f32>(cells.samples[i]) / static_cast<f32>(confident), 1.0f);
     for (u32 k = 0; k < 3; ++k)
-      acc[k] += share * static_cast<f64>(l.sum[k]) / static_cast<f64>(l.weight);
-    total += share;
-    left -= share;
+      out.sum[k] += static_cast<f32>(cells.mean[i]) * c;
+    out.confidence += c;
+    out.square += c * c;
+    out.spread += c * c / static_cast<f32>(cells.samples[i]);
   }
-  if (!(total > 0.0)) {
-    // Levels with samples whose confidence was zero and nothing after them: none took a share.
-    bool any = false;
-    for (u32 i = 0; i < count; ++i)
-      any = any || levels[i].weight > 1e-4f;
-    if (!any) return false;
-    for (u32 k = 0; k < 3; ++k)
-      out[k] = 0.0;
-    return true;
-  }
-  for (u32 k = 0; k < 3; ++k)
-    out[k] = acc[k] / total;
-  return true;
+  return out;
 }
+
+// The walk as its definition reads, in double and from the cells: each level's mean is its cells'
+// means by their shares (weight times confidence); the samples a cell of that mean holds are the
+// cells' counts averaged harmonically by the shares squared; the level takes that count over
+// `confident` of what the finer levels left, and the answer is the takes' weighted mean. Returns
+// the share taken in all, and in `noise` the variance of the answer in units of one sample's
+// (every cell's mean carrying a sample's variance over its count), which the walk's rule bounds.
+f64 brute_walk(const LevelCells* levels, u32 count, u32 confident, f64& value,
+               f64* noise = nullptr) {
+  f64 left = 1.0;
+  f64 acc = 0.0;
+  f64 variance_sum = 0.0;
+  for (u32 l = 0; l < count; ++l) {
+    f64 mean_sum = 0.0;
+    f64 confidence = 0.0;
+    f64 square = 0.0;
+    f64 inverse = 0.0;
+    for (u32 i = 0; i < 8; ++i) {
+      const f64 n = static_cast<f64>(levels[l].samples[i]);
+      if (n == 0.0) continue;
+      const f64 c = levels[l].weight[i] * std::fmin(n / static_cast<f64>(confident), 1.0);
+      mean_sum += c * levels[l].mean[i];
+      confidence += c;
+      square += c * c;
+      inverse += c * c / n;
+    }
+    if (!(confidence > 1e-6)) continue;
+    const f64 a_cell = square / inverse;  // the harmonic mean of the counts
+    const f64 share = left * std::fmin(a_cell / static_cast<f64>(confident), 1.0) *
+                      std::fmin(static_cast<f64>(k_gi_read_cover) * confidence, 1.0);
+    acc += share * (mean_sum / confidence);
+    variance_sum += share * share * inverse / (confidence * confidence);
+    left -= share;
+    if (left <= static_cast<f64>(k_gi_read_stop)) break;
+  }
+  const f64 taken = 1.0 - left;
+  value = taken > 0.0 ? acc / taken : 0.0;
+  if (noise != nullptr) *noise = taken > 0.0 ? variance_sum / (taken * taken) : 0.0;
+  return taken;
+}
+
 u32 next(u32& state) {
   state = state * 1664525u + 1013904223u;
   return state >> 8;
 }
 
+// Eight trilinear weights from a point's three fractions.
+void trilinear(f64 fx, f64 fy, f64 fz, f64 out[8]) {
+  for (u32 i = 0; i < 8; ++i)
+    out[i] = ((i & 1u) ? fx : 1.0 - fx) * ((i & 2u) ? fy : 1.0 - fy) * ((i & 4u) ? fz : 1.0 - fz);
+}
+
+f32 walk(const LevelCells* levels, u32 count, u32 confident, f32& value) {
+  GiLevelRead reads[k_gi_ladder];
+  for (u32 l = 0; l < count; ++l)
+    reads[l] = level_read(levels[l], confident);
+  f32 out[3] = {0.0f, 0.0f, 0.0f};
+  const f32 taken = gi_blend_levels(reads, count, out, confident);
+  value = out[0];
+  return taken;
+}
+
 }  // namespace
 
-TEST_CASE("gi cache key: the young cell's read is the brute-force blend of its levels") {
+TEST_CASE("gi cache key: the walk up the ladder is the brute-force blend of its cells") {
   u32 state = 12345u;
   u32 compared = 0;
   for (u32 trial = 0; trial < 4000; ++trial) {
-    GiLevelRead levels[4];
-    const u32 count = 1 + next(state) % 4;
-    for (u32 i = 0; i < count; ++i) {
-      // A level is empty a quarter of the time, otherwise some of its eight corners had samples.
-      if (next(state) % 4 == 0) continue;
-      levels[i].weight = 0.05f + 0.95f * static_cast<f32>(next(state) % 1000) / 1000.0f;
-      for (u32 c = 0; c < 3; ++c)
-        levels[i].sum[c] = levels[i].weight * static_cast<f32>(next(state) % 4000) / 1000.0f;
-      levels[i].confidence =
-          levels[i].weight * static_cast<f32>(next(state) % 1500) / 1000.0f;  // past 1 too
+    LevelCells levels[k_gi_ladder];
+    const u32 count = 1 + next(state) % k_gi_ladder;
+    for (u32 l = 0; l < count; ++l) {
+      trilinear(static_cast<f64>(next(state) % 1000) / 1000.0,
+                static_cast<f64>(next(state) % 1000) / 1000.0,
+                static_cast<f64>(next(state) % 1000) / 1000.0, levels[l].weight);
+      // A level is empty a quarter of the time; otherwise each corner has no cell a third of the
+      // time and from one sample to past the history's length the rest.
+      const bool empty = next(state) % 4 == 0;
+      for (u32 i = 0; i < 8; ++i) {
+        levels[l].samples[i] = empty || next(state) % 3 == 0 ? 0u : 1u + next(state) % 300;
+        levels[l].mean[i] = static_cast<f64>(next(state) % 4000) / 1000.0;
+      }
     }
-    f32 got[3];
-    f64 want[3];
-    const bool has = gi_blend_levels(levels, count, got);
-    const bool brute = brute_blend(levels, count, 0, want);
-    REQUIRE(has == brute);
-    if (!has) continue;
+    f32 got = 0.0f;
+    f64 want = 0.0;
+    const f32 taken = walk(levels, count, k_gi_confident, got);
+    const f64 brute = brute_walk(levels, count, k_gi_confident, want);
+    CHECK(std::fabs(static_cast<f64>(taken) - brute) <= 1e-4);
+    if (!(brute > 1e-3)) continue;
     ++compared;
-    for (u32 c = 0; c < 3; ++c)
-      CHECK(std::fabs(static_cast<f64>(got[c]) - want[c]) <= 1e-4 * (1.0 + std::fabs(want[c])));
+    CHECK(std::fabs(static_cast<f64>(got) - want) <= 2e-4 * (1.0 + std::fabs(want)));
   }
   CHECK(compared > 2000);
-  // A confident level alone decides; a young one hands the rest to its parent.
-  GiLevelRead fine;
-  fine.weight = 1.0f;
-  fine.sum[0] = fine.sum[1] = fine.sum[2] = 0.2f;
-  fine.confidence = 1.0f;
-  GiLevelRead coarse;
-  coarse.weight = 1.0f;
-  coarse.sum[0] = coarse.sum[1] = coarse.sum[2] = 1.0f;
-  coarse.confidence = 1.0f;
-  GiLevelRead pair[2] = {fine, coarse};
-  f32 out[3];
-  REQUIRE(gi_blend_levels(pair, 2, out));
-  CHECK(out[0] == doctest::Approx(0.2f));
-  pair[0].confidence = 0.25f;  // eight samples of the thirty-two
-  REQUIRE(gi_blend_levels(pair, 2, out));
-  CHECK(out[0] == doctest::Approx(0.25f * 0.2f + 0.75f * 1.0f));
-  GiLevelRead none[2];
-  CHECK_FALSE(gi_blend_levels(none, 2, out));
 }
 
+TEST_CASE("gi cache key: a cell remembers 256 samples or sixteen frames of them") {
+  // An own cell at the trickle's eleven a frame: a plain mean to 256, then that history.
+  CHECK(gi_history(0, 11) == 11);
+  CHECK(gi_history(250, 11) == 256);
+  CHECK(gi_history(256, 11) == 256);
+  // A coarse cell at 711 a frame: sixteen frames of them, where 256 was under one frame's and the
+  // frame's mean replaced the cell's (a rate of 1).
+  CHECK(gi_history(0, 711) == 711);
+  CHECK(gi_history(711, 711) == 1422);
+  CHECK(gi_history(16 * 711, 711) == 16 * 711);
+  // The view moves on and the cell takes a few: back to the samples' history, never above it.
+  CHECK(gi_history(16 * 711, 5) == 256);
+  // The count is sixteen bits in the cell.
+  CHECK(gi_history(60000, 60000) == 0xffffu);
+}
+
+TEST_CASE("gi cache key: a converged level decides alone and a young one hands the rest up") {
+  // The point at a cell's centre of every level, so one corner carries all the weight.
+  LevelCells levels[2];
+  for (LevelCells& level : levels) {
+    trilinear(0.0, 0.0, 0.0, level.weight);
+    for (u32 i = 0; i < 8; ++i) {
+      level.samples[i] = 0;
+      level.mean[i] = 0.0;
+    }
+  }
+  levels[0].samples[0] = k_gi_max_samples;
+  levels[0].mean[0] = 0.2;
+  levels[1].samples[0] = k_gi_max_samples;
+  levels[1].mean[0] = 1.0;
+  f32 value = 0.0f;
+  CHECK(walk(levels, 2, k_gi_confident, value) == doctest::Approx(1.0f));
+  CHECK(value == doctest::Approx(0.2f));
+  // A quarter of the samples it is read whole at: a quarter of the read, the parent the rest.
+  levels[0].samples[0] = k_gi_confident / 4;
+  const f32 quarter = static_cast<f32>(k_gi_confident / 4) / static_cast<f32>(k_gi_confident);
+  CHECK(walk(levels, 2, k_gi_confident, value) == doctest::Approx(1.0f));
+  CHECK(value == doctest::Approx(quarter * 0.2f + (1.0f - quarter) * 1.0f));
+  // The noise that quarter adds: with m samples behind its mean a level takes m / confident, so
+  // it adds a sample's spread times sqrt(m) / confident — at most 1 / sqrt(confident), which is
+  // sqrt(511 / 255) = 1.42 times what an exponential average of 256 keeps. And a sample moves a
+  // filling cell's share by 1 / confident, a converged cell's mean by 1 / 256: the same.
+  CHECK(std::sqrt((2.0 * k_gi_max_samples - 1.0) / k_gi_confident) < 1.42);
+  CHECK(k_gi_confident + 1 == k_gi_max_samples);
+  // No cell at all: nothing taken, and the caller keeps its prior.
+  levels[0].samples[0] = 0;
+  levels[1].samples[0] = 0;
+  CHECK(walk(levels, 2, k_gi_confident, value) == 0.0f);
+  // One level, young, and nothing above it: its mean, at the confidence it has, so the caller
+  // leans on its prior below the floor and not at all from the floor up.
+  levels[0].samples[0] = 2;
+  const f32 taken = walk(levels, 1, k_gi_confident, value);
+  const f32 two = 2.0f / static_cast<f32>(k_gi_confident);
+  CHECK(taken == doctest::Approx(two * std::fmin(k_gi_read_cover * two, 1.0f)));
+  trilinear(0.5, 0.5, 0.5, levels[0].weight);
+  for (u32 i = 0; i < 8; ++i) {
+    levels[0].samples[i] = 2;
+    levels[0].mean[i] = 0.2;
+  }
+  // Eight young cells at their shared corner are taken as one of them is at its centre: a level
+  // sharpens at one rate wherever the point stands among its cells.
+  CHECK(walk(levels, 1, k_gi_confident, value) ==
+        doctest::Approx(two * std::fmin(k_gi_read_cover * two, 1.0f)));
+  trilinear(0.0, 0.0, 0.0, levels[0].weight);
+  for (u32 i = 1; i < 8; ++i)
+    levels[0].samples[i] = 0;
+  CHECK(value == doctest::Approx(0.2f));
+  CHECK(gi_confidence_weight(0.0f) == 0.0f);
+  CHECK(gi_confidence_weight(taken) == doctest::Approx(taken / k_gi_read_floor));
+  CHECK(gi_confidence_weight(k_gi_read_floor) == 1.0f);
+  CHECK(gi_confidence_weight(1.0f) == 1.0f);
+}
+
+// **What the eye must not see** (renderer.md, "Indirect light", "Stage 5"): a cell's first samples
+// arriving, or a level handing over. Whatever the neighbourhood, one more sample in one cell moves
+// the read by a bounded step: where a cell stands alone its share grows by 1 / k_gi_confident of
+// the read a sample; in the worst neighbourhood — the cell a point is in taking its first sample
+// beside a corner that held an eighth of the weight with just the samples to be read whole — the
+// level hands a fifth of its read up at once (the samples behind its mean fall by a fifth), so
+// the bound here is a quarter of the spread of the means. Stage 2's read moved by all of it: a
+// cell appearing beside none took the whole read.
+TEST_CASE("gi cache key: no cell's next sample steps the read") {
+  u32 state = 99u;
+  f64 worst = 0.0;
+  f64 worst_noise = 0.0;
+  for (u32 trial = 0; trial < 3000; ++trial) {
+    LevelCells levels[k_gi_ladder];
+    for (u32 l = 0; l < k_gi_ladder; ++l) {
+      trilinear(static_cast<f64>(next(state) % 1000) / 1000.0,
+                static_cast<f64>(next(state) % 1000) / 1000.0,
+                static_cast<f64>(next(state) % 1000) / 1000.0, levels[l].weight);
+      for (u32 i = 0; i < 8; ++i) {
+        // Young at the fine levels, filling towards the coarse, as a surface just seen is; and the
+        // coarsest level always holds a frame's samples, as the ladder gives it.
+        const u32 most = 1u << (2 * l + 2);
+        levels[l].samples[i] =
+            next(state) % 3 == 0 && l + 1 < k_gi_ladder ? 0u : next(state) % most;
+        if (l + 1 == k_gi_ladder) levels[l].samples[i] += 64;
+        levels[l].mean[i] = static_cast<f64>(next(state) % 1000) / 1000.0;  // a spread of 1
+      }
+    }
+    f64 before = 0.0;
+    f64 noise = 0.0;
+    const f64 taken = brute_walk(levels, k_gi_ladder, k_gi_confident, before, &noise);
+    REQUIRE(taken > static_cast<f64>(k_gi_read_floor));
+    // The read's variance, whatever its cells hold: where the walk took everything, no more than
+    // a mean of `k_gi_confident` samples' over the share taken — a level that takes a share t of
+    // what is left adds at most t over `k_gi_confident`, and the shares sum to what was taken.
+    if (taken >= 1.0 - static_cast<f64>(k_gi_read_stop)) {
+      worst_noise = std::fmax(worst_noise, noise * static_cast<f64>(k_gi_confident));
+    }
+    const u32 l = next(state) % k_gi_ladder;
+    const u32 i = next(state) % 8;
+    levels[l].samples[i] += 1;
+    f64 after = 0.0;
+    (void)brute_walk(levels, k_gi_ladder, k_gi_confident, after);
+    worst = std::fmax(worst, std::fabs(after - before));
+  }
+  MESSAGE("the largest step one sample made, of a spread of 1: "
+          << worst << "; the read's largest variance, in those of a mean of " << k_gi_confident
+          << " samples: " << worst_noise);
+  CHECK(worst_noise <= 1.1);
+  CHECK(worst <= 0.25);
+}
 TEST_CASE("gi cache key: the faces' blend and the fallback's openness are smooth and bounded") {
   CHECK(gi_face_blend(1.0f, 0.0f) == 0.0f);
   CHECK(gi_face_blend(1.0f, k_gi_face_blend) == 0.0f);

@@ -297,6 +297,14 @@ struct ShadowMapParams {
 
 struct ResolvePush {
   uint64_t params;
+#ifdef RESOLVE_GI_STEP
+  // gi_update.slang's two passes alone (gfx::GiStepPush; R69 stage 5): which of the frame's steps
+  // this dispatch is — a frame after a load or a cut records several sample and fold pairs, the
+  // pre-roll — added to `ResolveParams::gi_frame`, and the step's flags (`k_gi_step_*`). Every
+  // other module's block is the eight bytes it was.
+  uint gi_step;
+  uint gi_step_flags;
+#endif
 };
 
 [[vk::push_constant]] ConstantBuffer<ResolvePush> g_push;

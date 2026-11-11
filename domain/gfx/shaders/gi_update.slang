@@ -17,7 +17,7 @@
 //     to the luminance of the harmonics at the pixel's normal, in fixed point, to both cells' sums
 //     for this frame.
 //   - `gi_fold_main`, a thread per cell: the frame's sum into the running mean, and an old cell
-//     freed (`k_gi_reset` clears them all, the cache's first frame).
+//     freed (`k_gi_step_reset` clears them all, the cache's first step).
 //
 // **Why one pass touches and traces.** A separate trace pass over a list of the frame's touched
 // cells would trace from one representative pixel per cell, and which pixel wins a cell's slot in
@@ -27,11 +27,23 @@
 #define RESOLVE_RAY_SHADOWS 1
 // The resolve's two entry points are left out, as for the half pass (resolve_half_sun.slang).
 #define RESOLVE_HALF_PASS 1
+// The frame's steps (stage 5): this module's push block carries which one a dispatch is.
+#define RESOLVE_GI_STEP 1
 #include "visibility_resolve.slang"
 #include "sampling.slang"
 // Stage 4's samples round the eye find their surface with the reflection's traversal
 // (`trace_scene_hit`, R129's file: called, never edited here).
 #include "hit_shade.slang"
+
+// **The frame's steps** (gfx::GiStepPush; renderer.md, "Indirect light", "Stage 5"). A frame
+// records one sample pass and one fold, or — its first frame, and a frame whose eye jumped —
+// several pairs against the same visibility buffer and structures before the resolve reads: the
+// pre-roll, so the first picture after a load or a cut is lit by a cache that has already had its
+// samples. Each step is a frame of the cache's own clock: `gi_now` is the count its pixel offsets,
+// its directions, its seeds and its stamps turn with.
+static const uint k_gi_step_reset = 1u;  // the fold clears every cell and the header
+static const uint k_gi_step_count = 2u;  // the fold counts what it keeps (the frame's last step)
+uint gi_now(ResolveParams* params) { return params->gi_frame + g_push.gi_step; }
 
 // The environment along `dir`: what an escaped ray carries.
 float3 gi_environment(ResolveParams* params, float3 dir) {
@@ -127,11 +139,33 @@ float3 gi_bounce(ResolveParams* params, float3 origin, float3 dir) {
   const Surface hit =
       surface_at(geo, instance, tri, float3(1.0 - bary.x - bary.y, bary.x, bary.y), origin);
   const ResolveMaterial material = material_of(geo, instance, entry.y);
-  const float2 surface_uv =
-      hit.uv + terrain_uv_offset(instance, params->terrain_uv_x0_mm, params->terrain_uv_z0_mm,
-                                 params->terrain_uv_per_mm);
-  const MaterialSample sampled =
-      sample_material(material, material_uv(material, surface_uv * material.uv_scale));
+  MaterialSample sampled;
+  bool ground = false;
+#ifdef MATERIAL_TERRAIN
+  // **A hit on the ground takes the ground's own material** (stage 5; R129's
+  // `terrain_hit_material`, terrain_material.slang: the masks' weights at the hit blending the
+  // layers' mean colours and roughness, the root under a thin cover, the snow's and the beach's
+  // responses and the porous ground's wetness). Until then a bounce off a terrain tile read the
+  // root material's base colour, which is the record's first layer: the forest's tan banks and its
+  // bare paths bounced their meadow's green. The footprint is a twentieth of the ray's length — a
+  // cosine ray stands for a wide patch of what it met — and never under the hit's own cell, so
+  // the masks are read at a coarse mip and the bounce's colour is the patch's, not a texel's.
+  // Only the terrain module (gi_update_terrain.slang) has the branch; the plain one is the bytes
+  // it was.
+  if ((material.flags & k_material_terrain_layers) != 0) {
+    const float cell =
+        k_gi_cell_min_m *
+        float(1u << gi_level(length(hit.position - params->camera.xyz), params->gi_cell_scale));
+    ground = terrain_hit_material(geo, material, hit.position,
+                                  max(cell, 0.05 * query.CommittedRayT()), sampled);
+  }
+#endif
+  if (!ground) {
+    const float2 surface_uv =
+        hit.uv + terrain_uv_offset(instance, params->terrain_uv_x0_mm, params->terrain_uv_z0_mm,
+                                   params->terrain_uv_per_mm);
+    sampled = sample_material(material, material_uv(material, surface_uv * material.uv_scale));
+  }
   float3 n = hit.normal;
   if (dot(n, hit.geometric) < 0.0) n = -n;
   BrdfSurface surface;
@@ -162,21 +196,25 @@ float3 gi_bounce(ResolveParams* params, float3 origin, float3 dir) {
   // past the second off surfaces nobody sees.
   //
   // **Stage 2: the coarser levels, then a bounded fallback.** The hit reads its own level and up
-  // to three coarser (`k_gi_hit_levels`; the sample pass adds every sample to three), so a wall
+  // to three coarser (`k_gi_ladder`; the sample pass adds every sample to the same four), so a wall
   // behind the eye takes the light of a coarse cell some pixel in view reached; where none has
   // samples it takes the harmonics times the ray's openness (`gi_openness`: nothing for a hit
   // within a metre, which is enclosed, all of it past ten, which is open), never the raw harmonics,
   // which lit the inside of the box as open sky.
+  //
+  // **Stage 5: the hit walks the ladder too**, and leans on that fallback in proportion where the
+  // levels together hold a handful of samples (`gi_confidence_weight`), so a hit's light does not
+  // step when its first cell appears — which is what the cells the hit feeds would then average.
   float3 ratio;
   const float3 harmonics = gi_harmonics(params, n);
-  float3 ambient = float3(0.0);
   const bool fallback = (params->gi_flags & k_gi_hit_fallback) != 0u;
-  if (gi_read(params->gi_cells, params->gi_count, params->gi_flags, params->eye, hit.position,
+  float3 ambient = fallback ? harmonics * gi_openness(query.CommittedRayT()) : float3(0.0);
+  const float taken =
+      gi_read(params->gi_cells, params->gi_count, params->gi_flags, params->eye, hit.position,
               gi_level(length(hit.position - params->camera.xyz), params->gi_cell_scale),
-              fallback ? k_gi_hit_levels : 2u, hit.normal, ratio)) {
-    ambient = ratio * gi_luminance(harmonics);
-  } else if (fallback) {
-    ambient = harmonics * gi_openness(query.CommittedRayT());
+              fallback ? k_gi_ladder : 2u, hit.normal, ratio);
+  if (taken > 0.0) {
+    ambient = lerp(ambient, ratio * gi_luminance(harmonics), gi_confidence_weight(taken));
   }
   return light + ambient * sampled.albedo * (1.0 - sampled.metallic);
 }
@@ -184,7 +222,7 @@ float3 gi_bounce(ResolveParams* params, float3 origin, float3 dir) {
 void gi_add(ResolveParams* params, uint slot, uint3 fixed) {
   Atomic<uint>* words =
       (Atomic<uint>*)gi_cell_words(params->gi_cells, params->gi_count) + slot * k_gi_cell_words;
-  words[1].store(params->gi_frame);
+  words[1].store(gi_now(params));
   words[2].add(1u);
   words[3].add(fixed.x);
   words[4].add(fixed.y);
@@ -232,15 +270,18 @@ uint64_t gi_cell_hash(ResolveParams* params, Surface s, uint l) {
   return gi_hash(c, l, gi_face(s.normal));
 }
 
-// One ray from a pixel's surface, its ratio added to the cells of `k_gi_sample_levels` levels
-// from the pixel's own. Returns the samples the pixel's own cell averaged before this frame
-// (the young test's count): 0 where the bucket was full, 0xffffffff where the sky gives no scale.
-uint gi_trace_and_add(ResolveParams* params, uint2 p, Surface s, InstanceDesc instance) {
+// One ray from a pixel's surface, its ratio added to the cells of the ladder (`k_gi_ladder`
+// levels from the pixel's own; from `first` levels above it for a sample round the eye, whose own
+// level takes too few to be worth its cells). Returns the samples the pixel's own cell averaged
+// before this frame (the young test's count): 0 where the bucket was full or `first` skipped it,
+// 0xffffffff where the sky gives no scale.
+uint gi_trace_and_add(ResolveParams* params, uint2 p, Surface s, InstanceDesc instance,
+                      uint first) {
   const float base = gi_luminance(gi_harmonics(params, s.normal));
   if (!(base > 0.0)) return 0xffffffffu;
   // One cosine-weighted direction about the interpolated normal; one that the triangle's own plane
   // hides is mirrored through that plane, so the ray never starts into its own surface.
-  uint rng = rng_seed(p, params->gi_frame, 0x9e3779b9u);
+  uint rng = rng_seed(p, gi_now(params), 0x9e3779b9u);
   float3 tangent;
   float3 bitangent;
   onb_from_normal(s.normal, tangent, bitangent);
@@ -259,14 +300,14 @@ uint gi_trace_and_add(ResolveParams* params, uint2 p, Surface s, InstanceDesc in
   }
   const float3 ratio = min(radiance / base, float3(k_gi_ratio_max));
   const uint3 fixed = uint3(ratio * k_gi_fixed + 0.5);
-  // The pixel's level and the coarser ones: the next, so a pixel whose level just changed as the
-  // eye moved reads a warm cell one level up, and a young cell has a parent to read (stage 2); the
-  // one past it, so a bounce's hit out of every view finds a coarse cell some pixel reached.
+  // The ladder (stage 5): the pixel's level and the three coarser, consecutive, so a surface
+  // whose level just changed as the eye came nearer reads the cells that were its own and its
+  // parents' a frame ago, and the coarsest of them takes enough samples in one frame to be read
+  // on it.
   const uint level = gi_level(length(s.position - params->camera.xyz), params->gi_cell_scale);
   uint own = 0u;
-  const uint levels = (params->gi_flags & k_gi_hit_fallback) != 0u ? k_gi_sample_levels : 2u;
-  for (uint l = level; l < min(level + levels, k_gi_levels); ++l) {
-    const uint slot = gi_insert(params->gi_cells, params->gi_count, params->gi_frame,
+  for (uint l = level + first; l < min(level + k_gi_ladder, k_gi_levels); ++l) {
+    const uint slot = gi_insert(params->gi_cells, params->gi_count, gi_now(params),
                                 gi_cell_hash(params, s, l));
     if (l == level && slot != k_gi_no_slot) own = gi_samples(params->gi_cells, params->gi_count, slot);
     if (slot != k_gi_no_slot) gi_add(params, slot, fixed);
@@ -286,7 +327,7 @@ uint gi_trace_and_add(ResolveParams* params, uint2 p, Surface s, InstanceDesc in
 void gi_sample_pixel(ResolveParams* params, uint t) {
   const uint pixels = params->width * params->height;
   const uint stride = params->gi_stride;
-  const uint offset = (params->gi_frame + pcg_hash(t)) % stride;
+  const uint offset = (gi_now(params) + pcg_hash(t)) % stride;
   const uint index = t * stride + offset;
   Atomic<uint>* header = (Atomic<uint>*)params->gi_cells;
   // Every lane reaches every wave operation below: the counts are one atomic a wave, not one a
@@ -299,7 +340,10 @@ void gi_sample_pixel(ResolveParams* params, uint t) {
                                instance);
   }
   uint own = 0xffffffffu;
-  if (trickle) own = gi_trace_and_add(params, uint2(index % params->width, index / params->width), s, instance);
+  if (trickle) {
+    own = gi_trace_and_add(params, uint2(index % params->width, index / params->width), s, instance,
+                           0u);
+  }
   const bool young_own = trickle && own < k_gi_young;
   // The second candidate: half a window on, a ray only where its own cell is young, and only for
   // the half of the budget the trickle does not take (its stride is half the budget's, so the
@@ -330,7 +374,7 @@ void gi_sample_pixel(ResolveParams* params, uint t) {
   const uint young_budget =
       half_left > params->gi_shell_cost ? half_left - params->gi_shell_cost : 0u;
   const bool traced = want && first + WavePrefixCountBits(want) < young_budget;
-  if (traced) gi_trace_and_add(params, q, sq, iq);
+  if (traced) gi_trace_and_add(params, q, sq, iq, 0u);
   const uint rays = WaveActiveCountBits(trickle) + WaveActiveCountBits(traced);
   const uint samples = WaveActiveCountBits(trickle);
   const uint young = WaveActiveCountBits(young_own);
@@ -356,7 +400,7 @@ uint gi_shell_sample(ResolveParams* params, uint i, out bool hit, out bool near)
   hit = false;
   near = false;
   const float3 dir = gi_shell_direction(i, params->gi_shell_rays, params->gi_shell_columns,
-                                        params->gi_frame);
+                                        gi_now(params));
   const float3 eye = params->camera.xyz;
   const float4 clip = mul(params->view_proj, float4(eye + dir, 1.0));
   if (clip.w > 0.0 && abs(clip.x) <= clip.w && abs(clip.y) <= clip.w) return 0u;
@@ -383,7 +427,7 @@ uint gi_shell_sample(ResolveParams* params, uint i, out bool hit, out bool near)
   const TriangleFetch tri = fetch_triangle(geo, instance, visible_index, entry.y, h.primitive & 0xff);
   const Surface s =
       surface_at(geo, instance, tri, float3(1.0 - h.bary.x - h.bary.y, h.bary.x, h.bary.y), eye);
-  gi_trace_and_add(params, p, s, instance);
+  gi_trace_and_add(params, p, s, instance, 1u);
   return 2u;
 }
 
@@ -394,9 +438,7 @@ uint gi_shell_sample(ResolveParams* params, uint i, out bool hit, out bool near)
 void gi_sample_main(uint3 id : SV_DispatchThreadID) {
   ResolveParams* params = (ResolveParams*)g_push.params;
   // The cache's first frame: the fold clears what the buffer held, so nothing is added before it.
-  if (params->gi_cells == 0 || params->gi_stride == 0 || (params->gi_flags & k_gi_reset) != 0u) {
-    return;
-  }
+  if (params->gi_cells == 0 || params->gi_stride == 0) return;
   if ((params->shadow_flags & k_shadow_sun) == 0 || params->scene == k_no_scene) return;
   const uint t = id.y * k_gi_dispatch_pitch * 64u + id.x;
   if (params->gi_shell_rays != 0u) {
@@ -430,7 +472,7 @@ void gi_sample_main(uint3 id : SV_DispatchThreadID) {
 // `k_gi_max_age` frames freed, and one nothing reached for `k_gi_evict_age` freed where its bucket
 // turned an insert away this frame (stage 2: a walk fills the cache with what it passed, and a
 // full bucket otherwise holds its stale cells for the whole age while the cells in view cannot
-// get in); with `k_gi_reset` every cell and the header cleared. It counts what it keeps, wave by
+// get in); with `k_gi_step_reset` every cell and the header cleared. It counts what it keeps, wave by
 // wave, into the header.
 [shader("compute")]
 [numthreads(64, 1, 1)]
@@ -440,7 +482,7 @@ void gi_fold_main(uint3 id : SV_DispatchThreadID) {
   if (params->gi_cells == 0 || cell >= params->gi_count) return;
   uint* keys = (uint*)gi_keys(params->gi_cells);
   uint* words = (uint*)gi_cell_words(params->gi_cells, params->gi_count) + cell * k_gi_cell_words;
-  if ((params->gi_flags & k_gi_reset) != 0u) {
+  if ((g_push.gi_step_flags & k_gi_step_reset) != 0u) {
     keys[cell] = 0u;
     for (uint i = 0u; i < k_gi_cell_words; ++i) words[i] = 0u;
     if (cell < 16u) ((uint*)params->gi_cells)[cell] = 0u;
@@ -453,13 +495,13 @@ void gi_fold_main(uint3 id : SV_DispatchThreadID) {
   if (keys[cell] != 0u) {
     const uint n = words[2];
     if (n == 0u) {
-      const uint age = params->gi_frame - words[1];
+      const uint age = gi_now(params) - words[1];
       uint* bucket = (uint*)gi_cell_words(params->gi_cells, params->gi_count) +
                            (cell & ~(k_gi_bucket - 1u)) * k_gi_cell_words;
       if (age > k_gi_max_age) {
         expired = true;
       } else if (gi_evict_age(params->gi_flags) != 0u && age > gi_evict_age(params->gi_flags) &&
-                 bucket[0] == params->gi_frame) {
+                 bucket[0] == gi_now(params)) {
         evicted = true;
       }
       if (expired || evicted) {
@@ -472,7 +514,13 @@ void gi_fold_main(uint3 id : SV_DispatchThreadID) {
     } else {
       const float3 frame_mean = float3(words[3], words[4], words[5]) / (k_gi_fixed * float(n));
       const uint previous = words[7] >> 16;
-      const uint total = min(previous + n, max(k_gi_max_samples, n));
+      // The history: 256 samples, or — for a cell that takes more than sixteen a frame, as every
+      // coarse level of the ladder does — `k_gi_history_frames` frames of them. Until stage 5 a
+      // cell that took over 256 samples in a frame kept none of its past (the rate below was 1),
+      // so the coarse levels, which are what a filling surface, a crown's leaf-sized cells and a
+      // bounce's hit read, were a fresh estimate every frame: quiet each, and flickering.
+      const uint total =
+          min(previous + n, max(k_gi_max_samples, min(n * k_gi_history_frames, 0xffffu)));
       const float rate = float(n) / float(total);
       const float3 old_mean = float3(f16tof32(words[6] & 0xffffu), f16tof32(words[6] >> 16),
                                      f16tof32(words[7] & 0xffffu));
@@ -487,6 +535,10 @@ void gi_fold_main(uint3 id : SV_DispatchThreadID) {
       young = total < k_gi_young;
     }
   }
+  // The young claims are a step's: cleared here for the next one of the frame (the header's
+  // counts are cleared behind the frame's last fold, by the renderer).
+  if (cell == 0u) ((uint*)params->gi_cells)[k_gi_ray_count] = 0u;
+  if ((g_push.gi_step_flags & k_gi_step_count) == 0u) return;
   Atomic<uint>* header = (Atomic<uint>*)params->gi_cells;
   const uint kept_count = WaveActiveCountBits(kept);
   const uint young_count = WaveActiveCountBits(young);

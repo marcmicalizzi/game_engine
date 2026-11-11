@@ -26,7 +26,7 @@ engine_shaders(NAME gfx SOURCES shaders/cluster_mesh.slang shaders/cluster_cull.
                              shaders/visibility_resolve_rt_water_terrain_stochastic.slang
                              shaders/resolve_half_sun.slang
                              # R69: the world-space radiance cache's sample and fold passes.
-                             shaders/gi_update.slang
+                             shaders/gi_update.slang shaders/gi_update_terrain.slang
                              shaders/path_trace_terrain.slang
                              shaders/hiz_build.slang shaders/cluster_vertex.slang
                              shaders/cluster_vertex_indexed.slang shaders/vertex_expand.slang

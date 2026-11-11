@@ -459,6 +459,10 @@ struct Stats {
   // are counted in `shadow_casters` with the rest; a frame measures them as the difference with
   // `renderer.gi.shell_m=0`.
   u32 gi_shell_views = 0;
+  // **The cache's pre-roll** (R69 stage 5; gi_preroll.h), the frame last recorded: the sample and
+  // fold pairs it recorded before its own because it started cold — the cache's first frame, or
+  // one whose eye jumped. 0 on every other frame.
+  u32 gi_preroll_steps = 0;
   // The vertex path's indexed draw, last frame, both hardware passes and every view: the triangles
   // the cut's clusters hold, which is what it draws (three indices each), and how many of those
   // clusters the index budget had no room for, which the fallback drew instead at one vertex
@@ -1029,6 +1033,9 @@ class SceneRenderer {
   // that captures one pose again and again leaves at zero.
   u32 gi_frame_ = 0;
   bool gi_reset_ = true;
+  // Where the frame before had its eye, for the pre-roll's cut test (gi_preroll.h).
+  WorldPos gi_last_eye_{};
+  bool gi_eye_known_ = false;
   gfx::FrameContext frames_;
   gfx::GpuTimer timer_;
   GeometryStreamer streamer_;
