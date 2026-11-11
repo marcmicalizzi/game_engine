@@ -13,9 +13,11 @@
 #include <test_temp_dir.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstring>
 #include <limits>
+#include <tuple>
 #include <vector>
 
 using namespace engine;
@@ -68,70 +70,36 @@ bool same_network(const ChannelNetwork& a, const ChannelNetwork& b) {
   return true;
 }
 
-// Welded by exact position, closed, two-manifold, outward and `parts` components: rocks'
-// check (domain/rocks/tests/rock_checks.h), which a capability's test may not include.
-void check_closed(const assets::MeshData& mesh, u32 parts) {
+// W97: one clast's mesh is one welded surface, outward, with no degenerate triangle, whose open
+// edges (where its buried triangles were left out) lie wholly under `under`.
+void check_buried_open(const assets::MeshData& mesh, f64 under) {
   REQUIRE(!mesh.positions.empty());
   REQUIRE(mesh.normals.size() == mesh.positions.size());
-  REQUIRE(mesh.indices.size() % 3 == 0);
-  const u32 n = mesh.positions.size();
-  std::vector<u32> order(n), weld(n);
-  for (u32 i = 0; i < n; ++i)
-    order[i] = i;
-  auto less = [&](u32 a, u32 b) {
-    const Vec3 pa = mesh.positions[a], pb = mesh.positions[b];
-    if (pa.x != pb.x) return pa.x < pb.x;
-    if (pa.y != pb.y) return pa.y < pb.y;
-    return pa.z < pb.z;
-  };
-  std::sort(order.begin(), order.end(), less);
-  u32 unique = 0;
-  for (u32 i = 0; i < n; ++i)
-    weld[order[i]] = (i > 0 && !less(order[i - 1], order[i])) ? weld[order[i - 1]] : unique++;
   std::vector<u64> directed;
-  u32 degenerate = 0;
+  u32 degenerate = 0, against = 0;
   for (u32 i = 0; i < mesh.indices.size(); i += 3) {
-    const u32 w[3] = {weld[mesh.indices[i]], weld[mesh.indices[i + 1]], weld[mesh.indices[i + 2]]};
-    if (w[0] == w[1] || w[1] == w[2] || w[0] == w[2]) ++degenerate;
+    const u32 w[3] = {mesh.indices[i], mesh.indices[i + 1], mesh.indices[i + 2]};
+    const Vec3 a = mesh.positions[w[0]], b = mesh.positions[w[1]], c = mesh.positions[w[2]];
+    if (!(length(cross(b - a, c - a)) > 0.0f)) ++degenerate;
+    const Vec3 vn = mesh.normals[w[0]] + mesh.normals[w[1]] + mesh.normals[w[2]];
+    if (dot(cross(b - a, c - a), vn) <= 0.0f) ++against;
     for (u32 e = 0; e < 3; ++e)
       directed.push_back(static_cast<u64>(w[e]) << 32 | w[(e + 1) % 3]);
   }
   CHECK(degenerate == 0);
+  CHECK_MESSAGE(against == 0, against << " faces wound against their normals");
   std::sort(directed.begin(), directed.end());
-  u32 repeated = 0, unmatched = 0;
+  u32 repeated = 0, open_above = 0;
   for (u32 i = 0; i < directed.size(); ++i) {
     if (i > 0 && directed[i] == directed[i - 1]) ++repeated;
     const u64 reverse = (directed[i] & 0xffffffffull) << 32 | directed[i] >> 32;
-    if (!std::binary_search(directed.begin(), directed.end(), reverse)) ++unmatched;
+    if (std::binary_search(directed.begin(), directed.end(), reverse)) continue;
+    const f64 ya = static_cast<f64>(mesh.positions[directed[i] >> 32].y);
+    const f64 yb = static_cast<f64>(mesh.positions[directed[i] & 0xffffffffull].y);
+    if (ya > under + 1e-4 || yb > under + 1e-4) ++open_above;
   }
   CHECK_MESSAGE(repeated == 0, repeated << " edges used twice in one direction");
-  CHECK_MESSAGE(unmatched == 0, unmatched << " edges with no opposite: a hole");
-  std::vector<u32> parent(unique);
-  for (u32 i = 0; i < unique; ++i)
-    parent[i] = i;
-  auto find = [&](u32 x) {
-    while (parent[x] != x)
-      x = parent[x] = parent[parent[x]];
-    return x;
-  };
-  for (const u64 e : directed)
-    parent[find(static_cast<u32>(e >> 32))] = find(static_cast<u32>(e & 0xffffffffull));
-  u32 components = 0;
-  for (u32 i = 0; i < unique; ++i)
-    components += find(i) == i ? 1u : 0u;
-  CHECK(components == parts);
-  f64 volume = 0;
-  u32 against = 0;
-  for (u32 i = 0; i < mesh.indices.size(); i += 3) {
-    const Vec3 a = mesh.positions[mesh.indices[i]], b = mesh.positions[mesh.indices[i + 1]],
-               c = mesh.positions[mesh.indices[i + 2]];
-    volume += static_cast<f64>(dot(a, cross(b, c))) / 6.0;
-    const Vec3 vn = mesh.normals[mesh.indices[i]] + mesh.normals[mesh.indices[i + 1]] +
-                    mesh.normals[mesh.indices[i + 2]];
-    if (dot(cross(b - a, c - a), vn) <= 0.0f) ++against;
-  }
-  CHECK(volume > 0.0);
-  CHECK_MESSAGE(against == 0, against << " faces wound against their normals");
+  CHECK_MESSAGE(open_above == 0, open_above << " open edges above the ground: a visible hole");
 }
 
 struct Opened {
@@ -258,9 +226,18 @@ TEST_CASE(
     for (const PlacedPiece& piece : laid) {
       assets::MeshData mesh;
       REQUIRE_MESSAGE(solve_piece(piece.recipe, mesh, error), error);
-      check_closed(mesh, piece.recipe.slabs.size());
-      CHECK(piece.recipe.part == ChannelPart::Boulder);
+      CHECK(piece.recipe.part == ChannelPart::Clasts);
       pieces.push_back(piece);
+      // W97: each clast alone (the first 40 of a piece) is one welded, outward surface whose only
+      // open edges lie under the ground beneath it, where its buried triangles were left out.
+      for (u32 k = 0; k < std::min<u32>(40, clast_count(piece.recipe)); ++k) {
+        ChannelPiece one = piece.recipe;
+        one.clasts.assign(piece.recipe.clasts.begin() + k * k_clast_ints,
+                          piece.recipe.clasts.begin() + (k + 1) * k_clast_ints);
+        assets::MeshData alone;
+        REQUIRE_MESSAGE(solve_piece(one, alone, error), error);
+        check_buried_open(alone, static_cast<f64>(clast_of(one, 0).ground_mm) / 1000.0 - .02);
+      }
     }
   }
   // The mesh generator "channel" reads the recipe's own JSON and builds the same container.
@@ -295,17 +272,17 @@ TEST_CASE("channels: whole expansion equals any tile order, with stable ids") {
   Opened opened;
   REQUIRE(opened.desc != nullptr);
   ChannelLayer p = layer();
-  p.piece_m = 16;
   std::string error;
   REQUIRE_MESSAGE(opened.desc->open(schema::to_json(p), c, &opened.state, &error), error);
   scene_gen::Placements whole, forward, backward;
   REQUIRE(opened.desc->expand(opened.state, c, whole, &error));
   REQUIRE_FALSE(whole.instances.empty());
-  for (i32 z = 0; z < 8; ++z)
-    for (i32 x = 0; x < 4; ++x)
+  // W97: a clast near the region's edge may stand a little past it, in the tile beyond.
+  for (i32 z = -1; z < 9; ++z)
+    for (i32 x = -1; x < 5; ++x)
       REQUIRE(opened.desc->tile(opened.state, {x, z}, c, forward, &error));
-  for (i32 z = 7; z >= 0; --z)
-    for (i32 x = 3; x >= 0; --x) {
+  for (i32 z = 8; z >= -1; --z)
+    for (i32 x = 4; x >= -1; --x) {
       if (opened.desc->occupies(opened.state, {x, z})) {
         const u32 before = backward.instances.size();
         REQUIRE(opened.desc->tile(opened.state, {x, z}, c, backward, &error));
@@ -353,20 +330,21 @@ TEST_CASE("channels: the refusals") {
   p = layer();
   p.head_threshold_m2 = std::numeric_limits<f32>::quiet_NaN();
   CHECK_FALSE(layer_in_range(p, error));
-  // A recipe with a top below its bottom, or a short array.
+  p = layer();
+  p.clast_min_mm = 8;
+  CHECK_FALSE(layer_in_range(p, error));
+  // W97: a clast whose axes are out of order, whose direction is no unit vector, or a short array.
   ChannelPiece piece;
   piece.surface.color = std::array<f32, 3>{.5f, .5f, .5f};
-  ChannelSlab slab;
-  slab.x = {0, 1, 0, 1};
-  slab.z = {0, 0, 1, 1};
-  slab.top = {1, 1, 1, 1};
-  slab.bottom = {0, 0, 0, 0};
-  piece.slabs.push_back(slab);
+  piece.clasts = {0, 0, 0, -50, 100, 70, 40, 10000, 0, 3000, 500, 7};
   CHECK(piece_in_range(piece, error));
-  piece.slabs[0].bottom[2] = 2;
+  piece.clasts[5] = 120;
   CHECK_FALSE(piece_in_range(piece, error));
-  piece.slabs[0].bottom[2] = 0;
-  piece.slabs[0].top.pop_back();
+  piece.clasts[5] = 70;
+  piece.clasts[8] = 5000;
+  CHECK_FALSE(piece_in_range(piece, error));
+  piece.clasts[8] = 0;
+  piece.clasts.pop_back();
   CHECK_FALSE(piece_in_range(piece, error));
   // A moving ground, and a layer the schema refuses.
   scene_gen::Context c;
@@ -600,7 +578,10 @@ f64 plane_bed(const void*, i64 x, i64 z) noexcept {
   return .022 * zz + .2 * std::abs(xx - 128);
 }
 }  // namespace
-TEST_CASE("channels: nothing is laid on the bed: no slab or skin on any reach") {
+TEST_CASE("channels: nothing is laid on the bed but clasts: no slab or skin on any reach") {
+  // W97: the bed carries its sediment's clasts now, on every reach whose sediment reaches the drawn
+  // size, but still nothing that is a slab: every piece is clasts, none wider than a boulder, and
+  // the steps' and clusters' boulders only where there are steps and clusters.
   const ChannelLayer p = layer();
   std::string error;
   struct Valley {
@@ -615,19 +596,16 @@ TEST_CASE("channels: nothing is laid on the bed: no slab or skin on any reach") 
     REQUIRE(plan_channels(q, ground(v.fn), 3, nullptr, n, error));
     REQUIRE_FALSE(n.links.empty());
     Vector<PlacedPiece> pieces;
-    REQUIRE(place_pieces(q, n, ground(v.fn), 32, pieces, error));
-    CHECK(pieces.empty() != v.boulders);
+    ClastLog log;
+    REQUIRE(place_pieces(q, n, ground(v.fn), 32, pieces, error, &log));
+    u64 boulders = 0;
+    for (const Clast& c : log.clasts)
+      boulders += c.zone >= 4 ? 1u : 0u;
+    CHECK((boulders > 0) == v.boulders);
     for (const PlacedPiece& piece : pieces) {
-      CHECK(piece.recipe.part == ChannelPart::Boulder);
-      for (const ChannelSlab& slab : piece.recipe.slabs) {
-        CHECK(slab.rows == 7);
-        CHECK(slab.columns == 7);
-        const u32 last = slab.rows * slab.columns - 1;
-        const f64 dx = static_cast<f64>(slab.x[last]) - static_cast<f64>(slab.x[0]);
-        const f64 dz = static_cast<f64>(slab.z[last]) - static_cast<f64>(slab.z[0]);
-        // The largest clast: a step's end, 1.5 of a 1.5 m step's, corner to corner.
-        CHECK(std::sqrt(dx * dx + dz * dz) <= 1.5 * 1.5 * 1.4143 + 1e-3);
-      }
+      CHECK(piece.recipe.part == ChannelPart::Clasts);
+      for (u32 k = 0; k < clast_count(piece.recipe); ++k)
+        CHECK(clast_of(piece.recipe, k).b_mm <= 1000);  // a 2 m b axis at the most
     }
   }
 }
@@ -752,18 +730,17 @@ TEST_CASE("channels: a step-pool's steps by their spacing and height, boulders o
     if (i + 1 < link.line.size()) falls += link.bed[i] - link.bed[i + 1] >= s[i + 1] - s[i];
   }
   CHECK(falls == 0);
-  // Pieces: the bed and the steps' boulders.
+  // The steps' boulders (W97: clasts of the reach's D84 to D97.7, in its tiles' pieces).
   Vector<PlacedPiece> pieces;
-  REQUIRE(place_pieces(p, n, ground(step_pool), 32, pieces, error));
+  ClastLog log;
+  REQUIRE(place_pieces(p, n, ground(step_pool), 32, pieces, error, &log));
   u32 boulders = 0;
-  for (const PlacedPiece& piece : pieces) {
-    if (piece.recipe.part == ChannelPart::Boulder) {
-      boulders += piece.recipe.slabs.size();
-      assets::MeshData mesh;
-      REQUIRE_MESSAGE(solve_piece(piece.recipe, mesh, error), error);
-      check_closed(mesh, piece.recipe.slabs.size());
+  for (const Clast& c : log.clasts)
+    if (c.zone == 4) {
+      ++boulders;
+      CHECK(static_cast<f64>(2 * c.b_mm) >=
+            .99e3 * std::min(2.0, static_cast<f64>(link.sediment[c.point].d84_m)));
     }
-  }
   CHECK(boulders >= link.step_at.size());
 }
 
@@ -800,16 +777,14 @@ TEST_CASE("channels: a cascade gets boulder clusters and no regular steps") {
   const f64 mean = sum / k, spread = std::sqrt(std::max(0.0, sum2 / k - mean * mean));
   CHECK(spread / mean > .3);
   Vector<PlacedPiece> pieces;
-  REQUIRE(place_pieces(p, n, ground(steep), 32, pieces, error));
+  ClastLog log;
+  REQUIRE(place_pieces(p, n, ground(steep), 32, pieces, error, &log));
   u32 others = 0, boulders = 0;
-  for (const PlacedPiece& piece : pieces) {
-    others += piece.recipe.part != ChannelPart::Boulder;
-    if (piece.recipe.part == ChannelPart::Boulder) {
-      boulders += piece.recipe.slabs.size();
-      assets::MeshData mesh;
-      REQUIRE_MESSAGE(solve_piece(piece.recipe, mesh, error), error);
-      check_closed(mesh, piece.recipe.slabs.size());
-    }
+  for (const PlacedPiece& piece : pieces)
+    others += piece.recipe.part != ChannelPart::Clasts;
+  for (const Clast& c : log.clasts) {
+    boulders += c.zone == 5 ? 1u : 0u;
+    CHECK(c.zone != 4);  // no step's keystone on a cascade
   }
   CHECK(others == 0);
   CHECK(boulders >= link.cluster_at.size());
@@ -828,9 +803,16 @@ TEST_CASE("channels: a 35-degree face is colluvial, cut and nothing laid") {
       colluvial += link.reach[i] == static_cast<u8>(ChannelReach::Colluvial);
     }
   CHECK(colluvial == points);
+  // W97: a colluvial channel's bed is the slope's own debris (Montgomery & Buffington 1997: bed
+  // material "variable"), so it carries clasts, angular ones (a few hundred metres of transport at
+  // the most), and no step's or cluster's boulders.
   Vector<PlacedPiece> pieces;
-  REQUIRE(place_pieces(p, n, ground(face), 32, pieces, error));
-  CHECK(pieces.empty());
+  ClastLog log;
+  REQUIRE(place_pieces(p, n, ground(face), 32, pieces, error, &log));
+  for (const Clast& c : log.clasts) {
+    CHECK(c.zone < 4);
+    CHECK(c.roundness <= .5);
+  }
   // The cut is still written: a gully is cut into its slope.
   CHECK(terrain_cuts_json(p, n).as_array().size() == n.links.size());
 }
@@ -890,13 +872,14 @@ TEST_CASE("channels: a link ends at a lake's shoreline, its fan grading to the l
     CHECK(z >= shore_z - 1e-3);
   }
   // Pieces: none under the lake.
+  // W97: no clast stands in the lake: every one's centre is on the shore's side of it, within a
+  // clast of the line's last point.
   Vector<PlacedPiece> pieces;
-  REQUIRE(place_pieces(p, wet, ground(notch), 32, pieces, error));
+  ClastLog log;
+  REQUIRE(place_pieces(p, wet, ground(notch), 32, pieces, error, &log));
   REQUIRE_FALSE(pieces.empty());
-  for (const PlacedPiece& piece : pieces)
-    for (const ChannelSlab& slab : piece.recipe.slabs)
-      for (f32 z : slab.z)
-        CHECK(piece.origin.z + static_cast<f64>(z) >= 100 - 2.0);
+  for (const Clast& c : log.clasts)
+    CHECK(static_cast<f64>(c.z_mm - c.a_mm) / 1000.0 >= 100 - 2.0);
   // A lake over the whole valley: the link begins under it and is dropped.
   const Vector<scene::WaterBody> drowned{lake(1000.0, -10, 600)};
   scene_gen::Exclusion all;
@@ -2101,4 +2084,301 @@ TEST_CASE("channels: one plan is read by the cut, the water, the exclusion and t
   CHECK_FALSE(read_plan(std::string_view(bytes).substr(0, bytes.size() / 2), refused, error));
   bytes[bytes.size() / 2] = static_cast<char>(bytes[bytes.size() / 2] ^ 1);
   CHECK_FALSE(read_plan(bytes, refused, error));
+}
+
+// ---- W97: bed sediment -------------------------------------------------------------------------
+
+namespace {
+f64 phi(f64 x) { return .5 * std::erfc(-x / std::sqrt(2.0)); }
+// The four valleys whose reaches run from pool-riffle to cascade, and the clasts each lays.
+struct Laid {
+  ChannelNetwork n;
+  Vector<PlacedPiece> pieces;
+  ClastLog log;
+};
+Laid lay_valley(const ChannelLayer& p, scene_gen::HeightFn fn, f32 tile = 32) {
+  Laid out;
+  std::string error;
+  REQUIRE_MESSAGE(plan_channels(p, ground(fn), 3, nullptr, out.n, error), error);
+  REQUIRE_MESSAGE(place_pieces(p, out.n, ground(fn), tile, out.pieces, error, &out.log), error);
+  return out;
+}
+f64 vertical_half(const Clast& c) {
+  const f64 B = static_cast<f64>(c.b_mm) / 1000, C = static_cast<f64>(c.c_mm) / 1000;
+  const f64 l = std::sqrt(1 + c.dip * c.dip);
+  const f64 by = c.dip / l, cy = 1 / l;
+  return std::sqrt(B * by * B * by + C * cy * C * cy);
+}
+}  // namespace
+
+// **The sediment is in the plan** (W97; channels.md, "Bed sediment"): every point of every link
+// carries it; the median coarsens from pool-riffle to cascade (Montgomery & Buffington 1997's
+// gravel, cobble-boulder and boulder beds); D84 and D16 are the median times and over 2^sigma; the
+// d90 stays under the reach's relative roughness; roundness only grows downstream; and the plan's
+// file carries it to the byte.
+TEST_CASE("channels: the bed's sediment by reach, in the plan") {
+  const ChannelLayer p = layer();
+  f64 median[7] = {}, count[7] = {};
+  for (const scene_gen::HeightFn fn : {&gentle, &plane_bed, &step_pool, &steep}) {
+    ChannelNetwork n;
+    std::string error;
+    REQUIRE(plan_channels(p, ground(fn), 3, nullptr, n, error));
+    for (const ChannelLink& link : n.links) {
+      REQUIRE(link.sediment.size() == link.line.size());
+      for (u32 i = 0; i < link.line.size(); ++i) {
+        const ChannelSediment& s = link.sediment[i];
+        const f64 d50 = static_cast<f64>(s.d50_m), sigma = static_cast<f64>(s.sorting);
+        CHECK(d50 >= .0005);
+        CHECK(static_cast<f64>(s.d84_m) == doctest::Approx(d50 * std::exp2(sigma)).epsilon(1e-5));
+        CHECK(static_cast<f64>(s.d16_m) == doctest::Approx(d50 / std::exp2(sigma)).epsilon(1e-5));
+        const u8 r = link.reach[i];
+        const f64 rr = r <= 1 ? .3 : r <= 3 ? .8 : 1.0;
+        CHECK(d50 * std::exp2(1.2816 * sigma) <=
+              rr * static_cast<f64>(link.line[i].depth_m) * (1 + 1e-5) + 1e-9);
+        CHECK(s.roundness >= .05f);
+        CHECK(s.roundness <= .95f);
+        if (i > 0) CHECK(s.roundness >= link.sediment[i - 1].roundness);
+        CHECK(s.cover >= 0.0f);
+        CHECK(s.cover <= 1.0f);
+        median[r] += d50;
+        count[r] += 1;
+      }
+    }
+  }
+  const auto mean = [&](ChannelReach r) {
+    const u32 k = static_cast<u32>(r);
+    return count[k] > 0 ? median[k] / count[k] : 0.0;
+  };
+  MESSAGE("mean D50 by reach, mm: pool-riffle "
+          << 1e3 * mean(ChannelReach::PoolRiffle) << ", plane-bed "
+          << 1e3 * mean(ChannelReach::PlaneBed) << ", step-pool "
+          << 1e3 * mean(ChannelReach::StepPool) << ", cascade "
+          << 1e3 * mean(ChannelReach::Cascade));
+  REQUIRE(count[static_cast<u32>(ChannelReach::PoolRiffle)] > 0);
+  REQUIRE(count[static_cast<u32>(ChannelReach::Cascade)] > 0);
+  CHECK(mean(ChannelReach::PoolRiffle) < mean(ChannelReach::StepPool));
+  CHECK(mean(ChannelReach::StepPool) < mean(ChannelReach::Cascade));
+}
+
+// **Counts by size follow the stated distribution** (W97; channels.md, "The clasts"): over four
+// seeds of the step-pool valley, the bed's surface under clasts between the drawn size and D84, and
+// above D84, each against what the lognormal says at each clast's own station, as a share of the
+// bed's area. A pebble count samples by area (Wolman 1954), so the comparison is by area.
+TEST_CASE("channels: the clasts' sizes follow the sediment's distribution over several seeds") {
+  for (u64 seed = 1; seed <= 4; ++seed) {
+    ChannelLayer p = layer();
+    p.seed = seed;
+    const Laid laid = lay_valley(p, &step_pool);
+    const f64 bed = laid.log.area_m2[0];
+    REQUIRE(bed > 100);
+    f64 below = 0, above = 0, expect_below = 0, expect_above = 0;
+    u64 clasts = 0;
+    const f64 psi_min = std::log2(static_cast<f64>(p.clast_min_mm) / 1000);
+    // What each station's cells expect, weighted by the share of the bed's area its clasts stand
+    // on: summed over the clasts as the station's expectation divided by its expected count, so a
+    // station with more bed counts for more.
+    for (const Clast& c : laid.log.clasts) {
+      if (c.zone != 0) continue;
+      ++clasts;
+      const ChannelSediment& s = laid.n.links[c.link].sediment[c.point];
+      const f64 area = .25 * 3.141592653589793 * 4e-6 * static_cast<f64>(c.a_mm * c.b_mm);
+      (static_cast<f64>(2 * c.b_mm) / 1000 >= static_cast<f64>(s.d84_m) ? above : below) += area;
+      const f64 sigma = static_cast<f64>(s.sorting), psi50 = std::log2(static_cast<f64>(s.d50_m));
+      const f64 z = (psi_min - psi50) / sigma;
+      const f64 drawn = 1 - phi(z);
+      if (drawn <= 0) continue;
+      // This clast's share of what its station draws: the expectation of each band is the
+      // station's drawn cover times the band's share of it.
+      expect_above += area * (1 - phi(1.0)) / drawn;
+      expect_below += area * std::max(0.0, phi(1.0) - phi(z)) / drawn;
+    }
+    REQUIRE(clasts > 500);
+    const f64 total = below + above;
+    MESSAGE("seed " << seed << ": " << clasts << " bed clasts over " << bed << " m2, cover "
+                    << total / bed << "; above D84 " << above / total << " (expected "
+                    << expect_above / (expect_above + expect_below) << ")");
+    // The bands' shares of the drawn cover, within 0.05 of the lognormal's.
+    CHECK(std::fabs(above / total - expect_above / (expect_above + expect_below)) <= .05);
+  }
+}
+
+// **A bar sorts head to tail** (Rice & Church 2010): on the gentle valley's bends, with clasts
+// drawn from 16 mm so a gravel bar has them, the bar's clasts at its head are coarser than at its
+// tail, over four seeds.
+TEST_CASE("channels: a bar's clasts fine from its head to its tail") {
+  u32 seeds_coarser = 0;
+  for (u64 seed = 1; seed <= 4; ++seed) {
+    ChannelLayer p = layer();
+    p.seed = seed;
+    p.clast_min_mm = 16;
+    const Laid laid = lay_valley(p, &gentle);
+    std::vector<f64> head, tail;
+    for (const Clast& c : laid.log.clasts) {
+      if (c.zone != 1) continue;
+      if (c.bar < .3f) head.push_back(static_cast<f64>(c.b_mm));
+      if (c.bar > .7f) tail.push_back(static_cast<f64>(c.b_mm));
+    }
+    REQUIRE(head.size() > 20);
+    REQUIRE(tail.size() > 20);
+    // The mean, not the median: most drawn clasts are near the drawn size, so the medians of a
+    // millimetre-rounded b tie.
+    f64 h = 0, t = 0;
+    for (const f64 b : head)
+      h += b / static_cast<f64>(head.size());
+    for (const f64 b : tail)
+      t += b / static_cast<f64>(tail.size());
+    MESSAGE("seed " << seed << ": bar head mean b " << 2 * h << " mm (" << head.size() << "), tail "
+                    << 2 * t << " mm (" << tail.size() << ")");
+    seeds_coarser += h > t ? 1u : 0u;
+  }
+  CHECK(seeds_coarser == 4);
+}
+
+// **Partly buried, none floating** (W97; channels.md, "The clasts"): every clast's lowest point is
+// under the lowest ground beneath it; its top stands over the ground at its centre by no more than
+// 0.9 of its height; and almost none is buried whole (a clast on a bank's foot lowered to the
+// downhill ground's level may be).
+TEST_CASE("channels: a clast is partly buried and none floats") {
+  for (const scene_gen::HeightFn fn : {&gentle, &step_pool, &steep}) {
+    const ChannelLayer p = layer();
+    const Laid laid = lay_valley(p, fn);
+    REQUIRE_FALSE(laid.log.clasts.empty());
+    u64 whole = 0, exposed_over = 0, floating = 0;
+    f64 exposure = 0;
+    for (const Clast& c : laid.log.clasts) {
+      const f64 hv = vertical_half(c);
+      const f64 y = static_cast<f64>(c.y_mm) / 1000;
+      const f64 g = ground(fn).surface_mm(c.x_mm, c.z_mm);
+      floating += y - hv > static_cast<f64>(c.ground_mm) / 1000 - .0095 ? 1u : 0u;
+      const f64 top = y + hv - g;
+      exposed_over += top > .9 * 2 * hv + .002 ? 1u : 0u;
+      whole += top <= 0 ? 1u : 0u;
+      exposure += std::max(0.0, top) / (2 * static_cast<f64>(c.b_mm) / 1000);
+    }
+    const u64 k = laid.log.clasts.size();
+    MESSAGE(k << " clasts: mean protrusion " << exposure / static_cast<f64>(k)
+              << " of b; buried whole " << whole);
+    CHECK(floating == 0);
+    CHECK(exposed_over == 0);
+    CHECK(whole * 20 <= k);
+  }
+}
+
+// **Tile-stable** (W97): the clasts are the same set whatever the tile size and from whatever
+// start, each in exactly one tile's piece (the one its centre stands in), one piece a tile; and
+// `open` builds no mesh.
+TEST_CASE("channels: the clasts are tile-stable, one merged piece a tile, and open builds none") {
+  const ChannelLayer p = layer();
+  const Laid a = lay_valley(p, &step_pool, 32), b = lay_valley(p, &step_pool, 64);
+  REQUIRE(a.log.clasts.size() == b.log.clasts.size());
+  const auto key = [](const Clast& c) {
+    return std::tuple(c.link, c.point, c.seed, c.x_mm, c.y_mm, c.z_mm, c.a_mm, c.b_mm, c.c_mm);
+  };
+  std::vector<decltype(key(a.log.clasts[0]))> ka, kb;
+  for (const Clast& c : a.log.clasts)
+    ka.push_back(key(c));
+  for (const Clast& c : b.log.clasts)
+    kb.push_back(key(c));
+  std::sort(ka.begin(), ka.end());
+  std::sort(kb.begin(), kb.end());
+  CHECK(ka == kb);
+  for (const Laid* l : {&a, &b}) {
+    std::vector<std::pair<i32, i32>> tiles;
+    u64 held = 0;
+    for (const PlacedPiece& piece : l->pieces) {
+      tiles.push_back({piece.tile.x, piece.tile.z});
+      held += clast_count(piece.recipe);
+    }
+    CHECK(held == l->log.clasts.size());
+    std::sort(tiles.begin(), tiles.end());
+    CHECK(std::adjacent_find(tiles.begin(), tiles.end()) == tiles.end());
+  }
+  // `open` writes the recipes and builds nothing.
+  test::TempDir scratch;
+  scene_gen::Context c;
+  c.dir = scratch.path();
+  c.ddc = scratch.path();
+  c.ground = ground(step_pool);
+  c.tile_size = 64;
+  const u64 solved = pieces_solved();
+  Opened opened;
+  std::string error;
+  REQUIRE_MESSAGE(opened.desc->open(schema::to_json(p), c, &opened.state, &error), error);
+  CHECK(pieces_solved() == solved);
+}
+
+// **The same bytes everywhere** (W97): the recipes of the step-pool valley and the mesh of its
+// first piece, pinned on MSVC; Clang and GCC reproduce them in the containers.
+TEST_CASE("channels: the clasts' recipes and mesh are pinned") {
+  const ChannelLayer p = layer();
+  const Laid laid = lay_valley(p, &step_pool, 64);
+  REQUIRE_FALSE(laid.pieces.empty());
+  u64 recipes = 0;
+  for (const PlacedPiece& piece : laid.pieces)
+    recipes = hash_combine(recipes, piece_source_hash(piece.recipe));
+  assets::MeshData mesh;
+  std::string error;
+  REQUIRE(solve_piece(laid.pieces[0].recipe, mesh, error));
+  const u64 positions = hash_bytes(mesh.positions.data(), mesh.positions.size() * sizeof(Vec3));
+  const u64 indices = hash_bytes(mesh.indices.data(), mesh.indices.size() * sizeof(u32));
+  MESSAGE("recipes " << recipes << ", first piece: " << mesh.indices.size() / 3
+                     << " triangles, positions " << positions << ", indices " << indices);
+  CHECK(recipes == 7519227035656357816ull);
+  CHECK(positions == 14068701233020217500ull);
+  CHECK(indices == 14738498776935463833ull);
+}
+
+// **What a tile of bed costs** (W97; measured, printed; the numbers channels.md, "What a tile
+// costs", quotes): the gentle valley drained at W93's scratch scene's hydraulic geometry (14 m and
+// 1.2 m at a square kilometre), so its trunk is a stream metres wide. Laying every clast of the
+// region (what `open` does beside the plan), and the busiest 64 m tile's mesh and container (what
+// its activation builds): clasts and triangles a square metre at the finest and coarsest forms.
+TEST_CASE("channels: what a tile of bed costs (measured, printed)") {
+  ChannelLayer p = layer();
+  p.width_at_km2_m = 14;
+  p.depth_at_km2_m = 1.2f;
+  p.head_threshold_m2 = 300;
+  ChannelNetwork n;
+  std::string error;
+  REQUIRE(plan_channels(p, ground(gentle), 3, nullptr, n, error));
+  Vector<PlacedPiece> pieces;
+  ClastLog log;
+  const auto laid_at = std::chrono::steady_clock::now();
+  REQUIRE(place_pieces(p, n, ground(gentle), 64, pieces, error, &log));
+  const f64 lay_ms =
+      std::chrono::duration<f64, std::milli>(std::chrono::steady_clock::now() - laid_at).count();
+  REQUIRE_FALSE(pieces.empty());
+  f64 area = 0;
+  for (const f64 a : log.area_m2)
+    area += a;
+  u32 busiest = 0;
+  for (u32 i = 1; i < pieces.size(); ++i)
+    if (clast_count(pieces[i].recipe) > clast_count(pieces[busiest].recipe)) busiest = i;
+  const PlacedPiece& piece = pieces[busiest];
+  geometry::ClusterFileData data;
+  const auto built = std::chrono::steady_clock::now();
+  REQUIRE_MESSAGE(build_piece_container(piece.recipe, {}, 0, data, error), error);
+  const f64 build_ms =
+      std::chrono::duration<f64, std::milli>(std::chrono::steady_clock::now() - built).count();
+  u64 root = 0;
+  for (u32 k = 0; k < data.mesh.lod.size(); ++k)
+    if (data.mesh.lod[k].parent_error == geometry::k_lod_terminal_error)
+      root += data.mesh.mesh.clusters[k].triangle_count;
+  // The tile's share of the bed's area, by its share of the clasts (the cells are not kept a
+  // tile): an estimate, said so on the page.
+  const f64 share =
+      static_cast<f64>(clast_count(piece.recipe)) / static_cast<f64>(log.clasts.size());
+  const f64 tile_area = area * share;
+  const ChannelSediment& trunk = n.links.back().sediment[n.links.back().line.size() / 2];
+  MESSAGE("region: ", log.clasts.size(), " clasts over ", area, " m2 of bed (",
+          static_cast<f64>(log.clasts.size()) / area, " a m2) in ", pieces.size(),
+          " tiles, laid in ", lay_ms, " ms; a trunk point's D50 ",
+          1e3 * static_cast<f64>(trunk.d50_m), " mm, D84 ", 1e3 * static_cast<f64>(trunk.d84_m),
+          " mm, cover ", trunk.cover, "; busiest tile ", clast_count(piece.recipe),
+          " clasts over about ", tile_area, " m2, finest ", data.mesh.leaf_triangle_count,
+          " triangles (", static_cast<f64>(data.mesh.leaf_triangle_count) / tile_area,
+          " a m2), coarsest ", root, " (", static_cast<f64>(root) / tile_area, " a m2), built in ",
+          build_ms, " ms");
+  CHECK(data.mesh.leaf_triangle_count > 0);
+  CHECK(root < data.mesh.leaf_triangle_count);
 }

@@ -7,3 +7,6 @@
 using namespace engine;
 
 ENGINE_EXPECT_SIZE(40, 8, channels::ChannelPoint);
+// W97: the bed's sediment, one per point of every line beside its `ChannelPoint`, written to the
+// plan file as its bytes.
+ENGINE_EXPECT_SIZE(32, 4, channels::ChannelSediment);

@@ -427,6 +427,49 @@ the trunk's over 3 of its own widths, also a design choice.
 **The planform**: Leopold & Wolman (1960), "River meanders", *GSA Bulletin* 71, 769–794: the
 meander wavelength 10–14 widths about a mean, the source of `meander_wavelength_variation` = ±25 %
 (10.9 ± 2.7 covers 8–14); the amplitude's ±50 % is a design choice for bends that differ visibly.
+## Bed sediment
+
+W97, 2026-11-10. What lies on a bed, read before the design ([channels](../subsystems/channels.md#bed-sediment)).
+A research sub-agent did the reading for this row; each number below says how it was read: **full
+text**, **abstract**, **secondary** (quoted by another source, named), or **not read** (a design
+choice, or from memory, said so).
+
+| Number | Value here | Source | How read |
+|---|---|---|---|
+| Bed material by reach | dune-ripple sand; pool-riffle gravel; plane-bed gravel-cobble; step-pool cobble-boulder; cascade boulder; bedrock rock; colluvial variable | Montgomery & Buffington 1997, *GSA Bulletin* 109: 596–611, Table 1 | full text |
+| A surface pebble count's median by reach | Finney Creek composite: D50 17 mm (pool-riffle) to 80 mm (cascade), D84 57 to 250 mm | Montgomery & Buffington 1997, Fig. 8 | full text |
+| Relative roughness d90/h, the most | pool-riffle 0.3, plane-bed and step-pool 0.8, cascade, bedrock and colluvial 1 | Montgomery & Buffington 1997 (pool-riffle under ~0.3; plane-bed 0.2–0.8; step-pool 0.3–0.8; a cascade's largest clasts near the bankfull depth) | full text |
+| The surface's size distribution | lognormal in size, so D84/D50 = D50/D16 = 2^sigma | Bunte & Abt 2001, USDA RMRS-GTR-74, p. 17 | full text |
+| Sorting sigma (phi units) | dune-ripple 0.6, pool-riffle 1.2, plane-bed 1.5, steeper 1.75 | Bunte & Abt 2001 p. 68: ~0.5 after long transport, 1.5–2 in mountain gravel-bed streams; Finney Creek's D84/D50 3.1–3.4 is sigma 1.6–1.8 | full text; **the value a reach takes inside that range is this row's choice** |
+| The median | D50 = h S / (1.65 tau*), tau* = 0.15 S^0.25 | Lamb, Dietrich & Venditti 2008, *JGR* 113 F02008, eq. 3 (the critical Shields number rising with slope over S 0.001–0.1, r² 0.41) | full text; taking the bankfull flow as just moving the median (a threshold channel) is Parker et al. 2007's quasi-universal gravel river, **secondary** (its 0.049 not confirmed in the paper) |
+| The armour | the surface median is about twice the subsurface's (1 with high supply, 3+ in high-energy mountain streams) | Bunte & Abt 2001 §3.3.1.1 p. 131 | full text; the surface is what is drawn, so the ratio sets nothing here: it says the drawn surface is coarser than what a cut face would show |
+| A bar's sorting | the surface median fines by a third from head to tail: 1.2 of the reach's at the head, 0.8 at the tail | Rice & Church 2010, *Sedimentology* 57: 232–251 (Fraser River: 33 % surface, 17 % subsurface) | abstract |
+| The flood bed's surface | the bar tail's, 0.8 | none | **design choice** |
+| A step's clasts | the reach's D84 to D97.7; a step's keystone about its D84, the step's height of its order | a 2021 synthesis in *Earth-Science Reviews* and a thesis | secondary (Chin 1999 and Grant et al. 1990 not read) |
+| Boulder cover on steep reaches | not pinned: the lognormal's own cover above the drawn size | Yager et al. 2007, Nitsche et al. 2011 | **not found** |
+| Imbrication | the a-b plane dips upstream 10–30° (tan 0.176–0.577), the a axis across the flow within ~20° | often quoted; one study measures 12–55°, mean 34.5° | secondary (a search snippet); the primary papers (Johansson 1963, Rust 1972, Laronne & Carson 1976) **not read** |
+| Protrusion | 0.36 of the b axis on average, drawn 0.15–0.57; never over 0.9 of the clast's height | Vázquez-Tarrío et al. 2024, *JGR Earth Surface*: 0.04–1.0, means 0.35–0.38 | secondary (a search snippet); Kirchner et al. 1990 read in its abstract only (the spread within one size exceeds the difference between surfaces) |
+| Shape | b/a 0.7 ± 0.15, c/b 0.6 ± 0.2 | Zingg 1935, Sneed & Folk 1958 | **not read: from memory**, a design choice inside the usual river-gravel range |
+| Roundness by transport | `1 - exp(-x / 1 km)` of x metres of channel upstream, 0.05 to 0.95 | Domokos et al. 2014, *PLOS ONE* 9: e88657: edges round with almost no loss of axis length first (phase I), about 1 km of transport; "within the first few kilometres" in the field | full text (the arXiv preprint) |
+| The normal's tail | `1 / (1 + e^(-1.702 x))` | a logistic approximation, from memory | **checked by test instead**: the size test compares the drawn bands against `erfc` within 0.05 |
+
+**What the numbers give** on the tests' valleys (`channels: the bed's sediment by reach, in the
+plan`): mean D50 13.6 mm on pool-riffle, 31.5 mm on plane-bed, 23.6 mm on step-pool, 27.9 mm on the
+cascade — the order of Finney Creek's 17 to 80 mm, smaller because the valleys' channels are
+shallow (0.1 to 0.3 m), and the relative roughness caps the steep reaches. The cover of clasts of
+64 mm or more on the step-pool valley's bed is 0.18 to 0.20 of its area over four seeds, three
+quarters of it in clasts above D84.
+
+**The drawn size**, 64 mm (`clast_min_mm`, 16 to 1,024): the Wentworth cobble's lower bound. A 64 mm
+clast is about 9 pixels across at 7 m in a 1080-line, 60-degree view (W93's `stream` camera
+distance), and a 32 mm one 4; what is finer is the bed's material, whose texels are the grains
+(the roles `gravel/bed` and `sand/bar`, which no pack here has). Halving it to 32 mm multiplies the
+count by about four on a pool-riffle bed; it is the knob a far-seeing scene turns up.
+
+**Not applied**, found while reading: none of the sources gives a pool's surface sediment; the
+row leaves the deepest of a bend's pool (more than 1.6 mean depths) bare of drawn clasts, a
+design choice that reads as the finer sediment a pool collects and the depth hiding the bed.
+
 ## Against the proof of concept
 
 The proof of concept's erosion model carved v31 with **688 channel heads** and **5–7 km of channel per

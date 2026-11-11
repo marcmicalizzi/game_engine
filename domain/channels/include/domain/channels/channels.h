@@ -68,7 +68,28 @@ namespace engine::channels {
 // 6 (W93, continued): no bed slab and no bar skin; the boulders alone are placed.
 // 7 (W93, continued): the kinks low-passed out of every line, a steep line's wander, the pool
 //    downstream of its bend's apex, the steep reaches' section, boulders at a step's banks.
-inline constexpr u32 k_channels_version = 7;
+// 8 (W97): the bed's sediment in the plan, and the clasts above `clast_min_mm` laid on the bed,
+//    the bars and the banks' feet as one merged mesh a tile; the steps' domes are clasts.
+inline constexpr u32 k_channels_version = 8;
+
+// **The bed's surface sediment at a point** (W97; channels.md, "Bed sediment"; the sources in
+// docs/experiments/channels.md, "Bed sediment"): the surface grain-size distribution a pebble count
+// would give there, lognormal in size (Bunte & Abt 2001), its median from the bankfull flow that
+// just moves it (Lamb, Dietrich & Venditti 2008) under the reach's relative roughness (Montgomery &
+// Buffington 1997), its sorting by reach, the clasts' roundness by how far the network has carried
+// them (Domokos et al. 2014), the share of the bed's surface under clasts drawn as geometry, and
+// where a point bar lies on the inner bank, how far along it from head to tail (the bar fines that
+// way: Rice & Church 2010). What the water (S101) reads of the bed is `d50_m` and `d84_m`.
+struct ChannelSediment {
+  f32 d16_m = 0;
+  f32 d50_m = 0;
+  f32 d84_m = 0;
+  f32 sorting = 0;      // sigma, phi units: D84 / D50 = D50 / D16 = 2^sorting
+  f32 roundness = 0;    // 0 angular to 1 rounded
+  f32 cover = 0;        // share of the bed's surface under clasts of `clast_min_mm` or larger
+  f32 bar = -1;         // on a point bar's run: 0 at its head to 1 at its tail; -1 none
+  f32 transport_m = 0;  // channel length upstream of the point, along the network
+};
 
 // A point of a channel's line, downstream order: where it is (y the ground under it, metres), its
 // bankfull width and depth, the bed's fall per metre there, and the contributing area.
@@ -130,6 +151,8 @@ struct ChannelLink {
   Vector<f32> flood_left;
   Vector<f32> flood_right;
   Vector<f32> entrenchment;
+  // **W97** (channels.md, "Bed sediment"), one per point of `line`: the bed's surface sediment.
+  Vector<ChannelSediment> sediment;
   // The points the water and the pieces run to: `line.size()`, less for a tributary whose last
   // points lie within the trunk's banks.
   u32 keep = 0;
@@ -329,25 +352,64 @@ WaterStats measure_water(const JsonValue& blocks, const scene_gen::Ground& groun
                          const scene_gen::Exclusion* water = nullptr, const f64* region = nullptr,
                          f64 border_m = 0);
 
-// One placed piece (a stretch of a link up to `piece_m` long, one part of it): where its frame
-// stands (x and z whole millimetres, y the ground there), its world tile, its recipe and a stable
-// id within the entry.
+// One placed piece (W97: every clast of one world tile, merged): where its frame stands (the
+// tile's corner, whole millimetres; y the lowest clast centre's whole millimetre), its world tile,
+// its recipe and a stable id within the entry (the tiles' order by z, then x).
 struct PlacedPiece {
   WorldPos origin{};
   scene_gen::TileCoord tile{};
   ChannelPiece recipe;
   u32 id = 0;
 };
-// Every piece of the network, in link order, then piece, then part (bed, bars, banks). Each piece's
-// heights are the ground's at its vertices, which is why it takes the ground again.
+// **A clast in a recipe** (`ChannelPiece::clasts`, `k_clast_ints` integers each; channels.md,
+// "The clasts"): its centre, millimetres from the piece's origin; the lowest ground under its
+// footprint, the same frame; its half axes a >= b >= c, millimetres; its a axis's horizontal
+// direction (x, z) and the tangent of its a-b plane's dip upstream, in ten-thousandths; its
+// roundness in thousandths; and the seed its facets are cut from. The b axis's horizontal
+// direction is (a.z, -a.x), downstream; the plane through a and b rises downstream by `dip`.
+inline constexpr u32 k_clast_ints = 12;
+struct Clast {
+  i64 x_mm = 0, y_mm = 0, z_mm = 0;
+  i64 ground_mm = 0;
+  i64 a_mm = 0, b_mm = 0, c_mm = 0;
+  f64 ax = 1, az = 0;  // unit
+  f64 dip = 0;         // tangent
+  f64 roundness = 0;
+  u32 seed = 0;
+  // Whence it came, kept by `place_pieces` for tests and statistics (not in a recipe): 0 the bed,
+  // 1 a point bar's inner bank, 2 a bank's foot, 3 the flood bed, 4 a step's keystone, 5 a
+  // cascade's cluster.
+  u8 zone = 0;
+  f32 bar = -1;  // the sediment's `bar` where it lies on a bar
+  u32 link = 0;
+  u32 point = 0;  // the station (point of the link's line) it was drawn at
+};
+inline constexpr u32 k_clast_zones = 6;
+Clast clast_of(const ChannelPiece& piece, u32 index);
+inline u32 clast_count(const ChannelPiece& piece) { return piece.clasts.size() / k_clast_ints; }
+// What `place_pieces` laid, for the tests and the page's numbers: every clast in world
+// millimetres (the same order as the pieces hold them), and the bed's area each zone drew over.
+struct ClastLog {
+  Vector<Clast> clasts;
+  f64 area_m2[k_clast_zones] = {};
+};
+// **What the generator places** (W97; channels.md, "What it places", "The clasts"): every clast
+// of `clast_min_mm` or larger the plan's sediment puts on the bed, the bars, the banks' feet and
+// the flood bed, and the steps' and cascades' boulders, drawn from the plan alone, each at a whole
+// millimetre with its burial from the ground there, then bucketed by the world tile its centre
+// stands in: one piece a tile, its clasts in link, station and draw order. `log` (nullable) is
+// filled with what was laid.
 bool place_pieces(const ChannelLayer& layer, const ChannelNetwork& network,
                   const scene_gen::Ground& ground, f32 tile_size, Vector<PlacedPiece>& out,
-                  std::string& error);
+                  std::string& error, ClastLog* log = nullptr);
 
-// A recipe's numbers in range: slab sizes, finite heights, top above bottom.
+// A recipe's numbers in range: the clasts' count, sizes, axes and directions.
 bool piece_in_range(const ChannelPiece& piece, std::string& error);
-// The closed, welded mesh of a recipe: each slab's top, bottom and four walls; one material.
+// The merged mesh of a recipe: every clast an ellipsoid cut by facets as angular as its roundness
+// says, on a cube-sphere grid by its size, its triangles wholly under the ground left out; one
+// material. Counted by `pieces_solved`, which a test holds `open` to none.
 bool solve_piece(const ChannelPiece& piece, assets::MeshData& out, std::string& error);
+u64 pieces_solved() noexcept;
 // Over the recipe's canonical JSON and the version: what its `.channel.json` file is named and
 // keyed by.
 u64 piece_source_hash(const ChannelPiece& piece);

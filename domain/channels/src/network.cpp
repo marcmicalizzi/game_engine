@@ -1153,7 +1153,8 @@ bool layer_in_range(const ChannelLayer& p, std::string& error) {
                 "flood_bed_widths/flood_height_depths/flood_entrenchment_min/"
                 "flood_min_width_m/flood_bed_depth/scarp_slope");
   if (!in(wide(p.step_m), .1, 4)) return fail(error, "step_m");
-  if (!in(wide(p.piece_m), 4, 256) || p.piece_m < 4 * p.step_m) return fail(error, "piece_m");
+  if (!in(wide(p.clast_min_mm), 16, 1024)) return fail(error, "clast_min_mm");
+  if (!in(wide(p.rounding_m), 10, 100000)) return fail(error, "rounding_m");
   return surface_in_range(p.boulders, error);
 }
 
@@ -1337,6 +1338,8 @@ bool detail::plan_from_lattice(const ChannelLayer& p, const scene_gen::Ground& g
     plan_section(p, link);
     plan_flood(p, ground, link);
   }
+  // W97: the bed's sediment, from the reaches, the sections and the network's lengths.
+  plan_sediment(p, n);
   return true;
 }
 
@@ -1752,6 +1755,11 @@ JsonValue bed_regions_json(const ChannelLayer& p, const ChannelNetwork& n) {
       while (e + 1 < m && in_bed(e + 1))
         ++e;
       Vector<f64> lx, lz, rx, rz;
+      // W97: with `bar_material`, the bed's outline stops at the cut's bank tops and the flood
+      // bed each side is a strip of its own, from the bank top out, in the bars' material.
+      const bool bars = !p.bar_material.empty();
+      Vector<f64> llx, llz, lrx, lrz;  // the left strip's inner and outer edges
+      Vector<f64> rlx, rlz, rrx, rrz;  // the right strip's
       f64 next = s[i];
       for (u32 q = i; q <= e; ++q) {
         if (q != e && s[q] < next) continue;
@@ -1770,10 +1778,51 @@ JsonValue bed_regions_json(const ChannelLayer& p, const ChannelNetwork& n) {
         const f64 right =
             std::max(half, q < link.flood_right.size() ? wide(link.flood_right[q]) : 0.0);
         // The left is the side of (-dz, dx).
-        lx.push_back(round_to(pt.at.x - tz * left, 1e2));
-        lz.push_back(round_to(pt.at.z + tx * left, 1e2));
-        rx.push_back(round_to(pt.at.x + tz * right, 1e2));
-        rz.push_back(round_to(pt.at.z - tx * right, 1e2));
+        const f64 bed_left = bars ? half : left, bed_right = bars ? half : right;
+        lx.push_back(round_to(pt.at.x - tz * bed_left, 1e2));
+        lz.push_back(round_to(pt.at.z + tx * bed_left, 1e2));
+        rx.push_back(round_to(pt.at.x + tz * bed_right, 1e2));
+        rz.push_back(round_to(pt.at.z - tx * bed_right, 1e2));
+        if (bars) {
+          llx.push_back(round_to(pt.at.x - tz * half, 1e2));
+          llz.push_back(round_to(pt.at.z + tx * half, 1e2));
+          lrx.push_back(round_to(pt.at.x - tz * left, 1e2));
+          lrz.push_back(round_to(pt.at.z + tx * left, 1e2));
+          rlx.push_back(round_to(pt.at.x + tz * half, 1e2));
+          rlz.push_back(round_to(pt.at.z - tx * half, 1e2));
+          rrx.push_back(round_to(pt.at.x + tz * right, 1e2));
+          rrz.push_back(round_to(pt.at.z - tx * right, 1e2));
+        }
+      }
+      const auto strip = [&](const Vector<f64>& ax, const Vector<f64>& az, const Vector<f64>& bx,
+                             const Vector<f64>& bz, const char* side) {
+        bool wide_enough = false;
+        for (u32 q = 0; q < ax.size() && !wide_enough; ++q)
+          wide_enough = std::fabs(ax[q] - bx[q]) + std::fabs(az[q] - bz[q]) > .05;
+        if (ax.size() < 2 || !wide_enough) return;
+        JsonValue polygon = JsonValue::array();
+        const auto corner = [&](f64 x, f64 z) {
+          JsonValue at = JsonValue::array();
+          at.push_back(JsonValue(x));
+          at.push_back(JsonValue(0.0));
+          at.push_back(JsonValue(z));
+          polygon.push_back(std::move(at));
+        };
+        for (u32 q = 0; q < ax.size(); ++q)
+          corner(ax[q], az[q]);
+        for (u32 q = bx.size(); q-- > 0;)
+          corner(bx[q], bz[q]);
+        JsonValue o = JsonValue::object();
+        o["name"] = JsonValue(p.name + " link " + std::to_string(k) + " bar " +
+                              std::to_string(stretch) + " " + side);
+        o["polygon"] = std::move(polygon);
+        o["material"] = JsonValue(p.bar_material);
+        o["feather_m"] = JsonValue(wide(p.bed_feather_m));
+        list.push_back(std::move(o));
+      };
+      if (bars) {
+        strip(llx, llz, lrx, lrz, "left");
+        strip(rlx, rlz, rrx, rrz, "right");
       }
       if (lx.size() >= 2) {
         JsonValue polygon = JsonValue::array();

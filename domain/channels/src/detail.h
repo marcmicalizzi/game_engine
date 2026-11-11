@@ -141,6 +141,16 @@ bool sample_lattice(const ChannelLayer& p, const scene_gen::Ground& ground, jobs
 bool plan_from_lattice(const ChannelLayer& p, const scene_gen::Ground& ground, u64 seed,
                        ChannelNetwork& n, std::string& error, const scene_gen::Exclusion* water);
 
+// **The bed's sediment** (sediment.cpp; channels.md, "Bed sediment"; W97): every link's
+// `sediment`, the plan's last step.
+inline constexpr f64 k_ln2 = 0.6931471805599453;
+f64 normal_cdf(f64 x);
+f64 log2_of(f64 x);
+f64 exp2_of(f64 x);
+ChannelSediment sediment_of(const ChannelLayer& p, ChannelReach reach, f64 depth_m, f64 slope,
+                            f64 transport_m);
+void plan_sediment(const ChannelLayer& p, ChannelNetwork& n);
+
 inline bool surface_in_range(const ChannelSurface& s, std::string& error) {
   if (s.tile_m.has_value() && !in(wide(*s.tile_m), .05, 20)) return fail(error, "surface tile_m");
   if (!in(wide(s.roughness), .02, 1)) return fail(error, "surface roughness");
