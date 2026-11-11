@@ -1042,6 +1042,18 @@ void fit_lods(assets::MeshData& mesh, TreeLevels& levels, u32 coarse_first,
   levels.levels[1].alpha_cutoff = best;
 }
 }  // namespace
+// `sward_atan` below is a port of fdlibm's s_atan.c (version 1.3 95/01/18), whose notice, as
+// its licence asks, is preserved here (third_party/LICENSES.md, "Ported, not vendored"):
+//
+// ====================================================
+// Copyright (C) 1993 by Sun Microsystems, Inc. All rights reserved.
+//
+// Developed at SunSoft, a Sun Microsystems, Inc. business.
+// Permission to use, copy, modify, and distribute this
+// software is freely granted, provided that this notice
+// is preserved.
+// ====================================================
+//
 // fdlibm's s_atan.c (Sun Microsystems, 1993), the reference the FreeBSD and glibc arctangents
 // descend from: reduce |x| to |t| <= 7/16 against atan(0.5), atan(1), atan(1.5) or atan(inf), each
 // in a high and a low part, then an odd polynomial of degree 23. Its coefficients are written as

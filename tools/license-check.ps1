@@ -17,7 +17,11 @@
   - a declaration or a vendored directory has no row, or a row names a declaration that no longer
     exists;
   - with -BuildDir (a configured build tree, whose _deps/<name>-src hold the fetched sources), a
-    dependency's own licence file is under a licence its row does not name.
+    dependency's own licence file is under a licence its row does not name;
+  - an engine source this script lists as a port of a published work ($ported, below: fdlibm's
+    transcendentals and arctangent) has no row in the record's "Ported, not vendored" table, a row
+    there names a file the list does not hold, or the file no longer carries its work's notice
+    (roadmap T86).
 
   The rules are tools/lib/LicenseCheck.psm1's, tested by tools/license-check.Tests.ps1. It runs in
   `tools/dev.ps1 lint`, as the CTest test `lint.licenses` in every preset (with that preset's build
@@ -44,14 +48,23 @@ if ($BuildDir) {
   }
 }
 $result = Invoke-LicenseCheck -Root $Root -SourceDirs $sources
+# **The engine sources that are ports of a published work** (roadmap T86): each is held against
+# third_party/LICENSES.md's "Ported, not vendored" table both ways, and must carry the line of its
+# work's notice given here. A new port adds its line here and its row there in the same commit.
+$ported = @(
+  @{ Path = 'core/math/include/core/math/deterministic.h'; Notice = 'Permission to use, copy, modify, and distribute this' }
+  @{ Path = 'domain/flora/src/sward.cpp'; Notice = 'Permission to use, copy, modify, and distribute this' }
+)
+$portProblems = @(Test-PortedSources -Root $Root -Ported $ported)
 $rows = @($result.Rows).Count
 $decls = @($result.Declarations).Count
+$problems = @($result.Problems) + $portProblems
 foreach ($n in $result.Notes) { Write-Host "license-check: note: $n" }
-if ($result.Problems.Count -gt 0) {
-  foreach ($p in $result.Problems) { Write-Host "license-check: $p" -ForegroundColor Red }
-  Write-Host "license-check: $($result.Problems.Count) problem(s) over $rows recorded dependencies and $decls declarations" -ForegroundColor Red
+if ($problems.Count -gt 0) {
+  foreach ($p in $problems) { Write-Host "license-check: $p" -ForegroundColor Red }
+  Write-Host "license-check: $($problems.Count) problem(s) over $rows recorded dependencies, $decls declarations and $($ported.Count) ported sources" -ForegroundColor Red
   exit 1
 }
 $read = $sources.Count
-Write-Host "license-check: $rows recorded dependencies, $decls declarations, $read dependencies' licence files read: every licence on ADR-0014's list"
+Write-Host "license-check: $rows recorded dependencies, $decls declarations, $read dependencies' licence files read: every licence on ADR-0014's list; $($ported.Count) ported sources, each recorded and carrying its notice"
 exit 0
