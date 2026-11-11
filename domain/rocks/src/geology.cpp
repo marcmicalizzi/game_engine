@@ -61,11 +61,13 @@ Fabric make_fabric(RockType type, const RockGeology& g, u64 seed, const scene::F
                    const WorldPos& origin) {
   Fabric f = make_fabric(type, g, seed);
   if (formation == nullptr || !g.from_formation) return f;
-  gfx::FormationParams block;
-  // The recipe's range check is the caller's; a field out of range leaves the face's own beds.
-  if (!gfx::pack_formation(*formation, block, nullptr)) return f;
+  // The frame-only pack (T94): the fabric reads the field's frame and no bed, so it packs no table
+  // (a whole block was 98,624 bytes on this stack, once a rock). The recipe's range check is the
+  // caller's; a field out of range leaves the face's own beds.
+  gfx::FormationFrame field;
+  if (!gfx::pack_formation_frame(*formation, field, nullptr)) return f;
   f.world = true;
-  f.field = gfx::formation_frame(block);
+  f.field = field;
   f.origin = D3{origin.x, origin.y, origin.z};
   f.normal = D3{f.field.normal[0], f.field.normal[1], f.field.normal[2]};
   f.tangent = D3{f.field.dip[0], f.field.dip[1], f.field.dip[2]};

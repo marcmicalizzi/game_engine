@@ -363,6 +363,13 @@ static_assert(offsetof(gfx::FormationParams, lateral) == 96);
 static_assert(offsetof(gfx::FormationParams, fault_q) == 160);
 static_assert(offsetof(gfx::FormationParams, beds) == 192);
 static_assert(offsetof(gfx::FormationParams, macro) == 49408);
+// T94: the block's head alone, and the frame the f64 twin reads. A caller that wants where the beds
+// stand and no bed (rocks' make_fabric, a cave plan, a ledge's frame) packs these 192 bytes into a
+// 208-byte frame (`pack_formation_frame`) where it declared the 98,624-byte block on its stack.
+ENGINE_EXPECT_SIZE(192, 8, gfx::FormationHead);
+static_assert(offsetof(gfx::FormationHead, lateral) == 96);
+static_assert(offsetof(gfx::FormationHead, fault_q) == 160);
+ENGINE_EXPECT_SIZE(208, 8, gfx::FormationFrame);
 static_assert(offsetof(gfx::FormationSequence, beds) == 64);
 static_assert(offsetof(gfx::FormationBedGpu, start_m) == 64);
 static_assert(offsetof(gfx::FormationBedGpu, base_amp_m) == 80);

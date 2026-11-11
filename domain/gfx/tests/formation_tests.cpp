@@ -657,6 +657,63 @@ TEST_CASE("formation: a drawn table is the same bytes on every compiler") {
   CHECK(hash == 8898964259588582771ull);
 }
 
+TEST_CASE("formation: the frame-only pack is the whole block's frame to the bit") {
+  // T94: a caller that wants the frame packs 192 bytes of head and no table. The head and the frame
+  // it gives are the packed block's, byte for byte, for an authored field (no lateral fields), an
+  // authored one whose beds' tops move, one whose macro beds' tops alone move, and drawn ones
+  // (lateral fields from the plans, a fault).
+  scene::Formation moving = fixture();
+  moving.beds[1].variation = 0.3f;
+  moving.beds[2].lens = true;
+  scene::Formation macro_moving = fixture();
+  macro_moving.macro_beds[0].variation = 0.4f;
+  scene::Formation still = drawn(3);
+  for (scene::FormationMember& m : still.members) {
+    m.variation = 0.0f;
+    m.lenses = 0.0f;
+  }
+  const scene::Formation cases[] = {fixture(), moving, macro_moving, drawn(1), drawn(7), still};
+  u32 with_fields = 0;
+  for (const scene::Formation& f : cases) {
+    const auto p = packed(f);
+    const gfx::FormationFrame want = gfx::formation_frame(*p);
+    gfx::FormationFrame got;
+    std::string error;
+    REQUIRE_MESSAGE(gfx::pack_formation_frame(f, got, &error), error);
+    CHECK(std::memcmp(&got, &want, sizeof(gfx::FormationFrame)) == 0);
+    gfx::FormationHead head;
+    Vector<gfx::FormationBedPlan> beds, members;
+    REQUIRE(gfx::pack_formation_head(f, head, beds, members, &error));
+    CHECK(std::memcmp(&head, p.get(), sizeof(gfx::FormationHead)) == 0);
+    const gfx::FormationHead copied = gfx::formation_head(*p);
+    CHECK(std::memcmp(&head, &copied, sizeof(gfx::FormationHead)) == 0);
+    CHECK(gfx::check_formation(f, &error));
+    // The fields are on exactly when a top of either table moves.
+    bool moves = false;
+    for (const gfx::FormationSequence* s : {&p->beds, &p->macro})
+      for (u32 i = 0; i < s->count; ++i)
+        moves = moves || s->beds[i].base_amp_m[0] != 0.0f || s->beds[i].base_amp_m[1] != 0.0f;
+    CHECK((head.lateral[0].cell_mm != 0u) == moves);
+    with_fields += moves ? 1u : 0u;
+  }
+  CHECK(with_fields == 4u);
+  // A formation that does not pack: the same sentence from all three, and the frame left as it was.
+  scene::Formation bad = fixture();
+  bad.dip_deg = 89.0f;
+  gfx::FormationFrame untouched;
+  untouched.origin[0] = 42.0;
+  std::string frame_error, block_error, check_error;
+  CHECK_FALSE(gfx::pack_formation_frame(bad, untouched, &frame_error));
+  CHECK(untouched.origin[0] == 42.0);
+  auto block = std::make_unique<gfx::FormationParams>();
+  CHECK_FALSE(gfx::pack_formation(bad, *block, &block_error));
+  CHECK_FALSE(gfx::check_formation(bad, &check_error));
+  CHECK(frame_error == block_error);
+  CHECK(check_error == block_error);
+  CHECK(block->flags == 0u);
+  CHECK(block->beds.count == 0u);
+}
+
 TEST_CASE("formation: the shader's coordinate, bed and filter are its f64 twin's") {
   gfx::Device device;
   std::string error;

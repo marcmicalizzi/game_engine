@@ -1527,6 +1527,19 @@ of a binary search for four beds, where the linear one took three). **What the p
 (`formation-sequence.md`, "What the pictures show"): the regular corrugation is gone and members
 read as members, but at 100 m and beyond the tops are still ruled lines.
 
+**The frame-only pack** (roadmap T94, 2026-11-11). The block is 98,624 bytes, and a caller that
+declared one to read its frame — rocks' `make_fabric` did, once a rock — put that on its stack.
+`gfx::FormationHead` is the block's first 192 bytes as a type of its own (the origin, the
+directions, the folds, the lateral fields and the fault: all the coordinate and the lateral fields
+read), `gfx::pack_formation_head` fills it from the scene's formation and its plans, and
+`gfx::pack_formation_frame(formation, frame, error)` gives the 208-byte `FormationFrame` the twin's
+`formation_coordinate` and `formation_lateral` take, with no table packed. `pack_formation` writes
+the block's head through the same function, so the two frames are the same bytes
+(`formation_tests.cpp`, "the frame-only pack"); whether the lateral fields are on is asked of the
+plans (`formation_top_travel`, the one rule for how far a top moves, which the table's packer also
+calls) and no longer read back from the packed tables. `gfx::check_formation` is the validation
+with the table's bound and no block, for a caller that only wants to know a formation packs.
+
 **Why the precision holds at 10 km — and at 10,000.** No absolute position is formed
 (ADR-0053). The shader has the frame's eye cell and a float offset from its corner; the field's
 origin is whole millimetres. It forms `D = cell * 64000 - origin_mm` in int64, dots it with the
