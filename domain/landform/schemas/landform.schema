@@ -134,7 +134,7 @@ struct Sketch @version(2) {
   /// Hillslope diffusivity, m2/yr: 0 to 1.
   diffusivity_m2_per_yr: f64 = 0.005
   /// The gradient no slope stands above (rise over run): 0.2 to 4. The default is 38.7 degrees
-  /// (experiments/landform.md, "Slopes and steepness: the sources").
+  /// (docs/experiments/landform.md, "Slopes and steepness: the sources").
   critical_slope: f64 = 0.8
   /// The same for rock of resistance 1: `critical_slope` to 4.
   critical_slope_resistant: f64 = 1.6
