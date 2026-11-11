@@ -101,14 +101,18 @@ function(_engine_test_directories dir out)
   set(${out} "${_all}" PARENT_SCOPE)
 endfunction()
 
-# Tests that assert an upper bound on wall-clock time, and so run with nothing beside them in
-# their CTest invocation (RUN_SERIAL) when the run has jobs (`tools/dev.ps1 test -Jobs`, the Linux
-# test presets' `execution.jobs`): `tileset` holds one height lookup beside a building window to
-# 50 ms, and `scene_collision` one tile's activation and one prefetch wait to 120 ms. Every other
-# timing check in the tree is a lower bound, a synthetic clock, or a ratio, which load cannot
-# break (docs/ci/what-to-run.md, "Jobs"). Named here because their registrations are not this
-# file's; each also gets the label `wall_clock`.
-set(ENGINE_WALL_CLOCK_TESTS tileset scene_collision)
+# Tests that assert an upper bound on wall-clock time carry the label `wall_clock`, set where each
+# is registered (`engine_module_tests(... WALL_CLOCK)`, roadmap T87), and run with nothing beside
+# them in their CTest invocation (RUN_SERIAL) when the run has jobs (`tools/dev.ps1 test -Jobs`, the
+# Linux test presets' `execution.jobs`): `tileset` holds one height lookup beside a building window
+# to 50 ms, and `scene_collision` one tile's activation and one prefetch wait to 120 ms. Every other
+# timing check in the tree is a lower bound, a synthetic clock, or a ratio, which load cannot break
+# (docs/ci/what-to-run.md, "Jobs").
+#
+# The one name left here is `scene_collision`, whose CMakeLists.txt was closed to the row that
+# moved the hold to the label (2026-11-11): it is labelled from this list until its registration
+# says WALL_CLOCK, and the finalize stops the configure once it does, so the list empties itself.
+set(_engine_wall_clock_unlabelled scene_collision)
 
 #   _engine_finalize_tests()
 # Deferred to the end of the top-level CMakeLists.txt, when every test of every directory exists.
@@ -119,7 +123,7 @@ set(ENGINE_WALL_CLOCK_TESTS tileset scene_collision)
 #     invocation never run at once and never queue against each other in the lock's half-hour wait,
 #     where a skip (exit 75) is a failure at the gate;
 #   - `e2e` adds RESOURCE_LOCK `e2e_apps` (windows and input devices, one of each; engine_app);
-#   - the wall-clock tests above get RUN_SERIAL.
+#   - `wall_clock` (above) adds RUN_SERIAL.
 # A RESOURCE_LOCK orders the tests of one `ctest` and nothing else: two invocations at once (the
 # gate's suites side by side) still share the card through the lock itself (ADR-0049).
 function(_engine_finalize_tests)
@@ -135,9 +139,15 @@ function(_engine_finalize_tests)
       if("e2e" IN_LIST _labels AND NOT "e2e_apps" IN_LIST _locks)
         set_property(TEST "${_test}" DIRECTORY "${_dir}" APPEND PROPERTY RESOURCE_LOCK e2e_apps)
       endif()
-      if("${_test}" IN_LIST ENGINE_WALL_CLOCK_TESTS)
-        set_property(TEST "${_test}" DIRECTORY "${_dir}" PROPERTY RUN_SERIAL TRUE)
+      if("${_test}" IN_LIST _engine_wall_clock_unlabelled)
+        if("wall_clock" IN_LIST _labels)
+          message(FATAL_ERROR "${_test} is registered WALL_CLOCK now: drop it from _engine_wall_clock_unlabelled in cmake/EngineTesting.cmake")
+        endif()
         set_property(TEST "${_test}" DIRECTORY "${_dir}" APPEND PROPERTY LABELS wall_clock)
+        list(APPEND _labels wall_clock)
+      endif()
+      if("wall_clock" IN_LIST _labels)
+        set_property(TEST "${_test}" DIRECTORY "${_dir}" PROPERTY RUN_SERIAL TRUE)
       endif()
     endforeach()
   endforeach()

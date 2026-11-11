@@ -568,7 +568,7 @@ function(_engine_check_config_invariant name)
 endfunction()
 
 #   engine_module_tests(NAME <name> SOURCES <file>... [DEPS <module>...] [PARTS <n>]
-#                       [CONFIG_INVARIANT])
+#                       [CONFIG_INVARIANT] [WALL_CLOCK])
 # DEPS are test-only dependencies (other engine modules the tests use but the module does not).
 # PARTS registers the one executable as <n> CTest tests, <name>.1 to <name>.<n>, each running only
 # its own files' cases (_engine_test_parts above: dealt by cost, the rest by name), for a suite
@@ -581,12 +581,17 @@ endfunction()
 # every configuration (checked here, _engine_check_config_invariant, and by the lint), so an
 # off-configuration may run its tests with no GPU and leave the GPU cases to the all-on suite
 # (`tools/dev.ps1 test -SkipInvariantGpu`).
+# WALL_CLOCK labels the tests `wall_clock`: a case asserts an upper bound on wall-clock time (a
+# lookup under 50 ms), which another test sharing the cores can break, so the finalize in
+# cmake/EngineTesting.cmake runs every test with the label alone (RUN_SERIAL) in a run with jobs
+# (roadmap T87; docs/ci/what-to-run.md, "Jobs"). A lower bound, a synthetic clock or a ratio does
+# not need it.
 # Every test runs with doctest's `--duration=true`, one line of seconds a case in the log, which is
 # what cmake/test-costs.txt is made from (tools/test-costs.ps1).
 function(engine_module_tests)
   set(_one NAME PARTS)
   set(_multi SOURCES DEPS)
-  cmake_parse_arguments(ET "CONFIG_INVARIANT" "${_one}" "${_multi}" ${ARGN})
+  cmake_parse_arguments(ET "CONFIG_INVARIANT;WALL_CLOCK" "${_one}" "${_multi}" ${ARGN})
   if(NOT ENGINE_BUILD_TESTS)
     return()
   endif()
@@ -618,6 +623,9 @@ function(engine_module_tests)
   if(ET_CONFIG_INVARIANT)
     _engine_check_config_invariant(${ET_NAME})
     list(APPEND _labels config_invariant)
+  endif()
+  if(ET_WALL_CLOCK)
+    list(APPEND _labels wall_clock)
   endif()
   if(ET_PARTS AND ET_PARTS GREATER 1)
     _engine_defer_test_parts(${ET_NAME} ${_test_target} ${ET_PARTS} "${_labels}" "${_opens_devices}" "")
