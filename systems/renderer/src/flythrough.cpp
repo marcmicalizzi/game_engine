@@ -212,6 +212,12 @@ void summarize_rt(const RtStats& stats, scene::FlythroughRt& out) {
   out.bytes_per_reference = stats.bytes_per_reference;
   out.reference_grows = stats.reference_grows;
   out.reference_shrinks = stats.reference_shrinks;
+  out.blas_built = stats.blas_built;
+  out.peak_blas_built = stats.peak_blas_built;
+  out.instance_slots = stats.instance_slots;
+  out.static_reserved_bytes = stats.static_reserved_bytes;
+  out.first_drop_bound = stats.first_drop_bound != 0 ? rt_bound_name(stats.first_drop_bound) : "";
+  out.last_drop_bound = stats.last_drop_bound != 0 ? rt_bound_name(stats.last_drop_bound) : "";
 }
 
 void summarize_textures(const GpuScene& scene, scene::FlythroughTextures& out) {

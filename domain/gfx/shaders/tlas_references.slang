@@ -20,7 +20,7 @@
 
 #include "scene.slang"
 
-// Mirrors gfx::TlasReferenceParams (88 bytes).
+// Mirrors gfx::TlasReferenceParams (120 bytes).
 struct TlasReferenceParams {
   uint64_t addresses;  // uint64_t[count]: ClusterBlasSet::addresses, what the build wrote
   uint64_t records;    // VkAccelerationStructureInstanceKHR[count], 64 bytes each
@@ -31,9 +31,53 @@ struct TlasReferenceParams {
   // uint64_t per mesh: the static structure of a rigid distance form, built once (renderer.md,
   // "Static structures for rigid forms"), or 0; the whole word 0 when the scene has none.
   uint64_t static_addresses;
+  // **The bottom-level build is over what the frame drew** (renderer.md, "The bottom-level build is
+  // over what the frame drew"; R143): the ranges' per-instance records, the same records without
+  // the empty ones, each instance's place among those (or `k_blas_none`), and their count, which
+  // the build reads. All zero for a caller whose build is over every instance.
+  uint64_t blas_records;  // BlasRecord[count], as clas_records.slang's ranges wrote them
+  uint64_t blas_dense;    // BlasRecord[]: only the records that reference anything
+  uint64_t blas_slots;    // uint[count]: an instance's place in `blas_dense`
+  uint64_t blas_count;    // uint: the records in `blas_dense`; the ranges clear it every frame
 };
 
+// Mirrors VkClusterAccelerationStructureBuildClustersBottomLevelInfoNV (16 bytes).
+struct BlasRecord {
+  uint count;
+  uint stride;
+  uint64_t references;
+};
+static const uint k_blas_none = 0xffffffffu;  // gfx::k_cluster_blas_none
+
 [[vk::push_constant]] ConstantBuffer<TlasReferenceParams> g_params;
+
+// **Only the instances that drew something are built** (R143). The ranges leave one bottom-level
+// record per instance slot, and the build costs the records it is handed whether they reference
+// anything or not: on the forest proof of concept's 219,166 slots that was 2.17 ms a frame, flat,
+// for a frame that draws a tenth of them — a streamed world's far rings are static forms, whose
+// record is empty every frame, and so is every slot the view does not hold. One thread an instance,
+// before the build: a record with a reference takes the next place of `blas_dense` and says so in
+// `blas_slots`. The places follow the atomic, so the order of the structures in the build's buffer
+// is not a function of the frame; the picture cannot tell, since a hit is named by its top-level
+// record, which stays the instance's, and the ray path settles a tied distance by the pair.
+[shader("compute")]
+[numthreads(64, 1, 1)]
+void blas_compact_main(uint3 thread_id : SV_DispatchThreadID) {
+  const uint i = thread_id.x;
+  if (i >= g_params.count) return;
+  BlasRecord* records = (BlasRecord*)g_params.blas_records;
+  uint* slots = (uint*)g_params.blas_slots;
+  const BlasRecord record = records[i];
+  if (record.count == 0) {
+    slots[i] = k_blas_none;
+    return;
+  }
+  Atomic<uint>* built = (Atomic<uint>*)g_params.blas_count;
+  const uint place = built[0].add(1);
+  BlasRecord* dense = (BlasRecord*)g_params.blas_dense;
+  dense[place] = record;
+  slots[i] = place;
+}
 
 // A record is 64 bytes: the 3x4 transform in its first twelve words, the reference in its last
 // eight bytes (gfx::k_instance_record_bytes = 64).
@@ -52,7 +96,15 @@ void tlas_references_main(uint3 thread_id : SV_DispatchThreadID) {
   const InstanceDesc instance = instances[i];
   // A rigid form's structure was built once, at load: this frame's build left the instance's own
   // empty (clas_records.slang leaves its entries out), and its mesh's static one stands in.
-  uint64_t reference = addresses[i];
+  uint64_t reference = 0;
+  if (g_params.blas_slots != 0) {
+    // The build was over the instances that drew something (`blas_compact_main`): this one's
+    // structure is at its place among them, and an instance with none stays inactive.
+    const uint place = ((uint*)g_params.blas_slots)[i];
+    if (place != k_blas_none) reference = addresses[place];
+  } else {
+    reference = addresses[i];
+  }
   if (g_params.static_addresses != 0 && (instance.flags & k_instance_static_rt) != 0) {
     reference = ((uint64_t*)g_params.static_addresses)[instance.mesh];
   }

@@ -77,8 +77,9 @@ struct Rig {
   ResolvedSettings resolved;
   GpuScene scene;
   SceneRenderer renderer;
-  bool build(const gfx::Device& device, const RenderSettings& settings, std::string& error) {
-    if (!load_scene(terrain_grid(), data, error)) return false;
+  bool build(const gfx::Device& device, const RenderSettings& settings, std::string& error,
+             const SceneDesc& desc_in = terrain_grid()) {
+    if (!load_scene(desc_in, data, error)) return false;
     resolve_settings(settings, device.features(), &data, resolved);
     if (!resolved.rt_chain) {
       error = "the settings resolved to no ray tracing chain";
@@ -659,6 +660,31 @@ TEST_CASE("rt capacity: a scene with no budget named takes the device's, and say
 // R94: past the capacity a frame spends it nearest first — the prefix, then the rings inside out,
 // one ring's blocks by tile key, a block's slots in order — whatever order the blocks were laid
 // out in, so the same instances are dropped every run.
+TEST_CASE("rt capacity: a drop names the bound it met") {
+  // **The warning names its bound** (R143; renderer.md, "The warning names its bound"): four
+  // bounds, each in cluster structures, judged against the capacities the frame was recorded
+  // against. The owner's v38 walk: 86,971 wanted of a capacity of 86,016 under a budget of 338,072
+  // — a growth in flight, which the old line could not say. The proof of concept's v40 captures:
+  // 124,490 wanted at a capacity that is the 1,024 MiB budget's 117,271.
+  CHECK(rt_drop_bound(86971, 86016, 338072, 0, 0, 0) == k_rt_bound_capacity);
+  CHECK(std::string(rt_bound_name(k_rt_bound_capacity)) == "capacity");
+  CHECK(rt_drop_bound(124490, 117271, 117271, 62131, 180224, 605949) == k_rt_bound_budget);
+  CHECK(std::string(rt_bound_name(k_rt_bound_budget)) == "budget");
+  CHECK(std::string(rt_bound_remedy(k_rt_bound_budget)) == "raise RenderSettings::rt_budget_mib");
+  // The references: under their ceiling, at it, and both kinds short at once.
+  CHECK(rt_drop_bound(10, 100, 200, 5000, 4096, 8192) == k_rt_bound_references);
+  CHECK(rt_drop_bound(10, 100, 200, 9000, 8192, 8192) == k_rt_bound_reference_ceiling);
+  const u32 both = rt_drop_bound(300, 200, 200, 9000, 8192, 8192);
+  CHECK(both == (k_rt_bound_budget | k_rt_bound_reference_ceiling));
+  CHECK(std::string(rt_bound_name(both)) == "budget+reference-ceiling");
+  CHECK(std::string(rt_bound_name(k_rt_bound_capacity | k_rt_bound_references)) ==
+        "capacity+references");
+  // A frame that fits met none, and a growth in flight asks for nothing.
+  CHECK(rt_drop_bound(100, 100, 200, 0, 0, 0) == 0u);
+  CHECK(std::string(rt_bound_name(0)) == "none");
+  CHECK(std::string(rt_bound_remedy(k_rt_bound_capacity)).rfind("none", 0) == 0);
+}
+
 TEST_CASE("rt capacity: the drop order is the prefix, then the rings inside out by tile key") {
   RtDropBlock blocks[] = {{.key = 9, .rank = 3, .first_slot = 10, .slots = 2},
                           {.key = 4, .rank = 2, .first_slot = 12, .slots = 1},
@@ -985,6 +1011,105 @@ TEST_CASE("rt cache: rigid structures built once trace the per-frame build's byt
       }
     }
     CHECK(built_first <= cached.scene.rt_cache_slots());
+  }
+  device.destroy();
+}
+
+// **Thousands of small rigid instances** (R143; renderer.md, "The bottom-level build is over what
+// the frame drew"): 10,000 instances of one 512-triangle mesh, the shape of a wall's stones. Every
+// one the picture shows is traced — the ray path's ids are the cached chain's and the per-frame
+// build's, word for word — none is dropped, the chain's memory is stated, and **the bottom-level
+// build is over the instances the frame draws, not over the scene's**: from a camera that sees a
+// corner of the field it builds a structure for each instance in view and no more, where until
+// R143 the build was handed a record for every instance slot every frame (about 10 ns each on the
+// RTX 5090: 2.17 ms a frame on the forest proof of concept's 219,166 slots). On main this fails to
+// compile for `blas_built`, which is the point: the count did not exist, it was the slots.
+TEST_CASE("rt chain: thousands of small rigid instances build what the frame draws, all traced") {
+  ScopedTunable on("renderer.rt.cache", "true");
+  gfx::Device device;
+  std::string error;
+  if (!device.create(gfx::DeviceOptions{}, &error) || !traces(device)) {
+    MESSAGE("tracing unavailable: " << error);
+    return;
+  }
+  SceneDesc stones;
+  stones.meshes.push_back("");
+  stones.heightfield_grid = 17;  // 512 triangles: a handful of clusters and the levels above them
+  stones.grid_instances = 100;   // 10,000 instances
+  stones.cache = false;
+  RenderSettings settings;
+  settings.raster = RasterMode::RayTrace;
+  settings.shadows = ShadowMode::Off;  // primary rays alone: what is built is what is drawn
+  settings.lights = false;
+  {  // the rigs are gone before the device they were made on
+    Rig per_frame;
+    {
+      ScopedTunable off("renderer.rt.cache", "false");
+      REQUIRE_MESSAGE(per_frame.build(device, settings, error, stones), error);
+    }
+    Rig cached;
+    REQUIRE_MESSAGE(cached.build(device, settings, error, stones), error);
+    REQUIRE(cached.scene.rt_cache());
+    const u32 instances = cached.scene.instance_count();
+    REQUIRE(instances == 10000u);
+    u64 frame_index = 0;
+    // Far: the whole field in view. Near: a corner of it.
+    for (const f32 distance : {2.5f, 0.12f}) {
+      for (u32 k = 0; k < 3; ++k, ++frame_index) {
+        REQUIRE_MESSAGE(per_frame.renderer.render_offscreen(
+                            frame_at(per_frame.data, distance, frame_index), &error),
+                        error);
+        REQUIRE_MESSAGE(
+            cached.renderer.render_offscreen(frame_at(cached.data, distance, frame_index), &error),
+            error);
+      }
+      CapturedFrame a;
+      CapturedFrame b;
+      REQUIRE_MESSAGE(per_frame.renderer.capture(frame_at(per_frame.data, distance, frame_index),
+                                                 {.color = true, .ids = true}, a, &error),
+                      error);
+      REQUIRE_MESSAGE(
+          cached.renderer.capture(frame_at(cached.data, distance, frame_index),
+                                  {.color = true, .ids = true, .depth = true}, b, &error),
+          error);
+      ++frame_index;
+      const Pictures differ = compare(a, b);
+      // The instances the picture shows: the first id word of every covered pixel.
+      Vector<u8> shown(instances, u8{0});
+      u32 shown_count = 0;
+      REQUIRE(b.ids.size() == u64{b.depth.size()} * k_id_words);
+      for (u32 p = 0; p < b.depth.size(); ++p) {
+        if (b.depth[p] == 0.0f) continue;
+        const u32 instance = b.ids[u64{p} * k_id_words];
+        if (instance < instances && shown[instance] == 0) {
+          shown[instance] = 1;
+          ++shown_count;
+        }
+      }
+      for (const Rig* rig : {&per_frame, &cached}) {
+        const RtStats& rt = rig->renderer.stats().rt;
+        MESSAGE(std::string(rig == &cached ? "cached" : "per frame")
+                << " at " << distance << " radii: " << shown_count << " of " << instances
+                << " instances in the picture, " << rt.blas_built
+                << " bottom-level structures built over " << rt.instance_slots << " slots, "
+                << rt.built << " cluster structures built, " << rt.references << " referenced, "
+                << rt.bytes / 1024 << " KiB of chain; " << differ.colour << " colour bytes and "
+                << differ.ids << " id words differ between the two");
+        CHECK(rt.overflow_frames == 0);
+        CHECK(rt.dropped_instances == 0);
+        CHECK(rt.instance_slots == instances);
+        // Every instance the picture shows has a structure, and nothing is built past the scene's.
+        CHECK(rt.blas_built >= shown_count);
+        CHECK(rt.blas_built <= instances);
+        if (distance < 1.0f) CHECK(rt.blas_built * 2 < instances);  // a corner, not the field
+      }
+      CHECK(shown_count > 0);
+      CHECK(differ.colour == 0);
+      CHECK(differ.ids == 0);
+    }
+    // The cached chain builds no cluster structure of its own for them, and holds a stated memory.
+    CHECK(cached.renderer.stats().rt.built == 0);
+    CHECK(cached.renderer.stats().rt.bytes < u64{512} * 1024 * 1024);
   }
   device.destroy();
 }
