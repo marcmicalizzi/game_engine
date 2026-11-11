@@ -191,6 +191,204 @@ longest river has points, 735 in the bench's 1,024 by 1,024 sketch twenty steps 
 published way to run a sweep in parallel (Barnes's, by level) hands a thread 1,400 points at a
 time at that size, which is less work than the hand-off. The subsystem page says what would pay.
 
+## Stage D (W106): the sources, and the design that is not built
+
+2026-11-11. Stage D set out to give the ice its basins, cirques and moraine ridges, and was cut
+by the night's clock to what it could finish: the trough's section checked against the published
+form, two checks restated from what the model does, the ground drawn by the renderer, and **the
+rules below written as the design for the pass that builds them. None of the three is in the
+solver.** The reading was by search extract and abstract for most of it (the publishers' PDFs
+would not decode through the fetch, and two are scans), and the table says so line by line: a
+number marked secondary is to be read at its source before a world pins it.
+
+### A trough's section: the sources
+
+| What | Form | Source |
+|---|---|---|
+| The form | Each side of a glacial valley's cross-section as y = a x^b, x from the centre line, fitted in logarithms by least squares | Svensson 1959, *J. Glaciol.* 3(25):362–363. **Read** (the note's text on the publisher's page; its equations are images, so its numbers were not): the exponent of his valley, Lapporten, "deviates only slightly" from 2; "The close agreement with a parabola is, however, evident"; and his own caution that one valley is no general conclusion. The fitted exponents, 2.045 and 2.177, are **secondary** (a search extract of a paper that quotes them) |
+| Its range | b from 1.5 (a semicubic parabola) to 2.0, rising with the intensity of erosion | Graf 1970. **Secondary** (a search extract), not read |
+| The fluvial end | An exponent of 1 is a V; mean exponents of 1.28 and 1.54 for fluvial and glacial end-member topography | Prasicek, Larsen and Montgomery 2015, *Nat. Commun.* 6:8028. **Secondary** (a search extract) |
+| What makes it | The erosion's pattern across a section under a sliding glacier, starting from a V | Harbor 1992, *GSA Bull.* 104:1364–1375. **Not read**: the one copy found is a scan the fetch could not decode. Known only from a later paper's line that his model assumed a quadratic section |
+
+**The measure is the exponent.** A section y = a x^b is 2 (y/a)^(1/b) wide at height y, so its
+width half way up over its width at the top is (1/2)^(1/b): a V 0.5, b = 1.5 gives 0.63, a
+parabola 0.71, Svensson's 2.18 gives 0.73. Stage C's glacier measured 0.73 and its river 0.56,
+which is **b = 2.2 and b = 1.2**. So stage C's "a trough is a parabola, not a U", which it counted
+as a shortfall, named the published description of a trough: Svensson's question was whether a
+glacial valley is a parabola, and his answer was yes. The test's bounds are now the exponents'
+(the river's under 1.5, the glacier's 1.5 or more), where they were "a tenth above the river's".
+**That does not show the solver's ice makes a trough**: the test valley's 2.2 turned out to be a
+trench against the region's held edge ([what a first attempt measured](#what-a-first-attempt-at-the-basins-measured)),
+and with the edge mended on the glacier's line the same valley measures 1.45, under the range.
+**What the reels show that the model lacks is a level floor, and in a real trough that floor is
+mostly not rock**: it is the fill of a basin the ice dug below the river's grade, flooded when the
+ice left and filled by the lake's sediment and the outwash. The solver has the flood and the
+fill; it has no basin to fill, which is the next section.
+
+### The basins the ice digs: the sources and the rule
+
+| What | Statement | Source |
+|---|---|---|
+| What an overdeepening is, and what limits it | Glaciers carve their beds below the local base level; "water, ice and sediment" must then climb an adverse slope, and how well they do depends on that slope's gradient against the ice surface's; an adverse gradient over 11 times the surface's may hold a subglacial lake; the authors suppose the geometry tends to one that keeps the ice flowing efficiently | Cook and Swift 2012, *Earth-Sci. Rev.* 115:332–372. **Abstract only**, through a search extract; the repository copy is larger than the fetch takes. Its sections on where basins form (confluences, the equilibrium line) were **not read** |
+| The limit as a number | Above an adverse bed slope of about 1.2 times the ice surface's slope for air-saturated water and 1.7 for pure water, water climbing the slope supercools, its channels freeze shut, sediment stays, and the bed is shielded; the "classic" ratio is 1.6; of 147 mapped overdeepenings few are deeper than the threshold allows | The 1.2 and 1.7 as a later paper gives them, attributing Röthlisberger and Lang 1987 and Alley et al. 1998; the 1.6 and the 147 from Werder 2016, *Geophys. Res. Lett.* 43 (its abstract). All **secondary** (search extracts). Hooke 1991 and Alley et al. 2003 **not read** |
+| Where the bed is dug | Erosion in proportion to the ice discharge a unit of valley width carries digs "a parabolic divot" in the long profile, deepest under the equilibrium line; the upper step of real profiles appears only when the tributaries of the head are given as a width | Anderson, Molnar and Kessler 2006, *J. Geophys. Res.* 111:F01004. **Secondary** (search extracts of its summaries; no abstract was reached) |
+| Steps and hanging valleys | Among the models that make U-shaped valleys and overdeepened long profiles from erosion by sliding | MacGregor, Anderson, Anderson and Waddington 2000, *Geology* 28:1031. **Not read**: named by a paper that cites it. MacGregor et al. 2009 (headwalls) and Rea 2009 **not read, not reached** |
+| What the stream-power form says of it | "With this extension, overdeepenings, hanging valleys, and steps at confluences can be simulated in an at least qualitatively reasonable way"; nothing on what bounds a basin's depth, on cirques or on moraines; the model "is not able to predict ... under which conditions glacial erosion is more efficient than fluvial erosion" | Hergarten 2021, sections 8 and 9: the end stage C had not reached, **read** through the same fetch. With it the paper is read whole |
+
+**Why the solver digs none today.** Under ice a point's base level is its receiver's bed raised
+by the ice's share of the step in thickness to the receiver, so the update drives the ice's
+surface level *between a point and its receiver* and never past: a bed goes below its receiver's
+only where the ice is thinner there, by that much at most. Thickness goes with the flux to the
+power 0.3, so it falls downstream only in the ablation zone, slowly, and there the erosion's power
+(the square root of the flux) is falling with it. Stage C's one-metre hollow "in one build and
+none in the next" is that margin. And a surface that follows the bed point by point reads the far
+side of any hollow as an adverse *surface*, where a glacier's surface does not follow its bed:
+it is smooth over several ice thicknesses, the ice flows down that surface, and it goes on
+wearing a bed that rises under it. That is the missing piece, and the published limit above is
+what bounds it.
+
+**The rule, as designed** (closures marked: each is this solver's until someone reads the
+source that would replace it):
+
+1. **The slope the ice's erosion reads is the ice surface's over a coupling length**, not to
+   the next point, **on a glacier's own line** (a point beside the line keeps the step to its
+   receiver: [what a first attempt measured](#what-a-first-attempt-at-the-basins-measured)):
+   from a point p, walk down the glacier's line a distance L = `coupling` × the
+   ice's thickness at p to a point q; the surface slope is (b_p + h_p − b_q − h_q) / D, D the
+   distance walked. That a glacier's flow answers to its thickness and surface slope averaged
+   along its length is Kamb and Echelmeyer 1986 (*J. Glaciol.* 32(111):267–284; **abstract**,
+   through a search extract of the authors' repository record): the coupling length ℓ is "one
+   to three times the ice thickness for valley glaciers and four to ten times for ice sheets",
+   and the weighting is well approximated by "a symmetrical triangular averaging window of
+   length 4ℓ". So `coupling` is ℓ over the thickness, 2 by default (the middle of their range),
+   and the window is 4ℓ, eight thicknesses, about the point. **The closure**: their window is
+   symmetric and triangular, and the form below reads only its downstream half, 2ℓ, as one
+   difference, because a sweep's point may read lower levels of the network and not higher
+   ones; the upstream half would be read from the last step's ground. Which of the two the
+   basins need is for the pass that builds them to measure.
+2. **Implicit, like every other term**: the ice's term draws the bed toward the level at which
+   that surface would be flat, T = b_q + h_q − h_p, at its own rate F_g = K_g Δt √(effective
+   flux) over D in cells; the meltwater's term stays the rivers' law to the receiver's bed b_r.
+   One division: z = (z + F_g T + F_w b_r) / (1 + F_g + F_w), with q's and r's heights the
+   sweep's iterates (both are lower levels of the network, so a level still reads only levels
+   below it and the bytes do not depend on the workers).
+3. **The depth is bounded by the published limit, not a clamp**: the ice's term stops where the
+   bed's adverse slope to its receiver reaches c times the surface slope, c = 1.5 (inside the
+   1.2 to 1.7 above). That is a closed form too: (b_r − b_p) / d ≤ c (b_p + h_p − s_q) / D
+   gives b_p ≥ (D b_r + c d (s_q − h_p)) / (D + c d), a mean of the receiver's bed and the
+   flat-surface level, and the ice's target is the higher of T and that. A basin is then as
+   deep as the surface's fall over a coupling length allows and no deeper, and its far side
+   rises no steeper than 1.5 times the ice's surface falls.
+4. **Where it digs follows from the flux**, with nothing added: below a confluence, where the
+   flux jumps and the surface slope does not; under the equilibrium line, where the flux peaks
+   (Anderson's divot); and at a valley's head when the line stands high enough that the glacier
+   ends a little below it, which is a cirque (below).
+5. **The cost** is one walk of a few points down the line for each point of ice, in the ice
+   steps only, and one more place beside each point of the sweep.
+
+**What fills them is already there.** Once the ice has gone the flood finds the basin
+(`fill`), the rivers' load builds a delta from its head and levels its floor
+([deposition](../subsystems/landform.md#deposition)), and a trough then reads, down valley, as a
+rock step, a lake or a level flat, and a rock bar. The rock floor under the fill is the height
+less `sediment` today. What the field file should gain when the basins stand is the flat's
+extent as a field of its own (the sediment that settled in standing water, kept the way `till`
+is), so a solver can tell a lake's fill from a fan on it.
+
+**Cirques, as designed.** No rule of their own is proposed: with the rule above, a glacier that
+ends a little below its valley's head (a high line: a cirque glaciation) has its flux peak and
+fall within a kilometre, digs its divot there, and leaves a floor below a lip where its snout
+stood, with a tarn in `fill`. The headwall is the slope limiter's, at the critical slope of its
+rock above the ice. What that leaves out is the headwall's own retreat by frost at the ice's
+edge (MacGregor et al. 2009, not read), and the published check on the floor's height against
+the equilibrium line (Rea 2009's balance ratios, not read): a cirque built this way has to be
+measured against both before the page calls it one. It needs the sketch to give the ice a
+history (a list of stands, each a year and a line's height), which a moraine needs too.
+
+**Moraines as ridges, as designed.** Today what the ice carries is laid where the ice melts,
+spread over the glacier's width: a sheet. The rule proposed: **what melts out at a point of the
+glacier's line is laid on the ice's margin within half the glacier's width of it** (the iced
+points with a neighbour that is not), still in proportion to the melt and still no higher than
+the ice is thick. In the ablation zone the margin within reach is the swath's two edges, so the
+load makes laterals, which begin at the equilibrium line because nothing melts above it (that
+lateral moraines mark the line is the premise of the published "maximum elevation of lateral
+moraines" method, known here from a search extract of Hawkins 1985: **secondary**); at the
+snout the edges close and the rest of the load makes the arc across the valley. A ridge's height
+is then the volume delivered while the snout stood there over the margin's length, and a stand
+that lasts builds a taller one; a later, higher stand leaves a recessional ridge up valley, and
+the valley behind a ridge holds a lake by the flood's rule with no rule added. The tests it owes:
+a ridge across the valley at each stand, standing above the ground up valley of it; the till's
+volume equal to what the ice delivered less what the meltwater took; and laterals that begin at
+the line.
+
+### What a first attempt at the basins measured
+
+The rule above was built once, on 2026-11-11, measured for half an hour, and **taken out again
+whole**: it is not in the tree, and no pin moved. What the attempt found is what the next pass
+should start from, in this order:
+
+1. **The held edge comes first.** In the trough test (a trunk falling at 0.02 whose ice leaves
+   through the held east edge) stage C's trunk ends at 1,041 m against an edge held at
+   1,273 m, and its bed is below its outlet's level for its whole length. The held point on
+   the line carries the glacier's 220 m of ice; the held points beside it carry 57 to 111 m,
+   their own threads'; the swath's points that drain to those are worn below the edge by the
+   difference, and the trench runs up the trunk from there. The ice's surface would have to
+   climb 230 m in one point for that bed to be a glacier's. **Stage C's trough numbers (b = 2.2,
+   1.7 times as wide, 196 m below the river's bed) are this trench.** Letting a held point under
+   a swath carry the swath's ice grades the trunk to its outlet on the axis (37 m below the
+   river's bed, 1.26 times as wide, b = 1.45) and leaves trenches of 50 to 200 m off the axis
+   near the edge, whose cause was not found; it was not kept. With nothing laid down
+   (`deposition` 0) the valley of the snout test ends 68 to 108 m below its base level beside
+   the held edge under either rule, so a run with deposition hides the same defect under fill.
+2. **The coupling is for a glacier's own line, not for its swath.** Read by every point of the
+   swath, the slope over a reach takes the trough's section away (b from 2.2 to 1.47, the width
+   a hundred metres up from 59 points to 32): a point beside the line has its receiver toward
+   the line, the reach then runs down the valley, and the cross fall that Hergarten's swath
+   wears away is divided by the reach's length. Read only where a point's own flux is the
+   swath's (its line), with the step to the receiver kept beside it, the section and the
+   hanging tributary stay (b = 1.59, a step of 39.9 m) while the edge's trench is still there
+   to flatter them.
+3. **A basin has to be told from a pond among till.** With deposition on, the snout valley's
+   floor is till in mounds up to 92 m thick (the melt-out rule caps till at the ice's
+   thickness and no lower), the glacier's line leaves the valley's axis among them, and the
+   standing water counted after the ice is mostly behind till. The test that holds a rock
+   basin should run with nothing laid down, or flood the rock's surface (the height less
+   `sediment`); the one that holds the fill comes after.
+4. **What the rule did where it could be read**: with nothing laid down and the line at
+   1,400 m the valley held 508 points of standing water where the last ice stood, to 82 m,
+   against 386 and 62 m reading the slope to the next point; the one point of the axis whose
+   bed rose under the ice stood at 1.28 times the surface's slope, inside the 1.5. Both
+   numbers include the edge's trench, so neither is evidence yet.
+5. **The limit as built**: T′ = T + (b_r − T) D / (D + c d) wherever the receiver's bed stands
+   above the flat-surface level T, in the sweep, one multiply and one add a point under ice;
+   and the ice's power over the reach's length in spacings, so a uniform valley erodes as
+   before. The sketch gained `ice.coupling` (2) and `ice.adverse_slope` (1.5).
+
+### The two checks stage C restated, and what was found
+
+- **The dammed valley's "level across within 8 m"** is kept as written and run for what it was
+  written for (one thread, no banks: 7.6 m). What stage C measured as 12.9 m with its defaults
+  is not a floor that is less level: it is the foot of the side slopes' aprons, which the bank
+  rule cuts back to a scarp (the tallest step beside the river's own floor is 9.1 m with banks
+  and 4.9 m without), on ground the test raises 30 m in its hundred thousand years while the
+  river holds its grade to the dam. **The bank rule bounds no such scarp**: a bank of fill falls
+  when the water's reach of it is worn, however tall it stands. So the second case holds what
+  the rule does give (the river's own floor, the points within the water's depth of its bed, is
+  wider than a thread and no narrower than with no bank taken; the step beside it is taller
+  than with none) and bounds the scarp by the only thing that does, the uplift over the run.
+  That bound is loose (30 m), and looser than stage C's "a quarter of the 87 m", which nothing
+  derived.
+- **The fan's "under a metre 1,700 m aside"** asked for a plain "as it was", and the plain there
+  never was: by the shares (half straight on and a quarter to each diagonal down a plane) the
+  water of the mouths facing the line spreads two points either way in the eight rows to it,
+  and the far points stand sixteen beyond the massif's edge, so none of it arrives; what does
+  is the massif's east and west flanks' rivers, which cross the plain beside it and turn
+  south. The deposit along the line runs from 10.6 m opposite the massif to 1.0 m at the
+  region's edges, 2.4 and 3.0 m at the far points. The bound is now what an even sheet of the
+  same load along the line would stand at (5.5 m): the far points under it, the crown over it,
+  since a point lays down G times the load a unit of its water carries and the far points'
+  water has run farther over the plain, laying down and gathering clear water. Stage C's "under
+  half the crown" was not derived either.
+
 ## Constants, their ranges, and the defaults the schema pins
 
 | Constant | Default | Range accepted | Status | Source or reason |

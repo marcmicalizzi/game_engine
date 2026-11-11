@@ -717,10 +717,23 @@ TEST_CASE("landform: with deposition a steady river stands 1 + G times as steep"
   CHECK(concavity == doctest::Approx(0.5).epsilon(0.06));
 }
 
-TEST_CASE("landform: a dammed valley fills to a floor level across that widens downstream") {
-  // A straight V-shaped valley falling east at 0.04 between sides at 0.5, its mouth held 90 m
-  // above its bed (a base level that rose: a moraine, a landslide, a trunk valley's own fill).
-  // The ground rises at 0.3 mm/yr and sheds into it for a hundred thousand years.
+namespace {
+
+// What the dammed valley's floor measures (the two cases below).
+struct DammedFloor {
+  f64 upper = 0.0;       // the run of fill about the axis, points, where the fill begins
+  f64 lower = 0.0;       // and in the lower third
+  i32 worst_across = 0;  // the largest cross fall of that run in the lower third, millimetres
+  u32 thickest = 0;      // the thickest fill, millimetres
+  f64 river = 0.0;       // the river's own floor in the lower third, points a column
+  i32 worst_river = 0;   // the largest cross fall of the river's own floor, millimetres
+  i32 worst_step = 0;    // the tallest step from the river's floor to the fill beside it
+};
+
+// A straight V-shaped valley falling east at 0.04 between sides at 0.5, its mouth held 90 m
+// above its bed (a base level that rose: a moraine, a landslide, a trunk valley's own fill). The
+// ground rises at 0.3 mm/yr and sheds into it for a hundred thousand years.
+DammedFloor dammed_valley(f64 lateral_erosion, f64 divide_below_slope, const char* what) {
   const u32 wide = 96, deep = 64;
   const landform::StartField start = start_from(wide, deep, 50000, [](f64 x, f64 z) {
     return 300.0 - 0.04 * x + 0.5 * std::fabs(z - 1600.0);
@@ -735,12 +748,15 @@ TEST_CASE("landform: a dammed valley fills to a floor level across that widens d
   sketch.erodibility_per_yr = 0.00002;
   sketch.start = "valley.json";
   sketch.duration_yr = 100000;
+  sketch.lateral_erosion = lateral_erosion;
+  sketch.divide_below_slope = divide_below_slope;
   const landform::Landform land = solved(sketch, &start);
   check_drains(land);
+  DammedFloor out;
   // The floor of a column: the run of points about the axis (row 32) on five metres or more of
   // fill.
   u32 widths[96] = {};
-  i32 worst_across = 0;
+  u32 columns = 0;
   for (u32 x = 0; x + 1 < wide; ++x) {
     if (land.sediment[32 * wide + x] < 5000) continue;
     u32 first = 32, last = 32;
@@ -748,40 +764,100 @@ TEST_CASE("landform: a dammed valley fills to a floor level across that widens d
       --first;
     while (last + 1 < deep && land.sediment[(last + 1) * wide + x] >= 5000)
       ++last;
+    u32 bed = 32;
     i32 lowest = land.height_mm[32 * wide + x], highest = lowest;
     for (u32 z = first; z <= last; ++z) {
       const i32 mm = land.height_mm[z * wide + x];
-      if (mm < lowest) lowest = mm;
+      if (mm < lowest) {
+        lowest = mm;
+        bed = z;
+      }
       if (mm > highest) highest = mm;
     }
     widths[x] = last - first + 1;
+    if (x < 80) continue;
     // The lower reach, where the fill is the lake's and the river's plain over it.
-    if (x >= 80 && highest - lowest > worst_across) worst_across = highest - lowest;
+    if (highest - lowest > out.worst_across) out.worst_across = highest - lowest;
+    // The river's own floor there: the points about the bed that stand within the water's depth
+    // of it, the depth the bank rule itself gives the reach (0.4 Q^0.35, Q the area times
+    // 4e-6 m/s: landform.md, "Lateral erosion"). A bank the river takes is lowered to its
+    // reach's receiver, so it joins this floor; fill it has not taken stands above it.
+    const f64 area_m2 = static_cast<f64>(land.discharge[bed * wide + x]) * 2500.0;
+    const i32 water = static_cast<i32>(400.0 * std::pow(area_m2 * 4.0e-6, 0.35));
+    u32 a = bed, b = bed;
+    while (a > first && land.height_mm[(a - 1) * wide + x] <= lowest + water)
+      --a;
+    while (b < last && land.height_mm[(b + 1) * wide + x] <= lowest + water)
+      ++b;
+    out.river += static_cast<f64>(b - a + 1);
+    ++columns;
+    for (u32 z = a; z <= b; ++z)
+      if (land.height_mm[z * wide + x] - lowest > out.worst_river)
+        out.worst_river = land.height_mm[z * wide + x] - lowest;
+    if (a > first && land.height_mm[(a - 1) * wide + x] - lowest > out.worst_step)
+      out.worst_step = land.height_mm[(a - 1) * wide + x] - lowest;
+    if (b < last && land.height_mm[(b + 1) * wide + x] - lowest > out.worst_step)
+      out.worst_step = land.height_mm[(b + 1) * wide + x] - lowest;
   }
+  if (columns > 0) out.river /= static_cast<f64>(columns);
   // Thirds of the filled reach, upstream to downstream (the fill begins near x = 50 points,
   // where the bed stood at the mouth's level).
-  f64 upper = 0.0, lower = 0.0;
   for (u32 x = 50; x < 65; ++x)
-    upper += static_cast<f64>(widths[x]) / 15.0;
+    out.upper += static_cast<f64>(widths[x]) / 15.0;
   for (u32 x = 80; x < 95; ++x)
-    lower += static_cast<f64>(widths[x]) / 15.0;
-  u32 thickest = 0;
+    out.lower += static_cast<f64>(widths[x]) / 15.0;
   for (u32 p = 0; p < wide * deep; ++p)
-    if (land.sediment[p] > thickest) thickest = land.sediment[p];
+    if (land.sediment[p] > out.thickest) out.thickest = land.sediment[p];
   std::printf(
-      "landform valley floor: %.1f points wide upstream, %.1f downstream, level across "
-      "within %d mm, thickest fill %u mm\n",
-      upper, lower, worst_across, thickest);
-  CHECK(lower >= 5.0);         // 250 m of floor and more at the lower end
-  CHECK(lower > 1.5 * upper);  // and it widens downstream
-  // Level across: the start's V fell 87 m over the floor's 350 m, and the floor's own cross fall
-  // is under a quarter of that. Its low point is the river's bed, cut a few metres into the
-  // fill, and since stage C the river also wears the fill's banks and moves across it, so the
-  // floor is uneven by the channel's depth (12.9 m measured; 7.6 m when the river had one
-  // thread and no banks to take, against a bound then of 8 m that said "level" as a number
-  // the model never promised).
-  CHECK(worst_across * 4 <= 87000);
-  CHECK(thickest > 50000);  // the fill is tens of metres deep at the mouth
+      "landform valley floor (%s): %.1f points wide upstream, %.1f downstream, level across "
+      "within %d mm, thickest fill %u mm; the river's own floor %.1f points a column, level "
+      "within %d mm, the tallest step beside it %d mm\n",
+      what, out.upper, out.lower, out.worst_across, out.thickest, out.river, out.worst_river,
+      out.worst_step);
+  return out;
+}
+
+}  // namespace
+
+TEST_CASE("landform: a dammed valley fills to a floor level across that widens downstream") {
+  // The case as it was written, for what it was written for: a river of one thread that takes
+  // no bank (stage C's lateral erosion and divided flow off, as the steady-state cases run).
+  const DammedFloor floor = dammed_valley(0.0, 0.0, "one thread, no banks");
+  CHECK(floor.lower >= 5.0);               // 250 m of floor and more at the lower end
+  CHECK(floor.lower > 1.5 * floor.upper);  // and it widens downstream
+  // Level across: the start's V fell 87 m over the floor's 350 m; the floor's own cross fall is
+  // the river's bed, cut a few metres into the fill, under the feet of the side slopes' aprons.
+  CHECK(floor.worst_across <= 8000);
+  CHECK(floor.thickest > 50000);  // the fill is tens of metres deep at the mouth
+}
+
+TEST_CASE("landform: a river that moves across a dammed valley's fill keeps a floor of its own") {
+  // The same valley with stage C's defaults (the flow divides on the fill and the river takes
+  // its banks), beside the same with no bank taken. What the bank rule gives, and no more
+  // (landform.md, "Lateral erosion"): a bank is lowered to its reach's receiver once the wear
+  // reaches what the water touches of it, **whatever stands above the water**, and nothing is
+  // ever raised. So:
+  const DammedFloor moving = dammed_valley(1.0, 0.1, "banks and divided flow");
+  const DammedFloor still = dammed_valley(0.0, 0.1, "divided flow, no banks");
+  CHECK(moving.lower >= 5.0);
+  CHECK(moving.lower > 1.5 * moving.upper);
+  CHECK(moving.thickest > 50000);
+  // 1. The river's own floor (the points within the water's depth of its bed) is wider than a
+  //    thread, and no narrower than where it takes no bank: a taken bank joins it.
+  CHECK(moving.river > 1.0);
+  CHECK(moving.river >= still.river);
+  // 2. Beside that floor stands what the river has not taken, cut back to a scarp: a taller
+  //    step than the graded foot of the aprons where no bank is taken.
+  CHECK(moving.worst_step > still.worst_step);
+  // 3. And the rule puts no bound of its own on that scarp, since a bank of fill falls when its
+  //    foot is worn however tall it is. What bounds it is the ground: the fill beside the river
+  //    rises with the uplift while the river holds its grade to the dam, so a bank left
+  //    standing gains on the bed by no more than the ground rose in the run, 0.3 mm/yr for a
+  //    hundred thousand years. (The whole run's cross fall, 12.9 m here, is that scarp on the
+  //    side slopes' aprons; stage C held it under "a quarter of the 87 m the V fell", which
+  //    nothing derives.)
+  CHECK(moving.worst_step <= 30000);
+  CHECK(moving.worst_across <= 30000 + 8000);  // the scarp over the one thread's 8 m of floor
 }
 
 TEST_CASE("landform: a massif's rivers leave a fan on the plain at its foot") {
@@ -806,7 +882,7 @@ TEST_CASE("landform: a massif's rivers leave a fan on the plain at its foot") {
   check_drains(land);
   // Along a line across the plain 400 m south of the massif's foot (row 56): the ground stands
   // highest opposite the massif and falls away to both sides, so a contour there bows away
-  // from the mouths, and far to the side the plain is as it was.
+  // from the mouths, and far to the side it stands under what an even sheet would.
   const u32 row = 56, mid = 48;
   const auto height_at = [&](u32 x) { return land.height_mm[row * side + x]; };
   i32 crown = height_at(mid);
@@ -821,16 +897,32 @@ TEST_CASE("landform: a massif's rivers leave a fan on the plain at its foot") {
       "landform fan: 400 m out the ground stands %d mm opposite the massif, %d and %d mm "
       "700 m to either side, %d and %d mm 1,700 m; %u mm of sediment at the foot\n",
       crown, near_west, near_east, far_west, far_east, apex);
+  // What an even sheet of the same load would stand at along the line: its mean.
+  i64 sum = 0;
+  for (u32 x = 0; x < side; ++x)
+    sum += height_at(x);
+  const i32 even = static_cast<i32>(sum / side);
+  std::printf("landform fan: an even sheet along that line would stand %d mm\n", even);
   CHECK(crown > 3000);
   CHECK(crown > near_west + 1000);
   CHECK(crown > near_east + 1000);
   CHECK(near_west > far_west);
   CHECK(near_east > far_east);
-  // The deposit thins away from the mouths: 1,700 m to the side it is under half the crown's.
-  // (Until stage C this was "under a metre", which held at 0.93 m and said more than the model
-  // does: a plain that rivers cross between two open edges aggrades as a whole, a little.)
-  CHECK(2 * far_west < crown);
-  CHECK(2 * far_east < crown);
+  // The deposit thins away from the mouths, and the bound on the far points is what the rule
+  // delivers there. By the shares, none of the water of the mouths that face the line reaches
+  // them: down a plane a point's flow goes half straight on and a quarter to each diagonal
+  // (Quinn's slope times contour length), so over the eight rows from the massif's foot it
+  // spreads two points either way, and the far points stand sixteen beyond the massif's edge.
+  // What reaches them is the massif's east and west flanks' own rivers, which cross the plain
+  // beside it and turn south: the plain there was never going to be "as it was" (this check was
+  // "under a metre" while it measured 0.93 m, then "under half the crown"; neither was derived).
+  // A point lays down G times the load a unit of its water carries, and that water has run
+  // farther over the plain than the water opposite the massif, laying down and gathering the
+  // plain's clear water all the way: so its deposit is under what the same load laid evenly
+  // along the line would be, and the crown's is over it.
+  CHECK(far_west < even);
+  CHECK(far_east < even);
+  CHECK(crown > even);
   CHECK(apex > 3000);
 }
 TEST_CASE("landform: a lake's floor fills level, and its river's mouth builds a delta") {
