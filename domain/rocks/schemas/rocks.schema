@@ -453,7 +453,7 @@ struct ExposureRule @version(1) {
 /// One tile's ledges at one form, written by the `ledges` generator as
 /// `ledge-<hash>.ledge.json` (rocks.md, "Exposed bedrock (G142)"): the ground's heights over the tile and
 /// an apron, the formation and the rule, from which the mesh is a pure function.
-struct LedgePatch @version(1) {
+struct LedgePatch @version(2) {
   seed: u64 = 1
   type: RockType = Sandstone
   formation: engine.scene.Formation
@@ -490,11 +490,15 @@ struct LedgePatch @version(1) {
   /// What a tread carries to its lip (rocks.md, "Treads"): soil, drawn in this linear colour,
   /// each channel 0 to 1; absent, a dark turf. The fronts and the worn edges are the rock.
   tread_tint: f32[3]?
+  /// A crag's risers (rocks.md, "A crag has mass"): the ground between its ledges is its rock
+  /// where the share of a bed that stands there, times its member's opening, passes this: 0.05
+  /// to 1 (1: no risers).
+  riser: f32 = 0.5 @since(2)
 }
 
 /// The scene generator `ledges`' entry (G142; rocks.md, "Exposed bedrock (G142)"): the resistant beds of
 /// a formation standing out of a soil-mantled slope as ledges, a merged mesh a tile and form.
-struct LedgeLayer @version(1) {
+struct LedgeLayer @version(2) {
   name: string
   seed: u64 = 1
   /// The region dressed, world metres, x and z; a tile is dressed when its corner lies inside.
@@ -527,6 +531,8 @@ struct LedgeLayer @version(1) {
   material: RockMaterial
   /// What a tread carries to its lip: `LedgePatch.tread_tint`.
   tread_tint: f32[3]?
+  /// Where a crag's ground is its rock: `LedgePatch.riser`.
+  riser: f32 = 0.5 @since(2)
   /// Where the patches' recipes are written: relative to the scene; empty, the host's
   /// derived-data root's `ledges/`, else the repository's, else `ledges` beside the scene.
   recipes: string

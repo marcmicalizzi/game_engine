@@ -731,6 +731,58 @@ TEST_CASE("cliffs generator: a steep band is cut into tiers at the layer's break
   CHECK(error.find("tier_m") != std::string::npos);
 }
 
+TEST_CASE("cliffs generator: a tier's rock is the beds its height cuts") {
+  // Two members, each thicker than a tier: 14 m of pale sandstone on 16 m of dark mudstone, level.
+  CliffLayer layer = tiered_layer(0, 0, 256, 256);
+  scene::Formation f;
+  f.dip_deg = 0.0f;
+  scene::FormationBed pale;
+  pale.name = "sandstone";
+  pale.thickness_m = 14.0f;
+  pale.resistance = 0.9f;
+  pale.tint = Vec3{1.0f, 0.95f, 0.85f};
+  pale.roughness = -0.1f;
+  scene::FormationBed dark;
+  dark.name = "mudstone";
+  dark.thickness_m = 16.0f;
+  dark.resistance = 0.2f;
+  dark.tint = Vec3{0.45f, 0.45f, 0.5f};
+  dark.roughness = 0.1f;
+  f.beds.push_back(dark);
+  f.beds.push_back(pale);
+  layer.formation = f;
+  Vector<CliffFace> faces;
+  std::string error;
+  REQUIRE_MESSAGE(trace_cliff_block(layer, ground_of(&escarpment), 0, 0, faces, &error), error);
+  REQUIRE(faces.size() >= 2);
+  // Every tier is the type's colour times a mean of the two beds' tints, so the red of a tier over
+  // the palest tier's lies between the mudstone's 0.45 and 1.
+  f32 darkest = 1.0f, palest = 0.0f, smoothest = 1.0f, roughest = 0.0f;
+  for (const CliffFace& face : faces) {
+    REQUIRE(face.cliff.material.tint.has_value());
+    REQUIRE(face.cliff.material.roughness_factor.has_value());
+    const f32 r = (*face.cliff.material.tint)[0];
+    const f32 rough = *face.cliff.material.roughness_factor;
+    MESSAGE("tier " << face.tier << " from " << face.y << " m: red " << r << ", roughness "
+                    << rough);
+    darkest = std::min(darkest, r);
+    palest = std::max(palest, r);
+    smoothest = std::min(smoothest, rough);
+    roughest = std::max(roughest, rough);
+  }
+  // The lowest tier is mostly mudstone (0 to 12 m), the one above mostly sandstone (16 to 30 m):
+  // they read apart, by more than half the two beds' difference, and no further than all of it.
+  CHECK(darkest / palest < 0.75f);
+  CHECK(darkest / palest >= 0.45f - 1e-4f);
+  CHECK(roughest > smoothest + 0.05f);
+  // With no formation the layer's material stands: no tint is written.
+  layer.formation.reset();
+  Vector<CliffFace> plain;
+  REQUIRE(trace_cliff_block(layer, ground_of(&escarpment), 0, 0, plain, &error));
+  for (const CliffFace& face : plain)
+    CHECK_FALSE(face.cliff.material.tint.has_value());
+}
+
 TEST_CASE("cliffs generator: no generated face shows from behind its own top, and tiers cover") {
   struct Case {
     const char* name;

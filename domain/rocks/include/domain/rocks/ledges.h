@@ -41,7 +41,8 @@ namespace engine::rocks {
 // The registry's names: a scene's `{"generator": "ledges", "params": {...}}`, and the mesh
 // generator a `<name>.ledge.json` is built by.
 inline constexpr const char* k_ledges_generator = "ledges";
-inline constexpr u32 k_ledge_version = 1;
+// 2: a block is a body (clefts, rims worn all round, undercut feet, crept blocks), G142c.
+inline constexpr u32 k_ledge_version = 2;
 
 // What a solve made, for a test and a host's summary.
 struct LedgeReport {
@@ -53,6 +54,16 @@ struct LedgeReport {
   f64 corner_length_m = 0.0;  // of which corners worn in plan, at the joints
   f64 tallest_m = 0.0;        // the tallest front above the ground
   u32 units = 0;              // bed-top planes that crop out in the patch
+  // A block is a body (rocks.md, "A block is a body"): its flanks in the joints' clefts, the
+  // worn rim over them, the undersides of its undercut foot, and the pieces of crept blocks.
+  f64 joint_length_m = 0.0;  // metres of flank along the joints, in plan
+  f64 joint_worn_m2 = 0.0;   // of worn rim between a tread and a flank
+  f64 cleft_depth_m = 0.0;   // the deepest flank: a cleft's depth from the tread to the ground
+  f64 undercut_m2 = 0.0;     // of undercut underside, facing down
+  u32 slipped = 0;           // pieces (a block's part in one lattice triangle) of crept blocks
+  // A crag has mass (rocks.md, "A crag has mass"): the ground between its ledges, its rock.
+  u32 riser_triangles = 0;
+  f64 riser_m2 = 0.0;
 };
 
 // The ranges `engine.rocks.LedgePatch` documents: false, with a sentence naming the first field

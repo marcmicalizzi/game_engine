@@ -9,6 +9,7 @@
 // heights, so a face is the same whichever tile asks for it; the identity is a hash of the line in
 // millimetres.
 #include "detail.h"
+#include "geology.h"
 
 #include <core/containers/hash_map.h>
 #include <core/hash/hash.h>
@@ -22,6 +23,8 @@
 #include <domain/rocks/rocks.h>
 #include <foundation/io/vfs.h>
 
+#include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdio>
 #include <filesystem>
@@ -685,6 +688,38 @@ void faces_of_line(const CliffLayer& layer, const scene_gen::Ground& ground, con
       if (layer.formation.has_value()) {
         c.formation = *layer.formation;
         c.world_origin = WorldPos{ox, face.y, oz};
+      }
+      // **A tier's rock is its beds'** (rocks.md, "A face in tiers"): with a bedded formation the
+      // face's colour is the type's (or the layer's tint) times the mean tint of the beds its
+      // height cuts at its middle vertex, and its roughness plus their mean offset, so tiers cut
+      // from different members read apart, as the ledges' units do.
+      if (tiers.bedded && tiers.beds.count > 0) {
+        const u32 mid = kept[kept.size() / 2];
+        const f64 low = foot_y[mid] - sink[mid];
+        f64 sum[4] = {0.0, 0.0, 0.0, 0.0};
+        constexpr u32 k_samples = 16;
+        for (u32 q = 0; q < k_samples; ++q) {
+          const f64 y =
+              low + height[mid] * (static_cast<f64>(q) + 0.5) / static_cast<f64>(k_samples);
+          const f64 coordinate =
+              gfx::formation_coordinate(tiers.frame, foot_x[mid], y, foot_z[mid]).coordinate;
+          const Vec4 v = gfx::formation_bed(tiers.beds, coordinate).value;
+          sum[0] += wide(v.x);
+          sum[1] += wide(v.y);
+          sum[2] += wide(v.z);
+          sum[3] += wide(v.w);
+        }
+        assets::Material base = rock_material(c.type);
+        material_factors(c.material, base.base_color, base.roughness);
+        const f64 count = static_cast<f64>(k_samples);
+        const f64 rgb[3] = {wide(base.base_color.x), wide(base.base_color.y),
+                            wide(base.base_color.z)};
+        std::array<f32, 3> tint{};
+        for (u32 k = 0; k < 3; ++k)
+          tint[k] = static_cast<f32>(std::clamp(rgb[k] * sum[k] / count, 0.0, 1.0));
+        c.material.tint = tint;
+        c.material.roughness_factor =
+            static_cast<f32>(std::clamp(wide(base.roughness) + sum[3] / count, 0.02, 1.0));
       }
       // The back the top was seated to, so the solver's is the same one.
       c.depth = static_cast<f32>(back);

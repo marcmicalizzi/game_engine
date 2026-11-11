@@ -196,6 +196,48 @@ is typically about 100 µm thick and takes about 10,000 years to coat a surface 
 Southwest (secondary, attributed to Liu and Broecker 2000 and to Dorn): a fresh break is the
 rock's own colour and an old surface is darker, which is the material's to carry.
 
+## A block as a body
+
+Read for G142c, the third pass on the ledges, by a research sub-agent; how each number was read is
+said beside it. None of the sources below was reached in full except where it says so.
+
+**Joints open into gulls where a cap rock creeps over a weaker bed** (cambering). Cooper's
+account of the Bath University cutting in *Mass Movements in Great Britain* (Geological
+Conservation Review vol. 33, ch. 6, citing Hawkins 1977; **full text read**): gulls **up to 0.4 m
+wide in a massive bed 1.9 m thick**; in the thinly bedded 2 m above it slip is spread bed by bed
+and "no fracture penetrates through to the surface"; block dips of 26 and 30° there and up to 37°
+on the Great Oolite, throws of 0.82 and 1.7 m, and "each individual block has rotated downslope, as
+well as being lowered". Barron et al. 2016 (*Geomorphology* 268, the Cotswold escarpment; **full
+text read**): open joints up to about 1.5 m in a cap 25 m or more thick, a foundered block rotated
+at least 30°. A BGS page: widths "from millimetres to tens of metres". Hollingworth, Taylor and
+Kellaway 1944 (*QJGS* 100, 1–44): up to 40 yards and dips to 40° (a search snippet; secondary). **No
+relation of aperture to distance from the edge was found** (Hutchinson 1991 was not reached).
+
+So the solver's cleft is at most a fifth of the unit's thickness (0.4 / 1.9 = 0.21) and 0.4 m,
+never more than a fifth of the joints' spacing (ours: a ledge's blocks are a metre or two, not a
+cap's tens), and narrow for most joints (the cube of a draw: ours). The least width, half the
+rock's edge wear, is ours: a worn joint is never shut. A crept block moves out by up to a fifth of
+the thickness (ours, the gull's ratio) and **turns 1.1 to 4.6 degrees** (ours): the cambered dips
+above are of caps tens of metres thick, and a ledge's block turned that far would have toppled off
+its tread (the block criterion, width over height under the tangent of the base's dip: Goodman and
+Bray 1976, read only as restated by others).
+
+**Undercuts.** Niemann 2007 (GSA Abstracts with Programs 39(6), 439; **abstract read**): shale
+undercutting resistant sandstone and limestone ledges on eight Appalachian roadcuts at 2.5 to 51
+mm a year, median about 20 (0.1 to 2.0 inches); Shakoor and Rogers 1992, before it, 0.5 to 3.75
+inches. Those are fresh cuts and rates, not depths. **No natural recess depth was found.** The
+solver's undercut (a third of the step high, 0.42 to 0.6 of it deep, 0.6 m at most, times the
+contrast in resistance over 0.6) is authored.
+
+**Rounding.** Only the order (corners, edges, faces) is supported, as before. No edge radius by
+lithology or block size was found.
+
+**Joint spacing.** Bai and Pollard 2000 (*J. Struct. Geol.* 22, 43–57; abstract, on a mirror):
+spacing over thickness at saturation about 1.0, 0.8 to 1.2. Narr and Suppe 1991 (*J. Struct.
+Geol.* 13, 1037–1048; abstract, on a mirror): thickness over spacing about 1.3 (the default
+`joint_ratio`), spacing over its median log-normal; no spread was found, so the solver's stations
+still move by up to three tenths of the spacing (ours).
+
 ## What is authored, not measured
 
 - **A bed's `resistance`** is an index from 0 to 1 the formation's author gives it, not a rock
@@ -218,7 +260,8 @@ rock's own colour and an old surface is darker, which is the material's to carry
   finer lattice would follow the plane's trace more closely at four times the triangles.
 - **A worn edge is one face, a worn corner one cut, a flute two scales of noise at the rows'
   own vertices.** A round is a chamfer shaded as one with the face under it; a curve would be
-  two or three faces more an edge. 43 triangles a metre of front against a budget of 48.
+  two or three faces more an edge. 43 triangles a metre of front against a budget of 48; then
+  (G142c) 54.7 against 56, the clefts' flanks and rims and the undercut row being the eight.
 - **Nothing is built behind a tread's back or under a front's foot** but 8 cm of tread and a foot
   that goes on 0.15 of the step under the ground (5 cm at least, `bury_m` at most), and a face
   the ground covers whole is not drawn. The share of triangles above the ground is what that
@@ -247,6 +290,23 @@ taken: upper bounds, not costs. With every bed cropping out and no wear (the fir
 tile was 37,492 triangles, 51 to 57 ms to solve and 208 to 286 ms to build, beside a busier
 machine. The ground there is a function, so the sampling is the solver's share of it and not a
 tile source's.
+
+**After G142c** (blocks as bodies, a crag's risers; the same tile, `msvc-release`, three runs,
+**61 to 73 % of the processor busy**: upper bounds):
+
+| | near form | far form |
+|---|---|---|
+| Triangles (vertices, clusters) | 6,852 (7,487; 295), of which 1,044 risers | 121 (148; 6): no risers (209 with them, before they were taken out of the far form) |
+| Front, m | 106 (the clefts take their widths out of it) | 59 |
+| Triangles a metre of front | 54.7 the ledges alone, 64.5 with the risers | 2.0 |
+| Risers | 466 m², 2.2 triangles a square metre | none |
+| Source mesh, bytes | 321,808 | 6,188 |
+| Solving, ms | 11.6 to 15.4 | 0.47 to 0.74 (with the risers) |
+| Building the container, ms | 50.0 to 53.1 | 1.6 to 2.3 (with the risers) |
+
+The generator's whole read of a 128 m square (four tiles: `open` sampling and solving both forms
+and writing eight recipes, then building the eight containers) takes 0.13 to 0.15 s at the same
+load; a 1 km square is 64 times that by arithmetic, about 9 s on one thread, not a timed run.
 
 **When each is paid.** `tile`, the call a tile's activation makes, is a search of the entry's
 tiles and one placement: microseconds, with the solver or without it. The solver's work is paid
@@ -310,3 +370,19 @@ a bedded gorge at a fall), a person would still object to:
   each bench.
 - **No picture of the far form.** A streamed run of the hillside drew the near form at every
   marker; whether the far form holds at its ring was not seen.
+
+**After G142c** (the same hillside, debug `engine-view`, a material pack of generated sets in place
+of the palm pack's yellow sandstone; beside reels r23 and r12):
+- **A block is a body at a walker's height.** The joints are open clefts with worn rims, some
+  blocks have crept out and settled, and the ledge stands on a rock riser, not on turf. It is
+  still a row of boxes: no curve, no moss on a bench, no stain down a face, one tiled set.
+- **From the valley a crag is a rock patch** where it was a few dashes; but its edge is the 1 m
+  lattice's, jagged against the turf, and the patch is flat, paint on the hill and not relief.
+- **The far form at its ring** (a streamed world of 32 m tiles, rings of 2, 4 and 6; the run's
+  world log: 4, 12 and 7 tiles in its rings, then 4, 12 and 6): risers drawn in the far form
+  z-fought with the terrain's coarser levels and showed as a grid of stripes, so they were taken
+  out of it. Without them the far form is what it was: thin level dashes 15 to 30 m long, the
+  stripes the near form left behind. A far form that answers to the near form's crags (a patch
+  of rock with steps in it) needs the risers in the ground's material, not over it.
+- **The plants stand through a riser** as they stand through a tread: nothing clears the cover
+  off rock.

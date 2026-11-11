@@ -49,6 +49,11 @@ constexpr u8 k_on_face = k_on_front | k_on_corner_lo | k_on_corner_hi;  // where
 // A corner is worn this much further than an edge: it is attacked through three faces, an edge
 // through two (docs/experiments/exposed-bedrock.md, "How a jointed block weathers").
 constexpr f64 k_corner = 1.5;
+// A crag's risers (rocks.md, "A crag has mass") are lifted this far over the ground.
+constexpr f64 k_riser_lift = 0.03;
+// The least wear for which a joint's edge is worn round too (rocks.md, "A block is a body"):
+// sandstone's 12 cm and limestone's 13.5 are, slate's 2.4 is not.
+constexpr f64 k_rim_m = 0.04;
 
 bool bad(std::string& error, const char* field, const char* range) {
   error = std::string("engine.rocks.LedgePatch.") + field + " must be " + range;
@@ -79,6 +84,9 @@ struct Unit {
   f64 depth[k_max_rows + 1] = {};  // across the beds from the top; depth[rows] is the thickness
   f64 lead[k_max_rows] = {};       // each row's bed's resistance less the unit's mean
   u32 bed = 0;                     // its top bed, whose tint and roughness the unit draws with
+  // How much weaker the bed under it is, 0 to 1: how far its foot is undercut (rocks.md,
+  // "A block is a body"). Nothing when every bed of the sequence stands.
+  f64 undercut = 0.0;
 };
 
 void find_units(const gfx::FormationSequence& s, const ExposureThresholds& rule, u64 seed,
@@ -126,6 +134,12 @@ void find_units(const gfx::FormationSequence& s, const ExposureThresholds& rule,
       }
     }
     u.depth[u.rows] = u.thickness;
+    if (length < n) {
+      // The bed under the unit's lowest weathers back under it (Niemann 2007, the shale under
+      // sandstone and limestone ledges of roadcuts): the contrast in resistance, over 0.6.
+      const u32 under = (top_bed + 2 * n - length) % n;
+      u.undercut = clamp01((mean - wide(s.beds[under].resistance)) / 0.6);
+    }
     out.push_back(u);
   };
   if (hard_count == n) {
@@ -163,8 +177,23 @@ struct Block {
   f64 mid = 0.0;
   f64 length = 1.0;
   u32 lost = 0;
+  // **Cambered** (rocks.md, "A block is a body"): a block that has crept out over the weak bed
+  // under it. `slip_m` out along the ground's fall (and down with the ground, so it stays seated),
+  // and `roll`: how far it has settled toward one of its joints. Zero for most.
+  f64 slip_m = 0.0;
+  f64 roll = 0.0;  // down toward its high joint, metres a metre along the strike
 };
-Block block_at(u64 seed, i64 block, f64 spacing, u32 rows) {
+// The open width of joint `k` (between block k - 1 and block k), metres: a worn joint is never
+// shut (half the rock's wear wide), and a few are opened into clefts by the blocks' creep, up to
+// a fifth of the unit's thickness, 0.4 m and a fifth of the joints' spacing (Cooper's GCR account
+// of the Bath University cutting: gulls up to 0.4 m wide in a massive bed 1.9 m thick;
+// docs/experiments/exposed-bedrock.md). The cube of a draw: most are narrow, a few open.
+f64 cleft_width(u64 seed, i64 k, f64 thickness, f64 spacing, f64 round_m) {
+  const f64 d = draw(seed, k, 0xC1ull);
+  const f64 open = std::min(std::min(0.4, 0.21 * thickness), 0.2 * spacing);
+  return 0.5 * round_m + open * d * d * d;
+}
+Block block_at(u64 seed, i64 block, f64 spacing, u32 rows, f64 thickness) {
   Block b;
   const f64 lo = station(block, spacing, seed), hi = station(block + 1, spacing, seed);
   b.mid = 0.5 * (lo + hi);
@@ -175,6 +204,15 @@ Block block_at(u64 seed, i64 block, f64 spacing, u32 rows) {
   const f64 r = draw(seed, block, 0x67ull);
   b.lost = r < 0.6 ? 0u : (r < 0.9 ? 1u : 2u);
   if (b.lost + 1 > rows) b.lost = rows - 1;
+  // One standing block in four has crept: out by up to a fifth of the unit's thickness (0.3 m at
+  // most), and settled toward its high joint by 0.02 to 0.08 m a metre (1.1 to 4.6 degrees,
+  // never so little that a part of its tread stays parallel to its bed). Cambered blocks over
+  // thick caps are reported rotated 26 to 37 degrees; a ledge's block turned that far would have
+  // toppled off its tread.
+  if (draw(seed, block, 0xB1ull) < 0.25) {
+    b.slip_m = std::min(0.3, 0.2 * thickness) * (0.25 + 0.75 * draw(seed, block, 0xB3ull));
+    b.roll = 0.02 + 0.06 * draw(seed, block, 0xB7ull);
+  }
   return b;
 }
 // The share of the step the block keeps at a place along the strike.
@@ -347,6 +385,7 @@ bool ledge_patch_in_range(const LedgePatch& p, std::string& error) {
   if (!in(wide(p.min_step_m), 0.02, 30.0)) return bad(error, "min_step_m", "in [0.02, 30]");
   if (!in(wide(p.bury_m), 0.05, 5.0)) return bad(error, "bury_m", "in [0.05, 5]");
   if (!in(wide(p.relief_m), 0.0, 2.0)) return bad(error, "relief_m", "in [0, 2]");
+  if (!in(wide(p.riser), 0.05, 1.0)) return bad(error, "riser", "in [0.05, 1]");
   if (!(p.cliff_slope_deg == 0.0f || in(wide(p.cliff_slope_deg), 30.0, 85.0)))
     return bad(error, "cliff_slope_deg", "0 or in [30, 85]");
   if (p.tread_tint.has_value())
@@ -389,6 +428,7 @@ bool sample_ledge_patch(const LedgeLayer& layer, const scene_gen::Ground& ground
   out.cliff_slope_deg = layer.cliff_slope_deg;
   out.material = layer.material;
   out.tread_tint = layer.tread_tint;
+  out.riser = layer.riser;
   const f64 corner = ground.surface_mm(x_mm, z_mm);
   if (!std::isfinite(corner)) return refuse("the ground's height is not finite");
   out.y_mm = scene_gen::nearest_mm(corner);
@@ -442,6 +482,7 @@ bool solve_patch(const LedgePatch& p, assets::MeshData& out, LedgeReport* report
   const f64 min_step = wide(p.min_step_m);
   const f64 bury = wide(p.bury_m);
   const f64 relief = p.far ? 0.0 : wide(p.relief_m);
+  const f64 riser_at = wide(p.riser);
   // **Worn round** (rocks.md, "Blocks"): an edge is worn back by the rock type's rounding, the
   // one the cliff faces use, and a face is fluted by as much again. The far form has neither.
   const f64 round_m = p.far ? 0.0 : k_wear_m * cliff_type_rounding(p.type);
@@ -457,7 +498,7 @@ bool solve_patch(const LedgePatch& p, assets::MeshData& out, LedgeReport* report
   // formation's coordinate there, the share of a bed that stands, the downhill direction, and
   // the place along the strike.
   Vector<f64> ground(m * m), coordinate(m * m), fraction(m * m), down_x(m * m), down_z(m * m),
-      strike(m * m), down_dip(m * m), per_slope(m * m);
+      strike(m * m), down_dip(m * m), per_slope(m * m), riser(m * m);
   const auto height_mm = [&](u32 i, u32 j) { return static_cast<i64>(p.heights_mm[j * side + i]); };
   for (u32 j = 0; j < m; ++j)
     for (u32 i = 0; i < m; ++i) {
@@ -477,6 +518,16 @@ bool solve_patch(const LedgePatch& p, assets::MeshData& out, LedgeReport* report
       fraction[k] =
           standing_share(rule, exposure_fraction(rule, shape), soil_cover(rule, wx_mm, wz_mm));
       if (shape.slope >= cliff_slope) fraction[k] = 0.0;
+      // **A crag's risers** (rocks.md, "A crag has mass"): the ground between a crag's ledges is
+      // its rock too where its member is open and the slope bares it, past the layer's `riser`.
+      // Near form only: a skin a few centimetres over the ground z-fights with the terrain's own
+      // coarser levels at the far form's distances (seen in G142c's streamed pictures).
+      {
+        const f64 c_ground = coordinate[k];
+        const f64 open = member_factor(rule, field, c_ground) *
+                         stretch_factor(rule, member_id(rule, field, c_ground), wx_mm, wz_mm);
+        riser[k] = riser_at < 1.0 && !p.far ? fraction[k] * open - riser_at : -1.0;
+      }
       // Metres behind a front a metre of height under its step, for the corners worn in plan.
       per_slope[k] = 1.0 / (shape.slope > 0.3 ? shape.slope : 0.3);
       const bool sloped = shape.slope > 1e-9;
@@ -486,17 +537,23 @@ bool solve_patch(const LedgePatch& p, assets::MeshData& out, LedgeReport* report
       down_dip[k] = frame.dip[0] * (wx - frame.origin[0]) + frame.dip[2] * (wz - frame.origin[2]);
     }
   const f64 strike0 = strike[0];
-  // The ground under a point of the patch, on the lattice's own triangles.
+  const f64 dip0 = down_dip[0];
+  // The ground under a point of the patch, on the lattice's own triangles, over the apron too: a
+  // crept block, a recess or an undercut reaches past the tile's edge, and what covers it there
+  // is the world's lattice, the same from the tile beside.
   const auto ground_at = [&](f64 x, f64 z) {
-    const f64 fx = std::clamp(x / cell, 0.0, static_cast<f64>(p.cells));
-    const f64 fz = std::clamp(z / cell, 0.0, static_cast<f64>(p.cells));
-    const u32 ix = std::min(static_cast<u32>(fx), p.cells - 1);
-    const u32 iz = std::min(static_cast<u32>(fz), p.cells - 1);
+    const f64 a0 = static_cast<f64>(p.apron);
+    const f64 last = static_cast<f64>(side - 1);
+    const f64 fx = std::clamp(x / cell + a0, 0.0, last);
+    const f64 fz = std::clamp(z / cell + a0, 0.0, last);
+    const u32 ix = std::min(static_cast<u32>(fx), side - 2);
+    const u32 iz = std::min(static_cast<u32>(fz), side - 2);
     const f64 u = fx - static_cast<f64>(ix), v = fz - static_cast<f64>(iz);
-    const u32 a = iz * m + ix;
-    if (u + v <= 1.0) return ground[a] * (1.0 - u - v) + ground[a + 1] * u + ground[a + m] * v;
-    return ground[a + 1] * (1.0 - v) + ground[a + m] * (1.0 - u) +
-           ground[a + m + 1] * (u + v - 1.0);
+    const auto at_mm = [&](u32 i, u32 j) { return static_cast<f64>(height_mm(i, j)) / 1000.0; };
+    if (u + v <= 1.0)
+      return at_mm(ix, iz) * (1.0 - u - v) + at_mm(ix + 1, iz) * u + at_mm(ix, iz + 1) * v;
+    return at_mm(ix + 1, iz) * (1.0 - v) + at_mm(ix, iz + 1) * (1.0 - u) +
+           at_mm(ix + 1, iz + 1) * (u + v - 1.0);
   };
 
   Mesher mesher;
@@ -531,9 +588,10 @@ bool solve_patch(const LedgePatch& p, assets::MeshData& out, LedgeReport* report
       for (u32 half = 0; half < 2; ++half) {
         const u32 n00 = cz * m + cx, n10 = n00 + 1, n01 = n00 + m, n11 = n01 + 1;
         const u32 node[3] = {half == 0 ? n00 : n10, n01, half == 0 ? n10 : n11};
-        f64 lx[3], lz[3], g[3], c[3], fr[3], dx[3], dz[3], st0[3], dp[3];
+        f64 lx[3], lz[3], g[3], c[3], fr[3], dx[3], dz[3], st0[3], dp[3], ps[3];
         for (u32 k = 0; k < 3; ++k) {
           dp[k] = down_dip[node[k]];
+          ps[k] = per_slope[node[k]];
           lx[k] = static_cast<f64>(node[k] % m) * cell;
           lz[k] = static_cast<f64>(node[k] / m) * cell;
           g[k] = ground[node[k]];
@@ -544,6 +602,45 @@ bool solve_patch(const LedgePatch& p, assets::MeshData& out, LedgeReport* report
           st0[k] = strike[node[k]];
         }
         if (!(fr[0] > 0.0 || fr[1] > 0.0 || fr[2] > 0.0)) continue;
+        const f64 rs[3] = {riser[node[0]], riser[node[1]], riser[node[2]]};
+        if (rs[0] > 0.0 || rs[1] > 0.0 || rs[2] > 0.0) {
+          // The riser: the part of the lattice triangle where it is past `riser`, on the ground
+          // and `k_riser_lift` over it, in the rock of the unit whose top is next above.
+          PolyVertex tri[3], skin[12];
+          for (u8 k = 0; k < 3; ++k) {
+            tri[k].w[k] = 1.0;
+            tri[k].a = tri[k].b = k;
+          }
+          const u32 n = clip(tri, 3, rs, node, true, 0, skin);
+          if (n >= 3) {
+            const f64 c_mid = (c[0] + c[1] + c[2]) / 3.0;
+            u32 above = 0;
+            f64 nearest = 1.0e30;
+            for (u32 ui = 0; ui < units.size(); ++ui) {
+              const f64 d = units[ui].top - c_mid;
+              const f64 up = d - period * std::floor(d / period);
+              if (up < nearest) {
+                nearest = up;
+                above = ui;
+              }
+            }
+            mesher.material = 1 + above;
+            D3 q[12];
+            for (u32 k = 0; k < n; ++k)
+              q[k] = {at(skin[k], lx), at(skin[k], g) + k_riser_lift, at(skin[k], lz)};
+            for (u32 k = 1; k + 1 < n; ++k) {
+              D3 r3[3] = {q[0], q[k], q[k + 1]};
+              f64 uv[3][2] = {{r3[0].x, r3[0].z}, {r3[1].x, r3[1].z}, {r3[2].x, r3[2].z}};
+              if (!mesher.emit(mix64(p.seed ^ 0x5249534552ull ^ above), r3, uv, Facing::Up, {}))
+                continue;
+              ++made.triangles;
+              ++made.above_ground;
+              ++made.riser_triangles;
+              const D3 area = cross(r3[1] - r3[0], r3[2] - r3[0]);
+              made.riser_m2 += 0.5 * std::sqrt(dot(area, area));
+            }
+          }
+        }
         const f64 c_min = std::min(c[0], std::min(c[1], c[2]));
         const f64 c_max = std::max(c[0], std::max(c[1], c[2]));
         for (u32 ui = 0; ui < units.size(); ++ui) {
@@ -594,7 +691,7 @@ bool solve_patch(const LedgePatch& p, assets::MeshData& out, LedgeReport* report
             const f64 st_max = std::max(st[0], std::max(st[1], st[2]));
             const u32 unit_rows = p.far ? 1u : unit.rows;
             const auto block_shape = [&](i64 index) {
-              if (!p.far) return block_at(uid, index, spacing, unit_rows);
+              if (!p.far) return block_at(uid, index, spacing, unit_rows, unit.thickness);
               Block whole_ledge;
               whole_ledge.share = k_far_share;
               return whole_ledge;
@@ -627,9 +724,17 @@ bool solve_patch(const LedgePatch& p, assets::MeshData& out, LedgeReport* report
               }
               const PolyVertex* current = tri;
               u32 n = 3;
+              // The block's own faces stand half its two joints' open widths in from their
+              // stations, so every joint is a cleft between two flanks (none on the far form).
+              const f64 lo =
+                  p.far ? 0.0
+                        : station(block, spacing, uid) +
+                              0.5 * cleft_width(uid, block, unit.thickness, spacing, round_m);
+              const f64 hi =
+                  p.far ? 0.0
+                        : station(block + 1, spacing, uid) -
+                              0.5 * cleft_width(uid, block + 1, unit.thickness, spacing, round_m);
               if (!p.far) {
-                const f64 lo = station(block, spacing, uid);
-                const f64 hi = station(block + 1, spacing, uid);
                 if (st_min < lo) {
                   const f64 f[3] = {st[0] - lo, st[1] - lo, st[2] - lo};
                   n = clip(current, n, f, node, true, k_on_joint_lo, stage_a);
@@ -654,8 +759,6 @@ bool solve_patch(const LedgePatch& p, assets::MeshData& out, LedgeReport* report
                 // **Corners worn in plan**: where the front meets a joint the block is cut back
                 // at 45 degrees, half as far again as an edge is worn and never more than a
                 // quarter of the block, so two blocks meet in a notch and not in a line.
-                const f64 lo = station(block, spacing, uid);
-                const f64 hi = station(block + 1, spacing, uid);
                 const f64 worn = std::min(k_corner * round_m, 0.25 * shape.length);
                 f64 c_lo[3], c_hi[3];
                 bool cut_lo = false, cut_hi = false;
@@ -713,22 +816,62 @@ bool solve_patch(const LedgePatch& p, assets::MeshData& out, LedgeReport* report
               const u32 block_rows = unit_rows - shape.lost;
               D3 lip_top[12];
               f64 lip[12];
+              // **Rounded all round**: a joint's edge is worn as the lip is, the tread drawn in
+              // along the strike off the cleft, so a block has no sharp edge where it is seen.
               for (u32 k = 0; k < n; ++k) {
                 lip[k] = 0.0;
                 lip_top[k] = top[k];
-                if ((poly[k].lines & k_on_face) == 0 || !(round_m > 0.0)) continue;
+                const bool on_face = (poly[k].lines & k_on_face) != 0;
+                const u8 joint = poly[k].lines & (k_on_joint_lo | k_on_joint_hi);
+                // A rock that wears less than k_rim_m (slate) keeps sharp joints: a rim that
+                // narrow is under a pixel at a few metres and would cost two triangles a joint.
+                if ((!on_face && (joint == 0 || round_m < k_rim_m)) || !(round_m > 0.0)) continue;
                 const f64 step = at(poly[k], db);
                 f64 first_row = step + under_of(step);
                 if (block_rows > 1)
                   first_row = std::min(first_row, unit.depth[shape.lost + 1] / ny - lost_m);
                 lip[k] = std::max(0.0, std::min(round_m, 0.45 * first_row));
-                const f64 ddx = at(poly[k], dx), ddz = at(poly[k], dz);
-                const f64 len = std::sqrt(ddx * ddx + ddz * ddz);
-                const D3 back = len > 1e-9 ? D3{ddx / len, 0.0, ddz / len} : D3{1.0, 0.0, 0.0};
+                D3 back{1.0, 0.0, 0.0};
+                if (on_face) {
+                  const f64 ddx = at(poly[k], dx), ddz = at(poly[k], dz);
+                  const f64 len = std::sqrt(ddx * ddx + ddz * ddz);
+                  if (len > 1e-9) back = D3{ddx / len, 0.0, ddz / len};
+                } else {
+                  // Into the block: along the strike from its low joint, against it from its high.
+                  back = (joint & k_on_joint_lo) != 0 ? along_strike * -1.0 : along_strike;
+                }
                 const f64 rise =
                     lip[k] * (frame.normal[0] * back.x + frame.normal[2] * back.z) / ny;
                 lip_top[k] = {top[k].x - lip[k] * back.x, top[k].y + rise,
                               top[k].z - lip[k] * back.z};
+              }
+              // **Cambered**: a crept block is moved out along the ground's fall and down with it.
+              // Every vertex of the block moves by a function of its own place, so the pieces of
+              // one block in two lattice triangles (or tiles) still meet.
+              const bool slipped = shape.slip_m > 0.0 && !p.far;
+              // And rolled down toward its high joint by a function of where each output vertex
+              // is (the strike is linear in the place), so the block turns as one body, out of
+              // its bed everywhere, and a worn rim folded over a vertex beside it turns with it.
+              // `top` keeps the translation only; every vertex drawn from it is rolled.
+              const auto rolled = [&](const D3& q) {
+                if (!slipped) return q;
+                const f64 at_q = strike0 + skew * dip0 +
+                                 (along_strike.x + skew * frame.dip[0]) * q.x +
+                                 (along_strike.z + skew * frame.dip[2]) * q.z;
+                const f64 drop = shape.roll * (at_q - lo);
+                return D3{q.x, q.y - (drop > 0.0 ? drop : 0.0), q.z};
+              };
+              if (slipped) {
+                for (u32 k = 0; k < n; ++k) {
+                  const f64 ddx = at(poly[k], dx), ddz = at(poly[k], dz);
+                  const f64 len = std::sqrt(ddx * ddx + ddz * ddz);
+                  const D3 out_dir = len > 1e-9 ? D3{ddx / len, 0.0, ddz / len} : D3{1.0, 0.0, 0.0};
+                  const f64 fall = 1.0 / at(poly[k], ps);
+                  const D3 shift = out_dir * shape.slip_m + D3{0.0, -shape.slip_m * fall, 0.0};
+                  top[k] = top[k] + shift;
+                  lip_top[k] = rolled(lip_top[k] + shift);
+                }
+                ++made.slipped;
               }
               bool drew = false;
               // The tread: the polygon, in the bedding plane. It carries soil to its lip.
@@ -754,8 +897,12 @@ bool solve_patch(const LedgePatch& p, assets::MeshData& out, LedgeReport* report
                   D3 outward{run.z, 0.0, -run.x};
                   if (outward.x * (mid_x - top[e[0]].x) + outward.z * (mid_z - top[e[0]].z) > 0.0)
                     outward = outward * -1.0;
-                  const u32 rows = block_rows;  // the rows the block still has
-                  f64 depth[2][k_max_rows + 1], back_m[2][k_max_rows], place_u[2], grown_at[2];
+                  // The rows the block still has, and under them, where the bed below is weaker,
+                  // its **undercut**: a last row from a third of the step above the ground down
+                  // to the foot, standing back under the rows above.
+                  const bool notched = unit.undercut > 0.0 && relief > 0.0;
+                  const u32 rows = block_rows + (notched ? 1u : 0u);
+                  f64 depth[2][k_max_rows + 2], back_m[2][k_max_rows + 1], place_u[2], grown_at[2];
                   D3 lean[2];
                   for (u32 v = 0; v < 2; ++v) {
                     const PolyVertex& pv = poly[e[v]];
@@ -770,13 +917,23 @@ bool solve_patch(const LedgePatch& p, assets::MeshData& out, LedgeReport* report
                     grown_at[v] = grown;
                     depth[v][0] = 0.0;
                     back_m[v][0] = 0.0;
-                    for (u32 r = 1; r < rows; ++r) {
+                    for (u32 r = 1; r < block_rows; ++r) {
                       const f64 at_row = unit.depth[shape.lost + r] / ny - lost_m;
                       depth[v][r] = at_row < foot ? at_row : foot;
                       // A weaker row stands further back under the row above it.
                       const f64 s = 0.15 + 0.85 * draw(uid, block, 0x100ull + r) -
                                     1.2 * unit.lead[shape.lost + r];
                       back_m[v][r] = grown * relief * clamp01(s);
+                    }
+                    if (notched) {
+                      // A third of the step high (0.5 m at most), and back by the bed's contrast
+                      // times 0.42 to 0.6 of the step (0.6 m at most), grown in with the step.
+                      const f64 high = std::min(0.35 * (step > 0.0 ? step : 0.0), 0.5);
+                      const f64 top_of = std::max(step - high, depth[v][block_rows - 1]);
+                      depth[v][block_rows] = top_of < foot ? top_of : foot;
+                      back_m[v][block_rows] = back_m[v][block_rows - 1] +
+                                              grown * unit.undercut * std::min(0.6 * step, 0.6) *
+                                                  (0.7 + 0.3 * draw(uid, block, 0x1C1ull));
                     }
                     depth[v][rows] = foot;
                     made.tallest_m = made.tallest_m > step ? made.tallest_m : step;
@@ -788,8 +945,8 @@ bool solve_patch(const LedgePatch& p, assets::MeshData& out, LedgeReport* report
                     const f64 rise = standing_back *
                                      (frame.normal[0] * lean[v].x + frame.normal[2] * lean[v].z) /
                                      ny;
-                    return D3{t.x - standing_back * lean[v].x, t.y - down + rise,
-                              t.z - standing_back * lean[v].z};
+                    return rolled(D3{t.x - standing_back * lean[v].x, t.y - down + rise,
+                                     t.z - standing_back * lean[v].z});
                   };
                   // The fluting: how far a face stands back at a depth under the tread, two scales
                   // of the world's noise, so the two segments that share a vertex agree.
@@ -861,54 +1018,77 @@ bool solve_patch(const LedgePatch& p, assets::MeshData& out, LedgeReport* report
                                       mix64(static_cast<u64>(block));
                     D3 s0[3] = {a0, b0, eb};
                     f64 suv0[3][2] = {{a0.x, a0.z}, {b0.x, b0.z}, {eb.x, eb.z}};
-                    if (mesher.emit(shelf, s0, suv0, up ? Facing::Up : Facing::Down, {}))
-                      count(up, s0);
                     D3 s1[3] = {a0, eb, ea};
                     f64 suv1[3][2] = {{a0.x, a0.z}, {eb.x, eb.z}, {ea.x, ea.z}};
-                    if (mesher.emit(shelf, s1, suv1, up ? Facing::Up : Facing::Down, {}))
-                      count(up, s1);
+                    const bool undercut = notched && r == block_rows;
+                    for (u32 which = 0; which < 2; ++which) {
+                      D3* sq = which == 0 ? s0 : s1;
+                      if (covered(sq) || !mesher.emit(shelf, sq, which == 0 ? suv0 : suv1,
+                                                      up ? Facing::Up : Facing::Down, {}))
+                        continue;
+                      count(up, sq);
+                      if (undercut) {
+                        const D3 area = cross(sq[1] - sq[0], sq[2] - sq[0]);
+                        made.undercut_m2 += 0.5 * std::sqrt(dot(area, area));
+                      }
+                    }
                   }
                   drew = true;
-                } else if ((shared & (k_on_joint_lo | k_on_joint_hi)) != 0) {
-                  // A joint face: the block's flank, where the block beside it does not stand
-                  // as far. One quad from the tread down to the ground and under it.
+                } else if (!p.far && (shared & (k_on_joint_lo | k_on_joint_hi)) != 0) {
+                  // A joint's **cleft**: the block's flank, open from the tread down to the
+                  // ground and under it whatever the block beside does, because the two stand
+                  // the joint's open width apart, and the tread's edge above it worn round.
                   const bool low_side = (shared & k_on_joint_lo) != 0;
-                  const Block beside = block_shape(low_side ? block - 1 : block + 1);
-                  const f64 beside_lost = unit.depth[beside.lost] / ny;
-                  f64 open[2], step[2];
+                  f64 step[2];
+                  D3 rim[2], foot_at[2];
                   for (u32 v = 0; v < 2; ++v) {
                     step[v] = at(poly[e[v]], db);
-                    // Open where the block beside is not there, where its tread is lower than
-                    // this one's, or past its front.
-                    const f64 its_step = step_of(beside, at(poly[e[v]], whole), at(poly[e[v]], st));
-                    open[v] = !(its_step > 0.0) || beside_lost > lost_m
-                                  ? 1.0
-                                  : step[v] + lost_m - (its_step + beside_lost);
+                    const D3& t = top[e[v]];
+                    rim[v] = rolled(D3{t.x, t.y - lip[e[v]], t.z});
+                    foot_at[v] = rolled(
+                        D3{t.x, t.y - (step[v] > 0.0 ? step[v] : 0.0) - under_of(step[v]), t.z});
                   }
-                  if (open[0] < 0.0 && open[1] < 0.0) continue;  // the block beside covers it
-                  f64 t0 = 0.0, t1 = 1.0;
-                  if (open[0] < 0.0) t0 = open[0] / (open[0] - open[1]);
-                  if (open[1] < 0.0) t1 = open[0] / (open[0] - open[1]);
-                  const D3 flank = lip_top[e[1]] - lip_top[e[0]];
-                  const D3 a = lip_top[e[0]] + flank * t0;
-                  const D3 b = lip_top[e[0]] + flank * t1;
-                  const f64 step_a = step[0] + (step[1] - step[0]) * t0;
-                  const f64 step_b = step[0] + (step[1] - step[0]) * t1;
-                  const D3 a1{a.x, a.y - (step_a > 0.0 ? step_a : 0.0) - under_of(step_a), a.z};
-                  const D3 b1{b.x, b.y - (step_b > 0.0 ? step_b : 0.0) - under_of(step_b), b.z};
                   const D3 outward = low_side ? along_strike * -1.0 : along_strike;
                   const u64 cls = mix64(uid + (low_side ? 0x4000ull : 0x5000ull)) ^
                                   mix64(static_cast<u64>(block));
-                  const f64 ua = a.x * frame.dip[0] + a.z * frame.dip[2];
-                  const f64 ub = b.x * frame.dip[0] + b.z * frame.dip[2];
-                  D3 q0[3] = {a, b, b1};
-                  f64 uv0[3][2] = {{ua, a.y}, {ub, b.y}, {ub, b1.y}};
+                  const auto u_of = [&](const D3& q) {
+                    return q.x * frame.dip[0] + q.z * frame.dip[2];
+                  };
+                  const D3& a = lip_top[e[0]];
+                  const D3& b = lip_top[e[1]];
+                  if (lip[e[0]] > 0.0 || lip[e[1]] > 0.0) {
+                    D3 w0[3] = {a, b, rim[1]};
+                    f64 wuv0[3][2] = {{u_of(a), a.y}, {u_of(b), b.y}, {u_of(rim[1]), rim[1].y}};
+                    if (!covered(w0) && mesher.emit(cls, w0, wuv0, Facing::Toward, outward)) {
+                      count(false, w0);
+                      const D3 area = cross(w0[1] - w0[0], w0[2] - w0[0]);
+                      made.joint_worn_m2 += 0.5 * std::sqrt(dot(area, area));
+                    }
+                    D3 w1[3] = {a, rim[1], rim[0]};
+                    f64 wuv1[3][2] = {
+                        {u_of(a), a.y}, {u_of(rim[1]), rim[1].y}, {u_of(rim[0]), rim[0].y}};
+                    if (!covered(w1) && mesher.emit(cls, w1, wuv1, Facing::Toward, outward)) {
+                      count(false, w1);
+                      const D3 area = cross(w1[1] - w1[0], w1[2] - w1[0]);
+                      made.joint_worn_m2 += 0.5 * std::sqrt(dot(area, area));
+                    }
+                  }
+                  D3 q0[3] = {rim[0], rim[1], foot_at[1]};
+                  f64 uv0[3][2] = {{u_of(rim[0]), rim[0].y},
+                                   {u_of(rim[1]), rim[1].y},
+                                   {u_of(foot_at[1]), foot_at[1].y}};
                   if (!covered(q0) && mesher.emit(cls, q0, uv0, Facing::Toward, outward))
                     count(false, q0);
-                  D3 q1[3] = {a, b1, a1};
-                  f64 uv1[3][2] = {{ua, a.y}, {ub, b1.y}, {ua, a1.y}};
+                  D3 q1[3] = {rim[0], foot_at[1], foot_at[0]};
+                  f64 uv1[3][2] = {{u_of(rim[0]), rim[0].y},
+                                   {u_of(foot_at[1]), foot_at[1].y},
+                                   {u_of(foot_at[0]), foot_at[0].y}};
                   if (!covered(q1) && mesher.emit(cls, q1, uv1, Facing::Toward, outward))
                     count(false, q1);
+                  const D3 run_xz{run.x, 0.0, run.z};
+                  made.joint_length_m += std::sqrt(dot(run_xz, run_xz));
+                  const f64 deepest = std::max(step[0], step[1]);
+                  made.cleft_depth_m = made.cleft_depth_m > deepest ? made.cleft_depth_m : deepest;
                 }
               }
               if (drew) cropped.push_back(uid);
