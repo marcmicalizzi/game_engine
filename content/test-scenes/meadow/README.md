@@ -58,9 +58,12 @@ Four recipes are the sward's growth forms, each from a source-bounded profile
 | `short-sod` | short sod | bent | 4–8.5 cm × 1–4 mm | 1,024 blades/m², two-segment ribbons; 6,400 cap |
 | `short-tussock` | short tussock | mat-grass | 12–27 cm × 0.5–1 mm | crowns 0.25 m apart, 0.05 m radius, 35 % turf between; 4,200 cap |
 
-`oxeye-daisy.flora.json` is the meadow's forb: the understory's herb at 0.5 m (*Leucanthemum
+`oxeye-daisy.flora.json` is one of the meadow's forbs: the understory's herb at 0.5 m (*Leucanthemum
 vulgare*'s stems are 20–90 cm across the floras). A sward placement entry names a form per family
-(`"form": "tall_tussock"`) and the forbs (`"forbs": ["oxeye-daisy.clusters"], "forb_share": 0.33`);
-the stature rule then picks each cell's form from its wetness, slope, shade and a 20 m mosaic.
+(`"form": "tall_tussock"`) and, since G140, the meadow's community, a species of the table and its mesh
+each (`"community": [{"species": "leucanthemum_vulgare", "mesh": "oxeye-daisy.clusters"}, …]`;
+G137's `"forbs"` is refused): each cell then draws a plant by the covers its site gives the species
+([flora](../../../docs/subsystems/flora.md#the-meadow-community-g140)), and the stature rule picks its
+form from the same site's wetness, its slope, shade and a 20 m mosaic.
 The crown spacings, radii and raised base are authored, not measured; the caps are explicit
 candidate budgets, not a claim about frame cost.
