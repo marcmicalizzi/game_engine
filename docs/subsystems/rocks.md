@@ -1133,9 +1133,9 @@ Two more factors on what stands, both functions of the world and neither of a ti
 
 The ledge solver multiplies a unit's step by both; `exposure_at` is still the mantle's rule at a
 point, without them (it names a bed, not a member). On the test hillside (two 64 m tiles, 26
-transects): **25 % of the resistant beds crop out along a transect, with a deviation of 20 points
-between transects** (93 % and 18 before), four transects have no rock at all, and the front falls
-from 2,083 m to 545 m. `stretch_m` 0 and `member_m` 0 are the stripes again.
+transects): **24 % of the resistant beds crop out along a transect, with a deviation of 19 points
+between transects** (92 % and 19 before), four transects have no rock at all, and the front falls
+from 2,214 m to 583 m. `stretch_m` 0 and `member_m` 0 are the stripes again.
 
 ### Ledges
 
@@ -1174,12 +1174,15 @@ is the top edge of every row that stands out past the row above. A front is **fl
 much again: two scales of the world's noise (1.1 m and 0.37 m) set each row's edges back, the
 same from both segments that share a vertex and from either tile. A triangle of a front, a worn
 edge or a joint face that the ground covers whole (a row set back into the slope by its recess
-and its flute) is not drawn. Measured on the test hillside: 0.090 m of worn width a metre of
-front on sandstone, 0.100 on limestone, 0.021 on slate, at 34 triangles a metre of front on all
-three (**the budget is 48**; it was 36 unworn with every covered face drawn). What it is not:
-corners are not yet worn in plan (a block's ends are still square to its joints), a joint is a
-plane and not a widened cleft, and a fresh break and an old surface are one material. The far
-form has neither the wear nor the flutes.
+and its flute) is not drawn. **Corners are worn in plan**, half as far again as an edge (a
+corner is attacked through three faces, an edge through two): where the front meets a joint the
+block is cut back at 45 degrees, never more than a quarter of its length, so two blocks meet in
+a notch and a block reads as a lump and not as a length of plank. Measured on the test hillside:
+0.082 m of worn width a metre of front on sandstone, 0.089 on limestone, 0.020 on slate; worn
+corners are 44 % of a sandstone front's length and 10 % of a slate's; 43, 42 and 47 triangles a
+metre of front (**the budget is 48**; it was 36 unworn with every covered face drawn). What it is
+not: a joint is a plane and not a widened cleft, a corner is a chamfer and not a curve, and a
+fresh break and an old surface are one material. The far form has none of the wear.
 
 **Treads, and the beds' own rock.** A tread carries soil to its lip: the tread polygons are one
 material, `tread_tint` (absent: a dark turf, linear 0.07 0.09 0.04, roughness 0.95), and the
@@ -1208,11 +1211,11 @@ both, the cluster DAG is the runtime LOD.
 
 | Form | A 64 m tile of the test hillside (31 bed tops) | Triangles a metre of front |
 |---|---|---|
-| near | 4,031 triangles, 5,059 vertices, 204 clusters, 118 m of front (37,492 triangles and 1,041 m as every bed's stripe, unworn) | 34 (the budget is 48) |
+| near | 5,255 triangles, 5,810 vertices, 245 clusters, 123 m of front (37,492 triangles and 1,041 m as every bed's stripe, unworn) | 43 (the budget is 48) |
 | far | 121 triangles, 148 vertices, 6 clusters, 59 m of front | 2.0 |
 
 68 % of the near form's triangles are above the ground (the solver's count on its own lattice;
-75 % against the hillside's function), against 13.9 % on the front of the box G132 measured.
+74 % against the hillside's function), against 13.9 % on the front of the box G132 measured.
 
 **The generator.** `open` reads the layer and, for every tile whose corner is in the region,
 samples the ground over the tile and the rule's apron, solves both forms, and writes a recipe
@@ -1244,12 +1247,13 @@ layer's `min_slope_deg` and no ledge is solved under or behind a face.
   the strike, the same number from every tile), the centre of its gap on the ground, the area of
   tread it would have carried inside the patch, its length between its joints and the step it
   would have stood to. A gap across a tile's border is an entry in each tile with one identity;
-  their area-weighted mean is its place. 309 in a 64 m tile of the test hillside with every bed
+  their area-weighted mean is its place. 306 in a 64 m tile of the test hillside with every bed
   cropping out, 5 of them across the border to the next. The deposits that would lay each block
   under its gap are G143's; the generator does not write the list anywhere.
 - **No holes or water**: a tile's mesh is not split round the exclusion's holes or channels.
 
-Tests (`tests/ledges_tests.cpp`, 4 s in msvc-debug): ledges only on resistant beds past the soil
+Tests (`tests/ledges_tests.cpp`, 9 s in msvc-debug; the outcrops, the wear, the soil and the tints,
+and the gaps each have a case of their own, named by what they hold): ledges only on resistant beds past the soil
 slope, none on weak beds, on 20° or in a hollow; tops within 1.5 mm of the formation's planes
 (0.002 mm measured); at least 60 % of triangles above the ground; no vertex whose height the
 ground behind does not reach within 8 m (the retaining-wall test); a front's height under the

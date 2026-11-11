@@ -48,10 +48,11 @@ struct LedgeReport {
   u32 triangles = 0;
   u32 tread_triangles = 0;  // in a bedding plane, facing up: treads and the bed rows' shelves
   u32 front_triangles = 0;
-  u32 above_ground = 0;      // triangles whose centroid is above the ground under it
-  f64 front_length_m = 0.0;  // metres of front along the tread's edge
-  f64 tallest_m = 0.0;       // the tallest front above the ground
-  u32 units = 0;             // bed-top planes that crop out in the patch
+  u32 above_ground = 0;       // triangles whose centroid is above the ground under it
+  f64 front_length_m = 0.0;   // metres of front along the tread's edge, its worn corners too
+  f64 corner_length_m = 0.0;  // of which corners worn in plan, at the joints
+  f64 tallest_m = 0.0;        // the tallest front above the ground
+  u32 units = 0;              // bed-top planes that crop out in the patch
 };
 
 // The ranges `engine.rocks.LedgePatch` documents: false, with a sentence naming the first field

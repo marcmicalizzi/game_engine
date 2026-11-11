@@ -386,6 +386,20 @@ TEST_CASE("ledges: a block's edges are worn round by its rock's rounding, inside
   CHECK(limestone > sandstone);
   CHECK(sandstone > 3.0 * slate);
   CHECK(sandstone > 0.08);
+  // Corners are worn in plan too, half as far again as the edges: metres of worn corner a metre
+  // of front, in the rocks' own order.
+  const auto corners = [&](RockType type) {
+    LedgeLayer layer = layer_of(beds());
+    layer.type = type;
+    const Solved s = solve(layer, h, 0, 0);
+    return s.report.corner_length_m / s.report.front_length_m;
+  };
+  const f64 sandstone_corners = corners(RockType::Sandstone),
+            slate_corners = corners(RockType::Slate);
+  MESSAGE("worn corners, a share of the front: sandstone " << sandstone_corners << ", slate "
+                                                           << slate_corners);
+  CHECK(sandstone_corners > 0.05);
+  CHECK(sandstone_corners > 2.0 * slate_corners);
   // The budget: 48 triangles a metre of front (36 before the wear).
   CHECK(sandstone_tris <= 48.0);
   CHECK(slate_tris <= 48.0);
@@ -443,7 +457,7 @@ TEST_CASE("ledges: a patch is pinned to the bit") {
                              << mesh_hash(far_form.mesh) << " source "
                              << ledge_source_hash(far_form.patch));
   CHECK(near_form.report.triangles > 0u);
-  CHECK(mesh_hash(near_form.mesh) == 7169356939382602585ull);
+  CHECK(mesh_hash(near_form.mesh) == 10076193532020212928ull);
   CHECK(ledge_source_hash(near_form.patch) == 10834469400257094798ull);
   CHECK(far_form.report.triangles > 0u);
   CHECK(mesh_hash(far_form.mesh) == 12540669320333577569ull);

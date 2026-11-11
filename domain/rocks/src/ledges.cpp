@@ -43,6 +43,12 @@ constexpr f32 k_soil[3] = {0.07f, 0.09f, 0.04f};
 constexpr u8 k_on_front = 1;
 constexpr u8 k_on_joint_lo = 2;
 constexpr u8 k_on_joint_hi = 4;
+constexpr u8 k_on_corner_lo = 8;  // a corner worn in plan, at the block's low joint and its high
+constexpr u8 k_on_corner_hi = 16;
+constexpr u8 k_on_face = k_on_front | k_on_corner_lo | k_on_corner_hi;  // where rock stands
+// A corner is worn this much further than an edge: it is attacked through three faces, an edge
+// through two (docs/experiments/exposed-bedrock.md, "How a jointed block weathers").
+constexpr f64 k_corner = 1.5;
 
 bool bad(std::string& error, const char* field, const char* range) {
   error = std::string("engine.rocks.LedgePatch.") + field + " must be " + range;
@@ -198,8 +204,10 @@ f64 at(const PolyVertex& v, const f64 f[3]) {
 PolyVertex crossing(const PolyVertex& p, const PolyVertex& q, const f64 f[3], const u32 node[3],
                     u8 line) {
   PolyVertex x;
-  // On the new line, and on any joint both ends are on.
-  x.lines = static_cast<u8>(line | (p.lines & q.lines & (k_on_joint_lo | k_on_joint_hi)));
+  // On the new line, and on any joint or worn corner both ends are on.
+  x.lines =
+      static_cast<u8>(line | (p.lines & q.lines &
+                              (k_on_joint_lo | k_on_joint_hi | k_on_corner_lo | k_on_corner_hi)));
   if (p.kind < 2 && q.kind < 2) {
     bool on[3] = {};
     on[p.a] = on[p.b] = on[q.a] = on[q.b] = true;
@@ -449,7 +457,7 @@ bool solve_patch(const LedgePatch& p, assets::MeshData& out, LedgeReport* report
   // formation's coordinate there, the share of a bed that stands, the downhill direction, and
   // the place along the strike.
   Vector<f64> ground(m * m), coordinate(m * m), fraction(m * m), down_x(m * m), down_z(m * m),
-      strike(m * m), down_dip(m * m);
+      strike(m * m), down_dip(m * m), per_slope(m * m);
   const auto height_mm = [&](u32 i, u32 j) { return static_cast<i64>(p.heights_mm[j * side + i]); };
   for (u32 j = 0; j < m; ++j)
     for (u32 i = 0; i < m; ++i) {
@@ -469,6 +477,8 @@ bool solve_patch(const LedgePatch& p, assets::MeshData& out, LedgeReport* report
       fraction[k] =
           standing_share(rule, exposure_fraction(rule, shape), soil_cover(rule, wx_mm, wz_mm));
       if (shape.slope >= cliff_slope) fraction[k] = 0.0;
+      // Metres behind a front a metre of height under its step, for the corners worn in plan.
+      per_slope[k] = 1.0 / (shape.slope > 0.3 ? shape.slope : 0.3);
       const bool sloped = shape.slope > 1e-9;
       down_x[k] = sloped ? -shape.slope_x / shape.slope : 1.0;
       down_z[k] = sloped ? -shape.slope_z / shape.slope : 0.0;
@@ -609,7 +619,8 @@ bool solve_patch(const LedgePatch& p, assets::MeshData& out, LedgeReport* report
               }
               const f64 lost_m =
                   unit.depth[shape.lost] / ny;  // the tread's drop under the unit's top
-              PolyVertex tri[3], stage_a[8], stage_b[8], behind[8], poly[8];
+              PolyVertex tri[3], stage_a[12], stage_b[12], stage_c[12], stage_d[12], behind[12],
+                  poly[12];
               for (u8 k = 0; k < 3; ++k) {
                 tri[k].w[k] = 1.0;
                 tri[k].a = tri[k].b = k;
@@ -639,6 +650,32 @@ bool solve_patch(const LedgePatch& p, assets::MeshData& out, LedgeReport* report
                 gl[k] = db[k] + (0.5 * h[k] < k_back_m ? 0.5 * h[k] : k_back_m);
                 fl[k] = db[k] - h[k];
               }
+              if (!p.far && round_m > 0.0) {
+                // **Corners worn in plan**: where the front meets a joint the block is cut back
+                // at 45 degrees, half as far again as an edge is worn and never more than a
+                // quarter of the block, so two blocks meet in a notch and not in a line.
+                const f64 lo = station(block, spacing, uid);
+                const f64 hi = station(block + 1, spacing, uid);
+                const f64 worn = std::min(k_corner * round_m, 0.25 * shape.length);
+                f64 c_lo[3], c_hi[3];
+                bool cut_lo = false, cut_hi = false;
+                for (u32 k = 0; k < 3; ++k) {
+                  const f64 behind_front = -fl[k] * per_slope[node[k]];
+                  c_lo[k] = st[k] - lo + behind_front - worn;
+                  c_hi[k] = hi - st[k] + behind_front - worn;
+                  cut_lo = cut_lo || c_lo[k] < 0.0;
+                  cut_hi = cut_hi || c_hi[k] < 0.0;
+                }
+                if (cut_lo) {
+                  n = clip(current, n, c_lo, node, true, k_on_corner_lo, stage_c);
+                  current = stage_c;
+                }
+                if (n >= 3 && cut_hi) {
+                  n = clip(current, n, c_hi, node, true, k_on_corner_hi, stage_d);
+                  current = stage_d;
+                }
+                if (n < 3) continue;
+              }
               n = clip(current, n, gl, node, true, 0, behind);
               if (n < 3) continue;
               n = clip(behind, n, fl, node, false, k_on_front, poly);
@@ -664,7 +701,7 @@ bool solve_patch(const LedgePatch& p, assets::MeshData& out, LedgeReport* report
                 continue;
               }
 
-              D3 top[8];
+              D3 top[12];
               f64 mid_x = 0.0, mid_z = 0.0;
               for (u32 k = 0; k < n; ++k) {
                 top[k] = {at(poly[k], lx), at(poly[k], g) + at(poly[k], db), at(poly[k], lz)};
@@ -674,12 +711,12 @@ bool solve_patch(const LedgePatch& p, assets::MeshData& out, LedgeReport* report
               // The lip: where the tread meets the front its edge is worn back along the bedding
               // plane, by the rounding and never more than 0.45 of the first row under it.
               const u32 block_rows = unit_rows - shape.lost;
-              D3 lip_top[8];
-              f64 lip[8];
+              D3 lip_top[12];
+              f64 lip[12];
               for (u32 k = 0; k < n; ++k) {
                 lip[k] = 0.0;
                 lip_top[k] = top[k];
-                if ((poly[k].lines & k_on_front) == 0 || !(round_m > 0.0)) continue;
+                if ((poly[k].lines & k_on_face) == 0 || !(round_m > 0.0)) continue;
                 const f64 step = at(poly[k], db);
                 f64 first_row = step + under_of(step);
                 if (block_rows > 1)
@@ -709,7 +746,9 @@ bool solve_patch(const LedgePatch& p, assets::MeshData& out, LedgeReport* report
                 const u32 e[2] = {k, (k + 1) % n};
                 const u8 shared = poly[e[0]].lines & poly[e[1]].lines;
                 const D3 run = top[e[1]] - top[e[0]];
-                if ((shared & k_on_front) != 0) {
+                if ((shared & k_on_face) != 0) {
+                  if ((shared & k_on_front) == 0)
+                    made.corner_length_m += std::sqrt(run.x * run.x + run.z * run.z);
                   // The front: down from the tread's edge to the ground and under it, a face a
                   // row, each row standing back under the one above by its own seeded share.
                   D3 outward{run.z, 0.0, -run.x};
