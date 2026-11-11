@@ -99,8 +99,9 @@ face agrees and a face that silently kept its own dip would draw beds crossing t
 `from_formation` out while it is true and `formation` and `world_origin` out while the field is
 absent, so no recipe written before keeps anything but the key it had (`canonical_rock_json`). A
 field out of the scene's ranges is refused with the scene's sentence, prefixed
-`engine.rocks.Cliff.`. Boulders, outcrops and scree do not read the field yet (their recipes have
-no world origin), and the `cliffs` generator does not yet copy the scene's field into the faces it
+`engine.rocks.Cliff.`. Boulders, outcrops and scree recipes do not read the field yet (their recipes
+have no world origin); the `deposits` generator's talus and shed blocks do, through
+`DepositLayer.formation` ([What a face sheds](#what-a-face-sheds), G143); and the `cliffs` generator does not yet copy the scene's field into the faces it
 writes (its owner's change): a hand-written recipe, or a generator that fills both fields, is how a
 face joins it today.
 
@@ -825,7 +826,7 @@ the scheduler, or another capability, and it can be removed from the build the s
 | Registration point | This capability | Status |
 |---|---|---|
 | Capabilities it requires | none | this capability stands alone |
-| Component and event types | `domain/rocks/schemas/rocks.schema`: `RockType`, `RockShape`, `RockMaterial`, `Boulder`, `Outcrop`, `Scree`, `CliffPoint`, `Cliff`, `RockFile`, `DepositPatch`, `DepositLayer` | parameters, not components: a rock has no runtime state |
+| Component and event types | `domain/rocks/schemas/rocks.schema`: `RockType`, `RockShape`, `RockMaterial`, `Boulder`, `Outcrop`, `Scree`, `CliffPoint`, `Cliff`, `RockFile`, `DepositBlock`, `DepositPatch`, `DepositLithology`, `DepositLayer` | parameters, not components: a rock has no runtime state |
 | Tick scheduler entry | none | the solver runs at content-build time and has no tick |
 | Render-graph passes | none | a rock is a cluster mesh like any other |
 | Content-build derived step | `engine-content rocks`, mesh generators `rock` and `deposit` (and through them `build`, `build-all`) | [the build](#the-build): keyed by the canonical parameters and `k_rocks_version` |
@@ -835,7 +836,7 @@ the scheduler, or another capability, and it can be removed from the build the s
 | LOD policy | the budget ladder, then the cluster DAG's | [the budget ladder](#the-budget-ladder) |
 | Determinism | `rocks::k_determinism` = `derived`; the same bytes on every toolchain | [above](#determinism) |
 | Zero cost when unused | nothing runs unless a scene names `cliffs` / `deposits` or a `.rock.json` / `.deposit.json` mesh | plan 11 §11.10: absent work |
-| Tests and size table | `tests/rocks_tests.cpp`, `tests/cliff_tests.cpp`, `tests/deposits_tests.cpp`, `tests/size_table.cpp` (`RockReport`, 36 bytes; `CliffReport`, 76; `DepositPlan`, 96) | written |
+| Tests and size table | `tests/rocks_tests.cpp`, `tests/cliff_tests.cpp`, `tests/deposits_tests.cpp`, `tests/deposits_cone_tests.cpp`, `tests/size_table.cpp` (`RockReport`, 36 bytes; `CliffReport`, 76; `DepositPlan`, 176; `DepositPile`, 72; `DepositPlanBlock`, 128) | written |
 | Bench | none | no hot path |
 | Removal proof | `ENGINE_WITH_ROCKS`, off in the minimal build | works |
 
@@ -895,14 +896,16 @@ observed talus geometry from authored controls.
 `engine.rocks.DepositLayer` supplies a finite `region_min` / `region_max` in world metres,
 `spacing_m`, an explicit `max_samples`, and the source, repose, runout and channel controls.
 `plan_deposits` samples static `scene_gen::Ground` in whole millimetres, routes D8 contributing
-area in height/index order, and propagates a descending source envelope along nonascending
-terrain. Only source-connected locations receive talus. A declining envelope produces the toe;
-the depth cap bounds authoring volume. Channel sediment occupies low-gradient cells above the
+area in height/index order, and stands what each face sheds at its foot by the supply rule of
+[What a face sheds](#what-a-face-sheds) (G143), which replaced G128's descending source envelope
+and its depth cap. Channel sediment occupies low-gradient cells above the
 contributing-area threshold. Pits retain sediment and terminate drainage. No water simulation,
-erosion rate, volume conservation or rockfall hazard prediction is implied.
+erosion rate or rockfall hazard prediction is implied; the talus conserves the supply it is
+given, not a mass balance through time.
 
 The region is the complete catchment for this bake. Its boundary admits no unknown inflow.
-Changing it can change drainage and deposits. The entire region is solved once on `open`, then
+Changing it can change drainage and deposits. The entire region is planned once on `open` (no patch's
+mesh is solved there: [A tile solves](#a-tile-solves)), then
 split into patches aligned to world tiles (`patch_m`, default 8 m), each at most 32 m and
 64 cells across. The patch edge divides the tile and is a whole number of sample spacings.
 `expand` and
@@ -948,7 +951,8 @@ section, preserving its existing container bytes and pins. Material setup does n
 geometry, vertex attributes or cover masks. The regression covers explicit and pack-supplied
 base-colour, normal and roughness maps: the missing sampling record previously caused an
 out-of-bounds write in materials::apply_set during scene startup.
-The v11 rock solver identity also changes the deposit container pin to 17513793063602312493;
+The v11 rock solver identity also changed the deposit container pin to 17513793063602312493 (G143's
+`k_deposit_version` 2 has since moved it to 14163044981722319397, [below](#what-a-face-sheds));
 the deposit mesh pin remains 6863964757150498499. This identity change is present before the
 sampling fix; it follows the deposit source hash's existing dependency on the rock solver version.
 
@@ -958,6 +962,197 @@ Public API: [deposits.h](../../domain/rocks/include/domain/rocks/deposits.h), `D
 flat terrain, channel convergence, translated world coordinates, budgets, topology, deterministic
 meshes and keys, reverse tile arrival, earlier footprints and input refusals.
 
+### What a face sheds
+
+G143 (`DepositLayer` @version(2), `DepositPatch` @version(2)) replaced G128's capped apron with one
+supply rule, and added the blocks shed below the faces and the formation's lithology. The grounding
+is [rockfall-deposits](../experiments/rockfall-deposits.md#g143-what-a-face-sheds-2026-11-10):
+Mohadjer et al.'s rock-wall retreat from talus volumes for the supply, Francou and Mante's 34-36
+degree talus, the 31-34 degree concave toe, Kirkby and Statham's exponential travel and fall sorting,
+Evans and Hungr's 27.5 degree minimum shadow angle, and block size from the source's joints.
+
+**Why the apron went.** G128's envelope descended at the repose angle from every steep sample and
+was capped at `talus_depth_m` (3 m): it knew where rock can fall from, not how much does. Below a
+face with three gullies its depth at the foot was 2.69 m under each gully and between them, and its
+reach 4.5 m in both: a flat-topped slab of even depth, the same under a 5 m face as under a 50 m one.
+G143's first agent stood cones in the gully mouths beside it, switched on by a field; the owner's
+rule is to replace a wrong shape, not build beside it, so both are gone (`talus_depth_m`,
+`cone_supply_m`, `cone_max_m` and the four `gully_*` controls; a migration drops `talus_depth_m`
+from a version-1 layer, and one that set it to zero gets `supply_m` 0).
+
+**The rule.** What lies at a face's foot is what the face shed. Face area is routed down steepest
+descent (D8) through the steep samples (`source_deg`, 50), each adding its own surface area (its
+plan area times `sqrt(1 + slope²)`), until it reaches a gentle sample: its **foot**. A foot's
+**supply** is that area times `supply_m`, the wall's retreat since the ice left (default 3.5 m:
+Mohadjer et al.'s 0.27-0.38 mm a year from talus volumes over 11,000 years; range 0-50 m, the
+published rates' 0.015-2 mm a year over the Holocene). Each foot spreads its own supply along the
+feet round it over its own pile's reach `r = h / tan(repose)` through a triangle kernel
+`(1 - d / r) / r`, which integrates to one along a line, so volume is conserved; a foot's pile is the
+wedge that holds what it receives, `h² a = q`, with `a = (1 / tan(repose) - 1 / tan(face)) / 2` the
+wedge's section against the face (the face's slope at the foot; at least `0.1 / tan(repose)`).
+Under a planar face `q` is the face's own supply per metre and the piles of neighbouring feet are
+one **sheet whose height goes as the root of the face's height above it**. A foot fed by a gully
+receives its volume `V` over `r`, so `h³ = V tan(repose) / a`: the half cone's `π h³ / (6 tan²)`
+within a few per cent, a **cone**, its neighbours on the kernel's flanks. Eight steps, each halfway
+to the law's height, settle every height together; no pile competes with another, so no step can
+run away (a first version that scaled each pile by what it won of the union let a few piles bury
+the rest). A pile never stands above the wall it fell from, nor more than 20 m (the patch's limit).
+
+**The surface.** Each pile's **apex** stands against the face above its foot, over the last sample
+of the face (walked up its largest inflow) below the pile's top, so a pile leans on its wall and is
+never a point in front of it. From the apex its surface falls at `repose_deg` for three quarters of
+its nominal length `h / tan(repose)`, then eases linearly to `toe_deg` (31) over one more nominal
+length, then holds it: straight over concave, never steeper than the repose. The deposit is the
+**union** of the piles' surfaces, found by one head-priority flood from every apex (a sample takes
+the highest surface that reaches it; ties by distance, then pile), within `runout_m`, where the
+surface stands over the ground, and nowhere deeper than the pile's own height over its foot (so a
+pile on a bench at a face's brink does not drape the face below it). A union of surfaces each no
+steeper than the repose is no steeper than the repose, so **where a cone meets a sheet there is no
+step** (`deposits: the union holds the angle of repose`). The coarse share rises from 0.2 at a
+pile's apex to 1 at its farthest sample (Kirkby and Statham's fall sorting). Channel sediment is
+G128's, and a sample's deposit is the larger of the two.
+
+**What it does on the tests' faces** (msvc-debug, the cases' MESSAGEs). A planar face whose height
+rises from 10 m to 16 m along its foot stands a sheet whose pile rises from 10.0 to 11.3 m over the
+foot and whose depth half a metre out rises from 6.5 to 7.2 m, the height over the root of the
+face's constant to 1%; the deposit holds 2,767 m³ for the 2,632 m³ the face shed (5% over: the
+wedge on a meadow that falls away from it). A planar 24 m face stands 14.0 m piles along its whole
+foot, the same to 0.2%. Its three funnel gullies, 12 m apart, each route 43.6 m³ (at 1 m of retreat)
+to their largest foot against 13.4 m³ a planar foot, and their piles stand 8.7 m over the foot
+against 7.6 m between them: **on a face this short with gullies this close, the cones merge into an
+apron that bulges at each gully** (each cone reaches farther than the gullies are apart). A cone
+stands alone where its gully drains more face than the faces between it shed, as in reels r04 and
+r19, where a gully drains a basin; the review pictures' funnel face (G143's report) is built so.
+
+**Shed blocks.** The top of a talus is a deposit's gentle sample under a sample whose top is steep
+and higher, with no steep drop below it (a notch's floor at a face's brink is a gully's head, not a
+talus' top). From those tops a shadow envelope runs down the deposit's top, never uphill, losing
+`tan(shadow_deg)` (27.5) a metre: Evans and Hungr's line. Candidates stand on the world's lattice
+near a metre (a whole number of spacings), so a block is where it is whatever window or tile asks;
+each carries `blocks_per_100m2 / 100 * exp(-d / block_decay_m)` blocks, d its run-out along the
+envelope. The default is 20 a 100 m² at the talus' top, authored against the reels (r04: "granite
+boulders 1-3 m scattered on the meadow"): no published count of blocks a unit area below a face was
+found (the USGS counts boulders over 1 m on a 20 m grid for rock avalanches, not talus feet). A block
+is kept only where the straight line from its talus' top falls at no less than `shadow_deg`, where
+the top under it is no steeper than the repose (3% of slack for the sampled facets, under talus'
+39-40 degree friction), off a face and out of a sediment channel. Its edge is `block_m` times
+`0.5 + d / (d + block_decay_m)` (the largest farthest) times 0.6-1.4; its thickness the type's plate
+of its width, never more than half the bed's thickness where the layer has a formation; its burial
+`buried_min`-`buried_max` (0.15-0.5) of its height by a drawn age. The patch its centre stands in
+builds it with the scree's fragment kernel at the finest rung under `block_triangles` (432: rung 6)
+and shears it onto the plane of the top under it, so it rests on every side. A patch of meadow with
+blocks and no bed is a patch.
+
+**The formation.** With `formation` (the scene's `engine.scene.Formation`, carried like a cliff's,
+W85), every deposit sample reads the bed at the face it came from: its pile's apex, or a block's
+talus' face. The bed is `gfx::formation_bed` at `gfx::formation_coordinate` of that face sample,
+through `geology.h`'s includes as they are. Its rock is the `lithology` row naming the bed, else the
+type its name spells in any case (`Limestone`), else `patch.type`. A patch is one material, so it
+takes the type most of its deposit samples and blocks voted for (the lowest type on a tie).
+
+**A bed of scree is a surface whose largest blocks alone are geometry.** The deposit is one merged
+mesh a patch (8 m by default, at most four a 16 m tile and sixteen a 32 m one), with the
+representative fragments and the blocks in the same mesh, never an instance a stone. The cluster
+DAG is its LOD policy and its coarsest level its far form. A bed's bare rim on steep ground (a
+sample under 1 mm deep with more than 10 cm of relief round it) sinks by half that relief, top and
+underside together, because a bed triangle between a deep sample and a face's sample stood out of a
+face the terrain triangulates the other way (`k_deposit_version` 2).
+
+**What the ground is under it.** Nothing can raise the terrain yet (W93 is reshaping the ground's
+edit), so the deposit is a bed lying on the ground it was asked for: the terrain under it stays the
+gully's floor and the foot, and a walker's collision meets the bed's own mesh where the scene's
+collision takes deposits (G128's 5 cm cut) and the ground otherwise. A raising edit would put the
+deposit's surface into the tile heights at every level, so the far terrain, the cover and the
+placements that read the ground (G135's exclusion, the sward) would see it, and the bed could thin
+to its fragments and blocks; until then it does not clear the sward or the litter it covers.
+
+**Determinism.** Integer millimetres for every place, `det::exp`/`det::log` for the cube root and
+the decay, one correctly rounded square root for distances and areas, a fixed count of kernel steps
+updated together in pile order, splitmix64 per world candidate; the plan and a patch with a block
+are pinned (`deposits: G143's plan and a patch with blocks are their pinned bytes`).
+
+### The edge and the seams
+
+G143's second stage (`k_deposit_version` 3). **The outline.** G128 and G143's first agent put a
+bare sample's top 1 mm under the ground, so between a deposit sample and a bare one the drawn top
+met the ground within a hair of the bare sample: the outline was the sample lattice's staircase,
+and a thick toe stood as a step. The plan now carries a signed **edge field** per sample: inside,
+the deposit; outside, the piles' own surfaces continued under the ground where one reached
+(`DepositPlan::sink`, the depth of the drawn top below the ground, 0-2 m), else the toe's slope
+(`k_edge_slope`, tan 31 degrees) down from the outline by a two-pass chamfer distance in whole
+millimetres. The first ring of bare samples past the outline is moved by world-anchored value noise
+of amplitude `k_edge_amp` (0.1 m) on a `k_edge_lattice_mm` (2 m) lattice, out or in. The drawn top
+meets the ground where the field crosses zero, between the samples (`deposits: the bed meets the
+meadow between its samples`: on the test's face 2 of 119 meadow edges cross within 3% of the bare
+sample, the crossing on average 0.38 of the way along; the deposit at its outline is at most
+0.32 m, under the stated 0.35 m: the toe's slope over a diagonal step plus the noise). A bare rim on
+steep ground still sinks by half the relief round it, now computed on the plan, so a sample on a
+patch's border sinks as its neighbour patch's does. The noise is anchored to the world, so a
+window translated to another place has another outline (the translation test holds the rest).
+
+**The toe's clasts.** Every fourth representative fragment of a patch stands in a bare cell within
+0.5 m of sink (about two metres past the outline), on the ground, from the largest band and smaller
+the farther out: a toe's largest clasts scattered and thinning past the bed (Kirkby and Statham's
+fall sorting). Shed blocks run past it to the shadow line as before.
+
+**The seams.** A patch's bed normals were area-weighted over its own triangles, so at a patch's
+border (and a tile's) each side saw half the surface and the shading showed a seam. The plan now
+carries the top's gradient (`DepositPlan::slope`, central differences over the plan, one-sided at
+the region's edge), each patch carries its samples' (`DepositPatch::slope`), and the bed's top
+normals are `normalize(-sx, 1, -sz)` from it: the same on both sides of a border to 0.028 degrees
+(`deposits: a cone across patch and tile borders`, bound 0.1). A patch written without one takes
+central differences over its own samples. Buried undersides and walls keep their triangles'
+normals. The G128 mesh pin moved to 625669387871748774 and the container pin to
+13439161428700819251 with it.
+### Where the triangles go
+
+The finest form spent 1,115 triangles a square metre on the first agent's tile, and 514 on this
+row's after its first two stages, nearly all of it in the representative fragments: every
+fragment of a patch was built at the finest cube-grid rung its equal share of the budget allowed
+(rung 20, 4,800 triangles), though 65% of them are 4-32 mm pebbles. A fragment is now built at the
+coarsest rung whose facets are no longer than `k_clast_edge` (2 cm: `pi r / 2 / n`), never finer
+than its share allows, so a centimetre's pebble spends 192 triangles and a 20 cm clast rung 16. On
+the cost case's tile that takes the finest form from 514 to 281 triangles a square metre (127,608 to
+69,768) and the tile's activation from 804 to 445 ms in msvc-release. What is left is the blocks
+(432 each), the coarse fragments and the bed (8 a square metre at 0.5 m samples).
+
+**Not done (G143's third stage, left for a later row):** the triangles freed are not yet spent on
+clast relief in the bed's surface, sized by the sorting, as geometry near and in the normal beyond;
+and the bed is not yet paler than its wall. The rock solver's fresh break against a weathered
+exterior (["Weathered exteriors and fresh breaks (G97)"](#weathered-exteriors-and-fresh-breaks-g97))
+is a baked rind on radial surfaces, which a deposit patch refuses (`surface_maps`), and the cliffs
+draw no rind either, so neither side of the contrast exists in the deposits' flat or pack material
+yet: a scree material (a role the pack does not have) or a fresh-break tint by lithology is the
+change.
+### A tile solves
+
+Until G143's fourth stage the generator's `open` solved every patch's mesh of the region to check
+its triangle budget before writing its recipe, so opening a region cost every patch's mesh, near
+or not ("nothing exists before its tile"). `open` now plans the region, writes each patch's recipe
+(`deposit-<hash>.deposit.json`, as the cliffs generator writes its faces' `.rock.json`) and checks
+it with `deposit_patch_fits`, every refusal `solve_deposit` makes without building the mesh (the
+bed's cells and surface triangles against the budget). A patch's mesh is solved when the host
+builds the mesh its tile names, through the mesh generator registry (`deposit`) and the
+derived-data cache, keyed by the recipe; a second world that names the same patch reads it from
+the cache. `deposit_solve_count()` counts the meshes built in a process, and the cost case holds
+`open` to none.
+
+| Measured (`deposits: what a tile of cones and shed blocks costs`, the gullied test face, 48 m region at 0.5 m, 36 patches) | msvc-release | msvc-debug |
+|---|---:|---:|
+| The plan alone (the supply rule, the edge, the blocks) | 7.5 ms | 29 ms |
+| `open` before stage 4 (plan, recipes, every patch solved) | 1,164 ms | 7,141 ms |
+| `open` after (plan, recipes, every patch checked, none solved) | 153 ms | 278 ms |
+| A 16 m tile's activation: its four patches' containers built (solve, cluster DAG) | 804 ms; 445 ms after [the fragments' rungs](#where-the-triangles-go) | 3,217 ms; 1,618 ms after |
+| The cost case's own time | | 3.6 s (12.8 s before) |
+
+Shared machine, 2026-11-10: two compiler processes of other agents running, CPU load 25-48% by
+`Win32_Processor.LoadPercentage` before and after the release runs, 16.7 GB free; upper bounds, one
+run each. The tile's activation is the mesh build a host does once a recipe, then reads from the
+derived-data cache. Triangles on that tile: 69,768 at the finest form over 248.5 m² of bed (281 a
+m²; 127,608 before [the fragments' rungs](#where-the-triangles-go)), 301 at the coarsest (1.2 a m²); 4 instances, each a merged mesh, carrying 29 blocks. Resident for an
+entry's life: the plan's 176-byte record, its per-sample arrays (ground 8 bytes, thickness, coarse,
+sink 4 each, slope 8, drainage 8; with a formation one `RockType`), 72 bytes a pile and 128 a
+block; it scales with the region's samples, not the world's size.
 ### Foothill exposure and repeated-material limits
 
 [G132's v29 controls](../experiments/v29-cliff-diagnosis.md) distinguish the continuous authored

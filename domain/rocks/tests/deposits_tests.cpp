@@ -99,7 +99,7 @@ TEST_CASE("deposits: connected foot talus with a finite runout and no uphill bla
 }
 TEST_CASE("deposits: channel sediment follows contributing area without needing a cliff") {
   auto p = layer();
-  p.talus_depth_m = 0;
+  p.supply_m = 0;
   DepositPlan plan;
   std::string error;
   REQUIRE_MESSAGE(plan_deposits(p, ground(channel), plan, error), error);
@@ -126,9 +126,12 @@ TEST_CASE("deposits: finite world millimetres preserve translated terrain decisi
     REQUIRE(plan_deposits(q, ground(cliff, &mm), far, error));
     REQUIRE(far.thickness.size() == near.thickness.size());
     for (u32 i = 0; i < near.thickness.size(); ++i) {
+      CHECK(far.drainage_m2[i] == near.drainage_m2[i]);
+      // G143: the outline's ring is moved by noise anchored to the world, so a translated window
+      // is another place there; inside the ring every decision is the same to the bit.
+      if (near.thickness[i] < .5f) continue;
       CHECK(far.thickness[i] == near.thickness[i]);
       CHECK(far.coarse[i] == near.coarse[i]);
-      CHECK(far.drainage_m2[i] == near.drainage_m2[i]);
     }
   }
 }
@@ -207,13 +210,18 @@ TEST_CASE("deposits: mesh identity and cluster container are deterministic") {
   const u64 hash = checks::mesh_hash(mesh);
   MESSAGE("deposit mesh pin: ", hash);
   // G128 initial MSVC pin; the existing rock solver pins remain unchanged.
-  CHECK(hash == 6863964757150498499ull);
+  // Re-taken for G143's normals from the top's gradient (2026-11-10; was 6863964757150498499), then
+  // for fragments built at the rung their size needs (was 625669387871748774).
+  CHECK(hash == 2024239262398034445ull);
   geometry::ClusterFileData a, b;
   REQUIRE_MESSAGE(build_deposit_container(p, {}, 0, a, error), error);
   REQUIRE(build_deposit_container(p, {}, 0, b, error));
   MESSAGE("deposit container pin: ", geometry::cluster_file_hash(a));
-  // Rock solver v11 changes the source/build identity, not the deposit mesh above.
-  CHECK(geometry::cluster_file_hash(a) == 17513793063602312493ull);
+  // Rock solver v11 changes the source/build identity, not the deposit mesh above; so does
+  // k_deposit_version 2 (G143, the bare rim's sink: was 17513793063602312493).
+  // k_deposit_version 3 and the normals (G143, stage 2; was 14163044981722319397), then the
+  // fragments' rungs (stage 3; was 13439161428700819251).
+  CHECK(geometry::cluster_file_hash(a) == 7929702402516820737ull);
   CHECK(geometry::cluster_file_hash(a) == geometry::cluster_file_hash(b));
   CHECK(a.source_hash == deposit_source_hash(p));
   CHECK(a.source_hash == b.source_hash);
