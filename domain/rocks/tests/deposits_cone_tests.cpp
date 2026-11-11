@@ -92,6 +92,17 @@ const DepositPile& largest(const DepositPlan& plan) {
   return *best;
 }
 constexpr f64 k_repose = 0.70020753820970977;  // tan 35 degrees
+// T108: a patch's bed and its loose stones are two primitives and materials; the closed-mesh checks
+// read the whole mesh as one body list.
+assets::MeshData as_one(const assets::MeshData& mesh) {
+  assets::MeshData one = mesh;
+  one.primitives.resize(1);
+  one.primitives[0].first_index = 0;
+  one.primitives[0].index_count = static_cast<u32>(one.indices.size());
+  one.primitives[0].material = 0;
+  one.materials.resize(1);
+  return one;
+}
 }  // namespace
 
 TEST_CASE("deposits: a planar face's sheet follows the face's height and holds its supply") {
@@ -602,7 +613,7 @@ TEST_CASE("deposits: a cone across patch and tile borders meets itself to the mi
       for (f32 t : r.patch.thickness)
         bed = bed || t > .001f;
       if (bed) {
-        checks::check_closed(mesh, 1 + r.patch.fragments + r.patch.blocks.size());
+        checks::check_closed(as_one(mesh), 1 + r.patch.fragments + r.patch.blocks.size());
         break;
       }
     }
@@ -967,7 +978,7 @@ TEST_CASE("deposits: G143's plan and a patch with blocks are their pinned bytes"
   patch.blocks.push_back(block);
   assets::MeshData mesh;
   REQUIRE_MESSAGE(solve_deposit(patch, mesh, error), error);
-  checks::check_closed(mesh, 1 + patch.fragments + 1);
+  checks::check_closed(as_one(mesh), 1 + patch.fragments + 1);
   MESSAGE("G143 patch mesh pin: ", checks::mesh_hash(mesh));
   // Re-taken for the bed's normals from the top's gradient, not its triangles (stage 2; was
   // 6681331591728775090), then for fragments built at the rung their size needs (stage 3; was

@@ -1077,7 +1077,9 @@ cuts apply. Opaque geometry casts standard shadows and receives the existing 5 c
 There is no additional impostor chain or cover mask.
 
 Materials use `rock/<type>` from the pack, overridden by the patch's `RockMaterial`, else the
-existing flat lithology colour. The bed projects x/z in metres per repeat; fragment charts use
+existing flat lithology colour; since G143's third pass the bed asks `rock/scree` first, and since
+T108 the loose stones are a material of their own that wears the rock's set ([A stone wears its
+rock](#a-stone-wears-its-rock)). The bed projects x/z in metres per repeat; fragment charts use
 the existing box projection. Baked `surface_maps` are refused for patches. Fine grain appearance
 requires a suitable tiled material; this feature does not generate sediment PBR maps.
 A textured deposit initializes its material-sampling record from the solved material before
@@ -1355,6 +1357,31 @@ slope): the edge field also sinks a bed's bare rim on the face above it, and the
 pictures stuck clasts to the wall (`k_deposit_version` 5; `deposits: the toe's clasts thin out over
 metres, the largest farthest`: 36, 19 and 9 clasts by metre out, 0.19, 0.24 and 0.32 m across,
 none on the face beside the bed). The shed blocks still run past them to the shadow line.
+
+### A stone wears its rock
+
+T108, 2026-11-11 (`k_deposit_version` 6). The bed samples the pack's `rock/scree`, which is right
+for a bed: its set is a picture of many clasts on a dark ground. Until T108 the loose fragments, the
+toe's clasts and the shed blocks were drawn in the same mesh with the same material, so every loose
+block past the toe was one stone wearing a picture of many stones (G143's third pass's one-metre
+picture). **A patch's mesh is now two primitives**: the bed (material 0, the scree's set as before)
+and every loose stone (material 1), which wears its rock's own set, chosen as a boulder's is: the
+recipe's own images, else the pack's `rock/<type>` (`rock_role` of the patch's type), else the
+type's flat constant. A stone is charted at **its own set's repeat** (`solve_deposit`'s
+`stone_tile_m`; the box projection of [External tiled maps](#external-tiled-maps)), so a 0.9 m
+block shows half a 2 m granite repeat, not four repeats of a 0.5 m scree. Each primitive is its own
+cluster DAG with the patch's border locked, merged by `merge_cluster_lod`, so a cluster names one
+material. A patch with no loose stone keeps one material; a patch of meadow with blocks and no bed
+has the stones' primitive alone (`deposits: a loose stone wears its rock's own surface and the bed
+the scree's`). The patch's `RockMaterial` factors (tint, roughness) go on both.
+
+**What a fresh break would add.** A block that fell this century shows a fresh break on the faces
+it broke along: paler and less rough than its weathered face, without lichen (the G97 rind is the
+same idea for a baked boulder). A stone that has lain on the talus for millennia is weathered all
+round. A second role a rock, `rock/<type>-fresh`, would let the blocks' broken faces (the fragment
+kernel already knows which facets are cut) and the youngest blocks (the plan draws each block's
+age as its burial) take it; the matgen sets have no such role yet, so this is a request to the
+material sets' row, not built here.
 
 ### A tile solves
 

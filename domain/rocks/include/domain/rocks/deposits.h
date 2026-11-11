@@ -10,8 +10,10 @@ namespace engine::rocks {
 // 3 (G143, second agent): the bed's outline, its sink and its normals come from the plan.
 // 4 (G143's third pass): the bed's top is rubble, its clasts anchored to the world, the loose
 // fragments of the largest band alone, the toe's clasts spread over metres. 5: the toe's clasts on
-// the gentle ground only (a mesh built at 4 may carry clasts on the face).
-inline constexpr u32 k_deposit_version = 5;
+// the gentle ground only (a mesh built at 4 may carry clasts on the face). 6 (T108): a loose stone
+// is its own primitive and material, its rock's set at that set's repeat (rocks.md, "A stone wears
+// its rock").
+inline constexpr u32 k_deposit_version = 6;
 // The bed's edge (rocks.md, "The edge and the seams"): inside its outline toward bare gentle ground
 // a deposit is no thicker than `k_edge_slope` (tan 31 degrees, the toe's own slope) times its
 // distance in, less half a spacing; past it the piles' surfaces continue under the ground; and the
@@ -83,7 +85,12 @@ bool plan_deposits(const DepositLayer& layer, const scene_gen::Ground& ground, D
 // per metre, positive in a hollow; zero on a face whose contours are straight.
 f64 deposit_convergence(const DepositPlan& plan, u32 i, u32 scale_samples);
 bool deposit_patch_in_range(const DepositPatch& patch, std::string& error);
-bool solve_deposit(const DepositPatch& patch, assets::MeshData& out, std::string& error);
+// The mesh has two primitives (T108; rocks.md, "A stone wears its rock"): the bed, material 0, its
+// UVs in repeats of `patch.material.tile_m`; and the loose stones (the fragments, the toe's clasts
+// and the shed blocks), material 1, charted in repeats of `stone_tile_m` (0: the bed's), because a
+// stone wears its rock's own set and not the bed's. A patch with no stone has the bed's alone.
+bool solve_deposit(const DepositPatch& patch, assets::MeshData& out, std::string& error,
+                   f64 stone_tile_m = 0);
 // Every refusal `solve_deposit` would make, without building the mesh (G143; rocks.md, "A tile
 // solves"): what the generator's `open` checks each patch with, so it solves none.
 bool deposit_patch_fits(const DepositPatch& patch, std::string& error);
