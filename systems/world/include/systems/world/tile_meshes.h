@@ -48,6 +48,18 @@ struct TileMeshSink {
   bool (*admit)(void* context, u32 mesh, const renderer::PlacementMeshData& data,
                 std::string* error) = nullptr;
   void (*retire)(void* context, u32 mesh) = nullptr;
+  // **Its textures** (R147; texture.md, "Textures that arrive after the load"): `texture` takes a
+  // reference on the built texture of `texture.key`, uploading it if the scene has none
+  // (`SceneRenderer::acquire_texture`), and `release_texture` gives one back; the table holds one
+  // per texture of a mesh from the commit that put the texture in until its mesh is admitted (the
+  // mesh then holds its own). `texture_resident` is asked from the thread that builds a mesh,
+  // before it reads a `.tex`. All null for a host that draws nothing: its builds then leave the
+  // textures out.
+  enum class Texture : u8 { held, need_bytes, refused };
+  Texture (*texture)(void* context, const renderer::PlacementTexture& texture,
+                     std::string* why) = nullptr;
+  void (*release_texture)(void* context, u64 key) = nullptr;
+  bool (*texture_resident)(void* context, u64 key) = nullptr;
 };
 
 struct TileMeshConfig {
@@ -95,6 +107,13 @@ struct TileMeshStats {
   u64 refused = 0;   // admissions the room refused
   u64 deferred = 0;  // admissions a commit's allowance left for the next
   u64 failures = 0;  // meshes that could not be built
+  // Their textures (R147), over the run: the ones a commit uploaded and their staged bytes, the
+  // ones a mesh found in the scene already, and the meshes that draw their constants because a
+  // texture was refused (the bound is in the log) or was never built.
+  u64 textures_uploaded = 0;
+  u64 texture_bytes = 0;
+  u64 textures_shared = 0;
+  u64 texture_refusals = 0;
 };
 
 class TileMeshes {
@@ -159,6 +178,10 @@ class TileMeshes {
   void collect(bool wait);
   void retire(u32 slot, bool for_room);
   void drop(u32 slot);
+  // The entry's textures into the scene, in order, within the commit's bytes: true when every one
+  // is in (or the mesh draws its constants), false when the allowance left one for a later commit.
+  bool admit_textures(Entry& entry);
+  void release_textures(Entry& entry);
 
   renderer::PlacementMeshOptions options_;
   TileMeshConfig config_;
@@ -173,6 +196,7 @@ class TileMeshes {
   u64 commit_bytes_ = 0;
   u64 commit_ = 0;  // commits begun: what an unnamed entry's age is counted in
   bool in_commit_ = false;
+  bool texture_refusing_ = false;  // the last texture asked for was refused: said once per change
   TileMeshStats stats_;
 };
 

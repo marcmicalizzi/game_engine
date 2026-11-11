@@ -1,0 +1,15 @@
+{
+  "format": "engine.structure-raise.v1",
+  "name": "R147",
+  "reason": "Texture residency for admitted meshes (R147): the texture table's public and private blocks in gpu_scene.h, the upload pass's image copies in record_frame, and the pages that say what is built (renderer.md, gfx.md, world.md)",
+  "date": "2026-11-11",
+  "by": "Marc Micalizzi",
+  "deltas": {
+    "renderer.record_frame.lines": 8,
+    "renderer.gpu_scene_cpp.lines": -36,
+    "renderer.gpu_scene_h.lines": 105,
+    "page:docs/subsystems/renderer.md": 2480,
+    "page:docs/subsystems/gfx.md": 387,
+    "page:docs/subsystems/world.md": 1709
+  }
+}

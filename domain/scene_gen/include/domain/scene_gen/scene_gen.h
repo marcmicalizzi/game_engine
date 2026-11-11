@@ -346,6 +346,14 @@ struct PlacementGeneratorDesc {
   // hands one anyway is refused with a sentence. Last, so every descriptor written before it reads
   // as it did.
   bool tile_meshes = false;
+  // **Those meshes may be alpha-tested** (R145; renderer.md, "Alpha-tested geometry"): a host
+  // chooses its masked pipelines when the scene is made, from the materials it can see then, and a
+  // tile's mesh is not among them. A generator whose tiles may hand a material with an alpha mask
+  // (foliage, a fence) says so here, and the scene draws through the masked pipelines from its
+  // first frame; one that hands such a material without saying so has it drawn opaque, said once
+  // by name. It costs a scene what its first alpha-tested material costs any scene, so a solver of
+  // rock leaves it false.
+  bool tile_meshes_masked = false;
 };
 
 // ---- ground -------------------------------------------------------------------------------------

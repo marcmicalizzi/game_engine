@@ -814,6 +814,15 @@ class SceneRenderer {
   // names it any more. Refused inside a frame.
   bool admit_mesh(u32 mesh, const PlacementMeshData& data, std::string* error = nullptr);
   bool retire_mesh(u32 mesh, std::string* error = nullptr);
+  // **A tile's mesh's texture** (texture.md, "Textures that arrive after the load";
+  // `GpuScene::acquire_texture`, `release_texture`): a reference on the built texture of
+  // `texture.key`, uploaded without a wait if the scene's table has none — taken before the mesh
+  // that names it is admitted, and given back once it is (the mesh holds its own). Refused inside
+  // a frame. `texture_resident` may be asked from any thread.
+  GpuScene::TextureAdmit acquire_texture(const PlacementTexture& texture,
+                                         std::string* why = nullptr);
+  void release_texture(u64 key) noexcept;
+  bool texture_resident(u64 key) const;
 
   // ---- one frame ------------------------------------------------------------------------------
   // Waits for the slot to come free, folds the statistics and timings of the frame that last

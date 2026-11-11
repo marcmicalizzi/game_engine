@@ -64,6 +64,10 @@ struct TileMeshes::Entry {
   u32 materials = 0;
   u64 payload = 0;
   u64 unnamed_since = 0;  // the commit its last reference went at
+  // Its textures (R147): how many of `data.textures` are in the scene, and the references the
+  // table holds on them until the mesh is admitted and holds its own.
+  u32 textures_in = 0;
+  Vector<u64> held;
   jobs::Counter ran;
 
   void build() noexcept {
@@ -100,6 +104,12 @@ void TileMeshes::create(const renderer::PlacementMeshOptions& options, const Til
   options_ = options;
   config_ = config;
   sink_ = sink;
+  // A host that draws: a mesh's build also finds, builds and reads its textures, off the
+  // committing thread, skipping the read of one the scene says it holds.
+  options_.textures = sink.texture != nullptr;
+  options_.texture_resident = sink.texture != nullptr ? sink.texture_resident : nullptr;
+  options_.texture_context = sink.context;
+  texture_refusing_ = false;
   jobs_ = jobs;
   used_clusters_ = 0;
   whole_ = true;
@@ -239,6 +249,72 @@ void TileMeshes::begin_commit(bool whole) {
   collect(whole);
 }
 
+void TileMeshes::release_textures(Entry& entry) {
+  if (sink_.release_texture != nullptr) {
+    for (const u64 key : entry.held)
+      sink_.release_texture(sink_.context, key);
+  }
+  entry.held.clear();
+}
+
+// **A mesh waits for its textures** (texture.md, "Textures that arrive after the load"): a
+// textured material's constants are its factors, white for most, so a rock drawn before its
+// textures is a white rock that turns brown; its tile draws what it drew for the commits this
+// takes. One texture at a time, in the mesh's own order, each inside the commit's bytes — one
+// larger than all of them goes alone — and the table holds a reference on each until the mesh is
+// in. A refusal (no pair, the byte budget, the device) ends the wait: the mesh is admitted with
+// its constants, said once per change with the bound's name.
+bool TileMeshes::admit_textures(Entry& entry) {
+  if (sink_.texture == nullptr) return true;
+  while (entry.textures_in < entry.data.textures.size()) {
+    renderer::PlacementTexture& texture = entry.data.textures[entry.textures_in];
+    const bool there =
+        sink_.texture_resident != nullptr && sink_.texture_resident(sink_.context, texture.key);
+    if (!there && texture.data.levels.empty()) {
+      // The scene held it when the mesh was built and has let it go since: read now, on this
+      // thread, which is the one case a commit reads a file.
+      std::string why;
+      (void)renderer::read_placement_texture(options_, texture.key, texture.data, &why);
+    }
+    const u64 bytes = there ? 0 : texture.staged_bytes();
+    if (!whole_ && bytes != 0 && config_.admission_bytes != 0 && commit_bytes_ != 0 &&
+        commit_bytes_ + bytes > config_.admission_bytes) {
+      ++stats_.deferred;
+      return false;
+    }
+    std::string why;
+    const TileMeshSink::Texture got = sink_.texture(sink_.context, texture, &why);
+    if (got != TileMeshSink::Texture::held) {
+      if (got == TileMeshSink::Texture::need_bytes) why = "its built texture could not be read";
+      release_textures(entry);
+      entry.data.textures.clear();
+      entry.data.textures_why = why;
+      entry.textures_in = 0;
+      ++stats_.texture_refusals;
+      if (!texture_refusing_) {
+        texture_refusing_ = true;
+        ENGINE_LOG_WARN(log_world_meshes,
+                        "a tile's mesh draws its materials' constants: a texture was refused",
+                        log::field("mesh", entry.mesh.path), log::field("bound", why),
+                        log::field("refusals", stats_.texture_refusals));
+      }
+      return true;
+    }
+    texture_refusing_ = false;
+    entry.held.push_back(texture.key);
+    if (there) {
+      ++stats_.textures_shared;
+    } else {
+      ++stats_.textures_uploaded;
+      stats_.texture_bytes += bytes;
+      commit_bytes_ += bytes;
+    }
+    texture.data = texture::TextureData{};  // the scene has it: the host's copy goes
+    ++entry.textures_in;
+  }
+  return true;
+}
+
 TileMeshes::Admit TileMeshes::admit(u32 slot) {
   if (slot >= entries_.size() || entries_[slot] == nullptr) return Admit::failed;
   Entry& entry = *entries_[slot];
@@ -246,11 +322,14 @@ TileMeshes::Admit TileMeshes::admit(u32 slot) {
   const State now = entry.state.load(std::memory_order_acquire);
   if (now == State::resident) return Admit::done;
   if (now == State::failed) return Admit::failed;
+  if (entry.clusters != 0 && entry.clusters <= config_.max_clusters && !admit_textures(entry))
+    return Admit::deferred;
   // The allowance (a budgeted commit's): a count, and bytes — a mesh larger than all of it goes
-  // alone, so a tile whose mesh is large still arrives.
+  // alone, so a tile whose mesh is large still arrives. The bytes are the commit's, the textures'
+  // included, so a mesh comes the commit after a texture that filled it.
   if (!whole_) {
     const bool count_spent = config_.admissions != 0 && commit_admissions_ >= config_.admissions;
-    const bool bytes_spent = config_.admission_bytes != 0 && commit_admissions_ != 0 &&
+    const bool bytes_spent = config_.admission_bytes != 0 && commit_bytes_ != 0 &&
                              commit_bytes_ + entry.payload > config_.admission_bytes;
     if (count_spent || bytes_spent) {
       ++stats_.deferred;
@@ -282,6 +361,7 @@ TileMeshes::Admit TileMeshes::admit(u32 slot) {
     entry.error = why;
     --stats_.waiting;
     stats_.host_bytes -= entry.payload;
+    release_textures(entry);
     entry.data = renderer::PlacementMeshData{};
     ++stats_.failures;
     ENGINE_LOG_WARN(log_world_meshes, "a tile's mesh was refused",
@@ -292,7 +372,10 @@ TileMeshes::Admit TileMeshes::admit(u32 slot) {
   stats_.admit_ns += took;
   stats_.max_admit_ns = std::max(stats_.max_admit_ns, took);
   // The scene has it: the host's copy of the streams goes (a mesh let go and wanted again comes
-  // back out of the cache).
+  // back out of the cache), and so do the table's references on its textures — the mesh holds its
+  // own from here until it is retired.
+  release_textures(entry);
+  entry.textures_in = 0;
   entry.data = renderer::PlacementMeshData{};
   entry.state.store(State::resident, std::memory_order_release);
   used_clusters_ += entry.clusters;
@@ -318,6 +401,7 @@ void TileMeshes::drop(u32 slot) {
     stats_.host_bytes -= entry.payload;
   }
   if (!entry.collected) --stats_.building;
+  release_textures(entry);  // a mesh let go while it waited for its textures
   by_identity_.erase(entry.identity);
   entries_[slot].reset();
   free_.push_back(slot);

@@ -48,6 +48,7 @@
 #include <systems/renderer/tile_layout.h>
 
 #include <memory>
+#include <mutex>
 #include <span>
 #include <string>
 
@@ -1050,6 +1051,15 @@ class GpuScene {
     };
     Vector<GeometryCopy> geometry;
     u64 geometry_bytes = 0;
+    // The textures admitted since the last frame (`acquire_texture`): each an image made with
+    // nothing in it and where its levels wait in a staging buffer. The same pass records them
+    // (`gfx::record_image_levels_upload`), before any material that names one is drawn.
+    struct ImageUpload {
+      gfx::ImageResource image;
+      gfx::BufferHandle staging;
+      u64 offsets[gfx::k_max_image_levels] = {};
+    };
+    Vector<ImageUpload> images;
     // Buffers of their own that stagings the ring had no room for made: the frame frees them once
     // it is done (the ring's own share, and the fields' staging, come back to the scene instead).
     Vector<gfx::BufferResource> retire;
@@ -1114,8 +1124,11 @@ class GpuScene {
   // **retired** once no instance names it: its record draws no cluster from the next frame and its
   // room is free at once, since the copy that reuses it is ordered the same way.
   //
-  // **What does not arrive** (said on the page): the materials' textures (an admitted mesh draws
-  // its materials' constants), coverage errors, a motion contract (it is rigid), cluster templates,
+  // Its materials are made as the load's are, with their textures when the scene's table holds
+  // them ("textures that arrive after the load", below) and their constants otherwise.
+  //
+  // **What does not arrive** (said on the page): coverage errors, a motion contract (it is rigid),
+  // an alpha-tested mesh's entry in the shadow proxy's table and its micromaps, cluster templates,
   // static structures and the resident cluster cache (the chain builds it per frame, as it builds
   // any mesh that has neither). A paged scene (`streamed()`) has no room: its payload is a page
   // pool, and a mesh that arrives would have to arrive as pages.
@@ -1159,6 +1172,49 @@ class GpuScene {
   // captured cluster id into a cluster of its mesh, wherever the mesh's clusters landed.
   u32 mesh_first_cluster(u32 mesh) const noexcept;
   u32 mesh_cluster_count(u32 mesh) const noexcept;
+
+  // ---- textures that arrive after the load (texture.md, "Textures that arrive after the load";
+  // R147; gpu_scene_textures.cpp) ---------------------------------------------------------------
+  //
+  // A scene with a mesh room keeps **one table of built textures by their `.tex` build key**: the
+  // load's (pinned for the scene's life) and the ones admitted since, each with a count of who
+  // holds it. `acquire_texture` takes a reference, uploading the texture if the table has none of
+  // that key — an image made empty, its levels staged for the next frame's upload pass, nothing
+  // waited for — and `release_texture` gives one back. `admit_mesh` takes a reference for each
+  // texture its materials sample and `retire_mesh` returns them, so a caller that holds a texture
+  // only until its mesh is in releases its own after the admission. A texture nobody holds leaves
+  // the table at once; its image and its bindless pair go once every frame that could have
+  // sampled it is done, and one wanted again before then comes back without an upload.
+  struct TextureRoom {
+    u32 pairs = 0;       // textures at once: a pair of sampled-image slots each
+    u32 first_slot = 0;  // the reserved run's first bindless slot; pair p is `first_slot + 2p`
+    u64 budget = 0;  // device bytes the admitted textures may hold (renderer.textures.budget_mib)
+  };
+  const TextureRoom& texture_room() const noexcept { return texture_room_; }
+  struct TextureUse {
+    u32 textures = 0;       // admitted and held now (the load's are not counted)
+    u32 references = 0;     // held on them
+    u64 bytes = 0;          // what the allocator gave them
+    u32 leaving = 0;        // let go, kept until the frames that could sample them are done
+    u64 leaving_bytes = 0;  // theirs: above the budget for those few frames
+    u64 uploaded = 0;       // over the run
+    u64 shared = 0;         // references that found the texture there (the load's included)
+    u64 revived = 0;        // of those, taken back out of the leaving list
+    u64 released = 0;       // textures let go
+    u64 refused = 0;
+    u64 staged_bytes = 0;  // copied onto the device by uploads, over the run
+  };
+  const TextureUse& texture_use() const noexcept { return texture_use_; }
+  enum class TextureAdmit : u8 {
+    held,        // a reference taken; uploaded if it had to be
+    need_bytes,  // not resident and `texture.data` is empty: read it, ask again
+    refused,     // no pair, the budget, or the device: `why` names the bound; nothing taken
+  };
+  TextureAdmit acquire_texture(const PlacementTexture& texture, std::string* why = nullptr);
+  void release_texture(u64 key) noexcept;
+  // Whether the table holds `key` now. **Any thread**: what a mesh's build asks before it reads a
+  // `.tex` (`PlacementMeshOptions::texture_resident`). Advisory, as that says.
+  bool texture_resident(u64 key) const;
 
   // ---- geometry streaming (04 §4.3 step 3, §4.9; docs/subsystems/renderer.md) -----------------
   //
@@ -1529,7 +1585,56 @@ class GpuScene {
     Range materials;  // of the material table, absolute entries
     u64 payload = 0;
     bool loaded = false;
+    Vector<u64> textures;  // the keys it holds a reference on (`acquire_texture`)
   };
+  // ---- textures that arrive after the load (gpu_scene_textures.cpp) ----
+  // What a material needs of a texture the scene holds, the load's or an admitted one.
+  struct TextureInfo {
+    u32 slot = ~u32{0};            // gfx::k_no_texture
+    bool normal_rg = false;        // stored BC5: the shader rebuilds z
+    bool normal_variance = false;  // its variance chain is at `slot + 1`
+    bool has_mean = false;         // `mean` is its linear mean texel (R131)
+    Vec4 mean{};
+  };
+  struct TileTexture {
+    u64 key = 0;
+    u32 refs = 0;
+    u32 pair = 0;
+    u32 frames = 0;  // while leaving: recorded frames until its image may go
+    u64 bytes = 0;
+    gfx::ImageResource image, variance;
+    gfx::ImageViewHandle view, variance_view;
+    TextureInfo info;
+  };
+  bool lay_out_texture_room(std::string* error);
+  void texture_frame() noexcept;  // once a recorded frame: the leaving textures whose time is up
+  void destroy_texture_room() noexcept;
+  bool find_texture(u64 key, TextureInfo& out) const noexcept;
+  void publish_texture_keys();
+  // **One function makes a material** (texture.md): the part of a `gfx::ResolveMaterial` every
+  // mesh's material is made the same way — factors, the five slots, the built flags, a sampler
+  // per textured slot, the UV transform, the alpha mask — for the load's and an admitted mesh's
+  // alike. False when a sampler could not be made.
+  bool fill_material(const assets::Material& source, bool built, const TextureInfo* tex,
+                     gfx::ResolveMaterial& out, std::string* error);
+  // The stochastic means of a material that asked for them (R131): null when set, else why not.
+  static const char* fill_stochastic(gfx::ResolveMaterial& material, const assets::Material& source,
+                                     bool built, const TextureInfo* tex) noexcept;
+  bool material_sampler_slot(const geometry::TextureSampler& wanted, bool mipmapped, u32& slot,
+                             std::string* error);
+  TextureRoom texture_room_;
+  TextureUse texture_use_;
+  Vector<TileTexture> tile_textures_;        // the admitted ones held now, unordered
+  Vector<TileTexture> leaving_textures_;     // let go, their images alive a few frames more
+  HashMap<u64, TextureInfo> load_textures_;  // the load's built textures by key: pinned
+  Vector<u32> free_texture_pairs_;
+  gfx::ImageResource texture_placeholder_;
+  gfx::ImageViewHandle texture_placeholder_view_;
+  Vector<TerrainUpdate::ImageUpload> pending_images_;
+  u32 texture_frames_ = 3;  // frames a leaving texture stays: one more than can be in flight
+  bool texture_refusal_said_ = false;
+  mutable std::mutex texture_keys_mutex_;
+  Vector<u64> texture_keys_;  // every key the table holds, sorted: `texture_resident`'s
   bool lay_out_mesh_slots(std::string* error);
   // The staging for a copy the next frame records: the terrain's ring, or a buffer of its own.
   bool stage_bytes(u64 bytes, gfx::BufferResource& staging, u64& at, std::string* error);
