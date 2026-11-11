@@ -93,6 +93,80 @@ ENGINE_BENCH_ARGS(landform_route, "landform.route", 256, 1024, 2048) {
   state.set_items(u64{side} * side);
 }
 
+// The routing of a ground with no depression in it: the young ground of `landform.route` under
+// a cone that falls 0.3 to the nearest edge, steeper than its roughness everywhere, which is
+// what a ground the rivers have cut is like (landform.md, "The flood's cost").
+ENGINE_BENCH_ARGS(landform_route_drained, "landform.route_drained", 256, 1024, 2048) {
+  const u32 side = bench::smoke_mode() ? 64u : static_cast<u32>(state.arg());
+  const landform::Sketch sketch = bench_sketch(side, 2);
+  jobs::JobSystem jobs(four_workers());
+  landform::SolveOptions options;
+  options.jobs = &jobs;
+  landform::Landform land;
+  std::string error;
+  if (!landform::solve(sketch, nullptr, options, land, error)) return;
+  Vector<u8> held(side * side, u8{0});
+  for (u32 z = 0; z < side; ++z)
+    for (u32 x = 0; x < side; ++x) {
+      const u32 i = z * side + x;
+      held[i] = land.receiver[i] == landform::k_no_receiver ? u8{1} : u8{0};
+      const u32 dx = x < side - 1 - x ? x : side - 1 - x;
+      const u32 dz = z < side - 1 - z ? z : side - 1 - z;
+      land.height_mm[i] += static_cast<i32>((dx < dz ? dx : dz) * 4800u);  // 0.3 of 16 m
+    }
+  Vector<i64> filled;
+  Vector<u32> order;
+  Vector<u8> receiver;
+  Vector<u32> area;
+  while (state.keep_running()) {
+    const bool ok = landform::route(side, side, land.height_mm, held, land.route_seed, &jobs,
+                                    filled, order, receiver, area);
+    bench::keep(ok);
+  }
+  state.set_items(u64{side} * side);
+}
+
+// The flood's memory traffic without its queue: the lattice walked in the flood's own order,
+// each point reading its eight neighbours' filled heights. What `landform.route` costs over
+// this is the queue and the receivers (landform.md, "The flood's cost").
+ENGINE_BENCH_ARGS(landform_walk, "landform.walk", 256, 1024, 2048) {
+  const u32 side = bench::smoke_mode() ? 64u : static_cast<u32>(state.arg());
+  const landform::Sketch sketch = bench_sketch(side, 2);
+  jobs::JobSystem jobs(four_workers());
+  landform::SolveOptions options;
+  options.jobs = &jobs;
+  landform::Landform land;
+  std::string error;
+  if (!landform::solve(sketch, nullptr, options, land, error)) return;
+  Vector<u8> held(side * side, u8{0});
+  for (u32 i = 0; i < side * side; ++i)
+    held[i] = land.receiver[i] == landform::k_no_receiver ? u8{1} : u8{0};
+  Vector<i64> filled;
+  Vector<u32> order;
+  Vector<u8> receiver;
+  Vector<u32> area;
+  if (!landform::route(side, side, land.height_mm, held, land.route_seed, &jobs, filled, order,
+                       receiver, area))
+    return;
+  const i32 wide = static_cast<i32>(side);
+  i64 sum = 0;
+  while (state.keep_running()) {
+    sum = 0;
+    for (u32 k = 0; k < side * side; ++k) {
+      const u32 c = order[k];
+      const i32 cx = static_cast<i32>(c % side);
+      const i32 cz = static_cast<i32>(c / side);
+      for (u32 n = 0; n < 8; ++n) {
+        const i32 nx = cx + landform::k_receiver_dx[n];
+        const i32 nz = cz + landform::k_receiver_dz[n];
+        if (nx < 0 || nz < 0 || nx >= wide || nz >= wide) continue;
+        sum += filled[static_cast<u32>(nz * wide + nx)];
+      }
+    }
+    bench::keep(sum);
+  }
+  state.set_items(u64{side} * side);
+}
 ENGINE_BENCH_ARGS(landform_area_power, "landform.area_power", 0, 1) {
   const u32 count = bench::smoke_mode() ? 1024u : 1000000u;
   const bool general = state.arg() != 0;

@@ -173,6 +173,44 @@ no floor at steady state**, because every point of it is losing ground; a floor 
 level that rose or an uplift that stopped, which a sketch gives by where it puts its uplift and
 its outlets.
 
+### The flood's cost
+
+Stage A's flood put every point through its queue, in order of height, which is no order of
+memory: at 2,048 points a side it was nearly the whole step, and its cost a point tripled from
+256 a side. **What the profile said** (`landform.walk`, the lattice walked in the flood's order
+with each point reading its eight neighbours and no queue): the walk is 119 ms of a route of
+812 ms at 2,048 a side, so it is the queue that costs and not the order of memory; the table is
+under [performance notes](#performance-notes).
+
+**The queue now sees only the ground that might not drain.** A point with a path to a held
+point that falls by a unit or more at every step is never raised by the flood: its filled
+height is its own. So:
+
+1. Every point's height is quantized, and every point finds its lowest neighbour, in memory
+   order and in parallel.
+2. One walk in memory order follows each point's chain of lowest neighbours to its end. A chain
+   that ends at a held point is **drained**; one that ends in a pit or a flat is not.
+3. The queue floods the points that are not drained, seeded by the drained points that touch
+   them. Those seeds have their final heights, and pops ascend, so each raised point is raised
+   by the same neighbour, to the same height, as in the flood of everything.
+4. The order is every point sorted by (filled height, index): a stable radix sort by height,
+   twelve bits a pass over the bits the heights span, of points that start in index order.
+   The pops of the whole lattice were exactly that sort, since a push is never below the pop
+   that made it.
+5. Where more than half the points might not drain (a rough plain, the first steps of a run)
+   the queue would have nearly every point anyway and the sort would be work on top of it, so
+   the flood of every point is run as it was. Both give the same bytes.
+
+**The bytes did not move**: the filled surface, the sills, the order, and so every pin of the
+tests, are what the flood of every point gave. This is the published idea (Barnes, Lehman and
+Mulla 2014's second algorithm keeps pit cells off the priority queue; Zhou, Sun and Fu 2016 and
+Wei, Zhou and Fu 2019 grow regions so that most points never enter it, cutting the queue's
+traffic by about 70%) taken to the form this solver's total order allows: no point outside a
+depression's catchment enters the queue at all, and the order comes from a sort. Cordonnier,
+Bovy and Braun 2019's basin graph, which never fills, was not taken, because it changes the
+receivers inside a depression and with them every byte. The sort keeps two buffers of eight
+bytes a point for the run.
+
 ### Structure
 
 A range in uniform rock has valleys evenly spaced and summits that are the same on every side,
@@ -397,9 +435,7 @@ authored heightfield. Exit 0, 1 (a file or a range), 2 (usage).
 ## Not stage A
 
 Each follows, and none is here: the glacial mode (troughs, cirques, overdeepened basins);
-**a flood that keeps ground with no depression off the heap, and the rivers' sweeps in the
-order's own sequence** (stage B's fourth part, not reached: the sweeps and the flood are the
-step); flow that divides, so one mouth's fan is a
+**the rivers' sweeps in the order's own sequence** (the sweeps are most of a step now); flow that divides, so one mouth's fan is a
 cone and a channel on its plain is more than a point wide; scree at an angle of repose and
 terraces; soil depth; snow; a general m and n; neighbouring regions solved so a shared edge
 agrees; the flow tree's levels in parallel; baking far-terrain maps from near output; anything
@@ -457,44 +493,79 @@ in the editor. The limits of the model as it stands are on the grounding page.
 ## Performance notes
 
 `engine_landform_bench` (`tools/dev.ps1 bench -Filter 'landform.*'`), `msvc-release`, 2026-11-10,
-an i9-10980XE, the solve on four workers. **The machine was busy** (`--wait-quiet=120` gave up:
-other processes used 63% of the CPU at the start and 75% at the end, `machine_state` in the
-bench's JSON), so every figure is an upper bound.
+an i9-10980XE, the solve on four workers. **The machine was busy every time** (`--wait-quiet` gave
+up: other processes used 43% to 65% of the CPU, `machine_state` in each run's JSON), so every
+figure is an upper bound, and two columns taken an hour apart differ by the load as well as by
+the code.
 
-| Row | What | Median | A point |
-|---|---|---|---|
-| `landform.solve/2048` | **a 2,048 by 2,048 sketch at 16 m solved to 100,000 years in twenty steps** | **27.1 s** | 323 ns a step |
-| `landform.solve/1024` | the same at 1,024 | 4.91 s | 234 ns a step |
-| `landform.solve/256` | the same at 256 | 0.218 s | 166 ns a step |
-| `landform.route/2048` | the flood, the receivers and the area of one ground | 1.27 s | 302 ns |
-| `landform.route/1024` | | 0.153 s | 146 ns |
-| `landform.route/256` | | 6.8 ms | 104 ns |
-| `landform.area_power/0` | √A over a million areas, as the solver does it | 1.66 ms | 1.7 ns |
-| `landform.area_power/1` | `det::exp(0.45 * det::log(A))`, a general exponent | 69.3 ms | 69 ns |
+| Row | What | Stage A (2026-11-10, 63 to 75% others) | Stage B, the flood of every point (65% others) | Stage B as it stands (43% others) |
+|---|---|---|---|---|
+| `landform.route/2048` | the flood, the receivers and the area of a **young** ground: a rough plain two steps old, where nearly every point might not drain | 1.27 s | 812 ms | 870 ms |
+| `landform.route/1024` | | 153 ms | 139 ms | 158 ms |
+| `landform.route/256` | | 6.8 ms | 6.3 ms | 6.9 ms |
+| `landform.route_drained/2048` | the same of a ground with no depression in it, which is what the rivers leave | — | — | **312 ms** |
+| `landform.route_drained/1024` | | — | — | 59 ms |
+| `landform.route_drained/256` | | — | — | 2.6 ms |
+| `landform.walk/2048` | the lattice walked in the flood's order, each point reading its eight neighbours: the flood's memory traffic with no queue | — | 119 ms | — |
+| `landform.walk/1024`, `/256` | | — | 21.8 ms, 0.80 ms | — |
+| `landform.solve/2048` | **a 2,048 by 2,048 sketch at 16 m solved to 100,000 years in twenty steps** | **27.1 s** | 117.3 s (the queue kept off drained ground, no fallback; 59% others) | **117.6 s** (38% others) |
+| `landform.solve/1024` | the same at 1,024 | 4.91 s | — | 17.7 s |
+| `landform.solve/256` | the same at 256 | 0.218 s | — | 0.584 s |
+| `landform.area_power/0`, `/1` | √A over a million areas, and `det::exp(0.45 * det::log(A))` | 1.66 ms, 69.3 ms | — | — |
 
-So a million years of a 2,048-point region at 5,000-year steps is about four and a half minutes,
-and a 1,024-point region solved for 1.5 million years (the picture's) took 75 s. **The flood is
-nearly the whole step** (1.27 s of 1.35 s at 2,048), and its cost a point triples from 256 to
-2,048 points a side: it visits the lattice in order of height, which is no order of memory, so at
-four million points every visit misses the cache. What follows from that is on the "Not stage A"
-list: routing ground with no depressions from its own slopes in memory order and flooding only
-the pits, and the flow tree's levels in parallel (Barnes 2019). A general exponent m would add
-69 ns a point a step, a fifth of today's step; m = 1/2 costs 1.7 ns.
+**What the flood's profile said.** Stage A's reading was that the flood misses the cache because
+it visits the lattice in order of height. The walk says otherwise: visiting four million points
+in that order and reading their neighbours is 119 ms of a route of 812 ms. The rest is the queue,
+a push and a pop of a 64-bit key for every point. So the cut is to keep points off the queue
+([the flood's cost](#the-floods-cost)), and it is 312 ms against 812 ms (2.6 times) where the
+ground drains, 62 ns a point less. Where it does not (the young ground of `landform.route`) the
+flood of every point is run as it was, after a classification that found it had to be: 7% slower
+at 2,048 a side in these two runs, inside what the load moved.
 
-The solve holds about 94 bytes a point while it runs (stage A's 54: the ground, the lift and
+**The sweeps are the cost now.** A step with deposition solves its rivers in about eight sweeps,
+each two walks of the order over a dozen arrays, where stage A's step had one. `landform.solve`
+at 2,048 a side went from 27.1 s to 117.6 s (1.4 µs a point a step, of which the flood is about a seventh), and the picture's region (1,024 points a
+side, 300 steps) from 75 s to 385 to 513 s. What follows is to keep a step's river data in the
+order's own sequence, so a sweep reads memory in order, and the flow tree's levels in parallel.
+The solve holds about 110 bytes a point while it runs (stage A's 54: the ground, the lift and
 hardness fields, the filled surface, the order, the receivers, the areas and a scratch surface;
-and stage B's 40: the sediment, the rivers' iterate, the shed a step carries to the next, the
-tapered G, each point's sill and its rock's resistance): 395 MB at 2,048 points a side, 1.6 GB at
-4,093. **The bench's
-table above is stage A's**: it was not run again after deposition (the machine had other rows'
-builds on it), and a step now adds the rivers' sweeps, two walks of the order each, where it had
-one; in `msvc-debug` the golden sketch went from 0.31 s to 0.66 s. **The sweeps are the cost now**: the picture's region (1,024 points a side, 300 steps) took 476 s in `msvc-release` on four workers beside other rows' builds, where stage A took 75 s; each sweep walks the flood's order twice over a dozen arrays, which is no order of memory. Keeping a step's river data in the order's own sequence is what follows. Nothing is resident afterwards, nothing scales with the world's
+and stage B's 56: the sediment, the rivers' iterate, the shed a step carries to the next, the
+tapered G, each point's sill, its rock's resistance, and the two buffers of the order's sort):
+460 MB at 2,048 points a side, 1.8 GB at 4,093. Nothing is resident afterwards, nothing scales with the world's
 size at run time, and there are no triangles and no per-tile cost: the tile set's are the
 heightfield's.
 
 ## Pictures, and what still reads wrong
 
-2026-11-10, a 16 km region of two ranges about a valley, 1,024 points at 16 m, 1.5 million years
+**Stage B** (2026-11-10, the same 16 km region of two ranges about a valley, 1,024 points at
+16 m, 1.5 million years, outside the repository). The sketch had to change with the model: its
+ridges at 3 to 4 mm/yr over K = 3 × 10⁻⁵ solve, with deposition, to a comb of straight valleys
+at a mean slope of 0.71 (a river that carries sediment stands twice as steep), and with hard
+beds at a contrast of ten to 0.90, a land of cliffs. At 0.9 to 1.6 mm/yr over K = 1.2 × 10⁻⁵, no
+regional uplift, a contrast of three and the default variation along the ridges, the relief
+shows what stage B added: **a fan at every valley's mouth** on the plains north and south of the
+ranges, each with its river's channels spreading over it, coalescing into an apron; **a floor
+along the main valley**, on up to 23 m of sediment; crests that rise and fall along their length
+and valleys no longer evenly spaced; and the beds as bands that cross the spurs, wider on the
+side that falls with the dip. Drawn by `engine-view` (from the 16 m ground read at 4 m, as
+stage A's were): from the main valley's floor the frame is a level floor, the smooth lobes of
+the fans, banded slopes and a summit that stands off-centre, where stage A's same view was one
+blank slope. Beside the reels (r03 and r04) a person still objects that:
+
+- **Everything is smooth.** The fans are domes and the spurs dunes: nothing is finer than the
+  lattice, the diffusion has rounded what the rivers cut, and there is one flat material. The
+  reels' ground is rock, scree, turf and boulders at every scale below 16 m.
+- **The floor has no river.** The channel is one point wide, and reading the ground at 4 m
+  loses it; the reels' floors are a river with bars and cut banks. That is the channels
+  solver's, from `drainage_area`, `receiver` and `sediment`.
+- **A hard bed's outcrop is a saw-tooth**, a point wide where it crosses a slope, where the
+  reels' beds are ledges and cliff bands with debris under them.
+- **The faces between the gullies are still planes** at the critical slope, and the valleys of
+  a range, though uneven now, still run straight down it side by side.
+- **The floor is a trough, not a plain**: the two aprons meet along the river at their own
+  slopes, and nothing has levelled it but one lake's fill.
+
+**Stage A** (the same day, before deposition). A 16 km region of two ranges about a valley, 1,024 points at 16 m, 1.5 million years
 (outside the repository, as every generated image is). The shaded relief is the first picture:
 it reads as two eroded ranges, with branching valleys, spurs between them and crests that wander,
 which a range of ridge lines with a profile does not. Drawn by `engine-view` from a tile set, from

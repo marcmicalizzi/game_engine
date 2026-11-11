@@ -139,21 +139,20 @@ struct Routing {
   Vector<u32> area;
   Vector<u64> heap;
   Vector<u32> sill;
-  Vector<u64> members;  // sill above cell, sorted: each lake's cells are one run
+  Vector<u64> members;    // sill above cell, sorted: each lake's cells are one run
+  Vector<u64> sort_from;  // the order's sort: height above index, and its other buffer
+  Vector<u64> sort_to;
   Vector<Lake> lakes;
 };
 
-// Priority-Flood with epsilon (Barnes, Lehman and Mulla 2014, Algorithm 3) from the held points:
-// pop the lowest (height, index), raise each unvisited neighbour to at least one unit above it.
-// A push is never below the pop that made it, so pops ascend, and `order` is both the flood's
-// order and the flow tree's: a point's receiver, which is strictly lower on the filled surface,
-// was popped before it.
+// The flood of every point, as Barnes et al. state it: the queue seeded by the held points, the
+// order the pops'. What `flood` falls back to where most of the ground might not drain (a rough
+// plain, the first steps of a run), since there the queue has nearly every point anyway and the
+// sort would be work on top of it.
 template <class Q>
-bool flood(u32 w, u32 h, const u8* held, Q&& units, Routing& r) {
+bool flood_all(u32 w, u32 h, const u8* held, Q&& units, Routing& r) {
   const u32 n = w * h;
   r.filled.assign(n, k_unvisited);
-  r.order.resize(n);
-  r.sill.assign(n, k_no_sill);
   r.heap.clear();
   i64* filled = r.filled.data();
   u32* order = r.order.data();
@@ -163,7 +162,6 @@ bool flood(u32 w, u32 h, const u8* held, Q&& units, Routing& r) {
     filled[i] = units(i);
     heap_push(r.heap, key_of(filled[i], i));
   }
-  if (r.heap.size() == 0) return false;
   const i32 wi = static_cast<i32>(w);
   const i32 hi = static_cast<i32>(h);
   u32 count = 0;
@@ -183,13 +181,178 @@ bool flood(u32 w, u32 h, const u8* held, Q&& units, Routing& r) {
       const i64 own = units(ni);
       const i64 f = own > fc ? own : fc + 1;
       filled[ni] = f;
+      if (own <= fc) sill[ni] = sill[c] != k_no_sill ? sill[c] : c;
+      heap_push(r.heap, key_of(f, ni));
+    }
+  }
+  return count == n;
+}
+
+// Priority-Flood with epsilon (Barnes, Lehman and Mulla 2014, Algorithm 3) from the held points://
+// pop the lowest (height, index), raise each unvisited neighbour to at least one unit above it. A
+// push is never below the pop that made it, so pops ascend, and `order` is both the flood's order
+// and the flow tree's: a point's receiver, which is strictly lower on the filled surface, was
+// popped before it.
+//
+// **The queue only sees the ground that might not drain** (landform.md, "The flood's cost"). A
+// point with a path to a held point that falls by a unit or more at every step is never raised:
+// its filled height is its own. So the lattice is first walked in memory order: each point
+// finds its lowest neighbour, and a point whose chain of lowest neighbours ends at a held point
+// is **drained** and done. The queue then floods only the rest, seeded by the drained points
+// that touch them, which pop in the same order among themselves as they would have among all
+// the points; and the order is the sort of every point by (filled height, index), which is what
+// the pops of the whole lattice were. The filled surface, the sills and the order are the same
+// bytes as the flood of every point gives (the tests' pins did not move). Where more than half the
+// points might not drain the flood of every point is run as it is (`flood_all`).
+template <class Q>
+bool flood(u32 w, u32 h, const u8* held, Q&& units, jobs::JobSystem* jobs, Routing& r) {
+  const u32 n = w * h;
+  r.filled.resize(n);
+  r.order.resize(n);
+  r.receiver.resize(n);
+  r.sill.assign(n, k_no_sill);
+  r.heap.clear();
+  i64* filled = r.filled.data();
+  u32* order = r.order.data();
+  u32* sill = r.sill.data();
+  // Until the receivers are found their array holds each point's state, and until the order is
+  // sorted its array holds each point's lowest neighbour.
+  u8* state = r.receiver.data();
+  u32* lowest = order;
+  constexpr u8 k_unknown = 0, k_drained = 1, k_undrained = 2, k_seed = 3;
+  const i32 wi = static_cast<i32>(w);
+  const i32 hi = static_cast<i32>(h);
+  for_rows(jobs, h, [&](u32 z0, u32 z1) {
+    for (u32 p = z0 * w; p < z1 * w; ++p)
+      filled[p] = units(p);
+  });
+  for_rows(jobs, h, [&](u32 z0, u32 z1) {
+    for (u32 z = z0; z < z1; ++z)
+      for (u32 x = 0; x < w; ++x) {
+        const u32 p = z * w + x;
+        if (held[p] != 0) {
+          state[p] = k_drained;
+          lowest[p] = p;
+          continue;
+        }
+        u32 best = p;
+        i64 best_height = filled[p];
+        for (u32 k = 0; k < 8; ++k) {
+          const i32 nx = static_cast<i32>(x) + k_receiver_dx[k];
+          const i32 nz = static_cast<i32>(z) + k_receiver_dz[k];
+          if (nx < 0 || nz < 0 || nx >= wi || nz >= hi) continue;
+          const u32 ni = static_cast<u32>(nz) * w + static_cast<u32>(nx);
+          if (filled[ni] < best_height) {
+            best_height = filled[ni];
+            best = ni;
+          }
+        }
+        state[p] = k_unknown;
+        lowest[p] = best;  // itself: a pit or a flat
+      }
+  });
+  u32 held_points = 0;
+  for (u32 p = 0; p < n; ++p) {
+    if (held[p] != 0) ++held_points;
+    if (state[p] != k_unknown) continue;
+    u32 q = p;
+    while (state[q] == k_unknown && lowest[q] != q)
+      q = lowest[q];
+    const u8 found = state[q] == k_drained ? k_drained : k_undrained;
+    for (u32 c = p; state[c] == k_unknown; c = lowest[c]) {
+      state[c] = found;
+      if (lowest[c] == c) break;
+    }
+  }
+  if (held_points == 0) return false;
+  u32 pending = 0;
+  for (u32 p = 0; p < n; ++p)
+    if (state[p] == k_undrained) ++pending;
+  if (u64{pending} * 2 > n) return flood_all(w, h, held, units, r);
+  // The queue's part: the points that might be raised, from the drained points beside them.
+  for (u32 p = 0; p < n; ++p) {
+    if (state[p] != k_undrained) continue;
+    const i32 px = static_cast<i32>(p % w);
+    const i32 pz = static_cast<i32>(p / w);
+    for (u32 k = 0; k < 8; ++k) {
+      const i32 nx = px + k_receiver_dx[k];
+      const i32 nz = pz + k_receiver_dz[k];
+      if (nx < 0 || nz < 0 || nx >= wi || nz >= hi) continue;
+      const u32 ni = static_cast<u32>(nz) * w + static_cast<u32>(nx);
+      if (state[ni] != k_drained) continue;
+      state[ni] = k_seed;
+      heap_push(r.heap, key_of(filled[ni], ni));
+    }
+  }
+  for (u32 p = 0; p < n; ++p)
+    if (state[p] == k_undrained) filled[p] = k_unvisited;
+  u32 count = 0;
+  while (r.heap.size() != 0) {
+    const u64 key = heap_pop(r.heap);
+    const u32 c = static_cast<u32>(key & k_index_mask);
+    const i64 fc = static_cast<i64>(key >> k_index_bits) - k_height_bias;
+    const i32 cx = static_cast<i32>(c % w);
+    const i32 cz = static_cast<i32>(c / w);
+    for (u32 k = 0; k < 8; ++k) {
+      const i32 nx = cx + k_receiver_dx[k];
+      const i32 nz = cz + k_receiver_dz[k];
+      if (nx < 0 || nz < 0 || nx >= wi || nz >= hi) continue;
+      const u32 ni = static_cast<u32>(nz) * w + static_cast<u32>(nx);
+      if (filled[ni] != k_unvisited) continue;
+      const i64 own = units(ni);
+      const i64 f = own > fc ? own : fc + 1;
+      filled[ni] = f;
+      ++count;
       // A raised point belongs to the depression of the point that raised it, or begins one
       // that spills over that point.
       if (own <= fc) sill[ni] = sill[c] != k_no_sill ? sill[c] : c;
       heap_push(r.heap, key_of(f, ni));
     }
   }
-  return count == n;
+  if (count != pending) return false;
+  // The order: every point by (filled height, index). The points start in index order, so a
+  // stable sort by height alone is the whole key: twelve bits a pass over the bits the heights
+  // span.
+  i64 low = filled[0], high = filled[0];
+  for (u32 p = 1; p < n; ++p) {
+    if (filled[p] < low) low = filled[p];
+    if (filled[p] > high) high = filled[p];
+  }
+  r.sort_from.resize(n);
+  r.sort_to.resize(n);
+  u64* from = r.sort_from.data();
+  u64* to = r.sort_to.data();
+  for_rows(jobs, h, [&](u32 z0, u32 z1) {
+    for (u32 p = z0 * w; p < z1 * w; ++p)
+      from[p] = (static_cast<u64>(filled[p] - low) << k_index_bits) | p;
+  });
+  constexpr u32 k_digit_bits = 12;
+  constexpr u32 k_buckets = 1u << k_digit_bits;
+  u32 start[k_buckets];
+  const u64 span = static_cast<u64>(high - low);
+  for (u32 shift = k_index_bits; shift < 64 && (span >> (shift - k_index_bits)) != 0;
+       shift += k_digit_bits) {
+    for (u32 b = 0; b < k_buckets; ++b)
+      start[b] = 0;
+    for (u32 p = 0; p < n; ++p)
+      ++start[(from[p] >> shift) & (k_buckets - 1)];
+    u32 running = 0;
+    for (u32 b = 0; b < k_buckets; ++b) {
+      const u32 here = start[b];
+      start[b] = running;
+      running += here;
+    }
+    for (u32 p = 0; p < n; ++p)
+      to[start[(from[p] >> shift) & (k_buckets - 1)]++] = from[p];
+    u64* t = from;
+    from = to;
+    to = t;
+  }
+  for_rows(jobs, h, [&](u32 z0, u32 z1) {
+    for (u32 p = z0 * w; p < z1 * w; ++p)
+      order[p] = static_cast<u32>(from[p] & k_index_mask);
+  });
+  return true;
 }
 
 // The lakes of a flooded ground (landform.md, "Deposition"): every raised point standing
@@ -797,7 +960,7 @@ bool route(u32 width, u32 height, const Vector<i32>& height_mm, const Vector<u8>
   const i32* mm = height_mm.data();
   const bool ok = flood(
       width, height, held.data(),
-      [mm](u32 i) { return static_cast<i64>(mm[i]) * k_fill_units_per_mm; }, r);
+      [mm](u32 i) { return static_cast<i64>(mm[i]) * k_fill_units_per_mm; }, jobs, r);
   if (ok) {
     find_receivers(width, height, held.data(), seed, jobs, r);
     accumulate(width, height, r);
@@ -996,7 +1159,7 @@ bool solve(const Sketch& s, const StartField* start, const SolveOptions& options
       for (u32 p = 0; p < n; ++p)
         before[p] = z[p];
     }
-    if (!flood(w, h, held, [z](u32 i) { return quantize(z[i]); }, routing)) {
+    if (!flood(w, h, held, [z](u32 i) { return quantize(z[i]); }, jobs, routing)) {
       error = "the flood did not reach every point";
       return false;
     }
@@ -1272,7 +1435,7 @@ bool solve(const Sketch& s, const StartField* start, const SolveOptions& options
       erosion[p] = held[p] != 0 ? 0 : clamp_i32((before[p] - z[p]) / dt * 1.0e6);
   }
   if (!flood(
-          w, h, held, [mm](u32 i) { return static_cast<i64>(mm[i]) * k_fill_units_per_mm; },
+          w, h, held, [mm](u32 i) { return static_cast<i64>(mm[i]) * k_fill_units_per_mm; }, jobs,
           routing)) {
     error = "the flood did not reach every point";
     return false;

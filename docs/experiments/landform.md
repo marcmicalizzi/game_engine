@@ -109,6 +109,25 @@ Brown noise, the spectrum the transects have; the amplitude (0.35) and the longe
 (6 km) are authoring: no source gives the spectrum of uplift along a range, only of the
 topography it leaves.
 
+## The flood: the sources
+
+2026-11-10, stage B. The published ways of making Priority-Flood cheaper, and which the solver
+took ([the flood's cost](../subsystems/landform.md#the-floods-cost)).
+
+| Variant | Source |
+|---|---|
+| A plain queue beside the priority queue: a neighbour no higher than the cell that reaches it is in a depression and goes to the plain queue, which is emptied first. 16.8% faster on average (12.5% median, 37.2% at most). The ε variant is built on the plain version, raises with `nextafter`, and needs a total order in the queue | Barnes, Lehman and Mulla 2014, *Comput. Geosci.* 62:117–127, arXiv:1511.04463, Algorithms 2 and 3. **Read** |
+| Region-growing: most cells outside depressions and flats are processed without the priority queue; 44.6% faster on average than the fastest variant before it, over thirty 3 m DEMs | Zhou, Sun and Fu 2016, *Comput. Geosci.* 90:87–96, doi:10.1016/j.cageo.2016.02.021. **Abstract only** |
+| The cells the priority queue processes cut by about 70%; 31 to 52% faster than the fastest before it | Wei, Zhou and Fu 2019, *Int. J. Digital Earth* 12:415–427, doi:10.1080/17538947.2018.1429503. **Abstract only** (the mechanism was not read) |
+| No fill at all: basins labelled from the boundary and from local minima, linked by their lowest passes, a minimum spanning tree of that graph oriented from the boundary, and receivers updated along it; linear in the points | Cordonnier, Bovy and Braun 2019, *Earth Surf. Dynam.* 7:549–562. **Read**. No speed-up is stated as a number |
+
+**What was taken.** The idea the middle two share, in the form the solver's total order allows:
+ground with a strictly falling path to an outlet never needs the queue, because its filled
+height is its own, and the order the queue would have given is the sort of the filled heights
+(a push is never below the pop that made it). The bytes are the flood's, which the basin graph's
+are not. Neither Zhou's nor Wei's algorithm was read, so this is not theirs; it is the same
+observation, checked by the pins.
+
 ## Constants, their ranges, and the defaults the schema pins
 
 | Constant | Default | Range accepted | Status | Source or reason |
@@ -255,12 +274,12 @@ text, five causes, and what this design does about each:
 
 ## What follows stage A
 
-The glacial mode (an equilibrium-line altitude, ice flux, troughs and cirques); a flood that skips
-ground with no depressions, and the order's levels in parallel; flow that divides (a fan as a
+The glacial mode (an equilibrium-line altitude, ice flux, troughs and cirques); the rivers'
+sweeps in the order's own sequence, and the order's levels in parallel; flow that divides (a fan as a
 cone, a channel more than a point wide); lateral erosion, terraces and scree at an angle of
 repose; soil depth; snow where erosion and wind put it; a general m and n; baking far-terrain maps
-from near output; anything in the editor. Deposition, the formation's beds and uplift that varies
-along a ridge were the first of these and are stage B.
+from near output; anything in the editor. Deposition, the formation's beds, uplift that varies
+along a ridge and the flood's cost were the first of these and are stage B.
 
 ## A request to the channels generator
 
@@ -285,7 +304,7 @@ and course are the ones the ground was cut by. The contract it would read is on 
 | A coast (the golden sketch with one critical slope, 0.9) | no neighbours steeper than 0.9 by more than 0.8 mm, land, waterline or bed | the rounding to whole millimetres |
 | A starting ground with a 370 m underwater wall, fifty thousand years | the largest step between neighbours 89,978 mm over a 100 m cell | 370,000 mm before; the critical slope allows 90,000 |
 | A 407 m massif at 50 m refined for forty thousand years at the default erodibility, nothing raised | its 800 m low-pass moves at most 9.5 m (2.3% of the relief); single points move 29.7 m | the bound held is a twentieth of the relief |
-| A 2,048-point sketch at 16 m to 100,000 years in twenty steps, four workers, busy machine | 27.1 s | — (stage A; not measured again after deposition) |
+| A 2,048-point sketch at 16 m to 100,000 years in twenty steps, four workers, busy machine | 27.1 s in stage A; 117.6 s in stage B (17.7 s at 1,024 a side, 0.58 s at 256) | the sweeps: about eight a step, two walks of the order each |
 | Stage B. Steepness at steady state with G = 1 and sediment as erodible as rock (64 points at 200 m, 1 mm/yr, K 4 × 10⁻⁵, three million years) | S √A K / U = 1.955 over 572 channel points: 1.91 for 8 to 16 cells, 1.96 for 16 to 64, 2.00 above | 1 + G (N − 1) / N, Yuan et al. 2019's discrete form; 2 in the limit. The mean erosion rate is 1,000.4 µm/yr and the concavity 0.485 |
 | The same with the cut first and the deposit laid after it (the first build) | 2.14: 1.92, 2.08 and 2.42 in the same three bins | the scheme that was dropped |
 | The budget of the golden sketch (400,000 years) | eroded 9.061 × 10⁹ m³ = deposited 2.135 × 10⁹ + left 6.821 × 10⁹ + unrouted 1.06 × 10⁸; settled 5.6 × 10⁵ | both identities hold to nine digits |
@@ -295,6 +314,8 @@ and course are the ones the ground was cut by. The contract it would read is on 
 | A block rising at 1 mm/yr between two open edges in beds dipping 15° toward one (300 m soft under 200 m hard, a tenth as erodible), a million years, 100 m points | mean gradient 0.669 on hard rock and 0.305 on soft (2.2 to 1); 0.549 across the beds and 0.503 down the dip (1.09 to 1; 1.0002 in uniform rock); a hard bed's outcrop 9.0 points wide down the dip and 4.7 across (1.93 to 1); the divide 3.4 points off the middle | Perne et al. 2017: no fixed ratio at n = 1 |
 | The default sketch: one default ridge (1 mm/yr, 4 km reach) across 8.2 km at 16 m, a million years, every default | mean slope 0.511, 27.5% of the land within a twentieth of the critical slope (0.8), the summit at 998 m. At a critical slope of 0.9: 0.546 and 24.5%. With K doubled and doubled again (0.8): 0.550 and 31.2%, 0.504 and 26.4% | DiBiase et al.: mean hillslope angles to about 35° in a range eroding this fast |
 | A ridge raised for one step with no erosion, variation 0.5 over 3.2 km, read every 50 m over 25 km | the rate runs 1.483 to 2.454 mm/yr about a mean of 1.839; the mean squared difference is 0.0069 at a lag of 200 m and 0.0742 at 1,600 m | a spectrum that falls with wavenumber |
+| The flood's profile at 2,048 a side (a young, rough ground; busy machine) | the route (flood, receivers, area) 812 ms; the lattice walked in the flood's order reading every neighbour, with no queue, 119 ms | stage A's reading was that the order of memory was the cost; it is the queue |
+| The route of a ground with no depression at 2,048 a side, the queue kept off drained ground | 312 ms | 812 ms for the flood of every point on the young ground (no figure was taken for the old flood on the drained ground) |
 | An open edge with deposition, the border test's sketch | the first row 1.41 m above the edge with G tapered toward it. With G uniform it stood 17.4 m up in the first build (the deposit laid after the cut); the uniform case was not measured again under the sweeps | the bound is 2 m |
 
 What the first pictures showed, and what still reads wrong beside the reels, is on the subsystem
