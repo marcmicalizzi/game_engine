@@ -32,6 +32,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <filesystem>
@@ -41,6 +42,7 @@
 #include <scene_fire.h>
 #include <scene_water.h>
 #include <schemas/scene.h>
+#include <thread>
 #include <utility>
 
 namespace engine::renderer {
@@ -3032,7 +3034,16 @@ void load_placement_textures(const SceneDesc& desc, const PlacementMeshOptions& 
     if (!held) {
       std::string why;
       const std::string path = texture::texture_cache_path(desc.ddc, record.key);
-      if (!texture::read_texture_file(path, texture.data, &why)) return refuse(name + ": " + why);
+      // Two tiles' meshes that name one new set are built at once on two workers, and both may
+      // write the entry — the same bytes, each by a rename — so a read can meet the other's
+      // rename on a file system that refuses one of the two. The entry is whole either way: ask
+      // again, twice, before the mesh is left to draw its constants.
+      bool read = texture::read_texture_file(path, texture.data, &why);
+      for (u32 again = 0; !read && again < 2; ++again) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        read = texture::read_texture_file(path, texture.data, &why);
+      }
+      if (!read) return refuse(name + ": " + why);
       if (texture.data.source_hash != record.source_hash || texture.data.build_key != record.key)
         return refuse(name + ": '" + path + "' was built from other bytes or options");
     }

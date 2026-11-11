@@ -9,6 +9,7 @@
 // the mesh is in, and the mesh's when it is retired; a whole commit admits everything at once; a
 // refused texture ends the wait, the mesh draws its constants and nothing of it stays held; and a
 // mesh let go while it waited leaves no texture behind.
+#include <core/jobs/job_system.h>
 #include <systems/renderer/scene.h>
 #include <systems/world/tile_meshes.h>
 
@@ -259,6 +260,37 @@ TEST_CASE("tile mesh textures: a refused texture ends the wait and the mesh draw
   // The map that did get in went back with the refusal: nothing is held for a mesh that draws none.
   CHECK(scene.textures.empty());
   CHECK(scene.violations == 0);
+}
+
+TEST_CASE("tile mesh textures: built on the job system, the textures come with the mesh") {
+  // The host's shape (engine-view's pool of two): the build, and with it the texture pass and its
+  // own small pool, runs on an efficiency worker; a whole commit waits for it.
+  test::TempDir tmp{"engine_world_tile_mesh_textures_jobs"};
+  Scene scene;
+  jobs::JobSystemConfig config;
+  config.performance_workers = 1;
+  config.efficiency_workers = 2;
+  jobs::JobSystem pool(config);
+  {
+    TileMeshes meshes;
+    meshes.create(options_of(tmp), room(0), scene.sink(), &pool);
+    std::string error;
+    const u32 a = meshes.acquire(rock(0, 0), "", &error);
+    const u32 b = meshes.acquire(rock(1, 0), "", &error);
+    REQUIRE_MESSAGE(a != TileMeshes::k_none, error);
+    REQUIRE_MESSAGE(b != TileMeshes::k_none, error);
+    meshes.begin_commit(true);
+    CHECK(meshes.admit(a) == TileMeshes::Admit::done);
+    CHECK(meshes.admit(b) == TileMeshes::Admit::done);
+    meshes.end_commit();
+    CHECK(scene.textured == 2);
+    CHECK(scene.plain == 0);
+    CHECK(scene.uploads == 2);  // the two rocks' maps are the same two
+    REQUIRE(scene.textures.size() == 2);
+    CHECK(scene.textures[0].refs == 2);
+    CHECK(scene.violations == 0);
+    CHECK(meshes.stats().failures == 0);
+  }
 }
 
 TEST_CASE("tile mesh textures: a mesh let go while it waits leaves no texture behind") {

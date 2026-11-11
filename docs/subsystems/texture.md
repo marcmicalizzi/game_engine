@@ -392,7 +392,10 @@ first row again by `mesh_texture_tests.cpp`, which stages one:
    set in host memory. **All or none per mesh**, as the load's rule is ("In the renderer"): one
    image without a built texture and the mesh draws its constants, with the reason in
    `PlacementMeshData::textures_why`. The pass makes a pool of two threads for its length, because
-   it wants one and the thread it runs on may be a worker of the host's pool.
+   it wants one and the thread it runs on may be a worker of the host's pool. Two tiles' meshes
+   that name one new set are built at once on two workers and both may write the entry — the same
+   bytes, each by a rename — so a read that fails is asked again, twice, before the mesh is left
+   with its constants (`tile_mesh_textures_tests.cpp` builds two such rocks on a pool).
 2. **Admitted one texture at a time, within the commit's allowance, before its mesh**
    (`world::TileMeshes::admit_textures`). The allowance is bytes staged a commit
    (`world.meshes.admission_kib`, 4,096 by default), the textures' and the meshes' together, and a
@@ -487,11 +490,11 @@ budget's refusal (1.4 s); an alpha-tested rock against the whole read, `0 depths
 over 8565 rock pixels`, and 537 more rock pixels when a scene not told to expect one draws it solid
 (1.6 s); and on the ray path the textured rocks against the whole read, again `0, 0, 0`, with the
 alpha-tested cut within 3 % of the rasterizer's (8,718 traced pixels against 8,565) and 384 short
-of the solid rock (2.6 s). `systems/world/tests/tile_mesh_textures_tests.cpp`, no device (0.5 s for
-its three cases): a commit under an allowance of 1,500 bytes stages 1,392, then 2,112 alone, then
+of the solid rock (2.6 s). `systems/world/tests/tile_mesh_textures_tests.cpp`, no device (0.7 s for
+its four cases): a commit under an allowance of 1,500 bytes stages 1,392, then 2,112 alone, then
 the mesh; a second rock of the same maps arrives in one commit with no upload and no read; the
-references by table and by mesh; a refused texture ends the wait; a mesh let go while it waited
-leaves nothing held.
+references by table and by mesh; a refused texture ends the wait; two rocks built on a job system
+arrive with their textures; a mesh let go while it waited leaves nothing held.
 
 **What it leaves.** The recording frame's allocation count through a flight (the committing
 thread's is counted above; `engine_view.frame_loop` has no scene whose tiles hand meshes yet); the
