@@ -1,11 +1,11 @@
 {
   "format": "engine.structure-raise.v1",
   "name": "T94",
-  "reason": "T94: the frame-only pack and the resolve's cost, measured three ways, on the formation's section of renderer.md; make_fabric's frame-only pack on rocks.md",
+  "reason": "T94: the frame-only pack, and what the formation costs the resolve measured three ways with what took it out, on the formation's section of renderer.md; make_fabric's frame-only pack on rocks.md",
   "date": "2026-11-11",
   "by": "Marc Micalizzi",
   "deltas": {
-    "page:docs/subsystems/renderer.md": 1141,
+    "page:docs/subsystems/renderer.md": 8282,
     "page:docs/subsystems/rocks.md": 150
   }
 }

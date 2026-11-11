@@ -97,7 +97,7 @@ f64 wrap(f64 a, f64 period) {
   return r > 0.5 * period ? r - period : r;
 }
 
-// A block is 98 KB: on the heap in a test that holds several.
+// A block is 104 KB: on the heap in a test that holds several.
 std::unique_ptr<gfx::FormationParams> packed(const scene::Formation& f) {
   auto p = std::make_unique<gfx::FormationParams>();
   std::string error;
@@ -654,7 +654,34 @@ TEST_CASE("formation: a drawn table is the same bytes on every compiler") {
   const u64 hash = fnv1a(p.get(), sizeof(gfx::FormationParams));
   MESSAGE("drawn(1): " << p->beds.count << " beds, block hash " << hash);
   CHECK(p->beds.count == 140u);
-  CHECK(hash == 8898964259588582771ull);
+  // Re-pinned by T94 (2026-11-11, msvc-debug): the block grew by the two slice indexes, each
+  // table's pad word became its slices per metre, and a drawn formation's flags carry
+  // `k_formation_drawn`. W94's pin was 8898964259588582771, and it still holds over the bytes W94
+  // packed (below).
+  CHECK(hash == 12084307430439113236ull);
+  CHECK(p->flags == (gfx::k_formation_valid | gfx::k_formation_drawn));
+  // The block as W94 laid it out — the head with W94's flags, then each table's head with its pad
+  // word zero and its beds, no index — hashed in that order: the value W94 pinned, so T94 moved no
+  // bed's byte.
+  u64 w94 = 0xcbf29ce484222325ull;
+  const auto feed = [&w94](const void* data, usize size) {
+    const auto* bytes = static_cast<const unsigned char*>(data);
+    for (usize i = 0; i < size; ++i) {
+      w94 ^= bytes[i];
+      w94 *= 0x100000001b3ull;
+    }
+  };
+  gfx::FormationHead head = gfx::formation_head(*p);
+  head.flags = gfx::k_formation_valid;
+  feed(&head, sizeof(head));
+  for (const gfx::FormationSequence* s : {&p->beds, &p->macro}) {
+    const u32 pad = 0;
+    feed(s, offsetof(gfx::FormationSequence, slices_per_m));
+    feed(&pad, sizeof(pad));
+    feed(&s->mean,
+         offsetof(gfx::FormationSequence, slices) - offsetof(gfx::FormationSequence, mean));
+  }
+  CHECK(w94 == 8898964259588582771ull);
 }
 
 TEST_CASE("formation: the frame-only pack is the whole block's frame to the bit") {
@@ -714,6 +741,157 @@ TEST_CASE("formation: the frame-only pack is the whole block's frame to the bit"
   CHECK(block->beds.count == 0u);
 }
 
+TEST_CASE("formation: a drawn formation's macro table is its members, to the float") {
+  // T94: `k_formation_drawn` lets the shader read a member's value through a bed (`member` is the
+  // macro table's index) where a pixel's box lies inside one bed. That is the macro's own lookup's
+  // answer only while a member starts and ends where its first and last bed do, as the same
+  // floats, and neither table moves a member's top. Held over five seeds; an authored pair of
+  // tables carries no such bit.
+  CHECK((packed(fixture())->flags & gfx::k_formation_drawn) == 0u);
+  for (u64 seed = 1; seed <= 5; ++seed) {
+    const auto p = packed(drawn(seed));
+    CHECK(p->flags == (gfx::k_formation_valid | gfx::k_formation_drawn));
+    const gfx::FormationSequence& beds = p->beds;
+    const gfx::FormationSequence& macro = p->macro;
+    REQUIRE(macro.count == 6u);
+    CHECK(macro.period_mm == beds.period_mm);
+    CHECK(macro.period_m == beds.period_m);
+    for (u32 m = 0; m < macro.count; ++m) {
+      CHECK(macro.beds[m].base_amp_m[0] == 0.0f);
+      CHECK(macro.beds[m].base_amp_m[1] == 0.0f);
+    }
+    u32 at_member = 0;
+    for (u32 i = 0; i < beds.count; ++i) {
+      const gfx::FormationBedGpu& b = beds.beds[i];
+      REQUIRE(b.member < macro.count);
+      if (i == 0 || b.member != beds.beds[i - 1].member) {
+        // A member's first bed: the member's own start, and a base that does not move.
+        if (i > 0) ++at_member;
+        CHECK(b.start_m == macro.beds[b.member].start_m);
+        CHECK(b.base_amp_m[0] == 0.0f);
+        CHECK(b.base_amp_m[1] == 0.0f);
+      }
+      CHECK(b.member == at_member);
+    }
+    CHECK(at_member + 1 == macro.count);
+    // So at any point and any lateral fields, the bed's member is the member the macro table finds.
+    u64 state = seed;
+    const f64 period = static_cast<f64>(beds.period_mm) / 1000.0;
+    const f64 slop = 4.0 * period / 8388608.0;
+    for (u32 k = 0; k < 20000; ++k) {
+      state = gfx::formation_mix(state);
+      const f64 c = (gfx::formation_unit(state) * 3.0 - 1.0) * period;
+      gfx::FormationLateral g;
+      state = gfx::formation_mix(state);
+      g.g[0] = k % 3 == 0 ? 1.0 : gfx::formation_unit(state);
+      state = gfx::formation_mix(state);
+      g.g[1] = k % 5 == 0 ? 1.0 : gfx::formation_unit(state);
+      const gfx::FormationBedSample found = gfx::formation_bed(beds, c, g);
+      const gfx::FormationBedSample within = gfx::formation_bed(macro, c, g);
+      CHECK(found.member == within.index);
+      // To four of a float's steps at the period's far end: a lens that is a member's first bed
+      // brings the next bed's base down to the member's own, as f32 start plus f32 amplitude.
+      CHECK(found.base >= within.base - slop);
+      CHECK(found.top <= within.top + slop);
+    }
+  }
+}
+
+TEST_CASE("formation: the slice index finds the bed a search of the whole table finds") {
+  // T94: a lookup reads its slice's word and searches the run of beds it names. Over authored and
+  // drawn tables, a table of 512 centimetre beds (many beds a slice) and one of kilometres (many
+  // slices a bed), at the lateral fields' corners and between, every slice's edges and 40,000
+  // seeded coordinates find the bed W94's search over the whole table finds.
+  const auto whole = [](const gfx::FormationSequence& s, f64 y, const gfx::FormationLateral& g) {
+    u32 lo = 0, hi = s.count;
+    while (hi - lo > 1) {
+      const u32 mid = (lo + hi) >> 1;
+      if (y >= gfx::formation_base(s, mid, g))
+        lo = mid;
+      else
+        hi = mid;
+    }
+    return lo;
+  };
+  scene::Formation thin = fixture();
+  thin.beds.clear();
+  for (u32 i = 0; i < gfx::k_formation_max_beds; ++i) {
+    scene::FormationBed b =
+        bed("thin", 0.01f + 0.001f * static_cast<f32>(i % 7), Vec3{1.0f, 1.0f, 1.0f}, 0.0f, 0.5f);
+    b.variation = 0.45f;
+    b.lens = i % 5 == 1 && i + 1 < gfx::k_formation_max_beds;
+    thin.beds.push_back(b);
+  }
+  scene::Formation thick = fixture();
+  thick.beds.clear();
+  for (u32 i = 0; i < 9; ++i) {
+    scene::FormationBed b =
+        bed("thick", 400.0f + 75.0f * static_cast<f32>(i % 4), Vec3{1.0f, 1.0f, 1.0f}, 0.0f, 0.5f);
+    b.variation = 0.4f;
+    thick.beds.push_back(b);
+  }
+  scene::Formation moving = fixture();
+  moving.beds[0].variation = 0.45f;
+  moving.beds[1].lens = true;
+  const scene::Formation cases[] = {fixture(), moving, drawn(1), drawn(7), thin, thick};
+  const f64 corners[][2] = {{0.0, 0.0}, {1.0, 1.0}, {1.0, 0.0},  {0.0, 1.0},
+                            {0.5, 0.5}, {0.3, 0.9}, {0.99, 0.01}};
+  u64 looked = 0, at_a_pinch = 0;
+  for (const scene::Formation& f : cases) {
+    const auto p = packed(f);
+    for (const gfx::FormationSequence* table : {&p->beds, &p->macro}) {
+      const gfx::FormationSequence& s = *table;
+      if (s.count == 0) continue;
+      const f64 period = static_cast<f64>(s.period_mm) / 1000.0;
+      // The words are well formed: a run of one bed or more, inside the table.
+      u64 candidates = 0;
+      u32 widest = 0;
+      for (u32 j = 0; j < gfx::k_formation_slices; ++j) {
+        const u32 first = s.slices[j] & 0xFFFFu, run = s.slices[j] >> 16;
+        CHECK(run >= 1u);
+        CHECK(first + run <= s.count);
+        candidates += run;
+        widest = run > widest ? run : widest;
+      }
+      MESSAGE(s.count << " beds over " << period
+                      << " m: " << static_cast<f64>(candidates) / gfx::k_formation_slices
+                      << " beds a slice, " << widest << " at most");
+      // A float's step at the period's far end, four times: inside it a pinched lens's base and
+      // its neighbour's are one number to within rounding, and either bed is the answer.
+      const f64 slop = 4.0 * period / 8388608.0;
+      const auto check = [&](f64 y, const gfx::FormationLateral& g) {
+        const u32 got = gfx::formation_find(s, y, g);
+        const u32 want = whole(s, y, g);
+        ++looked;
+        if (got == want) return;
+        ++at_a_pinch;
+        CHECK(got < s.count);
+        CHECK(gfx::formation_base(s, got, g) <= y + slop);
+        if (got + 1 < s.count) CHECK(y < gfx::formation_base(s, got + 1, g) + slop);
+        CHECK(std::fabs(gfx::formation_base(s, got, g) - gfx::formation_base(s, want, g)) <= slop);
+      };
+      const f64 h = period / gfx::k_formation_slices;
+      u64 state = 0x5EEDu + s.count;
+      for (const auto& corner : corners) {
+        gfx::FormationLateral g;
+        g.g[0] = corner[0];
+        g.g[1] = corner[1];
+        for (u32 j = 0; j <= gfx::k_formation_slices; ++j)
+          for (const f64 nudge : {-1e-4, -1e-7, 0.0, 1e-7, 1e-4}) {
+            const f64 y = static_cast<f64>(j) * h + nudge * (period < 10.0 ? 0.01 : 1.0);
+            if (y >= 0.0 && y <= period) check(y, g);
+          }
+        for (u32 k = 0; k < 40000; ++k) {
+          state = gfx::formation_mix(state);
+          check(gfx::formation_unit(state) * period, g);
+        }
+      }
+    }
+  }
+  MESSAGE(looked << " lookups, " << at_a_pinch << " inside a pinched lens's rounding");
+  CHECK(at_a_pinch * 1000 < looked);
+}
+
 TEST_CASE("formation: the shader's coordinate, bed and filter are its f64 twin's") {
   gfx::Device device;
   std::string error;
@@ -759,7 +937,7 @@ TEST_CASE("formation: the shader's coordinate, bed and filter are its f64 twin's
   REQUIRE(
       gfx::create_buffer(device, u64{points.size()} * sizeof(Point), storage, true, input, &error));
   std::memcpy(input.mapped, points.data(), u64{points.size()} * sizeof(Point));
-  REQUIRE(gfx::create_buffer(device, u64{points.size()} * 4 * sizeof(Vec4), storage, true, output,
+  REQUIRE(gfx::create_buffer(device, u64{points.size()} * 5 * sizeof(Vec4), storage, true, output,
                              &error));
   struct Push {
     u64 output;
@@ -789,8 +967,8 @@ TEST_CASE("formation: the shader's coordinate, bed and filter are its f64 twin's
     const f64 period = static_cast<f64>(params.beds.period_mm) / 1000.0;
     const f64 macro_period = static_cast<f64>(params.macro.period_mm) / 1000.0;
     f64 worst = 0.0, worst_macro = 0.0, worst_gradient = 0.0, worst_filter = 0.0,
-        worst_lateral = 0.0;
-    u32 compared = 0, edges = 0, moved = 0, thrown = 0;
+        worst_lateral = 0.0, worst_band = 0.0;
+    u32 compared = 0, edges = 0, moved = 0, thrown = 0, in_one_bed = 0;
     for (u32 i = 0; i < points.size(); ++i) {
       const Point& q = points[i];
       // What the float local means, exactly: the twin's own reading of the probe's point.
@@ -799,8 +977,8 @@ TEST_CASE("formation: the shader's coordinate, bed and filter are its f64 twin's
       const f64 z = static_cast<f64>(q.cell[2]) * 64.0 + static_cast<f64>(q.local[2]);
       const gfx::FormationSample want = gfx::formation_sample(params, frame, x, y, z);
       const f64 coordinate = want.at.coordinate;
-      const Vec4 a = got[4 * i], g = got[4 * i + 1], filtered = got[4 * i + 2],
-                 extra = got[4 * i + 3];
+      const Vec4 a = got[5 * i], g = got[5 * i + 1], filtered = got[5 * i + 2],
+                 extra = got[5 * i + 3], band = got[5 * i + 4];
       const f64 e = std::fabs(wrap(static_cast<f64>(a.x) - coordinate, period));
       const f64 em = std::fabs(wrap(static_cast<f64>(a.y) - coordinate, macro_period));
       worst = e > worst ? e : worst;
@@ -846,16 +1024,40 @@ TEST_CASE("formation: the shader's coordinate, bed and filter are its f64 twin's
                      std::fabs(static_cast<f64>(filtered.w) - static_cast<f64>(wf.w)) +
                      std::fabs(static_cast<f64>(extra.z) - static_cast<f64>(wm.x));
       worst_filter = df > worst_filter ? df : worst_filter;
+      // The band, as the resolve asks for it: both tables' filtered values over the wider of
+      // soft_m and the footprint's box (half the point's width, the probe's footprint), the tints
+      // multiplied and the roughness offsets added. T94's shortcuts live here — a box inside one
+      // bed is that bed's value, and a drawn formation's member is read through its bed — and the
+      // twin takes neither, so this holds them to the two integrals' difference.
+      const f64 soft = static_cast<f64>(params.soft_m);
+      const f64 box =
+          0.5 * static_cast<f64>(q.width) > soft ? 0.5 * static_cast<f64>(q.width) : soft;
+      const Vec4 bb = gfx::formation_filtered(params.beds, coordinate, box, want.lateral);
+      const Vec4 bm = gfx::formation_filtered(params.macro, coordinate, box, want.lateral);
+      const f64 db =
+          std::fabs(static_cast<f64>(band.x) - static_cast<f64>(bb.x) * static_cast<f64>(bm.x)) +
+          std::fabs(static_cast<f64>(band.y) - static_cast<f64>(bb.y) * static_cast<f64>(bm.y)) +
+          std::fabs(static_cast<f64>(band.z) - static_cast<f64>(bb.z) * static_cast<f64>(bm.z)) +
+          std::fabs(static_cast<f64>(band.w) - (static_cast<f64>(bb.w) + static_cast<f64>(bm.w)));
+      worst_band = db > worst_band ? db : worst_band;
+      const bool one_bed = coordinate - 0.5 * box > b.base && coordinate + 0.5 * box < b.top;
+      in_one_bed += one_bed ? 1u : 0u;
     }
     MESSAGE(std::string(which == 0 ? "authored" : "drawn")
             << ": coordinate error " << worst << " m, macro " << worst_macro << " m, gradient "
             << worst_gradient << ", lateral " << worst_lateral << ", filter " << worst_filter
-            << "; " << compared << " beds compared, " << edges << " within 3 mm of an edge, "
-            << moved << " with a field over zero, " << thrown << " beyond the fault");
+            << ", band " << worst_band << "; " << compared << " beds compared, " << edges
+            << " within 3 mm of an edge, " << moved << " with a field over zero, " << thrown
+            << " beyond the fault, " << in_one_bed << " boxes inside one bed");
     CHECK(worst_gradient < 1e-4);
     CHECK(worst_lateral < 1e-3);
     // The box's edges move with the coordinate, by the coordinate's error, and with the tops.
     CHECK(worst_filter < 2e-3);
+    // The band is a product of two such values and a sum of two: the filter's bound, twice over.
+    CHECK(worst_band < 4e-3);
+    // Both ways through the filter are met: boxes inside one bed, and boxes across a contact.
+    CHECK(in_one_bed > compared / 8);
+    CHECK(in_one_bed < compared - compared / 20);
     CHECK(compared > points.size() / 2);
     if (which == 1) {
       CHECK(moved > points.size() / 4);

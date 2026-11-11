@@ -10,20 +10,30 @@
 // modulo the period in int64; only the remainder and the frame-local part become floats, so the
 // precision is the same anywhere (formation.h has the argument).
 //
-// **The sequence is a table of up to 512 beds** (W94), drawn on the CPU from a seed or authored,
-// and found by a binary search: nine steps, where W85's eight beds took seven of a linear one. A
+// **The sequence is a table of up to 512 beds** (W94), drawn on the CPU from a seed or authored. A
 // bed's base stands at `start_m + dot(base_amp_m, g)`, g the two lateral fields at the point, so a
 // bed thickens, thins and pinches out along the strike; the table carries the prefix sums that keep
 // the box filter two lookups with the tops moved (formation.h, "Variation along strike").
+//
+// **A lookup is one word of the slice index and a step or two** (T94; formation.h, "The slice
+// index"). The period is cut into 1,024 equal slices, and each slice's word names the beds a
+// coordinate in it can be in wherever the tops stand: the binary search runs over those, not over
+// the table. W94's search over 512 beds was nine loads, each waiting on the one before, four times
+// a pixel: with the loop it ran in, 0.21 of the 0.33 ms the formation cost the resolve at 1080p
+// (renderer.md, "Formation bands", "What the formation costs the resolve").
 #ifndef ENGINE_FORMATION_SLANG
 #define ENGINE_FORMATION_SLANG
 
 static const uint k_formation_max_beds = 512u;
+static const uint k_formation_slices = 1024u;
+// gfx::FormationParams::flags: the block holds a formation, and the formation was drawn from
+// members (gfx::k_formation_drawn: the macro table is the members, tops and all).
 static const uint k_formation_valid = 1u;
+static const uint k_formation_drawn = 2u;
 // Where the two sequences sit in the block (gfx::FormationParams): a 192-byte head, then two
-// tables of 64 + 512 * 96 bytes.
+// tables of 64 + 512 * 96 + 1024 * 4 bytes.
 static const uint64_t k_formation_beds_offset = 192;
-static const uint64_t k_formation_macro_offset = 49408;
+static const uint64_t k_formation_macro_offset = 53504;
 static const float k_formation_q = 1.0 / 16777216.0;  // 2^-24
 static const float k_formation_tau = 6.28318530717958647;
 
@@ -42,19 +52,22 @@ struct FormationBed {
   uint pad;
 };
 
-// gfx::FormationSequence, 64 + 512 * 96 bytes. Read through a pointer, never copied.
+// gfx::FormationSequence, 64 + 512 * 96 + 1024 * 4 bytes. Read through a pointer, never copied.
 struct FormationSequence {
   uint count;
   uint period_mm;
   float period_m;
-  uint pad;
+  float slices_per_m;  // k_formation_slices / period_m (0 with no beds)
   float4 mean;
   float4 lateral_total0;
   float4 lateral_total1;
   FormationBed beds[k_formation_max_beds];
+  // The slice index: for each slice of the period, the first bed a coordinate in it can be in (low
+  // 16 bits) and how many beds it can be in (high 16), wherever the tops stand.
+  uint slices[k_formation_slices];
 };
 
-// gfx::FormationParams, 98,624 bytes: a 192-byte head and the two sequences (the offsets above).
+// gfx::FormationParams, 106,816 bytes: a 192-byte head and the two sequences (the offsets above).
 struct FormationParams {
   int64_t origin_x_mm;
   int64_t origin_y_mm;
@@ -89,21 +102,48 @@ struct FormationParams {
   int64_t fault_offset_mm;
   int64_t fault_throw_mm;
   FormationSequence beds;   // at 192
-  FormationSequence macro;  // at 49408
+  FormationSequence macro;  // at 53504
 };
 
-// a mod m in [0, m) for m > 0, on magnitudes (terrain_material.slang's caution: no signed `%`).
-int64_t formation_mod(int64_t a, int64_t m) {
-  const uint64_t magnitude = uint64_t(a < 0 ? -a : a);
-  const int64_t r = int64_t(magnitude % uint64_t(m));
-  return (a < 0 && r != 0) ? m - r : r;
+// The floor of a / (p * 2^24), its low 32 bits, and `r` = a - (p * 2^24) * floor(a / (p * 2^24)) in
+// [0, p * 2^24), for p > 0, on magnitudes (terrain_material.slang's caution: no signed `%`).
+// **In 32 bits wherever the numbers allow** (T94): the modulus is p whole millimetres shifted by 24
+// bits, so the quotient and the remainder are those of a's whole millimetres by p with a's low 24
+// bits carried through, and the whole millimetres fit 32 bits while the frame's cell is within
+// 2,147 km of the formation's origin along the direction. The card has no 64-bit division of its
+// own, and a banded pixel ran four of them on numbers that are the same for the whole frame; the
+// 64-bit form stays for a frame further out, and gives the same integers.
+uint formation_floor_div(int64_t a, uint p, out int64_t r) {
+  const int64_t whole = a >> 24;  // floor(a / 2^24)
+  const int64_t low = a & int64_t(0xFFFFFF);
+  uint quotient;
+  uint rest;
+  if (whole > int64_t(-2147483647) && whole < int64_t(2147483647)) {
+    const int w = int(whole);
+    const uint magnitude = uint(w < 0 ? -w : w);
+    const uint cells = magnitude / p;
+    const uint left = magnitude - cells * p;
+    const bool below = w < 0 && left != 0u;
+    rest = below ? p - left : left;
+    quotient = w < 0 ? (0u - cells) - (below ? 1u : 0u) : cells;
+  } else {
+    const uint64_t magnitude = uint64_t(whole < 0 ? -whole : whole);
+    const uint64_t cells = magnitude / uint64_t(p);
+    const uint left = uint(magnitude - cells * uint64_t(p));
+    const bool below = whole < 0 && left != 0u;
+    rest = below ? p - left : left;
+    quotient = whole < 0 ? (0u - uint(cells)) - (below ? 1u : 0u) : uint(cells);
+  }
+  r = (int64_t(rest) << 24) | low;
+  return quotient;
 }
 
 // The remainder of `s` (metres times 1000 * 2^24) modulo `period_mm`, in metres.
 float formation_reduce(int64_t s, uint period_mm) {
   if (period_mm == 0u) return 0.0;
-  const int64_t m = int64_t(period_mm) << 24;
-  return float(formation_mod(s, m)) * k_formation_q * 0.001;
+  int64_t r;
+  formation_floor_div(s, period_mm, r);
+  return float(r) * k_formation_q * 0.001;
 }
 
 // gfx::formation_hash, the lateral fields' lattice: the same integers on both sides.
@@ -124,12 +164,11 @@ float formation_lattice(uint cell, uint seed) {
 // the direction (millimetres times 2^24) and `local` the float rest, metres.
 float formation_lateral_field(int64_t s, float local, uint cell_mm, uint seed, float gain) {
   if (cell_mm == 0u) return 0.0;
-  const int64_t m = int64_t(cell_mm) << 24;
-  const int64_t r = formation_mod(s, m);
-  // s - r is a whole number of cells: divide its magnitude.
-  const int64_t whole = s - r;
-  const uint64_t cells = uint64_t(whole < 0 ? -whole : whole) / uint64_t(m);
-  const uint cell0 = whole < 0 ? uint(0u - uint(cells)) : uint(cells);
+  // Which cell of the lattice the integer part is in (the quotient's low 32 bits: the hash's
+  // argument) and how far into it, from one division (W94 took the remainder and then the
+  // quotient, two).
+  int64_t r;
+  const uint cell0 = formation_floor_div(s, cell_mm, r);
   const float len = float(cell_mm) * 0.001;
   const float u = (float(r) * k_formation_q * 0.001 + local) / len;
   const float step = floor(u);
@@ -190,7 +229,11 @@ FormationPoint formation_coordinate(FormationParams* f, int3 cell, float3 local)
   }
   FormationPoint p;
   p.bed = formation_reduce(sn, f->beds.period_mm) + ln - fold;
-  p.macro = formation_reduce(sn, f->macro.period_mm) + ln - fold;
+  // A drawn formation's members are its macro sequence, so the two periods are one and so is the
+  // remainder (T94: an int64 division a pixel that gave the number the line above just had).
+  p.macro = p.bed;
+  if (f->macro.period_mm != f->beds.period_mm)
+    p.macro = formation_reduce(sn, f->macro.period_mm) + ln - fold;
   p.gradient = n - slope * t;
   p.lateral = float2(0.0, 0.0);
   if (f->lateral0_cell_mm != 0u) {
@@ -214,18 +257,45 @@ struct FormationBedSample {
   float resistance;
 };
 
-// The bed whose base is the last at or under y, with the tops moved by the lateral fields: a
-// binary search, at most ten steps for 512 beds (gfx::formation_find, step for step).
-uint formation_find(FormationSequence* s, float y, float2 g) {
-  uint lo = 0u;
-  uint hi = s->count;
-  for (uint step = 0u; step < 10u && hi - lo > 1u; ++step) {
+// Where bed i's base stands at a point's lateral fields (gfx::formation_base).
+float formation_base(FormationSequence* s, uint i, float2 g) {
+  return s->beds[i].start_m + dot(s->beds[i].base_amp_m, g);
+}
+
+// One halving of the run [lo, hi), or nothing once it is down to one bed.
+void formation_halve(FormationSequence* s, float y, float2 g, inout uint lo, inout uint hi) {
+  if (hi - lo > 1u) {
     const uint mid = (lo + hi) >> 1;
-    if (y >= s->beds[mid].start_m + dot(s->beds[mid].base_amp_m, g))
+    if (y >= formation_base(s, mid, g))
       lo = mid;
     else
       hi = mid;
   }
+}
+
+// The bed whose base is the last at or under y, with the tops moved by the lateral fields
+// (gfx::formation_find, step for step): y's slice of the period names the beds it can be in, and a
+// binary search runs over those — none or one step on a drawn section where the whole table took
+// nine. **The halvings are written out, nine for the 512 beds a run can hold, and not a loop**
+// (T94): with a loop here the resolve cost every terrain pixel of every scene 0.08 ms at 1080p on
+// an RTX 5090 — a scene with no formation, where none of this runs, included — and with the same
+// steps written out it cost none (renderer.md, "Formation bands", "What a loop in the lookup
+// cost"). A step past the run's end is one compare.
+uint formation_find(FormationSequence* s, float y, float2 g) {
+  const uint slice = min(uint(max(y, 0.0) * s->slices_per_m), k_formation_slices - 1u);
+  const uint word = s->slices[slice];
+  uint lo = word & 0xFFFFu;
+  uint hi = lo + (word >> 16);
+  if (word == 0u) hi = s->count;  // a table with no index: the whole of it
+  formation_halve(s, y, g, lo, hi);
+  formation_halve(s, y, g, lo, hi);
+  formation_halve(s, y, g, lo, hi);
+  formation_halve(s, y, g, lo, hi);
+  formation_halve(s, y, g, lo, hi);
+  formation_halve(s, y, g, lo, hi);
+  formation_halve(s, y, g, lo, hi);
+  formation_halve(s, y, g, lo, hi);
+  formation_halve(s, y, g, lo, hi);
   return lo;
 }
 
@@ -239,9 +309,9 @@ FormationBedSample formation_bed(FormationSequence* s, float coordinate, float2 
   const float period = s->period_m;
   const float y = coordinate - period * floor(coordinate / period);
   const uint i = formation_find(s, y, g);
-  const float base = s->beds[i].start_m + dot(s->beds[i].base_amp_m, g);
+  const float base = formation_base(s, i, g);
   float top = period;
-  if (i + 1u < s->count) top = s->beds[i + 1u].start_m + dot(s->beds[i + 1u].base_amp_m, g);
+  if (i + 1u < s->count) top = formation_base(s, i + 1u, g);
   out.index = i;
   out.fraction = top - base > 1e-9 ? saturate((y - base) / (top - base)) : 0.0;
   out.value = s->beds[i].value;
@@ -249,13 +319,9 @@ FormationBedSample formation_bed(FormationSequence* s, float coordinate, float2 
   return out;
 }
 
-// The integral of the sequence's value less its mean, from the period's base to x, with the tops
-// moved (gfx::formation_deviation).
-float4 formation_deviation(FormationSequence* s, float x, float2 g) {
-  const float period = s->period_m;
-  const float k = floor(x / period);
-  const float y = x - k * period;
-  const uint i = formation_find(s, y, g);
+// The integral of the sequence's value less its mean, from the period's base to the coordinate
+// `k` whole periods and `y` up, which is in bed `i`, with the tops moved (gfx::formation_deviation).
+float4 formation_deviation(FormationSequence* s, float k, float y, uint i, float2 g) {
   return k * (g.x * s->lateral_total0 + g.y * s->lateral_total1) + s->beds[i].integral +
          g.x * s->beds[i].lateral0 + g.y * s->beds[i].lateral1 +
          (y - s->beds[i].start_m) * (s->beds[i].value - s->mean);
@@ -263,11 +329,37 @@ float4 formation_deviation(FormationSequence* s, float x, float2 g) {
 
 // The sequence's value averaged over `width` metres of coordinate (a box), so an edge is as wide
 // as the pixel's footprint across the beds and a sequence finer than a pixel reads as its mean.
-float4 formation_filtered(FormationSequence* s, float coordinate, float width, float2 g) {
+// **A box inside one bed is that bed's value** (T94), which is what the integral's difference
+// gives to rounding: the lower end is looked up, and when the upper end is under the next bed's
+// base in the same period nothing more is read — most pixels of a near face, whose footprint is
+// centimetres across beds of decimetres and more. A point (a width under a micrometre, the path
+// tracer's rays) is the same case. Otherwise the upper end is looked up too and the two integrals
+// differenced, as W94 did for every pixel.
+// `bed` is the bed the whole box is inside, or `k_formation_max_beds` when it spans a boundary.
+float4 formation_filtered(FormationSequence* s, float coordinate, float width, float2 g,
+                          out uint bed) {
+  bed = k_formation_max_beds;
   if (s->count == 0u) return float4(1.0, 1.0, 1.0, 0.0);
-  if (width <= 1e-6) return formation_bed(s, coordinate, g).value;
-  return s->mean + (formation_deviation(s, coordinate + 0.5 * width, g) -
-                    formation_deviation(s, coordinate - 0.5 * width, g)) / width;
+  const float period = s->period_m;
+  const float half = width > 1e-6 ? 0.5 * width : 0.0;
+  const float kl = floor((coordinate - half) / period);
+  const float kh = floor((coordinate + half) / period);
+  const float yl = (coordinate - half) - kl * period;
+  const float yh = (coordinate + half) - kh * period;
+  const uint il = formation_find(s, yl, g);
+  bool inside = kl == kh;
+  if (inside && il + 1u < s->count) inside = yh < formation_base(s, il + 1u, g);
+  if (inside) {
+    bed = il;
+    return s->beds[il].value;
+  }
+  const uint ih = formation_find(s, yh, g);
+  return s->mean + (formation_deviation(s, kh, yh, ih, g) -
+                    formation_deviation(s, kl, yl, il, g)) / width;
+}
+float4 formation_filtered(FormationSequence* s, float coordinate, float width, float2 g) {
+  uint bed;
+  return formation_filtered(s, coordinate, width, g, bed);
 }
 
 // The band at a point: both sequences' tints multiplied, their roughness offsets added, each
@@ -280,10 +372,21 @@ float4 formation_band(uint64_t address, FormationPoint p, float3 dp_dx, float3 d
   FormationParams* f = (FormationParams*)address;
   const float across = max(abs(dot(p.gradient, dp_dx)), abs(dot(p.gradient, dp_dy)));
   const float width = max(f->soft_m, 2.0 * across);
-  const float4 bed = formation_filtered((FormationSequence*)(address + k_formation_beds_offset),
-                                        p.bed, width, p.lateral);
-  const float4 macro = formation_filtered((FormationSequence*)(address + k_formation_macro_offset),
-                                          p.macro, width, p.lateral);
+  FormationSequence* beds = (FormationSequence*)(address + k_formation_beds_offset);
+  FormationSequence* members = (FormationSequence*)(address + k_formation_macro_offset);
+  uint inside;
+  const float4 bed = formation_filtered(beds, p.bed, width, p.lateral, inside);
+  // **A drawn formation's members are its macro sequence** (T94; `k_formation_drawn`): a bed's
+  // `member` is the macro table's index, and a member's base and top stand where its first and last
+  // bed's do, to the float (both tables' starts are the same whole millimetres, and a top between
+  // two members does not move in either). So a box inside one bed is inside that bed's member, and
+  // the macro's value is that member's: the number the macro's own lookup returns, for one load.
+  // An authored pair of tables says nothing of the kind and is looked up.
+  float4 macro;
+  if (inside != k_formation_max_beds && (f->flags & k_formation_drawn) != 0u)
+    macro = members->beds[beds->beds[inside].member].value;
+  else
+    macro = formation_filtered(members, p.macro, width, p.lateral);
   return float4(bed.rgb * macro.rgb, bed.w + macro.w);
 }
 

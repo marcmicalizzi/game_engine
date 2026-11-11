@@ -30,8 +30,9 @@
 // `k_formation_max_beds` beds, authored or drawn from a seed by `generate_formation` — on the CPU,
 // in integers and `det::` functions, once, at pack time — and both the shader and the twin read the
 // same bytes, so which bed a coordinate is in is the same answer on both to the bit of the table.
-// The lookup is a binary search (nine steps for 512 beds, where W85's eight beds took seven of a
-// linear one) and the box filter two of them, whatever the width.
+// The lookup is one word of the table's slice index and a binary search over the few beds it names
+// (T94, "The slice index" below; W94 searched the whole table, nine steps for 512 beds), and the
+// box filter two lookups at most, whatever the width.
 //
 // **Variation along strike** (W94). A bed's top is `start + a0 * g0(p) + a1 * g1(p)`: two seeded
 // lateral fields g in [0, 1] (value noise on a whole-millimetre lattice along a horizontal
@@ -62,6 +63,14 @@ inline constexpr u32 k_formation_q_bits = 24;
 inline constexpr f64 k_formation_q = 1.0 / 16777216.0;  // 2^-24
 // FormationParams::flags: the block holds a formation (an all-zero block is none).
 inline constexpr u32 k_formation_valid = 1u;
+// FormationParams::flags: the formation was drawn from members (T94), so **the macro table is the
+// members**: a bed's `member` is the macro table's index, a member's base and top are its first
+// and last bed's to the float (both tables' starts are the same whole millimetres), and a top
+// between two members moves in neither table. The shader then reads a member's value through its
+// bed where a pixel's box lies inside one bed, with no second lookup (formation.slang,
+// `formation_band`). An authored pair of tables promises none of it and never carries the bit; a
+// packer that moves the members' tops must move them alike in both tables to keep it.
+inline constexpr u32 k_formation_drawn = 2u;
 // FormationBedGpu::kind: what a bed is. Authored beds are 0; a drawn bed is one of its member's
 // two lithologies, and a lens (authored or drawn) carries the bit as well.
 inline constexpr u32 k_formation_bed_resistant = 1u;
@@ -102,17 +111,35 @@ struct FormationBedGpu {
 };
 static_assert(sizeof(FormationBedGpu) == 96);
 
+// **The slice index** (T94). A lookup's question is "which bed's base is the last at or under y",
+// and W94 answered it by a binary search over the whole table: nine loads for 512 beds, each
+// waiting on the one before, four times a banded pixel (two ends of the box, two sequences) — with
+// the loop it ran in, 0.21 of the 0.33 ms the formation cost the resolve at 1080p (renderer.md,
+// "Formation bands", "What the formation costs the resolve"). The
+// period is cut into `k_formation_slices` equal slices, and each slice carries one word: the first
+// bed a coordinate in the slice can be in and how many beds it can be in, **for every value of the
+// lateral fields** (a bed's base ranges over `start + [min(0, a0) + min(0, a1), max(0, a0) +
+// max(0, a1)]`), with a margin for the float that picks the slice. The search then runs over that
+// run of beds — one or two steps on a drawn section — and finds the bed the search over the whole
+// table finds, because the run holds every bed whose base can be at or under the coordinate and
+// starts at one whose base always is. The table is still the definition: the index is derived from
+// it at pack time (`pack_formation_index`), by the shader's twin, and says nothing the beds do not.
+inline constexpr u32 k_formation_slices = 1024;
+
 struct FormationSequence {
   u32 count = 0;      // 0: no sequence, a tint of one everywhere
   u32 period_mm = 0;  // the sum of the beds' whole-millimetre thicknesses
   f32 period_m = 0.0f;
-  u32 pad = 0;
-  Vec4 mean{};            // the value's mean over one period of the reference section
-  Vec4 lateral_total0{};  // each lateral field's correction over one whole period
+  f32 slices_per_m = 0.0f;  // k_formation_slices / period_m: a coordinate's slice is y times this
+  Vec4 mean{};              // the value's mean over one period of the reference section
+  Vec4 lateral_total0{};    // each lateral field's correction over one whole period
   Vec4 lateral_total1{};
   FormationBedGpu beds[k_formation_max_beds] = {};
+  // Per slice: the first candidate bed (low 16 bits) and the candidates' count (high 16, 1 or
+  // more).
+  u32 slices[k_formation_slices] = {};
 };
-static_assert(sizeof(FormationSequence) == 64 + 96 * k_formation_max_beds);
+static_assert(sizeof(FormationSequence) == 64 + 96 * k_formation_max_beds + 4 * k_formation_slices);
 
 // One lateral field: a horizontal direction (x, z) as integers over 2^24, the lattice's cell in
 // whole millimetres (0: the field is off, g = 0), its seed and its sharpening.
@@ -126,8 +153,8 @@ struct FormationLateralGpu {
 static_assert(sizeof(FormationLateralGpu) == 32);
 
 // **The field's GPU block**, one per scene, named by `TerrainRecord::formation` (a device
-// address; zero is no formation), mirrored in formation.slang. 98,624 bytes: a 192-byte head and
-// two tables of 512 beds.
+// address; zero is no formation), mirrored in formation.slang. 106,816 bytes: a 192-byte head and
+// two tables of 512 beds, each with its slice index (T94; 98,624 without the two indexes).
 struct FormationParams {
   i64 origin_mm[3] = {};  // the origin, whole millimetres
   i64 normal_q[3] = {};   // the beds' unit normal times 2^24, rounded: the normal is this over 2^24
@@ -135,7 +162,7 @@ struct FormationParams {
   u32 fold_mm[2] = {};    // the folds' wavelengths, whole millimetres (0: that fold is off)
   f32 fold_amp_m[2] = {};
   f32 soft_m = 0.0f;
-  u32 flags = 0;  // k_formation_valid
+  u32 flags = 0;  // k_formation_valid, k_formation_drawn
   FormationLateralGpu lateral[2] = {};
   i64 fault_q[2] = {};      // the fault plane's horizontal unit normal (x, z) times 2^24
   i64 fault_offset_mm = 0;  // where the plane stands along it from the origin
@@ -151,7 +178,7 @@ static_assert(sizeof(FormationParams) % 16 == 0);
 // the directions, the folds, the lateral fields and the fault, which is everything the coordinate
 // and the lateral fields read and nothing a bed lookup does. A caller that wants the formation's
 // frame (`pack_formation_frame`, below) packs this and no table: 192 bytes where the whole block
-// is 98,624 on its stack. `pack_formation` writes the block's head through the same function
+// is 106,816 on its stack. `pack_formation` writes the block's head through the same function
 // (`pack_formation_head`) and copies it in, so the two cannot differ.
 struct FormationHead {
   i64 origin_mm[3] = {};
@@ -424,12 +451,56 @@ inline void formation_clear(FormationSequence& s) {
   s.count = 0;
   s.period_mm = 0;
   s.period_m = 0.0f;
-  s.pad = 0;
+  s.slices_per_m = 0.0f;
   s.mean = Vec4{};
   s.lateral_total0 = Vec4{};
   s.lateral_total1 = Vec4{};
   for (u32 i = 0; i < k_formation_max_beds; ++i)
     s.beds[i] = blank;
+  for (u32 j = 0; j < k_formation_slices; ++j)
+    s.slices[j] = 0;
+}
+
+// **A table's slice index** (T94; "The slice index", above), from the table as the shader reads
+// it: the f32 starts and amplitudes widened, so the bounds are of the numbers the search compares.
+// Slice j is the coordinates [j h, (j + 1) h), h the period over `k_formation_slices`, widened by a
+// margin either way — a millimetre and 2^-18 of the period, 32 times the float's step at the
+// period's far end — because the shader picks the slice from a float product. Its word is the last
+// bed whose base is at or under the slice's lower edge wherever the tops stand (bed 0 for want of
+// one: its base is the period's start and never moves), and the count from there to the last bed
+// whose base can be at or under the upper edge. The bounds rise with the bed (tops never cross)
+// and the edges with the slice, so both are one walk through the table; a pinched lens's base can
+// sit a float's step under its neighbour's, which the margin covers thirty times over.
+inline void pack_formation_index(FormationSequence& s) {
+  s.slices_per_m = 0.0f;
+  for (u32 j = 0; j < k_formation_slices; ++j)
+    s.slices[j] = 0;
+  if (s.count == 0 || s.period_mm == 0) return;
+  const f64 period = static_cast<f64>(s.period_m);
+  s.slices_per_m = static_cast<f32>(static_cast<f64>(k_formation_slices) / period);
+  const f64 h = period / static_cast<f64>(k_formation_slices);
+  const f64 margin = 0.001 + period / 262144.0;
+  const auto low = [&s](u32 i) {
+    const FormationBedGpu& b = s.beds[i];
+    const f64 a0 = static_cast<f64>(b.base_amp_m[0]), a1 = static_cast<f64>(b.base_amp_m[1]);
+    return static_cast<f64>(b.start_m) + (a0 < 0.0 ? a0 : 0.0) + (a1 < 0.0 ? a1 : 0.0);
+  };
+  const auto high = [&s](u32 i) {
+    const FormationBedGpu& b = s.beds[i];
+    const f64 a0 = static_cast<f64>(b.base_amp_m[0]), a1 = static_cast<f64>(b.base_amp_m[1]);
+    return static_cast<f64>(b.start_m) + (a0 > 0.0 ? a0 : 0.0) + (a1 > 0.0 ? a1 : 0.0);
+  };
+  u32 first = 0, last = 0;
+  for (u32 j = 0; j < k_formation_slices; ++j) {
+    const f64 lower = static_cast<f64>(j) * h - margin;
+    const f64 upper = static_cast<f64>(j + 1) * h + margin;
+    while (first + 1 < s.count && high(first + 1) <= lower)
+      ++first;
+    while (last + 1 < s.count && low(last + 1) <= upper)
+      ++last;
+    if (last < first) last = first;
+    s.slices[j] = first | ((last - first + 1) << 16);
+  }
 }
 
 // **How far a top travels** (the top between bed i and bed i + 1 of a plan's first `count` beds):
@@ -541,6 +612,7 @@ inline void pack_formation_table(const Vector<FormationBedPlan>& plan, u64 seed,
   }
   out.lateral_total0 = to_vec4(lateral[0]);
   out.lateral_total1 = to_vec4(lateral[1]);
+  pack_formation_index(out);
 }
 
 // W85's name for packing an authored sequence, kept for its callers: the beds as written, the
@@ -615,7 +687,7 @@ inline bool pack_formation_head(const scene::Formation& f, FormationHead& out,
   out.fold_amp_m[0] = out.fold_mm[0] != 0 ? f.fold_amplitude_m : 0.0f;
   out.fold_amp_m[1] = out.fold_mm[1] != 0 ? f.fold2_amplitude_m : 0.0f;
   out.soft_m = f.soft_m;
-  out.flags = k_formation_valid;
+  out.flags = k_formation_valid | (f.members.empty() ? 0u : k_formation_drawn);
   // The lateral fields, only when a top moves: the strike is the dip direction turned a quarter
   // (-sin az, 0, cos az), and each field runs along it turned a little further its own way.
   const bool moves = formation_plan_moves(beds, formation_table_seed(f, 0)) ||
@@ -712,7 +784,7 @@ inline FormationFrame formation_frame(const FormationParams& p) {
 // **The frame-only pack** (T94): a scene's formation straight into the frame the twin's
 // `formation_coordinate` and `formation_lateral` read, with no block. What a solver that asks only
 // where the beds stand wants (rocks' `make_fabric`, a cave plan, a ledge's frame): the whole block
-// is 98,624 bytes, and a caller that declared one to read its head put that on its stack. The same
+// is 106,816 bytes, and a caller that declared one to read its head put that on its stack. The same
 // frame, to the bit, as `formation_frame` of the packed block (`formation_tests.cpp`, "the
 // frame-only pack"). False with `pack_formation`'s sentence, and `out` untouched, when the
 // formation does not pack.
@@ -799,9 +871,16 @@ inline f64 formation_base(const FormationSequence& s, u32 i, const FormationLate
   return static_cast<f64>(b.start_m) + static_cast<f64>(b.base_amp_m[0]) * g.g[0] +
          static_cast<f64>(b.base_amp_m[1]) * g.g[1];
 }
-// The bed whose base is the last at or under y: the shader's binary search, step for step.
+// The bed whose base is the last at or under y: the shader's lookup, step for step — y's slice of
+// the period, the run of beds its word names ("The slice index"), a binary search over the run.
+// The same bed as a search over the whole table (`formation_tests.cpp`, "the slice index").
 inline u32 formation_find(const FormationSequence& s, f64 y, const FormationLateral& g) {
-  u32 lo = 0, hi = s.count;
+  const f64 scaled = (y > 0.0 ? y : 0.0) * static_cast<f64>(s.slices_per_m);
+  const u32 slice = scaled < static_cast<f64>(k_formation_slices - 1) ? static_cast<u32>(scaled)
+                                                                      : k_formation_slices - 1;
+  const u32 word = s.slices[slice];
+  u32 lo = word & 0xFFFFu, hi = lo + (word >> 16);
+  if (word == 0) hi = s.count;  // a sequence filled by hand, with no index: the whole table
   while (hi - lo > 1) {
     const u32 mid = (lo + hi) >> 1;
     if (y >= formation_base(s, mid, g))
@@ -875,7 +954,10 @@ inline void formation_integral(const FormationSequence& s, f64 x, f64 out[4]) {
 
 // formation.slang's `formation_filtered`: the sequence's value averaged over `width` metres of
 // coordinate about `coordinate` (a box), the point's own value below a micrometre. A width over a
-// period tends to the sequence's mean, which is what a band far away should read as.
+// period tends to the sequence's mean, which is what a band far away should read as. This is the
+// definition: the two integrals' difference, always. The shader returns the bed's value outright
+// where the box lies inside one bed of one period (T94) — the same number to rounding, and most
+// pixels of a near face — and differences the integrals as here everywhere else.
 inline Vec4 formation_filtered(const FormationSequence& s, f64 coordinate, f64 width,
                                const FormationLateral& g) {
   if (s.count == 0) return Vec4{1.0f, 1.0f, 1.0f, 0.0f};

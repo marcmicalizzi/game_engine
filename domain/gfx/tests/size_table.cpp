@@ -355,17 +355,25 @@ static_assert(offsetof(gfx::TerrainRecord, formation) == 80);
 // pad); a table from 8 beds to 512 because the sequence is drawn from a seed and must not repeat
 // inside a hillside's section. The integrals stay per bed, so the box filter is still two lookups
 // rather than a loop over the beds it spans.
+//
+// T94: a table grew by its slice index, 1,024 words (4,096 bytes), and the block from 98,624 to
+// 106,816 bytes. The index is what a lookup reads first: one word naming the run of beds a
+// coordinate's slice of the period can be in, so the search is a step or two over that run where
+// it was nine dependent loads over the table, four times a banded pixel (renderer.md, "Formation
+// bands"). The head word that was a pad is the slices per metre.
 ENGINE_EXPECT_SIZE(96, 4, gfx::FormationBedGpu);
-ENGINE_EXPECT_SIZE(49216, 4, gfx::FormationSequence);
+ENGINE_EXPECT_SIZE(53312, 4, gfx::FormationSequence);
 ENGINE_EXPECT_SIZE(32, 8, gfx::FormationLateralGpu);
-ENGINE_EXPECT_SIZE(98624, 8, gfx::FormationParams);
+ENGINE_EXPECT_SIZE(106816, 8, gfx::FormationParams);
 static_assert(offsetof(gfx::FormationParams, lateral) == 96);
 static_assert(offsetof(gfx::FormationParams, fault_q) == 160);
 static_assert(offsetof(gfx::FormationParams, beds) == 192);
-static_assert(offsetof(gfx::FormationParams, macro) == 49408);
+static_assert(offsetof(gfx::FormationParams, macro) == 53504);
+static_assert(offsetof(gfx::FormationSequence, slices_per_m) == 12);
+static_assert(offsetof(gfx::FormationSequence, slices) == 49216);
 // T94: the block's head alone, and the frame the f64 twin reads. A caller that wants where the beds
 // stand and no bed (rocks' make_fabric, a cave plan, a ledge's frame) packs these 192 bytes into a
-// 208-byte frame (`pack_formation_frame`) where it declared the 98,624-byte block on its stack.
+// 208-byte frame (`pack_formation_frame`) where it declared the whole block on its stack.
 ENGINE_EXPECT_SIZE(192, 8, gfx::FormationHead);
 static_assert(offsetof(gfx::FormationHead, lateral) == 96);
 static_assert(offsetof(gfx::FormationHead, fault_q) == 160);
