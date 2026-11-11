@@ -683,8 +683,9 @@ TEST_CASE("water: a crest that crosses a bay's depth contours turns no corner") 
     const f64 fx = px + 64.0, fz = pz + 64.0;
     const u32 i = static_cast<u32>(std::floor(fx)), j = static_cast<u32>(std::floor(fz));
     const f64 u = fx - i, w = fz - j;
-    const f64 a = arrival[j * n + i], b = arrival[j * n + i + 1];
-    const f64 c = arrival[(j + 1) * n + i], d = arrival[(j + 1) * n + i + 1];
+    const auto tau = [&](u32 at) { return static_cast<f64>(arrival[at]); };
+    const f64 a = tau(j * n + i), b = tau(j * n + i + 1);
+    const f64 c = tau((j + 1) * n + i), d = tau((j + 1) * n + i + 1);
     gx = (b - a) + ((d - c) - (b - a)) * w;
     gz = (c - a) + ((d - b) - (c - a)) * u;
   };
@@ -694,13 +695,12 @@ TEST_CASE("water: a crest that crosses a bay's depth contours turns no corner") 
     for (u32 i = 30; i < 99; ++i) {
       const f64 r = std::hypot(static_cast<f64>(i) - 64.0, static_cast<f64>(j) - 64.0);
       if (r < 25.5 || r > 28.5) continue;
-      const f64 c = arrival[j * n + i];
-      second =
-          std::max(second, std::fabs(arrival[j * n + i + 1] - 2.0 * c + arrival[j * n + i - 1]));
-      second = std::max(second,
-                        std::fabs(arrival[(j + 1) * n + i] - 2.0 * c + arrival[(j - 1) * n + i]));
-      second = std::max(second, std::fabs(arrival[(j + 1) * n + i + 1] - arrival[(j + 1) * n + i] -
-                                          arrival[j * n + i + 1] + c));
+      const auto tau = [&](u32 at) { return static_cast<f64>(arrival[at]); };
+      const f64 c = tau(j * n + i);
+      second = std::max(second, std::fabs(tau(j * n + i + 1) - 2.0 * c + tau(j * n + i - 1)));
+      second = std::max(second, std::fabs(tau((j + 1) * n + i) - 2.0 * c + tau((j - 1) * n + i)));
+      second = std::max(second, std::fabs(tau((j + 1) * n + i + 1) - tau((j + 1) * n + i) -
+                                          tau(j * n + i + 1) + c));
     }
   // The contour 0.2 m deep: inshore of the train's source (1 / k0 = 0.36 m deep, 24.6 m out), where
   // the depth governs.
