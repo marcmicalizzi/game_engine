@@ -1547,8 +1547,8 @@ views — W85's tree (44c80a0a, its own shader), W94's (b8eb339a) and T94's — 
 copied out of its build, the same three scenes (the escarpment's ridge as one rock layer: W85's
 authored fixture, W94's drawn section of eight members with its fault, and the layer with no
 formation at all), RTX 5090, 1920 × 1080, `--raster hw --shadows csm --sun 120,35`, the resolve
-pass's GPU milliseconds, the median of 164 frames a held pose (two flights), two runs agreeing to
-0.005 ms. Every run under the GPU lock, and every run's `machine_state` the same: other processes
+pass's GPU milliseconds, the median of 164 frames a held pose (two flights), runs minutes apart
+agreeing to 0.002 ms and runs an hour apart to 0.008. Every run under the GPU lock, and every run's `machine_state` the same: other processes
 at 90 to 100% of the CPU (other agents' builds), the GPU 3 to 80% busy at the sample before the
 flight, so these are upper bounds:
 
@@ -1563,11 +1563,12 @@ flight, so these are upper bounds:
 | T94, the drawn formation | **0.590** | 0.168 | **0.566** |
 | T94, no formation | **0.494** | 0.138 | 0.477 |
 
-So the drawn formation is **at W85's own cost at 50 m and in the valley to within the runs'
-spread, and 0.005 ms over at 500 m**: flown again one after the other in one lease, W85's tree
-gave 0.590, 0.163 and 0.565 and T94's drawn formation 0.590, 0.168 and 0.566, and the same shader
-a quarter of an hour earlier 0.587, 0.168 and 0.558 — a spread of 0.003 to 0.008 between runs,
-which is the size of every difference left, so "under" is not claimed. A banded pixel pays
+So the drawn formation is **within 0.001 ms of W85's own cost at 50 m, 0.003 in the valley and
+0.005 at 500 m — over it, not under**. The table's rows were flown over two hours and differ by
+up to 0.008 ms from one hour to the next, so the three binaries were flown again one after the
+other, three times, each sample a lease of its own (CPU 32 to 55% busy with others' work): W85's
+tree gave 0.588, 0.162 and 0.561 (each within 0.001 across the three samples), W94's drawn
+formation 0.822, 0.225 and 0.765, and T94's drawn formation 0.589, 0.167 and 0.564. A banded pixel pays
 0.096 ms a frame for the drawn formation at 50 m where W85's eight authored beds cost 0.093 and
 W94's drawn section 0.33; and **a scene with no formation is 0.085 ms cheaper than W94 left it**,
 which nobody had measured. What took it out, at 50 m on the drawn scene, in the order it was done
