@@ -151,6 +151,10 @@ TEST_CASE("matgen: a bed's grid count reads the stated distribution, over seeds"
     matgen::Set clean = set;
     clean.granular.buried_permille = 0;
     CHECK(build(clean).stats.clast_cover > 0.75);
+    // The default (embedded) bed keeps a floor on its cover too. A floor from measurement, not
+    // from a source: at 512 texels its cover read 0.7458, 0.7386, 0.7454, 0.7407 and 0.7404 over
+    // seeds 11 to 55 (k_matgen_version 2); the floor is the smallest less 0.03.
+    CHECK(b.stats.clast_cover > 0.708);
   }
   const f64 count = static_cast<f64>(std::size(seeds));
   CHECK(sum50 / count == doctest::Approx(d50).epsilon(0.12));
