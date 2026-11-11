@@ -230,8 +230,9 @@ TEST_CASE("deposits: mesh identity and cluster container are deterministic") {
   // k_deposit_version 3 and the normals (G143, stage 2; was 14163044981722319397), then the
   // fragments' rungs (stage 3; was 13439161428700819251), then for the patch's border locked in
   // its cluster DAG (G143's third pass; was 7929702402516820737), then for the rubble and
-  // k_deposit_version 4 (was 1421504051895875902).
-  CHECK(geometry::cluster_file_hash(a) == 13829166473420471729ull);
+  // k_deposit_version 4 (was 1421504051895875902), then 5 for the toe's clasts kept off the face
+  // (was 13829166473420471729).
+  CHECK(geometry::cluster_file_hash(a) == 10478160828047604680ull);
   CHECK(geometry::cluster_file_hash(a) == geometry::cluster_file_hash(b));
   CHECK(a.source_hash == deposit_source_hash(p));
   CHECK(a.source_hash == b.source_hash);
