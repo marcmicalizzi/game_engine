@@ -439,6 +439,53 @@ Add-Content -LiteralPath '$order' -Value 'doomed'
     Test-That 'a waiting build said who held the lock and where it stood' {
       (Get-Content -LiteralPath "$p.build3.log" -Raw) -match "linux-build: waiting; held by 'claude-engine': held by a test \(until .+\); this ask is behind 2 of the 3 in the line, first 'claude-engine' \(pid $($builds[0].Id)\)"
     }
+
+    # A build that ends and asks again (an agent's second preset) goes behind the build that was
+    # waiting: one process runs the script twice, a second arrives during its first hold.
+    $p = New-LockPath
+    $env:ENGINE_LINUX_BUILD_LOCK = $p
+    $sw = [Diagnostics.Stopwatch]::StartNew()
+    [IO.File]::WriteAllText("$p.twice.ps1", "& '$build' -LockOnly 3`n& '$build' -LockOnly 0.3`n")
+    $twice = Start-Process pwsh -PassThru -NoNewWindow -RedirectStandardOutput "$p.twice.log" -RedirectStandardError "$p.twice.log.err" `
+      -ArgumentList @('-NoProfile', '-File', "`"$p.twice.ps1`"")
+    $until = [DateTime]::UtcNow.AddSeconds(60)
+    while (-not (Read-MachineLock -Path $p).Readable -and [DateTime]::UtcNow -lt $until) { Start-Sleep -Milliseconds 20 }
+    $other = Start-Build 0.3 "$p.other.log"
+    $served = New-Object System.Collections.Generic.List[long]
+    $until = [DateTime]::UtcNow.AddSeconds(120)
+    while (-not ($twice.HasExited -and $other.HasExited) -and [DateTime]::UtcNow -lt $until) {
+      $held = Read-MachineLock -Path $p
+      if ($held.Readable -and ($served.Count -eq 0 -or $served[$served.Count - 1] -ne $held.Pid)) { $served.Add($held.Pid) }
+      Start-Sleep -Milliseconds 20
+    }
+    Test-That "a build that releases and asks again is served after the build that was waiting ($([int]$sw.Elapsed.TotalSeconds) s)" {
+      ($served -join '|') -eq "$($twice.Id)|$($other.Id)|$($twice.Id)" -and -not (Test-Path -LiteralPath $p)
+    }
+
+    # A waiting build whose script is killed (a tool timeout: no finally runs) leaves a ticket
+    # nobody refreshes. The script has no knob for the ticket's lease, so this is the one case in
+    # the tree that waits out the real one: 30 s, counted in whole seconds, and a look. Each of
+    # those seconds is the bound being shown; the other cases use a three-second ticket.
+    $p = New-LockPath
+    $env:ENGINE_LINUX_BUILD_LOCK = $p
+    Write-Lock $p 'claude-engine' 30
+    $doomed = Start-Build 60 "$p.doomed.log"
+    $one = Wait-Line $p 1
+    $behind = Start-Build 0.3 "$p.behind.log"
+    $two = Wait-Line $p 2
+    Stop-Process -Id $doomed.Id -Force
+    $doomed.WaitForExit(30000) | Out-Null
+    $sw = [Diagnostics.Stopwatch]::StartNew()
+    Remove-Item -LiteralPath $p -Force
+    $took = $null
+    $until = [DateTime]::UtcNow.AddSeconds(90)
+    while ($null -eq $took -and [DateTime]::UtcNow -lt $until) {
+      if ((Read-MachineLock -Path $p).Pid -eq $behind.Id) { $took = $sw.Elapsed.TotalSeconds } else { Start-Sleep -Milliseconds 50 }
+    }
+    $behind.WaitForExit(60000) | Out-Null
+    Test-That ("a waiting build that is killed holds the build behind it for its ticket's lease and no longer ({0:N1} s after the lock was free; the bound is 32 s)" -f $took) {
+      $one -and $two -and $null -ne $took -and $took -lt 32 + 5 -and $took -gt 5 -and $behind.HasExited -and -not (Test-Path -LiteralPath $p)
+    }
   } finally {
     $env:ENGINE_LINUX_BUILD_LOCK = $buildLockBefore
   }} finally {
