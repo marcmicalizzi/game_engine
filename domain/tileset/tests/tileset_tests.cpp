@@ -616,6 +616,34 @@ TEST_CASE("tileset: a fixed footprint reads the same bounded data as source exte
   }
 }
 
+TEST_CASE("tileset: the host's derived-data root is the provider's, over the block's") {
+  // T90 (tileset.md, the provider's section): `Context::ddc` before the block's `ddc`, as
+  // `resolve_tile_set` takes a root it is handed first. Before, the provider passed none on.
+  test::TempDir tmp{"engine_tileset_provider_root"};
+  const Heightfield field = synth_heightfield(SynthKind::basin, 17, 1000);
+  std::string error;
+  REQUIRE_MESSAGE(write_heightfield(tmp.file("bowl.json"), field, error), error);
+  scene::Terrain entry;
+  entry.provider = "tiles";
+  entry.tiles = scene::TerrainTileSet{};
+  entry.tiles->heightfield = "bowl.json";
+  entry.tiles->ddc = "block";
+  entry.tiles->cells = 8;
+  entry.tiles->far_levels = 1;
+  scene_gen::Context context;
+  const std::string dir = tmp.path();
+  const std::string root = tmp.file("host");
+  context.dir = dir;
+  context.ddc = root;
+  const scene_gen::GroundProviderDesc* desc =
+      scene_gen::GeneratorRegistry::global().find_ground("tiles");
+  REQUIRE(desc != nullptr);
+  scene_gen::GroundProvider ground;
+  REQUIRE_MESSAGE(desc->make(entry, context, ground, &error), error);
+  CHECK(io::exists(io::join_path(root, "tilesets")));
+  CHECK_FALSE(io::exists(tmp.file("block")));
+}
+
 TEST_CASE("tileset: a terrain naming a heightfield builds its set through the cache on a miss") {
   test::TempDir tmp{"engine_tileset_provider_build"};
   const Heightfield field = synth_heightfield(SynthKind::basin, 49, 1000);
