@@ -1430,9 +1430,10 @@ far away at 4K); and the decoded path's capture is byte-identical to the parent 
 (`engine.scene.Formation`, `Scene` version 10) is one set of beds through the world: an origin, a
 dip and an azimuth (rocks' convention: the beds go down along (cos az, 0, sin az)), up to two
 cylindrical folds — the beds displaced along their normal by A sin(2π u / L), u the distance along
-the dip direction, so the hinges run along the strike — a **bed sequence** of up to eight beds
-(each a thickness, a tint, a roughness offset and a resistance) and a **macro sequence** of up to
-eight more at tens of metres, both repeating along the folded coordinate. A terrain layer opts in
+the dip direction, so the hinges run along the strike — a **bed sequence** of up to 512 beds
+(each a thickness, a tint, a roughness offset and a resistance; eight until W94, which also draws
+them from a seed and a list of members, below) and a **macro sequence** of members
+at tens of metres, both repeating along the folded coordinate. A terrain layer opts in
 with `formation: true` (`TerrainMaterialLayer` version 5; refused without a field): its sampled
 colour is multiplied by the bed's tint and the macro bed's, and their roughness offsets are added.
 So a band follows the ground's form — on a slope it is the line where the slope cuts a dipping,
@@ -1440,7 +1441,7 @@ folded plane, never a line on the screen or a contour — and a band on a steep 
 the bed is, which no plan-view mask could hold.
 
 **The flag, the address and the one block.** The layer's flag is `k_material_terrain_formation`,
-bit 18 of `ResolveMaterial::flags` (R131 took 17). The field is one 928-byte
+bit 18 of `ResolveMaterial::flags` (R131 took 17). The field is one 98,624-byte (W94; 928 before)
 `gfx::FormationParams` block (`domain/gfx/formation.h`, pinned by the size table, mirrored once in
 `formation.slang`), uploaded at scene load only when a layer asks for it, and named by
 `TerrainRecord::formation`, a device address in two of the eight pad words the terrain's record
@@ -1470,6 +1471,35 @@ with a one-pixel box, kept a two-pixel period alternating row by row — from th
 rays carry no footprint, draws `soft_m`. `domain/gfx/formation.h` holds the f64 twin of all three,
 which the rocks solver calls, and `formation_tests.cpp` holds the shader to it over a lattice round
 the origin and 10 km and 10,000 km out.
+
+**The sequence is drawn, and a bed's top moves** (roadmap W94, 2026-11-10; the grounding:
+[formation sequence](../experiments/formation-sequence.md)). `Formation` version 2 takes `members`
+and a `seed` in place of authored `beds`: each member (a thickness, `resistant` its share of
+resistant beds, a median bed and a log deviation) is an embedded chain of a resistant and a
+recessive lithology with lognormal thicknesses, drawn by `gfx::generate_formation` in whole
+millimetres, integer hashes and `det::exp`, on the CPU at pack time. The members are the macro
+sequence, so both tables have one period, the members' whole thickness: a section repeats after
+hundreds of metres, not every few. **The table is the definition**: 512 beds of 96 bytes a
+sequence (W85: 8 of 48), read by the shader and the twin alike, found by a **binary search** — nine
+steps, where eight beds took seven of a linear one, so the lookup's steps are what they were. The
+integral a bed carries is of the value **less the sequence's mean**, a bounded walk where the plain
+integral grew with the section, so a 4 mm box across a contact is exact to 1e-4 over a kilometre of
+beds (W85's form: 2e-3 over 128 m). An authored `beds` and `macro_beds` still packs to the table
+W85 packed and filters to the same value (`formation_tests.cpp`, "an authored sequence").
+**Variation along strike**: bed i's base stands at `start_m + dot(base_amp_m, g)`, g two lateral
+fields in [0, 1] at the point — value noise on a whole-millimetre lattice of `lateral_m` and 2.618
+times it, each along its own horizontal direction 35 and 50 degrees off the strike, the lattice's
+values from one 32-bit hash both sides compute, sharpened so a top rests at each end of its travel.
+A top's amplitude is whole millimetres, under 0.45 of the thinner bed it parts, so tops never
+cross; a **lens** is a bed whose top comes down its whole thickness, which pinches it out exactly
+where its field is one. The filter is still two lookups: each bed carries, per field, the prefix sum
+of `amplitude * (value below - value above)` over the tops under it, which is exactly what moving
+the tops adds to the integral. A **fault** is a vertical plane beyond which the coordinate is a
+throw greater, added in whole millimetres before the reduction. The first and last top of a sequence
+and every member's top do not move, so the period — and the precision argument below — is the same
+everywhere. The block is **98,624 bytes** a scene, uploaded as it was (one `upload_buffer` of the
+packed block); a pixel pays the two lateral fields (two int64 remainders, four hashes) and the fault's
+sign once, and nothing more per lookup than two multiplies a step.
 
 **Why the precision holds at 10 km — and at 10,000.** No absolute position is formed
 (ADR-0053). The shader has the frame's eye cell and a float offset from its corner; the field's
