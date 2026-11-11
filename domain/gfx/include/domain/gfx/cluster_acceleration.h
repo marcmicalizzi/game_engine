@@ -53,11 +53,12 @@ struct ClusterSetLimits {
   bool opacity_micromaps = false;
   // The most triangles and vertices one build's clusters hold **together**, or 0 for every cluster
   // at its own most (`max_clusters` times the two above), which is what every set here is created
-  // with. The driver sizes an implicit set by these totals as well as by the count (R143 measured
-  // it: `cluster set: what a set reserves follows its totals`), so a set whose builds are known to
-  // stay under smaller totals reserves less — and a build that passes them is undefined, which is
-  // why nothing per frame names them yet (renderer.md, "The bottom-level build is over what the
-  // frame drew", the page's measurement has the proposal).
+  // with. **Naming smaller totals buys nothing on the RTX 5090's driver** (R143 asked, because a
+  // forest's clusters hold a quarter of the triangles a set reserves for: `cluster set: what a set
+  // reserves does not follow its totals` prints 6,144 bytes a cluster, 8,832 with micromaps, at a
+  // half and a quarter of either total as at the whole), and a build that passed them would be
+  // undefined; so nothing here names them, and the test is there to say when a driver starts to
+  // (docs/experiments/rt-small-instances-2026-11-10.md).
   u32 max_total_triangles = 0;
   u32 max_total_vertices = 0;
 };

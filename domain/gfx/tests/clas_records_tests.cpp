@@ -1077,15 +1077,17 @@ TEST_CASE("clas records: on a traced picture every drawn structure is kept befor
   device.destroy();
 }
 
-TEST_CASE("cluster set: what a set reserves follows its totals") {
+TEST_CASE("cluster set: what a set reserves does not follow its totals") {
   // **What the frame's own set reserves** (R143; docs/experiments/rt-small-instances-2026-11-10.md,
   // "What a structure of the frame's own set reserves"). Every set here is created for clusters of
   // 124 triangles and 64 vertices each, and a forest's clusters average a quarter of those
   // triangles: its leaves are cards, four vertices to two triangles, so a cluster is full at 64
   // vertices and about 30 triangles. The size query takes the totals as well as the count
-  // (`ClusterSetLimits::max_total_*`); this says what the driver does with them, so that a set
-  // sized by the triangles its frames build — and a drop rule that holds a frame to them — can be
-  // costed. No number is pinned: it is the driver's.
+  // (`ClusterSetLimits::max_total_*`); this says what the driver does with them. On the RTX 5090
+  // at driver 610 it does nothing: 6,144 bytes a cluster, 8,832 with micromaps, at a half and a
+  // quarter of either total as at the whole, so a set sized by the triangles its frames build
+  // would reserve what it reserves now. No number is pinned — it is the driver's — and the one
+  // thing held is that fewer never reserve more; the messages say when a driver starts to follow.
   gfx::Device device;
   if (!gfx_test::open_device(device)) return;
   gfx::ClusterAsProperties props;
@@ -1113,9 +1115,10 @@ TEST_CASE("cluster set: what a set reserves follows its totals") {
           continue;
         }
         if (quarter == 4) full = sizes.data_bytes;
-        MESSAGE((micromaps ? "with micromaps, " : "plain, ")
-                << quarter << "/4 of the triangles" << (vertices_too ? " and of the vertices" : "")
-                << ": " << sizes.data_bytes / k_clusters << " bytes a cluster of storage, "
+        MESSAGE(std::string(micromaps ? "with micromaps, " : "plain, ")
+                << quarter << "/4 of the triangles"
+                << std::string(vertices_too ? " and of the vertices" : "") << ": "
+                << sizes.data_bytes / k_clusters << " bytes a cluster of storage, "
                 << sizes.scratch_bytes / k_clusters << " of scratch");
         CHECK(sizes.data_bytes <= full);  // fewer triangles never reserve more
       }

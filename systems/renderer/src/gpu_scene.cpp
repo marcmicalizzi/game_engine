@@ -6533,6 +6533,8 @@ void GpuScene::destroy() noexcept {
   gfx::destroy_buffer(device, rt_scratch);
   gfx::destroy_buffer(device, rt_instances);
   gfx::destroy_buffer(device, blas_records);
+  gfx::destroy_buffer(device, blas_dense);
+  gfx::destroy_buffer(device, blas_slots);
   gfx::destroy_buffer(device, instance_counts);
   gfx::destroy_buffer(device, slots);
   gfx::destroy_buffer(device, record_count);

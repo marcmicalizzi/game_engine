@@ -104,11 +104,92 @@ the build is handed, about 10 ns each — as v18's 70,000 slots at 0.75 ms and v
 
 ### The pairs, before and after
 
-RESULTS-TABLE
+One path — the `v40-flood-bed` view held 1.5 s (the frame that dropped 1,491), a cut to the
+`v40-wall-south-meadow` view held 2 s, then a walk across the wall, 817 frames — flown once by each
+executable in **one lease a resolution, the after run first and the base run straight after it**,
+`--raster rt --shadows rt`, the bounce, `--rt-budget-mib 1024`. Both runs of a pair draw the same
+frames: the same `rt_wanted` and `rt_references` on every frame, the same 173 (1080p) and 346
+(4K) frames past the capacity.
+
+| | 1920×1080 before | after | 3840×2160 before | after |
+|---|---:|---:|---:|---:|
+| `blas`, median / p99 (ms) | 1.927 / 2.196 | **0.380 / 0.451** | 1.700 / 1.867 | **0.385 / 0.446** |
+| `rt`, the whole chain, median / p99 (ms) | 4.823 / 5.998 | **3.255 / 4.705** | 4.847 / 5.679 | **3.508 / 4.244** |
+| `clas`, median (ms) | 1.849 | 1.860 | 2.291 | 2.274 |
+| GPU frame, median (ms) | 12.526 | **10.995** | 23.779 | **22.398** |
+| frame time, median (ms) | 12.72 | 11.31 | 23.95 | 22.69 |
+| bottom-level structures a frame (`blas_built`, the last frame / the most) | every slot: 292,864 | 17,783 / 24,272 | every slot: 252,928 | 13,130 / 21,574 |
+| the chain's bytes (`rt_bytes`) | 4,726 MiB | **2,956 MiB** | 4,574 MiB | **2,856 MiB** |
+| of them the rigid forms | 2,157 MiB | 382 MiB | 2,080 MiB | 357 MiB |
+| the process's device memory | 16,040 MiB | 14,251 MiB | 15,912 MiB | 14,190 MiB |
+| frames past the capacity (of 817) | 173 | 173 | 346 | 346 |
+| drawn instances that lost their structures, summed over those frames | 1,788,147 | **620,780** | 2,327,443 | **1,326,880** |
+| instances that lost only their casters, summed | 22 | 11,988 | 62,901 | 94,681 |
+| the first frame past the capacity (the flood bed, held) | 11,549 drawn instances dropped | **none**; 67 lost their casters | 10,409 drawn, 688 casters | **none**; 820 casters |
+| the warning | `capacity=117271 limit=117271` | `bound=budget unit="cluster structures"` … `drawn_first=true` | | |
+
+Machine: other processes held 21 to 75% of the CPU at the runs' ends and starts and 21.6 to 23.4 GB
+of the card (the summaries have each run's `machine_state`), so each figure is an upper bound and
+the pair is the measurement. The base run's `blas` is 1.9 ms where the first base flight of the
+night measured 2.17 because the table held 292,864 slots against fewer live ones; it is flat in
+both.
+
+**The frame's own structures past a 1,024 MiB budget are not only casters.** At the flood bed, held,
+the frame wants 130,476 against 117,271 and every drawn structure fits once the casters go last:
+no instance is missing from the traced picture, where main dropped 11,549 (in the marker capture,
+a frame drawn while somebody waits, 137 instances and 310 pixels of 2,073,600 that main's picture
+lacks; the wall view's capture is the same picture word for word). But the frames after the cut
+— the old place's inner ring still resident and swaying while the new one streams in, up to 229,002
+structures wanted at 1920×1080 and 336,497 at 3840×2160 — want more *drawn* structures than the
+budget holds, and there drawn instances are still dropped, farthest first: a third of main's at
+1080p, 57% of main's at 4K. **At 1,024 MiB this world does not fit at 3840×2160**: the median frame
+of the walk wants 111,807 of 117,271 and one frame in twenty wants 298,560.
+
+**At the device's own budget nothing is dropped, before or after.** The owner's v38 log shows his
+walk under the device's rule (`limit=338072`: 2,952 MiB with micromaps on this card), not under the
+1,024 MiB the proof of concept's launcher names. The same 817 frames at 3840×2160 with no budget
+named, after then before in one lease (2026-11-11 08:13, the debug test suites of this row waiting
+on the same lock, other load light):
+
+| 3840×2160, the device's budget (338,072) | before | after |
+|---|---:|---:|
+| frames past the capacity | 0 | 0 |
+| instances dropped, drawn or casters | 0 | 0 |
+| the most a frame wanted | 336,497 | 336,497 |
+| capacity at the end / the most held | 172,032 / 338,072 | 172,032 / 338,072 |
+| the chain's bytes at the end / at their most | 5,013 / 6,559 MiB | **3,296 / 4,842 MiB** |
+| cache misses the frame built itself (the run) | 924,329 | 924,329 |
+
+So on this path the answer to "does a drawn instance lose its structure at the owner's settings"
+is no, on main as well — with 0.5% to spare in the frames after the cut, which is no margin: the
+frame that wanted 336,497 holds 67,602 misses of a cache of 60,074 slots that the frame's own set
+had to build. The owner's 320 were a growth in flight (`bound=capacity`), which this row names and
+does not prevent; the three things that would are in "Rows this leaves" of the hand-back: the
+resident cache's slots at the size their structures are (six times the slots in the same bytes,
+by the forms' measure above), the frame's own set built into packed storage or at a lower
+per-cluster most (below: naming the frame's triangles does not shrink it), and the growth
+allocated ahead on a worker (R128's note).
 
 ### The rigid forms at the size they are
 
-STATIC-TABLE
+| v40 | forms | clusters | reserved at the driver's most (cluster storage) | held, packed (clusters, addresses, sizes and the bottom-level set) |
+|---|---:|---:|---:|---:|
+| 1920×1080 | 4,698 | 250,832 | 2,113 MiB (8,832 bytes a cluster) | **382 MiB** (1,598 bytes a cluster, all of it) |
+| 3840×2160 | 3,898 | 241,894 | 2,037 MiB | **357 MiB** |
+
+A form's cluster occupies about a sixth of what an implicit build reserves for it — the same
+finding as `vk_lod_clusters`' "3-5x bigger than actual", further out because these are leaf cards
+of two dozen triangles in a slot sized for 124. 1.7 GB of device memory returned on this world,
+for two more blocking submissions at load (the sizes pass and the explicit build; the load's
+"static ray tracing structures" stage). The traced picture is the same: `engine-view: a rigid
+form's structures built once trace the per-frame build's bytes` reports 0 pixels differing from the
+per-frame build of the same cut, on the packed structures.
+
+**A defect found on the way.** The first packed build lost the device in its first frames, on the
+forest and on that test: the command's info was made inside a lambda whose local triangle input the
+info points at (`opInput.pTriangleClusters`), so the driver read a dead stack frame.
+`create_packed_cluster_templates` had the same shape since it was written and had not failed; both
+keep the input outside the lambda now.
 
 ## What a structure of the frame's own set reserves
 
@@ -118,10 +199,23 @@ micromaps. A forest's clusters are not that: `birch-0` is 217,742 triangles in 7
 cluster), `spruce-0` 21,950 in 533 (41), a sward patch 960 in 71 (14) — leaves are cards, four
 vertices to two triangles, so a cluster is full at 64 vertices and about 30 triangles. The size
 query takes the build's total triangles and vertices as well as its cluster count
-(`ClusterSetLimits::max_total_triangles`, `max_total_vertices`, new and unused by the renderer);
-`cluster set: what a set reserves follows its totals` prints what the driver does with them:
+(`ClusterSetLimits::max_total_triangles`, `max_total_vertices`, new and unused by the renderer), so
+the question was whether a set sized by the triangles its frames build would reserve less.
+**It would not**: `cluster set: what a set reserves does not follow its totals` asks the driver
+for 65,536 clusters at the whole, a half and a quarter of the triangles, and of the vertices too:
 
-TOTALS-TABLE
+| the totals named | plain | with micromaps |
+|---|---:|---:|
+| every cluster at its most (what every set is created with) | 6,144 bytes a cluster | 8,832 |
+| half the triangles; half of both | 6,144; 6,144 | 8,832; 8,832 |
+| a quarter of the triangles; a quarter of both | 6,144; 6,144 | 8,832; 8,832 |
+
+The reservation is the count times the per-cluster most, whatever the totals say. So the frame's
+own set cannot be made smaller by naming what a forest's clusters hold; what can make it smaller
+is a lower per-cluster most for the sets whose meshes allow one (a set for the instances whose
+meshes' clusters never pass, say, 48 triangles, reserved for that), which is a second set and a
+second capacity, or building it explicitly into packed storage from sizes computed on the device
+in the frame — the same pass the cache's packing needs.
 
 ## The pair space, by category
 
@@ -150,7 +244,25 @@ for 432 triangles: its DAG has that many clusters because the rock generator's s
 small clusters, which a merge by tile would fold away (the solver handoff's "merged, with a far
 form"), but nothing in that returns ring 2. **What holds the pair space is the sward**: a patch is
 71 to 143 clusters at 960 to 1,920 triangles — 14 triangles a cluster, where the format holds 124 —
-and the generators' tiles are two thirds of the cap. PAIRS-4K
+and the generators' tiles are two thirds of the cap (a remainder, not a count: nothing in the
+summaries totals pairs by generator, which is the first thing a row on the pair space should add).
+
+**Why ring 2 at 3840×2160.** The same walk logs 206 withholding lines at 1920×1080, none naming
+ring 2, and 202 at 3840×2160, 36 of them ring 2. The prefix is the same 286,045 pairs at both; what
+grows is the distance forms, whose frontier is cut for the resolution: 93,030 static instances hold
+5,340,366 pairs at 1080p (57 each) and 77,581 hold 6,423,233 at 4K (83 each), a million more pairs
+for fewer instances, and the inner ring's sward and understory come first in the ranking, so the
+tiles that lose their placements are ring 3's and then ring 2's.
+
+**What would return ring 2**, in the order of what it would free: (1) the sward at the cluster
+size the format holds — a patch re-clustered from 14 to 60 triangles a cluster is a quarter of its
+pairs, and the generators' tiles are the largest share; it costs the patches' LOD granularity,
+which a blade field does not use (its levels are whole-patch forms); (2) the forms' frontiers
+held to their frontier (a static form draws only its frontier — 241,894 clusters over 3,898 forms,
+62 a form — while each instance's pair range is its form's whole DAG, 83 pairs an instance on
+average; a pair range of the frontier alone needs nothing of the picture, since a static form draws
+nothing else, but how much of the 6.4 million it frees was not measured here); (3) the stones
+merged by tile, 0.1 million. The cap itself is the owner's and is not part of this.
 
 ## Published practice
 
