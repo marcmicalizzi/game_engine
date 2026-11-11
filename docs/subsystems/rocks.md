@@ -552,12 +552,71 @@ sandstone the lowest tier's red is 0.54 of the next one's ("a tier's rock is the
 cuts"). Within a tier the beds are not told apart; that is the resolve's (a rock material banded
 by the formation, as the ground is).
 
-**What it does not do.** A tier's top is paid at its front's cell though it is in the ground
-(56 % of the escarpment's triangles are on a front, against 70 % for one box). A tier's bottom is
-open: it is under the top of the tier below, which a viewer directly under an overhanging tier
-could look past. The tiers of two blocks meet at the
-same breaks but are seated separately. The unbroken cap along each tier's top, and a face's talus
-by what fell from it, are as they were.
+**A tier over another keeps its bottom** (T101, `Cliff.bottom`). A tier's foot is at the plane
+of the tier under it, and that tier's front is carved back from its plane by its blocks, warp,
+gullies and grain (1.75 m on the mean, over 5 m at worst), so an open bottom hung in front of the
+carved crest and the ground showed through the face from below: the pale wedge of G142c's `foot`
+capture, at a tier seam. On the escarpment scene's layer the open edges of the faces stood up to
+9.2 m over the ground with no other face's rock round them; with the bottom closed (two triangles
+a cell of the line, at the top's coarser cell) none stands more than 0.23 m over it, at the
+recipe's quality and at Low (`tests/cliffs_generator_tests.cpp`, "no face of the escarpment opens
+over the ground"). The lowest tier's bottom is in the ground and stays open. **Its foot's carving
+stays in front of the ground**: a generated lowest tier stands on the ground at its foot with the
+ground rising behind it, so a recess carved in its first metres went behind the ground and the
+ground showed in the face over the talus's gaps (the other pale wedge of that capture); with a
+ground patch, a row whose carved point is under the ground keeps the most of its carving that is
+not (eight halvings against the patch). Seen in the pictures; no case measures it yet.
+
+**What it does not do.** The tiers of two blocks meet at the same breaks but are seated
+separately. The unbroken cap along each tier's top, and a face's talus by what fell from it, are
+as they were. A tier's top and ends are at a coarser cell than its front ([Benches](#benches)):
+75 % of the bedded escarpment's triangles are on a front, against 59 % before.
+
+### Benches
+
+**A bedded tier is a staircase, not a plane** (G172; [grounding](../experiments/exposed-bedrock.md#benches-on-a-bedded-face)).
+A generated face whose layer carries a formation bedded at 20° or less is written with `benches`,
+and the solver draws each station's column as the beds' profile (`src/cliff_benches.*`): a
+resistant member (resistance 0.5 or more) stands as a **riser** at 80°, a weak member lies back
+as a **bench** at the debris's angle of repose, 35°, and the first half metre of a weak member
+over a resistant one is a **tread**, the cliff-former's stripped top, a quarter of the weak
+member's plumb thickness (0.3 to 2 m). A member thinner than a metre steps nothing. The profile's
+run over the tier is the tier's batter times its height, so its chord is the plane's and tiers
+meet as they did: on ground gentler than the staircase the treads widen; on steeper ground the
+treads go first, then the benches steepen (never past 60°), then the risers go plumb. A tier
+breaks at a cliff-former's top under a weaker bed ([A face in tiers](#a-face-in-tiers)), so a
+tier is a bench at its foot and a riser over it, and the tier above stands on its tread.
+
+**Stood off by what the steps take back.** Between its foot and its top the staircase falls
+behind its plane, most at a riser's foot, and the plane was only the standoff in front of the
+ground. So the generator asks the same profile of every tier at a vertex (`BenchProfile::behind`)
+and stands all of them off by the worst over the two vertices either side, times 1.1 and a
+quarter of a metre more: every tier moves out together, so a tier's foot is still behind the
+crest of the one under it.
+
+**The crest's shoulder** (`CliffPoint.crest_back`). The topmost tier's top is the slope's brow,
+and its flat top from the crest to where the ground rises over it is a level slab seen from the
+crest. Where a tier is the topmost at a vertex, the generator measures that stretch and writes it
+less 0.3 m, the most for which every row of the shoulder stays in front of the ground under it,
+looked for a quarter of a metre at a time; the solver lays the front's last rows back by it (over
+1.25 times its length of height, 1.5 m at least, half the face at most), fades the carving out
+with it, and does not break the skyline back there: the skyline is the ground's own edge.
+
+**The top at a coarser cell.** An open face's top and its ends are flat from the crest to the
+back and in the ground past the crest, so their layers back are cut at four of the front's cells
+(no coarser than four of the set's repeats, which keeps a chart inside its UV range). The
+stations along are the front's, so the crest is a seam of shared points and nothing needs
+stitching. A closed box keeps one cell: its back is seen.
+
+**Measured** (`tests/cliffs_generator_tests.cpp`, the escarpment scene's layer with the scratch
+scene's formation of six members, 78 faces): 75.4 % of the faces' triangles on a front (58.9 %
+before), 1.48 million triangles in all (1.57 before); 20.3 % of the fronts' area slopes 25 to
+45° as a bench (9.4 % before, the carving's own). From a walker at the crest's edge, level tops
+over the ground near the brow: 0.12 to 0.33 m² a metre of the brow's faces with the shoulder,
+1.27 to 2.14 without it — what is left is the 0.3 m the shoulder stops short of the ground. The
+profile on a 30 m column (`tests/cliff_tests.cpp`): a 1 m weak member on ground at 50 and at 63°
+lies at 35° with treads widened to 3.7 and 1.2 m; a 20 m one at 40.5 and 55.9°, its tread given
+up; the profile falls behind its plane by 0.7 to 2.7 m.
 
 ### The escarpment
 
@@ -568,7 +627,7 @@ sandstone faces with an undercut of 0.5, a talus skirt of 0.15 of the height, 24
 and granite boulders at 4 per 100 m; since G142 **38 faces in tiers, 19 a flank**, open and
 tapered, each about 12 m of the flank's 113 m (the lowest of a line 217 m long and 22 m high,
 29,108 triangles at a 0.75 m cell; 809,030 triangles together, 56 % of them on a front, the rest
-on tops that are in the ground), where there were four closed boxes of 153,340 triangles each at
+on tops that are in the ground; since G172's coarser tops, 668,264 and 68 %), where there were four closed boxes of 153,340 triangles each at
 1 m ([A face in tiers](#a-face-in-tiers)). The capture below is the boxes'; what the tiers'
 showed is on [the grounding page](../experiments/exposed-bedrock.md#the-pictures-and-what-they-lack).
 A camera path along the east flank with three markers:
@@ -1531,6 +1590,15 @@ a curve, and a fresh break and an old surface are one material. The far form has
   the contrast in resistance with the bed under the unit (over 0.6, at most 1) times 0.42 to 0.6 of
   the step (0.6 m at most), grown in with the step; its underside faces down. Where every bed of a
   sequence stands there is no weaker bed and no undercut.
+- **A cleft's flank follows the undercut** (G174). Where a joint meets the front over a notched
+  foot, the flank's end at the face goes down to the undercut's top and in by its depth, so it
+  does not stand past the undercut as a fin (G142c's `slope-near` walker-along). Two triangles a
+  notch, so only a notch 0.15 m deep or more and 0.3 m high or more is followed (`k_notch_min_m`,
+  design); a shallower one leaves its fin. The ledges' budget is why: slate's front stood at 55.6
+  triangles a metre against 56, and following every notch took it to 57.3. On the test hillside's
+  beds no notch is that large; on a 2.4 m sandstone over shale 0.56 m² of the notches' sides are
+  taken out of the flanks (29 % of their area); the rows above the undercut, standing back a few
+  centimetres, are not followed. `LedgeReport::notch_m2` and `fin_m2` count both.
 - **Crept.** One standing block in four has crept out over the weak bed: moved out along the
   ground's fall by up to a fifth of the unit's thickness (0.3 m at most) and down with the ground,
   and settled toward its high joint by 0.02 to 0.08 m a metre (1.1 to 4.6 degrees), a function of

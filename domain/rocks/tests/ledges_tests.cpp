@@ -430,6 +430,8 @@ TEST_CASE("ledges: a block is a body, rounded all round, split by clefts, underc
     f64 down = 0.0;      // every down-facing underside, the same
     u32 slipped = 0;
     f64 per_metre = 0.0;  // triangles a metre of front
+    f64 notch = 0.0;      // the flanks' notches round the undercut (G174), square metres
+    f64 fin = 0.0;        // the fins left past it
   };
   const auto body = [&](RockType type, const scene::Formation& f) {
     LedgeLayer layer = layer_of(f);
@@ -461,11 +463,14 @@ TEST_CASE("ledges: a block is a body, rounded all round, split by clefts, underc
     b.down = down_area / s.report.front_length_m;
     b.slipped = s.report.slipped;
     b.per_metre = static_cast<f64>(s.report.triangles) / s.report.front_length_m;
+    b.notch = s.report.notch_m2;
+    b.fin = s.report.fin_m2;
     MESSAGE(static_cast<int>(type)
             << ": rim " << b.rim << " m, clefts " << b.flank << " m deep (deepest " << b.deepest
             << "), " << b.joints << " m of joint a metre of front, undercut " << b.undercut
             << " m2 a metre (all undersides " << b.down << "), " << b.slipped << " crept pieces, "
-            << b.per_metre << " triangles a metre of front");
+            << b.per_metre << " triangles a metre of front; flanks notched round the undercut "
+            << b.notch << " m2, fins left " << b.fin << " m2");
     return b;
   };
   const Body sandstone = body(RockType::Sandstone, beds());
@@ -484,6 +489,17 @@ TEST_CASE("ledges: a block is a body, rounded all round, split by clefts, underc
   // The beds under these units are shale and mudstone: the feet are undercut.
   CHECK(sandstone.undercut > 0.005);
   CHECK(sandstone.down > sandstone.undercut);
+  // G174: a flank over an undercut foot follows it, so it does not stand past the undercut as a
+  // fin. On the beds above the steps are about a metre and their notches too low to follow; on a
+  // thick sandstone over shale (clefts to 1.9 m) the deep and tall notches are taken out of the
+  // flanks (0.56 m2 of the tile's, 29 % of all the notches' side area, measured), and what is
+  // left is the shallow (under 0.15 m) and low (under 0.3 m) ones the triangle budget leaves.
+  // With the notch never followed, as the base's flanks were, `notch` is 0.
+  scene::Formation thick = beds();
+  thick.beds[0] = bed("shale", 2.0f, 0.1f);
+  thick.beds[1] = bed("sandstone", 2.4f, 0.9f);
+  const Body tall = body(RockType::Sandstone, thick);
+  CHECK(tall.notch > 0.25);
   // One standing block in four has crept out and leans.
   CHECK(sandstone.slipped > 10u);
   // Where every bed of the sequence stands there is no weaker bed under a unit: no undercut.
@@ -594,11 +610,11 @@ TEST_CASE("ledges: a patch is pinned to the bit") {
                              << mesh_hash(far_form.mesh) << " source "
                              << ledge_source_hash(far_form.patch));
   CHECK(near_form.report.triangles > 0u);
-  CHECK(mesh_hash(near_form.mesh) == 3689944686638937447ull);
-  CHECK(ledge_source_hash(near_form.patch) == 4449123448180381084ull);
+  CHECK(mesh_hash(near_form.mesh) == 268380186991178307ull);
+  CHECK(ledge_source_hash(near_form.patch) == 15021222710053488490ull);
   CHECK(far_form.report.triangles > 0u);
   CHECK(mesh_hash(far_form.mesh) == 12540669320333577569ull);
-  CHECK(ledge_source_hash(far_form.patch) == 13707332758584909599ull);
+  CHECK(ledge_source_hash(far_form.patch) == 16886934067500109421ull);
 }
 
 TEST_CASE("ledges generator: tiles in any order are the whole read, a form a ring") {

@@ -28,6 +28,9 @@ using namespace detail;
 // buffer's and not two coplanar surfaces'.
 constexpr f64 k_back_m = 0.08;
 constexpr u32 k_max_rows = 8;
+// A cleft's flank follows an undercut at least this deep (G174): a shallower notch's fin is under
+// this wide. Design, against the 56 triangles a metre of front the ledges hold.
+constexpr f64 k_notch_min_m = 0.15;
 // A bed thicker than this parts into rows about this thick (flaggy weathering along its own
 // laminae): an authoring choice, exposed-bedrock.md.
 constexpr f64 k_parting_m = 0.45;
@@ -1040,13 +1043,11 @@ bool solve_patch(const LedgePatch& p, assets::MeshData& out, LedgeReport* report
                   // the joint's open width apart, and the tread's edge above it worn round.
                   const bool low_side = (shared & k_on_joint_lo) != 0;
                   f64 step[2];
-                  D3 rim[2], foot_at[2];
+                  D3 rim[2];
                   for (u32 v = 0; v < 2; ++v) {
                     step[v] = at(poly[e[v]], db);
                     const D3& t = top[e[v]];
                     rim[v] = rolled(D3{t.x, t.y - lip[e[v]], t.z});
-                    foot_at[v] = rolled(
-                        D3{t.x, t.y - (step[v] > 0.0 ? step[v] : 0.0) - under_of(step[v]), t.z});
                   }
                   const D3 outward = low_side ? along_strike * -1.0 : along_strike;
                   const u64 cls = mix64(uid + (low_side ? 0x4000ull : 0x5000ull)) ^
@@ -1073,18 +1074,107 @@ bool solve_patch(const LedgePatch& p, assets::MeshData& out, LedgeReport* report
                       made.joint_worn_m2 += 0.5 * std::sqrt(dot(area, area));
                     }
                   }
-                  D3 q0[3] = {rim[0], rim[1], foot_at[1]};
-                  f64 uv0[3][2] = {{u_of(rim[0]), rim[0].y},
-                                   {u_of(rim[1]), rim[1].y},
-                                   {u_of(foot_at[1]), foot_at[1].y}};
-                  if (!covered(q0) && mesher.emit(cls, q0, uv0, Facing::Toward, outward))
-                    count(false, q0);
-                  D3 q1[3] = {rim[0], foot_at[1], foot_at[0]};
-                  f64 uv1[3][2] = {{u_of(rim[0]), rim[0].y},
-                                   {u_of(foot_at[1]), foot_at[1].y},
-                                   {u_of(foot_at[0]), foot_at[0].y}};
-                  if (!covered(q1) && mesher.emit(cls, q1, uv1, Facing::Toward, outward))
-                    count(false, q1);
+                  // **The flank follows the undercut** (G174; rocks.md, "Ledges"): where the joint
+                  // meets the block's front (or its worn corner) over a notched foot, that end of
+                  // the flank goes down the face to the undercut's top and in by its depth, so it
+                  // does not stand past the undercut as a fin. The rows above it stand back by a
+                  // few centimetres and are not followed: two triangles a notch, against the
+                  // ledges' triangle budget. The other end goes straight down, as the flank did.
+                  constexpr u32 k_flank = 4;
+                  D3 flank[2][k_flank];
+                  u32 count_of[2] = {0, 0};
+                  for (u32 v = 0; v < 2; ++v) {
+                    const PolyVertex& pv = poly[e[v]];
+                    const D3& t = top[e[v]];
+                    const bool face_end = (pv.lines & k_on_face) != 0 && relief > 0.0;
+                    const f64 st_v = step[v] > 0.0 ? step[v] : 0.0;
+                    const f64 foot = st_v + under_of(step[v]);
+                    // The front's column at this vertex, as the front's own loop makes it.
+                    f64 dep[k_max_rows + 2], bk[k_max_rows + 1];
+                    const bool notched = unit.undercut > 0.0 && relief > 0.0;
+                    const u32 rows = block_rows + (notched ? 1u : 0u);
+                    const f64 grown = relief > 0.0 ? clamp01(st_v / (2.0 * relief)) : 0.0;
+                    dep[0] = 0.0;
+                    bk[0] = 0.0;
+                    for (u32 r = 1; r < block_rows; ++r) {
+                      const f64 at_row = unit.depth[shape.lost + r] / ny - lost_m;
+                      dep[r] = at_row < foot ? at_row : foot;
+                      const f64 s = 0.15 + 0.85 * draw(uid, block, 0x100ull + r) -
+                                    1.2 * unit.lead[shape.lost + r];
+                      bk[r] = grown * relief * clamp01(s);
+                    }
+                    if (notched) {
+                      const f64 high = std::min(0.35 * st_v, 0.5);
+                      const f64 top_of = std::max(st_v - high, dep[block_rows - 1]);
+                      dep[block_rows] = top_of < foot ? top_of : foot;
+                      bk[block_rows] =
+                          bk[block_rows - 1] + grown * unit.undercut * std::min(0.6 * st_v, 0.6) *
+                                                   (0.7 + 0.3 * draw(uid, block, 0x1C1ull));
+                    }
+                    dep[rows] = foot;
+                    const f64 ddx = at(pv, dx), ddz = at(pv, dz);
+                    const f64 len = std::sqrt(ddx * ddx + ddz * ddz);
+                    const D3 ln = len > 1e-9 ? D3{ddx / len, 0.0, ddz / len} : D3{1.0, 0.0, 0.0};
+                    const auto place_at = [&](f64 down, f64 back) {
+                      if (!face_end) {
+                        back = 0.0;
+                      } else if (round_m > 0.0) {
+                        // The front's fluting at this depth, as its rows have it.
+                        const D3 q = world0 + t + D3{0.0, -down, 0.0};
+                        back += grown * round_m *
+                                (0.7 * noise3(flute_seed, q * (1.0 / 1.1)) +
+                                 0.3 * noise3(flute_seed + 1, q * (1.0 / 0.37)));
+                      }
+                      const f64 rise =
+                          back * (frame.normal[0] * ln.x + frame.normal[2] * ln.z) / ny;
+                      return rolled(D3{t.x - back * ln.x, t.y - down + rise, t.z - back * ln.z});
+                    };
+                    u32 fk = 0;
+                    flank[v][fk++] = rim[v];
+                    // A notch under `k_notch_min_m` deep, or under one and a half of it high,
+                    // leaves a fin no larger than that, a few pixels at a walker's distance, and is
+                    // not followed (the ledges' 56 triangles a metre of front).
+                    const f64 notch_in = bk[block_rows] - bk[block_rows - 1];
+                    const f64 notch_high = foot - dep[block_rows];
+                    const bool has_notch =
+                        face_end && notched && notch_high > 0.0 && notch_in > 0.0;
+                    const bool follow =
+                        has_notch && notch_in >= k_notch_min_m && notch_high >= 2.0 * k_notch_min_m;
+                    if (has_notch) (follow ? made.notch_m2 : made.fin_m2) += notch_in * notch_high;
+                    if (follow) {
+                      // The undercut's notch: down the face to the undercut's top, in by its
+                      // depth (never past four fifths of the flank's length), down to the foot.
+                      const D3& o = top[e[1 - v]];
+                      const f64 span =
+                          std::sqrt((o.x - t.x) * (o.x - t.x) + (o.z - t.z) * (o.z - t.z));
+                      const f64 in = std::min(bk[block_rows], 0.8 * span);
+                      const f64 lower = std::max(dep[block_rows], lip[e[v]]);
+                      flank[v][fk++] = place_at(lower, bk[block_rows - 1]);
+                      flank[v][fk++] = place_at(lower, in);
+                      flank[v][fk++] = place_at(foot, in);
+                    } else {
+                      flank[v][fk++] = rolled(D3{t.x, t.y - st_v - under_of(step[v]), t.z});
+                    }
+                    count_of[v] = fk;
+                  }
+                  // One polygon: end 0's top, down end 1, up end 0 again; a fan from end 0's top,
+                  // two triangles a flank and two more a notch.
+                  D3 ring[k_flank * 2];
+                  u32 around = 0;
+                  ring[around++] = flank[0][0];
+                  for (u32 fi = 0; fi < count_of[1]; ++fi)
+                    ring[around++] = flank[1][fi];
+                  for (u32 fi = count_of[0]; fi-- > 1;)
+                    ring[around++] = flank[0][fi];
+                  for (u32 fi = 1; fi + 1 < around; ++fi) {
+                    const D3& a0 = ring[0];
+                    const D3& b0 = ring[fi];
+                    const D3& b1 = ring[fi + 1];
+                    D3 q0[3] = {a0, b0, b1};
+                    f64 uv0[3][2] = {{u_of(a0), a0.y}, {u_of(b0), b0.y}, {u_of(b1), b1.y}};
+                    if (!covered(q0) && mesher.emit(cls, q0, uv0, Facing::Toward, outward))
+                      count(false, q0);
+                  }
                   const D3 run_xz{run.x, 0.0, run.z};
                   made.joint_length_m += std::sqrt(dot(run_xz, run_xz));
                   const f64 deepest = std::max(step[0], step[1]);

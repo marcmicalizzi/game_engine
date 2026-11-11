@@ -238,6 +238,47 @@ Geol.* 13, 1037–1048; abstract, on a mirror): thickness over spacing about 1.3
 `joint_ratio`), spacing over its median log-normal; no spread was found, so the solver's stations
 still move by up to three tenths of the spacing (ours).
 
+## Benches on a bedded face
+
+Read for G172 (2026-11-11), the cliff's tiers stepping back, by the row's own searches; none of
+the sources below was reached in full, and how each was read is said beside it.
+
+**A bedded scarp is a free face over a debris-mantled slope, member by member.** Chorley, Schumm
+and Sugden (1985, *Geomorphology*, p. 273; secondary, as an encyclopaedia's "Scarp retreat"
+restates it): in a dry climate a scarp's upper, near-vertical face is 10 to 75 % of its height and
+the rest a talus-covered rampart. Ward, Berlin and Anderson (2011, *ESPL* 36, 1023–1043,
+doi:10.1002/esp.2129; **abstract only**, through a search snippet, the paper's PDF refused the
+connection): cliffs in horizontally bedded rock "loom above a relatively straight bedrock slope
+('plinth') that is mantled with a thin layer of sediment and perched near the angle of repose".
+The same layered sequence repeated is the cliff-and-bench staircase of the Colorado Plateau,
+where the cliff-formers are the sandstones and limestones and the bench-formers the shales (the
+cuesta's scarp of [How layered rock makes steps](#how-layered-rock-makes-steps)).
+
+**The angle a weak member lies at is the debris's angle of repose.** Carson (1977, *ESPL*;
+secondary, through a later paper's review): a talus slope stands at the repose angle of its
+material, "an angle generally found on natural talus slopes" that "approaches 35 degrees".
+Statham (1976, *ESPL*; secondary, a geological guide's summary): a scree's profile is concave,
+35 to 37° in its upper part and 31 to 34° in its lower. **Chosen: a bench at 35°, never gentler
+than 30°.** Where the ground is steeper than a staircase of risers and 35° benches can follow, the
+benches steepen, up to **60° (ours)**: a weak rock with no debris on it stands steeper than its
+repose, and no source gave a number for how steep.
+
+**A riser stands at 80° (ours).** "Steeper slopes on stronger rocks" (Selby 1980, above) and the
+free face being "near-vertical" are all the sources give; 80° leaves a riser a lean a lower
+resolution still draws. A member thinner than a metre steps nothing (ours): a thin shale parting
+under a cliff-former is the undercut's notch, not a bench.
+
+**A tread at a cliff-former's top.** The stripped top of a resistant bed where the weak one over it
+has gone back: a quarter of the weak member's plumb thickness, 0.3 to 2 m (**ours**; no source
+gave a tread's width, which in the field depends on how far the weak member has retreated). On
+ground gentler than the staircase the treads widen to take the difference.
+
+**The run adds up to the plane's.** A tier's profile is laid so its run over the tier is the
+tier's own batter times its height (the lean that keeps its plane the standoff in front of the
+slope), so tiers meet as they did and the staircase follows the ground's mean slope; within the
+tier the profile falls behind the plane by up to a few metres at a riser's foot, and the generator
+stands every tier at a vertex off by that much more.
+
 ## What is authored, not measured
 
 - **A bed's `resistance`** is an index from 0 to 1 the formation's author gives it, not a rock
@@ -386,3 +427,20 @@ of the palm pack's yellow sandstone; beside reels r23 and r12):
   of rock with steps in it) needs the risers in the ground's material, not over it.
 - **The plants stand through a riser** as they stand through a tread: nothing clears the cover
   off rock.
+
+**After G172** (the escarpment with the formation and the hillside's walker view, debug
+`engine-view`, the generated sets, before and after from one checkout on fresh derived-data
+roots, 2026-11-11; beside reels r12, r23 and r25):
+- **The wedge at the foot is gone.** It was a tier seam: the tier over the lowest one hung its
+  open bottom past the lower one's carved crest. A speck remains at one seam, and a small pale
+  triangle at the ground between two talus cones that the foot's carving clamp did not change.
+- **From the valley the flank is banded with shelves** that catch the light where it was one
+  smooth wall, but it is still one plane in the large: the ground is steeper than a staircase of
+  80° risers and 35° benches can follow, so the benches steepen and the treads go, and the tiers
+  sit on one lean. The reels' walls step back member by member with green treads; ours carry
+  no soil (the bench is the rock's material: turf or scree on a bench is the ground's material
+  over it, not this solver's).
+- **From the crest the top is a sloping shoulder**, not a level band with a lip, but it is a wide
+  brown strip, and the skyline kinks where the faces' lines meet.
+- **The walker's view of the hillside is unchanged**: the fins in it are not followed under the
+  ledges' triangle budget (or are not the undercut's), so G174 does not show there.
