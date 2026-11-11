@@ -186,7 +186,7 @@ TEST_CASE("tileset: every tile of every level reads back as the build computed i
   for (const TileSetLevel& level : m.levels) {
     tiles += level.tiles;
     // One archive a level: its header, a record a tile, a 24-byte entry a tile.
-    CHECK(level.archive == level_archive(level.spacing_mm));
+    CHECK(level.archive == level_archive(level.spacing_mm, level.filter_mm));
     io::FileInfo info;
     REQUIRE(io::stat_file(io::join_path(s.tmp.file("set"), level.archive), info) == io::Status::Ok);
     const u64 record = 32 + u64{s.options.cells + 3} * (s.options.cells + 3) * 4;
@@ -226,6 +226,61 @@ TEST_CASE("tileset: every tile of every level reads back as the build computed i
   CHECK(differ == 0);
   CHECK(set.failures() == 0);
   CHECK(set.reads() == s.built.tiles);
+}
+
+TEST_CASE(
+    "tileset: a heightfield at one of its far levels' spacings builds, and both levels read") {
+  // T90 (found by the landform row, W95): a 16 m heightfield under the default chain (8, 16, 32,
+  // ... 256 m) has two levels at 16 m, the finest and a far level. Both were written to
+  // `16000.tiles`, the far one over the finest, so the set refused to open; and the reader's cache
+  // keyed a tile by its spacing alone, so one level's tile could answer for the other's.
+  test::TempDir tmp{"engine_tileset_coarse"};
+  const Heightfield field = synth_heightfield(SynthKind::ridge, 33, 16000, 11, -256000, -128000);
+  std::string error;
+  REQUIRE_MESSAGE(write_heightfield(tmp.file("coarse.json"), field, error), error);
+  BuildOptions options;  // the default chain
+  options.cells = 8;
+  BuildResult built;
+  REQUIRE_MESSAGE(
+      ensure_tileset(tmp.file("coarse.json"), options, tmp.file("set"), "", false, built, error),
+      error);
+  TileSet set;
+  REQUIRE_MESSAGE(set.open(built.manifest, error), error);
+  const TileSetManifest& m = set.manifest();
+  REQUIRE(m.levels.size() == 7);
+  CHECK(m.levels[0].spacing_mm == 16000);
+  CHECK(m.levels[0].filter_mm == 0);
+  CHECK(m.levels[2].spacing_mm == 16000);
+  CHECK(m.levels[2].filter_mm == 16000);
+  for (u32 a = 0; a < m.levels.size(); ++a)
+    for (u32 b = a + 1; b < m.levels.size(); ++b)
+      CHECK(m.levels[a].archive != m.levels[b].archive);
+
+  // Every level whole, each against what the build computes: the finest and the far level at its
+  // spacing are the quantized source (the edge held past it), a coarser one the box filter. Each
+  // level's tiles are read from its own archive, so every tile of the set is one read.
+  const Grid g = grid_of(field, options);
+  u32 differ = 0;
+  for (const TileSetLevel& level : m.levels) {
+    const i64 i0 = level.index_min[0];
+    const i64 j0 = level.index_min[1];
+    const u32 nx = static_cast<u32>(level.index_max[0] - i0 + 1);
+    const u32 nz = static_cast<u32>(level.index_max[1] - j0 + 1);
+    Vector<f32> h(nx * nz);
+    REQUIRE(set.source().filtered(0.0, level.spacing_mm, level.filter_mm, static_cast<i32>(i0),
+                                  static_cast<i32>(j0), nx, nz,
+                                  std::span<f32>(h.data(), h.size())));
+    const i64 r = level.spacing_mm / m.spacing_mm;
+    if (r < 1) continue;  // the 8 m level, the finest's bilinear surface: read, not compared here
+    for (u32 z = 0; z < nz; ++z)
+      for (u32 x = 0; x < nx; ++x) {
+        const i32 want = r == 1 ? g.at_world(i0 + x, j0 + z) : direct_filter(g, r, i0 + x, j0 + z);
+        differ += h[z * nx + x] == metres(want) ? 0u : 1u;
+      }
+  }
+  CHECK(differ == 0);
+  CHECK(set.failures() == 0);
+  CHECK(set.reads() == built.tiles);
 }
 
 TEST_CASE("tileset: the box filter is the surface's mean over each point's own cell") {
@@ -481,7 +536,7 @@ TEST_CASE("tileset: missing or corrupt tile data is refused, never zero ground")
   // archive's layout is the page's (tileset.md, "The archive"): a 64-byte header with the count at
   // byte 12 and the table's offset at byte 24, the records back to back in order of z then x, and
   // the table of 24-byte entries at the end.
-  const std::string file = io::join_path(io::parent_path(s.built.manifest), level_archive(500));
+  const std::string file = io::join_path(io::parent_path(s.built.manifest), level_archive(500, 0));
   std::string original;
   REQUIRE(io::read_file(file, original) == io::Status::Ok);
   TileSetLevel finest;
@@ -559,6 +614,34 @@ TEST_CASE("tileset: a fixed footprint reads the same bounded data as source exte
     MESSAGE(side << " source points a side: " << set.reads() << " reads, "
                  << set.cache_stats().resident_bytes << " resident payload bytes for 289 samples");
   }
+}
+
+TEST_CASE("tileset: the host's derived-data root is the provider's, over the block's") {
+  // T90 (tileset.md, the provider's section): `Context::ddc` before the block's `ddc`, as
+  // `resolve_tile_set` takes a root it is handed first. Before, the provider passed none on.
+  test::TempDir tmp{"engine_tileset_provider_root"};
+  const Heightfield field = synth_heightfield(SynthKind::basin, 17, 1000);
+  std::string error;
+  REQUIRE_MESSAGE(write_heightfield(tmp.file("bowl.json"), field, error), error);
+  scene::Terrain entry;
+  entry.provider = "tiles";
+  entry.tiles = scene::TerrainTileSet{};
+  entry.tiles->heightfield = "bowl.json";
+  entry.tiles->ddc = "block";
+  entry.tiles->cells = 8;
+  entry.tiles->far_levels = 1;
+  scene_gen::Context context;
+  const std::string dir = tmp.path();
+  const std::string root = tmp.file("host");
+  context.dir = dir;
+  context.ddc = root;
+  const scene_gen::GroundProviderDesc* desc =
+      scene_gen::GeneratorRegistry::global().find_ground("tiles");
+  REQUIRE(desc != nullptr);
+  scene_gen::GroundProvider ground;
+  REQUIRE_MESSAGE(desc->make(entry, context, ground, &error), error);
+  CHECK(io::exists(io::join_path(root, "tilesets")));
+  CHECK_FALSE(io::exists(tmp.file("block")));
 }
 
 TEST_CASE("tileset: a terrain naming a heightfield builds its set through the cache on a miss") {

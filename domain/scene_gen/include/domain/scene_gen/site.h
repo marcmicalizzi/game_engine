@@ -34,11 +34,14 @@
 // it (a sample is a function of the point and the scene, never of a window). Read-only once built.
 //
 // **Cost.** `k_site_form` is five ground queries (the point and four neighbours) and about forty
-// floating-point operations; `k_site_elevation` one query; `k_site_water` no ground query, one
-// binary search into the channels' cells and a walk of the segments filed there, and the bodies'
-// outlines. Nothing is cached per tile: a placement samples the points it keeps after its cheap
-// tests, which is fewer than a lattice would be for every kind sparser than the lattice
-// (scatter.md, "Kinds by site", has the measured numbers).
+// floating-point operations; `k_site_elevation` one query; `k_site_water` no ground query, the
+// exclusion's bank-edge query out to `k_site_water_reach_m` (a binary search a row of its 16 m
+// cells within the reach, 17 rows, and the segments filed there), and the bodies' outlines. Nothing
+// is cached per tile: a placement samples the points it keeps after its cheap tests, which is fewer
+// than a lattice would be for every kind sparser than the lattice (scatter.md, "Kinds by site", has
+// the measured numbers).
+
+#include "domain/scene_gen/exclusion.h"
 
 #include <core/base/types.h>
 #include <core/containers/vector.h>
@@ -111,7 +114,7 @@ class Site {
   f64 sun_x() const noexcept { return sun_x_; }
   f64 sun_y() const noexcept { return sun_y_; }
   f64 sun_z() const noexcept { return sun_z_; }
-  u32 segment_count() const noexcept { return segments_.size(); }
+  u32 segment_count() const noexcept { return channels_.segment_count(); }
   u32 body_count() const noexcept { return bodies_.size(); }
 
   // The site at the world point (whole millimetres), standing on `ground` (absent: flat at 0).
@@ -122,29 +125,20 @@ class Site {
   static const Site& fallback() noexcept;
 
  private:
-  struct Segment {
-    f64 ax = 0.0, az = 0.0, bx = 0.0, bz = 0.0;  // metres
-    f64 ra = 0.0, rb = 0.0;                      // bank edge at each end, from the line
-  };
-  struct Cell {
-    i64 key_z = 0;
-    i64 key_x = 0;
-    u32 segment = 0;
-  };
   struct Body {
     bool circle = false;
     f64 cx = 0.0, cz = 0.0, r = 0.0;
     Vector<f64> xs, zs;
     f64 x0 = 0.0, z0 = 0.0, x1 = 0.0, z1 = 0.0;  // the outline's box
   };
-  f64 channel_distance(f64 x, f64 z) const noexcept;
   f64 body_distance(f64 x, f64 z) const noexcept;
 
   f64 latitude_deg_ = k_site_default_latitude_deg;
   f64 sun_x_ = 0.0, sun_y_ = 1.0, sun_z_ = 0.0;
   f64 bearing_x_ = 0.0, bearing_z_ = 1.0;  // the sun's horizontal bearing, unit
-  Vector<Segment> segments_;
-  Vector<Cell> cells_;  // sorted by (z, x, segment)
+  // The channels as the exclusion files them, asked for their bank edge out to the site's reach
+  // (`Exclusion::channel_edge_distance_mm`, the one definition of that edge; T90): no copy of it.
+  Exclusion channels_;
   Vector<Body> bodies_;
 };
 

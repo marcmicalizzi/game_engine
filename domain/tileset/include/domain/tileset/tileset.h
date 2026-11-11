@@ -44,7 +44,9 @@ inline constexpr std::string_view k_tileset_format = "engine.tileset";
 // older build is never mistaken for this one's. 2 (2026-10-24, roadmap W76): a level is one
 // archive (`<spacing_mm>.tiles`) instead of a directory of tile files; every tile's bytes are
 // what its file held, so every level's hash is unchanged and the set's moves through its key.
-inline constexpr u32 k_tileset_version = 2;
+// 3 (2026-11-11, roadmap T90): a far level's archive is `far-<spacing_mm>.tiles`, so one at the
+// finest's spacing no longer replaces the finest's file; the records are the bytes they were.
+inline constexpr u32 k_tileset_version = 3;
 // The name the ground provider registers under (scene_gen.md, "The registrar pattern").
 inline constexpr std::string_view k_ground_provider = "tiles";
 // The file a set's manifest is, in its directory.
@@ -265,7 +267,7 @@ class TileSet {
   f64 point_mm_pinned(i64 x_mm, i64 z_mm, Pins& pins) const noexcept;
   void unpin(Pins& pins) const noexcept;
   void unpin_locked(Pins& pins) const noexcept;
-  u32 claim_locked(i32 tx, i32 tz, i64 spacing_mm, Pins* pins) const noexcept;
+  u32 claim_locked(i32 tx, i32 tz, i64 level, Pins* pins) const noexcept;
   // Claims and reads, as one batch, the tiles of `keys` (archive keys, ascending) that are neither
   // resident nor being read, at most `limit`; returns the tiles read.
   u32 fetch(const Level& level, std::span<const u64> keys, u32 limit) const noexcept;
@@ -287,8 +289,10 @@ class TileSet {
   mutable std::atomic<u32> failures_{0};
 };
 
-// A level's archive inside a set's directory: "<spacing_mm>.tiles".
-std::string level_archive(i64 spacing_mm);
+// A level's archive inside a set's directory: the finest's (filter 0) "<spacing_mm>.tiles", a far
+// level's "far-<spacing_mm>.tiles", so a heightfield at one of the chain's spacings, which has
+// both, keeps both (T90; tileset.md, "Two levels at one spacing").
+std::string level_archive(i64 spacing_mm, i64 filter_mm);
 
 // **The set behind a `tiles` ground** (the capability's typed accessor, scene_gen.md): null for a
 // ground another provider made. For capability-specific inspection; ordinary consumers use

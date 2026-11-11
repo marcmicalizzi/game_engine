@@ -224,8 +224,9 @@ bool tiles_make(const scene::Terrain& entry, const scene_gen::Context& context,
   std::string ddc;
   std::string why;
   // The same function `engine-content masks check` calls (T74), so the check composes the ground a
-  // load composes.
-  if (!resolve_tile_set(entry, context.dir, std::string(), ddc, manifest, why)) return fail(why);
+  // load composes; the host's root, when it names one, before the block's (T90).
+  if (!resolve_tile_set(entry, context.dir, std::string(context.ddc), ddc, manifest, why))
+    return fail(why);
   auto ground = std::make_unique<TilesGround>();
   if (!ground->set.open(manifest, why))
     return fail("the ground provider \"tiles\" could not open its set: " + why);

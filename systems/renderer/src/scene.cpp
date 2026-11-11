@@ -2075,6 +2075,7 @@ bool read_scene_file(const std::string& path, const SceneFileOptions& options, S
       resolve_path(tiles.manifest);
       resolve_path(tiles.heightfield);
       resolve_path(tiles.ddc);
+      if (!out.ddc.empty()) tiles.ddc = out.ddc;  // the host's root wins (T90; tileset.md)
       out.terrain.tiles = std::move(tiles);
       if (out.terrain.provider.empty()) out.terrain.provider = "tiles";
     }

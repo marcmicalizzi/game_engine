@@ -214,6 +214,39 @@ TEST_CASE("the site measures the distances to a channel's bank and a body's outl
   CHECK(only_water.heat_load == 1.0);
 }
 
+TEST_CASE("the site's distance to a channel is the exclusion's bank edge, a flood bed's included") {
+  // T90: the site asks the exclusion's one definition of a bank edge (exclusion.h,
+  // `channel_edge_distance_mm`) rather than keeping a copy of it. The copy left out the flood bed
+  // (W93), which reaches further than the bank on its side: here 20 m on the stream's left (+z).
+  Vector<scene::WaterChannel> channels{straight_channel(-500.0, 500.0, 3.0f),
+                                       straight_channel(-100.0, 40.0, 2.0f)};
+  channels[0].flood_left_m.push_back(20.0f);
+  channels[0].flood_left_m.push_back(20.0f);
+  channels[0].flood_right_m.push_back(0.0f);
+  channels[0].flood_right_m.push_back(0.0f);
+  for (WorldPos& p : channels[1].points)
+    p.z = 90.0;
+  Site site;
+  REQUIRE(site.build(46.5, {}, {channels.data(), channels.size()}));
+  Exclusion exclusion;
+  REQUIRE(exclusion.build({}, {}, {channels.data(), channels.size()}));
+  const Ground flat;
+  // 30 m on the flood side is 10 m past the bed's edge; 30 m on the other, 27.35 m past the bank's.
+  CHECK(site.sample_mm(flat, 0, mm(30.0), k_site_water).channel_m == doctest::Approx(10.0));
+  CHECK(site.sample_mm(flat, 0, mm(-30.0), k_site_water).channel_m == doctest::Approx(27.35));
+  // And to the bit everywhere, out to the reach and past it.
+  u32 differ = 0;
+  for (i64 j = -40; j <= 40; ++j)
+    for (i64 i = -40; i <= 40; ++i) {
+      const i64 x = i * 7919 - 3000, z = j * 4001 + 17;
+      const f64 edge = exclusion.channel_edge_distance_mm(x, z, k_site_water_reach_m);
+      const f64 want = edge < k_site_water_reach_m ? edge : k_site_water_reach_m;
+      const f64 got = site.sample_mm(flat, x, z, k_site_water).channel_m;
+      differ += std::memcmp(&want, &got, sizeof(f64)) == 0 ? 0u : 1u;
+    }
+  CHECK(differ == 0);
+}
+
 TEST_CASE("a site sample is a function of the point, whatever asks for it") {
   // Two tiles' windows that share a border, sampled in opposite orders, and a second site built
   // from the scene's water listed the other way round: the shared points are the same bits.
