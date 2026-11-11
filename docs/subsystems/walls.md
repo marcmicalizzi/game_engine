@@ -82,10 +82,10 @@ The measured numbers, with the machine's state, are in the table under [the grou
 | Triangles at the outline | 528 |
 | Traced structures | one an instance: 33 near, 9 far (the proof of concept: about 1,900) |
 | Pairs | a module's DAG is 105 to 232 clusters (about 165 for a stretch), so about 5,400 near and 9 far; the proof of concept's 1,900 stones of 600 to 700 triangles were about ten clusters each, some 19,000 |
-| Kit resident | 39 meshes at two variants, about 14 MiB of containers an entry (two entries' kits and the terrain: 32.9 MiB in the derived-data root), whatever the world's size; an entry's kit is its own (its seed is in every recipe) |
+| Kit resident | 39 meshes at two variants, about 29 MiB of containers an entry at G145b (two entries' kits and the terrain: 61.0 MiB in the derived-data root, 33.2 MiB at G145: flat-shaded split faces carry three vertices a triangle), whatever the world's size; an entry's kit is its own (its seed is in every recipe) |
 | Plan resident | 80 bytes a module (its slot and tile reference) and 56 a piece: about 3.1 KB for 100 m; the only thing that grows with the walls' length, and it is the entry's |
 | A tile's activation | standing 100 m of modules on the ground: 12.2 µs median (`walls.stand_tile/100`); 32 m: 3.7 µs |
-| A kit entry's solve | 3.6 to 4.0 ms (`walls.solve_module`), once per recipe, then a derived-data hit; the cluster build after it is the content build's |
+| A kit entry's solve | 3.6 to 4.0 ms (`walls.solve_module`, `msvc-release`, G145), once per recipe, then a derived-data hit; the cluster build after it is the content build's. G145b measured only `msvc-debug`: 30 to 44 ms by grade, with another agent's GPU work and 46 % of the CPU in use by others (an upper bound; no release build was made) |
 
 Timings: `msvc-release`, `engine_walls_bench --wait-quiet=120 --repeats=5`, 2026-11-10, on a busy machine (the harness's state: CPU 82.6 % others, the GPU lock held by another agent's captures), so they are upper bounds. In the debug `engine-view` run of the pictures the world's placements consumer spent 4.1 ms over 2,014 calls in all, the walls' among them, and the ray tracing chain dropped no instance (`dropped_instances` 0).
 
