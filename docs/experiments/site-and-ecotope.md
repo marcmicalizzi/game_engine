@@ -177,6 +177,30 @@ segment files in about 25 of the 64 m cells — so the forest proof of concept's
 sample's cost grows with how many segments share a cell; a network filed at a finer cell, or each
 segment's box tested first, is the lever if a scene's water is denser than the bench's.
 
+**After T90 (2026-11-11): the exclusion's query, at about four times the cost.** The site no
+longer keeps its own 64 m index; `channel_m` is `Exclusion::channel_edge_distance_mm` out to the
+128 m reach (scene_gen.md, "The bank edge is the exclusion's, asked"), which is right where the
+copy was not (a flood bed's edge) and reads every 16 m cell of the 272 m square round the point,
+17 binary searches and each segment once for every cell it is filed in. Measured the same way,
+before (the base's `site.cpp` and `site.h` built in the same tree) and after, on a machine that was
+not quiet (the harness waited 120 s each time and proceeded; other processes at 23% before and at
+35% and 49% after, the GPU lock held by other agents' tests), so all three are upper bounds:
+
+| What | Before | After (two runs) |
+|---|---|---|
+| `scene_gen.site.water` | 514 µs / 1,024, **502 ns a sample** | 1.997 and 2.074 ms / 1,024 (minima 1.988, 1.975), **about 1.95 µs a sample** |
+| `scene_gen.site.all` | 564 µs / 1,024 | 2.22 and 2.14 ms / 1,024 |
+| `scene_gen.site.form` | 57.0 µs / 1,024 | 60.8 and 59.1 µs (unchanged: no water read) |
+
+On the scatter's tile above, about 60 ruled placements, that is about 60 × 1.95 µs ≈ 120 µs a tile
+against 30 µs, if the tile were in the bench's dense network; one channel in reach costs far less
+(not re-measured). Resident falls: the exclusion files a segment (80 bytes) in the 16 m cells
+within its edge and 3 m, about 4 cells of 24 bytes for a small stream's 5 m segment against 25, so
+the forest's 10.6 km at 5 m keeps about 0.4 MB instead of 1.4 MB. **The lever is
+the query's**, not the site's: a scan that visits the cells nearest first and stops once the
+square's remaining rings are farther than the best edge found, or a coarser filing for a long
+reach, makes the long reach cost what the old copy did without a second definition of the edge.
+
 ## What the pictures show
 
 A valley written for the row (not committed: `content/test-scenes/alpine` holds G125's
