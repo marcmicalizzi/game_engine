@@ -193,7 +193,8 @@ at the widest spread, the most travel and every minor bed a lens, over four seed
 
 | Number | Value | From |
 |---|---|---|
-| beds a table | 512 (W85: 8) | 98,624 bytes a scene; nine steps of a binary search; a 264 m section is about 150 beds |
+| beds a table | 512 (W85: 8) | 106,816 bytes a scene with T94's slice indexes (98,624 as W94 left it, with nine steps of a binary search a lookup; T94: a slice's word and a step or two, [renderer](../subsystems/renderer.md#formation-bands)); a 264 m section is about 150 beds |
+| slices a table's index | 1,024 | **a choice** (T94): 1.2 beds a slice on a 264 m drawn section, 2.1 on 512 centimetre beds; 4,096 bytes a table |
 | members | 1-64, each 0.5-1,000 m | the Grand Canyon's units, 17-274 m |
 | bed floor | 10 mm | McKee and Weir's bed |
 | `sigma` | 0-1.5, default 0.7 | **a choice**: lognormal family from Talling and others, no parameter read |

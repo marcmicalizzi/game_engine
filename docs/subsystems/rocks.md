@@ -82,7 +82,9 @@ A cliff can take its bedding from the scene's formation (`engine.scene.Formation
 `Cliff.formation` (version 5), and where its origin stands in the world, `Cliff.world_origin`, so
 the build stays a function of the recipe: a face cut from a world with a field is keyed by the
 field. With both, `detail::make_fabric` takes the field's normal and dip direction (as integers
-over 2^24, the GPU's definition), switches the type's own fold off, and `sample_bed` counts the beds
+over 2^24, the GPU's definition; through `gfx::pack_formation_frame`, T94, which packs the frame
+and no table, where a whole 98,624-byte block stood on the stack of every rock built),
+switches the type's own fold off, and `sample_bed` counts the beds
 by `gfx::formation_coordinate` (`domain/gfx/formation.h`) — the f64 twin the terrain's shader is
 held to — at `world_origin` plus the point **on the face's mean plane in the recipe's frame**, not
 the face-local (along, height − datum) it reads without one. So the bed coordinate at a point of

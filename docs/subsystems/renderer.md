@@ -1456,8 +1456,8 @@ folded plane, never a line on the screen or a contour — and a band on a steep 
 the bed is, which no plan-view mask could hold.
 
 **The flag, the address and the one block.** The layer's flag is `k_material_terrain_formation`,
-bit 18 of `ResolveMaterial::flags` (R131 took 17). The field is one 98,624-byte (W94; 928 before)
-`gfx::FormationParams` block (`domain/gfx/formation.h`, pinned by the size table, mirrored once in
+bit 18 of `ResolveMaterial::flags` (R131 took 17). The field is one 106,816-byte (T94; 98,624
+after W94, 928 before) `gfx::FormationParams` block (`domain/gfx/formation.h`, pinned by the size table, mirrored once in
 `formation.slang`), uploaded at scene load only when a layer asks for it, and named by
 `TerrainRecord::formation`, a device address in two of the eight pad words the terrain's record
 always had. **Beside the terrain record and not in `ResolveParams`**: the field is the terrain's
@@ -1495,8 +1495,9 @@ recessive lithology with lognormal thicknesses, drawn by `gfx::generate_formatio
 millimetres, integer hashes and `det::exp`, on the CPU at pack time. The members are the macro
 sequence, so both tables have one period, the members' whole thickness: a section repeats after
 hundreds of metres, not every few. **The table is the definition**: 512 beds of 96 bytes a
-sequence (W85: 8 of 48), read by the shader and the twin alike, found by a **binary search** — nine
-steps, where eight beds took seven of a linear one, so the lookup's steps are what they were. The
+sequence (W85: 8 of 48), read by the shader and the twin alike, found by a **binary search** — over
+the whole table as W94 left it, nine steps; over the few beds a slice of the period names since
+T94 (below). The
 integral a bed carries is of the value **less the sequence's mean**, a bounded walk where the plain
 integral grew with the section, so a 4 mm box across a contact is exact to 1e-4 over a kilometre of
 beds (W85's form: 2e-3 over 128 m). An authored `beds` and `macro_beds` still packs to the table
@@ -1512,9 +1513,10 @@ of `amplitude * (value below - value above)` over the tops under it, which is ex
 the tops adds to the integral. A **fault** is a vertical plane beyond which the coordinate is a
 throw greater, added in whole millimetres before the reduction. The first and last top of a sequence
 and every member's top do not move, so the period — and the precision argument below — is the same
-everywhere. The block is **98,624 bytes** a scene, uploaded as it was (one `upload_buffer` of the
-packed block); a pixel pays the two lateral fields (two int64 remainders, four hashes) and the fault's
-sign once, and nothing more per lookup than two multiplies a step. **Measured** (2026-11-11, RTX
+everywhere. The block was **98,624 bytes** a scene as W94 left it (106,816 with T94's two slice
+indexes), uploaded as it was (one `upload_buffer` of the packed block); a pixel pays the two
+lateral fields (an int64 division each, four hashes) and the fault's sign once, and nothing more
+per lookup than two multiplies a step. **Measured as W94 left it** (2026-11-11, RTX
 5090, 1920 × 1080, `--raster hw --shadows csm`, the escarpment's ridge as one banded rock layer,
 the median of 52 frames a held pose; under the GPU lock with the GPU otherwise idle and every CPU
 core busy with other agents' builds, so upper bounds): the resolve with W85's authored fixture
@@ -1526,6 +1528,106 @@ on this view was not measured (no build of the base was made); its lookup has fe
 of a binary search for four beds, where the linear one took three). **What the pictures show**
 (`formation-sequence.md`, "What the pictures show"): the regular corrugation is gone and members
 read as members, but at 100 m and beyond the tops are still ruled lines.
+
+**The frame-only pack** (roadmap T94, 2026-11-11). The block is 106,816 bytes, and a caller that
+declared one to read its frame — rocks' `make_fabric` did, once a rock — put that on its stack.
+`gfx::FormationHead` is the block's first 192 bytes as a type of its own (the origin, the
+directions, the folds, the lateral fields and the fault: all the coordinate and the lateral fields
+read), `gfx::pack_formation_head` fills it from the scene's formation and its plans, and
+`gfx::pack_formation_frame(formation, frame, error)` gives the 208-byte `FormationFrame` the twin's
+`formation_coordinate` and `formation_lateral` take, with no table packed. `pack_formation` writes
+the block's head through the same function, so the two frames are the same bytes
+(`formation_tests.cpp`, "the frame-only pack"); whether the lateral fields are on is asked of the
+plans (`formation_top_travel`, the one rule for how far a top moves, which the table's packer also
+calls) and no longer read back from the packed tables. `gfx::check_formation` is the validation
+with the table's bound and no block, for a caller that only wants to know a formation packs.
+
+**What the formation costs the resolve** (roadmap T94, 2026-11-11). Measured three ways on W94's
+views — W85's tree (44c80a0a, its own shader), W94's (b8eb339a) and T94's — each `engine-view`
+copied out of its build, the same three scenes (the escarpment's ridge as one rock layer: W85's
+authored fixture, W94's drawn section of eight members with its fault, and the layer with no
+formation at all), RTX 5090, 1920 × 1080, `--raster hw --shadows csm --sun 120,35`, the resolve
+pass's GPU milliseconds, the median of 164 frames a held pose (two flights), runs minutes apart
+agreeing to 0.002 ms and runs an hour apart to 0.008. Every run under the GPU lock, and every run's `machine_state` the same: other processes
+at 90 to 100% of the CPU (other agents' builds), the GPU 3 to 80% busy at the sample before the
+flight, so these are upper bounds:
+
+| Resolve, ms | 50 m | 500 m | valley |
+|---|---|---|---|
+| W85's tree, its authored table | 0.589 | 0.163 | 0.563 |
+| W85's tree, no formation | 0.496 | 0.139 | 0.479 |
+| W94, the authored table | 0.725 | 0.200 | 0.680 |
+| W94, the drawn formation | 0.824 | 0.226 | 0.764 |
+| W94, no formation | **0.579** | 0.164 | 0.557 |
+| T94, the authored table | 0.593 | 0.173 | 0.572 |
+| T94, the drawn formation | **0.590** | 0.168 | **0.566** |
+| T94, no formation | **0.494** | 0.138 | 0.477 |
+
+So the drawn formation is **within 0.001 ms of W85's own cost at 50 m, 0.003 in the valley and
+0.005 at 500 m — over it, not under**. The table's rows were flown over two hours and differ by
+up to 0.008 ms from one hour to the next, so the three binaries were flown again one after the
+other, three times, each sample a lease of its own (CPU 32 to 55% busy with others' work): W85's
+tree gave 0.588, 0.162 and 0.561 (each within 0.001 across the three samples), W94's drawn
+formation 0.822, 0.225 and 0.765, and T94's drawn formation 0.589, 0.167 and 0.564. A banded pixel pays
+0.096 ms a frame for the drawn formation at 50 m where W85's eight authored beds cost 0.093 and
+W94's drawn section 0.33; and **a scene with no formation is 0.085 ms cheaper than W94 left it**,
+which nobody had measured. What took it out, at 50 m on the drawn scene, in the order it was done
+(each step's numbers are the shader at that step through the binary of the slice index, so the
+last is 0.587 here and 0.590 above):
+
+- **What a loop in the lookup cost.** W94's shader cost every terrain pixel of every scene, banded
+  or not: 0.579 ms with no formation against 0.493 with the formation's code compiled out, on a
+  scene where none of it runs. Compiling out any one of the lateral fields, the search or the
+  filter's second lookup gave the 0.086 back, and so did writing the search's steps out with no
+  `for`: it is what the driver's compile does with the shader once a loop of dependent loads with
+  a data-dependent end is in it (W85's loop over eight beds did not cross it), not work done. So
+  `formation_find` is nine halvings written out, each skipped by one compare once the run is one
+  bed, and the header says why. **Anyone adding a loop over a table to the resolve should time a
+  scene that never runs it.**
+- **The slice index** (0.824 → 0.741 with the loop still in, 0.662 with it out). A lookup was a
+  binary search over the whole table, nine loads each waiting on the one before, four times a
+  pixel. Each table now carries 1,024 words, one a slice of its period: the first bed a coordinate
+  in the slice can be in and how many, **wherever the tops stand** (a base ranges over its start
+  plus the negative and the positive parts of its two amplitudes), with a margin of a millimetre
+  and 2^-18 of the period for the float that picks the slice. The search runs over that run: 1.2
+  beds a slice on a 264 m drawn section, 2.1 on 512 centimetre beds, so none or one step. It
+  finds the bed the search of the whole table finds (`formation_tests.cpp`, "the slice index":
+  3.8 million lookups over six tables at seven settings of the fields, none different). The table
+  is still the definition; the index is derived from it by `pack_formation_index` and costs 4,096
+  bytes a table (the block: 98,624 → 106,816 bytes).
+- **A box inside one bed is that bed's value** (0.662 → 0.628). The filter looked both ends of
+  its box up and differenced two integrals. Where the upper end is under the next bed's base in
+  the same period — most pixels of a near face — the answer is the bed's value, which is what the
+  difference gives to rounding, and nothing more is read. The twin keeps the difference always: it
+  is the definition, and the probe holds the shader's band to it at 4e-3.
+- **Division in 32 bits, and a member through its bed** (0.628 → 0.587). The remainders modulo the
+  period, the fold's wavelength and the lateral lattices are of `whole millimetres << 24`, so they
+  are the whole millimetres' by the modulus with the low 24 bits carried, and those fit 32 bits
+  while the frame's cell is within 2,147 km of the origin along the direction; the 64-bit form
+  stays for a frame further out and gives the same integers. A drawn formation's two periods are
+  one, so one remainder serves both; a lateral field takes its cell and its remainder from one
+  division where it took two. And a drawn formation's macro table **is** its members
+  (`k_formation_drawn` in the block's flags): a bed's `member` is the macro's index and a member
+  starts and ends where its first and last bed do, as the same floats, so where the box is inside
+  one bed the macro's value is read through the bed and the macro's own lookup, which would return
+  that number, is not made (`formation_tests.cpp`, "a drawn formation's macro table is its
+  members"; the one place the two could differ is a float's step wide, where a lens that is a
+  member's first bed has pinched out and the next bed's base, an f32 start plus an f32 amplitude,
+  rounds a step under the member's own).
+
+**What is left, feature by feature** (the shader before the last step, 50 m, one feature compiled
+out): the lateral fields 0.042 ms, the macro's lookup 0.034, the four int64 divisions 0.028, the
+fold 0.010, the fault 0.009; the band's two lookups 0.057 in all and the coordinate with its
+fields 0.078. **Tried and not kept:** the remainders by a float reciprocal and two exact int64
+corrections in place of `%` (no gain: 0.636 against 0.628). **Where the rest would come from:**
+everything integer in `formation_coordinate` — the two dot products, their remainders, the lateral
+lattices' cells — is a function of the frame's eye cell and the block, the same for every pixel of
+the frame, and is recomputed a pixel because `formation.slang` is handed nothing a frame. A record
+a frame beside `ResolveParams` would take it out; that is the resolve's file and not this row's.
+**The picture moved by rounding and no more**: the drawn scene's captures from W94's binary and
+this one, 1920 × 1080, differ by one step of 255 at most, in 1,452 pixels of 2,073,600 at 50 m,
+42 at 500 m and 589 in the valley — the pixels whose box lies inside one bed, where the bed's
+value now stands for the difference of two integrals that gave it to the last bit or two.
 
 **Why the precision holds at 10 km — and at 10,000.** No absolute position is formed
 (ADR-0053). The shader has the frame's eye cell and a float offset from its corner; the field's
