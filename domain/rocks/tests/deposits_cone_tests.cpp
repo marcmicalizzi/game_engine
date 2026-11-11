@@ -44,6 +44,12 @@ f64 rising(const void*, i64 x_mm, i64 z_mm) noexcept {
   return x < 24 ? .08 * (x - 24) : std::min((x - 24) * 2, crest);
 }
 f64 flat(const void*, i64, i64) noexcept { return 0; }
+// A planar face at 63 degrees (rise 2 over run 1) from x = 24 m, `*data` metres high, a plateau
+// above it and the same gently falling meadow below.
+f64 wall_of(const void* data, i64 x_mm, i64) noexcept {
+  const f64 x = static_cast<f64>(x_mm) / 1000.0, height = *static_cast<const f64*>(data);
+  return x < 24 ? .08 * (x - 24) : std::min((x - 24) * 2, height);
+}
 scene_gen::Ground ground(const int* gullies = nullptr) {
   scene_gen::Ground g;
   g.surface_fn = &gullied;
@@ -82,7 +88,7 @@ const DepositPile* pile_at(const DepositPlan& plan, u32 foot) {
 const DepositPile& largest(const DepositPlan& plan) {
   const DepositPile* best = &plan.piles[0];
   for (const auto& pile : plan.piles)
-    if (pile.volume_m3 > best->volume_m3) best = &pile;
+    if (pile.held_m3 > best->held_m3) best = &pile;
   return *best;
 }
 constexpr f64 k_repose = 0.70020753820970977;  // tan 35 degrees
@@ -140,6 +146,56 @@ TEST_CASE("deposits: a planar face's sheet follows the face's height and holds i
   CHECK(plan.piles.empty());
 }
 
+TEST_CASE("deposits: a buried face sheds nothing, so the talus never buries its wall") {
+  // Fisher (1866) and Lehmann (1933): the talus rises against the wall it is shed from and the
+  // part it buries sheds no more, so the exposed face shrinks as the talus grows (Sanders 2012's
+  // negative feedback; rocks.md, "How much a face sheds"). Under a planar face of height H at
+  // slope s, a foot's wedge holds what the face above its top shed: a h^2 = R sqrt(1 + s^2)
+  // (H - h) / s, with R the supply. The default supply on a 10 m and a 100 m face.
+  constexpr f64 k_face_slope = 2.0, k_a = .5 * (1.0 / k_repose - 1.0 / k_face_slope);
+  const f64 supply = static_cast<f64>(DepositLayer{}.supply_m);
+  f64 ratio[2] = {};
+  u32 which = 0;
+  for (f64 height : {10.0, 100.0}) {
+    DepositLayer p = layer();
+    p.region_min = {-40, 0};
+    p.region_max = {28 + height / 2, 48};
+    DepositPlan plan;
+    std::string error;
+    scene_gen::Ground g;
+    g.surface_fn = &wall_of;
+    g.context = &height;
+    REQUIRE_MESSAGE(plan_deposits(p, g, plan, error), error);
+    // The piles of the feet in the middle of the strip, away from its ends.
+    f64 sum = 0, shed = 0, face = 0;
+    u32 count = 0;
+    for (const auto& pile : plan.piles) {
+      const f64 z = static_cast<f64>(pile.z_mm) / 1000.0;
+      if (z < 20 || z > 28) continue;
+      sum += pile.height_m;
+      shed += pile.volume_m3;
+      face += pile.face_m2;
+      ++count;
+    }
+    REQUIRE(count > 0u);
+    const f64 h = sum / static_cast<f64>(count);
+    const f64 q = supply * std::sqrt(1.0 + k_face_slope * k_face_slope) / k_face_slope;
+    // a h^2 + q h - q H = 0, and with no feedback a h^2 = q H.
+    const f64 law = (-q + std::sqrt(q * q + 4 * k_a * q * height)) / (2 * k_a);
+    const f64 unburied = std::sqrt(q * height / k_a);
+    MESSAGE(height, " m face, supply ", supply, " m: the sheet stands ", h, " m (", h / height,
+            " of the wall); the law with the buried face shedding nothing ", law, " m, without it ",
+            unburied, " m; shed ", shed, " m3 of the ", supply * face, " m3 the whole face would");
+    CHECK(std::abs(h - law) < .06 * law);
+    CHECK(h < .95 * unburied);
+    CHECK(shed < supply * face);
+    CHECK(h < height);
+    ratio[which++] = h / height;
+  }
+  // The taller the wall, the less of it its talus buries (Lehmann's buried core).
+  CHECK(ratio[1] < ratio[0]);
+}
+
 TEST_CASE("deposits: a cone stands at each gully's mouth and a planar face makes none") {
   DepositPlan plan;
   std::string error;
@@ -149,6 +205,18 @@ TEST_CASE("deposits: a cone stands at each gully's mouth and a planar face makes
   p.supply_m = 1;
   REQUIRE_MESSAGE(plan_deposits(p, ground(), plan, error), error);
   REQUIRE(plan.piles.size() >= 3);
+  // What a planar foot of the same face sheds under the same rule (its face above its own pile;
+  // G143's third pass made a buried face shed nothing, so it is no longer the 13.4 m3 of its whole
+  // column).
+  DepositPlan planar;
+  const int flat_face = 0;
+  REQUIRE(plan_deposits(p, ground(&flat_face), planar, error));
+  f64 planar_foot = 0;
+  for (const auto& pile : planar.piles) {
+    const f64 z = static_cast<f64>(pile.foot / planar.width) * .5;
+    if (z >= 20 && z <= 28) planar_foot = std::max(planar_foot, pile.volume_m3);
+  }
+  REQUIRE(planar_foot > 0);
 
   // The funnels route their face to the feet in their mouths: the largest supply of each gully is
   // several times a planar foot's, and the deposit's top along the foot bulges there into a cone
@@ -166,7 +234,7 @@ TEST_CASE("deposits: a cone stands at each gully's mouth and a planar face makes
     }
     MESSAGE("gully at z ", c, ": its largest foot sheds ", most, " m3; its tallest pile ", tallest,
             " m over the foot, between gullies ", between, " m");
-    CHECK(most > 3.0 * 13.4);  // a planar foot of this face sheds 13.4 m2 x 1 m = 13.4 m3
+    CHECK(most > 3.0 * planar_foot);
     CHECK(tallest > between);
   }
   // A planar face: every foot gets the same column of face, so every pile is the same height
@@ -641,25 +709,33 @@ TEST_CASE("deposits: neighbouring patches' coarse forms meet along their border"
   REQUIRE_MESSAGE(build_deposit_container(a.patch, {}, 0, da, error), error);
   REQUIRE_MESSAGE(build_deposit_container(b.patch, {}, 0, db, error), error);
   const f64 span = .5 * static_cast<f64>(a.patch.width - 1);
-  u32 cuts = 0, gaps = 0;
-  f64 worst_gap = 0, worst_sag = 0, worst_sag_t = 0;
+  // The vertices a cut keeps on the shared line, in world millimetres (z, then y to 0.01 mm): where
+  // two cuts keep the same chain, their tops meet along it whatever they do inside.
+  auto chain = [&](const geometry::ClusterLodMesh& lod, f32 t, f64 x, const WorldPos& at) {
+    Vector<i64> out;
+    for (u32 k = 0; k < lod.mesh.clusters.size(); ++k) {
+      if (!in_cut(lod, k, t)) continue;
+      const auto& c = lod.mesh.clusters[k];
+      for (u32 q = 0; q < c.vertex_count; ++q) {
+        const Vec3 v = lod.mesh.vertices[c.vertex_offset + q];
+        if (std::abs(static_cast<f64>(v.x) - x) > 1e-5) continue;
+        out.push_back(std::llround((at.z + static_cast<f64>(v.z)) * 1000.0) * 100000000ll +
+                      std::llround((at.y + static_cast<f64>(v.y)) * 100000.0));
+      }
+    }
+    std::sort(out.begin(), out.end());
+    out.erase(std::unique(out.begin(), out.end()), out.end());
+    return out;
+  };
+  const Vector<i64> finest = chain(da.mesh, 0.0f, span, a.at);
+  REQUIRE(finest.size() > 20u);
+  u32 cuts = 0, parted = 0, lost = 0;
+  f64 worst_sag = 0, worst_sag_t = 0;
   for (f32 t : {0.0f, .005f, .02f, .05f, .1f, .25f, .5f, 1.0f}) {
     ++cuts;
-    // Along the shared line, a little in from each side, at every sample and between them.
-    for (u32 s = 0; s + 1 < 2 * a.patch.depth - 1; ++s) {
-      const f64 z = .25 * static_cast<f64>(s);
-      f64 ya = 0, yb = 0;
-      const bool ha = cut_top(da.mesh, t, span - 1e-4, z, ya);
-      const bool hb = cut_top(db.mesh, t, 1e-4, z, yb);
-      if (ha != hb) {
-        ++gaps;
-        continue;
-      }
-      if (!ha) continue;
-      const f64 gap = std::abs((a.at.y + ya) - (b.at.y + yb));
-      worst_gap = std::max(worst_gap, gap);
-      gaps += gap > 2e-3;
-    }
+    const Vector<i64> ca = chain(da.mesh, t, span, a.at), cb = chain(db.mesh, t, 0.0, b.at);
+    parted += ca == cb ? 0u : 1u;
+    lost += ca == finest ? 0u : 1u;
     // Inside the patch: the cut's top against the plan's at every sample with a bed.
     for (u32 i = 0; i < a.patch.width * a.patch.depth; ++i) {
       if (a.patch.thickness[i] <= .05f) continue;
@@ -677,11 +753,13 @@ TEST_CASE("deposits: neighbouring patches' coarse forms meet along their border"
       }
     }
   }
-  MESSAGE("patches ", best_a, " and ", best_b, ": ", cuts, " cuts, ", gaps,
-          " places along the border where the two tops part by over 2 mm or one is missing (worst ",
-          worst_gap, " m); worst sag of a cut below the plan's top past its own error ", worst_sag,
-          " m (at error ", worst_sag_t, ")");
-  CHECK(gaps == 0u);
+  MESSAGE("patches ", best_a, " and ", best_b, ": ", finest.size(),
+          " vertices on the shared line; of ", cuts, " cuts, ", parted,
+          " keep a different chain on the two sides and ", lost,
+          " lose a vertex of it; worst sag of a cut below the plan's top past its own error ",
+          worst_sag, " m (at error ", worst_sag_t, ")");
+  CHECK(parted == 0u);
+  CHECK(lost == 0u);
   CHECK(worst_sag < .05);
 }
 
@@ -713,7 +791,10 @@ TEST_CASE("deposits: G143's plan and a patch with blocks are their pinned bytes"
   // the opt-in cones (was 11798949088187083648).
   // Re-taken for the edge field (2026-11-10, stage 2): the outline's ring moved by world noise and
   // the bare samples' sink (was 8162223296658278579).
-  CHECK(h == 4874663829597876097ull);
+  // Re-taken for G143's third pass (2026-11-11): a buried face sheds nothing, the default supply is
+  // a temperate wall's 1.2 m, and a pile's surface is measured from where its top meets the face
+  // (was 4874663829597876097).
+  CHECK(h == 12819893177785769668ull);
   DepositPatch patch;
   patch.width = 5;
   patch.depth = 5;

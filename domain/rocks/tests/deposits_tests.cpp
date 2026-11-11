@@ -68,6 +68,9 @@ struct Opened {
 TEST_CASE("deposits: connected foot talus with a finite runout and no uphill blanket") {
   DepositLayer p = layer();
   p.sediment_depth_m = 0;
+  // An alpine wall's supply (G143's third pass moved the default to a temperate wall's 1.2 m, whose
+  // lower talus puts these samples on its concave toe): the upper slope is the repose angle.
+  p.supply_m = 3.5f;
   DepositPlan plan;
   std::string error;
   REQUIRE_MESSAGE(plan_deposits(p, ground(cliff), plan, error), error);

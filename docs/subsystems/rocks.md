@@ -1081,17 +1081,18 @@ from a version-1 layer, and one that set it to zero gets `supply_m` 0).
 **The rule.** What lies at a face's foot is what the face shed. Face area is routed down steepest
 descent (D8) through the steep samples (`source_deg`, 50), each adding its own surface area (its
 plan area times `sqrt(1 + slope²)`), until it reaches a gentle sample: its **foot**. A foot's
-**supply** is that area times `supply_m`, the wall's retreat since the ice left (default 3.5 m:
-Mohadjer et al.'s 0.27-0.38 mm a year from talus volumes over 11,000 years; range 0-50 m, the
+**supply** is the part of that area its pile has not buried times `supply_m`, the wall's retreat since
+the ice left (default 1.2 m by [How much a face sheds](#how-much-a-face-sheds); range 0-50 m, the
 published rates' 0.015-2 mm a year over the Holocene). Each foot spreads its own supply along the
 feet round it over its own pile's reach `r = h / tan(repose)` through a triangle kernel
 `(1 - d / r) / r`, which integrates to one along a line, so volume is conserved; a foot's pile is the
 wedge that holds what it receives, `h² a = q`, with `a = (1 / tan(repose) - 1 / tan(face)) / 2` the
 wedge's section against the face (the face's slope at the foot; at least `0.1 / tan(repose)`).
 Under a planar face `q` is the face's own supply per metre and the piles of neighbouring feet are
-one **sheet whose height goes as the root of the face's height above it**. A foot fed by a gully
+one **sheet**, `a h² + q h = q H` with `q` the supply a metre of the face's height `H` (it went as
+the root of the face's height before G143's third pass let the talus bury its face). A foot fed by a gully
 receives its volume `V` over `r`, so `h³ = V tan(repose) / a`: the half cone's `π h³ / (6 tan²)`
-within a few per cent, a **cone**, its neighbours on the kernel's flanks. Eight steps, each halfway
+within a few per cent, a **cone**, its neighbours on the kernel's flanks. Sixteen steps, each halfway
 to the law's height, settle every height together; no pile competes with another, so no step can
 run away (a first version that scaled each pile by what it won of the union let a few piles bury
 the rest). A pile never stands above the wall it fell from, nor more than 20 m (the patch's limit).
@@ -1168,6 +1169,36 @@ to its fragments and blocks; until then it does not clear the sward or the litte
 the decay, one correctly rounded square root for distances and areas, a fixed count of kernel steps
 updated together in pile order, splitmix64 per world candidate; the plan and a patch with a block
 are pinned (`deposits: G143's plan and a patch with blocks are their pinned bytes`).
+
+### How much a face sheds
+
+G143's third pass, 2026-11-11 ([grounding](../experiments/rockfall-deposits.md#g143s-third-pass-the-shading-fault-the-supply-by-setting-and-the-rubble-2026-11-11)).
+**A buried face sheds nothing.** Fisher (1866) and Lehmann (1933) model a talus rising against its
+wall: the part it buries stops shedding, so the exposed face shrinks as the talus grows and the
+talus can never bury the wall that feeds it (Sanders 2012: "perhaps no other depositional system
+with such a rigid negative feedback"). Each pile now knows the face samples routed to its foot and
+their heights over it, and sheds the supply of those above its own top only; the heights settle
+together as before. On a planar face of height `H` at slope `s` the sheet then stands at the root
+of `a h² + q h - q H = 0`, `q = R sqrt(1 + s²) / s`: the 10 m and 100 m faces of `deposits: a
+buried face sheds nothing, so the talus never buries its wall` stand 4.17 m and 15.4 m against the
+law's 4.12 and 15.6 (without the feedback the law gives 5.38 and 17.0, and the first pass's 3.5 m
+gave 9.1 m against a 10 m wall).
+
+**The pile's top meets the face between samples.** The apex was the last face sample under the
+pile's top and the surface was measured from it, so every pile stood up to half a spacing out from
+its face and held more than it shed: 12% more on the rising test face once the feedback made its
+piles lower. The surface is now measured from where the face reaches the top (`lead`, up the face
+from the apex sample by the face's slope), and the face holds 3.5% more than it shed.
+
+**The default is a temperate wall's Holocene, not an alpine wall's.** `supply_m` is 1.2 m: Hinchliffe
+and Ballantyne (1999) measured 4.3-7.8 m of retreat on a basalt escarpment since 17.5 ka, four
+fifths of it before 11.5 ka, and about 0.1 mm a year now, so the Holocene share is about 1.1-1.2 m.
+By setting: an alpine wall's Holocene, 3-4.2 m (Mohadjer et al. 2020's 0.27-0.38 mm a year over
+11 ka); a temperate wall since deglaciation, 4.3-7.8 m (Hinchliffe and Ballantyne); a wall in
+recent rockfall, Sanders' 7-18 mm a year for decades after the event. At 1.2 m a 10 m crag is
+buried 42% and a 100 m wall 15%; at the alpine 3.5 m, 59% and 25% (the talus' 20 m cap holds the
+latter at 20%). What sets it from the world (a layer's elevation, aspect and climate from
+`scene_gen::Site`, G144, and the age of the deglaciation) is not read yet; the field is the knob.
 
 ### The edge and the seams
 
