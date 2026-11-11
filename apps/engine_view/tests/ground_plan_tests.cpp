@@ -10,10 +10,13 @@
 // shapes — a tread's bands and a mouth's apron — keeping a later entry off them, the whole read and
 // the per-tile build placing the same points.
 //
-// The generators of this file's own: `r144-mouth`, a cave mouth's stand-in (an opening, optionally
-// a benched pad, and the opening's outline grown to its apron as the shape it occupies), and
-// `r144-probe`, which stands on every point of a lattice the exclusion leaves free — the one
-// question the sward, the scatter and the litter each ask of a candidate (`Context::excluded_mm`).
+// The generators of this file's own: `ground-plan-test-mouth`, a cave mouth's stand-in (an opening,
+// optionally a benched pad, and the opening's outline grown to its apron as the shape it occupies),
+// and `ground-plan-test-probe`, which stands on every point of a lattice the exclusion leaves free
+// — the one question the sward, the scatter and the litter each ask of a candidate
+// (`Context::excluded_mm`). Both carry `test` in their names: this executable is a host's, and
+// `<host>.generators` lets through only a registration a GENERATOR tag names or a test's own, told
+// by that word (apps/tests/host_generators_tests.cpp).
 #include <core/json/json.h>
 #include <core/schema/json_reflect.h>
 #include <domain/scene_gen/scene_gen.h>
@@ -47,7 +50,8 @@ f64 number(const JsonValue& params, const char* key, f64 otherwise) {
   return v;
 }
 
-// ---- r144-mouth ---------------------------------------------------------------------------------
+// ---- ground-plan-test-mouth
+// ---------------------------------------------------------------------------------
 
 struct Mouth {
   std::string name;
@@ -139,7 +143,7 @@ bool mouth_tile(void* state, scene_gen::TileCoord tile, const scene_gen::Context
   mouth_shape(m, out);
   return true;
 }
-constexpr scene_gen::PlacementGeneratorDesc k_mouth{.name = "r144-mouth",
+constexpr scene_gen::PlacementGeneratorDesc k_mouth{.name = "ground-plan-test-mouth",
                                                     .open = &mouth_open,
                                                     .close = &mouth_close,
                                                     .expand = &mouth_expand,
@@ -147,7 +151,8 @@ constexpr scene_gen::PlacementGeneratorDesc k_mouth{.name = "r144-mouth",
                                                     .plan_ground = &mouth_plan};
 const scene_gen::Registrar k_mouth_registrar{k_mouth};
 
-// ---- r144-probe ---------------------------------------------------------------------------------
+// ---- ground-plan-test-probe
+// ---------------------------------------------------------------------------------
 
 struct Probe {
   i64 step_mm = 500;
@@ -204,7 +209,7 @@ bool probe_tile(void* state, scene_gen::TileCoord tile, const scene_gen::Context
                out);
   return true;
 }
-constexpr scene_gen::PlacementGeneratorDesc k_probe{.name = "r144-probe",
+constexpr scene_gen::PlacementGeneratorDesc k_probe{.name = "ground-plan-test-probe",
                                                     .open = &probe_open,
                                                     .close = &probe_close,
                                                     .expand = &probe_expand,
@@ -242,7 +247,7 @@ std::string scene_text(const std::string& tiles_extra, const std::string& terrai
 const char* k_routes =
     R"({"generator":"routes","params":{"name":"way","region_min":[-28,-28],)"
     R"("region_max":[28,28],"routes":[{"name":"across","waypoints":[[-24,0,-20],[22,0,18]]}]}})";
-const char* k_probe_entry = R"({"generator":"r144-probe","params":{"step":0.5}})";
+const char* k_probe_entry = R"({"generator":"ground-plan-test-probe","params":{"step":0.5}})";
 
 renderer::SceneDesc read(const test::TempDir& tmp, const char* file, const std::string& text) {
   const std::string path = tmp.file(file);
@@ -337,9 +342,9 @@ TEST_CASE("ground plan: two entries that edit the ground each plan on the ground
   // Two pads that overlap by two metres (a's over x in [4, 16], b's over [14, 26]), one raised
   // over the hill and one sunk into it, each with its opening; and an authored hole.
   const std::string a =
-      R"({"generator":"r144-mouth","params":{"name":"a","x":10,"z":6,"half":3,"pad":14}})";
+      R"({"generator":"ground-plan-test-mouth","params":{"name":"a","x":10,"z":6,"half":3,"pad":14}})";
   const std::string b =
-      R"({"generator":"r144-mouth","params":{"name":"b","x":20,"z":6,"half":3,"pad":5}})";
+      R"({"generator":"ground-plan-test-mouth","params":{"name":"b","x":20,"z":6,"half":3,"pad":5}})";
   const std::string authored = R"(,"holes":[{"name":"shaft","center":[-30,0,-30],"radius_m":2}])";
   g_log.clear();
   const renderer::SceneDesc ab = read(tmp, "ab.json", scene_text("", authored, a + "," + b));
@@ -386,13 +391,13 @@ TEST_CASE("ground plan: a planned opening is the same polygon written as a hole"
       tmp, "planned.json",
       scene_text(
           "", "",
-          R"({"generator":"r144-mouth","params":{"name":"m","x":10.5,"z":-4.25,"half":2.5}})"));
+          R"({"generator":"ground-plan-test-mouth","params":{"name":"m","x":10.5,"z":-4.25,"half":2.5}})"));
   const renderer::SceneDesc pasted = read(
       tmp, "pasted.json",
       scene_text(
           "",
           R"(,"holes":[{"name":"m","polygon":[[8,0,-6.75],[8,0,-1.75],[13,0,-1.75],[13,0,-6.75]]}])",
-          R"({"generator":"r144-mouth","params":{"name":"m","x":10.5,"z":-4.25,"half":2.5,"hole":false}})"));
+          R"({"generator":"ground-plan-test-mouth","params":{"name":"m","x":10.5,"z":-4.25,"half":2.5,"hole":false}})"));
   REQUIRE(planned.terrain.holes.count() == 1);
   // The compiled holes hash every region's numbers, and the terrain's hash is what its meshes are
   // cached under: equal, the two scenes draw one terrain from one cache entry.
@@ -411,16 +416,17 @@ TEST_CASE("ground plan: a planned opening is the same polygon written as a hole"
 TEST_CASE("ground plan: an edit is refused where no tile set can take it") {
   const test::TempDir tmp("view_ground_plan_refused");
   const std::string path = tmp.file("waves.json");
-  REQUIRE(io::write_file_atomic(
-              path,
-              R"({"format":"engine.scene.v1","name":"waves","terrain":{"size":17,"extent":20},)"
-              R"("placements":[{"generator":"r144-mouth","params":{"name":"m","pad":1}}]})") ==
-          io::Status::Ok);
+  REQUIRE(
+      io::write_file_atomic(
+          path,
+          R"({"format":"engine.scene.v1","name":"waves","terrain":{"size":17,"extent":20},)"
+          R"("placements":[{"generator":"ground-plan-test-mouth","params":{"name":"m","pad":1}}]})") ==
+      io::Status::Ok);
   renderer::SceneDesc desc;
   std::string error;
   CHECK_FALSE(renderer::read_scene_file(path, desc, error));
   CHECK(error.find("placements 0") != std::string::npos);
-  CHECK(error.find("r144-mouth") != std::string::npos);
+  CHECK(error.find("ground-plan-test-mouth") != std::string::npos);
   CHECK(error.find("\"tiles\"") != std::string::npos);
 }
 
@@ -429,7 +435,7 @@ TEST_CASE(
   const test::TempDir tmp("view_ground_plan_shapes");
   write_hill(tmp);
   const std::string mouth =
-      R"({"generator":"r144-mouth","params":{"name":"m","x":-10,"z":7.5,"half":2,"apron":1.5}})";
+      R"({"generator":"ground-plan-test-mouth","params":{"name":"m","x":-10,"z":7.5,"half":2,"apron":1.5}})";
   const std::string entries = mouth + "," + k_routes + "," + k_probe_entry;
   // Read whole.
   const renderer::SceneDesc whole = read(tmp, "whole.json", scene_text("", "", entries));
