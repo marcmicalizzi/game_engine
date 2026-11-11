@@ -205,10 +205,13 @@ static_assert(offsetof(FormationHead, fault_q) == offsetof(FormationParams, faul
 static_assert(offsetof(FormationHead, fault_offset_mm) ==
               offsetof(FormationParams, fault_offset_mm));
 static_assert(offsetof(FormationHead, fault_throw_mm) == offsetof(FormationParams, fault_throw_mm));
-// The head of a packed block, copied out.
+// The head of a packed block, copied out. Through `void*`: both types are trivially copyable and
+// the asserts above hold their layouts together, but each has default member initializers, and
+// GCC's -Wclass-memaccess refuses a raw copy into such a type unless the cast says it is meant
+// (Clang and MSVC say nothing).
 inline FormationHead formation_head(const FormationParams& p) {
   FormationHead h;
-  std::memcpy(&h, &p, sizeof(h));
+  std::memcpy(static_cast<void*>(&h), static_cast<const void*>(&p), sizeof(h));
   return h;
 }
 
@@ -721,7 +724,7 @@ inline bool pack_formation(const scene::Formation& f, FormationParams& out, std:
   FormationHead head;
   Vector<FormationBedPlan> beds, members;
   const bool ok = pack_formation_head(f, head, beds, members, error);
-  std::memcpy(&out, &head, sizeof(head));
+  std::memcpy(static_cast<void*>(&out), static_cast<const void*>(&head), sizeof(head));
   formation_clear(out.beds);
   formation_clear(out.macro);
   if (!ok) return false;
