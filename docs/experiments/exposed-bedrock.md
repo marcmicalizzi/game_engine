@@ -370,3 +370,19 @@ a bedded gorge at a fall), a person would still object to:
   each bench.
 - **No picture of the far form.** A streamed run of the hillside drew the near form at every
   marker; whether the far form holds at its ring was not seen.
+
+**After G142c** (the same hillside, debug `engine-view`, a material pack of generated sets in place
+of the palm pack's yellow sandstone; beside reels r23 and r12):
+- **A block is a body at a walker's height.** The joints are open clefts with worn rims, some
+  blocks have crept out and settled, and the ledge stands on a rock riser, not on turf. It is
+  still a row of boxes: no curve, no moss on a bench, no stain down a face, one tiled set.
+- **From the valley a crag is a rock patch** where it was a few dashes; but its edge is the 1 m
+  lattice's, jagged against the turf, and the patch is flat, paint on the hill and not relief.
+- **The far form at its ring** (a streamed world of 32 m tiles, rings of 2, 4 and 6; the run's
+  world log: 4, 12 and 7 tiles in its rings, then 4, 12 and 6): risers drawn in the far form
+  z-fought with the terrain's coarser levels and showed as a grid of stripes, so they were taken
+  out of it. Without them the far form is what it was: thin level dashes 15 to 30 m long, the
+  stripes the near form left behind. A far form that answers to the near form's crags (a patch
+  of rock with steps in it) needs the risers in the ground's material, not over it.
+- **The plants stand through a riser** as they stand through a tread: nothing clears the cover
+  off rock.
