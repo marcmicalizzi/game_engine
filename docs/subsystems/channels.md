@@ -200,7 +200,11 @@ a bar reads apart from the bed. **A palette layer names its images outright**
 their files. W97's first pictures drew flat paint between the stones for that reason: their scene's
 layers named tints and no images, so nothing of the generated pack reached the ground; the same
 scene with the layers naming the sets draws the bed as a cobble texture between the drawn clasts
-(W97b's pictures). That is the scene's to say, not the generator's; a palette layer that names a
+(W97b's pictures). The same scene drew its whole valley, meadow and all, in the `sand` layer
+until its `masks.priors` named palette layers (`soil` `meadow`, `scree` `gravel`, `bedrock` and
+`snow` `soil`): with the priors left at their defaults, three of which the palette does not have,
+nothing refused the scene and the ground beyond the bed took the bars' sand. That is the terrain
+masks' to look at (a row this leaves). Both are the scene's to say, not the generator's; a palette layer that names a
 role and finds it in the pack is the terrain's to add (a row this leaves).
 
 ## Bed sediment
@@ -312,6 +316,25 @@ container (no image, eight materials, every cluster one of them, each mean albed
 and the shares of the triangles over two valleys within 0.05 of the table's (measured 0.456,
 0.250, 0.147, 0.147).
 
+### The stray triangle on the riffle (T98)
+
+W97's first pictures showed a flat triangle about 13 cm across standing out of open water on the
+scratch valley's riffle (`riffle-up`). Reproduced at the base (b8eb339a) with the same scene, its
+pixels and every pixel round them carry the trunk's water ribbon in the id buffer (instance 29,
+`water/valley link 4`, one triangle), so **no bed piece stood above the water's surface there**:
+the triangle is something under the surface that the water drew without its tint. At W97b, with
+every clast's position the same to the bit (the positions' pin did not move) and only the piece's
+materials and DAGs changed (eight, one a rock, where there was one), the same view shows no such
+triangle. The likely cause is therefore a coarser cluster of the one-DAG bed piece standing close
+under the surface (a simplified triangle bridging stones), drawn by the water's thin layer at full
+strength; a printed diagnosis over a 9,965-clast tile found about 1,250 of 494,000 coarser
+triangles standing more than twice their cluster's error plus 2 cm from the nearest finest vertex
+in both the old and the new DAGs (a loose measure: a vertex, not the surface), so the new DAGs do
+not remove the kind, only that one. **Not held by a case**: a test of "no bed triangle above the
+water where the bed is deeper than a stone's protrusion" needs the cut ground the tile set makes
+(`domain/tileset`'s edits), which this module's tests do not link; and how the water draws what
+lies a few millimetres under it is the water's (closed to this row).
+
 ### A tile's bed, laid when it activates
 
 (W97b, 2026-11-11; R142's contract, [scene_gen](scene_gen.md#a-tiles-meshes), ADR-0061.) Until
@@ -357,7 +380,8 @@ of 64 mm or more):
 | The busiest tile's clasts | 12,251 over about 452 m² (its share of the clasts times the bed's area: an estimate) |
 | Its finest form | 610,781 triangles: 1,352 a m² |
 | Its coarsest (the DAG's roots) | 17 triangles: the far form is the bed's material, the clasts gone |
-| Its activation (solve, cluster DAG) | 2.9 s |
+| Its activation (solve, cluster DAG) | 2.9 s (W97, at scene read); 4.1 s (W97b, `msvc-release`, 2026-11-11 13:40, the machine at 100 % CPU: eight DAGs, one a rock, at the tile's activation off the frame's thread) |
+| Its coarsest form since W97b | 275 triangles: the eight DAGs' roots |
 | W93's scratch scene (`engine-content channels`) | 65,611 clasts over 474 m of channel, 14 tiles |
 
 **Where the triangles go**: a clast under 128 mm is 48 triangles before those under the ground
@@ -365,8 +389,15 @@ are left out, and on a lognormal bed most clasts are the smallest drawn. 1,352 a
 times the deposits' finest (rocks.md, "Where the triangles go"); the cluster DAG draws a tile's
 far clasts coarse, and `clast_min_mm` is the knob (128 mm takes the count to about a quarter on
 such a bed). **Resident**: the plan's `ChannelSediment`, 32 bytes a point of line (64 bytes a
-metre at the 0.5 m step); `open` keeps each tile's recipe path and placement, not the clasts; a
-recipe is 12 integers a clast (about 60 bytes of JSON). What scales with the world: the plan, by
+metre at the 0.5 m step); since W97b `open` keeps each tile's recipe text in memory with its
+placement (12 integers a clast, about 60 bytes of JSON: about 0.7 MB for the busiest tile, 4 MB
+for the test valley's 66,253 clasts) instead of writing it, which is what scales with the bed's
+area before any tile is near. **Who pays the build**: a host that streams (the world's placements
+consumer) builds a tile's piece when the tile activates, off the frame's thread, and holds it while
+the tile is held; a host that reads a scene whole (`engine-view --scene` without streaming) still
+lists and builds every piece at load through `expand`, as the contract requires, so it measured
+5.5 s of meshes at load on W97's scratch valley where the base took 15.4 s, both on a cold cache
+and the machine loaded (an upper bound each). What scales with the world: the plan, by
 its length of channel; the recipes and meshes, by its area of bed.
 
 ## In a scene
