@@ -418,8 +418,10 @@ bool create_packed_cluster_set(const Device& device, const ClusterSetLimits& lim
       !create_buffer(device, scratch_bytes, k_structure_usage, false, scratch, error)) {
     return fail();
   }
+  // The input keeps a pointer to this (`opInput.pTriangleClusters`), so it outlives every command
+  // made below: inside `commands` it would be gone before the command that reads it was recorded.
+  VkClusterAccelerationStructureTriangleClusterInputNV triangles = triangle_input(limits);
   auto commands = [&](VkClusterAccelerationStructureOpModeNV mode) {
-    VkClusterAccelerationStructureTriangleClusterInputNV triangles = triangle_input(limits);
     VkClusterAccelerationStructureCommandsInfoNV info{};
     info.sType = VK_STRUCTURE_TYPE_CLUSTER_ACCELERATION_STRUCTURE_COMMANDS_INFO_NV;
     info.input = set_input(limits, triangles);
@@ -591,8 +593,11 @@ bool create_packed_cluster_templates(const Device& device, const ClusterSetLimit
       !create_buffer(device, scratch_bytes, k_structure_usage, false, scratch, error)) {
     return fail();
   }
+  // Outside `commands`, whose result points at it (`opInput.pTriangleClusters`): as a local of the
+  // lambda it was gone before the command was recorded, and the driver read a dead frame (R143
+  // found it in the packed cluster set, which lost the device where this had not).
+  VkClusterAccelerationStructureTriangleClusterInputNV triangles = triangle_input(limits);
   auto commands = [&](VkClusterAccelerationStructureOpModeNV mode, VkDeviceAddress implicit) {
-    VkClusterAccelerationStructureTriangleClusterInputNV triangles = triangle_input(limits);
     VkClusterAccelerationStructureCommandsInfoNV info{};
     info.sType = VK_STRUCTURE_TYPE_CLUSTER_ACCELERATION_STRUCTURE_COMMANDS_INFO_NV;
     info.input = op_input(limits, k_op, triangles);
