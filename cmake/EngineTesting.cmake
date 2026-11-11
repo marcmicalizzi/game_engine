@@ -71,22 +71,14 @@ target_compile_definitions(engine_test_main PRIVATE
 # Seconds per test source file, which a parted test's files are dealt by (_engine_test_parts in
 # cmake/EngineModule.cmake; docs/ci/what-to-run.md, "Parts dealt by cost"). One line a file,
 # `<test> <basename> <seconds>`; `#` starts a comment. tools/test-costs.ps1 writes it from a CTest
-# log of a run with doctest's `--duration=true`, which every module and end-to-end test has.
+# log of a run with doctest's `--duration=true`, which every module and end-to-end test has. The
+# reader and the deal are cmake/EngineTestDeal.cmake's, which needs no project, so the tool's
+# prediction and its test run the configure's own deal in script mode.
+include("${CMAKE_SOURCE_DIR}/cmake/EngineTestDeal.cmake")
 set(_engine_cost_file "${CMAKE_SOURCE_DIR}/cmake/test-costs.txt")
 if(EXISTS "${_engine_cost_file}")
   set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${_engine_cost_file}")
-  file(STRINGS "${_engine_cost_file}" _engine_cost_lines)
-  foreach(_line IN LISTS _engine_cost_lines)
-    string(REGEX REPLACE "#.*$" "" _line "${_line}")
-    string(STRIP "${_line}" _line)
-    if(_line STREQUAL "")
-      continue()
-    endif()
-    if(NOT _line MATCHES "^([A-Za-z0-9_.]+)[ \t]+([A-Za-z0-9_.+-]+)[ \t]+([0-9]+)$")
-      message(FATAL_ERROR "cmake/test-costs.txt: '${_line}' is not `<test> <basename> <whole seconds>`")
-    endif()
-    set_property(GLOBAL PROPERTY "ENGINE_TEST_COST:${CMAKE_MATCH_1}:${CMAKE_MATCH_2}" "${CMAKE_MATCH_3}")
-  endforeach()
+  engine_read_test_costs("${_engine_cost_file}")
 endif()
 
 #   _engine_test_directories(<dir> <out>)
@@ -317,11 +309,13 @@ if(ENGINE_PWSH)
   set_tests_properties(tools.game_sdk PROPERTIES LABELS "tools;e2e;gpu" RESOURCE_LOCK "e2e_apps"
     TIMEOUT ${_game_sdk_timeout} SKIP_RETURN_CODE 75)
 
-  # The cost table's writer (tools/test-costs.ps1, cmake/test-costs.txt) over a CTest log and a
-  # case-to-file map written in the test: no build and no GPU.
+  # The cost table's writer (tools/test-costs.ps1, cmake/test-costs.txt) over CTest logs and a
+  # case-to-file map written in the test, the configure's deal (cmake/EngineTestDeal.cmake) over
+  # fixture tables in script mode, and the prediction over a hand-written CTestTestfile: this
+  # build's cmake, no build of its own and no GPU.
   add_test(NAME tools.test_costs
     COMMAND "${ENGINE_PWSH}" -NoProfile -ExecutionPolicy Bypass
-            -File "${CMAKE_SOURCE_DIR}/tools/test-costs.Tests.ps1"
+            -File "${CMAKE_SOURCE_DIR}/tools/test-costs.Tests.ps1" -Cmake "${CMAKE_COMMAND}"
     WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
   set_tests_properties(tools.test_costs PROPERTIES LABELS "tools")
 else()
