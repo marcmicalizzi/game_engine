@@ -174,8 +174,11 @@ generated sets only by building them there.
 Every decision is a hash, an integer, IEEE `+ - * /`, `sqrt`, `floor` or the engine's own
 `det::exp`, `det::log`, `det::sin`, `det::cos`; the sRGB encode is the texture build's committed
 table. The build is single-threaded, so there is no thread count for the bytes to depend on.
-`matgen_tests.cpp` pins the four images' hash for six defaults at 256 texels, taken on MSVC.
-Nothing was needed that `core/math/deterministic.h` lacks: a normal draw is Box and Muller's
+`matgen_tests.cpp` pins the four images' hash for six defaults at 256 texels, taken on MSVC in
+`msvc-debug`. **The Linux containers had not run them when the row was handed
+back**: the machine's one container lock was held by other rows from 22:50 until the hand-back
+at 01:45, so that Clang and GCC reproduce the pins rests, until a gate's containers run, on the
+construction above and not on a log. Nothing was needed that `core/math/deterministic.h` lacks: a normal draw is Box and Muller's
 from `det::log` and `det::cos`, a cube root is `det::exp(det::log(x) / 3)`, a tangent
 `det::sin / det::cos`.
 
@@ -254,6 +257,34 @@ joining the manifest, the refusals; 1.1 s). Benchmarks: `tools/dev.ps1 bench -Fi
 
 **Performance notes.** Nothing here is in a frame: a set is built once per recipe by the
 command. Measured figures are in "What it measured" above.
+
+## What the sets look like, and what a person would object to
+
+Judged 2026-11-10 from the images themselves (base colour and normal at 1,024 squared), beside
+the owner's reference reels r03 and the cobble riffle's motion sheet (a clear river over
+cobbles, a pale gravel bar), r19 (a torrent among grey boulders under scree), r01 (meadow
+floors) and r23 (dark wet rock under moss). **Not judged in the engine**: the night's GPU lock
+was never had, so no set was seen lit, on a mesh, or at a distance; that is the first thing to
+do with them. The bar is a photograph, and none of these is one:
+
+- *`gravel/bed`* reads as a bed of rounded pebbles and small cobbles of several rocks, shingled
+  down the flow, some crossed by a vein. Beside r03: every clast is a clean oval of one tone —
+  no banding, pitting, weathering rings or broken faces; the reel's bed is olive-brown under
+  algae and silt where this is neutral grey; nothing is larger than 18 cm or half buried; the
+  sand between is uniform.
+- *`rock/scree`* reads as angular blocks over dark gaps with more blocks below. Beside r19:
+  each block is a convex polygon with one ridge, where talus is slabs and prisms with fracture
+  faces; the gaps are flat dark pools; there are no fines in pockets and no lichen on old
+  faces.
+- *`rock/granite`* reads as a speckled granite at arm's length. The lichen thalli read as
+  stamped patches of too even a colour, the fresh breaks as pale paint, the joints as pen
+  lines; there is no run-off staining and no form above the decimetre.
+- *`rock/granite_wet`* is the same face darker and smoother, evenly: no sheen that varies, no
+  drips, none of r23's moss in the joints.
+- *`ground/turf`* reads as mown turf from above. Beside r01 the leaves are straight needles of
+  one width with no clumps, curl, seed heads or forbs.
+- `sand/bar`, `rock/basalt`, `rock/limestone`, `rock/sandstone`, `ground/soil`, `ground/moss`
+  and `ground/thatch` were built and measured and not looked at closely.
 
 ## Not yet
 

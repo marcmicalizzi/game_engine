@@ -307,16 +307,17 @@ TEST_CASE("matgen: a recipe reads, refuses and keys") {
 }
 
 TEST_CASE("matgen: the same bytes from every toolchain") {
-  // Taken on MSVC (x86-64-v3, debug); Clang 18 and GCC 13 at v3 and GCC at v2 reproduce them
-  // (matgen.md, "Same bytes everywhere"). A change to the generator moves them and bumps
-  // k_matgen_version.
+  // Taken on MSVC (x86-64-v3, debug). The generator calls nothing a toolchain rounds its own way,
+  // so Clang and GCC, at v3 and at v2, are held to the same bytes; which of them has been run is
+  // on the page (matgen.md, "Same bytes everywhere"). A change to the generator moves these and
+  // bumps k_matgen_version.
   struct Pin {
     const char* role;
     u64 hash;
   };
   const Pin pins[] = {
       {"gravel/bed", 14327999565024624954ull},    {"rock/scree", 8687072859064289307ull},
-      {"sand/bar", 17923485152781687478ull},       {"rock/granite", 10653580526231192418ull},
+      {"sand/bar", 17923485152781687478ull},      {"rock/granite", 10653580526231192418ull},
       {"rock/sandstone", 1534237874609981072ull}, {"ground/turf", 4583399645411956302ull},
   };
   for (const Pin& pin : pins) {
