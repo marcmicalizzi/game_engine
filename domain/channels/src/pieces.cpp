@@ -1,7 +1,8 @@
-// What the network places (docs/subsystems/channels.md, "What it places"): each link cut into
-// pieces, each piece the boulders of its steps and clusters, every height decided here from the
-// ground and written into the piece's recipe; and the mesh generator "channel" that builds a recipe
-// into a closed, welded mesh and a container through the derived-data cache.
+// What the network places (docs/subsystems/channels.md, "What it places", "The clasts"): every
+// clast of the bed's sediment large enough to be drawn as geometry, and the steps' and cascades'
+// boulders, decided from the plan at whole millimetres and merged into one recipe a world tile;
+// and the mesh generator "channel" that builds a recipe into its mesh and a container through the
+// derived-data cache.
 #include "detail.h"
 
 #include <core/json/json.h>
@@ -14,6 +15,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cmath>
 #include <limits>
 #include <optional>
@@ -22,18 +24,49 @@ namespace engine::channels {
 namespace {
 using namespace detail;
 
-// How far a part's top stands off the ground where it meets it, so the two never fight for a
-// pixel.
-constexpr f64 k_lift_m = .02;
-constexpr u32 k_max_rows = 1025;
-constexpr u32 k_max_columns = 33;
-constexpr u32 k_max_slabs = 256;
+std::atomic<u64> g_pieces_solved{0};
+
+constexpr u32 k_max_clasts = 400000;  // a piece (a tile)
+// **The clasts' numbers** (W97; channels.md, "The clasts"; each one's source and status on the
+// grounding page, docs/experiments/channels.md, "Bed sediment"):
+// A station's strip across the bed is drawn in cells about this wide, each with its own zone and
+// grain sizes, and the sizes in bins this wide in psi (log2 of the size).
+constexpr f64 k_cell_m = .5;
+constexpr f64 k_bin_psi = .25;
+// Shape (Zingg 1935; Sneed & Folk 1958, not read: from memory, a design choice inside the usual
+// river-gravel range): b/a 0.7 +- 0.15, c/b 0.6 +- 0.2.
+constexpr f64 k_ba = .7, k_ba_spread = .15;
+constexpr f64 k_cb = .6, k_cb_spread = .2;
+// **Burial**: a clast protrudes over the bed around it by 0.36 of its b axis on average (Vazquez-
+// Tarrio et al. 2024, read in a secondary: 0.04 to 1, means 0.35 to 0.38), drawn from a triangle
+// 0.15 to 0.57; never more than 0.9 of its own height, so every clast is partly buried.
+constexpr f64 k_protrusion = .36, k_protrusion_spread = .21;
+constexpr f64 k_exposed_max = .9;
+// **Imbrication**: the a-b plane dips upstream by 10 to 30 degrees (often quoted; one secondary
+// measures 12 to 55, mean 34.5; the primary sources were not read), the a axis across the flow
+// within about 20 degrees (rolling clasts).
+constexpr f64 k_dip_lo = .17633, k_dip_hi = .57735;  // tan 10, tan 30 degrees
+constexpr f64 k_yaw_jitter = .35;
+// **Where on the section**: a bank's foot, the lower half of an outer bank or a riffle's bank; a
+// bar, the inner bank to 0.9 of its height; nowhere a bed lies more than 1.6 mean depths under the
+// bank's top (the deepest of a bend's pool, where the water is twice the mean deep); on the flood
+// bed, a quarter metre off the channel's lip and half a metre off the scarp's foot. Design
+// choices: none on a bank's lip, none on a scarp.
+constexpr f64 k_bank_foot = .5;
+constexpr f64 k_bar_top = .1;
+constexpr f64 k_pool_depths = 1.6;
+constexpr f64 k_lip_m = .25;
+constexpr f64 k_scarp_m = .5;
+// **The bar's sorting** (Rice & Church 2010, the abstract: the surface median fines a third from
+// head to tail): 1.2 of the reach's median at the head, 0.8 at the tail. The flood bed's surface is
+// the tail's (a design choice: a flood bed is built of what the bars leave).
+constexpr f64 k_bar_head = 1.2, k_bar_tail = .8;
+constexpr f64 k_flood_bed = .8;
 
 struct Frame {
   f64 x, z;    // the line's point
   f64 nx, nz;  // its left normal
   f64 s;       // metres along the link
-  f64 kappa;   // signed curvature, 1/m: positive turns toward the normal
 };
 
 Vector<Frame> frames_of(const ChannelLink& link) {
@@ -45,17 +78,11 @@ Vector<Frame> frames_of(const ChannelLink& link) {
     const f64 tl = std::sqrt(tx * tx + tz * tz);
     tx = tl > 0 ? tx / tl : 1.0;
     tz = tl > 0 ? tz / tl : 0.0;
-    f[i] = {link.line[i].at.x, link.line[i].at.z, -tz, tx, 0.0, 0.0};
+    f[i] = {link.line[i].at.x, link.line[i].at.z, -tz, tx, 0.0};
     if (i > 0) {
       const f64 dx = f[i].x - f[i - 1].x, dz = f[i].z - f[i - 1].z;
       f[i].s = f[i - 1].s + std::sqrt(dx * dx + dz * dz);
     }
-  }
-  for (u32 i = 1; i + 1 < m; ++i) {
-    const f64 ax = f[i].x - f[i - 1].x, az = f[i].z - f[i - 1].z;
-    const f64 bx = f[i + 1].x - f[i].x, bz = f[i + 1].z - f[i].z;
-    const f64 la = std::sqrt(ax * ax + az * az), lb = std::sqrt(bx * bx + bz * bz);
-    if (la > 0 && lb > 0) f[i].kappa = (ax * bz - az * bx) / (la * lb) / (.5 * (la + lb));
   }
   return f;
 }
@@ -69,23 +96,6 @@ ChannelSurface surface_of(const ChannelSurface& s, std::array<f32, 3> color, f32
   return out;
 }
 
-struct Builder {
-  const ChannelLayer& p;
-  const scene_gen::Ground& ground;
-  f64 y0 = 0;
-  i64 x0 = 0, z0 = 0;
-  f64 ground_local(f64 x, f64 z, i64& xm, i64& zm) const {
-    xm = scene_gen::nearest_mm(x);
-    zm = scene_gen::nearest_mm(z);
-    return ground.surface_mm(xm, zm) - y0;
-  }
-  void vertex(ChannelSlab& slab, f64 x, f64 z, f64 top, f64 bottom) const {
-    slab.x.push_back(static_cast<f32>(x - static_cast<f64>(x0) / 1000.0));
-    slab.z.push_back(static_cast<f32>(z - static_cast<f64>(z0) / 1000.0));
-    slab.top.push_back(static_cast<f32>(top));
-    slab.bottom.push_back(static_cast<f32>(bottom));
-  }
-};
 // The bed a reach's boulders stand across: the cut's flat bed between its banks' toes
 // (detail::bend_section), a quarter of the width where the section is a V, so a narrow gully still
 // has room for a clast at its bottom.
@@ -93,26 +103,118 @@ f64 bed_width(const ChannelLayer& p, const ChannelPoint& pt, f64 asym, f64 swell
   const BendSection s = bend_section(p, wide(pt.width_m), wide(pt.depth_m), asym, swell);
   return std::max(.25 * s.width, s.bed);
 }
+
+// Lays one clast: its frame from the flow's, its burial from the ground under it.
+struct Layer {
+  const scene_gen::Ground& ground;
+  Vector<Clast>& out;
+  bool lay(Rng& draw, const Frame& f, f64 x, f64 z, f64 b_m, f64 roundness, u8 zone, f32 bar,
+           u32 link, u32 point) {
+    // Every number the recipe keeps is rounded first (millimetres, ten-thousandths), so what the
+    // burial below is decided from is what the mesh is built from.
+    const auto mm = [](f64 v) { return static_cast<f64>(scene_gen::nearest_mm(v)) / 1000; };
+    const f64 B = std::max(.002, mm(.5 * b_m));
+    const f64 A = std::max(B, mm(B / (k_ba + k_ba_spread * (2 * draw.unit() - 1))));
+    const f64 C = std::clamp(mm(B * (k_cb + k_cb_spread * (2 * draw.unit() - 1))), .001, B);
+    // The a axis across the flow (the left normal), turned a little toward the flow; then b, which
+    // the recipe derives as (a.z, -a.x), points downstream.
+    const f64 tx = f.nz, tz = -f.nx;  // downstream
+    const f64 jitter = k_yaw_jitter * (2 * draw.unit() - 1);
+    f64 ax = f.nx + jitter * tx, az = f.nz + jitter * tz;
+    const f64 al = std::sqrt(ax * ax + az * az);
+    ax = static_cast<f64>(std::llround(ax / al * 10000)) / 10000;
+    az = static_cast<f64>(std::llround(az / al * 10000)) / 10000;
+    const f64 dip =
+        static_cast<f64>(std::llround((k_dip_lo + (k_dip_hi - k_dip_lo) * draw.unit()) * 10000)) /
+        10000;
+    // The b axis rises downstream by `dip`; its height and c's are what stand the clast up.
+    const f64 bl = std::sqrt(1 + dip * dip);
+    const f64 by = dip / bl, cy = 1 / bl;  // c = a x b: its y is the b axis's horizontal share
+    const f64 hv = std::sqrt(B * by * B * by + C * cy * C * cy);
+    const auto at = [&](f64 px, f64 pz) {
+      return ground.surface_mm(scene_gen::nearest_mm(px), scene_gen::nearest_mm(pz));
+    };
+    const i64 xm = scene_gen::nearest_mm(x), zm = scene_gen::nearest_mm(z);
+    const f64 g = ground.surface_mm(xm, zm);
+    f64 low = g;
+    for (const f64 sa : {-1.0, 1.0}) {
+      low = std::min(low, at(x + sa * A * ax, z + sa * A * az));
+      low = std::min(low, at(x + sa * B * az, z - sa * B * ax));
+    }
+    if (!std::isfinite(g) || !std::isfinite(low)) return false;
+    const f64 share = k_protrusion + k_protrusion_spread * (draw.unit() + draw.unit() - 1);
+    const f64 exposed = std::min(share * b_m, k_exposed_max * 2 * hv);
+    Clast c;
+    c.ground_mm = static_cast<i64>(std::floor(low * 1000));
+    // None floating: its lowest point at least 10 mm under the lowest ground beneath it, in the
+    // recipe's own millimetres.
+    const i64 hv_mm = static_cast<i64>(std::ceil(hv * 1000));
+    c.y_mm = std::min(scene_gen::nearest_mm(g + exposed - hv), c.ground_mm - 10 + hv_mm - 1);
+    c.x_mm = xm;
+    c.z_mm = zm;
+    c.a_mm = scene_gen::nearest_mm(A);
+    c.b_mm = scene_gen::nearest_mm(B);
+    c.c_mm = scene_gen::nearest_mm(C);
+    c.ax = ax;
+    c.az = az;
+    c.dip = dip;
+    c.roundness = static_cast<f64>(std::llround(roundness * 1000)) / 1000;
+    c.seed = static_cast<u32>(draw.next() >> 33);
+    c.zone = zone;
+    c.bar = bar;
+    c.link = link;
+    c.point = point;
+    out.push_back(c);
+    return true;
+  }
+};
+
+i32 narrow(i64 v) {
+  return static_cast<i32>(
+      std::clamp<i64>(v, std::numeric_limits<i32>::min(), std::numeric_limits<i32>::max()));
+}
 }  // namespace
 
-// **What is placed is what is an object of its own** (W93, continued; channels.md, "What it
-// places"): the boulders of a step-pool reach's steps and of a cascade's clusters. The bed and
-// the bars are the ground's — the cut's flat bed, its point bars and its flood bed — and nothing
-// is laid on them: W86's bed slab and bar lens, and W93's skins after them, stood on the ground as
-// plates wherever their line was not the cut's, and with one plan there is no second line to lay
-// them from and no reason to lay them.
+Clast clast_of(const ChannelPiece& piece, u32 index) {
+  Clast c;
+  const i32* v = piece.clasts.data() + static_cast<usize>(index) * k_clast_ints;
+  c.x_mm = v[0];
+  c.y_mm = v[1];
+  c.z_mm = v[2];
+  c.ground_mm = v[3];
+  c.a_mm = v[4];
+  c.b_mm = v[5];
+  c.c_mm = v[6];
+  c.ax = static_cast<f64>(v[7]) / 10000;
+  c.az = static_cast<f64>(v[8]) / 10000;
+  c.dip = static_cast<f64>(v[9]) / 10000;
+  c.roundness = static_cast<f64>(v[10]) / 1000;
+  c.seed = static_cast<u32>(v[11]);
+  return c;
+}
+
+// **What is placed** (W97; channels.md, "What it places", "The clasts"): the clasts of the bed's
+// sediment from `clast_min_mm` up, at the density its distribution says, and the boulders of the
+// steps and cascades, every one decided from the plan (its station, its cell across the section,
+// its size bin and its draw), so a clast is the same whichever tile came first and whatever the
+// tile's size; then one piece a world tile.
 bool place_pieces(const ChannelLayer& p, const ChannelNetwork& n, const scene_gen::Ground& ground,
-                  f32 tile_size, Vector<PlacedPiece>& out, std::string& error) {
+                  f32 tile_size, Vector<PlacedPiece>& out, std::string& error, ClastLog* log) {
   out.clear();
+  if (log) *log = {};
   if (!(tile_size >= .25f && tile_size <= 100000.0f)) return fail(error, "tile_size");
   const i64 tile_mm = scene_gen::nearest_mm(wide(tile_size));
-  u32 id = 0;
-  const ChannelSurface boulder_look =
+  const ChannelSurface look =
       surface_of(p.boulders, {.45f, .44f, .42f}, 1.2f, std::array<f32, 3>{.7f, .68f, .65f});
-  for (const ChannelLink& link : n.links) {
-    // W90: a tributary's pieces stop at the trunk's banks (`keep`).
+  const f64 psi_min = log2_of(std::max(1.0, wide(p.clast_min_mm)) / 1000.0);
+  Vector<Clast> all;
+  Layer layer{ground, all};
+  f64 area[k_clast_zones] = {};
+  for (u32 k = 0; k < n.links.size(); ++k) {
+    const ChannelLink& link = n.links[k];
+    // W90: a tributary's clasts stop at the trunk's banks (`keep`).
     const u32 m = std::min<u32>(link.keep, link.line.size());
-    if (m < 2 || (link.step_at.empty() && link.cluster_at.empty())) continue;
+    if (m < 2 || link.sediment.size() != link.line.size()) continue;
     auto reach_at = [&](u32 i) {
       return i < link.reach.size() ? static_cast<ChannelReach>(link.reach[i])
                                    : ChannelReach::PoolRiffle;
@@ -123,249 +225,387 @@ bool place_pieces(const ChannelLayer& p, const ChannelNetwork& n, const scene_ge
     auto swell_at = [&](u32 i) {
       return shaped && i < link.swell.size() ? wide(link.swell[i]) : 0.0;
     };
-    const u32 pieces = std::max<u32>(1, static_cast<u32>(std::ceil(f[m - 1].s / wide(p.piece_m))));
-    // (`f` covers the whole line; the pieces cover its first `m` points.)
-    for (u32 k = 0; k < pieces; ++k) {
-      const u32 r0 = static_cast<u32>(static_cast<u64>(k) * (m - 1) / pieces);
-      const u32 r1 = static_cast<u32>(static_cast<u64>(k + 1) * (m - 1) / pieces);
-      if (r1 <= r0) continue;
-      Builder b{p, ground, 0.0, 0, 0};
-      b.x0 = scene_gen::nearest_mm(f[r0].x);
-      b.z0 = scene_gen::nearest_mm(f[r0].z);
-      b.y0 = ground.surface_mm(b.x0, b.z0);
-      PlacedPiece piece;
-      piece.origin =
-          WorldPos{static_cast<f64>(b.x0) / 1000.0, b.y0, static_cast<f64>(b.z0) / 1000.0};
-      const i64 tx = floor_div(b.x0, tile_mm), tz = floor_div(b.z0, tile_mm);
-      if (tx < std::numeric_limits<i32>::min() || tx > std::numeric_limits<i32>::max() ||
-          tz < std::numeric_limits<i32>::min() || tz > std::numeric_limits<i32>::max())
-        return fail(error, "tile coordinate (out of range)");
-      piece.tile = {static_cast<i32>(tx), static_cast<i32>(tz)};
-      // The steps' boulders (W90): at each step-pool crest in this piece, a row of domes across
-      // the bed, each about the step's height across (the clasts that hold a step up are of its
-      // height: Chin 1999), a stated jitter of a fifth of that along and across, their tops 0.6 of
-      // their width over the ground at the lip and their bottoms buried a third. A cascade's
-      // clusters (W91): one to three clasts of the cluster's size, anywhere across the bed and a
-      // size along it, so no two clusters line up.
-      piece.recipe.part = ChannelPart::Boulder;
-      piece.recipe.uv_origin = {static_cast<f32>(static_cast<f64>(b.x0 % 1024000) / 1000.0),
-                                static_cast<f32>(static_cast<f64>(b.z0 % 1024000) / 1000.0)};
-      piece.recipe.surface = boulder_look;
-      auto dome = [&](u32 i, f64 d, f64 lateral, f64 along) {
-        const f64 cx = f[i].x + f[i].nx * lateral + f[i].nz * along;
-        const f64 cz = f[i].z + f[i].nz * lateral - f[i].nx * along;
-        ChannelSlab slab;
-        slab.rows = 7;
-        slab.columns = 7;
-        for (u32 rr = 0; rr < 7; ++rr)
-          for (u32 cc = 0; cc < 7; ++cc) {
-            const f64 u = static_cast<f64>(rr) / 3.0 - 1, v = static_cast<f64>(cc) / 3.0 - 1;
-            const f64 x = cx + .5 * d * (f[i].nz * u + f[i].nx * v);
-            const f64 z = cz + .5 * d * (-f[i].nx * u + f[i].nz * v);
-            i64 xm = 0, zm = 0;
-            const f64 g = b.ground_local(x, z, xm, zm);
-            const f64 top = std::sqrt(std::max(0.0, 1 - .5 * (u * u + v * v)));
-            b.vertex(slab, x, z, g + k_lift_m + .6 * d * top, g - d / 3);
+    // ---- the bed's sediment, station by station -------------------------------------------------
+    for (u32 i = 0; i < m; ++i) {
+      if (i < link.knick.size() && link.knick[i]) continue;  // the water falls there
+      const ChannelSediment& sd = link.sediment[i];
+      const f64 ds = .5 * (f[std::min(i + 1, m - 1)].s - f[i > 0 ? i - 1 : 0].s);
+      if (!(ds > 0)) continue;
+      const ChannelPoint& pt = link.line[i];
+      const f64 asym = asym_at(i);
+      const BendSection sec =
+          bend_section(p, wide(pt.width_m), wide(pt.depth_m), asym, swell_at(i));
+      if (!(sec.width > 0)) continue;
+      const f64 half = .5 * sec.width;
+      const f64 deep = sec.thalweg + sec.pool;
+      const f64 mean = wide(pt.depth_m) * wide(pt.width_m) / sec.width;
+      const f64 fl = i < link.flood_left.size() ? wide(link.flood_left[i]) : 0.0;
+      const f64 fr = i < link.flood_right.size() ? wide(link.flood_right[i]) : 0.0;
+      const f64 lo = -std::max(half, fr), hi = std::max(half, fl);
+      const u32 cells = std::max<u32>(1, static_cast<u32>(std::ceil((hi - lo) / k_cell_m)));
+      const f64 cw = (hi - lo) / static_cast<f64>(cells);
+      const f64 factor = reach_at(i) == ChannelReach::Bedrock ? .3 : 1.0;
+      const f64 sigma = std::max(.1, wide(sd.sorting));
+      for (u32 c = 0; c < cells; ++c) {
+        const f64 o = lo + (static_cast<f64>(c) + .5) * cw;  // left positive
+        u8 zone = 0;
+        f64 scale = 1;
+        if (std::fabs(o) <= half) {
+          // The section's depth under the bank's top here: its two banks and the flat bed.
+          const f64 depth =
+              std::min({deep, (half - o) * sec.slope_left, (o + half) * sec.slope_right});
+          if (depth > k_pool_depths * mean) continue;
+          const bool bar_side = sd.bar >= 0 && (asym > 0 ? o > 0 : o < 0);
+          if (depth < deep * (1 - 1e-9)) {
+            if (bar_side) {
+              if (depth < k_bar_top * deep) continue;
+              zone = 1;
+            } else {
+              if (depth < k_bank_foot * deep) continue;
+              zone = 2;
+            }
+          } else if (bar_side) {
+            zone = 1;
           }
-        piece.recipe.slabs.push_back(std::move(slab));
-      };
-      const u32 last = r1 + (k + 1 == pieces ? 1u : 0u);
-      for (u32 q = 0; q < link.step_at.size(); ++q) {
-        const u32 i = link.step_at[q];
-        if (i < r0 || i >= last || i >= m) continue;
-        if (reach_at(i) != ChannelReach::StepPool) continue;
-        const ChannelPoint& pt = link.line[i];
-        const f64 bed_w = bed_width(p, pt, asym_at(i), swell_at(i));
-        const f64 size = std::clamp(wide(link.step_height[q]), .25, 1.5);
-        const u32 count = std::max<u32>(1, static_cast<u32>(std::lround(bed_w / size)));
-        Rng draw(hash_combine(link.seed, 0xb0u + i));
-        for (u32 c = 0; c < count && piece.recipe.slabs.size() < k_max_slabs; ++c) {
-          const f64 d = size * (.8 + .4 * draw.unit());
-          const f64 across = (static_cast<f64>(c) + .5) / static_cast<f64>(count) - .5;
-          const f64 lateral = across * bed_w + .2 * size * (2 * draw.unit() - 1);
-          const f64 along = .2 * size * (2 * draw.unit() - 1);
-          dome(i, d, lateral, along);
+          if (zone == 1) scale = k_bar_head + (k_bar_tail - k_bar_head) * wide(sd.bar);
+        } else {
+          const f64 reach = o > 0 ? fl : fr;
+          if (std::fabs(o) < half + k_lip_m || std::fabs(o) > reach - k_scarp_m) continue;
+          zone = 3;
+          scale = k_flood_bed;
         }
-        // **The step's ends** (W93, continued; channels.md, "The steep reaches"): a step is a
-        // channel-spanning accumulation jammed between the banks, and the clasts at its two ends
-        // are the largest and stand half in the bank. One each side, 1 to 1.5 of the step's clast
-        // across, its centre a third of itself past the bed's edge: the rocks that break the
-        // bank's line.
-        for (const f64 side : {-1.0, 1.0}) {
-          if (piece.recipe.slabs.size() >= k_max_slabs) break;
-          const f64 d = size * (1 + .5 * draw.unit());
-          const f64 along = .3 * size * (2 * draw.unit() - 1);
-          dome(i, d, side * (.5 * bed_w + .35 * d), along);
-        }
-      }
-      for (u32 q = 0; q < link.cluster_at.size(); ++q) {
-        const u32 i = link.cluster_at[q];
-        if (i < r0 || i >= last || i >= m) continue;
-        const f64 bed_w = bed_width(p, link.line[i], asym_at(i), swell_at(i));
-        const f64 size = wide(link.cluster_size[q]);
-        Rng draw(hash_combine(link.seed, 0xc1u + i));
-        const u32 count = 1 + static_cast<u32>(draw.unit() * 3.0);
-        for (u32 c = 0; c < count && piece.recipe.slabs.size() < k_max_slabs; ++c) {
-          const f64 d = size * (.7 + .6 * draw.unit());
-          const f64 lateral = (draw.unit() - .5) * std::max(0.0, bed_w - .5 * d);
-          const f64 along = size * (2 * draw.unit() - 1);
-          dome(i, d, lateral, along);
-        }
-        // And at about half the clusters a clast against one bank, as the steps' ends are.
-        if (draw.unit() < .5 && piece.recipe.slabs.size() < k_max_slabs) {
-          const f64 side = draw.unit() < .5 ? -1.0 : 1.0;
-          const f64 d = size * (.9 + .5 * draw.unit());
-          dome(i, d, side * (.5 * bed_w + .35 * d), size * (2 * draw.unit() - 1));
+        area[zone] += cw * ds;
+        const f64 psi50 = log2_of(wide(sd.d50_m) * scale);
+        const f64 psi_top = psi50 + 2.5 * sigma;
+        Rng draw(hash_combine(hash_combine(link.seed, 0x5ed0000ull + i), c));
+        for (f64 b0 = psi_min; b0 < psi_top; b0 += k_bin_psi) {
+          const f64 b1 = std::min(b0 + k_bin_psi, psi_top);
+          const f64 share = normal_cdf((b1 - psi50) / sigma) - normal_cdf((b0 - psi50) / sigma);
+          const f64 size = exp2_of(.5 * (b0 + b1));
+          // A clast covers pi/4 a b of the bed seen from above, a = b / (b/a).
+          const f64 each = .25 * k_pi * size * size / k_ba;
+          const f64 expect = share * factor * cw * ds / each;
+          const u32 count = static_cast<u32>(expect + draw.unit());
+          for (u32 q = 0; q < count; ++q) {
+            const f64 b = exp2_of(b0 + (b1 - b0) * draw.unit());
+            const f64 lateral = o + (draw.unit() - .5) * cw;
+            const f64 along = (draw.unit() - .5) * 2 * ds;
+            const f64 tx = f[i].nz, tz = -f[i].nx;
+            if (!layer.lay(draw, f[i], f[i].x + f[i].nx * lateral + tx * along,
+                           f[i].z + f[i].nz * lateral + tz * along, b, wide(sd.roundness), zone,
+                           zone == 1 ? sd.bar : -1.0f, k, i))
+              return fail(error, "ground under a clast (not finite)");
+          }
         }
       }
-      if (!piece.recipe.slabs.empty()) {
-        piece.id = ++id;
-        out.push_back(std::move(piece));
+    }
+    // ---- the steps' keystones and the cascades' clusters (W90, W91; sized since W97 by the
+    // reach's distribution: a step's clasts are about its D84 to D97.7, the keystone of the step
+    // its D84 or larger, read in a secondary)
+    // -------------------------------------------------------
+    auto keystone = [&](Rng& draw, u32 i) {
+      const ChannelSediment& sd = link.sediment[i];
+      const f64 psi84 = log2_of(wide(sd.d84_m));
+      const f64 psi98 = log2_of(wide(sd.d50_m)) + 2 * wide(sd.sorting);
+      return std::clamp(exp2_of(psi84 + (psi98 - psi84) * draw.unit()), .2, 2.0);
+    };
+    for (u32 q = 0; q < link.step_at.size(); ++q) {
+      const u32 i = link.step_at[q];
+      if (i >= m || reach_at(i) != ChannelReach::StepPool) continue;
+      const f64 bed_w = bed_width(p, link.line[i], asym_at(i), swell_at(i));
+      Rng draw(hash_combine(link.seed, 0xb0u + i));
+      const f64 typical = keystone(draw, i);
+      const u32 count = std::max<u32>(1, static_cast<u32>(std::lround(bed_w * k_ba / typical)));
+      for (u32 c = 0; c < count; ++c) {
+        const f64 b = keystone(draw, i);
+        const f64 across = (static_cast<f64>(c) + .5) / static_cast<f64>(count) - .5;
+        const f64 lateral = across * bed_w + .2 * b * (2 * draw.unit() - 1);
+        const f64 along = .2 * b * (2 * draw.unit() - 1);
+        const f64 tx = f[i].nz, tz = -f[i].nx;
+        if (!layer.lay(draw, f[i], f[i].x + f[i].nx * lateral + tx * along,
+                       f[i].z + f[i].nz * lateral + tz * along, b, wide(link.sediment[i].roundness),
+                       4, -1.0f, k, i))
+          return fail(error, "ground under a clast (not finite)");
+      }
+      // **The step's ends** (W93): a clast each side, half in the bank: the rocks that break the
+      // bank's line.
+      for (const f64 side : {-1.0, 1.0}) {
+        const f64 b = keystone(draw, i);
+        const f64 lateral = side * (.5 * bed_w + .35 * b / k_ba);
+        const f64 along = .3 * b * (2 * draw.unit() - 1);
+        const f64 tx = f[i].nz, tz = -f[i].nx;
+        if (!layer.lay(draw, f[i], f[i].x + f[i].nx * lateral + tx * along,
+                       f[i].z + f[i].nz * lateral + tz * along, b, wide(link.sediment[i].roundness),
+                       4, -1.0f, k, i))
+          return fail(error, "ground under a clast (not finite)");
+      }
+    }
+    for (u32 q = 0; q < link.cluster_at.size(); ++q) {
+      const u32 i = link.cluster_at[q];
+      if (i >= m) continue;
+      const f64 bed_w = bed_width(p, link.line[i], asym_at(i), swell_at(i));
+      Rng draw(hash_combine(link.seed, 0xc1u + i));
+      const u32 count = 1 + static_cast<u32>(draw.unit() * 3.0);
+      const bool against_bank = draw.unit() < .5;
+      for (u32 c = 0; c < count + (against_bank ? 1u : 0u); ++c) {
+        const f64 b = keystone(draw, i);
+        const bool bank = c == count;
+        const f64 lateral = bank ? (draw.unit() < .5 ? -1.0 : 1.0) * (.5 * bed_w + .35 * b / k_ba)
+                                 : (draw.unit() - .5) * std::max(0.0, bed_w - .5 * b / k_ba);
+        const f64 along = b * (2 * draw.unit() - 1);
+        const f64 tx = f[i].nz, tz = -f[i].nx;
+        if (!layer.lay(draw, f[i], f[i].x + f[i].nx * lateral + tx * along,
+                       f[i].z + f[i].nz * lateral + tz * along, b, wide(link.sediment[i].roundness),
+                       5, -1.0f, k, i))
+          return fail(error, "ground under a clast (not finite)");
       }
     }
   }
-  for (const PlacedPiece& piece : out)
+  // ---- one piece a tile, the tiles by z then x, each tile's clasts in the order laid ------------
+  Vector<u32> order(all.size());
+  Vector<i64> tile_x(all.size()), tile_z(all.size());
+  for (u32 c = 0; c < all.size(); ++c) {
+    order[c] = c;
+    tile_x[c] = floor_div(all[c].x_mm, tile_mm);
+    tile_z[c] = floor_div(all[c].z_mm, tile_mm);
+  }
+  std::sort(order.begin(), order.end(), [&](u32 a, u32 b) {
+    if (tile_z[a] != tile_z[b]) return tile_z[a] < tile_z[b];
+    if (tile_x[a] != tile_x[b]) return tile_x[a] < tile_x[b];
+    return a < b;
+  });
+  u32 id = 0;
+  for (u32 first = 0; first < order.size();) {
+    u32 end = first;
+    while (end < order.size() && tile_x[order[end]] == tile_x[order[first]] &&
+           tile_z[order[end]] == tile_z[order[first]])
+      ++end;
+    const i64 tx = tile_x[order[first]], tz = tile_z[order[first]];
+    if (tx < std::numeric_limits<i32>::min() || tx > std::numeric_limits<i32>::max() ||
+        tz < std::numeric_limits<i32>::min() || tz > std::numeric_limits<i32>::max())
+      return fail(error, "tile coordinate (out of range)");
+    const i64 x0 = tx * tile_mm, z0 = tz * tile_mm;
+    i64 y0 = std::numeric_limits<i64>::max();
+    for (u32 q = first; q < end; ++q)
+      y0 = std::min(y0, all[order[q]].y_mm);
+    PlacedPiece piece;
+    piece.origin = WorldPos{static_cast<f64>(x0) / 1000.0, static_cast<f64>(y0) / 1000.0,
+                            static_cast<f64>(z0) / 1000.0};
+    piece.tile = {static_cast<i32>(tx), static_cast<i32>(tz)};
+    piece.id = ++id;
+    piece.recipe.part = ChannelPart::Clasts;
+    piece.recipe.uv_origin = {static_cast<f32>(static_cast<f64>(x0 % 1024000) / 1000.0),
+                              static_cast<f32>(static_cast<f64>(z0 % 1024000) / 1000.0)};
+    piece.recipe.surface = look;
+    piece.recipe.clasts.reserve((end - first) * k_clast_ints);
+    for (u32 q = first; q < end; ++q) {
+      const Clast& c = all[order[q]];
+      const i64 v[k_clast_ints] = {c.x_mm - x0,
+                                   c.y_mm - y0,
+                                   c.z_mm - z0,
+                                   c.ground_mm - y0,
+                                   c.a_mm,
+                                   c.b_mm,
+                                   c.c_mm,
+                                   std::llround(c.ax * 10000),
+                                   std::llround(c.az * 10000),
+                                   std::llround(c.dip * 10000),
+                                   std::llround(c.roundness * 1000),
+                                   static_cast<i64>(c.seed)};
+      for (const i64 x : v)
+        piece.recipe.clasts.push_back(narrow(x));
+      if (log) log->clasts.push_back(c);
+    }
     if (!piece_in_range(piece.recipe, error)) return false;
+    out.push_back(std::move(piece));
+    first = end;
+  }
+  if (log)
+    for (u32 z = 0; z < k_clast_zones; ++z)
+      log->area_m2[z] = area[z];
   return true;
 }
 
 bool piece_in_range(const ChannelPiece& piece, std::string& error) {
-  if (piece.slabs.empty() || piece.slabs.size() > k_max_slabs) return fail(error, "piece slabs");
+  const u32 count = clast_count(piece);
+  if (piece.clasts.size() % k_clast_ints != 0 || count == 0 || count > k_max_clasts)
+    return fail(error, "piece clasts (a whole number of clasts, 1 to 400,000)");
   if (!in(wide(piece.uv_origin[0]), -2048, 2048) || !in(wide(piece.uv_origin[1]), -2048, 2048))
     return fail(error, "piece uv_origin");
   if (!surface_in_range(piece.surface, error)) return false;
-  u64 vertices = 0;
-  for (const ChannelSlab& s : piece.slabs) {
-    if (s.rows < 2 || s.rows > k_max_rows || s.columns < 2 || s.columns > k_max_columns)
-      return fail(error, "slab rows/columns");
-    const u32 count = s.rows * s.columns;
-    if (s.x.size() != count || s.z.size() != count || s.top.size() != count ||
-        s.bottom.size() != count)
-      return fail(error, "slab array sizes");
-    for (u32 i = 0; i < count; ++i)
-      if (!in(wide(s.x[i]), -1000, 1000) || !in(wide(s.z[i]), -1000, 1000) ||
-          !in(wide(s.top[i]), -10000, 10000) || !in(wide(s.bottom[i]), -10000, 10000) ||
-          !(s.top[i] > s.bottom[i]))
-        return fail(error, "slab samples (finite, top above bottom)");
-    vertices += 2ull * count;
+  for (u32 k = 0; k < count; ++k) {
+    const i32* v = piece.clasts.data() + static_cast<usize>(k) * k_clast_ints;
+    const auto within = [](i64 x, i64 lo, i64 hi) { return x >= lo && x <= hi; };
+    if (!within(v[0], -1000000, 1000000) || !within(v[2], -1000000, 1000000) ||
+        !within(v[1], -10000000, 10000000) || !within(v[3], -10000000, 10000000))
+      return fail(error, "clast place (within a kilometre of the piece's origin)");
+    if (!(v[6] >= 1 && v[5] >= v[6] && v[4] >= v[5] && v[4] <= 5000))
+      return fail(error, "clast axes (a >= b >= c >= 1 mm, a at most 5 m)");
+    const i64 len = static_cast<i64>(v[7]) * v[7] + static_cast<i64>(v[8]) * v[8];
+    if (len < 98000000 || len > 102000000) return fail(error, "clast direction (a unit vector)");
+    if (!within(v[9], -20000, 20000) || !within(v[10], 0, 1000))
+      return fail(error, "clast dip (-2 to 2) or roundness (0 to 1)");
   }
-  if (vertices > 4000000) return fail(error, "piece size");
   return true;
 }
+
+namespace {
+// A cube-sphere of `q` quads a face edge: unit directions, outward triangles.
+struct Sphere {
+  u32 q = 0;
+  Vector<f64> dx, dy, dz;  // unit directions
+  Vector<u32> tris;
+};
+Sphere sphere_of(u32 q) {
+  Sphere s;
+  s.q = q;
+  const i32 n = static_cast<i32>(q), side = 2 * n + 1;
+  Vector<i32> slot(static_cast<u32>(side * side * side), -1);
+  const auto vertex = [&](i32 x, i32 y, i32 z) {
+    i32& at = slot[static_cast<u32>(((x + n) * side + (y + n)) * side + (z + n))];
+    if (at < 0) {
+      at = static_cast<i32>(s.dx.size());
+      const f64 fx = x, fy = y, fz = z;
+      const f64 l = std::sqrt(fx * fx + fy * fy + fz * fz);
+      s.dx.push_back(fx / l);
+      s.dy.push_back(fy / l);
+      s.dz.push_back(fz / l);
+    }
+    return static_cast<u32>(at);
+  };
+  for (u32 axis = 0; axis < 3; ++axis)
+    for (const i32 sign : {-1, 1})
+      for (i32 u = -n; u < n; u += 2)
+        for (i32 v = -n; v < n; v += 2) {
+          // Lattice steps of 2 from -q to q: q quads a face edge, every corner on the lattice.
+          const auto at = [&](i32 a, i32 b) {
+            i32 c[3];
+            c[axis] = sign * n;
+            c[(axis + 1) % 3] = a;
+            c[(axis + 2) % 3] = b;
+            return vertex(c[0], c[1], c[2]);
+          };
+          const u32 i0 = at(u, v), i1 = at(u + 2, v), i2 = at(u + 2, v + 2), i3 = at(u, v + 2);
+          // Outward: (i1 - i0) x (i3 - i0) is the face's axis for a positive face (y x z = x,
+          // z x x = y, x x y = z), so its triangles run i0 i1 i2, i0 i2 i3; a negative face's the
+          // other way round.
+          if (sign > 0) {
+            for (const u32 x : {i0, i1, i2, i0, i2, i3})
+              s.tris.push_back(x);
+          } else {
+            for (const u32 x : {i0, i3, i2, i0, i2, i1})
+              s.tris.push_back(x);
+          }
+        }
+  return s;
+}
+}  // namespace
 
 bool solve_piece(const ChannelPiece& piece, assets::MeshData& out, std::string& error) {
   out = {};
   if (!piece_in_range(piece, error)) return false;
+  g_pieces_solved.fetch_add(1, std::memory_order_relaxed);
   assets::MeshData mesh;
   assets::Material material;
-  material.name = piece.part == ChannelPart::Bed       ? "channel bed"
-                  : piece.part == ChannelPart::Bar     ? "channel bar"
-                  : piece.part == ChannelPart::Boulder ? "channel boulder"
-                                                       : "channel bank";
+  material.name = "channel clasts";
   const auto& color = *piece.surface.color;
   material.base_color = {color[0], color[1], color[2], 1.0f};
   material.metallic = 0;
   material.roughness = piece.surface.roughness;
   mesh.materials.push_back(material);
+  // By the b axis: under 128 mm 2 quads a face edge (48 triangles), under 0.5 m 3 (108), under
+  // 1 m 4 (192), else 6 (432); the triangles under the ground are then left out.
+  const Sphere spheres[4] = {sphere_of(2), sphere_of(3), sphere_of(4), sphere_of(6)};
   const f32 u0 = piece.uv_origin[0], v0 = piece.uv_origin[1];
-  auto tri = [&](u32 a, u32 b, u32 c) {
-    mesh.indices.push_back(a);
-    mesh.indices.push_back(b);
-    mesh.indices.push_back(c);
-  };
-  for (const ChannelSlab& s : piece.slabs) {
-    const u32 count = s.rows * s.columns, first = mesh.positions.size();
-    for (u32 layer = 0; layer < 2; ++layer)
-      for (u32 i = 0; i < count; ++i) {
-        mesh.positions.push_back({s.x[i], layer ? s.bottom[i] : s.top[i], s.z[i]});
-        mesh.normals.push_back({0, 0, 0});
-        mesh.uvs.push_back({u0 + s.x[i], v0 + s.z[i]});
+  Vector<f64> px, py, pz, radius;
+  Vector<i32> remap;
+  for (u32 k = 0; k < clast_count(piece); ++k) {
+    const Clast c = clast_of(piece, k);
+    const f64 A = static_cast<f64>(c.a_mm) / 1000, B = static_cast<f64>(c.b_mm) / 1000,
+              C = static_cast<f64>(c.c_mm) / 1000;
+    const Sphere& sp = spheres[B < .064 ? 0 : B < .25 ? 1 : B < .5 ? 2 : 3];
+    // The clast's frame: a across, b downstream rising by the dip, c = a x b.
+    const f64 al = std::sqrt(c.ax * c.ax + c.az * c.az);
+    const f64 ax = c.ax / al, az = c.az / al;
+    const f64 bl = std::sqrt(1 + c.dip * c.dip);
+    const f64 bx = az / bl, by = c.dip / bl, bz = -ax / bl;
+    // c = a x b with a = (ax, 0, az): (-az by, az bx - ax bz, ax by).
+    const f64 cx = -(az * by), ccy = az * bx - ax * bz, cz = ax * by;
+    // Facets: planes cut at 0.78 to 0.92 of the ellipsoid's reach along their normals, blended
+    // away by roundness (channels.md, "The clasts").
+    Rng draw(hash_combine(0xc1a57ull, c.seed));
+    constexpr u32 k_planes = 10;
+    f64 nu[k_planes], nv[k_planes], nw[k_planes], h[k_planes];
+    for (u32 j = 0; j < k_planes; ++j) {
+      f64 a = 0, b = 0, w = 0, l = 0;
+      do {
+        a = 2 * draw.unit() - 1;
+        b = 2 * draw.unit() - 1;
+        w = 2 * draw.unit() - 1;
+        l = a * a + b * b + w * w;
+      } while (l < .04 || l > 1);
+      l = std::sqrt(l);
+      nu[j] = a / l;
+      nv[j] = b / l;
+      nw[j] = w / l;
+      h[j] = std::sqrt(A * nu[j] * A * nu[j] + B * nv[j] * B * nv[j] + C * nw[j] * C * nw[j]) *
+             (.78 + .14 * draw.unit());
+    }
+    const f64 R = std::clamp(c.roundness, 0.0, 1.0);
+    const u32 count = sp.dx.size();
+    px.resize(count);
+    py.resize(count);
+    pz.resize(count);
+    const f64 ox = static_cast<f64>(c.x_mm) / 1000, oy = static_cast<f64>(c.y_mm) / 1000,
+              oz = static_cast<f64>(c.z_mm) / 1000;
+    for (u32 v = 0; v < count; ++v) {
+      const f64 du = sp.dx[v], dv = sp.dy[v], dw = sp.dz[v];
+      const f64 e = 1 / std::sqrt((du / A) * (du / A) + (dv / B) * (dv / B) + (dw / C) * (dw / C));
+      f64 cut = e;
+      for (u32 j = 0; j < k_planes; ++j) {
+        const f64 d = du * nu[j] + dv * nv[j] + dw * nw[j];
+        if (d > 1e-6) cut = std::min(cut, h[j] / d);
       }
-    // Which way round the grid runs decides the winding: the top faces up.
-    f64 turn = 0;
-    for (u32 r = 0; r + 1 < s.rows; ++r)
-      for (u32 c = 0; c + 1 < s.columns; ++c) {
-        const u32 a = r * s.columns + c, b = a + 1, d = a + s.columns;
-        const f64 ex = wide(s.x[d]) - wide(s.x[a]), ez = wide(s.z[d]) - wide(s.z[a]);
-        const f64 fx = wide(s.x[b]) - wide(s.x[a]), fz = wide(s.z[b]) - wide(s.z[a]);
-        turn += ez * fx - ex * fz;  // the y of (d - a) x (b - a)
-      }
-    const bool flip = turn < 0;
-    const u32 top_first = mesh.indices.size();
-    for (u32 r = 0; r + 1 < s.rows; ++r)
-      for (u32 c = 0; c + 1 < s.columns; ++c) {
-        const u32 a = first + r * s.columns + c, b = a + 1, d = a + s.columns, e = d + 1;
-        if (!flip) {
-          tri(a, d, b);
-          tri(b, d, e);
-          tri(a + count, b + count, d + count);
-          tri(b + count, e + count, d + count);
-        } else {
-          tri(a, b, d);
-          tri(b, e, d);
-          tri(a + count, d + count, b + count);
-          tri(b + count, d + count, e + count);
+      const f64 r = R * e + (1 - R) * cut;
+      const f64 lu = r * du, lv = r * dv, lw = r * dw;
+      px[v] = ox + lu * ax + lv * bx + lw * cx;
+      py[v] = oy + lv * by + lw * ccy;
+      pz[v] = oz + lu * az + lv * bz + lw * cz;
+    }
+    // The triangles wholly under the lowest ground beneath the clast are not drawn.
+    const f64 under = static_cast<f64>(c.ground_mm) / 1000 - .02;
+    remap.assign(count, -1);
+    const u32 first_index = mesh.indices.size();
+    for (u32 t = 0; t < sp.tris.size(); t += 3) {
+      const u32 a = sp.tris[t], b = sp.tris[t + 1], d = sp.tris[t + 2];
+      if (py[a] < under && py[b] < under && py[d] < under) continue;
+      for (const u32 v : {a, b, d}) {
+        if (remap[v] < 0) {
+          remap[v] = static_cast<i32>(mesh.positions.size());
+          mesh.positions.push_back(
+              {static_cast<f32>(px[v]), static_cast<f32>(py[v]), static_cast<f32>(pz[v])});
+          mesh.normals.push_back({0, 0, 0});
+          const f64 off_u = static_cast<f64>(c.seed & 1023u) / 128.0;
+          const f64 off_v = static_cast<f64>((c.seed >> 10) & 1023u) / 128.0;
+          mesh.uvs.push_back({u0 + static_cast<f32>(px[v] + .5 * py[v] + off_u),
+                              v0 + static_cast<f32>(pz[v] + .5 * py[v] + off_v)});
         }
+        mesh.indices.push_back(static_cast<u32>(remap[v]));
       }
-    // Smooth normals over the top and over the bottom, area-weighted.
-    for (u32 t = top_first; t < mesh.indices.size(); t += 3) {
-      const u32 a = mesh.indices[t], b = mesh.indices[t + 1], c = mesh.indices[t + 2];
+    }
+    // Smooth normals over the clast, area-weighted.
+    for (u32 t = first_index; t < mesh.indices.size(); t += 3) {
+      const u32 a = mesh.indices[t], b = mesh.indices[t + 1], d = mesh.indices[t + 2];
       const Vec3 normal =
-          cross(mesh.positions[b] - mesh.positions[a], mesh.positions[c] - mesh.positions[a]);
+          cross(mesh.positions[b] - mesh.positions[a], mesh.positions[d] - mesh.positions[a]);
       mesh.normals[a] = mesh.normals[a] + normal;
       mesh.normals[b] = mesh.normals[b] + normal;
-      mesh.normals[c] = mesh.normals[c] + normal;
-    }
-    for (u32 v = first; v < mesh.positions.size(); ++v) {
-      const Vec3 normal = mesh.normals[v];
-      mesh.normals[v] =
-          length(normal) > 0 ? normalize(normal) : Vec3{0, v < first + count ? 1.0f : -1.0f, 0};
-    }
-    // The four walls, from the top's boundary edges in the direction the top runs them: each wall
-    // carries the edge backwards, down to the bottom and along it, with vertices of its own so its
-    // flat normal does not bend the top's.
-    auto wall = [&](u32 a, u32 b) {
-      const u32 at = first + a, bt = first + b;
-      const u32 w0 = mesh.positions.size();
-      const Vec3 corners[4] = {mesh.positions[bt], mesh.positions[at], mesh.positions[at + count],
-                               mesh.positions[bt + count]};
-      const Vec3 normal = normalize(cross(corners[1] - corners[0], corners[2] - corners[0]));
-      for (u32 q = 0; q < 4; ++q) {
-        mesh.positions.push_back(corners[q]);
-        mesh.normals.push_back(normal);
-        mesh.uvs.push_back({u0 + corners[q].x, v0 + corners[q].y});
-      }
-      tri(w0, w0 + 1, w0 + 2);
-      tri(w0, w0 + 2, w0 + 3);
-    };
-    // The top's boundary, each edge as a top triangle runs it.
-    const u32 R = s.rows, C = s.columns;
-    auto at = [&](u32 r, u32 c) { return r * C + c; };
-    for (u32 c = 0; c + 1 < C; ++c) {
-      // first row: the triangle (a, d, b) runs b -> a unflipped; (a, b, d) runs a -> b flipped.
-      if (!flip)
-        wall(at(0, c + 1), at(0, c));
-      else
-        wall(at(0, c), at(0, c + 1));
-      // last row: (b, d, e) runs d -> e unflipped; (b, e, d) runs e -> d flipped.
-      if (!flip)
-        wall(at(R - 1, c), at(R - 1, c + 1));
-      else
-        wall(at(R - 1, c + 1), at(R - 1, c));
-    }
-    for (u32 r = 0; r + 1 < R; ++r) {
-      // first column: (a, d, b) runs a -> d unflipped; (a, b, d) runs d -> a flipped.
-      if (!flip)
-        wall(at(r, 0), at(r + 1, 0));
-      else
-        wall(at(r + 1, 0), at(r, 0));
-      // last column: (b, d, e) runs e -> b unflipped; (b, e, d) runs b -> e flipped.
-      if (!flip)
-        wall(at(r + 1, C - 1), at(r, C - 1));
-      else
-        wall(at(r, C - 1), at(r + 1, C - 1));
+      mesh.normals[d] = mesh.normals[d] + normal;
     }
   }
+  for (Vec3& normal : mesh.normals)
+    normal = length(normal) > 0 ? normalize(normal) : Vec3{0, 1, 0};
+  if (mesh.indices.empty()) return fail(error, "piece (every clast wholly under the ground)");
   assets::Primitive part;
   part.index_count = mesh.indices.size();
   part.material = 0;
@@ -373,6 +613,7 @@ bool solve_piece(const ChannelPiece& piece, assets::MeshData& out, std::string& 
   out = std::move(mesh);
   return true;
 }
+u64 pieces_solved() noexcept { return g_pieces_solved.load(std::memory_order_relaxed); }
 
 std::string piece_json(const ChannelPiece& piece) {
   JsonWriteOptions o;
@@ -386,12 +627,14 @@ u64 piece_source_hash(const ChannelPiece& piece) {
 }
 
 namespace {
-// The roles a part samples when its surface names none: the first the pack has.
+// The roles a part samples when its surface names none: the first the pack has. The clasts take a
+// boulder's set, else any rock set the pack has (the engine's pack holds `rock/sandstone`).
 Vector<std::string_view> roles_of(ChannelPart part) {
   switch (part) {
     case ChannelPart::Bed: return {"gravel/bed", "rock/gravel", "rock/granite"};
     case ChannelPart::Bar: return {"sand/bar", "soil/parent", "soil/subsoil"};
-    case ChannelPart::Boulder: return {"rock/boulder", "rock/granite"};
+    case ChannelPart::Boulder:
+    case ChannelPart::Clasts: return {"rock/boulder", "rock/granite", "rock/sandstone"};
     default: return {"soil/subsoil", "soil/topsoil"};
   }
 }
@@ -443,10 +686,7 @@ bool build_piece_container(const ChannelPiece& piece, const geometry::ClusterLod
   out.build_key = assets::generated_mesh_build_key(
       out.source_hash, assets::MeshGeneratorInputs{pack}, lod, page_bytes);
   out.generator = "channel";
-  out.generator_kind = piece.part == ChannelPart::Bed       ? "channel bed"
-                       : piece.part == ChannelPart::Bar     ? "channel bar"
-                       : piece.part == ChannelPart::Boulder ? "channel boulder"
-                                                            : "channel bank";
+  out.generator_kind = "channel clasts";
   out.generator_params = piece_json(piece);
   return true;
 }

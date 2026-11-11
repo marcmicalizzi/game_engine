@@ -162,7 +162,8 @@ int channels_command(int argc, char** argv) {
   channels::ChannelWaterCounts shore_counts;
   channels::RibbonTrim trim;  // the ribbons' ends a body covers (W91 continuation)
   u32 reaches[7] = {};
-  u64 steps[7] = {}, boulders = 0, clusters = 0, knickpoints = 0, steep_left = 0, pulled = 0;
+  u64 steps[7] = {}, boulders = 0, clasts = 0, clast_tiles = 0, clusters = 0, knickpoints = 0,
+      steep_left = 0, pulled = 0;
   u64 bank_moved = 0;
   f64 lip_convexity = 0;
   f64 region[4] = {1e300, 1e300, -1e300, -1e300}, border = 0;
@@ -299,13 +300,16 @@ int channels_command(int argc, char** argv) {
           }
         }
       }
-      // W91: the boulders the placement generator lays over this network.
+      // W91: the boulders the placement generator lays over this network; W97: every clast, the
+      // steps' and cascades' boulders (zones 4 and 5) among them, merged one piece a 64 m tile.
       Vector<channels::PlacedPiece> pieces;
-      if (!channels::place_pieces(layer, network, ground_view, 64.0f, pieces, error))
+      channels::ClastLog laid;
+      if (!channels::place_pieces(layer, network, ground_view, 64.0f, pieces, error, &laid))
         return fail(scene_path + ": placements " + std::to_string(k) + ": " + error);
-      for (const channels::PlacedPiece& piece : pieces)
-        if (piece.recipe.part == channels::ChannelPart::Boulder)
-          boulders += piece.recipe.slabs.size();
+      for (const channels::Clast& c : laid.clasts)
+        boulders += c.zone >= 4 ? 1u : 0u;
+      clasts += laid.clasts.size();
+      clast_tiles += pieces.size();
       heads += network.heads.size();
       links += network.links.size();
       metres += network.length_m;
@@ -396,6 +400,8 @@ int channels_command(int argc, char** argv) {
   line["highest_fall_m"] = JsonValue(std::round(stats.highest_fall_m * 1000) / 1000);
   line["steps_by_reach"] = std::move(step_by_reach);
   line["boulders"] = JsonValue(boulders);
+  line["clasts"] = JsonValue(clasts);
+  line["clast_tiles"] = JsonValue(clast_tiles);
   line["cascade_clusters"] = JsonValue(clusters);
   line["knickpoints"] = JsonValue(knickpoints);
   line["lip_convexity_mean"] = JsonValue(

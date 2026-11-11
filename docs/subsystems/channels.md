@@ -7,8 +7,10 @@ begins, follows them downstream, and gives each point a bankfull width and depth
 channel is **cut into the ground** below its floodplain: `engine-content channels --cut` writes the
 terrain's `cuts` beside the water's description and the tile set is built with them
 ([tileset](tileset.md#channels-cut-into-the-ground); [The cut](#the-cut)). Since W93 the bed, the
-bars and the flood bed are that cut's own form, and what the generator places is the boulders of
-the steep reaches ([What it places](#what-it-places)); W86 dressed the trough with a gravel slab,
+bars and the flood bed are that cut's own form, and since W97 what the generator places is the
+bed's sediment: the clasts above the drawn size on the bed, the bars, the banks' feet and the flood
+bed, the steps' boulders among them, one merged mesh a tile ([Bed sediment](#bed-sediment),
+[What it places](#what-it-places)); W86 dressed the trough with a gravel slab,
 bar lenses and bank berms, none of which is laid any more. The same network is the description the flowing water
 draws: `engine-content channels` writes it as `engine.scene.WaterChannel` blocks. The published
 models every number comes from, and each constant's range, are on the grounding page,
@@ -159,44 +161,118 @@ no piece at all. What a slab carried that the ground does not yet is the bed's *
 gravel's texture and its centimetre relief), which is the terrain's to draw through its masks
 ([The flood bed](#the-flood-bed)), and the riffle's rise, which is the cut's section now.
 
-`place_pieces` cuts each link's line into pieces of at most `piece_m` (32 m), each standing at its
-first point's whole millimetre with y the ground there, filed in the world tile that point is in,
-**in link order, then piece order** — the order the ids (1, 2, …) are given in, so a tile's
-placements carry the same ids whichever tile came first. A piece with no boulder is not placed. A
-tributary's pieces stop at its trunk's banks, and a reach decides what it has
-([Reaches](#reaches)): a row of domes across the bed at each step-pool crest, each about the
-step's height across; one to three clasts at each of a cascade's clusters; nothing on any other
-reach. The bed they stand across is the cut's flat bed between its banks' toes, a quarter of the
-width where the section is a V.
+**Since W97 the bed carries its sediment** ([Bed sediment](#bed-sediment)): every clast from
+`clast_min_mm` (64 mm) up that the plan's sediment puts on the bed, the bars, the banks' feet and
+the flood bed, and the steps' and cascades' boulders among them, **one merged piece a world tile**
+([The clasts](#the-clasts)). What is finer than the drawn size is the bed's material, painted
+through the terrain's masks. A tributary's clasts stop at its trunk's banks (`keep`), and a reach
+decides its boulders ([Reaches](#reaches)): a row across the bed at each step-pool crest and one
+each side half in the bank; one to three at each of a cascade's clusters and, at about half of
+them, one against a bank. The bed they stand across is the cut's flat bed between its banks' toes,
+a quarter of the width where the section is a V.
 
 - **No banks** since W89. W86 laid a berm each side that rose *above* the ground, so every stream
   read as a canal between levees. The banks are the cut's own faces ([The cut](#the-cut)).
-- **No bed and no bars** since W93's continuation, as above. `ChannelLayer` version 7 has none of
-  the fields that shaped them (`riffle_rise`, `shields_bankfull`, `bar_rise`, `bar_width_widths`,
-  `bar_length_widths`, `bank_min_width_m`, `bank_height`, `bed`, `bars`, `banks`), and a scene that
-  names one is refused by the reader.
-
-Each piece is a **recipe** (`engine.channels.ChannelPiece`): its slabs (a boulder is a 7 by 7 dome
-with a buried bottom) with every height decided here, in the piece's frame, and its look. The mesh
-generator `channel` builds a recipe into one closed mesh per piece — each slab its top, its bottom
-and four walls, welded by position, outward — and a container through the derived-data cache,
-exactly as the deposits' patches are built. A recipe's file is named by its canonical JSON's hash,
-so two pieces that say the same thing share one entry. **Merged**: a piece's boulders are one
-mesh, so a 32 m stretch of steps is one instance however many clasts it has; a dome is 72
-triangles on top, 72 below and 48 in its walls, and the cluster LOD DAG of the piece is its far
-form (there is no card or impostor beyond it: at the distance a 0.5 m clast is a pixel the DAG's
-coarsest cut is a few triangles).
+- **No bed slab and no bar skin** since W93's continuation, as above. `ChannelLayer` version 7 has
+  none of the fields that shaped them (`riffle_rise`, `shields_bankfull`, `bar_rise`,
+  `bar_width_widths`, `bar_length_widths`, `bank_min_width_m`, `bank_height`, `bed`, `bars`,
+  `banks`), and a scene that names one is refused by the reader. Version 10 drops `piece_m` (a
+  piece is a tile's clasts), and W93's 7 by 7 domes are gone with `ChannelSlab`.
 
 ### Materials
 
-The boulders name a material-pack role (`boulders.role`) or, empty, take the first their pack has
-of `rock/boulder`, `rock/granite`. The set is sampled at `boulders.tile_m` (1.2 m) in metres of
-world x and z (each piece's UVs carry its origin modulo 1,024 m, so the texels run on across the
-joins) and `Stochastic` by default (R131). With a pack, `boulders.tint` multiplies the set (absent:
-0.7, 0.68, 0.65). With no pack, the flat colour (`boulders.color`, or a grey). **The bed's and the
-bars' materials are the terrain's**: the roles a pack would need for them are `gravel/bed` and
-`sand/bar`, which no pack here has (the engine's one pack holds `rock/sandstone` and the palm's
-sets; the POC's v30 pack has no gravel role either).
+Every clast takes the look `boulders` names: a material-pack role (`boulders.role`) or, empty, the
+first their pack has of `rock/boulder`, `rock/granite`, `rock/sandstone` (W97 added the last, the
+engine's one pack's rock set, so a worktree with the pack draws textured stones). The set is sampled
+at `boulders.tile_m` (1.2 m) in metres (each clast's UVs are its vertices' x and z plus half their
+height, offset by its seed, so neighbours show different texels) and `Stochastic` by default
+(R131). With a pack, `boulders.tint` multiplies the set (absent: 0.7, 0.68, 0.65). With no pack,
+the flat colour (`boulders.color`, or a grey). **The bed's and the bars' materials are the
+terrain's**: `bed_material` paints the cut's bed and, with `bar_material` (W97), the flood bed each
+side is a region of its own in the bars' material, so a bar reads apart from the bed. The roles a
+pack would need are `gravel/bed` and `sand/bar` (row G148 generates material sets by role), which
+no pack here has.
+
+## Bed sediment
+
+W97 (2026-11-10; the proof of concept's solver needs 2.1, items 3, 6 and 8): the photographs are
+cobbles and boulders from scarp to thalweg, hundreds in a frame; W93 drew bare ground with a few
+domes. **Each point of each link carries its bed's surface sediment in the plan**
+(`ChannelLink::sediment`, a `ChannelSediment` a point; the plan file's format 2), so the clasts,
+the water (row S101 reads `d50_m` and `d84_m` as the bed's roughness) and any other reader get the
+same answer, and the plan's key moves with it. Every number's source and how it was read is on the
+grounding page ([Bed sediment](../experiments/channels.md#bed-sediment)).
+
+- **The median** is what the bankfull flow just moves: `D50 = h S / (1.65 tau*)` with
+  `tau* = 0.15 S^0.25` (Lamb, Dietrich & Venditti 2008), h the point's bankfull mean depth and S the
+  bed's fall low-passed over five widths (at least 10 m), so a lattice step makes no grain-size step.
+  It is capped so that d90 stays under the reach's relative roughness (Montgomery & Buffington
+  1997: 0.3 of the depth on pool-riffle, 0.8 on plane-bed and step-pool, 1 steeper), and a
+  dune-ripple bed is sand (2 mm at most).
+- **The distribution** is lognormal in size (Bunte & Abt 2001) with sigma in phi units by reach:
+  0.6 dune-ripple, 1.2 pool-riffle, 1.5 plane-bed, 1.75 steeper; `d84 = d50 2^sigma`,
+  `d16 = d50 / 2^sigma`.
+- **Roundness** is `1 - exp(-x / rounding_m)` (1 km), x the channel length upstream of the point
+  along the network (the longest path from a head), clamped to 0.05–0.95 (Domokos et al. 2014: a
+  pebble's edges round within about a kilometre of transport). A colluvial gully's clasts are
+  angular; a lowland river's rounded.
+- **Cover**: the share of the bed's surface under clasts of `clast_min_mm` or larger, the
+  lognormal's tail above it (a pebble count samples by area: Wolman 1954); a bedrock reach keeps
+  0.3 of it.
+- **A bar's run**: where the section is a bend's to a quarter of its asymmetry or more, all on one
+  side, `bar` runs from 0 at the run's head to 1 at its tail; elsewhere -1.
+
+The normal's tail is a logistic approximation through the engine's exponential, so the plan is
+the same bits on every toolchain; the size test holds what it draws against the true normal.
+
+### The clasts
+
+`place_pieces` lays every clast from the plan alone, **station by station** (each point of a
+link's line, a strip half its neighbours' spacing either way), each strip **in cells** about 0.5 m
+across the section from the right edge to the left (the flood bed's reach, or the bank tops), and
+in each cell **by size bins** a quarter of a psi unit wide from the drawn size to 2.5 sigma above
+the median: a bin's expected count is its share of the cell's area divided by the plan area a
+clast of its size covers (pi/4 a b, a = b / 0.7), its count that rounded by a draw, every draw
+seeded by the link, the station and the cell. So a clast is the same whichever tile came first,
+whatever the tile size and from whatever start, and the counts follow the distribution
+(`channels: the clasts' sizes follow the sediment's distribution over several seeds`: above-D84
+share of the drawn cover within 0.01 of the lognormal's on four seeds). Where on the section:
+
+| Zone | Where | Its grain sizes |
+|---|---|---|
+| 0 the bed | the cut's flat bed between its toes | the point's |
+| 1 a bar | a bend's inner bank, to 0.9 of its height, and its flat bed's inner side | 1.2 of the median at the bar's head to 0.8 at its tail (Rice & Church 2010) |
+| 2 a bank's foot | the lower half of an outer bank, or of a riffle's banks | the point's |
+| 3 the flood bed | from 0.25 m past the channel's lip to 0.5 m short of the scarp | 0.8 of the median |
+| 4 a step's keystone | a row across each step-pool crest, one each side half in the bank | D84 to D97.7 of the reach, 0.2 to 2 m |
+| 5 a cascade's cluster | one to three across the bed, about half with one against a bank | the same |
+
+None on a bank's lip, none on a scarp, none where the bed lies more than 1.6 mean depths under the
+bank's top (the deepest of a bend's pool, where the water is twice the mean deep: the pool's finer
+sediment and its depth hide the bed there, a design choice), none at a knickpoint, none under a
+water body (a link ends at its shore).
+
+**A clast** (`Clast`, `k_clast_ints` integers in a recipe): its b axis drawn in its bin, a = b /
+(0.7 ± 0.15), c = b (0.6 ± 0.2); its a axis across the flow within about 20 degrees, its a-b plane
+dipping upstream 10 to 30 degrees (imbrication); **protruding** over the ground at its centre by
+0.36 of b on average (0.15 to 0.57), never more than 0.9 of its own height, and its lowest point at
+least 10 mm under the lowest ground beneath its footprint, **so none floats and every one is partly
+buried** (`channels: a clast is partly buried and none floats`). Every number is rounded to the
+recipe's millimetres and ten-thousandths before the burial is decided, so the test holds the
+recipe, not a float behind it.
+
+**One merged piece a tile**: the clasts are bucketed by the 64 m world tile their centre stands in,
+the tiles in z then x order (their ids 1, 2, …), each tile's clasts in the order laid. A clast
+whose footprint crosses a tile's border is in one tile's piece, so the bed is continuous. The
+recipe (`engine.channels.ChannelPiece` version 2, `part` `Clasts`) is written at `open` and its
+mesh is built only when the host builds the mesh its tile names, through the mesh generator
+`channel` and the derived-data cache (rocks.md, "A tile solves"; `pieces_solved()` holds `open` to
+none). The mesh: each clast an ellipsoid on a cube-sphere grid by its b axis (2 quads a face edge
+under 128 mm, 48 triangles; 3 under 0.5 m, 108; 4 under 1 m, 192; else 6, 432), cut by ten facets
+at 0.78 to 0.92 of its reach and blended back toward the ellipsoid by its roundness, so an angular
+clast has faces and a rounded one none; **the triangles wholly under the lowest ground beneath it
+are left out**, so each clast is open only underground (`channels: the placed pieces ...`). The
+cluster LOD DAG of the tile's mesh is its far form.
 
 ## In a scene
 
