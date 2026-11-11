@@ -309,7 +309,7 @@ TEST_CASE("deposits: cones climb their gullies and the apron between them is low
     DepositLayer p = layer();
     p.supply_m = DepositLayer{}.supply_m;
     p.region_min = {-40, 0};
-    p.region_max = {static_cast<f32>(28 + f.wall.height / 2), static_cast<f32>(4 * f.wall.spacing)};
+    p.region_max = {28 + f.wall.height / 2, 4 * f.wall.spacing};
     p.max_samples = 1048576;
     scene_gen::Ground g;
     g.surface_fn = &gullied_wall;
