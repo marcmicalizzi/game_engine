@@ -199,10 +199,10 @@ TEST_CASE("caves: the network is one closed surface, and two cells meet at a por
   }
   MESSAGE("the surface at 0.5 m: "
           << triangles << " triangles in " << plan.cells.size() << " cells, "
-          << static_cast<f64>(triangles) / plan.report.passage_m << " a metre of passage; rock "
-          << class_triangles[0] << ", sediment " << class_triangles[1] << ", breakdown "
-          << class_triangles[2] << ", water " << class_triangles[3] << ", apron "
-          << class_triangles[4]);
+          << static_cast<f64>(triangles) / static_cast<f64>(plan.report.passage_m)
+          << " a metre of passage; rock " << class_triangles[0] << ", sediment "
+          << class_triangles[1] << ", breakdown " << class_triangles[2] << ", water "
+          << class_triangles[3] << ", apron " << class_triangles[4]);
   CHECK(on_border == 0);
   // Closed: every edge of the whole network's surface has two triangles, but an apron's rim,
   // which lies on the ground at a mouth.

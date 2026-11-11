@@ -206,6 +206,52 @@ std::string section_svg(const Plan& plan, const scene_gen::Ground& ground) {
   return out;
 }
 
+std::string survey_json(const Plan& plan) {
+  const auto point = [](i64 x, i64 y, i64 z) {
+    return "[" + num(metres(x), 3) + ", " + num(metres(y), 3) + ", " + num(metres(z), 3) + "]";
+  };
+  std::string out = "{\n  \"format\": \"engine.caves.survey\",\n  \"base_level_m\": " +
+                    num(metres(plan.water_mm), 3) + ",\n  \"mouths\": [";
+  for (u32 m = 0; m < plan.mouths.size(); ++m) {
+    const PlanMouth& mouth = plan.mouths[m];
+    const PlanEdge& edge = plan.edges[mouth.edge];
+    const CellStation& tip = plan.stations[edge.first + edge.count - 1].station;
+    out += std::string(m == 0 ? "" : ",") + "\n    {\"at\": " + point(mouth.x, mouth.y, mouth.z) +
+           ", \"outward\": [" + num(tip.tx / 1048576.0, 4) + ", " + num(tip.ty / 1048576.0, 4) +
+           ", " + num(tip.tz / 1048576.0, 4) +
+           "], \"area_m2\": " + num(static_cast<f64>(mouth.area_m2)) +
+           ", \"pit\": " + (mouth.pit ? "true" : "false") + "}";
+  }
+  out += "\n  ],\n  \"halls\": [";
+  for (u32 h = 0; h < plan.halls.size(); ++h) {
+    const PlanHall& hall = plan.halls[h];
+    out += std::string(h == 0 ? "" : ",") +
+           "\n    {\"floor\": " + point(hall.hall.x, hall.hall.y, hall.hall.z) +
+           ", \"radii_m\": [" + num(metres(hall.hall.ra), 2) + ", " + num(metres(hall.hall.rb), 2) +
+           ", " + num(metres(hall.hall.rh), 2) +
+           "], \"fallen\": " + (hall.fallen ? "true" : "false") + "}";
+  }
+  out += "\n  ],\n  \"edges\": [";
+  for (u32 e = 0; e < plan.edges.size(); ++e) {
+    const PlanEdge& edge = plan.edges[e];
+    out += std::string(e == 0 ? "" : ",") + "\n    {\"kind\": \"" + strand_name(edge.kind) +
+           "\", \"level\": " + std::to_string(edge.level) +
+           ", \"walkable\": " + (edge.walkable ? "true" : "false") +
+           ", \"length_m\": " + num(static_cast<f64>(edge.length_m)) + ", \"floor\": [";
+    // The floor under the centreline every fourth station, and the last: where a walker stands.
+    bool first = true;
+    for (u32 j = 0; j < edge.count; ++j) {
+      if (j % 4 != 0 && j + 1 != edge.count) continue;
+      const CellStation& s = plan.stations[edge.first + j].station;
+      out += std::string(first ? "" : ", ") + point(s.x, s.floor, s.z);
+      first = false;
+    }
+    out += "]}";
+  }
+  out += "\n  ]\n}\n";
+  return out;
+}
+
 std::string holes_json(const Plan& plan) {
   std::string out = "[";
   u32 n = 0;

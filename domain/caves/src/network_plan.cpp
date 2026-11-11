@@ -991,10 +991,6 @@ f64 station_reach_m(const CellStation& s) noexcept {
   return r / 1000.0;
 }
 
-f64 field_margin(const Network& net) noexcept {
-  return std::max(1.0, static_cast<f64>(net.apron_m) + 0.75);
-}
-
 void cut_cells(Plan& plan) {
   const f64 most = static_cast<f64>(plan.network.cell_length_m);
   Vector<u32> node_cell(plan.nodes.size(), k_no_cell);

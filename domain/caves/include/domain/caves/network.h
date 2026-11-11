@@ -219,6 +219,10 @@ std::string section_svg(const Plan& plan, const scene_gen::Ground& ground);
 // The mouths' holes as `engine.scene.TerrainHole` entries, a JSON array: what a scene's terrain
 // takes today.
 std::string holes_json(const Plan& plan);
+// Where things are, for whoever dresses the scene (a light in the hall, a camera at a mouth): the
+// mouths with the way out of each, the halls, and every edge's floor under its centreline every
+// fourth station. Metres of the world.
+std::string survey_json(const Plan& plan);
 
 // ---- cells --------------------------------------------------------------------------------------
 

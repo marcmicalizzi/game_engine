@@ -115,7 +115,18 @@ bool open(const JsonValue& params, const scene_gen::Context& context, void** sta
       entry->pieces.push_back(piece);
     }
   }
+  // Beside the recipes, for a person: the holes the mouths ask of the terrain (which a placement
+  // cannot write into the terrain itself: caves.md, "What the terrain's hole must be") and where
+  // things are. Named by the plan, so another ground is another pair of files.
+  char stem[48];
+  std::snprintf(stem, sizeof(stem), "network-%016llx",
+                static_cast<unsigned long long>(plan_hash(plan)));
+  const std::string holes_path = io::join_path(dir, std::string(stem) + ".holes.json");
+  const std::string survey_path = io::join_path(dir, std::string(stem) + ".survey.json");
+  if (!io::exists(holes_path)) (void)io::write_file_atomic(holes_path, holes_json(plan));
+  if (!io::exists(survey_path)) (void)io::write_file_atomic(survey_path, survey_json(plan));
   ENGINE_LOG_INFO(log_caves, "cave network planned", log::field("entry", entry->where),
+                  log::field("holes", holes_path),
                   log::field("passage_m", static_cast<f64>(plan.report.passage_m)),
                   log::field("cells", static_cast<u64>(plan.cells.size())),
                   log::field("mouths", static_cast<u64>(plan.mouths.size())),

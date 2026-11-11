@@ -76,7 +76,8 @@ int caves_command(int argc, char** argv) {
       "                                 [--ground <valley>,<slope_x>[,<flank_m>]]\n"
       "                                 [--doline <x>,<z>,<radius>,<depth>] [--tile <m>]\n"
       "                                 [--cells] [--build]\n"
-      "  writes <stem>.plan.svg, <stem>.section.svg and <stem>.holes.json; the ground is\n"
+      "  writes <stem>.plan.svg, <stem>.section.svg, <stem>.holes.json (the holes its mouths\n"
+      "  ask of the terrain) and <stem>.survey.json (where things are); the ground is\n"
       "  y = max(valley, slope_x * x - max(0, z)^2 / flank), level at 0 with no --ground\n";
   if (argc < 4) {
     std::fputs(usage, stderr);
@@ -161,9 +162,11 @@ int caves_command(int argc, char** argv) {
   const std::string plan_path = io::join_path(out_dir, name + ".plan.svg");
   const std::string section_path = io::join_path(out_dir, name + ".section.svg");
   const std::string holes_path = io::join_path(out_dir, name + ".holes.json");
+  const std::string survey_path = io::join_path(out_dir, name + ".survey.json");
   if (io::write_file_atomic(plan_path, caves::plan_svg(plan)) != io::Status::Ok ||
       io::write_file_atomic(section_path, caves::section_svg(plan, ground)) != io::Status::Ok ||
-      io::write_file_atomic(holes_path, caves::holes_json(plan)) != io::Status::Ok)
+      io::write_file_atomic(holes_path, caves::holes_json(plan)) != io::Status::Ok ||
+      io::write_file_atomic(survey_path, caves::survey_json(plan)) != io::Status::Ok)
     return fail("the plan's files could not be written under " + out_dir);
 
   const caves::PlanReport& r = plan.report;
@@ -172,6 +175,7 @@ int caves_command(int argc, char** argv) {
   summary.set("plan", JsonValue(plan_path));
   summary.set("section", JsonValue(section_path));
   summary.set("holes", JsonValue(holes_path));
+  summary.set("survey", JsonValue(survey_path));
   summary.set("plan_hash", JsonValue(std::to_string(caves::plan_hash(plan))));
   summary.set("plan_ms", JsonValue(plan_ms));
   summary.set("levels", JsonValue(r.levels));

@@ -101,11 +101,11 @@ The roles a network's surfaces take from a pack: `rock/limestone` for the walls 
 
 ### The generator
 
-`src/network_placement.cpp`, the placement generator `caves`, with the per-tile contract (`open`, `meshes`, `tile`, `occupies`, `representation`, `expand`). `open` plans and writes the recipes under `recipes`, or `caves` under the derived-data root; `tile` places the cells whose bounds' middle is on the tile, each instance at its cell's lattice corner with no rotation; a far ring keeps only mouth cells. A scene's entry is `{"generator": "caves", "params": { an engine.caves.Network }}`; the `Scene` root gains no field.
+`src/network_placement.cpp`, the placement generator `caves`, with the per-tile contract (`open`, `meshes`, `tile`, `occupies`, `representation`, `expand`). `open` plans and writes the recipes under `recipes`, or `caves` under the derived-data root, and beside them, named by the plan's hash, `network-<hash>.holes.json` (the holes its mouths ask of the terrain, for a person to paste into the scene's terrain until a placement can write one) and `network-<hash>.survey.json` (where things are: the mouths with the way out of each, the halls, every edge's floor under its centreline every fourth station; what a camera, a light or a prop is placed by); `tile` places the cells whose bounds' middle is on the tile, each instance at its cell's lattice corner with no rotation; a far ring keeps only mouth cells. A scene's entry is `{"generator": "caves", "params": { an engine.caves.Network }}`; the `Scene` root gains no field.
 
 ### The command
 
-`engine-content cave-plan <network.json> <out dir> [--ground <valley>,<slope_x>[,<flank_m>]] [--doline <x>,<z>,<radius>,<depth>] [--tile <m>] [--cells] [--build]` plans a network against a hillside given by a few numbers (`y = max(valley, slope_x * x - max(0, z)^2 / flank)`) and writes `<stem>.plan.svg` (a plan view: passages at their width, coloured by kind, halls, mouths with the hole each asks for, dead ends named, portals), `<stem>.section.svg` (a long section along strike with no vertical exaggeration: roofs, floors, the ground over each trunk, base level) and `<stem>.holes.json`; one JSON line of the plan's numbers; with `--cells` every cell solved (triangles a class, milliseconds), with `--build` every container built. It needs no GPU.
+`engine-content cave-plan <network.json> <out dir> [--ground <valley>,<slope_x>[,<flank_m>]] [--doline <x>,<z>,<radius>,<depth>] [--tile <m>] [--cells] [--build]` plans a network against a hillside given by a few numbers (`y = max(valley, slope_x * x - max(0, z)^2 / flank)`) and writes `<stem>.plan.svg` (a plan view: passages at their width, coloured by kind, halls, mouths with the hole each asks for, dead ends named, portals), `<stem>.section.svg` (a long section along strike with no vertical exaggeration: roofs, floors, the ground over each trunk, base level), `<stem>.holes.json` and `<stem>.survey.json`; one JSON line of the plan's numbers; with `--cells` every cell solved (triangles a class, milliseconds), with `--build` every container built. It needs no GPU.
 
 ### Budgets
 
@@ -120,10 +120,13 @@ Measured on the test network (two levels in 24 m of limestone dipping 8 degrees,
 | Dressing | 137 triangles a drip; at most `triangle_budget` (20,000) a cell |
 | Recipes on disk | 3.5 MB of JSON for 78 files (two a cell) |
 | Lattice points sampled a network at 0.25 m | 15.6 million |
-| The plan, built once at `open` | 179 ms in `msvc-debug` |
-| A cell's solve at 0.25 m | 3.7 s mean, 7.8 s worst in `msvc-debug` (162 s for the 78 solves of the network) |
+| A cell's coarsest form | 11 clusters a container on average (863 root clusters in 78 containers of 13,177 clusters), each at most 124 triangles: under 1,400 triangles against 9,400 at full detail, because the cuts and the floors' edges are locked |
+| The plan, built once at `open` | 27 ms in `msvc-release` (14 ms for one level over 160 m of strike, 40 ms over 640 m: `caves.plan_network`) |
+| A tile's activation | a scan of the entry's cells (44 here) for the tile's: no solve, no ground query |
+| A cell's solve, on a derived-data miss | 254 ms at 0.25 m, 34 ms at 0.5 m (`caves.solve_cell`, a trunk's cell); 22.4 s for the network's 78 solves, the worst cell (the hall) 1.17 s |
+| A cell's container (the DAG) after its solve | 0.32 s mean: 25.0 s for the 78 |
 
-The release figures and a cell's coarsest form are measured in the row's last commit.
+All of these in `msvc-release` with other processes using 95 % of the CPU and the GPU busy (the bench's own warning): upper bounds. The solve samples every lattice point of a cell's bounds, 15.6 million for 415,016 triangles; sampling only near the surface is the obvious saving and is not done ([Not yet](#not-yet)).
 
 ## The single passage (G134)
 
