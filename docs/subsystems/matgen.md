@@ -97,13 +97,17 @@ A bed of clasts ([grounding](../experiments/generated-material-sets.md#a-bed-of-
   D50 strays from its lithology's tone less, by the square root of D50 over its size: the few
   largest clasts of a tile are its landmarks, and a pale or dark one among them is what the eye
   finds again every period ("Repetition").
-- *Embedded* (`buried_permille`, G151). A filled bed's matrix stands higher by that share of the
-  median clast's thickness, and each clast settles into it by up to the same share of its own;
+- *Embedded* (`buried_permille`, G151). A filled bed's matrix stands higher by half that share of
+  the median clast's thickness, and each clast settles into it by up to the share of its own;
   where the matrix's surface is above a clast's top the texel is matrix — the lower clasts lie
-  half buried — and silt drapes a clast's foot where the matrix nearly reaches it. The matrix's
-  grains pale toward a silt by the same share. `SetStats::buried_share` is the surface where the
-  matrix stands over a clast. The default bed's 0.30 sits in the 25 to 50 % embeddedness class of
-  Platts, Megahan and Minshall (1983).
+  half buried — and silt drapes a clast's foot where the matrix nearly reaches it (0.12 of a
+  median thickness). The matrix's grains pale toward a silt by 0.6 of the share, and are drawn as
+  cells with darker edges under a 2 cm mottle, so a matrix is grit and not a paste.
+  `SetStats::buried_share` is the surface where the matrix stands over a clast (0.10 of the
+  default bed; an unburied bed's smallest clasts also lie under the matrix's own level, 0.03).
+  The default's 0.30 sits in the 25 to 50 % embeddedness class of Platts, Megahan and Minshall
+  (1983); 0.35 left a third of the bed's surface as matrix in the first engine picture, a paste
+  between the stones.
 - *Film* (`film_permille`). A stable top carries a thin brown-olive film strongest on its crown
   and none down its sides; a fifth of the clasts carry none (turned or scoured), the rest
   0.4 to 1.15 of the strength.
@@ -260,10 +264,12 @@ Every decision is a hash, an integer, IEEE `+ - * /`, `sqrt`, `floor` or the eng
 `det::exp`, `det::log`, `det::sin`, `det::cos`; the sRGB encode is the texture build's committed
 table. The build is single-threaded, so there is no thread count for the bytes to depend on.
 `matgen_tests.cpp` pins the four images' hash for six defaults at 256 texels, taken on MSVC in
-`msvc-debug`. **The Linux containers had not run them when the row was handed
-back**: the machine's one container lock was held by other rows from 22:50 until the hand-back
-at 01:45, so that Clang and GCC reproduce the pins rests, until a gate's containers run, on the
-construction above and not on a log. Nothing was needed that `core/math/deterministic.h` lacks: a normal draw is Box and Muller's
+`msvc-debug` and re-taken for `k_matgen_version` 2 (G149 to G153; the turf's pin did not move,
+since the ground kind did not change). Whether the Linux containers reproduced the version-2
+pins is said in the row's hand-back and here once a log says so. The streaks' distance below a
+source is an integer from two sweeps round each column, the lichen's owner of a texel is decided
+by an f64 comparison of two quotients of the same arithmetic, so neither adds an operation a
+toolchain rounds its own way. Nothing was needed that `core/math/deterministic.h` lacks: a normal draw is Box and Muller's
 from `det::log` and `det::cos`, a cube root is `det::exp(det::log(x) / 3)`, a tangent
 `det::sin / det::cos`.
 
@@ -308,6 +314,15 @@ has tried to make it cheaper, because it is paid once. Laying a floor's leaves w
 leaf's whole bounding square at first (17.9 s for the thatch at 2,048); walking only the texels
 near the leaf's line made it 6.0 s and the same bytes.
 
+**Version 2** (G149 to G153), `engine-content matgen --force` in `msvc-release` at 1,024, every
+default and the six variants, 2026-11-11 09:38 on the same shared machine, **not a quiet run**:
+the processors read 77 % busy before and 65 % after, 21 GB free. Build ms a set: gravel bed 927
+(G148: 873), sand bar 802 (1,276), scree 1,109 (1,552), granite 1,884 (1,818), granite wet 1,864
+(2,294), basalt 2,103 (1,696), limestone 2,204 (2,598), sandstone 1,687 (2,554), moss 771, soil
+785, thatch 1,108, turf 1,148; each variant within 15 % of its role. No set takes more than 1.25
+times what it took (basalt, beside a different load), so none more than twice. The whole command
+with eighteen sets: 31 s.
+
 Resident while a set is built: 69 bytes a texel at most (the field's 20, the hollows' three
 integer planes, the granular kind's top, id, taken, rise and break planes — 14 — or the rock
 kind's patch, owner, reach, source and streak planes — 17 —, the four images' 8) — about 72 MB at
@@ -321,22 +336,29 @@ The pack directory `engine-content matgen` writes is derived data.
 - A set built from any window is the first window's bytes rotated.
 - The grid count over a bed reads the recipe's D50 and sorting; a rock's fresh share and a
   floor's covers are the recipe's.
+- No sixteenth of a tiled granular set stands out from its mean past the bounds "Repetition"
+  names.
+- Streaks and moss exist only where a recipe asks for them.
 - A recipe out of range is refused with the field named, and builds nothing.
 - The key moves with any field of the recipe and with `k_matgen_version`.
 - The same recipe builds the same bytes on every toolchain.
 
 **Public API.** `include/domain/matgen/matgen.h`: `Set` and its parts (from the schema),
 `Window`, `SetImages`, `SetStats`, `read_set`, `validate_set`, `canonical_json`, `set_key`,
-`build_set`, `default_sets`, `default_set`, `k_matgen_version`.
+`build_set`, `default_sets`, `default_set`, `variant_of`, `k_matgen_version`, `k_tiled_variants`.
 
 **Depends on.** `base`, `containers`, `math`, `hash`, `json`, `schema`, `log`, `texture` (the sRGB
 tables; the mip chain in the tests), `matgen_schemas`. No capability.
 
-**Testing.** `tools/dev.ps1 test -Filter matgen`: the rotation test over seven defaults; the
-seam's step; the grid count over five seeds; scree against the bed; a rock's shares and a
-floor's covers over three seeds each; every default's mean albedo and roughness inside its
-material's range; a mip chain's mean; a recipe read, refused and keyed; the pins (17 s in
-`msvc-debug`, the longest case 4.4 s: twelve defaults built at 256). `materials`' tests hold
+**Testing.** `tools/dev.ps1 test -Filter matgen`: the rotation test over eight defaults (the wet
+granite's streaks and moss among them); the seam's step; the grid count over five seeds (the
+cover of what is drawn held on the same bed unburied); scree against the bed; a rock's shares
+and a floor's covers over three seeds each; every default's mean albedo and roughness inside its
+material's range; the landmark measure under its bounds over three seeds for each tiled role,
+and the variants the same recipe from other seeds (G153); a rock face's form, streaks and moss
+where asked and absent where not (G152); a bed part buried and a talus layers deep (G151); a mip
+chain's mean; a recipe read, refused and keyed; the pins (about 23 s in `msvc-debug`, the
+longest case the grid count's 7.2 s: it builds each seed's bed twice, buried and not). `materials`' tests hold
 `merge_packs` and `pack_at`'s generated pack; `apps/engine_content/tests/matgen_tests.cpp` runs
 the command (two roles built, read back through `pack_at`, built again and skipped, a third role
 joining the manifest, the refusals; 1.1 s). Benchmarks: `tools/dev.ps1 bench -Filter 'matgen.*'`.
@@ -345,6 +367,41 @@ joining the manifest, the refusals; 1.1 s). Benchmarks: `tools/dev.ps1 bench -Fi
 command. Measured figures are in "What it measured" above.
 
 ## What the sets look like, and what a person would object to
+
+### In the engine (G149, 2026-11-11)
+
+All twelve drawn by `engine-view` (`msvc-release`, offscreen, 1,600 by 900, the earth sky at
+15:30 in July at 46.5 degrees north, no material pack but the generated one) as stripes of one
+flat ground, each 16 m wide, from 1.7 m looking at the ground two metres ahead and fifteen metres
+along it, and the four rock sets with a rock type on a block of that type from 2.5 m; before (the
+G148 generator's pack) and after, from the same `engine-view` and derived-data root. Judged
+beside the owner's reels r04 (lichen-splashed granite boulders, orange), r49 (a cobble bed and a
+pale gravel bar), r19 (slabby boulders and scree), r03 and r23. Worst first, after the change:
+
+1. **The four ground sets (`ground/turf`, `moss`, `soil`, `thatch`) read as flat colour** at
+   1.7 m: felt green, felt brown. They hold their detail at the scale of a blade, which the
+   sward's cook reads; as a terrain layer they are no floor. Not changed by this row.
+2. **The rock sets on a plane read as patterned linoleum at 15 m**: every set's tile carries the
+   same density of joints, colonies and dishes, and a flat plane shows it as a pattern. In the
+   last picture the scallops read as a lit and a shaded crescent each (softened after it; not
+   pictured again). On a block (granite, limestone, sandstone) they read as weathered rock with
+   lichen colonies, a step and joints; beside r04 the orange colonies are too few and too small,
+   the rock too pale and too evenly speckled, and the joints still read as cut lines more than
+   gaps.
+3. **`rock/basalt`** reads as dark slabs with polygonal joints, but its lichen reads as confetti:
+   white and orange discs bright on near-black rock.
+4. **`sand/bar`** reads as dry sand with a scatter of granules, flat: no ripples, no wet margin
+   (one set is one state).
+5. **`rock/scree`** — before, flat plates on a dark floor; after, a talus of angular blocks at
+   three depths with small dark voids and a few pockets of fines. Beside r19 the blocks are all
+   one pale tone (no weathered or lichened faces), their tops still mostly planes, and the fines
+   pockets read as flat beige pools.
+6. **`gravel/bed`** — before, polished pebbles in plain rows to the horizon; after, a bed whose
+   rows are gone at fifteen metres, its stones packed and part buried in a grit, some broken,
+   some filmed. Beside r49 the stones are too glossy (a wet bed's roughness under air) and the
+   film too faint to read as the reel's olive-brown.
+
+### Before the engine (G148, 2026-11-10)
 
 Judged 2026-11-10 from the images themselves (base colour and normal at 1,024 squared), beside
 the owner's reference reels r03 and the cobble riffle's motion sheet (a clear river over
