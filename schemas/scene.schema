@@ -1529,7 +1529,7 @@ struct WaterChannel @version(5) {
 /// layer's colour, `roughness` is added to its roughness), and its `resistance`, which no picture
 /// reads yet: it is what the exposed-bedrock solver will take to stand resistant beds out as ledges
 /// and let weak ones recess (sandstone and limestone near 1, shale near 0).
-struct FormationBed @version(1) {
+struct FormationBed @version(2) {
   name: string
   /// Across the bed, metres: 0.01 to 1,000, taken to the millimetre (a bed is thicker than 1 cm,
   /// McKee and Weir 1953). A macro bed is a member or a formation, metres to hundreds of metres.
@@ -1540,6 +1540,55 @@ struct FormationBed @version(1) {
   roughness: f32 = 0
   /// Resistance to weathering, 0 (recedes) to 1 (stands out). Carried, not drawn (W85).
   resistance: f32 = 0.5
+  /// Variation along strike (W94; `Formation.lateral_m`): the most this bed's **top** moves, as a
+  /// share of the thinner of the two beds it parts, 0 to 0.45 (two tops never cross). 0, the
+  /// default, is a top that is a plane, which is what an authored bed was. The sequence's last
+  /// top never moves, so the period is the same everywhere.
+  variation: f32 = 0 @since(2)
+  /// A lens (W94): this bed's top comes down to its base along stretches of the strike, so the bed
+  /// pinches out there and stands at its whole thickness between. Not on the sequence's last bed,
+  /// nor on two beds running.
+  lens: bool = false @since(2)
+}
+
+/// **A member of a generated sequence** (W94; `Formation.members`; the grounding,
+/// docs/experiments/formation-sequence.md): an interval of a formation with one character, tens of
+/// metres thick, which a hillside shows as a cliff or as a slope. Its beds are drawn, not listed:
+/// two lithologies alternate, a resistant one (sandstone, limestone, a lava flow) and a recessive
+/// one (shale, mudstone, an interflow bed), each bed's thickness from a lognormal distribution
+/// (Krumbein and Dacey's embedded chain with independent thicknesses, 1969). `resistant` is the
+/// share of the member's thickness in resistant beds, and the one number that makes it a
+/// cliff-former (near 1: thick resistant beds parted by thin recessive ones) or a slope-former (near
+/// 0: thick recessive intervals with thin resistant ledges).
+struct FormationMember @version(1) {
+  name: string
+  /// The member's thickness, metres: 0.5 to 1,000, taken to the millimetre.
+  thickness_m: f32 = 40 @unit(m)
+  /// The share of the thickness in resistant beds, 0 to 1.
+  resistant: f32 = 0.5
+  /// The median thickness of the beds of the member's **dominant** lithology (the resistant one
+  /// when `resistant` is a half or more), metres: 0.05 to 100. The other lithology's median follows
+  /// from the share (`bed_m * minor / major`), and under a centimetre it is left out, so a member
+  /// at 0 or 1 is beds of one lithology parted by bedding planes.
+  bed_m: f32 = 1 @unit(m)
+  /// The standard deviation of the logarithm of a bed's thickness, 0 to 1.5.
+  sigma: f32 = 0.7
+  /// The member's colour multiplier (the macro sequence's bed), each channel 0 to 2; absent white.
+  tint: vec3?
+  /// The two lithologies' colour multipliers within the member, each channel 0 to 2; absent is
+  /// (1.08, 1.05, 1.0) for the resistant and (0.78, 0.80, 0.84) for the recessive.
+  resistant_tint: vec3?
+  recessive_tint: vec3?
+  /// How far one bed's tone is from its lithology's, as a share either way, 0 to 0.5: no two beds
+  /// of a real section are one tone.
+  tone: f32 = 0.08
+  /// Variation along strike: the most a bed's top moves, as a share of the thinner of the two beds
+  /// it parts, 0 to 0.45 (`FormationBed.variation`, drawn per top up to this).
+  variation: f32 = 0.3
+  /// The share of the member's minor-lithology beds that are lenses, 0 to 1 (`FormationBed.lens`):
+  /// the shale partings of a sandstone cliff and the sandstone ledges of a shale slope are the beds
+  /// that pinch out.
+  lenses: f32 = 0.25
 }
 
 /// **A world formation** (roadmap W85; renderer.md, "Formation bands"; rocks.md, "Geology"): beds
@@ -1552,7 +1601,14 @@ struct FormationBed @version(1) {
 /// the distance along t, so its hinges run along the strike. `beds` repeats along that coordinate;
 /// `macro_beds` repeats along it too at its own period, so the bands a kilometre away still have
 /// structure when the beds have averaged out under a pixel. Both multiply.
-struct Formation @version(1) {
+///
+/// **The sequence is drawn or listed** (W94, version 2; renderer.md, "Formation bands"; the
+/// grounding, docs/experiments/formation-sequence.md). With `members`, the beds are drawn from
+/// `seed`: each member's beds from its own thickness distribution, up to 512 beds in all, and the
+/// members themselves are the macro sequence, so the section repeats only after the members'
+/// whole thickness (hundreds of metres), never inside it. With `beds` (and `macro_beds`) the
+/// sequence is the authored one, as it was. One or the other.
+struct Formation @version(2) {
   /// Where the bed coordinate is zero and the fold's phase starts, taken to the millimetre.
   origin: worldpos
   /// The beds' dip, degrees from horizontal: -85 to 85.
@@ -1570,11 +1626,28 @@ struct Formation @version(1) {
   /// The narrowest a band's edge is drawn, metres across the beds: 0 to 10. The pixel's own
   /// footprint widens it where it is wider, so a band never aliases.
   soft_m: f32 = 0.1 @unit(m)
-  /// The bed sequence, bottom first, repeating: 1 to 8 beds.
+  /// The bed sequence, bottom first, repeating: 1 to 512 beds; empty with `members`.
   beds: FormationBed[]
-  /// The macro sequence (members, tens of metres), bottom first, repeating: 0 to 8 beds; none is a
-  /// tint of one everywhere.
+  /// The macro sequence (members, tens of metres), bottom first, repeating: 0 to 512 beds; none is
+  /// a tint of one everywhere. Empty with `members`.
   macro_beds: FormationBed[]
+  /// The generated sequence's seed (`members`).
+  seed: u64 = 1 @since(2)
+  /// The generated sequence's members, bottom first: 1 to 64, or none for an authored sequence.
+  members: FormationMember[] @since(2)
+  /// Variation along strike (W94): the length, metres, over which a bed's top comes and goes, 10 to
+  /// 100,000 (taken to the millimetre). Two seeded fields of that length and 2.618 times it, each
+  /// along its own horizontal direction either side of the strike, move the tops that have a
+  /// `variation` or are a lens's; with no such top it does nothing.
+  lateral_m: f32 = 150 @unit(m) @since(2)
+  /// **A fault** (W94): a vertical plane whose horizontal normal points `fault_azimuth_deg` from
+  /// +x toward +z (-180 to 180) and which stands `fault_offset_m` along that normal from the origin
+  /// (within 100,000 km). Beyond it the bed coordinate is `fault_throw_m` greater, so every bed
+  /// there stands that far down its normal: -1,000 to 1,000 m, taken to the millimetre; 0 is no
+  /// fault. The one place the beds are not continuous.
+  fault_throw_m: f32 = 0 @unit(m) @since(2)
+  fault_azimuth_deg: f32 = 0 @unit(deg) @since(2)
+  fault_offset_m: f64 = 0 @unit(m) @since(2)
 }
 
 /// A scene: meshes, placements of them, and an optional terrain. Version 5 added `placements`,

@@ -1,4 +1,4 @@
-// The formation's two functions (formation.slang) at points the test names by their frame: an eye
+// The formation's functions (formation.slang) at points the test names by their frame: an eye
 // cell and a local offset from its corner, with a box width for the filter (gfx formation_tests).
 #include "formation.slang"
 
@@ -10,7 +10,7 @@ struct FormationProbePoint {
 };
 
 struct FormationProbeParams {
-  uint64_t output;     // three float4 per point (below)
+  uint64_t output;     // four float4 per point (below)
   uint64_t formation;  // one FormationParams
   uint64_t points;     // FormationProbePoint[]
   uint count;
@@ -28,10 +28,12 @@ void formation_probe_main(uint3 id : SV_DispatchThreadID) {
   const FormationPoint p = formation_coordinate(f, q.cell, q.local);
   FormationSequence* beds = (FormationSequence*)(address + k_formation_beds_offset);
   FormationSequence* macro = (FormationSequence*)(address + k_formation_macro_offset);
-  const FormationBedSample b = formation_bed(beds, p.bed);
-  const FormationBedSample m = formation_bed(macro, p.macro);
+  const FormationBedSample b = formation_bed(beds, p.bed, p.lateral);
+  const FormationBedSample m = formation_bed(macro, p.macro, p.lateral);
   float4* output = (float4*)g_formation_probe.output;
-  output[3 * id.x] = float4(p.bed, p.macro, float(b.index), float(m.index));
-  output[3 * id.x + 1] = float4(p.gradient, b.fraction);
-  output[3 * id.x + 2] = formation_filtered(beds, p.bed, q.width);
+  output[4 * id.x] = float4(p.bed, p.macro, float(b.index), float(m.index));
+  output[4 * id.x + 1] = float4(p.gradient, b.fraction);
+  output[4 * id.x + 2] = formation_filtered(beds, p.bed, q.width, p.lateral);
+  output[4 * id.x + 3] = float4(p.lateral, formation_filtered(macro, p.macro, q.width, p.lateral).x,
+                                b.resistance);
 }

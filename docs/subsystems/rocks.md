@@ -105,6 +105,36 @@ have no world origin); the `deposits` generator's talus and shed blocks do, thro
 copies its layer's `formation` into every face it writes, with the face's own world origin
 ([Faces in the slope](#faces-in-the-slope), G142); a hand-written recipe fills both fields itself.
 
+**What a solver asks the formation** (W94, 2026-11-10; `domain/gfx/formation.h`; the grounding:
+[formation sequence](../experiments/formation-sequence.md)). The formation is now a section drawn
+from a seed and its **members** — up to 512 beds, each in a member, a member a cliff-former or a
+slope-former by its `resistant` share — whose tops move along strike and may be thrown by a fault,
+so a solver that wants the bed the ground draws at a point asks with the point:
+
+- `gfx::formation_sample(params, frame, x, y, z)` gives the coordinate (the fault's throw in it),
+  the two lateral fields there, the **bed** and the **member**. Each is a `FormationBedSample`:
+  `index`, `fraction`, `resistance`, `kind` (resistant, recessive, a lens), `member`, and `base`
+  and `top`, where the bed's two contacts stand **at that point** along the coordinate, so
+  `top - base` is the bed's thickness there (zero where a lens has pinched out) and a ledge can sit
+  on the contact the terrain's band draws.
+- `gfx::formation_member(params, coordinate, lateral)` is the member alone: its bounds are where a
+  cliff band starts and stops, and its resistance at or over `k_formation_cliff_resistance` (a
+  half, the line `exposure` and the `cliffs` generator already draw) says it forms a cliff. A
+  formation with no macro sequence answers as one member, the whole period.
+- `gfx::formation_lateral(frame, x, y, z)` and `formation_bed(sequence, coordinate, lateral)` are
+  the two halves, for a solver that walks many coordinates at one place.
+- `gfx::formation_section_m(params)` is the thickness of section inside which nothing repeats.
+
+`formation_coordinate` applies the fault for every caller. **The queries W85 gave keep their
+meaning**: `formation_bed(sequence, coordinate)` without a point is the **reference section**, every
+top where the table's `start_m` puts it, which is what the ledges, the exposure rule, the deposits
+and the landform read tonight; where a top moves they are off by its travel (under 0.45 of the
+thinner bed, a lens's whole thickness), and they should move to the forms above and the plain one
+go. Recipes, ledge patches and deposit patches that carry a formation keep their keys while it is an
+authored one: the canonical parameters leave the seed, the members and the lateral length out of a
+formation with no members, a fault with no throw, and a bed's `variation` and `lens` at their
+defaults (the walk `detail::drop_absent_sampling` makes, the one all three canonical forms share).
+
 `quality` (`Low`, `Medium`, `High`, default `High`) spends respectively 10%, 35%, or 100% of the
 authored triangle budget, with a floor of 192 triangles per body or 2,000 per cliff and never above
 the authored budget. These are **offline source variants**. The existing cluster DAG and renderer

@@ -343,14 +343,24 @@ static_assert(offsetof(gfx::TerrainRecord, mask) == 32);
 // W85: the formation block's address in two of the pad words, read as `uint2 formation` at 80.
 static_assert(offsetof(gfx::TerrainRecord, formation) == 80);
 // The world formation's block (formation.h, W85), GPU-mirrored by formation.slang: one per scene,
-// read per banded pixel. 928 bytes: the origin and the two directions as int64 (the precision
-// argument), the folds, then two sequences of eight 48-byte beds each with their integrals, so the
-// box filter is two lookups rather than a loop over the beds it spans.
-ENGINE_EXPECT_SIZE(48, 4, gfx::FormationBedGpu);
-ENGINE_EXPECT_SIZE(416, 4, gfx::FormationSequence);
-ENGINE_EXPECT_SIZE(928, 8, gfx::FormationParams);
-static_assert(offsetof(gfx::FormationParams, beds) == 96);
-static_assert(offsetof(gfx::FormationParams, macro) == 512);
+// read per banded pixel. 98,624 bytes (W94; 928 as W85 left it): a 192-byte head — the origin and
+// the two directions as int64 (the precision argument), the folds, the two lateral fields and the
+// fault — then two tables of 512 beds of 96 bytes. A bed grew from 48 bytes by the two lateral
+// prefix sums (32), its base's two amplitudes (8), and its member and kind (8, one of them W85's
+// pad); a table from 8 beds to 512 because the sequence is drawn from a seed and must not repeat
+// inside a hillside's section. The integrals stay per bed, so the box filter is still two lookups
+// rather than a loop over the beds it spans.
+ENGINE_EXPECT_SIZE(96, 4, gfx::FormationBedGpu);
+ENGINE_EXPECT_SIZE(49216, 4, gfx::FormationSequence);
+ENGINE_EXPECT_SIZE(32, 8, gfx::FormationLateralGpu);
+ENGINE_EXPECT_SIZE(98624, 8, gfx::FormationParams);
+static_assert(offsetof(gfx::FormationParams, lateral) == 96);
+static_assert(offsetof(gfx::FormationParams, fault_q) == 160);
+static_assert(offsetof(gfx::FormationParams, beds) == 192);
+static_assert(offsetof(gfx::FormationParams, macro) == 49408);
+static_assert(offsetof(gfx::FormationSequence, beds) == 64);
+static_assert(offsetof(gfx::FormationBedGpu, start_m) == 64);
+static_assert(offsetof(gfx::FormationBedGpu, base_amp_m) == 80);
 
 ENGINE_EXPECT_SIZE(64, 4, gfx::ResolveLight);
 
