@@ -12,8 +12,9 @@ namespace engine::rocks {
 // fragments of the largest band alone, the toe's clasts spread over metres. 5: the toe's clasts on
 // the gentle ground only (a mesh built at 4 may carry clasts on the face). 6 (T108): a loose stone
 // is its own primitive and material, its rock's set at that set's repeat (rocks.md, "A stone wears
-// its rock").
-inline constexpr u32 k_deposit_version = 6;
+// its rock"). 7 (G183): a foot's supply spreads along the wall through a kernel whose wedges are a
+// cone's flanks (rocks.md, "Cones that climb their gullies").
+inline constexpr u32 k_deposit_version = 7;
 // The bed's edge (rocks.md, "The edge and the seams"): inside its outline toward bare gentle ground
 // a deposit is no thicker than `k_edge_slope` (tan 31 degrees, the toe's own slope) times its
 // distance in, less half a spacing; past it the piles' surfaces continue under the ground; and the

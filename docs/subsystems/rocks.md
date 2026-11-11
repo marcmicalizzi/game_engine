@@ -1124,15 +1124,16 @@ plan area times `sqrt(1 + slope²)`), until it reaches a gentle sample: its **fo
 **supply** is the part of that area its pile has not buried times `supply_m`, the wall's retreat since
 the ice left (default 1.2 m by [How much a face sheds](#how-much-a-face-sheds); range 0-50 m, the
 published rates' 0.015-2 mm a year over the Holocene). Each foot spreads its own supply along the
-feet round it over its own pile's reach `r = h / tan(repose)` through a triangle kernel
-`(1 - d / r) / r`, which integrates to one along a line, so volume is conserved; a foot's pile is the
+feet round it over its own pile's reach `r = h / tan(repose)` through a kernel (since G183 the
+cone's, `1.5 (1 - d / r)² / r`: [Cones that climb their gullies](#cones-that-climb-their-gullies)),
+which integrates to one along a line, so volume is conserved; a foot's pile is the
 wedge that holds what it receives, `h² a = q`, with `a = (1 / tan(repose) - 1 / tan(face)) / 2` the
 wedge's section against the face (the face's slope at the foot; at least `0.1 / tan(repose)`).
 Under a planar face `q` is the face's own supply per metre and the piles of neighbouring feet are
 one **sheet**, `a h² + q h = q H` with `q` the supply a metre of the face's height `H` (it went as
 the root of the face's height before G143's third pass let the talus bury its face). A foot fed by a gully
-receives its volume `V` over `r`, so `h³ = V tan(repose) / a`: the half cone's `π h³ / (6 tan²)`
-within a few per cent, a **cone**, its neighbours on the kernel's flanks. Sixteen steps, each halfway
+receives `1.5 V / r`, so `h³ = 1.5 V tan(repose) / a`, a **cone**, its neighbours on the kernel's
+flanks (G143 had `h³ = V tan(repose) / a` from a triangle kernel). Sixteen steps, each halfway
 to the law's height, settle every height together; no pile competes with another, so no step can
 run away (a first version that scaled each pile by what it won of the union let a few piles bury
 the rest). A pile never stands above the wall it fell from, nor more than 20 m (the patch's limit).
@@ -1158,7 +1159,8 @@ face's constant to 1%; the deposit holds 2,767 m³ for the 2,632 m³ the face sh
 wedge on a meadow that falls away from it). A planar 24 m face stands 14.0 m piles along its whole
 foot, the same to 0.2%. Its three funnel gullies, 12 m apart, each route 43.6 m³ (at 1 m of retreat)
 to their largest foot against 13.4 m³ a planar foot, and their piles stand 8.7 m over the foot
-against 7.6 m between them: **on a face this short with gullies this close, the cones merge into an
+against 7.6 m between them (G143's numbers; with the buried face's feedback and G183's kernel,
+8.0 m against 6.3 m): **on a face this short with gullies this close, the cones merge into an
 apron that bulges at each gully** (each cone reaches farther than the gullies are apart). A cone
 stands alone where its gully drains more face than the faces between it shed, as in reels r04 and
 r19, where a gully drains a basin; the review pictures' funnel face (G143's report) is built so.
@@ -1239,6 +1241,52 @@ recent rockfall, Sanders' 7-18 mm a year for decades after the event. At 1.2 m a
 buried 42% and a 100 m wall 15%; at the alpine 3.5 m, 59% and 25% (the talus' 20 m cap holds the
 latter at 20%). What sets it from the world (a layer's elevation, aspect and climate from
 `scene_gen::Site`, G144, and the age of the deglaciation) is not read yet; the field is the knob.
+
+### Cones that climb their gullies
+
+G183, 2026-11-11 (`k_deposit_version` 7; [grounding](../experiments/rockfall-deposits.md#g183-and-g182-cones-that-climb-and-the-bed-at-one-metre-2026-11-11)).
+From across, G143's apron under the gullied review face was a thin even band with a ruled upper
+edge and a small pile at each gully's foot: a gravel berm against the wall, not cones that climb
+their gullies and merge into an apron between. Sanders et al. (2009) describe the two forms: cones
+below cliffs whose chutes "focus" the supply into point sources, aprons below planar cliffs, and
+cones that "laterally merge" where the point sources are close. Talus slopes of 29-36 degrees
+(Wegner et al. 2021) put the default repose's 35 inside the measured range.
+
+**Why the edge was ruled.** Every foot spreads its supply along the wall to the feet within its
+pile's reach, and a foot's pile is the wedge holding what it receives, `h = sqrt(q / a)`. A triangle
+kernel `(1 - d / r) / r` gives a point source's neighbours `h0 sqrt(1 - d / r)`: a ridge along the
+wall standing above the cone's own surface, about 0.7 of the apex's height half a reach away where
+a cone stands at half. The gully's volume was spent raising the apron beside it, and the margin
+between two gullies 12 m apart on the 24 m test face stood at 0.90 of the cones'. **The kernel is
+now the cone's**, `1.5 (1 - d / r)² / r`, which also integrates to one along a line, so a planar
+face's sheet is the same sheet (the sheet and buried-face cases hold to 1%), but a point source's
+neighbours stand `h0 (1 - d / r)`: the pile's top falls along the wall at the repose angle, the
+cone's own surface. A gully's pile is then `h³ = 1.5 V tan(repose) / a` (15% taller for its volume
+than the triangle's), its apex walked further up the gully's floor ([What a face sheds](#what-a-face-sheds)),
+and the margin falls from each apex to the apron the spurs shed. On the discrete feet the kernel's
+sum is `1 + sp² / (2 r²)` where `r` is a whole number of spacings, so it is divided by that: a short
+pile's volume is conserved on the lattice too.
+
+**What it does** (`deposits: cones climb their gullies and the apron between them is lower, 10 to
+100 m`, the default 1.2 m supply, gullies a fifth of the wall deep): the margin along the wall
+stands at the gullies and between them as below, the apron at most four fifths of the cones where
+the cones are cones (a design value: the triangle kernel fails it on every face but the crag).
+
+| Wall, gullies apart | Cones' margin | Apron's | Ratio (triangle kernel) |
+|---|---:|---:|---:|
+| 10 m crag, 12 m | 4.45 m | 4.13 m | 0.93 (0.93) |
+| 24 m face, 12 m | 8.42 m | 6.30 m | 0.75 (0.90) |
+| 24 m face, 18 m | 8.39 m | 6.57 m | 0.78 (0.84) |
+| 100 m wall, 40 m | 19.9 m | 15.0 m | 0.75 (0.81) |
+
+The crag's cones reach 6.3 m along the wall from gullies 6 m from their midpoint, so they merge:
+an apron that bulges at each gully, as on the reels where a short wall is closely gullied. The
+buried-face feedback holds at both ends (the 10 m crag's cones bury 45% of it, the 100 m wall's
+20%). What the kernel cannot do: make a gully drain more than its face. On the review face the
+gullies are 5 m notches in a 24 m wall and drain a modest share, so its cones stand 2 m over the
+apron and not twice its height; a gully that heads into a basin (r04) makes the larger cone by the
+same rule. Rockfall concentrated in gullies beyond the area they drain (a jointed gully retreating
+faster than its spurs) would raise the contrast further; no inventory with numbers was found.
 
 ### The edge and the seams
 

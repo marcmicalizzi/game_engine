@@ -243,8 +243,9 @@ TEST_CASE("deposits: mesh identity and cluster container are deterministic") {
   // its cluster DAG (G143's third pass; was 7929702402516820737), then for the rubble and
   // k_deposit_version 4 (was 1421504051895875902), then 5 for the toe's clasts kept off the face
   // (was 13829166473420471729), then for T108's two primitives, the bed and the loose stones,
-  // each its own DAG and material, and k_deposit_version 6 (was 10478160828047604680).
-  CHECK(geometry::cluster_file_hash(a) == 16110835894214829114ull);
+  // each its own DAG and material, and k_deposit_version 6 (was 10478160828047604680), then for
+  // G183's k_deposit_version 7 in the source hash (was 16110835894214829114).
+  CHECK(geometry::cluster_file_hash(a) == 7110207806032102213ull);
   CHECK(geometry::cluster_file_hash(a) == geometry::cluster_file_hash(b));
   CHECK(a.source_hash == deposit_source_hash(p));
   CHECK(a.source_hash == b.source_hash);

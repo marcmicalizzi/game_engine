@@ -230,3 +230,22 @@ stand barely proud of the apron on this face, which is the face's (its spurs she
 a scene where gullies drain basins; the wall above is untextured ground, so the scree's contrast
 with its wall cannot be judged; and from across the toe's clasts still read as a speckled band
 along the outline.
+
+## G183 and G182: cones that climb and the bed at one metre (2026-11-11)
+
+T108, G183 and G182 ([rocks: A stone wears its rock](../subsystems/rocks.md#a-stone-wears-its-rock),
+[Cones that climb their gullies](../subsystems/rocks.md#cones-that-climb-their-gullies),
+[The bed is rubble](../subsystems/rocks.md#the-bed-is-rubble)). The sources were found and read by
+one research sub-agent over published pages; how each was read is its column. Several things were
+looked for and not found, and they are listed so the next pass does not look again in the same
+places.
+
+| Quantity / rule | Source read | Value used / trade |
+|---|---|---|
+| Cones below chutes, aprons below planar cliffs, cones that merge | Sanders, Ostermann and Kramers (2009), Facies 55: 345-373, full text: cones form below cliffs "differentiated into chutes and gorges" that focus the supply as point sources; aprons below planar cliffs; cones "laterally merge"; gorges between summits filled by talus dipping up to 50-60 degrees | The supply rule already routes a gully's face to its mouth; the kernel that spreads a foot's supply along the wall is now a cone's (its neighbours' wedges fall at the repose along the wall), so a gully's pile is a cone and the apron between is the spurs'. |
+| Talus slope range | Wegner et al. (2021), NHESS 21: 1159-1177, full text: mean cone slopes 29-36 degrees, straight or slightly convex above, concave at the base | The default repose (35 degrees) is inside it; unchanged. |
+| The buried rock-head | Bithell, Richards and Bithell (2014), ESPL 39: 1601-1610, full text: the Fisher-Lehmann rock-head, talus height at the wall from volume balance | The feedback G143's third pass added is held on gullied walls of 10 m and 100 m: cones bury 45% and 20% of them. |
+| Cone apex height against what the gully drains | Not found as a measured law (Siewert et al. 2012, ESPL 37: 1542-1555, abstract only, reference talus volumes to their source areas for retreat rates, 0.33-1.96 mm a year, and give no functional form) | The volume balance gives it: `h³ = 1.5 V tan(repose) / a` for a cone against a face; the apex height goes as the cube root of the gully's supply. |
+| Cone planform half angle; relief of the upper margin; rockfall in gullies against spurs | Not found (searched: Luckman's Treatise chapter, Rapp 1960, Church et al. 1979 abstract, Statham 1976 abstract) | The planform follows from the union of the piles' surfaces; the margin's relief is measured on the test walls and bounded by a design value (the apron at most four fifths of the cones), not a source's. |
+| Clast shape on talus | Wegner et al. (2021): blocks over 0.5 m, median a/b axis ratio 1.73 (basalt) to 2.63 (gneiss); Sanders et al. (2009): angular to subangular clasts, openwork, "open megapores" below larger platy clasts, an indistinct preferred orientation | The bed's clasts (G182): elongated 1-2.5 to 1 in plan, angular, tilted at random about the slope, of several heights, with the bed between the largest sunk into hollows. |
+| Clast protrusion, tilt angles, void depth, Zingg classes on talus | Not found (Bertran et al. 1997, Sedimentology 44, abstract only: individual particles give random orientation) | Authored and stated on the page. |

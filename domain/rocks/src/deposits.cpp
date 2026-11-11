@@ -366,13 +366,18 @@ bool plan_deposits(const DepositLayer& p, const scene_gen::Ground& ground, Depos
       if (fed[i] > 0 && slopes[i] < source)
         piles.push_back({i, i, 0.0, 0.0, fed[i] * wide(p.supply_m), 0.0, 0.0});
   // Each foot's height from the supply delivered to it, per metre of foot. Every foot spreads its
-  // own volume along the foot over its own pile's reach r = h / tan(repose) through a triangle
-  // kernel (1 - d / r) / r, which integrates to one along a line, and a foot's pile is the wedge
+  // own volume along the foot over its own pile's reach r = h / tan(repose) through a kernel
+  // 1.5 (1 - d / r)^2 / r, which integrates to one along a line, and a foot's pile is the wedge
   // that holds what it receives, h^2 a = q, a = (1/tan(repose) - 1/tan(face)) / 2 its section
   // against the face. Under a planar face q is the face's own supply per metre: a sheet whose
-  // height goes as the root of the face's. A foot fed by a gully receives its volume V over r:
-  // h^3 = V tan(repose) / a, within a few per cent of the half cone's pi h^3 / (6 tan^2), and its
-  // neighbours the kernel's flanks: a cone. Volume is conserved (the kernel integrates to one) and
+  // height goes as the root of the face's. A foot fed by a gully receives 1.5 V / r: h^3 = 1.5 V
+  // tan(repose) / a, and its neighbours' wedges stand h (1 - d / r), so the pile's top falls along
+  // the wall at the repose angle, the cone's own surface: a cone (G183; rocks.md, "Cones that climb
+  // their gullies"). The triangle kernel before it gave the neighbours h sqrt(1 - d / r), a ridge
+  // standing above the cone's surface along the wall that filled the apron between gullies to
+  // nearly the cones' height. The kernel is divided by its own sum over feet a spacing apart along
+  // a line, 1 + sp^2 / (2 r^2) (exact where r is a whole number of spacings), so a short pile's
+  // volume is conserved on the lattice. Volume is conserved (the kernel integrates to one) and
   // every height is a function of its neighbourhood, updated together, so no pile competes with
   // another. A pile never stands above the wall it fell from.
   // A buried face sheds nothing (Fisher 1866, Lehmann 1933; Sanders 2012's negative feedback;
@@ -425,7 +430,7 @@ bool plan_deposits(const DepositLayer& p, const scene_gen::Ground& ground, Depos
       }
       const f64 face_slope = up[f] != ~0u ? slopes[up[f]] : source;
       a[k] = std::max(.5 * (1.0 / repose - 1.0 / face_slope), .1 / repose);
-      tall[k] = cube_root(piles[k].volume * repose / a[k]);
+      tall[k] = cube_root(1.5 * piles[k].volume * repose / a[k]);
     }
     std::sort(by_key.begin(), by_key.end(),
               [&](u32 x, u32 y) { return keys[x] != keys[y] ? keys[x] < keys[y] : x < y; });
@@ -436,6 +441,7 @@ bool plan_deposits(const DepositLayer& p, const scene_gen::Ground& ground, Depos
         volume[g] = shed(g, tall[g]);
       for (u32 g = 0; g < m; ++g) {
         const f64 r = std::max(tall[g] / repose, sp);
+        const f64 weight = 1.5 / (r * (1.0 + .5 * sp * sp / (r * r)));
         const i64 r_mm = static_cast<i64>(r * 1000.0) + 1;
         const i64 gx = world_x(piles[g].foot), gz = world_z(piles[g].foot);
         for (i64 bx = floor_div_mm(gx - r_mm, bucket); bx <= floor_div_mm(gx + r_mm, bucket); ++bx)
@@ -446,7 +452,7 @@ bool plan_deposits(const DepositLayer& p, const scene_gen::Ground& ground, Depos
                                        [&](u32 x, i64 v) { return keys[x] < v; });
             for (; it != by_key.end() && keys[*it] == key; ++it) {
               const f64 d = sample_distance(plan, piles[g].foot, piles[*it].foot);
-              if (d < r) q[*it] += volume[g] * (1.0 - d / r) / r;
+              if (d < r) q[*it] += volume[g] * weight * (1.0 - d / r) * (1.0 - d / r);
             }
           }
       }

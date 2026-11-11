@@ -44,6 +44,30 @@ f64 rising(const void*, i64 x_mm, i64 z_mm) noexcept {
   return x < 24 ? .08 * (x - 24) : std::min((x - 24) * 2, crest);
 }
 f64 flat(const void*, i64, i64) noexcept { return 0; }
+// G183: a gullied wall of any height: the face at 63 degrees from x = 24 m rises `height` metres to
+// a plateau, and three gullies `spacing` metres apart cut up to `depth` metres into it, a quarter
+// of the spacing across at the foot and half of it at the crest, shallowing to nothing at the crest
+// so that every sample of a gully is face (no gentle notch at its head to catch a pile).
+struct GulliedWall {
+  f64 height;
+  f64 spacing;
+  f64 depth;
+};
+f64 gullied_wall(const void* data, i64 x_mm, i64 z_mm) noexcept {
+  const auto& g = *static_cast<const GulliedWall*>(data);
+  const f64 x = static_cast<f64>(x_mm) / 1000.0, z = static_cast<f64>(z_mm) / 1000.0;
+  const f64 run = g.height / 2;
+  f64 h = x < 24 ? .08 * (x - 24) : std::min((x - 24) * 2, g.height);
+  for (f64 c : {g.spacing, 2 * g.spacing, 3 * g.spacing}) {
+    const f64 u = (z - c) / (g.spacing * (.25 + .25 * std::clamp((x - 24) / run, 0.0, 1.0)));
+    if (u * u >= 1) continue;
+    const f64 across = (1 - u * u) * (1 - u * u);
+    const f64 along = std::clamp((x - 24) / (run * 2 / 3), 0.0, 1.0) *
+                      std::clamp((24 + run - x) / (run / 3), 0.0, 1.0);
+    h -= g.depth * across * along;
+  }
+  return h;
+}
 // A planar face at 63 degrees (rise 2 over run 1) from x = 24 m, `*data` metres high, a plateau
 // above it and the same gently falling meadow below.
 f64 wall_of(const void* data, i64 x_mm, i64) noexcept {
@@ -265,6 +289,78 @@ TEST_CASE("deposits: a cone stands at each gully's mouth and a planar face makes
     CHECK(deposit_convergence(plan, i, 4) == 0.0);
 }
 
+TEST_CASE("deposits: cones climb their gullies and the apron between them is lower, 10 to 100 m") {
+  // G183 (rocks.md, "Cones that climb their gullies"): a gully is a point source (Sanders et al.
+  // 2009: chutes "focus" the supply into cones, a planar cliff feeds an apron), so the talus' upper
+  // margin along the wall rises to a cone's apex in each gully and falls between them, where the
+  // cones' flanks meet the apron the spurs shed. Walls from a 10 m crag to a 100 m wall at the
+  // default supply, the gullies cut a fifth of the wall deep: the margin is the highest top of the
+  // deposit in each column along the wall.
+  struct Face {
+    GulliedWall wall;
+    const char* name;
+  };
+  const Face faces[] = {{{10, 12, 2}, "10 m crag"},
+                        {{24, 12, 5}, "24 m face"},
+                        {{24, 18, 5}, "24 m face, gullies 18 m apart"},
+                        {{100, 40, 20}, "100 m wall"}};
+  f64 buried[2] = {};
+  for (const Face& f : faces) {
+    DepositLayer p = layer();
+    p.supply_m = DepositLayer{}.supply_m;
+    p.region_min = {-40, 0};
+    p.region_max = {static_cast<f32>(28 + f.wall.height / 2), static_cast<f32>(4 * f.wall.spacing)};
+    p.max_samples = 1048576;
+    scene_gen::Ground g;
+    g.surface_fn = &gullied_wall;
+    g.context = &f.wall;
+    DepositPlan plan;
+    std::string error;
+    REQUIRE_MESSAGE(plan_deposits(p, g, plan, error), error);
+    Vector<f64> margin(plan.depth, 0.0);
+    for (u32 i = 0; i < plan.ground.size(); ++i)
+      if (plan.thickness[i] > .001f)
+        margin[i / plan.width] = std::max(margin[i / plan.width], top(plan, i));
+    const f64 s = f.wall.spacing;
+    auto row = [&](f64 z) { return static_cast<u32>(std::llround(z / .5)); };
+    f64 apex_lo = 1e9, apex_hi = 0, apron_hi = 0, fall_lo = 1e9;
+    for (u32 k = 1; k <= 3; ++k) {
+      const f64 c = s * k;
+      f64 apex = 0;
+      for (f64 z = c - .1 * s; z <= c + .1 * s; z += .5)
+        apex = std::max(apex, margin[row(z)]);
+      apex_lo = std::min(apex_lo, apex);
+      apex_hi = std::max(apex_hi, apex);
+      if (k == 3) continue;
+      f64 apron = 1e9;
+      for (f64 z = c + .4 * s; z <= c + .6 * s; z += .5)
+        apron = std::min(apron, margin[row(z)]);
+      apron_hi = std::max(apron_hi, apron);
+      // How far the margin falls from the apex a quarter of the spacing along the wall, per metre.
+      const f64 quarter = std::min(margin[row(c + .25 * s)], margin[row(c - .25 * s)]);
+      fall_lo = std::min(fall_lo, (apex - quarter) / (.25 * s));
+    }
+    MESSAGE(std::string(f.name), ": the margin stands ", apex_lo, "-", apex_hi,
+            " m at the gullies, ", apron_hi, " m at most between them; it falls ", fall_lo,
+            " a metre over the first quarter (tan ", "repose ", k_repose, ")");
+    // A cone never buries its wall (the feedback), and the margin rises and falls along it.
+    CHECK(apex_hi < f.wall.height);
+    CHECK(apron_hi < apex_lo);
+    // Where a gully's cone is a real cone (its flank along the wall falls at the repose from the
+    // apex, so it meets the apron within half the spacing), the apron between stands at most four
+    // fifths of the cones. A design value, not a source's: the triangle kernel's fat flanks held it
+    // at 0.90 on the 24 m face, 0.84 with the gullies 18 m apart and 0.81 on the 100 m wall (the
+    // cone kernel: 0.75, 0.78 and 0.75). The 10 m crag's cones reach
+    // 6.3 m along the wall from gullies 6 m from their midpoint: they merge, and it is only lower.
+    if (f.wall.height >= 24) CHECK(apron_hi < .8 * apex_lo);
+    if (f.wall.height == 10) buried[0] = apex_hi / f.wall.height;
+    if (f.wall.height == 100) buried[1] = apex_hi / f.wall.height;
+  }
+  // The taller the wall, the less of it the cones bury (Lehmann's buried core, held at the
+  // smallest and largest wall the default serves).
+  CHECK(buried[1] < buried[0]);
+}
+
 TEST_CASE("deposits: the union holds the angle of repose and eases concave to its toe") {
   DepositPlan plan;
   std::string error;
@@ -343,18 +439,35 @@ TEST_CASE("deposits: shed blocks thin with distance, the largest farthest, none 
     CHECK(b.half[1] <= std::max(b.half[0], b.half[2]));
     farthest = std::max(farthest, b.distance_m);
   }
+  // The thinning and the sorting are statistical: held over five seeds' blocks together, not one
+  // draw (T108's cones moved this face's one draw to 74, 85 and 33 blocks by thirds).
   u32 count[3] = {};
   f64 size[3] = {};
-  for (const auto& b : plan.blocks) {
-    const u32 bin = std::min(2u, static_cast<u32>(3 * b.distance_m / farthest));
-    ++count[bin];
-    size[bin] += b.half[0] + b.half[2];
+  for (u64 seed = 0; seed < 5; ++seed) {
+    DepositLayer s = p;
+    s.seed = p.seed + seed;
+    DepositPlan drawn;
+    REQUIRE(plan_deposits(s, ground(), drawn, error));
+    f64 reach = 0;
+    for (const auto& b : drawn.blocks)
+      reach = std::max(reach, b.distance_m);
+    for (const auto& b : drawn.blocks) {
+      const u32 bin = std::min(2u, static_cast<u32>(3 * b.distance_m / reach));
+      ++count[bin];
+      size[bin] += b.half[0] + b.half[2];
+    }
   }
   for (u32 k = 0; k < 3; ++k)
     if (count[k]) size[k] /= count[k];
-  MESSAGE("blocks ", plan.blocks.size(), " out to ", farthest, " m; by thirds: ", count[0], " ",
-          count[1], " ", count[2], ", mean size ", size[0], " ", size[1], " ", size[2]);
-  CHECK(count[0] > count[1]);
+  MESSAGE("blocks ", plan.blocks.size(), " out to ", farthest,
+          " m; five seeds' by thirds: ", count[0], " ", count[1], " ", count[2], ", mean size ",
+          size[0], " ", size[1], " ", size[2]);
+  // G183 restated (reported, the coordinator's call): with the cones' kernel the first third lies
+  // on the cones' upper flanks, at the repose, where fewer candidates may rest (five seeds: 390,
+  // 421 and 177 by thirds; the triangle kernel's 473, 405 and 208). The count still thins from the
+  // talus to the farthest third, and the expected count a candidate carries falls with distance
+  // by construction (exp(-d / block_decay_m)).
+  CHECK(count[0] > count[2]);
   CHECK(count[1] > count[2]);
   CHECK(size[0] < size[1]);
   CHECK(size[1] < size[2]);
@@ -745,7 +858,16 @@ TEST_CASE("deposits: neighbouring patches' coarse forms meet along their border"
   for (f32 t : {0.0f, .005f, .02f, .05f, .1f, .25f, .5f, 1.0f}) {
     ++cuts;
     const Vector<i64> ca = chain(da.mesh, t, span, a.at), cb = chain(db.mesh, t, 0.0, b.at);
-    parted += ca == cb ? 0u : 1u;
+    // The same chain: the same places along the line, and heights that round to the same 0.01 mm
+    // or its neighbour. Each patch's vertices are f32 metres from its own corner, whose heights
+    // differ, so one height read from the two frames differs by an f32 step (under a micrometre at
+    // these heights) and can round either side of a 0.01 mm boundary (T108's plan put five of 82
+    // vertices so); a parting the lock exists to stop is millimetres.
+    bool same = ca.size() == cb.size();
+    for (u32 k = 0; same && k < ca.size(); ++k)
+      same = ca[k] / 100000000ll == cb[k] / 100000000ll &&
+             std::abs(ca[k] % 100000000ll - cb[k] % 100000000ll) <= 1;
+    parted += same ? 0u : 1u;
     lost += ca == finest ? 0u : 1u;
     // Inside the patch: the cut's top against the plan's at every sample with a bed.
     for (u32 i = 0; i < a.patch.width * a.patch.depth; ++i) {
@@ -955,7 +1077,10 @@ TEST_CASE("deposits: G143's plan and a patch with blocks are their pinned bytes"
   // Re-taken for G143's third pass (2026-11-11): a buried face sheds nothing, the default supply is
   // a temperate wall's 1.2 m, and a pile's surface is measured from where its top meets the face
   // (was 4874663829597876097).
-  CHECK(h == 12819893177785769668ull);
+  // Re-taken for G183 (2026-11-11): a foot's supply spreads along the wall through the cone's
+  // kernel, so a gully's pile stands 8.0 m and not 7.6 m and the piles beside it fall at the
+  // repose (was 12819893177785769668).
+  CHECK(h == 8191438242356363095ull);
   DepositPatch patch;
   patch.width = 5;
   patch.depth = 5;
@@ -1033,7 +1158,7 @@ TEST_CASE("deposits: what a tile of cones and shed blocks costs (measured, print
   REQUIRE(desc->meshes(state, c, meshes, &error));
   desc->close(state);
   REQUIRE_FALSE(tile.instances.empty());
-  u64 leaf = 0, root = 0, blocks = 0;
+  u64 leaf = 0, root = 0, blocks = 0, bytes = 0, files = 0;
   f64 area = 0, build_ms = 0;
   for (const auto& instance : tile.instances) {
     std::string text;
@@ -1056,6 +1181,11 @@ TEST_CASE("deposits: what a tile of cones and shed blocks costs (measured, print
     REQUIRE_MESSAGE(build_deposit_container(patch, {}, 0, data, error), error);
     build_ms +=
         std::chrono::duration<f64, std::milli>(std::chrono::steady_clock::now() - built).count();
+    const std::string written = dir + "/patch-" + std::to_string(files++) + ".clusters";
+    REQUIRE(geometry::write_cluster_file(written, data, &error));
+    std::string bytes_read;
+    REQUIRE(io::read_file(written, bytes_read) == io::Status::Ok);
+    bytes += bytes_read.size();
     leaf += data.mesh.leaf_triangle_count;
     for (u32 k = 0; k < data.mesh.lod.size(); ++k)
       if (data.mesh.lod[k].parent_error == geometry::k_lod_terminal_error)
@@ -1065,7 +1195,7 @@ TEST_CASE("deposits: what a tile of cones and shed blocks costs (measured, print
           " blocks as geometry, ", area, " m2 of bed; finest ", leaf, " triangles (",
           static_cast<f64>(leaf) / area, " a m2), coarsest ", root, " (",
           static_cast<f64>(root) / area, " a m2); plan ", plan_ms, " ms, region open ", open_ms,
-          " ms, the tile's patches ", build_ms, " ms");
+          " ms, the tile's patches ", build_ms, " ms, ", bytes, " bytes as containers");
   CHECK(tile.instances.size() <= 4);  // a 16 m tile of 8 m patches: four merged meshes at most
   CHECK(root < leaf);
 }
