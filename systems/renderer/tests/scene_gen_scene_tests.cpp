@@ -126,6 +126,34 @@ constexpr scene_gen::PlacementGeneratorDesc k_row{.name = "scene-gen-test-row",
                                                   .tile = &row_tile};
 const scene_gen::Registrar k_row_registrar{k_row};
 
+// A row that also **plans for the ground** (scene_gen.md, "What an entry plans for the ground"): a
+// round opening of two metres about the origin, and for a whole read the opening's disc as the
+// shape it occupies.
+bool opening_plan(void* state, const scene_gen::Context& context, scene_gen::GroundPlan& out,
+                  std::string*) {
+  const Row& row = *static_cast<const Row*>(state);
+  // The hook's ground is the scene's, before anything was opened in it.
+  g_log += "plan " + row.name + (context.excluded_mm(0, 0) ? " in-hole;" : ";");
+  scene::TerrainHole hole;
+  hole.name = row.name;
+  hole.radius_m = 2.0f;
+  out.holes.push_back(hole);
+  return true;
+}
+bool opening_expand(void* state, const scene_gen::Context& context, scene_gen::Placements& out,
+                    std::string* error) {
+  out.shapes.add_disc(0, 0, 3.0);
+  return row_expand(state, context, out, error);
+}
+constexpr scene_gen::PlacementGeneratorDesc k_opening{.name = "scene-gen-test-opening",
+                                                      .open = &row_open,
+                                                      .close = &row_close,
+                                                      .expand = &opening_expand,
+                                                      .meshes = &row_meshes,
+                                                      .tile = &row_tile,
+                                                      .plan_ground = &opening_plan};
+const scene_gen::Registrar k_opening_registrar{k_opening};
+
 std::string scene_with(const std::string& placements, const std::string& world = std::string()) {
   return R"({"format":"engine.scene.v1","name":"rows",)"
          R"("meshes":[{"name":"marker","path":"marker.glb"}],)"
@@ -232,6 +260,48 @@ TEST_CASE("renderer: the ground is made first, and the placements follow in the 
   // And the meshes follow the entries: b's is appended first now.
   CHECK(second.mesh_info[1].name == "rows/b");
   CHECK(second.mesh_info[2].name == "rows/a");
+}
+
+TEST_CASE("renderer: an entry that plans for the ground is asked before the ground is made") {
+  // With no capability linked (this file is compiled in the minimal build): the hook is the
+  // reader's and the registry's. An entry whose generator plans is opened on the ground as it was,
+  // asked, closed, and opened again on the ground the read makes after it; one that plans nothing
+  // is opened once, as it always was. The opening joins the terrain's holes and the exclusion, and
+  // the shape the entry hands joins the exclusion for the entries after it.
+  const test::TempDir tmp("renderer_scene_gen_plan");
+  const std::string path = tmp.file("scene.json");
+  const char* opening = R"({"generator":"scene-gen-test-opening","params":{"name":"o","count":1}})";
+  REQUIRE(write_text(path, scene_with(std::string(k_a) + "," + opening + "," + k_b)));
+  g_log.clear();
+  SceneDesc desc;
+  std::string error;
+  REQUIRE_MESSAGE(read_scene_file(path, desc, error), error);
+  CHECK(g_log == "ground;open o;plan o;ground;open a;expand a;open o;expand o;open b;expand b;");
+  CHECK(desc.terrain.holes.count() == 1);
+  CHECK(desc.terrain.holes.contains_mm(1000.0, -1000.0));
+  CHECK(desc.terrain.exclusion.hole_count() == 1);
+  CHECK(desc.terrain.exclusion.footprint_count() == 1);
+  const scene_gen::Ground flat;
+  CHECK(desc.terrain.exclusion.excluded_mm(flat, 2500, 0, scene_gen::k_exclude_footprints));
+  CHECK_FALSE(desc.terrain.exclusion.excluded_mm(flat, 3500, 0));
+  // The terrain's hash is the hole's: the same scene with the hole written into it.
+  TerrainDesc bare = desc.terrain;
+  REQUIRE(bare.holes.build({}, &error));
+  CHECK(terrain_hash(bare) != terrain_hash(desc.terrain));
+  scene::TerrainHole written;
+  written.name = "o";
+  written.radius_m = 2.0f;
+  REQUIRE(bare.holes.build({&written, 1}, &error));
+  CHECK(terrain_hash(bare) == terrain_hash(desc.terrain));
+  // Streamed, the plan is still the read's: before the ground, once.
+  REQUIRE(write_text(path, scene_with(std::string(opening) + "," + k_a, R"(,"world":{})")));
+  g_log.clear();
+  SceneDesc streamed;
+  REQUIRE_MESSAGE(read_scene_file(path, streamed, error), error);
+  CHECK(g_log == "ground;open o;plan o;ground;open o;open a;");
+  CHECK(streamed.terrain.holes.count() == 1);
+  // Edits of the heights have nowhere to go on a ground with no tile set, and the reader says so
+  // (apps/engine_view/tests/ground_plan_tests.cpp holds the sentence, and the edits themselves).
 }
 
 TEST_CASE("renderer: a streamed scene opens each entry and expands none") {

@@ -240,6 +240,111 @@ TEST_CASE("routes: one plan, read again and named on its own treads") {
   CHECK_FALSE(read_plan(std::string_view(bytes).substr(0, bytes.size() / 2), refused, error));
 }
 
+// **The generator hands the plan over** (routes.md, "In a scene"; R144): through the registry, as
+// a host calls it. The edits it plans for the ground are `tread_edits_json`'s, field for field;
+// the plan stands on the ground before any edit, so an entry opened on a ground that carries its
+// treads (another surface, with the unedited one behind `uncut()`) makes the same plan and plans
+// nothing again; a whole read is handed every band, and the tiles between them hand each band to
+// every tile it stands on or within the wear's reach of, and to no other.
+TEST_CASE("routes: the generator hands its treads to the ground and its bands to the next entry") {
+  test::TempDir scratch;
+  const scene_gen::PlacementGeneratorDesc* generator =
+      scene_gen::GeneratorRegistry::global().find_placement("routes");
+  REQUIRE(generator != nullptr);
+  REQUIRE(generator->plan_ground != nullptr);
+  RouteLayer p = region(-50, -30, 50, 50);
+  p.routes.push_back(route("a", -44, -20, 40, 40));
+  p.routes.push_back(route("b", -44, 40, 40, 40));
+  const JsonValue params = schema::to_json(p);
+  const std::string root = scratch.path();
+  scene_gen::Context c;
+  c.ground = ground(hill);
+  c.ddc = root;
+  c.tile_size = 16.0f;
+  std::string error;
+  void* state = nullptr;
+  const u64 before = plans_made();
+  REQUIRE_MESSAGE(generator->open(params, c, &state, &error), error);
+  CHECK(plans_made() == before + 1);
+  scene_gen::GroundPlan plan;
+  REQUIRE_MESSAGE(generator->plan_ground(state, c, plan, &error), error);
+  generator->close(state);
+  CHECK(plan.holes.empty());
+
+  // The same network, planned here: its edits are the generator's.
+  RouteNetwork n;
+  REQUIRE_MESSAGE(plan_routes(p, c.ground, nullptr, n, error), error);
+  const JsonValue expected = tread_edits_json(p, n);
+  REQUIRE(expected.is_array());
+  REQUIRE(plan.edits.size() == expected.as_array().size());
+  REQUIRE_FALSE(plan.edits.empty());
+  JsonWriteOptions compact;
+  compact.pretty = false;
+  for (u32 k = 0; k < plan.edits.size(); ++k) {
+    scene::TerrainEdit read;
+    schema::ReadContext reader;
+    REQUIRE(schema::from_json(read, expected.as_array()[k], reader));
+    CHECK(write_json(schema::to_json(plan.edits[k]), compact) ==
+          write_json(schema::to_json(read), compact));
+    CHECK(plan.edits[k].mode == scene::TerrainEditMode::Bench);
+  }
+
+  // Opened again on a ground that carries the treads: the plan is the unedited ground's, read.
+  struct Before {
+    static bool get(void*, scene_gen::Ground& out) {
+      out = ground(hill);
+      return true;
+    }
+  };
+  scene_gen::Context benched = c;
+  benched.ground = ground(side_slope);
+  benched.uncut_ground.fn = &Before::get;
+  const u64 planned = plans_made();
+  REQUIRE_MESSAGE(generator->open(params, benched, &state, &error), error);
+  CHECK(plans_made() == planned);
+  scene_gen::Placements whole;
+  REQUIRE_MESSAGE(generator->expand(state, benched, whole, &error), error);
+  CHECK(whole.instances.empty());
+  Vector<scene_gen::Footprint> bands;
+  tread_footprints(p, n, bands);
+  REQUIRE(whole.shapes.size() == bands.size());
+  REQUIRE_FALSE(bands.empty());
+  for (u32 k = 0; k < bands.size(); ++k) {
+    CHECK(whole.shapes[k].shape == scene_gen::FootprintShape::band);
+    CHECK(whole.shapes[k].ax_mm == bands[k].ax_mm);
+    CHECK(whole.shapes[k].bz_mm == bands[k].bz_mm);
+    CHECK(whole.shapes[k].half_mm == bands[k].half_mm);
+  }
+  // By tile, 16 m: a band is handed to a tile exactly when its disc, grown by the wear's 2 m,
+  // touches the tile's square; `occupies` says which tiles hand any.
+  Vector<u32> handed;
+  handed.resize(bands.size(), 0u);
+  u32 occupied = 0;
+  for (i32 tz = -4; tz <= 4; ++tz)
+    for (i32 tx = -5; tx <= 4; ++tx) {
+      scene_gen::Placements placed;
+      const scene_gen::TileCoord tile{tx, tz};
+      REQUIRE(generator->tile(state, tile, benched, placed, &error));
+      CHECK(generator->occupies(state, tile) == !placed.shapes.empty());
+      occupied += placed.shapes.empty() ? 0u : 1u;
+      const i64 x0 = tx * i64{16000}, z0 = tz * i64{16000};
+      u32 expected_here = 0;
+      for (u32 k = 0; k < bands.size(); ++k) {
+        const i64 r = static_cast<i64>(bands[k].radius * 1000.0) + 1 + 2000;
+        const bool near_tile = bands[k].x_mm + r >= x0 && bands[k].x_mm - r < x0 + 16000 &&
+                               bands[k].z_mm + r >= z0 && bands[k].z_mm - r < z0 + 16000;
+        expected_here += near_tile ? 1u : 0u;
+        handed[k] += near_tile ? 1u : 0u;
+      }
+      CHECK(placed.shapes.size() == expected_here);
+    }
+  generator->close(state);
+  CHECK(occupied > 4);
+  CHECK(occupied < 90);
+  for (u32 k = 0; k < bands.size(); ++k)
+    CHECK(handed[k] >= 1);
+}
+
 // **The tread on the ground** (routes.md, "The tread"): a route along the contour of a 30 % side
 // slope, its edits built by the tile set as the scene would build them. Across the tread the
 // edited ground is flat at the station's top to the millimetre (a full bench: the top is the

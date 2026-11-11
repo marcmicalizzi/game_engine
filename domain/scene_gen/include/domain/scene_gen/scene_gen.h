@@ -38,6 +38,7 @@
 #include <core/math/world.h>
 #include <domain/geometry/cluster_lod.h>
 #include <domain/scene_gen/exclusion.h>
+#include <domain/scene_gen/footprint_list.h>
 #include <domain/scene_gen/ground_masks.h>
 #include <domain/scene_gen/site.h>
 #include <domain/scene_gen/tile_source.h>
@@ -289,9 +290,21 @@ inline constexpr u8 k_handoff_far = 2;
 // any tile held names it, and let go after the last (world.md, "A tile's meshes: residency by
 // reference"). What a tile hands must be what `expand` lists for the same placements, recipe for
 // recipe, since a scene read whole is the same scene.
+//
+// **The shapes it occupies** (R144; scene_gen.md, "The shapes a tile occupies"): the third list of
+// a hand-over, beside the placements and the meshes — what of the ground the entry's things stand
+// on that is not a placement's bounds: a tread's bands, a wall's foot, a pad's or a cave mouth's
+// apron's polygon (`Footprint`, whole millimetres). The host adds them to the exclusion the
+// entries after this one are handed (`Exclusion::add_footprints`, so `Context::excluded_mm`
+// answers by the shape) and to their `Context::earlier`, after the placements' discs. `expand`
+// hands every shape of the entry; `tile` every shape that reaches the tile or stands within the
+// reach a later entry may ask about it, so a point of the tile gets the whole read's answer. The
+// list owns a polygon's points (`FootprintList`), so a generator hands a shape built over its
+// scratch and the points outlive the call.
 struct Placements {
   Vector<PlacementMesh> meshes;
   Vector<Placement> instances;
+  FootprintList shapes;
   // The things made — buildings — for a host's summary.
   u32 things = 0;
   // For `tile`: which representation it drew the tile in, the generator's own numbering (the
@@ -300,9 +313,31 @@ struct Placements {
   void clear() noexcept {
     meshes.clear();
     instances.clear();
+    shapes.clear();
     things = 0;
     kind = 0;
   }
+};
+
+// **What an entry plans for the ground** (R144; scene_gen.md, "What an entry plans for the
+// ground"): one hand-over, two lists, because the ground takes the two in different places.
+//
+//  * `edits` change heights. They are the tile set's (`engine.scene.TerrainTileSet.edits`,
+//    tileset.md): written into the set when it is built, part of its key. The host appends them
+//    after the scene's own, in the entries' order.
+//  * `holes` are where the ground has **no surface** (`engine.scene.Terrain.holes`, terrain.md,
+//    "Holes"): a cave's mouth, a shaft. They are the terrain's, whatever provider makes it — every
+//    level's mesh, the collision and the exclusion read them — and no height says them, which is
+//    why an opening is not a fourth kind of edit: it would sit in the tile set's key and its list
+//    of edits as something the set cannot apply, and a ground with no tile set would have nowhere
+//    to carry it. The host appends them after the scene's own.
+//
+// So a planned edit and the same edit written into the scene are one entry of one list, and build
+// the same ground byte for byte. Coordinates are the plan's: whole millimetres, as metres.
+struct GroundPlan {
+  Vector<scene::TerrainEdit> edits;
+  Vector<scene::TerrainHole> holes;
+  bool empty() const noexcept { return edits.empty() && holes.empty(); }
 };
 
 // A placement generator (ADR-0046 decision 1): a function of its scene entry, the world seed, a
@@ -354,6 +389,18 @@ struct PlacementGeneratorDesc {
   // by name. It costs a scene what its first alpha-tested material costs any scene, so a solver of
   // rock leaves it false.
   bool tile_meshes_masked = false;
+  // **What the entry plans for the ground** (R144; `GroundPlan`; scene_gen.md, "What an entry
+  // plans for the ground"): its edits of the heights and its openings, for the host to add to the
+  // scene's own **before the ground is made**. Called once a scene read, after an `open` of its
+  // own and before any other entry point, on a `Context` whose `ground` is the ground **as it was
+  // before any edit** — the scene's own and every entry's left out — so a plan is a function of
+  // the entry, the seed and that ground, and never of another entry's edits or of the order the
+  // entries are in. The state is closed after it, and the entry is opened again on the edited
+  // ground for everything else; there `Context::uncut()` is the same unedited ground, which is
+  // what a generator that plans stands its plan on in `open`, so the two opens make one plan.
+  // Null: the entry leaves the ground as it is, and is opened once, as it always was.
+  bool (*plan_ground)(void* state, const Context& context, GroundPlan& out,
+                      std::string* error) = nullptr;
 };
 
 // ---- ground -------------------------------------------------------------------------------------

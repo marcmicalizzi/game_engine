@@ -41,7 +41,8 @@ engine_module(NAME renderer LAYER systems
           src/terrain_rings.cpp src/terrain_tiles.cpp src/sky.cpp src/request.cpp
           src/overlay.cpp src/scene_water.cpp src/scene_flora.cpp src/flora_motion.cpp
           src/flora_poser.cpp src/scene_fire.cpp src/far_forest.cpp src/water_reflect.cpp
-          src/water_refract.cpp)
+          src/water_refract.cpp
+          src/scene_ground_plan.cpp)
 # The renderer's own shader: the output encode after the frame passes (frame_pass.h,
 # shaders/frame_encode.slang), which includes domain/gfx's display.slang by its path.
 engine_shaders(NAME renderer SOURCES shaders/frame_encode.slang)

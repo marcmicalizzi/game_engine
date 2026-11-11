@@ -32,10 +32,12 @@
 // from the tread's edge — `tread_cover` on the tread, rising to 1 at `wear_m` past its edge by a
 // smoothstep — which any placement can ask for a density or a height.
 //
-// **What the placement generator does.** "routes" opens the plan (named on a ground that carries
-// its treads) and places nothing yet: a route's meshes (exposed roots and stones, steps) are later
-// rows'. It is what makes a scene's routes entry a scene's, so a ground that drifts from the plan
-// a scene names is refused at load.
+// **What the placement generator does** (routes.md, "In a scene"; R144). "routes" opens the plan
+// on the ground before any edit (`Context::uncut()`) and hands it over twice: its treads' `Bench`
+// edits to the ground, before the ground is made (`PlacementGeneratorDesc::plan_ground`), and its
+// treads' bands to the entries after it (`Placements::shapes`), so a scene that names the entry and
+// its waypoints draws benched treads the cover keeps off, with nothing pasted. It places no mesh
+// yet: a route's exposed roots, stones and steps are later rows'.
 //
 // **Determinism.** The lattice's heights are whole millimetres; a step's grade test is products of
 // integers and one correctly rounded square root; a step's time is `det::exp` (never the C
