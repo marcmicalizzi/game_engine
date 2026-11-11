@@ -371,19 +371,29 @@ its reach the valleys are the rivers'.
 
 **What it does not make, said plainly**:
 
-- **The trough is a parabola, not a level floor between walls.** By the stated measure (a
-  section's width half way up its lowest hundred metres over its width at the hundred: a V is
-  0.5, a parabola 0.71, a box 1) the glacier's trunk is 0.73 and the river's 0.56. The swath
-  wears the sides toward the line, but a side point's effective flux is its own small
-  catchment's to the 1/4, so it keeps a cross fall of about twice the valley's fall along, as
-  Hergarten says of his ("a slight V-shape remains"); the cross-sections of the photographs
-  need the ice's flow across the section (Harbor 1992's), which no stream-power form has.
-- **An overdeepened basin is not held by a test.** The update allows one wherever the ice thins
-  downstream faster than the bed falls; but the test's single valley, falling at 0.03, grew a
-  hollow a metre deep in one build and none in the next, and the two-range sketch's troughs
-  hold no more standing water after their ice than without it (442 flooded points against
-  482), so nothing is asserted and none should be expected yet. A cirque with a tarn behind a lip
-  needs a head glacier's own rotation, which is not here either.
+- **The trough's section is the published one, a parabola; what it lacks is the fill that
+  makes a floor.** By the stated measure (a section's width half way up its lowest hundred
+  metres over its width at the hundred) the glacier's trunk is 0.73 and the river's 0.56. A
+  section y = a x^b measures (1/2)^(1/b), so those are b = 2.2 and b = 1.2: Svensson 1959's
+  fit of a glacial valley is b "only slightly" off 2, Graf 1970's troughs run 1.5 to 2, and a
+  river's V is 1 ([the grounding](../experiments/landform.md#a-troughs-section-the-sources)
+  says how far each was read). Stage C called this a shortfall and it was not one; the test
+  now holds the exponents (W106). The level floor of the photographs is mostly not rock: it is
+  a lake's fill and outwash in a basin the ice dug below the river's grade, and the solver has
+  the fill and not the basin.
+- **No basin is dug, so no trough lake, no cirque and no tarn; and till is a sheet, not a
+  ridge.** A bed is worn below its receiver's only where the ice thins downstream, by that
+  much at most, because the update reads the ice's surface from one point to the next: the
+  test's valley grew a hollow a metre deep in one build and none in the next, and the
+  two-range sketch holds no more standing water after its ice than without (442 flooded
+  points against 482; 46 of the 2,969 flooded points of the picture's region lie where the
+  last ice stood). **The rule that would dig them is designed and not built** (W106,
+  [the basins the ice digs](../experiments/landform.md#the-basins-the-ice-digs-the-sources-and-the-rule)):
+  the ice's erosion reads its surface's slope over a coupling length of several thicknesses,
+  so it goes on wearing a bed that rises under it, to the published limit (an adverse slope
+  1.2 to 1.7 times the surface's); a cirque is that rule under a glacier that ends near its
+  head; a moraine is the melt-out laid on the ice's margin. Nothing here should be read as
+  having any of the three.
 - **Glaciers are long.** All the snow above the line in a catchment feeds the ice and only the
   glacier's own surface melts it, so a catchment with tall walls sends its ice far below the
   line. `melt_m` (half of `full_m` by default) is the knob.
@@ -722,9 +732,9 @@ authored heightfield. Exit 0, 1 (a file or a range), 2 (usage).
 
 ## Not stage A
 
-Each follows, and none is here: a glacier's flow across its section, so a trough has a level
-floor, and a head glacier's rotation, so a cirque has a tarn ([ice](#ice) says what stage C's
-ice does and does not make); scree at an angle of repose; soil depth; snow; a general m and n; neighbouring regions solved so a shared edge
+Each follows, and none is here: the basins the ice digs and what fills them, cirques, and
+moraines as ridges (designed in stage D and not built: [ice](#ice),
+[the grounding](../experiments/landform.md#stage-d-w106-the-sources-and-the-design-that-is-not-built)); scree at an angle of repose; soil depth; snow; a general m and n; neighbouring regions solved so a shared edge
 agrees; the rivers' sweeps in parallel by catchment (by level they are, and it buys nothing at
 these sizes: [the rivers' sweeps](#the-rivers-sweeps)); baking far-terrain maps from near output; anything
 in the editor. The limits of the model as it stands are on the grounding page.
@@ -772,15 +782,16 @@ in the editor. The limits of the model as it stands are on the grounding page.
 | a sketch outside a range is refused | six refusals, each naming its field | validation is lost |
 | what is eroded is deposited or leaves | the two identities of the budget to nine digits on the golden sketch; the settled and unrouted share under 2%; the same with G = 0, where everything cut leaves | a pass lays down what did not arrive, or loses what did |
 | with deposition a steady river stands 1 + G times as steep | the steepness factor S √A K / U over the channels in 1.85 to 2.05 at G = 1 (measured 1.955: the discrete form's (N − 1) / N), the mean rate within 2% of the uplift, the concavity within 0.03 of 0.5 | the deposit is not Yuan's, or is laid after the cut and not with it (which measured 2.14, rising with area) |
-| a dammed valley fills to a floor | a V-shaped valley whose mouth is held 90 m above its bed: the run of fill of 5 m or more about the axis is 5 points or more wide in the lower third, more than 1.5 times the upper third's (measured 6.7 against 2.2), its cross fall under a quarter of the 87 m the V fell over the same width (measured 12.9 m: the river's bed, which since stage C moves across the fill; the bound was 8 m while it measured 7.6 m), over 50 m of fill | nothing is laid down, or a lake is filled along the flood's order |
-| a massif's rivers leave a fan on the plain | 400 m out from a massif's foot the ground stands over 3 m up opposite it (measured 9.9 m), a metre or more lower 700 m to either side (6.9 and 8.3 m), and under half the crown's height 1,700 m away (2.4 and 3.0 m; this was "under a metre" while it measured 0.93 m, which said the plain there is untouched, and a plain between two open edges is not) | the load is not laid where a river leaves the range |
+| a dammed valley fills to a floor | a V-shaped valley whose mouth is held 90 m above its bed: the run of fill of 5 m or more about the axis is 5 points or more wide in the lower third, more than 1.5 times the upper third's (measured 6.7 against 2.2), level across within 8 m where the V fell 87 m over the same width (measured 7.6 m), over 50 m of fill; run for what it was written for, one thread and no banks, as the steady-state cases are | nothing is laid down, or a lake is filled along the flood's order |
+| a river that moves across a dammed valley's fill keeps a floor of its own (W106; 0.4 s: two solves) | the same valley with the defaults, beside the same with no bank taken: the river's own floor (the points within the bank rule's water depth of its bed) is wider than a thread and no narrower than with no bank (3.3 points a column against 2.3); the step beside it is taller than with none (9.1 m against 4.9 m: the aprons' foot cut to a scarp) and no taller than the ground rose in the run (30 m), the one bound there is, since the rule takes a bank of fill whatever its height ([what was found](../experiments/landform.md#the-two-checks-stage-c-restated-and-what-was-found)); the run's whole cross fall, 12.9 m, under that over the one thread's 8 m | no bank is taken on fill, or a taken bank is raised or left above its reach |
+| a massif's rivers leave a fan on the plain | 400 m out from a massif's foot the ground stands over 3 m up opposite it (measured 9.9 m), a metre or more lower 700 m to either side (6.9 and 8.3 m), and 1,700 m away under what an even sheet of the same load along the line would stand at (2.4 and 3.0 m against 5.5 m, the crown over it; W106: by the shares none of the facing mouths' water reaches those points, and what does is the massif's flanks' rivers, so "under a metre" asked for a plain the sketch never left alone, and "under half the crown" was not derived) | the load is not laid where a river leaves the range |
 | under dipping beds a ridge's two sides differ and a hard bed stands as a step | beds dipping 15° toward one edge of a rising block: the mean gradient on hard rock over 1.5 times that on soft (measured 2.2); across the beds over 1.05 times that down the dip (measured 1.09), and within 1% of 1 in uniform rock (measured 1.0002); a hard bed's outcrop over 1.5 times as wide down the dip as across (measured 1.93) | the beds are not read, or are read in a frame that does not rise with the rock |
 | a ridge's uplift varies along its line | one step with no erosion reads the uplift off the line: at variation 0.5 the mean within 15% of the rate, every station inside the half either way, a range over 0.6 mm/yr, and the mean squared difference at 1,600 m over four times that at 200 m (measured 10.7); at 0 even to the millimetre | the variation is lost, is white, or leaves its bounds |
 | flow that divides conserves its discharge (`rivers_tests.cpp`, 0.01 s) | on a cone falling at 0.03, 3,970 of 4,032 points divide, every point's shares sum to 32,768 and the held points' discharges to the lattice, exactly; with `divide_below_slope` 0, and on the same cone at 0.5, no point divides | a share is lost or made in the division, or steep ground divides |
 | a single mouth's fan is a cone (2.2 s: two solves of a hundred steps) | a funnel-shaped catchment drains through one mouth onto a level plain for 200,000 years: on an arc 500 m from the mouth the ground stands over 2 m above the plain (measured 28.2 m) and varies along the arc by under a third of that (5.4 m, 19%); with one receiver a point the same arc measures 13.9 m and 3.7 m (27%) | the flow does not divide on the fan, or the load is not carried by the shares |
 | a river's plain is wider than a point, and cutting down leaves a terrace (2.7 s: three solves) | a straight valley draining 20 km², banks three times as erodible as the bed, 400,000 years: the lower floor (points within 2 m of the lowest of their column) is 3 points wide or more (measured 8.8) and a point wider than with no lateral erosion (6.6), with over a hundred banks taken (11,310). Then the base level falls 20 m for 8,000 years: the river cuts down over a quarter of the fall in the last kilometre (7.5 m) into a floor narrower than the one it left (4.1 points against 10.2), and of the columns that owe a terrace (cut 5 m, old floor 3 points wider than the new) three quarters keep old floor within 1.5 m of where it stood (10 of 10, 6.5 points each) with its edge beside the new floor (10 of 10) | no bank is taken, or a river that cuts down takes its whole floor with it |
 | a range raised unevenly is not a comb (3.9 s: two solves of a hundred steps on a lattice that holds a dozen valleys a side) | a 9.6 km range along x raised evenly and with the default unevenness: of the mountain channels, the junctions a kilometre rise by over 15% (measured 0.149 to 0.359) and the share running straight down the range falls (60% to 43%) | the unevenness is lost, or is of the local rate and vanishes on the flanks |
-| ice leaves a trough where a river leaves a V, and a tributary hangs (`ice_tests.cpp`, 1.2 s: two solves of twenty steps) | a trunk valley falling at 0.02 with a tributary at 0.12, 100,000 years under ice and under a river: by the stated measure (width half way up the lowest 100 m over width at the 100 m: V 0.5, parabola 0.71, box 1) the river's trunk is in 0.35 to 0.65 (measured 0.56) and the glacier's a tenth more (0.73); the glacier's is half again as wide at the 100 m (59 points against 34 over three sections); the tributary's steepest step is over five times the river's (39.8 m against 2.7 m); the trunk's bed at the junction is 50 m or more below the river's (196 m), under 100 m or more of ice (220 m) | the ice wears only its line, or a tributary is graded to the trunk's bed |
+| ice leaves a trough where a river leaves a V, and a tributary hangs (`ice_tests.cpp`, 1.2 s: two solves of twenty steps) | a trunk valley falling at 0.02 with a tributary at 0.12, 100,000 years under ice and under a river: by the stated measure (width half way up the lowest 100 m over width at the 100 m: V 0.5, parabola 0.71, box 1) which is the exponent of a section y = a x^b, the river's trunk is under the glacial range's b = 1.5 (measured 1.19) and the glacier's at 1.5 or more (2.22: Svensson's parabola); the glacier's is half again as wide at the 100 m (59 points against 34 over three sections); the tributary's steepest step is over five times the river's (39.8 m against 2.7 m); the trunk's bed at the junction is 50 m or more below the river's (196 m), under 100 m or more of ice (220 m) | the ice wears only its line, or a tributary is graded to the trunk's bed |
 | a glacier ends where its ice is spent, and leaves till (0.4 s) | a valley falling at 0.03 whose line is 100 m above its head: over 300 points under ice (974), its snout past column 40 and 8 columns or more inside the lattice (column 146 of 160), a hundred points or more with half a metre of till (1,996), and till never more than the sediment there. Whether its bed holds a hollow is printed and not held (none) | the melt is not charged to the glacier, or till is laid that is not sediment |
 | an ice age solves to the same bytes on one, four and sixteen workers (0.7 s) | the heightfield, the ice, the till, the sediment and the discharge of a 30,000-year ice age from each, and the first three pinned on MSVC for Clang and GCC to reproduce | a loop of the ice reads what another chunk writes, or `det::exp` and `det::log` differ by toolchain |
 | a lake's floor fills level, and its mouth builds a delta | a basin fed for ten thousand years: its floor away from the mouths level within 50 mm (measured 0 and 3 mm) under water still metres deep; with `delta_share` 0.5 the shelf under the mouths holds a quarter more sediment (measured twice) and the floor stands lower | the fill follows the flood's order, or the mouths get nothing |
@@ -858,6 +869,32 @@ size at run time, and there are no triangles and no per-tile cost: the tile set'
 heightfield's.
 
 ## Pictures, and what still reads wrong
+
+**Stage D** (W106, 2026-11-11): **the first pictures of the ice-age ground as the renderer draws
+it** (stage C's 1,024-point sketch with its ice age, read at 4 m by a run of no steps and built
+as a tile set, both workarounds below; `engine-view --offscreen`, traced, 1,600 by 900, flat
+tints and no material pack; eight views in two runs, outside the repository). What they show,
+plainly, beside the reels (r03 and r04's valley floors under ribbed walls, r08's U-valley with
+sheer granite walls, r22's cirque lake ringed by cliffs, r26 and r46's flat-floored troughs):
+
+- **From a summit and from the air it reads as an eroded range**: branching valleys, sharp
+  crests, spurs, a far range with snow on its crest, a green main valley. Those two views hold.
+- **From inside a glaciated valley it does not read as one.** Looking down a side valley from
+  its head (the best of the floor views), the section is an open, round-bottomed V between
+  smooth walls at 35°: Svensson's parabola, and nothing a person would call a trough. No level
+  floor, no step, no lake, no bowl at the head, no ridge across it. The solver's own map said
+  the same in numbers: of 2,969 flooded points, 46 lie where the last ice stood.
+- **Two of the four views from a valley floor are a blank slope**: at eye height in a valley a
+  few hundred metres wide the frame is one wall of one tint, with nothing on it finer than the
+  16 m lattice. r03's wall is ribs, ledges and scree; here it is a plane.
+- **The main valley's floor is rolling fans**, smooth green domes with the range's front as
+  rounded grey cones behind: desert hills, not r03's flat floor with a gravel river under a
+  rock wall.
+- **The beds are a staircase**: a hard bed's outcrop crosses a slope as a saw-toothed stripe a
+  mask texel wide, and on the summit's near slope the 4 m masks are plainly visible as blocks.
+- So, in the order a person objects: no rock and no scree at any scale under 16 m (the rock
+  solvers' and the material's); no basin, lake, cirque or moraine (the design above, not
+  built); no river with banks (the channels solver's); and the fans' domes.
 
 **Stage C** (2026-11-11; the same sketch as stage B's, two ranges about a valley, 1,024 points at
 16 m, 1.5 million years, solved by the command, its shaded relief and drainage map outside the

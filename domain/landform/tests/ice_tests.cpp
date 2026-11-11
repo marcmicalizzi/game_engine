@@ -88,7 +88,7 @@ u32 width_above(const landform::Landform& land, u32 x, i32 up_mm) {
 
 // The stated measure of a cross-section's shape: its width half way up its lowest hundred
 // metres over its width at the hundred. A V of straight sides is 0.5, a parabola (Svensson
-// 1959's form for a glacial trough) 0.71, a floor between upright walls 1.
+// 1959's fit of a glacial trough) 0.71, a floor between upright walls 1.
 f64 trough_share(const landform::Landform& land, u32 x) {
   return static_cast<f64>(width_above(land, x, 50000)) /
          static_cast<f64>(width_above(land, x, 100000));
@@ -133,15 +133,21 @@ TEST_CASE("landform: ice leaves a trough where a river leaves a V, and a tributa
       glacier_share, river_share, glacier_width, river_width, glacier.ice[junction],
       glacier.ice[(k_axis - 20) * k_wide + k_side], glacier_step, river_step,
       glacier.height_mm[junction], river.height_mm[junction]);
-  // A V of straight sides is 0.5 and a parabola 0.71: the river's valley is the first, and the
-  // glacier's is past the second, and more than twice as wide.
-  // The river's valley is the V (0.56 on this lattice). The glacier's is wider in its lower
-  // half by a tenth of its width and more, and half again as wide a hundred metres up: a
-  // trough. It measures 0.73, a parabola and no more: the level floor between walls of the
-  // photographs it is not (landform.md, "Ice").
-  CHECK(river_share > 0.35);
-  CHECK(river_share < 0.65);
-  CHECK(glacier_share > river_share + 0.1);
+  // The measure is the published one in another dress. A section y = a x^b (Svensson 1959's
+  // form for a glacial valley's side) is (1/2)^(1/b) as wide half way up as at the top, so the
+  // share is the exponent: b = log(1/2) / log(share). A V of straight sides is b = 1, and a
+  // glacial trough is a parabola: Svensson's own valley fits b "only slightly" off 2, and
+  // Graf 1970's troughs run from 1.5 to 2; how far each was read is on the grounding page
+  // (docs/experiments/landform.md, "A trough's section: the sources"). So the bounds are the
+  // exponents': the river's valley under the glacial range's 1.5, the glacier's inside it or
+  // past it (a floor between walls is b without bound, and more of a trough, not less).
+  const f64 river_b = std::log(0.5) / std::log(river_share);
+  const f64 glacier_b = std::log(0.5) / std::log(glacier_share);
+  std::printf("landform ice: as y = a x^b the river's section is b = %.2f, the glacier's %.2f\n",
+              river_b, glacier_b);
+  CHECK(river_b > 0.66);  // not a gorge either: the share's old lower bound of 0.35
+  CHECK(river_b < 1.5);
+  CHECK(glacier_b >= 1.5);
   CHECK(glacier_width * 2 > river_width * 3);
   // The trunk's ice is the thicker, and the tributary's bed meets it at a step: the tributary
   // is worn to the trunk's ice, not to its bed.
