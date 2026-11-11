@@ -447,6 +447,7 @@ void fill_scene_info(const RenderHost::Scene& scene, const gfx::Device& device,
   out.lod_levels = scene.data.lod.level_cluster_counts.size();
   out.mesh_primitives = scene.data.mesh_primitives;
   out.mesh_cache = scene.data.mesh_cache;
+  out.materials = scene.data.load.materials;
   out.build_ms = static_cast<f64>(scene.data.build_ns) / 1.0e6;
   // `RenderSceneInfo.center` is a `worldpos` (version 3, ADR-0053): the scene's f64 centre as it
   // is.

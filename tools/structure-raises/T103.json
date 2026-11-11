@@ -1,0 +1,13 @@
+{
+  "format": "engine.structure-raise.v1",
+  "name": "T103",
+  "reason": "T103: engine-view's summary says which material pack the load used (one line, load.materials), and the pages that described the default pack as looked up only with the cache root say it is looked up whatever the root, with the test switch and RenderSceneInfo.materials",
+  "date": "2026-11-11",
+  "by": "Marc Micalizzi",
+  "deltas": {
+    "engine_view.main_cpp.lines": 1,
+    "page:docs/subsystems/renderer.md": 130,
+    "page:docs/subsystems/apps.md": 494,
+    "page:docs/subsystems/protocol.md": 329
+  }
+}

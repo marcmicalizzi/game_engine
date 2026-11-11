@@ -7,6 +7,7 @@
 #include <foundation/io/vfs.h>
 
 #include <algorithm>
+#include <cstdlib>
 #include <filesystem>
 #include <memory>
 #include <mutex>
@@ -267,6 +268,22 @@ std::unique_ptr<Pack> read_pack(const std::string& dir, bool& found) {
   return pack;
 }
 
+// `k_default_materials_env` is `0` (materials.h). Read at every lookup, not once: a test switches
+// it on for one case (tests/support/test_environment.h), and a lookup is a host's, never a loop's.
+bool default_lookup_switched_off() {
+#if defined(_MSC_VER)
+  char* value = nullptr;
+  size_t size = 0;
+  if (_dupenv_s(&value, &size, k_default_materials_env) != 0 || value == nullptr) return false;
+  const bool off = value[0] == '0' && value[1] == '\0';
+  std::free(value);
+  return off;
+#else
+  const char* value = std::getenv(k_default_materials_env);
+  return value != nullptr && value[0] == '0' && value[1] == '\0';
+#endif
+}
+
 }  // namespace
 
 Pack merge_packs(const Pack& primary, const Pack& fallback) {
@@ -320,10 +337,15 @@ const Pack* pack_at(std::string_view dir_in) {
   return held.packs.back().second.get();
 }
 
-std::string default_pack_dir(std::string_view start) {
+std::string repository_pack_dir(std::string_view start) {
   const std::string ddc = geometry::find_ddc_root(start);
   if (ddc.empty()) return std::string();
   return io::join_path(io::join_path(io::parent_path(ddc), "content"), "materials");
+}
+
+std::string default_pack_dir(std::string_view start) {
+  if (default_lookup_switched_off()) return std::string();
+  return repository_pack_dir(start);
 }
 
 const MaterialSet* find_role(const Pack* pack, std::string_view role) noexcept {

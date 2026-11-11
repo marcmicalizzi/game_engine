@@ -127,8 +127,19 @@ Pack merge_packs(const Pack& primary, const Pack& fallback);
 // with neither, or manifests that do not parse — said once, in the log. Thread-safe.
 const Pack* pack_at(std::string_view dir);
 
-// The default pack directory for a host: `<repo>/content/materials` beside `<repo>/ddc`, the root
-// `geometry::find_ddc_root(start)` finds; empty when there is no repository above `start`.
+// The repository's pack directory: `<repo>/content/materials` beside `<repo>/ddc`, the root
+// `geometry::find_ddc_root(start)` finds; empty when there is no repository above `start`. Where a
+// default pack is *written* (`engine-content matgen`); a reader asks `default_pack_dir`.
+std::string repository_pack_dir(std::string_view start);
+
+// The process switch every test and bench sets for itself and its children (tests/support):
+// `ENGINE_DEFAULT_MATERIALS=0` and the default lookup answers none, so no test reads the machine's
+// pack (materials.md, "Where the hosts find it"). Any other value, or none, leaves it on.
+inline constexpr const char* k_default_materials_env = "ENGINE_DEFAULT_MATERIALS";
+
+// **The one default lookup every host makes** when no pack is named: `repository_pack_dir(start)`,
+// or empty when `k_default_materials_env` is `0`. It does not depend on a derived-data root having
+// been named, found or kept: the pack is the repository's, the cache is the caller's.
 std::string default_pack_dir(std::string_view start);
 
 // The set a pack has for `role`, or null (a null pack has none).

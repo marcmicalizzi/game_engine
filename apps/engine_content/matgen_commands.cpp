@@ -119,7 +119,9 @@ int matgen_command(int argc, char** argv) {
   }
   if (sets.empty()) sets = matgen::default_sets();
   if (out_dir.empty()) {
-    const std::string pack = materials::default_pack_dir(platform::executable_directory());
+    // Where the default pack is written, which the test switch that blinds every reader does not
+    // touch (materials.h, `repository_pack_dir`).
+    const std::string pack = materials::repository_pack_dir(platform::executable_directory());
     if (pack.empty()) return fail("no repository above the executable: name --out <pack dir>");
     out_dir = io::join_path(pack, "generated");
   }

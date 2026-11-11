@@ -11,6 +11,7 @@
 #include <core/platform/cpu_baseline.h>
 
 #include <doctest/doctest.h>
+#include <test_environment.h>
 
 #include <cstdlib>
 #include <ctime>
@@ -72,10 +73,20 @@ void take_part_in_the_gpu_lock() {
   set_environment("ENGINE_GPU_LOCK_WAIT_UNTIL", std::to_string(deadline));
 }
 
+// No test reads the machine's material pack (docs/subsystems/materials.md, "Where the hosts find
+// it"; T103). The default lookup is a host's whatever its derived-data root, so a load in this
+// process, or in any `engine-view`, `engine-host` or `engine-content` it starts, would otherwise
+// draw with whatever pack this checkout has fetched or generated, and a test would pass or fail by
+// the machine. `materials::default_pack_dir` answers none while this is `0`; a test that wants a
+// pack names one, or holds `test::ScopedEnv(k_default_materials_env, "1")` for its case. Always
+// set, never inherited: a developer's shell does not decide what a test reads.
+void read_no_default_materials() { set_environment(engine::test::k_default_materials_env, "0"); }
+
 }  // namespace
 
 int main(int argc, char** argv) {
   engine::platform::require_cpu_baseline();
   take_part_in_the_gpu_lock();
+  read_no_default_materials();
   return doctest::Context(argc, argv).run();
 }

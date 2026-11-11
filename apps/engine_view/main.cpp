@@ -229,7 +229,7 @@ constexpr const char* k_usage =
     "  --no-cache       always build a glTF from source; do not read or write ddc/clusters\n"
     "  --ddc <dir>      the derived-data root (default: <repo>/ddc, found beside AGENTS.md)\n"
     "  --materials <dir>  the material pack a generated mesh's parts fall back to (default:\n"
-    "                   <repo>/content/materials, looked up only with the ddc root)\n"
+    "                   <repo>/content/materials, whatever --ddc says; none in a test)\n"
     "  --no-texture-sharing  upload every mesh's own copy of its textures. By default the scene\n"
     "                   uploads one texture per distinct image content and every mesh that samples\n"
     "                   it shares it; this is the old behaviour, for measuring what that saves\n"
@@ -692,7 +692,7 @@ struct Options {
   geometry::ClusterLodOptions lod;
   std::string scene;       // a scene JSON file: meshes and instances of them
   std::string ddc;         // derived-data root; empty is found from the executable
-  std::string materials;   // the material pack (materials.md); empty is found with the ddc root
+  std::string materials;   // the material pack (materials.md); empty is the repository's
   u32 grid_instances = 0;  // n: place the one mesh n x n times
   bool cache = true;
   f32 orbit = 0.0f;  // 0: breathe
@@ -2542,6 +2542,7 @@ JsonValue load_summary(const renderer::SceneLoadReport& load,
   JsonValue out = JsonValue::object();
   out.set("meshes", JsonValue(load.meshes));
   out.set("threads", JsonValue(load.threads));
+  out.set("materials", JsonValue(load.materials));  // the pack it drew with; "" none (T103)
   out.set("meshes_ms", JsonValue(load.meshes_ms));
   out.set("instances_floating", JsonValue(load.instances_floating));
   out.set("instances_buried", JsonValue(load.instances_buried));

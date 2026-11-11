@@ -5,11 +5,14 @@
 // load so a repainted one finds its new texture, and the per-mesh loads on the job system give the
 // same tables at one worker as at every one.
 #include <core/hash/hash.h>
+#include <core/platform/process.h>
+#include <domain/materials/materials.h>
 #include <foundation/image/png.h>
 #include <foundation/io/vfs.h>
 #include <systems/renderer/scene.h>
 
 #include <doctest/doctest.h>
+#include <test_environment.h>
 #include <test_temp_dir.h>
 
 #include <filesystem>
@@ -282,4 +285,44 @@ TEST_CASE("cooked load: a scene of more meshes than the job queues hold runs not
                    one.lod.mesh.clusters.size() * sizeof(*one.lod.mesh.clusters.data())) ==
         hash_bytes(every.lod.mesh.clusters.data(),
                    every.lod.mesh.clusters.size() * sizeof(*every.lod.mesh.clusters.data())));
+}
+
+// T103 (materials.md, "Where the hosts find it"): the load resolves its material pack whatever the
+// derived-data root — named or looked up, kept or not — and its report says which it used: the
+// named one, or the default lookup's, which inside a test is none (the test main's switch). Until
+// T103 a named root skipped the lookup, and every picture taken with `--ddc` drew flat. The
+// procedural heightfield keeps no cache entry, so the looked-up root is only found, never written.
+TEST_CASE("load: the material pack is resolved whatever the derived-data root, and reported") {
+  const test::TempDir tmp("load_pack_root");
+  REQUIRE(tmp.ok());
+  for (const bool cache : {true, false}) {
+    for (const bool named_root : {true, false}) {
+      CAPTURE(cache);
+      CAPTURE(named_root);
+      SceneDesc desc;
+      desc.meshes.push_back(std::string());
+      desc.heightfield_grid = 33;
+      desc.cache = cache;
+      if (named_root) desc.ddc = tmp.file("ddc");
+      std::string error;
+      SceneData unnamed;
+      REQUIRE_MESSAGE(load_scene(desc, unnamed, error), error);
+      CHECK(unnamed.load.materials.empty());
+      CHECK(unnamed.mesh_options.materials.empty());
+      {
+        // The lookup switched back on: the repository's pack, a named root or not. The assertion
+        // is on the path alone; a heightfield samples nothing of the pack (its manifest is read).
+        const test::ScopedEnv on(test::k_default_materials_env, "1");
+        SceneData looked_up;
+        REQUIRE_MESSAGE(load_scene(desc, looked_up, error), error);
+        CHECK(looked_up.load.materials ==
+              materials::repository_pack_dir(platform::executable_directory()));
+      }
+      desc.materials = tmp.file("pack");
+      SceneData named;
+      REQUIRE_MESSAGE(load_scene(desc, named, error), error);
+      CHECK(named.load.materials == tmp.file("pack"));
+      CHECK(named.mesh_options.materials == tmp.file("pack"));
+    }
+  }
 }

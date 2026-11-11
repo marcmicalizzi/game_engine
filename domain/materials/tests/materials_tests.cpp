@@ -1,13 +1,17 @@
 // Material sets and packs (docs/subsystems/materials.md): a set written into a container's
 // materials, the override order, and a pack's manifest — read, refused, found once per process.
+#include <core/platform/process.h>
 #include <domain/geometry/material_sampling.h>
 #include <domain/materials/materials.h>
 #include <foundation/io/vfs.h>
 
 #include <doctest/doctest.h>
+#include <test_environment.h>
 #include <test_temp_dir.h>
 
+#include <filesystem>
 #include <string>
+#include <string_view>
 
 using namespace engine;
 
@@ -247,4 +251,40 @@ TEST_CASE("materials: a generated pack stands behind the fetched one, role by ro
         std::string::npos);
   CHECK(materials::find_role(pack, "gravel/bed")->base_color.find("/both/generated/r/b.png") !=
         std::string::npos);
+}
+
+// T103 (materials.md, "Where the hosts find it"): the default lookup asks only for the repository
+// above where it starts — no derived-data root of anyone's goes in — and answers none inside a
+// test, whose main sets the switch for itself and every child; `1` or no value turns it back on.
+// The repository's directory, where `engine-content matgen` writes, is found either way.
+TEST_CASE("materials: the default pack is the repository's, and a test reads none") {
+  CHECK(std::string_view(test::k_default_materials_env) == materials::k_default_materials_env);
+  test::TempDir tmp("materials_default");
+  REQUIRE(tmp.ok());
+  std::filesystem::create_directories(tmp.native_file("bin"));
+  std::filesystem::create_directories(tmp.native_file("content/materials"));
+  REQUIRE(io::write_file(tmp.file("AGENTS.md"), "a repository of the test's own\n") ==
+          io::Status::Ok);
+  const std::string start = tmp.file("bin");
+  const std::string repository = materials::repository_pack_dir(start);
+  REQUIRE_FALSE(repository.empty());
+  CHECK(std::filesystem::equivalent(repository, tmp.native_file("content/materials")));
+
+  // The test main's switch: none, from the test's repository and from the checkout's alike.
+  CHECK(materials::default_pack_dir(start).empty());
+  CHECK(materials::default_pack_dir(platform::executable_directory()).empty());
+  {
+    const test::ScopedEnv on(test::k_default_materials_env, "1");
+    CHECK(materials::default_pack_dir(start) == repository);
+    const test::ScopedEnv unset(test::k_default_materials_env, "");
+    CHECK(materials::default_pack_dir(start) == repository);
+  }
+  CHECK(materials::default_pack_dir(start).empty());
+
+  // No repository above: none, whatever the switch.
+  test::TempDir bare("materials_default_bare");
+  REQUIRE(bare.ok());
+  const test::ScopedEnv on(test::k_default_materials_env, "1");
+  CHECK(materials::repository_pack_dir(bare.file("x")).empty());
+  CHECK(materials::default_pack_dir(bare.file("x")).empty());
 }
