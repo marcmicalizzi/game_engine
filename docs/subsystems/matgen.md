@@ -275,7 +275,10 @@ table. The build is single-threaded, so there is no thread count for the bytes t
 since the ground kind did not change). **The Linux containers reproduce the version-2 pins**:
 `linux-clang-debug` (2026-11-11 10:18, at 87eed81b) and `linux-gcc-release` (10:40, at
 7ac75070) and `linux-gcc-release-v2` (13:13, at e4e3bfc6), `-Filter "matgen|materials"`, every
-test passed. The streaks' distance below a
+test passed. Version 3 (the step removed; the granite and sandstone pins re-taken):
+`linux-clang-debug` (14:25, at 39896b51) and `linux-gcc-release` (14:35) passed;
+`linux-gcc-release-v2` did not run for version 3 (the container lock was not had before the
+row's hand-back). The streaks' distance below a
 source is an integer from two sweeps round each column, the lichen's owner of a texel is decided
 by an f64 comparison of two quotients of the same arithmetic, so neither adds an operation a
 toolchain rounds its own way. Nothing was needed that `core/math/deterministic.h` lacks: a normal draw is Box and Muller's
