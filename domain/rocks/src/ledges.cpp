@@ -399,10 +399,14 @@ bool sample_ledge_patch(const LedgeLayer& layer, const scene_gen::Ground& ground
   return ledge_patch_in_range(out, error);
 }
 
-bool solve_ledges(const LedgePatch& p, assets::MeshData& out, LedgeReport* report,
-                  std::string& error) {
+namespace {
+bool solve_patch(const LedgePatch& p, assets::MeshData& out, LedgeReport* report,
+                 Vector<LedgeGap>* gaps, std::string& error) {
   out = {};
   if (report != nullptr) *report = {};
+  if (gaps != nullptr) gaps->clear();
+  // A fallen block's pieces, one a lattice triangle it crosses: sums, divided at the end.
+  Vector<LedgeGap> pieces;
   if (!ledge_patch_in_range(p, error)) return false;
   ExposureThresholds rule;
   if (!prepare_exposure(p.rule, rule, error)) return false;
@@ -595,8 +599,14 @@ bool solve_ledges(const LedgePatch& p, assets::MeshData& out, LedgeReport* repor
             const i64 block_lo = p.far ? 0 : block_of(st_min, spacing, uid);
             const i64 block_hi = p.far ? 0 : block_of(st_max, spacing, uid);
             for (i64 block = block_lo; block <= block_hi; ++block) {
-              const Block shape = block_shape(block);
-              if (!(shape.share > 0.0)) continue;
+              Block shape = block_shape(block);
+              const bool fallen = !(shape.share > 0.0);
+              if (fallen) {
+                // A gap: nothing is drawn. Asked for, its footprint is the one the block had,
+                // at the blocks' mean share and square to its bed.
+                if (gaps == nullptr || p.far) continue;
+                shape.share = k_far_share;
+              }
               const f64 lost_m =
                   unit.depth[shape.lost] / ny;  // the tread's drop under the unit's top
               PolyVertex tri[3], stage_a[8], stage_b[8], behind[8], poly[8];
@@ -633,6 +643,26 @@ bool solve_ledges(const LedgePatch& p, assets::MeshData& out, LedgeReport* repor
               if (n < 3) continue;
               n = clip(behind, n, fl, node, false, k_on_front, poly);
               if (n < 3) continue;
+              if (fallen) {
+                LedgeGap piece;
+                piece.block = mix64(uid ^ mix64(static_cast<u64>(block) + 0x474150ull));
+                piece.length_m = shape.length;
+                piece.height_m = std::max(h[0], std::max(h[1], h[2]));
+                const f64 x0 = at(poly[0], lx), z0 = at(poly[0], lz);
+                for (u32 k = 1; k + 1 < n; ++k) {
+                  const f64 x1 = at(poly[k], lx), z1 = at(poly[k], lz);
+                  const f64 x2 = at(poly[k + 1], lx), z2 = at(poly[k + 1], lz);
+                  const f64 twice = (x1 - x0) * (z2 - z0) - (x2 - x0) * (z1 - z0);
+                  const f64 area = 0.5 * (twice < 0.0 ? -twice : twice);
+                  const f64 mx = (x0 + x1 + x2) / 3.0, mz = (z0 + z1 + z2) / 3.0;
+                  piece.area_m2 += area;
+                  piece.x += area * mx;
+                  piece.y += area * ground_at(mx, mz);
+                  piece.z += area * mz;
+                }
+                if (piece.area_m2 > 0.0) pieces.push_back(piece);
+                continue;
+              }
 
               D3 top[8];
               f64 mid_x = 0.0, mid_z = 0.0;
@@ -847,6 +877,33 @@ bool solve_ledges(const LedgePatch& p, assets::MeshData& out, LedgeReport* repor
           }
         }
       }
+  if (gaps != nullptr && !pieces.empty()) {
+    // One entry a block, in order of identity: the pieces' areas summed and their places meaned.
+    Vector<u32> by(pieces.size());
+    for (u32 i = 0; i < by.size(); ++i)
+      by[i] = i;
+    std::sort(by.begin(), by.end(), [&](u32 a, u32 b) {
+      return pieces[a].block != pieces[b].block ? pieces[a].block < pieces[b].block : a < b;
+    });
+    for (const u32 i : by) {
+      const LedgeGap& piece = pieces[i];
+      if (gaps->empty() || (*gaps)[gaps->size() - 1].block != piece.block) {
+        gaps->push_back(piece);
+        continue;
+      }
+      LedgeGap& gap = (*gaps)[gaps->size() - 1];
+      gap.area_m2 += piece.area_m2;
+      gap.x += piece.x;
+      gap.y += piece.y;
+      gap.z += piece.z;
+      gap.height_m = gap.height_m > piece.height_m ? gap.height_m : piece.height_m;
+    }
+    for (LedgeGap& gap : *gaps) {
+      gap.x /= gap.area_m2;
+      gap.y /= gap.area_m2;
+      gap.z /= gap.area_m2;
+    }
+  }
   if (mesher.corners.empty()) return true;
 
   // Weld: corners of one surface at one place are one vertex, its normal the area-weighted sum.
@@ -926,6 +983,17 @@ bool solve_ledges(const LedgePatch& p, assets::MeshData& out, LedgeReport* repor
     *report = made;
   }
   return true;
+}
+}  // namespace
+
+bool solve_ledges(const LedgePatch& p, assets::MeshData& out, LedgeReport* report,
+                  std::string& error) {
+  return solve_patch(p, out, report, nullptr, error);
+}
+
+bool ledge_gaps(const LedgePatch& p, Vector<LedgeGap>& out, std::string& error) {
+  assets::MeshData mesh;
+  return solve_patch(p, mesh, nullptr, &out, error);
 }
 
 u64 ledge_source_hash(const LedgePatch& p) {

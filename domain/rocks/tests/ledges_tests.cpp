@@ -766,3 +766,59 @@ TEST_CASE("ledges: a tread carries soil to its lip, and a bed's rock is its form
   CHECK_FALSE(sample_ledge_patch(layer, ground_of(h), 0, 0, k_tile_mm, false, refused, error));
   CHECK(error.find("tread_tint") != std::string::npos);
 }
+
+TEST_CASE("ledges: a fallen block is handed over with its identity, its place and its size") {
+  const Hill h;
+  LedgeLayer layer = layer_of(beds());
+  layer.rule.stretch_m = 0.0f;  // every bed's stripe: many blocks, and gaps across the border
+  layer.rule.member_m = 0.0f;
+  const Solved a = solve(layer, h, 0, 0);
+  const Solved b = solve(layer, h, k_tile_mm, 0);
+  Vector<LedgeGap> gaps_a, gaps_b, again;
+  std::string error;
+  REQUIRE_MESSAGE(ledge_gaps(a.patch, gaps_a, error), error);
+  REQUIRE_MESSAGE(ledge_gaps(b.patch, gaps_b, error), error);
+  REQUIRE(ledge_gaps(a.patch, again, error));
+  REQUIRE(gaps_a.size() > 20);
+  REQUIRE(again.size() == gaps_a.size());
+  f64 area = 0.0;
+  for (u32 i = 0; i < gaps_a.size(); ++i) {
+    const LedgeGap& g = gaps_a[i];
+    if (i > 0) CHECK(g.block > gaps_a[i - 1].block);  // in order, each once
+    CHECK(g.block == again[i].block);
+    CHECK(g.x == again[i].x);
+    CHECK(g.area_m2 > 0.0);
+    // Between its joints: a unit's thickness over the joint ratio, 0.5 to 8 m, moved by 0.3.
+    CHECK(g.length_m > 0.15);
+    CHECK(g.length_m < 13.0);
+    CHECK(g.height_m >= static_cast<f64>(layer.min_step_m));
+    CHECK(g.height_m <= static_cast<f64>(layer.max_step_m));
+    // Inside the patch, on the ground.
+    CHECK(g.x >= 0.0);
+    CHECK(g.x <= 64.0);
+    CHECK(g.z >= 0.0);
+    CHECK(g.z <= 64.0);
+    const f64 wx = static_cast<f64>(a.patch.x_mm) / 1000.0 + g.x;
+    const f64 wz = static_cast<f64>(a.patch.z_mm) / 1000.0 + g.z;
+    CHECK(static_cast<f64>(a.patch.y_mm) / 1000.0 + g.y ==
+          doctest::Approx(ground_m(h, wx, wz)).epsilon(0.02));
+    area += g.area_m2;
+  }
+  // A gap that crosses the border x = 64 is in both tiles, the same block of the same length.
+  u32 shared = 0;
+  for (const LedgeGap& g : gaps_a)
+    for (const LedgeGap& o : gaps_b)
+      if (g.block == o.block) {
+        ++shared;
+        CHECK(g.length_m == o.length_m);
+      }
+  MESSAGE(gaps_a.size() << " fallen blocks in the tile (" << area << " m2 of tread), "
+                        << gaps_b.size() << " in the next, " << shared
+                        << " across the border; front " << a.report.front_length_m << " m");
+  CHECK(shared >= 1);
+  // The far form has no blocks.
+  const Solved far_form = solve(layer, h, 0, 0, true);
+  Vector<LedgeGap> none;
+  REQUIRE(ledge_gaps(far_form.patch, none, error));
+  CHECK(none.empty());
+}

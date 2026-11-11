@@ -1238,12 +1238,15 @@ layer's `min_slope_deg` and no ledge is solved under or behind a face.
   the generator's own "is this point rock" query) is what the treads need; the blades that
   stand through a tread's back today do so because nothing says otherwise.
 - **Blocks are worn prisms.** Edges are worn and fronts fluted (above), but there is no fracture
-  surface, no corner worn in plan, and no fallen block lying under the gap it left (G143's
-  deposits own the debris; the solver knows each fallen block's index, size and place and does
-  not hand them over yet).
-- **A fallen block is not handed over.** The solver knows each block that fell out (its index
-  along the strike, its length, its unit and where its gap is); the deposits that would lay it
-  under the gap are another row's, and no list is exposed yet.
+  surface and no corner worn in plan.
+- **A fallen block is handed over, and nothing lays it down yet.** `ledge_gaps` (`ledges.h`)
+  lists a patch's fallen blocks in order of identity: the block (its bed top and its place along
+  the strike, the same number from every tile), the centre of its gap on the ground, the area of
+  tread it would have carried inside the patch, its length between its joints and the step it
+  would have stood to. A gap across a tile's border is an entry in each tile with one identity;
+  their area-weighted mean is its place. 309 in a 64 m tile of the test hillside with every bed
+  cropping out, 5 of them across the border to the next. The deposits that would lay each block
+  under its gap are G143's; the generator does not write the list anywhere.
 - **No holes or water**: a tile's mesh is not split round the exclusion's holes or channels.
 
 Tests (`tests/ledges_tests.cpp`, 4 s in msvc-debug): ledges only on resistant beds past the soil

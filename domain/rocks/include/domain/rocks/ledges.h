@@ -64,6 +64,23 @@ bool ledge_patch_in_range(const LedgePatch& patch, std::string& error);
 bool sample_ledge_patch(const LedgeLayer& layer, const scene_gen::Ground& ground, i64 x_mm,
                         i64 z_mm, i64 tile_mm, bool far, LedgePatch& out, std::string& error);
 
+// **A block that has fallen out of a ledge** (rocks.md, "Blocks"): one joint block in five is a
+// gap in its bed's front. What a deposit needs to lay the block under its gap: which block it is
+// (the same number from every tile), where its gap is, and how big the block was.
+struct LedgeGap {
+  u64 block = 0;  // its identity: its bed top and its place along the strike
+  f64 x = 0.0;    // the gap's centre inside this patch, metres from the patch's corner,
+  f64 y = 0.0;    // on the ground
+  f64 z = 0.0;
+  f64 area_m2 = 0.0;   // of the tread the block would have carried, inside this patch
+  f64 length_m = 0.0;  // along the strike, between its two joints
+  f64 height_m = 0.0;  // the step it would have stood to, at its tallest in this patch
+};
+// The patch's fallen blocks, in order of identity, each once. A gap that crosses a tile's border
+// is an entry in each tile with one identity and one length; their area-weighted mean is its
+// place. The far form has no blocks: an empty list.
+bool ledge_gaps(const LedgePatch& patch, Vector<LedgeGap>& out, std::string& error);
+
 // The patch's mesh, metres from its corner; an empty mesh (and true) where nothing crops out.
 bool solve_ledges(const LedgePatch& patch, assets::MeshData& out, LedgeReport* report,
                   std::string& error);
