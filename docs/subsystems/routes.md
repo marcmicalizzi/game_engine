@@ -218,6 +218,12 @@ the tile set does), `routes_schemas`.
   5 % or less; a steep stretch is not built as steps. Steps are not a ground edit's to make: a riser
   of 150-200 mm on a tread of 254-305 mm (the notebook) is finer than the tile set's finest lattice
   (25 cm in the test scenes), so they are meshes, a later row's, placed from the steep stretches.
+- **A tread finer than the ground's lattice.** On the scratch basin (25 cm heightfield, 250 mm mask)
+  a 0.6 m tread is two or three lattice points across: from ten metres it reads as a worn dirt path
+  sunk in turf, but where it runs diagonal to the lattice its groove and its colour step like a saw
+  further off, its width never varies, and it has no turf lip, no exposed soil on the cut bank and
+  no stones or roots. Those want the tread drawn as detail of the ground's material (a line the
+  resolve reads, not a mask texel), and the tread's meshes.
 - **A host that hands the treads across at activation**: until R142, the edits and regions reach a
   scene by pasting, and the bands and the wear reach a generator only through a test.
 
