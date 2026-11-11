@@ -2372,12 +2372,13 @@ TEST_CASE("channels: what a tile of bed costs (measured, printed)") {
   const ChannelSediment& trunk = n.links.back().sediment[n.links.back().line.size() / 2];
   MESSAGE("region: ", log.clasts.size(), " clasts over ", area, " m2 of bed (",
           static_cast<f64>(log.clasts.size()) / area, " a m2) in ", pieces.size(),
-          " tiles, laid in ", lay_ms, " ms; a trunk point's D50 ", 1e3 * trunk.d50_m, " mm, D84 ",
-          1e3 * trunk.d84_m, " mm, cover ", trunk.cover, "; busiest tile ",
-          clast_count(piece.recipe), " clasts over about ", tile_area, " m2, finest ",
-          data.mesh.leaf_triangle_count, " triangles (",
-          static_cast<f64>(data.mesh.leaf_triangle_count) / tile_area, " a m2), coarsest ", root,
-          " (", static_cast<f64>(root) / tile_area, " a m2), built in ", build_ms, " ms");
+          " tiles, laid in ", lay_ms, " ms; a trunk point's D50 ",
+          1e3 * static_cast<f64>(trunk.d50_m), " mm, D84 ", 1e3 * static_cast<f64>(trunk.d84_m),
+          " mm, cover ", trunk.cover, "; busiest tile ", clast_count(piece.recipe),
+          " clasts over about ", tile_area, " m2, finest ", data.mesh.leaf_triangle_count,
+          " triangles (", static_cast<f64>(data.mesh.leaf_triangle_count) / tile_area,
+          " a m2), coarsest ", root, " (", static_cast<f64>(root) / tile_area, " a m2), built in ",
+          build_ms, " ms");
   CHECK(data.mesh.leaf_triangle_count > 0);
   CHECK(root < data.mesh.leaf_triangle_count);
 }
