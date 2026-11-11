@@ -49,6 +49,8 @@ constexpr u8 k_on_face = k_on_front | k_on_corner_lo | k_on_corner_hi;  // where
 // A corner is worn this much further than an edge: it is attacked through three faces, an edge
 // through two (docs/experiments/exposed-bedrock.md, "How a jointed block weathers").
 constexpr f64 k_corner = 1.5;
+// A crag's risers (rocks.md, "A crag has mass") are lifted this far over the ground.
+constexpr f64 k_riser_lift = 0.03;
 // The least wear for which a joint's edge is worn round too (rocks.md, "A block is a body"):
 // sandstone's 12 cm and limestone's 13.5 are, slate's 2.4 is not.
 constexpr f64 k_rim_m = 0.04;
@@ -383,6 +385,7 @@ bool ledge_patch_in_range(const LedgePatch& p, std::string& error) {
   if (!in(wide(p.min_step_m), 0.02, 30.0)) return bad(error, "min_step_m", "in [0.02, 30]");
   if (!in(wide(p.bury_m), 0.05, 5.0)) return bad(error, "bury_m", "in [0.05, 5]");
   if (!in(wide(p.relief_m), 0.0, 2.0)) return bad(error, "relief_m", "in [0, 2]");
+  if (!in(wide(p.riser), 0.05, 1.0)) return bad(error, "riser", "in [0.05, 1]");
   if (!(p.cliff_slope_deg == 0.0f || in(wide(p.cliff_slope_deg), 30.0, 85.0)))
     return bad(error, "cliff_slope_deg", "0 or in [30, 85]");
   if (p.tread_tint.has_value())
@@ -425,6 +428,7 @@ bool sample_ledge_patch(const LedgeLayer& layer, const scene_gen::Ground& ground
   out.cliff_slope_deg = layer.cliff_slope_deg;
   out.material = layer.material;
   out.tread_tint = layer.tread_tint;
+  out.riser = layer.riser;
   const f64 corner = ground.surface_mm(x_mm, z_mm);
   if (!std::isfinite(corner)) return refuse("the ground's height is not finite");
   out.y_mm = scene_gen::nearest_mm(corner);
@@ -478,6 +482,7 @@ bool solve_patch(const LedgePatch& p, assets::MeshData& out, LedgeReport* report
   const f64 min_step = wide(p.min_step_m);
   const f64 bury = wide(p.bury_m);
   const f64 relief = p.far ? 0.0 : wide(p.relief_m);
+  const f64 riser_at = wide(p.riser);
   // **Worn round** (rocks.md, "Blocks"): an edge is worn back by the rock type's rounding, the
   // one the cliff faces use, and a face is fluted by as much again. The far form has neither.
   const f64 round_m = p.far ? 0.0 : k_wear_m * cliff_type_rounding(p.type);
@@ -493,7 +498,7 @@ bool solve_patch(const LedgePatch& p, assets::MeshData& out, LedgeReport* report
   // formation's coordinate there, the share of a bed that stands, the downhill direction, and
   // the place along the strike.
   Vector<f64> ground(m * m), coordinate(m * m), fraction(m * m), down_x(m * m), down_z(m * m),
-      strike(m * m), down_dip(m * m), per_slope(m * m);
+      strike(m * m), down_dip(m * m), per_slope(m * m), riser(m * m);
   const auto height_mm = [&](u32 i, u32 j) { return static_cast<i64>(p.heights_mm[j * side + i]); };
   for (u32 j = 0; j < m; ++j)
     for (u32 i = 0; i < m; ++i) {
@@ -513,6 +518,14 @@ bool solve_patch(const LedgePatch& p, assets::MeshData& out, LedgeReport* report
       fraction[k] =
           standing_share(rule, exposure_fraction(rule, shape), soil_cover(rule, wx_mm, wz_mm));
       if (shape.slope >= cliff_slope) fraction[k] = 0.0;
+      // **A crag's risers** (rocks.md, "A crag has mass"): the ground between a crag's ledges is
+      // its rock too where its member is open and the slope bares it, past the layer's `riser`.
+      {
+        const f64 c_ground = coordinate[k];
+        const f64 open = member_factor(rule, field, c_ground) *
+                         stretch_factor(rule, member_id(rule, field, c_ground), wx_mm, wz_mm);
+        riser[k] = riser_at < 1.0 ? fraction[k] * open - riser_at : -1.0;
+      }
       // Metres behind a front a metre of height under its step, for the corners worn in plan.
       per_slope[k] = 1.0 / (shape.slope > 0.3 ? shape.slope : 0.3);
       const bool sloped = shape.slope > 1e-9;
@@ -587,6 +600,45 @@ bool solve_patch(const LedgePatch& p, assets::MeshData& out, LedgeReport* report
           st0[k] = strike[node[k]];
         }
         if (!(fr[0] > 0.0 || fr[1] > 0.0 || fr[2] > 0.0)) continue;
+        const f64 rs[3] = {riser[node[0]], riser[node[1]], riser[node[2]]};
+        if (rs[0] > 0.0 || rs[1] > 0.0 || rs[2] > 0.0) {
+          // The riser: the part of the lattice triangle where it is past `riser`, on the ground
+          // and `k_riser_lift` over it, in the rock of the unit whose top is next above.
+          PolyVertex tri[3], skin[12];
+          for (u8 k = 0; k < 3; ++k) {
+            tri[k].w[k] = 1.0;
+            tri[k].a = tri[k].b = k;
+          }
+          const u32 n = clip(tri, 3, rs, node, true, 0, skin);
+          if (n >= 3) {
+            const f64 c_mid = (c[0] + c[1] + c[2]) / 3.0;
+            u32 above = 0;
+            f64 nearest = 1.0e30;
+            for (u32 ui = 0; ui < units.size(); ++ui) {
+              const f64 d = units[ui].top - c_mid;
+              const f64 up = d - period * std::floor(d / period);
+              if (up < nearest) {
+                nearest = up;
+                above = ui;
+              }
+            }
+            mesher.material = 1 + above;
+            D3 q[12];
+            for (u32 k = 0; k < n; ++k)
+              q[k] = {at(skin[k], lx), at(skin[k], g) + k_riser_lift, at(skin[k], lz)};
+            for (u32 k = 1; k + 1 < n; ++k) {
+              D3 r3[3] = {q[0], q[k], q[k + 1]};
+              f64 uv[3][2] = {{r3[0].x, r3[0].z}, {r3[1].x, r3[1].z}, {r3[2].x, r3[2].z}};
+              if (!mesher.emit(mix64(p.seed ^ 0x5249534552ull ^ above), r3, uv, Facing::Up, {}))
+                continue;
+              ++made.triangles;
+              ++made.above_ground;
+              ++made.riser_triangles;
+              const D3 area = cross(r3[1] - r3[0], r3[2] - r3[0]);
+              made.riser_m2 += 0.5 * std::sqrt(dot(area, area));
+            }
+          }
+        }
         const f64 c_min = std::min(c[0], std::min(c[1], c[2]));
         const f64 c_max = std::max(c[0], std::max(c[1], c[2]));
         for (u32 ui = 0; ui < units.size(); ++ui) {

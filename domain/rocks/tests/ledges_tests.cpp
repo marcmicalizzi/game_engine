@@ -369,6 +369,7 @@ TEST_CASE("ledges: a block's edges are worn round by its rock's rounding, inside
   const auto worn_width = [&](RockType type, f64& per_metre) {
     LedgeLayer layer = layer_of(beds());
     layer.type = type;
+    layer.riser = 1.0f;  // the ledges alone: a crag's risers lean as a worn edge does
     const Solved s = solve(layer, h, 0, 0);
     f64 area = 0.0;
     for (u32 t = 0; t + 2 < s.mesh.indices.size(); t += 3) {
@@ -492,6 +493,55 @@ TEST_CASE("ledges: a block is a body, rounded all round, split by clefts, underc
   CHECK(body(RockType::Sandstone, hard).undercut == 0.0);
 }
 
+TEST_CASE("ledges: a crag has mass, its risers the crag's rock") {
+  const Hill h;
+  const LedgeLayer layer = layer_of(beds());
+  const Solved s = solve(layer, h, 0, 0);
+  const Solved far_form = solve(layer, h, 0, 0, true);
+  LedgeLayer bare = layer;
+  bare.riser = 1.0f;
+  const Solved without = solve(bare, h, 0, 0);
+  MESSAGE("risers: " << s.report.riser_m2 << " m2 in " << s.report.riser_triangles << " triangles ("
+                     << static_cast<f64>(s.report.riser_triangles) / s.report.riser_m2
+                     << " a square metre); far " << far_form.report.riser_m2 << " m2 in "
+                     << far_form.report.riser_triangles << "; ledges alone "
+                     << without.report.triangles << " triangles");
+  // The ground between a crag's ledges is its rock: tens of square metres of a 64 m tile, the
+  // same ground in the far form, and nothing else in the mesh moves.
+  CHECK(s.report.riser_m2 > 50.0);
+  CHECK(far_form.report.riser_m2 > 0.5 * s.report.riser_m2);
+  CHECK(s.report.triangles == without.report.triangles + s.report.riser_triangles);
+  CHECK(without.report.riser_triangles == 0u);
+  // On the ground: a riser's triangles face up and lie on the hillside within the lattice's
+  // own error and the lift.
+  u32 off = 0, checked = 0;
+  for (u32 t = 0; t + 2 < s.mesh.indices.size(); t += 3) {
+    const P3 a = world(s, s.mesh.indices[t]);
+    const P3 n = normal_of(s, t);
+    // A riser's normal is the hillside's: up the slope's 37 degrees.
+    if (!(n.y > 0.7 && n.y < 0.85 && n.x < -0.5)) continue;
+    const f64 over = a.y - ground_m(h, a.x, a.z);
+    if (over > 0.0 && over < 0.2) {
+      ++checked;
+    } else if (over < -0.2 || over > 0.4) {
+      ++off;
+    }
+  }
+  CHECK(checked > 200u);
+  CHECK(off * 50u < checked);
+  // None on ground the rule leaves under soil: the gentle hill has no ledge and no riser.
+  Hill gentle;
+  gentle.rise = 0.364;
+  gentle.wave = 0.0;
+  CHECK(solve(layer, gentle, 0, 0).mesh.indices.empty());
+  // Out of range is refused.
+  LedgePatch patch = s.patch;
+  patch.riser = 0.0f;
+  std::string error;
+  CHECK_FALSE(ledge_patch_in_range(patch, error));
+  CHECK(error.find("riser") != std::string::npos);
+}
+
 TEST_CASE("ledges: the far form is the same steps on a coarser lattice") {
   const Hill slope;
   const LedgeLayer layer = layer_of(beds());
@@ -543,11 +593,11 @@ TEST_CASE("ledges: a patch is pinned to the bit") {
                              << mesh_hash(far_form.mesh) << " source "
                              << ledge_source_hash(far_form.patch));
   CHECK(near_form.report.triangles > 0u);
-  CHECK(mesh_hash(near_form.mesh) == 6324720027628883295ull);
-  CHECK(ledge_source_hash(near_form.patch) == 1958485751224947148ull);
+  CHECK(mesh_hash(near_form.mesh) == 3689944686638937447ull);
+  CHECK(ledge_source_hash(near_form.patch) == 4449123448180381084ull);
   CHECK(far_form.report.triangles > 0u);
-  CHECK(mesh_hash(far_form.mesh) == 12540669320333577569ull);
-  CHECK(ledge_source_hash(far_form.patch) == 12977504886990997870ull);
+  CHECK(mesh_hash(far_form.mesh) == 14638530343947162581ull);
+  CHECK(ledge_source_hash(far_form.patch) == 13707332758584909599ull);
 }
 
 TEST_CASE("ledges generator: tiles in any order are the whole read, a form a ring") {

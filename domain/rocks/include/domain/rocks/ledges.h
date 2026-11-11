@@ -61,6 +61,9 @@ struct LedgeReport {
   f64 cleft_depth_m = 0.0;   // the deepest flank: a cleft's depth from the tread to the ground
   f64 undercut_m2 = 0.0;     // of undercut underside, facing down
   u32 slipped = 0;           // pieces (a block's part in one lattice triangle) of crept blocks
+  // A crag has mass (rocks.md, "A crag has mass"): the ground between its ledges, its rock.
+  u32 riser_triangles = 0;
+  f64 riser_m2 = 0.0;
 };
 
 // The ranges `engine.rocks.LedgePatch` documents: false, with a sentence naming the first field

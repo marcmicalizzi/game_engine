@@ -1414,9 +1414,21 @@ a curve, and a fresh break and an old surface are one material. The far form has
 - **Unequal.** Blocks keep their earlier variety: lengths from 0.4 to 1.6 of the spacing, 55 to
   100 % of the step, more at one end, rows lost off the top, one in five fallen.
 
+**A crag has mass** (G142c). The ground between a crag's ledges is its rock too: where the share
+of a bed that stands at a lattice point (the exposure's, the slope and the soil's patches) times
+its member's opening (`member_factor` times `stretch_factor` of the bed at the ground) passes the
+layer's `riser` (0.5; 1 for none), the lattice triangle is drawn 3 cm over the ground in the rock
+of the unit whose top is next above, near and far. So a crag reads as one body of rock with ledges
+on it and not as dashes on turf: 466 m² of a 64 m tile of the test hillside in 1,044 triangles
+(2.2 a square metre), 385 m² in 88 in the far form. It is a skin: the ground under it keeps its
+shape, and the beds between the ledges are not told apart in it. What a crag's height and length
+should be against its hill is not grounded beyond the outcrops' lengths (under 100 m, Marshall
+and Roering 2014); the threshold is authored.
+
 What it costs: 54.7 triangles a metre of front on sandstone, 55.6 on slate, 54.3 on limestone
-(**the budget is 56**; 48 before: the flanks of every cleft and their rims about 5, the undercut
-row about 3), and the far form keeps its 2.
+(**the budget is 56**, the ledges alone; 48 before: the flanks of every cleft and their rims
+about 5, the undercut row about 3), and the far form keeps its 2. The risers are on top: 64.5 a
+metre of front with them on the test hillside, and the far form's 3.5.
 
 **Treads, and the beds' own rock.** A tread carries soil to its lip: the tread polygons are one
 material, `tread_tint` (absent: a dark turf, linear 0.07 0.09 0.04, roughness 0.95), and the
@@ -1445,8 +1457,8 @@ both, the cluster DAG is the runtime LOD.
 
 | Form | A 64 m tile of the test hillside (31 bed tops) | Triangles a metre of front |
 |---|---|---|
-| near | 5,808 triangles, 6,498 vertices, 262 clusters, 106 m of front (5,255 and 123 m before the clefts, which take their widths out of the front; 37,492 triangles and 1,041 m as every bed's stripe, unworn) | 54.7 (the budget is 56) |
-| far | 121 triangles, 148 vertices, 6 clusters, 59 m of front | 2.0 |
+| near | 6,852 triangles with the risers (5,808 without), 7,487 vertices, 295 clusters, 106 m of front (5,255 and 123 m before the clefts, which take their widths out of the front; 37,492 triangles and 1,041 m as every bed's stripe, unworn) | 54.7 (the budget is 56) |
+| far | 209 triangles, 293 vertices, 10 clusters, 59 m of front (121 triangles without the risers) | 3.5 (2.0 without) |
 
 68 % of the near form's triangles are above the ground (the solver's count on its own lattice;
 74 % against the hillside's function), against 13.9 % on the front of the box G132 measured.
@@ -1500,6 +1512,6 @@ ground behind does not reach within 8 m (the retaining-wall test); a front's hei
 unit's thickness times what stands there, with ends under 0.3 m and full steps over 0.8 m both
 present; a border's standing vertices matched across tiles within a millimetre; a block a body
 (a joint's worn rim in the rocks' order, clefts with depth, an undercut where the bed below is
-weaker and none where every bed stands, crept blocks); the far form
+weaker and none where every bed stands, crept blocks); a crag's risers on the ground and in the far form; the far form
 beside the near form's steps; the meshes' and recipes' pins; and the generator's tiles in reverse
 against its whole read, a form a ring.
