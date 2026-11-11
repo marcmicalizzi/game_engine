@@ -34,7 +34,8 @@ if(TARGET engine_scene_collision_impl AND TARGET engine_shaders_scene_collision)
 endif()
 
 set(_collision_tests tests/scene_collision_tests.cpp tests/size_table.cpp tests/terrain_hole_tests.cpp
-                     tests/far_forest_tests.cpp tests/collision_draw_tests.cpp)
+                     tests/far_forest_tests.cpp tests/collision_draw_tests.cpp
+                     tests/tile_mesh_tests.cpp)
 if(TARGET engine::terrain)
   # The ground refresh under a time-lapse, on the committed erg's dunes and the renderer's own
   # cadence rule: the terrain reaches the collision through the registry, so the test links it as

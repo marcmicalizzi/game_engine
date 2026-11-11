@@ -69,8 +69,14 @@
 #include <span>
 #include <string>
 
+namespace engine::geometry {
+struct ClusterLodMesh;
+struct ClusterMeshPart;
+}  // namespace engine::geometry
 namespace engine::renderer {
 struct SceneData;
+struct SourceMesh;
+struct PlacementMeshData;
 class UncutGround;
 }  // namespace engine::renderer
 namespace engine::physics {
@@ -152,6 +158,9 @@ struct Stats {
   u32 bodies = 0;      // live: a heightfield a tile, a compound a tile with placements
   u32 placements = 0;  // pieces in the compounds
   u32 proxies = 0;     // shapes made from meshes, each shared by every instance of its mesh
+  // Of those, the proxies of meshes a tile handed (docs: "A tile's meshes"): resident while a
+  // held tile or a build ahead names them, so this falls when the walker leaves.
+  u32 tile_proxies = 0;
   u32 proxy_triangles = 0;
   // A tree's triangles a proxy left out because a corner is of a frond, a leaf, a curtain or a twig
   // (scene_collision.md, "What gets no body").
@@ -361,6 +370,13 @@ class SceneCollision {
     Quat rotation{};
     const Proxy* proxy = nullptr;
   };
+  // The proxy of a mesh a tile handed, at a scale: resident by reference (`refs`: the held tiles
+  // and the builds ahead that name it), gone with the last.
+  struct TileProxy {
+    Proxy proxy;
+    u32 refs = 0;
+    u64 bytes = 0;
+  };
   // The proxies' counters, kept under the proxies' lock and copied into `Stats` on the tick.
   struct ProxyStats {
     u32 proxies = 0;
@@ -378,6 +394,11 @@ class SceneCollision {
     FlatMap<u32, u32> remap;
     scene_gen::Placements placed;
     Vector<PieceRecord> records;  // beside `children`, with `Config::keep_shapes`
+    // The last mesh a tile handed that this thread built (`renderer::load_placement_mesh`), kept
+    // so a tile's two placements of one mesh at two scales build it once.
+    std::unique_ptr<renderer::PlacementMeshData> tile_mesh;
+    u64 tile_mesh_identity = 0;
+    bool tile_mesh_ok = false;
   };
   // A tile's placements as built (`gather_placements`): its compound's shape, not yet in the
   // physics world's table, and what it holds.
@@ -387,6 +408,9 @@ class SceneCollision {
     u64 compound_bytes = 0;
     bool ok = true;               // false: a generator refused the tile or the backend a shape
     Vector<PieceRecord> records;  // with `Config::keep_shapes`
+    // The tile-handed proxies this gather took a reference to (`tile_proxies_`' keys), each once:
+    // moved to the tile with its body, released by `release_tile_proxies` when either goes.
+    Vector<u64> tile_proxies;
   };
   struct Tile {
     world::TileCoord coord;
@@ -412,6 +436,7 @@ class SceneCollision {
     f64 blend = 0.0;
     bool moving = false;
     Vector<PieceRecord> pieces_held;  // with `Config::keep_shapes`
+    Vector<u64> tile_proxies;         // the references its compound's pieces hold
   };
 
   static bool activate(void* context, const world::TileEvent& event);
@@ -459,6 +484,24 @@ class SceneCollision {
   // The proxy of a mesh at a scale, built on first ask; null for a mesh with no surface to stand
   // on. Thread-safe.
   const Proxy* proxy_for(u32 mesh, Vec3 scale, PlacementScratch& scratch);
+  // The cut both kinds of proxy are made of: `part`'s clusters of `lod` where each cluster's own
+  // error is within the threshold and its parent's is not, welded by source vertex and scaled,
+  // into `scratch.vertices`, `.indices` and `.parts`. `tree`: a mesh with the motion contract,
+  // which keeps its wood. Returns the triangles left out for it.
+  u32 cut_proxy(const geometry::ClusterLodMesh& lod, const geometry::ClusterMeshPart& part,
+                const renderer::SourceMesh* tree, Vec3 scale, PlacementScratch& scratch) const;
+  // **A tile-handed mesh's proxy** (docs: "A tile's meshes"): keyed by the mesh's identity
+  // (`renderer::placement_mesh_identity`) and the scale, built from the recipe through
+  // `renderer::load_placement_mesh` — no device, the cache entry the renderer reads — outside the
+  // proxies' lock, and referenced once per gather in `held`. Null for a mesh that will not build
+  // or has no surface. Thread-safe.
+  const Proxy* tile_proxy_for(const scene_gen::PlacementMesh& mesh, Vec3 scale,
+                              PlacementScratch& scratch, Vector<u64>& held);
+  // Gives back what a gather took: a proxy nobody else names goes, with its shape. Thread-safe.
+  void release_tile_proxies(Vector<u64>& held) noexcept;
+  // One piece of a tile-handed mesh, as `add_piece` for a scene mesh.
+  bool add_tile_piece(const scene_gen::PlacementMesh& mesh, const Mat4& linear, WorldPos at,
+                      WorldPos corner, PlacementScratch& scratch, Vector<u64>& held, u32 entry);
   scene_gen::Context context_for(const Entry& entry) const noexcept;
   void note_bodies() noexcept;
 
@@ -484,6 +527,8 @@ class SceneCollision {
   // By (mesh, scale), under `proxies_mutex_`: a worker building a tile ahead and the tick building
   // one itself may ask at once.
   FlatMap<u64, std::unique_ptr<Proxy>> proxies_;
+  // By (identity, scale), under the same lock: the proxies of meshes that arrived with a tile.
+  FlatMap<u64, std::unique_ptr<TileProxy>> tile_proxies_;
   ProxyStats proxy_stats_;
   std::mutex proxies_mutex_;
   // A generator's state is its own and may be scratch it writes (the ruins' assemblers), so its
