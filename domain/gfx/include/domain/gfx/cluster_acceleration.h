@@ -51,6 +51,15 @@ struct ClusterSetLimits {
   // OPACITY_MICROMAPS_BIT_NV on its input, which VUID-10881 asks of any build whose records name a
   // micromap array. A set, a cache or a template set built with it is sized with it too.
   bool opacity_micromaps = false;
+  // The most triangles and vertices one build's clusters hold **together**, or 0 for every cluster
+  // at its own most (`max_clusters` times the two above), which is what every set here is created
+  // with. The driver sizes an implicit set by these totals as well as by the count (R143 measured
+  // it: `cluster set: what a set reserves follows its totals`), so a set whose builds are known to
+  // stay under smaller totals reserves less — and a build that passes them is undefined, which is
+  // why nothing per frame names them yet (renderer.md, "The bottom-level build is over what the
+  // frame drew", the page's measurement has the proposal).
+  u32 max_total_triangles = 0;
+  u32 max_total_vertices = 0;
 };
 
 struct ClusterAsProperties {
@@ -156,6 +165,21 @@ void build_cluster_set_explicit(CommandList commands, const ClusterSetLimits& li
 void instantiate_cluster_templates(CommandList commands, const ClusterSet& set,
                                    DeviceAddress records, DeviceAddress count,
                                    const BufferResource& scratch);
+// **A set built once, at the size its structures are** (docs/subsystems/renderer.md, "Static
+// structures for rigid forms"; R143). `create_cluster_set` reserves the driver's most for every
+// cluster — 6,144 bytes for 124 triangles and 64 vertices on the RTX 5090, 8,832 where the build
+// allows opacity micromaps — which a set that is rebuilt every frame has to, since the next frame's
+// clusters are not known; a set built once and kept is known exactly. This does what
+// `create_packed_cluster_templates` does for templates, in three blocking submissions: the build in
+// COMPUTE_SIZES mode writes each structure's size, the host packs them back to back at the
+// device's cluster alignment, and the build runs again in EXPLICIT_DESTINATIONS mode into one
+// buffer of exactly that sum. `records` are `limits.max_clusters` cluster build records
+// (`write_cluster_build_records`) in a buffer the build can read; `out.addresses` then holds each
+// structure's address and `out.sizes` its size, as after `build_cluster_set`, and `out.data` is the
+// packed storage. The scratch is allocated and freed inside. Never `limits.instantiate`.
+bool create_packed_cluster_set(const Device& device, const ClusterSetLimits& limits,
+                               DeviceAddress records, ClusterSet& out,
+                               std::string* error = nullptr);
 void destroy_cluster_set(const Device& device, ClusterSet& set) noexcept;
 
 // Cluster templates (docs/plan/04-renderer.md §4.3, experiment E25): a template is built once
@@ -505,16 +529,35 @@ inline constexpr u32 k_cluster_cache_args_words = 13;
 // forms"): an instance flagged `k_instance_static_rt` takes its mesh's entry of `static_addresses`
 // — the bottom-level structure built once for that rigid form — instead of what this frame's build
 // decided, which for such an instance is an empty structure. 88 bytes.
+//
+// **And the bottom-level build over the instances that drew something** (docs/subsystems/
+// renderer.md, "The bottom-level build is over what the frame drew"; R143). The ranges write one
+// bottom-level record per instance *slot*, and the build's cost is the records it is handed, empty
+// or not — about 10 ns each on the RTX 5090, 2.17 ms a frame on the forest proof of concept's
+// 219,166 slots, of which a frame draws a tenth. With `blas_slots` set, the module's second entry
+// point, `blas_compact_main` (one thread an instance, before the build), copies every record that
+// references anything to the next place of `blas_dense`, counts them in `blas_count` — the count
+// the build then reads from the device — and writes the place into the instance's word of
+// `blas_slots`, `k_cluster_blas_none` for an instance with nothing; `tlas_references_main` then
+// reads `addresses[blas_slots[i]]`. The places are an atomic's, so their order is not the frame's
+// function; nothing reads it but this pair, and the top-level records stay in instance order. With
+// `blas_slots` zero — a caller that builds over every instance — `addresses` is per instance, as
+// before. 120 bytes.
 struct TlasReferenceParams {
-  u64 addresses = 0;  // u64[count]
+  u64 addresses = 0;  // u64[count], or with `blas_slots` u64 per compacted record
   u64 records = 0;    // top-level instance records, k_instance_record_bytes each
   u32 count = 0;
   u32 pad = 0;
   u64 instances = 0;         // InstanceDesc[count], the scene's, in record order
   FrameEye eye;              // the frame's origin
   u64 static_addresses = 0;  // u64 per mesh: its static structure, or 0; 0 for no static forms
+  u64 blas_records = 0;      // k_cluster_blas_record_bytes per instance, as the ranges wrote them
+  u64 blas_dense = 0;        // the same records, only those with a reference, out
+  u64 blas_slots = 0;        // u32 per instance: its record's place in `blas_dense`, or none
+  u64 blas_count = 0;        // u32: the records in `blas_dense`, zero before the dispatch
 };
-static_assert(sizeof(TlasReferenceParams) == 88);
+static_assert(sizeof(TlasReferenceParams) == 120);
+inline constexpr u32 k_cluster_blas_none = 0xffffffffu;
 inline constexpr u32 k_tlas_references_workgroup = 64;
 inline constexpr u32 k_cluster_records_workgroup = 64;
 inline constexpr u32 k_cluster_records_instantiate = 1u << 16;  // ClusterRecordParams::mode
@@ -530,6 +573,15 @@ inline constexpr u32 k_cluster_records_drop_scan = 1u << 17;
 // cull does not write in any case) never is. No light's ray meets it either way: its top-level
 // record's mask has no caster bit (`instance_ray_mask`, cluster_cull.h).
 inline constexpr u32 k_cluster_records_untraced_drawn = 1u << 18;
+// ClusterRecordParams::mode: **past the capacity, every drawn structure before any caster** (R143;
+// renderer.md, "What a frame past its capacity keeps"). Without it the rule spends the capacity a
+// rank of the drop order at a time — a ring's drawn clusters, then its casters, then the next ring
+// — which is right where the structures are the shadows only: a near tree's far side shadows more
+// pixels than a far tree does. Where they are the picture (a traced-primary frame), a dropped drawn
+// instance is a hole in it and a dropped caster a shadow's far side, so the whole order is one
+// rank: every instance's drawn clusters nearest first, then the casters nearest first. The
+// renderer sets it with the ray path.
+inline constexpr u32 k_cluster_records_drawn_first = 1u << 19;
 // The ranges' scan (clas_records.slang, `ranges_count_main` and `ranges_main`, and past the
 // capacity `ranges_drop_main`, `ranges_kept_count_main` and `ranges_kept_main`): a block of 1,024
 // instances to a group of 256 threads, four contiguous instances a thread. `instance_counts` holds,
@@ -559,13 +611,17 @@ constexpr u64 cluster_instance_count_words(u32 instance_count) noexcept {
 // built into the cache (what its explicit build reads as its count), 8 misses the cache had no
 // room for — built in the frame's own set since R114, and counted in words 0 and 1 — 9 slots
 // evicted, 10 slots occupied after the frame, 11 of word 8's the frame's set had no room for
-// either, which drew nothing that frame.
-inline constexpr u32 k_cluster_record_count_words = 12;
+// either, which drew nothing that frame; and 12 (`k_cluster_record_count_blas`, R143) the
+// bottom-level structures the frame builds — the instances that reference anything — which the
+// ranges' first dispatch clears and `blas_compact_main` (tlas_references.slang) counts.
+inline constexpr u32 k_cluster_record_count_blas = 12;
+inline constexpr u32 k_cluster_record_count_words = 13;
 constexpr u32 cluster_records_mode(u32 views, bool instantiate, bool drop_scan = false,
-                                   bool untraced_drawn = false) noexcept {
+                                   bool untraced_drawn = false, bool drawn_first = false) noexcept {
   return (views & 0xffffu) | (instantiate ? k_cluster_records_instantiate : 0u) |
          (drop_scan ? k_cluster_records_drop_scan : 0u) |
-         (untraced_drawn ? k_cluster_records_untraced_drawn : 0u);
+         (untraced_drawn ? k_cluster_records_untraced_drawn : 0u) |
+         (drawn_first ? k_cluster_records_drawn_first : 0u);
 }
 
 // Every instance's cluster bottom-level structure, built by **one** command into one buffer

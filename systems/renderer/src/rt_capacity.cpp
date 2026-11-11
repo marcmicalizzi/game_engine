@@ -207,6 +207,43 @@ void rt_drop_order(u32 prefix_slots, std::span<RtDropBlock> blocks, Vector<u32>&
   }
 }
 
+u32 rt_drop_bound(u32 wanted, u32 capacity, u32 limit, u32 references_wanted,
+                  u32 reference_capacity, u32 reference_limit) noexcept {
+  u32 bound = 0;
+  if (wanted > capacity) bound |= capacity >= limit ? k_rt_bound_budget : k_rt_bound_capacity;
+  if (references_wanted > reference_capacity) {
+    bound |= reference_capacity >= reference_limit ? k_rt_bound_reference_ceiling
+                                                   : k_rt_bound_references;
+  }
+  return bound;
+}
+
+const char* rt_bound_name(u32 bound) noexcept {
+  // The frame's own bound, then the references': a frame meets at most one of each.
+  static constexpr const char* k_names[3][3] = {
+      {"none", "reference-ceiling", "references"},
+      {"budget", "budget+reference-ceiling", "budget+references"},
+      {"capacity", "capacity+reference-ceiling", "capacity+references"}};
+  const u32 own = (bound & k_rt_bound_budget) != 0     ? 1u
+                  : (bound & k_rt_bound_capacity) != 0 ? 2u
+                                                       : 0u;
+  const u32 refs = (bound & k_rt_bound_reference_ceiling) != 0 ? 1u
+                   : (bound & k_rt_bound_references) != 0      ? 2u
+                                                               : 0u;
+  return k_names[own][refs];
+}
+
+const char* rt_bound_remedy(u32 bound) noexcept {
+  if ((bound & k_rt_bound_budget) != 0) {
+    return (bound & k_rt_bound_reference_ceiling) != 0
+               ? "raise RenderSettings::rt_budget_mib and the renderer.rt.reference_mib tunable"
+               : "raise RenderSettings::rt_budget_mib";
+  }
+  if ((bound & k_rt_bound_reference_ceiling) != 0)
+    return "raise the renderer.rt.reference_mib tunable";
+  return "none: a growth was in flight, and the frames after it hold what this one wanted";
+}
+
 u32 first_rt_capacity(u32 limit, u32 union_clusters, u64 estimate, u32 floor) noexcept {
   u64 first = estimate > floor ? estimate : u64{floor};
   if (first > union_clusters) first = union_clusters;

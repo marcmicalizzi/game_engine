@@ -2225,7 +2225,7 @@ struct OcclusionCheck @version(1) {
 /// without the chain. Version 2 (2026-10-25) adds the static structures of rigid forms (renderer.md,
 /// "Static structures for rigid forms"): the forms built once, their clusters and bytes, and the
 /// instance slots and pairs that referenced one at the end.
-struct FlythroughRt @version(5) {
+struct FlythroughRt @version(6) {
   /// R100: admission fallback and the compact chain's capacity arithmetic.
   caster_index_fallbacks: u32 = 0 @since(3)
   frame_estimate: u64 = 0 @since(3)
@@ -2288,6 +2288,20 @@ struct FlythroughRt @version(5) {
   /// memory from 512 to 4,096 MiB (docs/subsystems/renderer.md, "The budget follows the device").
   budget_mib: u32 = 0 @since(5)
   budget_source: string @since(5)
+  /// Version 6 (R143): the bottom-level structures the last frame's build made — the instances
+  /// that referenced anything — and the most a frame made, beside the instance slots the build was
+  /// over until then (docs/subsystems/renderer.md, "The bottom-level build is over what the frame
+  /// drew"); what the rigid forms' cluster structures would have reserved at the driver's most for
+  /// each, which packed to the size they are is `static_bytes`; and which bound the first and the
+  /// last frame that dropped anything met, of `budget`, `capacity` (a growth in flight),
+  /// `reference-ceiling` and `references`, joined by `+`, empty for a run that dropped nothing
+  /// ("The warning names its bound").
+  blas_built: u32 = 0 @since(6)
+  peak_blas_built: u32 = 0 @since(6)
+  instance_slots: u32 = 0 @since(6)
+  static_reserved_bytes: u64 = 0 @since(6)
+  first_drop_bound: string @since(6)
+  last_drop_bound: string @since(6)
 }
 
 /// The materials' textures a scene holds on the device (`renderer::GpuScene`): the distinct

@@ -5345,18 +5345,27 @@ bool GpuScene::build_static_forms(std::string* error) {
   bool ok = gfx::create_buffer(device, gfx::k_cluster_build_record_bytes * static_clusters_,
                                k_record_usage, true, clas_records, error) &&
             gfx::create_buffer(device, gfx::k_cluster_blas_record_bytes * mesh_count,
-                               k_record_usage, true, blas_records_once, error) &&
-            gfx::create_cluster_set(device, limits, static_clas_, error) &&
-            gfx::create_cluster_blas_set(device, mesh_count, static_clusters_, most_per_form,
-                                         static_blas_, error, limits.opacity_micromaps);
+                               k_record_usage, true, blas_records_once, error);
+  // **At the size they are** (R143; renderer.md, "Static structures for rigid forms"): the forms'
+  // cluster structures are built once and kept, so they are sized first and packed
+  // (`gfx::create_packed_cluster_set`) instead of each being reserved at the driver's most for a
+  // cluster, as the frame's own set has to be. What they would have reserved is kept for the log
+  // and the statistics (`static_reserved_bytes()`).
+  static_reserved_bytes_ = 0;
   if (ok) {
-    ok = gfx::create_scratch(
-        device, std::max(static_clas_.build_scratch_bytes, static_blas_.build_scratch_bytes),
-        scratch, error);
-  }
-  if (ok) {
+    gfx::ClusterBuildSizes reserved;
+    if (gfx::cluster_set_build_sizes(device, limits, reserved)) {
+      static_reserved_bytes_ = reserved.data_bytes;
+    }
     gfx::write_cluster_build_records(
         std::span<const gfx::ClusterBuildInput>(inputs.data(), inputs.size()), clas_records.mapped);
+    ok =
+        gfx::create_packed_cluster_set(device, limits, clas_records.address, static_clas_, error) &&
+        gfx::create_cluster_blas_set(device, mesh_count, static_clusters_, most_per_form,
+                                     static_blas_, error, limits.opacity_micromaps);
+  }
+  if (ok) ok = gfx::create_scratch(device, static_blas_.build_scratch_bytes, scratch, error);
+  if (ok) {
     auto* bytes = static_cast<u8*>(blas_records_once.mapped);
     for (u32 m = 0; m < mesh_count; ++m) {
       const u32 s = static_of_mesh_[m];
@@ -5372,9 +5381,6 @@ bool GpuScene::build_static_forms(std::string* error) {
     ok = gfx::submit_immediate(
         device,
         [&](gfx::CommandList cb) {
-          gfx::build_cluster_set(cb, static_clas_, clas_records.address, 0, scratch);
-          gfx::acceleration_build_barrier(cb, gfx::PipelineStage::AccelerationBuild,
-                                          gfx::MemoryAccess::AccelerationStructureRead);
           gfx::build_cluster_blas_set(cb, static_blas_, blas_records_once.address, 0, scratch);
           gfx::acceleration_build_barrier(cb, gfx::PipelineStage::ComputeShader,
                                           gfx::MemoryAccess::AccelerationStructureRead);
@@ -5399,7 +5405,9 @@ bool GpuScene::build_static_forms(std::string* error) {
                   static_blas_.data.size + static_blas_.addresses.size;
   ENGINE_LOG_INFO(log_renderer, "static ray tracing structures built",
                   log::field("forms", static_count_), log::field("clusters", static_clusters_),
-                  log::field("bytes", static_bytes_));
+                  log::field("bytes", static_bytes_),
+                  log::field("cluster_bytes", static_clas_.data.size),
+                  log::field("cluster_bytes_unpacked", static_reserved_bytes_));
   return true;
 }
 
@@ -5761,6 +5769,8 @@ void GpuScene::destroy_ray_tracing_layout() noexcept {
   gfx::destroy_buffer(device, slots);
   gfx::destroy_buffer(device, instance_counts);
   gfx::destroy_buffer(device, blas_records);
+  gfx::destroy_buffer(device, blas_dense);
+  gfx::destroy_buffer(device, blas_slots);
   gfx::destroy_buffer(device, records);
   gfx::destroy_buffer(device, hit_entries);
   gfx::destroy_cluster_set(device, clas_set);
@@ -5838,6 +5848,13 @@ bool GpuScene::lay_out_ray_tracing(std::string* error) {
                 device, gfx::k_cluster_blas_record_bytes * rt_instance_slots_,
                 k_record_usage | gfx::BufferUsage::TransferDst | gfx::BufferUsage::TransferSrc,
                 false, blas_records, error) &&
+            // The records of the instances that reference anything, which the bottom-level build
+            // reads, and every instance's place among them (R143, `blas_compact_main`): 20 bytes a
+            // slot, so that the build costs the instances a frame draws and not the slots.
+            gfx::create_buffer(device, gfx::k_cluster_blas_record_bytes * rt_instance_slots_,
+                               k_record_usage, false, blas_dense, error) &&
+            gfx::create_buffer(device, sizeof(u32) * u64{rt_instance_slots_}, k_address, false,
+                               blas_slots, error) &&
             gfx::create_tlas(device, rt_instance_slots_, gfx::k_build_fast_trace, tlas, error) &&
             gfx::upload_buffer(device, tlas_bytes.data(), tlas_bytes.size(),
                                gfx::k_build_input_usage | gfx::BufferUsage::TransferDst | k_storage,
@@ -5851,8 +5868,8 @@ bool GpuScene::lay_out_ray_tracing(std::string* error) {
   }
   if (!ok) return false;
   rt_scene_bytes_ = indices8.size + record_count.size + slots.size + instance_counts.size +
-                    blas_records.size + tlas.buffer.size + rt_instances.size +
-                    clas_templates.data.size + clas_templates.addresses.size +
+                    blas_records.size + blas_dense.size + blas_slots.size + tlas.buffer.size +
+                    rt_instances.size + clas_templates.data.size + clas_templates.addresses.size +
                     clas_templates.sizes.size + static_bytes_ + rt_cache_bytes_;
 
   // **The budget, in clusters.** What one cluster of capacity costs comes from the driver's own
@@ -6112,8 +6129,12 @@ bool GpuScene::resize_ray_tracing(u32 capacity, std::string* error, bool beyond_
   }
   // One bottom-level set over both: an instance references the frame's own structures or the
   // cache's, never both, so its most is the larger of the two capacities.
+  // And at most one structure per reference: the build is over the instances that reference
+  // anything (R143, `blas_compact_main`), never over every slot.
+  const u32 blas_structures = static_cast<u32>(
+      std::max<u64>(1, std::min<u64>(rt_instance_slots_, u64{capacity} + references)));
   ok = ok &&
-       gfx::create_cluster_blas_set(device, rt_instance_slots_, capacity + references,
+       gfx::create_cluster_blas_set(device, blas_structures, capacity + references,
                                     std::min(rt_max_per_instance_, std::max(capacity, references)),
                                     made_blas, error, rt_limits_.opacity_micromaps);
   lap(rt_resize_cost_.blas_ns);

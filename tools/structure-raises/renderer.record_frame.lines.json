@@ -1,0 +1,14 @@
+{
+  "format": "engine.structure-raise.v1",
+  "name": "renderer.record_frame.lines",
+  "reason": "R143: the blas compact pass and the bottom-level build over what the frame drew, recorded in the chain",
+  "date": "2026-11-10",
+  "by": "Marc Micalizzi",
+  "deltas": {
+    "renderer.record_frame.lines": 37,
+    "renderer.record_frame.add_pass": 1,
+    "renderer.gpu_scene_cpp.lines": 21,
+    "renderer.gpu_scene_h.lines": 12,
+    "page:docs/subsystems/renderer.md": 10009
+  }
+}

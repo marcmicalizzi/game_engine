@@ -209,6 +209,7 @@ static const uint k_count_miss_overflow = 8;
 static const uint k_count_evicted = 9;
 static const uint k_count_occupied = 10;
 static const uint k_count_miss_unbuilt = 11;
+static const uint k_count_blas = 12;  // gfx::k_cluster_record_count_blas
 
 CacheTables* cache_tables() { return (CacheTables*)g_params.cache; }
 
@@ -284,8 +285,15 @@ static const uint k_caster_run = 2;        // gfx::k_caster_run: the casters' ru
 static const uint k_instantiate = 0x10000;  // gfx::k_cluster_records_instantiate
 static const uint k_drop_scan = 0x20000;    // gfx::k_cluster_records_drop_scan
 static const uint k_untraced_drawn = 0x40000;  // gfx::k_cluster_records_untraced_drawn
+static const uint k_drawn_first = 0x80000;     // gfx::k_cluster_records_drawn_first
 
 uint view_count() { return g_params.mode & 0xffff; }
+// **Past the capacity, every drawn structure before any caster** (R143; renderer.md, "What a frame
+// past its capacity keeps"): the drop order is spent as one rank — every instance's drawn clusters
+// nearest first, then the casters nearest first — where the structures are the picture.
+bool drawn_first() { return (g_params.mode & k_drawn_first) != 0; }
+// Whether the drop order is one rank: no order at all (instance order), or drawn structures first.
+bool one_rank() { return g_params.drop_order == 0 || drawn_first(); }
 bool instantiating() { return (g_params.mode & k_instantiate) != 0; }
 // A traced-primary frame: an untraced instance's drawn entries are built (R110).
 bool untraced_drawn() { return (g_params.mode & k_untraced_drawn) != 0; }
@@ -472,6 +480,9 @@ void ranges_count<let kCache : int>(uint group, uint t) {
     } else if (t < 6) {
       record_count[k_count_misses + t] = 0;
     }
+    // The bottom-level structures the frame builds, which `blas_compact_main` counts
+    // (tlas_references.slang; R143): none yet.
+    if (t == 6) record_count[k_count_blas] = 0;
     // The drop words: no frame is past its capacity until `ranges_main` says so, and the passes
     // after it dispatch nothing (`x` 0, `y` and `z` 1).
     if (t < 8) drop_words()[t] = t == 1 || t == 2 || t == 4 || t == 5 ? 1u : 0u;
@@ -720,8 +731,8 @@ void over_capacity<let kCache : int>(uint group, uint t) {
     if (k > 0 && order_rank(k - 1) > rank) {
       ((Atomic<uint>*)(words + k_drop_state)).or(k_drop_serial);
     }
-    const uint b = g_params.drop_order != 0 ? rank_bound(rank, m, false) : 0u;
-    const uint e = g_params.drop_order != 0 ? rank_bound(rank, m, true) : m;
+    const uint b = one_rank() ? 0u : rank_bound(rank, m, false);
+    const uint e = one_rank() ? m : rank_bound(rank, m, true);
     uint d = 0;
     uint c = 0;
     uint flags = 0;
@@ -774,7 +785,7 @@ void drop_serial<let kCache : int>(uint wanted, uint cached_wanted) {
   while (begin_rank < m) {
     const uint rank = order_rank(begin_rank);
     uint end_rank = begin_rank;
-    while (end_rank < m && (g_params.drop_order == 0 || order_rank(end_rank) == rank)) {
+    while (end_rank < m && (one_rank() || order_rank(end_rank) == rank)) {
       const uint i = order_instance(end_rank);
       if (i < n) {
         const uint word = drawn[i];

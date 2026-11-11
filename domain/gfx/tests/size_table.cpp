@@ -139,7 +139,11 @@ ENGINE_EXPECT_SIZE(120, 8, gfx::ClusterCacheTables);
 // 88, not 80: the per-mesh table of static structures, which a rigid form's instance takes its
 // reference from instead of this frame's build (renderer.md, "Static structures for rigid forms",
 // 2026-10-25).
-ENGINE_EXPECT_SIZE(88, 8, gfx::TlasReferenceParams);
+// 120, not 88: the ranges' bottom-level records, the same without the empty ones, each instance's
+// place among those and their count — the module's second entry point compacts them so the
+// bottom-level build is over the instances that drew something and not over every instance slot
+// (renderer.md, "The bottom-level build is over what the frame drew", R143, 2026-11-10).
+ENGINE_EXPECT_SIZE(120, 8, gfx::TlasReferenceParams);
 
 // 416, not 400: geometry streaming appended the address of its own block plus the two counts that
 // bound every index the shader writes — the page table's length and the request buffer's capacity

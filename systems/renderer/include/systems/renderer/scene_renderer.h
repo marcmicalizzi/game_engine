@@ -381,6 +381,20 @@ struct RtStats {
   u64 overflow_frames = 0;
   u64 dropped_instances = 0;
   u64 dropped_caster_instances = 0;
+  // **What bound the first frame that dropped anything, and the last** (R143; renderer.md, "The
+  // warning names its bound"): `RtBound`'s bits — the frame's own capacity at the budget, or still
+  // under it (a growth had not landed), the references' capacity at its ceiling, or under it.
+  u32 first_drop_bound = 0;
+  u32 last_drop_bound = 0;
+  // **The bottom-level build is over what the frame drew** (R143): the structures the last frame's
+  // bottom-level build made — the instances that reference anything — the most a frame made, and
+  // the instance slots the build was over until then.
+  u32 blas_built = 0;
+  u32 peak_blas_built = 0;
+  u32 instance_slots = 0;
+  // What the rigid forms' cluster structures would have reserved at the driver's most for each;
+  // packed to the size they are, they hold `static_bytes` (R143).
+  u64 static_reserved_bytes = 0;
   // **Static structures for rigid forms** (renderer.md, "Static structures for rigid forms"): the
   // forms whose structures were built once, their clusters and bytes (in `bytes` too), and now —
   // after the last change of the tail — how many instance slots reference one and their pairs,
@@ -941,6 +955,9 @@ class SceneRenderer {
     gfx::ComputePipeline record_emit[2];
     gfx::ComputePipeline cache[4];         // the cluster cache's scan, evict, assign, references
     gfx::ComputePipeline tlas_references;  // tlas_references.slang: the BLAS addresses in
+    // tlas_references.slang, `blas_compact_main` (R143): the bottom-level records of the instances
+    // that reference anything, which the build reads.
+    gfx::ComputePipeline blas_compact;
     gfx::ComputePipeline trace;
     // resolve_half_sun.slang: the sun's ray once per 2x2 block of the half-rate columns (R126;
     // renderer.md, "A shading rate by region"), built only where the resolve traces shadows.
@@ -1095,7 +1112,8 @@ class SceneRenderer {
   Vector<u64> slot_submission_;
   Vector<u32> slot_pairs_;  // and the scene it culled, which a world changes between frames
   Vector<u32> slot_instances_;
-  Vector<u32> slot_rt_capacity_;  // the chain's capacity each slot's frame was recorded against
+  Vector<u32> slot_rt_capacity_;    // the chain's capacity each slot's frame was recorded against
+  Vector<u32> slot_rt_references_;  // and the cache's reference capacity (R143: the drop's bound)
   // The water's reflection and refraction each slot's frame was recorded with (R129, S86), folded
   // into `FrameStats` with the frame's own counts rather than the last recorded frame's.
   struct SlotWater {
@@ -1148,11 +1166,13 @@ class SceneRenderer {
   // The last frame recorded built the occlusion term's Hi-Z (R118), so this one may read it.
   bool hiz_lod_built_ = false;
   bool recording_ = false;
-  bool joint_overflow_warned_ = false;     // a span longer than the scene was sized for, said once
-  bool deform_overflow_warned_ = false;    // the pool budget refused a pair, said once
-  bool vertex_fallback_warned_ = false;    // the index budget sent a cluster to the fallback, once
-  bool shadow_fallback_warned_ = false;    // the same, for a shadow cascade's cut
-  bool rt_overflow_warned_ = false;        // a frame dropped instances' structures, said once
+  bool joint_overflow_warned_ = false;   // a span longer than the scene was sized for, said once
+  bool deform_overflow_warned_ = false;  // the pool budget refused a pair, said once
+  bool vertex_fallback_warned_ = false;  // the index budget sent a cluster to the fallback, once
+  bool shadow_fallback_warned_ = false;  // the same, for a shadow cascade's cut
+  // A frame dropped instances' structures: said once per bound it met, a bit a `rt_drop_bound`
+  // value (R143).
+  u32 rt_overflow_warned_ = 0;
   bool rt_cache_overflow_warned_ = false;  // the cluster cache had no room for misses, said once
   u64 rt_evictions_folded_ = 0;  // the evictions the last folded frame's record took off the sum
   bool rt_micromaps_ = false;    // the last recorded frame's records named the micromaps (R120)

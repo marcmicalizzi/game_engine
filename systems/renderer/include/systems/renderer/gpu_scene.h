@@ -701,6 +701,12 @@ class GpuScene {
   u32 static_meshes() const noexcept { return static_count_; }
   u32 static_clusters() const noexcept { return static_clusters_; }
   u64 static_bytes() const noexcept { return static_bytes_; }
+  // What the forms' cluster structures would have reserved at the driver's most for each (R143):
+  // they are packed to the size they are, so `static_bytes()` is less.
+  u64 static_reserved_bytes() const noexcept { return static_reserved_bytes_; }
+  // The instance slots the chain's per-instance tables hold: what the bottom-level build was over
+  // every frame until R143, and what the top-level structure still is.
+  u32 rt_instance_slots() const noexcept { return rt_instance_slots_; }
   u32 static_instances() const noexcept { return static_instances_live_; }
   // **The drop order** for frame slot `slot` (`gfx::ClusterRecordParams::drop_order`;
   // `rt_drop_order` in rt_capacity.h): the device address of that slot's copy, brought up to date
@@ -1275,6 +1281,11 @@ class GpuScene {
   // Three u32 per instance: its drawn clusters, its casters, then its dense record base.
   gfx::BufferResource instance_counts;
   gfx::BufferResource blas_records;  // one 16-byte bottom-level record per instance
+  // **The bottom-level build is over what the frame drew** (R143; renderer.md, "The bottom-level
+  // build is over what the frame drew"; `gfx::TlasReferenceParams`): the records of the instances
+  // that reference anything, which the build reads, and each instance's place among them.
+  gfx::BufferResource blas_dense;  // 16 bytes per instance slot: the frame's non-empty records
+  gfx::BufferResource blas_slots;  // u32 per instance slot: its place, or gfx::k_cluster_blas_none
   // One top-level instance record per instance, device-local and written once: the transforms
   // never change, and the one field that does — the bottom-level address, which the implicit
   // build of `blas_set` decides each frame — is written in on the GPU, a thread an instance
@@ -1774,6 +1785,7 @@ class GpuScene {
   u32 static_count_ = 0;
   u32 static_clusters_ = 0;
   u64 static_bytes_ = 0;
+  u64 static_reserved_bytes_ = 0;
   u32 static_instances_live_ = 0;
   u64 static_pairs_live_ = 0;
   u64 untraced_pairs_live_ = 0;
