@@ -5,6 +5,7 @@
 // decision is IEEE `+ - * /`, `sqrt`, `floor` and integers; the loops the job system runs are the
 // ones whose points read nothing another point of the same loop writes.
 #include <core/jobs/job_system.h>
+#include <domain/gfx/formation.h>
 #include <domain/landform/landform.h>
 
 #include <algorithm>
@@ -36,10 +37,11 @@ constexpr u64 k_route_salt = 0xD1B54A32D192ED03ull;
 constexpr f64 k_diffusion_number = 0.2;
 // A heightfield's float holds a whole millimetre exactly below 2^24 of them.
 constexpr f64 k_max_height_m = 16000.0;
-// The rivers' sweeps end when no height moves by this much (a tenth of a millimetre), or after
-// this many: Yuan et al. 2019 count six at G = 1 and nine at G = 2 to a looser bound.
-constexpr f64 k_river_tolerance_m = 1.0e-4;
-constexpr u32 k_river_sweeps = 64;
+// The rivers' sweeps end when no height moves by this much (the millimetre the heights round
+// to), or after this many: Yuan et al. 2019 count six at G = 1 and nine at G = 2 to a bound of
+// a thousandth of a step's uplift, 5 mm at 1 mm/yr and 5,000 years.
+constexpr f64 k_river_tolerance_m = 1.0e-3;
+constexpr u32 k_river_sweeps = 32;
 
 u64 mix(u64 x) noexcept {
   x += 0x9E3779B97F4A7C15ull;
@@ -391,40 +393,6 @@ void accumulate(u32 w, u32 h, Routing& r) {
   }
 }
 
-// ---- the rock ----------------------------------------------------------------------------------
-
-struct RockRow {
-  f64 top = 0.0;
-  f64 erodibility = 1.0;  // the factor on K
-  f64 critical = 0.9;     // the slope no hillslope of this rock stands above
-};
-
-struct RockTable {
-  Vector<RockRow> rows;  // ascending top
-  RockRow above;
-  const RockRow& at(f64 z) const noexcept {
-    for (u32 i = 0; i < rows.size(); ++i)
-      if (z <= rows[i].top) return rows[i];
-    return above;
-  }
-};
-
-RockRow rock_row(const Sketch& s, f64 top, f64 resistance) noexcept {
-  RockRow row;
-  row.top = top;
-  row.erodibility = 1.0 / (1.0 + resistance * (s.rock.contrast - 1.0));
-  row.critical = s.critical_slope + resistance * (s.critical_slope_resistant - s.critical_slope);
-  return row;
-}
-
-RockTable rock_table(const Sketch& s) {
-  RockTable t;
-  for (u32 i = 0; i < s.rock.bands.size(); ++i)
-    t.rows.push_back(rock_row(s, s.rock.bands[i].top_m, s.rock.bands[i].resistance));
-  t.above = rock_row(s, 0.0, s.rock.resistance);
-  return t;
-}
-
 // ---- the sketch's fields over the lattice -------------------------------------------------------
 
 bool in_range(f64 v, f64 lo, f64 hi) noexcept { return v >= lo && v <= hi; }
@@ -562,6 +530,67 @@ bool sample_start(const StartField& start, i64 x_mm, i64 z_mm, f64& out) noexcep
   return true;
 }
 
+// ---- the rock ----------------------------------------------------------------------------------
+
+// The factor on K and the critical slope of rock of a resistance, 0 to 1.
+f64 erodibility_of(const Sketch& s, f64 resistance) noexcept {
+  return 1.0 / (1.0 + resistance * (s.rock.contrast - 1.0));
+}
+
+f64 critical_of(const Sketch& s, f64 resistance) noexcept {
+  return s.critical_slope + resistance * (s.critical_slope_resistant - s.critical_slope);
+}
+
+// The sketch's formation as the solver reads it (landform.md, "Structure"): the world formation's
+// own definition, through its double-precision twin (`domain/gfx/formation.h`), and the sequence
+// whose beds a lattice can hold: the macro beds where the formation has them, else the beds.
+struct Strata {
+  bool on = false;
+  gfx::FormationFrame frame;
+  gfx::FormationSequence beds;
+};
+
+bool read_strata(const Sketch& s, Strata& out, std::string& error) {
+  out = Strata{};
+  if (!s.rock.formation) return true;
+  // A named default, as formation.h builds its own (GCC 13 stops on a temporary of this type).
+  gfx::FormationParams block;
+  std::string why;
+  if (!gfx::pack_formation(*s.rock.formation, block, &why)) {
+    error = "a sketch's rock." + why;
+    return false;
+  }
+  out.on = true;
+  out.frame = gfx::formation_frame(block);
+  out.beds = block.macro.count > 0 ? block.macro : block.beds;
+  return true;
+}
+
+// The resistance of the rock at the surface of every point, 0 to 1. With a formation it is the
+// bed the surface cuts **in the rock's own frame**: a point of rock now at height z stood at
+// z - raised before the uplift carried it there (`raised` the point's uplift so far), so the beds
+// rise with the rock and the surface lowers through them (landform.md, "Structure"). Each point
+// reads its own height and writes its own value: rows run in parallel.
+void read_resistance(const Sketch& s, const Strata& strata, const Frame& frame, const f64* z,
+                     const f64* lift, f64 steps_raised, jobs::JobSystem* jobs, f32* resistance) {
+  const u32 w = frame.w;
+  if (!strata.on) {
+    const f32 uniform = static_cast<f32>(s.rock.resistance);
+    for (u32 p = 0; p < w * frame.h; ++p)
+      resistance[p] = uniform;
+    return;
+  }
+  for_rows(jobs, frame.h, [&](u32 j0, u32 j1) {
+    for (u32 j = j0; j < j1; ++j)
+      for (u32 i = 0; i < w; ++i) {
+        const u32 p = j * w + i;
+        const gfx::FormationCoordinate c = gfx::formation_coordinate(
+            strata.frame, frame.x(i), z[p] - lift[p] * steps_raised, frame.z(j));
+        resistance[p] = gfx::formation_bed(strata.beds, c.coordinate).resistance;
+      }
+  });
+}
+
 // One point's slope limit (landform.md, "The slope limiter"): the gradient's length is at most
 // the critical slope. From the lower neighbour along x and the lower along z it is the upwind
 // step of the eikonal equation |grad z| = critical, (a + b + sqrt(2 f^2 - (a - b)^2)) / 2 with
@@ -569,10 +598,9 @@ bool sample_start(const StartField& start, i64 x_mm, i64 z_mm, f64& out) noexcep
 // eight-sided pyramid a limit along the lattice's eight directions alone makes; the four
 // diagonal neighbours then hold the slope along a diagonal to the same bound, so no pair of
 // neighbours stands steeper than the critical slope.
-bool limit_point(f64* z, u32 i, i32 x, i32 y, i32 w, i32 h, const RockTable& rock, f64 card,
+bool limit_point(f64* z, u32 i, i32 x, i32 y, i32 w, i32 h, f64 critical, f64 card,
                  f64 diag) noexcept {
   const f64 zi = z[i];
-  const f64 critical = rock.at(zi).critical;
   const f64 f = critical * card;
   const f64 none = std::numeric_limits<f64>::infinity();
   f64 a = none;
@@ -681,14 +709,13 @@ bool validate_sketch(const Sketch& s, std::string& error) {
   if (!in_range(s.rock.variation, 0.0, 0.9)) return refuse("a sketch's rock.variation is 0 to 0.9");
   if (s.rock.variation_cells < 2 || s.rock.variation_cells > 1024)
     return refuse("a sketch's rock.variation_cells is 2 to 1,024");
-  for (u32 i = 0; i < s.rock.bands.size(); ++i) {
-    const Band& band = s.rock.bands[i];
-    if (!in_range(band.resistance, 0.0, 1.0) || !in_range(band.top_m, -11000.0, 16000.0))
-      return refuse(
-          "a sketch's rock band is a top of -11,000 to 16,000 m and a resistance of 0 "
-          "to 1");
-    if (i > 0 && !(band.top_m > s.rock.bands[i - 1].top_m))
-      return refuse("a sketch's rock bands ascend by top_m");
+  if (s.rock.formation) {
+    // The world formation's own ranges, in its own words (dip_deg, a bed's thickness_m, ...).
+    std::string why;
+    if (!gfx::validate_formation(*s.rock.formation, &why)) {
+      error = "a sketch's rock." + why;
+      return false;
+    }
   }
   if (!in_range(s.erodibility_per_yr, 1.0e-8, 1.0e-2))
     return refuse("a sketch's erodibility_per_yr is 1e-8 to 1e-2");
@@ -763,7 +790,8 @@ bool solve(const Sketch& s, const StartField* start, const SolveOptions& options
   const f64 dt = static_cast<f64>(s.step_yr);
   const bool has_sea = s.sea.has_value();
   const f64 sea = has_sea ? s.sea->level_m : 0.0;
-  const RockTable rock = rock_table(s);
+  Strata strata;
+  if (!read_strata(s, strata, error)) return false;
 
   // ---- the starting ground and what is held --------------------------------------------------
   Vector<f64> ground(n);
@@ -896,6 +924,9 @@ bool solve(const Sketch& s, const StartField* start, const SolveOptions& options
   Vector<f64> iterate_field(n);
   Vector<f64> carry_field(n, 0.0);
   Vector<LakeCell> lake_scratch;
+  Vector<f32> resistance_field(n);  // the rock at each point's surface this step, 0 to 1
+  f32* resist = resistance_field.data();
+  read_resistance(s, strata, frame, z, lift, 0.0, jobs, resist);
   f64* sed = sediment_field.data();
   f64* hk = iterate_field.data();
   f64* carry = carry_field.data();
@@ -908,11 +939,15 @@ bool solve(const Sketch& s, const StartField* start, const SolveOptions& options
   };
   const f64 volume_start = total();
   f64 uplifted = 0.0, eroded = 0.0, laid = 0.0, left = 0.0, crept = 0.0, settled = 0.0;
+  u32 sweeps = 0;
   for (u32 step = 0; step < steps; ++step) {
     for (u32 p = 0; p < n; ++p) {
       z[p] += lift[p];
       uplifted += lift[p];
     }
+    // The beds rose with the rock; the surface has lowered through them since the last step.
+    if (strata.on)
+      read_resistance(s, strata, frame, z, lift, static_cast<f64>(step + 1), jobs, resist);
     if (step + 1 == steps) {
       before_field.resize(n);
       f64* before = before_field.data();
@@ -948,6 +983,7 @@ bool solve(const Sketch& s, const StartField* start, const SolveOptions& options
     for (u32 p = 0; p < n; ++p)
       hk[p] = z[p];
     for (u32 sweep = 0; sweep < k_river_sweeps; ++sweep) {
+      ++sweeps;
       for (u32 p = 0; p < n; ++p)
         flux[p] = 0.0;
       for (u32 k = n; k-- > 0;) {
@@ -983,7 +1019,7 @@ bool solve(const Sketch& s, const StartField* start, const SolveOptions& options
           if (top - through <= loose) {
             to = through;
           } else {
-            const f64 hard = hardness[p] * rock.at(z[p]).erodibility;
+            const f64 hard = hardness[p] * erodibility_of(s, static_cast<f64>(resist[p]));
             const f64 fr = hard * power;
             to = (top - loose * (1.0 - hard / loose_dt) + fr * base) / (1.0 + fr);
           }
@@ -1095,8 +1131,8 @@ bool solve(const Sketch& s, const StartField* start, const SolveOptions& options
       const u32 p = order[k];
       if (held[p] != 0) continue;
       const f64 zp = z[p];
-      if (!limit_point(z, p, static_cast<i32>(p % w), static_cast<i32>(p / w), wi, hi, rock, card,
-                       diag))
+      if (!limit_point(z, p, static_cast<i32>(p % w), static_cast<i32>(p / w), wi, hi,
+                       critical_of(s, static_cast<f64>(resist[p])), card, diag))
         continue;
       const f64 fell = zp - z[p];
       carry[p] = fell;
@@ -1126,7 +1162,8 @@ bool solve(const Sketch& s, const StartField* start, const SolveOptions& options
             const i32 x = x_up ? ii : wi - 1 - ii;
             const u32 p = static_cast<u32>(y * wi + x);
             if (held[p] != 0) continue;
-            moved |= limit_point(z, p, x, y, wi, hi, rock, card, diag);
+            moved |= limit_point(z, p, x, y, wi, hi, critical_of(s, static_cast<f64>(resist[p])),
+                                 card, diag);
           }
         }
       }
@@ -1151,9 +1188,15 @@ bool solve(const Sketch& s, const StartField* start, const SolveOptions& options
   out.budget.settled_m3 = settled * cell_m2;
   out.budget.unrouted_m3 = unrouted * cell_m2;
   out.budget.change_m3 = (total() - volume_start) * cell_m2;
+  out.river_sweeps = sweeps;
   out.sediment.resize(n);
   for (u32 p = 0; p < n; ++p)
     out.sediment[p] = static_cast<u32>(clamp_i32(sed[p] * 1000.0));
+  // The rock at the solved surface, where a later solver looks for the beds that stand out.
+  read_resistance(s, strata, frame, z, lift, static_cast<f64>(steps), jobs, resist);
+  out.resistance.resize(n);
+  for (u32 p = 0; p < n; ++p)
+    out.resistance[p] = static_cast<u8>(clamp_i32(static_cast<f64>(resist[p]) * 255.0));
   out.width = w;
   out.height = h;
   out.spacing_mm = s.spacing_mm;

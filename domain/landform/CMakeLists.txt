@@ -15,11 +15,16 @@
 # Pure CPU arithmetic in the domain layer: `jobs` for the loops whose points do not read each
 # other, `io` and `json` for the sketch and the files, `hash` for the grids' hashes. It does not
 # depend on the tile set (a capability may not depend on another): it writes and reads the
-# heightfield's header by its documented shape. No GPU, no ECS, no renderer.
-engine_schema_library(NAME landform_schemas SCHEMAS schemas/landform.schema CAPABILITY landform)
+# heightfield's header by its documented shape. `gfx` is for one header, the world formation's CPU
+# definition (`domain/gfx/formation.h`, the twin the rocks solver reads too): gfx is not a
+# capability, so the edge is an ordinary one, and nothing of the device is touched. No ECS, no
+# renderer.
+# DEPS schemas: a sketch's rock carries the scene's `engine.scene.Formation` (W85).
+engine_schema_library(NAME landform_schemas SCHEMAS schemas/landform.schema DEPS schemas
+  CAPABILITY landform)
 
 engine_module(NAME landform LAYER domain OPTIONAL
-  DEPS base containers math hash json schema io jobs landform_schemas
+  DEPS base containers math hash json schema io jobs gfx schemas landform_schemas
   SOURCES src/landform.cpp src/files.cpp)
 
 engine_module_tests(NAME landform

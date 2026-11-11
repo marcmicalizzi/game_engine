@@ -309,7 +309,7 @@ TEST_CASE("landform: the ground meets an open edge without a step") {
 TEST_CASE("landform: the sea bed takes part: no wall at the coast") {
   SUBCASE("a solved coast holds the critical slope on land, across the waterline and on the bed") {
     landform::Sketch sketch = golden_sketch();
-    sketch.rock.bands.clear();
+    sketch.rock.formation.reset();
     sketch.rock.resistance = 0.0;  // one critical slope everywhere: 0.9
     // Nothing laid down, so the shelf is still a sea after four hundred thousand years: with
     // the default deposition the rivers fill it (the subcase below is the coast they build).
@@ -331,7 +331,7 @@ TEST_CASE("landform: the sea bed takes part: no wall at the coast") {
     // rivers' sediment settles to the sea's level at their mouths and the fronts stand no
     // steeper than any other ground.
     landform::Sketch sketch = golden_sketch();
-    sketch.rock.bands.clear();
+    sketch.rock.formation.reset();
     sketch.rock.resistance = 0.0;
     sketch.sea->shelf_m = 4000.0;
     sketch.sea->depth_m = 600.0;
@@ -500,7 +500,7 @@ TEST_CASE("landform: the files round-trip and a field answers a window") {
   landform::Fields header;
   REQUIRE_MESSAGE(landform::read_fields(files.fields, header, error), error);
   CHECK(header.width == land.width);
-  CHECK(header.fields.size() == 6u);
+  CHECK(header.fields.size() == 7u);
   CHECK(header.solver_version == landform::k_solver_version);
   REQUIRE(header.sea_level_mm.has_value());
   CHECK(*header.sea_level_mm == 0);
@@ -556,9 +556,9 @@ TEST_CASE("landform: a sketch outside a range is refused by a sentence naming th
   CHECK(error.find("outlet") != std::string::npos);
 
   bad = sketch;
-  bad.rock.bands[1].top_m = 100.0;
+  bad.rock.formation->dip_deg = 89.0f;
   CHECK_FALSE(landform::validate_sketch(bad, error));
-  CHECK(error.find("ascend") != std::string::npos);
+  CHECK(error.find("dip_deg") != std::string::npos);
 
   bad = sketch;
   bad.erodibility_per_yr = 1.0;
@@ -884,4 +884,118 @@ TEST_CASE("landform: a lake's floor fills level, and its river's mouth builds a 
   // lower.
   CHECK(delta.shelf_mm > plain.shelf_mm + plain.shelf_mm / 4);
   CHECK(delta.highest < plain.lowest);
+}
+
+// ---- structure (landform.md, "Structure")
+// --------------------------------------------------------
+
+TEST_CASE(
+    "landform: under dipping beds a ridge's two sides differ and a hard bed stands as a step") {
+  // A block rising at 1 mm/yr between open edges north and south, so its divide runs east to
+  // west, in beds that dip 15 degrees to the north: 300 m of soft rock under 200 m of hard,
+  // repeating, the hard a tenth as erodible. A million years carries a kilometre of rock, two
+  // periods of the beds, up through the surface.
+  const u32 side = 96;
+  landform::Sketch sketch = plain_sketch(side, 100000);
+  sketch.edges.west = landform::EdgeKind::Closed;
+  sketch.edges.east = landform::EdgeKind::Closed;
+  sketch.uplift.regional_mm_per_yr = 1.0;
+  sketch.erodibility_per_yr = 0.00004;
+  sketch.rock.variation = 0.0;
+  sketch.rock.formation = dipping_formation(15.0f, -90.0f, 300.0f, 200.0f);
+  sketch.duration_yr = 1000000;
+  const landform::Landform land = solved(sketch);
+  check_drains(land);
+  // The two sides: the divide of each column (its highest point), and the mean gradient of the
+  // ground north of it (where the surface falls the way the beds dip) and south of it (where it
+  // cuts across their edges), over the middle columns.
+  f64 north_sum = 0.0, south_sum = 0.0, divide_sum = 0.0;
+  u32 north_count = 0, south_count = 0;
+  // A hard bed as a step: the mean gradient where the rock at the surface is hard against where
+  // it is soft, over the same columns.
+  f64 hard_sum = 0.0, soft_sum = 0.0;
+  u32 hard_count = 0, soft_count = 0;
+  // And how wide a hard bed's outcrop is on each side: the points of hard rock over the runs of
+  // them along a column. Down the dip the surface runs with the bed and its outcrop is a plate;
+  // across the beds it is an edge.
+  u32 plate_points = 0, plate_runs = 0, edge_points = 0, edge_runs = 0;
+  for (u32 x = 16; x < side - 16; ++x) {
+    u32 top = 0;
+    for (u32 z = 1; z < side; ++z)
+      if (land.height_mm[z * side + x] > land.height_mm[top * side + x]) top = z;
+    divide_sum += static_cast<f64>(top);
+    for (u32 z = 8; z + 8 < side; ++z) {
+      if (z == top || land.resistance[z * side + x] < 230) continue;
+      const bool starts = z == 8 || z - 1 == top || land.resistance[(z - 1) * side + x] < 230;
+      (z < top ? plate_points : edge_points) += 1;
+      if (starts) (z < top ? plate_runs : edge_runs) += 1;
+    }
+    for (u32 z = 8; z + 8 < side; ++z) {
+      const u32 p = z * side + x;
+      if (land.slope[p] <= 0) continue;
+      const f64 slope = static_cast<f64>(land.slope[p]) * 1.0e-6;
+      if (z < top) {
+        north_sum += slope;
+        ++north_count;
+      } else if (z > top) {
+        south_sum += slope;
+        ++south_count;
+      }
+      if (land.resistance[p] >= 230) {
+        hard_sum += slope;
+        ++hard_count;
+      } else if (land.resistance[p] <= 25) {
+        soft_sum += slope;
+        ++soft_count;
+      }
+    }
+  }
+  const f64 north = north_sum / static_cast<f64>(north_count);
+  const f64 south = south_sum / static_cast<f64>(south_count);
+  const f64 hard = hard_sum / static_cast<f64>(hard_count);
+  const f64 soft = soft_sum / static_cast<f64>(soft_count);
+  const f64 divide = divide_sum / static_cast<f64>(side - 32);
+  std::printf(
+      "landform structure: mean gradient %.4f north of the divide (down the dip) and %.4f "
+      "south (across the beds), the divide at row %.1f of 96; %.4f on hard rock (%u points) "
+      "and %.4f on soft (%u)\n",
+      north, south, divide, hard, hard_count, soft, soft_count);
+  const f64 plate = static_cast<f64>(plate_points) / static_cast<f64>(plate_runs);
+  const f64 edge = static_cast<f64>(edge_points) / static_cast<f64>(edge_runs);
+  std::printf(
+      "landform structure: a hard bed's outcrop is %.2f points wide down the dip and %.2f "
+      "across the beds\n",
+      plate, edge);
+  CHECK(hard_count > 200u);
+  CHECK(soft_count > 200u);
+  // The same sketch in uniform rock is symmetric: the comparison the asymmetry is against.
+  sketch.rock.formation.reset();
+  sketch.rock.resistance = 0.4;
+  const landform::Landform even = solved(sketch);
+  f64 even_north = 0.0, even_south = 0.0;
+  u32 even_north_count = 0, even_south_count = 0;
+  for (u32 x = 16; x < side - 16; ++x) {
+    u32 top = 0;
+    for (u32 z = 1; z < side; ++z)
+      if (even.height_mm[z * side + x] > even.height_mm[top * side + x]) top = z;
+    for (u32 z = 8; z + 8 < side; ++z) {
+      const u32 p = z * side + x;
+      if (even.slope[p] <= 0 || z == top) continue;
+      (z < top ? even_north : even_south) += static_cast<f64>(even.slope[p]) * 1.0e-6;
+      ++(z < top ? even_north_count : even_south_count);
+    }
+  }
+  const f64 even_ratio = (even_south / static_cast<f64>(even_south_count)) /
+                         (even_north / static_cast<f64>(even_north_count));
+  std::printf("landform structure: in uniform rock the two sides' gradients stand %.4f to 1\n",
+              even_ratio);
+  // The stated ratios. A hard bed stands as a step: the ground on it is over one and a half
+  // times as steep as on soft rock (measured 2.1). The two sides differ: across the beds the
+  // ground is a twentieth steeper than down the dip (measured 1.09 to 1, and 1.0001 to 1 in
+  // uniform rock), and a hard bed's outcrop is over one and a half times as wide down the dip,
+  // where the surface runs with it, as across the beds, where it is an edge (measured 1.84).
+  CHECK(hard > 1.5 * soft);
+  CHECK(south > 1.05 * north);
+  CHECK(even_ratio == doctest::Approx(1.0).epsilon(0.01));
+  CHECK(plate > 1.5 * edge);
 }

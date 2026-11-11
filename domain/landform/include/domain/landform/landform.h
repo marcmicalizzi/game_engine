@@ -52,7 +52,7 @@ namespace engine::landform {
 inline constexpr const char* k_determinism = "derived";
 
 /// Bumped whenever the same sketch would solve to different bytes; the field file records it.
-inline constexpr u32 k_solver_version = 2;
+inline constexpr u32 k_solver_version = 3;
 
 inline constexpr std::string_view k_fields_format = "engine.landform.fields";
 inline constexpr u32 k_fields_version = 2;
@@ -111,6 +111,9 @@ struct Landform {
   bool has_sea = false;
   i64 sea_level_mm = 0;
   u32 steps = 0;
+  /// The sweeps the rivers' solve took over the whole run (landform.md, "Deposition"): one a step
+  /// with nothing laid down, a handful with; steps times the limit says a step did not settle.
+  u32 river_sweeps = 0;
   i64 step_yr = 0;
   /// What `route` takes to find these receivers again: the sketch's seed, salted.
   u64 route_seed = 0;
@@ -130,6 +133,10 @@ struct Landform {
   /// creep laid down and nothing has removed since. Zero where the rock is at the surface, and
   /// for a run of no steps. The rock's surface is the height less this.
   Vector<u32> sediment;
+  /// The resistance of the rock at the point's surface, 0 (the sketch's erodibility) to 255 (the
+  /// most resistant: the erodibility over the contrast, the resistant critical slope): the bed
+  /// of the sketch's formation the solved surface cuts, or the sketch's uniform value.
+  Vector<u8> resistance;
   Budget budget;
   /// How deep the point lies under its depression's spill, whole millimetres; zero on draining
   /// ground.

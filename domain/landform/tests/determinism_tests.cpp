@@ -20,13 +20,17 @@ namespace {
 // sentence in the commit saying what moved it, and bumps `k_solver_version`.
 // Version 2 (W95 stage B, deposition): every hash moved, because the rivers now lay down
 // sediment (the golden sketch runs at the default G = 1) and the sediment field was added.
-constexpr u64 k_height_hash = 0xa8798c8946e71bdeull;
-constexpr u64 k_area_hash = 0x80e990defb6aa2f4ull;
-constexpr u64 k_receiver_hash = 0xbe4c589a51cc666aull;
-constexpr u64 k_slope_hash = 0x8c4c356e2272be94ull;
-constexpr u64 k_erosion_hash = 0x5d4dd3c2013f494aull;
-constexpr u64 k_fill_hash = 0x365713f6cacdb22cull;
-constexpr u64 k_sediment_hash = 0x24760841147467bbull;
+// Version 3 (structure): every hash moved again, because the golden sketch's rock is now a
+// formation of dipping, folded beds in place of two elevation bands, and the rivers' sweeps end
+// at a millimetre; the resistance field was added.
+constexpr u64 k_height_hash = 0x12bb0b1a52cf248full;
+constexpr u64 k_area_hash = 0x9e8842ec8f2beedaull;
+constexpr u64 k_receiver_hash = 0xc3d198544e7d351full;
+constexpr u64 k_slope_hash = 0x595bd6bbbe4d697cull;
+constexpr u64 k_erosion_hash = 0xec6dc5b13efd398bull;
+constexpr u64 k_fill_hash = 0x49ed8836e914e0e7ull;
+constexpr u64 k_sediment_hash = 0x519c27a7d4a20979ull;
+constexpr u64 k_resistance_hash = 0x17f0c4241eae4f90ull;
 
 }  // namespace
 
@@ -37,14 +41,15 @@ TEST_CASE("landform: the golden sketch solves to the pinned bytes on every toolc
   REQUIRE_MESSAGE(landform::solve(sketch, nullptr, {}, land, error), error);
   std::printf(
       "landform golden: height %016llx area %016llx receiver %016llx slope %016llx "
-      "erosion %016llx fill %016llx sediment %016llx\n",
+      "erosion %016llx fill %016llx sediment %016llx resistance %016llx\n",
       static_cast<unsigned long long>(hash_of(land.height_mm)),
       static_cast<unsigned long long>(hash_of(land.drainage_area)),
       static_cast<unsigned long long>(hash_of(land.receiver)),
       static_cast<unsigned long long>(hash_of(land.slope)),
       static_cast<unsigned long long>(hash_of(land.erosion_rate)),
       static_cast<unsigned long long>(hash_of(land.fill)),
-      static_cast<unsigned long long>(hash_of(land.sediment)));
+      static_cast<unsigned long long>(hash_of(land.sediment)),
+      static_cast<unsigned long long>(hash_of(land.resistance)));
   CHECK(hash_of(land.height_mm) == k_height_hash);
   CHECK(hash_of(land.drainage_area) == k_area_hash);
   CHECK(hash_of(land.receiver) == k_receiver_hash);
@@ -52,6 +57,7 @@ TEST_CASE("landform: the golden sketch solves to the pinned bytes on every toolc
   CHECK(hash_of(land.erosion_rate) == k_erosion_hash);
   CHECK(hash_of(land.fill) == k_fill_hash);
   CHECK(hash_of(land.sediment) == k_sediment_hash);
+  CHECK(hash_of(land.resistance) == k_resistance_hash);
 }
 
 TEST_CASE("landform: one, four and sixteen workers solve the serial solve's bytes") {
@@ -77,6 +83,8 @@ TEST_CASE("landform: one, four and sixteen workers solve the serial solve's byte
     CHECK(hash_of(land.erosion_rate) == hash_of(serial.erosion_rate));
     CHECK(hash_of(land.fill) == hash_of(serial.fill));
     CHECK(hash_of(land.sediment) == hash_of(serial.sediment));
+    CHECK(hash_of(land.resistance) == hash_of(serial.resistance));
+    CHECK(land.river_sweeps == serial.river_sweeps);
     // The budget's sums are taken in one order whatever the workers: the same bits.
     CHECK(land.budget.eroded_m3 == serial.budget.eroded_m3);
     CHECK(land.budget.deposited_m3 == serial.budget.deposited_m3);

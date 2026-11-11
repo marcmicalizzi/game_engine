@@ -53,12 +53,33 @@ lays down as well.
 **What follows for the design.** Yuan's scheme, not a cut followed by a deposit: both were built,
 and the subsystem page has what the second measured
 ([deposition](../subsystems/landform.md#deposition)). The sweeps end on a height tolerance, a
-tenth of a millimetre, since U Δt is zero in a sketch that raises nothing. **Lakes are not in
+millimetre, since U Δt is zero in a sketch that raises nothing. **Lakes are not in
 Yuan et al.** (their only remark is that local minima "artificially reduce the erosional
 efficiency"), so what a lake and the sea do with the flux is this solver's: everything that
 reaches standing water settles in it, a share at the mouth up to the water's level and the rest
 from the deepest point up, to one level. The level fill is a statement that what stays in
 suspension spreads over the whole floor; it is not a published scheme.
+
+## Structure: the sources
+
+2026-11-10, stage B. What is published about a river cutting through layers of unlike rock, and
+what the solver takes from it.
+
+| Finding | Source |
+|---|---|
+| Where a river crosses a contact between a weak and a strong rock, the two retreat at one rate measured along the contact ("erosional continuity"). With a contact much steeper than the channel that is the ordinary steady state, K_w S_w^n = K_s S_s^n, the strong rock steeper. With a contact much flatter than the channel it is K_w S_w^(n−1) = K_s S_s^(n−1): for n above 1 the strong rock is steeper still, for n below 1 the weak rock is the steeper, and **at n = 1 there is no fixed ratio**: the contacts stretch and stand as near-vertical steps. Its runs: K_w/K_s of 2 (1.2 at n = 1), layers of 10 and 50 m, m/n = 0.5 | Perne, Covington, Thaler and Myre 2017, *Earth Surf. Dynam.* 5:85–100, doi:10.5194/esurf-5-85-2017. **Read** |
+| Layered rock with a strong contrast, flat to moderately tilted, does not reach a steady state across the landscape: erosion rates vary in space and time with the order of the layers, the way the contact dips against the outlet and its angle, and can be above or below the uplift in either rock | Forte, Yanites and Whipple 2016, *Earth Surf. Process. Landforms* 41:1736–1757, doi:10.1002/esp.3947. **Abstract only** (its erodibility ratios, thicknesses and dips were not read) |
+| 100 m layers, the weak rock 2.1 to 2.8 times as erodible, dips to 10° upstream and 2.5° downstream: with n above 1 and beds dipping downstream, erosion locally exceeds ten times the uplift | Mitchell and Yanites 2021, *Earth Surf. Dynam.* 9:723–753, doi:10.5194/esurf-9-723-2021. **Read** (the first part of the page) |
+| A cuesta's backslope follows the dip of its resistant bed and its front slope cuts across the bedding and is the steeper; cuesta, homoclinal ridge and hogback are one form at rising dip, and the angles that divide them are arbitrary | **Secondary** (an encyclopedia's summary of Thornbury 1954 and others). No measured range of scarp angles was found in a source that could be read |
+
+**What follows for the design.** The solver is at n = 1, where Perne et al. say no ratio of
+steepness is fixed and contacts stand as steps; so the test states the ratios its own sketch
+gives and calls them that. The contrast between beds stays the sketch's (`rock.contrast`,
+default 10, an authoring number: the published runs use 1.2 to 2.8, and a default nearer those is
+something to weigh when the defaults are grounded). The frame is the point of the design: a
+formation fixed in space under a surface that is being raised and cut is flat layers of
+elevation; read in the rock's frame the beds come up through the surface, which is what the
+three papers model.
 
 ## Constants, their ranges, and the defaults the schema pins
 
@@ -76,7 +97,7 @@ suspension spreads over the whole floor; it is not a published scheme.
 | Sediment's erodibility over the rock's | 2 | 1 to 100 | range | Yuan et al. 2019 run 1, 2 and 4 |
 | Share settling at a lake's mouth | 0.5 | 0 to 1 | authoring | No source; Turowski et al. 2010 (abstract) bound the bedload alone at 1% to 50% |
 | Standing water | 10 mm | fixed | authoring | A point the flood raised by less is a flat a river crosses, not a lake: the flood's own ε over a wide flat is a few millimetres |
-| The sweeps' tolerance | 0.1 mm | fixed | authoring | Under the millimetre the heights round to. Yuan et al. stop at 10⁻³ U Δt, 5 mm at 1 mm/yr and 5,000 years |
+| The sweeps' tolerance | 1 mm | fixed | authoring | The millimetre the heights round to. Yuan et al. stop at 10⁻³ U Δt, 5 mm at 1 mm/yr and 5,000 years. The first build stopped at a tenth of a millimetre, finer than anything the output holds |
 | Hack's exponent (a check, not an input) | — | 0.5 to 0.7 | secondary | Hack 1957 found 0.6; Gray 1961, 0.568; "empirically found to lie in the range from 0.5 to 0.7" (search extracts of Rigon et al. 1996 and its citers; none read in full) |
 
 ## What determinism decided
@@ -143,11 +164,11 @@ rills off the lattice. The same run also showed how much of a range is planar wh
 against the spacing ([landform](../subsystems/landform.md#the-sketch)): at a steepness of 400 m
 on 32 m points nearly everything was at the critical slope.
 
-**Resistant rock stands.** A point's resistance (uniform, or a table of bands by elevation, each a
-0-to-1 resistance) divides its erodibility by up to the contrast and raises its critical slope
-toward the resistant rock's. A band is read at the surface's present height: flat-lying beds in a
-range that is being held up as fast as it is cut. Beds that dip and fold are the formation field's
-(W85), and reading it here is what follows.
+**Resistant rock stands.** A point's resistance (uniform, or the bed of the sketch's formation its
+surface cuts) divides its erodibility by up to the contrast and raises its critical slope toward
+the resistant rock's. Stage A read a table of bands at the surface's present height: flat-lying
+layers that never move. Stage B reads the world formation's dipping, folded beds (W85) in the
+rock's own frame, so they rise with the rock ([structure](#structure-the-sources)).
 
 **The borders take part.** The proof of concept's two worst landform defects were a ramp switched
 on in one row at a region's edge and a fixed sea bed met as a 370 m underwater wall. Here:
@@ -198,18 +219,20 @@ text, five causes, and what this design does about each:
 - **Area for discharge, uniform rain.** No orographic precipitation, no thresholds for incision.
 - **First order in time, drainage area explicit**: a large step is stable and smears a transient;
   steady state is exact (the slope-area test holds it to the fourth decimal).
-- **Resistance by elevation band**, not by a bed that rises with the rock.
+- **Beds are sampled at a point**, the macro beds where the formation has them: a bed thinner
+  than a point's fall is noise, and the uplift carries the beds straight up (no shear along a
+  fault, no folding as the run goes on).
 - **A heightfield**: no overhang, no pinnacle, no two-sided crest.
 
 ## What follows stage A
 
-The glacial mode (an equilibrium-line altitude, ice flux, troughs and cirques); reading the
-formation field's dipping beds for resistance, the beds rising with the rock; uplift that varies
+The glacial mode (an equilibrium-line altitude, ice flux, troughs and cirques); uplift that varies
 along a ridge line, and the defaults against published slope distributions; a flood that skips
 ground with no depressions, and the order's levels in parallel; flow that divides (a fan as a
 cone, a channel more than a point wide); lateral erosion, terraces and scree at an angle of
 repose; soil depth; snow where erosion and wind put it; a general m and n; baking far-terrain maps
-from near output; anything in the editor. Deposition was the first of these and is stage B.
+from near output; anything in the editor. Deposition and the formation's beds were the first of
+these and are stage B.
 
 ## A request to the channels generator
 
@@ -241,6 +264,7 @@ and course are the ones the ground was cut by. The contract it would read is on 
 | A V-shaped valley (sides 0.5, falling at 0.04) whose mouth is held 90 m above its bed, 100,000 years, 50 m points | the fill of 5 m or more is 2.7 points wide in its upper third and 6.7 in its lower, level across within 6.4 m, 88 m thick at most | the start's V falls 87 m over the lower floor's width |
 | A massif (2 mm/yr, 900 m reach) beside a plain, 300,000 years | 400 m out the plain stands 4.3 m up opposite the massif, 2.8 and 2.6 m 700 m to either side, 0.9 m 1,700 m away; 9.5 m of sediment at the foot | a fan |
 | A basin 40 m deep fed for 10,000 years | its floor level to the millimetre under 5.4 m of water with nothing settling at the mouths, within 3 mm under 8.5 m with half | — |
+| A block rising at 1 mm/yr between two open edges in beds dipping 15° toward one (300 m soft under 200 m hard, a tenth as erodible), a million years, 100 m points | mean gradient 0.668 on hard rock and 0.319 on soft (2.1 to 1); 0.556 across the beds and 0.508 down the dip (1.09 to 1; 1.0001 in uniform rock); a hard bed's outcrop 8.8 points wide down the dip and 4.8 across (1.84 to 1); the divide 2.8 points off the middle | Perne et al. 2017: no fixed ratio at n = 1 |
 | An open edge with deposition, the border test's sketch | the first row 1.41 m above the edge with G tapered toward it. With G uniform it stood 17.4 m up in the first build (the deposit laid after the cut); the uniform case was not measured again under the sweeps | the bound is 2 m |
 
 What the first pictures showed, and what still reads wrong beside the reels, is on the subsystem

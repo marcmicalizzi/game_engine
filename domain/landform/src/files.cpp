@@ -164,7 +164,7 @@ bool write_landform(const Landform& land, const Sketch& sketch, const std::strin
   const u32 n = land.width * land.height;
   if (n == 0 || land.height_mm.size() != n || land.drainage_area.size() != n ||
       land.receiver.size() != n || land.slope.size() != n || land.erosion_rate.size() != n ||
-      land.fill.size() != n || land.sediment.size() != n) {
+      land.fill.size() != n || land.sediment.size() != n || land.resistance.size() != n) {
     error = "the landform is not solved";
     return false;
   }
@@ -225,7 +225,8 @@ bool write_landform(const Landform& land, const Sketch& sketch, const std::strin
       !add("erosion_rate", "i32", "micrometres a year removed by the last step",
            land.erosion_rate) ||
       !add("fill", "u32", "millimetres under the depression's spill", land.fill) ||
-      !add("sediment", "u32", "millimetres of sediment under the point", land.sediment))
+      !add("sediment", "u32", "millimetres of sediment under the point", land.sediment) ||
+      !add("resistance", "u8", "resistance of the rock at the surface, 0 to 255", land.resistance))
     return false;
   out.fields = in_dir(stem + ".fields.json");
   return write_text(out.fields, schema::to_json(fields), error);

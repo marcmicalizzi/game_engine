@@ -3,6 +3,8 @@
 // ENGINE_WITH_LANDFORM=OFF takes them out of the build with everything else the capability owns.
 namespace engine.landform
 
+import "scene.schema"
+
 /// What a side of the region is (landform.md, "The borders").
 enum EdgeKind : u8 {
   /// Its points are held at the base level and are outlets: rivers leave across it.
@@ -74,28 +76,24 @@ struct Uplift @version(1) {
   raster: UpliftRaster?
 }
 
-/// The rock at and below `top_m`, down to the band under it.
-struct Band @version(1) {
-  top_m: f64 @unit(m)
-  /// 0 (the sketch's erodibility) to 1 (the erodibility over the contrast, the resistant
-  /// critical slope): the world formation's ordering (experiments/formation-field.md).
+/// How hard the ground is: uniform, or the beds of a formation (landform.md, "Structure").
+struct Rock @version(2) {
+  /// The resistance where the sketch has no formation: 0 (the sketch's erodibility) to 1 (the
+  /// erodibility over the contrast, the resistant critical slope).
   resistance: f64 = 0
-}
-
-/// How hard the ground is. Uniform, or by elevation band (ascending `top_m`; above the last band
-/// the uniform value).
-struct Rock @version(1) {
-  /// 0 to 1.
-  resistance: f64 = 0
-  bands: Band[]
   /// The erodibility at resistance 0 over the erodibility at resistance 1: 1 to 1,000.
   contrast: f64 = 10
   /// Seeded variation of the erodibility, as a fraction either way: 0 to 0.9.
   variation: f64 = 0.25
   /// The variation's wavelength, cells: 2 to 1,024.
   variation_cells: u32 = 16
+  /// The world formation (the scene's own `engine.scene.Formation`, copied here): the resistance
+  /// at a point is its bed's, read in the rock's frame, so the beds rise with the rock as it is
+  /// uplifted and the surface lowers through them. The macro beds where it has them, else the
+  /// beds. Version 2: it replaced the table of resistance by elevation band (`bands`), which a
+  /// sketch may no longer carry.
+  formation: engine.scene.Formation? @since(2)
 }
-
 /// The region sketch `engine-content landform` reads (landform.md, "The sketch"). Every range is
 /// checked, and a sketch outside one is refused with a sentence naming the field.
 struct Sketch @version(2) {
@@ -157,7 +155,7 @@ struct Sketch @version(2) {
 
 /// One field of the field file.
 struct FieldEntry @version(1) {
-  /// `drainage_area`, `receiver`, `slope`, `erosion_rate`, `fill`, `sediment`.
+  /// `drainage_area`, `receiver`, `slope`, `erosion_rate`, `fill`, `sediment`, `resistance`.
   name: string
   /// The raw grid, relative to the header: little-endian, rows of x in order of z, the
   /// heightfield's own lattice.

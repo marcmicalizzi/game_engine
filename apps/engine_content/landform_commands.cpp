@@ -162,6 +162,7 @@ int landform_command(int argc, char** argv) {
   summary.set("height", JsonValue(land.height));
   summary.set("spacing_mm", JsonValue(land.spacing_mm));
   summary.set("steps", JsonValue(land.steps));
+  summary.set("river_sweeps", JsonValue(land.river_sweeps));
   summary.set("step_yr", JsonValue(land.step_yr));
   summary.set("lowest_m", JsonValue(static_cast<f64>(lowest) / 1000.0));
   summary.set("highest_m", JsonValue(static_cast<f64>(highest) / 1000.0));

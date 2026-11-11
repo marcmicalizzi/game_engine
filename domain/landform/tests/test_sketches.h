@@ -13,10 +13,34 @@ u64 hash_of(const Vector<T>& v) {
   return hash_bytes(v.data(), static_cast<usize>(v.size()) * sizeof(T));
 }
 
+// A formation of two macro beds, a soft one (resistance 0) under a hard one (resistance 1), that
+// dip `dip_deg` toward `azimuth_deg` (from +x toward +z) and repeat; one bed of its own, since a
+// formation carries at least one.
+inline scene::Formation dipping_formation(f32 dip_deg, f32 azimuth_deg, f32 soft_m, f32 hard_m) {
+  scene::Formation f;
+  f.dip_deg = dip_deg;
+  f.azimuth_deg = azimuth_deg;
+  scene::FormationBed bed;
+  bed.name = "bed";
+  bed.thickness_m = 1.0f;
+  f.beds.push_back(bed);
+  scene::FormationBed soft;
+  soft.name = "soft";
+  soft.thickness_m = soft_m;
+  soft.resistance = 0.0f;
+  scene::FormationBed hard;
+  hard.name = "hard";
+  hard.thickness_m = hard_m;
+  hard.resistance = 1.0f;
+  f.macro_beds.push_back(soft);
+  f.macro_beds.push_back(hard);
+  return f;
+}
+
 // A sketch that uses every part of the model: a sea edge with its shelf, a closed edge, two open
 // ones at a base level above the sea, an outlet inside the lattice, a regional rate, a ridge and a
-// raster, a resistant band the ground rises through, erodibility variation, and a lattice that is
-// not square and not at the origin.
+// raster, a formation of dipping, folded beds the ground rises through, erodibility variation,
+// and a lattice that is not square and not at the origin.
 inline landform::Sketch golden_sketch() {
   landform::Sketch s;
   s.width = 96;
@@ -53,14 +77,9 @@ inline landform::Sketch golden_sketch() {
     raster.rates_mm_per_yr.push_back(r);
   s.uplift.raster = raster;
   s.rock.resistance = 0.2;
-  landform::Band soft;
-  soft.top_m = 150.0;
-  soft.resistance = 0.0;
-  landform::Band hard;
-  hard.top_m = 300.0;
-  hard.resistance = 1.0;
-  s.rock.bands.push_back(soft);
-  s.rock.bands.push_back(hard);
+  s.rock.formation = dipping_formation(12.0f, 30.0f, 120.0f, 60.0f);
+  s.rock.formation->fold_amplitude_m = 25.0f;
+  s.rock.formation->fold_wavelength_m = 1800.0f;
   s.rock.variation = 0.25;
   s.rock.variation_cells = 8;
   s.erodibility_per_yr = 0.00002;

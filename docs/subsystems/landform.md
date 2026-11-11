@@ -39,7 +39,7 @@ when the build has the tile set, and refuses its own output if the tile set does
 | `outlets` | Points held at a level anywhere in the lattice | — |
 | `border_reach_m` | Uplift is tapered to nothing over this distance from every open or sea edge | 16 cells |
 | `uplift` | `regional_mm_per_yr`, plus `ridges` (a polyline, `rate_mm_per_yr` on it, falling to nothing `reach_m` away as (1 − (r/reach)²)²; the largest of overlapping ridges counts), plus a coarse `raster` read bilinearly over the region | 0 to 100 mm/yr |
-| `rock` | `resistance` 0 to 1 (the world formation's ordering), uniform or by `bands` of elevation (`top_m` ascending); `contrast`, the erodibility at 0 over the erodibility at 1; `variation` and `variation_cells`, a seeded variation of the erodibility | 0; 10; ±25% over 16 cells |
+| `rock` | `resistance` 0 to 1 (the world formation's ordering), uniform, or the beds of `formation`, the scene's own `engine.scene.Formation`, read in the rock's frame ([structure](#structure)); `contrast`, the erodibility at 0 over the erodibility at 1; `variation` and `variation_cells`, a seeded variation of the erodibility | 0; no formation; 10; ±25% over 16 cells |
 | `erodibility_per_yr` | K of the stream-power law at m = 1/2, n = 1 | 10⁻⁸ to 10⁻², default 5 × 10⁻⁶ |
 | `channel_area_m2` | The drainage area a channel begins at: a point draining less is hillslope, lowered by diffusion and the critical slope alone | 0 to 10⁹; default 0, the rivers cut at every point |
 | `deposition` | G, the deposition coefficient ([deposition](#deposition)): a river lays down G / N of the sediment that reaches a point draining N cells. 0 is the detachment-limited law: nothing settles anywhere, standing water included | 0 to 10, default 1 |
@@ -117,8 +117,10 @@ river stands (1 + G) times as steep and no more concave, which the test holds.
 - **One solve for both.** The deposit depends on the flux, the flux on the heights above, and
   the heights on the receiver below, so the step is solved by sweeps (Yuan's equation 20): the
   flux of the last iterate, each point after its donors; then the heights, each point after its
-  receiver, with that deposit in the numerator. It ends when no height moves by a tenth of a
-  millimetre (`k_river_tolerance_m`), or after 64 sweeps. **Why not the cut first and the
+  receiver, with that deposit in the numerator. It ends when no height moves by a millimetre
+  (`k_river_tolerance_m`, what the heights round to), or after 32 sweeps; a run counts its
+  sweeps (`Landform::river_sweeps`, in the command's summary), eight a step in a range with a
+  plain at its foot. **Why not the cut first and the
   deposit after**, which is one pass each and was tried first: a deposit laid on top of a cut
   that has already been made stands a step's worth of sediment (metres) above the channel's
   grade, the next flood routes round it, and a steady range measured 2.4 times as steep in its
@@ -170,6 +172,48 @@ here stands at an angle of repose. And **a valley inside a range that is rising 
 no floor at steady state**, because every point of it is losing ground; a floor needs a base
 level that rose or an uplift that stopped, which a sketch gives by where it puts its uplift and
 its outlets.
+
+### Structure
+
+A range in uniform rock has valleys evenly spaced and summits that are the same on every side,
+because nothing in it has a direction. Rock has one: beds. The sketch's `rock.formation` is **the
+scene's own `engine.scene.Formation`** (W85; [rocks](rocks.md), "Geology on the world formation
+(W85)"; [the formation field](../experiments/formation-field.md)), copied into the sketch, and a
+point's resistance is the `resistance` of the bed its surface cuts.
+
+- **The beds rise with the rock.** The formation is read in the rock's own frame: a point of
+  rock now at height z stood at z less the point's uplift so far before it was raised, and the
+  bed coordinate is taken there. So a bed is carried up through the surface as the ground is
+  cut down through it, the rock at a point changes as the run goes on, and where uplift differs
+  from place to place the beds arch over it. Reading the bed at the surface's present height in
+  a fixed frame, as stage A's elevation bands did, makes flat-lying layers that never move.
+- **Which beds.** The macro beds where the formation has them (members, tens to hundreds of
+  metres: what a lattice of metres to tens of metres can hold), else the beds. A bed thinner
+  than a point's fall is sampled, not averaged, and reads as noise: give the solver beds the
+  lattice resolves.
+- **What resistance does** is what it did: it divides the erodibility by up to `contrast` and
+  raises the critical slope toward `critical_slope_resistant`. It is read once a step, after
+  the uplift, for every point.
+- **How it is reached.** Through `domain/gfx/formation.h`, the field's one CPU definition and
+  the double-precision twin the rocks solver reads: `pack_formation`, `formation_coordinate`
+  (the folds through `det::sin`) and `formation_bed`. `gfx` is a domain module and not a
+  capability, so the dependency is an ordinary one; nothing of the device is touched.
+- **It replaced the table of resistance by elevation band**, which a sketch may no longer
+  carry: `rock.bands` is refused as an unknown field. No migration is registered, because a
+  sketch file stores no version to migrate from.
+- **The field.** `resistance`, a byte a point, is the rock at the solved surface: where a hard
+  bed crops out.
+
+**What it makes** (the test: a block rising between two open edges in beds that dip 15° toward
+one of them, 300 m of soft rock under 200 m of hard a tenth as erodible): the ground on a hard
+bed stands 2.1 times as steep as on a soft one, a step at each outcrop; the two sides of the
+divide differ, the side that cuts across the beds a tenth steeper than the side that falls with
+them (1.09 to 1, against 1.0001 to 1 in uniform rock), and a hard bed's outcrop is 1.84 times as
+wide down the dip, where the surface runs with it as a plate, as across the beds, where it is an
+edge; the divide stands 2.8 points off the middle. **What it does not make**: a cuesta's cliff
+over its own debris slope, which needs the rock solvers; and at n = 1 the published result is
+that contacts steepen without a fixed ratio (Perne et al. 2017), so the 2.1 is this sketch's and
+not a law.
 
 ### The slope limiter
 
@@ -237,7 +281,7 @@ count (`determinism_tests.cpp` pins the hash of the heightfield and of each fiel
 
 ### The field file
 
-`engine.landform.fields/2` (`engine.landform.Fields`; version 2 added `sediment`). What a later solver (channels, scree, soil,
+`engine.landform.fields/2` (`engine.landform.Fields`; version 2 added `sediment` and `resistance`). What a later solver (channels, scree, soil,
 ecology, snow) reads:
 
 - **The lattice is the heightfield's**, point for point: `width`, `height`, `spacing_mm`,
@@ -253,6 +297,8 @@ ecology, snow) reads:
   | `erosion_rate` | i32 | micrometres a year removed by the last step, net of what it laid down | negative where the ground gained; zero for a run of no steps and at held points |
   | `fill` | u32 | millimetres under the depression's spill | zero on draining ground; a tarn's depth |
   | `sediment` | u32 | millimetres of sediment under the point | what rivers, lakes, the sea and creep laid down and nothing has removed since; zero where rock is at the surface and for a run of no steps. The rock's surface is the height less this |
+
+  | `resistance` | u8 | the resistance of the rock at the surface, 0 to 255 | the bed of the sketch's formation the solved surface cuts ([structure](#structure)), or the sketch's uniform value. Where it is high a hard bed crops out: a ledge, a cliff band, the cap of a scarp |
 
 - **What each later solver should take from `sediment`:**
   - **Scree and rock** (the cliffs, the deposits): rock is at the surface where it is zero, so
@@ -323,8 +369,7 @@ authored heightfield. Exit 0, 1 (a file or a range), 2 (usage).
 ## Not stage A
 
 Each follows, and none is here: the glacial mode (troughs, cirques, overdeepened basins);
-**resistance from the formation field's dipping beds**, rising with the rock (stage B's second
-part, not reached: the elevation bands stand until it replaces them); **uplift that varies along
+**uplift that varies along
 a ridge line, and defaults grounded against published slope distributions** (the third, not
 reached); **a flood that keeps ground with no depression off the heap** (the fourth, not
 reached: the flood is still nearly the whole step); flow that divides, so one mouth's fan is a
@@ -360,11 +405,11 @@ in the editor. The limits of the model as it stands are on the grounding page.
 
 ## Testing
 
-`tools/dev.ps1 test -Filter "^landform$"`. All CPU; the whole suite is about 11 s in `msvc-debug` (stage B's five cases are 3.7 s of it, and the sweeps added 3 s to stage A's).
+`tools/dev.ps1 test -Filter "^landform$"`. All CPU; the whole suite is about 13 s in `msvc-debug` (stage B's six cases are 5 s of it, and the sweeps added 3 s to stage A's).
 
 | Test | Holds | Fails when |
 |---|---|---|
-| the golden sketch solves to the pinned bytes | the hash of the heightfield and of each field, for a sketch that uses every part of the model; pinned on MSVC, reproduced by Clang and GCC | any toolchain, baseline or change of arithmetic moves a byte |
+| the golden sketch solves to the pinned bytes | the hash of the heightfield and of each of the seven fields, for a sketch that uses every part of the model (a formation of dipping, folded beds among them); pinned on MSVC, reproduced by Clang and GCC | any toolchain, baseline or change of arithmetic moves a byte |
 | one, four and sixteen workers | the serial solve's bytes from each | a parallel loop reads what another chunk writes |
 | the flood breaks ties by cell index | a flat's order, receivers and ε, a pit's fill | the queue's order is not total, or a diagonal beats a cardinal of equal fall |
 | every point drains | receivers' paths end at held points; held areas sum to the lattice | the flood or the receivers leave a point stranded |
@@ -378,6 +423,7 @@ in the editor. The limits of the model as it stands are on the grounding page.
 | with deposition a steady river stands 1 + G times as steep | the steepness factor S √A K / U over the channels in 1.85 to 2.05 at G = 1 (measured 1.955: the discrete form's (N − 1) / N), the mean rate within 2% of the uplift, the concavity within 0.03 of 0.5 | the deposit is not Yuan's, or is laid after the cut and not with it (which measured 2.14, rising with area) |
 | a dammed valley fills to a floor | a V-shaped valley whose mouth is held 90 m above its bed: the run of fill of 5 m or more about the axis is 5 points or more wide in the lower third, more than 1.5 times the upper third's (measured 6.7 against 2.7), level across within 8 m where the V fell 87 m (measured 6.4 m), over 50 m of fill | nothing is laid down, or a lake is filled along the flood's order |
 | a massif's rivers leave a fan on the plain | 400 m out from a massif's foot the ground stands over 3 m up opposite it (measured 4.3 m), a metre or more lower 700 m to either side (2.8 and 2.6 m), and under a metre 1,700 m away (0.9 m) | the load is not laid where a river leaves the range |
+| under dipping beds a ridge's two sides differ and a hard bed stands as a step | beds dipping 15° toward one edge of a rising block: the mean gradient on hard rock over 1.5 times that on soft (measured 2.1); across the beds over 1.05 times that down the dip (measured 1.09), and within 1% of 1 in uniform rock (measured 1.0001); a hard bed's outcrop over 1.5 times as wide down the dip as across (measured 1.84) | the beds are not read, or are read in a frame that does not rise with the rock |
 | a lake's floor fills level, and its mouth builds a delta | a basin fed for ten thousand years: its floor away from the mouths level within 50 mm (measured 0 and 3 mm) under water still metres deep; with `delta_share` 0.5 the shelf under the mouths holds a quarter more sediment (measured twice) and the floor stands lower | the fill follows the flood's order, or the mouths get nothing |
 
 ## Performance notes
@@ -407,13 +453,14 @@ list: routing ground with no depressions from its own slopes in memory order and
 the pits, and the flow tree's levels in parallel (Barnes 2019). A general exponent m would add
 69 ns a point a step, a fifth of today's step; m = 1/2 costs 1.7 ns.
 
-The solve holds about 90 bytes a point while it runs (stage A's 54: the ground, the lift and
+The solve holds about 94 bytes a point while it runs (stage A's 54: the ground, the lift and
 hardness fields, the filled surface, the order, the receivers, the areas and a scratch surface;
-and stage B's 36: the sediment, the rivers' iterate, the shed a step carries to the next, the
-tapered G and each point's sill): 378 MB at 2,048 points a side, 1.5 GB at 4,093. **The bench's
+and stage B's 40: the sediment, the rivers' iterate, the shed a step carries to the next, the
+tapered G, each point's sill and its rock's resistance): 395 MB at 2,048 points a side, 1.6 GB at
+4,093. **The bench's
 table above is stage A's**: it was not run again after deposition (the machine had other rows'
 builds on it), and a step now adds the rivers' sweeps, two walks of the order each, where it had
-one; in `msvc-debug` the golden sketch went from 0.31 s to 0.54 s. Nothing is resident afterwards, nothing scales with the world's
+one; in `msvc-debug` the golden sketch went from 0.31 s to 0.66 s. **The sweeps are the cost now**: the picture's region (1,024 points a side, 300 steps) took 476 s in `msvc-release` on four workers beside other rows' builds, where stage A took 75 s; each sweep walks the flood's order twice over a dozen arrays, which is no order of memory. Keeping a step's river data in the order's own sequence is what follows. Nothing is resident afterwards, nothing scales with the world's
 size at run time, and there are no triangles and no per-tile cost: the tile set's are the
 heightfield's.
 
