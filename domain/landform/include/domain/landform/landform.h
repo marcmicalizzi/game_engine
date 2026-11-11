@@ -165,8 +165,17 @@ struct Landform {
   /// A channel's width at the point, whole millimetres: the sketch's `channel_width_m` times the
   /// square root of the discharge in square kilometres.
   Vector<u32> channel_width;
+  /// The ice over the point at the last step it stood, whole millimetres (landform.md, "Ice"):
+  /// the glacier's extent, and with a sketch whose ice lasts to the run's end the ice of today.
+  /// Empty of ice is zero; a sketch with no ice age writes zeros.
+  Vector<u32> ice;
+  /// The till under the point, whole millimetres: the part of `sediment` that melted out of the
+  /// ice and nothing has removed since.
+  Vector<u32> till;
   /// How many times lateral erosion took a bank's point over the run.
   u32 banks_taken = 0;
+  /// The steps the ice stood for.
+  u32 ice_steps = 0;
   Budget budget;
   Timing timing;
   /// How deep the point lies under its depression's spill, whole millimetres; zero on draining

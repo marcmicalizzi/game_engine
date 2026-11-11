@@ -116,6 +116,33 @@ struct Rock @version(2) {
   /// sketch may no longer carry.
   formation: engine.scene.Formation? @since(2)
 }
+/// An ice age (landform.md, "Ice"): valley glaciers by Hergarten 2021's stream-power form. Snow
+/// becomes ice above the equilibrium line and ice melts below it; the ice a point passes on is
+/// what its catchment made less what melted on the way; a glacier is as wide and as thick as its
+/// flux makes it, and wears its bed over that width.
+struct Ice @version(1) {
+  /// The equilibrium line's altitude, metres: -11,000 to 9,000. Read on the ice's own surface.
+  ela_m: f64 @unit(m)
+  /// The height above the line at which all of a point's snowfall becomes ice (below the line
+  /// the same slope is the melt): 10 to 5,000 m. Hergarten's H_f - H_e, 500 m in his example.
+  full_m: f64 = 500 @unit(m)
+  /// The depth below the line at which a glacier loses, over its own width, as much ice as
+  /// full snowfall would make: 10 to 5,000 m. Half of `full_m` by default: ice melts about
+  /// twice as fast with depth below the line as it gathers with height above it.
+  melt_m: f64 = 250 @unit(m)
+  /// The ice's erodibility over the rivers': 0 to 100. Hergarten's examples use 1 and 2.
+  erodibility: f64 = 2
+  /// A glacier's width where its flux is that of one square kilometre making ice in full,
+  /// metres: 10 to 10,000. The width goes with the flux to the power 0.3 (Bahr 1997's width to
+  /// length and the catchment's length to area, as Hergarten combines them).
+  width_m: f64 = 500 @unit(m)
+  /// The ice's thickness over its width: 0.01 to 1. Hergarten's example is 0.25.
+  thickness_ratio: f64 = 0.25
+  /// The years of the run the ice stands in: from `from_yr` until `until_yr`, or the run's end.
+  from_yr: i64 = 0
+  until_yr: i64?
+}
+
 /// The region sketch `engine-content landform` reads (landform.md, "The sketch"). Every range is
 /// checked, and a sketch outside one is refused with a sentence naming the field.
 struct Sketch @version(3) {
@@ -176,6 +203,8 @@ struct Sketch @version(3) {
   /// field file is this times the square root of the discharge in square kilometres (the
   /// downstream hydraulic geometry's exponent of one half). 0.1 to 1,000.
   channel_width_m: f64 = 5 @since(3) @unit(m)
+  /// An ice age, or none.
+  ice: Ice? @since(3)
   seed: u64 = 1
   /// The starting plane's roughness, metres either way: 0 to 100.
   roughness_m: f64 = 1
@@ -192,7 +221,7 @@ struct Sketch @version(3) {
 /// One field of the field file.
 struct FieldEntry @version(1) {
   /// `drainage_area`, `receiver`, `slope`, `erosion_rate`, `fill`, `sediment`, `resistance`,
-  /// `discharge`, `channel_width`.
+  /// `discharge`, `channel_width`, `ice`, `till`.
   name: string
   /// The raw grid, relative to the header: little-endian, rows of x in order of z, the
   /// heightfield's own lattice.

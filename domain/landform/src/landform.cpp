@@ -364,15 +364,17 @@ bool flood(u32 w, u32 h, const u8* held, Q&& units, jobs::JobSystem* jobs, Routi
 // `k_lake_min_units` or more under its filled level, grouped by the sill its depression spills
 // over. Shallower raised points lose their sill and count as dry. A sorted run a lake, so the
 // table is the same whatever order the flood met the points in.
+// A point under a glacier (`iced`, where given) is no lake's: the ice crosses a hollow in its bed
+// and wears it, and the hollow is a lake once the ice has gone.
 template <class Q>
-void find_lakes(u32 n, Q&& units, Routing& r) {
+void find_lakes(u32 n, Q&& units, const u8* iced, Routing& r) {
   r.members.clear();
   r.lakes.clear();
   u32* sill = r.sill.data();
   const i64* filled = r.filled.data();
   for (u32 p = 0; p < n; ++p) {
     if (sill[p] == k_no_sill) continue;
-    if (filled[p] - units(p) >= k_lake_min_units) {
+    if (filled[p] - units(p) >= k_lake_min_units && (iced == nullptr || iced[p] == 0)) {
       r.members.push_back((static_cast<u64>(sill[p]) << 32) | p);
     } else {
       sill[p] = k_no_sill;
@@ -883,6 +885,180 @@ i32 clamp_i32(f64 v) noexcept {
   return static_cast<i32>(r);
 }
 
+// ---- ice ---------------------------------------------------------------------------------------
+//
+// Valley glaciers by Hergarten 2021's stream-power form (landform.md, "Ice";
+// docs/experiments/landform.md, "Ice: the sources"). The ice's thickness is not solved from its
+// flow: a glacier is as wide as its flux makes it (w ~ flux^0.3) and as thick as a fixed part of
+// its width, its flux is what its catchment made less what melted, routed down the bed's own
+// receivers, and it wears its bed by the same law the rivers do with its own erodibility, its
+// own "area" (the flux, spread over its width) and the slope of its own surface.
+
+// A glacier's width goes with its flux to this power (Hergarten 2021, equation 13: Bahr 1997's
+// width to length, 0.6, times the catchment's length to area, 0.52).
+constexpr f64 k_ice_width_power = 0.3;
+// A glacier's swath is stamped no wider than this many points either way.
+constexpr i32 k_ice_reach_cells = 96;
+
+struct IceField {
+  bool on = false;  // the ice stands this step
+  f64 erodibility = 0.0;
+  Vector<f64> flux;      // the ice a point passes on, in cells making ice in full
+  Vector<f64> arriving;  // what reaches it from above
+  Vector<f64> reach;     // the largest flux of a glacier whose swath holds the point
+  Vector<f64> thick;     // the ice over the point this step, metres
+  Vector<f64> before;    // and last step
+  Vector<f64> melt;      // the share of the ice reaching the point that melts there
+  Vector<f64> add;       // till to lay once the step's books are done
+  Vector<f64> till;      // till laid so far
+  Vector<u8> iced;       // the point is under a glacier this step
+  Vector<u8> was;        // and last step
+};
+
+f64 ice_width_m(const Ice& c, f64 cells, f64 cell_km2) noexcept {
+  return c.width_m * det::exp(k_ice_width_power * det::log(cells * cell_km2));
+}
+
+// This step's ice: the flux, the swaths, the thickness, what melts where.
+void glaciate(const Sketch& s, const Frame& frame, const u8* held, const f64* z, const Routing& r,
+              IceField& ice) {
+  const Ice& c = *s.ice;
+  const u32 w = frame.w;
+  const u32 n = w * frame.h;
+  const i32 wi = static_cast<i32>(w);
+  const i32 hi = static_cast<i32>(frame.h);
+  const Offsets o = neighbour_offsets(w);
+  const u32* order = r.order.data();
+  const u8* receiver = r.receiver.data();
+  const f64 cell_km2 = frame.spacing_m * frame.spacing_m * 1.0e-6;
+  ice.before.swap(ice.thick);
+  ice.was.swap(ice.iced);
+  const u8* was = ice.was.data();
+  f64* flux = ice.flux.data();
+  f64* arriving = ice.arriving.data();
+  f64* reach = ice.reach.data();
+  f64* thick = ice.thick.data();
+  const f64* before = ice.before.data();
+  f64* melt = ice.melt.data();
+  u8* iced = ice.iced.data();
+  for (u32 p = 0; p < n; ++p) {
+    flux[p] = 0.0;
+    arriving[p] = 0.0;
+    reach[p] = 0.0;
+    thick[p] = 0.0;
+    melt[p] = 0.0;
+    iced[p] = 0;
+  }
+  // The flux, every donor before its receiver (Hergarten 2021, equation 21, kept to the ice). A
+  // point adds the share of its snowfall that becomes ice, read on the ice's surface as it
+  // stood last step: above the line a part of it, up to all; below the line a loss. Bare
+  // ground below the line makes and loses nothing. A point the glacier covered last step
+  // passes its loss on down the bed's receivers, toward the glacier's line, so **a glacier
+  // pays for the melt over the whole of its swath** and ends where its catchment's ice is
+  // spent. (Hergarten's sum takes the loss of every point of the catchment, ice on it or not;
+  // taking it of the glacier's own surface is the same balance with the glacier's own area.)
+  for (u32 k = n; k-- > 0;) {
+    const u32 p = order[k];
+    if (held[p] != 0) continue;
+    const f64 above = z[p] + before[p] - c.ela_m;
+    f64 made = above >= 0.0 ? above / c.full_m : above / c.melt_m;
+    if (made > 1.0) made = 1.0;
+    const f64 from_above = arriving[p];
+    if (made < 0.0 && !(from_above > 0.0) && was[p] == 0) continue;
+    const f64 passed = from_above + made;
+    if (passed > 0.0) {
+      flux[p] = passed;
+      if (made < 0.0) melt[p] = -made < from_above ? -made / from_above : 1.0;
+      arriving[neighbour(p, o.at[receiver[p]])] += passed;
+    } else {
+      if (from_above > 0.0) melt[p] = 1.0;
+      if (was[p] != 0) arriving[neighbour(p, o.at[receiver[p]])] += passed;
+    }
+  }
+  // Ice that leaves the region through a held point is as thick there as its flux makes it: the
+  // edge of the lattice is not a snout, and the bed inside is not worn down to meet one.
+  for (u32 p = 0; p < n; ++p)
+    if (held[p] != 0 && arriving[p] > 0.0)
+      thick[p] = c.thickness_ratio * ice_width_m(c, arriving[p], cell_km2);
+  // The swaths, in cell order (a point keeps the largest flux and the thickest ice that reach
+  // it, which no order changes): every point within half a glacier's width of its line whose
+  // bed is not above the ice there.
+  for (u32 p = 0; p < n; ++p) {
+    if (!(flux[p] > 0.0)) continue;
+    const f64 wide = ice_width_m(c, flux[p], cell_km2);
+    const f64 deep = c.thickness_ratio * wide;
+    if (reach[p] < flux[p]) reach[p] = flux[p];
+    if (thick[p] < deep) thick[p] = deep;
+    iced[p] = 1;
+    i32 radius = static_cast<i32>(0.5 * wide / frame.spacing_m);
+    if (radius > k_ice_reach_cells) radius = k_ice_reach_cells;
+    if (radius < 1) continue;
+    const i32 px = static_cast<i32>(p % w);
+    const i32 py = static_cast<i32>(p / w);
+    const f64 surface = z[p] + deep;
+    for (i32 dy = -radius; dy <= radius; ++dy) {
+      const i32 y = py + dy;
+      if (y < 0 || y >= hi) continue;
+      for (i32 dx = -radius; dx <= radius; ++dx) {
+        const i32 x = px + dx;
+        if (x < 0 || x >= wi || dx * dx + dy * dy > radius * radius) continue;
+        const u32 u = static_cast<u32>(y) * w + static_cast<u32>(x);
+        if (held[u] != 0 || z[u] > surface) continue;
+        if (reach[u] < flux[p]) reach[u] = flux[p];
+        if (thick[u] < deep) thick[u] = deep;
+        iced[u] = 1;
+      }
+    }
+  }
+}
+
+// What melts out of the ice at a point, laid as till over the glacier's width there: `drop`
+// metres over one cell shared by the points within half the width that are under the ice (or
+// the point alone, at a snout). It is kept aside and laid once the step's books are done.
+f64 lay_till(const Sketch& s, const Frame& frame, const u8* held, u32 p, f64 drop, IceField& ice) {
+  const u32 w = frame.w;
+  const i32 wi = static_cast<i32>(w);
+  const i32 hi = static_cast<i32>(frame.h);
+  const f64 cell_km2 = frame.spacing_m * frame.spacing_m * 1.0e-6;
+  const f64 through = ice.arriving[p] > 1.0 ? ice.arriving[p] : 1.0;
+  const f64 wide = ice_width_m(*s.ice, through, cell_km2);
+  // A moraine stands no higher than the ice that built it: a point takes till up to the
+  // thickness of the glacier here, and what it has no room for goes on with the meltwater.
+  const f64 deep = s.ice->thickness_ratio * wide;
+  i32 radius = static_cast<i32>(0.5 * wide / frame.spacing_m);
+  if (radius > k_ice_reach_cells) radius = k_ice_reach_cells;
+  const i32 px = static_cast<i32>(p % w);
+  const i32 py = static_cast<i32>(p / w);
+  const u8* iced = ice.iced.data();
+  const f64* till = ice.till.data();
+  f64* add = ice.add.data();
+  u32 count = 0;
+  f64 laid = 0.0;
+  for (u32 pass = 0; pass < 2; ++pass) {
+    for (i32 dy = -radius; dy <= radius; ++dy) {
+      const i32 y = py + dy;
+      if (y < 0 || y >= hi) continue;
+      for (i32 dx = -radius; dx <= radius; ++dx) {
+        const i32 x = px + dx;
+        if (x < 0 || x >= wi || dx * dx + dy * dy > radius * radius) continue;
+        const u32 u = static_cast<u32>(y) * w + static_cast<u32>(x);
+        if (held[u] != 0 || (u != p && iced[u] == 0)) continue;
+        if (pass == 0) {
+          ++count;
+          continue;
+        }
+        const f64 room = deep - till[u] - add[u];
+        const f64 share = drop / static_cast<f64>(count);
+        const f64 given = share < room ? share : (room > 0.0 ? room : 0.0);
+        add[u] += given;
+        laid += given;
+      }
+    }
+    if (count == 0) return 0.0;
+  }
+  return laid;
+}
+
 // ---- the river network of one step -------------------------------------------------------------
 //
 // The rivers' solve is sweeps over the flow network (landform.md, "The rivers' sweeps"). The
@@ -927,6 +1103,7 @@ struct Network {
   Vector<f64> soft;      // K dt of sediment times the point's stream power
   Vector<f64> firm;      // K dt of its rock times the same
   Vector<f64> ratio;     // the rock's erodibility over the sediment's
+  Vector<f64> lift;      // what the ice adds to the point's base level (zero with none)
   // The network's edges, each point's a run: its receivers with the weight each one's height has
   // in the point's base level, and its donors with the share of each one's flow that comes here.
   Vector<u32> down_begin;
@@ -957,6 +1134,8 @@ struct RiverInputs {
   f64 loose_dt = 0.0;
   // The steepest fall, in fill units over one spacing, under which a point's flow divides.
   f64 divide_units = 0.0;
+  // The step's ice, or null.
+  const IceField* ice = nullptr;
   u32 grain = 4096;
 };
 
@@ -1078,7 +1257,13 @@ void build_network(const RiverInputs& in, const Routing& r, jobs::JobSystem* job
   const u8* receiver = r.receiver.data();
   const u32* order = r.order.data();
   const u32* sill = r.sill.data();
-  find_shares(w, in.h, in.divide_units, nullptr, jobs, r, net);
+  const bool icy = in.ice != nullptr && in.ice->on;
+  const u8* iced = icy ? in.ice->iced.data() : nullptr;
+  const f64* ice_flux = icy ? in.ice->flux.data() : nullptr;
+  const f64* ice_reach = icy ? in.ice->reach.data() : nullptr;
+  const f64* ice_thick = icy ? in.ice->thick.data() : nullptr;
+  const f64 ice_k = icy ? in.ice->erodibility : 0.0;
+  find_shares(w, in.h, in.divide_units, iced, jobs, r, net);
   accumulate_shares(w, in.h, r, net);
   const u16* share = net.share.data();
   const u64* discharge = net.discharge.data();
@@ -1199,9 +1384,12 @@ void build_network(const RiverInputs& in, const Routing& r, jobs::JobSystem* job
   f64* soft = net.soft.data();
   f64* firm = net.firm.data();
   f64* ratio = net.ratio.data();
+  net.lift.resize(n);
+  f64* lift = net.lift.data();
   for_span(jobs, 0, n, 4096, [&](u32 i0, u32 i1) {
     for (u32 i = i0; i < i1; ++i) {
       const u32 p = cell[i];
+      lift[i] = 0.0;
       ground[i] = in.z[p];
       iterate[i] = in.z[p];
       arriving[i] = 0.0;
@@ -1222,7 +1410,8 @@ void build_network(const RiverInputs& in, const Routing& r, jobs::JobSystem* job
         continue;
       }
       const f64 cells = static_cast<f64>(discharge[p]) / static_cast<f64>(k_share_one);
-      if ((in.has_sea && in.z[p] <= in.sea) || cells < in.channel_cells) {
+      const bool under_ice = iced != nullptr && iced[p] != 0;
+      if ((in.has_sea && in.z[p] <= in.sea) || (cells < in.channel_cells && !under_ice)) {
         kind[i] = k_node_passes;
         continue;
       }
@@ -1231,13 +1420,33 @@ void build_network(const RiverInputs& in, const Routing& r, jobs::JobSystem* job
       f64 power = 0.0;
       for (u32 j = 0; j < 8; ++j)
         if (sp[j] != 0) power += term(cells, sp[j], j);
+      if (under_ice) {
+        // Under a glacier (Hergarten 2021, equations 19, 22 and 25): the ice's own term, its
+        // erodibility times the square root of its effective flux (the catchment's cells to
+        // the 1/4 times the swath's flux to the 3/4) on the slope of the ice's surface, beside
+        // the meltwater's, the rivers' law on the cells that are not ice. One update takes
+        // both: the power is their sum, and the base level is the receiver's bed raised by the
+        // ice's share of the step in the ice's thickness there, so a tributary's bed hangs
+        // above its trunk's by what the trunk's ice is thicker, and a bed can be worn below
+        // its receiver's where the ice thins.
+        const u8 code = receiver[p];
+        const f64 along = (code & 1u) != 0 ? k_inv_sqrt2 : 1.0;
+        const f64 root = std::sqrt(ice_reach[p]);
+        const f64 glacial =
+            ice_k * std::sqrt(std::sqrt(std::sqrt(cells)) * root * std::sqrt(root)) * along;
+        const f64 water = cells > ice_flux[p] ? std::sqrt(cells - ice_flux[p]) * along : 0.0;
+        power = glacial + water;
+        if (power > 0.0)
+          lift[i] = glacial / power * (ice_thick[neighbour(p, o.at[code])] - ice_thick[p]);
+      }
       const f64 hard = in.hardness[p] * erodibility_of(s, static_cast<f64>(in.resist[p]));
       // The sweeps start from where last step's ended, relative to this step's ground: a river
       // near its grade moves by nearly the same amount each step, and the sweeps that would
       // find that again from nothing are saved (the answer is the same fixed point, to the
       // tolerance the sweeps end at).
       iterate[i] = in.z[p] + in.drift[p];
-      deposit[i] = in.settle[p] < cells ? in.settle[p] / cells : 1.0;
+      // Ice lays nothing down under itself here: what it carries melts out in the step's books.
+      deposit[i] = under_ice ? 0.0 : (in.settle[p] < cells ? in.settle[p] / cells : 1.0);
       loose[i] = in.sed[p];
       soft[i] = in.loose_dt * power;
       firm[i] = hard * power;
@@ -1336,6 +1545,7 @@ struct BankInputs {
   const u8* held = nullptr;
   const f64* hardness = nullptr;  // K dt times the point's variation
   const f32* resist = nullptr;
+  const u8* iced = nullptr;  // points under a glacier this step, or null
   u32 step = 0;
 };
 
@@ -1370,6 +1580,7 @@ u32 erode_banks(const BankInputs& in, const Routing& r, const Network& net, f64*
   u32 taken = 0;
   for (u32 p = 0; p < n; ++p) {
     if (kind[position[p]] != k_node_reach) continue;
+    if (in.iced != nullptr && in.iced[p] != 0) continue;  // a glacier widens its own bed
     const f64 cells = static_cast<f64>(discharge[p]) / static_cast<f64>(k_share_one);
     if (cells < k_bank_min_cells) continue;
     const u8 code = receiver[p];
@@ -1457,6 +1668,7 @@ u32 sweep_rivers(const RiverInputs& in, jobs::JobSystem* jobs, Network& net) {
   const f64* soft = net.soft.data();
   const f64* firm = net.firm.data();
   const f64* ratio = net.ratio.data();
+  const f64* lift = net.lift.data();
   const u32* down_begin = net.down_begin.data();
   const u32* down_place = net.down_place.data();
   const f64* down_weight = net.down_weight.data();
@@ -1495,6 +1707,7 @@ u32 sweep_rivers(const RiverInputs& in, jobs::JobSystem* jobs, Network& net) {
             if (has_sea && below < sea) below = sea;
             base += down_weight[e] * below;
           }
+          base += lift[i];
           f64 to = top;
           if (top > base) {
             // Sediment first, at its own erodibility: the point's own and what this step lays.
@@ -1599,6 +1812,22 @@ bool validate_sketch(const Sketch& s, std::string& error) {
     return refuse("a sketch's lateral_erosion is 0 to 10");
   if (!in_range(s.channel_width_m, 0.1, 1000.0))
     return refuse("a sketch's channel_width_m is 0.1 to 1,000 m");
+  if (s.ice) {
+    if (!in_range(s.ice->ela_m, -11000.0, 9000.0))
+      return refuse("a sketch's ice.ela_m is -11,000 to 9,000 m");
+    if (!in_range(s.ice->full_m, 10.0, 5000.0))
+      return refuse("a sketch's ice.full_m is 10 to 5,000 m");
+    if (!in_range(s.ice->melt_m, 10.0, 5000.0))
+      return refuse("a sketch's ice.melt_m is 10 to 5,000 m");
+    if (!in_range(s.ice->erodibility, 0.0, 100.0))
+      return refuse("a sketch's ice.erodibility is 0 to 100");
+    if (!in_range(s.ice->width_m, 10.0, 10000.0))
+      return refuse("a sketch's ice.width_m is 10 to 10,000 m");
+    if (!in_range(s.ice->thickness_ratio, 0.01, 1.0))
+      return refuse("a sketch's ice.thickness_ratio is 0.01 to 1");
+    if (s.ice->from_yr < 0 || (s.ice->until_yr && *s.ice->until_yr < s.ice->from_yr))
+      return refuse("a sketch's ice stands from from_yr, 0 or later, until until_yr, no earlier");
+  }
   if (!in_range(s.rock.resistance, 0.0, 1.0)) return refuse("a sketch's rock.resistance is 0 to 1");
   if (!in_range(s.rock.contrast, 1.0, 1000.0))
     return refuse("a sketch's rock.contrast is 1 to 1,000");
@@ -1911,6 +2140,24 @@ bool solve(const Sketch& s, const StartField* start, const SolveOptions& options
   banks.hardness = hardness;
   banks.resist = resist;
   u32 banks_taken = 0;
+  // The ice age, where the sketch has one (landform.md, "Ice").
+  IceField ice;
+  const bool has_ice = s.ice.has_value();
+  u32 ice_steps = 0;
+  if (has_ice) {
+    ice.erodibility = s.ice->erodibility;
+    ice.flux.assign(n, 0.0);
+    ice.arriving.assign(n, 0.0);
+    ice.reach.assign(n, 0.0);
+    ice.thick.assign(n, 0.0);
+    ice.before.assign(n, 0.0);
+    ice.melt.assign(n, 0.0);
+    ice.add.assign(n, 0.0);
+    ice.till.assign(n, 0.0);
+    ice.iced.assign(n, u8{0});
+    ice.was.assign(n, u8{0});
+    rivers.ice = &ice;
+  }
   // Where the seconds go: a clock read between the parts, which no decision reads.
   Timing timing;
   auto tick = std::chrono::steady_clock::now();
@@ -1938,8 +2185,19 @@ bool solve(const Sketch& s, const StartField* start, const SolveOptions& options
       error = "the flood did not reach every point";
       return false;
     }
-    find_lakes(n, [z](u32 i) { return quantize(z[i]); }, routing);
     find_receivers(w, h, held, s.seed ^ k_route_salt, jobs, routing);
+    // The ice, where the sketch has an ice age and this step is in it: before the lakes, since
+    // a hollow under a glacier is not one.
+    if (has_ice) {
+      const i64 at = static_cast<i64>(step) * s.step_yr;
+      ice.on = at >= s.ice->from_yr && (!s.ice->until_yr || at < *s.ice->until_yr);
+      if (ice.on) {
+        glaciate(s, frame, held, z, routing, ice);
+        ++ice_steps;
+      }
+    }
+    banks.iced = ice.on ? ice.iced.data() : nullptr;
+    find_lakes(n, [z](u32 i) { return quantize(z[i]); }, banks.iced, routing);
     const u32* order = routing.order.data();
     const u8* receiver = routing.receiver.data();
     const u32* sill = routing.sill.data();
@@ -1998,6 +2256,12 @@ bool solve(const Sketch& s, const StartField* start, const SolveOptions& options
       }
       q += carry[p];
       carry[p] = 0.0;
+      if (settles && ice.on && ice.melt[p] > 0.0 && q > 0.0) {
+        // What the ice carried melts out with the ice: that share is till here.
+        const f64 stays = lay_till(s, frame, held, p, q * ice.melt[p], ice);
+        laid += stays;
+        q -= stays;
+      }
       if (!settles) {
         // G = 0: nothing settles, in standing water either. What is cut leaves.
         const f64 lost = z[p] - hk[p];
@@ -2034,6 +2298,21 @@ bool solve(const Sketch& s, const StartField* start, const SolveOptions& options
       }
       z[p] -= lost;
       send(p, q + lost);
+    }
+    if (has_ice) {
+      // The till the ice dropped this step, now that no point's books read the ground; and till
+      // is never more than the sediment that is still there.
+      f64* add = ice.add.data();
+      f64* till = ice.till.data();
+      for (u32 p = 0; p < n; ++p) {
+        if (add[p] > 0.0) {
+          z[p] += add[p];
+          sed[p] += add[p];
+          till[p] += add[p];
+          add[p] = 0.0;
+        }
+        if (till[p] > sed[p]) till[p] = sed[p];
+      }
     }
     lap(timing.books_s);
     if (s.lateral_erosion > 0.0) {
@@ -2199,6 +2478,16 @@ bool solve(const Sketch& s, const StartField* start, const SolveOptions& options
   out.discharge.resize(n);
   out.channel_width.resize(n);
   out.banks_taken = banks_taken;
+  out.ice_steps = ice_steps;
+  out.ice.assign(n, 0u);
+  out.till.assign(n, 0u);
+  if (ice_steps > 0) {
+    for (u32 p = 0; p < n; ++p) {
+      out.ice[p] = static_cast<u32>(clamp_i32(ice.thick[p] * 1000.0));
+      const f64 kept = ice.till[p] < sed[p] ? ice.till[p] : sed[p];
+      out.till[p] = static_cast<u32>(clamp_i32(kept * 1000.0));
+    }
+  }
   {
     const u64* units = network.discharge.data();
     u32* discharge = out.discharge.data();

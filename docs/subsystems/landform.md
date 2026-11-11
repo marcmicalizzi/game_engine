@@ -48,6 +48,7 @@ when the build has the tile set, and refuses its own output if the tile set does
 | `divide_below_slope` | Where the steepest fall from a point is under this its flow divides among all its lower neighbours ([flow that divides](#flow-that-divides)); at this and above it all goes to the steepest. 0 never divides | 0 to 1, default 0.1 |
 | `lateral_erosion` | The erodibility of a river's bank over its bed's ([lateral erosion](#lateral-erosion)). 0 is none | 0 to 10, default 1 |
 | `channel_width_m` | A channel's width where it drains one square kilometre; the `channel_width` field is this times the square root of the discharge in square kilometres | 0.1 to 1,000 m, default 5 |
+| `ice` | An ice age, or none ([ice](#ice)): `ela_m`, the equilibrium line; `full_m` and `melt_m`, the height above it at which all snowfall becomes ice and the depth below it at which a glacier loses as much; `erodibility`, the ice's over the rivers'; `width_m` and `thickness_ratio`, a glacier's width at a square kilometre's flux and its thickness over its width; `from_yr` and `until_yr`, the years of the run it stands in | none; 500 m and 250 m; 2; 500 m and 0.25; from 0 to the run's end |
 | `diffusivity_m2_per_yr` | Hillslope diffusivity | 0 to 1, default 0.005 |
 | `critical_slope`, `critical_slope_resistant` | The gradient no slope stands above, for rock of resistance 0 and 1 | 0.2 to 4; 0.8 and 1.6 |
 | `seed`, `roughness_m` | The seed of the starting roughness, the erodibility's variation and the routing's diagonal weights | 1; 1 m |
@@ -312,6 +313,83 @@ outlets from linear mountain belts": the title is its finding, and it was not re
 would take it further is in
 [what still reads wrong](#pictures-and-what-still-reads-wrong).
 
+### Ice
+
+A sketch may have an ice age (`ice`: the equilibrium line's altitude, how fast snow becomes ice
+above it and ice melts below it, the ice's erodibility, a glacier's width and thickness for its
+flux, and the years it stands). The model is **Hergarten 2021's stream-power form for valley
+glaciers** ([the grounding](../experiments/landform.md#ice-the-sources) says what was read and
+what each number is), chosen because it is the published scheme that fits a solver whose every
+decision is a sum, a product, a division and a square root: the ice's thickness is not solved
+from its flow, so there is no ice-flow time step (a shallow-ice solve at 16 m wants steps of
+hours), and its erosion is the rivers' law with other numbers, solved in the same sweeps.
+
+Each step the ice stands:
+
+1. **The flux.** A point makes ice at the share min((s − ELA) / `full_m`, 1) of its snowfall,
+   s the height of the ice's surface there last step; below the line the share is negative,
+   (s − ELA) / `melt_m`, a loss. The flux is the sum down the bed's own receivers (the one
+   thread: ice does not divide here), in cells making ice in full. Bare ground below the line
+   makes and loses nothing; a point the glacier covered last step passes its loss on toward
+   the glacier's line, so **a glacier pays for the melt over the whole of its swath** and ends
+   where its catchment's ice is spent. That last is this solver's reading: Hergarten's sum takes
+   the loss of every point of the catchment, ice on it or not. Tried first as a loss over a
+   width from the flux at each point of the line, it melted every slope's ice within four
+   points of the line, because a slope's parallel threads each claimed a glacier's width.
+2. **Width and thickness.** A glacier is `width_m` wide where its flux is a square kilometre's
+   and its width goes with the flux to the power 0.3 (Hergarten's equation 13); its ice is
+   `thickness_ratio` of its width thick. **The swath** is every point within half that width of
+   the glacier's line whose bed is not above the ice there; a point takes the largest flux and
+   the thickest ice of the swaths that hold it. (The power is the one in the solver that is
+   not a square root: `det::exp(0.3 * det::log(x))`, once a point of ice a step.) Ice that
+   leaves through a held point keeps its thickness there: the lattice's edge is not a snout.
+3. **Erosion** is in the rivers' own update. Under a glacier a point's stream power is
+   the ice's erodibility times the square root of its effective flux (the point's own
+   catchment to the 1/4 times the swath's flux to the 3/4: Hergarten's equation 22, square
+   roots of square roots) plus the meltwater's (the rivers' law on the cells that are not
+   ice), and **its base level is the receiver's bed raised by the ice's share of the step in
+   thickness to the receiver**: the ice's term works on the slope of the ice's surface. So a
+   tributary's bed is worn to the trunk's ice and not to its bed, and hangs above it; and a
+   bed may be worn below its receiver's where the ice thins toward a snout. Under ice the
+   flow does not divide, no bank is taken, a hollow in the bed is not a lake, and nothing is
+   laid down in the sweeps.
+4. **Till.** What the ice carries melts out with the ice: at a point that loses a share of the
+   ice reaching it, that share of the sediment reaching it is laid as till, spread over the
+   glacier's width there, kept aside until the step's books are done and then added to the
+   ground and to the sediment. A point takes till up to the glacier's thickness and no more (a
+   moraine stands no higher than the ice that built it); the rest goes on with the meltwater
+   and the rivers lay it down as outwash by their own law. This melt-out rule is this solver's.
+
+**What it makes, measured** (the tests): a trunk under ice for 100,000 years is worn 196 m
+below the same valley under a river and is 1.7 times as wide a hundred metres above its floor;
+a tributary's bed meets it at a step of 40 m in one 50 m point where the river's is graded
+(2.7 m); a glacier whose line is above its valley's floor ends inside the region, 7.3 km down
+an 8 km valley, with till under where it stood. In the two-range sketch
+([pictures](#pictures-and-what-still-reads-wrong)) the ice takes the comb out of the ranges it
+covers: the troughs are wide, they are not evenly spaced, and their heads are open bowls.
+
+**What it does not make, said plainly**:
+
+- **The trough is a parabola, not a level floor between walls.** By the stated measure (a
+  section's width half way up its lowest hundred metres over its width at the hundred: a V is
+  0.5, a parabola 0.71, a box 1) the glacier's trunk is 0.73 and the river's 0.56. The swath
+  wears the sides toward the line, but a side point's effective flux is its own small
+  catchment's to the 1/4, so it keeps a cross fall of about twice the valley's fall along, as
+  Hergarten says of his ("a slight V-shape remains"); the cross-sections of the photographs
+  need the ice's flow across the section (Harbor 1992's), which no stream-power form has.
+- **An overdeepened basin is not held by a test.** The update allows one wherever the ice thins
+  downstream faster than the bed falls, and the two-range sketch has lakes in its troughs once
+  the ice has gone; but the test's single valley, falling at 0.03, grew a hollow a metre deep
+  in one build and none in the next, so nothing is asserted. A cirque with a tarn behind a lip
+  needs a head glacier's own rotation, which is not here either.
+- **Glaciers are long.** All the snow above the line in a catchment feeds the ice and only the
+  glacier's own surface melts it, so a catchment with tall walls sends its ice far below the
+  line. `melt_m` (half of `full_m` by default) is the knob.
+- **The ice is fast.** At the default erodibility of twice the rivers' a trunk is worn 2 mm a
+  year. An ice age in a sketch is tens of thousands of years, not hundreds.
+- No crevasses, no ice surface as geometry, no snow: the field file's `ice` is what the snow
+  and glacier solver starts from.
+
 ### The rivers' sweeps
 
 Stage B's sweeps walked the flood's order, which visits the lattice by height and so in no order
@@ -538,7 +616,7 @@ count (`determinism_tests.cpp` pins the hash of the heightfield and of each fiel
 ### The field file
 
 `engine.landform.fields/3` (`engine.landform.Fields`; version 2 added `sediment` and `resistance`,
-version 3 `discharge` and `channel_width`; a reader of an older version is refused by the
+version 3 `discharge`, `channel_width`, `ice` and `till`; a reader of an older version is refused by the
 version, since the solver that wrote it is not this one). What a later solver (channels, scree, soil,
 ecology, snow) reads:
 
@@ -561,6 +639,15 @@ ecology, snow) reads:
   | `discharge` | u32 | the cells whose water passes through the point when flow divides on gentle ground ([flow that divides](#flow-that-divides)), rounded to whole cells | equal to `drainage_area` wherever nothing above the point divided. Where it is large over a width of points the river is that wide a braid or the fan that broad; where `drainage_area` is large and this is not, the one thread is a choice among many |
   | `channel_width` | u32 | millimetres: the sketch's `channel_width_m` times the square root of `discharge` in square kilometres | the downstream hydraulic geometry's exponent of one half (Leopold and Maddock 1953, not read: the classical value) with an authoring coefficient, 5 m at one square kilometre by default. A channels solver that has its own relation reads `discharge` and ignores this |
 
+  | `ice` | u32 | millimetres of ice over the point at the last step the ice stood ([ice](#ice)) | the glacier's extent and thickness: with a sketch whose ice lasts to the run's end, the ice of today; with one whose ice ended, the last glaciation's reach (its trimline is where this meets zero). Zeros with no ice age |
+  | `till` | u32 | millimetres of the sediment that melted out of the ice and nothing has removed since | never more than `sediment`. Thick in a band across a valley is a moraine; thin and wide is ground moraine |
+
+- **What the snow and glacier solver should take from `ice`**: where to put a glacier's
+  surface (the bed plus this), where it steepens over a step in the bed (an icefall: `slope`
+  under ice), and that snow lies deepest where this is not zero and the ground is gentle.
+  **Lakes**: `fill` above zero inside a former glacier's reach is a tarn or a trough lake.
+  **Waterfalls**: a hanging valley's mouth is where a tributary's `slope` jumps at the edge of
+  the trunk's `ice`. **Soil and scatter**: `till` is boulder-rich, unsorted ground.
 - **What a channels solver should take from the two**: its course from `receiver` and
   `drainage_area` as before; its width from `channel_width`; and where `discharge` spreads over
   several points beside the course, the bed it may braid or move in (with `sediment` under it,
@@ -633,8 +720,9 @@ authored heightfield. Exit 0, 1 (a file or a range), 2 (usage).
 
 ## Not stage A
 
-Each follows, and none is here: the glacial mode (troughs, cirques, overdeepened basins);
-scree at an angle of repose; soil depth; snow; a general m and n; neighbouring regions solved so a shared edge
+Each follows, and none is here: a glacier's flow across its section, so a trough has a level
+floor, and a head glacier's rotation, so a cirque has a tarn ([ice](#ice) says what stage C's
+ice does and does not make); scree at an angle of repose; soil depth; snow; a general m and n; neighbouring regions solved so a shared edge
 agrees; the rivers' sweeps in parallel by catchment (by level they are, and it buys nothing at
 these sizes: [the rivers' sweeps](#the-rivers-sweeps)); baking far-terrain maps from near output; anything
 in the editor. The limits of the model as it stands are on the grounding page.
@@ -690,6 +778,9 @@ in the editor. The limits of the model as it stands are on the grounding page.
 | a single mouth's fan is a cone (2.2 s: two solves of a hundred steps) | a funnel-shaped catchment drains through one mouth onto a level plain for 200,000 years: on an arc 500 m from the mouth the ground stands over 2 m above the plain (measured 28.2 m) and varies along the arc by under a third of that (5.4 m, 19%); with one receiver a point the same arc measures 13.9 m and 3.7 m (27%) | the flow does not divide on the fan, or the load is not carried by the shares |
 | a river's plain is wider than a point, and cutting down leaves a terrace (2.7 s: three solves) | a straight valley draining 20 km², banks three times as erodible as the bed, 400,000 years: the lower floor (points within 2 m of the lowest of their column) is 3 points wide or more (measured 8.8) and a point wider than with no lateral erosion (6.6), with over a hundred banks taken (11,310). Then the base level falls 20 m for 8,000 years: the river cuts down over a quarter of the fall in the last kilometre (7.5 m) into a floor narrower than the one it left (4.1 points against 10.2), and of the columns that owe a terrace (cut 5 m, old floor 3 points wider than the new) three quarters keep old floor within 1.5 m of where it stood (10 of 10, 6.5 points each) with its edge beside the new floor (10 of 10) | no bank is taken, or a river that cuts down takes its whole floor with it |
 | a range raised unevenly is not a comb (3.9 s: two solves of a hundred steps on a lattice that holds a dozen valleys a side) | a 9.6 km range along x raised evenly and with the default unevenness: of the mountain channels, the junctions a kilometre rise by over 15% (measured 0.149 to 0.359) and the share running straight down the range falls (60% to 43%) | the unevenness is lost, or is of the local rate and vanishes on the flanks |
+| ice leaves a trough where a river leaves a V, and a tributary hangs (`ice_tests.cpp`, 1.2 s: two solves of twenty steps) | a trunk valley falling at 0.02 with a tributary at 0.12, 100,000 years under ice and under a river: by the stated measure (width half way up the lowest 100 m over width at the 100 m: V 0.5, parabola 0.71, box 1) the river's trunk is in 0.35 to 0.65 (measured 0.56) and the glacier's a tenth more (0.73); the glacier's is half again as wide at the 100 m (59 points against 34 over three sections); the tributary's steepest step is over five times the river's (39.8 m against 2.7 m); the trunk's bed at the junction is 50 m or more below the river's (196 m), under 100 m or more of ice (220 m) | the ice wears only its line, or a tributary is graded to the trunk's bed |
+| a glacier ends where its ice is spent, and leaves till (0.4 s) | a valley falling at 0.03 whose line is 100 m above its head: over 300 points under ice (974), its snout past column 40 and 8 columns or more inside the lattice (column 146 of 160), a hundred points or more with half a metre of till (1,996), and till never more than the sediment there. Whether its bed holds a hollow is printed and not held (none) | the melt is not charged to the glacier, or till is laid that is not sediment |
+| an ice age solves to the same bytes on one, four and sixteen workers (0.7 s) | the heightfield, the ice, the till, the sediment and the discharge of a 30,000-year ice age from each, and the first three pinned on MSVC for Clang and GCC to reproduce | a loop of the ice reads what another chunk writes, or `det::exp` and `det::log` differ by toolchain |
 | a lake's floor fills level, and its mouth builds a delta | a basin fed for ten thousand years: its floor away from the mouths level within 50 mm (measured 0 and 3 mm) under water still metres deep; with `delta_share` 0.5 the shelf under the mouths holds a quarter more sediment (measured twice) and the floor stands lower | the fill follows the flood's order, or the mouths get nothing |
 
 ## Performance notes

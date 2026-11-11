@@ -164,6 +164,28 @@ of one half (Leopold and Maddock 1953, **not read**: the classical downstream ex
 al. 2015's regional curves were looked for and their coefficients not reached); the uplift's
 unevenness, 0.7 over 3 km, which is the count's own result and has no source.
 
+### Ice: the sources
+
+| What | Form used | Source |
+|---|---|---|
+| The model | Valley glaciers in the stream-power form: the ice flux a point passes on is what its catchment made less what melted, routed down the steepest descent; erosion E = K_g A_i^m S^n with the rivers' m = 1/2 and n = 1, solved by the same implicit scheme; the slope is the ice surface's | Hergarten 2021, *Earth Surf. Dynam.* 9:937–952. **Read** (the publisher's full text, through a fetch that answers questions of it: the first 100,000 of its 121,691 characters, so not its conclusions): equations 13, 14, 19 to 28 and section 6 as that reading gave them. Its extraction garbled fractions, and the reading says where it inferred |
+| Ice made and melted | p_i = p min((H − H_e) / (H_f − H_e), 1), H_e the equilibrium line and H_f the height at which all precipitation is ice; negative below the line | The same, equation 23. `full_m` 500 m is H_f − H_e of its example (8 and 10 units of 250 m). Its sum (equation 21) is over every donor; whether a negative flux is clipped the reading could not say. **This solver's**: bare ground below the line loses nothing, and a point the glacier covered last step passes its loss to the glacier; and a second slope below the line, `melt_m` 250 m. That ice melts about twice as fast with depth as it gathers with height is the published balance ratio of glaciers (Rea 2009's area-altitude balance ratios, about 1.75 worldwide), **not read**: quoted from memory of the figure, an authoring default until someone reads it |
+| A glacier's width | w ∝ A_i^0.3: width to length 0.6 (Bahr 1997) times a catchment's length to area 0.52 (Prasicek et al. 2020) | Hergarten's equations 10 to 13, **read**; Bahr and Prasicek **secondary**, through him. He says the relation "is not directly derived from data but is consistent with them". The prefactor is his unity in grid spacings and has no physical value there: `width_m` 500 m at one square kilometre of flux is **authoring**, set so a 10 km² glacier is a kilometre wide |
+| Thickness | A fixed part of the width | The same, section 6: he derives h from the flux and the slope (his equation 40) and adopts h ∝ w as simpler, 0.05 in his units, "about 0.25" in metres. `thickness_ratio` 0.25 |
+| The swath | The erosion acts over a band about the line, each point of it with an effective flux A^ε A_i^(1−ε), ε = 0.25 "a safe choice"; "the U shape is introduced by the swath construction rather than predicted" | The same, section 3 and equation 22, **read**. His band is the donors within half a width of an upstream point of the line; here it is the points within half a width whose bed is not above the ice, which is this solver's, to keep a band from climbing a wall the ice does not reach |
+| Hanging valleys and overdeepening | The slope is that of bed plus thickness, so a tributary meets a trunk at the trunk's ice and a bed may be cut below its receiver's where the ice thins; "overdeepenings, hanging valleys, and steps at confluences at least qualitatively" | The same, section 6 and the abstract, **read**. Here the thickness enters as a rise in the point's base level, weighted by the ice's share of its stream power beside the meltwater's (his equations 24 to 28, K_eff) |
+| The ice's erodibility | K_g of 1 and 2 times the rivers' | The same, its figures 4 and 7. `erodibility` 2 |
+| What the form cannot do | "The model will even fail completely, e.g., for piedmont glaciers"; width and thickness "rely on empirical scaling"; it "cannot predict under which conditions U-shaped valleys occur or how flat they become" | The same, section 8, **read**. Measured here: 0.73 by the stated measure, a parabola |
+| A trough's section | A power law y = a x^b, b near 2; and the flow across a section that makes it | Svensson 1959 and Harbor 1992 (*GSA Bull.* 104:1364). **Not read**: named as what the measure is compared with and as what is missing |
+| Till | What the ice carries is laid where the ice melts, in proportion to the melt, to no more than the ice's thickness | **This solver's**; no source. Hergarten's section 5 has a sediment law for ice (K_d,g, K_t,g) which he calls "rather based on intuition than on real-world data", not taken |
+
+Leads that were not used, so nobody looks again: a shallow-ice solve (Kessler, Anderson and Briner
+2008; Egholm et al. 2011; Braun, Zwartz and Tomkin 1999, none read) needs steps of hours at this
+spacing or a coarser lattice of its own; a perfectly plastic profile (Nye 1951; Benn and Hulton
+2010, none read) gives a thickness and no velocity, so its erosion would need the balance flux
+anyway. Hergarten's form was taken because it is that balance flux with a published erosion law
+on it.
+
 What was measured rather than read: a level is narrow. The network has as many levels as its
 longest river has points, 735 in the bench's 1,024 by 1,024 sketch twenty steps old, so the
 published way to run a sweep in parallel (Barnes's, by level) hands a thread 1,400 points at a

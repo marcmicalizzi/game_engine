@@ -509,7 +509,7 @@ TEST_CASE("landform: the files round-trip and a field answers a window") {
   landform::Fields header;
   REQUIRE_MESSAGE(landform::read_fields(files.fields, header, error), error);
   CHECK(header.width == land.width);
-  CHECK(header.fields.size() == 9u);
+  CHECK(header.fields.size() == 11u);
   CHECK(header.solver_version == landform::k_solver_version);
   REQUIRE(header.sea_level_mm.has_value());
   CHECK(*header.sea_level_mm == 0);

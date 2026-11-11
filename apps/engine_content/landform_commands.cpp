@@ -191,6 +191,21 @@ int landform_command(int argc, char** argv) {
   budget.set("settled_m3", JsonValue(land.budget.settled_m3));
   budget.set("change_m3", JsonValue(land.budget.change_m3));
   summary.set("budget", std::move(budget));
+  if (land.ice_steps > 0) {
+    // The ice age (landform.md, "Ice"): how long it stood and what it left.
+    u32 iced = 0, thickest_ice = 0, tilled = 0;
+    for (u32 p = 0; p < n; ++p) {
+      if (land.ice[p] > 0) ++iced;
+      if (land.ice[p] > thickest_ice) thickest_ice = land.ice[p];
+      if (land.till[p] >= 1000) ++tilled;
+    }
+    JsonValue ice = JsonValue::object();
+    ice.set("steps", JsonValue(land.ice_steps));
+    ice.set("iced_points", JsonValue(iced));
+    ice.set("thickest_m", JsonValue(static_cast<f64>(thickest_ice) / 1000.0));
+    ice.set("till_points", JsonValue(tilled));
+    summary.set("ice", std::move(ice));
+  }
   summary.set("solve_seconds", JsonValue(seconds));
   // Where they went (landform.md, "Performance notes").
   JsonValue timing = JsonValue::object();

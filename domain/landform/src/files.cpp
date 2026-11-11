@@ -165,7 +165,8 @@ bool write_landform(const Landform& land, const Sketch& sketch, const std::strin
   if (n == 0 || land.height_mm.size() != n || land.drainage_area.size() != n ||
       land.receiver.size() != n || land.slope.size() != n || land.erosion_rate.size() != n ||
       land.fill.size() != n || land.sediment.size() != n || land.resistance.size() != n ||
-      land.discharge.size() != n || land.channel_width.size() != n) {
+      land.discharge.size() != n || land.channel_width.size() != n || land.ice.size() != n ||
+      land.till.size() != n) {
     error = "the landform is not solved";
     return false;
   }
@@ -232,7 +233,10 @@ bool write_landform(const Landform& land, const Sketch& sketch, const std::strin
       !add("discharge", "u32", "cells whose water passes through the point where flow divides",
            land.discharge) ||
       !add("channel_width", "u32", "millimetres: a channel's width from its discharge",
-           land.channel_width))
+           land.channel_width) ||
+      !add("ice", "u32", "millimetres of ice over the point at the last step the ice stood",
+           land.ice) ||
+      !add("till", "u32", "millimetres of the sediment that melted out of the ice", land.till))
     return false;
   out.fields = in_dir(stem + ".fields.json");
   return write_text(out.fields, schema::to_json(fields), error);
