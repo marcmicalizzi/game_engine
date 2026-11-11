@@ -34,6 +34,9 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $false
+# The engine-view this starts reads no machine's material pack, as no test does (the test main's
+# switch, which a script is not run under; docs/subsystems/materials.md, "Where the hosts find it").
+$env:ENGINE_DEFAULT_MATERIALS = '0'
 
 $Root = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $BuildDir = [System.IO.Path]::GetFullPath($BuildDir)

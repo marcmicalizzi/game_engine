@@ -2470,10 +2470,13 @@ bool load_scene(const SceneDesc& desc, SceneData& out, std::string& error) {
   // The derived-data cache lives at <repo>/ddc, found by walking up from the executable to the
   // directory that holds AGENTS.md, unless a root was named. With no root there is nowhere to
   // keep a built mesh, so the cache is simply off.
+  // The default material pack is looked up whatever the root (materials.md, "Where the hosts find
+  // it"; T103), and the load says which it used.
+  if (resolved.materials.empty())
+    resolved.materials = materials::default_pack_dir(platform::executable_directory());
+  out.load.materials = resolved.materials;
   if (resolved.cache && resolved.ddc.empty()) {
     resolved.ddc = geometry::find_ddc_root(platform::executable_directory());
-    if (resolved.materials.empty())
-      resolved.materials = materials::default_pack_dir(platform::executable_directory());
     if (resolved.ddc.empty()) {
       resolved.cache = false;
       ENGINE_LOG_WARN(log_renderer, "no derived-data root above the executable",

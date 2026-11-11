@@ -387,9 +387,9 @@ struct SceneDesc {
   bool cache = true;           // read and write <ddc>/clusters/<key>.clusters
   // The material pack a generated mesh's parts fall back to (docs/subsystems/materials.md): a
   // directory holding `pack.json`. Empty and the repository's own, `<repo>/content/materials`, is
-  // looked up **when the cache root is** — the repository's defaults go with the repository's
-  // cache — so a caller that names its own derived-data root (every test does) names its pack too,
-  // or draws the flat colours.
+  // looked up (`materials::default_pack_dir`) whatever `ddc` and `cache` say — except in a test or
+  // a bench, whose main switches that lookup off for itself and every process it starts, so a test
+  // that wants a pack names one (T103). `SceneLoadReport::materials` says which was used.
   std::string materials;
   // The longest bone-matrix span the caller will hand a frame, which is what the per-frame joint
   // buffer is sized by. It is the caller's number because it comes from the animation capability's
@@ -591,6 +591,9 @@ struct SourceMesh {
 struct SceneLoadReport {
   u32 meshes = 0;   // loaded by the per-mesh pass
   u32 threads = 0;  // the job system's workers it ran over, plus the calling thread
+  // The material pack directory the load resolved (`SceneDesc::materials`, or the default lookup):
+  // empty when there was none, so a run says which pack it drew with (T103).
+  std::string materials;
   // The file's `ground: false` instances more than a metre above (`floating`) or below (`buried`)
   // the ground they stand over (`SceneDesc::instances_floating`); only counted, never refused.
   u32 instances_floating = 0;

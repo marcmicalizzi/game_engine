@@ -65,6 +65,53 @@ TEST_CASE("engine-view: usage errors exit 2") {
   CHECK(help.output.find("usage: engine-view") != std::string::npos);
 }
 
+// T103 (materials.md, "Where the hosts find it"; apps.md, "The summary's load block"): the
+// summary's `load.materials` is the pack the load drew with. This child inherits the test main's
+// switch, so with no flag it is none whatever `--ddc` says — where the checkout's own pack would
+// otherwise be read — and `--materials` names one.
+TEST_CASE("engine-view: the summary says which material pack the load used") {
+  const test::TempDir tmp("engine_view_pack");
+  REQUIRE(tmp.ok());
+  const auto materials_of = [](const Run& run, std::string& out) {
+    usize end = run.output.size();
+    while (end > 0) {
+      usize begin = run.output.find_last_of('\n', end - 1);
+      begin = begin == std::string::npos ? 0 : begin + 1;
+      JsonValue summary;
+      if (begin < end && run.output[begin] == '{' &&
+          parse_json(std::string_view(run.output).substr(begin, end - begin), summary).ok) {
+        const JsonValue* load = summary.find("load");
+        const JsonValue* materials = load != nullptr ? load->find("materials") : nullptr;
+        if (materials == nullptr || !materials->is_string()) return false;
+        out = std::string(materials->as_string());
+        return true;
+      }
+      if (begin == 0) break;
+      end = begin - 1;
+    }
+    return false;
+  };
+  const std::vector<std::string> base = {"--offscreen", "--width", "64",           "--height",
+                                         "48",          "--grid",  "33",           "--frames",
+                                         "1",           "--ddc",   tmp.file("ddc")};
+  const Run unnamed = view(base);
+  if (unnamed.exit_code == 3) {
+    MESSAGE("engine-view unavailable here: " << unnamed.output);
+    return;
+  }
+  REQUIRE_MESSAGE(unnamed.exit_code == 0, unnamed.output);
+  std::string used = "unread";
+  REQUIRE_MESSAGE(materials_of(unnamed, used), unnamed.output);
+  CHECK(used.empty());
+  std::vector<std::string> with_pack = base;
+  with_pack.push_back("--materials");
+  with_pack.push_back(tmp.file("pack"));
+  const Run named = view(with_pack);
+  REQUIRE_MESSAGE(named.exit_code == 0, named.output);
+  REQUIRE_MESSAGE(materials_of(named, used), named.output);
+  CHECK(used == tmp.file("pack"));
+}
+
 TEST_CASE("engine-view: renders frames and captures the last one") {
   const test::TempDir tmp("engine_view");
   const std::string capture = tmp.file("view.png");

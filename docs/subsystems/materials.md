@@ -102,8 +102,10 @@ the derived-data root under the pack's hash and never reads it again while the p
 (roadmap W75; [content_build](content_build.md#one-hash-per-image-and-a-packs-from-its-manifest)). A
 pack is changed by repacking it, which moves its hash; one edited in place without its manifest is
 caught only where a missing texture is built from it. `pack_at(dir)` reads a directory's pack once per
-process and keeps it (null for no `pack.json`, said once in the log); `default_pack_dir(start)` is
-`<repo>/content/materials` beside the `<repo>/ddc` that `geometry::find_ddc_root` finds.
+process and keeps it (null for no `pack.json`, said once in the log); `repository_pack_dir(start)` is
+`<repo>/content/materials` beside the `<repo>/ddc` that `geometry::find_ddc_root` finds, and
+`default_pack_dir(start)` the same unless a test has switched the default off (below, "Where the
+hosts find it").
 
 **The generated sets stand behind it** (G148). `pack_at(dir)` also reads `dir/generated/pack.json`,
 the pack `engine-content matgen` writes ([matgen](matgen.md#the-default)), and returns
@@ -139,10 +141,34 @@ which costs a second each; keying per role would save that and is not worth its 
 
 **Where the hosts find it.** `engine-content flora` and `rocks` take `--materials <dir>` and
 `--no-materials`, and default to the repository's; `build` and `build-all` use the repository's for
-a generated mesh; the renderer's `SceneDesc::materials` names one, and is filled with the
-repository's **only when the cache root is looked up too** — the repository's defaults go with the
-repository's cache, and a caller that names its own derived-data root (every test does) names its
-pack as well or draws flat.
+a generated mesh; the renderer's `SceneDesc::materials` names one, and is otherwise filled with the
+repository's **whatever the derived-data root** — named, looked up, kept or switched off with
+`cache = false` (T103, 2026-11-11). Until then the lookup sat inside the branch that looked the
+cache root up, on the reasoning that the repository's defaults go with the repository's cache; but
+the pack is the checkout's and the cache is the caller's, and every picture of two days was taken
+with `--ddc` and drew its rock, scree, walls and stones as smooth constants without anyone asking
+for that (the escarpment check scene: 5 textures with `--ddc` alone, 11 with `--materials` named).
+The load's report says which pack it resolved (`SceneLoadReport::materials`, engine-view's summary
+`load.materials`, `render.load`'s `RenderSceneInfo.materials`; empty for none), so nobody infers it
+from a texture count again.
+
+**Every default lookup is one function, and a test switches it off.** `default_pack_dir(start)` is
+what the renderer's load, `engine-content flora`, `rocks`, `cover`, `build` and `build-all`
+(`content_build::repository_pack`) and engine-host's `content.build` call when no pack is named; it
+is `repository_pack_dir(start)` — `<repo>/content/materials` — unless the process variable
+`ENGINE_DEFAULT_MATERIALS` is `0` (`k_default_materials_env`), when it is empty. **The test main and
+the bench main set it to `0`** before anything else (`tests/support/test_main.cpp`, `bench_main.cpp`),
+so every in-process load and every `engine-view`, `engine-host` or `engine-content` a test starts
+inherits it and reads no machine's pack: the alternative, every test naming an empty pack, was about
+250 call sites in 100 files, and the next test written forgets. It is set, not defaulted, so a
+developer's shell does not decide what a test reads. A named pack is always honoured, so a test that
+wants one names it; the one test that wants the *lookup* (engine-cli's content-build parity test,
+which builds a repository of its own with a pack in it) holds
+`test::ScopedEnv(test::k_default_materials_env, "1")` for its case. The two CTest scripts that start
+a host loading a scene without a test main above it set the variable in their own lines:
+`tools/mcp-check.ps1` (`mcp_bridge.mcp_check`, `mcp_check_connect`) and
+`tools/export-game-sdk.Tests.ps1` (`tools.game_sdk`). What *writes* the default pack
+is not blinded: `engine-content matgen` with no `--out` writes under `repository_pack_dir`.
 
 ## The first pack (2026-10-19)
 
@@ -198,9 +224,9 @@ pipe, not a sandstone.
   roughness instead of flattening a distant normal without compensation
   ([texture](texture.md#normal-variance-r97)). A metal part still needs its metallic
   channel packed into B.
-- **A host's pack over the protocol**: engine-host finds the repository's pack only when its cache
-  root is looked up; `render.load` has no `materials` field yet, so a client that names its own
-  `ddc` draws generated meshes flat.
+- **A host's pack over the protocol**: engine-host finds the repository's pack whatever `ddc` a
+  client names (T103), and `RenderSceneInfo.materials` says which it used; but `render.load` has no
+  `materials` field yet, so a client cannot name another one.
 - **Per-role keys**: the pack's key is over the whole manifest, so changing one role rebuilds every
   generated mesh (a second each, and the textures are keyed by their bytes, so none of them
   rebuild).
@@ -216,7 +242,7 @@ pipe, not a sandstone.
 
 **Public API.** `include/domain/materials/materials.h`: `MaterialSet`, `names_images`,
 `set_in_range`, `UvLayout`, `apply_set`, `PackRole`, `Pack`, `parse_pack`, `merge_packs`, `pack_at`,
-`default_pack_dir`, `find_role`, `pack_key`, `resolve_set`, `k_pack_format`, `k_generated_pack_dir`,
+`repository_pack_dir`, `default_pack_dir`, `k_default_materials_env`, `find_role`, `pack_key`, `resolve_set`, `k_pack_format`, `k_generated_pack_dir`,
 `k_tile_min_m`, `k_tile_max_m`, `k_normal_scale_max`.
 
 **Depends on.** `base`, `containers`, `hash`, `json`, `log`, `io` (`pack_at` alone), `geometry`

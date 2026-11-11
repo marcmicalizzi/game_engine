@@ -76,6 +76,10 @@ param(
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
+# The engine-mcp and engine-host this starts read no machine's material pack: the check is a test
+# (CTest's mcp_bridge.mcp_check and mcp_check_connect), and a test's main is not what starts them
+# here (docs/subsystems/materials.md, "Where the hosts find it").
+$env:ENGINE_DEFAULT_MATERIALS = '0'
 
 $repo = Split-Path -Parent $PSScriptRoot
 if (-not $Mcp) {
