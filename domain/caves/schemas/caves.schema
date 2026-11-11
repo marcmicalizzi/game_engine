@@ -2,6 +2,7 @@
 // recipe, a `.cave.json` mesh a scene names like a `.rock.json`. The ranges are the grounding's
 // (docs/experiments/caves.md); a number outside one is refused with its field.
 namespace engine.caves
+import "scene.schema"
 
 /// A passage segment's cross-section (Ford and Williams 2007 ch. 7; Palmer 1991).
 enum PassageProfile : u8 {
@@ -87,4 +88,198 @@ struct Passage @version(1) {
   /// zero is the default, a pale grey-buff limestone (0.55, 0.50, 0.42).
   base_color: vec3
   roughness_factor: f32 = 0.85
+}
+
+// ---- cave networks (roadmap G146; docs/subsystems/caves.md, "The network") ------------------------
+
+/// **A cave network** (the placement generator "caves"; docs/subsystems/caves.md, "The network";
+/// the grounding, docs/experiments/cave-networks.md): a branchwork in the soluble member of the
+/// scene's formation, laid out in the bed's own coordinates — trunks along strike at successive
+/// base levels, feeders and connectors along dip — with its openings found against the ground. A
+/// scene's `placements` entry carries it as its parameters.
+struct Network @version(1) {
+  /// "engine.caves.network".
+  format: string
+  version: u32 = 1
+  seed: u64 = 1
+  /// The scene's formation (`engine.scene.Formation`, W85), repeated here because a placement
+  /// generator is handed its own entry and nothing else of the scene (as the cliffs' layer does).
+  /// Absent: level beds through `origin`.
+  formation: engine.scene.Formation?
+  /// The soluble member: the name of one of the formation's `macro_beds` (looked for first) or
+  /// `beds`; the occurrence nearest `origin` is the host. Empty: `member_thickness_m` of rock
+  /// centred on the bed through `origin`.
+  member: string
+  /// With no `member`: the host's thickness across the beds, metres, 6 to 400.
+  member_thickness_m: f32 = 30 @unit(m)
+  /// How far from the member's top and base every passage stays, metres, 0.25 to 10.
+  member_margin_m: f32 = 1 @unit(m)
+  /// A point in the rock the network is laid out about: the trunks run along strike either side of
+  /// the dip line through it, where the member meets each level.
+  origin: worldpos @unit(m)
+  /// The trunks' reach along strike, metres, 40 to 2,000.
+  reach_strike_m: f32 = 160 @unit(m)
+  /// The feeders' reach up dip from their trunk, metres, 15 to 1,000.
+  reach_dip_m: f32 = 70 @unit(m)
+  /// Levels, 1 to 4: the lowest at base level, each next one `level_spacing_m` higher and older.
+  levels: u32 = 2
+  /// Between levels, metres, 4 to 40.
+  level_spacing_m: f32 = 9 @unit(m)
+  /// True: base level is the lowest ground within the reach (the valley floor). False:
+  /// `base_level_m`.
+  base_level_auto: bool = true
+  /// The water table's height, metres, when not found from the ground.
+  base_level_m: f64 = 0 @unit(m)
+  /// The lowest trunk's width at its downstream end, metres, 2.5 to 14; a tube is twice as wide as
+  /// high (docs/experiments/caves.md) and an upstream reach is narrower by the area its feeders
+  /// bring.
+  trunk_width_m: f32 = 6 @unit(m)
+  /// Feeders a hundred metres of trunk, 0 to 4.
+  feeders_per_100m: f32 = 1.5
+  /// Breakdown halls, 0 to 4, on the upper levels first (the older the level the more it has
+  /// collapsed).
+  halls: u32 = 1
+  /// Side crawls (tubes too low to walk, pinching out), 0 to 8.
+  crawls: u32 = 2
+  /// Flood bypasses round a reach of the lowest trunk (a loop), 0 to 4.
+  bypasses: u32 = 1
+  /// The most openings a lead may add beyond the ones the ground itself makes, 0 to 8: a passage
+  /// end follows the bed to the nearest daylight within `lead_reach_m`, or climbs a shaft where
+  /// the cover is under `max_shaft_m`.
+  openings: u32 = 2
+  lead_reach_m: f32 = 60 @unit(m)
+  max_shaft_m: f32 = 20 @unit(m)
+  /// The least rock over a passage that is not an opening, metres, 0.5 to 20: a strand that would
+  /// come nearer the ground ends there in a choke.
+  min_cover_m: f32 = 2 @unit(m)
+  /// A hall whose roof has less cover than this share of its span has fallen in: a fissure to
+  /// daylight, 0.1 to 1 (docs/experiments/cave-networks.md, "Halls").
+  collapse_cover: f32 = 0.33
+  /// The sediment floor's depth as a share of a tube's height, 0 to 0.6.
+  fill: f32 = 0.22
+  /// The surface lattice's spacing, metres: 0.125, 0.25 or 0.5.
+  voxel_m: f32 = 0.25 @unit(m)
+  /// The most passage a cell holds, metres along its centreline, 8 to 64.
+  cell_length_m: f32 = 24 @unit(m)
+  /// How far round a mouth the mesh owns the ground, metres, 0 to 6: the rock lip that covers the
+  /// teeth of the terrain's hole (docs/subsystems/caves.md, "Mouths").
+  apron_m: f32 = 1.75 @unit(m)
+  /// The flow the walls' scallops record, metres a second, 0.01 to 2: their length is
+  /// 22,500 nu / v (Curl 1966), never under 2.4 lattice spacings.
+  flow_speed_m_s: f32 = 0.05
+  /// How far a resistant bed stands out of a wall and a weak one back, metres, 0 to 0.6.
+  ledge_m: f32 = 0.18 @unit(m)
+  /// The walker the clearance check passes: a capsule's radius and height, metres.
+  walker_radius_m: f32 = 0.3 @unit(m)
+  walker_height_m: f32 = 1.8 @unit(m)
+  /// Dressing (a cell's speleothems, one merged mesh a cell); absent: none.
+  speleothems: Speleothems?
+  /// Where the cells' recipes are written, relative to the scene; empty: `caves` under the
+  /// derived-data root.
+  recipes: string
+  /// From this ring of a streamed world outward only the cells that hold a mouth are placed.
+  far_ring: u32 = 2
+  /// The limestone's linear colour where no pack has a `rock/limestone` set; zero is the default.
+  base_color: vec3
+}
+
+/// How a station's section is turned.
+enum SectionFrame : u8 {
+  /// A tube: wide along the bed, across the passage; high along the bed's normal.
+  Bed = 0
+  /// A canyon: wide across the passage, level; high plumb.
+  Plumb = 1
+  /// A shaft or a fissure: the centreline is plumb, the section wide along strike.
+  Shaft = 2
+}
+
+/// One station of a cell's recipe: a point of a centreline and the section there, whole
+/// millimetres. Two stations in a row with one `edge` and consecutive `index` are a segment.
+struct CellStation @version(1) {
+  x: i64 = 0
+  y: i64 = 0
+  z: i64 = 0
+  /// The centreline's direction here, a unit vector times 2^20, and the distance along the edge.
+  tx: i32 = 0
+  ty: i32 = 0
+  tz: i32 = 0
+  s: i64 = 0
+  /// The tube's half width and half height (0: none).
+  a: i32 = 0
+  b: i32 = 0
+  /// The canyon cut down from the centre: half width (0: none), top and bottom from the centre,
+  /// plumb.
+  slot_hw: i32 = 0
+  slot_top: i32 = 0
+  slot_bot: i32 = 0
+  /// The sediment floor's height in the world.
+  floor: i64 = 0
+  edge: u32 = 0
+  index: u32 = 0
+  cell: u32 = 0
+  frame: SectionFrame = Bed
+  /// Bit 0: the walls here carry scallops (water flowed full or fast).
+  flags: u32 = 0
+}
+
+/// A breakdown hall of a cell's recipe: an ellipsoid's upper part over a pile, whole millimetres.
+struct CellHall @version(1) {
+  x: i64 = 0
+  y: i64 = 0
+  z: i64 = 0
+  /// Radii along its long axis, across, and up.
+  ra: i32 = 0
+  rb: i32 = 0
+  rh: i32 = 0
+  /// The long axis in plan, a unit vector times 2^20.
+  axis_x: i32 = 1048576
+  axis_z: i32 = 0
+  /// The floor's height in the world, and the pile's height over it at the middle.
+  floor: i64 = 0
+  pile: i32 = 0
+  cell: u32 = 0
+  seed: u64 = 0
+}
+
+/// **One cell of a network** (`<name>.cavecell.json`, the mesh generator "cavecell";
+/// docs/subsystems/caves.md, "Cells"): everything the surface inside the cell's bounds is a
+/// function of, in whole millimetres of the world, so a cell is built with no plan and no ground
+/// in hand and two cells that share a lattice cube make the same vertex in it.
+struct CellRecipe @version(1) {
+  /// "engine.caves.cell".
+  format: string
+  version: u32 = 1
+  seed: u64 = 1
+  /// 0: the cell's rock (walls, floor, water, the mouth's apron). 1: its dressing.
+  part: u32 = 0
+  cell: u32 = 0
+  voxel_mm: i32 = 250
+  /// The plan's anchor: every number below is evaluated from it, so two cells compute one field.
+  anchor_x: i64 = 0
+  anchor_y: i64 = 0
+  anchor_z: i64 = 0
+  /// The cell's bounds on the world's lattice, inclusive lattice indices.
+  lo_x: i64 = 0
+  lo_y: i64 = 0
+  lo_z: i64 = 0
+  hi_x: i64 = 0
+  hi_y: i64 = 0
+  hi_z: i64 = 0
+  formation: engine.scene.Formation?
+  has_water: bool = false
+  water: i64 = 0
+  stations: CellStation[]
+  halls: CellHall[]
+  /// The ground under a mouth: heights in millimetres from `anchor_y` on the lattice's columns
+  /// `patch_i .. patch_i + patch_nx - 1` by `patch_j ..`, x fastest. Empty: rock everywhere.
+  patch_i: i64 = 0
+  patch_j: i64 = 0
+  patch_nx: u32 = 0
+  patch_nz: u32 = 0
+  patch: i32[]
+  apron_mm: i32 = 0
+  scallop_mm: i32 = 600
+  ledge_mm: i32 = 180
+  speleothems: Speleothems?
+  base_color: vec3
 }
