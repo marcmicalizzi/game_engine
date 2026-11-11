@@ -1,5 +1,5 @@
 // Size table for domain/matgen (ADR-0019): the texel a build walks (one per texel of the set
-// while it is built: 80 MB at 2,048 squared, freed when the four images are written) and the
+// while it is built: 84 MB at 2,048 squared, freed when the four images are written) and the
 // window a build starts at.
 #include "../src/field.h"
 

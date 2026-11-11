@@ -178,7 +178,48 @@ from `det::log` and `det::cos`, a cube root is `det::exp(det::log(x) / 3)`, a ta
 
 ## Budgets
 
-See "Performance notes".
+A set costs nothing in a frame and nothing per tile: it is built once per recipe, by a command,
+and from then on it is a pack's images — three textures a role the renderer uploads (colour,
+roughness and normal; height is carried), 1.4 MB each at 1,024 squared and 5.6 MB at 2,048 in
+the `.tex` container (the figures [materials](materials.md#the-first-pack-2026-10-19) measured
+for a pack's maps of those sizes), shared by every mesh that samples the role. Nothing scales
+with the world's size. What a build costs is under "What it measured".
+
+## What it measured
+
+`engine-content matgen --force` in `msvc-release`, every default, 2026-11-10 23:27 to 23:31 on
+the shared machine (RTX 5090 box, 36 threads): **not a quiet run** — about twelve agents were
+building and testing, the processors read 65 % busy at the end and free memory fell under 2 GB
+at the start, so each figure is an upper bound. One thread; `build` is `build_set`, `write` the
+five PNGs.
+
+| Set | 1,024: build ms | write ms | PNG bytes | 2,048: build ms | write ms | PNG bytes |
+|---|---|---|---|---|---|---|
+| `gravel/bed` | 873 | 426 | 4,975,020 | 5,117 | 1,470 | 16,698,883 |
+| `sand/bar` | 1,276 | 833 | 4,255,260 | 2,691 | 1,246 | 13,420,868 |
+| `rock/scree` | 1,552 | 813 | 4,880,654 | 3,664 | 1,344 | 17,910,380 |
+| `rock/granite` | 1,818 | 778 | 3,044,649 | 7,181 | 1,099 | 9,220,140 |
+| `rock/granite_wet` | 2,294 | 614 | 2,812,091 | 7,174 | 1,155 | 8,468,409 |
+| `rock/basalt` | 1,696 | 338 | 3,008,115 | 8,826 | 1,222 | 10,145,953 |
+| `rock/limestone` | 2,598 | 572 | 3,459,416 | 9,344 | 1,492 | 11,728,415 |
+| `rock/sandstone` | 2,554 | 746 | 2,911,626 | 6,866 | 1,167 | 9,887,204 |
+| `ground/moss` | 1,013 | 357 | 4,796,841 | 5,815 | 1,733 | 15,933,246 |
+| `ground/soil` | 983 | 315 | 5,227,616 | 5,973 | 6,132 | 20,619,558 |
+| `ground/thatch` | 1,494 | 332 | 5,621,561 | 6,044 | 1,467 | 20,830,493 |
+| `ground/turf` | 1,424 | 386 | 6,300,743 | 6,167 | 1,461 | 22,902,104 |
+
+The whole command: **28.8 s and 51.3 MB of PNG at 1,024, 98.1 s and 177.8 MB at 2,048**, twelve
+sets, 73 files; run again with nothing changed, 3.3 s and 1.8 s (it reads twelve sidecars). An
+earlier run of the same binary at 1,024 beside heavier load took 67 s, which is how far these
+move with the machine. The rock kind is the dearest a texel (1.7 to 2.2 microseconds at 2,048):
+some eighty lattice hashes in f64 for its crystals, relief, stain, joints and patches; nobody
+has tried to make it cheaper, because it is paid once. Laying a floor's leaves walked each
+leaf's whole bounding square at first (17.9 s for the thatch at 2,048); walking only the texels
+near the leaf's line made it 6.0 s and the same bytes.
+
+Resident while a set is built: 61 bytes a texel (the field's 20, the hollows' three integer
+planes, the granular kind's top, id and taken planes, the four images) — 64 MB at 1,024 squared,
+256 MB at 2,048 — all freed when the images are written.
 
 **Owned data.** The recipe type (`schemas/matgen.schema`), the default recipes, `k_matgen_version`.
 The pack directory `engine-content matgen` writes is derived data.
@@ -202,12 +243,14 @@ tables; the mip chain in the tests), `matgen_schemas`. No capability.
 **Testing.** `tools/dev.ps1 test -Filter matgen`: the rotation test over seven defaults; the
 seam's step; the grid count over five seeds; scree against the bed; a rock's shares and a
 floor's covers over three seeds each; every default's mean albedo and roughness inside its
-material's range; a mip chain's mean; a recipe read, refused and keyed; the pins. `materials`'
-tests hold `merge_packs` and `pack_at`'s generated pack. Benchmarks:
-`tools/dev.ps1 bench -Filter 'matgen.*'`.
+material's range; a mip chain's mean; a recipe read, refused and keyed; the pins (17 s in
+`msvc-debug`, the longest case 4.4 s: twelve defaults built at 256). `materials`' tests hold
+`merge_packs` and `pack_at`'s generated pack; `apps/engine_content/tests/matgen_tests.cpp` runs
+the command (two roles built, read back through `pack_at`, built again and skipped, a third role
+joining the manifest, the refusals; 1.1 s). Benchmarks: `tools/dev.ps1 bench -Filter 'matgen.*'`.
 
 **Performance notes.** Nothing here is in a frame: a set is built once per recipe by the
-command. Measured figures are in "What it measured" below.
+command. Measured figures are in "What it measured" above.
 
 ## Not yet
 

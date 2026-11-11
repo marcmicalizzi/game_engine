@@ -8,6 +8,19 @@ the sets are generated images, and generated images are never committed (AGENTS.
 [content generation](../../docs/content-generation.md#material-packs)). A checkout without a pack
 draws every palm, tree and rock in the flat colours it always had, with one log line per role.
 
+## Generated sets: `generated/`
+
+```powershell
+build/msvc-release/bin/engine-content matgen
+```
+
+writes the engine's own generated sets — a gravel bed, a sand bar, scree, five rock faces, four
+ground floors ([matgen](../../docs/subsystems/matgen.md#the-defaults)) — into `generated/` here, a
+pack of its own that the lookup reads **behind** the fetched one: a role the fetched pack has is
+the fetched pack's, every other role the generated one's. It needs no download, and a second run
+builds only what changed. A fetch replaces what is here, `generated/` included: run the command
+again after one.
+
 ## Fetching
 
 ```powershell

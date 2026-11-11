@@ -13,10 +13,34 @@ void lay_fragment(Field& field, const Fragment& f, Vector<f32>* cover) {
   const f64 texel = field.texel_m;
   const i64 reach = static_cast<i64>((f.half_m + f.width_m) / texel) + 2;
   const i64 tcx = f.cx / k_sub, tcy = f.cy / k_sub;
+  // A row touches only the texels within `band` of the leaf's centre line (further ones have no
+  // coverage): the stretch of the line that crosses the band of rows `band` either side of this
+  // one, widened by `band`. A leaf is a few texels wide and a hundred long, so walking its whole
+  // bounding square would visit a hundred texels for each one it covers. The bound is wider than
+  // the leaf, so what is skipped was never written.
+  const f64 band = 0.5 * f.width_m + texel;
+  const f64 start = static_cast<f64>(f.cx % k_sub) / static_cast<f64>(k_sub);
   for (i64 ty = tcy - reach; ty <= tcy + reach; ++ty) {
     const f64 ly = offset_texels(ty, f.cy, size) * texel;
     const u32 sy = field.stored(ty, field.window.y);
-    for (i64 tx = tcx - reach; tx <= tcx + reach; ++tx) {
+    f64 xa = -f.half_m, xb = f.half_m;
+    if (std::fabs(f.dir_y) > 1.0e-9) {
+      f64 ta = (ly - band) / f.dir_y, tb = (ly + band) / f.dir_y;
+      if (ta > tb) std::swap(ta, tb);
+      ta = std::max(ta, -f.half_m);
+      tb = std::min(tb, f.half_m);
+      if (ta > tb) continue;
+      xa = ta * f.dir_x;
+      xb = tb * f.dir_x;
+      if (xa > xb) std::swap(xa, xb);
+    } else if (std::fabs(ly) > band) {
+      continue;
+    }
+    const i64 ka =
+        std::max(-reach, static_cast<i64>(std::floor((xa - band) / texel - 0.5 + start)) - 1);
+    const i64 kb =
+        std::min(reach, static_cast<i64>(std::floor((xb + band) / texel - 0.5 + start)) + 2);
+    for (i64 tx = tcx + ka; tx <= tcx + kb; ++tx) {
       const f64 lx = offset_texels(tx, f.cx, size) * texel;
       const f64 along = std::clamp(lx * f.dir_x + ly * f.dir_y, -f.half_m, f.half_m);
       const f64 ex = lx - along * f.dir_x, ey = ly - along * f.dir_y;
