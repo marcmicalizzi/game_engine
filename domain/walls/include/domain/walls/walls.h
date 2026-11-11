@@ -42,23 +42,53 @@ namespace engine::walls {
 // ---- the module solver -----------------------------------------------------------------------
 
 // The solver's version, in every recipe's source hash: a change that moves a stone bumps it.
-inline constexpr u32 k_wall_version = 3;
+// 4 (G177): stones laid with sloping beds and tops, jumpers, thin stones and lumps; a rough cope.
+inline constexpr u32 k_wall_version = 4;
 
 // What a stone is in a solved module (the report's, for the tests and the page's counts).
 enum class StoneRole : u8 { face, footing, through, tie, pinning, cover, cope, rubble, core };
 
 // One stone of a solved module, in the module's frame (x along the wall, y up, z across; the
-// module's middle at the origin, its foot line y = grade * x): its bed's and top's level, its
-// extent along the wall, the face it belongs to (+1 the +z face, -1 the -z face, 0 both or none),
-// the sweep (the course) it was laid in, its role. `z0`/`z1` are its extent across the wall.
+// module's middle at the origin, its foot line y = grade * x): its extent along the wall, the
+// lowest point of its bed and the highest of its top, the face it belongs to (+1 the +z face, -1
+// the -z face, 0 both or none), the sweep (the course) it was laid in, its role. `z0`/`z1` are its
+// extent across the wall. A face stone is not a box (G177; walls.md, "The module"): its bed runs
+// from `bed0` at x0 to `bed1` at x1 and its top from `top0` to `top1`, and a lump's top rises to a
+// ridge at (`peak_x`, `peak_y`) between them (`is_lump`); `bed_at` and `top_at` read them.
 struct Stone {
   f32 x0 = 0, x1 = 0;
   f32 bed = 0, top = 0;
   f32 z0 = 0, z1 = 0;
+  f32 bed0 = 0, bed1 = 0;
+  f32 top0 = 0, top1 = 0;
+  f32 peak_x = 0, peak_y = 0;
   u16 sweep = 0;
   i8 side = 0;
   StoneRole role = StoneRole::face;
 };
+
+// A lump: a stone whose top rises to a ridge between its ends, so its face is a pentagon.
+inline bool is_lump(const Stone& s) noexcept { return s.peak_x > s.x0 && s.peak_x < s.x1; }
+// The stone's bed and top at x along the wall (clamped to its extent).
+inline f64 bed_at(const Stone& s, f64 x) noexcept {
+  const f64 a = static_cast<f64>(s.x0), b = static_cast<f64>(s.x1);
+  const f64 b0 = static_cast<f64>(s.bed0), b1 = static_cast<f64>(s.bed1);
+  if (b <= a || x <= a) return b0;
+  if (x >= b) return b1;
+  return b0 + (b1 - b0) * (x - a) / (b - a);
+}
+inline f64 top_at(const Stone& s, f64 x) noexcept {
+  const f64 a = static_cast<f64>(s.x0), b = static_cast<f64>(s.x1);
+  const f64 t0 = static_cast<f64>(s.top0), t1 = static_cast<f64>(s.top1);
+  if (b <= a || x <= a) return t0;
+  if (x >= b) return t1;
+  if (is_lump(s)) {
+    const f64 p = static_cast<f64>(s.peak_x), py = static_cast<f64>(s.peak_y);
+    if (x <= p) return t0 + (py - t0) * (x - a) / (p - a);
+    return py + (t1 - py) * (x - p) / (b - p);
+  }
+  return t0 + (t1 - t0) * (x - a) / (b - a);
+}
 
 struct ModuleReport {
   Vector<Stone> stones;
