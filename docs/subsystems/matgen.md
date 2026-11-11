@@ -265,8 +265,10 @@ Every decision is a hash, an integer, IEEE `+ - * /`, `sqrt`, `floor` or the eng
 table. The build is single-threaded, so there is no thread count for the bytes to depend on.
 `matgen_tests.cpp` pins the four images' hash for six defaults at 256 texels, taken on MSVC in
 `msvc-debug` and re-taken for `k_matgen_version` 2 (G149 to G153; the turf's pin did not move,
-since the ground kind did not change). Whether the Linux containers reproduced the version-2
-pins is said in the row's hand-back and here once a log says so. The streaks' distance below a
+since the ground kind did not change). **The Linux containers reproduce the version-2 pins**:
+`linux-clang-debug` (2026-11-11 10:18, at 87eed81b) and `linux-gcc-release` (10:40, at
+7ac75070), `-Filter "matgen|materials"`, every test passed; `linux-gcc-release-v2` is the
+row's hand-back's to say. The streaks' distance below a
 source is an integer from two sweeps round each column, the lichen's owner of a texel is decided
 by an f64 comparison of two quotients of the same arithmetic, so neither adds an operation a
 toolchain rounds its own way. Nothing was needed that `core/math/deterministic.h` lacks: a normal draw is Box and Muller's
