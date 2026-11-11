@@ -8,7 +8,9 @@
 #include <domain/scene_gen/scene_gen.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
@@ -185,8 +187,13 @@ bool stand_in(const std::string& dir, const MeadowSpeciesTraits& species, const 
   std::error_code ec;
   if (std::filesystem::exists(path, ec)) return true;
   std::filesystem::create_directories(dir, ec);
+  // A partial name of the writer's own, so two hosts opening the same scene at once never write
+  // into one file; the rename then lands the same bytes either way.
   const std::filesystem::path partial =
-      std::filesystem::path(dir) / (std::string(name) + ".partial");
+      std::filesystem::path(dir) /
+      (std::string(name) + "." +
+       std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()) + "." +
+       std::to_string(reinterpret_cast<std::uintptr_t>(&text)) + ".partial");
   {
     std::ofstream stream(partial, std::ios::binary | std::ios::trunc);
     stream << text;
@@ -196,6 +203,10 @@ bool stand_in(const std::string& dir, const MeadowSpeciesTraits& species, const 
     }
   }
   std::filesystem::rename(partial, path, ec);
+  if (ec) {
+    std::error_code removed;
+    std::filesystem::remove(partial, removed);
+  }
   if (ec && !std::filesystem::exists(path)) {
     if (error) *error = "sward: cannot write " + out.path;
     return false;
@@ -303,7 +314,8 @@ bool open_forms(Entry& entry, const scene_gen::Context& context, std::string* er
   }
   const auto& m = p.meadow;
   if (!(m.moisture_base >= 1 && m.moisture_base <= 9) ||
-      !(m.wet_reach_m >= .5f && m.wet_reach_m <= scene_gen::k_site_water_reach_m) ||
+      !(m.wet_reach_m >= .5f &&
+        static_cast<f64>(m.wet_reach_m) <= scene_gen::k_site_water_reach_m) ||
       !(m.heat_dry >= 0 && m.heat_dry <= 10) || !(m.slope_dry >= 0 && m.slope_dry <= 10) ||
       !(m.hollow_wet >= 0 && m.hollow_wet <= 200) || !(m.light_open >= 1 && m.light_open <= 9) ||
       !(m.light_shade >= 1 && m.light_shade <= 9))
