@@ -1093,6 +1093,67 @@ class GpuScene {
     return d < static_cache_rebuild_.size() && static_cache_rebuild_[d] != 0;
   }
 
+  // ---- meshes that come and go (renderer.md, "Meshes that come and go"; R142) -------------------
+  //
+  // A scene whose instances come and go keeps **room for meshes that arrive after the load**: a
+  // run of mesh records past the scene's own and the ring slots', an arena of clusters, and — laid
+  // out by the cluster arena, a cluster's worst case apiece — the vertices and triangles they
+  // index, in the scene's one set of buffers, as a terrain ring's slots are (above). A tile's mesh
+  // (`PlacementMeshData`) is **admitted** into a slot the caller names: its clusters with their
+  // offsets moved to the arena, its LOD records, 16-bit positions, attributes, triangles, and with
+  // ray tracing its float positions and 8-bit indices, its materials' constants into the material
+  // arena and its clusters' material indices — all staged for the next frame to copy, in the pass
+  // that copies a ring's chunks, ordered after every frame in flight and before anything that reads
+  // geometry. From that frame a tail instance may name `mesh_room().first_mesh + slot`. A mesh is
+  // **retired** once no instance names it: its record draws no cluster from the next frame and its
+  // room is free at once, since the copy that reuses it is ordered the same way.
+  //
+  // **What does not arrive** (said on the page): the materials' textures (an admitted mesh draws
+  // its materials' constants), coverage errors, a motion contract (it is rigid), cluster templates,
+  // static structures and the resident cluster cache (the chain builds it per frame, as it builds
+  // any mesh that has neither). A paged scene (`streamed()`) has no room: its payload is a page
+  // pool, and a mesh that arrives would have to arrive as pages.
+  struct MeshRoom {
+    u32 first_mesh = 0;     // the scene mesh of slot 0; slot s is mesh `first_mesh + s`
+    u32 slots = 0;          // meshes at once
+    u32 clusters = 0;       // the arena's clusters
+    u32 max_clusters = 0;   // the most one mesh may have (the chain is sized by it)
+    u32 materials = 0;      // the material arena's entries
+    u64 cluster_bytes = 0;  // device bytes a cluster of the arena reserves, payload included
+    u64 bytes = 0;          // what the room holds on the device, whatever is in it
+  };
+  const MeshRoom& mesh_room() const noexcept { return mesh_room_; }
+  struct MeshUse {
+    u32 meshes = 0;         // resident now
+    u32 clusters = 0;       // of the arena, taken
+    u32 materials = 0;      // of the material arena, taken
+    u32 largest_free = 0;   // the longest free run of clusters: what the next mesh may be
+    u64 bytes = 0;          // reserved for the resident meshes: clusters x `cluster_bytes`
+    u64 payload_bytes = 0;  // what they actually hold
+    u64 admitted = 0;       // over the run
+    u64 retired = 0;
+    u64 staged_bytes = 0;  // copied onto the device by admissions, over the run
+  };
+  MeshUse mesh_use() const noexcept;
+  // Whether a mesh of this many clusters and materials has room now (a slot is the caller's).
+  bool mesh_fits(u32 clusters, u32 materials) const noexcept;
+  // How many material table entries a mesh takes: its materials and the default after them.
+  static u32 mesh_materials(const PlacementMeshData& mesh) noexcept {
+    return mesh.source.data.materials.size() + 1u;
+  }
+  // Admits `data` as scene mesh `mesh` (a free slot of the room). False, with a sentence and
+  // nothing changed, for a mesh that is no free slot, one with no clusters or more than
+  // `max_clusters`, a cluster past the scene's per-cluster limits, or no room in an arena.
+  bool admit_mesh(u32 mesh, const PlacementMeshData& data, std::string* error = nullptr);
+  // Lets scene mesh `mesh` go. The caller's contract: no instance of the tail names it.
+  void retire_mesh(u32 mesh) noexcept;
+  bool mesh_resident(u32 mesh) const noexcept;
+  // Scene mesh `mesh`'s run of the cluster array as the device holds it now — the load's, a ring
+  // slot's, or a mesh slot's (empty when nothing is admitted) — which is how a reader turns a
+  // captured cluster id into a cluster of its mesh, wherever the mesh's clusters landed.
+  u32 mesh_first_cluster(u32 mesh) const noexcept;
+  u32 mesh_cluster_count(u32 mesh) const noexcept;
+
   // ---- geometry streaming (04 §4.3 step 3, §4.9; docs/subsystems/renderer.md) -----------------
   //
   // **What is paged and what is not.** The descriptors stay: `clusters`, `lods`,
@@ -1451,6 +1512,34 @@ class GpuScene {
   u64 chunk_staging_bytes(const TerrainChunk& chunk) const noexcept;
   static bool take_range(Vector<Range>& free, u64 count, Range& out) noexcept;
   static void give_range(Vector<Range>& free, Range range) noexcept;
+  // ---- meshes that come and go (gpu_scene_meshes.cpp) ----
+  struct MeshSlot {
+    Range clusters;   // of the arena, absolute cluster indices
+    Range materials;  // of the material table, absolute entries
+    u64 payload = 0;
+    bool loaded = false;
+  };
+  bool lay_out_mesh_slots(std::string* error);
+  // The staging for a copy the next frame records: the terrain's ring, or a buffer of its own.
+  bool stage_bytes(u64 bytes, gfx::BufferResource& staging, u64& at, std::string* error);
+  // A mesh a tail instance may name and the pair expansion writes: the scene's own, or one of the
+  // room's (never a ring slot's, whose pairs are its slot's, nor the null mesh of a hole).
+  bool tail_mesh(u32 mesh) const noexcept {
+    return mesh < data_->parts.size() ||
+           (mesh >= mesh_room_.first_mesh && mesh - mesh_room_.first_mesh < mesh_room_.slots);
+  }
+  MeshRoom mesh_room_;
+  MeshUse mesh_use_;
+  Vector<MeshSlot> mesh_slots_;
+  Vector<Range> free_mesh_clusters_;
+  Vector<Range> free_mesh_materials_;
+  u32 mesh_part_base_ = 0;      // slot 0's place in `slot_parts_`
+  u32 mesh_cluster_base_ = 0;   // the arena's first cluster
+  u64 mesh_vertex_base_ = 0;    // the arenas' first vertex and triangle: cluster c of the arena
+  u64 mesh_triangle_base_ = 0;  // owns `mesh_cluster_vertices_` and `_triangles_` from them
+  u32 mesh_cluster_vertices_ = 0;
+  u32 mesh_cluster_triangles_ = 0;
+  u32 mesh_material_base_arena_ = 0;              // the material arena's first table entry
   Vector<RingSlots> ring_slots_;                  // index level - 1
   Vector<geometry::ClusterMeshPart> slot_parts_;  // mesh data.parts.size() + k
   u64 scene_vertex_count_ = 0;                    // the scene's own, where the arenas start

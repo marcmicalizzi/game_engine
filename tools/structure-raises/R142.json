@@ -1,0 +1,14 @@
+{
+  "format": "engine.structure-raise.v1",
+  "name": "R142",
+  "reason": "R142, meshes that arrive with their tiles: gpu_scene.h gains the mesh room's public surface and members (the room itself is gpu_scene_meshes.cpp); gpu_scene.cpp the room's layout call, its records, the material arena, the tail's checks for a mesh of the room and the geometry hand-over for a scene with no terrain levels; record_frame the two material buffers in the terrain upload pass and the pair expansion's read of the mesh records; renderer.md the section Meshes that come and go; world.md the section A tile's meshes: residency by reference",
+  "date": "2026-11-10",
+  "by": "Marc Micalizzi",
+  "deltas": {
+    "renderer.record_frame.lines": 11,
+    "renderer.gpu_scene_cpp.lines": 51,
+    "renderer.gpu_scene_h.lines": 89,
+    "page:docs/subsystems/renderer.md": 8882,
+    "page:docs/subsystems/world.md": 7378
+  }
+}

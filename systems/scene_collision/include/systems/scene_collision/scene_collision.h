@@ -71,7 +71,8 @@
 
 namespace engine::renderer {
 struct SceneData;
-}
+class UncutGround;
+}  // namespace engine::renderer
 namespace engine::physics {
 class CharacterBody;
 }
@@ -473,6 +474,9 @@ class SceneCollision {
   i64 tile_mm_ = 32000;
   GroundTime time_;
   scene::WorldRings world_rings_;
+  // The ground before its cuts, for a generator that plans them (`scene_gen::Context::uncut`).
+  std::unique_ptr<renderer::UncutGround> uncut_;
+  scene_gen::Context::UncutGround uncut_hook_;
   Vector<std::unique_ptr<Entry>> entries_;
   // A scene read whole: for every tile its instances reach, their indices.
   FlatMap<u64, Vector<u32>> bins_;

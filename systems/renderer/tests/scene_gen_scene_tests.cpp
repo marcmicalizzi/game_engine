@@ -95,7 +95,7 @@ bool row_expand(void* state, const scene_gen::Context& context, scene_gen::Place
   const Row& row = *static_cast<const Row*>(state);
   g_log += "expand " + row.name + ";";
   out.meshes.push_back(
-      scene_gen::PlacementMesh{"rows/" + row.name + ".glb", "rows/" + row.name, 0});
+      scene_gen::PlacementMesh{"rows/" + row.name + ".glb", "rows/" + row.name, 0, {}, 0.0f});
   for (u32 i = 0; i < row.count; ++i) {
     scene_gen::Placement p;
     p.mesh = 0;
@@ -110,7 +110,8 @@ bool row_expand(void* state, const scene_gen::Context& context, scene_gen::Place
 bool row_meshes(void* state, const scene_gen::Context&, Vector<scene_gen::PlacementMesh>& out,
                 std::string*) {
   const Row& row = *static_cast<const Row*>(state);
-  out.push_back(scene_gen::PlacementMesh{"rows/" + row.name + ".glb", "rows/" + row.name, 0});
+  out.push_back(
+      scene_gen::PlacementMesh{"rows/" + row.name + ".glb", "rows/" + row.name, 0, {}, 0.0f});
   return true;
 }
 bool row_tile(void*, scene_gen::TileCoord, const scene_gen::Context&, scene_gen::Placements&,
@@ -322,7 +323,7 @@ scene_gen::Placement piece_placement(const Piece& piece, const scene_gen::Ground
 }
 bool pieces_expand(void*, const scene_gen::Context& context, scene_gen::Placements& out,
                    std::string*) {
-  out.meshes.push_back(scene_gen::PlacementMesh{"pieces/box.glb", "pieces/box", 0});
+  out.meshes.push_back(scene_gen::PlacementMesh{"pieces/box.glb", "pieces/box", 0, {}, 0.0f});
   for (const Piece& piece : g_pieces)
     out.instances.push_back(piece_placement(piece, context.ground));
   out.things = g_pieces.size();

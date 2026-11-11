@@ -260,6 +260,8 @@ scene_gen::Context SceneCollision::context_for(const Entry& entry) const noexcep
   if (ground_ != nullptr) context.ground = ground_->view();
   if (!scene_->terrain.exclusion.empty()) context.exclusion = &scene_->terrain.exclusion;
   context.site = &scene_->terrain.site;
+  if (scene_->terrain.formation.has_value()) context.formation = &*scene_->terrain.formation;
+  context.uncut_ground = uncut_hook_;
   // The inner ring's representation: what is drawn round the walker (the ruins' blocks near).
   context.world = &world_rings_;
   context.ring = 0;
@@ -282,6 +284,8 @@ bool SceneCollision::create(physics::World& physics, const renderer::SceneData& 
   jobs_ = jobs;
   scene_ = &scene;
   ground_ = ground != nullptr && ground->valid() ? ground : nullptr;
+  uncut_ = std::make_unique<renderer::UncutGround>(scene.terrain);
+  uncut_hook_ = uncut_->hook();
   explicit_source_ = tiles != nullptr && tiles->valid();
   source_ = explicit_source_     ? *tiles
             : ground_ != nullptr ? ground_->tiles()

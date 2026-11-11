@@ -64,3 +64,4 @@ Numbered, dated, and immutable once accepted. To change a decision, write a new 
 | [0058](0058-a-load-trusts-recorded-identities.md) | A load trusts the identities its derived data and a pack's manifest record | Proposed |
 | [0059](0059-the-far-forest-is-the-renderers-per-world-tile.md) | The far forest is the renderer's, one prefix instance per world tile | Proposed |
 | [0060](0060-generators-stay-in-domain-tagged.md) | Generators stay in `domain/`, tagged: one list the hosts link, a rule over the tag instead of a layer | Proposed |
+| [0061](0061-a-tiles-meshes-arrive-with-the-tile.md) | A tile's meshes arrive with the tile, and are resident by reference: a recipe handed by `tile`, room reserved in the scene's buffers, a tile that waits for its meshes | Proposed |

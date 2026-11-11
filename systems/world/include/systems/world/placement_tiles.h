@@ -36,6 +36,7 @@
 #include <systems/renderer/gpu_scene.h>
 #include <systems/renderer/scene.h>
 #include <systems/renderer/terrain.h>
+#include <systems/world/tile_meshes.h>
 #include <systems/world/tile_ring.h>
 #include <systems/world/world.h>
 
@@ -109,6 +110,13 @@ struct PlacementTilesStats {
   u32 withheld = 0;
   u32 instances = 0;
   u32 pairs = 0;
+  // Now: the tiles whose last build waits for its meshes (drawn as they were before it), and of
+  // those the ones the mesh room refused at the last commit — the residency budget's withheld
+  // tiles (world.md, "A tile's meshes: residency by reference"). Over the run: the tiles that gave
+  // their meshes up to a nearer one.
+  u32 mesh_waiting = 0;
+  u32 mesh_starved = 0;
+  u64 mesh_yielded = 0;
   // Now, by the ring each drawn tile is in: its tiles, instances and pairs, and the tiles withheld
   // there — what a streamed world's accounting reports (renderer.md, "The pair accounting").
   u32 ring_tiles[k_max_rings] = {};
@@ -139,6 +147,19 @@ class PlacementTiles {
   // The ring whose scores order the tiles of one ring when the pair budget cannot draw them all:
   // the nearest first. Without one, tile order.
   void set_ring(const TileRing* ring) noexcept { ring_ = ring; }
+
+  // **A tile's meshes** (world.md, "A tile's meshes: residency by reference"; tile_meshes.h): the
+  // room they arrive into (the renderer's `GpuScene::mesh_room()`, as a `TileMeshConfig`), where an
+  // admitted one goes, and the job system their builds run on (null: where the tile is built).
+  // Called after `create` and before the first tile; without it a tile that hands a mesh is
+  // refused with a sentence, and the rest of the tile is drawn. A tile whose build names a mesh
+  // that is not resident **waits**: it draws what it drew before (nothing, for a new tile) until
+  // every mesh it names is in, so no frame draws an instance of a mesh that is not there and no
+  // ring change opens a hole. When the room has no run for a mesh, the farthest drawn tile that
+  // names one gives its meshes up first, so every tile drawn outranks every tile the room
+  // withholds (`PlacementTilesStats::mesh_starved`), as the pair budget's does.
+  void set_meshes(const TileMeshConfig& config, TileMeshSink sink, jobs::JobSystem* jobs = nullptr);
+  const TileMeshes& meshes() const noexcept { return meshes_; }
 
   // The tail as it was last handed on, in tile order. With a run sink (`set_run_sink`) a commit
   // writes no tail, and this writes it out of the drawn tiles when first asked after a commit.
@@ -245,13 +266,39 @@ class PlacementTiles {
     // since it activated, so it holds none (`fresh`) and is not drawn.
     bool due = false;
     bool fresh = false;
-    u32 pairs = 0;
-    u32 buildings = 0;
-    Vector<renderer::SceneInstance> instances;
-    Vector<u8> tags;  // parallel to `instances`
+    // **Its last build waits for its meshes** (world.md, "A tile's meshes: residency by
+    // reference"): `instances` name a mesh that is not resident yet, so the tile draws what it
+    // drew before the build — `held_*`, nothing for a tile that had nothing — until every mesh it
+    // names is, and then the build is what it draws. Never set for a tile whose generators hand no
+    // mesh, which draws its build at once as it always did.
+    bool waiting = false;
+    bool starved = false;  // waiting, and the mesh room refused it at the last commit
+    u32 pairs = 0;         // of what it draws
+    u32 buildings = 0;     // of its last build
+    Vector<renderer::SceneInstance> instances;  // its last build
+    Vector<u8> tags;                            // parallel to `instances`
+    Vector<u32> tickets;  // the mesh slots `instances` name, a reference each (`TileMeshes`)
+    Vector<renderer::SceneInstance> held_instances;  // drawn while `waiting`
+    Vector<u8> held_tags;
+    Vector<u32> held_tickets;
+    u32 held_buildings = 0;
     f64 stood = 0.0;  // the surface time it was built standing on
-    u64 version = 0;  // changed by every build (`TileRange::version`)
+    u64 version = 0;  // of what it draws; changed whenever that changes (`TileRange::version`)
+    std::span<const renderer::SceneInstance> drawn() const noexcept {
+      return waiting ? std::span<const renderer::SceneInstance>(held_instances.data(),
+                                                                held_instances.size())
+                     : std::span<const renderer::SceneInstance>(instances.data(), instances.size());
+    }
+    u32 drawn_buildings() const noexcept { return waiting ? held_buildings : buildings; }
   };
+  // The tile's meshes (`set_meshes`), and a commit's pass over the tiles that wait for them.
+  TileMeshes meshes_;
+  Vector<u32> handed_;  // build's scratch: the slot of each mesh the entry's tile call handed
+  void stage(TileBlock& block);     // before a build: what it draws now is kept as `held_*`
+  void finalize(TileBlock& block);  // its build is what it draws from here
+  u32 count_pairs(const TileBlock& block) const noexcept;
+  void admit_meshes();
+  void release_tickets(Vector<u32>& tickets) noexcept;
 
   static bool activate(void* context, const TileEvent& event);
   static bool change_ring(void* context, const TileEvent& event);
@@ -307,7 +354,12 @@ class PlacementTiles {
     u64 key = 0;
     u32 index = 0;
   };
-  Vector<Rank> ranks_;  // commit's scratch
+  Vector<Rank> ranks_;    // commit's scratch
+  Vector<Rank> waiting_;  // admit_meshes' scratch: the tiles that wait, nearest first
+  // The farthest drawn tile past `wanting` that names a mesh gives its meshes up (it is built
+  // again, and waits). False: there is none, and `wanting` is the one withheld.
+  bool yield_farthest(const Rank& wanting);
+  u32 mesh_refusals_logged_ = 0;
   InstanceSink sink_ = nullptr;
   void* sink_context_ = nullptr;
   PlacementTilesStats stats_;
@@ -318,6 +370,9 @@ class PlacementTiles {
   // The surface the tiles stand on now, when the host's ground has moved on from the scene's time.
   std::unique_ptr<renderer::TerrainSampler> stand_;
   f64 stand_time_ = 0.0;
+  // The ground before its cuts, for a generator that plans them (`scene_gen::Context::uncut`).
+  std::unique_ptr<renderer::UncutGround> uncut_;
+  scene_gen::Context::UncutGround uncut_hook_;
 };
 
 }  // namespace engine::world

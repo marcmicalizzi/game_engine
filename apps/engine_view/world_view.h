@@ -15,6 +15,7 @@
 #if ENGINE_VIEW_WORLD
 
 #include <core/base/types.h>
+#include <core/jobs/job_system.h>
 #include <core/json/json_value.h>
 #include <systems/renderer/camera_path.h>
 #include <systems/renderer/scene.h>
@@ -27,6 +28,7 @@
 #include <systems/world/world_log.h>
 
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 
@@ -127,6 +129,10 @@ class ViewWorld {
   world::WorldLog log_;
   std::string log_path_;  // empty: no log
   std::string log_text_;
+  // Where the tiles' meshes are built (world.md, "A tile's meshes: residency by reference"): made
+  // for a scene with a mesh room, and declared before the placements, whose table waits for its
+  // builds before the pool goes.
+  std::optional<jobs::JobSystem> mesh_jobs_;
   world::PlacementTiles placements_;
   world::PlacementTilesConfig placements_config_;
   Vector<std::string> kinds_;  // the streamed entries' generator names
