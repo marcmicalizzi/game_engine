@@ -1334,13 +1334,18 @@ struct WaterBody @version(5) {
   /// 0 with no ground wind: the four sines. **Every body's swash** (since version 5; water.md,
   /// "The shore"; docs/experiments/shore.md; roadmap S94): the wind's fetch-limited wave (JONSWAP's
   /// peak period and the spectrum's significant height) runs up the shore by Stockdon et al.
-  /// (2006). A closed body reads its own `wind_m_s` only (its surface keeps its four sines); an open
-  /// body the wind its spectrum takes. 0, with no tide: no swash, and the shore is version 4's.
+  /// (2006). A closed body reads its own `wind_m_s` only; an open body the wind its spectrum
+  /// takes. 0, with no tide: no swash, and the shore is version 4's. **Every body's waves** (roadmap
+  /// S100 stage B; water.md, "The spectrum"): a closed body with a `wind_m_s` draws the same
+  /// spectrum over its own reach along the wind, as narrow bands, with a lee by the shore the wind
+  /// blows from, and foam where its waves break; `wave_amplitude_m`, `wave_length_m`, `chop` and
+  /// `foam_m` are then not read.
   wind_m_s: f32 = 0 @since(3) @unit("m/s")
   /// How far the wind has blown over open water before it reaches the body, km: JONSWAP's fetch,
-  /// which sets how grown the sea is (a longer fetch, longer and higher waves). A closed body's
-  /// swash takes the smaller of this and the lake's own longest reach (its bounding square's
-  /// diagonal): a wind cannot blow over more water than the lake holds.
+  /// which sets how grown the sea is (a longer fetch, longer and higher waves), up to the fully
+  /// developed sea's (2.2e4 U^2 / g: 110 km at 7 m/s), past which it changes nothing. A closed
+  /// body takes the smaller of this and its own longest reach along its wind: a wind cannot blow
+  /// over more water than the lake holds.
   fetch_km: f32 = 100 @since(3) @unit(km)
   /// **The wet band** (docs/subsystems/water.md, "The shore"; docs/experiments/shore.md; roadmap
   /// S97): ground within this height above the level, metres, inside the body's bounds, is drawn
@@ -1349,7 +1354,8 @@ struct WaterBody @version(5) {
   wet_m: f32 = 0.3 @since(4) @unit(m)
   /// **The foam line** (same pages): how far in from where the level meets the ground, metres, a
   /// thin line of foam runs up and back with the largest wave's phase, its strength from the
-  /// waves' amplitude (a mirror has none), fading to nothing past it. 0: no foam.
+  /// waves' amplitude (a mirror has none), fading to nothing past it. 0: no foam. A body with a
+  /// wind or a tide does not read it: its foam is its breaking waves' (roadmap S100 stage B).
   foam_m: f32 = 0.6 @since(4) @unit(m)
   /// **The tide** (water.md, "The shore"; roadmap S94): an open body's still level rises and falls
   /// by this, metres, at the principal lunar semidiurnal constituent's period (M2, 12.42 h) on the

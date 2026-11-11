@@ -418,7 +418,7 @@ TEST_CASE("material resolve: the water branch matches its CPU reference") {
                                              footprint, depth, &dropped)
                      : wref::normal(w, p.x, p.z, static_cast<double>(block_of[b].time), footprint,
                                     depth);
-        w.roughness = wref::roughness_with(w.roughness, dropped);
+        w.roughness = wref::roughness_with(w.roughness, (1.0 - gfx::k_water_micro_share) * dropped);
         // The shore's fade: the distance from the edge, or for an open body the depth's share of
         // the calm depth (water_edge).
         const double from_edge = wref::edge(w, material.flags, static_cast<double>(uv.x), depth);

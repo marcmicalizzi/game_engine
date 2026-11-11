@@ -206,6 +206,9 @@ inline Dvec3 normal_spectrum(const gfx::WaterWave* waves, double x, double z, do
 }
 
 // water.slang's `water_roughness`: the lobe's roughness with the slope variance the pixel dropped.
+// Not mirrored here: `water_micro_normal`, which gives most of that variance back to the normal at
+// the pixel's own scale — the shading test's blocks keep every wave whole (the footprint drops
+// none), so both it and this widening are the identity there; the scene tests count it.
 inline double roughness_with(double roughness, double dropped) {
   const double r = std::clamp(roughness, brdf_ref::k_min_roughness, 1.0);
   const double alpha = r * r;

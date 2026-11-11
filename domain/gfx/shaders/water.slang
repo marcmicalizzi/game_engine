@@ -247,6 +247,41 @@ float water_roughness(float roughness, float dropped) {
   return min(sqrt(sqrt(alpha * alpha + max(dropped, 0.0))), 1.0);
 }
 
+// **The wavelets a pixel cannot hold, drawn at the pixel's own scale** (S100 stage B, after the
+// first forest captures: with the short bands out of the normal a windy lake thirty metres off was
+// a mirror with the far shore's trees in it, and a sea a grey sheet — the footprint is taken on
+// the level surface, where real waves turn their faces to the eye). `k_water_micro_share` of the
+// slope variance the footprint left out comes back as a band-limited ripple three footprints
+// long — two octaves of the envelope's own lattice, cross-faded as the footprint grows, travelling
+// down the wind at a wave of that length's speed on a lattice periodic in the clock — so far water
+// is rough at the scale the picture can show, in streaks along the view as foreshortened wavelets
+// are, and never a mirror under a wind; the rest stays in the lobe. It is detail at the wrong
+// wavelength with the right slope: the facets a pixel averages are not resolvable, their
+// statistics are.
+static const float k_water_micro_share = 0.7;
+float3 water_micro_normal(float3 n, float2 p, float time, float footprint, float dropped,
+                          float2 wind) {
+  if (!(dropped > 1e-6) || !(footprint > 0.0)) return n;
+  const float level = log2(3.0 * footprint);
+  const float base = floor(level);
+  const float blend = level - base;
+  const float2 across = float2(-wind.y, wind.x);
+  const float clock = time / k_water_period_s;
+  float2 slope = float2(0.0, 0.0);
+  for (uint o = 0; o < 2; ++o) {
+    const float cell = exp2(base + float(o));
+    const float cells = max(1.0, floor(sqrt(k_water_g * cell / k_water_two_pi) *
+                                           (k_water_period_s / cell) + 0.5));
+    const WaterEnvelope e = water_envelope(dot(wind, p) / cell - cells * clock,
+                                           dot(across, p) / cell, cells, 0x51ed270bu + o);
+    slope += e.e * (o == 0 ? 1.0 - blend : blend);
+  }
+  slope *= sqrt(k_water_micro_share * dropped /
+                ((1.0 - blend) * (1.0 - blend) + blend * blend));
+  const float2 g = float2(-n.x, -n.z) / max(n.y, 1e-3) + wind * slope.x + across * slope.y;
+  return normalize(float3(-g.x, 1.0, -g.y));
+}
+
 // The direction the reflected view leaves the surface along, kept above the horizon: a steep wave
 // that sends it down sends it into the water, which under the sky the mirror of the sky stands in.
 float3 water_reflected(float3 n, float3 v) {
@@ -790,15 +825,31 @@ float water_foam_lace(float2 p, float cell, uint wave) {
 
 // The share of a pixel that is foam where the pattern is `lace` and the density `density`: whole
 // at a density of 1 and none at 0 whatever the pattern; a pattern finer than the footprint is its
-// mean, so far foam is a grey and not a sparkle.
+// mean, so far foam is a grey and not a sparkle. The pattern's values crowd towards its ridges (a
+// third of a patch lies under 0.25), so the threshold rises slowly at first — D (0.45 + 0.55 D^3)
+// — and a density of a quarter is a tenth of the patch, the ridges alone (the first forest
+// captures drew a quarter-dense patch as four tenths cover, in blobs).
 float water_foam_cover(float lace, float density, float footprint, float cell) {
   const float blur = clamp(footprint / cell - 0.5, 0.0, 1.0);
-  const float soft = 0.08 + 0.5 * blur;
+  const float soft = 0.05 + 0.5 * blur;
   const float m = lerp(lace, 0.35, blur);
-  return smoothstep(m - soft, m + soft, density * (1.0 + 2.0 * soft) - soft);
+  const float d = clamp(density, 0.0, 1.0);
+  const float threshold = d * (0.45 + 0.55 * d * d * d);
+  return smoothstep(m - soft, m + soft, threshold * (1.0 + 2.0 * soft) - soft);
 }
 
-float water_foam_cell(float h) { return clamp(1.5 * h, 0.08, 1.5); }
+// The lace's cell: 0.6 of the wave's height, 6 to 60 cm, and a finer octave under it.
+float water_foam_cell(float h) { return clamp(0.6 * h, 0.06, 0.6); }
+
+// **How much foam a wave of height `h` makes, and how long it lasts.** A breaker's foam is the air
+// it entrains, which goes with the energy it loses: a decimetre wavelet spilling on a lake's shore
+// leaves flecks, a metre of surf a raft. The density a wave leaves is h / 0.5 m, whole from half a
+// metre, and its e-folding is the 4 s of an open-sea whitecap times sqrt(h / 1 m), within [0.25,
+// 1] of it: Callaghan et al.'s decay times grow with the breaker's scale (a small plume's bubbles
+// are shallow and gone in a second). Both are stated shapes between the measurements' ends, not
+// fits (shore.md, "The break and the foam").
+float water_foam_amount(float h) { return clamp(h / 0.5, 0.0, 1.0); }
+float water_foam_decay(float h) { return k_water_foam_decay_s * clamp(sqrt(max(h, 0.0)), 0.25, 1.0); }
 
 // **The foam on the water** at body-local p, still depth d (the tide's in), clock t. Wave k - j
 // passed here (u + j) periods ago; it had broken by here if its shoaled height had reached the
@@ -819,12 +870,18 @@ float water_bore_foam(WaterSurface* s, float2 p, WaterField f, float d, float t,
   const float k = floor(c);
   const float u = c - k;
   const float cell = water_foam_cell(h);
+  const float amount = water_foam_amount(h);
+  const float decay = water_foam_decay(h);
   const uint next = uint(int(k) + 1 + int(k_swash_group) * 64) % k_swash_group;
-  float foam = smoothstep(0.9, 1.05, ratio * water_swash_group(next)) * smoothstep(0.88, 0.97, u);
+  // The roller on the face of the wave coming in: a raft where the wave is big, flecks where not.
+  float foam = water_foam_cover(water_foam_lace(p, cell, next),
+                                amount * smoothstep(0.9, 1.05, ratio * water_swash_group(next)) *
+                                    smoothstep(0.88, 0.97, u),
+                                footprint, cell);
   for (uint back = 0; back < k_water_foam_waves; ++back) {
     const uint j = uint(int(k) - int(back) + int(k_swash_group) * 64) % k_swash_group;
     const float broke = smoothstep(0.9, 1.05, ratio * water_swash_group(j));
-    const float density = broke * exp(-(u + float(back)) * s->period_s / k_water_foam_decay_s);
+    const float density = amount * broke * exp(-(u + float(back)) * s->period_s / decay);
     if (density > 0.02)
       foam = max(foam, water_foam_cover(water_foam_lace(p, cell, j), density, footprint, cell));
   }
@@ -848,6 +905,8 @@ float water_uprush_foam(WaterShore s, WaterSwashPlace w, float2 p, float hh, flo
   const float u = c - kf;
   const float q = k_swash_uprush;
   const float cell = water_foam_cell(h);
+  const float amount = water_foam_amount(h);
+  const float decay = water_foam_decay(h);
   float foam = 0.0;
   for (uint back = 0; back < k_water_foam_waves; ++back) {
     const int wave = int(kf) - int(back);
@@ -865,10 +924,10 @@ float water_uprush_foam(WaterShore s, WaterSwashPlace w, float2 p, float hh, flo
       const float thin = clamp(0.5 * h, 0.03, 0.25);
       const float width = max(thin, footprint);
       const float y = x / width;
-      foam = max(foam, exp(-y * y) * (thin / width) * sqrt(1.0 - u / q));
+      foam = max(foam, sqrt(amount) * exp(-y * y) * (thin / width) * sqrt(1.0 - u / q));
     }
     const uint j = uint(wave + int(k_swash_group) * 64) % k_swash_group;
-    const float density = (1.0 - 0.6 * u1 / q) * exp(-since * w.period / k_water_foam_decay_s);
+    const float density = amount * (1.0 - 0.6 * u1 / q) * exp(-since * w.period / decay);
     if (density > 0.02)
       foam = max(foam, water_foam_cover(water_foam_lace(p, cell, j), density, footprint, cell));
   }

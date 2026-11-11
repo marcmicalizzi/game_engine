@@ -107,6 +107,9 @@ inline constexpr f64 k_water_group_across = 2.5;
 inline constexpr f64 k_water_envelope_gain = 1.6486932;
 // How far the crests' sharpening may tilt the normal: the envelopes' sum has a Rayleigh tail.
 inline constexpr f64 k_water_max_lift = 0.7;
+// The share of the slope variance a pixel's footprint leaves out of the normal that is drawn back
+// at the pixel's own scale (water.slang, `water_micro_normal`); the rest widens the lobe.
+inline constexpr f64 k_water_micro_share = 0.7;
 // The envelope's cells a clock period for a wave of `cycles`: its group travels cycles / 2
 // wavelengths.
 inline f64 water_envelope_cells(f64 cycles) noexcept {

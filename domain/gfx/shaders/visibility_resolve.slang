@@ -972,14 +972,16 @@ float3 water_pixel(ResolveParams* params, SceneGeometry geo, InstanceDesc instan
     }
   }
   float dropped = 0.0;
-  const float3 n =
+  float3 n =
       swash.surface != 0
           ? water_surface_normal((WaterSurface*)swash.surface, local.xz, s.uv.x,
                                  params->water_time_s, params->water_tide_phase, footprint, dropped)
           : water_normal_of(w, material.flags, geo.materials, index, local.xz,
                             params->water_time_s, footprint, depth, dropped);
-  // The wavelets the pixel cannot hold widen the lobe instead (S100 stage B; water.slang).
-  w.roughness = water_roughness(w.roughness, dropped);
+  // The wavelets the pixel cannot hold: most come back at the pixel's own scale, the rest widen
+  // the lobe (S100 stage B; water.slang, `water_micro_normal` and `water_roughness`).
+  w.roughness = water_roughness(w.roughness, (1.0 - k_water_micro_share) * dropped);
+  n = water_micro_normal(n, local.xz, params->water_time_s, footprint, dropped, w.direction);
   const float3 view = normalize(-from_eye);
   float edge = water_edge(w, material.flags, s.uv.x, depth);
   // The shore where the level meets the ground (k_material_water_shore; water.md, "The shore"):
@@ -1004,10 +1006,15 @@ float3 water_pixel(ResolveParams* params, SceneGeometry geo, InstanceDesc instan
         place = water_swash_place(swash, local.xz);
         front = water_swash_front(place, t, uprush);
       }
+      const float hh = -signed_depth - level;
       if (swash.surface != 0) {
         // The mesh stands where the pool lifted it (S100): the water here is the surface's height
-        // over the ground, the waves', the bore's or the sheet's.
-        depth = max(local.y + signed_depth, 0.0);
+        // over the ground, the waves', the bore's or the sheet's. **The sheet ends at the front,
+        // per pixel** (S100 stage B): the mesh's sheet is its vertices', so where the pixel's own
+        // front — with the lobes a mesh cannot carry — has not reached this ground, the pixel is
+        // bared ground, as the ground's own pixels beside it are, and the waterline is the
+        // front's and not a triangle's.
+        depth = water_swash_on(swash) && hh > front ? 0.0 : max(local.y + signed_depth, 0.0);
       } else {
         // The shift fades out over the swash's own depth, so deep water is the depth it was.
         const float band = 1.5 * swash.run_up_m + swash.tide_m + k_water_calm_depth;
@@ -1015,7 +1022,10 @@ float3 water_pixel(ResolveParams* params, SceneGeometry geo, InstanceDesc instan
         depth = max(signed_depth + (level + front) * weight, 0.0);
       }
       edge = water_shore_distance(map, local.xz, depth);
-      const float hh = -signed_depth - level;
+      // A lifted body's water reflects to its very edge (S100 stage B): the fade over `shore_m`
+      // hid a flat mesh's line against dry ground, and beside a film of wet sand, which mirrors
+      // the sky, it drew the water's edge as a dark band with no sky in it. Fresnel alone decides.
+      if (swash.surface != 0 && depth > 0.0) edge = max(edge, w.shore);
       // The foam of the waves that broke (S100 stage B; water.slang): over water the bores' — born
       // at each wave's break line, decaying behind it — and over the bank the sheet's.
       if (hh < 0.0 && swash.surface != 0) {
@@ -1148,9 +1158,10 @@ bool open_water_pixel(ResolveParams* params, float2 source, uint2 noise_pixel, b
     depth = max(centre.y - surface.y, 0.0);
   }
   float dropped = 0.0;
-  const float3 n = water_normal_of(w, material.flags, geo.materials, index, local.xz,
-                                   params->water_time_s, footprint, depth, dropped);
-  w.roughness = water_roughness(w.roughness, dropped);
+  float3 n = water_normal_of(w, material.flags, geo.materials, index, local.xz,
+                             params->water_time_s, footprint, depth, dropped);
+  w.roughness = water_roughness(w.roughness, (1.0 - k_water_micro_share) * dropped);
+  n = water_micro_normal(n, local.xz, params->water_time_s, footprint, dropped, w.direction);
   const float3 view = -ray;
   const float edge = water_edge(w, material.flags, 0.0, depth);
   Surface s;
