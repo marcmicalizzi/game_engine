@@ -201,6 +201,31 @@ the query's**, not the site's: a scan that visits the cells nearest first and st
 square's remaining rings are farther than the best edge found, or a coarser filing for a long
 reach, makes the long reach cost what the old copy did without a second definition of the edge.
 
+**After T102 (2026-11-11): the nearest cells first.** `channel_edge_distance_mm` now reads the
+grid a row at a time outward and each row from the point's column outward, and stops when the next
+cell is further than the best gap less the riparian 3 m, which the filing makes exact
+(scene_gen.md, "One definition of a bank's edge, asked out to any reach"); the answer is the old
+scan's to the bit. Measured in `msvc-release` with the base's bench copied out of the tree and run
+alternately with the change's, five repeats each, `--wait-quiet 30`: **the machine was not quiet**
+(other processes at 43–65% of the CPU in the four runs below and 60–100% in four earlier ones, the
+GPU lock held by other agents' tests), so every number is an upper bound and the ratio is the
+reliable part:
+
+| What | Before (the base, two runs) | After (two runs) |
+|---|---|---|
+| `scene_gen.site.water` | 2.179 and 2.369 ms / 1,024 (minima 2.115, 2.314): **2.13 to 2.31 µs a sample** | 747.5 and 667.4 µs / 1,024 (minima 691.2, 618.3): **0.65 to 0.73 µs a sample** |
+| `scene_gen.site.all` | 2.152 and 3.504 ms / 1,024 | 695.1 and 741.6 µs / 1,024 |
+| `scene_gen.site.form` | 60.2 and 67.0 µs | 64.1 and 59.0 µs (no water read) |
+
+A third of the cost, and since the base read 1.95 µs on T90's machine and 2.13 to 2.31 µs here, the
+change's 0.65 to 0.73 µs is about 0.6 µs on T90's: the 600 ns the row asked for, within the noise
+rather than under it. **What is left** is one binary search of the sorted cells a row read, and each
+segment's gap taken once for every cell it is filed in that the walk reads (a segment files in about
+four of the 16 m cells), so a point between two streams 25 m apart reads its own and its
+neighbours' cells and a dozen gaps; a point with no stream within the reach still reads the
+disc of rows within it, a binary search each. Neither is worth a second index: a coarser filing
+for long reaches would be one.
+
 ## What the pictures show
 
 A valley written for the row (not committed: `content/test-scenes/alpine` holds G125's

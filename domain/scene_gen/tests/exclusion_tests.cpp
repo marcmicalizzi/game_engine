@@ -325,6 +325,74 @@ TEST_CASE("exclusion: the distance to a bank's edge out to any reach is the ripa
   CHECK(none.channel_edge_distance_mm(0, 0, 128.0) > 1e20);
 }
 
+// The query reads the nearest cells first and stops early (T102); the square scan it replaced is
+// kept as `channel_edge_distance_reference_mm`, and the two must give the same bits at every point
+// and reach: round a dense network (the site bench's, 40 channels of 40 segments 25 to 50 m
+// apart, every fourth with a flood bed, one side wider than the other), out past its edges, and
+// at a reach equal to the distance itself, where a point is on the reach's edge.
+TEST_CASE("exclusion: the nearest-first bank edge query is the square scan's to the bit") {
+  Vector<scene::WaterChannel> channels;
+  for (u32 c = 0; c < 40; ++c) {
+    scene::WaterChannel ch;
+    for (u32 i = 0; i <= 40; ++i) {
+      const f64 x = -1000.0 + 50.0 * static_cast<f64>(c) + 0.3 * static_cast<f64>(i);
+      const f64 z = -1000.0 + 5.0 * static_cast<f64>(i) + 25.0 * static_cast<f64>(c);
+      ch.points.push_back(WorldPos{x, 0.0, z});
+      ch.width_m.push_back(2.0f + 0.05f * static_cast<f32>(i));
+      if (c % 4 == 1) {
+        ch.flood_left_m.push_back(9.0f + 0.5f * static_cast<f32>(i % 7));
+        ch.flood_right_m.push_back(i % 3 == 0 ? 0.0f : 4.0f);
+      }
+    }
+    channels.push_back(ch);
+  }
+  Exclusion ex;
+  REQUIRE(ex.build({}, {}, {channels.data(), channels.size()}));
+  u32 points = 0, inside = 0, near = 0, far = 0, none = 0, edges = 0;
+  u64 at = 0x9e3779b97f4a7c15ull;
+  for (u32 n = 0; n < 12000; ++n) {
+    // A point over the network's box and 200 m beyond it, by a 64-bit LCG (Knuth's MMIX); every
+    // other one within 15 m of one of the channels' points, so the beds, the banks and the flood
+    // beds are well sampled too.
+    at = at * 6364136223846793005ull + 1442695040888963407ull;
+    i64 x = static_cast<i64>((at >> 11) % 2400000) - 1200000;
+    i64 z = static_cast<i64>((at >> 37) % 1400000) - 1200000;
+    if (n % 2 == 1) {
+      const i64 c = static_cast<i64>((at >> 20) % 40), i = static_cast<i64>((at >> 30) % 41);
+      x = -1000000 + 50000 * c + 300 * i + static_cast<i64>((at >> 11) % 30001) - 15000;
+      z = -1000000 + 5000 * i + 25000 * c + static_cast<i64>((at >> 41) % 30001) - 15000;
+    }
+    ++points;
+    for (const f64 reach : {k_riparian_reach_m, 20.0, 128.0}) {
+      const f64 got = ex.channel_edge_distance_mm(x, z, reach);
+      const f64 want = ex.channel_edge_distance_reference_mm(x, z, reach);
+      REQUIRE(got == want);
+      if (reach == 128.0) ++(want > 1e20 ? none : want == 0.0 ? inside : want < 3.0 ? near : far);
+    }
+    // On the reach's edge: a reach of exactly the distance finds nothing, a reach a micrometre
+    // over finds it.
+    const f64 d = ex.channel_edge_distance_reference_mm(x, z, 128.0);
+    if (d > 0.0 && d < 1e20) {
+      ++edges;
+      CHECK(ex.channel_edge_distance_mm(x, z, d) == ex.channel_edge_distance_reference_mm(x, z, d));
+      CHECK(ex.channel_edge_distance_mm(x, z, d) > 1e20);
+      const f64 over = ex.channel_edge_distance_mm(x, z, d + 1e-6);
+      CHECK(over == ex.channel_edge_distance_reference_mm(x, z, d + 1e-6));
+      CHECK(over == d);
+    }
+  }
+  CHECK(points >= 10000);
+  CHECK(inside > 300);
+  CHECK(near > 300);
+  CHECK(far > 3000);
+  CHECK(none > 300);
+  CHECK(edges > 3000);
+  // A reach past the world's size reads only the filed rows, and finds what a wide one finds.
+  for (const i64 x : {-1150000, 0, 1150000})
+    CHECK(ex.channel_edge_distance_mm(x, 1100000, 1.0e30) ==
+          ex.channel_edge_distance_reference_mm(x, 1100000, 5000.0));
+}
+
 // ---- W98: footprints as shapes ------------------------------------------------------------------
 
 TEST_CASE("exclusion: a band footprint excludes its band and nothing else") {

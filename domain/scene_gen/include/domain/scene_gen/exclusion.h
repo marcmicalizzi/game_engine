@@ -160,9 +160,15 @@ class Exclusion {
   // reaches further on the point's side — 0 inside it, or a very large number (over 1e20) when no
   // edge is within `reach_m` metres. `channel_distance_mm` is this at `k_riparian_reach_m`, to
   // the bit. Const and without state of its own, so any number of threads may ask at once. It
-  // reads the cells within the reach of the point (a 16 m grid), so a long reach costs the
-  // segments of that square: at 128 m, 17 cells a side and a little more.
+  // reads the 16 m grid's cells nearest the point first, its own and then a row at a time
+  // outward, and stops when no cell left can hold an edge nearer than the best found (T102), so
+  // a point near a channel reads a few cells whatever the reach, and only a point with no edge
+  // near it reads the cells within the reach (at 128 m, a disc 16 cells across).
   f64 channel_edge_distance_mm(i64 x_mm, i64 z_mm, f64 reach_m) const noexcept;
+  // **The square scan the query above replaced** (T90's): every cell within the reach and the
+  // widest edge of the point. Kept for the test that holds the two to the bit and for nothing
+  // else; no generator calls it.
+  f64 channel_edge_distance_reference_mm(i64 x_mm, i64 z_mm, f64 reach_m) const noexcept;
 
  private:
   struct Body {
