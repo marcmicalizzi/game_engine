@@ -210,3 +210,23 @@ face, their cluster DAGs cut at errors of 0 to 1 m: before, the tops parted alon
 the two sides; after locking the border, none, and every cut keeps the finest chain. Inside a patch
 no cut sank more than 1.1 mm past its own error before or after, so the fault was at the edges only
 (rocks.md, "The coarse forms keep the patch's border").
+
+**The third pass's pictures** (not committed; `D:/workspace/game_engine_local/fable_sub/scratch/b59/G143c/`:
+`scene/` is the second agent's funnel face, its supply 1.5 m and 128 fragments a patch, with a camera
+path of five views: from the meadow, a walker at the toe outside the apron, one metre over the bed,
+across the valley at 80 m and at 160 m; `captures/before/` the base `44c80a0a`'s engine-view copied
+out of the tree, `before-noshadow/` and `before-finest/` its across views with `--shadows off` and
+with `--lod 0.05`, `after/` this pass's, one derived-data cache; a copy of row G148's generated pack
+as `--materials`, msvc-debug, 1600 x 900, CSM shadows, sun -30, 40). **The experiment**: from across,
+the base's patchwork of panels and wedges is there with the shadows off and gone with the finest
+forms forced, so it was the coarse forms, as the CPU case found; after the lock it is gone at the
+default LOD. **Before**, at one metre the bed was the granite set's smooth face with lichen; **after**,
+it is rubble, clasts standing on each other with dark voids, and the toe's clasts lie past it over
+metres. The pass's first after-run stuck toe clasts to the face above the apron (`captures/after-first/`),
+which the gentle-ground rule removed. Still wrong beside reels r04, r19 and r22: the apron is one
+dark even grey (the generated scree set's tone, darker than the reels' pale fans, and its 1 m tile
+repeats as a honeycomb from across); the clasts are all flat-topped plates of one shape; the cones
+stand barely proud of the apron on this face, which is the face's (its spurs shed most of it), not
+a scene where gullies drain basins; the wall above is untextured ground, so the scree's contrast
+with its wall cannot be judged; and from across the toe's clasts still read as a speckled band
+along the outline.

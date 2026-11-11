@@ -1267,8 +1267,10 @@ the cost case's tile that takes the finest form from 514 to 281 triangles a squa
 
 G143's third pass spent them on the bed itself ([The bed is rubble](#the-bed-is-rubble)): the
 finest form on the cost case's tile, at the default 24 loose fragments a patch, is 330 triangles a
-square metre (63,900; 506 at the 64 this case asked for before, against 281 without the relief), the
-coarsest 9.8 (was 1.2), and the tile's patches build in 1,307 ms in msvc-debug (1,618 before).
+square metre (61,740; 506 at the 64 this case asked for before, against 281 without the relief), the
+coarsest 9.7 (was 1.2), and the tile's patches build in 1,208 ms in msvc-debug (1,618 before; the
+plan 26 ms, `open` 153 ms; CPU 24-29% busy with other agents, 21 GB free, one run: upper bounds; no
+msvc-release run was made this pass).
 
 ### The bed is rubble
 
@@ -1310,7 +1312,11 @@ with distance and the largest farthest (Kirkby and Statham's exponential travel;
 fourth) are drawn over the edge field's whole band past the outline (sink 0-2 m, about three metres
 out), each with odds `exp(-d / k_toe_run_m)` of its distance `d` past the outline (sink over the
 toe's slope; `k_toe_run_m` 1.5 m, authored), at `fragment_m` times 0.4 rising to 1 with `d`, no
-longer one ring along the outline. The shed blocks still run past them to the shadow line.
+longer one ring along the outline, and only on gentle ground (a cell no steeper than the toe's own
+slope): the edge field also sinks a bed's bare rim on the face above it, and the pass's first
+pictures stuck clasts to the wall (`k_deposit_version` 5; `deposits: the toe's clasts thin out over
+metres, the largest farthest`: 36, 19 and 9 clasts by metre out, 0.19, 0.24 and 0.32 m across,
+none on the face beside the bed). The shed blocks still run past them to the shadow line.
 
 ### A tile solves
 
