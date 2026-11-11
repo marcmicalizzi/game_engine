@@ -101,6 +101,12 @@ SceneDesc describe(const test::TempDir& tmp, bool whole) {
   const scene_gen::PlacementMesh base = slab();
   desc.meshes.push_back(base.path);
   desc.recipes.push_back(MeshRecipe{base.path, base.recipe});
+  // A second mesh the load places nowhere, in both scenes: a scene of one mesh is not merged
+  // (its clusters keep their container's order), so without it the slab's clusters would be
+  // numbered one way in the streamed scene's load and another in the whole read's.
+  const scene_gen::PlacementMesh spare = rock(k_tiles);
+  desc.meshes.push_back(spare.path);
+  desc.recipes.push_back(MeshRecipe{spare.path, spare.recipe});
   SceneInstance ground;
   ground.mesh = 0;
   ground.transform.scale = Vec3{9.0f, 0.15f, 9.0f};
@@ -110,7 +116,7 @@ SceneDesc describe(const test::TempDir& tmp, bool whole) {
       const scene_gen::PlacementMesh mesh = rock(t);
       desc.meshes.push_back(mesh.path);
       desc.recipes.push_back(MeshRecipe{mesh.path, mesh.recipe});
-      place(t, 1 + t, desc.instances);
+      place(t, 2 + t, desc.instances);
     }
   }
   desc.ddc = tmp.file("ddc");
