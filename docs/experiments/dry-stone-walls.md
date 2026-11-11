@@ -79,12 +79,12 @@ What the third pass (G145c) read again (TCV (G145b)'s chapters, re-read 2026-11-
 
 | Quantity | Chosen (G145c) | Source |
 |---|---|---|
-| A face stone's face proper | a quadrilateral of its own: each corner drawn in from the two edges that meet there, independently, by 3 to 14 % of the face's dimension across that edge (3 to 40 mm; a small face 6 to 18 %, to 20 mm; a cope's top and sides and a cover's edges 4 to 12 %, to 20 mm) | TCV, Characteristic walling stones (gneiss rough and irregular); the shares a design choice, held by `face_tests.cpp` (the face proper is 0.88 of its bounding rectangle or less on average) |
-| Its worn arris | the stone's corner set back 0.6 of the larger inset and 3 to 8 mm (5 to 28 mm), so the band between is steeper than 25° | TCV, General points ("chips and rounds off"); the numbers a design choice |
-| Its crown | the face proper raised 1 to 4 mm off its corners at a point off its middle, smooth-shaded | design: a weathered face is not a plane; held to the flush bounds (98 % within 8 mm of the line) |
+| A face stone's face proper | a polygon of its own: each corner drawn in from the two edges that meet there, independently, by 3 to 14 % of the face's dimension across that edge (3 to 40 mm; a small face 6 to 18 %, to 20 mm; a fallen stone's top 4 to 12 %, to 20 mm; a cover's edges take the walling stone's) | TCV, Characteristic walling stones (gneiss rough and irregular); the shares a design choice, held by `face_tests.cpp` (the face proper's largest corner cut a quarter of its shorter side or more on average) |
+| Its worn arris | the stone's corner set back 0.6 of the larger inset and 3 to 8 mm (5 to 19 mm); 45 % of a walling stone's corners broken off, a cut 25 to 50 % of its shorter side back along each edge, so the band between is steeper than 25° | TCV, General points ("chips and rounds off"); the numbers a design choice |
+| Its crown | the face proper raised 0.5 to 2.5 mm off its corners at a point off its middle, smooth-shaded | design: a weathered face is not a plane; held to the flush bounds (98 % within 8 mm of the line) |
 | A closing stone or a pinning | no taller than twice its width and a centimetre where it is under 5 cm wide; a deeper hollow is packed with several | TCV, Building (one wedge the right size; the best stones in the face); the ratio a design choice |
 | A through-stone's end | its ends' corners drawn in along the wall by up to 6 % of its length and its top edge worn down by up to 6 mm, its two ends split as a face stone's | TCV, Throughstones (a stone that crosses the wall); the shape a design choice against the reels |
-| Cope | two in five wedges, narrower at the top by up to half their thickness; one in twelve leaning 7 to 12° on the next, the next set past its top | TCV, Types of coping (random; tilted coping, each stone holding down its neighbour); the shares design choices |
+| Cope | its top and sides bulging 3 to 8 mm (smooth-shaded), its ends drawn; two in five wedges, narrower at the top by up to half their thickness; one in twelve leaning 7 to 12° on the next, the next set past its top | TCV, Types of coping (random; tilted coping, each stone holding down its neighbour); the shares design choices |
 
 ## Where structure was traded for triangles
 

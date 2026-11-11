@@ -170,7 +170,7 @@ void swatch_uv(u32 swatch, f64 fu, f64 fv, f64& u, f64& v) {
 // that lies on stone or in the hearting and is never seen: a face stone's bed and tail. `edge` is
 // how far the arrises are worn back (`k_edge_*`), and `crown` raises the face proper to a crown
 // off its middle (four triangles, smooth-shaded) instead of a flat fan (two).
-constexpr u8 k_edge_fine = 0;   // a cope's top and sides, a cover's edges, a fallen stone's top
+constexpr u8 k_edge_fine = 0;   // a fallen stone's top
 constexpr u8 k_edge_small = 1;  // a small face: a closing stone, a stone under 0.012 m^2
 constexpr u8 k_edge_stone = 2;  // a walling stone's face, a through's or a tie's end
 struct Faces {
@@ -207,9 +207,9 @@ constexpr f64 k_broken = 0.45;     // the share of a walling stone's corners bro
 // order: (x0, za), (x1, za), (x1, zb), (x0, zb)), each face wound outward from the body's centre.
 // A split face is its face proper, four points drawn in from the corners, with a crown (four
 // triangles sharing smooth normals) or fanned flat (two), and the band of worn arrises between it
-// and the set-back corners (eight, flat): 12 triangles crowned, 10 flat; a plain face is two. The
-// corners of a split face are moved back before any face is drawn, so the beds and ends that meet
-// it stop short of the face's plane and stay flat.
+// and the set-back corners (eight, flat): 12 triangles crowned, 10 flat, two more a broken corner;
+// a plain face is two. The corners of a split face are moved back before any face is drawn, so the
+// beds and ends that meet it stop short of the face's plane and stay flat.
 void body(Builder& b, const D3 (&c0)[8], u32 swatch, Faces faces, Rng& r) {
   D3 centre{};
   for (const D3& p : c0)
@@ -629,11 +629,11 @@ struct Solver {
     // first stone shows its end as well.
     const u8 end = head && x0 <= -0.5 * s.L + 1e-6 ? face_bit(5) : u8{0};
     // A walling stone's face is crowned, its arrises worn back by the stone's share (12
-    // triangles); a face under 0.012 m^2 is worn by the small share; a closing stone is fanned
-    // flat (10), and one under 3 cm either way is a plain chip (2). In a standing face the stone's
-    // top and ends lie against its neighbours and are not drawn: a joint shows the worn arrises
-    // and the hearting's shadow behind them. Where the wall has fallen, and on the footing (its
-    // top is the scarcement), they are.
+    // triangles, two more a broken corner); a face under 0.012 m^2 is worn by the small share; a
+    // closing stone is fanned flat (10), and one under 4 cm either way is a plain chip (2). In a
+    // standing face the stone's top and ends lie against its neighbours and are not drawn: a joint
+    // shows the worn arrises and the hearting's shadow behind them. Where the wall has fallen, and
+    // on the footing (its top is the scarcement), they are.
     const bool closer = role == StoneRole::pinning;
     const u8 edge = closer || len * (top - bed) < 0.012 ? k_edge_small : k_edge_stone;
     const bool rough = !(closer && (len < 0.04 || top - bed < 0.04));
@@ -1227,16 +1227,14 @@ struct Solver {
                  {ta, t0, zc - hw}, {tb, t1, zc - hw}, {tb, t1, zc + hw}, {ta, t0, zc + hw}};
       for (u32 k = 4; k < 8; ++k)
         c[k].z += rng.range(-0.015, 0.015);
-      // Its top split and crowned, worn by the fine share; its two sides (what the field sees)
-      // bulging, so they are split stones and not boards; its bed, on the cover, never seen, nor
-      // its ends against its neighbours but at a head's end and the run's last.
+      // Its top and its two sides (what the field sees) bulging, so it is a split stone and not
+      // a board; its ends drawn plain, since the gaps between cope stones, a wedge's and a
+      // leaner's above all, show them (G145c: hidden, they let the eye into the stone); its bed,
+      // on the cover, never seen. 16 triangles.
       const u32 swatch = static_cast<u32>(rng.bits() % k_stone_swatches);
-      u8 hide = static_cast<u8>(face_bit(0) | face_bit(3) | face_bit(5));
-      if (first) hide = static_cast<u8>(hide & ~face_bit(5));
-      if (e >= x1 - 1e-9) hide = static_cast<u8>(hide & ~face_bit(3));
       body(b, c, swatch,
-           Faces{face_bit(1), hide, k_edge_fine, face_bit(1),
-                 static_cast<u8>(face_bit(2) | face_bit(4))},
+           Faces{0, face_bit(0), k_edge_fine, 0,
+                 static_cast<u8>(face_bit(1) | face_bit(2) | face_bit(4))},
            rng);
       const f64 gap = rng.range(0.002, 0.008);
       // Past a leaner's top, so it rests on the next stone and does not pass into it.

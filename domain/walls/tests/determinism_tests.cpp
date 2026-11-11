@@ -37,9 +37,10 @@ TEST_CASE("walls: modules and placements are the same bytes on every toolchain")
   // (k_wall_version 3) moved the four module pins again: draws keyed by the version (G145b's
   // separate stream removed), faces of their own shape with crowns and worn arrises, closing
   // stones and pinnings no slivers, seams crossed before the faces are drawn, the cope's wedges,
-  // leaners and bulging sides, the mid form's cope skyline; the placement pin did not move. A
-  // replacement records its reason and commit here.
-  constexpr u64 expected[] = {0x1457c73c3c5fd3a8ull, 0xea6fa303b2f973e4ull, 0x62711eaa92733f5full,
+  // leaners and bulging sides, the mid form's cope skyline; the placement pin did not move. Its
+  // second commit moved the three that have a cope (its top bulging rather than split, its ends
+  // drawn). A replacement records its reason and commit here.
+  constexpr u64 expected[] = {0xe8d0728a430a8a9bull, 0x620c4d61fe1cdb23ull, 0x40c494d2afa60c2cull,
                               0xde95ff3bb586d8d1ull, 0xf75f3d8efeaeb99aull};
   u64 got[5] = {};
   const ModuleKind kinds[4] = {ModuleKind::run, ModuleKind::head, ModuleKind::broken,
