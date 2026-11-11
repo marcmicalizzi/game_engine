@@ -255,3 +255,10 @@ source says otherwise:
   library.
 - Granite's grain-size class limits, joint spacing in outcrop, and lichen cover against exposure
   age.
+- (G149 to G153, 2026-11-11; none of these was read in its primary either.) Platts, Megahan and
+  Minshall 1983's embeddedness classes, read whole; a talus's void fraction and how fast fines
+  fill it with age (Sass 2006; Scapozza et al. 2015 read whole); crustose thallus size
+  distributions on old faces and the growth rate of *Xanthoria elegans* (Armstrong and Bradwell
+  2010 read whole, its PDF was not decodable; Osborn and Taylor 1975); the width and length of a
+  run-off streak (Pittino et al. 2024 read whole); a rule for a tile's size against its largest
+  feature, if the tiling literature has one (Wei et al. 2009 read whole).
