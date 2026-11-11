@@ -1,4 +1,4 @@
-# Landform: the grounding of the solver (W95, stages A and B)
+# Landform: the grounding of the solver (W95, stages A and B; W104, stage C)
 
 2026-11-10. This page backs `domain/landform` ([landform](../subsystems/landform.md)): what the
 solver models, where each process and constant comes from, what was read and what was not, the

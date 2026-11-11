@@ -365,8 +365,9 @@ below the same valley under a river and is 1.7 times as wide a hundred metres ab
 a tributary's bed meets it at a step of 40 m in one 50 m point where the river's is graded
 (2.7 m); a glacier whose line is above its valley's floor ends inside the region, 7.3 km down
 an 8 km valley, with till under where it stood. In the two-range sketch
-([pictures](#pictures-and-what-still-reads-wrong)) the ice takes the comb out of the ranges it
-covers: the troughs are wide, they are not evenly spaced, and their heads are open bowls.
+([pictures](#pictures-and-what-still-reads-wrong)) with the line at 800 m the ice covers the
+upper valleys, an eighth of the lattice, and those are wider and softer with open heads; below
+its reach the valleys are the rivers'.
 
 **What it does not make, said plainly**:
 
@@ -378,9 +379,10 @@ covers: the troughs are wide, they are not evenly spaced, and their heads are op
   Hergarten says of his ("a slight V-shape remains"); the cross-sections of the photographs
   need the ice's flow across the section (Harbor 1992's), which no stream-power form has.
 - **An overdeepened basin is not held by a test.** The update allows one wherever the ice thins
-  downstream faster than the bed falls, and the two-range sketch has lakes in its troughs once
-  the ice has gone; but the test's single valley, falling at 0.03, grew a hollow a metre deep
-  in one build and none in the next, so nothing is asserted. A cirque with a tarn behind a lip
+  downstream faster than the bed falls; but the test's single valley, falling at 0.03, grew a
+  hollow a metre deep in one build and none in the next, and the two-range sketch's troughs
+  hold no more standing water after their ice than without it (442 flooded points against
+  482), so nothing is asserted and none should be expected yet. A cirque with a tarn behind a lip
   needs a head glacier's own rotation, which is not here either.
 - **Glaciers are long.** All the snow above the line in a catchment feeds the ice and only the
   glacier's own surface melts it, so a catchment with tall walls sends its ice far below the
@@ -821,10 +823,18 @@ executable (44c80a0a, built in the same tree and copied out) and this one's run 
 other, twice, on a machine other agents were building on (36 threads at 56% to 100% while these
 ran), so a row's two columns saw the same load and its seconds are upper bounds.
 
-| Sketch | Base | Stage C | |
+| Sketch | Base | Stage C's first commit (the sweeps alone) | |
 |---|---|---|---|
-| the bench's sketch, 1,024 by 1,024 at 16 m, twenty steps from a plain | 25.7 s, 30.2 s, 30.4 s | 16.2 s, 16.5 s | 118 sweeps before, 107 after |
-| two ranges about a valley, 512 by 512 at 32 m, 300 steps (a mature ground) | 113.3 s | 57.7 s | 2,396 sweeps and 2,402: eight a step either way |
+| the bench's sketch, 1,024 by 1,024 at 16 m, twenty steps from a plain | 25.7 s, 30.2 s, 30.4 s, 29.2 s, 23.1 s | 16.2 s, 16.5 s, 18.1 s, 15.0 s | 118 sweeps before, 107 after; 735 levels |
+| the same at 2,048 by 2,048 | 159.6 s, 166.2 s | 79.2 s, 130.5 s (the second beside this row's own other solves) | 123 sweeps before, 104 after; 1,787 levels |
+| two ranges about a valley, 512 by 512 at 32 m, 300 steps (a mature ground) | 113.3 s | 57.7 s | 2,396 sweeps and 2,402: eight a step either way; 629 levels |
+
+**And what the rest of stage C costs.** The same 512 by 512 sketch with the defaults stage C
+ends with (flow that divides, banks, the uneven uplift) takes 105 s, about the base's time
+again: the divided network has 855 levels and its sweeps take 13 a step (4,093 over the run,
+51 s of the 105). With an ice age of 76 steps as well, 105 s. The picture's region (1,024 by
+1,024, 300 steps) took 458 s, where stage B's took 385 to 513 s: stage C bought back with
+the layout what its new processes spend.
 
 Where the 57.7 s went (`Landform::timing`, the command's summary): the sweeps 21.5 s, the
 network's layout 12.7 s, the flood and the receivers 12.2 s, the step's books 4.9 s, creep and the
@@ -848,6 +858,40 @@ size at run time, and there are no triangles and no per-tile cost: the tile set'
 heightfield's.
 
 ## Pictures, and what still reads wrong
+
+**Stage C** (2026-11-11; the same sketch as stage B's, two ranges about a valley, 1,024 points at
+16 m, 1.5 million years, solved by the command, its shaded relief and drainage map outside the
+repository; no `engine-view` run was made, so nothing here is of the ground as the renderer
+draws it). Beside stage B's map of the same sketch:
+
+- **The valleys branch and bend.** They differ in size, leave the crest at angles, and join
+  each other inside the range before they reach its foot; the divide wanders. Stage B's ran
+  from crest to foot side by side.
+- **The main valley has a river with a width**: a band several points wide where the flow
+  divides over its floor, a lake where a fan has dammed it, and a floor of sediment the length
+  of it. The piedmont's fans are cones with a few large rivers where there were many parallel
+  threads.
+- **With an ice age** (the same sketch at 512 points and 32 m, the line at 800 m for 380,000
+  years, ended 20,000 years before the end) the upper valleys are wider and softer and their
+  heads open; the lower valleys are unchanged.
+
+Beside the reels (r03's valley floor under a ribbed wall with a side valley hanging above it),
+what a person still objects to:
+
+- **Most valleys still cross the range the short way.** The comb is reduced by a third by the
+  count and is not gone. An uplift that is a line and a kernel will always have a short way;
+  what would take it further is a sketch drawn as blocks and faults, or structure that steers
+  the rivers (the strike valleys of dipping beds, which a contrast of 2 no longer cuts).
+- **A trough has no level floor and no walls.** The ice's valleys are wide parabolas. r03's
+  floor is flat for hundreds of metres and its wall stands up from it; that is the ice's flow
+  across the section, and it is not here.
+- **No cirque, no tarn, no moraine ridge.** Heads are open bowls with no lip; the till is a
+  sheet where the ice melted, not a ridge across the valley.
+- **The river on its floor is a band of lattice points, not a channel with banks**: at 16 m a
+  river is one to five points, and what the picture needs is the channels solver cutting a bed
+  of `channel_width` along it.
+- **Everything is still smooth below 16 m**, and the hanging valleys have no waterfall: both
+  are other solvers'.
 
 **Stage B** (2026-11-10, the same 16 km region of two ranges about a valley, 1,024 points at
 16 m, 1.5 million years, outside the repository). The sketch had to change with the model: its
