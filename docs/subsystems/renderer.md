@@ -1499,7 +1499,18 @@ throw greater, added in whole millimetres before the reduction. The first and la
 and every member's top do not move, so the period — and the precision argument below — is the same
 everywhere. The block is **98,624 bytes** a scene, uploaded as it was (one `upload_buffer` of the
 packed block); a pixel pays the two lateral fields (two int64 remainders, four hashes) and the fault's
-sign once, and nothing more per lookup than two multiplies a step.
+sign once, and nothing more per lookup than two multiplies a step. **Measured** (2026-11-11, RTX
+5090, 1920 × 1080, `--raster hw --shadows csm`, the escarpment's ridge as one banded rock layer,
+the median of 52 frames a held pose; under the GPU lock with the GPU otherwise idle and every CPU
+core busy with other agents' builds, so upper bounds): the resolve with W85's authored fixture
+(four beds, three macro beds) against a drawn section (163 m, eight members, the tops moving, a
+fault), both through this shader — **0.720 → 0.814 ms** at 50 m from the face, **0.197 → 0.219 ms**
+from 500 m, **0.672 → 0.752 ms** from the valley floor: 11 to 13% of the resolve for the longer
+search, the lateral fields and the fault. What the authored fixture cost under W85's own shader
+on this view was not measured (no build of the base was made); its lookup has fewer steps now (two
+of a binary search for four beds, where the linear one took three). **What the pictures show**
+(`formation-sequence.md`, "What the pictures show"): the regular corrugation is gone and members
+read as members, but at 100 m and beyond the tops are still ruled lines.
 
 **Why the precision holds at 10 km — and at 10,000.** No absolute position is formed
 (ADR-0053). The shader has the frame's eye cell and a float offset from its corner; the field's

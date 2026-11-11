@@ -168,6 +168,27 @@ Every step is an integer hash (splitmix64), `det::exp`, or whole millimetres, so
 same bytes on every compiler (`formation_tests.cpp` pins the block's hash). The shader never runs
 the generator: it reads the table.
 
+## The defaults by setting
+
+The defaults (a metre bed, a log deviation of 0.7, tops that travel 0.3, a quarter of the minor
+beds lenses, a 150 m lateral length) are a shallow-marine sandstone and shale, the case the
+sources above describe best. They are not every setting's. What a member of another kind should
+say, as **guidance from the classes and the reels, none of it measured**:
+
+| Setting | `bed_m` | `sigma` | `resistant` | `variation` | `lenses` | `lateral_m` |
+|---|---|---|---|---|---|---|
+| laminated or thin-bedded shale | 0.05-0.2 m | 0.4-0.7 | 0-0.3 | 0.1-0.2 | 0-0.1 | 500 m and up: sheets |
+| shallow-marine sandstone and shale (the default) | 0.3-2 m | 0.6-0.9 | 0.3-0.9 | 0.3 | 0.25 | 100-300 m |
+| river deposits: channel sandstone in mudstone | 1-5 m | 0.7-1.0 | 0.1-0.4 | 0.45 | 0.5-1 | 30-150 m (Gibling's channel fills, about 10 to 1) |
+| a massive cliff-former: dune sandstone, reef limestone | 5-30 m | 0.5 | 1 | 0.1 | 0 | any |
+| a lava pile (reel r23) | 3-15 m | 0.5-0.8 | 0.85-0.95 | 0.2-0.3 | 0.1 | 1-3 km: a flow runs for kilometres |
+
+`lateral_m` is one number for the whole formation, so a section that mixes a river member with a
+lava pile takes one length for both: the cost of two shared lateral fields ("Not done", below). The
+generator's rules are held at both ends of what a member may say (`formation_tests.cpp`, "the
+thinnest member and the thickest"): 5 cm beds in half a metre and 100 m beds in a kilometre, each
+at the widest spread, the most travel and every minor bed a lens, over four seeds.
+
 ## Numbers pinned
 
 | Number | Value | From |
@@ -183,6 +204,31 @@ the generator: it reads the table.
 | `lateral_m` | 10 m-100 km, default 150 m | Gibling's width-to-thickness for a metre bed |
 | second field | 2.618 times the first, 35 and -50 degrees off strike, gain 2.5 | **choices**: incommensurate, oblique, a third of the ground at each end |
 | fault throw | 0-1,000 m, one plane | displacement well under the trace length; a description, not a population |
+
+## What the pictures show
+
+Three held views of the escarpment scene's ridge as one banded rock layer (the pack's sandstone),
+1920 × 1080, W85's authored fixture against a drawn section of eight members (163 m, seed 7, a 6 m
+fault), 2026-11-11; the captures are outside the repository. Beside the reels (r12, r23, r25):
+
+- **Gone:** the corrugated-sheet look. The authored four beds come round every 4.83 m, some thirty
+  times up the 120 m face, and at 500 m they are a moiré of even lines. The drawn section's beds
+  are unequal, a massive member stands out as one dark band, thin-bedded intervals read as fine
+  lines between, and nothing comes round.
+- **Still a layer cake at 100 m and beyond: every contact is a ruled line.** The variation along
+  strike is there and is too small to see. A top's travel is bounded by the **thinner** of its two
+  beds (so two tops cannot cross), and next to a 20 cm parting that is under a decimetre; a top
+  between two 2 m beds moves 0.6 m over a hundred metres, a fifth of a degree. And the tops with
+  the most contrast, the members', do not move at all. r23's flows thicken and thin by a large part
+  of themselves round the bowl. **What would fix it without a new table or shader:** the member
+  tops moved by metres on the longer lateral field, each member's beds stretched in proportion
+  between them (a lens taking no share), and the per-top travel and the lenses kept on the shorter
+  field. The table already carries two amplitudes a bed; only `pack_formation_table` changes.
+- **The fault is a razor cut**: correct for a throw with no relief, and it reads as a seam in a
+  texture. A fault wants a gully or a step in the ground, which is the landform's.
+- **Colour and relief are not this row's and dominate the picture**: one tiled sandstone on a smooth
+  ridge is a painted ramp, whatever is painted on it. Resistant members want to stand as ledges
+  (R105, G142).
 
 ## Not done, and why
 

@@ -413,6 +413,51 @@ TEST_CASE("formation: a member's beds are lognormal about bed_m, and its share i
   CHECK(std::fabs(resistant_mm / total_mm - 0.8) < 0.04);
 }
 
+TEST_CASE("formation: the thinnest member and the thickest draw inside the same rules") {
+  // The defaults were chosen about a metre bed in a member of tens of metres. The two ends they
+  // must also serve: laminated shale, 5 cm beds in half a metre, and a pile of 100 m flows a
+  // kilometre thick, each at the widest spread and the most variation and lenses a member allows.
+  for (u64 seed = 1; seed <= 4; ++seed) {
+    for (u32 which = 0; which < 2; ++which) {
+      scene::Formation f;
+      f.seed = seed;
+      scene::FormationMember m = which == 0 ? member("laminated", 0.5f, 0.3f, 0.05f)
+                                            : member("flows", 1000.0f, 0.9f, 100.0f);
+      m.sigma = 1.5f;
+      m.variation = gfx::k_formation_max_variation;
+      m.lenses = 1.0f;
+      f.members.push_back(m);
+      f.members.push_back(member("beside", 20.0f, 0.5f, 1.0f));
+      const auto p = packed(f);
+      const gfx::FormationSequence& s = p->beds;
+      const u64 whole = which == 0 ? 500u : 1000000u;
+      CHECK(s.period_mm == whole + 20000u);
+      u64 in_member = 0;
+      u32 beds = 0;
+      for (u32 i = 0; i < s.count && s.beds[i].member == 0; ++i) {
+        CHECK(thickness_mm(s.beds[i]) >= 10u);
+        in_member += thickness_mm(s.beds[i]);
+        ++beds;
+      }
+      CHECK(in_member == whole);
+      CHECK(beds >= 1u);
+      // No top crosses another at any pair of lateral fields' ends, nor between them (to the f32
+      // of a start a kilometre up the section, 0.06 mm).
+      const f64 period = static_cast<f64>(s.period_mm) / 1000.0;
+      for (const f64 g0 : {0.0, 0.37, 1.0})
+        for (const f64 g1 : {0.0, 0.61, 1.0}) {
+          gfx::FormationLateral g;
+          g.g[0] = g0;
+          g.g[1] = g1;
+          for (u32 i = 0; i < s.count; ++i) {
+            const f64 top = i + 1 < s.count ? gfx::formation_base(s, i + 1, g) : period;
+            CHECK(top - gfx::formation_base(s, i, g) >= -2e-4);
+          }
+        }
+    }
+  }
+}
+
 TEST_CASE("formation: a top varies along strike continuously and inside its range") {
   u32 lenses = 0, lenses_gone = 0, lenses_whole = 0;
   for (u64 seed = 1; seed <= 4; ++seed) {
@@ -745,7 +790,7 @@ TEST_CASE("formation: the shader's coordinate, bed and filter are its f64 twin's
                      std::fabs(static_cast<f64>(extra.z) - static_cast<f64>(wm.x));
       worst_filter = df > worst_filter ? df : worst_filter;
     }
-    MESSAGE((which == 0 ? "authored" : "drawn")
+    MESSAGE(std::string(which == 0 ? "authored" : "drawn")
             << ": coordinate error " << worst << " m, macro " << worst_macro << " m, gradient "
             << worst_gradient << ", lateral " << worst_lateral << ", filter " << worst_filter
             << "; " << compared << " beds compared, " << edges << " within 3 mm of an edge, "
