@@ -98,8 +98,20 @@ struct Rock @version(1) {
   buried: f32 = 0.25
 }
 
-/// One kind of thing a layer places, and the rules it is placed by.
-struct Kind @version(1) {
+/// A kind's response to one variable of the site it would stand on (`scene_gen::Site`;
+/// docs/subsystems/scatter.md, "Kinds by site"; the grounding in
+/// docs/experiments/site-and-ecotope.md): 1 over [`min`, `max`], falling on a smoothstep to 0 over
+/// `soft` beyond each edge — the plateau of a species' response to a gradient and its tolerance.
+/// A kind's responses multiply into its density, thinned by each candidate's own hash.
+struct Response @version(1) {
+  min: f64 = -1000000000
+  max: f64 = 1000000000
+  soft: f64 = 0
+}
+
+/// One kind of thing a layer places, and the rules it is placed by. Version 2 added the responses
+/// to the site (G144); a kind that names none places exactly as a version 1 kind did.
+struct Kind @version(2) {
   name: string
   /// A glTF, GLB or .clusters file relative to the scene, as `engine.scene.MeshPlacement` names one.
   /// Empty: `rock`.
@@ -132,6 +144,29 @@ struct Kind @version(1) {
   /// The budget (the LOD policy): in a streamed world, a ring whose nearest tile is farther from the
   /// camera than this places none of this kind. 0: every ring.
   far: f32 = 0 @unit(m)
+  /// **The site's rules** (G144). Each names a range of one site variable at the candidate; absent,
+  /// the variable is not read. The elevation in metres, of the surface at the scene's time.
+  elevation: Response? @since(2)
+  /// How much higher the elevation's upper limit stands on a 30° slope facing the sun's bearing
+  /// (south-west north of the equator, north-west south of it) than on level ground, and how much
+  /// lower facing away: linear in the site's sunward tilt, so 0 on level ground. Negative lowers
+  /// the sunny side (the Apennines' -57). Needs `elevation`.
+  aspect_shift_m: f32 = 0 @since(2) @unit(m)
+  /// The krummholz band: over this depth below the (shifted) upper elevation limit the kind's scale
+  /// falls on a smoothstep from its own to `krummholz_scale` times it, and stays there through the
+  /// soft edge above the limit. 0: no band. Needs `elevation`.
+  krummholz_m: f32 = 0 @since(2) @unit(m)
+  krummholz_scale: f32 = 1 @since(2)
+  /// The slope as rise over run (0.577 is 30°), at the site's 10 m baseline.
+  slope: Response? @since(2)
+  /// The heat load: 1 level ground, more facing the sun, less facing away (r06's dry valleys: forest
+  /// only where it is below 1).
+  heat_load: Response? @since(2)
+  /// The curvature, 1/m: positive on a convex crest, negative in a hollow.
+  curvature: Response? @since(2)
+  /// Metres to the nearest water, a channel's bank or a body's outline; measured to 128 m, so a
+  /// limit past that is refused.
+  water_m: Response? @since(2)
 }
 
 /// A circle nothing of the layer is placed in: a landmark, a placement an editor made.

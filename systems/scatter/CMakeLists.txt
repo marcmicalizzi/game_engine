@@ -31,7 +31,7 @@ engine_module(NAME scatter LAYER systems OPTIONAL WHOLE_ARCHIVE GENERATOR placem
 # and through the world's placements consumer (world: a non-capability module).
 engine_module_tests(NAME scatter
   SOURCES tests/scatter_tests.cpp tests/scatter_scene_tests.cpp tests/scatter_seam_tests.cpp tests/scatter_exclusion_tests.cpp
-          tests/size_table.cpp
+          tests/scatter_site_tests.cpp tests/size_table.cpp
   DEPS renderer gfx world)
 
 # The scattered variant of desert-endless is held field for field to the scene beside it.
@@ -52,3 +52,4 @@ if(TARGET engine_scatter_tests AND TARGET engine::rocks)
   target_link_libraries(engine_scatter_tests PRIVATE engine::rocks)
   target_compile_definitions(engine_scatter_tests PRIVATE ENGINE_SCATTER_TESTS_ROCKS=1)
 endif()
+engine_module_bench(NAME scatter SOURCES bench/scatter_bench.cpp)
