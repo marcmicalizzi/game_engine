@@ -9,10 +9,13 @@
 #include <domain/geometry/cluster_file.h>
 #include <foundation/io/vfs.h>
 
+#include <algorithm>
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
 #include <memory>
+#include <span>
+#include <utility>
 
 namespace engine::routes {
 
@@ -236,10 +239,15 @@ bool ensure_plan(const RouteLayer& layer, const scene_gen::Context& context, std
     }
     return true;
   }
-  // No plan named: the ground is the ground before any tread, and the key is what the plan reads.
-  // A hit samples the lattice and plans nothing.
+  // No plan named: **the plan stands on the ground before any edit** (`Context::uncut()`;
+  // scene_gen.md, "What an entry plans for the ground"), which is the context's own ground where
+  // the host is asking for the plan or the scene has no edits, and the terrain less its edits where
+  // the ground already carries this entry's treads. So the open that hands the treads over and the
+  // open on the benched ground read the same heights and make one key. A hit samples the lattice
+  // and plans nothing.
+  const scene_gen::Ground ground = context.uncut();
   RouteNetwork n;
-  if (!detail::sample_lattice(layer, context.ground, context.jobs(), n, error, context.exclusion))
+  if (!detail::sample_lattice(layer, ground, context.jobs(), n, error, context.exclusion))
     return false;
   u64 ground_hash = hash_bytes(n.ground_mm.data(), n.ground_mm.size() * sizeof(i64));
   // The water each lattice point stands in (routes.md, "Water"), when the host handed any.
@@ -259,7 +267,7 @@ bool ensure_plan(const RouteLayer& layer, const scene_gen::Context& context, std
       return true;
     }
   }
-  if (!detail::plan_from_lattice(layer, context.ground, n, error, context.exclusion)) return false;
+  if (!detail::plan_from_lattice(layer, ground, n, error, context.exclusion)) return false;
   out.key = key;
   out.layer_hash = layer_hash;
   out.network = std::move(n);
@@ -271,9 +279,25 @@ bool ensure_plan(const RouteLayer& layer, const scene_gen::Context& context, std
 
 namespace {
 
+// A band filed under a tile it reaches: sorted by (z, x, band), so a tile's bands are one run in
+// the network's order.
+struct TileBand {
+  i64 z = 0;
+  i64 x = 0;
+  u32 band = 0;
+  constexpr bool operator<(const TileBand& o) const noexcept {
+    return z != o.z ? z < o.z : (x != o.x ? x < o.x : band < o.band);
+  }
+};
 struct Entry {
   RouteLayer layer;
   RoutePlan plan;
+  // **The tread as shapes** (routes.md, "In a scene"): its bands, and each filed under every tile
+  // of the world's grid it stands on or within the wear's reach of, which is what `tile` hands and
+  // `occupies` answers from.
+  Vector<scene_gen::Footprint> bands;
+  Vector<TileBand> by_tile;
+  i64 tile_mm = 32000;
 };
 
 bool refused(std::string* error, std::string message) {
@@ -281,6 +305,40 @@ bool refused(std::string* error, std::string message) {
   return false;
 }
 constexpr const char* k_moving = "routes require static ground; a moving ground keeps no tread";
+
+constexpr i64 floor_div(i64 a, i64 b) noexcept { return a / b - ((a % b != 0 && (a < 0)) ? 1 : 0); }
+
+// Files every band under the tiles its disc, grown by the wear's reach, touches. Integers past
+// the two products that turn metres into millimetres, so the same tiles on every toolchain.
+void file_bands(Entry& e, f32 tile_size) {
+  e.bands.clear();
+  e.by_tile.clear();
+  tread_footprints(e.layer, e.plan.network, e.bands);
+  e.tile_mm = static_cast<i64>(static_cast<f64>(tile_size) * 1000.0 + 0.5);
+  if (e.tile_mm < 1) e.tile_mm = 1;
+  const i64 reach_mm = static_cast<i64>(static_cast<f64>(e.layer.wear_m) * 1000.0 + 0.5);
+  for (u32 k = 0; k < e.bands.size(); ++k) {
+    const scene_gen::Footprint& band = e.bands[k];
+    const i64 r = static_cast<i64>(band.radius * 1000.0) + 1 + reach_mm;
+    const i64 x0 = floor_div(band.x_mm - r, e.tile_mm), x1 = floor_div(band.x_mm + r, e.tile_mm);
+    const i64 z0 = floor_div(band.z_mm - r, e.tile_mm), z1 = floor_div(band.z_mm + r, e.tile_mm);
+    for (i64 z = z0; z <= z1; ++z)
+      for (i64 x = x0; x <= x1; ++x)
+        e.by_tile.push_back(TileBand{z, x, k});
+  }
+  std::sort(e.by_tile.begin(), e.by_tile.end());
+}
+// The first band filed under the tile, and one past the last.
+std::pair<u32, u32> tile_run(const Entry& e, scene_gen::TileCoord tile) noexcept {
+  const TileBand lo{tile.z, tile.x, 0};
+  const TileBand* const begin = e.by_tile.data();
+  const TileBand* const end = begin + e.by_tile.size();
+  const TileBand* first = std::lower_bound(begin, end, lo);
+  const TileBand* last = first;
+  while (last != end && last->z == tile.z && last->x == tile.x)
+    ++last;
+  return {static_cast<u32>(first - begin), static_cast<u32>(last - begin)};
+}
 
 bool open(const JsonValue& params, const scene_gen::Context& context, void** state,
           std::string* error) {
@@ -299,25 +357,57 @@ bool open(const JsonValue& params, const scene_gen::Context& context, void** sta
   // **The plan, never made again over its own treads** (routes.md, "One plan"): read from its file
   // when the entry names it, made here only for an entry that names none.
   if (!ensure_plan(e->layer, context, root, e->plan, why)) return refused(error, why);
+  file_bands(*e, context.tile_size);
   *state = e.release();
   return true;
 }
 void close(void* state) noexcept { delete static_cast<Entry*>(state); }
-// Nothing is placed yet: the tread is the ground's (an edit and a mask region the scene carries),
-// and a route's meshes — steps, roots and stones in the tread — are later rows'.
-bool expand(void*, const scene_gen::Context& c, scene_gen::Placements&, std::string* error) {
+// **The treads, handed to the ground** (routes.md, "In a scene"; scene_gen.md, "What an entry
+// plans for the ground"): each line's `Bench` edit, read back from the JSON `engine-content
+// routes` writes, so a tread planned at load and the same tread pasted into the scene's
+// `terrain.tiles.edits` are the same edit, field for field, and build the same tile set.
+bool plan_ground(void* state, const scene_gen::Context& c, scene_gen::GroundPlan& out,
+                 std::string* error) {
   if (c.stand.present()) return refused(error, k_moving);
+  const Entry& e = *static_cast<const Entry*>(state);
+  const JsonValue edits = tread_edits_json(e.layer, e.plan.network);
+  if (!edits.is_array()) return true;
+  for (const JsonValue& json : edits.as_array()) {
+    scene::TerrainEdit edit;
+    schema::ReadContext reader;
+    if (!schema::from_json(edit, json, reader) || !reader.ok())
+      return refused(error,
+                     "routes: a tread's edit did not read back as an engine.scene.TerrainEdit");
+    out.edits.push_back(std::move(edit));
+  }
+  return true;
+}
+// No mesh is placed yet — a route's steps, roots and stones are later rows' — but the tread is
+// handed as the shapes it occupies: every band for a whole read, and for a tile the bands filed
+// under it, so the entries after this one keep off the tread.
+bool expand(void* state, const scene_gen::Context& c, scene_gen::Placements& out,
+            std::string* error) {
+  if (c.stand.present()) return refused(error, k_moving);
+  const Entry& e = *static_cast<const Entry*>(state);
+  out.shapes.add(std::span<const scene_gen::Footprint>(e.bands.data(), e.bands.size()));
   return true;
 }
 bool meshes(void*, const scene_gen::Context&, Vector<scene_gen::PlacementMesh>&, std::string*) {
   return true;
 }
-bool tile(void*, scene_gen::TileCoord, const scene_gen::Context& c, scene_gen::Placements&,
-          std::string* error) {
+bool tile(void* state, scene_gen::TileCoord at, const scene_gen::Context& c,
+          scene_gen::Placements& out, std::string* error) {
   if (c.stand.present()) return refused(error, k_moving);
+  const Entry& e = *static_cast<const Entry*>(state);
+  const auto [first, last] = tile_run(e, at);
+  for (u32 k = first; k < last; ++k)
+    out.shapes.add(e.bands[e.by_tile[k].band]);
   return true;
 }
-bool occupies(const void*, scene_gen::TileCoord) noexcept { return false; }
+bool occupies(const void* state, scene_gen::TileCoord at) noexcept {
+  const auto [first, last] = tile_run(*static_cast<const Entry*>(state), at);
+  return first != last;
+}
 u8 representation(const void*, const scene_gen::Context&) noexcept { return 0; }
 constexpr scene_gen::PlacementGeneratorDesc k_routes{.name = "routes",
                                                      .open = &open,
@@ -326,7 +416,8 @@ constexpr scene_gen::PlacementGeneratorDesc k_routes{.name = "routes",
                                                      .meshes = &meshes,
                                                      .tile = &tile,
                                                      .occupies = &occupies,
-                                                     .representation = &representation};
+                                                     .representation = &representation,
+                                                     .plan_ground = &plan_ground};
 const scene_gen::Registrar k_registrar{k_routes};
 
 }  // namespace

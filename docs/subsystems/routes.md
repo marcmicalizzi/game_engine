@@ -61,10 +61,14 @@ there: stage 4's steps are what such a stretch wants.
 
 As the channels' (channels.md, "One plan"): the key is the layer's canonical JSON with `plan` cleared,
 `k_routes_version` and the lattice's heights; `ensure_plan` samples the lattice, reads the file on a
-hit and plans on a miss, writing it (best effort). **A scene that carries its treads names its plan**
-(`RouteLayer.plan`, the key `engine-content routes` printed): the treads changed the ground the key
-was made from, so the generator reads that file and never plans over its own edits; a named plan that
-is missing, or was made from another layer, is refused with the command that makes it.
+hit and plans on a miss, writing it (best effort). **The lattice is sampled on the ground before any
+edit** (`Context::uncut()`, R144): the terrain less its tile set's edits, so the generator never
+plans over its own treads, the open that hands the treads to the ground and the open on the benched
+ground make one key, and a scene needs to name nothing. A layer may still name its plan
+(`RouteLayer.plan`, the key `engine-content routes` printed): the generator then reads that file
+whatever the ground, and a named plan that is missing, or was made from another layer, is refused
+with the command that makes it. That was the only way before R144, when the generator stood on the
+ground its pasted treads had changed.
 
 ### Determinism
 
@@ -114,7 +118,7 @@ about 2 m); the smoothstep between is a choice, said so on the grounding page.
 **What a placement would read.** The sward (row G140's `sward_placement.cpp` tonight) multiplies a
 patch's density class and its height by `cover_mm` at the patch's centre, as it multiplies the
 riparian factor today; scatter and litter drop a candidate where `cover_mm` is under a draw. No host
-hands a `RouteWear` to a generator yet: that is R142's contract (below).
+hands a `RouteWear` to a generator yet (below, "Not yet").
 
 ## Water
 
@@ -139,17 +143,32 @@ A waypoint cut off by a body counts as `unreached`.
 
 ## In a scene
 
-The placement generator **`routes`** opens the plan (named, on a ground that carries its treads; or
-keyed from the ground) and places nothing: `tile` is empty and `occupies` false. It exists so a scene's
-routes entry is a scene's, refused at load when its plan is missing or stale, and so the plan is where
-a later row's meshes (steps, roots, stones) and R142's edits and footprints at activation come from.
+**A scene that names a `routes` entry and its waypoints has its treads benched and kept bare, with
+nothing pasted** (R144, 2026-11-11; [scene_gen](scene_gen.md#what-an-entry-plans-for-the-ground)).
+The placement generator **`routes`** opens the plan on the ground before any edit and hands it over
+twice:
 
-**`engine-content routes <scene.json> <out.json> [--ddc <dir>] [--entry <i>]`** reads the scene's
-terrain through the registry with its `edits` cleared (the ground before any tread), runs
-`ensure_plan` for each `routes` entry (with the scene's water bodies and channels as its exclusion),
-and writes `{edits, plans, mask_regions, crossings}`: paste `edits` into
-`terrain.tiles.edits` (beside a channels' cuts), `mask_regions` into `terrain.masks.regions`, and each
-plan key into its entry's `params.plan`. Its JSON line counts the legs, the steep legs, the lines, the
+- **to the ground** (`plan_ground`): each line's `Bench` edit, read back from the JSON
+  `tread_edits_json` writes, so a tread planned at the read and the same tread pasted into
+  `terrain.tiles.edits` are one edit, field for field, and build one tile set
+  (`apps/engine_view/tests/ground_plan_tests.cpp`). The scene reader appends them to the tile set's
+  edits before the set is built. A terrain with no `tiles` block is refused: nothing else can bench
+  a tread.
+- **to the entries after it** (`Placements::shapes`): the tread's bands. `expand` hands every band;
+  `tile` hands the bands whose disc stands on the tile or within `wear_m` of it, filed by tile when
+  the entry is opened (a sorted list, one 24-byte record a band and tile; `occupies` is a search of
+  it). Both hosts add them to the exclusion, so the sward, the scatter and the litter leave the
+  tread bare through the question they already ask.
+
+It still places no mesh (steps, roots and stones are later rows'). **What still reaches a scene by
+pasting**: the tread's mask region, the third thing a route plans (below, "Not yet").
+
+**`engine-content routes <scene.json> <out.json> [--ddc <dir>] [--entry <i>]`** is how a person
+inspects a plan. It reads the scene's terrain through the registry with its `edits` cleared (the
+ground before any tread), runs `ensure_plan` for each `routes` entry (with the scene's water bodies
+and channels as its exclusion), and writes `{edits, plans, mask_regions, crossings}`: paste
+`mask_regions` into `terrain.masks.regions`. **Do not paste `edits` into a scene that keeps the
+entry**: the entry hands the same edits itself, and the tile set would be keyed by both. Its JSON line counts the legs, the steep legs, the lines, the
 metres, the metres over the cap, the switchbacks, the deepest hold, the edits, the regions, the bands,
 the bodies and channels read, the crossings and their metres, and the output's bytes.
 
@@ -224,8 +243,11 @@ the tile set does), `routes_schemas`.
   further off, its width never varies, and it has no turf lip, no exposed soil on the cut bank and
   no stones or roots. Those want the tread drawn as detail of the ground's material (a line the
   resolve reads, not a mask texel), and the tread's meshes.
-- **A host that hands the treads across at activation**: until R142, the edits and regions reach a
-  scene by pasting, and the bands and the wear reach a generator only through a test.
+- **The mask region and the wear, handed across**: the edits and the bands are the entry's since
+  R144; the tread's mask region still reaches a scene by pasting (the contract would carry it as a
+  third list of `scene_gen::GroundPlan`, appended to `terrain.masks.regions` before the ground is
+  made), and the wear reaches a generator only through a test (a density a `Context` hands, as the
+  riparian factor is).
 
 ## Capability contract (ADR-0027)
 

@@ -1,5 +1,6 @@
 #include "far_forest_build.h"
 #include "scene_flora.h"
+#include "scene_ground_plan.h"
 
 #include <core/containers/hash_map.h>
 #include <core/hash/hash.h>
@@ -51,15 +52,6 @@ namespace {
 // counts it (T74): a tree's roots and a rock's burial are within a metre; past it the author
 // either means it or the ground moved under an absolute `y`.
 constexpr f64 k_off_ground_m = 1.0;
-
-// G135: false leaves the placement generators' exclusion unbuilt, so a scene places as it did
-// before the holes, channels and water were read (scene_gen.md, "Exclusion"): the before of a
-// before and after, and the way out should a scene want grass in a bed. Read once, when the file is
-// read.
-tunables::Bool placement_exclusion{
-    "renderer.placement.exclusion", true,
-    "Leave a terrain hole, a stream's bed and banks and the water empty of placements "
-    "(scene_gen.md, \"Exclusion\"); false places as before G135"};
 
 void prune_form_parts(SourceMesh& form);  // below, beside the forms that take it first
 
@@ -1107,29 +1099,9 @@ void make_instance_grid(u32 n, f32 mesh_radius, u32 joints, f32 bounds_padding,
 }
 
 // A scene's placement entries, in the order the reader walks them (scene_gen.md, "The order
-// rule"): the `ruins` entries first — each the placement generator "ruins" with the entry itself as
-// its parameters, so every file written before the generic list reads as it did — then
-// `placements`, each as it names itself.
-struct PlacementRef {
-  std::string generator;
-  JsonValue params;
-  std::string where;
-  // In a streamed world, whether the world streams it (`PlacementEntry::stream`); a `ruins` entry
-  // always is.
-  bool stream = true;
-};
-
-// The job system's performance pool, made the first time a generator asks for it: a read of a few
-// tiles never starts one, and a read of many shares one, as the load's meshes and textures share
-// one.
-struct LazyPool {
-  std::optional<jobs::JobSystem> pool;
-  static jobs::JobSystem* get(void* context) {
-    auto* self = static_cast<LazyPool*>(context);
-    if (!self->pool.has_value()) self->pool.emplace(content_build::job_config(0));
-    return &*self->pool;
-  }
-};
+// rule"), are `placement_entries` (scene_ground_plan.h): the `ruins` entries first — each the
+// placement generator "ruins" with the entry itself as its parameters, so every file written before
+// the generic list reads as it did — then `placements`, each as it names itself.
 
 // Appends a generator's meshes after everything the scene has so far, each once: a mesh an earlier
 // entry appended — the same file under the same name, two entries of one kit — is that one, which
@@ -1190,16 +1162,8 @@ Vector<u32> append_placement_meshes(std::span<const scene_gen::PlacementMesh> me
 // consumer to expand a tile at a time. The renderer sees plain instances of meshes and nothing
 // else about a generator, and names none.
 bool expand_placements(const scene::Scene& file, const std::string& path, const std::string& dir,
-                       const TerrainSampler& ground, SceneDesc& out, std::string& error) {
-  Vector<PlacementRef> entries;
-  for (u32 r = 0; r < file.ruins.size(); ++r)
-    entries.push_back(PlacementRef{"ruins", schema::to_json(file.ruins[r]),
-                                   path + ": ruins " + std::to_string(r)});
-  for (u32 p = 0; p < file.placements.size(); ++p) {
-    entries.push_back(PlacementRef{file.placements[p].generator, file.placements[p].params,
-                                   path + ": placements " + std::to_string(p),
-                                   file.placements[p].stream});
-  }
+                       std::span<const PlacementRef> entries, const TerrainSampler& ground,
+                       SceneDesc& out, std::string& error) {
   if (entries.empty()) return true;
   const scene_gen::GeneratorRegistry& registry = scene_gen::GeneratorRegistry::global();
   // The world block a streamed entry is opened against: the file's, or the capability's defaults.
@@ -1226,8 +1190,9 @@ bool expand_placements(const scene::Scene& file, const std::string& path, const 
   // **Earlier placements** (ADR-0046 decision 4, as built 2026-10-12; scene_gen.md): every entry
   // read whole is handed the footprints of the entries read whole before it, in the scene's order —
   // where each placement stands and how far its mesh reaches on the ground, measured from the
-  // mesh as loaded (`ground_radius`), once a mesh and only when a later entry is there to read it.
-  Vector<scene_gen::Footprint> earlier;
+  // mesh as loaded (`ground_radius`), once a mesh and only when a later entry is there to read it —
+  // and, after them, the shapes the entry said it occupies (`hand_shapes_on`).
+  scene_gen::FootprintList earlier;
   Vector<f32> radius_of;  // by scene mesh; < 0 not measured yet
   const auto measure = [&](u32 mesh, f32& radius, std::string& why) {
     if (mesh < radius_of.size() && radius_of[mesh] >= 0.0f) {
@@ -1257,7 +1222,9 @@ bool expand_placements(const scene::Scene& file, const std::string& path, const 
   };
   for (u32 e = 0; e < entries.size(); ++e) {
     const PlacementRef& entry = entries[e];
-    context.earlier = std::span<const scene_gen::Footprint>(earlier.data(), earlier.size());
+    context.earlier = earlier.span();
+    // An earlier entry's shapes may have made an empty exclusion one to hand.
+    if (!out.terrain.exclusion.empty()) context.exclusion = &out.terrain.exclusion;
     const scene_gen::PlacementGeneratorDesc* generator = registry.find_placement(entry.generator);
     if (generator == nullptr) {
       error = entry.where + " " + registry.unknown_placement(entry.generator);
@@ -1356,11 +1323,13 @@ bool expand_placements(const scene::Scene& file, const std::string& path, const 
           return false;
         }
         const f32 scale = std::max(std::fabs(p.scale.x), std::fabs(p.scale.z));
-        earlier.push_back(scene_gen::Footprint{scene_gen::nearest_mm(p.position.x),
-                                               scene_gen::nearest_mm(p.position.z),
-                                               static_cast<f64>(radius * scale)});
+        earlier.add_disc(scene_gen::nearest_mm(p.position.x), scene_gen::nearest_mm(p.position.z),
+                         static_cast<f64>(radius * scale));
       }
     }
+    // The shapes it occupies: into the exclusion, which the world's consumer and the collision are
+    // handed too, and into what the entries after this one are handed.
+    if (!hand_shapes_on(placed.shapes, entry.where, out, earlier, error)) return false;
     out.placed_buildings += placed.things;
     out.placed_instances += placed.instances.size();
   }
@@ -2237,6 +2206,13 @@ bool read_scene_file(const std::string& path, const SceneFileOptions& options, S
   // ground provider is found and made (scene_gen.md): a name this executable does not carry, or an
   // entry the provider refuses — a dune time out of range, a band table the field cannot be built
   // from — refuses the file with the provider's sentence.
+  // **Before it**, what every placement reads of the scene besides the ground (the exclusion, the
+  // site), and what the placement entries plan for the ground — their edits and their openings,
+  // added to the scene's own, so the ground made here is the edited one (scene_ground_plan.h).
+  const Vector<PlacementRef> placements = placement_entries(file, path);
+  if (!plan_scene_ground(file, path, dir, {placements.data(), placements.size()},
+                         file.world.has_value() || options.world, out, error))
+    return false;
   profiling::TraceStage sampler_stage("ground sampler");
   const TerrainSampler ground(out.terrain);
   sampler_stage.end();
@@ -2407,29 +2383,12 @@ bool read_scene_file(const std::string& path, const SceneFileOptions& options, S
   // terrain levels drawn through the deformed-vertex pool, and a scene whose instances come and go
   // had no pool. It has one now, and the ray tracing chain, laid out over the tail's blocks
   // (renderer.md, "Instances that come and go").
-  // G135: where the placement generators leave nothing, read from the file once (scene_gen.md,
-  // "Exclusion"); a file with no holes, channels or water builds an empty one.
-  if (placement_exclusion.get()) {
-    const Vector<scene::TerrainHole> no_holes;
-    const auto& holes = file.terrain.has_value() ? file.terrain->holes : no_holes;
-    if (!out.terrain.exclusion.build(
-            {holes.data(), holes.size()}, {file.water.data(), file.water.size()},
-            {file.water_channels.data(), file.water_channels.size()}, &error)) {
-      error = path + ": " + error;
-      return false;
-    }
-  }
-  // G144: what the ground is like at a point, from the sky's latitude and the water (scene_gen.md,
-  // "The site"); read by a placement only where a rule of its asks.
-  if (!out.terrain.site.build(file.sky.has_value() ? static_cast<f64>(file.sky->latitude_deg)
-                                                   : scene_gen::k_site_default_latitude_deg,
-                              {file.water.data(), file.water.size()},
-                              {file.water_channels.data(), file.water_channels.size()}, &error)) {
-    error = path + ": " + error;
-    return false;
-  }
+  // The exclusion (G135) and the site (G144) they read were built before the ground was
+  // (`plan_scene_ground`, above).
   profiling::TraceStage placements_stage("placements");
-  if (!expand_placements(file, path, dir, ground, out, error)) return false;
+  if (!expand_placements(file, path, dir, {placements.data(), placements.size()}, ground, out,
+                         error))
+    return false;
   placements_stage.end();
   profiling::TraceStage water_stage("water");
   if (!read_scene_water(file, path, dir, ground, out, error)) return false;           // water.md

@@ -51,6 +51,13 @@ if(TARGET engine::tileset)
   # and a provider no build has refused with a sentence that lists `tiles` (tileset.md).
   list(APPEND _view_tests tests/tiles_view_tests.cpp)
 endif()
+if(TARGET engine::tileset AND TARGET engine::routes AND TARGET engine::world)
+  # What a placement entry plans for the ground and the shapes it occupies (R144; scene_gen.md):
+  # a routes entry's treads planned at the read against the same treads pasted, two editing entries,
+  # a planned opening against an authored hole, and the shapes keeping a later entry off them on
+  # both hosts' paths. No GPU; here because only a host links the tile set, the routes and the world.
+  list(APPEND _view_tests tests/ground_plan_tests.cpp)
+endif()
 if(TARGET engine::ruins)
   # A scene's `ruins` entry drawn end to end (docs/subsystems/ruins.md): the renderer's scene reader
   # expands it through the registry, and the test writes the kit of boxes and counts the pieces with
