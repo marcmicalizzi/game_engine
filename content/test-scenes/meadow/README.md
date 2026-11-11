@@ -67,3 +67,32 @@ G137's `"forbs"` is refused): each cell then draws a plant by the covers its sit
 form from the same site's wetness, its slope, shade and a 20 m mosaic.
 The crown spacings, radii and raised base are authored, not measured; the caps are explicit
 candidate budgets, not a claim about frame cost.
+
+## The community on a valley floor (G166)
+
+`community/scene.json` is the first scene that draws the meadow's community
+([flora](../../../docs/subsystems/flora.md#the-meadow-community-g140)): one sward entry naming the
+four growth forms (two density classes of two variants each) and all thirteen species as their
+stand-ins, in a 512 m bowl (`terrain-synth --kind basin` at a vertical scale of 2.5: a level floor
+for about 80 m round a 30 m pond, flanks steepening to 17°), so the pond's wet margin, the level
+floor and the dry flank each draw what the site gives them. Like `scene.json` it is a cook
+template: its paths resolve in a directory outside the checkout, filled by these lines.
+
+```powershell
+$out = 'D:/workspace/game_engine_local/meadow-community'; $bin = 'build/msvc-debug/bin'
+foreach ($form in 'tall-sod','tall-tussock','short-sod','short-tussock') { foreach ($d in 50,100) { foreach ($v in 0,1) {
+  $dir = "$out/$form/d$d-v$v"; New-Item -ItemType Directory -Force $dir | Out-Null
+  $p = Get-Content "content/test-scenes/meadow/$form.flora.json" -Raw | ConvertFrom-Json -AsHashtable
+  $p.sward.seed = 8801; $p.sward.variant = $v; $p.sward.density = $(if ($p.sward.density) { $p.sward.density } else { 1 }) * $d / 100
+  $p | ConvertTo-Json -Depth 10 | Set-Content "$dir/patch.flora.json"
+  & "$bin/engine-content" flora "$dir/patch.flora.json" "$dir/patch.clusters" --no-materials --sward-assets $dir } } }
+& "$bin/engine-content" terrain-synth "$out/ground.json" --kind basin --size 513 --spacing-mm 1000 --origin-mm -256000,-256000 --seed 0
+Copy-Item content/test-scenes/meadow/community/*.json $out
+& "$bin/engine-view" --scene "$out/scene.json" --camera-path "$out/camera-path.json" --offscreen --width 1920 --height 1080 --marker-captures "$out/captures"
+```
+
+The sward layer's `far_color` is the short sod's bake's (`short-sod/d100-v0/provenance.json`,
+`far_color_linear`), copied in by hand. The camera holds four views two seconds each, so the inner
+ring's blades have faded in before each marker: `above-50m`, `wet-margin`, `dry-slope`,
+`along-margin`. The pond stands in for a stream's margin (the niche reads both alike); the
+pictures and what still reads wrong beside reels r01 and r04 are roadmap G166's.
