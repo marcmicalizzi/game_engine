@@ -96,7 +96,8 @@ worn path's is in the reels.
 
 `tread_regions_json` writes each line's tread as a `TerrainMaskRegion` (its two edges as a polygon,
 in whole centimetres) naming `tread_material`, for the terrain's `masks.regions`, with a
-`tread_feather_m` edge. `tread_footprints` writes it as W98's bands, one a straight run of stations
+`tread_feather_m` edge of 0.25 m: one texel of the finest mask the terrain takes (250 mm). The first
+pictures had 0.15 m, and a tread running across the mask's grid drew its edge as a saw. `tread_footprints` writes it as W98's bands, one a straight run of stations
 (within 5 mm), half-width the tread's; held by `Exclusion::add_footprints`, every generator that asks
 `excluded_mm` leaves the tread bare. The test holds them to the tread and nothing else: a point 8 mm
 inside either edge is covered at every station, one 12 mm outside is not.

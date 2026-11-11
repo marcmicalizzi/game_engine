@@ -24,6 +24,10 @@
 // (`tread_footprints`) that `scene_gen::Exclusion::add_footprints` holds, so a placement asking
 // `excluded_mm` leaves the tread bare.
 //
+// **Water** (routes.md, "Water"): handed the placements' exclusion, the search never steps into a
+// water body and pays `ford_penalty` for a step touching a channel's corridor, so a stream is
+// forded short and square; `crossings_json` lists the fords where a footbridge would stand.
+//
 // **Wear** (`RouteWear`, `wear_factor`): the share of the cover trampling leaves at a distance
 // from the tread's edge — `tread_cover` on the tread, rising to 1 at `wear_m` past its edge by a
 // smoothstep — which any placement can ask for a density or a height.

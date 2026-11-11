@@ -82,8 +82,10 @@ struct RouteLayer @version(1) {
   /// The terrain palette layer the tread is drawn with (`engine.scene.TerrainMaskRegion.material`).
   /// Empty: no mask region is written.
   tread_material: string
-  /// The mask region's edge blend, metres, 0 to 2.
-  tread_feather_m: f32 = 0.15 @unit(m)
+  /// The mask region's edge blend, metres, 0 to 2. 0.25: one texel of the finest mask
+  /// (`TerrainMasks.spacing_mm` is at least 250 mm); a narrower blend draws a 0.6 m tread's edge as a
+  /// saw where it runs across the mask's grid (the first pictures, routes.md).
+  tread_feather_m: f32 = 0.25 @unit(m)
   /// **The plan's key** (routes.md, "One plan"): 16 hexadecimal digits, as `engine-content routes`
   /// printed it. Named on an entry whose ground carries its treads, whose heights are not what the
   /// plan was made from. Empty: keyed from the ground the entry is handed.
