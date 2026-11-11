@@ -39,7 +39,7 @@ when the build has the tile set, and refuses its own output if the tile set does
 | `outlets` | Points held at a level anywhere in the lattice | — |
 | `border_reach_m` | Uplift is tapered to nothing over this distance from every open or sea edge | 16 cells |
 | `uplift` | `regional_mm_per_yr`, plus `ridges` (a polyline, `rate_mm_per_yr` on it, varied along the line by `variation` over `variation_length_m` ([uplift along a ridge](#uplift-along-a-ridge)), falling to nothing `reach_m` away as (1 − (r/reach)²)²; the largest of overlapping ridges counts), plus a coarse `raster` read bilinearly over the region | 0 to 100 mm/yr; variation 0.35 over 6 km |
-| `rock` | `resistance` 0 to 1 (the world formation's ordering), uniform, or the beds of `formation`, the scene's own `engine.scene.Formation`, read in the rock's frame ([structure](#structure)); `contrast`, the erodibility at 0 over the erodibility at 1; `variation` and `variation_cells`, a seeded variation of the erodibility | 0; no formation; 10; ±25% over 16 cells |
+| `rock` | `resistance` 0 to 1 (the world formation's ordering), uniform, or the beds of `formation`, the scene's own `engine.scene.Formation`, read in the rock's frame ([structure](#structure)); `contrast`, the erodibility at 0 over the erodibility at 1; `variation` and `variation_cells`, a seeded variation of the erodibility | 0; no formation; 2 (stage C: inside the published 1.2 to 2.8 for a range's own rocks; it was 10, which solved a banded sketch to a land of cliffs); ±25% over 16 cells |
 | `erodibility_per_yr` | K of the stream-power law at m = 1/2, n = 1 | 10⁻⁸ to 10⁻², default 5 × 10⁻⁶ |
 | `channel_area_m2` | The drainage area a channel begins at: a point draining less is hillslope, lowered by diffusion and the critical slope alone | 0 to 10⁹; default 0, the rivers cut at every point |
 | `deposition` | G, the deposition coefficient ([deposition](#deposition)): a river lays down G / N of the sediment that reaches a point draining N cells. 0 is the detachment-limited law: nothing settles anywhere, standing water included | 0 to 10, default 1 |
@@ -87,10 +87,12 @@ Each step of `step_yr` years, in this order ([the grounding page](../experiments
    1991's Rho8, the number fixed to the cell): on a plane the flow's mean direction is then the
    plane's own, where the plain steepest-of-eight sends every cell down the same lattice
    direction and cuts parallel rills.
-4. **Drainage area**: in reverse flood order, a point adds its cells to its receiver's.
-5. **The rivers**: erosion and deposition together, implicit along the flow tree
-   ([deposition](#deposition)): a reach above its receiver and above the sea moves to
-   (z + d + F z_r) / (1 + F), F = K Δt √N over the distance in cells, d what the river lays down
+4. **Discharge**: in reverse flood order, a point adds its cells to its receivers' by its shares
+   of its flow among them.
+5. **The rivers**: erosion and deposition together, implicit over the flow network
+   ([deposition](#deposition), [the sweeps](#the-rivers-sweeps)): a reach above its base level
+   and above the sea moves to (z + d + F b) / (1 + F), F = K Δt times its stream power in cells
+   (√N over the distance to its receiver), b its receiver's height, d what the river lays down
    there. A receiver below the sea counts as the sea's level. Standing water (a lake's members,
    the sea) is not cut; it takes the sediment that reaches it.
 6. **Hillslopes**: explicit linear diffusion in as many substeps as stability needs, then the
@@ -172,6 +174,53 @@ here stands at an angle of repose. And **a valley inside a range that is rising 
 no floor at steady state**, because every point of it is losing ground; a floor needs a base
 level that rose or an uplift that stopped, which a sketch gives by where it puts its uplift and
 its outlets.
+
+### The rivers' sweeps
+
+Stage B's sweeps walked the flood's order, which visits the lattice by height and so in no order
+of memory, and each visit recomputed a square root and three divisions from a dozen arrays
+indexed by cell. They were most of a step. Stage C lays the step's network out once **in the
+sequence the sweeps walk it** and walks that:
+
+- **Levels.** A held point is level 0; any other point is one more than its highest receiver.
+  A point reads its receivers (lower levels) for its height and its donors (higher levels) for
+  its flux, never its own level.
+- **The sequence** is the points by level, and within a level by the place of the receiver that
+  set the level, so the donors of points that follow each other follow each other too: a
+  breadth-first order of the network (Braun and Willett 2013's stack, by generation), in which
+  a sweep's reads of the level above and of the level below both run forward through memory.
+- **Beside each point**, by its place: its kind this step (held, a lake's member, a slope or sea
+  bed that only passes its flux on, a reach), the constants of its update (K Δt of its sediment
+  and of its rock times its stream power, the share of the flux it lays down, its sediment),
+  and its edges, each a run: its receivers with the weight of each one's height in its base
+  level, its donors with the share of each one's flow that comes to it.
+- **A sweep** is the flux, levels from the top down, each point gathering what its donors pass
+  in the fixed order of the eight directions; then the heights, levels from the bottom up.
+- **The sweeps start from the last step's answer**: a reach near its grade moves by nearly the
+  same amount every step, so the first guess is the ground less what the rivers took last time.
+  The fixed point is the same; the sweeps that would find it again from nothing are saved where
+  the ground is young (118 sweeps to 107 over twenty steps from a plain) and not where it is
+  old: a mature range still takes eight a step, which says the count there is set by a few
+  points that keep moving a millimetre (a lake's rim, a bed changing from sediment to rock)
+  and not by the guess. Finding those is what would halve the sweeps.
+- **In parallel, by level.** A level's points write only their own entries, so a level runs on
+  the job system in chunks (`SolveOptions::level_grain` points each, where the level holds two
+  chunks or more) and the bytes are the same at any thread count; the largest move of a sweep
+  is a maximum, which does not care what order the chunks report in. **What it buys at the
+  sizes solved here is nothing, and the page should say so**: a network has as many levels as
+  its longest river has points (`Landform::network_levels`, in the command's summary), so the
+  bench's 1,024 by 1,024 sketch, twenty steps old, stands in 735 levels of 1,400 points, and an
+  older ground in more and narrower ones; a level that small costs less to walk than to hand
+  out. It pays where a level is tens of thousands of points wide (a lattice 8,192 a side and up). What
+  would pay at every size is the published other way (Braun and Willett's: catchments are
+  independent), which here needs the catchments that flow divides between joined first; it is
+  not built.
+
+What the layout cost and bought, measured as a pair ([performance notes](#performance-notes)):
+a solve of a mature ground takes half the time, and the sweeps are under two fifths of it. The
+layout itself (the shares, the levels, the sequence, the constants and the edges) is a fifth of
+the new step and the flood another fifth: every part now costs about the same, which is where to
+look next.
 
 ### The flood's cost
 
@@ -325,9 +374,13 @@ count (`determinism_tests.cpp` pins the hash of the heightfield and of each fiel
   square root ([what determinism decided](../experiments/landform.md#what-determinism-decided)).
 - The flood's order is a total order on (height, cell index).
 - The job system runs only the loops whose points do not read each other's results: the uplift
-  and hardness fields, the receivers, the diffusion (a Jacobi step) and the output fields. The
-  flood, the accumulation, the rivers' sweeps, the lakes and the limiter walk an order and are
-  serial.
+  and hardness fields, the receivers, the diffusion (a Jacobi step), the output fields, the
+  constants and edges of the step's network, and a level of the rivers' sweeps
+  ([the rivers' sweeps](#the-rivers-sweeps): a level's points read other levels only, and a
+  point's flux is a gather over its donors in a fixed order, never a scatter). The flood, the
+  discharge, the levels, the step's books, the lakes and the limiter walk an order and are
+  serial. The worker test runs the sweeps at a grain of eight points, so a small lattice's
+  levels do go to the workers.
 - The rivers' sweeps end on a comparison of heights, which is the same comparison everywhere
   because the heights are; a lake's members and a deposit's neighbours are sorted by height and
   then by cell, a total order; and the budget's sums are taken in one order whatever the workers.
@@ -435,10 +488,11 @@ authored heightfield. Exit 0, 1 (a file or a range), 2 (usage).
 ## Not stage A
 
 Each follows, and none is here: the glacial mode (troughs, cirques, overdeepened basins);
-**the rivers' sweeps in the order's own sequence** (the sweeps are most of a step now); flow that divides, so one mouth's fan is a
+flow that divides, so one mouth's fan is a
 cone and a channel on its plain is more than a point wide; scree at an angle of repose and
 terraces; soil depth; snow; a general m and n; neighbouring regions solved so a shared edge
-agrees; the flow tree's levels in parallel; baking far-terrain maps from near output; anything
+agrees; the rivers' sweeps in parallel by catchment (by level they are, and it buys nothing at
+these sizes: [the rivers' sweeps](#the-rivers-sweeps)); baking far-terrain maps from near output; anything
 in the editor. The limits of the model as it stands are on the grounding page.
 
 ## Invariants
@@ -522,7 +576,26 @@ ground drains, 62 ns a point less. Where it does not (the young ground of `landf
 flood of every point is run as it was, after a classification that found it had to be: 7% slower
 at 2,048 a side in these two runs, inside what the load moved.
 
-**The sweeps are the cost now.** A step with deposition solves its rivers in about eight sweeps,
+**Stage C, the sweeps laid out in their own sequence** ([the rivers' sweeps](#the-rivers-sweeps)),
+2026-11-10, `engine-content landform --jobs 5` in `msvc-release`, **each row a pair**: the base's
+executable (44c80a0a, built in the same tree and copied out) and this one's run one after the
+other, twice, on a machine other agents were building on (36 threads at 56% to 100% while these
+ran), so a row's two columns saw the same load and its seconds are upper bounds.
+
+| Sketch | Base | Stage C | |
+|---|---|---|---|
+| the bench's sketch, 1,024 by 1,024 at 16 m, twenty steps from a plain | 25.7 s, 30.2 s, 30.4 s | 16.2 s, 16.5 s | 118 sweeps before, 107 after |
+| two ranges about a valley, 512 by 512 at 32 m, 300 steps (a mature ground) | 113.3 s | 57.7 s | 2,396 sweeps and 2,402: eight a step either way |
+
+Where the 57.7 s went (`Landform::timing`, the command's summary): the sweeps 21.5 s, the
+network's layout 12.7 s, the flood and the receivers 12.2 s, the step's books 4.9 s, creep and the
+limiter 4.8 s. Every part is now within a factor of two of every other, and four of the five walk
+the lattice in the flood's order on one thread. The solve holds about 250 bytes a point while it
+runs (stage B's 110, and the network's 140: sixteen for a point's shares, eight for its discharge,
+its level, its two places and its anchor, ten doubles of constants and iterates, and about
+twelve bytes an edge each way).
+
+**Before stage C the sweeps were the cost.** A step with deposition solves its rivers in about eight sweeps,
 each two walks of the order over a dozen arrays, where stage A's step had one. `landform.solve`
 at 2,048 a side went from 27.1 s to 117.6 s (1.4 µs a point a step, of which the flood is about a seventh), and the picture's region (1,024 points a
 side, 300 steps) from 75 s to 385 to 513 s. What follows is to keep a step's river data in the

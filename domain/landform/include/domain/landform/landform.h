@@ -52,7 +52,7 @@ namespace engine::landform {
 inline constexpr const char* k_determinism = "derived";
 
 /// Bumped whenever the same sketch would solve to different bytes; the field file records it.
-inline constexpr u32 k_solver_version = 4;
+inline constexpr u32 k_solver_version = 5;
 
 inline constexpr std::string_view k_fields_format = "engine.landform.fields";
 inline constexpr u32 k_fields_version = 2;
@@ -100,6 +100,19 @@ struct Budget {
   f64 change_m3 = 0.0;
 };
 
+/// Where a solve's wall-clock seconds went, by part (landform.md, "Performance notes"). For a
+/// person and the command's summary; nothing reads it back and no decision depends on it.
+struct Timing {
+  f64 uplift_s = 0.0;   // the uplift and the rock's resistance, every step
+  f64 flood_s = 0.0;    // the flood, the lakes and the receivers
+  f64 network_s = 0.0;  // the step's network laid out in the sweeps' sequence
+  f64 sweeps_s = 0.0;   // the rivers' sweeps
+  f64 books_s = 0.0;    // the step's books: lakes, the sea, what each point lost or gained
+  f64 slopes_s = 0.0;   // lateral erosion, the ice's deposit, diffusion, the slope limiter
+  f64 settle_s = 0.0;   // the settling to the critical slope after the last step
+  f64 fields_s = 0.0;   // the outputs and their routing
+};
+
 /// A solved region. Every array is `width * height`, rows of x in order of z, on one lattice:
 /// point (i, j) stands at `origin + (i, j) * spacing`.
 struct Landform {
@@ -114,6 +127,9 @@ struct Landform {
   /// The sweeps the rivers' solve took over the whole run (landform.md, "Deposition"): one a step
   /// with nothing laid down, a handful with; steps times the limit says a step did not settle.
   u32 river_sweeps = 0;
+  /// The levels of the last step's flow network: its longest river, in points (landform.md,
+  /// "The rivers' sweeps"). The lattice over this is how wide a level is.
+  u32 network_levels = 0;
   i64 step_yr = 0;
   /// What `route` takes to find these receivers again: the sketch's seed, salted.
   u64 route_seed = 0;
@@ -138,6 +154,7 @@ struct Landform {
   /// of the sketch's formation the solved surface cuts, or the sketch's uniform value.
   Vector<u8> resistance;
   Budget budget;
+  Timing timing;
   /// How deep the point lies under its depression's spill, whole millimetres; zero on draining
   /// ground.
   Vector<u32> fill;
@@ -146,6 +163,11 @@ struct Landform {
 struct SolveOptions {
   /// Null runs every loop on the calling thread. The result is the same bytes either way.
   jobs::JobSystem* jobs = nullptr;
+  /// The rivers' sweeps run a level of the flow network on the job system where the level holds
+  /// twice this many points or more, in chunks of this many (landform.md, "The rivers' sweeps").
+  /// A knob for the tests, which set it small so a small lattice takes the parallel path: the
+  /// bytes are the same at any value.
+  u32 level_grain = 4096;
 };
 
 /// Every range the schema states, with a sentence naming the field that is outside one.

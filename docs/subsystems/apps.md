@@ -422,10 +422,10 @@ millimetres, which `terrain-tiles` builds as it builds any authored heightfield)
 drainage area, receiver, slope, erosion rate, fill, sediment, resistance), and two pictures for a person,
 `<stem>.relief.png` and `<stem>.drainage.png` (the second with the sediment as sand). The stem is
 the sketch's file name. It reads the heightfield back through the tile set's reader before it
-reports, and prints a JSON summary (the lattice, the steps and the rivers' sweeps, the lowest and highest point, the
+reports, and prints a JSON summary (the lattice, the steps, the rivers' sweeps and the levels of the last step's network, the lowest and highest point, the
 land's mean slope, the held, flooded and sea points, the largest drainage area, the points on a
 metre of sediment and the thickest, the run's `budget` in cubic metres
-([deposition](landform.md#deposition)), the solve's seconds). A build without the landform capability
+([deposition](landform.md#deposition)), the solve's seconds and, under `timing`, the part of the step each went to). A build without the landform capability
 refuses the command by naming it. Exit 0, 1 or 2 as the other commands.
 
 ## engine-content morphs: MakeHuman targets as morph channels

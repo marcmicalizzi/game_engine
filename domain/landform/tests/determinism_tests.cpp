@@ -26,14 +26,18 @@ namespace {
 // Version 4 (uplift along a ridge, the critical slope's default): every hash moved once more,
 // because the golden sketch's ridge now varies along its line by the default 0.35 and its
 // critical slope is the default, which went from 0.9 to 0.8.
-constexpr u64 k_height_hash = 0x249019bde6a14cc7ull;
-constexpr u64 k_area_hash = 0x48ca4e5470cd0656ull;
-constexpr u64 k_receiver_hash = 0xd4609ac9bc63d161ull;
-constexpr u64 k_slope_hash = 0x0aa531b7e49fe92aull;
-constexpr u64 k_erosion_hash = 0x7c6c819d7ea2347bull;
-constexpr u64 k_fill_hash = 0xc19680628fff6828ull;
-constexpr u64 k_sediment_hash = 0x70d43c0753d22169ull;
-constexpr u64 k_resistance_hash = 0xd3fc84052a7f7e51ull;
+// Version 5 (W104 stage C, time to look): every hash moved, because `rock.contrast` now defaults
+// to 2 where it was 10 (the golden sketch takes the default) and the rivers' sweeps start from
+// the last step's answer. The sweeps' new sequence and their gather of the flux moved nothing
+// by themselves: the same build with the old default and a cold start solved to version 4's pins.
+constexpr u64 k_height_hash = 0x1777be73ba69e294ull;
+constexpr u64 k_area_hash = 0x65ca5e2b7ec38dceull;
+constexpr u64 k_receiver_hash = 0x25b50e8b88f75e98ull;
+constexpr u64 k_slope_hash = 0xce9535ae453ee211ull;
+constexpr u64 k_erosion_hash = 0x67485c1fbc9c032bull;
+constexpr u64 k_fill_hash = 0xcb6cd89f3bb604d6ull;
+constexpr u64 k_sediment_hash = 0xc7c44ed914987ad3ull;
+constexpr u64 k_resistance_hash = 0xe794b335d2d59b01ull;
 
 }  // namespace
 
@@ -77,6 +81,9 @@ TEST_CASE("landform: one, four and sixteen workers solve the serial solve's byte
     jobs::JobSystem jobs(config);
     landform::SolveOptions options;
     options.jobs = &jobs;
+    // A level of this small lattice's network holds tens of points: a grain of eight puts the
+    // rivers' sweeps on the workers, which the default grain would not.
+    options.level_grain = 8;
     landform::Landform land;
     REQUIRE_MESSAGE(landform::solve(sketch, nullptr, options, land, error), error);
     CHECK(hash_of(land.height_mm) == hash_of(serial.height_mm));

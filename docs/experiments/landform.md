@@ -128,6 +128,22 @@ height is its own, and the order the queue would have given is the sort of the f
 are not. Neither Zhou's nor Wei's algorithm was read, so this is not theirs; it is the same
 observation, checked by the pins.
 
+## Stage C (W104): the sources
+
+2026-11-10 and 11. Stage C read these for what it added; the same four words say how far.
+
+### The sweeps' layout, and the contrast's default
+
+| What | Form used | Source |
+|---|---|---|
+| The order of a sweep | The network's points by generation from the outlets (a breadth-first stack), each point's receivers before it; the points of one generation independent of each other | Braun and Willett 2013 (**not read**, paywalled: their stack is by depth first, and its independence is by catchment) as described by Barnes 2019 (arXiv:1803.02977, **read** in stage A: "levels" of the order whose cells may run concurrently). The layout here is that level order with the levels' points sorted by their receiver's place; no number comes from either |
+| `rock.contrast` 2 | Erodibility of the weakest rock over the strongest in one range | The contrasts stage B's page lists under [structure](#structure-the-sources) (1.2 to 2.8 across the lithologies of single ranges); stage B kept an authoring 10 and said so. 2 is the middle of the published range; a sketch that wants cliffs asks for more |
+
+What was measured rather than read: a level is narrow. The network has as many levels as its
+longest river has points, 735 in the bench's 1,024 by 1,024 sketch twenty steps old, so the
+published way to run a sweep in parallel (Barnes's, by level) hands a thread 1,400 points at a
+time at that size, which is less work than the hand-off. The subsystem page says what would pay.
+
 ## Constants, their ranges, and the defaults the schema pins
 
 | Constant | Default | Range accepted | Status | Source or reason |

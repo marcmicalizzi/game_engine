@@ -814,8 +814,11 @@ TEST_CASE("landform: a massif's rivers leave a fan on the plain at its foot") {
   CHECK(crown > near_east + 1000);
   CHECK(near_west > far_west);
   CHECK(near_east > far_east);
-  CHECK(far_west < 1000);
-  CHECK(far_east < 1000);
+  // The deposit thins away from the mouths: 1,700 m to the side it is under half the crown's.
+  // (Until stage C this was "under a metre", which held at 0.93 m and said more than the model
+  // does: a plain that rivers cross between two open edges aggrades as a whole, a little.)
+  CHECK(2 * far_west < crown);
+  CHECK(2 * far_east < crown);
   CHECK(apex > 3000);
 }
 TEST_CASE("landform: a lake's floor fills level, and its river's mouth builds a delta") {
@@ -907,6 +910,10 @@ TEST_CASE(
   sketch.erodibility_per_yr = 0.00004;
   sketch.rock.variation = 0.0;
   sketch.rock.formation = dipping_formation(15.0f, -90.0f, 300.0f, 200.0f);
+  // The contrast is this test's own, not the default: what it measures is that the beds are
+  // read, in the rock's frame, and a tenfold contrast makes that a ratio with room in it. At the
+  // default of 2 (stage C: inside the published range) the same ratios stand, smaller.
+  sketch.rock.contrast = 10.0;
   sketch.duration_yr = 1000000;
   const landform::Landform land = solved(sketch);
   check_drains(land);
