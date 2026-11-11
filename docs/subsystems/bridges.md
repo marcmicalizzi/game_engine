@@ -54,7 +54,7 @@ millimetres) with a shape, a material and the member it **rests on** (`Member::s
 ground):
 
 - **Stepping stones**, one every 600 mm along the path across the bankfull width (under the shorter
-  adult step, 0.66 m), each 380 to 460 mm by 420 to 560 mm, its top 150 mm over the water at the
+  adult step, 0.66 m), each 300 to 380 mm along the path by 380 to 500 mm, its top 150 mm over the water at the
   scene's stage and its foot 150 mm into the bed; none where the ground is already dry footing.
 - **A clapper**: an abutment on each bank and piers between, the supports evenly spaced so no slab
   is longer than 2.4 m centre to centre (Tarr Steps), each a stack of rough stone courses of about
@@ -74,7 +74,10 @@ ground):
   abutment of rough courses founded 200 mm in it.
 - **A handrail** 1070 mm over the deck (the Forest Service and the NPS) where the deck stands more
   than 1 m over the bed — a choice: no source gives the fall height — on posts every 2 m or less on
-  the planks, or on the two sills beside a foot log, one side.
+  the planks, both sides, on a stringer bridge only. A foot log has none: a post on its 250 mm flat
+  would take the walking surface, and the first pictures' two posts on the sills with a rail five
+  metres between them read as a goalpost, not a rail. A foot log's rail (a rope, or a pole on
+  outriggers from the sills) is a later row's.
 
 The stones are **rough blocks**: the box's plan with each corner knocked off by its own draw (eight
 sides), flat at the bed and the top, so a slab reads as split along its bedding. The draws are a

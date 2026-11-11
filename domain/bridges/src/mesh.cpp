@@ -21,8 +21,6 @@ namespace {
 
 f32 metres(i32 mm) noexcept { return static_cast<f32>(static_cast<f64>(mm) / 1000.0); }
 
-Vec3 sub(Vec3 a, Vec3 b) noexcept { return {a.x - b.x, a.y - b.y, a.z - b.z}; }
-
 // A convex face's points, oriented so its normal points away from the solid's centre, appended as
 // a fan. `smooth` (nullable) gives each point its own normal (a log's round side); otherwise the
 // face's. UVs are metres of surface on the plane the normal is nearest to square to.
@@ -276,7 +274,7 @@ bool build_container(const Bridge& bridge, const assets::MeshGeneratorInputs& in
     out.cluster_material.push_back(material_of[part]);
   // The two materials, a constant each where the pack has no set for the layer's role: a grey
   // stone, a weathered timber.
-  const Vec4 colour[2] = {{0.46f, 0.45f, 0.42f, 1.0f}, {0.40f, 0.35f, 0.29f, 1.0f}};
+  const Vec4 colour[2] = {{0.46f, 0.45f, 0.42f, 1.0f}, {0.24f, 0.21f, 0.17f, 1.0f}};
   const f32 roughness[2] = {0.85f, 0.80f};
   const std::string_view role[2] = {bridge.stone_role, bridge.wood_role};
   for (u32 m = 0; m < 2; ++m) {

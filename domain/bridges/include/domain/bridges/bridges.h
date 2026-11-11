@@ -52,7 +52,7 @@
 namespace engine::bridges {
 
 // The solver's version, in every recipe's source hash: a change that moves a member bumps it.
-inline constexpr u32 k_bridge_version = 1;
+inline constexpr u32 k_bridge_version = 2;
 
 // ---- the grounded constants (docs/experiments/footbridges.md, each against its source) ---------
 

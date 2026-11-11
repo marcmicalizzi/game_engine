@@ -187,7 +187,7 @@ TEST_CASE(
       // The underside over bankfull by the bankfull depth, at least 300 mm.
       CHECK(p.soffit >= p.bankfull + std::max(k_min_freeboard_mm, depth));
       CHECK(p.span >= static_cast<i32>(c.width_mm));
-      CHECK(p.handrail == (p.deck > k_rail_fall_mm));
+      CHECK(p.handrail == (p.form == BridgeForm::stringers && p.deck > k_rail_fall_mm));
     } else if (p.form == BridgeForm::clapper) {
       CHECK(p.soffit >= p.bankfull);
       CHECK(p.span >= static_cast<i32>(c.width_mm));
@@ -233,11 +233,11 @@ TEST_CASE("bridges: every member is a closed solid wound outward") {
         }
         const Vec3 a = part.positions[part.indices[t]], b = part.positions[part.indices[t + 1]],
                    d = part.positions[part.indices[t + 2]];
+        const auto w = [](f32 v) { return static_cast<f64>(v); };
+        const f64 ax = w(a.x), ay = w(a.y), az = w(a.z), bx = w(b.x), by = w(b.y), bz = w(b.z);
+        const f64 dx = w(d.x), dy = w(d.y), dz = w(d.z);
         volume +=
-            (static_cast<f64>(a.x) * (static_cast<f64>(b.y) * d.z - static_cast<f64>(b.z) * d.y) -
-             static_cast<f64>(a.y) * (static_cast<f64>(b.x) * d.z - static_cast<f64>(b.z) * d.x) +
-             static_cast<f64>(a.z) * (static_cast<f64>(b.x) * d.y - static_cast<f64>(b.y) * d.x)) /
-            6.0;
+            (ax * (by * dz - bz * dy) - ay * (bx * dz - bz * dx) + az * (bx * dy - by * dx)) / 6.0;
       }
       u32 open = 0;
       for (const auto& [key, count] : edges)
@@ -365,9 +365,9 @@ TEST_CASE("bridges: the same bytes on every toolchain, pinned") {
   // Pinned on MSVC (x64, msvc-debug) 2026-11-11; GCC and Clang at v3 and GCC at v2 reproduce them.
   const Crossing cases[] = {stream(3000, 400), stream(6000, 800, 400, 300), stream(3000, 800),
                             stream(7000, 900, 0, 300)};
-  const u64 plan_pins[] = {0xae2e14e5c46f59d2ull, 0x9ca998a88eceb423ull, 0x1501c27128b8e681ull,
+  const u64 plan_pins[] = {0x1599dbc7f6e3f185ull, 0x9ca998a88eceb423ull, 0xfdce0357b88c500eull,
                            0xa2e065a587840fe5ull};
-  const u64 mesh_pins[] = {0x02776f58efcc8f25ull, 0xda99be6a0705e2aeull, 0x513d85929e7fa687ull,
+  const u64 mesh_pins[] = {0xa2149693bc9c34dfull, 0xda99be6a0705e2aeull, 0xd99ad790db329798ull,
                            0x1eb8b2d377f88031ull};
   for (u32 i = 0; i < 4; ++i) {
     MeshPart parts[2];

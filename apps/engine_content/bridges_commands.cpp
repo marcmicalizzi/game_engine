@@ -265,7 +265,8 @@ int bridges_command(int argc, char** argv) {
             const f64 dx = link.line[i].at.x - u.x, dz = link.line[i].at.z - u.z;
             if (dx * dx + dz * dz < nearest) {
               nearest = dx * dx + dz * dz;
-              c.d84_mm = static_cast<u32>(scene_gen::nearest_mm(link.sediment[i].d84_m));
+              c.d84_mm =
+                  static_cast<u32>(scene_gen::nearest_mm(static_cast<f64>(link.sediment[i].d84_m)));
             }
           }
 #endif

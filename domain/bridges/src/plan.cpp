@@ -101,7 +101,7 @@ i32 stone_stack(BridgePlan& plan, Draws& d, MemberKind kind, i32 x, i32 along, i
 void plan_stones(const Crossing& c, Draws& d, BridgePlan& p) {
   const i32 w = static_cast<i32>(c.width_mm);
   const i32 water = p.water;
-  const i32 count = std::max<i32>(2, (w + k_stone_pitch_mm - 1) / k_stone_pitch_mm);
+  const i32 count = std::max<i32>(1, (w + k_stone_pitch_mm - 1) / k_stone_pitch_mm);
   const i32 first = -((count - 1) * k_stone_pitch_mm) / 2;
   const i32 top = water + k_stone_rise_mm;
   p.deck = top;
@@ -112,7 +112,7 @@ void plan_stones(const Crossing& c, Draws& d, BridgePlan& p) {
   bool any = false;
   for (i32 k = 0; k < count; ++k) {
     const i32 x = first + k * k_stone_pitch_mm + d.range(-40, 40);
-    const i32 along = d.range(380, 460), across = d.range(420, 560);
+    const i32 along = d.range(300, 380), across = d.range(380, 500);
     const i32 x0 = x - along / 2, x1 = x + along / 2;
     // Dry footing already: a stone is set only where the ground is under the stone's top by more
     // than its rise (the bank's toe is a step of its own).
@@ -258,50 +258,31 @@ void plan_timber(const Crossing& c, Draws& d, BridgePlan& p, bool foot_log) {
     p.x_start = start;
     p.x_end = start + planks * pitch - k_plank_gap_mm;
   }
-  // A handrail where the deck stands high over the bed: posts on the deck (or, for a foot log, on
-  // the sills beside it) every 2 m or less, a rail along their tops. One side on a foot log.
-  p.handrail = p.deck > k_rail_fall_mm;
+  // A handrail on a plank deck that stands high over the bed: posts on the planks every 2 m or
+  // less, a rail along their tops, both sides. A foot log has none: a post on its 250 mm flat
+  // would take the walking surface, and two posts on its sills with a rail 5 m between them is no
+  // rail (the first pictures).
+  p.handrail = !foot_log && p.deck > k_rail_fall_mm;
   if (!p.handrail) return;
   const i32 post = 100;
-  for (i32 side = 1; side >= (foot_log ? 1 : -1); side -= 2) {
-    i32 x0 = 0, x1 = 0, base = 0, zc = 0;
-    Vector<i32> under;
-    if (foot_log) {
-      // On the two sills, outside the log.
-      x0 = s0;
-      x1 = s1;
-      base = soffit;
-      zc = side * (k_foot_log_mm / 2 + 120);
-      for (u32 m = 0; m < p.members.size(); ++m)
-        if (p.members[m].kind == MemberKind::sill && p.members[m].y1 == soffit)
-          under.push_back(static_cast<i32>(m));
-    } else {
-      x0 = p.x_start + post / 2;
-      x1 = p.x_end - post / 2;
-      base = p.deck;
-      zc = side * (k_deck_mm / 2 - post / 2);
-    }
+  for (i32 side = 1; side >= -1; side -= 2) {
+    const i32 x0 = p.x_start + post / 2, x1 = p.x_end - post / 2;
+    const i32 zc = side * (k_deck_mm / 2 - post / 2);
     const i32 bays = std::max<i32>(1, (x1 - x0 + 1999) / 2000);
     i32 first_post = -1;
     for (i32 k = 0; k <= bays; ++k) {
-      if (foot_log && k != 0 && k != bays) continue;
       const i32 x = x0 + static_cast<i32>(div_round(static_cast<i64>(x1 - x0) * k, bays));
-      // What the post stands on: the plank under its middle, or the sill at its end.
+      // The plank under the post's middle; over a gap, the plank before it.
       i32 on = -1;
-      if (foot_log) {
-        on = under.size() > 0 ? under[k == 0 ? 0 : under.size() - 1] : -1;
-      } else {
-        for (u32 m = 0; m < p.members.size(); ++m) {
-          const Member& q = p.members[m];
-          if (q.kind == MemberKind::plank && q.x0 <= x && x <= q.x1) on = static_cast<i32>(m);
-        }
-        if (on < 0) continue;  // over a gap: the next plank carries the next post
+      for (u32 m = 0; m < p.members.size(); ++m) {
+        const Member& q = p.members[m];
+        if (q.kind == MemberKind::plank && q.x0 <= x) on = static_cast<i32>(m);
       }
-      const i32 at = foot_log ? x
-                              : std::clamp(x, p.members[static_cast<u32>(on)].x0 + post / 2,
-                                           p.members[static_cast<u32>(on)].x1 - post / 2);
+      if (on < 0) continue;
+      const Member& plank = p.members[static_cast<u32>(on)];
+      const i32 at = std::clamp(x, plank.x0 + post / 2, plank.x1 - post / 2);
       const i32 idx = static_cast<i32>(
-          add(p, block(MemberKind::post, Shape::box, k_timber, at - post / 2, at + post / 2, base,
+          add(p, block(MemberKind::post, Shape::box, k_timber, at - post / 2, at + post / 2, p.deck,
                        p.deck + k_rail_mm, zc - post / 2, zc + post / 2, on)));
       if (first_post < 0) first_post = idx;
     }
