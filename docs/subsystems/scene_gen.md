@@ -178,7 +178,15 @@ struct GroundPlan { Vector<scene::TerrainEdit> edits; Vector<scene::TerrainHole>
 
 **Refused, with the entry named**: edits planned on a terrain with no `tiles` block (an edit is written into a tile set's heights when the set is built; a tread nobody benched is a scene that does not draw what it says); anything planned by a scene with no terrain; an opening `TerrainHoles` refuses. An edit's own numbers are checked by the tile set when the ground is made.
 
-**What it costs.** A scene none of whose generators plans asks the registry one name an entry and nothing else. A scene with a planning entry makes the unedited ground as well as the edited one (for a tile set, two sets in the cache, as `engine-content routes` and the scene made between them before) and opens each planning entry twice.
+**What it costs.** A scene none of whose generators plans asks the registry one name an entry and nothing else: its read has no stage for it. A scene with a planning entry makes the unedited ground as well as the edited one (for a tile set, two sets in the cache, as `engine-content routes` and the scene made between them before) and opens each planning entry twice. Measured on the routes' scratch basin (a 513 × 513 heightfield at 25 cm, five treads, 335 m of route), the scene file's read from `engine-view --startup-trace`, `msvc-release`, 2026-11-11 14:27, the CPU at about 50 % with other agents' builds, so upper bounds:
+
+| Scene | Cold (an empty derived-data root) | Warm, three reads |
+|---|---|---|
+| The treads pasted into `tiles.edits`, no entry | 143 ms | 9.5 to 9.8 ms |
+| The entry named, nothing pasted | 246 ms | 23.6 to 25.8 ms |
+| The bare basin, no entry and no edit | 66 ms | 7.5 to 10.7 ms |
+
+The planned read's 14 ms over the pasted one is the planning pass (8.1 to 8.7 ms: the unedited set opened, the entry opened on it, 4.9 to 5.6 ms of that the routes reading their plan) and the entry's second open (6.9 to 7.7 ms, with the unedited set opened again behind `uncut()`). Cold it builds the unedited set as well, and plans. **A lesson it cost a measurement to learn**: the first figures were 885 ms warm, of which 830 ms was two job pools started and stopped — the reader makes its pool the first time a generator asks, once in the planning pass and once in the expansion, and the routes asked for it to sample 3,969 lattice points. A generator asks `Context::jobs()` only for work that repays 36 threads starting; the routes now ask past 65,536 points.
 
 **Not built**: the world's placements consumer and the collision open a streamed entry on the edited description the reader left, so they need no hook; a host that builds a ground without the scene reader (`doc_scene`) calls no hook yet. A mask region is the third thing a route plans and is not handed across: it would be a third list of `GroundPlan`, appended to `Terrain.masks.regions` at the same place.
 
@@ -278,6 +286,7 @@ The descriptor is constant-initialized; the `Registrar` adds it to `GeneratorReg
 2. Pick a name no other generator of the kind has — the capability's own name is the convention (`ruins`, `dunes`, `city`) — and read the entry's parameters with the schema's reader where they have a schema type, so an unknown field is refused with its path.
 3. Tag the module: `GENERATOR placement:<name>` on its `engine_module()` line, one `<kind>:<name>` for every registration its sources make. That is the whole of the hosts' side: engine-view, engine-host and engine-editor link every tagged module ([Which generators a host carries](#which-generators-a-host-carries)). Nothing in `renderer` or `world` changes: a scene names it in `placements` (`{"generator": "<name>", "params": {...}}`) or as its terrain's `provider`.
 4. Test the generator through the registry from the capability's own tests (a scene is not needed: make a `Context`, `open`, `expand`, `tile`), and that `tile` over every tile is `expand`.
+5. A generator that changes the ground adds `plan_ground`, stands its plan on `context.uncut()`, and hands what it occupies in `Placements::shapes` ([What an entry plans for the ground](#what-an-entry-plans-for-the-ground)); the routes' generator (`domain/routes/src/generator.cpp`) is the smallest that does.
 
 ## Which generators a host carries
 
@@ -317,6 +326,7 @@ engine_host_generators(engine_view _view_deps)   # [EXCLUDE <module> "<reason>"]
 `include/domain/scene_gen/terrain_features.h`: `TerrainFeatures`, `terrain_features`, `ridge_weight`, `basin_weight` — the scene's ridges and basins.
 `include/domain/scene_gen/terrain_holes.h`: `TerrainHoles` — the scene's holes, the cell rule and the window hash a tile's key takes.
 `include/domain/scene_gen/exclusion.h`: `Exclusion` (`add_footprints`, `footprint_distance_mm` since W98), `ExclusionKind`, `k_riparian_floor`, `k_riparian_reach_m` -- where nothing is placed ([Exclusion](#exclusion), G135); `Footprint` (`band`, `polygon`, `edge_m`, `covers_mm`), `FootprintPoint`, `FootprintShape` -- a placement's footprint ([Footprints as shapes](#footprints-as-shapes), W98).
+`include/domain/scene_gen/footprint_list.h`: `FootprintList` -- footprints that own their polygons' points; `Placements::shapes`, `GroundPlan` and `PlacementGeneratorDesc::plan_ground` in `scene_gen.h` ([What an entry plans for the ground](#what-an-entry-plans-for-the-ground), [The shapes a tile occupies](#the-shapes-a-tile-occupies), R144).
 `include/domain/scene_gen/site.h`: `Site`, `SiteSample`, `SiteField`, `k_site_step_mm`, `k_site_water_reach_m`, `k_site_default_latitude_deg`, `k_site_max_latitude_deg` -- what the ground is like at a point ([The site](#the-site), G144); `Context::site`, `Context::site_mm`.
 
 `include/domain/scene_gen/tile_source.h`: `TileSourceOps`, `TileSource` — the seam a drawn or walked ground asks for heights through ([The tile source](#the-tile-source)); `GroundProvider::tiles()` is the procedural one.

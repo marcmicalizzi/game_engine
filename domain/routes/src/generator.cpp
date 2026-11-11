@@ -23,6 +23,8 @@ namespace {
 
 constexpr u32 k_plan_magic = 0x4C505452u;  // "RTPL"
 constexpr u32 k_plan_format = 1;
+// The lattice points past which sampling asks the host for its job pool: 256 x 256.
+constexpr f64 k_pool_points = 65536.0;
 static_assert(sizeof(Station) == 32, "a station is written as its bytes: no padding");
 
 struct Writer {
@@ -246,9 +248,17 @@ bool ensure_plan(const RouteLayer& layer, const scene_gen::Context& context, std
   // open on the benched ground read the same heights and make one key. A hit samples the lattice
   // and plans nothing.
   const scene_gen::Ground ground = context.uncut();
+  // **The host's job pool only for a lattice that repays starting it** (routes.md, "Budgets"). A
+  // host makes its pool the first time a generator asks, and starting and stopping one cost a
+  // scene's read 0.16 to 0.67 s on a busy 36-thread machine, where the 3,969 points of a 124 m
+  // region are sampled serially within the 5 ms the entry's whole open takes. The lattice's bytes
+  // do not depend on who samples it, so the threshold moves no plan.
+  const f64 spacing = static_cast<f64>(layer.spacing_m);
+  const f64 points = ((layer.region_max[0] - layer.region_min[0]) / spacing + 1.0) *
+                     ((layer.region_max[1] - layer.region_min[1]) / spacing + 1.0);
+  jobs::JobSystem* const pool = points > k_pool_points ? context.jobs() : nullptr;
   RouteNetwork n;
-  if (!detail::sample_lattice(layer, ground, context.jobs(), n, error, context.exclusion))
-    return false;
+  if (!detail::sample_lattice(layer, ground, pool, n, error, context.exclusion)) return false;
   u64 ground_hash = hash_bytes(n.ground_mm.data(), n.ground_mm.size() * sizeof(i64));
   // The water each lattice point stands in (routes.md, "Water"), when the host handed any.
   if (!n.wet.empty())

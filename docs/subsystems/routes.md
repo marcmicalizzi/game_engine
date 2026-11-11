@@ -189,6 +189,13 @@ number is an upper bound.
 | The plan file, 335 m of route (the scratch basin's five lines) | 22.4 KB, about 67 bytes a metre |
 | The edits written for them (`engine-content routes`'s output) | 103 KB, about 300 bytes a metre |
 
+**The lattice is sampled on the host's job pool only past 65,536 points** (256 × 256; R144). A
+host makes its pool the first time a generator asks, and on this machine starting and stopping one
+cost a scene's read 0.16 to 0.67 s where the scratch basin's 3,969 points are sampled serially within
+the 5 ms the entry's whole open takes: a scene naming the entry read in 885 ms warm with the pool and 24 ms without
+([scene_gen](scene_gen.md#what-an-entry-plans-for-the-ground) has the table). The lattice's bytes
+do not depend on who samples it, so the threshold moves no plan.
+
 The planner is about 7 µs a lattice point at 128 × 128, growing a little faster than the region
 (the heap); a 1 km² region at 2 m (250,000 points) is about two seconds, once, cached after. The
 tile cost is paid once a tile is built, not a frame.
