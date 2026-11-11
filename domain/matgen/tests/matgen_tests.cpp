@@ -411,8 +411,8 @@ TEST_CASE("matgen: the same bytes from every toolchain") {
   };
   const Pin pins[] = {
       {"gravel/bed", 6280004583196325757ull},      {"rock/scree", 15685960211907165185ull},
-      {"sand/bar", 6512822385822317515ull},        {"rock/granite", 12789445043993976799ull},
-      {"rock/sandstone", 16109245971402654920ull}, {"ground/turf", 4583399645411956302ull},
+      {"sand/bar", 6512822385822317515ull},        {"rock/granite", 6418967884203567027ull},
+      {"rock/sandstone", 15144819073237794497ull}, {"ground/turf", 4583399645411956302ull},
   };
   for (const Pin& pin : pins) {
     CAPTURE(pin.role);

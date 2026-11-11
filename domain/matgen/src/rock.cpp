@@ -216,6 +216,8 @@ void build_rock(const Set& set, Field& field, SetStats& stats, Shade& shade) {
 
       // Form above the decimetre: scallops (dishes between sharp rims, as a face that spalls in
       // flakes), ribs along the face, and one broken step where a low field crosses its middle.
+      // The scallops are slight (0.15 form at a cell's rim): at 0.6, the first engine pictures
+      // read every dish under a low sun as a lit and a shaded crescent, a pattern of arcs.
       bool lip = false;
       if (form > 0.0) {
         const Cell dish = cell_noise(set.seed ^ 0x7363616c6c6f70ull, lattice_of(vx, n, scallop_k),
@@ -225,7 +227,7 @@ void build_rock(const Set& set, Field& field, SetStats& stats, Shade& shade) {
         const f64 wide = lattice_noise(set.seed ^ 0x77696465ull, lattice_of(vx, n, wide_k),
                                        lattice_of(vy, n, wide_k), wide_k);
         const f64 step = smooth01((wide - 0.5) / 0.03);
-        height += form * (0.6 * rim * rim + 0.5 * (ribs - 0.5) + 1.4 * step);
+        height += form * (0.15 * rim * rim + 0.5 * (ribs - 0.5) + 1.4 * step);
         // Just under the step's edge water drips off.
         lip = step > 0.05 && step < 0.5;
         // The step's face is a fracture, rougher and darker for its shade.
