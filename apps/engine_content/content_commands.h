@@ -69,6 +69,10 @@ int channels_command(int argc, char** argv);
 // A region sketch solved into an authored heightfield and its fields (landform_commands.cpp,
 // docs/subsystems/landform.md); present when this build has the landform capability.
 int landform_command(int argc, char** argv);
+// A scene's footpaths written as benched treads, their mask regions and plan keys
+// (routes_commands.cpp, docs/subsystems/routes.md); present when this build has the routes
+// capability.
+int routes_command(int argc, char** argv);
 int soil_command(int argc, char** argv);
 int vine_command(int argc, char** argv);   // cover_commands.cpp
 int cover_command(int argc, char** argv);  // cover_commands.cpp

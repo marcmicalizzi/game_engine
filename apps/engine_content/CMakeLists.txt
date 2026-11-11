@@ -93,6 +93,11 @@ endif()
 if(TARGET engine::landform)
   list(APPEND _content_deps landform landform_schemas image)
 endif()
+# `routes` the same way, with the routes capability (docs/subsystems/routes.md): a scene's
+# footpaths written as benched treads, their mask regions and plan keys.
+if(TARGET engine::routes)
+  list(APPEND _content_deps routes routes_schemas schema schemas scene_gen)
+endif()
 if(TARGET engine::litter)
   list(APPEND _content_deps litter)
   list(APPEND _content_tests tests/litter_tests.cpp)
@@ -109,7 +114,7 @@ engine_app(NAME engine_content OUTPUT engine-content
   SOURCES main.cpp tissue_commands.cpp ruins_commands.cpp city_commands.cpp limit_dump.cpp
           normal_cases.cpp clip_commands.cpp terrain_commands.cpp tileset_commands.cpp masks_check_commands.cpp npc_commands.cpp
           flora_commands.cpp rocks_commands.cpp channels_commands.cpp cover_commands.cpp soil_commands.cpp morphs.cpp
-          landform_commands.cpp
+          landform_commands.cpp routes_commands.cpp
   DEPS ${_content_deps}
   E2E_TESTS ${_content_tests} tests/soil_tests.cpp tests/morphs_tests.cpp)
 
@@ -202,6 +207,10 @@ endif()
 
 if(TARGET engine::landform)
   target_compile_definitions(engine_engine_content PRIVATE ENGINE_CONTENT_LANDFORM=1)
+endif()
+
+if(TARGET engine::routes)
+  target_compile_definitions(engine_engine_content PRIVATE ENGINE_CONTENT_ROUTES=1)
 endif()
 
 if(TARGET engine::channels)

@@ -1,0 +1,80 @@
+// The routes capability's types (ADR-0007, ADR-0027; docs/subsystems/routes.md, roadmap W96): the
+// scene entry of the placement generator "routes", a network of footpaths planned once over a
+// region's ground. ENGINE_WITH_ROUTES=OFF takes them out of the build with everything else the
+// capability owns.
+namespace engine.routes
+
+/// One route: the places it joins, walked in order (routes.md, "The plan").
+struct Route @version(1) {
+  name: string
+  /// Two or more waypoints, world metres; x and z are where the route passes, y is not read (the
+  /// ground's). Each is moved to the nearest point of the region's lattice.
+  waypoints: worldpos[]
+}
+
+/// **The scene generator `routes`' entry** (routes.md; the proof of concept's solver needs 3.6): a
+/// network of footpaths over a region, planned once on a lattice of the ground by a least-cost
+/// search whose cost is the time Tobler's hiking function gives, under a grade cap, with every
+/// route after the first walking the earlier ones' cells for less so branches merge; the lines
+/// smoothed and stationed in whole centimetres; and, by `engine-content routes`, each line written
+/// into the terrain as a tread benched into the ground (`engine.scene.TerrainEdit`, mode `Bench`)
+/// with a mask region for its material. Every default is a source's or a stated choice
+/// (docs/experiments/routes.md).
+struct RouteLayer @version(1) {
+  name: string
+  /// The region the lattice covers, world metres, x and z, each a whole number of spacings.
+  region_min: f64[2]
+  region_max: f64[2]
+  /// The lattice the search runs on: 0.5 to 16 m, whole millimetres.
+  spacing_m: f32 = 2.0 @unit(m)
+  /// The most lattice points the region may hold: 4 to 4,194,304.
+  max_samples: u32 = 1048576
+  routes: Route[]
+  /// **The grade cap**, rise over run, 0.02 to 1: no lattice step of a route climbs or falls more
+  /// than this where a path under it exists. 0.25: the short-pitch maximum of the US Forest
+  /// Service's trail class 3 for hikers (FSH 2309.18 §23.11), a developed footpath.
+  grade_cap: f32 = 0.25
+  /// Where no path under the cap joins two waypoints, the search is run again with every step over
+  /// it allowed at this many times its time, 1 to 1000, and the metres over the cap are counted.
+  steep_penalty: f32 = 20
+  /// The share of its time a step costs where an earlier route already runs, 0.05 to 1: what makes
+  /// a later route join an earlier one rather than run beside it.
+  trodden: f32 = 0.5
+  /// Seconds a turn costs: of 45 to 90 degrees, and past 90 degrees (a switchback), 0 to 600. The
+  /// search carries a heading, so a climb under the cap is a few long legs and not a zigzag of
+  /// equal cost.
+  turn_s: f32 = 2
+  switchback_s: f32 = 30
+  /// Corner-cutting passes over the lattice line (Chaikin's), 0 to 4; a cut that would take a
+  /// stretch over the cap is not made.
+  smooth_passes: u32 = 2
+  /// The stations along a line, metres, 0.1 to 4: whole centimetres.
+  station_m: f32 = 0.5 @unit(m)
+  /// **The tread**: its width, 0.3 to 1.5 m (18 to 36 inches is trail class 3's), and how far it is
+  /// sunk under the ground on the flat, 0 to 0.3 m.
+  tread_width_m: f32 = 0.6 @unit(m)
+  sink_m: f32 = 0.04 @unit(m)
+  /// The cut bank above a tread benched into a slope, rise over run, 0.25 to 8 (1: "most soils are
+  /// stable with a 1:1 backslope", the Forest Service's notebook), and the fill below it, 0.1 to 8
+  /// (0.5, W98's batter).
+  backslope: f32 = 1
+  fill_slope: f32 = 0.5
+  /// The edit's rounding where a face meets the ground (`TerrainEdit.bank_round`, a share of the
+  /// face's height there), 0.1 to 1. 0.15: a tread's edge is a lip, not a shoulder; at W98's 0.75 a
+  /// fill face at 1 on 2 under a 30 % side slope lifts the ground 8 cm two metres off the tread,
+  /// where the two run nearly parallel.
+  edge_round: f32 = 0.15
+  /// **Wear** (routes.md, "Wear"): the distance past the tread's edge over which trampling thins
+  /// the cover, 0 to 20 m, and the cover left on the tread itself, 0 to 1.
+  wear_m: f32 = 2 @unit(m)
+  tread_cover: f32 = 0
+  /// The terrain palette layer the tread is drawn with (`engine.scene.TerrainMaskRegion.material`).
+  /// Empty: no mask region is written.
+  tread_material: string
+  /// The mask region's edge blend, metres, 0 to 2.
+  tread_feather_m: f32 = 0.15 @unit(m)
+  /// **The plan's key** (routes.md, "One plan"): 16 hexadecimal digits, as `engine-content routes`
+  /// printed it. Named on an entry whose ground carries its treads, whose heights are not what the
+  /// plan was made from. Empty: keyed from the ground the entry is handed.
+  plan: string
+}

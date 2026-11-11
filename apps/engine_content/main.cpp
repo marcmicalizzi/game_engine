@@ -188,6 +188,10 @@ const char* k_usage =
     "                                          heightfield, its fields (drainage area,\n"
     "                                          receiver, slope, erosion rate, fill) and a shaded\n"
     "                                          relief; present with the landform capability\n"
+    "  routes <scene.json> <out.json> [--ddc <dir>] [--entry <i>]\n"
+    "                                          the scene's footpaths as benched treads (edits),\n"
+    "                                          their mask regions and plan keys; present with\n"
+    "                                          the routes capability\n"
     "  vine <recipe.vine.json> <out.clusters>|--cache [--ddc <dir>] [--force]\n"
     "  cover <recipe.cover.json> <out.clusters>|--cache [--ddc <dir>] [--force]\n"
     "                                          grow a vine or organic cover over the host its\n"
@@ -1398,6 +1402,7 @@ int main(int argc, char** argv) {
   if (command == "rocks") return content::rocks_command(argc, argv);
   if (command == "channels") return content::channels_command(argc, argv);
   if (command == "landform") return content::landform_command(argc, argv);
+  if (command == "routes") return content::routes_command(argc, argv);
   if (command == "vine") return content::vine_command(argc, argv);
   if (command == "cover") return content::cover_command(argc, argv);
   if (command == "morphs") return content::morphs_command(argc, argv);
