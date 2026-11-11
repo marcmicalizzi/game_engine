@@ -99,12 +99,8 @@ endfunction()
 # Linux test presets' `execution.jobs`): `tileset` holds one height lookup beside a building window
 # to 50 ms, and `scene_collision` one tile's activation and one prefetch wait to 120 ms. Every other
 # timing check in the tree is a lower bound, a synthetic clock, or a ratio, which load cannot break
-# (docs/ci/what-to-run.md, "Jobs").
-#
-# The one name left here is `scene_collision`, whose CMakeLists.txt was closed to the row that
-# moved the hold to the label (2026-11-11): it is labelled from this list until its registration
-# says WALL_CLOCK, and the finalize stops the configure once it does, so the list empties itself.
-set(_engine_wall_clock_unlabelled scene_collision)
+# (docs/ci/what-to-run.md, "Jobs"). Both say WALL_CLOCK where they are registered; nothing is
+# labelled from here.
 
 #   _engine_finalize_tests()
 # Deferred to the end of the top-level CMakeLists.txt, when every test of every directory exists.
@@ -130,13 +126,6 @@ function(_engine_finalize_tests)
       endif()
       if("e2e" IN_LIST _labels AND NOT "e2e_apps" IN_LIST _locks)
         set_property(TEST "${_test}" DIRECTORY "${_dir}" APPEND PROPERTY RESOURCE_LOCK e2e_apps)
-      endif()
-      if("${_test}" IN_LIST _engine_wall_clock_unlabelled)
-        if("wall_clock" IN_LIST _labels)
-          message(FATAL_ERROR "${_test} is registered WALL_CLOCK now: drop it from _engine_wall_clock_unlabelled in cmake/EngineTesting.cmake")
-        endif()
-        set_property(TEST "${_test}" DIRECTORY "${_dir}" APPEND PROPERTY LABELS wall_clock)
-        list(APPEND _labels wall_clock)
       endif()
       if("wall_clock" IN_LIST _labels)
         set_property(TEST "${_test}" DIRECTORY "${_dir}" PROPERTY RUN_SERIAL TRUE)

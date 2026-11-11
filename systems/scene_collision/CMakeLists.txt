@@ -49,7 +49,9 @@ if(TARGET engine::tileset)
   # And in a channel cut into it (W89): the collision reads the cut heights the set was built with.
   list(APPEND _collision_tests tests/channel_cut_tests.cpp)
 endif()
-engine_module_tests(NAME scene_collision SOURCES ${_collision_tests})
+# WALL_CLOCK: scene_collision_tests.cpp holds one tile's activation and one prefetch wait under
+# 120 ms, so the suite runs alone in a CTest run with jobs (docs/ci/what-to-run.md, "Jobs").
+engine_module_tests(NAME scene_collision WALL_CLOCK SOURCES ${_collision_tests})
 if(TARGET engine_scene_collision_tests)
   target_compile_definitions(engine_scene_collision_tests PRIVATE
     ENGINE_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
