@@ -172,7 +172,7 @@ unevenness, 0.7 over 3 km, which is the count's own result and has no source.
 | Ice made and melted | p_i = p min((H − H_e) / (H_f − H_e), 1), H_e the equilibrium line and H_f the height at which all precipitation is ice; negative below the line | The same, equation 23. `full_m` 500 m is H_f − H_e of its example (8 and 10 units of 250 m). Its sum (equation 21) is over every donor; whether a negative flux is clipped the reading could not say. **This solver's**: bare ground below the line loses nothing, and a point the glacier covered last step passes its loss to the glacier; and a second slope below the line, `melt_m` 250 m. That ice melts about twice as fast with depth as it gathers with height is the published balance ratio of glaciers (Rea 2009's area-altitude balance ratios, about 1.75 worldwide), **not read**: quoted from memory of the figure, an authoring default until someone reads it |
 | A glacier's width | w ∝ A_i^0.3: width to length 0.6 (Bahr 1997) times a catchment's length to area 0.52 (Prasicek et al. 2020) | Hergarten's equations 10 to 13, **read**; Bahr and Prasicek **secondary**, through him. He says the relation "is not directly derived from data but is consistent with them". The prefactor is his unity in grid spacings and has no physical value there: `width_m` 500 m at one square kilometre of flux is **authoring**, set so a 10 km² glacier is a kilometre wide |
 | Thickness | A fixed part of the width | The same, section 6: he derives h from the flux and the slope (his equation 40) and adopts h ∝ w as simpler, 0.05 in his units, "about 0.25" in metres. `thickness_ratio` 0.25 |
-| The swath | The erosion acts over a band about the line, each point of it with an effective flux A^ε A_i^(1−ε), ε = 0.25 "a safe choice"; "the U shape is introduced by the swath construction rather than predicted" | The same, section 3 and equation 22, **read**. His band is the donors within half a width of an upstream point of the line; here it is the points within half a width whose bed is not above the ice, which is this solver's, to keep a band from climbing a wall the ice does not reach |
+| The swath | The erosion acts over a band about the line, each point of it with an effective flux A^ε A_i^(1−ε), ε = 0.25 "a safe choice"; "the U shape is introduced by the swath construction rather than predicted" | The same, section 3 and equation 22, **read**. His band is the donors within half a width of a point down the line. Stage C took every point within half a width whose bed is not above the ice, donor or not, which is what dug the trench at a held edge; stage E went back to his donors and kept the clip on the bed's height, which is this solver's, to keep a band from climbing a wall the ice does not reach ([the held edge](#the-held-edge-counted-and-mended)) |
 | Hanging valleys and overdeepening | The slope is that of bed plus thickness, so a tributary meets a trunk at the trunk's ice and a bed may be cut below its receiver's where the ice thins; "overdeepenings, hanging valleys, and steps at confluences at least qualitatively" | The same, section 6 and the abstract, **read**. Here the thickness enters as a rise in the point's base level, weighted by the ice's share of its stream power beside the meltwater's (his equations 24 to 28, K_eff) |
 | The ice's erodibility | K_g of 1 and 2 times the rivers' | The same, its figures 4 and 7. `erodibility` 2 |
 | What the form cannot do | "The model will even fail completely, e.g., for piedmont glaciers"; width and thickness "rely on empirical scaling"; it "cannot predict under which conditions U-shaped valleys occur or how flat they become" | The same, section 8, **read**. Measured here: 0.73 by the stated measure, a parabola |
@@ -388,6 +388,146 @@ should start from, in this order:
   since a point lays down G times the load a unit of its water carries and the far points'
   water has run farther over the plain, laying down and gathering clear water. Stage C's "under
   half the crown" was not derived either.
+
+## Stage E (W126): the held edge mended, and the trough measured again
+
+2026-11-11, the afternoon. Stage D left a defect found and not mended, a test that passed
+through it, and a design. Stage E counted the defect, mended it at its cause, and measured the
+trough again on the mended ice.
+
+### The held edge, counted and mended
+
+**The count** (the trough test's valley, each of its twenty ice steps: the points whose base
+level the ice lowers by a metre or more, which is to say the points that read the ice as
+thinning toward their receiver, sorted by why):
+
+| Kind | Stage C, first step | Stage C, last step | With stage D's one-line mend, last step |
+|---|---|---|---|
+| A point of a swath beside its line whose receiver is a held point | 92 points, 113 m in the mean, 319 m at the worst | 78, 59 m, 159 m | 40, 29 m, 230 m |
+| A point of a swath beside its line whose receiver is under less of the glacier (it drains out of the swath) | 112, 11 m, 70 m | 215, 13 m, 193 m | 240, 11 m, 57 m |
+| A point of a line whose own ice thins | none | none | none |
+
+Every point of this valley makes ice (the line is under its floor), so the ice thickens all the
+way down and the third row is the only one the model means. **Both of the others are one
+thing: a glacier's ice on a point that does not drain to the glacier's line.** Stage C stamped
+a disc about each point of a line and gave the disc the line's ice, so the disc reached points
+whose water and ice go elsewhere: at the region's edge, the points that drain straight out to
+the held points beside the trunk's outlet; inside, the points at a disc's rim whose receiver
+is one step outside it. Each of those has a receiver under some thinner thread's ice and reads
+the difference as a snout. Stage D's mend gave the held points under a disc the disc's ice,
+which moved the snout to the two held points just outside the last disc's rim: the trenches
+"50 to 200 m deep off the axis", which ran up the swath's two margins from there (the bed at
+the margin 914 m and 1,029 m, twenty points up from the edge, beside a floor at 1,271 m).
+
+**The published swath has no such points.** Hergarten 2021, section 3, **read** again for
+this (the publisher's text through the same fetch): "Let u be any donor of c0 ... The point u
+is added to the swath and assigned to c0 if the distance between u and ci is not greater
+than" half the width at ci "for any i ≥ 0 ... the same procedure is applied to all donors of
+these points ... the largest value of A_i (resulting from different starting points c0) is
+taken for each point." A swath is grown from a point of the line **through its donors**. He
+does not say which distance (taken here as the straight one, in whole points, as stage C's
+radius was), and he gives no boundary condition for the ice at a domain's edge (his example's
+east and west edges are periodic).
+
+**The mend**:
+
+1. **A swath is the points that drain to its line.** Each point walks down its own line (96
+   points at most, and no farther than the widest glacier's half width from where it started);
+   a line point q stands for every line point between the receiver and q once the point is
+   within half of q's width of q and its bed is not above q's ice (stage C's clip, kept);
+   the point takes the largest flux among those.
+2. **And never more than its receiver has.** That is the quoted recursion's consequence (a
+   swath is entered through its own points), taken as a cap rather than by keeping every
+   swath's membership: a point's swath flux is at most its receiver's unless its own flux is
+   the larger. So a step down in the ice from a point to its receiver happens only where a
+   line's own flux falls, which is melt. **This solver's closure**: the cap admits a line
+   point whose own swath the receiver is not in when the receiver is in a larger one.
+3. **A held point carries the thickest ice of the points that drain to it.** It is outside
+   the model (no flux is counted there), so this is a boundary condition, and the one that
+   adds nothing: the ice goes on as it came. **This solver's**; the paper has none.
+4. **The step the ice comes finds the ice twice.** A glacier pays for its melt over the swath
+   it had the step before; with none yet, the first step's glacier melted along its line alone
+   and ran to the region's edge whatever the line's height (every line of the one-valley case
+   reached column 159 of 160 on its first step and 82 to 155 on its second). That was a
+   second way to bring ice to an edge it should not reach, found while a test wanted a snout
+   that stays inside its region.
+
+**What it measures**: the count's first two rows are empty at every step. In the trough test
+no point stands under the edge's height (stage C: 2,407, the lowest by 274 m), the trunk's
+axis falls to the edge without a step (1,400 m at its head, 1,290 m at the junction, 1,273 m
+for its last kilometre and a half, the edge at 1,273 m), and the ice is 322 m on the last
+point inside and on the edge. With the hillslope creep off these hold to the millimetre; with
+it on, closed hollows of 9 to 14 cm stand on the floor, which is creep raising a level floor
+unevenly where nothing is laid down, and not the ice.
+
+**What it changes that was not asked for**: with less ice put where it does not belong, the
+ice's surface is lower, less snow becomes ice, and glaciers are shorter and thinner than stage
+C's. The one-valley case with the line at 1,600 m holds ice 32 m thick at the end where stage
+C's reached 92 m; its valley glacier is gone from the floor by 65,000 years because the ground
+has worn down under the line. And **a tributary's hanging step is 9 m where stage C measured
+40 m** (30 m with the swath mended and before the first step was): the step stands where the
+tributary's own ice meets the trunk's swath, and that margin moves by a point when the
+trunk's thickness crosses a whole point of half width, after which the old step is inside the
+swath and is worn away in a step or two. Nothing in the model sets a hanging step's height
+from below; the page no longer claims one.
+
+### The trough's section on the mended ice
+
+| What | Statement | Source |
+|---|---|---|
+| The form and its range | y = a x^b "best" describes a glacial valley's cross-section; b from 1.5 to 2.0; b rises with the intensity of glacial erosion (deeper, narrower sections) | Graf 1970, *Arctic and Alpine Research* 2(4):303–312. **Abstract** (the author's repository record), where stage D had a search extract. The body was not opened |
+| A wider range | b between 1.0 and 2.0 "in practice" (Hirano and Aniya 1988); in the Tian Shan 1.03 to 3.50 with most between 1.3 and 2.5 (Li, Liu and Cui 2001, as a later paper quotes them) | **Secondary** (search extracts of the two records and of the paper that quotes the third). Not read |
+| What makes the section | A model in which "the erosion rate varies quadratically with sliding speed" forms U-shaped valleys "within 50 ka"; it "primarily simulates the formation of glacial valleys by deepening", where observed valleys "have formed mainly by widening" | Seddik, Greve, Sugiyama and Naruse 2009 (arXiv:0901.1177). **Abstract only**: the PDF would not decode. Harbor 1992 (*GSA Bull.* 104:1364), the model it follows, was looked for again and **not read**: the copies found are scans |
+
+**The measure**, as stage D left it: a section's width half way up its lowest hundred metres
+over its width at the hundred is (1/2)^(1/b). On the mended ice, the trough test's trunk at
+five sections and five ages (the river's b beside it; widths in points of 50 m at the hundred
+metres):
+
+| Years of ice | b at columns 40, 52 (above the tributary) | b at 84, 96, 108 (below it) | Width at 96, ice against river |
+|---|---|---|---|
+| 10,000 | 1.9, 0.8 | 1.7, 1.5, 1.5 | 16 against 9 |
+| 20,000 | 2.0, 1.7 | 2.2, 2.3, 1.7 | 23 against 8 |
+| 40,000 | 4.3, 6.9 | 5.7, 4.3, 9.4 | 27 against 9 |
+| 60,000 | 2.7, 5.0 | 4.5, 3.2, 6.8 | 31 against 11 |
+| 100,000 | 3.1, 4.7 | 3.3, 6.4, 4.8 | 39 against 13 |
+
+(The river's b is 0.85 to 1.5 throughout, 1.2 in the mean. The measure is a ratio of two
+widths and is ill-conditioned past b = 3, where the two differ by a point or two.)
+
+**So the mended ice does make a trough, and the answer to stage D's question is yes with a
+limit.** A glacier's valley passes through the published range in its first 20,000 years
+(b 1.5 to 2.3, twice the river's width) and then goes past it to a floor between walls
+(b 3 and more). The section at 40,000 years, across the trunk above the tributary, in metres
+every 100 m: 1,556, 1,489, 1,411 | 1,360, 1,351, 1,346, 1,342, **1,337**, 1,341, 1,346,
+1,349, 1,353 | 1,400, 1,478, 1,558. The floor between the bars is the swath (the ice 250 m
+thick over all of it): 23 m of cross fall over 400 m, a slope of 0.06 where the walls stand at
+1.5. **Why**: every point of a swath has the line's flux in its stream power (to the 3/4)
+and is worn toward its receiver, which is toward the line, so the swath's cross fall is
+ground down to a few times the line's own fall; and outside the swath a slope's thinner ice
+meets the trunk's at a step in the ice's surface, so the wall hangs above the floor by that
+step and is steepened to its critical slope. That is the U of Hergarten's sentence,
+"introduced by the swath construction rather than predicted". Once the trunk nears its base
+level (the test's does after 40,000 years: the ice wears 2 mm a year) the floor is level.
+
+**What is missing, said plainly**: nothing in the model makes the erosion fall off across a
+glacier's width. The published section models (Harbor's, and Seddik's above) wear the bed in
+proportion to the sliding speed squared, which is greatest under the thickest ice and falls
+to nothing at the margin, and that is what holds a parabola while the valley deepens. A
+closure that would do it inside this form is to weigh a swath point's power by the ice over
+it under a level surface (the line's surface less the point's bed) against the line's
+thickness. It is not built: the rock floor being too level is not what a person objects to in
+the pictures (they show level floors, of fill), and the basins come first. The test holds the
+published lower bound (b at 1.5 or more against the river's under 1.5), that the section a
+hundred metres up is at least the swath wide (which is the model's own statement), and no
+upper bound.
+
+**The checks this restated** (each was stage C's number, taken on the trench): the trunk's
+bed at the junction "50 m or more below the river's" is now "below the river's and not below
+the edge" (25 m: the ice's erodibility is twice the rivers' on a flux the swath shares, and
+the edge is 17 m below the junction); "the tributary's steepest step over five times the
+river's" is now "taller than the river's, and where the ice thickens by 50 m or more"
+(8.9 m against 2.7 m, at the swath's margin, the ice 224 m above it and 294 m below).
 
 ## Constants, their ranges, and the defaults the schema pins
 

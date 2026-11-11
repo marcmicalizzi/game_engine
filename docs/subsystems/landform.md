@@ -339,10 +339,23 @@ Each step the ice stands:
 2. **Width and thickness.** A glacier is `width_m` wide where its flux is a square kilometre's
    and its width goes with the flux to the power 0.3 (Hergarten's equation 13); its ice is
    `thickness_ratio` of its width thick. **The swath** is every point within half that width of
-   the glacier's line whose bed is not above the ice there; a point takes the largest flux and
-   the thickest ice of the swaths that hold it. (The power is the one in the solver that is
-   not a square root: `det::exp(0.3 * det::log(x))`, once a point of ice a step.) Ice that
-   leaves through a held point keeps its thickness there: the lattice's edge is not a snout.
+   the glacier's line whose bed is not above the ice there **and which drains to that line**
+   (Hergarten's own definition: a swath is grown from a line point through its donors; W126).
+   Each point walks down its own line; a line point q stands for every line point from the
+   receiver to q once the point is within half of q's width of q; the point takes the largest
+   flux of those and the ice that flux makes, and **never more than its receiver has**, so a
+   step down in the ice from a point to its receiver is only ever the glacier's own thinning
+   along its line. (The power is the one in the solver that is not a square root:
+   `det::exp(0.3 * det::log(x))`, once a point of a line a step.) **The region's edge is not a
+   snout**: a held point is outside the model (no flux is counted there), so it carries the
+   thickest ice of the points that drain to it, and a glacier that leaves the region reads no
+   step in its surface there. Stage C stamped a disc about each line point instead, which put
+   a glacier's ice on points that drain out of its swath; each of those read the swath's
+   margin as a snout a glacier thick, and that was the trench at a held edge
+   ([the count](../experiments/landform.md#the-held-edge-counted-and-mended)). **The step the
+   ice comes finds it twice**: a glacier pays for its melt over the swath it had last step,
+   and with none yet it would melt along its line alone and run to the region's edge whatever
+   the line's height.
 3. **Erosion** is in the rivers' own update. Under a glacier a point's stream power is
    the ice's erodibility times the square root of its effective flux (the point's own
    catchment to the 1/4 times the swath's flux to the 3/4: Hergarten's equation 22, square
@@ -360,41 +373,56 @@ Each step the ice stands:
    moraine stands no higher than the ice that built it); the rest goes on with the meltwater
    and the rivers lay it down as outwash by their own law. This melt-out rule is this solver's.
 
-**What it makes, measured** (the tests): a trunk under ice for 100,000 years is worn 196 m
-below the same valley under a river and is 1.7 times as wide a hundred metres above its floor
-(both mostly a trench against the region's edge: "what it does not make", below);
-a tributary's bed meets it at a step of 40 m in one 50 m point where the river's is graded
-(2.7 m); a glacier whose line is above its valley's floor ends inside the region, 7.3 km down
-an 8 km valley, with till under where it stood. In the two-range sketch
+**What it makes, measured** (the tests, W126's numbers): a trunk under ice for 100,000 years
+is worn 25 m below the same valley under a river at the junction, down to the level of the edge
+it leaves through and no lower, and is three times as wide a hundred metres above its floor
+(108 points over three sections against 34; the swaths there are 75): a floor the swath wide
+between walls that hang above it by the step in the ice at the swath's margin. A tributary's
+bed meets the trunk's swath at its steepest step (9 m in one 50 m point where the river's
+steepest is 2.7 m). A glacier whose line is above its valley's floor ends inside the region
+(with the line 250 m above the valley's head, half way down an 8 km valley at its farthest)
+and leaves no point below the region's base level. In the two-range sketch
 ([pictures](#pictures-and-what-still-reads-wrong)) with the line at 800 m the ice covers the
 upper valleys, an eighth of the lattice, and those are wider and softer with open heads; below
 its reach the valleys are the rivers'.
 
 **What it does not make, said plainly**:
 
-- **A parabola is what a trough should be; whether this ice makes one is not yet shown.** By
+- **It makes a trough, and a mature one is flatter than a rock trough is measured to be.** By
   the stated measure (a section's width half way up its lowest hundred metres over its width
-  at the hundred) the test's trunk is 0.73 under ice and 0.56 under a river. A section
-  y = a x^b measures (1/2)^(1/b), so those are b = 2.2 and b = 1.2: Svensson 1959's fit of a
-  glacial valley is b "only slightly" off 2, Graf 1970's troughs run 1.5 to 2, and a river's V
-  is 1 ([the grounding](../experiments/landform.md#a-troughs-section-the-sources) says how
-  far each was read). So stage C's "a parabola, not a U" named the published form as a
-  shortfall, and the test now holds the exponents (W106). **But the test's 2.2 is the next
-  bullet's trench**, and without it the same valley measures 1.45. The level floor of the
-  photographs is a different matter and mostly not rock: a lake's fill and outwash in a basin
-  the ice dug below the river's grade. The solver has the fill and not the basin.
-- **Where a glacier leaves the region through a held edge, its trunk is a trench behind a
-  wall** (W106 found it; it is not mended). The edge's held point on the glacier's line keeps
-  the glacier's thickness (stage C's own mend), but the held points beside it carry only their
-  own threads' ice, 57 to 111 m in the test against 220 m in the swath inside; the swath's
-  points that drain to them read that as the ice thinning, and are worn below the edge by the
-  difference. The test's trunk ends at 1,041 m against an edge held at 1,273 m, a 230 m step in
-  one point, and is a trench for its whole length: the "196 m below the river's bed" and the
-  "1.7 times as wide" below are that trench, not the ice's power. Giving the edge's held points
-  the swath's ice was tried and takes the trench off the axis (the trunk then grades to its
-  outlet, 37 m below the river's, 1.26 times as wide, b = 1.45) but leaves trenches 50 to
-  200 m deep off the axis, so it was not kept. **A sketch whose ice reaches an open edge
-  should not be trusted there**; the two-range pictures' glaciers end inside their region.
+  at the hundred; a section y = a x^b measures (1/2)^(1/b)) the river's trunk is b = 1.2 and
+  the glacier's passes through the published range and out of it: 1.5 to 2.3 after 10,000 to
+  20,000 years, 3 to 9 after 40,000, 4.5 at the test's 100,000. Graf 1970's troughs run 1.5 to
+  2.0 and Svensson 1959's valley is "only slightly" off 2; the widest range found is 1.0 to
+  3.5 with most between 1.3 and 2.5
+  ([the grounding](../experiments/landform.md#the-troughs-section-on-the-mended-ice) says how
+  far each was read). **Why**: every point of a swath is worn toward the line with the line's
+  own flux, so once the trunk nears its base level the swath is ground to a floor whose cross
+  fall is a few times the fall along it, and the walls outside the swath hang above it by the
+  step in the ice. That is the U of Hergarten's own sentence ("introduced by the swath
+  construction rather than predicted"). **What is missing** for a parabola that lasts is the
+  erosion's fall across a glacier's width (the published section models wear in proportion
+  to the sliding speed squared, greatest under the thickest ice); it is not built, and the
+  test holds the lower bound only. The level floor of the photographs is a different matter
+  and mostly not rock: a lake's fill and outwash in a basin the ice dug below the river's
+  grade. The solver has the fill and not the basin.
+- **The trench at a held edge is mended** (W106 found it, W126 counted and mended it:
+  [the count](../experiments/landform.md#the-held-edge-counted-and-mended)). Stage C's trunk
+  ended at 1,041 m against an edge held at 1,273 m, with 2,407 points under the edge. Now none
+  is, the trunk meets the edge with no step, and the held point carries the ice of the point
+  that drains to it (322 m either side of the edge). Stage C's "196 m below the river's bed",
+  "1.7 times as wide" and a hanging step of 40 m were that trench's.
+- **A hanging valley's step is not tall here.** What the rule gives is where a tributary's
+  step stands (where its own ice meets the trunk's swath) and that it cannot be worn away from
+  below; how tall it grows depends on how long the swath's margin stays on one point. In the
+  test's valley the trunk's ice thins from 320 m to 294 m over the run, the swath narrows by a
+  point, and the step at the new margin is 9 m. A tributary much thinner than its trunk would
+  hang by most of the difference; no test valley has one yet.
+- **Creep leaves hollows of centimetres under ice.** A hollow under a glacier is not a lake
+  and nothing is laid in it, so what hillslope creep raises unevenly on a floor the ice has
+  ground level stays as closed hollows 9 to 14 cm deep (measured in both test valleys; with
+  the creep off there are none, to the millimetre). They are under the 16 m lattice's
+  quantum of interest and are said here so nobody reads them as basins.
 - **No basin is dug, so no trough lake, no cirque and no tarn; and till is a sheet, not a
   ridge.** A bed is worn below its receiver's only where the ice thins downstream, by that
   much at most, because the update reads the ice's surface from one point to the next: the
@@ -805,8 +833,10 @@ in the editor. The limits of the model as it stands are on the grounding page.
 | a single mouth's fan is a cone (2.2 s: two solves of a hundred steps) | a funnel-shaped catchment drains through one mouth onto a level plain for 200,000 years: on an arc 500 m from the mouth the ground stands over 2 m above the plain (measured 28.2 m) and varies along the arc by under a third of that (5.4 m, 19%); with one receiver a point the same arc measures 13.9 m and 3.7 m (27%) | the flow does not divide on the fan, or the load is not carried by the shares |
 | a river's plain is wider than a point, and cutting down leaves a terrace (2.7 s: three solves) | a straight valley draining 20 km², banks three times as erodible as the bed, 400,000 years: the lower floor (points within 2 m of the lowest of their column) is 3 points wide or more (measured 8.8) and a point wider than with no lateral erosion (6.6), with over a hundred banks taken (11,310). Then the base level falls 20 m for 8,000 years: the river cuts down over a quarter of the fall in the last kilometre (7.5 m) into a floor narrower than the one it left (4.1 points against 10.2), and of the columns that owe a terrace (cut 5 m, old floor 3 points wider than the new) three quarters keep old floor within 1.5 m of where it stood (10 of 10, 6.5 points each) with its edge beside the new floor (10 of 10) | no bank is taken, or a river that cuts down takes its whole floor with it |
 | a range raised unevenly is not a comb (3.9 s: two solves of a hundred steps on a lattice that holds a dozen valleys a side) | a 9.6 km range along x raised evenly and with the default unevenness: of the mountain channels, the junctions a kilometre rise by over 15% (measured 0.149 to 0.359) and the share running straight down the range falls (60% to 43%) | the unevenness is lost, or is of the local rate and vanishes on the flanks |
-| ice leaves a trough where a river leaves a V, and a tributary hangs (`ice_tests.cpp`, 1.2 s: two solves of twenty steps) | a trunk valley falling at 0.02 with a tributary at 0.12, 100,000 years under ice and under a river: by the stated measure (width half way up the lowest 100 m over width at the 100 m: V 0.5, parabola 0.71, box 1) which is the exponent of a section y = a x^b, the river's trunk is under the glacial range's b = 1.5 (measured 1.19) and the glacier's at 1.5 or more (2.22, which like this row's width and depth is inflated by the trench against the held edge that [ice](#ice) describes: mended, these checks should fail at 1.45); the glacier's is half again as wide at the 100 m (59 points against 34 over three sections); the tributary's steepest step is over five times the river's (39.8 m against 2.7 m); the trunk's bed at the junction is 50 m or more below the river's (196 m), under 100 m or more of ice (220 m) | the ice wears only its line, or a tributary is graded to the trunk's bed |
-| a glacier ends where its ice is spent, and leaves till (0.4 s) | a valley falling at 0.03 whose line is 100 m above its head: over 300 points under ice (974), its snout past column 40 and 8 columns or more inside the lattice (column 146 of 160), a hundred points or more with half a metre of till (1,996), and till never more than the sediment there. Whether its bed holds a hollow is printed and not held (none) | the melt is not charged to the glacier, or till is laid that is not sediment |
+| ice leaves a trough where a river leaves a V, and a tributary hangs (`ice_tests.cpp`, 1.2 s: two solves of twenty steps) | a trunk valley falling at 0.02 with a tributary at 0.12, 100,000 years under ice and under a river: by the stated measure (width half way up the lowest 100 m over width at the 100 m: V 0.5, parabola 0.71, box 1) which is the exponent of a section y = a x^b, the river's trunk is under the glacial range's b = 1.5 (measured 1.19) and the glacier's at 1.5 or more (4.54: a floor between walls, past the published range, as [ice](#ice) says); the glacier's section at the 100 m is at least its swath wide (108 points over three sections against swaths of 75) and half again the river's (34); the tributary's steepest step is taller than the river's (8.9 m against 2.7 m) and stands where its ice meets the trunk's swath (the ice 50 m or more thicker below it: 224 m to 294 m); the trunk's bed at the junction is below the river's (1,290 m against 1,315 m) and not below the edge, under 100 m or more of ice (298 m). W126 restated three of these from what the mended ice must give: stage C's widths, its 50 m at the junction and its step of five times the river's were the trench at the held edge | the ice wears only its line, or a tributary is graded to the trunk's bed |
+| a glacier that leaves through a held edge is graded to that edge (W126; 0.7 s) | the same trunk with its ice leaving through the open edge and the creep off: no point of the region under the edge's height (stage C: 2,407, the lowest by 274 m), no standing water over 10 mm, the trunk's axis never rising toward the edge by over a millimetre and never above its start, the last point inside within a metre of the edge (measured 0), and the held point carrying the ice of the point that drains to it (322.4 m on both) | a glacier's ice is put on points that drain out of its swath, or a held point is read as a snout |
+| a glacier that ends inside its region leaves the edge alone (W126; 4.3 s: the run solved to each of its twenty steps, so the test knows the farthest and the thickest the ice ever was) | a valley falling at 0.03 with the line 250 m above its head, nothing laid down and the creep off: the valley glacier's snout (ice within two rows of the axis) past column 40 in its first two steps and 40 columns or more inside the lattice at its farthest (column 82 of 160); no point under the edge's height; no standing water deeper than the thickest ice that stood on the point, and none on ground no ice reached (measured none anywhere) | a swath's margin or the region's edge is read as a snout, or the step the ice comes runs it to the edge |
+| a glacier ends where its ice is spent, and leaves till (0.5 s) | the same valley with the line 100 m above its head: over 300 points under ice (1,017), the last of it past column 40 and 8 columns or more inside the lattice (column 146 of 160, which is the upper sides' slope ice: the row above measures the valley glacier), a hundred points or more with half a metre of till (2,143), and till never more than the sediment there | the melt is not charged to the glacier, or till is laid that is not sediment |
 | an ice age solves to the same bytes on one, four and sixteen workers (0.7 s) | the heightfield, the ice, the till, the sediment and the discharge of a 30,000-year ice age from each, and the first three pinned on MSVC for Clang and GCC to reproduce | a loop of the ice reads what another chunk writes, or `det::exp` and `det::log` differ by toolchain |
 | a lake's floor fills level, and its mouth builds a delta | a basin fed for ten thousand years: its floor away from the mouths level within 50 mm (measured 0 and 3 mm) under water still metres deep; with `delta_share` 0.5 the shelf under the mouths holds a quarter more sediment (measured twice) and the floor stands lower | the fill follows the flood's order, or the mouths get nothing |
 
@@ -1003,10 +1033,10 @@ hold. Beside the reference reels (r03 and r04, the alpine valleys), what a perso
 - **A depression's floor keeps straight lines**: where a rising ridge dams a valley the lake that
   forms is routed along the flood's order, and its floor shows it.
 
-**The tile set cannot build a heightfield whose spacing is one of its own far levels'.** The 16 m
-ground was refused at open (`16000.tiles` "is not this level's archive"): the finest level and
-the far chain's 16 m level are both named by their spacing. The pictures were taken from the same
-ground read at 4 m by a landform run of no steps, which builds (as the 1 m grounds of the test
-scenes do). A spacing of 8, 32, 64, 128 or 256 m, the default chain's other levels, would
-presumably collide the same way; 16 m is the one that was tried. That is the tile set's to fix,
-and a row.
+**The tile set could not build a heightfield whose spacing is one of its own far levels', and
+now can.** Stages A to D met a 16 m ground refused at open (`16000.tiles` "is not this level's
+archive": the finest level and the far chain's 16 m level were both named by their spacing), and
+their pictures were taken from the same ground read at 4 m by a landform run of no steps. Since
+2026-11-11 a far level's archive has a name of its own (the tile set's change, merged that
+morning), so a solved ground builds at the spacing it was solved at and the 4 m read is no
+longer needed; no picture has yet been taken that way.

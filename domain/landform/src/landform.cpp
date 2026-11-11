@@ -906,6 +906,7 @@ struct IceField {
   Vector<f64> flux;      // the ice a point passes on, in cells making ice in full
   Vector<f64> arriving;  // what reaches it from above
   Vector<f64> reach;     // the largest flux of a glacier whose swath holds the point
+  Vector<f64> own;       // the ice the point's own flux makes, metres (its line's thickness)
   Vector<f64> thick;     // the ice over the point this step, metres
   Vector<f64> before;    // and last step
   Vector<f64> melt;      // the share of the ice reaching the point that melts there
@@ -925,8 +926,6 @@ void glaciate(const Sketch& s, const Frame& frame, const u8* held, const f64* z,
   const Ice& c = *s.ice;
   const u32 w = frame.w;
   const u32 n = w * frame.h;
-  const i32 wi = static_cast<i32>(w);
-  const i32 hi = static_cast<i32>(frame.h);
   const Offsets o = neighbour_offsets(w);
   const u32* order = r.order.data();
   const u8* receiver = r.receiver.data();
@@ -975,40 +974,87 @@ void glaciate(const Sketch& s, const Frame& frame, const u8* held, const f64* z,
       if (was[p] != 0) arriving[neighbour(p, o.at[receiver[p]])] += passed;
     }
   }
-  // Ice that leaves the region through a held point is as thick there as its flux makes it: the
-  // edge of the lattice is not a snout, and the bed inside is not worn down to meet one.
-  for (u32 p = 0; p < n; ++p)
-    if (held[p] != 0 && arriving[p] > 0.0)
-      thick[p] = c.thickness_ratio * ice_width_m(c, arriving[p], cell_km2);
-  // The swaths, in cell order (a point keeps the largest flux and the thickest ice that reach
-  // it, which no order changes): every point within half a glacier's width of its line whose
-  // bed is not above the ice there.
+  // Each line's own ice: as thick as its flux makes it, and half its width in points.
+  f64* own = ice.own.data();
+  const f64 half_cells = 0.5 / (c.thickness_ratio * frame.spacing_m);
+  i32 widest = 0;
   for (u32 p = 0; p < n; ++p) {
+    own[p] = 0.0;
     if (!(flux[p] > 0.0)) continue;
-    const f64 wide = ice_width_m(c, flux[p], cell_km2);
-    const f64 deep = c.thickness_ratio * wide;
-    if (reach[p] < flux[p]) reach[p] = flux[p];
-    if (thick[p] < deep) thick[p] = deep;
-    iced[p] = 1;
-    i32 radius = static_cast<i32>(0.5 * wide / frame.spacing_m);
+    own[p] = c.thickness_ratio * ice_width_m(c, flux[p], cell_km2);
+    i32 radius = static_cast<i32>(own[p] * half_cells);
     if (radius > k_ice_reach_cells) radius = k_ice_reach_cells;
-    if (radius < 1) continue;
-    const i32 px = static_cast<i32>(p % w);
-    const i32 py = static_cast<i32>(p / w);
-    const f64 surface = z[p] + deep;
-    for (i32 dy = -radius; dy <= radius; ++dy) {
-      const i32 y = py + dy;
-      if (y < 0 || y >= hi) continue;
-      for (i32 dx = -radius; dx <= radius; ++dx) {
-        const i32 x = px + dx;
-        if (x < 0 || x >= wi || dx * dx + dy * dy > radius * radius) continue;
-        const u32 u = static_cast<u32>(y) * w + static_cast<u32>(x);
-        if (held[u] != 0 || z[u] > surface) continue;
-        if (reach[u] < flux[p]) reach[u] = flux[p];
-        if (thick[u] < deep) thick[u] = deep;
-        iced[u] = 1;
+    if (radius > widest) widest = radius;
+  }
+  // The swaths (Hergarten 2021, section 3: "Let u be any donor of c0 ... The point u is added
+  // to the swath and assigned to c0 if the distance between u and ci is not greater than"
+  // half the width at ci "for any i >= 0", ci the points down the line from c0; "the same
+  // procedure is applied to all donors of these points", and a point takes the largest flux
+  // of the lines that hold it). **A swath is made of the points that drain to its line**: a
+  // point beside a glacier that drains away from it is not under it. Stage C stamped a disc
+  // about each point of a line instead, which put a glacier's ice on points that drain out of
+  // its swath (a region's held edge beside the line, a slope past a low divide), and each of
+  // those read the swath's margin as a snout a glacier thick and was worn below its receiver
+  // by that much: the trench W106 found, counted on the grounding page. So: each point walks
+  // down its own line; a point q on it stands for every line point from the receiver to q once
+  // the point is within half of q's width of q (and its bed is not above q's ice, this
+  // solver's clip); the point takes the largest flux of those, **and never more than its
+  // receiver has**, which is the quoted recursion's consequence (a swath is entered through
+  // its own points) and is what makes a step down in the ice to a receiver always the
+  // glacier's own thinning. In flood order, so a receiver is settled before its donors.
+  const i32 widest2 = widest * widest;
+  for (u32 k = 0; k < n; ++k) {
+    const u32 u = order[k];
+    if (held[u] != 0) continue;
+    f64 most = 0.0, most_deep = 0.0;  // the largest flux down the line so far, and its ice
+    f64 found = 0.0, found_deep = 0.0;
+    u32 q = u;
+    i32 dx = 0, dy = 0;
+    for (i32 step = 0; step < k_ice_reach_cells && widest > 0; ++step) {
+      const u8 code = receiver[q];
+      if (code == k_no_receiver) break;
+      q = neighbour(q, o.at[code]);
+      if (held[q] != 0) break;
+      dx += k_receiver_dx[code];
+      dy += k_receiver_dz[code];
+      const i32 far2 = dx * dx + dy * dy;
+      // Past the widest glacier's half width nothing down the line holds the point.
+      if (far2 > widest2) break;
+      if (flux[q] > most) {
+        most = flux[q];
+        most_deep = own[q];
+      }
+      i32 radius = static_cast<i32>(own[q] * half_cells);
+      if (radius > k_ice_reach_cells) radius = k_ice_reach_cells;
+      if (radius < 1 || far2 > radius * radius || z[u] > z[q] + own[q]) continue;
+      found = most;
+      found_deep = most_deep;
+    }
+    if (found > 0.0) {
+      const u32 below = neighbour(u, o.at[receiver[u]]);
+      if (held[below] == 0 && found > reach[below]) {
+        found = reach[below];
+        found_deep = thick[below];
       }
     }
+    if (flux[u] >= found) {
+      found = flux[u];
+      found_deep = own[u];
+    }
+    reach[u] = found;
+    thick[u] = found_deep;
+    iced[u] = found > 0.0 ? u8{1} : u8{0};
+  }
+  // **The region's edge is not a snout.** A held point is outside the model: no flux is
+  // counted at it and no swath is found from it, so what the ice does there is a boundary
+  // condition, and the one that adds nothing is that the ice goes on as it came: a held point
+  // carries the thickest ice of the points that drain to it. A glacier that leaves the region
+  // then reads no step in its surface at the edge, and a thinner thread that reaches the same
+  // held point hangs above it as it would above any trunk.
+  for (u32 p = 0; p < n; ++p) {
+    if (held[p] != 0 || iced[p] == 0) continue;
+    const u32 below = neighbour(p, o.at[receiver[p]]);
+    if (held[below] != 0 && thick[below] < thick[p]) thick[below] = thick[p];
   }
 }
 
@@ -2149,6 +2195,7 @@ bool solve(const Sketch& s, const StartField* start, const SolveOptions& options
     ice.flux.assign(n, 0.0);
     ice.arriving.assign(n, 0.0);
     ice.reach.assign(n, 0.0);
+    ice.own.assign(n, 0.0);
     ice.thick.assign(n, 0.0);
     ice.before.assign(n, 0.0);
     ice.melt.assign(n, 0.0);
@@ -2192,6 +2239,11 @@ bool solve(const Sketch& s, const StartField* start, const SolveOptions& options
       const i64 at = static_cast<i64>(step) * s.step_yr;
       ice.on = at >= s.ice->from_yr && (!s.ice->until_yr || at < *s.ice->until_yr);
       if (ice.on) {
+        // A glacier pays for the melt over its swath as it stood last step. The step the ice
+        // comes there is none, and a glacier found without one melts along its line only and
+        // runs to the region's edge whatever the line's height: so that step finds the ice
+        // twice, the second time over the first's swath.
+        if (ice_steps == 0) glaciate(s, frame, held, z, routing, ice);
         glaciate(s, frame, held, z, routing, ice);
         ++ice_steps;
       }
