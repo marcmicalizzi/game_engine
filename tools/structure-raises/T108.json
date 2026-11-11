@@ -1,10 +1,10 @@
 {
   "format": "engine.structure-raise.v1",
   "name": "T108",
-  "reason": "T108, G183 and G182: rocks.md's deposit sections say why a loose stone wears its rock's set, how a gully's cone climbs and its flanks fall at the repose along the wall, and what the bed's clasts are at one metre",
+  "reason": "T108, G183 and G182: rocks.md's deposit sections say why a loose stone wears its rock's set, how a gully's cone climbs and its flanks fall at the repose along the wall, and what the bed's clasts are at one metre and what they cost",
   "date": "2026-11-11",
   "by": "Marc Micalizzi",
   "deltas": {
-    "page:docs/subsystems/rocks.md": 5927
+    "page:docs/subsystems/rocks.md": 8656
   }
 }

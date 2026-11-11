@@ -1365,7 +1365,8 @@ msvc-release run was made this pass).
 G143's third pass, 2026-11-11 ([grounding](../experiments/rockfall-deposits.md#g143s-third-pass-the-shading-fault-the-supply-by-setting-and-the-rubble-2026-11-11)).
 Up close the bed was a smooth pale sheet with sparse pebbles: a scree's surface is openwork, angular
 clasts standing on each other with voids between and the fines below (Verdian et al. 2021), and at a
-metre, ten and a hundred what reads is its largest clasts. **The top is now drawn at 12.5 cm**
+metre, ten and a hundred what reads is its largest clasts. **The top is now drawn at 12.5 cm** (10
+cm since G182, below)
 (`k_clast_step_mm`; `sub` steps a sample spacing, 4 at 0.5 m, as many as the patch's budget holds
 with every loose fragment at the blocks' rung beside it) and **raised by the clasts of its own
 sorting**: three world-anchored lattices of 0.5, 1 and 2 m cells, one clast a cell, its centre, size
@@ -1391,6 +1392,37 @@ lands). The loose fragments are the largest band alone (the 4-32 mm pebbles, 65%
 default count is 24 a patch, not 96. The finest form is 136 triangles a square metre of bed, plus
 the loose fragments and blocks; the relief leaves the coarse forms through the cluster DAG, and
 beyond the finest it is the material's normal and roughness. `k_deposit_version` 4.
+
+**At one metre the clasts are blocks, not plates** (G182, `k_deposit_version` 8). The third pass's
+clasts were flat-topped plates of one shape standing 0.35 of their size on a flat floor, and at one
+metre the eye read the set's printed clasts and not them. A clast is now an angular block
+([grounding](../experiments/rockfall-deposits.md#g183-and-g182-cones-that-climb-and-the-bed-at-one-metre-2026-11-11)):
+in plan a hexagon in its own frame whose faces stand 0.7-1 of the half-size from its centre,
+elongated `a / b` 1.7-2.6 (Wegner et al. 2021's medians for talus blocks over 0.5 m); its top a low
+roof (`k_clast_roof`, 0.35 of its height from the edges up to ridges that follow the hexagon in)
+tilted about both axes (`k_clast_tilt`, up to half its height across its half-size); its sides a
+steep bevel over 0.12 of the half-size; its height drawn 0.2-0.5 of its size, so neighbours stand
+at several heights. **The bed between the largest lies in hollows**: wherever a lattice's clasts
+show, the bed sinks by `k_clast_void` (0.15) of the bed's clast size and the clasts stand out of it
+(Sanders et al. 2009's open pores under the larger clasts; the depth is authored, no source measured
+it). The top is drawn at **10 cm** (`k_clast_step_mm`, five steps a 0.5 m spacing; 12.5 cm before),
+so a 0.3 m clast spans three steps and its faces read. On the rubble case's 16 m bed, by quarters
+from apex to toe: the highest clast 0, 0.005, 0.10 and 0.14 m over the plan's top, the lowest hollow
+0, -0.001, -0.04 and -0.075 m; at the apex the bed is the material's alone. Every author-chosen
+number here is the page's, not a source's: no protrusion, tilt or void depth of talus clasts was
+found measured. **What the geometry cannot do and the material should**: the clasts under 10 cm,
+their own shading and a height that goes down between them (the set's height map read as
+parallax, or a darker cavity term between clasts) are the material sets' (`domain/matgen`), a
+request, not built here.
+
+**What it costs** (the cost case's tile, 16 m, four patches, at the default 24 loose stones a
+patch; msvc-debug, CPU 85-90% busy with other agents' builds, 12 GB free, one run each: upper
+bounds). The finest form: 319 triangles a square metre of bed on the base (T108 moves no
+triangle), 308 after G183's cones (a slightly smaller bed on this tile, 187.5 m² for 193.5),
+**381** after G182's 10 cm top; the coarsest 9.9, 10.1 and 12.0. The tile's four patches build in
+2.4, 1.9 and 2.3 s, and write 4.9 MB of containers after G183 and 5.8 MB after G182 (the base's
+bytes were not measured). The cluster DAG is the LOD policy; its coarsest level the far form, where
+the relief has gone into the material's normal.
 
 ### The toe
 

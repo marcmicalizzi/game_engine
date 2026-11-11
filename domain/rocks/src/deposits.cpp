@@ -134,13 +134,23 @@ f64 cone_surface(f64 apex, f64 height, f64 t, f64 t2, f64 r) {
 // anchored to the world. Three lattices, k_clast_cell_mm and twice and four times it, one clast a
 // cell: its centre, size, turn and tilt drawn from the cell's world coordinates, so a clast is
 // where it is whatever patch or tile builds it. A lattice's clasts stand only where the bed's own
-// clast size is near its cell's (fine at a pile's apex, coarse at its toe: fall sorting). A clast
-// is a flat-topped, steep-sided block standing k_clast_stand of its size above the bed (talus is
-// openwork, angular clasts on each other with voids between: Verdian et al. 2021); where clasts
-// overlap the higher wins. Clasts finer than the step are the material's.
-constexpr i64 k_clast_step_mm = 125;
+// clast size is near its cell's (fine at a pile's apex, coarse at its toe: fall sorting). Since
+// G182 a clast is an angular block, a hexagon in plan elongated as talus blocks are, its top a
+// tilted low roof, its sides a steep bevel, standing 0.2-0.5 of its size, and the bed between the
+// largest sinks into hollows (talus is openwork, angular clasts on each other with voids between:
+// Verdian et al. 2021, Sanders et al. 2009); where clasts overlap the higher wins. The top is drawn
+// at k_clast_step_mm, 10 cm since G182 (12.5 before), so a 0.3 m clast spans three steps. Clasts
+// finer than the step are the material's.
+constexpr i64 k_clast_step_mm = 100;
 constexpr i64 k_clast_cell_mm = 500;
-constexpr f64 k_clast_stand = 0.35;
+constexpr f64 k_clast_stand_lo = 0.2;  // a clast's height over the bed, of its size (authored)
+constexpr f64 k_clast_stand_hi = 0.5;
+constexpr f64 k_clast_tilt = 0.5;    // the top's tilt, of its height across the half-size
+constexpr f64 k_clast_roof = 0.35;   // the roof's rise from the edges to the ridges, of its height
+constexpr f64 k_clast_bevel = 0.12;  // the sides' run, of the half-size
+constexpr f64 k_clast_void = 0.15;   // the hollows' depth between the largest, of the clast size
+constexpr f64 k_hexagon[6][2] = {{1, 0},  {0.5, 0.8660254037844386},   {-0.5, 0.8660254037844386},
+                                 {-1, 0}, {-0.5, -0.8660254037844386}, {0.5, -0.8660254037844386}};
 constexpr f64 k_clast_fade_m = 0.3;   // a bed thinner than this shows its clasts in proportion
 constexpr f64 k_clast_sorting = 10;   // the toe's clasts against the apex's (authored)
 constexpr i64 k_clast_slope_mm = 25;  // the half step the relief's gradient is taken over
@@ -182,16 +192,37 @@ f64 clast_height(i64 x_mm, i64 z_mm, f64 size_m) {
         }
         const f64 px = static_cast<f64>(x_mm) / 1000.0 - ox,
                   pz = static_cast<f64>(z_mm) / 1000.0 - oz;
-        const f64 u = px * ux + pz * uz, v = pz * ux - px * uz;
-        const f64 a = 0.5 * s, b = 0.5 * s * (0.6 + 0.4 * unit_of(g, 1));
-        const f64 cheb = std::max(std::abs(u) / a, std::abs(v) / b);
-        if (cheb >= 1) continue;
-        const f64 tilt = 0.25 * (unit_of(g, 2) - 0.5) * u / a;
+        // G182 (rocks.md, "The bed is rubble"): an angular block, not a plate. In plan a hexagon
+        // in the clast's own frame, each face's distance from the centre drawn 0.7-1 of the
+        // half-size, elongated a / b 1.7-2.6 (Wegner et al. 2021's medians for talus blocks); its
+        // top a low roof whose ridges follow the hexagon in, tilted about both axes; its sides a
+        // steep bevel; its height drawn 0.2-0.5 of its size (several heights).
+        const f64 u = (px * ux + pz * uz) / (0.5 * s);
+        const f64 v = (pz * ux - px * uz) / (0.5 * s / (1.7 + 0.9 * unit_of(g, 1)));
+        if (u * u > 1.0 || v * v > 4.0 / 3.0) continue;  // the hexagon's box: 1 and 2 / sqrt(3)
+        const u64 e = mix64(g ^ 0x6182ull), f = mix64(e);
+        f64 inside = 1e9, reach = 0;
+        for (u32 k = 0; k < 6; ++k) {
+          const f64 c = 0.7 + 0.3 * unit_of(k < 4 ? e : f, k & 3u);
+          inside = std::min(inside, c - (k_hexagon[k][0] * u + k_hexagon[k][1] * v));
+          reach = std::max(reach, c);
+        }
+        if (inside <= 0) continue;
+        const f64 stand = k_clast_stand_lo + (k_clast_stand_hi - k_clast_stand_lo) * unit_of(f, 2);
+        const f64 tilt = k_clast_tilt * ((unit_of(g, 2) - 0.5) * u + (unit_of(g, 3) - 0.5) * v);
+        const f64 roof = 1.0 - k_clast_roof + k_clast_roof * inside / reach;
         best = std::max(
-            best, share * k_clast_stand * s * (1.0 + tilt) * std::min(1.0, 3.0 * (1.0 - cheb)));
+            best, share * stand * s * (1.0 + tilt) * roof * std::min(1.0, inside / k_clast_bevel));
       }
   }
-  return best;
+  // The bed between the largest clasts lies in hollows (Sanders et al. 2009's open pores under
+  // the larger clasts): it sinks by k_clast_void of the bed's clast size where the clasts that
+  // size shows stand, so the clasts stand out of hollows and not off a floor.
+  f64 hollow = 0;
+  for (u32 o = 0; o < 3; ++o)
+    hollow =
+        std::max(hollow, lattice_share(size_m, static_cast<f64>(k_clast_cell_mm << o) / 1000.0));
+  return best - k_clast_void * size_m * hollow;
 }
 bool ascii_equal(std::string_view a, const char* b) {
   usize i = 0;

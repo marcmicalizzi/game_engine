@@ -231,7 +231,9 @@ TEST_CASE("deposits: mesh identity and cluster container are deterministic") {
   // for fragments built at the rung their size needs (was 625669387871748774), then for G143's
   // third pass: the top drawn at 12.5 cm and raised by its clasts, the walls' own triangles, the
   // loose fragments of the largest band at 4 cm facets (was 2024239262398034445).
-  CHECK(hash == 1738319574425829183ull);
+  // Then for G182's clasts: angular, tilted blocks of several heights over hollows, the top drawn
+  // at 10 cm (was 1738319574425829183).
+  CHECK(hash == 3150207692158905108ull);
   geometry::ClusterFileData a, b;
   REQUIRE_MESSAGE(build_deposit_container(p, {}, 0, a, error), error);
   REQUIRE(build_deposit_container(p, {}, 0, b, error));
@@ -244,8 +246,9 @@ TEST_CASE("deposits: mesh identity and cluster container are deterministic") {
   // k_deposit_version 4 (was 1421504051895875902), then 5 for the toe's clasts kept off the face
   // (was 13829166473420471729), then for T108's two primitives, the bed and the loose stones,
   // each its own DAG and material, and k_deposit_version 6 (was 10478160828047604680), then for
-  // G183's k_deposit_version 7 in the source hash (was 16110835894214829114).
-  CHECK(geometry::cluster_file_hash(a) == 7110207806032102213ull);
+  // G183's k_deposit_version 7 in the source hash (was 16110835894214829114), then for G182's
+  // clasts and k_deposit_version 8 (was 7110207806032102213).
+  CHECK(geometry::cluster_file_hash(a) == 7783980573357481640ull);
   CHECK(geometry::cluster_file_hash(a) == geometry::cluster_file_hash(b));
   CHECK(a.source_hash == deposit_source_hash(p));
   CHECK(a.source_hash == b.source_hash);

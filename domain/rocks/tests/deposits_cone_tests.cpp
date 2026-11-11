@@ -893,7 +893,11 @@ TEST_CASE("deposits: neighbouring patches' coarse forms meet along their border"
           worst_sag, " m (at error ", worst_sag_t, ")");
   CHECK(parted == 0u);
   CHECK(lost == 0u);
-  CHECK(worst_sag < .05);
+  // G182 restated (reported): the bed between its largest clasts now lies in hollows below the
+  // plan's top, by up to k_clast_void (0.15) of the bed's clast size (twice `fragment_m` at the
+  // toe), so the finest form itself stands that far under it; the bound is the 5 cm it was plus
+  // that depth.
+  CHECK(worst_sag < .05 + .15 * 2.0 * static_cast<f64>(p.patch.fragment_m));
 }
 
 TEST_CASE("deposits: the bed is rubble whose clasts follow the sorting and the world") {
@@ -922,8 +926,8 @@ TEST_CASE("deposits: the bed is rubble whose clasts follow the sorting and the w
   REQUIRE_MESSAGE(solve_deposit(bed(0, true), mesh, error), error);
   // The relief over the bed's own top (1 m less the millimetre every top stands under its depth),
   // by quarters of its length, on the top's vertices away from its walls.
-  f64 mean[4] = {}, most[4] = {};
-  u32 count[4] = {};
+  f64 mean[4] = {}, most[4] = {}, least[4] = {};
+  u32 count[4] = {}, tilted[4] = {};
   for (u32 v = 0; v < mesh.positions.size(); ++v) {
     const Vec3 q = mesh.positions[v];
     if (q.y < .5f || mesh.normals[v].y < .2f || q.z < .5f || q.z > 1.5f) continue;
@@ -931,6 +935,10 @@ TEST_CASE("deposits: the bed is rubble whose clasts follow the sorting and the w
     const u32 k = std::min(3u, static_cast<u32>(static_cast<f64>(q.x) / 4.0));
     mean[k] += relief;
     most[k] = std::max(most[k], relief);
+    least[k] = std::min(least[k], relief);
+    // A vertex on a clast's top (over a tenth of the toe's clast size up) whose normal leans more
+    // than 10 degrees: a tilted, roofed top, where a plate's flat top leans at most its small tilt.
+    if (relief > .05 && mesh.normals[v].y < .985f) ++tilted[k];
     ++count[k];
   }
   for (u32 k = 0; k < 4; ++k) {
@@ -938,15 +946,24 @@ TEST_CASE("deposits: the bed is rubble whose clasts follow the sorting and the w
     mean[k] /= static_cast<f64>(count[k]);
   }
   MESSAGE("relief by quarter from the apex: mean ", mean[0], " ", mean[1], " ", mean[2], " ",
-          mean[3], " m; highest ", most[0], " ", most[1], " ", most[2], " ", most[3], " m");
-  // Fine at the apex: its clasts are the material's, under the 12.5 cm step (a tenth of the toe's
-  // 0.5 m at coarse share 0.2 is 0.08 m).
+          mean[3], " m; highest ", most[0], " ", most[1], " ", most[2], " ", most[3], " m; lowest ",
+          least[0], " ", least[1], " ", least[2], " ", least[3], " m; tilted top vertices ",
+          tilted[0], " ", tilted[1], " ", tilted[2], " ", tilted[3], " of ", count[0], " ",
+          count[1], " ", count[2], " ", count[3]);
+  // Fine at the apex: its clasts are the material's, under the 10 cm step (a tenth of the toe's
+  // 0.5 m at coarse share 0.2 is 0.08 m), and no hollow.
   CHECK(most[0] < .02);
-  // Coarser toward the toe, and at the toe clasts standing a third of their size (0.35 of 0.5 m).
+  CHECK(least[0] > -.02);
+  // Coarser toward the toe: the relief's span grows quarter by quarter (G182: the clasts stand out
+  // of hollows, so the mean need not), clasts stand at the toe, and the bed between the largest
+  // lies in hollows (k_clast_void, 0.15 of the 0.5 m clast size at full share).
   for (u32 k = 1; k < 4; ++k)
-    CHECK(mean[k] > mean[k - 1]);
+    CHECK(most[k] - least[k] > most[k - 1] - least[k - 1]);
   CHECK(most[3] > .1);
-  CHECK(most[3] < .35 * 1.0 * 1.13);
+  CHECK(least[3] < -.05);
+  // No higher than the 0.5 m lattice's tallest: half its largest size (0.95 of 0.5 m) at the most
+  // tilt (1 + 0.5 (0.5 + 0.5 x 2 / sqrt 3) < 1.55), less nothing for the roof at its ridge.
+  CHECK(most[3] < .5 * .95 * .5 * 1.55);
   // Anchored to the world: a bed two metres along in the world, all coarse, draws the same clast
   // two metres back in its own frame, to the bit.
   assets::MeshData a, b;
@@ -1109,7 +1126,9 @@ TEST_CASE("deposits: G143's plan and a patch with blocks are their pinned bytes"
   // 6681331591728775090), then for fragments built at the rung their size needs (stage 3; was
   // 2756680837895180932), then for G143's third pass's rubble, walls and loose fragments (was
   // 11144000825443644342).
-  CHECK(checks::mesh_hash(mesh) == 17461789932589341181ull);
+  // Then for G182's clasts: angular, tilted blocks of several heights over hollows, the top drawn
+  // at 10 cm (was 17461789932589341181).
+  CHECK(checks::mesh_hash(mesh) == 15314237377131777585ull);
   // A patch with no blocks keeps its version-1 key: the canonical bytes say nothing of them.
   DepositPatch plain = patch;
   plain.blocks.clear();
