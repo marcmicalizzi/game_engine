@@ -56,6 +56,16 @@ bool validate_terrain_materials(const scene::TerrainMaterials& m, std::string* e
       return fail(l.name + ": rotation_deg must be in [0,180]");
     if (l.rotation_deg > 0 && l.sampling != scene::TerrainSampling::Stochastic)
       return fail(l.name + ": rotation_deg turns a stochastic layer's tiles; this layer is tiled");
+    // A far colour replaces the mean a tiled layer's detail fades to (G141): a painted (Map) layer
+    // never fades, and a stochastic one blends about its own mean, so neither may name one.
+    if (l.far_color.has_value()) {
+      const Vec3 c = *l.far_color;
+      if (!(c.x >= 0 && c.x <= 1 && c.y >= 0 && c.y <= 1 && c.z >= 0 && c.z <= 1))
+        return fail(l.name + ": far_color must be linear RGB in [0,1]");
+      if (l.projection == scene::TerrainProjection::Map ||
+          l.sampling == scene::TerrainSampling::Stochastic)
+        return fail(l.name + ": far_color is a tiled triplanar layer's; this layer does not fade");
+    }
     for (const auto* path : {&l.base_color, &l.normal, &l.roughness, &l.mask, &l.height}) {
       if (!path->empty() && !io::exists(*path)) return fail(l.name + ": missing image " + *path);
     }
@@ -231,6 +241,9 @@ bool append_terrain_materials(const TerrainDesc& terrain, assets::MeshData& mesh
     // Cold container transport for the two means. GPU upload moves them into uv_transform and
     // clears emissive/metallic before shading; no cluster directly names a layer entry.
     m.emissive = Vec3{colour_mean.x * tint.x, colour_mean.y * tint.y, colour_mean.z * tint.z};
+    // A layer's far colour (G141; renderer.md, "A layer's far colour") is what its detail fades to
+    // in place of the image's mean; absent, the mean, so every scene before it draws the same.
+    if (layer.far_color.has_value()) m.emissive = *layer.far_color;
     m.metallic = roughness_mean.x * layer.roughness_factor;
     // A stochastic layer's height mean (R96), which its variance-preserving blend is taken about,
     // in the alpha cutoff a terrain layer never reads; a tiled layer's material is as it was.
@@ -277,6 +290,10 @@ u64 terrain_materials_hash(const scene::TerrainMaterials& materials) {
         layer.as_object().erase(std::string("snow"));
         // The formation band (W85) is shading read at upload too.
         layer.as_object().erase(std::string("formation"));
+        // A far colour (G141) rides the container's mean, so it keys a layer that names one; an
+        // absent one leaves the text, so every scene before the field keeps its key.
+        if (const JsonValue* far = layer.find("far_color"); far != nullptr && far->is_null())
+          layer.as_object().erase(std::string("far_color"));
       }
   const std::string text = write_json(json);
   // 2: the terrain record entry after the layers (2026-10-24), so a container built before it,

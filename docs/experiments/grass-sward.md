@@ -208,6 +208,151 @@ tile each, every patch put at its distance found by bisection on the score itsel
 The band is the asked width where the mosaic draws the boundary; where a site field moves the score
 too, it is narrower by the ratio of the noise's gradient to the whole (flora.md has the reason).
 
+## The floor under a sward (G141, 2026-11-10)
+
+The owner (2026-11-10): between sparse crowns the meadow's ground "reads low-poly and too shiny".
+The cause was the `--sward-assets` bake: blade lines on one flat green, `0.35 + 0.65 cover` times the
+blade's own colour, at a constant roughness of 0.70 — a floor that was the blade, drawn larger than the
+blades above it. This section grounds what the bake now composes the blades over
+([flora](../subsystems/flora.md#the-ground-under-the-sward-g141) has the rules).
+
+**What the drawn sward covers.** Measured on the meadow's own recipes at 256 px a metre, with the bake's
+16 samples a texel: the short-tussock recipe (mat-grass, 512 blades/m²) covers **2.3 %** of the ground
+from straight above and the short-sod recipe (bent, 1,024 blades/m²) **6.2 %**; their drawn leaf area
+index (one-sided leaf area over the cell, `TreeReport::leaf_area_index`) is a few hundredths. A
+measured grassland's is about a hundred times that: **1.7 ± 1.2** across grassland sites (Scurlock,
+Asner and Gower 2001, *Worldwide historical estimates of leaf area index, 1932–2000*, ORNL/TM-2001/268,
+the grassland biome's mean). So from above the drawn sward is mostly its floor, and the floor is what
+a person looks at between crowns: it has to be a floor.
+
+**What a floor is made of, by form.** Ground-cover surveys of grassland classify each point of a
+pin-point transect as live vegetation, litter or bare ground (the Canterbury and Waimakariri tussock
+resurveys, Landcare Research, in the *New Zealand Journal of Ecology*'s tussock-grassland series). In a
+short-tussock exclosure bare ground fell to about **5 %** within five years while the grazed ground
+outside stayed near **15 %**, litter abundant inside and sparse outside, and the same grassland held
+about **17 %** bare ground in 1948 (*New Zealand Journal of Ecology*, 1999, the exclosure study, as its
+abstract reports it). Managed European grasslands show the same direction: heavily grazed short turf
+opens bare soil and moss, lightly grazed tall stands accumulate litter (the grazed-and-cut bryophyte
+comparison found with the same search). No survey found gives the three shares of the *floor* (the
+ground that is not a live leaf) for each of the sward's four forms, so the shares below are **design
+choices in the surveys' direction**: a tussock's floor shows soil between crowns and more of it where
+grazed; a sod is a closed mat of thatch and moss with little soil; wet and shaded ground favours moss.
+
+| Form | Thatch | Moss | Soil | Canopy LAI (design) |
+|---|---|---|---|---|
+| tall sod (red fescue, rank) | 0.70 | 0.25 | 0.05 | 4.0 |
+| tall tussock (tufted hair-grass, lightly grazed) | 0.72 | 0.10 | 0.18 | 3.0 |
+| short sod (bent, grazed lawn) | 0.40 | 0.52 | 0.08 | 2.0 |
+| short tussock (mat-grass, grazed) | 0.50 | 0.20 | 0.30 | 1.5 |
+
+Wetness moves half its value of the soil's share and three tenths of the thatch's to moss; shade three
+tenths of the soil's and two tenths of the thatch's (`sward_floor_mix`). The canopy LAIs sit inside the
+grassland mean plus two deviations, taller and closed swards higher.
+
+**Their reflectance against the blade.** In the visible, plant litter and soil cannot be told apart by
+reflectance alone — only the 2.1 µm cellulose-lignin absorption separates them, and it fades as litter
+ages (Nagler, Daughtry and Goward 2000, *Remote Sensing of Environment* 71: 207–215). Standing litter
+has a disproportionate effect on a grassland canopy's reflectance, and leaf area and leaf angle are its
+main controls (Asner 1998, *Remote Sensing of Environment* 64: 234–253). So the floor's parts take
+linear albedos inside the visible ranges those papers' spectra span, as **stated design values**:
+thatch (decaying, on the ground, not standing straw) **(0.20, 0.165, 0.10)**, rising to the red;
+moss **(0.045, 0.075, 0.025)**; a moist organic loam **(0.085, 0.065, 0.045)**. The blade keeps its
+material's (0.09, 0.22, 0.06). Roughness: thatch 0.80 (± 0.03 grain), moss 0.95, soil 0.92, the blade
+its 0.70 — the floor is the matte part of a meadow, which is what "too shiny" asked for.
+
+**Why the floor is darker than the blades near the eye.** In the reference reels the ground between
+grass crowns is dark: r01's grazed turf on the ridge and its tall flowering meadow, r24's tussock bank
+and turf mounds, and the `grass-in-wind` frames' foreground clump (the reels under
+`game_engine_local\inspiration\_frames\`) show shadowed litter and soil between thin lit blades, not a
+lit floor. The floor under a canopy receives the light the canopy lets through, Beer and Lambert's
+`exp(−k LAI)` (Monsi and Saeki 1953), with `k = 0.5` for a spherical leaf-angle distribution's
+extinction (Campbell and Norman 1998, *An Introduction to Environmental Biophysics*, ch. 15). The
+drawn blades cast almost none of it (they are never traced, and the cascades shadow only the nearest
+metres), so the bake carries it: the near colour is the floor and the low leaves times
+`exp(−0.5 · canopy LAI)`, floored at 0.25 — 0.47 for a short tussock, 0.37 for a short sod.
+
+**The correction: the ground stands in for the undrawn canopy** (the coordinator, 2026-11-10). The
+first version took the far colour from the *drawn* leaf area, so a field drawn at a hundredth of a
+measured leaf area read as its floor from afar, olive-brown where reel r01's far meadow is green. A
+real meadow's floor is hidden by leaves from above and is solid green at a grazing angle, so both
+colours now come from the form's canopy leaf area (the table above), not the drawn one:
+
+- **Near, the undrawn leaves.** Live leaf fragments over the floor, at the profile's widths and
+  half its grown length, cover the ground from straight above by the gap law for the leaf area not
+  drawn, `1 − exp(−0.5 (LAI_canopy − LAI_drawn))`, each darker by `exp(−0.5 L)` for the leaf area
+  above it (Monsi and Saeki 1953). The floor's thatch, moss and soil fill the gaps in the shade.
+- **Far, the canopy.** The cover along a 10° view, `1 − exp(−0.5 LAI_canopy / sin 10°)`, is 0.987 for
+  the short tussock and above 0.996 for the others, so the far colour is the canopy's.
+
+**The canopy's colour.** Green vegetation absorbs in the blue (chlorophyll and carotenoids, about
+450 nm) and the red (chlorophyll, about 670 nm) and reflects most near 550 nm; a single fresh leaf
+reflects roughly 0.04–0.06 of the blue and red and 0.10–0.15 of the green, and a closed canopy less,
+its leaves shading each other (Asner 1998; the standard curve in Jensen, *Remote Sensing of the
+Environment*, 2007, ch. 11). No measured band table for these species was found this session (the
+turfgrass radiometry of Bremer et al. 2011, *Crop Science* 51: 2219–2227, could not be read), so the
+values are **stated band means inside those ranges**, linear:
+
+| Albedo | Blue | Green | Red | Used for |
+|---|---|---|---|---|
+| live leaf (`k_sward_leaf_albedo`) | 0.035 | 0.12 | 0.055 | the drawn blade's material and the baked live leaves |
+| green canopy (`k_sward_canopy_albedo`) | 0.025 | 0.085 | 0.04 | the far colour |
+| standing dead canopy (`k_sward_dead_canopy_albedo`) | 0.085 | 0.135 | 0.16 | the far colour's straw, by the form's `standing_dead` |
+
+This settles the blade: its old (0.09, 0.22, 0.06) was twice a field leaf's green. Standing dead is a
+design share by form (tall tussock 0.25, short tussock 0.15, tall sod 0.08, short sod 0.03), after
+Asner's finding that a small share of standing litter moves a grassland's reflectance far.
+
+**Measured on the bake** (the ground tests, 256 px a cell; the recipes the tests bake):
+
+| Form (recipe) | Live cover, achieved of target | Cover at 10° | Near mean (linear) | Far colour (linear) |
+|---|---|---|---|---|
+| short tussock (mat-grass) | 0.530 of 0.516 | 0.987 | (0.049, 0.072, 0.028) | (0.058, 0.092, 0.034) |
+| tall tussock (mat-grass) | 0.784 of 0.772 | 0.9998 | (0.035, 0.066, 0.021) | (0.070, 0.097, 0.040) |
+| short sod (bent) | 0.642 of 0.608 | 0.997 | (0.039, 0.071, 0.024) | (0.044, 0.086, 0.027) |
+| tall sod (bent) | 0.880 of 0.856 | 0.99999 | (0.034, 0.069, 0.021) | (0.050, 0.089, 0.030) |
+
+The achieved cover runs 0.013–0.034 over the gap law (the tests hold it within 0.05): a texel's
+cover is `1 − Π(1 − a)` over the leaves crossing it, which runs a little above the Poisson mean of
+partial covers.
+
+**The hand-off's mismatch, reported, not a target** (2026-11-10, `msvc-debug` engine-view, RTX 5090,
+1280 × 720, `--shadows csm --shadow-distance 8 --time-of-day 11`, the short-tussock cook with two
+variants, the machine shared with other agents' builds, which does not move a picture). One camera at
+3.5 m looking at the ground 20 m ahead, the meadow as drawn with its ground at the near image, against
+the same scene with no sward and the layer at its far colour (`detail_near_m` 0, `detail_far_m`
+0.01); ground below the centre, left of the trail (columns 160–560, rows 420–720): drawn
+**(0.0714, 0.0898, 0.0451)**, luma **0.0826**, green over red 1.26; far **(0.0787, 0.1061, 0.0497)**,
+luma **0.0962**, green over red 1.35. The far ground is 16 % brighter and a little greener than the
+drawn near sward: the far colour is the real canopy lit from above, where the near is the drawn
+sparse blades over leaves and floor in their own shade. The first version's far colour, from the
+drawn sward, was 14 % brighter than its near but olive-brown.
+**Blades a tuft: measured, not yet rebuilt (G141 stage 4).** Today's short-tussock recipe draws 512
+blades a square metre, 333 of them in 16 crowns (21 a tussock) and 179 as turf between; a near blade
+is 3 segments, 5 triangles, a coarse one 2 segments, 3 triangles; the cell's 4,192 triangles are 2,560
+near, 1,536 coarse and 96 card. Its widths are mat-grass's 0.5–1 mm (Kew GrassBase), so the blades
+are already as thin as the species' leaves: **the lever is their number, not their width.** The
+profiles' tiller densities are 5,815–7,414 a square metre for perennial ryegrass and about 3,080 for
+tall fescue, and a grass tiller carries about three live leaves, so a measured sward holds some 9,000
+to 22,000 leaves a square metre against the recipes' 512 to 1,024 — the 1–2 % of a measured leaf area
+the ground's numbers above show. The step that keeps every rung's triangles: a near blade of 2
+segments (3 triangles) carries 5/3 the blades on the near rung's 2,560 (853 a cell), and a coarse
+blade of one triangle (a sliver from the base to the tip) puts those 853 on 853 coarse triangles,
+under today's 1,536; the coverage must then be re-measured at the four views, since the near ribbon
+loses its shoulder sample. It changes every sward's bytes (a `k_sward_version` bump and every pin in
+`sward_tests.cpp` re-taken), which is why it was left for a row of its own rather than squeezed in.
+
+**Floor, as drawn.** The first floor (a 3 cm Worley mosaic of the three parts with dark crevices) read
+as camouflage polygons from a walker's eye; it was replaced before this commit by dead-leaf fragments
+over a soft moss-and-soil underlay (flora.md has the layout), which reads as a litter mat.
+
+**What this does not settle.** The baked live leaves stand in for the undrawn canopy as a flat image:
+near the eye they have no parallax and no sway, which only more drawn blades give (solver needs 2.3
+item 5, stage 4 above). The canopy and leaf albedos are band means inside the published ranges, not
+a measured spectrum of these species. The floor shares and albedos are stated design values, not fits to
+a plot survey of these forms; a photographed or scanned floor (a pack's `ground/thatch`, `ground/moss`
+and `ground/soil` roles, which the bake already reads where a pack has them) would replace the
+procedural parts.
+
 ## Rendering model and explicit approximations
 
 [Jahrmann & Wimmer 2017 §§3–5](https://www.cg.tuwien.ac.at/research/publications/2017/JAHRMANN-2017-RRTG/JAHRMANN-2017-RRTG-draft.pdf)

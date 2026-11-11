@@ -978,6 +978,20 @@ its colour and height do: "Normal filtering", below); a stochastic layer does no
 fade (below). `Map` retains its painting, filtered by the existing texture mips. These are content
 settings, not geological altitude rules.
 
+#### A layer's far colour
+
+`TerrainMaterialLayer.far_color` (scene schema, layer version 6; G141) is a tiled triplanar layer's
+colour past `detail_far_m`, linear RGB in [0, 1]: what its detail fades to in place of the image's
+mean, for a layer that stands in for something it does not draw. It rides the container's transport
+of the mean (`terrain_materials.cpp`), so the resolve reads it where it read the mean and nothing in
+the resolve changed: no shader, no GPU-mirrored struct, no millisecond. **A layer without it draws
+what it drew, to the bit** (the field is left out of the layer's JSON, so no scene's cache key
+moves); a layer with it is keyed apart. A `Map` or stochastic layer naming one is refused, since
+neither fades to its mean. The sward's ground uses it: the image is the floor under the drawn blades
+near the eye, `far_color` the real canopy past the sward's reach, and the fade the terrain already
+draws over `detail_near_m`..`detail_far_m` is the blend between them
+([flora](flora.md#the-ground-under-the-sward-g141), "Near and far").
+
 #### Stochastic sampling
 
 A triplanar layer may name `"sampling": "Stochastic"` (R96, scene schema `TerrainMaterialLayer`
