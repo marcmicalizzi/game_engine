@@ -46,6 +46,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <utility>
 
 namespace engine::jobs {
 class JobSystem;
@@ -222,12 +223,27 @@ inline constexpr u8 k_no_ring = 0xFFu;
 // metres at scale 1: the generator says it, because a later entry is handed this placement's
 // footprint (`Context::earlier`) before any host has built the mesh; 0 is a point. It is read for
 // a mesh with a recipe only — a file's reach is measured from the file.
+//
+// **It has a constructor, so a generator that names a file writes `{path, name, hash}` and is
+// whole.** As an aggregate, the two members a recipe added made every such three-value initialiser
+// in the tree — the sward's, the wetland's, the litter's — a missing-field error on Clang and GCC
+// (`-Wmissing-field-initializers`; MSVC says nothing), in files that had nothing to say about a
+// recipe. The arguments past the name default to what a file's mesh has.
 struct PlacementMesh {
   std::string path;
   std::string name;
   u64 hash = 0;
   std::string recipe;
   f32 reach = 0.0f;
+
+  PlacementMesh() = default;
+  PlacementMesh(std::string mesh_path, std::string mesh_name, u64 mesh_hash = 0,
+                std::string mesh_recipe = {}, f32 mesh_reach = 0.0f)
+      : path(std::move(mesh_path)),
+        name(std::move(mesh_name)),
+        hash(mesh_hash),
+        recipe(std::move(mesh_recipe)),
+        reach(mesh_reach) {}
 };
 
 // One instance: a mesh, where it stands in the world and how it is turned and scaled there, and a
