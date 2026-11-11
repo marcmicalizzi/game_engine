@@ -974,7 +974,30 @@ bool solve_cliff(const Cliff& p, assets::MeshData& out, CliffReport* report_out,
       }
       f64 notch = 0.0;
       const D3 at{f.foot.x + f.n.x * mean, y, f.foot.z + f.n.z * mean};
-      f64 o = mean + carve_at(carve, f.s, y, top, at, notch) * fade;
+      f64 carved = carve_at(carve, f.s, y, top, at, notch) * fade;
+      // **The foot's carving stays in front of the ground** (T101): with a ground patch (a
+      // generated line's lowest tier) the front stands on the ground at its foot, and the ground
+      // rises behind it, so a recess carved there went behind the ground and the ground showed
+      // in the face over the talus's gaps. A row whose carved point is under the ground keeps
+      // the most of its carving that is not, found in eight halvings.
+      if (p.ground && y > f.foot.y && carved < 0.0) {
+        const auto under_ground = [&](f64 share) {
+          bool unused = true;
+          const f64 o_try = mean + carved * share;
+          return ground_height(*p.ground, f.foot.x + f.n.x * o_try, f.foot.z + f.n.z * o_try,
+                               unused) > y - 0.05;
+        };
+        if (under_ground(1.0)) {
+          f64 lo = 0.0, hi = 1.0;
+          for (u32 q = 0; q < 8; ++q) {
+            const f64 mid = 0.5 * (lo + hi);
+            (under_ground(mid) ? hi : lo) = mid;
+          }
+          carved *= lo;
+          notch *= lo;
+        }
+      }
+      f64 o = mean + carved;
       if (j > 0 && o > below + k_lean * (y - below_y)) o = below + k_lean * (y - below_y);
       below = o;
       below_y = y;

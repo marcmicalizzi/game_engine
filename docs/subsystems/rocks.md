@@ -560,7 +560,12 @@ capture, at a tier seam. On the escarpment scene's layer the open edges of the f
 9.2 m over the ground with no other face's rock round them; with the bottom closed (two triangles
 a cell of the line, at the top's coarser cell) none stands more than 0.23 m over it, at the
 recipe's quality and at Low (`tests/cliffs_generator_tests.cpp`, "no face of the escarpment opens
-over the ground"). The lowest tier's bottom is in the ground and stays open.
+over the ground"). The lowest tier's bottom is in the ground and stays open. **Its foot's carving
+stays in front of the ground**: a generated lowest tier stands on the ground at its foot with the
+ground rising behind it, so a recess carved in its first metres went behind the ground and the
+ground showed in the face over the talus's gaps (the other pale wedge of that capture); with a
+ground patch, a row whose carved point is under the ground keeps the most of its carving that is
+not (eight halvings against the patch). Seen in the pictures; no case measures it yet.
 
 **What it does not do.** The tiers of two blocks meet at the same breaks but are seated
 separately. The unbroken cap along each tier's top, and a face's talus by what fell from it, are
