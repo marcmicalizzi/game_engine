@@ -97,15 +97,37 @@ std::string executable_path() {
 }
 
 bool read_text(const std::string& path, std::string& out, bool& exists) {
+#if ENGINE_PLATFORM_WINDOWS
+  // Opened so that nobody is in this reader's way: with the line, every waiter reads the lock
+  // and the tickets four times a second, and a reader that holds a file open without
+  // FILE_SHARE_DELETE makes the holder's release and every refresh's rename fail for as long as
+  // it reads. With it, a delete goes through (the name goes when this handle closes) and so does
+  // a rename over the file.
+  const HANDLE h = ::CreateFileA(path.c_str(), GENERIC_READ,
+                                 FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+                                 OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+  if (h == INVALID_HANDLE_VALUE) {
+    const DWORD error = ::GetLastError();
+    // Gone, or present and not to be opened now: a writer has it exclusively, or it is being
+    // deleted while another reader still has it open, both of which are "being written".
+    exists = error != ERROR_FILE_NOT_FOUND && error != ERROR_PATH_NOT_FOUND;
+    return false;
+  }
+  exists = true;
+  out.clear();
+  char chunk[4096];
+  for (;;) {
+    DWORD n = 0;
+    if (!::ReadFile(h, chunk, static_cast<DWORD>(sizeof(chunk)), &n, nullptr) || n == 0) break;
+    out.append(chunk, n);
+  }
+  ::CloseHandle(h);
+  return true;
+#else
   std::error_code ec;
   exists = fs::exists(fs::path(path), ec);
   if (!exists) return false;
-  std::FILE* f = nullptr;
-#if ENGINE_COMPILER_MSVC
-  (void)fopen_s(&f, path.c_str(), "rb");
-#else
-  f = std::fopen(path.c_str(), "rb");
-#endif
+  std::FILE* f = std::fopen(path.c_str(), "rb");
   if (f == nullptr) return false;  // exists, but a writer has it exclusively
   out.clear();
   char buffer[4096];
@@ -116,20 +138,31 @@ bool read_text(const std::string& path, std::string& out, bool& exists) {
   }
   std::fclose(f);
   return true;
+#endif
 }
 
 // "x" is C11's exclusive mode (O_EXCL on POSIX, CREATE_NEW on Windows), so two processes can
 // never both succeed.
+//
+// "Cannot create, and nothing is there" is tried again for a fifth of a second before it is
+// called a failure. On Windows a file that has been deleted while a reader still has it open
+// stays as a name nobody can open or create until that reader closes — microseconds — and the
+// head of the line tries the lock in exactly that moment, the one after a release, where a
+// waiter that looked every 15 s almost never did (seen in this module's own tests the first time
+// five processes shared a line: the probe ran without the lock and said so).
 CreateResult create_exclusive(const std::string& path, std::string_view body) {
   std::FILE* f = nullptr;
+  for (int attempt = 0; f == nullptr; ++attempt) {
 #if ENGINE_COMPILER_MSVC
-  (void)fopen_s(&f, path.c_str(), "wbx");
+    (void)fopen_s(&f, path.c_str(), "wbx");
 #else
-  f = std::fopen(path.c_str(), "wbx");
+    f = std::fopen(path.c_str(), "wbx");
 #endif
-  if (f == nullptr) {
+    if (f != nullptr) break;
     std::error_code ec;
-    return fs::exists(fs::path(path), ec) ? CreateResult::Exists : CreateResult::Failed;
+    if (fs::exists(fs::path(path), ec)) return CreateResult::Exists;
+    if (attempt >= 20) return CreateResult::Failed;
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
   }
   const bool ok = std::fwrite(body.data(), 1, body.size(), f) == body.size();
   const bool closed = std::fclose(f) == 0;
@@ -499,6 +532,203 @@ State read(const std::string& path, const Identity& self, i64 now_unix_s) {
   return state;
 }
 
+// ---- the line --------------------------------------------------------------------------------
+
+namespace {
+
+// "t-" + 16 + "-" + 16 + "-" + 10 + "-" + 4 + ".json": fixed width, so the names sort as the
+// numbers do and a sorted listing is the line.
+constexpr usize k_ticket_name_size = 2 + 16 + 1 + 16 + 1 + 10 + 1 + 4 + 5;
+
+std::atomic<u32> g_ticket_counter{0};
+
+bool ticket_number(std::string_view name, usize at, usize count, u64& value) {
+  value = 0;
+  for (usize i = at; i < at + count; ++i) {
+    if (name[i] < '0' || name[i] > '9') return false;
+    value = value * 10 + static_cast<u64>(name[i] - '0');
+  }
+  return true;
+}
+
+// The place a name encodes; false for anything that is not a ticket (a refresh's temporary file,
+// something a person left in the directory).
+bool parse_ticket_name(std::string_view name, i64& key_ms, i64& arrived_ms, u64& pid) {
+  if (name.size() != k_ticket_name_size || name.substr(0, 2) != "t-" || name[18] != '-' ||
+      name[35] != '-' || name[46] != '-' || name.substr(51) != ".json") {
+    return false;
+  }
+  u64 key = 0, arrived = 0, counter = 0;
+  if (!ticket_number(name, 2, 16, key) || !ticket_number(name, 19, 16, arrived) ||
+      !ticket_number(name, 36, 10, pid) || !ticket_number(name, 47, 4, counter)) {
+    return false;
+  }
+  key_ms = static_cast<i64>(key);
+  arrived_ms = static_cast<i64>(arrived);
+  return true;
+}
+
+struct LineEntry {
+  std::string name;
+  Waiter waiter;
+};
+
+// The live tickets in `directory`, sorted. A ticket is alive while its `expires` has not passed;
+// one that cannot be opened this instant is being renamed over, and alive; one that does not
+// parse is alive only while it is younger than `stale_s`. The dead are removed when asked.
+void list_line(const std::string& directory, i64 now_s, i64 stale_s, bool remove_dead,
+               Vector<LineEntry>& out) {
+  out.clear();
+  Vector<std::string> names;
+  std::error_code ec;
+  for (fs::directory_iterator it(fs::path(directory), ec), end; !ec && it != end;
+       it.increment(ec)) {
+    std::string name = it->path().filename().string();
+    i64 key_ms = 0, arrived_ms = 0;
+    u64 pid = 0;
+    if (parse_ticket_name(name, key_ms, arrived_ms, pid)) names.push_back(std::move(name));
+  }
+  std::sort(names.begin(), names.end());
+  for (const std::string& name : names) {
+    const std::string path = directory + "/" + name;
+    LineEntry entry;
+    entry.name = name;
+    i64 key_ms = 0;
+    (void)parse_ticket_name(name, key_ms, entry.waiter.arrived_unix_ms, entry.waiter.pid);
+    entry.waiter.declared_s = (key_ms - entry.waiter.arrived_unix_ms) / 1000;
+    std::string text;
+    bool exists = false;
+    const bool got = detail::read_text(path, text, exists);
+    if (!exists) continue;  // its owner left between the listing and the look
+    bool alive = true;
+    if (got) {
+      const detail::ParsedLock body = detail::parse_lock(text);
+      if (body.readable) {
+        entry.waiter.owner = body.owner;
+        entry.waiter.purpose = body.purpose.substr(0, std::min(body.purpose.size(), k_max_purpose));
+        i64 expires_s = 0;
+        alive = parse_iso8601_utc(body.expires, expires_s) && expires_s >= now_s;
+      } else {
+        alive = file_age_s(path) <= stale_s;
+      }
+    }
+    if (alive) {
+      out.push_back(std::move(entry));
+    } else if (remove_dead) {
+      (void)detail::remove_file(path);
+    }
+  }
+}
+
+std::string waiter_text(const Waiter& waiter, i64 now_unix_ms) {
+  const i64 waited_s = std::max<i64>(now_unix_ms - waiter.arrived_unix_ms, 0) / 1000;
+  return "'" + waiter.owner + "' (pid " + std::to_string(waiter.pid) + "): " + waiter.purpose +
+         ", waiting " + std::to_string(waited_s) + " s";
+}
+
+}  // namespace
+
+std::string line_directory(const std::string& lock_path) { return lock_path + ".line"; }
+
+Vector<Waiter> read_line(const std::string& lock_path, i64 now_unix_s) {
+  Vector<LineEntry> entries;
+  list_line(line_directory(lock_path), now_unix_s, k_ticket_lease_s, false, entries);
+  Vector<Waiter> line;
+  for (LineEntry& entry : entries)
+    line.push_back(std::move(entry.waiter));
+  return line;
+}
+
+namespace detail {
+
+bool line_is_empty(const std::string& lock_path, i64 ticket_lease_s) {
+  Vector<LineEntry> entries;
+  list_line(line_directory(lock_path), now_unix_s(), std::max<i64>(ticket_lease_s, 1), true,
+            entries);
+  return entries.empty();
+}
+
+bool Ticket::enter(const std::string& lock_path, const Identity& self, std::string_view purpose,
+                   i64 declared_s, i64 ticket_lease_s) {
+  leave();
+  directory_ = line_directory(lock_path);
+  std::error_code ec;
+  fs::create_directory(fs::path(directory_), ec);
+  if (!fs::is_directory(fs::path(directory_), ec)) return false;
+  owner_ = self.owner;
+  purpose_.assign(purpose.substr(0, std::min(purpose.size(), k_max_purpose)));
+  host_ = self.host;
+  pid_ = self.pid;
+  arrived_ms_ = time::wall_unix_ms();
+  declared_s_ = std::clamp<i64>(declared_s, 0, k_declared_cap_s);
+  lease_s_ = std::max<i64>(ticket_lease_s, 1);
+  char name[96];
+  std::snprintf(name, sizeof(name), "t-%016llu-%016llu-%010llu-%04u.json",
+                static_cast<unsigned long long>(arrived_ms_ + declared_s_ * 1000),
+                static_cast<unsigned long long>(arrived_ms_),
+                static_cast<unsigned long long>(pid_ % 10'000'000'000ull),
+                static_cast<unsigned>(g_ticket_counter.fetch_add(1) % 10'000u));
+  name_ = name;
+  path_ = directory_ + "/" + name_;
+  if (!write(arrived_ms_ / 1000)) return false;
+  entered_ = true;
+  return true;
+}
+
+bool Ticket::write(i64 now_s) {
+  JsonValue body = JsonValue::object();
+  body.set("owner", owner_);
+  body.set("purpose", purpose_);
+  body.set("pid", pid_);
+  body.set("started", format_iso8601_utc(arrived_ms_ / 1000));
+  body.set("expires", format_iso8601_utc(now_s + lease_s_));
+  body.set("host", host_);
+  body.set("declared_s", declared_s_);
+  if (!replace_atomically(path_, write_json(body, JsonWriteOptions{.pretty = false}))) return false;
+  refresh_at_s_ = now_s + std::max<i64>(lease_s_ / 3, 1);
+  return true;
+}
+
+LinePlace Ticket::look() {
+  LinePlace place;
+  if (!entered_) return place;
+  place.lined = true;
+  const i64 now_s = now_unix_s();
+  std::error_code ec;
+  // Missing: this process stalled for a whole ticket lease and a waiter removed it as dead. The
+  // name is the place, so writing it again puts the process back where it stood.
+  if (now_s >= refresh_at_s_ || !fs::exists(fs::path(path_), ec)) (void)write(now_s);
+  Vector<LineEntry> entries;
+  list_line(directory_, now_s, lease_s_, true, entries);
+  bool found = false;
+  for (const LineEntry& entry : entries) {
+    if (entry.name == name_) {
+      found = true;
+    } else if (!found) {
+      if (place.ahead == 0) place.first = entry.waiter;
+      ++place.ahead;
+    }
+    ++place.waiting;
+  }
+  if (!found) ++place.waiting;
+  return place;
+}
+
+void Ticket::leave() noexcept {
+  if (!entered_) return;
+  entered_ = false;
+  (void)remove_file(path_);
+}
+
+std::string describe_place(const LinePlace& place, i64 now_unix_ms) {
+  if (!place.lined) return {};
+  if (place.ahead == 0) return "first of " + std::to_string(place.waiting) + " in the line";
+  return "behind " + std::to_string(place.ahead) + " of the " + std::to_string(place.waiting) +
+         " in the line, first " + waiter_text(place.first, now_unix_ms);
+}
+
+}  // namespace detail
+
 // ---- holding ---------------------------------------------------------------------------------
 
 const char* to_string(Lease::Outcome outcome) noexcept {
@@ -530,33 +760,62 @@ Lease::Outcome Lease::acquire(const Config& config) {
 
   const i64 began_ns = time::monotonic_ns();
   const i64 timeout_ns = std::max<i64>(config.timeout_s, 0) * i64{1'000'000'000};
+  // Held for this process already (a wrapper took it): no place in the line is taken for a lock
+  // nobody will ask for.
+  {
+    const State seen = read(path_, config.self, detail::now_unix_s());
+    if (seen.mine && (seen.pid == config.self.pid || !seen.expired)) return Outcome::AlreadyMine;
+  }
+  // The lock file only from the head of the line (gpu_lock.h, "the line"). With nobody waiting
+  // the first try needs no ticket; once that has failed, or somebody is waiting, a place is taken
+  // and kept. Without a ticket — the line's directory cannot be written — this asks as the
+  // protocol always did.
+  detail::Ticket ticket;
+  bool asked = false;
   std::string announced;
+  bool said = false;
+  i64 unsettled_since_ns = 0;
   for (;;) {
+    if (!asked && !detail::line_is_empty(path_, config.ticket_lease_s)) {
+      (void)ticket.enter(path_, config.self, config.purpose, config.lease_s, config.ticket_lease_s);
+      asked = true;
+    }
+    const detail::LinePlace place = ticket.look();
+    const bool head = place.ahead == 0;
     const i64 now_s = detail::now_unix_s();
-    started_ = format_iso8601_utc(now_s);
-    expires_s_ = now_s + std::max<i64>(config.lease_s, 1);
-    switch (detail::create_exclusive(path_, body_json())) {
-      case detail::CreateResult::Created:
-        held_ = true;
-        detail::arm_signal_release(path_, expires_s_);
-        if (!announced.empty() && config.log != nullptr) {
-          std::fprintf(config.log, "bench: gpu lock taken after %.0f s\n",
-                       static_cast<f64>(time::monotonic_ns() - began_ns) / 1e9);
-        }
-        return Outcome::Taken;
-      case detail::CreateResult::Failed: return Outcome::Error;
-      case detail::CreateResult::Exists: break;
+    if (head) {
+      started_ = format_iso8601_utc(now_s);
+      expires_s_ = now_s + std::max<i64>(config.lease_s, 1);
+      switch (detail::create_exclusive(path_, body_json())) {
+        case detail::CreateResult::Created:
+          ticket.leave();
+          held_ = true;
+          detail::arm_signal_release(path_, expires_s_);
+          if (said && config.log != nullptr) {
+            std::fprintf(config.log, "bench: gpu lock taken after %.0f s\n",
+                         static_cast<f64>(time::monotonic_ns() - began_ns) / 1e9);
+          }
+          return Outcome::Taken;
+        case detail::CreateResult::Failed: return Outcome::Error;
+        case detail::CreateResult::Exists: break;
+      }
+    }
+    if (!asked) {  // not this ask's at the first try: take a place, then look again
+      (void)ticket.enter(path_, config.self, config.purpose, config.lease_s, config.ticket_lease_s);
+      asked = true;
+      continue;
     }
 
     std::string text;
     bool exists = false;
     const bool got = detail::read_text(path_, text, exists);
-    if (!exists) continue;  // released between the attempt and the look: try again at once
+    if (!exists && head) continue;  // released between the attempt and the look: try again at once
     const State seen = read(path_, config.self, now_s);
     // This process's own, or held for it by a wrapper that is still refreshing it. A wrapper's
     // lock that has expired is a wrapper that died: it is broken like anybody else's below.
     if (seen.mine && (seen.pid == config.self.pid || !seen.expired)) return Outcome::AlreadyMine;
-    if (got && seen.expired && seen.owner != "marc") {
+    // Only the head of the line breaks: the lock it frees is the head's to take.
+    if (head && got && seen.expired && seen.owner != "marc") {
       if (config.log != nullptr) {
         std::fprintf(config.log, "bench: breaking an expired gpu lock held by '%s' (%s)\n",
                      seen.owner.c_str(), seen.purpose.c_str());
@@ -567,20 +826,37 @@ Lease::Outcome Lease::acquire(const Config& config) {
     const i64 waited_ns = time::monotonic_ns() - began_ns;
     if (waited_ns >= timeout_ns) return Outcome::TimedOut;
     // Once per holder, not once per refresh: a holder's heartbeat moves `expires`, and a line per
-    // move would bury the one that says somebody new has the GPU.
-    const std::string holder = seen.readable ? seen.owner + "\n" + seen.purpose : std::string("\n");
-    if (config.log != nullptr && holder != announced) {
+    // move would bury the one that says somebody new has the GPU. A lock that is free or
+    // mid-write is the instant between two holders nearly every time it is seen, and is said
+    // only once it has lasted two seconds.
+    const std::string where = detail::describe_place(place, time::wall_unix_ms());
+    const bool settled = seen.present && seen.readable;
+    const std::string holder = settled ? seen.owner + "\n" + seen.purpose : std::string();
+    if (settled) {
+      unsettled_since_ns = 0;
+    } else if (unsettled_since_ns == 0) {
+      unsettled_since_ns = time::monotonic_ns();
+    }
+    const bool lingering =
+        !settled && time::monotonic_ns() - unsettled_since_ns >= i64{2'000'000'000};
+    if (config.log != nullptr && (settled || lingering) && (!said || holder != announced)) {
       if (seen.readable) {
-        std::fprintf(config.log, "bench: waiting for the gpu lock, held by '%s': %s (until %s)\n",
-                     seen.owner.c_str(), seen.purpose.c_str(), seen.expires.c_str());
-      } else {
+        std::fprintf(config.log,
+                     "bench: waiting for the gpu lock, held by '%s': %s (until %s); %s\n",
+                     seen.owner.c_str(), seen.purpose.c_str(), seen.expires.c_str(), where.c_str());
+      } else if (seen.present) {
         std::fprintf(config.log, "bench: waiting for the gpu lock (its file is being written)\n");
+      } else {
+        std::fprintf(config.log, "bench: the gpu lock is free and not this process's turn; %s\n",
+                     where.c_str());
       }
       announced = holder;
+      said = true;
     }
-    const i64 sleep_ns =
-        std::min(timeout_ns - waited_ns, std::max<i64>(config.poll_s, 1) * i64{1'000'000'000});
-    std::this_thread::sleep_for(std::chrono::nanoseconds(sleep_ns));
+    const i64 look_ns = std::min(std::max<i64>(config.poll_s, 1) * i64{1'000'000'000},
+                                 std::max<i64>(config.look_ms, 1) * i64{1'000'000});
+    std::this_thread::sleep_for(
+        std::chrono::nanoseconds(std::min(timeout_ns - waited_ns, look_ns)));
   }
 }
 

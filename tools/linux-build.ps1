@@ -76,7 +76,12 @@
     -KeepUnknown  with -Stale: keep the volumes whose checkout nothing can name.
     -WhatIf       with -Prune: print the same lines and remove nothing. Run it first.
     -Sync:$false  skip the source sync and build what is already in the volume.
-    -NoWait       if another build holds the lock, say who and exit 2 instead of waiting.
+    -NoWait       if another build holds the lock, or others are before this one in the lock's line,
+              say who and exit 2 instead of waiting.
+-LockOnly <s> take the build lock exactly as a build does — the same line, the same messages, the
+              same exit codes — hold it for <s> seconds and release it, starting no container and
+              asking nothing of Docker. It is how `tools.machine_lock` tests the build lock's line
+              through this script, and by hand a way to keep builds off the machine for a moment.
     -Offline      run the build containers with --network none: proof that everything this
                   build needs is already in the dependency cache, and a failure if it is not.
 
@@ -111,7 +116,8 @@ param(
   [switch]$KeepUnknown,
   [switch]$Sync = $true,
   [switch]$NoWait,
-  [switch]$Offline
+  [switch]$Offline,
+  [double]$LockOnly = 0
 )
 
 $ErrorActionPreference = 'Stop'
@@ -611,7 +617,45 @@ function Invoke-Prune {
   exit $failed
 }
 
+# --- the build lock --------------------------------------------------------------------------
+#
+# Taken before anything that costs the machine: the image build, the sync and every preset. The
+# lease is short and refreshed from a background thread while the build runs, so a build whose
+# script is killed holds the machine for ten minutes, not for as long as the build would have
+# taken. On a machine without the lock's directory there is nobody to coordinate with; the build
+# runs unlocked and says so.
+#
+# The lock has a line (tools/lib/MachineLock.psm1, "the line"; docs/ci/local-linux.md): a build
+# takes a ticket when it starts to wait and is served when no older live ticket stands before it.
+# Every build asks for the same ten-minute lease, so the line is first come, first served; the
+# waiting line says who holds the lock and where this build stands, and -NoWait and the give-up
+# say the same.
+$LockPath = Get-MachineLockPath -Kind linux-build
+$LockTimeoutMinutes = 240
+function Enter-BuildLock([string]$purpose) {
+  $lock = Enter-MachineLock -Path $LockPath -Purpose $purpose -LeaseMinutes 10 -Wait:(-not $NoWait) `
+                            -TimeoutMinutes $LockTimeoutMinutes -Label 'linux-build'
+  switch ($lock.Outcome) {
+    'NoDirectory' { Write-Warning "linux-build: $(Split-Path -Parent $LockPath) does not exist; building without the machine-wide lock" }
+    'Busy' { Write-Host "linux-build: the build lock is not this build's to take: $(Format-MachineLockRefusal $lock)" -ForegroundColor Yellow; exit 2 }
+    'TimedOut' { Write-Host "linux-build: gave up after $LockTimeoutMinutes minutes; the build lock was $(Format-MachineLockRefusal $lock)" -ForegroundColor Red; exit 3 }
+  }
+  return $lock
+}
+
 # --- run ---------------------------------------------------------------------------------------
+if ($LockOnly -gt 0) {
+  $lock = Enter-BuildLock "linux-build -LockOnly $LockOnly in $Root"
+  $heartbeat = if ($lock.Handle) { Start-MachineLockHeartbeat -Handle $lock.Handle } else { $null }
+  try {
+    Write-Host "linux-build: holding the build lock for $LockOnly s (-LockOnly)"
+    Start-Sleep -Milliseconds ([int]($LockOnly * 1000))
+  } finally {
+    Stop-MachineLockHeartbeat -Job $heartbeat
+    Exit-MachineLock -Handle $lock.Handle
+  }
+  exit 0
+}
 
 if ($Stale -and -not $Prune) { Stop-WithLine '-Stale is a -Prune option: tools/linux-build.ps1 -Prune -Stale -WhatIf' }
 if ($KeepUnknown -and -not $Stale) { Stop-WithLine '-KeepUnknown is a -Prune -Stale option' }
@@ -636,23 +680,7 @@ if ($Docs -or $Shell) {
   if ($Shell) { Invoke-Shell }
 }
 
-# --- the build lock --------------------------------------------------------------------------
-#
-# Taken before anything that costs the machine: the image build, the sync and every preset. The
-# lease is short and refreshed from a background thread while the build runs, so a build whose
-# script is killed holds the machine for ten minutes, not for as long as the build would have
-# taken. On a machine without the lock's directory there is nobody to coordinate with; the build
-# runs unlocked and says so.
-$LockPath = Get-MachineLockPath -Kind linux-build
-$LockTimeoutMinutes = 240
-$purpose = "linux-build $($targets -join ',')$(if ($Test) { ' -Test' }) in $Root"
-$lock = Enter-MachineLock -Path $LockPath -Purpose $purpose -LeaseMinutes 10 -Wait:(-not $NoWait) `
-                          -TimeoutMinutes $LockTimeoutMinutes -Label 'linux-build'
-switch ($lock.Outcome) {
-  'NoDirectory' { Write-Warning "linux-build: $(Split-Path -Parent $LockPath) does not exist; building without the machine-wide lock" }
-  'Busy' { Write-Host "linux-build: another build holds the lock: $(Format-MachineLockHolder $lock.Holder)" -ForegroundColor Yellow; exit 2 }
-  'TimedOut' { Write-Host "linux-build: gave up after $LockTimeoutMinutes minutes; still held by $(Format-MachineLockHolder $lock.Holder)" -ForegroundColor Red; exit 3 }
-}
+$lock = Enter-BuildLock "linux-build $($targets -join ',')$(if ($Test) { ' -Test' }) in $Root"
 $heartbeat = if ($lock.Handle) { Start-MachineLockHeartbeat -Handle $lock.Handle } else { $null }
 
 $results = [ordered]@{}

@@ -5,7 +5,7 @@
 .DESCRIPTION
   tools/gpu-lock.ps1 acquire -Purpose <text> [-Minutes 30] [-Owner claude-engine]
   tools/gpu-lock.ps1 release
-  tools/gpu-lock.ps1 status
+  tools/gpu-lock.ps1 status                                   # the holder, and the line behind it
   tools/gpu-lock.ps1 wait    [-Purpose <text>] [-Minutes 30] [-PollSeconds 20] [-TimeoutMinutes 240]
   tools/gpu-lock.ps1 refresh [-Minutes 30]
   tools/gpu-lock.ps1 run -Purpose <text> [-Minutes 10] -Exec "<command line>"
@@ -20,7 +20,15 @@
   any lock of the same format (`status -LockFile D:\workspace\linux-build.lock` says who is
   building).
 
-  `acquire` exits 0 when the lock is yours and 2 when someone else holds it (without waiting);
+  The lock has a line (docs/subsystems/gpu_lock.md, "The line"): an ask takes a ticket in
+  `<lock>.line\` and is served when no live ticket stands before it, in the order of arrival plus
+  the minutes it asked for with -Minutes — equal asks first come, first served, and a short ask
+  ahead of a long one only while the long one has waited less than the difference. A holder that
+  releases and asks again goes to the back. `status` prints who holds the lock, since when and
+  until when, and then the line: who waits, in order, for what, how long, and what they asked for.
+
+  `acquire` exits 0 when the lock is yours and 2 when it is not yours to take now — someone holds
+  it, or it is free and others are before you in the line — without waiting;
   `wait` waits for it; `run` waits, runs the command with the lock refreshed in the background
   (so -Minutes is the lease a crash would leave behind, not a limit on the command), and releases
   in a finally block so a failing command still releases. Exit code of `run` is the command's.
@@ -65,10 +73,24 @@ if ($Minutes -le 0) { $Minutes = if ($Action -eq 'run') { 10 } else { 30 } }
 switch ($Action) {
   'status' {
     $held = Read-MachineLock -Path $Lock
-    if (-not $held.Present) { Write-Output 'free'; exit 0 }
-    $state = if ($held.Blocking) { 'held' } else { 'EXPIRED' }
-    Write-Output "$state by $(Format-MachineLockHolder $held) (pid $($held.Pid), since $($held.Started))"
-    exit $(if ($held.Blocking) { 2 } else { 0 })
+    # The holder, then the line in the order it will be served. The first line is what it always
+    # was ("free", or who holds it since when until when), so whatever read it still does.
+    $line = Get-MachineLockLine -Path $Lock   # always an array, never unrolled
+    if (-not $held.Present) {
+      Write-Output 'free'
+    } else {
+      $state = if ($held.Blocking) { 'held' } else { 'EXPIRED' }
+      Write-Output "$state by $(Format-MachineLockHolder $held) (pid $($held.Pid), since $($held.Started))"
+    }
+    if ($line.Count -gt 0) {
+      Write-Output "$($line.Count) waiting, first served first:"
+      $n = 0
+      foreach ($w in $line) {
+        $n++
+        Write-Output ("  {0}. {1}, asks {2:0.#} min, since {3}" -f $n, (Format-MachineLockWaiter $w), ($w.DeclaredSeconds / 60), (ConvertTo-MachineLockTime $w.Arrived))
+      }
+    }
+    exit $(if ($held.Present -and $held.Blocking) { 2 } else { 0 })
   }
   'acquire' {
     if (-not $Purpose) { throw 'acquire needs -Purpose' }
@@ -76,7 +98,7 @@ switch ($Action) {
     switch ($r.Outcome) {
       'Taken' { Write-Output "acquired ($Owner, $Minutes min)"; exit 0 }
       'NoDirectory' { throw "$(Split-Path -Parent $Lock) does not exist; this machine does not use the lock" }
-      default { Write-Output "busy: held by $(Format-MachineLockHolder $r.Holder)"; exit 2 }
+      default { Write-Output "busy: $(Format-MachineLockRefusal $r)"; exit 2 }
     }
   }
   'wait' {
@@ -86,7 +108,7 @@ switch ($Action) {
     switch ($r.Outcome) {
       'Taken' { Write-Output "acquired ($Owner, $Minutes min)"; exit 0 }
       'NoDirectory' { throw "$(Split-Path -Parent $Lock) does not exist; this machine does not use the lock" }
-      default { Write-Output "gave up after $TimeoutMinutes minutes"; exit 3 }
+      default { Write-Output "gave up after $TimeoutMinutes minutes; $(Format-MachineLockRefusal $r)"; exit 3 }
     }
   }
   'refresh' {

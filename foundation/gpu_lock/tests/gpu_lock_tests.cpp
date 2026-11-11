@@ -303,3 +303,169 @@ TEST_CASE("gpu lock: a wrapper's lock is this process's while it lives, and brea
   CHECK(lease.acquire(config) == gpu_lock::Lease::Outcome::Taken);
   CHECK(gpu_lock::read(path, config.self, now_s()).pid == config.self.pid);
 }
+
+// ---- the line (gpu_lock.h, "the line"; roadmap T96) -------------------------------------------
+
+namespace {
+
+// A ticket as any implementation writes it (this is the format on disk, which the PowerShell half
+// writes too): the name is the place, the body the lock's own shape.
+std::string plant_ticket(const std::string& lock, i64 arrived_ms, i64 declared_s, u64 pid,
+                         i64 expires_unix_s, std::string_view purpose, u32 counter = 0) {
+  const std::string directory = gpu_lock::line_directory(lock);
+  std::error_code ec;
+  std::filesystem::create_directories(std::filesystem::path(directory), ec);
+  char name[96];
+  std::snprintf(name, sizeof(name), "t-%016lld-%016lld-%010llu-%04u.json",
+                static_cast<long long>(arrived_ms + declared_s * 1000),
+                static_cast<long long>(arrived_ms), static_cast<unsigned long long>(pid), counter);
+  JsonValue o = JsonValue::object();
+  o.set("owner", "claude-engine");
+  o.set("purpose", purpose);
+  o.set("pid", pid);
+  o.set("started", gpu_lock::format_iso8601_utc(arrived_ms / 1000));
+  o.set("expires", gpu_lock::format_iso8601_utc(expires_unix_s));
+  o.set("host", "TESTHOST");
+  o.set("declared_s", declared_s);
+  const std::string path = directory + "/" + name;
+  write_file(path, write_json(o, JsonWriteOptions{.pretty = false}));
+  return path;
+}
+
+usize files_in(const std::string& directory) {
+  usize n = 0;
+  std::error_code ec;
+  for (std::filesystem::directory_iterator it(std::filesystem::path(directory), ec), end;
+       !ec && it != end; it.increment(ec)) {
+    ++n;
+  }
+  return n;
+}
+
+// One attempt at a free lock by an ask that declares `lease_s`.
+gpu_lock::Lease::Outcome ask_once(gpu_lock::Lease& lease, const std::string& path, i64 lease_s) {
+  gpu_lock::Lease::Config config;
+  config.path = path;
+  config.self = gpu_lock::current_identity();
+  config.self.holder_pid = 0;
+  config.purpose = "an ask";
+  config.lease_s = lease_s;
+  config.timeout_s = 0;
+  config.log = nullptr;
+  return lease.acquire(config);
+}
+
+}  // namespace
+
+TEST_CASE("the line: a free lock is not taken past a live ticket, and a dead ticket is no one") {
+  test::TempDir dir("gpu_line_ticket");
+  const std::string path = dir.file("gpu.lock");
+  const std::string line = gpu_lock::line_directory(path);
+  const i64 now_ms = time::wall_unix_ms();
+
+  // Somebody asked ten seconds ago for the same lease and is still asking: the lock is free, and
+  // it is theirs to take. This ask's own ticket is gone again when it gives up.
+  const std::string theirs =
+      plant_ticket(path, now_ms - 10'000, 1800, k_other_pid, now_s() + 30, "ahead");
+  {
+    gpu_lock::Lease lease;
+    CHECK(ask_once(lease, path, 1800) == gpu_lock::Lease::Outcome::TimedOut);
+    CHECK_FALSE(exists(path));
+  }
+  CHECK(exists(theirs));
+  CHECK(files_in(line) == 1);
+  REQUIRE(gpu_lock::read_line(path, now_s()).size() == 1);
+  CHECK(gpu_lock::read_line(path, now_s())[0].purpose == "ahead");
+  CHECK(gpu_lock::read_line(path, now_s())[0].pid == k_other_pid);
+
+  // The same ticket with its lease run out is a waiter that died: skipped, and removed.
+  (void)std::filesystem::remove(std::filesystem::path(theirs));
+  const std::string dead =
+      plant_ticket(path, now_ms - 60'000, 1800, k_other_pid, now_s() - 5, "died in the line");
+  CHECK(gpu_lock::read_line(path, now_s()).empty());
+  {
+    gpu_lock::Lease lease;
+    CHECK(ask_once(lease, path, 1800) == gpu_lock::Lease::Outcome::Taken);
+    CHECK(exists(path));
+    CHECK_FALSE(exists(dead));
+    CHECK(files_in(line) == 0);  // the dead ticket, and this ask's own once it had the lock
+  }
+  CHECK_FALSE(exists(path));
+
+  // A ticket behind this ask's place (it arrives later) does not hold it up.
+  const std::string later =
+      plant_ticket(path, now_ms + 60'000, 1800, k_other_pid, now_s() + 30, "behind");
+  {
+    gpu_lock::Lease lease;
+    CHECK(ask_once(lease, path, 1800) == gpu_lock::Lease::Outcome::Taken);
+  }
+  CHECK(exists(later));
+}
+
+TEST_CASE("the line: a short ask passes a long one only while the long one has waited less") {
+  test::TempDir dir("gpu_line_key");
+  const std::string path = dir.file("gpu.lock");
+  const i64 now_ms = time::wall_unix_ms();
+
+  // A ten-minute ask that arrived a second ago, and a two-minute ask now: the short one would be
+  // done first (now + 120 s against now - 1 s + 600 s), so it goes first.
+  const std::string fresh =
+      plant_ticket(path, now_ms - 1'000, 600, k_other_pid, now_s() + 30, "ten minutes, just now");
+  {
+    gpu_lock::Lease lease;
+    CHECK(ask_once(lease, path, 120) == gpu_lock::Lease::Outcome::Taken);
+  }
+  (void)std::filesystem::remove(std::filesystem::path(fresh));
+
+  // The same ask after it has waited 500 s of the 480 s between them: nothing new passes it.
+  const std::string waited =
+      plant_ticket(path, now_ms - 500'000, 600, k_other_pid, now_s() + 30, "ten minutes, waited");
+  {
+    gpu_lock::Lease lease;
+    CHECK(ask_once(lease, path, 120) == gpu_lock::Lease::Outcome::TimedOut);
+    CHECK_FALSE(exists(path));
+  }
+  // And an ask for no more than it asked never passes it, however late.
+  {
+    gpu_lock::Lease lease;
+    CHECK(ask_once(lease, path, 600) == gpu_lock::Lease::Outcome::TimedOut);
+  }
+  (void)std::filesystem::remove(std::filesystem::path(waited));
+
+  // A declaration past the cap counts as the cap: asking for a day is not a day at the back. A
+  // ticket whose place is 2,000 s from now stands behind an ask for a day (1,800 s as counted).
+  (void)plant_ticket(path, now_ms + 2'000'000, 0, k_other_pid, now_s() + 30, "from the future");
+  {
+    gpu_lock::Lease lease;
+    CHECK(ask_once(lease, path, 86'400) == gpu_lock::Lease::Outcome::Taken);
+  }
+}
+
+TEST_CASE("the line: the order is the tickets' own, to the pid and the counter") {
+  test::TempDir dir("gpu_line_sort");
+  const std::string path = dir.file("gpu.lock");
+  const i64 t = time::wall_unix_ms() - 100'000;
+  const i64 alive = now_s() + 30;
+  // Written out of order on purpose: the directory's order is not the line's.
+  (void)plant_ticket(path, t + 5, 120, 700, alive, "same key, later arrival");       // key t+120005
+  (void)plant_ticket(path, t, 600, 900, alive, "long, first to arrive");             // key t+600000
+  (void)plant_ticket(path, t, 120, 800, alive, "same millisecond, higher pid");      // key t+120000
+  (void)plant_ticket(path, t, 120, 300, alive, "same millisecond, lower pid");       // key t+120000
+  (void)plant_ticket(path, t, 120, 300, alive, "same pid, its second ask", 1);       // key t+120000
+  (void)plant_ticket(path, t - 1000, 121, 950, alive, "same key, earlier arrival");  // key t+120000
+  // Not tickets: a refresh's temporary file and a stranger's note are not in the line.
+  write_file(gpu_lock::line_directory(path) + "/t-0000.json.123-abc.tmp", "{}");
+  write_file(gpu_lock::line_directory(path) + "/README.txt", "hello");
+
+  const Vector<gpu_lock::Waiter> line = gpu_lock::read_line(path, now_s());
+  REQUIRE(line.size() == 6);
+  CHECK(line[0].purpose == "same key, earlier arrival");
+  CHECK(line[1].purpose == "same millisecond, lower pid");
+  CHECK(line[2].purpose == "same pid, its second ask");
+  CHECK(line[3].purpose == "same millisecond, higher pid");
+  CHECK(line[4].purpose == "same key, later arrival");
+  CHECK(line[5].purpose == "long, first to arrive");
+  CHECK(line[5].declared_s == 600);
+  CHECK(line[5].arrived_unix_ms == t);
+  CHECK(line[5].pid == 900);
+}
