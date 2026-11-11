@@ -6,11 +6,13 @@
 // An offline solver: a region sketch (the lattice, what each edge is, outlets, uplift, how hard the
 // rock is, a seed, the time and the step) becomes an eroded ground — an authored heightfield the
 // tile set builds as it is (`engine.terrain.heightfield/1`, whole millimetres) and, on the same
-// lattice, the fields the later solvers read: drainage area, receiver, slope, erosion rate and
-// fill. The model is the published one: Priority-Flood routing (Barnes, Lehman and Mulla 2014),
-// the stream-power law solved implicitly along the flow tree (Braun and Willett 2013) at n = 1
-// and m = 1/2, and hillslope diffusion with a critical slope (Roering, Kirchner and Dietrich
-// 1999). It owns no runtime state: nothing ticks, nothing is drawn, nothing is kept resident.
+// lattice, the fields the later solvers read: drainage area, receiver, slope, erosion rate, fill
+// and sediment. The model is the published one: Priority-Flood routing (Barnes, Lehman and Mulla
+// 2014), the stream-power law solved implicitly along the flow tree (Braun and Willett 2013) at n =
+// 1 and m = 1/2, and hillslope diffusion with a critical slope (Roering, Kirchner and Dietrich
+// 1999), with the sediment the rivers carry laid down again (stage B: the erosion and deposition
+// law of Davy and Lague 2009 in Yuan et al. 2019's implicit form; landform.md, "Deposition").
+// It owns no runtime state: nothing ticks, nothing is drawn, nothing is kept resident.
 //
 // The same bytes from every toolchain and at any thread count: every decision is IEEE `+ - * /`,
 // one correctly rounded square root and integers, the flood's order is a total order on
@@ -50,10 +52,10 @@ namespace engine::landform {
 inline constexpr const char* k_determinism = "derived";
 
 /// Bumped whenever the same sketch would solve to different bytes; the field file records it.
-inline constexpr u32 k_solver_version = 1;
+inline constexpr u32 k_solver_version = 2;
 
 inline constexpr std::string_view k_fields_format = "engine.landform.fields";
-inline constexpr u32 k_fields_version = 1;
+inline constexpr u32 k_fields_version = 2;
 
 /// A receiver code: the neighbour a point drains to, east first and then clockwise seen from above
 /// with +z down the page (east, south-east, south, south-west, west, north-west, north,
@@ -74,6 +76,28 @@ struct StartField {
   i64 origin_z_mm = 0;
   f64 vertical_mm_per_unit = 1000.0;
   Vector<f32> data;
+};
+
+/// Where the run's material went, cubic metres (landform.md, "Deposition"). `eroded` is what the
+/// rivers cut and the slopes shed; all of it was `deposited` again, `left` through a held point,
+/// or was shed by the last step and never carried: eroded = deposited + left + unrouted. And the
+/// ground's volume changed by what was raised less what went: change = uplifted - left -
+/// crept_out - settled - unrouted, to the whole millimetres the heights round to.
+struct Budget {
+  f64 uplifted_m3 = 0.0;
+  f64 eroded_m3 = 0.0;
+  f64 deposited_m3 = 0.0;
+  /// Carried by the rivers through the held points: an open edge, the sea's edge, an outlet.
+  f64 left_m3 = 0.0;
+  /// Creep across the held points (the diffusion's exchange with them); negative is a gain.
+  f64 crept_out_m3 = 0.0;
+  /// What the settling to the critical slope after the last step removed. It has nowhere to go
+  /// and leaves the model.
+  f64 settled_m3 = 0.0;
+  /// What the last step's slopes shed, which no later step's rivers carried: it leaves too.
+  f64 unrouted_m3 = 0.0;
+  /// The solved ground's volume less the starting ground's, before the heights are rounded.
+  f64 change_m3 = 0.0;
 };
 
 /// A solved region. Every array is `width * height`, rows of x in order of z, on one lattice:
@@ -99,8 +123,14 @@ struct Landform {
   /// The fall to the receiver over the distance to it, parts per million; zero or less where the
   /// way out crosses a depression (the receiver is the filled surface's).
   Vector<i32> slope;
-  /// What the last step removed, micrometres a year (zero for a run of no steps).
+  /// What the last step removed, micrometres a year, net of what it laid down: negative where
+  /// the ground gained (zero for a run of no steps).
   Vector<i32> erosion_rate;
+  /// The sediment under the point, whole millimetres: what the rivers, the lakes, the sea and
+  /// creep laid down and nothing has removed since. Zero where the rock is at the surface, and
+  /// for a run of no steps. The rock's surface is the height less this.
+  Vector<u32> sediment;
+  Budget budget;
   /// How deep the point lies under its depression's spill, whole millimetres; zero on draining
   /// ground.
   Vector<u32> fill;

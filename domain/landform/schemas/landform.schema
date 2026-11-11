@@ -98,7 +98,7 @@ struct Rock @version(1) {
 
 /// The region sketch `engine-content landform` reads (landform.md, "The sketch"). Every range is
 /// checked, and a sketch outside one is refused with a sentence naming the field.
-struct Sketch @version(1) {
+struct Sketch @version(2) {
   /// Points a row (x) and rows (z), each 8 to 16,384.
   width: u32
   height: u32
@@ -132,6 +132,16 @@ struct Sketch @version(1) {
   critical_slope: f64 = 0.9
   /// The same for rock of resistance 1: `critical_slope` to 4.
   critical_slope_resistant: f64 = 1.6
+  /// The deposition coefficient G of Yuan et al. 2019 (Davy and Lague 2009's theta): a river lays
+  /// down G / N of the sediment that reaches a point draining N cells. 0 is the detachment-limited
+  /// law, with nothing laid down by a river; 1 is the published reference; 0 to 10
+  /// (landform.md, "Deposition").
+  deposition: f64 = 1 @since(2)
+  /// The erodibility of sediment over the sketch's `erodibility_per_yr`: 1 to 100.
+  sediment_erodibility: f64 = 2 @since(2)
+  /// The share of the sediment reaching standing water in a lake that settles at the river's
+  /// mouth, up to the water's level (a delta); the rest levels the lake's floor. 0 to 1.
+  delta_share: f64 = 0.5 @since(2)
   seed: u64 = 1
   /// The starting plane's roughness, metres either way: 0 to 100.
   roughness_m: f64 = 1
@@ -147,7 +157,7 @@ struct Sketch @version(1) {
 
 /// One field of the field file.
 struct FieldEntry @version(1) {
-  /// `drainage_area`, `receiver`, `slope`, `erosion_rate`, `fill`.
+  /// `drainage_area`, `receiver`, `slope`, `erosion_rate`, `fill`, `sediment`.
   name: string
   /// The raw grid, relative to the header: little-endian, rows of x in order of z, the
   /// heightfield's own lattice.
@@ -179,11 +189,11 @@ struct TerrainHeightfield @version(1) {
 }
 
 /// The header of the fields written beside a solved heightfield (landform.md, "The field file"):
-/// `engine.landform.fields/1`. Every field is on the heightfield's lattice, point for point.
+/// `engine.landform.fields/2`. Every field is on the heightfield's lattice, point for point.
 struct Fields @version(1) {
   /// "engine.landform.fields".
   format: string
-  version: u32 = 1
+  version: u32 = 2
   width: u32
   height: u32
   spacing_mm: i64

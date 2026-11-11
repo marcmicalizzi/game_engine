@@ -2,8 +2,9 @@
 # solver. A region sketch (the lattice, each edge open, closed or sea, outlets, uplift, the rock's
 # resistance, a seed, the time and step, an optional starting heightfield) becomes an eroded ground:
 # an authored heightfield the tile set builds as it is, and the fields the later solvers read
-# (drainage area, receiver, slope, erosion rate, fill). Priority-Flood routing, the stream-power law
-# solved implicitly along the flow tree, hillslope diffusion with a critical slope.
+# (drainage area, receiver, slope, erosion rate, fill, sediment). Priority-Flood routing, the
+# stream-power law with deposition solved implicitly along the flow tree, hillslope diffusion with a
+# critical slope.
 #
 # OPTIONAL creates ENGINE_WITH_LANDFORM (ON by default): switching it off, or configuring with
 # ENGINE_MINIMAL=ON, removes this module, its schema types, its tests and its bench, and the rest of

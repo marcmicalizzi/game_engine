@@ -1,11 +1,13 @@
 // The landform solver (docs/subsystems/landform.md, "The step"; docs/experiments/landform.md has
 // every source and constant). One step: uplift, the flood and its receivers, the drainage area,
-// the implicit stream-power incision along the flood's order, hillslope diffusion, the slope
-// limiter. Every decision is IEEE `+ - * /`, `sqrt`, `floor` and integers; the loops the job
-// system runs are the ones whose points read nothing another point of the same loop writes.
+// the rivers (stream-power incision and deposition solved together along the flood's order, the
+// lakes and the sea taking what reaches them), hillslope diffusion, the slope limiter. Every
+// decision is IEEE `+ - * /`, `sqrt`, `floor` and integers; the loops the job system runs are the
+// ones whose points read nothing another point of the same loop writes.
 #include <core/jobs/job_system.h>
 #include <domain/landform/landform.h>
 
+#include <algorithm>
 #include <cmath>
 #include <limits>
 #include <optional>
@@ -34,6 +36,10 @@ constexpr u64 k_route_salt = 0xD1B54A32D192ED03ull;
 constexpr f64 k_diffusion_number = 0.2;
 // A heightfield's float holds a whole millimetre exactly below 2^24 of them.
 constexpr f64 k_max_height_m = 16000.0;
+// The rivers' sweeps end when no height moves by this much (a tenth of a millimetre), or after
+// this many: Yuan et al. 2019 count six at G = 1 and nine at G = 2 to a looser bound.
+constexpr f64 k_river_tolerance_m = 1.0e-4;
+constexpr u32 k_river_sweeps = 64;
 
 u64 mix(u64 x) noexcept {
   x += 0x9E3779B97F4A7C15ull;
@@ -106,12 +112,31 @@ u64 heap_pop(Vector<u64>& heap) noexcept {
   return top;
 }
 
+// A point's `sill` entry: none on draining ground; on a point the flood raised, the point its
+// depression spills over (the first point the flood popped that was not itself raised); and, once
+// `find_lakes` has run, on a sill the index of its lake with `k_sill_flag` set.
+constexpr u32 k_no_sill = 0xFFFFFFFFu;
+constexpr u32 k_sill_flag = 0x80000000u;
+// A raised point this far or more under its spill is standing water (a lake's member); shallower
+// is a flat the flood stepped across, which a river crosses and aggrades like any reach.
+constexpr i64 k_lake_min_units = 10 * k_fill_units_per_mm;
+
+struct Lake {
+  u32 sill = 0;
+  u32 begin = 0;  // its members, a run of `Routing::members`
+  u32 end = 0;
+  f64 pool = 0.0;  // sediment that reached its water this step, metres over one cell
+};
+
 struct Routing {
   Vector<i64> filled;
   Vector<u32> order;
   Vector<u8> receiver;
   Vector<u32> area;
   Vector<u64> heap;
+  Vector<u32> sill;
+  Vector<u64> members;  // sill above cell, sorted: each lake's cells are one run
+  Vector<Lake> lakes;
 };
 
 // Priority-Flood with epsilon (Barnes, Lehman and Mulla 2014, Algorithm 3) from the held points:
@@ -124,9 +149,11 @@ bool flood(u32 w, u32 h, const u8* held, Q&& units, Routing& r) {
   const u32 n = w * h;
   r.filled.assign(n, k_unvisited);
   r.order.resize(n);
+  r.sill.assign(n, k_no_sill);
   r.heap.clear();
   i64* filled = r.filled.data();
   u32* order = r.order.data();
+  u32* sill = r.sill.data();
   for (u32 i = 0; i < n; ++i) {
     if (held[i] == 0) continue;
     filled[i] = units(i);
@@ -152,10 +179,146 @@ bool flood(u32 w, u32 h, const u8* held, Q&& units, Routing& r) {
       const i64 own = units(ni);
       const i64 f = own > fc ? own : fc + 1;
       filled[ni] = f;
+      // A raised point belongs to the depression of the point that raised it, or begins one
+      // that spills over that point.
+      if (own <= fc) sill[ni] = sill[c] != k_no_sill ? sill[c] : c;
       heap_push(r.heap, key_of(f, ni));
     }
   }
   return count == n;
+}
+
+// The lakes of a flooded ground (landform.md, "Deposition"): every raised point standing
+// `k_lake_min_units` or more under its filled level, grouped by the sill its depression spills
+// over. Shallower raised points lose their sill and count as dry. A sorted run a lake, so the
+// table is the same whatever order the flood met the points in.
+template <class Q>
+void find_lakes(u32 n, Q&& units, Routing& r) {
+  r.members.clear();
+  r.lakes.clear();
+  u32* sill = r.sill.data();
+  const i64* filled = r.filled.data();
+  for (u32 p = 0; p < n; ++p) {
+    if (sill[p] == k_no_sill) continue;
+    if (filled[p] - units(p) >= k_lake_min_units) {
+      r.members.push_back((static_cast<u64>(sill[p]) << 32) | p);
+    } else {
+      sill[p] = k_no_sill;
+    }
+  }
+  std::sort(r.members.data(), r.members.data() + r.members.size());
+  for (u32 k = 0; k < r.members.size(); ++k) {
+    const u32 at = static_cast<u32>(r.members[k] >> 32);
+    if (r.lakes.size() == 0 || r.lakes[r.lakes.size() - 1].sill != at) {
+      Lake lake;
+      lake.sill = at;
+      lake.begin = k;
+      r.lakes.push_back(lake);
+      sill[at] = k_sill_flag | (r.lakes.size() - 1);
+    }
+    r.lakes[r.lakes.size() - 1].end = k + 1;
+  }
+}
+
+// What settles at a point of standing water, laid on the lowest ground about it (landform.md,
+// "Deposition"): `v` metres over one cell fill the point and those of its eight neighbours that
+// stand lower, the lowest first, to one level no higher than `cap`, the water's. Returns what the
+// cap left over. Held points are never raised.
+f64 spread(f64* z, f64* sed, const u8* held, u32 p, f64 v, f64 cap, u32 w, u32 h,
+           f64& laid) noexcept {
+  u32 cell[9];
+  f64 height[9];
+  u32 m = 0;
+  if (z[p] < cap) {
+    cell[m] = p;
+    height[m++] = z[p];
+  }
+  const i32 x = static_cast<i32>(p % w);
+  const i32 y = static_cast<i32>(p / w);
+  for (u32 k = 0; k < 8; ++k) {
+    const i32 nx = x + k_receiver_dx[k];
+    const i32 ny = y + k_receiver_dz[k];
+    if (nx < 0 || ny < 0 || nx >= static_cast<i32>(w) || ny >= static_cast<i32>(h)) continue;
+    const u32 q = static_cast<u32>(ny) * w + static_cast<u32>(nx);
+    if (held[q] != 0 || !(z[q] < cap) || !(z[q] < z[p] + v)) continue;
+    // Insertion by height; equal heights keep the code's order.
+    u32 at = m++;
+    while (at > 0 && height[at - 1] > z[q]) {
+      cell[at] = cell[at - 1];
+      height[at] = height[at - 1];
+      --at;
+    }
+    cell[at] = q;
+    height[at] = z[q];
+  }
+  if (m == 0) return v;
+  f64 level = height[0];
+  f64 rest = v;
+  u32 k = 1;
+  while (k < m) {
+    const f64 next = height[k] < cap ? height[k] : cap;
+    const f64 room = (next - level) * static_cast<f64>(k);
+    if (room > rest) break;
+    rest -= room;
+    level = next;
+    ++k;
+  }
+  f64 top = level + rest / static_cast<f64>(k);
+  if (top > cap) top = cap;
+  rest -= (top - level) * static_cast<f64>(k);
+  for (u32 i = 0; i < m; ++i) {
+    if (!(height[i] < top)) break;
+    const f64 rise = top - height[i];
+    z[cell[i]] = top;
+    sed[cell[i]] += rise;
+    laid += rise;
+  }
+  return rest > 0.0 ? rest : 0.0;
+}
+
+struct LakeCell {
+  f64 height;
+  u32 cell;
+};
+
+// A lake's pool laid from its deepest point up to one level, no higher than its sill stands now
+// (landform.md, "Deposition"): what settles out of standing water levels its floor. Returns what
+// the full lake passes on to its sill.
+f64 fill_lake(const Routing& r, const Lake& lake, f64* z, f64* sed, Vector<LakeCell>& scratch,
+              f64& laid) {
+  const f64 cap = z[lake.sill];
+  scratch.clear();
+  for (u32 k = lake.begin; k < lake.end; ++k) {
+    const u32 p = static_cast<u32>(r.members[k] & 0xFFFFFFFFull);
+    if (z[p] < cap) scratch.push_back(LakeCell{z[p], p});
+  }
+  if (scratch.size() == 0) return lake.pool;
+  std::sort(scratch.data(), scratch.data() + scratch.size(),
+            [](const LakeCell& a, const LakeCell& b) {
+              return a.height < b.height || (a.height == b.height && a.cell < b.cell);
+            });
+  const u32 m = scratch.size();
+  f64 level = scratch[0].height;
+  f64 rest = lake.pool;
+  u32 k = 1;
+  while (k < m) {
+    const f64 room = (scratch[k].height - level) * static_cast<f64>(k);
+    if (room > rest) break;
+    rest -= room;
+    level = scratch[k].height;
+    ++k;
+  }
+  f64 top = level + rest / static_cast<f64>(k);
+  if (top > cap) top = cap;
+  rest -= (top - level) * static_cast<f64>(k);
+  for (u32 i = 0; i < m; ++i) {
+    if (!(scratch[i].height < top)) break;
+    const f64 rise = top - scratch[i].height;
+    z[scratch[i].cell] = top;
+    sed[scratch[i].cell] += rise;
+    laid += rise;
+  }
+  return rest > 0.0 ? rest : 0.0;
 }
 
 // The steepest lower neighbour of eight on the filled surface; the flood guarantees one lower.
@@ -536,6 +699,10 @@ bool validate_sketch(const Sketch& s, std::string& error) {
   if (!in_range(s.critical_slope, 0.2, 4.0)) return refuse("a sketch's critical_slope is 0.2 to 4");
   if (!in_range(s.critical_slope_resistant, s.critical_slope, 4.0))
     return refuse("a sketch's critical_slope_resistant is its critical_slope to 4");
+  if (!in_range(s.deposition, 0.0, 10.0)) return refuse("a sketch's deposition is 0 to 10");
+  if (!in_range(s.sediment_erodibility, 1.0, 100.0))
+    return refuse("a sketch's sediment_erodibility is 1 to 100");
+  if (!in_range(s.delta_share, 0.0, 1.0)) return refuse("a sketch's delta_share is 0 to 1");
   if (!in_range(s.roughness_m, 0.0, 100.0)) return refuse("a sketch's roughness_m is 0 to 100 m");
   if (s.step_yr < 1 || s.step_yr > 10000000)
     return refuse("a sketch's step_yr is 1 to 10,000,000 years");
@@ -684,8 +851,10 @@ bool solve(const Sketch& s, const StartField* start, const SolveOptions& options
   // ---- what each step adds and how hard each point is ---------------------------------------
   Vector<f64> lift_field(n);      // metres a step
   Vector<f64> hardness_field(n);  // K dt times the point's variation
+  Vector<f64> settle_field(n);    // G, tapered with the uplift toward an edge that drains
   f64* lift = lift_field.data();
   f64* hardness = hardness_field.data();
+  f64* settle = settle_field.data();
   const f64 reach = s.border_reach_m ? *s.border_reach_m : 16.0 * frame.spacing_m;
   const f64 k_dt = s.erodibility_per_yr * dt;
   for_rows(jobs, h, [&](u32 j0, u32 j1) {
@@ -695,10 +864,13 @@ bool solve(const Sketch& s, const StartField* start, const SolveOptions& options
         f64 rate = s.uplift.regional_mm_per_yr + ridge_rate(s, frame.x(i), frame.z(j));
         if (s.uplift.raster) rate += raster_rate(*s.uplift.raster, frame, i, j);
         const f64 d = drain_distance(s, frame, i, j);
+        f64 taper = 1.0;
         if (d >= 0.0 && reach > 0.0 && d < reach) {
           const f64 t = d / reach;
-          rate *= t * t * (3.0 - 2.0 * t);
+          taper = t * t * (3.0 - 2.0 * t);
         }
+        rate *= taper;
+        settle[p] = s.deposition * taper;
         lift[p] = held[p] != 0 ? 0.0 : rate * dt / 1000.0;
         hardness[p] =
             k_dt * (1.0 + s.rock.variation * value_noise(s.seed, i, j, s.rock.variation_cells));
@@ -717,9 +889,30 @@ bool solve(const Sketch& s, const StartField* start, const SolveOptions& options
   const f64 rr = substeps > 0 ? number / static_cast<f64>(substeps) : 0.0;
   // The channel threshold in cells: a point draining fewer is hillslope.
   const f64 channel_cells = s.channel_area_m2 / (frame.spacing_m * frame.spacing_m);
-  for (u32 step = 0; step < steps; ++step) {
+  // Sediment (landform.md, "Deposition"): its thickness, the iterate of the rivers' solve, what
+  // each point's slope shed last step and no river has carried yet, and the budget, all in
+  // metres over one cell until the end.
+  Vector<f64> sediment_field(n, 0.0);
+  Vector<f64> iterate_field(n);
+  Vector<f64> carry_field(n, 0.0);
+  Vector<LakeCell> lake_scratch;
+  f64* sed = sediment_field.data();
+  f64* hk = iterate_field.data();
+  f64* carry = carry_field.data();
+  const f64 loose_dt = k_dt * s.sediment_erodibility;
+  const auto total = [z, n]() {
+    f64 sum = 0.0;
     for (u32 p = 0; p < n; ++p)
+      sum += z[p];
+    return sum;
+  };
+  const f64 volume_start = total();
+  f64 uplifted = 0.0, eroded = 0.0, laid = 0.0, left = 0.0, crept = 0.0, settled = 0.0;
+  for (u32 step = 0; step < steps; ++step) {
+    for (u32 p = 0; p < n; ++p) {
       z[p] += lift[p];
+      uplifted += lift[p];
+    }
     if (step + 1 == steps) {
       before_field.resize(n);
       f64* before = before_field.data();
@@ -730,28 +923,138 @@ bool solve(const Sketch& s, const StartField* start, const SolveOptions& options
       error = "the flood did not reach every point";
       return false;
     }
+    find_lakes(n, [z](u32 i) { return quantize(z[i]); }, routing);
     find_receivers(w, h, held, s.seed ^ k_route_salt, jobs, routing);
     accumulate(w, h, routing);
     const u32* order = routing.order.data();
     const u8* receiver = routing.receiver.data();
     const u32* area = routing.area.data();
-    // Incision, each point after its receiver: z = (z + F z_r) / (1 + F), F = K dt sqrt(N) / d
-    // in cells (the spacing cancels at m = 1/2, n = 1). A river cuts to the sea and no lower.
-    for (u32 k = 0; k < n; ++k) {
+    const u32* sill = routing.sill.data();
+    // What a point is to its river this step: held, standing water (a lake's member, or under
+    // the sea), a slope too small to hold a channel, or a reach.
+    const auto still = [&](u32 p) {
+      const u32 tag = sill[p];
+      return (tag != k_no_sill && (tag & k_sill_flag) == 0) || (has_sea && z[p] <= sea);
+    };
+    // The rivers: erosion and deposition together, implicit (Yuan, Braun, Guerit, Rouby and
+    // Cordonnier 2019, their equation 20). A reach moves to (z + d + F z_r) / (1 + F), F = K dt
+    // sqrt(N) / d in cells (the spacing cancels at m = 1/2, n = 1), d the deposit: G / N of the
+    // flux that reaches it, which is what the points above lost. The flux depends on the answer,
+    // so it is found by sweeps: the flux of the last iterate, each point after its donors, then
+    // the heights, each point after its receiver, until no height moves by `k_river_tolerance_m`.
+    // z stays the ground before the rivers; `hk` is the iterate. A river cuts to the sea and no
+    // lower, and standing water neither cuts nor lays down here: it takes what reaches it below.
+    f64* flux = scratch_field.data();
+    for (u32 p = 0; p < n; ++p)
+      hk[p] = z[p];
+    for (u32 sweep = 0; sweep < k_river_sweeps; ++sweep) {
+      for (u32 p = 0; p < n; ++p)
+        flux[p] = 0.0;
+      for (u32 k = n; k-- > 0;) {
+        const u32 p = order[k];
+        const u8 code = receiver[p];
+        if (code == k_no_receiver) continue;
+        const u32 tag = sill[p];
+        if (tag != k_no_sill && (tag & k_sill_flag) == 0) continue;  // a lake keeps what it gets
+        const f64 passed = flux[p] + carry[p] + (z[p] - hk[p]);
+        if (passed > 0.0) flux[neighbour(p, o.at[code])] += passed;
+      }
+      f64 worst = 0.0;
+      for (u32 k = 0; k < n; ++k) {
+        const u32 p = order[k];
+        const u8 code = receiver[p];
+        if (code == k_no_receiver || still(p)) continue;
+        const f64 cells = static_cast<f64>(area[p]);
+        if (cells < channel_cells) continue;  // hillslope: no river here
+        const f64 down = flux[p] * (settle[p] < cells ? settle[p] / cells : 1.0);
+        const f64 top = z[p] + down;
+        f64 base = hk[neighbour(p, o.at[code])];
+        if (has_sea && base < sea) base = sea;
+        f64 to = top;
+        if (top > base) {
+          // Sediment first, at its own erodibility: the point's own and what this step lays.
+          // Where the cut goes through it into rock the height is the one at which the time to
+          // strip the sediment and the time to cut the rock make the step, each at the rate the
+          // final slope gives, which is the single formula again when the two erode alike.
+          const f64 power = std::sqrt(cells) * ((code & 1u) != 0 ? k_inv_sqrt2 : 1.0);
+          const f64 loose = sed[p] + down;
+          const f64 fs = loose_dt * power;
+          const f64 through = (top + fs * base) / (1.0 + fs);
+          if (top - through <= loose) {
+            to = through;
+          } else {
+            const f64 hard = hardness[p] * rock.at(z[p]).erodibility;
+            const f64 fr = hard * power;
+            to = (top - loose * (1.0 - hard / loose_dt) + fr * base) / (1.0 + fr);
+          }
+        }
+        const f64 moved = to > hk[p] ? to - hk[p] : hk[p] - to;
+        if (moved > worst) worst = moved;
+        hk[p] = to;
+      }
+      if (worst < k_river_tolerance_m) break;
+    }
+    // The solve's result, each point after its donors, with the books kept on what each point
+    // truly lost or gained: nothing is laid down that did not arrive. Standing water takes its
+    // share here, and a sill what its lake could not hold.
+    for (u32 p = 0; p < n; ++p)
+      flux[p] = 0.0;
+    Lake* lakes = routing.lakes.data();
+    const bool settles = s.deposition > 0.0;
+    for (u32 k = n; k-- > 0;) {
       const u32 p = order[k];
-      const u8 code = receiver[p];
-      if (code == k_no_receiver) continue;
-      if (static_cast<f64>(area[p]) < channel_cells) continue;  // hillslope: no river here
-      const f64 zp = z[p];
-      if (has_sea && zp <= sea) continue;
-      f64 base = z[neighbour(p, o.at[code])];
-      if (has_sea && base < sea) base = sea;
-      if (zp <= base) continue;
-      const f64 f = hardness[p] * rock.at(zp).erodibility * std::sqrt(static_cast<f64>(area[p])) *
-                    ((code & 1u) != 0 ? k_inv_sqrt2 : 1.0);
-      z[p] = (zp + f * base) / (1.0 + f);
+      f64 q = flux[p];
+      const u32 tag = sill[p];
+      const bool is_sill = tag != k_no_sill && (tag & k_sill_flag) != 0;
+      if (is_sill && lakes[tag & ~k_sill_flag].pool > 0.0)
+        q += fill_lake(routing, lakes[tag & ~k_sill_flag], z, sed, lake_scratch, laid);
+      if (held[p] != 0) {
+        left += q;
+        continue;
+      }
+      q += carry[p];
+      carry[p] = 0.0;
+      const u32 below = receiver[p] != k_no_receiver ? neighbour(p, o.at[receiver[p]]) : p;
+      if (!settles) {
+        // G = 0: nothing settles, in standing water either. What is cut leaves.
+        const f64 lost = z[p] - hk[p];
+        eroded += lost;
+        sed[p] = sed[p] > lost ? sed[p] - lost : 0.0;
+        z[p] = hk[p];
+        flux[below] += q + lost;
+        continue;
+      }
+      if (tag != k_no_sill && !is_sill) {
+        // A lake: a share settles at the mouth, up to the water's level; the rest, and what
+        // the mouth had no room for, joins the lake's pool and levels its floor.
+        Lake& lake = lakes[sill[tag] & ~k_sill_flag];
+        if (q > 0.0) {
+          const f64 mouth = q * s.delta_share;
+          lake.pool += q - mouth + spread(z, sed, held, p, mouth, z[lake.sill], w, h, laid);
+        }
+        continue;
+      }
+      if (has_sea && z[p] <= sea) {
+        // The sea: everything settles, the deepest ground about the point first, to the sea's
+        // level and no higher; what that leaves goes on along the bed.
+        if (q > 0.0) flux[below] += spread(z, sed, held, p, q, sea, w, h, laid);
+        continue;
+      }
+      f64 lost = z[p] - hk[p];
+      if (q + lost < 0.0) lost = -q;  // an iterate that laid down more than arrived
+      if (lost > 0.0) {
+        eroded += lost;
+        sed[p] = sed[p] > lost ? sed[p] - lost : 0.0;
+      } else {
+        laid -= lost;
+        sed[p] -= lost;
+      }
+      z[p] -= lost;
+      flux[below] += q + lost;
     }
     // Hillslopes: a Jacobi step reads one surface and writes the other, so rows run in parallel.
+    // What creep lowers comes off the sediment first, and what it raises is sediment.
+    const f64 before_creep = substeps > 0 ? total() : 0.0;
     f64* from = z;
     f64* to = scratch_field.data();
     for (u32 sub = 0; sub < substeps; ++sub) {
@@ -771,7 +1074,10 @@ bool solve(const Sketch& s, const StartField* start, const SolveOptions& options
             if (i + 1 < w) sum += src[p + 1] - c;
             if (j > 0) sum += src[p - w] - c;
             if (j + 1 < h) sum += src[p + w] - c;
-            dst[p] = c + rr * sum;
+            const f64 moved = rr * sum;
+            dst[p] = c + moved;
+            const f64 loose = sed[p] + moved;
+            sed[p] = loose > 0.0 ? loose : 0.0;
           }
       });
       f64* t = from;
@@ -781,16 +1087,31 @@ bool solve(const Sketch& s, const StartField* start, const SolveOptions& options
     if (from != z)
       for (u32 p = 0; p < n; ++p)
         z[p] = from[p];
+    if (substeps > 0) crept += before_creep - total();
     // The limiter in flood order: nearly ascending, so one pass settles almost every slope, and
-    // the pass after the last step settles the rest.
+    // the pass after the last step settles the rest. What a slope sheds is the next step's
+    // rivers' to carry from that point.
     for (u32 k = 0; k < n; ++k) {
       const u32 p = order[k];
       if (held[p] != 0) continue;
-      (void)limit_point(z, p, static_cast<i32>(p % w), static_cast<i32>(p / w), wi, hi, rock, card,
-                        diag);
+      const f64 zp = z[p];
+      if (!limit_point(z, p, static_cast<i32>(p % w), static_cast<i32>(p / w), wi, hi, rock, card,
+                       diag))
+        continue;
+      const f64 fell = zp - z[p];
+      carry[p] = fell;
+      eroded += fell;
+      sed[p] = sed[p] > fell ? sed[p] - fell : 0.0;
     }
   }
+  // What the last step's slopes shed no river carried: it leaves with the settling below.
+  f64 unrouted = 0.0;
+  for (u32 p = 0; p < n; ++p)
+    unrouted += carry[p];
   if (steps > 0) {
+    f64* stepped = scratch_field.data();
+    for (u32 p = 0; p < n; ++p)
+      stepped[p] = z[p];
     // To convergence: sweeps in the four diagonal orders until a round moves nothing. Heights
     // only fall, and a point's limit depends on lower points alone, so it ends; the bound on the
     // rounds is a guard, not a budget (a few rounds settle a range).
@@ -811,10 +1132,28 @@ bool solve(const Sketch& s, const StartField* start, const SolveOptions& options
       }
       if (!moved) break;
     }
+    // What the last settling took has nowhere to go: it leaves the model, and the budget says so.
+    for (u32 p = 0; p < n; ++p) {
+      const f64 fell = stepped[p] - z[p];
+      settled += fell;
+      sed[p] = sed[p] > fell ? sed[p] - fell : 0.0;
+    }
   }
 
   // ---- the outputs: whole millimetres, and the fields of exactly that ground -----------------
   out = Landform{};
+  const f64 cell_m2 = frame.spacing_m * frame.spacing_m;
+  out.budget.uplifted_m3 = uplifted * cell_m2;
+  out.budget.eroded_m3 = eroded * cell_m2;
+  out.budget.deposited_m3 = laid * cell_m2;
+  out.budget.left_m3 = left * cell_m2;
+  out.budget.crept_out_m3 = crept * cell_m2;
+  out.budget.settled_m3 = settled * cell_m2;
+  out.budget.unrouted_m3 = unrouted * cell_m2;
+  out.budget.change_m3 = (total() - volume_start) * cell_m2;
+  out.sediment.resize(n);
+  for (u32 p = 0; p < n; ++p)
+    out.sediment[p] = static_cast<u32>(clamp_i32(sed[p] * 1000.0));
   out.width = w;
   out.height = h;
   out.spacing_mm = s.spacing_mm;

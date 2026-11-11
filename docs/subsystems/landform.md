@@ -1,11 +1,14 @@
 # landform (domain, capability)
 
-**Purpose.** An offline landform solver (roadmap W95, stage A of G36's erosion and hydrology): a
-**region sketch** — the lattice, what each edge is, outlets, uplift, how hard the rock is, a seed,
-the time and the step, and optionally a ground to start from — becomes an **eroded ground**: an
-authored heightfield the tile set builds as it is ([tileset](tileset.md#the-source-engineterrainheightfield1)),
-in whole millimetres, and on the same lattice **the fields the later solvers read** (drainage
-area, receiver, slope, erosion rate, fill). Mountains are the largest subject in the owner's
+**Purpose.** An offline landform solver (roadmap W95, stages A and B of G36's erosion and
+hydrology): a **region sketch** — the lattice, what each edge is, outlets, uplift, how hard the
+rock is, a seed, the time and the step, and optionally a ground to start from — becomes an
+**eroded ground**: an authored heightfield the tile set builds as it is
+([tileset](tileset.md#the-source-engineterrainheightfield1)), in whole millimetres, and on the
+same lattice **the fields the later solvers read** (drainage area, receiver, slope, erosion rate,
+fill, sediment). Rivers cut and lay down ([deposition](#deposition)), so a valley that is dammed
+or whose base level rose has a floor, a plain at a range's foot takes its fans, and a lake or the
+sea fills from its rivers' mouths. Mountains are the largest subject in the owner's
 reference reels, and a range authored as ridge lines with a profile reads as smooth cones; what
 makes a range read as one is that it has been eroded, so the solver is a landscape evolution model
 in the published sense. The sources, every constant's range and what was read of each are on the
@@ -39,6 +42,9 @@ when the build has the tile set, and refuses its own output if the tile set does
 | `rock` | `resistance` 0 to 1 (the world formation's ordering), uniform or by `bands` of elevation (`top_m` ascending); `contrast`, the erodibility at 0 over the erodibility at 1; `variation` and `variation_cells`, a seeded variation of the erodibility | 0; 10; ±25% over 16 cells |
 | `erodibility_per_yr` | K of the stream-power law at m = 1/2, n = 1 | 10⁻⁸ to 10⁻², default 5 × 10⁻⁶ |
 | `channel_area_m2` | The drainage area a channel begins at: a point draining less is hillslope, lowered by diffusion and the critical slope alone | 0 to 10⁹; default 0, the rivers cut at every point |
+| `deposition` | G, the deposition coefficient ([deposition](#deposition)): a river lays down G / N of the sediment that reaches a point draining N cells. 0 is the detachment-limited law: nothing settles anywhere, standing water included | 0 to 10, default 1 |
+| `sediment_erodibility` | The erodibility of sediment over `erodibility_per_yr` | 1 to 100, default 2 |
+| `delta_share` | The share of what reaches a lake's water that settles at the river's mouth, up to the water's level; the rest levels the lake's floor | 0 to 1, default 0.5 |
 | `diffusivity_m2_per_yr` | Hillslope diffusivity | 0 to 1, default 0.005 |
 | `critical_slope`, `critical_slope_resistant` | The gradient no slope stands above, for rock of resistance 0 and 1 | 0.2 to 4; 0.9 and 1.6 |
 | `seed`, `roughness_m` | The seed of the starting roughness, the erodibility's variation and the routing's diagonal weights | 1; 1 m |
@@ -82,15 +88,88 @@ Each step of `step_yr` years, in this order ([the grounding page](../experiments
    plane's own, where the plain steepest-of-eight sends every cell down the same lattice
    direction and cuts parallel rills.
 4. **Drainage area**: in reverse flood order, a point adds its cells to its receiver's.
-5. **Incision** (the stream-power law, implicit along the flow tree, Braun and Willett 2013): in
-   flood order, a point above its receiver and above the sea moves to (z + F z_r) / (1 + F),
-   F = K Δt √N over the distance in cells. A receiver below the sea counts as the sea's level.
+5. **The rivers**: erosion and deposition together, implicit along the flow tree
+   ([deposition](#deposition)): a reach above its receiver and above the sea moves to
+   (z + d + F z_r) / (1 + F), F = K Δt √N over the distance in cells, d what the river lays down
+   there. A receiver below the sea counts as the sea's level. Standing water (a lake's members,
+   the sea) is not cut; it takes the sediment that reaches it.
 6. **Hillslopes**: explicit linear diffusion in as many substeps as stability needs, then the
-   slope limiter in flood order.
+   slope limiter in flood order. What a slope sheds is the next step's rivers' to carry from
+   that point.
 
 After the last step the limiter runs to convergence, the ground is rounded to whole millimetres
 once, and **the fields are routed again from exactly those millimetres**, so what the field file
 says is true of the heightfield beside it and not of the step before.
+
+### Deposition
+
+Stage A's rivers only cut, so every valley was a V to its mouth. Stage B is the erosion and
+deposition form of the same law (Davy and Lague 2009), in the form and with the implicit solution
+of Yuan, Braun, Guerit, Rouby and Cordonnier 2019 ([the grounding](../experiments/landform.md#deposition-the-sources)):
+
+    ∂z/∂t = U − K √A S + (G / A) Q_s
+
+Q_s is the sediment flux reaching the point: everything the points above it lost and did not lay
+down again. G, the sketch's `deposition`, is dimensionless (Davy and Lague's Θ: a settling
+velocity over the runoff). At G = 0 nothing settles and the law is stage A's. At steady state a
+river stands (1 + G) times as steep and no more concave, which the test holds.
+
+- **One solve for both.** The deposit depends on the flux, the flux on the heights above, and
+  the heights on the receiver below, so the step is solved by sweeps (Yuan's equation 20): the
+  flux of the last iterate, each point after its donors; then the heights, each point after its
+  receiver, with that deposit in the numerator. It ends when no height moves by a tenth of a
+  millimetre (`k_river_tolerance_m`), or after 64 sweeps. **Why not the cut first and the
+  deposit after**, which is one pass each and was tried first: a deposit laid on top of a cut
+  that has already been made stands a step's worth of sediment (metres) above the channel's
+  grade, the next flood routes round it, and a steady range measured 2.4 times as steep in its
+  large rivers and 1.9 in its small, where the law says 2 in both. Solved together the bed
+  never leaves its grade and the factor is 1.91 to 2.00.
+- **The discrete form is Yuan's**: a point lays down G / N of the flux from above (N its
+  drainage area in cells, itself included; its own cut is not in the flux), and never more than
+  reached it.
+- **Sediment is a layer.** Each point keeps the thickness of what was laid on it and nothing has
+  removed since. A river cuts sediment first, at `sediment_erodibility` times the erodibility
+  (Yuan's runs use 1, 2 and 4), and where it goes through into rock the height is the one at
+  which the time to strip the layer and the time to cut the rock make the step, each at the rate
+  the final slope gives: one division, and the plain formula again when the two erode alike.
+  Creep takes from the layer first and adds to it; a slope that fails loses its layer first. A
+  point that loses more than it gains in a step gets no layer from what it gained: the two went
+  on together, and the rock was never covered.
+- **A lake** is the points the flood raised by a centimetre or more, grouped by the point their
+  depression spills over. It is not cut. Of what reaches its water, `delta_share` settles at the
+  mouth, on the point and its lower neighbours, the lowest first, up to the sill's level: a
+  platform at the water's level with a front the slope limiter holds to the critical slope, a
+  delta. The rest, and what the mouth had no room for, is laid from the lake's deepest point up
+  to one level, so **a lake's floor is level** however the flood happened to cross it, and
+  stage A's straight lines in a dammed valley's floor are gone. A lake that is full passes the
+  rest to its sill.
+- **The sea** takes everything that reaches it, the same way and up to its level; what a point
+  has no room for goes on along the bed. A point brought to the sea's level is land the next
+  step, so a delta's plain rises above the water by the river's own deposit.
+- **Toward an edge that drains G is tapered** with the uplift, over `border_reach_m`. Without it
+  a small river meets an open edge on its own fan (the border test's first row stood 17.4 m up
+  over a 100 m cell in the first build, where its bound is 2 m), and the ground no longer meets
+  the tile set's flat plain beyond the edge.
+- **The budget.** `Landform::budget` (and the command's summary) says where the material went,
+  in cubic metres: eroded = deposited + left + unrouted, and change = uplifted − left −
+  crept_out − settled − unrouted. `left` went out through the held points by river; `crept_out`
+  across them by creep; `settled` is what the settling after the last step removed and
+  `unrouted` what the last step's slopes shed, both of which have no later step to carry them
+  and leave the model (0.7% of what was eroded in the golden sketch).
+
+**What it makes, and what it does not.** A valley whose mouth is dammed, or whose trunk has
+aggraded, fills to a floor that is level across and widens downstream (the test: 135 m wide
+where the fill begins and 335 m at the mouth, within 6.4 m across). A range's rivers lay a plain
+of coalesced fans at its foot, each river crossing it on its own grade, as Yuan et al. report
+for this model; a single massif beside a plain leaves a fan whose contours bow away from it
+(the test). **A fan is not a cone at the scale of one mouth**: flow has one receiver a point,
+so a river's deposit is laid along one path and the cone is what many steps of avulsion
+average to. **Small rivers lay their load down within a few points** (G / N is large where N
+is small), so the foot of every slope takes a little; that is colluvium, not scree: nothing
+here stands at an angle of repose. And **a valley inside a range that is rising everywhere has
+no floor at steady state**, because every point of it is losing ground; a floor needs a base
+level that rose or an uplift that stopped, which a sketch gives by where it puts its uplift and
+its outlets.
 
 ### The slope limiter
 
@@ -101,8 +180,9 @@ z it is the upwind step of the eikonal equation, (a + b + √(2f² − (a − b)
 critical slope times the spacing, and the four diagonal neighbours then hold the slope along a
 diagonal to the same bound. **Why not a limit along the eight directions alone**: that makes a
 failed slope an eight-sided pyramid with creases along the lattice, which is what the first
-relief showed; the eikonal step makes it a cone. What the limiter removes leaves the model (no
-deposition in stage A).
+relief showed; the eikonal step makes it a cone. What the limiter removes in a step is sediment
+flux from that point in the next ([deposition](#deposition)); only what the settling after the
+last step removes leaves the model.
 
 ### The borders
 
@@ -136,7 +216,11 @@ count (`determinism_tests.cpp` pins the hash of the heightfield and of each fiel
 - The flood's order is a total order on (height, cell index).
 - The job system runs only the loops whose points do not read each other's results: the uplift
   and hardness fields, the receivers, the diffusion (a Jacobi step) and the output fields. The
-  flood, the accumulation, the incision and the limiter walk an order and are serial.
+  flood, the accumulation, the rivers' sweeps, the lakes and the limiter walk an order and are
+  serial.
+- The rivers' sweeps end on a comparison of heights, which is the same comparison everywhere
+  because the heights are; a lake's members and a deposit's neighbours are sorted by height and
+  then by cell, a total order; and the budget's sums are taken in one order whatever the workers.
 - Nothing depends on the order tiles activate, because nothing here is per tile.
 
 ## The outputs
@@ -153,7 +237,7 @@ count (`determinism_tests.cpp` pins the hash of the heightfield and of each fiel
 
 ### The field file
 
-`engine.landform.fields/1` (`engine.landform.Fields`). What a later solver (channels, scree, soil,
+`engine.landform.fields/2` (`engine.landform.Fields`; version 2 added `sediment`). What a later solver (channels, scree, soil,
 ecology, snow) reads:
 
 - **The lattice is the heightfield's**, point for point: `width`, `height`, `spacing_mm`,
@@ -166,8 +250,26 @@ ecology, snow) reads:
   | `drainage_area` | u32 | cells draining through the point, itself included | times `spacing²` is the area. Exact integers |
   | `receiver` | u8 | the neighbour the point drains to, 0 to 7: east, south-east, south, south-west, west, north-west, north, north-east (`k_receiver_dx`, `k_receiver_dz`; +z is south) | 255 at a held point, which drains out of the region |
   | `slope` | i32 | the fall to the receiver over the distance to it, parts per million | zero or less where the way out crosses a depression: the receiver is the filled surface's |
-  | `erosion_rate` | i32 | micrometres a year removed by the last step | zero for a run of no steps and at held points |
+  | `erosion_rate` | i32 | micrometres a year removed by the last step, net of what it laid down | negative where the ground gained; zero for a run of no steps and at held points |
   | `fill` | u32 | millimetres under the depression's spill | zero on draining ground; a tarn's depth |
+  | `sediment` | u32 | millimetres of sediment under the point | what rivers, lakes, the sea and creep laid down and nothing has removed since; zero where rock is at the surface and for a run of no steps. The rock's surface is the height less this |
+
+- **What each later solver should take from `sediment`:**
+  - **Scree and rock** (the cliffs, the deposits): rock is at the surface where it is zero, so
+    an outcrop or a cliff belongs only there; a slope near the critical angle with a metre or
+    more is a debris slope, and the foot of a face where it thickens is where a cone or an
+    apron stands. It is not an angle of repose: the solver lays no talus.
+  - **Soil**: the parent material. Zero is soil weathered from the rock in place, thin on a
+    fast-eroding point (`erosion_rate`); alluvium and lake fill are deep, fine and level; a
+    thin layer at a slope's foot is colluvium.
+  - **Flood beds and channels**: a channel on sediment is alluvial (a gravel bed, bars, a bed
+    that can move across its floor: the run of sediment across the valley is the width it has
+    to move in); a channel on none is cut in rock (steps, pools, no bars).
+  - **Ecology and the sward**: a level floor on deep sediment beside a channel is the wet
+    meadow and the riparian strip; a fan's surface drains fast; lake fill at the water's level
+    is fen. `fill` above zero is still open water.
+  - **Water**: where the sediment is deep the water table is the river's; a lake whose `fill`
+    is small over deep `sediment` is nearly silted up.
 
 - **A window**: `read_field_window(json, header, name, x0, z0, w, h, out, bytes, error)` reads
   points [x0, x0 + w) by [z0, z0 + h) at byte offset `(j × width + i) × size`. A tile asks for
@@ -221,11 +323,15 @@ authored heightfield. Exit 0, 1 (a file or a range), 2 (usage).
 ## Not stage A
 
 Each follows, and none is here: the glacial mode (troughs, cirques, overdeepened basins);
-deposition (terraces, fans, deltas, scree zones, and a flat valley floor); soil depth; snow;
-reading the formation field's dipping beds for resistance; a general m and n; neighbouring
-regions solved so a shared edge agrees; the flow tree's levels in parallel; baking far-terrain
-maps from near output; anything in the editor. The limits of the model as it stands are on the
-grounding page.
+**resistance from the formation field's dipping beds**, rising with the rock (stage B's second
+part, not reached: the elevation bands stand until it replaces them); **uplift that varies along
+a ridge line, and defaults grounded against published slope distributions** (the third, not
+reached); **a flood that keeps ground with no depression off the heap** (the fourth, not
+reached: the flood is still nearly the whole step); flow that divides, so one mouth's fan is a
+cone and a channel on its plain is more than a point wide; scree at an angle of repose and
+terraces; soil depth; snow; a general m and n; neighbouring regions solved so a shared edge
+agrees; the flow tree's levels in parallel; baking far-terrain maps from near output; anything
+in the editor. The limits of the model as it stands are on the grounding page.
 
 ## Invariants
 
@@ -238,6 +344,10 @@ grounding page.
 - The output is a function of the sketch (and the starting ground): not of the thread count, the
   compiler, the CPU baseline or the C library.
 - A run of no steps writes the starting ground's heights untouched.
+- What is eroded is deposited, leaves through a held point, or is the last step's unrouted
+  shed: `budget.eroded_m3 = deposited_m3 + left_m3 + unrouted_m3`, to nine digits.
+- `sediment` is never more than the ground gained there: the rock's surface, the height less
+  the sediment, only falls relative to the rock.
 
 ## Public API
 
@@ -250,7 +360,7 @@ grounding page.
 
 ## Testing
 
-`tools/dev.ps1 test -Filter "^landform$"`. All CPU; the whole suite is about 4.5 s in `msvc-debug`.
+`tools/dev.ps1 test -Filter "^landform$"`. All CPU; the whole suite is about 11 s in `msvc-debug` (stage B's five cases are 3.7 s of it, and the sweeps added 3 s to stage A's).
 
 | Test | Holds | Fails when |
 |---|---|---|
@@ -260,10 +370,15 @@ grounding page.
 | every point drains | receivers' paths end at held points; held areas sum to the lattice | the flood or the receivers leave a point stranded |
 | a uniform uplift's steady state | the mean erosion rate within 1% of the uplift; slope against area regresses to −0.5 within 0.02 (measured 0.4999); Hack's exponent in 0.5 to 0.7 (measured 0.616) | the incision is not the stream-power law, or the routing does not make a network |
 | the ground meets an open edge without a step | the first row within 2 m, no bend above 0.2 a row; and that without the taper both fail | the border taper is lost |
-| the sea bed takes part | no neighbours above the critical slope on land, across the coast or on the bed; a 370 m underwater wall gone | the limiter or the routing stops at the waterline |
+| the sea bed takes part | no neighbours above the critical slope on land, across the coast or on the bed (with nothing laid down, and again on a coast the rivers build out, delta fronts included); a 370 m underwater wall gone | the limiter or the routing stops at the waterline |
 | a starting heightfield is refined | the 800 m low-pass moves under a twentieth of the relief (measured 9.5 m of 407 m) while single points move 30 m; no steps leaves the heights untouched | a refine replaces its ground |
 | the files round-trip | the heightfield read back whole millimetres; a field's window equals memory; a window past the edge is refused | the formats drift |
 | a sketch outside a range is refused | six refusals, each naming its field | validation is lost |
+| what is eroded is deposited or leaves | the two identities of the budget to nine digits on the golden sketch; the settled and unrouted share under 2%; the same with G = 0, where everything cut leaves | a pass lays down what did not arrive, or loses what did |
+| with deposition a steady river stands 1 + G times as steep | the steepness factor S √A K / U over the channels in 1.85 to 2.05 at G = 1 (measured 1.955: the discrete form's (N − 1) / N), the mean rate within 2% of the uplift, the concavity within 0.03 of 0.5 | the deposit is not Yuan's, or is laid after the cut and not with it (which measured 2.14, rising with area) |
+| a dammed valley fills to a floor | a V-shaped valley whose mouth is held 90 m above its bed: the run of fill of 5 m or more about the axis is 5 points or more wide in the lower third, more than 1.5 times the upper third's (measured 6.7 against 2.7), level across within 8 m where the V fell 87 m (measured 6.4 m), over 50 m of fill | nothing is laid down, or a lake is filled along the flood's order |
+| a massif's rivers leave a fan on the plain | 400 m out from a massif's foot the ground stands over 3 m up opposite it (measured 4.3 m), a metre or more lower 700 m to either side (2.8 and 2.6 m), and under a metre 1,700 m away (0.9 m) | the load is not laid where a river leaves the range |
+| a lake's floor fills level, and its mouth builds a delta | a basin fed for ten thousand years: its floor away from the mouths level within 50 mm (measured 0 and 3 mm) under water still metres deep; with `delta_share` 0.5 the shelf under the mouths holds a quarter more sediment (measured twice) and the floor stands lower | the fill follows the flood's order, or the mouths get nothing |
 
 ## Performance notes
 
@@ -292,9 +407,13 @@ list: routing ground with no depressions from its own slopes in memory order and
 the pits, and the flow tree's levels in parallel (Barnes 2019). A general exponent m would add
 69 ns a point a step, a fifth of today's step; m = 1/2 costs 1.7 ns.
 
-The solve holds about 54 bytes a point while it runs (the ground, the lift and hardness fields,
-the filled surface, the order, the receivers, the areas and a scratch surface): 226 MB at 2,048
-points a side, 900 MB at 4,093. Nothing is resident afterwards, nothing scales with the world's
+The solve holds about 90 bytes a point while it runs (stage A's 54: the ground, the lift and
+hardness fields, the filled surface, the order, the receivers, the areas and a scratch surface;
+and stage B's 36: the sediment, the rivers' iterate, the shed a step carries to the next, the
+tapered G and each point's sill): 378 MB at 2,048 points a side, 1.5 GB at 4,093. **The bench's
+table above is stage A's**: it was not run again after deposition (the machine had other rows'
+builds on it), and a step now adds the rivers' sweeps, two walks of the order each, where it had
+one; in `msvc-debug` the golden sketch went from 0.31 s to 0.54 s. Nothing is resident afterwards, nothing scales with the world's
 size at run time, and there are no triangles and no per-tile cost: the tile set's are the
 heightfield's.
 

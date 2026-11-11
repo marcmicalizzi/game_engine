@@ -1,0 +1,10 @@
+{
+  "format": "engine.structure-raise.v1",
+  "name": "W95b",
+  "reason": "apps.md's engine-content landform section says what stage B added to the command: the sediment field, the sediment's sand in the drainage picture, and the summary's sediment counts and budget",
+  "date": "2026-11-10",
+  "by": "Marc Micalizzi",
+  "deltas": {
+    "page:docs/subsystems/apps.md": 176
+  }
+}

@@ -171,6 +171,23 @@ int landform_command(int argc, char** argv) {
   summary.set("flooded_points", JsonValue(flooded));
   summary.set("sea_points", JsonValue(under_sea));
   summary.set("largest_area_cells", JsonValue(largest));
+  // Where the material went (landform.md, "Deposition"): eroded = deposited + left.
+  u32 covered = 0, thickest = 0;
+  for (u32 p = 0; p < n; ++p) {
+    if (land.sediment[p] >= 1000) ++covered;
+    if (land.sediment[p] > thickest) thickest = land.sediment[p];
+  }
+  summary.set("sediment_points", JsonValue(covered));
+  summary.set("thickest_sediment_m", JsonValue(static_cast<f64>(thickest) / 1000.0));
+  JsonValue budget = JsonValue::object();
+  budget.set("uplifted_m3", JsonValue(land.budget.uplifted_m3));
+  budget.set("eroded_m3", JsonValue(land.budget.eroded_m3));
+  budget.set("deposited_m3", JsonValue(land.budget.deposited_m3));
+  budget.set("left_m3", JsonValue(land.budget.left_m3));
+  budget.set("crept_out_m3", JsonValue(land.budget.crept_out_m3));
+  budget.set("settled_m3", JsonValue(land.budget.settled_m3));
+  budget.set("change_m3", JsonValue(land.budget.change_m3));
+  summary.set("budget", std::move(budget));
   summary.set("solve_seconds", JsonValue(seconds));
   summary.set("workers", JsonValue(pool.worker_count(jobs::Pool::Performance) + 1));
   std::printf("%s\n", write_json(summary).c_str());

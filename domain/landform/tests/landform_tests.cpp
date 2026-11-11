@@ -169,6 +169,7 @@ TEST_CASE("landform: a uniform uplift's steady state holds the concavity and Hac
   sketch.critical_slope = 4.0;
   sketch.critical_slope_resistant = 4.0;
   sketch.rock.variation = 0.0;
+  sketch.deposition = 0.0;  // stream power alone: nothing a river carries is laid down again
   sketch.duration_yr = 2000000;
   sketch.step_yr = 10000;
   const landform::Landform land = solved(sketch);
@@ -310,6 +311,9 @@ TEST_CASE("landform: the sea bed takes part: no wall at the coast") {
     landform::Sketch sketch = golden_sketch();
     sketch.rock.bands.clear();
     sketch.rock.resistance = 0.0;  // one critical slope everywhere: 0.9
+    // Nothing laid down, so the shelf is still a sea after four hundred thousand years: with
+    // the default deposition the rivers fill it (the subcase below is the coast they build).
+    sketch.deposition = 0.0;
     const landform::Landform land = solved(sketch);
     const f64 excess = worst_excess_mm(land, 0.9);
     u32 under = 0;
@@ -321,6 +325,32 @@ TEST_CASE("landform: the sea bed takes part: no wall at the coast") {
         excess, under);
     CHECK(under > land.height * 3);  // there is a sea bed to speak of
     CHECK(excess <= 2.0);            // whole-millimetre rounding, twice
+  }
+  SUBCASE("a coast the rivers build out holds the critical slope too, delta fronts included") {
+    // The same coast with deposition, and a sea wide and deep enough to outlast the run: the
+    // rivers' sediment settles to the sea's level at their mouths and the fronts stand no
+    // steeper than any other ground.
+    landform::Sketch sketch = golden_sketch();
+    sketch.rock.bands.clear();
+    sketch.rock.resistance = 0.0;
+    sketch.sea->shelf_m = 4000.0;
+    sketch.sea->depth_m = 600.0;
+    const landform::Landform land = solved(sketch);
+    const f64 excess = worst_excess_mm(land, 0.9);
+    u32 under = 0, delta = 0;
+    for (u32 p = 0; p < land.width * land.height; ++p) {
+      if (land.height_mm[p] > land.sea_level_mm) continue;
+      ++under;
+      if (land.sediment[p] >= 1000) ++delta;
+    }
+    std::printf(
+        "landform delta coast: worst excess %.1f mm, %u points under the sea, %u of them on a "
+        "metre or more of sediment\n",
+        excess, under, delta);
+    CHECK(under > land.height * 3);
+    CHECK(delta > land.height);  // the sea took sediment along the coast
+    CHECK(excess <= 2.0);
+    check_drains(land);
   }
   SUBCASE("a starting ground with a 370 m underwater wall loses it") {
     // Land at 50 m meeting a bed at -320 m in one 100 m cell: the proof of concept's fixed sea
@@ -470,7 +500,7 @@ TEST_CASE("landform: the files round-trip and a field answers a window") {
   landform::Fields header;
   REQUIRE_MESSAGE(landform::read_fields(files.fields, header, error), error);
   CHECK(header.width == land.width);
-  CHECK(header.fields.size() == 5u);
+  CHECK(header.fields.size() == 6u);
   CHECK(header.solver_version == landform::k_solver_version);
   REQUIRE(header.sea_level_mm.has_value());
   CHECK(*header.sea_level_mm == 0);
@@ -552,4 +582,306 @@ TEST_CASE("landform: a sketch outside a range is refused by a sentence naming th
   small.data.resize(16);
   CHECK_FALSE(landform::solve(bad, &small, {}, land, error));
   CHECK(error.find("cover") != std::string::npos);
+}
+
+// ---- deposition (landform.md, "Deposition") -----------------------------------------------------
+
+namespace {
+
+// |a - b| over the larger of the two.
+f64 relative(f64 a, f64 b) {
+  const f64 scale = std::fabs(a) > std::fabs(b) ? std::fabs(a) : std::fabs(b);
+  return scale > 0.0 ? std::fabs(a - b) / scale : 0.0;
+}
+
+// A grid of `side_x` by `side_z` points at `spacing_mm`, heights from `height(x_m, z_m)`.
+template <class F>
+landform::StartField start_from(u32 side_x, u32 side_z, i64 spacing_mm, F&& height) {
+  landform::StartField start;
+  start.width = side_x;
+  start.height = side_z;
+  start.spacing_mm = spacing_mm;
+  start.data.resize(side_x * side_z);
+  const f64 spacing = static_cast<f64>(spacing_mm) / 1000.0;
+  for (u32 z = 0; z < side_z; ++z)
+    for (u32 x = 0; x < side_x; ++x)
+      start.data[z * side_x + x] =
+          static_cast<f32>(height(spacing * static_cast<f64>(x), spacing * static_cast<f64>(z)));
+  return start;
+}
+
+}  // namespace
+
+TEST_CASE("landform: what is eroded is deposited or leaves through the held points") {
+  // The golden sketch (a sea, a closed edge, two open ones, an outlet, lakes behind its ridge):
+  // every part of the deposition runs. Two identities, each of sums the solver keeps separately:
+  // what the rivers cut and the slopes shed was laid down again or carried out through a held
+  // point; and the ground's volume changed by what was raised less what went.
+  const landform::Landform land = solved(golden_sketch());
+  const landform::Budget& b = land.budget;
+  std::printf(
+      "landform budget: uplifted %.6g eroded %.6g deposited %.6g left %.6g crept out %.6g "
+      "settled %.6g unrouted %.6g change %.6g m3\n",
+      b.uplifted_m3, b.eroded_m3, b.deposited_m3, b.left_m3, b.crept_out_m3, b.settled_m3,
+      b.unrouted_m3, b.change_m3);
+  CHECK(b.eroded_m3 > 0.0);
+  CHECK(b.deposited_m3 > 0.01 * b.eroded_m3);
+  CHECK(b.left_m3 > 0.01 * b.eroded_m3);
+  // The bound: nine significant digits. The sums are of 7,680 points over 80 steps in f64, and
+  // nothing but the rounding of those additions separates the two sides.
+  CHECK(relative(b.eroded_m3, b.deposited_m3 + b.left_m3 + b.unrouted_m3) < 1.0e-9);
+  CHECK(relative(b.change_m3, b.uplifted_m3 - b.left_m3 - b.crept_out_m3 - b.settled_m3 -
+                                  b.unrouted_m3) < 1.0e-9);
+  // The settling after the last step, and what the last step's slopes shed, are the two places
+  // material leaves the model: under a fiftieth of what was eroded, together.
+  CHECK(b.settled_m3 >= 0.0);
+  CHECK(b.unrouted_m3 >= 0.0);
+  CHECK(b.settled_m3 + b.unrouted_m3 < 0.02 * b.eroded_m3);
+  // The field: sediment only under a point, never more of it than the ground above the sea bed's
+  // lowest point could hold, and some of it somewhere.
+  u32 covered = 0;
+  for (u32 p = 0; p < land.width * land.height; ++p)
+    if (land.sediment[p] >= 1000) ++covered;
+  CHECK(covered > 50u);
+
+  // With the coefficient at zero a river lays nothing down: the detachment-limited law.
+  landform::Sketch bare = golden_sketch();
+  bare.deposition = 0.0;
+  bare.edges.west = landform::EdgeKind::Open;  // no sea, so nothing settles in one either
+  bare.sea.reset();
+  bare.outlets.clear();
+  const landform::Landform cut = solved(bare);
+  CHECK(relative(cut.budget.eroded_m3,
+                 cut.budget.deposited_m3 + cut.budget.left_m3 + cut.budget.unrouted_m3) < 1.0e-9);
+}
+
+TEST_CASE("landform: with deposition a steady river stands 1 + G times as steep") {
+  // Yuan et al. 2019, their equation 24: at steady state S = (1 + G) (U / K) A^-1/2, the
+  // concavity unchanged. Stream power and deposition alone, sediment as erodible as the rock.
+  landform::Sketch sketch = plain_sketch(64, 200000);
+  sketch.uplift.regional_mm_per_yr = 1.0;
+  sketch.border_reach_m = 0.0;
+  sketch.erodibility_per_yr = 0.00004;
+  sketch.diffusivity_m2_per_yr = 0.0;
+  sketch.critical_slope = 4.0;
+  sketch.critical_slope_resistant = 4.0;
+  sketch.rock.variation = 0.0;
+  sketch.sediment_erodibility = 1.0;
+  sketch.deposition = 1.0;
+  sketch.duration_yr = 3000000;
+  sketch.step_yr = 10000;
+  const landform::Landform land = solved(sketch);
+  const u32 n = land.width * land.height;
+  // The steepness S sqrt(A) K / U over the channels (eight cells and more), where the discrete
+  // form's (N - 1) / N is within an eighth of one.
+  f64 sum = 0.0, rate = 0.0;
+  u32 count = 0, free_points = 0;
+  Vector<f64> log_area, log_slope;
+  for (u32 p = 0; p < n; ++p) {
+    if (land.receiver[p] == landform::k_no_receiver) continue;
+    ++free_points;
+    rate += static_cast<f64>(land.erosion_rate[p]);
+    if (land.drainage_area[p] < 8 || land.slope[p] <= 0) continue;
+    const f64 area = static_cast<f64>(land.drainage_area[p]);
+    const f64 slope = static_cast<f64>(land.slope[p]) * 1.0e-6;
+    // U / K = 25 m; A in cells of 200 m, so S sqrt(N) * 200 / 25 is the factor.
+    sum += slope * std::sqrt(area) * 200.0 / 25.0;
+    ++count;
+    log_area.push_back(std::log(area));
+    log_slope.push_back(std::log(slope));
+  }
+  const f64 steepness = sum / static_cast<f64>(count);
+  const f64 concavity = -regress(log_area, log_slope);
+  const f64 mean_rate = rate / static_cast<f64>(free_points);
+  std::printf(
+      "landform deposition steady state: steepness factor %.4f over %u channel points, "
+      "concavity %.4f, mean rate %.1f um/yr\n",
+      steepness, count, concavity, mean_rate);
+  CHECK(mean_rate == doctest::Approx(1000.0).epsilon(0.02));
+  // 1 + G (N - 1) / N averaged over the channels is 1.9 to 2; held within a twentieth.
+  CHECK(steepness > 1.85);
+  CHECK(steepness < 2.05);
+  CHECK(concavity == doctest::Approx(0.5).epsilon(0.06));
+}
+
+TEST_CASE("landform: a dammed valley fills to a floor level across that widens downstream") {
+  // A straight V-shaped valley falling east at 0.04 between sides at 0.5, its mouth held 90 m
+  // above its bed (a base level that rose: a moraine, a landslide, a trunk valley's own fill).
+  // The ground rises at 0.3 mm/yr and sheds into it for a hundred thousand years.
+  const u32 wide = 96, deep = 64;
+  const landform::StartField start = start_from(wide, deep, 50000, [](f64 x, f64 z) {
+    return 300.0 - 0.04 * x + 0.5 * std::fabs(z - 1600.0);
+  });
+  landform::Sketch sketch = plain_sketch(wide, 50000);
+  sketch.height = deep;
+  sketch.edges.west = landform::EdgeKind::Closed;
+  sketch.edges.north = landform::EdgeKind::Closed;
+  sketch.edges.south = landform::EdgeKind::Closed;
+  sketch.base_level_m = 200.0;
+  sketch.border_reach_m = 0.0;
+  sketch.erodibility_per_yr = 0.00002;
+  sketch.start = "valley.json";
+  sketch.duration_yr = 100000;
+  const landform::Landform land = solved(sketch, &start);
+  check_drains(land);
+  // The floor of a column: the run of points about the axis (row 32) on five metres or more of
+  // fill.
+  u32 widths[96] = {};
+  i32 worst_across = 0;
+  for (u32 x = 0; x + 1 < wide; ++x) {
+    if (land.sediment[32 * wide + x] < 5000) continue;
+    u32 first = 32, last = 32;
+    while (first > 0 && land.sediment[(first - 1) * wide + x] >= 5000)
+      --first;
+    while (last + 1 < deep && land.sediment[(last + 1) * wide + x] >= 5000)
+      ++last;
+    i32 lowest = land.height_mm[32 * wide + x], highest = lowest;
+    for (u32 z = first; z <= last; ++z) {
+      const i32 mm = land.height_mm[z * wide + x];
+      if (mm < lowest) lowest = mm;
+      if (mm > highest) highest = mm;
+    }
+    widths[x] = last - first + 1;
+    // The lower reach, where the fill is the lake's and the river's plain over it.
+    if (x >= 80 && highest - lowest > worst_across) worst_across = highest - lowest;
+  }
+  // Thirds of the filled reach, upstream to downstream (the fill begins near x = 50 points,
+  // where the bed stood at the mouth's level).
+  f64 upper = 0.0, lower = 0.0;
+  for (u32 x = 50; x < 65; ++x)
+    upper += static_cast<f64>(widths[x]) / 15.0;
+  for (u32 x = 80; x < 95; ++x)
+    lower += static_cast<f64>(widths[x]) / 15.0;
+  u32 thickest = 0;
+  for (u32 p = 0; p < wide * deep; ++p)
+    if (land.sediment[p] > thickest) thickest = land.sediment[p];
+  std::printf(
+      "landform valley floor: %.1f points wide upstream, %.1f downstream, level across "
+      "within %d mm, thickest fill %u mm\n",
+      upper, lower, worst_across, thickest);
+  CHECK(lower >= 5.0);         // 250 m of floor and more at the lower end
+  CHECK(lower > 1.5 * upper);  // and it widens downstream
+  // Level across within eight metres over a floor 350 m wide, a cross fall under 1 in 40 where
+  // the start's V fell 87 m over the same width: the low point is the river's own bed, which
+  // it keeps a few metres into its fill.
+  CHECK(worst_across <= 8000);
+  CHECK(thickest > 50000);  // the fill is tens of metres deep at the mouth
+}
+
+TEST_CASE("landform: a massif's rivers leave a fan on the plain at its foot") {
+  // A massif two kilometres across rises at 2 mm/yr beside a plain that does not rise and
+  // drains to open edges north and south. For three hundred thousand years its rivers carry
+  // what they cut out onto the plain.
+  const u32 side = 96;
+  landform::Sketch sketch = plain_sketch(side, 50000);
+  sketch.edges.west = landform::EdgeKind::Closed;
+  sketch.edges.east = landform::EdgeKind::Closed;
+  landform::Ridge ridge;
+  ridge.points.push_back(landform::Point{2400.0, 900.0});
+  ridge.points.push_back(landform::Point{2400.0, 1500.0});
+  ridge.rate_mm_per_yr = 2.0;
+  ridge.reach_m = 900.0;
+  sketch.uplift.ridges.push_back(ridge);
+  sketch.erodibility_per_yr = 0.00002;
+  sketch.roughness_m = 0.2;
+  sketch.duration_yr = 300000;
+  sketch.step_yr = 2000;
+  const landform::Landform land = solved(sketch);
+  check_drains(land);
+  // Along a line across the plain 400 m south of the massif's foot (row 56): the ground stands
+  // highest opposite the massif and falls away to both sides, so a contour there bows away
+  // from the mouths, and far to the side the plain is as it was.
+  const u32 row = 56, mid = 48;
+  const auto height_at = [&](u32 x) { return land.height_mm[row * side + x]; };
+  i32 crown = height_at(mid);
+  for (u32 x = mid - 3; x <= mid + 3; ++x)
+    if (height_at(x) > crown) crown = height_at(x);
+  const i32 near_west = height_at(mid - 14), near_east = height_at(mid + 14);
+  const i32 far_west = height_at(mid - 34), far_east = height_at(mid + 34);
+  u32 apex = 0;
+  for (u32 x = mid - 3; x <= mid + 3; ++x)
+    if (land.sediment[50 * side + x] > apex) apex = land.sediment[50 * side + x];
+  std::printf(
+      "landform fan: 400 m out the ground stands %d mm opposite the massif, %d and %d mm "
+      "700 m to either side, %d and %d mm 1,700 m; %u mm of sediment at the foot\n",
+      crown, near_west, near_east, far_west, far_east, apex);
+  CHECK(crown > 3000);
+  CHECK(crown > near_west + 1000);
+  CHECK(crown > near_east + 1000);
+  CHECK(near_west > far_west);
+  CHECK(near_east > far_east);
+  CHECK(far_west < 1000);
+  CHECK(far_east < 1000);
+  CHECK(apex > 3000);
+}
+TEST_CASE("landform: a lake's floor fills level, and its river's mouth builds a delta") {
+  // A plane falling south at 0.1 into a basin 40 m deep and a kilometre across, whose south rim
+  // is its sill; the south edge is open. Nothing rises: the slope's rivers carry what they cut
+  // into the basin for ten thousand years, which does not fill it.
+  const u32 side = 80;
+  const auto ground = [](f64 x, f64 z) {
+    const f64 d2 = ((x - 2000.0) * (x - 2000.0) + (z - 2600.0) * (z - 2600.0)) / (500.0 * 500.0);
+    const f64 bowl = d2 < 1.0 ? 40.0 * (1.0 - d2) : 0.0;
+    return 100.0 + (z < 2000.0 ? 0.1 * (2000.0 - z) : 0.0) - bowl - 0.005 * z;
+  };
+  const landform::StartField start = start_from(side, side, 50000, ground);
+  landform::Sketch sketch = plain_sketch(side, 50000);
+  sketch.edges.west = landform::EdgeKind::Closed;
+  sketch.edges.east = landform::EdgeKind::Closed;
+  sketch.edges.north = landform::EdgeKind::Closed;
+  sketch.base_level_m.reset();
+  sketch.border_reach_m = 0.0;
+  sketch.erodibility_per_yr = 0.00002;
+  sketch.start = "basin.json";
+  sketch.duration_yr = 10000;
+  sketch.step_yr = 1000;
+  // What a run leaves: the floor (the basin's points within 250 m of its centre, on the side
+  // away from the mouths), how level it
+  // is and where it stands, the water still over it, and the sediment on the basin's north
+  // shelf, where the slope's rivers enter (250 to 500 m north of the centre).
+  struct Lake {
+    i32 lowest = 0, highest = 0;
+    u32 floor_points = 0, water_mm = 0;
+    u64 shelf_mm = 0;
+  };
+  const auto measure = [&](f64 share) {
+    sketch.delta_share = share;
+    const landform::Landform land = solved(sketch, &start);
+    check_drains(land);
+    Lake lake;
+    for (u32 z = 0; z < side; ++z)
+      for (u32 x = 0; x < side; ++x) {
+        const f64 dx = 50.0 * static_cast<f64>(x) - 2000.0;
+        const f64 dz = 50.0 * static_cast<f64>(z) - 2600.0;
+        const f64 d2 = dx * dx + dz * dz;
+        const u32 p = z * side + x;
+        if (d2 <= 250.0 * 250.0 && dz >= 0.0) {
+          const i32 mm = land.height_mm[p];
+          if (lake.floor_points == 0 || mm < lake.lowest) lake.lowest = mm;
+          if (lake.floor_points == 0 || mm > lake.highest) lake.highest = mm;
+          ++lake.floor_points;
+          if (land.fill[p] > lake.water_mm) lake.water_mm = land.fill[p];
+        } else if (d2 <= 500.0 * 500.0 && dz < -250.0) {
+          lake.shelf_mm += land.sediment[p];
+        }
+      }
+    std::printf(
+        "landform lake (delta share %.1f): %u floor points from %d to %d mm under %u mm of "
+        "water, %llu mm of sediment summed over the north shelf\n",
+        share, lake.floor_points, lake.lowest, lake.highest, lake.water_mm,
+        static_cast<unsigned long long>(lake.shelf_mm));
+    return lake;
+  };
+  const Lake plain = measure(0.0);
+  const Lake delta = measure(0.5);
+  // The start's floor falls 10 m from its rim to its centre over these 250 m; what settled
+  // levelled it to the millimetres the heights round to and the creep of ten thousand years.
+  CHECK(plain.floor_points > 30u);
+  CHECK(plain.water_mm > 1000u);  // still a lake
+  CHECK(plain.highest - plain.lowest <= 50);
+  CHECK(delta.highest - delta.lowest <= 50);
+  // With half of what arrives settling at the mouths the shelf holds more and the floor stands
+  // lower.
+  CHECK(delta.shelf_mm > plain.shelf_mm + plain.shelf_mm / 4);
+  CHECK(delta.highest < plain.lowest);
 }

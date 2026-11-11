@@ -1,4 +1,4 @@
-# Landform: the grounding of the solver (W95, stage A)
+# Landform: the grounding of the solver (W95, stages A and B)
 
 2026-11-10. This page backs `domain/landform` ([landform](../subsystems/landform.md)): what the
 solver models, where each process and constant comes from, what was read and what was not, the
@@ -33,6 +33,33 @@ means nothing was taken from it but its name. The proof of concept's research no
 | The slope limit as a gradient | The largest surface under the ground whose gradient is at most the critical slope: the eikonal equation's upwind step, (a + b + √(2f² − (a − b)²)) / 2, swept to convergence | The standard first-order (Godunov) scheme and the fast sweeping method (Zhao 2005, *Math. Comp.* 74:603–627; **not read**: the scheme is written here from its textbook statement). No number comes from it |
 | Base level | An outlet is a point held at its level (a Dirichlet boundary); a river cuts no lower than the sea | The convention of every source above (Cordonnier et al. 2019 route to "boundary nodes"); no number comes from it |
 
+## Deposition: the sources
+
+2026-11-10, stage B. The same status words as above. Stage A's rivers only cut; the reels' valleys
+(r03, r04) stand on flat floors under walls, which is sediment, so the law had to be the one that
+lays down as well.
+
+| Process | Form used | Source |
+|---|---|---|
+| Erosion and deposition in one law | The bed loses e = K q^m S^n and gains d = q_s / ξ, the sediment flux over a transport length ξ = q / (d* v_s) that grows with the water discharge; along a stream dq_s/dx = e − q_s/ξ. Θ = d* v_s / r (settling velocity over runoff) says which limit a river is in: far below 1 detachment-limited, far above transport-limited, and "generally larger than 1" for natural rivers | Davy and Lague 2009, *J. Geophys. Res.* 114, F03007, doi:10.1029/2008JF001146. **Read** (equations 3 to 9 and 15 to 17). The paper's notation list defines d* the other way up from its equation 6; the equation is what is used |
+| The same on drainage area, and its O(n) implicit solution | ∂h/∂t = U − K_f A^m S^n + (G / A) ∫_A (U − ∂h/∂t) dA, G = d* v_s / p (Davy and Lague's Θ). Discretely the deposit at a node is G / N_i times the sum over the nodes **upstream** of it of what each lost (the node itself is not in the sum). Solved by Gauss-Seidel sweeps in the order of the flow tree: h_i = [b_i − (G/N_i) Σ_ups h_j + F_i h_rec] / (1 + F_i), until the largest change is under 10⁻³ of U Δt; convergence is proven for G ≤ 1 and observed beyond; one sweep at G = 0, six at G = 1, eight or nine at G = 2, independent of the resolution | Yuan, Braun, Guerit, Rouby and Cordonnier 2019, *J. Geophys. Res. Earth Surface* 124(6):1346–1365, doi:10.1029/2018JF004867. **Read** (equations 9 to 24, figure 2's counts, the foreland runs). That the sum leaves out the node itself is read from its diagonal, 1 + F_i, and its convergence bound G < N_i / (N_i − 1) |
+| The steady state with deposition | S = [(1 + G) U / K_f]^(1/n) A^(−m/n): the steepness (and the response time) scale by 1 + G, the concavity does not change | Yuan et al. 2019, equation 24. **Read**. The test holds it |
+| What G is in nature | G = S_F^n / (S_R^n − S_F^n) from the slope of a fan and of the range river that feeds it at the apex. Experiments: 0.4 to 1.2, median 0.7. Natural systems (68): about 0 to 3.1, a third below 0.4 and two thirds above | Guerit, Yuan, Carretier, Bonnet, Rohais, Braun and Rouby 2019, *Geology* 47(9):853–856, doi:10.1130/G46356.1. **Read** (the accepted manuscript; figures and supplement not seen) |
+| Sediment more erodible than rock | A second erodibility for the sediment: 1, 2 and 4 times the rock's in the foreland runs; at 4 almost no sediment is kept | Yuan et al. 2019. **Read**. They switch on height above a base surface and say they track no thickness in the uplifting area; here it is a thickness at every point |
+| A fan's slope | For this law, what follows from G above: at the apex S_F = S_R G / (1 + G) at n = 1, half the feeding river's slope at G = 1. In the field: fans stand at 1.5° and more, depositional slopes of 0.5° to 1.5° being rare (Blair and McPherson 1994, **secondary**, from a lecture page; disputed for humid regions); a channel's slope falls down-fan from 0.10–0.04 to about 0.01 (Stock, Schmidt and Miller 2008, *GSA Bull.* 120:619, **abstract**) | Guerit et al. 2019 (**read**) for the relation; the field ranges are leads, not pins |
+| A valley floor's width | W = k A^b with b about 0.3 to 0.4 in most studies: 0.30 ± 0.06 (Appalachian rivers) and 0.32 ± 0.15 (Clubb, Weir and Mudd 2022, *Earth Surf. Dynam.* 10:437, **read**), 0.3–0.4 (Brocard and van der Beek 2006), 0.34 (Schanz and Montgomery 2016), 0.76 (Tomkin et al. 2003), all **secondary** through Clubb 2022. In the Himalaya width falls as exhumation rises and widening is "sediment deposition, not lateral bedrock erosion" (Clubb et al. 2023, *Nature Geosci.* 16:739, **read**) | A check on what a floor should do, not an input: the model has no lateral erosion (Yuan et al. say so of theirs), so a floor here is as wide as its fill reaches up the valley's sides |
+| What settles where in a lake | A river's bedload and sand stop at its mouth and its wash load goes on. The bedload share runs from about 1% of the load in large gravel-bed catchments to 30–50% in sand-bed rivers (Turowski, Rickenmann and Dadson 2010, *Sedimentology* 57:1126, **abstract**) | The split is `delta_share`, an authoring number: no source gives a share for what stops at a mouth, since suspended sand stops there too |
+
+**What follows for the design.** Yuan's scheme, not a cut followed by a deposit: both were built,
+and the subsystem page has what the second measured
+([deposition](../subsystems/landform.md#deposition)). The sweeps end on a height tolerance, a
+tenth of a millimetre, since U Δt is zero in a sketch that raises nothing. **Lakes are not in
+Yuan et al.** (their only remark is that local minima "artificially reduce the erosional
+efficiency"), so what a lake and the sea do with the flux is this solver's: everything that
+reaches standing water settles in it, a share at the mouth up to the water's level and the rest
+from the deepest point up, to one level. The level fill is a statement that what stays in
+suspension spreads over the whole floor; it is not a published scheme.
+
 ## Constants, their ranges, and the defaults the schema pins
 
 | Constant | Default | Range accepted | Status | Source or reason |
@@ -45,6 +72,11 @@ means nothing was taken from it but its name. The proof of concept's research no
 | Resistance contrast | 10 | 1 to 1000 | authoring | A bed's `resistance` is the world formation's 0-to-1 ordering ([formation field](formation-field.md)); K falls from the sketch's value at 0 to a tenth of it at 1. Stock and Montgomery's lithologies span five orders, so ten between the beds of one range is modest |
 | Seed roughness | 1 m | 0 to 100 | authoring | What breaks the symmetry of the starting plane so a network can form; it is gone from the result after the first few steps |
 | Erodibility variation | ±25% over 16 cells | 0 to 0.9 | authoring | Rock is not uniform; without it a planar face at the critical slope sheds water along the lattice and its rills run parallel (the proof of concept's "couloir streaks") |
+| Deposition coefficient G | 1 | 0 to 10 | range | Yuan et al. 2019's reference value ("typical"; G = 0.1 is close to none and the landscape changes from 1 up); inside Guerit et al. 2019's natural 0 to 3.1 and above their experiments' median of 0.7 |
+| Sediment's erodibility over the rock's | 2 | 1 to 100 | range | Yuan et al. 2019 run 1, 2 and 4 |
+| Share settling at a lake's mouth | 0.5 | 0 to 1 | authoring | No source; Turowski et al. 2010 (abstract) bound the bedload alone at 1% to 50% |
+| Standing water | 10 mm | fixed | authoring | A point the flood raised by less is a flat a river crosses, not a lake: the flood's own ε over a wide flat is a few millimetres |
+| The sweeps' tolerance | 0.1 mm | fixed | authoring | Under the millimetre the heights round to. Yuan et al. stop at 10⁻³ U Δt, 5 mm at 1 mm/yr and 5,000 years |
 | Hack's exponent (a check, not an input) | — | 0.5 to 0.7 | secondary | Hack 1957 found 0.6; Gray 1961, 0.568; "empirically found to lie in the range from 0.5 to 0.7" (search extracts of Rigon et al. 1996 and its citers; none read in full) |
 
 ## What determinism decided
@@ -150,9 +182,14 @@ text, five causes, and what this design does about each:
 
 ## Limits of the model
 
-- **Detachment-limited, with no deposition.** Nothing is laid down: no flat alluvial valley floors
-  (the reels' r03 and r04 both stand on one), no fans, terraces, deltas or scree aprons. Valleys
-  are V-shaped to their mouths.
+- **Deposition without lateral erosion** (stage B). A floor is as wide as its fill reaches up the
+  valley's sides: no river widens its valley by cutting its banks, so there are no strath
+  terraces and a valley in ground that is rising everywhere is still a V. No scree: nothing
+  stands at an angle of repose. One grain size.
+- **A fan is laid along one path at a time.** With one receiver a point a mouth's deposit is a
+  ridge a point wide that the next step's flood routes round; over many steps that averages to
+  a fan, and a range's fans to one plain, but a single cone is not resolved, and with a long
+  step the plain carries the last few steps' paths as low ridges.
 - **No ice.** No U-shaped troughs, cirques, hanging valleys or overdeepened basins.
 - **One receiver a point, one of eight neighbours.** Flow never divides (no braiding, no fan),
   and a single cell's choice is still a lattice direction: the hashed weight makes the mean
@@ -166,11 +203,13 @@ text, five causes, and what this design does about each:
 
 ## What follows stage A
 
-The glacial mode (an equilibrium-line altitude, ice flux, troughs and cirques); deposition
-(terraces, fans, deltas, scree zones, and with it a flat valley floor); soil depth; snow where
-erosion and wind put it; reading the formation field's dipping beds for resistance; a general m and
-n; the order's levels in parallel and a flood that skips ground with no depressions; baking
-far-terrain maps from near output; anything in the editor.
+The glacial mode (an equilibrium-line altitude, ice flux, troughs and cirques); reading the
+formation field's dipping beds for resistance, the beds rising with the rock; uplift that varies
+along a ridge line, and the defaults against published slope distributions; a flood that skips
+ground with no depressions, and the order's levels in parallel; flow that divides (a fan as a
+cone, a channel more than a point wide); lateral erosion, terraces and scree at an angle of
+repose; soil depth; snow where erosion and wind put it; a general m and n; baking far-terrain maps
+from near output; anything in the editor. Deposition was the first of these and is stage B.
 
 ## A request to the channels generator
 
@@ -195,7 +234,14 @@ and course are the ones the ground was cut by. The contract it would read is on 
 | A coast (the golden sketch with one critical slope, 0.9) | no neighbours steeper than 0.9 by more than 0.8 mm, land, waterline or bed | the rounding to whole millimetres |
 | A starting ground with a 370 m underwater wall, fifty thousand years | the largest step between neighbours 89,978 mm over a 100 m cell | 370,000 mm before; the critical slope allows 90,000 |
 | A 407 m massif at 50 m refined for forty thousand years at the default erodibility, nothing raised | its 800 m low-pass moves at most 9.5 m (2.3% of the relief); single points move 29.7 m | the bound held is a twentieth of the relief |
-| A 2,048-point sketch at 16 m to 100,000 years in twenty steps, four workers, busy machine | 27.1 s | — |
+| A 2,048-point sketch at 16 m to 100,000 years in twenty steps, four workers, busy machine | 27.1 s | — (stage A; not measured again after deposition) |
+| Stage B. Steepness at steady state with G = 1 and sediment as erodible as rock (64 points at 200 m, 1 mm/yr, K 4 × 10⁻⁵, three million years) | S √A K / U = 1.955 over 572 channel points: 1.91 for 8 to 16 cells, 1.96 for 16 to 64, 2.00 above | 1 + G (N − 1) / N, Yuan et al. 2019's discrete form; 2 in the limit. The mean erosion rate is 1,000.4 µm/yr and the concavity 0.485 |
+| The same with the cut first and the deposit laid after it (the first build) | 2.14: 1.92, 2.08 and 2.42 in the same three bins | the scheme that was dropped |
+| The budget of the golden sketch (400,000 years) | eroded 1.235 × 10¹⁰ m³ = deposited 2.446 × 10⁹ + left 9.821 × 10⁹ + unrouted 8.6 × 10⁷; settled 3 × 10⁴ | both identities hold to nine digits |
+| A V-shaped valley (sides 0.5, falling at 0.04) whose mouth is held 90 m above its bed, 100,000 years, 50 m points | the fill of 5 m or more is 2.7 points wide in its upper third and 6.7 in its lower, level across within 6.4 m, 88 m thick at most | the start's V falls 87 m over the lower floor's width |
+| A massif (2 mm/yr, 900 m reach) beside a plain, 300,000 years | 400 m out the plain stands 4.3 m up opposite the massif, 2.8 and 2.6 m 700 m to either side, 0.9 m 1,700 m away; 9.5 m of sediment at the foot | a fan |
+| A basin 40 m deep fed for 10,000 years | its floor level to the millimetre under 5.4 m of water with nothing settling at the mouths, within 3 mm under 8.5 m with half | — |
+| An open edge with deposition, the border test's sketch | the first row 1.41 m above the edge with G tapered toward it. With G uniform it stood 17.4 m up in the first build (the deposit laid after the cut); the uniform case was not measured again under the sweeps | the bound is 2 m |
 
 What the first pictures showed, and what still reads wrong beside the reels, is on the subsystem
 page ([Pictures](../subsystems/landform.md#pictures-and-what-still-reads-wrong)).
