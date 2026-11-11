@@ -79,6 +79,10 @@ Approach approach_of(const Crossing& c, const BridgePlan& plan, u32 grade) noexc
   return a;
 }
 
+i32 approach_width_mm(const Crossing& c, const BridgePlan& plan) noexcept {
+  return std::max<i32>(static_cast<i32>(c.tread_mm), plan.width) + k_approach_shoulders_mm;
+}
+
 JsonValue approach_edits_json(const Layer& layer, u32 grade) {
   JsonValue list = JsonValue::array();
   for (u32 k = 0; k < layer.crossings.size(); ++k) {
@@ -106,8 +110,7 @@ JsonValue approach_edits_json(const Layer& layer, u32 grade) {
         at.push_back(JsonValue(static_cast<f64>(top) / 1000.0));
         at.push_back(JsonValue(static_cast<f64>(wz) / 1000.0));
         points.push_back(std::move(at));
-        widths.push_back(JsonValue(
-            static_cast<f64>(std::max<i32>(static_cast<i32>(c.tread_mm), plan.width)) / 1000.0));
+        widths.push_back(JsonValue(static_cast<f64>(approach_width_mm(c, plan)) / 1000.0));
       }
       JsonValue o = JsonValue::object();
       o["name"] = JsonValue(layer.name + " " + std::to_string(k) + (end == 0 ? " near" : " far") +

@@ -108,11 +108,14 @@ under "Budgets".
 
 - **The approaches** (`approach_edits_json`): at each end of a bridge whose deck stands over the
   ground there, a `Fill` line from the deck's end out along the path, falling at the route's own
-  grade cap (the approach is the path's tread), as wide as the tread or the deck, with the routes'
-  0.5 fill batter and 0.15 rounding. Its top at the deck's end is the deck, so in the plan the walker
-  steps onto the bridge with **no step**; `Approach::step_mm` reports where the ground at a deck's
-  end stands over the deck (none in the tests). What the tile set's lattice leaves of that (a 25 cm
-  lattice samples the fill's top between its points) is not measured here.
+  grade cap (the approach is the path's tread), its top the tread or the deck, whichever is wider,
+  and half a metre of shoulder each side (`k_approach_shoulders_mm`), with the routes' 0.5 fill
+  batter and 0.15 rounding. Its top at the deck's end is the deck, so in the plan the walker steps
+  onto the bridge with **no step**; `Approach::step_mm` reports where the ground at a deck's end
+  stands over the deck (none in the tests). The shoulders are for the ground's lattice: the first
+  pictures had the top only a tread wide, two or three points of the scene's 50 cm heightfield,
+  and the lattice rounded the crest into a knife-edge ridge that met the sill under the deck rather
+  than the deck. What step the lattice still leaves is not measured here.
 - **The footprint** (`bridge_footprint`): the rectangle of every member's plan, as W98's polygon in
   world millimetres, so the bed's stones, the sward and scatter keep out from under it once a host
   hands it to the exclusion.

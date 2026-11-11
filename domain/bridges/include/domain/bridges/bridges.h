@@ -212,9 +212,15 @@ scene_gen::TileCoord tile_of(const Crossing& crossing, i64 tile_mm) noexcept;
 
 // **The approaches** (`engine.scene.TerrainEdit`s of mode `Fill`): for each end of a bridge whose
 // deck stands over the ground there, a line from the deck's end out along the path, falling at
-// `approach_grade_permille` to the ground, the tread's width, so the walker steps from the tread to
-// the deck with no step. A JSON array in the layer's order.
+// `approach_grade_permille` to the ground, so the walker steps from the tread to the deck with no
+// step. A JSON array in the layer's order.
 JsonValue approach_edits_json(const Layer& layer, u32 approach_grade_permille);
+// An approach's top is the tread or the deck, whichever is wider, and a shoulder of half this each
+// side: a crest only a tread wide is two or three points of a 25 to 50 cm ground lattice, which
+// rounds it down under the deck's end (the first pictures: a knife-edge ridge meeting the sill, not
+// the deck). A choice for the lattice, not a source's number.
+inline constexpr i32 k_approach_shoulders_mm = 1000;
+i32 approach_width_mm(const Crossing& crossing, const BridgePlan& plan) noexcept;
 // How long an approach runs, and the step it leaves at the deck's end against the profile's ground
 // with the fill in it (the larger of the two ends), mm: what the tests and the command report.
 struct Approach {
