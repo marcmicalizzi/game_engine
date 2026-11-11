@@ -441,6 +441,15 @@ TEST_CASE("deposits: shed blocks thin with distance, the largest farthest, none 
   }
   // The thinning and the sorting are statistical: held over five seeds' blocks together, not one
   // draw (T108's cones moved this face's one draw to 74, 85 and 33 blocks by thirds).
+  // G183 restated to its cause (the coordinator's review): with the cones' kernel the first third
+  // lies on the cones' upper flanks, at the repose, where fewer candidates may rest, so the raw
+  // count by thirds dips there (five seeds: 390, 421 and 177; the triangle kernel's 473, 405 and
+  // 208). What the model says is a density: blocks a square metre of ground a block can rest on,
+  // falling from third to third. That ground is every sample of the plan's own top (the deposit,
+  // or the meadow past it) no steeper than the repose (with the solver's 3% of slack), not a
+  // face, under the shadow line of a talus top this seed's blocks name; a sample's distance is
+  // to the nearest such top, as a block's is to its own.
+  const f64 shadow_t = std::tan(27.5 * 3.14159265358979323846 / 180.0);
   u32 count[3] = {};
   f64 size[3] = {};
   for (u64 seed = 0; seed < 5; ++seed) {
@@ -451,24 +460,52 @@ TEST_CASE("deposits: shed blocks thin with distance, the largest farthest, none 
     f64 reach = 0;
     for (const auto& b : drawn.blocks)
       reach = std::max(reach, b.distance_m);
+    u32 seed_count[3] = {};
     for (const auto& b : drawn.blocks) {
       const u32 bin = std::min(2u, static_cast<u32>(3 * b.distance_m / reach));
       ++count[bin];
+      ++seed_count[bin];
       size[bin] += b.half[0] + b.half[2];
     }
+    // The talus tops this seed's blocks were shed from.
+    Vector<u32> tops;
+    for (const auto& b : drawn.blocks) {
+      const u32 t =
+          static_cast<u32>(b.top_z_mm / 500) * drawn.width + static_cast<u32>(b.top_x_mm / 500);
+      if (std::find(tops.begin(), tops.end(), t) == tops.end()) tops.push_back(t);
+    }
+    f64 area[3] = {};
+    const u32 w = drawn.width, d = drawn.depth;
+    for (u32 z = 1; z + 1 < d; ++z)
+      for (u32 x = 1; x + 1 < w; ++x) {
+        const u32 i = z * w + x;
+        const f64 sx = (top(drawn, i + 1) - top(drawn, i - 1)) / 1.0;
+        const f64 sz = (top(drawn, i + w) - top(drawn, i - w)) / 1.0;
+        if (sx * sx + sz * sz > 1.0609 * k_repose * k_repose) continue;
+        f64 nearest = 1e9;
+        for (u32 t : tops) {
+          const f64 dx = .5 * (static_cast<f64>(t % w) - static_cast<f64>(x));
+          const f64 dz = .5 * (static_cast<f64>(t / w) - static_cast<f64>(z));
+          const f64 r = std::sqrt(dx * dx + dz * dz);
+          if (top(drawn, t) - top(drawn, i) >= shadow_t * r) nearest = std::min(nearest, r);
+        }
+        if (nearest > reach) continue;
+        area[std::min(2u, static_cast<u32>(3 * nearest / reach))] += .25;
+      }
+    f64 density[3] = {};
+    for (u32 k = 0; k < 3; ++k)
+      density[k] = area[k] > 0 ? static_cast<f64>(seed_count[k]) / area[k] : 0.0;
+    MESSAGE("seed ", s.seed, ": blocks by thirds ", seed_count[0], " ", seed_count[1], " ",
+            seed_count[2], " on ", area[0], " ", area[1], " ", area[2],
+            " m2 a block can rest on: ", density[0], " ", density[1], " ", density[2], " a m2");
+    CHECK(density[0] > density[1]);
+    CHECK(density[1] > density[2]);
   }
   for (u32 k = 0; k < 3; ++k)
     if (count[k]) size[k] /= count[k];
   MESSAGE("blocks ", plan.blocks.size(), " out to ", farthest,
           " m; five seeds' by thirds: ", count[0], " ", count[1], " ", count[2], ", mean size ",
           size[0], " ", size[1], " ", size[2]);
-  // G183 restated (reported, the coordinator's call): with the cones' kernel the first third lies
-  // on the cones' upper flanks, at the repose, where fewer candidates may rest (five seeds: 390,
-  // 421 and 177 by thirds; the triangle kernel's 473, 405 and 208). The count still thins from the
-  // talus to the farthest third, and the expected count a candidate carries falls with distance
-  // by construction (exp(-d / block_decay_m)).
-  CHECK(count[0] > count[2]);
-  CHECK(count[1] > count[2]);
   CHECK(size[0] < size[1]);
   CHECK(size[1] < size[2]);
   // Mean block size rises from the largest pile's foot out toward its toe.
