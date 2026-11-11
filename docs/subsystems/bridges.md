@@ -154,17 +154,35 @@ square root. A plan and a mesh are pinned on MSVC for Clang and GCC (v3 and v2) 
 
 ## Budgets
 
-See the roadmap row and the report for the measured numbers; the triangles by form:
+The three bridges of the picture scene (`msvc-debug`, the containers the renderer built, 2026-11-11):
 
-| Form (the bench's crossing) | Triangles, finest | Far form (the DAG's root) |
-|---|---|---|
-| Stepping stones, a 2 m brook | measured below | |
-| A clapper, 6 m, boulder bed | | |
-| A foot log, 3 m | | |
-| Log stringers, 7 m | | |
+| Form | Members | Triangles, finest | Coarser DAG levels, all of them | Container |
+|---|---|---|---|---|
+| Stepping stones, a 2 m brook | 4 stones | 112 | 48 (one level) | 10.3 KB |
+| A foot log, 3 m (sills on stone abutments) | log, 2 sills, 2 courses | 244 | 84 (one level) | 18.8 KB |
+| Log stringers, 6 m, railed | 2 stringers, 2 sills and their abutments, the planks, posts and two rails | 944 | 417 (three levels) | 80 KB |
 
-What scales with the world: the crossings, not the area — a crossing is about 1 KB of layer (its
-profile is most of it), and a bridge's mesh exists only while its tile is held.
+A clapper of 6 m (the bench's crossing) is three spans on two piers and two abutments of three to
+four courses each and three slabs: about 20 rough blocks of 28 triangles, some 560. Every bridge is
+under a thousand triangles at its finest and a few hundred from the far end of its tile; a mesh is
+resident only while its tile is held.
+
+`msvc-release`, `engine_bridges_bench --wait-quiet=120 --repeats=5`, 2026-11-11 14:12 local, on a
+busy machine (the bench proceeded after 120 s: other processes at 68 to 97 % of the CPU, the GPU
+lock held by another agent): every number is an upper bound. The bench's crossings: stones over a
+2 m brook, a clapper of 6 m on a boulder bed, a foot log over 3 m, stringers over 7 m.
+
+| What | Stones | Clapper | Foot log | Stringers |
+|---|---|---|---|---|
+| `plan_bridge` (what `open` pays a crossing) | 0.8 µs | 3.0 µs | 1.7 µs | 6.0 µs |
+| `solve_bridge` (the plan and every solid) | 13 µs | 33 µs | 44 µs | 112 µs |
+| `build_container` (a derived-data miss, once a bridge) | 0.28 ms | 1.4 ms | 0.70 ms | 4.2 ms |
+
+A tile's activation costs nothing of the solver: `tile` copies a placement and a recipe the entry
+made at `open`, and the mesh is the cache's (built once, off the frame's thread). What scales with
+the world is the crossings, not the area: a crossing's layer entry is 1 to 2 KB of JSON (the picture
+scene's three: 6.9 KB written; its profile is most of it), `open` plans each once and keeps its
+recipe (the same size again), and a bridge's mesh exists only while its tile is held.
 
 ## Invariants
 
