@@ -86,6 +86,13 @@ if (-not $FromSummaries) {
 
 function Get-Measured($summary, [string]$stat) { if ($summary.gpu_ms.total) { [double]$summary.gpu_ms.total.$stat } else { 0.0 } }
 
+# No material pack: a budget is a function of the tree, never of whether this checkout has fetched
+# or generated one (T103; docs/subsystems/materials.md, "Where the hosts find it"). The variable is
+# the one default lookup's switch, inherited by every engine-view below; each summary's
+# `load.materials` says what the flight resolved, and one that drew with a pack fails. None of the
+# budget scenes has a generated mesh that falls back to a pack, so the milliseconds do not move.
+$env:ENGINE_DEFAULT_MATERIALS = '0'
+
 $results = @()
 $summaries = @{}
 foreach ($r in $runs) {
@@ -120,6 +127,11 @@ foreach ($r in $runs) {
     continue
   }
   $summary = Get-Content $jsonl | Select-Object -Last 1 | ConvertFrom-Json
+  $pack = if ($summary.PSObject.Properties['load'] -and $summary.load -and $summary.load.PSObject.Properties['materials']) { "$($summary.load.materials)" } else { '' }
+  if ($pack) {
+    $results += [pscustomobject]@{ Id = $r.id; Verdict = 'failed'; Device = ''; Quiet = $false; Rows = @(); Missing = @(); MachineState = "drew with the material pack $pack; a budget draws with none" }
+    continue
+  }
   $summaries[$r.id] = $summary
   $result = Test-FrameBudgetRun -Budget $plan -Run $r -Summary $summary
   if ($AnyDevice -and $result.Verdict -eq 'device') {

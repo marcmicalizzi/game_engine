@@ -159,7 +159,10 @@ is `repository_pack_dir(start)` — `<repo>/content/materials` — unless the pr
 `ENGINE_DEFAULT_MATERIALS` is `0` (`k_default_materials_env`), when it is empty. **The test main and
 the bench main set it to `0`** before anything else (`tests/support/test_main.cpp`, `bench_main.cpp`),
 so every in-process load and every `engine-view`, `engine-host` or `engine-content` a test starts
-inherits it and reads no machine's pack: the alternative, every test naming an empty pack, was about
+inherits it and reads no machine's pack. That is the test-hygiene rule (`AGENTS.md`, "Test hygiene"):
+a test owns nothing outside its own scratch directory, and the checkout's `content/materials` is
+state a test does not own, which one worktree has fetched, another generated and a third lacks, so
+a test that read it would pass on one and fail on another for the same tree. The alternative, every test naming an empty pack, was about
 250 call sites in 100 files, and the next test written forgets. It is set, not defaulted, so a
 developer's shell does not decide what a test reads. A named pack is always honoured, so a test that
 wants one names it; the one test that wants the *lookup* (engine-cli's content-build parity test,
@@ -167,7 +170,13 @@ which builds a repository of its own with a pack in it) holds
 `test::ScopedEnv(test::k_default_materials_env, "1")` for its case. The two CTest scripts that start
 a host loading a scene without a test main above it set the variable in their own lines:
 `tools/mcp-check.ps1` (`mcp_bridge.mcp_check`, `mcp_check_connect`) and
-`tools/export-game-sdk.Tests.ps1` (`tools.game_sdk`). What *writes* the default pack
+`tools/export-game-sdk.Tests.ps1` (`tools.game_sdk`). The tools that measure name theirs:
+`tools/frame-budget.ps1` flies with none, so a budget is a function of the tree
+([bench](bench.md#frame-budgets)); `tools/flythrough.ps1` names none and passes no `--ddc`, so it
+drew with the checkout's pack before T103 and does now, and its summaries' `load.materials` say
+which; a packaged game (`tools/package-game.ps1`) names its shipped pack with `--materials` when it
+ships one, and otherwise has no repository above it to find one in, so it draws with none either
+way. What *writes* the default pack
 is not blinded: `engine-content matgen` with no `--out` writes under `repository_pack_dir`.
 
 ## The first pack (2026-10-19)
