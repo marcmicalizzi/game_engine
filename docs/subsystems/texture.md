@@ -402,11 +402,12 @@ first row again by `mesh_texture_tests.cpp`, which stages one:
    texture larger than all of it goes alone — so **the default admits one 2K texture a commit**
    (a normal goes with its variance: 8 MiB), a 2K set takes three commits, and its mesh the one
    after: four frames, 67 ms at 60 Hz, during which the tile draws what it drew. **What a 2K
-   texture costs the committing thread is 0.97 ms**: one image made and 5,592,432 bytes copied into
-   staging, the best of three in `msvc-debug` on an RTX 5090 beside other agents' builds
-   (`mesh_texture_tests.cpp`, 2026-11-11), so an upper bound — the copy is the C library's in any
-   build. **The default stays.** A whole set in one commit would be about 3.4 ms of the frame's
-   thread in one frame, which shows at 120 Hz, to save three frames of a wait on a tile that is
+   texture costs the committing thread is 0.66 ms**: one image made and 5,592,432 bytes copied into
+   staging, the best of three in `msvc-release` (0.97 ms in `msvc-debug`) on an RTX 5090 beside
+   eleven other agents' builds and test runs (`mesh_texture_tests.cpp`, 2026-11-11), so an upper
+   bound. **The default stays.** A whole set in one commit would be about 2.3 ms of the frame's
+   thread in one frame (18.67 MiB at that rate), which shows at 120 Hz, to save three frames of a
+   wait on a tile that is
    already waiting for its mesh's build and is drawing its last ring's form meanwhile; the three
    frames show nowhere. What would move it is a measured walk where the wait is seen (the first
    converted solver), not this number.
