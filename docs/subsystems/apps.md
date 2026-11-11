@@ -428,6 +428,17 @@ metre of sediment and the thickest, the run's `budget` in cubic metres
 ([deposition](landform.md#deposition)), the solve's seconds). A build without the landform capability
 refuses the command by naming it. Exit 0, 1 or 2 as the other commands.
 
+## engine-content matgen: generated material sets as a pack
+
+`engine-content matgen [--out <pack dir>] [--texels <n>] [--role <role>]... [--set <recipe.json>]... [--force]`
+builds the generated material sets ([matgen](matgen.md#the-command); roadmap G148) — every default
+role, or the roles and `engine.matgen.Set` files named — into a pack directory, by default
+`<repo>/content/materials/generated`, which every host's default pack lookup reads behind the
+fetched pack ([materials](materials.md#a-pack)). A set already built for its recipe's key is
+skipped. One JSON line a set (`role`, `key`, `built`, the build's and the write's milliseconds,
+the PNG bytes, what the build measured) and one for the pack. A build without the matgen
+capability refuses the command by naming it. Exit 0, 1 or 2 as the other commands.
+
 ## engine-content morphs: MakeHuman targets as morph channels
 
 ```

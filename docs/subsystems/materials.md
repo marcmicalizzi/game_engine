@@ -105,6 +105,15 @@ caught only where a missing texture is built from it. `pack_at(dir)` reads a dir
 process and keeps it (null for no `pack.json`, said once in the log); `default_pack_dir(start)` is
 `<repo>/content/materials` beside the `<repo>/ddc` that `geometry::find_ddc_root` finds.
 
+**The generated sets stand behind it** (G148). `pack_at(dir)` also reads `dir/generated/pack.json`,
+the pack `engine-content matgen` writes ([matgen](matgen.md#the-default)), and returns
+`merge_packs(fetched, generated)`: every role of the fetched pack is the fetched pack's, every role
+it lacks is the generated one's, the directory, name and version are the fetched pack's, and the
+hash is over both, so a generated mesh's build key moves when either manifest does. Where `dir`
+has no manifest of its own the generated pack is the pack. A role is therefore resolved in the
+order recipe, fetched pack, generated set, flat colour. The log's "material pack" line says how
+many of the roles are generated.
+
 **How a role's texels are placed** (R131). A role may say `"sampling": "stochastic"` (or
 `"tiled"`, the default, which every pack before the key reads as); anything else refuses the pack.
 A stochastic set is drawn at three tiles of a triangle lattice in the material's UV plane, each at
@@ -203,11 +212,12 @@ pipe, not a sandstone.
 - The recipe's set wins over the pack's, the pack's over none, per part.
 - A pack is read whole or refused; the same text in another directory is another key.
 - `pack_at` reads a directory once per process.
+- A generated set never replaces a fetched pack's role; it fills the roles the fetched pack lacks.
 
 **Public API.** `include/domain/materials/materials.h`: `MaterialSet`, `names_images`,
-`set_in_range`, `UvLayout`, `apply_set`, `PackRole`, `Pack`, `parse_pack`, `pack_at`,
-`default_pack_dir`, `find_role`, `pack_key`, `resolve_set`, `k_pack_format`, `k_tile_min_m`,
-`k_tile_max_m`, `k_normal_scale_max`.
+`set_in_range`, `UvLayout`, `apply_set`, `PackRole`, `Pack`, `parse_pack`, `merge_packs`, `pack_at`,
+`default_pack_dir`, `find_role`, `pack_key`, `resolve_set`, `k_pack_format`, `k_generated_pack_dir`,
+`k_tile_min_m`, `k_tile_max_m`, `k_normal_scale_max`.
 
 **Depends on.** `base`, `containers`, `hash`, `json`, `log`, `io` (`pack_at` alone), `geometry`
 (the container's material records). Not a capability: `assets`' generator inputs carry a pack, and
