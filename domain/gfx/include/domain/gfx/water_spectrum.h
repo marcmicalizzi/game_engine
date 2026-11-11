@@ -46,7 +46,9 @@ struct WaterWave {
   f32 cycles = 0.0f;           // whole cycles a `k_water_period_s`
   f32 phase = 0.0f;            // at the clock's zero, cycles in [0, 1)
   f32 steepness = 0.0f;        // Gerstner's Q k a: how far the crest sharpens the normal
-  f32 pad = 0.0f;
+  // (5/8) (omega_p / omega)^4: how fast the wave's amplitude falls where the sea is younger than
+  // the table's (`water_grown_share`; S100 stage B).
+  f32 grow = 0.0f;
 };
 static_assert(sizeof(WaterWave) == 32);
 static_assert(sizeof(WaterWave) * k_water_waves <= sizeof(ResolveMaterial) * k_water_wave_entries);
@@ -65,13 +67,71 @@ inline constexpr f64 k_water_band_high = 4.0;
 // are scaled down alike, so no crest loops over itself.
 inline constexpr f64 k_water_max_steepness = 0.6;
 
+// **A wind sea stops growing** (S100 stage B; docs/experiments/shore.md, "The spectrum for every
+// body"): the fetch laws below have no upper end, and a real sea is fully developed where the
+// dimensionless fetch g F / U^2 reaches about 2.2e4 (the fetch at which JONSWAP's peak law meets
+// Pierson and Moskowitz's 1964 fully developed peak, f_p U / g = 0.13: (3.5 / 0.13)^(1/0.33);
+// Hasselmann et al. 1973, section 2.4), so a longer fetch is taken as that one: 110 km at 7 m/s.
+// A longer period than that wind's is swell, which a body says with `swell_period_s`.
+inline constexpr f64 k_water_developed_fetch = 2.2e4;
+inline f64 water_grown_fetch(f64 u10, f64 fetch_m) noexcept {
+  return std::min(fetch_m, k_water_developed_fetch * u10 * u10 / k_water_spectrum_g);
+}
 // JONSWAP's fetch laws: the peak frequency ω_p = 22 (g² / (U₁₀ F))^(1/3) and the Phillips
-// constant α = 0.076 (U₁₀² / (F g))^0.22, with U₁₀ the wind 10 m up (m/s) and F the fetch (m).
+// constant α = 0.076 (U₁₀² / (F g))^0.22, with U₁₀ the wind 10 m up (m/s) and F the fetch (m),
+// kept to the fully developed one.
 inline f64 jonswap_peak(f64 u10, f64 fetch_m) noexcept {
-  return 22.0 * std::cbrt(k_water_spectrum_g * k_water_spectrum_g / (u10 * fetch_m));
+  return 22.0 * std::cbrt(k_water_spectrum_g * k_water_spectrum_g /
+                          (u10 * water_grown_fetch(u10, fetch_m)));
 }
 inline f64 jonswap_alpha(f64 u10, f64 fetch_m) noexcept {
-  return 0.076 * std::pow(u10 * u10 / (fetch_m * k_water_spectrum_g), 0.22);
+  return 0.076 * std::pow(u10 * u10 / (water_grown_fetch(u10, fetch_m) * k_water_spectrum_g), 0.22);
+}
+
+// **Every wave is a narrow band, not a line** (S100 stage B; water.md, "The spectrum"): a band of
+// the spectrum is a carrier at its centre under a slowly varying complex envelope (Longuet-Higgins
+// 1957: a narrow-band Gaussian sea is a carrier times a Rayleigh envelope), so each of the sixteen
+// is drawn as a (e1 sin + e2 cos) with (e1, e2) smooth value noise over cells `k_water_group_along`
+// wavelengths long the way the wave travels and `k_water_group_across` wide along its crest: the
+// crests are short, the waves come in groups, and nothing lines up or repeats. The band's width is
+// the table's own: neighbouring bands are 1.30 apart in wavenumber, whose beat is 1 / 0.26 = 3.8
+// wavelengths; a crest 2.5 wavelengths long is the spread Donelan and Banner give the band about
+// its own direction. The envelope travels at the deep-water group speed, half the phase speed: a
+// whole number of cells a clock period, over a lattice periodic in that number, so the clock wraps
+// with no jump.
+inline constexpr f64 k_water_group_along = 4.0;
+inline constexpr f64 k_water_group_across = 2.5;
+// The envelope's gain: each component is value noise in [-1, 1], whose variance at a random point
+// of a smoothstep lattice is (26/35)^2 / 3; the gain makes each component's 1/2, so a wave keeps
+// the variance a^2 / 2 of the sine it replaces: sqrt(3/2) 35/26.
+inline constexpr f64 k_water_envelope_gain = 1.6486932;
+// How far the crests' sharpening may tilt the normal: the envelopes' sum has a Rayleigh tail.
+inline constexpr f64 k_water_max_lift = 0.7;
+// The envelope's cells a clock period for a wave of `cycles`: its group travels cycles / 2
+// wavelengths.
+inline f64 water_envelope_cells(f64 cycles) noexcept {
+  return std::max(1.0, std::floor(cycles / (2.0 * k_water_group_along) + 0.5));
+}
+// The lattice's hash: the cell along (already reduced modulo the cells), the cell across, and the
+// wave's own salt (its phase's bits), to two values in [-1, 1].
+inline u32 water_envelope_hash(u32 along, u32 across, u32 salt) noexcept {
+  u32 h = along * 0x8DA6B343u ^ across * 0xD8163841u ^ salt * 0xCB1AB31Fu;
+  h ^= h >> 16;
+  h *= 0x7FEB352Du;
+  h ^= h >> 15;
+  h *= 0x846CA68Bu;
+  h ^= h >> 16;
+  return h;
+}
+// **Where the sea is younger than the table's** (a closed body's lee): `grown` is the share of the
+// table's fetch the wind has blown over at a place. The local peak is at omega_p grown^(-1/3), and
+// below it the spectrum falls as exp(-(5/4)(omega_p'/omega)^4), so the amplitude of a wave of the
+// table there is its own times exp(-grow (grown^(-4/3) - 1)), grow = (5/8)(omega_p/omega)^4: the
+// long waves go first and the lee is ripples, then nothing (the Phillips constant's slow rise
+// towards the lee, a factor grown^-0.11 in amplitude, is left out).
+inline f64 water_grown_share(f64 grow, f64 grown) noexcept {
+  const f64 g = std::clamp(grown, 1e-4, 1.0);
+  return std::exp(-grow * (std::pow(g, -4.0 / 3.0) - 1.0));
 }
 // S(ω) = α g² ω⁻⁵ exp(−(5/4)(ω_p/ω)⁴) γ^r, r = exp(−(ω − ω_p)² / (2 σ² ω_p²)): m² s.
 inline f64 jonswap(f64 omega, f64 alpha, f64 peak) noexcept {
@@ -139,6 +199,8 @@ inline void water_spectrum(f64 u10, f64 fetch_m, Vec2 wind, u32 seed,
     w.amplitude = static_cast<f32>(amplitude);
     w.cycles = static_cast<f32>(std::max(1.0, std::floor(omega * k_water_period_s / two_pi + 0.5)));
     w.phase = static_cast<f32>(water_wave_uniform(seed, i, 0));
+    const f64 q = peak / omega;
+    w.grow = static_cast<f32>(0.625 * q * q * q * q);
     ka[i] = k * amplitude;
     steepness += ka[i];
   }

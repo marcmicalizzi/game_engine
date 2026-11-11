@@ -18,6 +18,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 
 namespace engine::water_ref {
 
@@ -104,30 +105,111 @@ inline Dvec3 normal(const Params& w, double x, double z, double time, double foo
 
 // water.slang's `water_normal_spectrum` (gfx::k_material_water_spectrum, water_spectrum.h): the
 // table's Gerstner waves summed in double, each wave's numbers the float the GPU reads.
-inline Dvec3 normal_spectrum(const gfx::WaterWave* waves, double x, double z, double time,
-                             double footprint, double depth) {
-  double sx = 0.0;
-  double sz = 0.0;
-  double lift = 0.0;
-  const double calm = brdf_ref::clamp01(depth / k_calm_depth);
-  for (u32 i = 0; i < gfx::k_water_waves; ++i) {
-    const gfx::WaterWave& wave = waves[i];
-    const double k = static_cast<double>(wave.k);
-    const double dx = static_cast<double>(wave.direction.x);
-    const double dz = static_cast<double>(wave.direction.y);
-    const double lambda = k_two_pi / k;
-    const double along = (dx * x + dz * z) / lambda;
-    const double travel = frac(static_cast<double>(wave.cycles) * (time / k_period_s));
-    const double cyc = frac(frac(along) - travel + static_cast<double>(wave.phase));
-    const double keep = footprint > 0.0 ? brdf_ref::clamp01(lambda / (2.0 * footprint) - 1.0) : 1.0;
-    const double share = calm * keep;
-    const double angle = k_two_pi * cyc;
-    const double g = static_cast<double>(wave.amplitude) * k * share * std::cos(angle);
-    sx += dx * g;
-    sz += dz * g;
-    lift += static_cast<double>(wave.steepness) * share * std::sin(angle);
+// water_waves.slang's `water_envelope`: a wave's complex envelope at (u, v) cells, u periodic in
+// `cells`, and its derivatives in u and v (S100 stage B; water_spectrum.h, "Every wave is a narrow
+// band").
+struct Envelope {
+  double e[2] = {0.0, 0.0};
+  double du[2] = {0.0, 0.0};
+  double dv[2] = {0.0, 0.0};
+};
+inline Envelope envelope(double u, double v, double cells, u32 salt) {
+  const double cu = std::floor(u);
+  const double cv = std::floor(v);
+  const double fu = u - cu;
+  const double fv = v - cv;
+  const double u0 = cu - cells * std::floor(cu / cells);
+  const double u1 = u0 + 1.0 >= cells ? 0.0 : u0 + 1.0;
+  const u32 iu0 = static_cast<u32>(u0);
+  const u32 iu1 = static_cast<u32>(u1);
+  const u32 iv0 = static_cast<u32>(static_cast<i32>(cv));
+  const u32 iv1 = iv0 + 1u;
+  const auto value = [&](u32 a, u32 b, u32 c) {
+    const u32 h = gfx::water_envelope_hash(a, b, salt);
+    return static_cast<double>(c == 0 ? (h & 0xffffu) : (h >> 16)) * (1.0 / 32767.5) - 1.0;
+  };
+  const double su = fu * fu * (3.0 - 2.0 * fu);
+  const double sv = fv * fv * (3.0 - 2.0 * fv);
+  const double dsu = 6.0 * fu * (1.0 - fu);
+  const double dsv = 6.0 * fv * (1.0 - fv);
+  Envelope r;
+  for (u32 c = 0; c < 2; ++c) {
+    const double a = value(iu0, iv0, c), b = value(iu1, iv0, c);
+    const double g = value(iu0, iv1, c), d = value(iu1, iv1, c);
+    const double ab = a + (b - a) * su;
+    const double gd = g + (d - g) * su;
+    r.e[c] = (ab + (gd - ab) * sv) * gfx::k_water_envelope_gain;
+    r.du[c] = ((b - a) + ((d - g) - (b - a)) * sv) * dsu * gfx::k_water_envelope_gain;
+    r.dv[c] = (gd - ab) * dsv * gfx::k_water_envelope_gain;
   }
-  return brdf_ref::normalize(Dvec3{-sx, 1.0 - lift, -sz});
+  return r;
+}
+
+// water_waves.slang's `WaterSum` and `water_wave_add`, each wave's numbers the float the GPU reads.
+struct Sum {
+  double height = 0.0;
+  double gx = 0.0;
+  double gz = 0.0;
+  double lift = 0.0;
+  double dropped = 0.0;
+};
+inline void wave_add(const gfx::WaterWave& wave, double x, double z, double t, double footprint,
+                     double share, double young, Sum& r) {
+  if (!(wave.amplitude > 0.0f)) return;
+  const double k = static_cast<double>(wave.k);
+  const double dx = static_cast<double>(wave.direction.x);
+  const double dz = static_cast<double>(wave.direction.y);
+  const double lambda = k_two_pi / k;
+  const double keep = footprint > 0.0 ? brdf_ref::clamp01(lambda / (2.0 * footprint) - 1.0) : 1.0;
+  const double grown =
+      share * (young > 0.0 ? std::exp(-static_cast<double>(wave.grow) * young) : 1.0);
+  const double slope = static_cast<double>(wave.amplitude) * k * grown;
+  r.dropped += 0.5 * slope * slope * (1.0 - keep * keep);
+  const double weight = grown * keep;
+  if (!(weight > 0.0)) return;
+  const double clock = t / k_period_s;
+  const double along = (dx * x + dz * z) / lambda;
+  const double cyc = frac(frac(along) - frac(static_cast<double>(wave.cycles) * clock) +
+                          static_cast<double>(wave.phase));
+  const double angle = k_two_pi * cyc;
+  const double sn = std::sin(angle);
+  const double cs = std::cos(angle);
+  const double cells = gfx::water_envelope_cells(static_cast<double>(wave.cycles));
+  const double inv_u = 1.0 / (lambda * gfx::k_water_group_along);
+  const double inv_v = 1.0 / (lambda * gfx::k_water_group_across);
+  u32 salt = 0;
+  std::memcpy(&salt, &wave.phase, sizeof(salt));
+  const Envelope env = envelope(along / gfx::k_water_group_along - cells * clock,
+                                (-dz * x + dx * z) * inv_v, cells, salt);
+  const double carrier = env.e[0] * sn + env.e[1] * cs;
+  const double a = static_cast<double>(wave.amplitude) * weight;
+  const double along_term =
+      a * k * (env.e[0] * cs - env.e[1] * sn) + a * (env.du[0] * sn + env.du[1] * cs) * inv_u;
+  const double across_term = a * (env.dv[0] * sn + env.dv[1] * cs) * inv_v;
+  r.height += a * carrier;
+  r.gx += dx * along_term - dz * across_term;
+  r.gz += dz * along_term + dx * across_term;
+  r.lift += static_cast<double>(wave.steepness) * weight * carrier;
+}
+
+// `dropped`, when given, takes the mean square slope the footprint left out (water.slang's
+// `water_roughness` gives it to the lobe).
+inline Dvec3 normal_spectrum(const gfx::WaterWave* waves, double x, double z, double time,
+                             double footprint, double depth, double* dropped = nullptr) {
+  Sum sum;
+  const double calm = brdf_ref::clamp01(depth / k_calm_depth);
+  for (u32 i = 0; i < gfx::k_water_waves; ++i)
+    wave_add(waves[i], x, z, time, footprint, calm, 0.0, sum);
+  if (dropped != nullptr) *dropped = sum.dropped;
+  return brdf_ref::normalize(
+      Dvec3{-sum.gx, 1.0 - std::min(sum.lift, gfx::k_water_max_lift), -sum.gz});
+}
+
+// water.slang's `water_roughness`: the lobe's roughness with the slope variance the pixel dropped.
+inline double roughness_with(double roughness, double dropped) {
+  const double r = std::clamp(roughness, brdf_ref::k_min_roughness, 1.0);
+  const double alpha = r * r;
+  return std::min(std::sqrt(std::sqrt(alpha * alpha + std::max(dropped, 0.0))), 1.0);
 }
 
 // water.slang's `water_edge`: what the shore fades by — the distance from the outline for a closed
@@ -397,6 +479,7 @@ inline double value_noise(double x, double y) {
 struct Field {
   double depth = 0.0;
   double arrival = 0.0;
+  double grown = 1.0;
   double depth_grad[2] = {0.0, 0.0};
   double arrival_grad[2] = {0.0, 0.0};
 };
@@ -409,32 +492,49 @@ inline Field field_at(const gfx::WaterSurface& s, const float* field, double x, 
   const double t = static_cast<double>(s.texel_m);
   const double gx = (x - static_cast<double>(s.origin.x)) / t;
   const double gz = (z - static_cast<double>(s.origin.y)) / t;
+  // The quadratic B-spline over the nine texels round the point (water_waves.slang,
+  // `water_field_at`): C1, so a level line of the arrival has no corner at a texel's border.
   const double cx = std::clamp(gx, 0.0, last);
   const double cz = std::clamp(gz, 0.0, last);
-  const double ix = std::min(std::floor(cx), last - 1.0);
-  const double iz = std::min(std::floor(cz), last - 1.0);
-  const double fx = cx - ix;
-  const double fz = cz - iz;
-  const u32 i = static_cast<u32>(ix);
-  const u32 j = static_cast<u32>(iz);
-  const auto at = [&](u32 a, u32 b, u32 c) {
-    return static_cast<double>(field[2 * (b * n + a) + c]);
-  };
-  for (u32 c = 0; c < 2; ++c) {
-    const double a = at(i, j, c), b = at(i + 1, j, c), e = at(i, j + 1, c), h = at(i + 1, j + 1, c);
-    const double v = (a + (b - a) * fx) + ((e + (h - e) * fx) - (a + (b - a) * fx)) * fz;
-    const double dx = gx >= 0.0 && gx <= last ? ((b - a) + ((h - e) - (b - a)) * fz) / t : 0.0;
-    const double dz = gz >= 0.0 && gz <= last ? ((e - a) + ((h - b) - (e - a)) * fx) / t : 0.0;
-    if (c == 0) {
-      f.depth = v;
-      f.depth_grad[0] = dx;
-      f.depth_grad[1] = dz;
-    } else {
-      f.arrival = v;
-      f.arrival_grad[0] = dx;
-      f.arrival_grad[1] = dz;
+  const double mx = std::floor(cx + 0.5);
+  const double mz = std::floor(cz + 0.5);
+  const double fx = cx - mx;
+  const double fz = cz - mz;
+  const i64 ix = static_cast<i64>(mx);
+  const i64 iz = static_cast<i64>(mz);
+  const i64 hi = static_cast<i64>(n) - 1;
+  const double wx[3] = {0.5 * (0.5 - fx) * (0.5 - fx), 0.75 - fx * fx,
+                        0.5 * (0.5 + fx) * (0.5 + fx)};
+  const double wz[3] = {0.5 * (0.5 - fz) * (0.5 - fz), 0.75 - fz * fz,
+                        0.5 * (0.5 + fz) * (0.5 + fz)};
+  const double dwx[3] = {fx - 0.5, -2.0 * fx, fx + 0.5};
+  const double dwz[3] = {fz - 0.5, -2.0 * fz, fz + 0.5};
+  double v[3] = {0.0, 0.0, 0.0};
+  double dx[2] = {0.0, 0.0};
+  double dz[2] = {0.0, 0.0};
+  for (i64 j = 0; j < 3; ++j) {
+    const u32 row = static_cast<u32>(std::clamp(iz + j - 1, i64{0}, hi)) * n;
+    for (i64 i = 0; i < 3; ++i) {
+      const u32 at = row + static_cast<u32>(std::clamp(ix + i - 1, i64{0}, hi));
+      for (u32 c = 0; c < 3; ++c) {
+        const double texel = static_cast<double>(field[gfx::k_water_field_channels * at + c]);
+        v[c] += texel * wx[i] * wz[j];
+        if (c < 2) {
+          dx[c] += texel * dwx[i] * wz[j];
+          dz[c] += texel * wx[i] * dwz[j];
+        }
+      }
     }
   }
+  const double inside_x = gx >= 0.0 && gx <= last ? 1.0 / t : 0.0;
+  const double inside_z = gz >= 0.0 && gz <= last ? 1.0 / t : 0.0;
+  f.depth = v[0];
+  f.arrival = v[1];
+  f.grown = std::clamp(v[2], 0.0, 1.0);
+  f.depth_grad[0] = dx[0] * inside_x;
+  f.depth_grad[1] = dz[0] * inside_z;
+  f.arrival_grad[0] = dx[1] * inside_x;
+  f.arrival_grad[1] = dz[1] * inside_z;
   return f;
 }
 
@@ -455,15 +555,8 @@ inline double train_cycles(const gfx::WaterSurface& s, double t, double arrival)
   return (ct - 7.0 * std::floor(ct / 7.0)) - (ca - 7.0 * std::floor(ca / 7.0));
 }
 
-inline double facing(const gfx::WaterSurface& s, const Field& f) {
-  if ((s.flags & gfx::k_water_surface_open) != 0) return 1.0;
-  const double len = std::hypot(f.depth_grad[0], f.depth_grad[1]);
-  if (!(len > 1e-3)) return 1.0;
-  const double d = -(static_cast<double>(s.wind.x) * f.depth_grad[0] +
-                     static_cast<double>(s.wind.y) * f.depth_grad[1]) /
-                   len;
-  return 0.25 + 0.75 * std::clamp(d, 0.0, 1.0);
-}
+// water_waves.slang's `water_shelter`: the lee.
+inline double shelter(const Field& f) { return std::sqrt(std::clamp(f.grown, 0.0, 1.0)); }
 
 inline double offshore_weight(const gfx::WaterSurface& s, double d) {
   const double k0 = std::max(static_cast<double>(s.k0), 1e-6);
@@ -473,22 +566,20 @@ inline double offshore_weight(const gfx::WaterSurface& s, double d) {
   return x * x * (3.0 - 2.0 * x);
 }
 
-// The height over the still level (no tide), water_waves.slang's `water_height` at no footprint.
-inline double height(const gfx::WaterSurface& s, const Field& f, double x, double z, double t) {
+// The height over the still level (no tide), water_waves.slang's `water_height` for the pool's
+// lift: no pixel footprint, and the mesh's spacing (`mesh_far` along a ring, `mesh_ring` between
+// rings; 0 and 0: every wave whole) as what the waves and the train are held against.
+inline double height(const gfx::WaterSurface& s, const Field& f, double x, double z, double t,
+                     double mesh_far = 0.0, double mesh_ring = 0.0) {
   const double d = f.depth;
   const double w_off = s.k0 > 0.0f && s.height_m > 0.0f ? offshore_weight(s, d) : 1.0;
   double off = 0.0;
   if ((s.flags & gfx::k_water_surface_spectrum) != 0) {
-    for (u32 i = 0; i < gfx::k_water_waves; ++i) {
-      const gfx::WaterWave& wave = s.waves[i];
-      const double lambda = k_two_pi / static_cast<double>(wave.k);
-      const double along =
-          (static_cast<double>(wave.direction.x) * x + static_cast<double>(wave.direction.y) * z) /
-          lambda;
-      const double travel = frac(static_cast<double>(wave.cycles) * (t / k_period_s));
-      const double cyc = frac(frac(along) - travel + static_cast<double>(wave.phase));
-      off += static_cast<double>(wave.amplitude) * std::sin(k_two_pi * cyc);
-    }
+    const double young = std::pow(std::max(f.grown, 1e-4), -4.0 / 3.0) - 1.0;
+    Sum sum;
+    for (u32 i = 0; i < gfx::k_water_waves; ++i)
+      wave_add(s.waves[i], x, z, t, mesh_far, 1.0, young, sum);
+    off = sum.height;
   } else {
     for (u32 i = 0; i < 4; ++i) {
       const double lambda = static_cast<double>(s.wavelength) * k_length[i];
@@ -505,14 +596,28 @@ inline double height(const gfx::WaterSurface& s, const Field& f, double x, doubl
       const double along = (dx * x + dz * z) / lambda;
       const double travel = frac(cycles * (t / k_period_s));
       const double cyc = frac(frac(along) - travel + phase(s.seed, i));
-      off += a * std::sin(k_two_pi * cyc);
+      const double keep = mesh_far > 0.0 ? brdf_ref::clamp01(lambda / (2.0 * mesh_far) - 1.0) : 1.0;
+      off += a * keep * std::sin(k_two_pi * cyc);
     }
   }
   double train = 0.0;
   if (w_off < 1.0 && d > 0.0 && s.height_m > 0.0f && s.period_s > 0.0f) {
     const double c = train_cycles(s, t, f.arrival);
     const double env = 0.55 + 0.45 * (0.5 - 0.5 * std::cos(k_two_pi * (c + 0.5) / 7.0));
-    train = env * facing(s, f) *
+    // What the mesh carries of the train: its spacing as the train crosses it.
+    double keep = 1.0;
+    if (mesh_far > 0.0) {
+      const double lp = std::hypot(x, z);
+      const double lc = std::hypot(f.arrival_grad[0], f.arrival_grad[1]);
+      double along_ray = 1.0;
+      if (lp > 1e-3 && lc > 1e-9 * static_cast<double>(s.period_s))
+        along_ray = std::fabs(x * f.arrival_grad[0] + z * f.arrival_grad[1]) / (lp * lc);
+      const double held = std::max(
+          mesh_ring * along_ray, mesh_far * std::sqrt(std::max(1.0 - along_ray * along_ray, 0.0)));
+      const double local_k = gfx::water_wavenumber(static_cast<double>(s.k0), d);
+      if (held > 0.0) keep = brdf_ref::clamp01(k_two_pi / local_k / (2.0 * held) - 1.0);
+    }
+    train = keep * env * shelter(f) *
             train_shape(static_cast<double>(s.height_m), static_cast<double>(s.k0), d,
                         k_two_pi * frac(c));
   }
@@ -535,9 +640,19 @@ inline double front(const gfx::WaterSurface& s, const Field& f, double x, double
   const double along = std::max(static_cast<double>(s.along_m), 1e-3);
   const double variation = 0.85 + 0.3 * value_noise(x / along + 17.3, z / along + 5.1);
   const double r = static_cast<double>(s.run_up_m);
-  const double reach = r * group * variation * facing(s, f);
+  const double reach = r * group * variation * shelter(f);
   const double z_lo = -0.2 * r;
   return z_lo + (reach - z_lo) * swash_shape(c - k);
+}
+
+// water_waves.slang's `water_sheet_surface`: the sheet over ground `g` above the instant's still
+// level under a front at `fr`, going on under the ground past the front at the same slope.
+inline double sheet_surface(const gfx::WaterSurface& s, double g, double fr) {
+  const double r = static_cast<double>(s.run_up_m);
+  const double y = fr - g;
+  const double sheet =
+      y > 0.0 ? std::min(0.5 * y, 0.25 * r + 0.02) : std::max(0.5 * y, -gfx::k_water_bank_park_m);
+  return std::min(g, 1.15 * r + 0.1) + sheet;
 }
 
 inline double smoothstep(double a, double b, double v) {
@@ -546,29 +661,28 @@ inline double smoothstep(double a, double b, double v) {
 }
 
 // `water_vertex_lift`: how far above the still level the pool puts a vertex at (x, z), `edge`
-// metres in from the outline, at the clock t and the tide's phase. `decided`, when given, says
-// whether the vertex is far enough from the front's edge (1 cm) that float and double agree on
-// which side of it the vertex is.
+// metres in from the outline, at the clock t and the tide's phase. The sheet's surface is
+// continuous through the front since S100 stage B, so float and double agree everywhere and no
+// vertex is left out of the comparison.
 inline double vertex_lift(const gfx::WaterSurface& s, const float* field, double x, double z,
-                          double edge, double t, double tide_phase, bool* decided = nullptr) {
-  if (decided != nullptr) *decided = true;
+                          double edge, double t, double tide_phase) {
   const Field f = field_at(s, field, x, z);
   const double tide =
       s.tide_m > 0.0f ? static_cast<double>(s.tide_m) * std::sin(k_two_pi * tide_phase) : 0.0;
   const double fade = (s.flags & gfx::k_water_surface_open) != 0 && s.fade_m > 0.0f
                           ? smoothstep(0.0, static_cast<double>(s.fade_m), edge)
                           : 1.0;
-  const double water = (tide + height(s, f, x, z, t)) * fade;
+  const double mesh_far = static_cast<double>(s.mesh_far_m);
+  const double mesh_ring = std::min(
+      static_cast<double>(s.mesh_near_m) + static_cast<double>(s.mesh_grade) * std::max(edge, 0.0),
+      mesh_far);
+  const double water = (tide + height(s, f, x, z, t, mesh_far, mesh_ring)) * fade;
   if (field == nullptr) return water;
   const double d = f.depth + tide;
   const double r = static_cast<double>(s.run_up_m);
   const double band = 0.2 * r + 0.05;
   if (d >= band) return water;
-  const double g = -d;
-  const double fr = front(s, f, x, z, t);
-  if (decided != nullptr) *decided = std::fabs(fr - g) > 0.01;
-  const double bank = fr > g ? tide + g + std::min(0.5 * (fr - g), 0.25 * r + 0.02)
-                             : tide + std::min(g, 1.15 * r + 0.1) - gfx::k_water_bank_park_m;
+  const double bank = tide + sheet_surface(s, -d, front(s, f, x, z, t));
   const double share = 1.0 - smoothstep(0.0, band, d);
   return water + (bank - water) * share;
 }

@@ -1,0 +1,11 @@
+{
+  "format": "engine.structure-raise.v1",
+  "name": "renderer.gpu_scene_cpp.lines",
+  "reason": "S100 stage B: a closed body's lee (the grown share of its fetch per texel) and the mesh's three spacings join the water surface the GPU scene writes",
+  "date": "2026-11-10",
+  "by": "Marc Micalizzi",
+  "deltas": {
+    "renderer.gpu_scene_cpp.lines": 17,
+    "page:docs/subsystems/water.md": 6602
+  }
+}

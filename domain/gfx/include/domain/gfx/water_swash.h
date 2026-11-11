@@ -187,15 +187,20 @@ inline constexpr f64 k_water_bank_celerity = 1.0e4;
 // The depth below which the celerity is held (the shallow-water speed at 2 cm).
 inline constexpr f64 k_water_celerity_floor_m = 0.02;
 
-// **One body's height function, for the GPU** (608 bytes; water_waves.slang's `WaterSurface`). The
+// The field's floats a texel: the signed depth (m), the train's arrival (s), `grown` — the share
+// of the body's fetch the wind has blown over to reach the texel (`water_fetch_field`; 1 over an
+// open body) — and one spare.
+inline constexpr u32 k_water_field_channels = 4;
+// **One body's height function, for the GPU** (624 bytes; water_waves.slang's `WaterSurface`). The
 // GPU scene writes one per deformed body at load; the pool pass reaches it through the body's
 // `DeformDesc::joints` and the resolve through its `WaterShore::surface`.
 struct WaterSurface {
-  u64 field = 0;  // f32 [2 * size * size]: (signed depth m, arrival s) per texel, rows along +z
+  // f32 [4 * size * size]: (signed depth m, arrival s, grown, 0) per texel, rows along +z
+  u64 field = 0;
   Vec2 origin{};  // body-local (x, z) of texel (0, 0)'s centre: the depth map's grid
   f32 texel_m = 0.0f;
   u32 size = 0;
-  Vec2 wind{1.0f, 0.0f};  // a closed body's wind (unit, x z): which shores its waves face
+  Vec2 wind{1.0f, 0.0f};  // the body's wind (unit, x z)
   f32 height_m = 0.0f;    // the wind's significant height H_m0 offshore
   f32 period_s = 0.0f;    // the peak period on the water's clock (swash_period)
   f32 k0 = 0.0f;          // the peak's deep-water wavenumber, (2 pi / T)^2 / g
@@ -210,10 +215,20 @@ struct WaterSurface {
   u32 seed = 0;
   Vec2 direction{1.0f, 0.0f};
   f32 along_m = 0.0f;  // the swash reach's along-shore scale
+  // **What the mesh resolves** (S100 stage B; water.md, "The mesh"): the spacing of its vertices
+  // along a ring and far from the outline, the spacing of its rings at the outline, and how much a
+  // ring's spacing grows per metre in from it (the rings' geometric grade less one). The pool's
+  // lift leaves out what four vertices a wavelength cannot carry; the normal keeps it.
+  f32 mesh_far_m = 0.0f;
+  f32 mesh_near_m = 0.0f;
+  f32 mesh_grade = 0.0f;
+  // A swell's train (an open body's `swell_height_m` at `swell_period_s`): 1 when `height_m`,
+  // `period_s` and `k0` are a swell's, so the wind's table offshore is not what shoals.
+  f32 swell = 0.0f;
   f32 pad = 0.0f;
-  WaterWave waves[k_water_waves];  // an open body's spectrum (k_water_surface_spectrum)
+  WaterWave waves[k_water_waves];  // the wind's spectrum (k_water_surface_spectrum)
 };
-static_assert(sizeof(WaterSurface) == 608);
+static_assert(sizeof(WaterSurface) == 624);
 
 // **The dispersion relation at depth**: the wavenumber k with omega^2 = g k tanh(k d), from the
 // deep-water k0 = omega^2 / g — Fenton and McKee's (1990) explicit approximation
@@ -314,12 +329,61 @@ inline void water_arrival_field(const f32* depth, u32 size, f64 texel_m, f64 per
     out[i] = tau[i] < k_far ? static_cast<f32>(tau[i]) : 0.0f;
 }
 
+// **The fetch at every place** (S100 stage B; docs/experiments/shore.md, "The spectrum for every
+// body"): how far the wind has blown over the body's water to reach each texel, metres — w . grad F
+// = 1 over water with F = 0 where the wind comes off the land, by a first-order upwind difference
+// swept once in the wind's order, F = (h + |wx| F_x + |wz| F_z) / (|wx| + |wz|) with F_x and F_z
+// the upwind neighbours along each axis (exact along the axes, and smeared across the wind by the
+// scheme's own diffusion, sqrt(h x) wide after x: a lee's edge is soft, as a wind's shadow is).
+// Over land the value is carried on and decays with an e-folding of `k_water_fetch_land_m`, so a
+// beach's texels hold the sea's fetch at its waterline, and an island casts a lee. `wind` is unit,
+// over (x, z); `depth` and `out` are size * size, rows along +z. Returns the longest fetch over
+// water. Deterministic: a fixed order in double.
+inline constexpr f64 k_water_fetch_land_m = 20.0;
+inline f64 water_fetch_field(const f32* depth, u32 size, f64 texel_m, Vec2 wind,
+                             f32* out) noexcept {
+  const u32 count = size * size;
+  f64 wx = std::fabs(static_cast<f64>(wind.x));
+  f64 wz = std::fabs(static_cast<f64>(wind.y));
+  if (size < 2 || !(texel_m > 0.0) || !(wx + wz > 0.0)) {
+    for (u32 i = 0; i < count; ++i)
+      out[i] = 0.0f;
+    return 0.0;
+  }
+  const bool fx = wind.x < 0.0f;
+  const bool fz = wind.y < 0.0f;
+  const f64 step = texel_m / (wx + wz);
+  const f64 decay = std::exp(-step / k_water_fetch_land_m);
+  Vector<f64> fetch(count);
+  f64 longest = 0.0;
+  const i64 n = size;
+  for (i64 jj = 0; jj < n; ++jj) {
+    const i64 j = fz ? n - 1 - jj : jj;
+    for (i64 ii = 0; ii < n; ++ii) {
+      const i64 i = fx ? n - 1 - ii : ii;
+      const u32 at = static_cast<u32>(j * n + i);
+      const f64 a = ii > 0 ? fetch[static_cast<u32>(j * n + (fx ? i + 1 : i - 1))] : 0.0;
+      const f64 b = jj > 0 ? fetch[static_cast<u32>((fz ? j + 1 : j - 1) * n + i)] : 0.0;
+      const f64 up = (wx * a + wz * b) / (wx + wz);
+      if (depth[at] > 0.0f) {
+        fetch[at] = up + step;
+        longest = std::max(longest, fetch[at]);
+      } else {
+        fetch[at] = up * decay;
+      }
+    }
+  }
+  for (u32 i = 0; i < count; ++i)
+    out[i] = static_cast<f32>(fetch[i]);
+  return longest;
+}
+
 inline SwashWave swash_wave(f64 u10, f64 fetch_m) noexcept {
   SwashWave w;
   if (!(u10 > 0.0) || !(fetch_m > 0.0)) return w;
   const f64 g = k_swash_g;
-  const f64 peak = 22.0 * std::cbrt(g * g / (u10 * fetch_m));
-  const f64 alpha = 0.076 * std::pow(u10 * u10 / (fetch_m * g), 0.22);
+  const f64 peak = jonswap_peak(u10, fetch_m);
+  const f64 alpha = jonswap_alpha(u10, fetch_m);
   // m0 by the midpoint rule over [0.3, 6] omega_p in 4,096 steps (the spectrum is smooth there and
   // holds all but a few parts in a thousand of its variance in it).
   const u32 steps = 4096;

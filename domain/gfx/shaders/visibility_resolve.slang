@@ -934,7 +934,7 @@ float3 water_plunge_over(ResolveParams* params, Surface s, float ray_bias, float
 float3 water_pixel(ResolveParams* params, SceneGeometry geo, InstanceDesc instance,
                    uint visible_index, uint cluster, uint triangle, float2 source, Surface s,
                    float3 from_eye, ResolveMaterial material, float ray_bias) {
-  const WaterParams w = water_of(material);
+  WaterParams w = water_of(material);
   const TriangleFetch tri = fetch_triangle(geo, instance, visible_index, cluster, triangle);
   float3 dp_dx;
   float3 dp_dy;
@@ -971,12 +971,15 @@ float3 water_pixel(ResolveParams* params, SceneGeometry geo, InstanceDesc instan
       break;
     }
   }
+  float dropped = 0.0;
   const float3 n =
       swash.surface != 0
           ? water_surface_normal((WaterSurface*)swash.surface, local.xz, s.uv.x,
-                                 params->water_time_s, params->water_tide_phase, footprint)
+                                 params->water_time_s, params->water_tide_phase, footprint, dropped)
           : water_normal_of(w, material.flags, geo.materials, index, local.xz,
-                            params->water_time_s, footprint, depth);
+                            params->water_time_s, footprint, depth, dropped);
+  // The wavelets the pixel cannot hold widen the lobe instead (S100 stage B; water.slang).
+  w.roughness = water_roughness(w.roughness, dropped);
   const float3 view = normalize(-from_eye);
   float edge = water_edge(w, material.flags, s.uv.x, depth);
   // The shore where the level meets the ground (k_material_water_shore; water.md, "The shore"):
@@ -1013,8 +1016,15 @@ float3 water_pixel(ResolveParams* params, SceneGeometry geo, InstanceDesc instan
       }
       edge = water_shore_distance(map, local.xz, depth);
       const float hh = -signed_depth - level;
-      const float x = depth > 0.0 ? edge : (front - hh) / max(swash.slope, 1e-3);
-      foam = water_swash_foam(swash, local.xz, x, uprush, t, footprint);
+      // The foam of the waves that broke (S100 stage B; water.slang): over water the bores' — born
+      // at each wave's break line, decaying behind it — and over the bank the sheet's.
+      if (hh < 0.0 && swash.surface != 0) {
+        WaterSurface* surface = (WaterSurface*)swash.surface;
+        foam = water_bore_foam(surface, local.xz, water_field_at(surface, local.xz), -hh, t,
+                               footprint);
+      } else {
+        foam = water_uprush_foam(swash, place, local.xz, hh, t, footprint);
+      }
       if (!(depth > 0.0)) {
         float film;
         bared_wet = water_swash_on(swash) ? water_swash_wetness(swash, place, t, hh, film) : 1.0;
@@ -1119,7 +1129,7 @@ bool open_water_pixel(ResolveParams* params, float2 source, uint2 noise_pixel, b
   ResolveMaterial* materials = (ResolveMaterial*)geo.materials;
   const uint index = params->water_open_material;
   const ResolveMaterial material = materials[index];
-  const WaterParams w = water_of(material);
+  WaterParams w = water_of(material);
   // The depth under the plane: the body's depth map within its square, as the mesh reads it, so the
   // shading is continuous across the outline; past it, the level less the height of the surface
   // the pixel would otherwise show (the ground the ray meets under the water); with none, deep.
@@ -1137,8 +1147,10 @@ bool open_water_pixel(ResolveParams* params, float2 source, uint2 noise_pixel, b
   } else if (has_surface) {
     depth = max(centre.y - surface.y, 0.0);
   }
+  float dropped = 0.0;
   const float3 n = water_normal_of(w, material.flags, geo.materials, index, local.xz,
-                                   params->water_time_s, footprint, depth);
+                                   params->water_time_s, footprint, depth, dropped);
+  w.roughness = water_roughness(w.roughness, dropped);
   const float3 view = -ray;
   const float edge = water_edge(w, material.flags, 0.0, depth);
   Surface s;

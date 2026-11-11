@@ -134,8 +134,16 @@ struct Mesh {
   Vector<Vec2> uvs;
   Vector<u32> indices;
   f32 spacing = 0.0f;  // metres between edge samples, and between rings along a ray
-  u32 edge = 0;        // vertices a ring
-  u32 rings = 0;       // rings, the edge included; the centre is one vertex more
+  // **Rings closer together at the outline** (S100 stage B; water.md, "The mesh"): a body with a
+  // wind has its rings `near_spacing` apart at the outline (along the longest ray), each gap
+  // `1 + grade` times the one outside it until it is `spacing`, inwards and over the rim alike — so
+  // a crest coming in along the rings is carried by the mesh to where it breaks, for a few rings
+  // more and no more vertices a ring. No wind: `near_spacing` is `spacing` and `grade` 0, the
+  // bytes the mesh always was.
+  f32 near_spacing = 0.0f;
+  f32 grade = 0.0f;
+  u32 edge = 0;   // vertices a ring
+  u32 rings = 0;  // rings, the edge included; the centre is one vertex more
   // Of them, the swash's rim (S100; water.md, "The mesh"): rings past the outline over the bank,
   // first in the vertex order; 0 for a body with no wind and no tide.
   u32 rim = 0;
@@ -191,27 +199,34 @@ std::string mesh_file_name(std::span<const u8> glb);
 // shore's slope is known on both sides of the waterline and the swash knows how high the bank
 // stands. 16 bits over the body's own range: a 2.3 m pool with a 2 m bank keeps 0.07 mm. A
 // version-1 file (the bank clamped at zero) is read with `bank_max` 0, as before.
-inline constexpr u32 k_depth_map_version = 2;
+// Version 3 (S100 stage B) adds what the mesh resolves — `mesh_far_m`, `mesh_near_m` and
+// `mesh_grade`, the mesh's `spacing`, `near_spacing` and `grade` — which the renderer's lift holds
+// every wave against, since it may not ask this capability.
+inline constexpr u32 k_depth_map_version = 3;
 inline constexpr u32 k_depth_map_min = 64;
 inline constexpr u32 k_depth_map_max = 1024;
 // How high a bank the map stores: the larger of 2 m and twice the tide plus a metre, so the swash
 // and the tide's range are in it and a hill beside a pool does not spend the 16 bits.
 inline constexpr f32 k_depth_map_bank_min = 2.0f;
 struct DepthMap {
-  u32 size = 0;          // texels a side; 0 is no map
-  Vec2 origin{};         // body-local (x, z) of texel (0, 0)'s centre, metres
-  f32 texel_m = 0.0f;    // metres between texel centres
-  f32 depth_max = 0.0f;  // the deepest texel's depth
-  f32 bank_max = 0.0f;   // the highest bank stored, metres above the level (0: version 1)
-  Vector<u16> texels;    // size * size, rows along +z
+  u32 size = 0;            // texels a side; 0 is no map
+  Vec2 origin{};           // body-local (x, z) of texel (0, 0)'s centre, metres
+  f32 texel_m = 0.0f;      // metres between texel centres
+  f32 depth_max = 0.0f;    // the deepest texel's depth
+  f32 bank_max = 0.0f;     // the highest bank stored, metres above the level (0: version 1)
+  f32 mesh_far_m = 0.0f;   // the mesh's spacing (versions 1 and 2: four texels)
+  f32 mesh_near_m = 0.0f;  // its rings' spacing at the outline (versions 1 and 2: four texels)
+  f32 mesh_grade = 0.0f;   // the rings' spacing's growth per metre in from the outline
+  Vector<u16> texels;      // size * size, rows along +z
 };
 // Texel (i, j)'s signed depth, metres.
 f32 depth_map_depth(const DepthMap& map, u32 i, u32 j) noexcept;
 void build_depth_map(const Body& body, const Mesh& mesh, const scene_gen::Ground& ground,
                      DepthMap& out);
-// The map as a file: a 32-byte header — "EWDM", the version, the size, bank_max (version 1: 0),
-// origin x and z, texel_m and depth_max as little-endian u32 and f32 — then the texels as
-// little-endian u16. Versions 1 and 2 are read. The
+// The map as a file: a 44-byte header — "EWDM", the version, the size, bank_max (version 1: 0),
+// origin x and z, texel_m, depth_max and (version 3) mesh_far_m, mesh_near_m and mesh_grade as
+// little-endian u32 and f32 — then the texels as little-endian u16. Versions 1 and 2 (a 32-byte
+// header) are read. The
 // renderer's scene reader reads it (systems/renderer/src/scene_water.cpp; the layout is mirrored
 // there, since the renderer may not call a capability, and `water_scene_tests.cpp` holds the two
 // to each other).
