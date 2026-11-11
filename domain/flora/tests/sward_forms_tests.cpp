@@ -12,8 +12,10 @@
 
 #include <doctest/doctest.h>
 #include <test_paths.h>
+#include <test_temp_dir.h>
 
 #include <bit>
+#include <chrono>
 #include <cmath>
 #include <cstring>
 #include <fstream>
@@ -258,6 +260,9 @@ f64 rising(const void*, i64 x_mm, i64) noexcept { return k_tan20 * static_cast<f
 // One 64 m tile of 1 m cells over `surface`; palette 1 is the grass, its weight `weight(i)` at mip
 // point i, and the wetness byte `wet` everywhere.
 struct Meadow {
+  // G140: a community member naming no mesh has its stand-in recipe written into the derived-data
+  // root, which is this test's own scratch directory.
+  test::TempDir scratch;
   MaskGround ground;
   scene_gen::Context ctx;
   void* state = nullptr;
@@ -278,6 +283,7 @@ struct Meadow {
       ground.words[i] = wet * 0x01010101u;
     ctx.tile_size = 64;
     ctx.world_seed = 77;
+    ctx.ddc = scratch.path();
     ctx.ground.context = &ground;
     ctx.ground.surface_fn = surface;
     ctx.ground.masks_fn = [](const void* s, scene_gen::GroundMasks& out, std::string*) {
@@ -454,8 +460,16 @@ TEST_CASE("sward forms: the community's plants take their covers' share, and the
   CHECK(std::fabs(expected - 697) < 3);
   // Expectation, as the density classes are: sigma 24 at this share.
   CHECK(std::fabs(static_cast<f64>(forbs) - expected) < 100);
-  // The nearest ring alone: the card ring carries none.
-  CHECK(meadow.tile(1).instances.size() == 4096);
+  // The card ring carries the far form after its cards: red clover's stands for four plants, one in
+  // four of the near ring's cells by its own stream, its mesh after the near one.
+  u32 far = 0;
+  for (const auto& placed : meadow.tile(1).instances)
+    if ((placed.id & 0x80000000u) != 0) {
+      ++far;
+      CHECK(placed.mesh == 9);
+      CHECK(placed.handoff == 0);
+    }
+  CHECK(std::fabs(static_cast<f64>(far) - static_cast<f64>(forbs) / 4) < 50);
   // The streamed inner ring (G136's hand-off by distance): every patch's pair first, then the
   // forbs with no role, so the hand-off never sees a forb and a herb draws at every distance.
   const auto ring0 = meadow.tile(0);
@@ -835,17 +849,88 @@ TEST_CASE("meadow: a cell's plant is its cell's from any tile order, and a tile 
   }
   CHECK(plants > 400);
   CHECK(std::popcount(used) >= 4);
-  // The default budget: 256 plants a tile in the nearest ring, none in the next, none past it.
+  // The default budget: 256 plants a tile in the nearest ring; in the next the far forms, each
+  // counted as the plants it stands for, up to the same 256; none past it.
   p.forb_tile_cap = 256;
   Meadow capped(&rising, p, 120);
-  u32 near = 0, card = 0;
+  Vector<u32> thin_of_mesh;  // the far meshes follow the 13 near ones, flowering species only
+  for (const auto& species : flora::meadow_species())
+    if (flora::meadow_far_thin(species) > 0)
+      thin_of_mesh.push_back(flora::meadow_far_thin(species));
+  const u32 far_base = 8 + static_cast<u32>(flora::meadow_species().size());
+  u32 near = 0, far = 0, stands_for = 0;
   for (const auto& placed : capped.tile(0).instances)
     near += (placed.id & 0x80000000u) != 0 ? 1u : 0u;
   for (const auto& placed : capped.tile(1).instances)
-    card += (placed.id & 0x80000000u) != 0 ? 1u : 0u;
+    if ((placed.id & 0x80000000u) != 0) {
+      REQUIRE(placed.mesh >= far_base);
+      REQUIRE(placed.mesh < far_base + thin_of_mesh.size());
+      ++far;
+      stands_for += thin_of_mesh[placed.mesh - far_base];
+    }
   CHECK(near == 256);
-  CHECK(card == 0);
+  CHECK(stands_for <= 256);
+  CHECK(stands_for > 256 - 4);
+  CHECK(far < near);
+  MESSAGE("a capped tile: ", near, " plants near, ", far, " far forms standing for ", stands_for);
   CHECK(capped.tile(2).instances.empty());
+}
+
+TEST_CASE("meadow: the far form keeps the flowers' colour and coloured area within a tenth") {
+  // Each head's coloured area is its petal cards' (n l^2 at the herb's width ratio); a tile's
+  // flowers, near against far, per colour, summed over four worlds with no cap.
+  for (const auto& species : flora::meadow_species()) {
+    const auto near = flora::meadow_herb(species), far = flora::meadow_far_herb(species);
+    CHECK(far.flower_red == near.flower_red);
+    CHECK(far.flower_green == near.flower_green);
+    CHECK(far.flower_blue == near.flower_blue);
+    if (flora::meadow_far_thin(species) == 0) continue;
+    const f64 per_near = static_cast<f64>(near.flowers) * near.petals *
+                         static_cast<f64>(near.petal_length_m) *
+                         static_cast<f64>(near.petal_length_m);
+    const f64 per_far = static_cast<f64>(far.flowers) * far.petals *
+                        static_cast<f64>(far.petal_length_m) * static_cast<f64>(far.petal_length_m);
+    INFO(species.name);
+    CHECK(std::fabs(per_far / (per_near * flora::meadow_far_thin(species)) - 1) < 1e-3);
+  }
+  auto p = four_forms();
+  for (const auto& species : flora::meadow_species())
+    p.community.push_back(member(std::string(species.name).c_str()));
+  p.forb_tile_cap = 4096;
+  const u32 count = static_cast<u32>(flora::meadow_species().size());
+  Vector<f64> area_of_mesh;  // coloured area by mesh index past the patches'
+  for (const auto& species : flora::meadow_species()) {
+    const auto h = flora::meadow_herb(species);
+    area_of_mesh.push_back(static_cast<f64>(h.flowers) * h.petals *
+                           static_cast<f64>(h.petal_length_m) * static_cast<f64>(h.petal_length_m));
+  }
+  for (const auto& species : flora::meadow_species())
+    if (flora::meadow_far_thin(species) > 0) {
+      const auto h = flora::meadow_far_herb(species);
+      area_of_mesh.push_back(static_cast<f64>(h.flowers) * h.petals *
+                             static_cast<f64>(h.petal_length_m) *
+                             static_cast<f64>(h.petal_length_m));
+    }
+  f64 near_area = 0, far_area = 0;
+  u32 near_count = 0, far_count = 0;
+  for (u32 w = 0; w < 4; ++w) {
+    Meadow meadow(&rising, p, 120);
+    meadow.ctx.world_seed = 500 + w;
+    for (u8 ring : {u8{0}, u8{1}})
+      for (const auto& placed : meadow.tile(ring).instances) {
+        if ((placed.id & 0x80000000u) == 0) continue;
+        REQUIRE(placed.mesh >= 8);
+        const u32 m = placed.mesh - 8;
+        REQUIRE(m < area_of_mesh.size());
+        (ring == 0 ? near_area : far_area) += area_of_mesh[m];
+        if (area_of_mesh[m] > 0) ++(ring == 0 ? near_count : far_count);
+        if (ring == 1) CHECK(m >= count);
+      }
+  }
+  MESSAGE("four worlds: near ", near_count, " flowering plants, ", near_area,
+          " m2 of petal card; far ", far_count, " far forms, ", far_area, " m2");
+  CHECK(far_area > .9 * near_area);
+  CHECK(far_area < 1.1 * near_area);
 }
 
 TEST_CASE("meadow: the covers and a tile's community are the same bits on every toolchain") {
@@ -870,8 +955,37 @@ TEST_CASE("meadow: the covers and a tile's community are the same bits on every 
   p.forb_tile_cap = 4096;
   Meadow sloped(&rising, p, 120, true);
   CHECK(pin_of(sloped.tile(0)) == 5908356335877227896ull);
+  CHECK(pin_of(sloped.tile(1)) ==
+        8258841106184913265ull);  // the far ring: the cards and the far forms
   Meadow valley_floor(&valley, p);
   CHECK(pin_of(valley_floor.tile(0)) == 8268456944544360779ull);
+}
+
+TEST_CASE("meadow: what a tile's placement costs, with and without the community") {
+  // Reported, not held: a 64 m tile of 1 m cells on a slope, the four forms with the default band,
+  // and the thirteen species, at activation (never per frame). The flora page quotes the
+  // msvc-release figures with the machine's state.
+  auto bare = four_forms();
+  auto full = bare;
+  for (const auto& species : flora::meadow_species())
+    full.community.push_back(member(std::string(species.name).c_str()));
+  for (const auto* entry : {&bare, &full}) {
+    Meadow meadow(&rising, *entry, 120, true);
+    for (u8 ring : {u8{0}, u8{1}}) {
+      f64 best = 1e30;
+      for (u32 run = 0; run < 5; ++run) {
+        const auto start = std::chrono::steady_clock::now();
+        const auto out = meadow.tile(ring);
+        const f64 ms =
+            std::chrono::duration<f64, std::milli>(std::chrono::steady_clock::now() - start)
+                .count();
+        best = std::min(best, ms);
+        CHECK(out.instances.size() > 1000);
+      }
+      const std::string what = entry == &bare ? "forms alone" : "forms and community";
+      MESSAGE(what, ", ring ", u32{ring}, ": ", best, " ms a tile (best of 5)");
+    }
+  }
 }
 
 TEST_CASE("meadow: each species' stand-in herb is in range and inside its budget") {
@@ -886,7 +1000,20 @@ TEST_CASE("meadow: each species' stand-in herb is in range and inside its budget
     CHECK(report.triangles <= herb.triangle_budget);
     CHECK(report.triangles > 0);
     total += report.triangles;
-    MESSAGE(species.name, ": ", report.triangles, " triangles");
+    u32 far_triangles = 0;
+    if (flora::meadow_far_thin(species) > 0) {
+      const auto far = flora::meadow_far_herb(species, 3);
+      CHECK_MESSAGE(flora::herb_in_range(far, error), species.name, " far: ", error);
+      assets::MeshData far_mesh;
+      flora::TreeReport far_report;
+      REQUIRE_MESSAGE(flora::solve_herb(far, far_mesh, &far_report, &error), species.name, ": ",
+                      error);
+      far_triangles = far_report.triangles;
+      // Fewer triangles a plant it stands for than the near form's.
+      CHECK(far_triangles < report.triangles * flora::meadow_far_thin(species));
+    }
+    MESSAGE(species.name, ": ", report.triangles, " triangles near, ", far_triangles, " far for ",
+            flora::meadow_far_thin(species), " plants");
   }
   MESSAGE("the table's stand-ins: ", total, " triangles");
 }

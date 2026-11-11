@@ -314,7 +314,7 @@ cleared earlier footprints by), asked of the exclusion at its own point, upright
 stream, its ID the cell's with the top bit set (so an entry with a community is refused past a 31-bit
 cell space). The herb's motion kind is `parts` — every plant is a run of the part-pose table and is
 posed on the CPU each frame — so a tile keeps at most `forb_tile_cap` (256) of lowest hash, and plants
-stand only in representation 0 (the near ring). Ring 1 draws cards and no plants. The v36 measurement
+stand in representation 0 (the near ring) and, as far forms, in representation 1 (below). The v36 measurement
 (grass-sward.md) sets 1,024 and shows the cost: the deformed-vertex pool 0.08–0.18 ms more at 1080p
 with no relayout of the deform table.
 **Capability contract.** Flora remains optional. It adds only a dependency on the nonoptional
@@ -337,9 +337,11 @@ slope-conforming patches; tussock spacing and base height from a field measureme
 the band where the shade layer draws the boundary, and where the noise's weight is exactly 0
 (`sward_site_form` would take the score's gradient itself), and a band width from a measured
 tall-to-short boundary rather than the height mosaic's scale;
-the meadow community's far form (flowers past the near ring, so a flowering meadow reads at 50 m) and a
-`field`-kind meadow plant, so plants need no pose-table run and can stand past the near ring and past
-`forb_tile_cap` (a request: the herb's solver and the field pass are not this module's sward); the
+a `field`-kind meadow plant (or a static far form), so plants need no pose-table run and a tile can
+hold the community's whole density instead of `forb_tile_cap`'s 256 plants (6 % of a 64 m tile's
+cells: a flowering meadow at 50 m still reads sparse beside r01), and a merged far mesh a tile in place
+of far forms as instances (a request: the herb's solver and the field pass are not this module's
+sward); the
 species' leaf and flower sets (roles: a buttercup's and a marigold's yellow cup, a clover's magenta
 head, a cranesbill's violet saucer, a daisy's white ray, an umbel's white, a sedge's and a rush's
 leaf, a bilberry's leaf), grazing and soil as niche axes, per-species tolerances fitted to plot data,
@@ -381,17 +383,43 @@ the rule, pure; `src/sward_placement.cpp` reads it per cell.
   rushes and the marsh marigold do.
 - **The stand-in meshes** (`meadow_herb`): each species' herb recipe from the table — its height, its
   heads at their flat colour, petal cards a head; a sedge, a rush or a dwarf shrub a herb of leaves
-  alone — 48 to 498 triangles, 2,874 for the thirteen. They are stand-ins until leaf and flower sets
-  exist; the roles a species needs are listed under "Not yet".
+  alone — 48 to 498 triangles, 2,874 for the thirteen. A member that names no `mesh` stands as its
+  stand-in: `open` writes the recipe as `<ddc>/meadow/<species>-near-<hash>.flora.json` (the
+  host's derived-data root, else the repository's found from the scene, else `meadow` beside the
+  scene: the cliffs generator's rule), once, under its content hash, and names it, so the host builds
+  it through the `flora` mesh generator and the derived-data cache when a tile first uses it. They
+  are stand-ins until leaf and flower sets exist; the roles a species needs are listed under "Not
+  yet".
+- **The far form** (representation 1, the card ring): the same cell draws the same plant, and one in
+  `meadow_far_thin` of a flowering species' stands (stream 12 of its hash) as its far form
+  (`meadow_far_herb`, or the member's `far` mesh): a leafless stem carrying the heads of that many
+  plants (40 over its heads a plant, held to 1..4), each head with at most five petal cards whose
+  length grows by `sqrt(petals / 5)` so its coloured area is the near head's. A species with no
+  flowers has no far form (the sward's card is its colour there). The tile's cap counts a far form as
+  the plants it stands for, so at the cap both rings hold the same flowers a tile: on a capped tile,
+  256 plants near and 82 far forms standing for 253. Measured over four worlds with no cap, the far
+  ring's petal-card area is 34.5 m² against the near ring's 32.4 m² (+6 %; held to a tenth), at the
+  same flat colours. A far form is 186 to 510 triangles for up to four plants' heads.
 
 *Determinism and tiles.* A cell's niche, covers and draw are functions of its point and the entry, so
 a plant is its cell's from any tile, any order and any ring (`meadow: a cell's plant is its cell's
 from any tile order`); `meadow: the covers and a tile's community are the same bits on every
 toolchain` pins the covers over a lattice of niches and two tiles' communities, taken on MSVC.
 
-*Budget.* A tile keeps at most 256 plants in the nearest ring and none past it, at 48 to 498 triangles
-each (at most 127,000 a tile, about 31 a square metre at the cap). Resident: the entry's community list
-(a pointer a species) and nothing per tile.
+*Cost.* `meadow: what a tile's placement costs` (a 64 m tile of 1 m cells on a 20° slope under a
+graded paint, about 2,100 patches; best of five, three runs, `msvc-release`, 2026-11-10 22:34, the
+machine at 100 % CPU by `Win32_Processor.LoadPercentage` before and after with ten other compiler
+processes running and 22 GB free, so upper bounds): the four forms with the default band
+(G137-G140: a site sample a patch, two more for G139's gradient) 2.9-3.9 ms a tile near and
+2.7-3.3 ms in the card ring; with the thirteen species 4.2-5.3 ms near and 3.4-5.1 ms in the card
+ring, so the community costs about 1.3 ms a tile, at activation and never per frame.
+
+*Budget.* A tile keeps at most `forb_tile_cap` (256) plants in the nearest ring, at 48 to 498
+triangles each (at most 127,000 a tile, 31 a square metre at the cap), and far forms standing for
+at most 256 plants in the next (82 instances on the capped test tile, at most 510 triangles each:
+at most 42,000 a tile), none past it. Resident: the entry's community list (a pointer, a far mesh
+index and a thinning a species) and nothing per tile; the stand-in recipes are files in the
+derived-data root, a few hundred bytes each.
 
 ### The ground under the sward (G141)
 

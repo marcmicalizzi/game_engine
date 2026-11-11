@@ -146,6 +146,10 @@ gradient in the noise's units (a request under the subsystem page's "Not yet").
 
 r01 (the model): a tall meadow of mixed species at different heights with magenta clover heads, white
 and yellow small flowers, dense. r04: short, saturated turf down to a glacial stream's edge, few
-flowers. The rule gives the community and the covers; what the eye reads in r01 also needs the far
-form (flowers past the near ring, not built here), the herbs' leaf and flower sets (flat colour here),
-and wetness in the sward's colour (r04's banks are a greener, brighter turf than the slope above).
+flowers. The rule gives the community and the covers, and the far form carries the near ring's
+flowers into the card ring at their colour and coloured area (flora.md, "The meadow community").
+What the eye reads in r01 also needs the whole density (the pose table's cap holds a tile to 256
+plants, 6 % of its cells, where r01's meadow is a flower or more in every square metre: a `field`-kind
+plant or a static far form would lift it), the herbs' leaf and flower sets (flat colour here), and
+wetness in the sward's colour (r04's banks are a greener, brighter turf than the slope above). No
+picture was taken for this row: the result has not been looked at beside the reels.

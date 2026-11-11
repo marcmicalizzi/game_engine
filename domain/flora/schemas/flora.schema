@@ -1118,8 +1118,12 @@ struct MeadowRule @version(1) {
 struct MeadowSpecies @version(1) {
   /// The table's name, `caltha_palustris` and so on.
   species: string
-  /// A mesh path relative to the scene; the table's herb recipe (`meadow_herb`) is its stand-in.
+  /// The mesh it stands as near the eye, a path relative to the scene; empty: the table's stand-in
+  /// herb (`meadow_herb`), written as a recipe into the derived-data root's `meadow` directory.
   mesh: string
+  /// The mesh it stands as in the far ring, for `meadow_far_thin` plants at once; empty: the
+  /// stand-in (`meadow_far_herb`). Not read for a species with no flowers.
+  far: string
 }
 /// The sward placement registry's parameters. The paint already contains shade, wet margins,
 /// slopes and excluded trails; do not apply those factors twice at runtime.
@@ -1148,11 +1152,13 @@ struct SwardPlacements @version(3) {
   forbs: string[] @since(2) @deprecated
   /// G137's share of forb cells, replaced by the community's covers (G140): not read.
   forb_share: f32 = 0.33 @since(2) @deprecated
-  /// Plants of the community a tile keeps at most, 0..4096: every herb is a run of the frame's pose
-  /// table (its motion kind is `parts`), so a tile keeps the ones of lowest hash.
+  /// Plants of the community a tile keeps at most in a ring, 0..4096, a far form counted as the
+  /// plants it stands for: every herb is a run of the frame's pose table (its motion kind is
+  /// `parts`), so a tile keeps the ones of lowest hash.
   forb_tile_cap: u32 = 256 @since(2)
   /// G140, the meadow's community (1..16 species; empty: none): each cell that drew a patch draws
-  /// one plant of a species by the covers the site gives them, in the nearest ring only.
+  /// one plant of a species by the covers the site gives them, standing as itself in the nearest
+  /// ring and as one far form for several in the next.
   community: MeadowSpecies[] @since(3)
   /// G140: the site's moisture and light, read by the community and by the stature rule's wetness.
   meadow: MeadowRule @since(3)

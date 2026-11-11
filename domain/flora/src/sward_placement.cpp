@@ -1,13 +1,17 @@
 #include <core/hash/hash.h>
 #include <core/math/deterministic.h>
 #include <core/schema/json_reflect.h>
+#include <domain/flora/flora.h>
 #include <domain/flora/meadow.h>
 #include <domain/flora/sward.h>
+#include <domain/geometry/cluster_file.h>
 #include <domain/scene_gen/scene_gen.h>
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <filesystem>
+#include <fstream>
 #include <memory>
 #include <schemas/flora.h>
 
@@ -126,8 +130,78 @@ Herb meadow_herb(const MeadowSpeciesTraits& species, u64 seed) {
   }
   return h;
 }
+u32 meadow_far_thin(const MeadowSpeciesTraits& species) noexcept {
+  if (species.flowers == 0) return 0;
+  return std::clamp<u32>(k_meadow_far_heads / species.flowers, 1, k_meadow_far_thin);
+}
+Herb meadow_far_herb(const MeadowSpeciesTraits& species, u64 seed) {
+  Herb h = meadow_herb(species, seed);
+  const u32 thin = meadow_far_thin(species);
+  if (thin == 0) return h;
+  // The heads of `thin` plants on one stem, and no leaves (the sward's card is the green there).
+  h.flowers = std::min(species.flowers * thin, k_meadow_far_heads);
+  h.spike = h.flowers > 1 ? .5f : 0.0f;
+  h.leaves = 0;
+  // Fewer, larger petal cards a head, the head's coloured area kept: n l^2 = n' l'^2.
+  const u32 petals = std::min<u32>(species.petals, 5);
+  h.petals = std::max<u32>(petals, 3);
+  const f64 scale = std::sqrt(static_cast<f64>(species.petals) / static_cast<f64>(h.petals));
+  h.petal_length_m = static_cast<f32>(clamp_to(species.petal_m * scale, .004, .08));
+  return h;
+}
 
 namespace {
+// The far ring's plants (G140): stream 12 of the patch's hash keeps one plant in `thin` of a
+// flowering species', standing for all of them.
+constexpr u64 k_far_stream = 12;
+// Where a member that names no mesh has its stand-in written: `<ddc>/meadow`, or `meadow` beside
+// the scene where no derived-data root is found (the cliffs generator's rule).
+std::string recipe_dir(const scene_gen::Context& context) {
+  std::string ddc(context.ddc);
+  if (ddc.empty()) {
+    std::error_code ec;
+    const std::filesystem::path from = std::filesystem::absolute(
+        std::filesystem::path(context.dir.empty() ? "." : std::string(context.dir)), ec);
+    if (!ec) ddc = geometry::find_ddc_root(from.generic_string());
+  }
+  const std::filesystem::path base =
+      !ddc.empty() ? std::filesystem::path(ddc) : std::filesystem::path(std::string(context.dir));
+  return (base / "meadow").lexically_normal().generic_string();
+}
+// Writes the stand-in recipe under its content hash (once: the name is what it says) and names it.
+bool stand_in(const std::string& dir, const MeadowSpeciesTraits& species, const Herb& herb,
+              const char* form, scene_gen::PlacementMesh& out, std::string* error) {
+  FloraFile file;
+  file.species = k_species_herb;
+  file.herb = herb;
+  const std::string text = canonical_flora_json(file);
+  char name[96];
+  std::snprintf(name, sizeof(name), "%.40s-%s-%016llx.flora.json",
+                std::string(species.name).c_str(), form,
+                static_cast<unsigned long long>(flora_source_hash(file)));
+  const std::filesystem::path path = std::filesystem::path(dir) / name;
+  out.path = path.generic_string();
+  out.name = std::string("meadow/") + name;
+  std::error_code ec;
+  if (std::filesystem::exists(path, ec)) return true;
+  std::filesystem::create_directories(dir, ec);
+  const std::filesystem::path partial =
+      std::filesystem::path(dir) / (std::string(name) + ".partial");
+  {
+    std::ofstream stream(partial, std::ios::binary | std::ios::trunc);
+    stream << text;
+    if (!stream.good()) {
+      if (error) *error = "sward: cannot write " + partial.generic_string();
+      return false;
+    }
+  }
+  std::filesystem::rename(partial, path, ec);
+  if (ec && !std::filesystem::exists(path)) {
+    if (error) *error = "sward: cannot write " + out.path;
+    return false;
+  }
+  return true;
+}
 struct Entry {
   SwardPlacements params;
   Vector<scene_gen::PlacementMesh> meshes;
@@ -139,8 +213,11 @@ struct Entry {
   bool forms = false;
   // The first community mesh in `meshes`; the community's follow every family's.
   u32 forb_base = 0;
-  // G140: the community's species, in the entry's order.
+  // G140: the community's species, in the entry's order, and each one's far form: its mesh in
+  // `meshes` and how many plants it stands for (0: none, a species with no flowers).
   Vector<const MeadowSpeciesTraits*> community;
+  Vector<u32> far_mesh;
+  Vector<u32> far_thin;
 };
 constexpr u32 k_forms = 5;
 constexpr u32 k_forb_id_bit = 0x80000000u;
@@ -245,14 +322,40 @@ bool open_forms(Entry& entry, const scene_gen::Context& context, std::string* er
   const u64 depth = static_cast<u64>(static_cast<i64>(p.max_z) - p.min_z + 1);
   if (width * depth * entry.cells * entry.cells >= k_forb_id_bit)
     return fail(error, "tile window with a community exceeds the 31-bit stable cell ID space");
+  // The near meshes first, a member's own or its stand-in's, then the far forms (G140).
+  std::string dir;
+  const auto authored = [&](const std::string& path) {
+    const auto resolved = (std::filesystem::path(context.dir) / path).lexically_normal();
+    entry.meshes.push_back({resolved.generic_string(), "meadow", 0});
+  };
+  const auto generated = [&](const MeadowSpeciesTraits& species, const Herb& herb,
+                             const char* form) {
+    if (dir.empty()) dir = recipe_dir(context);
+    scene_gen::PlacementMesh mesh;
+    if (!stand_in(dir, species, herb, form, mesh, error)) return false;
+    entry.meshes.push_back(std::move(mesh));
+    return true;
+  };
   for (const auto& member : p.community) {
     const auto* species = meadow_species(member.species);
     if (species == nullptr)
       return fail(error, "unknown community species '" + member.species + "'");
-    if (member.mesh.empty()) return fail(error, "empty community mesh path");
     entry.community.push_back(species);
-    const auto resolved = (std::filesystem::path(context.dir) / member.mesh).lexically_normal();
-    entry.meshes.push_back({resolved.generic_string(), "meadow", 0});
+    if (!member.mesh.empty())
+      authored(member.mesh);
+    else if (!generated(*species, meadow_herb(*species, p.seed), "near"))
+      return false;
+  }
+  for (u32 i = 0; i < p.community.size(); ++i) {
+    const auto& species = *entry.community[i];
+    const u32 thin = meadow_far_thin(species);
+    entry.far_thin.push_back(thin);
+    entry.far_mesh.push_back(entry.meshes.size());
+    if (thin == 0) continue;
+    if (!p.community[i].far.empty())
+      authored(p.community[i].far);
+    else if (!generated(species, meadow_far_herb(species, p.seed), "far"))
+      return false;
   }
   return true;
 }
@@ -439,12 +542,18 @@ bool meshes(void* state, const scene_gen::Context&, Vector<scene_gen::PlacementM
 // moved centre, so inside the circle the patch cleared earlier structures by, and asked of the
 // exclusion at its own point. Upright (a herb grows vertical) and turned by stream 7; its rank
 // among a tile's from stream 9.
+//
+// **The far ring** (representation 1) draws the same plant in the same cell and keeps one in
+// `meadow_far_thin` of a flowering species' (stream 12), as its far form: the heads of that many
+// plants on one stem, leafless, their coloured area kept (`meadow_far_herb`). A species with no
+// flowers has no far form; the sward's card is its colour there.
 struct Forb {
   u64 rank = 0;
+  u32 plants = 1;  // how many plants it stands for
   scene_gen::Placement placed;
 };
 void add_forb(const Entry& entry, const scene_gen::Context& context, u64 random, u32 id, f64 px,
-              f64 pz, const MeadowNiche& niche, Vector<Forb>& forbs) {
+              f64 pz, const MeadowNiche& niche, bool far, Vector<Forb>& forbs) {
   const auto& p = entry.params;
   u32 covers[16] = {};
   const u32 count = entry.community.size();
@@ -459,6 +568,8 @@ void add_forb(const Entry& entry, const scene_gen::Context& context, u64 random,
     }
   }
   if (species == count) return;
+  const u32 thin = far ? entry.far_thin[species] : 1;
+  if (thin == 0 || hash_combine(random, k_far_stream) % thin != 0) return;
   const f64 cell = static_cast<f64>(p.cell_m);
   const f64 fx = px + (unit_of(random, 5) * 2 - 1) * .35 * cell;
   const f64 fz = pz + (unit_of(random, 6) * 2 - 1) * .35 * cell;
@@ -467,23 +578,32 @@ void add_forb(const Entry& entry, const scene_gen::Context& context, u64 random,
   Forb forb;
   forb.rank = hash_combine(random, 9);
   forb.placed.id = id | k_forb_id_bit;
-  forb.placed.mesh = entry.forb_base + species;
+  forb.plants = thin;
+  forb.placed.mesh = far ? entry.far_mesh[species] : entry.forb_base + species;
   forb.placed.position = {fx, context.ground.surface_mm(fx_mm, fz_mm), fz};
   forb.placed.rotation = quat_from_axis_angle(
       Vec3::unit_y(), static_cast<f32>(unit_of(random, 7) * 6.283185307179586));
   forbs.push_back(forb);
 }
-// A tile keeps at most `forb_tile_cap` forbs, those of lowest rank (every forb is a run of the
+// A tile keeps at most `forb_tile_cap` plants, those of lowest rank (every one is a run of the
 // frame's pose table: the herb's motion kind is `parts`), and appends them after the patches in
-// their cells' order, so the answer is the tile's whatever the request order.
+// their cells' order, so the answer is the tile's whatever the request order. A far form counts as
+// the plants it stands for, so both rings hold the same flowers a tile at the cap.
 void keep_forbs(const Entry& entry, Vector<Forb>& forbs, scene_gen::Placements& out) {
   if (forbs.empty()) return;
-  const u32 cap = entry.params.forb_tile_cap;
-  if (forbs.size() > cap) {
+  const u64 cap = entry.params.forb_tile_cap;
+  u64 total = 0;
+  for (const auto& forb : forbs)
+    total += forb.plants;
+  if (total > cap) {
     std::sort(forbs.begin(), forbs.end(), [](const Forb& a, const Forb& b) {
       return a.rank != b.rank ? a.rank < b.rank : a.placed.id < b.placed.id;
     });
-    forbs.resize(cap);
+    u32 kept = 0;
+    u64 sum = 0;
+    while (kept < forbs.size() && sum + forbs[kept].plants <= cap)
+      sum += forbs[kept++].plants;
+    forbs.resize(kept);
     std::sort(forbs.begin(), forbs.end(),
               [](const Forb& a, const Forb& b) { return a.placed.id < b.placed.id; });
   }
@@ -576,7 +696,7 @@ bool tile(void* state, scene_gen::TileCoord at, const scene_gen::Context& contex
       // Unbiased stochastic interpolation between adjacent authored density classes. The field
       // is identical in all rings; ring and request order never participate in the hash. G137: of
       // the families of the form the site picks, when the entry names forms.
-      const bool plants = !entry.community.empty() && out.kind == 0;
+      const bool plants = !entry.community.empty() && out.kind <= 1;
       CellSite at_cell;
       if (entry.forms || plants)
         at_cell = cell_site(entry, context, words[0], sample, scene_gen::nearest_mm(px),
@@ -597,7 +717,7 @@ bool tile(void* state, scene_gen::TileCoord at, const scene_gen::Context& contex
       // tipped onto the ground. Wetness-specific morphology requires separately cooked families,
       // and the scale stays 1: silently scaling real leaf dimensions is forbidden.
       out.instances.push_back(placed);
-      if (plants) add_forb(entry, context, random, id, px, pz, at_cell.niche, forbs);
+      if (plants) add_forb(entry, context, random, id, px, pz, at_cell.niche, out.kind == 1, forbs);
     }
   }
   if (context.ring == 0) hand_off(entry, out);

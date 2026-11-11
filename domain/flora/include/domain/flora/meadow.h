@@ -89,4 +89,16 @@ u32 meadow_cover(std::span<const MeadowSpeciesTraits* const> species, const Mead
 // herb of leaves alone. `seed` varies the plant.
 Herb meadow_herb(const MeadowSpeciesTraits& species, u64 seed = 1);
 
+// **The far form** (flora.md, "The meadow community"): past the near ring one plant in
+// `meadow_far_thin` of a flowering species' stands, as a leafless stem carrying the heads of that
+// many plants, each head with fewer, larger petal cards of the same coloured area, so a tile's
+// flowers keep their colour and their density at a fraction of the instances and triangles. The
+// most heads a herb carries, and the most plants a far form stands for:
+inline constexpr u32 k_meadow_far_heads = 40;
+inline constexpr u32 k_meadow_far_thin = 4;
+// How many plants a species' far form stands for: 0 for a species with no flowers (it has none),
+// else 40 over its heads a plant, held to 1..4.
+u32 meadow_far_thin(const MeadowSpeciesTraits& species) noexcept;
+Herb meadow_far_herb(const MeadowSpeciesTraits& species, u64 seed = 1);
+
 }  // namespace engine::flora
