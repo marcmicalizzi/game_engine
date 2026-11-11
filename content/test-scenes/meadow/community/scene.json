@@ -1,0 +1,59 @@
+{
+  "format": "engine.scene.v1",
+  "name": "meadow-community",
+  "description": "G166 cook template (paths resolve in the cook directory, ../README.md 'The community on a valley floor'): a 512 m bowl 50 m deep whose floor is level for about 80 m round a 30 m pond and whose flanks steepen to 17 degrees, under one sward entry naming the four growth forms and the meadow's thirteen species as their stand-ins, so the wet margin, the level floor and the dry slope draw what the community and the stature rule give each.",
+  "camera_path": "camera-path.json",
+  "sky": {"latitude_deg": 46.5, "day_of_year": 200, "turbidity": 2.5},
+  "terrain": {
+    "size": 17, "extent": 256, "provider": "tiles",
+    "tiles": {"heightfield": "ground.json", "cells": 64, "vertical_scale": 2.5, "ddc": "ddc"},
+    "materials": {
+      "layer_budget": 4, "detail_near_m": 27, "detail_far_m": 64,
+      "layers": [
+        {"name": "soil", "tint": [0.09, 0.07, 0.04], "roughness_factor": 0.9, "porosity": 0.7, "tile_m": 1.5},
+        {"name": "sward", "base_color": "short-sod/d100-v0/ground-colour.png", "normal": "short-sod/d100-v0/ground-normal.png",
+         "height": "short-sod/d100-v0/ground-height.png", "roughness": "short-sod/d100-v0/ground-roughness.png",
+         "tile_m": 1, "porosity": 0.6, "far_color": [0.0436, 0.0864, 0.0268]},
+        {"name": "mud", "tint": [0.05, 0.04, 0.02], "roughness_factor": 0.8, "porosity": 1, "tile_m": 1.3}
+      ]
+    },
+    "masks": {
+      "spacing_mm": 500, "tile_cells": 32, "height_blend": 0.2,
+      "priors": {"soil": "soil"},
+      "regions": [
+        {"name": "meadow", "polygon": [[-256, 0, -256], [256, 0, -256], [256, 0, 256], [-256, 0, 256]], "material": "sward", "feather_m": 0},
+        {"name": "pond", "water_body": "pond", "bed": "mud", "margin": "soil", "margin_m": 1.5, "wet_m": 8, "feather_m": 0.5}
+      ]
+    }
+  },
+  "water": [{"name": "pond", "level_m": -36.14, "shape": {"circle": {"center": [0, 0, 0], "radius_m": 30}}, "shore_m": 0.5}],
+  "world": {"tile_size": 64, "rings": [{"radius": 1.25}, {"radius": 3}, {"radius": 5}]},
+  "placements": [{"generator": "sward", "params": {
+    "seed": 8801, "cell_m": 1, "layer": 1, "min_x": -4, "max_x": 3, "min_z": -4, "max_z": 3,
+    "families": [
+      {"form": "tall_sod", "density": 0.5, "near": ["tall-sod/d50-v0/patch.clusters", "tall-sod/d50-v1/patch.clusters"],
+       "cards": ["tall-sod/d50-v0/distance.clusters", "tall-sod/d50-v1/distance.clusters"]},
+      {"form": "tall_sod", "density": 1, "near": ["tall-sod/d100-v0/patch.clusters", "tall-sod/d100-v1/patch.clusters"],
+       "cards": ["tall-sod/d100-v0/distance.clusters", "tall-sod/d100-v1/distance.clusters"]},
+      {"form": "tall_tussock", "density": 0.5, "near": ["tall-tussock/d50-v0/patch.clusters", "tall-tussock/d50-v1/patch.clusters"],
+       "cards": ["tall-tussock/d50-v0/distance.clusters", "tall-tussock/d50-v1/distance.clusters"]},
+      {"form": "tall_tussock", "density": 1, "near": ["tall-tussock/d100-v0/patch.clusters", "tall-tussock/d100-v1/patch.clusters"],
+       "cards": ["tall-tussock/d100-v0/distance.clusters", "tall-tussock/d100-v1/distance.clusters"]},
+      {"form": "short_sod", "density": 0.5, "near": ["short-sod/d50-v0/patch.clusters", "short-sod/d50-v1/patch.clusters"],
+       "cards": ["short-sod/d50-v0/distance.clusters", "short-sod/d50-v1/distance.clusters"]},
+      {"form": "short_sod", "density": 1, "near": ["short-sod/d100-v0/patch.clusters", "short-sod/d100-v1/patch.clusters"],
+       "cards": ["short-sod/d100-v0/distance.clusters", "short-sod/d100-v1/distance.clusters"]},
+      {"form": "short_tussock", "density": 0.5, "near": ["short-tussock/d50-v0/patch.clusters", "short-tussock/d50-v1/patch.clusters"],
+       "cards": ["short-tussock/d50-v0/distance.clusters", "short-tussock/d50-v1/distance.clusters"]},
+      {"form": "short_tussock", "density": 1, "near": ["short-tussock/d100-v0/patch.clusters", "short-tussock/d100-v1/patch.clusters"],
+       "cards": ["short-tussock/d100-v0/distance.clusters", "short-tussock/d100-v1/distance.clusters"]}
+    ],
+    "community": [
+      {"species": "caltha_palustris"}, {"species": "filipendula_ulmaria"}, {"species": "cardamine_pratensis"},
+      {"species": "carex_nigra"}, {"species": "juncus_effusus"}, {"species": "ranunculus_acris"},
+      {"species": "geranium_sylvaticum"}, {"species": "trifolium_pratense"}, {"species": "conopodium_majus"},
+      {"species": "vaccinium_myrtillus"}, {"species": "leucanthemum_vulgare"}, {"species": "lotus_corniculatus"},
+      {"species": "thymus_polytrichus"}
+    ]
+  }}]
+}
