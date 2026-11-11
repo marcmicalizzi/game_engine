@@ -375,9 +375,9 @@ TEST_CASE("caves: a cell is the same bytes every time, and pinned") {
   CHECK(apron > 0);      // the mouth's apron
   CHECK(breakdown > 0);  // the hall's breakdown
   // Taken on MSVC; Clang and GCC in the containers reproduce them (the solver rules, 1).
-  CHECK(hashes[0] == 6251535683394036173ull);
-  CHECK(hashes[1] == 6120405182994077932ull);
-  CHECK(hashes[2] == 6007986492886488821ull);
+  CHECK(hashes[0] == 2346836310554222384ull);
+  CHECK(hashes[1] == 16880174233671219797ull);
+  CHECK(hashes[2] == 18039883821311708033ull);
   // A recipe says everything: read back from its text it is the same cell.
   CellRecipe recipe, back;
   cell_recipe(plan, mouth, 0, recipe);

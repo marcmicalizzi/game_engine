@@ -78,9 +78,14 @@ SegmentEval eval_segment(const Field& field, const FieldSegment& seg, V3 p) noex
         rounded_box(dot(q, level), q.y - 0.5 * (top + bot), z, hw, 0.5 * (top - bot), hw, 0.8 * hw);
     e.f = std::min(e.f, slot);
   }
+  // The floor is the line through the two stations' floors, carried on past either end and not
+  // clamped there: a point just beyond a segment's end is inside its end cap, and a floor held at
+  // the end's height there undercuts the next segment's, which made every sloping passage a flight
+  // of steps a station long.
+  const f64 ramp = std::max(-1.0, std::min(2.0, along / seg.length));
   if (!s0.shaft && !s1.shaft) {
     const f64 floor_y =
-        lerp(s0.floor_y, s1.floor_y, t) + 0.05 * plan_noise(field.seed, p.x, p.z, 2.5);
+        lerp(s0.floor_y, s1.floor_y, ramp) + 0.05 * plan_noise(field.seed, p.x, p.z, 2.5);
     e.fill = floor_y - p.y;
   }
   e.scallops = s0.scallops && s1.scallops;
