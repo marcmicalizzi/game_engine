@@ -434,11 +434,11 @@ struct ExposureRule @version(1) {
   /// this size, so the fraction is the share of the ground that is rock (DiBiase's index).
   patch_m: f32 = 12.0 @unit(m)
   /// Outcrops, not stripes (rocks.md, "Outcrops, not stripes"): a second, longer scale of cover
-  /// drawn for each bed top on its own, so a resistant bed crops out in stretches about this long
-  /// and stays under the soil between them, metres: 0 (none) or 8 to 2,000 (60: under the 100 m
-  /// few continuous outcrops pass, Marshall and Roering 2014).
-  stretch_m: f32 = 60.0 @unit(m)
-  /// The share of a bed top's trace where it may crop out: 0.05 to 1.
+  /// drawn for each member on its own, so a member's beds crop out together as a crag about this
+  /// long and stay under the soil between crags, metres: 0 (none) or 8 to 2,000 (32: well under
+  /// the 100 m few continuous outcrops pass, Marshall and Roering 2014).
+  stretch_m: f32 = 32.0 @unit(m)
+  /// The share of a member's trace where it may crop out: 0.05 to 1.
   stretch_share: f32 = 0.4
   /// Members: resistant beds stand only inside a cliff-forming member. Where the formation has
   /// `macro_beds` the member is the macro bed at the bed's coordinate, by its resistance; where
@@ -487,6 +487,9 @@ struct LedgePatch @version(1) {
   /// or 30 to 85.
   cliff_slope_deg: f32 = 0.0 @unit(deg)
   material: RockMaterial
+  /// What a tread carries to its lip (rocks.md, "Treads"): soil, drawn in this linear colour,
+  /// each channel 0 to 1; absent, a dark turf. The fronts and the worn edges are the rock.
+  tread_tint: f32[3]?
 }
 
 /// The scene generator `ledges`' entry (G142; rocks.md, "Exposed bedrock (G142)"): the resistant beds of
@@ -522,6 +525,8 @@ struct LedgeLayer @version(1) {
   /// `min_slope_deg`), degrees: 0 (none) or 30 to 85.
   cliff_slope_deg: f32 = 0.0 @unit(deg)
   material: RockMaterial
+  /// What a tread carries to its lip: `LedgePatch.tread_tint`.
+  tread_tint: f32[3]?
   /// Where the patches' recipes are written: relative to the scene; empty, the host's
   /// derived-data root's `ledges/`, else the repository's, else `ledges` beside the scene.
   recipes: string

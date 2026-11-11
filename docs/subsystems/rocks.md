@@ -1124,15 +1124,18 @@ Two more factors on what stands, both functions of the world and neither of a ti
   Where it has none the rule groups the sequence itself: a seeded field along the bed coordinate
   `member_m` (12 m) across, standing over `member_share` (0.5) of it. That grouping is authored
   and is a stand-in: a formation with a longer sequence would say which beds are members.
-- **Stretches.** Each bed top has a cover field of its own, `stretch_m` (60 m) across, open over
-  `stretch_share` (0.4) of its trace and shut over a sixth of the field past that, so an outcrop's
-  end tapers as the rule's other ends do and two beds' outcrops are not one above the other.
+- **Stretches.** Each member (`member_id`) has a cover field of its own, `stretch_m` (32 m)
+  across, open over `stretch_share` (0.4) of its trace and shut over a sixth of the field past
+  that. The beds of one member crop out together, as a **crag** of stacked ledges, and stay under
+  the soil together between crags; a crag's end tapers as the rule's other ends do, and two
+  members' crags are not one above the other. (A field per bed top, tried first, scattered single
+  beds' lines over the hill, which read as contour lines from across the valley.)
 
 The ledge solver multiplies a unit's step by both; `exposure_at` is still the mantle's rule at a
-point, without them (it names a bed, not a bed top). On the test hillside (two 64 m tiles, 26
-transects): **25 % of the resistant beds crop out along a transect, with a deviation of 19 points
-between transects** (91 % and 19 before), one transect has no rock at all, and the front falls
-from 2,083 m to 568 m. `stretch_m` 0 and `member_m` 0 are the stripes again.
+point, without them (it names a bed, not a member). On the test hillside (two 64 m tiles, 26
+transects): **25 % of the resistant beds crop out along a transect, with a deviation of 20 points
+between transects** (93 % and 18 before), four transects have no rock at all, and the front falls
+from 2,083 m to 545 m. `stretch_m` 0 and `member_m` 0 are the stripes again.
 
 ### Ledges
 
@@ -1169,12 +1172,26 @@ sandstone 0.4 is 12 cm, limestone 0.45, granite 0.35, slate 0.08 is 2.4 cm), and
 the front by a worn face in the front's own normal class, so the two shade as one round, and so
 is the top edge of every row that stands out past the row above. A front is **fluted** by as
 much again: two scales of the world's noise (1.1 m and 0.37 m) set each row's edges back, the
-same from both segments that share a vertex and from either tile. Measured on the test hillside:
-0.096 m of worn width a metre of front on sandstone, 0.105 on limestone, 0.022 on slate, at 41
-triangles a metre of front on all three (**the budget is 48**; it was 36 unworn). What it is not:
+same from both segments that share a vertex and from either tile. A triangle of a front, a worn
+edge or a joint face that the ground covers whole (a row set back into the slope by its recess
+and its flute) is not drawn. Measured on the test hillside: 0.090 m of worn width a metre of
+front on sandstone, 0.100 on limestone, 0.021 on slate, at 34 triangles a metre of front on all
+three (**the budget is 48**; it was 36 unworn with every covered face drawn). What it is not:
 corners are not yet worn in plan (a block's ends are still square to its joints), a joint is a
 plane and not a widened cleft, and a fresh break and an old surface are one material. The far
 form has neither the wear nor the flutes.
+
+**Treads, and the beds' own rock.** A tread carries soil to its lip: the tread polygons are one
+material, `tread_tint` (absent: a dark turf, linear 0.07 0.09 0.04, roughness 0.95), and the
+fronts, the worn edges, the shelves and the joints are the rock. The rock is one material **a
+unit**, the type's colour times its top bed's `tint` and its roughness plus the bed's
+`roughness` (the formation's, the numbers the terrain's bands are drawn with), so beds are told
+apart on a slope as they are on the ground. A mesh is therefore a primitive a material, clustered
+a part and merged (`merge_cluster_lod`), and a cluster names one material; the pack's set
+(`rock/<type>`) goes on every rock material with the bed's tint over it, and the soil takes
+none, because the pack has no turf. What a tread cannot do yet: take the ground's own material
+and the sward's blades (it is a flat colour chosen to sit beside them), cut the ground under it,
+or clear the cover off its back.
 
 **Why a lattice of the world.** Each piece is the part of a lattice triangle (`cell_m`, 1 m,
 at the ground's own millimetres) between level lines of functions that are linear on it, and a
@@ -1191,11 +1208,11 @@ both, the cluster DAG is the runtime LOD.
 
 | Form | A 64 m tile of the test hillside (31 bed tops) | Triangles a metre of front |
 |---|---|---|
-| near | 4,827 triangles, 5,858 vertices, 199 clusters, 117 m of front (37,492 triangles and 1,041 m as every bed's stripe, unworn) | 41 (the budget is 48) |
-| far | 191 triangles, 230 vertices, 10 clusters, 89 m of front | 2.1 |
+| near | 4,031 triangles, 5,059 vertices, 204 clusters, 118 m of front (37,492 triangles and 1,041 m as every bed's stripe, unworn) | 34 (the budget is 48) |
+| far | 121 triangles, 148 vertices, 6 clusters, 59 m of front | 2.0 |
 
-66 % of the near form's triangles are above the ground (the solver's count on its own lattice;
-71 % against the hillside's function), against 13.9 % on the front of the box G132 measured.
+68 % of the near form's triangles are above the ground (the solver's count on its own lattice;
+75 % against the hillside's function), against 13.9 % on the front of the box G132 measured.
 
 **The generator.** `open` reads the layer and, for every tile whose corner is in the region,
 samples the ground over the tile and the rule's apron, solves both forms, and writes a recipe
@@ -1224,7 +1241,9 @@ layer's `min_slope_deg` and no ledge is solved under or behind a face.
   surface, no corner worn in plan, and no fallen block lying under the gap it left (G143's
   deposits own the debris; the solver knows each fallen block's index, size and place and does
   not hand them over yet).
-- **One material a mesh**, the type's pack role; a bed's tint from the formation does not reach it.
+- **A fallen block is not handed over.** The solver knows each block that fell out (its index
+  along the strike, its length, its unit and where its gap is); the deposits that would lay it
+  under the gap are another row's, and no list is exposed yet.
 - **No holes or water**: a tile's mesh is not split round the exclusion's holes or channels.
 
 Tests (`tests/ledges_tests.cpp`, 4 s in msvc-debug): ledges only on resistant beds past the soil

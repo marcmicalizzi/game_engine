@@ -94,10 +94,23 @@ f64 member_factor(const ExposureThresholds& rule, const gfx::FormationParams& fo
   return clamp01(0.5 + (v - 0.5) * 2.0) < rule.member_share ? 1.0 : 0.0;
 }
 
-f64 stretch_factor(const ExposureThresholds& rule, u64 bed_top, i64 x_mm, i64 z_mm) noexcept {
+u64 member_id(const ExposureThresholds& rule, const gfx::FormationParams& formation,
+              f64 coordinate) noexcept {
+  if (formation.macro.count > 0) {
+    const f64 period = static_cast<f64>(formation.macro.period_mm) / 1000.0;
+    const i64 repeat = static_cast<i64>(std::floor(coordinate / period));
+    return mix64(static_cast<u64>(repeat) * 64 +
+                 gfx::formation_bed(formation.macro, coordinate).index + 1);
+  }
+  if (!(rule.member_m > 0.0)) return 0;
+  // The rule's own groups stand round the lattice points of its field.
+  return mix64(static_cast<u64>(static_cast<i64>(std::floor(coordinate / rule.member_m + 0.5))) +
+               0x4D42ull);
+}
+
+f64 stretch_factor(const ExposureThresholds& rule, u64 member, i64 x_mm, i64 z_mm) noexcept {
   if (rule.stretch_mm <= 0 || rule.stretch_share >= 1.0) return 1.0;
-  const f64 v =
-      cover_octave(rule.seed ^ mix64(bed_top + 0x5354ull), x_mm, z_mm, rule.stretch_mm, 3);
+  const f64 v = cover_octave(rule.seed ^ mix64(member + 0x5354ull), x_mm, z_mm, rule.stretch_mm, 3);
   const f64 cover = clamp01(0.5 + (v - 0.5) * 2.0);
   // Open under the share, and shut over a sixth of the field past it: an outcrop's end tapers.
   return clamp01((rule.stretch_share - cover) * 6.0);

@@ -99,10 +99,15 @@ f64 standing_share(const ExposureThresholds& rule, f64 fraction, f64 cover) noex
 // and 0 over the rest; 1 everywhere when the rule has neither.
 f64 member_factor(const ExposureThresholds& rule, const gfx::FormationParams& formation,
                   f64 coordinate) noexcept;
-// `stretch_factor`: what the longer cover lets stand of bed top `bed_top` (any identity that is
-// the same from every tile) at a point, 0 to 1: a field `stretch_m` across drawn for that bed
-// top alone, open over `stretch_share` of it, so two beds' outcrops are not one above the other.
-f64 stretch_factor(const ExposureThresholds& rule, u64 bed_top, i64 x_mm, i64 z_mm) noexcept;
+// `member_id`: which member a bed coordinate is in, the same from every tile: the macro bed and
+// its repeat of the macro sequence, or the rule's own group; 0 when the rule has neither.
+u64 member_id(const ExposureThresholds& rule, const gfx::FormationParams& formation,
+              f64 coordinate) noexcept;
+// `stretch_factor`: what the longer cover lets stand of member `member` at a point, 0 to 1: a
+// field `stretch_m` across drawn for that member alone, open over `stretch_share` of it. The beds
+// of one member crop out together, as a crag of stacked ledges, and stay under the soil together
+// between crags; two members' crags are not one above the other.
+f64 stretch_factor(const ExposureThresholds& rule, u64 member, i64 x_mm, i64 z_mm) noexcept;
 
 // A point's exposure: its shape, the bed at the surface, and `stand`, the share of that bed's
 // thickness that stands there (`standing_share * resistance_factor`); `exposed` is `stand > 0`.

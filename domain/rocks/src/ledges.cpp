@@ -37,6 +37,8 @@ constexpr f64 k_wear_m = 0.3;
 constexpr f64 k_far_share = 0.8;
 // UVs are cut into charts this many repeats square (the content build warns past 16).
 constexpr f64 k_chart = 16.0;
+// What a tread carries when the patch names no colour: a dark turf, linear.
+constexpr f32 k_soil[3] = {0.07f, 0.09f, 0.04f};
 // PolyVertex::lines: the level lines a vertex lies on.
 constexpr u8 k_on_front = 1;
 constexpr u8 k_on_joint_lo = 2;
@@ -70,6 +72,7 @@ struct Unit {
   u32 rows = 0;                    // its rows, top first (the last takes what is past k_max_rows)
   f64 depth[k_max_rows + 1] = {};  // across the beds from the top; depth[rows] is the thickness
   f64 lead[k_max_rows] = {};       // each row's bed's resistance less the unit's mean
+  u32 bed = 0;                     // its top bed, whose tint and roughness the unit draws with
 };
 
 void find_units(const gfx::FormationSequence& s, const ExposureThresholds& rule, u64 seed,
@@ -84,6 +87,7 @@ void find_units(const gfx::FormationSequence& s, const ExposureThresholds& rule,
   if (hard_count == 0) return;
   const auto add = [&](u32 top_bed, u32 length) {
     Unit u;
+    u.bed = top_bed;
     u.top = wide(s.beds[top_bed].start_m) + wide(s.beds[top_bed].thickness_m);
     f64 weighted = 0.0;
     for (u32 k = 0; k < length; ++k) {
@@ -267,6 +271,10 @@ enum class Facing { Up, Down, Toward };
 
 struct Mesher {
   Vector<Corner> corners;
+  // The material the next triangles draw with, and each triangle's: 0 the treads' soil, 1 + u
+  // unit u's rock.
+  u32 material = 0;
+  Vector<u32> tri_material;
   f64 tile_m = 1.0;
   // Appends the triangle wound so its normal faces as asked; false for one with no area.
   bool emit(u64 cls, D3 p[3], f64 uv[3][2], Facing facing, D3 toward) {
@@ -299,6 +307,7 @@ struct Mesher {
       c.normal = n;
       corners.push_back(c);
     }
+    tri_material.push_back(material);
     return true;
   }
 };
@@ -332,6 +341,9 @@ bool ledge_patch_in_range(const LedgePatch& p, std::string& error) {
   if (!in(wide(p.relief_m), 0.0, 2.0)) return bad(error, "relief_m", "in [0, 2]");
   if (!(p.cliff_slope_deg == 0.0f || in(wide(p.cliff_slope_deg), 30.0, 85.0)))
     return bad(error, "cliff_slope_deg", "0 or in [30, 85]");
+  if (p.tread_tint.has_value())
+    for (const f32 channel : *p.tread_tint)
+      if (!(channel >= 0.0f && channel <= 1.0f)) return bad(error, "tread_tint", "in [0, 1]");
   if (p.material.surface_maps.has_value())
     return bad(error, "material.surface_maps", "absent (a patch takes a tiled set)");
   return material_factors_in_range(p.material, error);
@@ -368,6 +380,7 @@ bool sample_ledge_patch(const LedgeLayer& layer, const scene_gen::Ground& ground
   out.relief_m = layer.relief_m;
   out.cliff_slope_deg = layer.cliff_slope_deg;
   out.material = layer.material;
+  out.tread_tint = layer.tread_tint;
   const f64 corner = ground.surface_mm(x_mm, z_mm);
   if (!std::isfinite(corner)) return refuse("the ground's height is not finite");
   out.y_mm = scene_gen::nearest_mm(corner);
@@ -484,10 +497,18 @@ bool solve_ledges(const LedgePatch& p, assets::MeshData& out, LedgeReport* repor
     const f64 cx = (q[0].x + q[1].x + q[2].x) / 3.0, cz = (q[0].z + q[1].z + q[2].z) / 3.0;
     if ((q[0].y + q[1].y + q[2].y) / 3.0 > ground_at(cx, cz)) ++made.above_ground;
   };
+  // A triangle of a front, a worn edge or a joint face that the ground covers whole (every corner
+  // 2 cm or more under the lattice's own ground) is not drawn: a face set back into the slope by
+  // its row's recess and its flute is under the turf there.
+  const auto covered = [&](const D3 q[3]) {
+    for (u32 k = 0; k < 3; ++k)
+      if (q[k].y > ground_at(q[k].x, q[k].z) - 0.02) return false;
+    return true;
+  };
   Vector<u64> cropped;  // the unit instances that made a triangle
   // How far a front goes on under the ground at its foot: less under a low step.
   const auto under_of = [&](f64 step) {
-    const f64 under = 0.05 + 0.25 * (step > 0.0 ? step : 0.0);
+    const f64 under = 0.05 + 0.15 * (step > 0.0 ? step : 0.0);
     return bury < under ? bury : under;
   };
 
@@ -527,6 +548,7 @@ bool solve_ledges(const LedgePatch& p, assets::MeshData& out, LedgeReport* repor
             // member, and along its own stretches.
             const f64 member = member_factor(rule, field, c_top - 0.5 * unit.thickness);
             if (!(member > 0.0)) continue;
+            const u64 crag = member_id(rule, field, c_top - 0.5 * unit.thickness);
             // The top plane's height over the ground, and the step with every block whole.
             f64 d[3], whole[3];
             bool any_h = false, any_g = false, any_f = false;
@@ -542,7 +564,7 @@ bool solve_ledges(const LedgePatch& p, assets::MeshData& out, LedgeReport* repor
             any_f = false;
             for (u32 k = 0; k < 3; ++k) {
               whole[k] *=
-                  stretch_factor(rule, uid, p.x_mm + static_cast<i64>(node[k] % m) * cell_mm,
+                  stretch_factor(rule, crag, p.x_mm + static_cast<i64>(node[k] % m) * cell_mm,
                                  p.z_mm + static_cast<i64>(node[k] / m) * cell_mm);
               any_h = any_h || whole[k] >= min_step;
               any_f = any_f || d[k] - whole[k] < 0.0;
@@ -642,7 +664,8 @@ bool solve_ledges(const LedgePatch& p, assets::MeshData& out, LedgeReport* repor
                               top[k].z - lip[k] * back.z};
               }
               bool drew = false;
-              // The tread: the polygon, in the bedding plane.
+              // The tread: the polygon, in the bedding plane. It carries soil to its lip.
+              mesher.material = 0;
               for (u32 k = 1; k + 1 < n; ++k) {
                 D3 q[3] = {lip_top[0], lip_top[k], lip_top[k + 1]};
                 f64 uv[3][2] = {{q[0].x, q[0].z}, {q[1].x, q[1].z}, {q[2].x, q[2].z}};
@@ -651,6 +674,7 @@ bool solve_ledges(const LedgePatch& p, assets::MeshData& out, LedgeReport* repor
                   drew = true;
                 }
               }
+              mesher.material = 1 + ui;
               for (u32 k = 0; k < n; ++k) {
                 const u32 e[2] = {k, (k + 1) % n};
                 const u8 shared = poly[e[0]].lines & poly[e[1]].lines;
@@ -740,17 +764,21 @@ bool solve_ledges(const LedgePatch& p, assets::MeshData& out, LedgeReport* repor
                       // The worn edge, in the face's own class so the two shade as one round.
                       D3 w0[3] = {ea, eb, b};
                       f64 wuv0[3][2] = {{place_u[0], ea.y}, {place_u[1], eb.y}, {place_u[1], b.y}};
-                      if (mesher.emit(cls, w0, wuv0, Facing::Toward, outward)) count(false, w0);
+                      if (!covered(w0) && mesher.emit(cls, w0, wuv0, Facing::Toward, outward))
+                        count(false, w0);
                       D3 w1[3] = {ea, b, a};
                       f64 wuv1[3][2] = {{place_u[0], ea.y}, {place_u[1], b.y}, {place_u[0], a.y}};
-                      if (mesher.emit(cls, w1, wuv1, Facing::Toward, outward)) count(false, w1);
+                      if (!covered(w1) && mesher.emit(cls, w1, wuv1, Facing::Toward, outward))
+                        count(false, w1);
                     }
                     D3 q0[3] = {a, b, cc};
                     f64 uv0[3][2] = {{place_u[0], a.y}, {place_u[1], b.y}, {place_u[1], cc.y}};
-                    if (mesher.emit(cls, q0, uv0, Facing::Toward, outward)) count(false, q0);
+                    if (!covered(q0) && mesher.emit(cls, q0, uv0, Facing::Toward, outward))
+                      count(false, q0);
                     D3 q1[3] = {a, cc, dd};
                     f64 uv1[3][2] = {{place_u[0], a.y}, {place_u[1], cc.y}, {place_u[0], dd.y}};
-                    if (mesher.emit(cls, q1, uv1, Facing::Toward, outward)) count(false, q1);
+                    if (!covered(q1) && mesher.emit(cls, q1, uv1, Facing::Toward, outward))
+                      count(false, q1);
                     if (r == 0) continue;
                     // The underside of the row above, in the parting plane. Where either end's
                     // parting is under the front's foot it is under the ground: left out, so
@@ -806,10 +834,12 @@ bool solve_ledges(const LedgePatch& p, assets::MeshData& out, LedgeReport* repor
                   const f64 ub = b.x * frame.dip[0] + b.z * frame.dip[2];
                   D3 q0[3] = {a, b, b1};
                   f64 uv0[3][2] = {{ua, a.y}, {ub, b.y}, {ub, b1.y}};
-                  if (mesher.emit(cls, q0, uv0, Facing::Toward, outward)) count(false, q0);
+                  if (!covered(q0) && mesher.emit(cls, q0, uv0, Facing::Toward, outward))
+                    count(false, q0);
                   D3 q1[3] = {a, b1, a1};
                   f64 uv1[3][2] = {{ua, a.y}, {ub, b1.y}, {ua, a1.y}};
-                  if (mesher.emit(cls, q1, uv1, Facing::Toward, outward)) count(false, q1);
+                  if (!covered(q1) && mesher.emit(cls, q1, uv1, Facing::Toward, outward))
+                    count(false, q1);
                 }
               }
               if (drew) cropped.push_back(uid);
@@ -830,10 +860,35 @@ bool solve_ledges(const LedgePatch& p, assets::MeshData& out, LedgeReport* repor
     return a < b;
   });
   assets::MeshData mesh;
-  assets::Material material = rock_material(p.type);
-  material_factors(p.material, material.base_color, material.roughness);
-  mesh.materials.push_back(material);
-  mesh.indices.resize(corner_count);
+  // The materials that drew a triangle, in order: the treads' soil, then each unit's rock, the
+  // type's colour times its top bed's tint and roughness (the formation's, so beds are told
+  // apart).
+  const u32 material_count = 1 + units.size();
+  Vector<u32> used(material_count), slot(material_count);
+  for (const u32 m_of : mesher.tri_material)
+    ++used[m_of];
+  for (u32 k = 0; k < material_count; ++k) {
+    if (used[k] == 0) continue;
+    slot[k] = mesh.materials.size();
+    assets::Material material = rock_material(p.type);
+    material_factors(p.material, material.base_color, material.roughness);
+    if (k == 0) {
+      material.name = "soil";
+      material.base_color = p.tread_tint.has_value() ? Vec4{(*p.tread_tint)[0], (*p.tread_tint)[1],
+                                                            (*p.tread_tint)[2], 1.0f}
+                                                     : Vec4{k_soil[0], k_soil[1], k_soil[2], 1.0f};
+      material.roughness = 0.95f;
+    } else {
+      const Vec4 bed = field.beds.beds[units[k - 1].bed].value;
+      material.name = "rock";
+      material.base_color.x = std::clamp(material.base_color.x * bed.x, 0.0f, 1.0f);
+      material.base_color.y = std::clamp(material.base_color.y * bed.y, 0.0f, 1.0f);
+      material.base_color.z = std::clamp(material.base_color.z * bed.z, 0.0f, 1.0f);
+      material.roughness = std::clamp(material.roughness + bed.w, 0.0f, 1.0f);
+    }
+    mesh.materials.push_back(material);
+  }
+  Vector<u32> welded(corner_count);
   Vector<D3> normals;
   for (u32 i = 0; i < corner_count; ++i) {
     const Corner& c = mesher.corners[order[i]];
@@ -844,16 +899,26 @@ bool solve_ledges(const LedgePatch& p, assets::MeshData& out, LedgeReport* repor
     }
     const u32 vertex = mesh.positions.size() - 1;
     normals[vertex] = normals[vertex] + c.normal;
-    mesh.indices[order[i]] = vertex;
+    welded[order[i]] = vertex;
+  }
+  // One primitive a material, the triangles in the order they were made.
+  for (u32 k = 0; k < material_count; ++k) {
+    if (used[k] == 0) continue;
+    assets::Primitive part;
+    part.first_index = mesh.indices.size();
+    part.material = static_cast<i32>(slot[k]);
+    for (u32 t = 0; t < mesher.tri_material.size(); ++t) {
+      if (mesher.tri_material[t] != k) continue;
+      for (u32 c = 0; c < 3; ++c)
+        mesh.indices.push_back(welded[3 * t + c]);
+    }
+    part.index_count = mesh.indices.size() - part.first_index;
+    mesh.primitives.push_back(part);
   }
   for (u32 i = 0; i < normals.size(); ++i) {
     const D3 n = normalized(normals[i]);
     mesh.normals.push_back({static_cast<f32>(n.x), static_cast<f32>(n.y), static_cast<f32>(n.z)});
   }
-  assets::Primitive part;
-  part.index_count = mesh.indices.size();
-  part.material = 0;
-  mesh.primitives.push_back(part);
   out = std::move(mesh);
   if (report != nullptr) {
     std::sort(cropped.begin(), cropped.end());
@@ -895,28 +960,59 @@ bool build_ledge_container(const LedgePatch& input, const geometry::ClusterLodOp
   // A ledge is a sheet whose back is the ground: wound outwards like a closed body's, so the
   // cone test drops what faces away, and a traced shadow keeps it as a caster.
   options.normal_cones = true;
-  if (!geometry::build_cluster_lod(mesh.positions, {mesh.indices.data(), mesh.indices.size()},
-                                   options, out.mesh, &error, assets::attribute_source(mesh)))
-    return false;
+  // A DAG a material (the treads' soil, each unit's rock), merged: a cluster names one material.
+  const geometry::AttributeSource attributes = assets::attribute_source(mesh);
+  Vector<geometry::ClusterLodMesh> parts;
+  Vector<u32> part_material;
+  for (const assets::Primitive& primitive : mesh.primitives) {
+    geometry::ClusterLodMesh part;
+    if (!geometry::build_cluster_lod(
+            mesh.positions, {mesh.indices.data() + primitive.first_index, primitive.index_count},
+            options, part, &error, attributes))
+      return false;
+    parts.push_back(std::move(part));
+    part_material.push_back(static_cast<u32>(primitive.material));
+  }
+  Vector<u32> part_of_cluster;
+  if (!geometry::merge_cluster_lod(parts, out.mesh, &part_of_cluster, &error)) return false;
   if (page_bytes > 0) {
     geometry::ClusterPagesOptions pages;
     pages.page_bytes = page_bytes;
-    if (!geometry::build_cluster_pages(out.mesh, pages, out.pages, &error)) return false;
+    Vector<u32> source_of_cluster;
+    if (!geometry::build_cluster_pages(out.mesh, pages, out.pages, &error, &source_of_cluster))
+      return false;
+    geometry::permute_cluster_array(source_of_cluster, part_of_cluster);
   }
-  out.cluster_material.assign(out.mesh.mesh.clusters.size(), 0u);
-  geometry::ClusterFileMaterial material;
-  material.base_color = mesh.materials[0].base_color;
-  material.metallic = 0;
-  material.roughness = mesh.materials[0].roughness;
-  out.materials.push_back(material);
-  if (chosen) {
-    out.material_sampling.push_back(geometry::encode_material_sampling(
-        mesh.materials[0].sampling, mesh.materials[0].occlusion_strength));
+  for (const u32 part : part_of_cluster)
+    out.cluster_material.push_back(part_material[part]);
+  // What the type's rock is before a bed's tint, to carry the tint over a pack's set.
+  assets::Material plain = rock_material(p.type);
+  material_factors(p.material, plain.base_color, plain.roughness);
+  for (u32 k = 0; k < mesh.materials.size(); ++k) {
+    geometry::ClusterFileMaterial material;
+    material.base_color = mesh.materials[k].base_color;
+    material.metallic = 0;
+    material.roughness = mesh.materials[k].roughness;
+    out.materials.push_back(material);
+    if (chosen)
+      out.material_sampling.push_back(geometry::encode_material_sampling(
+          mesh.materials[k].sampling, mesh.materials[k].occlusion_strength));
+  }
+  for (u32 k = 0; chosen && k < mesh.materials.size(); ++k) {
+    if (mesh.materials[k].name == "soil") continue;  // no set: the pack has no turf
     materials::MaterialSet applied = *chosen;
     if (p.material.sampling.has_value())
       applied.stochastic = *p.material.sampling == RockSampling::Stochastic;
-    materials::apply_set(applied, materials::UvLayout::repeats, out, 0);
-    material_factors(p.material, out.materials[0].base_color, out.materials[0].roughness);
+    materials::apply_set(applied, materials::UvLayout::repeats, out, k);
+    material_factors(p.material, out.materials[k].base_color, out.materials[k].roughness);
+    // The bed's tint and roughness, over whatever the set left as the factor.
+    const Vec4 solved = mesh.materials[k].base_color;
+    const auto over = [](f32 tinted, f32 base) { return base > 1e-6f ? tinted / base : 1.0f; };
+    out.materials[k].base_color.x *= over(solved.x, plain.base_color.x);
+    out.materials[k].base_color.y *= over(solved.y, plain.base_color.y);
+    out.materials[k].base_color.z *= over(solved.z, plain.base_color.z);
+    out.materials[k].roughness = std::clamp(
+        out.materials[k].roughness + mesh.materials[k].roughness - plain.roughness, 0.0f, 1.0f);
   }
   if (!out.image_paths.empty()) texture::fill_cluster_texture_records(out);
   out.source_hash = ledge_source_hash(input);

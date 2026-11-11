@@ -136,7 +136,8 @@ gradient of 1 or more), are "a meter to tens of meters" thick (measured 1 to 15 
 "horizontally continuous but not contiguous". They make 12 % of one watershed's topography and
 under 4 % of the other's; in the second "very few continuous outcrops" exceed 100 m, and within a
 350 m radius resistant beds average about 5 % and never pass 12 % (0 to 30 % in the first).
-**`stretch_m` defaults to 60 m** so an outcrop is a stretch well under that 100 m, and
+**`stretch_m` defaults to 32 m** so an outcrop is a crag well under that 100 m (60 m, tried
+first, drew lines a hundred metres long), and
 **`stretch_share` 0.4 with `member_share` 0.5** leaves a fifth of a resistant bed's trace able to
 crop out before the slope's own exposure and the soil's patches are applied, inside the 0 to 30 %
 the paper measured over ground. The two shares themselves are ours, not the paper's.

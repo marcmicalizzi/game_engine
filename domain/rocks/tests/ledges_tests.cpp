@@ -443,11 +443,11 @@ TEST_CASE("ledges: a patch is pinned to the bit") {
                              << mesh_hash(far_form.mesh) << " source "
                              << ledge_source_hash(far_form.patch));
   CHECK(near_form.report.triangles > 0u);
-  CHECK(mesh_hash(near_form.mesh) == 17259686158855157545ull);
-  CHECK(ledge_source_hash(near_form.patch) == 1023279402199257043ull);
+  CHECK(mesh_hash(near_form.mesh) == 7169356939382602585ull);
+  CHECK(ledge_source_hash(near_form.patch) == 10834469400257094798ull);
   CHECK(far_form.report.triangles > 0u);
-  CHECK(mesh_hash(far_form.mesh) == 9185605051799371196ull);
-  CHECK(ledge_source_hash(far_form.patch) == 17846031924479908873ull);
+  CHECK(mesh_hash(far_form.mesh) == 12540669320333577569ull);
+  CHECK(ledge_source_hash(far_form.patch) == 737779768996180544ull);
 }
 
 TEST_CASE("ledges generator: tiles in any order are the whole read, a form a ring") {
@@ -470,10 +470,15 @@ TEST_CASE("ledges generator: tiles in any order are the whole read, a form a rin
   REQUIRE_MESSAGE(desc->open(schema::to_json(layer), context, &whole.state, &error), error);
   scene_gen::Placements expanded;
   REQUIRE(desc->expand(whole.state, context, expanded, &error));
-  CHECK(expanded.things == 4);  // 128 m square: four tiles, each with ledges
+  // 128 m square, four tiles: a tile no crag stands in has no mesh, and one whose steps are all
+  // under the far form's least has no far form.
+  CHECK(expanded.things >= 2);
+  CHECK(expanded.things <= 4);
   Vector<scene_gen::PlacementMesh> resident;
   REQUIRE(desc->meshes(whole.state, context, resident, &error));
-  CHECK(resident.size() == 8);  // a near and a far form each
+  CHECK(resident.size() > expanded.things);
+  CHECK(resident.size() <= 2 * expanded.things);
+  MESSAGE(expanded.things << " of 4 tiles have ledges, " << resident.size() << " meshes");
   for (const scene_gen::PlacementMesh& mesh : resident) {
     CHECK(io::exists(mesh.path));
     CHECK(mesh.path.find("/ledges/ledge-") != std::string::npos);
@@ -530,6 +535,7 @@ TEST_CASE("ledges generator: tiles in any order are the whole read, a form a rin
   CHECK(file.generator == "ledge");
   CHECK(file.source_hash == ledge_source_hash(patch));
   CHECK(!file.mesh.mesh.clusters.empty());
+  CHECK(file.cluster_material.size() == file.mesh.mesh.clusters.size());
 
   // A layer with no formation is refused with a sentence.
   LedgeLayer bare = layer;
@@ -614,7 +620,7 @@ TEST_CASE("ledges: rock crops out in patches across the beds, not as every bed's
   patches.rule.stretch_m = 0.0f;
   patches.rule.member_m = 0.0f;
   const LedgeLayer layer = layer_of(beds());  // the rule's own
-  CHECK(layer.rule.stretch_m == 60.0f);
+  CHECK(layer.rule.stretch_m == 32.0f);
   CHECK(layer.rule.member_m == 12.0f);
   f64 sum[2] = {}, squares[2] = {};
   u32 transects = 0, none_at_all = 0;
@@ -695,4 +701,68 @@ TEST_CASE("ledges: rock crops out in patches across the beds, not as every bed's
   bad_rule.rule.stretch_m = 3.0f;
   CHECK_FALSE(prepare_exposure(bad_rule.rule, off, error));
   CHECK(error.find("stretch_m") != std::string::npos);
+}
+
+TEST_CASE("ledges: a tread carries soil to its lip, and a bed's rock is its formation's") {
+  const Hill h;
+  // Two resistant beds the formation tells apart: a warm sandstone and a pale, smoother limestone.
+  scene::Formation f = beds();
+  f.beds[1].tint = Vec3{1.0f, 0.8f, 0.6f};
+  f.beds[4].tint = Vec3{0.9f, 0.95f, 1.0f};
+  f.beds[4].roughness = -0.2f;
+  LedgeLayer layer = layer_of(f);
+  layer.rule.stretch_m = 0.0f;  // every bed's stripe, so both units are in the tile
+  layer.rule.member_m = 0.0f;
+  const Solved s = solve(layer, h, 0, 0);
+  // One primitive a material: the soil first, then a rock a unit.
+  REQUIRE(s.mesh.materials.size() == 3);
+  REQUIRE(s.mesh.primitives.size() == 3);
+  CHECK(s.mesh.materials[0].name == "soil");
+  CHECK(s.mesh.materials[0].base_color.y > s.mesh.materials[0].base_color.x);  // a turf, not a rock
+  const assets::Material plain = [&] {
+    const Solved untinted = solve(layer_of(beds()), h, 0, 0);
+    return untinted.mesh.materials[untinted.mesh.materials.size() - 1];
+  }();
+  const assets::Material& sandstone = s.mesh.materials[1];
+  const assets::Material& limestone = s.mesh.materials[2];
+  CHECK(sandstone.base_color.z == doctest::Approx(plain.base_color.z * 0.6f));
+  CHECK(limestone.base_color.z == doctest::Approx(plain.base_color.z * 1.0f));
+  CHECK(limestone.roughness == doctest::Approx(plain.roughness - 0.2f));
+  CHECK(sandstone.base_color.z < limestone.base_color.z);
+  // The soil's primitive is the treads: every triangle of it faces up, in a bedding plane; the
+  // rock's are the fronts, the worn edges, the shelves and the joints.
+  const assets::Primitive& soil = s.mesh.primitives[0];
+  REQUIRE(soil.material == 0);
+  u32 up = 0;
+  for (u32 t = soil.first_index; t < soil.first_index + soil.index_count; t += 3)
+    up += normal_of(s, t).y > 0.9 ? 1u : 0u;
+  // (but for a sliver in a thousand, whose normal is its rounding's)
+  CHECK((soil.index_count / 3 - up) * 1000 <= soil.index_count / 3);
+  u32 steep = 0, rock = 0;
+  for (u32 t = soil.first_index + soil.index_count; t + 2 < s.mesh.indices.size(); t += 3) {
+    ++rock;
+    steep += std::fabs(normal_of(s, t).y) < 0.9 ? 1u : 0u;
+  }
+  CHECK(steep > rock / 2);
+  // The container keeps them apart: a cluster names one material, and both rocks and the soil
+  // are there; a tread's own colour can be given.
+  geometry::ClusterFileData file;
+  std::string error;
+  REQUIRE_MESSAGE(build_ledge_container(s.patch, {}, 0, file, error, nullptr), error);
+  REQUIRE(file.materials.size() == 3);
+  CHECK(file.cluster_material.size() == file.mesh.mesh.clusters.size());
+  bool seen[3] = {};
+  for (const u32 m : file.cluster_material) {
+    REQUIRE(m < 3);
+    seen[m] = true;
+  }
+  CHECK((seen[0] && seen[1] && seen[2]));
+  CHECK(file.materials[1].base_color.z == doctest::Approx(sandstone.base_color.z));
+  layer.tread_tint = std::array<f32, 3>{0.2f, 0.1f, 0.05f};
+  const Solved bare = solve(layer, h, 0, 0);
+  CHECK(bare.mesh.materials[0].base_color.x == doctest::Approx(0.2f));
+  layer.tread_tint = std::array<f32, 3>{2.0f, 0.1f, 0.05f};
+  LedgePatch refused;
+  CHECK_FALSE(sample_ledge_patch(layer, ground_of(h), 0, 0, k_tile_mm, false, refused, error));
+  CHECK(error.find("tread_tint") != std::string::npos);
 }
