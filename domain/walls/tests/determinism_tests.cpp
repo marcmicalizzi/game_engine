@@ -39,8 +39,9 @@ TEST_CASE("walls: modules and placements are the same bytes on every toolchain")
   // stones and pinnings no slivers, seams crossed before the faces are drawn, the cope's wedges,
   // leaners and bulging sides, the mid form's cope skyline; the placement pin did not move. Its
   // second commit moved the three that have a cope (its top bulging rather than split, its ends
-  // drawn, its wedges and leaners toned down). A replacement records its reason and commit here.
-  constexpr u64 expected[] = {0xa022553a997f49c9ull, 0xf6a7cf181a83776aull, 0xeb557bd4a4dfca21ull,
+  // drawn, its wedges and leaners toned down, the mid form's cope striped). A replacement records
+  // its reason and commit here.
+  constexpr u64 expected[] = {0x264d57e35394e76eull, 0xb27d3711e672fc5dull, 0x4d2399495c9ce990ull,
                               0xde95ff3bb586d8d1ull, 0xf75f3d8efeaeb99aull};
   u64 got[5] = {};
   const ModuleKind kinds[4] = {ModuleKind::run, ModuleKind::head, ModuleKind::broken,

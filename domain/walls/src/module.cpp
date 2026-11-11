@@ -1417,7 +1417,18 @@ void top_box(Builder& b, const Section& s, f64 x0, f64 x1, f64 h0, f64 h1, f64 h
                    {x0, s.base(x0) + h1, -hw}, {x1, s.base(x1) + h1b, -hw},
                    {x1, s.base(x1) + h1b, hw}, {x0, s.base(x0) + h1, hw}};
   Rng plain{0};  // a plain body draws nothing
+  const u32 first = static_cast<u32>(b.mesh.positions.size());
   body(b, c, swatch, Faces{}, plain);
+  if (h1_end >= 0) {
+    // The mid form's cope: its faces striped along the wall by one row of the stones' swatches,
+    // a swatch every 8 cm (a cope stone's thickness), so the band keeps the near cope's upright
+    // stones of differing greys where it hands over (G145c; walls.md, "Forms and the LOD policy").
+    for (u32 i = first; i < b.mesh.positions.size(); ++i) {
+      const f64 x = static_cast<f64>(b.mesh.positions[i].x);
+      b.mesh.uvs[i] = {static_cast<f32>(x * (static_cast<f64>(k_swatch) / k_atlas) / 0.08),
+                       static_cast<f32>((7.0 * k_swatch + 4.0) / k_atlas)};
+    }
+  }
 }
 
 void mid_form(Builder& b, const Module& m, const Section& s, const ModuleReport& report,
