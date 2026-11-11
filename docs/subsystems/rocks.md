@@ -514,6 +514,14 @@ On all three no top is over the ground behind it (0.43 m under at the least), an
 any face's upward triangles stands over the ground behind where its top went in
 (`tests/cliffs_generator_tests.cpp`, "no generated face shows from behind its own top").
 
+**A tier's rock is its beds'** (G142c). With a bedded formation (dip 20° or less) a tier's
+colour is the type's (or the layer's tint) times the mean tint of the beds its height cuts,
+sixteen samples up its middle vertex, and its roughness plus their mean offset, so tiers cut from
+different members read apart as the ledges' units do: on 16 m of dark mudstone under 14 m of pale
+sandstone the lowest tier's red is 0.54 of the next one's ("a tier's rock is the beds its height
+cuts"). Within a tier the beds are not told apart; that is the resolve's (a rock material banded
+by the formation, as the ground is).
+
 **What it does not do.** A tier's top is paid at its front's cell though it is in the ground
 (56 % of the escarpment's triangles are on a front, against 70 % for one box). A tier's bottom is
 open: it is under the top of the tier below, which a viewer directly under an overhanging tier
@@ -1467,8 +1475,13 @@ layer's `min_slope_deg` and no ledge is solved under or behind a face.
   the generator's own "is this point rock" query) is what the treads need; the blades that
   stand through a tread's back today do so because nothing says otherwise.
 - **A block is still faceted.** It is rounded by one chamfer a worn edge and split by clefts
-  (above), but there is no fracture surface beside an old one, no curve, and a crept block does
-  not lean out over its front.
+  (above), but there is no curve, and a crept block does not lean out over its front.
+- **No old surface beside a fresh break.** The baked surfaces (G96, G97) are radial-only, and a
+  ledge or a tier is one tiled material a unit. What it would take: a second rock material a
+  unit, the fresh break, on the faces a block lost (a fallen neighbour's flank, the rows lost off
+  its top, a cleft's flank where the block beside fell) with the old surface's darker, rougher
+  set on the rest, chosen per face by the class the mesher already gives each; and from the pack,
+  a weathered and a fresh role per rock (`rock/<type>` and `rock/<type>-fresh`).
 - **A fallen block is handed over, and nothing lays it down yet.** `ledge_gaps` (`ledges.h`)
   lists a patch's fallen blocks in order of identity: the block (its bed top and its place along
   the strike, the same number from every tile), the centre of its gap on the ground, the area of
