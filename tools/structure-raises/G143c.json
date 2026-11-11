@@ -1,0 +1,10 @@
+{
+  "format": "engine.structure-raise.v1",
+  "name": "G143c",
+  "reason": "G143's third pass on the deposits: the coarse forms' border lock, the bed as rubble, the supply's burial feedback and the toe, each with its measurement and its source",
+  "date": "2026-11-11",
+  "by": "Marc Micalizzi",
+  "deltas": {
+    "page:docs/subsystems/rocks.md": 7916
+  }
+}

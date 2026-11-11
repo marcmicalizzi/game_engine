@@ -68,6 +68,9 @@ struct Opened {
 TEST_CASE("deposits: connected foot talus with a finite runout and no uphill blanket") {
   DepositLayer p = layer();
   p.sediment_depth_m = 0;
+  // An alpine wall's supply (G143's third pass moved the default to a temperate wall's 1.2 m, whose
+  // lower talus puts these samples on its concave toe): the upper slope is the repose angle.
+  p.supply_m = 3.5f;
   DepositPlan plan;
   std::string error;
   REQUIRE_MESSAGE(plan_deposits(p, ground(cliff), plan, error), error);
@@ -184,6 +187,9 @@ TEST_CASE("deposits: continuous bed and angular fragments hold topology and the 
   }
   p = patch();
   p.fragments = 0;
+  // Channel sediment (coarse share zero) has no clasts the relief draws (G143's third pass; the
+  // relief's own case is in deposits_cone_tests.cpp), so the bed is its support plus its depth.
+  std::fill(p.coarse.begin(), p.coarse.end(), 0.0f);
   REQUIRE(solve_deposit(p, mesh, error));
   // Every top vertex follows its sampled support and depth; underside is buried.
   for (const auto& v : mesh.positions) {
@@ -211,8 +217,10 @@ TEST_CASE("deposits: mesh identity and cluster container are deterministic") {
   MESSAGE("deposit mesh pin: ", hash);
   // G128 initial MSVC pin; the existing rock solver pins remain unchanged.
   // Re-taken for G143's normals from the top's gradient (2026-11-10; was 6863964757150498499), then
-  // for fragments built at the rung their size needs (was 625669387871748774).
-  CHECK(hash == 2024239262398034445ull);
+  // for fragments built at the rung their size needs (was 625669387871748774), then for G143's
+  // third pass: the top drawn at 12.5 cm and raised by its clasts, the walls' own triangles, the
+  // loose fragments of the largest band at 4 cm facets (was 2024239262398034445).
+  CHECK(hash == 1738319574425829183ull);
   geometry::ClusterFileData a, b;
   REQUIRE_MESSAGE(build_deposit_container(p, {}, 0, a, error), error);
   REQUIRE(build_deposit_container(p, {}, 0, b, error));
@@ -220,8 +228,11 @@ TEST_CASE("deposits: mesh identity and cluster container are deterministic") {
   // Rock solver v11 changes the source/build identity, not the deposit mesh above; so does
   // k_deposit_version 2 (G143, the bare rim's sink: was 17513793063602312493).
   // k_deposit_version 3 and the normals (G143, stage 2; was 14163044981722319397), then the
-  // fragments' rungs (stage 3; was 13439161428700819251).
-  CHECK(geometry::cluster_file_hash(a) == 7929702402516820737ull);
+  // fragments' rungs (stage 3; was 13439161428700819251), then for the patch's border locked in
+  // its cluster DAG (G143's third pass; was 7929702402516820737), then for the rubble and
+  // k_deposit_version 4 (was 1421504051895875902), then 5 for the toe's clasts kept off the face
+  // (was 13829166473420471729).
+  CHECK(geometry::cluster_file_hash(a) == 10478160828047604680ull);
   CHECK(geometry::cluster_file_hash(a) == geometry::cluster_file_hash(b));
   CHECK(a.source_hash == deposit_source_hash(p));
   CHECK(a.source_hash == b.source_hash);
@@ -299,6 +310,42 @@ TEST_CASE("deposits: explicit and pack PBR sets have sampling records") {
   CHECK(same_bytes(data.mesh.mesh.vertices, plain.mesh.mesh.vertices));
   CHECK(same_bytes(data.mesh.mesh.attributes, plain.mesh.mesh.attributes));
   CHECK(same_bytes(data.cover_mask, plain.cover_mask));
+}
+TEST_CASE("deposits: a bed samples the pack's scree before its rock's") {
+  // G143's third pass (rocks.md, "The bed is rubble"): a talus' surface is fresh clasts, so the
+  // granular role comes first and the rock's own role is behind it. No pack on disk: two stand-in
+  // packs parsed from text.
+  auto p = patch();
+  p.fragments = 0;
+  p.type = RockType::Granite;
+  const char* rock =
+      R"("rock/granite":{"tile_m":1,"normal_convention":"opengl","maps":{"base_color":{"file":"g.png"},)"
+      R"("normal":{"file":"gn.png"},"roughness":{"file":"gr.png"},"metallic":{"file":"gm.png"},)"
+      R"("height":{"file":"gh.png"}}})";
+  const char* scree =
+      R"("rock/scree":{"tile_m":1,"normal_convention":"opengl","maps":{"base_color":{"file":"s.png"},)"
+      R"("normal":{"file":"sn.png"},"roughness":{"file":"sr.png"},"metallic":{"file":"sm.png"},)"
+      R"("height":{"file":"sh.png"}}})";
+  const std::string head =
+      R"({"format":"engine.materials.pack/1","name":"stand-in","version":"1","roles":{)";
+  materials::Pack both, granite_only;
+  std::string error;
+  REQUIRE_MESSAGE(
+      materials::parse_pack(head + rock + "," + scree + "}}", "C:/stand-in", both, error), error);
+  REQUIRE(materials::parse_pack(head + rock + "}}", "C:/stand-in", granite_only, error));
+  geometry::ClusterFileData data;
+  REQUIRE_MESSAGE(build_deposit_container(p, {}, 0, data, error, &both), error);
+  REQUIRE(data.materials[0].base_color_image >= 0);
+  CHECK(data.image_paths[static_cast<u32>(data.materials[0].base_color_image)] ==
+        "C:/stand-in/s.png");
+  REQUIRE_MESSAGE(build_deposit_container(p, {}, 0, data, error, &granite_only), error);
+  REQUIRE(data.materials[0].base_color_image >= 0);
+  CHECK(data.image_paths[static_cast<u32>(data.materials[0].base_color_image)] ==
+        "C:/stand-in/g.png");
+  // A recipe that names its own image keeps it.
+  p.material.base_color = "own/c.png";
+  REQUIRE_MESSAGE(build_deposit_container(p, {}, 0, data, error, &both), error);
+  CHECK(data.image_paths[static_cast<u32>(data.materials[0].base_color_image)] == "own/c.png");
 }
 TEST_CASE("deposits: whole expansion equals reversed tile arrival with stable ids and exclusion") {
   test::TempDir scratch;

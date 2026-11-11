@@ -1069,7 +1069,7 @@ rigid-body settling. Normals follow the support slope. Cells with less than 1 mm
 The patch's `triangle_budget` covers bed and every requested fragment: surface triangles first,
 then each fragment receives the finest existing cube-grid rung up to 20 that fits its equal
 share. A budget below all fragments at rung 4 is refused, with no silent count reduction.
-Default 96 fragments / 32000 triangles per patch; `max_samples` defaults to 262144 vertices.
+Default 24 fragments (96 before G143's third pass drew the bed's clasts as its relief) / 32000 triangles per patch; `max_samples` defaults to 262144 vertices.
 CPU temporary storage and mesh builds scale with that finite region and its explicit budgets;
 this first version is an offline bake and does not promise constant-time world opening.
 At distance the normal cluster DAG reduces geometry; the streamed host's ordinary distance-form
@@ -1119,17 +1119,18 @@ from a version-1 layer, and one that set it to zero gets `supply_m` 0).
 **The rule.** What lies at a face's foot is what the face shed. Face area is routed down steepest
 descent (D8) through the steep samples (`source_deg`, 50), each adding its own surface area (its
 plan area times `sqrt(1 + slope²)`), until it reaches a gentle sample: its **foot**. A foot's
-**supply** is that area times `supply_m`, the wall's retreat since the ice left (default 3.5 m:
-Mohadjer et al.'s 0.27-0.38 mm a year from talus volumes over 11,000 years; range 0-50 m, the
+**supply** is the part of that area its pile has not buried times `supply_m`, the wall's retreat since
+the ice left (default 1.2 m by [How much a face sheds](#how-much-a-face-sheds); range 0-50 m, the
 published rates' 0.015-2 mm a year over the Holocene). Each foot spreads its own supply along the
 feet round it over its own pile's reach `r = h / tan(repose)` through a triangle kernel
 `(1 - d / r) / r`, which integrates to one along a line, so volume is conserved; a foot's pile is the
 wedge that holds what it receives, `h² a = q`, with `a = (1 / tan(repose) - 1 / tan(face)) / 2` the
 wedge's section against the face (the face's slope at the foot; at least `0.1 / tan(repose)`).
 Under a planar face `q` is the face's own supply per metre and the piles of neighbouring feet are
-one **sheet whose height goes as the root of the face's height above it**. A foot fed by a gully
+one **sheet**, `a h² + q h = q H` with `q` the supply a metre of the face's height `H` (it went as
+the root of the face's height before G143's third pass let the talus bury its face). A foot fed by a gully
 receives its volume `V` over `r`, so `h³ = V tan(repose) / a`: the half cone's `π h³ / (6 tan²)`
-within a few per cent, a **cone**, its neighbours on the kernel's flanks. Eight steps, each halfway
+within a few per cent, a **cone**, its neighbours on the kernel's flanks. Sixteen steps, each halfway
 to the law's height, settle every height together; no pile competes with another, so no step can
 run away (a first version that scaled each pile by what it won of the union let a few piles bury
 the rest). A pile never stands above the wall it fell from, nor more than 20 m (the patch's limit).
@@ -1207,6 +1208,36 @@ the decay, one correctly rounded square root for distances and areas, a fixed co
 updated together in pile order, splitmix64 per world candidate; the plan and a patch with a block
 are pinned (`deposits: G143's plan and a patch with blocks are their pinned bytes`).
 
+### How much a face sheds
+
+G143's third pass, 2026-11-11 ([grounding](../experiments/rockfall-deposits.md#g143s-third-pass-the-shading-fault-the-supply-by-setting-and-the-rubble-2026-11-11)).
+**A buried face sheds nothing.** Fisher (1866) and Lehmann (1933) model a talus rising against its
+wall: the part it buries stops shedding, so the exposed face shrinks as the talus grows and the
+talus can never bury the wall that feeds it (Sanders 2012: "perhaps no other depositional system
+with such a rigid negative feedback"). Each pile now knows the face samples routed to its foot and
+their heights over it, and sheds the supply of those above its own top only; the heights settle
+together as before. On a planar face of height `H` at slope `s` the sheet then stands at the root
+of `a h² + q h - q H = 0`, `q = R sqrt(1 + s²) / s`: the 10 m and 100 m faces of `deposits: a
+buried face sheds nothing, so the talus never buries its wall` stand 4.17 m and 15.4 m against the
+law's 4.12 and 15.6 (without the feedback the law gives 5.38 and 17.0, and the first pass's 3.5 m
+gave 9.1 m against a 10 m wall).
+
+**The pile's top meets the face between samples.** The apex was the last face sample under the
+pile's top and the surface was measured from it, so every pile stood up to half a spacing out from
+its face and held more than it shed: 12% more on the rising test face once the feedback made its
+piles lower. The surface is now measured from where the face reaches the top (`lead`, up the face
+from the apex sample by the face's slope), and the face holds 3.5% more than it shed.
+
+**The default is a temperate wall's Holocene, not an alpine wall's.** `supply_m` is 1.2 m: Hinchliffe
+and Ballantyne (1999) measured 4.3-7.8 m of retreat on a basalt escarpment since 17.5 ka, four
+fifths of it before 11.5 ka, and about 0.1 mm a year now, so the Holocene share is about 1.1-1.2 m.
+By setting: an alpine wall's Holocene, 3-4.2 m (Mohadjer et al. 2020's 0.27-0.38 mm a year over
+11 ka); a temperate wall since deglaciation, 4.3-7.8 m (Hinchliffe and Ballantyne); a wall in
+recent rockfall, Sanders' 7-18 mm a year for decades after the event. At 1.2 m a 10 m crag is
+buried 42% and a 100 m wall 15%; at the alpine 3.5 m, 59% and 25% (the talus' 20 m cap holds the
+latter at 20%). What sets it from the world (a layer's elevation, aspect and climate from
+`scene_gen::Site`, G144, and the age of the deglaciation) is not read yet; the field is the knob.
+
 ### The edge and the seams
 
 G143's second stage (`k_deposit_version` 3). **The outline.** G128 and G143's first agent put a
@@ -1226,10 +1257,10 @@ steep ground still sinks by half the relief round it, now computed on the plan, 
 patch's border sinks as its neighbour patch's does. The noise is anchored to the world, so a
 window translated to another place has another outline (the translation test holds the rest).
 
-**The toe's clasts.** Every fourth representative fragment of a patch stands in a bare cell within
-0.5 m of sink (about two metres past the outline), on the ground, from the largest band and smaller
-the farther out: a toe's largest clasts scattered and thinning past the bed (Kirkby and Statham's
-fall sorting). Shed blocks run past it to the shadow line as before.
+**The toe's clasts.** Every fourth fragment of a patch lies past the outline, on the ground: until
+G143's third pass in a bare cell within 0.5 m of sink, smaller the farther out, which drew them as
+one dotted line along the outline; now spread over metres and the largest farthest ([The
+toe](#the-toe)). Shed blocks run past it to the shadow line as before.
 
 **The seams.** A patch's bed normals were area-weighted over its own triangles, so at a patch's
 border (and a tile's) each side saw half the surface and the shading showed a seam. The plan now
@@ -1240,26 +1271,91 @@ normals are `normalize(-sx, 1, -sz)` from it: the same on both sides of a border
 central differences over its own samples. Buried undersides and walls keep their triangles'
 normals. The G128 mesh pin moved to 625669387871748774 and the container pin to
 13439161428700819251 with it.
+
+### The coarse forms keep the patch's border
+
+G143's third pass, 2026-11-11. From across a valley the apron drew as a patchwork of 8 m square
+panels of different shade with dark wedges between them, and nobody had found why. The cause is the
+LOD, not the shading: a patch is a **closed** mesh (its top, a buried underside and walls round it,
+so it stays two-manifold for the simplifier and the collision), and a closed mesh has no open border
+for the cluster DAG's simplifier to hold. Each patch's coarse forms pulled its top off the line it
+shares with its neighbour in its own way, so two neighbours' coarse tops parted along it and their
+walls showed between them. Measured on the gullied test face, two neighbours' cuts at errors of 0 to
+1 m: the tops parted by more than 2 mm at 156 places along their shared line, up to 12.7 cm; their
+tops sank no more than a millimetre past each cut's own error anywhere else, so the coarse forms
+were not wrong inside a patch, only at its edge. Every vertex on a patch's border is now locked
+(`geometry::AttributeSource::locked`, as the terrain's chunks lock theirs), and the two cuts meet to
+0.14 mm at every error (`deposits: neighbouring patches' coarse forms meet along their border`,
+which fails without the lock). **The lesson for any generator that cuts one surface into closed
+pieces:** lock the cut, or the pieces' DAGs will not meet. The container pin moved to
+1421504051895875902.
+
 ### Where the triangles go
 
 The finest form spent 1,115 triangles a square metre on the first agent's tile, and 514 on this
 row's after its first two stages, nearly all of it in the representative fragments: every
 fragment of a patch was built at the finest cube-grid rung its equal share of the budget allowed
 (rung 20, 4,800 triangles), though 65% of them are 4-32 mm pebbles. A fragment is now built at the
-coarsest rung whose facets are no longer than `k_clast_edge` (2 cm: `pi r / 2 / n`), never finer
+coarsest rung whose facets are no longer than `k_clast_edge` (2 cm then, 4 cm since the pebbles
+went: `pi r / 2 / n`), never finer
 than its share allows, so a centimetre's pebble spends 192 triangles and a 20 cm clast rung 16. On
 the cost case's tile that takes the finest form from 514 to 281 triangles a square metre (127,608 to
 69,768) and the tile's activation from 804 to 445 ms in msvc-release. What is left is the blocks
 (432 each), the coarse fragments and the bed (8 a square metre at 0.5 m samples).
 
-**Not done (G143's third stage, left for a later row):** the triangles freed are not yet spent on
-clast relief in the bed's surface, sized by the sorting, as geometry near and in the normal beyond;
-and the bed is not yet paler than its wall. The rock solver's fresh break against a weathered
-exterior (["Weathered exteriors and fresh breaks (G97)"](#weathered-exteriors-and-fresh-breaks-g97))
-is a baked rind on radial surfaces, which a deposit patch refuses (`surface_maps`), and the cliffs
-draw no rind either, so neither side of the contrast exists in the deposits' flat or pack material
-yet: a scree material (a role the pack does not have) or a fresh-break tint by lithology is the
-change.
+G143's third pass spent them on the bed itself ([The bed is rubble](#the-bed-is-rubble)): the
+finest form on the cost case's tile, at the default 24 loose fragments a patch, is 330 triangles a
+square metre (61,740; 506 at the 64 this case asked for before, against 281 without the relief), the
+coarsest 9.7 (was 1.2), and the tile's patches build in 1,208 ms in msvc-debug (1,618 before; the
+plan 26 ms, `open` 153 ms; CPU 24-29% busy with other agents, 21 GB free, one run: upper bounds; no
+msvc-release run was made this pass).
+
+### The bed is rubble
+
+G143's third pass, 2026-11-11 ([grounding](../experiments/rockfall-deposits.md#g143s-third-pass-the-shading-fault-the-supply-by-setting-and-the-rubble-2026-11-11)).
+Up close the bed was a smooth pale sheet with sparse pebbles: a scree's surface is openwork, angular
+clasts standing on each other with voids between and the fines below (Verdian et al. 2021), and at a
+metre, ten and a hundred what reads is its largest clasts. **The top is now drawn at 12.5 cm**
+(`k_clast_step_mm`; `sub` steps a sample spacing, 4 at 0.5 m, as many as the patch's budget holds
+with every loose fragment at the blocks' rung beside it) and **raised by the clasts of its own
+sorting**: three world-anchored lattices of 0.5, 1 and 2 m cells, one clast a cell, its centre, size
+(0.55-0.95 of the cell), turn, aspect and tilt drawn from the cell's world coordinates
+(`DepositPatch::origin_mm`, version 3), a flat-topped block with steep sides standing 0.35 of its
+size above the bed; where clasts overlap the higher wins. A lattice shows where the bed's clast size
+is 0.35 to 0.7 of its cell (smoothly). **The clast size follows the fall sorting the plan carries**:
+`2 fragment_m` at the toe (coarse share 1) and a tenth of it at share 0 (`k_clast_sorting`, authored:
+no apex-to-toe ratio was found), log-linear between (Francou: the sorting is logarithmic), so a
+pile's upper part is the material's fine scree and its toe stands in half-metre blocks. A bed
+thinner than 0.3 m shows its clasts in proportion, so the outline still meets the meadow, and
+channel sediment (share 0) has none. Its normals are the plan's gradient plus the clasts' own,
+taken over ±25 mm in world millimetres, so a clast across a patch's border is one clast with one
+shading (`deposits: the bed is rubble whose clasts follow the sorting and the world`: on a 16 m bed
+whose share rises from 0.2 to 1, the mean relief by quarters is 0, 0.0001, 0.016 and 0.053 m, the
+highest clast 0.17 m; a bed two metres along the world draws the same clasts to the bit). Clasts
+under the 12.5 cm step are the material's: **the bed samples the pack's `rock/scree` role first**,
+its rock's role behind it (`k_scree_role`; a recipe that names its own images keeps them), since a
+talus surface is fresh clasts and not the wall's face; the pack is where a scree is paler than its
+wall (no source found states that it is; Verdian et al.: talus sees little weathering after it
+lands). The loose fragments are the largest band alone (the 4-32 mm pebbles, 65% of them, and the
+8-30% band went; their facets are 4 cm, `k_clast_edge`, and never finer than the blocks'), and the
+default count is 24 a patch, not 96. The finest form is 136 triangles a square metre of bed, plus
+the loose fragments and blocks; the relief leaves the coarse forms through the cluster DAG, and
+beyond the finest it is the material's normal and roughness. `k_deposit_version` 4.
+
+### The toe
+
+G143's third pass. A real toe's largest clasts lie scattered over metres past the bed, thinning
+with distance and the largest farthest (Kirkby and Statham's exponential travel; Copons et al.
+2009's shadow angles put the farthest at 22-31 degrees from the apex). The toe's fragments (every
+fourth) are drawn over the edge field's whole band past the outline (sink 0-2 m, about three metres
+out), each with odds `exp(-d / k_toe_run_m)` of its distance `d` past the outline (sink over the
+toe's slope; `k_toe_run_m` 1.5 m, authored), at `fragment_m` times 0.4 rising to 1 with `d`, no
+longer one ring along the outline, and only on gentle ground (a cell no steeper than the toe's own
+slope): the edge field also sinks a bed's bare rim on the face above it, and the pass's first
+pictures stuck clasts to the wall (`k_deposit_version` 5; `deposits: the toe's clasts thin out over
+metres, the largest farthest`: 36, 19 and 9 clasts by metre out, 0.19, 0.24 and 0.32 m across,
+none on the face beside the bed). The shed blocks still run past them to the shadow line.
+
 ### A tile solves
 
 Until G143's fourth stage the generator's `open` solved every patch's mesh of the region to check

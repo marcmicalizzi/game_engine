@@ -188,3 +188,45 @@ draws untextured) and smooth between its fragments, not coarse and paler than it
 clasts lie in a line along the outline rather than thinning out over metres; shadows and shading
 streak across the apron near blocks and along some patch borders; and the walker's camera stands
 inside the taller apron, so that view shows nothing.
+
+## G143's third pass: the shading fault, the supply by setting and the rubble (2026-11-11)
+
+Read 2026-11-11 for G143's third pass. Most primary papers on talus sorting are paywalled; what
+was read in full and what only as an abstract or a summary is said in each row.
+
+| Quantity / rule | Source read | Value used / trade |
+|---|---|---|
+| A buried face sheds nothing | Sanders (2012), *Talus accumulation*, Geo.Alp 9: 82-99, read in full (Fig. 1, Fig. 6): the Fisher (1866) / Lehmann (1933) feedback, "perhaps no other depositional system with such a rigid negative feedback"; the talus steepens to its residual shear angle (about 35 degrees on carbonate talus), then onlaps the cliff, whose area and supply decay | A pile sheds the supply of the face above its own top only, so the talus never buries its wall and buries a tall wall's smaller share (rocks.md, "How much a face sheds"). |
+| The default supply | Hinchliffe and Ballantyne (1999), Scott. Geogr. J. 115: 53-70, abstract only: basalt cliff in Trotternish, 4.3-7.8 m of retreat (mean 5.6) since deglaciation at 17.5 cal ka, about 80% of it between 17.5 and 11.5 ka, about 0.1 m a ka now | 1.2 m, a temperate wall's Holocene share (20% of 5.6 m, or 0.1 mm a year over 11.5 ka). |
+| The supply by setting | Mohadjer et al. (2020), above (alpine, calcareous, 3.0-4.2 m over 11 ka); Hinchliffe and Ballantyne (4.3-7.8 m since 17.5 ka); Sanders (2012): 7-18 mm a year of talus accumulation in two Holocene rock-avalanche scars, up to about 1 m a year just after the event; summaries of Draebing et al. (2024, EPSL; not read): 1.2-1.4 mm a year 9-10 ka ago against 0.02-0.08 now | A layer sets `supply_m` for its setting; the page gives the range by setting. Long-term talus-volume rates run 3-10 times the modern measured ones (Mohadjer, Draebing), so a rate measured today is not a supply. |
+| Talus height against wall height | No field ratio from a primary source was found | The law with the feedback gives it: at 1.2 m a 10 m face is buried 42%, a 100 m face 15%; held by the test at both. |
+| Fall sorting, its shape | Francou (1988/89), Biuletyn Peryglacjalny, read in full (French): fall sorting is "commonly observed", the sorting expected "logarithmic rather than linear" after Gardner (1970), Carniel and Scheidegger (1974) and Francou (1988); Verdian, Sklar, Riebe and Moore (2021), Earth Surf. Dynam. 9: 1073-1090, read (Sec. 2.3): "size-selective transport leads to downslope coarsening, which is commonly observed on angle-of-repose slopes"; median b-axis 10-575 mm across 15 sites, about 1.42 times the cliff's fracture spacing; counter-evidence, Wegner et al. (2021), NHESS 21: 1159-1177, read: no clear size-runout relation at one of four sites | The clast size of the bed's relief grows log-linearly with the coarse share (which grows with distance from the apex): a tenth of the toe's size at the apex. No measured apex-to-toe ratio was found; the tenth is authored. |
+| The surface is openwork | Verdian et al. (2021): fines sampled "through openings between particles at the surface"; Hill et al. (2020), Geogr. Ann. A 102: 118-140 (boulder fans, introduction read): "boulders with openwork texture" | The bed's relief is flat-topped, steep-sided blocks standing on each other with voids between (rocks.md, "The bed is rubble"); the share of its size a clast stands above the bed (0.35) is authored, no source measured protrusion. |
+| Paler than its wall | No source found stating it; Verdian et al.: their talus "has not undergone much weathering after deposition" | The bed samples a granular role (`rock/scree`) before its rock's; the tint is the pack's, not a solver's. |
+
+**The shading fault was the LOD, measured on the CPU.** Two neighbouring patches of the gullied test
+face, their cluster DAGs cut at errors of 0 to 1 m: before, the tops parted along the shared line at
+156 places by up to 12.7 cm, and seven of eight cuts kept a different chain of border vertices on
+the two sides; after locking the border, none, and every cut keeps the finest chain. Inside a patch
+no cut sank more than 1.1 mm past its own error before or after, so the fault was at the edges only
+(rocks.md, "The coarse forms keep the patch's border").
+
+**The third pass's pictures** (not committed; `D:/workspace/game_engine_local/fable_sub/scratch/b59/G143c/`:
+`scene/` is the second agent's funnel face, its supply 1.5 m and 128 fragments a patch, with a camera
+path of five views: from the meadow, a walker at the toe outside the apron, one metre over the bed,
+across the valley at 80 m and at 160 m; `captures/before/` the base `44c80a0a`'s engine-view copied
+out of the tree, `before-noshadow/` and `before-finest/` its across views with `--shadows off` and
+with `--lod 0.05`, `after/` this pass's, one derived-data cache; a copy of row G148's generated pack
+as `--materials`, msvc-debug, 1600 x 900, CSM shadows, sun -30, 40). **The experiment**: from across,
+the base's patchwork of panels and wedges is there with the shadows off and gone with the finest
+forms forced, so it was the coarse forms, as the CPU case found; after the lock it is gone at the
+default LOD. **Before**, at one metre the bed was the granite set's smooth face with lichen; **after**,
+it is rubble, clasts standing on each other with dark voids, and the toe's clasts lie past it over
+metres. The pass's first after-run stuck toe clasts to the face above the apron (`captures/after-first/`),
+which the gentle-ground rule removed. Still wrong beside reels r04, r19 and r22: the apron is one
+dark even grey (the generated scree set's tone, darker than the reels' pale fans, and its 1 m tile
+repeats as a honeycomb from across); the clasts are all flat-topped plates of one shape; the cones
+stand barely proud of the apron on this face, which is the face's (its spurs shed most of it), not
+a scene where gullies drain basins; the wall above is untextured ground, so the scree's contrast
+with its wall cannot be judged; and from across the toe's clasts still read as a speckled band
+along the outline.

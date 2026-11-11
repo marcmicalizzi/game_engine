@@ -8,7 +8,10 @@
 namespace engine::rocks {
 // 2 since G143 (2026-11-10): a bed's bare rim on steep ground sinks below the face it meets.
 // 3 (G143, second agent): the bed's outline, its sink and its normals come from the plan.
-inline constexpr u32 k_deposit_version = 3;
+// 4 (G143's third pass): the bed's top is rubble, its clasts anchored to the world, the loose
+// fragments of the largest band alone, the toe's clasts spread over metres. 5: the toe's clasts on
+// the gentle ground only (a mesh built at 4 may carry clasts on the face).
+inline constexpr u32 k_deposit_version = 5;
 // The bed's edge (rocks.md, "The edge and the seams"): inside its outline toward bare gentle ground
 // a deposit is no thicker than `k_edge_slope` (tan 31 degrees, the toe's own slope) times its
 // distance in, less half a spacing; past it the piles' surfaces continue under the ground; and the
