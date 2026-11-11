@@ -6,6 +6,7 @@
 #include <doctest/doctest.h>
 
 #include <cmath>
+#include <string>
 
 using namespace engine;
 using namespace engine::scene_gen;
@@ -321,4 +322,116 @@ TEST_CASE("exclusion: the distance to a bank's edge out to any reach is the ripa
   Exclusion none;
   REQUIRE(none.build({}, {}, {}));
   CHECK(none.channel_edge_distance_mm(0, 0, 128.0) > 1e20);
+}
+
+// ---- W98: footprints as shapes ------------------------------------------------------------------
+
+TEST_CASE("exclusion: a band footprint excludes its band and nothing else") {
+  // A wall's foot: 12 m along +x from (2, 5) m, 0.4 m either side of its line, its ends round.
+  const Footprint wall = Footprint::band(mm(2.0), mm(5.0), mm(14.0), mm(5.0), mm(0.4));
+  // Its edge, metres: inside negative, outside positive, round past the ends.
+  CHECK(wall.edge_m(mm(8.0), mm(5.0)) == doctest::Approx(-0.4).epsilon(1e-12));
+  CHECK(wall.edge_m(mm(8.0), mm(5.399)) == doctest::Approx(-0.001).epsilon(1e-9));
+  CHECK(wall.edge_m(mm(8.0), mm(6.4)) == doctest::Approx(1.0).epsilon(1e-12));
+  CHECK(wall.edge_m(mm(14.6), mm(5.0)) == doctest::Approx(0.2).epsilon(1e-12));
+  CHECK(wall.covers_mm(mm(8.0), mm(4.6)));
+  CHECK_FALSE(wall.covers_mm(mm(8.0), mm(4.599)));
+  // Its disc holds the whole band, a millimetre over: a reader that knows only discs keeps clear.
+  CHECK(wall.x_mm == mm(8.0));
+  CHECK(wall.z_mm == mm(5.0));
+  CHECK(wall.radius == doctest::Approx(6.401).epsilon(1e-12));
+  for (const f64 x : {2.0, 8.0, 14.0, 14.4})
+    for (const f64 z : {4.6, 5.0, 5.4}) {
+      if (!wall.covers_mm(mm(x), mm(z))) continue;
+      const f64 dx = x - 8.0, dz = z - 5.0;
+      CHECK(dx * dx + dz * dz < wall.radius * wall.radius);
+    }
+
+  Exclusion ex;
+  REQUIRE(ex.build({}, {}, {}));
+  std::string error;
+  REQUIRE_MESSAGE(ex.add_footprints({&wall, 1}, &error), error);
+  CHECK(ex.footprint_count() == 1);
+  CHECK_FALSE(ex.empty());
+  const f64 h = 0.0;
+  const Ground ground = ground_at(h);
+  // **The sward grows to the wall's foot**: a point a millimetre past the band is free, where the
+  // wall's disc of 6.4 m held everything back by its radius (the sward adds half a patch's
+  // diagonal to an earlier footprint's radius, so 1.6 m and more for a 4 m wall's disc).
+  for (const f64 x : {2.5, 8.0, 13.5}) {
+    CHECK(ex.excluded_mm(ground, mm(x), mm(5.4)));
+    CHECK(ex.excluded_mm(ground, mm(x), mm(4.6)));
+    CHECK_FALSE(ex.excluded_mm(ground, mm(x), mm(5.401)));
+    CHECK_FALSE(ex.excluded_mm(ground, mm(x), mm(4.599)));
+  }
+  // Every generator asks with every kind by default; one that asks without the footprints'
+  // kind is not refused by them.
+  CHECK_FALSE(ex.excluded_mm(ground, mm(8.0), mm(5.0), k_exclude_all & ~k_exclude_footprints));
+  // How far to the edge, within a reach, and nothing past it.
+  CHECK(ex.footprint_distance_mm(mm(8.0), mm(6.4), 3.0) == doctest::Approx(1.0).epsilon(1e-12));
+  CHECK(ex.footprint_distance_mm(mm(8.0), mm(5.0), 3.0) == 0.0);
+  CHECK(ex.footprint_distance_mm(mm(8.0), mm(9.0), 3.0) > 1e20);
+  CHECK(ex.footprint_distance_mm(mm(8.0), mm(9.0), 4.0) == doctest::Approx(3.6).epsilon(1e-12));
+  // The channels, holes and water still answer as they did.
+  CHECK(ex.channel_distance_mm(mm(8.0), mm(5.0)) > 1e20);
+  // `build` clears the footprints.
+  REQUIRE(ex.build({}, {}, {}));
+  CHECK(ex.empty());
+  CHECK_FALSE(ex.excluded_mm(ground, mm(8.0), mm(5.0)));
+}
+
+TEST_CASE("exclusion: a polygon footprint excludes its inside, a notch included, by its edge") {
+  // An L: a 10 m square at the origin with its north-east quarter missing, a yard round a house.
+  const FootprintPoint l[6] = {{0, 0},       {10000, 0},    {10000, 5000},
+                               {5000, 5000}, {5000, 10000}, {0, 10000}};
+  const Footprint yard = Footprint::polygon(l);
+  CHECK(yard.covers_mm(2000, 2000));
+  CHECK(yard.covers_mm(8000, 2000));
+  CHECK(yard.covers_mm(2000, 8000));
+  CHECK_FALSE(yard.covers_mm(8000, 8000));  // the notch
+  CHECK(yard.edge_m(8000, 8000) == doctest::Approx(3.0).epsilon(1e-12));
+  CHECK(yard.edge_m(2000, 2000) == doctest::Approx(-2.0).epsilon(1e-12));
+  CHECK(yard.edge_m(-1000, 5000) == doctest::Approx(1.0).epsilon(1e-12));
+  // Either turn is the same polygon (to the last bits of a projection taken from the other end).
+  const FootprintPoint reversed[6] = {l[5], l[4], l[3], l[2], l[1], l[0]};
+  const Footprint other = Footprint::polygon(reversed);
+  for (i64 z = -2000; z <= 12000; z += 700)
+    for (i64 x = -2000; x <= 12000; x += 700)
+      CHECK(std::fabs(other.edge_m(x, z) - yard.edge_m(x, z)) < 1e-9);
+  Exclusion ex;
+  REQUIRE(ex.build({}, {}, {}));
+  std::string error;
+  {
+    // The exclusion copies the points: the footprint may go once it is added.
+    const FootprintPoint copy[6] = {l[0], l[1], l[2], l[3], l[4], l[5]};
+    const Footprint held = Footprint::polygon(copy);
+    REQUIRE_MESSAGE(ex.add_footprints({&held, 1}, &error), error);
+  }
+  const f64 h = 0.0;
+  const Ground ground = ground_at(h);
+  u64 agree = 0;
+  for (i64 z = -2000; z <= 12000; z += 250)
+    for (i64 x = -2000; x <= 12000; x += 250) {
+      CHECK(ex.excluded_mm(ground, x, z) == yard.covers_mm(x, z));
+      ++agree;
+    }
+  CHECK(agree == 57 * 57);
+  // A disc and a band beside it, in one call; refusals leave nothing added.
+  const Footprint discs[2] = {Footprint{30000, 30000, 2.0},
+                              Footprint::band(0, 20000, 0, 20000, 500)};
+  REQUIRE(ex.add_footprints(discs, &error));
+  CHECK(ex.footprint_count() == 3);
+  CHECK(ex.excluded_mm(ground, 31500, 30000));
+  CHECK(ex.excluded_mm(ground, 0, 20400));  // a band of no length is a disc of its half-width
+  const Footprint bad[2] = {Footprint{0, 0, 1.0}, Footprint::band(0, 0, 1000, 0, 0)};
+  CHECK_FALSE(ex.add_footprints(bad, &error));
+  CHECK(error.find("footprint 1 is a band with a half-width under a millimetre") !=
+        std::string::npos);
+  CHECK(ex.footprint_count() == 3);
+  const FootprintPoint flat[3] = {{0, 0}, {1000, 0}, {2000, 0}};
+  const Footprint line = Footprint::polygon(flat);
+  CHECK_FALSE(ex.add_footprints({&line, 1}, &error));
+  CHECK(error.find("no area") != std::string::npos);
+  const Footprint nan_disc{0, 0, std::nan("")};
+  CHECK_FALSE(ex.add_footprints({&nan_disc, 1}, &error));
 }

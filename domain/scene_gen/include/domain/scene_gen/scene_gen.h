@@ -108,15 +108,13 @@ struct Ground {
 // ---- what a generator sees ----------------------------------------------------------------------
 
 // **An earlier entry's placement, as a later one is handed it** (ADR-0046 decision 4, "the
-// placements it is handed in the declared order"; scene_gen.md, "Earlier placements"): where it
-// stands, in whole millimetres of the world, and how far its mesh reaches on the ground there — the
-// radius of the mesh's bounds in the ground's plane, times its scale — which the host computes from
-// the meshes it loaded, since a generator names its meshes by path and never reads another's.
-struct Footprint {
-  i64 x_mm = 0;
-  i64 z_mm = 0;
-  f64 radius = 0.0;  // metres
-};
+// placements it is handed in the declared order"; scene_gen.md, "Earlier placements"): a
+// `Footprint` (exclusion.h, where it is declared so the exclusion can hold one): where it stands,
+// in whole millimetres of the world, and how far its mesh reaches on the ground there — the radius
+// of the mesh's bounds in the ground's plane, times its scale — which the host computes from the
+// meshes it loaded, since a generator names its meshes by path and never reads another's. Since
+// W98 a footprint may be a band or a polygon as well as a disc (scene_gen.md, "Footprints as
+// shapes"); its disc then holds the whole shape, so a reader that knows only discs keeps clear.
 
 // Everything a generator is handed besides its entry, and nothing of any other generator (ADR-0046
 // decision 4). A generator that wants another's output asks the ground it is handed, never the

@@ -23,7 +23,173 @@ f64 bank_number(f64 value, f64 fallback) noexcept {
   return finite(value) && value >= 0.0 ? value : fallback;
 }
 
+i64 floor_half(i64 v) noexcept { return v >= 0 ? v / 2 : -((-v + 1) / 2); }
+
+// The squared distance from (x, z) to the segment from a to b, millimetres.
+f64 segment_distance2(f64 x, f64 z, f64 ax, f64 az, f64 bx, f64 bz) noexcept {
+  const f64 ex = bx - ax, ez = bz - az;
+  const f64 len2 = ex * ex + ez * ez;
+  f64 t = 0.0;
+  if (len2 > 0.0) t = std::clamp(((x - ax) * ex + (z - az) * ez) / len2, 0.0, 1.0);
+  const f64 px = ax + t * ex - x, pz = az + t * ez - z;
+  return px * px + pz * pz;
+}
+
+f64 mm(i64 v) noexcept { return static_cast<f64>(v); }
+
 }  // namespace
+
+// ---- footprints ---------------------------------------------------------------------------------
+
+Footprint Footprint::band(i64 ax, i64 az, i64 bx, i64 bz, i64 half) noexcept {
+  Footprint f;
+  f.shape = FootprintShape::band;
+  f.ax_mm = ax;
+  f.az_mm = az;
+  f.bx_mm = bx;
+  f.bz_mm = bz;
+  f.half_mm = half;
+  f.x_mm = floor_half(ax + bx);
+  f.z_mm = floor_half(az + bz);
+  // The disc that holds it: half the line's length from its middle and the half-width, and a
+  // millimetre for the middle's rounding.
+  const f64 ex = mm(bx - ax), ez = mm(bz - az);
+  f.radius = (0.5 * std::sqrt(ex * ex + ez * ez) + mm(half) + 1.0) * 0.001;
+  return f;
+}
+
+Footprint Footprint::polygon(std::span<const FootprintPoint> pts) noexcept {
+  Footprint f;
+  f.shape = FootprintShape::polygon;
+  if (pts.size() < 3) return f;
+  f.points = pts.data();
+  f.point_count = static_cast<u32>(pts.size());
+  i64 x0 = pts[0].x_mm, x1 = x0, z0 = pts[0].z_mm, z1 = z0;
+  for (const FootprintPoint& p : pts) {
+    x0 = std::min(x0, p.x_mm);
+    x1 = std::max(x1, p.x_mm);
+    z0 = std::min(z0, p.z_mm);
+    z1 = std::max(z1, p.z_mm);
+  }
+  f.x_mm = floor_half(x0 + x1);
+  f.z_mm = floor_half(z0 + z1);
+  f64 far2 = 0.0;
+  for (const FootprintPoint& p : pts) {
+    const f64 dx = mm(p.x_mm - f.x_mm), dz = mm(p.z_mm - f.z_mm);
+    far2 = std::max(far2, dx * dx + dz * dz);
+  }
+  f.radius = (std::sqrt(far2) + 1.0) * 0.001;
+  return f;
+}
+
+f64 Footprint::edge_m(i64 x_mm_at, i64 z_mm_at) const noexcept {
+  const f64 x = mm(x_mm_at), z = mm(z_mm_at);
+  switch (shape) {
+    case FootprintShape::disc: {
+      if (!(radius > 0.0)) return k_far;
+      const f64 dx = x - mm(x_mm), dz = z - mm(z_mm);
+      return std::sqrt(dx * dx + dz * dz) * 0.001 - radius;
+    }
+    case FootprintShape::band: {
+      if (half_mm < 1) return k_far;
+      const f64 d2 = segment_distance2(x, z, mm(ax_mm), mm(az_mm), mm(bx_mm), mm(bz_mm));
+      return (std::sqrt(d2) - mm(half_mm)) * 0.001;
+    }
+    case FootprintShape::polygon: {
+      if (points == nullptr || point_count < 3) return k_far;
+      // Inside by the even-odd rule (a crossing of the ray towards +x), and the nearest edge.
+      bool in = false;
+      f64 d2 = k_far;
+      for (u32 i = 0, j = point_count - 1; i < point_count; j = i++) {
+        const f64 xi = mm(points[i].x_mm), zi = mm(points[i].z_mm);
+        const f64 xj = mm(points[j].x_mm), zj = mm(points[j].z_mm);
+        if ((zi > z) != (zj > z)) {
+          const f64 cross = xj + (z - zj) * (xi - xj) / (zi - zj);
+          if (x < cross) in = !in;
+        }
+        d2 = std::min(d2, segment_distance2(x, z, xj, zj, xi, zi));
+      }
+      const f64 d = std::sqrt(d2) * 0.001;
+      return in ? -d : d;
+    }
+  }
+  return k_far;
+}
+
+bool Exclusion::add_footprints(std::span<const Footprint> footprints, std::string* error) {
+  const auto fail = [&](usize k, const char* why) {
+    if (error != nullptr) *error = "footprint " + std::to_string(k) + " " + why;
+    return false;
+  };
+  // Checked whole before anything is added.
+  for (usize k = 0; k < footprints.size(); ++k) {
+    const Footprint& f = footprints[k];
+    if (!finite(f.radius) || f.radius < 0.0)
+      return fail(k, "has a radius that is negative or not finite");
+    if (f.shape == FootprintShape::band && f.half_mm < 1)
+      return fail(k, "is a band with a half-width under a millimetre");
+    if (f.shape == FootprintShape::polygon) {
+      if (f.points == nullptr || f.point_count < 3)
+        return fail(k, "is a polygon of fewer than three points");
+      f64 area2 = 0.0;
+      for (u32 i = 0, j = f.point_count - 1; i < f.point_count; j = i++)
+        area2 += mm(f.points[j].x_mm) * mm(f.points[i].z_mm) -
+                 mm(f.points[i].x_mm) * mm(f.points[j].z_mm);
+      if (!(std::fabs(area2) > 0.0)) return fail(k, "is a polygon with no area");
+    }
+  }
+  for (const Footprint& f : footprints) {
+    if (!(f.radius > 0.0)) continue;  // a disc of no radius covers nothing
+    const u32 id = footprints_.size();
+    Footprint kept = f;
+    footprint_first_.push_back(points_.size());
+    if (f.shape == FootprintShape::polygon) {
+      for (u32 i = 0; i < f.point_count; ++i)
+        points_.push_back(f.points[i]);
+      kept.points = nullptr;
+    }
+    footprints_.push_back(kept);
+    const f64 cx = mm(f.x_mm) * 0.001, cz = mm(f.z_mm) * 0.001;
+    for (i64 z = cell_of(cz - f.radius); z <= cell_of(cz + f.radius); ++z)
+      for (i64 x = cell_of(cx - f.radius); x <= cell_of(cx + f.radius); ++x)
+        footprint_cells_.push_back(Cell{z, x, id});
+  }
+  std::sort(footprint_cells_.begin(), footprint_cells_.end(), [](const Cell& a, const Cell& b) {
+    if (a.key_z != b.key_z) return a.key_z < b.key_z;
+    if (a.key_x != b.key_x) return a.key_x < b.key_x;
+    return a.segment < b.segment;
+  });
+  return true;
+}
+
+f64 Exclusion::footprint_edge_m(u32 k, i64 x_mm, i64 z_mm) const noexcept {
+  const Footprint& f = footprints_[k];
+  if (f.shape != FootprintShape::polygon) return f.edge_m(x_mm, z_mm);
+  Footprint p = f;
+  p.points = points_.data() + footprint_first_[k];
+  return p.edge_m(x_mm, z_mm);
+}
+
+f64 Exclusion::footprint_distance_mm(i64 x_mm, i64 z_mm, f64 reach_m) const noexcept {
+  if (footprint_cells_.empty() || !(reach_m > 0.0)) return k_far;
+  const f64 x = mm(x_mm) * 0.001, z = mm(z_mm) * 0.001;
+  // A footprint whose edge is within the reach has its disc within the reach of the point, and it
+  // is filed in every cell its disc's box touches.
+  const i64 cx0 = cell_of(x - reach_m), cx1 = cell_of(x + reach_m);
+  const i64 cz0 = cell_of(z - reach_m), cz1 = cell_of(z + reach_m);
+  f64 best = k_far;
+  for (i64 cz = cz0; cz <= cz1; ++cz) {
+    auto it = std::lower_bound(footprint_cells_.begin(), footprint_cells_.end(), Cell{cz, cx0, 0},
+                               [](const Cell& a, const Cell& b) {
+                                 if (a.key_z != b.key_z) return a.key_z < b.key_z;
+                                 return a.key_x < b.key_x;
+                               });
+    for (; it != footprint_cells_.end() && it->key_z == cz && it->key_x <= cx1; ++it)
+      best = std::min(best, footprint_edge_m(it->segment, x_mm, z_mm));
+  }
+  if (best >= reach_m) return k_far;
+  return best > 0.0 ? best : 0.0;
+}
 
 bool Exclusion::build(std::span<const scene::TerrainHole> holes,
                       std::span<const scene::WaterBody> water,
@@ -33,6 +199,10 @@ bool Exclusion::build(std::span<const scene::TerrainHole> holes,
   segments_.clear();
   cells_.clear();
   widest_edge_ = 0.0;
+  footprints_.clear();
+  footprint_first_.clear();
+  points_.clear();
+  footprint_cells_.clear();
   if (!holes_.build(holes, error)) return false;
 
   for (const scene::WaterBody& block : water) {
@@ -211,6 +381,17 @@ bool Exclusion::excluded_mm(const Ground& ground, i64 x_mm, i64 z_mm, u32 kinds)
   const f64 x = static_cast<f64>(x_mm) * 0.001;
   const f64 z = static_cast<f64>(z_mm) * 0.001;
   if ((kinds & k_exclude_channels) != 0 && !cells_.empty() && nearest_gap(x, z) <= 0.0) return true;
+  // The shaped footprints (W98): the point's own cell's.
+  if ((kinds & k_exclude_footprints) != 0 && !footprint_cells_.empty()) {
+    const i64 cz = cell_of(z), cx = cell_of(x);
+    auto it = std::lower_bound(footprint_cells_.begin(), footprint_cells_.end(), Cell{cz, cx, 0},
+                               [](const Cell& a, const Cell& b) {
+                                 if (a.key_z != b.key_z) return a.key_z < b.key_z;
+                                 return a.key_x < b.key_x;
+                               });
+    for (; it != footprint_cells_.end() && it->key_z == cz && it->key_x == cx; ++it)
+      if (footprint_edge_m(it->segment, x_mm, z_mm) <= 0.0) return true;
+  }
   if ((kinds & k_exclude_water) != 0) {
     for (const Body& body : bodies_) {
       if (!body.open && !inside(body, x, z)) continue;
