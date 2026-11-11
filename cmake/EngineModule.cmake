@@ -405,7 +405,8 @@ endfunction()
 # its test files with target_sources after engine_module_tests, and a file the deal never saw
 # would be a file whose cases no part runs.
 #
-# **The deal is by cost** (roadmap T77; docs/ci/what-to-run.md, "Parts dealt by cost"): the files
+# **The deal is by cost** (roadmap T77, T88; docs/ci/what-to-run.md, "Parts dealt by cost";
+# engine_deal_test_files in cmake/EngineTestDeal.cmake, which a prediction runs too): the files
 # cmake/test-costs.txt gives seconds for go first, longest first, each to the part with the least
 # so far (longest-processing-time first, which is within a third of the best possible deal); the
 # files it does not name follow in name order, round the parts, which with an empty table is the
@@ -426,62 +427,20 @@ function(_engine_test_parts name target parts labels opens_devices timeout)
       list(APPEND _names "${_base}")
     endif()
   endforeach()
-  list(REMOVE_DUPLICATES _names)
-  list(SORT _names)
-
-  # The costed files as "<seconds, zero-padded>|<name>", so a descending string sort is a
-  # descending numeric one and equal costs fall back to the name.
-  set(_costed "")
-  set(_uncosted "")
-  foreach(_base IN LISTS _names)
-    get_property(_cost GLOBAL PROPERTY "ENGINE_TEST_COST:${name}:${_base}")
-    if("${_cost}" STREQUAL "")
-      list(APPEND _uncosted "${_base}")
-    else()
-      string(LENGTH "${_cost}" _digits)
-      set(_padded "${_cost}")
-      while(_digits LESS 9)
-        string(PREPEND _padded "0")
-        math(EXPR _digits "${_digits} + 1")
-      endwhile()
-      list(APPEND _costed "${_padded}|${_base}")
-    endif()
-  endforeach()
-  list(SORT _costed ORDER DESCENDING)
+  engine_deal_test_files(${name} ${parts} "${_names}" _deal)   # cmake/EngineTestDeal.cmake
 
   math(EXPR _last "${parts} - 1")
   foreach(_k RANGE 0 ${_last})
-    set(_part_${_k} "")
-    set(_load_${_k} 0)
-  endforeach()
-  foreach(_entry IN LISTS _costed)
-    string(REPLACE "|" ";" _pair "${_entry}")
-    list(GET _pair 0 _cost)
-    list(GET _pair 1 _base)
-    math(EXPR _cost "${_cost} + 0")   # drops the padding
-    set(_best 0)
-    foreach(_k RANGE 1 ${_last})
-      if(_load_${_k} LESS _load_${_best})
-        set(_best ${_k})
-      endif()
-    endforeach()
-    list(APPEND _part_${_best} "*/${_base}" "*\\${_base}")
-    math(EXPR _load_${_best} "${_load_${_best}} + ${_cost}")
-  endforeach()
-  set(_i 0)
-  foreach(_base IN LISTS _uncosted)
-    math(EXPR _k "${_i} % ${parts}")
-    list(APPEND _part_${_k} "*/${_base}" "*\\${_base}")
-    math(EXPR _i "${_i} + 1")
-  endforeach()
-
-  foreach(_k RANGE 0 ${_last})
-    if(NOT _part_${_k})
+    if(NOT _deal_${_k})
       continue()
     endif()
+    set(_filters "")
+    foreach(_base IN LISTS _deal_${_k})
+      list(APPEND _filters "*/${_base}" "*\\${_base}")
+    endforeach()
     math(EXPR _part "${_k} + 1")
     set(_test ${name}.${_part})
-    string(JOIN "," _filter_arg ${_part_${_k}})
+    string(JOIN "," _filter_arg ${_filters})
     add_test(NAME ${_test} COMMAND ${target} --duration=true "--source-file=${_filter_arg}")
     set_tests_properties(${_test} PROPERTIES LABELS "${labels}")
     if(NOT "${timeout}" STREQUAL "")
@@ -568,7 +527,7 @@ function(_engine_check_config_invariant name)
 endfunction()
 
 #   engine_module_tests(NAME <name> SOURCES <file>... [DEPS <module>...] [PARTS <n>]
-#                       [CONFIG_INVARIANT])
+#                       [CONFIG_INVARIANT] [WALL_CLOCK])
 # DEPS are test-only dependencies (other engine modules the tests use but the module does not).
 # PARTS registers the one executable as <n> CTest tests, <name>.1 to <name>.<n>, each running only
 # its own files' cases (_engine_test_parts above: dealt by cost, the rest by name), for a suite
@@ -581,12 +540,17 @@ endfunction()
 # every configuration (checked here, _engine_check_config_invariant, and by the lint), so an
 # off-configuration may run its tests with no GPU and leave the GPU cases to the all-on suite
 # (`tools/dev.ps1 test -SkipInvariantGpu`).
+# WALL_CLOCK labels the tests `wall_clock`: a case asserts an upper bound on wall-clock time (a
+# lookup under 50 ms), which another test sharing the cores can break, so the finalize in
+# cmake/EngineTesting.cmake runs every test with the label alone (RUN_SERIAL) in a run with jobs
+# (roadmap T87; docs/ci/what-to-run.md, "Jobs"). A lower bound, a synthetic clock or a ratio does
+# not need it.
 # Every test runs with doctest's `--duration=true`, one line of seconds a case in the log, which is
 # what cmake/test-costs.txt is made from (tools/test-costs.ps1).
 function(engine_module_tests)
   set(_one NAME PARTS)
   set(_multi SOURCES DEPS)
-  cmake_parse_arguments(ET "CONFIG_INVARIANT" "${_one}" "${_multi}" ${ARGN})
+  cmake_parse_arguments(ET "CONFIG_INVARIANT;WALL_CLOCK" "${_one}" "${_multi}" ${ARGN})
   if(NOT ENGINE_BUILD_TESTS)
     return()
   endif()
@@ -618,6 +582,9 @@ function(engine_module_tests)
   if(ET_CONFIG_INVARIANT)
     _engine_check_config_invariant(${ET_NAME})
     list(APPEND _labels config_invariant)
+  endif()
+  if(ET_WALL_CLOCK)
+    list(APPEND _labels wall_clock)
   endif()
   if(ET_PARTS AND ET_PARTS GREATER 1)
     _engine_defer_test_parts(${ET_NAME} ${_test_target} ${ET_PARTS} "${_labels}" "${_opens_devices}" "")

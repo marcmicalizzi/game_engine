@@ -140,17 +140,42 @@ TEST_CASE("sward forms: a tussock's crowns stand at their spacing with ground be
   }
 }
 
+namespace {
+// Everything a solve hands on: the mesh, every level's indices and its card cutoff.
+u64 solved_pin(const Solved& s) {
+  u64 pin = hash_bytes(s.mesh.positions.data(), s.mesh.positions.size() * sizeof(Vec3));
+  pin = hash_combine(pin, hash_bytes(s.mesh.indices.data(), s.mesh.indices.size() * sizeof(u32)));
+  for (const auto& level : s.levels.levels) {
+    pin = hash_combine(pin, hash_bytes(level.indices.data(), level.indices.size() * sizeof(u32)));
+    pin = hash_combine(pin, hash_bytes(&level.alpha_cutoff, sizeof(level.alpha_cutoff)));
+  }
+  return pin;
+}
+}  // namespace
+
 TEST_CASE("sward forms: the same form from the same seed twice, another from another seed") {
-  for (const auto& form : k_forms) {
+  // The LOD fit is the whole cost of a solve (four coverage views rasterized about eleven times;
+  // a solve with it off takes milliseconds), and three fitted solves of each form took 212 s of a
+  // debug suite (T88). So each form's fitted solve runs once and its bytes are pinned, which holds
+  // more than a second run in the same process did — every run, every toolchain — and the repeat
+  // and the seed's effect are held on the near form, with the fit off. A quarter of each recipe's
+  // density (the families' lightest class: the same species, layout and crowns) keeps the fitted
+  // solve to a third of the cost again. Pins taken on MSVC (x64, v3); the Linux containers
+  // reproduce them, as they do sward_tests.cpp's eight-variant family pin at full density.
+  constexpr u64 k_pins[] = {7626587603361884875ull, 8745277581405426160ull, 2444956417515254200ull,
+                            6988461357104796185ull};
+  for (u32 i = 0; i < 4; ++i) {
+    const auto& form = k_forms[i];
     INFO(form.file);
     flora::Sward p = recipe(form.file);
+    p.density = .25f;
+    const auto fitted = solve(p);
+    CHECK(solved_pin(fitted) == k_pins[i]);
+    p.fit_lods = false;
     const auto a = solve(p);
     const auto b = solve(p);
     REQUIRE(a.mesh.positions.size() == b.mesh.positions.size());
-    CHECK(std::memcmp(a.mesh.positions.data(), b.mesh.positions.data(),
-                      a.mesh.positions.size() * sizeof(Vec3)) == 0);
-    CHECK(a.mesh.indices == b.mesh.indices);
-    CHECK(a.levels.levels[1].alpha_cutoff == b.levels.levels[1].alpha_cutoff);
+    CHECK(solved_pin(a) == solved_pin(b));
     p.seed += 1;
     const auto c = solve(p);
     CHECK((c.mesh.positions.size() != a.mesh.positions.size() ||
