@@ -1144,7 +1144,14 @@ bool solve_deposit(const DepositPatch& p, assets::MeshData& out, std::string& er
         const u32 a = z * w + x;
         if (active[z * (w - 1) + x]) continue;
         const f32 s = std::min({p.sink[a], p.sink[a + 1], p.sink[a + w], p.sink[a + w + 1]});
-        if (s > 0.0f && s < 1.95f) {  // past the cap the field says no more how far out
+        // A toe lies on the gentle ground below the bed, never on the face above it, whose bare
+        // rim the edge field also sinks (the third pass's first pictures stuck clasts to the wall).
+        const f32 g_lo =
+            std::min({p.ground[a], p.ground[a + 1], p.ground[a + w], p.ground[a + w + 1]});
+        const f32 g_hi =
+            std::max({p.ground[a], p.ground[a + 1], p.ground[a + w], p.ground[a + w + 1]});
+        const bool gentle = wide(g_hi - g_lo) <= k_edge_slope * wide(p.spacing_m);
+        if (gentle && s > 0.0f && s < 1.95f) {  // past the cap the field says no more how far out
           ring.push_back(a);
           ring_sink.push_back(s);
         }

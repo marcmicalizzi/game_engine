@@ -857,10 +857,12 @@ TEST_CASE("deposits: the toe's clasts thin out over metres, the largest farthest
   for (u32 z = 0; z < p.depth; ++z)
     for (u32 x = 0; x < p.width; ++x) {
       const f32 out = static_cast<f32>(x) * .5f - 4.0f;  // metres past the outline
-      p.ground.push_back(0.0f);
-      p.thickness.push_back(out < 0 ? std::min(.6f * -out, .5f) : 0.0f);
-      p.coarse.push_back(out < 0 ? 1.0f : 0.0f);
-      p.sink.push_back(out < 0 ? 0.0f : std::min(2.0f, .6f * out + .01f));
+      // The first 1.5 m is the face the bed lies against: bare, steep, sunk by the edge field.
+      const bool face = x < 4;
+      p.ground.push_back(face ? 2.0f * (1.5f - static_cast<f32>(x) * .5f) : 0.0f);
+      p.thickness.push_back(face ? 0.0f : (out < 0 ? std::min(.6f * -out, .5f) : 0.0f));
+      p.coarse.push_back(!face && out < 0 ? 1.0f : 0.0f);
+      p.sink.push_back(face ? .3f : (out < 0 ? 0.0f : std::min(2.0f, .6f * out + .01f)));
     }
   assets::MeshData mesh;
   std::string error;
@@ -887,7 +889,9 @@ TEST_CASE("deposits: the toe's clasts thin out over metres, the largest farthest
     hi[r] = std::max(hi[r], x);
   }
   f64 count[3] = {}, size[3] = {}, nearest = 1e9, farthest = 0;
+  u32 on_face = 0;
   for (u32 i = 0; i < nv; ++i) {
+    if (find(i) == i && lo[i] + hi[i] < 2.8) ++on_face;  // centred on the face above the bed
     if (find(i) != i || lo[i] < 4.05) continue;
     const f64 d = .5 * (lo[i] + hi[i]) - 4.0;
     const u32 band = std::min(2u, static_cast<u32>(d));
@@ -906,6 +910,7 @@ TEST_CASE("deposits: the toe's clasts thin out over metres, the largest farthest
   CHECK(count[2] > 0);
   CHECK(size[2] > size[0]);
   CHECK(farthest - nearest > 1.5);  // over metres, not a ring along the outline
+  CHECK(on_face == 0u);
 }
 
 TEST_CASE("deposits: G143's plan and a patch with blocks are their pinned bytes") {
