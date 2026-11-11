@@ -763,6 +763,151 @@ TEST_CASE("deposits: neighbouring patches' coarse forms meet along their border"
   CHECK(worst_sag < .05);
 }
 
+TEST_CASE("deposits: the bed is rubble whose clasts follow the sorting and the world") {
+  // G143's third pass (rocks.md, "The bed is rubble"): the top is raised by clasts sized by the
+  // fall sorting the plan carries, fine at a pile's apex and coarse at its toe, and anchored to the
+  // world. A 16 m bed a metre deep whose coarse share rises from 0.2 to 1 along x.
+  auto bed = [](i64 origin_x_mm, bool ramp) {
+    DepositPatch p;
+    p.width = 33;
+    p.depth = 5;
+    p.spacing_m = .5f;
+    p.fragments = 0;
+    p.fragment_m = .25f;
+    p.triangle_budget = 100000;
+    p.origin_mm = {origin_x_mm, 7000};
+    for (u32 z = 0; z < p.depth; ++z)
+      for (u32 x = 0; x < p.width; ++x) {
+        p.ground.push_back(0.0f);
+        p.thickness.push_back(1.0f);
+        p.coarse.push_back(ramp ? .2f + .8f * static_cast<f32>(x) / 32.0f : 1.0f);
+      }
+    return p;
+  };
+  std::string error;
+  assets::MeshData mesh;
+  REQUIRE_MESSAGE(solve_deposit(bed(0, true), mesh, error), error);
+  // The relief over the bed's own top (1 m less the millimetre every top stands under its depth),
+  // by quarters of its length, on the top's vertices away from its walls.
+  f64 mean[4] = {}, most[4] = {};
+  u32 count[4] = {};
+  for (u32 v = 0; v < mesh.positions.size(); ++v) {
+    const Vec3 q = mesh.positions[v];
+    if (q.y < .5f || mesh.normals[v].y < .2f || q.z < .5f || q.z > 1.5f) continue;
+    const f64 relief = static_cast<f64>(q.y) - .999;
+    const u32 k = std::min(3u, static_cast<u32>(static_cast<f64>(q.x) / 4.0));
+    mean[k] += relief;
+    most[k] = std::max(most[k], relief);
+    ++count[k];
+  }
+  for (u32 k = 0; k < 4; ++k) {
+    REQUIRE(count[k] > 0u);
+    mean[k] /= static_cast<f64>(count[k]);
+  }
+  MESSAGE("relief by quarter from the apex: mean ", mean[0], " ", mean[1], " ", mean[2], " ",
+          mean[3], " m; highest ", most[0], " ", most[1], " ", most[2], " ", most[3], " m");
+  // Fine at the apex: its clasts are the material's, under the 12.5 cm step (a tenth of the toe's
+  // 0.5 m at coarse share 0.2 is 0.08 m).
+  CHECK(most[0] < .02);
+  // Coarser toward the toe, and at the toe clasts standing a third of their size (0.35 of 0.5 m).
+  for (u32 k = 1; k < 4; ++k)
+    CHECK(mean[k] > mean[k - 1]);
+  CHECK(most[3] > .1);
+  CHECK(most[3] < .35 * 1.0 * 1.13);
+  // Anchored to the world: a bed two metres along in the world, all coarse, draws the same clast
+  // two metres back in its own frame, to the bit.
+  assets::MeshData a, b;
+  REQUIRE(solve_deposit(bed(0, false), a, error));
+  REQUIRE(solve_deposit(bed(2000, false), b, error));
+  u32 same = 0, compared = 0;
+  for (const Vec3& qa : a.positions) {
+    if (qa.y < .5f || qa.x < 2.0f) continue;
+    for (const Vec3& qb : b.positions)
+      if (qb.z == qa.z && std::abs(static_cast<f64>(qb.x) + 2.0 - static_cast<f64>(qa.x)) < 1e-6 &&
+          qb.y > .5f) {
+        ++compared;
+        same += qb.y == qa.y ? 1u : 0u;
+        break;
+      }
+    if (compared >= 200) break;
+  }
+  MESSAGE("vertices compared two metres apart: ", compared, ", the same ", same);
+  CHECK(compared >= 200u);
+  CHECK(same == compared);
+  // Channel sediment (coarse share zero) has no relief: its grains are the material's.
+  DepositPatch sediment = bed(0, false);
+  std::fill(sediment.coarse.begin(), sediment.coarse.end(), 0.0f);
+  REQUIRE(solve_deposit(sediment, mesh, error));
+  for (const Vec3& q : mesh.positions)
+    if (q.y > .5f) CHECK(std::abs(static_cast<f64>(q.y) - .999) < 1e-5);
+}
+
+TEST_CASE("deposits: the toe's clasts thin out over metres, the largest farthest") {
+  // G143's third pass (rocks.md, "The toe"): a bed over the first 4 m of a 16 m patch, the meadow
+  // past it with the edge field's sink rising 0.6 m a metre (the toe's slope) to its 2 m cap. The
+  // toe's clasts (every fourth fragment) lie past the outline, fewer the farther out and larger.
+  DepositPatch p;
+  p.width = 33;
+  p.depth = 9;
+  p.spacing_m = .5f;
+  p.fragments = 256;
+  p.fragment_m = .25f;
+  p.triangle_budget = 400000;
+  p.origin_mm = {64000, 0};
+  for (u32 z = 0; z < p.depth; ++z)
+    for (u32 x = 0; x < p.width; ++x) {
+      const f32 out = static_cast<f32>(x) * .5f - 4.0f;  // metres past the outline
+      p.ground.push_back(0.0f);
+      p.thickness.push_back(out < 0 ? std::min(.6f * -out, .5f) : 0.0f);
+      p.coarse.push_back(out < 0 ? 1.0f : 0.0f);
+      p.sink.push_back(out < 0 ? 0.0f : std::min(2.0f, .6f * out + .01f));
+    }
+  assets::MeshData mesh;
+  std::string error;
+  REQUIRE_MESSAGE(solve_deposit(p, mesh, error), error);
+  // The mesh's parts by shared positions; a part wholly past the outline is a toe clast.
+  const checks::Topology topology = checks::weld(mesh);
+  const u32 nv = topology.positions;
+  Vector<u32> parent(nv);
+  for (u32 i = 0; i < nv; ++i)
+    parent[i] = i;
+  auto find = [&](u32 x) {
+    while (parent[x] != x)
+      x = parent[x] = parent[parent[x]];
+    return x;
+  };
+  for (u32 i = 0; i < mesh.indices.size(); i += 3)
+    for (u32 k = 1; k < 3; ++k)
+      parent[find(topology.weld[mesh.indices[i + k]])] = find(topology.weld[mesh.indices[i]]);
+  Vector<f64> lo(nv, 1e9), hi(nv, -1e9);
+  for (u32 i = 0; i < mesh.positions.size(); ++i) {
+    const u32 r = find(topology.weld[i]);
+    const f64 x = static_cast<f64>(mesh.positions[i].x);
+    lo[r] = std::min(lo[r], x);
+    hi[r] = std::max(hi[r], x);
+  }
+  f64 count[3] = {}, size[3] = {}, nearest = 1e9, farthest = 0;
+  for (u32 i = 0; i < nv; ++i) {
+    if (find(i) != i || lo[i] < 4.05) continue;
+    const f64 d = .5 * (lo[i] + hi[i]) - 4.0;
+    const u32 band = std::min(2u, static_cast<u32>(d));
+    count[band] += 1;
+    size[band] += hi[i] - lo[i];
+    nearest = std::min(nearest, d);
+    farthest = std::max(farthest, d);
+  }
+  for (u32 k = 0; k < 3; ++k)
+    size[k] /= std::max(count[k], 1.0);
+  MESSAGE("toe clasts by metre past the outline: ", count[0], " ", count[1], " ", count[2],
+          ", mean across ", size[0], " ", size[1], " ", size[2], " m; from ", nearest, " to ",
+          farthest, " m out");
+  CHECK(count[0] > count[1]);
+  CHECK(count[1] > count[2]);
+  CHECK(count[2] > 0);
+  CHECK(size[2] > size[0]);
+  CHECK(farthest - nearest > 1.5);  // over metres, not a ring along the outline
+}
+
 TEST_CASE("deposits: G143's plan and a patch with blocks are their pinned bytes") {
   DepositLayer p = layer();
   p.blocks_per_100m2 = 60;
@@ -821,8 +966,9 @@ TEST_CASE("deposits: G143's plan and a patch with blocks are their pinned bytes"
   MESSAGE("G143 patch mesh pin: ", checks::mesh_hash(mesh));
   // Re-taken for the bed's normals from the top's gradient, not its triangles (stage 2; was
   // 6681331591728775090), then for fragments built at the rung their size needs (stage 3; was
-  // 2756680837895180932).
-  CHECK(checks::mesh_hash(mesh) == 11144000825443644342ull);
+  // 2756680837895180932), then for G143's third pass's rubble, walls and loose fragments (was
+  // 11144000825443644342).
+  CHECK(checks::mesh_hash(mesh) == 17461789932589341181ull);
   // A patch with no blocks keeps its version-1 key: the canonical bytes say nothing of them.
   DepositPatch plain = patch;
   plain.blocks.clear();
@@ -845,7 +991,9 @@ TEST_CASE("deposits: what a tile of cones and shed blocks costs (measured, print
   c.tile_size = 16;
   DepositLayer p = layer();
   p.blocks_per_100m2 = 30;
-  p.patch.fragments = 64;
+  // The default loose fragments (24 a patch since G143's third pass; this case asked for 64 before,
+  // 506 triangles a m2 at 64 with the relief, 281 without it and with the pebbles).
+  p.patch.fragments = DepositPatch{}.fragments;
   p.patch.triangle_budget = 40000;
   const auto* desc = scene_gen::GeneratorRegistry::global().find_placement("deposits");
   void* state = nullptr;

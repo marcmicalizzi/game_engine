@@ -23,9 +23,10 @@ constexpr i32 k_dx[] = {-1, 0, 1, -1, 1, -1, 0, 1};
 constexpr i32 k_dz[] = {-1, -1, -1, 0, 0, 1, 1, 1};
 constexpr f64 k_diag = 1.4142135623730951;
 constexpr f32 k_min_depth = 0.001f;
-// G143: the longest facet a representative fragment is built with, metres (rocks.md, "Where the
-// triangles go"): 2 cm, below what a clast shows at a walker's distance.
-constexpr f64 k_clast_edge = 0.02;
+// G143: the longest facet a loose fragment is built with, metres (rocks.md, "Where the triangles
+// go"): 4 cm since G143's third pass, whose loose clasts are 5-40 cm (2 cm while 4-32 mm pebbles
+// were fragments).
+constexpr f64 k_clast_edge = 0.04;
 // G143: squared, a block's sampled top may be 3% steeper than the repose (a cone's facets are its
 // secants), still under the 39-40 degree friction of talus (rocks.md, "What a face sheds").
 constexpr f64 k_rest_slack = 1.0609;
@@ -127,6 +128,70 @@ f64 cone_surface(f64 apex, f64 height, f64 t, f64 t2, f64 r) {
   const f64 u = r - rb;
   if (u <= len) return apex - t * rb - t * u + (t - t2) * u * u / (2.0 * len);
   return apex - t * rb - 0.5 * (t + t2) * len - t2 * (u - len);
+}
+// ---- G143's third pass: the bed is rubble (rocks.md, "The bed is rubble") ----
+// The top is drawn at k_clast_step_mm, and raised by the clasts a scree's surface is made of,
+// anchored to the world. Three lattices, k_clast_cell_mm and twice and four times it, one clast a
+// cell: its centre, size, turn and tilt drawn from the cell's world coordinates, so a clast is
+// where it is whatever patch or tile builds it. A lattice's clasts stand only where the bed's own
+// clast size is near its cell's (fine at a pile's apex, coarse at its toe: fall sorting). A clast
+// is a flat-topped, steep-sided block standing k_clast_stand of its size above the bed (talus is
+// openwork, angular clasts on each other with voids between: Verdian et al. 2021); where clasts
+// overlap the higher wins. Clasts finer than the step are the material's.
+constexpr i64 k_clast_step_mm = 125;
+constexpr i64 k_clast_cell_mm = 500;
+constexpr f64 k_clast_stand = 0.35;
+constexpr f64 k_clast_fade_m = 0.3;   // a bed thinner than this shows its clasts in proportion
+constexpr f64 k_clast_sorting = 10;   // the toe's clasts against the apex's (authored)
+constexpr i64 k_clast_slope_mm = 25;  // the half step the relief's gradient is taken over
+constexpr const char* k_scree_role = "rock/scree";  // G148's granular role
+constexpr f64 k_toe_run_m = 1.5;  // how far past the outline the toe's clasts thin by e (authored)
+u64 clast_hash(i64 x, i64 z, u64 o) {
+  return mix64(static_cast<u64>(x) * 0x9E3779B97F4A7C15ull ^ mix64(static_cast<u64>(z) + o));
+}
+f64 unit_of(u64 h, u32 k) { return static_cast<f64>((h >> (k * 16)) & 0xffffu) / 65535.0; }
+// The share of a lattice of `cell_m` cells a bed whose clasts are `size_m` across shows.
+f64 lattice_share(f64 size_m, f64 cell_m) {
+  const f64 t = std::clamp((size_m / cell_m - 0.35) / 0.35, 0.0, 1.0);
+  return t * t * (3.0 - 2.0 * t);
+}
+f64 clast_height(i64 x_mm, i64 z_mm, f64 size_m) {
+  f64 best = 0;
+  for (u32 o = 0; o < 3; ++o) {
+    const i64 cell = k_clast_cell_mm << o;
+    const f64 cell_m = static_cast<f64>(cell) / 1000.0;
+    const f64 share = lattice_share(size_m, cell_m);
+    if (share <= 0) continue;
+    const i64 cx = floor_div_mm(x_mm, cell), cz = floor_div_mm(z_mm, cell);
+    for (i64 dz = -1; dz <= 1; ++dz)
+      for (i64 dx = -1; dx <= 1; ++dx) {
+        const u64 h = clast_hash(cx + dx, cz + dz, o + 1), g = mix64(h);
+        const f64 s = cell_m * (0.55 + 0.4 * unit_of(h, 0));  // across, metres
+        const f64 ox =
+            static_cast<f64>((cx + dx) * cell) / 1000.0 + cell_m * (0.2 + 0.6 * unit_of(h, 1));
+        const f64 oz =
+            static_cast<f64>((cz + dz) * cell) / 1000.0 + cell_m * (0.2 + 0.6 * unit_of(h, 2));
+        f64 ux = unit_of(h, 3) - 0.5, uz = unit_of(g, 0) - 0.5;
+        const f64 len = std::sqrt(ux * ux + uz * uz);
+        if (len < 1e-3) {
+          ux = 1;
+          uz = 0;
+        } else {
+          ux /= len;
+          uz /= len;
+        }
+        const f64 px = static_cast<f64>(x_mm) / 1000.0 - ox,
+                  pz = static_cast<f64>(z_mm) / 1000.0 - oz;
+        const f64 u = px * ux + pz * uz, v = pz * ux - px * uz;
+        const f64 a = 0.5 * s, b = 0.5 * s * (0.6 + 0.4 * unit_of(g, 1));
+        const f64 cheb = std::max(std::abs(u) / a, std::abs(v) / b);
+        if (cheb >= 1) continue;
+        const f64 tilt = 0.25 * (unit_of(g, 2) - 0.5) * u / a;
+        best = std::max(
+            best, share * k_clast_stand * s * (1.0 + tilt) * std::min(1.0, 3.0 * (1.0 - cheb)));
+      }
+  }
+  return best;
 }
 bool ascii_equal(std::string_view a, const char* b) {
   usize i = 0;
@@ -907,6 +972,29 @@ bool solve_deposit(const DepositPatch& p, assets::MeshData& out, std::string& er
     return x >= 0 && z >= 0 && x < static_cast<i32>(w - 1) && z < static_cast<i32>(h - 1) &&
            active[static_cast<u32>(z) * (w - 1) + static_cast<u32>(x)] != 0;
   };
+  // G143's third pass (rocks.md, "The bed is rubble"): the top is drawn `sub` steps a spacing, at
+  // k_clast_step_mm, raised by the clasts, as fine as the budget holds with every fragment at its
+  // block's rung beside it; the underside and the walls' feet stay on the samples.
+  const i64 spacing_mm = std::llround(wide(p.spacing_m) * 1000.0);
+  u32 wall_edges = 0;
+  for (u32 a : cells) {
+    const i32 x = static_cast<i32>(a % w), z = static_cast<i32>(a / w);
+    wall_edges += static_cast<u32>(!present(x - 1, z) + !present(x + 1, z) + !present(x, z - 1) +
+                                   !present(x, z + 1));
+  }
+  auto surface_of = [&](u64 s) {
+    return static_cast<u64>(cells.size()) * (2 * s * s + 2) +
+           static_cast<u64>(wall_edges) * (s + 1);
+  };
+  u32 sub = 1;
+  for (u32 s = static_cast<u32>(
+           std::clamp<i64>((spacing_mm + k_clast_step_mm / 2) / k_clast_step_mm, 1, 16));
+       s > 1; --s)
+    if (spacing_mm % s == 0 && surface_of(s) + 432ull * p.fragments <= p.triangle_budget) {
+      sub = s;
+      break;
+    }
+  surface_triangles = static_cast<u32>(surface_of(sub));
   u32 rung = 4;
   const u32 each = p.fragments > 0 ? (p.triangle_budget - surface_triangles) / p.fragments : 0;
   for (u32 r : k_grid_rungs)
@@ -915,86 +1003,139 @@ bool solve_deposit(const DepositPatch& p, assets::MeshData& out, std::string& er
   assets::Material mat = rock_material(p.type);
   material_factors(p.material, mat.base_color, mat.roughness);
   mesh.materials.push_back(mat);
-  Vector<f32> surface(n), sink(n, 0.0f);
+  Vector<f32> surface(n), sink(n, 0.0f), grad_x(n), grad_z(n);
   for (u32 i = 0; i < n; ++i) {
     // G143: a bare sample's top stands `sink` below the ground (the plan's signed edge field, and
     // a bare rim on steep ground), so the bed meets the ground between the samples.
     if (!p.sink.empty() && p.thickness[i] <= k_min_depth) sink[i] = p.sink[i];
     surface[i] = p.ground[i] + p.thickness[i] - k_min_depth - sink[i];
   }
-  for (u32 bottom = 0; bottom < 2; ++bottom)
-    for (u32 i = 0; i < n; ++i) {
-      const f32 x = static_cast<f32>(i % w) * p.spacing_m,
-                z = static_cast<f32>(i / w) * p.spacing_m;
-      mesh.positions.push_back({x, bottom ? p.ground[i] - .05f - sink[i] : surface[i], z});
-      mesh.normals.push_back({0, 0, 0});
-      mesh.uvs.push_back({x / p.material.tile_m, z / p.material.tile_m});
+  // G143: the top's gradient, the plan's when the patch carries it, so two patches' normals at
+  // their shared border are the same (rocks.md, "The edge and the seams"); else central differences
+  // over its own samples, one-sided at its edge.
+  for (u32 i = 0; i < n; ++i) {
+    if (!p.slope.empty()) {
+      grad_x[i] = p.slope[2 * i];
+      grad_z[i] = p.slope[2 * i + 1];
+      continue;
     }
+    const u32 x = i % w, z = i / w;
+    const u32 x0 = x > 0 ? i - 1 : i, x1 = x + 1 < w ? i + 1 : i;
+    const u32 z0 = z > 0 ? i - w : i, z1 = z + 1 < h ? i + w : i;
+    grad_x[i] = static_cast<f32>((wide(surface[x1]) - wide(surface[x0])) /
+                                 (wide(p.spacing_m) * static_cast<f64>(x1 - x0)));
+    grad_z[i] = static_cast<f32>((wide(surface[z1]) - wide(surface[z0])) /
+                                 (wide(p.spacing_m) * static_cast<f64>((z1 - z0) / w)));
+  }
+  const i64 step_mm = spacing_mm / sub;
+  const u32 fw = (w - 1) * sub + 1, fh = (h - 1) * sub + 1, nf = fw * fh;
+  auto at = [&](u32 f) {
+    return static_cast<f32>(static_cast<f64>(static_cast<i64>(f) * step_mm) / 1000.0);
+  };
+  const f64 toe_size = 2.0 * wide(p.fragment_m), log_sorting = det::log(k_clast_sorting);
+  // The fine top's vertices of the active cells, then the samples' underside.
+  Vector<u8> needed(nf, 0);
+  for (u32 a : cells) {
+    const u32 cx = a % w, cz = a / w;
+    for (u32 j = 0; j <= sub; ++j)
+      for (u32 i = 0; i <= sub; ++i)
+        needed[(cz * sub + j) * fw + cx * sub + i] = 1;
+  }
+  for (u32 f = 0; f < nf; ++f) {
+    const u32 fx = f % fw, fz = f / fw;
+    const f32 x = at(fx), z = at(fz);
+    f64 y = 0, gx = 0, gz = 0;
+    if (needed[f]) {
+      const f64 lx = wide(x), lz = wide(z);
+      y = sample(p, surface, lx, lz);
+      gx = sample(p, grad_x, lx, lz);
+      gz = sample(p, grad_z, lx, lz);
+      const f64 fade = std::clamp(sample(p, p.thickness, lx, lz) / k_clast_fade_m, 0.0, 1.0);
+      if (fade > 0) {
+        // Fall sorting, logarithmic (Francou 1988): the clasts a tenth of the toe's at the apex.
+        const f64 size = toe_size * det::exp((sample(p, p.coarse, lx, lz) - 1.0) * log_sorting);
+        const i64 wx = p.origin_mm[0] + static_cast<i64>(fx) * step_mm;
+        const i64 wz = p.origin_mm[1] + static_cast<i64>(fz) * step_mm;
+        y += fade * clast_height(wx, wz, size);
+        const f64 run = 2.0 * static_cast<f64>(k_clast_slope_mm) / 1000.0;
+        gx += fade *
+              (clast_height(wx + k_clast_slope_mm, wz, size) -
+               clast_height(wx - k_clast_slope_mm, wz, size)) /
+              run;
+        gz += fade *
+              (clast_height(wx, wz + k_clast_slope_mm, size) -
+               clast_height(wx, wz - k_clast_slope_mm, size)) /
+              run;
+      }
+    }
+    mesh.positions.push_back({x, static_cast<f32>(y), z});
+    const D3 nn = normalized({-gx, 1.0, -gz});
+    mesh.normals.push_back(
+        {static_cast<f32>(nn.x), static_cast<f32>(nn.y), static_cast<f32>(nn.z)});
+    mesh.uvs.push_back({x / p.material.tile_m, z / p.material.tile_m});
+  }
+  for (u32 i = 0; i < n; ++i) {
+    const f32 x = at((i % w) * sub), z = at((i / w) * sub);
+    mesh.positions.push_back({x, p.ground[i] - .05f - sink[i], z});
+    mesh.normals.push_back({0, -1, 0});
+    mesh.uvs.push_back({x / p.material.tile_m, z / p.material.tile_m});
+  }
+  auto fine = [&](u32 fx, u32 fz) { return fz * fw + fx; };
   auto tri = [&](u32 a, u32 b, u32 c) {
     mesh.indices.push_back(a);
     mesh.indices.push_back(b);
     mesh.indices.push_back(c);
   };
+  // A wall from sample a to sample b: the top's chain along the edge over the two samples' feet,
+  // fanned from a's foot. Each triangle has its own corners and its own face's normal, so a wall
+  // never bends the bed's shading, and a fan triangle the clasts on a patch's border fold (the
+  // wall there is inside the bed, back to back with its neighbour's) is still wound as it faces.
   auto edge = [&](u32 a, u32 b) {
-    // Boundary walls have their own normals; their buried vertical faces must not bend the bed
-    // shading.
-    const u32 first = mesh.positions.size();
-    for (u32 v : {a, b, b + n, a + n}) {
-      const Vec3 position = mesh.positions[v];
-      const Vec2 uv = mesh.uvs[v];
-      mesh.positions.push_back(position);
-      mesh.uvs.push_back(uv);
-      mesh.normals.push_back({0, 0, 0});
-    }
-    tri(first, first + 1, first + 2);
-    tri(first, first + 2, first + 3);
+    const i64 ax = a % w, az = a / w, bx = b % w, bz = b / w;
+    const i64 dx = (bx > ax) - (bx < ax), dz = (bz > az) - (bz < az);
+    auto top = [&](u32 k) {
+      return fine(static_cast<u32>(ax * sub + static_cast<i64>(k) * dx),
+                  static_cast<u32>(az * sub + static_cast<i64>(k) * dz));
+    };
+    auto face = [&](u32 i0, u32 i1, u32 i2) {
+      const Vec3 p0 = mesh.positions[i0], p1 = mesh.positions[i1], p2 = mesh.positions[i2];
+      const Vec3 c = cross(p1 - p0, p2 - p0);
+      const Vec3 normal = length(c) > 0 ? normalize(c) : Vec3{0, 1, 0};
+      const u32 first = mesh.positions.size();
+      for (u32 v : {i0, i1, i2}) {
+        const Vec3 position = mesh.positions[v];
+        const Vec2 uv = mesh.uvs[v];
+        mesh.positions.push_back(position);
+        mesh.uvs.push_back(uv);
+        mesh.normals.push_back(normal);
+      }
+      tri(first, first + 1, first + 2);
+    };
+    for (u32 k = 0; k < sub; ++k)
+      face(nf + a, top(k), top(k + 1));
+    face(nf + a, top(sub), nf + b);
   };
   for (u32 a : cells) {
+    const u32 cx = a % w, cz = a / w;
+    for (u32 j = 0; j < sub; ++j)
+      for (u32 i = 0; i < sub; ++i) {
+        const u32 ta = fine(cx * sub + i, cz * sub + j), tb = ta + 1, tc = ta + fw, td = tc + 1;
+        tri(ta, tc, tb);
+        tri(tb, tc, td);
+      }
     const u32 b = a + 1, c = a + w, d = c + 1;
-    tri(a, c, b);
-    tri(b, c, d);
-    tri(a + n, b + n, c + n);
-    tri(b + n, d + n, c + n);
-    const i32 x = static_cast<i32>(a % w), z = static_cast<i32>(a / w);
+    tri(nf + a, nf + b, nf + c);
+    tri(nf + b, nf + d, nf + c);
+    const i32 x = static_cast<i32>(cx), z = static_cast<i32>(cz);
     if (!present(x, z - 1)) edge(a, b);
     if (!present(x + 1, z)) edge(b, d);
     if (!present(x, z + 1)) edge(d, c);
     if (!present(x - 1, z)) edge(c, a);
-  }
-  // Area-weighted normals for the connected bed; fragment normals stay their own.
-  for (u32 t = 0; t < mesh.indices.size(); t += 3) {
-    const u32 a = mesh.indices[t], b = mesh.indices[t + 1], c = mesh.indices[t + 2];
-    const Vec3 normal =
-        cross(mesh.positions[b] - mesh.positions[a], mesh.positions[c] - mesh.positions[a]);
-    mesh.normals[a] = mesh.normals[a] + normal;
-    mesh.normals[b] = mesh.normals[b] + normal;
-    mesh.normals[c] = mesh.normals[c] + normal;
-  }
-  for (Vec3& normal : mesh.normals)
-    normal = length(normal) > 0 ? normalize(normal) : Vec3{0, 1, 0};
-  // G143: the bed's top takes its normals from the top's gradient, the plan's when the patch
-  // carries it, so two patches' normals at their shared border are the same (rocks.md, "The edge
-  // and the seams"); else central differences over its own samples, one-sided at its edge.
-  for (u32 i = 0; i < n; ++i) {
-    f64 sx = 0, sz = 0;
-    if (!p.slope.empty()) {
-      sx = wide(p.slope[2 * i]);
-      sz = wide(p.slope[2 * i + 1]);
-    } else {
-      const u32 x = i % w, z = i / w;
-      const u32 x0 = x > 0 ? i - 1 : i, x1 = x + 1 < w ? i + 1 : i;
-      const u32 z0 = z > 0 ? i - w : i, z1 = z + 1 < h ? i + w : i;
-      sx =
-          (wide(surface[x1]) - wide(surface[x0])) / (wide(p.spacing_m) * static_cast<f64>(x1 - x0));
-      sz = (wide(surface[z1]) - wide(surface[z0])) /
-           (wide(p.spacing_m) * static_cast<f64>((z1 - z0) / w));
-    }
-    const D3 nn = normalized({-sx, 1.0, -sz});
-    mesh.normals[i] = {static_cast<f32>(nn.x), static_cast<f32>(nn.y), static_cast<f32>(nn.z)};
-  }
-  // G143: past the bed's edge its largest clasts lie scattered and thinning, as a real toe's do
-  // (rocks.md, "The edge and the seams"): every fourth fragment stands in a bare cell within the
-  // edge field's 0.5 m of sink (about two metres out), on the ground, smaller the farther out.
+  }  // G143: past the bed's edge its largest clasts lie scattered and thinning over metres, the
+  // largest farthest, as a real toe's do (rocks.md, "The toe"; Kirkby and Statham's exponential
+  // travel): every fourth fragment stands in a bare cell of the edge field's band (sink 0-2 m,
+  // about three metres out), drawn there with odds exp(-d / k_toe_run_m) of its distance d past the
+  // outline (sink over the toe's slope), on the ground, larger the farther out.
   Vector<u32> ring;
   Vector<f32> ring_sink;
   if (!p.sink.empty())
@@ -1003,29 +1144,38 @@ bool solve_deposit(const DepositPatch& p, assets::MeshData& out, std::string& er
         const u32 a = z * w + x;
         if (active[z * (w - 1) + x]) continue;
         const f32 s = std::min({p.sink[a], p.sink[a + 1], p.sink[a + w], p.sink[a + w + 1]});
-        if (s > 0.0f && s < .5f) {
+        if (s > 0.0f && s < 1.95f) {  // past the cap the field says no more how far out
           ring.push_back(a);
           ring_sink.push_back(s);
         }
       }
-  const u32 quarter = (p.fragments + 3) / 4;
   for (u32 f = 0; f < p.fragments && (!cells.empty() || !ring.empty()); ++f) {
     Rng rng(mix64(p.seed ^ mix64(static_cast<u64>(f) + 1)));
     const bool toe = !ring.empty() && (cells.empty() || f % 4 == 3);
-    const u32 slot =
-        toe ? static_cast<u32>(static_cast<u64>(f / 4) * ring.size() / quarter) % ring.size()
-            : static_cast<u32>(static_cast<u64>(f) * cells.size() / p.fragments);
+    u32 slot = 0;
+    f64 out_m = 0;  // a toe clast's distance past the outline
+    if (toe) {
+      for (u32 attempt = 0; attempt < 16; ++attempt) {
+        slot = static_cast<u32>(rng.next() % ring.size());
+        out_m = wide(ring_sink[slot]) / k_edge_slope;
+        if (rng.unit() < det::exp(-out_m / k_toe_run_m)) break;
+      }
+    } else {
+      slot = static_cast<u32>(static_cast<u64>(f) * cells.size() / p.fragments);
+    }
     const u32 a = toe ? ring[slot] : cells[slot];
     const f64 x = (static_cast<f64>(a % w) + rng.range(.25, .75)) * wide(p.spacing_m);
     const f64 z = (static_cast<f64>(a / w) + rng.range(.25, .75)) * wide(p.spacing_m);
-    const f64 coarse = toe ? 1.0 : sample(p, p.coarse, x, z), pick = rng.unit();
+    const f64 coarse = toe ? 1.0 : sample(p, p.coarse, x, z);
+    // On the bed, loose clasts of the largest band alone: the relief draws the bed's clasts and the
+    // material what is finer (G143's third pass dropped the 4-32 mm pebbles, 65% of the fragments,
+    // and the 8-30% band, which the 12.5 cm relief and the material now carry).
     const f64 size =
-        toe ? wide(p.fragment_m) * rng.range(.4, 1.0) * (1.0 - 2.0 * wide(ring_sink[slot]))
-            : (pick < .65 ? rng.range(.004, .032)
-                          : (pick < .92 ? wide(p.fragment_m) * rng.range(.08, .3)
-                                        : wide(p.fragment_m) * rng.range(.4, 1.0)));
+        toe ? wide(p.fragment_m) * rng.range(.7, 1.0) * (0.4 + 0.6 * out_m / (out_m + k_toe_run_m))
+            : wide(p.fragment_m) * rng.range(.4, 1.0);
     const f64 radius =
-        std::min(size * (coarse > 0 ? .35 + .65 * coarse : .08), wide(p.spacing_m) * .2);
+        toe ? size
+            : std::min(size * (coarse > 0 ? .35 + .65 * coarse : .08), wide(p.spacing_m) * .2);
     const f64 r = coarse > 0 ? std::max(.004, radius) : rng.range(.004, .032);
     const Vector<f32>& support = toe ? p.ground : surface;
     const f64 y = sample(p, support, x, z);
@@ -1042,6 +1192,13 @@ bool solve_deposit(const DepositPatch& p, assets::MeshData& out, std::string& er
       if (candidate >= rung || .5 * k_pi * r / static_cast<f64>(candidate) <= k_clast_edge) break;
     }
     own = std::min(own, rung);
+    // A clast is a small block: no finer than the blocks' rung (G143's third pass).
+    {
+      u32 cap = 4;
+      for (u32 candidate : k_grid_rungs)
+        if (triangles_of_grid(candidate) <= p.block_triangles) cap = candidate;
+      own = std::min(own, cap);
+    }
     emit_fragment(p.type, half, {x, y, z}, yaw, .3, seed, own, wide(p.material.tile_m), mesh);
     // Support shear is local to each fragment; its existing angular fabric is retained.
     const f64 eps = wide(p.spacing_m) * .01;
@@ -1121,7 +1278,16 @@ bool build_deposit_container(const DepositPatch& input, const geometry::ClusterL
   set.tile_m = p.material.tile_m;
   set.normal_scale = p.material.normal_scale;
   bool from_pack = false;
-  const auto* chosen = materials::resolve_set(&set, pack, rock_role(p.type), &from_pack);
+  // G143's third pass: a bed of scree samples the pack's granular role first, its rock's behind it
+  // (rocks.md, "The bed is rubble"): a talus' surface is a surface of fresh clasts, not the face.
+  const bool own_images = !set.base_color.empty() || !set.normal.empty() ||
+                          !set.roughness.empty() || !set.metallic.empty() || !set.height.empty();
+  const materials::MaterialSet* chosen =
+      own_images ? nullptr : materials::find_role(pack, k_scree_role);
+  if (chosen != nullptr)
+    from_pack = true;
+  else
+    chosen = materials::resolve_set(&set, pack, rock_role(p.type), &from_pack);
   if (from_pack) p.material.tile_m = chosen->tile_m;
   assets::MeshData mesh;
   if (!solve_deposit(p, mesh, error)) return false;
@@ -1132,8 +1298,10 @@ bool build_deposit_container(const DepositPatch& input, const geometry::ClusterL
   // line it shares with its neighbour its own way; from across a valley the apron drew as square
   // panels with wedges between them. Every vertex on the patch's border is locked, as the
   // terrain's chunks lock theirs (terrain.md), so two neighbours' coarse forms meet exactly.
-  const f32 span_x = static_cast<f32>(p.width - 1) * p.spacing_m;
-  const f32 span_z = static_cast<f32>(p.depth - 1) * p.spacing_m;
+  // The border's positions as solve_deposit computes them (whole millimetres from the corner).
+  const i64 spacing_mm = std::llround(wide(p.spacing_m) * 1000.0);
+  const f32 span_x = static_cast<f32>(static_cast<f64>(spacing_mm * (p.width - 1)) / 1000.0);
+  const f32 span_z = static_cast<f32>(static_cast<f64>(spacing_mm * (p.depth - 1)) / 1000.0);
   Vector<u8> locked(mesh.positions.size(), 0);
   for (u32 v = 0; v < mesh.positions.size(); ++v) {
     const Vec3 q = mesh.positions[v];

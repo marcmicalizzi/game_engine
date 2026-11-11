@@ -156,6 +156,9 @@ bool open(const JsonValue& params, const scene_gen::Context& context, void** sta
       p.width = static_cast<u32>((x1 - x0) / plan.spacing_mm) + 1;
       p.depth = static_cast<u32>((z1 - z0) / plan.spacing_mm) + 1;
       p.spacing_m = e->layer.spacing_m;
+      // G143's third pass: the corner the bed's clasts are anchored to (rocks.md, "The bed is
+      // rubble").
+      p.origin_mm = {x0, z0};
       p.ground.clear();
       p.thickness.clear();
       p.coarse.clear();

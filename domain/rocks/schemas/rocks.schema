@@ -551,7 +551,7 @@ struct DepositBlock @version(1) {
 
 /// A terrain-fitted sediment patch, written by deposits as <hash>.deposit.json.
 /// Heights and depths are sampled at vertices; all lengths are local metres.
-struct DepositPatch @version(2) {
+struct DepositPatch @version(3) {
   seed: u64 = 1
   type: RockType = Granite
   /// Grid points per axis, 2..65, with exactly width*depth values in each array.
@@ -564,8 +564,10 @@ struct DepositPatch @version(2) {
   thickness: f32[]
   /// Coarse rockfall share, 0..1; zero is channel sediment and gravel.
   coarse: f32[]
-  /// Number of visible representative fragments, 0..4096 (not a grain inventory).
-  fragments: u32 = 96
+  /// Number of loose fragments, 0..4096 (not a grain inventory): clasts of the largest band on the
+  /// bed and, every fourth, past its toe. The bed's own clasts are its relief (G143's third pass,
+  /// 96 before it).
+  fragments: u32 = 24
   /// Largest fragment half-length, 0.02..2 m, no larger than half spacing_m.
   fragment_m: f32 = 0.4 @unit(m)
   /// Whole patch surface plus all fragments, 500..1,000,000 triangles.
@@ -582,6 +584,9 @@ struct DepositPatch @version(2) {
   /// G143: per sample, the bed top's gradient (rise over run in x, then z) from the plan, so a
   /// patch's normals are its neighbours' at a shared border. Empty: from the patch's own samples.
   slope: f32[] @since(2)
+  /// G143's third pass: the patch's corner in world millimetres (x, z), what the bed's clasts are
+  /// anchored to, so a clast across a patch's border is the same clast on both sides.
+  origin_mm: i64[2] @since(3)
 }
 
 /// A formation bed's rock (G143): a bed of the deposit layer's `formation` named `bed` sheds `type`.
