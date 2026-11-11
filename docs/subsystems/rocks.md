@@ -1357,8 +1357,8 @@ dipping with it make slabs, and both are the same intersection.
 (1.3) apart on average, their stations moved by up to three tenths, and their planes up to 20° off
 the dip direction per bed top. A block keeps 55 to 100 % of its step, more at one end than the
 other, so its front is not parallel to the contour; one in five has fallen out; some have lost
-one or two rows off their tops, so neighbours' treads step. A joint face is drawn only where the
-block beside does not cover it. Each bed parts into **rows** about 0.45 m thick, each standing
+one or two rows off their tops, so neighbours' treads step. Every joint is an open cleft with a
+flank on each side (**A block is a body**, below). Each bed parts into **rows** about 0.45 m thick, each standing
 back under the one above by up to `relief_m` (0.25 m), weaker beds further: the front's faces and
 the undersides between them. Every tread and every underside is in a bedding plane.
 
@@ -1379,9 +1379,36 @@ block is cut back at 45 degrees, never more than a quarter of its length, so two
 a notch and a block reads as a lump and not as a length of plank. Measured on the test hillside:
 0.082 m of worn width a metre of front on sandstone, 0.089 on limestone, 0.020 on slate; worn
 corners are 44 % of a sandstone front's length and 10 % of a slate's; 43, 42 and 47 triangles a
-metre of front (**the budget is 48**; it was 36 unworn with every covered face drawn). What it is
-not: a joint is a plane and not a widened cleft, a corner is a chamfer and not a curve, and a
-fresh break and an old surface are one material. The far form has none of the wear.
+metre of front before a block was a body (below). What it is not: a corner is a chamfer and not
+a curve, and a fresh break and an old surface are one material. The far form has none of the wear.
+
+**A block is a body** (G142c; [grounding](../experiments/exposed-bedrock.md#a-block-as-a-body)).
+- **Every joint is a cleft.** A block's faces stand half of each joint's open width in from the
+  joint's station, so two neighbours never share a plane: half the rock's wear (6 cm on sandstone)
+  plus the cube of a seeded draw times a fifth of the unit's thickness, 0.4 m and a fifth of the
+  spacing at most (gulls up to 0.4 m wide in a massive bed 1.9 m thick). Each side is a **flank**
+  from the tread down to the ground and under it, drawn whatever the block beside does, so a cleft
+  is as deep as the step (0.25 m on the mean on the test hillside, 0.91 m the deepest).
+- **Rounded all round.** A joint's edge is worn as the lip is: the tread drawn in along the strike
+  by the same amount, the flank's top lowered by it, a worn rim between them in the flank's class.
+  A rock that wears under 4 cm (slate) keeps sharp joints (`k_rim_m`).
+- **Undercut where the bed below is weaker.** A unit's last row is an undercut: from a third of
+  the step above the ground (0.5 m at most) down to the foot, standing back under the rows above by
+  the contrast in resistance with the bed under the unit (over 0.6, at most 1) times 0.42 to 0.6 of
+  the step (0.6 m at most), grown in with the step; its underside faces down. Where every bed of a
+  sequence stands there is no weaker bed and no undercut.
+- **Crept.** One standing block in four has crept out over the weak bed: moved out along the
+  ground's fall by up to a fifth of the unit's thickness (0.3 m at most) and down with the ground,
+  and settled toward its high joint by 0.02 to 0.08 m a metre (1.1 to 4.6 degrees), a function of
+  where each vertex ends up, so the block turns as one body and leaves its bed everywhere. A crept
+  block's tread is the one tread not in its bedding plane. It does not lean out: a lean by its
+  step's height is not linear in the place, and folded a worn rim over the vertex beside it.
+- **Unequal.** Blocks keep their earlier variety: lengths from 0.4 to 1.6 of the spacing, 55 to
+  100 % of the step, more at one end, rows lost off the top, one in five fallen.
+
+What it costs: 54.7 triangles a metre of front on sandstone, 55.6 on slate, 54.3 on limestone
+(**the budget is 56**; 48 before: the flanks of every cleft and their rims about 5, the undercut
+row about 3), and the far form keeps its 2.
 
 **Treads, and the beds' own rock.** A tread carries soil to its lip: the tread polygons are one
 material, `tread_tint` (absent: a dark turf, linear 0.07 0.09 0.04, roughness 0.95), and the
@@ -1410,7 +1437,7 @@ both, the cluster DAG is the runtime LOD.
 
 | Form | A 64 m tile of the test hillside (31 bed tops) | Triangles a metre of front |
 |---|---|---|
-| near | 5,255 triangles, 5,810 vertices, 245 clusters, 123 m of front (37,492 triangles and 1,041 m as every bed's stripe, unworn) | 43 (the budget is 48) |
+| near | 5,808 triangles, 6,498 vertices, 262 clusters, 106 m of front (5,255 and 123 m before the clefts, which take their widths out of the front; 37,492 triangles and 1,041 m as every bed's stripe, unworn) | 54.7 (the budget is 56) |
 | far | 121 triangles, 148 vertices, 6 clusters, 59 m of front | 2.0 |
 
 68 % of the near form's triangles are above the ground (the solver's count on its own lattice;
@@ -1439,8 +1466,9 @@ layer's `min_slope_deg` and no ledge is solved under or behind a face.
   tread or thins it at a front's foot. A band-shaped footprint (a polyline with a half-width, or
   the generator's own "is this point rock" query) is what the treads need; the blades that
   stand through a tread's back today do so because nothing says otherwise.
-- **Blocks are worn prisms.** Edges are worn and fronts fluted (above), but there is no fracture
-  surface and no corner worn in plan.
+- **A block is still faceted.** It is rounded by one chamfer a worn edge and split by clefts
+  (above), but there is no fracture surface beside an old one, no curve, and a crept block does
+  not lean out over its front.
 - **A fallen block is handed over, and nothing lays it down yet.** `ledge_gaps` (`ledges.h`)
   lists a patch's fallen blocks in order of identity: the block (its bed top and its place along
   the strike, the same number from every tile), the centre of its gap on the ground, the area of
@@ -1457,6 +1485,8 @@ slope, none on weak beds, on 20° or in a hollow; tops within 1.5 mm of the form
 (0.002 mm measured); at least 60 % of triangles above the ground; no vertex whose height the
 ground behind does not reach within 8 m (the retaining-wall test); a front's height under the
 unit's thickness times what stands there, with ends under 0.3 m and full steps over 0.8 m both
-present; a border's standing vertices matched across tiles within a millimetre; the far form
+present; a border's standing vertices matched across tiles within a millimetre; a block a body
+(a joint's worn rim in the rocks' order, clefts with depth, an undercut where the bed below is
+weaker and none where every bed stands, crept blocks); the far form
 beside the near form's steps; the meshes' and recipes' pins; and the generator's tiles in reverse
 against its whole read, a form a ring.

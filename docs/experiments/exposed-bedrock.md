@@ -196,6 +196,48 @@ is typically about 100 µm thick and takes about 10,000 years to coat a surface 
 Southwest (secondary, attributed to Liu and Broecker 2000 and to Dorn): a fresh break is the
 rock's own colour and an old surface is darker, which is the material's to carry.
 
+## A block as a body
+
+Read for G142c, the third pass on the ledges, by a research sub-agent; how each number was read is
+said beside it. None of the sources below was reached in full except where it says so.
+
+**Joints open into gulls where a cap rock creeps over a weaker bed** (cambering). Cooper's
+account of the Bath University cutting in *Mass Movements in Great Britain* (Geological
+Conservation Review vol. 33, ch. 6, citing Hawkins 1977; **full text read**): gulls **up to 0.4 m
+wide in a massive bed 1.9 m thick**; in the thinly bedded 2 m above it slip is spread bed by bed
+and "no fracture penetrates through to the surface"; block dips of 26 and 30° there and up to 37°
+on the Great Oolite, throws of 0.82 and 1.7 m, and "each individual block has rotated downslope, as
+well as being lowered". Barron et al. 2016 (*Geomorphology* 268, the Cotswold escarpment; **full
+text read**): open joints up to about 1.5 m in a cap 25 m or more thick, a foundered block rotated
+at least 30°. A BGS page: widths "from millimetres to tens of metres". Hollingworth, Taylor and
+Kellaway 1944 (*QJGS* 100, 1–44): up to 40 yards and dips to 40° (a search snippet; secondary). **No
+relation of aperture to distance from the edge was found** (Hutchinson 1991 was not reached).
+
+So the solver's cleft is at most a fifth of the unit's thickness (0.4 / 1.9 = 0.21) and 0.4 m,
+never more than a fifth of the joints' spacing (ours: a ledge's blocks are a metre or two, not a
+cap's tens), and narrow for most joints (the cube of a draw: ours). The least width, half the
+rock's edge wear, is ours: a worn joint is never shut. A crept block moves out by up to a fifth of
+the thickness (ours, the gull's ratio) and **turns 1.1 to 4.6 degrees** (ours): the cambered dips
+above are of caps tens of metres thick, and a ledge's block turned that far would have toppled off
+its tread (the block criterion, width over height under the tangent of the base's dip: Goodman and
+Bray 1976, read only as restated by others).
+
+**Undercuts.** Niemann 2007 (GSA Abstracts with Programs 39(6), 439; **abstract read**): shale
+undercutting resistant sandstone and limestone ledges on eight Appalachian roadcuts at 2.5 to 51
+mm a year, median about 20 (0.1 to 2.0 inches); Shakoor and Rogers 1992, before it, 0.5 to 3.75
+inches. Those are fresh cuts and rates, not depths. **No natural recess depth was found.** The
+solver's undercut (a third of the step high, 0.42 to 0.6 of it deep, 0.6 m at most, times the
+contrast in resistance over 0.6) is authored.
+
+**Rounding.** Only the order (corners, edges, faces) is supported, as before. No edge radius by
+lithology or block size was found.
+
+**Joint spacing.** Bai and Pollard 2000 (*J. Struct. Geol.* 22, 43–57; abstract, on a mirror):
+spacing over thickness at saturation about 1.0, 0.8 to 1.2. Narr and Suppe 1991 (*J. Struct.
+Geol.* 13, 1037–1048; abstract, on a mirror): thickness over spacing about 1.3 (the default
+`joint_ratio`), spacing over its median log-normal; no spread was found, so the solver's stations
+still move by up to three tenths of the spacing (ours).
+
 ## What is authored, not measured
 
 - **A bed's `resistance`** is an index from 0 to 1 the formation's author gives it, not a rock
@@ -218,7 +260,8 @@ rock's own colour and an old surface is darker, which is the material's to carry
   finer lattice would follow the plane's trace more closely at four times the triangles.
 - **A worn edge is one face, a worn corner one cut, a flute two scales of noise at the rows'
   own vertices.** A round is a chamfer shaded as one with the face under it; a curve would be
-  two or three faces more an edge. 43 triangles a metre of front against a budget of 48.
+  two or three faces more an edge. 43 triangles a metre of front against a budget of 48; then
+  (G142c) 54.7 against 56, the clefts' flanks and rims and the undercut row being the eight.
 - **Nothing is built behind a tread's back or under a front's foot** but 8 cm of tread and a foot
   that goes on 0.15 of the step under the ground (5 cm at least, `bury_m` at most), and a face
   the ground covers whole is not drawn. The share of triangles above the ground is what that

@@ -155,7 +155,10 @@ TEST_CASE("ledges: they stand on a resistant bed past the soil slope, and nowher
   REQUIRE(s.report.triangles > 500);
   CHECK(s.mesh.indices.size() == 3 * s.report.triangles);
   CHECK(s.report.tallest_m > 0.8);
-  CHECK(s.report.units >= 4);  // of 31 bed tops: outcrops, not every bed's stripe
+  // Of 31 bed tops 13 crop out at the rule's members and stretches: outcrops, not every bed's
+  // stripe. The first agent's bound, put back after it was loosened mid-way to 4.
+  CHECK(s.report.units >= 10);
+  CHECK(s.report.units < 31);
   MESSAGE("near form: " << s.report.triangles << " triangles, " << s.report.front_length_m
                         << " m of front, "
                         << static_cast<f64>(s.report.triangles) / s.report.front_length_m
@@ -296,8 +299,12 @@ TEST_CASE("ledges: a front's height follows the exposure and falls to nothing wh
     if (over < 0.3) ++low;
     if (over > 0.8) ++full;
   }
-  CHECK(low > 50);   // the ends are there
-  CHECK(full > 50);  // and so are the full steps
+  MESSAGE(low << " vertices under 0.3 m, " << full << " over 0.8 m");
+  CHECK(low > 50);  // the ends are there
+  // And so are the full steps. (50 before a block was a body: a joint's flank no longer starts at
+  // the tread's height but under its worn rim, and a crept block has moved down the slope, so
+  // fewer vertices stand at a full step; 28 do.)
+  CHECK(full > 20);
 }
 
 TEST_CASE("ledges: a ledge that crosses a tile's border meets itself to the millimetre") {
@@ -322,7 +329,7 @@ TEST_CASE("ledges: a ledge that crosses a tile's border meets itself to the mill
       std::vector<P3> out;
       for (u32 v = 0; v < s.mesh.positions.size(); ++v) {
         const P3 p = world(s, v);
-        if (std::fabs((x_axis ? p.x : p.z) - at) < 1e-4 && p.y > ground_m(slope, p.x, p.z) + 0.01)
+        if (std::fabs((x_axis ? p.x : p.z) - at) < 2e-5 && p.y > ground_m(slope, p.x, p.z) + 0.01)
           out.push_back(p);
       }
       return out;
@@ -342,8 +349,12 @@ TEST_CASE("ledges: a ledge that crosses a tile's border meets itself to the mill
     const std::vector<P3> az = border(a, false, 0.0), bz = border(along_z, false, 0.0);
     MESSAGE("border vertices: " << ax.size() << " and " << bx.size() << " across x = 64, "
                                 << az.size() << " and " << bz.size() << " across z = 0");
-    CHECK(ax.size() > (stripes ? 10u : 0u));
-    CHECK(az.size() > (stripes ? 10u : 0u));
+    // (Each border over 10 before a block was a body: a joint's worn rim and a crept block move a
+    // tread's vertices off the border's plane, the same from either tile, so the two borders are
+    // counted together.)
+    CHECK(ax.size() + az.size() > (stripes ? 20u : 0u));
+    CHECK(ax.size() > 0u);
+    CHECK(az.size() > 0u);
     CHECK(matched(ax, bx) == 0);
     CHECK(matched(bx, ax) == 0);
     CHECK(matched(az, bz) == 0);
@@ -400,10 +411,85 @@ TEST_CASE("ledges: a block's edges are worn round by its rock's rounding, inside
                                                            << slate_corners);
   CHECK(sandstone_corners > 0.05);
   CHECK(sandstone_corners > 2.0 * slate_corners);
-  // The budget: 48 triangles a metre of front (36 before the wear).
-  CHECK(sandstone_tris <= 48.0);
-  CHECK(slate_tris <= 48.0);
-  CHECK(limestone_tris <= 48.0);
+  // The budget: 56 triangles a metre of front (36 before the wear, 48 before a block was a body:
+  // the clefts' flanks and their worn rims and the undercut row under each front cost about 8).
+  CHECK(sandstone_tris <= 56.0);
+  CHECK(slate_tris <= 56.0);
+  CHECK(limestone_tris <= 56.0);
+}
+
+TEST_CASE("ledges: a block is a body, rounded all round, split by clefts, undercut and crept") {
+  const Hill h;
+  struct Body {
+    f64 rim = 0.0;       // metres of worn rim a metre of joint
+    f64 flank = 0.0;     // the clefts' mean depth: flank area over joint length
+    f64 joints = 0.0;    // metres of joint a metre of front
+    f64 deepest = 0.0;   // the deepest cleft
+    f64 undercut = 0.0;  // undercut underside, square metres a metre of front
+    f64 down = 0.0;      // every down-facing underside, the same
+    u32 slipped = 0;
+    f64 per_metre = 0.0;  // triangles a metre of front
+  };
+  const auto body = [&](RockType type, const scene::Formation& f) {
+    LedgeLayer layer = layer_of(f);
+    layer.type = type;
+    const Solved s = solve(layer, h, 0, 0);
+    gfx::FormationParams field;
+    std::string error;
+    REQUIRE(gfx::pack_formation(*layer.formation, field, &error));
+    const gfx::FormationFrame frame = gfx::formation_frame(field);
+    const P3 strike{-frame.dip[2], 0.0, frame.dip[0]};
+    Body b;
+    f64 flank_area = 0.0, down_area = 0.0;
+    for (u32 t = 0; t + 2 < s.mesh.indices.size(); t += 3) {
+      const P3 a = world(s, s.mesh.indices[t]), q = world(s, s.mesh.indices[t + 1]),
+               c = world(s, s.mesh.indices[t + 2]);
+      const P3 u{q.x - a.x, q.y - a.y, q.z - a.z}, v{c.x - a.x, c.y - a.y, c.z - a.z};
+      const P3 n{u.y * v.z - u.z * v.y, u.z * v.x - u.x * v.z, u.x * v.y - u.y * v.x};
+      const f64 twice = std::sqrt(n.x * n.x + n.y * n.y + n.z * n.z);
+      if (!(twice > 0.0)) continue;
+      // A flank stands in a joint: its normal along the strike, within the joints' 20 degrees.
+      if (std::fabs(n.x * strike.x + n.z * strike.z) / twice > 0.9) flank_area += 0.5 * twice;
+      if (n.y / twice < -0.5) down_area += 0.5 * twice;
+    }
+    b.rim = s.report.joint_worn_m2 / s.report.joint_length_m;
+    b.flank = flank_area / s.report.joint_length_m;
+    b.joints = s.report.joint_length_m / s.report.front_length_m;
+    b.deepest = s.report.cleft_depth_m;
+    b.undercut = s.report.undercut_m2 / s.report.front_length_m;
+    b.down = down_area / s.report.front_length_m;
+    b.slipped = s.report.slipped;
+    b.per_metre = static_cast<f64>(s.report.triangles) / s.report.front_length_m;
+    MESSAGE(static_cast<int>(type)
+            << ": rim " << b.rim << " m, clefts " << b.flank << " m deep (deepest " << b.deepest
+            << "), " << b.joints << " m of joint a metre of front, undercut " << b.undercut
+            << " m2 a metre (all undersides " << b.down << "), " << b.slipped << " crept pieces, "
+            << b.per_metre << " triangles a metre of front");
+    return b;
+  };
+  const Body sandstone = body(RockType::Sandstone, beds());
+  const Body slate = body(RockType::Slate, beds());
+  const Body limestone = body(RockType::Limestone, beds());
+  // Rounded all round: a joint's rim is worn as the lip is, in the rocks' own order and by about
+  // their amounts (sandstone's 12 cm of wear against slate's 2.4).
+  CHECK(sandstone.rim > 0.04);
+  CHECK(sandstone.rim > 2.5 * slate.rim);
+  CHECK(limestone.rim > sandstone.rim);
+  // Every joint is a cleft with depth: a flank on each side, as deep on the mean as a third of a
+  // metre, the deepest the unit's step.
+  CHECK(sandstone.joints > 0.25);
+  CHECK(sandstone.flank > 0.2);
+  CHECK(sandstone.deepest > 0.8);
+  // The beds under these units are shale and mudstone: the feet are undercut.
+  CHECK(sandstone.undercut > 0.005);
+  CHECK(sandstone.down > sandstone.undercut);
+  // One standing block in four has crept out and leans.
+  CHECK(sandstone.slipped > 10u);
+  // Where every bed of the sequence stands there is no weaker bed under a unit: no undercut.
+  scene::Formation hard = beds();
+  for (scene::FormationBed& b : hard.beds)
+    b.resistance = 0.9f;
+  CHECK(body(RockType::Sandstone, hard).undercut == 0.0);
 }
 
 TEST_CASE("ledges: the far form is the same steps on a coarser lattice") {
@@ -457,11 +543,11 @@ TEST_CASE("ledges: a patch is pinned to the bit") {
                              << mesh_hash(far_form.mesh) << " source "
                              << ledge_source_hash(far_form.patch));
   CHECK(near_form.report.triangles > 0u);
-  CHECK(mesh_hash(near_form.mesh) == 10076193532020212928ull);
-  CHECK(ledge_source_hash(near_form.patch) == 10834469400257094798ull);
+  CHECK(mesh_hash(near_form.mesh) == 6324720027628883295ull);
+  CHECK(ledge_source_hash(near_form.patch) == 1958485751224947148ull);
   CHECK(far_form.report.triangles > 0u);
   CHECK(mesh_hash(far_form.mesh) == 12540669320333577569ull);
-  CHECK(ledge_source_hash(far_form.patch) == 737779768996180544ull);
+  CHECK(ledge_source_hash(far_form.patch) == 12977504886990997870ull);
 }
 
 TEST_CASE("ledges generator: tiles in any order are the whole read, a form a ring") {
@@ -484,14 +570,14 @@ TEST_CASE("ledges generator: tiles in any order are the whole read, a form a rin
   REQUIRE_MESSAGE(desc->open(schema::to_json(layer), context, &whole.state, &error), error);
   scene_gen::Placements expanded;
   REQUIRE(desc->expand(whole.state, context, expanded, &error));
-  // 128 m square, four tiles: a tile no crag stands in has no mesh, and one whose steps are all
-  // under the far form's least has no far form.
-  CHECK(expanded.things >= 2);
-  CHECK(expanded.things <= 4);
+  // 128 m square, four tiles: a crag stands in each at the rule's members and stretches, and each
+  // has a near and a far form (the first agent's exact counts, put back after they were loosened
+  // to ranges mid-way). A tile no crag stands in would have no mesh, and one whose steps are all
+  // under the far form's least no far form.
+  CHECK(expanded.things == 4);
   Vector<scene_gen::PlacementMesh> resident;
   REQUIRE(desc->meshes(whole.state, context, resident, &error));
-  CHECK(resident.size() > expanded.things);
-  CHECK(resident.size() <= 2 * expanded.things);
+  CHECK(resident.size() == 8);
   MESSAGE(expanded.things << " of 4 tiles have ledges, " << resident.size() << " meshes");
   for (const scene_gen::PlacementMesh& mesh : resident) {
     CHECK(io::exists(mesh.path));
@@ -748,9 +834,12 @@ TEST_CASE("ledges: a tread carries soil to its lip, and a bed's rock is its form
   const assets::Primitive& soil = s.mesh.primitives[0];
   REQUIRE(soil.material == 0);
   u32 up = 0;
-  for (u32 t = soil.first_index; t < soil.first_index + soil.index_count; t += 3)
+  for (u32 t = soil.first_index; t < soil.first_index + soil.index_count; t += 3) {
     up += normal_of(s, t).y > 0.9 ? 1u : 0u;
+  }
   // (but for a sliver in a thousand, whose normal is its rounding's)
+  const u32 tread_count = soil.index_count / 3;
+  MESSAGE((tread_count - up) << " of " << tread_count << " tread triangles lean past 25 degrees");
   CHECK((soil.index_count / 3 - up) * 1000 <= soil.index_count / 3);
   u32 steep = 0, rock = 0;
   for (u32 t = soil.first_index + soil.index_count; t + 2 < s.mesh.indices.size(); t += 3) {
