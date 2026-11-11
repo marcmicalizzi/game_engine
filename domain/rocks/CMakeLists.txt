@@ -25,7 +25,8 @@ engine_module(NAME rocks LAYER domain OPTIONAL WHOLE_ARCHIVE
        gfx rocks_schemas
   SOURCES src/solver.cpp src/cliff.cpp src/rocks.cpp src/cliffs_generator.cpp src/geology.cpp
           src/surface_bake.cpp src/deposits.cpp src/deposits_generator.cpp
-          src/exposure.cpp src/ledges.cpp src/ledges_generator.cpp)
+          src/exposure.cpp src/ledges.cpp src/ledges_generator.cpp
+          src/cliff_benches.cpp)
 
 engine_module_tests(NAME rocks
   SOURCES tests/rocks_tests.cpp tests/cliff_tests.cpp tests/cliffs_generator_tests.cpp

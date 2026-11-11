@@ -17,6 +17,7 @@
 // f64 with IEEE `+ - * /`, `sqrt`, `floor` and `det::sin`/`det::cos` only, contraction off
 // (ADR-0035), one thread, one seeded stream per purpose: the same parameters give the same bytes on
 // every toolchain.
+#include "cliff_benches.h"
 #include "detail.h"
 #include "geology.h"
 
@@ -86,6 +87,7 @@ struct Line {
   Vector<f64> s;    // the distance along the line in the ground's plane, at each vertex
   Vector<f64> height;
   Vector<f64> batter;
+  Vector<f64> crest_back;
   f64 length = 0.0;
   f64 height_max = 0.0;
 };
@@ -96,9 +98,11 @@ struct Frame {
   f64 s = 0.0;
   f64 height = 0.0;
   f64 batter = 0.0;
+  f64 crest_back = 0.0;
 };
 
-void line_at(const Line& line, f64 q, D3& foot, f64& height, f64& batter) {
+void line_at(const Line& line, f64 q, D3& foot, f64& height, f64& batter,
+             f64* crest_back = nullptr) {
   const f64 at = q < 0.0 ? 0.0 : (q > line.length ? line.length : q);
   u32 lo = 0;
   u32 hi = line.s.size() - 1;
@@ -115,6 +119,7 @@ void line_at(const Line& line, f64 q, D3& foot, f64& height, f64& batter) {
   foot = line.foot[lo] + (line.foot[hi] - line.foot[lo]) * t;
   height = lerp(line.height[lo], line.height[hi], t);
   batter = lerp(line.batter[lo], line.batter[hi], t);
+  if (crest_back != nullptr) *crest_back = lerp(line.crest_back[lo], line.crest_back[hi], t);
 }
 
 // The frame at `s`: the foot there, and the normal of the chord `window` either side, so the
@@ -123,7 +128,7 @@ void line_at(const Line& line, f64 q, D3& foot, f64& height, f64& batter) {
 Frame frame_at(const Line& line, f64 s, f64 window) {
   Frame f;
   f.s = s;
-  line_at(line, s, f.foot, f.height, f.batter);
+  line_at(line, s, f.foot, f.height, f.batter, &f.crest_back);
   D3 a;
   D3 b;
   f64 unused_h = 0.0;
@@ -544,8 +549,10 @@ u64 box_triangles(u64 a, u64 b, u64 c) { return 4u * (a * b + a * c + b * c); }
 // An open face's (rocks.md, "Faces in the slope"): the front, the top and the two ends of the box,
 // without its back and its bottom.
 u64 open_triangles(u64 a, u64 b, u64 c) { return 2u * a * b + 2u * a * c + 4u * b * c; }
-// emit_box's `skip`: the bottom (axis 1, minus) and the back (axis 2, minus) of k_faces.
+// emit_box's `skip`: the bottom (axis 1, minus) and the back (axis 2, minus) of k_faces; an open
+// face that keeps its bottom (`bottom`, T101) skips the back alone.
 constexpr u32 k_open_skip = (1u << 3) | (1u << 5);
+constexpr u32 k_open_skip_back = 1u << 5;
 
 u32 cells_over(f64 metres, f64 cell, u32 at_least) {
   const f64 n = std::ceil(metres / cell - 1e-9);
@@ -671,6 +678,8 @@ bool cliff_in_range(const Cliff& p, std::string& error) {
       return bad("points.height", "1 to 200 m");
     if (q.batter.has_value() && !in(wide(*q.batter), 0.0, 1.5))
       return bad("points.batter", "0 to 1.5");
+    if (q.crest_back.has_value() && !in(wide(*q.crest_back), 0.0, 20.0))
+      return bad("points.crest_back", "0 to 20 m");
     if (i > 0) {
       const f64 dx = wide(q.x) - wide(p.points[i - 1].x);
       const f64 dz = wide(q.z) - wide(p.points[i - 1].z);
@@ -757,6 +766,7 @@ bool solve_cliff(const Cliff& p, assets::MeshData& out, CliffReport* report_out,
     z.line.foot.push_back(D3{wide(q.x), wide(q.y), wide(q.z)});
     z.line.height.push_back(wide(q.height.value_or(p.height)));
     z.line.batter.push_back(wide(q.batter.value_or(p.batter)));
+    z.line.crest_back.push_back(wide(q.crest_back.value_or(0.0f)));
     if (i == 0) {
       z.line.s.push_back(0.0);
     } else {
@@ -848,8 +858,15 @@ bool solve_cliff(const Cliff& p, assets::MeshData& out, CliffReport* report_out,
     const f64 cell = k_cliff_cells_m[r];
     const u32 a = cells_over(z.line.length, cell, 2);
     const u32 b = cells_over(face_h, cell, 2);
-    const u32 c = cells_over(z.depth, cell, 1);
-    const u64 ft = p.open ? open_triangles(a, b, c) : box_triangles(a, b, c);
+    // **An open face's top at a coarser cell** (rocks.md, "Benches"): its top and its ends are flat
+    // from the crest to the back, and in the ground past the crest, so the layers back are cut at
+    // four of the front's cells (no coarser than four of the set's repeats, so a chart stays inside
+    // its UV range). The stations along are the front's, so the crest is one seam of shared points
+    // and nothing is left to stitch. A closed box's back is seen and keeps the front's cell.
+    const f64 back_cell = p.open ? max2(cell, min2(4.0 * cell, 4.0 * tile_m)) : cell;
+    const u32 c = cells_over(z.depth, back_cell, 1);
+    const u64 ft = p.open ? open_triangles(a, b, c) + (p.bottom ? 2u * static_cast<u64>(a) * c : 0u)
+                          : box_triangles(a, b, c);
     u64 st = 0;
     u32 sa = 0;
     u32 sb = 0;
@@ -902,10 +919,20 @@ bool solve_cliff(const Cliff& p, assets::MeshData& out, CliffReport* report_out,
     const f64 s =
         i == ns ? z.line.length : z.line.length * static_cast<f64>(i) / static_cast<f64>(ns);
     Frame f = frame_at(z.line, s, z.window);
-    // The skyline: the top is broken back by up to 15% of the height, slowly along the face.
-    f.height *= 1.0 - 0.15 * noise3(z.seed_skyline, D3{s / 30.0, 0.5, 0.5});
+    // The skyline: the top is broken back by up to 15% of the height, slowly along the face. Not
+    // where the crest falls back into the slope's brow (`crest_back`): there the skyline is the
+    // ground's own edge, which the terrain draws.
+    const f64 broken = 0.15 * noise3(z.seed_skyline, D3{s / 30.0, 0.5, 0.5});
+    f.height *= 1.0 - broken * (1.0 - smoothstep(f.crest_back / 0.5));
     frames.push_back(f);
   }
+  // **The members, stepped** (rocks.md, "Benches"): with `benches` and a bedded formation, each
+  // station's column is the beds' profile (cliff_benches.h) — a riser a resistant member, a bench a
+  // weak one, a tread at a cliff-former's top — whose run over the face's height is the batter's.
+  BenchBeds bench_beds_of;
+  const bool stepped =
+      p.benches && p.formation.has_value() && bench_beds(*p.formation, bench_beds_of);
+  const auto plane_back = [&](const Frame& f, f64 y) { return f.batter * max2(0.0, y - f.foot.y); };
   const f64 depth = z.depth;
   const auto row_y = [&](const Frame& f, u32 j) {
     const f64 bottom = f.foot.y - z.buried;
@@ -920,23 +947,41 @@ bool solve_cliff(const Cliff& p, assets::MeshData& out, CliffReport* report_out,
   // steeply than the lean, which is what the overhang test holds.
   constexpr f64 k_lean = 0.4;
   Vector<f64> front((ns + 1) * (nh + 1));
+  BenchProfile column;
   for (u32 i = 0; i <= ns; ++i) {
     const Frame& f = frames[i];
     const f64 top = f.foot.y + f.height;
+    if (stepped) {
+      const f64 wy = p.world_origin.y;
+      bench_profile(bench_beds_of, p.world_origin.x + f.foot.x, p.world_origin.z + f.foot.z, -f.n.x,
+                    -f.n.z, wy + f.foot.y, wy + top, f.batter, column);
+    }
+    // **The crest's shoulder**: over its last rows the front falls back by `crest_back`, and the
+    // carving fades out with it, so a top that meets the slope's brow rounds over into the ground
+    // rather than standing a level slab in front of it (rocks.md, "Benches").
+    const f64 shoulder =
+        f.crest_back > 0.0 ? min2(0.5 * f.height, max2(1.5, 1.25 * f.crest_back)) : 0.0;
     f64 below = 0.0;
     f64 below_y = 0.0;
     for (u32 j = 0; j <= nh; ++j) {
       const f64 y = row_y(f, j);
-      const f64 mean = -f.batter * max2(0.0, y - f.foot.y);
+      f64 mean = stepped ? -column.setback(p.world_origin.y + y) : -plane_back(f, y);
+      f64 fade = 1.0;
+      if (shoulder > 0.0) {
+        const f64 w = smoothstep((y - (top - shoulder)) / shoulder);
+        mean -= f.crest_back * w;
+        fade = 1.0 - w;
+      }
       f64 notch = 0.0;
       const D3 at{f.foot.x + f.n.x * mean, y, f.foot.z + f.n.z * mean};
-      f64 o = mean + carve_at(carve, f.s, y, top, at, notch);
+      f64 o = mean + carve_at(carve, f.s, y, top, at, notch) * fade;
       if (j > 0 && o > below + k_lean * (y - below_y)) o = below + k_lean * (y - below_y);
       below = o;
       below_y = y;
-      o -= notch;
+      o -= notch * fade;
       // Held half a metre in front of the back, so the ends' ladders are wound one way.
-      if (o < mean - depth + 0.5) o = mean - depth + 0.5;
+      const f64 back = -plane_back(f, y) - depth;
+      if (o < back + 0.5) o = back + 0.5;
       front[i * (nh + 1) + j] = o;
     }
   }
@@ -964,7 +1009,8 @@ bool solve_cliff(const Cliff& p, assets::MeshData& out, CliffReport* report_out,
     return weathered_uv(uv, carve.seed_grain, 2.0 * carve.fabric.irregularity);
   };
   const u32 face_n[3] = {ns, nh, nd};
-  emit_box(face_n, face_point, face_uv, tile_m, out, p.open ? k_open_skip : 0u);
+  emit_box(face_n, face_point, face_uv, tile_m, out,
+           p.open ? (p.bottom ? k_open_skip_back : k_open_skip) : 0u);
   u32 parts = 1;
 
   // ---- the talus skirt -------------------------------------------------------------------------

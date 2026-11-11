@@ -238,6 +238,47 @@ Geol.* 13, 1037–1048; abstract, on a mirror): thickness over spacing about 1.3
 `joint_ratio`), spacing over its median log-normal; no spread was found, so the solver's stations
 still move by up to three tenths of the spacing (ours).
 
+## Benches on a bedded face
+
+Read for G172 (2026-11-11), the cliff's tiers stepping back, by the row's own searches; none of
+the sources below was reached in full, and how each was read is said beside it.
+
+**A bedded scarp is a free face over a debris-mantled slope, member by member.** Chorley, Schumm
+and Sugden (1985, *Geomorphology*, p. 273; secondary, as an encyclopaedia's "Scarp retreat"
+restates it): in a dry climate a scarp's upper, near-vertical face is 10 to 75 % of its height and
+the rest a talus-covered rampart. Ward, Berlin and Anderson (2011, *ESPL* 36, 1023–1043,
+doi:10.1002/esp.2129; **abstract only**, through a search snippet, the paper's PDF refused the
+connection): cliffs in horizontally bedded rock "loom above a relatively straight bedrock slope
+('plinth') that is mantled with a thin layer of sediment and perched near the angle of repose".
+The same layered sequence repeated is the cliff-and-bench staircase of the Colorado Plateau,
+where the cliff-formers are the sandstones and limestones and the bench-formers the shales (the
+cuesta's scarp of [How layered rock makes steps](#how-layered-rock-makes-steps)).
+
+**The angle a weak member lies at is the debris's angle of repose.** Carson (1977, *ESPL*;
+secondary, through a later paper's review): a talus slope stands at the repose angle of its
+material, "an angle generally found on natural talus slopes" that "approaches 35 degrees".
+Statham (1976, *ESPL*; secondary, a geological guide's summary): a scree's profile is concave,
+35 to 37° in its upper part and 31 to 34° in its lower. **Chosen: a bench at 35°, never gentler
+than 30°.** Where the ground is steeper than a staircase of risers and 35° benches can follow, the
+benches steepen, up to **60° (ours)**: a weak rock with no debris on it stands steeper than its
+repose, and no source gave a number for how steep.
+
+**A riser stands at 80° (ours).** "Steeper slopes on stronger rocks" (Selby 1980, above) and the
+free face being "near-vertical" are all the sources give; 80° leaves a riser a lean a lower
+resolution still draws. A member thinner than a metre steps nothing (ours): a thin shale parting
+under a cliff-former is the undercut's notch, not a bench.
+
+**A tread at a cliff-former's top.** The stripped top of a resistant bed where the weak one over it
+has gone back: a quarter of the weak member's plumb thickness, 0.3 to 2 m (**ours**; no source
+gave a tread's width, which in the field depends on how far the weak member has retreated). On
+ground gentler than the staircase the treads widen to take the difference.
+
+**The run adds up to the plane's.** A tier's profile is laid so its run over the tier is the
+tier's own batter times its height (the lean that keeps its plane the standoff in front of the
+slope), so tiers meet as they did and the staircase follows the ground's mean slope; within the
+tier the profile falls behind the plane by up to a few metres at a riser's foot, and the generator
+stands every tier at a vertex off by that much more.
+
 ## What is authored, not measured
 
 - **A bed's `resistance`** is an index from 0 to 1 the formation's author gives it, not a rock

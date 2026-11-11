@@ -42,7 +42,8 @@ namespace engine::rocks {
 // generator a `<name>.ledge.json` is built by.
 inline constexpr const char* k_ledges_generator = "ledges";
 // 2: a block is a body (clefts, rims worn all round, undercut feet, crept blocks), G142c.
-inline constexpr u32 k_ledge_version = 2;
+// 3: a cleft's flank follows the front's rows and its undercut at the face, G174.
+inline constexpr u32 k_ledge_version = 3;
 
 // What a solve made, for a test and a host's summary.
 struct LedgeReport {
@@ -60,7 +61,13 @@ struct LedgeReport {
   f64 joint_worn_m2 = 0.0;   // of worn rim between a tread and a flank
   f64 cleft_depth_m = 0.0;   // the deepest flank: a cleft's depth from the tread to the ground
   f64 undercut_m2 = 0.0;     // of undercut underside, facing down
-  u32 slipped = 0;           // pieces (a block's part in one lattice triangle) of crept blocks
+  // A cleft's flank over an undercut foot (G174): the side of the notch, in the joint's plane,
+  // that a flank going straight down would stand past the undercut as a fin. `notch_m2` the
+  // flanks that follow the undercut took out; `fin_m2` what was left standing, under a notch too
+  // shallow or too low to follow (`k_notch_min_m`).
+  f64 notch_m2 = 0.0;
+  f64 fin_m2 = 0.0;
+  u32 slipped = 0;  // pieces (a block's part in one lattice triangle) of crept blocks
   // A crag has mass (rocks.md, "A crag has mass"): the ground between its ledges, its rock.
   u32 riser_triangles = 0;
   f64 riser_m2 = 0.0;
