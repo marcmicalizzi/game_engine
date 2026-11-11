@@ -293,10 +293,10 @@ TEST_CASE("channels: whole expansion equals any tile order, with stable ids") {
     scene_gen::Placements one;
     REQUIRE(opened.desc->tile(opened.state, {x, z}, c, one, &error));
     CHECK(one.meshes.size() == one.instances.size());  // one piece a tile, its own mesh
-    for (const scene_gen::Placement& p : one.instances) {
-      REQUIRE(p.mesh < one.meshes.size());
-      const scene_gen::PlacementMesh& m = one.meshes[p.mesh];
-      into.push_back({p.id, p, m.recipe, m.path, m.reach});
+    for (const scene_gen::Placement& placed : one.instances) {
+      REQUIRE(placed.mesh < one.meshes.size());
+      const scene_gen::PlacementMesh& m = one.meshes[placed.mesh];
+      into.push_back({placed.id, placed, m.recipe, m.path, m.reach});
     }
     return one.instances.size();
   };
