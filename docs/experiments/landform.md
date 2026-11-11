@@ -214,9 +214,12 @@ number marked secondary is to be read at its source before a world pins it.
 width half way up over its width at the top is (1/2)^(1/b): a V 0.5, b = 1.5 gives 0.63, a
 parabola 0.71, Svensson's 2.18 gives 0.73. Stage C's glacier measured 0.73 and its river 0.56,
 which is **b = 2.2 and b = 1.2**. So stage C's "a trough is a parabola, not a U", which it counted
-as a shortfall, was the published description of a trough: Svensson's question was whether a
+as a shortfall, named the published description of a trough: Svensson's question was whether a
 glacial valley is a parabola, and his answer was yes. The test's bounds are now the exponents'
 (the river's under 1.5, the glacier's 1.5 or more), where they were "a tenth above the river's".
+**That does not show the solver's ice makes a trough**: the test valley's 2.2 turned out to be a
+trench against the region's held edge ([what a first attempt measured](#what-a-first-attempt-at-the-basins-measured)),
+and with the edge mended on the glacier's line the same valley measures 1.45, under the range.
 **What the reels show that the model lacks is a level floor, and in a real trough that floor is
 mostly not rock**: it is the fill of a basin the ice dug below the river's grade, flooded when the
 ice left and filled by the lake's sediment and the outwash. The solver has the flood and the
@@ -248,7 +251,9 @@ what bounds it.
 source that would replace it):
 
 1. **The slope the ice's erosion reads is the ice surface's over a coupling length**, not to
-   the next point: from a point p, walk down the glacier's line a distance L = `coupling` × the
+   the next point, **on a glacier's own line** (a point beside the line keeps the step to its
+   receiver: [what a first attempt measured](#what-a-first-attempt-at-the-basins-measured)):
+   from a point p, walk down the glacier's line a distance L = `coupling` × the
    ice's thickness at p to a point q; the surface slope is (b_p + h_p − b_q − h_q) / D, D the
    distance walked. That a glacier's flow answers to its thickness and surface slope averaged
    along its length is Kamb and Echelmeyer 1986 (*J. Glaciol.* 32(111):267–284; **abstract**,
@@ -314,6 +319,49 @@ the valley behind a ridge holds a lake by the flood's rule with no rule added. T
 a ridge across the valley at each stand, standing above the ground up valley of it; the till's
 volume equal to what the ice delivered less what the meltwater took; and laterals that begin at
 the line.
+
+### What a first attempt at the basins measured
+
+The rule above was built once, on 2026-11-11, measured for half an hour, and **taken out again
+whole**: it is not in the tree, and no pin moved. What the attempt found is what the next pass
+should start from, in this order:
+
+1. **The held edge comes first.** In the trough test (a trunk falling at 0.02 whose ice leaves
+   through the held east edge) stage C's trunk ends at 1,041 m against an edge held at
+   1,273 m, and its bed is below its outlet's level for its whole length. The held point on
+   the line carries the glacier's 220 m of ice; the held points beside it carry 57 to 111 m,
+   their own threads'; the swath's points that drain to those are worn below the edge by the
+   difference, and the trench runs up the trunk from there. The ice's surface would have to
+   climb 230 m in one point for that bed to be a glacier's. **Stage C's trough numbers (b = 2.2,
+   1.7 times as wide, 196 m below the river's bed) are this trench.** Letting a held point under
+   a swath carry the swath's ice grades the trunk to its outlet on the axis (37 m below the
+   river's bed, 1.26 times as wide, b = 1.45) and leaves trenches of 50 to 200 m off the axis
+   near the edge, whose cause was not found; it was not kept. With nothing laid down
+   (`deposition` 0) the valley of the snout test ends 68 to 108 m below its base level beside
+   the held edge under either rule, so a run with deposition hides the same defect under fill.
+2. **The coupling is for a glacier's own line, not for its swath.** Read by every point of the
+   swath, the slope over a reach takes the trough's section away (b from 2.2 to 1.47, the width
+   a hundred metres up from 59 points to 32): a point beside the line has its receiver toward
+   the line, the reach then runs down the valley, and the cross fall that Hergarten's swath
+   wears away is divided by the reach's length. Read only where a point's own flux is the
+   swath's (its line), with the step to the receiver kept beside it, the section and the
+   hanging tributary stay (b = 1.59, a step of 39.9 m) while the edge's trench is still there
+   to flatter them.
+3. **A basin has to be told from a pond among till.** With deposition on, the snout valley's
+   floor is till in mounds up to 92 m thick (the melt-out rule caps till at the ice's
+   thickness and no lower), the glacier's line leaves the valley's axis among them, and the
+   standing water counted after the ice is mostly behind till. The test that holds a rock
+   basin should run with nothing laid down, or flood the rock's surface (the height less
+   `sediment`); the one that holds the fill comes after.
+4. **What the rule did where it could be read**: with nothing laid down and the line at
+   1,400 m the valley held 508 points of standing water where the last ice stood, to 82 m,
+   against 386 and 62 m reading the slope to the next point; the one point of the axis whose
+   bed rose under the ice stood at 1.28 times the surface's slope, inside the 1.5. Both
+   numbers include the edge's trench, so neither is evidence yet.
+5. **The limit as built**: T′ = T + (b_r − T) D / (D + c d) wherever the receiver's bed stands
+   above the flat-surface level T, in the sweep, one multiply and one add a point under ice;
+   and the ice's power over the reach's length in spacings, so a uniform valley erodes as
+   before. The sketch gained `ice.coupling` (2) and `ice.adverse_slope` (1.5).
 
 ### The two checks stage C restated, and what was found
 

@@ -141,6 +141,15 @@ TEST_CASE("landform: ice leaves a trough where a river leaves a V, and a tributa
   // (docs/experiments/landform.md, "A trough's section: the sources"). So the bounds are the
   // exponents': the river's valley under the glacial range's 1.5, the glacier's inside it or
   // past it (a floor between walls is b without bound, and more of a trough, not less).
+  //
+  // **What this valley's numbers are worth** (W106, measured and not yet mended): its ice runs
+  // out through the held east edge, and the points of the swath that drain to the edge's held
+  // points off the axis read the thinner ice there as a snout, so the whole trunk is worn into
+  // a trench 230 m below its outlet (the bed at 1,041 m under the edge's 1,273 m). The 2.2,
+  // the width and the 196 m below are that trench's. With the edge's held points given the
+  // swath's ice (tried, and not kept: trenches remain off the axis) the same valley measures
+  // b = 1.45, 43 points against 34, and 37 m: these checks will then fail, and should (the
+  // subsystem page, "Ice", says so).
   const f64 river_b = std::log(0.5) / std::log(river_share);
   const f64 glacier_b = std::log(0.5) / std::log(glacier_share);
   std::printf("landform ice: as y = a x^b the river's section is b = %.2f, the glacier's %.2f\n",

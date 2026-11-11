@@ -361,7 +361,8 @@ Each step the ice stands:
    and the rivers lay it down as outwash by their own law. This melt-out rule is this solver's.
 
 **What it makes, measured** (the tests): a trunk under ice for 100,000 years is worn 196 m
-below the same valley under a river and is 1.7 times as wide a hundred metres above its floor;
+below the same valley under a river and is 1.7 times as wide a hundred metres above its floor
+(both mostly a trench against the region's edge: "what it does not make", below);
 a tributary's bed meets it at a step of 40 m in one 50 m point where the river's is graded
 (2.7 m); a glacier whose line is above its valley's floor ends inside the region, 7.3 km down
 an 8 km valley, with till under where it stood. In the two-range sketch
@@ -371,16 +372,29 @@ its reach the valleys are the rivers'.
 
 **What it does not make, said plainly**:
 
-- **The trough's section is the published one, a parabola; what it lacks is the fill that
-  makes a floor.** By the stated measure (a section's width half way up its lowest hundred
-  metres over its width at the hundred) the glacier's trunk is 0.73 and the river's 0.56. A
-  section y = a x^b measures (1/2)^(1/b), so those are b = 2.2 and b = 1.2: Svensson 1959's
-  fit of a glacial valley is b "only slightly" off 2, Graf 1970's troughs run 1.5 to 2, and a
-  river's V is 1 ([the grounding](../experiments/landform.md#a-troughs-section-the-sources)
-  says how far each was read). Stage C called this a shortfall and it was not one; the test
-  now holds the exponents (W106). The level floor of the photographs is mostly not rock: it is
-  a lake's fill and outwash in a basin the ice dug below the river's grade, and the solver has
-  the fill and not the basin.
+- **A parabola is what a trough should be; whether this ice makes one is not yet shown.** By
+  the stated measure (a section's width half way up its lowest hundred metres over its width
+  at the hundred) the test's trunk is 0.73 under ice and 0.56 under a river. A section
+  y = a x^b measures (1/2)^(1/b), so those are b = 2.2 and b = 1.2: Svensson 1959's fit of a
+  glacial valley is b "only slightly" off 2, Graf 1970's troughs run 1.5 to 2, and a river's V
+  is 1 ([the grounding](../experiments/landform.md#a-troughs-section-the-sources) says how
+  far each was read). So stage C's "a parabola, not a U" named the published form as a
+  shortfall, and the test now holds the exponents (W106). **But the test's 2.2 is the next
+  bullet's trench**, and without it the same valley measures 1.45. The level floor of the
+  photographs is a different matter and mostly not rock: a lake's fill and outwash in a basin
+  the ice dug below the river's grade. The solver has the fill and not the basin.
+- **Where a glacier leaves the region through a held edge, its trunk is a trench behind a
+  wall** (W106 found it; it is not mended). The edge's held point on the glacier's line keeps
+  the glacier's thickness (stage C's own mend), but the held points beside it carry only their
+  own threads' ice, 57 to 111 m in the test against 220 m in the swath inside; the swath's
+  points that drain to them read that as the ice thinning, and are worn below the edge by the
+  difference. The test's trunk ends at 1,041 m against an edge held at 1,273 m, a 230 m step in
+  one point, and is a trench for its whole length: the "196 m below the river's bed" and the
+  "1.7 times as wide" below are that trench, not the ice's power. Giving the edge's held points
+  the swath's ice was tried and takes the trench off the axis (the trunk then grades to its
+  outlet, 37 m below the river's, 1.26 times as wide, b = 1.45) but leaves trenches 50 to
+  200 m deep off the axis, so it was not kept. **A sketch whose ice reaches an open edge
+  should not be trusted there**; the two-range pictures' glaciers end inside their region.
 - **No basin is dug, so no trough lake, no cirque and no tarn; and till is a sheet, not a
   ridge.** A bed is worn below its receiver's only where the ice thins downstream, by that
   much at most, because the update reads the ice's surface from one point to the next: the
@@ -791,7 +805,7 @@ in the editor. The limits of the model as it stands are on the grounding page.
 | a single mouth's fan is a cone (2.2 s: two solves of a hundred steps) | a funnel-shaped catchment drains through one mouth onto a level plain for 200,000 years: on an arc 500 m from the mouth the ground stands over 2 m above the plain (measured 28.2 m) and varies along the arc by under a third of that (5.4 m, 19%); with one receiver a point the same arc measures 13.9 m and 3.7 m (27%) | the flow does not divide on the fan, or the load is not carried by the shares |
 | a river's plain is wider than a point, and cutting down leaves a terrace (2.7 s: three solves) | a straight valley draining 20 km², banks three times as erodible as the bed, 400,000 years: the lower floor (points within 2 m of the lowest of their column) is 3 points wide or more (measured 8.8) and a point wider than with no lateral erosion (6.6), with over a hundred banks taken (11,310). Then the base level falls 20 m for 8,000 years: the river cuts down over a quarter of the fall in the last kilometre (7.5 m) into a floor narrower than the one it left (4.1 points against 10.2), and of the columns that owe a terrace (cut 5 m, old floor 3 points wider than the new) three quarters keep old floor within 1.5 m of where it stood (10 of 10, 6.5 points each) with its edge beside the new floor (10 of 10) | no bank is taken, or a river that cuts down takes its whole floor with it |
 | a range raised unevenly is not a comb (3.9 s: two solves of a hundred steps on a lattice that holds a dozen valleys a side) | a 9.6 km range along x raised evenly and with the default unevenness: of the mountain channels, the junctions a kilometre rise by over 15% (measured 0.149 to 0.359) and the share running straight down the range falls (60% to 43%) | the unevenness is lost, or is of the local rate and vanishes on the flanks |
-| ice leaves a trough where a river leaves a V, and a tributary hangs (`ice_tests.cpp`, 1.2 s: two solves of twenty steps) | a trunk valley falling at 0.02 with a tributary at 0.12, 100,000 years under ice and under a river: by the stated measure (width half way up the lowest 100 m over width at the 100 m: V 0.5, parabola 0.71, box 1) which is the exponent of a section y = a x^b, the river's trunk is under the glacial range's b = 1.5 (measured 1.19) and the glacier's at 1.5 or more (2.22: Svensson's parabola); the glacier's is half again as wide at the 100 m (59 points against 34 over three sections); the tributary's steepest step is over five times the river's (39.8 m against 2.7 m); the trunk's bed at the junction is 50 m or more below the river's (196 m), under 100 m or more of ice (220 m) | the ice wears only its line, or a tributary is graded to the trunk's bed |
+| ice leaves a trough where a river leaves a V, and a tributary hangs (`ice_tests.cpp`, 1.2 s: two solves of twenty steps) | a trunk valley falling at 0.02 with a tributary at 0.12, 100,000 years under ice and under a river: by the stated measure (width half way up the lowest 100 m over width at the 100 m: V 0.5, parabola 0.71, box 1) which is the exponent of a section y = a x^b, the river's trunk is under the glacial range's b = 1.5 (measured 1.19) and the glacier's at 1.5 or more (2.22, which like this row's width and depth is inflated by the trench against the held edge that [ice](#ice) describes: mended, these checks should fail at 1.45); the glacier's is half again as wide at the 100 m (59 points against 34 over three sections); the tributary's steepest step is over five times the river's (39.8 m against 2.7 m); the trunk's bed at the junction is 50 m or more below the river's (196 m), under 100 m or more of ice (220 m) | the ice wears only its line, or a tributary is graded to the trunk's bed |
 | a glacier ends where its ice is spent, and leaves till (0.4 s) | a valley falling at 0.03 whose line is 100 m above its head: over 300 points under ice (974), its snout past column 40 and 8 columns or more inside the lattice (column 146 of 160), a hundred points or more with half a metre of till (1,996), and till never more than the sediment there. Whether its bed holds a hollow is printed and not held (none) | the melt is not charged to the glacier, or till is laid that is not sediment |
 | an ice age solves to the same bytes on one, four and sixteen workers (0.7 s) | the heightfield, the ice, the till, the sediment and the discharge of a 30,000-year ice age from each, and the first three pinned on MSVC for Clang and GCC to reproduce | a loop of the ice reads what another chunk writes, or `det::exp` and `det::log` differ by toolchain |
 | a lake's floor fills level, and its mouth builds a delta | a basin fed for ten thousand years: its floor away from the mouths level within 50 mm (measured 0 and 3 mm) under water still metres deep; with `delta_share` 0.5 the shelf under the mouths holds a quarter more sediment (measured twice) and the floor stands lower | the fill follows the flood's order, or the mouths get nothing |
@@ -879,6 +893,9 @@ sheer granite walls, r22's cirque lake ringed by cliffs, r26 and r46's flat-floo
 
 - **From a summit and from the air it reads as an eroded range**: branching valleys, sharp
   crests, spurs, a far range with snow on its crest, a green main valley. Those two views hold.
+  The solver's relief of the same ground (stage C's `alpine-b`, written then and first read
+  now) shows where the ice was as broad pale ribbons in the upper valleys that narrow to V's
+  below its reach: wider valleys, and nothing else that says ice.
 - **From inside a glaciated valley it does not read as one.** Looking down a side valley from
   its head (the best of the floor views), the section is an open, round-bottomed V between
   smooth walls at 35°: Svensson's parabola, and nothing a person would call a trough. No level
