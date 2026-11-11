@@ -212,8 +212,8 @@ TEST_CASE("landform: ice leaves a trough where a river leaves a V, and a tributa
   // the trunk's swath, and is steeper than a river leaves anywhere on it. How tall it grows
   // depends on how long the swath's margin stays on one point (in this valley the trunk's ice
   // thins from 320 m to 294 m over the run, its swath narrows by a point, and the step at the
-  // new margin is what has grown since: 9 m). Stage C held "five times the river's" on a step
-  // of 40 m that the trench at the region's edge had made (W126).
+  // new margin is what has grown since: 14 m). Stage C held "five times the river's" on a
+  // step of 40 m that the trench at the region's edge had made (W126).
   CHECK(glacier.ice[junction] > 100000);
   CHECK(glacier_step > river_step);
   CHECK(ice_below > ice_above + 50000);
@@ -330,6 +330,226 @@ TEST_CASE("landform: a glacier that ends inside its region leaves the edge alone
   CHECK(dry_hollows == 0);
 }
 
+namespace {
+
+// A valley with a firn field above it: the west four kilometres are a plateau falling east at
+// 0.025 from 2,000 m, dished gently toward the axis, and below it the one valley's shape (east
+// at 0.03 from 1,500 m between sides at 0.5) for six kilometres, to an open east edge at the
+// valley's level there. With the line at 1,750 m the plateau feeds a glacier that fills the
+// valley to its edge for the first tens of thousands of years and draws back up it as the
+// plateau wears down, so every reach of the valley has stood under a snout.
+constexpr u32 k_firn_wide = 200, k_firn_deep = 48, k_firn_axis = 24;
+
+landform::StartField firn_valley() {
+  return start_from(k_firn_wide, k_firn_deep, 50000, [](f64 x, f64 z) {
+    const f64 across = std::fabs(z - 1200.0);
+    if (x < 4000.0) return 2000.0 - 0.025 * x + 0.05 * across;
+    return 1500.0 - 0.03 * (x - 4000.0) + 0.5 * across;
+  });
+}
+
+// Nothing is laid down and the creep is off, so the ground is rock and what stands in a hollow
+// is the hollow the ice dug: a basin is told from a pond among till.
+landform::Sketch firn_sketch(bool with_ice) {
+  landform::Sketch sketch = plain_sketch(k_firn_wide, 50000);
+  sketch.height = k_firn_deep;
+  sketch.edges.west = landform::EdgeKind::Closed;
+  sketch.edges.north = landform::EdgeKind::Closed;
+  sketch.edges.south = landform::EdgeKind::Closed;
+  sketch.base_level_m = 1500.0 - 0.03 * 5950.0;
+  sketch.border_reach_m = 0.0;
+  sketch.erodibility_per_yr = 0.00002;
+  sketch.start = "firn.json";
+  sketch.duration_yr = 100000;
+  sketch.diffusivity_m2_per_yr = 0.0;
+  sketch.deposition = 0.0;
+  if (with_ice) {
+    landform::Ice ice;
+    ice.ela_m = 1750.0;
+    sketch.ice = ice;
+  }
+  return sketch;
+}
+
+// The standing water a ground holds: the points with a metre or more, and the deepest.
+struct Water {
+  u32 points = 0;
+  u32 deepest = 0;
+  u32 first = 0;  // the columns they span
+  u32 last = 0;
+};
+
+Water water_of(const landform::Landform& land) {
+  Water out;
+  out.first = land.width;
+  for (u32 p = 0; p < land.width * land.height; ++p) {
+    if (land.fill[p] > out.deepest) out.deepest = land.fill[p];
+    if (land.fill[p] < 1000) continue;
+    ++out.points;
+    if (p % land.width < out.first) out.first = p % land.width;
+    if (p % land.width > out.last) out.last = p % land.width;
+  }
+  return out;
+}
+
+}  // namespace
+
+TEST_CASE("landform: a glacier digs basins its rivers cannot, and they hold water") {
+  const landform::StartField start = firn_valley();
+  const Water river = water_of(solved(firn_sketch(false), &start));
+  // The glaciated run, solved to each of its steps: the thickest ice that ever stood on each
+  // point, and whether any ice did.
+  landform::Sketch sketch = firn_sketch(true);
+  const u32 n = k_firn_wide * k_firn_deep;
+  std::vector<u32> most(n, 0u);
+  landform::Landform land;
+  for (i64 years = 5000; years <= 100000; years += 5000) {
+    sketch.duration_yr = years;
+    land = solved(sketch, &start);
+    for (u32 p = 0; p < n; ++p)
+      if (land.ice[p] > most[p]) most[p] = land.ice[p];
+  }
+  const Water ice = water_of(land);
+  u32 dry_hollows = 0, over_ice = 0, floor_points = 0;
+  i32 worst_over = 0;
+  for (u32 p = 0; p < n; ++p) {
+    if (most[p] == 0 && land.fill[p] > 10) ++dry_hollows;
+    const i32 over = static_cast<i32>(land.fill[p]) - static_cast<i32>(most[p]);
+    if (over > 10) ++over_ice;
+    if (over > worst_over) worst_over = over;
+    const u32 z = p / k_firn_wide;
+    if (land.fill[p] >= 1000 && z + 3 >= k_firn_axis && z <= k_firn_axis + 3) ++floor_points;
+  }
+  // The same valley with the 1-point rule (the slope read to the receiver), and with the
+  // adverse-slope limit tighter and looser than the published 1.5.
+  const auto with = [&](f64 coupling, f64 adverse) {
+    landform::Sketch other = firn_sketch(true);
+    other.ice->coupling = coupling;
+    other.ice->adverse_slope = adverse;
+    return water_of(solved(other, &start));
+  };
+  const Water tight = with(2.0, 0.5), loose = with(2.0, 6.0), next_point = with(0.0, 1.5);
+  std::printf(
+      "landform ice: with nothing laid down a glacier's valley holds %u points of standing "
+      "water of a metre or more, columns %u to %u of %u, the deepest %u mm (%u of them within "
+      "three rows of the axis); under its rivers alone %u points (deepest %u mm); %u points "
+      "hold more than the thickest ice that stood on them (by %d mm at most), %u hold water "
+      "where no ice stood. With the adverse-slope limit at 0.5 the deepest is %u mm, at 6 it "
+      "is %u mm; reading the slope to the next point it is %u mm over %u points\n",
+      ice.points, ice.first, ice.last, k_firn_wide, ice.deepest, floor_points, river.points,
+      river.deepest, over_ice, worst_over, dry_hollows, tight.deepest, loose.deepest,
+      next_point.deepest, next_point.points);
+  // Rivers wear toward their receiver and leave no hollow; ice wears toward the level that
+  // lays its surface flat, which under thinning ice is below the bed down the valley.
+  CHECK(river.points == 0);
+  CHECK(river.deepest <= 10);
+  CHECK(ice.points > 0);
+  CHECK(floor_points > 0);
+  // Ground no ice stood on holds none.
+  CHECK(dry_hollows == 0);
+  // The limit bounds the dig: an adverse bed is worn until it rises `adverse_slope` times as
+  // steeply as the ice's surface falls, so a tighter limit leaves a shallower basin.
+  CHECK(tight.deepest < ice.deepest);
+  CHECK(ice.deepest <= loose.deepest);
+}
+
+TEST_CASE("landform: what a glacier's basin holds is filled from its head once the ice has gone") {
+  // The firn valley again with the rivers laying down what they carry: 60,000 years of ice,
+  // and then the same ground under its rivers for 40,000 more. The ice leaves the basin, the
+  // flood finds the lake, and the rivers fill it: by the end less water stands where the ice
+  // stood than when it left, and what replaced it is sediment over the rock floor.
+  const landform::StartField start = firn_valley();
+  landform::Sketch sketch = firn_sketch(true);
+  sketch.deposition = 1.0;
+  sketch.ice->until_yr = 60000;
+  sketch.duration_yr = 60000;
+  const landform::Landform left = solved(sketch, &start);
+  sketch.duration_yr = 100000;
+  const landform::Landform filled = solved(sketch, &start);
+  const Water before = water_of(left), after = water_of(filled);
+  // The volume of water standing, and of sediment where water stood when the ice left, in
+  // metres over one cell.
+  f64 water_before = 0.0, water_after = 0.0, laid = 0.0;
+  u32 basin_points = 0, rock_under = 0;
+  for (u32 p = 0; p < k_firn_wide * k_firn_deep; ++p) {
+    water_before += static_cast<f64>(left.fill[p]) / 1000.0;
+    water_after += static_cast<f64>(filled.fill[p]) / 1000.0;
+    if (left.fill[p] < 1000) continue;
+    ++basin_points;
+    const f64 gained =
+        (static_cast<f64>(filled.sediment[p]) - static_cast<f64>(left.sediment[p])) / 1000.0;
+    if (gained > 0.0) laid += gained;
+    // The rock's surface, the height less the sediment, did not rise under the fill.
+    if (filled.height_mm[p] - static_cast<i32>(filled.sediment[p]) <=
+        left.height_mm[p] - static_cast<i32>(left.sediment[p]) + 2)
+      ++rock_under;
+  }
+  std::printf(
+      "landform ice: when the ice left, %u points held a metre of water or more (deepest %u "
+      "mm, %.0f m of water over a cell in all); 40,000 years of rivers later %u do (deepest %u "
+      "mm, %.0f m), and those points gained %.0f m of sediment; the rock floor stands no "
+      "higher at %u of the %u\n",
+      before.points, before.deepest, water_before, after.points, after.deepest, water_after, laid,
+      rock_under, basin_points);
+  CHECK(before.points > 0);
+  CHECK(water_after < water_before);
+  CHECK(laid > 0.0);
+  CHECK(rock_under == basin_points);
+}
+
+TEST_CASE("landform: a bed under ice rises no steeper than the limit lets it") {
+  // The firn valley's ice, solved step by step to **the first step that leaves the axis'
+  // bed rising anywhere**: every rise there was made in that one step, under the ice the
+  // field file records, so the test can read the slope the solver read: down the valley's
+  // axis, from each point to the point twice `coupling` thicknesses on. (A later step's ground
+  // carries rises an earlier, thicker ice made, which the limit does not bound against the
+  // later ice.)
+  const landform::StartField start = firn_valley();
+  for (const f64 adverse : {1.5, 0.5}) {
+    CAPTURE(adverse);
+    landform::Sketch sketch = firn_sketch(true);
+    sketch.ice->adverse_slope = adverse;
+    landform::Landform land;
+    u32 rises = 0, line_points = 0, steps_taken = 0;
+    f64 worst = 0.0;
+    for (i64 years = sketch.step_yr; years <= 100000 && rises == 0; years += sketch.step_yr) {
+      sketch.duration_yr = years;
+      land = solved(sketch, &start);
+      ++steps_taken;
+      line_points = 0;
+      const f64 spacing = static_cast<f64>(land.spacing_mm);
+      for (u32 x = 0; x + 1 < k_firn_wide; ++x) {
+        const u32 p = k_firn_axis * k_firn_wide + x;
+        // A point of the glacier's own line whose water and ice go east along the axis.
+        if (land.ice[p] == 0 || land.receiver[p] != 0) continue;
+        ++line_points;
+        const f64 rise = static_cast<f64>(land.height_mm[p + 1] - land.height_mm[p]);
+        if (rise <= 1.0) continue;
+        u32 steps = static_cast<u32>(
+            std::ceil(2.0 * sketch.ice->coupling * static_cast<f64>(land.ice[p]) / spacing));
+        if (steps < 1) steps = 1;
+        if (x + steps >= k_firn_wide) steps = k_firn_wide - 1 - x;
+        const u32 q = p + steps;
+        const f64 fall = static_cast<f64>(land.height_mm[p]) + static_cast<f64>(land.ice[p]) -
+                         static_cast<f64>(land.height_mm[q]) - static_cast<f64>(land.ice[q]);
+        ++rises;
+        const f64 ratio = fall > 0.0 ? rise * static_cast<f64>(steps) / fall : 1.0e9;
+        if (ratio > worst) worst = ratio;
+      }
+    }
+    std::printf(
+        "landform ice: with the limit at %.1f the axis' bed first rises after %u steps: "
+        "%u of its %u points of ice rise to the next, the steepest at %.3f of the ice "
+        "surface's slope\n",
+        adverse, steps_taken, rises, line_points, worst);
+    CHECK(line_points > 50);
+    CHECK(rises > 0);
+    // The sweeps end within a millimetre a point, which on a rise of a metre is a part in a
+    // thousand; two in a hundred covers the shortest rises counted.
+    CHECK(worst <= adverse * 1.02);
+  }
+}
+
 TEST_CASE("landform: a glacier ends where its ice is spent, and leaves till where it melted") {
   // The one valley with the line at 1,600 m for 100,000 years: the ice gathers on the upper
   // sides and the head and melts down the valley, and what it carried is laid where it melts.
@@ -397,9 +617,10 @@ TEST_CASE("landform: an ice age solves to the same bytes on one, four and sixtee
   // one part of the solver that takes a power that is not a square root (det::exp, det::log).
   // Re-taken by W126: a glacier's swath is the points that drain to its line and a held point
   // carries its donors' ice, where a disc about each line point put a glacier's ice on points
-  // that drain out of it (the trench at a held edge).
-  CHECK(hash_of(serial.height_mm) == 0xf245d52654094673ull);
-  CHECK(hash_of(serial.ice) == 0xc1fbc9c39439f7a0ull);
+  // that drain out of it (the trench at a held edge); and again for the basins' rule (the
+  // slope read over a coupling length on a glacier's own line, and meltwater that never fills).
+  CHECK(hash_of(serial.height_mm) == 0xcb332c9fa2168f28ull);
+  CHECK(hash_of(serial.ice) == 0xe26756e1f278b69cull);
   CHECK(hash_of(serial.till) == 0x06a454b0b5827417ull);
   std::printf("landform ice pins: height %016llx ice %016llx till %016llx\n",
               static_cast<unsigned long long>(hash_of(serial.height_mm)),

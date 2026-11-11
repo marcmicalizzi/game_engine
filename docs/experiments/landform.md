@@ -529,6 +529,110 @@ the edge is 17 m below the junction); "the tributary's steepest step over five t
 river's" is now "taller than the river's, and where the ice thickens by 50 m or more"
 (8.9 m against 2.7 m, at the swath's margin, the ice 224 m above it and 294 m below).
 
+### The basins, as built, and what they are worth
+
+Stage D's rule is in the solver, with one thing added that its design did not have and its
+first attempt did not find.
+
+**What was built** is the design above, point for point: on a glacier's own line the ice's
+term reads its surface from the point to the point twice `coupling` thicknesses down the line
+(`coupling` 2, the middle of Kamb and Echelmeyer's one to three; one walk of at most 64 points
+for each point of ice, in the ice steps only), draws the bed toward the flat-surface level
+T = b_q + h_q − h_p with its power over the reach's length, and stops at the adverse-slope
+limit as the closed form T′ = T + (b_r − T) D / (D + c d), c = `adverse_slope` 1.5. A point of
+a swath beside the line reads the step to its receiver, as before.
+
+**What the design got wrong: the meltwater's term fills.** The design's update is
+z = (z + F_g T + F_w b_r) / (1 + F_g + F_w), the ice toward its level and the water toward
+the receiver's bed. Where the ice's level is below the receiver's bed, the water's term in
+that formula is positive: it raises the bed toward the receiver, which is deposition by an
+erosion law. So a basin came out as deep as the ice's share F_g / (F_g + F_w) of what the ice
+alone would dig, and **reading the slope over a reach divides the ice's power by the reach's
+length, eight points or so, and its share with it**. Measured in the firn valley (below) with
+nothing laid down: with the design's update the valley held 71 points of standing water to
+3.5 m, where reading the slope to the next point held 408 points to 13 m; the coupling dug
+less than the rule it replaced. In a glacier's lower reach the meltwater is the whole
+catchment's and its term is the larger of the two. **The mend**: where the joint update ends
+below the receiver's bed, the water's term is left out and the ice works alone, with its own
+part of the power, toward T′ (two evaluations of the same formula for such a point, and one
+for every other). **This solver's closure**; that subglacial water climbs an adverse bed
+rather than grading it is the premise of the published limit itself (it is the water that
+supercools on the climb).
+
+**The test valley.** A glacier fed from steep walls does not last: the walls' own ice wears
+them 3 mm a year at the default erodibility, they sink under the line, and the one-valley
+case's glacier is gone from its floor in 40,000 to 65,000 years. So the basins' valley has a
+firn plateau above it (four kilometres falling at 0.025 from 2,000 m, then six kilometres of
+valley at 0.03 between sides at 0.5, the line at 1,750 m). The plateau wears down too (its
+axis stands at 1,740 m at the head and under 1,440 m half a kilometre in by the end), and the
+glacier fills the valley to its edge for about 30,000 years and then draws back up it, so
+every reach of the floor has stood under a snout.
+That is a retreating glacier, not a steady one; no steady one was found in a hundred thousand
+years of this solver's ice.
+
+**What it measures**, nothing laid down and the creep off (so a hollow is rock):
+
+| Run | Points holding a metre of water | Deepest |
+|---|---|---|
+| The valley under its rivers alone | 0 | 0 |
+| Under ice, as built (`coupling` 2, limit 1.5) | 130, columns 132 to 197 of 200, all on the floor | 7.5 m |
+| The limit at 0.5 | | 2.4 m |
+| The limit at 6 | | 12.2 m |
+| The slope read to the next point (`coupling` 0), water not filling | 505 | 34 m |
+
+No point holds more water than the thickest ice that ever stood on it, and none holds any
+where no ice stood. The axis' bed first rises after three steps, at five points, the steepest
+at 0.89 of the ice surface's slope over its reach (0.26 with the limit at 0.5).
+
+**Reading the slope to the next point digs a pit under every snout.** With `coupling` 0 the
+only thing that lets a bed fall below its receiver is the ice thinning from one point to the
+next, and this model's ice thins fastest at its snout (its thickness goes with the flux to
+the power 0.3, and a glacier pays its swath's melt along its line, so the last half
+kilometre loses about five metres of ice a point). So each step's snout leaves a pit a few
+points long and up to 34 m deep, and a retreating glacier leaves a row of them, a saw-tooth
+down the valley's axis (the bed at 1,312, 1,320, 1,314, 1,308, 1,302, 1,313, 1,309, 1,307,
+1,303, 1,310 m every 250 m). Read over a reach of four thicknesses the same thinning is spread along the reach
+and the pits become one long shallow basin. That, and not a deeper basin, is what the
+coupling buys.
+
+**What they are worth in a sketch, said plainly: little yet.** The basins are dug in the
+glacier's lower reach, and that is where the till rule lays what the ice carries, to no more
+than the ice's thickness. With deposition on, the firn valley when its ice leaves holds 819
+points of water to 40 m, most of it ponded behind till and not in rock (stage D's solver:
+287 points to 75 m), and 40,000 years of rivers fill all of it. The two-range sketch
+(512 by 512 at 32 m) holds one point of a metre of water after its ice age with stage D's
+solver and none with this, and with a colder ice age that ends one step before the run does
+(the line at 600 m) it holds 11, where stage D's holds 2. **The pictures still show no trough lake.** What stands
+between the rule and a lake a person can see is the till: laid as moraines on the ice's
+margin (stage D's design, not built) it would dam the valley at the snout and leave the basin
+open behind it, which is the order the photographs show: bar or moraine, lake, flat.
+
+**Not built, and the state of each**:
+
+- **The fields.** The rock floor under a basin's fill is the height less `sediment`, as it
+  was; the flat's extent (the sediment that settled in standing water, kept apart the way
+  `till` is) is not a field, and the field file is unchanged at version 3. To add it: the two
+  places the books lay sediment in a lake (`spread` at a river's mouth and `fill_lake` on the
+  floor) add to an array beside `till`, capped by the sediment each step as till is.
+- **Cirques.** The rule is the basins' under a glacier that ends near its head; the sketch's
+  ice needs a history of stands (years and line heights) to hold a glacier there, and the
+  one-valley case shows why a single stand will not: the glacier is never still.
+- **Moraines as ridges**, and till capped below the ice's thickness: the first thing to
+  build, for the reason above. Stage E measured till to 58 m under ice 36 m thick at the last
+  step (the cap is the thickness of the glacier that laid it, and earlier glaciers were
+  thicker).
+- **The section's fall across a swath** ([the trough's section](#the-troughs-section-on-the-mended-ice)).
+- **A hanging valley worth the name**: a test valley whose tributary is much thinner than
+  its trunk.
+
+**What the solve costs.** The ice's new work is inside the ice steps: one walk down each
+point's line for its swath (which replaced the stamp of a disc about every line point), one
+more for its reach, and for a point whose joint update ends under its receiver's bed a
+second evaluation of the update. The two-range sketch (512 by 512, 300 steps of which 76 are
+ice), `engine-content landform --jobs 5` in `msvc-release`, the base's executable and this
+one's run alternately on a machine at 76% to 84% CPU before each run: the subsystem page's
+[performance notes](../subsystems/landform.md#performance-notes) have the pairs.
+
 ## Constants, their ranges, and the defaults the schema pins
 
 | Constant | Default | Range accepted | Status | Source or reason |

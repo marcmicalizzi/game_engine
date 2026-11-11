@@ -897,8 +897,11 @@ i32 clamp_i32(f64 v) noexcept {
 // A glacier's width goes with its flux to this power (Hergarten 2021, equation 13: Bahr 1997's
 // width to length, 0.6, times the catchment's length to area, 0.52).
 constexpr f64 k_ice_width_power = 0.3;
-// A glacier's swath is stamped no wider than this many points either way.
+// A point looks for the glacier that holds it no farther than this many points down its line.
 constexpr i32 k_ice_reach_cells = 96;
+// The walk down a glacier's line to where its erosion reads the ice's surface ends after this
+// many points whatever the ice's thickness.
+constexpr u32 k_ice_coupling_points = 64;
 
 struct IceField {
   bool on = false;  // the ice stands this step
@@ -914,6 +917,10 @@ struct IceField {
   Vector<f64> till;      // till laid so far
   Vector<u8> iced;       // the point is under a glacier this step
   Vector<u8> was;        // and last step
+  // The point each iced point's erosion reads the ice's surface at, a coupling's reach down
+  // its line, and how far that is in spacings (landform.md, "Basins the ice digs").
+  Vector<u32> far;
+  Vector<f64> far_cells;
 };
 
 f64 ice_width_m(const Ice& c, f64 cells, f64 cell_km2) noexcept {
@@ -1056,6 +1063,36 @@ void glaciate(const Sketch& s, const Frame& frame, const u8* held, const f64* z,
     const u32 below = neighbour(p, o.at[receiver[p]]);
     if (held[below] != 0 && thick[below] < thick[p]) thick[below] = thick[p];
   }
+  // Where each iced point's erosion reads the ice's surface (landform.md, "Basins the ice
+  // digs"). Ice flows down its surface, and its surface is smooth over several thicknesses
+  // whatever the bed does under it (Kamb and Echelmeyer 1986: a coupling length of one to
+  // three thicknesses for a valley glacier, the averaging window four of those). So **along a
+  // glacier's own line** the slope is read to the point twice the coupling length down the
+  // line, the downstream half of that window, and the ice goes on wearing a bed that rises
+  // under it for as long as its surface falls over the reach. A point of the swath beside the
+  // line keeps the step to its receiver: the surface across a glacier is level, the cross
+  // fall the swath wears away would be divided by the reach's length, and W106 measured the
+  // trough's section gone when every point of the swath read the reach. One step at least,
+  // so a coupling of nothing reads the slope to the receiver everywhere.
+  u32* far = ice.far.data();
+  f64* far_cells = ice.far_cells.data();
+  const f64 window = 2.0 * c.coupling / frame.spacing_m;
+  for (u32 p = 0; p < n; ++p) {
+    far[p] = p;
+    far_cells[p] = 0.0;
+    if (iced[p] == 0) continue;
+    const f64 want = flux[p] >= reach[p] ? window * thick[p] : 0.0;
+    u32 q = p;
+    f64 walked = 0.0;
+    for (u32 k = 0; k < k_ice_coupling_points; ++k) {
+      const u8 code = receiver[q];
+      q = neighbour(q, o.at[code]);
+      walked += (code & 1u) != 0 ? k_sqrt2 : 1.0;
+      if (!(walked < want) || receiver[q] == k_no_receiver) break;
+    }
+    far[p] = q;
+    far_cells[p] = walked;
+  }
 }
 
 // What melts out of the ice at a point, laid as till over the glacier's width there: `drop`
@@ -1149,7 +1186,13 @@ struct Network {
   Vector<f64> soft;      // K dt of sediment times the point's stream power
   Vector<f64> firm;      // K dt of its rock times the same
   Vector<f64> ratio;     // the rock's erodibility over the sediment's
-  Vector<f64> lift;      // what the ice adds to the point's base level (zero with none)
+  // Under ice (zero with none): the ice's share of the point's stream power, the place of the
+  // point its erosion reads the ice's surface at, the ice's thickness there less here, and the
+  // part of an adverse bed the published limit lets it keep wearing.
+  Vector<f64> ice_share;
+  Vector<u32> far_place;
+  Vector<f64> far_step;
+  Vector<f64> far_limit;
   // The network's edges, each point's a run: its receivers with the weight each one's height has
   // in the point's base level, and its donors with the share of each one's flow that comes here.
   Vector<u32> down_begin;
@@ -1430,12 +1473,24 @@ void build_network(const RiverInputs& in, const Routing& r, jobs::JobSystem* job
   f64* soft = net.soft.data();
   f64* firm = net.firm.data();
   f64* ratio = net.ratio.data();
-  net.lift.resize(n);
-  f64* lift = net.lift.data();
+  net.ice_share.resize(n);
+  net.far_place.resize(n);
+  net.far_step.resize(n);
+  net.far_limit.resize(n);
+  f64* ice_share = net.ice_share.data();
+  u32* far_place = net.far_place.data();
+  f64* far_step = net.far_step.data();
+  f64* far_limit = net.far_limit.data();
+  const u32* ice_far = icy ? in.ice->far.data() : nullptr;
+  const f64* ice_far_cells = icy ? in.ice->far_cells.data() : nullptr;
+  const f64 adverse = icy ? s.ice->adverse_slope : 0.0;
   for_span(jobs, 0, n, 4096, [&](u32 i0, u32 i1) {
     for (u32 i = i0; i < i1; ++i) {
       const u32 p = cell[i];
-      lift[i] = 0.0;
+      ice_share[i] = 0.0;
+      far_place[i] = i;
+      far_step[i] = 0.0;
+      far_limit[i] = 0.0;
       ground[i] = in.z[p];
       iterate[i] = in.z[p];
       arriving[i] = 0.0;
@@ -1471,19 +1526,33 @@ void build_network(const RiverInputs& in, const Routing& r, jobs::JobSystem* job
         // erodibility times the square root of its effective flux (the catchment's cells to
         // the 1/4 times the swath's flux to the 3/4) on the slope of the ice's surface, beside
         // the meltwater's, the rivers' law on the cells that are not ice. One update takes
-        // both: the power is their sum, and the base level is the receiver's bed raised by the
-        // ice's share of the step in the ice's thickness there, so a tributary's bed hangs
-        // above its trunk's by what the trunk's ice is thicker, and a bed can be worn below
-        // its receiver's where the ice thins.
+        // both: the power is their sum, and the base level is the receiver's bed drawn, by the
+        // ice's share, toward the level at which the ice's surface would be flat from here to
+        // the point a coupling's reach down the line (landform.md, "Basins the ice digs"):
+        // that point's bed and ice less the ice here. Beside a line that point is the
+        // receiver, so a tributary's bed hangs above its trunk's by what the trunk's ice is
+        // thicker; on a line a bed is worn below its receiver's wherever the surface still
+        // falls over the reach: a basin. The ice's slope is taken over that reach, so its
+        // power is over the reach's length and not the step's.
         const u8 code = receiver[p];
         const f64 along = (code & 1u) != 0 ? k_inv_sqrt2 : 1.0;
         const f64 root = std::sqrt(ice_reach[p]);
+        const f64 reach_cells = ice_far_cells[p];
         const f64 glacial =
-            ice_k * std::sqrt(std::sqrt(std::sqrt(cells)) * root * std::sqrt(root)) * along;
+            ice_k * std::sqrt(std::sqrt(std::sqrt(cells)) * root * std::sqrt(root)) / reach_cells;
         const f64 water = cells > ice_flux[p] ? std::sqrt(cells - ice_flux[p]) * along : 0.0;
         power = glacial + water;
-        if (power > 0.0)
-          lift[i] = glacial / power * (ice_thick[neighbour(p, o.at[code])] - ice_thick[p]);
+        if (power > 0.0) {
+          const u32 q = ice_far[p];
+          ice_share[i] = glacial / power;
+          far_place[i] = position[q];
+          far_step[i] = ice_thick[q] - ice_thick[p];
+          // The published limit (an adverse bed slope of `adverse_slope` times the surface's
+          // slope shuts the erosion down) as the part of an adverse bed the ice may still
+          // wear: with D the reach and d the step to the receiver, both in spacings,
+          // (b_r - b) / d <= c (b + h - s_q) / D gives b >= flat + (b_r - flat) D / (D + c d).
+          far_limit[i] = reach_cells / (reach_cells + adverse * ((code & 1u) != 0 ? k_sqrt2 : 1.0));
+        }
       }
       const f64 hard = in.hardness[p] * erodibility_of(s, static_cast<f64>(in.resist[p]));
       // The sweeps start from where last step's ended, relative to this step's ground: a river
@@ -1714,7 +1783,10 @@ u32 sweep_rivers(const RiverInputs& in, jobs::JobSystem* jobs, Network& net) {
   const f64* soft = net.soft.data();
   const f64* firm = net.firm.data();
   const f64* ratio = net.ratio.data();
-  const f64* lift = net.lift.data();
+  const f64* ice_share = net.ice_share.data();
+  const u32* far_place = net.far_place.data();
+  const f64* far_step = net.far_step.data();
+  const f64* far_limit = net.far_limit.data();
   const u32* down_begin = net.down_begin.data();
   const u32* down_place = net.down_place.data();
   const f64* down_weight = net.down_weight.data();
@@ -1753,20 +1825,38 @@ u32 sweep_rivers(const RiverInputs& in, jobs::JobSystem* jobs, Network& net) {
             if (has_sea && below < sea) below = sea;
             base += down_weight[e] * below;
           }
-          base += lift[i];
-          f64 to = top;
-          if (top > base) {
-            // Sediment first, at its own erodibility: the point's own and what this step lays.
-            // Where the cut goes through it into rock the height is the one at which the time
-            // to strip the sediment and the time to cut the rock make the step, each at the rate
-            // the final slope gives, which is the single formula again when the two erode alike.
-            const f64 loose = loose_of[i] + down;
-            const f64 through = (top + soft[i] * base) / (1.0 + soft[i]);
-            if (top - through <= loose) {
-              to = through;
-            } else {
-              to = (top - loose * (1.0 - ratio[i]) + firm[i] * base) / (1.0 + firm[i]);
-            }
+          // Sediment first, at its own erodibility: the point's own and what this step lays.
+          // Where the cut goes through it into rock the height is the one at which the time
+          // to strip the sediment and the time to cut the rock make the step, each at the rate
+          // the final slope gives, which is the single formula again when the two erode alike.
+          const f64 loose = loose_of[i] + down;
+          const f64 thin = ratio[i];
+          const auto cut = [top, loose, thin](f64 soft_k, f64 firm_k, f64 level) {
+            if (!(top > level)) return top;
+            const f64 through = (top + soft_k * level) / (1.0 + soft_k);
+            if (top - through <= loose) return through;
+            return (top - loose * (1.0 - thin) + firm_k * level) / (1.0 + firm_k);
+          };
+          f64 to;
+          if (ice_share[i] > 0.0) {
+            // Under ice: the ice's term draws the bed toward the level that would lay its
+            // surface flat over the coupling's reach, and where that is below the receiver's
+            // bed (an adverse bed) no lower than the published limit lets the ice wear it; the
+            // meltwater's term draws it toward the receiver's bed. Both at once is one update
+            // toward their mean by their powers.
+            const f64 flat = iterate[far_place[i]] + far_step[i];
+            const f64 target = base > flat ? flat + (base - flat) * far_limit[i] : flat;
+            to = cut(soft[i], firm[i], base + ice_share[i] * (target - base));
+            // **Water wears a bed down and never fills it.** Where that update ends below the
+            // receiver's bed the meltwater's term has pulled the bed up toward the receiver,
+            // which is deposition by an erosion law; there the ice works alone, with its own
+            // part of the power, toward its own level. (Without this a basin is as deep as
+            // the ice's share of the power lets it be, and where meltwater is plentiful, the
+            // lower reach of every glacier, that is next to nothing.)
+            if (to < base && target < base)
+              to = cut(soft[i] * ice_share[i], firm[i] * ice_share[i], target);
+          } else {
+            to = cut(soft[i], firm[i], base);
           }
           const f64 moved = to > iterate[i] ? to - iterate[i] : iterate[i] - to;
           if (moved > most) most = moved;
@@ -1871,6 +1961,9 @@ bool validate_sketch(const Sketch& s, std::string& error) {
       return refuse("a sketch's ice.width_m is 10 to 10,000 m");
     if (!in_range(s.ice->thickness_ratio, 0.01, 1.0))
       return refuse("a sketch's ice.thickness_ratio is 0.01 to 1");
+    if (!in_range(s.ice->coupling, 0.0, 10.0)) return refuse("a sketch's ice.coupling is 0 to 10");
+    if (!in_range(s.ice->adverse_slope, 0.5, 11.0))
+      return refuse("a sketch's ice.adverse_slope is 0.5 to 11");
     if (s.ice->from_yr < 0 || (s.ice->until_yr && *s.ice->until_yr < s.ice->from_yr))
       return refuse("a sketch's ice stands from from_yr, 0 or later, until until_yr, no earlier");
   }
@@ -2203,6 +2296,8 @@ bool solve(const Sketch& s, const StartField* start, const SolveOptions& options
     ice.till.assign(n, 0.0);
     ice.iced.assign(n, u8{0});
     ice.was.assign(n, u8{0});
+    ice.far.assign(n, 0u);
+    ice.far_cells.assign(n, 0.0);
     rivers.ice = &ice;
   }
   // Where the seconds go: a clock read between the parts, which no decision reads.
