@@ -3045,11 +3045,11 @@ struct UncutGround::State {
 };
 
 UncutGround::UncutGround(const TerrainDesc& terrain) {
-  present_ = terrain.enabled && terrain.tiles.has_value() && !terrain.tiles->cuts.empty();
+  present_ = terrain.enabled && terrain.tiles.has_value() && !terrain.tiles->edits.empty();
   if (!present_) return;
   state_ = std::make_unique<State>();
   state_->terrain = terrain;
-  state_->terrain.tiles->cuts.clear();
+  state_->terrain.tiles->edits.clear();
 }
 
 UncutGround::~UncutGround() = default;
