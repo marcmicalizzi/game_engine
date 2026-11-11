@@ -98,9 +98,15 @@ TEST_CASE("walls: vertical joints are crossed, one on two and two on one") {
   // solver reaches, stated as such and not from a source (TCV: none through three): G145c
   // measured 70 of 5,465 joints through three courses (1.28 %) and 34 through four (0.62 %).
   // G145b's bounds (2 % and 0.8 %) held on its own kept draws only; on the version's draws they
-  // failed at 2.09 %.
-  CHECK(static_cast<f64>(more) < 0.014 * static_cast<f64>(joints));
-  CHECK(static_cast<f64>(four) < 0.007 * static_cast<f64>(joints));
+  // failed at 2.09 %. G177's layout (a stone that starts on another level beside a jumper starts
+  // off the joint below) measures 46 of 4,560 through three (1.01 %) and 19 through four
+  // (0.42 %); G178 holds that, tighter than G145c's 1.4 % and 0.7 %. What stops zero, of the 46:
+  // 13 meet a through-stone or a tie (neither can move), 4 lie at the module's own ends, 3 beside
+  // a jumper, 2 beside a lump, 2 at the footing, and 21 where a stone laid over a pack of pinnings
+  // ends within 3 cm of a joint two stones down, which the end's check, reading the skyline just
+  // below, does not see (walls.md, "Not yet").
+  CHECK(static_cast<f64>(more) < 0.011 * static_cast<f64>(joints));
+  CHECK(static_cast<f64>(four) < 0.005 * static_cast<f64>(joints));
 }
 
 TEST_CASE("walls: the face is not coursed boxes") {
