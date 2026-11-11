@@ -407,7 +407,7 @@ namespace {
 struct BuildLevel {
   i64 spacing = 0;
   i64 filter = 0;
-  i64 ratio = 0;  // spacing over the finest's; 1 for the finest; 0 for a point level (bilinear)
+  i64 ratio = 0;  // spacing over the finest's: 1 for the finest, an even number for a far level
   i64 imin = 0, imax = 0, jmin = 0, jmax = 0;
 };
 
@@ -422,28 +422,6 @@ struct Finest {
   }
 };
 
-// The finest's bilinear surface at whole millimetres (TileSet::point_mm's arithmetic, operation
-// for operation).
-f64 bilinear(const Finest& f, i64 x_mm, i64 z_mm) noexcept {
-  const i64 x0 = f.ox * f.s;
-  const i64 z0 = f.oz * f.s;
-  const i64 fx = clamp_i64(x_mm - x0, 0, (f.w - 1) * f.s);
-  const i64 fz = clamp_i64(z_mm - z0, 0, (f.h - 1) * f.s);
-  const i64 ci = fx / f.s;
-  const i64 cj = fz / f.s;
-  const f64 u = static_cast<f64>(fx - ci * f.s) / static_cast<f64>(f.s);
-  const f64 v = static_cast<f64>(fz - cj * f.s) / static_cast<f64>(f.s);
-  const f64 h00 = f.at(ci, cj);
-  const f64 h10 = f.at(ci + 1, cj);
-  const f64 h01 = f.at(ci, cj + 1);
-  const f64 h11 = f.at(ci + 1, cj + 1);
-  const f64 top = h00 + u * (h10 - h00);
-  const f64 bottom = h01 + u * (h11 - h01);
-  return top + v * (bottom - top);
-}
-
-i32 round_mm(f64 mm) noexcept { return static_cast<i32>(std::floor(mm + 0.5)); }
-
 // The level's millimetres over its whole stored window, rows of x in order of z.
 void fill_level(const Finest& f, const BuildLevel& L, Vector<i32>& out) {
   const i64 nx = L.imax - L.imin + 1;
@@ -453,13 +431,6 @@ void fill_level(const Finest& f, const BuildLevel& L, Vector<i32>& out) {
     for (i64 j = 0; j < nz; ++j)
       for (i64 i = 0; i < nx; ++i)
         out[static_cast<u32>(j * nx + i)] = f.at(L.imin + i - f.ox, L.jmin + j - f.oz);
-    return;
-  }
-  if (L.ratio == 0) {
-    for (i64 j = 0; j < nz; ++j)
-      for (i64 i = 0; i < nx; ++i)
-        out[static_cast<u32>(j * nx + i)] =
-            round_mm(bilinear(f, (L.imin + i) * L.spacing, (L.jmin + j) * L.spacing));
     return;
   }
   // **The box filter over each point's own cell**: the mean of the finest's bilinear surface over
@@ -511,14 +482,15 @@ bool make_levels(const Finest& f, const BuildOptions& o, Vector<BuildLevel>& out
   const i64 z0 = f.oz * f.s;
   const i64 z1 = (f.oz + f.h - 1) * f.s;
   for (const i64 spacing : chain) {
+    // **No far level at or below the finest's spacing** (T105; tileset.md, "The far mip chain and
+    // its filter"): it would carry nothing the finest does not — its points are the finest's
+    // bilinear surface — so the reader answers a filter there from the finest itself, and a coarse
+    // ground (a landform's 8 or 16 m) builds its chain from the first spacing above its own.
+    if (spacing <= f.s) continue;
     BuildLevel L;
     L.spacing = spacing;
     L.filter = spacing;
-    if (spacing <= f.s) {
-      // No coarser than the source: it carries everything the source has, its points the
-      // bilinear surface's.
-      L.ratio = 0;
-    } else if (spacing % (2 * f.s) == 0) {
+    if (spacing % (2 * f.s) == 0) {
       L.ratio = spacing / f.s;
     } else {
       error = "the far level of " + std::to_string(spacing) +
@@ -645,8 +617,8 @@ bool build_tileset(const Heightfield& field, u64 source_hash, std::string_view s
       }
     }
     // The level as one file: its records in the order written, and the table that finds them. Named
-    // by what the level is, not by its spacing alone: a heightfield at one of the chain's spacings
-    // has a far level at its own spacing too (tileset.md, "Two levels at one spacing").
+    // by what the level is, not by its spacing alone (tileset.md, "Two levels at one spacing"),
+    // though since T105 no far level is built at the finest's spacing.
     record.archive = level_archive(L.spacing, L.filter);
     if (!writer.write(io::join_path(dir, record.archive), record.archive_bytes, error))
       return false;
@@ -1346,6 +1318,8 @@ f32 TileSet::height_mm(i64 x_mm, i64 z_mm) const noexcept {
 }
 
 bool TileSet::has_filter(i64 spacing_mm) const noexcept {
+  // At or below the finest's spacing a filter is the finest's surface (T105).
+  if (!levels_.empty() && spacing_mm >= 1 && spacing_mm <= levels_[0]->spacing) return true;
   for (const auto& level : levels_)
     if (level->filter != 0 && level->spacing == spacing_mm) return true;
   return false;
@@ -1392,13 +1366,18 @@ bool TileSet::heights(i64 spacing_mm, i64 filter_mm, i32 i0, i32 j0, u32 nx, u32
   const Level* level = nullptr;
   i64 ratio = 0;  // world lattice index to the level's: times this; 0, the bilinear surface
   if (filter_mm > 0) {
-    // A lattice filtered to its spacing reads the chain level built at it, point for point.
+    // A lattice filtered to its spacing reads the chain level built at it, point for point; one at
+    // or below the finest's spacing has no level of its own (T105) and is read from the finest,
+    // as an unfiltered lattice is (below): what such a level held was the finest's surface.
     if (filter_mm != spacing_mm) return false;
     for (const auto& l : levels_)
       if (l->filter != 0 && l->spacing == spacing_mm) level = l.get();
-    if (level == nullptr) return false;
-    ratio = 1;
-  } else if (spacing_mm % levels_[0]->spacing == 0) {
+    if (level != nullptr)
+      ratio = 1;
+    else if (spacing_mm > levels_[0]->spacing)
+      return false;
+  }
+  if (level == nullptr && spacing_mm % levels_[0]->spacing == 0) {
     level = levels_[0].get();
     ratio = spacing_mm / levels_[0]->spacing;
   }

@@ -29,6 +29,20 @@ Every dependency of the engine is listed here with its license. Policy: permissi
 | miniaudio | 0.11.25 (tag; commit 9634bedb5b5a2ca38c1ee7108a9358a4e233f14d, 2026-03-04) | Unlicense (public domain) OR MIT-0, the licensee's choice (the `LICENSE` file at that commit); the WAV, FLAC and MP3 decoders inside `miniaudio.h` are the same author's dr_libs under the same terms | domain/audio (playback devices through WASAPI, PulseAudio and ALSA; WAV, FLAC and MP3 decoding; decode-time sample-rate conversion; capability `ENGINE_WITH_AUDIO`) | CMake FetchContent at configure time (`cmake/EngineAudio.cmake`), only when the capability is on; `miniaudio.c` compiled as C into `engine_miniaudio` with DirectSound, WinMM, JACK, miniaudio's own null device, the encoders, the generators, the high-level engine, the node graph and the resource manager compiled out, linked privately, and its header included by one file, `domain/audio/src/backend.cpp`. The checkout's `extras/` (stb_vorbis, the libvorbis and libopus wrappers) is not compiled | `miniaudio` |
 | Jolt Physics | v5.6.0 | MIT (the `LICENSE` file at that tag, Jorrit Rouwe) | domain/physics (rigid bodies, the character, collision queries; capability `ENGINE_WITH_PHYSICS`), in double precision | CMake FetchContent of the repository at configure time (`cmake/EnginePhysics.cmake`), only when the capability is on; the `Jolt` library target from its `Build/` project, static, with its unit tests, samples, viewer and performance test not built. Unrecorded here from its adoption until 2026-10-07, when the licence check's first run found it (T20) | `jolt` |
 
+## Ported, not vendored
+
+Nothing below is fetched or compiled as it was published: each is a work whose code was rewritten
+into an engine source, function by function, and whose licence asks that its notice travel with
+the code. The notice is quoted, as its licence asks, at the head of the port, in the file the last
+column names; `tools/license-check.ps1` holds this table to its list of ported sources both ways (a
+port in the list with no row here, a row here naming no port in the list) and finds the notice in
+each file (roadmap T86, 2026-11-11).
+
+| Work | Version | License | What was ported | Ported into |
+|---|---|---|---|---|
+| fdlibm (Sun Microsystems; netlib.org/fdlibm) | e_exp.c 1.6 and s_expm1.c 1.5 (04/04/22); e_log.c, s_log1p.c, s_tanh.c, s_asinh.c, k_sin.c, k_cos.c, s_sin.c, s_cos.c 1.3 and e_rem_pio2.c 1.4 (95/01/18) | Sun Microsystems' permission notice: use, copy, modify and distribute freely granted, provided that the notice is preserved (the 1993 notice, "Developed at SunSoft", and the 2004 notice; attribution only, so permissive in ADR-0014's sense) | `exp`, `expm1`, `log`, `log1p`, `tanh`, `asinh`, `sin`, `cos` and the medium pi/2 reduction: the algorithms, their reductions and kernels, the coefficients as bit patterns | `core/math/include/core/math/deterministic.h` |
+| fdlibm (Sun Microsystems; netlib.org/fdlibm) | s_atan.c 1.3 (95/01/18) | Sun Microsystems' permission notice, as above (the 1993 notice) | `atan`: the reduction against atan(0.5), atan(1), atan(1.5) and atan(inf) and the odd polynomial, the coefficients as bit patterns | `domain/flora/src/sward.cpp` (`sward_atan`) |
+
 ## Consulted, not vendored
 
 Nothing below is fetched, linked, or compiled into anything; each is recorded because a published

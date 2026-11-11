@@ -31,13 +31,16 @@ struct Golden {
 // are version 2's, pinned on MSVC and reproduced by GCC and Clang in the Linux containers.
 // Re-pinned 2026-11-11 (T90): version 3 names a far level's archive `far-<spacing_mm>.tiles`; no
 // record and no archive's byte moved, and the set's hash moved with the key, which names the
-// version (version 2's was "9d8c5f04c967e143").
+// version (version 2's was "9d8c5f04c967e143"). Re-pinned 2026-11-11 (T105): version 4 builds no
+// far level at or below the finest's spacing; this set's chain (1 and 2 m over 25 cm) is all
+// above it, so again no record and no archive moved, and the set's hash moved with the key
+// (version 3's was "fe8c38fc552304f5").
 constexpr Golden k_levels[] = {
     {250, "fd82e80e4bd15f80", "60560ee72a1596b4"},
     {1000, "3a1e7be49e9262b8", "49b1a32cfb0a8baa"},
     {2000, "e4664bf93ee87160", "279816856e9d9afe"},
 };
-constexpr const char* k_set = "fe8c38fc552304f5";
+constexpr const char* k_set = "657af0510271906f";
 constexpr const char* k_grid = "4695685c9bf29577";
 
 std::string hex16(u64 v) {

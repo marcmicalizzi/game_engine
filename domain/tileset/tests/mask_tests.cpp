@@ -392,7 +392,10 @@ TEST_CASE("tileset masks determinism: the fixture's level hashes to the pinned v
   // Re-pinned 2026-11-11 (T90): `k_tileset_version` 3 (a far level's archive renamed) moved the
   // set's key, which the mask level's key names; the archive is unchanged. Before:
   // "9707cc0db08471c9".
-  constexpr const char* k_level = "e4854ad70bcac09e";
+  // Re-pinned 2026-11-11 (T105): `k_tileset_version` 4 (no far level at or below the finest's
+  // spacing) moved the set's key the same way; the archive is unchanged. Before:
+  // "e4854ad70bcac09e".
+  constexpr const char* k_level = "a8298a209cc92c73";
   constexpr const char* k_archive = "75eef7ec443e0e7e";
   Fixture fx;
   MaskBuildResult built;
