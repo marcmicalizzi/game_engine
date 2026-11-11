@@ -247,12 +247,37 @@ TEST_CASE("caves: the plan is the same whatever asks, and pinned") {
   REQUIRE_MESSAGE(g.desc->open(schema::to_json(n), context, &g.state, &error), error);
   Vector<scene_gen::PlacementMesh> meshes;
   REQUIRE(g.desc->meshes(g.state, context, meshes, &error));
-  u32 meshed = 0;
-  for (const PlanCell& c : a.cells)
-    if (!c.flooded) ++meshed;
-  CHECK(meshes.size() == 2 * meshed);  // a cell's rock and its dressing
-  for (const auto& m : meshes)
-    CHECK(io::exists(m.path));
+  // A cell's rock, and its dressing where a drip falls in it: a bare cell lists none, because an
+  // empty mesh is not one a scene can load.
+  u32 meshed = 0, far_expected = 0;
+  for (u32 c = 0; c < a.cells.size(); ++c) {
+    if (a.cells[c].flooded) continue;
+    CellRecipe recipe;
+    cell_recipe(a, c, 1, recipe);
+    assets::MeshData dressing;
+    CellReport report;
+    REQUIRE(solve_cell(recipe, dressing, &report, error));
+    const u32 parts = report.triangles > 0 ? 2 : 1;
+    meshed += parts;
+    if (a.cells[c].mouth) far_expected += parts;
+  }
+  CHECK(meshes.size() == meshed);
+  CHECK(meshed < 2 * a.cells.size());  // some cell of this network is bare
+  // Every mesh it lists builds: what a scene's read does with each.
+  for (const auto& m : meshes) {
+    REQUIRE(io::exists(m.path));
+    std::string text;
+    REQUIRE(io::read_file(m.path, text) == io::Status::Ok);
+    const assets::MeshGeneratorDesc* cavecell =
+        assets::MeshGeneratorRegistry::global().find(assets::mesh_generator_of(m.path));
+    REQUIRE(cavecell != nullptr);
+    if (m.name.find("dress-") == std::string::npos) continue;  // the rock's are the cell tests'
+    geometry::ClusterFileData data;
+    CHECK_MESSAGE(cavecell->build(
+                      std::span<const u8>(reinterpret_cast<const u8*>(text.data()), text.size()),
+                      assets::MeshGeneratorInputs{}, geometry::ClusterLodOptions{}, 0, data, error),
+                  error);
+  }
   scene_gen::Placements whole;
   REQUIRE(g.desc->expand(g.state, context, whole, &error));
   REQUIRE(whole.instances.size() == meshes.size());
@@ -291,7 +316,7 @@ TEST_CASE("caves: the plan is the same whatever asks, and pinned") {
     far_count += out.instances.size();
   }
   CHECK(mouth_cells >= 2);
-  CHECK(far_count == 2 * mouth_cells);
+  CHECK(far_count == far_expected);
 }
 
 TEST_CASE("caves: a network's refusals name the field") {

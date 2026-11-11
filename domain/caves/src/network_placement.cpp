@@ -99,6 +99,20 @@ bool open(const JsonValue& params, const scene_gen::Context& context, void** sta
       scene_gen::PlacementMesh mesh;
       mesh.path = io::join_path(dir, name);
       mesh.name = std::string("caves/") + name;
+      if (part == 1 && !io::exists(mesh.path)) {
+        // A cell no drip falls in has no dressing, and an empty mesh is not a mesh a scene can
+        // load: the recipe is solved once to see (a few milliseconds; the rock's is not), and a
+        // cell found bare leaves a marker so the next read does not solve it again.
+        const std::string bare = mesh.path + ".bare";
+        if (io::exists(bare)) continue;
+        assets::MeshData probe;
+        CellReport report;
+        std::string ignored;
+        if (!solve_cell(recipe, probe, &report, ignored) || report.triangles == 0) {
+          (void)io::write_file_atomic(bare, "no drip falls in this cell\n");
+          continue;
+        }
+      }
       if (!io::exists(mesh.path)) {
         const io::Status status = io::write_file_atomic(mesh.path, text);
         if (status != io::Status::Ok)
@@ -109,7 +123,7 @@ bool open(const JsonValue& params, const scene_gen::Context& context, void** sta
       piece.tile = plan.cells[cell].tile;
       piece.origin = cell_origin(plan, cell);
       piece.mesh = entry->meshes.size();
-      piece.id = cell * 2 + part + 1;
+      piece.id = entry->pieces.size() + 1;
       piece.mouth = plan.cells[cell].mouth;
       entry->meshes.push_back(std::move(mesh));
       entry->pieces.push_back(piece);
