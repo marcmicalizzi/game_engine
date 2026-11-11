@@ -24,6 +24,7 @@
 #include <domain/gfx/cluster_cull.h>
 #include <domain/gfx/visibility_resolve.h>
 #include <domain/gfx/water_spectrum.h>
+#include <domain/texture/texture_file.h>
 #include <systems/renderer/far_forest.h>
 #include <systems/renderer/fire.h>
 #include <systems/renderer/terrain.h>
@@ -251,6 +252,7 @@ struct StreamedPlacements {
   Vector<u32> meshes;
   // The generator's `tile_meshes`: its tiles hand meshes, so the scene makes room for them.
   bool tile_meshes = false;
+  bool tile_meshes_masked = false;  // and they may be alpha-tested (`tile_meshes_masked`)
   // For an entry whose placement ids name the whole read's instances (the `authored` entry's: its
   // place in the file's own list plus one), the loaded index of id 1: a placement of id `n` is
   // given `motion_key = motion_key_base + n - 1`, the key the whole read gives it. `~0u`: none.
@@ -629,6 +631,17 @@ struct PlacementMeshOptions {
   std::string ddc;
   bool cache = true;
   std::string materials;
+  // **Its textures too** (R147; texture.md, "Textures that arrive after the load"): the build also
+  // runs the load's texture pass for the one mesh — every image its materials sample gets its
+  // `.tex` key, trusted from its header or built now by the content build's own step — and reads
+  // the ones the scene does not hold, so the admission has their bytes without a read on the
+  // frame's thread. Off for a caller that wants the geometry alone (the collision).
+  bool textures = false;
+  // Whether the scene holds the texture of this build key now, asked from the building thread
+  // before a `.tex` is read: true skips the read. Advisory — a texture let go between the build
+  // and the admission is read again by the admitter (`read_placement_texture`). Null reads all.
+  bool (*texture_resident)(void* context, u64 key) = nullptr;
+  void* texture_context = nullptr;
 };
 
 // A loaded scene: everything the GPU upload reads, and everything a summary reports.
@@ -688,6 +701,10 @@ struct SceneData {
   // Some streamed entry's tiles hand meshes (`StreamedPlacements::tile_meshes`): the GPU scene
   // makes the room they arrive into (renderer.md, "Meshes that come and go").
   bool tile_meshes = false;
+  // ... and one of them says those meshes may be alpha-tested
+  // (`scene_gen::PlacementGeneratorDesc::tile_meshes_masked`): the scene draws through the masked
+  // pipelines from its first frame, since they are chosen when it is made (R147).
+  bool tile_meshes_masked = false;
   // A streamed world's own instances (`AuthoredStreaming`): what was streamed and what kept, and
   // the most pairs one tile of them holds in its innermost form — the least room a tail must have,
   // which `GpuScene::create` accounts with the prefix and the terrain rings' slots before anything
@@ -788,11 +805,29 @@ bool pairs_after(const SceneData& scene, u32 first_pair, std::span<const SceneIn
 // clusters in the order a whole read's merge leaves them (leaves first), its materials and the map
 // from cluster to material, and its reach on the ground. The same bytes a scene read whole holds
 // for the same recipe, since both come from one cache entry.
+// One built texture of a tile's mesh (R147): the image of `source.data.images` it is, its `.tex`
+// build key — what the scene shares a texture by — and its bytes as the file holds them, or none
+// when the scene said it holds the key (`PlacementMeshOptions::texture_resident`).
+struct PlacementTexture {
+  u32 image = 0;
+  u64 key = 0;
+  texture::TextureData data;
+  // What the device copies for it: every level of the chain, and of the variance chain, each at
+  // a 16-byte offset. Zero for one with no bytes.
+  u64 staged_bytes() const noexcept;
+};
+
 struct PlacementMeshData {
   geometry::ClusterLodMesh lod;
   geometry::ClusterMeshPart part;  // of `lod`: every cluster, from zero
   SourceMesh source;
   f32 reach = 0.0f;  // `ground_radius` of the mesh as built
+  // With `PlacementMeshOptions::textures`: one per image a material samples, **all or none** as
+  // the load's own rule is (texture.md, "In the renderer") — empty, with `textures_why`, when any
+  // of them has no built texture (no cache, an image that cannot be read or built), and the mesh
+  // then draws its materials' constants.
+  Vector<PlacementTexture> textures;
+  std::string textures_why;
   // Host bytes of the streams a device upload copies, for a caller's accounting.
   u64 payload_bytes() const noexcept;
 };
@@ -811,6 +846,10 @@ u64 placement_mesh_identity(const scene_gen::PlacementMesh& mesh) noexcept;
 // goes is drawn rigid).
 bool load_placement_mesh(const scene_gen::PlacementMesh& mesh, const PlacementMeshOptions& options,
                          PlacementMeshData& out, std::string& error);
+// The `.tex` of `key` under `options`' derived-data root, read whole: what an admitter does for a
+// texture the build skipped because the scene held it then and no longer does.
+bool read_placement_texture(const PlacementMeshOptions& options, u64 key, texture::TextureData& out,
+                            std::string* error = nullptr);
 
 // **The ground before its cuts, for `scene_gen::Context::uncut_ground`** (scene_gen.md, "The
 // formation and the ground before its cuts"): the terrain entry with its tile set's cuts removed,

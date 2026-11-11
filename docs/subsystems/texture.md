@@ -330,14 +330,16 @@ one finding its new texture.
 
 ## Textures that arrive after the load
 
-**Designed, not built** (R145, 2026-11-11). A mesh that arrives with its tile
-([renderer](renderer.md#meshes-that-come-and-go)) draws its materials' constants, because every
-texture of a scene is uploaded by the load, each with a submission the load waits for. This section
-is the design that closes that, written down with its sizes because the night it was designed in
-ended before it could be built and tested whole; the first two steps exist as an unmerged patch
-(the upload's two halves in `domain/gfx`, the per-mesh texture pass in `scene.cpp`) and nothing of
-it is in the tree. Until it lands, a solver whose tiles hand meshes loses its textures by
-converting.
+**Built** (R147, 2026-11-11; designed by R145 the night before). A mesh that arrives with its tile
+([renderer](renderer.md#meshes-that-come-and-go)) drew its materials' constants, because every
+texture of a scene was uploaded by the load, each with a submission the load waits for; so no
+solver could move to the tile contract without losing its rock or its leaves. Now a tile's mesh
+brings its textures: found or built off the frame, uploaded without a wait inside the commit's byte
+allowance, shared by content with the load's and with each other, and released with the last mesh
+that names them. The code is `gpu_scene_textures.cpp` (the table, the upload, the release, and the
+one function that makes a material), `load_placement_textures` in `scene.cpp` (the build's half),
+`world::TileMeshes::admit_textures` (the pace), and `gfx::create_sampled_image_levels` with
+`gfx::record_image_levels_upload` (the upload's two halves).
 
 **Whole textures by reference, not pages by feedback.** The published practice has two shapes.
 Virtual texturing keeps one page table for the world's texels, renders what it wants into a
@@ -346,12 +348,13 @@ van Waveren, "id Tech 5 Challenges", SIGGRAPH 2009; Chen, "Adaptive Virtual Text
 Far Cry 4", GDC 2015). Mip streaming keeps whole textures, each resident down to some level, in a
 fixed pool ordered by what the view needs (Unreal Engine's texture streaming and its pool size),
 and asset systems hold what several users share by reference count (Unity's Addressables). *None of
-these was re-read on the night this was written; they are cited as known, and no number below is
-taken from them.* The simple scheme is enough for a tile's meshes for three reasons: a tile's mesh
-arrives at its ring's distance with a material set a solver chose by role, so the textures are few
-and shared (a region of ledges names one rock set); residency is already decided above the
-renderer, per tile, with a linger and a budget, and a texture has no residency of its own to
-decide — it lives exactly as long as a mesh that names it; and a page table costs an indirection
+these was re-read for this row either, by the night that designed it or the afternoon that built
+it; they are cited as known, for the shape of the two families and nothing else, and no number on
+this page is taken from them.* The simple scheme is enough for a tile's meshes for three reasons: a
+tile's mesh arrives at its ring's distance with a material set a solver chose by role, so the
+textures are few and shared (a region of ledges names one rock set); residency is already decided
+above the renderer, per tile, with a linger and a budget, and a texture has no residency of its own
+to decide — it lives exactly as long as a mesh that names it; and a page table costs an indirection
 in every sample of the resolve at 3840 × 2160 with no upscaler, for a problem — unique texels over
 the whole world — this engine does not have, since its ground is layered by rule and its meshes
 tile. It is **not** enough where the count is the cost: the forest proof of concept's 5,392 built
@@ -361,7 +364,8 @@ chain's own shape — the small levels first, the top ones under a pool — whic
 laid out for ("Not yet").
 
 **What a texture costs.** Chains as `texture_level_bytes` gives them, checked against the engine's
-own derived-data cache (40 built textures: 28 of 5.33 MiB, 5 of 21.33 MiB, 5 of 1.33 MiB):
+own derived-data cache (40 built textures: 28 of 5.33 MiB, 5 of 21.33 MiB, 5 of 1.33 MiB), and the
+first row again by `mesh_texture_tests.cpp`, which stages one:
 
 | Texture | Levels | Bytes |
 |---|---|---|
@@ -371,77 +375,129 @@ own derived-data cache (40 built textures: 28 of 5.33 MiB, 5 of 21.33 MiB, 5 of 
 | 4096², BC7 or BC5 | 13 | 22,369,648 (21.33 MiB) |
 | **A 2K set**: base colour, metallic-roughness, normal and its variance | | **19,573,512 (18.67 MiB)** |
 
-**The design, in the order a texture travels.**
+**What is built, in the order a texture travels.**
 
 1. **Found and read off the frame.** `renderer::load_placement_mesh` — the build a tile's mesh
-   already has, on the job system's efficiency pool — gains the load's texture pass for one mesh
-   (`PlacementMeshOptions::textures`; the collision leaves it off): every image a material samples
-   gets its `.tex` key (the container's record for an image the mesh carries, the load's identity
-   of the file for one named by path), its `.tex` is trusted from its header or built by the
-   content build's own step, and its bytes are read — unless the scene says it holds that key, an
-   advisory, thread-safe ask that saves the read (a texture let go between the build and the
-   admission is read again by the admitter). **All or none per mesh**, as the load's rule is
-   ("In the renderer"): one image without a built texture and the mesh draws its constants, with
-   the reason.
-2. **Admitted one texture at a time, within the commit's allowance, before its mesh.** The
-   allowance is bytes staged a commit (`world.meshes.admission_kib`, 4,096 by default) and a
+   already has, on the job system's efficiency pool — runs the load's texture pass for the one
+   mesh when `PlacementMeshOptions::textures` is set (the world sets it for a host that draws; the
+   collision leaves it off). It is the load's own function, `prepare_scene_textures`, over a list
+   of one, not a copy of its rule: every image a material samples gets its `.tex` key (the
+   container's record for an image the mesh carries, the load's identity of the file for one named
+   by path), its `.tex` is trusted from its header or built by the content build's own step, and
+   then its bytes are read — unless the scene says it holds that key
+   (`PlacementMeshOptions::texture_resident`, an advisory ask any thread may make, which
+   `GpuScene::texture_resident` answers from a sorted list under a mutex; a texture let go between
+   the build and the admission is read again by the admitter, the one case a commit reads a file).
+   Without the ask every waiting mesh of a region of ledges would hold its own copy of the one rock
+   set in host memory. **All or none per mesh**, as the load's rule is ("In the renderer"): one
+   image without a built texture and the mesh draws its constants, with the reason in
+   `PlacementMeshData::textures_why`. The pass makes a pool of two threads for its length, because
+   it wants one and the thread it runs on may be a worker of the host's pool.
+2. **Admitted one texture at a time, within the commit's allowance, before its mesh**
+   (`world::TileMeshes::admit_textures`). The allowance is bytes staged a commit
+   (`world.meshes.admission_kib`, 4,096 by default), the textures' and the meshes' together, and a
    texture larger than all of it goes alone — so **the default admits one 2K texture a commit**
    (a normal goes with its variance: 8 MiB), a 2K set takes three commits, and its mesh the one
-   after: four frames, 67 ms at 60 Hz, during which the tile draws what it drew. What the frame's
-   thread pays is the copy of one texture's bytes into staging; that copy has not been measured.
-3. **Uploaded without a wait.** `gfx::upload_image_2d_levels` becomes two halves:
+   after: four frames, 67 ms at 60 Hz, during which the tile draws what it drew. **What a 2K
+   texture costs the committing thread is 0.97 ms**: one image made and 5,592,432 bytes copied into
+   staging, the best of three in `msvc-debug` on an RTX 5090 beside other agents' builds
+   (`mesh_texture_tests.cpp`, 2026-11-11), so an upper bound — the copy is the C library's in any
+   build. **The default stays.** A whole set in one commit would be about 3.4 ms of the frame's
+   thread in one frame, which shows at 120 Hz, to save three frames of a wait on a tile that is
+   already waiting for its mesh's build and is drawing its last ring's form meanwhile; the three
+   frames show nowhere. What would move it is a measured walk where the wait is seen (the first
+   converted solver), not this number.
+3. **Uploaded without a wait.** `gfx::upload_image_2d_levels` is two halves:
    `create_sampled_image_levels` (the image and its chain, nothing in it) and
    `record_image_levels_upload` (the transition to a copy target, a copy a level, the transition
-   to what shaders read), recorded by the next frame in the pass that already copies an admitted
-   mesh's streams, out of the same staging ring (32 MiB; a staging the ring has no room for is a
-   buffer of its own, as a mesh's is). The image is one the render graph never sees, which is why
-   its two barriers are recorded by that function and not derived.
+   to what shaders read), recorded by the next frame in the "terrain upload" pass that copies an
+   admitted mesh's streams, out of the same staging ring (32 MiB; a staging the ring has no room
+   for is a buffer of its own, as a mesh's is). The image is one the render graph never sees,
+   which is why its two barriers are recorded by that function and not derived. The load's upload
+   is the same two halves round a submission it waits for.
 4. **Shared by content.** One table for the scene, keyed by the `.tex` build key — the key the
-   load already shares by — holding the load's textures (pinned) and the admitted ones with a
-   count of the meshes that name each. A mesh whose texture is there takes a reference and uploads
-   nothing, whether the load or another tile's mesh brought it.
-5. **Released with the last mesh.** A mesh's retirement gives its references back; a texture at
-   zero leaves the table at once, and its image, its view and its bindless slots go once every
-   frame that could have sampled it is done (one more than the frames in flight, counted in
-   recorded frames). The mesh's own linger (`world.meshes.linger`) is the texture's: a mesh kept
-   warm keeps its textures.
+   load already shares by — holding the load's built textures (pinned: no count, never released)
+   and the admitted ones with a count of who holds each. `GpuScene::acquire_texture` takes a
+   reference and uploads only when the table has none of that key, whether the load or another
+   tile's mesh brought it. `admit_mesh` takes one for each texture its materials sample; the
+   caller's own, taken to have the texture in before the mesh, goes back once the mesh is in.
+5. **Released with the last mesh.** `retire_mesh` gives the mesh's references back; a texture at
+   zero leaves the table at once, and its image, its view and its pair go four recorded frames
+   later (`k_joint_slots` + 1: one more than can be in flight, so every frame that could have
+   sampled it is done). **One wanted again before then comes back without an upload**
+   (`TextureUse::revived`): its image is still there. The mesh's own linger
+   (`world.meshes.linger`) is the texture's: a mesh kept warm keeps its textures.
 6. **Bindless slots from a reserved run.** A scene with a mesh room reserves
    2 × `renderer.textures.slots` consecutive sampled-image slots when it is made (1,024 textures:
    2,048 of the set's 16,384), a pair a texture, because the resolve reads a normal map's variance
    at the slot after its normal's and a free list of single slots cannot promise that; a free pair
-   holds a 1 × 1 placeholder. The capacity is the pairs and a byte budget
-   (`renderer.textures.budget_mib`, 1,024: fifty-four 2K sets).
-7. **A refusal draws the constants and names its bound.** No pair free, the budget passed, or a
-   device without `textureCompressionBC`: the mesh is admitted with its materials' constants, and
-   the log says which bound, once per change, as the mesh room's refusal does.
+   holds a 1 × 1 placeholder. They are consecutive because nothing has freed a descriptor when the
+   scene is made, and the layout refuses a scene where they are not. **The capacity is the pairs
+   and a byte budget** (`renderer.textures.budget_mib`, 1,024: fifty-four 2K sets), counted in what
+   the allocator gave the admitted textures (`TextureUse::bytes`; the load's are the load's). A
+   texture on its way out is above the budget for its four frames (`leaving_bytes`): counting it
+   would make a refusal depend on what left a moment ago, and the picture on the order of arrival.
+7. **A refusal draws the constants and names its bound.** No pair free, the budget passed, a
+   device without `textureCompressionBC`, or no room at all: `acquire_texture` says which, the
+   world gives back what the mesh's earlier textures held, the mesh is admitted with its
+   materials' constants, and the log says it once per change with the bound's name
+   (`a tile's mesh draws its materials' constants: a texture was refused … bound=…`).
 
-**A mesh waits for its textures.** The brief for this row asked that a mesh never wait unless the
-pop is worse than the wait. It is: a material's constants are its factors, which for a textured
-material are white and 1.0, so a rock drawn before its textures is a white rock that turns brown,
-over its whole surface, and an alpha-tested mesh is its cards drawn solid until the coverage
-arrives. The wait costs four frames at the default allowance, on a tile that is already waiting
-for its mesh's build and is drawing what it drew before.
+**A mesh waits for its textures.** R145's brief asked that a mesh never wait unless the pop is
+worse than the wait. It is: a material's constants are its factors, which for a textured material
+are white and 1.0, so a rock drawn before its textures is a white rock that turns brown, over its
+whole surface, and an alpha-tested mesh is its cards drawn solid until the coverage arrives. The
+wait is four frames at the default allowance, on a tile that is already waiting for its mesh's
+build and is drawing what it drew before.
 
 **Alpha-tested materials.** The masked pipelines are chosen when the scene is made, from the
 materials it can see then (`GpuScene::has_masked`). A generator whose tiles may hand an alpha-tested
-material says so in its descriptor (`tile_meshes_masked`, beside `tile_meshes`), and the scene
-draws through the masked pipelines from its first frame; a masked material handed without it is
-drawn opaque, said by name. **Open**: the opaque shadow proxy's coverage table (R109) and the
-opacity micromaps (R120) are baked at load over the load's own clusters, so an admitted masked
-mesh has neither, and what its shadow costs and looks like without them has to be measured before
-foliage is handed by a tile.
+material says so in its descriptor (`scene_gen::PlacementGeneratorDesc::tile_meshes_masked`, beside
+`tile_meshes`), and the scene draws through the masked pipelines from its first frame; the mesh's
+alpha-tested materials then draw their coverage on every rasterizer and on the ray path, because
+every masked reader takes the material table and the per-cluster material indices by address, and
+an admitted mesh's are in them. A masked material handed without the declaration is drawn opaque,
+said by name. **Its shadow**: the opaque shadow proxy's coverage table (R109) and the opacity
+micromaps (R120) are baked at load over the load's own clusters, so an admitted masked mesh has
+neither — its clusters read coverage zero in the table, which is "never solid", and have no
+micromap — and a shadow ray tests the mask's texel at every candidate triangle. That is the right
+shadow, texel for texel, at the any-hit cost the two bakes exist to cut; **what it costs in a frame
+has not been measured**, since it needs foliage handed by a tile, and what would give an admitted
+mesh the bakes is running each over the admitted clusters in the commit that admits them (both are
+one dispatch over a list of clusters; the proxy's table already has the room's clusters in it).
 
-**One function makes a material.** The load builds each `gfx::ResolveMaterial` inline in
-`upload_materials` — the five slots, the flags a built texture sets, the samplers, the UV
-transform, the alpha mask, the stochastic means from the built chain's small level. The admission
-must build the same record from the same inputs, so that block becomes one function both call;
-anything else lets the two drift, and "a streamed scene is the scene read whole" is the test that
-would find it.
+**One function makes a material.** `GpuScene::fill_material` builds a `gfx::ResolveMaterial`'s
+common part — factors, the five slots, the flags a built texture sets, a sampler per textured slot,
+the UV transform, the alpha mask — and `fill_stochastic` the stochastic means, for the load's
+meshes and an admitted mesh's alike; the load's inline block is gone. Anything else lets the two
+drift, and "a streamed scene is the scene read whole" is the test that would find it. **Stochastic
+sampling** on an admitted mesh is drawn only where the load already has a stochastic material: the
+resolve's stochastic variant is chosen from the load's, as the masked pipelines are, and a second
+declaration was not added for it; elsewhere such a material draws plain, said by name.
 
-**The tests it lands with**: a textured tile mesh against the whole read, rasterized and traced,
-to the byte; a texture two meshes share uploaded once and released after the second; the refusal
-drawing constants and naming its bound; an alpha-tested tile mesh drawing its coverage; the bytes
-resident before, with and after.
+**The tests**: `systems/renderer/tests/mesh_texture_tests.cpp` on a device (seconds in
+`msvc-debug`, the wait for the GPU lock aside) — textured rocks that arrived one by one against the
+scene read whole and against another order of arrival through other slots after a rock and its map
+came and went, `0 depths, 0 colours, 0 ids over 9102 rock pixels` each, and 6,781 of those pixels
+another colour when the same rocks draw their constants (2.2 s); a shared texture uploaded once,
+the bytes before, with and after, the leaving list's four frames, the revival, and what admitting a
+rock whose textures are resident allocates (5 allocations, no device buffer; 0.9 s); both refusals
+by name and the mesh drawn from its constants (1.6 s); a 2K texture's admission timed, and the byte
+budget's refusal (1.4 s); an alpha-tested rock against the whole read, `0 depths, 0 colours, 0 ids
+over 8565 rock pixels`, and 537 more rock pixels when a scene not told to expect one draws it solid
+(1.6 s); and on the ray path the textured rocks against the whole read, again `0, 0, 0`, with the
+alpha-tested cut within 3 % of the rasterizer's (8,718 traced pixels against 8,565) and 384 short
+of the solid rock (2.6 s). `systems/world/tests/tile_mesh_textures_tests.cpp`, no device (0.5 s for
+its three cases): a commit under an allowance of 1,500 bytes stages 1,392, then 2,112 alone, then
+the mesh; a second rock of the same maps arrives in one commit with no upload and no read; the
+references by table and by mesh; a refused texture ends the wait; a mesh let go while it waited
+leaves nothing held.
+
+**What it leaves.** The recording frame's allocation count through a flight (the committing
+thread's is counted above; `engine_view.frame_loop` has no scene whose tiles hand meshes yet); the
+p99 of a walk over activating tiles; the bakes for an admitted alpha-tested mesh, above; a
+stochastic declaration; and textures for **authored** meshes by the same residency, which is where
+the forest's count is.
 
 ## Samplers and texture transforms
 

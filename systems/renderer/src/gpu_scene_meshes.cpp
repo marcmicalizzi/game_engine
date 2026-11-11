@@ -26,6 +26,7 @@
 #include <core/base/assert.h>
 #include <core/log/log.h>
 #include <domain/geometry/cluster_lod.h>
+#include <domain/geometry/material_sampling.h>
 #include <foundation/tunables/tunables.h>
 #include <systems/renderer/gpu_scene.h>
 
@@ -225,6 +226,76 @@ bool GpuScene::admit_mesh(u32 mesh, const PlacementMeshData& data, std::string* 
                 " clusters of at most " + std::to_string(mesh_cluster_vertices_) + " and " +
                 std::to_string(mesh_cluster_triangles_) + ")");
   }
+  // **The materials, made as the load makes its own** (`fill_material`; texture.md, "Textures that
+  // arrive after the load"): with their textures when every image a material samples is in the
+  // scene's table — the caller acquired them, or the load holds them — and with their constants
+  // otherwise, all or none as the load's rule is. Made before any room is taken, so a failure
+  // leaves nothing to give back.
+  const assets::MeshData& mesh_data = data.source.data;
+  const u32 own = nm - 1;
+  Vector<TextureInfo> image_info(mesh_data.images.size());
+  bool built = !data.textures.empty();
+  for (const PlacementTexture& texture : data.textures) {
+    if (texture.image < image_info.size() && find_texture(texture.key, image_info[texture.image]))
+      continue;
+    built = false;
+    break;
+  }
+  if (!built) {
+    for (TextureInfo& info : image_info)
+      info = TextureInfo{};
+    const bool wanted = !data.textures.empty() || !data.textures_why.empty();
+    if (wanted && !texture_refusal_said_) {
+      texture_refusal_said_ = true;  // once a scene: the world's residency says each change
+      ENGINE_LOG_WARN(log_renderer, "a tile's mesh draws its materials' constants",
+                      log::field("mesh", name),
+                      log::field("reason", data.textures_why.empty()
+                                               ? std::string("a texture it names is not in the "
+                                                             "scene's table (acquire_texture)")
+                                               : data.textures_why));
+    }
+  }
+  const auto info_of = [&](i32 image) {
+    return image >= 0 && static_cast<u32>(image) < image_info.size()
+               ? image_info[static_cast<u32>(image)]
+               : TextureInfo{};
+  };
+  Vector<gfx::ResolveMaterial> made(nm);
+  for (u32 m = 0; m < own; ++m) {
+    assets::Material from = mesh_data.materials[m];
+    // The masked pipelines are chosen when the scene is made: an alpha-tested material in a scene
+    // that was not told to expect one (`tile_meshes_masked`) is drawn opaque, and said.
+    if (from.alpha_mode == assets::k_alpha_mask && !has_masked_) {
+      from.alpha_mode = assets::k_alpha_opaque;
+      ENGINE_LOG_WARN(log_renderer, "an alpha-tested material of a tile's mesh is drawn opaque",
+                      log::field("mesh", name), log::field("material", m),
+                      log::field("reason",
+                                 "no generator of the scene said its tiles hand one "
+                                 "(scene_gen::PlacementGeneratorDesc::"
+                                 "tile_meshes_masked)"));
+    }
+    const TextureInfo tex[geometry::k_material_slots] = {
+        info_of(from.base_color_image), info_of(from.metallic_roughness_image),
+        info_of(from.normal_image), info_of(from.occlusion_image), info_of(from.emissive_image)};
+    if (!fill_material(from, built, tex, made[m], error)) return false;
+    // Stochastic sampling (R131) where the set asked for it and the scene's resolve is the
+    // stochastic one, which is chosen from the load's materials when the scene is made.
+    const bool stochastic =
+        m < data.source.material_sampling_flags.size() &&
+        (data.source.material_sampling_flags[m] & geometry::k_material_sampling_stochastic) != 0;
+    if (stochastic) {
+      const char* refused = has_stochastic_materials_
+                                ? fill_stochastic(made[m], from, built, tex)
+                                : "no material of the load is stochastic, and the resolve was "
+                                  "chosen from the load's";
+      if (refused != nullptr) {
+        ENGINE_LOG_WARN(log_renderer, "stochastic sampling refused; the material draws plain",
+                        log::field("mesh", name), log::field("material", m),
+                        log::field("reason", refused));
+      }
+    }
+  }
+  made[own].albedo = Vec4{0.8f, 0.8f, 0.8f, 0.6f};  // the load's default for a part with none
   if (!take_range(free_mesh_clusters_, nc, slot.clusters)) {
     return fail(name + ": the mesh room has no run of " + std::to_string(nc) +
                 " clusters free (renderer.meshes.budget_mib)");
@@ -283,7 +354,6 @@ bool GpuScene::admit_mesh(u32 mesh, const PlacementMeshData& data, std::string* 
   // Each cluster's material, local to the mesh's run of the table as the load writes it: the
   // material of the cluster's part, or the default after the mesh's own for a part that names none.
   auto* cluster_material = reinterpret_cast<u32*>(base + at_cluster_materials);
-  const u32 own = nm - 1;
   for (u32 c = 0; c < nc; ++c) {
     const u32 part = data.source.part_of_cluster[c];
     const i32 material =
@@ -291,23 +361,18 @@ bool GpuScene::admit_mesh(u32 mesh, const PlacementMeshData& data, std::string* 
     cluster_material[c] =
         material >= 0 && static_cast<u32>(material) < own ? static_cast<u32>(material) : own;
   }
-  // **The materials' constants** — base colour, roughness, metallic, emissive — and none of their
-  // textures, which are resident by the load alone until textures have a residency of their own
-  // (renderer.md, "Meshes that come and go", what does not arrive). An alpha-tested material is
-  // therefore drawn opaque: its cutout is its texture's.
-  auto* materials_out = reinterpret_cast<gfx::ResolveMaterial*>(base + at_materials);
-  for (u32 m = 0; m < own; ++m) {
-    const assets::Material& from = data.source.data.materials[m];
-    gfx::ResolveMaterial material;
-    material.albedo = Vec4{from.base_color.x, from.base_color.y, from.base_color.z, from.roughness};
-    material.emissive = Vec4{from.emissive, from.metallic};
-    material.normal_scale = from.normal_scale;
-    material.occlusion_strength = from.occlusion_strength;
-    materials_out[m] = material;
+  std::memcpy(base + at_materials, made.data(), u64{nm} * sizeof(gfx::ResolveMaterial));
+  // A reference on each texture its materials sample, for as long as the mesh is resident: the
+  // caller's own (taken to have the texture in before the mesh) can go once this returns.
+  slot.textures.clear();
+  if (built) {
+    for (const PlacementTexture& texture : data.textures) {
+      PlacementTexture named;  // the key alone: it is resident, so no bytes are asked for
+      named.image = texture.image;
+      named.key = texture.key;
+      if (acquire_texture(named, nullptr) == TextureAdmit::held) slot.textures.push_back(named.key);
+    }
   }
-  gfx::ResolveMaterial plain;
-  plain.albedo = Vec4{0.8f, 0.8f, 0.8f, 0.6f};  // the load's default for a part with no material
-  materials_out[own] = plain;
 
   const auto copy = [&](const gfx::BufferResource& dst, u64 src, u64 dst_offset, u64 size) {
     if (size == 0) return;
@@ -377,6 +442,10 @@ void GpuScene::retire_mesh(u32 mesh) noexcept {
   pending_mesh_writes_.push_back(mesh);
   give_range(free_mesh_clusters_, slot.clusters);
   give_range(free_mesh_materials_, slot.materials);
+  // Its textures' references back: one nobody else holds leaves the table now and its image once
+  // the frames in flight are done (gpu_scene_textures.cpp).
+  for (const u64 key : slot.textures)
+    release_texture(key);
   slot = MeshSlot{};
 }
 

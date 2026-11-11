@@ -285,6 +285,7 @@ class SceneTextures {
     if (share_) index_.try_emplace(hash_combine(texture.content, texture.form), textures_.size());
     textures_.push_back(texture);
   }
+  const Vector<SceneTexture>& all() const noexcept { return textures_; }
 
  private:
   bool share_;
@@ -647,6 +648,19 @@ void water_surface_of(const SceneWater& water, const WaterSwashNumbers& n, gfx::
 }
 
 }  // namespace
+
+// For gpu_scene_textures.cpp: a texture admitted after the load is made by what makes the load's.
+namespace detail {
+gfx::Format built_texture_format(const texture::TextureData& t) noexcept {
+  return texture_gpu_format(t);
+}
+bool built_texture_mean_of(const texture::TextureData& t, Vec4& mean) {
+  return built_texture_mean(t, mean);
+}
+gfx::SamplerDesc material_sampler_desc(const geometry::TextureSampler& sampler, bool mipmapped) {
+  return sampler_desc(sampler, mipmapped);
+}
+}  // namespace detail
 
 GpuScene::~GpuScene() { destroy(); }
 
@@ -3493,6 +3507,10 @@ void GpuScene::terrain_prepare(u32 slot, TerrainUpdate& out) {
   out.retire.clear();
   out.geometry.clear();
   out.geometry_bytes = 0;
+  out.images.clear();
+  // A recorded frame: the textures let go long enough ago for every frame that could have sampled
+  // them to be done go now (gpu_scene_textures.cpp).
+  if (!leaving_textures_.empty()) texture_frame();
   const u32 region = slot < k_joint_slots ? slot : slot % k_joint_slots;
   // The staging ring's share of the frame that last had this slot is free (that frame is done);
   // everything staged since the last frame, with the records below, is this one's (the end).
@@ -3515,6 +3533,8 @@ void GpuScene::terrain_prepare(u32 slot, TerrainUpdate& out) {
   const auto hand_over_geometry = [&] {
     std::swap(out.geometry, pending_geometry_);
     pending_geometry_.clear();
+    std::swap(out.images, pending_images_);  // the textures admitted since (`acquire_texture`)
+    pending_images_.clear();
     for (const gfx::BufferResource& staging : pending_staging_)
       out.retire.push_back(staging);
     pending_staging_.clear();
@@ -4192,24 +4212,9 @@ bool GpuScene::upload_materials(const ResolvedSettings& resolved, std::string* e
   const geometry::ClusterLodMesh& lod = data_->lod;
   if (!gfx::create_sampler(device, gfx::Filter::Linear, sampler_, error)) return false;
   const u32 sampler_slot = bindless_.add_sampler(sampler_);
-  // The materials' samplers, one per distinct combination a textured slot asks for, made when
-  // the first slot that asks for it is met — so a scene with no textures has exactly the bindless
-  // set it always had, and a thousand materials on the glTF default share one sampler.
-  bool sampler_failed = false;
-  auto material_sampler = [&](const geometry::TextureSampler& wanted, bool mipmapped) -> u32 {
-    const u32 key = geometry::pack_texture_sampler(wanted) | (mipmapped ? 0x80000000u : 0u);
-    for (const MaterialSampler& known : material_samplers_)
-      if (known.key == key) return known.slot;
-    MaterialSampler made;
-    made.key = key;
-    if (!gfx::create_sampler(device, sampler_desc(wanted, mipmapped), made.sampler, error)) {
-      sampler_failed = true;
-      return 0;
-    }
-    made.slot = bindless_.add_sampler(made.sampler);
-    material_samplers_.push_back(made);
-    return made.slot;
-  };
+  // The materials' samplers are made as their slots ask (`material_sampler_slot`, with
+  // `fill_material` in gpu_scene_textures.cpp, which an admitted mesh's materials go through too).
+  load_textures_.clear();
   texture_bytes_ = 0;
   textures_built_ = 0;
   textures_decoded_ = 0;
@@ -4514,81 +4519,40 @@ bool GpuScene::upload_materials(const ResolvedSettings& resolved, std::string* e
       };
       u32 source_material_index = 0;
       for (const assets::Material& source : mesh_data.materials) {
-        gfx::ResolveMaterial material;
-        material.albedo =
-            Vec4{source.base_color.x, source.base_color.y, source.base_color.z, source.roughness};
-        // The emissive factor, which the emissive texture multiplies where there is one.
-        material.emissive = Vec4{source.emissive, source.metallic};
-        // Colour goes up sRGB and data UNORM; the order is the order an image shared by two slots
-        // keeps the format of (base colour first, as it always was).
-        material.albedo_texture =
-            texture_slot_of(source.base_color_image, gfx::Format::R8G8B8A8Srgb);
-        material.metallic_roughness_texture =
-            texture_slot_of(source.metallic_roughness_image, gfx::Format::R8G8B8A8Unorm);
-        material.normal_texture = texture_slot_of(source.normal_image, gfx::Format::R8G8B8A8Unorm);
-        material.occlusion_texture =
-            texture_slot_of(source.occlusion_image, gfx::Format::R8G8B8A8Unorm);
-        material.emissive_texture =
-            texture_slot_of(source.emissive_image, gfx::Format::R8G8B8A8Srgb);
+        // Each slot's texture, in the order an image shared by two slots keeps the format of (base
+        // colour first, as it always was; colour goes up sRGB and data UNORM), and what a material
+        // needs to know of it. The record itself — factors, the five slots, the built flags, a
+        // sampler per textured slot, the UV transform, the alpha mask — is `fill_material`'s
+        // (gpu_scene_textures.cpp), which a mesh admitted after the load goes through too, so the
+        // two cannot drift (texture.md, "Textures that arrive after the load").
+        const auto info_of = [&](i32 image, gfx::Format format) {
+          TextureInfo info;
+          info.slot = texture_slot_of(image, format);
+          if (image >= 0 && static_cast<u32>(image) < image_made.size()) {
+            const u32 index = static_cast<u32>(image);
+            info.has_mean = image_made[index].has_mean;
+            info.mean = image_made[index].mean;
+            if (use_built && index < built.size()) {
+              info.normal_rg = built[index].stored == texture::TextureFormat::bc5;
+              info.normal_variance = built[index].normal_variance;
+            }
+          }
+          return info;
+        };
+        const TextureInfo tex[geometry::k_material_slots] = {
+            info_of(source.base_color_image, gfx::Format::R8G8B8A8Srgb),
+            info_of(source.metallic_roughness_image, gfx::Format::R8G8B8A8Unorm),
+            info_of(source.normal_image, gfx::Format::R8G8B8A8Unorm),
+            info_of(source.occlusion_image, gfx::Format::R8G8B8A8Unorm),
+            info_of(source.emissive_image, gfx::Format::R8G8B8A8Srgb)};
         if (variance_upload_failed) return false;
-        material.normal_scale = source.normal_scale;
-        material.occlusion_strength = source.occlusion_strength;
-        material.uv_scale = 1.0f;
+        gfx::ResolveMaterial material;
+        if (!fill_material(source, use_built, tex, material, error)) return false;
         // The terrain's material draws the sand's detail when its scene asks for it, weighted by
         // the sand share its metallic-roughness map carries in alpha (renderer.md, "The sand close
         // up"). The rings' slots draw with this material too.
         if (m == data_->terrain_mesh && data_->terrain.enabled && data_->terrain.has_detail)
           material.flags |= gfx::k_material_ground_detail;
-        if (use_built) {
-          material.flags |= gfx::k_material_mipped;
-          // A BC5 normal map holds x and y; the shader rebuilds z (material.slang).
-          const i32 normal = source.normal_image;
-          if (normal >= 0 && static_cast<u32>(normal) < built.size() &&
-              built[static_cast<u32>(normal)].stored == texture::TextureFormat::bc5) {
-            material.flags |= gfx::k_material_normal_rg;
-          }
-          if (normal >= 0 && static_cast<u32>(normal) < built.size() &&
-              built[static_cast<u32>(normal)].normal_variance &&
-              material.normal_texture != gfx::k_no_texture)
-            material.flags |= gfx::k_material_normal_variance;
-        }
-        // Each textured slot's own sampler, and one UV transform for the material: the base
-        // colour's where it is textured, the first textured slot's otherwise. A slot with no
-        // texture asks for no sampler and borrows `sampler` (gfx::k_same_sampler), which it never
-        // reads.
-        const u32 slot_texture[geometry::k_material_slots] = {
-            material.albedo_texture, material.metallic_roughness_texture, material.normal_texture,
-            material.occlusion_texture, material.emissive_texture};
-        u32 slot_sampler[geometry::k_material_slots];
-        i32 transform_slot = -1;
-        for (u32 s = 0; s < geometry::k_material_slots; ++s) {
-          slot_sampler[s] = gfx::k_same_sampler;
-          if (slot_texture[s] == gfx::k_no_texture) continue;
-          slot_sampler[s] = material_sampler(source.sampling[s].sampler, use_built);
-          if (transform_slot < 0) transform_slot = static_cast<i32>(s);
-        }
-        if (sampler_failed) return false;
-        material.sampler = slot_sampler[geometry::k_slot_base_color] != gfx::k_same_sampler
-                               ? slot_sampler[geometry::k_slot_base_color]
-                               : (transform_slot >= 0 ? slot_sampler[transform_slot] : 0u);
-        material.samplers_mr_normal = slot_sampler[geometry::k_slot_metallic_roughness] |
-                                      (slot_sampler[geometry::k_slot_normal] << 16);
-        material.samplers_occlusion_emissive = slot_sampler[geometry::k_slot_occlusion] |
-                                               (slot_sampler[geometry::k_slot_emissive] << 16);
-        if (transform_slot >= 0) {
-          const geometry::TextureTransform& transform = source.sampling[transform_slot].transform;
-          bool conflict = false;
-          for (u32 s = 0; s < geometry::k_material_slots; ++s) {
-            if (slot_texture[s] != gfx::k_no_texture && source.sampling[s].transform != transform)
-              conflict = true;
-          }
-          if (conflict) ++transform_conflicts_;
-          gfx::set_uv_transform(material, transform.offset, transform.rotation, transform.scale);
-        }
-        // An alpha-tested material (renderer.md, "Alpha-tested geometry"): after the transform,
-        // which clears the two words the cutoff and the factor's alpha go in.
-        if (source.alpha_mode == assets::k_alpha_mask)
-          gfx::set_alpha_mask(material, source.alpha_cutoff, source.base_color.w);
         // A water body's mesh (scene.h, `SceneWater`; docs/subsystems/water.md): its one material
         // is the water class, the body's shading numbers packed into slots an untextured material
         // never reads, so every reader but the resolve's water branch draws its shallow colour.
@@ -4612,31 +4576,9 @@ bool GpuScene::upload_materials(const ResolvedSettings& resolved, std::string* e
             (source_mesh.material_sampling_flags[source_material_index] &
              geometry::k_material_sampling_stochastic) != 0;
         if (wants_stochastic) {
-          const auto mean_of = [&](i32 image, Vec4& out) {
-            out = Vec4{1.0f, 1.0f, 1.0f, 1.0f};
-            if (image < 0) return true;
-            const SceneTexture& made = image_made[static_cast<u32>(image)];
-            if (!made.has_mean) return false;
-            out = made.mean;
-            return true;
-          };
-          Vec4 colour_texel;
-          Vec4 roughness_texel;
-          const char* refused = nullptr;
-          if (!use_built) {
-            refused = "its textures are not built (the means come from the built chain)";
-          } else if (m == data_->terrain_mesh) {
-            refused = "a terrain material is sampled by its own layers";
-          } else if (!mean_of(source.base_color_image, colour_texel) ||
-                     !mean_of(source.metallic_roughness_image, roughness_texel)) {
-            refused = "a texture's mean did not decode";
-          } else if (!gfx::set_stochastic(material,
-                                          Vec3{material.albedo.x * colour_texel.x,
-                                               material.albedo.y * colour_texel.y,
-                                               material.albedo.z * colour_texel.z},
-                                          material.albedo.w * roughness_texel.y)) {
-            refused = "the material is alpha-tested or water, whose word the means would take";
-          }
+          const char* refused = use_built && m == data_->terrain_mesh
+                                    ? "a terrain material is sampled by its own layers"
+                                    : fill_stochastic(material, source, use_built, tex);
           if (refused != nullptr) {
             ENGINE_LOG_WARN(log_renderer, "stochastic sampling refused; the material draws plain",
                             log::field("mesh", m), log::field("material", source_material_index),
@@ -4790,7 +4732,25 @@ bool GpuScene::upload_materials(const ResolvedSettings& resolved, std::string* e
           coverage_words[part.first_cluster + i] = source_mesh.lod_coverage[i];
       }
     }
+    // The load's built textures by key, for a scene whose tiles hand meshes: a mesh that arrives
+    // naming one of them shares it and uploads nothing (gpu_scene_textures.cpp). Pinned: the load's
+    // textures are the scene's for its life.
+    if (mesh_room_.slots != 0) {
+      for (const SceneTexture& held : scene_textures.all()) {
+        if (held.form != k_form_built) continue;
+        TextureInfo info;
+        info.slot = held.slot;
+        info.normal_rg = held.stored == texture::TextureFormat::bc5;
+        info.normal_variance = held.normal_variance;
+        info.has_mean = held.has_mean;
+        info.mean = held.mean;
+        load_textures_.try_emplace(held.content, info);
+      }
+    }
   }
+  // The pairs of bindless slots the textures of meshes admitted later take, reserved now while the
+  // set has freed nothing and its next slots are consecutive (gpu_scene_textures.cpp).
+  if (!lay_out_texture_room(error)) return false;
   if (texture_references_ != 0) {
     ENGINE_LOG_INFO(
         log_renderer, "scene textures", log::field("distinct", textures_built_ + textures_decoded_),
@@ -4881,6 +4841,9 @@ bool GpuScene::upload_materials(const ResolvedSettings& resolved, std::string* e
     if ((material.flags & gfx::k_material_terrain_layers) != 0) has_terrain_materials_ = true;
     if ((material.flags & gfx::k_material_alpha_mask) != 0) has_masked_ = true;
   }
+  // A generator said its tiles may hand an alpha-tested mesh (`tile_meshes_masked`): the masked
+  // pipelines are chosen from this flag when the scene's renderer is made, before any tile is.
+  if (mesh_room_.slots != 0 && data_->tile_meshes_masked) has_masked_ = true;
   // The resolve's stochastic variant is the one only such a scene draws with (scene_renderer.cpp,
   // `resolve_module`).
   has_stochastic_materials_ = stochastic != 0;
@@ -6725,6 +6688,7 @@ void GpuScene::destroy() noexcept {
   gfx::destroy_buffer(device, instances);
   gfx::destroy_buffer(device, quantized);
   gfx::destroy_buffer(device, clusters);
+  destroy_texture_room();
   for (gfx::ImageViewHandle view : texture_views_)
     gfx::destroy_image_view(device, view);
   texture_views_.clear();
