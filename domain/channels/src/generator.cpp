@@ -1,7 +1,8 @@
 // The placement generator "channels" (docs/subsystems/channels.md, "In a scene"): the network over
-// the entry's region decided once, when the entry is opened, its pieces written as recipes into
-// the derived-data root, and each tile handed the pieces whose origin it holds — so a tile's
-// placements are the same whenever and in whatever order it comes in.
+// the entry's region decided once, when the entry is opened, its pieces kept as recipes, and each
+// tile handed the pieces whose origin it holds with their recipes (W97b: a tile's bed is built when
+// the tile activates, never at scene read) — so a tile's placements and meshes are the same
+// whenever and in whatever order it comes in.
 #include "detail.h"
 
 #include <core/json/json.h>
@@ -346,11 +347,16 @@ bool ensure_plan(const ChannelLayer& layer, const scene_gen::Context& context, s
 
 namespace {
 
+// **What `open` keeps** (W97b; channels.md, "A tile's bed, laid when it activates"): the plan's
+// decisions and nothing built — each piece's recipe text, its placement and its tile. No mesh is
+// listed as resident and no file is written: a tile hands its own piece's recipe when it activates,
+// and the host builds it off the frame's thread through the derived-data cache (scene_gen.md, "A
+// tile's meshes").
 struct Entry {
   ChannelLayer layer;
-  Vector<scene_gen::PlacementMesh> meshes;
-  Vector<scene_gen::Placement> placements;
-  Vector<scene_gen::TileCoord> tiles;  // per placement
+  Vector<scene_gen::PlacementMesh> meshes;  // one a piece, its recipe in memory
+  Vector<scene_gen::Placement> placements;  // one a piece; `mesh` its index in `meshes`
+  Vector<scene_gen::TileCoord> tiles;       // per placement
 };
 
 bool refused(std::string* error, std::string message) {
@@ -385,15 +391,13 @@ bool open(const JsonValue& params, const scene_gen::Context& context, void** sta
   if (!place_pieces(e->layer, plan.network, context.ground, context.tile_size, pieces, why))
     return refused(error, why);
   for (const PlacedPiece& piece : pieces) {
-    const std::string text = piece_json(piece.recipe);
+    std::string text = piece_json(piece.recipe);
     char name[64];
     std::snprintf(name, sizeof(name), "channel-%016llx.channel.json",
                   static_cast<unsigned long long>(piece_source_hash(piece.recipe)));
-    scene_gen::PlacementMesh mesh;
-    mesh.path = io::join_path(root, name);
-    mesh.name = std::string("channels/") + name;
-    if (!io::exists(mesh.path) && io::write_file_atomic(mesh.path, text) != io::Status::Ok)
-      return refused(error, "channels: cannot write " + mesh.path);
+    // The recipe is handed, not written: `path` is where its file would be, which names it.
+    scene_gen::PlacementMesh mesh(io::join_path(root, name), std::string("channels/") + name, 0,
+                                  std::move(text), piece_reach_m(piece.recipe));
     scene_gen::Placement at;
     at.position = piece.origin;
     at.mesh = e->meshes.size();
@@ -421,19 +425,18 @@ bool expand(void* state, const scene_gen::Context& c, scene_gen::Placements& out
   }
   return true;
 }
-bool meshes(void* state, const scene_gen::Context&, Vector<scene_gen::PlacementMesh>& out,
-            std::string*) {
-  for (const auto& m : static_cast<Entry*>(state)->meshes)
-    out.push_back(m);
-  return true;
-}
+// A tile's piece arrives with the tile (`Placements::meshes`): nothing is resident before it, so
+// the entry lists no `meshes` at all, and its placement indexes the list it is handed with.
 bool tile(void* state, scene_gen::TileCoord tile, const scene_gen::Context& c,
           scene_gen::Placements& out, std::string* error) {
   if (c.stand.present()) return refused(error, k_moving);
   const auto& e = *static_cast<Entry*>(state);
   for (u32 i = 0; i < e.placements.size(); ++i)
     if (e.tiles[i] == tile) {
-      out.instances.push_back(e.placements[i]);
+      auto at = e.placements[i];
+      at.mesh = out.meshes.size();
+      out.meshes.push_back(e.meshes[e.placements[i].mesh]);
+      out.instances.push_back(at);
       ++out.things;
     }
   return true;
@@ -448,10 +451,10 @@ constexpr scene_gen::PlacementGeneratorDesc k_channels{.name = "channels",
                                                        .open = &open,
                                                        .close = &close,
                                                        .expand = &expand,
-                                                       .meshes = &meshes,
                                                        .tile = &tile,
                                                        .occupies = &occupies,
-                                                       .representation = &representation};
+                                                       .representation = &representation,
+                                                       .tile_meshes = true};
 const scene_gen::Registrar k_registrar{k_channels};
 }  // namespace
 }  // namespace engine::channels

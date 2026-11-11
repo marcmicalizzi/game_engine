@@ -470,6 +470,33 @@ count by about four on a pool-riffle bed; it is the knob a far-seeing scene turn
 row leaves the deepest of a bend's pool (more than 1.6 mean depths) bare of drawn clasts, a
 design choice that reads as the finer sediment a pool collects and the depth hiding the bed.
 
+## The stones' rocks
+
+W97b with G165, 2026-11-11 ([channels](../subsystems/channels.md#what-a-stone-is-made-of)). A
+research sub-agent read for this row; how each number was read is said as above.
+
+| Number | Value here | Source | How read |
+|---|---|---|---|
+| Is the share of a pebble count above a size the areal cover of that size? | yes: a grid-by-number sample (a Wolman count) weights a grain by the plan area it covers, so the lognormal's tail above `clast_min_mm` is the cover of the drawn clasts, as W97 took it | Bunte & Abt 2001, RMRS-GTR-74, §4.3 and Tables 4.5a and 4.5b (after Kellerhals & Bray 1971) | full text; the equivalence is the reader's reading of the conversion section, not a quoted sentence |
+| How much of a riffle, a bar and a pool is under cobbles | not found by channel unit | Bunte & Abt 2001; Buffington & Montgomery 1999 | **not found** |
+| Surface over subsurface median | about 1 with a high supply, about 2 typically, 3 or more in mountain streams | Bunte & Abt 2001 §3.3.1.1 p. 131 | full text (as W97 read it) |
+| Pools against riffles | commonly finer in pools, coarser on riffles; not consistent (a scoured pool can be the coarsest unit); no ratio | Bunte & Abt 2001 §3.2 | full text |
+| Lithologies in a bed | a handful: five in one river's bed gravel (andesite, quartz porphyry, sandstone, hornfels, chert), each size class's mix changing downstream | Kodama 1994, *J. Sedimentary Research* 64: 68–75 | abstract |
+| How the mix changes downstream | the resistant lithologies over-represented downstream, the weak ones (schist, sandstone, limestone) under-represented, by abrasion | Attal & Lavé 2006, GSA Special Paper 398 | secondary (a summary of the abstract) |
+| Dry stone albedo | basalt 0.12, sandstone 0.12, grey granite 0.18, chalk 0.25 | a measured table of stone albedo in *J. American Institute for Conservation* 39(2), Table 1 ("Controls on stone temperatures...") | full text of the web article; broadband, its own source not given |
+| Wet against dry | sand 0.182 to 0.091, a dark soil 0.141 to 0.084: wet about 0.5 to 0.6 of dry | Ångström 1925 in Lekner & Dorf 1988, *Applied Optics* 27: 1278–1280 | Lekner & Dorf full text; Ångström secondary; **not applied here** (wet stones are the water's) |
+
+**What follows.** W97's cover is the right quantity: on the test valley's trunk (D50 49 mm, sigma
+1.2) 36 % of the bed is under clasts of 64 mm or more, and the reels' near-total cover is the
+pebbles finer than that, which are the bed's material's texels (`gravel/bed`, D50 45 mm in its
+recipe), not geometry. Near-total cover by drawn cobbles would need a riffle's D50 well above 64 mm
+(about 59 % above 64 mm at D50 80 mm and sigma 1.5), which the threshold of motion gives a deeper
+or steeper stream than the test valley's. So G165 changes no cover: it draws four rocks, and puts
+the bed's texture between them (the scene's layers naming the generated sets). **Design choices**:
+the four rocks' hues within each albedo, the two tones (0.85 and 1.15), and the shares (0.45 grey,
+0.25 pale, 0.15 dark, 0.15 brown: those of `gravel/bed`'s generated set, so the stones and the
+texture agree). No source gave percentages by lithology.
+
 ## Against the proof of concept
 
 The proof of concept's erosion model carved v31 with **688 channel heads** and **5–7 km of channel per

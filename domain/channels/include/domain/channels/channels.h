@@ -70,7 +70,9 @@ namespace engine::channels {
 //    downstream of its bend's apex, the steep reaches' section, boulders at a step's banks.
 // 8 (W97): the bed's sediment in the plan, and the clasts above `clast_min_mm` laid on the bed,
 //    the bars and the banks' feet as one merged mesh a tile; the steps' domes are clasts.
-inline constexpr u32 k_channels_version = 8;
+// 9 (W97b): a tile's piece handed with the tile (no recipe file written), its stones of four
+//    lithologies in two tones as material constants, a DAG a material, no pack set applied.
+inline constexpr u32 k_channels_version = 9;
 
 // **The bed's surface sediment at a point** (W97; channels.md, "Bed sediment"; the sources in
 // docs/experiments/channels.md, "Bed sediment"): the surface grain-size distribution a pebble count
@@ -410,6 +412,10 @@ bool piece_in_range(const ChannelPiece& piece, std::string& error);
 // material. Counted by `pieces_solved`, which a test holds `open` to none.
 bool solve_piece(const ChannelPiece& piece, assets::MeshData& out, std::string& error);
 u64 pieces_solved() noexcept;
+// How far a piece's mesh reaches on the ground from its origin (the tile's corner), metres: the
+// farthest clast centre plus its a axis. What a tile hands as `PlacementMesh::reach`, since a later
+// entry is handed the footprint before any host has built the mesh.
+f32 piece_reach_m(const ChannelPiece& piece);
 // Over the recipe's canonical JSON and the version: what its `.channel.json` file is named and
 // keyed by.
 u64 piece_source_hash(const ChannelPiece& piece);

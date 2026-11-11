@@ -255,7 +255,11 @@ struct ChannelLayer @version(10) {
   bed_material: string @since(9)
   bed_feather_m: f32 = 0.4 @since(9) @unit(m)
   /// The clasts' look (channels.md, "Materials"): every clast the generator lays, the bed's and
-  /// the steps' alike, the one thing it places.
+  /// the steps' alike, the one thing it places. Since W97b a tile's mesh draws its materials'
+  /// constants only: with `color` absent the stones are four lithologies in two tones (channels.md,
+  /// "What a stone is made of"); `color` given makes every stone that rock at `roughness`. `role`,
+  /// `tile_m`, `sampling` and `tint` are carried in the recipe for when a tile's meshes draw
+  /// textures, and draw nothing today.
   boulders: ChannelSurface @since(7)
   /// **Bed sediment** (W97; channels.md, "Bed sediment"; the sources in
   /// docs/experiments/channels.md, "Bed sediment"): the smallest clast drawn as geometry, its b

@@ -274,33 +274,107 @@ TEST_CASE("channels: whole expansion equals any tile order, with stable ids") {
   ChannelLayer p = layer();
   std::string error;
   REQUIRE_MESSAGE(opened.desc->open(schema::to_json(p), c, &opened.state, &error), error);
-  scene_gen::Placements whole, forward, backward;
+  scene_gen::Placements whole;
   REQUIRE(opened.desc->expand(opened.state, c, whole, &error));
   REQUIRE_FALSE(whole.instances.empty());
+  // **A tile's bed arrives with the tile** (W97b; scene_gen.md, "A tile's meshes"): the entry lists
+  // nothing resident, says its tiles hand meshes, and writes no recipe file.
+  CHECK(opened.desc->meshes == nullptr);
+  CHECK(opened.desc->tile_meshes);
+  // Each tile is handed alone (a host's `Placements` holds one tile's call), and what it hands is
+  // gathered here as (id, placement, the recipe its placement names, the mesh's path and reach).
+  struct Handed {
+    u32 id;
+    scene_gen::Placement at;
+    std::string recipe, path;
+    f32 reach;
+  };
+  auto activate = [&](i32 x, i32 z, std::vector<Handed>& into) {
+    scene_gen::Placements one;
+    REQUIRE(opened.desc->tile(opened.state, {x, z}, c, one, &error));
+    CHECK(one.meshes.size() == one.instances.size());  // one piece a tile, its own mesh
+    for (const scene_gen::Placement& p : one.instances) {
+      REQUIRE(p.mesh < one.meshes.size());
+      const scene_gen::PlacementMesh& m = one.meshes[p.mesh];
+      into.push_back({p.id, p, m.recipe, m.path, m.reach});
+    }
+    return one.instances.size();
+  };
+  std::vector<Handed> forward, backward;
   // W97: a clast near the region's edge may stand a little past it, in the tile beyond.
   for (i32 z = -1; z < 9; ++z)
     for (i32 x = -1; x < 5; ++x)
-      REQUIRE(opened.desc->tile(opened.state, {x, z}, c, forward, &error));
+      (void)activate(x, z, forward);
   for (i32 z = 8; z >= -1; --z)
-    for (i32 x = 4; x >= -1; --x) {
-      if (opened.desc->occupies(opened.state, {x, z})) {
-        const u32 before = backward.instances.size();
-        REQUIRE(opened.desc->tile(opened.state, {x, z}, c, backward, &error));
-        CHECK(backward.instances.size() > before);
-      }
-    }
-  auto by_id = [](const auto& a, const auto& b) { return a.id < b.id; };
-  std::sort(forward.instances.begin(), forward.instances.end(), by_id);
-  std::sort(backward.instances.begin(), backward.instances.end(), by_id);
-  REQUIRE(forward.instances.size() == whole.instances.size());
-  REQUIRE(backward.instances.size() == whole.instances.size());
+    for (i32 x = 4; x >= -1; --x)
+      if (opened.desc->occupies(opened.state, {x, z})) CHECK(activate(x, z, backward) > 0);
+  auto by_id = [](const Handed& a, const Handed& b) { return a.id < b.id; };
+  std::sort(forward.begin(), forward.end(), by_id);
+  std::sort(backward.begin(), backward.end(), by_id);
+  REQUIRE(forward.size() == whole.instances.size());
+  REQUIRE(backward.size() == whole.instances.size());
   for (u32 i = 0; i < whole.instances.size(); ++i) {
+    const scene_gen::PlacementMesh& listed = whole.meshes[whole.instances[i].mesh];
     CHECK(whole.instances[i].id == i + 1);
-    CHECK(forward.instances[i].id == whole.instances[i].id);
-    CHECK(backward.instances[i].mesh == whole.instances[i].mesh);
-    CHECK(backward.instances[i].position == whole.instances[i].position);
-    CHECK(io::exists(whole.meshes[whole.instances[i].mesh].path));
+    CHECK(forward[i].id == whole.instances[i].id);
+    CHECK(backward[i].at.position == whole.instances[i].position);
+    // What a tile hands is what the whole read lists, recipe for recipe, and the recipe is the
+    // mesh generator's own bytes: nothing is read from or written to disk.
+    CHECK(forward[i].recipe == listed.recipe);
+    CHECK(backward[i].recipe == listed.recipe);
+    CHECK(backward[i].path == listed.path);
+    CHECK_FALSE(listed.recipe.empty());
+    CHECK_FALSE(io::exists(listed.path));
+    CHECK(listed.reach > 0.0f);
+    CHECK(forward[i].reach == listed.reach);
   }
+}
+
+// **The same bytes from any start and any thread count** (W97b): two entries opened over one
+// ground, one planning with no job system and one with six workers, hand every tile the same
+// recipe in whichever order their tiles activate.
+TEST_CASE("channels: a tile's bed is the same bytes whichever tile activates first, any jobs") {
+  test::TempDir one_dir, six_dir;
+  jobs::JobSystemConfig config;
+  config.performance_workers = 6;
+  config.efficiency_workers = 0;
+  config.pin_threads = false;
+  jobs::JobSystem js(config);
+  scene_gen::Context serial, parallel;
+  for (scene_gen::Context* c : {&serial, &parallel}) {
+    c->ground = ground(gentle);  // a pool-riffle valley with bars and a flood bed
+    c->tile_size = 64;
+  }
+  const std::string one_path = one_dir.path(), six_path = six_dir.path();
+  serial.dir = one_path;
+  serial.ddc = one_path;
+  parallel.dir = six_path;
+  parallel.ddc = six_path;
+  parallel.jobs_context = &js;
+  parallel.jobs_fn = [](void* context) { return static_cast<jobs::JobSystem*>(context); };
+  Opened a, b;
+  ChannelLayer p = layer();
+  p.head_threshold_m2 = 300;
+  std::string error;
+  REQUIRE_MESSAGE(a.desc->open(schema::to_json(p), serial, &a.state, &error), error);
+  REQUIRE_MESSAGE(b.desc->open(schema::to_json(p), parallel, &b.state, &error), error);
+  std::vector<std::pair<u32, std::string>> first, second;
+  auto take = [&](Opened& o, const scene_gen::Context& c, i32 x, i32 z, auto& into) {
+    scene_gen::Placements one;
+    REQUIRE(o.desc->tile(o.state, {x, z}, c, one, &error));
+    for (const scene_gen::Placement& at : one.instances)
+      into.emplace_back(at.id, one.meshes[at.mesh].recipe);
+  };
+  for (i32 z = -1; z < 9; ++z)
+    for (i32 x = -1; x < 5; ++x)
+      take(a, serial, x, z, first);
+  for (i32 z = 8; z >= -1; --z)
+    for (i32 x = 4; x >= -1; --x)
+      take(b, parallel, x, z, second);
+  std::sort(first.begin(), first.end());
+  std::sort(second.begin(), second.end());
+  REQUIRE_FALSE(first.empty());
+  CHECK(first == second);
 }
 
 TEST_CASE("channels: the refusals") {
@@ -2323,9 +2397,52 @@ TEST_CASE("channels: the clasts' recipes and mesh are pinned") {
   const u64 indices = hash_bytes(mesh.indices.data(), mesh.indices.size() * sizeof(u32));
   MESSAGE("recipes " << recipes << ", first piece: " << mesh.indices.size() / 3
                      << " triangles, positions " << positions << ", indices " << indices);
-  CHECK(recipes == 7519227035656357816ull);
+  // W97b re-pinned the recipes (k_channels_version 9; the surface carries no default colour) and
+  // the indices (the triangles grouped by lithology); the positions are W97's to the bit.
+  CHECK(recipes == 7718558231201880594ull);
   CHECK(positions == 14068701233020217500ull);
-  CHECK(indices == 14738498776935463833ull);
+  CHECK(indices == 4152819545259226263ull);
+}
+
+// **The stones are of several rocks, as constants** (W97b, G165; channels.md, "What a stone is
+// made of"): a tile's container names no image (a tile's mesh draws constants only, ADR-0061),
+// holds a material a lithology and tone with a dry rock's albedo, gives every cluster one of them,
+// and over two valleys the lithologies' shares of the triangles follow their shares of the stones.
+TEST_CASE("channels: the stones are of four rocks in their shares, as material constants") {
+  const ChannelLayer p = layer();
+  f64 by_rock[4] = {}, total = 0;
+  for (const scene_gen::HeightFn fn : {&step_pool, &plane_bed}) {
+    const Laid laid = lay_valley(p, fn, 64);
+    REQUIRE_FALSE(laid.pieces.empty());
+    for (const PlacedPiece& piece : laid.pieces) {
+      assets::MeshData mesh;
+      std::string error;
+      REQUIRE(solve_piece(piece.recipe, mesh, error));
+      REQUIRE(mesh.materials.size() == 8);
+      for (const assets::Primitive& prim : mesh.primitives) {
+        by_rock[prim.material / 2] += prim.index_count / 3;
+        total += prim.index_count / 3;
+      }
+    }
+    geometry::ClusterFileData data;
+    std::string error;
+    REQUIRE_MESSAGE(build_piece_container(laid.pieces[0].recipe, {}, 0, data, error), error);
+    CHECK(data.image_paths.empty());
+    REQUIRE(data.materials.size() == 8);
+    REQUIRE(data.cluster_material.size() == data.mesh.mesh.clusters.size());
+    for (const u32 m : data.cluster_material)
+      CHECK(m < 8);
+    for (const geometry::ClusterFileMaterial& m : data.materials) {
+      const f32 mean = (m.base_color.x + m.base_color.y + m.base_color.z) / 3.0f;
+      CHECK(mean > 0.08f);  // the darkest tone of basalt's 0.12
+      CHECK(mean < 0.32f);  // the lightest of the pale rock's 0.25
+    }
+  }
+  const f64 share[4] = {.45, .25, .15, .15};
+  for (u32 r = 0; r < 4; ++r) {
+    MESSAGE("rock " << r << ": " << by_rock[r] / total << " of the triangles");
+    CHECK(std::abs(by_rock[r] / total - share[r]) < .05);
+  }
 }
 
 // **What a tile of bed costs** (W97; measured, printed; the numbers channels.md, "What a tile

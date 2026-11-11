@@ -29,8 +29,10 @@ readers place them as they place any generator's instances.
 **Owned data.** The network (`ChannelNetwork`: the lattice's heights, the filled heights, D8
 receivers, contributing area, channel cells, heads and links with their lines) is planned once,
 kept as a derived file (`<ddc>/channels/plan-<key>.channel-plan`; [One plan](#one-plan)) and is the
-source of truth for every cut, every piece and every `WaterChannel` block made from it; the recipes
-(`<ddc>/channels/channel-<hash>.channel.json`) are derived data too.
+source of truth for every cut, every piece and every `WaterChannel` block made from it. The
+pieces' recipes are kept in memory by the opened entry and handed with their tiles (W97b; [A
+tile's bed, laid when it activates](#a-tiles-bed-laid-when-it-activates)); no recipe file is
+written, and a built piece lives in the derived-data cache under its recipe's key.
 
 ## The network
 
@@ -181,17 +183,25 @@ a quarter of the width where the section is a V.
 
 ### Materials
 
-Every clast takes the look `boulders` names: a material-pack role (`boulders.role`) or, empty, the
-first their pack has of `rock/boulder`, `rock/granite`, `rock/sandstone` (W97 added the last, the
-engine's one pack's rock set, so a worktree with the pack draws textured stones). The set is sampled
-at `boulders.tile_m` (1.2 m) in metres (each clast's UVs are its vertices' x and z plus half their
-height, offset by its seed, so neighbours show different texels) and `Stochastic` by default
-(R131). With a pack, `boulders.tint` multiplies the set (absent: 0.7, 0.68, 0.65). With no pack,
-the flat colour (`boulders.color`, or a grey). **The bed's and the bars' materials are the
-terrain's**: `bed_material` paints the cut's bed and, with `bar_material` (W97), the flood bed each
-side is a region of its own in the bars' material, so a bar reads apart from the bed. The roles a
-pack would need are `gravel/bed` and `sand/bar` (row G148 generates material sets by role), which
-no pack here has.
+**Since W97b a tile's piece draws its materials' constants only**: it is handed with its tile
+(R142's contract), and a mesh a tile hands has no texture residency yet ([ADR-0061](../adr/0061-a-tiles-meshes-arrive-with-the-tile.md);
+the main coordinator's next row). So the stones are not textured: each is one of four lithologies
+in two tones, each a material of its own with the dry rock's albedo and roughness ([What a stone
+is made of](#what-a-stone-is-made-of)). `boulders.color`, given, makes every stone that one rock at
+`boulders.roughness`. `boulders.role`, `tile_m`, `sampling` and `tint` are still carried in the
+recipe (each clast's UVs are its vertices' x and z plus half their height, offset by its seed) for
+when such meshes draw textures, and draw nothing today; until W97b a pack's `rock/boulder`, else
+`rock/granite`, else `rock/sandstone` set was applied, which no host drew for a tile's mesh.
+**The bed's and the bars' materials are the terrain's**: `bed_material` paints the cut's bed and,
+with `bar_material` (W97), the flood bed each side is a region of its own in the bars' material, so
+a bar reads apart from the bed. **A palette layer names its images outright**
+(`TerrainMaterialLayer.base_color` and the rest): the generated sets `gravel/bed` and `sand/bar`
+(G148, `engine-content matgen`) reach the bed only when the scene's `gravel` and `sand` layers name
+their files. W97's first pictures drew flat paint between the stones for that reason: their scene's
+layers named tints and no images, so nothing of the generated pack reached the ground; the same
+scene with the layers naming the sets draws the bed as a cobble texture between the drawn clasts
+(W97b's pictures). That is the scene's to say, not the generator's; a palette layer that names a
+role and finds it in the pack is the terrain's to add (a row this leaves).
 
 ## Bed sediment
 
@@ -264,15 +274,73 @@ recipe, not a float behind it.
 **One merged piece a tile**: the clasts are bucketed by the 64 m world tile their centre stands in,
 the tiles in z then x order (their ids 1, 2, …), each tile's clasts in the order laid. A clast
 whose footprint crosses a tile's border is in one tile's piece, so the bed is continuous. The
-recipe (`engine.channels.ChannelPiece` version 2, `part` `Clasts`) is written at `open` and its
-mesh is built only when the host builds the mesh its tile names, through the mesh generator
-`channel` and the derived-data cache (rocks.md, "A tile solves"; `pieces_solved()` holds `open` to
-none). The mesh: each clast an ellipsoid on a cube-sphere grid by its b axis (2 quads a face edge
+recipe (`engine.channels.ChannelPiece` version 2, `part` `Clasts`) is decided at `open` and handed
+with its tile ([A tile's bed, laid when it activates](#a-tiles-bed-laid-when-it-activates)); its
+mesh is built only when the host builds what the tile hands, through the mesh generator `channel`
+and the derived-data cache (`pieces_solved()` holds `open` to none). The mesh: each clast an
+ellipsoid on a cube-sphere grid by its b axis (2 quads a face edge
 under 128 mm, 48 triangles; 3 under 0.5 m, 108; 4 under 1 m, 192; else 6, 432), cut by ten facets
 at 0.78 to 0.92 of its reach and blended back toward the ellipsoid by its roundness, so an angular
 clast has faces and a rounded one none; **the triangles wholly under the lowest ground beneath it
-are left out**, so each clast is open only underground (`channels: the placed pieces ...`). The
-cluster LOD DAG of the tile's mesh is its far form.
+are left out**, so each clast is open only underground (`channels: the placed pieces ...`). Since
+W97b the triangles are grouped by the clast's material, one cluster LOD DAG a material, merged, so
+a cluster is one rock at every level; the merged DAG is the tile's far form.
+
+### What a stone is made of
+
+(W97b with G165, 2026-11-11.) A gravel bed carries a handful of lithologies from its catchment,
+the resistant ones enriched downstream by abrasion (the grounding page, [The stones'
+rocks](../experiments/channels.md#the-stones-rocks)). A clast is one of four, drawn from its own
+seed by share, so a recipe needs no new field and the same recipe is the same stones on every
+host; and one of two tones, 0.85 and 1.15 of its rock's albedo. Each of the eight is a material of
+the piece's container with its constants, since a tile's mesh draws no texture yet:
+
+| Rock | Dry albedo, linear | Roughness | Share |
+|---|---|---|---:|
+| granite (grey granite, gneiss) | 0.19, 0.18, 0.17 | 0.8 | 0.45 |
+| pale (quartzite, limestone, chalk) | 0.27, 0.26, 0.24 | 0.75 | 0.25 |
+| basalt (and greywacke) | 0.12, 0.12, 0.125 | 0.75 | 0.15 |
+| sandstone | 0.16, 0.12, 0.085 | 0.85 | 0.15 |
+
+The albedos are a measured table's (grey granite 0.18, basalt 0.12, sandstone 0.12, chalk 0.25);
+the hues, the tones and the shares are design choices, the shares those of `gravel/bed`'s generated
+set (G148) so the stones and the bed's texture between them agree. **Not built**: the mix from the
+scene's formation (`Context::formation`) or from the catchment's rocks upstream, the abrasion
+that enriches the hard rocks downstream, and wet stones at and under the waterline (the water's).
+`channels: the stones are of four rocks in their shares, as material constants` holds the
+container (no image, eight materials, every cluster one of them, each mean albedo in 0.08 to 0.32)
+and the shares of the triangles over two valleys within 0.05 of the table's (measured 0.456,
+0.250, 0.147, 0.147).
+
+### A tile's bed, laid when it activates
+
+(W97b, 2026-11-11; R142's contract, [scene_gen](scene_gen.md#a-tiles-meshes), ADR-0061.) Until
+W97b `open` wrote every tile's recipe into the derived-data root and listed every piece in its
+`meshes`, so a host read each one at scene read and built it there: 2.9 s for the busiest tile of
+the test valley, at load, before the first frame. Now:
+
+- **`open`** reads the plan, lays every clast (the plan, the sediment, the draws: what `place_pieces`
+  does) and keeps, a piece, its recipe's JSON, its placement and its tile. It builds nothing and
+  writes nothing but the plan file.
+- **No resident meshes**: the entry has no `meshes` entry point, and its descriptor says
+  `tile_meshes`, so a host makes room for meshes that arrive with tiles.
+- **`tile`** hands the tile's piece as `PlacementMesh{path, name, 0, recipe, reach}` with its
+  placement indexing it: `path` is where the file would be (`<ddc>/channels/channel-<hash>.channel.json`,
+  which names it), `recipe` its bytes, `reach` the farthest clast centre from the tile's corner plus
+  its a axis (`piece_reach_m`). The host builds it through the mesh generator `channel` and the
+  derived-data cache, keyed by the recipe, off the frame's thread ([world](world.md#a-tiles-meshes-residency-by-reference)).
+- **`expand`** lists every piece with its recipe, so a scene read whole is the same scene.
+
+What the contract carries today: the mesh, its materials' constants, its collision proxy (a mesh a
+tile hands is walked on), and its cluster DAG as the far form. What it does not, and the bed
+needs: texture residency (the stones are untextured until it lands); a footprint other than a disc
+of `reach` about the tile's corner (a later entry is handed a disc as wide as the tile for a piece
+that covers a thin strip of it); and a far form past the DAG (the bed's material darkened and
+roughened by cover). `channels: whole expansion equals any tile order, with stable ids` holds a
+tile's hand-over to the whole read's, recipe for recipe, and that no file is written;
+`channels: a tile's bed is the same bytes whichever tile activates first, any jobs` holds two
+entries, one planned with six workers and one with none, to the same recipe at every tile in
+opposite orders.
 
 ### What a tile costs
 
@@ -310,9 +378,9 @@ its length of channel; the recipes and meshes, by its area of bed.
 ```
 
 The entry is opened once: its plan is read (or, for an entry on uncut ground whose plan is not
-cached yet, made; [One plan](#one-plan)), every piece's recipe written under the host's
-derived-data root's `channels/` (else the repository's `ddc/`, else `ddc/` beside the scene), and
-`expand`/`tile`/`occupies` hand out what was decided. An entry of a scene whose ground carries the
+cached yet, made; [One plan](#one-plan)) from the host's derived-data root's `channels/` (else the
+repository's `ddc/`, else `ddc/` beside the scene), every piece's recipe decided and kept, and
+`expand`/`tile`/`occupies` hand out what was decided, a tile's piece with the tile. An entry of a scene whose ground carries the
 plan's cuts names the plan: `"plan": "<the key engine-content channels printed>"`. A moving ground is refused (the dunes have no
 drainage to dress). Every field, its default and range is in `schemas/channels.schema`.
 

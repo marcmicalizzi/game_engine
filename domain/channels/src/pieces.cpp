@@ -63,6 +63,44 @@ constexpr f64 k_scarp_m = .5;
 constexpr f64 k_bar_head = 1.2, k_bar_tail = .8;
 constexpr f64 k_flood_bed = .8;
 
+// **What a stone is made of** (W97b, G165; channels.md, "What a stone is made of"; the sources on
+// docs/experiments/channels.md, "The stones' rocks"): a gravel bed carries a handful of
+// lithologies from its catchment (Kodama 1994, five in one bed, abstract), so a clast is one of
+// four, drawn from its seed by share, in one of two tones. A tile's mesh draws its materials'
+// constants only (ADR-0061), so the albedo is the dry rock's own, linear: grey granite 0.18, basalt
+// 0.12, sandstone 0.12 and a pale (chalk, limestone, quartzite) 0.25 (a measured table of dry stone
+// albedo, read in full; broadband). The shares follow `gravel/bed`'s generated set (matgen) so the
+// stones and the bed's texture between them agree; the hues and the tones (0.85 and 1.15 of the
+// albedo) are design choices.
+struct ClastLithology {
+  const char* name;
+  f32 albedo[3];
+  f32 roughness;
+  f64 share;
+};
+constexpr ClastLithology k_lithologies[] = {
+    {"granite", {.19f, .18f, .17f}, .8f, .45},
+    {"pale", {.27f, .26f, .24f}, .75f, .25},
+    {"basalt", {.12f, .12f, .125f}, .75f, .15},
+    {"sandstone", {.16f, .12f, .085f}, .85f, .15},
+};
+constexpr u32 k_clast_tones = 2;
+constexpr f32 k_tone[k_clast_tones] = {.85f, 1.15f};
+constexpr u32 k_clast_materials = 4 * k_clast_tones;
+static_assert(sizeof(k_lithologies) / sizeof(k_lithologies[0]) * k_clast_tones ==
+              k_clast_materials);
+// A clast's material from its seed alone: the recipe carries no lithology, so the same recipe is
+// the same stones whichever tile or host builds it.
+u32 clast_material(u32 seed) {
+  const u64 h = hash_combine(0x11740107ull, seed);
+  const f64 u = static_cast<f64>(h >> 40) / 16777216.0;
+  u32 lith = 0;
+  f64 sum = k_lithologies[0].share;
+  while (lith + 1 < 4 && u >= sum)
+    sum += k_lithologies[++lith].share;
+  return lith * k_clast_tones + static_cast<u32>((h >> 8) & 1u);
+}
+
 struct Frame {
   f64 x, z;    // the line's point
   f64 nx, nz;  // its left normal
@@ -87,12 +125,11 @@ Vector<Frame> frames_of(const ChannelLink& link) {
   return f;
 }
 
-ChannelSurface surface_of(const ChannelSurface& s, std::array<f32, 3> color, f32 tile,
-                          std::optional<std::array<f32, 3>> tint) {
+// The clasts' surface as the recipe carries it: the tile size defaulted, and the colour left as
+// authored — absent, the stones are the lithologies' mix (W97b).
+ChannelSurface surface_of(const ChannelSurface& s, f32 tile) {
   ChannelSurface out = s;
-  if (!out.color.has_value()) out.color = color;
   if (!out.tile_m.has_value()) out.tile_m = tile;
-  if (!out.tint.has_value()) out.tint = tint;
   return out;
 }
 
@@ -204,8 +241,7 @@ bool place_pieces(const ChannelLayer& p, const ChannelNetwork& n, const scene_ge
   if (log) *log = {};
   if (!(tile_size >= .25f && tile_size <= 100000.0f)) return fail(error, "tile_size");
   const i64 tile_mm = scene_gen::nearest_mm(wide(tile_size));
-  const ChannelSurface look =
-      surface_of(p.boulders, {.45f, .44f, .42f}, 1.2f, std::array<f32, 3>{.7f, .68f, .65f});
+  const ChannelSurface look = surface_of(p.boulders, 1.2f);
   const f64 psi_min = log2_of(std::max(1.0, wide(p.clast_min_mm)) / 1000.0);
   Vector<Clast> all;
   Layer layer{ground, all};
@@ -506,13 +542,28 @@ bool solve_piece(const ChannelPiece& piece, assets::MeshData& out, std::string& 
   if (!piece_in_range(piece, error)) return false;
   g_pieces_solved.fetch_add(1, std::memory_order_relaxed);
   assets::MeshData mesh;
-  assets::Material material;
-  material.name = "channel clasts";
-  const auto& color = *piece.surface.color;
-  material.base_color = {color[0], color[1], color[2], 1.0f};
-  material.metallic = 0;
-  material.roughness = piece.surface.roughness;
-  mesh.materials.push_back(material);
+  // **One material a lithology and tone** (W97b, G165; channels.md, "What a stone is made of"): a
+  // tile's mesh draws its materials' constants only (ADR-0061; texture residency for a tile's
+  // meshes is not built yet), so each stone's colour and roughness are the material's own.
+  // An authored `boulders.color` makes every stone that one rock, at `boulders.roughness`.
+  const bool authored = piece.surface.color.has_value();
+  for (u32 m = 0; m < k_clast_materials; ++m) {
+    const ClastLithology& l = k_lithologies[m / k_clast_tones];
+    const f32 tone = k_tone[m % k_clast_tones];
+    assets::Material material;
+    material.name = std::string("channel clasts, ") + l.name;
+    material.base_color = {l.albedo[0] * tone, l.albedo[1] * tone, l.albedo[2] * tone, 1.0f};
+    material.roughness = l.roughness;
+    if (authored) {
+      const auto& c = *piece.surface.color;
+      material.base_color = {c[0] * tone, c[1] * tone, c[2] * tone, 1.0f};
+      material.roughness = piece.surface.roughness;
+    }
+    material.metallic = 0;
+    mesh.materials.push_back(material);
+  }
+  Vector<u32> by_material[k_clast_materials];
+  Vector<u32> own;
   // By the b axis: under 128 mm 2 quads a face edge (48 triangles), under 0.5 m 3 (108), under
   // 1 m 4 (192), else 6 (432); the triangles under the ground are then left out.
   const Sphere spheres[4] = {sphere_of(2), sphere_of(3), sphere_of(4), sphere_of(6)};
@@ -575,7 +626,7 @@ bool solve_piece(const ChannelPiece& piece, assets::MeshData& out, std::string& 
     // The triangles wholly under the lowest ground beneath the clast are not drawn.
     const f64 under = static_cast<f64>(c.ground_mm) / 1000 - .02;
     remap.assign(count, -1);
-    const u32 first_index = mesh.indices.size();
+    own.clear();
     for (u32 t = 0; t < sp.tris.size(); t += 3) {
       const u32 a = sp.tris[t], b = sp.tris[t + 1], d = sp.tris[t + 2];
       if (py[a] < under && py[b] < under && py[d] < under) continue;
@@ -590,30 +641,55 @@ bool solve_piece(const ChannelPiece& piece, assets::MeshData& out, std::string& 
           mesh.uvs.push_back({u0 + static_cast<f32>(px[v] + .5 * py[v] + off_u),
                               v0 + static_cast<f32>(pz[v] + .5 * py[v] + off_v)});
         }
-        mesh.indices.push_back(static_cast<u32>(remap[v]));
+        own.push_back(static_cast<u32>(remap[v]));
       }
     }
     // Smooth normals over the clast, area-weighted.
-    for (u32 t = first_index; t < mesh.indices.size(); t += 3) {
-      const u32 a = mesh.indices[t], b = mesh.indices[t + 1], d = mesh.indices[t + 2];
+    for (u32 t = 0; t < own.size(); t += 3) {
+      const u32 a = own[t], b = own[t + 1], d = own[t + 2];
       const Vec3 normal =
           cross(mesh.positions[b] - mesh.positions[a], mesh.positions[d] - mesh.positions[a]);
       mesh.normals[a] = mesh.normals[a] + normal;
       mesh.normals[b] = mesh.normals[b] + normal;
       mesh.normals[d] = mesh.normals[d] + normal;
     }
+    Vector<u32>& into = by_material[clast_material(c.seed)];
+    for (const u32 index : own)
+      into.push_back(index);
   }
   for (Vec3& normal : mesh.normals)
     normal = length(normal) > 0 ? normalize(normal) : Vec3{0, 1, 0};
+  // One primitive a material that holds a clast, in the materials' order.
+  for (u32 m = 0; m < k_clast_materials; ++m) {
+    if (by_material[m].empty()) continue;
+    assets::Primitive part;
+    part.first_index = mesh.indices.size();
+    part.index_count = by_material[m].size();
+    part.material = static_cast<i32>(m);
+    for (const u32 index : by_material[m])
+      mesh.indices.push_back(index);
+    mesh.primitives.push_back(part);
+  }
   if (mesh.indices.empty()) return fail(error, "piece (every clast wholly under the ground)");
-  assets::Primitive part;
-  part.index_count = mesh.indices.size();
-  part.material = 0;
-  mesh.primitives.push_back(part);
   out = std::move(mesh);
   return true;
 }
 u64 pieces_solved() noexcept { return g_pieces_solved.load(std::memory_order_relaxed); }
+
+f32 piece_reach_m(const ChannelPiece& piece) {
+  i64 most = 0;
+  for (u32 k = 0; k < clast_count(piece); ++k) {
+    const i32* v = piece.clasts.data() + static_cast<usize>(k) * k_clast_ints;
+    const i64 x = v[0], z = v[2];
+    // The centre's distance, rounded up to a millimetre, plus the a axis: an integer square root.
+    const i64 d2 = x * x + z * z;
+    i64 d = static_cast<i64>(std::sqrt(static_cast<f64>(d2)));
+    while (d * d < d2)
+      ++d;
+    most = std::max(most, d + v[4]);
+  }
+  return static_cast<f32>(static_cast<f64>(most) / 1000.0);
+}
 
 std::string piece_json(const ChannelPiece& piece) {
   JsonWriteOptions o;
@@ -626,20 +702,6 @@ u64 piece_source_hash(const ChannelPiece& piece) {
   return hash_combine(hash_bytes(text.data(), text.size()), k_channels_version);
 }
 
-namespace {
-// The roles a part samples when its surface names none: the first the pack has. The clasts take a
-// boulder's set, else any rock set the pack has (the engine's pack holds `rock/sandstone`).
-Vector<std::string_view> roles_of(ChannelPart part) {
-  switch (part) {
-    case ChannelPart::Bed: return {"gravel/bed", "rock/gravel", "rock/granite"};
-    case ChannelPart::Bar: return {"sand/bar", "soil/parent", "soil/subsoil"};
-    case ChannelPart::Boulder:
-    case ChannelPart::Clasts: return {"rock/boulder", "rock/granite", "rock/sandstone"};
-    default: return {"soil/subsoil", "soil/topsoil"};
-  }
-}
-}  // namespace
-
 bool build_piece_container(const ChannelPiece& piece, const geometry::ClusterLodOptions& lod,
                            u32 page_bytes, geometry::ClusterFileData& out, std::string& error,
                            const materials::Pack* pack) {
@@ -648,40 +710,40 @@ bool build_piece_container(const ChannelPiece& piece, const geometry::ClusterLod
   if (!solve_piece(piece, mesh, error)) return false;
   geometry::ClusterLodOptions options = lod;
   options.normal_cones = true;
-  if (!geometry::build_cluster_lod(mesh.positions, {mesh.indices.data(), mesh.indices.size()},
-                                   options, out.mesh, &error, assets::attribute_source(mesh)))
-    return false;
+  // **A DAG a material** (W97b): each lithology's stones are their own cluster LOD DAG, merged, so
+  // a cluster is one material at every level and the far form keeps the mix.
+  const auto attributes = assets::attribute_source(mesh);
+  Vector<geometry::ClusterLodMesh> parts;
+  Vector<u32> owners;
+  for (const assets::Primitive& primitive : mesh.primitives) {
+    geometry::ClusterLodMesh part;
+    if (!geometry::build_cluster_lod(
+            mesh.positions, {mesh.indices.data() + primitive.first_index, primitive.index_count},
+            options, part, &error, attributes))
+      return false;
+    parts.push_back(std::move(part));
+  }
+  if (!geometry::merge_cluster_lod(parts, out.mesh, &owners, &error)) return false;
+  for (u32& owner : owners)
+    owner = static_cast<u32>(mesh.primitives[owner].material);
   if (page_bytes > 0) {
     geometry::ClusterPagesOptions pages;
     pages.page_bytes = page_bytes;
-    if (!geometry::build_cluster_pages(out.mesh, pages, out.pages, &error)) return false;
+    Vector<u32> order;
+    if (!geometry::build_cluster_pages(out.mesh, pages, out.pages, &error, &order)) return false;
+    geometry::permute_cluster_array(order, owners);
   }
-  out.cluster_material.assign(out.mesh.mesh.clusters.size(), 0u);
-  geometry::ClusterFileMaterial material;
-  material.base_color = mesh.materials[0].base_color;
-  material.metallic = 0;
-  material.roughness = mesh.materials[0].roughness;
-  out.materials.push_back(material);
-  const materials::MaterialSet* chosen = nullptr;
-  if (!piece.surface.role.empty()) {
-    chosen = materials::resolve_set(nullptr, pack, piece.surface.role);
-  } else {
-    for (std::string_view role : roles_of(piece.part))
-      if ((chosen = materials::find_role(pack, role)) != nullptr) break;
+  out.cluster_material = std::move(owners);
+  // **Constants only** (ADR-0061; scene_gen.md, "A tile's meshes"): a mesh a tile hands draws its
+  // materials' constants until texture residency for such meshes lands, so no set is applied and
+  // no image named; the pack still keys the build, as every generated mesh's does.
+  for (const assets::Material& m : mesh.materials) {
+    geometry::ClusterFileMaterial material;
+    material.base_color = m.base_color;
+    material.metallic = 0;
+    material.roughness = m.roughness;
+    out.materials.push_back(material);
   }
-  if (chosen != nullptr) {
-    out.material_sampling.push_back(geometry::encode_material_sampling(
-        mesh.materials[0].sampling, mesh.materials[0].occlusion_strength));
-    materials::MaterialSet applied = *chosen;
-    applied.tile_m = *piece.surface.tile_m;
-    applied.stochastic = piece.surface.sampling == ChannelSampling::Stochastic;
-    materials::apply_set(applied, materials::UvLayout::metres, out, 0);
-    if (piece.surface.tint.has_value()) {
-      const auto& tint = *piece.surface.tint;
-      out.materials[0].base_color = {tint[0], tint[1], tint[2], 1.0f};
-    }
-  }
-  if (!out.image_paths.empty()) texture::fill_cluster_texture_records(out);
   out.source_hash = piece_source_hash(piece);
   out.build_key = assets::generated_mesh_build_key(
       out.source_hash, assets::MeshGeneratorInputs{pack}, lod, page_bytes);
@@ -706,7 +768,6 @@ bool read_piece(std::span<const u8> bytes, ChannelPiece& out, std::string& error
       error += "; " + d.path + ": " + d.message;
     return false;
   }
-  if (!out.surface.color.has_value()) out.surface.color = std::array<f32, 3>{.5f, .5f, .5f};
   if (!out.surface.tile_m.has_value()) out.surface.tile_m = 1.0f;
   return piece_in_range(out, error);
 }
