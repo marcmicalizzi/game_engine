@@ -42,7 +42,7 @@ namespace engine::walls {
 // ---- the module solver -----------------------------------------------------------------------
 
 // The solver's version, in every recipe's source hash: a change that moves a stone bumps it.
-inline constexpr u32 k_wall_version = 2;
+inline constexpr u32 k_wall_version = 3;
 
 // What a stone is in a solved module (the report's, for the tests and the page's counts).
 enum class StoneRole : u8 { face, footing, through, tie, pinning, cover, cope, rubble, core };
@@ -70,6 +70,10 @@ struct ModuleReport {
   u32 far_triangles = 0;
   // Where the finest form's triangles go, indexed by `StoneRole` (walls.md, "Budgets").
   u32 role_triangles[9] = {};
+  // The seams (joints through three courses) the solver crossed by moving a joint along its
+  // course, and those it left (walls.md, "The module").
+  u32 seams_crossed = 0;
+  u32 seams_left = 0;
   // The stone's volume in the faces, the throughs, the cover and the cope, m^3, and its length.
   f64 stone_volume_m3 = 0;
   f64 length_m = 0;

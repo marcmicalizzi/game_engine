@@ -165,34 +165,51 @@ void swatch_uv(u32 swatch, f64 fu, f64 fv, f64& u, f64& v) {
 
 // Which of a body's six faces (0 bottom, 1 top, 2 the za side, 3 the x1 end, 4 the zb side, 5
 // the x0 end) are split and which are not drawn. A split face is the face a waller shows
-// (dry-stone-walls.md, "The stone, the face and the cope"): its arrises knocked back, the corners
-// of its outline taken off and its middle raised off-centre, while the beds stay flat. A face not
-// drawn is one that lies on stone or in the hearting and is never seen: a face stone's bed and
-// tail. `chips` is how many corners of each split face are knocked off (4, 2 at a diagonal, or 0:
-// the arrises knocked back and no corner taken off).
+// (dry-stone-walls.md, "The stone's own shape"): its face proper an outline of its own, its
+// arrises rounded back to the stone's corners, while the beds stay flat. A face not drawn is one
+// that lies on stone or in the hearting and is never seen: a face stone's bed and tail. `edge` is
+// how far the arrises are worn back (`k_edge_*`), and `crown` raises the face proper to a crown
+// off its middle (four triangles, smooth-shaded) instead of a flat fan (two).
+constexpr u8 k_edge_fine = 0;   // a cope's top and sides, a cover's edges, a fallen stone's top
+constexpr u8 k_edge_small = 1;  // a small face: a closing stone, a stone under 0.012 m^2
+constexpr u8 k_edge_stone = 2;  // a walling stone's face, a through's or a tie's end
 struct Faces {
   u8 split = 0;
   u8 hidden = 0;
-  u8 chips = 4;
+  u8 edge = k_edge_stone;
+  u8 crown = 0x3f;  // which split faces are crowned
+  u8 pillow = 0;    // which plain faces bulge: a crown over their own corners (four triangles)
 };
 constexpr u8 face_bit(u32 f) { return static_cast<u8>(1u << f); }
 
-// The split face's numbers (dry-stone-walls.md, "The stone, the face and the cope"): an arris set
-// back 4 to 12 mm behind the face's plane; a corner of the outline taken off by a chip 10 to 30 mm
-// along each edge (at most 30 % of the edge) and 20 to 60 % of that in from the other edge, a
-// corner not taken off set in 3 to 10 mm along both; the outline's points within 4 mm of the plane
-// either way, which is the face's relief.
-constexpr f64 k_setback_lo = 0.004, k_setback_hi = 0.012;
-constexpr f64 k_chip_lo = 0.010, k_chip_hi = 0.030;
-constexpr f64 k_ring_relief = 0.004;
+// The split face's numbers (dry-stone-walls.md, "The stone's own shape"). Each corner of the face
+// proper is drawn in from both edges that meet there, independently: from an edge by a share of
+// the face's dimension across it (`k_inset`), so a long stone's ends round off further than its
+// beds and the outline is a quadrilateral of its own rather than the rectangle it was laid as.
+// The stone's corner behind it is set back from the face's plane by 0.6 of the larger inset and 3
+// to 8 mm (5 to 19 mm), so the worn arris between them is steeper than 25 degrees; the face
+// proper's corners lie within 2.5 mm of the plane and its crown 0.5 to 2.5 mm proud of them.
+struct Inset {
+  f64 lo, hi;        // share of the dimension across the edge
+  f64 min_m, max_m;  // the inset's bounds, metres
+};
+constexpr Inset k_inset[3] = {
+    {0.04, 0.12, 0.002, 0.020},  // fine
+    {0.06, 0.18, 0.003, 0.020},  // small
+    {0.03, 0.14, 0.003, 0.040},  // stone
+};
+constexpr f64 k_ring_relief = 0.0025;
+constexpr f64 k_crown_lo = 0.0005, k_crown_hi = 0.0025;
+constexpr f64 k_back_max = 0.019;  // a corner's set-back at most, so a face's relief is <= 35 mm
+constexpr f64 k_broken = 0.45;     // the share of a walling stone's corners broken off
 
 // A six-faced body from its eight corners (bottom ring 0..3, top ring 4..7, the rings in one
-// order: (x0, za), (x1, za), (x1, zb), (x0, zb)), each face flat-shaded and wound outward from
-// the body's centre. A split face's outline is four points and two more a knocked-off corner, the
-// face fanned over it (2 + chips triangles), with the band of knocked-back arrises between the
-// outline and the face's corners, set back (8 + chips): 18 triangles with four chips, 14 with
-// two, 10 with none; a plain face is two. The corners of a split face are moved back before any
-// face is drawn, so the beds and ends that meet it stop short of the face's plane and stay flat.
+// order: (x0, za), (x1, za), (x1, zb), (x0, zb)), each face wound outward from the body's centre.
+// A split face is its face proper, four points drawn in from the corners, with a crown (four
+// triangles sharing smooth normals) or fanned flat (two), and the band of worn arrises between it
+// and the set-back corners (eight, flat): 12 triangles crowned, 10 flat; a plain face is two. The
+// corners of a split face are moved back before any face is drawn, so the beds and ends that meet
+// it stop short of the face's plane and stay flat.
 void body(Builder& b, const D3 (&c0)[8], u32 swatch, Faces faces, Rng& r) {
   D3 centre{};
   for (const D3& p : c0)
@@ -242,68 +259,155 @@ void body(Builder& b, const D3 (&c0)[8], u32 swatch, Faces faces, Rng& r) {
               i2 = b.vertex(p2, n, u2, v2);
     b.tri(i0, i1, i2);
   };
-  // The split faces' arrises set back: their corners moved behind the face's plane.
+  // The split faces' face proper, corner by corner (each drawn in from the two edges that meet
+  // there), and their corners set back behind the face's plane by what the insets ask.
   D3 c[8];
   for (u32 k = 0; k < 8; ++k)
     c[k] = c0[k];
   D3 split_n[6];
+  D3 ring_of[6][8];
+  u32 count_of[6] = {0, 0, 0, 0, 0, 0};
+  u32 first_of[6][4] = {}, last_of[6][4] = {};
   for (u32 f = 0; f < 6; ++f) {
     if ((faces.split & face_bit(f)) == 0) continue;
-    split_n[f] = outward(c0, f);
-    for (u32 e = 0; e < 4; ++e) {
-      const f64 back = r.range(k_setback_lo, k_setback_hi);
-      c[rings[f][e]] = c[rings[f][e]] - split_n[f] * back;
+    const D3 n = outward(c0, f);
+    split_n[f] = n;
+    const Inset& in = k_inset[std::min<u32>(faces.edge, 2)];
+    for (u32 k = 0; k < 4; ++k) {
+      const D3 p = c0[rings[f][k]], ep = c0[rings[f][(k + 3) % 4]] - p,
+               en = c0[rings[f][(k + 1) % 4]] - p;
+      const f64 lp = std::max(std::sqrt(dot(ep, ep)), 1e-6),
+                ln = std::max(std::sqrt(dot(en, en)), 1e-6);
+      // In from the previous edge by a share of the next edge's length, and from the next edge
+      // by a share of the previous one's: each corner its own, so the face proper is a polygon
+      // of its own.
+      const f64 share_a = r.range(in.lo, in.hi);
+      const f64 share_b = r.range(in.lo, in.hi);
+      const f64 hi_a = std::min(in.max_m, 0.3 * ln), hi_b = std::min(in.max_m, 0.3 * lp);
+      const f64 ia = std::clamp(share_a * ln, std::min(in.min_m, hi_a), hi_a);
+      const f64 ib = std::clamp(share_b * lp, std::min(in.min_m, hi_b), hi_b);
+      const f64 lift = r.range(-k_ring_relief, k_ring_relief);
+      // A walling stone's corner is broken off (`k_broken`, 45 %): two points, a cut 25
+      // to 50 % of the shorter edge back along each edge, so the face proper is a pentagon or
+      // more and its corner a dark facet where four stones meet.
+      const f64 broken = r.next();
+      const f64 cut_a = r.range(0.25, 0.50), cut_b = r.range(0.25, 0.50);
+      first_of[f][k] = count_of[f];
+      f64 deepest = std::max(ia, ib);
+      if (faces.edge == k_edge_stone && broken < k_broken) {
+        const f64 shorter = std::min(lp, ln);
+        const f64 ca = std::max(std::min(cut_a * shorter, 0.3 * lp), ib);
+        const f64 cb = std::max(std::min(cut_b * shorter, 0.3 * ln), ia);
+        ring_of[f][count_of[f]++] = p + ep * (ca / lp) + en * (ia / ln) + n * lift;
+        ring_of[f][count_of[f]++] = p + en * (cb / ln) + ep * (ib / lp) + n * lift;
+        deepest = std::max(ca, cb);
+      } else {
+        ring_of[f][count_of[f]++] = p + en * (ia / ln) + ep * (ib / lp) + n * lift;
+      }
+      last_of[f][k] = count_of[f] - 1;
+      const f64 wear = r.range(0.003, 0.008);
+      const f64 back = std::clamp(0.6 * deepest + wear, 0.005, k_back_max);
+      c[rings[f][k]] = c[rings[f][k]] - n * back;
     }
   }
   for (u32 f = 0; f < 6; ++f) {
     if ((faces.hidden & face_bit(f)) != 0) continue;
     if ((faces.split & face_bit(f)) != 0) {
       const D3 n = split_n[f];
-      const D3 q[4] = {c0[rings[f][0]], c0[rings[f][1]], c0[rings[f][2]], c0[rings[f][3]]};
       const D3 qm[4] = {c[rings[f][0]], c[rings[f][1]], c[rings[f][2]], c[rings[f][3]]};
-      // The outline, corner by corner: a knocked-off corner is two points, a chip along each of
-      // its edges and in from the other; any other corner one point set in along both.
-      u32 diagonal = 0;
-      if (faces.chips == 2) diagonal = static_cast<u32>(r.bits() & 1u);
-      D3 ring[8];
-      u32 first[4], last[4], count = 0;
-      for (u32 k = 0; k < 4; ++k) {
-        const D3 p = q[k], ep = q[(k + 3) % 4] - p, en = q[(k + 1) % 4] - p;
-        const f64 lp = std::max(std::sqrt(dot(ep, ep)), 1e-6),
-                  ln = std::max(std::sqrt(dot(en, en)), 1e-6);
-        const D3 up = ep * (1.0 / lp), un = en * (1.0 / ln);
-        const bool chipped = faces.chips == 4 || (faces.chips == 2 && (k & 1u) == diagonal);
-        if (chipped) {
-          const f64 wa = std::min(r.range(k_chip_lo, k_chip_hi), 0.3 * lp);
-          const f64 ia = std::min(r.range(0.2, 0.6) * wa, 0.25 * ln);
-          const f64 za = r.range(-k_ring_relief, k_ring_relief);
-          const f64 wb = std::min(r.range(k_chip_lo, k_chip_hi), 0.3 * ln);
-          const f64 ib = std::min(r.range(0.2, 0.6) * wb, 0.25 * lp);
-          const f64 zb = r.range(-k_ring_relief, k_ring_relief);
-          first[k] = count;
-          ring[count++] = p + up * wa + un * ia + n * za;
-          last[k] = count;
-          ring[count++] = p + un * wb + up * ib + n * zb;
-        } else {
-          const f64 ia = std::min(r.range(0.003, 0.010), 0.25 * ln);
-          const f64 ib = std::min(r.range(0.003, 0.010), 0.25 * lp);
-          const f64 za = r.range(-k_ring_relief, k_ring_relief);
-          first[k] = last[k] = count;
-          ring[count++] = p + un * ia + up * ib + n * za;
+      const D3(&ring)[8] = ring_of[f];
+      const u32 count = count_of[f];
+      if ((faces.crown & face_bit(f)) != 0) {
+        // The crown: an interior point, off the middle by the ring's own weights, raised off
+        // the ring; a triangle a ring point sharing their vertices, each vertex's normal the
+        // mean of its triangles', so the face proper reads rounded and its arris band crisp.
+        D3 apex{};
+        f64 weight = 0;
+        for (u32 k = 0; k < count; ++k) {
+          const f64 w = r.range(0.5, 1.5);
+          apex = apex + ring[k] * w;
+          weight += w;
         }
+        const f64 crown = r.range(k_crown_lo, k_crown_hi);
+        apex = apex * (1.0 / weight) + n * crown;
+        D3 tn[8];
+        D3 all{};
+        for (u32 k = 0; k < count; ++k) {
+          D3 t = cross(ring[k] - apex, ring[(k + 1) % count] - apex);
+          if (dot(t, n) < 0) t = t * -1.0;
+          tn[k] = unit(t);
+          all = all + tn[k];
+        }
+        f64 u, v;
+        uv_of(apex, n, u, v);
+        const u32 i_apex = b.vertex(apex, unit(all), u, v);
+        u32 iv[8];
+        for (u32 k = 0; k < count; ++k) {
+          uv_of(ring[k], n, u, v);
+          iv[k] = b.vertex(ring[k], unit(tn[(k + count - 1) % count] + tn[k]), u, v);
+        }
+        for (u32 k = 0; k < count; ++k) {
+          const u32 k1 = (k + 1) % count;
+          if (dot(cross(ring[k] - apex, ring[k1] - apex), n) > 0)
+            b.tri(i_apex, iv[k], iv[k1]);
+          else
+            b.tri(i_apex, iv[k1], iv[k]);
+        }
+      } else {
+        for (u32 k = 1; k + 1 < count; ++k)
+          facet(ring[0], ring[k], ring[k + 1], n, n);
       }
-      for (u32 i = 1; i + 1 < count; ++i)
-        facet(ring[0], ring[i], ring[i + 1], n, n);
+      // The worn arrises: a broken corner's facet down to the stone's set-back corner, and along
+      // each edge from the face proper out to the stone's two set-back corners.
       for (u32 k = 0; k < 4; ++k) {
         const u32 k1 = (k + 1) % 4;
-        if (first[k] != last[k]) facet(qm[k], ring[first[k]], ring[last[k]], n, n);
-        facet(qm[k], qm[k1], ring[first[k1]], n, n);
-        facet(qm[k], ring[first[k1]], ring[last[k]], n, n);
+        const D3& a = ring[first_of[f][k]];
+        const D3& z = ring[last_of[f][k]];
+        if (first_of[f][k] != last_of[f][k]) facet(qm[k], a, z, n, n);
+        facet(qm[k], qm[k1], ring[first_of[f][k1]], n, n);
+        facet(qm[k], ring[first_of[f][k1]], z, n, n);
       }
       continue;
     }
     const D3 q[4] = {c[rings[f][0]], c[rings[f][1]], c[rings[f][2]], c[rings[f][3]]};
     const D3 n = outward(c, f);
+    if ((faces.pillow & face_bit(f)) != 0) {
+      // A bulging side: a point off its middle 3 to 8 mm proud of its corners, four triangles
+      // sharing smooth normals (a cope stone's sides: a split stone's, not a board's).
+      D3 apex{};
+      f64 weight = 0;
+      for (u32 k = 0; k < 4; ++k) {
+        const f64 w = r.range(0.5, 1.5);
+        apex = apex + q[k] * w;
+        weight += w;
+      }
+      const f64 bulge = r.range(0.003, 0.008);
+      apex = apex * (1.0 / weight) + n * bulge;
+      D3 tn[4];
+      D3 all{};
+      for (u32 k = 0; k < 4; ++k) {
+        D3 t = cross(q[k] - apex, q[(k + 1) % 4] - apex);
+        if (dot(t, n) < 0) t = t * -1.0;
+        tn[k] = unit(t);
+        all = all + tn[k];
+      }
+      f64 u, v;
+      uv_of(apex, n, u, v);
+      const u32 i_apex = b.vertex(apex, unit(all), u, v);
+      u32 iv[4];
+      for (u32 k = 0; k < 4; ++k) {
+        uv_of(q[k], n, u, v);
+        iv[k] = b.vertex(q[k], unit(tn[(k + 3) % 4] + tn[k]), u, v);
+      }
+      for (u32 k = 0; k < 4; ++k) {
+        const u32 k1 = (k + 1) % 4;
+        if (dot(cross(q[k] - apex, q[k1] - apex), n) > 0)
+          b.tri(i_apex, iv[k], iv[k1]);
+        else
+          b.tri(i_apex, iv[k1], iv[k]);
+      }
+      continue;
+    }
     u32 id[4];
     for (u32 e = 0; e < 4; ++e) {
       f64 u, v;
@@ -351,10 +455,6 @@ f64 graded(const Section& s, f64 h) {
 constexpr f64 k_dx = 0.01;        // the skyline's sampling, metres
 constexpr f64 k_overhang = 0.12;  // how far a course may run past the module's end
 constexpr f64 k_line = 0.002;     // a face stone's plane off the batter's line, either way
-// The solver's stream of draws, apart from the recipe's version (k_wall_version, which moves
-// the cache): G145b kept G145's stream, so the courses are G145's and the joint residue is
-// measured over the same draws (walls.md, "Joints crossed").
-constexpr u64 k_draw_stream = 1;
 
 struct Skyline {
   f64 x_lo = 0;
@@ -452,8 +552,8 @@ struct Solver {
   // -z face, 0 both: a stone across the wall); a face stone's bed and tail are not drawn, its
   // shown face is split when `rough`, and `split` names more faces to split (a head's end).
   void block(f64 x0, f64 x1, f64 bed, f64 top, f64 za, f64 zb, f64 za_top, f64 zb_top, i32 face,
-             f64 jitter_face, u64 seed, u8 split = 0, bool rough = true, u8 chips = 4,
-             u8 hide = 0) {
+             f64 jitter_face, u64 seed, u8 split = 0, bool rough = true, u8 edge = k_edge_stone,
+             bool crown = true, u8 hide = 0, f64 taper = 0) {
     Rng r{seed};
     const f64 j = 0.004;
     D3 c[8] = {{x0, bed, za},     {x1, bed, za},     {x1, bed, zb},     {x0, bed, zb},
@@ -461,6 +561,17 @@ struct Solver {
     for (D3& p : c) {
       p.x += r.range(-0.002, 0.002);  // a joint 0 to 8 mm wide with the 2 mm gap either side
       p.y += r.range(-j, j);
+    }
+    if (taper > 0) {
+      // A through-stone's ends are a long stone's, not a box's: each end drawn in along the wall
+      // by up to `taper` of its length at each corner and its top edge worn down by up to 6 mm,
+      // so its end is a quadrilateral of its own (its ends' faces are split besides).
+      const f64 len = x1 - x0;
+      for (u32 k = 0; k < 8; ++k) {
+        const f64 in = r.range(0.0, taper) * len;
+        c[k].x += (k == 0 || k == 3 || k == 4 || k == 7) ? in : -in;
+        if (k >= 4) c[k].y -= r.range(0.0, 0.006);
+      }
     }
     if (face != 0) {
       // The face is the ring's z-high side for +z and z-low for -z: jitter it proud or sunk.
@@ -478,7 +589,8 @@ struct Solver {
     }
     faces.split = static_cast<u8>(faces.split | split);
     faces.hidden = static_cast<u8>((faces.hidden | hide) & ~split);
-    faces.chips = chips;
+    faces.edge = edge;
+    faces.crown = crown ? u8{0x3f} : u8{0};
     // Every draw on its own statement: the order of a call's arguments is the compiler's.
     const u32 swatch = static_cast<u32>(r.bits() % k_stone_swatches);
     body(b, c, swatch, faces, r);
@@ -496,9 +608,11 @@ struct Solver {
     const f64 len = x1 - x0;
     const f64 tail_max = std::max(0.12, out_t - 0.04);
     f64 tail = std::clamp(len * rng.range(0.9, 1.5), std::min(0.16, tail_max), tail_max);
-    // A head's runners reach the wall's middle, so its end shows stone and not the hearting.
-    if (head && x0 <= -0.5 * s.L + 1e-6) tail = std::min(out_b, out_t);
-    const f64 in_b = out_b - tail, in_t = out_t - tail;
+    // A head's runners reach a centimetre past the wall's middle at their bed and their top, so
+    // its end shows stone and not the hearting (G145c: reaching the middle only at the top left a
+    // wedge 4 cm wide at the bed between the two faces' runners, the batter's difference).
+    if (head && x0 <= -0.5 * s.L + 1e-6) tail = std::max(out_b, out_t) + 0.01;
+    const f64 in_b = out_b - tail;
     Stone st;
     st.x0 = static_cast<f32>(x0);
     st.x1 = static_cast<f32>(x1);
@@ -510,16 +624,19 @@ struct Solver {
     st.sweep = sweep;
     st.role = role;
     const i32 id = add_stone(st);
-    const f64 g = 0.002;  // a joint's width either side
     // Built to the line (TCV, Placing the stones: "just brushing the line"), so the face's plane
     // is on the batter within 2 mm and only the split face's own relief stands off it. A head's
     // first stone shows its end as well.
     const u8 end = head && x0 <= -0.5 * s.L + 1e-6 ? face_bit(5) : u8{0};
-    // A large face has all four corners knocked off, a small one two (18 or 14 triangles). In a
-    // standing face the stone's top and ends lie against its neighbours and are not drawn: a
-    // joint shows the knocked-back arrises and the hearting's shadow behind them. Where the wall
-    // has fallen, and on the footing (its top is the scarcement), they are.
-    const u8 chips = role == StoneRole::pinning ? 0 : len * (top - bed) >= 0.02 ? 4 : 2;
+    // A walling stone's face is crowned, its arrises worn back by the stone's share (12
+    // triangles); a face under 0.012 m^2 is worn by the small share; a closing stone is fanned
+    // flat (10), and one under 3 cm either way is a plain chip (2). In a standing face the stone's
+    // top and ends lie against its neighbours and are not drawn: a joint shows the worn arrises
+    // and the hearting's shadow behind them. Where the wall has fallen, and on the footing (its
+    // top is the scarcement), they are.
+    const bool closer = role == StoneRole::pinning;
+    const u8 edge = closer || len * (top - bed) < 0.012 ? k_edge_small : k_edge_stone;
+    const bool rough = !(closer && (len < 0.04 || top - bed < 0.04));
     // Near a head the ends are drawn too: the head's end shows its joints, and a look into one
     // meets stone.
     const bool open = ragged(xm) || role == StoneRole::footing || (head && x0 < -0.5 * s.L + 0.6);
@@ -527,13 +644,150 @@ struct Solver {
         open ? (role == StoneRole::footing ? static_cast<u8>(face_bit(3) | face_bit(5)) : u8{0})
              : static_cast<u8>(face_bit(1) | face_bit(3) | face_bit(5));
     const u64 seed = rng.bits();
-    if (side > 0)
-      block(x0 + g, x1 - g, bed, top, in_b, out_b, in_t, out_t, 1, k_line, seed, end, true, chips,
-            hide);
-    else
-      block(x0 + g, x1 - g, bed, top, -out_b, -in_b, -out_t, -in_t, -1, k_line, seed, end, true,
-            chips, hide);
+    // Drawn once the face is whole (`draw_pending`), from the stone as it stands after the seams
+    // are crossed, with a joint's 2 mm either side.
+    pending.push_back({static_cast<u32>(id), seed, end, edge, hide, rough, !closer});
     sky[side > 0 ? 0 : 1].set(x0, x1, top, id);
+  }
+
+  // ---- seams crossed (walls.md, "The module") ----
+  // A face stone is laid in its sweep but drawn once the face is whole, so a seam the sweeps left
+  // (a joint through three courses) is crossed by moving one joint of it along its course before
+  // any stone is drawn: of the two stones meeting there, the one whose band lies within its
+  // neighbour's is lengthened 5 cm past the seam and its neighbour shortened, and what that
+  // leaves open above or below the lengthened stone is closed with the face (`close_faces`).
+  struct Pending {
+    u32 stone = 0;
+    u64 seed = 0;
+    u8 end = 0, edge = 0, hide = 0;
+    bool rough = true, crown = true;
+  };
+  Vector<Pending> pending;
+
+  static bool in_face(const Stone& t) {
+    return t.role == StoneRole::face || t.role == StoneRole::footing ||
+           t.role == StoneRole::through || t.role == StoneRole::tie;
+  }
+  // The lowest face, through or tie stone of a face covering x whose bed is at or above `level`
+  // (the measure module_tests.cpp holds the solver to).
+  i32 on_top(i8 side, f64 x, f64 level) const {
+    i32 best = -1;
+    for (u32 i = 0; i < report.stones.size(); ++i) {
+      const Stone& t = report.stones[i];
+      if (!in_face(t) || (t.side != 0 && t.side != side)) continue;
+      if (static_cast<f64>(t.bed) < level - 0.006) continue;
+      if (x < static_cast<f64>(t.x0) || x > static_cast<f64>(t.x1)) continue;
+      if (best < 0 || t.bed < report.stones[static_cast<u32>(best)].bed) best = static_cast<i32>(i);
+    }
+    return best;
+  }
+  // How many courses above stone `i` the joint at its end runs on, and the stones either side of
+  // it at each.
+  u32 seam(u32 i, i32 (&ls)[3], i32 (&rs)[3]) const {
+    const Stone& s0 = report.stones[i];
+    const f64 x = static_cast<f64>(s0.x1);
+    f64 level = static_cast<f64>(s0.top);
+    u32 levels = 0;
+    for (u32 k = 0; k < 3; ++k) {
+      const i32 l = on_top(s0.side, x - 0.04, level), r = on_top(s0.side, x + 0.04, level);
+      if (l < 0 || r < 0 || l == r) break;
+      const Stone& sl = report.stones[static_cast<u32>(l)];
+      const Stone& sr = report.stones[static_cast<u32>(r)];
+      if (std::abs(static_cast<f64>(sl.x1) - x) >= 0.03 &&
+          std::abs(static_cast<f64>(sr.x0) - x) >= 0.03)
+        break;
+      ls[levels] = l;
+      rs[levels] = r;
+      ++levels;
+      level = std::min(static_cast<f64>(sl.top), static_cast<f64>(sr.top));
+    }
+    return levels;
+  }
+  static bool seam_end(const Stone& t, i8 side) {
+    return (t.role == StoneRole::face || t.role == StoneRole::footing) && t.side == side &&
+           t.x1 <= 1.4f && t.x1 >= -1.4f;
+  }
+  u32 seams_of(i8 side) const {
+    u32 n = 0;
+    i32 ls[3] = {-1, -1, -1}, rs[3] = {-1, -1, -1};
+    for (u32 i = 0; i < report.stones.size(); ++i)
+      if (seam_end(report.stones[i], side)) n += seam(i, ls, rs) >= 2 ? 1u : 0u;
+    return n;
+  }
+  // Moves the joint between stones li and ri by d along the wall; false when it may not.
+  bool shift(u32 li, u32 ri, f64 d) {
+    Stone& l = report.stones[li];
+    Stone& r = report.stones[ri];
+    auto movable = [](const Stone& t) {
+      return t.role == StoneRole::face || t.role == StoneRole::footing;
+    };
+    if (!movable(l) || !movable(r) || l.side != r.side) return false;
+    if (std::abs(static_cast<f64>(l.x1) - static_cast<f64>(r.x0)) > 0.005) return false;
+    const Stone& inner = d > 0 ? l : r;
+    const Stone& outer = d > 0 ? r : l;
+    if (inner.bed < outer.bed - 0.002f || inner.top > outer.top + 0.002f) return false;
+    if (d > 0 && static_cast<f64>(r.x1) - (static_cast<f64>(r.x0) + d) < 0.08) return false;
+    if (d < 0 && (static_cast<f64>(l.x1) + d) - static_cast<f64>(l.x0) < 0.08) return false;
+    l.x1 = static_cast<f32>(static_cast<f64>(l.x1) + d);
+    r.x0 = static_cast<f32>(static_cast<f64>(r.x0) + d);
+    return true;
+  }
+  void cross_seams() {
+    for (const i8 side : {i8{1}, i8{-1}}) {
+      u32 now = seams_of(side);
+      for (u32 i = 0; i < report.stones.size() && now > 0; ++i) {
+        if (!seam_end(report.stones[i], side)) continue;
+        i32 ls[3] = {-1, -1, -1}, rs[3] = {-1, -1, -1};
+        if (seam(i, ls, rs) < 2) continue;
+        bool done = false;
+        for (const u32 k : {1u, 0u})
+          for (const f64 d : {0.05, -0.05}) {
+            if (done) continue;
+            const u32 li = static_cast<u32>(ls[k]), ri = static_cast<u32>(rs[k]);
+            const Stone keep_l = report.stones[li], keep_r = report.stones[ri];
+            if (!shift(li, ri, d)) continue;
+            const u32 after = seams_of(side);
+            if (after < now) {
+              report.seams_crossed += now - after;
+              now = after;
+              done = true;
+            } else {
+              report.stones[li] = keep_l;
+              report.stones[ri] = keep_r;
+            }
+          }
+      }
+      report.seams_left += now;
+    }
+  }
+
+  // Draws the face stones laid so far (and the closing stones), from their stones as they stand
+  // after the seams were crossed: the face on the batter's line at the stone's middle, its tail
+  // the depth it was laid with, a joint's 2 mm either side.
+  void draw_pending() {
+    for (const Pending& p : pending) {
+      const Stone& st = report.stones[p.stone];
+      account(st.role);
+      const f64 x0 = static_cast<f64>(st.x0), x1 = static_cast<f64>(st.x1);
+      const f64 bed = static_cast<f64>(st.bed), top = static_cast<f64>(st.top);
+      const f64 xm = 0.5 * (x0 + x1);
+      f64 out_b = 0.5 * s.width(std::max(bed - s.base(xm), 0.0)),
+          out_t = 0.5 * s.width(std::max(top - s.base(xm), 0.0));
+      if (st.role == StoneRole::footing) {
+        out_b += k_scarcement_m;
+        out_t += k_scarcement_m;
+      }
+      const f64 tail = std::abs(static_cast<f64>(st.z1) - static_cast<f64>(st.z0));
+      const f64 in_b = out_b - tail, in_t = out_t - tail;
+      const f64 g = 0.002;
+      if (st.side > 0)
+        block(x0 + g, x1 - g, bed, top, in_b, out_b, in_t, out_t, 1, k_line, p.seed, p.end, p.rough,
+              p.edge, p.crown, p.hide);
+      else
+        block(x0 + g, x1 - g, bed, top, -out_b, -in_b, -out_t, -in_t, -1, k_line, p.seed, p.end,
+              p.rough, p.edge, p.crown, p.hide);
+    }
+    pending.clear();
   }
 
   // Pinnings: the small stones knocked into the face under a stone where it bridges a hollow.
@@ -558,30 +812,44 @@ struct Solver {
         const f64 xm = 0.5 * (a + z);
         // Its face on the batter's line at its foot and at its top, set back 4 mm; at a head's
         // end it reaches the wall's middle, as the runners do, so the end shows no hearting.
-        const f64 out_t = 0.5 * s.width(std::max(bed - s.base(xm), 0.0)) - 0.004;
-        const f64 out_b = 0.5 * s.width(std::max(low - s.base(xm), 0.0)) - 0.004;
         const bool at_end = head && a <= -0.5 * s.L + 0.02;
-        const f64 deep = at_end ? std::max(out_t, out_b) + 0.01 : 0.08;
-        const f64 out = out_t;
-        Stone st;
-        st.x0 = static_cast<f32>(a);
-        st.x1 = static_cast<f32>(z);
-        st.bed = static_cast<f32>(low);
-        st.top = static_cast<f32>(bed);
-        st.z0 = static_cast<f32>(sg * (out - deep));
-        st.z1 = static_cast<f32>(sg * out);
-        st.side = static_cast<i8>(side);
-        st.sweep = sweep;
-        st.role = StoneRole::pinning;
-        add_stone(st);
-        // A pinning is a chip of stone, its face plain (two triangles; it is a few centimetres).
-        const u8 end = at_end ? face_bit(5) : u8{0};
-        if (side > 0)
-          block(a + 0.003, z - 0.003, low + 0.002, bed - 0.002, out_b - deep, out_b, out_t - deep,
-                out_t, 1, k_line, rng.bits(), end, false);
-        else
-          block(a + 0.003, z - 0.003, low + 0.002, bed - 0.002, -out_b, -out_b + deep, -out_t,
-                -out_t + deep, -1, k_line, rng.bits(), end, false);
+        // A narrow hollow deeper than twice its width and 8 mm is packed with pinnings one on
+        // another, each no taller than that, not with one sliver (G145c: a closing stone is a
+        // stone; face_tests.cpp holds twice and a centimetre).
+        const f64 w = z - a, depth = bed - low;
+        const u32 pieces = w < 0.0505 && depth > 2.0 * w + 0.008
+                               ? static_cast<u32>(std::ceil(depth / (2.0 * w + 0.008) - 1e-9))
+                               : 1u;
+        // In a standing face a pinning's top and ends lie against stone: only its face is drawn.
+        const bool open = ragged(xm) || (head && a < -0.5 * s.L + 0.6);
+        const u8 hide = open ? u8{0} : static_cast<u8>(face_bit(1) | face_bit(3) | face_bit(5));
+        for (u32 p = 0; p < pieces; ++p) {
+          const f64 y0 = low + depth * static_cast<f64>(p) / static_cast<f64>(pieces);
+          const f64 y1 = low + depth * static_cast<f64>(p + 1) / static_cast<f64>(pieces);
+          const f64 out_t = 0.5 * s.width(std::max(y1 - s.base(xm), 0.0)) - 0.004;
+          const f64 out_b = 0.5 * s.width(std::max(y0 - s.base(xm), 0.0)) - 0.004;
+          const f64 deep = at_end ? std::max(out_t, out_b) + 0.01 : 0.08;
+          const f64 out = out_t;
+          Stone st;
+          st.x0 = static_cast<f32>(a);
+          st.x1 = static_cast<f32>(z);
+          st.bed = static_cast<f32>(y0);
+          st.top = static_cast<f32>(y1);
+          st.z0 = static_cast<f32>(sg * (out - deep));
+          st.z1 = static_cast<f32>(sg * out);
+          st.side = static_cast<i8>(side);
+          st.sweep = sweep;
+          st.role = StoneRole::pinning;
+          add_stone(st);
+          // A pinning is a chip of stone, its face plain (two triangles; it is a few centimetres).
+          const u8 end = at_end ? face_bit(5) : u8{0};
+          if (side > 0)
+            block(a + 0.003, z - 0.003, y0 + 0.002, y1 - 0.002, out_b - deep, out_b, out_t - deep,
+                  out_t, 1, k_line, rng.bits(), end, false, k_edge_small, false, hide);
+          else
+            block(a + 0.003, z - 0.003, y0 + 0.002, y1 - 0.002, -out_b, -out_b + deep, -out_t,
+                  -out_t + deep, -1, k_line, rng.bits(), end, false, k_edge_small, false, hide);
+        }
       }
       i = j;
     }
@@ -605,7 +873,9 @@ struct Solver {
     st.role = role;
     const i32 id = add_stone(st);
     const u8 end = role == StoneRole::tie ? face_bit(5) : u8{0};  // a tie shows the head's end
-    block(x0 + 0.002, x1 - 0.002, bed, top, -wb, wb, -wt, wt, 0, 0.0, rng.bits(), end);
+    const u64 seed = rng.bits();
+    block(x0 + 0.002, x1 - 0.002, bed, top, -wb, wb, -wt, wt, 0, 0.0, seed, end, true, k_edge_stone,
+          true, 0, role == StoneRole::through ? 0.06 : 0.0);
     sky[0].set(x0, x1, top, id);
     sky[1].set(x0, x1, top, id);
   }
@@ -772,7 +1042,9 @@ struct Solver {
       }
       if (!any) break;
     }
+    cross_seams();
     close_faces();
+    draw_pending();
   }
 
   // What the sweeps leave open in a standing face — a slot where a course resumed past a joint, a
@@ -825,8 +1097,11 @@ struct Solver {
             i = i1;
             continue;
           }
+          // Carried up no further than twice its width (to 12 cm): a closing stone, not a sliver
+          // (face_tests.cpp); what is left above is the next one's.
+          const u32 tall = std::min(12u, 2u * (i1 - i));
           u32 j1 = j + 1;
-          while (j1 < ny && j1 - j < 12) {
+          while (j1 < ny && j1 - j < tall) {
             bool all = true;
             for (u32 k = i; k < i1 && all; ++k)
               all = open[j1 * nx + k] != 0;
@@ -876,9 +1151,16 @@ struct Solver {
                  {e - 0.002, bed1 + t, hw}, {x + 0.002, bed0 + t, hw}};
       for (D3& p : c)
         p.z += rng.range(-0.008, 0.008);
-      // Its two edges along the faces split, as a face stone's is.
+      // Its two edges along the faces split, as a face stone's is, fanned flat; its bed on the
+      // wall and its ends against its neighbours not drawn, but at a head's end and where a
+      // broken stretch's cover stops.
       const u32 swatch = static_cast<u32>(rng.bits() % k_stone_swatches);
-      body(b, c, swatch, Faces{static_cast<u8>(face_bit(2) | face_bit(4)), 0, 2}, rng);
+      u8 hide = static_cast<u8>(face_bit(0) | face_bit(3) | face_bit(5));
+      if (head && x <= x0 + 1e-9) hide = static_cast<u8>(hide & ~face_bit(5));
+      if (m.kind == ModuleKind::broken && e >= x1 - 1e-9)
+        hide = static_cast<u8>(hide & ~face_bit(3));
+      body(b, c, swatch, Faces{static_cast<u8>(face_bit(2) | face_bit(4)), hide, k_edge_stone, 0},
+           rng);
       cover_x.push_back(x);
       cover_t.push_back(t);
       x = e;
@@ -916,9 +1198,20 @@ struct Solver {
       const f64 t0 = b0 + hc * split0;
       const f64 t1 = b1 + hc * split1;
       const f64 own = rng.range(-2.5, 2.5);
-      const f64 lean_deg = std::clamp(0.5 * prev_lean + own, -4.0, 4.0);
-      prev_lean = lean_deg;
+      // Now and then (one in twelve) a stone leans on the next, 7 to 12 degrees, its foot a
+      // few centimetres off it at the foot, the next set past its top (G145c, a design value: no
+      // source read gives a share); else vertical within 4 degrees, as its neighbour leans.
+      const f64 tilt = rng.next();
+      const bool leaning = !big && !first && tilt < 1.0 / 12.0;
+      const f64 steep = rng.range(7.0, 12.0);
+      const f64 lean_deg = leaning ? steep : std::clamp(0.5 * prev_lean + own, -4.0, 4.0);
+      prev_lean = leaning ? 0.0 : lean_deg;
       const f64 lean = hc * (lean_deg * 3.141592653589793 / 180.0);  // the top's run, small angle
+      // Two in five are wedges, narrower at the top than at the bed by up to half their
+      // thickness, the narrowing on either side (a split stone is seldom square).
+      const f64 shape = rng.next();
+      const f64 wa = shape < 0.4 ? rng.range(0.0, 0.25) * (e - x) : 0.0;
+      const f64 wb = shape < 0.4 ? rng.range(0.0, 0.25) * (e - x) : 0.0;
       Stone st;
       st.x0 = static_cast<f32>(x);
       st.x1 = static_cast<f32>(e);
@@ -929,16 +1222,25 @@ struct Solver {
       st.role = StoneRole::cope;
       add_stone(st);
       const f64 xa = x + 0.002, xb = e - 0.002;
-      D3 c[8] = {{xa, b0, zc - hw},        {xb, b1, zc - hw},        {xb, b1, zc + hw},
-                 {xa, b0, zc + hw},        {xa + lean, t0, zc - hw}, {xb + lean, t1, zc - hw},
-                 {xb + lean, t1, zc + hw}, {xa + lean, t0, zc + hw}};
+      const f64 ta = xa + lean + wa, tb = xb + lean - wb;
+      D3 c[8] = {{xa, b0, zc - hw}, {xb, b1, zc - hw}, {xb, b1, zc + hw}, {xa, b0, zc + hw},
+                 {ta, t0, zc - hw}, {tb, t1, zc - hw}, {tb, t1, zc + hw}, {ta, t0, zc + hw}};
       for (u32 k = 4; k < 8; ++k)
         c[k].z += rng.range(-0.015, 0.015);
-      // Its top split, its arrises knocked back (a cope's top is too narrow for a chip at each
-      // corner); its bed, on the cover, never seen.
+      // Its top split and crowned, worn by the fine share; its two sides (what the field sees)
+      // bulging, so they are split stones and not boards; its bed, on the cover, never seen, nor
+      // its ends against its neighbours but at a head's end and the run's last.
       const u32 swatch = static_cast<u32>(rng.bits() % k_stone_swatches);
-      body(b, c, swatch, Faces{face_bit(1), face_bit(0), 0}, rng);
-      x = e + rng.range(0.002, 0.008);
+      u8 hide = static_cast<u8>(face_bit(0) | face_bit(3) | face_bit(5));
+      if (first) hide = static_cast<u8>(hide & ~face_bit(5));
+      if (e >= x1 - 1e-9) hide = static_cast<u8>(hide & ~face_bit(3));
+      body(b, c, swatch,
+           Faces{face_bit(1), hide, k_edge_fine, face_bit(1),
+                 static_cast<u8>(face_bit(2) | face_bit(4))},
+           rng);
+      const f64 gap = rng.range(0.002, 0.008);
+      // Past a leaner's top, so it rests on the next stone and does not pass into it.
+      x = e + gap + (leaning ? std::max(lean - wb, 0.0) : 0.0);
       first = false;
     }
   }
@@ -984,7 +1286,7 @@ struct Solver {
       add_stone(st);
       // Its top split; its underside, on the ground, never seen.
       const u32 swatch = static_cast<u32>(rng.bits() % k_stone_swatches);
-      body(b, c, swatch, Faces{face_bit(1), face_bit(0), 2}, rng);
+      body(b, c, swatch, Faces{face_bit(1), face_bit(0), k_edge_small, face_bit(1)}, rng);
     }
   }
 
@@ -1107,11 +1409,14 @@ f64 top_of(const void* ctx, f64 x) {
 
 // A box over [x0, x1] on the line y = base(x) + h0..h1, the width w across: the cover, the cope's
 // groups, the outline's top.
-void top_box(Builder& b, const Section& s, f64 x0, f64 x1, f64 h0, f64 h1, f64 hw, u32 swatch) {
+// `h1_end` is the top's height at x1 when the top slants (the mid form's cope), else h1.
+void top_box(Builder& b, const Section& s, f64 x0, f64 x1, f64 h0, f64 h1, f64 hw, u32 swatch,
+             f64 h1_end = -1.0) {
+  const f64 h1b = h1_end >= 0 ? h1_end : h1;
   const D3 c[8] = {{x0, s.base(x0) + h0, -hw}, {x1, s.base(x1) + h0, -hw},
                    {x1, s.base(x1) + h0, hw},  {x0, s.base(x0) + h0, hw},
-                   {x0, s.base(x0) + h1, -hw}, {x1, s.base(x1) + h1, -hw},
-                   {x1, s.base(x1) + h1, hw},  {x0, s.base(x0) + h1, hw}};
+                   {x0, s.base(x0) + h1, -hw}, {x1, s.base(x1) + h1b, -hw},
+                   {x1, s.base(x1) + h1b, hw}, {x0, s.base(x0) + h1, hw}};
   Rng plain{0};  // a plain body draws nothing
   body(b, c, swatch, Faces{}, plain);
 }
@@ -1127,10 +1432,12 @@ void mid_form(Builder& b, const Module& m, const Section& s, const ModuleReport&
   proud.push_back(m.kind == ModuleKind::strip ? 0.0 : -0.004);
   while (h < s.body - 0.02) {
     const f64 t = std::min(graded(s, std::max(h, 0.0)), s.body - h);
+    // A course's middle proud and its joint sunk 16 mm (G145b: 8 mm), so the bands' shading
+    // carries some of the near form's joint shadow at the hand-over.
     levels.push_back(h + 0.5 * t);
     proud.push_back(0.012);
     levels.push_back(h + t);
-    proud.push_back(-0.008);
+    proud.push_back(-0.016);
     h += t;
   }
   const u32 columns = static_cast<u32>(std::ceil((xb - xa) / 0.5));
@@ -1157,30 +1464,31 @@ void mid_form(Builder& b, const Module& m, const Section& s, const ModuleReport&
   const f64 ca = head ? -0.5 * s.L : -0.5 * s.L - 0.02;
   const f64 cb = m.kind == ModuleKind::broken ? broken_from - 0.05 : 0.5 * s.L + 0.02;
   top_box(b, s, ca, cb, s.body, s.body + 0.075, 0.5 * s.top_w + 0.03, k_swatch_mid);
+  // The cope as blocks of three stones, each block's top slanting from its first stone's top to
+  // its last's and the block a centimetre short of the next, so the mid form keeps the cope's
+  // broken skyline where the near form hands it over (G145c; walls.md, "Forms and the LOD
+  // policy") rather than a flat band.
   u32 in_group = 0;
-  f64 gx0 = 0, gtop = 0;
+  f64 gx0 = 0, gtop0 = 0, gtop1 = 0, gx1 = 0;
   for (const Stone& st : report.stones) {
     if (st.role != StoneRole::cope) continue;
+    const f64 xm = 0.5 * static_cast<f64>(st.x0 + st.x1);
+    const f64 above = static_cast<f64>(st.top) - s.base(xm) - s.body;
     if (in_group == 0) {
       gx0 = static_cast<f64>(st.x0);
-      gtop = 0;
+      gtop0 = above;
     }
-    // The block's top above the line, at its stones' highest.
-    const f64 xm = 0.5 * static_cast<f64>(st.x0 + st.x1);
-    gtop = std::max(gtop, static_cast<f64>(st.top) - s.base(xm) - s.body);
+    gtop1 = above;
+    gx1 = static_cast<f64>(st.x1);
     if (++in_group == 3) {
-      top_box(b, s, gx0, static_cast<f64>(st.x1), s.body + 0.07, s.body + gtop, 0.5 * s.top_w,
-              k_swatch_mid);
+      top_box(b, s, gx0, std::max(gx1 - 0.01, gx0 + 0.02), s.body + 0.07, s.body + gtop0,
+              0.5 * s.top_w, k_swatch_mid, s.body + gtop1);
       in_group = 0;
     }
   }
-  if (in_group > 0) {
-    const Stone* last = nullptr;
-    for (const Stone& st : report.stones)
-      if (st.role == StoneRole::cope) last = &st;
-    top_box(b, s, gx0, static_cast<f64>(last->x1), s.body + 0.07, s.body + gtop, 0.5 * s.top_w,
-            k_swatch_mid);
-  }
+  if (in_group > 0)
+    top_box(b, s, gx0, gx1, s.body + 0.07, s.body + gtop0, 0.5 * s.top_w, k_swatch_mid,
+            s.body + gtop1);
 }
 
 void far_form(Builder& b, const Module& m, const Section& s, f64 broken_from) {
@@ -1234,7 +1542,7 @@ bool solve_module(const Module& m, assets::MeshData& out, ModuleReport& report,
   report.length_m = s.L;
   b.indices = &out.indices;
   Solver solver(m, s, b, report,
-                hash_combine(hash_combine(m.seed, k_draw_stream), static_cast<u64>(m.kind)));
+                hash_combine(hash_combine(m.seed, k_wall_version), static_cast<u64>(m.kind)));
   solver.head = m.kind == ModuleKind::head;
   const f64 broken_from = solver.broken_from();
   if (m.kind == ModuleKind::strip) {

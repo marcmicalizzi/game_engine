@@ -3,6 +3,8 @@
 // no line of sight through a standing module's face or a head's end to the far side or into a
 // hole in the hearting. Measured on the solved mesh itself, not on the solver's report.
 
+#include "walls_test_support.h"
+
 #include <domain/walls/walls.h>
 
 #include <doctest/doctest.h>
@@ -48,6 +50,28 @@ struct FaceOf {
   u32 triangles = 0;
   f64 proud_max = -1, proud_min = 1, proud_mean = 0;
   f64 arris_share = 0;
+  // The face proper (its triangles within 25 degrees of the face) projected on the wall's
+  // elevation: its area and its bounding rectangle's, so a rectangle is 1 and a lump less.
+  f64 proper_area = 0;
+  f64 proper_lo_x = 1e9, proper_hi_x = -1e9, proper_lo_y = 1e9, proper_hi_y = -1e9;
+  Vector<V> proper_points;
+  f64 rectangle() const { return (proper_hi_x - proper_lo_x) * (proper_hi_y - proper_lo_y); }
+  // The largest of the face proper's four corner cuts: how far its bounding rectangle's corner is
+  // from the nearest point of it, over the rectangle's shorter side. A rectangle (or one with its
+  // corners only clipped) is near 0; a stone with a corner broken off is a fifth or more.
+  f64 largest_cut() const {
+    const f64 shorter = std::min(proper_hi_x - proper_lo_x, proper_hi_y - proper_lo_y);
+    if (shorter <= 1e-9 || proper_points.empty()) return 0;
+    f64 most = 0;
+    for (const f64 cx : {proper_lo_x, proper_hi_x})
+      for (const f64 cy : {proper_lo_y, proper_hi_y}) {
+        f64 nearest = 1e9;
+        for (const V& p : proper_points)
+          nearest = std::min(nearest, std::sqrt((p.x - cx) * (p.x - cx) + (p.y - cy) * (p.y - cy)));
+        most = std::max(most, nearest);
+      }
+    return most / shorter;
+  }
 };
 
 FaceOf face_of(const Module& m, const assets::MeshData& mesh, const Stone& s) {
@@ -81,7 +105,18 @@ FaceOf face_of(const Module& m, const assets::MeshData& mesh, const Stone& s) {
     if (cosine < 0.02) continue;  // a bed, an end: not the face
     ++f.triangles;
     area += 0.5 * l;
-    if (cosine < std::cos(25.0 * 3.141592653589793 / 180.0)) tilted += 0.5 * l;
+    if (cosine < std::cos(25.0 * 3.141592653589793 / 180.0)) {
+      tilted += 0.5 * l;
+    } else {
+      f.proper_area += 0.5 * std::abs((b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x));
+      for (const V& p : {a, b, c}) {
+        f.proper_points.push_back(p);
+        f.proper_lo_x = std::min(f.proper_lo_x, p.x);
+        f.proper_hi_x = std::max(f.proper_hi_x, p.x);
+        f.proper_lo_y = std::min(f.proper_lo_y, p.y);
+        f.proper_hi_y = std::max(f.proper_hi_y, p.y);
+      }
+    }
     // The line at the stone's middle: a level stone on a slope is built to it there (walls.md,
     // "The face").
     const f64 xm = 0.5 * static_cast<f64>(s.x0 + s.x1);
@@ -283,6 +318,131 @@ TEST_CASE("walls: a face stone is a split slab, not a box") {
   CHECK(arris_sum / stones >= 0.12);
 }
 
+TEST_CASE("walls: a face stone's outline is its own shape, not a rectangle") {
+  // The reels' gneiss (r53, r07, r57) and TCV's characteristic walling stones: a face's outline
+  // is broken at its corners and its sides are not square to each other, so the face proper (what
+  // is within 25 degrees of the face) is a polygon of its own. Measured by its largest corner cut
+  // (`FaceOf::largest_cut`): how far a corner of its bounding rectangle is from it, over the
+  // rectangle's shorter side. Design values (G145c), not run against the base; G145b's face
+  // proper was a rectangle with 10 to 30 mm chips.
+  u32 stones = 0, square = 0;
+  f64 sum = 0, area = 0;
+  for (const u64 seed : {1ull, 2ull, 3ull})
+    for (const i32 grade : {0, 375}) {
+      const Module m = module_of(ModuleKind::run, grade, seed);
+      assets::MeshData mesh;
+      ModuleReport report;
+      std::string error;
+      REQUIRE(solve_module(m, mesh, report, error));
+      for (const Stone& s : report.stones) {
+        if (!inner(s) || (s.x1 - s.x0) * (s.top - s.bed) < 0.012f) continue;
+        const FaceOf f = face_of(m, mesh, s);
+        if (f.triangles < 6 || f.proper_area <= 0) continue;
+        const f64 cut = f.largest_cut();
+        sum += cut;
+        area += f.proper_area / std::max(f.rectangle(), 1e-12);
+        square += cut < 0.1 ? 1u : 0u;
+        ++stones;
+      }
+    }
+  REQUIRE(stones > 150);
+  MESSAGE(stones << " face stones of 0.012 m^2 or more: the largest corner cut is " << sum / stones
+                 << " of the shorter side on average, " << square
+                 << " under 0.1; the face proper covers " << area / stones << " of its rectangle");
+  CHECK(sum / stones >= 0.25);
+  CHECK(square * 10 <= stones);
+}
+
+TEST_CASE("walls: a closing stone is a stone, not a sliver") {
+  // What closes a face (a pinning under a stone, a closing stone where a course resumed) is a
+  // small stone knocked in, not a vertical sliver: one narrower than 5 cm stands no taller than
+  // twice its width and 1 cm. A design value (G145c), run against the base to see it fail:
+  // G145b's closing stones were up to 2 by 12 cm and its pinnings 3 by 34.
+  u32 small = 0, slivers = 0;
+  f64 worst = 0;
+  for (const u64 seed : {1ull, 2ull, 3ull})
+    for (const i32 grade : {0, 250, 500})
+      for (const ModuleKind kind : {ModuleKind::run, ModuleKind::head}) {
+        const Module m = module_of(kind, grade, seed);
+        assets::MeshData mesh;
+        ModuleReport report;
+        std::string error;
+        REQUIRE(solve_module(m, mesh, report, error));
+        for (const Stone& s : report.stones) {
+          if (s.side == 0 || (s.role != StoneRole::pinning && s.role != StoneRole::face)) continue;
+          if (s.x0 < -1.4f || s.x1 > 1.4f) continue;  // the module's ends meet the next one's
+          const f64 w = static_cast<f64>(s.x1 - s.x0), h = static_cast<f64>(s.top - s.bed);
+          if (w >= 0.05) continue;
+          ++small;
+          CHECK(w >= 0.02 - 1e-6);
+          if (h > 2.0 * w + 0.01) {
+            if (slivers++ == 0)
+              MESSAGE("the first sliver: role " << static_cast<u32>(s.role) << ", " << w << " by "
+                                                << h << " at " << s.x0 << ", " << s.bed << " (kind "
+                                                << static_cast<u32>(kind) << ", grade " << grade
+                                                << ", seed " << seed << ")");
+          }
+          worst = std::max(worst, h / w);
+        }
+      }
+  MESSAGE(small << " stones narrower than 5 cm, " << slivers << " slivers, tallest " << worst
+                << " times its width");
+  CHECK(slivers == 0);
+}
+
+TEST_CASE("walls: the near form keeps its budget") {
+  // G145's near form was 1,458 triangles a metre (walls.md, "Budgets": 145,788 for 100 m of
+  // wall on a 1 in 8 slope); G145b's split faces took it to 1,979 and three vertices a triangle.
+  // Measured the same way, a straight 100 m on 1 in 8, and held at G145's figure and the
+  // vertices (an entry's bytes) at 3,500 a metre, a design value; G145b fails both (1,979
+  // triangles a metre measured this way, flat-shaded at three vertices a triangle; and 2,532
+  // and 7,143 a metre over stretches at grades 0, 250 and 500, run against it).
+  Layer layer;
+  WallLine line;
+  line.points_mm = {0, 0, 100000, 0};
+  layer.lines.push_back(line);
+  Plan plan;
+  std::string why;
+  REQUIRE(make_plan(layer, 32000, plan, why));
+  Vector<Module> kit;
+  kit_recipes(layer, kit);
+  f64 tris = 0, verts = 0, steep = 0, steep_m = 0;
+  Vector<u32> tris_of, verts_of;
+  tris_of.resize(kit.size(), 0);
+  verts_of.resize(kit.size(), 0);
+  const walls::test::TestPlane plane{0.125, 0.0, 0.0};
+  const scene_gen::Ground ground = walls::test::ground_of(plane);
+  for (const Slot& s : plan.slots) {
+    // The module standing on 1 in 8, as the placement test stands it.
+    const u32 k = stand_slot(plan, layer, s, ground).placement.mesh;
+    if (tris_of[k] == 0) {
+      assets::MeshData mesh;
+      ModuleReport report;
+      REQUIRE(solve_module(kit[k], mesh, report, why));
+      tris_of[k] = report.near_triangles;
+      // The finest form's vertices: those its indices name (the coarser forms' come after).
+      u32 top = 0;
+      for (const u32 i : mesh.indices)
+        top = std::max(top, i);
+      verts_of[k] = top + 1;
+    }
+    tris += tris_of[k];
+    verts += verts_of[k];
+  }
+  for (const u64 seed : {1ull, 2ull}) {
+    assets::MeshData mesh;
+    ModuleReport report;
+    REQUIRE(solve_module(module_of(ModuleKind::run, 500, seed), mesh, report, why));
+    steep += report.near_triangles;
+    steep_m += report.length_m;
+  }
+  MESSAGE("near form, 100 m on 1 in 8: " << tris / 100.0 << " triangles and " << verts / 100.0
+                                         << " vertices a metre; a stretch at 1 in 2: "
+                                         << steep / steep_m << " triangles a metre");
+  CHECK(tris / 100.0 <= 1460.0);
+  CHECK(verts / 100.0 <= 3500.0);
+}
+
 TEST_CASE("walls: the face is flush to the batter's line") {
   // TCV, Building (Placing the stones): each stone "almost touching or just brushing the line",
   // none to "project beyond the general face of the wall". A face stone's high point stands no
@@ -373,8 +533,8 @@ TEST_CASE("walls: no line of sight through a face or a head's end") {
   // reach the far side, the hearting may show only in joints (a line, never a 3 cm hole), and
   // the share of rays that meet it is a joint's, not a gap's.
   u32 rays = 0, hearting = 0, slant_hole = 0;
-  // One seed: 12 s in msvc-debug for two, each a few hundred thousand ray-triangle tests a module.
-  for (const u64 seed : {1ull})
+  // Two seeds: 11 s in msvc-debug at G145c's triangles (G145b ran one; two took it 12 to 16 s).
+  for (const u64 seed : {1ull, 2ull})
     for (const i32 grade : {0, 375})
       for (const ModuleKind kind : {ModuleKind::run, ModuleKind::head}) {
         const Module m = module_of(kind, grade, seed);
