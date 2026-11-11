@@ -443,6 +443,35 @@ TEST_CASE("walls: the near form keeps its budget") {
   CHECK(verts / 100.0 <= 3500.0);
 }
 
+TEST_CASE("walls: every triangle faces the way its normals say") {
+  // A triangle wound against its own vertices' normals is culled from the side it should show:
+  // the eye sees into the stone (G145c's first cope sides). Every triangle of every form.
+  for (const ModuleKind kind :
+       {ModuleKind::run, ModuleKind::head, ModuleKind::broken, ModuleKind::fallen})
+    for (const u64 seed : {1ull, 2ull}) {
+      assets::MeshData mesh;
+      ModuleReport report;
+      std::string error;
+      REQUIRE(solve_module(module_of(kind, 250, seed), mesh, report, error));
+      u32 against = 0, first = ~0u;
+      for (u32 t = 0; t + 2 < mesh.indices.size(); t += 3) {
+        const u32 i0 = mesh.indices[t], i1 = mesh.indices[t + 1], i2 = mesh.indices[t + 2];
+        const V a = at(mesh, i0), b = at(mesh, i1), c = at(mesh, i2);
+        const V g = crs(sub(b, a), sub(c, a));
+        const Vec3 n0 = mesh.normals[i0], n1 = mesh.normals[i1], n2 = mesh.normals[i2];
+        const V n{static_cast<f64>(n0.x + n1.x + n2.x), static_cast<f64>(n0.y + n1.y + n2.y),
+                  static_cast<f64>(n0.z + n1.z + n2.z)};
+        if (dt(g, g) < 1e-16) continue;
+        if (dt(g, n) < 0) {
+          if (first == ~0u) first = t / 3;
+          ++against;
+        }
+      }
+      INFO("kind " << static_cast<u32>(kind) << " seed " << seed << ": first triangle " << first);
+      CHECK(against == 0);
+    }
+}
+
 TEST_CASE("walls: the face is flush to the batter's line") {
   // TCV, Building (Placing the stones): each stone "almost touching or just brushing the line",
   // none to "project beyond the general face of the wall". A face stone's high point stands no

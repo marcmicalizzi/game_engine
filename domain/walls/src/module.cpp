@@ -1198,20 +1198,21 @@ struct Solver {
       const f64 t0 = b0 + hc * split0;
       const f64 t1 = b1 + hc * split1;
       const f64 own = rng.range(-2.5, 2.5);
-      // Now and then (one in twelve) a stone leans on the next, 7 to 12 degrees, its foot a
-      // few centimetres off it at the foot, the next set past its top (G145c, a design value: no
-      // source read gives a share); else vertical within 4 degrees, as its neighbour leans.
+      // Now and then (one in fifteen) a stone leans on the next, 5 to 8 degrees, its foot a few
+      // centimetres off it, the next set past its top (G145c, a design value: no source read
+      // gives a share); else vertical within 4 degrees, as its neighbour leans.
       const f64 tilt = rng.next();
-      const bool leaning = !big && !first && tilt < 1.0 / 12.0;
-      const f64 steep = rng.range(7.0, 12.0);
+      const bool leaning = !big && !first && tilt < 1.0 / 15.0;
+      const f64 steep = rng.range(5.0, 8.0);
       const f64 lean_deg = leaning ? steep : std::clamp(0.5 * prev_lean + own, -4.0, 4.0);
       prev_lean = leaning ? 0.0 : lean_deg;
       const f64 lean = hc * (lean_deg * 3.141592653589793 / 180.0);  // the top's run, small angle
-      // Two in five are wedges, narrower at the top than at the bed by up to half their
-      // thickness, the narrowing on either side (a split stone is seldom square).
+      // Three in ten are wedges, narrower at the top than at the bed by up to a fifth of their
+      // thickness, the narrowing on either side (a split stone is seldom square; G145c's first
+      // pictures, at a half, opened gaps the sky showed through).
       const f64 shape = rng.next();
-      const f64 wa = shape < 0.4 ? rng.range(0.0, 0.25) * (e - x) : 0.0;
-      const f64 wb = shape < 0.4 ? rng.range(0.0, 0.25) * (e - x) : 0.0;
+      const f64 wa = shape < 0.3 ? rng.range(0.0, 0.10) * (e - x) : 0.0;
+      const f64 wb = shape < 0.3 ? rng.range(0.0, 0.10) * (e - x) : 0.0;
       Stone st;
       st.x0 = static_cast<f32>(x);
       st.x1 = static_cast<f32>(e);
