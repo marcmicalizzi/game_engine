@@ -12,11 +12,18 @@
 #
 # Pure CPU arithmetic: `assets` for the mesh and the generator registry, `geometry` for the cluster
 # build, `materials` and `texture` for a pack's limestone. No GPU, no ECS.
-engine_schema_library(NAME caves_schemas SCHEMAS schemas/caves.schema CAPABILITY caves)
+engine_schema_library(NAME caves_schemas SCHEMAS schemas/caves.schema DEPS schemas CAPABILITY caves)
 
-engine_module(NAME caves LAYER domain OPTIONAL WHOLE_ARCHIVE GENERATOR mesh:cave
-  DEPS base containers math hash json schema log io assets geometry materials texture caves_schemas
-  SOURCES src/caves.cpp src/passage.cpp)
+engine_module(NAME caves LAYER domain OPTIONAL WHOLE_ARCHIVE
+  GENERATOR mesh:cave mesh:cavecell placement:caves
+  DEPS base containers math hash json schema log io assets geometry materials texture scene_gen
+       gfx caves_schemas
+  SOURCES src/caves.cpp src/passage.cpp src/field.cpp src/network_plan.cpp src/network_cells.cpp
+          src/network_svg.cpp src/network_placement.cpp)
 
 engine_module_tests(NAME caves
-  SOURCES tests/caves_tests.cpp tests/size_table.cpp)
+  SOURCES tests/caves_tests.cpp tests/network_plan_tests.cpp tests/network_cell_tests.cpp
+          tests/size_table.cpp)
+
+engine_module_bench(NAME caves
+  SOURCES bench/caves_bench.cpp)

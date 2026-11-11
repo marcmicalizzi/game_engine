@@ -76,6 +76,10 @@ int matgen_command(int argc, char** argv);
 // (routes_commands.cpp, docs/subsystems/routes.md); present when this build has the routes
 // capability.
 int routes_command(int argc, char** argv);
+// A cave network's plan against a hillside, as a plan view, a long section and the holes its
+// mouths ask of the terrain (caves_commands.cpp, docs/subsystems/caves.md); present when this
+// build has the caves capability.
+int caves_command(int argc, char** argv);
 int soil_command(int argc, char** argv);
 int vine_command(int argc, char** argv);   // cover_commands.cpp
 int cover_command(int argc, char** argv);  // cover_commands.cpp

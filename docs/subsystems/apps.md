@@ -418,6 +418,16 @@ a scene's `channels` placement draws in each.
 over the terrain before its edits and writes the treads as `Bench` edits, their mask regions and the
 plan keys to paste ([routes](routes.md#in-a-scene); roadmap W96).
 
+## engine-content cave-plan: a cave network as a survey
+
+`engine-content cave-plan <network.json> <out dir> [--ground <valley>,<slope_x>[,<flank_m>]]
+[--doline <x>,<z>,<radius>,<depth>] [--tile <m>] [--name <stem>] [--cells] [--build]` plans an
+`engine.caves.Network` ([caves](caves.md#the-command); roadmap G146) against a hillside given by a
+few numbers and writes a plan view and a long section as SVG and the holes its mouths ask of the
+terrain as `engine.scene.TerrainHole` polygons; one JSON line of the plan's numbers, with every
+cell's triangles and milliseconds under `--cells` and its container under `--build`. No GPU.
+Present with the caves capability; without it the command says so and exits 1.
+
 ## engine-content landform: a region sketch solved into an eroded ground
 
 `engine-content landform <sketch.json> <out dir> [--name <stem>] [--jobs <n>] [--no-relief]`

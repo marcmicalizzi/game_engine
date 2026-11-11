@@ -197,6 +197,11 @@ const char* k_usage =
     "                                          the scene's footpaths as benched treads (edits),\n"
     "                                          their mask regions and plan keys; present with\n"
     "                                          the routes capability\n"
+    "  cave-plan <network.json> <out dir> [--ground <valley>,<slope_x>[,<flank_m>]] [--cells]\n"
+    "                                          a cave network's plan against a hillside: a plan\n"
+    "                                          view, a long section, the holes its mouths ask\n"
+    "                                          of the terrain; --cells solves every cell;\n"
+    "                                          present with the caves capability\n"
     "  vine <recipe.vine.json> <out.clusters>|--cache [--ddc <dir>] [--force]\n"
     "  cover <recipe.cover.json> <out.clusters>|--cache [--ddc <dir>] [--force]\n"
     "                                          grow a vine or organic cover over the host its\n"
@@ -1409,6 +1414,7 @@ int main(int argc, char** argv) {
   if (command == "landform") return content::landform_command(argc, argv);
   if (command == "matgen") return content::matgen_command(argc, argv);
   if (command == "routes") return content::routes_command(argc, argv);
+  if (command == "cave-plan") return content::caves_command(argc, argv);
   if (command == "vine") return content::vine_command(argc, argv);
   if (command == "cover") return content::cover_command(argc, argv);
   if (command == "morphs") return content::morphs_command(argc, argv);
