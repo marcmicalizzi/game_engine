@@ -13,6 +13,7 @@
 #include <test_temp_dir.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstring>
 #include <limits>
@@ -2325,4 +2326,58 @@ TEST_CASE("channels: the clasts' recipes and mesh are pinned") {
   CHECK(recipes == 7519227035656357816ull);
   CHECK(positions == 14068701233020217500ull);
   CHECK(indices == 14738498776935463833ull);
+}
+
+// **What a tile of bed costs** (W97; measured, printed; the numbers channels.md, "What a tile
+// costs", quotes): the gentle valley drained at W93's scratch scene's hydraulic geometry (14 m and
+// 1.2 m at a square kilometre), so its trunk is a stream metres wide. Laying every clast of the
+// region (what `open` does beside the plan), and the busiest 64 m tile's mesh and container (what
+// its activation builds): clasts and triangles a square metre at the finest and coarsest forms.
+TEST_CASE("channels: what a tile of bed costs (measured, printed)") {
+  ChannelLayer p = layer();
+  p.width_at_km2_m = 14;
+  p.depth_at_km2_m = 1.2f;
+  p.head_threshold_m2 = 300;
+  ChannelNetwork n;
+  std::string error;
+  REQUIRE(plan_channels(p, ground(gentle), 3, nullptr, n, error));
+  Vector<PlacedPiece> pieces;
+  ClastLog log;
+  const auto laid_at = std::chrono::steady_clock::now();
+  REQUIRE(place_pieces(p, n, ground(gentle), 64, pieces, error, &log));
+  const f64 lay_ms =
+      std::chrono::duration<f64, std::milli>(std::chrono::steady_clock::now() - laid_at).count();
+  REQUIRE_FALSE(pieces.empty());
+  f64 area = 0;
+  for (const f64 a : log.area_m2)
+    area += a;
+  u32 busiest = 0;
+  for (u32 i = 1; i < pieces.size(); ++i)
+    if (clast_count(pieces[i].recipe) > clast_count(pieces[busiest].recipe)) busiest = i;
+  const PlacedPiece& piece = pieces[busiest];
+  geometry::ClusterFileData data;
+  const auto built = std::chrono::steady_clock::now();
+  REQUIRE_MESSAGE(build_piece_container(piece.recipe, {}, 0, data, error), error);
+  const f64 build_ms =
+      std::chrono::duration<f64, std::milli>(std::chrono::steady_clock::now() - built).count();
+  u64 root = 0;
+  for (u32 k = 0; k < data.mesh.lod.size(); ++k)
+    if (data.mesh.lod[k].parent_error == geometry::k_lod_terminal_error)
+      root += data.mesh.mesh.clusters[k].triangle_count;
+  // The tile's share of the bed's area, by its share of the clasts (the cells are not kept a
+  // tile): an estimate, said so on the page.
+  const f64 share =
+      static_cast<f64>(clast_count(piece.recipe)) / static_cast<f64>(log.clasts.size());
+  const f64 tile_area = area * share;
+  const ChannelSediment& trunk = n.links.back().sediment[n.links.back().line.size() / 2];
+  MESSAGE("region: ", log.clasts.size(), " clasts over ", area, " m2 of bed (",
+          static_cast<f64>(log.clasts.size()) / area, " a m2) in ", pieces.size(),
+          " tiles, laid in ", lay_ms, " ms; a trunk point's D50 ", 1e3 * trunk.d50_m, " mm, D84 ",
+          1e3 * trunk.d84_m, " mm, cover ", trunk.cover, "; busiest tile ",
+          clast_count(piece.recipe), " clasts over about ", tile_area, " m2, finest ",
+          data.mesh.leaf_triangle_count, " triangles (",
+          static_cast<f64>(data.mesh.leaf_triangle_count) / tile_area, " a m2), coarsest ", root,
+          " (", static_cast<f64>(root) / tile_area, " a m2), built in ", build_ms, " ms");
+  CHECK(data.mesh.leaf_triangle_count > 0);
+  CHECK(root < data.mesh.leaf_triangle_count);
 }

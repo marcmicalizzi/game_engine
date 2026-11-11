@@ -274,6 +274,33 @@ clast has faces and a rounded one none; **the triangles wholly under the lowest 
 are left out**, so each clast is open only underground (`channels: the placed pieces ...`). The
 cluster LOD DAG of the tile's mesh is its far form.
 
+### What a tile costs
+
+`channels: what a tile of bed costs (measured, printed)`, msvc-release, 2026-11-10 22:45, the
+machine at 100 % CPU (`Win32_Processor.LoadPercentage` before and after: other agents' builds), so
+every time is an upper bound, one run. The gentle test valley drained at W93's scratch scene's
+hydraulic geometry (a trunk 3 to 5 m wide, its D50 49 mm, D84 112 mm, 36 % of its bed under clasts
+of 64 mm or more):
+
+| Measured | |
+|---|---:|
+| Clasts, the region (14 tiles of 64 m) | 66,253 over 2,443 m² of bed: 27 a m² |
+| Laying them all (what `open` adds to the plan) | 98 ms |
+| The busiest tile's clasts | 12,251 over about 452 m² (its share of the clasts times the bed's area: an estimate) |
+| Its finest form | 610,781 triangles: 1,352 a m² |
+| Its coarsest (the DAG's roots) | 17 triangles: the far form is the bed's material, the clasts gone |
+| Its activation (solve, cluster DAG) | 2.9 s |
+| W93's scratch scene (`engine-content channels`) | 65,611 clasts over 474 m of channel, 14 tiles |
+
+**Where the triangles go**: a clast under 128 mm is 48 triangles before those under the ground
+are left out, and on a lognormal bed most clasts are the smallest drawn. 1,352 a square metre is nearly five
+times the deposits' finest (rocks.md, "Where the triangles go"); the cluster DAG draws a tile's
+far clasts coarse, and `clast_min_mm` is the knob (128 mm takes the count to about a quarter on
+such a bed). **Resident**: the plan's `ChannelSediment`, 32 bytes a point of line (64 bytes a
+metre at the 0.5 m step); `open` keeps each tile's recipe path and placement, not the clasts; a
+recipe is 12 integers a clast (about 60 bytes of JSON). What scales with the world: the plan, by
+its length of channel; the recipes and meshes, by its area of bed.
+
 ## In a scene
 
 ```json
