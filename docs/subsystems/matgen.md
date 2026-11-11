@@ -264,8 +264,13 @@ Judged 2026-11-10 from the images themselves (base colour and normal at 1,024 sq
 the owner's reference reels r03 and the cobble riffle's motion sheet (a clear river over
 cobbles, a pale gravel bar), r19 (a torrent among grey boulders under scree), r01 (meadow
 floors) and r23 (dark wet rock under moss). **Not judged in the engine**: the night's GPU lock
-was never had, so no set was seen lit, on a mesh, or at a distance; that is the first thing to
-do with them. The bar is a photograph, and none of these is one:
+was never had, so no set was seen on a mesh, under the sky, or at a distance; that is the first
+thing to do with them. The nearest thing looked at was a CPU preview — the base colour lit
+through the set's own normal map by one raking light, straight down, two tiles by two — in
+which the gravel reads as a pebble bed with no seam, its largest cobbles plainly repeating
+every metre, and the scree as crushed angular stone lying on a dark floor rather than a deep
+talus: its gaps are too wide and too flat, and the lower layer of blocks is lost in them. The
+bar is a photograph, and none of these is one:
 
 - *`gravel/bed`* reads as a bed of rounded pebbles and small cobbles of several rocks, shingled
   down the flow, some crossed by a vein. Beside r03: every clast is a clean oval of one tone —
@@ -301,6 +306,12 @@ do with them. The bar is a photograph, and none of these is one:
 - **Roughness is one channel in a BC7 slot**, as every pack's.
 - **Fall sorting, ripples, a wet margin**: one set is one state; a bar's ripples and the sorting
   down a cone are the placement's or a later kind's.
+- **The openwork lower layer** is one layer of the same blocks, drawn dark; a talus wants its
+  gaps narrowed by blocks wedged at every depth, and their shade to deepen with it.
+- **Repetition.** A granular set is tiled, and a one-metre bed's largest cobbles repeat in
+  plain sight at ten metres; the stochastic placement cannot be used on clasts as it is (three
+  offsets blended ghost them), so the cure is a larger tile, several sets by a mask, or a
+  placement of whole clasts in the resolve.
 - The numbers marked not verified on the grounding page.
 
 ## Capability contract (ADR-0027)
