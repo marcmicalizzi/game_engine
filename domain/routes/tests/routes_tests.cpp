@@ -190,7 +190,7 @@ TEST_CASE("routes: the plan is the same bytes from any thread count and any host
   MESSAGE("plan " << plan_hash << " edits " << edit_hash << " key " << plan_key_text(one.key) << " "
                   << serial.network.length_m << " m");
   CHECK(plan_hash == 9261413012588863944ull);
-  CHECK(edit_hash == 5364647451644046780ull);
+  CHECK(edit_hash == 8388828807951059492ull);
 }
 
 // **One plan** (routes.md, "One plan"): made once and written; asked again, read; named, read

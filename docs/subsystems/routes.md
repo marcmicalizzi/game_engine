@@ -79,8 +79,11 @@ pinned on MSVC for Clang and GCC to reproduce.
 
 `tread_edits_json` writes each line as an `engine.scene.TerrainEdit`: mode `Bench`, its points the
 stations thinned to those a straight run misses by more than 5 mm in x, z or y, `width_m` the tread's,
-`bank_slope` the layer's `backslope` (1, the notebook's 1:1), `fill_slope` (0.5, W98's) and
-`bank_round` the layer's `edge_round` (0.15). The tile set then cuts the uphill side and fills the
+`bank_slope` the layer's `backslope` (1, the notebook's 1:1), `fill_slope` (0.5, W98's),
+`bank_round` the layer's `edge_round` (0.15), and `face_m` 1 m and `fill_m` 0.5 m before the faces
+run out. A full bench cuts the tread's width times the side slope (0.33 m for 0.6 m at 55 %, the
+steepest side slope the notebook switchbacks on) and fills only hollows; W98's 2 m each reached eight
+metres off the tread and made a tile with a tread across it cost 10.5 ms against 1.35 ms (below). The tile set then cuts the uphill side and fills the
 downhill, the tread flat across its width to the millimetre (W98's bench), and the faces meet the
 ground: the tread test holds the edited ground two metres past each edge to the ground as it was, and
 every 5 cm across to no step steeper than the faces.
@@ -151,9 +154,24 @@ the bodies and channels read, the crossings and their metres, and the output's b
 
 ## Budgets
 
-| What | Number | Machine |
-|---|---|---|
-| Plan, 2 km² of lattice | see the measurement table in the roadmap row (W96) | `msvc-release`, state quoted there |
+`msvc-release`, `engine_routes_bench --wait-quiet=120 --repeats=5`, 2026-11-11 01:20 to 01:30, on a
+shared machine (other processes at 16 to 42 % of the CPU, the GPU lock held by another agent): every
+number is an upper bound.
+
+| What | Number |
+|---|---|
+| Plan, one route across a 126 m square (64 × 64 points at 2 m) | 15.4 ms |
+| Plan, across a 254 m square (128 × 128), about 360 m of route | 93 ms |
+| Plan, across a 510 m square (256 × 256) | 475 ms |
+| One 64-cell tile at 25 cm with a tread across it (`TerrainEdits::apply`), faces 1 m and 0.5 m | 1.35 ms |
+| The same with W98's default faces, 2 m and 2 m | 10.5 ms |
+| A wear query (`RouteWear::cover_mm`) | 28 to 38 ns |
+| The plan file, 335 m of route (the scratch basin's five lines) | 22.4 KB, about 67 bytes a metre |
+| The edits written for them (`engine-content routes`'s output) | 103 KB, about 300 bytes a metre |
+
+The planner is about 7 µs a lattice point at 128 × 128, growing a little faster than the region
+(the heap); a 1 km² region at 2 m (250,000 points) is about two seconds, once, cached after. The
+tile cost is paid once a tile is built, not a frame.
 
 What scales with the world: the plan file grows with the metres of route (one 32-byte station every
 `station_m`, one cell index every lattice step); the search's working set with the region (16 states a

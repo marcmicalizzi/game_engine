@@ -63,6 +63,13 @@ struct RouteLayer @version(1) {
   /// (0.5, W98's batter).
   backslope: f32 = 1
   fill_slope: f32 = 0.5
+  /// How far the cut bank rises at `backslope`, and the fill falls at `fill_slope`, before each runs
+  /// out (`TerrainEdit.face_m`, `fill_m`), metres, 0.1 to 10. A full bench cuts the tread's width
+  /// times the side slope (0.6 m at 55 %, the steepest side slope the notebook switchbacks on, is
+  /// 0.33 m) and fills only hollows, so 1 m and 0.5 m; W98's 2 m each made a tile with a tread across
+  /// it cost ten times as much (routes.md, "Budgets") for faces that met the ground long before.
+  face_m: f32 = 1 @unit(m)
+  fill_m: f32 = 0.5 @unit(m)
   /// The edit's rounding where a face meets the ground (`TerrainEdit.bank_round`, a share of the
   /// face's height there), 0.1 to 1. 0.15: a tread's edge is a lip, not a shoulder; at W98's 0.75 a
   /// fill face at 1 on 2 under a 30 % side slope lifts the ground 8 cm two metres off the tread,

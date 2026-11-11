@@ -2,8 +2,12 @@
 // routes.md, "Budgets"): the planner over a square region of a hillside with one route across it
 // (the argument is the region's side in lattice points at 2 m), and the wear query a placement
 // makes per candidate point.
+#include <core/schema/json_reflect.h>
 #include <domain/routes/routes.h>
+#include <domain/tileset/cuts.h>
 #include <foundation/bench/bench.h>
+
+#include <cmath>
 
 using namespace engine;
 
@@ -42,6 +46,44 @@ ENGINE_BENCH_ARGS(routes_plan, "routes.plan", 64, 128, 256) {
     bench::keep(n.length_m);
   }
   state.set_items(side * side);
+}
+
+// **A tile's cost with a tread across it** (routes.md, "Budgets"): the treads of a planned network
+// as the tile set builds them, applied to one 64-cell tile at 25 cm that a tread crosses (the
+// argument: the tiles' cells a side).
+ENGINE_BENCH_ARGS(routes_tread_tile, "routes.tread_tile", 64) {
+  const i64 cells = static_cast<i64>(state.arg());
+  const routes::RouteLayer p = layer(128);
+  scene_gen::Ground g;
+  g.surface_fn = &hillside;
+  std::string error;
+  routes::RouteNetwork n;
+  routes::plan_routes(p, g, nullptr, n, error);
+  const JsonValue list = routes::tread_edits_json(p, n);
+  Vector<scene::TerrainEdit> edits;
+  for (const JsonValue& e : list.as_array()) {
+    scene::TerrainEdit edit;
+    schema::ReadContext reader;
+    if (schema::from_json(edit, e, reader)) edits.push_back(edit);
+  }
+  tileset::TerrainEdits built;
+  built.build({edits.data(), edits.size()}, &error);
+  // The tile centred on the middle station of the first line, at 25 cm.
+  const i64 spacing = 250;
+  const routes::Station& mid = n.lines[0].stations[n.lines[0].stations.size() / 2];
+  const i64 i0 = static_cast<i64>(mid.at.x * 4.0) - cells / 2;
+  const i64 j0 = static_cast<i64>(mid.at.z * 4.0) - cells / 2;
+  Vector<i32> heights(static_cast<u32>(cells * cells), 0);
+  u64 changed = 0;
+  while (state.keep_running()) {
+    for (i64 j = 0; j < cells; ++j)
+      for (i64 i = 0; i < cells; ++i)
+        heights[static_cast<u32>(j * cells + i)] = static_cast<i32>(
+            std::llround(hillside(nullptr, (i0 + i) * spacing, (j0 + j) * spacing) * 1000.0));
+    changed += built.apply(spacing, i0, j0, cells, cells, {heights.data(), heights.size()});
+    bench::keep(changed);
+  }
+  state.set_items(static_cast<u64>(cells * cells));
 }
 
 ENGINE_BENCH_ARGS(routes_wear, "routes.wear", 1024, 16384) {

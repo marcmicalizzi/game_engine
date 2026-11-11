@@ -404,6 +404,8 @@ bool layer_in_range(const RouteLayer& p, std::string& error) {
   if (!in(wide(p.backslope), .25, 8)) return fail(error, "backslope (0.25 to 8)");
   if (!in(wide(p.fill_slope), .1, 8)) return fail(error, "fill_slope (0.1 to 8)");
   if (!in(wide(p.edge_round), .1, 1)) return fail(error, "edge_round (0.1 to 1)");
+  if (!in(wide(p.face_m), .1, 10) || !in(wide(p.fill_m), .1, 10))
+    return fail(error, "face_m and fill_m (0.1 to 10)");
   if (!in(wide(p.wear_m), 0, 20)) return fail(error, "wear_m (0 to 20)");
   if (!in(wide(p.tread_cover), 0, 1)) return fail(error, "tread_cover (0 to 1)");
   if (!in(wide(p.tread_feather_m), 0, 2)) return fail(error, "tread_feather_m (0 to 2)");
@@ -725,6 +727,8 @@ JsonValue tread_edits_json(const RouteLayer& p, const RouteNetwork& net) {
     o["bank_slope"] = JsonValue(static_cast<f64>(p.backslope));
     o["fill_slope"] = JsonValue(static_cast<f64>(p.fill_slope));
     o["bank_round"] = JsonValue(static_cast<f64>(p.edge_round));
+    o["face_m"] = JsonValue(static_cast<f64>(p.face_m));
+    o["fill_m"] = JsonValue(static_cast<f64>(p.fill_m));
     list.push_back(std::move(o));
   }
   return list;
