@@ -33,10 +33,16 @@ TEST_CASE("walls: modules and placements are the same bytes on every toolchain")
   // a call's arguments are evaluated in the compiler's order, and with two draws among them MSVC
   // and GCC agreed with each other and not with Clang. G145b (k_wall_version 2) moved the four
   // module pins: split faces with knocked-back arrises, faces built to the line, closed faces, the
-  // cope's variation and the palette's mean swatch; the placement pin did not move. A replacement
-  // records its reason and commit here.
-  constexpr u64 expected[] = {0x880da522c6ddef55ull, 0xa95a28cb08757e7dull, 0x50385d342922622dull,
-                              0x91ac6065372b52ffull, 0xf75f3d8efeaeb99aull};
+  // cope's variation and the palette's mean swatch; the placement pin did not move. G145c
+  // (k_wall_version 3) moved the four module pins again: draws keyed by the version (G145b's
+  // separate stream removed), faces of their own shape with crowns and worn arrises, closing
+  // stones and pinnings no slivers, seams crossed before the faces are drawn, the cope's wedges,
+  // leaners and bulging sides, the mid form's cope skyline; the placement pin did not move. Its
+  // second commit moved the three that have a cope (its top bulging rather than split, its ends
+  // drawn, its wedges and leaners toned down, the mid form's cope striped). A replacement records
+  // its reason and commit here.
+  constexpr u64 expected[] = {0x264d57e35394e76eull, 0xb27d3711e672fc5dull, 0x4d2399495c9ce990ull,
+                              0xde95ff3bb586d8d1ull, 0xf75f3d8efeaeb99aull};
   u64 got[5] = {};
   const ModuleKind kinds[4] = {ModuleKind::run, ModuleKind::head, ModuleKind::broken,
                                ModuleKind::fallen};

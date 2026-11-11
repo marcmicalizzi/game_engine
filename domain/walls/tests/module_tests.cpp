@@ -63,14 +63,16 @@ TEST_CASE("walls: vertical joints are crossed, one on two and two on one") {
   // TCV, Building: "one on two and two on one"; a running joint is two or more uncrossed joints.
   // For every joint at a face stone's end inside the module, the stone above it may end there too
   // (two courses) but the one above that may not.
-  u32 joints = 0, two = 0, more = 0, four = 0;
+  u32 joints = 0, two = 0, more = 0, four = 0, crossed = 0, left = 0;
   for (const i32 grade : {0, 250, 500})
-    for (const u64 seed : {1ull, 2ull, 3ull}) {
+    for (const u64 seed : {1ull, 2ull, 3ull, 4ull, 5ull, 6ull}) {
       for (const ModuleKind kind : {ModuleKind::run, ModuleKind::head}) {
         assets::MeshData mesh;
         ModuleReport report;
         std::string error;
         REQUIRE(solve_module(module_of(kind, grade, seed), mesh, report, error));
+        crossed += report.seams_crossed;
+        left += report.seams_left;
         for (const Stone& s : report.stones) {
           if (s.role != StoneRole::face && s.role != StoneRole::footing) continue;
           const f64 x = static_cast<f64>(s.x1);
@@ -83,15 +85,20 @@ TEST_CASE("walls: vertical joints are crossed, one on two and two on one") {
         }
       }
     }
-  INFO(joints << " joints, " << two << " through two courses, " << more << " through three, "
-              << four << " through four");
+  MESSAGE(joints << " joints, " << two << " through two courses, " << more << " through three, "
+                 << four << " through four; the solver crossed " << crossed << " seams and left "
+                 << left);
   CHECK(joints > 500);
-  // The solver keeps every end off the joint below; what is left is where a course ends against
-  // a step too tall to bring level in one stone — beside a through-stone's packing, or a footing
-  // stepping up a slope (walls.md, "Joints crossed"). Measured at G145: 1.6 % of joints through
-  // three courses and 0.6 % through four; pinned as bounds so the rate cannot grow unseen.
-  CHECK(static_cast<f64>(more) < 0.02 * static_cast<f64>(joints));
-  CHECK(static_cast<f64>(four) < 0.008 * static_cast<f64>(joints));
+  // The solver keeps every end off the joint below and crosses what seams it can before the faces
+  // are drawn (walls.md, "The module"); what is left is where a course ends against a step too
+  // tall to bring level in one stone, beside a through-stone's packing, or a footing stepping up
+  // a slope. Held over 36 modules (six seeds, three grades, a stretch and a head) at what the
+  // solver reaches, stated as such and not from a source (TCV: none through three): G145c
+  // measured 70 of 5,465 joints through three courses (1.28 %) and 34 through four (0.62 %).
+  // G145b's bounds (2 % and 0.8 %) held on its own kept draws only; on the version's draws they
+  // failed at 2.09 %.
+  CHECK(static_cast<f64>(more) < 0.014 * static_cast<f64>(joints));
+  CHECK(static_cast<f64>(four) < 0.007 * static_cast<f64>(joints));
 }
 
 TEST_CASE("walls: the height, batter, through-stones and cope are inside the pinned ranges") {
