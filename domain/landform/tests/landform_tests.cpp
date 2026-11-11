@@ -257,6 +257,7 @@ TEST_CASE("landform: the ground meets an open edge without a step") {
   ridge.reach_m = 3000.0;
   sketch.uplift.ridges.push_back(ridge);
   sketch.erodibility_per_yr = 0.00002;
+  sketch.critical_slope = 0.9;
   sketch.duration_yr = 500000;
   // Along every line inward from each of the four edges: the first row's height over the edge's
   // (the step), and the largest change of slope from one row to the next over the first four
@@ -310,7 +311,8 @@ TEST_CASE("landform: the sea bed takes part: no wall at the coast") {
   SUBCASE("a solved coast holds the critical slope on land, across the waterline and on the bed") {
     landform::Sketch sketch = golden_sketch();
     sketch.rock.formation.reset();
-    sketch.rock.resistance = 0.0;  // one critical slope everywhere: 0.9
+    sketch.rock.resistance = 0.0;
+    sketch.critical_slope = 0.9;  // one critical slope everywhere
     // Nothing laid down, so the shelf is still a sea after four hundred thousand years: with
     // the default deposition the rivers fill it (the subcase below is the coast they build).
     sketch.deposition = 0.0;
@@ -333,6 +335,7 @@ TEST_CASE("landform: the sea bed takes part: no wall at the coast") {
     landform::Sketch sketch = golden_sketch();
     sketch.rock.formation.reset();
     sketch.rock.resistance = 0.0;
+    sketch.critical_slope = 0.9;
     sketch.sea->shelf_m = 4000.0;
     sketch.sea->depth_m = 600.0;
     const landform::Landform land = solved(sketch);
@@ -371,6 +374,7 @@ TEST_CASE("landform: the sea bed takes part: no wall at the coast") {
     sketch.edges.east = landform::EdgeKind::Sea;
     sketch.sea = landform::Sea{};
     sketch.rock.variation = 0.0;
+    sketch.critical_slope = 0.9;
     sketch.start = "wall.json";
     sketch.duration_yr = 50000;
     const landform::Landform land = solved(sketch, &start);
@@ -990,12 +994,87 @@ TEST_CASE(
   std::printf("landform structure: in uniform rock the two sides' gradients stand %.4f to 1\n",
               even_ratio);
   // The stated ratios. A hard bed stands as a step: the ground on it is over one and a half
-  // times as steep as on soft rock (measured 2.1). The two sides differ: across the beds the
-  // ground is a twentieth steeper than down the dip (measured 1.09 to 1, and 1.0001 to 1 in
+  // times as steep as on soft rock (measured 2.2). The two sides differ: across the beds the
+  // ground is a twentieth steeper than down the dip (measured 1.09 to 1, and 1.0002 to 1 in
   // uniform rock), and a hard bed's outcrop is over one and a half times as wide down the dip,
-  // where the surface runs with it, as across the beds, where it is an edge (measured 1.84).
+  // where the surface runs with it, as across the beds, where it is an edge (measured 1.93).
   CHECK(hard > 1.5 * soft);
   CHECK(south > 1.05 * north);
   CHECK(even_ratio == doctest::Approx(1.0).epsilon(0.01));
   CHECK(plate > 1.5 * edge);
+}
+
+// ---- uplift along a ridge (landform.md, "Uplift along a ridge")
+// ----------------------------------
+
+TEST_CASE("landform: a ridge's uplift varies along its line, more at long wavelengths than short") {
+  // One step with next to no erosion, so the ground along the line is the line's uplift: a
+  // straight ridge 25 km long read every 50 m, raised for a thousand years.
+  landform::Sketch sketch = plain_sketch(512, 50000);
+  sketch.height = 16;
+  sketch.edges.north = landform::EdgeKind::Closed;
+  sketch.edges.south = landform::EdgeKind::Closed;
+  sketch.border_reach_m = 0.0;
+  sketch.roughness_m = 0.0;
+  landform::Ridge ridge;
+  ridge.points.push_back(landform::Point{0.0, 400.0});
+  ridge.points.push_back(landform::Point{25550.0, 400.0});
+  ridge.rate_mm_per_yr = 2.0;
+  ridge.reach_m = 300.0;
+  ridge.variation = 0.5;
+  ridge.variation_length_m = 3200.0;
+  sketch.uplift.ridges.push_back(ridge);
+  sketch.erodibility_per_yr = 0.00000001;
+  sketch.diffusivity_m2_per_yr = 0.0;
+  sketch.critical_slope = 4.0;
+  sketch.critical_slope_resistant = 4.0;
+  sketch.rock.variation = 0.0;
+  sketch.deposition = 0.0;
+  sketch.duration_yr = 1000;
+  sketch.step_yr = 1000;
+  const landform::Landform land = solved(sketch);
+  // Row 8 is the line (z = 400 m): 2 m where the rate is 2 mm/yr.
+  const u32 first = 8, last = 504;
+  const auto rate = [&](u32 x) { return static_cast<f64>(land.height_mm[8 * 512 + x]) / 1000.0; };
+  f64 lowest = rate(first), highest = lowest, sum = 0.0;
+  for (u32 x = first; x < last; ++x) {
+    const f64 v = rate(x);
+    if (v < lowest) lowest = v;
+    if (v > highest) highest = v;
+    sum += v;
+  }
+  const f64 mean = sum / static_cast<f64>(last - first);
+  // The mean squared difference between stations a lag apart: of a noise whose spectrum falls
+  // as the wavenumber squared it grows with the lag, about in proportion below the longest
+  // wavelength.
+  const auto structure = [&](u32 lag) {
+    f64 total = 0.0;
+    for (u32 x = first; x + lag < last; ++x) {
+      const f64 d = rate(x + lag) - rate(x);
+      total += d * d;
+    }
+    return total / static_cast<f64>(last - first - lag);
+  };
+  const f64 near = structure(4);  // 200 m
+  const f64 far = structure(32);  // 1,600 m, half the longest wavelength
+  std::printf(
+      "landform ridge: the rate along the line runs %.3f to %.3f about a mean of %.3f mm/yr; "
+      "the mean squared difference is %.5f at 200 m and %.5f at 1,600 m (%.1f times)\n",
+      lowest, highest, mean, near, far, far / near);
+  CHECK(mean == doctest::Approx(2.0).epsilon(0.15));
+  CHECK(lowest >= 2.0 * 0.5 - 0.001);
+  CHECK(highest <= 2.0 * 1.5 + 0.001);
+  CHECK(highest - lowest > 0.6);  // it does vary: over a third of the range it may
+  CHECK(far > 4.0 * near);        // and far more over a long reach than a short one
+
+  // With no variation the line is raised evenly.
+  sketch.uplift.ridges[0].variation = 0.0;
+  const landform::Landform even = solved(sketch);
+  i32 even_low = even.height_mm[8 * 512 + first], even_high = even_low;
+  for (u32 x = first; x < last; ++x) {
+    const i32 mm = even.height_mm[8 * 512 + x];
+    if (mm < even_low) even_low = mm;
+    if (mm > even_high) even_high = mm;
+  }
+  CHECK(even_high - even_low <= 1);
 }

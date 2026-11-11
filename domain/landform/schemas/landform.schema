@@ -49,13 +49,20 @@ struct Outlet @version(1) {
 
 /// Uplift along a line: `rate_mm_per_yr` on the line, falling to nothing `reach_m` from it as
 /// (1 - (r / reach)^2)^2. Where ridges overlap the largest counts.
-struct Ridge @version(1) {
+struct Ridge @version(2) {
   /// Two points or more.
   points: Point[]
   /// 0 to 100 mm/yr.
   rate_mm_per_yr: f64 = 1
   /// 1 m to 1,000 km.
   reach_m: f64 = 4000
+  /// The rate varies along the line by this fraction either way, seeded: 0 (uniform) to 0.9.
+  /// A range raised evenly along its length has valleys evenly spaced; no real one is
+  /// (landform.md, "Uplift along a ridge").
+  variation: f64 = 0.35 @since(2)
+  /// The variation's longest wavelength, metres along the line: 10 to 1,000,000. Three more
+  /// octaves follow it down, each half the wavelength and 1 / sqrt(2) the amplitude.
+  variation_length_m: f64 = 6000 @since(2) @unit(m)
 }
 
 /// Uplift as a coarse grid over the region, corner to corner, read bilinearly: `width` by `height`
@@ -126,8 +133,9 @@ struct Sketch @version(2) {
   channel_area_m2: f64 = 0
   /// Hillslope diffusivity, m2/yr: 0 to 1.
   diffusivity_m2_per_yr: f64 = 0.005
-  /// The gradient no slope stands above (rise over run): 0.2 to 4.
-  critical_slope: f64 = 0.9
+  /// The gradient no slope stands above (rise over run): 0.2 to 4. The default is 38.7 degrees
+  /// (experiments/landform.md, "Slopes and steepness: the sources").
+  critical_slope: f64 = 0.8
   /// The same for rock of resistance 1: `critical_slope` to 4.
   critical_slope_resistant: f64 = 1.6
   /// The deposition coefficient G of Yuan et al. 2019 (Davy and Lague 2009's theta): a river lays

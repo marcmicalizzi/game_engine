@@ -38,7 +38,7 @@ when the build has the tile set, and refuses its own output if the tile set does
 | `sea` | `level_m`, and for a run with no starting ground `shelf_m` and `depth_m`: the bed falls from the level a shelf's width in from a sea edge to the depth at the edge | required by a sea edge |
 | `outlets` | Points held at a level anywhere in the lattice | — |
 | `border_reach_m` | Uplift is tapered to nothing over this distance from every open or sea edge | 16 cells |
-| `uplift` | `regional_mm_per_yr`, plus `ridges` (a polyline, `rate_mm_per_yr` on it, falling to nothing `reach_m` away as (1 − (r/reach)²)²; the largest of overlapping ridges counts), plus a coarse `raster` read bilinearly over the region | 0 to 100 mm/yr |
+| `uplift` | `regional_mm_per_yr`, plus `ridges` (a polyline, `rate_mm_per_yr` on it, varied along the line by `variation` over `variation_length_m` ([uplift along a ridge](#uplift-along-a-ridge)), falling to nothing `reach_m` away as (1 − (r/reach)²)²; the largest of overlapping ridges counts), plus a coarse `raster` read bilinearly over the region | 0 to 100 mm/yr; variation 0.35 over 6 km |
 | `rock` | `resistance` 0 to 1 (the world formation's ordering), uniform, or the beds of `formation`, the scene's own `engine.scene.Formation`, read in the rock's frame ([structure](#structure)); `contrast`, the erodibility at 0 over the erodibility at 1; `variation` and `variation_cells`, a seeded variation of the erodibility | 0; no formation; 10; ±25% over 16 cells |
 | `erodibility_per_yr` | K of the stream-power law at m = 1/2, n = 1 | 10⁻⁸ to 10⁻², default 5 × 10⁻⁶ |
 | `channel_area_m2` | The drainage area a channel begins at: a point draining less is hillslope, lowered by diffusion and the critical slope alone | 0 to 10⁹; default 0, the rivers cut at every point |
@@ -46,7 +46,7 @@ when the build has the tile set, and refuses its own output if the tile set does
 | `sediment_erodibility` | The erodibility of sediment over `erodibility_per_yr` | 1 to 100, default 2 |
 | `delta_share` | The share of what reaches a lake's water that settles at the river's mouth, up to the water's level; the rest levels the lake's floor | 0 to 1, default 0.5 |
 | `diffusivity_m2_per_yr` | Hillslope diffusivity | 0 to 1, default 0.005 |
-| `critical_slope`, `critical_slope_resistant` | The gradient no slope stands above, for rock of resistance 0 and 1 | 0.2 to 4; 0.9 and 1.6 |
+| `critical_slope`, `critical_slope_resistant` | The gradient no slope stands above, for rock of resistance 0 and 1 | 0.2 to 4; 0.8 and 1.6 |
 | `seed`, `roughness_m` | The seed of the starting roughness, the erodibility's variation and the routing's diagonal weights | 1; 1 m |
 | `duration_yr`, `step_yr` | Whole years; the run is `duration_yr / step_yr` steps. No steps writes the starting ground's own fields | 1,000,000; 5,000 |
 | `start` | An `engine.terrain.heightfield/1` header beside the sketch: the ground the run starts from and refines. It must cover the lattice and may be coarser (it is read bilinearly) | — |
@@ -157,11 +157,11 @@ river stands (1 + G) times as steep and no more concave, which the test holds.
   crept_out − settled − unrouted. `left` went out through the held points by river; `crept_out`
   across them by creep; `settled` is what the settling after the last step removed and
   `unrouted` what the last step's slopes shed, both of which have no later step to carry them
-  and leave the model (0.7% of what was eroded in the golden sketch).
+  and leave the model (1.2% of what was eroded in the golden sketch).
 
 **What it makes, and what it does not.** A valley whose mouth is dammed, or whose trunk has
-aggraded, fills to a floor that is level across and widens downstream (the test: 135 m wide
-where the fill begins and 335 m at the mouth, within 6.4 m across). A range's rivers lay a plain
+aggraded, fills to a floor that is level across and widens downstream (the test: 180 m wide
+where the fill begins and 335 m at the mouth, within 7.6 m across). A range's rivers lay a plain
 of coalesced fans at its foot, each river crossing it on its own grade, as Yuan et al. report
 for this model; a single massif beside a plain leaves a fan whose contours bow away from it
 (the test). **A fan is not a cone at the scale of one mouth**: flow has one receiver a point,
@@ -206,14 +206,42 @@ point's resistance is the `resistance` of the bed its surface cuts.
 
 **What it makes** (the test: a block rising between two open edges in beds that dip 15° toward
 one of them, 300 m of soft rock under 200 m of hard a tenth as erodible): the ground on a hard
-bed stands 2.1 times as steep as on a soft one, a step at each outcrop; the two sides of the
+bed stands 2.2 times as steep as on a soft one, a step at each outcrop; the two sides of the
 divide differ, the side that cuts across the beds a tenth steeper than the side that falls with
-them (1.09 to 1, against 1.0001 to 1 in uniform rock), and a hard bed's outcrop is 1.84 times as
+them (1.09 to 1, against 1.0002 to 1 in uniform rock), and a hard bed's outcrop is 1.93 times as
 wide down the dip, where the surface runs with it as a plate, as across the beds, where it is an
-edge; the divide stands 2.8 points off the middle. **What it does not make**: a cuesta's cliff
+edge; the divide stands 3.4 points off the middle. **What it does not make**: a cuesta's cliff
 over its own debris slope, which needs the rock solvers; and at n = 1 the published result is
 that contacts steepen without a fixed ratio (Perne et al. 2017), so the 2.1 is this sketch's and
 not a law.
+
+### Uplift along a ridge
+
+A ridge line raised evenly along its length has a crest of one height and valleys evenly spaced
+down both sides, which is what the first agent's range showed and no range does. A ridge's
+`rate_mm_per_yr` now varies along its line by `variation` either way (default 0.35), by a seeded
+noise of the **station**, the distance along the line: four octaves from `variation_length_m`
+(default 6 km) down, each half the wavelength and 1/√2 the amplitude of the one before, so its
+power spectrum falls as the wavenumber squared, which is what transects of real topography do
+([the grounding](../experiments/landform.md#slopes-and-steepness-the-sources)). The station is
+the plan's own, so the same line gives the same uplift whatever lattice reads it. The test reads
+the uplift off a ridge raised for one step with no erosion: at `variation` 0.5 the rate runs
+from 1.48 to 2.45 mm/yr about 1.84, and the mean squared difference between stations 1,600 m
+apart is 10.7 times that between stations 200 m apart; at 0 the line is even to the millimetre.
+
+**The defaults against real ranges.** At the defaults (1 mm/yr on a ridge, K = 5 × 10⁻⁶, G = 1)
+a river's steepness is (1 + G) U / K = 400 m, which at a reference concavity of 0.45 and a 10 km²
+basin is a normalized steepness of about 180 m^0.9: the top of what the San Gabriel Mountains
+show, where they erode at about a millimetre a year. The critical slope's default went from 0.9
+to **0.8** (38.7°), between the 37° modal slope of that range's threshold hillslopes and the 40°
+fitted to the Olympic Mountains. **The default sketch** (one default ridge across an 8 km square
+at 16 m, a million years) has a mean slope of 0.51 (27°) and **27.5% of its land within a
+twentieth of the critical slope**; at 0.9 it was 0.55 and 24.5%. So the defaults do not leave
+the land at the critical slope. A sketch can: the first agent's valley raised its ridges at 3 to
+4 mm/yr over K = 3 × 10⁻⁵ and measured 0.66, and with deposition the same sketch is steeper
+still (0.71), because a river that carries sediment stands 1 + G times as steep. A range that
+is to read as dissected at a 16 m lattice wants a steepness of tens of metres, not hundreds
+([the sketch](#the-sketch)).
 
 ### The slope limiter
 
@@ -369,10 +397,9 @@ authored heightfield. Exit 0, 1 (a file or a range), 2 (usage).
 ## Not stage A
 
 Each follows, and none is here: the glacial mode (troughs, cirques, overdeepened basins);
-**uplift that varies along
-a ridge line, and defaults grounded against published slope distributions** (the third, not
-reached); **a flood that keeps ground with no depression off the heap** (the fourth, not
-reached: the flood is still nearly the whole step); flow that divides, so one mouth's fan is a
+**a flood that keeps ground with no depression off the heap, and the rivers' sweeps in the
+order's own sequence** (stage B's fourth part, not reached: the sweeps and the flood are the
+step); flow that divides, so one mouth's fan is a
 cone and a channel on its plain is more than a point wide; scree at an angle of repose and
 terraces; soil depth; snow; a general m and n; neighbouring regions solved so a shared edge
 agrees; the flow tree's levels in parallel; baking far-terrain maps from near output; anything
@@ -405,7 +432,7 @@ in the editor. The limits of the model as it stands are on the grounding page.
 
 ## Testing
 
-`tools/dev.ps1 test -Filter "^landform$"`. All CPU; the whole suite is about 13 s in `msvc-debug` (stage B's six cases are 5 s of it, and the sweeps added 3 s to stage A's).
+`tools/dev.ps1 test -Filter "^landform$"`. All CPU; the whole suite is about 13 s in `msvc-debug` (stage B's seven cases are 5 s of it, and the sweeps added 3 s to stage A's).
 
 | Test | Holds | Fails when |
 |---|---|---|
@@ -421,9 +448,10 @@ in the editor. The limits of the model as it stands are on the grounding page.
 | a sketch outside a range is refused | six refusals, each naming its field | validation is lost |
 | what is eroded is deposited or leaves | the two identities of the budget to nine digits on the golden sketch; the settled and unrouted share under 2%; the same with G = 0, where everything cut leaves | a pass lays down what did not arrive, or loses what did |
 | with deposition a steady river stands 1 + G times as steep | the steepness factor S √A K / U over the channels in 1.85 to 2.05 at G = 1 (measured 1.955: the discrete form's (N − 1) / N), the mean rate within 2% of the uplift, the concavity within 0.03 of 0.5 | the deposit is not Yuan's, or is laid after the cut and not with it (which measured 2.14, rising with area) |
-| a dammed valley fills to a floor | a V-shaped valley whose mouth is held 90 m above its bed: the run of fill of 5 m or more about the axis is 5 points or more wide in the lower third, more than 1.5 times the upper third's (measured 6.7 against 2.7), level across within 8 m where the V fell 87 m (measured 6.4 m), over 50 m of fill | nothing is laid down, or a lake is filled along the flood's order |
-| a massif's rivers leave a fan on the plain | 400 m out from a massif's foot the ground stands over 3 m up opposite it (measured 4.3 m), a metre or more lower 700 m to either side (2.8 and 2.6 m), and under a metre 1,700 m away (0.9 m) | the load is not laid where a river leaves the range |
-| under dipping beds a ridge's two sides differ and a hard bed stands as a step | beds dipping 15° toward one edge of a rising block: the mean gradient on hard rock over 1.5 times that on soft (measured 2.1); across the beds over 1.05 times that down the dip (measured 1.09), and within 1% of 1 in uniform rock (measured 1.0001); a hard bed's outcrop over 1.5 times as wide down the dip as across (measured 1.84) | the beds are not read, or are read in a frame that does not rise with the rock |
+| a dammed valley fills to a floor | a V-shaped valley whose mouth is held 90 m above its bed: the run of fill of 5 m or more about the axis is 5 points or more wide in the lower third, more than 1.5 times the upper third's (measured 6.7 against 3.6), level across within 8 m where the V fell 87 m (measured 7.6 m), over 50 m of fill | nothing is laid down, or a lake is filled along the flood's order |
+| a massif's rivers leave a fan on the plain | 400 m out from a massif's foot the ground stands over 3 m up opposite it (measured 4.6 m), a metre or more lower 700 m to either side (2.9 and 2.8 m), and under a metre 1,700 m away (0.93 and 0.90 m) | the load is not laid where a river leaves the range |
+| under dipping beds a ridge's two sides differ and a hard bed stands as a step | beds dipping 15° toward one edge of a rising block: the mean gradient on hard rock over 1.5 times that on soft (measured 2.2); across the beds over 1.05 times that down the dip (measured 1.09), and within 1% of 1 in uniform rock (measured 1.0002); a hard bed's outcrop over 1.5 times as wide down the dip as across (measured 1.93) | the beds are not read, or are read in a frame that does not rise with the rock |
+| a ridge's uplift varies along its line | one step with no erosion reads the uplift off the line: at variation 0.5 the mean within 15% of the rate, every station inside the half either way, a range over 0.6 mm/yr, and the mean squared difference at 1,600 m over four times that at 200 m (measured 10.7); at 0 even to the millimetre | the variation is lost, is white, or leaves its bounds |
 | a lake's floor fills level, and its mouth builds a delta | a basin fed for ten thousand years: its floor away from the mouths level within 50 mm (measured 0 and 3 mm) under water still metres deep; with `delta_share` 0.5 the shelf under the mouths holds a quarter more sediment (measured twice) and the floor stands lower | the fill follows the flood's order, or the mouths get nothing |
 
 ## Performance notes

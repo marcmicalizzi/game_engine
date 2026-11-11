@@ -23,14 +23,17 @@ namespace {
 // Version 3 (structure): every hash moved again, because the golden sketch's rock is now a
 // formation of dipping, folded beds in place of two elevation bands, and the rivers' sweeps end
 // at a millimetre; the resistance field was added.
-constexpr u64 k_height_hash = 0x12bb0b1a52cf248full;
-constexpr u64 k_area_hash = 0x9e8842ec8f2beedaull;
-constexpr u64 k_receiver_hash = 0xc3d198544e7d351full;
-constexpr u64 k_slope_hash = 0x595bd6bbbe4d697cull;
-constexpr u64 k_erosion_hash = 0xec6dc5b13efd398bull;
-constexpr u64 k_fill_hash = 0x49ed8836e914e0e7ull;
-constexpr u64 k_sediment_hash = 0x519c27a7d4a20979ull;
-constexpr u64 k_resistance_hash = 0x17f0c4241eae4f90ull;
+// Version 4 (uplift along a ridge, the critical slope's default): every hash moved once more,
+// because the golden sketch's ridge now varies along its line by the default 0.35 and its
+// critical slope is the default, which went from 0.9 to 0.8.
+constexpr u64 k_height_hash = 0x249019bde6a14cc7ull;
+constexpr u64 k_area_hash = 0x48ca4e5470cd0656ull;
+constexpr u64 k_receiver_hash = 0xd4609ac9bc63d161ull;
+constexpr u64 k_slope_hash = 0x0aa531b7e49fe92aull;
+constexpr u64 k_erosion_hash = 0x7c6c819d7ea2347bull;
+constexpr u64 k_fill_hash = 0xc19680628fff6828ull;
+constexpr u64 k_sediment_hash = 0x70d43c0753d22169ull;
+constexpr u64 k_resistance_hash = 0xd3fc84052a7f7e51ull;
 
 }  // namespace
 

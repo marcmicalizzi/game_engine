@@ -52,7 +52,7 @@ namespace engine::landform {
 inline constexpr const char* k_determinism = "derived";
 
 /// Bumped whenever the same sketch would solve to different bytes; the field file records it.
-inline constexpr u32 k_solver_version = 3;
+inline constexpr u32 k_solver_version = 4;
 
 inline constexpr std::string_view k_fields_format = "engine.landform.fields";
 inline constexpr u32 k_fields_version = 2;

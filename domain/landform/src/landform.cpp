@@ -33,6 +33,8 @@ constexpr i64 k_unvisited = std::numeric_limits<i64>::min();
 constexpr u32 k_row_grain = 16;
 // Keeps the receivers' numbers apart from the roughness's, which hash the same seed and cell.
 constexpr u64 k_route_salt = 0xD1B54A32D192ED03ull;
+// And the ridges' variation apart from both.
+constexpr u64 k_ridge_salt = 0x8CB92BA72F3D8DD7ull;
 // The explicit diffusion's largest step, as D dt / spacing^2 (a quarter is the stability limit).
 constexpr f64 k_diffusion_number = 0.2;
 // A heightfield's float holds a whole millimetre exactly below 2^24 of them.
@@ -435,13 +437,40 @@ f64 sea_distance(const Sketch& s, const Frame& f, u32 i, u32 j) noexcept {
   return d;
 }
 
-// The largest ridge kernel at a point, mm/yr: (1 - (r / reach)^2)^2 of the line's rate.
+// Seeded noise along a line, in [-1, 1]: four octaves of value noise from `length` down, each
+// half the wavelength and 1 / sqrt(2) the amplitude of the one before, so the power spectrum
+// falls as the wavenumber squared (a Brown noise: landform.md, "Uplift along a ridge"). A
+// station is a place on the plan's own line, so the same line gives the same numbers whatever
+// lattice reads it.
+f64 line_noise(u64 seed, f64 station, f64 length) noexcept {
+  f64 sum = 0.0;
+  f64 amplitude = 1.0;
+  f64 wavelength = length;
+  for (u32 octave = 0; octave < 4; ++octave) {
+    const f64 at = station / wavelength;
+    const f64 cell = std::floor(at);
+    const f64 t = at - cell;
+    const u64 index = static_cast<u64>(static_cast<i64>(cell));
+    const f64 a = signed_unit(mix(seed ^ mix(index + (u64{octave} << 56))));
+    const f64 b = signed_unit(mix(seed ^ mix(index + 1 + (u64{octave} << 56))));
+    sum += amplitude * (a + (b - a) * (t * t * (3.0 - 2.0 * t)));
+    amplitude *= k_inv_sqrt2;
+    wavelength *= 0.5;
+  }
+  // 1 + 2^-1/2 + 2^-1 + 2^-3/2, the four amplitudes.
+  return sum / 2.5606601717798214;
+}
+
+// The largest ridge kernel at a point, mm/yr: (1 - (r / reach)^2)^2 of the line's rate, the rate
+// that of the line's nearest station.
 f64 ridge_rate(const Sketch& s, f64 px, f64 pz) noexcept {
   f64 best = 0.0;
   for (u32 r = 0; r < s.uplift.ridges.size(); ++r) {
     const Ridge& ridge = s.uplift.ridges[r];
     const f64 reach2 = ridge.reach_m * ridge.reach_m;
     f64 d2 = reach2;
+    f64 station = 0.0;
+    f64 along = 0.0;  // the line's length before this segment
     for (u32 k = 0; k + 1 < ridge.points.size(); ++k) {
       const f64 ax = ridge.points[k].x;
       const f64 az = ridge.points[k].z;
@@ -455,11 +484,20 @@ f64 ridge_rate(const Sketch& s, f64 px, f64 pz) noexcept {
       const f64 dx = apx - t * abx;
       const f64 dz = apz - t * abz;
       const f64 seg2 = dx * dx + dz * dz;
-      if (seg2 < d2) d2 = seg2;
+      const f64 length = std::sqrt(len2);
+      if (seg2 < d2) {
+        d2 = seg2;
+        station = along + t * length;
+      }
+      along += length;
     }
     if (d2 >= reach2) continue;
     const f64 k1 = 1.0 - d2 / reach2;
-    const f64 rate = ridge.rate_mm_per_yr * k1 * k1;
+    const f64 varied = ridge.variation > 0.0
+                           ? 1.0 + ridge.variation * line_noise(mix(s.seed ^ k_ridge_salt) + r,
+                                                                station, ridge.variation_length_m)
+                           : 1.0;
+    const f64 rate = ridge.rate_mm_per_yr * varied * k1 * k1;
     if (rate > best) best = rate;
   }
   return best;
@@ -688,6 +726,10 @@ bool validate_sketch(const Sketch& s, std::string& error) {
       return refuse("a sketch's ridge rate_mm_per_yr is 0 to 100");
     if (!in_range(ridge.reach_m, 1.0, 1000000.0))
       return refuse("a sketch's ridge reach_m is 1 to 1,000,000 m");
+    if (!in_range(ridge.variation, 0.0, 0.9))
+      return refuse("a sketch's ridge variation is 0 to 0.9");
+    if (!in_range(ridge.variation_length_m, 10.0, 1000000.0))
+      return refuse("a sketch's ridge variation_length_m is 10 to 1,000,000 m");
     for (u32 k = 0; k < ridge.points.size(); ++k)
       if (!in_range(ridge.points[k].x, -1.0e9, 1.0e9) ||
           !in_range(ridge.points[k].z, -1.0e9, 1.0e9))

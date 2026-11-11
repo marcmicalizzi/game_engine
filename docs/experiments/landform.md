@@ -81,6 +81,34 @@ formation fixed in space under a surface that is being raised and cut is flat la
 elevation; read in the rock's frame the beds come up through the surface, which is what the
 three papers model.
 
+## Slopes and steepness: the sources
+
+2026-11-10, stage B. What real ranges measure, for the defaults and for the variation along a
+ridge.
+
+| Measure | Source |
+|---|---|
+| In the San Gabriel Mountains (50 basins eroding at 35 to 1,100 m/Myr) the mean hillslope angle rises with the erosion rate up to about 300 m/Myr and then stops responding, while the channels' normalized steepness keeps rising, nonlinearly | DiBiase, Whipple, Heimsath and Ouimet 2010, *Earth Planet. Sci. Lett.* 289:134–144, doi:10.1016/j.epsl.2009.10.036. **Abstract only** |
+| The same range's normalized steepness (reference concavity 0.45) runs from 30 to 180 m^0.9, and rises as about the square root of the erosion rate; across studies the exponent is 0.25 to 1 | DiBiase and Whipple 2011, *J. Geophys. Res.* 116, F04036, doi:10.1029/2011JF002095. **Read** |
+| On 1 m lidar, below a catchment mean slope of 30° the modal slope rises with the mean and little rock is exposed; above it rock exposure rises sharply and debris at its angle of repose holds the modal slope near 37° | DiBiase, Heimsath and Whipple 2012, *Earth Surf. Process. Landforms* 37:855–865, doi:10.1002/esp.3205. **Abstract only** |
+| E = E₀ + K S / [1 − (S/S_c)²] with S_c = 40° for the Olympic Mountains; mean slope there varies by a few degrees across strong gradients of erosion rate | Montgomery and Brandon 2002, *Earth Planet. Sci. Lett.* 201:481, **secondary** through Montgomery 2003, *C. R. Geoscience* 335:1121 (read as a web page) |
+| Hillslopes stop steepening above about 0.2 mm/yr; channel steepness keeps rising to at least 0.6 mm/yr (eastern Tibet) | Ouimet, Whipple and Granger 2009, *Geology* 37:579–582, doi:10.1130/G30013A.1. **Abstract only** |
+| The nonlinear hillslope law's fitted S_c is 1.25 ± 0.10 (gradient) and its K 0.0032 ± 0.0009 m²/yr at one Oregon Coast Range basin; over five, S_c 1.2 to 1.35 and K 0.0031 to 0.0045 | Roering, Kirchner and Dietrich 1999, *Water Resour. Res.* 35:853–870. **Read** (the author's reprint; stage A had only the abstract). That S_c is the law's asymptote, which no slope reaches, not the angle slopes stand at: the solver's critical slope is the angle they stand at, which is the lidar's 37° and Montgomery's 40° |
+| Power spectra of topography along linear transects are often power laws with an exponent near −2, S(k) ∝ k⁻²; a transect's fractal dimension is near 1.5, a Brown noise | Pelletier, "Why is topography fractal?", arXiv:physics/9705033, **abstract**; Huang and Turcotte 1989, *J. Geophys. Res.* 94:7491, **abstract** (Arizona, D = 1.52). That D = 1.5 is an exponent of 2 is the usual β = 5 − 2D, not read in either |
+
+**What follows.** (1) The critical slope's default is **0.8** (38.7°), between the 37° and the
+40°; it was 0.9 (42°), above both, on the strength of a secondary quote. (2) K's default stays
+5 × 10⁻⁶: with G = 1 a ridge at the default 1 mm/yr has a steepness of 400 m at the solver's
+concavity of 0.5, and a steepness at 0.5 is one at 0.45 times A^0.05, 2.2 at 10 km², so about
+180 m^0.9: where DiBiase and Whipple's range ends, at about that erosion rate. The law here is
+linear in the uplift (n = 1) where their fit is a square root, so a sketch at 0.1 mm/yr is
+gentler than the field (40 m against about 60). (3) The diffusivity's default, 0.005, is inside
+Roering's 0.003 to 0.0045 times the factor of two their soil-to-rock density ratio puts between
+a soil flux and a rock one; it was not changed. (4) A ridge's rate varies along its line as a
+Brown noise, the spectrum the transects have; the amplitude (0.35) and the longest wavelength
+(6 km) are authoring: no source gives the spectrum of uplift along a range, only of the
+topography it leaves.
+
 ## Constants, their ranges, and the defaults the schema pins
 
 | Constant | Default | Range accepted | Status | Source or reason |
@@ -88,7 +116,7 @@ three papers model.
 | m, n | 1/2, 1 | fixed | range | Stock and Montgomery 1999 (abstract): A^(0.3–0.5) S^1. Fixed because of determinism, below |
 | Erodibility K | 5 × 10⁻⁶ yr⁻¹ | 10⁻⁸ to 10⁻² | authoring inside a range | Stock and Montgomery 1999 (abstract), for m = 0.4 in m^0.2/yr: granite and metamorphic rock 10⁻⁷–10⁻⁶, volcaniclastic rock 10⁻⁵–10⁻⁴, mudstone 10⁻⁴–10⁻². At m = 1/2 the unit is yr⁻¹ and a value converts by A^−0.1 (a fifth at 10 km²), so the default is a weak volcaniclastic or a strong sedimentary rock. What it fixes with the uplift is the steepness: at steady state S = (U/K) A^−1/2, so 1 mm/yr over the default is a steepness of 200 m |
 | Hillslope diffusivity D | 0.005 m²/yr | 0 to 1 | range | Roering et al. 1999's runs, 0.003 (figure text); 10⁻³–10⁻² as the span of field values in a lecture summary of the literature (MIT OCW 12.163, **secondary**) |
-| Critical slope Sc | 0.9 (42°) | 0.2 to 4 | secondary | Inside the 0.8–1.25 the proof of concept's notes quote for soil-mantled ridges, Roering's 1.25 at its top. Not re-read; a number to check against DiBiase et al. 2012 before a world pins it |
+| Critical slope Sc | 0.8 (38.7°) | 0.2 to 4 | range | Between the 37° modal slope of threshold hillslopes (DiBiase et al. 2012, abstract) and the 40° fitted to the Olympic Mountains (Montgomery and Brandon 2002, secondary). Stage A's 0.9 came from a secondary quote of Roering's 1.25, which is the nonlinear law's asymptote and not an angle slopes stand at ([slopes and steepness](#slopes-and-steepness-the-sources)) |
 | Critical slope of the most resistant rock | 1.6 (58°) | Sc to 4 | authoring | Bare rock stands steeper than a soil-mantled slope; no source gives the figure |
 | Resistance contrast | 10 | 1 to 1000 | authoring | A bed's `resistance` is the world formation's 0-to-1 ordering ([formation field](formation-field.md)); K falls from the sketch's value at 0 to a tenth of it at 1. Stock and Montgomery's lithologies span five orders, so ten between the beds of one range is modest |
 | Seed roughness | 1 m | 0 to 100 | authoring | What breaks the symmetry of the starting plane so a network can form; it is gone from the result after the first few steps |
@@ -98,6 +126,7 @@ three papers model.
 | Share settling at a lake's mouth | 0.5 | 0 to 1 | authoring | No source; Turowski et al. 2010 (abstract) bound the bedload alone at 1% to 50% |
 | Standing water | 10 mm | fixed | authoring | A point the flood raised by less is a flat a river crosses, not a lake: the flood's own ε over a wide flat is a few millimetres |
 | The sweeps' tolerance | 1 mm | fixed | authoring | The millimetre the heights round to. Yuan et al. stop at 10⁻³ U Δt, 5 mm at 1 mm/yr and 5,000 years. The first build stopped at a tenth of a millimetre, finer than anything the output holds |
+| A ridge's variation along its line | 0.35 over 6 km, four octaves, each 1/√2 the amplitude | 0 to 0.9; 10 m to 1,000 km | authoring, with the spectrum's form from a range | Transects of topography have spectra near k⁻² (Pelletier, Huang and Turcotte, abstracts); the amplitude and the wavelength have no source |
 | Hack's exponent (a check, not an input) | — | 0.5 to 0.7 | secondary | Hack 1957 found 0.6; Gray 1961, 0.568; "empirically found to lie in the range from 0.5 to 0.7" (search extracts of Rigon et al. 1996 and its citers; none read in full) |
 
 ## What determinism decided
@@ -226,13 +255,12 @@ text, five causes, and what this design does about each:
 
 ## What follows stage A
 
-The glacial mode (an equilibrium-line altitude, ice flux, troughs and cirques); uplift that varies
-along a ridge line, and the defaults against published slope distributions; a flood that skips
+The glacial mode (an equilibrium-line altitude, ice flux, troughs and cirques); a flood that skips
 ground with no depressions, and the order's levels in parallel; flow that divides (a fan as a
 cone, a channel more than a point wide); lateral erosion, terraces and scree at an angle of
 repose; soil depth; snow where erosion and wind put it; a general m and n; baking far-terrain maps
-from near output; anything in the editor. Deposition and the formation's beds were the first of
-these and are stage B.
+from near output; anything in the editor. Deposition, the formation's beds and uplift that varies
+along a ridge were the first of these and are stage B.
 
 ## A request to the channels generator
 
@@ -260,11 +288,13 @@ and course are the ones the ground was cut by. The contract it would read is on 
 | A 2,048-point sketch at 16 m to 100,000 years in twenty steps, four workers, busy machine | 27.1 s | — (stage A; not measured again after deposition) |
 | Stage B. Steepness at steady state with G = 1 and sediment as erodible as rock (64 points at 200 m, 1 mm/yr, K 4 × 10⁻⁵, three million years) | S √A K / U = 1.955 over 572 channel points: 1.91 for 8 to 16 cells, 1.96 for 16 to 64, 2.00 above | 1 + G (N − 1) / N, Yuan et al. 2019's discrete form; 2 in the limit. The mean erosion rate is 1,000.4 µm/yr and the concavity 0.485 |
 | The same with the cut first and the deposit laid after it (the first build) | 2.14: 1.92, 2.08 and 2.42 in the same three bins | the scheme that was dropped |
-| The budget of the golden sketch (400,000 years) | eroded 1.235 × 10¹⁰ m³ = deposited 2.446 × 10⁹ + left 9.821 × 10⁹ + unrouted 8.6 × 10⁷; settled 3 × 10⁴ | both identities hold to nine digits |
-| A V-shaped valley (sides 0.5, falling at 0.04) whose mouth is held 90 m above its bed, 100,000 years, 50 m points | the fill of 5 m or more is 2.7 points wide in its upper third and 6.7 in its lower, level across within 6.4 m, 88 m thick at most | the start's V falls 87 m over the lower floor's width |
-| A massif (2 mm/yr, 900 m reach) beside a plain, 300,000 years | 400 m out the plain stands 4.3 m up opposite the massif, 2.8 and 2.6 m 700 m to either side, 0.9 m 1,700 m away; 9.5 m of sediment at the foot | a fan |
+| The budget of the golden sketch (400,000 years) | eroded 9.061 × 10⁹ m³ = deposited 2.135 × 10⁹ + left 6.821 × 10⁹ + unrouted 1.06 × 10⁸; settled 5.6 × 10⁵ | both identities hold to nine digits |
+| A V-shaped valley (sides 0.5, falling at 0.04) whose mouth is held 90 m above its bed, 100,000 years, 50 m points | the fill of 5 m or more is 3.6 points wide in its upper third and 6.7 in its lower, level across within 7.6 m, 88 m thick at most | the start's V falls 87 m over the lower floor's width |
+| A massif (2 mm/yr, 900 m reach) beside a plain, 300,000 years | 400 m out the plain stands 4.6 m up opposite the massif, 2.9 and 2.8 m 700 m to either side, 0.9 m 1,700 m away; 10.0 m of sediment at the foot | a fan |
 | A basin 40 m deep fed for 10,000 years | its floor level to the millimetre under 5.4 m of water with nothing settling at the mouths, within 3 mm under 8.5 m with half | — |
-| A block rising at 1 mm/yr between two open edges in beds dipping 15° toward one (300 m soft under 200 m hard, a tenth as erodible), a million years, 100 m points | mean gradient 0.668 on hard rock and 0.319 on soft (2.1 to 1); 0.556 across the beds and 0.508 down the dip (1.09 to 1; 1.0001 in uniform rock); a hard bed's outcrop 8.8 points wide down the dip and 4.8 across (1.84 to 1); the divide 2.8 points off the middle | Perne et al. 2017: no fixed ratio at n = 1 |
+| A block rising at 1 mm/yr between two open edges in beds dipping 15° toward one (300 m soft under 200 m hard, a tenth as erodible), a million years, 100 m points | mean gradient 0.669 on hard rock and 0.305 on soft (2.2 to 1); 0.549 across the beds and 0.503 down the dip (1.09 to 1; 1.0002 in uniform rock); a hard bed's outcrop 9.0 points wide down the dip and 4.7 across (1.93 to 1); the divide 3.4 points off the middle | Perne et al. 2017: no fixed ratio at n = 1 |
+| The default sketch: one default ridge (1 mm/yr, 4 km reach) across 8.2 km at 16 m, a million years, every default | mean slope 0.511, 27.5% of the land within a twentieth of the critical slope (0.8), the summit at 998 m. At a critical slope of 0.9: 0.546 and 24.5%. With K doubled and doubled again (0.8): 0.550 and 31.2%, 0.504 and 26.4% | DiBiase et al.: mean hillslope angles to about 35° in a range eroding this fast |
+| A ridge raised for one step with no erosion, variation 0.5 over 3.2 km, read every 50 m over 25 km | the rate runs 1.483 to 2.454 mm/yr about a mean of 1.839; the mean squared difference is 0.0069 at a lag of 200 m and 0.0742 at 1,600 m | a spectrum that falls with wavenumber |
 | An open edge with deposition, the border test's sketch | the first row 1.41 m above the edge with G tapered toward it. With G uniform it stood 17.4 m up in the first build (the deposit laid after the cut); the uniform case was not measured again under the sweeps | the bound is 2 m |
 
 What the first pictures showed, and what still reads wrong beside the reels, is on the subsystem
