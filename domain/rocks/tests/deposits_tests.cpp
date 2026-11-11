@@ -220,8 +220,9 @@ TEST_CASE("deposits: mesh identity and cluster container are deterministic") {
   // Rock solver v11 changes the source/build identity, not the deposit mesh above; so does
   // k_deposit_version 2 (G143, the bare rim's sink: was 17513793063602312493).
   // k_deposit_version 3 and the normals (G143, stage 2; was 14163044981722319397), then the
-  // fragments' rungs (stage 3; was 13439161428700819251).
-  CHECK(geometry::cluster_file_hash(a) == 7929702402516820737ull);
+  // fragments' rungs (stage 3; was 13439161428700819251), then for the patch's border locked in
+  // its cluster DAG (G143's third pass; was 7929702402516820737).
+  CHECK(geometry::cluster_file_hash(a) == 1421504051895875902ull);
   CHECK(geometry::cluster_file_hash(a) == geometry::cluster_file_hash(b));
   CHECK(a.source_hash == deposit_source_hash(p));
   CHECK(a.source_hash == b.source_hash);

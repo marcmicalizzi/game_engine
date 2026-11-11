@@ -1080,8 +1080,22 @@ bool build_deposit_container(const DepositPatch& input, const geometry::ClusterL
   if (!solve_deposit(p, mesh, error)) return false;
   geometry::ClusterLodOptions options = lod;
   options.normal_cones = true;
+  // G143's third pass (rocks.md, "The coarse forms keep the patch's border"): a patch is a closed
+  // mesh, so the simplifier sees no open border at its edge and moved each patch's top off the
+  // line it shares with its neighbour its own way; from across a valley the apron drew as square
+  // panels with wedges between them. Every vertex on the patch's border is locked, as the
+  // terrain's chunks lock theirs (terrain.md), so two neighbours' coarse forms meet exactly.
+  const f32 span_x = static_cast<f32>(p.width - 1) * p.spacing_m;
+  const f32 span_z = static_cast<f32>(p.depth - 1) * p.spacing_m;
+  Vector<u8> locked(mesh.positions.size(), 0);
+  for (u32 v = 0; v < mesh.positions.size(); ++v) {
+    const Vec3 q = mesh.positions[v];
+    locked[v] = q.x == 0.0f || q.z == 0.0f || q.x == span_x || q.z == span_z ? 1 : 0;
+  }
+  geometry::AttributeSource attributes = assets::attribute_source(mesh);
+  attributes.locked = std::span<const u8>(locked.data(), locked.size());
   if (!geometry::build_cluster_lod(mesh.positions, {mesh.indices.data(), mesh.indices.size()},
-                                   options, out.mesh, &error, assets::attribute_source(mesh)))
+                                   options, out.mesh, &error, attributes))
     return false;
   if (page_bytes > 0) {
     geometry::ClusterPagesOptions pages;

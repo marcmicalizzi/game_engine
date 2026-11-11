@@ -1202,6 +1202,25 @@ normals are `normalize(-sx, 1, -sz)` from it: the same on both sides of a border
 central differences over its own samples. Buried undersides and walls keep their triangles'
 normals. The G128 mesh pin moved to 625669387871748774 and the container pin to
 13439161428700819251 with it.
+
+### The coarse forms keep the patch's border
+
+G143's third pass, 2026-11-11. From across a valley the apron drew as a patchwork of 8 m square
+panels of different shade with dark wedges between them, and nobody had found why. The cause is the
+LOD, not the shading: a patch is a **closed** mesh (its top, a buried underside and walls round it,
+so it stays two-manifold for the simplifier and the collision), and a closed mesh has no open border
+for the cluster DAG's simplifier to hold. Each patch's coarse forms pulled its top off the line it
+shares with its neighbour in its own way, so two neighbours' coarse tops parted along it and their
+walls showed between them. Measured on the gullied test face, two neighbours' cuts at errors of 0 to
+1 m: the tops parted by more than 2 mm at 156 places along their shared line, up to 12.7 cm; their
+tops sank no more than a millimetre past each cut's own error anywhere else, so the coarse forms
+were not wrong inside a patch, only at its edge. Every vertex on a patch's border is now locked
+(`geometry::AttributeSource::locked`, as the terrain's chunks lock theirs), and the two cuts meet to
+0.14 mm at every error (`deposits: neighbouring patches' coarse forms meet along their border`,
+which fails without the lock). **The lesson for any generator that cuts one surface into closed
+pieces:** lock the cut, or the pieces' DAGs will not meet. The container pin moved to
+1421504051895875902.
+
 ### Where the triangles go
 
 The finest form spent 1,115 triangles a square metre on the first agent's tile, and 514 on this

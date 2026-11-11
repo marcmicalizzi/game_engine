@@ -540,6 +540,151 @@ TEST_CASE("deposits: a cone across patch and tile borders meets itself to the mi
     }
 }
 
+namespace {
+// The cut a renderer draws at mesh-space error `t`: every cluster whose own error is at most `t`
+// and whose parent's is past it (geometry.md, the cluster LOD's one formula).
+bool in_cut(const geometry::ClusterLodMesh& lod, u32 k, f32 t) {
+  return lod.lod[k].own_error <= t && t < lod.lod[k].parent_error;
+}
+// The highest triangle of the cut over (x, z), in the mesh's own frame; false where none covers it.
+bool cut_top(const geometry::ClusterLodMesh& lod, f32 t, f64 x, f64 z, f64& y) {
+  bool found = false;
+  const auto& m = lod.mesh;
+  for (u32 k = 0; k < m.clusters.size(); ++k) {
+    if (!in_cut(lod, k, t)) continue;
+    const auto& c = m.clusters[k];
+    for (u32 j = 0; j < c.triangle_count; ++j) {
+      const u32 packed = m.triangles[c.triangle_offset + j];
+      const Vec3 a = m.vertices[c.vertex_offset + (packed & 0xffu)];
+      const Vec3 b = m.vertices[c.vertex_offset + ((packed >> 8) & 0xffu)];
+      const Vec3 d = m.vertices[c.vertex_offset + ((packed >> 16) & 0xffu)];
+      const f64 ax = static_cast<f64>(a.x), az = static_cast<f64>(a.z);
+      const f64 e1x = static_cast<f64>(b.x) - ax, e1z = static_cast<f64>(b.z) - az;
+      const f64 e2x = static_cast<f64>(d.x) - ax, e2z = static_cast<f64>(d.z) - az;
+      const f64 det = e1x * e2z - e2x * e1z;
+      if (std::abs(det) < 1e-12) continue;
+      const f64 u = ((x - ax) * e2z - e2x * (z - az)) / det;
+      const f64 v = (e1x * (z - az) - (x - ax) * e1z) / det;
+      if (u < -1e-6 || v < -1e-6 || u + v > 1 + 1e-6) continue;
+      const f64 h = static_cast<f64>(a.y) + u * (static_cast<f64>(b.y) - static_cast<f64>(a.y)) +
+                    v * (static_cast<f64>(d.y) - static_cast<f64>(a.y));
+      if (!found || h > y) y = h;
+      found = true;
+    }
+  }
+  return found;
+}
+}  // namespace
+
+TEST_CASE("deposits: neighbouring patches' coarse forms meet along their border") {
+  // Stage 1 of G143's third pass (rocks.md, "The coarse forms keep the patch's border"): from
+  // across a valley the apron drew as square panels of different shade with dark wedges between
+  // them. Each 8 m patch is its own closed mesh (top, buried underside, walls), so the cluster
+  // DAG's simplifier had no open border to hold: it pulled each patch's top away from the shared
+  // line its own way, and the two coarse forms no longer met. Every cut of two neighbours must draw
+  // the same top along the line they share, and no coarser than its error below the plan's top.
+  test::TempDir scratch;
+  scene_gen::Context c;
+  const std::string dir = scratch.path();
+  c.dir = dir;
+  c.ddc = dir;
+  c.ground = ground();
+  c.tile_size = 16;
+  DepositLayer p = layer();
+  p.patch.fragments = 0;  // the bed alone: a fragment by the line is one patch's, not both
+  p.patch.triangle_budget = 40000;
+  const auto* desc = scene_gen::GeneratorRegistry::global().find_placement("deposits");
+  REQUIRE(desc != nullptr);
+  void* state = nullptr;
+  std::string error;
+  REQUIRE_MESSAGE(desc->open(schema::to_json(p), c, &state, &error), error);
+  scene_gen::Placements whole;
+  REQUIRE(desc->expand(state, c, whole, &error));
+  desc->close(state);
+  struct Read {
+    DepositPatch patch;
+    WorldPos at;
+  };
+  Vector<Read> patches;
+  for (const auto& instance : whole.instances) {
+    std::string text;
+    REQUIRE(io::read_file(whole.meshes[instance.mesh].path, text) == io::Status::Ok);
+    JsonValue json;
+    REQUIRE(parse_json(text, json).ok);
+    Read r;
+    schema::ReadContext ctx;
+    REQUIRE(schema::from_json(r.patch, json, ctx));
+    r.at = instance.position;
+    patches.push_back(r);
+  }
+  // The deepest pair side by side along x: the most bed along their shared column.
+  i32 best_a = -1, best_b = -1;
+  f64 best = 0;
+  for (u32 i = 0; i < patches.size(); ++i)
+    for (u32 j = 0; j < patches.size(); ++j) {
+      const auto &a = patches[i], &b = patches[j];
+      const f64 span = .5 * static_cast<f64>(a.patch.width - 1);
+      if (std::abs(b.at.x - (a.at.x + span)) > 1e-9 || b.at.z != a.at.z) continue;
+      f64 depth = 0;
+      for (u32 z = 0; z < a.patch.depth; ++z)
+        depth += static_cast<f64>(a.patch.thickness[z * a.patch.width + a.patch.width - 1]);
+      if (depth > best) {
+        best = depth;
+        best_a = static_cast<i32>(i);
+        best_b = static_cast<i32>(j);
+      }
+    }
+  REQUIRE(best_a >= 0);
+  const Read& a = patches[static_cast<u32>(best_a)];
+  const Read& b = patches[static_cast<u32>(best_b)];
+  geometry::ClusterFileData da, db;
+  REQUIRE_MESSAGE(build_deposit_container(a.patch, {}, 0, da, error), error);
+  REQUIRE_MESSAGE(build_deposit_container(b.patch, {}, 0, db, error), error);
+  const f64 span = .5 * static_cast<f64>(a.patch.width - 1);
+  u32 cuts = 0, gaps = 0;
+  f64 worst_gap = 0, worst_sag = 0, worst_sag_t = 0;
+  for (f32 t : {0.0f, .005f, .02f, .05f, .1f, .25f, .5f, 1.0f}) {
+    ++cuts;
+    // Along the shared line, a little in from each side, at every sample and between them.
+    for (u32 s = 0; s + 1 < 2 * a.patch.depth - 1; ++s) {
+      const f64 z = .25 * static_cast<f64>(s);
+      f64 ya = 0, yb = 0;
+      const bool ha = cut_top(da.mesh, t, span - 1e-4, z, ya);
+      const bool hb = cut_top(db.mesh, t, 1e-4, z, yb);
+      if (ha != hb) {
+        ++gaps;
+        continue;
+      }
+      if (!ha) continue;
+      const f64 gap = std::abs((a.at.y + ya) - (b.at.y + yb));
+      worst_gap = std::max(worst_gap, gap);
+      gaps += gap > 2e-3;
+    }
+    // Inside the patch: the cut's top against the plan's at every sample with a bed.
+    for (u32 i = 0; i < a.patch.width * a.patch.depth; ++i) {
+      if (a.patch.thickness[i] <= .05f) continue;
+      const f64 x = .5 * static_cast<f64>(i % a.patch.width),
+                z = .5 * static_cast<f64>(i / a.patch.width);
+      f64 y = 0;
+      if (!cut_top(da.mesh, t, std::clamp(x, 1e-4, span - 1e-4),
+                   std::clamp(z, 1e-4, .5 * static_cast<f64>(a.patch.depth - 1) - 1e-4), y))
+        continue;
+      const f64 plan = static_cast<f64>(a.patch.ground[i]) + static_cast<f64>(a.patch.thickness[i]);
+      const f64 sag = plan - y - static_cast<f64>(t);
+      if (sag > worst_sag) {
+        worst_sag = sag;
+        worst_sag_t = static_cast<f64>(t);
+      }
+    }
+  }
+  MESSAGE("patches ", best_a, " and ", best_b, ": ", cuts, " cuts, ", gaps,
+          " places along the border where the two tops part by over 2 mm or one is missing (worst ",
+          worst_gap, " m); worst sag of a cut below the plan's top past its own error ", worst_sag,
+          " m (at error ", worst_sag_t, ")");
+  CHECK(gaps == 0u);
+  CHECK(worst_sag < .05);
+}
+
 TEST_CASE("deposits: G143's plan and a patch with blocks are their pinned bytes") {
   DepositLayer p = layer();
   p.blocks_per_100m2 = 60;
