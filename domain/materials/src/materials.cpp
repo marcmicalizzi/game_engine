@@ -242,6 +242,44 @@ std::string absolute_dir(std::string_view dir) {
 
 }  // namespace
 
+namespace {
+
+// The pack whose manifest is `<dir>/pack.json`: null, with `found` false, where there is none;
+// null, said in the log, when it is there and refused.
+std::unique_ptr<Pack> read_pack(const std::string& dir, bool& found) {
+  const std::string manifest = io::join_path(dir, "pack.json");
+  found = io::exists(manifest);
+  if (!found) return nullptr;
+  std::string text;
+  std::string error;
+  const io::Status status = io::read_file(manifest, text);
+  std::unique_ptr<Pack> pack = std::make_unique<Pack>();
+  if (status != io::Status::Ok) {
+    error = std::string("cannot read pack.json: ") + io::status_name(status);
+  } else {
+    parse_pack(text, dir, *pack, error);  // `error` says why when it refuses
+  }
+  if (!error.empty()) {
+    ENGINE_LOG_WARN(log_materials, "material pack refused", log::field("dir", dir),
+                    log::field("error", error));
+    return nullptr;
+  }
+  return pack;
+}
+
+}  // namespace
+
+Pack merge_packs(const Pack& primary, const Pack& fallback) {
+  Pack merged = primary;
+  for (const PackRole& role : fallback.roles) {
+    if (find_role(&primary, role.role) == nullptr) merged.roles.push_back(role);
+  }
+  std::sort(merged.roles.begin(), merged.roles.end(),
+            [](const PackRole& a, const PackRole& b) { return a.role < b.role; });
+  merged.hash = hash_combine(primary.hash, fallback.hash);
+  return merged;
+}
+
 const Pack* pack_at(std::string_view dir_in) {
   if (dir_in.empty()) return nullptr;
   const std::string dir = absolute_dir(dir_in);
@@ -250,30 +288,33 @@ const Pack* pack_at(std::string_view dir_in) {
   for (const auto& [where, pack] : held.packs) {
     if (where == dir) return pack.get();
   }
-  std::unique_ptr<Pack> pack;
-  const std::string manifest = io::join_path(dir, "pack.json");
-  if (!io::exists(manifest)) {
+  // The pack fetched into `dir`, and behind it the generated sets in `dir/generated` (matgen.md,
+  // "The default"): a role the fetched pack has is the fetched pack's, every other role the
+  // generated one's, so a checkout with no fetched pack still has a set for each default role.
+  bool found = false, generated_found = false;
+  std::unique_ptr<Pack> pack = read_pack(dir, found);
+  std::unique_ptr<Pack> generated =
+      read_pack(io::join_path(dir, k_generated_pack_dir), generated_found);
+  usize generated_roles = 0;
+  if (generated != nullptr) {
+    generated_roles = generated->roles.size();
+    if (pack != nullptr) {
+      generated_roles = 0;
+      for (const PackRole& role : generated->roles)
+        generated_roles += find_role(pack.get(), role.role) == nullptr ? 1u : 0u;
+      pack = std::make_unique<Pack>(merge_packs(*pack, *generated));
+    } else {
+      pack = std::move(generated);
+    }
+  }
+  if (!found && !generated_found) {
     ENGINE_LOG_INFO(log_materials, "no material pack; generated meshes draw their flat colours",
                     log::field("dir", dir));
-  } else {
-    std::string text;
-    std::string error;
-    const io::Status status = io::read_file(manifest, text);
-    pack = std::make_unique<Pack>();
-    if (status != io::Status::Ok) {
-      error = std::string("cannot read pack.json: ") + io::status_name(status);
-    } else {
-      parse_pack(text, dir, *pack, error);  // `error` says why when it refuses
-    }
-    if (!error.empty()) {
-      ENGINE_LOG_WARN(log_materials, "material pack refused", log::field("dir", dir),
-                      log::field("error", error));
-      pack.reset();
-    } else {
-      ENGINE_LOG_INFO(log_materials, "material pack", log::field("dir", dir),
-                      log::field("name", pack->name), log::field("version", pack->version),
-                      log::field("roles", pack->roles.size()));
-    }
+  } else if (pack != nullptr) {
+    ENGINE_LOG_INFO(log_materials, "material pack", log::field("dir", dir),
+                    log::field("name", pack->name), log::field("version", pack->version),
+                    log::field("roles", pack->roles.size()),
+                    log::field("generated_roles", generated_roles));
   }
   held.packs.push_back({dir, std::move(pack)});
   return held.packs.back().second.get();

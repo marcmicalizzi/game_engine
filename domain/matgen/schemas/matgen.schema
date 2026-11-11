@@ -1,0 +1,123 @@
+// Generated material sets (docs/subsystems/matgen.md; the numbers and their sources,
+// docs/experiments/generated-material-sets.md). A recipe is whole numbers only: micrometres,
+// millimetres, thousandths. Its canonical JSON is therefore the same bytes from every compiler,
+// and the set's key is a hash over that text and the generator's version.
+namespace engine.matgen
+
+/// Which generator builds the set.
+enum Kind : u8 { granular = 0, rock = 1, ground = 2 }
+
+/// One constituent of a mix: a lithology of a clast population, or a mineral of a rock. Colours
+/// are linear albedo in thousandths.
+struct Constituent {
+  /// Its share of the mix, relative to the others' (they need not sum to 1000).
+  share_permille: u32 = 1000
+  r_permille: u32 = 350
+  g_permille: u32 = 350
+  b_permille: u32 = 350
+  /// How far a clast's (or a crystal's) tone strays from the constituent's, as a half range.
+  tone_permille: u32 = 150
+  roughness_permille: u32 = 850
+  /// Contrast of the grain inside a clast (a granite cobble's crystals), as a half range.
+  speckle_permille: u32 = 0
+  /// The share of this lithology's clasts crossed by a pale vein.
+  vein_permille: u32 = 0
+}
+
+/// A bed of clasts: the surface a pebble count would read.
+struct Granular {
+  /// The surface's median intermediate axis by grid count (Wolman 1954), micrometres.
+  d50_um: u32 = 45000
+  /// Its sorting: the standard deviation of the grid-count distribution in phi, thousandths.
+  sorting_milliphi: u32 = 1000
+  /// The distribution is cut this many phi either side of the median, thousandths.
+  truncate_milliphi: u32 = 2000
+  /// Krumbein's roundness of the clasts, thousandths (100 very angular .. 900 well rounded).
+  roundness_permille: u32 = 600
+  /// The range of b/a (elongation) and of c/b (flatness) the clasts are drawn from, thousandths.
+  ba_min_permille: u32 = 550
+  ba_max_permille: u32 = 900
+  cb_min_permille: u32 = 400
+  cb_max_permille: u32 = 850
+  /// The clasts' plan areas drawn, as a share of the tile. What shows is less by their overlap
+  /// (SetStats::clast_cover); the rest is the matrix.
+  cover_permille: u32 = 880
+  /// The mean dip of a clast's a-b plane against the flow (the set's +u), degrees: 0 for none.
+  /// A height field shows a lean only as far as the clast's thickness lets it (matgen.md).
+  imbrication_deg: u32 = 30
+  /// The half range of a clast's tilt about a random axis, degrees.
+  scatter_deg: u32 = 6
+  /// How strongly the a-axis lies across the flow: 0 any way round, 1000 always across.
+  alignment_permille: u32 = 600
+  /// 0: a matrix of sand fills between the clasts; 1000: openwork, the gaps are voids over a
+  /// lower layer of clasts.
+  openwork_permille: u32 = 0
+  /// The matrix's grain, micrometres.
+  matrix_um: u32 = 500
+  lithologies: Constituent[] = []
+}
+
+/// A rock face: crystals, joints, a weathering rind against fresh breaks, lichen.
+struct Rock {
+  /// The crystal (or sand grain) size, micrometres.
+  grain_um: u32 = 3500
+  minerals: Constituent[] = []
+  /// Micro-relief at the decimetre scale: the height's half range, micrometres.
+  relief_um: u32 = 4000
+  /// Joint sets drawn: 0, 1 or 2 (the second across the first).
+  joint_sets: u32 = 2
+  /// Each set's traces cross the tile's side this many times (its winding), 1..6.
+  joint_winding: u32 = 2
+  joint_width_um: u32 = 2500
+  /// The share of the surface under the weathering rind; the rest is fresh break.
+  rind_permille: u32 = 800
+  /// The rind's tint over the rock's own colour, thousandths.
+  rind_r_permille: u32 = 740
+  rind_g_permille: u32 = 720
+  rind_b_permille: u32 = 680
+  /// Crustose lichen cover of the rind (none grows on a fresh break): the exposure parameter.
+  lichen_permille: u32 = 120
+  /// Pits (a basalt's vesicles, a limestone's solution pits): the share of the surface.
+  pits_permille: u32 = 0
+  /// Bedding laminae across the tile (a sandstone's): 0 for none.
+  laminae: u32 = 0
+}
+
+/// A ground floor: moss and soil under dead leaf fragments under live leaves.
+struct Ground {
+  /// The underlay's two parts, relative shares.
+  moss_permille: u32 = 0
+  soil_permille: u32 = 1000
+  /// The share of the ground under dead leaf fragments (a Poisson cover).
+  thatch_permille: u32 = 500
+  /// The share under live leaves, over the thatch.
+  live_permille: u32 = 0
+  /// A fragment's length range and width range, millimetres and micrometres.
+  leaf_min_mm: u32 = 30
+  leaf_max_mm: u32 = 90
+  leaf_width_min_um: u32 = 1000
+  leaf_width_max_um: u32 = 4000
+}
+
+/// One set: the role it stands for, the surface one repeat covers and the texels across it.
+struct Set @version(1) {
+  /// `<word>/<word>`, as a material pack's role.
+  role: string = ""
+  kind: Kind = granular
+  seed: u64 = 1
+  /// The side of the surface one repeat covers, 50..20000 mm.
+  tile_mm: u32 = 1000
+  /// Texels across it: a power of two, 64..4096.
+  texels: u32 = 1024
+  /// Wetness: 0 dry, 1000 wet through (darker, smoother).
+  wet_permille: u32 = 0
+  /// How much of a hollow's shade is baked into the colour, thousandths.
+  cavity_permille: u32 = 350
+  /// The pack role's normal_scale, thousandths.
+  normal_scale_permille: u32 = 1000
+  /// The pack role's sampling: true for "stochastic" (materials.md, R131).
+  stochastic: bool = false
+  granular: Granular
+  rock: Rock
+  ground: Ground
+}

@@ -112,8 +112,19 @@ struct Pack {
 // unit. `hash` is over the text and `dir`, so a pack moved or changed is a new key. Pure.
 bool parse_pack(std::string_view text, std::string_view dir, Pack& out, std::string& error);
 
-// The pack in `dir`, read once per process and kept: null for an empty `dir`, a directory with no
-// `pack.json`, or one that does not parse — the last two said once, in the log. Thread-safe.
+// Where, inside a pack's directory, the generated sets' own pack lives (`engine-content matgen`
+// writes it; docs/subsystems/matgen.md, "The default").
+inline constexpr const char* k_generated_pack_dir = "generated";
+
+// `primary` with every role it lacks taken from `fallback`: its directory, name and version are
+// `primary`'s, its roles sorted, and its hash over both, so a build key moves when either does.
+// Pure.
+Pack merge_packs(const Pack& primary, const Pack& fallback);
+
+// The pack in `dir`, read once per process and kept: `dir/pack.json`, with the generated sets'
+// pack in `dir/generated/pack.json` behind it (`merge_packs`: a role the first has is the first's)
+// — or that one alone where `dir` has no manifest of its own. Null for an empty `dir`, a directory
+// with neither, or manifests that do not parse — said once, in the log. Thread-safe.
 const Pack* pack_at(std::string_view dir);
 
 // The default pack directory for a host: `<repo>/content/materials` beside `<repo>/ddc`, the root

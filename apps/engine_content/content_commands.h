@@ -69,6 +69,9 @@ int channels_command(int argc, char** argv);
 // A region sketch solved into an authored heightfield and its fields (landform_commands.cpp,
 // docs/subsystems/landform.md); present when this build has the landform capability.
 int landform_command(int argc, char** argv);
+// Generated material sets built into a pack directory (matgen_commands.cpp,
+// docs/subsystems/matgen.md); present when this build has the matgen capability.
+int matgen_command(int argc, char** argv);
 int soil_command(int argc, char** argv);
 int vine_command(int argc, char** argv);   // cover_commands.cpp
 int cover_command(int argc, char** argv);  // cover_commands.cpp

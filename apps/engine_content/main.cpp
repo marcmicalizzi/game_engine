@@ -188,6 +188,11 @@ const char* k_usage =
     "                                          heightfield, its fields (drainage area,\n"
     "                                          receiver, slope, erosion rate, fill) and a shaded\n"
     "                                          relief; present with the landform capability\n"
+    "  matgen [--out <pack dir>] [--texels <n>] [--role <role>]... [--set <recipe.json>]...\n"
+    "         [--force]                        build generated material sets (gravel, sand,\n"
+    "                                          scree, rock, ground) into a pack directory,\n"
+    "                                          by default the one every host reads behind the\n"
+    "                                          fetched pack; present with the matgen capability\n"
     "  vine <recipe.vine.json> <out.clusters>|--cache [--ddc <dir>] [--force]\n"
     "  cover <recipe.cover.json> <out.clusters>|--cache [--ddc <dir>] [--force]\n"
     "                                          grow a vine or organic cover over the host its\n"
@@ -1398,6 +1403,7 @@ int main(int argc, char** argv) {
   if (command == "rocks") return content::rocks_command(argc, argv);
   if (command == "channels") return content::channels_command(argc, argv);
   if (command == "landform") return content::landform_command(argc, argv);
+  if (command == "matgen") return content::matgen_command(argc, argv);
   if (command == "vine") return content::vine_command(argc, argv);
   if (command == "cover") return content::cover_command(argc, argv);
   if (command == "morphs") return content::morphs_command(argc, argv);
