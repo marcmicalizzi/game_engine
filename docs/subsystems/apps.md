@@ -412,6 +412,12 @@ for usage. It requires the channels capability; see [channels](channels.md#the-w
 The hosts (engine-view, engine-host, engine-editor) link the capability with the other generators, so
 a scene's `channels` placement draws in each.
 
+## engine-content routes: footpaths as benched treads
+
+`engine-content routes <scene.json> <out.json> [--ddc <dir>] [--entry <i>]` plans each `routes` entry
+over the terrain before its edits and writes the treads as `Bench` edits, their mask regions and the
+plan keys to paste ([routes](routes.md#in-a-scene); roadmap W96).
+
 ## engine-content landform: a region sketch solved into an eroded ground
 
 `engine-content landform <sketch.json> <out dir> [--name <stem>] [--jobs <n>] [--no-relief]`

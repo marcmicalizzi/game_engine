@@ -1,0 +1,10 @@
+{
+  "format": "engine.structure-raise.v1",
+  "name": "W96",
+  "reason": "engine-content routes is a new subcommand (W96); apps.md lists every engine-content command, so the page gains its section of four lines",
+  "date": "2026-11-11",
+  "by": "Marc Micalizzi",
+  "deltas": {
+    "page:docs/subsystems/apps.md": 322
+  }
+}

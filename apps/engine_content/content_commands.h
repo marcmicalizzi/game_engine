@@ -72,6 +72,10 @@ int landform_command(int argc, char** argv);
 // Generated material sets built into a pack directory (matgen_commands.cpp,
 // docs/subsystems/matgen.md); present when this build has the matgen capability.
 int matgen_command(int argc, char** argv);
+// A scene's footpaths written as benched treads, their mask regions and plan keys
+// (routes_commands.cpp, docs/subsystems/routes.md); present when this build has the routes
+// capability.
+int routes_command(int argc, char** argv);
 int soil_command(int argc, char** argv);
 int vine_command(int argc, char** argv);   // cover_commands.cpp
 int cover_command(int argc, char** argv);  // cover_commands.cpp
