@@ -86,22 +86,22 @@ struct Scene {
     }
     ++self->violations;
   }
-  static TileMeshSink::Texture texture(void* context, const renderer::PlacementTexture& texture,
+  static TileMeshSink::Texture texture(void* context, const renderer::PlacementTexture& wanted,
                                        std::string* why) {
     auto* self = static_cast<Scene*>(context);
-    if (Texture* there = self->find(texture.key)) {
+    if (Texture* there = self->find(wanted.key)) {
       ++there->refs;
       return TileMeshSink::Texture::held;
     }
-    if (texture.data.levels.empty()) return TileMeshSink::Texture::need_bytes;
+    if (wanted.data.levels.empty()) return TileMeshSink::Texture::need_bytes;
     if (self->textures.size() >= self->pairs) {
       if (why != nullptr) *why = "every texture pair holds a texture (renderer.textures.slots)";
       return TileMeshSink::Texture::refused;
     }
     Texture made;
-    made.key = texture.key;
+    made.key = wanted.key;
     made.refs = 1;
-    made.bytes = texture.staged_bytes();
+    made.bytes = wanted.staged_bytes();
     self->textures.push_back(made);
     ++self->uploads;
     self->uploaded_bytes += made.bytes;

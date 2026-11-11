@@ -644,14 +644,14 @@ TEST_CASE("mesh textures: what a 2K texture costs a commit, and the byte budget'
   REQUIRE_MESSAGE(rig.shoot(frame), rig.error);
   // Timed three times over: the first admission of a scene also pays for what it grows.
   i64 best = 0;
-  for (u32 round = 0; round < 3; ++round) {
+  for (u32 turn = 0; turn < 3; ++turn) {
     const i64 start = time::monotonic_ns();
     std::string why;
     REQUIRE_MESSAGE(rig.renderer.acquire_texture(first, &why) == GpuScene::TextureAdmit::held, why);
     const i64 took = time::monotonic_ns() - start;
-    best = round == 0 || took < best ? took : best;
+    best = turn == 0 || took < best ? took : best;
     // The byte budget: a second 2K map is past it, and is refused by its name.
-    if (round == 0) {
+    if (turn == 0) {
       CHECK(rig.renderer.acquire_texture(second, &why) == GpuScene::TextureAdmit::refused);
       MESSAGE("refused: " << why);
       CHECK(why.find("renderer.textures.budget_mib") != std::string::npos);
