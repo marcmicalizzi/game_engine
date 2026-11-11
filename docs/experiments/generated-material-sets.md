@@ -202,8 +202,11 @@ with green algae or cyanobacteria ("Tintenstriche"; Pittino et al. 2024, Frontie
 Microbiology, doi 10.3389/fmicb.2024.1430059, *read (secondary)*), driven by the rock's water
 retention. **No width or length was found**: 0.45 m long, strands 3 cm across, are *chosen*.
 
-**Form above the decimetre.** No source was read: scallops 0.33 m, ribs 0.5 m, one step, and the
-amplitudes (granite 22 mm) are *chosen* to give a face a shape the normal map shows at 15 m.
+**Form above the decimetre.** No source was read: scallops 0.33 m (at 0.15 of the form at a
+cell's rim), ribs 0.5 m, and the amplitudes (granite 22 mm) are *chosen* to give a face a shape
+the normal map shows at 15 m. A broken step of 1.4 times the form was drawn too and removed
+(`k_matgen_version` 3): its curved contour, cut by the rock sets' stochastic sampling, read as
+crescent stamps in the engine (matgen.md, "Rock sets").
 
 ## A floor
 
