@@ -270,7 +270,9 @@ try {
     $bad = Join-Path $scratch 'bad-costs.txt'
     Write-Text $bad "r big.cpp ten`n"
     $d = Invoke-Deal $bad 3
-    Test-That 'a malformed row stops the configure, quoted' { $d.Code -ne 0 -and $d.Out.Contains("'r big.cpp ten' is not") }
+    # CMake wraps an error's text at word boundaries, where depends on the path's length (the
+    # Linux container's /tmp wrapped inside the quote), so the words are compared, not the lines.
+    Test-That 'a malformed row stops the configure, quoted' { $d.Code -ne 0 -and ($d.Out -replace '\s+', ' ').Contains("'r big.cpp ten' is not") }
 
     # ---- -Predict, over a CTestTestfile.cmake as the configure writes one (the deal of the empty
     # table above) and the fixture table
