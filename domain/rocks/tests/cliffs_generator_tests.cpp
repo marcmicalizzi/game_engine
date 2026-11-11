@@ -1002,6 +1002,20 @@ TEST_CASE("cliffs generator: the bedded escarpment steps back in benches, its fr
     }
   }
   const f64 share = static_cast<f64>(front) / static_cast<f64>(triangles);
+  f64 line = 0.0;
+  u64 low = 0;
+  for (const CliffFace& face : faces) {
+    line += face.length;
+    Cliff coarse = face.cliff;
+    coarse.quality = RockQuality::Low;
+    assets::MeshData mesh;
+    CliffReport report;
+    REQUIRE_MESSAGE(solve_cliff(coarse, mesh, &report, &error), error);
+    low += report.face_triangles;
+  }
+  MESSAGE(line << " m of faces' lines: " << static_cast<f64>(triangles) / line
+               << " triangles a metre of line at the recipe's quality, "
+               << static_cast<f64>(low) / line << " at Low");
   MESSAGE(faces.size() << " faces, " << triangles << " triangles, " << share * 100.0
                        << " % on a front; " << bench_area / front_area * 100.0
                        << " % of the fronts' area lies back as a bench");
