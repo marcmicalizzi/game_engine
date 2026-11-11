@@ -139,6 +139,31 @@ observation, checked by the pins.
 | The order of a sweep | The network's points by generation from the outlets (a breadth-first stack), each point's receivers before it; the points of one generation independent of each other | Braun and Willett 2013 (**not read**, paywalled: their stack is by depth first, and its independence is by catchment) as described by Barnes 2019 (arXiv:1803.02977, **read** in stage A: "levels" of the order whose cells may run concurrently). The layout here is that level order with the levels' points sorted by their receiver's place; no number comes from either |
 | `rock.contrast` 2 | Erodibility of the weakest rock over the strongest in one range | The contrasts stage B's page lists under [structure](#structure-the-sources) (1.2 to 2.8 across the lithologies of single ranges); stage B kept an authoring 10 and said so. 2 is the middle of the published range; a sketch that wants cliffs asks for more |
 
+### Flow that divides: the sources
+
+| What | Form used | Source |
+|---|---|---|
+| The rule | A point's flow to each lower neighbour in proportion to the slope toward it times the contour length it crosses, 0.5 of a spacing toward a cardinal neighbour and 0.354 toward a diagonal | Quinn, Beven, Chevallier and Planchon 1991, *Hydrol. Processes* 5:59–79. **Not read**; the rule and its two contour lengths are as the multiple-flow-direction literature states them (**secondary**: Esri's "How Flow Direction works", which gives the partition with a distance adjustment for cardinal and diagonal neighbours, and Qin et al. below) |
+| Where it applies | The exponent on the slope rises with the steepest downslope gradient e: f(e) = 8.9 min(e, 1) + 1.1, from 1.1 on a plain to 10 on a slope of 1 | Qin, Zhu, Pei, Li, Zhou and Yang 2007, *Int. J. Geogr. Inf. Sci.* 21(4):443–458. **Secondary**: the formula as Esri's page quotes it and attributes it; the author's own copy of the paper was fetched and would not decode. The solver does not use the exponent: it divides at exponent 1 where f(e) < 2 (e < 0.1) and not at all above, a two-valued stand-in chosen so that no power is taken, and says so. `divide_below_slope` 0.1 is that crossing |
+| The rivers' law over several receivers | Each receiver's implicit term is K Δt (A w_k)^m / l_k, the height (z + Σ F_k z_k) / (1 + Σ F_k), the sediment passed by the weights | FastScape's `StreamPowerLaw.f90` (the implementation of Yuan et al. 2019), **read** as source: `fact = kfint*dt*(a*mwrec)**m/mlrec`, `h = f/df`, `dh(ijr) = dh(ijr) + dh(ijk)*mwrec(k,ijk)`. Its own weights are slope to a power that may vary with slope (`p_mfd_exp = 0.5 + 0.6*slope`, `FlowRouting.f90`, **read**), on a surface filled by 10⁻⁸ a step; here the weights are Quinn's and the surface the flood's |
+
+Authoring, marked so: the two-valued rule itself, and the shares kept as parts of 32,768.
+
+### Lateral erosion: the sources
+
+| What | Form used | Source |
+|---|---|---|
+| The model | A reach wears the neighbour on the outside of its bend at K_l A S / R; the volume, that rate over the water's depth and one spacing, accumulates at the neighbour until it equals what stands there above the reach's receiver, and the neighbour is then lowered to the receiver's height | Langston and Tucker 2018, *Earth Surf. Dynam.* 6:1–27. **Abstract only** of the article (its page gives no body and its PDF is past what the fetch takes): two bank models, one "the slow process of widening a bedrock canyon", one undercutting and slumping in softer rock; valleys "many times wider than the grid discretization scale". **The algorithm was read from the authors' implementation**, Landlab's `LateralEroder` (`lateral_erosion.py`, `node_finder.py`): `petlat = -Kl*da*max_slopes*inv_rad_curv`; `wd = 0.4*(da*runoffms)**0.35` with `runoffms = (Klr*F/kw)**2`, F = 0.02, kw = 10, so 4 × 10⁻⁶ m/s at a ratio of 1; `vol_lat_dt += abs(petlat)*dx*wd`; the two thresholds `(z[i] + wd - z[flowdirs[i]])*dx**2` (undercutting-slump) and `(z[lat_node] - z[flowdirs[i]])*dx**2` (total block); the lowering to `z[flowdirs[i]]`; the donor of the largest area as the inflow |
+| The curvature | 0.23, 0.67 and 1.37 over the spacing for a straight reach, a bend of 45 or 135 degrees, a right angle; on a straight reach a random side | The same implementation (`node_finder.py`), **read** as source. Here the side on a straight reach is hashed from the seed, the step and the cell, and the bank is the neighbour square to the outflow on the bend's outside (the implementation uses lookup tables by donor and receiver, described in its comments and not transcribed: the rule here agrees with the one case its comments spell out, a right-angle bend eroding the cell straight ahead of the inflow) |
+| K_l / K_v | `lateral_erosion` 1 | The implementation's default `Kl_ratio = 1.0`; the terrace test uses 3 for a weak rock, inside nothing published that was read |
+| Whether it breaks a comb | Lateral erosion makes a network reorganise toward a dendritic one | Kwang, Langston and Parker 2021, *PNAS* 118(16). **Not read** (the publisher refused the fetch): known from its press summaries, which give 5 to 15 million years for the change. Measured here, 1.5 million years of it moved no divide ([valleys that are not a comb](../subsystems/landform.md#valleys-that-are-not-a-comb)) |
+
+Authoring, marked so: joining the two bank models by what the bank is made of; the 64-cell floor
+under which a reach is not asked; `channel_width_m` 5 m at one square kilometre with the exponent
+of one half (Leopold and Maddock 1953, **not read**: the classical downstream exponent; Bieger et
+al. 2015's regional curves were looked for and their coefficients not reached); the uplift's
+unevenness, 0.7 over 3 km, which is the count's own result and has no source.
+
 What was measured rather than read: a level is narrow. The network has as many levels as its
 longest river has points, 735 in the bench's 1,024 by 1,024 sketch twenty steps old, so the
 published way to run a sweep in parallel (Barnes's, by level) hands a thread 1,400 points at a

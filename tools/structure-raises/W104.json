@@ -1,10 +1,10 @@
 {
   "format": "engine.structure-raise.v1",
   "name": "W104",
-  "reason": "apps.md: the landform command's summary gains the network's levels and where the solve's seconds went (W104 stage C)",
+  "reason": "apps.md: the landform command's summary gains the network's levels, the banks taken and where the solve's seconds went, and its field list the divided discharge and a channel's width (W104 stage C)",
   "date": "2026-11-10",
   "by": "Marc Micalizzi",
   "deltas": {
-    "page:docs/subsystems/apps.md": 94
+    "page:docs/subsystems/apps.md": 171
   }
 }

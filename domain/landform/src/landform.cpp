@@ -5,6 +5,7 @@
 // decision is IEEE `+ - * /`, `sqrt`, `floor` and integers; the loops the job system runs are the
 // ones whose points read nothing another point of the same loop writes.
 #include <core/jobs/job_system.h>
+#include <core/math/deterministic.h>
 #include <domain/gfx/formation.h>
 #include <domain/landform/landform.h>
 
@@ -37,6 +38,8 @@ constexpr u32 k_row_grain = 16;
 constexpr u64 k_route_salt = 0xD1B54A32D192ED03ull;
 // And the ridges' variation apart from both.
 constexpr u64 k_ridge_salt = 0x8CB92BA72F3D8DD7ull;
+// And the uplift's unevenness over the plan.
+constexpr u64 k_plan_salt = 0x5851F42D4C957F2Dull;
 // The explicit diffusion's largest step, as D dt / spacing^2 (a quarter is the stability limit).
 constexpr f64 k_diffusion_number = 0.2;
 // A heightfield's float holds a whole millimetre exactly below 2^24 of them.
@@ -626,10 +629,45 @@ f64 line_noise(u64 seed, f64 station, f64 length) noexcept {
   return sum / 2.5606601717798214;
 }
 
+// Seeded noise over the plan, in [-1, 1]: the same four octaves as `line_noise`, of value noise
+// on a square lattice of the world's own metres, so a place has its number whatever lattice
+// reads it (landform.md, "Valleys that are not a comb").
+f64 plan_noise(u64 seed, f64 x, f64 z, f64 length) noexcept {
+  f64 sum = 0.0;
+  f64 amplitude = 1.0;
+  f64 wavelength = length;
+  for (u32 octave = 0; octave < 4; ++octave) {
+    const f64 ax = x / wavelength;
+    const f64 az = z / wavelength;
+    const f64 cx = std::floor(ax);
+    const f64 cz = std::floor(az);
+    const f64 tx = ax - cx;
+    const f64 tz = az - cz;
+    const u64 ix = static_cast<u64>(static_cast<i64>(cx));
+    const u64 iz = static_cast<u64>(static_cast<i64>(cz));
+    const auto corner = [seed, octave](u64 gx, u64 gz) {
+      return signed_unit(mix(seed ^ mix((gz << 32) ^ (gx & 0xFFFFFFFFull) ^ (u64{octave} << 60))));
+    };
+    const f64 sx = tx * tx * (3.0 - 2.0 * tx);
+    const f64 sz = tz * tz * (3.0 - 2.0 * tz);
+    const f64 a = corner(ix, iz);
+    const f64 b = corner(ix + 1, iz);
+    const f64 c = corner(ix, iz + 1);
+    const f64 d = corner(ix + 1, iz + 1);
+    const f64 front = a + (b - a) * sx;
+    const f64 back = c + (d - c) * sx;
+    sum += amplitude * (front + (back - front) * sz);
+    amplitude *= k_inv_sqrt2;
+    wavelength *= 0.5;
+  }
+  return sum / 2.5606601717798214;
+}
+
 // The largest ridge kernel at a point, mm/yr: (1 - (r / reach)^2)^2 of the line's rate, the rate
 // that of the line's nearest station.
-f64 ridge_rate(const Sketch& s, f64 px, f64 pz) noexcept {
+f64 ridge_rate(const Sketch& s, f64 px, f64 pz, f64& envelope) noexcept {
   f64 best = 0.0;
+  envelope = 0.0;
   for (u32 r = 0; r < s.uplift.ridges.size(); ++r) {
     const Ridge& ridge = s.uplift.ridges[r];
     const f64 reach2 = ridge.reach_m * ridge.reach_m;
@@ -664,6 +702,9 @@ f64 ridge_rate(const Sketch& s, f64 px, f64 pz) noexcept {
                            : 1.0;
     const f64 rate = ridge.rate_mm_per_yr * varied * k1 * k1;
     if (rate > best) best = rate;
+    // What the unevenness over the plan is a fraction of: the line's rate falling off as the
+    // kernel's square root, so a flank is as uneven as the crest.
+    if (ridge.rate_mm_per_yr * k1 > envelope) envelope = ridge.rate_mm_per_yr * k1;
   }
   return best;
 }
@@ -857,9 +898,6 @@ i32 clamp_i32(f64 v) noexcept {
 // any thread count. A point's flux is a gather over its donors in the fixed order of the eight
 // directions, never a scatter whose order the threads would decide.
 
-// A point's whole flow, in the units its shares among its receivers are kept in.
-constexpr u32 k_share_one = 32768;
-
 // What a point is to its river this step.
 constexpr u8 k_node_held = 0;    // an outlet: it takes what reaches it
 constexpr u8 k_node_keeps = 1;   // a lake's member: what reaches it settles in the lake
@@ -917,6 +955,8 @@ struct RiverInputs {
   f64 sea = 0.0;
   f64 channel_cells = 0.0;
   f64 loose_dt = 0.0;
+  // The steepest fall, in fill units over one spacing, under which a point's flow divides.
+  f64 divide_units = 0.0;
   u32 grain = 4096;
 };
 
@@ -940,18 +980,59 @@ void raise_to(std::atomic<f64>& worst, f64 v) noexcept {
   }
 }
 
-// Each point's shares of its flow among its lower neighbours: all of it to its receiver.
-void find_shares(u32 w, u32 h, jobs::JobSystem* jobs, const Routing& r, Network& net) {
+// Each point's shares of its flow among its lower neighbours (landform.md, "Flow that divides").
+// Where the steepest fall on the filled surface is `divide_units` (fill units over one spacing)
+// or more, all of it goes to the receiver. Where the ground is gentler the flow divides among
+// every lower neighbour in proportion to its slope times the contour length it crosses (Quinn,
+// Beven, Chevallier and Planchon 1991: half a spacing toward a cardinal neighbour, sqrt(2) / 4
+// toward a diagonal one), which over the distances 1 and sqrt(2) is the fall times two and the
+// fall times one: whole numbers. The shares are whole units of `k_share_one` and the receiver
+// takes what the divisions left, so they sum to it exactly. `single`, where given, marks points
+// that never divide.
+void find_shares(u32 w, u32 h, f64 divide_units, const u8* single, jobs::JobSystem* jobs,
+                 const Routing& r, Network& net) {
   net.share.resize(w * h * 8);
   u16* share = net.share.data();
   const u8* receiver = r.receiver.data();
+  const i64* filled = r.filled.data();
+  const i32 wi = static_cast<i32>(w);
+  const i32 hi = static_cast<i32>(h);
   for_rows(jobs, h, [&](u32 j0, u32 j1) {
-    for (u32 p = j0 * w; p < j1 * w; ++p) {
-      u16* s = share + p * 8;
-      for (u32 k = 0; k < 8; ++k)
-        s[k] = 0;
-      if (receiver[p] != k_no_receiver) s[receiver[p]] = static_cast<u16>(k_share_one);
-    }
+    for (u32 z = j0; z < j1; ++z)
+      for (u32 x = 0; x < w; ++x) {
+        const u32 p = z * w + x;
+        u16* s = share + p * 8;
+        for (u32 k = 0; k < 8; ++k)
+          s[k] = 0;
+        const u8 code = receiver[p];
+        if (code == k_no_receiver) continue;
+        s[code] = static_cast<u16>(k_share_one);
+        if (!(divide_units > 0.0) || (single != nullptr && single[p] != 0)) continue;
+        u64 raw[8];
+        u64 total = 0;
+        f64 steepest = 0.0;
+        for (u32 k = 0; k < 8; ++k) {
+          raw[k] = 0;
+          const i32 nx = static_cast<i32>(x) + k_receiver_dx[k];
+          const i32 nz = static_cast<i32>(z) + k_receiver_dz[k];
+          if (nx < 0 || nz < 0 || nx >= wi || nz >= hi) continue;
+          const i64 drop = filled[p] - filled[static_cast<u32>(nz) * w + static_cast<u32>(nx)];
+          if (drop <= 0) continue;
+          const f64 fall = static_cast<f64>(drop) * ((k & 1u) != 0 ? k_inv_sqrt2 : 1.0);
+          if (fall > steepest) steepest = fall;
+          raw[k] = static_cast<u64>(drop) * ((k & 1u) != 0 ? 1u : 2u);
+          total += raw[k];
+        }
+        if (!(steepest < divide_units) || total == raw[code]) continue;
+        u32 rest = k_share_one;
+        for (u32 k = 0; k < 8; ++k) {
+          if (k == code || raw[k] == 0) continue;
+          const u32 part = static_cast<u32>((raw[k] * k_share_one) / total);
+          s[k] = static_cast<u16>(part);
+          rest -= part;
+        }
+        s[code] = static_cast<u16>(rest);
+      }
   });
 }
 
@@ -997,7 +1078,7 @@ void build_network(const RiverInputs& in, const Routing& r, jobs::JobSystem* job
   const u8* receiver = r.receiver.data();
   const u32* order = r.order.data();
   const u32* sill = r.sill.data();
-  find_shares(w, in.h, jobs, r, net);
+  find_shares(w, in.h, in.divide_units, nullptr, jobs, r, net);
   accumulate_shares(w, in.h, r, net);
   const u16* share = net.share.data();
   const u64* discharge = net.discharge.data();
@@ -1241,6 +1322,118 @@ void build_network(const RiverInputs& in, const Routing& r, jobs::JobSystem* job
   });
 }
 
+// Keeps the banks' sides apart from the other numbers hashed from the seed and the cell.
+constexpr u64 k_bank_salt = 0xA24BAED4963EE407ull;
+// A reach draining fewer cells than this takes no bank: its lateral rate, which goes with the
+// area, would not move a bank in a run, and the pass is not worth its walk of them.
+constexpr f64 k_bank_min_cells = 64.0;
+
+struct BankInputs {
+  const Sketch* sketch = nullptr;
+  u32 w = 0;
+  u32 h = 0;
+  f64 spacing_m = 0.0;
+  const u8* held = nullptr;
+  const f64* hardness = nullptr;  // K dt times the point's variation
+  const f32* resist = nullptr;
+  u32 step = 0;
+};
+
+// Lateral erosion (landform.md, "Lateral erosion"): Langston and Tucker 2018's model as their
+// own implementation states it (Landlab's LateralEroder). A reach wears the bank beside it, on
+// the outside of its bend, at K_l A S / R: A its drainage area, S its slope, 1 / R the bend's
+// curvature from the directions the water arrives by and leaves by (0.23, 0.67 or 1.37 over the
+// spacing for straight, a 45 or 135 degree bend, a right angle), K_l the bank's erodibility
+// times the sketch's ratio. The volume worn, that rate over the water's depth and one spacing,
+// is kept at the bank's point from step to step; when it reaches what stands there above the
+// reach's receiver (all of the rock, and of the sediment what the water reaches: rock has to be
+// worn through, loose ground slumps when it is undercut) the point is lowered to the receiver's
+// height, and what it lost is the next step's rivers' to carry from there. The floor is then a
+// point wider, the next flood may send the river over it, and the slope limiter brings the wall
+// above down behind it. Each point is visited in cell order, one thread: the same bytes at any
+// worker count. Returns the banks taken.
+u32 erode_banks(const BankInputs& in, const Routing& r, const Network& net, f64* z, f64* sed,
+                f64* carry, f64* bank, f64& eroded) {
+  const Sketch& s = *in.sketch;
+  const u32 w = in.w;
+  const u32 n = w * in.h;
+  const i32 wi = static_cast<i32>(w);
+  const i32 hi = static_cast<i32>(in.h);
+  const Offsets o = neighbour_offsets(w);
+  const u8* receiver = r.receiver.data();
+  const u16* share = net.share.data();
+  const u64* discharge = net.discharge.data();
+  const u32* position = net.position.data();
+  const u8* kind = net.kind.data();
+  const f64 cell_m2 = in.spacing_m * in.spacing_m;
+  const u64 seed = mix(s.seed ^ k_bank_salt) + in.step;
+  u32 taken = 0;
+  for (u32 p = 0; p < n; ++p) {
+    if (kind[position[p]] != k_node_reach) continue;
+    const f64 cells = static_cast<f64>(discharge[p]) / static_cast<f64>(k_share_one);
+    if (cells < k_bank_min_cells) continue;
+    const u8 code = receiver[p];
+    const i32 x = static_cast<i32>(p % w);
+    const i32 y = static_cast<i32>(p / w);
+    // The donor the most water comes from; the lowest direction on a tie.
+    u32 from = 8;
+    u64 most = 0;
+    for (u32 j = 0; j < 8; ++j) {
+      const i32 nx = x + k_receiver_dx[j];
+      const i32 ny = y + k_receiver_dz[j];
+      if (nx < 0 || ny < 0 || nx >= wi || ny >= hi) continue;
+      const u32 q = static_cast<u32>(ny) * w + static_cast<u32>(nx);
+      const u64 part = discharge[q] * share[q * 8 + ((j + 4) & 7u)];
+      if (part > most) {
+        most = part;
+        from = j;
+      }
+    }
+    if (from == 8) continue;  // a head: no bend to speak of
+    // The turn, in eighths, from the direction the water arrives by to the one it leaves by:
+    // the codes run clockwise, so one to three is a turn to the right.
+    const u32 turn = (code - ((from + 4) & 7u)) & 7u;
+    if (turn == 4) continue;
+    const f64 curvature = turn == 0 ? 0.23 : ((turn == 2 || turn == 6) ? 1.37 : 0.67);
+    bool left = turn >= 1 && turn <= 3;  // the outside of a right turn is the left bank
+    if (turn == 0) left = (mix(seed ^ mix(p)) & 1u) != 0;
+    // The bank beside the reach, square to the way it leaves; from a diagonal, the cardinal
+    // neighbour on that side, which touches the receiver too.
+    const u32 swing = (code & 1u) != 0 ? 1u : 2u;
+    const u32 side = left ? (code + 8 - swing) & 7u : (code + swing) & 7u;
+    const i32 bx = x + k_receiver_dx[side];
+    const i32 by = y + k_receiver_dz[side];
+    if (bx < 0 || by < 0 || bx >= wi || by >= hi) continue;
+    const u32 b = static_cast<u32>(by) * w + static_cast<u32>(bx);
+    if (in.held[b] != 0 || !(z[b] > z[p])) continue;
+    const u32 below = neighbour(p, o.at[code]);
+    const f64 fall = z[p] - z[below];
+    if (!(fall > 0.0)) continue;
+    const f64 slope = fall / (in.spacing_m * ((code & 1u) != 0 ? k_sqrt2 : 1.0));
+    const f64 soft =
+        sed[b] > 0.0 ? s.sediment_erodibility : erodibility_of(s, static_cast<f64>(in.resist[b]));
+    // K_l dt A S / R, metres of bank this step; A / R is cells times the spacing.
+    const f64 retreat =
+        in.hardness[b] * soft * s.lateral_erosion * cells * in.spacing_m * slope * curvature;
+    // The water's depth, metres: 0.4 Q^0.35, Q the area times 4e-6 m/s (the implementation's
+    // own constants). The one power that is not a square root: `det::exp` and `det::log`.
+    const f64 depth = 0.4 * det::exp(0.35 * det::log(cells * cell_m2 * 4.0e-6));
+    bank[b] += retreat * depth / in.spacing_m;
+    const f64 stands = z[b] - z[below];
+    const f64 loose = sed[b] < stands ? sed[b] : stands;
+    const f64 reach = z[p] + depth - z[below];
+    const f64 needed = (stands - loose) + (loose < reach ? loose : reach);
+    if (bank[b] < needed) continue;
+    z[b] = z[below];
+    sed[b] -= loose;
+    carry[b] += stands;
+    eroded += stands;
+    bank[b] = 0.0;
+    ++taken;
+  }
+  return taken;
+}
+
 // The rivers: erosion and deposition together, implicit (Yuan, Braun, Guerit, Rouby and
 // Cordonnier 2019, their equation 20). A reach moves to (z + d + F b) / (1 + F): F = K dt P, P
 // its stream power in cells (the spacing cancels at m = 1/2, n = 1), b its base level (its
@@ -1396,6 +1589,16 @@ bool validate_sketch(const Sketch& s, std::string& error) {
       if (!in_range(raster.rates_mm_per_yr[k], 0.0, 100.0))
         return refuse("a sketch's uplift raster rates are 0 to 100 mm/yr");
   }
+  if (!in_range(s.uplift.variation, 0.0, 0.9))
+    return refuse("a sketch's uplift.variation is 0 to 0.9");
+  if (!in_range(s.uplift.variation_length_m, 10.0, 1000000.0))
+    return refuse("a sketch's uplift.variation_length_m is 10 to 1,000,000 m");
+  if (!in_range(s.divide_below_slope, 0.0, 1.0))
+    return refuse("a sketch's divide_below_slope is 0 to 1");
+  if (!in_range(s.lateral_erosion, 0.0, 10.0))
+    return refuse("a sketch's lateral_erosion is 0 to 10");
+  if (!in_range(s.channel_width_m, 0.1, 1000.0))
+    return refuse("a sketch's channel_width_m is 0.1 to 1,000 m");
   if (!in_range(s.rock.resistance, 0.0, 1.0)) return refuse("a sketch's rock.resistance is 0 to 1");
   if (!in_range(s.rock.contrast, 1.0, 1000.0))
     return refuse("a sketch's rock.contrast is 1 to 1,000");
@@ -1457,6 +1660,34 @@ bool route(u32 width, u32 height, const Vector<i32>& height_mm, const Vector<u8>
   r.order.swap(order);
   r.receiver.swap(receiver);
   r.area.swap(area);
+  return ok;
+}
+
+bool route_divided(u32 width, u32 height, i64 spacing_mm, const Vector<i32>& height_mm,
+                   const Vector<u8>& held, u64 seed, f64 divide_below_slope, jobs::JobSystem* jobs,
+                   Vector<u8>& receiver, Vector<u16>& share, Vector<u64>& discharge) {
+  const u32 n = width * height;
+  if (n == 0 || height_mm.size() != n || held.size() != n || spacing_mm <= 0) return false;
+  Routing r;
+  r.receiver.swap(receiver);
+  Network net;
+  net.share.swap(share);
+  net.discharge.swap(discharge);
+  const i32* mm = height_mm.data();
+  const bool ok = flood(
+      width, height, held.data(),
+      [mm](u32 i) { return static_cast<i64>(mm[i]) * k_fill_units_per_mm; }, jobs, r);
+  if (ok) {
+    find_receivers(width, height, held.data(), seed, jobs, r);
+    find_shares(
+        width, height,
+        divide_below_slope * static_cast<f64>(spacing_mm) * static_cast<f64>(k_fill_units_per_mm),
+        nullptr, jobs, r, net);
+    accumulate_shares(width, height, r, net);
+  }
+  r.receiver.swap(receiver);
+  net.share.swap(share);
+  net.discharge.swap(discharge);
   return ok;
 }
 
@@ -1582,8 +1813,23 @@ bool solve(const Sketch& s, const StartField* start, const SolveOptions& options
     for (u32 j = j0; j < j1; ++j)
       for (u32 i = 0; i < w; ++i) {
         const u32 p = j * w + i;
-        f64 rate = s.uplift.regional_mm_per_yr + ridge_rate(s, frame.x(i), frame.z(j));
-        if (s.uplift.raster) rate += raster_rate(*s.uplift.raster, frame, i, j);
+        f64 envelope = 0.0;
+        f64 rate = s.uplift.regional_mm_per_yr + ridge_rate(s, frame.x(i), frame.z(j), envelope);
+        envelope += s.uplift.regional_mm_per_yr;
+        if (s.uplift.raster) {
+          const f64 from_raster = raster_rate(*s.uplift.raster, frame, i, j);
+          rate += from_raster;
+          envelope += from_raster;
+        }
+        // Uneven over the plan, so a range is not a pair of ramps: the seeded noise times a
+        // fraction of the rate about the point (a ridge's rate falling off as its kernel's
+        // square root, so its flanks are as uneven as its crest), and never below nothing.
+        if (s.uplift.variation > 0.0) {
+          rate += s.uplift.variation * envelope *
+                  plan_noise(mix(s.seed ^ k_plan_salt), frame.x(i), frame.z(j),
+                             s.uplift.variation_length_m);
+          if (rate < 0.0) rate = 0.0;
+        }
         const f64 d = drain_distance(s, frame, i, j);
         f64 taper = 1.0;
         if (d >= 0.0 && reach > 0.0 && d < reach) {
@@ -1653,6 +1899,18 @@ bool solve(const Sketch& s, const StartField* start, const SolveOptions& options
   rivers.channel_cells = channel_cells;
   rivers.loose_dt = loose_dt;
   rivers.grain = options.level_grain;
+  rivers.divide_units = s.divide_below_slope * frame.spacing_m * k_units_per_m;
+  // What lateral erosion has worn from each bank and not yet taken, metres over one cell.
+  Vector<f64> bank_field(n, 0.0);
+  BankInputs banks;
+  banks.sketch = &s;
+  banks.w = w;
+  banks.h = h;
+  banks.spacing_m = frame.spacing_m;
+  banks.held = held;
+  banks.hardness = hardness;
+  banks.resist = resist;
+  u32 banks_taken = 0;
   // Where the seconds go: a clock read between the parts, which no decision reads.
   Timing timing;
   auto tick = std::chrono::steady_clock::now();
@@ -1778,6 +2036,10 @@ bool solve(const Sketch& s, const StartField* start, const SolveOptions& options
       send(p, q + lost);
     }
     lap(timing.books_s);
+    if (s.lateral_erosion > 0.0) {
+      banks.step = step;
+      banks_taken += erode_banks(banks, routing, network, z, sed, carry, bank_field.data(), eroded);
+    }
     // Hillslopes: a Jacobi step reads one surface and writes the other, so rows run in parallel.
     // What creep lowers comes off the sediment first, and what it raises is sediment.
     const f64 before_creep = substeps > 0 ? total() : 0.0;
@@ -1931,6 +2193,26 @@ bool solve(const Sketch& s, const StartField* start, const SolveOptions& options
   }
   find_receivers(w, h, held, s.seed ^ k_route_salt, jobs, routing);
   accumulate(w, h, routing);
+  // The divided discharge of the same ground, and a channel's width from it.
+  find_shares(w, h, rivers.divide_units, nullptr, jobs, routing, network);
+  accumulate_shares(w, h, routing, network);
+  out.discharge.resize(n);
+  out.channel_width.resize(n);
+  out.banks_taken = banks_taken;
+  {
+    const u64* units = network.discharge.data();
+    u32* discharge = out.discharge.data();
+    u32* wide = out.channel_width.data();
+    const f64 cell_km2 = frame.spacing_m * frame.spacing_m * 1.0e-6;
+    const f64 width_mm = s.channel_width_m * 1000.0;
+    for_rows(jobs, h, [&](u32 j0, u32 j1) {
+      for (u32 p = j0 * w; p < j1 * w; ++p) {
+        discharge[p] = static_cast<u32>((units[p] + k_share_one / 2) / k_share_one);
+        const f64 km2 = static_cast<f64>(units[p]) / static_cast<f64>(k_share_one) * cell_km2;
+        wide[p] = static_cast<u32>(clamp_i32(width_mm * std::sqrt(km2)));
+      }
+    });
+  }
   const i64* filled = routing.filled.data();
   const u8* receiver = routing.receiver.data();
   i32* slope = out.slope.data();

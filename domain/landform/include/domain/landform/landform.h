@@ -52,10 +52,14 @@ namespace engine::landform {
 inline constexpr const char* k_determinism = "derived";
 
 /// Bumped whenever the same sketch would solve to different bytes; the field file records it.
-inline constexpr u32 k_solver_version = 5;
+inline constexpr u32 k_solver_version = 6;
 
 inline constexpr std::string_view k_fields_format = "engine.landform.fields";
-inline constexpr u32 k_fields_version = 2;
+inline constexpr u32 k_fields_version = 3;
+
+/// A point's whole flow, in the units its shares among its receivers and `route_divided`'s
+/// discharge are kept in: whole numbers, so a divided flow is conserved exactly.
+inline constexpr u32 k_share_one = 32768;
 
 /// A receiver code: the neighbour a point drains to, east first and then clockwise seen from above
 /// with +z down the page (east, south-east, south, south-west, west, north-west, north,
@@ -153,6 +157,16 @@ struct Landform {
   /// most resistant: the erodibility over the contrast, the resistant critical slope): the bed
   /// of the sketch's formation the solved surface cuts, or the sketch's uniform value.
   Vector<u8> resistance;
+  /// The cells whose water passes through the point when flow divides where the ground is
+  /// gentle (landform.md, "Flow that divides"), rounded to whole cells: `drainage_area` is the
+  /// one thread down each point's receiver, this is where the water spreads over a fan or a
+  /// plain. The two are equal wherever nothing above the point divided.
+  Vector<u32> discharge;
+  /// A channel's width at the point, whole millimetres: the sketch's `channel_width_m` times the
+  /// square root of the discharge in square kilometres.
+  Vector<u32> channel_width;
+  /// How many times lateral erosion took a bank's point over the run.
+  u32 banks_taken = 0;
   Budget budget;
   Timing timing;
   /// How deep the point lies under its depression's spill, whole millimetres; zero on draining
@@ -185,6 +199,15 @@ bool solve(const Sketch& sketch, const StartField* start, const SolveOptions& op
 bool route(u32 width, u32 height, const Vector<i32>& height_mm, const Vector<u8>& held, u64 seed,
            jobs::JobSystem* jobs, Vector<i64>& filled, Vector<u32>& order, Vector<u8>& receiver,
            Vector<u32>& area);
+
+/// The divided routing of a ground (landform.md, "Flow that divides"): the flood and the
+/// receivers as `route` finds them, then each point's shares of its flow among its lower
+/// neighbours (eight a point, of `k_share_one`; all of it to the receiver where the steepest fall
+/// is `divide_below_slope` or more) and its discharge in 1 / `k_share_one` of a cell. The held
+/// points' discharges sum to the lattice exactly. False when no point is held.
+bool route_divided(u32 width, u32 height, i64 spacing_mm, const Vector<i32>& height_mm,
+                   const Vector<u8>& held, u64 seed, f64 divide_below_slope, jobs::JobSystem* jobs,
+                   Vector<u8>& receiver, Vector<u16>& share, Vector<u64>& discharge);
 
 // ---- files (src/files.cpp) ----------------------------------------------------------------------
 

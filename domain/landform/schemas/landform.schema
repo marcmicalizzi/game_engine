@@ -75,12 +75,25 @@ struct UpliftRaster @version(1) {
   rates_mm_per_yr: f64[]
 }
 
-/// What raises the ground: the regional rate, plus the ridges' largest kernel, plus the raster.
-struct Uplift @version(1) {
+/// What raises the ground: the regional rate, plus the ridges' largest kernel, plus the raster,
+/// all times the seeded unevenness.
+struct Uplift @version(2) {
   /// 0 to 100 mm/yr.
   regional_mm_per_yr: f64 = 0
   ridges: Ridge[]
   raster: UpliftRaster?
+  /// The rate varies over the plan by this fraction either way, seeded: 0 (even) to 0.9. A
+  /// range raised by a kernel that depends only on the distance to its line is a pair of ramps,
+  /// and the rivers of a ramp run straight down it side by side; what breaks that comb is a
+  /// rate that is uneven across the range as well as along it (landform.md, "Valleys that are
+  /// not a comb", has the count).
+  /// It is a fraction of the rate about the point: the regional rate and the raster's, and a
+  /// ridge's own rate falling off as the square root of its kernel, so a flank is as uneven as
+  /// the crest; the sum is never below nothing.
+  variation: f64 = 0.7 @since(2)
+  /// The unevenness's longest wavelength, metres: 10 to 1,000,000. Three more octaves follow it
+  /// down, each half the wavelength and 1 / sqrt(2) the amplitude.
+  variation_length_m: f64 = 3000 @since(2) @unit(m)
 }
 
 /// How hard the ground is: uniform, or the beds of a formation (landform.md, "Structure").
@@ -105,7 +118,7 @@ struct Rock @version(2) {
 }
 /// The region sketch `engine-content landform` reads (landform.md, "The sketch"). Every range is
 /// checked, and a sketch outside one is refused with a sentence naming the field.
-struct Sketch @version(2) {
+struct Sketch @version(3) {
   /// Points a row (x) and rows (z), each 8 to 16,384.
   width: u32
   height: u32
@@ -150,6 +163,19 @@ struct Sketch @version(2) {
   /// The share of the sediment reaching standing water in a lake that settles at the river's
   /// mouth, up to the water's level (a delta); the rest levels the lake's floor. 0 to 1.
   delta_share: f64 = 0.5 @since(2)
+  /// Where the steepest fall from a point is under this (rise over run) its flow divides among
+  /// all its lower neighbours, in proportion to each one's slope times the contour it crosses
+  /// (Quinn et al. 1991); at this and above it all goes to the steepest. 0 never divides; 0 to
+  /// 1. The default is the slope at which Qin et al. 2007's exponent for the same rule passes 2
+  /// (landform.md, "Flow that divides").
+  divide_below_slope: f64 = 0.1 @since(3)
+  /// Lateral erosion: the erodibility of a river's bank over that of its bed (Langston and
+  /// Tucker 2018's K_l / K_v). 0 is none; 0 to 10 (landform.md, "Lateral erosion").
+  lateral_erosion: f64 = 1 @since(3)
+  /// A channel's width where it drains one square kilometre, metres: the width written to the
+  /// field file is this times the square root of the discharge in square kilometres (the
+  /// downstream hydraulic geometry's exponent of one half). 0.1 to 1,000.
+  channel_width_m: f64 = 5 @since(3) @unit(m)
   seed: u64 = 1
   /// The starting plane's roughness, metres either way: 0 to 100.
   roughness_m: f64 = 1
@@ -165,7 +191,8 @@ struct Sketch @version(2) {
 
 /// One field of the field file.
 struct FieldEntry @version(1) {
-  /// `drainage_area`, `receiver`, `slope`, `erosion_rate`, `fill`, `sediment`, `resistance`.
+  /// `drainage_area`, `receiver`, `slope`, `erosion_rate`, `fill`, `sediment`, `resistance`,
+  /// `discharge`, `channel_width`.
   name: string
   /// The raw grid, relative to the header: little-endian, rows of x in order of z, the
   /// heightfield's own lattice.
@@ -197,11 +224,11 @@ struct TerrainHeightfield @version(1) {
 }
 
 /// The header of the fields written beside a solved heightfield (landform.md, "The field file"):
-/// `engine.landform.fields/2`. Every field is on the heightfield's lattice, point for point.
+/// `engine.landform.fields/3`. Every field is on the heightfield's lattice, point for point.
 struct Fields @version(1) {
   /// "engine.landform.fields".
   format: string
-  version: u32 = 2
+  version: u32 = 3
   width: u32
   height: u32
   spacing_mm: i64

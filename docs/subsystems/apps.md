@@ -419,10 +419,10 @@ solves an `engine.landform.Sketch` ([landform](landform.md#the-sketch); roadmap 
 into the directory, `<stem>.json` and `<stem>.f32` (an `engine.terrain.heightfield/1` in whole
 millimetres, which `terrain-tiles` builds as it builds any authored heightfield),
 `<stem>.fields.json` and a raw grid a field ([the field file](landform.md#the-field-file):
-drainage area, receiver, slope, erosion rate, fill, sediment, resistance), and two pictures for a person,
+drainage area, receiver, slope, erosion rate, fill, sediment, resistance, the divided discharge and a channel's width), and two pictures for a person,
 `<stem>.relief.png` and `<stem>.drainage.png` (the second with the sediment as sand). The stem is
 the sketch's file name. It reads the heightfield back through the tile set's reader before it
-reports, and prints a JSON summary (the lattice, the steps, the rivers' sweeps and the levels of the last step's network, the lowest and highest point, the
+reports, and prints a JSON summary (the lattice, the steps, the rivers' sweeps, the levels of the last step's network and the banks lateral erosion took, the lowest and highest point, the
 land's mean slope, the held, flooded and sea points, the largest drainage area, the points on a
 metre of sediment and the thickest, the run's `budget` in cubic metres
 ([deposition](landform.md#deposition)), the solve's seconds and, under `timing`, the part of the step each went to). A build without the landform capability

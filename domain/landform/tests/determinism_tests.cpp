@@ -30,14 +30,17 @@ namespace {
 // to 2 where it was 10 (the golden sketch takes the default) and the rivers' sweeps start from
 // the last step's answer. The sweeps' new sequence and their gather of the flux moved nothing
 // by themselves: the same build with the old default and a cold start solved to version 4's pins.
-constexpr u64 k_height_hash = 0x1777be73ba69e294ull;
-constexpr u64 k_area_hash = 0x65ca5e2b7ec38dceull;
-constexpr u64 k_receiver_hash = 0x25b50e8b88f75e98ull;
-constexpr u64 k_slope_hash = 0xce9535ae453ee211ull;
-constexpr u64 k_erosion_hash = 0x67485c1fbc9c032bull;
-constexpr u64 k_fill_hash = 0xcb6cd89f3bb604d6ull;
-constexpr u64 k_sediment_hash = 0xc7c44ed914987ad3ull;
-constexpr u64 k_resistance_hash = 0xe794b335d2d59b01ull;
+// Version 6 (W104 stage C, rivers with width): every hash moved, because the golden sketch takes
+// the new defaults: its flow divides where the ground is gentle, its rivers wear their banks, and
+// its uplift is uneven over the plan by 0.7.
+constexpr u64 k_height_hash = 0x87a3180cd93046ffull;
+constexpr u64 k_area_hash = 0x37a14640e15ff18bull;
+constexpr u64 k_receiver_hash = 0xe27b979581e5b230ull;
+constexpr u64 k_slope_hash = 0x8b5d9a6c90a7ca7dull;
+constexpr u64 k_erosion_hash = 0x5a95096691d65b81ull;
+constexpr u64 k_fill_hash = 0x3496a0d9a616b98eull;
+constexpr u64 k_sediment_hash = 0x70108d41bd5df534ull;
+constexpr u64 k_resistance_hash = 0x2f7f8146fcaad4e8ull;
 
 }  // namespace
 

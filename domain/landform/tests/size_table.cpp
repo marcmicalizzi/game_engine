@@ -3,10 +3,11 @@
 // pinning is the result a host holds while it writes the files: eight arrays (the sediment's and
 // the resistance's joined the six with deposition, W95 stage B), the lattice, the routing seed and
 // the run's budget of eight volumes. Stage C (W104) added where the solve's seconds went, eight
-// doubles, and the count of the network's levels: 264 to 336 bytes.
+// doubles, and the count of the network's levels (336 bytes), then the divided discharge and the
+// channel's width, two arrays, and the count of the banks lateral erosion took: 376 bytes.
 #include <core/base/size_table.h>
 #include <domain/landform/landform.h>
 
 using namespace engine;
 
-ENGINE_EXPECT_SIZE(336, 8, landform::Landform);
+ENGINE_EXPECT_SIZE(376, 8, landform::Landform);
