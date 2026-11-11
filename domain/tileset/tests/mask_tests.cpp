@@ -590,13 +590,13 @@ scene::Terrain cut_masks_terrain(bool with_cut) {
   entry.tiles->far_ratio = 1;
   entry.tiles->far_levels = 2;
   if (with_cut) {
-    scene::TerrainCut c;
+    scene::TerrainEdit c;
     c.name = "run";
     c.points = {WorldPos{5.0, 0.0, 20.0}, WorldPos{35.0, 0.0, 20.0}};
     c.width_m = {8.0f, 8.0f};
     c.depth_m = {4.0f, 4.0f};
     c.bank_slope = 3.0f;
-    entry.tiles->cuts.push_back(c);
+    entry.tiles->edits.push_back(c);
   }
   scene::TerrainMaterials materials;
   materials.layer_budget = 4;

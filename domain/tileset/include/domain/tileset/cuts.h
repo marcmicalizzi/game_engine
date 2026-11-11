@@ -1,8 +1,8 @@
 #pragma once
 
 // **Channels cut into the ground** (docs/subsystems/tileset.md, "Channels cut into the ground";
-// roadmap W89, W93): a set's `cuts` (`engine.scene.TerrainCut`, the `tiles` block's), compiled once
-// and written into the set's heights when it is built.
+// roadmap W89, W93, W98): a set's `edits` (`engine.scene.TerrainEdit`, the `tiles` block's),
+// compiled once and written into the set's heights when it is built.
 //
 // **A cut is a ground edit along a line**: a profile across the line at every point, interpolated
 // along each segment, and the ground lowered to it. The profile (`CutProfile`) is the lower
@@ -20,13 +20,14 @@
 // meet at it, a V. A cut that names no side slopes is this profile with both the cut's
 // `bank_slope` and no offset; every cut's `rise` is its depth.
 //
-// **What W93 adds to a cut** (`TerrainCut` version 2; docs/subsystems/channels.md, "The section"):
-// a slope per point for each bank (a cut bank on a bend's outside, a point bar's slope on its
-// inside), a rounded top (`bank_round`, below), and a **flood bed**: a second profile on the same
-// line, a flat bed `flood_depth_m` under the top reaching `flood_left_m` and `flood_right_m` from
-// the line, bounded each side by a scarp at `scarp_slope` whose top stands `scarp_m` over the bed,
-// its face going on as much again where it meets higher ground. A segment's surface is its
-// channel's and its flood bed's joined by the rounded minimum.
+// **What W93 adds to a cut** (`TerrainCut` version 2, now `TerrainEdit`'s line;
+// docs/subsystems/channels.md, "The section"): a slope per point for each bank (a cut bank on a
+// bend's outside, a point bar's slope on its inside), a rounded top (`bank_round`, below), and a
+// **flood bed**: a second profile on the same line, a flat bed `flood_depth_m` under the top
+// reaching `flood_left_m` and `flood_right_m` from the line, bounded each side by a scarp at
+// `scarp_slope` whose top stands `scarp_m` over the bed, its face going on as much again where it
+// meets higher ground. A segment's surface is its channel's and its flood bed's joined by the
+// rounded minimum.
 //
 // **A rounded top.** Where a cut's surface crosses the ground the lower of the two has a crease;
 // with a rounding height `k` (`bank_round` times the depth at the point) the ground becomes
@@ -35,7 +36,7 @@
 //
 // — the polynomial smooth minimum: the two meet tangent over the band where they are within `k` of
 // each other, the crease lowered by `k / 4`. It needs the ground, so every segment is rounded
-// against the ground as it was and the lowest of them kept (`TerrainCuts::lowered_mm`), never one
+// against the ground as it was and the lowest of them kept (`TerrainEdits::edited_mm`), never one
 // segment against another's work: the result is the same in any order. `k` is at most the depth
 // (`bank_round` at most 1), so a face's reach, which ends a depth over the top, ends where the
 // rounding has: no step at the reach's edge over ground at the top or below it.
@@ -70,12 +71,53 @@
 // sums, divisions and one square root (all correctly rounded), never libm, so a point is cut to
 // the same millimetre on every toolchain; the result is rounded half up once.
 //
-// **A second client** (a trail's tread, a terrace; not built): the profile and the union are a
-// client's as they stand — a tread is a profile with a flat bed and two short banks. What it would
-// add: its own scene block compiled into `Segment`s beside the cuts' (`TerrainCuts::build` reads
-// `TerrainCut` alone), a **fill** rule (this edit only lowers; a bench across a slope raises its
-// downhill side, so a side needs `max` where a cut has `min`, and the union's order rule extended
-// to the two together), and a top per side (here one `top` serves both banks).
+// **Ground edits that raise as well as lower** (W98; tileset.md, "Ground edits that raise as well
+// as lower"). `engine.scene.TerrainEdit` replaced `TerrainCut`: an edit is a line or a patch and
+// has a mode, `Cut`, `Fill` or `Bench`. Each gives the ground two envelopes, each where its mode
+// has it:
+//
+//   U, the **upper** (a cut): the ground may stand no higher. A `Cut` line's is the profile
+//      above; a `Bench` line's is that profile with no depth (flat across the width at the top),
+//      its faces rising at the bank slope for `face_m` and running out.
+//   D, the **lower** (a fill): the ground may lie no lower. A line's is the same shape mirrored:
+//      flat across the width at the top, its faces falling at the fill slope (one per side and
+//      per point, as the banks) for `fill_m`, then running out downward the same way:
+//
+//      D(s) = top + delta_fill(s),  delta_fill = min(0, m_l (w / 2 - s), m_r (w / 2 + s))
+//
+//   A patch's are its surface S over the polygon (flat, or the bilinear surface of its grid held
+//   at the grid's edge), and past the polygon's edge, at the distance d from it, S + face(d) and
+//   S - fill(d), the faces at their slopes and running out as a line's do.
+//
+// **How they compose**, the rule that makes the order of the list and the tile that applies them
+// irrelevant: **fills first, every fill against the ground as it was, the highest kept; then
+// cuts, every cut against that, the lowest kept**:
+//
+//   R = max(g, max_i fill_round(g, D_i, k_i))       L = min(R, min_j cut_round(R, U_j, k_j))
+//
+// with `fill_round` the mirror of `cut_round` (the polynomial smooth maximum). A plain maximum and
+// minimum are each the same in any order, and every term reads `g` or `R`, never another term's
+// work, so the result is a function of the edits and the point's own height: the same from any
+// window. **A cut wins where the two disagree**: a channel through a causeway is a gap in it, a
+// stream across a tread is a ford. With no fill `R` is `g` and every cut is W93's to the bit.
+//
+// **Why a cut lowered only** (W89 to W93): `min(ground, round(surface))` is a plain minimum over
+// the segments, which is what made the union order-free and tile-free; and a chain level is the
+// box filter of the ground as it was, edited after, so a level that cannot draw an edit keeps its
+// bytes. W98 keeps both: the fills are a plain maximum taken first, the cuts a plain minimum
+// taken after, and a level is edited after its own heights by the same cell rule. **A patch's
+// width**, which the cell rule reads, is four times its area over its perimeter (a square's side,
+// a disc's diameter).
+//
+// **A fill's rounding stops at its top, and so does a bench's and a patch's cut.** A fill's crest
+// stands at an unknown height over the ground (a berm 0.8 m high has a 2 m `fill_m`), so a band of
+// `k` over the crest would lift it by up to `k / 4`; and a bench has both envelopes meeting at its
+// top, where a smooth minimum and maximum would leave a dip of up to a sixth of the band where the
+// old ground crosses the tread's height. So the rounding height at a point is the least of `k` and
+// the face's drop under (or height over) the top there: 0 on the crest, the tread and the patch's
+// surface, which are exact to the millimetre, and the full band where a face meets the ground. A
+// `Cut` line keeps W93's band over its whole section (its bed lies a depth under its top, so the
+// band, at most the depth, never reaches a flat ground at the top; and its pins are W93's).
 
 #include <core/base/types.h>
 #include <core/containers/vector.h>
@@ -107,39 +149,57 @@ bool cut_profile(const CutProfile& p, f64 s, f64& out) noexcept;
 // The rounded minimum of the ground and a cut's surface for a rounding height `k` (above); `k` 0
 // is the minimum.
 f64 cut_round(f64 ground, f64 surface, f64 k) noexcept;
+// Its mirror, the rounded maximum of the ground and a fill's surface: `-cut_round(-g, -s, k)`,
+// `max(g, s) + (max(k - |g - s|, 0) / k)^2 k / 4`.
+f64 fill_round(f64 ground, f64 surface, f64 k) noexcept;
 
-class TerrainCuts {
+// The run of a face that leaves a top at `slope` and goes on at it for `rise` before it runs out
+// (above): its height over (a cut's) or under (a fill's) the top at `d` past the top's edge, d >=
+// 0, or false past its end. `rise / slope` of run at the slope, then `rise / (1 - v)` at the share
+// v of one more such run, ending at 0.95 of it. Exposed for the tests.
+bool face_height(f64 d, f64 slope, f64 rise, f64& out) noexcept;
+
+class TerrainEdits {
  public:
-  // Compiles `cuts`. False, with a sentence naming the cut, for fewer than two points, arrays whose
-  // length is not the points', a width or depth not positive and finite, a coordinate not finite,
-  // a bank slope outside [0.25, 8]; and (W93) a per-point slope outside [0.02, 16], a rounding
-  // outside [0.1, 1], a flood bed with a negative reach or depth, a scarp that is not positive
-  // where the bed has a reach, or a scarp slope outside [0.25, 8].
-  bool build(std::span<const scene::TerrainCut> cuts, std::string* error = nullptr);
-  bool empty() const noexcept { return segments_.empty(); }
-  u32 cut_count() const noexcept { return cuts_; }
+  // Compiles `edits`. False, with a sentence naming the edit, for: neither or both of `points` and
+  // `outline`; a line of fewer than two points, arrays whose length is not the points', a width
+  // not positive and finite, a `Cut`'s depth not positive and finite or a `Fill`'s or `Bench`'s
+  // not zero, a coordinate not finite, a bank slope outside [0.25, 8] or a fill slope outside
+  // [0.1, 8], a per-point slope outside [0.02, 16], a rounding outside [0.1, 1], a face height
+  // outside [0, 100] or a fill height outside (0, 100], a flood bed with a negative reach or depth
+  // or on a line that is not a `Cut`, a scarp that is not positive where the bed has a reach, or a
+  // scarp slope outside [0.25, 8]; a patch of fewer than three points, no area, points not all at
+  // one height with no grid, a grid of fewer than 2 or more than 1024 points a side, a spacing not
+  // positive or a height array that is not its points', or line-only fields named on it.
+  bool build(std::span<const scene::TerrainEdit> edits, std::string* error = nullptr);
+  bool empty() const noexcept { return segments_.empty() && patches_.empty(); }
+  u32 edit_count() const noexcept { return edits_; }
   u32 segment_count() const noexcept { return segments_.size(); }
-  // `hash_combine` over every cut's numbers in order; 0 for none, so a set without cuts keys as it
-  // always did.
+  u32 patch_count() const noexcept { return patches_.size(); }
+  // Whether any edit raises the ground (a `Fill` or a `Bench`).
+  bool raises() const noexcept { return raises_; }
+  // Over every edit's canonical bytes (`schema::to_json` written by `write_json`) in the list's
+  // order, so every field of an edit enters by construction; 0 for none, so a set without edits
+  // keys as it always did.
   u64 hash() const noexcept { return hash_; }
 
-  // The cut surface at the world point (millimetres) for a level of spacing `cell_mm`: the lowest
-  // over every segment that reaches the point and whose width there is wider than the cell. False
-  // when none does (the ground is the ground there).
+  // The lowest **upper** envelope at the world point (millimetres) for a level of spacing
+  // `cell_mm`, over every edit that cuts, reaches the point and is wider than the cell there.
+  // False when none does.
   bool surface_mm(f64 x_mm, f64 z_mm, i64 cell_mm, f64& out) const noexcept;
-  // What the cuts leave of a ground standing at `ground_mm` there: the lowest over every such
-  // segment of `cut_round(ground, surface, k)` with the segment's own rounding height — each
-  // segment against the ground as it was, so the answer is the same in any order and is
-  // continuous wherever the surfaces are. False when no segment reaches the point. Not rounded
-  // to the millimetre: `apply` rounds it once.
-  bool lowered_mm(f64 x_mm, f64 z_mm, i64 cell_mm, f64 ground_mm, f64& out) const noexcept;
+  // The highest **lower** envelope there, over every edit that fills; false when none.
+  bool fill_mm(f64 x_mm, f64 z_mm, i64 cell_mm, f64& out) const noexcept;
+  // What the edits leave of a ground standing at `ground_mm` there: the rule above, fills first
+  // against the ground as it was, then cuts against that. False when no edit reaches the point.
+  // Not rounded to the millimetre: `apply` rounds it once.
+  bool edited_mm(f64 x_mm, f64 z_mm, i64 cell_mm, f64 ground_mm, f64& out) const noexcept;
 
-  // Lowers a window of a lattice in place: `values` holds `nx * nz` whole millimetres, rows of x
-  // in order of z, point (i, j) at lattice index (i0 + i, j0 + j) of spacing `spacing_mm`. Each
-  // point becomes `min(value, round(lowered_mm(point, value)))` where a cut applies at that
-  // spacing. Walks the window in blocks and each block's segments, so a window no cut reaches
-  // costs one comparison a segment, and a point is a function of the cuts and its own height:
-  // the same from any window that holds it. Returns the points lowered, each once.
+  // Edits a window of a lattice in place: `values` holds `nx * nz` whole millimetres, rows of x in
+  // order of z, point (i, j) at lattice index (i0 + i, j0 + j) of spacing `spacing_mm`. Each point
+  // becomes `round(edited_mm(point, value))` where an edit applies at that spacing. Walks the
+  // window in blocks and each block's edits, so a window no edit reaches costs one comparison an
+  // edit, and a point is a function of the edits and its own height: the same from any window that
+  // holds it. Returns the points changed, each once.
   u64 apply(i64 spacing_mm, i64 i0, i64 j0, i64 nx, i64 nz, std::span<i32> values) const;
 
  private:
@@ -152,17 +212,37 @@ class TerrainCuts {
   };
   struct Segment {
     f64 ax = 0, az = 0, bx = 0, bz = 0;  // millimetres
-    End a, b;                            // the channel
+    End a, b;                            // the channel, or a bench's upper envelope
     End fa, fb;                          // the flood bed, where `flood`
+    End da, db;                          // the lower envelope, where `fills`
+    bool cuts = true, fills = false, bench = false;
     bool flood = false;
     f64 x0 = 0, z0 = 0, x1 = 0, z1 = 0;  // the reach's bounds
+    f64 widest = 0;                      // the widest cell width the cell rule reads
   };
-  // What a segment says at a point: its channel's surface (joined to its flood bed's by the
-  // rounded minimum where it has both) and its flood bed's, each with its rounding height.
+  struct Patch {
+    Vector<f64> xs, zs;  // the outline, millimetres
+    bool cuts = false, fills = false, bench = false;
+    // The surface: flat at `level`, or the grid's bilinear surface.
+    f64 level = 0;
+    bool grid = false;
+    f64 gx = 0, gz = 0, gy = 0, gs = 1;  // the grid's corner, its base height and spacing, mm
+    i64 gnx = 0, gnz = 0;
+    Vector<i32> heights;
+    f64 cut_slope = 1, cut_rise = 0, fill_slope = 0.5, fill_rise = 0;
+    f64 cut_k = 0, fill_k = 0;
+    f64 width = 0;  // four times the area over the perimeter, which the cell rule reads
+    f64 x0 = 0, z0 = 0, x1 = 0, z1 = 0;
+  };
+  // What an edit says at a point: its upper envelope (a channel's surface joined to its flood
+  // bed's by the rounded minimum where it has both, and the flood bed's) and its lower, each with
+  // its rounding height.
   struct Reading {
-    bool has_channel = false, has_bed = false;
+    bool has_channel = false, has_bed = false, has_fill = false;
     f64 channel = 0, channel_round = 0;
     f64 bed = 0, bed_round = 0;
+    f64 fill = 0, fill_k = 0;
+    bool cuts() const noexcept { return has_channel || has_bed; }
     f64 surface() const noexcept {
       if (!has_bed) return channel;
       return has_channel ? (channel < bed ? channel : bed) : bed;
@@ -176,12 +256,20 @@ class TerrainCuts {
       }
       return v;
     }
+    f64 raised(f64 ground) const noexcept {
+      return has_fill ? fill_round(ground, fill, fill_k) : ground;
+    }
   };
-  // The segment's reading at the point for the cell, millimetres; false when it does not reach
-  // it or is no wider than the cell there.
+  // The segment's or the patch's reading at the point for the cell, millimetres; false when it
+  // does not reach it or is no wider than the cell there.
   static bool segment_at(const Segment& s, f64 x, f64 z, f64 cell, Reading& out) noexcept;
+  static bool patch_at(const Patch& p, f64 x, f64 z, f64 cell, Reading& out) noexcept;
+  // Item `k` of the segments then the patches.
+  bool item_at(u32 k, f64 x, f64 z, f64 cell, Reading& out) const noexcept;
   Vector<Segment> segments_;
-  u32 cuts_ = 0;
+  Vector<Patch> patches_;
+  u32 edits_ = 0;
+  bool raises_ = false;
   u64 hash_ = 0;
 };
 

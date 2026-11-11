@@ -676,3 +676,43 @@ TEST_CASE("renderer: a tile set enters the terrain hash by its content, not its 
   CHECK(terrain_hash(waves) == 13453624538570071608ull);
   CHECK(terrain_hash(dunes) == 8709113653536985860ull);
 }
+
+// **Every field of a ground edit enters the terrain's hash** (W98; tileset.md, "Ground edits that
+// raise as well as lower"): the hash reads each edit's canonical bytes. Until W98 it named a cut's
+// points, widths, depths and bank slope one by one, so a cut that changed only its side slopes, its
+// rounding or its flood bed drew the render mesh cached for the cut before it (found by W93).
+TEST_CASE("renderer: every field of a ground edit enters the terrain hash") {
+  const test::TempDir tmp("renderer_terrain_edit_hash");
+  const std::string hf = tmp.file("hf.json");
+  REQUIRE(write_text(hf, std::string(R"({"format":"engine.terrain.heightfield","version":1,)") +
+                             R"("width":65,"height":65,"spacing_mm":1000,"origin_mm":[0,0],)" +
+                             R"("vertical_mm_per_unit":1000,"data":"hf.f32",)" +
+                             R"("data_hash":"00000000000000a1"})"));
+  TerrainDesc desc;
+  desc.provider = "tiles";
+  desc.tiles.emplace();
+  desc.tiles->heightfield = hf;
+  const u64 bare = terrain_hash(desc);
+  scene::TerrainEdit cut;
+  cut.name = "run";
+  cut.points = {WorldPos{5.0, 0.0, 20.0}, WorldPos{35.0, 0.0, 20.0}};
+  cut.width_m = {3.0f, 3.0f};
+  cut.depth_m = {0.6f, 0.6f};
+  desc.tiles->edits.push_back(cut);
+  const u64 first = terrain_hash(desc);
+  CHECK(first != bare);
+  CHECK(terrain_hash(desc) == first);
+  const auto changed = [&](auto edit) {
+    TerrainDesc other = desc;
+    edit(other.tiles->edits[0]);
+    return terrain_hash(other);
+  };
+  CHECK(changed([](scene::TerrainEdit& e) { e.bank_round = 0.5f; }) != first);
+  CHECK(changed([](scene::TerrainEdit& e) {
+          e.bank_slope_left = {0.5f, 0.5f};
+          e.bank_slope_right = {2.0f, 2.0f};
+        }) != first);
+  CHECK(changed([](scene::TerrainEdit& e) { e.scarp_slope = 2.0f; }) != first);
+  CHECK(changed([](scene::TerrainEdit& e) { e.mode = scene::TerrainEditMode::Bench; }) != first);
+  CHECK(changed([](scene::TerrainEdit& e) { e.name = "run"; }) == first);
+}

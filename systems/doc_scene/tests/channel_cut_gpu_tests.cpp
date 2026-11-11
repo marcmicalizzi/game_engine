@@ -73,12 +73,12 @@ SceneDesc cut_scene(const test::TempDir& tmp, bool cut) {
   desc.terrain.tiles->ring_spacing_mm = 4000;
   desc.terrain.tiles->far_levels = 1;
   if (cut) {
-    scene::TerrainCut c;
+    scene::TerrainEdit c;
     c.name = "run";
     c.points = {WorldPos{-60.0, 2.0, 0.0}, WorldPos{60.0, 2.0, 0.0}};
     c.width_m = {3.0f, 3.0f};
     c.depth_m = {0.6f, 0.6f};
-    desc.terrain.tiles->cuts.push_back(c);
+    desc.terrain.tiles->edits.push_back(c);
   }
   desc.world.enabled = desc.world.ground = true;
   desc.world.ring_count = 4;

@@ -140,7 +140,7 @@ std::string cut_scene_text(bool with_cut) {
     "size": 17, "extent": 64, "provider": "tiles",
     "tiles": {"heightfield": "flat.json", "cells": 16, "ring_spacing_mm": 1000, "far_ratio": 1,
               "far_levels": 2)") +
-         (with_cut ? R"(, "cuts": [{"name": "run", "points": [[5, 0, 20], [35, 0, 20]],
+         (with_cut ? R"(, "edits": [{"name": "run", "points": [[5, 0, 20], [35, 0, 20]],
               "width_m": [8, 8], "depth_m": [4, 4], "bank_slope": 3}])"
                    : "") +
          R"(},

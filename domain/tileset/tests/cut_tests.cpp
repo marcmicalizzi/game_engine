@@ -23,9 +23,9 @@ using namespace engine::tileset;
 
 namespace {
 
-scene::TerrainCut cut_of(std::string name, WorldPos a, WorldPos b, f32 width, f32 depth,
-                         f32 slope = 1.0f) {
-  scene::TerrainCut c;
+scene::TerrainEdit cut_of(std::string name, WorldPos a, WorldPos b, f32 width, f32 depth,
+                          f32 slope = 1.0f) {
+  scene::TerrainEdit c;
   c.name = std::move(name);
   c.points = {a, b};
   c.width_m = {width, width};
@@ -95,13 +95,13 @@ TEST_CASE("tileset: a cut lowers the finest level to its section and leaves the 
   const BuildResult plain = s.build(s.options, "plain");
   BuildOptions o = s.options;
   // A 3 m channel along z = 20 m from x = 5 to 35 m, 0.6 m deep, its top on the flat ground.
-  const scene::TerrainCut cut =
+  const scene::TerrainEdit cut =
       cut_of("run", WorldPos{5.0, 0.0, 20.0}, WorldPos{35.0, 0.0, 20.0}, 3.0f, 0.6f);
   std::string error;
-  REQUIRE_MESSAGE(o.cuts.build({&cut, 1}, &error), error);
+  REQUIRE_MESSAGE(o.edits.build({&cut, 1}, &error), error);
   const BuildResult cut_set = s.build(o, "cut");
   CHECK(cut_set.key != plain.key);
-  CHECK(cut_set.cut_points > 0);
+  CHECK(cut_set.edited_points > 0);
 
   TileSet a, b;
   REQUIRE_MESSAGE(a.open(plain.manifest, error), error);
@@ -114,7 +114,7 @@ TEST_CASE("tileset: a cut lowers the finest level to its section and leaves the 
   const f64 depth_mm =
       static_cast<f64>(0.6f) * 1000.0;  // the depth the build reads: the f32 widened
   const f64 reach = 1.5 + 2 * 0.6;      // half the width, and the face's two runs past it
-  u32 cut_points = 0, untouched_tiles = 0, touched_tiles = 0;
+  u32 edited_points = 0, untouched_tiles = 0, touched_tiles = 0;
   for (i64 tz = 0; tz < 10; ++tz) {
     for (i64 tx = 0; tx < 10; ++tx) {
       bool tile_touched = false;
@@ -133,7 +133,7 @@ TEST_CASE("tileset: a cut lowers the finest level to its section and leaves the 
                 std::min(ground, std::floor(cut_round(ground, section, 0.75 * depth_mm) + 0.5));
           CHECK(b.point_mm(i * sp, j * sp) == expected);
           if (expected != ground) {
-            ++cut_points;
+            ++edited_points;
             tile_touched = true;
           }
           if (d > reach + 0.25) CHECK(b.point_mm(i * sp, j * sp) == ground);
@@ -142,7 +142,7 @@ TEST_CASE("tileset: a cut lowers the finest level to its section and leaves the 
       ++(tile_touched ? touched_tiles : untouched_tiles);
     }
   }
-  CHECK(cut_points > 1000);
+  CHECK(edited_points > 1000);
   CHECK(touched_tiles >= 8);
   CHECK(untouched_tiles >= 60);
   // The bed under the line, and the top at the bank's edge rounded down by a quarter of the band:
@@ -171,12 +171,12 @@ TEST_CASE("tileset: a cut no wider than a level's spacing closes on it") {
   const BuildResult plain = s.build(s.options, "plain");
   BuildOptions o = s.options;
   // 0.2 m wide: not wider than the finest's 25 cm, so no level holds it.
-  const scene::TerrainCut rill =
+  const scene::TerrainEdit rill =
       cut_of("rill", WorldPos{5.0, 0.0, 20.0}, WorldPos{35.0, 0.0, 20.0}, 0.2f, 0.1f);
   std::string error;
-  REQUIRE_MESSAGE(o.cuts.build({&rill, 1}, &error), error);
+  REQUIRE_MESSAGE(o.edits.build({&rill, 1}, &error), error);
   const BuildResult closed = s.build(o, "rill");
-  CHECK(closed.cut_points == 0);
+  CHECK(closed.edited_points == 0);
   CHECK(closed.key != plain.key);
   TileSet a, b;
   REQUIRE_MESSAGE(a.open(plain.manifest, error), error);
@@ -190,20 +190,20 @@ TEST_CASE("tileset: cuts key a set only when there are some, and their order is 
   const BuildOptions none = s.options;
   BuildOptions empty = s.options;
   std::string error;
-  REQUIRE(empty.cuts.build({}, &error));
-  CHECK(empty.cuts.empty());
+  REQUIRE(empty.edits.build({}, &error));
+  CHECK(empty.edits.empty());
   CHECK(tileset_key(7, none) == tileset_key(7, empty));
   // Two crossing channels, built in either order: the same heights to the byte (the lowest of the
   // sections, whichever came first), though the key, which names the order, differs.
-  const scene::TerrainCut a =
+  const scene::TerrainEdit a =
       cut_of("a", WorldPos{5.0, 0.0, 20.0}, WorldPos{35.0, 0.0, 20.0}, 3.0f, 0.6f);
-  const scene::TerrainCut b =
+  const scene::TerrainEdit b =
       cut_of("b", WorldPos{20.0, 0.2, 5.0}, WorldPos{20.0, -0.1, 35.0}, 2.0f, 0.9f, 2.0f);
   BuildOptions ab = s.options, ba = s.options;
-  const scene::TerrainCut first[2] = {a, b};
-  const scene::TerrainCut second[2] = {b, a};
-  REQUIRE(ab.cuts.build(first, &error));
-  REQUIRE(ba.cuts.build(second, &error));
+  const scene::TerrainEdit first[2] = {a, b};
+  const scene::TerrainEdit second[2] = {b, a};
+  REQUIRE(ab.edits.build(first, &error));
+  REQUIRE(ba.edits.build(second, &error));
   const BuildResult x = s.build(ab, "ab");
   const BuildResult y = s.build(ba, "ba");
   TileSet tx, ty;
@@ -218,21 +218,21 @@ TEST_CASE("tileset: cuts key a set only when there are some, and their order is 
 
 TEST_CASE("tileset: a cut that is not one is refused with a sentence") {
   std::string error;
-  TerrainCuts cuts;
-  scene::TerrainCut one = cut_of("lone", WorldPos{0, 0, 0}, WorldPos{1, 0, 0}, 1.0f, 0.2f);
+  TerrainEdits cuts;
+  scene::TerrainEdit one = cut_of("lone", WorldPos{0, 0, 0}, WorldPos{1, 0, 0}, 1.0f, 0.2f);
   one.points.resize(1);
   one.width_m.resize(1);
   one.depth_m.resize(1);
   CHECK_FALSE(cuts.build({&one, 1}, &error));
   CHECK(error.find("\"lone\" has fewer than two points") != std::string::npos);
-  scene::TerrainCut uneven = cut_of("uneven", WorldPos{0, 0, 0}, WorldPos{1, 0, 0}, 1.0f, 0.2f);
+  scene::TerrainEdit uneven = cut_of("uneven", WorldPos{0, 0, 0}, WorldPos{1, 0, 0}, 1.0f, 0.2f);
   uneven.depth_m.push_back(0.3f);
   CHECK_FALSE(cuts.build({&uneven, 1}, &error));
   CHECK(error.find("length") != std::string::npos);
-  scene::TerrainCut flat = cut_of("flat", WorldPos{0, 0, 0}, WorldPos{1, 0, 0}, 1.0f, 0.0f);
+  scene::TerrainEdit flat = cut_of("flat", WorldPos{0, 0, 0}, WorldPos{1, 0, 0}, 1.0f, 0.0f);
   CHECK_FALSE(cuts.build({&flat, 1}, &error));
   CHECK(error.find("positive") != std::string::npos);
-  scene::TerrainCut sheer = cut_of("sheer", WorldPos{0, 0, 0}, WorldPos{1, 0, 0}, 1.0f, 0.2f, 9.f);
+  scene::TerrainEdit sheer = cut_of("sheer", WorldPos{0, 0, 0}, WorldPos{1, 0, 0}, 1.0f, 0.2f, 9.f);
   CHECK_FALSE(cuts.build({&sheer, 1}, &error));
   CHECK(error.find("bank slope") != std::string::npos);
   CHECK(cuts.empty());
@@ -244,7 +244,7 @@ namespace {
 
 // A cut of `n` points along a line from `a` to `b`, with every W93 field per point.
 struct Shaped {
-  scene::TerrainCut cut;
+  scene::TerrainEdit cut;
   Shaped(std::string name, WorldPos a, WorldPos b, u32 n) {
     cut.name = std::move(name);
     for (u32 k = 0; k < n; ++k) {
@@ -398,7 +398,7 @@ TEST_CASE(
                    static_cast<f64>(s.cut.bank_slope_left[k]),
                    static_cast<f64>(s.cut.bank_slope_right[k])};
   };
-  TerrainCuts cuts;
+  TerrainEdits cuts;
   std::string error;
   REQUIRE_MESSAGE(cuts.build({&s.cut, 1}, &error), error);
   const i64 n = 161;
@@ -458,8 +458,8 @@ TEST_CASE("tileset: a cut is continuous across a joint, a junction and its two s
     l = 1.0f + 0.5f * static_cast<f32>(k);
     r = 2.0f;
   });
-  const scene::TerrainCut both[2] = {trunk.cut, trib.cut};
-  TerrainCuts cuts;
+  const scene::TerrainEdit both[2] = {trunk.cut, trib.cut};
+  TerrainEdits cuts;
   std::string error;
   REQUIRE_MESSAGE(cuts.build(both, &error), error);
   // What the cuts leave of a flat ground 1.15 m up — over every top, and under every face's own
@@ -482,8 +482,8 @@ TEST_CASE("tileset: a cut is continuous across a joint, a junction and its two s
   for (i64 z = 14000; z <= 36000; z += step) {
     for (usize c = 0; c < columns; ++c) {
       f64 here = 0;
-      const bool cut = cuts.lowered_mm(static_cast<f64>(2000 + static_cast<i64>(c) * step),
-                                       static_cast<f64>(z), 1, flat, here);
+      const bool cut = cuts.edited_mm(static_cast<f64>(2000 + static_cast<i64>(c) * step),
+                                      static_cast<f64>(z), 1, flat, here);
       row[c] = cut ? here : flat;
       lowered += cut && here < flat - 1.0;
       const auto pair = [&](f64 other) {
@@ -503,8 +503,8 @@ TEST_CASE("tileset: a cut is continuous across a joint, a junction and its two s
   CHECK_MESSAGE(worst <= bound, "the largest step between neighbours 20 mm apart: "
                                     << worst << " mm, at (" << worst_x << ", " << worst_z << ")");
   // At the junction the surface is the lower of the two, whichever comes first.
-  const scene::TerrainCut swapped[2] = {trib.cut, trunk.cut};
-  TerrainCuts other;
+  const scene::TerrainEdit swapped[2] = {trib.cut, trunk.cut};
+  TerrainEdits other;
   REQUIRE(other.build(swapped, &error));
   for (i64 z = 20000; z <= 27000; z += 130)
     for (i64 x = 16000; x <= 23000; x += 130) {
@@ -514,8 +514,8 @@ TEST_CASE("tileset: a cut is continuous across a joint, a junction and its two s
       REQUIRE(has_a == has_b);
       if (!has_a) continue;
       CHECK(a == b);
-      REQUIRE(cuts.lowered_mm(static_cast<f64>(x), static_cast<f64>(z), 1, flat, la));
-      REQUIRE(other.lowered_mm(static_cast<f64>(x), static_cast<f64>(z), 1, flat, lb));
+      REQUIRE(cuts.edited_mm(static_cast<f64>(x), static_cast<f64>(z), 1, flat, la));
+      REQUIRE(other.edited_mm(static_cast<f64>(x), static_cast<f64>(z), 1, flat, lb));
       CHECK(la == lb);
       CHECK(la <= std::min(a, flat));
     }
@@ -540,12 +540,12 @@ TEST_CASE("tileset: the same cut from two windows is the same millimetres, in ei
     r = 1.5f;
   });
   b.cut.bank_round = 0.5f;
-  const scene::TerrainCut ab[2] = {a.cut, b.cut}, ba[2] = {b.cut, a.cut};
-  TerrainCuts first, second;
+  const scene::TerrainEdit ab[2] = {a.cut, b.cut}, ba[2] = {b.cut, a.cut};
+  TerrainEdits first, second;
   std::string error;
   REQUIRE(first.build(ab, &error));
   REQUIRE(second.build(ba, &error));
-  const auto window = [&](const TerrainCuts& cuts, i64 i0, i64 j0, i64 nx, i64 nz) {
+  const auto window = [&](const TerrainEdits& cuts, i64 i0, i64 j0, i64 nx, i64 nz) {
     std::vector<i32> v(static_cast<usize>(nx * nz));
     for (i64 j = 0; j < nz; ++j)
       for (i64 i = 0; i < nx; ++i)
@@ -588,14 +588,14 @@ TEST_CASE("tileset: the same cut from two windows is the same millimetres, in ei
 TEST_CASE("tileset: a flood bed is a second profile, bounded by its scarps") {
   // A 2 m channel 0.4 m deep in a flood bed 0.1 m under the top, reaching 5 m to the left and 2 m
   // to the right, its scarps at 2 rising 0.5 m; the ground flat, 0.3 m over the top.
-  scene::TerrainCut c =
+  scene::TerrainEdit c =
       cut_of("flood", WorldPos{5.0, 0.0, 20.0}, WorldPos{35.0, 0.0, 20.0}, 2.f, 0.4f);
   c.flood_left_m = {5.f, 5.f};
   c.flood_right_m = {2.f, 2.f};
   c.flood_depth_m = {0.1f, 0.1f};
   c.scarp_m = {0.5f, 0.5f};
   c.scarp_slope = 2.f;
-  TerrainCuts cuts;
+  TerrainEdits cuts;
   std::string error;
   REQUIRE_MESSAGE(cuts.build({&c, 1}, &error), error);
   const auto at = [&](f64 lateral_m, i64 cell, f64& v) {
@@ -632,7 +632,7 @@ TEST_CASE("tileset: a flood bed is a second profile, bounded by its scarps") {
   BuildOptions o = s.options;
   for (WorldPos& p : c.points)
     p.y = -0.3;  // the flat ground stands 0.3 m over the top
-  REQUIRE_MESSAGE(o.cuts.build({&c, 1}, &error), error);
+  REQUIRE_MESSAGE(o.edits.build({&c, 1}, &error), error);
   const BuildResult built = s.build(o, "flood");
   TileSet set;
   REQUIRE_MESSAGE(set.open(built.manifest, error), error);
@@ -646,8 +646,8 @@ TEST_CASE("tileset: a flood bed is a second profile, bounded by its scarps") {
 
 TEST_CASE("tileset: a shaped cut that is not one is refused with a sentence") {
   std::string error;
-  TerrainCuts cuts;
-  scene::TerrainCut c = cut_of("side", WorldPos{0, 0, 0}, WorldPos{1, 0, 0}, 1.0f, 0.2f);
+  TerrainEdits cuts;
+  scene::TerrainEdit c = cut_of("side", WorldPos{0, 0, 0}, WorldPos{1, 0, 0}, 1.0f, 0.2f);
   c.bank_slope_left = {1.f, 1.f};
   CHECK_FALSE(cuts.build({&c, 1}, &error));
   CHECK(error.find("\"side\" has a left and a right bank slope array") != std::string::npos);
@@ -682,17 +682,390 @@ TEST_CASE("tileset: a shaped cut that is not one is refused with a sentence") {
   CHECK(error.find("scarp slope") != std::string::npos);
   c.scarp_slope = 1.5f;
   CHECK(cuts.build({&c, 1}, &error));
-  CHECK(cuts.cut_count() == 1);
-  // The side slopes and the flood bed add to the hash only where they are named: a scarp's slope
-  // with no flood bed is not read.
-  const scene::TerrainCut plain = cut_of("side", WorldPos{0, 0, 0}, WorldPos{1, 0, 0}, 1.0f, 0.2f);
-  scene::TerrainCut defaults = plain;
-  defaults.scarp_slope = 3.f;  // read only with a flood bed
-  TerrainCuts x, y;
+  CHECK(cuts.edit_count() == 1);
+  // **Every field enters the hash** (W98: an edit's canonical bytes), so a scarp's slope with no
+  // flood bed is another key though it moves no height; until W98 the hash named the fields one by
+  // one and a field it did not name was the same key (W93's test held that, for this case).
+  const scene::TerrainEdit plain = cut_of("side", WorldPos{0, 0, 0}, WorldPos{1, 0, 0}, 1.0f, 0.2f);
+  scene::TerrainEdit defaults = plain;
+  defaults.scarp_slope = 3.f;
+  TerrainEdits x, y;
   REQUIRE(x.build({&plain, 1}, &error));
   REQUIRE(y.build({&defaults, 1}, &error));
-  CHECK(x.hash() == y.hash());
+  CHECK(x.hash() != y.hash());
   CHECK(x.hash() != cuts.hash());
+  TerrainEdits again;
+  REQUIRE(again.build({&plain, 1}, &error));
+  CHECK(again.hash() == x.hash());
+}
+
+// ---- W98: edits that raise as well as lower, lines and patches ----------------------------------
+
+namespace {
+
+scene::TerrainEdit line_of(scene::TerrainEditMode mode, std::string name, WorldPos a, WorldPos b,
+                           f32 width) {
+  scene::TerrainEdit e;
+  e.name = std::move(name);
+  e.mode = mode;
+  e.points = {a, b};
+  e.width_m = {width, width};
+  return e;
+}
+
+// A square patch of side `side` metres centred at (x, z), its outline at height `y`.
+scene::TerrainEdit square_of(scene::TerrainEditMode mode, std::string name, f64 x, f64 z, f64 side,
+                             f64 y) {
+  scene::TerrainEdit e;
+  e.name = std::move(name);
+  e.mode = mode;
+  const f64 h = 0.5 * side;
+  e.outline = {WorldPos{x - h, y, z - h}, WorldPos{x + h, y, z - h}, WorldPos{x + h, y, z + h},
+               WorldPos{x - h, y, z + h}};
+  return e;
+}
+
+// A hollow: the ground falls to 1.5 m below its rim at (20, 20) m over a 12 m radius, a cosine
+// bowl in whole millimetres, from the deterministic series (no C library).
+i32 hollow_mm(i64 i, i64 j) {
+  const f64 dx = static_cast<f64>(i) * 0.25 - 20.0, dz = static_cast<f64>(j) * 0.25 - 20.0;
+  const f64 r2 = dx * dx + dz * dz;
+  if (r2 >= 144.0) return 0;
+  // 1.5 (1 - r^2 / 144)^2: a smooth bowl, zero slope at the rim and the centre.
+  const f64 u = 1.0 - r2 / 144.0;
+  return static_cast<i32>(std::floor(-1500.0 * u * u + 0.5));
+}
+
+std::vector<i32> lattice(i32 (*ground)(i64, i64), i64 i0, i64 j0, i64 nx, i64 nz) {
+  std::vector<i32> v(static_cast<usize>(nx * nz));
+  for (i64 j = 0; j < nz; ++j)
+    for (i64 i = 0; i < nx; ++i)
+      v[static_cast<usize>(j * nx + i)] = ground(i0 + i, j0 + j);
+  return v;
+}
+
+}  // namespace
+
+TEST_CASE("tileset: a fill is flat across its width, its faces fall at their slope and run out") {
+  // A 4 m crest at 1 m along +x, faces at one on two falling 2 m and then running out.
+  const scene::TerrainEdit e = line_of(scene::TerrainEditMode::Fill, "berm",
+                                       WorldPos{0.0, 1.0, 0.0}, WorldPos{40.0, 1.0, 0.0}, 4.0f);
+  TerrainEdits edits;
+  std::string error;
+  REQUIRE_MESSAGE(edits.build({&e, 1}, &error), error);
+  CHECK(edits.raises());
+  f64 v = 0;
+  const auto at = [&](f64 lateral_m) { return edits.fill_mm(20000.0, lateral_m * 1000.0, 250, v); };
+  REQUIRE(at(0.0));
+  CHECK(v == 1000.0);
+  REQUIRE(at(-1.9));
+  CHECK(v == 1000.0);
+  REQUIRE(at(3.0));  // a metre past the crest at 0.5: half a metre down
+  CHECK(v == doctest::Approx(500.0).epsilon(1e-12));
+  REQUIRE(at(-6.0));  // 4 m past it: the fill's whole 2 m
+  CHECK(v == doctest::Approx(-1000.0).epsilon(1e-12));
+  REQUIRE(at(8.0));  // half way through the run-out: twice the drop
+  CHECK(v == doctest::Approx(1000.0 - 4000.0).epsilon(1e-9));
+  CHECK_FALSE(at(10.0));  // past 0.95 of the run-out
+  // No cut: the upper envelope is nowhere.
+  CHECK_FALSE(edits.surface_mm(20000.0, 0.0, 250, v));
+  // What it leaves of a ground: raised where below, untouched where above; on the crest exact, a
+  // fill's rounding stopping at its top, and where a face meets the ground rounded over the least
+  // of 0.75 of the drop and the face's own drop there (half a metre, 1 m past the crest).
+  REQUIRE(edits.edited_mm(20000.0, 0.0, 250, -3000.0, v));
+  CHECK(v == 1000.0);
+  REQUIRE(edits.edited_mm(20000.0, 0.0, 250, 2500.0, v));
+  CHECK(v == 2500.0);
+  REQUIRE(edits.edited_mm(20000.0, 0.0, 250, 1000.0, v));
+  CHECK(v == 1000.0);
+  REQUIRE(edits.edited_mm(20000.0, 3000.0, 250, 500.0, v));
+  CHECK(v == doctest::Approx(500.0 + 500.0 / 4).epsilon(1e-12));
+  CHECK(fill_round(5.0, 5.0, 1.0) == doctest::Approx(5.25).epsilon(1e-12));
+  CHECK(fill_round(5.0, 9.0, 1.0) == 9.0);
+  CHECK(fill_round(9.0, 5.0, 0.0) == 9.0);
+  // The face against its formula.
+  f64 h = 0;
+  REQUIRE(face_height(1.0, 0.5, 2.0, h));
+  CHECK(h == 0.5);
+  REQUIRE(face_height(6.0, 0.5, 2.0, h));
+  CHECK(h == doctest::Approx(4.0).epsilon(1e-12));
+  CHECK_FALSE(face_height(7.9, 0.5, 2.0, h));
+}
+
+TEST_CASE("tileset: a bench is flat across its tread, cut on the uphill side and filled below") {
+  // A cross-slope of one in four rising to +z, and a tread 3 m wide along +x at its height at
+  // z = 20 m, its cut face at 1 and its fill face at 0.5.
+  const auto slope_mm = [](i64, i64 j) { return static_cast<i32>(j * 250 / 4) - 5000; };
+  scene::TerrainEdit tread = line_of(scene::TerrainEditMode::Bench, "tread",
+                                     WorldPos{2.0, 0.0, 20.0}, WorldPos{38.0, 0.0, 20.0}, 3.0f);
+  TerrainEdits edits;
+  std::string error;
+  REQUIRE_MESSAGE(edits.build({&tread, 1}, &error), error);
+  const i64 n = 161;
+  std::vector<i32> v(static_cast<usize>(n * n));
+  for (i64 j = 0; j < n; ++j)
+    for (i64 i = 0; i < n; ++i)
+      v[static_cast<usize>(j * n + i)] = slope_mm(i, j);
+  const std::vector<i32> ground = v;
+  CHECK(edits.apply(250, 0, 0, n, n, v) > 1000);
+  u64 tread_points = 0, cut = 0, filled = 0;
+  for (i64 j = 0; j < n; ++j) {
+    for (i64 i = 24; i <= 136; ++i) {  // x 6 to 34 m, clear of the caps
+      const i32 g = ground[static_cast<usize>(j * n + i)];
+      const i32 e = v[static_cast<usize>(j * n + i)];
+      const f64 lateral = static_cast<f64>(j) * 0.25 - 20.0;
+      if (std::fabs(lateral) < 1.5) {
+        // **The tread is flat to the millimetre** where it crosses the old ground's height too:
+        // a bench's rounding stops at its tread.
+        CHECK(e == 0);
+        ++tread_points;
+      } else if (lateral > 0.0) {
+        CHECK(e <= g);  // uphill: cut, never raised
+        CHECK(e >= 0);
+        cut += e < g;
+      } else {
+        CHECK(e >= g);  // downhill: filled, never cut
+        CHECK(e <= 0);
+        filled += e > g;
+      }
+    }
+  }
+  CHECK(tread_points == 11 * 113);
+  CHECK(cut > 500);
+  CHECK(filled > 500);
+  // Past the faces the slope is the slope: 9 m uphill (the cut face reaches 2 m over the tread in
+  // 2 m of run and runs out within 2 m more) and 12 m down (the fill's 2 m drop in 4 m, then 4).
+  CHECK(v[static_cast<usize>((80 + 36) * n + 80)] ==
+        ground[static_cast<usize>((80 + 36) * n + 80)]);
+  CHECK(v[static_cast<usize>((80 - 48) * n + 80)] ==
+        ground[static_cast<usize>((80 - 48) * n + 80)]);
+}
+
+TEST_CASE("tileset: a patch is its surface, flat or a grid, feathered into the ground") {
+  std::string error;
+  // A pad 6 m square at 0.5 m over a ground at 0, its fill faces at 0.5, rounded over a tenth of
+  // their 2 m drop: inside, the pad; 1 m past its edge, 0.5 m down the face: the ground.
+  scene::TerrainEdit pad = square_of(scene::TerrainEditMode::Fill, "pad", 20.0, 20.0, 6.0, 0.5);
+  pad.bank_round = 0.1f;
+  // A deposit: a grid of heights over a 4 m square, rising 1 mm a millimetre... a ramp of 250 mm a
+  // point along x, laid 2 m up over a ground at 0.
+  scene::TerrainEdit deposit =
+      square_of(scene::TerrainEditMode::Fill, "deposit", 10.0, 30.0, 4.0, 0.0);
+  deposit.bank_round = 0.1f;
+  deposit.grid_origin = WorldPos{8.0, 2.0, 28.0};
+  deposit.grid_spacing_mm = 1000;
+  deposit.grid_nx = 5;
+  deposit.grid_nz = 5;
+  for (i32 j = 0; j < 5; ++j)
+    for (i32 i = 0; i < 5; ++i)
+      deposit.grid_mm.push_back(250 * i + 10 * j);
+  const scene::TerrainEdit both[2] = {pad, deposit};
+  TerrainEdits edits;
+  REQUIRE_MESSAGE(edits.build(both, &error), error);
+  CHECK(edits.patch_count() == 2);
+  f64 v = 0;
+  REQUIRE(edits.edited_mm(20000.0, 20000.0, 250, 0.0, v));
+  CHECK(v == 500.0);
+  REQUIRE(edits.edited_mm(22900.0, 17100.0, 250, 0.0, v));
+  CHECK(v == 500.0);
+  REQUIRE(edits.edited_mm(24000.0, 20000.0, 250, -2000.0, v));  // 1 m out: 0.5 m down the face
+  CHECK(v == doctest::Approx(0.0).epsilon(1e-12));
+  REQUIRE(edits.edited_mm(20000.0, 20000.0, 250, 900.0, v));  // ground over the pad: kept
+  CHECK(v == 900.0);
+  // The deposit's grid: bilinear inside, from 2 m up.
+  REQUIRE(edits.edited_mm(9500.0, 29250.0, 250, 0.0, v));
+  CHECK(v == doctest::Approx(2000.0 + 250.0 * 1.5 + 10.0 * 1.25).epsilon(1e-12));
+  // Past the grid's edge the surface is held at the edge: 0.5 m outside the square at x = 12.5,
+  // a quarter metre down a face at 0.5 from the edge's height.
+  REQUIRE(edits.edited_mm(12500.0, 30000.0, 250, 0.0, v));
+  CHECK(v == doctest::Approx(2000.0 + 1000.0 + 20.0 - 250.0).epsilon(1e-12));
+  // A bench pad on a slope: flat across the pad wherever the old ground crossed its height.
+  scene::TerrainEdit bench =
+      square_of(scene::TerrainEditMode::Bench, "level", 20.0, 20.0, 6.0, 0.0);
+  TerrainEdits level;
+  REQUIRE_MESSAGE(level.build({&bench, 1}, &error), error);
+  for (const f64 g : {-1500.0, -10.0, 0.0, 10.0, 1500.0}) {
+    REQUIRE(level.edited_mm(19000.0, 21000.0, 250, g, v));
+    CHECK(v == 0.0);
+  }
+  // The patch's width the cell rule reads: four times its area over its perimeter, its side.
+  CHECK(level.edited_mm(20000.0, 20000.0, 4000, 300.0, v));
+  CHECK_FALSE(level.edited_mm(20000.0, 20000.0, 8000, 300.0, v));
+}
+
+TEST_CASE("tileset: raises and lowers compose the same in any order and from any window") {
+  // Over the hollow: a causeway benched level across it at the rim's height, a channel cut across
+  // the causeway (a cut wins: it is a gap in the causeway), a deposit lying in the hollow's side
+  // and a pad cut and filled level beside it.
+  scene::TerrainEdit causeway = line_of(scene::TerrainEditMode::Bench, "causeway",
+                                        WorldPos{4.0, 0.0, 20.0}, WorldPos{36.0, 0.0, 20.0}, 3.0f);
+  causeway.fill_slope = 0.6f;
+  scene::TerrainEdit channel = line_of(scene::TerrainEditMode::Cut, "channel",
+                                       WorldPos{20.0, -0.4, 6.0}, WorldPos{21.0, -0.6, 34.0}, 2.0f);
+  channel.depth_m = {0.5f, 0.5f};
+  scene::TerrainEdit deposit =
+      square_of(scene::TerrainEditMode::Fill, "deposit", 14.0, 27.0, 5.0, 0.0);
+  deposit.grid_origin = WorldPos{11.5, -1.2, 24.5};
+  deposit.grid_spacing_mm = 1250;
+  deposit.grid_nx = 5;
+  deposit.grid_nz = 5;
+  for (i32 j = 0; j < 5; ++j)
+    for (i32 i = 0; i < 5; ++i)
+      deposit.grid_mm.push_back(300 * ((i + 2 * j) % 3) + 100 * i);
+  scene::TerrainEdit pad = square_of(scene::TerrainEditMode::Bench, "pad", 27.0, 12.0, 4.0, -0.7);
+  pad.fill_m = 1.0f;
+  const scene::TerrainEdit forward[4] = {causeway, channel, deposit, pad};
+  const scene::TerrainEdit backward[4] = {pad, deposit, channel, causeway};
+  TerrainEdits first, second;
+  std::string error;
+  REQUIRE_MESSAGE(first.build(forward, &error), error);
+  REQUIRE_MESSAGE(second.build(backward, &error), error);
+  std::vector<i32> whole = lattice(hollow_mm, 0, 0, 161, 161);
+  std::vector<i32> other = whole;
+  const std::vector<i32> ground = whole;
+  const u64 changed = first.apply(250, 0, 0, 161, 161, whole);
+  CHECK(second.apply(250, 0, 0, 161, 161, other) == changed);
+  CHECK(whole == other);
+  u64 raised = 0, lowered = 0;
+  for (usize k = 0; k < whole.size(); ++k) {
+    raised += whole[k] > ground[k];
+    lowered += whole[k] < ground[k];
+  }
+  CHECK(raised > 2000);
+  CHECK(lowered > 500);
+  // The causeway's crest across the hollow, at the rim's height, where the hollow was 1 m deep.
+  const auto at = [&](f64 x_m, f64 z_m) {
+    return whole[static_cast<usize>(std::lround(z_m * 4) * 161 + std::lround(x_m * 4))];
+  };
+  CHECK(at(14.0, 20.0) == 0);
+  CHECK(at(26.0, 20.0) == 0);
+  // The channel cuts through it: its bed half a metre under its own top there.
+  CHECK(at(20.5, 20.0) < -800);
+  // **Tile-stable**: windows that start off the blocks, one a single 16-cell tile with its apron,
+  // hold the same millimetres wherever they overlap the whole.
+  const i64 windows[3][4] = {{37, 50, 97, 111}, {63, 47, 19, 19}, {0, 79, 161, 3}};
+  for (const auto& w : windows) {
+    std::vector<i32> part = lattice(hollow_mm, w[0], w[1], w[2], w[3]);
+    second.apply(250, w[0], w[1], w[2], w[3], part);
+    u64 differ = 0;
+    for (i64 j = 0; j < w[3]; ++j)
+      for (i64 i = 0; i < w[2]; ++i)
+        differ += part[static_cast<usize>(j * w[2] + i)] !=
+                  whole[static_cast<usize>((w[1] + j) * 161 + (w[0] + i))];
+    CHECK(differ == 0);
+  }
+  // **Across a tile's border** the edited ground is continuous: no two neighbours 25 cm apart
+  // differ by more than the steepest face over the step, plus a millimetre: the faces are at 1 or
+  // gentler, and the steepest run-out is the channel's where its face meets ground 0.6 m over a top
+  // whose face holds 0.5 m, a slope of 1 / (1 - 1/6)^2 = 1.44, so 1.5 x 250 + 1 = 376 mm. A seam
+  // step would be the edit's own height, a metre and more (measured 250 mm on MSVC, 2026-11-10).
+  i32 worst = 0;
+  for (i64 j = 0; j < 161; ++j)
+    for (i64 i = 1; i < 161; ++i)
+      worst = std::max(worst, std::abs(whole[static_cast<usize>(j * 161 + i)] -
+                                       whole[static_cast<usize>(j * 161 + i - 1)]));
+  MESSAGE("the largest step between neighbours 25 cm apart: " << worst << " mm");
+  CHECK(worst <= 376);
+  // **The same bytes from every toolchain**: the hollow (integer arithmetic and one division) and
+  // the lattice after the four edits, taken on MSVC and reproduced by Clang and GCC.
+  const u64 ground_hash = hash_bytes(ground.data(), ground.size() * sizeof(i32));
+  const u64 edit_hash = hash_bytes(whole.data(), whole.size() * sizeof(i32));
+  MESSAGE("hollow " << ground_hash << ", edited " << edit_hash);
+  CHECK(ground_hash == 17149333333107072769ull);
+  CHECK(edit_hash == 16557965784987386551ull);
+}
+
+TEST_CASE("tileset: a fill closes on a level as a cut does, and the far levels keep their bytes") {
+  Flat s;
+  const BuildResult plain = s.build(s.options, "plain");
+  BuildOptions o = s.options;
+  // A berm 3 m wide 0.8 m up along z = 20 m, and a 6 m pad 0.4 m up at (10, 32).
+  scene::TerrainEdit berm = line_of(scene::TerrainEditMode::Fill, "berm", WorldPos{5.0, 0.8, 20.0},
+                                    WorldPos{35.0, 0.8, 20.0}, 3.0f);
+  scene::TerrainEdit pad = square_of(scene::TerrainEditMode::Fill, "pad", 10.0, 32.0, 6.0, 0.4);
+  const scene::TerrainEdit both[2] = {berm, pad};
+  std::string error;
+  REQUIRE_MESSAGE(o.edits.build(both, &error), error);
+  const BuildResult built = s.build(o, "fill");
+  CHECK(built.edited_points > 1000);
+  TileSet a, b;
+  REQUIRE_MESSAGE(a.open(plain.manifest, error), error);
+  REQUIRE_MESSAGE(b.open(built.manifest, error), error);
+  CHECK(b.point_mm(20000, 20000) == 800.0);
+  CHECK(b.point_mm(10000, 32000) == 400.0);
+  CHECK(b.point_mm(20000, 27000) == 0.0);
+  const TileSetManifest& pm = a.manifest();
+  const TileSetManifest& bm = b.manifest();
+  REQUIRE(bm.levels.size() == 5);
+  CHECK(bm.levels[1].hash != pm.levels[1].hash);  // 1 m: both
+  CHECK(bm.levels[2].hash != pm.levels[2].hash);  // 2 m: both
+  CHECK(bm.levels[3].hash != pm.levels[3].hash);  // 4 m: the pad, not the berm
+  CHECK(bm.levels[4].hash == pm.levels[4].hash);  // 8 m: neither
+  // The 4 m level holds the pad and not the berm.
+  CHECK(b.manifest().levels[3].spacing_mm == 4000);
+}
+
+TEST_CASE("tileset: an edit that is not one is refused with a sentence") {
+  std::string error;
+  TerrainEdits edits;
+  const auto refused = [&](const scene::TerrainEdit& e, const char* words) {
+    CHECK_FALSE(edits.build({&e, 1}, &error));
+    CHECK_MESSAGE(error.find(words) != std::string::npos, error);
+    CHECK(edits.empty());
+  };
+  scene::TerrainEdit none;
+  none.name = "none";
+  refused(none, "\"none\" names neither");
+  scene::TerrainEdit both = square_of(scene::TerrainEditMode::Fill, "both", 0, 0, 2, 0);
+  both.points = {WorldPos{0, 0, 0}, WorldPos{1, 0, 0}};
+  refused(both, "names both");
+  scene::TerrainEdit deep =
+      line_of(scene::TerrainEditMode::Bench, "deep", WorldPos{0, 0, 0}, WorldPos{1, 0, 0}, 1.0f);
+  deep.depth_m = {0.2f, 0.2f};
+  refused(deep, "names a depth");
+  deep.depth_m = {0.0f, 0.0f};
+  CHECK(edits.build({&deep, 1}, &error));
+  scene::TerrainEdit steep = deep;
+  steep.fill_slope = 9.0f;
+  refused(steep, "fill slope outside [0.1, 8]");
+  steep.fill_slope = 0.5f;
+  steep.fill_m = 0.0f;
+  refused(steep, "fill height");
+  steep.fill_m = 2.0f;
+  steep.fill_slope_left = {0.5f, 0.5f};
+  refused(steep, "fill slope array");
+  steep.fill_slope_right = {0.5f, 0.01f};
+  refused(steep, "fill slope outside [0.02, 16]");
+  scene::TerrainEdit flood = deep;
+  flood.flood_left_m = {1.f, 1.f};
+  flood.flood_right_m = {1.f, 1.f};
+  flood.flood_depth_m = {0.f, 0.f};
+  flood.scarp_m = {0.2f, 0.2f};
+  refused(flood, "flood bed and is not a cut");
+  scene::TerrainEdit thin = square_of(scene::TerrainEditMode::Fill, "thin", 0, 0, 2, 0);
+  thin.outline.resize(2);
+  refused(thin, "fewer than three points");
+  scene::TerrainEdit line_ish = square_of(scene::TerrainEditMode::Fill, "line", 0, 0, 2, 0);
+  for (WorldPos& p : line_ish.outline)
+    p.z = 0.0;
+  refused(line_ish, "no area");
+  scene::TerrainEdit tilted = square_of(scene::TerrainEditMode::Fill, "tilted", 0, 0, 2, 0);
+  tilted.outline[2].y = 0.5;
+  refused(tilted, "not all at one height");
+  scene::TerrainEdit gridded = square_of(scene::TerrainEditMode::Fill, "grid", 0, 0, 2, 0);
+  gridded.grid_nx = 2;
+  gridded.grid_nz = 2;
+  gridded.grid_spacing_mm = 1000;
+  gridded.grid_mm = {0, 0, 0};
+  refused(gridded, "heights are not its points'");
+  gridded.grid_mm.push_back(0);
+  gridded.grid_spacing_mm = 0;
+  refused(gridded, "spacing is not positive");
+  gridded.grid_spacing_mm = 1000;
+  CHECK(edits.build({&gridded, 1}, &error));
+  scene::TerrainEdit arrays = square_of(scene::TerrainEditMode::Fill, "arrays", 0, 0, 2, 0);
+  arrays.width_m = {1.f};
+  refused(arrays, "is a patch and names a line's arrays");
 }
 
 TEST_CASE("tileset: the provider stands on the cut ground, and refuses cuts beside a built set") {
@@ -709,7 +1082,7 @@ TEST_CASE("tileset: the provider stands on the cut ground, and refuses cuts besi
   entry.tiles->ring_spacing_mm = 1000;
   entry.tiles->far_ratio = 1;
   entry.tiles->far_levels = 2;
-  entry.tiles->cuts.push_back(
+  entry.tiles->edits.push_back(
       cut_of("run", WorldPos{5.0, 0.0, 20.0}, WorldPos{35.0, 0.0, 20.0}, 3.0f, 0.6f));
   scene_gen::Context context;
   const std::string dir = tmp.path();
@@ -725,11 +1098,11 @@ TEST_CASE("tileset: the provider stands on the cut ground, and refuses cuts besi
   entry.tiles->heightfield.clear();
   entry.tiles->manifest = "set/manifest.json";
   CHECK_FALSE(desc->make(entry, context, ground, &error));
-  CHECK(error.find("cuts besides") != std::string::npos);
+  CHECK(error.find("edits besides") != std::string::npos);
   // A cut that is not one is refused before anything is built.
   entry.tiles->manifest.clear();
   entry.tiles->heightfield = "flat.json";
-  entry.tiles->cuts[0].bank_slope = 0.f;
+  entry.tiles->edits[0].bank_slope = 0.f;
   CHECK_FALSE(desc->make(entry, context, ground, &error));
-  CHECK(error.find("cannot cut its ground") != std::string::npos);
+  CHECK(error.find("cannot edit its ground") != std::string::npos);
 }

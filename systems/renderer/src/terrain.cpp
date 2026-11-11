@@ -1,5 +1,6 @@
 #include <core/hash/hash.h>
 #include <core/json/json.h>
+#include <core/schema/json_reflect.h>
 #include <domain/scene_gen/terrain_features.h>
 #include <domain/texture/texture_build.h>
 #include <foundation/io/vfs.h>
@@ -571,19 +572,16 @@ u64 terrain_hash(const TerrainDesc& desc) noexcept {
       h = mix_f32(h, t.vertical_scale);
       h = hash_combine(hash_combine(h, t.cells), std::bit_cast<u64>(t.ring_spacing_mm));
       h = hash_combine(hash_combine(h, t.far_ratio), t.far_levels);
-      // Channels cut into the ground (W89; tileset.md): part of the build, so of the content.
-      // Only a block with some, so every other keeps its hash.
-      if (!t.cuts.empty()) {
-        h = hash_combine(h, 0x43555453ull);  // "CUTS"
-        for (const scene::TerrainCut& c : t.cuts) {
-          h = mix_f32(hash_combine(h, c.points.size()), c.bank_slope);
-          for (const WorldPos& p : c.points)
-            for (const f64 v : {p.x, p.y, p.z})
-              h = hash_combine(h, std::bit_cast<u64>(v));
-          for (const f32 v : c.width_m)
-            h = mix_f32(h, v);
-          for (const f32 v : c.depth_m)
-            h = mix_f32(h, v);
+      // Ground edits (W89, W98; tileset.md): part of the build, so of the content. Each by its
+      // canonical bytes, so every field it has, and every field a later version adds, enters by
+      // construction (until W98 only a cut's points, width, depth and bank slope did, and a cut
+      // that changed only its side slopes, rounding or flood bed drew a cached mesh). Only a block
+      // with some, so every other keeps its hash.
+      if (!t.edits.empty()) {
+        h = hash_combine(h, 0x4544495453ull);  // "EDITS"
+        for (const scene::TerrainEdit& e : t.edits) {
+          const std::string bytes = write_json(schema::to_json(e));
+          h = hash_combine(h, hash_bytes(bytes.data(), bytes.size()));
         }
       }
     }

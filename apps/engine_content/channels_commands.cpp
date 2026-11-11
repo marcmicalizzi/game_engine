@@ -111,7 +111,7 @@ int channels_command(int argc, char** argv) {
   // **The ground as it was before any cut** (W89): the network is planned over the heights the cuts
   // are made from, never over a ground they already lowered, so writing the cuts of a scene that
   // carries them gives the same cuts again.
-  if (terrain.tiles.has_value()) terrain.tiles->cuts.clear();
+  if (terrain.tiles.has_value()) terrain.tiles->edits.clear();
   // The provider the renderer would draw this terrain with (renderer::terrain_provider's rule).
   const std::string provider =
       !terrain.provider.empty()
@@ -335,8 +335,8 @@ int channels_command(int argc, char** argv) {
   const u32 written = all.as_array().size();
   const u32 cut_count = cuts.as_array().size();
   out["water_channels"] = std::move(all);
-  // The terrain's cuts, for the `tiles` block (`terrain.tiles.cuts`).
-  if (cut) out["cuts"] = std::move(cuts);
+  // The terrain's cuts, for the `tiles` block (`terrain.tiles.edits`, W98).
+  if (cut) out["edits"] = std::move(cuts);
   // Each entry's plan, for its `params.plan`: what the generator reads on the cut ground.
   JsonValue plan_keys = JsonValue::array();
   for (const JsonValue& p : plans.as_array())
