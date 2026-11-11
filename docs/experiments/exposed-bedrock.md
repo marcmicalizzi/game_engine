@@ -427,3 +427,20 @@ of the palm pack's yellow sandstone; beside reels r23 and r12):
   of rock with steps in it) needs the risers in the ground's material, not over it.
 - **The plants stand through a riser** as they stand through a tread: nothing clears the cover
   off rock.
+
+**After G172** (the escarpment with the formation and the hillside's walker view, debug
+`engine-view`, the generated sets, before and after from one checkout on fresh derived-data
+roots, 2026-11-11; beside reels r12, r23 and r25):
+- **The wedge at the foot is gone.** It was a tier seam: the tier over the lowest one hung its
+  open bottom past the lower one's carved crest. A speck remains at one seam, and a small pale
+  triangle at the ground between two talus cones that the foot's carving clamp did not change.
+- **From the valley the flank is banded with shelves** that catch the light where it was one
+  smooth wall, but it is still one plane in the large: the ground is steeper than a staircase of
+  80° risers and 35° benches can follow, so the benches steepen and the treads go, and the tiers
+  sit on one lean. The reels' walls step back member by member with green treads; ours carry
+  no soil (the bench is the rock's material: turf or scree on a bench is the ground's material
+  over it, not this solver's).
+- **From the crest the top is a sloping shoulder**, not a level band with a lip, but it is a wide
+  brown strip, and the skyline kinks where the faces' lines meet.
+- **The walker's view of the hillside is unchanged**: the fins in it are not followed under the
+  ledges' triangle budget (or are not the undercut's), so G174 does not show there.
