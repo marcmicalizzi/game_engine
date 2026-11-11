@@ -13,28 +13,16 @@ namespace {
 
 constexpr f64 k_pi = 3.14159265358979323846;
 constexpr f64 k_sqrt_half = 0.70710678118654752440;
-// The side of the grid the channels' segments are filed on, metres: a segment is filed in every
-// cell within its bank edge and the reach of it, so a query reads one cell's list.
-constexpr f64 k_cell_m = 64.0;
 
-i64 cell_of(f64 metres) noexcept { return static_cast<i64>(std::floor(metres / k_cell_m)); }
 bool finite(f64 v) noexcept { return std::isfinite(v); }
 
-// A channel's bank reach as its description gives it, or the field's default where the number is
-// negative or not a number: the exclusion's reading (exclusion.cpp, `bank_number`; T78), so the
-// distance to a bank is measured from the edge the exclusion clears to.
-f64 bank_number(f64 value, f64 fallback) noexcept {
-  return finite(value) && value >= 0.0 ? value : fallback;
-}
-
 // From (x, z) to the segment a-b, metres.
-f64 segment_distance(f64 ax, f64 az, f64 bx, f64 bz, f64 x, f64 z, f64* t_out) noexcept {
+f64 segment_distance(f64 ax, f64 az, f64 bx, f64 bz, f64 x, f64 z) noexcept {
   const f64 dx = bx - ax;
   const f64 dz = bz - az;
   const f64 len2 = dx * dx + dz * dz;
   f64 t = 0.0;
   if (len2 > 0.0) t = std::clamp(((x - ax) * dx + (z - az) * dz) / len2, 0.0, 1.0);
-  if (t_out != nullptr) *t_out = t;
   const f64 px = ax + t * dx - x;
   const f64 pz = az + t * dz - z;
   return std::sqrt(px * px + pz * pz);
@@ -49,8 +37,7 @@ Site::Site() noexcept {
 
 bool Site::build(f64 latitude_deg, std::span<const scene::WaterBody> water,
                  std::span<const scene::WaterChannel> channels, std::string* error) {
-  segments_.clear();
-  cells_.clear();
+  channels_ = Exclusion{};
   bodies_.clear();
   if (!finite(latitude_deg)) {
     if (error != nullptr) *error = "the site's latitude is not a number";
@@ -111,66 +98,10 @@ bool Site::build(f64 latitude_deg, std::span<const scene::WaterBody> water,
     bodies_.push_back(std::move(body));
   }
 
-  const scene::WaterChannel defaults;  // the schema's defaults, which are the recipe's
-  for (const scene::WaterChannel& channel : channels) {
-    const u32 n = channel.points.size();
-    if (n < 2 || channel.width_m.size() < n) continue;
-    bool ok = true;
-    for (u32 i = 0; i < n; ++i)
-      ok = ok && finite(channel.points[i].x) && finite(channel.points[i].z) &&
-           finite(static_cast<f64>(channel.width_m[i])) && channel.width_m[i] > 0.0f;
-    if (!ok) continue;
-    const f64 bank_widths = bank_number(channel.bank_width_widths, defaults.bank_width_widths);
-    const f64 bank_m = bank_number(channel.bank_width_m, defaults.bank_width_m);
-    const auto edge = [&](u32 i) {
-      const f64 w = static_cast<f64>(channel.width_m[i]);
-      return 0.5 * w + bank_widths * w + bank_m;
-    };
-    for (u32 i = 0; i + 1 < n; ++i) {
-      Segment s;
-      s.ax = channel.points[i].x;
-      s.az = channel.points[i].z;
-      s.bx = channel.points[i + 1].x;
-      s.bz = channel.points[i + 1].z;
-      s.ra = edge(i);
-      s.rb = edge(i + 1);
-      const u32 id = segments_.size();
-      const f64 reach = std::max(s.ra, s.rb) + k_site_water_reach_m;
-      const i64 cx0 = cell_of(std::min(s.ax, s.bx) - reach);
-      const i64 cx1 = cell_of(std::max(s.ax, s.bx) + reach);
-      const i64 cz0 = cell_of(std::min(s.az, s.bz) - reach);
-      const i64 cz1 = cell_of(std::max(s.az, s.bz) + reach);
-      segments_.push_back(s);
-      for (i64 cz = cz0; cz <= cz1; ++cz)
-        for (i64 cx = cx0; cx <= cx1; ++cx)
-          cells_.push_back(Cell{cz, cx, id});
-    }
-  }
-  std::sort(cells_.begin(), cells_.end(), [](const Cell& a, const Cell& b) {
-    if (a.key_z != b.key_z) return a.key_z < b.key_z;
-    if (a.key_x != b.key_x) return a.key_x < b.key_x;
-    return a.segment < b.segment;
-  });
-  return true;
-}
-
-f64 Site::channel_distance(f64 x, f64 z) const noexcept {
-  if (cells_.empty()) return k_site_water_reach_m;
-  const i64 cz = cell_of(z);
-  const i64 cx = cell_of(x);
-  const auto first = std::lower_bound(cells_.begin(), cells_.end(), Cell{cz, cx, 0},
-                                      [](const Cell& a, const Cell& b) {
-                                        if (a.key_z != b.key_z) return a.key_z < b.key_z;
-                                        return a.key_x < b.key_x;
-                                      });
-  f64 best = k_site_water_reach_m;
-  for (auto it = first; it != cells_.end() && it->key_z == cz && it->key_x == cx; ++it) {
-    const Segment& s = segments_[it->segment];
-    f64 t = 0.0;
-    const f64 d = segment_distance(s.ax, s.az, s.bx, s.bz, x, z, &t);
-    best = std::min(best, d - (s.ra + t * (s.rb - s.ra)));
-  }
-  return std::max(best, 0.0);
+  // The channels as the exclusion reads them (T90): its parse, its bank edge and its flood bed, so
+  // the site's distance to a bank is the exclusion's edge to the bit. No holes and no bodies: the
+  // site measures a body's outline itself, above, which is not what the exclusion keeps.
+  return channels_.build({}, {}, channels, error);
 }
 
 f64 Site::body_distance(f64 x, f64 z) const noexcept {
@@ -195,7 +126,7 @@ f64 Site::body_distance(f64 x, f64 z) const noexcept {
         const f64 cross = body.xs[j] + (z - zj) * (body.xs[i] - body.xs[j]) / (zi - zj);
         if (x < cross) in = !in;
       }
-      edge = std::min(edge, segment_distance(body.xs[j], zj, body.xs[i], zi, x, z, nullptr));
+      edge = std::min(edge, segment_distance(body.xs[j], zj, body.xs[i], zi, x, z));
     }
     best = std::min(best, in ? 0.0 : edge);
   }
@@ -230,7 +161,9 @@ SiteSample Site::sample_mm(const Ground& ground, i64 x_mm, i64 z_mm, u32 fields)
   if ((fields & k_site_water) != 0) {
     const f64 x = static_cast<f64>(x_mm) * 0.001;
     const f64 z = static_cast<f64>(z_mm) * 0.001;
-    s.channel_m = channel_distance(x, z);
+    // The exclusion's answer past the reach is a very large number; the site's is the reach.
+    const f64 edge = channels_.channel_edge_distance_mm(x_mm, z_mm, k_site_water_reach_m);
+    s.channel_m = edge < k_site_water_reach_m ? edge : k_site_water_reach_m;
     s.body_m = body_distance(x, z);
   }
   return s;
