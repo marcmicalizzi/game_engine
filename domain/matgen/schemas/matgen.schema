@@ -25,7 +25,7 @@ struct Constituent {
 }
 
 /// A bed of clasts: the surface a pebble count would read.
-struct Granular {
+struct Granular @version(2) {
   /// The surface's median intermediate axis by grid count (Wolman 1954), micrometres.
   d50_um: u32 = 45000
   /// Its sorting: the standard deviation of the grid-count distribution in phi, thousandths.
@@ -55,10 +55,22 @@ struct Granular {
   /// The matrix's grain, micrometres.
   matrix_um: u32 = 500
   lithologies: Constituent[] = []
+  /// Embeddedness (Platts, Megahan and Minshall 1983): the matrix's surface stands this share of
+  /// the median clast's thickness above its old level, so the lower clasts lie half buried in it.
+  buried_permille: u32 = 0 @since(2)
+  /// A biofilm on the tops of the stable clasts (a bed's periphyton): its strength, thousandths.
+  film_permille: u32 = 0 @since(2)
+  /// The share of the clasts with one broken face: a straight side across the outline, paler.
+  broken_permille: u32 = 0 @since(2)
+  /// An openwork bed's age: the share of its voids that fines have filled (talus fills from the
+  /// surface down as it ages).
+  fines_permille: u32 = 0 @since(2)
+  /// An openwork bed's depth in layers of clasts under the top one, 1..3.
+  depth_layers: u32 = 1 @since(2)
 }
 
 /// A rock face: crystals, joints, a weathering rind against fresh breaks, lichen.
-struct Rock {
+struct Rock @version(2) {
   /// The crystal (or sand grain) size, micrometres.
   grain_um: u32 = 3500
   minerals: Constituent[] = []
@@ -81,6 +93,15 @@ struct Rock {
   pits_permille: u32 = 0
   /// Bedding laminae across the tile (a sandstone's): 0 for none.
   laminae: u32 = 0
+  /// Form above the decimetre: the half range of scallops, ribs and one broken step, micrometres.
+  form_um: u32 = 0 @since(2)
+  /// Run-off staining below the joints and the step, down the image (+V is up the face): its
+  /// strength, thousandths.
+  streak_permille: u32 = 0 @since(2)
+  /// The share of the joints' length that holds moss (a wet face's), thousandths.
+  moss_permille: u32 = 0 @since(2)
+  /// The largest lichen thallus' diameter, millimetres (thalli run from 2 mm up to it).
+  lichen_max_mm: u32 = 60 @since(2)
 }
 
 /// A ground floor: moss and soil under dead leaf fragments under live leaves.

@@ -93,7 +93,32 @@ A bed of clasts ([grounding](../experiments/generated-material-sets.md#a-bed-of-
   the tile; what shows is less by the clasts' overlap (`SetStats::clast_cover`: 0.80 of the
   default bed for 1.0 drawn).
 - *Colour.* Each clast is one lithology of the mix by share, its tone its own, with a grain
-  inside it (`speckle`), a broad mottle, and for some a pale vein straight across.
+  inside it (`speckle`), a broad mottle, and for some a pale vein straight across. A clast past
+  D50 strays from its lithology's tone less, by the square root of D50 over its size: the few
+  largest clasts of a tile are its landmarks, and a pale or dark one among them is what the eye
+  finds again every period ("Repetition").
+- *Embedded* (`buried_permille`, G151). A filled bed's matrix stands higher by that share of the
+  median clast's thickness, and each clast settles into it by up to the same share of its own;
+  where the matrix's surface is above a clast's top the texel is matrix — the lower clasts lie
+  half buried — and silt drapes a clast's foot where the matrix nearly reaches it. The matrix's
+  grains pale toward a silt by the same share. `SetStats::buried_share` is the surface where the
+  matrix stands over a clast. The default bed's 0.30 sits in the 25 to 50 % embeddedness class of
+  Platts, Megahan and Minshall (1983).
+- *Film* (`film_permille`). A stable top carries a thin brown-olive film strongest on its crown
+  and none down its sides; a fifth of the clasts carry none (turned or scoured), the rest
+  0.4 to 1.15 of the strength.
+- *Broken faces* (`broken_permille`). That share of the clasts has one more edge, a straight cut
+  between 0.4 and 0.75 of the outline's radius, whose bevel stays sharp however rounded the rest
+  is, and whose rock is 18 % paler: a fresh fracture.
+- *Several depths* (`depth_layers`, openwork only). The drawn clasts are laid again once a layer
+  down, for each of 1 to 3 layers, each layer a further 1.2 median thicknesses down and 0.72 as
+  bright, so a gap shows blocks wedged at every depth and not one floor of them; the voids' floor
+  lies under the deepest.
+- *Roofed blocks.* An angular clast's top is cut by two fracture planes, not one, so it is a roof
+  and not a plate.
+- *Fines* (`fines_permille`, openwork only). An old talus fills from the surface down; that share
+  (about: a one-octave noise cut at a level) of the voids is filled with fines a third of a median
+  thickness down, which cover the lower layers there.
 
 `SetStats` reports the count over every texel that shows a clast (`d16_mm`, `d50_mm`, `d84_mm`),
 the share that is matrix, the clasts drawn and those in each layer, and the drawn clasts' mean
@@ -107,9 +132,39 @@ half range from five octaves; up to two joint sets, the second across the first,
 shown along part of its length; a weathering rind over `rind_permille` of the face (the crystals'
 contrast muted toward the rock's mean, tinted, stained) against fresh breaks a flake lower, the
 patches cut from a low noise at the share's quantile so the share is exact; pits; bedding
-laminae; and crustose lichen as lobed thalli, a Poisson cover of `lichen_permille`, on the rind
-only. **Lichen by exposure is a parameter of the set, not a mask**: one set is one exposure, and
-a mask by aspect over a mesh is the cover capability's.
+laminae; and crustose lichen on the rind only. **Lichen by exposure is a parameter of the set, not
+a mask**: one set is one exposure, and a mask by aspect over a mesh is the cover capability's.
+
+What G152 added, each from the judgement of the first sets in the engine ("What the sets look
+like"):
+
+- *Form above the decimetre* (`form_um`): scallops a third of a metre across (dishes between
+  sharp rims, a face that spalls in flakes), ribs half a metre apart running down the face, and
+  a broken step where a field of the tile's own period crosses its middle (the step's face 10 %
+  darker). The form is 1.4 `form_um` for the step and about 1 more for the rest.
+- *Joints as worn gaps*: a floor of fines its own width (the width wandering along the trace from
+  0.25 to 0.85 of `joint_width_um`), shoulders rounded as a quarter circle over two and a half
+  widths, four widths deep; the hollows' shade does the rest.
+- *Fresh breaks* keep 70 % of the crystals' contrast over the rind's and are stained a little
+  too (newer, not new), behind a sharp edge (0.8 `relief_um` deep over a share step of 0.006).
+- *Run-off streaks* (`streak_permille`): dark stripes down the face from every joint floor and
+  every step's lip, near black, as the cyanobacterial and lichen films of the Alps' ink stripes
+  ("Tintenstriche"). **Down the image is down the face** (+V up, the normal map's convention); a
+  set laid with a rotation turns its streaks with it. For each texel, how far below the nearest
+  source it lies, capped at 0.45 m, is an integer found by two sweeps down each column round the
+  torus, so the streaks tile and do not depend on the window; they fade with that distance and
+  are split into strands by a noise 3 cm across and 60 cm long. `SetStats::streak_share` is the
+  face they darken by more than 15 %.
+- *Lichen colonies* (`lichen_max_mm`): thalli from 2 mm across up to the recipe's largest
+  (granite 120 mm), drawn log-uniformly with a skew to the small (an old face holds a few large
+  colonies among many young ones), until their discs reach the Poisson cover; outlines lobed by a
+  6 mm noise and broken by a 25 mm one; older and darker at the centre and eroded through in
+  places on a colony past 40 mm, brighter at the margin; where two meet each keeps the texels
+  nearer its own centre, so neighbours stop at each other. Five species: the map lichen with its
+  black prothallus, the orange of *Xanthoria elegans*, grey, dark and white crusts.
+- *Moss in a wet face's joints* (`moss_permille`): shoot tips over the joint floors and
+  shoulders along that share of the joints' length, raised three joint widths.
+  `SetStats::moss_cover`.
 
 ## Ground sets
 
@@ -125,20 +180,50 @@ Poisson cover of `thatch_permille`, live leaves with a midrib and tapered tips a
 
 | Role | Kind | Tile | What | Asked for by |
 |---|---|---|---|---|
-| `gravel/bed` | granular | 1 m | D50 45 mm, 1 phi, rounded, imbricated, wet through (a bed lies under its water), five lithologies | a channel's bed ([channels](channels.md)) |
+| `gravel/bed` | granular | 2 m | D50 45 mm, 1 phi, rounded, imbricated, wet through (a bed lies under its water), five lithologies, embedded 0.30, a film on its tops, 12 % broken | a channel's bed ([channels](channels.md)) |
 | `sand/bar` | granular | 0.5 m | sand with a 12 % cover of granules and small pebbles, dry | a channel's bars |
-| `rock/scree` | granular | 2 m | D50 110 mm, angular, openwork, no fabric | named for scree and deposits; see "Not yet" |
-| `rock/granite` | rock | 1.5 m | a monzogranite, 3.5 mm, 92 % rind (an old face), 12 % lichen | boulders, cliffs, deposits, a soil profile's stones ([rocks](rocks.md)) |
-| `rock/granite_wet` | rock | 1.5 m | the same wet through, a darker rind, 4 % lichen | a recipe that names it |
-| `rock/basalt` | rock | 1.5 m | a dark groundmass, vesicles, a rusty rind | `RockType::Basalt` |
-| `rock/limestone` | rock | 2 m | micrite, solution pits, a grey rind, 15 % lichen | `RockType::Limestone`, the caves |
-| `rock/sandstone` | rock | 1.5 m | buff grains, twelve laminae, one joint set | `RockType::Sandstone` |
+| `rock/scree` | granular | 3 m | D50 110 mm, angular and roofed, openwork three layers deep, fines in 15 % of its voids, no fabric | named for scree and deposits; see "Not yet" |
+| `rock/granite` | rock | 1.5 m | a monzogranite, 3.5 mm, 92 % rind (an old face), 16 % lichen up to 120 mm, form 22 mm, streaks | boulders, cliffs, deposits, a soil profile's stones ([rocks](rocks.md)) |
+| `rock/granite_wet` | rock | 1.5 m | the same wet through, a darker rind, 4 % lichen, strong streaks, moss in 55 % of its joints | a recipe that names it |
+| `rock/basalt` | rock | 1.5 m | a dark groundmass, vesicles, a rusty rind, form 15 mm | `RockType::Basalt` |
+| `rock/limestone` | rock | 2 m | micrite, solution pits, a grey rind, 15 % lichen, form 25 mm, strong ink stripes | `RockType::Limestone`, the caves |
+| `rock/sandstone` | rock | 1.5 m | buff grains, twelve laminae, one joint set, form 12 mm | `RockType::Sandstone` |
+| `gravel/bed.1`, `.2`, `sand/bar.1`, `.2`, `rock/scree.1`, `.2` | granular | as their role | the same recipe from other seeds ("Repetition") | a consumer that picks a variant by place |
 | `ground/soil`, `ground/moss`, `ground/thatch` | ground | 0.5 m | the sward floor's three parts | the sward's cook (`--sward-assets`) |
 | `ground/turf` | ground | 0.5 m | live leaves over thatch over moss and soil | a terrain layer that names it |
 
 Rock sets are `stochastic` (R131: a rock set is laid over cliffs many times its repeat, as
 `tools/pack-materials.ps1` defaults every `rock/*` role); the granular and ground sets are
 tiled, `rock/scree` included, because three offsets of a bed of clasts blended is no bed.
+
+## Repetition
+
+A tiled set repeats at its period, and what shows the repeat is not the tile's texture but its
+few most salient features: the brightest or largest cobble, a dark patch, a vein, seen again in
+plain rows to the horizon (the first gravel bed in the engine, G149; the tiling literature frames
+the goal as output with no visible repetition — Cohen et al. 2003's Wang tiles, Wei et al.
+2009's survey — and sets no rule for how large a tile must be against its largest feature, so the
+measure and its bounds here are this row's own). G153 acts where a recipe can:
+
+- **The measure** (`SetStats::landmark_contrast`, `block_contrast`): the albedo's luminance over
+  a 16 by 16 grid of blocks, and the largest and the RMS departure of a block from the tile's
+  mean as a share of it. A block that stands out is a landmark seen again every tile. Measured on
+  the base generator's 1,024-texel pack (the same measure over its base colour PNGs): the gravel
+  bed 1.04 (one sixteenth of the tile twice the mean: one pale cobble filling it), the scree
+  0.89, the sand bar 0.29, granite 0.37, turf 0.10. The test holds the tiled granular roles under
+  bounds over three seeds ("Testing").
+- **A larger tile where a role's features are large**: the gravel bed's tile is 2 m (its D84 is
+  86 mm, its cut 180 mm: a one-metre tile held a dozen clasts past D84, each a landmark), the
+  scree's 3 m; and the largest clast is a sixth of the tile at most.
+- **The largest clasts' tone held** toward their lithology's (above, "Colour").
+- **Variants**: `default_sets` writes `<role>.1` and `<role>.2` beside each tiled granular role,
+  the same numbers from seeds mixed from the role's (`variant_of`, `k_tiled_variants`). **Who
+  picks one is not this module's** (the resolve and the hosts' lookup are closed to it): a
+  consumer would hash the lattice cell its surface's tile falls in (the terrain's tile corner, a
+  channel's station) to pick one of the three, so neighbouring tiles differ and the same place
+  always draws the same one; the seams between variants are then the seams between two beds,
+  which a height blend or a placement's own edge has to carry. Asked of the hosts under "Not
+  yet".
 
 ## The command
 
@@ -223,9 +308,10 @@ has tried to make it cheaper, because it is paid once. Laying a floor's leaves w
 leaf's whole bounding square at first (17.9 s for the thatch at 2,048); walking only the texels
 near the leaf's line made it 6.0 s and the same bytes.
 
-Resident while a set is built: 61 bytes a texel (the field's 20, the hollows' three integer
-planes, the granular kind's top, id and taken planes, the four images) — 64 MB at 1,024 squared,
-256 MB at 2,048 — all freed when the images are written.
+Resident while a set is built: 69 bytes a texel at most (the field's 20, the hollows' three
+integer planes, the granular kind's top, id, taken, rise and break planes — 14 — or the rock
+kind's patch, owner, reach, source and streak planes — 17 —, the four images' 8) — about 72 MB at
+1,024 squared, 290 MB at 2,048 (G148's: 61 bytes) — all freed when the images are written.
 
 **Owned data.** The recipe type (`schemas/matgen.schema`), the default recipes, `k_matgen_version`.
 The pack directory `engine-content matgen` writes is derived data.
@@ -306,12 +392,14 @@ bar is a photograph, and none of these is one:
 - **Roughness is one channel in a BC7 slot**, as every pack's.
 - **Fall sorting, ripples, a wet margin**: one set is one state; a bar's ripples and the sorting
   down a cone are the placement's or a later kind's.
-- **The openwork lower layer** is one layer of the same blocks, drawn dark; a talus wants its
-  gaps narrowed by blocks wedged at every depth, and their shade to deepen with it.
-- **Repetition.** A granular set is tiled, and a one-metre bed's largest cobbles repeat in
-  plain sight at ten metres; the stochastic placement cannot be used on clasts as it is (three
-  offsets blended ghost them), so the cure is a larger tile, several sets by a mask, or a
-  placement of whole clasts in the resolve.
+- **The openwork lower layers** are the same blocks laid again, a layer at a time; a talus's
+  blocks wedged at every depth would be a placement of their own.
+- **Picking a variant by place.** The variants exist; no consumer picks one yet (the terrain's
+  layers, a channel's bed and the hosts' lookup are other rows' files): a request under the
+  row's hand-back. A placement of whole clasts in the resolve, or several sets by a mask, are the
+  other cures, neither this module's.
+- **Streaks run down the image.** A rock set laid on a mesh by triplanar or with a rotation has
+  no idea which way is down; a streak points the way the image's -V points on that face.
 - The numbers marked not verified on the grounding page.
 
 ## Capability contract (ADR-0027)

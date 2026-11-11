@@ -208,6 +208,11 @@ int matgen_command(int argc, char** argv) {
       measured.set("moss_share", JsonValue(stats.moss_share));
       measured.set("thatch_cover", JsonValue(stats.thatch_cover));
       measured.set("live_cover", JsonValue(stats.live_cover));
+      measured.set("buried_share", JsonValue(stats.buried_share));
+      measured.set("streak_share", JsonValue(stats.streak_share));
+      measured.set("moss_cover", JsonValue(stats.moss_cover));
+      measured.set("landmark_contrast", JsonValue(stats.landmark_contrast));
+      measured.set("block_contrast", JsonValue(stats.block_contrast));
       record.set("measured", measured);
       if (io::write_file_atomic(sidecar, write_json(record)) != io::Status::Ok)
         return fail("'" + sidecar + "' could not be written");
