@@ -520,11 +520,13 @@ bool solve_patch(const LedgePatch& p, assets::MeshData& out, LedgeReport* report
       if (shape.slope >= cliff_slope) fraction[k] = 0.0;
       // **A crag's risers** (rocks.md, "A crag has mass"): the ground between a crag's ledges is
       // its rock too where its member is open and the slope bares it, past the layer's `riser`.
+      // Near form only: a skin a few centimetres over the ground z-fights with the terrain's own
+      // coarser levels at the far form's distances (seen in G142c's streamed pictures).
       {
         const f64 c_ground = coordinate[k];
         const f64 open = member_factor(rule, field, c_ground) *
                          stretch_factor(rule, member_id(rule, field, c_ground), wx_mm, wz_mm);
-        riser[k] = riser_at < 1.0 ? fraction[k] * open - riser_at : -1.0;
+        riser[k] = riser_at < 1.0 && !p.far ? fraction[k] * open - riser_at : -1.0;
       }
       // Metres behind a front a metre of height under its step, for the corners worn in plan.
       per_slope[k] = 1.0 / (shape.slope > 0.3 ? shape.slope : 0.3);

@@ -506,10 +506,11 @@ TEST_CASE("ledges: a crag has mass, its risers the crag's rock") {
                      << " a square metre); far " << far_form.report.riser_m2 << " m2 in "
                      << far_form.report.riser_triangles << "; ledges alone "
                      << without.report.triangles << " triangles");
-  // The ground between a crag's ledges is its rock: tens of square metres of a 64 m tile, the
-  // same ground in the far form, and nothing else in the mesh moves.
+  // The ground between a crag's ledges is its rock: tens of square metres of a 64 m tile, and
+  // nothing else in the mesh moves. Not in the far form: a skin over the ground z-fights with the
+  // terrain's coarser levels at its distances.
   CHECK(s.report.riser_m2 > 50.0);
-  CHECK(far_form.report.riser_m2 > 0.5 * s.report.riser_m2);
+  CHECK(far_form.report.riser_triangles == 0u);
   CHECK(s.report.triangles == without.report.triangles + s.report.riser_triangles);
   CHECK(without.report.riser_triangles == 0u);
   // On the ground: a riser's triangles face up and lie on the hillside within the lattice's
@@ -596,7 +597,7 @@ TEST_CASE("ledges: a patch is pinned to the bit") {
   CHECK(mesh_hash(near_form.mesh) == 3689944686638937447ull);
   CHECK(ledge_source_hash(near_form.patch) == 4449123448180381084ull);
   CHECK(far_form.report.triangles > 0u);
-  CHECK(mesh_hash(far_form.mesh) == 14638530343947162581ull);
+  CHECK(mesh_hash(far_form.mesh) == 12540669320333577569ull);
   CHECK(ledge_source_hash(far_form.patch) == 13707332758584909599ull);
 }
 

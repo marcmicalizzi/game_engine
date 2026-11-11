@@ -291,6 +291,23 @@ tile was 37,492 triangles, 51 to 57 ms to solve and 208 to 286 ms to build, besi
 machine. The ground there is a function, so the sampling is the solver's share of it and not a
 tile source's.
 
+**After G142c** (blocks as bodies, a crag's risers; the same tile, `msvc-release`, three runs,
+**61 to 73 % of the processor busy**: upper bounds):
+
+| | near form | far form |
+|---|---|---|
+| Triangles (vertices, clusters) | 6,852 (7,487; 295), of which 1,044 risers | 121 (148; 6): no risers (209 with them, before they were taken out of the far form) |
+| Front, m | 106 (the clefts take their widths out of it) | 59 |
+| Triangles a metre of front | 54.7 the ledges alone, 64.5 with the risers | 2.0 |
+| Risers | 466 m², 2.2 triangles a square metre | none |
+| Source mesh, bytes | 321,808 | 6,188 |
+| Solving, ms | 11.6 to 15.4 | 0.47 to 0.74 (with the risers) |
+| Building the container, ms | 50.0 to 53.1 | 1.6 to 2.3 (with the risers) |
+
+The generator's whole read of a 128 m square (four tiles: `open` sampling and solving both forms
+and writing eight recipes, then building the eight containers) takes 0.13 to 0.15 s at the same
+load; a 1 km square is 64 times that by arithmetic, about 9 s on one thread, not a timed run.
+
 **When each is paid.** `tile`, the call a tile's activation makes, is a search of the entry's
 tiles and one placement: microseconds, with the solver or without it. The solver's work is paid
 earlier, because a streamed tile may name only a mesh the scene listed when it was read: the
