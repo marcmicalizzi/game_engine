@@ -216,69 +216,97 @@ rock's own colour and an old surface is darker, which is the material's to carry
 
 - **The lattice is the ground's, 1 m.** A front's line is piecewise straight at that spacing; a
   finer lattice would follow the plane's trace more closely at four times the triangles.
-- **A front is planar between rows** and a block is a prism. Weathered rounding and a fracture
-  surface are the radial solver's ([rock structure](rock-structure.md)) and have no counterpart
-  on a sheet yet.
+- **A worn edge is one face, a worn corner one cut, a flute two scales of noise at the rows'
+  own vertices.** A round is a chamfer shaded as one with the face under it; a curve would be
+  two or three faces more an edge. 43 triangles a metre of front against a budget of 48.
 - **Nothing is built behind a tread's back or under a front's foot** but 8 cm of tread and a foot
-  that goes on a quarter of the step under the ground (5 cm at least, `bury_m` at most). The
-  share of triangles above the ground is what that buys: 66 % against the 13.9 % G132 counted on
-  the front of a closed box.
-- **The far form** drops the blocks, the rows and every step under 0.8 m, on a 4 m lattice: 2.1
-  triangles a metre of front against 36.
+  that goes on 0.15 of the step under the ground (5 cm at least, `bury_m` at most), and a face
+  the ground covers whole is not drawn. The share of triangles above the ground is what that
+  buys: 68 % against the 13.9 % G132 counted on the front of a closed box.
+- **The far form** drops the blocks, the rows, the wear and every step under 0.8 m, on a 4 m
+  lattice: 2.0 triangles a metre of front against 43.
 
 ## Measured
 
 A 64 m tile of the test hillside (`tests/ledges_tests.cpp`: 36.9°, noses and hollows 40 m apart,
-five beds dipping 12°, 31 bed tops cropping out), one thread.
+five beds dipping 12°; 13 of its 31 bed tops crop out somewhere in the tile), one thread.
 
 | | near form | far form |
 |---|---|---|
-| Triangles (vertices, clusters) | 37,492 (48,673; 1,793) | 1,533 (1,810; 69) |
-| Front, m | 1,041 | 728 |
-| Triangles a metre of front | 36 | 2.1 |
-| Source mesh, bytes | 2,007,440 | 76,316 |
-| Sampling the ground, ms | 0.35 to 0.46 (5,329 heights) | 0.03 to 0.04 (361) |
-| Solving, ms | 51 to 57 | 1.6 to 1.9 |
-| Building the container (the cluster DAG), ms | 208 to 286 | 7.2 to 8.0 |
+| Triangles (vertices, clusters) | 5,255 (5,810; 245) | 121 (148; 6) |
+| Front, m | 123 | 59 |
+| Triangles a metre of front | 43 | 2.0 |
+| Source mesh, bytes | 248,980 | 6,188 |
+| Sampling the ground, ms | 0.32 to 0.52 (5,329 heights) | 0.02 to 0.03 (361) |
+| Solving, ms | 11.1 to 12.1 | 0.37 to 0.45 |
+| Building the container (a cluster DAG a material, merged), ms | 33.0 to 35.0 | 0.90 to 1.00 |
 
-The times are `msvc-release`, three runs of `ledges: what a tile costs`, on an i9-10980XE
-**beside other agents' builds, 50 to 58 % of the processor busy when they were taken**: upper
-bounds, not costs. The ground there is a function, so the sampling is the solver's share of it
-and not a tile source's.
+The times are `msvc-release`, three runs of `ledges: what a tile costs`, on an i9-10980XE with
+**18 to 35 % of the processor busy** (other agents' builds and a container build) when they were
+taken: upper bounds, not costs. With every bed cropping out and no wear (the first pass) the same
+tile was 37,492 triangles, 51 to 57 ms to solve and 208 to 286 ms to build, beside a busier
+machine. The ground there is a function, so the sampling is the solver's share of it and not a
+tile source's.
 
 **When each is paid.** `tile`, the call a tile's activation makes, is a search of the entry's
 tiles and one placement: microseconds, with the solver or without it. The solver's work is paid
 earlier, because a streamed tile may name only a mesh the scene listed when it was read: the
-sampling and the solve once a tile and form when the scene **opens** (about 55 ms and 2 ms a tile
-that has ledges; less for one that has none, which stops at its first triangle without a
-standing bed), and the container once a mesh when the scene reader **builds** it, a cache hit
-after the first read. Both scale with the region's tiles, not the world's, and neither with the
-frame. What is kept resident is the entry's list (a path and two indices a tile) and the built
-meshes.
+sampling and the solve once a tile and form when the scene **opens**, and the container once a
+mesh when the scene reader **builds** it, a cache hit after the first read. Both scale with the
+region's tiles, not the world's, and neither with the frame. **For a region a kilometre square
+of 64 m tiles (256 tiles) of ground like the test hillside's**: `open` solves 512 patches, about
+256 × (0.4 + 11.6 + 0.02 + 0.4) ms = 3.2 s on one thread and less where a tile has no rock (a
+patch with nothing standing stops at its triangles' first test), and writes a recipe of about
+12 KB (the heights) for each form that has ledges; the reader then builds each listed mesh once,
+about 34 ms a near form, 9 s for all of them, into the derived-data cache. What stays resident
+is the entry's list (a path and two indices a tile: under 100 KB for the region) and the built
+meshes of the tiles in the rings that draw them, about 250 KB of source mesh a near tile. That
+`open` solves a region nobody is near is the placement contract's (a mesh must be listed at
+scene read); the solver itself is a function of the tile.
 
-**Bytes a tile, on a scene.** The escarpment's east flank (224 m by 288 m of 32 m tiles, beds 1.5
-to 6 m thick, `cliff_slope_deg` 50): 19 of 63 tiles have ledges; their near forms are 17,592
-triangles together (2,038 the largest), 1,789,906 bytes of built containers on disk (200,290 the
-largest, about 94 KB a tile that has any) and 233,038 bytes of recipes (12 KB each: the heights).
+**The cliff faces in tiers** (`tests/cliffs_generator_tests.cpp`, a 256 m block at a budget of
+20,000 a line): 2 faces and 12,204 triangles on the 30 m fin and the planar slope, 10 faces and
+17,124 triangles on a quadrant of the escarpment's ridge; the escarpment scene itself is 38
+faces. Tracing the scene's four blocks and solving its 38 recipes once each (the lowest tier of
+a line twice, for its ground patch) takes 1.0 s in `msvc-release` and 6.3 s in `msvc-debug`.
 
 ## The pictures, and what they lack
 
-Captures are under the row's scratch directory, outside the repository (the hand-back names
+Captures are under the row's scratch directories, outside the repository (the hand-backs name
 them); nothing here is a golden. Two scenes: a scratch hillside 36 to 41° steep with noses and
-hollows under a scatter of fescue, hair-grass and bracken, and a scratch copy of the escarpment.
-A worktree has no material pack, so every rock is its type's flat colour.
+hollows under a scatter of fescue, hair-grass and bracken, and a scratch copy of the escarpment
+with the formation, a `ledges` layer above its faces and sand-coloured treads. The second pass's
+captures (engine-view offscreen, 1280 × 720, `--shadows csm`, `--sun 120,35`, msvc-debug, RTX
+5090, 2026-11-10) had the engine's material pack, whose one rock set, `rock/sandstone`, is a
+saturated yellow; the scenes tint it (0.5, 0.46, 0.9) toward ochre, and it is still the first
+thing a person sees.
 
-Set beside the owner's reference reels (contact sheets r12, r23, r44 and r47: stepped basalt and
-moss, bedded ledges at a fall, a grass slope under a cliff), a person would object to:
+**What changed in them.** From across the valley the hillside's rock is now five or six crags,
+each a stack of three or four short ledges, with turf between; before, every resistant bed drew a
+line across the hill. At a walker's height a ledge is a row of separate lumps with worn top edges
+and cut-back ends, soil on their treads, textured; before, crisp prisms in one flat colour. The
+escarpment's flank is rock from its foot to the round of its crest in one bedded mass, where the
+seated single box stood on its lower two fifths; from on the crest behind the east faces the
+top tier's top is a band at the ground's own edge and nothing hollow shows.
 
-- **No rock surface.** Flat colour, planar faces, crisp prisms. The reels' rock is rounded at
-  every edge, fluted, stained, lichened and wet, and its beds are told apart by colour.
-- **The treads are bare.** In the reels a tread is turf or moss to its lip and the rock is the
-  riser. Here nothing grows on a tread and the scatter's plants stand through its back.
-- **Regular in height.** The formation repeats every few metres and every resistant bed crops
-  out, so from across the valley the ledges are stripes at even spacing, broken along their
-  length by the soil's patches and the fallen blocks but not across the slope.
-- **Nothing lies below them.** No fallen block under the gap it left, no scree, no soil worn at
-  a foot.
-- **One scale.** The reels' steps run from a hand's breadth to tens of metres in one view; a
-  ledge here is 0.15 to 4 m, and the faces above that are another generator's boxes.
+Set beside the owner's reference reels (contact sheets r12 and r23: stepped basalt under moss,
+a bedded gorge at a fall), a person would still object to:
+
+- **The rock is a colour and a tiled set.** No staining, no lichen, no wet, no moss on a riser,
+  no darker old surface beside a paler break; the reels' rock is all of those before it is a
+  shape. The pack's yellow makes it worse.
+- **Lumps, not rock.** A block is a prism with one worn edge and two cut corners. The reels'
+  blocks are rounded on every side, undercut, split, and never two alike; their joints are
+  clefts with plants in them.
+- **A crag is still stripes inside.** Its ledges are level rows of about one height, a metre or
+  so, because the beds are; the reels' steps run from a hand's breadth to tens of metres in one
+  view, and the tiered faces that carry the large end are another generator's and another look.
+- **Treads are a flat colour.** They sit beside the turf but carry no blades, and the scatter's
+  plants stand through a tread's back; in the reels a tread is thick moss rounded over its lip.
+- **Nothing lies below.** No block under the gap it fell from (the gaps are handed over, nothing
+  takes them yet), no scree, no worn soil at a foot. The cliff's own talus is still smooth cones.
+- **The tiers do not read.** A face's tiers meet without a bench or a change of rock, so the
+  flank is one wall with level bedding; the reels' cliffs step back at each member, with turf on
+  each bench.
+- **No picture of the far form.** A streamed run of the hillside drew the near form at every
+  marker; whether the far form holds at its ring was not seen.

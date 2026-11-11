@@ -15,8 +15,8 @@ landscape-scale rock — faces found from the ground's heights rather than drawn
   0.15 of the height, 24 fallen blocks of up to 2.5 m each, the default 250,000-triangle budget, the
   rock pack's `rock/sandstone` where the pack is installed and the flat colour otherwise — and
   **granite boulders** (`content/rocks/granite-boulder.rock.json`) at 4 per 100 m of face, 0.8–2.2
-  scale, at their feet. 38 faces in tiers of about 12 m, 19 a flank, each about 215 m long, on
-  flanks to 113 m high, overlapping where the blocks' grid at x = 0 and z = 0 divides them; only
+  scale, at their feet. 38 faces in tiers of about 12 m, 19 a flank, each about 215 m long and
+  809,030 triangles together at a 0.75 m cell, on flanks to 113 m high, overlapping where the blocks' grid at x = 0 and z = 0 divides them; only
   the lowest tier of a line has the skirt, the blocks and the boulders. A generated face has no
   back and no bottom, its top is in the ground behind it and its ends go into the ground where the
   steep ground ends ([rocks](../../../docs/subsystems/rocks.md#a-face-in-tiers), roadmap G142). The

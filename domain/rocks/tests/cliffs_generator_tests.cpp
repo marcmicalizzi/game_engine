@@ -290,6 +290,7 @@ TEST_CASE("cliffs generator: the escarpment scene's layer dresses both flanks of
   // Each face is a recipe that reads back and solves, the first one closed.
   bool first = true;
   f32 tallest = 0.0f;
+  u64 triangles = 0, front = 0;
   for (const scene_gen::PlacementMesh& mesh : out.meshes) {
     if (mesh.path.find("/cliffs/cliff-") == std::string::npos) continue;
     std::string recipe;
@@ -302,12 +303,16 @@ TEST_CASE("cliffs generator: the escarpment scene's layer dresses both flanks of
     REQUIRE_MESSAGE(solve_cliff(*file.cliff, solved, &report, &error), error);
     CHECK(report.triangles <= file.cliff->triangle_budget);
     tallest = std::max(tallest, report.height_m);
+    triangles += report.triangles;
+    front += 2u * report.stations * report.rows;
     if (first) {
       MESSAGE("first face: " << report.length_m << " m long, " << report.height_m << " m high, "
                              << report.triangles << " triangles at " << report.cell_m << " m");
       first = false;
     }
   }
+  MESSAGE("the scene's faces: " << triangles << " triangles, " << front
+                                << " of them on a front, the tallest " << tallest << " m");
   // The flanks are 113 m of steep ground in tiers of about 12 m: no face is the whole flank.
   CHECK(tallest > 8.0f);
   CHECK(tallest < 40.0f);

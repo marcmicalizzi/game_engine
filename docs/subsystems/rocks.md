@@ -513,8 +513,10 @@ On all three no top is over the ground behind it (0.43 m under at the least), an
 any face's upward triangles stands over the ground behind where its top went in
 (`tests/cliffs_generator_tests.cpp`, "no generated face shows from behind its own top").
 
-**What it does not do.** A tier's bottom is open: it is under the top of the tier below, which a
-viewer directly under an overhanging tier could look past. The tiers of two blocks meet at the
+**What it does not do.** A tier's top is paid at its front's cell though it is in the ground
+(56 % of the escarpment's triangles are on a front, against 70 % for one box). A tier's bottom is
+open: it is under the top of the tier below, which a viewer directly under an overhanging tier
+could look past. The tiers of two blocks meet at the
 same breaks but are seated separately. The unbroken cap along each tier's top, and a face's talus
 by what fell from it, are as they were.
 
@@ -525,9 +527,11 @@ ridge (`engine-content terrain-synth --kind ridge --size 401 --spacing-mm 1000`,
 the `tiles` provider at a vertical scale of 3: 120 m high, its flanks to 66°) and a `cliffs` layer of
 sandstone faces with an undercut of 0.5, a talus skirt of 0.15 of the height, 24 fallen blocks each
 and granite boulders at 4 per 100 m; since G142 **38 faces in tiers, 19 a flank**, open and
-tapered, each about 12 m of the flank's 113 m (the lowest of a line 218 m long and 22 m high,
-29,296 triangles at a 0.75 m cell), where there were four closed boxes of 153,340 triangles at 1 m
-([A face in tiers](#a-face-in-tiers)). The capture below is the boxes' and has not been re-taken.
+tapered, each about 12 m of the flank's 113 m (the lowest of a line 217 m long and 22 m high,
+29,108 triangles at a 0.75 m cell; 809,030 triangles together, 56 % of them on a front, the rest
+on tops that are in the ground), where there were four closed boxes of 153,340 triangles each at
+1 m ([A face in tiers](#a-face-in-tiers)). The capture below is the boxes'; what the tiers'
+showed is on [the grounding page](../experiments/exposed-bedrock.md#the-pictures-and-what-they-lack).
 A camera path along the east flank with three markers:
 `valley`, `along` and `foot`, the last a walk at eye height. Its heightfield is written first and is
 never committed (the README has the lines).
