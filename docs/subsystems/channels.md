@@ -584,7 +584,9 @@ where the junctions are; rills under a metre are left. `ChannelLink::bank_moved`
 `bank_moved_points` count the points moved. **What is left** on the test valley: 32 of 1,969
 points (1.6 %) with less than half a bank and 12 (0.6 %) with none, the worst 1.23 depths under;
 the test holds 2 % and 1 %. They are where a width's move does not reach the floor, and a ribbon
-there is still narrowed or lowered by W91's fit.
+there is still narrowed or lowered by W91's fit. Since the kinks were low-passed out of the line
+and the steep line wanders ([The planform](#the-planform)): 36 points (1.8 %) with less than half
+a bank and **none** with no bank, the worst 1.08 depths under.
 
 ## Seen: the section, the flood bed and the proof of concept's items 6, 7 and 8
 
@@ -998,8 +1000,8 @@ averaged over the source area; no braided reaches; the valley's confinement is n
 reach; a bend with a point bar is cut 6 % narrower than its crossings where a surveyed river's
 is wider ([the grounding](../experiments/channels.md#the-steep-reaches-the-pools-place-and-three-numbers-read-again)); undercut and
 turf banks are not the heightfield's to draw; the line is moved between its banks by a width at the most, so where the trough's floor is
-further off than that a bench with half a bank or none is left (1.6 % and 0.6 % of the test
-valley's points; the ribbon's fit still narrows the water there); knickpoints are read from the ground's profile along the line, not
+further off than that a bench with half a bank is left (1.8 % of the test valley's points, and
+none with no bank; the ribbon's fit still narrows the water there); knickpoints are read from the ground's profile along the line, not
 from rock strength; a plan named by an entry on cut ground cannot be made again at a load
 ([One plan](#one-plan): `scene_gen::Context` hands a generator the ground it stands on and not
 the ground before its cuts); the mouths read the exclusion's box for a fill body, not its traced flood.
