@@ -624,11 +624,18 @@ bool mesh_dressing(const CellRecipe& rc, assets::MeshData& out, CellReport* repo
     f64 roof = 0.0, ground = 0.0;
     u8 roof_cls = 0, floor_cls = 0;
     if (!meet(p, 1.0, 12.0, roof, roof_cls) || roof_cls != k_surface_rock) return;
+    // Past a mouth the tube's roof is in the open air (the ground cut it away): no rock there and
+    // no drip, nor within half a metre of the ground. (The first pictures had a stalactite
+    // hanging in the sky at a mouth.)
+    f64 open_y = 0.0;
+    if (field.ground_at(p.x, p.z, open_y) && roof > open_y - 0.5) return;
     const bool has_floor = meet(p, -1.0, 30.0, ground, floor_cls);
     const f64 gap = has_floor ? roof - ground : 30.0;
     if (gap < 0.4) return;
     ++rep.drips;
-    const f64 sink = 0.08;
+    // Seated in the rock: the mesh's roof stands up to three quarters of a lattice step off the
+    // field's zero the drip was marched to, and a body sunk less than that hangs in the air.
+    const f64 sink = 0.08 + 0.75 * step;
     if (unit(mix64(h + 1)) < static_cast<f64>(sp.straw_share)) {
       const f64 len =
           std::min(0.5 * gap, static_cast<f64>(sp.straw_max_m) * (0.3 + 0.7 * unit(mix64(h + 2))));

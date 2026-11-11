@@ -43,8 +43,9 @@ namespace engine::caves {
 inline constexpr std::string_view k_network_format = "engine.caves.network";
 inline constexpr std::string_view k_cell_format = "engine.caves.cell";
 // Bumped whenever a plan or a cell's surface changes for the same inputs, so a cached cell is
-// never an older solve's.
-inline constexpr u32 k_network_version = 1;
+// never an older solve's. 2 (2026-11-11): a drip is not placed under a roof the ground cut away at
+// a mouth, and a body is sunk three quarters of a lattice step into the rock.
+inline constexpr u32 k_network_version = 2;
 // The roles a network's surfaces take from a pack (materials.md); `rock/limestone` is caves.h's.
 inline constexpr std::string_view k_sediment_role = "cave/sediment";
 inline constexpr std::string_view k_breakdown_role = "cave/breakdown";
