@@ -920,13 +920,13 @@ struct Solver {
     // Each stone keeps its own bed and top lines: the one lengthened runs them on, the one
     // shortened takes them where its new end falls.
     auto run_on = [](Stone& t, f64 nx0, f64 nx1) {
-      const f64 a = static_cast<f64>(t.x0), b = static_cast<f64>(t.x1);
-      const f64 sb = (static_cast<f64>(t.bed1) - static_cast<f64>(t.bed0)) / (b - a);
-      const f64 st = (static_cast<f64>(t.top1) - static_cast<f64>(t.top0)) / (b - a);
-      const f64 b0 = static_cast<f64>(t.bed0) + sb * (nx0 - a);
-      const f64 b1 = static_cast<f64>(t.bed0) + sb * (nx1 - a);
-      const f64 t0 = static_cast<f64>(t.top0) + st * (nx0 - a);
-      const f64 t1 = static_cast<f64>(t.top0) + st * (nx1 - a);
+      const f64 ra = static_cast<f64>(t.x0), rb = static_cast<f64>(t.x1);
+      const f64 sb = (static_cast<f64>(t.bed1) - static_cast<f64>(t.bed0)) / (rb - ra);
+      const f64 st = (static_cast<f64>(t.top1) - static_cast<f64>(t.top0)) / (rb - ra);
+      const f64 b0 = static_cast<f64>(t.bed0) + sb * (nx0 - ra);
+      const f64 b1 = static_cast<f64>(t.bed0) + sb * (nx1 - ra);
+      const f64 t0 = static_cast<f64>(t.top0) + st * (nx0 - ra);
+      const f64 t1 = static_cast<f64>(t.top0) + st * (nx1 - ra);
       t.x0 = static_cast<f32>(nx0);
       t.x1 = static_cast<f32>(nx1);
       t.peak_x = t.x0;
