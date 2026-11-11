@@ -42,7 +42,7 @@ namespace engine::walls {
 // ---- the module solver -----------------------------------------------------------------------
 
 // The solver's version, in every recipe's source hash: a change that moves a stone bumps it.
-inline constexpr u32 k_wall_version = 1;
+inline constexpr u32 k_wall_version = 2;
 
 // What a stone is in a solved module (the report's, for the tests and the page's counts).
 enum class StoneRole : u8 { face, footing, through, tie, pinning, cover, cope, rubble, core };
@@ -68,6 +68,8 @@ struct ModuleReport {
   u32 near_triangles = 0;
   u32 mid_triangles = 0;
   u32 far_triangles = 0;
+  // Where the finest form's triangles go, indexed by `StoneRole` (walls.md, "Budgets").
+  u32 role_triangles[9] = {};
   // The stone's volume in the faces, the throughs, the cover and the cope, m^3, and its length.
   f64 stone_volume_m3 = 0;
   f64 length_m = 0;
@@ -89,6 +91,10 @@ inline constexpr f64 k_through_high_m = 0.70;
 inline constexpr f64 k_through_spacing_m = 0.80;
 // The footing's projection beyond each face (TCV's scarcement, 50 to 75 mm).
 inline constexpr f64 k_scarcement_m = 0.06;
+// A cope stone's thickness along the wall, metres: mostly thin slabs, now and then a block
+// (TCV, Types of coping: random coping; slab copes 50 to 200 mm thick).
+inline constexpr f64 k_cope_thin_m = 0.04;
+inline constexpr f64 k_cope_thick_m = 0.16;
 
 // Solves a module: the finest form (every stone) in `out` as positions, normals, UVs and indices,
 // one material and its stone palette image, and the coarser forms' indices in the report.

@@ -24,7 +24,7 @@ engine_module(NAME walls LAYER domain OPTIONAL WHOLE_ARCHIVE GENERATOR placement
 
 engine_module_tests(NAME walls
   SOURCES tests/stations_tests.cpp tests/module_tests.cpp tests/placement_tests.cpp
-          tests/determinism_tests.cpp tests/size_table.cpp)
+          tests/face_tests.cpp tests/determinism_tests.cpp tests/size_table.cpp)
 
 engine_module_bench(NAME walls
   SOURCES bench/walls_bench.cpp)

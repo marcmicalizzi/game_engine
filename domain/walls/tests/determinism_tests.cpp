@@ -29,11 +29,14 @@ u64 mesh_hash(const assets::MeshData& m, const ModuleReport& r) {
 }  // namespace
 
 TEST_CASE("walls: modules and placements are the same bytes on every toolchain") {
-  // G145's first pins (k_wall_version 1), taken after every draw was given its own statement: a
-  // call's arguments are evaluated in the compiler's order, and with two draws among them MSVC and
-  // GCC agreed with each other and not with Clang. A replacement records its reason and commit here.
-  constexpr u64 expected[] = {0x595c4b096c1b1fecull, 0xfd72a21e576b48d4ull, 0x11b7492f3617ddb3ull,
-                              0xd8e1d7c68e42464aull, 0xf75f3d8efeaeb99aull};
+  // G145's first pins (k_wall_version 1) were taken after every draw was given its own statement:
+  // a call's arguments are evaluated in the compiler's order, and with two draws among them MSVC
+  // and GCC agreed with each other and not with Clang. G145b (k_wall_version 2) moved the four
+  // module pins: split faces with knocked-back arrises, faces built to the line, closed faces, the
+  // cope's variation and the palette's mean swatch; the placement pin did not move. A replacement
+  // records its reason and commit here.
+  constexpr u64 expected[] = {0x880da522c6ddef55ull, 0xa95a28cb08757e7dull, 0x50385d342922622dull,
+                              0x91ac6065372b52ffull, 0xf75f3d8efeaeb99aull};
   u64 got[5] = {};
   const ModuleKind kinds[4] = {ModuleKind::run, ModuleKind::head, ModuleKind::broken,
                                ModuleKind::fallen};

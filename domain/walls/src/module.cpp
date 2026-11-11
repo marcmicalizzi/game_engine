@@ -50,14 +50,15 @@ struct Rng {
 //
 // A 128 x 128 sRGB image of 16 x 16 swatches of 8 x 8 texels: rows 0..13 the stones' (a slabby
 // metamorphic stone's greys, blue-greys, brown-greys and weathered light slabs, each texel
-// mottled, a lighter fleck now and then, faint foliation bands), row 14 the mid form's average and
-// row 15 the hearting's shadow. A stone takes one swatch, so the stones of a wall differ from each
-// other as the reels' do (dry-stone-walls.md, "Where structure was traded for triangles").
+// mottled, a lighter fleck now and then, faint foliation bands), rows 14 and 15 the stones' mean
+// (the mid form's and the outline's swatch, 224) but for the last swatch, the hearting's shadow.
+// A stone takes one swatch, so the stones of a wall differ from each other as the reels' do
+// (dry-stone-walls.md, "Where structure was traded for triangles").
 constexpr u32 k_atlas = 128;
 constexpr u32 k_swatch = 8;
 constexpr u32 k_stone_swatches = 14 * 16;
 constexpr u32 k_swatch_mid = 14 * 16;
-constexpr u32 k_swatch_core = 15 * 16;
+constexpr u32 k_swatch_core = 16 * 16 - 1;
 
 void palette_image(Vector<u8>& out) {
   struct Tint {
@@ -73,46 +74,61 @@ void palette_image(Vector<u8>& out) {
   };
   Vector<u8> pixels;
   pixels.resize(k_atlas * k_atlas * 3);
-  for (u32 sy = 0; sy < 16; ++sy)
-    for (u32 sx = 0; sx < 16; ++sx) {
-      const u32 swatch = sy * 16 + sx;
-      Rng rng{hash_combine(0x57a11e5ull, swatch)};
-      f64 r = 0, g = 0, b = 0, speckle = 0.04, band = 0.03;
-      if (swatch >= k_swatch_core) {
-        r = g = b = 26;
-        speckle = 0;
-        band = 0;
-      } else if (swatch >= k_swatch_mid) {
-        r = 98;
-        g = 97;
-        b = 95;
-      } else {
-        f64 pick = rng.next(), acc = 0;
-        for (const Tint& t : tints) {
-          acc += t.weight;
-          r = t.r;
-          g = t.g;
-          b = t.b;
-          if (pick < acc) break;
+  // The stones' swatches first, their texels summed: every other swatch but the hearting's is
+  // their mean, plain, so the coarser forms carry the near wall's colour at every mip level (the
+  // hearting's one dark swatch is a 256th of the atlas, in its far corner, and reaches the mid
+  // form's swatch only in the last level, the whole atlas's mean).
+  f64 sum[3] = {0, 0, 0};
+  for (u32 pass = 0; pass < 2; ++pass)
+    for (u32 sy = 0; sy < 16; ++sy)
+      for (u32 sx = 0; sx < 16; ++sx) {
+        const u32 swatch = sy * 16 + sx;
+        if ((swatch < k_stone_swatches) != (pass == 0)) continue;
+        Rng rng{hash_combine(0x57a11e5ull, swatch)};
+        f64 r = 0, g = 0, b = 0, speckle = 0.04, band = 0.03;
+        if (swatch == k_swatch_core) {
+          r = g = b = 26;
+          speckle = 0;
+          band = 0;
+        } else if (swatch >= k_stone_swatches) {
+          const f64 texels = static_cast<f64>(k_stone_swatches * k_swatch * k_swatch);
+          r = sum[0] / texels;
+          g = sum[1] / texels;
+          b = sum[2] / texels;
+          speckle = 0;
+          band = 0;
+        } else {
+          f64 pick = rng.next(), acc = 0;
+          for (const Tint& t : tints) {
+            acc += t.weight;
+            r = t.r;
+            g = t.g;
+            b = t.b;
+            if (pick < acc) break;
+          }
+          const f64 bright = rng.range(0.90, 1.10);
+          r *= bright;
+          g *= bright;
+          b *= bright;
         }
-        const f64 bright = rng.range(0.90, 1.10);
-        r *= bright;
-        g *= bright;
-        b *= bright;
-      }
-      for (u32 ty = 0; ty < k_swatch; ++ty) {
-        const f64 row = 1.0 + band * (rng.next() * 2.0 - 1.0);
-        for (u32 tx = 0; tx < k_swatch; ++tx) {
-          f64 m = row * (1.0 + 0.07 * (rng.next() * 2.0 - 1.0));
-          if (rng.next() < speckle) m *= 1.22;
-          const u32 px = sx * k_swatch + tx, py = sy * k_swatch + ty;
-          u8* p = &pixels[(py * k_atlas + px) * 3];
-          p[0] = static_cast<u8>(std::clamp(r * m + 0.5, 0.0, 255.0));
-          p[1] = static_cast<u8>(std::clamp(g * m + 0.5, 0.0, 255.0));
-          p[2] = static_cast<u8>(std::clamp(b * m + 0.5, 0.0, 255.0));
+        for (u32 ty = 0; ty < k_swatch; ++ty) {
+          const f64 row = 1.0 + band * (rng.next() * 2.0 - 1.0);
+          for (u32 tx = 0; tx < k_swatch; ++tx) {
+            const f64 mottle = rng.next();
+            f64 m = speckle > 0 ? row * (1.0 + 0.07 * (mottle * 2.0 - 1.0)) : 1.0;
+            const f64 fleck = rng.next();
+            if (fleck < speckle) m *= 1.22;
+            const u32 px = sx * k_swatch + tx, py = sy * k_swatch + ty;
+            u8* p = &pixels[(py * k_atlas + px) * 3];
+            p[0] = static_cast<u8>(std::clamp(r * m + 0.5, 0.0, 255.0));
+            p[1] = static_cast<u8>(std::clamp(g * m + 0.5, 0.0, 255.0));
+            p[2] = static_cast<u8>(std::clamp(b * m + 0.5, 0.0, 255.0));
+            if (swatch < k_stone_swatches)
+              for (u32 k = 0; k < 3; ++k)
+                sum[k] += static_cast<f64>(p[k]);
+          }
         }
       }
-    }
   out.clear();
   image::encode_png(k_atlas, k_atlas, 3, pixels, out);
 }
@@ -147,24 +163,49 @@ void swatch_uv(u32 swatch, f64 fu, f64 fv, f64& u, f64& v) {
   v = (sy * k_swatch + 1.5 + 5.0 * std::clamp(fv, 0.0, 1.0)) / k_atlas;
 }
 
-// A closed six-faced body from its eight corners (bottom ring 0..3, top ring 4..7, the rings in
-// one order: (x0, za), (x1, za), (x1, zb), (x0, zb)), each face flat-shaded and wound outward
-// from the body's centre. The face `split_face` (0 bottom, 1 top, 2 the za side, 3 the x1 end,
-// 4 the zb side, 5 the x0 end; -1 none) is cut into four planes about a point `bulge` proud of
-// its middle: a stone's split face, angular rather than flat.
-void body(Builder& b, const D3 (&c)[8], u32 swatch, i32 split_face, f64 bulge) {
+// Which of a body's six faces (0 bottom, 1 top, 2 the za side, 3 the x1 end, 4 the zb side, 5
+// the x0 end) are split and which are not drawn. A split face is the face a waller shows
+// (dry-stone-walls.md, "The stone, the face and the cope"): its arrises knocked back, the corners
+// of its outline taken off and its middle raised off-centre, while the beds stay flat. A face not
+// drawn is one that lies on stone or in the hearting and is never seen: a face stone's bed and
+// tail. `chips` is how many corners of each split face are knocked off (4, 2 at a diagonal, or 0:
+// the arrises knocked back and no corner taken off).
+struct Faces {
+  u8 split = 0;
+  u8 hidden = 0;
+  u8 chips = 4;
+};
+constexpr u8 face_bit(u32 f) { return static_cast<u8>(1u << f); }
+
+// The split face's numbers (dry-stone-walls.md, "The stone, the face and the cope"): an arris set
+// back 4 to 12 mm behind the face's plane; a corner of the outline taken off by a chip 10 to 30 mm
+// along each edge (at most 30 % of the edge) and 20 to 60 % of that in from the other edge, a
+// corner not taken off set in 3 to 10 mm along both; the outline's points within 4 mm of the plane
+// either way, which is the face's relief.
+constexpr f64 k_setback_lo = 0.004, k_setback_hi = 0.012;
+constexpr f64 k_chip_lo = 0.010, k_chip_hi = 0.030;
+constexpr f64 k_ring_relief = 0.004;
+
+// A six-faced body from its eight corners (bottom ring 0..3, top ring 4..7, the rings in one
+// order: (x0, za), (x1, za), (x1, zb), (x0, zb)), each face flat-shaded and wound outward from
+// the body's centre. A split face's outline is four points and two more a knocked-off corner, the
+// face fanned over it (2 + chips triangles), with the band of knocked-back arrises between the
+// outline and the face's corners, set back (8 + chips): 18 triangles with four chips, 14 with
+// two, 10 with none; a plain face is two. The corners of a split face are moved back before any
+// face is drawn, so the beds and ends that meet it stop short of the face's plane and stay flat.
+void body(Builder& b, const D3 (&c0)[8], u32 swatch, Faces faces, Rng& r) {
   D3 centre{};
-  for (const D3& p : c)
+  for (const D3& p : c0)
     centre = centre + p;
   centre = centre * 0.125;
-  D3 lo = c[0], hi = c[0];
-  for (const D3& p : c) {
+  D3 lo = c0[0], hi = c0[0];
+  for (const D3& p : c0) {
     lo = {std::min(lo.x, p.x), std::min(lo.y, p.y), std::min(lo.z, p.z)};
     hi = {std::max(hi.x, p.x), std::max(hi.y, p.y), std::max(hi.z, p.z)};
   }
   const D3 size{std::max(hi.x - lo.x, 1e-6), std::max(hi.y - lo.y, 1e-6),
                 std::max(hi.z - lo.z, 1e-6)};
-  static constexpr u8 faces[6][4] = {{0, 1, 2, 3}, {4, 5, 6, 7}, {0, 1, 5, 4},
+  static constexpr u8 rings[6][4] = {{0, 1, 2, 3}, {4, 5, 6, 7}, {0, 1, 5, 4},
                                      {1, 2, 6, 5}, {2, 3, 7, 6}, {3, 0, 4, 7}};
   auto uv_of = [&](D3 p, D3 n, f64& u, f64& v) {
     // Project on the two axes the face lies across.
@@ -176,31 +217,93 @@ void body(Builder& b, const D3 (&c)[8], u32 swatch, i32 split_face, f64 bulge) {
       fv = (p.z - lo.z) / size.z;
     swatch_uv(swatch, fu, fv, u, v);
   };
-  for (i32 f = 0; f < 6; ++f) {
-    const D3 q[4] = {c[faces[f][0]], c[faces[f][1]], c[faces[f][2]], c[faces[f][3]]};
-    D3 mid = (q[0] + q[1] + q[2] + q[3]) * 0.25;
-    D3 n = unit(cross(q[2] - q[0], q[3] - q[1]));
-    const bool flip = dot(n, mid - centre) < 0;
-    if (flip) n = n * -1.0;
-    if (f == split_face) {
-      const D3 apex = mid + n * bulge;
-      for (u32 e = 0; e < 4; ++e) {
-        const D3 a = q[e], c2 = q[(e + 1) % 4];
-        D3 fn = unit(cross(c2 - a, apex - a));
-        if (dot(fn, n) < 0) fn = fn * -1.0;
-        f64 u0, v0, u1, v1, u2, v2;
-        uv_of(a, n, u0, v0);
-        uv_of(c2, n, u1, v1);
-        uv_of(apex, n, u2, v2);
-        const u32 i0 = b.vertex(a, fn, u0, v0), i1 = b.vertex(c2, fn, u1, v1),
-                  i2 = b.vertex(apex, fn, u2, v2);
-        if (dot(cross(c2 - a, apex - a), fn) > 0)
-          b.tri(i0, i1, i2);
-        else
-          b.tri(i0, i2, i1);
+  auto outward = [&](const D3(&k)[8], u32 f) {
+    const D3 q0 = k[rings[f][0]], q1 = k[rings[f][1]], q2 = k[rings[f][2]], q3 = k[rings[f][3]];
+    const D3 mid = (q0 + q1 + q2 + q3) * 0.25;
+    D3 n = unit(cross(q2 - q0, q3 - q1));
+    if (dot(n, mid - centre) < 0) n = n * -1.0;
+    return n;
+  };
+  // One flat triangle, wound so its normal agrees with `hint`.
+  auto facet = [&](D3 p0, D3 p1, D3 p2, D3 hint, D3 uv_normal) {
+    D3 n = cross(p1 - p0, p2 - p0);
+    if (dot(n, hint) < 0) {
+      const D3 t = p1;
+      p1 = p2;
+      p2 = t;
+      n = n * -1.0;
+    }
+    n = unit(n);
+    f64 u0, v0, u1, v1, u2, v2;
+    uv_of(p0, uv_normal, u0, v0);
+    uv_of(p1, uv_normal, u1, v1);
+    uv_of(p2, uv_normal, u2, v2);
+    const u32 i0 = b.vertex(p0, n, u0, v0), i1 = b.vertex(p1, n, u1, v1),
+              i2 = b.vertex(p2, n, u2, v2);
+    b.tri(i0, i1, i2);
+  };
+  // The split faces' arrises set back: their corners moved behind the face's plane.
+  D3 c[8];
+  for (u32 k = 0; k < 8; ++k)
+    c[k] = c0[k];
+  D3 split_n[6];
+  for (u32 f = 0; f < 6; ++f) {
+    if ((faces.split & face_bit(f)) == 0) continue;
+    split_n[f] = outward(c0, f);
+    for (u32 e = 0; e < 4; ++e) {
+      const f64 back = r.range(k_setback_lo, k_setback_hi);
+      c[rings[f][e]] = c[rings[f][e]] - split_n[f] * back;
+    }
+  }
+  for (u32 f = 0; f < 6; ++f) {
+    if ((faces.hidden & face_bit(f)) != 0) continue;
+    if ((faces.split & face_bit(f)) != 0) {
+      const D3 n = split_n[f];
+      const D3 q[4] = {c0[rings[f][0]], c0[rings[f][1]], c0[rings[f][2]], c0[rings[f][3]]};
+      const D3 qm[4] = {c[rings[f][0]], c[rings[f][1]], c[rings[f][2]], c[rings[f][3]]};
+      // The outline, corner by corner: a knocked-off corner is two points, a chip along each of
+      // its edges and in from the other; any other corner one point set in along both.
+      u32 diagonal = 0;
+      if (faces.chips == 2) diagonal = static_cast<u32>(r.bits() & 1u);
+      D3 ring[8];
+      u32 first[4], last[4], count = 0;
+      for (u32 k = 0; k < 4; ++k) {
+        const D3 p = q[k], ep = q[(k + 3) % 4] - p, en = q[(k + 1) % 4] - p;
+        const f64 lp = std::max(std::sqrt(dot(ep, ep)), 1e-6),
+                  ln = std::max(std::sqrt(dot(en, en)), 1e-6);
+        const D3 up = ep * (1.0 / lp), un = en * (1.0 / ln);
+        const bool chipped = faces.chips == 4 || (faces.chips == 2 && (k & 1u) == diagonal);
+        if (chipped) {
+          const f64 wa = std::min(r.range(k_chip_lo, k_chip_hi), 0.3 * lp);
+          const f64 ia = std::min(r.range(0.2, 0.6) * wa, 0.25 * ln);
+          const f64 za = r.range(-k_ring_relief, k_ring_relief);
+          const f64 wb = std::min(r.range(k_chip_lo, k_chip_hi), 0.3 * ln);
+          const f64 ib = std::min(r.range(0.2, 0.6) * wb, 0.25 * lp);
+          const f64 zb = r.range(-k_ring_relief, k_ring_relief);
+          first[k] = count;
+          ring[count++] = p + up * wa + un * ia + n * za;
+          last[k] = count;
+          ring[count++] = p + un * wb + up * ib + n * zb;
+        } else {
+          const f64 ia = std::min(r.range(0.003, 0.010), 0.25 * ln);
+          const f64 ib = std::min(r.range(0.003, 0.010), 0.25 * lp);
+          const f64 za = r.range(-k_ring_relief, k_ring_relief);
+          first[k] = last[k] = count;
+          ring[count++] = p + un * ia + up * ib + n * za;
+        }
+      }
+      for (u32 i = 1; i + 1 < count; ++i)
+        facet(ring[0], ring[i], ring[i + 1], n, n);
+      for (u32 k = 0; k < 4; ++k) {
+        const u32 k1 = (k + 1) % 4;
+        if (first[k] != last[k]) facet(qm[k], ring[first[k]], ring[last[k]], n, n);
+        facet(qm[k], qm[k1], ring[first[k1]], n, n);
+        facet(qm[k], ring[first[k1]], ring[last[k]], n, n);
       }
       continue;
     }
+    const D3 q[4] = {c[rings[f][0]], c[rings[f][1]], c[rings[f][2]], c[rings[f][3]]};
+    const D3 n = outward(c, f);
     u32 id[4];
     for (u32 e = 0; e < 4; ++e) {
       f64 u, v;
@@ -247,6 +350,11 @@ f64 graded(const Section& s, f64 h) {
 
 constexpr f64 k_dx = 0.01;        // the skyline's sampling, metres
 constexpr f64 k_overhang = 0.12;  // how far a course may run past the module's end
+constexpr f64 k_line = 0.002;     // a face stone's plane off the batter's line, either way
+// The solver's stream of draws, apart from the recipe's version (k_wall_version, which moves
+// the cache): G145b kept G145's stream, so the courses are G145's and the joint residue is
+// measured over the same draws (walls.md, "Joints crossed").
+constexpr u64 k_draw_stream = 1;
 
 struct Skyline {
   f64 x_lo = 0;
@@ -280,7 +388,7 @@ struct Skyline {
   bool joint_near(f64 x, f64 tolerance, f64& where) const {
     const u32 a = at(x - tolerance), e = at(x + tolerance);
     for (u32 i = a; i < e && i + 1 < top.size(); ++i)
-      if (id[i] >= 0 && id[i + 1] >= 0 && id[i] != id[i + 1]) {
+      if ((id[i] >= 0 || id[i + 1] >= 0) && id[i] != id[i + 1]) {
         where = x_of(i) + 0.5 * k_dx;
         return true;
       }
@@ -319,7 +427,18 @@ struct Solver {
     return m.kind == ModuleKind::fallen || (m.kind == ModuleKind::broken && x > broken_from());
   }
 
+  // The triangles since the last stone are that stone's (every stone's geometry follows its
+  // `add_stone`); `account` closes the tally at a change of role.
+  StoneRole tally_role = StoneRole::face;
+  u32 tally_mark = 0;
+  void account(StoneRole next) {
+    report.role_triangles[static_cast<u32>(tally_role)] += b.triangles - tally_mark;
+    tally_mark = b.triangles;
+    tally_role = next;
+  }
+
   i32 add_stone(const Stone& st) {
+    account(st.role);
     report.stones.push_back(st);
     if (st.role != StoneRole::pinning && st.role != StoneRole::rubble && st.role != StoneRole::core)
       report.stone_volume_m3 += static_cast<f64>(st.x1 - st.x0) *
@@ -328,15 +447,19 @@ struct Solver {
     return static_cast<i32>(report.stones.size() - 1);
   }
 
-  // A block between two levels: its corners jittered within its beds (flat to 5 mm) and its face.
+  // A block between two levels: its corners jittered within its beds (flat to 4 mm) and its face
+  // (proud or sunk by up to `jitter_face`). `face` is the side it shows (+1 the +z face, -1 the
+  // -z face, 0 both: a stone across the wall); a face stone's bed and tail are not drawn, its
+  // shown face is split when `rough`, and `split` names more faces to split (a head's end).
   void block(f64 x0, f64 x1, f64 bed, f64 top, f64 za, f64 zb, f64 za_top, f64 zb_top, i32 face,
-             f64 jitter_face, u64 seed) {
+             f64 jitter_face, u64 seed, u8 split = 0, bool rough = true, u8 chips = 4,
+             u8 hide = 0) {
     Rng r{seed};
     const f64 j = 0.004;
     D3 c[8] = {{x0, bed, za},     {x1, bed, za},     {x1, bed, zb},     {x0, bed, zb},
                {x0, top, za_top}, {x1, top, za_top}, {x1, top, zb_top}, {x0, top, zb_top}};
     for (D3& p : c) {
-      p.x += r.range(-0.006, 0.006);
+      p.x += r.range(-0.002, 0.002);  // a joint 0 to 8 mm wide with the 2 mm gap either side
       p.y += r.range(-j, j);
     }
     if (face != 0) {
@@ -345,11 +468,20 @@ struct Solver {
       for (u32 k : {a, e, a + 4, e + 4})
         c[k].z += static_cast<f64>(face) * r.range(-jitter_face, jitter_face);
     }
-    const i32 split = face > 0 ? 4 : face < 0 ? 2 : -1;
+    Faces faces;
+    if (face != 0) {
+      const u32 shown = face > 0 ? 4 : 2, tail = face > 0 ? 2 : 4;
+      faces.split = rough ? face_bit(shown) : 0;
+      faces.hidden = static_cast<u8>(face_bit(0) | face_bit(tail));
+    } else if (rough) {
+      faces.split = static_cast<u8>(face_bit(2) | face_bit(4));
+    }
+    faces.split = static_cast<u8>(faces.split | split);
+    faces.hidden = static_cast<u8>((faces.hidden | hide) & ~split);
+    faces.chips = chips;
     // Every draw on its own statement: the order of a call's arguments is the compiler's.
     const u32 swatch = static_cast<u32>(r.bits() % k_stone_swatches);
-    const f64 bulge = r.range(0.004, 0.014);
-    body(b, c, swatch, split, bulge);
+    body(b, c, swatch, faces, r);
   }
 
   void face_stone(i32 side, f64 x0, f64 x1, f64 bed, f64 top, StoneRole role, u16 sweep) {
@@ -379,10 +511,28 @@ struct Solver {
     st.role = role;
     const i32 id = add_stone(st);
     const f64 g = 0.002;  // a joint's width either side
+    // Built to the line (TCV, Placing the stones: "just brushing the line"), so the face's plane
+    // is on the batter within 2 mm and only the split face's own relief stands off it. A head's
+    // first stone shows its end as well.
+    const u8 end = head && x0 <= -0.5 * s.L + 1e-6 ? face_bit(5) : u8{0};
+    // A large face has all four corners knocked off, a small one two (18 or 14 triangles). In a
+    // standing face the stone's top and ends lie against its neighbours and are not drawn: a
+    // joint shows the knocked-back arrises and the hearting's shadow behind them. Where the wall
+    // has fallen, and on the footing (its top is the scarcement), they are.
+    const u8 chips = role == StoneRole::pinning ? 0 : len * (top - bed) >= 0.02 ? 4 : 2;
+    // Near a head the ends are drawn too: the head's end shows its joints, and a look into one
+    // meets stone.
+    const bool open = ragged(xm) || role == StoneRole::footing || (head && x0 < -0.5 * s.L + 0.6);
+    const u8 hide =
+        open ? (role == StoneRole::footing ? static_cast<u8>(face_bit(3) | face_bit(5)) : u8{0})
+             : static_cast<u8>(face_bit(1) | face_bit(3) | face_bit(5));
+    const u64 seed = rng.bits();
     if (side > 0)
-      block(x0 + g, x1 - g, bed, top, in_b, out_b, in_t, out_t, 1, 0.012, rng.bits());
+      block(x0 + g, x1 - g, bed, top, in_b, out_b, in_t, out_t, 1, k_line, seed, end, true, chips,
+            hide);
     else
-      block(x0 + g, x1 - g, bed, top, -out_b, -in_b, -out_t, -in_t, -1, 0.012, rng.bits());
+      block(x0 + g, x1 - g, bed, top, -out_b, -in_b, -out_t, -in_t, -1, k_line, seed, end, true,
+            chips, hide);
     sky[side > 0 ? 0 : 1].set(x0, x1, top, id);
   }
 
@@ -406,24 +556,32 @@ struct Solver {
       if (z - a >= 0.03) {
         const f64 sg = side > 0 ? 1.0 : -1.0;
         const f64 xm = 0.5 * (a + z);
-        const f64 out = 0.5 * s.width(std::max(bed - s.base(xm), 0.0)) - 0.004;
+        // Its face on the batter's line at its foot and at its top, set back 4 mm; at a head's
+        // end it reaches the wall's middle, as the runners do, so the end shows no hearting.
+        const f64 out_t = 0.5 * s.width(std::max(bed - s.base(xm), 0.0)) - 0.004;
+        const f64 out_b = 0.5 * s.width(std::max(low - s.base(xm), 0.0)) - 0.004;
+        const bool at_end = head && a <= -0.5 * s.L + 0.02;
+        const f64 deep = at_end ? std::max(out_t, out_b) + 0.01 : 0.08;
+        const f64 out = out_t;
         Stone st;
         st.x0 = static_cast<f32>(a);
         st.x1 = static_cast<f32>(z);
         st.bed = static_cast<f32>(low);
         st.top = static_cast<f32>(bed);
-        st.z0 = static_cast<f32>(sg * (out - 0.08));
+        st.z0 = static_cast<f32>(sg * (out - deep));
         st.z1 = static_cast<f32>(sg * out);
         st.side = static_cast<i8>(side);
         st.sweep = sweep;
         st.role = StoneRole::pinning;
         add_stone(st);
+        // A pinning is a chip of stone, its face plain (two triangles; it is a few centimetres).
+        const u8 end = at_end ? face_bit(5) : u8{0};
         if (side > 0)
-          block(a + 0.003, z - 0.003, low + 0.002, bed - 0.002, out - 0.08, out, out - 0.08, out, 1,
-                0.004, rng.bits());
+          block(a + 0.003, z - 0.003, low + 0.002, bed - 0.002, out_b - deep, out_b, out_t - deep,
+                out_t, 1, k_line, rng.bits(), end, false);
         else
-          block(a + 0.003, z - 0.003, low + 0.002, bed - 0.002, -out, -out + 0.08, -out,
-                -out + 0.08, -1, 0.004, rng.bits());
+          block(a + 0.003, z - 0.003, low + 0.002, bed - 0.002, -out_b, -out_b + deep, -out_t,
+                -out_t + deep, -1, k_line, rng.bits(), end, false);
       }
       i = j;
     }
@@ -446,7 +604,8 @@ struct Solver {
     st.sweep = sweep;
     st.role = role;
     const i32 id = add_stone(st);
-    block(x0 + 0.002, x1 - 0.002, bed, top, -wb, wb, -wt, wt, 0, 0.0, rng.bits());
+    const u8 end = role == StoneRole::tie ? face_bit(5) : u8{0};  // a tie shows the head's end
+    block(x0 + 0.002, x1 - 0.002, bed, top, -wb, wb, -wt, wt, 0, 0.0, rng.bits(), end);
     sky[0].set(x0, x1, top, id);
     sky[1].set(x0, x1, top, id);
   }
@@ -525,6 +684,8 @@ struct Solver {
           if (x != prev_end && !first) {
             f64 jx = 0;
             if (k.joint_near(x, 0.035, jx)) {
+              // The stone starts past the joint; what it leaves short of it is closed when the
+              // faces are (close_faces).
               x = jx + 0.045;
               continue;
             }
@@ -611,6 +772,80 @@ struct Solver {
       }
       if (!any) break;
     }
+    close_faces();
+  }
+
+  // What the sweeps leave open in a standing face — a slot where a course resumed past a joint, a
+  // hollow no stone above bridged — is closed with small stones, as a waller packs the last gaps
+  // (walls.md, "The face"): over each face a centimetre grid in the module's elevation, from the
+  // ground to the cover's bed, every cell covered by a stone of that face marked, and each open
+  // run of two or more cells, carried up while the cells above it are open too (to 12 cm), made a
+  // pinning set to the line.
+  void close_faces() {
+    constexpr f64 k_cell = 0.01;
+    const u32 nx = static_cast<u32>(std::floor(s.L / k_cell + 0.5));
+    const u32 ny = static_cast<u32>(std::floor(s.body / k_cell + 0.5));
+    Vector<u8> open;
+    for (i32 side : {1, -1}) {
+      open.clear();
+      open.resize(nx * ny, 1);
+      const f64 x_lo = -0.5 * s.L;
+      for (const Stone& st : report.stones) {
+        if (st.side != 0 && st.side != side) continue;
+        if (st.role == StoneRole::cover || st.role == StoneRole::cope ||
+            st.role == StoneRole::rubble)
+          continue;
+        const f64 x0 = static_cast<f64>(st.x0), x1 = static_cast<f64>(st.x1);
+        const f64 xm = 0.5 * (x0 + x1);
+        const f64 h0 = static_cast<f64>(st.bed) - s.base(xm),
+                  h1 = static_cast<f64>(st.top) - s.base(xm);
+        for (u32 i = 0; i < nx; ++i) {
+          const f64 xc = x_lo + (static_cast<f64>(i) + 0.5) * k_cell;
+          if (xc < x0 || xc > x1) continue;
+          // Heights over the ground's line at this column: a level stone on a slope.
+          const f64 dh = s.base(xm) - s.base(xc);
+          for (u32 j = 0; j < ny; ++j) {
+            const f64 hc = (static_cast<f64>(j) + 0.5) * k_cell;
+            if (hc >= h0 + dh && hc <= h1 + dh) open[j * nx + i] = 0;
+          }
+        }
+      }
+      for (u32 j = 0; j < ny; ++j) {
+        const f64 hc = (static_cast<f64>(j) + 0.5) * k_cell;
+        for (u32 i = 0; i < nx;) {
+          if (!open[j * nx + i] || ragged(x_lo + (static_cast<f64>(i) + 0.5) * k_cell) ||
+              hc > limit(x_lo + (static_cast<f64>(i) + 0.5) * k_cell) - 0.015) {
+            ++i;
+            continue;
+          }
+          u32 i1 = i;
+          while (i1 < nx && open[j * nx + i1] && i1 - i < 30)
+            ++i1;
+          if (i1 - i < 2) {
+            i = i1;
+            continue;
+          }
+          u32 j1 = j + 1;
+          while (j1 < ny && j1 - j < 12) {
+            bool all = true;
+            for (u32 k = i; k < i1 && all; ++k)
+              all = open[j1 * nx + k] != 0;
+            if (!all) break;
+            ++j1;
+          }
+          for (u32 b2 = j; b2 < j1; ++b2)
+            for (u32 a2 = i; a2 < i1; ++a2)
+              open[b2 * nx + a2] = 0;
+          const f64 a = x_lo + static_cast<f64>(i) * k_cell,
+                    z = x_lo + static_cast<f64>(i1) * k_cell;
+          const f64 xm = 0.5 * (a + z);
+          const f64 bed = s.base(xm) + static_cast<f64>(j) * k_cell;
+          const f64 top = s.base(xm) + static_cast<f64>(j1) * k_cell;
+          face_stone(side, a, z, bed, top, StoneRole::pinning, 0);
+          i = i1;
+        }
+      }
+    }
   }
 
   // The cover course across the full width, on the line of the cover's bed, and the cope on edge
@@ -641,7 +876,9 @@ struct Solver {
                  {e - 0.002, bed1 + t, hw}, {x + 0.002, bed0 + t, hw}};
       for (D3& p : c)
         p.z += rng.range(-0.008, 0.008);
-      body(b, c, static_cast<u32>(rng.bits() % k_stone_swatches), -1, 0.0);
+      // Its two edges along the faces split, as a face stone's is.
+      const u32 swatch = static_cast<u32>(rng.bits() % k_stone_swatches);
+      body(b, c, swatch, Faces{static_cast<u8>(face_bit(2) | face_bit(4)), 0, 2}, rng);
       cover_x.push_back(x);
       cover_t.push_back(t);
       x = e;
@@ -652,20 +889,36 @@ struct Solver {
         ++i;
       return s.base(x) + s.body + (cover_t.empty() ? 0.075 : cover_t[i]);
     };
+    // The cope as random upright coping (TCV, Types of coping): stones of differing thickness,
+    // mostly thin slabs and now and then a block; their heights the specification's on average,
+    // taller and shorter alternating more often than not, neighbours never more than 50 mm apart
+    // (Upright: "rarely ... more than 2 inches"); each set near vertical, leaning as its neighbour
+    // does, within 4 degrees; packed close (TCV, Coping: 2 to 3 mm wedges), 2 to 8 mm apart.
     bool first = true;
+    bool taller = rng.next() < 0.5;
+    f64 prev_h = s.cope, prev_lean = 0;
     for (f64 x = x0; x < x1 - 0.04;) {
       const bool big = head && first;
-      const f64 t = big ? 0.30 : rng.range(0.05, 0.12);
+      const f64 thin = rng.next();
+      const f64 t = big ? 0.30 : k_cope_thin_m + (k_cope_thick_m - k_cope_thin_m) * thin * thin;
       const f64 e = std::min(x + t, x1);
       const f64 hw = big ? 0.5 * s.top_w + 0.02 : 0.5 * s.top_w * rng.range(0.78, 1.05);
       const f64 zc = rng.range(-0.015, 0.015);
       const f64 b0 = cover_top(x), b1 = cover_top(e);
-      const f64 hc = s.cope * (big ? 1.1 : 1.0);
-      // A stone's own height, then its two ends' split: a ragged line of slabs on edge.
-      const f64 tall = rng.range(0.90, 1.08);
-      const f64 t0 = b0 + hc * tall * rng.range(0.90, 1.04);
-      const f64 t1 = b1 + hc * tall * rng.range(0.90, 1.04);
-      const f64 lean = rng.range(-0.025, 0.025);
+      const f64 turn = rng.next();
+      if (turn < 0.7) taller = !taller;
+      const f64 want = s.cope * (taller ? rng.range(1.00, 1.11) : rng.range(0.92, 1.01));
+      const f64 hc = big ? s.cope * 1.1 : std::clamp(want, prev_h - 0.05, prev_h + 0.05);
+      prev_h = hc;
+      // Its top split unevenly: one end up to 7 % below the other.
+      const f64 split0 = rng.range(0.93, 1.0);
+      const f64 split1 = rng.range(0.93, 1.0);
+      const f64 t0 = b0 + hc * split0;
+      const f64 t1 = b1 + hc * split1;
+      const f64 own = rng.range(-2.5, 2.5);
+      const f64 lean_deg = std::clamp(0.5 * prev_lean + own, -4.0, 4.0);
+      prev_lean = lean_deg;
+      const f64 lean = hc * (lean_deg * 3.141592653589793 / 180.0);  // the top's run, small angle
       Stone st;
       st.x0 = static_cast<f32>(x);
       st.x1 = static_cast<f32>(e);
@@ -680,11 +933,12 @@ struct Solver {
                  {xa, b0, zc + hw},        {xa + lean, t0, zc - hw}, {xb + lean, t1, zc - hw},
                  {xb + lean, t1, zc + hw}, {xa + lean, t0, zc + hw}};
       for (u32 k = 4; k < 8; ++k)
-        c[k].z += rng.range(-0.025, 0.025);
+        c[k].z += rng.range(-0.015, 0.015);
+      // Its top split, its arrises knocked back (a cope's top is too narrow for a chip at each
+      // corner); its bed, on the cover, never seen.
       const u32 swatch = static_cast<u32>(rng.bits() % k_stone_swatches);
-      const f64 bulge = rng.range(0.004, 0.012);
-      body(b, c, swatch, 1, bulge);
-      x = e + rng.range(0.003, 0.015);
+      body(b, c, swatch, Faces{face_bit(1), face_bit(0), 0}, rng);
+      x = e + rng.range(0.002, 0.008);
       first = false;
     }
   }
@@ -728,15 +982,16 @@ struct Solver {
       st.side = static_cast<i8>(sg > 0 ? 1 : -1);
       st.role = StoneRole::rubble;
       add_stone(st);
+      // Its top split; its underside, on the ground, never seen.
       const u32 swatch = static_cast<u32>(rng.bits() % k_stone_swatches);
-      const f64 bulge = rng.range(0.004, 0.012);
-      body(b, c, swatch, 1, bulge);
+      body(b, c, swatch, Faces{face_bit(1), face_bit(0), 2}, rng);
     }
   }
 
   // The hearting: a dark closed core between the faces' tails, so a joint shows shadow.
   void lay_core() {
-    const f64 xa = head ? -0.5 * s.L + 0.01 : -0.5 * s.L - 0.06, xb = 0.5 * s.L + 0.06;
+    // At a head the core stands 3 cm behind the end, behind its stones' knocked-back arrises.
+    const f64 xa = head ? -0.5 * s.L + 0.03 : -0.5 * s.L - 0.06, xb = 0.5 * s.L + 0.06;
     const u32 n = static_cast<u32>(std::ceil((xb - xa) / 0.25));
     Vector<D3> lo_n, lo_p, hi_n, hi_p;  // per station: bottom -z, bottom +z, top -z, top +z
     for (u32 i = 0; i <= n; ++i) {
@@ -857,7 +1112,8 @@ void top_box(Builder& b, const Section& s, f64 x0, f64 x1, f64 h0, f64 h1, f64 h
                    {x1, s.base(x1) + h0, hw},  {x0, s.base(x0) + h0, hw},
                    {x0, s.base(x0) + h1, -hw}, {x1, s.base(x1) + h1, -hw},
                    {x1, s.base(x1) + h1, hw},  {x0, s.base(x0) + h1, hw}};
-  body(b, c, swatch, -1, 0.0);
+  Rng plain{0};  // a plain body draws nothing
+  body(b, c, swatch, Faces{}, plain);
 }
 
 void mid_form(Builder& b, const Module& m, const Section& s, const ModuleReport& report,
@@ -892,7 +1148,8 @@ void mid_form(Builder& b, const Module& m, const Section& s, const ModuleReport&
                        {xb, s.base(xb) + 0.16, sg * 0.5 * s.base_w},
                        {xb, s.base(xb) + 0.02, sg * (0.5 * s.base_w + 1.0)},
                        {ra, s.base(ra) + 0.02, sg * (0.5 * s.base_w + 1.0)}};
-      body(b, c, k_swatch_mid, -1, 0.0);
+      Rng plain{0};
+      body(b, c, k_swatch_mid, Faces{}, plain);
     }
   }
   if (m.kind == ModuleKind::fallen) return;
@@ -977,7 +1234,7 @@ bool solve_module(const Module& m, assets::MeshData& out, ModuleReport& report,
   report.length_m = s.L;
   b.indices = &out.indices;
   Solver solver(m, s, b, report,
-                hash_combine(hash_combine(m.seed, k_wall_version), static_cast<u64>(m.kind)));
+                hash_combine(hash_combine(m.seed, k_draw_stream), static_cast<u64>(m.kind)));
   solver.head = m.kind == ModuleKind::head;
   const f64 broken_from = solver.broken_from();
   if (m.kind == ModuleKind::strip) {
@@ -987,7 +1244,9 @@ bool solve_module(const Module& m, assets::MeshData& out, ModuleReport& report,
     solver.lay_faces();
     solver.lay_top();
     solver.lay_rubble();
+    solver.account(StoneRole::core);
     solver.lay_core();
+    solver.account(StoneRole::core);
     report.near_triangles = b.triangles;
     b.triangles = 0;
     b.indices = &report.mid_indices;
