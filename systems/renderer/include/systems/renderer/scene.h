@@ -156,18 +156,28 @@ struct SceneWaterDepth {
   f32 texel_m = 0.0f;
   f32 depth_max = 0.0f;
   f32 bank_max = 0.0f;
+  // What the body's mesh resolves (the file's version 3; `water::DepthMap`): its vertices' spacing
+  // along a ring and far from the outline, its rings' spacing at the outline, and the spacing's
+  // growth per metre in from it. A file older than version 3: four texels, four texels and 0.
+  f32 mesh_far_m = 0.0f;
+  f32 mesh_near_m = 0.0f;
+  f32 mesh_grade = 0.0f;
   Vector<u16> texels;
 };
 struct SceneWater {
   scene::WaterBody body;
   gfx::WaterShading shading;
   SceneWaterDepth depth{};
-  // The wind the body's waves were made at, m/s: the ground's where the body follows it, else its
-  // own `wind_m_s` (an open body's spectrum and swash read it; S94).
+  // The wind the body's waves were made at, m/s: an open body's is the ground's where the body
+  // follows it, else its own `wind_m_s`; a closed body's is its own `wind_m_s` (S94, S100).
   f32 wind_m_s = 0.0f;
-  // An open body's waves from the spectrum (gfx::water_spectrum; water.md, "The spectrum"), made
-  // at load from the wind and the body's fetch: `gfx::k_water_waves` of them, or none (a closed
-  // body, or no wind), and then the four sines.
+  // The fetch that wind's sea is grown over, metres (S100 stage B; water.md, "The spectrum"): an
+  // open body's `fetch_km`; a closed body's the longest reach of its own water along its wind
+  // (`gfx::water_fetch_field` over its depth map), no longer than `fetch_km`.
+  f32 fetch_m = 0.0f;
+  // The wind's waves from the spectrum (gfx::water_spectrum; water.md, "The spectrum"), made at
+  // load from the wind and the fetch: `gfx::k_water_waves` of them for every body with a wind, or
+  // none, and then the material's four sines.
   Vector<gfx::WaterWave> waves;
   // A channel of flowing water's (`engine.scene.WaterChannel`; water.md, "Channels"; S96): the
   // mesh's UV.x is the flow phase, and the GPU scene sets `gfx::k_material_water_channel` on its

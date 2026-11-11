@@ -252,8 +252,9 @@ TEST_CASE("water channel: the GLB is the same bytes twice, pinned, and the gener
   // sqrt (the cube root is Newton's, not the C library's).
   CHECK(glb_hash == 17028419247352518564ull);  // 100,928 bytes
   // Re-pinned by S94: the depth map's header says version 2 (a channel's map has no bank, so only
-  // the version word moved).
-  CHECK(map_hash == 653138204300349312ull);  // 466,610 bytes
+  // the version word moved). Re-pinned by S100 stage B: version 3's header holds the mesh's three
+  // spacings, twelve bytes more (the texels are the bytes they were).
+  CHECK(map_hash == 13241460754695211659ull);  // 466,622 bytes
   // The importer reads it as the renderer will: positions, normals and the phase and depth UVs.
   assets::MeshData data;
   std::string error;
@@ -317,9 +318,11 @@ TEST_CASE("water channel: the surface's regimes are their sources' numbers") {
   // The surface's deformation q^2 / 2g with q the shear velocity: the test's gentle reach (0.6 m
   // at 1 in 100, 1.78 m/s) is u* = sqrt(g d S) = 0.243 m/s and a few millimetres of surface; its
   // steep reach (0.4 m at 1 in 25) 0.396 m/s and about eight millimetres.
-  const f64 gentle = water::shear_velocity(static_cast<f64>(water::manning_speed(0.04f, 0.6f, 0.01f)), 0.6, 0.04);
+  const f64 gentle =
+      water::shear_velocity(static_cast<f64>(water::manning_speed(0.04f, 0.6f, 0.01f)), 0.6, 0.04);
   CHECK(gentle == doctest::Approx(std::sqrt(9.81 * 0.6 * 0.01)).epsilon(1e-5));
-  const f64 steep = water::shear_velocity(static_cast<f64>(water::manning_speed(0.04f, 0.4f, 0.04f)), 0.4, 0.04);
+  const f64 steep =
+      water::shear_velocity(static_cast<f64>(water::manning_speed(0.04f, 0.4f, 0.04f)), 0.4, 0.04);
   CHECK(steep == doctest::Approx(std::sqrt(9.81 * 0.4 * 0.04)).epsilon(1e-5));
   CHECK(water::surface_disturbance_m(gentle) == doctest::Approx(0.0030).epsilon(0.02));
   CHECK(water::surface_disturbance_m(steep) == doctest::Approx(0.0080).epsilon(0.02));

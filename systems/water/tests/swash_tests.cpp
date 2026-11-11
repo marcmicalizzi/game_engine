@@ -70,25 +70,33 @@ TEST_CASE(
   CHECK(worst <= 0.5 * step + 1e-6);
   // Round trip.
   const Vector<u8> bytes = water::depth_map_bytes(map);
-  CHECK(bytes.size() == 32u + map.size * map.size * 2u);
-  CHECK(bytes[4] == 2u);  // the version
+  // Version 3 (S100 stage B): a 44-byte header, the mesh's three spacings after the deepest.
+  CHECK(bytes.size() == 44u + map.size * map.size * 2u);
+  CHECK(bytes[4] == 3u);  // the version
   water::DepthMap back;
   std::string error;
   REQUIRE_MESSAGE(
       water::read_depth_map(std::span<const u8>(bytes.data(), bytes.size()), back, &error), error);
   CHECK(back.bank_max == map.bank_max);
   CHECK(back.depth_max == map.depth_max);
+  CHECK(back.mesh_far_m == map.mesh_far_m);
+  CHECK(back.mesh_near_m == map.mesh_near_m);
+  CHECK(back.mesh_grade == map.mesh_grade);
+  CHECK(map.mesh_far_m > 0.0f);
   CHECK(std::equal(back.texels.begin(), back.texels.end(), map.texels.begin()));
-  // A version-1 file: the same layout with 0 in word 3 and texels over [0, depth_max]; read with
-  // no bank, as before.
-  Vector<u8> v1 = bytes;
+  // A version-1 file: a 32-byte header with 0 in word 3 and texels over [0, depth_max]; read with
+  // no bank, as before, and the mesh's spacing taken as four texels.
+  Vector<u8> v1;
+  for (u32 i = 0; i < bytes.size(); ++i)
+    if (i < 32u || i >= 44u) v1.push_back(bytes[i]);
   v1[4] = 1u;
   v1[12] = v1[13] = v1[14] = v1[15] = 0u;
   REQUIRE(water::read_depth_map(std::span<const u8>(v1.data(), v1.size()), back, &error));
   CHECK(back.bank_max == 0.0f);
+  CHECK(back.mesh_far_m == 4.0f * back.texel_m);
   CHECK(water::depth_map_depth(back, 0, 0) >= 0.0f);
   // A version this reader does not know is refused.
-  v1[4] = 3u;
+  v1[4] = 4u;
   CHECK_FALSE(water::read_depth_map(std::span<const u8>(v1.data(), v1.size()), back, &error));
 }
 

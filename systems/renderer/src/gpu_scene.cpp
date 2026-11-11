@@ -565,9 +565,9 @@ WaterSwashNumbers water_swash_numbers(const SceneWater& water) {
   const scene::WaterBody& body = water.body;
   n.wind = static_cast<f64>(body.wind_m_s);
   if (body.open && water.wind_m_s > 0.0f) n.wind = static_cast<f64>(water.wind_m_s);
-  n.fetch_m = static_cast<f64>(body.fetch_km) * 1000.0;
-  const f64 side = static_cast<f64>(water.depth.size - 1) * static_cast<f64>(water.depth.texel_m);
-  if (!body.open) n.fetch_m = std::min(n.fetch_m, side * std::sqrt(2.0));
+  // The fetch the scene's reader found (S100 stage B): an open body's `fetch_km`, a closed body's
+  // own reach along its wind.
+  n.fetch_m = static_cast<f64>(water.fetch_m);
   n.slope = water_shore_slope(water.depth);
   n.wave = gfx::swash_wave(n.wind, n.fetch_m);
   n.run_up = gfx::stockdon_r2(n.wave.height_m, n.wave.period_s, n.slope);
@@ -608,6 +608,9 @@ void water_surface_of(const SceneWater& water, const WaterSwashNumbers& n, gfx::
   out.seed = water.shading.seed;
   out.direction = water.shading.direction;
   out.wind = water.shading.direction;
+  out.mesh_far_m = map.mesh_far_m;
+  out.mesh_near_m = map.mesh_near_m;
+  out.mesh_grade = map.mesh_grade;
   if (water.waves.size() == gfx::k_water_waves) {
     out.flags |= gfx::k_water_surface_spectrum;
     for (u32 i = 0; i < gfx::k_water_waves; ++i)
@@ -622,10 +625,24 @@ void water_surface_of(const SceneWater& water, const WaterSwashNumbers& n, gfx::
   Vector<f32> arrival(count);
   gfx::water_arrival_field(depth.data(), map.size, static_cast<f64>(map.texel_m), period,
                            arrival.data());
-  field.resize(2 * count);
+  // The share of the body's fetch the wind has blown over at each texel (a closed body's lee): the
+  // fetch field over the fetch the table was grown at. An open body's sea comes in grown.
+  Vector<f32> grown(count);
+  if (body.open || !(n.fetch_m > 0.0)) {
+    for (u32 i = 0; i < count; ++i)
+      grown[i] = 1.0f;
+  } else {
+    gfx::water_fetch_field(depth.data(), map.size, static_cast<f64>(map.texel_m), out.wind,
+                           grown.data());
+    for (u32 i = 0; i < count; ++i)
+      grown[i] = static_cast<f32>(std::clamp(static_cast<f64>(grown[i]) / n.fetch_m, 0.0, 1.0));
+  }
+  field.resize(gfx::k_water_field_channels * count);
   for (u32 i = 0; i < count; ++i) {
-    field[2 * i] = depth[i];
-    field[2 * i + 1] = arrival[i];
+    field[4 * i] = depth[i];
+    field[4 * i + 1] = arrival[i];
+    field[4 * i + 2] = grown[i];
+    field[4 * i + 3] = 0.0f;
   }
 }
 

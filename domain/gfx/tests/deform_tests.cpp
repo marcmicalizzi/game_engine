@@ -1195,10 +1195,14 @@ TEST_CASE(
   Vector<f32> arrival(size * size);
   gfx::water_arrival_field(depth.data(), size, 0.25, static_cast<f64>(surface.period_s),
                            arrival.data());
-  Vector<f32> field(2 * size * size);
+  // The field's four floats a texel: the depth, the arrival, the grown share (whole here) and one
+  // spare.
+  Vector<f32> field(gfx::k_water_field_channels * size * size);
   for (u32 i = 0; i < size * size; ++i) {
-    field[2 * i] = depth[i];
-    field[2 * i + 1] = arrival[i];
+    field[4 * i] = depth[i];
+    field[4 * i + 1] = arrival[i];
+    field[4 * i + 2] = 1.0f;
+    field[4 * i + 3] = 0.0f;
   }
   gfx::BufferResource field_buffer;
   gfx::BufferResource surface_buffer;
@@ -1212,44 +1216,68 @@ TEST_CASE(
   run(water, lifted);
   const Vec3 origin = scene.lod.mesh.quant_origin;
   const f32 step = scene.lod.mesh.quant_scale;
-  u32 checked = 0, undecided = 0, wrong = 0, bank = 0, moved = 0;
-  f64 worst = 0.0;
-  for (u32 e = 0; e < cut_count; ++e) {
-    const geometry::ClusterDesc& c = scene.lod.mesh.clusters[scene.cut[e]];
-    for (u32 v = 0; v < c.vertex_count; ++v) {
-      const u32 vertex = c.vertex_offset + v;
-      const u32 slot = scene.slot_table[e] + v;
-      const f32 rx = origin.x + static_cast<f32>(scene.lod.mesh.quantized[vertex * 3]) * step;
-      const f32 ry = origin.y + static_cast<f32>(scene.lod.mesh.quantized[vertex * 3 + 1]) * step;
-      const f32 rz = origin.z + static_cast<f32>(scene.lod.mesh.quantized[vertex * 3 + 2]) * step;
-      bool decided = true;
-      const f64 want =
-          water_ref::vertex_lift(surface, field.data(), static_cast<f64>(rx), static_cast<f64>(rz),
-                                 0.0, static_cast<f64>(clock), 0.0, &decided);
-      const f64 got = static_cast<f64>(lifted[slot * 3 + 1]) - static_cast<f64>(ry);
-      ++checked;
-      if (rx > 3.5f) ++bank;
-      if (std::fabs(got) > 1e-3) ++moved;
-      if (!decided) {
-        ++undecided;
-        continue;
+  // Every vertex of the cut against the double reference. Since S100 stage B the sheet's surface
+  // is continuous through the front, so no vertex near it is left out.
+  const auto compare = [&](const gfx::WaterSurface& body, const char* what, u32 moved_share) {
+    u32 checked = 0, wrong = 0, bank = 0, moved = 0;
+    f64 worst = 0.0;
+    for (u32 e = 0; e < cut_count; ++e) {
+      const geometry::ClusterDesc& c = scene.lod.mesh.clusters[scene.cut[e]];
+      for (u32 v = 0; v < c.vertex_count; ++v) {
+        const u32 vertex = c.vertex_offset + v;
+        const u32 slot = scene.slot_table[e] + v;
+        const f32 rx = origin.x + static_cast<f32>(scene.lod.mesh.quantized[vertex * 3]) * step;
+        const f32 ry = origin.y + static_cast<f32>(scene.lod.mesh.quantized[vertex * 3 + 1]) * step;
+        const f32 rz = origin.z + static_cast<f32>(scene.lod.mesh.quantized[vertex * 3 + 2]) * step;
+        const f64 want =
+            water_ref::vertex_lift(body, field.data(), static_cast<f64>(rx), static_cast<f64>(rz),
+                                   0.0, static_cast<f64>(clock), 0.0);
+        const f64 got = static_cast<f64>(lifted[slot * 3 + 1]) - static_cast<f64>(ry);
+        ++checked;
+        if (rx > 3.5f) ++bank;
+        if (std::fabs(got) > 1e-3) ++moved;
+        const f64 err = std::fabs(got - want);
+        worst = std::max(worst, err);
+        if (err > 2e-3 + 0.02 * std::fabs(want)) ++wrong;
+        CHECK(std::fabs(lifted[slot * 3] - rx) <= 1e-5f * (1.0f + std::fabs(rx)));
+        CHECK(std::fabs(lifted[slot * 3 + 2] - rz) <= 1e-5f * (1.0f + std::fabs(rz)));
       }
-      const f64 err = std::fabs(got - want);
-      worst = std::max(worst, err);
-      if (err > 2e-3 + 0.02 * std::fabs(want)) ++wrong;
-      CHECK(std::fabs(lifted[slot * 3] - rx) <= 1e-5f * (1.0f + std::fabs(rx)));
-      CHECK(std::fabs(lifted[slot * 3 + 2] - rz) <= 1e-5f * (1.0f + std::fabs(rz)));
     }
-  }
-  CHECK(checked > 1000u);
-  CHECK(bank > 100u);
-  CHECK(moved > checked / 2);
-  CHECK(wrong == 0u);
-  MESSAGE("water stage: " << checked << " vertices, " << bank << " over the bank, " << moved
-                          << " lifted, " << undecided
-                          << " within 1 cm of the front left out, worst " << worst
-                          << " m from the double reference");
+    CHECK(checked > 1000u);
+    CHECK(bank > 100u);
+    CHECK(moved > checked / moved_share);
+    CHECK(wrong == 0u);
+    MESSAGE("water stage, " << what << ": " << checked << " vertices, " << bank
+                            << " over the bank, " << moved << " lifted, worst " << worst
+                            << " m from the double reference");
+  };
+  compare(surface, "the four sines and the train", 2u);
 
+  // (3) The same beach under the wind's spectrum (S100 stage B): sixteen narrow bands, each a
+  // carrier under its travelling envelope, a lee that grows from a fifth of the fetch at the
+  // field's -x side to the whole of it at +x, and a mesh that carries a wave of four spacings and
+  // none of two — 0.5 m along a ring, 0.25 m between rings at the outline.
+  gfx::water_spectrum(6.0, 3000.0, Vec2{1.0f, 0.0f}, 5, surface.waves);
+  surface.flags |= gfx::k_water_surface_spectrum;
+  surface.mesh_far_m = 0.5f;
+  surface.mesh_near_m = 0.25f;
+  surface.mesh_grade = 0.15f;
+  for (u32 j = 0; j < size; ++j)
+    for (u32 i = 0; i < size; ++i)
+      field[4 * (j * size + i) + 2] =
+          0.2f + 0.8f * static_cast<f32>(i) / static_cast<f32>(size - 1);
+  gfx::BufferResource lee_field;
+  gfx::BufferResource lee_surface;
+  REQUIRE(gfx::upload_buffer(device, field.data(), u64{field.size()} * sizeof(f32), k_address,
+                             lee_field, &error));
+  surface.field = lee_field.address;
+  REQUIRE(gfx::upload_buffer(device, &surface, sizeof(surface), k_address, lee_surface, &error));
+  water.joints = lee_surface.address;
+  run(water, lifted);
+  compare(surface, "the spectrum's bands in a lee on a mesh", 4u);
+
+  gfx::destroy_buffer(device, lee_field);
+  gfx::destroy_buffer(device, lee_surface);
   gfx::destroy_buffer(device, still_buffer);
   gfx::destroy_buffer(device, field_buffer);
   gfx::destroy_buffer(device, surface_buffer);

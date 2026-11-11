@@ -1,20 +1,29 @@
 // **The water's height function** (docs/subsystems/water.md, "The mesh" and "Shading"; the
-// grounding, docs/experiments/shore.md, "The wave as height"; roadmap S100). No bindings and no entry
-// points, like brdf.slang: the pool pass (deform.slang's water stage) lifts every vertex of a body
-// with a wind by `water_vertex_lift`, and the resolve's water branch (water.slang) shades it with
-// `water_surface_slope`, the gradient of the same function, so the normal is the surface's. Mirrored
-// in double by domain/gfx/tests/water_reference.h; change one and the other in the same commit.
+// grounding, docs/experiments/shore.md, "The wave as height" and "Stage B: waves that read as
+// water"; roadmap S100). No bindings and no entry points, like brdf.slang: the pool pass
+// (deform.slang's water stage) lifts every vertex of a body with a wind by `water_vertex_lift`, and
+// the resolve's water branch (water.slang) shades it with `water_surface_normal`, the gradient of
+// the same function, so the normal is the surface's. Mirrored in double by domain/gfx/tests/water_reference.h; change one and
+// the other in the same commit.
 //
-// Offshore, a body's own waves: an open body's sixteen Gerstner waves from the spectrum (their
-// vertical displacement a sin(phase)), a closed one's four sines at the material's amplitude. Near
-// the shore **the depth governs** the wind's peak wave, a train: it shoals by linear theory's
-// coefficient (Green's law in shallow water) until it breaks at H = 0.78 d (McCowan 1894), and is
-// then the saturated bore H = 0.78 d to the shore; its crest sharpens as it nears breaking; its
-// wavenumber is the dispersion relation's at the local depth; and its phase is the **arrival time**
-// of the train at the place (gfx::water_arrival_field, an eikonal solved on the depth map's grid at
-// load), so the crests slow and bunch as they come in and neighbouring places are in sequence.
-// Over the bank the swash's front (water.slang's ballistic profile, its phase the train's arrival
-// at the shoreline) decides whether the vertex is the sheet or parked under the ground.
+// Offshore, the wind's sea: sixteen waves from the fetch-limited spectrum, each a narrow band — a
+// carrier under a travelling complex envelope (`water_wave_add`) — for every body with a wind, open
+// or closed, and where a closed body's wind has blown over less water than the table's fetch the
+// long waves are not grown yet (`grown`, the field's third channel). A body with no wind keeps the
+// material's four sines. Near the shore **the depth governs** the wind's peak wave, a train: it
+// shoals by linear theory's coefficient (Green's law in shallow water) until it breaks at H = 0.78 d
+// (McCowan 1894), and is then the saturated bore H = 0.78 d to the shore; its crest sharpens as it
+// nears breaking; its wavenumber is the dispersion relation's at the local depth; and its phase is
+// the **arrival time** of the train at the place (gfx::water_arrival_field, an eikonal solved on the
+// depth map's grid at load), so the crests slow and bunch as they come in and neighbouring places
+// are in sequence. Over the bank the swash's front (water.slang's ballistic profile, its phase the
+// train's arrival at the shoreline) says how thick the sheet is, and the surface goes on under the
+// ground past it at the same slope, so the mesh meets the ground along the front and not along a
+// triangle's edge.
+//
+// **What the mesh carries** (water.md, "The mesh"): the lift is given the mesh's own spacing as its
+// footprint, so a wave four vertices cannot carry is left out of the displacement and stays in the
+// normal, which is evaluated per pixel from the same function.
 #ifndef ENGINE_WATER_WAVES_SLANG
 #define ENGINE_WATER_WAVES_SLANG
 
@@ -46,7 +55,7 @@ struct WaterWave {
   float cycles;
   float phase;
   float steepness;
-  float pad;
+  float grow;  // (5/8)(omega_p / omega)^4: gfx::water_grown_share
 };
 
 uint water_hash2(int2 c) {
@@ -70,6 +79,110 @@ float water_value_noise(float2 p) {
   const float e = float(water_hash2(i + int2(0, 1)) >> 8) * (1.0 / 16777216.0);
   const float g = float(water_hash2(i + int2(1, 1)) >> 8) * (1.0 / 16777216.0);
   return lerp(lerp(a, b, f.x), lerp(e, g, f.x), f.y);
+}
+
+// ---- a wave as a narrow band (gfx::k_water_group_along and its neighbours, water_spectrum.h; S100
+// stage B; water.md, "The spectrum") ---------------------------------------------------------------
+static const float k_water_group_along = 4.0;        // gfx::k_water_group_along
+static const float k_water_group_across = 2.5;       // gfx::k_water_group_across
+static const float k_water_envelope_gain = 1.6486932;  // gfx::k_water_envelope_gain
+static const float k_water_max_lift = 0.7;           // gfx::k_water_max_lift
+
+// gfx::water_envelope_hash.
+uint water_envelope_hash(uint along, uint across, uint salt) {
+  uint h = along * 0x8DA6B343u ^ across * 0xD8163841u ^ salt * 0xCB1AB31Fu;
+  h ^= h >> 16;
+  h *= 0x7FEB352Du;
+  h ^= h >> 15;
+  h *= 0x846CA68Bu;
+  h ^= h >> 16;
+  return h;
+}
+
+float2 water_envelope_value(uint h) {
+  return float2(float(h & 0xffffu), float(h >> 16)) * (1.0 / 32767.5) - 1.0;
+}
+
+// The envelope at (u, v) cells — u the way the wave travels, periodic in `cells`, v along its crest
+// — its two components and their derivatives in u and in v.
+struct WaterEnvelope {
+  float2 e;
+  float2 du;
+  float2 dv;
+};
+
+WaterEnvelope water_envelope(float u, float v, float cells, uint salt) {
+  const float cu = floor(u);
+  const float cv = floor(v);
+  const float fu = u - cu;
+  const float fv = v - cv;
+  const float u0 = cu - cells * floor(cu / cells);
+  const float u1 = u0 + 1.0 >= cells ? 0.0 : u0 + 1.0;
+  const uint iu0 = uint(u0);
+  const uint iu1 = uint(u1);
+  const uint iv0 = uint(int(cv));
+  const uint iv1 = iv0 + 1u;
+  const float2 a = water_envelope_value(water_envelope_hash(iu0, iv0, salt));
+  const float2 b = water_envelope_value(water_envelope_hash(iu1, iv0, salt));
+  const float2 c = water_envelope_value(water_envelope_hash(iu0, iv1, salt));
+  const float2 d = water_envelope_value(water_envelope_hash(iu1, iv1, salt));
+  const float su = fu * fu * (3.0 - 2.0 * fu);
+  const float sv = fv * fv * (3.0 - 2.0 * fv);
+  const float dsu = 6.0 * fu * (1.0 - fu);
+  const float dsv = 6.0 * fv * (1.0 - fv);
+  const float2 ab = lerp(a, b, su);
+  const float2 cd = lerp(c, d, su);
+  WaterEnvelope r;
+  r.e = lerp(ab, cd, sv) * k_water_envelope_gain;
+  r.du = lerp(b - a, d - c, sv) * (dsu * k_water_envelope_gain);
+  r.dv = (cd - ab) * (dsv * k_water_envelope_gain);
+  return r;
+}
+
+// The waves' sum: the height, its gradient, the Gerstner crests' sharpening of the normal (`lift`),
+// and the mean square slope the footprint left out (`dropped`), which the shading gives to the
+// surface's roughness so a far water keeps its glitter's width.
+struct WaterSum {
+  float height;
+  float2 grad;
+  float lift;
+  float dropped;
+};
+
+// One wave of a table at body-local p and the clock t: `share` scales it (the shore's calm), and
+// `young` is grown^(-4/3) - 1 where the sea is younger than the table's (0: as grown). A wave
+// shorter than twice the `footprint` (metres: a pixel's, or the mesh's spacing for the lift) is
+// left out, and whole at four times it.
+void water_wave_add(WaterWave wave, float2 p, float t, float footprint, float share, float young,
+                    inout WaterSum r) {
+  if (!(wave.amplitude > 0.0)) return;
+  const float lambda = k_water_two_pi / wave.k;
+  const float keep = footprint > 0.0 ? clamp(lambda / (2.0 * footprint) - 1.0, 0.0, 1.0) : 1.0;
+  const float grown = share * (young > 0.0 ? exp(-wave.grow * young) : 1.0);
+  const float slope = wave.amplitude * wave.k * grown;
+  r.dropped += 0.5 * slope * slope * (1.0 - keep * keep);
+  const float weight = grown * keep;
+  if (!(weight > 0.0)) return;
+  const float clock = t / k_water_period_s;
+  const float along = dot(wave.direction, p) / lambda;
+  const float cyc = frac(frac(along) - frac(wave.cycles * clock) + wave.phase);
+  const float angle = k_water_two_pi * cyc;
+  const float sn = sin(angle);
+  const float cs = cos(angle);
+  const float cells = max(1.0, floor(wave.cycles / (2.0 * k_water_group_along) + 0.5));
+  const float2 across = float2(-wave.direction.y, wave.direction.x);
+  const float inv_u = 1.0 / (lambda * k_water_group_along);
+  const float inv_v = 1.0 / (lambda * k_water_group_across);
+  const WaterEnvelope env = water_envelope(along / k_water_group_along - cells * clock,
+                                           dot(across, p) * inv_v, cells, asuint(wave.phase));
+  const float carrier = env.e.x * sn + env.e.y * cs;
+  const float a = wave.amplitude * weight;
+  r.height += a * carrier;
+  r.grad += wave.direction * (a * wave.k * (env.e.x * cs - env.e.y * sn)) +
+            (wave.direction * ((env.du.x * sn + env.du.y * cs) * inv_u) +
+             across * ((env.dv.x * sn + env.dv.y * cs) * inv_v)) *
+                a;
+  r.lift += wave.steepness * weight * carrier;
 }
 
 // The swash's shape (gfx::k_swash_*; water_swash.h).
@@ -97,9 +210,9 @@ static const float k_water_train_deep_kd = 1.0;    // gfx::k_water_train_deep_kd
 static const float k_water_train_shallow_kd = 0.35;
 static const uint k_water_surface_waves = 16u;     // gfx::k_water_waves
 
-// Mirrors gfx::WaterSurface (608 bytes).
+// Mirrors gfx::WaterSurface (624 bytes).
 struct WaterSurface {
-  uint64_t field;  // float2 per texel: (signed depth, arrival s), rows along +z
+  uint64_t field;  // float4 per texel: (signed depth, arrival s, grown, 0), rows along +z
   float2 origin;
   float texel_m;
   uint size;
@@ -118,42 +231,66 @@ struct WaterSurface {
   uint seed;
   float2 direction;
   float along_m;
+  float mesh_far_m;
+  float mesh_near_m;
+  float mesh_grade;
+  float swell;
   float pad;
   WaterWave waves[16];
 };
 
-// The field at body-local p: the bilinear depth and arrival, and the bilinear's own gradient in the
-// cell (zero along an axis the point is clamped on).
+// The field at body-local p: the depth, the arrival and the grown share, and the first two's
+// gradients (zero along an axis the point is clamped on). **Read smoothly** (S100 stage B; shore.md,
+// "The shallows"): a quadratic B-spline over the nine texels round the point, which is C1, where a
+// bilinear read's gradient jumps at every texel's border and a crest — a level line of the arrival
+// — turned a corner there.
 struct WaterField {
   float depth;
   float arrival;
+  float grown;
   float2 depth_grad;
   float2 arrival_grad;
 };
 
 WaterField water_field_at(WaterSurface* s, float2 p) {
   WaterField f = (WaterField)0;
+  f.grown = 1.0;
   const uint n = s->size;
   if (s->field == 0 || n < 2) return f;
   const float last = float(n - 1);
   const float2 g = (p - s->origin) / s->texel_m;
   const float2 c = clamp(g, float2(0.0, 0.0), float2(last, last));
-  const float2 i0f = min(floor(c), float2(last - 1.0, last - 1.0));
-  const uint ix = uint(i0f.x);
-  const uint iz = uint(i0f.y);
-  const float2 fr = c - i0f;
-  float2* texels = (float2*)s->field;
-  const float2 a = texels[iz * n + ix];
-  const float2 b = texels[iz * n + ix + 1u];
-  const float2 e = texels[(iz + 1u) * n + ix];
-  const float2 h = texels[(iz + 1u) * n + ix + 1u];
-  const float2 v = lerp(lerp(a, b, fr.x), lerp(e, h, fr.x), fr.y);
+  const float2 mid = floor(c + 0.5);
+  const float2 fr = c - mid;  // [-0.5, 0.5]
+  const int ix = int(mid.x);
+  const int iz = int(mid.y);
+  const int hi = int(n) - 1;
+  const float3 wx = float3(0.5 * (0.5 - fr.x) * (0.5 - fr.x), 0.75 - fr.x * fr.x,
+                           0.5 * (0.5 + fr.x) * (0.5 + fr.x));
+  const float3 wz = float3(0.5 * (0.5 - fr.y) * (0.5 - fr.y), 0.75 - fr.y * fr.y,
+                           0.5 * (0.5 + fr.y) * (0.5 + fr.y));
+  const float3 dwx = float3(fr.x - 0.5, -2.0 * fr.x, fr.x + 0.5);
+  const float3 dwz = float3(fr.y - 0.5, -2.0 * fr.y, fr.y + 0.5);
+  float4* texels = (float4*)s->field;
+  float3 v = float3(0.0, 0.0, 0.0);
+  float2 dx = float2(0.0, 0.0);
+  float2 dz = float2(0.0, 0.0);
+  for (int j = 0; j < 3; ++j) {
+    const uint row = uint(clamp(iz + j - 1, 0, hi)) * n;
+    for (int i = 0; i < 3; ++i) {
+      const float3 t = texels[row + uint(clamp(ix + i - 1, 0, hi))].xyz;
+      v += t * (wx[i] * wz[j]);
+      dx += t.xy * (dwx[i] * wz[j]);
+      dz += t.xy * (wx[i] * dwz[j]);
+    }
+  }
   const float inside_x = g.x >= 0.0 && g.x <= last ? 1.0 / s->texel_m : 0.0;
   const float inside_z = g.y >= 0.0 && g.y <= last ? 1.0 / s->texel_m : 0.0;
-  const float2 dx = lerp(b - a, h - e, fr.y) * inside_x;
-  const float2 dz = lerp(e - a, h - b, fr.x) * inside_z;
+  dx *= inside_x;
+  dz *= inside_z;
   f.depth = v.x;
   f.arrival = v.y;
+  f.grown = clamp(v.z, 0.0, 1.0);
   f.depth_grad = float2(dx.x, dz.x);
   f.arrival_grad = float2(dx.y, dz.y);
   return f;
@@ -215,16 +352,11 @@ float water_train_envelope(float c, out float dc) {
   return 0.55 + 0.45 * (0.5 - 0.5 * cos(x));
 }
 
-// A closed body's waves face the shore its wind blows towards: the train's height (and the swash's
-// reach) is a quarter on a shore the wind blows away from, whole where it blows straight in. An
-// open body's swell comes in everywhere. Its own gradient is left out of the slope (a few percent
-// of it, where the shore turns).
-float water_facing(WaterSurface* s, float2 depth_grad) {
-  if ((s->flags & k_water_surface_open) != 0) return 1.0;
-  const float len = length(depth_grad);
-  if (!(len > 1e-3)) return 1.0;
-  return 0.25 + 0.75 * clamp(-dot(s->wind, depth_grad / len), 0.0, 1.0);
-}
+// **The lee** (S100 stage B): the train's height and the swash's reach where the wind has blown
+// over `grown` of the body's fetch — the fetch-limited growth law's H ~ F^(1/2) — so a closed body's
+// waves are whole on the shore its wind blows to and nothing on the one it blows from. An open
+// body's field holds 1. Its own gradient is left out of the slope.
+float water_shelter(WaterField f) { return sqrt(clamp(f.grown, 0.0, 1.0)); }
 
 // The waves' weight against the train's: 1 where k0 d >= 1, 0 under 0.35, smoothstep between.
 float water_offshore_weight(WaterSurface* s, float d, out float dd) {
@@ -236,37 +368,31 @@ float water_offshore_weight(WaterSurface* s, float d, out float dd) {
 }
 
 // The height of the water at body-local p over the still level (the tide's not included), its
-// gradient, and the Gerstner crests' sharpening of the normal (`lift`). `footprint` (metres, 0 for
-// the mesh) fades a wave shorter than twice it out of the gradient, as the four sines always were.
+// gradient, the Gerstner crests' sharpening of the normal (`lift`) and the slope variance the
+// footprint left out (`dropped`). `footprint` (metres) is the pixel's; for the pool's lift it is 0
+// and `mesh` is the mesh's spacing (along a ring, between rings) at the vertex, which the waves
+// and the train are held against instead (0, 0: a pixel).
 struct WaterHeight {
   float height;
   float2 grad;
   float lift;
+  float dropped;
 };
 
-WaterHeight water_height(WaterSurface* s, float2 p, WaterField f, float t, float footprint) {
+WaterHeight water_height(WaterSurface* s, float2 p, WaterField f, float t, float footprint,
+                         float2 mesh) {
   WaterHeight r = (WaterHeight)0;
   const float d = f.depth;
   float dw = 0.0;
   const float w_off = s->k0 > 0.0 && s->height_m > 0.0 ? water_offshore_weight(s, d, dw) : 1.0;
   // Offshore: the spectrum's sixteen, or the four sines.
-  float off = 0.0;
-  float2 off_grad = float2(0.0, 0.0);
+  WaterSum off = (WaterSum)0;
+  const float wave_footprint = max(footprint, mesh.x);
   if (w_off > 0.0 || dw != 0.0) {
     if ((s->flags & k_water_surface_spectrum) != 0) {
-      for (uint i = 0; i < k_water_surface_waves; ++i) {
-        const WaterWave wave = s->waves[i];
-        const float lambda = k_water_two_pi / wave.k;
-        const float along = dot(wave.direction, p) / lambda;
-        const float travel = frac(wave.cycles * (t / k_water_period_s));
-        const float cyc = frac(frac(along) - travel + wave.phase);
-        const float keep =
-            footprint > 0.0 ? clamp(lambda / (2.0 * footprint) - 1.0, 0.0, 1.0) : 1.0;
-        const float angle = k_water_two_pi * cyc;
-        off += wave.amplitude * keep * sin(angle);
-        off_grad += wave.direction * (wave.amplitude * wave.k * keep * cos(angle));
-        r.lift += wave.steepness * keep * w_off * sin(angle);
-      }
+      const float young = pow(max(f.grown, 1e-4), -4.0 / 3.0) - 1.0;
+      for (uint i = 0; i < k_water_surface_waves; ++i)
+        water_wave_add(s->waves[i], p, t, wave_footprint, 1.0, young, off);
     } else {
       for (uint i = 0; i < 4; ++i) {
         const float lambda = s->wavelength * k_water_length[i];
@@ -284,10 +410,12 @@ WaterHeight water_height(WaterSurface* s, float2 p, WaterField f, float t, float
         const float along = dot(dir, p) / lambda;
         const float travel = frac(cycles * (t / k_water_period_s));
         const float cyc = frac(frac(along) - travel + water_phase(s->seed, i));
-        const float keep =
-            footprint > 0.0 ? clamp(lambda / (2.0 * footprint) - 1.0, 0.0, 1.0) : 1.0;
-        off += a * keep * sin(k_water_two_pi * cyc);
-        off_grad += dir * (a * k * keep * cos(k_water_two_pi * cyc));
+        const float keep = wave_footprint > 0.0
+                               ? clamp(lambda / (2.0 * wave_footprint) - 1.0, 0.0, 1.0)
+                               : 1.0;
+        off.height += a * keep * sin(k_water_two_pi * cyc);
+        off.grad += dir * (a * k * keep * cos(k_water_two_pi * cyc));
+        off.dropped += 0.5 * a * k * a * k * (1.0 - keep * keep);
       }
     }
   }
@@ -298,12 +426,24 @@ WaterHeight water_height(WaterSurface* s, float2 p, WaterField f, float t, float
     const float c = water_train_cycles(s, t, f.arrival);
     const float theta = k_water_two_pi * frac(c);
     const float local_k = water_wavenumber(s->k0, d);
+    // grad c = -grad tau / T: the local wavenumber, along the way the train travels.
+    const float2 grad_c = -f.arrival_grad / s->period_s;
+    // What the train is held against: a pixel's footprint, or for the lift the mesh's spacing as
+    // the train crosses it — the rings' along the ray from the body's centre, the ring's own
+    // across it — so a crest that runs along the rings needs only the rings close together.
+    float held = footprint;
+    if (mesh.x > 0.0) {
+      const float lp = length(p);
+      const float lc = length(grad_c);
+      float along_ray = 1.0;
+      if (lp > 1e-3 && lc > 1e-9) along_ray = abs(dot(p, grad_c)) / (lp * lc);
+      held = max(mesh.y * along_ray, mesh.x * sqrt(max(1.0 - along_ray * along_ray, 0.0)));
+    }
     const float keep =
-        footprint > 0.0 ? clamp(k_water_two_pi / local_k / (2.0 * footprint) - 1.0, 0.0, 1.0)
-                        : 1.0;
+        held > 0.0 ? clamp(k_water_two_pi / local_k / (2.0 * held) - 1.0, 0.0, 1.0) : 1.0;
     float d_env = 0.0;
     const float env = water_train_envelope(c, d_env);
-    const float facing = water_facing(s, f.depth_grad);
+    const float shelter = water_shelter(f);
     float d_theta = 0.0;
     const float shape = water_train_shape(s->height_m, s->k0, d, theta, d_theta);
     // The shape's change with depth, by a central difference over a millimetre's part of it.
@@ -312,16 +452,16 @@ WaterHeight water_height(WaterSurface* s, float2 p, WaterField f, float t, float
     const float d_depth = (water_train_shape(s->height_m, s->k0, d + eps, theta, unused) -
                            water_train_shape(s->height_m, s->k0, max(d - eps, 1e-4), theta, unused)) /
                           (d + eps - max(d - eps, 1e-4));
-    // grad c = -grad tau / T: the local wavenumber, along the way the train travels.
-    const float2 grad_c = -f.arrival_grad / s->period_s;
-    train = env * facing * shape;
-    train_grad = facing * keep *
+    train = env * shelter * shape;
+    train_grad = shelter * keep *
                  (env * (d_depth * f.depth_grad + d_theta * k_water_two_pi * grad_c) +
                   shape * d_env * grad_c);
     train *= keep;
   }
-  r.height = w_off * off + (1.0 - w_off) * train;
-  r.grad = w_off * off_grad + (1.0 - w_off) * train_grad + (off - train) * dw * f.depth_grad;
+  r.height = w_off * off.height + (1.0 - w_off) * train;
+  r.grad = w_off * off.grad + (1.0 - w_off) * train_grad + (off.height - train) * dw * f.depth_grad;
+  r.lift = w_off * off.lift;
+  r.dropped = w_off * w_off * off.dropped;
   return r;
 }
 
@@ -332,13 +472,23 @@ float water_surface_tide(WaterSurface* s, float tide_phase) {
 
 // The along-shore variation of the swash's reach, [0.85, 1.15]: smooth over `along_m` (about two
 // peak wavelengths, the crest's length under a spread sea), so the front is one connected line.
-float water_reach_variation(WaterSurface* s, float2 p) {
-  return 0.85 + 0.3 * water_value_noise(p / max(s->along_m, 1e-3) + float2(17.3, 5.1));
+// `lobes` (a pixel's; S100 stage B) adds what a mesh's vertices cannot carry: the front's lobes, a
+// tenth of the reach either way over about half the swash's width (the run-up over the slope, 0.5
+// to 6 m) and half that again at a quarter of the scale, standing where they are from wave to wave
+// as a beach's cusps do — so the front is scalloped and its lip ragged, never a ruled line.
+float water_reach_variation(WaterSurface* s, float2 p, bool lobes) {
+  float v = 0.85 + 0.3 * water_value_noise(p / max(s->along_m, 1e-3) + float2(17.3, 5.1));
+  if (lobes) {
+    const float lobe = clamp(0.6 * s->run_up_m / max(s->slope, 1e-3), 0.5, 6.0);
+    v *= 1.0 + 0.2 * (water_value_noise(p / lobe + float2(3.1, 9.7)) - 0.5) +
+         0.1 * (water_value_noise(p * (3.7 / lobe) + float2(11.9, 2.3)) - 0.5);
+  }
+  return v;
 }
 
 // The swash's front above the still (and tide's) level at p and t: the ballistic profile of the
 // wave whose crest reached the shoreline last, its reach R times the group's shape for that wave
-// times the along-shore variation times the shore's facing. `uprush` says which half it is in.
+// times the along-shore variation times the lee's shelter. `uprush` says which half it is in.
 float water_surface_front(WaterSurface* s, float2 p, WaterField f, float t, out bool uprush) {
   uprush = false;
   if (!(s->run_up_m > 0.0) || !(s->period_s > 0.0)) return 0.0;
@@ -348,20 +498,36 @@ float water_surface_front(WaterSurface* s, float2 p, WaterField f, float t, out 
   uprush = u < k_swash_uprush;
   const uint j = uint(int(k) + int(k_swash_group) * 64) % k_swash_group;
   const float reach =
-      s->run_up_m * water_swash_group(j) * water_reach_variation(s, p) * water_facing(s, f.depth_grad);
+      s->run_up_m * water_swash_group(j) * water_reach_variation(s, p, false) * water_shelter(f);
   const float z_lo = -k_swash_rundown * s->run_up_m;
   return z_lo + (reach - z_lo) * water_swash_shape(u);
 }
 
+// The sheet's surface over ground `g` metres above the instant's still level, where the front
+// stands `front` above it: the ground plus half the front's height over it, up to a quarter of R
+// and 2 cm — and **past the front the same slope on under the ground**, down to the park's 5 cm, so
+// the surface crosses the ground along the front itself (S100 stage B: stage A parked an uncovered
+// vertex 5 cm under at once, and the triangle between it and a covered one stood up as a kerb with
+// a straight edge). Never higher than the front can reach, so a vertex under a cliff stands no wall
+// up.
+float water_sheet_surface(WaterSurface* s, float g, float front) {
+  const float y = front - g;
+  const float sheet =
+      y > 0.0 ? min(0.5 * y, 0.25 * s->run_up_m + 0.02) : max(0.5 * y, -k_water_bank_park);
+  return min(g, 1.15 * s->run_up_m + 0.1) + sheet;
+}
+
+// The mesh's spacing at a vertex `edge` metres in from the outline: (along a ring, between rings).
+float2 water_mesh_spacing(WaterSurface* s, float edge) {
+  return float2(s->mesh_far_m, min(s->mesh_near_m + s->mesh_grade * max(edge, 0.0), s->mesh_far_m));
+}
+
 // **A vertex's lift** (the pool's water stage): how far above its rest place, the still level, a
 // vertex at body-local p stands at the clock t, `edge` its distance in from the outline (UV.x).
-// Water deeper than the swash's band takes the waves and the tide, faded in from an open body's
-// outline over `fade_m` so its edge meets the flat sea past it; over the bank (and where the
-// backwash bares the bottom) the vertex is the sheet's surface where the front covers it — the
-// ground plus the sheet's thickness, half the front's height over the ground up to a quarter of R
-// and 2 cm — and 5 cm under the ground where it does not, which the depth test hides (never higher
-// than the front can reach, so a parked vertex under a cliff stands no wall up). The two blend over
-// the band. A body with no field is its waves alone.
+// Water deeper than the swash's band takes the waves the mesh can carry and the tide, faded in from
+// an open body's outline over `fade_m` so its edge meets the flat sea past it; over the bank (and
+// where the backwash bares the bottom) the vertex is the sheet's surface (`water_sheet_surface`).
+// The two blend over the band. A body with no field is its waves alone.
 float water_vertex_lift(WaterSurface* s, float2 p, float edge, float t, float tide_phase,
                         out float2 grad) {
   grad = float2(0.0, 0.0);
@@ -370,7 +536,7 @@ float water_vertex_lift(WaterSurface* s, float2 p, float edge, float t, float ti
   const float fade = (s->flags & k_water_surface_open) != 0 && s->fade_m > 0.0
                          ? smoothstep(0.0, s->fade_m, edge)
                          : 1.0;
-  const WaterHeight w = water_height(s, p, f, t, 0.0);
+  const WaterHeight w = water_height(s, p, f, t, 0.0, water_mesh_spacing(s, edge));
   const float water = (tide + w.height) * fade;
   if (s->field == 0) {
     grad = w.grad * fade;
@@ -382,15 +548,9 @@ float water_vertex_lift(WaterSurface* s, float2 p, float edge, float t, float ti
     grad = w.grad * fade;
     return water;
   }
-  const float g = -d;  // the ground over the instant's still level
   bool uprush = false;
   const float front = water_surface_front(s, p, f, t, uprush);
-  float bank;
-  if (front > g) {
-    bank = tide + g + min(0.5 * (front - g), 0.25 * s->run_up_m + 0.02);
-  } else {
-    bank = tide + min(g, 1.15 * s->run_up_m + 0.1) - k_water_bank_park;
-  }
+  const float bank = tide + water_sheet_surface(s, -d, front);
   const float share = 1.0 - smoothstep(0.0, band, d);
   grad = w.grad * fade * (1.0 - share);
   return lerp(water, bank, share);

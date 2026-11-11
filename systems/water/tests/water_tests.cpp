@@ -183,23 +183,49 @@ TEST_CASE("water: a body with a wind has its mesh grown over the bank, one witho
   water::build_mesh(windy, ground, grown);
   CHECK(grown.rim > 0u);
   CHECK(grown.edge == plain.edge);
-  CHECK(grown.rings == plain.rings + grown.rim);
   REQUIRE(grown.positions.size() == grown.edge * grown.rings + 1);
-  // The rim's vertices stand outside the outline over the bank, the outermost first; the rings
-  // inside are the windless mesh's, vertex for vertex.
+  // The windless mesh says so of itself: one spacing, no grade.
+  CHECK(plain.near_spacing == plain.spacing);
+  CHECK(plain.grade == 0.0f);
+  // The rim's vertices stand outside the outline over the bank, the outermost first.
   for (u32 j = 0; j < grown.edge; ++j) {
     const Vec3 p = grown.positions[j];
     CHECK(std::sqrt(p.x * p.x + p.z * p.z) > 10.0f);
     CHECK(grown.uvs[j].x == 0.0f);
   }
+  // **Rings closer together at the outline** (S100 stage B; re-pinned: until then the rings inside
+  // were the windless mesh's, vertex for vertex). The first ring inside the rim is the outline, the
+  // same vertices the windless mesh starts with; the gaps from it inwards start at `near_spacing`
+  // and each is at most 1.15 of the one outside it and `spacing`, as are the rim's outwards.
+  CHECK(grown.near_spacing < grown.spacing);
+  CHECK(grown.near_spacing >= 0.25f);
+  CHECK(grown.grade == doctest::Approx(0.15f));
   const u32 skip = grown.rim * grown.edge;
-  for (u32 i = 0; i < plain.positions.size(); ++i) {
-    CHECK(grown.positions[skip + i] == plain.positions[i]);
-    CHECK(grown.uvs[skip + i] == plain.uvs[i]);
+  for (u32 j = 0; j < grown.edge; ++j) {
+    CHECK(grown.positions[skip + j] == plain.positions[j]);
+    CHECK(grown.uvs[skip + j] == plain.uvs[j]);
   }
-  MESSAGE("an 8 m/s wind over a 20 m pool: " << grown.rim << " rim rings, "
-                                             << grown.positions.size() - plain.positions.size()
-                                             << " vertices more");
+  const auto radius = [&](u32 ring) {
+    const Vec3 p = grown.positions[ring * grown.edge];
+    return static_cast<f64>(std::sqrt(p.x * p.x + p.z * p.z));
+  };
+  f64 last_gap = 0.0;
+  for (u32 r = grown.rim; r + 1 < grown.rings; ++r) {
+    const f64 gap = radius(r) - radius(r + 1);
+    if (r == grown.rim)
+      CHECK(gap == doctest::Approx(static_cast<f64>(grown.near_spacing)).epsilon(1e-4));
+    CHECK(gap > 0.0);
+    CHECK(gap <= static_cast<f64>(grown.spacing) * 1.0001);
+    if (last_gap > 0.0) CHECK(gap <= last_gap * 1.1501);
+    if (last_gap > 0.0) CHECK(gap >= last_gap * 0.9999);
+    last_gap = gap;
+  }
+  CHECK(radius(grown.rim - 1) - radius(grown.rim) ==
+        doctest::Approx(static_cast<f64>(grown.near_spacing)).epsilon(1e-4));
+  MESSAGE("an 8 m/s wind over a 20 m pool: "
+          << grown.rim << " rim rings, " << grown.rings << " rings in all against the windless "
+          << plain.rings << ", the gaps from " << grown.near_spacing << " m to " << grown.spacing
+          << " m, " << grown.positions.size() - plain.positions.size() << " vertices more");
 }
 
 TEST_CASE("water: the polynomial sine is the sine to 1e-14 everywhere a circle asks") {
@@ -393,9 +419,10 @@ TEST_CASE("water: the depth map is the ground under the body, a quarter of the s
   MESSAGE("depth map " << map.size << " texels a side at " << map.texel_m << " m; worst texel "
                        << worst << " m, worst vertex " << worst_vertex << " m");
   CHECK(worst_vertex < 1e-3);
-  // The bytes: 32 of header and two a texel, read back as written, the same twice.
+  // The bytes: 44 of header (version 3: the mesh's spacings after the deepest) and two a texel,
+  // read back as written, the same twice.
   const Vector<u8> bytes = water::depth_map_bytes(map);
-  CHECK(bytes.size() == 32u + map.size * map.size * 2u);
+  CHECK(bytes.size() == 44u + map.size * map.size * 2u);
   water::DepthMap back;
   std::string error;
   REQUIRE_MESSAGE(
@@ -412,8 +439,9 @@ TEST_CASE("water: the depth map is the ground under the body, a quarter of the s
   CHECK(std::equal(twice.begin(), twice.end(), bytes.begin()));
   const u64 hash = hash_bytes(bytes.data(), bytes.size(), 0);
   MESSAGE("depth map hash " << std::hex << hash);
-  // Re-pinned by S94: the map is signed (version 2), its bank stored below zero.
-  CHECK(hash == 10389239473159268430ull);
+  // Re-pinned by S94: the map is signed (version 2), its bank stored below zero. Re-pinned by S100
+  // stage B: version 3's header holds the mesh's three spacings (twelve bytes more).
+  CHECK(hash == 6934579250243124016ull);
   // Refused: not a map, and a size its bytes do not hold.
   CHECK_FALSE(water::read_depth_map(std::span<const u8>(bytes.data(), 16), back, &error));
   CHECK_FALSE(
@@ -578,8 +606,9 @@ TEST_CASE("water: an open body is the closed one's mesh and map, and its sea goe
                             << open_bytes.size() << " bytes, hash " << map_hash);
   CHECK(open_glb.size() == 29056u);
   CHECK(glb_hash == 17133894412657858236ull);
-  CHECK(open_bytes.size() == 10690u);
-  CHECK(map_hash == 8971604607983950309ull);  // re-pinned by S94: the signed map, version 2
+  // Re-pinned by S100 stage B, both: the map's header is version 3's (twelve bytes more).
+  CHECK(open_bytes.size() == 10702u);
+  CHECK(map_hash == 17247269276869333348ull);  // re-pinned by S94: the signed map, version 2
   // The depth past the outline: the bowl's ground meets the level 10 m from its centre, so 8 m out
   // (2 m past a 6 m outline) the open sea is 2 - 0.02 * 64 = 0.72 m deep and the closed pool has
   // none; 12 m out the ground stands above the level and neither has water; inside the outline the

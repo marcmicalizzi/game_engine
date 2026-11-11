@@ -163,10 +163,10 @@ TEST_CASE("material resolve: the water branch matches its CPU reference") {
     u32 attributes;
     f32 time;
   };
-  const Block block_of[k_blocks] = {{0, 0, 0.0f},   {0, 0, 37.25f},  {1, 0, 500.0f}, {2, 0, 0.0f},
-                                    {0, 1, 0.0f},   {3, 0, 500.0f},  {3, 2, 37.25f}, {5, 1, 0.0f},
-                                    {8, 0, 37.25f}, {10, 0, 500.0f}, {12, 0, 0.0f},
-                                    {14, 0, 37.25f}, {14, 1, 0.0f}};
+  const Block block_of[k_blocks] = {
+      {0, 0, 0.0f},   {0, 0, 37.25f},  {1, 0, 500.0f}, {2, 0, 0.0f},   {0, 1, 0.0f},
+      {3, 0, 500.0f}, {3, 2, 37.25f},  {5, 1, 0.0f},   {8, 0, 37.25f}, {10, 0, 500.0f},
+      {12, 0, 0.0f},  {14, 0, 37.25f}, {14, 1, 0.0f}};
   // The map each material reads (k_material_water_depth_map), or none.
   const i32 map_of_material[21] = {-1, -1, -1, -1, -1, -1, -1, -1, 0,  -1, 1,
                                    -1, 1,  -1, -1, -1, -1, -1, -1, -1, -1};
@@ -381,7 +381,7 @@ TEST_CASE("material resolve: the water branch matches its CPU reference") {
   int differs_with_volume = 0;
   for (u32 b = 0; b < k_blocks; ++b) {
     const gfx::ResolveMaterial& material = material_table[block_of[b].material];
-    const wref::Params w = wref::params_of(material);
+    const wref::Params w_block = wref::params_of(material);
     const bool volume = (material.flags & gfx::k_material_water_volume) != 0;
     const Vec2 uv = uv_of[block_of[b].attributes][0];
     const double slope = static_cast<double>(slope_of[block_of[b].attributes]);
@@ -409,12 +409,16 @@ TEST_CASE("material resolve: the water branch matches its CPU reference") {
         if (spectral)
           std::memcpy(static_cast<void*>(table), &material_table[block_of[b].material + 2],
                       sizeof(table));
+        // The slope variance the footprint leaves out of the spectrum's normal widens the lobe
+        // (S100 stage B; water.slang, `water_roughness`).
+        wref::Params w = w_block;
+        double dropped = 0.0;
         const ref::Dvec3 n =
-            spectral ? wref::normal_spectrum(table, p.x, p.z,
-                                             static_cast<double>(block_of[b].time), footprint,
-                                             depth)
+            spectral ? wref::normal_spectrum(table, p.x, p.z, static_cast<double>(block_of[b].time),
+                                             footprint, depth, &dropped)
                      : wref::normal(w, p.x, p.z, static_cast<double>(block_of[b].time), footprint,
                                     depth);
+        w.roughness = wref::roughness_with(w.roughness, (1.0 - gfx::k_water_micro_share) * dropped);
         // The shore's fade: the distance from the edge, or for an open body the depth's share of
         // the calm depth (water_edge).
         const double from_edge = wref::edge(w, material.flags, static_cast<double>(uv.x), depth);
@@ -432,11 +436,11 @@ TEST_CASE("material resolve: the water branch matches its CPU reference") {
                                         : ref::dvec3(material_table[optics.sampler].albedo);
           const ref::Dvec3 under = wref::volume(wref::optics_of(optics), path, n_b, albedo, sun_ref,
                                                 ref::splat(1.0), 1.0, 1.0, ambient);
-          linear = wref::radiance_volume(w, n, v, from_edge, sun_ref, ref::splat(1.0), sky_ref,
-                                         under);
+          linear =
+              wref::radiance_volume(w, n, v, from_edge, sun_ref, ref::splat(1.0), sky_ref, under);
         } else {
-          linear = wref::radiance(w, n, v, from_edge, depth, sun_ref, ref::splat(1.0), ambient,
-                                  sky_ref);
+          linear =
+              wref::radiance(w, n, v, from_edge, depth, sun_ref, ref::splat(1.0), ambient, sky_ref);
         }
         const u8* got = pixel(b, x, y);
         const u8 expect[3] = {ref::display(linear.x), ref::display(linear.y),
@@ -498,4 +502,253 @@ TEST_CASE("material resolve: the water branch matches its CPU reference") {
   }
   frames.destroy();
   device.destroy();
+}
+
+// ---- S100 stage B, on the CPU: the wind's sea, the lee and the shallows -------------------------
+// (water_spectrum.h, water_swash.h and water_reference.h, which mirrors water_waves.slang; the pool
+// pass holds the shader to the same reference in deform_tests.cpp.)
+
+// **A lake's wind sea** (docs/experiments/shore.md, "The spectrum for every body"): 7 m/s over 0.9
+// km of water. The table's sixteen bands hold the height the fetch-limited growth law gives and
+// JONSWAP's peak period; drawn as narrow bands — a carrier under a travelling envelope — they keep
+// the variance of the sines they replace, the gradient is the height's, the clock wraps with no
+// jump, and one band alone does not repeat forty wavelengths on (a sine does, exactly).
+TEST_CASE("water: a lake's wind sea has the growth law's height and period, and never repeats") {
+  const f64 u10 = 7.0;
+  const f64 fetch = 900.0;
+  const f64 g = 9.81;
+  gfx::WaterWave waves[gfx::k_water_waves];
+  gfx::water_spectrum(u10, fetch, Vec2{1.0f, 0.0f}, 631, waves);
+  f64 variance = 0.0;
+  u32 peak_band = 0;
+  for (u32 i = 0; i < gfx::k_water_waves; ++i) {
+    variance += 0.5 * static_cast<f64>(waves[i].amplitude) * static_cast<f64>(waves[i].amplitude);
+    if (waves[i].amplitude > waves[peak_band].amplitude) peak_band = i;
+  }
+  // The Coastal Engineering Manual's fetch-limited growth (II-2): g H / U^2 = 1.6e-3 (g F /
+  // U^2)^1/2 and JONSWAP's peak, f_p U / g = 3.5 (g F / U^2)^(-1/3) (Hasselmann et al. 1973).
+  const f64 x = g * fetch / (u10 * u10);
+  const f64 law_height = 1.6e-3 * u10 * u10 / g * std::sqrt(x);
+  const f64 law_period = u10 / (3.5 * g) * std::cbrt(x);
+  const f64 height = 4.0 * std::sqrt(variance);
+  const f64 period = 6.283185307179586 / gfx::jonswap_peak(u10, fetch);
+  MESSAGE("7 m/s over 0.9 km: H_m0 "
+          << height << " m (the growth law " << law_height << "), T_p " << period << " s (the law "
+          << law_period << "), peak wavelength " << g * period * period / 6.283185307 << " m");
+  CHECK(height == doctest::Approx(law_height).epsilon(0.2));
+  CHECK(period == doctest::Approx(law_period).epsilon(0.03));
+  // The band nearest the peak is the table's largest.
+  const f64 peak_omega = static_cast<f64>(waves[peak_band].cycles) * 6.283185307179586 / 1024.0;
+  CHECK(peak_omega == doctest::Approx(gfx::jonswap_peak(u10, fetch)).epsilon(0.15));
+  // A fully developed sea grows no further: 7 m/s past 110 km is the same table.
+  CHECK(gfx::jonswap_peak(u10, 600000.0) == gfx::jonswap_peak(u10, 2.2e4 * u10 * u10 / g));
+  CHECK(gfx::jonswap_peak(u10, 100000.0) > gfx::jonswap_peak(u10, 600000.0));
+
+  // The bands' sum over a 60 m patch at eight clocks: the variance of the sines.
+  const auto sum_at = [&](f64 px, f64 pz, f64 t) {
+    wref::Sum s;
+    for (const gfx::WaterWave& w : waves)
+      wref::wave_add(w, px, pz, t, 0.0, 1.0, 0.0, s);
+    return s;
+  };
+  f64 mean = 0.0, square = 0.0;
+  u32 count = 0;
+  for (u32 k = 0; k < 8; ++k)
+    for (u32 j = 0; j < 80; ++j)
+      for (u32 i = 0; i < 80; ++i) {
+        const f64 h = sum_at(-30.0 + 0.77 * i, -30.0 + 0.77 * j, 3.0 + 117.0 * k).height;
+        mean += h;
+        square += h * h;
+        ++count;
+      }
+  mean /= count;
+  const f64 measured = square / count - mean * mean;
+  MESSAGE("the bands' variance over the patch " << measured << " m^2 against the sines' "
+                                                << variance);
+  CHECK(measured == doctest::Approx(variance).epsilon(0.15));
+  // The gradient is the height's, by a central difference over a millimetre.
+  for (u32 k = 0; k < 16; ++k) {
+    const f64 px = -7.0 + 1.37 * k, pz = 3.0 - 0.91 * k, t = 11.0 + 61.0 * k, e = 1e-3;
+    const wref::Sum s = sum_at(px, pz, t);
+    const f64 dx = (sum_at(px + e, pz, t).height - sum_at(px - e, pz, t).height) / (2.0 * e);
+    const f64 dz = (sum_at(px, pz + e, t).height - sum_at(px, pz - e, t).height) / (2.0 * e);
+    CHECK(std::fabs(s.gx - dx) < 2e-4);
+    CHECK(std::fabs(s.gz - dz) < 2e-4);
+  }
+  // The clock wraps at 1,024 s with no jump: every carrier and every envelope is periodic in it.
+  for (u32 k = 0; k < 16; ++k) {
+    const f64 px = 40.0 - 5.3 * k, pz = -12.0 + 2.9 * k;
+    CHECK(std::fabs(sum_at(px, pz, 0.0).height - sum_at(px, pz, 1024.0).height) < 1e-9);
+  }
+  // One band alone, forty of its wavelengths on along its travel: a sine is itself again; the band
+  // is not (the correlation over 4,000 places).
+  const gfx::WaterWave& band = waves[peak_band];
+  const f64 lambda = 6.283185307179586 / static_cast<f64>(band.k);
+  f64 aa = 0.0, bb = 0.0, ab = 0.0;
+  for (u32 i = 0; i < 4000; ++i) {
+    const f64 px = -200.0 + 0.613 * i, pz = 150.0 - 0.357 * i;
+    wref::Sum a, b;
+    wref::wave_add(band, px, pz, 5.0, 0.0, 1.0, 0.0, a);
+    wref::wave_add(band, px + 40.0 * lambda * static_cast<f64>(band.direction.x),
+                   pz + 40.0 * lambda * static_cast<f64>(band.direction.y), 5.0, 0.0, 1.0, 0.0, b);
+    aa += a.height * a.height;
+    bb += b.height * b.height;
+    ab += a.height * b.height;
+  }
+  const f64 correlation = ab / std::sqrt(aa * bb);
+  MESSAGE("one band against itself forty wavelengths on: correlation " << correlation);
+  CHECK(std::fabs(correlation) < 0.2);
+  // In a lee the long waves go first: at a tenth of the fetch the peak is all but gone and the
+  // shortest band barely touched.
+  CHECK(gfx::water_grown_share(static_cast<f64>(waves[peak_band].grow), 0.1) < 0.01);
+  CHECK(gfx::water_grown_share(static_cast<f64>(waves[gfx::k_water_waves - 1].grow), 0.1) > 0.9);
+  CHECK(gfx::water_grown_share(static_cast<f64>(waves[peak_band].grow), 1.0) == 1.0);
+}
+
+// **The fetch at every place** (gfx::water_fetch_field): a round lake of 80 m radius on a metre
+// grid. Along the wind's diameter the fetch is the chord behind the place; the wind's own shore has
+// none; an island casts a lee; and a beach's texels keep the fetch of the water at their foot.
+TEST_CASE("water: a closed body's fetch is its own reach along the wind") {
+  const u32 n = 201;
+  Vector<f32> depth(n * n);
+  const auto fill = [&](bool island) {
+    for (u32 j = 0; j < n; ++j)
+      for (u32 i = 0; i < n; ++i) {
+        const f64 px = static_cast<f64>(i) - 100.0, pz = static_cast<f64>(j) - 100.0;
+        const bool land =
+            std::hypot(px, pz) > 80.0 || (island && std::fabs(px) < 10.0 && std::fabs(pz) < 20.0);
+        depth[j * n + i] = land ? -0.5f : 1.0f;
+      }
+  };
+  fill(false);
+  Vector<f32> fetch(n * n);
+  const auto at = [&](i32 px, i32 pz) {
+    return static_cast<f64>(fetch[(pz + 100) * n + px + 100]);
+  };
+  const f64 longest = gfx::water_fetch_field(depth.data(), n, 1.0, Vec2{1.0f, 0.0f}, fetch.data());
+  CHECK(longest == doctest::Approx(160.0).epsilon(0.02));
+  CHECK(at(0, 0) == doctest::Approx(81.0).epsilon(0.03));
+  CHECK(at(78, 0) == doctest::Approx(159.0).epsilon(0.03));
+  CHECK(at(-79, 0) < 3.0);
+  CHECK(at(-90, 0) == 0.0);
+  // The beach past the downwind shore holds the sea's fetch, decaying over 20 m of land.
+  CHECK(at(84, 0) > 0.75 * at(78, 0));
+  // Half way up the lake's side the chord is shorter: 2 sqrt(80^2 - 60^2) = 105.8 m.
+  CHECK(at(50, 60) == doctest::Approx(52.9 + 50.0).epsilon(0.08));
+  // Across the wind's diagonal the centre still has the radius behind it.
+  gfx::water_fetch_field(depth.data(), n, 1.0, Vec2{0.6f, 0.8f}, fetch.data());
+  CHECK(at(0, 0) == doctest::Approx(81.0).epsilon(0.06));
+  CHECK(at(-48, -64) < 4.0);
+  // An island 20 m long along the wind: right behind it the fetch is a fraction of the open
+  // lake's, and it regrows.
+  fill(true);
+  gfx::water_fetch_field(depth.data(), n, 1.0, Vec2{1.0f, 0.0f}, fetch.data());
+  CHECK(at(12, 0) < 0.5 * 93.0);
+  CHECK(at(70, 0) > at(12, 0) + 50.0);
+  CHECK(at(0, 60) == doctest::Approx(52.9).epsilon(0.1));
+}
+
+// **A crest crossing a bay has no corner** (docs/experiments/shore.md, "The shallows"). A round bay
+// 60 m across on a metre grid, shelving 1:15 from its rim: the train's crests are level lines of
+// the arrival field, and a crest's direction is the field's gradient's. Walked along a depth
+// contour in millimetre steps, the direction the read gives turns from one step to the next by at
+// most what a C1 field allows — the field's largest second difference over its gradient, times the
+// step (the bound below) — and never by a jump. A bilinear read of the same texels, which is what
+// stage A drew, jumps at every texel border the walk crosses: the corners counted here are the
+// facets of the forest's item 29.
+TEST_CASE("water: a crest that crosses a bay's depth contours turns no corner") {
+  const u32 n = 129;
+  const f64 texel = 1.0;
+  gfx::WaterSurface s{};
+  s.size = n;
+  s.texel_m = static_cast<f32>(texel);
+  s.origin = Vec2{-64.0f, -64.0f};
+  s.period_s = static_cast<f32>(gfx::swash_period(1.2));
+  Vector<f32> depth(n * n);
+  for (u32 j = 0; j < n; ++j)
+    for (u32 i = 0; i < n; ++i)
+      depth[j * n + i] = static_cast<f32>(
+          (30.0 - std::hypot(static_cast<f64>(i) - 64.0, static_cast<f64>(j) - 64.0)) / 15.0);
+  Vector<f32> arrival(n * n);
+  gfx::water_arrival_field(depth.data(), n, texel, static_cast<f64>(s.period_s), arrival.data());
+  Vector<f32> field(gfx::k_water_field_channels * n * n);
+  for (u32 i = 0; i < n * n; ++i) {
+    field[4 * i] = depth[i];
+    field[4 * i + 1] = arrival[i];
+    field[4 * i + 2] = 1.0f;
+    field[4 * i + 3] = 0.0f;
+  }
+  // Stage A's read: the bilinear's own gradient in the cell.
+  const auto bilinear_grad = [&](f64 px, f64 pz, f64& gx, f64& gz) {
+    const f64 fx = px + 64.0, fz = pz + 64.0;
+    const u32 i = static_cast<u32>(std::floor(fx)), j = static_cast<u32>(std::floor(fz));
+    const f64 u = fx - i, w = fz - j;
+    const auto tau = [&](u32 at) { return static_cast<f64>(arrival[at]); };
+    const f64 a = tau(j * n + i), b = tau(j * n + i + 1);
+    const f64 c = tau((j + 1) * n + i), d = tau((j + 1) * n + i + 1);
+    gx = (b - a) + ((d - c) - (b - a)) * w;
+    gz = (c - a) + ((d - b) - (c - a)) * u;
+  };
+  // The field's largest second difference inside the walked ring, and its smallest gradient there.
+  f64 second = 0.0;
+  for (u32 j = 30; j < 99; ++j)
+    for (u32 i = 30; i < 99; ++i) {
+      const f64 r = std::hypot(static_cast<f64>(i) - 64.0, static_cast<f64>(j) - 64.0);
+      if (r < 25.5 || r > 28.5) continue;
+      const auto tau = [&](u32 at) { return static_cast<f64>(arrival[at]); };
+      const f64 c = tau(j * n + i);
+      second = std::max(second, std::fabs(tau(j * n + i + 1) - 2.0 * c + tau(j * n + i - 1)));
+      second = std::max(second, std::fabs(tau((j + 1) * n + i) - 2.0 * c + tau((j - 1) * n + i)));
+      second = std::max(second, std::fabs(tau((j + 1) * n + i + 1) - tau((j + 1) * n + i) -
+                                          tau(j * n + i + 1) + c));
+    }
+  // The contour 0.2 m deep: inshore of the train's source (1 / k0 = 0.36 m deep, 24.6 m out), where
+  // the depth governs.
+  const f64 radius = 27.0;
+  const f64 step = 1e-3;
+  const u32 steps = static_cast<u32>(6.283185307179586 * radius / step);
+  f64 smallest = 1e30;
+  f64 worst_smooth = 0.0, worst_bilinear = 0.0;
+  u32 corners_smooth = 0, corners_bilinear = 0;
+  f64 last_smooth = 0.0, last_bilinear = 0.0;
+  const auto turn = [](f64 a, f64 b) {
+    f64 d = std::fabs(a - b);
+    if (d > 3.14159265358979) d = 6.283185307179586 - d;
+    return d;
+  };
+  // Two passes: the gradient's smallest length first, for the bound; then the turns against it.
+  for (u32 pass = 0; pass < 2; ++pass) {
+    const f64 bound = pass == 1 ? 4.0 * second / (texel * texel) / smallest * step : 0.0;
+    for (u32 k = 0; k <= steps; ++k) {
+      const f64 a = static_cast<f64>(k) * step / radius;
+      const f64 px = radius * std::cos(a), pz = radius * std::sin(a);
+      const wref::Field f = wref::field_at(s, field.data(), px, pz);
+      if (pass == 0) {
+        smallest = std::min(smallest, std::hypot(f.arrival_grad[0], f.arrival_grad[1]));
+        continue;
+      }
+      f64 bx = 0.0, bz = 0.0;
+      bilinear_grad(px, pz, bx, bz);
+      const f64 smooth = std::atan2(f.arrival_grad[1], f.arrival_grad[0]);
+      const f64 faceted = std::atan2(bz, bx);
+      if (k > 0) {
+        const f64 ts = turn(smooth, last_smooth), tb = turn(faceted, last_bilinear);
+        worst_smooth = std::max(worst_smooth, ts);
+        worst_bilinear = std::max(worst_bilinear, tb);
+        if (ts > bound) ++corners_smooth;
+        if (tb > bound) ++corners_bilinear;
+      }
+      last_smooth = smooth;
+      last_bilinear = faceted;
+    }
+    if (pass == 1)
+      MESSAGE("a crest round the 27 m contour in 1 mm steps: the C1 read turns at most "
+              << worst_smooth * 57.2957795 << " deg a step (the bound " << bound * 57.2957795
+              << "), 0 corners wanted and " << corners_smooth << " found; the bilinear read turns "
+              << worst_bilinear * 57.2957795 << " deg at a texel's border, " << corners_bilinear
+              << " corners in " << 6.283185307 * radius << " m");
+  }
+  CHECK(smallest > 0.0);
+  CHECK(corners_smooth == 0u);
+  CHECK(corners_bilinear > 100u);
 }
