@@ -29,6 +29,17 @@ f64 channel(const void*, i64 x, i64 z) noexcept {
   return .3 * std::abs(xx - 16) + .06 * (32 - zz);
 }
 f64 invalid(const void*, i64, i64) noexcept { return std::numeric_limits<f64>::quiet_NaN(); }
+// T108: a patch's bed and its loose stones are two primitives and materials; the closed-mesh checks
+// read the whole mesh as one body list.
+assets::MeshData as_one(const assets::MeshData& mesh) {
+  assets::MeshData one = mesh;
+  one.primitives.resize(1);
+  one.primitives[0].first_index = 0;
+  one.primitives[0].index_count = static_cast<u32>(one.indices.size());
+  one.primitives[0].material = 0;
+  one.materials.resize(1);
+  return one;
+}
 DepositLayer layer() {
   DepositLayer p;
   p.region_max = {32, 32};
@@ -181,7 +192,7 @@ TEST_CASE("deposits: continuous bed and angular fragments hold topology and the 
     p.triangle_budget = budget;
     REQUIRE_MESSAGE(solve_deposit(p, mesh, error), error);
     CHECK(mesh.indices.size() / 3 <= budget);
-    checks::check_closed(mesh, 1 + p.fragments);
+    checks::check_closed(as_one(mesh), 1 + p.fragments);
     REQUIRE(solve_deposit(p, again, error));
     CHECK(checks::mesh_hash(mesh) == checks::mesh_hash(again));
   }
@@ -206,7 +217,7 @@ TEST_CASE("deposits: isolated wet samples form closed beds at diagonal contacts"
   assets::MeshData mesh;
   std::string error;
   REQUIRE(solve_deposit(p, mesh, error));
-  checks::check_closed(mesh, 1);
+  checks::check_closed(as_one(mesh), 1);
 }
 TEST_CASE("deposits: mesh identity and cluster container are deterministic") {
   const auto p = patch();
@@ -220,7 +231,9 @@ TEST_CASE("deposits: mesh identity and cluster container are deterministic") {
   // for fragments built at the rung their size needs (was 625669387871748774), then for G143's
   // third pass: the top drawn at 12.5 cm and raised by its clasts, the walls' own triangles, the
   // loose fragments of the largest band at 4 cm facets (was 2024239262398034445).
-  CHECK(hash == 1738319574425829183ull);
+  // Then for G182's clasts: angular, tilted blocks of several heights over hollows, the top drawn
+  // at 10 cm (was 1738319574425829183).
+  CHECK(hash == 3150207692158905108ull);
   geometry::ClusterFileData a, b;
   REQUIRE_MESSAGE(build_deposit_container(p, {}, 0, a, error), error);
   REQUIRE(build_deposit_container(p, {}, 0, b, error));
@@ -231,8 +244,11 @@ TEST_CASE("deposits: mesh identity and cluster container are deterministic") {
   // fragments' rungs (stage 3; was 13439161428700819251), then for the patch's border locked in
   // its cluster DAG (G143's third pass; was 7929702402516820737), then for the rubble and
   // k_deposit_version 4 (was 1421504051895875902), then 5 for the toe's clasts kept off the face
-  // (was 13829166473420471729).
-  CHECK(geometry::cluster_file_hash(a) == 10478160828047604680ull);
+  // (was 13829166473420471729), then for T108's two primitives, the bed and the loose stones,
+  // each its own DAG and material, and k_deposit_version 6 (was 10478160828047604680), then for
+  // G183's k_deposit_version 7 in the source hash (was 16110835894214829114), then for G182's
+  // clasts and k_deposit_version 8 (was 7110207806032102213).
+  CHECK(geometry::cluster_file_hash(a) == 7783980573357481640ull);
   CHECK(geometry::cluster_file_hash(a) == geometry::cluster_file_hash(b));
   CHECK(a.source_hash == deposit_source_hash(p));
   CHECK(a.source_hash == b.source_hash);
@@ -346,6 +362,99 @@ TEST_CASE("deposits: a bed samples the pack's scree before its rock's") {
   p.material.base_color = "own/c.png";
   REQUIRE_MESSAGE(build_deposit_container(p, {}, 0, data, error, &both), error);
   CHECK(data.image_paths[static_cast<u32>(data.materials[0].base_color_image)] == "own/c.png");
+}
+TEST_CASE("deposits: a loose stone wears its rock's own surface and the bed the scree's") {
+  // T108 (rocks.md, "A stone wears its rock"): a loose fragment or a shed block is one stone, so it
+  // samples its rock's role (`rock/<type>`) at that set's own repeat, never the bed's granular set,
+  // which is a picture of many stones. Two stand-in packs parsed from text: the rock's set repeats
+  // every 2 m, the scree's every 0.5 m.
+  auto p = patch();
+  p.type = RockType::Granite;
+  DepositBlock block;
+  block.x_m = 1;
+  block.z_m = 1;
+  block.y_m = .3f;
+  block.half = {.4f, .2f, .3f};
+  block.buried = .3f;
+  block.seed = 108;
+  p.blocks.push_back(block);
+  const char* rock =
+      R"("rock/granite":{"tile_m":2,"normal_convention":"opengl","maps":{"base_color":{"file":"g.png"},)"
+      R"("normal":{"file":"gn.png"},"roughness":{"file":"gr.png"},"metallic":{"file":"gm.png"},)"
+      R"("height":{"file":"gh.png"}}})";
+  const char* scree =
+      R"("rock/scree":{"tile_m":0.5,"normal_convention":"opengl","maps":{"base_color":{"file":"s.png"},)"
+      R"("normal":{"file":"sn.png"},"roughness":{"file":"sr.png"},"metallic":{"file":"sm.png"},)"
+      R"("height":{"file":"sh.png"}}})";
+  const std::string head =
+      R"({"format":"engine.materials.pack/1","name":"stand-in","version":"1","roles":{)";
+  materials::Pack both, granite_only;
+  std::string error;
+  REQUIRE_MESSAGE(
+      materials::parse_pack(head + rock + "," + scree + "}}", "C:/stand-in", both, error), error);
+  REQUIRE(materials::parse_pack(head + rock + "}}", "C:/stand-in", granite_only, error));
+  auto image_of = [](const geometry::ClusterFileData& d, u32 m) {
+    const i32 slot = d.materials[m].base_color_image;
+    return slot >= 0 ? d.image_paths[static_cast<u32>(slot)] : std::string();
+  };
+  auto clusters_of = [](const geometry::ClusterFileData& d, u32 m) {
+    return static_cast<u32>(std::count(d.cluster_material.begin(), d.cluster_material.end(), m));
+  };
+  geometry::ClusterFileData data;
+  REQUIRE_MESSAGE(build_deposit_container(p, {}, 0, data, error, &both), error);
+  // The bed is material 0 and wears the scree; the fragments and the block are material 1 and
+  // wear the granite; each names its own clusters.
+  REQUIRE(data.materials.size() == 2);
+  REQUIRE(data.material_sampling.size() == 2);
+  CHECK(image_of(data, 0) == "C:/stand-in/s.png");
+  CHECK(image_of(data, 1) == "C:/stand-in/g.png");
+  CHECK(clusters_of(data, 0) > 0u);
+  CHECK(clusters_of(data, 1) > 0u);
+  CHECK(clusters_of(data, 0) + clusters_of(data, 1) == data.mesh.mesh.clusters.size());
+  // With only the rock's set, both wear it; with no pack, both are the type's flat colour.
+  REQUIRE_MESSAGE(build_deposit_container(p, {}, 0, data, error, &granite_only), error);
+  REQUIRE(data.materials.size() == 2);
+  CHECK(image_of(data, 0) == "C:/stand-in/g.png");
+  CHECK(image_of(data, 1) == "C:/stand-in/g.png");
+  REQUIRE_MESSAGE(build_deposit_container(p, {}, 0, data, error), error);
+  REQUIRE(data.materials.size() == 2);
+  CHECK(data.materials[0].base_color_image < 0);
+  CHECK(data.materials[1].base_color_image < 0);
+  CHECK(data.material_sampling.empty());
+  // The stones are charted at their own set's repeat and the bed at its own: the bed's UVs do not
+  // move with the stones' set, and the stones' coordinates shrink as their set's repeat grows.
+  assets::MeshData fine_rock, coarse_rock;
+  REQUIRE(solve_deposit(p, fine_rock, error, .5));
+  REQUIRE(solve_deposit(p, coarse_rock, error, 2.0));
+  REQUIRE(fine_rock.primitives.size() == 2);
+  REQUIRE(coarse_rock.primitives.size() == 2);
+  CHECK(fine_rock.primitives[0].material == 0);
+  CHECK(fine_rock.primitives[1].material == 1);
+  REQUIRE(fine_rock.indices.size() == coarse_rock.indices.size());
+  f64 span[2] = {};
+  bool bed_same = true;
+  for (u32 k = 0; k < 2; ++k) {
+    const auto& part = fine_rock.primitives[k];
+    for (u32 i = part.first_index; i < part.first_index + part.index_count; ++i) {
+      const Vec2 a = fine_rock.uvs[fine_rock.indices[i]],
+                 b = coarse_rock.uvs[coarse_rock.indices[i]];
+      if (k == 0) bed_same = bed_same && a.x == b.x && a.y == b.y;
+      if (k == 1) {
+        span[0] = std::max(span[0], static_cast<f64>(std::max(std::abs(a.x), std::abs(a.y))));
+        span[1] = std::max(span[1], static_cast<f64>(std::max(std::abs(b.x), std::abs(b.y))));
+      }
+    }
+  }
+  MESSAGE("the stones' widest coordinate at a 0.5 m and a 2 m repeat: ", span[0], ", ", span[1]);
+  CHECK(bed_same);
+  // Each chart sits in a cell of a whole, even number of repeats (rocks.md, "External tiled
+  // maps"), so a quarter of the repeat at least doubles the widest coordinate.
+  CHECK(span[0] >= 2.0 * span[1]);
+  // A patch with no loose stone has one material: the bed's.
+  auto bare = patch();
+  bare.fragments = 0;
+  REQUIRE_MESSAGE(build_deposit_container(bare, {}, 0, data, error, &both), error);
+  CHECK(data.materials.size() == 1);
 }
 TEST_CASE("deposits: whole expansion equals reversed tile arrival with stable ids and exclusion") {
   test::TempDir scratch;

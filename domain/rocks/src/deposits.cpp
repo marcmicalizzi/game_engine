@@ -134,13 +134,23 @@ f64 cone_surface(f64 apex, f64 height, f64 t, f64 t2, f64 r) {
 // anchored to the world. Three lattices, k_clast_cell_mm and twice and four times it, one clast a
 // cell: its centre, size, turn and tilt drawn from the cell's world coordinates, so a clast is
 // where it is whatever patch or tile builds it. A lattice's clasts stand only where the bed's own
-// clast size is near its cell's (fine at a pile's apex, coarse at its toe: fall sorting). A clast
-// is a flat-topped, steep-sided block standing k_clast_stand of its size above the bed (talus is
-// openwork, angular clasts on each other with voids between: Verdian et al. 2021); where clasts
-// overlap the higher wins. Clasts finer than the step are the material's.
-constexpr i64 k_clast_step_mm = 125;
+// clast size is near its cell's (fine at a pile's apex, coarse at its toe: fall sorting). Since
+// G182 a clast is an angular block, a hexagon in plan elongated as talus blocks are, its top a
+// tilted low roof, its sides a steep bevel, standing 0.2-0.5 of its size, and the bed between the
+// largest sinks into hollows (talus is openwork, angular clasts on each other with voids between:
+// Verdian et al. 2021, Sanders et al. 2009); where clasts overlap the higher wins. The top is drawn
+// at k_clast_step_mm, 10 cm since G182 (12.5 before), so a 0.3 m clast spans three steps. Clasts
+// finer than the step are the material's.
+constexpr i64 k_clast_step_mm = 100;
 constexpr i64 k_clast_cell_mm = 500;
-constexpr f64 k_clast_stand = 0.35;
+constexpr f64 k_clast_stand_lo = 0.2;  // a clast's height over the bed, of its size (authored)
+constexpr f64 k_clast_stand_hi = 0.5;
+constexpr f64 k_clast_tilt = 0.5;    // the top's tilt, of its height across the half-size
+constexpr f64 k_clast_roof = 0.35;   // the roof's rise from the edges to the ridges, of its height
+constexpr f64 k_clast_bevel = 0.12;  // the sides' run, of the half-size
+constexpr f64 k_clast_void = 0.15;   // the hollows' depth between the largest, of the clast size
+constexpr f64 k_hexagon[6][2] = {{1, 0},  {0.5, 0.8660254037844386},   {-0.5, 0.8660254037844386},
+                                 {-1, 0}, {-0.5, -0.8660254037844386}, {0.5, -0.8660254037844386}};
 constexpr f64 k_clast_fade_m = 0.3;   // a bed thinner than this shows its clasts in proportion
 constexpr f64 k_clast_sorting = 10;   // the toe's clasts against the apex's (authored)
 constexpr i64 k_clast_slope_mm = 25;  // the half step the relief's gradient is taken over
@@ -182,16 +192,37 @@ f64 clast_height(i64 x_mm, i64 z_mm, f64 size_m) {
         }
         const f64 px = static_cast<f64>(x_mm) / 1000.0 - ox,
                   pz = static_cast<f64>(z_mm) / 1000.0 - oz;
-        const f64 u = px * ux + pz * uz, v = pz * ux - px * uz;
-        const f64 a = 0.5 * s, b = 0.5 * s * (0.6 + 0.4 * unit_of(g, 1));
-        const f64 cheb = std::max(std::abs(u) / a, std::abs(v) / b);
-        if (cheb >= 1) continue;
-        const f64 tilt = 0.25 * (unit_of(g, 2) - 0.5) * u / a;
+        // G182 (rocks.md, "The bed is rubble"): an angular block, not a plate. In plan a hexagon
+        // in the clast's own frame, each face's distance from the centre drawn 0.7-1 of the
+        // half-size, elongated a / b 1.7-2.6 (Wegner et al. 2021's medians for talus blocks); its
+        // top a low roof whose ridges follow the hexagon in, tilted about both axes; its sides a
+        // steep bevel; its height drawn 0.2-0.5 of its size (several heights).
+        const f64 u = (px * ux + pz * uz) / (0.5 * s);
+        const f64 v = (pz * ux - px * uz) / (0.5 * s / (1.7 + 0.9 * unit_of(g, 1)));
+        if (u * u > 1.0 || v * v > 4.0 / 3.0) continue;  // the hexagon's box: 1 and 2 / sqrt(3)
+        const u64 e = mix64(g ^ 0x6182ull), f = mix64(e);
+        f64 inside = 1e9, reach = 0;
+        for (u32 k = 0; k < 6; ++k) {
+          const f64 c = 0.7 + 0.3 * unit_of(k < 4 ? e : f, k & 3u);
+          inside = std::min(inside, c - (k_hexagon[k][0] * u + k_hexagon[k][1] * v));
+          reach = std::max(reach, c);
+        }
+        if (inside <= 0) continue;
+        const f64 stand = k_clast_stand_lo + (k_clast_stand_hi - k_clast_stand_lo) * unit_of(f, 2);
+        const f64 tilt = k_clast_tilt * ((unit_of(g, 2) - 0.5) * u + (unit_of(g, 3) - 0.5) * v);
+        const f64 roof = 1.0 - k_clast_roof + k_clast_roof * inside / reach;
         best = std::max(
-            best, share * k_clast_stand * s * (1.0 + tilt) * std::min(1.0, 3.0 * (1.0 - cheb)));
+            best, share * stand * s * (1.0 + tilt) * roof * std::min(1.0, inside / k_clast_bevel));
       }
   }
-  return best;
+  // The bed between the largest clasts lies in hollows (Sanders et al. 2009's open pores under
+  // the larger clasts): it sinks by k_clast_void of the bed's clast size where the clasts that
+  // size shows stand, so the clasts stand out of hollows and not off a floor.
+  f64 hollow = 0;
+  for (u32 o = 0; o < 3; ++o)
+    hollow =
+        std::max(hollow, lattice_share(size_m, static_cast<f64>(k_clast_cell_mm << o) / 1000.0));
+  return best - k_clast_void * size_m * hollow;
 }
 bool ascii_equal(std::string_view a, const char* b) {
   usize i = 0;
@@ -366,13 +397,18 @@ bool plan_deposits(const DepositLayer& p, const scene_gen::Ground& ground, Depos
       if (fed[i] > 0 && slopes[i] < source)
         piles.push_back({i, i, 0.0, 0.0, fed[i] * wide(p.supply_m), 0.0, 0.0});
   // Each foot's height from the supply delivered to it, per metre of foot. Every foot spreads its
-  // own volume along the foot over its own pile's reach r = h / tan(repose) through a triangle
-  // kernel (1 - d / r) / r, which integrates to one along a line, and a foot's pile is the wedge
+  // own volume along the foot over its own pile's reach r = h / tan(repose) through a kernel
+  // 1.5 (1 - d / r)^2 / r, which integrates to one along a line, and a foot's pile is the wedge
   // that holds what it receives, h^2 a = q, a = (1/tan(repose) - 1/tan(face)) / 2 its section
   // against the face. Under a planar face q is the face's own supply per metre: a sheet whose
-  // height goes as the root of the face's. A foot fed by a gully receives its volume V over r:
-  // h^3 = V tan(repose) / a, within a few per cent of the half cone's pi h^3 / (6 tan^2), and its
-  // neighbours the kernel's flanks: a cone. Volume is conserved (the kernel integrates to one) and
+  // height goes as the root of the face's. A foot fed by a gully receives 1.5 V / r: h^3 = 1.5 V
+  // tan(repose) / a, and its neighbours' wedges stand h (1 - d / r), so the pile's top falls along
+  // the wall at the repose angle, the cone's own surface: a cone (G183; rocks.md, "Cones that climb
+  // their gullies"). The triangle kernel before it gave the neighbours h sqrt(1 - d / r), a ridge
+  // standing above the cone's surface along the wall that filled the apron between gullies to
+  // nearly the cones' height. The kernel is divided by its own sum over feet a spacing apart along
+  // a line, 1 + sp^2 / (2 r^2) (exact where r is a whole number of spacings), so a short pile's
+  // volume is conserved on the lattice. Volume is conserved (the kernel integrates to one) and
   // every height is a function of its neighbourhood, updated together, so no pile competes with
   // another. A pile never stands above the wall it fell from.
   // A buried face sheds nothing (Fisher 1866, Lehmann 1933; Sanders 2012's negative feedback;
@@ -425,7 +461,7 @@ bool plan_deposits(const DepositLayer& p, const scene_gen::Ground& ground, Depos
       }
       const f64 face_slope = up[f] != ~0u ? slopes[up[f]] : source;
       a[k] = std::max(.5 * (1.0 / repose - 1.0 / face_slope), .1 / repose);
-      tall[k] = cube_root(piles[k].volume * repose / a[k]);
+      tall[k] = cube_root(1.5 * piles[k].volume * repose / a[k]);
     }
     std::sort(by_key.begin(), by_key.end(),
               [&](u32 x, u32 y) { return keys[x] != keys[y] ? keys[x] < keys[y] : x < y; });
@@ -436,6 +472,7 @@ bool plan_deposits(const DepositLayer& p, const scene_gen::Ground& ground, Depos
         volume[g] = shed(g, tall[g]);
       for (u32 g = 0; g < m; ++g) {
         const f64 r = std::max(tall[g] / repose, sp);
+        const f64 weight = 1.5 / (r * (1.0 + .5 * sp * sp / (r * r)));
         const i64 r_mm = static_cast<i64>(r * 1000.0) + 1;
         const i64 gx = world_x(piles[g].foot), gz = world_z(piles[g].foot);
         for (i64 bx = floor_div_mm(gx - r_mm, bucket); bx <= floor_div_mm(gx + r_mm, bucket); ++bx)
@@ -446,7 +483,7 @@ bool plan_deposits(const DepositLayer& p, const scene_gen::Ground& ground, Depos
                                        [&](u32 x, i64 v) { return keys[x] < v; });
             for (; it != by_key.end() && keys[*it] == key; ++it) {
               const f64 d = sample_distance(plan, piles[g].foot, piles[*it].foot);
-              if (d < r) q[*it] += volume[g] * (1.0 - d / r) / r;
+              if (d < r) q[*it] += volume[g] * weight * (1.0 - d / r) * (1.0 - d / r);
             }
           }
       }
@@ -960,8 +997,11 @@ bool deposit_patch_fits(const DepositPatch& p, std::string& error) {
 
 u64 deposit_solve_count() { return g_solves.load(std::memory_order_relaxed); }
 
-bool solve_deposit(const DepositPatch& p, assets::MeshData& out, std::string& error) {
+bool solve_deposit(const DepositPatch& p, assets::MeshData& out, std::string& error,
+                   f64 stone_tile_m) {
   out = {};
+  // T108 (rocks.md, "A stone wears its rock"): a loose stone is charted at its own set's repeat.
+  const f64 stone_tile = stone_tile_m > 0 ? stone_tile_m : wide(p.material.tile_m);
   Vector<u8> active;
   Vector<u32> cells;
   u32 surface_triangles = 0;
@@ -1131,7 +1171,10 @@ bool solve_deposit(const DepositPatch& p, assets::MeshData& out, std::string& er
     if (!present(x + 1, z)) edge(b, d);
     if (!present(x, z + 1)) edge(d, c);
     if (!present(x - 1, z)) edge(c, a);
-  }  // G143: past the bed's edge its largest clasts lie scattered and thinning over metres, the
+  }
+  // T108: everything after the bed is a loose stone, its own primitive and material.
+  const u32 bed_indices = mesh.indices.size();
+  // G143: past the bed's edge its largest clasts lie scattered and thinning over metres, the
   // largest farthest, as a real toe's do (rocks.md, "The toe"; Kirkby and Statham's exponential
   // travel): every fourth fragment stands in a bare cell of the edge field's band (sink 0-2 m,
   // about three metres out), drawn there with odds exp(-d / k_toe_run_m) of its distance d past the
@@ -1206,7 +1249,7 @@ bool solve_deposit(const DepositPatch& p, assets::MeshData& out, std::string& er
         if (triangles_of_grid(candidate) <= p.block_triangles) cap = candidate;
       own = std::min(own, cap);
     }
-    emit_fragment(p.type, half, {x, y, z}, yaw, .3, seed, own, wide(p.material.tile_m), mesh);
+    emit_fragment(p.type, half, {x, y, z}, yaw, .3, seed, own, stone_tile, mesh);
     // Support shear is local to each fragment; its existing angular fabric is retained.
     const f64 eps = wide(p.spacing_m) * .01;
     const f64 sx = (sample(p, support, x + eps, z) - sample(p, support, x - eps, z)) / (2 * eps);
@@ -1231,7 +1274,7 @@ bool solve_deposit(const DepositPatch& p, assets::MeshData& out, std::string& er
     const f64 x = wide(b.x_m), y = wide(b.y_m), z = wide(b.z_m);
     const f64 sx = wide(b.slope[0]), sz = wide(b.slope[1]);
     emit_fragment(p.type, {wide(b.half[0]), wide(b.half[1]), wide(b.half[2])}, {x, y, z},
-                  wide(b.yaw), wide(b.buried), b.seed, block_rung, wide(p.material.tile_m), mesh);
+                  wide(b.yaw), wide(b.buried), b.seed, block_rung, stone_tile, mesh);
     for (u32 v = first; v < mesh.positions.size(); ++v) {
       Vec3& pos = mesh.positions[v];
       pos.y = static_cast<f32>(wide(pos.y) + sx * (wide(pos.x) - x) + sz * (wide(pos.z) - z));
@@ -1257,10 +1300,24 @@ bool solve_deposit(const DepositPatch& p, assets::MeshData& out, std::string& er
   mesh.positions.resize(used);
   mesh.normals.resize(used);
   mesh.uvs.resize(used);
-  assets::Primitive part;
-  part.index_count = mesh.indices.size();
-  part.material = 0;
-  mesh.primitives.push_back(part);
+  // T108: the bed (material 0), then the stones (material 1, the same rock's constants until a set
+  // is applied), each a primitive; a patch of meadow with blocks and no bed has the stones alone.
+  if (bed_indices > 0) {
+    assets::Primitive part;
+    part.index_count = bed_indices;
+    part.material = 0;
+    mesh.primitives.push_back(part);
+  }
+  if (mesh.indices.size() > bed_indices) {
+    const assets::Material stone_material =
+        mesh.materials[0];  // a copy: never push our own element
+    mesh.materials.push_back(stone_material);
+    assets::Primitive part;
+    part.first_index = bed_indices;
+    part.index_count = mesh.indices.size() - bed_indices;
+    part.material = 1;
+    mesh.primitives.push_back(part);
+  }
   out = std::move(mesh);
   return true;
 }
@@ -1295,9 +1352,16 @@ bool build_deposit_container(const DepositPatch& input, const geometry::ClusterL
     from_pack = true;
   else
     chosen = materials::resolve_set(&set, pack, rock_role(p.type), &from_pack);
+  // T108 (rocks.md, "A stone wears its rock"): a loose stone is one stone, so it wears its rock's
+  // own set (the recipe's images, else `rock/<type>`, else the type's flat colour, as a boulder
+  // does), at that set's repeat; never the bed's granular set, which is a picture of many stones.
+  bool stone_from_pack = false;
+  const materials::MaterialSet* stone =
+      materials::resolve_set(&set, pack, rock_role(p.type), &stone_from_pack);
+  const f64 stone_tile = stone_from_pack ? wide(stone->tile_m) : wide(p.material.tile_m);
   if (from_pack) p.material.tile_m = chosen->tile_m;
   assets::MeshData mesh;
-  if (!solve_deposit(p, mesh, error)) return false;
+  if (!solve_deposit(p, mesh, error, stone_tile)) return false;
   geometry::ClusterLodOptions options = lod;
   options.normal_cones = true;
   // G143's third pass (rocks.md, "The coarse forms keep the patch's border"): a patch is a closed
@@ -1316,31 +1380,53 @@ bool build_deposit_container(const DepositPatch& input, const geometry::ClusterL
   }
   geometry::AttributeSource attributes = assets::attribute_source(mesh);
   attributes.locked = std::span<const u8>(locked.data(), locked.size());
-  if (!geometry::build_cluster_lod(mesh.positions, {mesh.indices.data(), mesh.indices.size()},
-                                   options, out.mesh, &error, attributes))
-    return false;
+  // T108: one DAG a primitive (the bed, the stones), merged, so a cluster names one material.
+  Vector<geometry::ClusterLodMesh> parts;
+  Vector<u32> part_material;
+  for (const assets::Primitive& primitive : mesh.primitives) {
+    geometry::ClusterLodMesh part;
+    if (!geometry::build_cluster_lod(
+            mesh.positions, {mesh.indices.data() + primitive.first_index, primitive.index_count},
+            options, part, &error, attributes))
+      return false;
+    part_material.push_back(static_cast<u32>(primitive.material));
+    parts.push_back(std::move(part));
+  }
+  Vector<u32> owner;
+  if (!geometry::merge_cluster_lod(parts, out.mesh, &owner, &error)) return false;
+  for (u32& o : owner)
+    o = part_material[o];
   if (page_bytes > 0) {
     geometry::ClusterPagesOptions pages;
     pages.page_bytes = page_bytes;
-    if (!geometry::build_cluster_pages(out.mesh, pages, out.pages, &error)) return false;
+    Vector<u32> order;
+    if (!geometry::build_cluster_pages(out.mesh, pages, out.pages, &error, &order)) return false;
+    geometry::permute_cluster_array(order, owner);
   }
-  out.cluster_material.assign(out.mesh.mesh.clusters.size(), 0u);
-  geometry::ClusterFileMaterial material;
-  material.base_color = mesh.materials[0].base_color;
-  material.metallic = 0;
-  material.roughness = mesh.materials[0].roughness;
-  out.materials.push_back(material);
-  if (chosen) {
+  out.cluster_material = std::move(owner);
+  for (const assets::Material& m : mesh.materials) {
+    geometry::ClusterFileMaterial material;
+    material.base_color = m.base_color;
+    material.metallic = 0;
+    material.roughness = m.roughness;
+    out.materials.push_back(material);
+  }
+  if (chosen || stone) {
     // apply_set requires a sampling record beside the material. Keep the optional section
     // absent for untextured deposits so their existing container bytes remain unchanged.
-    out.material_sampling.push_back(geometry::encode_material_sampling(
-        mesh.materials[0].sampling, mesh.materials[0].occlusion_strength));
-    // The patch's `sampling`, when it names one, places the chosen set's texels (R131).
-    materials::MaterialSet applied = *chosen;
-    if (p.material.sampling.has_value())
-      applied.stochastic = *p.material.sampling == RockSampling::Stochastic;
-    materials::apply_set(applied, materials::UvLayout::repeats, out, 0);
-    material_factors(p.material, out.materials[0].base_color, out.materials[0].roughness);
+    for (const assets::Material& m : mesh.materials)
+      out.material_sampling.push_back(
+          geometry::encode_material_sampling(m.sampling, m.occlusion_strength));
+    for (u32 k = 0; k < mesh.materials.size(); ++k) {
+      const materials::MaterialSet* own = k == 0 ? chosen : stone;
+      if (own == nullptr) continue;
+      // The patch's `sampling`, when it names one, places the chosen set's texels (R131).
+      materials::MaterialSet applied = *own;
+      if (p.material.sampling.has_value())
+        applied.stochastic = *p.material.sampling == RockSampling::Stochastic;
+      materials::apply_set(applied, materials::UvLayout::repeats, out, k);
+      material_factors(p.material, out.materials[k].base_color, out.materials[k].roughness);
+    }
   }
   if (!out.image_paths.empty()) texture::fill_cluster_texture_records(out);
   out.source_hash = deposit_source_hash(input);
