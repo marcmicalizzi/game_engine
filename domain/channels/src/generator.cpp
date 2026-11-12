@@ -23,7 +23,7 @@ namespace {
 using namespace detail;
 
 constexpr u32 k_plan_magic = 0x4C504843u;  // "CHPL"
-constexpr u32 k_plan_format = 2;           // 2 (W97): a link's sediment
+constexpr u32 k_plan_format = 3;           // 2 (W97): a link's sediment; 3 (W116): its seat
 static_assert(sizeof(ChannelPoint) == 40, "a point is written as its bytes: no padding");
 static_assert(sizeof(ChannelSediment) == 32, "a sediment is written as its bytes: no padding");
 
@@ -79,6 +79,7 @@ void write_link(Writer& w, const ChannelLink& l) {
   w.list(l.reach);
   w.list(l.step_depth);
   w.list(l.bed);
+  w.list(l.seat);
   w.list(l.step_at);
   w.list(l.step_height);
   w.list(l.cluster_at);
@@ -113,6 +114,7 @@ bool read_link(Reader& r, ChannelLink& l) {
   r.list(l.reach);
   r.list(l.step_depth);
   r.list(l.bed);
+  r.list(l.seat);
   r.list(l.step_at);
   r.list(l.step_height);
   r.list(l.cluster_at);
@@ -139,10 +141,10 @@ bool read_link(Reader& r, ChannelLink& l) {
   const u32 m = l.line.size();
   const auto per_point = [m](u32 size) { return size == 0 || size == m; };
   if (!per_point(l.reach.size()) || !per_point(l.step_depth.size()) || !per_point(l.bed.size()) ||
-      !per_point(l.knick.size()) || !per_point(l.asym.size()) || !per_point(l.swell.size()) ||
-      !per_point(l.flood_left.size()) || !per_point(l.flood_right.size()) ||
-      !per_point(l.entrenchment.size()) || !per_point(l.sediment.size()) ||
-      l.flood_left.size() != l.flood_right.size())
+      !per_point(l.seat.size()) || !per_point(l.knick.size()) || !per_point(l.asym.size()) ||
+      !per_point(l.swell.size()) || !per_point(l.flood_left.size()) ||
+      !per_point(l.flood_right.size()) || !per_point(l.entrenchment.size()) ||
+      !per_point(l.sediment.size()) || l.flood_left.size() != l.flood_right.size())
     return false;
   if (l.step_at.size() != l.step_height.size() || l.cluster_at.size() != l.cluster_size.size() ||
       l.keep > m)

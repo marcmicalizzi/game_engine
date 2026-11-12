@@ -72,7 +72,10 @@ namespace engine::channels {
 //    the bars and the banks' feet as one merged mesh a tile; the steps' domes are clasts.
 // 9 (W97b): a tile's piece handed with the tile (no recipe file written), its stones of four
 //    lithologies in two tones as material constants, a DAG a material, no pack set applied.
-inline constexpr u32 k_channels_version = 9;
+// 10 (W116): a line across a slope is seated under its lower bank (`ChannelLink::seat`), its flood
+//    bed reaches no further than the ground holds its level, and the line is moved toward a bank
+//    only where the move finds one.
+inline constexpr u32 k_channels_version = 10;
 
 // **The bed's surface sediment at a point** (W97; channels.md, "Bed sediment"; the sources in
 // docs/experiments/channels.md, "Bed sediment"): the surface grain-size distribution a pebble count
@@ -366,7 +369,9 @@ WaterStats measure_water(const JsonValue& blocks, const scene_gen::Ground& groun
 // under it) over the ground at its lower bank top, and the flood bed's level over the ground at
 // its outer edge. Each point of every kept stretch at least `bar_min_width_m` wide is read across
 // the line's heading over a width, at the section's half width (`bend_section`'s, with its swell)
-// and at each side's flood reach, against `ground` (the ground before any cut: a cut only lowers,
+// and at each side's flood reach (a fan, a knickpoint and a tributary's confluence grade are not
+// read: a body's level or the trunk stands over their banks), against `ground` (the ground before
+// any cut: a cut only lowers,
 // so where the section stands over that ground the cut leaves it standing in the air). The
 // section is the trapezoid or triangle the cut writes, its faces rising to its top at the bank
 // tops, so on ground that is a plane across a width a section whose top holds holds everywhere

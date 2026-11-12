@@ -134,11 +134,21 @@ SeatStats measure_seat(const ChannelLayer& p, const ChannelNetwork& n,
       const ChannelPoint& pt = link.line[i];
       const f64 w = wide(pt.width_m);
       if (w < wide(p.bar_min_width_m) || (i < link.knick.size() && link.knick[i])) continue;
-      // The heading over a width: the chord between the points half a width either way.
+      // A fan opens into a water body, whose level stands over its banks: not read.
+      if (link.mouth &&
+          s.back() - s[i] < wide(p.fan_widths) * wide(link.line[link.line.size() - 1].width_m))
+        continue;
+      // Nor does a tributary's mouth: over its confluence grade it opens into its trunk, whose
+      // banks stand over it, and its downhill bank there is the trunk's channel.
+      if (link.trunk != ~0u &&
+          s[m - 1] - s[i] < wide(p.confluence_widths) * wide(link.line[m - 1].width_m))
+        continue;
+      // The heading over a width: the chord between the points half a width either way, over
+      // the whole line as the seat reads it.
       u32 a = i, b = i;
       while (a > 0 && s[i] - s[a] < .5 * w)
         --a;
-      while (b + 1 < m && s[b] - s[i] < .5 * w)
+      while (b + 1 < link.line.size() && s[b] - s[i] < .5 * w)
         ++b;
       const f64 tx = link.line[b].at.x - link.line[a].at.x;
       const f64 tz = link.line[b].at.z - link.line[a].at.z;
