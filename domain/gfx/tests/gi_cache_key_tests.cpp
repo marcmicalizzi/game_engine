@@ -698,3 +698,55 @@ TEST_CASE("gi cache key: a crown's cell counts in sixteenths, and a full count i
   CHECK(gi_history_rate(60000u, 700u) == doctest::Approx(1.0f / 16.0f));
   CHECK(gi_history_rate(100u, 12u) == doctest::Approx(12.0f / 112.0f));
 }
+
+// Stage 8: a foliage cell's memory is sixty-four frames, by the same rule. What the longer memory
+// buys is the size of a frame's step in the cell's mean once it has filled — every pixel of a far
+// crown takes that step together — and what it must not cost is the fill: until the history is
+// full the rate is the plain mean's, whatever the memory.
+TEST_CASE("gi cache key: a foliage cell remembers sixty-four frames, and fills as fast as ever") {
+  CHECK(k_gi_crown_history_frames == 4u * k_gi_history_frames);
+  // The stamp's flag is above any frame count the cache's clock reaches.
+  CHECK((k_gi_stamp_crown & 0x7fffffffu) == 0u);
+  // The fill: the same counts and rates as a face's cell while the history is short of either cap.
+  for (const u32 n : {16u, 160u, 2400u}) {
+    u32 face = 0;
+    u32 crown = 0;
+    for (u32 frame = 0; frame < 16 && (crown + n) < 0xffffu; ++frame) {
+      CHECK(gi_history_rate(crown, n, k_gi_crown_history_frames) ==
+            doctest::Approx(gi_history_rate(face, n)));
+      face = gi_history(face, n);
+      crown = gi_history(crown, n, k_gi_crown_history_frames);
+      CHECK(crown == face);
+    }
+  }
+  // Filled: a frame's share of sixty-four, a quarter of a face's step, under the field's cap ...
+  CHECK(gi_history(160u * 64u, 160u, k_gi_crown_history_frames) == 160u * 64u);
+  CHECK(gi_history_rate(160u * 64u, 160u, k_gi_crown_history_frames) ==
+        doctest::Approx(1.0f / 64.0f));
+  CHECK(gi_history_rate(160u * 16u, 160u) == doctest::Approx(1.0f / 16.0f));
+  // ... and past it, where the count has filled its sixteen bits and stands for the whole history.
+  CHECK(gi_history(0xffffu, 24000u, k_gi_crown_history_frames) == 0xffffu);
+  CHECK(gi_history_rate(0xffffu, 24000u, k_gi_crown_history_frames) ==
+        doctest::Approx(1.0f / 64.0f));
+  // A cell that takes little keeps the 256 samples every cell keeps.
+  CHECK(gi_history(256u, 2u, k_gi_crown_history_frames) == 256u);
+}
+
+// Stage 8: the word the sample pass reads a direction round the eye's stops from.
+TEST_CASE("gi cache key: the shell's word holds the reach in whole metres and the refresh") {
+  CHECK(gi_shell_word(48.0f, 8u) == (48u | (8u << 16) | k_gi_shell_first));
+  CHECK(gi_shell_word(48.0f, 8u, false) == (48u | (8u << 16)));
+  // The reach rounds up, so the ray never stops short of the volume.
+  CHECK((gi_shell_word(47.2f, 8u) & 0xffffu) == 48u);
+  CHECK((gi_shell_word(0.0f, 8u) & 0xffffu) == 0u);  // no stop
+  CHECK((gi_shell_word(1.0e9f, 1u) & 0xffffu) == 0xffffu);
+  CHECK(((gi_shell_word(48.0f, 0u) >> 16) & 0xffu) == 0u);  // never refreshed
+  CHECK(((gi_shell_word(48.0f, 1u) >> 16) & 0xffu) == 1u);  // every frame: stage 7's pass
+  CHECK(((gi_shell_word(48.0f, 4000u) >> 16) & 0xffu) == 0xffu);
+  CHECK((gi_shell_word(48.0f, 255u, false) >> 24) == 0u);
+  // The pass's threads: the directions and the windows each in whole workgroups, so a wave is
+  // all of one kind whichever comes first.
+  CHECK(gi_shell_base(65536u) == 65536u);
+  CHECK(gi_shell_base(65537u) == 65536u + k_gi_workgroup);
+  CHECK(gi_shell_base(0u) == 0u);
+}

@@ -32,6 +32,7 @@
 #include <foundation/image/metrics.h>
 #include <foundation/tunables/tunables.h>
 #include <systems/renderer/capture.h>
+#include <systems/renderer/crown_priors.h>
 #include <systems/renderer/eye_shell.h>
 #include <systems/renderer/gi_preroll.h>
 #include <systems/renderer/gpu_scene.h>
@@ -93,7 +94,7 @@ struct MeshBuilder {
 
 // A GLB of one primitive and one material, u32 indices, no UVs needed by the material but given.
 bool write_glb(const std::string& path, const MeshBuilder& m, Vec3 base_color, f32 roughness,
-               bool masked = false) {
+               bool masked = false, bool two_sided = false) {
   std::vector<u8> bin;
   for (const Vec3& p : m.positions) {
     put_f32(bin, p.x);
@@ -133,6 +134,8 @@ bool write_glb(const std::string& path, const MeshBuilder& m, Vec3 base_color, f
       // An alpha-tested material whose alpha is one: nothing is cut, and the mesh is foliage to
       // whatever asks (the crowns' priors, stage 7).
       (masked ? ",\"alphaMode\":\"MASK\",\"alphaCutoff\":0.5" : "") +
+      // A leaf card is seen from both sides.
+      (two_sided ? ",\"doubleSided\":true" : "") +
       "}],"
       "\"accessors\":["
       "{\"bufferView\":0,\"componentType\":5126,\"count\":" +
@@ -467,15 +470,64 @@ bool write_crown(const std::string& path) {
   return write_glb(path, m, Vec3{0.25f, 0.45f, 0.15f}, 0.8f, true);
 }
 
+// **A crown of leaf cards** (stage 8): the same ball of 1.5 m, filled with 340 two-sided square
+// cards 0.3 m a side turned every way, alpha-tested. A card's triangle is 0.045 m2 (a leaf's, by
+// `gfx::k_crown_card_max_m2`), and 340 cards are 30.6 m2 of card, 21.4 m2 of leaf at the card's
+// fill of 0.7, in 14.1 m3: **1.5 m2 of leaf a cubic metre**, a tall spruce's (the grounding page
+// counts 0.46 for the oak, 1.47 for the tall spruce and 4.0 for the young one; the forest's
+// ninetieth percentile is 1.82), where the cubes above count 6.5 and put every prior on its
+// floor. Through its centre the optical depth is 0.5 x 1.5 x 1.5 = 1.1, so the priors run from
+// about a third in the middle to one at the rim, as a crown's do.
+//
+// `radius`, `h` (a card's half side) and `cards` make the other two meshes the load tells apart
+// (stage 8): low leaves, and pictures of leaves.
+bool write_leaf_crown(const std::string& path, f32 radius = 1.5f, f32 h = 0.15f, u32 cards = 340) {
+  MeshBuilder m;
+  u32 state = 20261112u;
+  auto unit = [&state]() {
+    state = state * 1664525u + 1013904223u;
+    return static_cast<f32>(state >> 8) / 16777216.0f;
+  };
+  for (u32 leaf = 0; leaf < cards; ++leaf) {
+    Vec3 c{};
+    do {
+      c = Vec3{2.0f * unit() - 1.0f, 2.0f * unit() - 1.0f, 2.0f * unit() - 1.0f};
+    } while (dot(c, c) > 1.0f);
+    c = Vec3{c.x * radius, c.y * radius, c.z * radius};
+    // The card's normal: uniform on the sphere (a spherical leaf angle distribution, the G = 0.5
+    // the prior is built with), by rejection inside the ball.
+    Vec3 n{};
+    f32 nn = 0.0f;
+    do {
+      n = Vec3{2.0f * unit() - 1.0f, 2.0f * unit() - 1.0f, 2.0f * unit() - 1.0f};
+      nn = dot(n, n);
+    } while (nn > 1.0f || nn < 0.01f);
+    const f32 nl = std::sqrt(nn);
+    n = Vec3{n.x / nl, n.y / nl, n.z / nl};
+    Vec3 u = cross(n, std::fabs(n.y) < 0.9f ? Vec3{0.0f, 1.0f, 0.0f} : Vec3{1.0f, 0.0f, 0.0f});
+    const f32 ul = std::sqrt(dot(u, u));
+    u = Vec3{u.x / ul, u.y / ul, u.z / ul};
+    const Vec3 v = cross(n, u);
+    auto corner = [&](f32 a, f32 b) {
+      return Vec3{c.x + h * (a * u.x + b * v.x), c.y + h * (a * u.y + b * v.y),
+                  c.z + h * (a * u.z + b * v.z)};
+    };
+    m.quad(corner(-1.0f, -1.0f), corner(1.0f, -1.0f), corner(1.0f, 1.0f), corner(-1.0f, 1.0f), n);
+  }
+  return write_glb(path, m, Vec3{0.25f, 0.45f, 0.15f}, 0.8f, true, true);
+}
+
 constexpr u32 k_stand_crowns = 9;
 
-Fixture stand_fixture(const std::filesystem::path& dir) {
+// `leaf_cards`: the crowns are `write_leaf_crown`'s (stage 8) in place of the solid cubes'.
+Fixture stand_fixture(const std::filesystem::path& dir, bool leaf_cards = false) {
   const std::string cube = slashes(dir / "cube.glb");
   const std::string crown = slashes(dir / "crown.glb");
   REQUIRE(write_cube(cube));
-  REQUIRE(write_crown(crown));
+  REQUIRE((leaf_cards ? write_leaf_crown(crown) : write_crown(crown)));
   Fixture out;
-  out.name = "a stand of nine crowns over a slab";
+  out.name = leaf_cards ? "a stand of nine crowns of leaf cards over a slab"
+                        : "a stand of nine crowns over a slab";
   out.desc.meshes.push_back(cube);
   out.desc.meshes.push_back(crown);
   out.desc.ddc = slashes(dir / "ddc");
@@ -758,7 +810,7 @@ TEST_CASE("gi cache: a scene moved by whole cells draws the same bytes with the 
   // (their defaults, stated), the pre-roll and, under `bounce`, the hits' reads. The samples'
   // directions and the steps' offsets turn with the cache's frame count, never with a position,
   // and every cell is keyed as a pixel's, so all of it moves with the scene by whole cells.
-  const ScopedTunable shell("renderer.gi.shell_m", "48");
+  const ScopedTunable shell("renderer.gi.shell_m", "24");
   const ScopedTunable shell_rays("renderer.gi.shell_rays", "65536");
   for (const char* mode_name : {"sky", "bounce"}) {
     const ScopedTunable mode("renderer.gi.mode", mode_name);
@@ -794,7 +846,7 @@ TEST_CASE("gi cache: the frames with the cache on make no buffer and allocate as
   u64 allocations[2] = {0, 0};
   // Stage 4's volume round the eye and its samples on (their defaults, stated): the volume is a
   // row of the cull block and the samples ride in the sample pass's dispatch, no buffer of either.
-  const ScopedTunable shell("renderer.gi.shell_m", "48");
+  const ScopedTunable shell("renderer.gi.shell_m", "24");
   const ScopedTunable shell_rays("renderer.gi.shell_rays", "65536");
   for (u32 m = 0; m < 2; ++m) {
     const ScopedTunable mode("renderer.gi.mode", m == 0 ? "off" : "sky");
@@ -854,9 +906,11 @@ TEST_CASE("gi cache: the young cells' rays never pass the frame's budget") {
     if (i == 0) CHECK(steps == 1 + rig.resolved.gi_preroll);
     if (i > 0) CHECK(steps == 1);
     if (gi.samples == 0) continue;  // the stats of a frame before the first sample
-    // The view's own rays: the samples round the eye take two a direction that met a surface and
-    // one otherwise, out of the young half.
-    const u32 view_rays = (gi.rays - gi.shell - gi.shell_hits) / steps;
+    // The view's own rays: the samples round the eye take two a direction that met a surface
+    // (one where its cells are whole and it is kept, stage 8) and one otherwise, out of the young
+    // half.
+    CHECK(gi.shell_kept <= gi.shell_hits);
+    const u32 view_rays = (gi.rays - gi.shell - (gi.shell_hits - gi.shell_kept)) / steps;
     most = std::max(most, view_rays);
     least = std::min(least, view_rays);
   }
@@ -938,7 +992,7 @@ TEST_CASE("gi cache: the levers against the reference at three bounces") {
       {"the plain read", "1", "0", "false", "false", "false", "0", "0"},
       {"stage 2's numbers", "32", "16", "true", "true", "true", "0", "0"},
       {"stage 4's numbers", "32", "16", "true", "true", "true", "48", "65536"},
-      {"the defaults (stage 5)", "255", "16", "true", "true", "true", "48", "65536"},
+      {"the defaults (stage 5)", "255", "16", "true", "true", "true", "24", "65536"},
   };
   constexpr u32 k_steps = sizeof(steps) / sizeof(steps[0]);
   constexpr u32 k_defaults = 3;
@@ -959,7 +1013,7 @@ TEST_CASE("gi cache: the levers against the reference at three bounces") {
       if (s == k_defaults) {
         // The row is the defaults, not a copy of them that could fall behind.
         CHECK(rig.resolved.gi_confident == gfx::k_gi_confident);
-        CHECK(rig.resolved.gi_shell_m == 48.0f);
+        CHECK(rig.resolved.gi_shell_m == 24.0f);
         CHECK(rig.resolved.gi_shell_rays == 65536u);
       }
       CapturedFrame shot;
@@ -1123,7 +1177,7 @@ TEST_CASE("gi cache: a turn shows no fill") {
     const char* shell_rays;
   };
   const Run runs[] = {{"the plain read, nothing round the eye", "1", "0", "0"},
-                      {"the defaults", "255", "48", "65536"},
+                      {"the defaults", "255", "24", "65536"},
                       {"the ladder alone, nothing round the eye", "255", "0", "0"}};
   constexpr u32 k_runs = sizeof(runs) / sizeof(runs[0]);
   EventCurve curves[k_runs];
@@ -1385,14 +1439,23 @@ TEST_CASE("gi cache: on a stand of trees a coarse level holds the fine one's lig
 // page). The bound waits for a fixture of leaf cards, or for a hit's fallback that does not lean
 // on a prior at its floor. The second run is stage 6's read (the prior off), which stands
 // outside its floor, brighter, as it did.
-TEST_CASE("gi cache: a turn to a stand of trees stands nearer and settles sooner with the prior") {
-  Gpu gpu;
-  if (!gpu.ok) {
-    MESSAGE("gi cache unavailable here: " << gpu.why);
-    return;
-  }
-  const test::TempDir tmp("engine_gi_stand_turn");
-  const Fixture fixture = stand_fixture(tmp.native());
+//
+// **Stage 8: this is the stand of solid crowns, and it keeps this case under that name.** The
+// band's bound is held on a stand whose crowns are leaf cards at a tree's leaf area, by the case
+// after this one.
+namespace {
+
+struct StandCurve {
+  f64 bias = 0.0;          // the first frame's signed distance from the reference
+  f64 apart = 0.0;         // ... and its absolute one
+  f64 floor = 0.0;         // the still picture's distance from it
+  f64 floor_change = 0.0;  // ... and its change between frames
+  f64 worst_change = 0.0;  // the largest change from the eighth frame on
+};
+
+// The turn to a stand: the eye held looking away, turned to the stand in four frames and held;
+// over the crowns' pixels, the first frame against the mean of the last sixty-four.
+StandCurve stand_turn(const Gpu& gpu, const Fixture& fixture, const char* crown_prior) {
   constexpr u32 k_hold = 60;
   constexpr u32 k_turn = 4;
   constexpr u32 k_after = 352;
@@ -1417,19 +1480,11 @@ TEST_CASE("gi cache: a turn to a stand of trees stands nearer and settles sooner
   // runs out — with it the first frame's band moved by more between two runs of one executable
   // (0.98 and 0.73 by the count) than the reveal moves it, and the case's second run refused it.
   const ScopedTunable young("renderer.gi.young_rays", "false");
-  struct Curve {
-    f64 bias = 0.0;          // the first frame's signed distance from the reference
-    f64 apart = 0.0;         // ... and its absolute one
-    f64 floor = 0.0;         // the still picture's distance from it
-    f64 floor_change = 0.0;  // ... and its change between frames
-    f64 worst_change = 0.0;  // the largest change from the eighth frame on
-  };
-  Curve curves[2];
-  const char* reveal[2] = {"true", "false"};
+  StandCurve c;
   CaptureChannels channels;
   channels.ids = true;
-  for (u32 r = 0; r < 2; ++r) {
-    const ScopedTunable lever("renderer.gi.crown_prior", reveal[r]);
+  {
+    const ScopedTunable lever("renderer.gi.crown_prior", crown_prior);
     Rig rig;
     rig.width = k_stand_size;
     rig.height = k_stand_size;
@@ -1473,7 +1528,6 @@ TEST_CASE("gi cache: a turn to a stand of trees stands nearer and settles sooner
         sum += std::abs(luma_of(shots[k], crown[j]) - luma_of(shots[k - 1], crown[j]));
       return sum / static_cast<f64>(crown.size());
     };
-    Curve& c = curves[r];
     c.bias = from_reference(0, true);
     c.apart = from_reference(0, false);
     for (usize k = count - 2 * k_stand_tail; k < count - k_stand_tail; ++k) {
@@ -1482,15 +1536,30 @@ TEST_CASE("gi cache: a turn to a stand of trees stands nearer and settles sooner
     }
     for (usize k = 8; k < count; ++k)
       c.worst_change = std::max(c.worst_change, change(k));
-    const std::string label = std::string("the crown's prior ") + reveal[r];
+    const std::string label = fixture.name + ", the crown's prior " + crown_prior;
     MESSAGE(
         label << ": over " << crown.size() << " crown pixels the first frame after the turn stands "
               << c.bias << " 8-bit steps from the long-held picture in the mean (" << c.apart
               << " apart) against a floor of " << c.floor << "; the largest change from the eighth "
               << "frame on " << c.worst_change << " against the floor's " << c.floor_change);
   }
-  const Curve& now = curves[0];
-  const Curve& faces = curves[1];
+  return c;
+}
+
+}  // namespace
+
+TEST_CASE(
+    "gi cache: a turn to a stand of solid crowns stands nearer and settles sooner with the "
+    "prior") {
+  Gpu gpu;
+  if (!gpu.ok) {
+    MESSAGE("gi cache unavailable here: " << gpu.why);
+    return;
+  }
+  const test::TempDir tmp("engine_gi_stand_turn");
+  const Fixture fixture = stand_fixture(tmp.native());
+  const StandCurve now = stand_turn(gpu, fixture, "true");
+  const StandCurve faces = stand_turn(gpu, fixture, "false");
   // By faces (stage 6's read) the band shows: brighter than its floor.
   CHECK(faces.bias > faces.floor);
   // With the prior the first frame stands nearer the long-held picture, and the frames after the
@@ -1498,6 +1567,81 @@ TEST_CASE("gi cache: a turn to a stand of trees stands nearer and settles sooner
   // head says why, and the first form of this check — the band within the floor — refused it.)
   CHECK(now.apart < faces.apart);
   CHECK(now.worst_change < faces.worst_change);
+}
+
+// **A turn to a stand of leaf cards shows no band** (stage 8): the bound stage 6's case was
+// written for and neither stage 6 nor the solid crowns met. The stand's crowns are leaf cards at
+// a tree's leaf area (`write_leaf_crown`: 1.5 m2 a cubic metre, priors from a third to one), so
+// their cells hold the light outside the crown's own shade and a pixel reads one coarse level
+// times its own prior: turned to from looking away, the crowns' first frame stands inside the
+// still picture's floor of its long-held picture, in the mean. One run, the prior on (the
+// default): the solid crowns' case above keeps the comparison with stage 6's read.
+TEST_CASE("gi cache: a turn to a stand of leaf cards shows no band") {
+  Gpu gpu;
+  if (!gpu.ok) {
+    MESSAGE("gi cache unavailable here: " << gpu.why);
+    return;
+  }
+  const test::TempDir tmp("engine_gi_leaf_turn");
+  const Fixture fixture = stand_fixture(tmp.native(), true);
+  const StandCurve now = stand_turn(gpu, fixture, "true");
+  CHECK(std::abs(now.bias) <= now.floor);
+}
+
+// **Which meshes are foliage** (stage 8; `build_crown_priors`, no device). A record in the table
+// makes a mesh's alpha-tested surfaces foliage. A crown has a grid of its own shade (stage 7);
+// a mesh of leaf cards that stand under a crown's height — a shrub, a sward — has the one cell
+// that lets everything through, read as one from any point and any facing; an opaque mesh has
+// none; and neither has a mesh of pictures of leaves (cards of a square metre: an impostor),
+// whose walk is one level where it is seen from and for which the grid's lookup was 0.4 ms of
+// the forest's resolve. Without the stage the shrub has no record.
+TEST_CASE("gi cache: low leaves read one cell of no shade, and pictures of leaves have none") {
+  const test::TempDir tmp("engine_gi_low_leaves");
+  const std::string cube = slashes(tmp.native() / "cube.glb");
+  const std::string crown = slashes(tmp.native() / "crown.glb");
+  const std::string shrub = slashes(tmp.native() / "shrub.glb");
+  const std::string cards = slashes(tmp.native() / "cards.glb");
+  REQUIRE(write_cube(cube));
+  REQUIRE(write_leaf_crown(crown));
+  REQUIRE(write_leaf_crown(shrub, 0.5f, 0.1f, 120));  // 1.2 m tall with its cards: under 1.5
+  REQUIRE(write_leaf_crown(cards, 1.5f, 0.5f, 40));   // a card's triangle 0.5 m2: over 0.05
+  SceneDesc desc;
+  for (const std::string& mesh : {cube, crown, shrub, cards})
+    desc.meshes.push_back(mesh);
+  desc.ddc = slashes(tmp.native() / "ddc");
+  for (u32 m = 0; m < 4; ++m) {
+    SceneInstance instance;
+    instance.mesh = m;
+    instance.transform.position = Vec3{6.0f * static_cast<f32>(m), 2.0f, 0.0f};
+    desc.instances.push_back(instance);
+  }
+  SceneData data;
+  std::string error;
+  REQUIRE_MESSAGE(load_scene(desc, data, error), error);
+  CrownPriorTable table;
+  build_crown_priors(data, table);
+  REQUIRE(table.meshes >= 4);
+  REQUIRE(table.bytes.size() >= table.meshes * sizeof(gfx::CrownPriorDesc) + 4);
+  CHECK(table.crowns == 1);
+  CHECK(table.plain == 1);
+  gfx::CrownPriorDesc records[4];
+  std::memcpy(records, table.bytes.data(), sizeof(records));
+  CHECK(records[0].offset == gfx::k_no_crown);    // opaque: nothing asks
+  REQUIRE(records[1].offset != gfx::k_no_crown);  // a crown: its own grid, more than one cell
+  CHECK((records[1].dims & 0xffu) > 1u);
+  REQUIRE(records[2].offset != gfx::k_no_crown);  // low leaves: the cell of no shade
+  CHECK(records[2].dims == (1u | (1u << 8) | (1u << 16)));
+  REQUIRE(records[2].offset + 2u <= table.bytes.size());
+  for (const Vec3 p :
+       {Vec3{0.0f, 0.0f, 0.0f}, Vec3{0.4f, -0.3f, 0.2f}, Vec3{-90.0f, 40.0f, 7.0f}}) {
+    const gfx::CrownPriorSample s =
+        gfx::crown_prior_sample(records[2], table.bytes.data() + records[2].offset, p);
+    CHECK(s.up == 1.0f);
+    CHECK(s.down == 1.0f);
+    for (const f32 normal_y : {-1.0f, 0.0f, 0.7f, 1.0f})
+      CHECK(gfx::crown_prior(s, normal_y) == 1.0f);
+  }
+  CHECK(records[3].offset == gfx::k_no_crown);  // pictures of leaves: the walk they had
 }
 
 // **The start and a cut** (stage 5's pre-roll, gi_preroll.h). The first frame after a cut to

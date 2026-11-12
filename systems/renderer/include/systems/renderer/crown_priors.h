@@ -27,6 +27,7 @@ struct CrownPriorTable {
   u32 meshes = 0;    // the records: every mesh of the scene
   u32 crowns = 0;    // of them, with a grid of their own
   u32 forms = 0;     // ... and distance forms that read their source's
+  u32 plain = 0;     // ... and meshes of low leaves: the one cell of no shade (stage 8)
   u32 leaf_triangles = 0;
   f64 leaf_area_m2 = 0.0;    // over every crown, one-sided
   f64 leaf_volume_m3 = 0.0;  // the cells that hold a leaf

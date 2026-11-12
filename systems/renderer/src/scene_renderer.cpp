@@ -2049,6 +2049,7 @@ void SceneRenderer::fold_gi(u32 slot) {
   gi.shell = words[gfx::k_gi_stat_shell];
   gi.shell_hits = words[gfx::k_gi_stat_shell_hits];
   gi.shell_near = words[gfx::k_gi_stat_shell_near];
+  gi.shell_kept = words[gfx::k_gi_stat_shell_kept];
   if (resolved_.gi_log) {
     ENGINE_LOG_INFO(log_renderer, "gi cache", log::field("frame", gi_frame_),
                     log::field("rays", gi.rays), log::field("samples", gi.samples),
@@ -2056,7 +2057,8 @@ void SceneRenderer::fold_gi(u32 slot) {
                     log::field("cells", gi.cells), log::field("young_cells", gi.young_cells),
                     log::field("evicted", gi.evicted), log::field("expired", gi.expired),
                     log::field("shell", gi.shell), log::field("shell_hits", gi.shell_hits),
-                    log::field("shell_near", gi.shell_near));
+                    log::field("shell_near", gi.shell_near),
+                    log::field("shell_kept", gi.shell_kept));
   }
 }
 
@@ -3466,6 +3468,9 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
       resolve.gi_shell_rays = gi_shell_rays;
       resolve.gi_shell_columns = gi_shell_columns;
       resolve.gi_shell_cost = static_cast<u32>(gfx::gi_shell_ray_cost(gi_shell_rays) * views);
+      resolve.gi_shell_word =
+          gfx::gi_shell_word(resolved_.gi_shell_clip ? resolved_.gi_shell_m : 0.0f,
+                             resolved_.gi_shell_refresh, resolved_.gi_shell_first);
       resolve.gi_crowns = gi_crowns_.address;
       resolve.gi_crown_count = gi_crown_count_;
     }
@@ -5425,9 +5430,11 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
                                   sizeof(push), &push);
                 const u64 pixels = u64{view_frames[v].width} * view_frames[v].height;
                 u64 threads = (pixels + gi_stride - 1) / gi_stride;
-                // Stage 4: the shell's directions, from the next whole workgroup on.
+                // Stage 4: the shell's directions, in whole workgroups of their own — before the
+                // windows' (stage 8) or behind them (gi_cache.h, `gi_shell_base`).
                 if (gi_shell_rays > 0) {
-                  threads = gfx::gi_shell_base(static_cast<u32>(threads)) + u64{gi_shell_rays};
+                  threads = u64{gfx::gi_shell_base(static_cast<u32>(threads))} +
+                            gfx::gi_shell_base(gi_shell_rays);
                 }
                 const u64 groups = (threads + gfx::k_gi_workgroup - 1) / gfx::k_gi_workgroup;
                 cb.dispatch(static_cast<u32>(std::min<u64>(groups, gfx::k_gi_dispatch_pitch)),

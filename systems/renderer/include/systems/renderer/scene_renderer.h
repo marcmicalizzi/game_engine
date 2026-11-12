@@ -148,6 +148,8 @@ struct GiStats {
   u32 shell = 0;
   u32 shell_hits = 0;
   u32 shell_near = 0;
+  // Stage 8: of `shell_hits`, those whose cells were whole and took no bounce this frame.
+  u32 shell_kept = 0;
 };
 // One frame's numbers, as the renderer folds them in when that frame's slot comes around again
 // (`Stats::last`). The sums beside it answer "what does this scene cost on average"; a flythrough

@@ -427,6 +427,9 @@ struct ResolvedSettings {
   bool gi_crown_prior = false;  // `renderer.gi.crown_prior`: foliage through its crown's shade
   f32 gi_shell_m = 0.0f;        // `renderer.gi.shell_m`: the casters round the eye (stage 4)
   u32 gi_shell_rays = 0;        // `renderer.gi.shell_rays`: the samples round the eye (stage 4)
+  u32 gi_shell_refresh = 1;     // `renderer.gi.shell_refresh`: a whole cell's bounce, frames apart
+  bool gi_shell_clip = false;   // `renderer.gi.shell_clip`: the eye's rays stop at `gi_shell_m`
+  bool gi_shell_first = false;  // `renderer.gi.shell_first`: the directions are the first threads
   u32 gi_preroll = 0;           // `renderer.gi.preroll`: steps before a cold frame's own (stage 5)
   f32 gi_cut_m = 0.0f;          // `renderer.gi.cut_m`: an eye that moved this far starts cold
   bool occlusion = false;       // two-pass occlusion culling runs

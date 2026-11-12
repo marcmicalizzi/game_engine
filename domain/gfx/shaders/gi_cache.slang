@@ -23,6 +23,11 @@ static const uint k_gi_max_age = 240u;
 // gfx::k_gi_history_frames: a cell's history is 256 samples or this many frames' samples, the
 // longer.
 static const uint k_gi_history_frames = 16u;
+// gfx::k_gi_crown_history_frames, gfx::k_gi_stamp_crown (stage 8): a foliage cell remembers this
+// many frames, and its stamp's top bit says it is one (the fold has a cell's words and not its
+// key's tag).
+static const uint k_gi_crown_history_frames = 64u;
+static const uint k_gi_stamp_crown = 0x80000000u;
 static const uint k_gi_no_slot = 0xffffffffu;
 // gfx::k_gi_dispatch_pitch: the groups a row of a pass's two-dimensional dispatch.
 static const uint k_gi_dispatch_pitch = 32768u;
@@ -481,10 +486,22 @@ float2 gi_crown_cell(uint64_t grid, uint3 dims, uint3 c) {
   return float2(float(pair & 0xffu), float(pair >> 8)) * (1.0 / 255.0);
 }
 
-// The prior of a surface of `instance` at `position` (from the frame's eye) with normal `normal`,
-// or a negative number where its mesh has no crown: the grid's two means at the point in mesh
-// space, trilinear between the cells' centres and held at the grid's edge, weighted by the share
-// of the surface's hemisphere that is above the horizon (gfx::crown_prior), never under the floor.
+// The prior of an alpha-tested surface of `instance` at `position` (from the frame's eye) with
+// normal `normal`: the grid's two means at the point in mesh space, trilinear between the cells'
+// centres and held at the grid's edge, weighted by the share of the surface's hemisphere that is
+// above the horizon (gfx::crown_prior), never under the floor. A negative number where the frame
+// has no table (`renderer.gi.crown_prior` off) or the mesh no record (one that arrived after the
+// load): the surface keeps its faces.
+//
+// **A mesh of low leaves reads one cell of no shade** (stage 8; the renderer's
+// `build_crown_priors`, renderer.md "Stage 8"): a sward, a shrub and a sapling are foliage too —
+// their cards face every way at every depth, so a face in their cells' key splits their samples
+// as it split a crown's, their own level's cells never fill, and their walk read two to four
+// levels on two faces for good. Their record is a grid of one cell that lets everything
+// through, so this function returns one for them with no rule of its own, and they read and
+// fill the crown's cells with no shade but what their own solvers already paint. (Pictures of
+// leaves — an impostor, a form's merged cards — have no record: this lookup on every one of
+// their pixels cost more than their one-level walk.)
 float gi_crown_prior(uint64_t table, uint count, InstanceDesc instance, FrameEye eye,
                      float3 position, float3 normal) {
   if (table == 0 || instance.mesh >= count) return -1.0;
@@ -525,6 +542,12 @@ float gi_crown_prior(uint64_t table, uint count, InstanceDesc instance, FrameEye
 static const uint k_gi_stat_shell = 9u;
 static const uint k_gi_stat_shell_hits = 10u;
 static const uint k_gi_stat_shell_near = 11u;
+// gfx::k_gi_stat_shell_kept (stage 8): the directions that met a surface whose cells are whole,
+// and stopped at the eye's ray.
+static const uint k_gi_stat_shell_kept = 12u;
+// gfx::k_gi_shell_first (`ResolveParams::gi_shell_word`): the directions are the sample pass's
+// first threads.
+static const uint k_gi_shell_first = 1u << 24;
 static const float k_gi_shell_near_m = 50.0;
 uint gi_shell_hash(uint v) {
   v = v * 747796405u + 2891336453u;

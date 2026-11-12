@@ -2635,6 +2635,93 @@ other alpha-tested mesh keep stage 6's walk, and the samples round the eye and t
 stage 5's as they were. Its forest is darker than main's by 9.0 8-bit steps over vegetation and
 2.5 over the rest — the side the judge above says is right. The row stays `in progress`.
 
+### Stage 8: what the forest paid for, and what a far crown remembers
+
+Roadmap R69 stage 8 (2026-11-12, batch 62; [the measurements](../experiments/gi-cache-2026-11-07.md#stage-8-the-forests-cost-by-term-the-far-crowns-flicker)).
+Stage 7 was held for two things: the forest's frame over main's, and a still picture that changed
+between frames by 0.136 of a step over far crowns where main's changes by 0.076.
+
+**The split came first, and it moved every cut** (the page has the table: stage 7's binary flown
+on the forest with one thing switched at a time, main beside it). The gap was 0.75 to 1.0 ms in
+one machine state, not 1.6 between two: the sample pass +0.48, the resolve +0.37, the chain
++0.19, the primaries +0.17. Three of the four were not what stage 7 took them for:
+
+- **The directions round the eye cost by where they ran, not by what they traced.** A quarter of
+  them cost three quarters as much, and halving the volume they trace through changed nothing.
+  They were the sample pass's last workgroups; their rays are its longest (from the eye through
+  whatever stands round it, then a bounce); and a workgroup of them was dispatched when the
+  windows' work was done, so the pass waited on an idle device for its slowest few threads.
+  **They are the pass's first threads now** (`gfx::k_gi_shell_first`, `gi_shell_base`,
+  `renderer.gi.shell_first`): the same directions, the same rays, the same cells, run beside
+  the windows' 620,000 samples. Nothing a picture can show changes.
+- **The chain's share is the swaying trees between 24 and 48 m behind the eye**: 9,300 clusters
+  whose structures are instantiated from the deformed pool every frame. Nearer than 24 m the
+  volume's geometry is rigid or already in the frame for the sun. **The volume's reach is 24 m**
+  (`renderer.gi.shell_m`, 48 until now). What a turn shows of a tree past it is the ladder's
+  and the crown's prior's to hold, and they hold it: the grove's turn, 75 m out, stands 0.24 of
+  a step from its long-held picture on its first frame.
+- **The primaries' share is the nearest geometry** — the instances the eye stands in hold their
+  clusters all round the eye with the volume, and every primary ray starts inside more boxes —
+  and no reach worth having removes it (0.13 of the 0.17 at 12 m). It stays; an instance that
+  holds only casters could be masked out of the primaries' traversal, which is the chain's row.
+
+**Low leaves are foliage too** (`renderer::build_crown_priors`). Stage 7 gave a crown's cells
+and its one-level read to the 93 meshes of the forest that have a crown, and left every other
+alpha-tested mesh the walk over face-keyed levels. For a mesh of leaf cards that stand under a
+crown's 1.5 m — a sward, a shrub, a sapling, a fern — that walk never ends: its cards face every
+way at every depth, so its own cells never fill. Such a mesh is foliage in every way that
+matters to the cache; what it lacks is a shade of its own to divide by, which its own solver
+paints. So it has a record now: **a grid of one cell that lets everything through** (two bytes
+of 255, no extent). The shader's lookup returns a prior of one for it by the rule it already
+had, and its alpha-tested surfaces fill and read the crown's cells. It is done in the table and
+not in the shader on purpose: the resolve's modules are byte for byte stage 7's, so a build with
+this stage compiles two new pipelines (the cache's own, 80 ms each) where a change to the
+resolve's source compiles them all — on the forest the difference between a first load like any
+other and one that needs 53 GB of the machine.
+
+**Pictures of leaves keep the walk.** A far forest's impostor and a form's merged cards (cards
+over `gfx::k_crown_card_max_m2` on average) are seen from where their level is the ladder's
+last: their walk is one level already. The stage's first build gave every mesh the cell, and on
+the forest the resolve was 0.4 ms *dearer* for it and the water's reflections 0.14: the grid's
+lookup — a 3×3 inverse and eight cells — on two million pixels that had nothing to save. A cut
+is held by the pair that measures it, not by the count of lookups it removes. A mesh that
+arrives after the load still has no record, and keeps the walk whatever it is.
+
+**A foliage cell remembers sixty-four frames** (`gfx::k_gi_crown_history_frames`,
+`k_gi_stamp_crown`; the fold). What sets a cell's rate is `gi_history`: a cell keeps 256 samples
+or sixteen frames of them, the longer, so a coarse cell that takes hundreds a frame moves a
+sixteenth of the way to each frame's mean. For a face's cell that is grain: the pixels that read
+it are its own patch, and its neighbours' means move independently. A crown's cell has no face
+and is read two levels up, so every pixel of a far crown reads the same few cells, and their
+sixteenth-steps moved the whole crown together — which the eye reads as flicker, and the measure
+as 0.136. What such a cell holds is the light outside the crown's own shade over the sky's
+harmonics: the sun's hour and the sky's colour reach the picture through the harmonics the
+ratio multiplies, the same frame, and what is left in the ratio is the bounce off what stands
+round the tree and the crown's own geometry, which change over minutes. **A face's cell follows
+the camera's world (a door, a torch's reach, a rock rolled into a hollow); a crown's follows
+the sun and the wind**, and neither is hidden by a second of memory. The fold has a cell's
+words and not its key's tag, so a foliage sample sets the top bit of its cell's stamp. Until the
+history is full the rate is the plain mean's whatever the memory, so a crown fills as fast as it
+did (`gi cache key: a foliage cell remembers sixty-four frames, and fills as fast as ever`).
+
+**Two levers, stated and off** (`renderer.gi.shell_refresh`, `renderer.gi.shell_clip`). A
+direction whose surface's cells are already whole can stop at the eye's ray and take its bounce
+one frame in n, and the eye's ray can stop at the volume's reach. Both were built against the
+sample pass's cost before the split showed where it was; with the directions first neither buys
+a tenth of a millisecond on the grove, the first lowers the still picture's floor under the
+box's turn (which then stands 2.06 floors off where its case allows two), and the second stops
+warming what the sun's sweep holds past the reach (the stand at 16 m stands two steps further
+off on a turn's first frame). They stay as knobs with those numbers beside them.
+
+**What it does** (the page has the tables). On the grove at 3840×2160 with traced primaries and
+shadows the frame is **0.3 ms under main's** over crowns and 0.2 under it over sand (stage 7:
+0.2 and 0.1). The still picture's change between frames over far crowns is **0.043** of a step
+(main 0.076, stage 7 0.136) and its floor 0.14 (main 0.27, stage 7 0.29); the turn's first frame
+stands 0.24 from the long-held picture (main 0.72, stage 7 0.39) and +0.05 in the mean. Against
+the reference tracer the picture stands where stage 7's did: 1.07 over the trees from 50 m and
+1.05 from close (the grove's crowns all have grids, so nothing of this stage reaches them but
+the memory).
+
 ## The sun's day
 
 *A scene that names a sky takes its sun, its moon and its sky from it instead, on the world's clock ([The sky](#the-sky)); everything in this section is the stand-in's, which every other scene still draws, to the bit.*

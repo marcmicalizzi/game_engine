@@ -1205,11 +1205,13 @@ struct ResolveParams {
   // (`gfx::gi_shell_columns`), and the rays every view's shell takes out of the young half of
   // `gi_rays` (`gfx::gi_shell_ray_cost` summed over the views), which the young candidates' claims
   // then stop short of. 0 directions is no shell sample, and the pass is the one it was. Read only
-  // by the sample pass. A new 16-byte row: the block grew from 560 to 576 bytes.
+  // by the sample pass. A new 16-byte row: the block grew from 560 to 576 bytes. Its last word
+  // (stage 8, `gfx::gi_shell_word`; it was padding): the metres the eye's rays stop at and the
+  // frames between a whole cell's samples.
   u32 gi_shell_rays = 0;
   u32 gi_shell_columns = 0;
   u32 gi_shell_cost = 0;
-  u32 gi_shell_pad = 0;
+  u32 gi_shell_word = 0;
   // **The crowns' priors** (crown_prior.h; renderer.md, "Indirect light", "Stage 7"; R69 stage 7):
   // the table of `CrownPriorDesc` records, one a mesh of the scene, with their grids behind it,
   // and the meshes it covers; 0 and 0 for none, and foliage is then read as everything else is.

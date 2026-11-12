@@ -84,11 +84,24 @@ inline constexpr u32 k_gi_max_samples = 256;
 // cells never fill, a bounce's hit). Sixteen frames is a little under what an own cell's 256
 // samples are at the trickle's eleven a frame, so no level remembers less time than the finest.
 inline constexpr u32 k_gi_history_frames = 16;
+// **A foliage cell remembers four times as long** (stage 8; renderer.md, "Indirect light", "Stage
+// 8"). A face's cell is read by the pixels of its own patch and its neighbours' means move
+// independently, so its sixteen frames show as grain. A crown's cell has no face and is read two
+// levels up: every pixel of a far crown reads the same few cells, and each frame's step of their
+// means moved the whole crown together — flicker, 0.136 of an 8-bit step a frame over far crowns
+// against main's 0.076. What such a cell holds is the light outside the crown's own shade, which
+// follows the sun and the sky through the harmonics its ratio multiplies (the same frame) and the
+// bounce off what stands round the tree (minutes): nothing a second's memory hides.
+inline constexpr u32 k_gi_crown_history_frames = 64;
+// The fold has a cell's words and not its key's tag, so a foliage sample sets its cell's stamp's
+// top bit (the cache's frame count is far under it: a year at sixty a second is 2^31).
+inline constexpr u32 k_gi_stamp_crown = 0x80000000u;
 // The fold's history for a cell that averaged `previous` samples and takes `n` this frame (the
-// shader's rule): the new count, and `n` over it the rate the frame's mean enters at.
-constexpr u32 gi_history(u32 previous, u32 n) noexcept {
-  const u32 frames = n * k_gi_history_frames < 0xffffu ? n * k_gi_history_frames : 0xffffu;
-  const u32 cap = k_gi_max_samples > frames ? k_gi_max_samples : frames;
+// shader's rule): the new count, and `n` over it the rate the frame's mean enters at. `frames` is
+// the cell's memory: `k_gi_history_frames`, or a foliage cell's `k_gi_crown_history_frames`.
+constexpr u32 gi_history(u32 previous, u32 n, u32 frames = k_gi_history_frames) noexcept {
+  const u32 held = n * frames < 0xffffu ? n * frames : 0xffffu;
+  const u32 cap = k_gi_max_samples > held ? k_gi_max_samples : held;
   return previous + n < cap ? previous + n : cap;
 }
 // The rate the frame's mean enters at (the shader's rule): `n` over the new count — or, for a
@@ -96,11 +109,10 @@ constexpr u32 gi_history(u32 previous, u32 n) noexcept {
 // takes over 4,095 a frame (a crown's coarse cell, whose samples count in sixteenths: stage 7)
 // fills the field in under sixteen frames, and by the count alone would then remember only what
 // fits; a full field is read as the sixteen frames it is the cap of.
-constexpr f32 gi_history_rate(u32 previous, u32 n) noexcept {
-  const u32 full =
-      k_gi_max_samples > n * k_gi_history_frames ? k_gi_max_samples : n * k_gi_history_frames;
+constexpr f32 gi_history_rate(u32 previous, u32 n, u32 frames = k_gi_history_frames) noexcept {
+  const u32 full = k_gi_max_samples > n * frames ? k_gi_max_samples : n * frames;
   return static_cast<f32>(n) /
-         static_cast<f32>(previous >= 0xffffu ? full : gi_history(previous, n));
+         static_cast<f32>(previous >= 0xffffu ? full : gi_history(previous, n, frames));
 }
 // Frames without a sample after which the fold frees a cell.
 inline constexpr u32 k_gi_max_age = 240;
@@ -175,7 +187,11 @@ inline constexpr u32 k_gi_ray_count = 8;
 inline constexpr u32 k_gi_stat_shell = 9;
 inline constexpr u32 k_gi_stat_shell_hits = 10;
 inline constexpr u32 k_gi_stat_shell_near = 11;
-inline constexpr u32 k_gi_stat_copy_words = 12;
+// Stage 8: the directions that met a surface whose cells are already whole and stopped at the
+// eye's ray (gi_update.slang, `gi_shell_keep`): their cells stamped, their bounce taken one frame
+// in eight.
+inline constexpr u32 k_gi_stat_shell_kept = 12;
+inline constexpr u32 k_gi_stat_copy_words = 13;
 inline constexpr f32 k_gi_shell_near_m = 50.0f;
 
 // The buffer's bytes for `count` slots: the header, the keys and the cells.
@@ -477,9 +493,20 @@ constexpr u32 gi_trickle_stride(u64 pixels, u64 rays) noexcept {
 // eye's directions cover the sphere evenly and densely over frames. Each costs two rays from the
 // young half of the budget (the primary from the eye and the sample's own), so the young half is
 // `gi_shell_rays * 2` smaller when they run.
-constexpr u32 gi_shell_base(u32 windows) noexcept {
-  return (windows + k_gi_workgroup - 1) / k_gi_workgroup * k_gi_workgroup;
+//
+// **Stage 8: the directions are the pass's first threads** (`gi_shell_word`'s bit 24,
+// `renderer.gi.shell_first`). A direction's rays are long — from the eye through whatever stands
+// round it, then a bounce — and a workgroup of them takes as long as its longest. Dispatched
+// behind the windows they ran when the windows' work was done, with the device otherwise idle,
+// and the pass waited for the slowest of them: a quarter of the directions cost three quarters
+// as much (renderer.md, "Stage 8"). Dispatched first they run beside the windows. With the bit,
+// thread `i` under `gi_shell_base(gi_shell_rays)` takes direction `i` and the threads from there
+// take the windows; without it the windows come first, as stage 4 had them. Either way the pass
+// dispatches `gi_shell_base(windows) + gi_shell_base(gi_shell_rays)` threads.
+constexpr u32 gi_shell_base(u32 count) noexcept {
+  return (count + k_gi_workgroup - 1) / k_gi_workgroup * k_gi_workgroup;
 }
+inline constexpr u32 k_gi_shell_first = 1u << 24;
 // Columns of the grid for `count` directions: about sqrt(pi * count), so a cell's width in
 // longitude at the equator (2 pi / columns) is about its height (2 / rows radians).
 inline u32 gi_shell_columns(u32 count) noexcept {
@@ -491,5 +518,21 @@ inline u32 gi_shell_columns(u32 count) noexcept {
 // The rays the shell's samples take out of the young half: two a direction (an upper bound: a
 // direction inside the view's frustum, or one that meets nothing, takes fewer).
 constexpr u64 gi_shell_ray_cost(u32 shell_rays) noexcept { return u64{shell_rays} * 2; }
+
+// **Stage 8: what a direction round the eye stops at** (`ResolveParams::gi_shell_word`;
+// renderer.md, "Indirect light", "Stage 8"). The low half is the reach of the eye's ray in whole
+// metres, rounded up (0: no stop): the radius of the volume that put the geometry round the eye
+// into the frame's structures, past which they hold a part of what is there. The third byte is the
+// frames between the bounces of a direction whose surface's cells are whole
+// (`renderer.gi.shell_refresh`): such a direction stops at the eye's ray, stamps its cells so the
+// fold keeps them, and takes its bounce one frame in that many — 1 is every frame (stage 7's pass),
+// 0 never. Bit 24
+// (`k_gi_shell_first`): the directions are the pass's first threads.
+constexpr u32 gi_shell_word(f32 reach_m, u32 refresh, bool first = true) noexcept {
+  const u32 whole = reach_m > 0.0f ? static_cast<u32>(reach_m) : 0u;
+  const u32 reach = static_cast<f32>(whole) < reach_m ? whole + 1 : whole;
+  return (reach < 0xffffu ? reach : 0xffffu) | ((refresh < 0xffu ? refresh : 0xffu) << 16) |
+         (first ? k_gi_shell_first : 0u);
+}
 
 }  // namespace engine::gfx

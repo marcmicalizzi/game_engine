@@ -462,9 +462,13 @@ tunables::Float gi_far_lift{
 // caster volume round the eye puts the geometry within this many metres into the frame's ray
 // tracing structures whatever the frustum, so the cache's rays meet the forest behind the eye; 0
 // is no volume, the structures the frame's frustum and lights alone ask for. On since stage 5,
-// whose ladder is what made the samples below show: 48 m and 65,536 are stage 4's measured setting.
+// whose ladder is what made the samples below show: 48 m and 65,536 were stage 4's measured
+// setting. **24 m since stage 8**: on the forest the ring from 24 to 48 m behind the eye is
+// swaying trees, 9,300 clusters the chain instantiates every frame for 0.2 ms, and what a turn
+// shows of a tree that far is held by the ladder and the crown's prior without them (renderer.md,
+// "Stage 8").
 tunables::Float gi_shell_m{
-    "renderer.gi.shell_m", 48.0, 0.0, 1024.0,
+    "renderer.gi.shell_m", 24.0, 0.0, 1024.0,
     "Metres round the eye whose geometry the frame's ray tracing structures hold as casters "
     "whatever the frustum, for the cache's rays, where the cache is on (0: none) (renderer.md, "
     "Indirect light, Stage 4; read at load)"};
@@ -477,6 +481,28 @@ tunables::Int gi_shell_rays{
     "Directions over the sphere round each view's eye the cache samples a frame, two rays each out "
     "of the young half of renderer.gi.rays_per_frame (0: none) (renderer.md, Indirect light, "
     "Stage 4; read at load)"};
+// **Stage 8** (R69; renderer.md, "Indirect light", "Stage 8"): two stated levers on what a
+// direction round the eye stops at, both off. The directions' cost was where they were
+// dispatched, not what they traced (`renderer.gi.shell_first` below), and with that mended
+// neither lever buys what it gives up: a direction kept at the eye's ray while its cells are
+// whole samples the sphere less (the still picture's floor moves under the box's turn), and a
+// ray stopped at the volume's reach no longer warms what the sun's sweep holds past it (the
+// stand of trees at 16 m stands two steps further off on a turn's first frame).
+tunables::Int gi_shell_refresh{
+    "renderer.gi.shell_refresh", 1, 0, 255,
+    "Frames between the bounces of a direction round the eye whose surface's cells are already "
+    "whole: between them it stops at the eye's ray and stamps its cells (1: a bounce every frame; "
+    "0: never) (renderer.md, Indirect light, Stage 8; read at load)"};
+tunables::Bool gi_shell_clip{
+    "renderer.gi.shell_clip", false,
+    "The rays the cache traces from the eye stop at renderer.gi.shell_m, the reach of the volume "
+    "that holds the geometry round the eye (false: they run to the scene's end) (renderer.md, "
+    "Indirect light, Stage 8; read at load)"};
+tunables::Bool gi_shell_first{
+    "renderer.gi.shell_first", true,
+    "The directions round the eye are the sample pass's first threads, so their long rays run "
+    "beside the pixels' samples (false: its last, as stage 4, where the pass waited for the "
+    "slowest of them) (renderer.md, Indirect light, Stage 8; read at load)"};
 // **Stage 5: the pre-roll** (gi_preroll.h; renderer.md, "Indirect light", "Stage 5"). Thirty-two
 // steps: the trickle samples one pixel in nine at 3840x2160, so nine steps reach every pixel once
 // and thirty-two give a cell ten pixels wide about 350 samples, past `renderer.gi.confident`, and
@@ -815,6 +841,9 @@ void resolve_settings(const RenderSettings& requested, const gfx::DeviceFeatures
   out.gi_show_level = static_cast<i32>(gi_show_level.get());
   out.gi_shell_m = static_cast<f32>(gi_shell_m.get());
   out.gi_shell_rays = static_cast<u32>(gi_shell_rays.get());
+  out.gi_shell_refresh = static_cast<u32>(gi_shell_refresh.get());
+  out.gi_shell_clip = gi_shell_clip.get();
+  out.gi_shell_first = gi_shell_first.get();
   out.gi_preroll = static_cast<u32>(gi_preroll.get());
   out.gi_cut_m = static_cast<f32>(gi_cut_m.get());
   // More than one view needs the cull pass: every view's draw reads its own run of the visible
