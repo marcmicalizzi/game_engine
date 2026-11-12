@@ -250,7 +250,9 @@ differ by one code**, the same two in the build with the class exit and the buil
 are ground with no shore record near: the wet class is empty at that pose, and drawing it by the
 plain module changes nothing there. It is the two modules: the same source compiled twice by the
 driver, whose compiler may contract or reorder a float expression differently beside different
-code. `draws` cannot differ this way (one module) and does not.
+code. `draws` cannot differ this way (one module) and does not. The test that holds `modules`
+(`systems/water/tests/resolve_class_water_tests.cpp`, the shore test's basin at 480 × 320) allows
+it a code on one pixel in twenty thousand and measured none at either of its poses.
 
 ## What it costs to build
 

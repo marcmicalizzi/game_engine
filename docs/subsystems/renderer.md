@@ -2537,7 +2537,12 @@ the picture by that class's pixels. At 3840 × 2160 with the bounce off, 0 pixel
 seven poses measured. `modules` is two modules' arithmetic: 0 pixels differ on six of the seven
 poses, and on the seventh (the layered ground's mountain) **2 pixels of 8.3 million differ by one
 code**, ground pixels no record reaches, where the driver's compiler arranged the same source's
-floats differently in the two modules.
+floats differently in the two modules. `resolve_class_water_tests.cpp` (in `systems/water`, where
+a scene with water can be built) holds `modules` on a basin with a wet band, across it and looking
+away: the plain module's classes are the five, the picture is the one draw's to a code on at most
+one pixel in twenty thousand (none measured there), and the wet class drawn by the plain module
+(`renderer.resolve.class_wet_plain`) is not the picture, by the band's pixels and only pixels of
+the wet class.
 
 **What it costs, and why it is off.** A fixed-function depth test rejects **quads, not pixels**:
 a 2 × 2 quad the test keeps runs all four of its lanes, and a lane whose pixel failed the test

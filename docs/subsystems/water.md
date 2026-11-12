@@ -425,6 +425,12 @@ checks an authored bowl through the stock `TerrainSampler`: native streamed latt
 the ground view used for wading, mesh vertex depths and quantized depth-map samples agree.
 Terrain streaming does not introduce a second bottom for water.
 
+R151's GPU case (`tests/resolve_class_water_tests.cpp`) draws the shore test's basin with the
+resolve split by pixel class ([renderer](renderer.md#the-resolve-by-pixel-class)): under `modules`
+the ground that no shore record reaches is drawn by the resolve module without water and is the
+one draw's picture, the wet class holds every pixel the band darkens (drawn by the plain module it
+is not the picture, and only that class's pixels move), and `draws` is the one draw's bytes.
+
 ## Capability contract (ADR-0027)
 
 This is a capability: it was added without editing `core/`, `foundation/`, the render graph, the scheduler, or another capability, and it can be removed from the build the same way.

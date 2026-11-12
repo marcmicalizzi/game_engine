@@ -1,14 +1,15 @@
 {
   "format": "engine.structure-raise.v1",
   "name": "R151",
-  "reason": "R151: the resolve by pixel class adds a classify pass and the per-class draws' plan to record_frame's resolve block (the draws and the pipelines are in resolve_classes.cpp), a section on renderer.md, the frame record's resolve_classify bucket on apps.md and the classes' header on gfx.md",
+  "reason": "R151: the resolve by pixel class adds a classify pass and the per-class draws' plan to record_frame's resolve block (the draws and the pipelines are in resolve_classes.cpp), a section on renderer.md, the frame record's resolve_classify bucket on apps.md, the classes' header on gfx.md and the basin's case on water.md",
   "date": "2026-11-12",
   "by": "Marc Micalizzi",
   "deltas": {
     "renderer.record_frame.lines": 54,
     "renderer.record_frame.add_pass": 1,
-    "page:docs/subsystems/renderer.md": 7222,
+    "page:docs/subsystems/renderer.md": 7686,
     "page:docs/subsystems/apps.md": 814,
-    "page:docs/subsystems/gfx.md": 581
+    "page:docs/subsystems/gfx.md": 581,
+    "page:docs/subsystems/water.md": 482
   }
 }
