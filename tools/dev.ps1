@@ -47,7 +47,12 @@
                 with no GPU, and then everything else as usual. In an all-on configuration it
                 changes nothing. It is the merge gate's (docs/ci/what-to-run.md, "The
                 off-configurations' GPU cases").
-    affected    Print what `test -Affected` would run, without building or running it.
+                Every ctest pass's LastTest.log is also kept beside it as
+                LastTest-<yyyyMMdd-HHmmss>-<pass>.log (all, affected or filter, and with
+                -SkipInvariantGpu's two passes -invariant-no-driver and -rest), the newest 16,
+                so a later pass or a rerun does not overwrite the seconds tools/test-costs.ps1
+                reads (tools/lib/CTestLogs.psm1).
+    affected   Print what `test -Affected` would run, without building or running it.
     bench       Build, then run every engine_*_bench executable. -Filter is a glob on
                 benchmark names; JSON lines land in build/<preset>/bench/<module>.jsonl.
                 -GpuLock passes --gpu-lock to each: every executable waits for the
@@ -251,16 +256,21 @@ function Test-OffConfiguration {
 
 # One `ctest` over the preset, streamed and kept: CTest lists the tests that did not run at the
 # end, and a test whose processes gave up waiting for the GPU lock (exit 75, SKIP_RETURN_CODE) is
-# one of them.
-function Invoke-CTest([string[]]$ctestArgs) {
+# one of them. Its LastTest.log is copied to a name of its own, `LastTest-<time>-<pass>.log` beside
+# it (tools/lib/CTestLogs.psm1), because the next pass or the next invocation writes the same file.
+Import-Module (Join-Path $PSScriptRoot 'lib/CTestLogs.psm1') -Force
+function Invoke-CTest([string[]]$ctestArgs, [string]$pass) {
   Push-Location $Root
   $lines = @()
+  $started = Get-Date
   try {
     & ctest @ctestArgs | Tee-Object -Variable lines | Out-Host
     $code = $LASTEXITCODE
   }
   finally { Pop-Location }
-  return [pscustomobject]@{ Code = $code; Lines = @($lines) }
+  $kept = Save-CTestLog -BuildDir $BuildDir -Pass $pass -Started $started
+  if ($kept) { Write-Host "ctest log ($pass): $kept" -ForegroundColor Cyan }
+  return [pscustomobject]@{ Code = $code; Lines = @($lines); Log = $kept }
 }
 
 function Invoke-Test {
@@ -268,12 +278,14 @@ function Invoke-Test {
   Invoke-Build
   Ensure-Tool ctest
   $args = @('--preset', $Preset)
+  # What the run selects, in its logs' names: every test, the affected ones, or a filter's.
+  $kind = 'all'
   if ($Affected) {
     # After the build, so the module graph is the one this tree configures.
     $result = Get-Affected
-    if (-not $result.All) { $args += @('-R', $result.Filter) }
+    if (-not $result.All) { $args += @('-R', $result.Filter); $kind = 'affected' }
   }
-  if ($Filter) { $args += @('-R', $Filter) }
+  if ($Filter) { $args += @('-R', $Filter); $kind = 'filter' }
   # On the command line it wins over a test preset's `execution.jobs`; absent, the preset decides
   # (the Windows presets name none, so an author's run is serial as before).
   if ($Jobs -gt 0) { $args += @('-j', "$Jobs") }
@@ -292,12 +304,12 @@ function Invoke-Test {
                VK_ADD_DRIVER_FILES = ''; ENGINE_GPU_LOCK_ON_DEVICE = '0' }
     $saved = @{}
     foreach ($k in $hide.Keys) { $saved[$k] = [Environment]::GetEnvironmentVariable($k); [Environment]::SetEnvironmentVariable($k, $(if ($hide[$k]) { $hide[$k] } else { $null })) }
-    try { $runs += Invoke-CTest ($args + @('-L', '^config_invariant$')) }
+    try { $runs += Invoke-CTest ($args + @('-L', '^config_invariant$')) "$kind-invariant-no-driver" }
     finally { foreach ($k in $saved.Keys) { [Environment]::SetEnvironmentVariable($k, $saved[$k]) } }
-    $runs += Invoke-CTest ($args + @('-LE', '^config_invariant$'))
+    $runs += Invoke-CTest ($args + @('-LE', '^config_invariant$')) "$kind-rest"
   } else {
     if ($SkipInvariantGpu) { Write-Host "-SkipInvariantGpu: $Preset is an all-on configuration; nothing skipped" -ForegroundColor Cyan }
-    $runs += Invoke-CTest $args
+    $runs += Invoke-CTest $args $kind
   }
   $lines = @($runs | ForEach-Object { $_.Lines })
   $code = @($runs | Where-Object { $_.Code -ne 0 } | Select-Object -First 1 | ForEach-Object { $_.Code })
@@ -307,9 +319,9 @@ function Invoke-Test {
   if ($skipped.Count -gt 0) {
     Write-Host ("{0} test(s) did not run: their processes gave up waiting for the machine-wide GPU lock ({1}). " -f $skipped.Count, ($skipped -join ', ')) -ForegroundColor Yellow
     # CTest keeps a skipped test's output out of the console; the line that says how long it
-    # waited and for whom is in the log, and it is the line a reader needs.
-    $log = Join-Path $BuildDir 'Testing/Temporary/LastTest.log'
-    if (Test-Path -LiteralPath $log) {
+    # waited and for whom is in the log, and it is the line a reader needs: every pass's, each
+    # kept under its own name.
+    foreach ($log in @($runs | ForEach-Object { $_.Log } | Where-Object { $_ })) {
       Select-String -LiteralPath $log -Pattern 'gpu-lock: gave up waiting' | ForEach-Object { Write-Host "  $($_.Line)" -ForegroundColor Yellow }
     }
     Write-Host 'Nothing failed. Run them again when the lock is free: tools/gpu-lock.ps1 status says who has it.' -ForegroundColor Yellow

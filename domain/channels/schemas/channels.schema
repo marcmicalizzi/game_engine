@@ -4,14 +4,20 @@
 // else the capability owns.
 namespace engine.channels
 
-/// What a piece's mesh dresses: the bed's gravel skin, the bars of finer sediment on it, or the
-/// cut-soil banks along its edges (channels.md, "What it places").
+/// What a piece's mesh is (channels.md, "What it places"). Since W93 only `Boulder` is placed: the
+/// bed and the bars are the ground's own (the cut's) and the banks its faces; the first three keep
+/// their numbers, which a schema never reuses.
 enum ChannelPart : u8 {
   Bed
   Bar
   Bank
-  /// A step's boulders (W90): a row of domes across the bed at a step-pool or cascade reach's crest.
+  /// A step's boulders (W90 to W93): a row of domes across the bed at a step-pool or cascade
+  /// reach's crest. Since W97 they are clasts of a `Clasts` piece.
   Boulder
+  /// **Every clast of a tile** (W97; channels.md, "The clasts"): the bed's, the bars', the banks'
+  /// feet's and the flood bed's clasts above `clast_min_mm`, and the steps' and cascades' boulders,
+  /// one merged mesh.
+  Clasts
 }
 
 /// **A reach's morphology** (Montgomery & Buffington 1997; channels.md, "Reaches"; W90), from the
@@ -64,7 +70,21 @@ struct ChannelSurface @version(1) {
 /// Version 4 (W91): steps on step-pool reaches alone with risers at `riser_angle_deg`, boulder
 /// clusters on cascades, knickpoints on the ground's profile, the chute's steepest fall, and every
 /// point of the line held in its trough.
-struct ChannelLayer @version(4) {
+/// Version 5 (W93): the cut's section follows the line's bends (`section_asymmetry`), a pool at each
+/// bend's apex and a riffle at each crossing, the banks' tops rounded.
+/// Version 6 (W93): `plan`, the one plan the cut, the water and the placements read.
+/// Version 7 (W93): the bed and the bars are the ground's, so nothing is laid on them and the
+/// fields that shaped the slab, the lens and the bank pieces are gone (`riffle_rise`,
+/// `shields_bankfull`, `bar_rise`, `bar_width_widths`, `bar_length_widths`, `bank_min_width_m`,
+/// `bank_height`, `bed`, `bars`, `banks`), with the switch back to the trapezoid
+/// (`section_asymmetry`); `boulders` is the look of what is still placed. A scene naming a removed
+/// field is refused by the reader (the owner, 2026-11-10: nothing is kept for compatibility).
+/// Version 8 (W93): the steep reaches' section and planform (`step_widening`, `steep_asymmetry`,
+/// `steep_wander_widths`).
+/// Version 9 (W93): `bed_material` and `bed_feather_m`, the bed's outline for the terrain's masks.
+/// Version 10 (W97): the bed's sediment (`clast_min_mm`, `rounding_m`) and the bars' material
+/// (`bar_material`); `piece_m` is gone, since a piece is a tile's clasts.
+struct ChannelLayer @version(10) {
   name: string
   seed: u64 = 1
   /// The region drained, world metres, x and z, each a whole number of spacings.
@@ -100,34 +120,22 @@ struct ChannelLayer @version(4) {
   /// (Montgomery & Buffington 1997): 0 to 0.5, min below max.
   meander_slope_min: f32 = 0.01
   meander_slope_max: f32 = 0.04
-  /// The bed's rhythm along the line: pool to pool in widths, 2 to 20 (Leopold et al. 1964), and
-  /// the riffle's rise over the pool as a fraction of the depth, 0 to 1.
+  /// The bed's rhythm along the line: pool to pool in widths, 2 to 20 (Leopold et al. 1964).
   pool_riffle_widths: f32 = 6.0
-  riffle_rise: f32 = 0.2
   /// Above `meander_slope_max` the rhythm is step to step, in widths: 1 to 10 (Montgomery &
   /// Buffington 1997).
   step_pool_widths: f32 = 2.5
-  /// The bankfull Shields number the bed's median grain is set by, `D50 = h S / (1.65 tau)`
-  /// (Parker et al. 2007): 0.01 to 0.2.
-  shields_bankfull: f32 = 0.049
-  /// Bars: the narrowest bed that has them (0 to 100 m), how far their crown rises above the bed as
-  /// a fraction of the depth (0 to 1), and their width and length in bed widths.
+  /// The narrowest channel whose section has a point bar and a pool (0 to 100 m): below it the
+  /// section is the symmetric trapezoid, since the lattice a cut is drawn on does not hold a bar
+  /// narrower than this.
   bar_min_width_m: f32 = 1.0 @unit(m)
-  bar_rise: f32 = 0.4
-  bar_width_widths: f32 = 0.35
-  bar_length_widths: f32 = 3.0
-  /// W86's bank pieces, read and range-checked so a scene naming them still reads, and placed no
-  /// more since W89: the banks are the cut's faces (channels.md, "The cut"). The two widths are
-  /// still the reach the placements leave bare beyond the water (scene_gen.md, "Exclusion"), handed
-  /// over on the water's description (`WaterChannel`) where they are not the defaults (T78).
-  bank_min_width_m: f32 = 1.5 @unit(m)
-  bank_height: f32 = 0.6
+  /// The reach the placements leave bare beyond the water's edge (scene_gen.md, "Exclusion"):
+  /// `bank_width_widths` of the width and `bank_width_m` more, handed over on the water's
+  /// description (`WaterChannel`) where they are not the defaults (T78).
   bank_width_widths: f32 = 0.25
   bank_width_m: f32 = 0.4 @unit(m)
   /// The line's resampling step along its length: 0.1 to 4 m.
   step_m: f32 = 0.5 @unit(m)
-  /// A link is placed in pieces of at most this length: 4 to 256 m.
-  piece_m: f32 = 32.0 @unit(m)
   /// The cut's banks, rise over run (0.25 to 8; 1, 45 degrees): the cross-section the bed is laid
   /// in and the terrain's cuts are written with (channels.md, "The cut"; the source in
   /// docs/experiments/channels.md).
@@ -183,30 +191,99 @@ struct ChannelLayer @version(4) {
   /// line by up to these shares of themselves (0 to 0.5, 0 to 0.8), from a noise of the link's own.
   meander_wavelength_variation: f32 = 0.25 @since(3)
   meander_amplitude_variation: f32 = 0.5 @since(3)
-  bed: ChannelSurface
-  bars: ChannelSurface
-  banks: ChannelSurface
-}
-
-/// One slab of a piece: a grid of `rows` cross-sections of `columns` points, row-major, each with
-/// its place in the piece's frame (metres from the piece's origin) and the heights of its top and
-/// bottom there. Closed by its four edges.
-struct ChannelSlab @version(1) {
-  rows: u32 = 2
-  columns: u32 = 2
-  x: f32[]
-  z: f32[]
-  top: f32[]
-  bottom: f32[]
+  /// **The section** (W93; channels.md, "The section"; the sources in docs/experiments/channels.md,
+  /// "The section"): a bend whose radius of curvature is `bend_radius_widths` bankfull widths or
+  /// tighter (1 to 20; Leopold & Wolman 1960: 2 to 3) has a triangular section of the hydraulic
+  /// geometry's area: the outer bank at `cut_bank_slope` (rise over run, 0.25 to 8), the thalweg
+  /// at its toe twice the mean depth down, and the point bar rising from there to the inner bank's
+  /// top. Between bends the section is the trapezoid, a riffle.
+  bend_radius_widths: f32 = 3 @since(5)
+  cut_bank_slope: f32 = 3 @since(5)
+  /// Along a reach that does not bend, the thalweg still swings from bank to bank and a pool lies
+  /// against each (Leopold & Wolman 1957; Keller & Melhorn 1978): the asymmetry alternates sides
+  /// every `pool_riffle_widths`, to this share of a bend's (0 to 1).
+  alternate_asymmetry: f32 = 0.6 @since(5)
+  /// A riffle is wider than the pools beside it (Richards 1976): the cut is half this share wider
+  /// than the hydraulic geometry's width at a riffle and half narrower at a pool's apex (0 to
+  /// 0.5), its depth changed with it so the section's area stays.
+  riffle_widening: f32 = 0.12 @since(5)
+  /// The banks' tops are rounded over this share of the cut's depth (0.1 to 1; `TerrainCut`'s
+  /// `bank_round`), and the cut's faces run out to the ground: every cut the generator writes.
+  bank_round: f32 = 0.75 @since(5)
+  /// **The flood bed** (W93; channels.md, "The flood bed"; the sources in
+  /// docs/experiments/channels.md, "The flood bed"): the valley's confinement is read from the
+  /// ground at `flood_height_depths` thalweg depths over the bed (Rosgen 1994: the flood-prone
+  /// width is taken at twice the greatest bankfull depth; 1.25 to 4), across the line each way.
+  /// Where the flood-prone width is at least `flood_entrenchment_min` bankfull widths (Rosgen's
+  /// entrenchment ratio; below 1.4 a channel is entrenched; 1 to 5) and the bed at least
+  /// `flood_min_width_m` wide (0 to 100 m), on a pool-riffle, dune-ripple or plane-bed reach, the
+  /// cut carries a flood bed: as wide as the flood-prone width allows, `flood_bed_widths`
+  /// bankfull widths at the most (1.25 to 12), wider on the inside of a
+  /// bend, its surface `flood_bed_depth` of the thalweg under the top of the bank (0 to 0.45: under
+  /// the water's stage it would flood), bounded by scarps at `scarp_slope` (0.25 to 8).
+  flood_bed_widths: f32 = 3 @since(5)
+  flood_height_depths: f32 = 2 @since(5)
+  flood_entrenchment_min: f32 = 1.4 @since(5)
+  flood_min_width_m: f32 = 2 @since(5) @unit(m)
+  flood_bed_depth: f32 = 0.25 @since(5)
+  scarp_slope: f32 = 1.5 @since(5)
+  /// **The plan this entry reads** (W93; channels.md, "One plan"): the key `engine-content
+  /// channels` prints for the entry, 16 hexadecimal digits, naming the plan file in the derived-data
+  /// root's `channels/` that the scene's `cuts` and `water_channels` were written from. An entry
+  /// that stands on cut ground names it, and the generator then plans nothing: the cut ground is
+  /// not the ground the plan was made from. Empty: the ground is the ground before any cut, and the
+  /// plan is keyed from it, read when it is cached and made once when it is not. Not part of what a
+  /// plan is keyed by.
+  plan: string @since(6)
+  /// **The steep reaches** (W93; channels.md, "The steep reaches"; the sources in
+  /// docs/experiments/channels.md, "The steep reaches"), step-pool, cascade, bedrock and colluvial:
+  /// the cut is narrower at a step's crest and wider over its pool by half `step_widening` of the
+  /// width each way (0 to 0.6; irregular where the reach has no steps), its thalweg wanders
+  /// between the banks to `steep_asymmetry` of a bend's section (0 to 1), and where the slope
+  /// allows no meander the line itself wanders up to `steep_wander_widths` widths either way (0
+  /// to 3), held inside its trough.
+  step_widening: f32 = 0.3 @since(8)
+  steep_asymmetry: f32 = 0.35 @since(8)
+  steep_wander_widths: f32 = 0.75 @since(8)
+  /// **The bed's material** (W93; channels.md, "The flood bed"): the terrain palette layer
+  /// (`terrain.materials.layers[].name`) the beds are painted with, standing for the role
+  /// `gravel/bed`. Named: `engine-content channels` writes each stretch of bed — the cut and its
+  /// flood bed — as a `TerrainMaskRegion` under `mask_regions`, for the terrain's
+  /// `masks.regions`, its edge feathered over `bed_feather_m` (0 to 10 m). Empty: none are
+  /// written, and the bed draws as the ground beside it. Neither is part of what a plan is made
+  /// from in any way that moves a line, though both are in its key.
+  bed_material: string @since(9)
+  bed_feather_m: f32 = 0.4 @since(9) @unit(m)
+  /// The clasts' look (channels.md, "Materials"): every clast the generator lays, the bed's and
+  /// the steps' alike, the one thing it places.
+  boulders: ChannelSurface @since(7)
+  /// **Bed sediment** (W97; channels.md, "Bed sediment"; the sources in
+  /// docs/experiments/channels.md, "Bed sediment"): the smallest clast drawn as geometry, its b
+  /// axis in millimetres (16 to 1,024; 64 is the cobble's lower bound, about 9 pixels across at
+  /// 7 m in a 1080-line, 60-degree view). What is finer is the bed's material.
+  clast_min_mm: f32 = 64 @since(10)
+  /// The channel length over which a clast's edges round (Domokos et al. 2014: phase I, the edges
+  /// rounding with little loss of size, about 1 km): roundness is `1 - exp(-x / rounding_m)` at x
+  /// metres of channel upstream. 10 to 100,000 m.
+  rounding_m: f32 = 1000 @since(10) @unit(m)
+  /// The terrain palette layer the flood bed is painted with, standing for the role `sand/bar`:
+  /// `engine-content channels` writes the flood bed's outline under `mask_regions` with it, after
+  /// the bed's, so a bar reads apart from the bed. Empty: the flood bed is painted as the bed.
+  bar_material: string @since(10)
 }
 
 /// A placed piece's recipe, written by the generator as `<hash>.channel.json` and built by the mesh
-/// generator "channel": the part it is, its slabs with every height already decided, and its look.
-struct ChannelPiece @version(1) {
-  part: ChannelPart = Bed
+/// generator "channel": the part it is, its clasts with every height already decided, and its look.
+/// Version 2 (W97): `slabs` (the domes and, before W93, the slabs) gone; `clasts` the clasts of a
+/// tile.
+struct ChannelPiece @version(2) {
+  part: ChannelPart = Clasts
   /// The piece origin's place in its UV frame, metres (the world's x and z modulo 1,024 m), so the
   /// texels run on across the joins between pieces.
   uv_origin: f32[2]
   surface: ChannelSurface
-  slabs: ChannelSlab[]
+  /// `k_clast_ints` integers a clast (channels.h, `Clast`): centre x, y, z and the lowest ground
+  /// under it (mm from the piece's origin), half axes a, b, c (mm), the a axis's horizontal
+  /// direction x, z and the dip's tangent (ten-thousandths), roundness (thousandths), seed.
+  clasts: i32[] @since(2)
 }

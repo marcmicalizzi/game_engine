@@ -90,7 +90,7 @@ tests before handoff.
 distinct from the unchanged Tuft solver. [Grounding and limitations](../experiments/grass-sward.md)
 record the eight botanical profiles, field tiller counts, source dimensions and rendering papers.
 The public pure API is `sward_profiles`, `sward_profile`, `sward_in_range`, `solve_sward` and
-`bake_sward_ground` and `measure_sward_coverage` in `domain/flora/sward.h`. `k_sward_version` keys only sward output; adding it
+`bake_sward_ground`, `bake_sward_ground_over` (G141) and `measure_sward_coverage` in `domain/flora/sward.h`. `k_sward_version` keys only sward output; adding it
 does not invalidate or change accepted tree/understory meshes. The shared catalogue has one
 `sward` kind whose motion kind is `field` and whose caster policy is "never traced, the nearest
 cascade only, its rest pose" (R95, 2026-10-25): the renderer poses its blades on the GPU from a
@@ -167,10 +167,11 @@ visually effective. UVs cover each blade, and cards address their own atlas rect
 also writes a 256² top-view colour/normal/height/roughness set, a `distance.clusters` cut at
 20 m (projection scale 2160, 1000 px geometric/coverage thresholds, fade 0.1), and `provenance.json`.
 It remaps motion and section 41 with `LodFormMap`; the form records a distinct build key. The
-ground uses actual top-view geometry depth and normals, roughness 0.7, and dark blade colour
-under uncovered samples. The dark base is authored and declared in provenance. The deliberately
+ground is the top view composed over a floor of thatch, moss and soil (G141, "The ground under the
+sward", below), its blades at the blade's roughness 0.7 and the floor between them at the floor's.
+The deliberately
 permissive cut selects the authored card rung; the cook rejects any retained non-card cluster.
-This is a ring policy, **not** a one-pixel error guarantee. Ground, blades and cards share
+This is a ring policy, **not** a one-pixel error guarantee. Blades and cards keep
 roughness 0.7. External material overrides are refused for sward to preserve the bake's source.
 Generated files stay outside
 the checkout. The optional `bake_level` depth output leaves existing atlas bytes unchanged.
@@ -231,10 +232,13 @@ default).
 four); an entry names forms for every family or none (refused otherwise), and each form's density
 classes ascend to weight 1 on their own. Where it names them, the placement asks the **stature rule**
 (`SwardStature` in the entry, `sward_site_form` in `sward.h`) at the patch's moved centre and then
-interpolates the density between that form's classes as before. Its inputs are what the scene already
-hands the generator: the mask's wetness at the cell (a water body's `wet_m` band) or a stream's
-nearness, `(1 − riparian_factor) / (1 − k_riparian_floor)`, whichever is larger; the slope from central
-differences at half a cell, its angle the sward's own arctangent (`sward_atan`, below); the weight of the palette layer `shade_layer` where the paint has one
+interpolates the density between that form's classes as before. Its inputs are the cell's site (G140,
+2026-11-10): the wetness is the meadow rule's, `(F − moisture_base) / (9 − moisture_base)` from the
+moisture F the site's distances to water, heat load, slope and curvature and the mask's wet band give
+([The meadow community](#the-meadow-community-g140)), where until G140 it was the mask's wetness or a
+stream's nearness over the 3 m riparian reach; the slope is the site's (central differences 5 m either
+side, `scene_gen::k_site_step_mm`) where it was half a cell's, its angle the sward's own arctangent
+(`sward_atan`, below); the weight of the palette layer `shade_layer` where the paint has one
 (255, the default, none — v36's paint has no such layer); and two value noises of the place on a
 `mosaic_m` lattice (20 m) seeded from the world's and the entry's seeds. Scores and defaults are in the
 grounding page. A form the entry has no family for falls to the nearest it has: the other habit, then
@@ -283,12 +287,19 @@ share of one form falls from 95 % to 5 % over `band_m`, the same rule for both o
   own estimate), the default band comes out at 3.04 m for tall against short and 3.02 m for tussock
   against sod; a band of zero at 0.225 m, within the 0.25 m bin (the forms tests hold the band to a
   fifth either side and the line under half a metre).
-- *Where it is not the asked width.* Where a site field moves the score as well — a wet margin, a slope
-  through the thresholds, a shade layer's edge — the score's true gradient is the noise's plus the
-  field's, and the band is narrower (or wider, where the field opposes the noise) by the ratio of the
-  noise's gradient to the whole; a boundary the noise does not move at all (`noise` 0) stays a line.
-  Taking the fields' gradients too would mean sampling the mask and the ground again around every
-  cell; it is listed under "Not yet".
+- **Where a site field draws the boundary** (G139, 2026-11-10; [grounding](../experiments/meadow-community.md#where-a-site-field-draws-the-boundary-g139)).
+  Where a wet margin or a slope through the thresholds moves the score as well, the score's true
+  gradient is the noise's plus the field's, and with the noise's alone the band narrowed by their
+  ratio, to a line where the field drew the boundary. The band now reads the whole: the fields' part
+  of each score (`wet_tall · wetness + steep_tall · steepness`, and the tussock's) is taken again one
+  cell along x and one along z from the site (`cell_site` in `sward_placement.cpp`), and its forward
+  differences are added to the noise's analytic gradient as vectors. `sward_site_form` reads a
+  gradient in the noise's units, so the whole is handed to it divided by `2 |noise|`; with no field
+  gradient the noise's goes as it did (a flat tile's forms are G138's to the bit). Measured on a
+  valley floor whose slope draws the boundary (noise weight 0.02, six worlds): 2.95 m for a band of
+  3 m, against about 0.1 m by G138's rule. It costs two more site samples a cell. Not taken: the
+  shade layer's gradient (the paint would be sampled round every cell), and a `noise` of exactly 0,
+  where `sward_site_form` multiplies the band by zero and a line remains.
 - *Cost.* Per cell: the two noises' derivatives (two eases' slopes, four lerps, two square roots), two
   hashes for the draws, and per axis one multiply-divide and a smoothstep; nothing allocated. One 64 m
   tile of 4,096 cells, `msvc-release`, 41 placements a run, three runs alternating with the commit
@@ -296,17 +307,16 @@ share of one form falls from 95 % to 5 % over `band_m`, the same rule for both o
   at 62–91 % CPU from other agents' builds, so the pair is an upper bound: about 0.2 ms a tile, 40 ns
   a cell, at activation and never per frame.
 
-**The meadow's forbs.** `forbs` (1–16 herb mesh paths; empty, the default, none) stand in a
-`forb_share` of the cells that drew a patch (0.33 a hay meadow's, 0.1 a pasture's, grounded on the
-same page), from stream 4 of the patch's hash: within 0.35 of a cell a side of the patch's moved
-centre (inside the circle the patch cleared earlier footprints by), asked of the exclusion at their own
-point, upright, turned by their own stream, their ID the cell's with the top bit set (so an entry with
-forbs is refused past a 31-bit cell space). The herb's motion kind is `parts` — every forb is a run of
-the part-pose table and is posed on the CPU each frame — so a tile keeps at most `forb_tile_cap`
-(256) of lowest hash, and forbs stand only in representation 0 (the near ring). Ring 1 draws cards and
-no forbs. On a 64 m tile of 1 m cells the default cap binds at about 6 % of the cells where the share asks
-33 %; the v36 measurement (grass-sward.md) sets 1,024 and shows the cost: the deformed-vertex pool
-0.08–0.18 ms more at 1080p with no relayout of the deform table.
+**The meadow's plants** are the community's since G140 ([The meadow community](#the-meadow-community-g140),
+below); G137's `forbs` (one list of meshes in a fixed `forb_share` of the cells) is refused by name.
+A plant stands within 0.35 of a cell a side of its patch's moved centre (inside the circle the patch
+cleared earlier footprints by), asked of the exclusion at its own point, upright, turned by its own
+stream, its ID the cell's with the top bit set (so an entry with a community is refused past a 31-bit
+cell space). The herb's motion kind is `parts` — every plant is a run of the part-pose table and is
+posed on the CPU each frame — so a tile keeps at most `forb_tile_cap` (256) of lowest hash, and plants
+stand in representation 0 (the near ring) and, as far forms, in representation 1 (below). The v36 measurement
+(grass-sward.md) sets 1,024 and shows the cost: the deformed-vertex pool 0.08–0.18 ms more at 1080p
+with no relayout of the deform table.
 **Capability contract.** Flora remains optional. It adds only a dependency on the nonoptional
 `scene_gen` registry and `Ground::masks`; no renderer pass depends on flora. Ground forwarding
 exposes existing W72 data. Baking uses the flora baker and geometry's authored-level DAG/form
@@ -324,13 +334,159 @@ and release pair/shadow budgets are accepted.
 **Not yet.** Seasonal phenology and seed-head geometry; measured patch sky AO and calibrated
 thickness/colour; sparse-family card coverage; exact per-texel density conservation;
 slope-conforming patches; tussock spacing and base height from a field measurement (authored today);
-the transition band in metres where a site field and not the mosaic draws the boundary (the band reads
-the noise's gradient alone, G138) and a band width from a measured tall-to-short boundary rather than
-the height mosaic's scale;
-a `field`-kind meadow forb, so forbs need no pose-table run and can stand past the near ring and past
-`forb_tile_cap` (a request: the herb's solver and the field pass are not this module's sward); zero-footprint
+the band where the shade layer draws the boundary, and where the noise's weight is exactly 0
+(`sward_site_form` would take the score's gradient itself), and a band width from a measured
+tall-to-short boundary rather than the height mosaic's scale;
+a `field`-kind meadow plant (or a static far form), so plants need no pose-table run and a tile can
+hold the community's whole density instead of `forb_tile_cap`'s 256 plants (6 % of a 64 m tile's
+cells: a flowering meadow at 50 m still reads sparse beside r01), and a merged far mesh a tile in place
+of far forms as instances (a request: the herb's solver and the field pass are not this module's
+sward); the
+species' leaf and flower sets (roles: a buttercup's and a marigold's yellow cup, a clover's magenta
+head, a cranesbill's violet saucer, a daisy's white ray, an umbel's white, a sedge's and a rush's
+leaf, a bilberry's leaf), grazing and soil as niche axes, per-species tolerances fitted to plot data,
+and the sward's colour by wetness; zero-footprint
 host support; field sway, persistent contact/recovery fields and caster policy on the engine side; far-ground wind sheen. The
 current-main shadow stand-in is CSM with a short shadow distance, never claimed as final policy.
+
+### The meadow community (G140)
+
+**A meadow is a community, not one forb** ([grounding](../experiments/meadow-community.md); the
+forest proof of concept's solver needs §2.3 items 1 and 6, §3.2). `include/domain/flora/meadow.h` is
+the rule, pure; `src/sward_placement.cpp` reads it per cell.
+
+- **The table** (`meadow_species()`): ten forbs, a sedge, a rush and a dwarf shrub of a montane hay
+  meadow along a moisture gradient (MG3's mesic sward and shade edge, MG8's wet margin, the dry
+  slope), each with its Ellenberg moisture F and light L as recalibrated for Britain (Hill et al.
+  1999, read) for its optimum, a Domin class's midpoint for its greatest cover (chosen from the
+  communities' constancy), and a height, heads and a flower colour (chosen) for its stand-in recipe.
+  The grounding page has the table and marks every number.
+- **The niche** (`meadow_niche`): the cell's site (`Context::site_mm`, G144) and the paint's wet band
+  and shade layer become F and L. F is `moisture_base` (5) less `heat_dry` (2) a unit of heat load
+  over level ground's, less `slope_dry` (2) a unit of slope, plus `hollow_wet` (20) a 1/m of
+  concavity, held to 1..9, then lifted towards the wet margin's 9 on a smoothstep within
+  `wet_reach_m` (10 m) of a channel's bank or a water body's outline, or by the paint's wet band. L is
+  `light_open` (7.5) falling to `light_shade` (5) with the shade layer's weight. `MeadowRule` in the
+  entry (`meadow`) holds the seven numbers.
+- **The covers** (`meadow_cover`): each species' greatest cover times a Gaussian on F (tolerance 1)
+  and L (1.5) about its optimum (ter Braak and Looman 1986), cut to 0 past three tolerances, quantized
+  to 1/65536, and where the sum passes one scaled down in integers, so it never does. The exponential
+  is `det::exp`: a cover is the same bits on every toolchain.
+- **A plant a cell** (`community`, 1..16 `MeadowSpecies`, a table name and a mesh path each): every
+  cell that drew a patch in the near ring draws one plant, stream 4 of its hash's top 16 bits against
+  the covers' running sum, so a species stands in its cover's share of the cells and a cell past the
+  sum is grass alone; the plant is placed as G137's forbs were (above), its mesh the species'. On a
+  level, dry, open meadow red clover's cover is 0.170 and it stands in 697 cells of 4,096 (the test
+  holds the count to 100). The tile's cap (`forb_tile_cap`, 256) then keeps the lowest-ranked of all
+  species alike, so the cap thins the community without changing its proportions.
+- **The stature rule reads the same F** (above, "Growth forms by site"), so the tussock stands where the
+  rushes and the marsh marigold do.
+- **The stand-in meshes** (`meadow_herb`): each species' herb recipe from the table — its height, its
+  heads at their flat colour, petal cards a head; a sedge, a rush or a dwarf shrub a herb of leaves
+  alone — 48 to 498 triangles, 2,874 for the thirteen. A member that names no `mesh` stands as its
+  stand-in: `open` writes the recipe as `<ddc>/meadow/<species>-near-<hash>.flora.json` (the
+  host's derived-data root, else the repository's found from the scene, else `meadow` beside the
+  scene: the cliffs generator's rule), once, under its content hash, and names it, so the host builds
+  it through the `flora` mesh generator and the derived-data cache when a tile first uses it. They
+  are stand-ins until leaf and flower sets exist; the roles a species needs are listed under "Not
+  yet".
+- **The far form** (representation 1, the card ring): the same cell draws the same plant, and one in
+  `meadow_far_thin` of a flowering species' stands (stream 12 of its hash) as its far form
+  (`meadow_far_herb`, or the member's `far` mesh): a leafless stem carrying the heads of that many
+  plants (40 over its heads a plant, held to 1..4), each head with at most five petal cards whose
+  length grows by `sqrt(petals / 5)` so its coloured area is the near head's. A species with no
+  flowers has no far form (the sward's card is its colour there). The tile's cap counts a far form as
+  the plants it stands for, so at the cap both rings hold the same flowers a tile: on a capped tile,
+  256 plants near and 82 far forms standing for 253. Measured over four worlds with no cap, the far
+  ring's petal-card area is 34.5 m² against the near ring's 32.4 m² (+6 %; held to a tenth), at the
+  same flat colours. A far form is 186 to 510 triangles for up to four plants' heads.
+
+*Determinism and tiles.* A cell's niche, covers and draw are functions of its point and the entry, so
+a plant is its cell's from any tile, any order and any ring (`meadow: a cell's plant is its cell's
+from any tile order`); `meadow: the covers and a tile's community are the same bits on every
+toolchain` pins the covers over a lattice of niches and two tiles' communities, taken on MSVC.
+
+*Cost.* `meadow: what a tile's placement costs` (a 64 m tile of 1 m cells on a 20° slope under a
+graded paint, about 2,100 patches; best of five, three runs, `msvc-release`, 2026-11-10 22:34, the
+machine at 100 % CPU by `Win32_Processor.LoadPercentage` before and after with ten other compiler
+processes running and 22 GB free, so upper bounds): the four forms with the default band
+(G137-G140: a site sample a patch, two more for G139's gradient) 2.9-3.9 ms a tile near and
+2.7-3.3 ms in the card ring; with the thirteen species 4.2-5.3 ms near and 3.4-5.1 ms in the card
+ring, so the community costs about 1.3 ms a tile, at activation and never per frame.
+
+*Budget.* A tile keeps at most `forb_tile_cap` (256) plants in the nearest ring, at 48 to 498
+triangles each (at most 127,000 a tile, 31 a square metre at the cap), and far forms standing for
+at most 256 plants in the next (82 instances on the capped test tile, at most 510 triangles each:
+at most 42,000 a tile), none past it. Resident: the entry's community list (a pointer, a far mesh
+index and a thinning a species) and nothing per tile; the stand-in recipes are files in the
+derived-data root, a few hundred bytes each.
+
+### The ground under the sward (G141)
+
+**The bake over a floor** ([grounding](../experiments/grass-sward.md#the-floor-under-a-sward-g141-2026-11-10)).
+`bake_sward_ground_over` (`sward.h`) composes the sward's top view (`bake_sward_ground`, 16 samples
+a texel) over a floor at 256 px a cell, and `engine-content flora … --sward-assets` writes it in
+place of the old blade lines on one flat green at roughness 0.70. Per texel, with `c` the bake's
+cover of the texel: colour, roughness, normal and height are the floor's where `c` is 0, the blade's
+where it is 1, and weighed by `c` between. The drawn swards cover 2 to 6 % of the ground from
+straight above, so what a person sees between crowns is this floor.
+
+- *The floor* is three parts, a share each (`SwardFloorMix`): an underlay of moss and soil from two
+  octaves of wrapped value noise (8 and 2.5 cm), split at the moss share's quantile (so the shares
+  are exact) with a soft edge, moss rising in cushions up to 8 mm; over it the thatch as dead leaf
+  fragments 3 to 9 cm long and 1 to 4 mm wide at random turns, each its own tone, as many as a
+  Poisson cover of the thatch's share asks (`N = −ln(1 − s) A / (L w)`, 3,300 a square metre at a
+  share of a half), stacked. The floor's normal comes from its height's central differences; the
+  image tiles at the cell. Where a material pack has a `ground/thatch`, `ground/moss` or
+  `ground/soil` role, that part samples the role's base colour and roughness images instead (none
+  exist yet; the cook says `procedural` in `provenance.json` for each). A first layout, a 3 cm
+  Worley mosaic, read as camouflage polygons and was dropped.- *By form* (`sward_floor_mix`, `sward_default_floor`): a tussock stands in thatch and soil, a sod
+  on a closed mat of thatch and moss; wet and shaded ground move share to moss. The bake takes the
+  form from `--sward-form`, else from the recipe (`sward_recipe_form`: a tussock where it has a
+  crown spacing, tall where its leaves' grown length is 0.2 m or more). `sward_site_floor` gives a
+  site's floor from the stature rule's own inputs, calling `sward_site_form` unchanged — the hook a
+  per-cell ground would read; the scene's ground layer today is one bake per scene, so a field of
+  mixed forms takes the floor of the family the cook was told (see "Not yet").
+- *Same bytes everywhere*: hashes, products, sums, divisions, square roots, a sort of the noise for its
+  quantile, and the engine's own `det::exp`, `det::log`, `det::sin` and `det::cos`; no C library call
+  decides a texel. `sward_tests.cpp` pins the four
+  images' hash and the far colour for the short-tussock recipe, taken on MSVC. The old bake was not pinned.
+
+**Near and far.** The drawn swards carry 1 to 2 % of a measured sward's leaf area, so the ground
+stands in for the leaves the engine does not draw, near and far (the coordinator's correction,
+2026-11-10: the first version matched the far colour to the sparse drawn sward and turned the far
+meadow olive-brown beside reel r01). Each form has a canopy leaf area index (`canopy_lai`, 1.5 to 4)
+and a share of standing dead leaf (`standing_dead`, 0.03 to 0.25).
+
+- *Near*, the image: the floor in the whole canopy's shade, `exp(−0.5 · canopy LAI)` floored at
+  0.25; over it **the undrawn live leaves**, fragments at the profile's leaf width and half its
+  grown length, whose cover from straight above is the gap law for the leaf area not drawn,
+  `1 − exp(−0.5 (canopy LAI − drawn LAI))` (0.52 for the short tussock, 0.63 for the short sod), each
+  at a depth in that leaf area and darker by `exp(−0.5 L)` above it, the deepest painted first, at
+  the blade's roughness and raised in the height map by its depth; over those the drawn blades' top
+  view. A sod's ground comes out mostly green, a tussock's keeps its litter gaps. A leaf is filtered
+  by the overlap of its width with a texel's, so a leaf thinner than a texel keeps its area and the
+  cover follows the law (the tests hold it within 0.03). The image is opaque.
+- *Far*, the layer's `far_color` ([renderer](renderer.md#a-layers-far-colour)): the real canopy at
+  10° of elevation (`k_sward_far_elevation_deg`), whose cover `1 − exp(−0.5 · canopy LAI / sin 10°)`
+  is above 0.999 for every form, so the far colour is the canopy's: a green grass canopy's visible
+  albedo with the form's standing dead (`k_sward_canopy_albedo`, `k_sward_dead_canopy_albedo`).
+  The blade's own material is a live leaf's albedo (`k_sward_leaf_albedo`, `k_sward_version` 8).
+
+The terrain fades the image's detail to `far_color` over the scene's `detail_near_m`..`detail_far_m`,
+which `tools/sward-cook.ps1` sets to the sward's reach (`-DetailNearM 27`, where the near blades'
+hand-off band ends, `-DetailFarM 64`, where the meadow's cards end), and it writes the bake's far
+colour into the scene's sward layer. `provenance.json` records the form, the shares, the canopy leaf
+area and standing dead, the transmission, the covers (drawn from above, live target and achieved,
+canopy along the view) and the near mean and far colour. The far colour is the real canopy's and not
+the drawn one's, so where the near sward is drawn sparse the hand-off from the drawn near to the far
+colour shows: that mismatch is measured and reported (grass-sward.md), not bent away.
+**Not yet.** A per-cell ground that follows the stature rule's form across a mixed field (a mask
+layer per form, or the sward placement writing the ground it stands on); photographed floor parts
+(the pack roles above); wetness-dependent floor colour; a far colour that follows the view's elevation
+rather than one stated 10°; more blades a tuft at every rung's triangles (G141's stage 4, measured and
+designed in the grounding page, not built: the blades are already the species' width, and their
+number is 2 to 5 % of a measured sward's leaves).
 
 ## Shared growth rules and named species (G85)
 

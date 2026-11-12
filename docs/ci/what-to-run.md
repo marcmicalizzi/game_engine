@@ -232,6 +232,21 @@ The GPU lock stopped being a reason to wait on 2026-10-01: a test holds it for t
 a device open ([gpu_lock](../subsystems/gpu_lock.md), ADR-0049), so a suite queues behind another
 agent's test and not behind its hour.
 
+**Both machine locks are lines since 2026-11-11** (T96, [the line](../subsystems/gpu_lock.md#the-line),
+[ADR-0062](../adr/0062-the-machine-locks-have-a-line.md)): the GPU lock and the container build
+lock serve whoever has waited longest, a holder that releases and asks again goes to the back,
+and a short ask (a test's device, a `-Minutes 2` capture) passes a long one only while the long
+one has waited less than the difference between them. So a wait is the holds that were before
+you, each once, and no longer a lottery a re-asker wins: there is nothing to gain by asking early
+and often. (The pause GPU-LOCK.md's rule 9 asks between back-to-back holds is still what lets in
+a tool that takes no ticket, the Blender agent's: with nobody in the line, a re-asker has the
+lock back at once.)
+`tools/gpu-lock.ps1 status` (with `-LockFile D:\workspace\linux-build.lock` for builds) prints the
+holder and the line, and a waiter's own log says where it stands. What it changes for a plan:
+GPU tests beside other agents' now take turns hold by hold, so a long GPU suite run beside five
+others runs at a sixth of its pace instead of all at once after a wait; and a waiter that is
+killed frees its place within 32 s.
+
 ### How long things take
 
 So that a wait can be sized before it is written. Measured on the desktop on 2026-10-04 and, where a row says so, 2026-10-10, with one to four
@@ -354,12 +369,16 @@ so a test registered anywhere — by a module, an app, a tool, or a file added s
   `tools.game_sdk`, which starts `engine-view`, carries the label since T77.
 - **End-to-end tests keep `RESOURCE_LOCK e2e_apps`** (windows and input devices; `engine_app`),
   parts included.
-- **Tests that assert an upper bound on wall-clock time run alone** (`RUN_SERIAL`, and the label
-  `wall_clock`): `tileset` (one height lookup beside a building window under 50 ms) and
-  `scene_collision` (an activation and a prefetch wait under 120 ms). Every other timing check in the
-  tree was read and is a lower bound (`elapsed >= x`), a synthetic clock (the flythrough's injected
-  30 ms host turn), or a ratio; the `bench.*` smoke runs make one iteration and assert nothing about
-  time, so they share cores.
+- **Tests that assert an upper bound on wall-clock time run alone**: a test registered
+  `engine_module_tests(... WALL_CLOCK)` carries the label `wall_clock`, and the finalize gives every
+  test with the label `RUN_SERIAL` (T87): `tileset` (one height lookup
+  beside a building window under 50 ms) and `scene_collision` (an activation and a prefetch wait
+  under 120 ms). Every other timing check in the tree was read (again on 2026-11-11: every test
+  file that reads a clock) and is a lower bound (`elapsed >= x`), a synthetic clock (the
+  flythrough's injected 30 ms host turn, a game session's ticks), a ratio, or a figure printed and
+  not held (the cut, channel, ledge, cone and meadow costs); the `bench.*` smoke runs make one
+  iteration and assert nothing about time, so they share cores. A new test that bounds a wall
+  clock says `WALL_CLOCK` where it is registered.
 - Scratch space was already per test (`TempDir`, the lint's `test-temp-path`), which is why a test
   can share a run with another at all.
 
@@ -387,25 +406,67 @@ wrongly left out queues in the lock.
 `engine_module_tests(... PARTS <n>)` and now `engine_app(... E2E_PARTS <n>)` register one executable
 as `<name>.1` to `<name>.<n>`, each running its own source files' cases through doctest's
 `--source-file=` filter. `engine_view` has four parts and `gfx` two (with `renderer`'s four). The
-deal (`_engine_test_parts`, `cmake/EngineModule.cmake`):
+deal (`_engine_test_parts`, `cmake/EngineModule.cmake`, calling `engine_deal_test_files` in
+`cmake/EngineTestDeal.cmake`, which needs no project, so `tools/test-costs.ps1 -Predict` and
+`tools.test_costs` run the configure's own deal in script mode rather than a copy of it):
 
 - runs at the end of the declaring `CMakeLists.txt` (`cmake_language(DEFER)`) and reads the test
   target's whole `SOURCES`, because `gfx` adds most of its test files with `target_sources` after
   `engine_module_tests`;
-- deals the files `cmake/test-costs.txt` gives seconds for first, longest first, each to the part
-  with the least so far, and the rest in name order round the parts — so an empty table is the
-  name-order deal the renderer's parts had (its four parts are file for file the ones gate b57 ran);
+- deals the files `cmake/test-costs.txt` gives seconds for first, longest first (equal costs by
+  name), each to the part with the least so far (the lowest-numbered of equals), and the rest in
+  name order round the parts from the first — so an empty table is the name-order deal the
+  renderer's parts had (its four parts are file for file the ones gate b57 ran);
 - anchors each file's filter at the separator before its name (`*/x.cpp` and `*\x.cpp`), so `gfx`'s
   `deform_tests.cpp` does not also run `flora_deform_tests.cpp`.
 
-**The table is empty, and why.** Gate b57's logs hold seconds per CTest test only — no case or file
-durations — so the renderer is not re-dealt yet (its part 3 still holds half the server's renderer
-time, and part 2 over half of Windows'). Every module and end-to-end test now runs with
-`--duration=true`, one line of seconds a case in the log, and `tools/test-costs.ps1 -Log <LastTest.log>
--Tests renderer,gfx,engine_view -BuildDir build/msvc-debug` sums them per file into the table (the
-case-to-file map from the executable's own `--list-test-cases --reporters=xml`; tested by
-`tools.test_costs`). The slowest card is the binding one, so the rows come from the GPU server's
-log (`remote-build.ps1 -Fetch`) where it has one: a part that fits there fits on the RTX 5090.
+**The table, and how it is refreshed.** Every module and end-to-end test runs with
+`--duration=true`, one line of seconds a case in the log (since T77), and `tools/test-costs.ps1`
+sums them per file into the table (T88; the case-to-file map from the executable's own
+`--list-test-cases --reporters=xml`; tested by `tools.test_costs`). The slowest card is the
+binding one — a part that fits on the GPU server fits on the RTX 5090 — so the tool reads several
+logs and keeps, a file, the seconds of the log that took longest over it, with that log's label
+as the row's comment (`renderer shadow_map_tests.cpp 666  # b58-linux-server`). After a gate:
+
+1. collect the logs: the server's `LastTest.log` (`remote-build.ps1 -Fetch <dir>`), and
+   `msvc-release`'s for the apps' tests (`engine_view`'s parts run there and not on a CPU-only
+   container); `tools/dev.ps1 test` keeps every pass's log as
+   `build/<preset>/Testing/Temporary/LastTest-<time>-<pass>.log`, so a rerun no longer overwrites
+   the suite's (gate b58 lost `msvc-debug`'s that way);
+2. `tools/test-costs.ps1 -Log <server log>,<msvc-release log> -Label <gate>-linux-server,<gate>-msvc-release
+   -Tests renderer,gfx,engine_view -BuildDir build/msvc-debug -Out <scratch>/test-costs.txt`, in a
+   build of the gate's commit (a case renamed since is reported and left out);
+3. `tools/test-costs.ps1 -Predict -BuildDir build/msvc-debug -Table <scratch>/test-costs.txt`:
+   each part's seconds as the build deals them now and as the configure would deal them by the
+   new table — the configure's own `engine_deal_test_files` in script mode, no build needed;
+4. copy it over `cmake/test-costs.txt` and commit it with the prediction in the message; the next
+   configure deals by it (the file is a configure dependency). Reading the table and dealing costs
+   the configure about 70 ms (390 rows and three deals of 130 files, `cmake -P`, 2026-11-11, host
+   CPU at 48% beside other agents' builds: an upper bound).
+
+A file the table does not name — one added since the gate — is dealt round the parts after the
+costed ones and counts nothing, so a table a few days old still deals well; refresh it when a
+part's measured seconds drift from the prediction by more than a quarter. A log line from another
+thread can land inside a duration line and cut the case's name (seven cases in gate b58's server
+log); the tool mends a cut name when exactly one case of the test begins with what is left, and
+reports the rest.
+
+**Gate b58's logs, predicted** (a prediction from one run's seconds, not a measurement until a
+gate runs the deal): the table they write is not committed on 2026-11-11, because other branches
+merging that day add files to the renderer, so the re-deal lands on the merged tree. Over this
+branch's base (`cdeb3cca`), the server's seconds for `renderer` and `gfx`, the slowest of the
+server's and the three Windows presets' for `engine_view`:
+
+| Test | Parts now (name order), seconds | By the table | Longest part |
+|---|---|---|---|
+| `renderer` (54 files, server) | 878, 1,424, 2,383, 1,125 | 1,453, 1,453, 1,452, 1,452 | 2,383 to 1,453 |
+| `gfx` (47 files, 2 not costed, server) | 188, 378 | 283, 283 | 378 to 283 |
+| `engine_view` (40 sources, 8 with no cases) | 270, 530, 561, 134 | 374, 374, 373, 374 | 561 to 374 |
+
+The renderer's "now" reproduces the server's measured parts (876, 1,423, 2,382, 1,123 s), which is
+the check that every case was placed. `engine_view`'s rows mix machines by design, and one is
+suspect: `interactive_tests.cpp` takes its 128 s from `msvc-minimal`, where an end-to-end test's
+children can wait for the card out of sight; the server's and release's runs of it were shorter.
 **A case's seconds include its wait for the GPU lock**, and on this shared desktop that can be most
 of them: `gfx.1`, run by filter on 2026-11-10 behind three other agents' measurements, took 1,765 s
 of which 1,725 were one case waiting (its own work: 50 holds, 35 s held, on the RTX 5090 in

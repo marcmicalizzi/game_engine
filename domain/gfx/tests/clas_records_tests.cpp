@@ -649,6 +649,9 @@ struct RangesCase {
   u32 capacity = 0;
   u32 reference_capacity = 0;
   u64 references = 0;  // the cache's reference array, or 0 for no cache
+  // `gfx::k_cluster_records_drawn_first` (R143): the order is spent as one rank, every drawn
+  // structure before any caster.
+  bool drawn_first = false;
 
   u64 wanted(bool of_cached) const {
     u64 w = 0;
@@ -680,7 +683,7 @@ struct RangesCase {
       u32 begin = 0;
       while (begin < m) {
         u32 end = begin;
-        while (end < m && rank(end) == rank(begin)) {
+        while (end < m && (drawn_first || rank(end) == rank(begin))) {
           const u32 i = entry(end);
           if (i < n) {
             if (!take(dm[i] != 0, d[i])) {
@@ -763,7 +766,7 @@ u32 run_ranges(const gfx::Device& device, gfx::ShaderModuleHandle module, const 
   params.blas_records = blas.address;
   params.clas_addresses = k_fake_addresses;
   params.instance_count = c.n;
-  params.mode = gfx::cluster_records_mode(1, false, scan);
+  params.mode = gfx::cluster_records_mode(1, false, scan, false, c.drawn_first);
   params.capacity = c.capacity;
   if (!c.order.empty()) {
     Vector<u32> laid(2 + c.order.size(), 0u);
@@ -988,6 +991,280 @@ TEST_CASE("clas records: past the capacity the walk keeps what the rule keeps, r
   CHECK(differing == 0);
   MESSAGE(cases << " cases past or at the capacity: the walk writes the rule's words in every one");
   gfx::destroy_shader_module(device, module);
+  device.destroy();
+}
+
+TEST_CASE("clas records: on a traced picture every drawn structure is kept before any caster") {
+  // **What a frame past its capacity keeps** (R143; renderer.md, "What a frame past its capacity
+  // keeps"). The rule spends the capacity a rank of the drop order at a time — a ring's drawn
+  // clusters, its casters, then the next ring — so a far ring's *drawn* instances go before a near
+  // ring's casters do. Under traced shadows that is right; where the structures are the picture a
+  // dropped drawn instance is a hole in it. With `k_cluster_records_drawn_first` the order is one
+  // rank: every drawn structure nearest first, then the casters. Here against the rule on the CPU,
+  // word for word, on the scan and on one thread; and the point of it — with room for every drawn
+  // structure and none to spare, no instance loses its drawn clusters where the rank-by-rank rule
+  // drops some. On main the mode bit does nothing and the second half fails.
+  gfx::Device device;
+  if (!gfx_test::open_device(device)) return;
+  std::string error;
+  gfx::ShaderModuleHandle module = gfx::create_shader_module(
+      device, shaders::k_clas_records_spirv, shaders::k_clas_records_spirv_size, &error);
+  REQUIRE(module.valid());
+  u32 differing = 0;
+  for (const u32 n : {700u, 70001u}) {
+    for (const bool with_cache : {false, true}) {
+      RangesCase c = random_case(n, 4321u + n, with_cache);
+      random_order(c, 17u * n + (with_cache ? 1u : 0u));
+      c.drawn_first = true;
+      const u32 built = static_cast<u32>(c.wanted(false));
+      const u32 refs = static_cast<u32>(c.wanted(true));
+      const u32 capacities[3][2] = {{built - built / 4, refs + 5}, {built / 2, refs / 3}, {7, 3}};
+      for (const auto& capacity : capacities) {
+        c.capacity = capacity[0];
+        c.reference_capacity = capacity[1];
+        for (const bool scan : {true, false}) {
+          std::string label;
+          u32 walked = 0;
+          const u32 here = run_ranges(device, module, c, label, walked, scan);
+          CHECK_MESSAGE(here == 0, n << " instances, drawn first"
+                                     << std::string(with_cache ? " with a cache" : "")
+                                     << (scan ? "" : ", one thread") << ", capacity " << capacity[0]
+                                     << "/" << capacity[1] << ": " << label);
+          differing += here;
+        }
+      }
+    }
+  }
+  CHECK(differing == 0);
+  // Room for exactly every named instance's drawn structures: the rank-by-rank rule spends some of
+  // it on the near ranks' casters and drops far drawn instances; drawn first drops none of them.
+  {
+    RangesCase c = random_case(5003u, 99u, false);
+    random_order(c, 7u);
+    Vector<u8> named(c.n, u8{0});
+    for (u32 k = 0; k < c.order.size() / 2; ++k) {
+      if (c.order[2 * k] < c.n) named[c.order[2 * k]] = 1;
+    }
+    u32 drawn_named = 0;
+    u32 unnamed = 0;
+    for (u32 i = 0; i < c.n; ++i) {
+      if (named[i] != 0) {
+        drawn_named += c.drawn[i];
+      } else if (c.drawn[i] + c.casters[i] != 0) {
+        ++unnamed;  // an instance the order does not name keeps nothing under either rule
+      }
+    }
+    c.capacity = drawn_named;
+    u32 dropped[2] = {0, 0};
+    for (const bool first : {false, true}) {
+      c.drawn_first = first;
+      Vector<u32> counts;
+      Vector<u64> blas;
+      u32 words[6] = {};
+      c.reference(counts, blas, words);
+      dropped[first ? 1 : 0] = words[2];
+      std::string label;
+      u32 walked = 0;
+      CHECK_MESSAGE(run_ranges(device, module, c, label, walked) == 0, label);
+    }
+    MESSAGE("5,003 instances, room for every named drawn structure ("
+            << drawn_named << "): rank by rank drops " << dropped[0] - unnamed
+            << " drawn instances, drawn first " << dropped[1] - unnamed);
+    CHECK(dropped[1] == unnamed);
+    CHECK(dropped[0] > unnamed);
+  }
+  gfx::destroy_shader_module(device, module);
+  device.destroy();
+}
+
+TEST_CASE("cluster set: what a set reserves does not follow its totals") {
+  // **What the frame's own set reserves** (R143; docs/experiments/rt-small-instances-2026-11-10.md,
+  // "What a structure of the frame's own set reserves"). Every set here is created for clusters of
+  // 124 triangles and 64 vertices each, and a forest's clusters average a quarter of those
+  // triangles: its leaves are cards, four vertices to two triangles, so a cluster is full at 64
+  // vertices and about 30 triangles. The size query takes the totals as well as the count
+  // (`ClusterSetLimits::max_total_*`); this says what the driver does with them. On the RTX 5090
+  // at driver 610 it does nothing: 6,144 bytes a cluster, 8,832 with micromaps, at a half and a
+  // quarter of either total as at the whole, so a set sized by the triangles its frames build
+  // would reserve what it reserves now. No number is pinned — it is the driver's — and the one
+  // thing held is that fewer never reserve more; the messages say when a driver starts to follow.
+  gfx::Device device;
+  if (!gfx_test::open_device(device)) return;
+  gfx::ClusterAsProperties props;
+  if (!gfx::cluster_as_properties(device, props)) {
+    MESSAGE("no cluster acceleration structures");
+    device.destroy();
+    return;
+  }
+  constexpr u32 k_clusters = 65536;
+  u64 full = 0;
+  for (const bool micromaps : {false, true}) {
+    for (const u32 quarter : {4u, 2u, 1u}) {  // the share of the totals, in quarters
+      for (const bool vertices_too : {false, true}) {
+        if (quarter == 4 && vertices_too) continue;
+        gfx::ClusterSetLimits limits;
+        limits.max_clusters = k_clusters;
+        limits.max_geometry_index = k_clusters - 1;
+        limits.opacity_micromaps = micromaps;
+        limits.max_total_triangles = k_clusters * 124u / 4u * quarter;
+        if (vertices_too) limits.max_total_vertices = k_clusters * 64u / 4u * quarter;
+        gfx::ClusterBuildSizes sizes;
+        const bool ok = gfx::cluster_set_build_sizes(device, limits, sizes);
+        if (!ok) {
+          MESSAGE("the driver gave no size at " << quarter << "/4 of the triangles");
+          continue;
+        }
+        if (quarter == 4) full = sizes.data_bytes;
+        MESSAGE(std::string(micromaps ? "with micromaps, " : "plain, ")
+                << quarter << "/4 of the triangles"
+                << std::string(vertices_too ? " and of the vertices" : "") << ": "
+                << sizes.data_bytes / k_clusters << " bytes a cluster of storage, "
+                << sizes.scratch_bytes / k_clusters << " of scratch");
+        CHECK(sizes.data_bytes <= full);  // fewer triangles never reserve more
+      }
+    }
+  }
+  device.destroy();
+}
+
+TEST_CASE("tlas references: the bottom-level build is over the instances that reference anything") {
+  // **The bottom-level build is over what the frame drew** (R143; renderer.md, "The bottom-level
+  // build is over what the frame drew"). The ranges write a bottom-level record per instance slot
+  // and the build was over all of them: `blas_compact_main` copies the records that reference
+  // anything to the front of a second array, counts them, and says where each instance's went;
+  // `tlas_references_main` then takes an instance's address from that place. 5,000 instances, one
+  // in nine with a record: the count is theirs, the compacted records are theirs — each once, in
+  // whatever order the atomic gave — every instance's top-level reference is the address of its own
+  // record's structure, an instance with none is inactive, and a static form's keeps its mesh's.
+  gfx::Device device;
+  std::string error;
+  if (!gfx_test::open_device(device)) return;
+  constexpr u32 k_count = 5000;
+  constexpr u32 k_words = static_cast<u32>(gfx::k_instance_record_bytes / 4);
+  const auto has = [](u32 i) { return i % 9 == 4; };
+  const auto is_static = [](u32 i) { return i % 50 == 7; };
+  Vector<gfx::InstanceDesc> instances(k_count);
+  Vector<u64> blas;
+  blas.resize(2 * k_count);  // zeroed: a (u64, u64) constructor would read as two iterators
+  Vector<u32> records(u64{k_count} * k_words, u32{0});
+  u32 expected_built = 0;
+  for (u32 i = 0; i < k_count; ++i) {
+    instances[i].mesh = i % 3;
+    instances[i].flags = is_static(i) ? gfx::k_instance_static_rt : 0u;
+    records[u64{i} * k_words + 12] = i | (0xffu << 24);
+    if (has(i)) {
+      blas[2 * i] = u64{i % 5 + 1} | (u64{8} << 32);  // count, stride
+      blas[2 * i + 1] = 0x100000u + u64{i} * 64u;     // references
+      ++expected_built;
+    }
+  }
+  const u64 static_addresses[3] = {0x7000000u, 0x7000100u, 0x7000200u};
+  constexpr gfx::BufferUsage k_address =
+      gfx::BufferUsage::Storage | gfx::BufferUsage::ShaderDeviceAddress;
+  gfx::BufferResource instance_buffer, record_buffer, address_buffer, blas_buffer, dense_buffer,
+      place_buffer, count_buffer, static_buffer;
+  REQUIRE(gfx::upload_buffer(device, instances.data(), instances.size() * sizeof(gfx::InstanceDesc),
+                             k_address, instance_buffer, &error));
+  REQUIRE(gfx::create_buffer(device, records.size() * sizeof(u32), k_address, true, record_buffer,
+                             &error));
+  std::memcpy(record_buffer.mapped, records.data(), records.size() * sizeof(u32));
+  REQUIRE(gfx::upload_buffer(device, blas.data(), blas.size() * sizeof(u64), k_address, blas_buffer,
+                             &error));
+  REQUIRE(gfx::upload_buffer(device, static_addresses, sizeof(static_addresses), k_address,
+                             static_buffer, &error));
+  REQUIRE(gfx::create_buffer(device, gfx::k_cluster_blas_record_bytes * k_count, k_address, true,
+                             dense_buffer, &error));
+  REQUIRE(gfx::create_buffer(device, sizeof(u32) * k_count, k_address, true, place_buffer, &error));
+  REQUIRE(
+      gfx::create_buffer(device, sizeof(u64) * k_count, k_address, true, address_buffer, &error));
+  REQUIRE(gfx::create_buffer(device, sizeof(u32) * 4, k_address, true, count_buffer, &error));
+  std::memset(dense_buffer.mapped, 0xcd, gfx::k_cluster_blas_record_bytes * k_count);
+  std::memset(place_buffer.mapped, 0xcd, sizeof(u32) * k_count);
+  std::memset(count_buffer.mapped, 0, sizeof(u32) * 4);  // the ranges clear it every frame
+  const gfx::ShaderModuleHandle module = gfx::create_shader_module(
+      device, shaders::k_tlas_references_spirv, shaders::k_tlas_references_spirv_size, &error);
+  REQUIRE(module.valid());
+  gfx::ComputePipeline compact, references;
+  REQUIRE_MESSAGE(gfx::create_compute_pipeline(device, module, "blas_compact_main", {},
+                                               sizeof(gfx::TlasReferenceParams), compact, &error),
+                  error);
+  REQUIRE_MESSAGE(
+      gfx::create_compute_pipeline(device, module, "tlas_references_main", {},
+                                   sizeof(gfx::TlasReferenceParams), references, &error),
+      error);
+  gfx::TlasReferenceParams params{};
+  params.addresses = address_buffer.address;
+  params.records = record_buffer.address;
+  params.count = k_count;
+  params.instances = instance_buffer.address;
+  params.static_addresses = static_buffer.address;
+  params.blas_records = blas_buffer.address;
+  params.blas_dense = dense_buffer.address;
+  params.blas_slots = place_buffer.address;
+  params.blas_count = count_buffer.address;
+  const u32 groups =
+      (k_count + gfx::k_tlas_references_workgroup - 1) / gfx::k_tlas_references_workgroup;
+  REQUIRE(gfx::submit_immediate(
+      device,
+      [&](gfx::CommandList cb) {
+        cb.bind_pipeline(gfx::BindPoint::Compute, compact.pipeline);
+        cb.push_constants(compact.layout, gfx::ShaderStage::Compute, 0, sizeof(params), &params);
+        cb.dispatch(groups, 1, 1);
+      },
+      &error));
+  const u32 built = *static_cast<const u32*>(count_buffer.mapped);
+  CHECK(built == expected_built);
+  // The build: each compacted record's structure at an address that names its references, which is
+  // how the check below tells whose it is.
+  const auto* dense = static_cast<const u64*>(dense_buffer.mapped);
+  auto* addresses = static_cast<u64*>(address_buffer.mapped);
+  for (u32 place = 0; place < built && place < k_count; ++place)
+    addresses[place] = dense[2 * place + 1] + 0x40000000u;
+  REQUIRE(gfx::submit_immediate(
+      device,
+      [&](gfx::CommandList cb) {
+        cb.bind_pipeline(gfx::BindPoint::Compute, references.pipeline);
+        cb.push_constants(references.layout, gfx::ShaderStage::Compute, 0, sizeof(params), &params);
+        cb.dispatch(groups, 1, 1);
+      },
+      &error));
+  const auto* places = static_cast<const u32*>(place_buffer.mapped);
+  const auto* out = static_cast<const u32*>(record_buffer.mapped);
+  Vector<u8> taken(k_count, u8{0});
+  u32 wrong_place = 0;
+  u32 wrong_record = 0;
+  u32 wrong_reference = 0;
+  for (u32 i = 0; i < k_count; ++i) {
+    u64 reference = 0;
+    std::memcpy(&reference, out + u64{i} * k_words + 14, sizeof(reference));
+    u64 expected = 0;
+    if (has(i)) {
+      const u32 place = places[i];
+      if (place >= built || taken[place] != 0) {
+        ++wrong_place;
+      } else {
+        taken[place] = 1;
+        wrong_record += dense[2 * place] != blas[2 * i] || dense[2 * place + 1] != blas[2 * i + 1];
+      }
+      expected = blas[2 * i + 1] + 0x40000000u;
+    } else {
+      wrong_place += places[i] != gfx::k_cluster_blas_none ? 1u : 0u;
+    }
+    if (is_static(i)) expected = static_addresses[i % 3];
+    wrong_reference += reference != expected ? 1u : 0u;
+  }
+  MESSAGE(k_count << " instances, " << built << " with a record: " << wrong_place << " places, "
+                  << wrong_record << " compacted records and " << wrong_reference
+                  << " top-level references differ");
+  CHECK(wrong_place == 0);
+  CHECK(wrong_record == 0);
+  CHECK(wrong_reference == 0);
+  gfx::destroy_compute_pipeline(device, compact);
+  gfx::destroy_compute_pipeline(device, references);
+  gfx::destroy_shader_module(device, module);
+  for (gfx::BufferResource* b : {&instance_buffer, &record_buffer, &address_buffer, &blas_buffer,
+                                 &dense_buffer, &place_buffer, &count_buffer, &static_buffer})
+    gfx::destroy_buffer(device, *b);
   device.destroy();
 }
 

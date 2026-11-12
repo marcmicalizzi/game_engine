@@ -8,6 +8,7 @@
 #include <core/jobs/job_system.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <limits>
 
@@ -21,6 +22,15 @@ constexpr f64 k_sqrt2 = 1.4142135623730951;
 // How far, in depths, a point of the line may stand over the trough it runs in (the meander's test,
 // W86, and every point's, W91): half the depth, the water's own stage.
 constexpr f64 k_trough_rise = .5;
+// How many times the line is moved between its banks (below): the easing takes some of each move
+// back, and a third round was measured to undo part of the second.
+constexpr u32 k_bank_rounds = 2;
+// The steep line's wander (build_line): a knot of its noise every this many widths, and the
+// narrowest width it is scaled by; and the sigma, in widths, the kinks are low-passed over.
+constexpr f64 k_wander_knot_widths = 5.0;
+constexpr f64 k_wander_knot_min_m = 5.0;
+constexpr f64 k_wander_min_width_m = 1.0;
+constexpr f64 k_kink_sigma_widths = 0.5;
 
 struct Node {
   i64 h;
@@ -115,7 +125,15 @@ void build_line(const ChannelLayer& p, const ChannelNetwork& n, const scene_gen:
   const f64 lo = wide(p.meander_slope_min), hi = wide(p.meander_slope_max);
   link.meander = 1.0 - smoothstep(lo, hi, link.slope);
   Vector<f64> offset(m, 0.0);
-  if (link.meander > 0 && p.meander_amplitude_coeff > 0) {
+  // **A steep line wanders** (W93, continued; channels.md, "The steep reaches"): above the
+  // meanders' slope the routing's line down a planar slope is a ruled line, and a gully is not
+  // one. Where the meander fades the line takes an irregular offset instead — a value noise of
+  // the link's own, a knot every `k_wander_knot_widths` widths (5 m at least), up to
+  // `steep_wander_widths` widths (of at least `k_wander_min_width_m`) either way — which the
+  // trough test below holds to the trough as it holds a meander: in a gully with sides the wander
+  // is drawn back, and on a plane it stays.
+  const bool wanders = link.meander < 1 && p.steep_wander_widths > 0;
+  if ((link.meander > 0 && p.meander_amplitude_coeff > 0) || wanders) {
     Rng rng(link.seed);
     const f64 jitter = .7 + .6 * rng.unit();
     const f64 phase0 = rng.unit() * 2 * k_pi;
@@ -145,6 +163,12 @@ void build_line(const ChannelLayer& p, const ChannelNetwork& n, const scene_gen:
       const f64 ease = smoothstep(0.0, 1.0, edge);
       f64 o = link.meander * .5 * wide(p.meander_amplitude_coeff) * powd(wi, 1.1) * amplitude *
               det::sin(phase) * ease;
+      if (wanders) {
+        const f64 knot = std::max(k_wander_knot_widths * wi, k_wander_knot_min_m);
+        const f64 in = smoothstep(0.0, 1.0, std::min(ps[i], length - ps[i]) / knot);
+        o += (1 - link.meander) * wide(p.steep_wander_widths) * std::max(wi, k_wander_min_width_m) *
+             noise(3, ps[i] / knot) * in;
+      }
       if (i == 0 || i + 1 == m || o == 0) continue;
       f64 tx = px[i + 1] - px[i - 1], tz = pz[i + 1] - pz[i - 1];
       const f64 tl = std::sqrt(tx * tx + tz * tz);
@@ -236,6 +260,85 @@ void build_line(const ChannelLayer& p, const ChannelNetwork& n, const scene_gen:
       ++link.trough_pulled;
       fx[i] = rx[i] + share[i] * (fx[i] - rx[i]);
       fz[i] = rz[i] + share[i] * (fz[i] - rz[i]);
+    }
+  }
+  // **The kinks taken out** (W93, continued; channels.md, "The planform"). The trough test draws
+  // single points back, and what it leaves turns left and right again inside two or three widths;
+  // the cut's banks follow the line, so they zigzagged. The line is low-passed once more, at the
+  // channel's own scale: a Gaussian along the length of sigma `k_kink_sigma_widths` widths (two
+  // steps at least), eased to nothing at the two ends, which stay where the junctions are. Half a
+  // width is far under a meander's wavelength (10.9 widths: a bend keeps 96 % of its amplitude) and
+  // moves a point by a fraction of the width, inside the banks the next test holds.
+  {
+    Vector<f64> sx(fx), sz(fz);
+    for (u32 i = 1; i + 1 < m; ++i) {
+      const f64 wi = hydraulic(wide(p.width_at_km2_m), wide(p.width_exponent), pa[i]);
+      const f64 sigma = std::max(k_kink_sigma_widths * wi, 2 * wide(p.step_m));
+      f64 ax = 0, az = 0, aw = 0;
+      const auto add = [&](u32 k) {
+        const f64 d = ps[k] - ps[i];
+        const f64 weight = det::exp(-d * d / (2 * sigma * sigma));
+        ax += weight * fx[k];
+        az += weight * fz[k];
+        aw += weight;
+      };
+      for (u32 k = i; ps[i] - ps[k] <= 3 * sigma; --k) {
+        add(k);
+        if (k == 0) break;
+      }
+      for (u32 k = i + 1; k < m && ps[k] - ps[i] <= 3 * sigma; ++k)
+        add(k);
+      const f64 t = std::min(1.0, std::min(ps[i], length - ps[i]) / sigma);
+      sx[i] = fx[i] + t * (ax / aw - fx[i]);
+      sz[i] = fz[i] + t * (az / aw - fz[i]);
+    }
+    fx = std::move(sx);
+    fz = std::move(sz);
+  }
+  // **The line between its banks** (W93; channels.md, "A line across a slope"). The trough test
+  // above holds the line's centre within half a depth of the trough's floor; a channel is a
+  // width wide, and where the ground falls across it one bank's top can stand more than half a
+  // depth under the centre's ground while the centre passes: the cut then has a bench there and
+  // no bank on the downhill side. A stream does not traverse a slope, so the line is what is
+  // wrong, and it is moved: across its own heading toward the lower bank, a quarter of the width
+  // at a time and a width at the most, until neither bank's ground (half the width either way)
+  // stands more than `k_bank_fall` of the depth under the ground at the point. The moves are
+  // eased along the line by three binomial passes, which takes a little of each move back, so
+  // the whole is done `k_bank_rounds` times; the two ends stay where the junctions are.
+  // Rills under a metre wide are left: the lattice the cut is drawn on is a quarter of that.
+  link.bank_moved = 0;
+  for (u32 round = 0; round < k_bank_rounds; ++round) {
+    constexpr f64 k_bank_fall = .5;
+    Vector<f64> move(m, 0.0), nx(m, 0.0), nz(m, 0.0);
+    for (u32 i = 1; i + 1 < m; ++i) {
+      const f64 tx = fx[i + 1] - fx[i - 1], tz = fz[i + 1] - fz[i - 1];
+      const f64 tl = std::sqrt(tx * tx + tz * tz);
+      const f64 wi = hydraulic(wide(p.width_at_km2_m), wide(p.width_exponent), pa[i]);
+      if (tl <= 0 || wi < 1.0) continue;
+      nx[i] = -tz / tl;
+      nz[i] = tx / tl;
+      const f64 di = hydraulic(wide(p.depth_at_km2_m), wide(p.depth_exponent), pa[i]);
+      f64 across = 0;
+      for (u32 tries = 0; tries < 4; ++tries) {
+        const f64 cx = fx[i] + nx[i] * across, cz = fz[i] + nz[i] * across;
+        const f64 left = ground_at(ground, cx + nx[i] * .5 * wi, cz + nz[i] * .5 * wi);
+        const f64 right = ground_at(ground, cx - nx[i] * .5 * wi, cz - nz[i] * .5 * wi);
+        if (ground_at(ground, cx, cz) - std::min(left, right) <= k_bank_fall * di) break;
+        across += (left < right ? .25 : -.25) * wi;
+      }
+      move[i] = across;
+    }
+    for (u32 pass = 0; pass < 3; ++pass) {
+      Vector<f64> next = move;
+      for (u32 i = 1; i + 1 < m; ++i)
+        next[i] = .25 * move[i - 1] + .5 * move[i] + .25 * move[i + 1];
+      move = std::move(next);
+    }
+    for (u32 i = 1; i + 1 < m; ++i) {
+      if (move[i] == 0) continue;
+      if (round == 0) ++link.bank_moved;
+      fx[i] += nx[i] * move[i];
+      fz[i] += nz[i] * move[i];
     }
   }
   link.line.clear();
@@ -608,6 +711,291 @@ f64 fan_share(const ChannelLayer& p, const ChannelLink& link, const Vector<f64>&
   return fan > 0 && from_end < fan ? 1.0 - from_end / fan : 0.0;
 }
 
+// **The section along the line** (W93; channels.md, "The section"): each point's asymmetry, -1 to
+// 1, positive where the line bends left. A bend's share is the line's mean curvature over a bar's
+// length about the point (`bar_length_widths`, three widths) — the turn between its heading half
+// that length above the point and half below, over the length, each heading a chord of a width —
+// times the width times `bend_radius_widths`: 1 where the radius of curvature is that many widths
+// or fewer. Over a bar's length because a bar and its pool are built by the flow along a bend,
+// not by a kink: the line the trough test draws back turns left and right again within two or
+// three widths (W91), and read point by point (a chord of 0.75 widths each way) those kinks put
+// a pool every 2.7 widths on the test valley, alternating sides; over a bar's length they
+// cancel, and a meander's bend, half of 10.9 widths long, does not. Where a stretch does not bend
+// (the mean bend over a pool-to-pool length either way is small) the asymmetry alternates sides
+// every `pool_riffle_widths`, a sine of the link's own phase, to `alternate_asymmetry`. Pool-riffle
+// and dune-ripple reaches take both; a plane-bed reach half a bend's and no alternation (Montgomery
+// & Buffington's plane bed has no free bars, and a bend still forces a pool); the steeper reaches,
+// a knickpoint, a fan, a tributary's last points inside its trunk's banks, a bed narrower than
+// `bar_min_width_m` and the first and last two widths of a link take none.
+constexpr f64 k_bend_window_widths = 4.0;
+// How far downstream of a bend's apex its pool lies, in widths: 0.36 of the channel distance from
+// the apex to the next inflection (NRCS NEH 654 ch. 12, the 1981 Red River survey's mean; range
+// -0.4 to 1.08), which for a meander 10.9 widths long is a quarter of it, 2.7 widths.
+constexpr f64 k_pool_lag_widths = 1.0;
+// A value noise along a line: knots at the whole numbers of `at`, eased between, -1 to 1.
+f64 value_noise(u64 seed, f64 at) {
+  const f64 k = std::floor(at);
+  const i64 knot = static_cast<i64>(k);
+  const f64 t = at - k, e = t * t * (3 - 2 * t);
+  const f64 a = place_noise(seed, knot, 0), b = place_noise(seed, knot + 1, 0);
+  return a + (b - a) * e;
+}
+// The unit heading of the line at arc length `at`: the chord between the points half a `span`
+// either way (clamped to the line), found from index `hint` on.
+struct Heading {
+  f64 x = 0, z = 0;
+  bool ok = false;
+};
+Heading heading_at(const ChannelLink& link, const Vector<f64>& s, f64 at, f64 span) {
+  const u32 m = link.line.size();
+  if (at - .5 * span < s[0] || at + .5 * span > s[m - 1]) return {};
+  // The first point at or past each end of the chord.
+  const auto first_at = [&](f64 v) {
+    u32 lo = 0, hi = m - 1;
+    while (lo < hi) {
+      const u32 mid = (lo + hi) / 2;
+      if (s[mid] < v)
+        lo = mid + 1;
+      else
+        hi = mid;
+    }
+    return lo;
+  };
+  const u32 a = first_at(at - .5 * span), b = first_at(at + .5 * span);
+  if (b <= a) return {};
+  const f64 dx = link.line[b].at.x - link.line[a].at.x, dz = link.line[b].at.z - link.line[a].at.z;
+  const f64 length = std::sqrt(dx * dx + dz * dz);
+  if (!(length > 0)) return {};
+  return {dx / length, dz / length, true};
+}
+void plan_section(const ChannelLayer& p, ChannelLink& link) {
+  const u32 m = link.line.size();
+  link.asym.assign(m, 0.0f);
+  link.swell.assign(m, 0.0f);
+  link.flood_left.assign(m, 0.0f);
+  link.flood_right.assign(m, 0.0f);
+  link.entrenchment.assign(m, 0.0f);
+  if (m < 3) return;
+  const Vector<f64> s = lengths_of(link.line);
+  Vector<f64> bend(m, 0.0);
+  for (u32 i = 0; i < m; ++i) {
+    const f64 w = wide(link.line[i].width_m);
+    const f64 bar = std::max(k_bend_window_widths * w, 1e-3);
+    const Heading above = heading_at(link, s, s[i] - .5 * bar, w);
+    const Heading below = heading_at(link, s, s[i] + .5 * bar, w);
+    if (!above.ok || !below.ok) continue;
+    // The turn between the two headings as twice the tangent of its half, which grows with the
+    // turn to a half circle and needs no arc function; over the bar's length, a curvature.
+    const f64 dot = above.x * below.x + above.z * below.z;
+    if (!(1 + dot > 1e-6)) continue;
+    const f64 kappa = 2 * (above.x * below.z - above.z * below.x) / (1 + dot) / bar;
+    bend[i] = std::clamp(kappa * w * wide(p.bend_radius_widths), -1.0, 1.0);
+  }
+  Rng rng(hash_combine(link.seed, 0x5ec7ull));
+  f64 theta = rng.unit() * 2 * k_pi;
+  Vector<f64> asym(m, 0.0), swell(m, 0.0);
+  const u32 keep = std::min<u32>(link.keep, m);
+  u32 from = 0, to = 0, crest = 0;
+  f64 sum = 0;  // of |bend| over [from, to)
+  for (u32 i = 0; i < m; ++i) {
+    const f64 w = wide(link.line[i].width_m);
+    const f64 pool = std::max(wide(p.pool_riffle_widths) * w, .5);
+    if (i > 0) theta += (s[i] - s[i - 1]) * k_pi / pool;
+    // The mean bend over a pool-to-pool length either way: a stretch that meanders has its pools
+    // at its bends and its riffles at its crossings, and no bar of its own between them.
+    while (to < m && s[to] - s[i] <= pool)
+      sum += std::fabs(bend[to++]);
+    while (from < i && s[i] - s[from] > pool)
+      sum -= std::fabs(bend[from++]);
+    const f64 straight =
+        1 - smoothstep(.2, .5, to > from ? sum / static_cast<f64>(to - from) : 0.0);
+    const ChannelReach reach =
+        i < link.reach.size() ? static_cast<ChannelReach>(link.reach[i]) : ChannelReach::PoolRiffle;
+    f64 share = 0, alternate = 0;
+    if (reach == ChannelReach::DuneRipple || reach == ChannelReach::PoolRiffle) {
+      share = 1;
+      alternate = wide(p.alternate_asymmetry) * straight;
+    } else if (reach == ChannelReach::PlaneBed) {
+      share = .5;
+    }
+    const bool steep = reach == ChannelReach::StepPool || reach == ChannelReach::Cascade ||
+                       reach == ChannelReach::Bedrock || reach == ChannelReach::Colluvial;
+    const bool held = i >= keep || (i < link.knick.size() && link.knick[i]);
+    if (held || w < wide(p.bar_min_width_m)) share = 0;
+    const f64 ends = smoothstep(0, 2 * w, s[i]) * smoothstep(0, 2 * w, s[m - 1] - s[i]) *
+                     (1 - fan_share(p, link, s, i));
+    share *= ends;
+    // **The pool lies downstream of the bend's apex** (channels.md, "The section"): the section
+    // at a point is the bend's `k_pool_lag_widths` widths upstream of it.
+    const u32 lagged = static_cast<u32>(
+        std::lower_bound(s.begin(), s.begin() + i, s[i] - k_pool_lag_widths * w) - s.begin());
+    const f64 b = bend[lagged];
+    const f64 v = b + alternate * (1 - std::fabs(b)) * det::sin(theta);
+    asym[i] = std::clamp(v, -1.0, 1.0) * share;
+    swell[i] = .5 * wide(p.riffle_widening) * (1 - 2 * std::min(1.0, std::fabs(v))) * share;
+    // **The steep reaches** (channels.md, "The steep reaches"): no bars and no bends' pools, and
+    // not one section either. The thalweg wanders between the banks — an irregular asymmetry, a
+    // knot of its noise every two widths — and the width follows the steps: narrowest at a step's
+    // crest and widest over its pool on a step-pool reach, irregular (a knot every width and a
+    // half) where the reach has no steps. A knickpoint, a tributary's last points and a link's two
+    // ends take none, as with the bars.
+    if (steep && !held && w >= wide(p.bar_min_width_m)) {
+      const f64 scale = std::max(w, 1.0);
+      asym[i] = wide(p.steep_asymmetry) *
+                value_noise(hash_combine(link.seed, 0xa5e1ull), s[i] / (2 * scale)) * ends;
+      f64 phase = value_noise(hash_combine(link.seed, 0x57e9ull), s[i] / (1.5 * scale));
+      if (reach == ChannelReach::StepPool && !link.step_at.empty()) {
+        while (crest + 1 < link.step_at.size() && link.step_at[crest + 1] <= i)
+          ++crest;
+        const u32 a = link.step_at[crest];
+        if (a <= i && crest + 1 < link.step_at.size()) {
+          const f64 run = s[link.step_at[crest + 1]] - s[a];
+          if (run > 0) phase = -det::cos(2 * k_pi * (s[i] - s[a]) / run);
+        }
+      }
+      swell[i] = .5 * wide(p.step_widening) * phase * ends;
+    }
+  }
+  // A reach's edge and a knickpoint's are steps in the share: two binomial passes ease them.
+  for (Vector<f64>* values : {&asym, &swell}) {
+    for (u32 pass = 0; pass < 2; ++pass) {
+      f64 before = (*values)[0];
+      for (u32 i = 1; i + 1 < m; ++i) {
+        const f64 here = (*values)[i];
+        (*values)[i] = .25 * before + .5 * here + .25 * (*values)[i + 1];
+        before = here;
+      }
+    }
+  }
+  for (u32 i = 0; i < m; ++i) {
+    link.asym[i] = static_cast<f32>(round_to(asym[i], 1e3));
+    link.swell[i] = static_cast<f32>(round_to(swell[i], 1e4));
+  }
+}
+
+// **The flood bed** (W93; channels.md, "The flood bed"): the valley's confinement read from the
+// ground, and the bed it leaves room for. At a station (one a bankfull width along the line, on a
+// pool-riffle, dune-ripple or plane-bed reach at least `flood_min_width_m` wide, away from a
+// knickpoint, a fan and a tributary's last points) the ground is walked across the line each way,
+// from the line out, in steps of a sixth of the width (0.5 m at least), to where it first stands
+// `flood_height_depths - 1` thalwegs over the ground at the line — Rosgen's flood-prone elevation,
+// twice the greatest bankfull depth over the thalweg — the crossing found between the two steps
+// that bracket it. A side whose ground falls a thalweg under the line's first is not a valley's
+// floor (the line is perched on a slope): its walk ends there. The two distances over the width
+// are the entrenchment ratio. Where it is at least `flood_entrenchment_min` the bed reaches, each
+// side, the flood-prone distance less the scarp's run, half `flood_bed_widths` widths at the most
+// — `k_flood_bend` of that more on the inside of a bend and less on its outside, where the bar
+// builds and the bank is cut — and never less than the channel's own bank. Between stations the
+// reaches are interpolated, and they close to the channel's width over two widths at a stretch's
+// ends.
+constexpr f64 k_flood_bend = .6;
+void plan_flood(const ChannelLayer& p, const scene_gen::Ground& ground, ChannelLink& link) {
+  const u32 m = link.line.size();
+  if (m < 3 || link.flood_left.size() != m) return;
+  const Vector<f64> s = lengths_of(link.line);
+  const u32 keep = std::min<u32>(link.keep, m);
+  struct Station {
+    u32 at;
+    f64 left, right, ratio;
+  };
+  Vector<Station> stations;
+  f64 next = 0;
+  for (u32 i = 0; i < keep; ++i) {
+    const ChannelPoint& pt = link.line[i];
+    const f64 w = wide(pt.width_m);
+    if (s[i] < next) continue;
+    next = s[i] + std::max(w, wide(p.step_m));
+    const ChannelReach reach =
+        i < link.reach.size() ? static_cast<ChannelReach>(link.reach[i]) : ChannelReach::PoolRiffle;
+    const bool alluvial = reach == ChannelReach::DuneRipple || reach == ChannelReach::PoolRiffle ||
+                          reach == ChannelReach::PlaneBed;
+    const Heading along = heading_at(link, s, s[i], k_bend_window_widths * w);
+    if (!alluvial || w < wide(p.flood_min_width_m) || !along.ok ||
+        (i < link.knick.size() && link.knick[i]) || fan_share(p, link, s, i) > 0) {
+      stations.push_back({i, 0.0, 0.0, 0.0});
+      continue;
+    }
+    const f64 thalweg = section_of(w, wide(pt.depth_m), wide(p.bank_slope)).thalweg;
+    const f64 rise = (wide(p.flood_height_depths) - 1) * thalweg;
+    const f64 scarp = rise + wide(p.flood_bed_depth) * thalweg;
+    const f64 run = scarp / wide(p.scarp_slope);
+    const f64 half = .5 * wide(p.flood_bed_widths) * w;
+    const f64 limit = half * (1 + k_flood_bend) + run;
+    const f64 step = std::max(.5, w / 6);
+    const f64 top = pt.at.y;
+    // The left is the side of (-dz, dx).
+    const auto walk = [&](f64 nx, f64 nz) {
+      f64 before = 0, before_at = 0;
+      for (f64 d = step;; d += step) {
+        const f64 at = std::min(d, limit);
+        const f64 over = ground_at(ground, pt.at.x + nx * at, pt.at.z + nz * at) - top;
+        if (over >= rise) return before_at + (at - before_at) * (rise - before) / (over - before);
+        if (over <= -thalweg || at >= limit) return at;
+        before = over;
+        before_at = at;
+      }
+    };
+    const f64 prone_left = walk(-along.z, along.x), prone_right = walk(along.z, -along.x);
+    Station st{i, 0.0, 0.0, (prone_left + prone_right) / w};
+    if (st.ratio >= wide(p.flood_entrenchment_min)) {
+      const f64 a = i < link.asym.size() ? wide(link.asym[i]) : 0.0;
+      const f64 bank = .5 * w;
+      st.left = std::max(bank, std::min(half * (1 + k_flood_bend * a), prone_left - run));
+      st.right = std::max(bank, std::min(half * (1 - k_flood_bend * a), prone_right - run));
+      // A bed no wider than the channel in it is none.
+      if (st.left + st.right < 1.1 * w) st.left = st.right = 0;
+    }
+    stations.push_back(st);
+  }
+  // **A bed is as narrow as the narrowest reading near it.** The line kinks (W91's trough test),
+  // and a walk across a kinked line can run along the valley and read a floor several times as
+  // wide as it is; on W93's scratch scene that put the bed's scarp metres up a 17-degree valley
+  // side. Each station's reach is the least over itself and its two neighbours either way.
+  {
+    Vector<Station> eroded = stations;
+    for (u32 q = 0; q < stations.size(); ++q) {
+      for (u32 o = q >= 2 ? q - 2 : 0; o < std::min<u32>(stations.size(), q + 3); ++o) {
+        if (!(stations[o].left > 0)) continue;
+        if (!(eroded[q].left > 0)) break;
+        eroded[q].left = std::min(eroded[q].left, stations[o].left);
+        eroded[q].right = std::min(eroded[q].right, stations[o].right);
+      }
+    }
+    stations = std::move(eroded);
+  }
+  // Between stations, and closing over two widths where a stretch of bed begins and ends.
+  for (u32 q = 0; q + 1 < stations.size(); ++q) {
+    const Station& a = stations[q];
+    const Station& b = stations[q + 1];
+    for (u32 i = a.at; i < b.at; ++i) {
+      const f64 t = (s[i] - s[a.at]) / std::max(s[b.at] - s[a.at], 1e-9);
+      link.entrenchment[i] = static_cast<f32>(round_to(a.ratio + t * (b.ratio - a.ratio), 1e3));
+      if (!(a.left > 0) || !(b.left > 0)) continue;
+      link.flood_left[i] = static_cast<f32>(a.left + t * (b.left - a.left));
+      link.flood_right[i] = static_cast<f32>(a.right + t * (b.right - a.right));
+    }
+  }
+  for (u32 i = 0; i < m;) {
+    if (!(link.flood_left[i] > 0)) {
+      ++i;
+      continue;
+    }
+    u32 e = i;
+    while (e + 1 < m && link.flood_left[e + 1] > 0)
+      ++e;
+    for (u32 q = i; q <= e; ++q) {
+      const f64 w = wide(link.line[q].width_m);
+      const f64 ease = smoothstep(0, 2 * w, s[q] - s[i]) * smoothstep(0, 2 * w, s[e] - s[q]);
+      const f64 bank = .5 * w;
+      link.flood_left[q] = static_cast<f32>(
+          round_to(bank + ease * std::max(0.0, wide(link.flood_left[q]) - bank), 1e3));
+      link.flood_right[q] = static_cast<f32>(
+          round_to(bank + ease * std::max(0.0, wide(link.flood_right[q]) - bank), 1e3));
+    }
+    i = e + 1;
+  }
+}
+
 // **Confluences** (W90; channels.md, "Confluences"): at every junction the incoming link of the
 // largest contributing area is the trunk, which runs on as the link that begins there; every other
 // incoming link is a tributary of that link. Junctions are taken by the downstream link's area,
@@ -721,16 +1109,11 @@ bool layer_in_range(const ChannelLayer& p, std::string& error) {
   if (!in(wide(p.meander_slope_min), 0, .5) || !in(wide(p.meander_slope_max), 0, .5) ||
       p.meander_slope_min >= p.meander_slope_max)
     return fail(error, "meander_slope_min/max");
-  if (!in(wide(p.pool_riffle_widths), 2, 20) || !in(wide(p.riffle_rise), 0, 1) ||
-      !in(wide(p.step_pool_widths), 1, 10))
-    return fail(error, "pool_riffle_widths/riffle_rise/step_pool_widths");
-  if (!in(wide(p.shields_bankfull), .01, .2)) return fail(error, "shields_bankfull");
-  if (!in(wide(p.bar_min_width_m), 0, 100) || !in(wide(p.bar_rise), 0, 1) ||
-      !in(wide(p.bar_width_widths), .05, .5) || !in(wide(p.bar_length_widths), .5, 20))
-    return fail(error, "bar_min_width_m/bar_rise/bar_width_widths/bar_length_widths");
-  if (!in(wide(p.bank_min_width_m), 0, 100) || !in(wide(p.bank_height), 0, 2) ||
-      !in(wide(p.bank_width_widths), 0, 2) || !in(wide(p.bank_width_m), 0, 10))
-    return fail(error, "bank_min_width_m/bank_height/bank_width_widths/bank_width_m");
+  if (!in(wide(p.pool_riffle_widths), 2, 20) || !in(wide(p.step_pool_widths), 1, 10))
+    return fail(error, "pool_riffle_widths/step_pool_widths");
+  if (!in(wide(p.bar_min_width_m), 0, 100)) return fail(error, "bar_min_width_m");
+  if (!in(wide(p.bank_width_widths), 0, 2) || !in(wide(p.bank_width_m), 0, 10))
+    return fail(error, "bank_width_widths/bank_width_m");
   if (!in(wide(p.bank_slope), .25, 8)) return fail(error, "bank_slope");
   if (!in(wide(p.reach_window_widths), 5, 50) || !in(wide(p.reach_window_min_m), 0, 200))
     return fail(error, "reach_window_widths/reach_window_min_m");
@@ -754,20 +1137,50 @@ bool layer_in_range(const ChannelLayer& p, std::string& error) {
   if (!in(wide(p.knick_window_widths), 1, 20) || !in(wide(p.knick_window_min_m), .5, 50))
     return fail(error, "knick_window_widths/knick_window_min_m");
   if (!in(wide(p.chute_gradient_max), .2, 1)) return fail(error, "chute_gradient_max");
+  if (!in(wide(p.bend_radius_widths), 1, 20) || !in(wide(p.cut_bank_slope), .25, 8) ||
+      !in(wide(p.alternate_asymmetry), 0, 1) || !in(wide(p.riffle_widening), 0, .5) ||
+      !in(wide(p.bank_round), .1, 1))
+    return fail(error,
+                "bend_radius_widths/cut_bank_slope/alternate_asymmetry/riffle_widening/bank_round");
+  if (!in(wide(p.step_widening), 0, .6) || !in(wide(p.steep_asymmetry), 0, 1) ||
+      !in(wide(p.steep_wander_widths), 0, 3))
+    return fail(error, "step_widening/steep_asymmetry/steep_wander_widths");
+  if (!in(wide(p.bed_feather_m), 0, 10)) return fail(error, "bed_feather_m");
+  if (!in(wide(p.flood_bed_widths), 1.25, 12) || !in(wide(p.flood_height_depths), 1.25, 4) ||
+      !in(wide(p.flood_entrenchment_min), 1, 5) || !in(wide(p.flood_min_width_m), 0, 100) ||
+      !in(wide(p.flood_bed_depth), 0, .45) || !in(wide(p.scarp_slope), .25, 8))
+    return fail(error,
+                "flood_bed_widths/flood_height_depths/flood_entrenchment_min/"
+                "flood_min_width_m/flood_bed_depth/scarp_slope");
   if (!in(wide(p.step_m), .1, 4)) return fail(error, "step_m");
-  if (!in(wide(p.piece_m), 4, 256) || p.piece_m < 4 * p.step_m) return fail(error, "piece_m");
-  for (const ChannelSurface* s : {&p.bed, &p.bars, &p.banks})
-    if (!surface_in_range(*s, error)) return false;
-  return true;
+  if (!in(wide(p.clast_min_mm), 16, 1024)) return fail(error, "clast_min_mm");
+  if (!in(wide(p.rounding_m), 10, 100000)) return fail(error, "rounding_m");
+  return surface_in_range(p.boulders, error);
 }
+
+namespace {
+std::atomic<u64> g_plans_made{0};
+}
+u64 plans_made() noexcept { return g_plans_made.load(std::memory_order_relaxed); }
 
 bool plan_channels(const ChannelLayer& p, const scene_gen::Ground& ground, u64 seed,
                    jobs::JobSystem* jobs, ChannelNetwork& out, std::string& error,
                    const scene_gen::Exclusion* water) {
   out = {};
+  ChannelNetwork n;
+  if (!detail::sample_lattice(p, ground, jobs, n, error)) return false;
+  if (!detail::plan_from_lattice(p, ground, seed, n, error, water)) return false;
+  out = std::move(n);
+  return true;
+}
+
+// The lattice (channels.md, "The network", step 1): the region's dimensions and the ground at
+// every point of it, which is also what a plan's key reads (channels.md, "One plan").
+bool detail::sample_lattice(const ChannelLayer& p, const scene_gen::Ground& ground,
+                            jobs::JobSystem* jobs, ChannelNetwork& n, std::string& error) {
+  n = {};
   if (!ground.present()) return fail(error, "ground (required)");
   if (!layer_in_range(p, error)) return false;
-  ChannelNetwork n;
   n.spacing_mm = scene_gen::nearest_mm(wide(p.spacing_m));
   n.x_mm = scene_gen::nearest_mm(p.region_min[0]);
   n.z_mm = scene_gen::nearest_mm(p.region_min[1]);
@@ -803,6 +1216,17 @@ bool plan_channels(const ChannelLayer& p, const scene_gen::Ground& ground, u64 s
     rows(0, n.depth);
   for (u8 b : bad)
     if (b) return fail(error, "ground height (finite, +/-1e6 m)");
+  return true;
+}
+
+// Steps 2 to 6 over a sampled lattice: the fill, the routing, the heads, the links and their
+// lines. The one place the planner runs, counted for `plans_made`.
+bool detail::plan_from_lattice(const ChannelLayer& p, const scene_gen::Ground& ground, u64 seed,
+                               ChannelNetwork& n, std::string& error,
+                               const scene_gen::Exclusion* water) {
+  (void)error;
+  g_plans_made.fetch_add(1, std::memory_order_relaxed);
+  const u32 cells = n.width * n.depth;
   // Pits filled by priority flood from the region's edge with a one-micrometre epsilon (Barnes,
   // Lehman & Mulla 2014), so every interior cell has a strictly lower neighbour and drains to the
   // edge; a flat drains along the way the flood came.
@@ -909,7 +1333,13 @@ bool plan_channels(const ChannelLayer& p, const scene_gen::Ground& ground, u64 s
     n.length_m += link.length_m;
   }
   confluences(p, n);
-  out = std::move(n);
+  for (ChannelLink& link : n.links) {
+    link.area_end = link.cells.empty() ? 0u : n.area_cells[link.cells.back()];
+    plan_section(p, link);
+    plan_flood(p, ground, link);
+  }
+  // W97: the bed's sediment, from the reaches, the sections and the network's lengths.
+  plan_sediment(p, n);
   return true;
 }
 
@@ -1083,7 +1513,8 @@ JsonValue water_channels_json(const ChannelLayer& p, const ChannelNetwork& n, f6
   std::sort(order.begin(), order.end(), [&](u32 a, u32 b) {
     const ChannelLink& x = n.links[n.links[a].trunk];
     const ChannelLink& y = n.links[n.links[b].trunk];
-    const u32 ax = n.area_cells[x.cells.back()], ay = n.area_cells[y.cells.back()];
+    const u32 ax = x.area_end,
+              ay = y.area_end;  // not the lattice: a plan read from its file has none
     if (ax != ay) return ax > ay;
     return n.links[a].trunk != n.links[b].trunk ? n.links[a].trunk < n.links[b].trunk : a < b;
   });
@@ -1191,6 +1622,20 @@ JsonValue water_channels_json(const ChannelLayer& p, const ChannelNetwork& n, f6
     o["seed"] = JsonValue(link.seed);
     o["reach"] = std::move(reach);
     if (ground != nullptr) o["fit"] = std::move(fits);
+    // The flood bed's reach (W93), for the placements' exclusion: the cut's own numbers at the
+    // ribbon's points, on a link that has a bed.
+    bool flooded = false;
+    for (u32 j = 0; j < m && !flooded; ++j)
+      flooded = a + j < link.flood_left.size() && link.flood_left[a + j] > 0;
+    if (flooded && cut) {
+      JsonValue fl = JsonValue::array(), fr = JsonValue::array();
+      for (u32 j = 0; j < m; ++j) {
+        fl.push_back(JsonValue(round_to(wide(link.flood_left[a + j]), 1e3)));
+        fr.push_back(JsonValue(round_to(wide(link.flood_right[a + j]), 1e3)));
+      }
+      o["flood_left_m"] = std::move(fl);
+      o["flood_right_m"] = std::move(fr);
+    }
     // The bank's reach, which the placements' exclusion reads from the description (T78; it copied
     // the defaults until then). Written only where the recipe moved it, so a description at the
     // defaults is the bytes it was.
@@ -1213,6 +1658,7 @@ JsonValue terrain_cuts_json(const ChannelLayer& p, const ChannelNetwork& n) {
     JsonValue o = JsonValue::object();
     o["name"] = JsonValue(p.name + " link " + std::to_string(k));
     JsonValue points = JsonValue::array(), widths = JsonValue::array(), depths = JsonValue::array();
+    JsonValue left = JsonValue::array(), right = JsonValue::array();
     for (u32 i = 0; i < link.line.size(); ++i) {
       const ChannelPoint& pt = link.line[i];
       const f64 top = round_to(pt.at.y, 1e3);
@@ -1223,16 +1669,184 @@ JsonValue terrain_cuts_json(const ChannelLayer& p, const ChannelNetwork& n) {
       points.push_back(std::move(at));
       // The fan opens the cut toward the shore (W90).
       const f64 spread = 1 + wide(p.fan_spread) * fan_share(p, link, s, i);
-      widths.push_back(JsonValue(round_to(wide(pt.width_m) * spread, 1e3)));
+      // The section here (W93; channels.md, "The section"): the trapezoid at a riffle, the
+      // triangle at a bend's apex, the pool that much under the bed's line.
+      const BendSection section = bend_section(p, wide(pt.width_m), wide(pt.depth_m),
+                                               i < link.asym.size() ? wide(link.asym[i]) : 0.0,
+                                               i < link.swell.size() ? wide(link.swell[i]) : 0.0);
+      widths.push_back(JsonValue(round_to(section.width * spread, 1e3)));
       // The bed below the top: the thalweg, more where the cut runs through a rise, a step's pool
-      // or a confluence's grade.
-      depths.push_back(JsonValue(std::max(1e-3, round_to(top - link.bed[i], 1e3))));
+      // or a confluence's grade, and a bend's pool.
+      // A riffle's bed stands that much over the bed's line and a pool's that much under it: the
+      // section's own thalweg at its own width against the trapezoid's at the hydraulic
+      // geometry's, so the area is kept as the width swells and narrows.
+      const f64 line_thalweg =
+          section_of(wide(pt.width_m), wide(pt.depth_m), wide(p.bank_slope)).thalweg;
+      depths.push_back(JsonValue(round_to(
+          std::max(1e-3, round_to(top - link.bed[i], 1e3) + (section.thalweg - line_thalweg)) +
+              section.pool,
+          1e3)));
+      left.push_back(JsonValue(round_to(section.slope_left, 1e4)));
+      right.push_back(JsonValue(round_to(section.slope_right, 1e4)));
     }
     o["points"] = std::move(points);
     o["width_m"] = std::move(widths);
     o["depth_m"] = std::move(depths);
     o["bank_slope"] = JsonValue(wide(p.bank_slope));
+    // Every cut the generator writes is shaped: a slope a bank a point, tops rounded, faces that
+    // run out (W93; the trapezoid with a crease and a wall at its end is written no more).
+    o["bank_slope_left"] = std::move(left);
+    o["bank_slope_right"] = std::move(right);
+    o["bank_round"] = JsonValue(wide(p.bank_round));
+    // The flood bed (W93; channels.md, "The flood bed"), on a link that has any: its reach each
+    // side, its surface `flood_bed_depth` of the thalweg under the top, and its scarp's top at
+    // the flood-prone elevation.
+    bool flooded = false;
+    for (u32 i = 0; i < link.flood_left.size() && !flooded; ++i)
+      flooded = link.flood_left[i] > 0;
+    if (flooded) {
+      JsonValue fl = JsonValue::array(), fr = JsonValue::array(), fd = JsonValue::array(),
+                scarp = JsonValue::array();
+      for (u32 i = 0; i < link.line.size(); ++i) {
+        const ChannelPoint& pt = link.line[i];
+        const f64 thalweg =
+            section_of(wide(pt.width_m), wide(pt.depth_m), wide(p.bank_slope)).thalweg;
+        const f64 under = wide(p.flood_bed_depth) * thalweg;
+        fl.push_back(JsonValue(round_to(wide(link.flood_left[i]), 1e3)));
+        fr.push_back(JsonValue(round_to(wide(link.flood_right[i]), 1e3)));
+        fd.push_back(JsonValue(round_to(under, 1e3)));
+        scarp.push_back(JsonValue(
+            round_to(std::max(1e-3, (wide(p.flood_height_depths) - 1) * thalweg + under), 1e3)));
+      }
+      o["flood_left_m"] = std::move(fl);
+      o["flood_right_m"] = std::move(fr);
+      o["flood_depth_m"] = std::move(fd);
+      o["scarp_m"] = std::move(scarp);
+      o["scarp_slope"] = JsonValue(wide(p.scarp_slope));
+    }
     list.push_back(std::move(o));
+  }
+  return list;
+}
+// **The bed's material** (channels.md, "The flood bed"): the outline of each stretch of bed, for
+// the terrain's masks. A stretch is a run of a link's kept points at least `bar_min_width_m` wide
+// and off a knickpoint; its outline reaches, each side, the further of the cut's own bank top and
+// the flood bed's edge, a corner about every width along the line, the left side downstream and
+// the right side back. Centimetres, so the text is the same from every toolchain.
+JsonValue bed_regions_json(const ChannelLayer& p, const ChannelNetwork& n) {
+  JsonValue list = JsonValue::array();
+  if (p.bed_material.empty()) return list;
+  for (u32 k = 0; k < n.links.size(); ++k) {
+    const ChannelLink& link = n.links[k];
+    const u32 m = std::min<u32>(link.keep, link.line.size());
+    if (m < 3) continue;
+    const Vector<f64> s = lengths_of(link.line);
+    const auto in_bed = [&](u32 i) {
+      return wide(link.line[i].width_m) >= wide(p.bar_min_width_m) &&
+             !(i < link.knick.size() && link.knick[i]);
+    };
+    u32 stretch = 0;
+    for (u32 i = 0; i < m;) {
+      if (!in_bed(i)) {
+        ++i;
+        continue;
+      }
+      u32 e = i;
+      while (e + 1 < m && in_bed(e + 1))
+        ++e;
+      Vector<f64> lx, lz, rx, rz;
+      // W97: with `bar_material`, the bed's outline stops at the cut's bank tops and the flood
+      // bed each side is a strip of its own, from the bank top out, in the bars' material.
+      const bool bars = !p.bar_material.empty();
+      Vector<f64> llx, llz, lrx, lrz;  // the left strip's inner and outer edges
+      Vector<f64> rlx, rlz, rrx, rrz;  // the right strip's
+      f64 next = s[i];
+      for (u32 q = i; q <= e; ++q) {
+        if (q != e && s[q] < next) continue;
+        const ChannelPoint& pt = link.line[q];
+        const f64 w = wide(pt.width_m);
+        next = s[q] + std::max(w, 1.0);
+        const u32 a = q > 0 ? q - 1 : 0, b = std::min<u32>(link.line.size() - 1, q + 1);
+        f64 tx = link.line[b].at.x - link.line[a].at.x, tz = link.line[b].at.z - link.line[a].at.z;
+        const f64 tl = std::sqrt(tx * tx + tz * tz);
+        if (!(tl > 0)) continue;
+        tx /= tl;
+        tz /= tl;
+        const f64 half = .5 * w * (1 + (q < link.swell.size() ? wide(link.swell[q]) : 0.0));
+        const f64 left =
+            std::max(half, q < link.flood_left.size() ? wide(link.flood_left[q]) : 0.0);
+        const f64 right =
+            std::max(half, q < link.flood_right.size() ? wide(link.flood_right[q]) : 0.0);
+        // The left is the side of (-dz, dx).
+        const f64 bed_left = bars ? half : left, bed_right = bars ? half : right;
+        lx.push_back(round_to(pt.at.x - tz * bed_left, 1e2));
+        lz.push_back(round_to(pt.at.z + tx * bed_left, 1e2));
+        rx.push_back(round_to(pt.at.x + tz * bed_right, 1e2));
+        rz.push_back(round_to(pt.at.z - tx * bed_right, 1e2));
+        if (bars) {
+          llx.push_back(round_to(pt.at.x - tz * half, 1e2));
+          llz.push_back(round_to(pt.at.z + tx * half, 1e2));
+          lrx.push_back(round_to(pt.at.x - tz * left, 1e2));
+          lrz.push_back(round_to(pt.at.z + tx * left, 1e2));
+          rlx.push_back(round_to(pt.at.x + tz * half, 1e2));
+          rlz.push_back(round_to(pt.at.z - tx * half, 1e2));
+          rrx.push_back(round_to(pt.at.x + tz * right, 1e2));
+          rrz.push_back(round_to(pt.at.z - tx * right, 1e2));
+        }
+      }
+      const auto strip = [&](const Vector<f64>& ax, const Vector<f64>& az, const Vector<f64>& bx,
+                             const Vector<f64>& bz, const char* side) {
+        bool wide_enough = false;
+        for (u32 q = 0; q < ax.size() && !wide_enough; ++q)
+          wide_enough = std::fabs(ax[q] - bx[q]) + std::fabs(az[q] - bz[q]) > .05;
+        if (ax.size() < 2 || !wide_enough) return;
+        JsonValue polygon = JsonValue::array();
+        const auto corner = [&](f64 x, f64 z) {
+          JsonValue at = JsonValue::array();
+          at.push_back(JsonValue(x));
+          at.push_back(JsonValue(0.0));
+          at.push_back(JsonValue(z));
+          polygon.push_back(std::move(at));
+        };
+        for (u32 q = 0; q < ax.size(); ++q)
+          corner(ax[q], az[q]);
+        for (u32 q = bx.size(); q-- > 0;)
+          corner(bx[q], bz[q]);
+        JsonValue o = JsonValue::object();
+        o["name"] = JsonValue(p.name + " link " + std::to_string(k) + " bar " +
+                              std::to_string(stretch) + " " + side);
+        o["polygon"] = std::move(polygon);
+        o["material"] = JsonValue(p.bar_material);
+        o["feather_m"] = JsonValue(wide(p.bed_feather_m));
+        list.push_back(std::move(o));
+      };
+      if (bars) {
+        strip(llx, llz, lrx, lrz, "left");
+        strip(rlx, rlz, rrx, rrz, "right");
+      }
+      if (lx.size() >= 2) {
+        JsonValue polygon = JsonValue::array();
+        const auto corner = [&](f64 x, f64 z) {
+          JsonValue at = JsonValue::array();
+          at.push_back(JsonValue(x));
+          at.push_back(JsonValue(0.0));
+          at.push_back(JsonValue(z));
+          polygon.push_back(std::move(at));
+        };
+        for (u32 q = 0; q < lx.size(); ++q)
+          corner(lx[q], lz[q]);
+        for (u32 q = rx.size(); q-- > 0;)
+          corner(rx[q], rz[q]);
+        JsonValue o = JsonValue::object();
+        o["name"] =
+            JsonValue(p.name + " link " + std::to_string(k) + " bed " + std::to_string(stretch++));
+        o["polygon"] = std::move(polygon);
+        o["material"] = JsonValue(p.bed_material);
+        o["feather_m"] = JsonValue(wide(p.bed_feather_m));
+        list.push_back(std::move(o));
+      }
+      i = e + 1;
+    }
   }
   return list;
 }

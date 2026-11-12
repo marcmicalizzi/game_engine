@@ -663,31 +663,115 @@ struct TerrainDetail @version(4) {
   flatten_end: f32 = 0 @since(3)
 }
 
-/// **A channel cut into the ground** (docs/subsystems/tileset.md, "Channels cut into the ground";
-/// roadmap W89): a polyline downstream with, at each point, the top of the bank (`points`' y, the
-/// floodplain's height at the line), the bankfull width there and the bed's depth below that top.
-/// The cross-section is a trapezoid: a flat bed `depth_m` below the top, banks rising from it at
-/// `bank_slope` (rise over run) to the top at half the width either side of the line, and above
-/// the top the bank's face going on up at the same slope for at most `depth_m` more, where it meets
-/// higher ground (a channel cut into a trough's side). A bed narrower than the banks allow is a V.
-/// The ground is lowered to the section where it stands above it and nowhere else, so the
-/// floodplain past the top of the bank is untouched. A level of the set whose spacing is not finer
-/// than the width at a point keeps its heights there (the cut closes, as a hole does). `engine-
-/// content channels` writes one per link of a channel network (docs/subsystems/channels.md); a
-/// scene may also author one. Refused with a sentence: fewer than two points, arrays whose length
-/// is not the points', a width or depth that is not positive and finite, a bank slope outside
-/// [0.25, 8].
-struct TerrainCut @version(1) {
+/// What a ground edit does to the ground it reaches (tileset.md, "Ground edits that raise as well
+/// as lower"). An enumerator is never renumbered.
+enum TerrainEditMode : u8 {
+  /// Lowers only: the ground is brought down to the edit's surface where it stands above it, and
+  /// left where it lies below (a channel, a cutting, a quarry's floor).
+  Cut
+  /// Raises only: the ground is brought up to the edit's surface where it lies below it, and left
+  /// where it stands above (an embankment, a berm, a deposit lying on the ground).
+  Fill
+  /// Both: cut where the ground stands above the surface and filled where it lies below, so the
+  /// surface is the ground across the edit (a tread benched into a cross-slope, cut on the uphill
+  /// side and filled on the downhill; a pad; a causeway level across a hollow).
+  Bench
+}
+
+/// **A ground edit** (roadmap W89, W93, W98; docs/subsystems/tileset.md, "Channels cut into the
+/// ground" and "Ground edits that raise as well as lower"; the formulas are the header of
+/// `domain/tileset/cuts.h`): the ground brought down to a surface, up to it, or both, written into
+/// the tile set's heights when it is built. Two shapes, exactly one named:
+///
+/// * **A line** (`points`, two or more): a section across the line at every point, interpolated
+///   along each segment, a round cap past each end. Its top is the point's y; across the top's
+///   `width_m` it is flat for a `Fill` or a `Bench`, and for a `Cut` it is W89's trapezoid with a
+///   bed `depth_m` under the top (W93's per-side slopes, rounding and flood bed below). Past the
+///   width the faces leave the top: a **cut face** rising at the bank slope (where the ground is
+///   above it), a **fill face** falling at the fill slope (where the ground is below), each going on
+///   at its slope for its height (`face_m`, `fill_m`) and then running out, steepening, so it meets
+///   the ground wherever the ground is. "Left" is the side of (-dz, dx) for a segment running
+///   (dx, dz). A cut across a slope with a `Bench` is the tread with both banks: its uphill face cut,
+///   its downhill face filled.
+/// * **A patch** (`outline`, three or more points, a simple polygon in x and z): a surface over the
+///   polygon — flat at its points' y, which must agree, or the small grid of heights `grid_*` names
+///   — with the same faces leaving its edge at the distance from the polygon, so its edge is
+///   feathered into the ground: a pad, a deposit's surface, a floor.
+///
+/// **How edits compose** (whatever their order in the list and whichever tile applies them): every
+/// fill is read against the ground as it was and the highest kept; then every cut against that, the
+/// lowest kept. So a cut wins where the two disagree (a channel through a causeway is a gap in it, a
+/// stream crossing a tread is a ford), and the same edits give the same millimetres from any window.
+/// A level of the set whose spacing is not finer than an edit's width keeps its heights there (the
+/// edit closes, as a hole does). Refused with a sentence: neither or both shapes; fewer points than
+/// the shape needs; arrays whose length is not the points'; a width not positive and finite; a
+/// `Cut` line's depth not positive, or a `Fill` or `Bench` line naming one; a slope or rounding out
+/// of its range; a patch with no area, points at different heights and no grid, or a grid whose
+/// numbers do not make one.
+struct TerrainEdit @version(1) {
   name: string
+  mode: TerrainEditMode = Cut
+  /// A line's points: x and z where it runs, y the top of its section.
   points: worldpos[]
-  /// The bankfull width at each point, metres: the cut's width at the top of its banks.
+  /// The width of the line's top at each point, metres: a channel's at the top of its banks, a
+  /// tread's or a crest's across its flat.
   width_m: f32[]
-  /// The bed's depth below the top of the bank at each point, metres.
+  /// A `Cut` line's bed below its top at each point, metres, positive. A `Fill` or a `Bench` names
+  /// none: its section is flat across the width at the top.
   depth_m: f32[]
   /// The banks' rise over run: 1 (45 degrees) by default, between a cohesionless toe at its
   /// angle of repose (30 to 40 degrees) and a vegetated or cohesive upper bank near vertical
   /// (docs/experiments/channels.md, "The cut").
   bank_slope: f32 = 1
+  /// **A slope per bank and per point** (rise over run, [0.02, 16]): the cut bank on a bend's
+  /// outside steep, the point bar's surface on its inside gentle, so the thalweg lies toward the
+  /// outer bank. Both or neither; one per point. Empty: `bank_slope` on both sides.
+  bank_slope_left: f32[]
+  bank_slope_right: f32[]
+  /// **A rounded top**: where the cut's surface meets the ground the two are joined by a smooth
+  /// minimum over the band where they are within this share of the depth at the point of each
+  /// other (the crease lowered by a quarter of it), [0.1, 1]; and the cut's faces run out to the
+  /// ground past their tops. Every cut rounds and runs out (version 3: 0, the crease and the wall
+  /// at a face's end that W89 left, is refused, and a cut that names none is rounded over 0.75).
+  bank_round: f32 = 0.75
+  /// **The flood bed** (all four or none; one per point): a flat bed `flood_depth_m` under the top
+  /// of the bank reaching `flood_left_m` and `flood_right_m` from the line, metres, bounded each
+  /// side by a scarp at `scarp_slope` whose top stands `scarp_m` above the bed, the face going on
+  /// as much again where it meets the valley's side. A point whose two reaches are zero has none.
+  /// The channel lies in it: the section is the lower of the two, their meeting rounded as the
+  /// top is.
+  flood_left_m: f32[]
+  flood_right_m: f32[]
+  flood_depth_m: f32[]
+  scarp_m: f32[]
+  /// The scarp's rise over run, [0.25, 8]: a raw face of alluvium stands steeper than its angle
+  /// of repose while it is fresh.
+  scarp_slope: f32 = 1.5
+  /// **The cut faces' height** over the top at the bank slope before they run out, metres, [0, 100]:
+  /// 0, a `Cut` line's depth (a channel's banks), and 2 m for a `Bench` line and for a patch, whose
+  /// sections have no depth.
+  face_m: f32 = 0
+  /// **The fill faces**: their fall over run, [0.1, 8], 0.5 by default (one on two, the usual batter
+  /// of an earth embankment; docs/experiments/ground-edits.md), or one per side and per point
+  /// ([0.02, 16], both or neither, a line only); and their drop under the top at that slope before
+  /// they run out, metres, (0, 100], 2 by default. The rounding (`bank_round`) is a share of the drop
+  /// as it is of a cut's rise.
+  fill_slope: f32 = 0.5
+  fill_slope_left: f32[]
+  fill_slope_right: f32[]
+  fill_m: f32 = 2
+  /// **A patch's outline**: three or more points, a simple polygon in x and z. With no grid its
+  /// surface is flat at the points' y, which must agree.
+  outline: worldpos[]
+  /// **A patch's grid of heights** (a deposit's surface): `grid_nx` by `grid_nz` points (2 to 1024
+  /// a side), rows of x in order of z, `grid_spacing_mm` apart (whole millimetres, positive), point
+  /// (0, 0) at `grid_origin`'s x and z, each height `grid_mm` whole millimetres over its y. The surface
+  /// is the grid's bilinear surface, held at its edge past it. `grid_nx` 0: no grid.
+  grid_origin: worldpos @unit(m)
+  grid_spacing_mm: i64 = 0
+  grid_nx: u32 = 0
+  grid_nz: u32 = 0
+  grid_mm: i32[]
 }
 
 /// The `tiles` ground provider's parameters (`Terrain.tiles`; docs/subsystems/tileset.md): an
@@ -695,8 +779,10 @@ struct TerrainCut @version(1) {
 /// and its far mip chain — or the heightfield to build one from on a miss, through the
 /// derived-data cache, as a scene mesh's clusters are built. A ground with no time: the set does
 /// not move, so a time-lapse moves nothing of it. Paths are relative to the scene's directory (or
-/// absolute). Version 2 adds `cuts` (W89).
-struct TerrainTileSet @version(2) {
+/// absolute). Version 2 adds `cuts` (W89); version 3 replaces them with `edits` (W98), which raise
+/// as well as lower (a scene file is read unversioned, so a file naming `cuts` is refused naming the
+/// field, and `engine-content channels --cut` writes `edits`).
+struct TerrainTileSet @version(3) {
   /// A built set's `manifest.json` (`engine.tileset.TileSetManifest`). Empty: `heightfield`.
   manifest: string
   /// An `engine.terrain.heightfield/1` header (`engine.tileset.HeightfieldHeader`) to build a set
@@ -719,13 +805,14 @@ struct TerrainTileSet @version(2) {
   ring_spacing_mm: i64 = 2000
   far_ratio: u32 = 4
   far_levels: u32 = 6
-  /// With `heightfield`: channels cut into the ground (`TerrainCut`; tileset.md, "Channels cut
-  /// into the ground"; roadmap W89), written into the set's heights when it is built, so every
-  /// reader of the set — every level the renderer draws, the ray path, the cascades, the
-  /// collision and the placements — stands on the cut ground. Part of the build's key. Empty, the
-  /// default: the set exactly as it was, its key unmoved. Refused beside a `manifest` (a set built
-  /// ahead is not built here).
-  cuts: TerrainCut[] @since(2)
+  /// With `heightfield`: the ground edits (`TerrainEdit`; tileset.md, "Channels cut into the
+  /// ground" and "Ground edits that raise as well as lower"; roadmap W89, W98) — channels cut into
+  /// it, treads, pads and embankments raised on it — written into the set's heights when it is
+  /// built, so every reader of the set — every level the renderer draws, the ray path, the
+  /// cascades, the collision and the placements — stands on the edited ground. Part of the build's
+  /// key. Empty, the default: the set exactly as it was, its key unmoved. Refused beside a
+  /// `manifest` (a set built ahead is not built here).
+  edits: TerrainEdit[] @since(3)
 }
 
 /// World-anchored detail or a finite painting in the scene terrain's map frame.
@@ -790,7 +877,7 @@ struct TerrainSnow @version(1) {
 
 /// One native-ground layer. Colour is sRGB; normals are OpenGL (+Y); roughness and mask are
 /// linear, read from R. Paths are relative to the scene. Layers composite in array order.
-struct TerrainMaterialLayer @version(5) {
+struct TerrainMaterialLayer @version(6) {
   name: string
   base_color: string
   normal: string
@@ -830,6 +917,10 @@ struct TerrainMaterialLayer @version(5) {
   /// the tint of the bed and the macro bed its point cuts, and their roughness offsets added. Needs
   /// a formation; refused without one. False draws what the layer drew.
   formation: bool = false @since(5)
+  /// A tiled layer's colour past `detail_far_m`, linear RGB in [0, 1] (G141; see
+  /// renderer.md, "A layer's far colour"): what its detail fades to in place of the image's mean,
+  /// for a layer that stands in for what it does not draw (a sward's canopy). Absent: the mean.
+  far_color: vec3? @since(6)
 }
 
 struct TerrainMaterials @version(1) {
@@ -1334,13 +1425,18 @@ struct WaterBody @version(5) {
   /// 0 with no ground wind: the four sines. **Every body's swash** (since version 5; water.md,
   /// "The shore"; docs/experiments/shore.md; roadmap S94): the wind's fetch-limited wave (JONSWAP's
   /// peak period and the spectrum's significant height) runs up the shore by Stockdon et al.
-  /// (2006). A closed body reads its own `wind_m_s` only (its surface keeps its four sines); an open
-  /// body the wind its spectrum takes. 0, with no tide: no swash, and the shore is version 4's.
+  /// (2006). A closed body reads its own `wind_m_s` only; an open body the wind its spectrum
+  /// takes. 0, with no tide: no swash, and the shore is version 4's. **Every body's waves** (roadmap
+  /// S100 stage B; water.md, "The spectrum"): a closed body with a `wind_m_s` draws the same
+  /// spectrum over its own reach along the wind, as narrow bands, with a lee by the shore the wind
+  /// blows from, and foam where its waves break; `wave_amplitude_m`, `wave_length_m`, `chop` and
+  /// `foam_m` are then not read.
   wind_m_s: f32 = 0 @since(3) @unit("m/s")
   /// How far the wind has blown over open water before it reaches the body, km: JONSWAP's fetch,
-  /// which sets how grown the sea is (a longer fetch, longer and higher waves). A closed body's
-  /// swash takes the smaller of this and the lake's own longest reach (its bounding square's
-  /// diagonal): a wind cannot blow over more water than the lake holds.
+  /// which sets how grown the sea is (a longer fetch, longer and higher waves), up to the fully
+  /// developed sea's (2.2e4 U^2 / g: 110 km at 7 m/s), past which it changes nothing. A closed
+  /// body takes the smaller of this and its own longest reach along its wind: a wind cannot blow
+  /// over more water than the lake holds.
   fetch_km: f32 = 100 @since(3) @unit(km)
   /// **The wet band** (docs/subsystems/water.md, "The shore"; docs/experiments/shore.md; roadmap
   /// S97): ground within this height above the level, metres, inside the body's bounds, is drawn
@@ -1349,7 +1445,8 @@ struct WaterBody @version(5) {
   wet_m: f32 = 0.3 @since(4) @unit(m)
   /// **The foam line** (same pages): how far in from where the level meets the ground, metres, a
   /// thin line of foam runs up and back with the largest wave's phase, its strength from the
-  /// waves' amplitude (a mirror has none), fading to nothing past it. 0: no foam.
+  /// waves' amplitude (a mirror has none), fading to nothing past it. 0: no foam. A body with a
+  /// wind or a tide does not read it: its foam is its breaking waves' (roadmap S100 stage B).
   foam_m: f32 = 0.6 @since(4) @unit(m)
   /// **The tide** (water.md, "The shore"; roadmap S94): an open body's still level rises and falls
   /// by this, metres, at the principal lunar semidiurnal constituent's period (M2, 12.42 h) on the
@@ -1375,7 +1472,7 @@ struct WaterBody @version(5) {
 /// points falls at 45 degrees or steeper the water is in free fall and that stretch is a waterfall.
 /// Refused with a sentence: fewer than two points, arrays of unequal length, a width or depth that
 /// is not positive, a slope that is negative where the line descends.
-struct WaterChannel @version(4) {
+struct WaterChannel @version(5) {
   name: string
   /// The centreline, downstream, world positions; each point's y is the **water surface's**
   /// height there.
@@ -1423,6 +1520,13 @@ struct WaterChannel @version(4) {
   /// defaults are the exclusion's old constants to the bit (0.4 has no exact f32).
   bank_width_widths: f64 = 0.25 @since(4)
   bank_width_m: f64 = 0.4 @since(4) @unit(m)
+  /// **The flood bed's reach from the line** at each point, metres, left and right (W93;
+  /// scene_gen.md, "Exclusion"; "left" the side of (-dz, dx) for a segment running (dx, dz)): the
+  /// cut's own numbers (`TerrainCut.flood_left_m`, `flood_right_m`), handed over here so the
+  /// placements leave the whole bed bare and not only the water and its banks. Both or neither,
+  /// one per point; empty where the channel has no flood bed. The water reads neither.
+  flood_left_m: f32[] @since(5)
+  flood_right_m: f32[] @since(5)
 }
 
 /// One bed of a formation's sequence (`Formation`; renderer.md, "Formation bands"; the grounding,
@@ -1431,7 +1535,7 @@ struct WaterChannel @version(4) {
 /// layer's colour, `roughness` is added to its roughness), and its `resistance`, which no picture
 /// reads yet: it is what the exposed-bedrock solver will take to stand resistant beds out as ledges
 /// and let weak ones recess (sandstone and limestone near 1, shale near 0).
-struct FormationBed @version(1) {
+struct FormationBed @version(2) {
   name: string
   /// Across the bed, metres: 0.01 to 1,000, taken to the millimetre (a bed is thicker than 1 cm,
   /// McKee and Weir 1953). A macro bed is a member or a formation, metres to hundreds of metres.
@@ -1442,6 +1546,55 @@ struct FormationBed @version(1) {
   roughness: f32 = 0
   /// Resistance to weathering, 0 (recedes) to 1 (stands out). Carried, not drawn (W85).
   resistance: f32 = 0.5
+  /// Variation along strike (W94; `Formation.lateral_m`): the most this bed's **top** moves, as a
+  /// share of the thinner of the two beds it parts, 0 to 0.45 (two tops never cross). 0, the
+  /// default, is a top that is a plane, which is what an authored bed was. The sequence's last
+  /// top never moves, so the period is the same everywhere.
+  variation: f32 = 0 @since(2)
+  /// A lens (W94): this bed's top comes down to its base along stretches of the strike, so the bed
+  /// pinches out there and stands at its whole thickness between. Not on the sequence's last bed,
+  /// nor on two beds running.
+  lens: bool = false @since(2)
+}
+
+/// **A member of a generated sequence** (W94; `Formation.members`; the grounding,
+/// docs/experiments/formation-sequence.md): an interval of a formation with one character, tens of
+/// metres thick, which a hillside shows as a cliff or as a slope. Its beds are drawn, not listed:
+/// two lithologies alternate, a resistant one (sandstone, limestone, a lava flow) and a recessive
+/// one (shale, mudstone, an interflow bed), each bed's thickness from a lognormal distribution
+/// (Krumbein and Dacey's embedded chain with independent thicknesses, 1969). `resistant` is the
+/// share of the member's thickness in resistant beds, and the one number that makes it a
+/// cliff-former (near 1: thick resistant beds parted by thin recessive ones) or a slope-former (near
+/// 0: thick recessive intervals with thin resistant ledges).
+struct FormationMember @version(1) {
+  name: string
+  /// The member's thickness, metres: 0.5 to 1,000, taken to the millimetre.
+  thickness_m: f32 = 40 @unit(m)
+  /// The share of the thickness in resistant beds, 0 to 1.
+  resistant: f32 = 0.5
+  /// The median thickness of the beds of the member's **dominant** lithology (the resistant one
+  /// when `resistant` is a half or more), metres: 0.05 to 100. The other lithology's median follows
+  /// from the share (`bed_m * minor / major`), and under a centimetre it is left out, so a member
+  /// at 0 or 1 is beds of one lithology parted by bedding planes.
+  bed_m: f32 = 1 @unit(m)
+  /// The standard deviation of the logarithm of a bed's thickness, 0 to 1.5.
+  sigma: f32 = 0.7
+  /// The member's colour multiplier (the macro sequence's bed), each channel 0 to 2; absent white.
+  tint: vec3?
+  /// The two lithologies' colour multipliers within the member, each channel 0 to 2; absent is
+  /// (1.08, 1.05, 1.0) for the resistant and (0.78, 0.80, 0.84) for the recessive.
+  resistant_tint: vec3?
+  recessive_tint: vec3?
+  /// How far one bed's tone is from its lithology's, as a share either way, 0 to 0.5: no two beds
+  /// of a real section are one tone.
+  tone: f32 = 0.08
+  /// Variation along strike: the most a bed's top moves, as a share of the thinner of the two beds
+  /// it parts, 0 to 0.45 (`FormationBed.variation`, drawn per top up to this).
+  variation: f32 = 0.3
+  /// The share of the member's minor-lithology beds that are lenses, 0 to 1 (`FormationBed.lens`):
+  /// the shale partings of a sandstone cliff and the sandstone ledges of a shale slope are the beds
+  /// that pinch out.
+  lenses: f32 = 0.25
 }
 
 /// **A world formation** (roadmap W85; renderer.md, "Formation bands"; rocks.md, "Geology"): beds
@@ -1454,7 +1607,14 @@ struct FormationBed @version(1) {
 /// the distance along t, so its hinges run along the strike. `beds` repeats along that coordinate;
 /// `macro_beds` repeats along it too at its own period, so the bands a kilometre away still have
 /// structure when the beds have averaged out under a pixel. Both multiply.
-struct Formation @version(1) {
+///
+/// **The sequence is drawn or listed** (W94, version 2; renderer.md, "Formation bands"; the
+/// grounding, docs/experiments/formation-sequence.md). With `members`, the beds are drawn from
+/// `seed`: each member's beds from its own thickness distribution, up to 512 beds in all, and the
+/// members themselves are the macro sequence, so the section repeats only after the members'
+/// whole thickness (hundreds of metres), never inside it. With `beds` (and `macro_beds`) the
+/// sequence is the authored one, as it was. One or the other.
+struct Formation @version(2) {
   /// Where the bed coordinate is zero and the fold's phase starts, taken to the millimetre.
   origin: worldpos
   /// The beds' dip, degrees from horizontal: -85 to 85.
@@ -1472,11 +1632,28 @@ struct Formation @version(1) {
   /// The narrowest a band's edge is drawn, metres across the beds: 0 to 10. The pixel's own
   /// footprint widens it where it is wider, so a band never aliases.
   soft_m: f32 = 0.1 @unit(m)
-  /// The bed sequence, bottom first, repeating: 1 to 8 beds.
+  /// The bed sequence, bottom first, repeating: 1 to 512 beds; empty with `members`.
   beds: FormationBed[]
-  /// The macro sequence (members, tens of metres), bottom first, repeating: 0 to 8 beds; none is a
-  /// tint of one everywhere.
+  /// The macro sequence (members, tens of metres), bottom first, repeating: 0 to 512 beds; none is
+  /// a tint of one everywhere. Empty with `members`.
   macro_beds: FormationBed[]
+  /// The generated sequence's seed (`members`).
+  seed: u64 = 1 @since(2)
+  /// The generated sequence's members, bottom first: 1 to 64, or none for an authored sequence.
+  members: FormationMember[] @since(2)
+  /// Variation along strike (W94): the length, metres, over which a bed's top comes and goes, 10 to
+  /// 100,000 (taken to the millimetre). Two seeded fields of that length and 2.618 times it, each
+  /// along its own horizontal direction either side of the strike, move the tops that have a
+  /// `variation` or are a lens's; with no such top it does nothing.
+  lateral_m: f32 = 150 @unit(m) @since(2)
+  /// **A fault** (W94): a vertical plane whose horizontal normal points `fault_azimuth_deg` from
+  /// +x toward +z (-180 to 180) and which stands `fault_offset_m` along that normal from the origin
+  /// (within 100,000 km). Beyond it the bed coordinate is `fault_throw_m` greater, so every bed
+  /// there stands that far down its normal: -1,000 to 1,000 m, taken to the millimetre; 0 is no
+  /// fault. The one place the beds are not continuous.
+  fault_throw_m: f32 = 0 @unit(m) @since(2)
+  fault_azimuth_deg: f32 = 0 @unit(deg) @since(2)
+  fault_offset_m: f64 = 0 @unit(m) @since(2)
 }
 
 /// A scene: meshes, placements of them, and an optional terrain. Version 5 added `placements`,
@@ -2225,7 +2402,7 @@ struct OcclusionCheck @version(1) {
 /// without the chain. Version 2 (2026-10-25) adds the static structures of rigid forms (renderer.md,
 /// "Static structures for rigid forms"): the forms built once, their clusters and bytes, and the
 /// instance slots and pairs that referenced one at the end.
-struct FlythroughRt @version(5) {
+struct FlythroughRt @version(6) {
   /// R100: admission fallback and the compact chain's capacity arithmetic.
   caster_index_fallbacks: u32 = 0 @since(3)
   frame_estimate: u64 = 0 @since(3)
@@ -2288,6 +2465,20 @@ struct FlythroughRt @version(5) {
   /// memory from 512 to 4,096 MiB (docs/subsystems/renderer.md, "The budget follows the device").
   budget_mib: u32 = 0 @since(5)
   budget_source: string @since(5)
+  /// Version 6 (R143): the bottom-level structures the last frame's build made — the instances
+  /// that referenced anything — and the most a frame made, beside the instance slots the build was
+  /// over until then (docs/subsystems/renderer.md, "The bottom-level build is over what the frame
+  /// drew"); what the rigid forms' cluster structures would have reserved at the driver's most for
+  /// each, which packed to the size they are is `static_bytes`; and which bound the first and the
+  /// last frame that dropped anything met, of `budget`, `capacity` (a growth in flight),
+  /// `reference-ceiling` and `references`, joined by `+`, empty for a run that dropped nothing
+  /// ("The warning names its bound").
+  blas_built: u32 = 0 @since(6)
+  peak_blas_built: u32 = 0 @since(6)
+  instance_slots: u32 = 0 @since(6)
+  static_reserved_bytes: u64 = 0 @since(6)
+  first_drop_bound: string @since(6)
+  last_drop_bound: string @since(6)
 }
 
 /// The materials' textures a scene holds on the device (`renderer::GpuScene`): the distinct

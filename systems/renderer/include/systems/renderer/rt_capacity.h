@@ -233,6 +233,31 @@ struct RtDropBlock {
 };
 void rt_drop_order(u32 prefix_slots, std::span<RtDropBlock> blocks, Vector<u32>& out);
 
+// **Which bound bound** (renderer.md, "The warning names its bound"; R143). A frame that built less
+// than it wanted met one of four, and until R143 the warning named none of them and printed the
+// capacity the scene held when the frame was *read back*, two frames after it was recorded — the
+// owner's v38 walk logged `wanted=86971 built=86016 capacity=338072`, a frame built against 86,016
+// while the growth to 338,072 was in flight, and nobody could say which number had bound. The four,
+// each a count of **cluster structures** (one per visible cluster of an instance, never instances
+// or bytes): the frame's own structures against its capacity when that capacity is the budget's
+// (`k_rt_bound_budget`: the ceiling `rt_budget_mib` gives, the remedy is a larger budget or a
+// smaller demand) or still under it (`k_rt_bound_capacity`: a growth had not landed, and no budget
+// would have helped); and the references to the resident cache against theirs, at
+// `renderer.rt.reference_mib`'s ceiling (`k_rt_bound_reference_ceiling`) or under it
+// (`k_rt_bound_references`). `capacity` and `reference_capacity` are the ones the frame was
+// recorded against. Arithmetic only, so it is tested on the CPU.
+inline constexpr u32 k_rt_bound_budget = 1;
+inline constexpr u32 k_rt_bound_capacity = 2;
+inline constexpr u32 k_rt_bound_reference_ceiling = 4;
+inline constexpr u32 k_rt_bound_references = 8;
+u32 rt_drop_bound(u32 wanted, u32 capacity, u32 limit, u32 references_wanted,
+                  u32 reference_capacity, u32 reference_limit) noexcept;
+// "budget", "capacity", "reference-ceiling", "references", joined by '+' when two met; "none".
+const char* rt_bound_name(u32 bound) noexcept;
+// What to do about it, for the warning: the setting or tunable to raise, or that nothing needs to
+// be (a growth in flight).
+const char* rt_bound_remedy(u32 bound) noexcept;
+
 // Every time is wall time in seconds on one monotonic clock (the renderer's `time::monotonic_ns`),
 // so a test drives the policy with made-up times.
 class RtCapacity {

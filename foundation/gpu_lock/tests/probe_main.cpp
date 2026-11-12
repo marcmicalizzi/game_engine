@@ -4,14 +4,19 @@
 // command wrapped in `tools/gpu-lock.ps1 run`. It opens no device: the hold is the whole point.
 //
 //   engine_gpu_lock_probe [--on] [--lock <path>] [--lease <s>] [--refresh <s>] [--poll <s>]
-//                         [--report <file>] <command>
+//                         [--look <ms>] [--ticket <s>] [--report <file>] <command>
 //
 //   --on       sets ENGINE_GPU_LOCK_ON_DEVICE=1 in this process first, as the test main does, so
 //              the hold takes the lock and every child inherits the switch
 //   --report   appends "<pid> <mode>" once the hold is established, so a test can see what a
 //              process that is not its direct child decided
 //
+//   --look     how often a waiter looks at the line and the lock, in milliseconds
+//   --ticket   the lease of this process's ticket in the line, in seconds
+//
 //   hold <ms>                   hold for <ms>, then release and exit 0
+//   holds <n> <ms>              n holds of <ms> each, one straight after the other, a report line
+//                               for each: a holder that releases and asks again
 //   parent <ms> -- <argv...>    hold, run this probe with <argv> as a child and wait for it,
 //                               hold <ms> more, release, exit with the child's code
 //   parent-dies -- <argv...>    hold, start the child, wait until it has reported, and exit 0
@@ -94,8 +99,9 @@ bool reported_by_other(const std::string& path) {
 int usage() {
   std::fprintf(stderr,
                "usage: engine_gpu_lock_probe [--on] [--lock <path>] [--lease <s>] "
-               "[--refresh <s>] [--poll <s>] [--report <file>] "
-               "hold <ms> | parent <ms> -- <argv> | parent-dies -- <argv> | cycles <n> | "
+               "[--refresh <s>] [--poll <s>] [--look <ms>] [--ticket <s>] [--report <file>] "
+               "hold <ms> | holds <n> <ms> | parent <ms> -- <argv> | parent-dies -- <argv> | "
+               "cycles <n> | "
                "spawn -- <argv>\n");
   return 2;
 }
@@ -109,6 +115,8 @@ int main(int argc, char** argv) {
   i64 lease = 0;
   i64 refresh = 0;
   i64 poll = 0;
+  i64 look = 0;
+  i64 ticket = 0;
   int i = 1;
   for (; i < argc; ++i) {
     const std::string_view a = argv[i];
@@ -123,6 +131,10 @@ int main(int argc, char** argv) {
       refresh = std::atoll(next());
     } else if (a == "--poll") {
       poll = std::atoll(next());
+    } else if (a == "--look") {
+      look = std::atoll(next());
+    } else if (a == "--ticket") {
+      ticket = std::atoll(next());
     } else if (a == "--report") {
       report_path = next();
     } else {
@@ -132,7 +144,11 @@ int main(int argc, char** argv) {
   if (i >= argc) return usage();
   const std::string_view command = argv[i++];
   i64 ms = 0;
-  if ((command == "hold" || command == "parent") && i < argc) ms = std::atoll(argv[i++]);
+  i64 holds = 1;
+  if (command == "holds" && i < argc) holds = std::atoll(argv[i++]);
+  if ((command == "hold" || command == "holds" || command == "parent") && i < argc) {
+    ms = std::atoll(argv[i++]);
+  }
   const std::string self = executable();  // outlives `child`, which only views it
   std::vector<std::string_view> child;
   if (i < argc && std::string_view(argv[i]) == "--") {
@@ -146,6 +162,8 @@ int main(int argc, char** argv) {
   if (lease > 0) config.lease_s = lease;
   if (refresh > 0) config.refresh_s = refresh;
   if (poll > 0) config.poll_s = poll;
+  if (look > 0) config.look_ms = look;
+  if (ticket > 0) config.ticket_lease_s = ticket;
   config.purpose = "gpu lock probe: " + std::string(command);
 
   auto run_child = [&](platform::Process& p) {
@@ -179,6 +197,16 @@ int main(int argc, char** argv) {
     platform::Process p;
     run_child(p);
     return p.wait();
+  }
+
+  if (command == "holds") {
+    for (i64 k = 0; k < holds; ++k) {
+      gpu_lock::DeviceHold again;
+      report(report_path, again.acquire(config));
+      std::this_thread::sleep_for(std::chrono::milliseconds(ms));
+      again.release();
+    }
+    return 0;
   }
 
   gpu_lock::DeviceHold hold;

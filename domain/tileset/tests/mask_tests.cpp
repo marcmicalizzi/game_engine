@@ -389,7 +389,13 @@ TEST_CASE("tileset masks determinism: the fixture's level hashes to the pinned v
   // Re-pinned 2026-11-08 (T74): the level hash is seeded with the key, and `k_mask_version` 3
   // moved the key; the archive's own hash, every byte of the file, is unchanged
   // ("75eef7ec443e0e7e"), so no tile's bytes moved. Before: "558a6a74fd7c454a" (version 2).
-  constexpr const char* k_level = "9707cc0db08471c9";
+  // Re-pinned 2026-11-11 (T90): `k_tileset_version` 3 (a far level's archive renamed) moved the
+  // set's key, which the mask level's key names; the archive is unchanged. Before:
+  // "9707cc0db08471c9".
+  // Re-pinned 2026-11-11 (T105): `k_tileset_version` 4 (no far level at or below the finest's
+  // spacing) moved the set's key the same way; the archive is unchanged. Before:
+  // "e4854ad70bcac09e".
+  constexpr const char* k_level = "a8298a209cc92c73";
   constexpr const char* k_archive = "75eef7ec443e0e7e";
   Fixture fx;
   MaskBuildResult built;
@@ -590,13 +596,13 @@ scene::Terrain cut_masks_terrain(bool with_cut) {
   entry.tiles->far_ratio = 1;
   entry.tiles->far_levels = 2;
   if (with_cut) {
-    scene::TerrainCut c;
+    scene::TerrainEdit c;
     c.name = "run";
     c.points = {WorldPos{5.0, 0.0, 20.0}, WorldPos{35.0, 0.0, 20.0}};
     c.width_m = {8.0f, 8.0f};
     c.depth_m = {4.0f, 4.0f};
     c.bank_slope = 3.0f;
-    entry.tiles->cuts.push_back(c);
+    entry.tiles->edits.push_back(c);
   }
   scene::TerrainMaterials materials;
   materials.layer_budget = 4;

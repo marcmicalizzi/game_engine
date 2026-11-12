@@ -79,7 +79,6 @@
           32
         ],
         "spacing_m": 0.5,
-        "talus_depth_m": 2.5,
         "runout_m": 32,
         "channel_area_m2": 12,
         "sediment_depth_m": 0.1,

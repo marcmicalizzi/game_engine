@@ -63,7 +63,33 @@ namespace engine::channels {
 // 2 (W89): the bed is the cut's flat bed and no bank piece is placed.
 // 3 (W90): pieces by reach (boulder steps, nothing on bedrock and colluvial), mouths, confluences.
 // 4 (W91): steps on step-pool reaches alone, cascade clusters, knickpoints, the line in its trough.
-inline constexpr u32 k_channels_version = 4;
+// 5 (W93): the section follows the bends (the bed toward the outer bank, the bars the ground's own
+//    point bars with a skin on them), the flood bed.
+// 6 (W93, continued): no bed slab and no bar skin; the boulders alone are placed.
+// 7 (W93, continued): the kinks low-passed out of every line, a steep line's wander, the pool
+//    downstream of its bend's apex, the steep reaches' section, boulders at a step's banks.
+// 8 (W97): the bed's sediment in the plan, and the clasts above `clast_min_mm` laid on the bed,
+//    the bars and the banks' feet as one merged mesh a tile; the steps' domes are clasts.
+inline constexpr u32 k_channels_version = 8;
+
+// **The bed's surface sediment at a point** (W97; channels.md, "Bed sediment"; the sources in
+// docs/experiments/channels.md, "Bed sediment"): the surface grain-size distribution a pebble count
+// would give there, lognormal in size (Bunte & Abt 2001), its median from the bankfull flow that
+// just moves it (Lamb, Dietrich & Venditti 2008) under the reach's relative roughness (Montgomery &
+// Buffington 1997), its sorting by reach, the clasts' roundness by how far the network has carried
+// them (Domokos et al. 2014), the share of the bed's surface under clasts drawn as geometry, and
+// where a point bar lies on the inner bank, how far along it from head to tail (the bar fines that
+// way: Rice & Church 2010). What the water (S101) reads of the bed is `d50_m` and `d84_m`.
+struct ChannelSediment {
+  f32 d16_m = 0;
+  f32 d50_m = 0;
+  f32 d84_m = 0;
+  f32 sorting = 0;      // sigma, phi units: D84 / D50 = D50 / D16 = 2^sorting
+  f32 roundness = 0;    // 0 angular to 1 rounded
+  f32 cover = 0;        // share of the bed's surface under clasts of `clast_min_mm` or larger
+  f32 bar = -1;         // on a point bar's run: 0 at its head to 1 at its tail; -1 none
+  f32 transport_m = 0;  // channel length upstream of the point, along the network
+};
 
 // A point of a channel's line, downstream order: where it is (y the ground under it, metres), its
 // bankfull width and depth, the bed's fall per metre there, and the contributing area.
@@ -87,6 +113,9 @@ struct ChannelLink {
   f64 meander = 0;    // the share of the meander amplitude the slope allowed, 0 to 1
   bool head = false;  // the link begins at a channel head
   u64 seed = 0;
+  // The contributing area at the link's last cell, in lattice cells: what orders the junctions,
+  // kept on the link so a plan read from its file (which holds no lattice) orders them the same.
+  u32 area_end = 0;
   // **W90** (channels.md, "Reaches", "Mouths", "Confluences"), one per point of `line`:
   Vector<u8> reach;        // the reach's `ChannelReach` code
   Vector<f32> step_depth;  // how far a step-pool's pool lowers the cut's bed below its line, m
@@ -105,6 +134,25 @@ struct ChannelLink {
   f64 lip_convexity = 0;  // the knickpoints' second differences at their lips, summed
   u32 steep_left = 0;
   u32 trough_pulled = 0;
+  // W93 (channels.md, "A line across a slope"): the points moved across the line so that neither
+  // bank's ground stands more than half a depth under the line's.
+  u32 bank_moved = 0;
+  // **W93** (channels.md, "The section", "The flood bed"), one per point of `line`: the section's
+  // asymmetry, -1 to 1 — positive where the line bends left (toward (-dz, dx)), so the point bar
+  // is on the left and the cut bank and the thalweg on the right; 0 at a riffle, and on a steep
+  // reach an irregular wander of the thalweg between the banks; how much wider the cut is than
+  // the hydraulic geometry's width, as a share of it (`swell`: up to half `riffle_widening` wider
+  // at a riffle and narrower at a pool's apex, half `step_widening` narrower at a step's crest and
+  // wider over its pool, 0 where a reach has neither); the flood bed's reach from the line each
+  // side, metres (0: none); and the entrenchment ratio measured there (the flood-prone width over
+  // the bankfull width; 0 where it was not measured).
+  Vector<f32> asym;
+  Vector<f32> swell;
+  Vector<f32> flood_left;
+  Vector<f32> flood_right;
+  Vector<f32> entrenchment;
+  // **W97** (channels.md, "Bed sediment"), one per point of `line`: the bed's surface sediment.
+  Vector<ChannelSediment> sediment;
   // The points the water and the pieces run to: `line.size()`, less for a tributary whose last
   // points lie within the trunk's banks.
   u32 keep = 0;
@@ -165,6 +213,57 @@ bool plan_channels(const ChannelLayer& layer, const scene_gen::Ground& ground, u
                    jobs::JobSystem* jobs, ChannelNetwork& out, std::string& error,
                    const scene_gen::Exclusion* water = nullptr);
 
+// **The plan** (channels.md, "One plan"; W93, the proof of concept's solver needs 2.1 item 9): the
+// network of a layer over the ground **before its cuts**, made once and kept as a derived file,
+// `<derived-data root>/channels/plan-<key>.channel-plan`. Everything that needs a channel's line
+// reads this one object: `terrain_cuts_json` (the cut), `water_channels_json` (the water's
+// description, and through it the exclusion's corridor) and `place_pieces` (what the generator
+// still places). `network` holds the links, the heads and the counts; the lattice's own arrays
+// (heights, fill, receivers, areas) are in it when the plan was made by this call and empty when
+// it was read, since no reader of a plan asks them.
+//
+// **The key** is what the plan was made from: the layer (every field but `plan`), the world's
+// seed, `k_channels_version`, the ground's heights at every point of the layer's lattice to the
+// micrometre and whether a water body covers each. A layer that names no plan is keyed that way
+// from the ground it is handed, which must then be the ground before any cut; a hit reads the
+// file and plans nothing. **A layer on a cut ground names its plan** (`ChannelLayer.plan`, the
+// key `engine-content channels` printed, 16 hexadecimal digits): the cut ground's heights are not
+// what the plan was made from, so the key cannot be made again from them, and the generator
+// never plans over a ground its own cuts lowered. A named plan that is not in the directory, or
+// that records another layer or seed than the entry's, is refused with the command that makes it.
+struct ChannelPlan {
+  u64 key = 0;
+  u64 layer_hash = 0;  // `plan_layer_hash` of the layer it was made from
+  u64 seed = 0;        // the world's seed it was made with
+  ChannelNetwork network;
+  bool planned = false;  // made by this call (a miss); false: read from its file
+};
+// Over the layer's canonical JSON with `plan` cleared, and `k_channels_version`.
+u64 plan_layer_hash(const ChannelLayer& layer);
+// "<dir>/plan-<key as 16 lower-case hex digits>.channel-plan".
+std::string plan_path(std::string_view dir, u64 key);
+std::string plan_key_text(u64 key);
+// Where the capability's derived files live: `<ddc>/channels`, `ddc` the host's root when it named
+// one, else the repository's found from `scene_dir`, else `<scene_dir>/ddc` — the rule the
+// generator's recipes always had. Made when it is not there. False with a sentence.
+bool derived_dir(std::string_view ddc, std::string_view scene_dir, std::string& out,
+                 std::string& error);
+// **The one way to a plan.** `context` is what a generator is handed: its ground, the world's
+// seed, the job system (asked only on a miss) and the exclusion whose water bodies end a link at a
+// shoreline. With `layer.plan` empty: keys the plan from the ground, reads it on a hit, plans and
+// writes it on a miss. With `layer.plan` a key: reads that file and plans nothing, whatever the
+// ground. `dir` is `derived_dir`'s.
+bool ensure_plan(const ChannelLayer& layer, const scene_gen::Context& context, std::string_view dir,
+                 ChannelPlan& out, std::string& error);
+// The file's bytes for a plan, and a plan from them: the same bytes from every toolchain (integers
+// and IEEE bits, little-endian), closed by a hash of the whole. `read_plan` refuses a file that is
+// short, of another version, or whose arrays disagree with one another.
+std::string plan_bytes(const ChannelPlan& plan);
+bool read_plan(std::string_view bytes, ChannelPlan& out, std::string& error);
+// How many times this process has run the planner (`plan_channels`): what a test holds a cached
+// load to.
+u64 plans_made() noexcept;
+
 // The reach of a fall per metre by the layer's bounds (Montgomery & Buffington 1997); `colluvial`
 // picks colluvial over bedrock above `slope_steep`.
 ChannelReach reach_of(const ChannelLayer& layer, f64 slope, bool colluvial);
@@ -209,6 +308,12 @@ JsonValue water_channels_json(const ChannelLayer& layer, const ChannelNetwork& n
 // down the line, never more than two thalwegs under the ground at it — as a JSON array.
 JsonValue terrain_cuts_json(const ChannelLayer& layer, const ChannelNetwork& network);
 
+// **The bed's material** (channels.md, "The flood bed"; W93): each stretch of bed — the cut between
+// its bank tops and its flood bed — as an `engine.scene.TerrainMaskRegion` naming the layer's
+// `bed_material`, in link order: what the terrain's `masks.regions` take so the bed is drawn with
+// the ground's own material and not a mesh laid on it. Empty for a layer that names no material.
+JsonValue bed_regions_json(const ChannelLayer& layer, const ChannelNetwork& network);
+
 // **What the water's description draws, measured** (W91; channels.md, "Against the proof of
 // concept"): over `WaterChannel` blocks as `water_channels_json` writes them, against the ground
 // (the ground before any cut: a cut only lowers it, so a ribbon edge over it is over the cut ground
@@ -247,25 +352,64 @@ WaterStats measure_water(const JsonValue& blocks, const scene_gen::Ground& groun
                          const scene_gen::Exclusion* water = nullptr, const f64* region = nullptr,
                          f64 border_m = 0);
 
-// One placed piece (a stretch of a link up to `piece_m` long, one part of it): where its frame
-// stands (x and z whole millimetres, y the ground there), its world tile, its recipe and a stable
-// id within the entry.
+// One placed piece (W97: every clast of one world tile, merged): where its frame stands (the
+// tile's corner, whole millimetres; y the lowest clast centre's whole millimetre), its world tile,
+// its recipe and a stable id within the entry (the tiles' order by z, then x).
 struct PlacedPiece {
   WorldPos origin{};
   scene_gen::TileCoord tile{};
   ChannelPiece recipe;
   u32 id = 0;
 };
-// Every piece of the network, in link order, then piece, then part (bed, bars, banks). Each piece's
-// heights are the ground's at its vertices, which is why it takes the ground again.
+// **A clast in a recipe** (`ChannelPiece::clasts`, `k_clast_ints` integers each; channels.md,
+// "The clasts"): its centre, millimetres from the piece's origin; the lowest ground under its
+// footprint, the same frame; its half axes a >= b >= c, millimetres; its a axis's horizontal
+// direction (x, z) and the tangent of its a-b plane's dip upstream, in ten-thousandths; its
+// roundness in thousandths; and the seed its facets are cut from. The b axis's horizontal
+// direction is (a.z, -a.x), downstream; the plane through a and b rises downstream by `dip`.
+inline constexpr u32 k_clast_ints = 12;
+struct Clast {
+  i64 x_mm = 0, y_mm = 0, z_mm = 0;
+  i64 ground_mm = 0;
+  i64 a_mm = 0, b_mm = 0, c_mm = 0;
+  f64 ax = 1, az = 0;  // unit
+  f64 dip = 0;         // tangent
+  f64 roundness = 0;
+  u32 seed = 0;
+  // Whence it came, kept by `place_pieces` for tests and statistics (not in a recipe): 0 the bed,
+  // 1 a point bar's inner bank, 2 a bank's foot, 3 the flood bed, 4 a step's keystone, 5 a
+  // cascade's cluster.
+  u8 zone = 0;
+  f32 bar = -1;  // the sediment's `bar` where it lies on a bar
+  u32 link = 0;
+  u32 point = 0;  // the station (point of the link's line) it was drawn at
+};
+inline constexpr u32 k_clast_zones = 6;
+Clast clast_of(const ChannelPiece& piece, u32 index);
+inline u32 clast_count(const ChannelPiece& piece) { return piece.clasts.size() / k_clast_ints; }
+// What `place_pieces` laid, for the tests and the page's numbers: every clast in world
+// millimetres (the same order as the pieces hold them), and the bed's area each zone drew over.
+struct ClastLog {
+  Vector<Clast> clasts;
+  f64 area_m2[k_clast_zones] = {};
+};
+// **What the generator places** (W97; channels.md, "What it places", "The clasts"): every clast
+// of `clast_min_mm` or larger the plan's sediment puts on the bed, the bars, the banks' feet and
+// the flood bed, and the steps' and cascades' boulders, drawn from the plan alone, each at a whole
+// millimetre with its burial from the ground there, then bucketed by the world tile its centre
+// stands in: one piece a tile, its clasts in link, station and draw order. `log` (nullable) is
+// filled with what was laid.
 bool place_pieces(const ChannelLayer& layer, const ChannelNetwork& network,
                   const scene_gen::Ground& ground, f32 tile_size, Vector<PlacedPiece>& out,
-                  std::string& error);
+                  std::string& error, ClastLog* log = nullptr);
 
-// A recipe's numbers in range: slab sizes, finite heights, top above bottom.
+// A recipe's numbers in range: the clasts' count, sizes, axes and directions.
 bool piece_in_range(const ChannelPiece& piece, std::string& error);
-// The closed, welded mesh of a recipe: each slab's top, bottom and four walls; one material.
+// The merged mesh of a recipe: every clast an ellipsoid cut by facets as angular as its roundness
+// says, on a cube-sphere grid by its size, its triangles wholly under the ground left out; one
+// material. Counted by `pieces_solved`, which a test holds `open` to none.
 bool solve_piece(const ChannelPiece& piece, assets::MeshData& out, std::string& error);
+u64 pieces_solved() noexcept;
 // Over the recipe's canonical JSON and the version: what its `.channel.json` file is named and
 // keyed by.
 u64 piece_source_hash(const ChannelPiece& piece);

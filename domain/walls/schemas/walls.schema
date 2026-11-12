@@ -1,0 +1,73 @@
+// Dry-stone walls along a line (docs/subsystems/walls.md; the numbers and their sources,
+// docs/experiments/dry-stone-walls.md). Every length here is whole centimetres or millimetres, so
+// a recipe's canonical form and its key are integers and a decision never passes through a float.
+namespace engine.walls
+
+/// What a module is: a standing stretch, a head (a vertical wall end at a gateway or the line's
+/// end, at the module's low-x end), a broken stretch (standing at its low-x end, fallen toward its
+/// high-x end), a fallen stretch (its footing and its stone at the foot), or the far strip.
+enum ModuleKind : u8 { run = 0, head = 1, broken = 2, fallen = 3, strip = 4 }
+
+/// One solved wall module, the mesh generator `wall`'s file (`<name>.wall.json`): a stretch of
+/// wall `length_cm` long along +x, centred on its origin, its foot on the line y = grade * x,
+/// courses level. The placement generator writes these under the derived-data root.
+struct Module @version(1) {
+  kind: ModuleKind = run
+  /// The variant: any u64. Every stone's draw is a stream of it.
+  seed: u64 = 1
+  /// The ground's rise over run along +x the module is solved for, in thousandths, -500..500.
+  grade_permille: i32 = 0
+  /// 100..600 cm (the strip: 100).
+  length_cm: u32 = 300
+  /// Ground to the cope's top, 100..180 cm (dry-stone-walls.md: 1.2 m cattle, 1.6 m sheep).
+  height_cm: u32 = 130
+  /// The cope's height, 25..30 cm (TCV: "usually 10-12 in (250-300 mm)").
+  cope_cm: u32 = 27
+  /// Base width at the ground, 60..90 cm (Post: 28 to 34 in).
+  base_width_cm: u32 = 70
+  /// Width under the cover course, 30..50 cm (Post: 14 to 18 in). The batter of each face, from
+  /// the two widths and the body's height, must be 1:6 to 1:10 (Post).
+  top_width_cm: u32 = 40
+  /// How deep the foot course is set below the ground, 5..20 cm.
+  footing_cm: u32 = 10
+}
+
+/// One wall: a polyline over the ground.
+struct WallLine {
+  /// Its vertices, whole millimetres of the world: x0, z0, x1, z1, ... (at least two points; a
+  /// segment 0.5 m to 10 km long).
+  points_mm: i64[] = []
+  /// Closed: the last point joins the first.
+  closed: bool = false
+  /// Gateways: each one's centre as a station, whole centimetres of arc length from the line's
+  /// start. Each has a head either side (`Layer.gateway_cm` clear between them).
+  gateways_cm: i64[] = []
+}
+
+/// A layer of walls: the placement generator `walls`'s parameters.
+struct Layer @version(1) {
+  lines: WallLine[] = []
+  seed: u64 = 1
+  /// The module every stretch is cut into, before a run's fit (each run is a whole number of
+  /// modules, each 85 % to 118 % of this): 200..400 cm.
+  module_cm: u32 = 300
+  height_cm: u32 = 130
+  cope_cm: u32 = 27
+  base_width_cm: u32 = 70
+  top_width_cm: u32 = 40
+  footing_cm: u32 = 10
+  /// A gateway's clear width between its two heads, 100..800 cm.
+  gateway_cm: u32 = 300
+  /// The share of the stretches (heads excluded) fallen to the footing, 0..0.9: 0 a kept wall.
+  /// Exact per line, to the nearest module.
+  ruined: f32 = 0.0
+  /// A fallen stretch's length, 1..8 modules.
+  gap_modules: u32 = 2
+  /// Variants of the standing and fallen modules, 1..4.
+  variants: u32 = 2
+  /// The first ring of a streamed world that draws the far strip instead of the modules; rings
+  /// inside it draw the modules (default: the third ring, past 8 tiles at the default rings).
+  far_ring: u32 = 2
+  /// Where the module recipes are written: empty for the derived-data root's `walls/`.
+  recipes: string = ""
+}

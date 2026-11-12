@@ -139,7 +139,11 @@ ENGINE_EXPECT_SIZE(120, 8, gfx::ClusterCacheTables);
 // 88, not 80: the per-mesh table of static structures, which a rigid form's instance takes its
 // reference from instead of this frame's build (renderer.md, "Static structures for rigid forms",
 // 2026-10-25).
-ENGINE_EXPECT_SIZE(88, 8, gfx::TlasReferenceParams);
+// 120, not 88: the ranges' bottom-level records, the same without the empty ones, each instance's
+// place among those and their count — the module's second entry point compacts them so the
+// bottom-level build is over the instances that drew something and not over every instance slot
+// (renderer.md, "The bottom-level build is over what the frame drew", R143, 2026-11-10).
+ENGINE_EXPECT_SIZE(120, 8, gfx::TlasReferenceParams);
 
 // 416, not 400: geometry streaming appended the address of its own block plus the two counts that
 // bound every index the shader writes — the page table's length and the request buffer's capacity
@@ -274,8 +278,9 @@ ENGINE_EXPECT_SIZE(576, 8, gfx::ResolveParams);
 // stride a multiple of 16; its alignment 8 from the address.
 ENGINE_EXPECT_SIZE(112, 8, gfx::WaterShore);
 // A body's height function (water_swash.h; S100), GPU-mirrored by water_waves.slang's
-// `WaterSurface`: the header, then the spectrum's sixteen waves.
-ENGINE_EXPECT_SIZE(608, 8, gfx::WaterSurface);
+// `WaterSurface`: the header, then the spectrum's sixteen waves. 624 since S100 stage B: what the
+// mesh resolves (three spacings, one in the old pad) and the swell's flag.
+ENGINE_EXPECT_SIZE(624, 8, gfx::WaterSurface);
 
 // The sky (sky.h; docs/subsystems/gfx.md, "The sky"): the air, the lights, the eye, the celestial
 // frame, the exposure, the tables' addresses, and a view's inverse projection and pixel angle for
@@ -343,14 +348,39 @@ static_assert(offsetof(gfx::TerrainRecord, mask) == 32);
 // W85: the formation block's address in two of the pad words, read as `uint2 formation` at 80.
 static_assert(offsetof(gfx::TerrainRecord, formation) == 80);
 // The world formation's block (formation.h, W85), GPU-mirrored by formation.slang: one per scene,
-// read per banded pixel. 928 bytes: the origin and the two directions as int64 (the precision
-// argument), the folds, then two sequences of eight 48-byte beds each with their integrals, so the
-// box filter is two lookups rather than a loop over the beds it spans.
-ENGINE_EXPECT_SIZE(48, 4, gfx::FormationBedGpu);
-ENGINE_EXPECT_SIZE(416, 4, gfx::FormationSequence);
-ENGINE_EXPECT_SIZE(928, 8, gfx::FormationParams);
-static_assert(offsetof(gfx::FormationParams, beds) == 96);
-static_assert(offsetof(gfx::FormationParams, macro) == 512);
+// read per banded pixel. 98,624 bytes (W94; 928 as W85 left it): a 192-byte head — the origin and
+// the two directions as int64 (the precision argument), the folds, the two lateral fields and the
+// fault — then two tables of 512 beds of 96 bytes. A bed grew from 48 bytes by the two lateral
+// prefix sums (32), its base's two amplitudes (8), and its member and kind (8, one of them W85's
+// pad); a table from 8 beds to 512 because the sequence is drawn from a seed and must not repeat
+// inside a hillside's section. The integrals stay per bed, so the box filter is still two lookups
+// rather than a loop over the beds it spans.
+//
+// T94: a table grew by its slice index, 1,024 words (4,096 bytes), and the block from 98,624 to
+// 106,816 bytes. The index is what a lookup reads first: one word naming the run of beds a
+// coordinate's slice of the period can be in, so the search is a step or two over that run where
+// it was nine dependent loads over the table, four times a banded pixel (renderer.md, "Formation
+// bands"). The head word that was a pad is the slices per metre.
+ENGINE_EXPECT_SIZE(96, 4, gfx::FormationBedGpu);
+ENGINE_EXPECT_SIZE(53312, 4, gfx::FormationSequence);
+ENGINE_EXPECT_SIZE(32, 8, gfx::FormationLateralGpu);
+ENGINE_EXPECT_SIZE(106816, 8, gfx::FormationParams);
+static_assert(offsetof(gfx::FormationParams, lateral) == 96);
+static_assert(offsetof(gfx::FormationParams, fault_q) == 160);
+static_assert(offsetof(gfx::FormationParams, beds) == 192);
+static_assert(offsetof(gfx::FormationParams, macro) == 53504);
+static_assert(offsetof(gfx::FormationSequence, slices_per_m) == 12);
+static_assert(offsetof(gfx::FormationSequence, slices) == 49216);
+// T94: the block's head alone, and the frame the f64 twin reads. A caller that wants where the beds
+// stand and no bed (rocks' make_fabric, a cave plan, a ledge's frame) packs these 192 bytes into a
+// 208-byte frame (`pack_formation_frame`) where it declared the whole block on its stack.
+ENGINE_EXPECT_SIZE(192, 8, gfx::FormationHead);
+static_assert(offsetof(gfx::FormationHead, lateral) == 96);
+static_assert(offsetof(gfx::FormationHead, fault_q) == 160);
+ENGINE_EXPECT_SIZE(208, 8, gfx::FormationFrame);
+static_assert(offsetof(gfx::FormationSequence, beds) == 64);
+static_assert(offsetof(gfx::FormationBedGpu, start_m) == 64);
+static_assert(offsetof(gfx::FormationBedGpu, base_amp_m) == 80);
 
 ENGINE_EXPECT_SIZE(64, 4, gfx::ResolveLight);
 

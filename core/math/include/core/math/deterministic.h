@@ -15,6 +15,30 @@
 // polynomial or rational kernel. The coefficients are written as their bit patterns, so no
 // decimal-to-binary conversion stands between the source and the constant.
 //
+// **These are ports, and fdlibm's notice is preserved here, as its licence asks**
+// (third_party/LICENSES.md, "Ported, not vendored"; roadmap T86). The files ported are
+// e_exp.c and s_expm1.c (versions 1.6 and 1.5, 04/04/22), which carry the first notice below,
+// and e_log.c, s_log1p.c, s_tanh.c, s_asinh.c, k_sin.c, k_cos.c, s_sin.c, s_cos.c (1.3) and
+// e_rem_pio2.c's medium reduction (1.4, all 95/01/18), which carry the second, as published at
+// netlib.org/fdlibm:
+//
+// ====================================================
+// Copyright (C) 2004 by Sun Microsystems, Inc. All rights reserved.
+//
+// Permission to use, copy, modify, and distribute this
+// software is freely granted, provided that this notice
+// is preserved.
+// ====================================================
+//
+// ====================================================
+// Copyright (C) 1993 by Sun Microsystems, Inc. All rights reserved.
+//
+// Developed at SunSoft, a Sun Microsystems, Inc. business.
+// Permission to use, copy, modify, and distribute this
+// software is freely granted, provided that this notice
+// is preserved.
+// ====================================================
+//
 // Accuracy, measured against the platform's `std::` on dense grids by
 // `core/math/tests/deterministic_tests.cpp` (which prints the maxima and holds the bounds): on
 // MSVC's UCRT the largest difference is 1 ulp for `exp`, `log`, `log1p`, `asinh`, `sin` and

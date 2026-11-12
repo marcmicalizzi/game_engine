@@ -95,7 +95,7 @@ bool row_expand(void* state, const scene_gen::Context& context, scene_gen::Place
   const Row& row = *static_cast<const Row*>(state);
   g_log += "expand " + row.name + ";";
   out.meshes.push_back(
-      scene_gen::PlacementMesh{"rows/" + row.name + ".glb", "rows/" + row.name, 0});
+      scene_gen::PlacementMesh{"rows/" + row.name + ".glb", "rows/" + row.name, 0, {}, 0.0f});
   for (u32 i = 0; i < row.count; ++i) {
     scene_gen::Placement p;
     p.mesh = 0;
@@ -110,7 +110,8 @@ bool row_expand(void* state, const scene_gen::Context& context, scene_gen::Place
 bool row_meshes(void* state, const scene_gen::Context&, Vector<scene_gen::PlacementMesh>& out,
                 std::string*) {
   const Row& row = *static_cast<const Row*>(state);
-  out.push_back(scene_gen::PlacementMesh{"rows/" + row.name + ".glb", "rows/" + row.name, 0});
+  out.push_back(
+      scene_gen::PlacementMesh{"rows/" + row.name + ".glb", "rows/" + row.name, 0, {}, 0.0f});
   return true;
 }
 bool row_tile(void*, scene_gen::TileCoord, const scene_gen::Context&, scene_gen::Placements&,
@@ -124,6 +125,34 @@ constexpr scene_gen::PlacementGeneratorDesc k_row{.name = "scene-gen-test-row",
                                                   .meshes = &row_meshes,
                                                   .tile = &row_tile};
 const scene_gen::Registrar k_row_registrar{k_row};
+
+// A row that also **plans for the ground** (scene_gen.md, "What an entry plans for the ground"): a
+// round opening of two metres about the origin, and for a whole read the opening's disc as the
+// shape it occupies.
+bool opening_plan(void* state, const scene_gen::Context& context, scene_gen::GroundPlan& out,
+                  std::string*) {
+  const Row& row = *static_cast<const Row*>(state);
+  // The hook's ground is the scene's, before anything was opened in it.
+  g_log += "plan " + row.name + (context.excluded_mm(0, 0) ? " in-hole;" : ";");
+  scene::TerrainHole hole;
+  hole.name = row.name;
+  hole.radius_m = 2.0f;
+  out.holes.push_back(hole);
+  return true;
+}
+bool opening_expand(void* state, const scene_gen::Context& context, scene_gen::Placements& out,
+                    std::string* error) {
+  out.shapes.add_disc(0, 0, 3.0);
+  return row_expand(state, context, out, error);
+}
+constexpr scene_gen::PlacementGeneratorDesc k_opening{.name = "scene-gen-test-opening",
+                                                      .open = &row_open,
+                                                      .close = &row_close,
+                                                      .expand = &opening_expand,
+                                                      .meshes = &row_meshes,
+                                                      .tile = &row_tile,
+                                                      .plan_ground = &opening_plan};
+const scene_gen::Registrar k_opening_registrar{k_opening};
 
 std::string scene_with(const std::string& placements, const std::string& world = std::string()) {
   return R"({"format":"engine.scene.v1","name":"rows",)"
@@ -233,6 +262,48 @@ TEST_CASE("renderer: the ground is made first, and the placements follow in the 
   CHECK(second.mesh_info[2].name == "rows/a");
 }
 
+TEST_CASE("renderer: an entry that plans for the ground is asked before the ground is made") {
+  // With no capability linked (this file is compiled in the minimal build): the hook is the
+  // reader's and the registry's. An entry whose generator plans is opened on the ground as it was,
+  // asked, closed, and opened again on the ground the read makes after it; one that plans nothing
+  // is opened once, as it always was. The opening joins the terrain's holes and the exclusion, and
+  // the shape the entry hands joins the exclusion for the entries after it.
+  const test::TempDir tmp("renderer_scene_gen_plan");
+  const std::string path = tmp.file("scene.json");
+  const char* opening = R"({"generator":"scene-gen-test-opening","params":{"name":"o","count":1}})";
+  REQUIRE(write_text(path, scene_with(std::string(k_a) + "," + opening + "," + k_b)));
+  g_log.clear();
+  SceneDesc desc;
+  std::string error;
+  REQUIRE_MESSAGE(read_scene_file(path, desc, error), error);
+  CHECK(g_log == "ground;open o;plan o;ground;open a;expand a;open o;expand o;open b;expand b;");
+  CHECK(desc.terrain.holes.count() == 1);
+  CHECK(desc.terrain.holes.contains_mm(1000.0, -1000.0));
+  CHECK(desc.terrain.exclusion.hole_count() == 1);
+  CHECK(desc.terrain.exclusion.footprint_count() == 1);
+  const scene_gen::Ground flat;
+  CHECK(desc.terrain.exclusion.excluded_mm(flat, 2500, 0, scene_gen::k_exclude_footprints));
+  CHECK_FALSE(desc.terrain.exclusion.excluded_mm(flat, 3500, 0));
+  // The terrain's hash is the hole's: the same scene with the hole written into it.
+  TerrainDesc bare = desc.terrain;
+  REQUIRE(bare.holes.build({}, &error));
+  CHECK(terrain_hash(bare) != terrain_hash(desc.terrain));
+  scene::TerrainHole written;
+  written.name = "o";
+  written.radius_m = 2.0f;
+  REQUIRE(bare.holes.build({&written, 1}, &error));
+  CHECK(terrain_hash(bare) == terrain_hash(desc.terrain));
+  // Streamed, the plan is still the read's: before the ground, once.
+  REQUIRE(write_text(path, scene_with(std::string(opening) + "," + k_a, R"(,"world":{})")));
+  g_log.clear();
+  SceneDesc streamed;
+  REQUIRE_MESSAGE(read_scene_file(path, streamed, error), error);
+  CHECK(g_log == "ground;open o;plan o;ground;open o;open a;");
+  CHECK(streamed.terrain.holes.count() == 1);
+  // Edits of the heights have nowhere to go on a ground with no tile set, and the reader says so
+  // (apps/engine_view/tests/ground_plan_tests.cpp holds the sentence, and the edits themselves).
+}
+
 TEST_CASE("renderer: a streamed scene opens each entry and expands none") {
   const test::TempDir tmp("renderer_scene_gen_streamed");
   const std::string path = tmp.file("scene.json");
@@ -322,7 +393,7 @@ scene_gen::Placement piece_placement(const Piece& piece, const scene_gen::Ground
 }
 bool pieces_expand(void*, const scene_gen::Context& context, scene_gen::Placements& out,
                    std::string*) {
-  out.meshes.push_back(scene_gen::PlacementMesh{"pieces/box.glb", "pieces/box", 0});
+  out.meshes.push_back(scene_gen::PlacementMesh{"pieces/box.glb", "pieces/box", 0, {}, 0.0f});
   for (const Piece& piece : g_pieces)
     out.instances.push_back(piece_placement(piece, context.ground));
   out.things = g_pieces.size();
@@ -675,4 +746,44 @@ TEST_CASE("renderer: a tile set enters the terrain hash by its content, not its 
   dunes.basins.push_back(basin);
   CHECK(terrain_hash(waves) == 13453624538570071608ull);
   CHECK(terrain_hash(dunes) == 8709113653536985860ull);
+}
+
+// **Every field of a ground edit enters the terrain's hash** (W98; tileset.md, "Ground edits that
+// raise as well as lower"): the hash reads each edit's canonical bytes. Until W98 it named a cut's
+// points, widths, depths and bank slope one by one, so a cut that changed only its side slopes, its
+// rounding or its flood bed drew the render mesh cached for the cut before it (found by W93).
+TEST_CASE("renderer: every field of a ground edit enters the terrain hash") {
+  const test::TempDir tmp("renderer_terrain_edit_hash");
+  const std::string hf = tmp.file("hf.json");
+  REQUIRE(write_text(hf, std::string(R"({"format":"engine.terrain.heightfield","version":1,)") +
+                             R"("width":65,"height":65,"spacing_mm":1000,"origin_mm":[0,0],)" +
+                             R"("vertical_mm_per_unit":1000,"data":"hf.f32",)" +
+                             R"("data_hash":"00000000000000a1"})"));
+  TerrainDesc desc;
+  desc.provider = "tiles";
+  desc.tiles.emplace();
+  desc.tiles->heightfield = hf;
+  const u64 bare = terrain_hash(desc);
+  scene::TerrainEdit cut;
+  cut.name = "run";
+  cut.points = {WorldPos{5.0, 0.0, 20.0}, WorldPos{35.0, 0.0, 20.0}};
+  cut.width_m = {3.0f, 3.0f};
+  cut.depth_m = {0.6f, 0.6f};
+  desc.tiles->edits.push_back(cut);
+  const u64 first = terrain_hash(desc);
+  CHECK(first != bare);
+  CHECK(terrain_hash(desc) == first);
+  const auto changed = [&](auto edit) {
+    TerrainDesc other = desc;
+    edit(other.tiles->edits[0]);
+    return terrain_hash(other);
+  };
+  CHECK(changed([](scene::TerrainEdit& e) { e.bank_round = 0.5f; }) != first);
+  CHECK(changed([](scene::TerrainEdit& e) {
+          e.bank_slope_left = {0.5f, 0.5f};
+          e.bank_slope_right = {2.0f, 2.0f};
+        }) != first);
+  CHECK(changed([](scene::TerrainEdit& e) { e.scarp_slope = 2.0f; }) != first);
+  CHECK(changed([](scene::TerrainEdit& e) { e.mode = scene::TerrainEditMode::Bench; }) != first);
+  CHECK(changed([](scene::TerrainEdit& e) { e.name = "run"; }) == first);
 }

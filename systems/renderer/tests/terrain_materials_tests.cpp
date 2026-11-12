@@ -66,6 +66,45 @@ TEST_CASE("renderer: native terrain materials validate budgets, images and finit
   CHECK(error.find("missing.png") != std::string::npos);
 }
 
+TEST_CASE("renderer: a layer's far colour replaces its mean, and a layer without one keeps it") {
+  // G141 (renderer.md, "A layer's far colour"): the colour a tiled layer's detail fades to.
+  const test::TempDir tmp("terrain_far_color");
+  const std::string colour = tmp.file("colour.png");
+  write_pixel(colour, 64, 128, 192);
+  auto t = ground(colour);
+  std::string error;
+  const u64 plain_hash = terrain_materials_hash(*t.materials);
+  assets::MeshData plain;
+  plain.materials.emplace_back();
+  REQUIRE_MESSAGE(append_terrain_materials(t, plain, &error), error);
+  // Without the field: the image's linear mean, to the bit, as before the field existed.
+  const auto srgb = [](f64 v) { return static_cast<f32>(std::pow((v / 255 + .055) / 1.055, 2.4)); };
+  CHECK(plain.materials[1].emissive.x == srgb(64));
+  CHECK(plain.materials[1].emissive.y == srgb(128));
+  CHECK(plain.materials[1].emissive.z == srgb(192));
+  // With it: the far colour, and a scene that names one is keyed apart.
+  t.materials->layers[0].far_color = Vec3{.04f, .085f, .025f};
+  REQUIRE(validate_terrain_materials(*t.materials, &error));
+  assets::MeshData far;
+  far.materials.emplace_back();
+  REQUIRE_MESSAGE(append_terrain_materials(t, far, &error), error);
+  CHECK(far.materials[1].emissive.x == .04f);
+  CHECK(far.materials[1].emissive.y == .085f);
+  CHECK(far.materials[1].emissive.z == .025f);
+  CHECK(far.materials[1].base_color_image == plain.materials[1].base_color_image);
+  CHECK(terrain_materials_hash(*t.materials) != plain_hash);
+  // Refused out of range, and on a layer that never fades to its mean.
+  t.materials->layers[0].far_color = Vec3{1.5f, 0, 0};
+  CHECK_FALSE(validate_terrain_materials(*t.materials, &error));
+  CHECK(error.find("far_color") != std::string::npos);
+  t.materials->layers[0].far_color = Vec3{.04f, .085f, .025f};
+  t.materials->layers[0].sampling = scene::TerrainSampling::Stochastic;
+  CHECK_FALSE(validate_terrain_materials(*t.materials, &error));
+  t.materials->layers[0].sampling = scene::TerrainSampling::Tiled;
+  t.materials->layers[0].projection = scene::TerrainProjection::Map;
+  CHECK_FALSE(validate_terrain_materials(*t.materials, &error));
+}
+
 TEST_CASE("renderer: native terrain material images change cache identity and no height") {
   const test::TempDir tmp("terrain_material_cache");
   const std::string colour = tmp.file("colour.png");

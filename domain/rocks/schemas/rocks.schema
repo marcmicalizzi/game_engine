@@ -239,7 +239,7 @@ struct Scree @version(3) {
 /// One vertex of a cliff's line along the ground (rocks.md, "Cliffs"), metres from the recipe's
 /// origin: `x` and `z` where the face's foot runs, `y` the ground there. `height` and `batter`
 /// override the face's own at this vertex, and are interpolated between vertices.
-struct CliffPoint @version(1) {
+struct CliffPoint @version(2) {
   x: f32 = 0.0 @unit(m)
   y: f32 = 0.0 @unit(m)
   z: f32 = 0.0 @unit(m)
@@ -247,6 +247,11 @@ struct CliffPoint @version(1) {
   height: f32? @unit(m)
   /// How far the face leans back, metres across per metre up: 0 to 1.5; absent, the face's.
   batter: f32?
+  /// The crest's shoulder (G172; rocks.md, "Benches"): how far the front's top falls back over its
+  /// last rows, so a face whose top meets the slope's brow rounds over into it instead of
+  /// standing a level slab in front of it: 0 to 20 m; absent, none. The cliffs generator sets it
+  /// on a line's topmost tier.
+  crest_back: f32? @since(2) @unit(m)
 }
 
 /// Terrain heights below a cliff's debris, sampled in its local x/z frame, rows of x in z.
@@ -268,7 +273,7 @@ struct CliffGround @version(1) {
 /// under a hard one, warped and grained — closed at the ends, the top and a back buried `depth`
 /// behind it, with a talus skirt of the rock's own debris at its foot. Walking along `points`, the
 /// face looks to the right (+z for a line along +x).
-struct Cliff @version(5) {
+struct Cliff @version(7) {
   seed: u64 = 1
   type: RockType = Sandstone
   /// The foot of the face, in order: 2 to 4,096 vertices, a line 1 to 1,000 m long.
@@ -326,6 +331,22 @@ struct Cliff @version(5) {
   formation: engine.scene.Formation? @since(5)
   /// Where the recipe's origin stands in the world, metres: read only with `formation`.
   world_origin: worldpos @since(5)
+  /// No back and no bottom (rocks.md, "Faces in the slope"): a face that stands in a slope shows
+  /// neither, and a closed box spends over half its triangles on them. The front, the top and the
+  /// ends remain and share their borders. The cliffs generator sets it; false is the closed box a
+  /// face on open ground needs.
+  open: bool = false @since(6)
+  /// An open face keeps its bottom (T101; rocks.md, "A face in tiers"): a tier that stands on
+  /// another has its foot at the plane of the tier under it, and that tier's front is carved back
+  /// from its plane, so an open bottom would hang past the carved crest and show the ground
+  /// through the face. The cliffs generator sets it on every tier but a line's lowest.
+  bottom: bool = false @since(7)
+  /// The members step (G172; rocks.md, "Benches"): with a bedded `formation` (dip 20 degrees or
+  /// less), up the face a resistant member stands as a riser at 80 degrees and a weak one lies
+  /// back as a bench near the angle of repose, a tread at each resistant member's top, the whole
+  /// profile's run the face's batter times its height. The cliffs generator sets it with a
+  /// formation; false is the plane leaned by the batter.
+  benches: bool = false @since(7)
 }
 
 /// A rock file, `<name>.rock.json`: the shape and its parameters. Only the shape's own block may
@@ -351,7 +372,7 @@ struct CliffBand @version(1) {
 
 /// The scene generator `cliffs`' entry (rocks.md, "The cliffs generator"): the steep ground of a
 /// region found from the ground's heights, its feet traced into lines and dressed with faces.
-struct CliffLayer @version(1) {
+struct CliffLayer @version(2) {
   name: string
   seed: u64 = 1
   /// The region dressed, world metres, x and z: a face whose first vertex lies inside is placed.
@@ -390,11 +411,169 @@ struct CliffLayer @version(1) {
   /// Where the faces' recipes are written: relative to the scene; empty, the host's derived-data
   /// root's `cliffs/`, else the repository's, else `cliffs` beside the scene.
   recipes: string
+  /// The scene's formation (`engine.scene.Formation`, W85), repeated here because a placement
+  /// generator is handed its own entry and the ground, not the scene (rocks.md, "The cliffs
+  /// generator"): with it every face's recipe carries the field and its own world origin, so the
+  /// faces' beds are the terrain's bands. Absent: the faces keep their own bedding, as before.
+  formation: engine.scene.Formation? @since(2)
+  /// Faces that sit in the slope (G142; rocks.md, "Faces in the slope"): a face's ends are sunk
+  /// into the ground over this many metres of its line, so it ends with the steep ground instead
+  /// of in a capped wall: 0 (the ends stand) to 100 m.
+  taper_m: f32 = 16.0 @since(2) @unit(m)
+  /// A face in tiers (rocks.md, "A face in tiers"): a steep band taller than this is cut into
+  /// tiers about this high, each following its own part of the slope's profile with its top in
+  /// the ground behind it, so a convex slope is covered and no top stands proud: 3 to 200 m. A
+  /// break is a bedding plane of `formation` where a resistant bed's top is within a third of
+  /// this, else a level.
+  tier_m: f32 = 12.0 @since(2) @unit(m)
+}
+
+/// Where bedrock shows through a soil mantle (G142; rocks.md, "Exposed bedrock (G142)"; the grounding,
+/// docs/experiments/exposed-bedrock.md). The ground's slope and convexity are measured by central
+/// differences `scale_m` either side of a point, from heights in whole millimetres.
+struct ExposureRule @version(1) {
+  /// Under this slope the soil mantle is whole and nothing crops out, degrees: 5 to 60 (30:
+  /// DiBiase, Heimsath and Whipple 2012, little rock below a 30 degree mean slope).
+  soil_slope_deg: f32 = 30.0 @unit(deg)
+  /// Past this slope no soil is held and a resistant bed stands to its full thickness, degrees:
+  /// above `soil_slope_deg`, to 80 (45: the same source, no soil-covered slope steeper).
+  rock_slope_deg: f32 = 45.0 @unit(deg)
+  /// The convexity (minus the Laplacian of the height, 1/m) at which a nose's soil thins to
+  /// nothing: 0.002 to 1 (0.03: Heimsath et al. 1997's production function and diffusivity).
+  critical_curvature: f32 = 0.03
+  /// The differences' arm, metres: 1 to 32, a whole number of the patch's cells.
+  scale_m: f32 = 4.0 @unit(m)
+  /// A bed stands as a ledge only at or above this resistance: 0 to 1.
+  min_resistance: f32 = 0.5
+  /// The soil's patches, metres: 0 (none: a resistant bed past the soil slope shows along its
+  /// whole trace) or 2 to 200. Rock shows where the exposure fraction is above a seeded field of
+  /// this size, so the fraction is the share of the ground that is rock (DiBiase's index).
+  patch_m: f32 = 12.0 @unit(m)
+  /// Outcrops, not stripes (rocks.md, "Outcrops, not stripes"): a second, longer scale of cover
+  /// drawn for each member on its own, so a member's beds crop out together as a crag about this
+  /// long and stay under the soil between crags, metres: 0 (none) or 8 to 2,000 (32: well under
+  /// the 100 m few continuous outcrops pass, Marshall and Roering 2014).
+  stretch_m: f32 = 32.0 @unit(m)
+  /// The share of a member's trace where it may crop out: 0.05 to 1.
+  stretch_share: f32 = 0.4
+  /// Members: resistant beds stand only inside a cliff-forming member. Where the formation has
+  /// `macro_beds` the member is the macro bed at the bed's coordinate, by its resistance; where
+  /// it has none the rule groups the sequence itself, a seeded field along the bed coordinate this
+  /// many metres across: 0 (none: every resistant bed may crop out) or 2 to 500.
+  member_m: f32 = 12.0 @unit(m)
+  /// The share of the sequence that is cliff-forming, when the grouping is the rule's own: 0.05
+  /// to 1.
+  member_share: f32 = 0.5
+}
+
+/// One tile's ledges at one form, written by the `ledges` generator as
+/// `ledge-<hash>.ledge.json` (rocks.md, "Exposed bedrock (G142)"): the ground's heights over the tile and
+/// an apron, the formation and the rule, from which the mesh is a pure function.
+struct LedgePatch @version(2) {
+  seed: u64 = 1
+  type: RockType = Sandstone
+  formation: engine.scene.Formation
+  rule: ExposureRule
+  /// The patch's corner, whole millimetres of the world: the mesh's origin, and what the heights
+  /// are counted from.
+  x_mm: i64 = 0
+  y_mm: i64 = 0
+  z_mm: i64 = 0
+  /// The lattice's spacing, whole millimetres: 250 to 16,000.
+  cell_mm: u32 = 1000
+  /// Cells a side: 1 to 256.
+  cells: u32 = 64
+  /// Lattice points of apron round the cells, `rule.scale_m` over the spacing: 1 to 64.
+  apron: u32 = 4
+  /// `(cells + 1 + 2 apron)^2` heights in whole millimetres above `y_mm`, rows of x in order of z.
+  heights_mm: i32[]
+  /// The far form: one face a step, no joint blocks, no bed rows.
+  far: bool = false
+  /// A unit's thickness over its joint spacing: 0.5 to 4 (1.3: Narr and Suppe 1991).
+  joint_ratio: f32 = 1.3
+  /// The tallest step, metres: 0.2 to 30; a thicker unit's front stands this high.
+  max_step_m: f32 = 4.0 @unit(m)
+  /// A step lower than this is left under the soil, metres: 0.02 to 5.
+  min_step_m: f32 = 0.15 @unit(m)
+  /// How far a front goes on under the ground at its foot, metres: 0.05 to 5.
+  bury_m: f32 = 0.5 @unit(m)
+  /// How far a row's edge may stand back under the row above it, metres: 0 to 2.
+  relief_m: f32 = 0.25 @unit(m)
+  /// Ground at or past this slope is left to the `cliffs` generator's faces, degrees: 0 (none)
+  /// or 30 to 85.
+  cliff_slope_deg: f32 = 0.0 @unit(deg)
+  material: RockMaterial
+  /// What a tread carries to its lip (rocks.md, "Treads"): soil, drawn in this linear colour,
+  /// each channel 0 to 1; absent, a dark turf. The fronts and the worn edges are the rock.
+  tread_tint: f32[3]?
+  /// A crag's risers (rocks.md, "A crag has mass"): the ground between its ledges is its rock
+  /// where the share of a bed that stands there, times its member's opening, passes this: 0.05
+  /// to 1 (1: no risers).
+  riser: f32 = 0.5 @since(2)
+}
+
+/// The scene generator `ledges`' entry (G142; rocks.md, "Exposed bedrock (G142)"): the resistant beds of
+/// a formation standing out of a soil-mantled slope as ledges, a merged mesh a tile and form.
+struct LedgeLayer @version(2) {
+  name: string
+  seed: u64 = 1
+  /// The region dressed, world metres, x and z; a tile is dressed when its corner lies inside.
+  region_min: f64[2]
+  region_max: f64[2]
+  type: RockType = Sandstone
+  /// The scene's formation, repeated (as `CliffLayer.formation`): required.
+  formation: engine.scene.Formation?
+  rule: ExposureRule
+  /// The near form's lattice, metres: 0.25 to 8, dividing the world's tile and `rule.scale_m`.
+  cell_m: f32 = 1.0 @unit(m)
+  /// The far form's: `cell_m` to 16, dividing the tile; `rule.scale_m` is a whole number of it or
+  /// it is the scale itself.
+  far_cell_m: f32 = 4.0 @unit(m)
+  /// How many of the world's rings, innermost first, draw the near form: 0 to 8.
+  near_rings: u32 = 1
+  /// How many draw either form; further rings draw nothing (the terrain's bands carry the beds):
+  /// `near_rings` to 8.
+  far_rings: u32 = 3
+  /// The far form leaves out a step lower than this, metres: 0.02 to 30.
+  far_min_step_m: f32 = 0.8 @unit(m)
+  joint_ratio: f32 = 1.3
+  max_step_m: f32 = 4.0 @unit(m)
+  min_step_m: f32 = 0.15 @unit(m)
+  bury_m: f32 = 0.5 @unit(m)
+  relief_m: f32 = 0.25 @unit(m)
+  /// Ground at or past this slope is left to the `cliffs` generator's faces (its
+  /// `min_slope_deg`), degrees: 0 (none) or 30 to 85.
+  cliff_slope_deg: f32 = 0.0 @unit(deg)
+  material: RockMaterial
+  /// What a tread carries to its lip: `LedgePatch.tread_tint`.
+  tread_tint: f32[3]?
+  /// Where a crag's ground is its rock: `LedgePatch.riser`.
+  riser: f32 = 0.5 @since(2)
+  /// Where the patches' recipes are written: relative to the scene; empty, the host's
+  /// derived-data root's `ledges/`, else the repository's, else `ledges` beside the scene.
+  recipes: string
+}
+
+/// One fallen block of a deposit patch (G143; rocks.md, "What a face sheds"): a block shed
+/// from the face above, or one of a cone's largest, as geometry of the patch's own mesh, never an
+/// instance. Local metres from the patch's corner; `y_m` is the ground under its centre.
+struct DepositBlock @version(1) {
+  x_m: f32 = 0.0 @unit(m)
+  y_m: f32 = 0.0 @unit(m)
+  z_m: f32 = 0.0 @unit(m)
+  /// Half-extents, 0.02..4 m: x and z across, y the thickness (across the bedding it broke along).
+  half: f32[3]
+  yaw: f32 = 0.0
+  /// The share of its height under the ground, 0..0.9 (its age: fresh blocks sit high).
+  buried: f32 = 0.3
+  /// The ground's gradient under it (rise over run in x and z), what it is sheared to rest on.
+  slope: f32[2]
+  seed: u64 = 1
 }
 
 /// A terrain-fitted sediment patch, written by deposits as <hash>.deposit.json.
 /// Heights and depths are sampled at vertices; all lengths are local metres.
-struct DepositPatch @version(1) {
+struct DepositPatch @version(3) {
   seed: u64 = 1
   type: RockType = Granite
   /// Grid points per axis, 2..65, with exactly width*depth values in each array.
@@ -407,17 +586,44 @@ struct DepositPatch @version(1) {
   thickness: f32[]
   /// Coarse rockfall share, 0..1; zero is channel sediment and gravel.
   coarse: f32[]
-  /// Number of visible representative fragments, 0..4096 (not a grain inventory).
-  fragments: u32 = 96
+  /// Number of loose fragments, 0..4096 (not a grain inventory): clasts of the largest band on the
+  /// bed and, every fourth, past its toe. The bed's own clasts are its relief (G143's third pass,
+  /// 96 before it).
+  fragments: u32 = 24
   /// Largest fragment half-length, 0.02..2 m, no larger than half spacing_m.
   fragment_m: f32 = 0.4 @unit(m)
   /// Whole patch surface plus all fragments, 500..1,000,000 triangles.
   triangle_budget: u32 = 32000
   material: RockMaterial
+  /// G143: the fallen blocks whose centres stand in this patch, 0..1024; empty is none and is left
+  /// out of the canonical bytes, so a patch without them keeps the key it had.
+  blocks: DepositBlock[] @since(2)
+  /// Triangles each block is built at, 192..12288: the finest cube-grid rung that fits.
+  block_triangles: u32 = 432 @since(2)
+  /// G143: per sample, 0..2 m, how far a bare sample's bed top stands below the ground: the plan's
+  /// signed edge field past the outline, and a bare rim on steep ground. Empty: none.
+  sink: f32[] @since(2)
+  /// G143: per sample, the bed top's gradient (rise over run in x, then z) from the plan, so a
+  /// patch's normals are its neighbours' at a shared border. Empty: from the patch's own samples.
+  slope: f32[] @since(2)
+  /// G143's third pass: the patch's corner in world millimetres (x, z), what the bed's clasts are
+  /// anchored to, so a clast across a patch's border is the same clast on both sides.
+  origin_mm: i64[2] @since(3)
+}
+
+/// A formation bed's rock (G143): a bed of the deposit layer's `formation` named `bed` sheds `type`.
+/// A bed no row names sheds the rock its name spells (`Limestone`, any case), else `patch.type`.
+struct DepositLithology @version(1) {
+  bed: string
+  type: RockType = Granite
 }
 
 /// Static deposition authoring over a finite terrain window; not a hazard or fluid simulation.
-struct DepositLayer @version(1) {
+/// Version 2 (G143) replaces version 1's capped apron (`talus_depth_m`, removed; a migration drops
+/// it, and a layer that set it to zero asked for no talus, `supply_m` 0) with one supply rule: what
+/// lies at a face's foot is what the face shed, a cone under a gully and a sheet under a planar
+/// face; and adds the blocks shed below the faces and the formation's lithology.
+struct DepositLayer @version(2) {
   seed: u64 = 1
   /// World metres, finite within +/-1e8; max exceeds min, aligned to spacing_m.
   region_min: f64[2]
@@ -430,11 +636,9 @@ struct DepositLayer @version(1) {
   max_samples: u32 = 262144
   /// Rockfall-source slope, 40..85 degrees, above repose_deg.
   source_deg: f32 = 50.0
-  /// Runout envelope descent angle, 25..40 degrees (natural talus commonly ~35).
+  /// A deposit's upper slope, 25..40 degrees (Francou and Mante's talus, 34-36).
   repose_deg: f32 = 35.0
-  /// Maximum rockfall thickness, 0..20 m; zero disables talus.
-  talus_depth_m: f32 = 3.0 @unit(m)
-  /// Maximum downstream travel from a steep source, 1..1000 m.
+  /// Maximum travel of a deposit's surface from its apex, 1..1000 m.
   runout_m: f32 = 40.0 @unit(m)
   /// Catchment area required for channel deposits, 1..1e6 square metres.
   channel_area_m2: f32 = 24.0
@@ -448,4 +652,31 @@ struct DepositLayer @version(1) {
   clear_m: f32 = 0.0 @unit(m)
   /// Patch geometry and material defaults; sampled arrays and dimensions are replaced.
   patch: DepositPatch
+  /// G143: the rock wall's retreat since the ice left, 0..50 m: a foot's deposit holds the area of
+  /// the face routed to it that its pile has not buried, times this (rocks.md, "How much a face
+  /// sheds"). 1.2 m is a temperate wall's Holocene share (Hinchliffe and Ballantyne 1999: 5.6 m
+  /// since 17.5 ka, four fifths of it before 11.5 ka; about 0.1 mm a year now); an alpine wall's
+  /// Holocene is 3-4.2 m (Mohadjer et al. 2020), a temperate wall since deglaciation 4.3-7.8 m.
+  /// Zero, no rockfall deposit.
+  supply_m: f32 = 1.2 @unit(m) @since(2)
+  /// A deposit's lower profile eases from `repose_deg` to this, 20..repose_deg (the 31-34 degree
+  /// concave toe).
+  toe_deg: f32 = 31.0 @since(2)
+  /// The run-out of shed blocks: none past the line `shadow_deg` (15..45; Evans and Hungr's
+  /// minimum shadow angle, 27.5) below the top of the talus beneath its face.
+  shadow_deg: f32 = 27.5 @since(2)
+  /// Shed blocks per 100 square metres at the talus' top, 0..400 (authored against the reels: no
+  /// published density was found). The count falls as exp(-d / `block_decay_m`) (1..500 m) with
+  /// the distance past the talus' top.
+  blocks_per_100m2: f32 = 20.0 @since(2)
+  block_decay_m: f32 = 12.0 @unit(m) @since(2)
+  /// The source's joint spacing, the mean edge of a block, 0.1..6 m; the largest travel farthest.
+  block_m: f32 = 1.0 @unit(m) @since(2)
+  /// The buried share of a block's height by its age, 0..0.9, min at most max.
+  buried_min: f32 = 0.15 @since(2)
+  buried_max: f32 = 0.5 @since(2)
+  /// The world's formation, when the deposits read it: a deposit sheds the rock of the bed at the
+  /// face above it (`lithology`), and a block is no thicker than that bed.
+  formation: engine.scene.Formation? @since(2)
+  lithology: DepositLithology[] @since(2)
 }

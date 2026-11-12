@@ -206,6 +206,11 @@ struct SceneCollision::Build {
   std::atomic<u32> state{k_queued};
   jobs::Counter ran;
 
+  // A build let go before its tile was activated gives back the tile-handed proxies it named.
+  ~Build() {
+    if (owner != nullptr) owner->release_tile_proxies(placed.tile_proxies);
+  }
+
   void compute() noexcept {
     const i64 start = time::monotonic_ns();
     if (ground) {
@@ -248,6 +253,7 @@ SceneCollision::~SceneCollision() {
   tiles_.clear();
   tick_scratch_.children.clear();
   proxies_.clear();
+  tile_proxies_.clear();
   entries_.clear();
 }
 
@@ -259,6 +265,9 @@ scene_gen::Context SceneCollision::context_for(const Entry& entry) const noexcep
   context.where = entry.source->where;
   if (ground_ != nullptr) context.ground = ground_->view();
   if (!scene_->terrain.exclusion.empty()) context.exclusion = &scene_->terrain.exclusion;
+  context.site = &scene_->terrain.site;
+  if (scene_->terrain.formation.has_value()) context.formation = &*scene_->terrain.formation;
+  context.uncut_ground = uncut_hook_;
   // The inner ring's representation: what is drawn round the walker (the ruins' blocks near).
   context.world = &world_rings_;
   context.ring = 0;
@@ -281,6 +290,8 @@ bool SceneCollision::create(physics::World& physics, const renderer::SceneData& 
   jobs_ = jobs;
   scene_ = &scene;
   ground_ = ground != nullptr && ground->valid() ? ground : nullptr;
+  uncut_ = std::make_unique<renderer::UncutGround>(scene.terrain);
+  uncut_hook_ = uncut_->hook();
   explicit_source_ = tiles != nullptr && tiles->valid();
   source_ = explicit_source_     ? *tiles
             : ground_ != nullptr ? ground_->tiles()
@@ -439,7 +450,8 @@ void SceneCollision::note_bodies() noexcept {
   // The proxies are built on whichever thread asks first; their counters are copied here, on the
   // tick, under their lock.
   std::lock_guard<std::mutex> lock(proxies_mutex_);
-  stats_.proxies = proxies_.size();
+  stats_.proxies = proxies_.size() + tile_proxies_.size();
+  stats_.tile_proxies = tile_proxies_.size();
   stats_.proxy_triangles = proxy_stats_.triangles;
   stats_.flora_triangles_left_out = proxy_stats_.flora_left_out;
   stats_.proxy_bytes = proxy_stats_.bytes;
@@ -877,26 +889,15 @@ u32 SceneCollision::follow(physics::CharacterBody& walker) {
 // ---- the placements
 // -------------------------------------------------------------------------------
 
-// A mesh's proxy at a scale: the scene's cluster LOD DAG of the mesh cut where each cluster's own
-// error is within `mesh_error_m` and its parent's is not (`geometry::lod_selects`' rule with the
-// threshold in metres rather than pixels) — the coarsest level that stays that close to the
-// surface — welded by source vertex so the backend sees shared edges, scaled into the instance's
-// size. One shape per (mesh, scale), shared by every instance. **Thread-safe**: a build ahead on a
-// worker and the tick may both ask, so the cache is looked in and a proxy built under its lock —
-// one proxy is built at a time, whoever asks, and every asker of a key gets the one shape. The
-// scene's DAG is read only, and the cut is made in the asker's scratch.
-const SceneCollision::Proxy* SceneCollision::proxy_for(u32 mesh, Vec3 scale,
-                                                       PlacementScratch& scratch) {
-  const u64 key = proxy_key(mesh, scale);
-  std::lock_guard<std::mutex> lock(proxies_mutex_);
-  if (const std::unique_ptr<Proxy>* proxy = proxies_.find_value(key))
-    return (*proxy)->shape ? proxy->get() : nullptr;
+// The cut a proxy is made of (`proxy_for`, `tile_proxy_for`): see the header.
+u32 SceneCollision::cut_proxy(const geometry::ClusterLodMesh& lod,
+                              const geometry::ClusterMeshPart& part,
+                              const renderer::SourceMesh* tree, Vec3 scale,
+                              PlacementScratch& scratch) const {
   Vector<Vec3>& vertices = scratch.vertices;
   Vector<u32>& indices = scratch.indices;
   FlatMap<u32, u32>& remap = scratch.remap;
-  const i64 start = time::monotonic_ns();
-  const geometry::ClusterMeshPart& part = scene_->parts[mesh];
-  const geometry::ClusterLodMesh& lod = scene_->lod;
+  u32 left_out = 0;
   const f32 largest =
       std::max(std::fabs(scale.x), std::max(std::fabs(scale.y), std::fabs(scale.z)));
   // The threshold is in the mesh's own units: the instance's scale (its fit included, since the
@@ -912,9 +913,6 @@ const SceneCollision::Proxy* SceneCollision::proxy_for(u32 mesh, Vec3 scale,
   // collider — the trunk, and a load-bearing limb where the structural table says so — so the
   // walker walks into a palm's crown, where the renderer's push bends the fronds aside, and is
   // still stopped by the trunk.
-  const renderer::SourceMesh* tree =
-      mesh < scene_->sources.size() && scene_->sources[mesh].has_motion() ? &scene_->sources[mesh]
-                                                                          : nullptr;
   const std::span<const geometry::ClusterFileStructuralPart> structure =
       tree != nullptr ? std::span<const geometry::ClusterFileStructuralPart>(
                             tree->structural_parts.data(), tree->structural_parts.size())
@@ -942,7 +940,7 @@ const SceneCollision::Proxy* SceneCollision::proxy_for(u32 mesh, Vec3 scale,
       if (tree != nullptr &&
           !(wooden(cluster.vertex_offset + local[0]) && wooden(cluster.vertex_offset + local[1]) &&
             wooden(cluster.vertex_offset + local[2]))) {
-        ++proxy_stats_.flora_left_out;
+        ++left_out;
         continue;
       }
       u32 corner[3];
@@ -973,6 +971,30 @@ const SceneCollision::Proxy* SceneCollision::proxy_for(u32 mesh, Vec3 scale,
       }
     }
   }
+  return left_out;
+}
+
+// A mesh's proxy at a scale: the scene's cluster LOD DAG of the mesh cut where each cluster's own
+// error is within `mesh_error_m` and its parent's is not (`geometry::lod_selects`' rule with the
+// threshold in metres rather than pixels) — the coarsest level that stays that close to the
+// surface — welded by source vertex so the backend sees shared edges, scaled into the instance's
+// size. One shape per (mesh, scale), shared by every instance. **Thread-safe**: a build ahead on a
+// worker and the tick may both ask, so the cache is looked in and a proxy built under its lock —
+// one proxy is built at a time, whoever asks, and every asker of a key gets the one shape. The
+// scene's DAG is read only, and the cut is made in the asker's scratch.
+const SceneCollision::Proxy* SceneCollision::proxy_for(u32 mesh, Vec3 scale,
+                                                       PlacementScratch& scratch) {
+  const u64 key = proxy_key(mesh, scale);
+  std::lock_guard<std::mutex> lock(proxies_mutex_);
+  if (const std::unique_ptr<Proxy>* proxy = proxies_.find_value(key))
+    return (*proxy)->shape ? proxy->get() : nullptr;
+  const i64 start = time::monotonic_ns();
+  const renderer::SourceMesh* tree =
+      mesh < scene_->sources.size() && scene_->sources[mesh].has_motion() ? &scene_->sources[mesh]
+                                                                          : nullptr;
+  proxy_stats_.flora_left_out += cut_proxy(scene_->lod, scene_->parts[mesh], tree, scale, scratch);
+  const Vector<Vec3>& vertices = scratch.vertices;
+  const Vector<u32>& indices = scratch.indices;
   auto proxy = std::make_unique<Proxy>();
   if (config_.keep_shapes) {
     proxy->vertices = vertices;
@@ -993,6 +1015,119 @@ const SceneCollision::Proxy* SceneCollision::proxy_for(u32 mesh, Vec3 scale,
   proxies_.try_emplace(key, std::move(proxy));
   proxy_stats_.ns += time::monotonic_ns() - start;
   return out;
+}
+
+// **The proxy of a mesh a tile handed** (scene_collision.md, "A tile's meshes"). The mesh has no
+// place in the scene's merged DAG — it arrives with its tile — so the proxy is cut from the mesh as
+// `renderer::load_placement_mesh` builds it: the load's own per-mesh pass, no device, into the
+// cache entry the renderer's residency reads or wrote, so on a warm cache this is a read. Keyed by
+// the mesh's identity (the generator and the recipe's bytes), never by where a tile listed it, so
+// two tiles handing one recipe share one shape. **The build is outside the proxies' lock** — a
+// recipe on a cold cache is a solve, and the tick must not wait behind a worker's — so two threads
+// may build one key at once; the second finds the first's and drops its own.
+const SceneCollision::Proxy* SceneCollision::tile_proxy_for(const scene_gen::PlacementMesh& mesh,
+                                                            Vec3 scale, PlacementScratch& scratch,
+                                                            Vector<u64>& held) {
+  const u64 identity = renderer::placement_mesh_identity(mesh);
+  u64 key = hash_combine(hash_combine(identity, bits(scale.x)), bits(scale.y));
+  key = hash_combine(key, bits(scale.z));
+  const auto take = [&](TileProxy& found) -> const Proxy* {
+    bool counted = false;
+    for (const u64 k : held)
+      counted = counted || k == key;
+    if (!counted) {
+      ++found.refs;
+      held.push_back(key);
+    }
+    return found.proxy.shape ? &found.proxy : nullptr;
+  };
+  {
+    std::lock_guard<std::mutex> lock(proxies_mutex_);
+    if (const std::unique_ptr<TileProxy>* found = tile_proxies_.find_value(key))
+      return take(**found);
+  }
+  const i64 start = time::monotonic_ns();
+  if (scratch.tile_mesh == nullptr || scratch.tile_mesh_identity != identity) {
+    if (scratch.tile_mesh == nullptr)
+      scratch.tile_mesh = std::make_unique<renderer::PlacementMeshData>();
+    std::string why;
+    scratch.tile_mesh_identity = identity;
+    scratch.tile_mesh_ok =
+        renderer::load_placement_mesh(mesh, scene_->mesh_options, *scratch.tile_mesh, why);
+    if (!scratch.tile_mesh_ok) {
+      ENGINE_LOG_WARN(log_collision, "a tile's mesh has no collision: it was not built",
+                      log::field("mesh", mesh.path), log::field("error", why));
+    }
+  }
+  auto made = std::make_unique<TileProxy>();
+  u32 left_out = 0;
+  if (scratch.tile_mesh_ok) {
+    const renderer::PlacementMeshData& data = *scratch.tile_mesh;
+    left_out = cut_proxy(data.lod, data.part, data.source.has_motion() ? &data.source : nullptr,
+                         scale, scratch);
+    if (config_.keep_shapes) {
+      made->proxy.vertices = scratch.vertices;
+      made->proxy.indices = scratch.indices;
+      made->proxy.parts = scratch.parts;
+    }
+    if (!scratch.indices.empty() &&
+        physics_->build_mesh(
+            std::span<const Vec3>(scratch.vertices.data(), scratch.vertices.size()),
+            std::span<const u32>(scratch.indices.data(), scratch.indices.size()),
+            made->proxy.shape) == physics::Status::Ok) {
+      made->proxy.triangles = scratch.indices.size() / 3;
+      u32 triangles = 0;
+      (void)physics_->built_memory(made->proxy.shape, false, made->bytes, triangles);
+    }
+  }
+  std::lock_guard<std::mutex> lock(proxies_mutex_);
+  proxy_stats_.ns += time::monotonic_ns() - start;
+  if (const std::unique_ptr<TileProxy>* found = tile_proxies_.find_value(key))
+    return take(**found);  // another thread's, made meanwhile: this one goes with `made`
+  proxy_stats_.triangles += made->proxy.triangles;
+  proxy_stats_.bytes += made->bytes;
+  proxy_stats_.flora_left_out += left_out;
+  TileProxy& kept = *made;
+  tile_proxies_.try_emplace(key, std::move(made));
+  return take(kept);
+}
+
+void SceneCollision::release_tile_proxies(Vector<u64>& held) noexcept {
+  if (held.empty()) return;
+  std::lock_guard<std::mutex> lock(proxies_mutex_);
+  for (const u64 key : held) {
+    const std::unique_ptr<TileProxy>* found = tile_proxies_.find_value(key);
+    if (found == nullptr || (*found)->refs == 0) continue;
+    if (--(*found)->refs != 0) continue;
+    proxy_stats_.triangles -= (*found)->proxy.triangles;
+    proxy_stats_.bytes -= (*found)->bytes;
+    tile_proxies_.erase(key);
+  }
+  held.clear();
+}
+
+bool SceneCollision::add_tile_piece(const scene_gen::PlacementMesh& mesh, const Mat4& linear,
+                                    WorldPos at, WorldPos corner, PlacementScratch& scratch,
+                                    Vector<u64>& held, u32 entry) {
+  Placement placed;
+  if (!decompose(linear, placed)) return false;
+  const Proxy* proxy = tile_proxy_for(mesh, placed.scale, scratch, held);
+  if (proxy == nullptr) return false;
+  physics::BuiltChild child;
+  child.shape = &proxy->shape;
+  child.transform.position = relative(at, corner);
+  child.transform.rotation = placed.rotation;
+  scratch.children.push_back(child);
+  if (config_.keep_shapes) {
+    PieceRecord record;
+    record.mesh = k_no_index;  // no scene mesh: it arrived with the tile
+    record.entry = entry;
+    record.offset = child.transform.position;
+    record.rotation = placed.rotation;
+    record.proxy = proxy;  // resident while the tile holds its reference
+    scratch.records.push_back(record);
+  }
+  return true;
 }
 
 WorldPos SceneCollision::tile_corner(world::TileCoord coord) const noexcept {
@@ -1039,6 +1174,7 @@ void SceneCollision::gather_placements(world::TileCoord coord, PlacementScratch&
   out.compound_bytes = 0;
   out.ok = true;
   out.records.clear();
+  release_tile_proxies(out.tile_proxies);
   scratch.children.clear();
   scratch.records.clear();
   const u64 key = world::tile_key(coord);
@@ -1063,8 +1199,17 @@ void SceneCollision::gather_placements(world::TileCoord coord, PlacementScratch&
                         log::field("z", coord.z), log::field("error", why));
         continue;
       }
+      const u32 resident = entry.source->meshes.size();
       for (const scene_gen::Placement& p : scratch.placed.instances) {
-        if (p.mesh >= entry.source->meshes.size()) continue;
+        if (p.mesh >= resident) {
+          // A mesh the tile handed (scene_gen.md, "A tile's meshes"): index `resident + k` is the
+          // tile's own list. It stands where the renderer stands it — its fit is the identity.
+          const u32 k = p.mesh - resident;
+          if (k >= scratch.placed.meshes.size()) continue;
+          (void)add_tile_piece(scratch.placed.meshes[k], mat4_from_transform(p.turn()), p.position,
+                               corner, scratch, out.tile_proxies, e);
+          continue;
+        }
         const u32 mesh = entry.source->meshes[p.mesh];
         const Mat4 fit = mesh < scene_->mesh_fit.size() ? scene_->mesh_fit[mesh] : Mat4::identity();
         // Where the renderer stands the same placement (`renderer::instance_translation`): the
@@ -1111,6 +1256,18 @@ bool SceneCollision::build_placements(Tile& tile, Build* build) {
     stats_.placement_ns += time::monotonic_ns() - start;
   }
   tile.pieces = 0;
+  // The references the gather took go with the tile, and are given back when it is let go
+  // (`deactivate`) — or here, when the tile gets no body to hold them.
+  tile.tile_proxies = std::move(placed->tile_proxies);
+  placed->tile_proxies.clear();
+  struct GiveBack {
+    SceneCollision* self;
+    Tile* tile;
+    bool keep = false;
+    ~GiveBack() {
+      if (!keep) self->release_tile_proxies(tile->tile_proxies);
+    }
+  } give_back{this, &tile};
   if (!placed->compound) return placed->ok;
   const i64 body_start = time::monotonic_ns();
   struct BodyCount {
@@ -1135,6 +1292,7 @@ bool SceneCollision::build_placements(Tile& tile, Build* build) {
     return false;
   }
   tile.pieces = placed->pieces;
+  give_back.keep = true;
   if (config_.keep_shapes) tile.pieces_held = std::move(placed->records);
   ++stats_.bodies_created;
   return placed->ok;
@@ -1313,6 +1471,7 @@ void SceneCollision::deactivate(void* context, const world::TileEvent& event) {
     ++self->stats_.bodies_destroyed;
   }
   if (tile->placements_shape) self->physics_->destroy_shape(tile->placements_shape);
+  self->release_tile_proxies(tile->tile_proxies);  // after the compound that named them
   self->tiles_.erase(key);
   ++self->stats_.deactivated;
   self->note_bodies();

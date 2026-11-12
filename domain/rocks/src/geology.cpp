@@ -61,11 +61,13 @@ Fabric make_fabric(RockType type, const RockGeology& g, u64 seed, const scene::F
                    const WorldPos& origin) {
   Fabric f = make_fabric(type, g, seed);
   if (formation == nullptr || !g.from_formation) return f;
-  gfx::FormationParams block;
-  // The recipe's range check is the caller's; a field out of range leaves the face's own beds.
-  if (!gfx::pack_formation(*formation, block, nullptr)) return f;
+  // The frame-only pack (T94): the fabric reads the field's frame and no bed, so it packs no table
+  // (a whole block was 98,624 bytes on this stack, once a rock). The recipe's range check is the
+  // caller's; a field out of range leaves the face's own beds.
+  gfx::FormationFrame field;
+  if (!gfx::pack_formation_frame(*formation, field, nullptr)) return f;
   f.world = true;
-  f.field = gfx::formation_frame(block);
+  f.field = field;
   f.origin = D3{origin.x, origin.y, origin.z};
   f.normal = D3{f.field.normal[0], f.field.normal[1], f.field.normal[2]};
   f.tangent = D3{f.field.dip[0], f.field.dip[1], f.field.dip[2]};
@@ -197,8 +199,44 @@ void drop_default_formation(JsonValue& json) {
   }
 }
 
+namespace {
+
+// W94 (Formation and FormationBed version 2): what an authored formation does not use is left out
+// of a canonical recipe while it says nothing — the seed, the members and the lateral length of a
+// formation with no members, a fault with no throw, a bed's `variation` at zero and `lens` at false
+// — so a recipe, a ledge patch or a deposit patch carrying a W85 field keeps the key it had. A
+// drawn formation, a fault and a moving top are all in the key. It rides `drop_absent_sampling`
+// because that is the one walk every canonical form of this module makes (the rock file's, the
+// ledges' and the deposits'); `drop_default_formation` is the rock file's alone.
+void drop_unused_sequence(JsonValue& object) {
+  const auto zero = [](const JsonValue* v) {
+    if (v == nullptr) return false;
+    if (v->is_float()) return v->as_float() == 0.0;
+    if (v->is_int()) return v->as_int() == 0;
+    return v->is_uint() && v->as_uint() == 0;
+  };
+  const JsonValue* members = object.find("members");
+  if (members != nullptr && members->is_array() && members->as_array().empty() &&
+      object.find("macro_beds") != nullptr) {
+    for (const char* key : {"members", "seed", "lateral_m"})
+      object.as_object().erase(std::string(key));
+    if (zero(object.find("fault_throw_m")))
+      for (const char* key : {"fault_throw_m", "fault_azimuth_deg", "fault_offset_m"})
+        object.as_object().erase(std::string(key));
+  }
+  if (object.find("thickness_m") != nullptr && object.find("resistance") != nullptr) {
+    if (zero(object.find("variation"))) object.as_object().erase(std::string("variation"));
+    const JsonValue* lens = object.find("lens");
+    if (lens != nullptr && lens->is_bool() && !lens->as_bool())
+      object.as_object().erase(std::string("lens"));
+  }
+}
+
+}  // namespace
+
 void drop_absent_sampling(JsonValue& json) {
   if (json.is_object()) {
+    drop_unused_sequence(json);
     for (auto&& [key, value] : json.as_object()) {
       if (key == "material" && value.is_object()) {
         const JsonValue* sampling = value.find("sampling");

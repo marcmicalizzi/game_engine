@@ -41,8 +41,20 @@ struct CliffFace {
   i32 block_z = 0;
   f64 length = 0.0;       // metres along its line
   f64 mean_height = 0.0;  // metres
+  // Its tier (rocks.md, "A face in tiers"): the band of the layer's tier breaks it stands in, and
+  // whether it is the lowest tier at its line (the one with the talus and the foot boulders).
+  i32 tier = 0;
+  bool lowest = true;
   Cliff cliff;
 };
+
+// How far behind its mean plane the solver stands a face's back: the recipe's `depth`, else the
+// carving's deepest reach on a face `height_m` tall plus two metres, never under 4 m.
+f64 cliff_back_m(const Cliff& cliff, f64 height_m);
+
+// The rounding a rock type's faces weather to when a recipe gives none, 0 to 1 (rocks.md, "Cliffs",
+// the model by type): the ledges' blocks wear by the same amount.
+f64 cliff_type_rounding(RockType type);
 
 // The ranges `engine.rocks.CliffLayer` documents (its `face` but for the line, which the ground
 // gives): false, with a sentence naming the first field out of range, otherwise.

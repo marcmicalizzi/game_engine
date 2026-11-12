@@ -58,6 +58,10 @@ bool material_factors_in_range(const RockMaterial& m, std::string& error);
 // A recipe's canonical JSON without the material blocks' absent `sampling` (R131, RockMaterial
 // version 5): the reflection writes an absent optional as null, and leaving it in would move every
 // rock's and deposit's source hash for a field that says nothing. A `sampling` that is set stays.
+// The same walk leaves out what W94 added to the formation while an authored one does not use it
+// (Formation and FormationBed version 2: the seed, the members, the lateral length, a fault with
+// no throw, a bed's `variation` and `lens` at their defaults), so a rock file, a ledge patch and a
+// deposit patch carrying a W85 field keep their keys; a drawn formation is all in the key.
 void drop_absent_sampling(JsonValue& json);
 // The same for the formation (W85, RockGeology version 2, Cliff version 5): `from_formation` while
 // it is the default true, and a cliff's `formation` and `world_origin` while it carries none, so

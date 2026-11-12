@@ -91,6 +91,19 @@ bool ViewWorld::create(const renderer::SceneData& data, renderer::SceneRenderer&
     placements_config_.fixed_pairs = renderer.scene().static_pair_count();
     if (!placements_.create(data, placements_config_, error)) return false;
     placements_.set_run_sink(&ViewWorld::hand_over, this);
+    // A tile's meshes go into the scene's mesh room, built off this thread (world.md, "A tile's
+    // meshes: residency by reference"): a pool of its own, made only for a scene that has the
+    // room — one of whose generators hands meshes with its tiles — and small, since a tile's mesh
+    // is a few hundred kilobytes and the frame's own jobs keep the machine's workers.
+    if (renderer.scene().mesh_room().slots != 0) {
+      jobs::JobSystemConfig pool;
+      pool.performance_workers = 1;
+      pool.efficiency_workers = 2;
+      pool.pin_threads = false;
+      mesh_jobs_.emplace(pool);
+    }
+    world::connect_scene_meshes(placements_, renderer,
+                                mesh_jobs_.has_value() ? &*mesh_jobs_ : nullptr);
     world::add_scene_consumers(world_, nullptr, &placements_);
     // Each scene mesh's kind for `nearest_placement`: the generator of the streamed entry whose
     // resident meshes it is (`StreamedPlacements::meshes`), by the generator's registered name.

@@ -192,34 +192,27 @@ WaterWave* water_waves(uint64_t materials, uint index) {
   return (WaterWave*)(materials + uint64_t(index + 2u) * uint64_t(k_resolve_material_bytes));
 }
 
-float3 water_normal_spectrum(WaterWave* waves, float2 p, float time, float footprint,
-                             float depth) {
-  float2 slope = float2(0.0, 0.0);
-  float lift = 0.0;
+// `dropped` is the mean square slope the footprint left out of the normal (S100 stage B), which
+// `water_roughness` gives to the lobe.
+float3 water_normal_spectrum(WaterWave* waves, float2 p, float time, float footprint, float depth,
+                             out float dropped) {
+  WaterSum sum = (WaterSum)0;
   const float calm = clamp(depth / k_water_calm_depth, 0.0, 1.0);
-  for (uint i = 0; i < k_water_waves; ++i) {
-    const WaterWave wave = waves[i];
-    const float lambda = k_water_two_pi / wave.k;
-    const float along = dot(wave.direction, p) / lambda;
-    const float travel = frac(wave.cycles * (time / k_water_period_s));
-    const float cyc = frac(frac(along) - travel + wave.phase);
-    const float keep = footprint > 0.0 ? clamp(lambda / (2.0 * footprint) - 1.0, 0.0, 1.0) : 1.0;
-    const float share = calm * keep;
-    const float angle = k_water_two_pi * cyc;
-    slope += wave.direction * (wave.amplitude * wave.k * share * cos(angle));
-    lift += wave.steepness * share * sin(angle);
-  }
-  return normalize(float3(-slope.x, 1.0 - lift, -slope.y));
+  for (uint i = 0; i < k_water_waves; ++i)
+    water_wave_add(waves[i], p, time, footprint, calm, 0.0, sum);
+  dropped = sum.dropped;
+  return normalize(float3(-sum.grad.x, 1.0 - min(sum.lift, k_water_max_lift), -sum.grad.y));
 }
 
 // **The normal of a body with a surface** (S100): the gradient of the height the pool lifted the
-// mesh by (`water_height`, water_waves.slang), the Gerstner crests' sharpening with it, faded flat
-// over the swash's band (the sheet over the bank is a few centimetres on the ground's slope) and in
-// from an open body's outline as the lift is. The open fade's own gradient is left out.
+// mesh by (`water_height`, water_waves.slang) — every wave of it, where the lift took only what the
+// mesh carries — the Gerstner crests' sharpening with it, faded flat over the swash's band (the
+// sheet over the bank is a few centimetres on the ground's slope) and in from an open body's outline
+// as the lift is. The open fade's own gradient is left out.
 float3 water_surface_normal(WaterSurface* s, float2 p, float edge, float time, float tide_phase,
-                            float footprint) {
+                            float footprint, out float dropped) {
   const WaterField f = water_field_at(s, p);
-  const WaterHeight w = water_height(s, p, f, time, footprint);
+  const WaterHeight w = water_height(s, p, f, time, footprint, float2(0.0, 0.0));
   const float fade = (s->flags & k_water_surface_open) != 0 && s->fade_m > 0.0
                          ? smoothstep(0.0, s->fade_m, edge)
                          : 1.0;
@@ -229,16 +222,64 @@ float3 water_surface_normal(WaterSurface* s, float2 p, float edge, float time, f
     share = 1.0 - smoothstep(0.0, band, f.depth + water_surface_tide(s, tide_phase));
   }
   const float k = fade * (1.0 - share);
-  return normalize(float3(-w.grad.x * k, 1.0 - w.lift * k, -w.grad.y * k));
+  dropped = w.dropped * k * k;
+  return normalize(
+      float3(-w.grad.x * k, 1.0 - min(w.lift, k_water_max_lift) * k, -w.grad.y * k));
 }
 
 // The waves' normal for a water material: the spectrum's where it has one, the four sines'
 // otherwise.
 float3 water_normal_of(WaterParams w, uint flags, uint64_t materials, uint index, float2 p,
-                       float time, float footprint, float depth) {
+                       float time, float footprint, float depth, out float dropped) {
+  dropped = 0.0;
   if ((flags & k_material_water_spectrum) != 0)
-    return water_normal_spectrum(water_waves(materials, index), p, time, footprint, depth);
+    return water_normal_spectrum(water_waves(materials, index), p, time, footprint, depth, dropped);
   return water_normal(w, p, time, footprint, depth);
+}
+
+// **The lobe's roughness with the waves a pixel cannot hold** (S100 stage B; water.md, "The
+// spectrum"): a wave shorter than the pixel is out of the normal, and its facets are still there —
+// the sun's glitter off a far lake is as wide as the wavelets are steep. The slope variance the
+// footprint left out joins the GGX lobe's: alpha^2 is a Beckmann surface's mean square slope, so
+// alpha'^2 = alpha^2 + dropped, and the roughness is alpha's square root.
+float water_roughness(float roughness, float dropped) {
+  const float alpha = brdf_alpha(roughness);
+  return min(sqrt(sqrt(alpha * alpha + max(dropped, 0.0))), 1.0);
+}
+
+// **The wavelets a pixel cannot hold, drawn at the pixel's own scale** (S100 stage B, after the
+// first forest captures: with the short bands out of the normal a windy lake thirty metres off was
+// a mirror with the far shore's trees in it, and a sea a grey sheet — the footprint is taken on
+// the level surface, where real waves turn their faces to the eye). `k_water_micro_share` of the
+// slope variance the footprint left out comes back as a band-limited ripple three footprints
+// long — two octaves of the envelope's own lattice, cross-faded as the footprint grows, travelling
+// down the wind at a wave of that length's speed on a lattice periodic in the clock — so far water
+// is rough at the scale the picture can show, in streaks along the view as foreshortened wavelets
+// are, and never a mirror under a wind; the rest stays in the lobe. It is detail at the wrong
+// wavelength with the right slope: the facets a pixel averages are not resolvable, their
+// statistics are.
+static const float k_water_micro_share = 0.7;
+float3 water_micro_normal(float3 n, float2 p, float time, float footprint, float dropped,
+                          float2 wind) {
+  if (!(dropped > 1e-6) || !(footprint > 0.0)) return n;
+  const float level = log2(3.0 * footprint);
+  const float base = floor(level);
+  const float blend = level - base;
+  const float2 across = float2(-wind.y, wind.x);
+  const float clock = time / k_water_period_s;
+  float2 slope = float2(0.0, 0.0);
+  for (uint o = 0; o < 2; ++o) {
+    const float cell = exp2(base + float(o));
+    const float cells = max(1.0, floor(sqrt(k_water_g * cell / k_water_two_pi) *
+                                           (k_water_period_s / cell) + 0.5));
+    const WaterEnvelope e = water_envelope(dot(wind, p) / cell - cells * clock,
+                                           dot(across, p) / cell, cells, 0x51ed270bu + o);
+    slope += e.e * (o == 0 ? 1.0 - blend : blend);
+  }
+  slope *= sqrt(k_water_micro_share * dropped /
+                ((1.0 - blend) * (1.0 - blend) + blend * blend));
+  const float2 g = float2(-n.x, -n.z) / max(n.y, 1e-3) + wind * slope.x + across * slope.y;
+  return normalize(float3(-g.x, 1.0, -g.y));
 }
 
 // The direction the reflected view leaves the surface along, kept above the horizon: a steep wave
@@ -664,7 +705,7 @@ WaterSwashPlace water_swash_place(WaterShore s, float2 p) {
     const float ca = f.arrival / s.period_s;
     const float group = float(k_swash_group);
     w.phase = -(ca - group * floor(ca / group));
-    w.jitter = water_reach_variation(surface, p) * water_facing(surface, f.depth_grad);
+    w.jitter = water_reach_variation(surface, p, true) * water_shelter(f);
     return w;
   }
   const float scale = max(k_swash_raggedness_m, 3.0 * s.run_up_m / max(s.slope, 1e-3));
@@ -739,24 +780,158 @@ float3 water_wet_darkening(float3 albedo, float wet) {
   return lerp(float3(1.0), wet_ground_darkening(albedo), clamp(wet, 0.0, 1.0));
 }
 
-// **The foam riding the front**: `x` metres behind the front along the slope (x >= 0 is under the
-// sheet, x < 0 the sand above it). The running-up sheet's leading edge is a bore of foam a quarter
-// of `foam_m` deep with a trail behind it; the backwash leaves a lace a tenth of `foam_m` wide at
-// its retreating edge. Strength from the wave's height (whole at 4 cm), broken by value noise at a
-// quarter of `foam_m`; a line narrower than the footprint is widened to it and dimmed by the share.
-float water_swash_foam(WaterShore s, float2 p, float x, bool uprush, float t, float footprint) {
-  if (!(s.foam_m > 0.0)) return 0.0;
-  const float strength = clamp(s.height_m / (2.0 * k_water_foam_full_amplitude), 0.0, 1.0);
+// ---- the foam of a wave that breaks (S100 stage B; docs/experiments/shore.md, "The break and the
+// foam"; water.md, "The swash") -------------------------------------------------------------------
+// Foam is born where a wave of the train breaks and nowhere else, rides in on the bore's face, is
+// left on the water behind it and on the sheet up the beach, and decays — **a function of the clock
+// and the place, with nothing kept**: the train is periodic in its group of seven, so "which waves
+// passed here broken, and how long ago" is a sum over the last few waves, each a closed form.
+//
+// The decay: an e-folding of 4 s (Callaghan, Deane, Stokes and Ward 2012: individual whitecaps'
+// foam decays in 0.2 to 10.4 s, area-weighted 1.4 to 4.8 s; shore.md).
+static const float k_water_foam_decay_s = 4.0;
+// No air is entrained by a wave under about 2 cm, and the foam is whole from 6 cm: whitecaps start
+// with the first breaking wavelets, Beaufort 3 (shore.md, "The break and the foam").
+static const float k_water_foam_min_height = 0.02;
+static const float k_water_foam_full_height = 0.06;
+// A wave whose surf similarity (Iribarren) number is past 3.3 surges up the beach without breaking
+// (Battjes 1974): no foam; whole under 2.
+static const float k_water_surging_lo = 2.0;
+static const float k_water_surging_hi = 3.3;
+// The waves a place's foam is summed back over: three periods of a sea's 5.6 s is e^-4 of a wave's
+// foam; a lake's second-long waves overlap, and the older ones are under the newer.
+static const uint k_water_foam_waves = 3;
+
+// How much a wave of height `h` at period `period_s` foams on a foreshore of `slope`: nothing when
+// it is too small to entrain air or surges without breaking.
+float water_foam_strength(float h, float period_s, float slope) {
+  if (!(h > k_water_foam_min_height)) return 0.0;
+  const float l0 = k_water_g * period_s * period_s / k_water_two_pi;
+  const float xi = slope / sqrt(max(h, 1e-4) / max(l0, 1e-3));
+  return smoothstep(k_water_foam_min_height, k_water_foam_full_height, h) *
+         (1.0 - smoothstep(k_water_surging_lo, k_water_surging_hi, xi));
+}
+
+// The foam's pattern for one wave's leavings, in [0, 1], near 0 along the ridges of two octaves of
+// value noise: foam is where the pattern is under the density, so as the density decays the patch
+// is eaten from the open cells inwards and what is left last is the lace along the ridges — a
+// raft of bubbles thinning into streaks, not a sheet fading. `cell` metres; each wave its own.
+float water_foam_lace(float2 p, float cell, uint wave) {
+  const float2 o = float2(float(wave) * 17.31, float(wave) * 5.77);
+  const float a = water_value_noise(p / cell + o);
+  const float b = water_value_noise(p * (3.4 / cell) + o.yx + float2(41.0, 7.0));
+  return 1.0 - (0.6 * (1.0 - abs(2.0 * a - 1.0)) + 0.4 * (1.0 - abs(2.0 * b - 1.0)));
+}
+
+// The share of a pixel that is foam where the pattern is `lace` and the density `density`: whole
+// at a density of 1 and none at 0 whatever the pattern; a pattern finer than the footprint is its
+// mean, so far foam is a grey and not a sparkle. The pattern's values crowd towards its ridges (a
+// third of a patch lies under 0.25), so the threshold rises slowly at first — D (0.45 + 0.55 D^3)
+// — and a density of a quarter is a tenth of the patch, the ridges alone (the first forest
+// captures drew a quarter-dense patch as four tenths cover, in blobs).
+float water_foam_cover(float lace, float density, float footprint, float cell) {
+  const float blur = clamp(footprint / cell - 0.5, 0.0, 1.0);
+  const float soft = 0.05 + 0.5 * blur;
+  const float m = lerp(lace, 0.35, blur);
+  const float d = clamp(density, 0.0, 1.0);
+  const float threshold = d * (0.45 + 0.55 * d * d * d);
+  return smoothstep(m - soft, m + soft, threshold * (1.0 + 2.0 * soft) - soft);
+}
+
+// The lace's cell: 0.6 of the wave's height, 6 to 60 cm, and a finer octave under it.
+float water_foam_cell(float h) { return clamp(0.6 * h, 0.06, 0.6); }
+
+// **How much foam a wave of height `h` makes, and how long it lasts.** A breaker's foam is the air
+// it entrains, which goes with the energy it loses: a decimetre wavelet spilling on a lake's shore
+// leaves flecks, a metre of surf a raft. The density a wave leaves is h / 0.5 m, whole from half a
+// metre, and its e-folding is the 4 s of an open-sea whitecap times sqrt(h / 1 m), within [0.25,
+// 1] of it: Callaghan et al.'s decay times grow with the breaker's scale (a small plume's bubbles
+// are shallow and gone in a second). Both are stated shapes between the measurements' ends, not
+// fits (shore.md, "The break and the foam").
+float water_foam_amount(float h) { return clamp(h / 0.5, 0.0, 1.0); }
+float water_foam_decay(float h) { return k_water_foam_decay_s * clamp(sqrt(max(h, 0.0)), 0.25, 1.0); }
+
+// **The foam on the water** at body-local p, still depth d (the tide's in), clock t. Wave k - j
+// passed here (u + j) periods ago; it had broken by here if its shoaled height had reached the
+// breaker index, G(k - j) H Ks(d) >= 0.78 d — the same limit the pool's lift caps the train's
+// height by — so the foam starts at each wave's own break line, further out for the group's larger
+// waves, and there is none seaward of the largest's. The wave coming in carries a roller on its
+// face.
+float water_bore_foam(WaterSurface* s, float2 p, WaterField f, float d, float t, float footprint) {
+  if (!(s->height_m > 0.0) || !(s->period_s > 0.0) || !(d > 0.0)) return 0.0;
+  const float shelter = water_shelter(f);
+  const float h = s->height_m * shelter;
+  const float strength = water_foam_strength(h, s->period_s, s->slope);
   if (!(strength > 0.0)) return 0.0;
-  const float thin = (uprush ? 0.25 : 0.1) * s.foam_m;
-  const float width = max(thin, footprint);
-  const float y = max(x, 0.0) / width;
-  const float line = exp(-y * y) * (thin / width) * (x >= -footprint ? 1.0 : 0.0);
-  const float trail = uprush ? 0.35 * clamp(1.0 - x / s.foam_m, 0.0, 1.0) * (x >= 0.0 ? 1.0 : 0.0)
-                             : 0.0;
-  const float breakup =
-      water_value_noise(p * (4.0 / s.foam_m) + float2(0.37, 0.71) * (t / max(s.period_s, 1e-3)));
-  return strength * clamp((line + trail) * (0.3 + 1.1 * breakup), 0.0, 1.0);
+  const float ratio =
+      h * water_shoaling(water_wavenumber(s->k0, d), d) / (k_water_breaking_gamma * d);
+  if (!(ratio > 0.9)) return 0.0;  // the group's largest wave has not broken here
+  const float c = water_train_cycles(s, t, f.arrival);
+  const float k = floor(c);
+  const float u = c - k;
+  const float cell = water_foam_cell(h);
+  const float amount = water_foam_amount(h);
+  const float decay = water_foam_decay(h);
+  const uint next = uint(int(k) + 1 + int(k_swash_group) * 64) % k_swash_group;
+  // The roller on the face of the wave coming in: a raft where the wave is big, flecks where not.
+  float foam = water_foam_cover(water_foam_lace(p, cell, next),
+                                amount * smoothstep(0.9, 1.05, ratio * water_swash_group(next)) *
+                                    smoothstep(0.88, 0.97, u),
+                                footprint, cell);
+  for (uint back = 0; back < k_water_foam_waves; ++back) {
+    const uint j = uint(int(k) - int(back) + int(k_swash_group) * 64) % k_swash_group;
+    const float broke = smoothstep(0.9, 1.05, ratio * water_swash_group(j));
+    const float density = amount * broke * exp(-(u + float(back)) * s->period_s / decay);
+    if (density > 0.02)
+      foam = max(foam, water_foam_cover(water_foam_lace(p, cell, j), density, footprint, cell));
+  }
+  return strength * foam;
+}
+
+// **The foam on the sheet** over ground `hh` metres above the instant's still level: the bore that
+// collapsed at the shoreline carries its foam up the beach as the front's thin line — a few
+// centimetres, strongest as it sets off and gone as the front stalls at its top, never on the way
+// back — and leaves it behind on the sheet, where it decays from the moment the front passed
+// (`u1`, the same crossing the wet sand's age is taken from), less of it the higher it was left.
+float water_uprush_foam(WaterShore s, WaterSwashPlace w, float2 p, float hh, float t,
+                        float footprint) {
+  if (!water_swash_on(s)) return 0.0;
+  const float h = s.height_m * min(w.jitter, 1.0);
+  const float strength = water_foam_strength(h, s.period_s, s.slope);
+  if (!(strength > 0.0)) return 0.0;
+  const float z_lo = -k_swash_rundown * w.run_up;
+  const float c = t / w.period + w.phase;
+  const float kf = floor(c);
+  const float u = c - kf;
+  const float q = k_swash_uprush;
+  const float cell = water_foam_cell(h);
+  const float amount = water_foam_amount(h);
+  const float decay = water_foam_decay(h);
+  float foam = 0.0;
+  for (uint back = 0; back < k_water_foam_waves; ++back) {
+    const int wave = int(kf) - int(back);
+    const float a = water_swash_reach(w, wave);
+    const float ck = max((hh - z_lo) / (a - z_lo), 0.0);
+    if (!(ck <= 1.0)) continue;  // this wave never came this high
+    const float r = sqrt(1.0 - ck);
+    const float u1 = (1.0 - r) * q;
+    const float since = u + float(back) - u1;  // periods since its front arrived here
+    if (since < 0.0) continue;
+    if (back == 0 && u < q) {
+      // The front's line, `x` metres behind it along the slope.
+      const float front = z_lo + (a - z_lo) * water_swash_shape(u);
+      const float x = max(front - hh, 0.0) / max(s.slope, 1e-3);
+      const float thin = clamp(0.5 * h, 0.03, 0.25);
+      const float width = max(thin, footprint);
+      const float y = x / width;
+      foam = max(foam, sqrt(amount) * exp(-y * y) * (thin / width) * sqrt(1.0 - u / q));
+    }
+    const uint j = uint(wave + int(k_swash_group) * 64) % k_swash_group;
+    const float density = amount * (1.0 - 0.6 * u1 / q) * exp(-since * w.period / decay);
+    if (density > 0.02)
+      foam = max(foam, water_foam_cover(water_foam_lace(p, cell, j), density, footprint, cell));
+  }
+  return strength * foam;
 }
 
 // **A ground pixel in the swash** (the resolve's water stage, before the material; S99 moved the
@@ -788,7 +963,7 @@ WaterWetGround water_swash_saturation(WaterShore s, float2 p, float h, float t, 
     g.s = 1.0;
     g.film = 1.0;
   }
-  if (water_swash_on(s)) g.foam = water_swash_foam(s, p, x, uprush, t, footprint);
+  if (water_swash_on(s)) g.foam = water_uprush_foam(s, w, p, hh, t, footprint);
   return g;
 }
 

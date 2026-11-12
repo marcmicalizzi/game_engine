@@ -4,6 +4,7 @@
 // the device hold (device_hold.cpp). Internal to the module.
 
 #include <core/base/types.h>
+#include <foundation/gpu_lock/gpu_lock.h>
 
 #include <string>
 #include <string_view>
@@ -69,5 +70,61 @@ void disarm_signal_release();
 
 // Wall-clock Unix seconds.
 i64 now_unix_s();
+
+// ---- the line (gpu_lock.h, "the line") --------------------------------------------------------
+
+// Where a ticket stands at one look.
+struct LinePlace {
+  bool lined = false;  // false: this process has no ticket (the line's directory cannot be made)
+  u32 ahead = 0;       // live tickets before this one; 0 is "try the lock"
+  u32 waiting = 0;     // live tickets, this one included
+  Waiter first;        // the head of the line when ahead > 0
+};
+
+// One ask's place in the line. Entered once, looked at from the loop that tries the lock (which
+// is also what keeps it alive), and left when the lock is taken or the ask ends.
+class Ticket {
+ public:
+  Ticket() noexcept = default;
+  ~Ticket() { leave(); }
+  Ticket(const Ticket&) = delete;
+  Ticket& operator=(const Ticket&) = delete;
+
+  // Writes the ticket. False when the line's directory cannot be made or written: the caller
+  // then asks as a tool without tickets does, which is the protocol as it was.
+  bool enter(const std::string& lock_path, const Identity& self, std::string_view purpose,
+             i64 declared_s, i64 ticket_lease_s);
+  // Refreshes this ticket when a third of its lease has gone (or it was removed while this
+  // process stalled), removes the dead tickets it sees, and says where this one stands.
+  LinePlace look();
+  void leave() noexcept;
+  bool entered() const noexcept { return entered_; }
+
+ private:
+  bool write(i64 now_s);
+
+  std::string directory_;
+  std::string name_;
+  std::string path_;
+  std::string owner_;
+  std::string purpose_;
+  std::string host_;
+  u64 pid_ = 0;
+  i64 arrived_ms_ = 0;
+  i64 declared_s_ = 0;
+  i64 lease_s_ = 0;
+  i64 refresh_at_s_ = 0;
+  bool entered_ = false;
+};
+
+// Whether nobody is waiting: no live ticket in the lock's line (the dead ones it finds are
+// removed). An ask that finds the line empty tries the lock without a ticket — nobody is there to
+// be passed — and takes one only if that fails, so an uncontended take writes no file but the
+// lock's own.
+bool line_is_empty(const std::string& lock_path, i64 ticket_lease_s);
+
+// "first of 3 in the line", or "behind 2 of the 4 in the line, first 'owner' (pid 1): purpose,
+// waiting 12 s"; empty when the process has no ticket.
+std::string describe_place(const LinePlace& place, i64 now_unix_ms);
 
 }  // namespace engine::gpu_lock::detail

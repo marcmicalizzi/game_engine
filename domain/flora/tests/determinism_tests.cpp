@@ -262,8 +262,9 @@ TEST_CASE("sward: the slope's arctangent and the forms it decides have a cross-c
   line.stature.band_m = 0;
   CHECK(sward_pin(line) == 8287572821809745209ull);
   // With the default band (3 m) the forms near each boundary are drawn by the cells' hashes; the
-  // slope's thresholds and the band's draws both decide here.
-  CHECK(sward_pin(sward_four_forms()) == 1843532570838069930ull);
+  // slope's thresholds and the band's draws both decide here. Re-pinned by G139: the slope draws
+  // these boundaries, and the band now reads its gradient as well as the noise's, so it widens.
+  CHECK(sward_pin(sward_four_forms()) == 16211441857905139045ull);
 }
 
 TEST_CASE("ground plants: the far fern retains every pinna and motion part") {

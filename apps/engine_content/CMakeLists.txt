@@ -88,6 +88,31 @@ list(APPEND _content_tests tests/channels_tests.cpp tests/channel_cut_tests.cpp
 if(TARGET engine::channels)
   list(APPEND _content_deps channels channels_schemas schema schemas scene_gen)
 endif()
+# `landform` the same way, with the landform capability (docs/subsystems/landform.md): a region
+# sketch solved into an authored heightfield and its fields. `image` writes its shaded relief.
+if(TARGET engine::landform)
+  list(APPEND _content_deps landform landform_schemas image)
+endif()
+# `matgen` the same way, with the matgen capability (docs/subsystems/matgen.md): generated material
+# sets built into a pack directory. `image` writes their PNGs.
+if(TARGET engine::matgen)
+  list(APPEND _content_deps matgen matgen_schemas materials image schema)
+endif()
+# `routes` the same way, with the routes capability (docs/subsystems/routes.md): a scene's
+# footpaths written as benched treads, their mask regions and plan keys.
+if(TARGET engine::routes)
+  list(APPEND _content_deps routes routes_schemas schema schemas scene_gen)
+endif()
+# `bridges` the same way, with the bridges capability (docs/subsystems/bridges.md): the footbridges
+# where a scene's routes ford its streams. It reads the routes' plans, so it wants both.
+if(TARGET engine::bridges AND TARGET engine::routes)
+  list(APPEND _content_deps bridges bridges_schemas routes routes_schemas schema schemas scene_gen)
+endif()
+# `cave-plan` the same way, with the caves capability (docs/subsystems/caves.md): a network's
+# plan as a survey. Linked, it is also what makes `build` take a `.cavecell.json`.
+if(TARGET engine::caves)
+  list(APPEND _content_deps caves caves_schemas scene_gen schema)
+endif()
 if(TARGET engine::litter)
   list(APPEND _content_deps litter)
   list(APPEND _content_tests tests/litter_tests.cpp)
@@ -104,8 +129,10 @@ engine_app(NAME engine_content OUTPUT engine-content
   SOURCES main.cpp tissue_commands.cpp ruins_commands.cpp city_commands.cpp limit_dump.cpp
           normal_cases.cpp clip_commands.cpp terrain_commands.cpp tileset_commands.cpp masks_check_commands.cpp npc_commands.cpp
           flora_commands.cpp rocks_commands.cpp channels_commands.cpp cover_commands.cpp soil_commands.cpp morphs.cpp
+          landform_commands.cpp matgen_commands.cpp routes_commands.cpp caves_commands.cpp
+          bridges_commands.cpp
   DEPS ${_content_deps}
-  E2E_TESTS ${_content_tests} tests/soil_tests.cpp tests/morphs_tests.cpp)
+  E2E_TESTS ${_content_tests} tests/soil_tests.cpp tests/morphs_tests.cpp tests/matgen_tests.cpp)
 
 if(TARGET engine::tissue)
   target_compile_definitions(engine_engine_content PRIVATE ENGINE_CONTENT_TISSUE=1)
@@ -192,6 +219,27 @@ endif()
 
 if(TARGET engine::wetland)
   target_link_libraries(engine_engine_content PRIVATE engine::wetland)
+endif()
+
+if(TARGET engine::landform)
+  target_compile_definitions(engine_engine_content PRIVATE ENGINE_CONTENT_LANDFORM=1)
+endif()
+
+if(TARGET engine::matgen)
+  target_compile_definitions(engine_engine_content PRIVATE ENGINE_CONTENT_MATGEN=1)
+  if(TARGET engine_engine_content_tests)
+    target_compile_definitions(engine_engine_content_tests PRIVATE ENGINE_CONTENT_MATGEN=1)
+    target_link_libraries(engine_engine_content_tests PRIVATE engine::materials)
+  endif()
+endif()
+if(TARGET engine::routes)
+  target_compile_definitions(engine_engine_content PRIVATE ENGINE_CONTENT_ROUTES=1)
+endif()
+if(TARGET engine::bridges AND TARGET engine::routes)
+  target_compile_definitions(engine_engine_content PRIVATE ENGINE_CONTENT_BRIDGES=1)
+endif()
+if(TARGET engine::caves)
+  target_compile_definitions(engine_engine_content PRIVATE ENGINE_CONTENT_CAVES=1)
 endif()
 
 if(TARGET engine::channels)

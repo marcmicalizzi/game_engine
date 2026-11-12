@@ -183,6 +183,29 @@ const char* k_usage =
     "                                          blocks) from the scene's channels placements\n"
     "                                          over its terrain; present with the channels\n"
     "                                          capability\n"
+    "  landform <sketch.json> <out dir> [--name <stem>] [--jobs <n>] [--no-relief]\n"
+    "                                          solve a region sketch into an authored\n"
+    "                                          heightfield, its fields (drainage area,\n"
+    "                                          receiver, slope, erosion rate, fill) and a shaded\n"
+    "                                          relief; present with the landform capability\n"
+    "  matgen [--out <pack dir>] [--texels <n>] [--role <role>]... [--set <recipe.json>]...\n"
+    "         [--force]                        build generated material sets (gravel, sand,\n"
+    "                                          scree, rock, ground) into a pack directory,\n"
+    "                                          by default the one every host reads behind the\n"
+    "                                          fetched pack; present with the matgen capability\n"
+    "  routes <scene.json> <out.json> [--ddc <dir>] [--entry <i>]\n"
+    "                                          the scene's footpaths as benched treads (edits),\n"
+    "                                          their mask regions and plan keys; present with\n"
+    "                                          the routes capability\n"
+    "  bridges <scene.json> <out.json> [--ddc <dir>] [--grade <permille>]\n"
+    "                                          the footbridges where the scene's routes ford its\n"
+    "                                          streams: a bridges entry, approaches (edits) and\n"
+    "                                          footprints; present with the bridges capability\n"
+    "  cave-plan <network.json> <out dir> [--ground <valley>,<slope_x>[,<flank_m>]] [--cells]\n"
+    "                                          a cave network's plan against a hillside: a plan\n"
+    "                                          view, a long section, the holes its mouths ask\n"
+    "                                          of the terrain; --cells solves every cell;\n"
+    "                                          present with the caves capability\n"
     "  vine <recipe.vine.json> <out.clusters>|--cache [--ddc <dir>] [--force]\n"
     "  cover <recipe.cover.json> <out.clusters>|--cache [--ddc <dir>] [--force]\n"
     "                                          grow a vine or organic cover over the host its\n"
@@ -1392,6 +1415,11 @@ int main(int argc, char** argv) {
   if (command == "flora") return content::flora_command(argc, argv);
   if (command == "rocks") return content::rocks_command(argc, argv);
   if (command == "channels") return content::channels_command(argc, argv);
+  if (command == "landform") return content::landform_command(argc, argv);
+  if (command == "matgen") return content::matgen_command(argc, argv);
+  if (command == "routes") return content::routes_command(argc, argv);
+  if (command == "bridges") return content::bridges_command(argc, argv);
+  if (command == "cave-plan") return content::caves_command(argc, argv);
   if (command == "vine") return content::vine_command(argc, argv);
   if (command == "cover") return content::cover_command(argc, argv);
   if (command == "morphs") return content::morphs_command(argc, argv);

@@ -11,6 +11,7 @@
 #include <core/math/math.h>
 #include <core/schema/json_reflect.h>
 #include <domain/gfx/water_spectrum.h>
+#include <domain/gfx/water_swash.h>
 #include <domain/gfx/wet_ground.h>
 #include <domain/scene_gen/scene_gen.h>
 #include <foundation/io/vfs.h>
@@ -90,14 +91,16 @@ SceneWaterDepth read_depth_map(const std::string& mesh_path) {
     return v;
   };
   // "EWDM", the version, the size, the bank (version 1: 0), origin x and z, the texel, the
-  // deepest; then u16 texels over [-bank, deepest] (version 1: [0, deepest]).
+  // deepest, and since version 3 the mesh's three spacings; then u16 texels over [-bank, deepest]
+  // (version 1: [0, deepest]).
   const u32 version = bytes.size() >= 8 ? u32_at(4) : 0u;
-  if (bytes.size() < 32 || u32_at(0) != 0x4d445745u || (version != 1u && version != 2u)) {
+  if (bytes.size() < 32 || u32_at(0) != 0x4d445745u || version < 1u || version > 3u) {
     ENGINE_LOG_WARN(log_renderer, "water depth map unread", log::field("path", path));
     return map;
   }
+  const usize head = version >= 3u ? 44 : 32;
   const u32 size = u32_at(8);
-  if (size < 2 || size > 4096 || bytes.size() != 32 + usize{size} * size * 2) {
+  if (size < 2 || size > 4096 || bytes.size() != head + usize{size} * size * 2) {
     ENGINE_LOG_WARN(log_renderer, "water depth map unread", log::field("path", path));
     return map;
   }
@@ -106,14 +109,41 @@ SceneWaterDepth read_depth_map(const std::string& mesh_path) {
   map.texel_m = f32_at(24);
   map.depth_max = f32_at(28);
   map.bank_max = version == 1u ? 0.0f : f32_at(12);
+  map.mesh_far_m = version >= 3u ? f32_at(32) : 4.0f * map.texel_m;
+  map.mesh_near_m = version >= 3u ? f32_at(36) : 4.0f * map.texel_m;
+  map.mesh_grade = version >= 3u ? f32_at(40) : 0.0f;
+  if (!(map.mesh_far_m >= 0.0f) || !(map.mesh_near_m >= 0.0f) || !(map.mesh_grade >= 0.0f) ||
+      !std::isfinite(map.mesh_far_m + map.mesh_near_m + map.mesh_grade)) {
+    ENGINE_LOG_WARN(log_renderer, "water depth map unread", log::field("path", path));
+    return SceneWaterDepth{};
+  }
   if (!(map.bank_max >= 0.0f) || !std::isfinite(map.bank_max)) {
     ENGINE_LOG_WARN(log_renderer, "water depth map unread", log::field("path", path));
     return SceneWaterDepth{};
   }
   map.texels.resize(size * size);
   for (u32 t = 0; t < size * size; ++t)
-    map.texels[t] = static_cast<u16>(byte(32 + usize{t} * 2) | (byte(33 + usize{t} * 2) << 8));
+    map.texels[t] =
+        static_cast<u16>(byte(head + usize{t} * 2) | (byte(head + 1 + usize{t} * 2) << 8));
   return map;
+}
+
+// **A closed body's fetch** (water.md, "The spectrum"; S100 stage B): the longest reach of its own
+// water along its wind — the fetch field's largest value over the depth map — no longer than the
+// block's `fetch_km`: a wind cannot blow over more water than the lake holds along it. With no map,
+// the block's.
+f64 closed_fetch_m(const SceneWaterDepth& map, Vec2 wind, f64 fetch_m) {
+  if (map.size < 2) return fetch_m;
+  const u32 count = map.size * map.size;
+  Vector<f32> depth(count);
+  const f64 range = static_cast<f64>(map.depth_max) + static_cast<f64>(map.bank_max);
+  for (u32 i = 0; i < count; ++i)
+    depth[i] = static_cast<f32>(static_cast<f64>(map.texels[i]) / 65535.0 * range -
+                                static_cast<f64>(map.bank_max));
+  Vector<f32> fetch(count);
+  const f64 longest = gfx::water_fetch_field(depth.data(), map.size, static_cast<f64>(map.texel_m),
+                                             wind, fetch.data());
+  return std::min(fetch_m, longest);
 }
 
 }  // namespace
@@ -168,18 +198,24 @@ bool read_scene_water(const scene::Scene& file, const std::string& path, const s
     water.body = file.water[k];
     f32 wind = 0.0f;
     water.shading = shading_of(file.water[k], out.terrain, ground, wind);
-    // An open sea's waves from the spectrum (water.md, "The spectrum"): the ground's wind where it
-    // has one and the body follows it, the body's own otherwise; none, and the four sines.
-    if (wind <= 0.0f) wind = file.water[k].wind_m_s;
+    // **Every body's waves from the spectrum** (water.md, "The spectrum"; S100 stage B): an open
+    // body's wind is the ground's where it has one and the body follows it, its own otherwise, over
+    // its `fetch_km`; a closed body's is its own `wind_m_s` (a pool under trees does not feel the
+    // region's wind unless its block says so) over its own reach along it. No wind: the four sines.
+    if (wind <= 0.0f || !file.water[k].open) wind = file.water[k].wind_m_s;
     water.wind_m_s = wind;
-    if (file.water[k].open && wind > 0.0f) {
+    water.depth = read_depth_map(placed.meshes[k].path);
+    water.fetch_m = file.water[k].fetch_km * 1000.0f;
+    if (!file.water[k].open && wind > 0.0f)
+      water.fetch_m = static_cast<f32>(
+          closed_fetch_m(water.depth, water.shading.direction, static_cast<f64>(water.fetch_m)));
+    if (wind > 0.0f && water.fetch_m > 0.0f) {
       gfx::WaterWave waves[gfx::k_water_waves];
-      gfx::water_spectrum(static_cast<f64>(wind), static_cast<f64>(file.water[k].fetch_km) * 1000.0,
+      gfx::water_spectrum(static_cast<f64>(wind), static_cast<f64>(water.fetch_m),
                           water.shading.direction, file.water[k].seed, waves);
       for (const gfx::WaterWave& wave : waves)
         water.waves.push_back(wave);
     }
-    water.depth = read_depth_map(placed.meshes[k].path);
     info.water = std::move(water);
     out.mesh_info.push_back(std::move(info));
     SceneInstance instance;

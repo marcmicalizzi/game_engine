@@ -66,6 +66,24 @@ int rocks_command(int argc, char** argv);
 // The water's channel description from a scene's "channels" placements (channels_commands.cpp,
 // docs/subsystems/channels.md); present when this build has the channels capability.
 int channels_command(int argc, char** argv);
+// A region sketch solved into an authored heightfield and its fields (landform_commands.cpp,
+// docs/subsystems/landform.md); present when this build has the landform capability.
+int landform_command(int argc, char** argv);
+// Generated material sets built into a pack directory (matgen_commands.cpp,
+// docs/subsystems/matgen.md); present when this build has the matgen capability.
+int matgen_command(int argc, char** argv);
+// A scene's footpaths written as benched treads, their mask regions and plan keys
+// (routes_commands.cpp, docs/subsystems/routes.md); present when this build has the routes
+// capability.
+int routes_command(int argc, char** argv);
+// The footbridges where a scene's routes ford its streams: a `bridges` placement entry, the
+// approaches as ground edits and the footprints (bridges_commands.cpp, docs/subsystems/bridges.md);
+// present when this build has the bridges and routes capabilities.
+int bridges_command(int argc, char** argv);
+// A cave network's plan against a hillside, as a plan view, a long section and the holes its
+// mouths ask of the terrain (caves_commands.cpp, docs/subsystems/caves.md); present when this
+// build has the caves capability.
+int caves_command(int argc, char** argv);
 int soil_command(int argc, char** argv);
 int vine_command(int argc, char** argv);   // cover_commands.cpp
 int cover_command(int argc, char** argv);  // cover_commands.cpp

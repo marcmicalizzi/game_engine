@@ -226,7 +226,269 @@ try {
     $out = & pwsh -NoProfile -File $cli run -Purpose 'cli run' -LockFile $p -Exec 'cmd /c exit -1073741819'
     Test-That 'an access violation''s code (0xC0000005) comes through whole' { $LASTEXITCODE -eq -1073741819 }
   }
-} finally {
+
+  # --- the line (T96) ---------------------------------------------------------------------------
+  # A ticket as any implementation writes it: the name is the place, the body a lock's.
+  function Write-Ticket([string]$lock, [long]$arrivedMs, [long]$declaredSeconds, [long]$ticketPid, [double]$aliveSeconds, [string]$purpose, [int]$counter = 0) {
+    $dir = "$lock.line"
+    New-Item -ItemType Directory -Force -Path $dir | Out-Null
+    $name = 't-{0:D16}-{1:D16}-{2:D10}-{3:D4}.json' -f ($arrivedMs + $declaredSeconds * 1000), $arrivedMs, $ticketPid, $counter
+    $body = [ordered]@{
+      owner = 'claude-engine'; purpose = $purpose; pid = $ticketPid
+      started = (ConvertTo-MachineLockTime ([DateTimeOffset]::FromUnixTimeMilliseconds($arrivedMs).UtcDateTime))
+      expires = (ConvertTo-MachineLockTime ([DateTime]::UtcNow.AddSeconds($aliveSeconds))); host = 'TESTHOST'
+      declared_s = $declaredSeconds
+    } | ConvertTo-Json -Compress
+    $path = Join-Path $dir $name
+    [IO.File]::WriteAllText($path, $body)
+    return $path
+  }
+  function Get-NowMs { return [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() }
+  # A waiter in a process of its own, as a second agent is: `gpu-lock.ps1 run` at the case's lock.
+  # No window, and its output in the case's scratch rather than in this test's.
+  $script:children = 0
+  function Start-Child([string[]]$arguments) {
+    $script:children++
+    $log = Join-Path $scratch "child$($script:children).log"
+    return Start-Process pwsh -PassThru -NoNewWindow -RedirectStandardOutput $log -RedirectStandardError "$log.err" -ArgumentList $arguments
+  }
+  function Start-Waiter([string]$lock, [string]$purpose, [string]$exec, [double]$minutes = 10) {
+    return Start-Child @('-NoProfile', '-File', "`"$cli`"", 'run', '-Purpose', "`"$purpose`"", '-Minutes', "$minutes", '-LockFile', "`"$lock`"", '-Exec', "`"$exec`"")
+  }
+  function Wait-Line([string]$lock, [int]$count, [int]$timeoutSeconds = 60) {
+    $until = [DateTime]::UtcNow.AddSeconds($timeoutSeconds)
+    while ([DateTime]::UtcNow -lt $until) {
+      if ((Get-MachineLockLine -Path $lock).Count -eq $count) { return $true }
+      Start-Sleep -Milliseconds 50
+    }
+    return $false
+  }
+
+  Write-Host 'the line: tickets'
+  $p = New-LockPath
+  $theirs = Write-Ticket $p ((Get-NowMs) - 10000) 600 4321 30 'ahead of everyone'
+  $r = Enter-MachineLock -Path $p -Purpose 'x' -Owner 'claude-engine' -LeaseMinutes 10
+  Test-That 'a free lock is not taken past a live ticket, and the answer says where the ask stood' {
+    $r.Outcome -eq 'Busy' -and -not (Test-Path -LiteralPath $p) -and -not $r.Holder.Present -and
+    $r.Place.Ahead -eq 1 -and (Format-MachineLockRefusal $r) -match "free, and not this ask's turn: it was behind 1 of the 2 in the line, first 'claude-engine' \(pid 4321\): ahead of everyone, waiting 1\d s"
+  }
+  Test-That 'and the ask left no ticket of its own behind' { @(Get-ChildItem -LiteralPath "$p.line").Count -eq 1 }
+  Remove-Item -LiteralPath $theirs -Force
+  $dead = Write-Ticket $p ((Get-NowMs) - 60000) 600 4321 -5 'died in the line'
+  Test-That 'a ticket whose lease ran out is not in the line' { (Get-MachineLockLine -Path $p).Count -eq 0 }
+  $r = Enter-MachineLock -Path $p -Purpose 'x' -Owner 'claude-engine' -LeaseMinutes 10
+  Test-That 'and does not hold the lock from anyone; whoever passes removes it' {
+    $r.Outcome -eq 'Taken' -and -not (Test-Path -LiteralPath $dead) -and @(Get-ChildItem -LiteralPath "$p.line").Count -eq 0
+  }
+  Exit-MachineLock -Handle $r.Handle
+
+  $p = New-LockPath
+  $fresh = Write-Ticket $p ((Get-NowMs) - 1000) 600 4321 30 'ten minutes, just now'
+  $r = Enter-MachineLock -Path $p -Purpose 'x' -Owner 'claude-engine' -LeaseMinutes 2
+  Test-That 'a two-minute ask passes a ten-minute ask that arrived a second ago' { $r.Outcome -eq 'Taken' }
+  Exit-MachineLock -Handle $r.Handle
+  Remove-Item -LiteralPath $fresh -Force
+  Write-Ticket $p ((Get-NowMs) - 500000) 600 4321 30 'ten minutes, waited' | Out-Null
+  $r = Enter-MachineLock -Path $p -Purpose 'x' -Owner 'claude-engine' -LeaseMinutes 2
+  Test-That 'and not one that has waited longer than the difference between them' { $r.Outcome -eq 'Busy' -and $r.Place.Ahead -eq 1 }
+
+  $p = New-LockPath
+  $t0 = (Get-NowMs) - 100000
+  Write-Ticket $p ($t0 + 5) 120 700 30 'later key' | Out-Null
+  Write-Ticket $p $t0 600 900 30 'long, first to arrive' | Out-Null
+  Write-Ticket $p $t0 120 800 30 'same millisecond, higher pid' | Out-Null
+  Write-Ticket $p $t0 120 300 30 'same millisecond, lower pid' | Out-Null
+  Write-Ticket $p $t0 120 300 30 'same pid, its second ask' 1 | Out-Null
+  Write-Ticket $p ($t0 - 1000) 121 950 30 'same key, earlier arrival' | Out-Null
+  [IO.File]::WriteAllText((Join-Path "$p.line" 'README.txt'), 'not a ticket')
+  $line = Get-MachineLockLine -Path $p
+  Test-That 'the order is the tickets'' own: key, arrival, pid, counter (the same six the C++ test sorts)' {
+    ($line | ForEach-Object Purpose) -join '|' -eq 'same key, earlier arrival|same millisecond, lower pid|same pid, its second ask|same millisecond, higher pid|later key|long, first to arrive' -and
+    $line[5].DeclaredSeconds -eq 600 -and $line[5].Pid -eq 900
+  }
+
+  Write-Host 'the line: status'
+  Write-Lock $p 'astra-blender' 30
+  $out = & pwsh -NoProfile -File $cli status -LockFile $p
+  Test-That 'status prints the holder, since when and until when, then the line in order' {
+    $LASTEXITCODE -eq 2 -and $out.Count -eq 8 -and $out[0] -match "^held by 'astra-blender': held by a test \(until .+Z\) \(pid 4321, since .+Z\)$" -and
+    $out[1] -eq '6 waiting, first served first:' -and
+    $out[2] -match "^  1\. 'claude-engine' \(pid 950\): same key, earlier arrival, waiting 1\d\d s, asks 2 min, since .+Z$" -and
+    $out[7] -match "^  6\. 'claude-engine' \(pid 900\): long, first to arrive, waiting \d+ s, asks 10 min, since .+Z$"
+  }
+  Remove-Item -LiteralPath $p -Force
+  $out = & pwsh -NoProfile -File $cli status -LockFile $p
+  Test-That 'a free lock with a line is "free", exit 0, and the line' { $LASTEXITCODE -eq 0 -and $out[0] -eq 'free' -and $out.Count -eq 8 }
+  $out = & pwsh -NoProfile -File $cli acquire -Purpose 'cli, no turn' -LockFile $p -Minutes 30
+  Test-That 'acquire of a free lock behind a line is busy, exit 2, and says so' {
+    $LASTEXITCODE -eq 2 -and "$out" -match "^busy: free, and not this ask's turn: it was behind 6 of the 7 in the line" -and -not (Test-Path -LiteralPath $p)
+  }
+
+  Write-Host 'the line: several processes'
+  # Somebody holds the lock; three waiters arrive one at a time, and a fourth process that has
+  # just held the lock asks again (here: arrives last). Each appends its name while it holds.
+  $p = New-LockPath
+  $order = "$p.order.txt"
+  Write-Lock $p 'astra-blender' 30
+  $sw = [Diagnostics.Stopwatch]::StartNew()
+  $waiters = @()
+  foreach ($n in 'one', 'two', 'three') {
+    $waiters += Start-Waiter $p "waiter $n" "Add-Content -LiteralPath '$order' -Value '$n'; Start-Sleep -Milliseconds 300"
+    if (-not (Wait-Line $p $waiters.Count)) { break }
+  }
+  Test-That 'three waiters stand in the line in the order they arrived' {
+    ((Get-MachineLockLine -Path $p) | ForEach-Object Purpose) -join '|' -eq 'waiter one|waiter two|waiter three'
+  }
+  Test-That 'and nobody passed the holder' { -not (Test-Path -LiteralPath $order) }
+  Remove-Item -LiteralPath $p -Force
+  $waiters | ForEach-Object { $_.WaitForExit(120000) | Out-Null }
+  Test-That "they are served in that order (three pwsh waiters, $([int]$sw.Elapsed.TotalSeconds) s)" {
+    (Get-Content -LiteralPath $order) -join '|' -eq 'one|two|three' -and -not (Test-Path -LiteralPath $p)
+  }
+
+  # A holder that lets go and asks again goes behind whoever was waiting: `again` holds, `late`
+  # arrives while it does, `again` releases and asks at once (the second run starts as the first
+  # ends), and `late` is served before `again`'s second hold.
+  $p = New-LockPath
+  $order = "$p.order.txt"
+  $sw = [Diagnostics.Stopwatch]::StartNew()
+  [IO.File]::WriteAllText("$p.again.ps1", @"
+& '$cli' run -Purpose again -LockFile '$p' -Exec "Add-Content -LiteralPath '$order' -Value 'again 1'; while (-not (Test-Path -LiteralPath '$p.go')) { Start-Sleep -Milliseconds 50 }"
+& '$cli' run -Purpose again -LockFile '$p' -Exec "Add-Content -LiteralPath '$order' -Value 'again 2'"
+"@)
+  $again = Start-Child @('-NoProfile', '-File', "`"$p.again.ps1`"")
+  $until = [DateTime]::UtcNow.AddSeconds(60)
+  while (-not (Test-Path -LiteralPath $order) -and [DateTime]::UtcNow -lt $until) { Start-Sleep -Milliseconds 50 }
+  $late = Start-Waiter $p 'late' "Add-Content -LiteralPath '$order' -Value 'late'; Start-Sleep -Milliseconds 300"
+  $lined = Wait-Line $p 1
+  [IO.File]::WriteAllText("$p.go", 'go')
+  $late.WaitForExit(120000) | Out-Null; $again.WaitForExit(120000) | Out-Null
+  Test-That "a holder that releases and asks again goes behind the one that was waiting ($([int]$sw.Elapsed.TotalSeconds) s)" {
+    $lined -and (Get-Content -LiteralPath $order) -join '|' -eq 'again 1|late|again 2'
+  }
+
+  # A waiter killed in the line (Stop-Process on this test's own child: no finally runs, its
+  # ticket stays) stops counting when its ticket's lease runs out. The doomed one asks with a
+  # three-second ticket so that the case takes seconds; a tool's own is 30 s, and the rule is the
+  # same one.
+  $p = New-LockPath
+  $order = "$p.order.txt"
+  Write-Lock $p 'astra-blender' 30
+  [IO.File]::WriteAllText("$p.doomed.ps1", @"
+Import-Module '$module' -Force
+Enter-MachineLock -Path '$p' -Purpose doomed -Owner claude-engine -LeaseMinutes 10 -Wait -TicketLeaseSeconds 3 | Out-Null
+Add-Content -LiteralPath '$order' -Value 'doomed'
+"@)
+  $doomed = Start-Child @('-NoProfile', '-File', "`"$p.doomed.ps1`"")
+  $one = Wait-Line $p 1
+  $behind = Start-Waiter $p 'behind' "Add-Content -LiteralPath '$order' -Value 'behind'"
+  $two = Wait-Line $p 2
+  Stop-Process -Id $doomed.Id -Force
+  $doomed.WaitForExit(30000) | Out-Null
+  Remove-Item -LiteralPath $p -Force
+  $sw = [Diagnostics.Stopwatch]::StartNew()
+  $behind.WaitForExit(120000) | Out-Null
+  $waited = $sw.Elapsed.TotalSeconds
+  Test-That ("a waiter killed in the line blocks the one behind it for its ticket's lease and no longer ({0:N1} s; the bound is 4 s and the machine)" -f $waited) {
+    $one -and $two -and $behind.HasExited -and $waited -lt 4 + 0.25 + 10 -and (Get-Content -LiteralPath $order) -join '|' -eq 'behind'
+  }
+  Test-That 'and its ticket is gone, removed by the one that passed it' { (Get-MachineLockLine -Path $p).Count -eq 0 -and @(Get-ChildItem -LiteralPath "$p.line" -Filter 't-*.json').Count -eq 0 }
+
+  Write-Host 'the build lock, through tools/linux-build.ps1 -LockOnly'
+  # The container build's lock is this protocol at another path, taken by linux-build.ps1; its
+  # line is tested through the script itself, at a lock of the case's own and with no Docker.
+  $build = Join-Path $PSScriptRoot 'linux-build.ps1'
+  $buildLockBefore = $env:ENGINE_LINUX_BUILD_LOCK
+  try {
+    $p = New-LockPath
+    $env:ENGINE_LINUX_BUILD_LOCK = $p
+    function Start-Build([double]$seconds, [string]$log) {
+      return Start-Process pwsh -PassThru -NoNewWindow -RedirectStandardOutput $log -RedirectStandardError "$log.err" `
+        -ArgumentList @('-NoProfile', '-File', "`"$build`"", '-LockOnly', "$seconds")
+    }
+    Write-Lock $p 'claude-engine' 30
+    $sw = [Diagnostics.Stopwatch]::StartNew()
+    $builds = @()
+    foreach ($n in 1..3) {
+      $builds += Start-Build (0.3 + $n / 100) "$p.build$n.log"
+      if (-not (Wait-Line $p $builds.Count)) { break }
+    }
+    $line = Get-MachineLockLine -Path $p
+    Test-That 'three builds wait in the line in the order they started, each asking ten minutes' {
+      $line.Count -eq 3 -and ($line | ForEach-Object Purpose) -join '|' -match '^linux-build -LockOnly 0\.31 in .+\|linux-build -LockOnly 0\.32 in .+\|linux-build -LockOnly 0\.33 in ' -and
+      @($line | Where-Object { $_.DeclaredSeconds -ne 600 }).Count -eq 0
+    }
+    $out = & pwsh -NoProfile -File $build -LockOnly 0.1 -NoWait 2>&1
+    Test-That '-NoWait behind them exits 2 and names the holder and its place in the line' {
+      $LASTEXITCODE -eq 2 -and "$out" -match "linux-build: the build lock is not this build's to take: held by 'claude-engine': held by a test \(until .+\); this ask was behind 3 of the 4 in the line, first 'claude-engine' \(pid \d+\): linux-build -LockOnly 0\.31 in "
+    }
+    $out = & pwsh -NoProfile -File $cli status -LockFile $p
+    Test-That 'gpu-lock.ps1 status -LockFile shows the build lock''s line' { $out.Count -eq 5 -and $out[1] -eq '3 waiting, first served first:' -and $out[4] -match 'LockOnly 0\.33' }
+    # Who holds it, looked at every 20 ms while the three are served: their pids, in order.
+    $served = New-Object System.Collections.Generic.List[long]
+    Remove-Item -LiteralPath $p -Force
+    $until = [DateTime]::UtcNow.AddSeconds(120)
+    while (@($builds | Where-Object { -not $_.HasExited }).Count -gt 0 -and [DateTime]::UtcNow -lt $until) {
+      $held = Read-MachineLock -Path $p
+      if ($held.Readable -and ($served.Count -eq 0 -or $served[$served.Count - 1] -ne $held.Pid)) { $served.Add($held.Pid) }
+      Start-Sleep -Milliseconds 20
+    }
+    Test-That "and are served in that order (three script runs, $([int]$sw.Elapsed.TotalSeconds) s)" {
+      ($served -join '|') -eq (($builds | ForEach-Object Id) -join '|') -and -not (Test-Path -LiteralPath $p)
+    }
+    Test-That 'a waiting build said who held the lock and where it stood' {
+      (Get-Content -LiteralPath "$p.build3.log" -Raw) -match "linux-build: waiting; held by 'claude-engine': held by a test \(until .+\); this ask is behind 2 of the 3 in the line, first 'claude-engine' \(pid $($builds[0].Id)\)"
+    }
+
+    # A build that ends and asks again (an agent's second preset) goes behind the build that was
+    # waiting: one process runs the script twice, a second arrives during its first hold.
+    $p = New-LockPath
+    $env:ENGINE_LINUX_BUILD_LOCK = $p
+    $sw = [Diagnostics.Stopwatch]::StartNew()
+    [IO.File]::WriteAllText("$p.twice.ps1", "& '$build' -LockOnly 3`n& '$build' -LockOnly 0.3`n")
+    $twice = Start-Process pwsh -PassThru -NoNewWindow -RedirectStandardOutput "$p.twice.log" -RedirectStandardError "$p.twice.log.err" `
+      -ArgumentList @('-NoProfile', '-File', "`"$p.twice.ps1`"")
+    $until = [DateTime]::UtcNow.AddSeconds(60)
+    while (-not (Read-MachineLock -Path $p).Readable -and [DateTime]::UtcNow -lt $until) { Start-Sleep -Milliseconds 20 }
+    $other = Start-Build 0.3 "$p.other.log"
+    $served = New-Object System.Collections.Generic.List[long]
+    $until = [DateTime]::UtcNow.AddSeconds(120)
+    while (-not ($twice.HasExited -and $other.HasExited) -and [DateTime]::UtcNow -lt $until) {
+      $held = Read-MachineLock -Path $p
+      if ($held.Readable -and ($served.Count -eq 0 -or $served[$served.Count - 1] -ne $held.Pid)) { $served.Add($held.Pid) }
+      Start-Sleep -Milliseconds 20
+    }
+    Test-That "a build that releases and asks again is served after the build that was waiting ($([int]$sw.Elapsed.TotalSeconds) s)" {
+      ($served -join '|') -eq "$($twice.Id)|$($other.Id)|$($twice.Id)" -and -not (Test-Path -LiteralPath $p)
+    }
+
+    # A waiting build whose script is killed (a tool timeout: no finally runs) leaves a ticket
+    # nobody refreshes. The script has no knob for the ticket's lease, so this is the one case in
+    # the tree that waits out the real one: 30 s, counted in whole seconds, and a look. Each of
+    # those seconds is the bound being shown; the other cases use a three-second ticket.
+    $p = New-LockPath
+    $env:ENGINE_LINUX_BUILD_LOCK = $p
+    Write-Lock $p 'claude-engine' 30
+    $doomed = Start-Build 60 "$p.doomed.log"
+    $one = Wait-Line $p 1
+    $behind = Start-Build 0.3 "$p.behind.log"
+    $two = Wait-Line $p 2
+    Stop-Process -Id $doomed.Id -Force
+    $doomed.WaitForExit(30000) | Out-Null
+    $sw = [Diagnostics.Stopwatch]::StartNew()
+    Remove-Item -LiteralPath $p -Force
+    $took = $null
+    $until = [DateTime]::UtcNow.AddSeconds(90)
+    while ($null -eq $took -and [DateTime]::UtcNow -lt $until) {
+      if ((Read-MachineLock -Path $p).Pid -eq $behind.Id) { $took = $sw.Elapsed.TotalSeconds } else { Start-Sleep -Milliseconds 50 }
+    }
+    $behind.WaitForExit(60000) | Out-Null
+    Test-That ("a waiting build that is killed holds the build behind it for its ticket's lease and no longer ({0:N1} s after the lock was free; the bound is 32 s)" -f $took) {
+      $one -and $two -and $null -ne $took -and $took -lt 32 + 5 -and $took -gt 5 -and $behind.HasExited -and -not (Test-Path -LiteralPath $p)
+    }
+  } finally {
+    $env:ENGINE_LINUX_BUILD_LOCK = $buildLockBefore
+  }} finally {
   if ($KeepTemp) { Write-Host "kept $scratch" } else { Remove-Item -Recurse -Force -LiteralPath $scratch -ErrorAction SilentlyContinue }
 }
 

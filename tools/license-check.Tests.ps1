@@ -119,6 +119,44 @@ try {
   Test-That 'a record without the declared-as column is refused with a sentence' {
     try { Invoke-LicenseCheck -Root $t.Root | Out-Null; $false } catch { $_.Exception.Message -match 'declared or vendored as' }
   }
+
+  # Ported sources (T86): the record's "Ported, not vendored" table against the script's list, both
+  # ways, and the notice in each file.
+  $notice = 'Permission to use, copy, modify, and distribute this'
+  function New-PortTree([string[]]$portRows, [hashtable]$files) {
+    $p = New-Tree @((Row 'alpha' 'MIT')) @('alpha')
+    $md = Get-Content -Raw (Join-Path $p.Root 'third_party/LICENSES.md')
+    $section = (@('', '## Ported, not vendored', '', '| Work | Version | License | What was ported | Ported into |', '|---|---|---|---|---|') + $portRows) -join "`n"
+    $md.Replace("`n## Consulted, not vendored", "$section`n`n## Consulted, not vendored") | Set-Content (Join-Path $p.Root 'third_party/LICENSES.md')
+    foreach ($rel in $files.Keys) {
+      $f = Join-Path $p.Root $rel
+      New-Item -ItemType Directory -Force -Path (Split-Path $f) | Out-Null
+      $files[$rel] | Set-Content $f
+    }
+    return $p.Root
+  }
+  function PortRow([string]$path) { "| a work | 1.0 | its notice | a function | ``$path`` (``the_function``) |" }
+  $withNotice = "// $notice`n// software is freely granted, provided that this notice`n// is preserved."
+  $portRoot = New-PortTree @((PortRow 'core/x/a.h'), (PortRow 'domain/y/b.cpp')) @{ 'core/x/a.h' = $withNotice; 'domain/y/b.cpp' = $withNotice }
+  $list = @(@{ Path = 'core/x/a.h'; Notice = $notice }, @{ Path = 'domain/y/b.cpp'; Notice = $notice })
+  Test-That 'every listed port recorded and carrying its notice is clean, and the main record still reads one row' {
+    @(Test-PortedSources -Root $portRoot -Ported $list).Count -eq 0 -and @((Invoke-LicenseCheck -Root $portRoot).Rows).Count -eq 1
+  }
+  $r = @(Test-PortedSources -Root $portRoot -Ported ($list + @(@{ Path = 'core/x/c.h'; Notice = $notice })))
+  Test-That 'a port in the list with no row on the page fails, naming the file' {
+    @($r | Where-Object { $_ -match '^core/x/c\.h: listed as a port .* has no row naming it' }).Count -eq 1
+  }
+  $r = @(Test-PortedSources -Root $portRoot -Ported @($list[0]))
+  Test-That 'a row on the page naming no port in the list fails, naming its line' {
+    $r.Count -eq 1 -and $r[0] -match '^third_party/LICENSES\.md:\d+: records `domain/y/b\.cpp` as a port'
+  }
+  $portRoot = New-PortTree @((PortRow 'core/x/a.h')) @{ 'core/x/a.h' = '// the notice was dropped' }
+  $r = @(Test-PortedSources -Root $portRoot -Ported @($list[0]))
+  Test-That 'a listed port whose file no longer holds its notice fails' {
+    $r.Count -eq 1 -and $r[0] -match '^core/x/a\.h: .* does not hold it'
+  }
+  $portRoot = New-PortTree @() @{}
+  Test-That 'a page with no ported section and an empty list is clean' { @(Test-PortedSources -Root $portRoot -Ported @()).Count -eq 0 }
 } finally {
   Remove-Item -Recurse -Force -LiteralPath $scratch -ErrorAction SilentlyContinue
 }

@@ -16,7 +16,7 @@
       "file": "systems/renderer/src/scene_renderer.cpp",
       "function": "SceneRenderer::record_frame",
       "why": "every pass and every feature flag of a frame",
-      "ceiling": 3302
+      "ceiling": 3358
     },
     {
       "id": "renderer.record_frame.add_pass",
@@ -25,28 +25,28 @@
       "function": "SceneRenderer::record_frame",
       "pattern": "\\badd_pass\\s*[(<]",
       "why": "the passes a frame adds inline rather than through a frame-pass seam",
-      "ceiling": 43
+      "ceiling": 44
     },
     {
       "id": "renderer.gpu_scene_cpp.lines",
       "measure": "file-lines",
       "file": "systems/renderer/src/gpu_scene.cpp",
       "why": "every feature's GPU state",
-      "ceiling": 6791
+      "ceiling": 6846
     },
     {
       "id": "renderer.gpu_scene_h.lines",
       "measure": "file-lines",
       "file": "systems/renderer/include/systems/renderer/gpu_scene.h",
       "why": "every feature's GPU state",
-      "ceiling": 1834
+      "ceiling": 2040
     },
     {
       "id": "engine_view.main_cpp.lines",
       "measure": "file-lines",
       "file": "apps/engine_view/main.cpp",
       "why": "every play feature and every flag",
-      "ceiling": 7469
+      "ceiling": 7470
     },
     {
       "id": "engine_view.run_view.lines",
@@ -107,19 +107,19 @@
       "id": "page:docs/subsystems/renderer.md",
       "measure": "page-bytes",
       "file": "docs/subsystems/renderer.md",
-      "ceiling": 967119
+      "ceiling": 1003088
     },
     {
       "id": "page:docs/subsystems/apps.md",
       "measure": "page-bytes",
       "file": "docs/subsystems/apps.md",
-      "ceiling": 654032
+      "ceiling": 659199
     },
     {
       "id": "page:docs/subsystems/gfx.md",
       "measure": "page-bytes",
       "file": "docs/subsystems/gfx.md",
-      "ceiling": 309129
+      "ceiling": 309516
     },
     {
       "id": "page:docs/subsystems/geometry.md",
@@ -131,7 +131,7 @@
       "id": "page:docs/subsystems/flora.md",
       "measure": "page-bytes",
       "file": "docs/subsystems/flora.md",
-      "ceiling": 222617
+      "ceiling": 236015
     },
     {
       "id": "page:docs/plan/05-simulation.md",
@@ -149,13 +149,13 @@
       "id": "page:docs/subsystems/water.md",
       "measure": "page-bytes",
       "file": "docs/subsystems/water.md",
-      "ceiling": 164554
+      "ceiling": 172375
     },
     {
       "id": "page:docs/subsystems/protocol.md",
       "measure": "page-bytes",
       "file": "docs/subsystems/protocol.md",
-      "ceiling": 114676
+      "ceiling": 115005
     },
     {
       "id": "page:docs/experiments/e10-generated-props.md",
@@ -173,13 +173,19 @@
       "id": "page:docs/subsystems/world.md",
       "measure": "page-bytes",
       "file": "docs/subsystems/world.md",
-      "ceiling": 101267
+      "ceiling": 110226
     },
     {
       "id": "page:AGENTS.md",
       "measure": "page-bytes",
       "file": "AGENTS.md",
-      "ceiling": 72094
+      "ceiling": 72441
+    },
+    {
+      "id": "page:docs/subsystems/rocks.md",
+      "measure": "page-bytes",
+      "file": "docs/subsystems/rocks.md",
+      "ceiling": 137063
     }
   ],
   "rebaselines": [
@@ -273,6 +279,387 @@
           "id": "page:AGENTS.md",
           "old": 70114,
           "new": 72094
+        }
+      ]
+    },
+    {
+      "date": "2026-11-10",
+      "by": "fable",
+      "reason": "batch 59's day wave (the solver needs: G141 to G145, W93, W95): rocks.md becomes a pinned page where the exposure rule, ledges, tiers and the supply rule meet; apps.md, flora.md, water.md and renderer.md by their rows' raise files",
+      "commit": "3b3a2997",
+      "folded": [
+        {
+          "name": "b59-day",
+          "reason": "rocks.md passes the default page ceiling where G142 (exposure, ledges, tiers) and G143 (what a face sheds) meet: 99,134 and 93,232 bytes alone, 115,626 together; neither branch tripped it",
+          "date": "2026-11-10",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "page:docs/subsystems/renderer.md": 2,
+            "page:docs/subsystems/rocks.md": 15626
+          }
+        },
+        {
+          "name": "G141",
+          "reason": "G141: the sward's ground under the blades, its undrawn leaves and its far colour are documented on flora.md, and the terrain layer's far_color on renderer.md",
+          "date": "2026-11-10",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "page:docs/subsystems/renderer.md": 1057,
+            "page:docs/subsystems/flora.md": 5902
+          }
+        },
+        {
+          "name": "W93",
+          "reason": "engine-content channels takes --ddc, keeps each entry's network as one plan under it and writes the plans' keys (apps.md); water.md says what WaterChannel versions 4 and 5 carry for the exclusion, which the page lacked",
+          "date": "2026-11-10",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "page:docs/subsystems/apps.md": 432,
+            "page:docs/subsystems/water.md": 609
+          }
+        },
+        {
+          "name": "W95",
+          "reason": "apps.md gains the section for the new command, engine-content landform (a region sketch solved into an eroded ground): the page documents every engine-content command",
+          "date": "2026-11-10",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "page:docs/subsystems/apps.md": 1078
+          }
+        },
+        {
+          "name": "W95b",
+          "reason": "apps.md's engine-content landform section says what stage B added to the command: the sediment and resistance fields, the sediment's sand in the drainage picture, and the summary's sweeps, sediment counts and budget",
+          "date": "2026-11-10",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "page:docs/subsystems/apps.md": 211
+          }
+        }
+      ],
+      "changes": [
+        {
+          "id": "page:docs/subsystems/renderer.md",
+          "old": 967119,
+          "new": 968178
+        },
+        {
+          "id": "page:docs/subsystems/apps.md",
+          "old": 654032,
+          "new": 655753
+        },
+        {
+          "id": "page:docs/subsystems/flora.md",
+          "old": 222617,
+          "new": 228519
+        },
+        {
+          "id": "page:docs/subsystems/water.md",
+          "old": 164554,
+          "new": 165163
+        },
+        {
+          "id": "page:docs/subsystems/rocks.md",
+          "old": 100000,
+          "new": 115626
+        }
+      ]
+    },
+    {
+      "date": "2026-11-11",
+      "by": "fable",
+      "reason": "Batch 59's night wave: fifteen rows' recorded growth folded after their merges (W94, G148, G140, T90, G142c, G143c, W96, W104, G146, R142, S100 stage B, R143)",
+      "commit": "18f6b1d3",
+      "folded": [
+        {
+          "name": "G140",
+          "reason": "G140 adds the meadow community section (the rule, the covers, a plant a cell, the stand-ins, the far form, its cost and budget) to flora.md and G139 the band where a site field draws the boundary",
+          "date": "2026-11-10",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "page:docs/subsystems/flora.md": 7496
+          }
+        },
+        {
+          "name": "G142c",
+          "reason": "G142c: a ledge's block is a body, a crag's risers its rock (near form), a tier's rock by its beds, and what an old surface beside a fresh break would take",
+          "date": "2026-11-11",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "page:docs/subsystems/rocks.md": 5127
+          }
+        },
+        {
+          "name": "G143c",
+          "reason": "G143's third pass on the deposits: the coarse forms' border lock, the bed as rubble, the supply's burial feedback and the toe, each with its measurement and its source",
+          "date": "2026-11-11",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "page:docs/subsystems/rocks.md": 7916
+          }
+        },
+        {
+          "name": "G146",
+          "reason": "apps.md gains the section for the new engine-content cave-plan command (the cave network's plan as a survey)",
+          "date": "2026-11-10",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "page:docs/subsystems/apps.md": 710
+          }
+        },
+        {
+          "name": "G148",
+          "reason": "G148: the engine-content matgen command gets its section in apps.md, and AGENTS.md says a checkout with no pack has generated sets after one command",
+          "date": "2026-11-10",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "page:docs/subsystems/apps.md": 823,
+            "page:AGENTS.md": 347
+          }
+        },
+        {
+          "name": "R142",
+          "reason": "R142, meshes that arrive with their tiles: gpu_scene.h gains the mesh room's public surface and members (the room itself is gpu_scene_meshes.cpp); gpu_scene.cpp the room's layout call, its records, the material arena, the tail's checks for a mesh of the room and the geometry hand-over for a scene with no terrain levels; record_frame the two material buffers in the terrain upload pass and the pair expansion's read of the mesh records; renderer.md the section Meshes that come and go; world.md the section A tile's meshes: residency by reference",
+          "date": "2026-11-11",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "renderer.record_frame.lines": 11,
+            "renderer.gpu_scene_cpp.lines": 51,
+            "renderer.gpu_scene_h.lines": 89,
+            "page:docs/subsystems/renderer.md": 9094,
+            "page:docs/subsystems/world.md": 7378
+          }
+        },
+        {
+          "name": "renderer.gpu_scene_cpp.lines",
+          "reason": "S100 stage B: a closed body's lee (the grown share of its fetch per texel) and the mesh's three spacings join the water surface the GPU scene writes; water.md gains what the mesh carries, the spectrum for every body and the foam of the waves that broke",
+          "date": "2026-11-10",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "renderer.gpu_scene_cpp.lines": 17,
+            "page:docs/subsystems/water.md": 7212
+          }
+        },
+        {
+          "name": "renderer.record_frame.lines",
+          "reason": "R143: the blas compact pass, the bottom-level build over what the frame drew, the forms packed, and their sections of renderer.md",
+          "date": "2026-11-11",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "renderer.record_frame.lines": 37,
+            "renderer.record_frame.add_pass": 1,
+            "renderer.gpu_scene_cpp.lines": 23,
+            "renderer.gpu_scene_h.lines": 12,
+            "page:docs/subsystems/renderer.md": 10916
+          }
+        },
+        {
+          "name": "T90",
+          "reason": "T90: apps.md names a far level's archive (far-<spacing_mm>.tiles) and says what --ddc reaches",
+          "date": "2026-11-11",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "page:docs/subsystems/apps.md": 384
+          }
+        },
+        {
+          "name": "W104",
+          "reason": "apps.md: the landform command's summary gains the network's levels, the banks taken, the ice and where the solve's seconds went, and its field list the divided discharge, a channel's width, the ice and its till (W104 stage C)",
+          "date": "2026-11-11",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "page:docs/subsystems/apps.md": 254
+          }
+        },
+        {
+          "name": "W94",
+          "reason": "W94: the formation is drawn from a seed and its members into a 512-bed table and its tops move along strike; renderer.md \"Formation bands\" says what the table, the binary search, the deviation integral, the lateral fields and the fault are and what they cost, and rocks.md gains \"What a solver asks the formation\", the queries the rock solvers read",
+          "date": "2026-11-11",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "page:docs/subsystems/renderer.md": 3863,
+            "page:docs/subsystems/rocks.md": 2511
+          }
+        },
+        {
+          "name": "W96",
+          "reason": "engine-content routes is a new subcommand (W96); apps.md lists every engine-content command, so the page gains its section of four lines",
+          "date": "2026-11-11",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "page:docs/subsystems/apps.md": 322
+          }
+        }
+      ],
+      "changes": [
+        {
+          "id": "renderer.record_frame.lines",
+          "old": 3302,
+          "new": 3350
+        },
+        {
+          "id": "renderer.record_frame.add_pass",
+          "old": 43,
+          "new": 44
+        },
+        {
+          "id": "renderer.gpu_scene_cpp.lines",
+          "old": 6791,
+          "new": 6882
+        },
+        {
+          "id": "renderer.gpu_scene_h.lines",
+          "old": 1834,
+          "new": 1935
+        },
+        {
+          "id": "page:docs/subsystems/renderer.md",
+          "old": 968178,
+          "new": 992047
+        },
+        {
+          "id": "page:docs/subsystems/apps.md",
+          "old": 655753,
+          "new": 658249
+        },
+        {
+          "id": "page:docs/subsystems/flora.md",
+          "old": 228519,
+          "new": 236015
+        },
+        {
+          "id": "page:docs/subsystems/water.md",
+          "old": 165163,
+          "new": 172375
+        },
+        {
+          "id": "page:docs/subsystems/world.md",
+          "old": 101267,
+          "new": 108517
+        },
+        {
+          "id": "page:AGENTS.md",
+          "old": 72094,
+          "new": 72441
+        },
+        {
+          "id": "page:docs/subsystems/rocks.md",
+          "old": 115626,
+          "new": 131180
+        }
+      ]
+    },
+    {
+      "date": "2026-11-11",
+      "by": "Marc Micalizzi",
+      "reason": "",
+      "commit": "489e3b9a",
+      "folded": [
+        {
+          "name": "G147",
+          "reason": "engine-content bridges: the command's section, beside routes'",
+          "date": "2026-11-11",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "page:docs/subsystems/apps.md": 456
+          }
+        },
+        {
+          "name": "G172",
+          "reason": "G172, T101 and G174 land on rocks.md: the benches section (the members' profile, the stand-off it asks, the crest's shoulder, the top at a coarser cell, their measures), a tier's closed bottom and the foot's carving in A face in tiers, and the flank's notch in A block is a body",
+          "date": "2026-11-11",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "page:docs/subsystems/rocks.md": 5733
+          }
+        },
+        {
+          "name": "R147",
+          "reason": "Texture residency for admitted meshes (R147): the texture table's public and private blocks in gpu_scene.h, the upload pass's image copies in record_frame, and the pages that say what is built (renderer.md, gfx.md, world.md)",
+          "date": "2026-11-11",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "renderer.record_frame.lines": 8,
+            "renderer.gpu_scene_cpp.lines": -36,
+            "renderer.gpu_scene_h.lines": 105,
+            "page:docs/subsystems/renderer.md": 2480,
+            "page:docs/subsystems/gfx.md": 387,
+            "page:docs/subsystems/world.md": 1709
+          }
+        },
+        {
+          "name": "T103",
+          "reason": "T103: engine-view's summary says which material pack the load used (one line, load.materials), and the pages that described the default pack as looked up only with the cache root say it is looked up whatever the root, with the test switch and RenderSceneInfo.materials",
+          "date": "2026-11-11",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "engine_view.main_cpp.lines": 1,
+            "page:docs/subsystems/renderer.md": 130,
+            "page:docs/subsystems/apps.md": 494,
+            "page:docs/subsystems/protocol.md": 329
+          }
+        },
+        {
+          "name": "T94",
+          "reason": "T94: the frame-only pack, and what the formation costs the resolve measured three ways with what took it out, on the formation's section of renderer.md; make_fabric's frame-only pack on rocks.md",
+          "date": "2026-11-11",
+          "by": "Marc Micalizzi",
+          "deltas": {
+            "page:docs/subsystems/renderer.md": 8431,
+            "page:docs/subsystems/rocks.md": 150
+          }
+        }
+      ],
+      "changes": [
+        {
+          "id": "renderer.record_frame.lines",
+          "old": 3350,
+          "new": 3358
+        },
+        {
+          "id": "renderer.gpu_scene_cpp.lines",
+          "old": 6882,
+          "new": 6846
+        },
+        {
+          "id": "renderer.gpu_scene_h.lines",
+          "old": 1935,
+          "new": 2040
+        },
+        {
+          "id": "engine_view.main_cpp.lines",
+          "old": 7469,
+          "new": 7470
+        },
+        {
+          "id": "page:docs/subsystems/renderer.md",
+          "old": 992047,
+          "new": 1003088
+        },
+        {
+          "id": "page:docs/subsystems/apps.md",
+          "old": 658249,
+          "new": 659199
+        },
+        {
+          "id": "page:docs/subsystems/gfx.md",
+          "old": 309129,
+          "new": 309516
+        },
+        {
+          "id": "page:docs/subsystems/protocol.md",
+          "old": 114676,
+          "new": 115005
+        },
+        {
+          "id": "page:docs/subsystems/world.md",
+          "old": 108517,
+          "new": 110226
+        },
+        {
+          "id": "page:docs/subsystems/rocks.md",
+          "old": 131180,
+          "new": 137063
         }
       ]
     }

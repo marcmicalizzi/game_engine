@@ -38,13 +38,16 @@
 #include <core/math/world.h>
 #include <domain/geometry/cluster_lod.h>
 #include <domain/scene_gen/exclusion.h>
+#include <domain/scene_gen/footprint_list.h>
 #include <domain/scene_gen/ground_masks.h>
+#include <domain/scene_gen/site.h>
 #include <domain/scene_gen/tile_source.h>
 
 #include <schemas/scene.h>
 #include <span>
 #include <string>
 #include <string_view>
+#include <utility>
 
 namespace engine::jobs {
 class JobSystem;
@@ -107,15 +110,13 @@ struct Ground {
 // ---- what a generator sees ----------------------------------------------------------------------
 
 // **An earlier entry's placement, as a later one is handed it** (ADR-0046 decision 4, "the
-// placements it is handed in the declared order"; scene_gen.md, "Earlier placements"): where it
-// stands, in whole millimetres of the world, and how far its mesh reaches on the ground there — the
-// radius of the mesh's bounds in the ground's plane, times its scale — which the host computes from
-// the meshes it loaded, since a generator names its meshes by path and never reads another's.
-struct Footprint {
-  i64 x_mm = 0;
-  i64 z_mm = 0;
-  f64 radius = 0.0;  // metres
-};
+// placements it is handed in the declared order"; scene_gen.md, "Earlier placements"): a
+// `Footprint` (exclusion.h, where it is declared so the exclusion can hold one): where it stands,
+// in whole millimetres of the world, and how far its mesh reaches on the ground there — the radius
+// of the mesh's bounds in the ground's plane, times its scale — which the host computes from the
+// meshes it loaded, since a generator names its meshes by path and never reads another's. Since
+// W98 a footprint may be a band or a polygon as well as a disc (scene_gen.md, "Footprints as
+// shapes"); its disc then holds the whole shape, so a reader that knows only discs keeps clear.
 
 // Everything a generator is handed besides its entry, and nothing of any other generator (ADR-0046
 // decision 4). A generator that wants another's output asks the ground it is handed, never the
@@ -172,6 +173,35 @@ struct Context {
   f64 riparian_factor_mm(i64 x_mm, i64 z_mm) const noexcept {
     return exclusion != nullptr ? exclusion->riparian_factor_mm(x_mm, z_mm) : 1.0;
   }
+  // **The site a placement reads** (G144; scene_gen.md, "The site"): elevation, slope, the
+  // downslope direction, heat load, curvature and the distances to water at the point, built once
+  // by the host from the scene's sky and water. Null: `Site::fallback()`, the default latitude and
+  // no water, so a rule still reads the ground. A generator with no rule never asks.
+  const Site* site = nullptr;
+  SiteSample site_mm(i64 x_mm, i64 z_mm, u32 fields = k_site_all) const noexcept {
+    return (site != nullptr ? *site : Site::fallback()).sample_mm(ground, x_mm, z_mm, fields);
+  }
+  // **The scene's formation** (R142; scene_gen.md, "The formation and the ground before its cuts";
+  // `engine.scene.Scene.formation`, W85): the beds a rock solver reads its members, joints and
+  // lithology from, the same record the ground's bands are shaded by, so a cliff, its scree and a
+  // wall built of its stone agree without each entry repeating it. Null: the scene names none, and
+  // `has_formation()` is how a generator that needs one refuses with a sentence.
+  const scene::Formation* formation = nullptr;
+  bool has_formation() const noexcept { return formation != nullptr; }
+  // **The ground as it was before its channels were cut** (R142; the same section): what a solver
+  // that *plans* the cuts stands its plan on, so a plan can be made again from the scene at load
+  // instead of being pasted into it. Made on the first ask — a second provider of the terrain entry
+  // less its cuts, which most generators never want — and `ground` itself for a scene with no cuts
+  // or a host that offers none, where the two are the same surface.
+  struct UncutGround {
+    bool (*fn)(void* context, Ground& out) = nullptr;
+    void* context = nullptr;
+  } uncut_ground;
+  Ground uncut() const {
+    Ground before;
+    return uncut_ground.fn != nullptr && uncut_ground.fn(uncut_ground.context, before) ? before
+                                                                                       : ground;
+  }
 };
 inline constexpr u8 k_no_ring = 0xFFu;
 
@@ -180,10 +210,39 @@ inline constexpr u8 k_no_ring = 0xFFu;
 // A mesh a placement instances: a path the reader resolves through the derived-data cache as it
 // does any scene mesh (glTF, GLB or `.clusters`), the name a summary knows it by, and the content
 // hash its bytes must have (0: unchecked).
+//
+// **A mesh a solver makes is handed as its recipe, not written** (R142; scene_gen.md, "A tile's
+// meshes"): `recipe` is the bytes of the mesh generator's file `path` names
+// (`<anything>.<generator>.json`, domain/assets/mesh_generator.h), and with it nothing is read
+// from disk — `path` is then where the file *would* be, which is what its relative image paths
+// resolve against and what a sentence calls it. The host builds it through the mesh generator
+// registry and the derived-data cache, keyed by what the recipe says (the generator's
+// `source_hash`), so the same recipe handed by two tiles, two runs or two hosts is one cache entry
+// and one resident mesh. `reach` is how far the mesh reaches on the ground from its own origin,
+// metres at scale 1: the generator says it, because a later entry is handed this placement's
+// footprint (`Context::earlier`) before any host has built the mesh; 0 is a point. It is read for
+// a mesh with a recipe only — a file's reach is measured from the file.
+//
+// **It has a constructor, so a generator that names a file writes `{path, name, hash}` and is
+// whole.** As an aggregate, the two members a recipe added made every such three-value initialiser
+// in the tree — the sward's, the wetland's, the litter's — a missing-field error on Clang and GCC
+// (`-Wmissing-field-initializers`; MSVC says nothing), in files that had nothing to say about a
+// recipe. The arguments past the name default to what a file's mesh has.
 struct PlacementMesh {
   std::string path;
   std::string name;
   u64 hash = 0;
+  std::string recipe;
+  f32 reach = 0.0f;
+
+  PlacementMesh() = default;
+  PlacementMesh(std::string mesh_path, std::string mesh_name, u64 mesh_hash = 0,
+                std::string mesh_recipe = {}, f32 mesh_reach = 0.0f)
+      : path(std::move(mesh_path)),
+        name(std::move(mesh_name)),
+        hash(mesh_hash),
+        recipe(std::move(mesh_recipe)),
+        reach(mesh_reach) {}
 };
 
 // One instance: a mesh, where it stands in the world and how it is turned and scaled there, and a
@@ -221,11 +280,31 @@ struct Placement {
 inline constexpr u8 k_handoff_near = 1;
 inline constexpr u8 k_handoff_far = 2;
 
-// What a generator made. `expand` fills `meshes` with what its instances index; `tile` leaves it
-// empty and indexes the list its `meshes` entry gave, which a streamed scene holds resident.
+// What a generator made. `expand` fills `meshes` with what its instances index.
+//
+// **`tile` hands its meshes with its placements** (R142; scene_gen.md, "A tile's meshes"): a
+// tile's placement indexes one list, the generator's resident meshes first (its `meshes` entry's,
+// possibly none) and then this call's `meshes` — index `resident + k` is `meshes[k]` — so a mesh
+// only this tile draws is named here and nowhere else, and exists on no host before the tile does.
+// A host keeps each by reference: built when the first tile that names it activates, resident while
+// any tile held names it, and let go after the last (world.md, "A tile's meshes: residency by
+// reference"). What a tile hands must be what `expand` lists for the same placements, recipe for
+// recipe, since a scene read whole is the same scene.
+//
+// **The shapes it occupies** (R144; scene_gen.md, "The shapes a tile occupies"): the third list of
+// a hand-over, beside the placements and the meshes — what of the ground the entry's things stand
+// on that is not a placement's bounds: a tread's bands, a wall's foot, a pad's or a cave mouth's
+// apron's polygon (`Footprint`, whole millimetres). The host adds them to the exclusion the
+// entries after this one are handed (`Exclusion::add_footprints`, so `Context::excluded_mm`
+// answers by the shape) and to their `Context::earlier`, after the placements' discs. `expand`
+// hands every shape of the entry; `tile` every shape that reaches the tile or stands within the
+// reach a later entry may ask about it, so a point of the tile gets the whole read's answer. The
+// list owns a polygon's points (`FootprintList`), so a generator hands a shape built over its
+// scratch and the points outlive the call.
 struct Placements {
   Vector<PlacementMesh> meshes;
   Vector<Placement> instances;
+  FootprintList shapes;
   // The things made — buildings — for a host's summary.
   u32 things = 0;
   // For `tile`: which representation it drew the tile in, the generator's own numbering (the
@@ -234,9 +313,31 @@ struct Placements {
   void clear() noexcept {
     meshes.clear();
     instances.clear();
+    shapes.clear();
     things = 0;
     kind = 0;
   }
+};
+
+// **What an entry plans for the ground** (R144; scene_gen.md, "What an entry plans for the
+// ground"): one hand-over, two lists, because the ground takes the two in different places.
+//
+//  * `edits` change heights. They are the tile set's (`engine.scene.TerrainTileSet.edits`,
+//    tileset.md): written into the set when it is built, part of its key. The host appends them
+//    after the scene's own, in the entries' order.
+//  * `holes` are where the ground has **no surface** (`engine.scene.Terrain.holes`, terrain.md,
+//    "Holes"): a cave's mouth, a shaft. They are the terrain's, whatever provider makes it — every
+//    level's mesh, the collision and the exclusion read them — and no height says them, which is
+//    why an opening is not a fourth kind of edit: it would sit in the tile set's key and its list
+//    of edits as something the set cannot apply, and a ground with no tile set would have nowhere
+//    to carry it. The host appends them after the scene's own.
+//
+// So a planned edit and the same edit written into the scene are one entry of one list, and build
+// the same ground byte for byte. Coordinates are the plan's: whole millimetres, as metres.
+struct GroundPlan {
+  Vector<scene::TerrainEdit> edits;
+  Vector<scene::TerrainHole> holes;
+  bool empty() const noexcept { return edits.empty() && holes.empty(); }
 };
 
 // A placement generator (ADR-0046 decision 1): a function of its scene entry, the world seed, a
@@ -254,12 +355,18 @@ struct PlacementGeneratorDesc {
   // The whole entry, standing on `context.ground`: a scene read whole.
   bool (*expand)(void* state, const Context& context, Placements& out,
                  std::string* error) = nullptr;
-  // What a streamed scene holds resident for `tile` to name, in the order `tile`'s placements index
-  // it. Read once, when the scene is.
+  // **What must be resident from the start**: a kit every tile draws from (the ruins' blocks, a
+  // sward's patches), in the order `tile`'s placements index it. Read once, when the scene is, and
+  // held for the run — so it lists only what most tiles name, and it costs its bytes whether or not
+  // anyone is near. Null, or an empty list: the entry holds nothing before a tile asks, which is
+  // what a solver whose meshes are a tile's own wants (`Placements`, above). A generator may do
+  // both: a kit here, and a tile's merged mesh with the tile.
   bool (*meshes)(void* state, const Context& context, Vector<PlacementMesh>& out,
                  std::string* error) = nullptr;
   // One tile of it in `context.ring`: the whole expansion restricted to the tile, in that ring's
-  // representation. Empty for a tile the entry puts nothing on.
+  // representation, with the meshes only it names (`Placements::meshes`). Empty for a tile the
+  // entry puts nothing on. It builds no mesh: it says what each is made from, and the host builds
+  // it off the frame's thread.
   bool (*tile)(void* state, TileCoord tile, const Context& context, Placements& out,
                std::string* error) = nullptr;
   // Whether the entry puts anything on `tile`: what a host asks before it treats a ring change as a
@@ -268,6 +375,32 @@ struct PlacementGeneratorDesc {
   // The representation `ring` draws, the generator's own numbering: a tile moving between two
   // rings of one representation is not built again. Null: every ring its own.
   u8 (*representation)(const void* state, const Context& context) noexcept = nullptr;
+  // **Its tiles hand meshes** (`Placements::meshes` from `tile`): what a host reads before it has
+  // seen a tile, to make the room such meshes arrive into — which costs its budget whether or not
+  // a mesh is in it, so a scene none of whose generators says this reserves none and a tile that
+  // hands one anyway is refused with a sentence. Last, so every descriptor written before it reads
+  // as it did.
+  bool tile_meshes = false;
+  // **Those meshes may be alpha-tested** (R145; renderer.md, "Alpha-tested geometry"): a host
+  // chooses its masked pipelines when the scene is made, from the materials it can see then, and a
+  // tile's mesh is not among them. A generator whose tiles may hand a material with an alpha mask
+  // (foliage, a fence) says so here, and the scene draws through the masked pipelines from its
+  // first frame; one that hands such a material without saying so has it drawn opaque, said once
+  // by name. It costs a scene what its first alpha-tested material costs any scene, so a solver of
+  // rock leaves it false.
+  bool tile_meshes_masked = false;
+  // **What the entry plans for the ground** (R144; `GroundPlan`; scene_gen.md, "What an entry
+  // plans for the ground"): its edits of the heights and its openings, for the host to add to the
+  // scene's own **before the ground is made**. Called once a scene read, after an `open` of its
+  // own and before any other entry point, on a `Context` whose `ground` is the ground **as it was
+  // before any edit** — the scene's own and every entry's left out — so a plan is a function of
+  // the entry, the seed and that ground, and never of another entry's edits or of the order the
+  // entries are in. The state is closed after it, and the entry is opened again on the edited
+  // ground for everything else; there `Context::uncut()` is the same unedited ground, which is
+  // what a generator that plans stands its plan on in `open`, so the two opens make one plan.
+  // Null: the entry leaves the ground as it is, and is opened once, as it always was.
+  bool (*plan_ground)(void* state, const Context& context, GroundPlan& out,
+                      std::string* error) = nullptr;
 };
 
 // ---- ground -------------------------------------------------------------------------------------

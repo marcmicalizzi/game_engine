@@ -257,28 +257,10 @@ HoldMode establish(ProcessHold& h, const HoldConfig& config) {
 
   const i64 began_ms = wall_ms();
   i64 deadline_s = h.config.wait_until_unix_s;
-  std::string announced;
-  for (;;) {
-    const i64 now_s = detail::now_unix_s();
-    const detail::CreateResult created = try_take(h, now_s);
-    if (created == detail::CreateResult::Failed) return HoldMode::Error;
-    if (created == detail::CreateResult::Created) {
-      h.waited_ms = wall_ms() - began_ms;
-      if (!announced.empty()) {
-        say(h.config, "taken after " + std::to_string(h.waited_ms / 1000) + " s");
-      }
-      // Children started while this lasts find the lock held for them (the header's "Children").
-      h.previous_holder = detail::environment(k_env_holder);
-      detail::set_environment(k_env_holder, std::to_string(h.config.self.pid));
-      h.set_holder_env = true;
-      start_keeper(h);
-      return HoldMode::Taken;
-    }
-    std::string text;
-    bool exists = false;
-    const bool got = detail::read_text(h.path, text, exists);
-    if (!exists) continue;  // released between the attempt and the look
-    const State seen = read(h.path, h.config.self, now_s);
+  // Held for this process already — by this process through another path, or by the ancestor
+  // ENGINE_GPU_LOCK_HOLDER names: used as it is, and no place in the line is taken for it, so a
+  // holder's child is never counted among the waiters behind its own parent.
+  auto held_for_us = [&h](const State& seen) {
     if (seen.mine && seen.pid == h.config.self.pid) return HoldMode::InProcess;
     if (seen.mine && !seen.expired) {
       h.parent_pid = seen.pid;
@@ -286,18 +268,75 @@ HoldMode establish(ProcessHold& h, const HoldConfig& config) {
       start_keeper(h);
       return HoldMode::Parents;
     }
-    if (got && seen.expired && seen.owner != "marc") {
+    return HoldMode::Off;
+  };
+  if (const HoldMode found = held_for_us(read(h.path, h.config.self, detail::now_unix_s()));
+      found != HoldMode::Off) {
+    return found;
+  }
+  // The lock file only from the head of the line (gpu_lock.h, "the line"). With nobody waiting
+  // the first try needs no ticket — which is every hold of a suite that has the GPU to itself —
+  // and once that has failed, or somebody is waiting, a place is taken and kept. Without a
+  // ticket — the line's directory cannot be written — this asks as the protocol always did.
+  detail::Ticket ticket;
+  bool asked = false;
+  auto take_a_place = [&] {
+    (void)ticket.enter(h.path, h.config.self, h.config.purpose, h.config.lease_s,
+                       h.config.ticket_lease_s);
+    asked = true;
+  };
+  std::string announced;
+  bool said = false;
+  i64 unsettled_since_ms = 0;
+  for (;;) {
+    if (!asked && !detail::line_is_empty(h.path, h.config.ticket_lease_s)) take_a_place();
+    const detail::LinePlace place = ticket.look();
+    const bool head = place.ahead == 0;
+    const i64 now_s = detail::now_unix_s();
+    if (head) {
+      const detail::CreateResult created = try_take(h, now_s);
+      if (created == detail::CreateResult::Failed) return HoldMode::Error;
+      if (created == detail::CreateResult::Created) {
+        ticket.leave();
+        h.waited_ms = wall_ms() - began_ms;
+        if (said) {
+          say(h.config, "taken after " + std::to_string(h.waited_ms / 1000) + " s");
+        }
+        // Children started while this lasts find the lock held for them (the header's
+        // "Children").
+        h.previous_holder = detail::environment(k_env_holder);
+        detail::set_environment(k_env_holder, std::to_string(h.config.self.pid));
+        h.set_holder_env = true;
+        start_keeper(h);
+        return HoldMode::Taken;
+      }
+    }
+    if (!asked) {  // not this process's at the first try: take a place, then look again
+      take_a_place();
+      continue;
+    }
+    std::string text;
+    bool exists = false;
+    const bool got = detail::read_text(h.path, text, exists);
+    if (!exists && head) continue;  // released between the attempt and the look
+    const State seen = read(h.path, h.config.self, now_s);
+    if (const HoldMode found = held_for_us(seen); found != HoldMode::Off) return found;
+    // Only the head of the line breaks: the lock it frees is the head's to take.
+    if (head && got && seen.expired && seen.owner != "marc") {
       say(h.config, "breaking an expired GPU lock held by " + holder_text(seen));
       if (detail::break_stale(h.path, text)) continue;
     }
 
+    const std::string where = detail::describe_place(place, wall_ms());
     if (deadline_s == 0) deadline_s = now_s + k_default_wait_s;
     if (now_s >= deadline_s) {
+      ticket.leave();
       h.waited_ms = wall_ms() - began_ms;
       log_event(h.config, h.path, "gave_up", 0, h.waited_ms, "", &seen);
       say(h.config, "gave up waiting for the GPU lock after " + std::to_string(h.waited_ms / 1000) +
-                        " s; it is held by " + holder_text(seen) + ". Exit " +
-                        std::to_string(k_exit_gave_up) +
+                        " s; it is held by " + holder_text(seen) +
+                        (where.empty() ? std::string() : ", and this process was " + where) +
+                        ". Exit " + std::to_string(k_exit_gave_up) +
                         ": nothing ran on the GPU; run this again when the lock is free");
       if (h.config.exit_on_give_up) {
         std::fflush(nullptr);
@@ -305,24 +344,35 @@ HoldMode establish(ProcessHold& h, const HoldConfig& config) {
       }
       return HoldMode::GaveUp;
     }
+    // Once per holder, not once per look, and with the place this process has at that moment. A
+    // lock that is free or mid-write is the instant between two holders nearly every time it is
+    // seen, so it is said only once it has lasted two seconds: a head of the line that died and
+    // has not yet run out its ticket, or a file left half-written.
+    const bool settled = seen.present && seen.readable;
     const std::string holder =
-        seen.readable ? seen.owner + "\n" + seen.purpose + "\n" + std::to_string(seen.pid)
-                      : std::string("\n");
-    if (holder != announced) {
-      say(h.config, "waiting for the GPU lock, held by " + holder_text(seen) + "; gives up at " +
-                        format_iso8601_utc(deadline_s));
+        settled ? seen.owner + "\n" + seen.purpose + "\n" + std::to_string(seen.pid)
+                : std::string();
+    if (settled) {
+      unsettled_since_ms = 0;
+    } else if (unsettled_since_ms == 0) {
+      unsettled_since_ms = wall_ms();
+    }
+    const bool lingering = !settled && wall_ms() - unsettled_since_ms >= 2000;
+    if ((settled || lingering) && (!said || holder != announced)) {
+      say(h.config, "waiting for the GPU lock, held by " + holder_text(seen) +
+                        (where.empty() ? std::string() : "; this process is " + where) +
+                        "; gives up at " + format_iso8601_utc(deadline_s));
       announced = holder;
+      said = true;
     }
-    i64 sleep_s = std::min<i64>(std::max<i64>(h.config.poll_s, 1), deadline_s - now_s);
-    // A holder whose lease runs out before the next look is looked at again when it does: one
-    // that died (a crash, a killed test) is broken a second after its lease rather than up to a
-    // poll later. A live holder refreshes long before that, and a person's lock is never broken.
-    i64 holder_expires = 0;
-    if (seen.readable && seen.owner != "marc" && parse_iso8601_utc(seen.expires, holder_expires) &&
-        holder_expires >= now_s) {
-      sleep_s = std::min<i64>(sleep_s, holder_expires - now_s + 1);
-    }
-    std::this_thread::sleep_for(std::chrono::seconds(std::max<i64>(sleep_s, 1)));
+    // Every waiter looks every look_ms, the head included: a lock that is released is taken by
+    // the head within one look, a holder that died is broken within one look of its lease
+    // running out, and a waiter that became the head knows it before the hold in front of it is
+    // likely to have ended. poll_s is an upper bound a caller may still set.
+    const i64 look_ms =
+        std::min<i64>(std::max<i64>(h.config.poll_s, 1) * 1000, std::max<i64>(h.config.look_ms, 1));
+    const i64 left_ms = std::max<i64>((deadline_s - now_s) * 1000, 1);
+    std::this_thread::sleep_for(std::chrono::milliseconds(std::min(look_ms, left_ms)));
   }
 }
 

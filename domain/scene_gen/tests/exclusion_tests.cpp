@@ -5,7 +5,9 @@
 
 #include <doctest/doctest.h>
 
+#include <chrono>
 #include <cmath>
+#include <string>
 
 using namespace engine;
 using namespace engine::scene_gen;
@@ -209,4 +211,341 @@ TEST_CASE("exclusion: the same scene answers the same, whichever way it was buil
       excluded += e ? 1u : 0u;
     }
   CHECK(excluded > 100u);
+}
+
+// W93 (which folds W92 in): the corridor is the cut's. A cut's bank tops stand at half the width,
+// inside the dressed bank's edge, so a channel without a flood bed is excluded as it was; a flood
+// bed reaches further, on the side it reaches, and the description hands its edge over.
+TEST_CASE("exclusion: a channel's flood bed is left bare on the side it reaches") {
+  scene::WaterChannel channel = straight_channel(0.0, 40.0, 3.0f);
+  // The line runs along +x, so its left ((-dz, dx)) is +z: 6 m of bed on the left, 1 m on the
+  // right, which is inside the bank's 2.65 m and changes nothing there.
+  for (u32 i = 0; i < 2; ++i) {
+    channel.flood_left_m.push_back(6.0f);
+    channel.flood_right_m.push_back(1.0f);
+  }
+  Exclusion ex;
+  REQUIRE(ex.build({}, {}, {&channel, 1}));
+  const f64 h = 0.0;
+  const Ground ground = ground_at(h);
+  CHECK(ex.excluded_mm(ground, mm(20.0), mm(5.9)));         // on the bed
+  CHECK_FALSE(ex.excluded_mm(ground, mm(20.0), mm(6.1)));   // past its edge
+  CHECK(ex.excluded_mm(ground, mm(20.0), mm(-2.6)));        // the right bank, as before
+  CHECK_FALSE(ex.excluded_mm(ground, mm(20.0), mm(-2.7)));  // and not 5.9 m out on that side
+  CHECK_FALSE(ex.excluded_mm(ground, mm(20.0), mm(-5.9)));
+  // The riparian distance is measured from the bed's edge.
+  CHECK(ex.channel_distance_mm(mm(20.0), mm(7.0)) == doctest::Approx(1.0).epsilon(1e-9));
+  CHECK(ex.riparian_factor_mm(mm(20.0), mm(6.0)) == doctest::Approx(k_riparian_floor));
+  CHECK(ex.riparian_factor_mm(mm(20.0), mm(6.0 + k_riparian_reach_m)) == 1.0);
+  // The reach follows the line: 6 m at one end and none at the other is 3 m half way, which the
+  // bank's 2.65 m is inside of.
+  scene::WaterChannel closing = straight_channel(0.0, 40.0, 3.0f);
+  closing.flood_left_m.push_back(6.0f);
+  closing.flood_left_m.push_back(0.0f);
+  closing.flood_right_m.push_back(0.0f);
+  closing.flood_right_m.push_back(0.0f);
+  Exclusion taper;
+  REQUIRE(taper.build({}, {}, {&closing, 1}));
+  CHECK(taper.excluded_mm(ground, mm(20.0), mm(2.9)));
+  CHECK_FALSE(taper.excluded_mm(ground, mm(20.0), mm(3.1)));
+  CHECK_FALSE(taper.excluded_mm(ground, mm(36.0), mm(2.7)));
+  // Arrays that are not the points' long, and a number that is not one, are no flood bed: the
+  // channel is excluded exactly as one that names none.
+  const scene::WaterChannel plain = straight_channel(0.0, 40.0, 3.0f);
+  scene::WaterChannel odd = plain;
+  odd.flood_left_m.push_back(6.0f);
+  odd.flood_right_m.push_back(6.0f);
+  scene::WaterChannel bad = plain;
+  for (u32 i = 0; i < 2; ++i) {
+    bad.flood_left_m.push_back(-4.0f);
+    bad.flood_right_m.push_back(std::numeric_limits<f32>::quiet_NaN());
+  }
+  Exclusion a, b, c;
+  REQUIRE(a.build({}, {}, {&plain, 1}));
+  REQUIRE(b.build({}, {}, {&odd, 1}));
+  REQUIRE(c.build({}, {}, {&bad, 1}));
+  for (i64 z = -9000; z <= 9000; z += 50) {
+    const bool e = a.excluded_mm(ground, mm(20.0), z);
+    CHECK(b.excluded_mm(ground, mm(20.0), z) == e);
+    CHECK(c.excluded_mm(ground, mm(20.0), z) == e);
+    CHECK(b.riparian_factor_mm(mm(20.0), z) == a.riparian_factor_mm(mm(20.0), z));
+    CHECK(c.riparian_factor_mm(mm(20.0), z) == a.riparian_factor_mm(mm(20.0), z));
+  }
+}
+
+// The one definition of a bank's edge, asked out to a reach the caller gives (W93, for G144's
+// site): inside the riparian reach it is `channel_distance_mm` to the bit, past it the same
+// distance goes on, and past the caller's reach there is no channel.
+TEST_CASE("exclusion: the distance to a bank's edge out to any reach is the riparian one's") {
+  // Two channels: a 3 m one along +x with 6 m of flood bed on its left, and a narrowing one 60 m
+  // off that turns across it.
+  scene::WaterChannel a = straight_channel(0.0, 40.0, 3.0f);
+  for (u32 i = 0; i < 2; ++i) {
+    a.flood_left_m.push_back(6.0f);
+    a.flood_right_m.push_back(0.0f);
+  }
+  scene::WaterChannel b;
+  b.points = {WorldPos{-30.0, 0.0, 60.0}, WorldPos{10.0, 0.0, 70.0}, WorldPos{50.0, 0.0, 55.0}};
+  b.width_m = {4.0f, 2.0f, 1.0f};
+  b.depth_m = {0.5f, 0.5f, 0.5f};
+  b.slope = {0.01f, 0.01f, 0.01f};
+  const scene::WaterChannel both[2] = {a, b};
+  Exclusion ex;
+  REQUIRE(ex.build({}, {}, both));
+  u32 inside = 0, near = 0, far = 0;
+  for (i64 z = -20000; z <= 90000; z += 370) {
+    for (i64 x = -50000; x <= 70000; x += 410) {
+      const f64 riparian = ex.channel_distance_mm(x, z);
+      CHECK(ex.channel_edge_distance_mm(x, z, k_riparian_reach_m) == riparian);
+      const f64 wide = ex.channel_edge_distance_mm(x, z, 128.0);
+      // Every point of this box is within 128 m of an edge.
+      REQUIRE(wide < 128.0);
+      if (riparian < 1e20) {
+        CHECK(wide == riparian);
+        ++(riparian == 0.0 ? inside : near);
+      } else {
+        CHECK(wide >= k_riparian_reach_m);
+        ++far;
+        // A shorter reach than the distance finds nothing; a longer one the same distance.
+        CHECK(ex.channel_edge_distance_mm(x, z, wide * 0.99) > 1e20);
+        CHECK(ex.channel_edge_distance_mm(x, z, wide + 1.0) == wide);
+      }
+    }
+  }
+  CHECK(inside > 100);
+  CHECK(near > 100);
+  CHECK(far > 10000);
+  // By hand: 20 m to the left of the first channel's line is 14 m from its flood bed's edge, and
+  // 20 m to its right 17.35 m from its bank's (1.5 + 0.75 + 0.4 = 2.65 m out).
+  CHECK(ex.channel_edge_distance_mm(mm(20.0), mm(20.0), 128.0) == doctest::Approx(14.0));
+  CHECK(ex.channel_edge_distance_mm(mm(20.0), mm(-20.0), 128.0) == doctest::Approx(17.35));
+  CHECK(ex.channel_edge_distance_mm(mm(20.0), mm(-20.0), 0.0) > 1e20);
+  Exclusion none;
+  REQUIRE(none.build({}, {}, {}));
+  CHECK(none.channel_edge_distance_mm(0, 0, 128.0) > 1e20);
+}
+
+// The query reads the nearest cells first and stops early (T102); the square scan it replaced is
+// kept as `channel_edge_distance_reference_mm`, and the two must give the same bits at every point
+// and reach: round a dense network (the site bench's, 40 channels of 40 segments 25 to 50 m
+// apart, every fourth with a flood bed, one side wider than the other), out past its edges, and
+// at a reach equal to the distance itself, where a point is on the reach's edge.
+TEST_CASE("exclusion: the nearest-first bank edge query is the square scan's to the bit") {
+  Vector<scene::WaterChannel> channels;
+  for (u32 c = 0; c < 40; ++c) {
+    scene::WaterChannel ch;
+    for (u32 i = 0; i <= 40; ++i) {
+      const f64 x = -1000.0 + 50.0 * static_cast<f64>(c) + 0.3 * static_cast<f64>(i);
+      const f64 z = -1000.0 + 5.0 * static_cast<f64>(i) + 25.0 * static_cast<f64>(c);
+      ch.points.push_back(WorldPos{x, 0.0, z});
+      ch.width_m.push_back(2.0f + 0.05f * static_cast<f32>(i));
+      if (c % 4 == 1) {
+        ch.flood_left_m.push_back(9.0f + 0.5f * static_cast<f32>(i % 7));
+        ch.flood_right_m.push_back(i % 3 == 0 ? 0.0f : 4.0f);
+      }
+    }
+    channels.push_back(ch);
+  }
+  Exclusion ex;
+  REQUIRE(ex.build({}, {}, {channels.data(), channels.size()}));
+  u32 points = 0, inside = 0, near = 0, far = 0, none = 0, edges = 0;
+  u64 at = 0x9e3779b97f4a7c15ull;
+  for (u32 n = 0; n < 12000; ++n) {
+    // A point over the network's box and 200 m beyond it, by a 64-bit LCG (Knuth's MMIX); every
+    // other one within 15 m of one of the channels' points, so the beds, the banks and the flood
+    // beds are well sampled too.
+    at = at * 6364136223846793005ull + 1442695040888963407ull;
+    i64 x = static_cast<i64>((at >> 11) % 2400000) - 1200000;
+    i64 z = static_cast<i64>((at >> 37) % 1400000) - 1200000;
+    if (n % 2 == 1) {
+      const i64 c = static_cast<i64>((at >> 20) % 40), i = static_cast<i64>((at >> 30) % 41);
+      x = -1000000 + 50000 * c + 300 * i + static_cast<i64>((at >> 11) % 30001) - 15000;
+      z = -1000000 + 5000 * i + 25000 * c + static_cast<i64>((at >> 41) % 30001) - 15000;
+    }
+    ++points;
+    for (const f64 reach : {k_riparian_reach_m, 20.0, 128.0}) {
+      const f64 got = ex.channel_edge_distance_mm(x, z, reach);
+      const f64 want = ex.channel_edge_distance_reference_mm(x, z, reach);
+      REQUIRE(got == want);
+      if (reach == 128.0) ++(want > 1e20 ? none : want == 0.0 ? inside : want < 3.0 ? near : far);
+    }
+    // On the reach's edge: a reach of exactly the distance finds nothing, a reach a micrometre
+    // over finds it.
+    const f64 d = ex.channel_edge_distance_reference_mm(x, z, 128.0);
+    if (d > 0.0 && d < 1e20) {
+      ++edges;
+      CHECK(ex.channel_edge_distance_mm(x, z, d) == ex.channel_edge_distance_reference_mm(x, z, d));
+      CHECK(ex.channel_edge_distance_mm(x, z, d) > 1e20);
+      const f64 over = ex.channel_edge_distance_mm(x, z, d + 1e-6);
+      CHECK(over == ex.channel_edge_distance_reference_mm(x, z, d + 1e-6));
+      CHECK(over == d);
+    }
+  }
+  CHECK(points >= 10000);
+  CHECK(inside > 300);
+  CHECK(near > 300);
+  CHECK(far > 3000);
+  CHECK(none > 300);
+  CHECK(edges > 3000);
+  // A reach past the world's size reads only the filed rows, and finds what a wide one finds.
+  for (const i64 x : {-1150000, 0, 1150000})
+    CHECK(ex.channel_edge_distance_mm(x, 1100000, 1.0e30) ==
+          ex.channel_edge_distance_reference_mm(x, 1100000, 5000.0));
+}
+
+// ---- W98: footprints as shapes ------------------------------------------------------------------
+
+TEST_CASE("exclusion: a band footprint excludes its band and nothing else") {
+  // A wall's foot: 12 m along +x from (2, 5) m, 0.4 m either side of its line, its ends round.
+  const Footprint wall = Footprint::band(mm(2.0), mm(5.0), mm(14.0), mm(5.0), mm(0.4));
+  // Its edge, metres: inside negative, outside positive, round past the ends.
+  CHECK(wall.edge_m(mm(8.0), mm(5.0)) == doctest::Approx(-0.4).epsilon(1e-12));
+  CHECK(wall.edge_m(mm(8.0), mm(5.399)) == doctest::Approx(-0.001).epsilon(1e-9));
+  CHECK(wall.edge_m(mm(8.0), mm(6.4)) == doctest::Approx(1.0).epsilon(1e-12));
+  CHECK(wall.edge_m(mm(14.6), mm(5.0)) == doctest::Approx(0.2).epsilon(1e-12));
+  CHECK(wall.covers_mm(mm(8.0), mm(4.6)));
+  CHECK_FALSE(wall.covers_mm(mm(8.0), mm(4.599)));
+  // Its disc holds the whole band, a millimetre over: a reader that knows only discs keeps clear.
+  CHECK(wall.x_mm == mm(8.0));
+  CHECK(wall.z_mm == mm(5.0));
+  CHECK(wall.radius == doctest::Approx(6.401).epsilon(1e-12));
+  for (const f64 x : {2.0, 8.0, 14.0, 14.4})
+    for (const f64 z : {4.6, 5.0, 5.4}) {
+      if (!wall.covers_mm(mm(x), mm(z))) continue;
+      const f64 dx = x - 8.0, dz = z - 5.0;
+      CHECK(dx * dx + dz * dz < wall.radius * wall.radius);
+    }
+
+  Exclusion ex;
+  REQUIRE(ex.build({}, {}, {}));
+  std::string error;
+  REQUIRE_MESSAGE(ex.add_footprints({&wall, 1}, &error), error);
+  CHECK(ex.footprint_count() == 1);
+  CHECK_FALSE(ex.empty());
+  const f64 h = 0.0;
+  const Ground ground = ground_at(h);
+  // **The sward grows to the wall's foot**: a point a millimetre past the band is free, where the
+  // wall's disc of 6.4 m held everything back by its radius (the sward adds half a patch's
+  // diagonal to an earlier footprint's radius, so 1.6 m and more for a 4 m wall's disc).
+  for (const f64 x : {2.5, 8.0, 13.5}) {
+    CHECK(ex.excluded_mm(ground, mm(x), mm(5.4)));
+    CHECK(ex.excluded_mm(ground, mm(x), mm(4.6)));
+    CHECK_FALSE(ex.excluded_mm(ground, mm(x), mm(5.401)));
+    CHECK_FALSE(ex.excluded_mm(ground, mm(x), mm(4.599)));
+  }
+  // Every generator asks with every kind by default; one that asks without the footprints'
+  // kind is not refused by them.
+  CHECK_FALSE(ex.excluded_mm(ground, mm(8.0), mm(5.0), k_exclude_all & ~k_exclude_footprints));
+  // How far to the edge, within a reach, and nothing past it.
+  CHECK(ex.footprint_distance_mm(mm(8.0), mm(6.4), 3.0) == doctest::Approx(1.0).epsilon(1e-12));
+  CHECK(ex.footprint_distance_mm(mm(8.0), mm(5.0), 3.0) == 0.0);
+  CHECK(ex.footprint_distance_mm(mm(8.0), mm(9.0), 3.0) > 1e20);
+  CHECK(ex.footprint_distance_mm(mm(8.0), mm(9.0), 4.0) == doctest::Approx(3.6).epsilon(1e-12));
+  // The channels, holes and water still answer as they did.
+  CHECK(ex.channel_distance_mm(mm(8.0), mm(5.0)) > 1e20);
+  // `build` clears the footprints.
+  REQUIRE(ex.build({}, {}, {}));
+  CHECK(ex.empty());
+  CHECK_FALSE(ex.excluded_mm(ground, mm(8.0), mm(5.0)));
+}
+
+TEST_CASE("exclusion: a polygon footprint excludes its inside, a notch included, by its edge") {
+  // An L: a 10 m square at the origin with its north-east quarter missing, a yard round a house.
+  const FootprintPoint l[6] = {{0, 0},       {10000, 0},    {10000, 5000},
+                               {5000, 5000}, {5000, 10000}, {0, 10000}};
+  const Footprint yard = Footprint::polygon(l);
+  CHECK(yard.covers_mm(2000, 2000));
+  CHECK(yard.covers_mm(8000, 2000));
+  CHECK(yard.covers_mm(2000, 8000));
+  CHECK_FALSE(yard.covers_mm(8000, 8000));  // the notch
+  CHECK(yard.edge_m(8000, 8000) == doctest::Approx(3.0).epsilon(1e-12));
+  CHECK(yard.edge_m(2000, 2000) == doctest::Approx(-2.0).epsilon(1e-12));
+  CHECK(yard.edge_m(-1000, 5000) == doctest::Approx(1.0).epsilon(1e-12));
+  // Either turn is the same polygon (to the last bits of a projection taken from the other end).
+  const FootprintPoint reversed[6] = {l[5], l[4], l[3], l[2], l[1], l[0]};
+  const Footprint other = Footprint::polygon(reversed);
+  for (i64 z = -2000; z <= 12000; z += 700)
+    for (i64 x = -2000; x <= 12000; x += 700)
+      CHECK(std::fabs(other.edge_m(x, z) - yard.edge_m(x, z)) < 1e-9);
+  Exclusion ex;
+  REQUIRE(ex.build({}, {}, {}));
+  std::string error;
+  {
+    // The exclusion copies the points: the footprint may go once it is added.
+    const FootprintPoint copy[6] = {l[0], l[1], l[2], l[3], l[4], l[5]};
+    const Footprint held = Footprint::polygon(copy);
+    REQUIRE_MESSAGE(ex.add_footprints({&held, 1}, &error), error);
+  }
+  const f64 h = 0.0;
+  const Ground ground = ground_at(h);
+  u64 agree = 0;
+  for (i64 z = -2000; z <= 12000; z += 250)
+    for (i64 x = -2000; x <= 12000; x += 250) {
+      CHECK(ex.excluded_mm(ground, x, z) == yard.covers_mm(x, z));
+      ++agree;
+    }
+  CHECK(agree == 57 * 57);
+  // A disc and a band beside it, in one call; refusals leave nothing added.
+  const Footprint discs[2] = {Footprint{30000, 30000, 2.0},
+                              Footprint::band(0, 20000, 0, 20000, 500)};
+  REQUIRE(ex.add_footprints(discs, &error));
+  CHECK(ex.footprint_count() == 3);
+  CHECK(ex.excluded_mm(ground, 31500, 30000));
+  CHECK(ex.excluded_mm(ground, 0, 20400));  // a band of no length is a disc of its half-width
+  const Footprint bad[2] = {Footprint{0, 0, 1.0}, Footprint::band(0, 0, 1000, 0, 0)};
+  CHECK_FALSE(ex.add_footprints(bad, &error));
+  CHECK(error.find("footprint 1 is a band with a half-width under a millimetre") !=
+        std::string::npos);
+  CHECK(ex.footprint_count() == 3);
+  const FootprintPoint flat[3] = {{0, 0}, {1000, 0}, {2000, 0}};
+  const Footprint line = Footprint::polygon(flat);
+  CHECK_FALSE(ex.add_footprints({&line, 1}, &error));
+  CHECK(error.find("no area") != std::string::npos);
+  const Footprint nan_disc{0, 0, std::nan("")};
+  CHECK_FALSE(ex.add_footprints({&nan_disc, 1}, &error));
+}
+
+// **What a footprint query costs** (W98; scene_gen.md, "Footprints as shapes"): 10,000 bands and
+// 1,000 polygons over a square kilometre, asked at a million points. Prints the nanoseconds a
+// query; asserts only that some points were covered and most were not.
+TEST_CASE("exclusion: what a footprint query costs") {
+  Vector<Footprint> shapes;
+  Vector<FootprintPoint> corners;
+  corners.reserve(4000);
+  u64 h = 0x9E3779B97F4A7C15ull;
+  const auto next = [&h]() {
+    h ^= h << 13;
+    h ^= h >> 7;
+    h ^= h << 17;
+    return h;
+  };
+  for (u32 k = 0; k < 10000; ++k) {
+    const i64 x = static_cast<i64>(next() % 1000000), z = static_cast<i64>(next() % 1000000);
+    shapes.push_back(Footprint::band(x, z, x + static_cast<i64>(next() % 12000), z + 3000, 400));
+  }
+  for (u32 k = 0; k < 1000; ++k) {
+    const i64 x = static_cast<i64>(next() % 1000000), z = static_cast<i64>(next() % 1000000);
+    const u32 first = corners.size();
+    corners.push_back({x, z});
+    corners.push_back({x + 8000, z});
+    corners.push_back({x + 8000, z + 6000});
+    corners.push_back({x, z + 6000});
+    shapes.push_back(Footprint::polygon({corners.data() + first, 4}));
+  }
+  Exclusion ex;
+  REQUIRE(ex.build({}, {}, {}));
+  std::string error;
+  REQUIRE_MESSAGE(ex.add_footprints({shapes.data(), shapes.size()}, &error), error);
+  const f64 flat = 0.0;
+  const Ground ground = ground_at(flat);
+  u64 covered = 0;
+  const auto t0 = std::chrono::steady_clock::now();
+  for (u32 k = 0; k < 1000000; ++k)
+    covered += ex.excluded_mm(ground, static_cast<i64>(next() % 1000000),
+                              static_cast<i64>(next() % 1000000));
+  const f64 ns =
+      std::chrono::duration<f64, std::nano>(std::chrono::steady_clock::now() - t0).count() / 1e6;
+  MESSAGE("a footprint query over 11,000 shapes: " << ns << " ns, " << covered << " covered");
+  CHECK(covered > 1000);
+  CHECK(covered < 200000);
 }

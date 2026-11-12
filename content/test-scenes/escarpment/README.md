@@ -15,9 +15,12 @@ landscape-scale rock — faces found from the ground's heights rather than drawn
   0.15 of the height, 24 fallen blocks of up to 2.5 m each, the default 250,000-triangle budget, the
   rock pack's `rock/sandstone` where the pack is installed and the flat colour otherwise — and
   **granite boulders** (`content/rocks/granite-boulder.rock.json`) at 4 per 100 m of face, 0.8–2.2
-  scale, at their feet. Four faces, two a flank, about 215 m long and to 113 m high, overlapping where
-  the blocks' grid at x = 0 and z = 0 divides them. The faces' recipes are written under the
-  derived-data root's `cliffs/`.
+  scale, at their feet. 38 faces in tiers of about 12 m, 19 a flank, each about 215 m long and
+  809,030 triangles together at a 0.75 m cell, on flanks to 113 m high, overlapping where the blocks' grid at x = 0 and z = 0 divides them; only
+  the lowest tier of a line has the skirt, the blocks and the boulders. A generated face has no
+  back and no bottom, its top is in the ground behind it and its ends go into the ground where the
+  steep ground ends ([rocks](../../../docs/subsystems/rocks.md#a-face-in-tiers), roadmap G142). The
+  faces' recipes are written under the derived-data root's `cliffs/`.
 - **The camera path** (`camera-path.json`) spends 34 seconds at the east flank: the whole face from
   the valley floor, along it at mid height, up over the crest looking down it, and a walk at eye
   height along its foot outside the skirt; three markers: `valley`, `along`, `foot`.
@@ -36,7 +39,7 @@ build/msvc-debug/bin/engine-view --scene (Resolve-Path content/test-scenes/escar
 Name the scene by an **absolute path**: the `tiles` provider builds the set into the repository's
 `ddc/`, which it finds by walking up from the heightfield's directory, and a relative path gives it
 nowhere to walk from (a wart of the provider's, [tileset](../../../docs/subsystems/tileset.md)).
-The first read builds the tile set and solves and clusters the four faces (seconds in a debug
+The first read builds the tile set and solves and clusters the 38 faces (seconds in a debug
 build); later reads hit the cache. `domain/rocks/tests/cliffs_generator_tests.cpp` runs this scene's
 layer over the same ridge and checks both flanks are dressed and every face solves; what the markers
 show is in rocks.md ("The escarpment").

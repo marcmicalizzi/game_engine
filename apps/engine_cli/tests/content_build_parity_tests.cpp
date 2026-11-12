@@ -17,6 +17,7 @@
 #include <foundation/image/png.h>
 
 #include <doctest/doctest.h>
+#include <test_environment.h>
 #include <test_paths.h>
 #include <test_temp_dir.h>
 
@@ -120,6 +121,9 @@ std::string exe_name(const char* name) {
 TEST_CASE("content build: build-all and content.build give one manifest's palm the same bytes") {
   const test::TempDir tmp("cli_content_parity");
   REQUIRE(tmp.ok());
+  // The one test that wants the default lookup, which the test main switches off (T103): the
+  // pack it finds is the test's own repository's, never the machine's.
+  const test::ScopedEnv default_materials(test::k_default_materials_env, "1");
   const std::filesystem::path repo = tmp.native() / "repo";
   std::filesystem::create_directories(repo / "bin");
   REQUIRE(write_text(repo / "AGENTS.md", "a repository of the test's own\n"));

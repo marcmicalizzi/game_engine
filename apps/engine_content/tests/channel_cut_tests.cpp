@@ -96,7 +96,7 @@ TEST_CASE("engine-content channels --cut writes the terrain's cuts beside the wa
 
   JsonValue written;
   REQUIRE(parse_json(first, written).ok);
-  const JsonValue* cuts = written.find("cuts");
+  const JsonValue* cuts = written.find("edits");
   const JsonValue* blocks = written.find("water_channels");
   REQUIRE(cuts != nullptr);
   REQUIRE(blocks != nullptr);
@@ -130,7 +130,7 @@ TEST_CASE("engine-content channels --cut writes the terrain's cuts beside the wa
 
   // A scene that carries the cuts: its ground is cut, and the command writes the same file, since
   // it plans over the ground before them.
-  const std::string cut_scene = head + R"(,"cuts":)" + write_json(*cuts) + tail;
+  const std::string cut_scene = head + R"(,"edits":)" + write_json(*cuts) + tail;
   REQUIRE(io::write_file_atomic(tmp.file("cut.json"), cut_scene) == io::Status::Ok);
   std::vector<std::string> from_cut = args;
   from_cut[1] = tmp.file("cut.json");
@@ -140,6 +140,16 @@ TEST_CASE("engine-content channels --cut writes the terrain's cuts beside the wa
   std::string third;
   REQUIRE(io::read_file(tmp.file("c.json"), third) == io::Status::Ok);
   CHECK(third == first);
+  // **One plan** (W93; channels.md, "One plan"): the first run made the plan and filed it under
+  // the scene's derived-data root; the runs after it, the cut scene's too, read that file and
+  // planned nothing; and each wrote the entry's key.
+  CHECK(out.text.find("\"planned\":1") != std::string::npos);
+  CHECK(again_out.text.find("\"planned\":0") != std::string::npos);
+  const JsonValue* plans = written.find("plans");
+  REQUIRE(plans != nullptr);
+  REQUIRE(plans->as_array().size() == 1);
+  const std::string plan_key((*plans)[0].find("plan")->as_string());
+  CHECK(io::exists(tmp.file("ddc/channels/plan-" + plan_key + ".channel-plan")));
   // And the cut scene's ground is lower than the plain one's at a cut's line, by its depth there.
   JsonValue cut_json;
   REQUIRE(parse_json(cut_scene, cut_json).ok);
@@ -148,10 +158,10 @@ TEST_CASE("engine-content channels --cut writes the terrain's cuts beside the wa
   REQUIRE(schema::from_json(cut_terrain, *cut_json.find("terrain"), cut_reader));
   REQUIRE(cut_reader.ok());
   REQUIRE(cut_terrain.tiles.has_value());
-  REQUIRE(cut_terrain.tiles->cuts.size() == cuts->as_array().size());
+  REQUIRE(cut_terrain.tiles->edits.size() == cuts->as_array().size());
   scene_gen::GroundProvider cut_ground;
   REQUIRE_MESSAGE(provider->make(cut_terrain, context, cut_ground, &error), error);
-  const scene::TerrainCut& c = cut_terrain.tiles->cuts.back();
+  const scene::TerrainEdit& c = cut_terrain.tiles->edits.back();
   const u32 mid = c.points.size() / 2;
   const i64 x = scene_gen::nearest_mm(c.points[mid].x), z = scene_gen::nearest_mm(c.points[mid].z);
   const f64 plain = ground.view().surface_mm(x, z), cut = cut_ground.view().surface_mm(x, z);
@@ -168,9 +178,26 @@ TEST_CASE("engine-content channels --cut writes the terrain's cuts beside the wa
   }
   // Somewhere the scene's ground is cut or every channel is narrower than the points' spacing.
   bool any_wide = false;
-  for (const scene::TerrainCut& k : cut_terrain.tiles->cuts)
+  for (const scene::TerrainEdit& k : cut_terrain.tiles->edits)
     for (const f32 w : k.width_m)
       any_wide = any_wide || w > 2.0f;
   MESSAGE("a channel wider than the valley's 2 m points: " << std::string(any_wide ? "yes" : "no"));
+  // **A load of the cut scene plans nothing**: its entry names the plan the command printed, the
+  // generator opens over the cut ground and reads the file.
+  JsonValue params = *(*scene_json.find("placements"))[0].find("params");
+  params["plan"] = JsonValue(plan_key);
+  const auto* generator = scene_gen::GeneratorRegistry::global().find_placement("channels");
+  REQUIRE(generator != nullptr);
+  scene_gen::Context load = context;
+  load.ground = cut_ground.view();
+  const u64 made = channels::plans_made();
+  void* state = nullptr;
+  REQUIRE_MESSAGE(generator->open(params, load, &state, &error), error);
+  CHECK(channels::plans_made() == made);
+  generator->close(state);
+  // An entry naming a plan nobody made is refused with the command that makes it.
+  params["plan"] = JsonValue("0123456789abcdef");
+  CHECK_FALSE(generator->open(params, load, &state, &error));
+  CHECK(error.find("engine-content channels") != std::string::npos);
 #endif
 }

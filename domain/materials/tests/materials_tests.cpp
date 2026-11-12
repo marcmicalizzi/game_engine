@@ -1,13 +1,17 @@
 // Material sets and packs (docs/subsystems/materials.md): a set written into a container's
 // materials, the override order, and a pack's manifest — read, refused, found once per process.
+#include <core/platform/process.h>
 #include <domain/geometry/material_sampling.h>
 #include <domain/materials/materials.h>
 #include <foundation/io/vfs.h>
 
 #include <doctest/doctest.h>
+#include <test_environment.h>
 #include <test_temp_dir.h>
 
+#include <filesystem>
 #include <string>
+#include <string_view>
 
 using namespace engine;
 
@@ -196,4 +200,91 @@ TEST_CASE("materials: pack_at reads a directory's pack once and none where there
   CHECK(materials::find_role(pack, "palm/frond")->base_color.find("/other/r/b.png") !=
         std::string::npos);
   CHECK(materials::pack_at("") == nullptr);
+}
+
+TEST_CASE("materials: a generated pack stands behind the fetched one, role by role") {
+  // merge_packs: the first pack's roles are its own, the roles it lacks are the second's, and the
+  // hash moves with either (a build key over the pack must).
+  materials::Pack fetched, generated;
+  std::string error;
+  REQUIRE(materials::parse_pack(pack_text("rock/granite"), "D:/p", fetched, error));
+  REQUIRE(materials::parse_pack(pack_text("gravel/bed"), "D:/p/generated", generated, error));
+  const materials::Pack merged = materials::merge_packs(fetched, generated);
+  REQUIRE(merged.roles.size() == 2u);
+  CHECK(merged.roles[0].role == "gravel/bed");
+  CHECK(merged.roles[1].role == "rock/granite");
+  CHECK(merged.dir == fetched.dir);
+  CHECK(merged.hash != fetched.hash);
+  materials::Pack same_role;
+  REQUIRE(materials::parse_pack(pack_text("rock/granite"), "D:/p/generated", same_role, error));
+  const materials::Pack kept = materials::merge_packs(fetched, same_role);
+  REQUIRE(kept.roles.size() == 1u);
+  CHECK(kept.roles[0].set.base_color == fetched.roles[0].set.base_color);
+
+  // pack_at: `<dir>/generated/pack.json` alone is the pack; beside `<dir>/pack.json` it fills the
+  // roles that one lacks and never replaces one it has.
+  engine::test::TempDir tmp("materials-generated");
+  const std::string alone = tmp.file("alone");
+  const std::string alone_generated = io::join_path(alone, materials::k_generated_pack_dir);
+  REQUIRE(io::make_directories(alone_generated) == io::Status::Ok);
+  REQUIRE(io::write_file(io::join_path(alone_generated, "pack.json"), pack_text("gravel/bed")) ==
+          io::Status::Ok);
+  const materials::Pack* only = materials::pack_at(alone);
+  REQUIRE(only != nullptr);
+  REQUIRE(materials::find_role(only, "gravel/bed") != nullptr);
+  CHECK(materials::find_role(only, "gravel/bed")->base_color.find("/alone/generated/r/b.png") !=
+        std::string::npos);
+  CHECK(materials::pack_key(only) != 0u);
+
+  const std::string both = tmp.file("both");
+  const std::string both_generated = io::join_path(both, materials::k_generated_pack_dir);
+  REQUIRE(io::make_directories(both_generated) == io::Status::Ok);
+  REQUIRE(io::write_file(io::join_path(both, "pack.json"), pack_text("rock/granite")) ==
+          io::Status::Ok);
+  REQUIRE(io::write_file(io::join_path(both_generated, "pack.json"), pack_text("gravel/bed")) ==
+          io::Status::Ok);
+  const materials::Pack* pack = materials::pack_at(both);
+  REQUIRE(pack != nullptr);
+  REQUIRE(materials::find_role(pack, "rock/granite") != nullptr);
+  REQUIRE(materials::find_role(pack, "gravel/bed") != nullptr);
+  CHECK(materials::find_role(pack, "rock/granite")->base_color.find("/both/r/b.png") !=
+        std::string::npos);
+  CHECK(materials::find_role(pack, "gravel/bed")->base_color.find("/both/generated/r/b.png") !=
+        std::string::npos);
+}
+
+// T103 (materials.md, "Where the hosts find it"): the default lookup asks only for the repository
+// above where it starts — no derived-data root of anyone's goes in — and answers none inside a
+// test, whose main sets the switch for itself and every child; `1` or no value turns it back on.
+// The repository's directory, where `engine-content matgen` writes, is found either way.
+TEST_CASE("materials: the default pack is the repository's, and a test reads none") {
+  CHECK(std::string_view(test::k_default_materials_env) == materials::k_default_materials_env);
+  test::TempDir tmp("materials_default");
+  REQUIRE(tmp.ok());
+  std::filesystem::create_directories(tmp.native_file("bin"));
+  std::filesystem::create_directories(tmp.native_file("content/materials"));
+  REQUIRE(io::write_file(tmp.file("AGENTS.md"), "a repository of the test's own\n") ==
+          io::Status::Ok);
+  const std::string start = tmp.file("bin");
+  const std::string repository = materials::repository_pack_dir(start);
+  REQUIRE_FALSE(repository.empty());
+  CHECK(std::filesystem::equivalent(repository, tmp.native_file("content/materials")));
+
+  // The test main's switch: none, from the test's repository and from the checkout's alike.
+  CHECK(materials::default_pack_dir(start).empty());
+  CHECK(materials::default_pack_dir(platform::executable_directory()).empty());
+  {
+    const test::ScopedEnv on(test::k_default_materials_env, "1");
+    CHECK(materials::default_pack_dir(start) == repository);
+    const test::ScopedEnv unset(test::k_default_materials_env, "");
+    CHECK(materials::default_pack_dir(start) == repository);
+  }
+  CHECK(materials::default_pack_dir(start).empty());
+
+  // No repository above: none, whatever the switch.
+  test::TempDir bare("materials_default_bare");
+  REQUIRE(bare.ok());
+  const test::ScopedEnv on(test::k_default_materials_env, "1");
+  CHECK(materials::repository_pack_dir(bare.file("x")).empty());
+  CHECK(materials::default_pack_dir(bare.file("x")).empty());
 }

@@ -6,7 +6,7 @@
 # rest of the tree still builds and passes — a scene's `.rock.json` mesh is then refused with the
 # mesh-generator registry's sentence. That is the proof that the capability is additive.
 # WHOLE_ARCHIVE keeps the module's static registration objects — its schema types and the mesh
-# generators "rock" and "deposit" — from being dropped by the linker because nothing references them.
+# generators "rock", "deposit" and "ledge" — from being dropped by the linker because nothing references them.
 #
 # Pure CPU arithmetic over core modules and the mesh types it emits: `assets` for the mesh
 # (`assets::MeshData`) and the generator registry, `geometry` for the cluster build its container
@@ -20,16 +20,19 @@
 engine_schema_library(NAME rocks_schemas SCHEMAS schemas/rocks.schema DEPS schemas CAPABILITY rocks)
 
 engine_module(NAME rocks LAYER domain OPTIONAL WHOLE_ARCHIVE
-  GENERATOR mesh:rock mesh:deposit placement:cliffs placement:deposits
+  GENERATOR mesh:rock mesh:deposit mesh:ledge placement:cliffs placement:deposits placement:ledges
   DEPS base containers math hash json schema log io image assets geometry materials texture scene_gen
        gfx rocks_schemas
   SOURCES src/solver.cpp src/cliff.cpp src/rocks.cpp src/cliffs_generator.cpp src/geology.cpp
-          src/surface_bake.cpp src/deposits.cpp src/deposits_generator.cpp)
+          src/surface_bake.cpp src/deposits.cpp src/deposits_generator.cpp
+          src/exposure.cpp src/ledges.cpp src/ledges_generator.cpp
+          src/cliff_benches.cpp)
 
 engine_module_tests(NAME rocks
   SOURCES tests/rocks_tests.cpp tests/cliff_tests.cpp tests/cliffs_generator_tests.cpp
           tests/size_table.cpp tests/geology_tests.cpp tests/surface_bake_tests.cpp tests/deposits_tests.cpp
-          tests/formation_tests.cpp tests/deposits_exclusion_tests.cpp)
+          tests/formation_tests.cpp tests/deposits_exclusion_tests.cpp
+          tests/deposits_cone_tests.cpp tests/exposure_tests.cpp tests/ledges_tests.cpp)
 
 # The committed recipes in content/rocks/ are pinned by hash; the test finds them through
 # test_paths.h, by this path or in a test bundle.

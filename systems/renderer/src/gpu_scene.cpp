@@ -285,6 +285,7 @@ class SceneTextures {
     if (share_) index_.try_emplace(hash_combine(texture.content, texture.form), textures_.size());
     textures_.push_back(texture);
   }
+  const Vector<SceneTexture>& all() const noexcept { return textures_; }
 
  private:
   bool share_;
@@ -565,9 +566,9 @@ WaterSwashNumbers water_swash_numbers(const SceneWater& water) {
   const scene::WaterBody& body = water.body;
   n.wind = static_cast<f64>(body.wind_m_s);
   if (body.open && water.wind_m_s > 0.0f) n.wind = static_cast<f64>(water.wind_m_s);
-  n.fetch_m = static_cast<f64>(body.fetch_km) * 1000.0;
-  const f64 side = static_cast<f64>(water.depth.size - 1) * static_cast<f64>(water.depth.texel_m);
-  if (!body.open) n.fetch_m = std::min(n.fetch_m, side * std::sqrt(2.0));
+  // The fetch the scene's reader found (S100 stage B): an open body's `fetch_km`, a closed body's
+  // own reach along its wind.
+  n.fetch_m = static_cast<f64>(water.fetch_m);
   n.slope = water_shore_slope(water.depth);
   n.wave = gfx::swash_wave(n.wind, n.fetch_m);
   n.run_up = gfx::stockdon_r2(n.wave.height_m, n.wave.period_s, n.slope);
@@ -608,6 +609,9 @@ void water_surface_of(const SceneWater& water, const WaterSwashNumbers& n, gfx::
   out.seed = water.shading.seed;
   out.direction = water.shading.direction;
   out.wind = water.shading.direction;
+  out.mesh_far_m = map.mesh_far_m;
+  out.mesh_near_m = map.mesh_near_m;
+  out.mesh_grade = map.mesh_grade;
   if (water.waves.size() == gfx::k_water_waves) {
     out.flags |= gfx::k_water_surface_spectrum;
     for (u32 i = 0; i < gfx::k_water_waves; ++i)
@@ -622,14 +626,41 @@ void water_surface_of(const SceneWater& water, const WaterSwashNumbers& n, gfx::
   Vector<f32> arrival(count);
   gfx::water_arrival_field(depth.data(), map.size, static_cast<f64>(map.texel_m), period,
                            arrival.data());
-  field.resize(2 * count);
+  // The share of the body's fetch the wind has blown over at each texel (a closed body's lee): the
+  // fetch field over the fetch the table was grown at. An open body's sea comes in grown.
+  Vector<f32> grown(count);
+  if (body.open || !(n.fetch_m > 0.0)) {
+    for (u32 i = 0; i < count; ++i)
+      grown[i] = 1.0f;
+  } else {
+    gfx::water_fetch_field(depth.data(), map.size, static_cast<f64>(map.texel_m), out.wind,
+                           grown.data());
+    for (u32 i = 0; i < count; ++i)
+      grown[i] = static_cast<f32>(std::clamp(static_cast<f64>(grown[i]) / n.fetch_m, 0.0, 1.0));
+  }
+  field.resize(gfx::k_water_field_channels * count);
   for (u32 i = 0; i < count; ++i) {
-    field[2 * i] = depth[i];
-    field[2 * i + 1] = arrival[i];
+    field[4 * i] = depth[i];
+    field[4 * i + 1] = arrival[i];
+    field[4 * i + 2] = grown[i];
+    field[4 * i + 3] = 0.0f;
   }
 }
 
 }  // namespace
+
+// For gpu_scene_textures.cpp: a texture admitted after the load is made by what makes the load's.
+namespace detail {
+gfx::Format built_texture_format(const texture::TextureData& t) noexcept {
+  return texture_gpu_format(t);
+}
+bool built_texture_mean_of(const texture::TextureData& t, Vec4& mean) {
+  return built_texture_mean(t, mean);
+}
+gfx::SamplerDesc material_sampler_desc(const geometry::TextureSampler& sampler, bool mipmapped) {
+  return sampler_desc(sampler, mipmapped);
+}
+}  // namespace detail
 
 GpuScene::~GpuScene() { destroy(); }
 
@@ -791,6 +822,13 @@ bool GpuScene::create(const gfx::Device& device, const SceneData& data,
     }
     pair_stride_ = pair_count_;
   }
+  // Room for the meshes that arrive with their tiles, after the rings' slots: mesh records, an
+  // arena of clusters and the vertices and triangles it owns, and no instance or pair — a tile's
+  // instances are the tail's (gpu_scene_meshes.cpp; renderer.md, "Meshes that come and go").
+  if (!lay_out_mesh_slots(error)) {
+    destroy();
+    return false;
+  }
   // The prefix a dynamic scene's tail follows: the load's instances and the levels' slots.
   static_instances_ = instance_count_;
   static_pairs_ = pair_count_;
@@ -906,6 +944,9 @@ bool GpuScene::create(const gfx::Device& device, const SceneData& data,
       mesh_descs.push_back(desc);
     }
   }
+  // The room's slots: the scene's addresses and no clusters, until a mesh is admitted into one.
+  for (u32 s = 0; s < mesh_room_.slots; ++s)
+    mesh_descs.push_back(described(slot_parts_[mesh_part_base_ + s]));
   // A hole of a dynamic scene's pair space names a **null mesh**, one past the scene's, with no
   // clusters: the cull pass finds the pair past every cluster that mesh has and rejects it before
   // it reads a cluster (cluster_cull.slang). A scene read whole has no holes and no such mesh.
@@ -943,7 +984,7 @@ bool GpuScene::create(const gfx::Device& device, const SceneData& data,
   }
   // The first fill went through buffers of its own, once; every upload from here on is staged
   // through the ring.
-  if (!ring_slots_.empty() && !create_staging_ring(error)) {
+  if ((!ring_slots_.empty() || mesh_room_.slots != 0) && !create_staging_ring(error)) {
     destroy();
     return false;
   }
@@ -1022,9 +1063,8 @@ gfx::TlasInstance GpuScene::tlas_record(u32 slot) const noexcept {
   gfx::TlasInstance record;
   // The prefix is always live; a tail slot is when it names one of the scene's meshes (a hole's
   // null instance names the null mesh, past them).
-  const bool live =
-      slot < instance_table_.size() &&
-      (!dynamic_ || slot < static_instances_ || instance_table_[slot].mesh < data_->parts.size());
+  const bool live = slot < instance_table_.size() && (!dynamic_ || slot < static_instances_ ||
+                                                      tail_mesh(instance_table_[slot].mesh));
   if (slot < instance_table_.size())
     record.transform = gfx::instance_matrix(instance_table_[slot], WorldEye{});
   record.custom_index = slot;
@@ -1649,8 +1689,16 @@ bool GpuScene::set_dynamic_instances(std::span<const SceneInstance> tail,
       const u32 i = block.first + k;
       const SceneInstance& source = run[k];
       gfx::InstanceDesc probe;
-      // The placement's own checks: a mesh the scene has not is refused with its sentence.
-      if (source.mesh >= data_->parts.size()) {
+      // The placement's own checks: a mesh the scene has not is refused with its sentence — and
+      // a mesh of the room that is not resident, which no tile may name before it is admitted.
+      if (source.mesh >= data_->parts.size() && !mesh_resident(source.mesh)) {
+        if (tail_mesh(source.mesh)) {
+          if (error != nullptr) {
+            *error = "tail instance " + std::to_string(i) + " names mesh " +
+                     std::to_string(source.mesh) + ", a mesh slot with no mesh admitted";
+          }
+          return false;
+        }
         if (!make_instance(*data_, source, 0, probe, error)) return false;
       }
       // **A deformed tail instance** — skinned, or of a mesh with morph channels, which deforms
@@ -1658,7 +1706,7 @@ bool GpuScene::set_dynamic_instances(std::span<const SceneInstance> tail,
       // the tail"): the deform table is laid out once, for the load's instances, so a tail
       // instance has no entry to point at, and drawn rigid it would stand at its bind pose.
       // Refused alone, by name, before the layout is touched.
-      const geometry::ClusterMeshPart& part = data_->parts[source.mesh];
+      const geometry::ClusterMeshPart& part = part_of(source.mesh);
       if (source.joints != 0 || part.morph_channel_count != 0) {
         if (error != nullptr) {
           *error =
@@ -1671,7 +1719,7 @@ bool GpuScene::set_dynamic_instances(std::span<const SceneInstance> tail,
         }
         return false;
       }
-      pairs += data_->parts[source.mesh].cluster_count;
+      pairs += part.cluster_count;
     }
     request.pairs = pairs > k_max_pairs ? k_max_pairs + 1u : static_cast<u32>(pairs);
   }
@@ -1783,7 +1831,13 @@ bool GpuScene::write_slots(std::span<const SceneInstance> tail,
       if (block != nullptr && k < write.live) {
         const SceneInstance& source = block_instances(tail, *block)[k];
         gfx::InstanceDesc& desc = instance_table_[slot];
-        if (!make_instance(*data_, source, first_pair, desc, error)) return false;
+        // A mesh of the room is placed as it was built: no fit (renderer.md, "Meshes that come
+        // and go"). Checked resident before the layout was touched.
+        if (source.mesh >= data_->parts.size() && mesh_resident(source.mesh)) {
+          place_instance(source, Mat4::identity(), first_pair, desc);
+        } else if (!make_instance(*data_, source, first_pair, desc, error)) {
+          return false;
+        }
         // A patch's hand-off role carries the tick its tile's instances came at (G136; renderer.md,
         // "The hand-off by distance"), so a tile that arrives or moves inward fades its blades in.
         if (source.handoff != 0) {
@@ -1801,10 +1855,10 @@ bool GpuScene::write_slots(std::span<const SceneInstance> tail,
         if (static_build_ && static_mesh(source.mesh)) {
           desc.flags |= gfx::k_instance_static_rt;
           ++static_instances_live_;
-          static_pairs_live_ += data_->parts[source.mesh].cluster_count;
+          static_pairs_live_ += part_of(source.mesh).cluster_count;
         }
         tail_keys_[slot] = key_of(source);
-        first_pair += data_->parts[source.mesh].cluster_count;
+        first_pair += part_of(source.mesh).cluster_count;
         if (flora_tail_ && tail_sways(source.mesh)) acquire_tail_tree(slot, source);
       } else {
         // Past the live instances: a null instance at the pairs' end, so a pair of the slack lands
@@ -1965,7 +2019,7 @@ bool GpuScene::prepare_tables(u32 slot, TableUpdate& out, std::string* error) {
   for (const InstanceRange& run : runs) {
     slot_count += run.end - run.begin;
     for (u32 i = run.begin; i < run.end; ++i)
-      expand += instance_table_[i].mesh < data_->parts.size() ? 1u : 0u;
+      expand += tail_mesh(instance_table_[i].mesh) ? 1u : 0u;
   }
   if (slot_count == 0) {
     runs.clear();
@@ -2017,9 +2071,9 @@ bool GpuScene::prepare_tables(u32 slot, TableUpdate& out, std::string* error) {
     }
     for (u32 i = run.begin; i < run.end; ++i) {
       const u32 mesh = instance_table_[i].mesh;
-      if (mesh >= data_->parts.size()) continue;
+      if (!tail_mesh(mesh)) continue;
       list[listed++] = i;
-      pairs += data_->parts[mesh].cluster_count;
+      pairs += part_of(mesh).cluster_count;
     }
   }
   runs.clear();
@@ -2170,11 +2224,11 @@ bool GpuScene::validate_tables(std::string* why) const {
     for (u32 k = 0; k < block.inst_cap && block.inst_begin + k < instance_count_; ++k) {
       const gfx::InstanceDesc& desc = instance_table_[block.inst_begin + k];
       if (k < block.instances) {
-        if (desc.mesh >= data_->parts.size() || desc.first_pair != pair) {
+        if (!tail_mesh(desc.mesh) || desc.first_pair != pair) {
           return fail("block " + std::to_string(block.key) + "'s slot " + std::to_string(k) +
                       " is not its instance");
         }
-        pair += data_->parts[desc.mesh].cluster_count;
+        pair += part_of(desc.mesh).cluster_count;
       } else if (desc.mesh != null_mesh_ || desc.first_pair != block.pair_begin + block.pairs) {
         return fail("block " + std::to_string(block.key) + "'s slack is not null at its end");
       }
@@ -2184,7 +2238,7 @@ bool GpuScene::validate_tables(std::string* why) const {
   }
   u32 named = 0;
   for (u32 i = static_instances_; i < instance_count_; ++i)
-    named += instance_table_[i].mesh < data_->parts.size() ? 1u : 0u;
+    named += tail_mesh(instance_table_[i].mesh) ? 1u : 0u;
   if (named != live) return fail("a slot outside every block names an instance");
   return true;
 }
@@ -2245,7 +2299,7 @@ bool GpuScene::upload_geometry(const ResolvedSettings& resolved, std::string* er
   // fixed-size slots that `create_streaming` already allocated, and nothing is uploaded here. A
   // ring vertex v's three u16 are at byte 6 v like the scene's, and the last one is read as two
   // words, so the arena's end keeps four bytes of room.
-  const bool ring_room = !ring_slots_.empty();
+  const bool ring_room = vertex_capacity_ > scene_vertex_count_;  // rings' arenas, or the mesh room
   if (!streamed_ &&
       (!upload_room(device, lod.mesh.quantized.data(), u64{lod.mesh.quantized.size()} * sizeof(u16),
                     ring_room ? vertex_capacity_ * 6 + 4 : 0, k_storage, quantized, error) ||
@@ -3453,6 +3507,10 @@ void GpuScene::terrain_prepare(u32 slot, TerrainUpdate& out) {
   out.retire.clear();
   out.geometry.clear();
   out.geometry_bytes = 0;
+  out.images.clear();
+  // A recorded frame: the textures let go long enough ago for every frame that could have sampled
+  // them to be done go now (gpu_scene_textures.cpp).
+  if (!leaving_textures_.empty()) texture_frame();
   const u32 region = slot < k_joint_slots ? slot : slot % k_joint_slots;
   // The staging ring's share of the frame that last had this slot is free (that frame is done);
   // everything staged since the last frame, with the records below, is this one's (the end).
@@ -3468,7 +3526,26 @@ void GpuScene::terrain_prepare(u32 slot, TerrainUpdate& out) {
       returning.push_back(staging);
     field_retired_.clear();
   }
-  if (terrain_.empty() || terrain_table_.mapped == nullptr) return;
+  // The copies staged since the last frame — the rings' chunks, and the meshes admitted into the
+  // mesh room (gpu_scene_meshes.cpp), which a scene with no terrain levels has too.
+  // Swapped and cleared rather than moved from, so both lists keep what they grew to and a frame
+  // of chunk uploads allocates nothing once they have (the long-flight test counts it).
+  const auto hand_over_geometry = [&] {
+    std::swap(out.geometry, pending_geometry_);
+    pending_geometry_.clear();
+    std::swap(out.images, pending_images_);  // the textures admitted since (`acquire_texture`)
+    pending_images_.clear();
+    for (const gfx::BufferResource& staging : pending_staging_)
+      out.retire.push_back(staging);
+    pending_staging_.clear();
+    out.geometry_bytes = pending_geometry_bytes_;
+    pending_geometry_bytes_ = 0;
+    if (staging_ring_.mapped != nullptr) ring_slot_end_[region] = ring_head_;
+  };
+  if (terrain_.empty() || terrain_table_.mapped == nullptr) {
+    hand_over_geometry();
+    return;
+  }
   auto* table =
       static_cast<gfx::TerrainLevelDesc*>(terrain_table_.mapped) + u64{region} * terrain_.size();
   // The fields' copies, a budget a frame (`renderer.terrain.upload_mib`), in the order they were
@@ -3544,16 +3621,7 @@ void GpuScene::terrain_prepare(u32 slot, TerrainUpdate& out) {
       terrain_table_.address + u64{region} * terrain_.size() * sizeof(gfx::TerrainLevelDesc);
   // The rings' chunk uploads since the last frame (the records of the slots they turn on or off are
   // `prepare_records`', which every frame runs).
-  // Swapped and cleared rather than moved from, so both lists keep what they grew to and a frame
-  // of chunk uploads allocates nothing once they have (the long-flight test counts it).
-  std::swap(out.geometry, pending_geometry_);
-  pending_geometry_.clear();
-  for (const gfx::BufferResource& staging : pending_staging_)
-    out.retire.push_back(staging);
-  pending_staging_.clear();
-  out.geometry_bytes = pending_geometry_bytes_;
-  pending_geometry_bytes_ = 0;
-  if (staging_ring_.mapped != nullptr) ring_slot_end_[region] = ring_head_;
+  hand_over_geometry();
 }
 
 // ---- the rings' slots (renderer.md, "The rings in the scene")
@@ -4144,24 +4212,9 @@ bool GpuScene::upload_materials(const ResolvedSettings& resolved, std::string* e
   const geometry::ClusterLodMesh& lod = data_->lod;
   if (!gfx::create_sampler(device, gfx::Filter::Linear, sampler_, error)) return false;
   const u32 sampler_slot = bindless_.add_sampler(sampler_);
-  // The materials' samplers, one per distinct combination a textured slot asks for, made when
-  // the first slot that asks for it is met — so a scene with no textures has exactly the bindless
-  // set it always had, and a thousand materials on the glTF default share one sampler.
-  bool sampler_failed = false;
-  auto material_sampler = [&](const geometry::TextureSampler& wanted, bool mipmapped) -> u32 {
-    const u32 key = geometry::pack_texture_sampler(wanted) | (mipmapped ? 0x80000000u : 0u);
-    for (const MaterialSampler& known : material_samplers_)
-      if (known.key == key) return known.slot;
-    MaterialSampler made;
-    made.key = key;
-    if (!gfx::create_sampler(device, sampler_desc(wanted, mipmapped), made.sampler, error)) {
-      sampler_failed = true;
-      return 0;
-    }
-    made.slot = bindless_.add_sampler(made.sampler);
-    material_samplers_.push_back(made);
-    return made.slot;
-  };
+  // The materials' samplers are made as their slots ask (`material_sampler_slot`, with
+  // `fill_material` in gpu_scene_textures.cpp, which an admitted mesh's materials go through too).
+  load_textures_.clear();
   texture_bytes_ = 0;
   textures_built_ = 0;
   textures_decoded_ = 0;
@@ -4466,81 +4519,40 @@ bool GpuScene::upload_materials(const ResolvedSettings& resolved, std::string* e
       };
       u32 source_material_index = 0;
       for (const assets::Material& source : mesh_data.materials) {
-        gfx::ResolveMaterial material;
-        material.albedo =
-            Vec4{source.base_color.x, source.base_color.y, source.base_color.z, source.roughness};
-        // The emissive factor, which the emissive texture multiplies where there is one.
-        material.emissive = Vec4{source.emissive, source.metallic};
-        // Colour goes up sRGB and data UNORM; the order is the order an image shared by two slots
-        // keeps the format of (base colour first, as it always was).
-        material.albedo_texture =
-            texture_slot_of(source.base_color_image, gfx::Format::R8G8B8A8Srgb);
-        material.metallic_roughness_texture =
-            texture_slot_of(source.metallic_roughness_image, gfx::Format::R8G8B8A8Unorm);
-        material.normal_texture = texture_slot_of(source.normal_image, gfx::Format::R8G8B8A8Unorm);
-        material.occlusion_texture =
-            texture_slot_of(source.occlusion_image, gfx::Format::R8G8B8A8Unorm);
-        material.emissive_texture =
-            texture_slot_of(source.emissive_image, gfx::Format::R8G8B8A8Srgb);
+        // Each slot's texture, in the order an image shared by two slots keeps the format of (base
+        // colour first, as it always was; colour goes up sRGB and data UNORM), and what a material
+        // needs to know of it. The record itself — factors, the five slots, the built flags, a
+        // sampler per textured slot, the UV transform, the alpha mask — is `fill_material`'s
+        // (gpu_scene_textures.cpp), which a mesh admitted after the load goes through too, so the
+        // two cannot drift (texture.md, "Textures that arrive after the load").
+        const auto info_of = [&](i32 image, gfx::Format format) {
+          TextureInfo info;
+          info.slot = texture_slot_of(image, format);
+          if (image >= 0 && static_cast<u32>(image) < image_made.size()) {
+            const u32 index = static_cast<u32>(image);
+            info.has_mean = image_made[index].has_mean;
+            info.mean = image_made[index].mean;
+            if (use_built && index < built.size()) {
+              info.normal_rg = built[index].stored == texture::TextureFormat::bc5;
+              info.normal_variance = built[index].normal_variance;
+            }
+          }
+          return info;
+        };
+        const TextureInfo tex[geometry::k_material_slots] = {
+            info_of(source.base_color_image, gfx::Format::R8G8B8A8Srgb),
+            info_of(source.metallic_roughness_image, gfx::Format::R8G8B8A8Unorm),
+            info_of(source.normal_image, gfx::Format::R8G8B8A8Unorm),
+            info_of(source.occlusion_image, gfx::Format::R8G8B8A8Unorm),
+            info_of(source.emissive_image, gfx::Format::R8G8B8A8Srgb)};
         if (variance_upload_failed) return false;
-        material.normal_scale = source.normal_scale;
-        material.occlusion_strength = source.occlusion_strength;
-        material.uv_scale = 1.0f;
+        gfx::ResolveMaterial material;
+        if (!fill_material(source, use_built, tex, material, error)) return false;
         // The terrain's material draws the sand's detail when its scene asks for it, weighted by
         // the sand share its metallic-roughness map carries in alpha (renderer.md, "The sand close
         // up"). The rings' slots draw with this material too.
         if (m == data_->terrain_mesh && data_->terrain.enabled && data_->terrain.has_detail)
           material.flags |= gfx::k_material_ground_detail;
-        if (use_built) {
-          material.flags |= gfx::k_material_mipped;
-          // A BC5 normal map holds x and y; the shader rebuilds z (material.slang).
-          const i32 normal = source.normal_image;
-          if (normal >= 0 && static_cast<u32>(normal) < built.size() &&
-              built[static_cast<u32>(normal)].stored == texture::TextureFormat::bc5) {
-            material.flags |= gfx::k_material_normal_rg;
-          }
-          if (normal >= 0 && static_cast<u32>(normal) < built.size() &&
-              built[static_cast<u32>(normal)].normal_variance &&
-              material.normal_texture != gfx::k_no_texture)
-            material.flags |= gfx::k_material_normal_variance;
-        }
-        // Each textured slot's own sampler, and one UV transform for the material: the base
-        // colour's where it is textured, the first textured slot's otherwise. A slot with no
-        // texture asks for no sampler and borrows `sampler` (gfx::k_same_sampler), which it never
-        // reads.
-        const u32 slot_texture[geometry::k_material_slots] = {
-            material.albedo_texture, material.metallic_roughness_texture, material.normal_texture,
-            material.occlusion_texture, material.emissive_texture};
-        u32 slot_sampler[geometry::k_material_slots];
-        i32 transform_slot = -1;
-        for (u32 s = 0; s < geometry::k_material_slots; ++s) {
-          slot_sampler[s] = gfx::k_same_sampler;
-          if (slot_texture[s] == gfx::k_no_texture) continue;
-          slot_sampler[s] = material_sampler(source.sampling[s].sampler, use_built);
-          if (transform_slot < 0) transform_slot = static_cast<i32>(s);
-        }
-        if (sampler_failed) return false;
-        material.sampler = slot_sampler[geometry::k_slot_base_color] != gfx::k_same_sampler
-                               ? slot_sampler[geometry::k_slot_base_color]
-                               : (transform_slot >= 0 ? slot_sampler[transform_slot] : 0u);
-        material.samplers_mr_normal = slot_sampler[geometry::k_slot_metallic_roughness] |
-                                      (slot_sampler[geometry::k_slot_normal] << 16);
-        material.samplers_occlusion_emissive = slot_sampler[geometry::k_slot_occlusion] |
-                                               (slot_sampler[geometry::k_slot_emissive] << 16);
-        if (transform_slot >= 0) {
-          const geometry::TextureTransform& transform = source.sampling[transform_slot].transform;
-          bool conflict = false;
-          for (u32 s = 0; s < geometry::k_material_slots; ++s) {
-            if (slot_texture[s] != gfx::k_no_texture && source.sampling[s].transform != transform)
-              conflict = true;
-          }
-          if (conflict) ++transform_conflicts_;
-          gfx::set_uv_transform(material, transform.offset, transform.rotation, transform.scale);
-        }
-        // An alpha-tested material (renderer.md, "Alpha-tested geometry"): after the transform,
-        // which clears the two words the cutoff and the factor's alpha go in.
-        if (source.alpha_mode == assets::k_alpha_mask)
-          gfx::set_alpha_mask(material, source.alpha_cutoff, source.base_color.w);
         // A water body's mesh (scene.h, `SceneWater`; docs/subsystems/water.md): its one material
         // is the water class, the body's shading numbers packed into slots an untextured material
         // never reads, so every reader but the resolve's water branch draws its shallow colour.
@@ -4564,31 +4576,9 @@ bool GpuScene::upload_materials(const ResolvedSettings& resolved, std::string* e
             (source_mesh.material_sampling_flags[source_material_index] &
              geometry::k_material_sampling_stochastic) != 0;
         if (wants_stochastic) {
-          const auto mean_of = [&](i32 image, Vec4& out) {
-            out = Vec4{1.0f, 1.0f, 1.0f, 1.0f};
-            if (image < 0) return true;
-            const SceneTexture& made = image_made[static_cast<u32>(image)];
-            if (!made.has_mean) return false;
-            out = made.mean;
-            return true;
-          };
-          Vec4 colour_texel;
-          Vec4 roughness_texel;
-          const char* refused = nullptr;
-          if (!use_built) {
-            refused = "its textures are not built (the means come from the built chain)";
-          } else if (m == data_->terrain_mesh) {
-            refused = "a terrain material is sampled by its own layers";
-          } else if (!mean_of(source.base_color_image, colour_texel) ||
-                     !mean_of(source.metallic_roughness_image, roughness_texel)) {
-            refused = "a texture's mean did not decode";
-          } else if (!gfx::set_stochastic(material,
-                                          Vec3{material.albedo.x * colour_texel.x,
-                                               material.albedo.y * colour_texel.y,
-                                               material.albedo.z * colour_texel.z},
-                                          material.albedo.w * roughness_texel.y)) {
-            refused = "the material is alpha-tested or water, whose word the means would take";
-          }
+          const char* refused = use_built && m == data_->terrain_mesh
+                                    ? "a terrain material is sampled by its own layers"
+                                    : fill_stochastic(material, source, use_built, tex);
           if (refused != nullptr) {
             ENGINE_LOG_WARN(log_renderer, "stochastic sampling refused; the material draws plain",
                             log::field("mesh", m), log::field("material", source_material_index),
@@ -4742,7 +4732,25 @@ bool GpuScene::upload_materials(const ResolvedSettings& resolved, std::string* e
           coverage_words[part.first_cluster + i] = source_mesh.lod_coverage[i];
       }
     }
+    // The load's built textures by key, for a scene whose tiles hand meshes: a mesh that arrives
+    // naming one of them shares it and uploads nothing (gpu_scene_textures.cpp). Pinned: the load's
+    // textures are the scene's for its life.
+    if (mesh_room_.slots != 0) {
+      for (const SceneTexture& held : scene_textures.all()) {
+        if (held.form != k_form_built) continue;
+        TextureInfo info;
+        info.slot = held.slot;
+        info.normal_rg = held.stored == texture::TextureFormat::bc5;
+        info.normal_variance = held.normal_variance;
+        info.has_mean = held.has_mean;
+        info.mean = held.mean;
+        load_textures_.try_emplace(held.content, info);
+      }
+    }
   }
+  // The pairs of bindless slots the textures of meshes admitted later take, reserved now while the
+  // set has freed nothing and its next slots are consecutive (gpu_scene_textures.cpp).
+  if (!lay_out_texture_room(error)) return false;
   if (texture_references_ != 0) {
     ENGINE_LOG_INFO(
         log_renderer, "scene textures", log::field("distinct", textures_built_ + textures_decoded_),
@@ -4804,6 +4812,17 @@ bool GpuScene::upload_materials(const ResolvedSettings& resolved, std::string* e
       }
     }
   }
+  // The mesh room's material arena, after the scene's own entries (gpu_scene_meshes.cpp): the
+  // default material until a mesh that arrives with a tile brings its own into a run of it.
+  if (mesh_room_.slots != 0) {
+    mesh_material_base_arena_ = material_table.size();
+    for (u32 k = 0; k < mesh_room_.materials; ++k) {
+      material_table.push_back(gfx::ResolveMaterial{});
+      table_material.push_back(u8{1});
+    }
+    free_mesh_materials_.clear();
+    free_mesh_materials_.push_back(Range{mesh_material_base_arena_, mesh_room_.materials});
+  }
   material_count_ = material_table.size();
   has_water_ = false;
   has_terrain_materials_ = false;
@@ -4822,6 +4841,9 @@ bool GpuScene::upload_materials(const ResolvedSettings& resolved, std::string* e
     if ((material.flags & gfx::k_material_terrain_layers) != 0) has_terrain_materials_ = true;
     if ((material.flags & gfx::k_material_alpha_mask) != 0) has_masked_ = true;
   }
+  // A generator said its tiles may hand an alpha-tested mesh (`tile_meshes_masked`): the masked
+  // pipelines are chosen from this flag when the scene's renderer is made, before any tile is.
+  if (mesh_room_.slots != 0 && data_->tile_meshes_masked) has_masked_ = true;
   // The resolve's stochastic variant is the one only such a scene draws with (scene_renderer.cpp,
   // `resolve_module`).
   has_stochastic_materials_ = stochastic != 0;
@@ -5188,12 +5210,14 @@ bool GpuScene::create_ray_tracing(const ResolvedSettings& resolved, std::string*
   limits.opacity_micromaps = !micromap_list_.empty();
   rt_limits_ = limits;
   constexpr gfx::BufferUsage k_record_usage = k_address | gfx::BufferUsage::AccelerationBuildInput;
-  bool ok = (streamed_ || upload_room(device, packed.data(), packed.size(),
-                                      ring_slots_.empty() ? 0 : triangle_capacity_ * 3 + 4,
-                                      gfx::k_build_input_usage, indices8, error)) &&
-            gfx::create_buffer(device, sizeof(u32) * gfx::k_cluster_record_count_words,
-                               k_record_usage | gfx::BufferUsage::TransferSrc, false, record_count,
-                               error);
+  bool ok =
+      (streamed_ ||
+       upload_room(device, packed.data(), packed.size(),
+                   triangle_capacity_ > scene_triangle_count_ ? triangle_capacity_ * 3 + 4 : 0,
+                   gfx::k_build_input_usage, indices8, error)) &&
+      gfx::create_buffer(device, sizeof(u32) * gfx::k_cluster_record_count_words,
+                         k_record_usage | gfx::BufferUsage::TransferSrc, false, record_count,
+                         error);
   // One template per cluster of the scene, built from the rest pose, with cluster id and base
   // geometry index zero so an instantiate record's offsets are the visible entry outright. Built
   // once, **packed to the size each one is** rather than to the driver's worst case (about 2.2 KB
@@ -5345,18 +5369,27 @@ bool GpuScene::build_static_forms(std::string* error) {
   bool ok = gfx::create_buffer(device, gfx::k_cluster_build_record_bytes * static_clusters_,
                                k_record_usage, true, clas_records, error) &&
             gfx::create_buffer(device, gfx::k_cluster_blas_record_bytes * mesh_count,
-                               k_record_usage, true, blas_records_once, error) &&
-            gfx::create_cluster_set(device, limits, static_clas_, error) &&
-            gfx::create_cluster_blas_set(device, mesh_count, static_clusters_, most_per_form,
-                                         static_blas_, error, limits.opacity_micromaps);
+                               k_record_usage, true, blas_records_once, error);
+  // **At the size they are** (R143; renderer.md, "Static structures for rigid forms"): the forms'
+  // cluster structures are built once and kept, so they are sized first and packed
+  // (`gfx::create_packed_cluster_set`) instead of each being reserved at the driver's most for a
+  // cluster, as the frame's own set has to be. What they would have reserved is kept for the log
+  // and the statistics (`static_reserved_bytes()`).
+  static_reserved_bytes_ = 0;
   if (ok) {
-    ok = gfx::create_scratch(
-        device, std::max(static_clas_.build_scratch_bytes, static_blas_.build_scratch_bytes),
-        scratch, error);
-  }
-  if (ok) {
+    gfx::ClusterBuildSizes reserved;
+    if (gfx::cluster_set_build_sizes(device, limits, reserved)) {
+      static_reserved_bytes_ = reserved.data_bytes;
+    }
     gfx::write_cluster_build_records(
         std::span<const gfx::ClusterBuildInput>(inputs.data(), inputs.size()), clas_records.mapped);
+    ok =
+        gfx::create_packed_cluster_set(device, limits, clas_records.address, static_clas_, error) &&
+        gfx::create_cluster_blas_set(device, mesh_count, static_clusters_, most_per_form,
+                                     static_blas_, error, limits.opacity_micromaps);
+  }
+  if (ok) ok = gfx::create_scratch(device, static_blas_.build_scratch_bytes, scratch, error);
+  if (ok) {
     auto* bytes = static_cast<u8*>(blas_records_once.mapped);
     for (u32 m = 0; m < mesh_count; ++m) {
       const u32 s = static_of_mesh_[m];
@@ -5372,9 +5405,6 @@ bool GpuScene::build_static_forms(std::string* error) {
     ok = gfx::submit_immediate(
         device,
         [&](gfx::CommandList cb) {
-          gfx::build_cluster_set(cb, static_clas_, clas_records.address, 0, scratch);
-          gfx::acceleration_build_barrier(cb, gfx::PipelineStage::AccelerationBuild,
-                                          gfx::MemoryAccess::AccelerationStructureRead);
           gfx::build_cluster_blas_set(cb, static_blas_, blas_records_once.address, 0, scratch);
           gfx::acceleration_build_barrier(cb, gfx::PipelineStage::ComputeShader,
                                           gfx::MemoryAccess::AccelerationStructureRead);
@@ -5399,7 +5429,9 @@ bool GpuScene::build_static_forms(std::string* error) {
                   static_blas_.data.size + static_blas_.addresses.size;
   ENGINE_LOG_INFO(log_renderer, "static ray tracing structures built",
                   log::field("forms", static_count_), log::field("clusters", static_clusters_),
-                  log::field("bytes", static_bytes_));
+                  log::field("bytes", static_bytes_),
+                  log::field("cluster_bytes", static_clas_.data.size),
+                  log::field("cluster_bytes_unpacked", static_reserved_bytes_));
   return true;
 }
 
@@ -5761,6 +5793,8 @@ void GpuScene::destroy_ray_tracing_layout() noexcept {
   gfx::destroy_buffer(device, slots);
   gfx::destroy_buffer(device, instance_counts);
   gfx::destroy_buffer(device, blas_records);
+  gfx::destroy_buffer(device, blas_dense);
+  gfx::destroy_buffer(device, blas_slots);
   gfx::destroy_buffer(device, records);
   gfx::destroy_buffer(device, hit_entries);
   gfx::destroy_cluster_set(device, clas_set);
@@ -5800,6 +5834,8 @@ bool GpuScene::lay_out_ray_tracing(std::string* error) {
       rt_max_per_instance_ = std::max(rt_max_per_instance_, part.cluster_count * view_count_);
     for (const geometry::ClusterMeshPart& part : slot_parts_)
       rt_max_per_instance_ = std::max(rt_max_per_instance_, part.cluster_count * view_count_);
+    // Or a mesh that arrives with a tile, whatever is resident now: the most one may have.
+    rt_max_per_instance_ = std::max(rt_max_per_instance_, mesh_room_.max_clusters * view_count_);
   } else {
     for (const gfx::InstanceDesc& instance : instance_table_) {
       rt_max_per_instance_ =
@@ -5838,6 +5874,13 @@ bool GpuScene::lay_out_ray_tracing(std::string* error) {
                 device, gfx::k_cluster_blas_record_bytes * rt_instance_slots_,
                 k_record_usage | gfx::BufferUsage::TransferDst | gfx::BufferUsage::TransferSrc,
                 false, blas_records, error) &&
+            // The records of the instances that reference anything, which the bottom-level build
+            // reads, and every instance's place among them (R143, `blas_compact_main`): 20 bytes a
+            // slot, so that the build costs the instances a frame draws and not the slots.
+            gfx::create_buffer(device, gfx::k_cluster_blas_record_bytes * rt_instance_slots_,
+                               k_record_usage, false, blas_dense, error) &&
+            gfx::create_buffer(device, sizeof(u32) * u64{rt_instance_slots_}, k_address, false,
+                               blas_slots, error) &&
             gfx::create_tlas(device, rt_instance_slots_, gfx::k_build_fast_trace, tlas, error) &&
             gfx::upload_buffer(device, tlas_bytes.data(), tlas_bytes.size(),
                                gfx::k_build_input_usage | gfx::BufferUsage::TransferDst | k_storage,
@@ -5851,8 +5894,8 @@ bool GpuScene::lay_out_ray_tracing(std::string* error) {
   }
   if (!ok) return false;
   rt_scene_bytes_ = indices8.size + record_count.size + slots.size + instance_counts.size +
-                    blas_records.size + tlas.buffer.size + rt_instances.size +
-                    clas_templates.data.size + clas_templates.addresses.size +
+                    blas_records.size + blas_dense.size + blas_slots.size + tlas.buffer.size +
+                    rt_instances.size + clas_templates.data.size + clas_templates.addresses.size +
                     clas_templates.sizes.size + static_bytes_ + rt_cache_bytes_;
 
   // **The budget, in clusters.** What one cluster of capacity costs comes from the driver's own
@@ -6112,8 +6155,12 @@ bool GpuScene::resize_ray_tracing(u32 capacity, std::string* error, bool beyond_
   }
   // One bottom-level set over both: an instance references the frame's own structures or the
   // cache's, never both, so its most is the larger of the two capacities.
+  // And at most one structure per reference: the build is over the instances that reference
+  // anything (R143, `blas_compact_main`), never over every slot.
+  const u32 blas_structures = static_cast<u32>(
+      std::max<u64>(1, std::min<u64>(rt_instance_slots_, u64{capacity} + references)));
   ok = ok &&
-       gfx::create_cluster_blas_set(device, rt_instance_slots_, capacity + references,
+       gfx::create_cluster_blas_set(device, blas_structures, capacity + references,
                                     std::min(rt_max_per_instance_, std::max(capacity, references)),
                                     made_blas, error, rt_limits_.opacity_micromaps);
   lap(rt_resize_cost_.blas_ns);
@@ -6512,6 +6559,8 @@ void GpuScene::destroy() noexcept {
   gfx::destroy_buffer(device, rt_scratch);
   gfx::destroy_buffer(device, rt_instances);
   gfx::destroy_buffer(device, blas_records);
+  gfx::destroy_buffer(device, blas_dense);
+  gfx::destroy_buffer(device, blas_slots);
   gfx::destroy_buffer(device, instance_counts);
   gfx::destroy_buffer(device, slots);
   gfx::destroy_buffer(device, record_count);
@@ -6572,6 +6621,11 @@ void GpuScene::destroy() noexcept {
   record_uploads_ = record_upload_bytes_ = 0;
   ring_slots_.clear();
   slot_parts_.clear();
+  mesh_room_ = MeshRoom{};
+  mesh_use_ = MeshUse{};
+  mesh_slots_.clear();
+  free_mesh_clusters_.clear();
+  free_mesh_materials_.clear();
   mesh_descs_.clear();
   rings_ = nullptr;
   scene_vertex_count_ = scene_triangle_count_ = vertex_capacity_ = triangle_capacity_ = 0;
@@ -6634,6 +6688,7 @@ void GpuScene::destroy() noexcept {
   gfx::destroy_buffer(device, instances);
   gfx::destroy_buffer(device, quantized);
   gfx::destroy_buffer(device, clusters);
+  destroy_texture_room();
   for (gfx::ImageViewHandle view : texture_views_)
     gfx::destroy_image_view(device, view);
   texture_views_.clear();

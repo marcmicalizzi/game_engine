@@ -1,5 +1,6 @@
 #include "far_forest_build.h"
 #include "scene_flora.h"
+#include "scene_ground_plan.h"
 
 #include <core/containers/hash_map.h>
 #include <core/hash/hash.h>
@@ -9,6 +10,7 @@
 #include <core/profiling/startup_trace.h>  // stages only: timing, never logic
 #include <core/schema/json_reflect.h>
 #include <core/time/time.h>
+#include <domain/assets/mesh_generator.h>
 #include <domain/content_build/content_build.h>
 #include <domain/content_build/image_identities.h>
 #include <domain/geometry/cluster_file.h>
@@ -31,14 +33,17 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <filesystem>
+#include <mutex>
 #include <optional>
 #include <renderer_log.h>
 #include <scene_fire.h>
 #include <scene_water.h>
 #include <schemas/scene.h>
+#include <thread>
 #include <utility>
 
 namespace engine::renderer {
@@ -49,15 +54,6 @@ namespace {
 // counts it (T74): a tree's roots and a rock's burial are within a metre; past it the author
 // either means it or the ground moved under an absolute `y`.
 constexpr f64 k_off_ground_m = 1.0;
-
-// G135: false leaves the placement generators' exclusion unbuilt, so a scene places as it did
-// before the holes, channels and water were read (scene_gen.md, "Exclusion"): the before of a
-// before and after, and the way out should a scene want grass in a bed. Read once, when the file is
-// read.
-tunables::Bool placement_exclusion{
-    "renderer.placement.exclusion", true,
-    "Leave a terrain hole, a stream's bed and banks and the water empty of placements "
-    "(scene_gen.md, \"Exclusion\"); false places as before G135"};
 
 void prune_form_parts(SourceMesh& form);  // below, beside the forms that take it first
 
@@ -1105,29 +1101,9 @@ void make_instance_grid(u32 n, f32 mesh_radius, u32 joints, f32 bounds_padding,
 }
 
 // A scene's placement entries, in the order the reader walks them (scene_gen.md, "The order
-// rule"): the `ruins` entries first — each the placement generator "ruins" with the entry itself as
-// its parameters, so every file written before the generic list reads as it did — then
-// `placements`, each as it names itself.
-struct PlacementRef {
-  std::string generator;
-  JsonValue params;
-  std::string where;
-  // In a streamed world, whether the world streams it (`PlacementEntry::stream`); a `ruins` entry
-  // always is.
-  bool stream = true;
-};
-
-// The job system's performance pool, made the first time a generator asks for it: a read of a few
-// tiles never starts one, and a read of many shares one, as the load's meshes and textures share
-// one.
-struct LazyPool {
-  std::optional<jobs::JobSystem> pool;
-  static jobs::JobSystem* get(void* context) {
-    auto* self = static_cast<LazyPool*>(context);
-    if (!self->pool.has_value()) self->pool.emplace(content_build::job_config(0));
-    return &*self->pool;
-  }
-};
+// rule"), are `placement_entries` (scene_ground_plan.h): the `ruins` entries first — each the
+// placement generator "ruins" with the entry itself as its parameters, so every file written before
+// the generic list reads as it did — then `placements`, each as it names itself.
 
 // Appends a generator's meshes after everything the scene has so far, each once: a mesh an earlier
 // entry appended — the same file under the same name, two entries of one kit — is that one, which
@@ -1136,27 +1112,43 @@ struct MeshKey {
   std::string path;
   std::string name;
   u64 hash = 0;
+  // A mesh handed as its recipe (scene_gen.md, "A tile's meshes"): what it is, whatever its path.
+  u64 identity = 0;
 };
 Vector<u32> append_placement_meshes(std::span<const scene_gen::PlacementMesh> meshes,
-                                    Vector<std::pair<MeshKey, u32>>& seen, SceneDesc& out) {
+                                    Vector<std::pair<MeshKey, u32>>& seen, SceneDesc& out,
+                                    std::string* clash = nullptr) {
   Vector<u32> index;
   index.reserve(static_cast<u32>(meshes.size()));
   for (const scene_gen::PlacementMesh& mesh : meshes) {
     u32 found = ~0u;
+    // A recipe is one mesh however many placements, tiles or entries hand it, as it is one
+    // resident mesh in a streamed world (`placement_mesh_identity`); a file is its path and name.
+    const u64 identity = mesh.recipe.empty() ? 0 : placement_mesh_identity(mesh);
     for (const auto& [key, scene_mesh] : seen) {
-      if (key.path == mesh.path && key.name == mesh.name && key.hash == mesh.hash) {
+      if (identity != 0 ? key.identity == identity
+                        : key.identity == 0 && key.path == mesh.path && key.name == mesh.name &&
+                              key.hash == mesh.hash) {
         found = scene_mesh;
         break;
+      }
+      // Two recipes under one path: the load finds a recipe by its path, so the second would be
+      // built from the first's bytes. Said, not drawn wrong.
+      if (identity != 0 && key.identity != 0 && key.path == mesh.path && clash != nullptr &&
+          clash->empty()) {
+        *clash = "two different recipes were handed as " + mesh.path +
+                 ": a recipe's path names it, so each needs its own";
       }
     }
     if (found == ~0u) {
       found = out.meshes.size();
       out.meshes.push_back(mesh.path);
+      if (identity != 0) out.recipes.push_back(MeshRecipe{mesh.path, mesh.recipe});
       SceneMeshInfo info;
       info.name = mesh.name;
       info.hash = mesh.hash;
       out.mesh_info.push_back(std::move(info));
-      seen.push_back({MeshKey{mesh.path, mesh.name, mesh.hash}, found});
+      seen.push_back({MeshKey{mesh.path, mesh.name, mesh.hash, identity}, found});
     }
     index.push_back(found);
   }
@@ -1172,16 +1164,8 @@ Vector<u32> append_placement_meshes(std::span<const scene_gen::PlacementMesh> me
 // consumer to expand a tile at a time. The renderer sees plain instances of meshes and nothing
 // else about a generator, and names none.
 bool expand_placements(const scene::Scene& file, const std::string& path, const std::string& dir,
-                       const TerrainSampler& ground, SceneDesc& out, std::string& error) {
-  Vector<PlacementRef> entries;
-  for (u32 r = 0; r < file.ruins.size(); ++r)
-    entries.push_back(PlacementRef{"ruins", schema::to_json(file.ruins[r]),
-                                   path + ": ruins " + std::to_string(r)});
-  for (u32 p = 0; p < file.placements.size(); ++p) {
-    entries.push_back(PlacementRef{file.placements[p].generator, file.placements[p].params,
-                                   path + ": placements " + std::to_string(p),
-                                   file.placements[p].stream});
-  }
+                       std::span<const PlacementRef> entries, const TerrainSampler& ground,
+                       SceneDesc& out, std::string& error) {
   if (entries.empty()) return true;
   const scene_gen::GeneratorRegistry& registry = scene_gen::GeneratorRegistry::global();
   // The world block a streamed entry is opened against: the file's, or the capability's defaults.
@@ -1196,14 +1180,21 @@ bool expand_placements(const scene::Scene& file, const std::string& path, const 
   context.ddc = out.ddc;
   if (out.terrain.enabled) context.ground = ground.provider().view();
   if (!out.terrain.exclusion.empty()) context.exclusion = &out.terrain.exclusion;
+  context.site = &out.terrain.site;
+  // The scene's formation, and the ground before its cuts when it has any (scene_gen.md, "The
+  // formation and the ground before its cuts").
+  if (out.terrain.formation.has_value()) context.formation = &*out.terrain.formation;
+  UncutGround uncut(out.terrain);
+  if (uncut.present()) context.uncut_ground = uncut.hook();
   context.jobs_fn = &LazyPool::get;
   context.jobs_context = &pool;
   Vector<std::pair<MeshKey, u32>> seen;
   // **Earlier placements** (ADR-0046 decision 4, as built 2026-10-12; scene_gen.md): every entry
   // read whole is handed the footprints of the entries read whole before it, in the scene's order —
   // where each placement stands and how far its mesh reaches on the ground, measured from the
-  // mesh as loaded (`ground_radius`), once a mesh and only when a later entry is there to read it.
-  Vector<scene_gen::Footprint> earlier;
+  // mesh as loaded (`ground_radius`), once a mesh and only when a later entry is there to read it —
+  // and, after them, the shapes the entry said it occupies (`hand_shapes_on`).
+  scene_gen::FootprintList earlier;
   Vector<f32> radius_of;  // by scene mesh; < 0 not measured yet
   const auto measure = [&](u32 mesh, f32& radius, std::string& why) {
     if (mesh < radius_of.size() && radius_of[mesh] >= 0.0f) {
@@ -1233,7 +1224,9 @@ bool expand_placements(const scene::Scene& file, const std::string& path, const 
   };
   for (u32 e = 0; e < entries.size(); ++e) {
     const PlacementRef& entry = entries[e];
-    context.earlier = std::span<const scene_gen::Footprint>(earlier.data(), earlier.size());
+    context.earlier = earlier.span();
+    // An earlier entry's shapes may have made an empty exclusion one to hand.
+    if (!out.terrain.exclusion.empty()) context.exclusion = &out.terrain.exclusion;
     const scene_gen::PlacementGeneratorDesc* generator = registry.find_placement(entry.generator);
     if (generator == nullptr) {
       error = entry.where + " " + registry.unknown_placement(entry.generator);
@@ -1256,28 +1249,51 @@ bool expand_placements(const scene::Scene& file, const std::string& path, const 
       ~Close() { generator->close(state); }
     } close{generator, state};
     if (world_streams) {
-      if (generator->meshes == nullptr || generator->tile == nullptr) {
+      if (generator->tile == nullptr) {
         error = entry.where + ": the placement generator \"" + entry.generator +
                 "\" has no tiles, so a streamed world cannot hold it";
         return false;
       }
+      // What the entry needs resident from the start, which may be nothing: a generator with no
+      // `meshes` hands every mesh with the tile that names it (scene_gen.md, "A tile's meshes").
       Vector<scene_gen::PlacementMesh> resident;
-      if (!generator->meshes(state, context, resident, &error)) return false;
+      if (generator->meshes != nullptr && !generator->meshes(state, context, resident, &error))
+        return false;
       StreamedPlacements streamed;
       streamed.generator = entry.generator;
       streamed.params = entry.params;
       streamed.dir = dir;
       streamed.where = entry.where;
+      streamed.tile_meshes = generator->tile_meshes;
+      streamed.tile_meshes_masked = generator->tile_meshes && generator->tile_meshes_masked;
+      std::string clash;
       streamed.meshes = append_placement_meshes(
-          std::span<const scene_gen::PlacementMesh>(resident.data(), resident.size()), seen, out);
+          std::span<const scene_gen::PlacementMesh>(resident.data(), resident.size()), seen, out,
+          &clash);
+      if (!clash.empty()) {
+        error = entry.where + ": " + clash;
+        return false;
+      }
       out.streamed.push_back(std::move(streamed));
       continue;
     }
     scene_gen::Placements placed;
     if (!generator->expand(state, context, placed, &error)) return false;
+    std::string clash;
     const Vector<u32> meshes = append_placement_meshes(
         std::span<const scene_gen::PlacementMesh>(placed.meshes.data(), placed.meshes.size()), seen,
-        out);
+        out, &clash);
+    if (!clash.empty()) {
+      error = entry.where + ": " + clash;
+      return false;
+    }
+    // A recipe's reach on the ground is the generator's word (`PlacementMesh::reach`), as it is
+    // for the same mesh handed with a tile, where nothing has been built when the next entry asks.
+    for (u32 k = 0; k < placed.meshes.size(); ++k) {
+      if (placed.meshes[k].recipe.empty()) continue;
+      if (radius_of.size() <= meshes[k]) radius_of.resize(meshes[k] + 1, -1.0f);
+      radius_of[meshes[k]] = placed.meshes[k].reach;
+    }
     out.instances.reserve(out.instances.size() + placed.instances.size());
     for (const scene_gen::Placement& p : placed.instances) {
       if (p.mesh >= meshes.size()) {
@@ -1310,11 +1326,13 @@ bool expand_placements(const scene::Scene& file, const std::string& path, const 
           return false;
         }
         const f32 scale = std::max(std::fabs(p.scale.x), std::fabs(p.scale.z));
-        earlier.push_back(scene_gen::Footprint{scene_gen::nearest_mm(p.position.x),
-                                               scene_gen::nearest_mm(p.position.z),
-                                               static_cast<f64>(radius * scale)});
+        earlier.add_disc(scene_gen::nearest_mm(p.position.x), scene_gen::nearest_mm(p.position.z),
+                         static_cast<f64>(radius * scale));
       }
     }
+    // The shapes it occupies: into the exclusion, which the world's consumer and the collision are
+    // handed too, and into what the entries after this one are handed.
+    if (!hand_shapes_on(placed.shapes, entry.where, out, earlier, error)) return false;
     out.placed_buildings += placed.things;
     out.placed_instances += placed.instances.size();
   }
@@ -2074,6 +2092,7 @@ bool read_scene_file(const std::string& path, const SceneFileOptions& options, S
       resolve_path(tiles.manifest);
       resolve_path(tiles.heightfield);
       resolve_path(tiles.ddc);
+      if (!out.ddc.empty()) tiles.ddc = out.ddc;  // the host's root wins (T90; tileset.md)
       out.terrain.tiles = std::move(tiles);
       if (out.terrain.provider.empty()) out.terrain.provider = "tiles";
     }
@@ -2190,6 +2209,13 @@ bool read_scene_file(const std::string& path, const SceneFileOptions& options, S
   // ground provider is found and made (scene_gen.md): a name this executable does not carry, or an
   // entry the provider refuses — a dune time out of range, a band table the field cannot be built
   // from — refuses the file with the provider's sentence.
+  // **Before it**, what every placement reads of the scene besides the ground (the exclusion, the
+  // site), and what the placement entries plan for the ground — their edits and their openings,
+  // added to the scene's own, so the ground made here is the edited one (scene_ground_plan.h).
+  const Vector<PlacementRef> placements = placement_entries(file, path);
+  if (!plan_scene_ground(file, path, dir, {placements.data(), placements.size()},
+                         file.world.has_value() || options.world, out, error))
+    return false;
   profiling::TraceStage sampler_stage("ground sampler");
   const TerrainSampler ground(out.terrain);
   sampler_stage.end();
@@ -2360,20 +2386,12 @@ bool read_scene_file(const std::string& path, const SceneFileOptions& options, S
   // terrain levels drawn through the deformed-vertex pool, and a scene whose instances come and go
   // had no pool. It has one now, and the ray tracing chain, laid out over the tail's blocks
   // (renderer.md, "Instances that come and go").
-  // G135: where the placement generators leave nothing, read from the file once (scene_gen.md,
-  // "Exclusion"); a file with no holes, channels or water builds an empty one.
-  if (placement_exclusion.get()) {
-    const Vector<scene::TerrainHole> no_holes;
-    const auto& holes = file.terrain.has_value() ? file.terrain->holes : no_holes;
-    if (!out.terrain.exclusion.build(
-            {holes.data(), holes.size()}, {file.water.data(), file.water.size()},
-            {file.water_channels.data(), file.water_channels.size()}, &error)) {
-      error = path + ": " + error;
-      return false;
-    }
-  }
+  // The exclusion (G135) and the site (G144) they read were built before the ground was
+  // (`plan_scene_ground`, above).
   profiling::TraceStage placements_stage("placements");
-  if (!expand_placements(file, path, dir, ground, out, error)) return false;
+  if (!expand_placements(file, path, dir, {placements.data(), placements.size()}, ground, out,
+                         error))
+    return false;
   placements_stage.end();
   profiling::TraceStage water_stage("water");
   if (!read_scene_water(file, path, dir, ground, out, error)) return false;           // water.md
@@ -2414,10 +2432,13 @@ bool load_scene(const SceneDesc& desc, SceneData& out, std::string& error) {
   // The derived-data cache lives at <repo>/ddc, found by walking up from the executable to the
   // directory that holds AGENTS.md, unless a root was named. With no root there is nowhere to
   // keep a built mesh, so the cache is simply off.
+  // The default material pack is looked up whatever the root (materials.md, "Where the hosts find
+  // it"; T103), and the load says which it used.
+  if (resolved.materials.empty())
+    resolved.materials = materials::default_pack_dir(platform::executable_directory());
+  out.load.materials = resolved.materials;
   if (resolved.cache && resolved.ddc.empty()) {
     resolved.ddc = geometry::find_ddc_root(platform::executable_directory());
-    if (resolved.materials.empty())
-      resolved.materials = materials::default_pack_dir(platform::executable_directory());
     if (resolved.ddc.empty()) {
       resolved.cache = false;
       ENGINE_LOG_WARN(log_renderer, "no derived-data root above the executable",
@@ -2743,8 +2764,17 @@ bool load_scene(const SceneDesc& desc, SceneData& out, std::string& error) {
   out.max_joints = resolved.max_joints;
   if (out.skinned_instances == 0) out.instance_joints.clear();
   out.mesh_fit = std::move(fit_of_mesh);
+  // What a tile's mesh is built with after the load: the load's own options (R142).
+  out.mesh_options =
+      PlacementMeshOptions{resolved.lod, resolved.ddc, resolved.cache, resolved.materials};
   out.world = resolved.world;
   out.streamed = resolved.streamed;
+  out.tile_meshes = false;
+  out.tile_meshes_masked = false;
+  for (const StreamedPlacements& entry : out.streamed) {
+    out.tile_meshes = out.tile_meshes || entry.tile_meshes;
+    out.tile_meshes_masked = out.tile_meshes_masked || entry.tile_meshes_masked;
+  }
   // A streamed world's instances come and go — unless all it streams is its ground (the world's
   // tiles, which are terrain levels in fixed slots, not instances of the tail).
   out.dynamic = resolved.world.enabled && !(resolved.world.ground && resolved.streamed.empty());
@@ -2780,16 +2810,21 @@ bool make_instance(const SceneData& scene, const SceneInstance& source, u32 firs
     }
     return false;
   }
-  out = gfx::InstanceDesc{};
   const Mat4 fit =
       source.mesh < scene.mesh_fit.size() ? scene.mesh_fit[source.mesh] : Mat4::identity();
+  place_instance(source, fit, first_pair, out);
+  return true;
+}
+
+void place_instance(const SceneInstance& source, const Mat4& fit, u32 first_pair,
+                    gfx::InstanceDesc& out) {
+  out = gfx::InstanceDesc{};
   gfx::set_instance_placement(out, mat4_from_transform(source.transform) * fit,
                               instance_translation(source, fit));
   out.mesh = source.mesh;
   out.first_pair = first_pair;
   out.bounds_padding = source.bounds_padding;
   if (source.handoff != 0) apply_handoff(out, source.handoff, sward_handoff_band_tunable());
-  return true;
 }
 
 void apply_handoff(gfx::InstanceDesc& out, u8 handoff, u32 band) noexcept {
@@ -2897,6 +2932,216 @@ void update_scene_bounds(SceneData& out) {
     }
     out.center = absolute(to_world(frame), center);
   }
+}
+
+// ---- a tile's mesh (renderer.md, "Meshes that come and go") -------------------------------------
+
+// **A tile's mesh's textures, off the frame** (texture.md, "Textures that arrive after the load";
+// R147): the load's own texture pass (`prepare_scene_textures`) run for the one mesh on the thread
+// that built it — the same function over a list of one, so a tile's image gets the key, the trust
+// and, on a cold cache, the build a whole read's would, and there is no second copy of the rule to
+// drift — and then the `.tex` of every image a material samples, read whole unless the scene says
+// it holds the key. All or none, as the upload's rule is: the first image without a built texture
+// empties the list and says why.
+void load_placement_textures(const SceneDesc& desc, const PlacementMeshOptions& options,
+                             PlacementMeshData& out) {
+  const u32 image_count = out.source.data.images.size();
+  Vector<bool> sampled(image_count, false);
+  u32 needed = 0;
+  for (const assets::Material& material : out.source.data.materials) {
+    for (const i32 image :
+         {material.base_color_image, material.metallic_roughness_image, material.normal_image,
+          material.occlusion_image, material.emissive_image}) {
+      if (image >= 0 && static_cast<u32>(image) < image_count &&
+          !sampled[static_cast<u32>(image)]) {
+        sampled[static_cast<u32>(image)] = true;
+        ++needed;
+      }
+    }
+  }
+  if (needed == 0) return;
+  const auto refuse = [&](std::string why) {
+    out.textures.clear();
+    out.textures_why = std::move(why);
+  };
+  if (!desc.cache || desc.ddc.empty())
+    return refuse("the load reads no derived-data cache, where built textures live");
+  if (out.source.textures.size() != image_count)
+    return refuse("the mesh records no built textures");
+  {
+    // A pool of its own, two threads for the length of the pass: the pass wants one, and this
+    // thread may be a worker of the host's pool, which must not wait on its own.
+    jobs::JobSystemConfig config;
+    config.performance_workers = 1;
+    config.efficiency_workers = 1;
+    jobs::JobSystem pool(config);
+    content_build::ImageIdentities identities(desc.ddc, materials::pack_at(desc.materials));
+    Vector<SourceMesh> one;
+    one.push_back(std::move(out.source));
+    SceneLoadReport report;
+    prepare_scene_textures(desc, one, identities, pool, report);
+    out.source = std::move(one[0]);
+  }
+  for (u32 i = 0; i < image_count; ++i) {
+    if (!sampled[i]) continue;
+    const std::string name = "image " + std::to_string(i);
+    const geometry::ClusterFileTexture& record = out.source.textures[i];
+    if (record.options == 0 || record.key == 0)
+      return refuse(name + " has no built texture (its record names none this build reads)");
+    PlacementTexture texture;
+    texture.image = i;
+    texture.key = record.key;
+    const bool held = options.texture_resident != nullptr &&
+                      options.texture_resident(options.texture_context, record.key);
+    if (!held) {
+      std::string why;
+      const std::string path = texture::texture_cache_path(desc.ddc, record.key);
+      // Two tiles' meshes that name one new set are built at once on two workers, and both may
+      // write the entry — the same bytes, each by a rename — so a read can meet the other's
+      // rename on a file system that refuses one of the two. The entry is whole either way: ask
+      // again, twice, before the mesh is left to draw its constants.
+      bool read = texture::read_texture_file(path, texture.data, &why);
+      for (u32 again = 0; !read && again < 2; ++again) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        read = texture::read_texture_file(path, texture.data, &why);
+      }
+      if (!read) return refuse(name + ": " + why);
+      if (texture.data.source_hash != record.source_hash || texture.data.build_key != record.key)
+        return refuse(name + ": '" + path + "' was built from other bytes or options");
+    }
+    out.textures.push_back(std::move(texture));
+  }
+}
+
+u64 PlacementTexture::staged_bytes() const noexcept {
+  u64 bytes = 0;
+  for (u32 l = 0; l < data.levels.size(); ++l)
+    bytes += (data.level_bytes(l).size() + 15) / 16 * 16;
+  if (!data.normal_variance.empty()) {
+    for (u32 l = 0; l < data.levels.size(); ++l)
+      bytes += (data.normal_variance_level_bytes(l).size() + 15) / 16 * 16;
+  }
+  return bytes;
+}
+
+bool read_placement_texture(const PlacementMeshOptions& options, u64 key, texture::TextureData& out,
+                            std::string* error) {
+  if (options.ddc.empty()) {
+    if (error != nullptr) *error = "no derived-data root to read a texture from";
+    return false;
+  }
+  if (!texture::read_texture_file(texture::texture_cache_path(options.ddc, key), out, error))
+    return false;
+  if (out.build_key != key) {
+    if (error != nullptr) *error = "the texture file was built from other bytes or options";
+    return false;
+  }
+  return true;
+}
+
+u64 PlacementMeshData::payload_bytes() const noexcept {
+  const geometry::ClusterMesh& m = lod.mesh;
+  return u64{m.clusters.size()} *
+             (sizeof(geometry::ClusterDesc) + sizeof(geometry::ClusterLodDesc) + sizeof(u32)) +
+         u64{m.vertices.size()} * (6 + sizeof(geometry::VertexAttributes) + sizeof(Vec3)) +
+         u64{m.triangles.size()} * (sizeof(u32) + 3);
+}
+
+u64 placement_mesh_identity(const scene_gen::PlacementMesh& mesh) noexcept {
+  u64 words[2];
+  if (!mesh.recipe.empty()) {
+    const std::string_view generator = assets::mesh_generator_of(mesh.path);
+    words[0] = hash_bytes(generator.data(), generator.size());
+    words[1] = hash_bytes(mesh.recipe.data(), mesh.recipe.size());
+  } else {
+    words[0] = hash_bytes(mesh.path.data(), mesh.path.size());
+    words[1] = mesh.hash;
+  }
+  const u64 identity = hash_bytes(words, sizeof(words));
+  return identity != 0 ? identity : 1;  // zero is "no recipe" to a reader
+}
+
+bool load_placement_mesh(const scene_gen::PlacementMesh& mesh, const PlacementMeshOptions& options,
+                         PlacementMeshData& out, std::string& error) {
+  out = PlacementMeshData{};
+  if (mesh.path.empty()) {
+    error = "a tile's mesh names no path";
+    return false;
+  }
+  // The load's own per-mesh pass (`load_source_mesh`), under the load's options: one cache entry
+  // whichever of the two asked first, and the same bytes from either.
+  SceneDesc desc;
+  desc.lod = options.lod;
+  desc.ddc = options.ddc;
+  desc.cache = options.cache && !options.ddc.empty();
+  desc.materials = options.materials;
+  if (!mesh.recipe.empty()) desc.recipes.push_back(MeshRecipe{mesh.path, mesh.recipe});
+  Vector<geometry::ClusterLodMesh> dags(1);
+  geometry::ClusterPages pages;
+  if (!load_source_mesh(mesh.path, desc, mesh.hash, out.source, dags[0], pages, error))
+    return false;
+  if (!dags[0].mesh.skin.empty() || !dags[0].mesh.morph_channels.empty()) {
+    error = mesh.path + ": a mesh that arrives with a tile is drawn rigid, and this one is " +
+            (dags[0].mesh.skin.empty() ? "morphed" : "skinned");
+    return false;
+  }
+  // A whole read's merge puts each mesh's leaves first and reorders what is kept per cluster with
+  // it (`load_scene`); the same here, so a cluster of this mesh is the cluster a whole read numbers
+  // the same — which is what makes a streamed scene's ids the whole read's.
+  Vector<geometry::ClusterMeshPart> parts;
+  Vector<u32> source_of_cluster;
+  if (!geometry::merge_cluster_meshes(
+          std::span<const geometry::ClusterLodMesh>(dags.data(), dags.size()), out.lod, parts,
+          &error, geometry::ClusterOrder::leaves_first, &source_of_cluster)) {
+    error = mesh.path + ": " + error;
+    return false;
+  }
+  out.part = parts[0];
+  const std::span<const u32> order(source_of_cluster.data() + out.part.first_cluster,
+                                   out.part.cluster_count);
+  geometry::permute_cluster_array(order, out.source.part_of_cluster);
+  if (!out.source.lod_coverage.empty())
+    geometry::permute_cluster_array(order, out.source.lod_coverage);
+  out.source.path = mesh.path;
+  out.reach = ground_radius(out.lod, out.part.first_cluster, out.part.cluster_count);
+  if (options.textures) load_placement_textures(desc, options, out);
+  return true;
+}
+
+// ---- the ground before its cuts -----------------------------------------------------------------
+
+struct UncutGround::State {
+  TerrainDesc terrain;  // the scene's, less its cuts
+  std::mutex mutex;
+  std::unique_ptr<TerrainSampler> sampler;  // made on the first ask
+};
+
+UncutGround::UncutGround(const TerrainDesc& terrain) {
+  present_ = terrain.enabled && terrain.tiles.has_value() && !terrain.tiles->edits.empty();
+  if (!present_) return;
+  state_ = std::make_unique<State>();
+  state_->terrain = terrain;
+  state_->terrain.tiles->edits.clear();
+}
+
+UncutGround::~UncutGround() = default;
+
+scene_gen::Context::UncutGround UncutGround::hook() noexcept {
+  scene_gen::Context::UncutGround out;
+  if (present_) {
+    out.fn = &UncutGround::get;
+    out.context = state_.get();
+  }
+  return out;
+}
+
+bool UncutGround::get(void* context, scene_gen::Ground& out) {
+  auto* state = static_cast<State*>(context);
+  std::lock_guard<std::mutex> lock(state->mutex);
+  if (state->sampler == nullptr) state->sampler = std::make_unique<TerrainSampler>(state->terrain);
+  if (!state->sampler->provider().valid()) return false;
+  out = state->sampler->provider().view();
+  return true;
 }
 
 }  // namespace engine::renderer

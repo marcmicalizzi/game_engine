@@ -12,6 +12,7 @@
 // why engine-host keeps a `SceneData` across calls and rebuilds only the GPU side when the
 // settings change.
 
+#include <core/base/macros.h>
 #include <core/base/types.h>
 #include <core/containers/vector.h>
 #include <core/json/json_value.h>
@@ -23,10 +24,12 @@
 #include <domain/gfx/cluster_cull.h>
 #include <domain/gfx/visibility_resolve.h>
 #include <domain/gfx/water_spectrum.h>
+#include <domain/texture/texture_file.h>
 #include <systems/renderer/far_forest.h>
 #include <systems/renderer/fire.h>
 #include <systems/renderer/terrain.h>
 
+#include <memory>
 #include <optional>
 #include <span>
 #include <string>
@@ -156,18 +159,28 @@ struct SceneWaterDepth {
   f32 texel_m = 0.0f;
   f32 depth_max = 0.0f;
   f32 bank_max = 0.0f;
+  // What the body's mesh resolves (the file's version 3; `water::DepthMap`): its vertices' spacing
+  // along a ring and far from the outline, its rings' spacing at the outline, and the spacing's
+  // growth per metre in from it. A file older than version 3: four texels, four texels and 0.
+  f32 mesh_far_m = 0.0f;
+  f32 mesh_near_m = 0.0f;
+  f32 mesh_grade = 0.0f;
   Vector<u16> texels;
 };
 struct SceneWater {
   scene::WaterBody body;
   gfx::WaterShading shading;
   SceneWaterDepth depth{};
-  // The wind the body's waves were made at, m/s: the ground's where the body follows it, else its
-  // own `wind_m_s` (an open body's spectrum and swash read it; S94).
+  // The wind the body's waves were made at, m/s: an open body's is the ground's where the body
+  // follows it, else its own `wind_m_s`; a closed body's is its own `wind_m_s` (S94, S100).
   f32 wind_m_s = 0.0f;
-  // An open body's waves from the spectrum (gfx::water_spectrum; water.md, "The spectrum"), made
-  // at load from the wind and the body's fetch: `gfx::k_water_waves` of them, or none (a closed
-  // body, or no wind), and then the four sines.
+  // The fetch that wind's sea is grown over, metres (S100 stage B; water.md, "The spectrum"): an
+  // open body's `fetch_km`; a closed body's the longest reach of its own water along its wind
+  // (`gfx::water_fetch_field` over its depth map), no longer than `fetch_km`.
+  f32 fetch_m = 0.0f;
+  // The wind's waves from the spectrum (gfx::water_spectrum; water.md, "The spectrum"), made at
+  // load from the wind and the fetch: `gfx::k_water_waves` of them for every body with a wind, or
+  // none, and then the material's four sines.
   Vector<gfx::WaterWave> waves;
   // A channel of flowing water's (`engine.scene.WaterChannel`; water.md, "Channels"; S96): the
   // mesh's UV.x is the flow phase, and the GPU scene sets `gfx::k_material_water_channel` on its
@@ -232,8 +245,14 @@ struct StreamedPlacements {
   std::string dir;        // the scene file's directory
   std::string where;      // "scene.json: ruins 0", for a sentence
   // The generator's resident meshes (`scene_gen::PlacementGeneratorDesc::meshes`), in its order, as
-  // scene meshes: a tile's placement of mesh `m` is an instance of scene mesh `meshes[m]`.
+  // scene meshes: a tile's placement of mesh `m` is an instance of scene mesh `meshes[m]`. A
+  // placement of mesh `meshes.size() + k` names the k-th mesh its tile handed
+  // (`scene_gen::Placements::meshes`), which is resident while a tile held names it and not before
+  // (world.md, "A tile's meshes: residency by reference").
   Vector<u32> meshes;
+  // The generator's `tile_meshes`: its tiles hand meshes, so the scene makes room for them.
+  bool tile_meshes = false;
+  bool tile_meshes_masked = false;  // and they may be alpha-tested (`tile_meshes_masked`)
   // For an entry whose placement ids name the whole read's instances (the `authored` entry's: its
   // place in the file's own list plus one), the loaded index of id 1: a placement of id `n` is
   // given `motion_key = motion_key_base + n - 1`, the key the whole read gives it. `~0u`: none.
@@ -338,8 +357,19 @@ struct AuthoredStats {
 };
 
 // What to load: mesh files and instances of them, or one of the procedural scenes above.
+// A mesh handed as its recipe (`scene_gen::PlacementMesh::recipe`; scene_gen.md, "A tile's
+// meshes"): the bytes the mesh generator's file at `path` would hold. The load reads these instead
+// of the file, so a solver's output is never written to be read back.
+struct MeshRecipe {
+  std::string path;
+  std::string bytes;
+};
+
 struct SceneDesc {
-  Vector<std::string> meshes;       // glTF, GLB, or .clusters; one empty path = procedural
+  Vector<std::string> meshes;  // glTF, GLB, or .clusters; one empty path = procedural
+  // The recipes of the meshes above that were handed and not written (`MeshRecipe`), by path. A
+  // whole read's placement entries fill it; empty for every scene whose meshes are all files.
+  Vector<MeshRecipe> recipes;
   Vector<SceneInstance> instances;  // empty: one identity instance of every mesh
   u32 grid_instances = 0;           // n: n x n copies of mesh 0, varied in rotation and scale
   Procedural procedural = Procedural::heightfield;  // which mesh an empty path builds
@@ -359,9 +389,9 @@ struct SceneDesc {
   bool cache = true;           // read and write <ddc>/clusters/<key>.clusters
   // The material pack a generated mesh's parts fall back to (docs/subsystems/materials.md): a
   // directory holding `pack.json`. Empty and the repository's own, `<repo>/content/materials`, is
-  // looked up **when the cache root is** — the repository's defaults go with the repository's
-  // cache — so a caller that names its own derived-data root (every test does) names its pack too,
-  // or draws the flat colours.
+  // looked up (`materials::default_pack_dir`) whatever `ddc` and `cache` say — except in a test or
+  // a bench, whose main switches that lookup off for itself and every process it starts, so a test
+  // that wants a pack names one (T103). `SceneLoadReport::materials` says which was used.
   std::string materials;
   // The longest bone-matrix span the caller will hand a frame, which is what the per-frame joint
   // buffer is sized by. It is the caller's number because it comes from the animation capability's
@@ -563,6 +593,9 @@ struct SourceMesh {
 struct SceneLoadReport {
   u32 meshes = 0;   // loaded by the per-mesh pass
   u32 threads = 0;  // the job system's workers it ran over, plus the calling thread
+  // The material pack directory the load resolved (`SceneDesc::materials`, or the default lookup):
+  // empty when there was none, so a run says which pack it drew with (T103).
+  std::string materials;
   // The file's `ground: false` instances more than a metre above (`floating`) or below (`buried`)
   // the ground they stand over (`SceneDesc::instances_floating`); only counted, never refused.
   u32 instances_floating = 0;
@@ -592,10 +625,33 @@ struct SceneLoadReport {
   u64 inline_jobs = 0;
 };
 
+// **What a mesh built after the load is built with** (R142; renderer.md, "Meshes that come and
+// go"): the load's own LOD options, derived-data root and material pack, carried on the loaded
+// scene so every host that holds one — the world's placements consumer, the collision — builds a
+// tile's mesh into the cache entry the whole read would have, and finds what the other built.
+struct PlacementMeshOptions {
+  geometry::ClusterLodOptions lod;
+  std::string ddc;
+  bool cache = true;
+  std::string materials;
+  // **Its textures too** (R147; texture.md, "Textures that arrive after the load"): the build also
+  // runs the load's texture pass for the one mesh — every image its materials sample gets its
+  // `.tex` key, trusted from its header or built now by the content build's own step — and reads
+  // the ones the scene does not hold, so the admission has their bytes without a read on the
+  // frame's thread. Off for a caller that wants the geometry alone (the collision).
+  bool textures = false;
+  // Whether the scene holds the texture of this build key now, asked from the building thread
+  // before a `.tex` is read: true skips the read. Advisory — a texture let go between the build
+  // and the admission is read again by the admitter (`read_placement_texture`). Null reads all.
+  bool (*texture_resident)(void* context, u64 key) = nullptr;
+  void* texture_context = nullptr;
+};
+
 // A loaded scene: everything the GPU upload reads, and everything a summary reports.
 struct SceneData {
   SceneLoadReport load;
-  geometry::ClusterLodMesh lod;             // every mesh of the scene, merged
+  PlacementMeshOptions mesh_options;  // what a tile's mesh is built with, as the load built its own
+  geometry::ClusterLodMesh lod;       // every mesh of the scene, merged
   Vector<geometry::ClusterMeshPart> parts;  // one per mesh: its clusters and its 16-bit grid
   // The scene's one page table, filled only under `SceneDesc::stream`: every mesh's pages, one
   // after another, with `parts[m].first_page`/`page_count` naming each mesh's run
@@ -645,6 +701,13 @@ struct SceneData {
   bool dynamic = false;
   WorldDesc world;
   Vector<StreamedPlacements> streamed;
+  // Some streamed entry's tiles hand meshes (`StreamedPlacements::tile_meshes`): the GPU scene
+  // makes the room they arrive into (renderer.md, "Meshes that come and go").
+  bool tile_meshes = false;
+  // ... and one of them says those meshes may be alpha-tested
+  // (`scene_gen::PlacementGeneratorDesc::tile_meshes_masked`): the scene draws through the masked
+  // pipelines from its first frame, since they are chosen when it is made (R147).
+  bool tile_meshes_masked = false;
   // A streamed world's own instances (`AuthoredStreaming`): what was streamed and what kept, and
   // the most pairs one tile of them holds in its innermost form — the least room a tail must have,
   // which `GpuScene::create` accounts with the prefix and the terrain rings' slots before anything
@@ -721,6 +784,11 @@ u32 read_instance_count(const SceneData& scene) noexcept;
 // out once).
 bool make_instance(const SceneData& scene, const SceneInstance& source, u32 first_pair,
                    gfx::InstanceDesc& out, std::string* error = nullptr);
+// The placement alone, through a fit the caller names: what `make_instance` does once it has
+// checked the mesh, and what the GPU scene does for a mesh that arrived after the load (a tile's
+// mesh, whose fit is the identity; renderer.md, "Meshes that come and go").
+void place_instance(const SceneInstance& source, const Mat4& fit, u32 first_pair,
+                    gfx::InstanceDesc& out);
 // The record's hand-off role for `SceneInstance::handoff` and the band it carries (G136;
 // `gfx::set_instance_handoff`, stamp 0): no role, and a zero band, for an instance with none.
 void apply_handoff(gfx::InstanceDesc& out, u8 handoff, u32 band) noexcept;
@@ -732,6 +800,78 @@ void apply_handoff(gfx::InstanceDesc& out, u8 handoff, u32 band) noexcept;
 // can check before it asks.
 bool pairs_after(const SceneData& scene, u32 first_pair, std::span<const SceneInstance> instances,
                  u32 max_pairs, u32& end_pair, std::string* error = nullptr);
+
+// ---- a tile's mesh (R142; renderer.md, "Meshes that come and go") -------------------------------
+//
+// **A mesh that arrives with its tile, built** — everything the GPU scene admits and the collision
+// builds a proxy from, and nothing of the device: its own DAG with offsets from zero and its
+// clusters in the order a whole read's merge leaves them (leaves first), its materials and the map
+// from cluster to material, and its reach on the ground. The same bytes a scene read whole holds
+// for the same recipe, since both come from one cache entry.
+// One built texture of a tile's mesh (R147): the image of `source.data.images` it is, its `.tex`
+// build key — what the scene shares a texture by — and its bytes as the file holds them, or none
+// when the scene said it holds the key (`PlacementMeshOptions::texture_resident`).
+struct PlacementTexture {
+  u32 image = 0;
+  u64 key = 0;
+  texture::TextureData data;
+  // What the device copies for it: every level of the chain, and of the variance chain, each at
+  // a 16-byte offset. Zero for one with no bytes.
+  u64 staged_bytes() const noexcept;
+};
+
+struct PlacementMeshData {
+  geometry::ClusterLodMesh lod;
+  geometry::ClusterMeshPart part;  // of `lod`: every cluster, from zero
+  SourceMesh source;
+  f32 reach = 0.0f;  // `ground_radius` of the mesh as built
+  // With `PlacementMeshOptions::textures`: one per image a material samples, **all or none** as
+  // the load's own rule is (texture.md, "In the renderer") — empty, with `textures_why`, when any
+  // of them has no built texture (no cache, an image that cannot be read or built), and the mesh
+  // then draws its materials' constants.
+  Vector<PlacementTexture> textures;
+  std::string textures_why;
+  // Host bytes of the streams a device upload copies, for a caller's accounting.
+  u64 payload_bytes() const noexcept;
+};
+
+// What a host keeps one resident mesh per: over the generator `path` names and the recipe's bytes
+// for a mesh handed as its recipe (so two tiles, or two paths, handing one recipe share one mesh),
+// over the path and its expected hash for a file.
+u64 placement_mesh_identity(const scene_gen::PlacementMesh& mesh) noexcept;
+
+// Builds or finds `mesh` exactly as the load does one of its own (`load_scene`'s per-mesh pass:
+// the mesh generator registry for a recipe or a generator's file, the importer for a glTF, a
+// container as it is; the derived-data cache under `options`). **No device and no scene**: it may
+// run on any thread, and two threads asking for one recipe write the same bytes to the same cache
+// entry. False, with a sentence naming the mesh, for a generator this executable does not carry, a
+// recipe its generator refuses, or a mesh that deforms (skinned or morphed: a mesh that comes and
+// goes is drawn rigid).
+bool load_placement_mesh(const scene_gen::PlacementMesh& mesh, const PlacementMeshOptions& options,
+                         PlacementMeshData& out, std::string& error);
+// The `.tex` of `key` under `options`' derived-data root, read whole: what an admitter does for a
+// texture the build skipped because the scene held it then and no longer does.
+bool read_placement_texture(const PlacementMeshOptions& options, u64 key, texture::TextureData& out,
+                            std::string* error = nullptr);
+
+// **The ground before its cuts, for `scene_gen::Context::uncut_ground`** (scene_gen.md, "The
+// formation and the ground before its cuts"): the terrain entry with its tile set's cuts removed,
+// as a second provider made on the first ask and kept. `present()` only for a terrain that has
+// cuts; every host that builds a `Context` hands `hook()` when it is. Thread-safe.
+class UncutGround {
+ public:
+  explicit UncutGround(const TerrainDesc& terrain);
+  ~UncutGround();
+  ENGINE_NON_COPYABLE(UncutGround);
+  bool present() const noexcept { return present_; }
+  scene_gen::Context::UncutGround hook() noexcept;
+
+ private:
+  struct State;
+  static bool get(void* context, scene_gen::Ground& out);
+  bool present_ = false;
+  std::unique_ptr<State> state_;
+};
 
 // Re-derives the scene's bounding sphere — what the camera frames and what every distance, bias
 // and light reach scales with — from the instances as they stand. `load_scene` ends with it.

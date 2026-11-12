@@ -80,6 +80,21 @@ bool upload_image_2d_levels(const Device& device, u32 width, u32 height, Format 
                             std::span<const ImageLevelData> levels, ImageResource& out,
                             std::string* error = nullptr);
 
+// **The same upload in two halves, so that nothing waits for the device** (texture.md, "Textures
+// that arrive after the load"; R145). `create_sampled_image_levels` makes the sampled image with
+// its chain and nothing in it (ImageLayout::Undefined); `record_image_levels_upload` records, into
+// a command list the caller owns — a frame's, inside a transfer pass — the transition to a copy
+// target, one copy per level out of `staging` at `level_offsets` (each a multiple of 16, the
+// level's bytes as `upload_image_2d_levels` takes them), and the transition to
+// ImageLayout::ShaderReadOnly, where the image stays. The image is one the render graph has never
+// seen and no pass declares, which is why its two barriers are recorded here and not derived:
+// nothing reads it before this, and every later reader samples it through the bindless set.
+// `upload_image_2d_levels` is these two around a submission it waits for.
+inline constexpr u32 k_max_image_levels = 16;
+bool create_sampled_image_levels(const Device& device, u32 width, u32 height, Format format,
+                                 u32 levels, ImageResource& out, std::string* error = nullptr);
+void record_image_levels_upload(CommandList commands, const ImageResource& image,
+                                BufferHandle staging, std::span<const u64> level_offsets) noexcept;
 bool create_image_2d(const Device& device, u32 width, u32 height, Format format, ImageUsage usage,
                      ImageResource& out, std::string* error = nullptr);
 void destroy_image(const Device& device, ImageResource& image) noexcept;

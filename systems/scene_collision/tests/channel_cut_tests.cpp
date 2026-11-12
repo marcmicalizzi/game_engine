@@ -56,7 +56,7 @@ TEST_CASE("scene_collision: the ground inside a channel's cut is its bed") {
   REQUIRE_MESSAGE(tileset::write_heightfield(tmp.file("flat.json"), field, error), error);
   // A channel 4 m wide and 0.8 m deep along z = 0, its top on the ground, its banks at a rise of
   // 0.5 (27 degrees, under the walker's 40) so a character can climb out: a flat bed 0.8 m wide.
-  scene::TerrainCut cut;
+  scene::TerrainEdit cut;
   cut.name = "run";
   cut.points = {WorldPos{-30.0, 2.0, 0.0}, WorldPos{30.0, 2.0, 0.0}};
   cut.width_m = {4.0f, 4.0f};
@@ -69,7 +69,7 @@ TEST_CASE("scene_collision: the ground inside a channel's cut is its bed") {
   entry.tiles->ddc = "ddc";
   entry.tiles->cells = 32;
   entry.tiles->far_levels = 2;
-  entry.tiles->cuts.push_back(cut);
+  entry.tiles->edits.push_back(cut);
   scene_gen::Context context;
   const std::string dir = tmp.path();
   context.dir = dir;
@@ -98,12 +98,15 @@ TEST_CASE("scene_collision: the ground inside a channel's cut is its bed") {
     f32 h = 0.0f;
     REQUIRE(collision.ground_height(WorldPos{x, 0.0, 0.0}, h));
     CHECK(h == doctest::Approx(1.2f).epsilon(1e-6));
+    // (W93: every cut's top is rounded over 0.75 of its depth, 0.6 m here. The face a metre from
+    // the line stands 0.5 m under the top, inside that band: 1500 - (0.1 / 0.6)^2 * 150 = 1495.83,
+    // 1.496 m to the millimetre. The top itself is lowered by a quarter of the band, 0.15 m.)
     REQUIRE(collision.ground_height(WorldPos{x, 0.0, 1.0}, h));
-    CHECK(h == doctest::Approx(1.5f).epsilon(1e-6));
+    CHECK(h == doctest::Approx(1.496f).epsilon(1e-6));
     REQUIRE(collision.ground_height(WorldPos{x, 0.0, -1.0}, h));
-    CHECK(h == doctest::Approx(1.5f).epsilon(1e-6));
+    CHECK(h == doctest::Approx(1.496f).epsilon(1e-6));
     REQUIRE(collision.ground_height(WorldPos{x, 0.0, 2.0}, h));
-    CHECK(h == doctest::Approx(2.0f).epsilon(1e-6));
+    CHECK(h == doctest::Approx(1.85f).epsilon(1e-6));
     REQUIRE(collision.ground_height(WorldPos{x, 0.0, 6.0}, h));
     CHECK(h == doctest::Approx(2.0f).epsilon(1e-6));
     // The collision's ground is the set's, to the bit, on its lattice.
@@ -130,4 +133,79 @@ TEST_CASE("scene_collision: the ground inside a channel's cut is its bed") {
   CHECK(end.z > 3.0);
   CHECK(lowest == doctest::Approx(1.2).epsilon(0.03));
   CHECK(end.y == doctest::Approx(2.0).epsilon(0.03));
+}
+
+// **A walker stands on raised ground** (W98; tileset.md, "Ground edits that raise as well as
+// lower"): a causeway's fill, 4 m across its crest and 1.5 m over a flat ground, read by the
+// collision through the set's heights with no change of its own.
+TEST_CASE("scene_collision: the ground on a fill is its crest, and a walker stands on it") {
+  test::TempDir tmp{"engine_scene_collision_fill"};
+  tileset::Heightfield field =
+      tileset::synth_heightfield(tileset::SynthKind::flat, 129, 500, 0, -32000, -32000);
+  for (f32& h : field.data)
+    h = 2.0f;
+  std::string error;
+  REQUIRE_MESSAGE(tileset::write_heightfield(tmp.file("flat.json"), field, error), error);
+  scene::TerrainEdit fill;
+  fill.name = "causeway";
+  fill.mode = scene::TerrainEditMode::Fill;
+  fill.points = {WorldPos{-30.0, 3.5, 0.0}, WorldPos{30.0, 3.5, 0.0}};
+  fill.width_m = {4.0f, 4.0f};
+  scene::Terrain entry;
+  entry.provider = "tiles";
+  entry.tiles = scene::TerrainTileSet{};
+  entry.tiles->heightfield = "flat.json";
+  entry.tiles->ddc = "ddc";
+  entry.tiles->cells = 32;
+  entry.tiles->far_levels = 2;
+  entry.tiles->edits.push_back(fill);
+  scene_gen::Context context;
+  const std::string dir = tmp.path();
+  context.dir = dir;
+  const scene_gen::GroundProviderDesc* desc =
+      scene_gen::GeneratorRegistry::global().find_ground("tiles");
+  REQUIRE(desc != nullptr);
+  scene_gen::GroundProvider ground;
+  REQUIRE_MESSAGE(desc->make(entry, context, ground, &error), error);
+  const tileset::TileSet* set = tileset::tile_set_of(ground);
+  REQUIRE(set != nullptr);
+  renderer::SceneData scene;
+  physics::World physics;
+  REQUIRE(physics.init(physics_options()) == physics::Status::Ok);
+  SceneCollision collision;
+  REQUIRE_MESSAGE(collision.create(physics, scene, &ground, Config{}, &error), error);
+  world::World ring(one_ring());
+  ring.add_consumer(collision.consumer());
+  sim::ObserverSet observer;
+  observer.add(WorldPos{16.0, 0.0, 16.0}, 1.0f);
+  ring.update(observer, 0, true);
+  // The crest; 2 m past it a metre down the face at one on two, rounded where it meets the ground
+  // over the face's own drop (2500 + 0.5^2 * 1000 / 4 = 2562.5, 2.563 to the millimetre); 4 m past
+  // it the face is under the ground and rounds into it (2 + (1 - 0.5 / 1.5)^2 * 1.5 / 4 = 2.167);
+  // 8 m past it the ground.
+  for (const f64 x : {-20.0, 0.0, 7.0, 20.0}) {
+    f32 h = 0.0f;
+    for (const f64 z : {-1.0, 0.0, 1.0}) {
+      REQUIRE(collision.ground_height(WorldPos{x, 0.0, z}, h));
+      CHECK(h == doctest::Approx(3.5f).epsilon(1e-6));
+    }
+    REQUIRE(collision.ground_height(WorldPos{x, 0.0, 4.0}, h));
+    CHECK(h == doctest::Approx(2.563f).epsilon(1e-6));
+    REQUIRE(collision.ground_height(WorldPos{x, 0.0, -6.0}, h));
+    CHECK(h == doctest::Approx(2.167f).epsilon(1e-6));
+    REQUIRE(collision.ground_height(WorldPos{x, 0.0, 10.0}, h));
+    CHECK(h == doctest::Approx(2.0f).epsilon(1e-6));
+    REQUIRE(collision.ground_height(WorldPos{x, 0.0, 4.0}, h));
+    CHECK(h == set->height_mm(scene_gen::nearest_mm(x), 4000));
+  }
+  // A character set down over the crest stands on it.
+  physics::CharacterBody body;
+  physics::CharacterConfig c;
+  c.step_hz = 240;
+  REQUIRE(body.create(physics, c, WorldPos{4.0, 3.7, 0.0}) == physics::Status::Ok);
+  const physics::CharacterInput still;
+  for (u32 k = 0; k < 240; ++k)
+    REQUIRE(body.step(still) == physics::Status::Ok);
+  const DVec3 feet = body.feet() - WorldPos::origin();
+  CHECK(feet.y == doctest::Approx(3.5).epsilon(0.01));
 }

@@ -300,6 +300,7 @@ void SceneRenderer::Pipelines::destroy(const gfx::Device& device) noexcept {
   for (gfx::ComputePipeline& pass : cache)
     gfx::destroy_compute_pipeline(device, pass);
   gfx::destroy_compute_pipeline(device, tlas_references);
+  gfx::destroy_compute_pipeline(device, blas_compact);
   gfx::destroy_compute_pipeline(device, trace);
   gfx::destroy_compute_pipeline(device, half_sun);
   gfx::destroy_compute_pipeline(device, gi_sample);
@@ -572,6 +573,7 @@ bool SceneRenderer::create(const gfx::Device& device, GpuScene& scene,
   slot_counted_.assign(desc.frames_in_flight, u8{1});
   rt_drop_folded_.assign(desc.frames_in_flight, ~u64{0});
   slot_rt_capacity_.assign(desc.frames_in_flight, 0);
+  slot_rt_references_.assign(desc.frames_in_flight, 0);
   slot_water_.assign(desc.frames_in_flight, SlotWater{});
   slot_terrain_bytes_.assign(desc.frames_in_flight, 0);
   slot_cpu_.assign(desc.frames_in_flight, FrameCpu{});
@@ -1044,6 +1046,9 @@ bool SceneRenderer::create_pipelines(std::string* error) {
     if (!gfx::create_compute_pipeline(device, references->module, "tlas_references_main", {},
                                       sizeof(gfx::TlasReferenceParams), pipelines_.tlas_references,
                                       error) ||
+        !gfx::create_compute_pipeline(device, references->module, "blas_compact_main", {},
+                                      sizeof(gfx::TlasReferenceParams), pipelines_.blas_compact,
+                                      error) ||
         !gfx::create_compute_pipeline(device, records->module, "records_main", {},
                                       sizeof(gfx::ClusterRecordParams), pipelines_.records,
                                       error)) {
@@ -1384,7 +1389,7 @@ void SceneRenderer::destroy() noexcept {
   recording_ = false;
   rt_capacity_ = RtCapacity{};
   rt_reference_policy_ = RtCapacity{};
-  rt_overflow_warned_ = false;
+  rt_overflow_warned_ = 0;
   stats_.rt = RtStats{};
 }
 
@@ -1420,6 +1425,47 @@ bool SceneRenderer::resize(u32 width, u32 height, std::string* error) {
   // The frame passes' linear image and the overlay's UI layer are the target's size (frame_pass.h).
   if (ui_layer_.image.valid() && !create_ui_layer(error)) return false;
   return !linear_wanted() || create_linear_target(error);
+}
+
+// A tile's mesh, in and out (renderer.md, "Meshes that come and go"): the scene stages the copies
+// and the records, and the next frame's "terrain upload" and "record upload" passes write them.
+bool SceneRenderer::admit_mesh(u32 mesh, const PlacementMeshData& data, std::string* error) {
+  if (scene_ == nullptr) return false;
+  if (recording_) {
+    if (error != nullptr) *error = "a mesh is admitted between frames, not inside one";
+    return false;
+  }
+  return scene_->admit_mesh(mesh, data, error);
+}
+
+bool SceneRenderer::retire_mesh(u32 mesh, std::string* error) {
+  if (scene_ == nullptr) return false;
+  if (recording_) {
+    if (error != nullptr) *error = "a mesh is retired between frames, not inside one";
+    return false;
+  }
+  scene_->retire_mesh(mesh);
+  return true;
+}
+
+// A tile's mesh's texture, in and out (texture.md, "Textures that arrive after the load"): the
+// scene makes the image and stages its levels, and the next frame's "terrain upload" pass copies
+// them, before the mesh that names it is drawn.
+GpuScene::TextureAdmit SceneRenderer::acquire_texture(const PlacementTexture& texture,
+                                                      std::string* why) {
+  if (scene_ == nullptr || recording_) {
+    if (why != nullptr) *why = "a texture is admitted between frames of a scene, not inside one";
+    return GpuScene::TextureAdmit::refused;
+  }
+  return scene_->acquire_texture(texture, why);
+}
+
+void SceneRenderer::release_texture(u64 key) noexcept {
+  if (scene_ != nullptr && !recording_) scene_->release_texture(key);
+}
+
+bool SceneRenderer::texture_resident(u64 key) const {
+  return scene_ != nullptr && scene_->texture_resident(key);
 }
 
 bool SceneRenderer::set_dynamic_instances(std::span<const SceneInstance> tail,
@@ -1661,6 +1707,9 @@ void SceneRenderer::fold_visible(u32 slot) {
     chain.built = rt[0];
     chain.wanted = rt[1];
     chain.peak_wanted = std::max(chain.peak_wanted, chain.wanted);
+    // The bottom-level structures the frame built: the instances that referenced anything (R143).
+    chain.blas_built = rt[gfx::k_cluster_record_count_blas];
+    chain.peak_blas_built = std::max(chain.peak_blas_built, chain.blas_built);
     // The cache's words (gfx::k_cluster_record_count_words; renderer.md, "The resident cluster
     // structure cache"): the frame's references, its misses, what it built into the cache, what it
     // had no room for, and what it evicted.
@@ -1719,14 +1768,41 @@ void SceneRenderer::fold_visible(u32 slot) {
       // (and under the ray path were not in the picture), the casters' lost only the shadows of
       // what faces away from the camera. Frames before a growth lands can do it; a run that keeps
       // doing it is past its budget.
-      if (!rt_overflow_warned_) {
-        rt_overflow_warned_ = true;
+      //
+      // **And it names its bound** (R143; renderer.md, "The warning names its bound"): the
+      // capacities are the ones this frame was recorded against, not the scene's now — a growth
+      // lands between the two — and the bound says whether a budget was met or a growth was in
+      // flight. Said once per bound, so a run whose first drop was a growth still says when it
+      // meets its budget. `wanted` holds the cache's misses the frame had to build itself.
+      const u32 built_capacity = slot < slot_rt_capacity_.size() ? slot_rt_capacity_[slot] : 0u;
+      const u32 built_references =
+          slot < slot_rt_references_.size() ? slot_rt_references_[slot] : 0u;
+      const bool cached = scene_->rt_cache();
+      const u32 bound =
+          rt_drop_bound(chain.wanted, built_capacity, scene_->rt_capacity_limit(),
+                        cached ? rt[5] : 0u, built_references, scene_->rt_reference_limit());
+      if (fresh) {
+        if (chain.first_drop_bound == 0) chain.first_drop_bound = bound;
+        chain.last_drop_bound = bound;
+      }
+      const u32 bound_bit = 1u << (bound & 15u);
+      if ((rt_overflow_warned_ & bound_bit) == 0) {
+        rt_overflow_warned_ |= bound_bit;
         ENGINE_LOG_WARN(log_renderer, "the ray tracing chain dropped instances' structures",
+                        log::field("bound", rt_bound_name(bound)),
+                        log::field("unit", "cluster structures"),
                         log::field("wanted", chain.wanted), log::field("built", chain.built),
-                        log::field("capacity", scene_->rt_capacity()),
+                        log::field("capacity", built_capacity),
                         log::field("limit", scene_->rt_capacity_limit()),
+                        log::field("from_cache", cached ? rt[8] : 0u),
+                        log::field("references_wanted", cached ? rt[5] : 0u),
+                        log::field("references", cached ? rt[4] : 0u),
+                        log::field("reference_capacity", built_references),
+                        log::field("reference_limit", scene_->rt_reference_limit()),
                         log::field("instances", rt[2]), log::field("caster_instances", rt[3]),
-                        log::field("remedy", "raise RenderSettings::rt_budget_mib"));
+                        log::field("drawn_first", resolved_.ray_path),
+                        log::field("budget_mib", scene_->rt_budget_mib()),
+                        log::field("remedy", rt_bound_remedy(bound)));
       }
     }
   }
@@ -2162,6 +2238,8 @@ void SceneRenderer::note_rt_bytes() noexcept {
   chain.static_forms = scene_->static_meshes();
   chain.static_clusters = scene_->static_clusters();
   chain.static_bytes = scene_->static_bytes();
+  chain.static_reserved_bytes = scene_->static_reserved_bytes();
+  chain.instance_slots = scene_->rt_instance_slots();
   chain.static_instances = scene_->static_instances();
   chain.static_pairs = scene_->static_pairs();
 }
@@ -2205,6 +2283,9 @@ u64 SceneRenderer::submit_frame(const FrameDesc& frame, std::string* error) {
     slot_rt_cache_[slot] = rt_cache_recording_ ? u8{1} : u8{0};
     slot_counted_[slot] = count_frames_ ? u8{1} : u8{0};
     slot_rt_capacity_[slot] = resolved_.rt_chain ? scene_->rt_capacity() : 0u;
+    if (slot < slot_rt_references_.size()) {
+      slot_rt_references_[slot] = resolved_.rt_chain ? scene_->rt_reference_capacity() : 0u;
+    }
   }
   ++recorded_;
   ++submitted_;
@@ -3660,6 +3741,13 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
     // A rigid form's instance takes its mesh's structure, built once (renderer.md, "Static
     // structures for rigid forms"): one u64 per mesh, 0 for a mesh with none.
     tlas_references.static_addresses = scene.static_addresses();
+    // The bottom-level build is over the instances that reference anything (R143; renderer.md,
+    // "The bottom-level build is over what the frame drew"): the ranges' records, compacted.
+    tlas_references.blas_records = scene.blas_records.address;
+    tlas_references.blas_dense = scene.blas_dense.address;
+    tlas_references.blas_slots = scene.blas_slots.address;
+    tlas_references.blas_count =
+        scene.record_count.address + u64{gfx::k_cluster_record_count_blas} * sizeof(u32);
     record_params.clusters = scene.clusters.address;
     record_params.vertices = scene.vertices.address;
     record_params.indices8 = scene.indices8.address;
@@ -3693,8 +3781,11 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
     // (`rt_complete`), whose path tracer's first ray is a camera ray. No light's ray meets them in
     // either: their top-level masks have no caster bit (`tlas_references`).
     const bool untraced_drawn = ray_path || frame.rt_complete;
+    // **Past the capacity a traced picture keeps its drawn structures before any caster** (R143;
+    // renderer.md, "What a frame past its capacity keeps"): there a dropped drawn instance is a
+    // hole in the picture, and a dropped caster the far side of a shadow.
     record_params.mode = gfx::cluster_records_mode(
-        views, settings.rt_templates && !scene.has_masked(), drop_scan, untraced_drawn);
+        views, settings.rt_templates && !scene.has_masked(), drop_scan, untraced_drawn, ray_path);
     // What the frame's structures hold room for: the records pass keeps no more, dropping whole
     // instances past it (gfx::ClusterRecordParams). The top-level instance records — one per scene
     // instance, the world transform and the instance as the custom index, shared by every view —
@@ -3867,6 +3958,8 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
     gfx::RgBuffer clusters, lods, quantized, attributes, triangles, meshes, vertices, indices8;
     gfx::RgBuffer instances;  // an instance moved, or a slot turned on at its chunk's corner
     gfx::RgBuffer staging;    // this frame slot's record staging
+    // An admitted mesh's material indices and materials (R142; "Meshes that come and go").
+    gfx::RgBuffer cluster_materials, materials;
   } tg{};
   const auto import_read = [&](const char* name, const gfx::BufferResource& buffer) {
     return buffer.buffer.valid()
@@ -3884,6 +3977,11 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
       tg.vertices = import_read("ring vertices", scene.vertices);
       tg.indices8 = import_read("ring indices8", scene.indices8);
     }
+    // A scene with a mesh room copies an admitted mesh's material indices and materials too.
+    if (scene.mesh_room().slots != 0) {
+      tg.cluster_materials = import_read("mesh cluster materials", scene.cluster_materials);
+      tg.materials = import_read("mesh materials", scene.materials);
+    }
   }
   if (mesh_records) tg.meshes = import_read("mesh records", scene.meshes);
   if (instance_records) tg.instances = import_read("instance records", scene.instances);
@@ -3894,7 +3992,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
   auto read_ring_geometry = [&](gfx::PassBuilder& b, gfx::Access access) {
     for (const gfx::RgBuffer handle :
          {tg.clusters, tg.lods, tg.quantized, tg.attributes, tg.triangles, tg.meshes, tg.vertices,
-          tg.indices8, tg.instances}) {
+          tg.indices8, tg.instances, tg.cluster_materials, tg.materials}) {
       if (handle.valid()) b.read(handle, access);
     }
   };
@@ -3939,6 +4037,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
   };
   struct RtBuffers {
     gfx::RgBuffer records, record_count, slots, instance_counts, blas_records, hit_entries;
+    gfx::RgBuffer blas_dense, blas_slots;  // R143: the records the build reads, and their places
     gfx::RgBuffer clas_data, clas_addresses, clas_sizes, blas_data, blas_addresses, tlas, instances;
     // The resident cluster structure cache (renderer.md, "The resident cluster structure cache").
     gfx::RgBuffer cache_keys, cache_owners, cache_stamps, cache_free, cache_misses,
@@ -3968,6 +4067,8 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
     rt.slots = graph.import_buffer("clas slots", scene.slots);
     rt.instance_counts = graph.import_buffer("clas instance counts", scene.instance_counts);
     rt.blas_records = graph.import_buffer("cluster blas records", scene.blas_records);
+    rt.blas_dense = graph.import_buffer("cluster blas records built", scene.blas_dense);
+    rt.blas_slots = graph.import_buffer("cluster blas places", scene.blas_slots);
     rt.clas_data = graph.import_buffer("clas", scene.clas_set.data);
     rt.clas_addresses = graph.import_buffer("clas addresses", scene.clas_set.addresses);
     rt.clas_sizes = graph.import_buffer("clas sizes", scene.clas_set.sizes);
@@ -4126,7 +4227,10 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
   // A moving terrain's fields the host evaluated since the last frame, copied out of their staging
   // into their field slots before the cull pass and the pool pass read them. The staging buffers go
   // to the frame context once this frame is recorded, and are freed when it is done.
-  if (terrain_copies > 0 || terrain_geometry) {
+  // The textures admitted since the last frame go in the same pass (`GpuScene::acquire_texture`):
+  // images the graph never sees, their barriers recorded with their copies.
+  const bool terrain_images = !terrain_frame_.images.empty();
+  if (terrain_copies > 0 || terrain_geometry || terrain_images) {
     graph.add_pass(
         "terrain upload", gfx::PassKind::Transfer,
         [&, terrain_copies, terrain_geometry](gfx::PassBuilder& b) {
@@ -4135,8 +4239,9 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
             b.write(rg_terrain_copies[c].field, gfx::Access::TransferWrite);
           }
           if (terrain_geometry) {
-            for (const gfx::RgBuffer handle : {tg.clusters, tg.lods, tg.quantized, tg.attributes,
-                                               tg.triangles, tg.vertices, tg.indices8}) {
+            for (const gfx::RgBuffer handle :
+                 {tg.clusters, tg.lods, tg.quantized, tg.attributes, tg.triangles, tg.vertices,
+                  tg.indices8, tg.cluster_materials, tg.materials}) {
               if (handle.valid()) b.write(handle, gfx::Access::TransferWrite);
             }
           }
@@ -4150,6 +4255,11 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
           }
           for (const GpuScene::TerrainUpdate::GeometryCopy& copy : terrain_frame_.geometry)
             cb.copy_buffer(copy.src, copy.dst, copy.region);
+          for (const GpuScene::TerrainUpdate::ImageUpload& upload : terrain_frame_.images) {
+            gfx::record_image_levels_upload(
+                cb, upload.image, upload.staging,
+                std::span<const u64>(upload.offsets, upload.image.levels));
+          }
           timer.end(cb);
         });
   }
@@ -4228,6 +4338,9 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
           [&](gfx::PassBuilder& b) {
             b.read(rg_table_staging, gfx::Access::ComputeRead);  // the list of instances
             b.read(rg_instances, gfx::Access::ComputeRead);
+            // The mesh records it reads each instance's cluster count from, when this frame wrote
+            // any (a mesh admitted with the tile whose instances are being expanded).
+            if (tg.meshes.valid()) b.read(tg.meshes, gfx::Access::ComputeRead);
             b.write(rg_pair_table, gfx::Access::ComputeWrite);
           },
           [&](gfx::CommandList cb, gfx::RenderGraph&) {
@@ -5032,10 +5145,32 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
       // address its build just wrote (R114) — before the bottom-level build reads them; timed with
       // the cache's other passes.
       if (rt_cache) add_cache_pass(3);
+      // **Only the instances that reference anything are built** (R143; tlas_references.slang,
+      // `blas_compact_main`): the ranges' per-instance records, without the empty ones, and their
+      // count in the record count's word 12, which the build reads. Timed with the build, as
+      // "blas": it is part of what the build costs now.
+      graph.add_pass(
+          "blas compact", gfx::PassKind::Compute,
+          [&](gfx::PassBuilder& b) {
+            b.read(rt.blas_records, gfx::Access::ComputeRead);
+            b.write(rt.blas_dense, gfx::Access::ComputeWrite);
+            b.write(rt.blas_slots, gfx::Access::ComputeWrite);
+            b.write(rt.record_count, gfx::Access::ComputeReadWrite);
+          },
+          [&](gfx::CommandList cb, gfx::RenderGraph&) {
+            timer.begin(cb, "blas");
+            cb.bind_pipeline(gfx::BindPoint::Compute, pipelines.blas_compact.pipeline);
+            cb.push_constants(pipelines.blas_compact.layout, gfx::ShaderStage::Compute, 0,
+                              sizeof(gfx::TlasReferenceParams), &tlas_references);
+            cb.dispatch((instance_count + gfx::k_tlas_references_workgroup - 1) /
+                            gfx::k_tlas_references_workgroup,
+                        1, 1);
+          });
       graph.add_pass(
           "blas", gfx::PassKind::Compute,
           [&](gfx::PassBuilder& b) {
-            b.read(rt.blas_records, gfx::Access::AccelerationBuildRead);
+            b.read(rt.blas_dense, gfx::Access::AccelerationBuildRead);
+            b.read(rt.record_count, gfx::Access::AccelerationBuildRead);
             b.read(rt.clas_addresses, gfx::Access::AccelerationBuildRead);
             b.read(rt.clas_data, gfx::Access::AccelerationBuildRead);
             if (rt_cache) {
@@ -5049,9 +5184,10 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
             // Every instance's structure in **one** build, packed into one buffer by the driver
             // (gfx::ClusterBlasSet). It used to be a build per instance, each waiting for the last
             // because they shared the scratch — 90 of them a frame on the desert overlook.
-            timer.begin(cb, "blas");
-            gfx::build_cluster_blas_set(cb, scene.blas_set, scene.blas_records.address, 0,
-                                        scene.rt_scratch);
+            gfx::build_cluster_blas_set(
+                cb, scene.blas_set, scene.blas_dense.address,
+                scene.record_count.address + u64{gfx::k_cluster_record_count_blas} * sizeof(u32),
+                scene.rt_scratch);
             timer.end(cb);
           });
       // Each instance's bottom-level address, which the build just decided, into the reference
@@ -5064,6 +5200,7 @@ bool SceneRenderer::record_frame(const FrameDesc& frame, gfx::RgImage color_hand
           "tlas instances", gfx::PassKind::Compute,
           [&](gfx::PassBuilder& b) {
             b.read(rt.blas_addresses, gfx::Access::ComputeRead);
+            b.read(rt.blas_slots, gfx::Access::ComputeRead);  // an instance's place in the build
             // The scene's instance records, which a frame that turns a terrain slot on writes.
             read_ring_geometry(b, gfx::Access::ComputeRead);
             b.write(rt.instances, gfx::Access::ComputeWrite);

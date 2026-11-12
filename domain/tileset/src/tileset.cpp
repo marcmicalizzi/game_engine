@@ -113,7 +113,10 @@ u64 tile_bytes(u32 cells) noexcept {
 
 }  // namespace
 
-std::string level_archive(i64 spacing_mm) { return std::to_string(spacing_mm) + ".tiles"; }
+std::string level_archive(i64 spacing_mm, i64 filter_mm) {
+  return (filter_mm == 0 ? std::string() : std::string("far-")) + std::to_string(spacing_mm) +
+         ".tiles";
+}
 
 // ---- the source ---------------------------------------------------------------------------------
 
@@ -365,8 +368,8 @@ u64 tileset_key(u64 source_hash, const BuildOptions& o) noexcept {
   key = hash_combine(key, static_cast<u64>(o.offset_x_mm));
   key = hash_combine(key, static_cast<u64>(o.offset_y_mm));
   key = hash_combine(key, static_cast<u64>(o.offset_z_mm));
-  // The cuts (W89): only a set with some, so every other keeps its key and its cache entry.
-  if (!o.cuts.empty()) key = hash_combine(hash_combine(key, 0x4355545355ull), o.cuts.hash());
+  // The edits (W89, W98): only a set with some, so every other keeps its key and its cache entry.
+  if (!o.edits.empty()) key = hash_combine(hash_combine(key, 0x4544495453ull), o.edits.hash());
   return key;
 }
 
@@ -404,7 +407,7 @@ namespace {
 struct BuildLevel {
   i64 spacing = 0;
   i64 filter = 0;
-  i64 ratio = 0;  // spacing over the finest's; 1 for the finest; 0 for a point level (bilinear)
+  i64 ratio = 0;  // spacing over the finest's: 1 for the finest, an even number for a far level
   i64 imin = 0, imax = 0, jmin = 0, jmax = 0;
 };
 
@@ -419,28 +422,6 @@ struct Finest {
   }
 };
 
-// The finest's bilinear surface at whole millimetres (TileSet::point_mm's arithmetic, operation
-// for operation).
-f64 bilinear(const Finest& f, i64 x_mm, i64 z_mm) noexcept {
-  const i64 x0 = f.ox * f.s;
-  const i64 z0 = f.oz * f.s;
-  const i64 fx = clamp_i64(x_mm - x0, 0, (f.w - 1) * f.s);
-  const i64 fz = clamp_i64(z_mm - z0, 0, (f.h - 1) * f.s);
-  const i64 ci = fx / f.s;
-  const i64 cj = fz / f.s;
-  const f64 u = static_cast<f64>(fx - ci * f.s) / static_cast<f64>(f.s);
-  const f64 v = static_cast<f64>(fz - cj * f.s) / static_cast<f64>(f.s);
-  const f64 h00 = f.at(ci, cj);
-  const f64 h10 = f.at(ci + 1, cj);
-  const f64 h01 = f.at(ci, cj + 1);
-  const f64 h11 = f.at(ci + 1, cj + 1);
-  const f64 top = h00 + u * (h10 - h00);
-  const f64 bottom = h01 + u * (h11 - h01);
-  return top + v * (bottom - top);
-}
-
-i32 round_mm(f64 mm) noexcept { return static_cast<i32>(std::floor(mm + 0.5)); }
-
 // The level's millimetres over its whole stored window, rows of x in order of z.
 void fill_level(const Finest& f, const BuildLevel& L, Vector<i32>& out) {
   const i64 nx = L.imax - L.imin + 1;
@@ -450,13 +431,6 @@ void fill_level(const Finest& f, const BuildLevel& L, Vector<i32>& out) {
     for (i64 j = 0; j < nz; ++j)
       for (i64 i = 0; i < nx; ++i)
         out[static_cast<u32>(j * nx + i)] = f.at(L.imin + i - f.ox, L.jmin + j - f.oz);
-    return;
-  }
-  if (L.ratio == 0) {
-    for (i64 j = 0; j < nz; ++j)
-      for (i64 i = 0; i < nx; ++i)
-        out[static_cast<u32>(j * nx + i)] =
-            round_mm(bilinear(f, (L.imin + i) * L.spacing, (L.jmin + j) * L.spacing));
     return;
   }
   // **The box filter over each point's own cell**: the mean of the finest's bilinear surface over
@@ -508,14 +482,15 @@ bool make_levels(const Finest& f, const BuildOptions& o, Vector<BuildLevel>& out
   const i64 z0 = f.oz * f.s;
   const i64 z1 = (f.oz + f.h - 1) * f.s;
   for (const i64 spacing : chain) {
+    // **No far level at or below the finest's spacing** (T105; tileset.md, "The far mip chain and
+    // its filter"): it would carry nothing the finest does not — its points are the finest's
+    // bilinear surface — so the reader answers a filter there from the finest itself, and a coarse
+    // ground (a landform's 8 or 16 m) builds its chain from the first spacing above its own.
+    if (spacing <= f.s) continue;
     BuildLevel L;
     L.spacing = spacing;
     L.filter = spacing;
-    if (spacing <= f.s) {
-      // No coarser than the source: it carries everything the source has, its points the
-      // bilinear surface's.
-      L.ratio = 0;
-    } else if (spacing % (2 * f.s) == 0) {
+    if (spacing % (2 * f.s) == 0) {
       L.ratio = spacing / f.s;
     } else {
       error = "the far level of " + std::to_string(spacing) +
@@ -595,12 +570,12 @@ bool build_tileset(const Heightfield& field, u64 source_hash, std::string_view s
   for (const BuildLevel& L : levels) {
     fill_level(f, L, values);
     const i64 nx = L.imax - L.imin + 1;
-    // **The cuts** (cuts.h, W89): after the level's own heights, so a chain level is the box filter
-    // of the ground as it was and only a level finer than a channel holds it. A tile no cut lowered
-    // is the bytes it was without them.
-    if (!options.cuts.empty())
-      out.cut_points += options.cuts.apply(L.spacing, L.imin, L.jmin, nx, L.jmax - L.jmin + 1,
-                                           std::span<i32>(values.data(), values.size()));
+    // **The edits** (cuts.h, W89, W98): after the level's own heights, so a chain level is the box
+    // filter of the ground as it was and only a level finer than an edit holds it. A tile no edit
+    // changed is the bytes it was without them.
+    if (!options.edits.empty())
+      out.edited_points += options.edits.apply(L.spacing, L.imin, L.jmin, nx, L.jmax - L.jmin + 1,
+                                               std::span<i32>(values.data(), values.size()));
     archive::Writer writer("ETIL", L.spacing, static_cast<u32>(tile_bytes(options.cells)));
     TileSetLevel record;
     record.spacing_mm = L.spacing;
@@ -641,8 +616,10 @@ bool build_tileset(const Heightfield& field, u64 source_hash, std::string_view s
         ++record.tiles;
       }
     }
-    // The level as one file: its records in the order written, and the table that finds them.
-    record.archive = level_archive(L.spacing);
+    // The level as one file: its records in the order written, and the table that finds them. Named
+    // by what the level is, not by its spacing alone (tileset.md, "Two levels at one spacing"),
+    // though since T105 no far level is built at the finest's spacing.
+    record.archive = level_archive(L.spacing, L.filter);
     if (!writer.write(io::join_path(dir, record.archive), record.archive_bytes, error))
       return false;
     out.bytes += record.archive_bytes;
@@ -712,6 +689,9 @@ bool ensure_tileset(const std::string& heightfield_json, const BuildOptions& opt
 // ---- the reader ---------------------------------------------------------------------------------
 
 struct TileSet::Level {
+  // The level's place in the manifest: what the cache keys its tiles by, since two levels can
+  // share a spacing (the finest and a far level at it; tileset.md, "Two levels at one spacing").
+  i64 index = 0;
   i64 spacing = 0;
   i64 filter = 0;
   i64 imin = 0, imax = 0, jmin = 0, jmax = 0;
@@ -746,7 +726,7 @@ archive::FetchOptions fetch_options(const TileSet::ReadOptions& read) noexcept {
 // reads it twice. Neither the index nor the payloads are sized by the source extent.
 struct TileSet::Cache {
   struct Key {
-    i64 spacing;
+    i64 level;  // the level's index, not its spacing: two levels can share one
     i32 x, z;
     bool operator==(const Key&) const = default;
   };
@@ -963,6 +943,7 @@ bool TileSet::open(const std::string& manifest_path, std::string& error) {
   cache_->index.reserve(reserve);
   for (const TileSetLevel& record : manifest_.levels) {
     auto level = std::make_unique<Level>();
+    level->index = levels_.size();
     level->spacing = record.spacing_mm;
     level->filter = record.filter_mm;
     level->imin = record.index_min[0];
@@ -1024,7 +1005,7 @@ const i32* TileSet::tile(const Level& level, i32 tx, i32 tz, Pins& pins) const n
   const i64 kx = i64{tx} - level.tx0;
   const i64 kz = i64{tz} - level.tz0;
   if (kx < 0 || kz < 0 || kx >= level.ntx || kz >= level.ntz) return nullptr;
-  const Cache::Key key{level.spacing, tx, tz};
+  const Cache::Key key{level.index, tx, tz};
   // The request's own pins first, with no lock: a row of points reads one tile many times.
   if (pins.count > 0 && pins.pins[pins.last].key == key) return pins.pins[pins.last].grid;
   for (u32 k = 0; k < pins.count; ++k) {
@@ -1061,7 +1042,7 @@ const i32* TileSet::tile(const Level& level, i32 tx, i32 tz, Pins& pins) const n
       failures_.fetch_add(1, std::memory_order_relaxed);
       return nullptr;
     }
-    slot = claim_locked(tx, tz, level.spacing, &pins);
+    slot = claim_locked(tx, tz, level.index, &pins);
   }
 
   // The read, with no lock held: another caller's lookups, hits and other tiles' reads go on. One
@@ -1115,9 +1096,9 @@ const i32* TileSet::tile(const Level& level, i32 tx, i32 tz, Pins& pins) const n
 // budget has tiles — a request's own tile (`pins` given) grows the cache past its budget by the
 // pins, and the next evictions bring it back; a batch reading ahead (`pins` null) stops instead,
 // `k_no_slot`. The slot is marked loading, in the index, and pinned once by its claimant.
-u32 TileSet::claim_locked(i32 tx, i32 tz, i64 spacing_mm, Pins* pins) const noexcept {
+u32 TileSet::claim_locked(i32 tx, i32 tz, i64 level, Pins* pins) const noexcept {
   Cache& cache = *cache_;
-  const Cache::Key key{spacing_mm, tx, tz};
+  const Cache::Key key{level, tx, tz};
   u32 slot = 0;
   const u32 size = cache.entries.size();
   if (size < cache.capacity) {
@@ -1232,10 +1213,10 @@ u32 TileSet::fetch(const Level& level, std::span<const u64> keys, u32 limit) con
       if (batch.slots.size() >= limit) break;
       const i32 tz = static_cast<i32>(static_cast<u32>(key >> 32) ^ 0x8000'0000u);
       const i32 tx = static_cast<i32>(static_cast<u32>(key) ^ 0x8000'0000u);
-      if (cache.index.find_value(Cache::Key{level.spacing, tx, tz}) != nullptr) continue;
+      if (cache.index.find_value(Cache::Key{level.index, tx, tz}) != nullptr) continue;
       const u32 entry = level.archive.find(tx, tz);
       if (entry == archive::Reader::k_absent) continue;  // its asker refuses it
-      const u32 slot = claim_locked(tx, tz, level.spacing, nullptr);
+      const u32 slot = claim_locked(tx, tz, level.index, nullptr);
       if (slot == k_no_slot) break;  // every entry pinned or being read: the rest read alone
       batch.slots.push_back(slot);
       batch.fetches.push_back(archive::Fetch{entry, nullptr, false});
@@ -1337,6 +1318,8 @@ f32 TileSet::height_mm(i64 x_mm, i64 z_mm) const noexcept {
 }
 
 bool TileSet::has_filter(i64 spacing_mm) const noexcept {
+  // At or below the finest's spacing a filter is the finest's surface (T105).
+  if (!levels_.empty() && spacing_mm >= 1 && spacing_mm <= levels_[0]->spacing) return true;
   for (const auto& level : levels_)
     if (level->filter != 0 && level->spacing == spacing_mm) return true;
   return false;
@@ -1383,13 +1366,18 @@ bool TileSet::heights(i64 spacing_mm, i64 filter_mm, i32 i0, i32 j0, u32 nx, u32
   const Level* level = nullptr;
   i64 ratio = 0;  // world lattice index to the level's: times this; 0, the bilinear surface
   if (filter_mm > 0) {
-    // A lattice filtered to its spacing reads the chain level built at it, point for point.
+    // A lattice filtered to its spacing reads the chain level built at it, point for point; one at
+    // or below the finest's spacing has no level of its own (T105) and is read from the finest,
+    // as an unfiltered lattice is (below): what such a level held was the finest's surface.
     if (filter_mm != spacing_mm) return false;
     for (const auto& l : levels_)
       if (l->filter != 0 && l->spacing == spacing_mm) level = l.get();
-    if (level == nullptr) return false;
-    ratio = 1;
-  } else if (spacing_mm % levels_[0]->spacing == 0) {
+    if (level != nullptr)
+      ratio = 1;
+    else if (spacing_mm > levels_[0]->spacing)
+      return false;
+  }
+  if (level == nullptr && spacing_mm % levels_[0]->spacing == 0) {
     level = levels_[0].get();
     ratio = spacing_mm / levels_[0]->spacing;
   }

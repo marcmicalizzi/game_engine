@@ -272,6 +272,15 @@ wherever the pack goes.
 Inference only, as everywhere in this pipeline ([plan 12](plan/12-ai-usage-policy.md)): the sets
 and the lab's scripts are never training data, and the models are run unmodified.
 
+**Beside the packs, sets no model made.** `engine-content matgen` builds tiled sets from recipes
+of whole numbers — a gravel bed from a pebble count's size distribution, rock faces from modal
+mineral shares, ground floors from leaf fragments ([matgen](subsystems/matgen.md)) — into
+`content/materials/generated/`, which the pack lookup reads behind the fetched pack. They are
+derived data: deterministic, rebuilt by one command, never committed, and carrying no licence
+but the engine's own (whether `package-game.ps1` and `export-game-sdk.ps1` should carry them or
+rebuild them is not decided; they copy what the pack directory holds). A photographed or lab-made role replaces a generated
+one simply by being in the fetched pack.
+
 ## Testing
 
 `tools/materials-pack.Tests.ps1`, under CTest as **`tools.materials_pack`**, runs both pack scripts

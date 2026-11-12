@@ -27,6 +27,7 @@
 
 #include <core/base/macros.h>
 #include <core/base/types.h>
+#include <core/containers/vector.h>
 
 #include <cstdio>
 #include <string>
@@ -80,6 +81,53 @@ inline constexpr i64 k_unreadable_stale_s = 60;
 bool parse_iso8601_utc(std::string_view text, i64& out_unix_s) noexcept;
 std::string format_iso8601_utc(i64 unix_s);
 
+// ---- the line ---------------------------------------------------------------------------------
+//
+// The lock file says who has the GPU; the line says who is next (docs/subsystems/gpu_lock.md,
+// "The line"; roadmap T96). A process that asks for the lock writes a **ticket** — one small JSON
+// file in the directory `<lock path>.line` — before it tries the lock file, tries the lock file
+// only while no live ticket stands before its own, and deletes its ticket when it has the lock or
+// stops asking. The lock file and its rules are unchanged, so the line is advice among the
+// processes that take part in it and exclusion is still the create-new of the lock file: a tool
+// that knows nothing of tickets behaves exactly as it did.
+//
+// A ticket's file name is its place, so the line is a sorted directory listing:
+//
+//     t-<key ms, 16 digits>-<arrived ms, 16 digits>-<pid, 10 digits>-<counter, 4 digits>.json
+//
+// `arrived` is the wall clock in Unix milliseconds when the process began to ask, and
+// `key` = arrived + the lease it asked for (at most k_declared_cap_s): the moment it would be done
+// if it were served at once and held for what it declared. Earliest key first; equal keys by
+// arrival, then by pid, then by the process's own counter — nothing in the order depends on which
+// process the scheduler ran first, only on what the tickets say. Equal declarations are plain
+// first come, first served, and a process that releases and asks again takes a new ticket at the
+// back. A short ask passes a long one only while the long one has waited less than the difference
+// between them, so nobody is passed for longer than the lease it asked for.
+//
+// The body is the lock's own shape (`owner`, `purpose`, `pid`, `started` = arrival, `expires`,
+// `host`, and `declared_s`), refreshed by rename like the lock. A ticket whose `expires` has
+// passed is a waiter that died: it is skipped, and removed, by whoever looks. A waiter refreshes
+// its ticket from the same loop that tries the lock, so a ticket is never alive while its owner
+// has stopped trying.
+inline constexpr i64 k_ticket_lease_s = 30;       // a dead waiter stops counting after this
+inline constexpr i64 k_line_look_ms = 250;        // how often a waiter looks at the line
+inline constexpr i64 k_declared_cap_s = 30 * 60;  // GPU-LOCK.md's default lease
+
+struct Waiter {
+  std::string owner;
+  std::string purpose;  // at most 200 bytes of it
+  u64 pid = 0;
+  i64 arrived_unix_ms = 0;
+  i64 declared_s = 0;  // the lease it asked for, as the line counted it (capped)
+};
+
+// `<lock path>.line`.
+std::string line_directory(const std::string& lock_path);
+
+// The live tickets of the lock at `lock_path`, in the order they will be served. Never waits and
+// never writes: a dead ticket is left for a waiter to remove.
+Vector<Waiter> read_line(const std::string& lock_path, i64 now_unix_s);
+
 // A lock this process holds for a while: taken by acquire(), kept alive by refresh_if_due(),
 // dropped by release() or the destructor. While it is held, SIGINT and SIGTERM delete the file
 // before the process dies, so Ctrl+C does not leave the GPU spoken for until the lease runs out;
@@ -89,13 +137,15 @@ std::string format_iso8601_utc(i64 unix_s);
 class Lease {
  public:
   struct Config {
-    std::string path;          // empty: default_path()
-    Identity self;             // who takes it
-    std::string purpose;       // one line: what is running
-    i64 lease_s = 30 * 60;     // how long a silent holder keeps it
-    i64 poll_s = 20;           // how often a waiter looks again (GPU-LOCK.md: 15-30 s)
-    i64 timeout_s = 4 * 3600;  // how long to wait before giving up; 0 = one attempt
-    std::FILE* log = stderr;   // who we are waiting for, and what was broken
+    std::string path;              // empty: default_path()
+    Identity self;                 // who takes it
+    std::string purpose;           // one line: what is running
+    i64 lease_s = 30 * 60;         // how long a silent holder keeps it
+    i64 poll_s = 20;               // an upper bound on a look; the line's look_ms is the shorter
+    i64 timeout_s = 4 * 3600;      // how long to wait before giving up; 0 = one attempt
+    std::FILE* log = stderr;       // who we are waiting for, and what was broken
+    i64 look_ms = k_line_look_ms;  // how often a waiter looks at the line and the lock
+    i64 ticket_lease_s = k_ticket_lease_s;  // how long its ticket outlives it if it dies
   };
 
   enum class Outcome : u8 {

@@ -4,6 +4,7 @@
 // earlier footprint honoured, and the faces it writes being rocks that solve.
 #include <core/json/json.h>
 #include <core/schema/json_reflect.h>
+#include <domain/gfx/formation.h>
 #include <domain/rocks/cliffs.h>
 #include <domain/rocks/rocks.h>
 #include <domain/scene_gen/scene_gen.h>
@@ -14,8 +15,11 @@
 #include <test_temp_dir.h>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
+#include <map>
 #include <string>
+#include <tuple>
 #include <vector>
 
 using namespace engine;
@@ -49,6 +53,8 @@ CliffLayer layer_over(f64 x0, f64 z0, f64 x1, f64 z1) {
   layer.region_max[1] = z1;
   layer.face.triangle_budget = 20000;
   layer.face.talus_blocks = 4;
+  // One tier: these cases are about the tracer, and the tiers have their own below.
+  layer.tier_m = 200.0f;
   return layer;
 }
 
@@ -286,6 +292,8 @@ TEST_CASE("cliffs generator: the escarpment scene's layer dresses both flanks of
   CHECK(boulders > 0);
   // Each face is a recipe that reads back and solves, the first one closed.
   bool first = true;
+  f32 tallest = 0.0f;
+  u64 triangles = 0, front = 0;
   for (const scene_gen::PlacementMesh& mesh : out.meshes) {
     if (mesh.path.find("/cliffs/cliff-") == std::string::npos) continue;
     std::string recipe;
@@ -297,13 +305,20 @@ TEST_CASE("cliffs generator: the escarpment scene's layer dresses both flanks of
     assets::MeshData solved;
     REQUIRE_MESSAGE(solve_cliff(*file.cliff, solved, &report, &error), error);
     CHECK(report.triangles <= file.cliff->triangle_budget);
-    CHECK(report.height_m > 20.0f);
+    tallest = std::max(tallest, report.height_m);
+    triangles += report.triangles;
+    front += 2u * report.stations * report.rows;
     if (first) {
       MESSAGE("first face: " << report.length_m << " m long, " << report.height_m << " m high, "
                              << report.triangles << " triangles at " << report.cell_m << " m");
       first = false;
     }
   }
+  MESSAGE("the scene's faces: " << triangles << " triangles, " << front
+                                << " of them on a front, the tallest " << tallest << " m");
+  // The flanks are 113 m of steep ground in tiers of about 12 m: no face is the whole flank.
+  CHECK(tallest > 8.0f);
+  CHECK(tallest < 40.0f);
 }
 
 namespace {
@@ -370,4 +385,863 @@ TEST_CASE("cliffs generator: a line the stand-off folds is merged to the recipe'
   CHECK(least < most);
   // A line that merely folds is merged, never left out.
   CHECK(skipped_total == 0);
+}
+
+// ---- faces in the slope (G142; rocks.md, "Faces in the slope") ----------------------------------
+
+namespace {
+
+// A steep band that ends inside the block: 30 m up over a run of 20 m (56 degrees) for z within
+// 65 m of 125, the run widening by 3 m a metre past that, so the ground is under 50 degrees from
+// about z = 58 down and z = 192 up.
+f64 ending_band(const void*, i64 x_mm, i64 z_mm) noexcept {
+  const f64 x = static_cast<f64>(x_mm) / 1000.0, z = static_cast<f64>(z_mm) / 1000.0;
+  const f64 past = std::fabs(z - 125.0) - 65.0;
+  const f64 run = 20.0 + (past > 0.0 ? 3.0 * past : 0.0);
+  const f64 t = x < 100.0 ? 0.0 : (x > 100.0 + run ? 1.0 : (x - 100.0) / run);
+  return 30.0 * t;
+}
+// A fin: the same 30 m rise over 20 m, a top 2 m wide, and the ground falling away behind it at
+// 37 degrees, which is not steep enough for a face of its own.
+f64 fin(const void*, i64 x_mm, i64) noexcept {
+  const f64 x = static_cast<f64>(x_mm) / 1000.0;
+  if (x < 100.0) return 0.0;
+  if (x < 120.0) return 30.0 * (x - 100.0) / 20.0;
+  if (x < 122.0) return 30.0;
+  return x < 162.0 ? 30.0 - 30.0 * (x - 122.0) / 40.0 : 0.0;
+}
+
+scene::Formation level_formation() {
+  scene::Formation f;
+  f.dip_deg = 8.0f;
+  f.azimuth_deg = 40.0f;
+  scene::FormationBed sandstone;
+  sandstone.name = "sandstone";
+  sandstone.thickness_m = 2.0f;
+  sandstone.resistance = 0.9f;
+  scene::FormationBed shale;
+  shale.name = "shale";
+  shale.thickness_m = 1.0f;
+  shale.resistance = 0.1f;
+  f.beds.push_back(sandstone);
+  f.beds.push_back(shale);
+  return f;
+}
+
+// How far a face's top stands over the ground behind it: a top is flat from its crest to its
+// back, in front of the slope at first and then in the ground; the worst, over every vertex, of
+// the top less the ground from where it goes in to `back` metres behind the crest. 1e9 for a top
+// that never goes into the ground at all.
+f64 proud_of_ground(const CliffFace& face, scene_gen::HeightFn ground, f64 back) {
+  const Vector<CliffPoint>& p = face.cliff.points;
+  f64 worst = -1.0e9;
+  for (u32 i = 0; i < p.size(); ++i) {
+    const CliffPoint& a = p[i > 0 ? i - 1 : 0];
+    const CliffPoint& b = p[i + 1 < p.size() ? i + 1 : p.size() - 1];
+    const f64 tx = static_cast<f64>(b.x - a.x), tz = static_cast<f64>(b.z - a.z);
+    const f64 l = std::sqrt(tx * tx + tz * tz);
+    const f64 nx = -tz / l, nz = tx / l;  // the line's right: downhill
+    const f64 top = face.y + static_cast<f64>(p[i].y) + static_cast<f64>(*p[i].height);
+    const f64 lean = static_cast<f64>(*p[i].batter) * static_cast<f64>(*p[i].height);
+    f64 entry = -1.0;
+    for (f64 d = 0.0; d <= back; d += 0.25) {
+      const f64 x =
+          static_cast<f64>(face.x_mm) / 1000.0 + static_cast<f64>(p[i].x) - nx * (lean + d);
+      const f64 z =
+          static_cast<f64>(face.z_mm) / 1000.0 + static_cast<f64>(p[i].z) - nz * (lean + d);
+      const f64 g = ground(nullptr, scene_gen::nearest_mm(x), scene_gen::nearest_mm(z));
+      if (entry < 0.0 && g >= top) entry = d;
+      // Past the entry itself, where the ground is the top's height by definition.
+      if (entry >= 0.0 && d >= entry + 1.5) worst = std::max(worst, top - g);
+    }
+    if (entry < 0.0) return 1.0e9;
+  }
+  return worst;
+}
+
+}  // namespace
+
+TEST_CASE("cliffs generator: a face carries the layer's formation at its own origin") {
+  CliffLayer layer = layer_over(0, 0, 256, 256);
+  Vector<CliffFace> plain;
+  std::string error;
+  REQUIRE(trace_cliff_block(layer, ground_of(&escarpment), 0, 0, plain, &error));
+  REQUIRE(plain.size() == 1);
+  CHECK_FALSE(plain[0].cliff.formation.has_value());
+
+  layer.formation = level_formation();
+  Vector<CliffFace> faces;
+  REQUIRE_MESSAGE(trace_cliff_block(layer, ground_of(&escarpment), 0, 0, faces, &error), error);
+  // The field's beds are where a face is cut into tiers, so the line is not the plain one's: the
+  // lowest tier comes first.
+  REQUIRE(!faces.empty());
+  const CliffFace& face = faces[0];
+  CHECK(face.lowest);
+  REQUIRE(face.cliff.formation.has_value());
+  CHECK(face.cliff.formation->dip_deg == 8.0f);
+  CHECK(face.cliff.formation->beds.size() == 2);
+  CHECK(face.cliff.world_origin.x == static_cast<f64>(face.x_mm) / 1000.0);
+  CHECK(face.cliff.world_origin.y == face.y);
+  CHECK(face.cliff.world_origin.z == static_cast<f64>(face.z_mm) / 1000.0);
+  // The recipe is keyed by the field, and solves.
+  RockFile with_field, without;
+  with_field.shape = RockShape::Cliff;
+  with_field.cliff = face.cliff;
+  without.shape = RockShape::Cliff;
+  without.cliff = plain[0].cliff;
+  CHECK(canonical_rock_json(with_field).find("formation") != std::string::npos);
+  CHECK(canonical_rock_json(without).find("formation") == std::string::npos);
+  CHECK(rock_source_hash(with_field) != rock_source_hash(without));
+  assets::MeshData mesh;
+  REQUIRE_MESSAGE(solve_cliff(face.cliff, mesh, nullptr, &error), error);
+  // A field out of range is refused by the layer, with the scene's sentence.
+  layer.formation->dip_deg = 89.0f;
+  CHECK_FALSE(cliff_layer_in_range(layer, error));
+  CHECK(error.find("dip_deg") != std::string::npos);
+}
+
+TEST_CASE("cliffs generator: a face's ends go into the ground where the steep ground ends") {
+  CliffLayer layer = layer_over(0, 0, 256, 256);
+  Vector<CliffFace> capped, tapered;
+  std::string error;
+  CHECK(layer.taper_m == 16.0f);  // the layer's own: ends go into the ground unless it says 0
+  layer.taper_m = 0.0f;
+  REQUIRE(trace_cliff_block(layer, ground_of(&ending_band), 0, 0, capped, &error));
+  REQUIRE(capped.size() == 1);
+  layer.taper_m = 16.0f;
+  REQUIRE_MESSAGE(trace_cliff_block(layer, ground_of(&ending_band), 0, 0, tapered, &error), error);
+  REQUIRE(tapered.size() == 1);
+  const Vector<CliffPoint>& before = capped[0].cliff.points;
+  const Vector<CliffPoint>& after = tapered[0].cliff.points;
+  REQUIRE(before.size() == after.size());
+  // Without the taper both ends stand: metres of face over the ground at their feet.
+  CHECK(*before[0].height > 5.0f);
+  CHECK(*before[before.size() - 1].height > 5.0f);
+  CHECK(std::fabs(before[0].y) < 0.01f);
+  // With it each end is the least face, a metre, sunk so its top is under the ground at its foot.
+  for (const u32 i : {0u, after.size() - 1}) {
+    CHECK(*after[i].height == doctest::Approx(1.0f));
+    const f64 foot =
+        ending_band(nullptr, tapered[0].x_mm + scene_gen::nearest_mm(static_cast<f64>(after[i].x)),
+                    tapered[0].z_mm + scene_gen::nearest_mm(static_cast<f64>(after[i].z)));
+    const f64 top =
+        tapered[0].y + static_cast<f64>(after[i].y) + static_cast<f64>(*after[i].height);
+    CHECK(top < foot - 0.25);
+  }
+  // The middle is the face it was, and the height rises along the taper (its 16 m of line, four
+  // spacings) without a step; past it the height is what the ground under the foot gives.
+  const u32 mid = after.size() / 2;
+  CHECK(*after[mid].height == *before[mid].height);
+  CHECK(after[mid].y == before[mid].y);
+  REQUIRE(mid > 4);
+  for (u32 i = 1; i <= 4; ++i)
+    CHECK(*after[i].height >= *after[i - 1].height - 0.75f);
+  // A tapered face is another face: its identity moves with its ends, and it still solves.
+  CHECK(tapered[0].identity != capped[0].identity);
+  assets::MeshData mesh;
+  REQUIRE_MESSAGE(solve_cliff(tapered[0].cliff, mesh, nullptr, &error), error);
+  // The taper's range is the layer's.
+  layer.taper_m = 500.0f;
+  CHECK_FALSE(cliff_layer_in_range(layer, error));
+  CHECK(error.find("taper_m") != std::string::npos);
+}
+
+// ---- a face in tiers (G142; rocks.md, "A face in tiers") ----------------------------------------
+
+namespace {
+
+CliffLayer tiered_layer(f64 x0, f64 z0, f64 x1, f64 z1) {
+  CliffLayer layer = layer_over(x0, z0, x1, z1);
+  layer.tier_m = 12.0f;  // the layer's own
+  return layer;
+}
+
+// The downhill normal of a face's line at vertex i: the line's right.
+void normal_at(const Vector<CliffPoint>& p, u32 i, f64& nx, f64& nz) {
+  const CliffPoint& a = p[i > 0 ? i - 1 : 0];
+  const CliffPoint& b = p[i + 1 < p.size() ? i + 1 : p.size() - 1];
+  const f64 tx = static_cast<f64>(b.x - a.x), tz = static_cast<f64>(b.z - a.z);
+  const f64 l = std::sqrt(tx * tx + tz * tz);
+  nx = -tz / l;
+  nz = tx / l;
+}
+
+// **What a face's mesh shows from behind its own top**: over every vertex of an upward triangle
+// (the top, a ledge), how far it stands over the ground at its own place when the ground between
+// it and the front has already risen over it — a point of the top behind where the top went into
+// the ground, which only a viewer behind the face sees, and sees as a hollow shell. 0 when no
+// vertex does.
+f64 shell_behind(const CliffFace& face, const assets::MeshData& mesh, scene_gen::HeightFn ground) {
+  const Vector<CliffPoint>& line = face.cliff.points;
+  const f64 ox = static_cast<f64>(face.x_mm) / 1000.0, oz = static_cast<f64>(face.z_mm) / 1000.0;
+  f64 worst = 0.0;
+  for (u32 t = 0; t + 2 < mesh.indices.size(); t += 3) {
+    f64 q[3][3];
+    for (u32 k = 0; k < 3; ++k) {
+      const Vec3& v = mesh.positions[mesh.indices[t + k]];
+      q[k][0] = static_cast<f64>(v.x);
+      q[k][1] = static_cast<f64>(v.y);
+      q[k][2] = static_cast<f64>(v.z);
+    }
+    const f64 ux = q[1][0] - q[0][0], uy = q[1][1] - q[0][1], uz = q[1][2] - q[0][2];
+    const f64 vx = q[2][0] - q[0][0], vy = q[2][1] - q[0][1], vz = q[2][2] - q[0][2];
+    const f64 nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx;
+    const f64 len = std::sqrt(nx * nx + ny * ny + nz * nz);
+    if (!(len > 0.0) || ny < 0.9 * len) continue;
+    for (u32 k = 0; k < 3; ++k) {
+      const f64 x = ox + q[k][0], y = face.y + q[k][1], z = oz + q[k][2];
+      const f64 here = ground(nullptr, scene_gen::nearest_mm(x), scene_gen::nearest_mm(z));
+      if (y <= here + 0.05) continue;  // in the ground
+      // The nearest vertex of the line gives the way to the front.
+      u32 near = 0;
+      f64 best = 1.0e30;
+      for (u32 i = 0; i < line.size(); ++i) {
+        const f64 dx = q[k][0] - static_cast<f64>(line[i].x);
+        const f64 dz = q[k][2] - static_cast<f64>(line[i].z);
+        if (dx * dx + dz * dz < best) {
+          best = dx * dx + dz * dz;
+          near = i;
+        }
+      }
+      f64 fx = 0.0, fz = 0.0;
+      normal_at(line, near, fx, fz);
+      for (f64 d = 0.25; d <= 30.0; d += 0.25) {
+        const f64 g =
+            ground(nullptr, scene_gen::nearest_mm(x + fx * d), scene_gen::nearest_mm(z + fz * d));
+        if (g >= y + 0.05) {
+          worst = std::max(worst, y - here);
+          break;
+        }
+      }
+    }
+  }
+  return worst;
+}
+
+// The share of a block's steep ground that some face stands in front of: over a 2 m grid, the
+// points steeper than the layer's threshold whose height lies in the span (foot to top) of a face's
+// vertex within 16 m.
+f64 covered_share(const Vector<CliffFace>& faces, scene_gen::HeightFn ground, f64 x0, f64 z0,
+                  f64 x1, f64 z1, f64 tan_steep) {
+  u32 steep = 0, covered = 0;
+  const auto h = [&](f64 x, f64 z) {
+    return ground(nullptr, scene_gen::nearest_mm(x), scene_gen::nearest_mm(z));
+  };
+  for (f64 z = z0; z <= z1; z += 2.0) {
+    for (f64 x = x0; x <= x1; x += 2.0) {
+      const f64 sx = (h(x + 4.0, z) - h(x - 4.0, z)) / 8.0,
+                sz = (h(x, z + 4.0) - h(x, z - 4.0)) / 8.0;
+      if (sx * sx + sz * sz < tan_steep * tan_steep) continue;
+      ++steep;
+      const f64 y = h(x, z);
+      bool in = false;
+      for (u32 f = 0; f < faces.size() && !in; ++f) {
+        const CliffFace& face = faces[f];
+        for (const CliffPoint& p : face.cliff.points) {
+          const f64 dx = static_cast<f64>(face.x_mm) / 1000.0 + static_cast<f64>(p.x) - x;
+          const f64 dz = static_cast<f64>(face.z_mm) / 1000.0 + static_cast<f64>(p.z) - z;
+          if (dx * dx + dz * dz > 16.0 * 16.0) continue;
+          const f64 foot = face.y + static_cast<f64>(p.y);
+          if (y >= foot - 0.5 && y <= foot + static_cast<f64>(*p.height) + 0.5) {
+            in = true;
+            break;
+          }
+        }
+      }
+      covered += in ? 1u : 0u;
+    }
+  }
+  return steep > 0 ? static_cast<f64>(covered) / static_cast<f64>(steep) : 1.0;
+}
+
+}  // namespace
+
+TEST_CASE("cliffs generator: a steep band is cut into tiers at the layer's breaks") {
+  CliffLayer layer = tiered_layer(0, 0, 256, 256);
+  CHECK(CliffLayer{}.tier_m == 12.0f);
+  Vector<CliffFace> faces;
+  std::string error;
+  REQUIRE_MESSAGE(trace_cliff_block(layer, ground_of(&escarpment), 0, 0, faces, &error), error);
+  // 30 m of band, steep to 27 m by the slope's 4 m differences, in tiers of 12: a break at 12 m,
+  // and none at 24, which is within a third of a tier of the top. Two faces, lowest first.
+  for (const CliffFace& face : faces)
+    MESSAGE("tier " << face.tier << " from " << face.y << " m, " << face.mean_height << " m high");
+  REQUIRE(faces.size() == 2);
+  for (u32 f = 0; f < 2; ++f) {
+    const CliffFace& face = faces[f];
+    const CliffPoint& mid = face.cliff.points[face.cliff.points.size() / 2];
+    const f64 foot = face.y + static_cast<f64>(mid.y);
+    const f64 top = foot + static_cast<f64>(*mid.height);
+    MESSAGE("tier " << face.tier << ": foot " << foot << " m, top " << top << " m, batter "
+                    << static_cast<f64>(*mid.batter) << ", " << face.cliff.points.size()
+                    << " vertices, budget " << face.cliff.triangle_budget);
+    CHECK(face.tier == static_cast<i32>(f));
+    CHECK(face.lowest == (f == 0));
+    CHECK(face.cliff.open);
+    // Only the lowest tier has the band's skirt and blocks, and a ground patch under them.
+    CHECK((face.cliff.talus > 0.0f) == (f == 0));
+    CHECK((face.cliff.talus_blocks > 0) == (f == 0));
+    CHECK(face.cliff.ground.has_value() == (f == 0));
+    // A tier's top is the break (the top one's, half a metre under the brow), and the next tier's
+    // foot is at most that: its bottom edge is under the top it stands on.
+    if (f == 0) CHECK(top == doctest::Approx(12.0).epsilon(0.02));
+    if (f == 1) CHECK(top == doctest::Approx(26.5).epsilon(0.02));
+    if (f > 0) {
+      CHECK(foot <= 12.0 * f + 0.01);
+      CHECK(foot > 12.0 * f - 2.0);
+    }
+    // A share of the layer's budget by its height.
+    CHECK(face.cliff.triangle_budget < layer.face.triangle_budget);
+    assets::MeshData mesh;
+    REQUIRE_MESSAGE(solve_cliff(face.cliff, mesh, nullptr, &error), error);
+  }
+  // With the formation the breaks are its resistant beds' tops: at the top of a tier that has
+  // another over it, the profile's own point is on a sandstone bed's top (2 m of sandstone on
+  // 1 m of shale, so the coordinate there is 2 past a whole period).
+  layer.formation = level_formation();
+  Vector<CliffFace> bedded;
+  REQUIRE_MESSAGE(trace_cliff_block(layer, ground_of(&escarpment), 0, 0, bedded, &error), error);
+  REQUIRE(bedded.size() >= 2);
+  gfx::FormationParams field;
+  REQUIRE(gfx::pack_formation(*layer.formation, field, &error));
+  const gfx::FormationFrame frame = gfx::formation_frame(field);
+  // Counted over every vertex of every face that has a tier over it (a tier's own end is tapered
+  // under the break, and its top tier's top is the brow's): most tops are on a sandstone bed's top.
+  u32 on_plane = 0, tops = 0;
+  for (u32 f = 0; f < bedded.size(); ++f) {
+    const CliffFace& face = bedded[f];
+    bool has_upper = false;
+    for (const CliffFace& other : bedded)
+      has_upper = has_upper || other.tier == face.tier + 1;
+    if (!has_upper) continue;
+    for (const CliffPoint& p : face.cliff.points) {
+      const f64 top = face.y + static_cast<f64>(p.y) + static_cast<f64>(*p.height);
+      // The profile's point at that height: the band rises 30 m over x 100 to 120.
+      const f64 x = 100.0 + top * 20.0 / 30.0;
+      const f64 z = static_cast<f64>(face.z_mm) / 1000.0 + static_cast<f64>(p.z);
+      const f64 c = gfx::formation_coordinate(frame, x, top, z).coordinate;
+      const f64 in_period = c - std::floor(c / 3.0) * 3.0;
+      ++tops;
+      on_plane += std::fabs(in_period - 2.0) < 0.2 ? 1u : 0u;
+    }
+  }
+  MESSAGE(bedded.size() << " faces with the formation; " << on_plane << " of " << tops
+                        << " tops under another tier are on a sandstone bed's top");
+  CHECK(tops > 0);
+  CHECK(2 * on_plane > tops);  // The tier's range is the layer's.
+  layer.tier_m = 1.0f;
+  CHECK_FALSE(cliff_layer_in_range(layer, error));
+  CHECK(error.find("tier_m") != std::string::npos);
+}
+
+TEST_CASE("cliffs generator: a tier's rock is the beds its height cuts") {
+  // Two members, each thicker than a tier: 14 m of pale sandstone on 16 m of dark mudstone, level.
+  CliffLayer layer = tiered_layer(0, 0, 256, 256);
+  scene::Formation f;
+  f.dip_deg = 0.0f;
+  scene::FormationBed pale;
+  pale.name = "sandstone";
+  pale.thickness_m = 14.0f;
+  pale.resistance = 0.9f;
+  pale.tint = Vec3{1.0f, 0.95f, 0.85f};
+  pale.roughness = -0.1f;
+  scene::FormationBed dark;
+  dark.name = "mudstone";
+  dark.thickness_m = 16.0f;
+  dark.resistance = 0.2f;
+  dark.tint = Vec3{0.45f, 0.45f, 0.5f};
+  dark.roughness = 0.1f;
+  f.beds.push_back(dark);
+  f.beds.push_back(pale);
+  layer.formation = f;
+  Vector<CliffFace> faces;
+  std::string error;
+  REQUIRE_MESSAGE(trace_cliff_block(layer, ground_of(&escarpment), 0, 0, faces, &error), error);
+  REQUIRE(faces.size() >= 2);
+  // Every tier is the type's colour times a mean of the two beds' tints, so the red of a tier over
+  // the palest tier's lies between the mudstone's 0.45 and 1.
+  f32 darkest = 1.0f, palest = 0.0f, smoothest = 1.0f, roughest = 0.0f;
+  for (const CliffFace& face : faces) {
+    REQUIRE(face.cliff.material.tint.has_value());
+    REQUIRE(face.cliff.material.roughness_factor.has_value());
+    const f32 r = (*face.cliff.material.tint)[0];
+    const f32 rough = *face.cliff.material.roughness_factor;
+    MESSAGE("tier " << face.tier << " from " << face.y << " m: red " << r << ", roughness "
+                    << rough);
+    darkest = std::min(darkest, r);
+    palest = std::max(palest, r);
+    smoothest = std::min(smoothest, rough);
+    roughest = std::max(roughest, rough);
+  }
+  // The lowest tier is mostly mudstone (0 to 12 m), the one above mostly sandstone (16 to 30 m):
+  // they read apart, by more than half the two beds' difference, and no further than all of it.
+  CHECK(darkest / palest < 0.75f);
+  CHECK(darkest / palest >= 0.45f - 1e-4f);
+  CHECK(roughest > smoothest + 0.05f);
+  // With no formation the layer's material stands: no tint is written.
+  layer.formation.reset();
+  Vector<CliffFace> plain;
+  REQUIRE(trace_cliff_block(layer, ground_of(&escarpment), 0, 0, plain, &error));
+  for (const CliffFace& face : plain)
+    CHECK_FALSE(face.cliff.material.tint.has_value());
+}
+
+TEST_CASE("cliffs generator: no generated face shows from behind its own top, and tiers cover") {
+  struct Case {
+    const char* name;
+    scene_gen::HeightFn ground;
+    f64 x0, z0, x1, z1;
+    i32 bx, bz;
+  };
+  // A fin (a top 2 m wide, the ground falling away behind it), the escarpment scene's ridge (a
+  // crest rounded over between two steep flanks) and a planar slope under a flat top.
+  const Case cases[] = {{"fin", &fin, 0, 0, 256, 256, 0, 0},
+                        {"rounded crest", &escarpment_ridge, -256, -256, 0, 0, -1, -1},
+                        {"planar slope", &escarpment, 0, 0, 256, 256, 0, 0}};
+  const f64 tan_steep = std::tan(50.0 * 3.14159265358979323846 / 180.0);
+  for (const Case& c : cases) {
+    const std::string name = c.name;
+    CAPTURE(name);
+    std::string error;
+    // The single box a line, as the generator stood before the tiers, with the same seated top.
+    CliffLayer one = layer_over(c.x0, c.z0, c.x1, c.z1);
+    Vector<CliffFace> single;
+    REQUIRE_MESSAGE(trace_cliff_block(one, ground_of(c.ground), c.bx, c.bz, single, &error), error);
+    CliffLayer layer = tiered_layer(c.x0, c.z0, c.x1, c.z1);
+    Vector<CliffFace> faces;
+    REQUIRE_MESSAGE(trace_cliff_block(layer, ground_of(c.ground), c.bx, c.bz, faces, &error),
+                    error);
+    REQUIRE(!faces.empty());
+    f64 worst_line = -1.0e9, worst_mesh = 0.0;
+    u32 triangles = 0;
+    for (const CliffFace& face : faces) {
+      f64 tallest = 1.0;
+      for (const CliffPoint& p : face.cliff.points)
+        tallest = std::max(tallest, static_cast<f64>(*p.height));
+      // The line's own statement: the top, from where it goes into the ground to the back, is
+      // under the ground; it goes in within the back.
+      REQUIRE(face.cliff.depth.has_value());
+      CHECK(static_cast<f64>(*face.cliff.depth) >= cliff_back_m(layer.face, tallest) - 1e-3);
+      const f64 proud = proud_of_ground(face, c.ground, static_cast<f64>(*face.cliff.depth));
+      if (proud > 0.0)
+        MESSAGE("tier " << face.tier << " at " << face.y << " m, " << face.length << " m long, "
+                        << face.mean_height << " m high, back " << *face.cliff.depth << ": "
+                        << proud);
+      worst_line = std::max(worst_line, proud);
+      // And the mesh's: no vertex of the top over the ground behind where the top went in.
+      assets::MeshData mesh;
+      CliffReport report;
+      REQUIRE_MESSAGE(solve_cliff(face.cliff, mesh, &report, &error), error);
+      triangles += report.triangles;
+      worst_mesh = std::max(worst_mesh, shell_behind(face, mesh, c.ground));
+    }
+    const f64 with_tiers = covered_share(faces, c.ground, c.x0, c.z0, c.x1, c.z1, tan_steep);
+    const f64 with_one = covered_share(single, c.ground, c.x0, c.z0, c.x1, c.z1, tan_steep);
+    MESSAGE(name << ": " << faces.size() << " faces in tiers (" << triangles
+                 << " triangles), a top at most " << worst_line
+                 << " m over the ground behind it, a mesh vertex at most " << worst_mesh
+                 << " m proud behind; the steep ground covered " << with_tiers * 100.0
+                 << " % in tiers, " << with_one * 100.0 << " % by one seated box a line ("
+                 << single.size() << " faces)");
+    CHECK(worst_line <= 0.0);
+    CHECK(worst_mesh == 0.0);
+    CHECK(with_tiers >= 0.9);
+    CHECK(with_tiers >= with_one - 0.02);
+  }
+}
+
+TEST_CASE("cliffs generator: an open face spends its triangles on its front") {
+  // The triangles: a generated face has no back and no bottom, so its front is most of it. The
+  // same face as a closed box, for the measure: under a half, since a box's back mirrors its front.
+  CliffLayer layer = layer_over(0, 0, 256, 256);
+  Vector<CliffFace> standard;
+  std::string error;
+  REQUIRE(trace_cliff_block(layer, ground_of(&escarpment), 0, 0, standard, &error));
+  REQUIRE(standard.size() == 1);
+  const auto front_share = [](const CliffReport& r) {
+    return 2.0 * static_cast<f64>(r.stations) * static_cast<f64>(r.rows) /
+           static_cast<f64>(r.face_triangles);
+  };
+  assets::MeshData mesh;
+  CliffReport standard_report;
+  REQUIRE_MESSAGE(solve_cliff(standard[0].cliff, mesh, &standard_report, &error), error);
+  MESSAGE("a layer's own face: " << front_share(standard_report) * 100.0 << " % with the back "
+                                 << standard_report.depth_m << " m behind (cell "
+                                 << standard_report.cell_m << " m), " << standard_report.triangles
+                                 << " triangles");
+  CHECK(standard[0].cliff.open);
+  CHECK(front_share(standard_report) >= 0.6);
+  // The generator asked the solver how far back the face goes, and got what the solver stands.
+  CHECK(
+      static_cast<f64>(standard_report.depth_m) ==
+      doctest::Approx(cliff_back_m(standard[0].cliff, static_cast<f64>(standard_report.height_m))));
+  Cliff boxed = standard[0].cliff;
+  boxed.open = false;
+  CliffReport boxed_report;
+  REQUIRE_MESSAGE(solve_cliff(boxed, mesh, &boxed_report, &error), error);
+  MESSAGE("the same face as a closed box: " << front_share(boxed_report) * 100.0 << " % (cell "
+                                            << boxed_report.cell_m << " m)");
+  CHECK(front_share(boxed_report) < 0.5);
+  // An open face is the box's front, top and ends: 2ab + 2ac + 4bc of its cells.
+  CHECK(standard_report.face_triangles ==
+        2u * standard_report.stations * standard_report.rows +
+            2u * standard_report.stations * standard_report.depth_rows +
+            4u * standard_report.rows * standard_report.depth_rows);
+}
+
+namespace {
+
+// The escarpment scene's cliffs layer (content/test-scenes/escarpment/scene.json), with the
+// formation and the taper the G142c captures were taken with.
+CliffLayer escarpment_layer(bool bedded) {
+  CliffLayer layer;
+  layer.name = "escarpment";
+  layer.seed = 7;
+  layer.region_min[0] = -200.0;
+  layer.region_min[1] = -200.0;
+  layer.region_max[0] = 200.0;
+  layer.region_max[1] = 200.0;
+  layer.spacing_m = 4.0f;
+  layer.block_m = 400.0f;
+  layer.min_slope_deg = 50.0f;
+  layer.min_length_m = 30.0f;
+  layer.min_height_m = 8.0f;
+  layer.max_length_m = 300.0f;
+  layer.face.type = RockType::Sandstone;
+  layer.face.undercut = 0.5f;
+  layer.face.talus = 0.15f;
+  layer.face.talus_blocks = 24;
+  layer.face.talus_block_m = 2.5f;
+  layer.face.material.tile_m = 2.0f;
+  layer.face.triangle_budget = 250000;
+  if (bedded) {
+    layer.taper_m = 24.0f;
+    scene::Formation f;
+    f.dip_deg = 6.0f;
+    f.azimuth_deg = 30.0f;
+    const auto bed = [&](const char* name, f32 thickness, f32 resistance) {
+      scene::FormationBed b;
+      b.name = name;
+      b.thickness_m = thickness;
+      b.resistance = resistance;
+      f.beds.push_back(b);
+    };
+    bed("sandstone", 6.0f, 0.9f);
+    bed("shale", 2.5f, 0.15f);
+    bed("flags", 3.0f, 0.8f);
+    bed("mudstone", 4.0f, 0.2f);
+    bed("limestone", 1.5f, 0.95f);
+    bed("shale", 3.0f, 0.1f);
+    layer.formation = f;
+  }
+  return layer;
+}
+
+// A face mesh's open edges (edges of one triangle once the positions are welded), restricted to
+// the face's own box (the first `face_triangles`), in the recipe's frame.
+std::vector<std::array<Vec3, 2>> open_edges(const assets::MeshData& mesh, u32 face_triangles) {
+  std::map<std::tuple<f32, f32, f32>, u32> weld;
+  std::vector<u32> id(mesh.positions.size());
+  for (u32 i = 0; i < mesh.positions.size(); ++i) {
+    const Vec3& p = mesh.positions[i];
+    id[i] =
+        weld.emplace(std::make_tuple(p.x, p.y, p.z), static_cast<u32>(weld.size())).first->second;
+  }
+  std::map<std::pair<u32, u32>, std::pair<u32, std::pair<u32, u32>>> edges;
+  for (u32 t = 0; t < face_triangles * 3u; t += 3) {
+    for (u32 e = 0; e < 3; ++e) {
+      const u32 a = mesh.indices[t + e], b = mesh.indices[t + (e + 1) % 3];
+      const auto key = std::make_pair(std::min(id[a], id[b]), std::max(id[a], id[b]));
+      auto& slot = edges[key];
+      slot.first += 1;
+      slot.second = std::make_pair(a, b);
+    }
+  }
+  std::vector<std::array<Vec3, 2>> out;
+  for (const auto& [key, slot] : edges)
+    if (slot.first == 1)
+      out.push_back({mesh.positions[slot.second.first], mesh.positions[slot.second.second]});
+  return out;
+}
+
+}  // namespace
+
+TEST_CASE("cliffs generator: the bedded escarpment steps back in benches, its front most of it") {
+  // The escarpment scene's layer with its formation: the share of the faces' triangles on a
+  // front, and the share of the fronts' area that lies back as a bench (a surface sloping 25 to 45
+  // degrees, facing up and out), over every face of the ridge's two flanks.
+  const CliffLayer layer = escarpment_layer(true);
+  Vector<CliffFace> faces;
+  std::string error;
+  for (i32 bz = -1; bz <= 0; ++bz)
+    for (i32 bx = -1; bx <= 0; ++bx)
+      REQUIRE_MESSAGE(trace_cliff_block(layer, ground_of(&escarpment_ridge), bx, bz, faces, &error),
+                      error);
+  u64 triangles = 0, front = 0;
+  f64 front_area = 0.0, bench_area = 0.0;
+  for (const CliffFace& face : faces) {
+    assets::MeshData mesh;
+    CliffReport report;
+    REQUIRE_MESSAGE(solve_cliff(face.cliff, mesh, &report, &error), error);
+    triangles += report.face_triangles;
+    front += 2u * report.stations * report.rows;
+    // The fronts are the box's +k face; measured over the face's own triangles that look out
+    // (away from the line's left) rather than over the top's level ones.
+    for (u32 t = 0; t < report.face_triangles * 3u; t += 3) {
+      const Vec3 a = mesh.positions[mesh.indices[t]];
+      const Vec3 n =
+          cross(mesh.positions[mesh.indices[t + 1]] - a, mesh.positions[mesh.indices[t + 2]] - a);
+      const f64 len = std::sqrt(static_cast<f64>(dot(n, n)));
+      if (!(len > 0.0)) continue;
+      const f64 ny = static_cast<f64>(n.y) / len;
+      if (ny > 0.97 || ny < -0.2) continue;  // the top, the ends' undersides
+      front_area += 0.5 * len;
+      // Sloping 25 to 45 degrees (a bench; the faces' planes lean at 50 to 70): the normal's
+      // height between cos 45 and cos 25.
+      if (ny >= 0.7071 && ny <= 0.9063) bench_area += 0.5 * len;
+    }
+  }
+  const f64 share = static_cast<f64>(front) / static_cast<f64>(triangles);
+  f64 line = 0.0;
+  u64 low = 0;
+  for (const CliffFace& face : faces) {
+    line += face.length;
+    Cliff coarse = face.cliff;
+    coarse.quality = RockQuality::Low;
+    assets::MeshData mesh;
+    CliffReport report;
+    REQUIRE_MESSAGE(solve_cliff(coarse, mesh, &report, &error), error);
+    low += report.face_triangles;
+  }
+  MESSAGE(line << " m of faces' lines: " << static_cast<f64>(triangles) / line
+               << " triangles a metre of line at the recipe's quality, "
+               << static_cast<f64>(low) / line << " at Low");
+  MESSAGE(faces.size() << " faces, " << triangles << " triangles, " << share * 100.0
+                       << " % on a front; " << bench_area / front_area * 100.0
+                       << " % of the fronts' area lies back as a bench");
+  CHECK(share > 0.60);
+  CHECK(bench_area / front_area > 0.15);
+}
+
+TEST_CASE("cliffs generator: from the crest the top tier's top is no level slab") {
+  // A walker on the ridge's crest, looking down the east flank: the level triangles of the faces
+  // (within 10 degrees of level, facing up) that stand over the ground and that the walker sees
+  // past the ground, near the brow (the ground uphill of them turns gentler than four fifths of the
+  // tracer's threshold within 6 m, so a lower tier's tread on the steep flank is not counted).
+  // Their area a metre of the brow's faces.
+  const CliffLayer layer = escarpment_layer(true);
+  Vector<CliffFace> faces;
+  std::string error;
+  for (i32 bz = -1; bz <= 0; ++bz)
+    for (i32 bx = -1; bx <= 0; ++bx)
+      REQUIRE_MESSAGE(trace_cliff_block(layer, ground_of(&escarpment_ridge), bx, bz, faces, &error),
+                      error);
+  const auto h = [](f64 x, f64 z) {
+    return escarpment_ridge(nullptr, scene_gen::nearest_mm(x), scene_gen::nearest_mm(z));
+  };
+  const f64 tan_brow = 0.8 * std::tan(50.0 * 3.14159265358979323846 / 180.0);
+  // The same faces with the shoulder taken off (`crest_back` absent: the tops as the base drew
+  // them), for the measure's own control.
+  f64 worst[2] = {0.0, 0.0};
+  for (u32 off = 0; off < 2; ++off) {
+    for (const f64 cz : {-60.0, 0.0, 60.0}) {
+      // On the crest, at its east edge: from the crest line (x = -z / 4) east to where the ground
+      // turns steep, two metres back from there, 1.7 m up, where a walker looks over the edge.
+      f64 cx = -0.25 * cz;
+      for (u32 q = 0; q < 400; ++q) {
+        const f64 sx = (h(cx + 2.0, cz) - h(cx - 2.0, cz)) / 4.0;
+        if (std::fabs(sx) >= tan_brow) break;
+        cx += 0.5;
+      }
+      cx -= 2.0;
+      const f64 cy = h(cx, cz) + 1.7;
+      f64 slab = 0.0, length = 0.0;
+      for (const CliffFace& face : faces) {
+        const f64 ox = static_cast<f64>(face.x_mm) / 1000.0;
+        const f64 oz = static_cast<f64>(face.z_mm) / 1000.0;
+        const f64 ax = static_cast<f64>(face.anchor_x_mm) / 1000.0;
+        const f64 az = static_cast<f64>(face.anchor_z_mm) / 1000.0;
+        // The east flank's faces within 80 m along the crest.
+        if (ax < -0.25 * az || std::fabs(az - cz) > 80.0) continue;
+        Cliff cliff = face.cliff;
+        if (off == 1)
+          for (CliffPoint& p : cliff.points)
+            p.crest_back.reset();
+        assets::MeshData mesh;
+        CliffReport report;
+        REQUIRE_MESSAGE(solve_cliff(cliff, mesh, &report, &error), error);
+        bool brow = false;
+        for (u32 t = 0; t < report.face_triangles * 3u; t += 3) {
+          const Vec3 a = mesh.positions[mesh.indices[t]];
+          const Vec3 b = mesh.positions[mesh.indices[t + 1]];
+          const Vec3 c = mesh.positions[mesh.indices[t + 2]];
+          const Vec3 n = cross(b - a, c - a);
+          const f64 len = std::sqrt(static_cast<f64>(dot(n, n)));
+          // Level: within 10 degrees.
+          if (!(len > 0.0) || static_cast<f64>(n.y) < 0.9848 * len) continue;
+          const f64 x = ox + static_cast<f64>(a.x + b.x + c.x) / 3.0;
+          const f64 y = face.y + static_cast<f64>(a.y + b.y + c.y) / 3.0;
+          const f64 z = oz + static_cast<f64>(a.z + b.z + c.z) / 3.0;
+          if (y <= h(x, z) + 0.1) continue;  // in the ground
+          // Near the brow: walking up the slope from it, the ground turns gentle within 6 m. A
+          // lower tier's top (a tread) is a tier's height under the brow, further than that.
+          bool near_brow = false;
+          f64 wx = x, wz = z;
+          for (u32 q = 0; q < 12 && !near_brow; ++q) {
+            const f64 sx = (h(wx + 2.0, wz) - h(wx - 2.0, wz)) / 4.0;
+            const f64 sz = (h(wx, wz + 2.0) - h(wx, wz - 2.0)) / 4.0;
+            const f64 s = std::sqrt(sx * sx + sz * sz);
+            if (s < tan_brow) {
+              near_brow = true;
+              break;
+            }
+            wx += 0.5 * sx / s;
+            wz += 0.5 * sz / s;
+          }
+          if (!near_brow) continue;
+          // Seen from the crest past the ground: the sight line stays over the ground.
+          bool seen = true;
+          const f64 dx = x - cx, dy = y - cy, dz = z - cz;
+          const f64 d = std::sqrt(dx * dx + dy * dy + dz * dz);
+          for (f64 q = 1.0; q < d - 0.5 && seen; q += 0.5)
+            seen = cy + dy * q / d > h(cx + dx * q / d, cz + dz * q / d);
+          if (!seen) continue;
+          slab += 0.5 * len;
+          brow = true;
+        }
+        if (brow) length += face.length;
+      }
+      const f64 per_m = length > 0.0 ? slab / length : 0.0;
+      MESSAGE(std::string(off == 1 ? "shoulder off" : "shoulder on")
+              << ", from the crest at z " << cz << ": " << slab << " m2 of level top seen over "
+              << length << " m of the brow's faces, " << per_m << " m2 a metre");
+      worst[off] = std::max(worst[off], per_m);
+    }
+  }
+  // What is left is the 0.3 m the shoulder stops short of the ground by, a metre of brow.
+  CHECK(worst[0] < 0.5);
+  CHECK(worst[1] > 1.0);
+}
+TEST_CASE("cliffs generator: no face of the escarpment opens over the ground (T101)") {
+  // Every open edge of every face of the escarpment scene's layer, with its formation and without,
+  // at the recipe's quality and at Low: a point of one over the ground is a hole unless it is in
+  // another face's rock (a ray straight up from it meets a triangle of another face that faces
+  // up). On the base, a tier's open bottom hung past the carved crest of the tier under it, 8 to 9
+  // m over the ground at worst; now no point is more than a quarter of a metre over it.
+  f64 worst = 0.0;
+  for (const bool bedded : {false, true}) {
+    const CliffLayer layer = escarpment_layer(bedded);
+    Vector<CliffFace> faces;
+    std::string error;
+    for (i32 bz = -1; bz <= 0; ++bz)
+      for (i32 bx = -1; bx <= 0; ++bx)
+        REQUIRE_MESSAGE(
+            trace_cliff_block(layer, ground_of(&escarpment_ridge), bx, bz, faces, &error), error);
+    for (const RockQuality quality : {RockQuality::High, RockQuality::Low}) {
+      struct Hit {
+        f64 over;
+        f64 x, y, z;
+        u32 face;
+      };
+      struct Tri {
+        f64 p[3][3];
+        u32 face;
+      };
+      std::vector<Hit> hits;
+      std::vector<Tri> caps;  // every face's triangles that face up, in the world
+      std::map<std::pair<i64, i64>, std::vector<u32>> grid;  // 2 m cells of x, z
+      std::vector<Hit> points;
+      for (u32 f = 0; f < faces.size(); ++f) {
+        if (std::fabs(static_cast<f64>(faces[f].anchor_z_mm) / 1000.0) > 200.0 ||
+            std::fabs(static_cast<f64>(faces[f].anchor_x_mm) / 1000.0) > 200.0)
+          continue;
+        Cliff c = faces[f].cliff;
+        c.quality = quality;
+        assets::MeshData mesh;
+        CliffReport report;
+        REQUIRE_MESSAGE(solve_cliff(c, mesh, &report, &error), error);
+        const f64 ox = static_cast<f64>(faces[f].x_mm) / 1000.0;
+        const f64 oz = static_cast<f64>(faces[f].z_mm) / 1000.0;
+        for (u32 t = 0; t < report.face_triangles * 3u; t += 3) {
+          Tri tri;
+          tri.face = f;
+          for (u32 k = 0; k < 3; ++k) {
+            const Vec3& v = mesh.positions[mesh.indices[t + k]];
+            tri.p[k][0] = ox + static_cast<f64>(v.x);
+            tri.p[k][1] = faces[f].y + static_cast<f64>(v.y);
+            tri.p[k][2] = oz + static_cast<f64>(v.z);
+          }
+          const f64 ux = tri.p[1][0] - tri.p[0][0], uz = tri.p[1][2] - tri.p[0][2];
+          const f64 vx = tri.p[2][0] - tri.p[0][0], vz = tri.p[2][2] - tri.p[0][2];
+          if (!(uz * vx - ux * vz > 1e-9)) continue;  // its normal's y: up only
+          const u32 id = static_cast<u32>(caps.size());
+          caps.push_back(tri);
+          const f64 x0 = std::min({tri.p[0][0], tri.p[1][0], tri.p[2][0]});
+          const f64 x1 = std::max({tri.p[0][0], tri.p[1][0], tri.p[2][0]});
+          const f64 z0 = std::min({tri.p[0][2], tri.p[1][2], tri.p[2][2]});
+          const f64 z1 = std::max({tri.p[0][2], tri.p[1][2], tri.p[2][2]});
+          for (i64 i = static_cast<i64>(std::floor(x0 / 2.0));
+               i <= static_cast<i64>(std::floor(x1 / 2.0)); ++i)
+            for (i64 j = static_cast<i64>(std::floor(z0 / 2.0));
+                 j <= static_cast<i64>(std::floor(z1 / 2.0)); ++j)
+              grid[{i, j}].push_back(id);
+        }
+        for (const auto& e : open_edges(mesh, report.face_triangles)) {
+          for (u32 q = 0; q <= 4; ++q) {
+            const f64 t = static_cast<f64>(q) / 4.0;
+            const f64 x = ox + static_cast<f64>(e[0].x) +
+                          (static_cast<f64>(e[1].x) - static_cast<f64>(e[0].x)) * t;
+            const f64 y = faces[f].y + static_cast<f64>(e[0].y) +
+                          (static_cast<f64>(e[1].y) - static_cast<f64>(e[0].y)) * t;
+            const f64 z = oz + static_cast<f64>(e[0].z) +
+                          (static_cast<f64>(e[1].z) - static_cast<f64>(e[0].z)) * t;
+            const f64 g =
+                escarpment_ridge(nullptr, scene_gen::nearest_mm(x), scene_gen::nearest_mm(z));
+            if (y > g + 0.05) points.push_back(Hit{y - g, x, y, z, f});
+          }
+        }
+      }
+      // A point over the ground is sealed when a ray straight up from it meets another face's
+      // triangle that faces up (it is inside that face's rock, under its top or a bench).
+      for (const Hit& p : points) {
+        const auto cell = grid.find(
+            {static_cast<i64>(std::floor(p.x / 2.0)), static_cast<i64>(std::floor(p.z / 2.0))});
+        bool sealed = false;
+        if (cell != grid.end()) {
+          for (const u32 id : cell->second) {
+            const Tri& tri = caps[id];
+            if (tri.face == p.face) continue;
+            const f64 ax = tri.p[0][0], az = tri.p[0][2];
+            const f64 bx = tri.p[1][0] - ax, bz = tri.p[1][2] - az;
+            const f64 cx = tri.p[2][0] - ax, cz = tri.p[2][2] - az;
+            const f64 det = bx * cz - bz * cx;
+            if (std::fabs(det) < 1e-12) continue;
+            const f64 u = ((p.x - ax) * cz - (p.z - az) * cx) / det;
+            const f64 v = (bx * (p.z - az) - bz * (p.x - ax)) / det;
+            if (u < -1e-6 || v < -1e-6 || u + v > 1.0 + 1e-6) continue;
+            const f64 y =
+                tri.p[0][1] + u * (tri.p[1][1] - tri.p[0][1]) + v * (tri.p[2][1] - tri.p[0][1]);
+            if (y >= p.y - 0.05) {
+              sealed = true;
+              break;
+            }
+          }
+        }
+        if (!sealed) hits.push_back(p);
+      }
+      std::sort(hits.begin(), hits.end(),
+                [](const Hit& a, const Hit& b) { return a.over > b.over; });
+      const f64 gap = hits.empty() ? 0.0 : hits[0].over;
+      const std::string what = std::string(bedded ? "bedded" : "plain") +
+                               (quality == RockQuality::Low ? ", low" : ", high");
+      MESSAGE(what << ": " << points.size() << " open-edge points over the ground, " << hits.size()
+                   << " in no other face's rock, " << gap << " m over the ground at worst");
+      for (u32 k = 0; k < hits.size() && k < 3; ++k)
+        MESSAGE("  tier " << static_cast<i64>(faces[hits[k].face].tier) << ": " << hits[k].over
+                          << " m over at (" << hits[k].x << ", " << hits[k].y << ", " << hits[k].z
+                          << ")");
+      worst = std::max(worst, gap);
+    }
+  }
+  CHECK(worst <= 0.25);
 }

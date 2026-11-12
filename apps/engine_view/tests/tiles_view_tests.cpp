@@ -9,9 +9,12 @@
 #include "view_process.h"
 
 #include <core/json/json.h>
+#include <domain/tileset/tileset.h>
 #include <foundation/image/decode.h>
 #include <foundation/image/png.h>
 #include <foundation/io/vfs.h>
+#include <systems/renderer/scene.h>
+#include <systems/renderer/terrain.h>
 
 #include <doctest/doctest.h>
 #include <test_paths.h>
@@ -231,6 +234,32 @@ TEST_CASE(
   // The path tracer reads the same masks too: engine-view's --reference has its own window path,
   // so that agreement is the renderer's test (terrain_materials_tests.cpp).
 }
+TEST_CASE("engine-view: the derived-data root the host names is the tiles ground's, no device") {
+  // T90 (the page that says what `--ddc` reaches is apps.md): `--ddc` sets the description's root
+  // before the scene is read, and the
+  // reader hands it to the tile set, so a scene naming a heightfield and no `tiles.ddc` builds its
+  // set there. Before, the root stopped at the reader and the provider looked for one above the
+  // heightfield, which a scene outside a checkout has not: "no derived-data root to build ...
+  // into".
+  const test::TempDir tmp("engine_view_tiles_ddc");
+  std::string error;
+  const tileset::Heightfield field =
+      tileset::synth_heightfield(tileset::SynthKind::ridge, 33, 1000, 5, -16000, -16000);
+  REQUIRE_MESSAGE(tileset::write_heightfield(tmp.file("ridge.json"), field, error), error);
+  const std::string scene = tmp.file("scene.json");
+  REQUIRE(io::write_file(scene, R"({"format": "engine.scene.v1", "name": "tiles-ddc",
+  "terrain": {"size": 17, "extent": 16, "provider": "tiles",
+    "tiles": {"heightfield": "ridge.json", "cells": 16}}})") == io::Status::Ok);
+  renderer::SceneDesc desc;
+  desc.ddc = tmp.file("root");
+  REQUIRE_MESSAGE(renderer::read_scene_file(scene, desc, error), error);
+  REQUIRE(desc.terrain.tiles.has_value());
+  CHECK(desc.terrain.tiles->ddc == desc.ddc);
+  const renderer::TerrainSampler ground(desc.terrain);
+  REQUIRE_MESSAGE(ground.ok(), ground.error());
+  CHECK(io::exists(io::join_path(desc.ddc, "tilesets")));
+}
+
 TEST_CASE("engine-view: a ground provider no build has is refused, naming tiles among its own") {
   const test::TempDir tmp("engine_view_tiles_refused");
   const std::string scene = tmp.file("scene.json");
