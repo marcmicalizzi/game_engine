@@ -376,7 +376,7 @@ slope at 10 m.
 
 | Stage | What is built | What it returns to the eye | What holds it |
 |---|---|---|---|
-| 1. The skirt | the tube carried down on every tree species' trunk; the seat in the generator section; the solver's version and the pins | no gap under any tree at any distance or yaw, to 45°, at no cost an instance: the owner's defect, closed | a CPU test over the four ramps and eight yaws: the skirt's lowest ring is under the ground beneath it at 64 azimuths; the three distances captured |
+| 1. The skirt (**built**, below) | the tube carried down on every tree species' trunk; the solver's version and the pins | no gap under any tree at any distance or yaw, to 45°, at no cost an instance: the owner's defect, closed | a CPU test over the four ramps and 64 azimuths: the skirt's lowest ring is under the ground beneath it; every LOD cut and distance form keeps it; a GPU case on the scene, from the ids |
 | 2. The footprint | the 17-sample seat and plane fit in the scene reader and the placements; `engine-content ground sample` | trees beside a tread, a cut bank and the lattice's edge sit; authors can ask the drawn ground | a tread benched under a rim; the whole read and the streamed tiles equal; pinned bytes of the fit for the containers |
 | 3. The conformed foot | the foot part, the pose's third kind, its normal, the padding and the error scale, the fade at the ring's edge | at 2 to 10 m the flare leans into the slope: exposed down-slope, buried up-slope | the stage against a CPU reference; rest poses to the bit at *g* = 0; rays against raster word for word on a conformed tree; a cost pair at 3840 x 2160 under traced primaries and shadows |
 | 4. The laterals | the rounded roots by habit in the foot; near-detail clusters left out of distance forms; shapes handed to the exclusion; G102's ridge and sleeve removed | roots on every tree at 2 to 15 m, round, in the trunk's bark, with no grass through them | the collapse check G102 left open, on the foot; a form without marked clusters; the chain's demand counted on the scene and on one forest pair |
@@ -385,6 +385,36 @@ slope at 10 m.
 
 Stage 1 stands alone and is the one that answers the walk. Stages 3 and 4 share the foot and are
 best built by one row; 2 can run beside 1.
+
+### Stage 1 as built (2026-11-12, branch b62-G201-1)
+
+Every tree mesh the solver makes carries the skirt ([flora](../subsystems/flora.md#the-trunks-skirt)
+has the rule, each trunk kind and the re-pins): two rings under the stem's bottom ring, the first a
+quarter of the rim's radius down with the radius grown by a tenth, the second straight under it at
+*rho* tan 45° + 0.15 m below the origin. Two things differ from the design above, both found in the
+build:
+
+- **The depth is measured from the origin, not the stem.** `1.1 r + 0.15 m` assumed a stem on the
+  axis; a birch clump's stems and a leaning palm's foot stand off it, and the ground under a stem
+  0.3 m out at 45° is 0.3 m lower again. So the depth is the lowest ring's farthest point from the
+  origin times tan 45° plus the margin: the design's number for a stem on the axis, deeper for one
+  off it (the clump's 0.39 to 0.44 m where 1.1 *r* + 0.15 m would have given 0.30 to 0.34).
+- **The seat in the generator section is left to stage 2**, its only reader; the skirt needs
+  nothing recorded, the plan counts its triangles.
+
+| Trunk kind | Sides | Skirt triangles | Rim | Bottom |
+|---|---|---|---|---|
+| date palm (default) | 16 | 64 | 0.23 m | -0.40 m |
+| broadleaf (default) | 12 | 48 | 0.48 m | -0.68 m |
+| broadleaf profiles at 10 m (maple to alder) | 12 | 48 | 0.08 to 0.34 m | -0.23 to -0.53 m |
+| conifer (default) | 10 | 40 | 0.41 m | -0.60 m |
+| evergreen profiles at 10 m (pine to juniper) | 10 | 40 | 0.14 to 0.36 m | -0.31 to -0.55 m |
+| birch, one stem; a three-stem clump | 10; 8 a stem | 40; 96 | 0.17 m; 0.13 to 0.17 m | -0.34 m; -0.39 to -0.44 m |
+| willow, orchard tree | 10, 12 | 40, 48 | 0.68 m, 0.20 m | -0.90 m, -0.37 m |
+| ancient tree (20,000 rung) | 59 | 236 | 11.0 m (the buttresses) | -12.3 m |
+
+The forest's own meshes were not rebuilt here (the proof of concept is read, never run); the
+design's 0.58 to 1.40 m for their rims of 0.39 to 1.14 m is the same rule.
 
 ### What the build needs from other rows
 

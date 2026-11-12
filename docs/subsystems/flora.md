@@ -2427,8 +2427,9 @@ weight zero and does not move.
 
 **What it costs.** 40 to 64 triangles a mesh (236 on the ancient tree), 2 (*sides* + 1) vertices,
 in every rung and every distance form, and nothing per instance; no schema, no placement path's
-change. The mesh's box reaches down by the skirt's depth, so the 16-bit grid of a 10 to 22 m tree is
-2 to 5 % coarser. On the tree-bases scene ([`content/test-scenes/tree-bases/`](../../content/test-scenes/tree-bases/README.md),
+change. The mesh's box reaches down by the skirt's depth, so its 16-bit grid is coarser by the
+depth over the tree's height: 2 to 5 % on the 10 m profiles, 3 % on a 22 m spruce, 8 % on the
+ancient tree. On the tree-bases scene ([`content/test-scenes/tree-bases/`](../../content/test-scenes/tree-bases/README.md),
 the tall spruce on ramps of 0, 15, 30 and 45 degrees at eight yaws) the GPU case in
 `systems/renderer`'s `flora_scene_tests.cpp` reads the ids across the slope and finds nothing but
 the tree and its ramp under any trunk. **The mesh less its skirt is the mesh it was**: every
