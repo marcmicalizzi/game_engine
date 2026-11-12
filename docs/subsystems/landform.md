@@ -1030,7 +1030,8 @@ alternately, the machine at 42% to 80% CPU before each run (a dozen agents build
 the four, and its first the slowest. The new work is in the ice steps only: a ridge at each
 snout (a band of at most a few hundred points and forty sums over it), one comparison and
 one clamp a point of ice in the books, and one more array each side of the sweep for the
-section's floor. While it runs a sketch with ice holds 58 more bytes a point (the largest
+section's floor. While it runs a sketch with ice holds 34 more bytes a point (the largest
 flux up the line, the thickest ice, the surface's level and the distance to the line, the
-ridges, their crests and the snouts), every sketch 8 more for a lake's fill, and the result
-40 more for the five new fields.
+ridges, their crests and the snouts, less the melt's share it no longer keeps), every
+sketch 16 more (the section's floor in the network, a lake's fill), and the result 17 more
+for the five new fields.
