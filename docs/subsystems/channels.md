@@ -337,26 +337,36 @@ within 0.05 of the table's (measured 0.456, 0.250, 0.147, 0.147).
 
 ### The stray triangle on the riffle (T98)
 
-W97's first pictures showed a flat triangle about 13 cm across standing out of open water on the
-scratch valley's riffle (`riffle-up`). Reproduced at the base (b8eb339a) with the same scene, its
-pixels and every pixel round them carry the trunk's water ribbon in the id buffer (instance 29,
-`water/valley link 4`, one triangle), so **no bed piece stood above the water's surface there**:
-the triangle is something under the surface that the water drew without its tint. At W97b, with
-every clast's position the same to the bit (the positions' pin did not move) and only the piece's
-materials and DAGs changed (eight, one a rock, where there was one), the same view shows no such
-triangle. The likely cause is therefore a coarser cluster of the one-DAG bed piece standing close
-under the surface (a simplified triangle bridging stones), drawn by the water's thin layer at full
-strength; a printed diagnosis over a 9,965-clast tile found about 1,250 of 494,000 coarser
-triangles standing more than twice their cluster's error plus 2 cm from the nearest finest vertex
-in both the old and the new DAGs (a loose measure: a vertex, not the surface), so the new DAGs do
-not remove the kind, only that one. **W97c found it is not gone** (2026-11-11): W97b's tip
-(2cfb738f, merged onto be3826d9) draws a faint tan triangle at the same place of the same view,
-and with the stones textured it turns pale cream, the colour of the stones' sets: so it is a bed
-piece's triangle, seen through or standing above the surface, and the id buffer's ribbon was the
-water drawn over it. **Not held by a case**: a test of "no bed triangle above the
-water where the bed is deeper than a stone's protrusion" needs the cut ground the tile set makes
-(`domain/tileset`'s edits), which this module's tests do not link; and how the water draws what
-lies a few millimetres under it is the water's (closed to this row).
+W97's first pictures showed a flat triangle about 13 cm across in the open water of the scratch
+valley's riffle (`riffle-up`, about pixel 680, 823 of 1920 by 1080): dark while the stones were
+constant colours, pale cream once they wore their rocks' sets. W97b read the id buffer there (the
+trunk's ribbon) as "no bed piece above the water"; W97c read the colour as "a bed piece's
+triangle, a coarse level suspected". **Both were half right, and the cause is the water's**
+(T98, 2026-11-12, on 5b044794, one camera, `--raster hw --shadows rt`):
+
+- **What the picture holds there is the water.** Every pixel within 4 of the marker carries one
+  ribbon triangle (`water/valley link 4`, its cluster 93, triangle 19). The scene less its
+  `water_channels` draws no pale shape there at all: the straight view meets the cut ground and,
+  a few pixels off, a stone of a bed piece at level 1. And with water and `--shadows csm`, which
+  traces no ray, the shape is gone while the ids stay the same.
+- **So it is what the water's refraction ray meets** (`water_refract.slang`; water.md, "What is
+  under the water"): a bed stone, standing in about 0.30 m of water (the ribbon's depth there; its
+  surface 9.50 m) about 0.22 m over its ground. The refraction counts a hit as the ground when it
+  lies within 8 cm plus 0.5 % of the eye's distance of the depth map's ground, about 10 cm here, so
+  only the stone's top stands "in the water": a cap with a hard edge where the stone crosses that
+  margin, shaded almost untinted at a few centimetres' depth, round which every other stone of the
+  bed is the terrain material's pebbles. That is the pale triangle.
+- **No level of a piece bridges stones.** The suspicion (meshoptimizer's sloppy fallback welds on a
+  grid, and could join two stones) is held to "no" by a case: over three seeds, the busiest tile's
+  piece has no coarse triangle with corners on two stones (test: "no coarse level of a piece joins
+  two stones, over seeds", 8.5 s in `msvc-debug`). Beside it, printed: about 5 % of a sample of
+  coarse triangles stand farther than their cluster's error from the finest form, the worst 1.4
+  times it (60 to 97 mm at levels 7 to 9): the simplifier's error is a quadric estimate, not a
+  bound, and nothing a viewer resolves at those levels' distances.
+
+Nothing here changes what this module builds (`k_channels_version` stays 9). What the water's
+refraction should do with a stone that crosses its margin, and with the stones under it, is the
+water's: a request, with the numbers above.
 
 ### A tile's bed, laid when it activates
 

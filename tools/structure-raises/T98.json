@@ -1,10 +1,10 @@
 {
   "format": "engine.structure-raise.v1",
   "name": "T98",
-  "reason": "channels.md's Not-yet list says exactly which reading of the valley's confinement exists (the flood bed's) and which does not (the reach's class)",
+  "reason": "channels.md: the Not-yet list says which reading of the valley's confinement exists; T98's section replaces two guesses at the riffle's pale triangle with what it is (the water's refraction meeting a stone's top past its ground margin) and the case that no level of a piece bridges stones",
   "date": "2026-11-12",
   "by": "Marc Micalizzi",
   "deltas": {
-    "page:docs/subsystems/channels.md": 76
+    "page:docs/subsystems/channels.md": 723
   }
 }
