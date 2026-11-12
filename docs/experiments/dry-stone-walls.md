@@ -123,6 +123,21 @@ What G177's pictures still showed beside r53, r07 and r57 (G189, 2026-11-11): ev
 
 Measured over eight stretches (`look_tests.cpp`, against G177's build): a face proper's facets spread 4.8° about their mean (3.0°), 9 % of faces lie within 2° of a plane (28 %), the mean face is turned 2.1° off the line (1.75°: the turn is the measure with the least margin, because the arrises and the 35 mm of relief take most of a stone's depth), and the arrises are shaded 32° off their own facets (0°: flat bands).
 
+## A cope that is not a row of books
+
+What G177's pictures still showed (G189, 2026-11-11): the cope a row of upright slabs of near-equal height, like books on a shelf, and the cover course under it a row of boxes drawing a straight dark line at any distance. No new source was read; the handbook's, already read above, allows far more than G177 used: random coping uses stone varying by 25 to 50 mm or more, buck and doe alternates tall and short stones, tilted or sloping coping sets each stone leaning on its neighbour, and slab copes are 50 to 200 mm thick (TCV, Types of coping); a cope is brought to its line, matched over the wall rather than stone by stone (TCV, Coping). The cover course has no numbers in any source read; the reels' cover stones are flat stones of uneven thickness and projection.
+
+| Quantity | Chosen (G189) | Source |
+|---|---|---|
+| Cope thickness | one in three a block of 100 to 200 mm, the rest slabs of 40 to 100 mm by the square of a draw (G177: 40 to 160 mm by the 1.5th power) | TCV, Types of coping (slab copes 50 to 200 mm); the share a design value |
+| Cope height | taller and shorter alternating eight times in ten (1.02 to 1.10, 0.86 to 0.96 of the cope), half of the cover's departure from 75 mm made up, within 0.86 to 1.08 of the cope and 40 mm of the neighbour | TCV, Types of coping (random, buck and doe; 50 mm between neighbours, held with the cover's fall under them) and Coping (brought to a line) |
+| Cope top | square (corners 0.86 to 1), falling across the wall (one side 0.62 to 0.80), or a block's falling along it | design, against r53, r07, r57 |
+| Cope set | runs of three to seven leaning together by up to 12°, ±3° of their own; one in twelve leaning 12 to 20° on its neighbour; no more than 4° within 0.15 m of a module's end | TCV, Types of coping (tilted or sloping coping); TCV, Coping asks for vertical, and the runs depart from it as the reels' copes do; the angles a design value |
+| Wedges | 45 %, narrower at the top by up to 18 % of their thickness either side | design |
+| Cover stone | 25 to 55 cm long, 45 to 110 mm thick, 8 to 40 mm thicker at one end, its end within 15 mm of its neighbour's, each corner 5 to 55 mm proud | design (no source read gives a cover's numbers) |
+
+Measured over four stretches (`look_tests.cpp`; the base is G177's build): neighbours' heights differing by 30 mm or more 50 % (18 %), thickness's coefficient of variation 0.52 (0.40), leans spread 7.7° with 51 % at 6° or more (G177's rule, half its neighbour's lean and 2.5° of its own within 4°, cannot spread past about 2.5°), cover stones falling 15 mm or more end to end 67 % (0), the cover's top spread 13.2 mm about its mean (7.8). The skyline's movement at 2 cm bins and the sky seen through the cope at 60 % of its height were tried as measures and dropped: G177's already moved 76 mm a bin and showed sky over 21 % of its length, since its gaps reach the cover.
+
 ## Where structure was traded for triangles
 
 - **The hearting is not geometry.** It is a dark closed core behind the faces, so a gap between face stones shows shadow and not the field behind. A hearting stone is never seen in a standing wall.

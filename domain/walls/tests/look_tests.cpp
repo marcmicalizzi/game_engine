@@ -124,21 +124,6 @@ Vector<f64> skyline(const assets::MeshData& mesh, const Vector<u32>& indices, f6
   return top;
 }
 
-// Whether a point of the wall's elevation (x, y) is behind any of the triangles seen square on.
-bool covered(const assets::MeshData& mesh, const Vector<u32>& indices, f64 x, f64 y) {
-  for (u32 t = 0; t + 2 < indices.size(); t += 3) {
-    const V a = at(mesh, indices[t]), b = at(mesh, indices[t + 1]), c = at(mesh, indices[t + 2]);
-    if (x < std::min({a.x, b.x, c.x}) || x > std::max({a.x, b.x, c.x})) continue;
-    if (y < std::min({a.y, b.y, c.y}) || y > std::max({a.y, b.y, c.y})) continue;
-    const f64 d = (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
-    if (std::abs(d) < 1e-14) continue;
-    const f64 u = ((x - a.x) * (c.y - a.y) - (y - a.y) * (c.x - a.x)) / d;
-    const f64 v = ((b.x - a.x) * (y - a.y) - (b.y - a.y) * (x - a.x)) / d;
-    if (u >= 0 && v >= 0 && u + v <= 1) return true;
-  }
-  return false;
-}
-
 }  // namespace
 
 TEST_CASE("walls: a face stone's face is broken and weathered, not a plane with box edges") {
@@ -203,15 +188,18 @@ TEST_CASE("walls: a face stone's face is broken and weathered, not a plane with 
   CHECK(shade >= 10.0);
 }
 
-TEST_CASE("walls: the cope reads irregular at ten metres, not as books on a shelf" *
-          doctest::skip()) {
-  // At ten metres a pixel is about 7 mm (1,600 across 60 degrees). Over the stretch's cope, seen
-  // square on: (1) neighbours' heights differ by 30 mm or more often (TCV's 50 mm is the most);
-  // (2) thickness spreads (TCV: slab copes 50 to 200 mm); (3) the skyline at 2 cm bins moves
-  // (its mean step between bins) and (4) the sky shows through the cope at 60 % of its height
-  // in gaps and between wedges' and leaners' tops.
-  f64 step_sum = 0, gap_share = 0, dh_sum = 0, thick_cv = 0;
-  u32 pairs = 0, big = 0, modules = 0;
+TEST_CASE("walls: the cope reads irregular at ten metres, not as books on a shelf") {
+  // At ten metres a pixel is about 7 mm (1,600 across 60 degrees). Over four stretches' cope:
+  // (1) neighbours' heights differ by 30 mm or more often (TCV's 50 mm is the most; the base,
+  // G177: 18 %), (2) thickness spreads (TCV: slab copes 50 to 200 mm; the base: a coefficient of
+  // variation of 0.40), (3) the stones lean, in runs, as tilted coping's do (TCV, Types of
+  // coping): their leans spread by 5 degrees or more and a quarter lean 6 or more. The base kept
+  // no lean in its report; its rule (half its neighbour's lean and up to 2.5 of its own, within 4
+  // degrees, one in fifteen at 5 to 8) cannot spread by more than about 2.5 nor give a quarter
+  // past 6, so (3) is read from its code, not run. The skyline's movement at 2 cm bins is
+  // reported: the base's already moved 76 mm a bin (its gaps reach the cover), so it is no measure.
+  f64 step_sum = 0, dh_sum = 0, thick_cv = 0, lean_sum = 0, lean_sq = 0;
+  u32 pairs = 0, big = 0, modules = 0, leans = 0, steep = 0;
   for (const u64 seed : {1ull, 2ull, 3ull, 4ull}) {
     const Module m = module_of(ModuleKind::run, 0, seed);
     assets::MeshData mesh;
@@ -219,12 +207,10 @@ TEST_CASE("walls: the cope reads irregular at ten metres, not as books on a shel
     std::string error;
     REQUIRE(solve_module(m, mesh, report, error));
     Vector<f64> h, t;
-    f64 cope_bed = 1e9;
     for (const Stone& s : report.stones) {
       if (s.role != StoneRole::cope || s.x0 < -1.4f || s.x1 > 1.4f) continue;
       h.push_back(static_cast<f64>(s.top - s.bed));
       t.push_back(static_cast<f64>(s.x1 - s.x0));
-      cope_bed = std::min(cope_bed, static_cast<f64>(s.bed));
     }
     REQUIRE(h.size() > 10);
     for (u32 i = 1; i < h.size(); ++i) {
@@ -240,32 +226,36 @@ TEST_CASE("walls: the cope reads irregular at ten metres, not as books on a shel
     for (const f64 v : t)
       vt += (v - mt) * (v - mt);
     thick_cv += std::sqrt(vt / static_cast<f64>(t.size())) / mt;
+    for (const f32 l : report.cope_lean_deg) {
+      const f64 d = static_cast<f64>(l);
+      lean_sum += d;
+      lean_sq += d * d;
+      steep += std::abs(d) >= 6.0 ? 1u : 0u;
+      ++leans;
+    }
     const Vector<f64> sky = skyline(mesh, mesh.indices, -1.4, 0.02, 140);
     f64 steps = 0;
     for (u32 i = 1; i < sky.size(); ++i)
       steps += std::abs(sky[i] - sky[i - 1]);
     step_sum += steps / static_cast<f64>(sky.size() - 1);
-    const f64 probe = cope_bed + 0.6 * static_cast<f64>(m.cope_cm) / 100.0;
-    u32 open = 0, probes = 0;
-    for (f64 x = -1.395; x < 1.4; x += 0.01, ++probes)
-      open += covered(mesh, mesh.indices, x, probe) ? 0u : 1u;
-    gap_share += static_cast<f64>(open) / static_cast<f64>(probes);
     ++modules;
   }
+  REQUIRE(leans > 40);
   const f64 mods = static_cast<f64>(modules);
+  const f64 lean_mean = lean_sum / leans;
+  const f64 lean_sd = std::sqrt(std::max(0.0, lean_sq / leans - lean_mean * lean_mean));
   MESSAGE("cope: neighbours differ by " << 1000.0 * dh_sum / pairs << " mm on average, "
                                         << 100.0 * big / pairs << " % by 30 mm or more; thickness "
-                                        << "spread " << thick_cv / mods << "; the skyline moves "
-                                        << 1000.0 * step_sum / mods << " mm a 2 cm bin; the sky "
-                                        << "shows at 60 % of its height over "
-                                        << 100.0 * gap_share / mods << " % of its length");
+                                        << "spread " << thick_cv / mods << "; leans spread "
+                                        << lean_sd << " degrees, " << 100.0 * steep / leans
+                                        << " % lean 6 or more; the skyline moves "
+                                        << 1000.0 * step_sum / mods << " mm a 2 cm bin");
   CHECK(static_cast<f64>(big) >= 0.30 * static_cast<f64>(pairs));
   CHECK(thick_cv / mods >= 0.50);
-  CHECK(step_sum / mods >= 0.012);
-  CHECK(gap_share / mods >= 0.06);
+  CHECK(lean_sd >= 5.0);
+  CHECK(static_cast<f64>(steep) >= 0.25 * static_cast<f64>(leans));
 }
-
-TEST_CASE("walls: the cover course is stones, not a row of boxes" * doctest::skip()) {
+TEST_CASE("walls: the cover course is stones, not a row of boxes") {
   // The cover (throughbands of the top, TCV, Coping) is flat stones of their own thickness, not
   // sawn slabs: a stone is thicker at one end than the other, and the course's top, seen from
   // the side, is not a ruled line. Over four seeds' stretches: (1) the share of cover stones

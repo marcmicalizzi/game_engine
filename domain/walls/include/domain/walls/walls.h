@@ -44,8 +44,9 @@ namespace engine::walls {
 // The solver's version, in every recipe's source hash: a change that moves a stone bumps it.
 // 4 (G177): stones laid with sloping beds and tops, jumpers, thin stones and lumps; a rough cope.
 // 5 (G189): a standing face stone's face turned off the line, broken across and weathered, its
-// arrises smooth-shaded.
-inline constexpr u32 k_wall_version = 5;
+// arrises smooth-shaded. 6 (G189): the cover course stones of their own thickness and proud; the
+// cope's blocks, cock-and-hen heights, top shapes, leaning runs and wedges.
+inline constexpr u32 k_wall_version = 6;
 
 // What a stone is in a solved module (the report's, for the tests and the page's counts).
 enum class StoneRole : u8 { face, footing, through, tie, pinning, cover, cope, rubble, core };
@@ -109,6 +110,9 @@ struct ModuleReport {
   // The stone's volume in the faces, the throughs, the cover and the cope, m^3, and its length.
   f64 stone_volume_m3 = 0;
   f64 length_m = 0;
+  // Each cope stone's lean along the wall, degrees, positive toward +x, in the order of the cope
+  // stones in `stones` (G189; walls.md, "The module").
+  Vector<f32> cope_lean_deg;
 };
 
 // The ranges docs/experiments/dry-stone-walls.md pins, as a sentence for the first one broken.
@@ -127,10 +131,11 @@ inline constexpr f64 k_through_high_m = 0.70;
 inline constexpr f64 k_through_spacing_m = 0.80;
 // The footing's projection beyond each face (TCV's scarcement, 50 to 75 mm).
 inline constexpr f64 k_scarcement_m = 0.06;
-// A cope stone's thickness along the wall, metres: mostly thin slabs, now and then a block
-// (TCV, Types of coping: random coping; slab copes 50 to 200 mm thick).
+// A cope stone's thickness along the wall, metres: slabs, and one in four a block (TCV, Types of
+// coping: random coping; slab copes 50 to 200 mm thick; G189 took the thickest from 160 mm to the
+// source's 200).
 inline constexpr f64 k_cope_thin_m = 0.04;
-inline constexpr f64 k_cope_thick_m = 0.16;
+inline constexpr f64 k_cope_thick_m = 0.20;
 
 // Solves a module: the finest form (every stone) in `out` as positions, normals, UVs and indices,
 // one material and its stone palette image, and the coarser forms' indices in the report.
