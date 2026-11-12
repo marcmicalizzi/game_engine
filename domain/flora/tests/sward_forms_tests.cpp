@@ -884,8 +884,38 @@ TEST_CASE("meadow: a cell's plant is its cell's from any tile order, and a tile 
   }
   CHECK(plants > 400);
   CHECK(std::popcount(used) >= 4);
-  // The default budget: 256 plants a tile in the nearest ring; in the next the far forms, each
-  // counted as the plants it stands for, up to the same 256; none past it.
+  // G167's budget, reported: the drifts a tile holds in each ring and their triangles (each
+  // species' drift solved once; the plants' seeds are the entry's, as the stand-ins are).
+  {
+    Vector<u32> near_tris, far_tris;
+    for (const auto& species : flora::meadow_species()) {
+      assets::MeshData mesh;
+      flora::TreeReport report;
+      std::string error;
+      REQUIRE(flora::solve_meadow_plant(flora::meadow_drift(species, 1, p.seed), mesh, &report,
+                                        &error));
+      near_tris.push_back(report.triangles);
+      if (flora::meadow_far_thin(species) > 0) {
+        REQUIRE(flora::solve_meadow_plant(flora::meadow_far_drift(species, 1, p.seed), mesh,
+                                          &report, &error));
+        far_tris.push_back(report.triangles);
+      }
+    }
+    u64 near_sum = 0, far_sum = 0;
+    u32 far_count = 0;
+    for (const auto& placed : a.instances)
+      if ((placed.id & 0x80000000u) != 0) near_sum += near_tris[placed.mesh - 8];
+    const u32 far_base = 8 + static_cast<u32>(flora::meadow_species().size());
+    for (const auto& placed : first.tile(1).instances)
+      if ((placed.id & 0x80000000u) != 0) {
+        ++far_count;
+        far_sum += far_tris[placed.mesh - far_base];
+      }
+    MESSAGE("a 64 m tile, the whole community at the cap of 4096: ", plants, " drifts near, ",
+            near_sum, " triangles; ", far_count, " far forms, ", far_sum, " triangles");
+  }
+  // A lower cap is the budget lever: 256 drifts a tile in the nearest ring; in the next the far
+  // forms, each counted as the drifts it stands for, up to the same 256; none past it.
   p.forb_tile_cap = 256;
   Meadow capped(&rising, p, 120);
   Vector<u32> thin_of_mesh;  // the far meshes follow the 13 near ones, flowering species only

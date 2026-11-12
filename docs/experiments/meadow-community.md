@@ -198,6 +198,18 @@ quoted by Wagner et al. 2026, read; in a Pennine Dales hay meadow its flowering 
 margin's marsh marigold and cuckooflower and the mesic sward's pignut are past flowering; meadowsweet,
 buttercup, clover, wood cranesbill, ox-eye daisy, trefoil and thyme are in flower.
 
+**The budget, counted** (`meadow: a cell's plant is its cell's from any tile order`, the test's
+graded 64 m tile on its slope with the whole community, MSVC): the odds sum past one in every
+cell, so at the default cap the near ring holds **4,096 drifts a tile, 2,623,872 triangles** (640 a
+square metre, beside the sward's own 1,280 near and 768 coarse a patch), and the card ring **524 far
+forms, 167,664 triangles**. A drift is 264 to 3,144 triangles (`meadow: a drift is the field
+kind`: a forb out of flower 264, the sedge's and the rush's 384, a buttercup's 864 with 40 heads,
+a thyme's 1,416 with 48, a meadowsweet's 3,144 with 192), eight plants of one parentless part
+each. Before G167 the same tile held 256
+herbs of 48 to 498 triangles, at most 127,000. Cluster LOD thins a drift with distance like any
+mesh; the drifts are no instance of the pose table, so the CPU poser and the pose table's slots
+are unchanged by them.
+
 **Wet against dry, for G168** (read: Punalekar et al. 2016, Remote Sensing 8(2):112, field
 spectroscopy of a floodplain meadow, MG4): the wet community (*Carex*, *Juncus acutiflorus*,
 *Filipendula*, *Cardamine*) and the dry one were "spectrally very similar", the dry slightly
