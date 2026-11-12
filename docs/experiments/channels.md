@@ -497,6 +497,44 @@ the four rocks' hues within each albedo, the two tones (0.85 and 1.15), and the 
 0.25 pale, 0.15 dark, 0.15 brown: those of `gravel/bed`'s generated set, so the stones and the
 texture agree). No source gave percentages by lithology.
 
+## A line across a slope: where bankfull stands, and what a hillside channel lacks (W116)
+
+What the seat rule ([channels](../subsystems/channels.md#the-section-seated-under-its-lower-bank-w116))
+rests on, read 2026-11-12 by one research pass over published sources. How each was read is said;
+where a point rests on an inference, it says so.
+
+- **Bankfull is the stage that first spills.** Buffington (2006), *Identifying bankfull
+  elevation*, USDA Forest Service Rocky Mountain Research Station (read whole): "bankfull flow is
+  defined as the discharge that just begins to spill out of the channel onto the floodplain"
+  (after Leopold, Wolman & Miller 1964), and the floodplain "may not be extensive in incised
+  channels". Harrelson, Rawlins & Potyondy (1994), *Stream channel reference sites*, USDA FS GTR
+  RM-245 (read whole): steep, confined streams "often lack distinguishable floodplains". Williams
+  (1978), *Bank-full discharge of rivers*, Water Resources Research 14(6) (abstract only): eleven
+  definitions in use. **No source read states "the lower bank's top" in so many words**; it is the
+  inference the rule makes from the first definition: water that spills at the lower bank first
+  is bounded by it, so the section's top is seated at the lower bank's ground.
+- **A hillside channel has no levee.** Brierley, Ferguson & Woolfe (1997), *What is a fluvial
+  levee?*, Sedimentary Geology 114 (abstract): levees are "raised ridges that separate river
+  channels from their floodplains". Han & Kim (2022), Earth Surface Dynamics 10 (read whole; a
+  model paper quoting the field literature): a levee is a wedge of suspended load laid by overbank
+  flow, concave-up and fining away from the channel. No source read describes a levee on a channel
+  cut into a hillside; every one ties it to a floodplain. So the rule builds no `Fill`: an absence
+  of evidence and a definition, not a stated negative.
+- **A confined reach has little or no flood bed.** Montgomery & Buffington (1997), GSA Bulletin
+  109(5) (read whole): alluvial reaches "may be either confined, with little to no associated
+  flood plain, or unconfined". Fryirs, Wheaton & Brierley (2016), Earth Surface Processes and
+  Landforms 41 (read whole): a confined reach abuts a valley margin over more than 90 % of its
+  length and has floodplain pockets over under 10 % of it. A stream along a hillside abuts the
+  hillside's margin along all of it; that its downhill side has no floodplain is the inference.
+- **Water over a low bank leaves down the fall line.** Only anthropogenic analogues were found:
+  Weaver, Hagans & Popenoe (1995), USGS Professional Paper 1454-I (read whole): 90 % of measured
+  gully erosion on nine sites came from streams diverted out of their channels onto the hillslope;
+  the USDA Forest Service's *Diversion potential at road-stream crossings* (1997, read whole): 56 %
+  of 1,992 crossings would divert overflow down the grade. Not a natural-stream source.
+
+**Design choices**, not from a source: the 2 cm bound; reading the bank over the swell's range at
+nine places; the seat's dilation over two points either way; and the move's tenth of a depth.
+
 ## Against the proof of concept
 
 The proof of concept's erosion model carved v31 with **688 channel heads** and **5–7 km of channel per

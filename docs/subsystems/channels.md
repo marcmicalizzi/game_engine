@@ -877,6 +877,108 @@ there is still narrowed or lowered by W91's fit. Since the kinks were low-passed
 and the steep line wanders ([The planform](#the-planform)): 36 points (1.8 %) with less than half
 a bank and **none** with no bank, the worst 1.08 depths under.
 
+### The section seated under its lower bank (W116)
+
+(2026-11-12, roadmap W116; the owner's walk of the forest that morning, marks 3 to 5, and the
+forest's engine needs 53 and 21: "a level bar or flood-bed surface on a cross-slope stands out of
+the hillside on its downhill side".) Moving the line answers a line on a valley's side above its
+floor; it cannot answer a stream that runs along a hillside's contour, where every place a width
+across falls the same. There the cut's **top of bank was the ground at the line**, so the downhill
+bank's ground stood under the top by half the width times the cross-slope — under the bed and the
+water past a little cross-slope — and the cut, which only lowers, left the section's downhill half
+standing over the hillside: the water carried level over the drop, and a flood bed whose level
+reached out over ground that falls away (the tan plate of mark 4, the bed's mask region painted on
+it).
+
+**The rule.** At every point of every kept stretch at least `bar_min_width_m` wide, nothing of the
+section stands over the ground beside it by more than `k_seat_bound_m` (**2 cm**, under the 25 cm
+lattice's height step on a slope of one in ten): the top of the bank (and with it the bed, the bar
+and the water under it) over the ground at the **lower** bank top, read across the line's heading
+over a width at the section's half width; and each side's flood-bed level over the ground at that
+side's edge. The section's faces rise from its bed to its top at the bank tops, so on ground that
+is a plane across a width a top that holds holds every place between. Fans (a body's level stands
+over their banks), knickpoints and a tributary's confluence grade (it opens into its trunk) are not
+read. `measure_seat` measures it and `engine-content channels` prints it as `seat` in its summary
+line: the points read, those over the bound (`bank_over`, `flood_over`) and the most, how far and
+how much line the plan seated, and the water's fit codes.
+
+**How it is met**, in the order the brief asked:
+
+- **The section narrows on the downhill side where nothing needs its width: the flood bed.** Each
+  side's walk ([The flood bed](#the-flood-bed)) also finds where the ground first stands under the
+  bed's level (`flood_bed_depth` of a thalweg under the top), and the bed reaches no further on
+  that side. A side whose ground falls away from the line has no bed; on a hillside the uphill
+  side's walk meets the flood-prone height within a width or two, so a seated reach is entrenched
+  and has none either — which is what confined reaches are (Montgomery & Buffington 1997: "little
+  to no" flood plain; Fryirs, Wheaton & Brierley 2016: floodplain pockets under a tenth of a
+  confined reach).
+- **The channel is cut deeper** (`seat_section`, `ChannelLink::seat`): its width is the hydraulic
+  geometry's and carries its area, so it is not narrowed; its top is the ground at the lower of its
+  two bank tops, its bed, its flood bed and its water that much lower. Bankfull is the stage at
+  which the water first spills (Leopold, Wolman & Miller 1964, as Buffington's field guide states
+  it), so on unequal banks it is the lower bank's top that bounds it, and water standing over its
+  downhill bank would leave down the fall line. The bank's ground is read at nine half widths over
+  the range the section's swell can give it (the swell is planned after the bed), across the
+  line's heading over a width and its heading between its neighbours, the lowest kept,
+  rounded up to the millimetre and taken as the most over two points either way. The uphill bank
+  is then the higher, its face running out to the hillside as every cut's does
+  ([tileset](tileset.md#channels-cut-into-the-ground), "A face that runs out").
+- **No fill.** A `Fill` would build the downhill bank as a levee, and a natural levee is the
+  overbank deposit of a channel on its floodplain, a ridge between the two (Brierley, Ferguson &
+  Woolfe 1997); a channel cut into a hillside has neither, so a bank built there reads as an
+  earthwork, which is what W86's berms read as. Cutting deeper always holds the rule, so no reach
+  is refused for it.
+- **The line is moved toward a bank only where the move finds one** (`build_line`): the place that
+  holds both banks, or the tested place (a width at the most) whose bank falls a tenth of a depth
+  less than at the line. W93's move took a width untested whenever no place held, which on a
+  hillside carried the line off the trough the routing found and down the slope: on W116's scratch
+  scene it moved 493 of 707 points, kinked the line where each move began and ended, and turned a
+  1.5 % contour stream into 169 points of step-pool and 30 of cascade.
+
+**What a cross-sloping reach looks like in section now**: a channel incised into the hillside, its
+downhill bank top at the ground and its uphill bank higher by the width times the cross-slope plus
+the seat (2.3 m on a 3.3 m stream across 30 degrees), the water at half the thalweg under the low
+bank, no flood bed on either side, and the bed's mask region no wider than the cut's own bank tops.
+
+**Measured.** W116's scratch scene (a 384 m stream along a hillside's contour at the
+toe of a metre-wide bench, falling 1.5 %, the hillside falling across it at 10, 20 and 30 degrees,
+`--cut`, 707 points): on the base, **648 points' tops stood over their lower bank's ground by more
+than 2 cm, 399 m of the 438 m, the worst 1.08 m** (at 30 degrees); 39 of 101 flood-bed sides over
+their edge, the worst 0.20 m; the ribbon's fit narrowed 384 points; `no_bank_m` 133. Now: **none**
+(the worst 13 mm), no flood-bed side over (43 read), the seat up to 1.09 m over 370 m of line, the
+fit narrows 12 points and lowers none, `no_bank_m` 0, and the reaches 95 points of step-pool and
+none of cascade. Held by "a stream across a hillside is seated under its downhill bank" (three
+cross-slopes, three seeds, `measure_seat` and the water's fit) and, on the tile set's own edited
+ground (`seat_ground_tests.cpp`, built where the tileset capability is: the cuts compiled by
+`tileset::TerrainEdits`), "on the edited ground nothing of a cross-slope's section stands in the
+air": the section read at nine places a side out to its bank top or flood edge, 7,758 places a
+case, none over the ground under it by more than 2 cm, and the ribbon's edges and the handed
+width's within the fit's tolerance of the edited ground. The W93 valley above, read by the same
+measure: no point over (the worst 4 mm), seated up to 0.40 m.
+
+**Seen** (2026-11-12, `msvc-debug`, 1920×1080, `--raster hw --shadows rt`, world tiles, the
+generated material sets, the base and this row built in one checkout against one derived-data
+root each): from six metres back and two up, at 10 degrees the base's water ran out past the
+downhill bank as a level sheet ending in a straight edge over the slope, and at 30 degrees the
+bed and the water stood as a shelf along the hillside with the cut only on the uphill side; now
+the water lies in a trench between two banks at every cross-slope, the downhill bank's lip
+standing over it. What a walker would still object to is not this rule's: the waterline along
+the downhill bank is the lattice's sawtooth ([The flood bed](#the-flood-bed)), the uphill cut's
+lip reads as a row of teeth from below where a coarser ring draws it, and the scene's ground drew
+in its default sand.
+
+**What is left.** The meander still swings the contour stream a little down the slope at 20 and
+30 degrees, so its profile reads step-pool for 31 to 85 of 433 points (printed by the case, not
+held); a meander on a hillside wants the trough test applied across the whole width, not the
+centre.
+
+**W93's count, restated** (2026-11-12): the case "a line across a slope is moved between its
+banks" held the points whose bank stands half a depth under the *line's* ground under 2 %, a
+level reached by the untested width's move that kinked the line on a hillside; it now holds, at
+every such point (58 of 1,969 on the valley, none excepted), that the section's top stands over
+that bank by no more than the bound, and that the move leaves fewer such points than no move
+(58 against 370 with `ChannelLayer::bank_move` off, `ChannelLayer` version 11).
+
 ## Seen: the section, the flood bed and the proof of concept's items 6, 7 and 8
 
 (2026-11-10, W93; `msvc-release`, 1920×1080, `--raster hw --shadows rt --terrain-tiles

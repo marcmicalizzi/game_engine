@@ -84,7 +84,8 @@ struct ChannelSurface @version(1) {
 /// Version 9 (W93): `bed_material` and `bed_feather_m`, the bed's outline for the terrain's masks.
 /// Version 10 (W97): the bed's sediment (`clast_min_mm`, `rounding_m`) and the bars' material
 /// (`bar_material`); `piece_m` is gone, since a piece is a tile's clasts.
-struct ChannelLayer @version(10) {
+/// Version 11 (W116): `bank_move`, the switch for the line's move toward a lower bank.
+struct ChannelLayer @version(11) {
   name: string
   seed: u64 = 1
   /// The region drained, world metres, x and z, each a whole number of spacings.
@@ -272,6 +273,10 @@ struct ChannelLayer @version(10) {
   /// `engine-content channels` writes the flood bed's outline under `mask_regions` with it, after
   /// the bed's, so a bar reads apart from the bed. Empty: the flood bed is painted as the bed.
   bar_material: string @since(10)
+  /// **The line's move toward a lower bank** (W93, W116; channels.md, "A line across a slope"):
+  /// on by default; off plans the line where the trough test left it, which is what the case
+  /// holding that the move earns its place compares against.
+  bank_move: bool = true @since(11)
 }
 
 /// A placed piece's recipe, written by the generator as `<hash>.channel.json` and built by the mesh

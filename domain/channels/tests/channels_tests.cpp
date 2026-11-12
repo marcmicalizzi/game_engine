@@ -600,7 +600,9 @@ TEST_CASE("channels: the cuts have the TerrainCut shape and the water lies insid
       const ChannelPoint& pt = link.line[i];
       const f64 top = cut.points[i].y;
       const f64 bed = top - static_cast<f64>(cut.depth_m[i]);
-      CHECK(std::fabs(top - pt.at.y) <= 5e-4 + 1e-9);  // the ground at the line, to the mm
+      // The ground at the line less the seat (W116: the top of the lower bank), to the mm.
+      REQUIRE(i < link.seat.size());
+      CHECK(std::fabs(top - (pt.at.y - static_cast<f64>(link.seat[i]))) <= 5e-4 + 1e-9);
       // The section's thalweg: D (W - D / m) = W d, the area the hydraulic geometry's mean depth
       // gives, at least, where the bed runs through no rise (or a V of twice the mean).
       const f64 w = static_cast<f64>(pt.width_m), mean = static_cast<f64>(pt.depth_m);
@@ -1676,44 +1678,174 @@ f64 zigzag(const void*, i64 x, i64 z) noexcept {
 
 // Stage 3's invariant: neither bank's ground (half the width across the line's heading) stands more
 // than half a depth under the ground at the line, so the cut has a bank on both sides.
+//
+// **What this case held, and what holds now** (W116, 2026-11-12): it counted the points with a
+// bank half a depth or more under the line's ground and held them under 2 %, because such a point
+// left the section standing in the air; that count went because the 2 % was reached by W93's move
+// taken untested where no place held, which on a hillside kinked the line and stood its ribbon
+// 0.52 m over the edited ground; what holds now is the per-point form below — every such point
+// is seated under that bank — and the move must still leave fewer such points than no move.
 TEST_CASE("channels: a line across a slope is moved between its banks") {
-  const ChannelLayer p = stream_layer(1);
-  ChannelNetwork n;
+  struct Read {
+    u32 points = 0, half_bank = 0, no_bank = 0, moved = 0, unseated = 0;
+    f64 worst = 0, short_m = 0;
+  };
+  const auto read = [](const ChannelNetwork& n) {
+    Read r;
+    for (const ChannelLink& link : n.links) {
+      r.moved += link.bank_moved;
+      for (u32 i = 1; i + 1 < link.line.size(); ++i) {
+        const ChannelPoint& pt = link.line[i];
+        const f64 w = static_cast<f64>(pt.width_m), d = static_cast<f64>(pt.depth_m);
+        if (w < 1.0) continue;
+        const f64 tx = link.line[i + 1].at.x - link.line[i - 1].at.x;
+        const f64 tz = link.line[i + 1].at.z - link.line[i - 1].at.z;
+        const f64 tl = std::sqrt(tx * tx + tz * tz);
+        if (!(tl > 0)) continue;
+        const auto at = [&](f64 side) {
+          return zigzag(nullptr, std::llround((pt.at.x - tz / tl * side * .5 * w) * 1000.0),
+                        std::llround((pt.at.z + tx / tl * side * .5 * w) * 1000.0));
+        };
+        const f64 under = pt.at.y - std::min(at(1), at(-1));
+        ++r.points;
+        r.no_bank += under > 1.13 * d;  // the trapezoid's thalweg: the bank's ground under the bed
+        r.worst = std::max(r.worst, under / d);
+        if (!(under > .5 * d)) continue;
+        ++r.half_bank;
+        // The section's top stands over that bank by `under - seat`: never past the bound.
+        const f64 seat = i < link.seat.size() ? static_cast<f64>(link.seat[i]) : 0.0;
+        r.unseated += seat < under - k_seat_bound_m;
+        r.short_m = std::max(r.short_m, under - seat);
+      }
+    }
+    return r;
+  };
+  ChannelLayer p = stream_layer(1);
+  ChannelNetwork n, still;
   std::string error;
   REQUIRE(plan_channels(p, ground(zigzag), 1, nullptr, n, error));
-  u32 points = 0, half_bank = 0, no_bank = 0, moved = 0;
-  f64 worst = 0;
-  for (const ChannelLink& link : n.links) {
-    moved += link.bank_moved;
-    for (u32 i = 1; i + 1 < link.line.size(); ++i) {
-      const ChannelPoint& pt = link.line[i];
-      const f64 w = static_cast<f64>(pt.width_m), d = static_cast<f64>(pt.depth_m);
-      if (w < 1.0) continue;
-      const f64 tx = link.line[i + 1].at.x - link.line[i - 1].at.x;
-      const f64 tz = link.line[i + 1].at.z - link.line[i - 1].at.z;
-      const f64 tl = std::sqrt(tx * tx + tz * tz);
-      if (!(tl > 0)) continue;
-      const auto at = [&](f64 side) {
-        return zigzag(nullptr, std::llround((pt.at.x - tz / tl * side * .5 * w) * 1000.0),
-                      std::llround((pt.at.z + tx / tl * side * .5 * w) * 1000.0));
-      };
-      const f64 under = pt.at.y - std::min(at(1), at(-1));
-      ++points;
-      half_bank += under > .5 * d;
-      no_bank += under > 1.13 * d;  // the trapezoid's thalweg: the bank's ground under the bed
-      worst = std::max(worst, under / d);
+  p.bank_move = false;
+  REQUIRE(plan_channels(p, ground(zigzag), 1, nullptr, still, error));
+  p.bank_move = true;
+  const Read moved = read(n), unmoved = read(still);
+  MESSAGE("points " << moved.points << ", a bank more than half a depth under the line at "
+                    << moved.half_bank << " (unmoved " << unmoved.half_bank
+                    << "), under the bed at " << moved.no_bank << ", the worst " << moved.worst
+                    << " depths; moved " << moved.moved
+                    << "; of those points, the top over the bank by at most " << moved.short_m
+                    << " m, past the bound at " << moved.unseated);
+  // Measured (2026-11-10, W93): 1,969 points, 486 moved; a bank more than half a depth under the
+  // line at 32 (100 after one round of the move), under the bed at 12, the worst 1.23 depths.
+  // Measured (2026-11-12, W116, the move only where it finds a bank): 1,969 points, 526 moved; 58
+  // such points with the move and 370 without it (`bank_move` false), none under the bed, the
+  // worst 1.08 depths; every one of the 58 seated (the top over its bank by 0 m at the most).
+  REQUIRE(moved.points > 500);
+  CHECK(moved.moved > 0);
+  // 1. What answers a missing bank, per point: the section's top stands over that bank by no more
+  //    than the bound, at every point the old count counted, none excepted.
+  CHECK(moved.unseated == 0);
+  // 2. The move still earns its place: no more such points than the same line unmoved.
+  CHECK(moved.half_bank <= unmoved.half_bank);
+  CHECK(unmoved.moved == 0);
+  CHECK(moved.no_bank * 100 <= moved.points);
+  // W116: where the move leaves a bank under the line's ground, the section is seated under it, so
+  // the cut's top stands over no lower bank's ground by more than the bound.
+  const SeatStats seat = measure_seat(p, n, ground(zigzag));
+  MESSAGE("seated: " << seat.points << " points read, the top over the lower bank at "
+                     << seat.bank_over << " (most " << seat.bank_over_m << " m), seat up to "
+                     << seat.seat_max_m << " m over " << seat.seated_line_m << " m of line");
+  CHECK(seat.bank_over == 0);
+}
+
+// ---- W116: a stream across a hillside
+// ------------------------------------------------------------
+
+namespace {
+// A hillside falling across the line toward z = 0 at the tangent the context holds, with a bench
+// a metre wide at its toe at z = 128 m rising 3 % outward, so the routing's one channel runs along
+// the contour there, falling 1.2 % toward +x (pool-riffle by the reaches' bounds). The stream's
+// bankfull width (3 m and more) is past the bench, so its downhill bank top stands on the
+// hillside: the owner's marks 3 to 5 (2026-11-12) in a ground with nothing else in it.
+f64 contour(const void* context, i64 x, i64 z) noexcept {
+  const f64 t = *static_cast<const f64*>(context);
+  const f64 a = static_cast<f64>(z) / 1000.0 - 128;
+  const f64 across = a >= 0 ? t * a : (a >= -1 ? -.03 * a : .03 - t * (-a - 1));
+  return 40 - .012 * static_cast<f64>(x) / 1000.0 + across;
+}
+ChannelLayer contour_layer(u64 seed) {
+  ChannelLayer p = layer(256);
+  p.spacing_m = 1;
+  p.head_threshold_m2 = 60;
+  p.width_at_km2_m = 12;
+  p.depth_at_km2_m = 1.0f;
+  p.seed = seed;
+  return p;
+}
+// The tangents of 10, 20 and 30 degrees.
+constexpr f64 k_cross_slopes[3] = {.17632698070846498, .36397023426620234, .57735026918962573};
+}  // namespace
+
+// **The rule** (W116; channels.md, "A line across a slope"): at every point nothing of the cut's
+// section stands over the ground beside it on the downhill side by more than 2 cm — its top of
+// bank over the ground at its lower bank top, its flood bed's level over the ground at its edge —
+// and the water the description hands draws inside its banks, neither narrowed nor lowered by the
+// ribbon's fit. Over three cross-slopes and three seeds. On the base (f228814b) every case fails:
+// the top stood over the downhill bank's ground by up to (half the width) times the cross-slope.
+// The points on a reach steeper than plane-bed are printed, not held: the meander still swings
+// the line down the slope at 20 and 30 degrees, and its profile there reads step-pool
+// (channels.md, "A line across a slope": what is left).
+TEST_CASE("channels: a stream across a hillside is seated under its downhill bank") {
+  for (u32 c = 0; c < 3; ++c) {
+    for (u64 seed : {1ull, 2ull, 3ull}) {
+      const ChannelLayer p = contour_layer(seed);
+      scene_gen::Ground g;
+      g.surface_fn = &contour;
+      g.context = &k_cross_slopes[c];
+      ChannelNetwork n;
+      std::string error;
+      REQUIRE(plan_channels(p, g, seed, nullptr, n, error));
+      const ChannelLink* trunk = nullptr;
+      for (const ChannelLink& link : n.links)
+        if (trunk == nullptr || link.length_m > trunk->length_m) trunk = &link;
+      REQUIRE(trunk != nullptr);
+      CHECK(trunk->length_m > 150);
+      const SeatStats seat = measure_seat(p, n, g);
+      const JsonValue water = water_channels_json(p, n, 0, .5f, true, &g);
+      u32 narrowed = 0, lowered = 0, steep = 0;
+      for (const JsonValue& block : water.as_array())
+        for (const JsonValue& code : block.find("fit")->as_array()) {
+          f64 v = 0;
+          REQUIRE(code.get_f64(v));
+          narrowed += v == 1;
+          lowered += v == 2;
+        }
+      for (const ChannelLink& link : n.links)
+        for (const u8 r : link.reach)
+          steep += r != static_cast<u8>(ChannelReach::PoolRiffle) &&
+                   r != static_cast<u8>(ChannelReach::PlaneBed) &&
+                   r != static_cast<u8>(ChannelReach::DuneRipple);
+      const WaterStats stats = measure_water(water, g);
+      MESSAGE("cross-slope " << k_cross_slopes[c] << " seed " << seed << ": " << seat.points
+                             << " points, the top over the lower bank at " << seat.bank_over
+                             << " (most " << seat.bank_over_m << " m), flood sides "
+                             << seat.flood_sides << " over at " << seat.flood_over << " (most "
+                             << seat.flood_over_m << " m), seat up to " << seat.seat_max_m
+                             << " m; water narrowed " << narrowed << ", lowered " << lowered
+                             << "; steep points " << steep);
+      REQUIRE(seat.points > 200);
+      CHECK(seat.bank_over == 0);
+      CHECK(seat.bank_over_m <= k_seat_bound_m);
+      CHECK(seat.flood_over == 0);
+      CHECK(seat.flood_over_m <= k_seat_bound_m);
+      // Seated: by about half the width times the cross-slope, less the bench's metre.
+      CHECK(seat.seat_max_m > .5 * k_cross_slopes[c]);
+      // The water stands inside its banks as planned: the fit never has to lower it under the
+      // downhill ground (it may still draw the ribbon's quarter past the bank top in to where the
+      // hillside meets it, which is the water's overhang and not its width).
+      CHECK(lowered == 0);
+      CHECK(stats.edges_above_005 == 0);
     }
   }
-  MESSAGE("points " << points << ", a bank more than half a depth under the line at " << half_bank
-                    << ", under the bed at " << no_bank << ", the worst " << worst
-                    << " depths; moved " << moved);
-  // Measured (2026-11-10): 1,969 points, 486 moved; a bank more than half a depth under the line
-  // at 32 of them (100 after one round of the move) and under the bed at 12, the worst 1.23
-  // depths. Held: under 2 % and under 1 %.
-  REQUIRE(points > 500);
-  CHECK(moved > 0);
-  CHECK(half_bank * 100 <= points * 2);
-  CHECK(no_bank * 100 <= points);
 }
 
 // ---- W93, continued: the steep reaches and the line's kinks -------------------------------------
@@ -2516,8 +2648,10 @@ TEST_CASE("channels: the clasts' recipes and mesh are pinned") {
   MESSAGE("recipes " << recipes << ", first piece: " << mesh.indices.size() / 3
                      << " triangles, positions " << positions << ", indices " << indices);
   // W97b re-pinned the recipes (k_channels_version 9; the surface carries no default colour) and
-  // the indices (the triangles grouped by lithology); the positions are W97's to the bit.
-  CHECK(recipes == 7718558231201880594ull);
+  // the indices (the triangles grouped by lithology); the positions are W97's to the bit. W116
+  // re-pinned the recipes alone: `k_channels_version` 10 is in every recipe's hash, and the
+  // positions and indices of this V-notch's pieces are the same bits (nothing in it is seated).
+  CHECK(recipes == 13916790691844512975ull);
   CHECK(positions == 14068701233020217500ull);
   CHECK(indices == 4152819545259226263ull);
 }

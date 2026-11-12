@@ -307,7 +307,7 @@ void build_line(const ChannelLayer& p, const ChannelNetwork& n, const scene_gen:
   // the whole is done `k_bank_rounds` times; the two ends stay where the junctions are.
   // Rills under a metre wide are left: the lattice the cut is drawn on is a quarter of that.
   link.bank_moved = 0;
-  for (u32 round = 0; round < k_bank_rounds; ++round) {
+  for (u32 round = 0; round < (p.bank_move ? k_bank_rounds : 0u); ++round) {
     constexpr f64 k_bank_fall = .5;
     Vector<f64> move(m, 0.0), nx(m, 0.0), nz(m, 0.0);
     for (u32 i = 1; i + 1 < m; ++i) {
@@ -318,15 +318,35 @@ void build_line(const ChannelLayer& p, const ChannelNetwork& n, const scene_gen:
       nx[i] = -tz / tl;
       nz[i] = tx / tl;
       const f64 di = hydraulic(wide(p.depth_at_km2_m), wide(p.depth_exponent), pa[i]);
-      f64 across = 0;
-      for (u32 tries = 0; tries < 4; ++tries) {
+      // **A move is kept only where it finds a bank** (W116; channels.md, "A line across a
+      // slope"): the place that holds both banks, or else the tested place (a width across at
+      // the most) whose bank falls least, where that is a tenth of a depth less than at the line.
+      // On a hillside every place a width across falls as much or more, and W93's move (which
+      // took a width's move untested whenever no place held) carried the line off the trough the
+      // routing found and down the slope: on W116's contour stream it kinked the line where the
+      // move began and ended, left its ribbon half a metre over the edited ground there and
+      // turned the stream's profile into step-pool and cascade. There the line stays, and the
+      // section is seated under its lower bank instead (`seat_section`).
+      f64 across = 0, best_across = 0, best_fall = 0, first_fall = 0;
+      bool found = false;
+      for (u32 tries = 0; tries < 5; ++tries) {
         const f64 cx = fx[i] + nx[i] * across, cz = fz[i] + nz[i] * across;
         const f64 left = ground_at(ground, cx + nx[i] * .5 * wi, cz + nz[i] * .5 * wi);
         const f64 right = ground_at(ground, cx - nx[i] * .5 * wi, cz - nz[i] * .5 * wi);
-        if (ground_at(ground, cx, cz) - std::min(left, right) <= k_bank_fall * di) break;
+        const f64 fall = ground_at(ground, cx, cz) - std::min(left, right);
+        if (tries == 0) first_fall = best_fall = fall;
+        if (fall <= k_bank_fall * di) {
+          found = true;
+          break;
+        }
+        if (fall < best_fall) {
+          best_fall = fall;
+          best_across = across;
+        }
+        if (tries == 4) break;
         across += (left < right ? .25 : -.25) * wi;
       }
-      move[i] = across;
+      move[i] = found ? across : (best_fall < first_fall - .1 * di ? best_across : 0.0);
     }
     for (u32 pass = 0; pass < 3; ++pass) {
       Vector<f64> next = move;
@@ -644,6 +664,10 @@ void classify(const ChannelLayer& p, ChannelLink& link) {
 // link that ends at a shoreline, graded over the fan's length to half a thalweg under the body's
 // level, whatever was there.
 constexpr f64 k_cut_depth_thalwegs = 2.0;
+// The top of the bank at point i: the ground at the line less the seat (W116).
+f64 top_of(const ChannelLink& link, u32 i) {
+  return link.line[i].at.y - (i < link.seat.size() ? wide(link.seat[i]) : 0.0);
+}
 void cut_bed(const ChannelLayer& p, ChannelLink& link) {
   const u32 m = link.line.size();
   link.bed.assign(m, 0.0);
@@ -652,7 +676,7 @@ void cut_bed(const ChannelLayer& p, ChannelLink& link) {
   Vector<f64> floor(m, 0.0);
   for (u32 i = 0; i < m; ++i) {
     const ChannelPoint& pt = link.line[i];
-    const f64 top = round_to(pt.at.y, 1e3);
+    const f64 top = round_to(top_of(link, i), 1e3);
     const f64 thalweg =
         round_to(section_of(wide(pt.width_m), wide(pt.depth_m), wide(p.bank_slope)).thalweg, 1e3);
     bed = std::min(bed, round_to(top - thalweg, 1e3));
@@ -697,7 +721,7 @@ void cut_bed(const ChannelLayer& p, ChannelLink& link) {
   const f64 b0 = link.bed[f], span = s[m - 1] - s[f];
   for (u32 i = f; i < m; ++i) {
     const f64 t = span > 0 ? (s[i] - s[f]) / span : 1.0;
-    const f64 top = round_to(link.line[i].at.y, 1e3);
+    const f64 top = round_to(top_of(link, i), 1e3);
     link.bed[i] = std::min(round_to(b0 + t * (target - b0), 1e3), round_to(top - .01, 1e3));
   }
 }
@@ -768,6 +792,77 @@ Heading heading_at(const ChannelLink& link, const Vector<f64>& s, f64 at, f64 sp
   if (!(length > 0)) return {};
   return {dx / length, dz / length, true};
 }
+// **The section seated under its lower bank** (W116; channels.md, "A line across a slope"; the
+// owner's walk of 2026-11-12, marks 3 to 5). The cut's top of bank was the ground at the line, so
+// where the ground falls across the line the downhill bank's ground stood under the top, and
+// under the bed and the water too past a little cross-slope: the cut, which only lowers, left the
+// section standing over the hillside there. Bankfull is the stage at which the water first
+// spills, so it is the lower bank's top that bounds it; a stream whose water stood over its
+// downhill bank would leave down the fall line. So the section is **cut deeper**: its top is the
+// ground at the lower of its two bank tops — read across the line's heading over a width, the
+// lowest over the half widths the section's swell can give it (half `riffle_widening` or
+// `step_widening` either way) —
+// and its bed, its flood bed and its water stand that much lower too (a fan is left: it opens
+// into a body whose level stands over its banks, and the measure skips it as it does). The
+// seat is rounded up to the millimetre and taken as the most over a point and two neighbours
+// either way (a metre of line at the default step), since the cut joins two points' tops by a
+// straight line while a bend's outer bank top need not be one, and the heading a bank is read
+// across turns with the line. The width is the hydraulic geometry's and is kept: a narrower channel
+// would carry its area only deeper. Never a fill: no levee is built, because a levee is the
+// overbank deposit of a channel on its floodplain and a channel cut into a hillside has none
+// (Brierley et al. 1997).
+void seat_section(const ChannelLayer& p, const scene_gen::Ground& ground, ChannelLink& link) {
+  const u32 m = link.line.size();
+  link.seat.assign(m, 0.0f);
+  if (m < 2) return;
+  const Vector<f64> s = lengths_of(link.line);
+  Vector<f64> seat(m, 0.0);
+  for (u32 i = 0; i < m; ++i) {
+    const ChannelPoint& pt = link.line[i];
+    const f64 w = wide(pt.width_m);
+    if (!(w > 0)) continue;
+    const ChannelReach reach =
+        i < link.reach.size() ? static_cast<ChannelReach>(link.reach[i]) : ChannelReach::PoolRiffle;
+    const bool steep = reach == ChannelReach::StepPool || reach == ChannelReach::Cascade ||
+                       reach == ChannelReach::Bedrock || reach == ChannelReach::Colluvial;
+    // A fan is left as it is: it opens into a water body whose own level stands over its banks,
+    // and its bed is graded to that level.
+    if (fan_share(p, link, s, i) > 0) continue;
+    // The section's half width is not known yet (its swell is planned after the bed), so the
+    // bank's ground is read at nine places over the range the swell can give it, and the lowest
+    // kept: a bank top past a valley's floor stands higher the further out it is.
+    // Across two headings, the lowest kept: the line's over a width (the cut's section turns with
+    // it) and its own between the neighbouring points (where a kink turns it within a width).
+    const f64 swell = .5 * wide(steep ? p.step_widening : p.riffle_widening);
+    Heading local;
+    {
+      const u32 a = i > 0 ? i - 1 : 0, b = std::min(i + 1, m - 1);
+      const f64 dx = link.line[b].at.x - link.line[a].at.x;
+      const f64 dz = link.line[b].at.z - link.line[a].at.z;
+      const f64 l = std::sqrt(dx * dx + dz * dz);
+      if (!(l > 0)) continue;
+      local = {dx / l, dz / l, true};
+    }
+    Heading along = heading_at(link, s, s[i], w);
+    if (!along.ok) along = local;
+    f64 lower = std::numeric_limits<f64>::infinity();
+    for (const Heading& h : {along, local}) {
+      for (u32 k = 0; k <= 8; ++k) {
+        const f64 half = .5 * w * (1 + swell * (static_cast<f64>(k) / 4 - 1));
+        lower = std::min(lower, ground_at(ground, pt.at.x - h.z * half, pt.at.z + h.x * half));
+        lower = std::min(lower, ground_at(ground, pt.at.x + h.z * half, pt.at.z - h.x * half));
+      }
+    }
+    seat[i] = std::max(0.0, std::ceil((pt.at.y - lower) * 1e3) / 1e3);
+  }
+  for (u32 i = 0; i < m; ++i) {
+    f64 most = 0;
+    for (u32 j = i > 2 ? i - 2 : 0; j < std::min(i + 3, m); ++j)
+      most = std::max(most, seat[j]);
+    link.seat[i] = static_cast<f32>(most);
+  }
+}
+
 void plan_section(const ChannelLayer& p, ChannelLink& link) {
   const u32 m = link.line.size();
   link.asym.assign(m, 0.0f);
@@ -922,26 +1017,54 @@ void plan_flood(const ChannelLayer& p, const scene_gen::Ground& ground, ChannelL
     const f64 half = .5 * wide(p.flood_bed_widths) * w;
     const f64 limit = half * (1 + k_flood_bend) + run;
     const f64 step = std::max(.5, w / 6);
-    const f64 top = pt.at.y;
-    // The left is the side of (-dz, dx).
+    // The top is the seated one (W116): the ground at the line less the seat, so on a seated
+    // point the walk begins `seat` over the top.
+    const f64 top = top_of(link, i);
+    const f64 under = wide(p.flood_bed_depth) * thalweg;
+    // The left is the side of (-dz, dx). Each walk gives the flood-prone distance and **how far
+    // the ground holds the bed's level** (W116): the first distance at which the ground stands
+    // under the bed's surface, `under` below the top. Past it the bed would be a level surface
+    // over ground that falls away, which the cut cannot make and which read as a plate in the air
+    // on the owner's walk (mark 4), so the bed on that side reaches no further.
+    struct Walked {
+      f64 prone = 0, hold = 0;
+    };
     const auto walk = [&](f64 nx, f64 nz) {
-      f64 before = 0, before_at = 0;
+      Walked out;
+      out.hold = limit;
+      bool held = false;
+      f64 before = ground_at(ground, pt.at.x, pt.at.z) - top, before_at = 0;
       for (f64 d = step;; d += step) {
         const f64 at = std::min(d, limit);
         const f64 over = ground_at(ground, pt.at.x + nx * at, pt.at.z + nz * at) - top;
-        if (over >= rise) return before_at + (at - before_at) * (rise - before) / (over - before);
-        if (over <= -thalweg || at >= limit) return at;
+        if (!held && over < -under) {
+          held = true;
+          out.hold = before > -under
+                         ? before_at + (at - before_at) * (-under - before) / (over - before)
+                         : before_at;
+        }
+        if (over >= rise) {
+          out.prone = before_at + (at - before_at) * (rise - before) / (over - before);
+          return out;
+        }
+        if (over <= -thalweg || at >= limit) {
+          out.prone = at;
+          return out;
+        }
         before = over;
         before_at = at;
       }
     };
-    const f64 prone_left = walk(-along.z, along.x), prone_right = walk(along.z, -along.x);
+    const Walked left = walk(-along.z, along.x), right = walk(along.z, -along.x);
+    const f64 prone_left = left.prone, prone_right = right.prone;
     Station st{i, 0.0, 0.0, (prone_left + prone_right) / w};
     if (st.ratio >= wide(p.flood_entrenchment_min)) {
       const f64 a = i < link.asym.size() ? wide(link.asym[i]) : 0.0;
       const f64 bank = .5 * w;
-      st.left = std::max(bank, std::min(half * (1 + k_flood_bend * a), prone_left - run));
-      st.right = std::max(bank, std::min(half * (1 - k_flood_bend * a), prone_right - run));
+      st.left = std::max(
+          bank, std::min(std::min(half * (1 + k_flood_bend * a), prone_left - run), left.hold));
+      st.right = std::max(
+          bank, std::min(std::min(half * (1 - k_flood_bend * a), prone_right - run), right.hold));
       // A bed no wider than the channel in it is none.
       if (st.left + st.right < 1.1 * w) st.left = st.right = 0;
     }
@@ -1329,6 +1452,7 @@ bool detail::plan_from_lattice(const ChannelLayer& p, const scene_gen::Ground& g
   apply_water(n, ground, water);
   for (ChannelLink& link : n.links) {
     classify(p, link);
+    seat_section(p, ground, link);  // W116: the section under its lower bank
     cut_bed(p, link);
     n.length_m += link.length_m;
   }
@@ -1661,7 +1785,8 @@ JsonValue terrain_cuts_json(const ChannelLayer& p, const ChannelNetwork& n) {
     JsonValue left = JsonValue::array(), right = JsonValue::array();
     for (u32 i = 0; i < link.line.size(); ++i) {
       const ChannelPoint& pt = link.line[i];
-      const f64 top = round_to(pt.at.y, 1e3);
+      // The seated top (W116): under the ground at the line by the seat, at the lower bank's top.
+      const f64 top = round_to(top_of(link, i), 1e3);
       JsonValue at = JsonValue::array();
       at.push_back(JsonValue(round_to(pt.at.x, 1e3)));
       at.push_back(JsonValue(top));
