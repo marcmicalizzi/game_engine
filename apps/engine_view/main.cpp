@@ -55,6 +55,7 @@
 #include <domain/gfx/device.h>
 #include <domain/gfx/display.h>
 #include <domain/gfx/display_probe.h>
+#include <domain/gfx/pipeline_batch.h>
 #include <foundation/bench/machine_state.h>
 #include <foundation/image/png.h>
 #include <foundation/input/input.h>
@@ -2535,10 +2536,10 @@ bool save_recording(const Options& options, const Interactive& it, const view::F
 }
 
 // The summary's `load` block (FlythroughSummary version 17; apps.md, "The summary's load block"):
-// what the load read for its meshes and textures (`renderer::SceneLoadReport`) and what the
-// device's pipeline cache did (`gfx::PipelineCacheReport`).
-JsonValue load_summary(const renderer::SceneLoadReport& load,
-                       const gfx::PipelineCacheReport& cache) {
+// what the load read for its meshes and textures (`renderer::SceneLoadReport`), what the device's
+// pipeline cache did (`gfx::PipelineCacheReport`) and every pipeline it made (pipeline_batch.h).
+JsonValue load_summary(const renderer::SceneLoadReport& load, const gfx::Device& device) {
+  const gfx::PipelineCacheReport& cache = device.pipeline_cache();
   JsonValue out = JsonValue::object();
   out.set("meshes", JsonValue(load.meshes));
   out.set("threads", JsonValue(load.threads));
@@ -2567,6 +2568,7 @@ JsonValue load_summary(const renderer::SceneLoadReport& load,
   pipelines.set("loaded_bytes", JsonValue(cache.loaded_bytes));
   pipelines.set("ignored", JsonValue(cache.ignored));
   out.set("pipeline_cache", std::move(pipelines));
+  out.set("pipelines", gfx::pipeline_creations_json(device));  // R149
   return out;
 }
 
@@ -3997,7 +3999,7 @@ int run_offscreen(Options& options, Interactive& interactive) {
       summary.quiet =
           bench::is_quiet(bench::worst_of(machine_start, machine_end), bench::QuietThresholds{});
     }
-    summary.load = load_summary(scene_data.load, device.pipeline_cache());
+    summary.load = load_summary(scene_data.load, device);
     if (startup.on()) {
       std::string why;
       summary.startup = startup.finish(&why);

@@ -6,6 +6,7 @@
 
 #include <domain/gfx/backend/vulkan/vulkan.h>
 #include <domain/gfx/device.h>
+#include <domain/gfx/pipeline_batch.h>
 #include <domain/gfx/pipeline_cache.h>
 #include <foundation/io/vfs.h>
 
@@ -15,6 +16,7 @@
 #include <cstring>
 #include <shaders/fill.spv.h>
 #include <string>
+#include <thread>
 
 using namespace engine;
 
@@ -220,4 +222,108 @@ TEST_CASE("pipeline cache: written when a pipeline grew it, read back, and the s
     REQUIRE(fill(device, plain));
     CHECK(plain == first);
   }
+}
+
+// The batch (pipeline_batch.h; gfx.md, "Pipelines created in parallel"; R149): inside it a create
+// call records and returns, the handle null and a compute layout already made; a nested batch's
+// end leaves the work to the outer one; another thread's creation is made at once; the end fills
+// every out-parameter; a batch dropped without its end compiles nothing; every creation is timed
+// under its module's name, and the fill computes the same bytes through a batched pipeline.
+TEST_CASE("pipeline batch: recorded, compiled together at its end, timed under the shader's name") {
+  gfx::Device device;
+  if (!gfx_test::open_device(device)) return;
+  const gfx::Handles& h = device.handles();
+  std::string error;
+  gfx::ShaderModuleHandle module =
+      gfx::create_shader_module(device, shaders::k_fill_spirv, shaders::k_fill_spirv_size, &error);
+  REQUIRE_MESSAGE(module.valid(), error);
+  gfx::name_shader_module(device, module, "fill");
+  VkDescriptorSetLayoutBinding binding{};
+  binding.binding = 0;
+  binding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+  binding.descriptorCount = 1;
+  binding.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+  VkDescriptorSetLayoutCreateInfo layout_info{};
+  layout_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+  layout_info.bindingCount = 1;
+  layout_info.pBindings = &binding;
+  VkDescriptorSetLayout set_layout = VK_NULL_HANDLE;
+  REQUIRE(vkCreateDescriptorSetLayout(h.device, &layout_info, nullptr, &set_layout) == VK_SUCCESS);
+  const gfx::DescriptorSetLayoutHandle layouts[] = {gfx::vk::wrap(set_layout)};
+  auto make = [&](gfx::ComputePipeline& out) {
+    // The entry point from a buffer that dies before the batch's end: the request owns its copy.
+    std::string entry = "fill";
+    return gfx::create_compute_pipeline(device, module, entry.c_str(), layouts, sizeof(FillParams),
+                                        out, &error);
+  };
+
+  constexpr u32 k_batched = 6;
+  gfx::ComputePipeline batched[k_batched];
+  gfx::ComputePipeline elsewhere;
+  {
+    gfx::PipelineBatch batch(device);
+    for (u32 i = 0; i + 1 < k_batched; ++i) {
+      REQUIRE_MESSAGE(make(batched[i]), error);
+      CHECK(batched[i].layout.valid());
+      CHECK_FALSE(batched[i].pipeline.valid());
+    }
+    {
+      gfx::PipelineBatch inner(device);
+      REQUIRE_MESSAGE(make(batched[k_batched - 1]), error);
+      CHECK(inner.end(&error));
+      CHECK_FALSE(batched[k_batched - 1].pipeline.valid());  // the outer end compiles it
+    }
+    std::thread other([&] { (void)make(elsewhere); });
+    other.join();
+    CHECK(elsewhere.pipeline.valid());  // another thread's creation is not the batch's
+    REQUIRE_MESSAGE(batch.end(&error), error);
+  }
+  for (const gfx::ComputePipeline& p : batched)
+    CHECK(p.pipeline.valid());
+
+  gfx::ComputePipeline dropped;
+  {
+    gfx::PipelineBatch batch(device);
+    REQUIRE(make(dropped));
+  }
+  CHECK(dropped.layout.valid());
+  CHECK_FALSE(dropped.pipeline.valid());
+  gfx::ComputePipeline now;
+  REQUIRE(make(now));
+  CHECK(now.pipeline.valid());
+
+  Vector<gfx::PipelineCreation> creations;
+  gfx::pipeline_creations(device, creations);
+  REQUIRE(creations.size() == k_batched + 2);  // the batch, the other thread's, the last one
+  u32 in_batch = 0;
+  for (const gfx::PipelineCreation& c : creations) {
+    CHECK(c.shader == "fill");
+    CHECK(c.entry == "fill");
+    CHECK(c.kind == gfx::PipelineKind::Compute);
+    CHECK(c.spirv_bytes == shaders::k_fill_spirv_size);
+    CHECK(c.ok);
+    CHECK(c.seconds >= 0.0);
+    in_batch += c.batched ? 1u : 0u;
+  }
+  CHECK(in_batch == k_batched);
+  CHECK_FALSE(creations[creations.size() - 1].batched);
+  Vector<gfx::PipelineBatchRecord> batches;
+  gfx::pipeline_batches(device, batches);
+  REQUIRE(batches.size() == 1);  // the nested end and the dropped batch compiled nothing
+  CHECK(batches[0].count == k_batched);
+  CHECK(batches[0].threads >= 1);
+  CHECK(batches[0].sum_seconds >= batches[0].largest_seconds);
+  const JsonValue summary = gfx::pipeline_creations_json(device);
+  u64 count = 0;
+  REQUIRE(summary.find("count")->get_u64(count));
+  CHECK(count == creations.size());
+  CHECK(summary.find("slowest")->size() == creations.size());
+
+  for (gfx::ComputePipeline& p : batched)
+    gfx::destroy_compute_pipeline(device, p);
+  gfx::destroy_compute_pipeline(device, elsewhere);
+  gfx::destroy_compute_pipeline(device, dropped);
+  gfx::destroy_compute_pipeline(device, now);
+  vkDestroyDescriptorSetLayout(h.device, set_layout, nullptr);
+  gfx::destroy_shader_module(device, module);
 }

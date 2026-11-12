@@ -1,6 +1,7 @@
 #include <core/platform/process.h>
 #include <core/time/time.h>
 #include <domain/gfx/path_trace.h>
+#include <domain/gfx/pipeline_batch.h>
 #include <domain/gfx/requirements.h>
 #include <foundation/io/vfs.h>
 #include <systems/renderer/lighting.h>
@@ -132,10 +133,12 @@ bool ReferenceRenderer::create_pipelines(std::string* error) {
   if (shader == nullptr) return false;
   const gfx::DescriptorSetLayoutHandle set_layout = scene_->bindless().layout();
   const std::span<const gfx::DescriptorSetLayoutHandle> layouts(&set_layout, 1);
+  gfx::PipelineBatch batch(*device_);  // the two side by side (pipeline_batch.h)
   return gfx::create_compute_pipeline(*device_, shader->module, "path_trace_main", layouts,
                                       sizeof(u64), trace_, error) &&
          gfx::create_compute_pipeline(*device_, shader->module, "tonemap_main", layouts,
-                                      sizeof(u64), tonemap_, error);
+                                      sizeof(u64), tonemap_, error) &&
+         batch.end(error);
 }
 
 bool ReferenceRenderer::create_targets(std::string* error) {
