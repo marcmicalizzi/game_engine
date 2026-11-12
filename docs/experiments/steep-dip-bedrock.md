@@ -157,6 +157,71 @@ weak members stand back from its resistant ones by their contrast in resistance,
 the strike shows its members as ribs and gullies and a face along a dip shows them as banded
 recesses (ramped in over 20 to 35 degrees of dip; under it the benches do this, G172).
 
+## Measured
+
+The tables are on the subsystem page, where the rules are: what the generators did on a steep dip
+before and after ([rocks](../subsystems/rocks.md#beds-at-any-attitude)) and what a massif costs
+([rocks](../subsystems/rocks.md#a-massif-inside-a-budget)). The pictures and the frame cost are here.
+
+**The frame's cost** (`content/test-scenes/steep-dip/`, its camera path flown once, 3840 x 2160,
+`--raster rt --shadows rt`, `renderer.gi.mode=bounce`, RTX 5090, 2026-11-12; main's release
+binaries copied out of the tree against this branch's msvc-release, in one lease, alternating;
+the machine was not quiet, 78 to 93 % of the processors busy with other work, so every figure is
+an upper bound, GPU times from the engine's own timers, medians over the path):
+
+| | main | this branch | main again | this branch again |
+|---|---|---|---|---|
+| frame | 4.60 ms (p95 8.80) | 4.47 (6.39) | 4.81 (13.66) | 4.50 (6.36) |
+| resolve | 1.89 | 1.96 | 1.90 | 1.98 |
+| traced primaries | 1.34 | 1.26 | 1.34 | 1.27 |
+| the bounce's rays | 0.42 | 0.40 | 0.41 | 0.40 |
+| bottom- and top-level builds | 0.090, 0.077 | 0.090, 0.077 | 0.089, 0.077 | 0.089, 0.079 |
+
+`--raster hw`, the same flags: 3.21 ms on main against 3.16 here (resolve 2.05 against 1.99). The
+scene's clusters are 52,862 on main and 52,808 here. The change is content, not a pass: the
+treads past the soil slope change material (rock for turf, about 0.07 ms more resolve on this
+path, within the pairs' spread) and the faces' members move vertices, so there is no cost to
+claim back and none was found.
+
+**The pictures** (the same scene and settings at 1920 x 1080, `load.materials` the worktree's
+`content/materials` with the generated sets only, so the gneiss draws its flat colour; main's
+binaries and this branch's, one checkout's caches each). The reels that show steeply bedded
+mountains are r21 (a jagged grey limestone ridge whose beds stand as near-vertical slabby faces
+and ribs over a 25 to 35 degree slope) and r22's tiles 9 and 12 (a tilted slab peak, strata
+dipping about 30 degrees, its dip slope one bedding plane and its scarp stacked bed edges).
+Beside them, plainly:
+
+- **From a kilometre** the mountain is still the forest's pale banded cone: the faces are a grey
+  hood in horizontal 12 m tiers over the steep band, and the crags are dark patches at its foot.
+  Nothing at this distance says the beds dip 57 degrees; r21's ridge is all diagonal ribs and
+  slabs from the crest down. The tiers' horizontal seams are what reads, and they are levels by
+  design on a steep dip (the faces carve the members, but within a tier).
+- **From 100 m** a member's gully shows in the lowest tier where the schist crosses it (the face
+  stands back and the ground shows in the notch), and on the flank whose strike runs up the slope
+  the crags carry thin ribs running up it. The crags themselves read as flat grey skins on the
+  ground with holes, not as rock standing out of it.
+- **From 10 to 35 m** at eye height the views that were aimed at the ledges' outer band found the
+  faces' feet and the ground, and one crag with a single leaning fin: the ledges cover 12 to 30 %
+  of the 35 to 48 degree ground in patches, and from below a step of 0.5 to 2 m on a 45 degree
+  slope is hidden by the slope in front of it. r22's slabs are tens of metres wide; ours are a
+  metre or two.
+- What a person would still object to: the horizontal tiers; flat-coloured rock; crags as skins;
+  the steps too small for the mountain (a 57 degree gneiss stands in ribs metres to tens of metres
+  high, the ledges cap a step at 4 m and the exposure rule stands it to a fraction of that).
+
+## What the forest's authors found on their cirque (v42), and what this row took
+
+Their part (read as text) tried both generators on the cirque's foot and on a 31 to 37 degree
+stream slope. Of what they wrote down, this row took the dip (the faces read as horizontal
+shelving because the tiers' breaks and the benches need 20 degrees or less: the members now carve
+the faces, and the ledges' fronts, treads and leans follow the beds) and the cost (every recipe of
+a region built at load: the far form by ring, and the case for faces arriving with their tiles).
+It left, as rows: the profile walk's 200 m limit (a 900 m wall is dressed for its lowest 250 m);
+tiers cut shorter than their two tapers on a rippled wall, which stand as triangular blades (27 %
+of faces at a 4 m trace); a tier's top sampling the set stretched along the ledge; the talus skirt
+on a 35 to 50 degree foot; and the ledges' little rock on 30 to 40 degree ground, which is the
+cited rule's answer and not a defect of the attitude.
+
 ## What is not done
 
 - **Toppled blocks are not drawn at the foot.** A block that topples is a gap in its ledge, handed
