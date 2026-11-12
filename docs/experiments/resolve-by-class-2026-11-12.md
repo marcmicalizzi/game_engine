@@ -462,8 +462,9 @@ none measured at four poses).
 
 **Not flown when this was written.** A binary whose resolve shaders are new needs 66 GB of
 commit free when its lease comes (the warm-up's rule, from the load that died past 59 GB), and
-the two leases that came, at 12:46 and 13:27, each found 58 GB and were given back at once; a
-third was in the GPU's line behind fourteen others when the row's code was committed. Nothing
+the three leases that came, at 12:46, 13:27 and 14:49, found 58, 58 and 48 GB and were given
+back at once; a fourth was in the GPU's line behind sixteen others, an hour's load of the
+owner's forest session among them, when the row handed back. Nothing
 on this page says what the split returns on the forest, whose frame is leaves over a layered
 ground beside water and whose resolve is 9.8 ms at the lake.
 
@@ -527,11 +528,13 @@ binaries copied out, `-WaitQuiet 60`, from 13:02, each run waiting its turn in t
 |---|---|---:|---|
 | overlook-1080p | pass | 0.159 / 0.203 (0.155 / 0.358) | busy: others at 91 % of the CPU at its start |
 | erg-walk-1080p-rt | pass | 0.747 / 1.123 (0.724 / 1.214) | busy: others at 47 % |
-| erg-walk-surround3-rt, endless-1080p-csm, endless-surround3-rt | in the GPU's line when this was written | | |
+| erg-walk-surround3-rt | busy, inconclusive | 3.703 / 4.965 (3.771 / 4.127) | busy: others at 73 % at its start, 58 % at its end; the median is under its budget and the p99 over, as in the morning's run |
+| endless-1080p-csm, endless-surround3-rt | in the GPU's line when this was written (eighteen waiting) | | |
 
 None of these scenes holds an alpha-tested material (the overlook's classify bucket is zero), so
 under `auto` every one is the one draw, and what the runs hold is the one draw with the class
-exit's test at its top: inside the budgets on the two that were flown, on a busy machine. The
+exit's test at its top: inside the budgets on the two the tool could judge, on a busy machine,
+and no verdict on the third. The
 morning's table, above, is the same scenes with every class drawn.
 
 ## What stands between `modules` and a default
