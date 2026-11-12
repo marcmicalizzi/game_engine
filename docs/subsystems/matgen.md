@@ -203,14 +203,15 @@ and zero in a recipe that does not ask for it:
 - **Clods** (`clod_mm`) of soil: cells of a cellular field whose lookup is warped by half a cell
   (a polygon's straight edges read as crazy paving), domed by `relief_um`, cracked along some of
   their edge, not all of it.
-- **Cushions** (`cushion_mm`) of moss (version 7): one a cell, its centre jittered and its radius
-  0.7 to 0.98 of a cell so neighbours overlap, each a smooth bump `(1 - (d / r)^2)^2` joined to
+- **Cushions** (`cushion_mm`) of moss (versions 7 and 8): one a cell, its centre jittered and its
+  radius 0.85 to 1.4 cells so neighbours overlap widely and the hollows are scattered pockets
+  (version 7's radii under a cell left a hollow round every cushion: a net at 15 m), each a smooth bump `(1 - (d / r)^2)^2` joined to
   its neighbours softly (one less the product of one less each bump), so two cushions merge where
   they meet. A cushion's hue and vigour are blended across the bumps by their weights, so its
   tone falls off into its neighbours' rather than stepping at an edge; its crown is lighter and
   greener (lit yellow-green, the shaded body and a dry brown mixed by the crown, the hue and the
-  wet-dry mosaic), its margins and the hollows between darker and wetter (0.72 of the crown's
-  tone), and its relief the crown over low hummocks of `relief_um`. Versions 5 and 6 drew a
+  wet-dry mosaic), its margins and the hollows between darker and wetter (0.8 of the crown's
+  tone), each cushion's own vigour 0.7 to 1.3 of the tone, and its relief the crown over low hummocks of `relief_um`. Versions 5 and 6 drew a
   cushion as a Voronoi cell of one tone: creased domes (crazy paving) and then hard-edged tone
   patches (a camouflage print), both in the engine. A carpet with no cushions (the turf's
   underlay) keeps its flat tone, byte for byte.
@@ -240,7 +241,7 @@ two, so the base fails every floor; the landmark ceiling the base meets except t
 | Role | contrast at 5 cm: base, now, floor | at 25 cm: base, now, floor | relief RMS mm: base, now, floor | landmark: base, now, ceiling |
 |---|---|---|---|---|
 | `ground/turf` | 0.018–0.021, 0.056–0.068, > 0.04 | 0.002–0.005, 0.035–0.051, > 0.02 | 2.6–2.8, 5.8–7.9, > 4 | 0.10–0.11, 0.14–0.15, < 0.30 |
-| `ground/moss` | 0.035–0.058, 0.145–0.154, > 0.08 | 0.008–0.024, 0.074–0.088, > 0.04 | 0.44–0.65, 6.8–9.3, > 3 | 0.22–0.46, 0.29–0.33, < 0.45 |
+| `ground/moss` | 0.035–0.058, 0.118–0.130, > 0.08 | 0.008–0.024, 0.086–0.102, > 0.04 | 0.44–0.65, 6.7–9.2, > 3 | 0.22–0.46, 0.28–0.33, < 0.45 |
 | `ground/soil` | 0.053–0.065, 0.106–0.118, > 0.08 | 0.014–0.025, 0.037–0.059, > 0.03 | 0.57, 3.6–4.7, > 2 | 0.31–0.43, 0.22–0.26, < 0.40 |
 | `ground/thatch` | 0.027–0.030, 0.045–0.046, > 0.035 | 0.006–0.012, 0.023–0.025, > 0.018 | 1.43, 4.2–5.6, > 2.5 | 0.14–0.17, 0.11–0.13, < 0.30 |
 
@@ -626,9 +627,10 @@ bar is a photograph, and none of these is one:
 - **Built on demand.** A scene read that finds a role missing could call `build_set` through a
   registration point and the derived-data cache, as a tile's mesh is built; it needs the hosts'
   lookup (`systems/renderer/src/scene.cpp`, `domain/content_build`), which this row did not edit.
-- **`rock/scree` has no caller.** The rocks capability resolves scree and deposits by the
-  rock's type (`rock/granite`...), so a scree mesh takes the rock face's set; the set here is for
-  a ground layer or a recipe that names it until the deposits ask for a granular role.
+- **`rock/scree` has one caller, the deposits' bed.** The bed samples the pack's `rock/scree`
+  role first and its rock's role behind it (`k_scree_role`; [rocks](rocks.md#the-bed-is-rubble)),
+  since a talus surface is fresh clasts and not the wall's face. Nothing else asks for it: a scree
+  block's mesh and a cliff still take their rock face's set (`rock/granite`...).
 - **Lithology from the formation.** The bed's mix and the scree's rock are the recipe's, not the
   scene's formation's; a recipe per catchment is the hook.
 - **Height is carried and unread** by generated meshes ([materials](materials.md), "Not yet"); a

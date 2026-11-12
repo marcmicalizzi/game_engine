@@ -123,8 +123,10 @@ Cell warped_cell(u64 seed, u32 vx, u32 vy, u32 n, u32 k) noexcept {
   return cell_noise(seed, x + wx, y + wy, k);
 }
 
-// A moss carpet's cushions at texel (vx, vy) for period `k` (G187, version 7): one cushion a cell,
-// its centre jittered and its radius 0.7 to 0.98 of a cell, so neighbours overlap. Each is a
+// A moss carpet's cushions at texel (vx, vy) for period `k` (G187, version 8): one cushion a cell,
+// its centre jittered and its radius 0.85 to 1.4 cells, so neighbours overlap widely and the
+// hollows between them are scattered pockets rather than a net (version 7's radii under a cell
+// left a hollow round every cushion, which read as a reticulated pattern at 15 m). Each is a
 // smooth bump (1 - (d / r)^2)^2, and they are joined softly (1 - the product of 1 - bump), so two
 // cushions merge where they meet instead of meeting at an edge; a cushion's hue and vigour are
 // blended by the bumps' weights, so its tone falls off across it into its neighbours' rather
@@ -145,12 +147,14 @@ Cushions cushions(u64 seed, u32 vx, u32 vy, u32 n, u32 k) noexcept {
   const f64 tx = x - fx, ty = y - fy;
   Cushions out;
   f64 open = 1.0, weight = 0.0, hue = 0.0, vigour = 0.0;
-  for (i64 j = -1; j <= 1; ++j) {
-    for (i64 i = -1; i <= 1; ++i) {
+  // A radius up to 1.4 cells reaches two cells over: a centre in cell i lies at least |i| - 1
+  // cells from any point of this one, so -2..2 holds every cushion that can cover it.
+  for (i64 j = -2; j <= 2; ++j) {
+    for (i64 i = -2; i <= 2; ++i) {
       const u64 h = hash3(seed, wrap_node(ix + i, k), wrap_node(iy + j, k));
       const f64 dx = (static_cast<f64>(i) + 0.15 + 0.7 * unit_of(h)) - tx;
       const f64 dy = (static_cast<f64>(j) + 0.15 + 0.7 * unit_of(mix64(h))) - ty;
-      const f64 r = 0.7 + 0.28 * unit_of(mix64(h ^ 0x72ull));
+      const f64 r = 0.85 + 0.55 * unit_of(mix64(h ^ 0x72ull));
       const f64 s = (dx * dx + dy * dy) / (r * r);
       if (s >= 1.0) continue;
       const f64 bump = (1.0 - s) * (1.0 - s);
@@ -278,9 +282,9 @@ void build_ground(const Set& set, Field& field, SetStats& stats, Shade& shade) {
       const f64 dry = cushioned ? clamp01(patchiness * (0.5 - moist) * 1.0 +
                                           0.25 * (cushion_tone - 0.5) - 0.3 * hollow)
                                 : clamp01(patchiness * (0.5 - moist) * 1.6);
-      const f64 green = cushioned ? clamp01(0.3 + 0.6 * crown + 0.5 * (cushion_tone - 0.5)) : 0.5;
+      const f64 green = cushioned ? clamp01(0.3 + 0.6 * crown + 0.9 * (cushion_tone - 0.5)) : 0.5;
       const f64 body_shade =
-          cushioned ? mix(0.72, 1.08, smooth01(crown)) * (0.85 + 0.3 * vigour) : 1.0;
+          cushioned ? mix(0.8, 1.06, smooth01(crown)) * (0.7 + 0.6 * vigour) : 1.0;
       f64 moss_rgb[3];
       for (u32 c = 0; c < 3; ++c) {
         const f64 body = mix(k_moss[c], k_moss_lit[c], green * lit);

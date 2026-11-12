@@ -502,7 +502,8 @@ TEST_CASE("matgen: the same bytes from every toolchain") {
   // soil and the thatch, which no earlier pin held; version 6 (the engine pictures: a moss carpet's
   // relief smoothed, a board's weathering patches smaller) moved the moss and the two woods;
   // version 7 (the moss's cushions overlap and blend their tone instead of one tone a cell) moved
-  // the moss; which of them has been run is on the page (matgen.md, "Same bytes everywhere"). A
+  // the moss, and version 8 (its cushions overlapping widely, its hollows pockets) moved it again;
+  // which of them has been run is on the page (matgen.md, "Same bytes everywhere"). A
   // change to the generator moves these and bumps k_matgen_version.
   struct Pin {
     const char* role;
@@ -513,7 +514,7 @@ TEST_CASE("matgen: the same bytes from every toolchain") {
       {"sand/bar", 6512822385822317515ull},       {"rock/granite", 1158326275606281670ull},
       {"rock/sandstone", 2145369994992403863ull}, {"ground/turf", 6124285787784493336ull},
       {"wood/plank", 14025903017001931447ull},    {"wood/log", 7590841734047759407ull},
-      {"ground/moss", 7388122920877078052ull},    {"ground/soil", 13248924326901389473ull},
+      {"ground/moss", 74344028886144336ull},      {"ground/soil", 13248924326901389473ull},
       {"ground/thatch", 4229589913222796817ull},
   };
   for (const Pin& pin : pins) {

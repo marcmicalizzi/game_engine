@@ -65,7 +65,9 @@ namespace engine::matgen {
 ///    creased at every seam), a board's weathering patches smaller and weaker (a checker at 15 m).
 /// 7: a moss carpet's cushions overlap and merge, their tone falling off across each (a lighter,
 ///    yellower crown, darker wet margins) instead of one tone a cell (a camouflage print).
-inline constexpr u32 k_matgen_version = 7;
+/// 8: the moss's cushions overlap widely (radii 0.85 to 1.4 cells) so its hollows are scattered
+///    pockets, not a net round every cushion (version 7's read as a reticulated pattern at 15 m).
+inline constexpr u32 k_matgen_version = 8;
 
 /// Variants of a tiled role (G153): `default_sets` writes `<role>.1` .. `<role>.<n>` beside each
 /// tiled granular role, the same recipe from other seeds, so a consumer that picks one by place
